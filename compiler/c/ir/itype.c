@@ -138,6 +138,165 @@ int itypeCarriesBorrow(INode *type) {
     }
 }
 
+// Can a borrowed reference whose referent is 'want' be stored somewhere in a
+// value of type 'type': does it hold, anywhere a store can reach (a field, a
+// variant, an element, through an owning reference or a pointer), a borrowed
+// reference to that type, or to a trait, which a borrow of any implementer
+// becomes? 'want' is a type declaration. Asked only of a call that may store
+// through one of its arguments, so the answer is not remembered.
+#define HoldsBorrowMaxDepth 16
+static INode *holdsBorrowAsking[HoldsBorrowMaxDepth];
+static int holdsBorrowDepth = 0;
+
+int itypeHoldsBorrowOf(INode *type, INode *want) {
+    if (type == NULL)
+        return 0;
+    switch (type->tag) {
+    case NameUseTag:
+        return isTypeNode(type) ? itypeHoldsBorrowOf(itypeGetTypeDcl(type), want) : 0;
+    case AliasDclTag:
+        return itypeHoldsBorrowOf(((AliasDclNode *)type)->target, want);
+    case RefTag:
+    case ArrayRefTag:
+    case VirtRefTag:
+    {
+        INode *referent = ((RefNode *)type)->vtexp;
+        if (itypeGetTypeDcl(((RefNode *)type)->region) == borrowRef && isTypeNode(referent)) {
+            INode *refdcl = itypeGetTypeDcl(referent);
+            if (refdcl == want || (refdcl->tag == StructTag && (refdcl->flags & TraitType))
+                || (want->tag == ArrayTag && itypeGetTypeDcl(arrayElemType(want)) == refdcl))
+                return 1;
+        }
+        return itypeHoldsBorrowOf(referent, want);
+    }
+    case PtrTag:
+        return itypeHoldsBorrowOf(((StarNode *)type)->vtexp, want);
+    case ArrayTag:
+        return itypeHoldsBorrowOf(arrayElemType(type), want);
+    case TTupleTag: {
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodesFor(((TupleNode *)type)->elems, cnt, nodesp)) {
+            if (itypeHoldsBorrowOf(*nodesp, want))
+                return 1;
+        }
+        return 0;
+    }
+    case StructTag:
+    {
+        if (!itypeCarriesBorrow(type))
+            return 0;
+        for (int i = 0; i < holdsBorrowDepth; ++i) {
+            if (holdsBorrowAsking[i] == type)
+                return 0;
+        }
+        if (holdsBorrowDepth == HoldsBorrowMaxDepth)
+            return 1;
+        holdsBorrowAsking[holdsBorrowDepth++] = type;
+        int holds = 0;
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodelistFor(&((StructNode *)type)->fields, cnt, nodesp)) {
+            if (itypeHoldsBorrowOf(((IExpNode *)*nodesp)->vtype, want)) {
+                holds = 1;
+                break;
+            }
+        }
+        if (!holds && ((StructNode *)type)->derived) {
+            for (nodesFor(((StructNode *)type)->derived, cnt, nodesp)) {
+                if (itypeHoldsBorrowOf(*nodesp, want)) {
+                    holds = 1;
+                    break;
+                }
+            }
+        }
+        --holdsBorrowDepth;
+        return holds;
+    }
+    default:
+        return 0;
+    }
+}
+
+// The structs itypeDropReadsBorrow is asking about. A type reaching itself (a
+// node owning the next) adds nothing round the loop: what it reads is found
+// where it was first asked. Asked only where a holder dies with a conflict
+// pending, which is rare, so the answer is not remembered.
+#define DropReadsMaxDepth 16
+static StructNode *dropReadsAsking[DropReadsMaxDepth];
+static int dropReadsDepth = 0;
+
+static int itypeStructDropReadsBorrow(StructNode *type) {
+    for (int i = 0; i < dropReadsDepth; ++i) {
+        if (dropReadsAsking[i] == type)
+            return 0;
+    }
+    if (dropReadsDepth == DropReadsMaxDepth)
+        return itypeCarriesBorrow((INode *)type);
+    dropReadsAsking[dropReadsDepth++] = type;
+    // Its own 'final' may read any borrow it holds but through a raw pointer;
+    // what a raw pointer reaches -- a collection's elements -- it finalizes
+    INode *final = namespaceFind(&type->namespace, finalName);
+    int hasfinal = final && final->tag == FnDclTag;
+    int reads = 0;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodelistFor(&type->fields, cnt, nodesp)) {
+        INode *ftype = ((IExpNode *)*nodesp)->vtype;
+        INode *fdcl = ftype && isTypeNode(ftype) ? itypeGetTypeDcl(ftype) : NULL;
+        if (fdcl && fdcl->tag == PtrTag)
+            reads = itypeDropReadsBorrow(((StarNode *)fdcl)->vtexp);
+        else
+            reads = hasfinal ? itypeCarriesBorrow(ftype) : itypeDropReadsBorrow(ftype);
+        if (reads)
+            break;
+    }
+    // An enum dies as whichever of its variants the value is
+    if (!reads && type->derived) {
+        for (nodesFor(type->derived, cnt, nodesp)) {
+            if (itypeDropReadsBorrow(*nodesp)) {
+                reads = 1;
+                break;
+            }
+        }
+    }
+    --dropReadsDepth;
+    return reads;
+}
+
+int itypeDropReadsBorrow(INode *type) {
+    if (type == NULL)
+        return 0;
+    switch (type->tag) {
+    case NameUseTag:
+        return isTypeNode(type) ? itypeDropReadsBorrow(itypeGetTypeDcl(type)) : 0;
+    case AliasDclTag:
+        return itypeDropReadsBorrow(((AliasDclNode *)type)->target);
+    case RefTag:
+    case ArrayRefTag:
+    case VirtRefTag:
+        // A borrow's death does nothing; an owner's finalizes what it owns
+        if (itypeGetTypeDcl(((RefNode *)type)->region) == borrowRef)
+            return 0;
+        return itypeDropReadsBorrow(((RefNode *)type)->vtexp);
+    case ArrayTag:
+        return itypeDropReadsBorrow(arrayElemType(type));
+    case TTupleTag: {
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodesFor(((TupleNode *)type)->elems, cnt, nodesp)) {
+            if (itypeDropReadsBorrow(*nodesp))
+                return 1;
+        }
+        return 0;
+    }
+    case StructTag:
+        return itypeStructDropReadsBorrow((StructNode *)type);
+    default:
+        return 0;
+    }
+}
+
 // ---- The thread check: may a value of this type cross threads? ----------
 //
 // A type is bound to its thread when it holds, anywhere -- inline, through an

@@ -75,7 +75,8 @@ The `pool` package's `Pool[T]` is a generational pool: `add` returns a
 against the slot each time it is used, through the pool value — `get` answers
 an `Option` of a borrow, `None` once the value is removed. The borrow `pool[r]`
 returns is checked like the scratch arena's; the one inside `get`'s `Option`
-is not (a borrow held inside another value carries no lifetime), and no
+freezes a local pool while it is held, but is not checked where it goes (a
+borrow held inside another value carries no lifetime), and no
 invariant lifetime yet pairs a `Ref` with its own pool, so one used with
 another pool of its type is merely bounds- and generation-checked there.
 A third region ref is a library package too: `rcweak`'s `Rcw`, reference
@@ -425,7 +426,7 @@ gap:
 | a moved-out value may not be used | `nameuseFlow` | **flow** |
 | a borrow may not outlive what it points at | `assignlvalrtype` and `swapFlow` (one check, `assignBorrowLifetimeCheck`), `returnFlowEscape`, `fnCallFlowStoredBorrow` | **flow**, at three sites only |
 | a call's returned borrow lives as long as the narrowest borrow it was handed | `fnCallFinalizeArgs`, on a reference node of the call's own — or on the borrowed elements of a tuple of its own, where the call returns several values | type check |
-| freezing a borrow's source, and so aliasing of borrows: a borrow held in a local freezes its source until the borrow's last use | the loan walk, `loanAccess` and `loanUse` (`ErrorFrozen`) | **flow**, for a borrow held in a local whose type is a borrowed reference, one a call returned included (it borrows every argument; a `NoLoanMut` container only its life), and between a call's arguments (`loanFlightAccess`, a receiver two-phase) — not one held inside another value |
+| freezing a borrow's source, and so aliasing of borrows: a borrow held in a local freezes its source until the borrow's last use | the loan walk, `loanAccess` and `loanUse` (`ErrorFrozen`) | **flow**, for a borrow held in a local, bare or inside a struct, `Option`, array or list the local holds, one a call returned included (it borrows every argument; a `NoLoanMut` container only its life), and between a call's arguments (`loanFlightAccess`, a receiver two-phase) |
 
 ## Hazards
 

@@ -21,21 +21,23 @@
 //
 // The first: a borrow held inside another value carries no lifetime, so the
 // borrow in 'get's and 'getMut's Option is not checked against the pool it
-// came from. Returning the Option, storing it in an outer variable, and
-// matching the borrow out of it and returning or storing that all compile.
+// came from. Returning the Option, storing it through a parameter, and
+// matching the borrow out of it and returning that all compile. (Stored in an
+// outer variable that is used after the pool ends, it is refused: held in a
+// local, it freezes the pool as a bare borrow does.)
 // 'pool[r]' and '&mut pool[r]' return a bare borrow, which IS checked: the
 // compiler's suite pins that returning one or storing it where it outlives
 // the pool is refused (test/cases/region/region_flow_pool_escape.cone). So
 // 'if pool.alive(r) { ...pool[r]... }' is the checked form today.
 // The second is freezing through a shared path. A borrow from 'pool[r]' or
-// '&mut pool[r]' held in a local freezes a local pool: 'remove', an 'add'
+// '&mut pool[r]', or an Option from 'get' or 'getMut', held in a local
+// freezes a local pool: 'remove', an 'add'
 // (which may move every value), and moving or dropping it are refused while
 // the borrow is live. A pool reached through a '&mut Pool' parameter, a field
 // of 'self' or a 'Rc[mut, T]' owner is not frozen, since another reference may
 // reach it; Jon's rule refuses such a borrow, and waits on 'uni' reborrowing.
-// A borrow from 'get' or 'getMut' freezes nothing yet (it is inside an
-// Option), and a static pool (a module's global) changed by a function
-// called while a borrow of it lives is not seen.
+// A static pool (a module's global) changed by a function called while a
+// borrow of it lives is not seen.
 
 mod gaps;
 

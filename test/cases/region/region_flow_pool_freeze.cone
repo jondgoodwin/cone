@@ -1,0 +1,52 @@
+// A borrow a pool hands back inside an 'Option' -- 'get' and 'getMut' --
+// keeps a local pool frozen while it is still to be used, exactly as a bare
+// borrow from 'pool[r]' does (collection_flow_freeze): no 'remove', no 'add'
+// (which may move every value), no moving the pool away. The 'Option' held
+// in a local, the hidden variable a 'match' keeps it in, and the binding a
+// 'case' makes of it each hold the borrow. Each error is reported at the
+// touch.
+
+mod region_flow_pool_freeze;
+
+import pool use *;
+
+struct Pt { pub x i64; pub y i64; }
+
+fn consume(p Pool[Pt]) {}
+
+// Removed while the binding of a matched 'get' is still to be used
+fn removedWhileMatched() i64 {
+  mut p = Pool[Pt].empty();
+  imm r = p.add(new Pt(1, 2));
+  match p.get(r) {
+    case imm e Some {
+      p.remove(r);              //~ ErrorFrozen:7 "may not be borrowed mutably"
+      e.value.x;
+    }
+    else { 0; }
+  }
+}
+
+// Added to while an 'Option' from 'getMut' is still to be used
+fn addedWhileHeld() i64 {
+  mut p = Pool[Pt].empty();
+  imm r = p.add(new Pt(1, 2));
+  imm o = p.getMut(r);
+  p.add(new Pt(3, 4));          //~ ErrorFrozen:3 "is borrowed mutably (by 'getMut'"
+  match o {
+    case imm e Some { e.value.x; }
+    else { 0; }
+  }
+}
+
+// Moved away while an 'Option' from 'get' is still to be used
+fn movedWhileHeld() i64 {
+  mut p = Pool[Pt].empty();
+  imm r = p.add(new Pt(1, 2));
+  imm o = p.get(r);
+  consume(p);                   //~ ErrorFrozen:11 "may not be moved"
+  match o {
+    case imm e Some { e.value.x; }
+    else { 0; }
+  }
+}

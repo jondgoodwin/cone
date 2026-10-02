@@ -1,0 +1,39 @@
+// A call handed a writable borrow of a local struct holding a borrow may
+// store its other argument there, so afterwards the struct holds that
+// borrow and keeps its source frozen while it is used.
+//
+// Verdict: refuse, ErrorFrozen at the replacement.
+// Basis: borrow-freezing rule (26 Sep 2026) -- a store through a reference
+// (a call with a '&mut X' argument, X carrying a borrow, among them) puts
+// the stored borrow's loans into what the reference points at;
+// reflifefn.html, "Mutable borrowed reference parameters" -- the callee may
+// store any borrow it was handed there.
+// Master 42f45409: accepted, and it reads freed memory -- main, run, prints
+// "final" (the replaced owner) and then a garbage value through the struct.
+// Stage 3 fixed it.
+
+mod lifetime_free_call_store_holder_frozen;
+
+import stdio use *;
+
+struct R {
+  pub n i64;
+  fn final(self &uni) {
+    printStr("final\n");
+  }
+}
+
+struct H { pub r &R; }
+
+fn stash(o &mut H, r &R) { o.r = r; }
+
+fn main() {
+  imm t = new R(1);
+  mut s = new So[R](42);
+  mut h = new H(&t);
+  stash(&mut h, &*s);
+  s = new So[R](7);          //~ ErrorFrozen
+  printStr("read = ");
+  printInt(h.r.n);
+  printStr("\n");
+}

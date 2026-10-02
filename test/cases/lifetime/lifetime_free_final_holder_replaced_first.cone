@@ -1,0 +1,41 @@
+// The neighbour of lifetime_free_final_holder_frozen: the struct whose
+// finalizer reads its borrow is stored over first, its old value finalized
+// there while the source is still alive, so the source is free afterwards.
+//
+// Verdict: accept; the old struct's finalizer reads 42 before the owner is
+// replaced.
+// Basis: borrow-freezing rule (26 Sep 2026) -- a holder reassigned whole
+// holds only its new value's borrows; its old value's finalizer runs at the
+// store, a use there and not later.
+// Master 42f45409: correct (a borrow inside a struct froze nothing).
+
+mod lifetime_free_final_holder_replaced_first;
+
+import stdio use *;
+
+struct R {
+  pub n i64;
+  fn final(self &uni) {
+    printStr("final ");
+    printInt(self.n);
+    printStr("\n");
+  }
+}
+
+struct H {
+  pub r &R;
+  fn final(self &uni) {
+    printStr("finalizer reads ");
+    printInt(self.r.n);
+    printStr("\n");
+  }
+}
+
+fn main() {
+  imm t = new R(9);
+  mut s = new So[R](42);
+  mut h = new H(&*s);
+  h = new H(&t);
+  s = new So[R](7);
+  printStr("replaced\n");
+}

@@ -60,6 +60,17 @@ INode *itypeGetDerefTypeDcl(INode *node);
 // Remembered per struct once the struct is type checked.
 int itypeCarriesBorrow(INode *type);
 
+// Can a borrowed reference to 'want' (a type declaration) be stored somewhere
+// in a value of this type: does it hold a borrowed reference to that type, or
+// to a trait?
+int itypeHoldsBorrowOf(INode *type, INode *want);
+
+// May a value of this type, dying, read a borrowed reference it holds: does
+// it hold one where a 'final' method can reach it? Rust's drop check, with
+// what a raw pointer reaches (a collection's elements) taken as finalized,
+// never read, as Rust's '#[may_dangle]' collections promise.
+int itypeDropReadsBorrow(INode *type);
+
 // Does a value of this type hold a traced reference where it sits: a reference
 // into a region declaring 'Traced', or a tuple, array, struct or enum holding
 // one inline (not through another reference or a pointer)? Remembered per

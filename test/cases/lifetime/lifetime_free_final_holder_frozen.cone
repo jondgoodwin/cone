@@ -1,0 +1,38 @@
+// A struct holding a borrow, whose finalizer reads it, uses the borrow when
+// it dies: its source may not be changed while the struct is still alive,
+// though nothing else uses the struct again.
+//
+// Verdict: refuse, ErrorFrozen at the replacement.
+// Basis: borrow-freezing rule (26 Sep 2026) -- a holder's finalizer at its
+// scope end is a use when its type needs finalizing. Rust: the drop check
+// (a type with a Drop impl uses its borrows when dropped; E0505/E0506; by
+// reading, not run).
+// Master 42f45409: accepted, and the finalizer reads freed memory -- main,
+// run, prints "final" (the replaced owner) and then "finalizer reads
+// <garbage>". Stage 3 fixed it.
+
+mod lifetime_free_final_holder_frozen;
+
+import stdio use *;
+
+struct R {
+  pub n i64;
+  fn final(self &uni) {
+    printStr("final\n");
+  }
+}
+
+struct H {
+  pub r &R;
+  fn final(self &uni) {
+    printStr("finalizer reads ");
+    printInt(self.r.n);
+    printStr("\n");
+  }
+}
+
+fn main() {
+  mut s = new So[R](42);
+  imm h = new H(&*s);
+  s = new So[R](7);          //~ ErrorFrozen
+}

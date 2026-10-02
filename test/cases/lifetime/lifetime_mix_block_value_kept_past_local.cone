@@ -1,0 +1,37 @@
+// A block's value holding a borrow of a variable declared in the block goes
+// on to the holder it initializes after that variable has ended: the
+// variable ends while the value still being made holds its borrow, which
+// the holder will use.
+//
+// Verdict: refuse, ErrorFrozen at the inner owner, which ends while the
+// block's value holds a borrow of it (ref_flow_freeze's idiom, at the
+// source's declaration).
+// Basis: borrow-freezing rule (26 Sep 2026) -- a value holding a borrow keeps
+// its source alive until the value's last use; the value a block hands on is
+// certainly used. Rust: refused (E0597, "borrowed value does not live long
+// enough"; by reading, not run).
+// Master 42f45409: accepted, and it reads freed memory -- main, run, prints
+// "final" and then "read = <garbage>". Stage 3 fixed it.
+
+mod lifetime_mix_block_value_kept_past_local;
+
+import stdio use *;
+
+struct R {
+  pub n i64;
+  fn final(self &uni) {
+    printStr("final\n");
+  }
+}
+
+struct H { pub r &R; }
+
+fn main() {
+  imm h = {
+    imm x = new So[R](42);   //~ ErrorFrozen
+    new H(&*x);
+  };
+  printStr("read = ");
+  printInt(h.r.n);
+  printStr("\n");
+}
