@@ -143,6 +143,13 @@ Visual Studio projects stay at the root.
   `textdiff` is the line diff of two lists of lines or two texts: the edit
   as spans (a minimal one, by Myers' algorithm) and the unified diff that
   shows it, in `difflib.unified_diff`'s format and `diff -u`'s;
+  `toml` reads a subset of TOML, enough for Congo's manifests and machine
+  config: tables, keys set to strings (TOML's escapes), integers, booleans
+  and lists of strings, and comments, into a `Document` of `Table`s whose
+  typed getters answer an `Option`, everything in the order written; the
+  rest of TOML (dates, floats, inline tables, arrays of tables, literal and
+  multi-line strings, dotted and quoted keys) is refused by name with its
+  line, never misread, a core `Result` holding a `TomlError`;
   `fs`, `path` and `env` are the synchronous OS layer over `libc` and
   `posix`: `fs` is files and folders (whole files read, written and
   appended, `stat`, folders made, listed in name order, walked and removed,

@@ -1,0 +1,169 @@
+// Everything outside the subset, and every malformed text, refused with its
+// line and its reason, each pinned to the whole message: the TOML that the
+// subset leaves out (dates and times, floats, integers in other bases,
+// literal and multi-line strings, inline tables, arrays of tables, dotted
+// and quoted keys and table names, lists holding anything but strings), and
+// what TOML itself refuses (a key set twice, a table defined twice or named
+// like a key, bad escapes, strings and lists not closed, control
+// characters, a lone '\r', text that is not UTF-8, anything after a value,
+// a missing '=' or value, bad integers). Each bad line is put after good
+// ones, so the line counted is checked too.
+
+mod refused;
+
+import testing use *;
+import collections use *;
+import toml;
+
+// What parsing text gives: the error's message, or "<parsed>"
+fn failure(text &[]u8) String {
+  match toml.parse(text) {
+    case imm ok Ok { String.from("<parsed>"); }
+    case imm e Error { e.value.message(); }
+  }
+}
+
+fn refuses(text &[]u8, want &[]u8, label &[]u8) {
+  imm got = failure(text);
+  expectStr(got.view(), want, label);
+}
+
+fn main() i32 {
+  imm head = "# a manifest\n[package]\nname = \"x\"\n";
+
+  // -------- outside the subset --------
+  mut t = String.from(head);
+  t.append("when = 1979-05-27\n");
+  refuses(t.view(), "line 4: dates and times are not supported", "a date");
+  refuses("at = 07:32:00\n", "line 1: dates and times are not supported", "a time");
+  refuses("at = 1979-05-27T07:32:00Z\n", "line 1: dates and times are not supported", "a date-time");
+  refuses("at = 1979-05-27 07:32:00\n", "line 1: dates and times are not supported", "a date-time with a space");
+  refuses("at = 1979-05-27T00:32:00.999-07:00\n", "line 1: dates and times are not supported",
+    "a date-time with a fraction and an offset");
+  refuses("pi = 3.14\n", "line 1: floats are not supported", "a float");
+  refuses("big = 1e6\n", "line 1: floats are not supported", "an exponent");
+  refuses("big = 6E-3\n", "line 1: floats are not supported", "a negative exponent");
+  refuses("x = inf\n", "line 1: floats are not supported", "inf");
+  refuses("x = -nan\n", "line 1: floats are not supported", "-nan");
+  refuses("x = +inf\n", "line 1: floats are not supported", "+inf");
+  refuses("x = 0xFF\n", "line 1: hexadecimal, octal and binary integers are not supported", "hex");
+  refuses("x = 0o17\n", "line 1: hexadecimal, octal and binary integers are not supported", "octal");
+  refuses("x = 0b101\n", "line 1: hexadecimal, octal and binary integers are not supported", "binary");
+  t = String.from(head);
+  t.append("point = { x = 1, y = 2 }\n");
+  refuses(t.view(), "line 4: inline tables ('{...}') are not supported", "an inline table");
+  t = String.from(head);
+  t.append("[[bin]]\nname = \"a\"\n");
+  refuses(t.view(), "line 4: arrays of tables ('[[...]]') are not supported", "an array of tables");
+  refuses("s = \"\"\"\nmany\nlines\"\"\"\n", "line 1: multi-line strings are not supported", "a multi-line string");
+  refuses("s = '''\nmany'''\n", "line 1: multi-line strings are not supported", "a multi-line literal string");
+  refuses("s = 'C:\\path'\n", "line 1: literal strings ('...') are not supported: write the string in \"...\"",
+    "a literal string");
+  refuses("[a]\nb.c = 1\n", "line 2: dotted keys ('a.b = ...') are not supported", "a dotted key");
+  refuses("[a.b]\n", "line 1: dotted table names ('[a.b]') are not supported", "a dotted table name");
+  refuses("[a . b]\n", "line 1: dotted table names ('[a.b]') are not supported", "a dotted table name, spaced");
+  refuses("\"quoted\" = 1\n", "line 1: quoted keys are not supported: a key is letters, digits, '_' and '-'",
+    "a quoted key");
+  refuses("['a']\n", "line 1: quoted table names are not supported: a table name is letters, digits, '_' and '-'",
+    "a quoted table name");
+  refuses("l = [1, 2]\n", "line 1: a list may hold only strings", "a list of integers");
+  refuses("l = [\"a\",\n  true]\n", "line 2: a list may hold only strings", "a list holding a boolean");
+  refuses("l = [[\"a\"]]\n", "line 1: a list may hold only strings", "a list of lists");
+  refuses("l = [{a = 1}]\n", "line 1: a list may hold only strings", "a list of inline tables");
+  refuses("l = ['a']\n", "line 1: literal strings ('...') are not supported: write the string in \"...\"",
+    "a list of literal strings");
+  refuses("l = [\"\"\"a\"\"\"]\n", "line 1: multi-line strings are not supported", "a list of multi-line strings");
+
+  // -------- twice --------
+  t = String.from(head);
+  t.append("version = \"1\"\nname = \"y\"\n");
+  refuses(t.view(), "line 5: key 'name' is set twice in [package]; the first is on line 3", "a key set twice");
+  refuses("a = 1\nb = 2\na = 3\n", "line 3: key 'a' is set twice; the first is on line 1", "a root key set twice");
+  t = String.from(head);
+  t.append("[link]\n[package]\n");
+  refuses(t.view(), "line 5: table [package] is defined twice; the first is on line 2", "a table defined twice");
+  refuses("link = 1\n[link]\n", "line 2: table [link] has the name of a key set on line 1",
+    "a table named like a key of the root");
+  refuses("a = 1\n[t]\na = 1\n[u]\nb = 1\n[t]\n", "line 6: table [t] is defined twice; the first is on line 2",
+    "a table defined again later");
+
+  // -------- strings --------
+  refuses("s = \"a\\qb\"\n", "line 1: bad escape '\\q' in a string: the escapes are \\b \\t \\n \\f \\r \\\" \\\\ \\uXXXX and \\UXXXXXXXX",
+    "an unknown escape");
+  refuses("s = \"\\x41\"\n", "line 1: bad escape '\\x' in a string: the escapes are \\b \\t \\n \\f \\r \\\" \\\\ \\uXXXX and \\UXXXXXXXX",
+    "a hex escape, TOML 1.1's");
+  refuses("s = \"\\e\"\n", "line 1: bad escape '\\e' in a string: the escapes are \\b \\t \\n \\f \\r \\\" \\\\ \\uXXXX and \\UXXXXXXXX",
+    "an escape character escape, TOML 1.1's");
+  refuses("s = \"\\ \"\n", "line 1: bad escape in a string: the escapes are \\b \\t \\n \\f \\r \\\" \\\\ \\uXXXX and \\UXXXXXXXX",
+    "a backslash before a space");
+  refuses("s = \"\\u12\"\n", "line 1: '\\u' must be followed by 4 hex digits", "a short \\u");
+  refuses("s = \"\\u12G4\"\n", "line 1: '\\u' must be followed by 4 hex digits", "a \\u with a non-hex digit");
+  refuses("s = \"\\U0001F60\"\n", "line 1: '\\U' must be followed by 8 hex digits", "a short \\U");
+  refuses("s = \"\\uD800\"\n", "line 1: the escape names no character: a surrogate, or beyond U+10FFFF", "a surrogate");
+  refuses("s = \"\\U00110000\"\n", "line 1: the escape names no character: a surrogate, or beyond U+10FFFF",
+    "beyond U+10FFFF");
+  refuses("s = \"\\UFFFFFFFF\"\n", "line 1: the escape names no character: a surrogate, or beyond U+10FFFF",
+    "far beyond U+10FFFF");
+  t = String.from(head);
+  t.append("s = \"open\n");
+  refuses(t.view(), "line 4: the string is not closed with '\"' on its line", "a string not closed");
+  refuses("s = \"open", "line 1: the string is not closed with '\"' on its line", "a string not closed at the end");
+  refuses("s = \"ends in \\", "line 1: the string is not closed with '\"' on its line", "a string ending in a backslash");
+  refuses("s = \"a\x01b\"\n", "line 1: a control character in a string must be written as an escape",
+    "a control character in a string");
+  refuses("s = \"a\x7Fb\"\n", "line 1: a control character in a string must be written as an escape",
+    "DEL in a string");
+
+  // -------- lists --------
+  t = String.from(head);
+  t.append("l = [\n  \"a\",\n  \"b\"\n");
+  refuses(t.view(), "line 4: the list is not closed with ']'", "a list not closed: the line it opened on");
+  refuses("l = [\"a\" \"b\"]\n", "line 1: expected ',' or ']' after a string in a list", "a list missing a ','");
+  refuses("l = [,]\n", "line 1: expected a string before ','", "a list of only a ','");
+  refuses("l = [\"a\",,]\n", "line 1: expected a string before ','", "a list with two ','");
+  refuses("l = [\n# open\n", "line 1: the list is not closed with ']'", "a list ending in a comment");
+
+  // -------- lines, comments and bytes --------
+  refuses("a = 1\r\nb = 2\rc = 3\n", "line 2: a carriage return must be followed by a line feed", "a lone CR");
+  refuses("a = 1 # note\x01\n", "line 1: a comment may not hold a control character", "a control character in a comment");
+  refuses("a = 1\nb = \"ok\"\nc = \"\xFF\"\n", "line 3: the text is not UTF-8", "a byte that is not UTF-8");
+  refuses("a = \"\xC0\xAF\"\n", "line 1: the text is not UTF-8", "an overlong form");
+  refuses("a = \"\xED\xA0\x80\"\n", "line 1: the text is not UTF-8", "a surrogate in UTF-8");
+  refuses("\n\na = \"\xE6\x97\"", "line 3: the text is not UTF-8", "a character cut short at the end");
+  t = String.from(head);
+  t.append("output = \"library\" extra\n");
+  refuses(t.view(), "line 4: expected the end of the line after the value", "something after a value");
+  refuses("a = 1 2\n", "line 1: expected the end of the line after the value", "two values");
+  refuses("[a] b = 1\n", "line 1: expected the end of the line after the table's name", "a key after a header");
+  refuses("[a\n", "line 1: expected ']' after the table's name", "a header not closed");
+  refuses("[]\n", "line 1: expected a table name: letters, digits, '_' and '-'", "an empty table name");
+  refuses("a \"x\"\n", "line 1: expected '=' after the key", "no '='");
+  refuses("a\n", "line 1: expected '=' after the key", "a key alone");
+  refuses("a =\n", "line 1: expected a value after '='", "no value");
+  refuses("a = # none\n", "line 1: expected a value after '='", "a comment for a value");
+  refuses("a =", "line 1: expected a value after '='", "no value at the end");
+  refuses("= 1\n", "line 1: expected a key: letters, digits, '_' and '-'", "no key");
+  refuses("a = hello\n", "line 1: expected a value: a string in \"...\", an integer, true, false or a list of strings",
+    "a bare word");
+  refuses("a = True\n", "line 1: expected a value: a string in \"...\", an integer, true, false or a list of strings",
+    "True");
+  refuses("a = +\n", "line 1: expected a value: a string in \"...\", an integer, true, false or a list of strings",
+    "a sign alone");
+  refuses("a = 012\n", "line 1: an integer may not start with 0", "a leading zero");
+  refuses("a = -01\n", "line 1: an integer may not start with 0", "a leading zero after a sign");
+  refuses("a = 1__000\n", "line 1: an integer is decimal digits, with '_' only between two of them", "two '_'");
+  refuses("a = 1_\n", "line 1: an integer is decimal digits, with '_' only between two of them", "a trailing '_'");
+  refuses("a = 12a\n", "line 1: an integer is decimal digits, with '_' only between two of them", "a letter in an integer");
+  refuses("a = 9223372036854775808\n", "line 1: the integer is beyond i64's range", "one past i64's largest");
+  refuses("a = -9223372036854775809\n", "line 1: the integer is beyond i64's range", "one past i64's smallest");
+
+  // The message is the line and the reason; the fields hold them apart
+  match toml.parse("a = 1\nb = 2.5\n") {
+    case imm ok Ok { expect(false, "a float refused"); }
+    case imm e Error {
+      expectUInt(u64.from(e.value.line), 2u64, "the error's line");
+      expectStr(e.value.reason.view(), "floats are not supported", "the error's reason");
+    }
+  }
+  done();
+}
