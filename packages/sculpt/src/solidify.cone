@@ -1,0 +1,236 @@
+// ======== Solidify: a surface given thickness ========
+
+// The least cosine 'solidify''s even thickness divides by: a vertex whose
+// faces fold back on each other moves at most 10 times the thickness
+const EvenCosMin = 0.1;
+
+// A surface given thickness (Blender's Solidify modifier, Simple mode): the
+// surface and a copy of it offset along the vertex normals, 'thickness'
+// apart, the copy turned over so the pair bounds a solid, and, with 'rim',
+// a quad closing the gap at each side of every open boundary loop. A closed
+// surface gives two nested shells, the inner facing inward, into the hollow.
+//
+// 'offset', from -1 to 1 (held there), places the solid as Blender's does,
+// by the faces' normals: at -1 it lies behind the surface (the surface stays
+// where it is, the copy is 'thickness' behind it, inside a closed mesh), at
+// 0 it is centred on it, and at 1 it lies in front. Vertex v moves along its
+// normal n by thickness (offset + 1) / 2, and its copy by thickness (offset
+// - 1) / 2. A negative thickness puts the copy in front; the shell behind
+// is always the one turned over, so the faces face out of the solid either
+// way. The normals are the mesh's own (PolyMesh.vertexNormals), each face's
+// weighted by its angle at the vertex, so a face cut in two does not pull
+// the normal toward it.
+//
+// With 'evenThickness', each vertex's move is divided by the cosine of the
+// angle between its normal and its faces' normals (the mean of the cosines,
+// weighted as the normal is, held to at least 0.1), so each face's offset
+// plane lies the full thickness from it where faces meet at an angle: the
+// corner of a box moves sqrt 3 times as far, and each face exactly the
+// thickness. Without it, every vertex moves the thickness, and the walls
+// thin where the surface folds.
+//
+// Numbering: vertex v stays v, its copy is V + v (V the vertex count); face f
+// stays f, its copy is F + f, with its corners reversed from the same first
+// corner (as 'mirror' turns its copy over); then the rim quads from 2F,
+// loop by loop round each boundary, each loop from its first side met going
+// through the faces in order, each from its first corner. On a boundary
+// side a -> b of a face (the face on its left), the rim quad is (b, a, a',
+// b'), a' and b' the copies (with a negative thickness, (a, b, b', a')).
+//
+// Channels: a copy vertex takes its vertex's values, a copy face its face's
+// values, and each copy corner the values of the corner it was copied from
+// (so the copy's uv is the surface's, read from behind); both shells' sides
+// keep their edge's values, "crease" too. A rim quad takes the face values
+// of the face whose boundary side it closes, and its corners that face's
+// corner values at a and b (a' and b' as a and b), but for "uv", which on the
+// rim is a strip as 'extrudeFaces''s walls are: u along the boundary loop by
+// length from 0 to 1, v 0 at the inner shell (the one turned over) and 1 at
+// the outer. The rim's sides joining a vertex to its copy are new, 0 in
+// every edge channel.
+pub fn solidify(m &PolyMesh, thickness f32, offset f32, evenThickness Bool, rim Bool) PolyMesh {
+  solidifyWith(m, thickness, offset, evenThickness, rim, 0., 0., 0.);
+}
+
+// The same, with creases for subdivision, as Blender's Crease Inner, Outer
+// and Rim: with 'rim', each rim quad's side along the inner shell gets at
+// least 'creaseInner' in the "crease" edge channel, its side along the outer
+// shell at least 'creaseOuter', and its sides joining a vertex to its copy
+// 'creaseRim'. A crease above 0 adds a "crease" edge channel when the mesh
+// has none.
+pub fn solidifyWith(m &PolyMesh, thickness f32, offset f32, evenThickness Bool, rim Bool, creaseInner f32,
+    creaseOuter f32, creaseRim f32) PolyMesh {
+  imm nv = m.positions.len();
+  imm nf = m.fHalfedge.len();
+  imm off = clampf(offset, -1., 1.);
+  imm flip = thickness < 0.;
+  imm normals = m.vertexNormals();
+  imm scale = if evenThickness {evenScales(m, &normals);} else {ones(nv);};
+  mut pos = List[Vec3].withCapacity(2usize * nv);
+  mut vSrc = List[u32].withCapacity(2usize * nv);
+  mut v = 0usize;
+  while v < nv {
+    pos.push(*m.positions[v] + *normals[v] * (*scale[v] * thickness * (off + 1.) * 0.5));
+    vSrc.push(u32.from(v));
+    v = v + 1usize;
+  }
+  v = 0usize;
+  while v < nv {
+    pos.push(*m.positions[v] + *normals[v] * (*scale[v] * thickness * (off - 1.) * 0.5));
+    vSrc.push(u32.from(v));
+    v = v + 1usize;
+  }
+
+  mut counts = List[u32].empty();
+  mut idx = List[u32].empty();
+  mut cSrc = List[u32].empty();
+  mut eSrc = List[u32].empty();
+  mut fSrc = List[u32].empty();
+  if flip {
+    addReversed(m, 0usize, &mut counts, &mut idx, &mut cSrc, &mut eSrc, &mut fSrc);
+    addCopy(m, nv, &mut counts, &mut idx, &mut cSrc, &mut eSrc, &mut fSrc);
+  } else {
+    addCopy(m, 0usize, &mut counts, &mut idx, &mut cSrc, &mut eSrc, &mut fSrc);
+    addReversed(m, nv, &mut counts, &mut idx, &mut cSrc, &mut eSrc, &mut fSrc);
+  }
+
+  // Every face in one region, so the rim is the boundary
+  mut region = List[u32].withCapacity(nf);
+  mut f = 0usize;
+  while f < nf {
+    region.push(0u32);
+    f = f + 1usize;
+  }
+  mut loops = List[u32].empty();
+  mut starts = List[u32].empty();
+  if rim { rimLoops(m, &region, &mut loops, &mut starts); }
+  mut j = 0usize;
+  while j < loops.len() {
+    imm h = *loops[j];
+    imm a = m.fromVertex(h);
+    imm b = m.toVertex(h);
+    imm ca = m.prev(h);
+    counts.push(4u32);
+    if flip {
+      idx.push(a);
+      idx.push(b);
+      idx.push(u32.from(nv) + b);
+      idx.push(u32.from(nv) + a);
+      cSrc.push(ca);
+      cSrc.push(h);
+      cSrc.push(h);
+      cSrc.push(ca);
+    } else {
+      idx.push(b);
+      idx.push(a);
+      idx.push(u32.from(nv) + a);
+      idx.push(u32.from(nv) + b);
+      cSrc.push(h);
+      cSrc.push(ca);
+      cSrc.push(ca);
+      cSrc.push(h);
+    }
+    eSrc.push(NoIndex);
+    eSrc.push(h / 2u32);
+    eSrc.push(NoIndex);
+    eSrc.push(h / 2u32);
+    fSrc.push(m.face(h));
+    j = j + 1usize;
+  }
+
+  mut out = assemble(m, &pos, &vSrc, &counts, &idx, &cSrc, &eSrc, &fSrc);
+  // A face refused (none should be) would shift the rim's numbers: leave
+  // the corner values as carried
+  if !rim or out.fHalfedge.len() != counts.len() { return out; }
+  imm stripU = loopU(m, &loops, &starts);
+  stripUvs(&mut out, 2usize * nf, &stripU, !flip);
+  if creaseInner > 0. or creaseOuter > 0. or creaseRim > 0. {
+    imm ch = out.addFloatChannel(EdgeDomain, "crease", 0.);
+    // A quad's corner k's incoming side: 0 and 2 the uprights, 1 the outer
+    // shell's side and 3 the inner's ((b, a, a', b')), or the other way
+    // round when flipped ((a, b, b', a'))
+    imm innerK = if flip {1usize;} else {3usize;};
+    imm outerK = if flip {3usize;} else {1usize;};
+    j = 0usize;
+    while j < loops.len() {
+      imm hs = out.faceHalfedges(u32.from(2usize * nf + j));
+      raiseCrease(&mut out, ch, *hs[innerK], creaseInner);
+      raiseCrease(&mut out, ch, *hs[outerK], creaseOuter);
+      raiseCrease(&mut out, ch, *hs[0usize], creaseRim);
+      raiseCrease(&mut out, ch, *hs[2usize], creaseRim);
+      j = j + 1usize;
+    }
+  }
+  out;
+}
+
+// Each vertex's even-thickness factor: 1 over the mean cosine between its
+// normal and its faces' normals, each weighted by the face's angle at the
+// vertex (as the normal is), the cosine held to at least EvenCosMin; 1 for a
+// vertex on no face
+fn evenScales(m &PolyMesh, normals &List[Vec3]) List[f32] {
+  imm nv = m.positions.len();
+  mut sumW = List[f32].withCapacity(nv);
+  mut sumC = List[f32].withCapacity(nv);
+  mut v = 0usize;
+  while v < nv {
+    sumW.push(0.);
+    sumC.push(0.);
+    v = v + 1usize;
+  }
+  mut f = 0usize;
+  while f < m.fHalfedge.len() {
+    imm fnrm = m.faceNormal(u32.from(f));
+    imm hs = m.faceHalfedges(u32.from(f));
+    mut k = 0usize;
+    while k < hs.len() {
+      imm h = *hs[k];
+      imm c = usize.from(m.toVertex(h));
+      imm w = cornerAngleAt(m, h);
+      sumW.set(c, *sumW[c] + w);
+      sumC.set(c, *sumC[c] + w * normals[c].dot(fnrm));
+      k = k + 1usize;
+    }
+    f = f + 1usize;
+  }
+  mut out = List[f32].withCapacity(nv);
+  v = 0usize;
+  while v < nv {
+    if *sumW[v] > 0. {
+      mut cosine = *sumC[v] / *sumW[v];
+      if cosine < EvenCosMin { cosine = EvenCosMin; }
+      out.push(1. / cosine);
+    } else {
+      out.push(1.);
+    }
+    v = v + 1usize;
+  }
+  out;
+}
+
+// The angle of corner h's face at h's vertex, in radians; 0 when a side has
+// no length
+fn cornerAngleAt(m &PolyMesh, h u32) f32 {
+  imm p = *m.positions[usize.from(m.toVertex(h))];
+  imm e1 = *m.positions[usize.from(m.fromVertex(h))] - p;
+  imm e2 = *m.positions[usize.from(m.toVertex(m.next(h)))] - p;
+  imm l = e1.length() * e2.length();
+  if l <= 0. { return 0.; }
+  acos(clampf(e1.dot(e2) / l, -1., 1.));
+}
+
+// A list of n 1s
+fn ones(n usize) List[f32] {
+  mut out = List[f32].withCapacity(n);
+  mut i = 0usize;
+  while i < n {
+    out.push(1.);
+    i = i + 1usize;
+  }
+  out;
+}
+
+// The edge of half-edge h given at least 'value' in channel ch
+fn raiseCrease(out &mut PolyMesh, ch u32, h u32, value f32) {
+  imm e = h / 2u32;
+  if out.float(ch, e) < value { out.setFloat(ch, e, value); }
+}
