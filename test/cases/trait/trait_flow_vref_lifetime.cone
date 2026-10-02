@@ -37,34 +37,57 @@ fn holdVref(dst &mut &<Shape, src &<Shape) { *dst = src; }
 
 // -------- stored past the block the value lives in --------
 
-fn stores() {
+// Each is kept in an outer variable past the block 'c' lives in, and used
+// there: 'c' may not end while it is still held. (Held and not used again, it
+// may be: a variable's lifetime follows what it holds.)
+fn stores() i32 {
   mut v &<Shape = &global;
   mut w &Shape = &global;
+  mut seen = 0;
+
+  // The coercion into a virtual reference keeps what it was borrowed from
+  {
+    imm c = new Circle(3);  //~ ErrorFrozen
+    v = &c;
+  }
+  seen = seen + v.area();
+
+  // Widening to the base trait's own reference type is the same coercion
+  {
+    imm c = new Circle(3);  //~ ErrorFrozen
+    w = &c;
+  }
+  imm widened &Shape = w;
+
+  // A call handed a virtual-reference borrow returns one carrying it, exactly
+  // as ref_flow_call establishes for a plain reference
+  {
+    imm c = new Circle(3);  //~ ErrorFrozen
+    v = sameVref(&c);
+  }
+  seen = seen + v.area();
+
+  // What is allowed beside them, which is what makes these a lifetime rule
+  // rather than a refusal of the coercion itself: a virtual reference to a
+  // global, and one stored in a binding of this very block
   {
     imm c = new Circle(3);
-
-    // The coercion into a virtual reference keeps what it was borrowed from
-    v = &c;                 //~ ErrorInvType:5 "lval outlives the borrowed reference you are storing"
-
-    // Widening to the base trait's own reference type is the same coercion
-    w = &c;                 //~ ErrorInvType:5 "lval outlives the borrowed reference you are storing"
-
-    // A call handed a virtual-reference borrow returns one no longer-lived than
-    // the narrowest borrow it was given, exactly as ref_flow_call establishes
-    // for a plain reference
-    v = sameVref(&c);       //~ ErrorInvType:5 "lval outlives the borrowed reference you are storing"
-
-    // The third consumer of a borrow's scope: a '&mut &<Shape' argument is a
-    // place the callee may store the other argument, and 'held' outlives it
-    holdVref(&mut v, &c);   //~ ErrorCallEscape:13 "Call could store a borrowed reference"
-
-    // What is allowed beside them, which is what makes these a lifetime rule
-    // rather than a refusal of the coercion itself: a virtual reference to a
-    // global, and one stored in a binding of this very block
     v = &global;
     w = &global;
     imm inner &<Shape = &c;
-    inner.area();
+    seen = seen + inner.area();
+  }
+  imm widenedAgain &Shape = w;
+  seen + v.area();
+}
+
+// The third consumer of a borrow's scope: a '&mut &<Shape' argument is a
+// place the callee may store the other argument, and 'v' outlives it
+fn storesThroughCall() {
+  mut v &<Shape = &global;
+  {
+    imm c = new Circle(3);
+    holdVref(&mut v, &c);   //~ ErrorCallEscape:13 "Call could store a borrowed reference"
   }
 }
 
@@ -102,12 +125,10 @@ fn returnsParmPassedThrough(s &<Shape) &<Shape {
 
 // -------- kept past the value through a narrowed binding --------
 
-// A lifetime does not survive a variable (compiler/c/doc/phases/flow.md, "What
-// a reader from Rust will get wrong", item 3): a declared type carries no
-// scope, so the store into 'out' is not refused. But narrowing a virtual
-// reference back to its concrete type binds a variable holding the borrow the
-// virtual reference held, and 'out' holds it once stored: 'c' ending while
-// 'out' still holds its borrow, used afterwards, is the loan walk's refusal.
+// Narrowing a virtual reference back to its concrete type binds a variable
+// holding the borrow the virtual reference held, and 'out' holds it once
+// stored: 'c' ending while 'out' still holds its borrow, used afterwards, is
+// the loan walk's refusal.
 fn narrowingIsTracked() i32 {
   mut out &Circle = &global;
   {

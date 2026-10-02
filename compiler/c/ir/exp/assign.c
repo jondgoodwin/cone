@@ -274,19 +274,64 @@ int assignlvalrtype(INode *lval, INode *rtype, HollowNode **hollowrel) {
     return 0;
 }
 
+// Is 'lval' part of a variable's own storage -- the variable itself, or a
+// field or element of its value, or of what a sole owner it holds owns -- the
+// variable a local or a by-value parameter? A variable's lifetime follows what
+// it holds now, so a shorter borrow may be stored there: the loan walk
+// (flowpath.c) refuses it only where it is used after its source ends, or
+// carried out of the function.
+static int assignIsLocalPlace(INode *lval) {
+    while (1) {
+        if (isNameUseNode(lval) && isExpNode(lval)) {
+            INode *dcl = ((NameUseNode *)lval)->dclnode;
+            return dcl && dcl->tag == VarDclTag && ((VarDclNode *)dcl)->scope > 0
+                && !(dcl->flags & FlagStatic);
+        }
+        switch (lval->tag) {
+        case FldAccessTag:
+        case ArrIndexTag:
+        {
+            // A virtual reference, a reference to an array, a slice and a
+            // pointer are reached through with no dereference injected
+            INode *obj = ((FnCallNode *)lval)->objfn;
+            uint16_t objtag = iexpGetTypeDcl(obj)->tag;
+            if (objtag == RefTag || objtag == ArrayRefTag || objtag == VirtRefTag || objtag == PtrTag)
+                return 0;
+            lval = obj;
+            break;
+        }
+        case DerefTag:
+        {
+            // Only a sole owner's referent is its holder's own
+            INode *refexp = ((StarNode *)lval)->vtexp;
+            RefNode *reftype = (RefNode *)iexpGetTypeDcl(refexp);
+            if (reftype->tag != RefTag || itypeGetTypeDcl(reftype->region) == borrowRef
+                || (permGetFlags(reftype->perm) & MayAlias))
+                return 0;
+            lval = refexp;
+            break;
+        }
+        default:
+            return 0;
+        }
+    }
+}
+
 // Refuse storing a value of type 'rtype' into 'lval', whose storage lives at
 // 'lvalscope', when the value is a borrowed reference the lval would outlive.
 // Assignment stores one way; swap stores both ways and so calls this twice.
 // A slice (ArrayRefTag) borrows exactly as a single reference does, and so
 // does a virtual reference (VirtRefTag), which doc/reference/refvirtref.html
 // describes as a borrowed reference carrying a vtable; all three tags carry
-// the same scope and are subject to the same rule.
+// the same scope and are subject to the same rule. A store into a variable's
+// own storage is the loan walk's (assignIsLocalPlace); this refuses a store
+// into a global, or through a reference into what may outlive the borrow.
 void assignBorrowLifetimeCheck(INode *lval, uint16_t lvalscope, INode *rtype) {
     RefNode* rvaltype = (RefNode *)rtype;
     RefNode* lvaltype = (RefNode *)((IExpNode*)lval)->vtype;
     if ((rvaltype->tag == RefTag || rvaltype->tag == ArrayRefTag || rvaltype->tag == VirtRefTag)
         && (lvaltype->tag == RefTag || lvaltype->tag == ArrayRefTag || lvaltype->tag == VirtRefTag)
-        && lvaltype->region == borrowRef) {
+        && lvaltype->region == borrowRef && !assignIsLocalPlace(lval)) {
         if (lvalscope < rvaltype->scope) {
             errorMsgNode(lval, ErrorInvType, "lval outlives the borrowed reference you are storing");
         }

@@ -23,6 +23,7 @@ enum LoanKind {
     LoanExcl,       // may write: 'mut', 'uni', 'mut1' of a 'uni' source; '&uni' of any
     LoanAlias,      // 'mut', 'ro', 'mut1' of a shared source: it needs the source only alive
     LoanPin,        // neither: 'opaq', which holds only the address
+    LoanCaller,     // what the caller lent through a parameter: frozen by the caller, nothing here conflicts
 };
 
 typedef struct {
@@ -210,8 +211,113 @@ uint32_t loanMake(INode *site, Place *pl, INode *perm) {
     return id;
 }
 
+// A caller loan is not linked from its parameter: no access here meets it
+uint32_t loanCaller(uint32_t var) {
+    VarDclNode *parm = pathVars[var].var;
+    uint32_t id = mapGet(parm, 0, 0);
+    if (id)
+        return id;
+    if (nloans >= loancap)
+        loans = (Loan *)pathGrow(loans, &loancap, sizeof(Loan));
+    id = nloans++;
+    Loan *loan = &loans[id];
+    loan->site = (INode *)parm;
+    loan->by = NULL;
+    memset(&loan->place, 0, sizeof(Place));
+    loan->place.var = var;
+    loan->place.deref = 1;
+    loan->next = 0;
+    loan->mayhold = 0;
+    loan->nmay = 0;
+    loan->maycap = 0;
+    loan->kind = LoanCaller;
+    loan->writes = 0;
+    mapPut(parm, 0, 0, id);
+    return id;
+}
+
 uint32_t loanRoot(uint32_t loan) {
     return loans[loan].place.var;
+}
+
+// A variable whose storage outlives every call: a global, or a static
+static int loanVarIsGlobal(VarDclNode *var) {
+    return var->scope == 0 || (var->flags & FlagStatic);
+}
+
+int loanIsLocal(uint32_t id) {
+    Loan *loan = &loans[id];
+    return loan->kind != LoanCaller && !loan->place.deref
+        && !loanVarIsGlobal(pathVars[loan->place.var].var);
+}
+
+uint32_t loanLocalIn(PathSet *set) {
+    if (set == &pathSetAll) {
+        for (uint32_t id = 1; id < nloans; ++id) {
+            if (loanIsLocal(id))
+                return id;
+        }
+        return 0;
+    }
+    if (set == NULL)
+        return 0;
+    for (uint32_t i = 0; i < set->cnt; ++i) {
+        if (loanIsLocal(set->ids[i]))
+            return set->ids[i];
+    }
+    return 0;
+}
+
+// Is this the type of a borrowed reference?
+static int loanIsBorrowType(INode *type) {
+    return (type->tag == RefTag || type->tag == ArrayRefTag || type->tag == VirtRefTag)
+        && itypeGetTypeDcl(((RefNode *)type)->region) == borrowRef;
+}
+
+// May a reference to a 'referent' point at what this loan borrows? A
+// reference's loans are what it points at and what that holds, in one set; a
+// loan of a struct of another type than the referent is one of the second
+// kind (a borrow is coerced only to a trait, its own or a base's, or to a
+// slice), and so is the caller loan of a parameter that is no reference,
+// which stands for the borrows it holds. Anything not known to be one may be
+// the first.
+static int loanMayBePointee(Loan *loan, INode *referent) {
+    if (referent == NULL)
+        return 1;
+    INode *borrowed;
+    if (loan->kind == LoanCaller) {
+        INode *parmtype = itypeGetTypeDcl(pathVars[loan->place.var].var->vtype);
+        if (!loanIsBorrowType(parmtype))
+            return 0;
+        borrowed = ((RefNode *)parmtype)->vtexp;
+    }
+    else {
+        INode *sitetype = iexpGetTypeDcl(loan->site);
+        if (!loanIsBorrowType(sitetype))
+            return 1;
+        borrowed = ((RefNode *)sitetype)->vtexp;
+    }
+    INode *b = itypeGetTypeDcl(borrowed);
+    INode *r = itypeGetTypeDcl(referent);
+    return b == r || b->tag != StructTag || r->tag != StructTag
+        || (b->flags & TraitType) || (r->flags & TraitType);
+}
+
+int loanMayPointOut(PathSet *refholds, INode *referent) {
+    if (refholds == NULL || refholds == &pathSetAll)
+        return 1;
+    int local = 0;
+    for (uint32_t i = 0; i < refholds->cnt; ++i) {
+        Loan *loan = &loans[refholds->ids[i]];
+        // A reborrow through another reference points where that one does,
+        // and what that one held came along with it
+        if ((loan->kind != LoanCaller && loan->place.deref) || !loanMayBePointee(loan, referent))
+            continue;
+        if (!loanIsLocal(refholds->ids[i]) || loan->place.owned)
+            return 1;
+        local = 1;
+    }
+    return !local;
 }
 
 uint32_t loanAt(INode *site) {
@@ -261,6 +367,8 @@ void loanHeldBy(uint32_t var, PathSet *holds) {
 // replacing and ending it; an '&opaq' loan holds only the address, so only
 // moving, replacing or ending the source conflicts with it.
 static int loanConflictsAs(int access, uint8_t kind, Loan *loan, Place *pl) {
+    if (kind == LoanCaller)
+        return 0;
     // A place on the way to the shared path -- the field holding a 'Rc[mut, T]'
     // owner the loan was reached through -- the loan reads: changing the
     // owner there would end what it borrows
@@ -380,6 +488,34 @@ static char *loanAttempt(int access) {
     case AccessMove: return "moved";
     case AccessEnd: return "ended";
     default: return "changed";
+    }
+}
+
+void loanEscape(INode *node, uint32_t loan, int how) {
+    // Once, though a loop's body is walked again
+    if (mapGet(node, 0, 1))
+        return;
+    mapPut(node, 0, 1, 1);
+    char srcname[128];
+    char where[160];
+    loanSourceName(&loans[loan].place, srcname, sizeof(srcname));
+    loanWhere(&loans[loan], where, sizeof(where));
+    switch (how) {
+    case LoanEscapeReturn:
+        errorMsgNode(node, ErrorEscape,
+            "Returned value carries a borrow of '%s' (made %s), which it would outlive: '%s' belongs to this function.",
+            srcname, where, srcname);
+        break;
+    case LoanEscapeStore:
+        errorMsgNode(node, ErrorEscape,
+            "Stored where it may outlive this function, the value carries a borrow of '%s' (made %s), which belongs to this function.",
+            srcname, where);
+        break;
+    default:
+        errorMsgNode(node, ErrorCallEscape,
+            "Call could store a borrowed reference where it would outlive the value it points to: an argument carries a borrow of '%s' (made %s), and another reaches beyond this function.",
+            srcname, where);
+        break;
     }
 }
 

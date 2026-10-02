@@ -1,0 +1,46 @@
+// A borrow matched out of the 'Option' a local pool's 'get' returns, and
+// returned: it points into the pool, which ends with the function.
+//
+// Verdict: refuse, ErrorEscape at the returned borrow.
+// Basis: language rule (1 Oct 2026) -- lifetimes are infectious: the Option
+// holds a borrow of the pool (reflifefn.html: a returned borrow has its
+// borrowed arguments' lifetime, here the receiver's), and a 'case' binding
+// holds what the matched value holds; a borrow of a local is never returned.
+// Master 2274ee9d: accepted, and it reads freed memory -- main, run, prints
+// "final" and then "read = 2396060956448". Stage 4 fixed it.
+
+mod lifetime_band_return_pool_get_matched;
+
+import stdio use *;
+import pool use *;
+
+struct Pt {
+  pub x i64;
+  pub y i64;
+  fn final(self &uni) {
+    printStr("final\n");
+  }
+}
+
+fn found(dflt &Pt) &Pt {
+  mut p = Pool[Pt].empty();
+  imm r = p.add(new Pt(7, 8));
+  match p.get(r) {
+    case imm e Some { return e.value; } //~ ErrorEscape
+    else { return dflt; }
+  }
+}
+
+fn clobber(n i64) i64 {
+  mut a Array[i64, 16] = [n, n, n, n, n, n, n, n, n, n, n, n, n, n, n, n];
+  a[3] + a[9];
+}
+
+fn main() {
+  imm d = new Pt(0, 0);
+  imm q = found(&d);
+  clobber(21);
+  printStr("read = ");
+  printInt(q.x);
+  printStr("\n");
+}

@@ -233,8 +233,8 @@ static uint32_t pathVar(VarDclNode *var) {
     // A holder is a local variable or a parameter whose type carries a
     // borrow: a borrowed reference, or a struct, tuple, array, 'Option' or
     // collection holding one (itypeCarriesBorrow). What a parameter holds,
-    // the caller lent and froze; it is tracked only once something here is
-    // stored into it. The temporary an operator changing its operand in place
+    // the caller lent and froze: its caller loan (flowPathWalk), and whatever
+    // is stored into it here. The temporary an operator changing its operand in place
     // borrows it through ('x += 1', 'v <- (a, b)') is the operator's own, as
     // a method's receiver is: 'k += k' reads 'k' while it is borrowed.
     pv->holder = var->scope > 0 && !(var->flags & FlagStatic) && var->namesym != tempName
@@ -450,9 +450,13 @@ static int pwThrough(INode **refp, Place *pl, PathSet **base) {
         pl->nsteps = 0;
         pl->shared = pwMayAlias(reftype);
         pl->sharedlen = 0;
+        pl->owned = 0;
+        pl->referent = refpl.nsteps == 0 && !refpl.deref ? ((RefNode *)reftype)->vtexp : NULL;
         return 1;
     }
     *pl = refpl;
+    if (pwMayAlias(reftype))
+        pl->owned = 1;
     // A dereference cut off by the step limit is not marked shared: the place
     // then stands for more than itself, and is held to the stricter rule
     if (pl->nsteps < PlaceMaxSteps) {
@@ -489,7 +493,9 @@ static int pwPlace(INode **nodep, Place *pl, PathSet **base) {
         pl->nsteps = 0;
         pl->shared = 0;
         pl->sharedlen = 0;
+        pl->owned = 0;
         pl->use = node;
+        pl->referent = NULL;
         return 1;
     }
     switch (node->tag) {
@@ -605,8 +611,8 @@ static PathSet *pwLend(INode *site, Place *pl, INode *perm, int access, uint32_t
     uint32_t id = loanMake(site, &lent, perm);
     if (loan)
         *loan = id;
-    PathVar *pv = &pathVars[pl->var];
-    return pathSetAdd(pv->holder ? pv->holds : NULL, id);
+    // Only a holder holds loans, but for an operator's temporary (pwVarDcl)
+    return pathSetAdd(pathVars[pl->var].holds, id);
 }
 
 // An owning reference coerced to a borrowed one ('imm b &i32 = u', 'u' a
@@ -722,46 +728,81 @@ static void pwStoreInto(uint32_t var, int deref, PathSet *holds) {
     }
 }
 
+// Does a place outlive this function? One rooted at a global does; one reached
+// through an owner others may own too ('owned') may; what a borrowed reference
+// points at ('deref') does when the reference may point beyond the function
+// (loanMayPointOut). Anything else is this function's own, and a variable
+// holding a shorter borrow there is the walk's to follow.
+static int pwPlaceOutlives(Place *pl) {
+    VarDclNode *dcl = pathVars[pl->var].var;
+    if (dcl->scope == 0 || (dcl->flags & FlagStatic) || pl->owned)
+        return 1;
+    return pl->deref && loanMayPointOut(pathVars[pl->var].holds, pl->referent);
+}
+
+// A value carrying 'holds' is stored at 'lval', the place 'pl': where that
+// place may outlive the function, the value may carry no borrow of the
+// function's own storage
+static void pwStoreEscapes(INode *lval, Place *pl, PathSet *holds) {
+    uint32_t local = pathLoans ? loanLocalIn(holds) : 0;
+    if (local && pwPlaceOutlives(pl))
+        loanEscape(lval, local, LoanEscapeStore);
+}
+
 // Where a store through the reference argument 'ref' lands, keyed as pwPlace
 // keys it, found from the node alone (the argument is walked already): for a
 // borrow ('&mut outer', '&mut h.list', '&mut *r'), the root of what it
 // borrows; for a reference read from a place ('r', 'h.r'), what it points at.
-// Returns the root variable's index, or 0 for nothing the walk tracks.
-static uint32_t pwStoreTarget(INode *ref, int *deref) {
+// Fills in the root variable, 'deref', 'owned' and 'referent' of 'pl' as
+// pwPlace would; returns 0 for nothing the walk tracks.
+static int pwStoreTarget(INode *ref, Place *pl) {
     while (ref->tag == CastTag && !(ref->flags & FlagConvert))
         ref = ((CastNode *)ref)->exp;
+    memset(pl, 0, sizeof(Place));
     INode *place = ref;
-    *deref = 1;
+    // The reference through which the store lands nearest it, and whether it
+    // was read from a variable itself
+    INode *through = ref;
     if (ref->tag == BorrowTag || ref->tag == ArrayBorrowTag) {
         place = ((RefNode *)ref)->vtexp;
-        *deref = 0;
+        through = NULL;
     }
     while (1) {
         VarDclNode *var = pwNamedVar(place);
-        if (var)
-            return (var->flags & FlagStatic) ? 0 : pathVar(var);
+        if (var) {
+            pl->var = pathVar(var);
+            pl->deref = through != NULL;
+            if (through == place)
+                pl->referent = ((RefNode *)iexpGetTypeDcl(place))->vtexp;
+            return 1;
+        }
+        INode *refexp;
         switch (place->tag) {
         case CastTag:
             if (place->flags & FlagConvert)
                 return 0;
             place = ((CastNode *)place)->exp;
-            break;
+            continue;
         case FldAccessTag:
         case ArrIndexTag:
             // A virtual reference, a reference to an array and a slice are
             // reached through with no dereference injected
-            place = ((FnCallNode *)place)->objfn;
-            if (pwIsBorrowed(iexpGetTypeDcl(place)))
-                *deref = 1;
+            refexp = ((FnCallNode *)place)->objfn;
             break;
         case DerefTag:
-            place = ((StarNode *)place)->vtexp;
-            if (pwIsBorrowed(iexpGetTypeDcl(place)))
-                *deref = 1;
+            refexp = ((StarNode *)place)->vtexp;
             break;
         default:
             return 0;
         }
+        INode *reftype = iexpGetTypeDcl(refexp);
+        if (pwIsBorrowed(reftype)) {
+            if (through == NULL)
+                through = refexp;
+        }
+        else if (place->tag == DerefTag && reftype->tag == RefTag && pwMayAlias(reftype) && through == NULL)
+            pl->owned = 1;
+        place = refexp;
     }
 }
 
@@ -814,16 +855,20 @@ static void pwCallStores(FnCallNode *call, PathSet **argsets, Place *recvpl) {
         }
         if (others == NULL)
             continue;
-        int deref = 0;
-        uint32_t target;
-        if (at == 0 && recvpl) {
-            target = recvpl->var;
-            deref = recvpl->deref;
-        }
+        Place target;
+        int found = 1;
+        if (at == 0 && recvpl)
+            target = *recvpl;
         else
-            target = pwStoreTarget(arg, &deref);
-        if (target)
-            pwStoreInto(target, deref, others);
+            found = pwStoreTarget(arg, &target);
+        // Where the place may outlive the function -- or is nowhere the walk
+        // follows, when the reference itself is all there is to go by -- what
+        // is stored there may carry no borrow of the function's own storage
+        uint32_t local = loanLocalIn(others);
+        if (local && (found ? pwPlaceOutlives(&target) : loanMayPointOut(argsets[at], argtype->vtexp)))
+            loanEscape((INode *)call, local, LoanEscapeCall);
+        if (found)
+            pwStoreInto(target.var, target.deref, others);
     }
 }
 
@@ -914,6 +959,7 @@ static void pwStore(INode **lvalp, PathSet *holds, INode **rvalp) {
         // was not live before, so what its old value was pending on is dropped.
         uint32_t index = pathVar(var);
         Place pl = { index, 0, 0 };
+        pwStoreEscapes(*lvalp, &pl, holds);
         pwAccess(&pl, itypeNeedsFinal(var->vtype) ? AccessReplace : AccessWrite, *lvalp);
         if (pathVars[index].holder) {
             pwHolderDies(index);
@@ -934,6 +980,7 @@ static void pwStore(INode **lvalp, PathSet *holds, INode **rvalp) {
     // Part of a local's own value: its old value is released if the local holds one
     if (pathDrops && !pl.deref && pathVars[pl.var].tracked && flowLvalRootVar(*lvalp) == pathVars[pl.var].var)
         dropPartStore(pl.var, *lvalp);
+    pwStoreEscapes(*lvalp, &pl, holds);
     pwStoreInto(pl.var, pl.deref, holds);
 }
 
@@ -960,27 +1007,38 @@ static void pwSwap(SwapNode *node) {
     INode **sides[2] = { &node->lval, &node->rval };
     uint32_t whole[2] = { 0, 0 };
     PathSet *holds[2] = { NULL, NULL };
+    Place places[2];
+    int found[2] = { 0, 0 };
     for (int i = 0; i < 2; ++i) {
         VarDclNode *var = pwNamedVar(*sides[i]);
-        Place pl;
+        Place *pl = &places[i];
         PathSet *base;
         if (var) {
             whole[i] = pathVar(var);
-            pl.var = whole[i];
-            pl.deref = 0;
-            pl.nsteps = 0;
-            pl.shared = 0;
-            pl.sharedlen = 0;
-            pl.use = *sides[i];
+            pl->var = whole[i];
+            pl->deref = 0;
+            pl->nsteps = 0;
+            pl->shared = 0;
+            pl->sharedlen = 0;
+            pl->owned = 0;
+            pl->use = *sides[i];
+            pl->referent = NULL;
             holds[i] = pathVars[whole[i]].holds;
-            pwAccess(&pl, itypeNeedsFinal(var->vtype) ? AccessReplace : AccessWrite, *sides[i]);
-            pwDropUse(&pl, *sides[i], 0);
+            pwAccess(pl, itypeNeedsFinal(var->vtype) ? AccessReplace : AccessWrite, *sides[i]);
+            pwDropUse(pl, *sides[i], 0);
+            found[i] = 1;
         }
-        else if (pwPlace(sides[i], &pl, &base)) {
-            pwDropUse(&pl, *sides[i], 0);
-            holds[i] = pwPlaceHolds(&pl, *sides[i]);
-            pwAccess(&pl, AccessWrite, *sides[i]);
+        else if (pwPlace(sides[i], pl, &base)) {
+            pwDropUse(pl, *sides[i], 0);
+            holds[i] = pwPlaceHolds(pl, *sides[i]);
+            pwAccess(pl, AccessWrite, *sides[i]);
+            found[i] = 1;
         }
+    }
+    // Each side is a store of the other's value
+    for (int i = 0; i < 2; ++i) {
+        if (found[i])
+            pwStoreEscapes(*sides[i], &places[i], holds[1 - i]);
     }
     // Two holders exchange what they hold, and what each is pending on goes
     // with its value; a part of a holder gains what the other side held
@@ -1021,6 +1079,12 @@ static void pwVarDcl(VarDclNode *var) {
     }
     if (pathVars[index].holder)
         pathSetFacts(index, holds, NULL);
+    // That temporary is no holder, but what is borrowed through it carries its
+    // borrow: 'v <- (a, b)' returns a borrow of 'v' (pwLend)
+    else if (var->namesym == tempName && holds != pathVars[index].holds) {
+        pathLogVar(index);
+        pathVars[index].holds = holds;
+    }
     if (var->value && pathVars[index].tracked)
         pathSetState(index, DropWhole);
 }
@@ -1037,6 +1101,10 @@ static void pwScopeEnd(uint32_t from) {
         if (pv->holder && (pv->holds || pv->pending)) {
             pwHolderDies(index);
             pathSetFacts(index, NULL, NULL);
+        }
+        else if (pv->holds) {
+            pathLogVar(index);
+            pv->holds = NULL;
         }
         if (pv->loans) {
             Place pl = { index, 0, 0 };
@@ -1116,10 +1184,15 @@ static PathSet *pwStmts(BlockNode *blk, int move) {
             break;
         case ReturnTag:
         {
-            // Every variable is a local of this function, and dies with it
+            // What it hands the caller may carry no borrow of this function's
+            // own storage, whatever its type. Then every variable, a local of
+            // this function, dies with it.
             BreakRetNode *ret = (BreakRetNode *)*nodesp;
-            if (ret->exp && ret->exp != unknownType && isExpNode(ret->exp))
-                pwValue(&ret->exp, 1);
+            if (ret->exp && ret->exp != unknownType && isExpNode(ret->exp)) {
+                uint32_t local = loanLocalIn(pwValue(&ret->exp, 1));
+                if (local)
+                    loanEscape(ret->exp, local, LoanEscapeReturn);
+            }
             pwExit(*nodesp, 0);
             pwScopeEnd(0);
             dead = 1;
@@ -1428,12 +1501,16 @@ void flowPathWalk(FnDclNode *fndcl, int loans, int drops) {
     dead = 0;
 
     // The parameters are variables of the function's block; what a caller lent
-    // through one is the caller's to freeze
+    // through one is the caller's to freeze, and outlives the call: each holds
+    // its caller loan
     INode **nodesp;
     uint32_t cnt;
     pwParms = ((FnSigNode *)fndcl->vtype)->parms;
-    for (nodesFor(pwParms, cnt, nodesp))
-        pathVar((VarDclNode *)*nodesp);
+    for (nodesFor(pwParms, cnt, nodesp)) {
+        uint32_t index = pathVar((VarDclNode *)*nodesp);
+        if (loans && pathVars[index].holder)
+            pathSetFacts(index, pathSetAdd(NULL, loanCaller(index)), NULL);
+    }
     pwBlock((BlockNode *)fndcl->value, 1, 1);
     if (drops)
         dropWalkEnd(errors == errorsOnEntry);

@@ -3,14 +3,14 @@
 // '&mut pool[r]' return a bare borrow no longer-lived than the borrow of the
 // pool they were called through, so the rules for any borrow of a local
 // apply to it: it may not be returned from the function holding the pool,
-// alone or through a variable, nor stored in a variable, a field or an
-// element that outlives the pool. The pool package's own tests
-// (packages/pool/tests/) run what a pool may do.
+// alone or through a variable, nor stored through a parameter, nor kept in a
+// variable or a field that outlives the pool and used there. The borrow
+// inside the Option that 'pool.get(r)' and 'pool.getMut(r)' return carries
+// the pool's loan the same way: the Option, or the borrow matched out of it,
+// may not be returned or stored through a parameter either. The pool
+// package's own tests (packages/pool/tests/) run what a pool may do.
 //
-// What still compiles, and dangles, is not here: the borrow inside the Option
-// that 'pool.get(r)' and 'pool.getMut(r)' return carries no lifetime, so
-// returning the Option, or storing it through a parameter, is not checked.
-// Held in a local, it, like a borrow from 'pool[r]', freezes a local pool
+// Held in a local, a borrow from 'pool[r]' or 'get' freezes a local pool
 // while it lives, against 'remove', 'add' and moving it away
 // (region_flow_pool_freeze, collection_flow_freeze); a pool reached through a
 // shared path is not frozen (doc/design/safety.md, the scorecard;
@@ -42,24 +42,51 @@ fn returnedVar() &Pt {
   v;                            //~ ErrorEscape:3 "outlives"
 }
 
-fn outerVariable() {
+// Kept in an outer variable, or a field of one, past the pool and used there
+fn outerVariable() i64 {
   imm dummy = new Pt(0, 0);
   mut v = &dummy;
   {
-    mut p = Pool[Pt].empty();
+    mut p = Pool[Pt].empty();   //~ ErrorFrozen "goes out of scope"
     imm r = p.add(new Pt(1, 2));
-    v = p[r];                   //~ ErrorInvType:5 "outlives"
+    v = p[r];
   }
+  v.x;
 }
 
-fn outerField() {
+fn outerField() i64 {
   imm dummy = new Pt(0, 0);
   mut h = new Holder(&dummy);
   {
-    mut p = Pool[Pt].empty();
+    mut p = Pool[Pt].empty();   //~ ErrorFrozen "goes out of scope"
     imm r = p.add(new Pt(1, 2));
-    h.r = p[r];                 //~ ErrorInvType:6 "outlives"
+    h.r = p[r];
   }
+  h.r.x;
+}
+
+// A borrow of the pool, a 'get''s Option, or the borrow matched out of one,
+// returned
+fn returnedOption() Option[&Pt] {
+  mut p = Pool[Pt].empty();
+  imm r = p.add(new Pt(1, 2));
+  p.get(r);                     //~ ErrorEscape "carries a borrow of 'p'"
+}
+
+fn returnedMatched(dflt &Pt) &Pt {
+  mut p = Pool[Pt].empty();
+  imm r = p.add(new Pt(1, 2));
+  match p.get(r) {
+    case imm e Some { return e.value; } //~ ErrorEscape "carries a borrow of 'p'"
+    else { return dflt; }
+  }
+}
+
+// ... or stored through a parameter
+fn storedOption(o &mut Option[&Pt]) {
+  mut p = Pool[Pt].empty();
+  imm r = p.add(new Pt(1, 2));
+  *o = p.get(r);                //~ ErrorEscape "carries a borrow of 'p'"
 }
 
 fn callersValue(h &mut Holder) {

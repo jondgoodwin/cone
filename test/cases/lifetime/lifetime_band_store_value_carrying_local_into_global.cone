@@ -1,0 +1,50 @@
+// An 'Option' holding a borrow of a local stored into a global.
+//
+// Verdict: refuse, ErrorEscape at the store.
+// Basis: language rule (1 Oct 2026) -- lifetimes are infectious: a value
+// holding a borrow takes on its lifetime; refborref.html, "Lifetime
+// Constraints"; the band ordering (1 Oct 2026): a global outlives the
+// function.
+// Master 2274ee9d: accepted (only a bare borrow stored was checked), and it
+// reads freed memory -- main, run, prints "final" and then
+// "read = 2693284341808". Stage 4 fixed it.
+
+mod lifetime_band_store_value_carrying_local_into_global;
+
+import stdio use *;
+
+struct R {
+  pub n i64;
+  fn final(self &uni) {
+    printStr("final\n");
+  }
+}
+
+mut GO Option[&R];
+
+fn @initpure init() {
+  GO = None[&R][];
+}
+
+fn stash() {
+  imm x = new So[R](42);
+  GO = Some[&R][&*x];        //~ ErrorEscape
+}
+
+fn clobber(n i64) i64 {
+  mut a Array[i64, 16] = [n, n, n, n, n, n, n, n, n, n, n, n, n, n, n, n];
+  a[3] + a[9];
+}
+
+fn main() {
+  stash();
+  clobber(21);
+  match GO {
+    case imm e Some {
+      printStr("read = ");
+      printInt(e.value.n);
+      printStr("\n");
+    }
+    else {}
+  }
+}

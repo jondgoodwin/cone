@@ -31,23 +31,32 @@ fn writesAndLifetimes(readOnly &i32) {
   // so it may not be re-pointed even though what it points at is writable
   imm fixed = &mut target;
   fixed = &mut other;     //~ ErrorNoMut:3 "You do not have permission to modify lval"
+}
 
-  // A borrow of an inner-block variable may not be stored where it would
-  // outlive what it points at. This is the case the staging file flagged with
-  // "Uncomment for lifetime error", and the compiler does diagnose it.
+// A borrow of an inner-block variable may be stored in an outer one -- a
+// variable's lifetime follows what it holds now -- but not kept there past
+// what it points at: the inner variable may not end while the outer one still
+// holds its borrow and is used again. This is the case the staging file
+// flagged with "Uncomment for lifetime error". The loan walk reports it, and
+// walks only a function whose flow raised nothing else, hence a function of
+// its own.
+fn lifetimes() i32 {
+  imm target = 1;
   mut escaping = &target;
   {
-    mut shortLived = 3;
-    escaping = &shortLived;  //~ ErrorInvType:5 "lval outlives the borrowed reference you are storing"
+    mut shortLived = 3;      //~ ErrorFrozen
+    escaping = &shortLived;
   }
+  imm first = *escaping;
 
-  // ... nor stored by way of a local it initialized, which keeps its lifetime
-  // whether the local's type is inferred or declared
+  // ... nor by way of a local it initialized, whether that local's type is
+  // inferred or declared
   {
-    mut shortLived = 4;
+    mut shortLived = 4;      //~ ErrorFrozen
     imm held &i32 = &shortLived;
-    escaping = held;         //~ ErrorInvType:5 "lval outlives the borrowed reference you are storing"
+    escaping = held;
   }
+  first + *escaping;
 }
 
 // Writing through a reference reads the reference. That is the half of an

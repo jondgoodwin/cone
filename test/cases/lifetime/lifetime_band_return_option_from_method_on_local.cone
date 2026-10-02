@@ -1,0 +1,36 @@
+// The 'Option' a '&mut self' method of a local returns, returned: without
+// annotations the borrow it holds shares the lifetime of the method's borrow
+// of the local, so it may not leave the function -- though the borrow came,
+// in fact, from the slice the caller lent.
+//
+// Verdict: refuse, ErrorEscape at the returned call.
+// Basis: reflifefn.html -- every unannotated borrow in a signature shares one
+// lifetime, so the result's borrow is no longer-lived than '&mut c'; the
+// bare-borrow form ('c.cur()' returned) has been refused on that rule all
+// along. Rust accepts it, the item's lifetime being named on the struct;
+// in Cone that waits on lifetimes on struct types. Reading of the rules
+// (agent's), as lifetime_mix_struct_getter_result_returned is.
+// Master 2274ee9d: accepted (a borrow inside a returned value was not
+// checked). Pinned so the over-strictness is visible.
+
+mod lifetime_band_return_option_from_method_on_local;
+
+struct R { pub n i64; }
+
+struct Cursor {
+  pub items &[]R;
+  pub at usize;
+  pub fn next(self &mut) Option[&R] {
+    if at < items.len() {
+      imm r = &items[at];
+      at = at + 1usize;
+      return Some[&R][r];
+    }
+    None[&R][];
+  }
+}
+
+fn firstOf(items &[]R) Option[&R] {
+  mut c = new Cursor(items, 0usize);
+  c.next();                  //~ ErrorEscape
+}

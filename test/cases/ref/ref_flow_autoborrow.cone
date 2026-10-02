@@ -37,44 +37,85 @@ struct Car {
   pub engine Engine use cell;
 }
 
-fn storesAutoBorrows() {
+// Each result is kept in an outer variable past the block its source lives
+// in, and used there: the source may not end while it is still held.
+fn storesAutoBorrows() i32 {
   imm outerArr Array[i32, 2] = [0, 0];
   mut slice &[]i32 = &[]outerArr;
   mut r &i32 = &G;
+  mut seen = 0;
+
+  // An array auto-borrowed to a slice argument, beside the borrow written out
+  {
+    imm innerArr Array[i32, 2] = [1, 2]; //~ ErrorFrozen
+    slice = sameSlice(innerArr);
+  }
+  seen = seen + slice[0];
+  {
+    imm innerArr Array[i32, 2] = [1, 2]; //~ ErrorFrozen
+    slice = sameSlice(&[]innerArr);
+  }
+  seen = seen + slice[0];
+
+  // The '&mut' receiver an operator method is handed: op-assign, append, and
+  // append of a tuple, which borrows the receiver once into a temporary
+  {
+    mut v = new Vec(0);             //~ ErrorFrozen
+    r = (v += 1);
+  }
+  seen = seen + *r;
+  {
+    mut v = new Vec(0);             //~ ErrorFrozen
+    r = (v <- 1);
+  }
+  seen = seen + *r;
+  {
+    mut v = new Vec(0);             //~ ErrorFrozen
+    r = (v <- (1, 2));
+  }
+  seen = seen + *r;
+
+  // The field reborrowed for a folded method, whether the receiver is a
+  // borrow expression or a variable holding one
+  {
+    mut car = new Car(new Engine(5)); //~ ErrorFrozen
+    r = (&car).cell();
+  }
+  seen = seen + *r;
+  {
+    mut car = new Car(new Engine(5)); //~ ErrorFrozen
+    imm c = &car;
+    r = c.cell();
+  }
+  seen = seen + *r;
+
+  // The receiver borrowed from a value for a method declaring 'self &', on
+  // a folded method and a type's own, as '(&car).cell()' written out is
+  {
+    mut car = new Car(new Engine(5)); //~ ErrorFrozen
+    r = car.cell();
+  }
+  seen = seen + *r;
+  {
+    mut car = new Car(new Engine(5)); //~ ErrorFrozen
+    r = car.engine.cell();
+  }
+  seen = seen + *r;
+
+  // What is not refused, and what makes the above a lifetime rule rather
+  // than a refusal of auto-borrows: an auto-borrow of a global keeps its
+  // global lifetime, and the result held inside the block it was borrowed
+  // in is fine
   {
     imm innerArr Array[i32, 2] = [1, 2];
-    mut v = new Vec(0);
     mut car = new Car(new Engine(5));
     imm c = &car;
-
-    // An array auto-borrowed to a slice argument, beside the borrow written out
-    slice = sameSlice(innerArr);    //~ ErrorInvType:5 "lval outlives the borrowed reference you are storing"
-    slice = sameSlice(&[]innerArr); //~ ErrorInvType:5 "lval outlives the borrowed reference you are storing"
-
-    // The '&mut' receiver an operator method is handed: op-assign, append, and
-    // append of a tuple, which borrows the receiver once into a temporary
-    r = (v += 1);                   //~ ErrorInvType:5 "lval outlives the borrowed reference you are storing"
-    r = (v <- 1);                   //~ ErrorInvType:5 "lval outlives the borrowed reference you are storing"
-    r = (v <- (1, 2));              //~ ErrorInvType:5 "lval outlives the borrowed reference you are storing"
-
-    // The field reborrowed for a folded method, whether the receiver is a
-    // borrow expression or a variable holding one
-    r = (&car).cell();              //~ ErrorInvType:5 "lval outlives the borrowed reference you are storing"
-    r = c.cell();                   //~ ErrorInvType:5 "lval outlives the borrowed reference you are storing"
-
-    // The receiver borrowed from a value for a method declaring 'self &', on
-    // a folded method and a type's own, as '(&car).cell()' written out is
-    r = car.cell();                 //~ ErrorInvType:5 "lval outlives the borrowed reference you are storing"
-    r = car.engine.cell();          //~ ErrorInvType:5 "lval outlives the borrowed reference you are storing"
-
-    // What is not refused, and what makes the above a lifetime rule rather
-    // than a refusal of auto-borrows: an auto-borrow of a global keeps its
-    // global lifetime, and the result held inside the block it was borrowed
-    // in is fine
     slice = sameSlice(GARR);
     imm kept = sameSlice(innerArr);
     imm keptCell = c.cell();
+    seen = seen + kept[0] + *keptCell;
   }
+  seen + slice[0] + *r;
 }
 
 // Returning the result meets returnFlowEscape, as returning the written borrow
