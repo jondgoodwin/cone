@@ -1,0 +1,275 @@
+// The sculpt package's rib phase field and margin ring, checked against
+// values worked out by hand. Only a failure prints.
+//
+// ribPhase and ribProfile, plain ribs (frequency 4, sharpness 3):
+// - phase = 4 along, so along 0.125 is phase 0.5 (a crest: sin^2(pi/2) = 1,
+//   cubed 1); along 0.25 is phase 1 (a trough: 0); along 0.0625 is phase
+//   0.25: sin^2(pi/4) = 1/2, cubed 1/8.
+// - Sharpness 1 at phase 0.25: 1/2.
+// The vortex pair (frequency 4, one pair, aspect 40, seed 3), with the
+// pair's places from ribDefectPair (s1, t1, s2, t2):
+// - Far above both (along 1: u >= 40 x 0.25 = 10, e^-10 = 4.5e-5): each
+//   factor 1 - e^-z is within 5e-5 of 1, so the phase is 4 along within
+//   1e-4.
+// - Far below both (along 0; each vortex is at along 0.15 - 0.0375 or
+//   more, so u <= -40 x 0.1125 = -4.5): 1 - e^-z_k is -e^-z_k (1 - e^z_k),
+//   |e^z_k| under e^-4.5 = 0.011, so f1 conj f2 is a positive number times
+//   e^-i(v1 - v2), its angle off by under 2 x 0.011 rad, v1 - v2 = t2 - t1,
+//   whose size is under 2 < pi: the phase is (t1 - t2) / 2 pi within 0.004,
+//   the same at every theta.
+// - The phase repeats every turn of theta (it reads theta only through cos
+//   and sin): at 16 points, phase(theta) and phase(theta + 2 pi) within 1e-5.
+// - Winding: walking a small circle (radius 0.05 in u, v) round the first
+//   vortex, the phase's steps (each taken to the nearest whole-number
+//   shift) add up to +1 (one rib more on one side); round a circle that
+//   holds both, to 0; round neither, to 0.
+// ribAmplitude:
+// - plain ribs: 1 everywhere;
+// - absent 1: every rib missing, 0;
+// - spread 0.5, absent 0: rib k's height is 1 + 0.5 toSigned(hash2(k, 3,
+//   seed).x), the same for phase k + 0.2 and k + 0.8, and between 0.5 and
+//   1.5;
+// - an envelope (cover 0.5): every value in [0, 1], and some 0 and some 1
+//   over 400 points of a 2 x 2 x 2 box (the smoothstep's two plateaux).
+// ribField on a tube swept along a line (8-gon, 100 segments, length 1):
+// it adds "ribs" and "ribsAmp"; with plain ribs of frequency 4 the rings at
+// along 0.25 and 0.75 (phases 1 and 3) are 0; with frequency 2 the ring at
+// along 0.25 (phase 0.5) is 1 (within 1e-5); with absent 1, "ribs" is 0
+// everywhere.
+// marginPeriod:
+// - just past the Brusselator's Hopf point (A 1, B 2.02) the cycle is
+//   nearly the linear one, of angular frequency A: the period is within 3%
+//   of 2 pi, and a stays within 0.5 of the fixed point A = 1;
+// - A 1, B 3 (the plain ring's): least a under 1 and greatest over 3 (the
+//   pulses are spikes: measured 0.37 and 3.76 here; Python's own Euler run
+//   of the same equations gave 0.370 and 3.760, period 7.16).
+// marginRing on the tube (64 cells, even, frequency 6): every height in
+// [0, 1.5] (a ring's spread round the tube is not checked: an even ring
+// does not stay in step, see ribs.cone); along the tube, the crests (local
+// maxima above 0.5 at the first column) number 6, give or take 1; a second
+// run gives the same bits; "ribsAmp" is 1.
+
+mod ribs;
+
+import testing use *;
+import libc;
+import collections use *;
+import geomath use *;
+import mesh use *;
+import noise;
+import sculpt use *;
+
+fn phases() {
+  imm r = RibField.plain(4., 1u32);
+  imm p = new Vec3(0., 0., 0.);
+  expectFloat(f64.from(ribPhase(&r, 0.125, 0., p)), 0.5d, 0d, "phase 4 along");
+  expectFloat(f64.from(ribProfile(&r, 0.5)), 1d, 0.000001d, "a crest at a half");
+  expectFloat(f64.from(ribProfile(&r, 1.)), 0d, 0.000001d, "a trough at a whole number");
+  expectFloat(f64.from(ribProfile(&r, 0.25)), 0.125d, 0.000001d, "sharpness 3: (1/2)^3");
+  mut r1 = RibField.plain(4., 1u32);
+  r1.sharpness = 1.;
+  expectFloat(f64.from(ribProfile(&r1, 0.25)), 0.5d, 0.000001d, "sharpness 1: 1/2");
+}
+
+fn vortices() {
+  mut r = RibField.plain(4., 3u32);
+  r.defects = 1u32;
+  r.defectAspect = 40.;
+  imm p = new Vec3(0., 0., 0.);
+  imm pair = ribDefectPair(&r, 0u32);
+  expect(pair.x >= 0.15 and pair.x < 0.75, "the pair's first vortex in along 0.15..0.75");
+  expect(libc.fabsf(pair.z - pair.x) <= 0.15 / 4. + 0.000001, "the second within 0.15 ribs of it along");
+  imm turn = pair.w - pair.y;
+  expect(libc.fabsf(turn) >= 0.8 and libc.fabsf(turn) <= 2.0001, "the second 0.8 to 2 radians round");
+  mut worstAbove = 0.;
+  mut worstBelow = 0.;
+  mut worstSeam = 0.;
+  mut i = 0;
+  while i < 16 {
+    imm t = 2. * pi * f32.from(i) / 16.;
+    imm above = libc.fabsf(ribPhase(&r, 1., t, p) - 4.);
+    if above > worstAbove { worstAbove = above; }
+    imm below = libc.fabsf(ribPhase(&r, 0., t, p) - (pair.y - pair.w) / (2. * pi));
+    if below > worstBelow { worstBelow = below; }
+    imm seam = libc.fabsf(ribPhase(&r, 0.4, t, p) - ribPhase(&r, 0.4, t + 2. * pi, p));
+    if seam > worstSeam { worstSeam = seam; }
+    i = i + 1;
+  }
+  expect(worstAbove < 0.0001, "far above the pair: 4 along");
+  expect(worstBelow < 0.004,"far below the pair: shifted by (t1 - t2) / 2 pi");
+  expect(worstSeam < 0.00001, "seamless round the turn");
+  expectInt(i64.from(winding(&r, pair.x, pair.y, 0.05)), 1, "one turn round the first vortex");
+  expectInt(i64.from(winding(&r, pair.z, pair.w, 0.05)), -1, "minus one round the second");
+  imm midS = (pair.x + pair.z) * 0.5;
+  imm midT = (pair.y + pair.w) * 0.5;
+  // a circle (in u, v) holding both: radius past half their distance apart
+  imm du = (pair.z - pair.x) * 40.;
+  imm half = (du * du + turn * turn).sqrt() * 0.5 + 0.3;
+  expectInt(i64.from(winding(&r, midS, midT, half)), 0, "none round both");
+  expectInt(i64.from(winding(&r, 0.95, 1., 0.05)), 0, "none round neither");
+}
+
+// The phase's turns round a circle of radius 'radius' (in u = along x
+// aspect, v = theta) about (along s, theta t): 256 steps, each the nearest
+// whole-number shift taken out
+fn winding(r &RibField, s f32, t f32, radius f32) i32 {
+  imm p = new Vec3(0., 0., 0.);
+  mut total = 0.;
+  mut last = ribPhase(r, s + radius / r.defectAspect, t, p);
+  mut k = 1;
+  while k <= 256 {
+    imm a = 2. * pi * f32.from(k) / 256.;
+    imm ph = ribPhase(r, s + radius * cos(a) / r.defectAspect, t + radius * sin(a), p);
+    mut step = ph - last;
+    step = step - libc.floorf(step + 0.5);
+    total = total + step;
+    last = ph;
+    k = k + 1;
+  }
+  i32.from(libc.floorf(total + 0.5));
+}
+
+fn amplitudes() {
+  imm p = new Vec3(0.3, 0.2, 0.1);
+  imm plain = RibField.plain(4., 1u32);
+  expectFloat(f64.from(ribAmplitude(&plain, 2.3, p)), 1d, 0d, "plain: 1");
+  mut gone = RibField.plain(4., 1u32);
+  gone.absent = 1.;
+  expectFloat(f64.from(ribAmplitude(&gone, 2.3, p)), 0d, 0d, "absent 1: 0");
+  mut spread = RibField.plain(4., 9u32);
+  spread.spread = 0.5;
+  mut k = 0;
+  mut ok = true;
+  while k < 20 {
+    imm want = 1. + 0.5 * noise.toSigned(noise.hash2(k, 3, 9u32).x);
+    imm a = ribAmplitude(&spread, f32.from(k) + 0.2, p);
+    imm b = ribAmplitude(&spread, f32.from(k) + 0.8, p);
+    if a != want or b != want or a < 0.5 or a > 1.5 { ok = false; }
+    k = k + 1;
+  }
+  expect(ok, "each rib its own height, the whole rib alike");
+  mut env = RibField.plain(4., 5u32);
+  env.cover = 0.5;
+  mut zeros = 0;
+  mut ones = 0;
+  mut inRange = true;
+  mut x = 0;
+  while x < 400 {
+    imm q = new Vec3(f32.from(x % 7) * 0.31, f32.from((x / 7) % 7) * 0.29, f32.from(x / 49) * 0.27);
+    imm a = ribAmplitude(&env, 0.5, q);
+    if a < 0. or a > 1. { inRange = false; }
+    if a == 0. { zeros = zeros + 1; }
+    if a == 1. { ones = ones + 1; }
+    x = x + 1;
+  }
+  expect(inRange, "the envelope in [0, 1]");
+  expect(zeros > 0 and ones > 0, "the envelope has bare and full patches");
+}
+
+fn tube() PolyMesh {
+  imm outline = Profile.polygon(8u32, 0.1);
+  imm path = Path.line(new Vec3(0., 0., 0.), new Vec3(0., 0., 1.), 100u32);
+  sweep(&outline, &path, 0., 1., 1., false);
+}
+
+fn fields() {
+  mut m = tube();
+  imm r = RibField.plain(4., 1u32);
+  ribField(&mut m, "ribs", &r);
+  imm ribs = m.findFloatChannel(VertexDomain, "ribs");
+  imm amp = m.findFloatChannel(VertexDomain, "ribsAmp");
+  expect(ribs != NoIndex and amp != NoIndex, "ribs and ribsAmp added");
+  // ring i is vertices 8 i .. 8 i + 7, at along i / 100: rings 25 and 75
+  // are phases 1 and 3, troughs
+  mut most = 0.;
+  mut j = 0u32;
+  while j < 8u32 {
+    imm t = m.float(ribs, 25u32 * 8u32 + j);
+    if t > most { most = t; }
+    imm t3 = m.float(ribs, 75u32 * 8u32 + j);
+    if t3 > most { most = t3; }
+    j = j + 1u32;
+  }
+  expect(most < 0.00001, "troughs at along 0.25 and 0.75 (phases 1 and 3)");
+  mut m2 = tube();
+  imm r2 = RibField.plain(2., 1u32);
+  ribField(&mut m2, "ribs", &r2);
+  imm c2 = m2.findFloatChannel(VertexDomain, "ribs");
+  // frequency 2: along 0.25 is phase 0.5, a crest
+  expectFloat(f64.from(m2.float(c2, 25u32 * 8u32)), 1d, 0.00001d, "a crest at along 0.25 (frequency 2)");
+  mut m3 = tube();
+  mut r3 = RibField.plain(4., 1u32);
+  r3.absent = 1.;
+  ribField(&mut m3, "ribs", &r3);
+  imm c3 = m3.findFloatChannel(VertexDomain, "ribs");
+  mut none = 0.;
+  mut v = 0u32;
+  while v < u32.from(m3.vertexCount()) {
+    if m3.float(c3, v) > none { none = m3.float(c3, v); }
+    v = v + 1u32;
+  }
+  expectFloat(f64.from(none), 0d, 0d, "absent 1: no ribs");
+}
+
+fn rings() {
+  mut hopf = MarginRing.plain(6., 1u32);
+  hopf.drive = 2.02;
+  imm c = marginPeriod(&hopf);
+  expect(libc.fabsf(c.x - 2. * pi) < 0.03 * 2. * pi, "past the Hopf point: period near 2 pi");
+  expect(c.y > 0.5 and c.z < 1.5, "past the Hopf point: small swings about 1");
+  imm plain = MarginRing.plain(6., 1u32);
+  imm c3 = marginPeriod(&plain);
+  expect(c3.y < 1. and c3.z > 3., "B 3: spikes");
+
+  mut m = tube();
+  imm g = MarginRing.plain(6., 1u32);
+  marginRing(&mut m, "ribs", &g);
+  imm ch = m.findFloatChannel(VertexDomain, "ribs");
+  imm amp = m.findFloatChannel(VertexDomain, "ribsAmp");
+  mut worst = 0.;
+  mut i = 0u32;
+  while i <= 100u32 {
+    mut mean = 0.;
+    mut j = 0u32;
+    while j < 8u32 { mean = mean + m.float(ch, i * 8u32 + j); j = j + 1u32; }
+    mean = mean / 8.;
+    j = 0u32;
+    while j < 8u32 {
+      imm d = libc.fabsf(m.float(ch, i * 8u32 + j) - mean);
+      if d > worst { worst = d; }
+      j = j + 1u32;
+    }
+    i = i + 1u32;
+  }
+  expect(worst <= 1.5, "heights held to [0, 1.5]");
+  mut again = tube();
+  marginRing(&mut again, "ribs", &g);
+  imm ch2 = again.findFloatChannel(VertexDomain, "ribs");
+  mut same = true;
+  mut v = 0u32;
+  while v < u32.from(m.vertexCount()) {
+    if m.float(ch, v) != again.float(ch2, v) { same = false; }
+    v = v + 1u32;
+  }
+  expect(same, "the same ring, the same bits");
+  mut crests = 0;
+  i = 1u32;
+  while i < 100u32 {
+    imm a = m.float(ch, (i - 1u32) * 8u32);
+    imm b = m.float(ch, i * 8u32);
+    imm n = m.float(ch, (i + 1u32) * 8u32);
+    if b > 0.5 and b >= a and b > n { crests = crests + 1; }
+    i = i + 1u32;
+  }
+  expect(crests >= 5 and crests <= 7, "frequency 6: six crests, give or take one");
+  expectFloat(f64.from(m.float(amp, 0u32)), 1d, 0d, "ribsAmp 1");
+}
+
+fn main() i32 {
+  phases();
+  vortices();
+  amplitudes();
+  fields();
+  rings();
+  done();
+}

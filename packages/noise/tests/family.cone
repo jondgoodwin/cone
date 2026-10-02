@@ -1,0 +1,114 @@
+// The noise package's family dials, checked against values worked out by
+// hand. Only a failure prints.
+//
+// FamilyDial(mean, spread, first, second, own, lo, hi).draw(seed, i, d, z)
+// is mean + spread (first z.x + second z.y + own u), u = toSigned(hash2(i,
+// d, seed).x), held to [lo, hi]:
+// - spread 0: the mean (2.5), whatever the latents;
+// - mean 5 held to [0, 1]: 1; mean -5: 0;
+// - first 1 only, latents (0.4, -0.7), spread 2: 1 + 2 x 0.4 = 1.8; second
+//   1 only: 1 - 1.4 = -0.4;
+// - own 1 only: mean + spread u exactly, u from the hash above;
+// - keyed by path: individual 7's dial 3 is the same number however many
+//   others were drawn first, and dials 3 and 4 differ.
+// familyLatents: the sum of two uniform draws in [0, 1) less 1, so in
+// [-1, 1), mean 0, and triangular: |z| < 1/2 has chance 1 - (1/2)^2 = 3/4.
+// Over 4000 individuals: the mean within 0.03 of 0 (the standard deviation
+// of one latent is 1/sqrt 6 = 0.41, of the mean 0.0065), the share within
+// 0.03 of 3/4 (binomial sd 0.007), and the two latents' correlation within
+// 0.05 of 0.
+// chance: mean 1 is always, mean 0 never; mean 0.3, spread 0: the share of
+// 4000 within 0.03 of 0.3.
+// familyUnit: in [0, 1), and its mean over 4000 within 0.03 of 1/2.
+
+mod family;
+
+import testing use *;
+import libc;
+import geomath use *;
+import noise use *;
+
+fn draws() {
+  imm z = new Vec2(0.4, -0.7);
+  imm still = new FamilyDial(2.5, 0., 1., 1., 1., -10., 10.);
+  expectFloat(f64.from(still.draw(9u32, 3u32, 1u32, z)), 2.5d, 0d, "spread 0: the mean");
+  imm high = new FamilyDial(5., 0., 0., 0., 0., 0., 1.);
+  expectFloat(f64.from(high.draw(9u32, 3u32, 1u32, z)), 1d, 0d, "held to hi");
+  imm low = new FamilyDial(-5., 0., 0., 0., 0., 0., 1.);
+  expectFloat(f64.from(low.draw(9u32, 3u32, 1u32, z)), 0d, 0d, "held to lo");
+  imm first = new FamilyDial(1., 2., 1., 0., 0., -10., 10.);
+  expectFloat(f64.from(first.draw(9u32, 3u32, 1u32, z)), 1.8d, 0.000001d, "the first latent's loading");
+  imm second = new FamilyDial(1., 2., 0., 1., 0., -10., 10.);
+  expectFloat(f64.from(second.draw(9u32, 3u32, 1u32, z)), -0.4d, 0.000001d, "the second latent's loading");
+  imm own = new FamilyDial(1., 2., 0., 0., 1., -10., 10.);
+  imm u = toSigned(hash2(3, 1, 9u32).x);
+  expectFloat(f64.from(own.draw(9u32, 3u32, 1u32, z)), f64.from(1. + 2. * u), 0d, "its own draw");
+  imm a = own.draw(9u32, 7u32, 3u32, z);
+  mut k = 0u32;
+  while k < 50u32 { own.draw(9u32, k, k % 5u32, z); k = k + 1u32; }
+  expectFloat(f64.from(own.draw(9u32, 7u32, 3u32, z)), f64.from(a), 0d, "keyed by path, not by order");
+  expect(own.draw(9u32, 7u32, 4u32, z) != a, "another dial, another number");
+}
+
+fn latents() {
+  mut sx = 0.;
+  mut sy = 0.;
+  mut sxy = 0.;
+  mut sxx = 0.;
+  mut syy = 0.;
+  mut inner = 0;
+  mut inRange = true;
+  mut i = 0u32;
+  while i < 4000u32 {
+    imm z = familyLatents(77u32, i);
+    if z.x < -1. or z.x >= 1. or z.y < -1. or z.y >= 1. { inRange = false; }
+    sx = sx + z.x;
+    sy = sy + z.y;
+    sxy = sxy + z.x * z.y;
+    sxx = sxx + z.x * z.x;
+    syy = syy + z.y * z.y;
+    if libc.fabsf(z.x) < 0.5 { inner = inner + 1; }
+    i = i + 1u32;
+  }
+  imm n = 4000.;
+  expect(inRange, "latents in [-1, 1)");
+  expect(libc.fabsf(sx / n) < 0.03 and libc.fabsf(sy / n) < 0.03, "latents' mean 0");
+  expect(libc.fabsf(f32.from(inner) / n - 0.75) < 0.03, "triangular: |z| < 1/2 three times in four");
+  imm cov = sxy / n - (sx / n) * (sy / n);
+  imm corr = cov / ((sxx / n - (sx / n) * (sx / n)) * (syy / n - (sy / n) * (sy / n))).sqrt();
+  expect(libc.fabsf(corr) < 0.05, "the two latents uncorrelated");
+}
+
+fn chances() {
+  imm z = new Vec2(0., 0.);
+  imm always = new FamilyDial(1., 0., 0., 0., 0., 0., 1.);
+  imm never = new FamilyDial(0., 0., 0., 0., 0., 0., 1.);
+  imm some = new FamilyDial(0.3, 0., 0., 0., 0., 0., 1.);
+  mut all = true;
+  mut none = true;
+  mut hits = 0;
+  mut usum = 0.;
+  mut uIn = true;
+  mut i = 0u32;
+  while i < 4000u32 {
+    if !always.chance(5u32, i, 2u32, z) { all = false; }
+    if never.chance(5u32, i, 2u32, z) { none = false; }
+    if some.chance(5u32, i, 2u32, z) { hits = hits + 1; }
+    imm u = familyUnit(5u32, i, 2u32);
+    if u < 0. or u >= 1. { uIn = false; }
+    usum = usum + u;
+    i = i + 1u32;
+  }
+  expect(all, "chance 1: always");
+  expect(none, "chance 0: never");
+  expect(libc.fabsf(f32.from(hits) / 4000. - 0.3) < 0.03, "chance 0.3: about 3 in 10");
+  expect(uIn, "familyUnit in [0, 1)");
+  expect(libc.fabsf(usum / 4000. - 0.5) < 0.03, "familyUnit's mean 1/2");
+}
+
+fn main() i32 {
+  draws();
+  latents();
+  chances();
+  done();
+}

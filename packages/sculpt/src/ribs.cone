@@ -1,0 +1,351 @@
+// ======== Ribs that melt: a rib phase field, and a growing margin ========
+//
+// Two ways to fill a vertex channel with ribs across a swept, lathed or
+// extruded mesh, read from its "along" (0 at the start, 1 at the end) and
+// "around" (0 to 1 round the outline) channels. Each writes a channel of
+// crest height about 1 (0 between ribs); the caller scales it (by the local
+// radius, say) and moves the surface with displaceAlongNormal.
+//
+// THE PHASE FIELD (ribField). Ribs are the crests of a phase: rib k runs
+// where the phase is k + 1/2, and the troughs where it is a whole number.
+// The height is
+//
+//   A(p) * h(k) * (sin^2(pi phase))^sharpness,   k = floor(phase),
+//
+// and the phase is frequency * along, plus four terms, each off at its
+// default:
+// - warp: warp * fbm3(p * warpScale), p the vertex's position, so the ribs
+//   wander and tilt (a warp of 1 moves a rib by up to about a rib);
+// - the envelope A: smoothstep of a slow fbm3(p * coverScale) against a
+//   threshold set by 'cover', so ribs fade out in patches ('cover' 1 or more:
+//   A = 1 everywhere, no noise is asked);
+// - each rib's own height h(k) = 1 + spread * u, and with chance 'absent' no
+//   rib at all, u and the chance hashed from (seed, k): a rib keeps its
+//   number however it wanders, so the whole rib is tall or missing;
+// - 'defects' pairs of phase vortices: one rib forks in a Y and the two
+//   rejoin a little further round (a dislocation pair, as in fingerprints
+//   and stripe patterns). A vortex at (s0, t0) adds arg(1 - e^-z) / 2 pi,
+//   z = (along - s0) aspect + i (theta - t0), theta = 2 pi around: near the
+//   vortex that is arg z, one turn of phase round it, and it repeats every
+//   turn of theta, so it is seamless round the mesh. The pair's two are
+//   taken together as arg(f1 conj f2), which sends the jump of a whole rib
+//   only along a short cut between them; above both the phase is unchanged,
+//   below both shifted by a constant. 'defectAspect' converts along to the
+//   same scale as theta: a horn of length L and radius r wants L / r, so a
+//   vortex is round on the surface.
+// Every random number is a hash of (seed, a term's index, a rib's number or
+// a pair's number), never a stream; noise is noise.fbm3, 3 octaves.
+//
+// THE MARGIN RING (marginRing). A horn or shell grows at its rim; its ribs
+// are what the rim was doing when each ring was laid down (Meinhardt, The
+// Algorithmic Beauty of Sea Shells; Fowler, Meinhardt and Prusinkiewicz
+// 1992). Here the rim is a ring of 'cells' cells running the Brusselator, an
+// oscillating reaction-diffusion (Prigogine and Lefever 1968):
+//
+//   a' = A_i - (B + 1) a + a^2 b + Da (a[i-1] + a[i+1] - 2 a)
+//   b' = B a - a^2 b              + Db (b[i-1] + b[i+1] - 2 b)
+//
+// which, for B > 1 + A^2, pulses: each pulse of a is one rib round the rim.
+// 'unevenness' makes each cell's A_i differ, by noise.gradient3 round the
+// ring that drifts slowly with growth, so cells run at different rates, and
+// ribs tilt, fork and end where the ring slips a beat. Measured: diffusion
+// does not hold even an even ring in step at the plain settings (A 1, B 3,
+// both diffusions 0.4): a start difference of 0.2% between cells grows to
+// the full swing within about six periods (Cone and a numpy run of the same
+// equations agree), so the ribs fall into waves round the ring even with no
+// unevenness; less diffusion breaks them up more. The run lasts 'frequency' periods of one
+// cell's pulse (measured first, from one cell alone), so 'frequency' ribs
+// span along 0 to 1. A vertex's height is a, between the lone cell's least
+// and greatest, at its along (in time) and its around (on the ring), both
+// interpolated linearly. Explicit Euler, 400 steps a period.
+
+pub struct RibField {
+  pub frequency f32;     // ribs from along 0 to along 1
+  pub sharpness f32;     // the crest's exponent: 1 a plain sine squared, larger narrower
+  pub warp f32;          // the phase's warp, in ribs; 0 none
+  pub warpScale f32;     // the warp noise's cells per unit of position
+  pub cover f32;         // the share of the surface ribbed, roughly; 1 or more: all
+  pub coverScale f32;    // the envelope noise's cells per unit of position
+  pub spread f32;        // each rib's height 1 + spread * u, u in [-1, 1); 0 all alike
+  pub absent f32;        // each rib's chance of being missing; 0 none
+  pub defects u32;       // pairs of phase vortices; 0 none
+  pub defectAspect f32;  // along's scale against theta's for the vortices
+  pub seed u32;
+
+  // Regular ribs: 'frequency' of them, sharpness 3, and no other term
+  pub fn plain(frequency f32, seed u32) RibField {
+    new RibField(frequency, 3., 0., 1., 1., 1., 0., 0., 0u32, 1., seed);
+  }
+}
+
+// The envelope's threshold against fBm for a 'cover' (a linear guess at
+// fbm3's spread, so 'cover' is only roughly the share ribbed: measure it)
+fn coverThreshold(cover f32) f32 { 0.9 * (0.5 - cover); }
+
+fn smoothstepF(e0 f32, e1 f32, x f32) f32 {
+  imm t = clampF((x - e0) / (e1 - e0), 0., 1.);
+  t * t * (3. - 2. * t);
+}
+
+// One vortex's 1 - e^-z, z = u + i v, as (real, imaginary)
+fn vortexFactor(u f32, v f32) Vec2 {
+  imm uu = if u < -30. {-30.;} else {u;};
+  imm e = libc.expf(0. - uu);
+  new Vec2(1. - e * cos(v), e * sin(v));
+}
+
+// Pair d's two vortices: (along, theta) of the first and second
+pub fn ribDefectPair(r &RibField, d u32) Vec4 {
+  imm h = noise.hash2(i32.from(d), 101, r.seed);
+  imm g = noise.hash2(i32.from(d), 102, r.seed);
+  imm s0 = 0.15 + 0.6 * noise.toUnit(h.x);
+  imm t0 = 2. * pi * noise.toUnit(h.y);
+  imm turn = (0.8 + 1.2 * noise.toUnit(g.x)) * (if (g.y & 1u32) == 0u32 {1.;} else {-1.;});
+  imm ds = (noise.toUnit(g.z) - 0.5) * 0.3 / r.frequency;
+  new Vec4(s0, t0, s0 + ds, t0 + turn);
+}
+
+// The phase at a point: along, theta = 2 pi around, its position
+pub fn ribPhase(r &RibField, along f32, theta f32, p Vec3) f32 {
+  mut phase = r.frequency * along;
+  if r.warp != 0. {
+    phase = phase + r.warp * noise.fbm3(p * r.warpScale, noise.hash1(1, r.seed), 3, 2., 0.5).value;
+  }
+  mut d = 0u32;
+  while d < r.defects {
+    imm pair = ribDefectPair(r, d);
+    imm f1 = vortexFactor((along - pair.x) * r.defectAspect, theta - pair.y);
+    imm f2 = vortexFactor((along - pair.z) * r.defectAspect, theta - pair.w);
+    // f1 times f2's conjugate
+    imm re = f1.x * f2.x + f1.y * f2.y;
+    imm im = f1.y * f2.x - f1.x * f2.y;
+    phase = phase + atan2(im, re) / (2. * pi);
+    d = d + 1u32;
+  }
+  phase;
+}
+
+// The amplitude at a point of phase 'phase': the envelope times rib k's height
+pub fn ribAmplitude(r &RibField, phase f32, p Vec3) f32 {
+  mut amp = 1.;
+  if r.cover < 1. {
+    imm n = noise.fbm3(p * r.coverScale, noise.hash1(2, r.seed), 3, 2., 0.5).value;
+    imm t = coverThreshold(r.cover);
+    amp = smoothstepF(t - 0.12, t + 0.12, n);
+  }
+  if r.spread != 0. or r.absent > 0. {
+    imm k = i32.from(libc.floorf(phase));
+    imm h = noise.hash2(k, 3, r.seed);
+    if noise.toUnit(h.y) < r.absent { return 0.; }
+    amp = amp * (1. + r.spread * noise.toSigned(h.x));
+  }
+  amp;
+}
+
+// The crest's shape at a phase: 0 at whole numbers, 1 at halves
+pub fn ribProfile(r &RibField, phase f32) f32 {
+  imm s = sin(pi * phase);
+  libc.powf(s * s, r.sharpness);
+}
+
+// Write the rib height into the vertex channel 'name' (added if the mesh has
+// none) and its amplitude, A h(k), into 'name' followed by "Amp". A mesh
+// without "along" or "around" counts 0 for the missing one.
+pub fn ribField(m &mut PolyMesh, name &[]u8, r &RibField) {
+  imm along = m.findFloatChannel(VertexDomain, "along");
+  imm around = m.findFloatChannel(VertexDomain, "around");
+  imm out = channelNamed(m, name);
+  mut ampName = String.from(name);
+  ampName <- "Amp";
+  imm ampOut = channelNamed(m, ampName.view());
+  mut k = 0u32;
+  while k < u32.from(m.vertexCount()) {
+    imm a = if along != NoIndex {m.float(along, k);} else {0.;};
+    imm t = if around != NoIndex {2. * pi * m.float(around, k);} else {0.;};
+    imm p = *m.positions[usize.from(k)];
+    imm phase = ribPhase(r, a, t, p);
+    imm amp = ribAmplitude(r, phase, p);
+    m.setFloat(out, k, amp * ribProfile(r, phase));
+    m.setFloat(ampOut, k, amp);
+    k = k + 1u32;
+  }
+}
+
+fn channelNamed(m &mut PolyMesh, name &[]u8) u32 {
+  imm c = m.findFloatChannel(VertexDomain, name);
+  if c != NoIndex { return c; }
+  m.addFloatChannel(VertexDomain, name, 0.);
+}
+
+// ---- the margin ring ----
+
+pub struct MarginRing {
+  pub frequency f32;     // pulses (ribs) from along 0 to along 1
+  pub cells u32;         // cells round the rim
+  pub feed f32;          // the Brusselator's A
+  pub drive f32;         // its B; pulses when B > 1 + A^2
+  pub spreadA f32;       // a's diffusion between neighbouring cells
+  pub spreadB f32;       // b's
+  pub unevenness f32;    // A_i = A (1 + unevenness g), g a noise round the ring
+  pub unevenScale f32;   // g's cells round the ring (on a circle of radius 1)
+  pub drift f32;         // g's change per period
+  pub seed u32;
+
+  // A ring of 64 cells, A 1, B 3, both diffusions 0.4, even (no
+  // unevenness), drifting 0.15 a period; each cell starts within 0.2% of
+  // the fixed point (a = A, b = B / A), hashed by its index
+  pub fn plain(frequency f32, seed u32) MarginRing {
+    new MarginRing(frequency, 64u32, 1., 3., 0.4, 0.4, 0., 1.5, 0.15, seed);
+  }
+}
+
+const RING_STEPS = 400;      // Euler steps a period
+const RING_SNAPSHOTS = 40;   // states kept a period
+const RING_WARMUP = 8;       // periods run before along 0
+
+// One Euler step of the ring; 'feeds' each cell's A
+fn ringStep(g &MarginRing, a &mut List[f32], b &mut List[f32], na &mut List[f32], nb &mut List[f32], feeds &List[f32], dt f32) {
+  imm n = a.len();
+  mut i = 0usize;
+  while i < n {
+    imm l = (i + n - 1usize) % n;
+    imm r = (i + 1usize) % n;
+    imm ai = *a[i];
+    imm bi = *b[i];
+    imm react = ai * ai * bi;
+    imm da = *feeds[i] - (g.drive + 1.) * ai + react + g.spreadA * (*a[l] + *a[r] - 2. * ai);
+    imm db = g.drive * ai - react + g.spreadB * (*b[l] + *b[r] - 2. * bi);
+    na.set(i, ai + dt * da);
+    nb.set(i, bi + dt * db);
+    i = i + 1usize;
+  }
+  i = 0usize;
+  while i < n {
+    a.set(i, *na[i]);
+    b.set(i, *nb[i]);
+    i = i + 1usize;
+  }
+}
+
+// One lone cell's period, least and greatest a, measured over its fifth to
+// tenth pulses (after the start has died away), stepping 'dt'
+pub fn marginPeriod(g &MarginRing) Vec3 {
+  imm dt = 0.002;
+  mut a = g.feed + 0.1;
+  mut b = g.drive / g.feed;
+  mut t = 0.;
+  mut rising = true;
+  mut peaks = 0;
+  mut firstPeak = 0.;
+  mut lo = 1000000.;
+  mut hi = -1000000.;
+  while peaks < 10 and t < 10000. {
+    imm react = a * a * b;
+    imm na = a + dt * (g.feed - (g.drive + 1.) * a + react);
+    imm nb = b + dt * (g.drive * a - react);
+    if rising and na < a {
+      peaks = peaks + 1;
+      if peaks == 5 { firstPeak = t; }
+    }
+    rising = na >= a;
+    if peaks >= 5 {
+      if a < lo { lo = a; }
+      if a > hi { hi = a; }
+    }
+    a = na;
+    b = nb;
+    t = t + dt;
+  }
+  new Vec3((t - firstPeak) / 5., lo, hi);
+}
+
+// Write the ring's pulses into the vertex channel 'name' (added if the mesh
+// has none), height 0 at the lone cell's least a and 1 at its greatest, and
+// 1 into 'name' followed by "Amp"
+pub fn marginRing(m &mut PolyMesh, name &[]u8, g &MarginRing) {
+  imm cycle = marginPeriod(g);
+  imm period = cycle.x;
+  imm n = usize.from(if g.cells < 3u32 {3u32;} else {g.cells;});
+  imm dt = period / f32.from(RING_STEPS);
+  mut a = List[f32].withCapacity(n);
+  mut b = List[f32].withCapacity(n);
+  mut na = List[f32].withCapacity(n);
+  mut nb = List[f32].withCapacity(n);
+  mut feeds = List[f32].withCapacity(n);
+  mut i = 0usize;
+  while i < n {
+    a.push(g.feed * (1. + 0.002 * noise.toSigned(noise.hash1(i32.from(i), g.seed))));
+    b.push(g.drive / g.feed);
+    na.push(0.);
+    nb.push(0.);
+    feeds.push(g.feed);
+    i = i + 1usize;
+  }
+  // Run RING_WARMUP periods first, so the ring is on its cycle (it starts
+  // at the fixed point, whence the pulses grow over a few periods) before
+  // along 0
+  mut w = 0;
+  while w < RING_WARMUP * RING_STEPS {
+    ringStep(g, &mut a, &mut b, &mut na, &mut nb, &feeds, dt);
+    w = w + 1;
+  }
+  // The states, RING_SNAPSHOTS a period, from along 0 to 1
+  imm snaps = i32.from(libc.ceilf(g.frequency * f32.from(RING_SNAPSHOTS))) + 1;
+  imm per = RING_STEPS / RING_SNAPSHOTS;
+  mut kept = List[f32].withCapacity(usize.from(snaps) * n);
+  imm fseed = noise.hash1(4, g.seed);
+  mut s = 0;
+  while s < snaps {
+    i = 0usize;
+    while i < n {
+      kept.push(*a[i]);
+      i = i + 1usize;
+    }
+    // the cells' feeds for the next stretch
+    imm time = f32.from(s) / f32.from(RING_SNAPSHOTS) * g.drift;
+    i = 0usize;
+    while i < n {
+      if g.unevenness != 0. {
+        imm phi = 2. * pi * f32.from(i) / f32.from(n);
+        imm q = new Vec3(cos(phi) * g.unevenScale, sin(phi) * g.unevenScale, time);
+        feeds.set(i, g.feed * (1. + g.unevenness * noise.gradient3(q, fseed).value));
+      }
+      i = i + 1usize;
+    }
+    mut step = 0;
+    while step < per {
+      ringStep(g, &mut a, &mut b, &mut na, &mut nb, &feeds, dt);
+      step = step + 1;
+    }
+    s = s + 1;
+  }
+  // Each vertex: its along in snapshots, its around in cells
+  imm along = m.findFloatChannel(VertexDomain, "along");
+  imm around = m.findFloatChannel(VertexDomain, "around");
+  imm out = channelNamed(m, name);
+  mut ampName = String.from(name);
+  ampName <- "Amp";
+  imm ampOut = channelNamed(m, ampName.view());
+  imm span = cycle.z - cycle.y;
+  mut k = 0u32;
+  while k < u32.from(m.vertexCount()) {
+    imm al = if along != NoIndex {clampF(m.float(along, k), 0., 1.);} else {0.;};
+    imm ar = if around != NoIndex {m.float(around, k);} else {0.;};
+    imm ts = al * g.frequency * f32.from(RING_SNAPSHOTS);
+    imm s0 = i32.from(libc.floorf(ts));
+    imm s1 = if s0 + 1 < snaps {s0 + 1;} else {s0;};
+    imm ft = ts - f32.from(s0);
+    imm cs = (ar - libc.floorf(ar)) * f32.from(n);
+    imm c0 = usize.from(i32.from(libc.floorf(cs))) % n;
+    imm c1 = (c0 + 1usize) % n;
+    imm fc = cs - libc.floorf(cs);
+    imm r0 = usize.from(s0) * n;
+    imm r1 = usize.from(s1) * n;
+    imm lo = *kept[r0 + c0] * (1. - fc) + *kept[r0 + c1] * fc;
+    imm hi = *kept[r1 + c0] * (1. - fc) + *kept[r1 + c1] * fc;
+    imm val = lo * (1. - ft) + hi * ft;
+    m.setFloat(out, k, clampF((val - cycle.y) / span, 0., 1.5));
+    m.setFloat(ampOut, k, 1.);
+    k = k + 1u32;
+  }
+}

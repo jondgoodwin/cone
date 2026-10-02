@@ -1,0 +1,57 @@
+// ======== Families: dials drawn per individual, keyed by path ========
+//
+// A family of shapes is a table of dials, each a distribution; an individual
+// is a number. Every random number an individual uses is a hash of (family
+// seed, individual, dial), never the next draw of a stream, so adding a dial
+// or an individual changes no other (the lesson of SpeedTree's per-node
+// seeds and of Minecraft's chunk seeds).
+//
+// Independent jitter on every dial gives incoherent individuals, so each
+// individual also has two latent numbers (familyLatents), and a dial moves
+// with them by its loadings: "vigour" can lengthen, thicken and add ribs
+// together. A dial's value is
+//
+//   mean + spread (first z0 + second z1 + own u),  held to [lo, hi],
+//
+// z0, z1 the individual's latents and u its own draw for this dial, each in
+// [-1, 1). A latent is the sum of two uniform draws less 1 (triangular, so
+// the middle is commoner than the edges); u is uniform. 'chance' reads the
+// same dial as a probability, mean + spread (first z0 + second z1) held to
+// [0, 1], against a uniform draw (Weber and Penn's paired value and
+// variation, with correlated latents added).
+
+pub struct FamilyDial {
+  pub mean f32;
+  pub spread f32;
+  pub first f32;    // the loading on latent 0
+  pub second f32;   // the loading on latent 1
+  pub own f32;      // the loading on the dial's own draw
+  pub lo f32;
+  pub hi f32;
+
+  // The dial's value for 'individual' of the family 'familySeed'
+  pub fn draw(self &, familySeed u32, individual u32, dial u32, latents Vec2) f32 {
+    imm u = toSigned(hash2(i32.from(individual), i32.from(dial), familySeed).x);
+    imm x = mean + spread * (first * latents.x + second * latents.y + own * u);
+    if x < lo {lo;} elif x > hi {hi;} else {x;};
+  }
+
+  // The dial read as a chance, and whether this individual has it
+  pub fn chance(self &, familySeed u32, individual u32, dial u32, latents Vec2) Bool {
+    imm x = mean + spread * (first * latents.x + second * latents.y);
+    imm p = if x < 0. {0.;} elif x > 1. {1.;} else {x;};
+    toUnit(hash2(i32.from(individual), i32.from(dial), familySeed).y) < p;
+  }
+}
+
+// An individual's two latent numbers, each in (-1, 1), triangular
+pub fn familyLatents(familySeed u32, individual u32) Vec2 {
+  imm h = hash2(i32.from(individual), -1, familySeed);
+  new Vec2(toUnit(h.x) + toUnit(h.y) - 1., toUnit(h.z) + toUnit(hash2(i32.from(individual), -2, familySeed).x) - 1.);
+}
+
+// A uniform number in [0, 1) for (family, individual, dial): a dial with no
+// distribution worth bytes, such as a heading round the compass
+pub fn familyUnit(familySeed u32, individual u32, dial u32) f32 {
+  toUnit(hash2(i32.from(individual), i32.from(dial), familySeed).z);
+}
