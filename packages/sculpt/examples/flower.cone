@@ -1,0 +1,55 @@
+// flower: a petal swept along a curve and repeated round an axis by a radial
+// array, then smoothed by Catmull-Clark subdivision.
+//
+//   congo run packages/sculpt/examples/flower.cone
+//
+// The petal is a flat rounded rectangle, 0.24 wide and 0.05 thick, swept
+// with caps along a cubic Bezier that leaves the y axis at radius 0.1,
+// rises and curls outward to (1.2, 0.35, 0), its scale tapering from 0.6 at
+// the base to 0.15 at the tip. Seven copies of it go round +y, a whole turn,
+// copy k turned by 2 pi k / 7, concatenated in order (copy k's vertex v is k
+// V + v). It writes flower.obj (level 2, triangles with smooth normals and
+// uvs) in the current folder, and prints the counts.
+
+mod flower;
+
+import stdio use *;
+import collections use *;
+import geomath use *;
+import mesh use *;
+import sculpt use *;
+
+fn main() i32 {
+  imm profile = Profile.roundedRectangle(0.24, 0.05, 0.02, 2u32);
+  imm curve = new CubicBezier3(new Vec3(0.1, 0., 0.), new Vec3(0.4, 0.3, 0.), new Vec3(0.9, 0.45, 0.),
+    new Vec3(1.2, 0.35, 0.));
+  imm path = Path.fromCubic(curve, 12u32);
+  imm petal = sweep(&profile, &path, 0., 0.6, 0.15, true);
+  imm flower = arrayRadial(&petal, 7u32, new Vec3(0., 1., 0.), 2. * pi, new Vec3(0., 0., 0.), -1.);
+
+  print <- "Petal: "; print <- petal.vertexCount(); print <- " vertices, "; print <- petal.faceCount();
+  print <- " faces\nFlower: "; print <- flower.vertexCount(); print <- " vertices, "; print <- flower.faceCount();
+  print <- " faces\n";
+  imm problems = flower.validate();
+  if problems.len() != 0usize {
+    mut i = 0usize;
+    while i < problems.len() {
+      printStr(problems[i].view());
+      print <- "\n";
+      i = i + 1usize;
+    }
+    return 1;
+  }
+
+  imm smooth = subdivide(&flower, 2u32);
+  imm tri = smooth.triangulate(true);
+  print <- "Level 2: "; print <- smooth.faceCount(); print <- " quads, "; print <- tri.triangleCount();
+  print <- " triangles\n";
+  if writeObj(&tri, "flower.obj") {
+    print <- "Wrote flower.obj\n";
+    0;
+  } else {
+    print <- "Could not write flower.obj\n";
+    1;
+  };
+}

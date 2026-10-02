@@ -1,0 +1,295 @@
+// The sculpt package's mirror, checked with the testing package against
+// values worked out by hand; only a failure prints, so mirrors.out holds the
+// summary alone.
+//
+// - The open box: the cube cage's numbering (vertex x + 2y + 4z), but with x
+//   at 0 or 2 and y, z at -1 or 1, and its left face (x = 0) left out: back
+//   0 (0, 2, 3, 1), front 1 (4, 5, 7, 6), right 2 (1, 3, 7, 5), bottom 3
+//   (0, 1, 5, 4), top 4 (2, 6, 7, 3); 8 vertices, 12 edges, 5 faces, the
+//   square 0-2-6-4 its open seam on the plane x = 0. Its channels: vertex
+//   "w" = v; face "id" = 10 + f; edge "crease" 2 on edge 1-3 and 3 on the
+//   seam edge 0-2; edge "mark" 4 on edge 0-2; corner "uv" (v / 8, f / 8) at
+//   vertex v of face f; vertex vec3 "rest" = the position.
+// - Mirrored in x = 0 (origin 0, normal +x) with merge 0.001: vertices 0, 2,
+//   4, 6 lie on the plane and merge with their copies; 1, 3, 5, 7 are
+//   copied, in order, as 8, 9, 10, 11, at x = -2: 8 (-2, -1, -1), 9 (-2, 1,
+//   -1), 10 (-2, -1, 1), 11 (-2, 1, 1). A closed box from x = -2 to 2: 12
+//   vertices; the 12 edges and the 8 copies of the edges off the plane, 20;
+//   10 faces; 12 - 20 + 10 = 2; no boundary edge; volume 4 x 2 x 2 = 16
+//   (the divergence theorem over outward faces, so a face turned inward
+//   would show as a smaller sum).
+//   Face 5 + f copies face f reversed from its first corner: corner j is
+//   the original's (n - j) % n. The back (0, 2, 3, 1) gives face 5: 0,
+//   copy of 1 (8), copy of 3 (9), 2 = (0, 8, 9, 2), still facing (0, 0,
+//   -1). The right (1, 3, 7, 5) gives face 7: (8, 10, 11, 9), facing
+//   (-1, 0, 0). The bottom (0, 1, 5, 4) gives face 8: (0, 4, 10, 8),
+//   facing (0, -1, 0).
+//   Channels: vertex 8 has w 1 and rest (2, -1, -1) (a vec3 channel is
+//   copied, not reflected); vertex 11 w 7; face 7 id 12. Edge 8-9 copies 1-3:
+//   crease 2, so two edges of crease 2; the seam 0-2 keeps 3 and mark 4; the
+//   other 17 crease 0. Face 7's corners at 8 and 10 take face 2's corners at
+//   1 and 5: uv (0.125, 0.25) and (0.625, 0.25).
+// - With mirrorWith, U and V mirrored and offset (1, 0): face 7's corner at
+//   8 is (1 - 0.125 + 1, 1 - 0.25) = (1.875, 0.75); face 2's corner at 1 is
+//   unchanged, (0.125, 0.25).
+// - Without merging (merge -1): 16 vertices, copy of v at 8 + v: vertex 9
+//   (-2, -1, -1); 24 edges, 10 faces, the two seams open, 8 boundary edges;
+//   face 5 is (8, 9, 11, 10).
+// - Vertex 0 moved to (0.0004, -1, -1): 0.0008 from its reflection. Merge
+//   0.001 takes it: it moves onto the plane, to (0, -1, -1), 12 vertices.
+//   Merge 0.0007 does not: its copy is made, 13 vertices, and the seam's
+//   edges at 0 stay open (0-2, 0-4 and their copies, 4 boundary edges).
+// - The unmerged mirror welded at 0.001: the copies of the seam's vertices,
+//   8, 10, 12 and 14, join 0, 2, 4 and 6, and the copies of 1, 3, 5 and 7
+//   (9, 11, 13, 15) become 8 to 11, the merged mirror's numbering: 12
+//   vertices, 20 edges, 10 faces, closed, volume 16; the copied back (8, 9,
+//   11, 10) becomes (0, 8, 9, 2); the seam 0-2 and its copy 8-10, both
+//   crease 3, merge as crease 3.
+
+mod mirrors;
+
+import testing use *;
+import collections use *;
+import geomath use *;
+import mesh use *;
+import sculpt use *;
+
+imm near = 0.00001d;
+
+fn point(got Vec3, x f32, y f32, z f32, label &[]u8) {
+  expectFloat(got.x, x, near, label);
+  expectFloat(got.y, y, near, label);
+  expectFloat(got.z, z, near, label);
+}
+
+fn clean(m &PolyMesh, label &[]u8) {
+  imm problems = m.validate();
+  expectInt(i64.from(problems.len()), 0, label);
+}
+
+fn edgeOf(m &PolyMesh, a u32, b u32) u32 {
+  mut e = 0u32;
+  while usize.from(e) < m.edgeCount() {
+    imm p = *m.hVertex[usize.from(2u32 * e)];
+    imm q = *m.hVertex[usize.from(2u32 * e + 1u32)];
+    if (p == a and q == b) or (p == b and q == a) { return e; }
+    e = e + 1u32;
+  }
+  NoIndex;
+}
+
+fn faceIs(m &PolyMesh, f u32, a u32, b u32, c u32, d u32, label &[]u8) {
+  imm vs = m.faceVertices(f);
+  expectInt(i64.from(vs.len()), 4, label);
+  if vs.len() == 4usize {
+    expectInt(i64.from(*vs[0usize]), i64.from(a), label);
+    expectInt(i64.from(*vs[1usize]), i64.from(b), label);
+    expectInt(i64.from(*vs[2usize]), i64.from(c), label);
+    expectInt(i64.from(*vs[3usize]), i64.from(d), label);
+  }
+}
+
+// The enclosed volume, by the divergence theorem: each face's fan of
+// triangles from its first corner, p0 . (p1 x p2) / 6 each
+fn volume(m &PolyMesh) f32 {
+  mut sum f32 = 0.;
+  mut f = 0usize;
+  while f < m.faceCount() {
+    imm pts = m.facePositions(u32.from(f));
+    mut i = 1usize;
+    while i + 1usize < pts.len() {
+      sum = sum + pts[0usize].dot(pts[i].cross(*pts[i + 1usize]));
+      i = i + 1usize;
+    }
+    f = f + 1usize;
+  }
+  sum / 6.;
+}
+
+fn boundaryEdges(m &PolyMesh) i64 {
+  mut n = 0i64;
+  mut e = 0u32;
+  while usize.from(e) < m.edgeCount() {
+    if m.isBoundaryEdge(e) { n = n + 1; }
+    e = e + 1u32;
+  }
+  n;
+}
+
+fn countEdgesWith(m &PolyMesh, name &[]u8, value f32) i64 {
+  imm ch = m.findFloatChannel(EdgeDomain, name);
+  if ch == NoIndex { return -1; }
+  mut n = 0i64;
+  mut e = 0u32;
+  while usize.from(e) < m.edgeCount() {
+    if m.float(ch, e) == value { n = n + 1; }
+    e = e + 1u32;
+  }
+  n;
+}
+
+// The corner uv of face f at vertex v
+fn uvAt(m &PolyMesh, f u32, v u32) Vec2 {
+  imm ch = m.findVec2Channel(CornerDomain, "uv");
+  imm hs = m.faceHalfedges(f);
+  mut i = 0usize;
+  while i < hs.len() {
+    if m.toVertex(*hs[i]) == v { return m.vec2(ch, *hs[i]); }
+    i = i + 1usize;
+  }
+  new Vec2(-1., -1.);
+}
+
+// The open box, vertex 0 at x = x0
+fn openBox(x0 f32) PolyMesh {
+  mut pts = List[Vec3].withCapacity(8usize);
+  mut v = 0u32;
+  while v < 8u32 {
+    imm x = if (v & 1u32) != 0u32 {2.;} else {0.;};
+    imm y = if (v & 2u32) != 0u32 {1.;} else {-1.;};
+    imm z = if (v & 4u32) != 0u32 {1.;} else {-1.;};
+    pts.push(new Vec3(if v == 0u32 {x0;} else {x;}, y, z));
+    v = v + 1u32;
+  }
+  imm counts Array[u32, 5] = [4u32, 4u32, 4u32, 4u32, 4u32];
+  imm faces Array[u32, 20] = [0u32, 2u32, 3u32, 1u32,  4u32, 5u32, 7u32, 6u32,  1u32, 3u32, 7u32, 5u32,
+    0u32, 1u32, 5u32, 4u32,  2u32, 6u32, 7u32, 3u32];
+  mut problems = List[String].empty();
+  mut m = PolyMesh.fromPolygons(pts.view(), &counts, &faces, &mut problems);
+  imm w = m.addFloatChannel(VertexDomain, "w", 0.);
+  imm rest = m.addVec3Channel(VertexDomain, "rest", new Vec3(0., 0., 0.));
+  v = 0u32;
+  while v < 8u32 {
+    m.setFloat(w, v, f32.from(v));
+    m.setVec3(rest, v, *m.positions[usize.from(v)]);
+    v = v + 1u32;
+  }
+  imm id = m.addFloatChannel(FaceDomain, "id", 0.);
+  imm crease = m.addFloatChannel(EdgeDomain, "crease", 0.);
+  imm mark = m.addFloatChannel(EdgeDomain, "mark", 0.);
+  imm uv = m.addVec2Channel(CornerDomain, "uv", new Vec2(0., 0.));
+  m.setFloat(crease, edgeOf(&m, 1u32, 3u32), 2.);
+  m.setFloat(crease, edgeOf(&m, 0u32, 2u32), 3.);
+  m.setFloat(mark, edgeOf(&m, 0u32, 2u32), 4.);
+  mut f = 0u32;
+  while f < 5u32 {
+    m.setFloat(id, f, 10. + f32.from(f));
+    imm hs = m.faceHalfedges(f);
+    mut i = 0usize;
+    while i < hs.len() {
+      m.setVec2(uv, *hs[i], new Vec2(f32.from(m.toVertex(*hs[i])) / 8., f32.from(f) / 8.));
+      i = i + 1usize;
+    }
+    f = f + 1u32;
+  }
+  m;
+}
+
+fn merged() {
+  imm box = openBox(0.);
+  imm m = mirror(&box, new Vec3(0., 0., 0.), new Vec3(1., 0., 0.), 0.001);
+  clean(&m, "merged: validates");
+  expectInt(i64.from(m.vertexCount()), 12, "merged: 12 vertices");
+  expectInt(i64.from(m.edgeCount()), 20, "merged: 20 edges");
+  expectInt(i64.from(m.faceCount()), 10, "merged: 10 faces");
+  expectInt(boundaryEdges(&m), 0, "merged: closed");
+  expectFloat(volume(&m), 16., near, "merged: volume 16, every face outward");
+  point(*m.positions[8usize], -2., -1., -1., "merged: vertex 8, the copy of 1");
+  point(*m.positions[9usize], -2., 1., -1., "merged: vertex 9, the copy of 3");
+  point(*m.positions[10usize], -2., -1., 1., "merged: vertex 10, the copy of 5");
+  point(*m.positions[11usize], -2., 1., 1., "merged: vertex 11, the copy of 7");
+  point(*m.positions[2usize], 0., 1., -1., "merged: vertex 2 kept");
+  faceIs(&m, 5u32, 0u32, 8u32, 9u32, 2u32, "merged: face 5, the back reversed");
+  faceIs(&m, 7u32, 8u32, 10u32, 11u32, 9u32, "merged: face 7, the right reversed");
+  faceIs(&m, 8u32, 0u32, 4u32, 10u32, 8u32, "merged: face 8, the bottom reversed");
+  point(m.faceNormal(5u32), 0., 0., -1., "merged: face 5 faces -z");
+  point(m.faceNormal(7u32), -1., 0., 0., "merged: face 7 faces -x");
+  point(m.faceNormal(8u32), 0., -1., 0., "merged: face 8 faces -y");
+  point(m.faceNormal(2u32), 1., 0., 0., "merged: face 2 still faces +x");
+
+  imm w = m.findFloatChannel(VertexDomain, "w");
+  require(w != NoIndex, "merged: w carried");
+  expectFloat(m.float(w, 8u32), 1., near, "merged: vertex 8's w is 1's");
+  expectFloat(m.float(w, 11u32), 7., near, "merged: vertex 11's w is 7's");
+  expectFloat(m.float(w, 2u32), 2., near, "merged: vertex 2's w its own");
+  imm rest = m.findVec3Channel(VertexDomain, "rest");
+  require(rest != NoIndex, "merged: rest carried");
+  point(m.vec3(rest, 8u32), 2., -1., -1., "merged: a vec3 channel copied, not reflected");
+  imm id = m.findFloatChannel(FaceDomain, "id");
+  require(id != NoIndex, "merged: id carried");
+  expectFloat(m.float(id, 7u32), 12., near, "merged: face 7's id is face 2's");
+  expectFloat(m.float(id, 2u32), 12., near, "merged: face 2's id its own");
+  imm crease = m.findFloatChannel(EdgeDomain, "crease");
+  require(crease != NoIndex, "merged: crease carried");
+  expectFloat(m.float(crease, edgeOf(&m, 8u32, 9u32)), 2., near, "merged: edge 8-9 creased as 1-3");
+  expectFloat(m.float(crease, edgeOf(&m, 1u32, 3u32)), 2., near, "merged: edge 1-3 keeps its crease");
+  expectFloat(m.float(crease, edgeOf(&m, 0u32, 2u32)), 3., near, "merged: the seam 0-2 keeps its crease");
+  expectInt(countEdgesWith(&m, "crease", 2.), 2, "merged: two edges of crease 2");
+  expectInt(countEdgesWith(&m, "crease", 0.), 17, "merged: 17 uncreased");
+  imm mark = m.findFloatChannel(EdgeDomain, "mark");
+  expectFloat(m.float(mark, edgeOf(&m, 0u32, 2u32)), 4., near, "merged: the seam keeps its mark");
+  point2(uvAt(&m, 7u32, 8u32), 0.125, 0.25, "merged: face 7's corner at 8 is face 2's at 1");
+  point2(uvAt(&m, 7u32, 10u32), 0.625, 0.25, "merged: face 7's corner at 10 is face 2's at 5");
+  point2(uvAt(&m, 5u32, 0u32), 0., 0., "merged: face 5's corner at 0 is face 0's");
+
+  imm u = mirrorWith(&box, new Vec3(0., 0., 0.), new Vec3(1., 0., 0.), 0.001, true, true, new Vec2(1., 0.));
+  clean(&u, "uv mirrored: validates");
+  point2(uvAt(&u, 7u32, 8u32), 1.875, 0.75, "uv mirrored: face 7's corner at 8");
+  point2(uvAt(&u, 2u32, 1u32), 0.125, 0.25, "uv mirrored: the original's corner unchanged");
+}
+
+fn point2(got Vec2, x f32, y f32, label &[]u8) {
+  expectFloat(got.x, x, near, label);
+  expectFloat(got.y, y, near, label);
+}
+
+fn unmerged() {
+  imm box = openBox(0.);
+  imm m = mirror(&box, new Vec3(0., 0., 0.), new Vec3(1., 0., 0.), -1.);
+  clean(&m, "unmerged: validates");
+  expectInt(i64.from(m.vertexCount()), 16, "unmerged: 16 vertices");
+  expectInt(i64.from(m.edgeCount()), 24, "unmerged: 24 edges");
+  expectInt(i64.from(m.faceCount()), 10, "unmerged: 10 faces");
+  expectInt(boundaryEdges(&m), 8, "unmerged: both seams open");
+  point(*m.positions[9usize], -2., -1., -1., "unmerged: vertex 9, the copy of 1");
+  faceIs(&m, 5u32, 8u32, 9u32, 11u32, 10u32, "unmerged: face 5");
+  point(m.faceNormal(5u32), 0., 0., -1., "unmerged: face 5 faces -z");
+}
+
+fn mergeDistance() {
+  imm box = openBox(0.0004);
+  imm near1 = mirror(&box, new Vec3(0., 0., 0.), new Vec3(1., 0., 0.), 0.001);
+  clean(&near1, "merge 0.001: validates");
+  expectInt(i64.from(near1.vertexCount()), 12, "merge 0.001: vertex 0 merged");
+  point(*near1.positions[0usize], 0., -1., -1., "merge 0.001: vertex 0 moved onto the plane");
+  expectInt(boundaryEdges(&near1), 0, "merge 0.001: closed");
+  imm far1 = mirror(&box, new Vec3(0., 0., 0.), new Vec3(1., 0., 0.), 0.0007);
+  clean(&far1, "merge 0.0007: validates");
+  expectInt(i64.from(far1.vertexCount()), 13, "merge 0.0007: vertex 0 copied");
+  expectInt(boundaryEdges(&far1), 4, "merge 0.0007: the seam open at vertex 0");
+}
+
+fn weldedMirror() {
+  imm box = openBox(0.);
+  imm open = mirror(&box, new Vec3(0., 0., 0.), new Vec3(1., 0., 0.), -1.);
+  imm m = weld(&open, 0.001);
+  clean(&m, "welded: validates");
+  expectInt(i64.from(m.vertexCount()), 12, "welded: 12 vertices");
+  expectInt(i64.from(m.edgeCount()), 20, "welded: 20 edges");
+  expectInt(i64.from(m.faceCount()), 10, "welded: 10 faces");
+  expectInt(boundaryEdges(&m), 0, "welded: closed");
+  expectFloat(volume(&m), 16., near, "welded: volume 16");
+  point(*m.positions[8usize], -2., -1., -1., "welded: vertex 8, the copy of 1");
+  point(*m.positions[11usize], -2., 1., 1., "welded: vertex 11, the copy of 7");
+  faceIs(&m, 5u32, 0u32, 8u32, 9u32, 2u32, "welded: face 5 as the merged mirror's");
+  imm crease = m.findFloatChannel(EdgeDomain, "crease");
+  expectFloat(m.float(crease, edgeOf(&m, 0u32, 2u32)), 3., near, "welded: the seam keeps its crease");
+}
+
+fn main() i32 {
+  merged();
+  unmerged();
+  mergeDistance();
+  weldedMirror();
+  done();
+}
