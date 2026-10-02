@@ -1,0 +1,40 @@
+// A 'self &uni' setter called on a struct the caller lent as '&uni', handed
+// a borrow of a local: the struct outlives the local. The '&uni' form of
+// lifetime_mix_setter_local_on_param.
+//
+// Verdict: refuse, ErrorCallEscape at the call.
+// Basis: reflifefn.html, "Mutable borrowed reference parameters": a call
+// handed a writable borrow of a place that can hold a borrow, a method's
+// receiver included, may store any other borrow it was handed there.
+// Master a3a2f44d: accepted, and it reads freed memory -- main, run, prints
+// "final" and then "read = 1598410725840". Stage 2 fixed it.
+
+mod lifetime_mix_uni_setter_local_on_param;
+
+import stdio use *;
+
+struct R {
+  pub n i64;
+  fn final(self &uni) {
+    printStr("final\n");
+  }
+}
+
+struct H {
+  pub r &R;
+  pub fn set(self &uni, r &R) { self.r = r; }
+}
+
+fn fill(h &uni H) {
+  imm x = new So[R](42);
+  h.set(&*x);                //~ ErrorCallEscape
+}
+
+fn main() {
+  imm outer = new R(1);
+  imm hs = new So[H](&outer);
+  fill(&uni *hs);
+  printStr("read = ");
+  printInt(hs.r.n);
+  printStr("\n");
+}

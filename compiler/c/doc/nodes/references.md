@@ -447,8 +447,10 @@ reference they are `ErrorNoRead`.
 the borrow site**: `assignBorrowLifetimeCheck` when a borrow is stored into a
 longer-lived lval — by `assignlvalrtype` for an assignment, and by `swapFlow`
 once in each direction for a swap, which stores both ways — `returnFlowEscape` when one is returned, and
-`fnCallFlowStoredBorrow` when one is passed to a call beside a `&mut &T`
-argument that points at a longer-lived place. Each reads `RefTag`, `ArrayRefTag`
+`fnCallFlowStoredBorrow` when one is passed to a call beside a `&mut` or
+`&uni` argument (a method's receiver included) that points at a longer-lived
+place able to hold a borrow — `&T` itself, a struct with a borrow field, an
+`Option` or `List` of borrows, a slice of them (`itypeCarriesBorrow`). Each reads `RefTag`, `ArrayRefTag`
 and `VirtRefTag` alike: a virtual reference is a borrowed reference carrying a
 vtable, and a slice borrows as a single reference does. `returnFlowEscape`
 looks into a returned `if`, `match` (an `if` once desugared) or block and checks

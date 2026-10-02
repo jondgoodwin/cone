@@ -112,8 +112,11 @@ int itypeCarriesBorrow(INode *type) {
     case RefTag:
     case ArrayRefTag:
     case VirtRefTag:
+        // A borrowed reference to a function is global: a function is never
+        // a local, so its borrow can neither dangle nor hold anything frozen
         if (itypeGetTypeDcl(((RefNode *)type)->region) == borrowRef)
-            return 1;
+            return !(type->tag == RefTag && isTypeNode(((RefNode *)type)->vtexp)
+                && itypeGetTypeDcl(((RefNode *)type)->vtexp)->tag == FnSigTag);
         return itypeCarriesBorrow(((RefNode *)type)->vtexp);
     case PtrTag:
         return itypeCarriesBorrow(((StarNode *)type)->vtexp);

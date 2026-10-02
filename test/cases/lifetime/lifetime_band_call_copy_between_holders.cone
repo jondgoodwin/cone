@@ -1,0 +1,39 @@
+// Two '&mut' borrows of structs holding borrows, the second of a struct in an
+// inner block: the callee may copy the inner struct's borrow into the outer
+// one, and the inner struct may hold a borrow as short-lived as itself. A
+// writable borrow of a borrow-holding place counts as a borrow passed beside
+// the other, at its place's lifetime.
+//
+// Verdict: refuse, ErrorCallEscape at the call.
+// Basis: reflifefn.html, "Mutable borrowed reference parameters": a call
+// handed a writable borrow of a place that can hold a borrow may store there
+// any borrow it can reach through its other arguments.
+// Master a3a2f44d: accepted, and it reads freed memory -- main, run, prints
+// "final" and then "1502315601264". Stage 2 fixed it.
+
+mod lifetime_band_call_copy_between_holders;
+
+import stdio use *;
+
+struct R {
+  pub n i64;
+  fn final(self &uni) {
+    printStr("final\n");
+  }
+}
+
+struct H { pub r &R; }
+
+fn cp(a &mut H, b &mut H) { a.r = b.r; }
+
+fn main() {
+  imm outer = new R(1);
+  mut h = new H(&outer);
+  {
+    imm s = new So[R](42);
+    mut inner = new H(&*s);
+    cp(&mut h, &mut inner);  //~ ErrorCallEscape
+  }
+  printInt(h.r.n);
+  printStr("\n");
+}

@@ -1,0 +1,42 @@
+// A '&mut' to a struct whose only borrow is a function reference, passed
+// beside a shorter borrow: a function is never a local, so a borrow of one is
+// global, and the only borrow the struct can hold is one no argument could
+// shorten. The call is safe (the frame loop's '&mut' scratch arena beside a
+// step's borrow is this shape).
+//
+// Verdict: accept; prints 42.
+// Basis: reflifefn.html, "Mutable borrowed reference parameters": the risk
+// is a callee storing a shorter borrow into the place, and a place that can
+// hold only a function's borrow holds nothing shorter-lived than global.
+// Master a3a2f44d: correct (the call-site check covered only '&mut &T').
+
+mod lifetime_band_call_fn_ref_holder_beside_shorter;
+
+import stdio use *;
+
+fn show(label &[]u8, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+fn twice(n i64) i64 { n * 2; }
+
+struct R { pub n i64; }
+
+struct Runner {
+  pub run &fn(n i64) i64;
+  pub last i64;
+}
+
+fn step(rn &mut Runner, r &R) { rn.last = (rn.run)(r.n); }
+
+fn main() {
+  mut rn = new Runner(&twice, 0);
+  {
+    imm r = new R(21);
+    step(&mut rn, &r);
+  }
+  show("fn-ref-holder", rn.last);
+}

@@ -2378,22 +2378,25 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
     }
 }
 
-// A '&mut &T' argument is a place the callee may store any other borrowed
-// reference it was handed, and without annotations it is free to: every
-// borrowed reference in the signature shares one lifetime (doc/reference/reflifefn.html,
-// "Mutable borrowed reference parameters"). So what that argument points at may
-// not outlive the narrowest borrow passed alongside it -- the same comparison
-// assignlvalrtype makes for the store the callee might write.
+// A writable borrow of a place that can hold a borrowed reference -- '&mut &T',
+// or a '&mut' or '&uni' to a struct with a borrow field, an Option or List of
+// borrows, a slice of them, or a method's 'self &mut' receiver of any of these
+// -- is somewhere the callee may store any other borrowed reference it was
+// handed, and without annotations it is free to: every borrowed reference in
+// the signature shares one lifetime (doc/reference/reflifefn.html, "Mutable
+// borrowed reference parameters"). So what that argument points at may not
+// outlive the narrowest borrow passed alongside it -- the same comparison
+// assignlvalrtype makes for the store the callee might write. A place no
+// longer-lived than every borrow beside it may take any of them.
 static void fnCallFlowStoredBorrow(FnCallNode *node) {
     uint16_t narrowest = fnCallNarrowestBorrowScope(node);
     INode **argsp;
     uint32_t cnt;
     for (nodesFor(node->args, cnt, argsp)) {
         INode *argtype = iexpGetTypeDcl(*argsp);
-        if (argtype->tag != RefTag || ((RefNode*)argtype)->region != borrowRef
-            || !(permGetFlags(((RefNode*)argtype)->perm) & MayWrite))
-            continue;
-        if (!fnCallIsBorrowType(itypeGetTypeDcl(((RefNode*)argtype)->vtexp)))
+        if (!fnCallIsBorrowType(argtype)
+            || !(permGetFlags(((RefNode*)argtype)->perm) & MayWrite)
+            || !itypeCarriesBorrow(((RefNode*)argtype)->vtexp))
             continue;
         if (((RefNode*)argtype)->scope < narrowest) {
             errorMsgNode((INode*)node, ErrorCallEscape,
