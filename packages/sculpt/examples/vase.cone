@@ -1,0 +1,65 @@
+// vase: a lattice reshaping a dense mesh by a few numbers. A cylinder
+// (radius 1, height 2, closed at the bottom, open at the top) is lathed in
+// 24 steps and 8 rings, and a 3 x 3 x 3 lattice round it is squeezed: the
+// bottom ring of control points pushed out to 1.3 times its radius (the
+// belly), the middle ring pulled in to 0.4 (the neck), the top ring out to
+// 1.2 (the lip). The Bernstein interpolation (Sederberg and Parry's FFD)
+// blends them into one smooth profile, radius (1 - t)^2 1.3 + 2 t (1 - t)
+// 0.4 + t^2 1.2 at height 2t: 0.825 at the middle. The lattice is the
+// program: 24 control points moved, each by one scale, reshape 193 vertices.
+// It is then given a wall and subdivided twice.
+//
+//   congo run packages/sculpt/examples/vase.cone
+//
+// It writes vase-cage.obj and vase-l2.obj in the current folder,
+// triangulated with smooth normals, and prints each one's counts.
+
+mod vase;
+
+import stdio use *;
+import collections use *;
+import geomath use *;
+import mesh use *;
+import sculpt use *;
+
+fn write(pm &PolyMesh, name &[]u8) Bool {
+  imm tri = pm.triangulate(true);
+  printStr(name); print <- ": "; print <- pm.vertexCount(); print <- " vertices, "; print <- pm.faceCount();
+  print <- " faces, "; print <- tri.triangleCount(); print <- " triangles\n";
+  writeObj(&tri, name);
+}
+
+// Each control point of ring j moved out from the axis (y) by 'scale'
+fn scaleRing(lat &mut Lattice, j u32, scale f32) {
+  mut k = 0u32;
+  while k < 3u32 {
+    mut i = 0u32;
+    while i < 3u32 {
+      imm p = lat.rest(i, j, k);
+      lat.setPoint(i, j, k, new Vec3(p.x * scale, p.y, p.z * scale));
+      i = i + 1u32;
+    }
+    k = k + 1u32;
+  }
+}
+
+fn main() i32 {
+  imm pts Array[Vec2, 9] = [new Vec2(0., 0.), new Vec2(1., 0.), new Vec2(1., 0.25), new Vec2(1., 0.5),
+    new Vec2(1., 0.75), new Vec2(1., 1.), new Vec2(1., 1.25), new Vec2(1., 1.5), new Vec2(1., 2.)];
+  imm profile = Profile.fromPoints(&pts, false);
+  imm cylinder = lathe(&profile, new Vec3(0., 1., 0.), 2. * pi, 24u32);
+  mut lat = Lattice.regular(new Vec3(-1., 0., -1.), new Vec3(2., 0., 0.), new Vec3(0., 2., 0.), new Vec3(0., 0., 2.),
+    3u32, 3u32, 3u32);
+  scaleRing(&mut lat, 0u32, 1.3);
+  scaleRing(&mut lat, 1u32, 0.4);
+  scaleRing(&mut lat, 2u32, 1.2);
+  imm shaped = latticeDeform(&cylinder, &lat, LatticeBernstein);
+  imm cage = solidify(&shaped, 0.05, -1., true, true);
+  imm levels = subdivisionLevels(&cage, 2u32);
+  mut ok = write(&cage, "vase-cage.obj");
+  ok = ok and write(levels[2usize], "vase-l2.obj");
+  if ok {0;} else {
+    print <- "Could not write a file\n";
+    1;
+  };
+}
