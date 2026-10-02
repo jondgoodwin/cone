@@ -1,0 +1,465 @@
+// The generators' parameter channels, "along" and "around" (extrude, sweep,
+// sweepScaled and lathe record each vertex's place in the generator), their
+// carry through every later operator, and 'displaceAlongNormal', checked
+// with the testing package against values worked out by hand; only a
+// failure prints, so channels.out holds the summary alone.
+//
+// - A sweep of the unit square S = (0,0) (1,0) (1,1) (0,1) along the straight
+//   path (0,0,0) to (0,0,1) in 4 equal pieces, with caps: 5 rings of 4, 20
+//   vertices; vertex 4i + j is S's point j at path point i. along is s / L
+//   = i / 4: 0, 0.25, 0.5, 0.75, 1. S is 4 long and each side 1, so around
+//   is j / 4: 0, 0.25, 0.5, 0.75. Both are f32 vertex channels, 20 values
+//   each, beside the corner "uv" (one Vec2 channel, two float channels).
+//   The seam: S closes from point 3 back to point 0, so face 3 (the closing
+//   band's first quad, (0, 3), (0, 0), (1, 0), (1, 3)) has corner 1 at
+//   vertex 0 with uv u = 1, while vertex 0's around is 0. The caps make no
+//   vertices: the start cap, face 16, is 3, 2, 1, 0, all along 0; the end
+//   cap, face 17, is 16 to 19, all along 1.
+// - Along an uneven path, (0,0,0) (0,0,1) (0,0,4): 1 and 3 long, L = 4, so
+//   along is 0, 0.25, 1 by distance, not 0, 0.5, 1 by point.
+// - The square extruded along (0,0,2) in 2 segments: along i / 2 = 0, 0.5,
+//   1; and along (0,0,-2), its faces turned over, the same along (by ring,
+//   not by direction).
+// - A torus, the diamond of radius 0.5 swept round Path.circle(2, 4): 4
+//   equal chords, so along is k / 4 for ring k, ring 0 (the seam) 0 and
+//   ring 3 0.75; face 15, vertices 15, 12, 0, 3, has uv (1, 1) at vertex 0,
+//   whose along and around are both 0.
+// - sweepScaled (here a scale of 1) writes them too: along 16 pieces, ring 1
+//   is along 1/16 = 0.0625.
+// - A lathe of the segment (1, 0) to (1, 2) about +y, a whole turn in 4
+//   steps: vertex 4j + k is profile point j in column k. along is the
+//   angle's fraction k / 4: vertex 1 0.25, vertex 7 0.75, vertex 4 0;
+//   around is the profile's fraction, 0 for vertices 0-3 and 1 for 4-7.
+//   Face 3, 3, 0, 4, 7, closes the turn: its corner 1 (vertex 0) has u = 1
+//   in "uv", and vertex 0 has along 0. A half turn in 2 steps is open, 3
+//   columns: vertex 2 has along 1 (no seam). The profile (1, 0) (1, 1)
+//   (1, 3), 1 and 2 long, gives around 0, 1/3, 1 (vertices 0, 4, 8). The
+//   octahedron, (0, -1) (1, 0) (0, 1) lathed: vertex 0 (the bottom pole)
+//   has along 0 and around 0; vertices 1 to 4, the middle point's columns,
+//   along 0, 0.25, 0.5, 0.75, around 0.5 (two pieces of equal length); vertex
+//   5, the top pole, along 0, around 1.
+// - The carry chain: the square swept along (0,0,0) to (0,0,1) in 4 pieces,
+//   no caps (an open tube: 20 vertices, 36 edges, 16 quads), then bent a
+//   quarter turn about +y along +z from the origin: R = 1 / (pi/2) and the
+//   bend turns +z towards +x, so vertex 16 at (0, 0, 1) goes to (R, 0, R) =
+//   (0.636620, 0, 0.636620), its along still 1. Then subdivided once: V + E +
+//   F = 20 + 36 + 16 = 72 vertices; vertex v keeps its number, edge e's
+//   point is 20 + e, face f's 56 + f. along is i / 4, a linear function of
+//   the ring, and Catmull-Clark reproduces it on this grid: an interior
+//   vertex of valence 4 at ring i has face points averaging (2 a_i + a_{i-1}
+//   + a_{i+1}) / 4 = a_i and edge midpoints averaging a_i, so (F + 2R + P) /
+//   4 = a_i; a boundary vertex (ring 0 or 4) follows its boundary
+//   neighbours, all on its ring. So vertex 8 stays 0.5, 0 stays 0 and 16
+//   stays 1; the edge from vertex 4 to vertex 8 (rings 1 and 2) gets (a + b
+//   + 2 (a + b) / 2) / 4 = 0.375; the ring edge 8-9 gets 0.5; face 12 (rings
+//   3 and 4) gets its corners' mean, (0.75 + 0.75 + 1 + 1) / 4 = 0.875.
+//   around shows the seam: away from it, vertex 9 (around 0.25, neighbours
+//   0 and 0.5 in its ring) stays 0.25 and vertex 10 stays 0.5; but vertex 8,
+//   the seam (around 0, its ring neighbours 0.25 and 0.75), gets face points
+//   0.125, 0.125, 0.375, 0.375 (F = 0.25) and edge midpoints 0.125, 0.375,
+//   0, 0 (R = 0.125), so (0.25 + 0.25 + 0) / 4 = 0.125: the vertex rules
+//   blend 0 with the 0.75 across the seam. Then a linear array of 2, offset
+//   (3, 0, 0): copy 1's vertex v is 72 + v with v's values and v's position
+//   moved by (3, 0, 0): vertex 80 along 0.5, 140 along 0.875.
+// - Every other operator carries them, on the open tube T:
+//   - mirror in x = 5: vertex 20 + v is v's copy, its along v's;
+//   - a linear array of 2, offset (0, 0, 1), unmerged, welded at 0.001:
+//     copy 1's ring 0 (vertices 20-23) lies on copy 0's ring 4 (16-19) and
+//     merges into it, keeping its lowest-numbered vertex's values (along
+//     1); 36 vertices left, copy 1's vertex 24 (ring 1) now 20 with along
+//     0.25, and 35 (copy 1's last) along 1; the array with its own merge
+//     gives the same;
+//   - extruding face 5 (vertices 5, 6, 10, 9) by 0.5: new vertices 20 to 23
+//     are 5's, 6's, 10's and 9's copies, along 0.25, 0.25, 0.5, 0.5 and
+//     around 0.25, 0.5, 0.5, 0.25; insetting face 5 by 0.1 the same;
+//   - solidify 0.1 with a rim: vertex 20 + v is v's copy, so 28 has along
+//     0.5;
+//   - smoothing, the lattice, twist, taper and curveDeform move vertices
+//     only: both channels come back bit for bit.
+// - displaceAlongNormal on a cylinder: the open profile (1, 0) (1, 0.5)
+//   (1, 1) (1, 1.5) (1, 2) lathed a whole turn about +y in 4 steps; vertex
+//   4j + k is point j in column k, column k at k quarter turns (x to -z), so
+//   (1, y) goes to (1, y, 0), (0, y, -1), (-1, y, 0), (0, y, 1). Every
+//   vertex's faces are rectangles meeting it at 90 degrees, two of them
+//   either side of the radius, so its normal is the radius, outward. around
+//   is j / 4. By "around" and 0.5, point j moves out by 0.5 j / 4: vertex 0
+//   stays at (1, 0, 0), vertex 10 (j = 2, column 2) goes to (-1.25, 1, 0),
+//   vertex 17 (j = 4, column 1) to (0, 2, -1.5). Ribs from a channel the
+//   caller filled, "rib" 1 on profile points 1 and 3 and 0 elsewhere, and
+//   0.25: vertex 4 (1, 0.5, 0) goes to (1.25, 0.5, 0), vertex 13 (j = 3,
+//   column 1) to (0, 1.5, -1.25), vertex 8 stays (1, 1, 0). Face 0 is 0, 1,
+//   5, 4: (1, 0, 0), (0, 0, -1), (0, 0.5, -1.25), (1.25, 0.5, 0), a
+//   trapezoid; (B - A) x (C - A) = (-1, 0, -1) x (-1, 0.5, -1.25) = (0.5,
+//   -0.25, -0.5), length 0.75, so its normal is (0.666667, -0.333333,
+//   -0.666667): still outward, tilted down as the rib flares. An empty
+//   name, or a channel the mesh lacks, moves every vertex by the amount:
+//   vertex 6 (j = 1, column 2) by 0.25 to (-1.25, 0.5, 0). Topology and
+//   channels are unchanged.
+
+mod channels;
+
+import testing use *;
+import collections use *;
+import geomath use *;
+import mesh use *;
+import sculpt use *;
+
+imm near = 0.00001d;
+
+fn point(got Vec3, x f32, y f32, z f32, label &[]u8) {
+  expectFloat(got.x, x, near, label);
+  expectFloat(got.y, y, near, label);
+  expectFloat(got.z, z, near, label);
+}
+
+// The value of a vertex channel named 'name' at vertex v
+fn value(m &PolyMesh, name &[]u8, v u32) f32 {
+  imm ch = m.findFloatChannel(VertexDomain, name);
+  if ch == NoIndex { return -1.; }
+  m.float(ch, v);
+}
+
+fn along(m &PolyMesh, v u32, want f32, label &[]u8) {expectFloat(value(m, "along", v), want, near, label);}
+fn around(m &PolyMesh, v u32, want f32, label &[]u8) {expectFloat(value(m, "around", v), want, near, label);}
+
+// 'validate' clean
+fn clean(m &PolyMesh, label &[]u8) {
+  imm problems = m.validate();
+  if !expectInt(i64.from(problems.len()), 0, label) {
+    mut i = 0usize;
+    while i < problems.len() {
+      expectStr(problems[i].view(), "", label);
+      i = i + 1usize;
+    }
+  }
+}
+
+// Both channels there, as vertex channels with a value per vertex
+fn hasChannels(m &PolyMesh, label &[]u8) {
+  imm a = m.findFloatChannel(VertexDomain, "along");
+  imm r = m.findFloatChannel(VertexDomain, "around");
+  if !expectBool(a != NoIndex and r != NoIndex, true, label) { return; }
+  expectInt(i64.from(m.floats[usize.from(a)].values.len()), i64.from(m.vertexCount()), label);
+  expectInt(i64.from(m.floats[usize.from(r)].values.len()), i64.from(m.vertexCount()), label);
+}
+
+// Both channels the same, bit for bit, in two meshes of the same vertices
+fn sameChannels(a &PolyMesh, b &PolyMesh, label &[]u8) {
+  if !expectInt(i64.from(b.vertexCount()), i64.from(a.vertexCount()), label) { return; }
+  mut diff = 0i64;
+  mut v = 0u32;
+  while usize.from(v) < a.vertexCount() {
+    if value(a, "along", v) != value(b, "along", v) { diff = diff + 1; }
+    if value(a, "around", v) != value(b, "around", v) { diff = diff + 1; }
+    v = v + 1u32;
+  }
+  expectInt(diff, 0, label);
+}
+
+// The uv of a face's corner k
+fn cornerUv(m &PolyMesh, f u32, k usize) Vec2 {
+  imm ch = m.findVec2Channel(CornerDomain, "uv");
+  imm hs = m.faceHalfedges(f);
+  m.vec2(ch, *hs[k]);
+}
+
+// The edge joining vertices a and b, or NoIndex
+fn edgeBetween(m &PolyMesh, a u32, b u32) u32 {
+  imm hs = m.vertexOutgoing(a);
+  mut i = 0usize;
+  while i < hs.len() {
+    if m.toVertex(*hs[i]) == b { return m.edge(*hs[i]); }
+    i = i + 1usize;
+  }
+  NoIndex;
+}
+
+fn unitSquare() Profile {
+  imm sq Array[Vec2, 4] = [new Vec2(0., 0.), new Vec2(1., 0.), new Vec2(1., 1.), new Vec2(0., 1.)];
+  Profile.fromPoints(&sq, true);
+}
+
+// The square swept along z from 0 to 1 in 4 pieces, open at both ends
+fn openTube() PolyMesh {
+  imm s = unitSquare();
+  imm path = Path.line(new Vec3(0., 0., 0.), new Vec3(0., 0., 1.), 4u32);
+  sweep(&s, &path, 0., 1., 1., false);
+}
+
+fn unitScale(u f32) f32 { 1.; }
+
+fn sweeps() {
+  imm s = unitSquare();
+  imm path = Path.line(new Vec3(0., 0., 0.), new Vec3(0., 0., 1.), 4u32);
+  imm m = sweep(&s, &path, 0., 1., 1., true);
+  clean(&m, "sweep: validates");
+  requireInt(i64.from(m.vertexCount()), 20, "sweep: 20 vertices");
+  hasChannels(&m, "sweep: along and around");
+  expectInt(i64.from(m.floats.len()), 2, "sweep: two float channels");
+  expectInt(i64.from(m.vec2s.len()), 1, "sweep: one Vec2 channel, uv");
+  mut i = 0u32;
+  while i < 5u32 {
+    mut j = 0u32;
+    while j < 4u32 {
+      along(&m, 4u32 * i + j, f32.from(i) * 0.25, "sweep: along is i / 4");
+      around(&m, 4u32 * i + j, f32.from(j) * 0.25, "sweep: around is j / 4");
+      j = j + 1u32;
+    }
+    i = i + 1u32;
+  }
+  along(&m, 8u32, 0.5, "sweep: vertex 8 halfway");
+  around(&m, 0u32, 0., "sweep: the seam vertex has around 0");
+  imm f3 = m.faceVertices(3u32);
+  expectInt(i64.from(*f3[1usize]), 0, "sweep: face 3's corner 1 is vertex 0");
+  expectFloat(cornerUv(&m, 3u32, 1usize).x, 1., near, "sweep: where its corner uv has u = 1");
+  imm startCap = m.faceVertices(16u32);
+  imm endCap = m.faceVertices(17u32);
+  requireInt(i64.from(startCap.len()), 4, "sweep: start cap");
+  requireInt(i64.from(endCap.len()), 4, "sweep: end cap");
+  i = 0u32;
+  while i < 4u32 {
+    along(&m, *startCap[usize.from(i)], 0., "sweep: start cap vertices along 0");
+    along(&m, *endCap[usize.from(i)], 1., "sweep: end cap vertices along 1");
+    i = i + 1u32;
+  }
+
+  imm uneven Array[Vec3, 3] = [new Vec3(0., 0., 0.), new Vec3(0., 0., 1.), new Vec3(0., 0., 4.)];
+  imm up = Path.fromPoints(&uneven, false);
+  imm u = sweep(&s, &up, 0., 1., 1., false);
+  along(&u, 0u32, 0., "uneven path: along 0");
+  along(&u, 4u32, 0.25, "uneven path: along 1 / 4, by distance");
+  along(&u, 9u32, 1., "uneven path: along 1");
+
+  imm e = extrude(&s, new Vec3(0., 0., 2.), 2u32, true);
+  hasChannels(&e, "extrude: along and around");
+  along(&e, 0u32, 0., "extrude: ring 0");
+  along(&e, 5u32, 0.5, "extrude: ring 1");
+  along(&e, 11u32, 1., "extrude: ring 2");
+  around(&e, 6u32, 0.5, "extrude: point 2");
+  imm down = extrude(&s, new Vec3(0., 0., -2.), 2u32, true);
+  along(&down, 5u32, 0.5, "extrude down: along by ring");
+  along(&down, 11u32, 1., "extrude down: along by ring");
+  around(&down, 7u32, 0.75, "extrude down: around by profile");
+
+  imm d = Profile.polygon(4u32, 0.5);
+  imm ring = Path.circle(2., 4u32);
+  imm t = sweep(&d, &ring, 0., 1., 1., true);
+  hasChannels(&t, "torus: along and around");
+  along(&t, 0u32, 0., "torus: ring 0, the seam, along 0");
+  along(&t, 5u32, 0.25, "torus: ring 1");
+  along(&t, 14u32, 0.75, "torus: ring 3");
+  around(&t, 14u32, 0.5, "torus: point 2");
+  imm tv = t.faceVertices(15u32);
+  expectInt(i64.from(*tv[2usize]), 0, "torus: face 15's corner 2 is vertex 0");
+  expectFloat(cornerUv(&t, 15u32, 2usize).x, 1., near, "torus: its uv u is 1");
+  expectFloat(cornerUv(&t, 15u32, 2usize).y, 1., near, "torus: its uv v is 1");
+  around(&t, 0u32, 0., "torus: vertex 0 around 0");
+
+  imm dia = Profile.polygon(4u32, 1.);
+  imm zpath = Path.line(new Vec3(0., 0., 0.), new Vec3(0., 0., 2.), 16u32);
+  imm r = sweepScaled(&dia, &zpath, 0., true, &unitScale);
+  hasChannels(&r, "sweepScaled: along and around");
+  along(&r, 4u32, 0.0625, "sweepScaled: ring 1 along 1 / 16");
+  along(&r, 67u32, 1., "sweepScaled: the last ring along 1");
+}
+
+fn lathes() {
+  imm seg Array[Vec2, 2] = [new Vec2(1., 0.), new Vec2(1., 2.)];
+  imm s = Profile.fromPoints(&seg, false);
+  imm c = lathe(&s, new Vec3(0., 1., 0.), 2. * pi, 4u32);
+  requireInt(i64.from(c.vertexCount()), 8, "lathe: 8 vertices");
+  hasChannels(&c, "lathe: along and around");
+  along(&c, 0u32, 0., "lathe: column 0, the seam");
+  along(&c, 1u32, 0.25, "lathe: column 1");
+  along(&c, 7u32, 0.75, "lathe: column 3");
+  along(&c, 4u32, 0., "lathe: column 0 at the top");
+  around(&c, 2u32, 0., "lathe: the bottom point");
+  around(&c, 6u32, 1., "lathe: the top point");
+  imm f3 = c.faceVertices(3u32);
+  expectInt(i64.from(*f3[1usize]), 0, "lathe: face 3's corner 1 is vertex 0");
+  expectFloat(cornerUv(&c, 3u32, 1usize).x, 1., near, "lathe: where its corner uv has u = 1");
+
+  imm half = lathe(&s, new Vec3(0., 1., 0.), pi, 2u32);
+  along(&half, 1u32, 0.5, "half turn: column 1");
+  along(&half, 2u32, 1., "half turn: column 2, open, along 1");
+
+  imm bent Array[Vec2, 3] = [new Vec2(1., 0.), new Vec2(1., 1.), new Vec2(1., 3.)];
+  imm b = Profile.fromPoints(&bent, false);
+  imm l = lathe(&b, new Vec3(0., 1., 0.), 2. * pi, 4u32);
+  around(&l, 0u32, 0., "lathe by length: point 0");
+  around(&l, 4u32, 0.333333, "lathe by length: point 1, 1 of 3");
+  around(&l, 8u32, 1., "lathe by length: point 2");
+
+  imm arc Array[Vec2, 3] = [new Vec2(0., -1.), new Vec2(1., 0.), new Vec2(0., 1.)];
+  imm a = Profile.fromPoints(&arc, false);
+  imm o = lathe(&a, new Vec3(0., 1., 0.), 2. * pi, 4u32);
+  requireInt(i64.from(o.vertexCount()), 6, "octahedron: 6 vertices");
+  hasChannels(&o, "octahedron: along and around");
+  along(&o, 0u32, 0., "octahedron: the bottom pole, along 0");
+  around(&o, 0u32, 0., "octahedron: the bottom pole, around 0");
+  along(&o, 1u32, 0., "octahedron: column 0");
+  along(&o, 2u32, 0.25, "octahedron: column 1");
+  along(&o, 3u32, 0.5, "octahedron: column 2");
+  along(&o, 4u32, 0.75, "octahedron: column 3");
+  around(&o, 3u32, 0.5, "octahedron: the middle point");
+  along(&o, 5u32, 0., "octahedron: the top pole, along 0");
+  around(&o, 5u32, 1., "octahedron: the top pole, around 1");
+}
+
+fn chain() {
+  imm t = openTube();
+  requireInt(i64.from(t.vertexCount()), 20, "chain: 20 vertices");
+  requireInt(i64.from(t.edgeCount()), 36, "chain: 36 edges");
+  requireInt(i64.from(t.faceCount()), 16, "chain: 16 faces");
+  imm b = bend(&t, pi / 2., new Vec3(0., 1., 0.), new Vec3(0., 0., 1.), new Vec3(0., 0., 0.));
+  point(*b.positions[16usize], 0.636620, 0., 0.636620, "chain: the bend moved vertex 16");
+  along(&b, 16u32, 1., "chain: after the bend, vertex 16 along 1");
+  along(&b, 8u32, 0.5, "chain: after the bend, vertex 8 along 0.5");
+
+  imm s = subdivide(&b, 1u32);
+  clean(&s, "chain: subdivided validates");
+  requireInt(i64.from(s.vertexCount()), 72, "chain: 72 vertices");
+  hasChannels(&s, "chain: subdivided keeps along and around");
+  along(&s, 0u32, 0., "chain: vertex 0 stays 0");
+  along(&s, 8u32, 0.5, "chain: vertex 8 stays 0.5");
+  along(&s, 16u32, 1., "chain: vertex 16 stays 1");
+  imm e48 = edgeBetween(&t, 4u32, 8u32);
+  requireBool(e48 != NoIndex, true, "chain: edge 4-8");
+  along(&s, 20u32 + e48, 0.375, "chain: edge 4-8's point, between rings 1 and 2");
+  imm e89 = edgeBetween(&t, 8u32, 9u32);
+  requireBool(e89 != NoIndex, true, "chain: edge 8-9");
+  along(&s, 20u32 + e89, 0.5, "chain: edge 8-9's point, on ring 2");
+  imm e01 = edgeBetween(&t, 0u32, 1u32);
+  along(&s, 20u32 + e01, 0., "chain: boundary edge 0-1's point");
+  imm e1617 = edgeBetween(&t, 16u32, 17u32);
+  along(&s, 20u32 + e1617, 1., "chain: boundary edge 16-17's point");
+  along(&s, 56u32 + 12u32, 0.875, "chain: face 12's point, between rings 3 and 4");
+  around(&s, 9u32, 0.25, "chain: vertex 9's around, away from the seam");
+  around(&s, 10u32, 0.5, "chain: vertex 10's around, away from the seam");
+  around(&s, 8u32, 0.125, "chain: vertex 8's around, the seam blended");
+
+  imm arr = arrayLinear(&s, 2u32, new Vec3(3., 0., 0.), -1.);
+  requireInt(i64.from(arr.vertexCount()), 144, "chain: the array's 144 vertices");
+  hasChannels(&arr, "chain: the array keeps along and around");
+  along(&arr, 8u32, 0.5, "chain: copy 0's vertex 8");
+  along(&arr, 80u32, 0.5, "chain: copy 1's vertex 8");
+  along(&arr, 140u32, 0.875, "chain: copy 1's face 12 point");
+  around(&arr, 80u32, 0.125, "chain: copy 1's vertex 8's around");
+  imm p8 = *s.positions[8usize];
+  point(*arr.positions[80usize], p8.x + 3., p8.y, p8.z, "chain: copy 1's vertex 8 moved by the offset");
+}
+
+fn carried() {
+  imm t = openTube();
+
+  imm mi = mirror(&t, new Vec3(5., 0., 0.), new Vec3(1., 0., 0.), -1.);
+  requireInt(i64.from(mi.vertexCount()), 40, "mirror: 40 vertices");
+  hasChannels(&mi, "mirror: along and around");
+  along(&mi, 28u32, 0.5, "mirror: vertex 8's copy");
+  around(&mi, 29u32, 0.25, "mirror: vertex 9's copy");
+
+  imm stacked = arrayLinear(&t, 2u32, new Vec3(0., 0., 1.), -1.);
+  imm w = weld(&stacked, 0.001);
+  requireInt(i64.from(w.vertexCount()), 36, "weld: 36 vertices");
+  hasChannels(&w, "weld: along and around");
+  along(&w, 16u32, 1., "weld: the merged ring keeps copy 0's along");
+  along(&w, 20u32, 0.25, "weld: copy 1's ring 1, renumbered");
+  along(&w, 35u32, 1., "weld: copy 1's last vertex");
+  around(&w, 21u32, 0.25, "weld: copy 1's ring 1, point 1");
+  imm am = arrayLinear(&t, 2u32, new Vec3(0., 0., 1.), 0.001);
+  requireInt(i64.from(am.vertexCount()), 36, "array merged: 36 vertices");
+  sameChannels(&w, &am, "array merged: as welded");
+
+  imm f5 Array[u32, 1] = [5u32];
+  imm ex = extrudeFaces(&t, &f5, 0.5);
+  clean(&ex, "extrude face: validates");
+  requireInt(i64.from(ex.vertexCount()), 24, "extrude face: 24 vertices");
+  hasChannels(&ex, "extrude face: along and around");
+  along(&ex, 20u32, 0.25, "extrude face: 5's copy");
+  along(&ex, 21u32, 0.25, "extrude face: 6's copy");
+  along(&ex, 22u32, 0.5, "extrude face: 10's copy");
+  along(&ex, 23u32, 0.5, "extrude face: 9's copy");
+  around(&ex, 20u32, 0.25, "extrude face: 5's copy");
+  around(&ex, 21u32, 0.5, "extrude face: 6's copy");
+  around(&ex, 22u32, 0.5, "extrude face: 10's copy");
+  around(&ex, 23u32, 0.25, "extrude face: 9's copy");
+
+  imm ins = inset(&t, &f5, 0.1, 0.);
+  requireInt(i64.from(ins.vertexCount()), 24, "inset: 24 vertices");
+  hasChannels(&ins, "inset: along and around");
+  along(&ins, 20u32, 0.25, "inset: 5's copy");
+  along(&ins, 22u32, 0.5, "inset: 10's copy");
+  around(&ins, 21u32, 0.5, "inset: 6's copy");
+
+  imm so = solidify(&t, 0.1, 0., false, true);
+  requireInt(i64.from(so.vertexCount()), 40, "solidify: 40 vertices");
+  hasChannels(&so, "solidify: along and around");
+  along(&so, 28u32, 0.5, "solidify: vertex 8's copy");
+  around(&so, 39u32, 0.75, "solidify: vertex 19's copy");
+
+  imm sm = smooth(&t, 0.5, 2u32);
+  sameChannels(&t, &sm, "smooth: unchanged");
+  imm tb = smoothTaubin(&t, 0.5, taubinMu(0.5, TaubinPassBand), 2u32);
+  sameChannels(&t, &tb, "Taubin: unchanged");
+  mut lat = Lattice.regular(new Vec3(-1., -1., -1.), new Vec3(3., 0., 0.), new Vec3(0., 3., 0.), new Vec3(0., 0., 3.),
+    2u32, 2u32, 2u32);
+  lat.movePoint(1u32, 1u32, 1u32, new Vec3(0.5, 0.5, 0.5));
+  imm la = latticeDeform(&t, &lat, LatticeLinear);
+  sameChannels(&t, &la, "lattice: unchanged");
+  imm tw = twist(&t, pi / 2., new Vec3(0., 0., 1.), new Vec3(0., 0., 0.));
+  sameChannels(&t, &tw, "twist: unchanged");
+  imm tp = taper(&t, 1., new Vec3(0., 0., 1.), new Vec3(0., 0., 0.));
+  sameChannels(&t, &tp, "taper: unchanged");
+  imm circ = Path.circle(2., 16u32);
+  imm cd = curveDeform(&t, &circ, new Vec3(0., 0., 1.), new Vec3(0., 1., 0.), new Vec3(0., 0., 0.));
+  sameChannels(&t, &cd, "curveDeform: unchanged");
+}
+
+fn displacements() {
+  imm col Array[Vec2, 5] = [new Vec2(1., 0.), new Vec2(1., 0.5), new Vec2(1., 1.), new Vec2(1., 1.5), new Vec2(1., 2.)];
+  imm p = Profile.fromPoints(&col, false);
+  imm c = lathe(&p, new Vec3(0., 1., 0.), 2. * pi, 4u32);
+  requireInt(i64.from(c.vertexCount()), 20, "cylinder: 20 vertices");
+  point(*c.positions[17usize], 0., 2., -1., "cylinder: vertex 17");
+
+  imm flare = displaceAlongNormal(&c, "around", 0.5);
+  clean(&flare, "by around: validates");
+  point(*flare.positions[0usize], 1., 0., 0., "by around: vertex 0 stays");
+  point(*flare.positions[10usize], -1.25, 1., 0., "by around: vertex 10 out by 0.25");
+  point(*flare.positions[17usize], 0., 2., -1.5, "by around: vertex 17 out by 0.5");
+
+  mut ribbed = displaceAlongNormal(&c, "", 0.);
+  imm rib = ribbed.addFloatChannel(VertexDomain, "rib", 0.);
+  mut k = 0u32;
+  while k < 4u32 {
+    ribbed.setFloat(rib, 4u32 + k, 1.);
+    ribbed.setFloat(rib, 12u32 + k, 1.);
+    k = k + 1u32;
+  }
+  imm r = displaceAlongNormal(&ribbed, "rib", 0.25);
+  clean(&r, "ribs: validates");
+  point(*r.positions[4usize], 1.25, 0.5, 0., "ribs: vertex 4 out by 0.25");
+  point(*r.positions[13usize], 0., 1.5, -1.25, "ribs: vertex 13 out by 0.25");
+  point(*r.positions[8usize], 1., 1., 0., "ribs: vertex 8 stays");
+  point(r.faceNormal(0u32), 0.666667, -0.333333, -0.666667, "ribs: face 0 still faces out, tilted");
+  expectInt(i64.from(r.faceCount()), i64.from(c.faceCount()), "ribs: the same faces");
+  expectInt(i64.from(r.edgeCount()), i64.from(c.edgeCount()), "ribs: the same edges");
+  expectInt(i64.from(r.floats.len()), 3, "ribs: along, around and rib carried");
+  expectInt(i64.from(r.vec2s.len()), 1, "ribs: uv carried");
+  sameChannels(&c, &r, "ribs: along and around unchanged");
+  expectFloat(value(&r, "rib", 13u32), 1., near, "ribs: rib unchanged");
+
+  imm all = displaceAlongNormal(&c, "", 0.25);
+  point(*all.positions[6usize], -1.25, 0.5, 0., "no channel: every vertex by the amount");
+  imm missing = displaceAlongNormal(&c, "nope", 0.25);
+  point(*missing.positions[6usize], -1.25, 0.5, 0., "a missing channel: every vertex by the amount");
+}
+
+fn main() i32 {
+  sweeps();
+  lathes();
+  chain();
+  carried();
+  displacements();
+  done();
+}

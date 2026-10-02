@@ -11,11 +11,14 @@
 // - Profile to solid: 'extrude' (along a direction), 'lathe' (revolved about
 //   an axis) and 'sweep' (along a path, with twist and taper; 'sweepScaled'
 //   with the scale any function of arc length), each making a
-//   mesh.PolyMesh of quads, with a corner "uv" channel.
+//   mesh.PolyMesh of quads, with a corner "uv" channel and the vertex
+//   channels "along" and "around" (see below).
 // - Deformers, which move a PolyMesh's vertices and leave its topology and
 //   channels as they were: 'bend', 'twist' and 'taper' (Barr's global
-//   deformations, as Blender's Simple Deform modifier offers them), and
-//   'curveDeform' (a mesh laid along a path, as Blender's Curve modifier).
+//   deformations, as Blender's Simple Deform modifier offers them),
+//   'curveDeform' (a mesh laid along a path, as Blender's Curve modifier),
+//   and 'displaceAlongNormal' (each vertex along its normal by a stored
+//   channel's value times an amount, as Blender's Displace modifier).
 // - Lattice (free-form deformation): 'Lattice', a box spanned by three axes
 //   and a grid of l x m x n control points over it, read, set and moved one
 //   by one, and 'latticeDeform', each vertex moved by the control points'
@@ -79,6 +82,16 @@
 // 'triangulate' splits a vertex whose corners' uvs differ, so a texture wraps
 // once without smearing back across the last face.
 //
+// Generator parameters: extrude, sweep, sweepScaled and lathe also record
+// each vertex's place in the generator as two f32 vertex channels, as
+// Blender's Spline Parameter kept by Capture Attribute: "along", how far the
+// profile had travelled (an extrusion's or a sweep's fraction of length, a
+// lathe's fraction of its angle), and "around", the fraction of the
+// profile's length, each 0 to 1. Every later operator carries them as it
+// carries any vertex channel (subdivision by its vertex rules), so after a
+// bend a point still knows how far along the straight line it was. A closed
+// loop's seam vertex gets 0; the corner "uv" is the seam-correct form.
+//
 // The algorithms are from the literature; parameters follow Blender's manual,
 // never its source:
 // - rotation-minimizing frames: Wang, Juttler, Zheng and Liu, "Computation of
@@ -105,8 +118,8 @@
 //   helpers.cone    small vector and list helpers the others use
 //   profile.cone    Profile, and its uvs
 //   path.cone       Frame and Path, and rotation-minimizing frames
-//   solid.cone      extrude, sweep and lathe
-//   deform.cone     bend, twist, taper and curveDeform
+//   solid.cone      extrude, sweep and lathe, and their "along" and "around"
+//   deform.cone     bend, twist, taper, curveDeform and displaceAlongNormal
 //   lattice.cone    Lattice, latticeDeform, latticeWeights and the three bases
 //   copies.cone     mirror, mirrorWith, arrayLinear, arrayRadial, arrayAlongPath
 //   weld.cone       weld, and the spatial hash that finds its clusters

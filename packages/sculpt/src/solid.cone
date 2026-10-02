@@ -1,4 +1,24 @@
 // ======== Profile to solid ========
+//
+// Every operator here records, on each vertex, where it came from in the
+// generator, as two f32 vertex channels (Blender's Spline Parameter kept by
+// Capture Attribute), so a later step can still ask how far along the
+// original line a point was after the shape has been bent, lathed or
+// subdivided:
+// - "along": how far the profile had travelled, 0 to 1: an extrusion's
+//   ring i / segments, a sweep's arc length s / L, a lathe's angle as a
+//   fraction of the whole, k / steps;
+// - "around": where on the profile, 0 to 1, by the profile's length.
+// They are the vertex form of the corner "uv" (a sweep's or an extrusion's
+// (around, along), a lathe's (along, around)), but a vertex is shared by
+// the faces about it, so on a closed loop the seam vertex can hold only one
+// value: it gets 0 (the first ring, the first column, profile point 0),
+// where the corners closing the loop have 1 in "uv". The corner "uv" stays
+// the seam-correct form; a channel interpolated across a seam (subdivision's
+// vertex rules there) blends 0 with values near 1. A cap makes no vertices of
+// its own: its corners are the end rings', with their values (along 0 at the
+// start, 1 at the end). A lathe's vertex on the axis, shared by every
+// column, has along 0.
 
 // Build a solid from rings of points: 'nr' rings of 'm' points each, ring by
 // ring, point k of ring i at pos[i * m + k]. Neighbouring rings are joined
@@ -9,9 +29,22 @@
 // about the direction the rings advance. With 'caps', and a closed profile
 // between open ends, the first ring is closed by an n-gon facing back and
 // the last by one facing forward. 'flip' reverses every face. us holds each
-// profile point's u and then 1; vs each ring's v and then 1.
+// profile point's u and then 1; vs each ring's v and then 1. Vertex
+// (i, j)'s "along" is vs[i] and its "around" us[j].
 fn tube(pos &List[Vec3], m usize, nr usize, profileClosed Bool, ringsClosed Bool, caps Bool, flip Bool,
     us &List[f32], vs &List[f32], capStart &List[Vec2], capEnd &List[Vec2]) PolyMesh {
+  mut along = List[f32].withCapacity(m * nr);
+  mut around = List[f32].withCapacity(m * nr);
+  mut r = 0usize;
+  while r < nr {
+    mut j = 0usize;
+    while j < m {
+      along.push(*vs[r]);
+      around.push(*us[j]);
+      j = j + 1usize;
+    }
+    r = r + 1usize;
+  }
   mut counts = List[u32].empty();
   mut idx = List[u32].empty();
   mut uvs = List[Vec2].empty();
@@ -69,7 +102,7 @@ fn tube(pos &List[Vec3], m usize, nr usize, profileClosed Bool, ringsClosed Bool
     }
     emitFace(&mut counts, &mut idx, &mut uvs, &face, &fuv, flip);
   }
-  build(pos, &counts, &idx, &uvs);
+  build(pos, &counts, &idx, &uvs, &along, &around);
 }
 
 // Add one face, its corners and their uvs, reversed when 'flip'
@@ -85,12 +118,23 @@ fn emitFace(counts &mut List[u32], idx &mut List[u32], uvs &mut List[Vec2], face
   }
 }
 
-// The PolyMesh of the faces, with their corner uvs as the "uv" channel
-fn build(pos &List[Vec3], counts &List[u32], idx &List[u32], uvs &List[Vec2]) PolyMesh {
+// The PolyMesh of the faces, with their corner uvs as the "uv" channel and
+// each vertex's generator parameters as the "along" and "around" vertex
+// channels
+fn build(pos &List[Vec3], counts &List[u32], idx &List[u32], uvs &List[Vec2], along &List[f32],
+    around &List[f32]) PolyMesh {
   mut problems = List[String].empty();
   mut pm = PolyMesh.fromPolygons(pos.view(), counts.view(), idx.view(), &mut problems);
   imm ch = pm.addVec2Channel(CornerDomain, "uv", new Vec2(0., 0.));
   pm.setCornerVec2s(ch, uvs.view());
+  imm alongCh = pm.addFloatChannel(VertexDomain, "along", 0.);
+  imm aroundCh = pm.addFloatChannel(VertexDomain, "around", 0.);
+  mut v = 0usize;
+  while v < along.len() {
+    pm.setFloat(alongCh, u32.from(v), *along[v]);
+    pm.setFloat(aroundCh, u32.from(v), *around[v]);
+    v = v + 1usize;
+  }
   pm;
 }
 
@@ -251,8 +295,12 @@ pub fn lathe(profile &Profile, axis Vec3, angle f32, steps u32) PolyMesh {
   }
   imm eps = size * 0.000001;
 
-  // The vertices, and where each profile point's begin
+  // The vertices, and where each profile point's begin; a column's "along"
+  // is its angle's fraction, k / steps, and an axis vertex's 0
+  imm vs = profileUs(profile);
   mut pos = List[Vec3].empty();
+  mut along = List[f32].empty();
+  mut around = List[f32].empty();
   mut base = List[u32].withCapacity(m);
   mut onAxis = List[Bool].withCapacity(m);
   j = 0usize;
@@ -262,6 +310,8 @@ pub fn lathe(profile &Profile, axis Vec3, angle f32, steps u32) PolyMesh {
     if absf(p.x) <= eps {
       onAxis.push(true);
       pos.push(a * p.y);
+      along.push(0.);
+      around.push(*vs[j]);
     } else {
       onAxis.push(false);
       imm start = e * p.x + a * p.y;
@@ -269,13 +319,14 @@ pub fn lathe(profile &Profile, axis Vec3, angle f32, steps u32) PolyMesh {
       while k < cols {
         imm q = Quat.angleAxis(angle * f32.from(k) / f32.from(nsteps), a);
         pos.push(q * start);
+        along.push(f32.from(k) / f32.from(nsteps));
+        around.push(*vs[j]);
         k = k + 1usize;
       }
     }
     j = j + 1usize;
   }
 
-  imm vs = profileUs(profile);
   mut counts = List[u32].empty();
   mut idx = List[u32].empty();
   mut uvs = List[Vec2].empty();
@@ -324,5 +375,5 @@ pub fn lathe(profile &Profile, axis Vec3, angle f32, steps u32) PolyMesh {
     }
     k = k + 1usize;
   }
-  build(&pos, &counts, &idx, &uvs);
+  build(&pos, &counts, &idx, &uvs, &along, &around);
 }

@@ -2,10 +2,12 @@
 //
 // Each moves the vertices of a PolyMesh and returns the result as a new
 // PolyMesh: the same vertices, half-edges and faces in the same order, and
-// every attribute channel carried over unchanged. Each works in a frame set
-// by an origin and a unit direction 'along' (made unit here): a vertex's
-// coordinate along it is t = (p - origin) . along, and the deformed span is
-// the mesh's extent in t, from its least to its greatest. As in Barr (1984),
+// every attribute channel carried over unchanged. 'displaceAlongNormal'
+// moves each vertex along its normal by a channel's value; the others each
+// work in a frame set by an origin and a unit direction 'along' (made unit
+// here): a vertex's coordinate along it is t = (p - origin) . along, and the
+// deformed span is the mesh's extent in t, from its least to its greatest.
+// As in Barr (1984),
 // the rate of bend, twist or taper is the amount over that span, and it acts
 // on t measured from the origin, held to the span (t clamped to it): so the
 // part of the mesh at the origin (t = 0) stays where it is, and a mesh whose
@@ -168,6 +170,31 @@ pub fn taper(m &PolyMesh, factor f32, along Vec3, origin Vec3) PolyMesh {
       imm s = 1. + factor * clampf(t, ext.x, ext.y) / span;
       out.push(origin + d * t + (q - d * t) * s);
     }
+    i = i + 1usize;
+  }
+  withPositions(m, out);
+}
+
+// A displacement along the normals by a stored channel (Blender's Displace
+// modifier in Normal direction, its strength 'amount' and its texture a
+// vertex channel): each vertex moves along its unit normal by amount times
+// its value in the f32 vertex channel named, so a channel written earlier
+// (a generator's "along" or "around", or one the caller filled) drives the
+// shape: ribs, bulges, a flare. The normals are mesh's 'vertexNormals'
+// (angle-weighted) of the mesh as given, all found before any vertex moves,
+// so the result does not depend on visiting order. An empty name, or a
+// channel the mesh does not have, counts 1 for every vertex: every vertex
+// moves by 'amount' (Blender's Shrink/Fatten), as smoothing's weight does.
+// An isolated vertex has no normal and stays.
+pub fn displaceAlongNormal(m &PolyMesh, channelName &[]u8, amount f32) PolyMesh {
+  imm ch = if channelName.len > 0usize {m.findFloatChannel(VertexDomain, channelName);} else {NoIndex;};
+  imm normals = m.vertexNormals();
+  imm n = m.positions.len();
+  mut out = List[Vec3].withCapacity(n);
+  mut i = 0usize;
+  while i < n {
+    imm w = if ch != NoIndex {m.float(ch, u32.from(i));} else {1.;};
+    out.push(*m.positions[i] + *normals[i] * (amount * w));
     i = i + 1usize;
   }
   withPositions(m, out);
