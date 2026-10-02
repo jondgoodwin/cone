@@ -15,7 +15,8 @@
 //   stays thick far out), smooth-unioned;
 // - a heavy jaw and throat, and a keel under the chest down to the wings'
 //   roots, two chains of tapered capsules;
-// - biomechanical tubes, two a side, tapered capsules offset from the spine;
+// - biomechanical strands, three a side, tapered capsules offset from the
+//   spine out to the tail's end;
 // - vertebrae repeated along the spine (repeatAlongCells over a PathCurve),
 //   each scaled by the body's radius there: a knob, a dorsal spike swept
 //   back (its height jittered by a hash of its index), and over the chest a
@@ -29,11 +30,16 @@
 //   thickened, its trailing edge scalloped by balls cut out between the
 //   finger tips. The membrane is a field of its own, meshed apart and drawn
 //   in a darker, rougher material;
-// - over all of it, a relief of ridged fBm added near the surface, its grain
-//   along the ship.
+// - over all of it, a fine, faint relief of ridged fBm added near the
+//   surface: only the texture left below the structure.
 // The proportions, the wings' pose and the relief's dials were set by
 // measuring renders against the reference with tools/refmeasure (the
-// starship pilot, 2 Oct 2026), not by eye.
+// starship pilot, 2 Oct 2026), not by eye. The sub-structure (a slimmer
+// core inside its ribs, the ribs' period and roundness, the tail's comb,
+// three strands a side, the wing's spar, seams and oval panel, the wide-set
+// eyes, crest and prongs) was found by zooming into crops of the reference
+// (the zoom-in test, 2 Oct 2026: tools/refmeasure's period, elements,
+// rectify and profile).
 // The lights (eyes, mouth, the strip along each wing's leading edge) are
 // small spheres in an over-bright Blinn-Phong material, so they bloom.
 //
@@ -79,14 +85,15 @@ const SEGMENTS = 32;                // the spine's polyline
 const VERTEBRAE = 56;
 const SEED = 1977u32;
 const MEMBRANE f32 = 0.045;         // the membrane's half-thickness
-const RELIEF f32 = 0.045;           // the relief on the frame, per unit of ridged fBm
-const MEMBRANE_RELIEF f32 = 0.025;  // and on the membranes
-const GRAIN f32 = 3.;               // its first octave's frequency
+const RELIEF f32 = 0.012;           // the relief on the frame, per unit of ridged fBm
+const MEMBRANE_RELIEF f32 = 0.008;  // and on the membranes
+const GRAIN f32 = 9.;               // its first octave's frequency
+const CORE f32 = 0.72;              // the hull's core, of the envelope its ribs and spines fill
 const STRETCH f32 = 0.4;            // its grain: features 1 / STRETCH times longer along x
 const LEVELS = 2usize;
 const FINEST f32 = 0.03;
 // Each mesh's meshHash: the frame's levels, then the membrane's
-imm PINNED Array[u32, 4] = [0x759f3dbau32, 0x41dfa6e1u32, 0x0e12be29u32, 0x68b1ef23u32];
+imm PINNED Array[u32, 4] = [0x14878edfu32, 0xf3e2af98u32, 0xc3d5fec9u32, 0xbf8abab1u32];
 imm PARTS Array[&[]u8, 2] = ["frame", "membrane"];
 const WIDTH = 1920u32;
 const HEIGHT = 1080u32;
@@ -151,12 +158,22 @@ struct Vertebrae {
       imm h = (0.18 + 0.75 * r) * (1. + 0.35 * jitter(index, 1u32));
       d = smoothUnion(d, taperedCapsule(l, v(0., r * 0.9, 0.), v(0., r + h, 0.55 * h), 0.03 + 0.12 * r, 0.004), 0.03);
     }
-    // Over the chest, ribs: a cage wider than the body inside it, swept back
-    // towards the tail as they go down
-    if u > 0.1 and u < 0.62 {
-      imm rr = 0.018 + 0.05 * r;
-      imm rib = chain(l, v(r * 0.35, r * 0.7, 0.), v(r * 1.3, r * 0.3, 0.04 + 0.3 * r), v(r * 1.32, r * -0.5, 0.08 + 0.75 * r), rr, rr * 0.9, rr * 0.7);
-      d = smoothUnion(d, minf(rib, taperedCapsule(l, v(r * 1.32, r * -0.5, 0.08 + 0.75 * r), v(r * 0.75, r * -1.1, 0.1 + 1.05 * r), rr * 0.7, rr * 0.4)), 0.03);
+    // Over the neck and the chest, ribs: thin round tubes (their period, 0.21
+    // of a unit, and their roundness measured on the reference's neck), a
+    // cage wider than the core inside it, swept back as they go down
+    if u > 0.02 and u < 0.62 {
+      imm rr = 0.02 + 0.012 * r;
+      // One rib, zoomed in (level 2): round, a spindle thickest at its
+      // shoulder, and hooked over at its top where it leaves the spine
+      imm rib = chain(l, v(r * 0.35, r * 0.7, 0.), v(r * 1.3, r * 0.3, 0.04 + 0.3 * r), v(r * 1.32, r * -0.5, 0.08 + 0.75 * r), rr * 0.7, rr * 1.15, rr * 0.8);
+      imm hook = taperedCapsule(l, v(r * 0.35, r * 0.7, 0.), v(r * 0.2, r * 0.95, -0.06), rr * 0.7, rr * 0.35);
+      d = smoothUnion(d, minf(minf(rib, hook), taperedCapsule(l, v(r * 1.32, r * -0.5, 0.08 + 0.75 * r), v(r * 0.75, r * -1.1, 0.1 + 1.05 * r), rr * 0.8, rr * 0.4)), 0.03);
+    }
+    // Along the tail, a comb: a pair of thin spines out to the sides and up,
+    // swept back
+    if u > 0.6 and u < 0.97 {
+      imm s = 0.3 + 0.4 * r;
+      d = smoothUnion(d, taperedCapsule(l, v(r * 0.55, r * 0.35, 0.), v(r * 0.55 + 0.8 * s, r * 0.35 + 0.45 * s, 0.45 * s), 0.025, 0.004), 0.02);
     }
     d;
   }
@@ -187,7 +204,7 @@ struct Ship {
     while i <= SEGMENTS {
       imm t = f32.from(i) / f32.from(SEGMENTS);
       spine.push(spineAt(t));
-      radii.push(radiusAt(t));
+      radii.push(radiusAt(t) * CORE);
       i = i + 1;
     }
     imm path = sculpt.Path.fromPoints(spine.view(), false);
@@ -224,12 +241,14 @@ struct Ship {
       imm rb = *radii[i + 1usize];
       if near(q, a, (b - a).length() + ra + 0.2, d, 0.06) {
         d = smoothUnion(d, taperedCapsule(q, a, b, ra, rb), 0.06);
-        // The tubes along the flanks, over most of the body
+        // The strands along the flanks, three a side, out to the tail's end
+        // (long parallel tubes, measured along the reference's tail)
         imm t = f32.from(i) / f32.from(SEGMENTS);
-        if t > 0.04 and t < 0.75 {
-          imm low = taperedCapsule(q, a + v(0., ra * -0.35, ra * 0.8), b + v(0., rb * -0.35, rb * 0.8), 0.02 + ra * 0.12, 0.02 + rb * 0.12);
-          imm high = taperedCapsule(q, a + v(0., ra * 0.45, ra * 0.6), b + v(0., rb * 0.45, rb * 0.6), 0.015 + ra * 0.07, 0.015 + rb * 0.07);
-          d = smoothUnion(d, minf(low, high), 0.03);
+        if t > 0.04 and t < 0.97 {
+          imm low = taperedCapsule(q, a + v(0., ra * -0.35, ra * 0.95), b + v(0., rb * -0.35, rb * 0.95), 0.02 + ra * 0.16, 0.02 + rb * 0.16);
+          imm high = taperedCapsule(q, a + v(0., ra * 0.5, ra * 0.75), b + v(0., rb * 0.5, rb * 0.75), 0.015 + ra * 0.1, 0.015 + rb * 0.1);
+          imm under = taperedCapsule(q, a + v(0., ra * -0.85, ra * 0.5), b + v(0., rb * -0.85, rb * 0.5), 0.015 + ra * 0.12, 0.015 + rb * 0.12);
+          d = smoothUnion(d, minf(minf(low, high), under), 0.03);
         }
       }
       i = i + 1usize;
@@ -246,15 +265,30 @@ struct Ship {
       taperedCapsule(q, v(-0.55, -0.02, 0.), v(-1.25, -0.12, 0.), 0.22, 0.08), 0.08);
     d = smoothUnion(d, taperedCapsule(q, v(-0.7, 0.1, 0.1), v(-0.1, 0.27, 0.24), 0.04, 0.08), 0.05);
     d = smoothUnion(d, taperedCapsule(q, v(-0.3, -0.1, 0.22), v(0.1, -0.05, 0.3), 0.07, 0.1), 0.05);
+    // Brow bosses round the eyes, set wide (the reference's pair of eye
+    // lights, back-projected, sit 0.47 either side of the midline)
+    d = smoothUnion(d, sphere(q - v(-0.6, 0.09, 0.27), 0.12), 0.06);
+    // A crest of small ridges along the top of the skull, swept back
+    mut c = 0;
+    while c < 6 {
+      imm x = -1.05 + 0.2 * f32.from(c);
+      imm top = if x < -0.55 { -0.12 + (x + 1.25) / 0.7 * 0.1 + 0.08 + (x + 1.25) / 0.7 * 0.14; }
+        else { -0.02 + (x + 0.55) / 0.7 * 0.07 + 0.22 + (x + 0.55) / 0.7 * 0.14; };
+      d = smoothUnion(d, taperedCapsule(q, v(x, top - 0.03, 0.), v(x + 0.14, top + 0.09, 0.), 0.035, 0.006), 0.03);
+      c = c + 1;
+    }
     // The mouth and the eyes cut out
     d = smoothSubtract(d, capsule(q, v(-0.3, -0.16, 0.), v(-1.35, -0.2, 0.), 0.065), 0.02);
-    d = smoothSubtract(d, sphere(q - v(-0.45, 0.09, 0.2), 0.075), 0.02);
+    d = smoothSubtract(d, sphere(q - v(-0.6, 0.09, 0.3), 0.075), 0.02);
     // The jaw bones
     d = smoothUnion(d, taperedCapsule(q, v(0.05, -0.2, 0.22), v(-1.1, -0.3, 0.06), 0.09, 0.04), 0.04);
     // Two pairs of horns swept back along the neck
     d = smoothUnion(d, chain(q, v(0., 0.25, 0.2), v(0.65, 0.48, 0.4), v(1.35, 0.6, 0.5), 0.1, 0.065, 0.03), 0.05);
     d = minf(d, taperedCapsule(q, v(1.35, 0.6, 0.5), v(2.0, 0.58, 0.52), 0.03, 0.003));
     d = smoothUnion(d, chain(q, v(0.1, -0.05, 0.3), v(0.7, -0.05, 0.55), v(1.25, 0.02, 0.62), 0.07, 0.04, 0.004), 0.04);
+    // A lower prong from the jaw's corner, swept back and out (the
+    // reference's whiskers at the side of the head)
+    d = smoothUnion(d, chain(q, v(-0.3, -0.22, 0.24), v(0.35, -0.32, 0.5), v(0.9, -0.2, 0.7), 0.05, 0.03, 0.004), 0.03);
     // Teeth
     mut k = 0;
     while k < 5 {
@@ -307,6 +341,42 @@ struct Ship {
       b = smoothUnion(b, taperedCapsule(q, from, from.lerp(self.w(f).lerp(self.w(f + 1usize), 0.5), 0.72), 0.065, 0.035), 0.03);
       f = f + 1usize;
     }
+    // Found on the reference's membrane, rectified onto the wing's plane: a
+    // spar parallel to the leading edge, a third of the way back; behind it
+    // a band of plates, their seams raised strips across it about 0.6 apart;
+    // ahead of it, near the root, an oval panel in a raised rim. The seams
+    // and the rim are capsules cut to the membrane, so they stand 0.06
+    // proud of it (two cells of the fine mesh) and stop at its edge.
+    imm root = self.w(7usize);
+    imm s0 = sh.lerp(root, 0.35);
+    imm s1 = wr.lerp(self.w(6usize), 0.3);
+    b = smoothUnion(b, taperedCapsule(q, s0, s1, 0.09, 0.05), 0.04);
+    imm along = (s1 - s0).normalize();
+    imm back = (root - sh) - along * (root - sh).dot(along);
+    imm aft = back.normalize();
+    imm skin = self.membraneAt(q) - 0.06;
+    if skin < b + 0.1 {
+      mut seams f32 = 3.4028235e38;
+      mut k = 1;
+      while k < 10 {
+        imm at = s0.lerp(s1, f32.from(k) / 10.);
+        seams = minf(seams, capsule(q, at, at + aft * 2.4, 0.1));
+        k = k + 1;
+      }
+      // The oval's rim: an ellipse of capsules in the plane ahead of the spar
+      imm fore = (sh.lerp(self.w(1usize), 0.55) - s0.lerp(s1, 0.25)) * 0.5;
+      imm c = s0.lerp(s1, 0.25) + fore;
+      imm ax = along * 1.5;
+      mut j = 0;
+      while j < 16 {
+        imm a0 = 6.2831853 * f32.from(j) / 16.;
+        imm a1 = 6.2831853 * f32.from(j + 1) / 16.;
+        seams = minf(seams, capsule(q, c + ax * cos(a0) + fore * (0.8 * sin(a0)), c + ax * cos(a1) + fore * (0.8 * sin(a1)), 0.1));
+        j = j + 1;
+      }
+      imm cut = if seams > skin { seams; } else { skin; };
+      b = smoothUnion(b, cut, 0.02);
+    }
     // Spikes along the leading edge, up and back, asked only when the edge
     // is near enough to change the union
     if minf(capsule(q, sh, el, 0.), capsule(q, el, wr, 0.)) - 0.45 < b + 0.08 {
@@ -337,8 +407,8 @@ struct Ship {
     // A heavy jaw and throat under the skull and the neck, and a keel under
     // the chest down to the wings' roots
     if near(q, v(3.3, -0.3, 0.), 4.8, d, 0.15) {
-      d = smoothUnion(d, chain(q, v(-0.9, -0.45, 0.), v(0.6, -0.55, 0.), v(2.6, -0.35, 0.), 0.2, 0.32, 0.4), 0.15);
-      d = smoothUnion(d, chain(q, v(2.6, -0.35, 0.), v(5.0, -0.2, 0.), v(7.6, 0.1, 0.), 0.45, 0.5, 0.3), 0.15);
+      d = smoothUnion(d, chain(q, v(-0.9, -0.45, 0.), v(0.6, -0.55, 0.), v(2.6, -0.35, 0.), 0.15, 0.22, 0.28), 0.15);
+      d = smoothUnion(d, chain(q, v(2.6, -0.35, 0.), v(5.0, -0.2, 0.), v(7.6, 0.1, 0.), 0.32, 0.36, 0.22), 0.15);
     }
     // The skull drawn SKULL times its size about the snout's tip
     if near(q, toHead(v(-0.2, 0.15, 0.)), 2.6 * SKULL, d, 0.06) { d = smoothUnion(d, self.skull(SNOUT + (q - SNOUT) * (1. / SKULL)) * SKULL, 0.06); }
@@ -359,7 +429,7 @@ fn lights(ship &Ship) List[Vec4] {
   mut l = List[Vec4].empty();
   mut side = -1.;
   while side < 2. {
-    imm eye = toHead(v(-0.45, 0.09, 0.19 * side));
+    imm eye = toHead(v(-0.6, 0.09, 0.27 * side));
     l.push(new Vec4(eye.x, eye.y, eye.z, 0.06 * SKULL));
     mut k = 0;
     while k < 28 {

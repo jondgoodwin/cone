@@ -27,6 +27,31 @@ has them). Run it as `python tools/refmeasure/refmeasure.py <command> ...`.
   the time split evenly between the starts. Writes `fitcamera.json`.
 - `render <prefix> --camera=ARG [--size WxH] [--fine]`: one shot and its mask from the starship example.
 
+Zooming in (`zoom.py`), for finding a part's sub-structure in a crop. Each command draws what it found:
+
+- `crop <image> x0,y0,x1,y1 <out.png> [--scale S]`: a part, enlarged to look at.
+- `period <image> <out> --line x0,y0,x1,y1 [--width W]`: the repetition along a strip, by autocorrelation (the
+  Fourier peak beside it as a cross-check): period, count, peak strength, ticks on the picture. With
+  `--spine --camera=ARG [--t0 --t1 --lift]` it samples instead along the starship's spine projected
+  through the camera, at equal **true arc length** (rectified), and gives the period in model units;
+  `--raw` samples at equal image steps for comparison.
+- `repeats <image> <out> --box B --template T [--thresh]`: copies of one element, by normalised template
+  matching over a few angles and scales, with non-maximum suppression; their pitch.
+- `elements <image> <out> --box B [--pct --min-len]`: elongated bright elements (tubes, ribs, seams): a Sato
+  ridge filter, thresholded and skeletonised; each piece's length, radius (distance transform) and
+  direction, and the crop's structure-tensor grain. On a glossy tube it traces the rim highlights, so
+  its radius is the highlight's, not the tube's.
+- `rectify <image> <out> --camera=ARG --plane P0 P1 P2`: the picture warped onto the plane through three
+  3-D points (a wing's joints), so periods and sizes come out in true units.
+- `profile <image> <out> --at x,y,axis_deg,half [--at ...]`: brightness across a part, perpendicular to its
+  axis, read as round (a centred peak, smooth falloff), flat (a plateau) or a step (a ridge or edge).
+- `cropscore <sheet.json> <render> <mask> <out> --box B [--line L]`: a render against the reference over one
+  box: IoU, edge density, grain, the element summary, the gradient-orientation histograms' L1 distance,
+  and the period along the same line in both.
+
+A box in reference pixels compares whatever our model puts there: unless the macro shape matches part for
+part, not just in silhouette, the two crops can hold different anatomy.
+
 Camera arguments are `ex,ey,ez,tx,ty,tz,ux,uy,uz,fov` (eye, target, up, vertical field of view in
 degrees). Pass them as `--camera=...`, with the equals sign, because they start with a minus sign.
 
