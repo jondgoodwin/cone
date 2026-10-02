@@ -276,20 +276,11 @@ fn shiftRegions(m &PolyMesh, region &List[u32], shift &List[Vec3], rimShift &Lis
   mut loops = List[u32].empty();
   mut starts = List[u32].empty();
   rimLoops(m, region, &mut loops, &mut starts);
-  mut wallU = List[f32].withCapacity(2usize * loops.len());   // per quad: u at a, then at b
   mut l = 0usize;
   while l + 1usize < starts.len() {
     imm first = usize.from(*starts[l]);
     imm end = usize.from(*starts[l + 1usize]);
-    mut total f32 = 0.;
     mut j = first;
-    while j < end {
-      imm hj = *loops[j];
-      total = total + (*m.positions[usize.from(m.toVertex(hj))] - *m.positions[usize.from(m.fromVertex(hj))]).length();
-      j = j + 1usize;
-    }
-    mut run f32 = 0.;
-    j = first;
     while j < end {
       imm hj = *loops[j];
       imm pa = *sector[usize.from(m.prev(hj))];
@@ -311,12 +302,6 @@ fn shiftRegions(m &PolyMesh, region &List[u32], shift &List[Vec3], rimShift &Lis
       moved.push(*rimShift[usize.from(hj)]);
       moved.push(*rimShift[usize.from(pa)]);
       fSrc.push(m.face(hj));
-      imm len = (*m.positions[usize.from(m.toVertex(hj))] - *m.positions[usize.from(m.fromVertex(hj))]).length();
-      imm u0 = if total > 0. {run / total;} else {0.;};
-      run = run + len;
-      imm u1 = if j + 1usize == end {1.;} elif total > 0. {run / total;} else {0.;};
-      wallU.push(u0);
-      wallU.push(u1);
       j = j + 1usize;
     }
     l = l + 1usize;
@@ -343,22 +328,74 @@ fn shiftRegions(m &PolyMesh, region &List[u32], shift &List[Vec3], rimShift &Lis
       f = f + 1usize;
     }
   } else {
-    imm uvCh = out.findVec2Channel(CornerDomain, "uv");
-    if uvCh != NoIndex {
-      mut w = 0usize;
-      while w < loops.len() {
-        imm hs = out.faceHalfedges(u32.from(nf + w));
-        imm u0 = *wallU[2usize * w];
-        imm u1 = *wallU[2usize * w + 1usize];
-        out.setVec2(uvCh, *hs[0usize], new Vec2(u0, 0.));
-        out.setVec2(uvCh, *hs[1usize], new Vec2(u1, 0.));
-        out.setVec2(uvCh, *hs[2usize], new Vec2(u1, 1.));
-        out.setVec2(uvCh, *hs[3usize], new Vec2(u0, 1.));
-        w = w + 1usize;
-      }
-    }
+    imm wallU = loopU(m, &loops, &starts);
+    stripUvs(&mut out, nf, &wallU, false);
   }
   out;
+}
+
+// Each rim half-edge's u along its loop (see 'rimLoops'), by length from 0
+// at the loop's first vertex to 1 back at it: per half-edge a -> b, in loop
+// order, u at a and then u at b, the loop's last b being 1 (the seam)
+fn loopU(m &PolyMesh, loops &List[u32], starts &List[u32]) List[f32] {
+  mut out = List[f32].withCapacity(2usize * loops.len());
+  mut l = 0usize;
+  while l + 1usize < starts.len() {
+    imm first = usize.from(*starts[l]);
+    imm end = usize.from(*starts[l + 1usize]);
+    mut total f32 = 0.;
+    mut j = first;
+    while j < end {
+      total = total + sideLength(m, *loops[j]);
+      j = j + 1usize;
+    }
+    mut run f32 = 0.;
+    j = first;
+    while j < end {
+      imm u0 = if total > 0. {run / total;} else {0.;};
+      run = run + sideLength(m, *loops[j]);
+      imm u1 = if j + 1usize == end {1.;} elif total > 0. {run / total;} else {0.;};
+      out.push(u0);
+      out.push(u1);
+      j = j + 1usize;
+    }
+    l = l + 1usize;
+  }
+  out;
+}
+
+// The length of half-edge h
+fn sideLength(m &PolyMesh, h u32) f32 {
+  (*m.positions[usize.from(m.toVertex(h))] - *m.positions[usize.from(m.fromVertex(h))]).length();
+}
+
+// The "uv" corner channel's strip map on the quads from face 'first' on, one
+// per rim half-edge a -> b in loop order, u from 'stripU' (see 'loopU'), v 0
+// at the foot and 1 at the top. A quad runs (a, b, b', a'), its foot a -> b;
+// when 'reversed', it runs (b, a, a', b') and its foot is a' -> b' (v 0
+// there), so either way the texture reads the right way round from the side
+// the quad faces. Nothing is done when the mesh has no "uv".
+fn stripUvs(out &mut PolyMesh, first usize, stripU &List[f32], reversed Bool) {
+  imm uvCh = out.findVec2Channel(CornerDomain, "uv");
+  if uvCh == NoIndex { return; }
+  mut w = 0usize;
+  while 2usize * w < stripU.len() {
+    imm hs = out.faceHalfedges(u32.from(first + w));
+    imm u0 = *stripU[2usize * w];
+    imm u1 = *stripU[2usize * w + 1usize];
+    if reversed {
+      out.setVec2(uvCh, *hs[0usize], new Vec2(u1, 1.));
+      out.setVec2(uvCh, *hs[1usize], new Vec2(u0, 1.));
+      out.setVec2(uvCh, *hs[2usize], new Vec2(u0, 0.));
+      out.setVec2(uvCh, *hs[3usize], new Vec2(u1, 0.));
+    } else {
+      out.setVec2(uvCh, *hs[0usize], new Vec2(u0, 0.));
+      out.setVec2(uvCh, *hs[1usize], new Vec2(u1, 0.));
+      out.setVec2(uvCh, *hs[2usize], new Vec2(u1, 1.));
+      out.setVec2(uvCh, *hs[3usize], new Vec2(u0, 1.));
+    }
+    w = w + 1usize;
+  }
 }
 
 // The move d of corner c (of a face of m) across its face, as weights

@@ -1,0 +1,477 @@
+// The sculpt package's solidify, checked with the testing package against
+// values worked out by hand; only a failure prints, so solidifies.out holds
+// the summary alone.
+//
+// Channels on the meshes that carry them: vertex "w" = v; face "id" = 10 +
+// f; edge "crease" 0 but where set; corner "uv" (v / 8, f / 8) and corner
+// "c" = 10 f + v at vertex v of face f. A face's corners run from its first
+// vertex. Volumes are by the divergence theorem over the faces as wound, so
+// a face turned the wrong way would show in the sum.
+//
+// - A 2 x 1 quad: 0 (0, 0, 0), 1 (2, 0, 0), 2 (2, 1, 0), 3 (0, 1, 0), face
+//   0 (0, 1, 2, 3) facing +z, crease 2 on 0-1. Every vertex normal is +z.
+//   Thickness 0.5, offset -1: the quad stays, copies 4..7 at z = -0.5. Face
+//   1 is the copy turned over, corners 0, 3, 2, 1 of face 0 from the same
+//   first: (4, 7, 6, 5), facing -z. The boundary loop starts at face 0's
+//   first corner's half-edge, 3 -> 0, then 0 -> 1, 1 -> 2, 2 -> 3, and side
+//   a -> b gets the rim quad (b, a, a', b'): face 2 (0, 3, 7, 4), facing (3 -
+//   0) x (7 - 3) = (0, 1, 0) x (0, 0, -0.5) = (-0.5, 0, 0), -x; face 3 (1,
+//   0, 4, 5), (-2, 0, 0) x (0, 0, -0.5) = (0, -1, 0), -y; face 4 (2, 1, 5,
+//   6), +x; face 5 (3, 2, 6, 7), +y. A box: 8 vertices, 12 edges, 6 faces,
+//   closed, volume 2 x 1 x 0.5 = 1.
+//   Channels: 5's w is 1's; face 1's id is face 0's, 10, and so is rim face
+//   3's. Edge 0-1 keeps crease 2 and the copy's 4-5 has it too; the upright
+//   0-4 has 0: two edges of crease 2, ten of 0. The copy's corner at 5 is
+//   face 0's at 1: uv (1/8, 0), c 1. The loop's sides are 1, 2, 1, 2 long, 6
+//   in all, so u runs 0, 1/6, 3/6, 4/6, 1. The rim is turned against the
+//   loop, (b, a, a', b'), so v is 0 at the copy (the inner shell) and 1 at
+//   the quad, and the texture still reads the right way round from outside:
+//   face 3's corners at 1, 0, 4, 5 are (0.5, 1), (1/6, 1), (1/6, 0), (0.5,
+//   0); face 5's at 3 and 7 the seam, (1, 1) and (1, 0). Face 3's c at 4 is
+//   face 0's at 0, 0, and at 5 face 0's at 1, 1.
+// - The same quad, offset 0: the quad at z = 0.25, the copy at -0.25;
+//   offset 1: the quad at 0.5, the copy at 0. Volume 1 each time.
+// - Thickness -0.5, offset -1: the quad moves by -0.5 x 0 and the copy by
+//   -0.5 x -1, up to z = 0.5, in front. The shell behind is the quad, so it
+//   is the one turned over: face 0 (0, 3, 2, 1) faces -z, face 1 (4, 5, 6,
+//   7) +z, and rim quads run (a, b, b', a'): face 2 (3, 0, 4, 7), (0, -1, 0)
+//   x (0, 0, 0.5) = (-0.5, 0, 0), -x. Volume 1.
+// - Without the rim: the two shells alone, 8 vertices, 8 edges, 2 faces, 8
+//   boundary edges. Open, so the volume sum is no volume: the quad, in z = 0
+//   through the origin, adds nothing, and the copy, at z = -0.5 facing -z,
+//   adds the cone from the origin over it, (1/3) x 0.5 x its area 2 = 1/3.
+// - Creases, 1 inner, 2 outer, 3 rim: the uprights 0-4, 1-5, 2-6, 3-7 get 3;
+//   the inner shell's sides get at least 1, so 4-5 keeps its 2 and 5-6, 6-7,
+//   7-4 get 1; the quad's sides get at least 2, 0-1 keeping 2: four edges of
+//   3, five of 2, three of 1.
+// - An open hexagonal tube: extrude of the hexagon of radius 1 (from (1, 0),
+//   counterclockwise) along (0, 0, 2), one segment, no caps; vertex j at
+//   z = 0, 6 + j at z = 2, six quads facing out. Each vertex lies on two
+//   faces whose normals are 30 degrees either side of it, with 90-degree
+//   corners, so its normal is radial. Thickness 0.1, offset -1, uneven: the
+//   copies lie on the hexagon of radius 0.9, copy 12 (vertex 0's) at (0.9,
+//   0, 0); the wall is the region between hexagons of radius 1 and 0.9, of
+//   area (3 sqrt 3 / 2)(1 - 0.81), times the height 2: 0.98726896. Even: the
+//   cosine is cos 30 = sqrt 3 / 2, so the copies move 0.1 / (sqrt 3 / 2):
+//   radius 0.88452995, the apothem sqrt 3 / 2 - 0.1, every wall exactly 0.1
+//   thick; the hexagon of apothem a has area 2 sqrt 3 a^2, so the wall is
+//   2 x 2 sqrt 3 (0.75 - (0.8660254 - 0.1)^2) = 1.1307180. Both: 24
+//   vertices, 18 x 2 + 12 uprights = 48 edges, 12 + 12 rim quads = 24 faces,
+//   closed (24 - 48 + 24 = 0, a torus).
+// - A strip folded at a right angle: 0 (0, 1, 0), 1 (0, 0, 0), 2 (1, 0, 0),
+//   3 (0, 1, 1), 4 (0, 0, 1), 5 (1, 0, 1); face 0 (0, 1, 4, 3) faces (1 - 0)
+//   x (4 - 1) = (0, -1, 0) x (0, 0, 1) = (-1, 0, 0), face 1 (1, 2, 5, 4)
+//   (0, -1, 0). Vertex 1 lies on both, with 90-degree corners: normal (-1,
+//   -1, 0) / sqrt 2, and the cosine to each face's normal 1 / sqrt 2.
+//   Thickness 0.1, offset -1. Even: vertex 1 moves 0.1 sqrt 2 along (1, 1,
+//   0) / sqrt 2, copy 7 at (0.1, 0.1, 0), 0.1 from both faces; copy 6 (0's)
+//   at (0.1, 1, 0) and 8 (2's) at (1, 0.1, 0). The solid is the L of section
+//   1 x 0.1 + 0.9 x 0.1 = 0.19, 1 deep: volume 0.19. Uneven: copy 7 at
+//   (0.0707107, 0.0707107, 0), and the section (0, 1), (0, 0), (1, 0), (1,
+//   0.1), (k, k), (0.1, 1), k = 0.1 / sqrt 2, by the shoelace 0.1 + 0.9 k =
+//   0.1636396. 12 vertices, 7 x 2 + 6 = 20 edges, 2 + 2 + 6 = 10 faces,
+//   closed. The loop: 3 -> 0, 0 -> 1, 1 -> 2 (across the fold), 2 -> 5, 5 ->
+//   4, 4 -> 3; rim face 4 (0, 3, 9, 6) faces (0, 0, 1) x (0.1, 0, 0) = (0,
+//   0.1, 0), +y; rim face 6 (2, 1, 7, 8) faces (-1, 0, 0) x (0.1, 0.1, 0) =
+//   (0, 0, -0.1), -z.
+// - The cube PolyMesh.cube(1) (faces back 0 (0, 2, 3, 1), front 1, left 2,
+//   right 3, bottom 4, top 5), crease 3 on 2-6, thickness 0.25, offset -1,
+//   even: each corner's normal is its diagonal, the cosine to each face 1 /
+//   sqrt 3, so it moves 0.25 sqrt 3 along it, 0.25 along each axis: the copies
+//   are the cube of half-size 0.75, copy 8 (0's) at (-0.75, -0.75, -0.75).
+//   Two nested shells: 16 vertices, 24 edges, 12 faces, closed, no rim (no
+//   boundary). Face 6, the back turned over, (8, 9, 11, 10), faces +z, into
+//   the hollow. Volume 8 - 1.5^3 = 4.625. Uneven: the copies at 1 - 0.25 /
+//   sqrt 3 = 0.85566243 each way, volume 8 - 1.71132487^3 = 2.98815788.
+//   Even, offset 0: shells at 1.125 and 0.875, volume 2.25^3 - 1.75^3 =
+//   6.03125; offset 1: at 1.25 and 1, 15.625 - 8 = 7.625.
+//   Channels: 15's w is 7's; face 6's id is face 0's, 10; the copy's 10-14
+//   keeps 2-6's crease 3.
+
+mod solidifies;
+
+import testing use *;
+import collections use *;
+import geomath use *;
+import mesh use *;
+import sculpt use *;
+
+imm near = 0.00001d;
+
+fn point(got Vec3, x f32, y f32, z f32, label &[]u8) {
+  expectFloat(got.x, x, near, label);
+  expectFloat(got.y, y, near, label);
+  expectFloat(got.z, z, near, label);
+}
+
+fn point2(got Vec2, x f32, y f32, label &[]u8) {
+  expectFloat(got.x, x, near, label);
+  expectFloat(got.y, y, near, label);
+}
+
+fn clean(m &PolyMesh, label &[]u8) {
+  imm problems = m.validate();
+  expectInt(i64.from(problems.len()), 0, label);
+}
+
+fn counts(m &PolyMesh, nv i64, ne i64, nf i64, label &[]u8) {
+  expectInt(i64.from(m.vertexCount()), nv, label);
+  expectInt(i64.from(m.edgeCount()), ne, label);
+  expectInt(i64.from(m.faceCount()), nf, label);
+}
+
+fn face(m &PolyMesh, f u32, a u32, b u32, c u32, d u32, label &[]u8) {
+  imm vs = m.faceVertices(f);
+  expectInt(i64.from(vs.len()), 4, label);
+  if vs.len() == 4usize {
+    expectInt(i64.from(*vs[0usize]), i64.from(a), label);
+    expectInt(i64.from(*vs[1usize]), i64.from(b), label);
+    expectInt(i64.from(*vs[2usize]), i64.from(c), label);
+    expectInt(i64.from(*vs[3usize]), i64.from(d), label);
+  }
+}
+
+fn edgeOf(m &PolyMesh, a u32, b u32) u32 {
+  mut e = 0u32;
+  while usize.from(e) < m.edgeCount() {
+    imm p = *m.hVertex[usize.from(2u32 * e)];
+    imm q = *m.hVertex[usize.from(2u32 * e + 1u32)];
+    if (p == a and q == b) or (p == b and q == a) { return e; }
+    e = e + 1u32;
+  }
+  NoIndex;
+}
+
+fn boundaryEdges(m &PolyMesh) i64 {
+  mut n = 0i64;
+  mut e = 0u32;
+  while usize.from(e) < m.edgeCount() {
+    if m.isBoundaryEdge(e) { n = n + 1; }
+    e = e + 1u32;
+  }
+  n;
+}
+
+fn countEdgesWith(m &PolyMesh, name &[]u8, value f32) i64 {
+  imm ch = m.findFloatChannel(EdgeDomain, name);
+  if ch == NoIndex { return -1; }
+  mut n = 0i64;
+  mut e = 0u32;
+  while usize.from(e) < m.edgeCount() {
+    if m.float(ch, e) == value { n = n + 1; }
+    e = e + 1u32;
+  }
+  n;
+}
+
+fn creaseOf(m &PolyMesh, a u32, b u32) f32 {
+  m.float(m.findFloatChannel(EdgeDomain, "crease"), edgeOf(m, a, b));
+}
+
+fn volume(m &PolyMesh) f32 {
+  mut sum f32 = 0.;
+  mut f = 0usize;
+  while f < m.faceCount() {
+    imm pts = m.facePositions(u32.from(f));
+    mut i = 1usize;
+    while i + 1usize < pts.len() {
+      sum = sum + pts[0usize].dot(pts[i].cross(*pts[i + 1usize]));
+      i = i + 1usize;
+    }
+    f = f + 1usize;
+  }
+  sum / 6.;
+}
+
+// The corner of face f at vertex v
+fn cornerAt(m &PolyMesh, f u32, v u32) u32 {
+  imm hs = m.faceHalfedges(f);
+  mut i = 0usize;
+  while i < hs.len() {
+    if m.toVertex(*hs[i]) == v { return *hs[i]; }
+    i = i + 1usize;
+  }
+  NoIndex;
+}
+
+fn uvAt(m &PolyMesh, f u32, v u32) Vec2 {
+  imm h = cornerAt(m, f, v);
+  if h == NoIndex { return new Vec2(-1., -1.); }
+  m.vec2(m.findVec2Channel(CornerDomain, "uv"), h);
+}
+
+fn cAt(m &PolyMesh, f u32, v u32) f32 {
+  imm h = cornerAt(m, f, v);
+  if h == NoIndex { return -1.; }
+  m.float(m.findFloatChannel(CornerDomain, "c"), h);
+}
+
+fn addChannels(m &mut PolyMesh) {
+  imm w = m.addFloatChannel(VertexDomain, "w", 0.);
+  mut v = 0u32;
+  while usize.from(v) < m.vertexCount() {
+    m.setFloat(w, v, f32.from(v));
+    v = v + 1u32;
+  }
+  imm id = m.addFloatChannel(FaceDomain, "id", 0.);
+  m.addFloatChannel(EdgeDomain, "crease", 0.);
+  imm uv = m.addVec2Channel(CornerDomain, "uv", new Vec2(0., 0.));
+  imm c = m.addFloatChannel(CornerDomain, "c", 0.);
+  mut f = 0u32;
+  while usize.from(f) < m.faceCount() {
+    m.setFloat(id, f, 10. + f32.from(f));
+    imm hs = m.faceHalfedges(f);
+    mut i = 0usize;
+    while i < hs.len() {
+      imm hv = m.toVertex(*hs[i]);
+      m.setVec2(uv, *hs[i], new Vec2(f32.from(hv) / 8., f32.from(f) / 8.));
+      m.setFloat(c, *hs[i], 10. * f32.from(f) + f32.from(hv));
+      i = i + 1usize;
+    }
+    f = f + 1u32;
+  }
+}
+
+fn setCrease(m &mut PolyMesh, a u32, b u32, value f32) {
+  imm ch = m.findFloatChannel(EdgeDomain, "crease");
+  imm e = edgeOf(m, a, b);
+  m.setFloat(ch, e, value);
+}
+
+fn polys(pts &List[Vec3], sizes &List[u32], idx &List[u32]) PolyMesh {
+  mut problems = List[String].empty();
+  PolyMesh.fromPolygons(pts.view(), sizes.view(), idx.view(), &mut problems);
+}
+
+fn quad() PolyMesh {
+  mut pts = List[Vec3].empty();
+  pts.push(new Vec3(0., 0., 0.));
+  pts.push(new Vec3(2., 0., 0.));
+  pts.push(new Vec3(2., 1., 0.));
+  pts.push(new Vec3(0., 1., 0.));
+  mut sizes = List[u32].empty();
+  sizes.push(4u32);
+  mut idx = List[u32].empty();
+  idx.push(0u32);
+  idx.push(1u32);
+  idx.push(2u32);
+  idx.push(3u32);
+  mut m = polys(&pts, &sizes, &idx);
+  addChannels(&mut m);
+  setCrease(&mut m, 0u32, 1u32, 2.);
+  m;
+}
+
+fn thinBox() {
+  imm q = quad();
+  imm m = solidify(&q, 0.5, -1., false, true);
+  clean(&m, "box: validates");
+  counts(&m, 8, 12, 6, "box: 8 vertices, 12 edges, 6 faces");
+  expectInt(boundaryEdges(&m), 0, "box: closed");
+  expectFloat(volume(&m), 1., near, "box: volume 1, every face outward");
+  point(*m.positions[2usize], 2., 1., 0., "box: vertex 2 stays");
+  point(*m.positions[4usize], 0., 0., -0.5, "box: 4, 0's copy");
+  point(*m.positions[6usize], 2., 1., -0.5, "box: 6, 2's copy");
+  face(&m, 0u32, 0u32, 1u32, 2u32, 3u32, "box: face 0 is the quad");
+  face(&m, 1u32, 4u32, 7u32, 6u32, 5u32, "box: face 1 is its copy turned over");
+  point(m.faceNormal(1u32), 0., 0., -1., "box: the copy faces -z");
+  face(&m, 2u32, 0u32, 3u32, 7u32, 4u32, "box: rim 2");
+  face(&m, 3u32, 1u32, 0u32, 4u32, 5u32, "box: rim 3");
+  face(&m, 4u32, 2u32, 1u32, 5u32, 6u32, "box: rim 4");
+  face(&m, 5u32, 3u32, 2u32, 6u32, 7u32, "box: rim 5");
+  point(m.faceNormal(2u32), -1., 0., 0., "box: rim 2 faces -x");
+  point(m.faceNormal(3u32), 0., -1., 0., "box: rim 3 faces -y");
+  point(m.faceNormal(4u32), 1., 0., 0., "box: rim 4 faces +x");
+  point(m.faceNormal(5u32), 0., 1., 0., "box: rim 5 faces +y");
+
+  imm w = m.findFloatChannel(VertexDomain, "w");
+  expectFloat(m.float(w, 5u32), 1., near, "box: 5's w is 1's");
+  imm id = m.findFloatChannel(FaceDomain, "id");
+  expectFloat(m.float(id, 1u32), 10., near, "box: the copy's id is the quad's");
+  expectFloat(m.float(id, 3u32), 10., near, "box: rim 3's id is the quad's");
+  expectFloat(creaseOf(&m, 0u32, 1u32), 2., near, "box: 0-1 keeps its crease");
+  expectFloat(creaseOf(&m, 4u32, 5u32), 2., near, "box: the copy's 4-5 has it");
+  expectFloat(creaseOf(&m, 0u32, 4u32), 0., near, "box: the upright 0-4 has none");
+  expectInt(countEdgesWith(&m, "crease", 2.), 2, "box: two edges of crease 2");
+  expectInt(countEdgesWith(&m, "crease", 0.), 10, "box: ten of 0");
+  point2(uvAt(&m, 1u32, 5u32), 0.125, 0., "box: the copy's uv at 5 is the quad's at 1");
+  expectFloat(cAt(&m, 1u32, 5u32), 1., near, "box: the copy's c at 5 is the quad's at 1");
+  point2(uvAt(&m, 3u32, 1u32), 0.5, 1., "box: rim 3 at 1");
+  point2(uvAt(&m, 3u32, 0u32), 0.16666667, 1., "box: rim 3 at 0");
+  point2(uvAt(&m, 3u32, 4u32), 0.16666667, 0., "box: rim 3 at 4");
+  point2(uvAt(&m, 3u32, 5u32), 0.5, 0., "box: rim 3 at 5");
+  point2(uvAt(&m, 5u32, 3u32), 1., 1., "box: rim 5 at 3, the seam");
+  point2(uvAt(&m, 5u32, 7u32), 1., 0., "box: rim 5 at 7, the seam");
+  point2(uvAt(&m, 2u32, 0u32), 0.16666667, 1., "box: rim 2 at 0");
+  point2(uvAt(&m, 2u32, 3u32), 0., 1., "box: rim 2 at 3");
+  expectFloat(cAt(&m, 3u32, 4u32), 0., near, "box: rim 3's c at 4 is the quad's at 0");
+  expectFloat(cAt(&m, 3u32, 5u32), 1., near, "box: rim 3's c at 5 is the quad's at 1");
+
+  imm centred = solidify(&q, 0.5, 0., false, true);
+  clean(&centred, "offset 0: validates");
+  expectFloat(volume(&centred), 1., near, "offset 0: volume 1");
+  point(*centred.positions[0usize], 0., 0., 0.25, "offset 0: the quad at 0.25");
+  point(*centred.positions[4usize], 0., 0., -0.25, "offset 0: the copy at -0.25");
+  imm front = solidify(&q, 0.5, 1., false, true);
+  clean(&front, "offset 1: validates");
+  expectFloat(volume(&front), 1., near, "offset 1: volume 1");
+  point(*front.positions[0usize], 0., 0., 0.5, "offset 1: the quad at 0.5");
+  point(*front.positions[4usize], 0., 0., 0., "offset 1: the copy at 0");
+  imm held = solidify(&q, 0.5, 3., false, true);
+  point(*held.positions[0usize], 0., 0., 0.5, "offset 3 is held to 1");
+
+  imm neg = solidify(&q, -0.5, -1., false, true);
+  clean(&neg, "negative: validates");
+  counts(&neg, 8, 12, 6, "negative: 8 vertices, 12 edges, 6 faces");
+  expectFloat(volume(&neg), 1., near, "negative: volume 1, every face outward");
+  point(*neg.positions[0usize], 0., 0., 0., "negative: the quad stays");
+  point(*neg.positions[4usize], 0., 0., 0.5, "negative: the copy in front");
+  face(&neg, 0u32, 0u32, 3u32, 2u32, 1u32, "negative: the quad turned over");
+  face(&neg, 1u32, 4u32, 5u32, 6u32, 7u32, "negative: the copy as it was");
+  face(&neg, 2u32, 3u32, 0u32, 4u32, 7u32, "negative: rim 2");
+  point(neg.faceNormal(2u32), -1., 0., 0., "negative: rim 2 faces -x");
+  point(neg.faceNormal(0u32), 0., 0., -1., "negative: the quad faces -z");
+  point2(uvAt(&neg, 2u32, 3u32), 0., 0., "negative: rim 2 at 3, v 0 at the quad, now inner");
+  point2(uvAt(&neg, 2u32, 4u32), 0.16666667, 1., "negative: rim 2 at 4");
+
+  imm open = solidify(&q, 0.5, -1., false, false);
+  clean(&open, "no rim: validates");
+  counts(&open, 8, 8, 2, "no rim: 8 vertices, 8 edges, 2 faces");
+  expectInt(boundaryEdges(&open), 8, "no rim: 8 boundary edges");
+  expectFloat(volume(&open), 0.33333333, near, "no rim: the copy's cone to the origin alone, 1/3");
+
+  imm creased = solidifyWith(&q, 0.5, -1., false, true, 1., 2., 3.);
+  clean(&creased, "creases: validates");
+  expectFloat(creaseOf(&creased, 0u32, 4u32), 3., near, "creases: upright 0-4");
+  expectFloat(creaseOf(&creased, 2u32, 6u32), 3., near, "creases: upright 2-6");
+  expectFloat(creaseOf(&creased, 4u32, 5u32), 2., near, "creases: 4-5 keeps its 2");
+  expectFloat(creaseOf(&creased, 5u32, 6u32), 1., near, "creases: inner 5-6");
+  expectFloat(creaseOf(&creased, 1u32, 2u32), 2., near, "creases: outer 1-2");
+  expectInt(countEdgesWith(&creased, "crease", 3.), 4, "creases: four edges of 3");
+  expectInt(countEdgesWith(&creased, "crease", 2.), 5, "creases: five of 2");
+  expectInt(countEdgesWith(&creased, "crease", 1.), 3, "creases: three of 1");
+
+  // A crease asked of a mesh with none adds the channel
+  imm bare = quad0();
+  imm added = solidifyWith(&bare, 0.5, -1., false, true, 0., 0., 4.);
+  expectInt(countEdgesWith(&added, "crease", 4.), 4, "creases: added, four uprights of 4");
+  expectInt(countEdgesWith(&added, "crease", 0.), 8, "creases: added, eight of 0");
+}
+
+// The quad with no channels
+fn quad0() PolyMesh {
+  mut pts = List[Vec3].empty();
+  pts.push(new Vec3(0., 0., 0.));
+  pts.push(new Vec3(2., 0., 0.));
+  pts.push(new Vec3(2., 1., 0.));
+  pts.push(new Vec3(0., 1., 0.));
+  mut sizes = List[u32].empty();
+  sizes.push(4u32);
+  mut idx = List[u32].empty();
+  idx.push(0u32);
+  idx.push(1u32);
+  idx.push(2u32);
+  idx.push(3u32);
+  polys(&pts, &sizes, &idx);
+}
+
+fn tube() {
+  imm hex = Profile.polygon(6u32, 1.);
+  imm t = extrude(&hex, new Vec3(0., 0., 2.), 1u32, false);
+  counts(&t, 12, 18, 6, "tube: the open hexagonal tube");
+  imm m = solidify(&t, 0.1, -1., false, true);
+  clean(&m, "tube: validates");
+  counts(&m, 24, 48, 24, "tube: 24 vertices, 48 edges, 24 faces");
+  expectInt(boundaryEdges(&m), 0, "tube: closed");
+  point(*m.positions[12usize], 0.9, 0., 0., "tube: copy 12 at radius 0.9");
+  point(*m.positions[18usize], 0.9, 0., 2., "tube: copy 18 at radius 0.9, at the top");
+  expectFloat(volume(&m), 0.98726896, 0.00001d, "tube: the wall between radii 1 and 0.9");
+  imm e = solidify(&t, 0.1, -1., true, true);
+  clean(&e, "tube even: validates");
+  counts(&e, 24, 48, 24, "tube even: 24 vertices, 48 edges, 24 faces");
+  point(*e.positions[12usize], 0.88452995, 0., 0., "tube even: copy 12 at 0.1 / cos 30 in");
+  expectFloat(volume(&e), 1.1307180, 0.00001d, "tube even: every wall 0.1 thick");
+}
+
+fn fold() {
+  mut pts = List[Vec3].empty();
+  pts.push(new Vec3(0., 1., 0.));
+  pts.push(new Vec3(0., 0., 0.));
+  pts.push(new Vec3(1., 0., 0.));
+  pts.push(new Vec3(0., 1., 1.));
+  pts.push(new Vec3(0., 0., 1.));
+  pts.push(new Vec3(1., 0., 1.));
+  mut sizes = List[u32].empty();
+  sizes.push(4u32);
+  sizes.push(4u32);
+  mut idx = List[u32].empty();
+  idx.push(0u32);
+  idx.push(1u32);
+  idx.push(4u32);
+  idx.push(3u32);
+  idx.push(1u32);
+  idx.push(2u32);
+  idx.push(5u32);
+  idx.push(4u32);
+  imm s = polys(&pts, &sizes, &idx);
+  point(s.faceNormal(0u32), -1., 0., 0., "fold: face 0 faces -x");
+  point(s.faceNormal(1u32), 0., -1., 0., "fold: face 1 faces -y");
+  imm m = solidify(&s, 0.1, -1., true, true);
+  clean(&m, "fold even: validates");
+  counts(&m, 12, 20, 10, "fold even: 12 vertices, 20 edges, 10 faces");
+  expectInt(boundaryEdges(&m), 0, "fold even: closed");
+  point(*m.positions[7usize], 0.1, 0.1, 0., "fold even: copy 7, 0.1 from both faces");
+  point(*m.positions[10usize], 0.1, 0.1, 1., "fold even: copy 10");
+  point(*m.positions[6usize], 0.1, 1., 0., "fold even: copy 6");
+  point(*m.positions[8usize], 1., 0.1, 0., "fold even: copy 8");
+  expectFloat(volume(&m), 0.19, near, "fold even: the L of section 0.19");
+  face(&m, 4u32, 0u32, 3u32, 9u32, 6u32, "fold even: rim 4");
+  point(m.faceNormal(4u32), 0., 1., 0., "fold even: rim 4 faces +y");
+  face(&m, 6u32, 2u32, 1u32, 7u32, 8u32, "fold even: rim 6, across the fold");
+  point(m.faceNormal(6u32), 0., 0., -1., "fold even: rim 6 faces -z");
+  imm u = solidify(&s, 0.1, -1., false, true);
+  point(*u.positions[7usize], 0.07071068, 0.07071068, 0., "fold uneven: copy 7, 0.1 along the normal");
+  expectFloat(volume(&u), 0.16363961, near, "fold uneven: the thinner L, 0.1636396");
+}
+
+fn cube() {
+  mut c = PolyMesh.cube(1.);
+  addChannels(&mut c);
+  setCrease(&mut c, 2u32, 6u32, 3.);
+  imm m = solidify(&c, 0.25, -1., true, true);
+  clean(&m, "cube: validates");
+  counts(&m, 16, 24, 12, "cube: two shells, 16 vertices, 24 edges, 12 faces");
+  expectInt(boundaryEdges(&m), 0, "cube: closed");
+  point(*m.positions[7usize], 1., 1., 1., "cube: 7 stays");
+  point(*m.positions[8usize], -0.75, -0.75, -0.75, "cube: copy 8");
+  point(*m.positions[15usize], 0.75, 0.75, 0.75, "cube: copy 15");
+  face(&m, 6u32, 8u32, 9u32, 11u32, 10u32, "cube: face 6, the back turned over");
+  point(m.faceNormal(6u32), 0., 0., 1., "cube: face 6 faces +z, into the hollow");
+  expectFloat(volume(&m), 4.625, near, "cube: volume 8 - 1.5^3");
+  imm w = m.findFloatChannel(VertexDomain, "w");
+  expectFloat(m.float(w, 15u32), 7., near, "cube: 15's w is 7's");
+  imm id = m.findFloatChannel(FaceDomain, "id");
+  expectFloat(m.float(id, 6u32), 10., near, "cube: face 6's id is the back's");
+  expectFloat(creaseOf(&m, 10u32, 14u32), 3., near, "cube: the copy's 10-14 keeps 2-6's crease");
+  expectInt(countEdgesWith(&m, "crease", 3.), 2, "cube: two edges of crease 3");
+
+  imm u = solidify(&c, 0.25, -1., false, true);
+  point(*u.positions[15usize], 0.85566243, 0.85566243, 0.85566243, "cube uneven: copy 15");
+  expectFloat(volume(&u), 2.98815788, 0.0001d, "cube uneven: volume");
+  imm mid = solidify(&c, 0.25, 0., true, true);
+  point(*mid.positions[7usize], 1.125, 1.125, 1.125, "cube offset 0: 7 out");
+  point(*mid.positions[15usize], 0.875, 0.875, 0.875, "cube offset 0: 15 in");
+  expectFloat(volume(&mid), 6.03125, near, "cube offset 0: volume");
+  imm out = solidify(&c, 0.25, 1., true, true);
+  point(*out.positions[7usize], 1.25, 1.25, 1.25, "cube offset 1: 7 out");
+  point(*out.positions[15usize], 1., 1., 1., "cube offset 1: 15 where 7 was");
+  expectFloat(volume(&out), 7.625, near, "cube offset 1: volume");
+}
+
+fn main() i32 {
+  thinBox();
+  tube();
+  fold();
+  cube();
+  done();
+}

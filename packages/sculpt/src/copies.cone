@@ -52,25 +52,8 @@ pub fn mirrorWith(m &PolyMesh, origin Vec3, normal Vec3, merge f32, mirrorU Bool
   mut eSrc = List[u32].empty();
   mut fSrc = List[u32].empty();
   addCopy(m, 0usize, &mut counts, &mut idx, &mut cSrc, &mut eSrc, &mut fSrc);
-  // The copy reversed: corner j is the original's corner (n - j) % n, and
-  // its incoming side runs along the original's side out of that corner
+  addReversed(m, nv, &mut counts, &mut idx, &mut cSrc, &mut eSrc, &mut fSrc);
   mut f = 0usize;
-  while f < nf {
-    imm hs = m.faceHalfedges(u32.from(f));
-    imm n = hs.len();
-    counts.push(u32.from(n));
-    mut j = 0usize;
-    while j < n {
-      imm i = (n - j) % n;
-      imm h = *hs[i];
-      idx.push(u32.from(nv) + *m.hVertex[usize.from(h)]);
-      cSrc.push(h);
-      eSrc.push(*hs[(i + 1usize) % n] / 2u32);
-      j = j + 1usize;
-    }
-    fSrc.push(u32.from(f));
-    f = f + 1usize;
-  }
   mut both = assemble(m, &pos, &vSrc, &counts, &idx, &cSrc, &eSrc, &fSrc);
 
   imm uvCh = both.findVec2Channel(CornerDomain, "uv");
@@ -252,6 +235,31 @@ fn addCopy(m &PolyMesh, base usize, counts &mut List[u32], idx &mut List[u32], c
       cSrc.push(h);
       eSrc.push(h / 2u32);
       i = i + 1usize;
+    }
+    fSrc.push(u32.from(f));
+    f = f + 1usize;
+  }
+}
+
+// m's faces turned over, their vertices numbered from 'base', added to the
+// flat face lists 'assemble' takes: each face's corner j is its corner
+// (n - j) % n, so it keeps its first corner, and that corner's incoming side
+// runs along the face's side out of it
+fn addReversed(m &PolyMesh, base usize, counts &mut List[u32], idx &mut List[u32], cSrc &mut List[u32],
+    eSrc &mut List[u32], fSrc &mut List[u32]) {
+  mut f = 0usize;
+  while f < m.fHalfedge.len() {
+    imm hs = m.faceHalfedges(u32.from(f));
+    imm n = hs.len();
+    counts.push(u32.from(n));
+    mut j = 0usize;
+    while j < n {
+      imm i = (n - j) % n;
+      imm h = *hs[i];
+      idx.push(u32.from(base) + *m.hVertex[usize.from(h)]);
+      cSrc.push(h);
+      eSrc.push(*hs[(i + 1usize) % n] / 2u32);
+      j = j + 1usize;
     }
     fSrc.push(u32.from(f));
     f = f + 1usize;
