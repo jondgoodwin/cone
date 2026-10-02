@@ -109,20 +109,87 @@ pub const PATH_MAX = 260usize;
 extern fn _fullpath(resolved *u8, path *u8, size usize) *u8;
 pub fn realpath(path *u8, resolved *u8) *u8 inline {_fullpath(resolved, path, PATH_MAX);}
 
-// stdlib.h: setting an environment variable. The runtime's '_putenv_s'
-// always overwrites, so where 'overwrite' is zero and the variable is set,
-// nothing is done, as POSIX says. It returns 0, or an error number where
-// POSIX returns -1.
-extern fn _putenv_s(name *u8, value *u8) i32;
-pub fn setenv(name *u8, value *u8, overwrite i32) i32 inline {
-  if overwrite == 0i32 and libc.getenv(name) != 0usize as *u8 {0i32;} else {_putenv_s(name, value);};
+// stdlib.h: the environment, read and changed in UTF-8. Windows keeps it in
+// UTF-16, and the runtime's narrow 'getenv' reads a copy it converts once,
+// at start-up, in the ANSI code page, so a variable the program inherited
+// beyond ASCII reads wrongly ('é 日本' as "\xE9 ??") whatever locale is set
+// later. These three go through the runtime's wide environment instead
+// ('_wgetenv', '_wputenv_s'), converting names and values between UTF-8 and
+// UTF-16. A name or value that is not UTF-8 is no variable's: 'getenv'
+// answers null and 'setenv' EINVAL.
+extern fn _wgetenv(name *u16) *u16;
+extern fn _wputenv_s(name *u16, value *u16) i32;
+extern {
+  fn @c(system) MultiByteToWideChar(page u32, flags u32, from *u8, fromLen i32, to *u16, toLen i32) i32;
+  fn @c(system) WideCharToMultiByte(page u32, flags u32, from *u16, fromLen i32, to *u8, toLen i32,
+      fallback *u8, usedFallback *i32) i32;
+}
+const utf8Page = 65001u32;          // CP_UTF8
+const invalidUtf8Fails = 8u32;      // MB_ERR_INVALID_CHARS
+
+// A C string's UTF-8 as UTF-16 ending in a 0, in a block from malloc the
+// caller frees; null when it is not UTF-8
+fn utf16FromUtf8(s *u8) *u16 {
+  imm n = MultiByteToWideChar(utf8Page, invalidUtf8Fails, s, -1i32, 0usize as *u16, 0i32);
+  if n == 0i32 {return 0usize as *u16;};
+  imm p = libc.malloc(usize.from(n) * 2usize) as *u16;
+  MultiByteToWideChar(utf8Page, invalidUtf8Fails, s, -1i32, p, n);
+  p;
 }
 
+// The block 'getenv' answers in, grown as needed: its address and size
+mut envAnswer = 0usize;
+mut envAnswerSize = 0usize;
+
+fn getenvUtf8(name *u8) *u8 {
+  imm wname = utf16FromUtf8(name);
+  if wname == 0usize as *u16 {return 0usize as *u8;};
+  imm wvalue = _wgetenv(wname);
+  libc.free(wname as *u8);
+  if wvalue == 0usize as *u16 {return 0usize as *u8;};
+  // A lone surrogate, which is no character, becomes U+FFFD
+  imm size = WideCharToMultiByte(utf8Page, 0u32, wvalue, -1i32, 0usize as *u8, 0i32, 0usize as *u8, 0usize as *i32);
+  if size <= 0i32 {return 0usize as *u8;};
+  if usize.from(size) > envAnswerSize {
+    envAnswer = libc.realloc(envAnswer as *u8, usize.from(size)) as usize;
+    envAnswerSize = usize.from(size);
+  };
+  WideCharToMultiByte(utf8Page, 0u32, wvalue, -1i32, envAnswer as *u8, size, 0usize as *u8, 0usize as *i32);
+  envAnswer as *u8;
+}
+
+fn setenvUtf8(name *u8, value *u8, overwrite i32) i32 {
+  imm wname = utf16FromUtf8(name);
+  if wname == 0usize as *u16 {return EINVAL;};
+  imm wvalue = utf16FromUtf8(value);
+  if wvalue == 0usize as *u16 {
+    libc.free(wname as *u8);
+    return EINVAL;
+  };
+  mut result = 0i32;
+  if overwrite != 0i32 or _wgetenv(wname) == 0usize as *u16 {
+    result = _wputenv_s(wname, wvalue);
+  };
+  libc.free(wname as *u8);
+  libc.free(wvalue as *u8);
+  result;
+}
+
+// getenv(name): the variable's value, in a block overwritten by the next
+// call, as POSIX allows; null when it is not set
+pub fn getenv(name *u8) *u8 inline {getenvUtf8(name);}
+
+// setenv(name, value, overwrite): the runtime's '_wputenv_s' always
+// overwrites, so where 'overwrite' is zero and the variable is set, nothing
+// is done, as POSIX says. It returns 0, or an error number where POSIX
+// returns -1.
+pub fn setenv(name *u8, value *u8, overwrite i32) i32 inline {setenvUtf8(name, value, overwrite);}
+
 // unsetenv(name): removes a variable, which is not an error when it is not
-// set. The runtime's '_putenv_s' removes one given an empty value, which is
+// set. The runtime's '_wputenv_s' removes one given an empty value, which is
 // also why, on Windows, 'setenv' with an empty value removes the variable
 // rather than setting it empty.
-pub fn unsetenv(name *u8) i32 inline {_putenv_s(name, &[]"");}
+pub fn unsetenv(name *u8) i32 inline {setenvUtf8(name, &[]"", 1i32);}
 
 // stdio.h: running a command through the shell (cmd.exe on Windows) with a
 // pipe to what it prints ('r') or to what it reads ('w'). 'pclose' waits for

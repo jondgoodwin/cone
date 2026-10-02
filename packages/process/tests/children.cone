@@ -9,7 +9,8 @@
 // its time limit, and one whose own child sleeps, both stopped (the
 // grandchild's death checked by its process id); the working folder, a
 // UTF-8 one among them; standard input read from NUL; a variable set
-// before the run inherited; arguments round-tripped through the child's
+// before the run inherited, beyond ASCII, as Windows holds it and as the
+// env package reads it; arguments round-tripped through the child's
 // parsers (every string of up to four of 'a', space, tab, '"' and '\', and
 // UTF-8 ones), Windows' CommandLineToArgvW and the C runtime's both; a raw
 // command line; a child that shares this test's output, whose line this
@@ -220,6 +221,14 @@ fn child(a &List[String], argc i32, argv **u8) i32 {
       i = i + 1usize;
     }
     out(s.view());
+    return 0i32;
+  }
+  if mode.equals("envget") {
+    // The same variable as the env package reads it, its UTF-8 in hex
+    match env.get(a[3usize].view()) {
+      case imm v Some { imm h = hexOf(v.value.view()); out(h.view()); }
+      case is None { out("<none>"); }
+    }
     return 0i32;
   }
   err("no such mode\n");
@@ -446,6 +455,11 @@ fn environment(exe &[]u8) {
   // 'inherited, é 日本' in UTF-16
   expectStr(o.stdout.view(), "105 110 104 101 114 105 116 101 100 44 32 233 32 26085 26412",
     "a variable set before the run, UTF-8 into UTF-16");
+  mut g = childCommand(exe, "envget");
+  g.push(String.from("CONE_PROCESS_TEST"));
+  imm r = ran(process.run(g.view()), "envget");
+  expectStr(r.stdout.view(), "696e686572697465642c20c3a920e697a5e69cac",
+    "an inherited variable read by env.get, UTF-8 again");
   env.unset("CONE_PROCESS_TEST");
   imm p = ran(process.run(c.view()), "env unset");
   expectStr(p.stdout.view(), "<none>", "a variable removed before the run");
