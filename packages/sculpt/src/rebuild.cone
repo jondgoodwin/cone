@@ -1,0 +1,292 @@
+// ======== Rebuilding a mesh from another's elements ========
+//
+// Mirror, array and weld each make a new PolyMesh whose every element comes
+// from an element of the mesh they were given: a vertex from a vertex, a
+// face from a face, a corner from a corner, an edge from an edge. 'assemble'
+// builds such a mesh and carries every attribute channel across by those
+// links; 'collapse' merges vertices into their clusters' representatives and
+// removes what that makes degenerate.
+
+// A PolyMesh made of elements drawn from m's, every channel carried. The new
+// vertices are 'pos', vertex v from m's vertex vSrc[v]. The faces are given
+// flat, as fromPolygons takes them ('counts', 'idx'), face f from m's face
+// fSrc[f]; for each corner given, cSrc is the m half-edge (corner) whose
+// corner values it takes, and eSrc the m edge that its incoming side (from
+// the corner before it) runs along. A face fromPolygons refuses is left out,
+// as it leaves one out.
+//
+// Each channel's values: a vertex's and a face's from their sources; a
+// corner's from its source corner, a boundary half-edge's 0 (it is unused);
+// an edge's from the source edge of the first face, in order, that runs
+// along it, except that the "crease" edge channel takes the greatest of the
+// edges merged into it, so a sharp edge stays sharp whichever side marked it.
+fn assemble(m &PolyMesh, pos &List[Vec3], vSrc &List[u32], counts &List[u32], idx &List[u32], cSrc &List[u32],
+    eSrc &List[u32], fSrc &List[u32]) PolyMesh {
+  mut problems = List[String].empty();
+  mut out = PolyMesh.fromPolygons(pos.view(), counts.view(), idx.view(), &mut problems);
+
+  // Which given face each made face is, and where its corners begin in idx:
+  // faces are made in the order given, a refused one left out
+  imm nf = out.fHalfedge.len();
+  mut given = List[u32].withCapacity(nf);
+  mut first = List[u32].withCapacity(nf);
+  mut f = 0usize;
+  mut g = 0usize;
+  mut start = 0usize;
+  while f < nf and g < counts.len() {
+    imm n = usize.from(*counts[g]);
+    imm vs = out.faceVertices(u32.from(f));
+    mut same = vs.len() == n;
+    mut i = 0usize;
+    while same and i < n {
+      if *vs[i] != *idx[start + i] { same = false; }
+      i = i + 1usize;
+    }
+    if same {
+      given.push(u32.from(g));
+      first.push(u32.from(start));
+      f = f + 1usize;
+    }
+    start = start + n;
+    g = g + 1usize;
+  }
+
+  mut c = 0usize;
+  while c < m.floats.len() {
+    imm domain = m.floats[c].domain;
+    imm isCrease = domain == EdgeDomain and m.floats[c].name.equals("crease");
+    imm vals = floatChannelVec3s(m, c);
+    imm res = carryChannel(&out, domain, &vals, isCrease, vSrc, cSrc, eSrc, fSrc, &given, &first);
+    out.floats.push(new Channel[f32](String.from(m.floats[c].name.view()), domain, vec3ToFloats(&res)));
+    c = c + 1usize;
+  }
+  c = 0usize;
+  while c < m.vec2s.len() {
+    imm domain = m.vec2s[c].domain;
+    imm vals = vec2ChannelVec3s(m, c);
+    imm res = carryChannel(&out, domain, &vals, false, vSrc, cSrc, eSrc, fSrc, &given, &first);
+    out.vec2s.push(new Channel[Vec2](String.from(m.vec2s[c].name.view()), domain, vec3ToVec2s(&res)));
+    c = c + 1usize;
+  }
+  c = 0usize;
+  while c < m.vec3s.len() {
+    imm domain = m.vec3s[c].domain;
+    imm vals = vec3ChannelVec3s(m, c);
+    imm res = carryChannel(&out, domain, &vals, false, vSrc, cSrc, eSrc, fSrc, &given, &first);
+    out.vec3s.push(new Channel[Vec3](String.from(m.vec3s[c].name.view()), domain, res));
+    c = c + 1usize;
+  }
+  out;
+}
+
+// One channel's values (as Vec3) for the elements of 'out', from the source
+// values 'vals' by the links 'assemble' was given
+fn carryChannel(out &PolyMesh, domain u32, vals &List[Vec3], isCrease Bool, vSrc &List[u32], cSrc &List[u32],
+    eSrc &List[u32], fSrc &List[u32], given &List[u32], first &List[u32]) List[Vec3] {
+  imm zero = new Vec3(0., 0., 0.);
+  if domain == VertexDomain {
+    imm nv = out.positions.len();
+    mut res = List[Vec3].withCapacity(nv);
+    mut v = 0usize;
+    while v < nv {
+      res.push(*vals[usize.from(*vSrc[v])]);
+      v = v + 1usize;
+    }
+    return res;
+  }
+  if domain == FaceDomain {
+    imm nf = out.fHalfedge.len();
+    mut res = List[Vec3].withCapacity(nf);
+    mut f = 0usize;
+    while f < nf {
+      res.push(*vals[usize.from(*fSrc[usize.from(*given[f])])]);
+      f = f + 1usize;
+    }
+    return res;
+  }
+  imm n = out.domainSize(domain);
+  mut res = List[Vec3].withCapacity(n);
+  mut seen = List[Bool].withCapacity(n);
+  mut i = 0usize;
+  while i < n {
+    res.push(zero);
+    seen.push(false);
+    i = i + 1usize;
+  }
+  mut f = 0usize;
+  while f < out.fHalfedge.len() {
+    imm hs = out.faceHalfedges(u32.from(f));
+    imm base = usize.from(*first[f]);
+    mut k = 0usize;
+    while k < hs.len() {
+      imm h = *hs[k];
+      if domain == CornerDomain {
+        res.set(usize.from(h), *vals[usize.from(*cSrc[base + k])]);
+      } else {
+        imm e = usize.from(h / 2u32);
+        imm val = *vals[usize.from(*eSrc[base + k])];
+        if !*seen[e] {
+          res.set(e, val);
+          seen.set(e, true);
+        } elif isCrease and val.x > res[e].x {
+          res.set(e, val);
+        }
+      }
+      k = k + 1usize;
+    }
+    f = f + 1usize;
+  }
+  res;
+}
+
+// m with each vertex v merged into rep[v], its cluster's representative: the
+// cluster's lowest-numbered vertex, so rep[v] <= v and rep[rep[v]] ==
+// rep[v]. The representatives are kept, in their order, at their own
+// positions, with their own vertex values; every other vertex goes. Each
+// face's corners are mapped to the representatives, and a run of corners at
+// one vertex (a side that collapsed) becomes one corner, which takes the
+// corner values of the run's lowest-numbered vertex (its representative, when
+// that is in the face), so a quad with one side collapsed becomes a triangle.
+// A face is removed when it is left with fewer than 3 corners, when it comes
+// back to a vertex it has already passed (a bow tie, which is not one
+// polygon), or when it has the same corners as a face kept before it, either
+// way round (the second of two coincident faces, back to back or not). A
+// face that is not changed keeps its corners in their order from its first.
+// Edges are the faces' sides, so an edge that collapsed is gone with them.
+// Vertices are never removed but by merging: one left on no face stays, on
+// no edge.
+fn collapse(m &PolyMesh, rep &List[u32]) PolyMesh {
+  imm nv = m.positions.len();
+  mut newIdx = List[u32].withCapacity(nv);
+  mut pos = List[Vec3].empty();
+  mut vSrc = List[u32].empty();
+  mut v = 0usize;
+  while v < nv {
+    imm r = usize.from(*rep[v]);
+    if r == v {
+      newIdx.push(u32.from(pos.len()));
+      pos.push(*m.positions[v]);
+      vSrc.push(u32.from(v));
+    } else {
+      newIdx.push(*newIdx[r]);
+    }
+    v = v + 1usize;
+  }
+
+  mut counts = List[u32].empty();
+  mut idx = List[u32].empty();
+  mut cSrc = List[u32].empty();
+  mut eSrc = List[u32].empty();
+  mut fSrc = List[u32].empty();
+  // Kept faces chained by their lowest vertex, to find a face's duplicate
+  mut byLowest = List[u32].withCapacity(pos.len());
+  v = 0usize;
+  while v < pos.len() {
+    byLowest.push(NoIndex);
+    v = v + 1usize;
+  }
+  mut keptNext = List[u32].empty();
+  mut keptStart = List[u32].empty();
+  mut runV = List[u32].empty();   // per run: its vertex
+  mut runC = List[u32].empty();   // per run: the corner it keeps
+  mut runE = List[u32].empty();   // per run: the edge its incoming side runs along
+  mut runLow = List[u32].empty(); // per run: the source vertex of the corner it keeps
+  mut f = 0usize;
+  while f < m.fHalfedge.len() {
+    imm hs = m.faceHalfedges(u32.from(f));
+    imm n = hs.len();
+    // Start at the first corner whose vertex differs from the one before it
+    mut i0 = n;
+    mut i = 0usize;
+    while i < n and i0 == n {
+      imm here = *newIdx[usize.from(*m.hVertex[usize.from(*hs[i])])];
+      imm before = *newIdx[usize.from(*m.hVertex[usize.from(*hs[(i + n - 1usize) % n])])];
+      if here != before { i0 = i; }
+      i = i + 1usize;
+    }
+    runV.clear();
+    runC.clear();
+    runE.clear();
+    runLow.clear();
+    if i0 < n {
+      mut k = 0usize;
+      while k < n {
+        imm h = *hs[(i0 + k) % n];
+        imm src = *m.hVertex[usize.from(h)];
+        imm nvx = *newIdx[usize.from(src)];
+        imm last = runV.len();
+        if last == 0usize or *runV[last - 1usize] != nvx {
+          runV.push(nvx);
+          runC.push(h);
+          runE.push(h / 2u32);
+          runLow.push(src);
+        } elif src < *runLow[last - 1usize] {
+          runC.set(last - 1usize, h);
+          runLow.set(last - 1usize, src);
+        }
+        k = k + 1usize;
+      }
+    }
+    imm r = runV.len();
+    mut keep = r >= 3usize;
+    // No vertex twice, and the lowest vertex for the duplicate search
+    mut lowest = NoIndex;
+    i = 0usize;
+    while keep and i < r {
+      if *runV[i] < lowest { lowest = *runV[i]; }
+      mut j = i + 1usize;
+      while j < r {
+        if *runV[i] == *runV[j] { keep = false; }
+        j = j + 1usize;
+      }
+      i = i + 1usize;
+    }
+    if keep {
+      mut o = *byLowest[usize.from(lowest)];
+      while keep and o != NoIndex {
+        imm ou = usize.from(o);
+        if usize.from(*counts[ou]) == r and sameCycle(&idx, usize.from(*keptStart[ou]), &runV) { keep = false; }
+        o = *keptNext[ou];
+      }
+    }
+    if keep {
+      imm kept = u32.from(counts.len());
+      keptStart.push(u32.from(idx.len()));
+      keptNext.push(*byLowest[usize.from(lowest)]);
+      byLowest.set(usize.from(lowest), kept);
+      counts.push(u32.from(r));
+      i = 0usize;
+      while i < r {
+        idx.push(*runV[i]);
+        cSrc.push(*runC[i]);
+        eSrc.push(*runE[i]);
+        i = i + 1usize;
+      }
+      fSrc.push(u32.from(f));
+    }
+    f = f + 1usize;
+  }
+  assemble(m, &pos, &vSrc, &counts, &idx, &cSrc, &eSrc, &fSrc);
+}
+
+// Whether the face in idx from 'start', with as many corners as 'vs', has the
+// same corners as vs in a cycle, either way round
+fn sameCycle(idx &List[u32], start usize, vs &List[u32]) Bool {
+  imm n = vs.len();
+  mut o = 0usize;
+  while o < n {
+    if *idx[start + o] == *vs[0usize] {
+      mut fwd = true;
+      mut back = true;
+      mut k = 0usize;
+      while k < n {
+        if *idx[start + (o + k) % n] != *vs[k] { fwd = false; }
+        if *idx[start + (o + n - k) % n] != *vs[k] { back = false; }
+        k = k + 1usize;
+      }
+      return fwd or back;
+    }
+    o = o + 1usize;
+  }
+  false;
+}

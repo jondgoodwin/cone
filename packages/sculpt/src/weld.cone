@@ -1,0 +1,155 @@
+// ======== Weld: merging vertices by distance ========
+
+// Weld (Blender's Merge by Distance, and its Weld modifier in All mode):
+// vertices within 'distance' of each other are merged. Two vertices are
+// joined when the distance between them is at most 'distance', and a
+// cluster is everything joined to anything in it (so a chain of close
+// vertices merges as one, as it would merged pair by pair). Each cluster is
+// represented by its lowest-numbered vertex, which keeps its position and
+// its vertex values; the others go, and the vertices left keep their order,
+// so vertex v's new number is the count of representatives before it. Faces
+// and their corners follow (see 'collapse'): a face that loses a side loses
+// that corner, one left with fewer than 3 corners or crossing itself goes,
+// and of two coincident faces the first is kept. Every channel is carried
+// (see 'assemble'): a vertex's values are its representative's, a face's
+// and a corner's their own, and an edge's the first face's along it, but
+// for "crease", which takes the greatest. A distance of 0 merges
+// only vertices at the same point; a negative distance merges none, though
+// coincident faces still go.
+//
+// It is deterministic: the clusters are the connected pieces of the "within
+// distance" pairs, which do not depend on the order pairs are found in, and
+// each is named by its lowest number. Pairs are found through a spatial
+// hash of cells 'distance' wide, so only vertices in neighbouring cells are
+// compared.
+pub fn weld(m &PolyMesh, distance f32) PolyMesh {
+  imm none = List[u32].empty();
+  imm rep = clusters(&m.positions, distance, &none, 0u32, false);
+  collapse(m, &rep);
+}
+
+// Each vertex's cluster representative (its lowest-numbered vertex), the
+// clusters joining vertices within 'distance' (none when it is negative).
+// With 'copyOf' empty, any two vertices may join; otherwise vertex v belongs
+// to copy copyOf[v] of 'copies', and only vertices of neighbouring copies
+// join: copy k with copy k + 1, and the last with the first when 'wrap'.
+fn clusters(pos &List[Vec3], distance f32, copyOf &List[u32], copies u32, wrap Bool) List[u32] {
+  imm n = pos.len();
+  mut parent = List[u32].withCapacity(n);
+  mut v = 0usize;
+  while v < n {
+    parent.push(u32.from(v));
+    v = v + 1usize;
+  }
+  if distance < 0. or n == 0usize { return parent; }
+
+  // The spatial hash: each vertex's cell, and the vertices of each slot
+  // chained, a slot holding the cells whose hash falls in it
+  imm size = if distance > 0. {distance;} else {1.;};
+  mut slots = 1usize;
+  while slots < 2usize * n { slots = slots * 2usize; }
+  imm mask = u32.from(slots - 1usize);
+  mut head = List[u32].withCapacity(slots);
+  mut i = 0usize;
+  while i < slots {
+    head.push(NoIndex);
+    i = i + 1usize;
+  }
+  mut next = List[u32].withCapacity(n);
+  mut cx = List[i32].withCapacity(n);
+  mut cy = List[i32].withCapacity(n);
+  mut cz = List[i32].withCapacity(n);
+  v = 0usize;
+  while v < n {
+    imm p = *pos[v];
+    imm x = cellOf(p.x, size);
+    imm y = cellOf(p.y, size);
+    imm z = cellOf(p.z, size);
+    cx.push(x);
+    cy.push(y);
+    cz.push(z);
+    imm s = usize.from(cellHash(x, y, z) & mask);
+    next.push(*head[s]);
+    head.set(s, u32.from(v));
+    v = v + 1usize;
+  }
+
+  // Each vertex against the higher-numbered ones in the 27 cells about it
+  imm d2 = distance * distance;
+  v = 0usize;
+  while v < n {
+    imm p = *pos[v];
+    mut dz = -1i32;
+    while dz <= 1i32 {
+      mut dy = -1i32;
+      while dy <= 1i32 {
+        mut dx = -1i32;
+        while dx <= 1i32 {
+          imm s = usize.from(cellHash(*cx[v] + dx, *cy[v] + dy, *cz[v] + dz) & mask);
+          mut w = *head[s];
+          while w != NoIndex {
+            imm wu = usize.from(w);
+            if wu > v and mayJoin(copyOf, copies, wrap, v, wu) and (*pos[wu] - p).lengthSquared() <= d2 {
+              joinSets(&mut parent, u32.from(v), w);
+            }
+            w = *next[wu];
+          }
+          dx = dx + 1i32;
+        }
+        dy = dy + 1i32;
+      }
+      dz = dz + 1i32;
+    }
+    v = v + 1usize;
+  }
+  mut rep = List[u32].withCapacity(n);
+  v = 0usize;
+  while v < n {
+    rep.push(rootOf(&mut parent, u32.from(v)));
+    v = v + 1usize;
+  }
+  rep;
+}
+
+// Whether vertices a and b may join (see 'clusters')
+fn mayJoin(copyOf &List[u32], copies u32, wrap Bool, a usize, b usize) Bool {
+  if copyOf.len() == 0usize { return true; }
+  imm ka = *copyOf[a];
+  imm kb = *copyOf[b];
+  if ka + 1u32 == kb or kb + 1u32 == ka { return true; }
+  imm lastK = copies - 1u32;
+  wrap and copies > 2u32 and ((ka == 0u32 and kb == lastK) or (kb == 0u32 and ka == lastK));
+}
+
+// The cell a coordinate falls in, held to a billion cells either way
+fn cellOf(x f32, size f32) i32 {
+  i32.from(clampf(libc.floorf(x / size), -1000000000., 1000000000.));
+}
+
+// A cell's slot hash (Teschner et al., "Optimized spatial hashing for
+// collision detection of deformable objects", 2003)
+fn cellHash(x i32, y i32, z i32) u32 {
+  ((x as u32) * 73856093u32) ^ ((y as u32) * 19349663u32) ^ ((z as u32) * 83492791u32);
+}
+
+// Union-find, each set rooted at its lowest member: the root of v's set,
+// every vertex on the way pointed straight at it
+fn rootOf(parent &mut List[u32], v u32) u32 {
+  mut r = v;
+  while *parent[usize.from(r)] != r { r = *parent[usize.from(r)]; }
+  mut x = v;
+  while *parent[usize.from(x)] != r {
+    imm up = *parent[usize.from(x)];
+    parent.set(usize.from(x), r);
+    x = up;
+  }
+  r;
+}
+
+// Join the sets of a and b, under the lower root
+fn joinSets(parent &mut List[u32], a u32, b u32) {
+  imm ra = rootOf(parent, a);
+  imm rb = rootOf(parent, b);
+  if ra < rb { parent.set(usize.from(rb), ra); }
+  elif rb < ra { parent.set(usize.from(ra), rb); }
+}
