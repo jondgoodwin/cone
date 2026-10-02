@@ -1,13 +1,14 @@
-// Congo, the Cone build tool, written in Cone: stage 1 of the port from
+// Congo, the Cone build tool, written in Cone: stage 2 of the port from
 // congo.py, which it matches message for message on what it does.
 //
-//     congo run [--release] <file.cone> [-- args...]
-//                                       build one lone file and run it
-//     congo clean <file.cone>           delete what a lone file's build wrote
+//     congo new <name> [--lib]          make a package folder
+//     congo build [--release]           build the package the current folder is in
+//     congo run [--release] [file.cone] [-- args...]
+//                                       build it (or one lone file) and run it
+//     congo clean [file.cone]           delete what a build wrote
 //
-// The rest of congo.py (a package's manifest: 'new', 'build', 'run' and
-// 'clean' in a package, 'test') is not here yet; tools/congo/congo.py does
-// it, and is how this program is built (README.md, "Congo in Cone").
+// 'congo test' is not here yet; tools/congo/congo.py does it, and is how
+// this program is first built (README.md, "Congo in Cone").
 //
 // CONGO DISCOVERS, THE COMPILER IS TOLD. Congo reads each source file's
 // header -- its leading comments, its 'mod' line and its 'import' lines, and
@@ -22,14 +23,15 @@
 // beside its object: what an importer is compiled against in place of the
 // package's source.
 //
-// The files of this module: header.cone (the header scan and the names a
-// module may not have), paths.cone (paths and the environment as congo.py's
-// pathlib and os.path read them), registry.cone (manifests, the machine
-// config, the registry), modules.cone (a package's module tree and its
-// loops), order.cone (the build order and the build descriptions),
-// linker.cone (conec, conestd and Microsoft's linker), build.cone (the
-// compiles and the link), sha1.cone and util.cone. Windows only, as the
-// process package and Congo's linking are for now.
+// The files of this module: commands.cone (the commands, and the current
+// package), header.cone (the header scan and the names a module may not
+// have), paths.cone (paths and the environment as congo.py's pathlib and
+// os.path read them), registry.cone (manifests, the machine config, the
+// registry), modules.cone (a package's module tree and its loops), order.cone
+// (the build order and the build descriptions), linker.cone (conec, conestd
+// and Microsoft's linker), build.cone (the compiles, the link and a build),
+// sha1.cone and util.cone. Windows only, as the process package and Congo's
+// linking are for now.
 
 mod congo;
 
@@ -64,69 +66,34 @@ fn findRepo() String {
   String.empty();
 }
 
-// -------- commands --------
-
-// Build a lone file and run it, passing on its exit code
-fn cmdRun(file &[]u8, release Bool, programArgs &List[String]) i32 {
-  imm repo = findRepo();
-  imm pkg = lonePackage(file);
-  mut mode &[]u8 = "debug";
-  if release { mode = "release"; }
-  imm folders = registryFolders(repo.view());
-  mut reg = readRegistry(folders);
-  imm root = loneBuildRoot(pkg.src.view());
-  imm out = joined(root.view(), mode);
-  imm name = pkg.name.copy();
-  imm top = reg.add(pkg);
-  imm plan = buildOrder(&reg, top);
-  // Found at the first compile, after the imports are resolved, so that an
-  // error in the source is reported before anything about the machine
-  imm conec = findConec(repo.view());
-  imm objs = compileAll(&reg, &plan, top, out.view(), mode, conec.view());
-  imm exeName = cat(name.view(), ".exe");
-  imm exe = joined(out.view(), exeName.view());
-  link(&reg, &plan, &objs, exe.view(), conec.view());
-  imm place = shown(exe.view());
-  imm finished = cat(mode, " ", place.view());
-  say("Finished", finished.view());
-  say("Running", place.view());
-  mut args = List[String].empty();
-  args.push(exe.copy());
-  mut i = 0usize;
-  while i < programArgs.len() {
-    args.push(programArgs[i].copy());
-    i = i + 1usize;
-  }
-  match process.run(args.view(), new process.Options(inherit: true)) {
-    case imm ok Ok { ok.value.exitCode as i32; }
-    case imm e Error {
-      fail(e.value.message());
-    }
-  }
-}
-
-// Delete a lone file's build
-fn cmdClean(file &[]u8) i32 {
-  imm p = winPath(file);
-  imm target = loneBuildRoot(p.view());
-  if fs.exists(target.view()) {
-    match fs.removeAll(target.view()) {
-      case is Ok {}
-      case imm e Error {
-        fail(e.value.message());
-      }
-    }
-    imm place = shown(target.view());
-    say("Removed", place.view());
-  }
-  0i32;
-}
-
 // -------- the command line, as congo.py's argparse reads it --------
 
 fn usageError(msg String) i32 {
   printFlush();
   eprintStr("usage: congo [-h] command ...\ncongo: error: ");
+  eprintStr(msg.view());
+  eprintStr("\n");
+  2i32;
+}
+
+// A command's own usage line
+fn commandUsage(command &[]u8) String {
+  mut usage = cat("usage: congo ", command, " [-h]");
+  if command == "new" { usage <- " [--lib] name [path]"; }
+  elif command == "build" { usage <- " [--release]"; }
+  elif command == "run" { usage <- " [--release] [file]"; }
+  else { usage <- " [file]"; }
+  usage;
+}
+
+// An error the command's own parser reports, under its usage line
+fn commandError(command &[]u8, msg String) i32 {
+  printFlush();
+  imm usage = commandUsage(command);
+  eprintStr(usage.view());
+  eprintStr("\ncongo ");
+  eprintStr(command);
+  eprintStr(": error: ");
   eprintStr(msg.view());
   eprintStr("\n");
   2i32;
@@ -161,24 +128,34 @@ fn topHelp() i32 {
   0i32;
 }
 
-fn runHelp() i32 {
-  printStr("usage: congo run [-h] [--release] [file]\n\npositional arguments:\n");
-  printStr("  file        a lone .cone file, run with no manifest\n\noptions:\n");
-  printStr("  -h, --help  show this help message and exit\n  --release   an optimised build\n\n");
-  printStr("Arguments after '--' are passed to the program.\n");
+fn commandHelp(command &[]u8) i32 {
+  imm usage = commandUsage(command);
+  printStr(usage.view());
+  printStr("\n\n");
+  if command == "new" {
+    printStr("positional arguments:\n  name        the package's name\n");
+    printStr("  path        the folder to make (default: the name)\n\noptions:\n");
+    printStr("  -h, --help  show this help message and exit\n");
+    printStr("  --lib       a library package, whose include file its build generates\n");
+  }
+  elif command == "build" {
+    printStr("options:\n  -h, --help  show this help message and exit\n  --release   an optimised build\n");
+  }
+  elif command == "run" {
+    printStr("positional arguments:\n  file        a lone .cone file, run with no manifest\n\noptions:\n");
+    printStr("  -h, --help  show this help message and exit\n  --release   an optimised build\n\n");
+    printStr("Arguments after '--' are passed to the program.\n");
+  }
+  else {
+    printStr("positional arguments:\n  file        a lone .cone file whose build to delete\n\noptions:\n");
+    printStr("  -h, --help  show this help message and exit\n");
+  }
   0i32;
 }
 
-fn cleanHelp() i32 {
-  printStr("usage: congo clean [-h] [file]\n\npositional arguments:\n");
-  printStr("  file        a lone .cone file whose build to delete\n\noptions:\n");
-  printStr("  -h, --help  show this help message and exit\n");
-  0i32;
-}
-
-// What this Congo cannot do yet: everything that reads a package's manifest
-fn notYet(what &[]u8) i32 {
-  fail(cat("'congo ", what, "' needs a package's manifest, which this Congo (written in Cone, stage 1) does not read yet; it runs and cleans a lone file. Python's tools/congo/congo.py does the rest"));
+// What this Congo cannot do yet
+fn notYet() i32 {
+  fail(String.from("'congo test' is not in this Congo (written in Cone, stage 2) yet; Python's tools/congo/congo.py runs a package's tests"));
 }
 
 fn main() i32 {
@@ -208,30 +185,53 @@ fn main() i32 {
     return usageError(cat("argument command: invalid choice: '", command,
       "' (choose from new, build, run, test, clean)"));
   }
-  if command == "new" or command == "build" or command == "test" { return notYet(command); }
-  // run [--release] [file]; clean [file]
+  if command == "test" { return notYet(); }
+  // new name [path] [--lib]; build [--release]; run [--release] [file];
+  // clean [file]. Each option is a flag, read where it stands, as is '-h'
   mut release = false;
-  mut file = String.empty();
-  mut hasFile = false;
+  mut lib = false;
+  mut positionals = List[String].empty();
+  mut most = 1usize;
+  if command == "new" { most = 2usize; }
+  elif command == "build" { most = 0usize; }
+  imm hasRelease = command == "build" or command == "run";
   i = at + 1usize;
   while i < argv.len() {
     imm arg = argv[i].view();
-    if isHelp(arg) { return if command == "run" {runHelp();} else {cleanHelp();}; }
-    if command == "run" and isOption(arg, "--release") { release = true; }
-    elif looksLikeOption(arg) or hasFile { extras.push(String.from(arg)); }
-    else {
-      file = String.from(arg);
-      hasFile = true;
+    if isHelp(arg) { return commandHelp(command); }
+    imm eq = findByte(arg, '=', 0usize);
+    mut explicit &[]u8 = "";
+    if arg.len >= 2usize and arg[0usize] == '-' and eq < arg.len {
+      // '--flag=value': a flag takes no value
+      imm opt = &arg[..eq];
+      if opt == "-h" or isOption(opt, "--help") { explicit = "-h/--help"; }
+      elif hasRelease and isOption(opt, "--release") { explicit = "--release"; }
+      elif command == "new" and isOption(opt, "--lib") { explicit = "--lib"; }
     }
+    if explicit.len > 0usize {
+      return commandError(command, cat("argument ", explicit, ": ignored explicit argument '", &arg[eq + 1usize..], "'"));
+    }
+    if hasRelease and isOption(arg, "--release") { release = true; }
+    elif command == "new" and isOption(arg, "--lib") { lib = true; }
+    elif looksLikeOption(arg) or positionals.len() >= most { extras.push(String.from(arg)); }
+    else { positionals.push(String.from(arg)); }
     i = i + 1usize;
+  }
+  if command == "new" and positionals.len() == 0usize {
+    return commandError(command, String.from("the following arguments are required: name"));
   }
   if extras.len() > 0usize {
     imm listed = String.join(extras.view(), " ");
     return usageError(cat("unrecognized arguments: ", listed.view()));
   }
-  if not hasFile {
-    return notYet(if command == "run" {"run";} else {"clean";});
+  if command == "new" {
+    if positionals.len() > 1usize { return cmdNew(positionals[0usize].view(), positionals[1usize].view(), lib); }
+    return cmdNew(positionals[0usize].view(), "", lib);
   }
-  if command == "run" { cmdRun(file.view(), release, &programArgs); }
-  else { cmdClean(file.view()); }
+  if command == "build" { return cmdBuild(release); }
+  imm hasFile = positionals.len() > 0usize;
+  mut file = String.empty();
+  if hasFile { file = positionals[0usize].copy(); }
+  if command == "run" { cmdRun(file.view(), hasFile, release, &programArgs); }
+  else { cmdClean(file.view(), hasFile); }
 }

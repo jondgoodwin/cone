@@ -558,9 +558,9 @@ the packages' tests: `congo test` in `packages/` does.
 Congo is being ported to Cone, in stages, so that nothing needs Python. The
 port is a package here, beside `congo.py`: `tools/congo/congo.toml`, its root
 `src/congo.cone` (the only file that imports) and the files joining its module
-(`header.cone`, `paths.cone`, `registry.cone`, `modules.cone`, `order.cone`,
-`linker.cone`, `build.cone`, `sha1.cone`, `util.cone`). It is built by
-`congo.py`, which stays as the way to build it:
+(`commands.cone`, `header.cone`, `paths.cone`, `registry.cone`, `modules.cone`,
+`order.cone`, `linker.cone`, `build.cone`, `sha1.cone`, `util.cone`). `congo.py`
+builds it first:
 
 ```
 cd tools/congo
@@ -568,20 +568,28 @@ python congo.py build
 ```
 
 which writes `tools/congo/build/debug/congo.exe` (`--release`,
-`build/release/congo.exe`). Windows only, as its `process` package and its
-linking are for now.
+`build/release/congo.exe`). After that it builds itself, `build\debug\congo.exe
+build` in `tools/congo`, into the same place. Windows will not remove a
+running program's file but will rename it, so when the executable a build
+links is the Congo running, that Congo is first moved aside to
+`congo.exe.old` (one left there before is removed). It cannot `clean` its own
+build folder while it runs from it; `congo.py clean` can. Windows only, as its
+`process` package and its linking are for now.
 
-**Stage 1 is a lone file:** `congo run [--release] <file.cone> [-- args...]`
-and `congo clean <file.cone>`, matching `congo.py` message for message, file for
-file and exit status for exit status — the header scan, the registries (the
-repository's `packages/` and the machine config's folders, every manifest in
-them read and checked), the build order and its loop refusals, the build
-descriptions, `conec`, `[link]`, the linker found through `vcvars64.bat`, and
-the program run with its exit status passed back. Everything that needs the
-current package's manifest (`new`, `build`, `test`, and `run` or `clean` with
-no file) says so and exits 1; `congo.py` does it. The repository is the nearest
-folder above the executable holding `packages/core`, as `conec` finds its
-packages folder.
+**It does everything but `congo test`:** `congo new` (the manifest and the
+template, byte for byte), `congo build` (debug and `--release`, a program
+linked or a library's object, the build folder, the descriptions), `congo run`
+of the current package or a lone file, and `congo clean` of either, matching
+`congo.py` message for message, file for file and exit status for exit status
+— the current package's manifest found by walking up and checked as
+`congo.py` checks it, the header scan, the package's folder module tree and its
+loop refusals, the registries (the repository's `packages/` and the machine
+config's folders, every manifest in them read and checked), the build order
+and its loop refusals, `conec`, `[link]`, the linker found through
+`vcvars64.bat`, and the program run with its exit status passed back. Like
+`congo.py`, it builds the whole of a build every time. `congo test` says it is
+not here yet and exits 1. The repository is the nearest folder above the
+executable holding `packages/core`, as `conec` finds its packages folder.
 
 `CONGO_EXE` points `test_congo.py` at it:
 
@@ -589,8 +597,8 @@ packages folder.
 $env:CONGO_EXE = "tools\congo\build\debug\congo.exe"; python tools/congo/test_congo.py
 ```
 
-runs every lone-file scenario against the Cone Congo and skips the scenarios
-that need more of Congo, saying why.
+runs every scenario but those of `congo test` against the Cone Congo, and
+skips those, saying why.
 
 Where it differs from `congo.py`, beyond what it does not do yet:
 
@@ -606,6 +614,8 @@ Where it differs from `congo.py`, beyond what it does not do yet:
   junction or short (8.3) name in it is kept as written, where `Path.resolve()`
   follows it; and a source file's time is in whole seconds when Congo asks
   whether `conec` is stale.
+- Where `congo.py` stops with a Python traceback (a folder or file it cannot
+  make, write or remove), it says `congo: error:` and why, and exits 1.
 
 ## Not built yet
 

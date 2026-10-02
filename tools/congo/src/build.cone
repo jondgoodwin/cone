@@ -1,6 +1,49 @@
-// Building: each package's compile, the link, and a lone file standing as a
-// package (congo.py's compile_unit, Session, build, lone_package and
-// lone_build_root).
+// Building: each package's compile, the link, a package's build as a whole,
+// and a lone file standing as a package (congo.py's compile_unit, Session,
+// build, build_folder, lone_package and lone_build_root).
+
+// Where a package's build goes: build/<mode>/ in the package's folder; a
+// lone file's under the Congo home
+fn buildFolder(pkg &Package, mode &[]u8) String {
+  if pkg.lone {
+    imm root = loneBuildRoot(pkg.src.view());
+    return joined(root.view(), mode);
+  }
+  imm folder = joined(pkg.root.view(), "build");
+  joined(folder.view(), mode);
+}
+
+// Build pkg and everything it imports into its build folder, each package
+// compiled on its own; answer the executable, or for a library its object.
+// A build is whole every time: every description written, every package
+// compiled, nothing kept from a build before.
+fn buildPackage(repo &[]u8, pkg Package, mode &[]u8) String {
+  imm folders = registryFolders(repo);
+  mut reg = readRegistry(folders);
+  imm out = buildFolder(&pkg, mode);
+  imm isLibrary = pkg.output.equals("library");
+  imm name = pkg.name.copy();
+  imm top = reg.add(pkg);
+  imm plan = buildOrder(&reg, top);
+  // Found at the first compile, after the imports are resolved, so that an
+  // error in the source is reported before anything about the machine
+  imm conec = findConec(repo);
+  imm objs = compileAll(&reg, &plan, top, out.view(), mode, conec.view());
+  if isLibrary {
+    imm obj = objs[objs.len() - 1usize].copy();
+    imm place = shown(obj.view());
+    imm finished = cat(mode, " library object ", place.view());
+    say("Finished", finished.view());
+    return obj;
+  }
+  imm exeName = cat(name.view(), ".exe");
+  imm exe = joined(out.view(), exeName.view());
+  link(&reg, &plan, &objs, exe.view(), conec.view());
+  imm place = shown(exe.view());
+  imm finished = cat(mode, " ", place.view());
+  say("Finished", finished.view());
+  exe;
+}
 
 // A lone file's build goes under the Congo home, not beside the file: the
 // folder a lone file sits in is nobody's package, and may well hold a
@@ -178,6 +221,35 @@ fn holdsPath(list &List[String], p &[]u8) Bool {
   false;
 }
 
+// Congo building itself, where the executable it links is the one running.
+// Windows will not remove a running program's file, but will rename it: so
+// the running Congo is moved aside, to <exe>.old (one left by a build before
+// removed first), and the new one is linked where any build links it.
+fn moveAsideIfRunning(exe &[]u8) {
+  mut running = String.empty();
+  match process.currentExe() {
+    case mut ok Ok { running <=> ok.value; }
+    case is Error { return; }
+  }
+  imm spelled = winPath(running.view());
+  if not samePath(spelled.view(), exe) { return; }
+  imm old = cat(exe, ".old");
+  match fs.removeFile(old.view()) {
+    case is Ok {}
+    case imm e Error {
+      if not e.value.notFound() {
+        fail(e.value.message());
+      }
+    }
+  }
+  match fs.rename(exe, old.view()) {
+    case is Ok {}
+    case imm e Error {
+      fail(e.value.message());
+    }
+  }
+}
+
 // Link the objects into exe: the program's object first, then the packages
 // it imports, last built first; and the C libraries every one of them names,
 // in the same order, each once. A C package's own object is linked like any
@@ -249,6 +321,7 @@ fn link(reg &Registry, plan &Plan, objs &List[String], exe &[]u8, conec &[]u8) {
   command.push(String.from("legacy_stdio_definitions.lib"));
   imm place = shown(exe);
   say("Linking", place.view());
+  moveAsideIfRunning(exe);
   match fs.removeFile(exe) {
     case is Ok {}
     case imm e Error {
