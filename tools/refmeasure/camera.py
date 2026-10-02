@@ -87,3 +87,19 @@ def starship_landmarks():
     tail = end + last / np.linalg.norm(last) * 1.7
     head = np.array([-1.33, -0.12, 0.0])       # the snout capsule's end, less its radius
     return {"head": head, "tail": tail}
+
+
+def starship_spine(t0=0.0, t1=1.0, n=200, lift=0.0):
+    """Points along starship.cone's spine (the same formula as its spineAt),
+    from t0 to t1, raised `lift` units in y (towards the back), and the
+    cumulative 3-D arc length at each."""
+    t = np.linspace(t0, t1, n)
+    arch = (0.55 + 0.5 * (1 - t) ** 2) * np.sin(3.14159 * t)
+    pts = np.stack([0.1 + 11.5 * t, 0.18 * np.sin(5.65 * t) + arch + 0.9 * t ** 3 + lift, 0 * t], 1)
+    arc = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(pts, axis=0), axis=1))])
+    return pts, arc
+
+
+def parse_arg(arg):
+    v = [float(x) for x in arg.split(",")]
+    return np.array(v[0:3]), np.array(v[3:6]), np.array(v[6:9]), v[9]
