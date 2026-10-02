@@ -1,0 +1,41 @@
+// A local's borrow stored through a reference to a local node -- a struct
+// holding a borrow of its own type, and holding the caller's node -- and read
+// back inside the function: the reference points at the local node, and only
+// what that node held came from the caller, so the store is legal.
+//
+// Verdict: accept; prints 5.
+// Basis: language rule (2 Oct 2026), the flow rule -- a variable's lifetime
+// follows what it holds now; a store through a reference lands where the
+// reference points, not in what that place held before.
+// Rust: accepted (by reading, not run).
+// Master b306a838: refused with ErrorEscape ("Stored where it may outlive
+// this function"): the caller's node the local held has the type the
+// reference points at, so it was taken for a place the reference may point at.
+
+mod lifetime_mix_store_through_ref_to_local_node;
+
+import stdio use *;
+
+struct Node {
+  pub n i64;
+  pub next Option[&Node];
+}
+
+fn relink(r &Node) {
+  imm x = new Node(5, Some[&Node][r]);
+  mut lh = new Node(1, Some[&Node][r]);
+  {
+    imm q = &mut lh;
+    q.next = Some[&Node][&x];
+  }
+  match lh.next {
+    case imm nx Some { printInt(nx.value.n); }
+    case is None { printStr("none"); }
+  }
+  printStr("\n");
+}
+
+fn main() {
+  imm end = new Node(0, None[&Node][]);
+  relink(&end);
+}

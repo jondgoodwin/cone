@@ -1,0 +1,38 @@
+// The counterpart of lifetime_mix_store_into_local_holding_param: the store
+// through '&mut q' is legal, but 's' ends before 'q', which now holds its
+// borrow, is read.
+//
+// Verdict: refuse, ErrorFrozen where 's' is declared (it ends first), and
+// nothing at the store.
+// Basis: language rule (2 Oct 2026), the flow rule -- a variable's lifetime
+// follows what it holds now; borrow-freezing rule (26 Sep 2026) -- a store
+// through a reference puts the stored borrow's loans into what it points at.
+// Master b306a838: refused, but also at the store ("Stored where it may
+// outlive this function"), which is legal.
+
+mod lifetime_free_store_into_local_holding_param_frozen;
+
+import stdio use *;
+
+struct R {
+  pub n i64;
+  fn final(self &uni) {
+    printStr("final\n");
+  }
+}
+
+fn g(r &R) {
+  mut q = r;
+  {
+    imm s = new So[R](3);   //~ ErrorFrozen
+    mut p = &mut q;
+    *p = &*s;
+  }
+  printInt(q.n);
+  printStr("\n");
+}
+
+fn main() {
+  imm outer = new R(1);
+  g(&outer);
+}

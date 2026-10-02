@@ -57,6 +57,9 @@ typedef struct {
     uint8_t sharedlen;  // then, how many steps lead to the first reference that may alias (0: the root's)
     uint8_t owned;      // 1: a step dereferences an owning reference others may own too ('Rc'), so
                         // the place may outlive its root variable
+    uint8_t far;        // deref: the reference was itself read through a borrowed one ('**pp',
+                        // '*r.g'), so the root stands for anything a borrow or more past where
+                        // the variable points (flowloan.h, LoanFar)
     uintptr_t steps[PlaceMaxSteps];
     INode *use;         // the name use of the root variable, where a use of it is reported
     INode *referent;    // deref: the type the root variable, read itself as the reference, points

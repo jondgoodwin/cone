@@ -125,6 +125,35 @@ static int pathSetEqual(PathSet *a, PathSet *b) {
     return pathSetWithin(a, b) && pathSetWithin(b, a);
 }
 
+// A loan set with every loan made far ('far'), or near: the far ones sort
+// after the near, each run in order, so the two runs are merged
+static PathSet *pathSetLoansAs(PathSet *set, int far) {
+    if (set == NULL || set == &pathSetAll)
+        return set;
+    uint32_t nnear = 0;
+    while (nnear < set->cnt && !(set->ids[nnear] & LoanFar))
+        ++nnear;
+    if (nnear == (far ? 0 : set->cnt))
+        return set;
+    PathSet *as = pathSetNew(set->cnt);
+    uint32_t bit = far ? LoanFar : 0;
+    uint32_t i = 0, k = nnear, n = 0;
+    while (i < nnear || k < set->cnt) {
+        uint32_t a = i < nnear ? set->ids[i] : UINT32_MAX;
+        uint32_t b = k < set->cnt ? loanOf(set->ids[k]) : UINT32_MAX;
+        if (a <= b) {
+            ++i;
+            if (a == b)
+                ++k;
+        }
+        else
+            ++k;
+        as->ids[n++] = (a <= b ? a : b) | bit;
+    }
+    as->cnt = n;
+    return as;
+}
+
 // *********************
 // The walk's state
 // *********************
@@ -400,10 +429,15 @@ static VarDclNode *pwNamedVar(INode *node) {
 }
 
 // The loans a value read from this place carries, if its type carries any:
-// everything its root variable holds (holders are whole variables)
+// everything its root variable holds (holders are whole variables). Read from
+// the variable's own storage, they are near or far as they are there; read
+// from where it points, which of them that value's borrows point at is not
+// known, so every one is near.
 static PathSet *pwPlaceHolds(Place *pl, INode *node) {
     PathVar *pv = &pathVars[pl->var];
-    return pv->holder && pwCarries(((IExpNode *)node)->vtype) ? pv->holds : NULL;
+    if (!pv->holder || !pwCarries(((IExpNode *)node)->vtype))
+        return NULL;
+    return pl->deref ? pathSetLoansAs(pv->holds, 0) : pv->holds;
 }
 
 // A temporary as the root of a place ('*make()', 'make().x', an owner made
@@ -510,6 +544,7 @@ static int pwThrough(INode **refp, Place *pl, PathSet **base) {
         pl->shared = pwMayAlias(reftype);
         pl->sharedlen = 0;
         pl->owned = 0;
+        pl->far = refpl.deref;
         pl->referent = refpl.nsteps == 0 && !refpl.deref ? ((RefNode *)reftype)->vtexp : NULL;
         return 1;
     }
@@ -553,6 +588,7 @@ static int pwPlace(INode **nodep, Place *pl, PathSet **base) {
         pl->shared = 0;
         pl->sharedlen = 0;
         pl->owned = 0;
+        pl->far = 0;
         pl->use = node;
         pl->referent = NULL;
         return 1;
@@ -565,6 +601,7 @@ static int pwPlace(INode **nodep, Place *pl, PathSet **base) {
         pl->shared = 0;
         pl->sharedlen = 0;
         pl->owned = 0;
+        pl->far = 0;
         pl->use = node;
         pl->referent = NULL;
         return 1;
@@ -680,8 +717,18 @@ static PathSet *pwLend(INode *site, Place *pl, INode *perm, int access, uint32_t
     uint32_t id = loanMake(site, &lent, perm);
     if (loan)
         *loan = id;
-    // Only a holder holds loans, but for an operator's temporary (pwVarDcl)
-    return pathSetAdd(pathVars[pl->var].holds, id);
+    // Only a holder holds loans, but for an operator's temporary (pwVarDcl).
+    // The new loan is near: the borrow points at its place. What the root
+    // holds is held there, so a borrow of the root's own storage ('&mut q',
+    // '&mut h.f') reaches it a borrow further on: far. A reborrow through it
+    // ('&mut *r', '&mut r.f') points where it does, so each loan stays as it
+    // was, or, through a reference read through another, is near.
+    PathSet *held = pathVars[pl->var].holds;
+    if (!pl->deref)
+        held = pathSetLoansAs(held, 1);
+    else if (pl->far)
+        held = pathSetLoansAs(held, 0);
+    return pathSetAdd(held, id);
 }
 
 // An owning reference coerced to a borrowed one ('imm b &i32 = u', 'u' a
@@ -775,38 +822,64 @@ static void pwHolderDies(uint32_t var) {
         loanUse(var, (INode *)pv->var);
 }
 
-// A value carrying 'holds' stored into part of a place rooted at 'var' -- its
-// own value, or, for 'deref', what that variable (a borrowed reference) points
-// at: the holder there holds those loans too, besides what it held. Stored
-// through a reference, they go wherever it may point: the reference's holder
-// holds them, since what is read back through it carries them, and so does
-// each holder one of its loans borrows from, so that after 'imm r = &mut
-// outer; *r = v' or 'stash(&mut outer, v)', using 'outer' uses 'v''s loans.
-static void pwStoreInto(uint32_t var, int deref, PathSet *holds) {
+// How many borrows past its root variable a place lies: 0, the variable's own
+// storage; 1, what the variable's own borrows point at, its near loans'
+// places; 2, anything further, its far loans' places too
+static int pwPlaceLevel(Place *pl) {
+    return pl->deref ? (pl->far ? 2 : 1) : 0;
+}
+
+// A store of a value carrying 'holds' lands where a value holding 'refholds'
+// points: in each place its near loans borrow (every loan's, for 'beyond').
+// The holder rooted there holds those loans: as they are, where the loan
+// borrows the holder's own storage, or far, where it borrows what the holder
+// points at (a reborrow '&mut *r'). 'except' is the holder whose own
+// reference this is, already given them.
+static void pwStoreLands(PathSet *refholds, int beyond, PathSet *holds, uint32_t except) {
+    if (refholds == NULL || refholds == &pathSetAll)
+        return;
+    for (uint32_t i = 0; i < refholds->cnt; ++i) {
+        if ((refholds->ids[i] & LoanFar) && !beyond)
+            continue;
+        uint32_t loan = loanOf(refholds->ids[i]);
+        uint32_t root = loanRoot(loan);
+        PathVar *rv = &pathVars[root];
+        if (root == except || !rv->holder)
+            continue;
+        PathSet *put = loanThrough(loan) ? pathSetLoansAs(holds, 1) : holds;
+        pathSetFacts(root, pathSetUnion(rv->holds, put), rv->pending);
+    }
+}
+
+// A value carrying 'holds' stored into places reached from the variable
+// 'var', 'from' to 'to' borrows past it (pwPlaceLevel): its own storage, or
+// where it points, or further. The holder there holds those loans too,
+// besides what it held: as its own where the store may land in its own
+// storage, else far, since what is read back through it carries them. And so
+// does each holder where it may land past 'var' (pwStoreLands), so that after
+// 'imm r = &mut outer; *r = v' or 'stash(&mut outer, v)', using 'outer' uses
+// 'v''s loans.
+static void pwStoreInto(uint32_t var, int from, int to, PathSet *holds) {
     PathVar *pv = &pathVars[var];
     if (holds == NULL || !pv->holder)
         return;
     PathSet *held = pv->holds;
-    pathSetFacts(var, pathSetUnion(held, holds), pv->pending);
-    if (!deref || held == NULL || held == &pathSetAll)
-        return;
-    for (uint32_t i = 0; i < held->cnt; ++i) {
-        PathVar *root = &pathVars[loanRoot(held->ids[i])];
-        if (root != pv && root->holder)
-            pathSetFacts((uint32_t)(root - pathVars), pathSetUnion(root->holds, holds), root->pending);
-    }
+    pathSetFacts(var, pathSetUnion(held, from == 0 ? holds : pathSetLoansAs(holds, 1)), pv->pending);
+    if (to > 0)
+        pwStoreLands(held, to > 1, holds, var);
 }
 
 // Does a place outlive this function? One rooted at a global does; one reached
 // through an owner others may own too ('owned') may; what a borrowed reference
 // points at ('deref') does when the reference may point beyond the function
-// (loanMayPointOut). Anything else is this function's own, and a variable
-// holding a shorter borrow there is the walk's to follow.
+// (loanMayPointOut), and a place further on ('far') when anything it reaches
+// may. Anything else is this function's own, and a variable holding a shorter
+// borrow there is the walk's to follow.
 static int pwPlaceOutlives(Place *pl) {
     VarDclNode *dcl = pathVars[pl->var].var;
     if (dcl->scope == 0 || (dcl->flags & FlagStatic) || pl->owned)
         return 1;
-    return pl->deref && loanMayPointOut(pathVars[pl->var].holds, pl->referent);
+    return pl->deref && loanMayPointOut(pathVars[pl->var].holds, pl->referent, pl->far);
 }
 
 // The signature of the function being walked
@@ -816,13 +889,14 @@ static FnSigNode *pwSig = NULL;
 // at 'node': what a borrowed parameter points at holds only the lifetimes its
 // type names there, so a borrow the caller lent through a parameter of
 // another lifetime may not go in it ('how', LoanEscapeStore or
-// LoanEscapeCall). Asked only where the function names lifetimes: unnamed,
-// every borrow in its signature shares one.
-static void pwStoreApart(INode *node, PathSet *refholds, PathSet *stored, int how) {
+// LoanEscapeCall); 'beyond' when it may land past where the reference points.
+// Asked only where the function names lifetimes: unnamed, every borrow in its
+// signature shares one.
+static void pwStoreApart(INode *node, PathSet *refholds, int beyond, PathSet *stored, int how) {
     if (!pwSig->lifenamed)
         return;
     VarDclNode *through;
-    uint32_t apart = loanStoredApart(stored, refholds, &through);
+    uint32_t apart = loanStoredApart(stored, refholds, beyond, &through);
     if (apart)
         loanApart(node, apart, through, how);
 }
@@ -845,7 +919,7 @@ static void pwStoreEscapes(INode *lval, Place *pl, PathSet *holds) {
     else if ((root->scope == 0 || (root->flags & FlagStatic)) && (caller = loanNotGlobalIn(holds)))
         loanEscape(lval, caller, LoanEscapeStore);
     else if (pl->deref)
-        pwStoreApart(lval, pathVars[pl->var].holds, holds, LoanEscapeStore);
+        pwStoreApart(lval, pathVars[pl->var].holds, pl->far, holds, LoanEscapeStore);
 }
 
 // The signature of the function a call calls, where it names lifetimes, which
@@ -863,12 +937,14 @@ static int pwParmShares(FnSigNode *sig, uint32_t i, INode *wanted) {
         || lifeShared(((IExpNode *)nodesGet(sig->parms, i))->vtype, wanted);
 }
 
-// Where a store through the reference argument 'ref' lands, keyed as pwPlace
-// keys it, found from the node alone (the argument is walked already): for a
-// borrow ('&mut outer', '&mut h.list', '&mut *r'), the root of what it
-// borrows; for a reference read from a place ('r', 'h.r'), what it points at.
-// Fills in the root variable, 'deref', 'owned' and 'referent' of 'pl' as
-// pwPlace would; returns 0 for nothing the walk tracks.
+// Where a store through the argument 'ref' lands, keyed as pwPlace keys it,
+// found from the node alone (the argument is walked already): for a borrow
+// ('&mut outer', '&mut h.list', '&mut *r'), the root of what it borrows; for
+// a reference read from a place ('r', 'h.r'), what it points at; for a value
+// that is no borrowed reference ('w', 'h.w'), the place it is read from,
+// where its own borrows start. Fills in the root variable, 'deref', 'far',
+// 'owned' and 'referent' of 'pl' as pwPlace would; returns 0 for nothing the
+// walk tracks.
 static int pwStoreTarget(INode *ref, Place *pl) {
     while (ref->tag == CastTag && !(ref->flags & FlagConvert))
         ref = ((CastNode *)ref)->exp;
@@ -881,6 +957,8 @@ static int pwStoreTarget(INode *ref, Place *pl) {
         place = ((RefNode *)ref)->vtexp;
         through = NULL;
     }
+    else if (!pwIsBorrowed(iexpGetTypeDcl(ref)))
+        through = NULL;
     while (1) {
         VarDclNode *var = pwNamedVar(place);
         if (var) {
@@ -911,8 +989,11 @@ static int pwStoreTarget(INode *ref, Place *pl) {
         }
         INode *reftype = iexpGetTypeDcl(refexp);
         if (pwIsBorrowed(reftype)) {
+            // Another reference, read through to reach that one: further on
             if (through == NULL)
                 through = refexp;
+            else
+                pl->far = 1;
         }
         else if (place->tag == DerefTag && reftype->tag == RefTag && pwMayAlias(reftype) && through == NULL)
             pl->owned = 1;
@@ -939,9 +1020,15 @@ static INode *pwLendSite(INode *arg) {
 // -- may store there anything its other arguments carry: every borrow in an
 // unannotated signature shares one lifetime (reflifefn.html), as
 // fnCallFlowStoredBorrow reads it, and with lifetimes named, anything whose
-// parameter shares one with what that parameter points at. So that place's
-// holder holds those loans from here on. 'argsets' is what each argument
-// carries; 'recvpl' the place of a receiver taken by reference, or NULL.
+// parameter shares one with what that parameter points at. And it may store
+// through every writable borrow it reaches from there, at any depth
+// (itypeWritableBorrowDepth): through the '&mut &R' that '&mut p' points at
+// ('**x = v'), through a struct's '&mut' field ('*h.r = v'), or through one a
+// by-value argument holds ('st(w, v)', 'w' a struct holding a '&mut'). So
+// the places it may land in, from the nearest to the furthest, are checked
+// as a store's are, and their holders hold those loans from here on.
+// 'argsets' is what each argument carries; 'recvpl' the place of a receiver
+// taken by reference, or NULL.
 static void pwCallStores(FnCallNode *call, PathSet **argsets, Place *recvpl) {
     if (call->args == NULL || call->args->used < 2)
         return;
@@ -949,10 +1036,15 @@ static void pwCallStores(FnCallNode *call, PathSet **argsets, Place *recvpl) {
     uint32_t nargs = call->args->used;
     for (uint32_t at = 0; at < nargs; ++at) {
         INode *arg = nodesGet(call->args, at);
-        RefNode *argtype = (RefNode *)iexpGetTypeDcl(arg);
-        if ((argtype->tag != RefTag && argtype->tag != ArrayRefTag) || !pwIsBorrowed((INode *)argtype)
-            || !(permGetFlags(argtype->perm) & MayWrite) || !pwCarries(argtype->vtexp))
+        INode *argtype = iexpGetTypeDcl(arg);
+        // How many borrows past the argument the callee may store, from what
+        // a writable borrow points at or from a value's own borrows: past
+        // three, every place reached is as far as the walk tells apart
+        int depth = itypeWritableBorrowDepth(argtype, 3);
+        if (depth == 0)
             continue;
+        int isref = pwIsBorrowed(argtype);
+        INode *storedin = isref ? ((RefNode *)argtype)->vtexp : argtype;
         INode *pointee = sig && at < sig->parms->used
             ? lifePointee(((IExpNode *)nodesGet(sig->parms, at))->vtype) : NULL;
         PathSet *others = NULL;
@@ -966,39 +1058,52 @@ static void pwCallStores(FnCallNode *call, PathSet **argsets, Place *recvpl) {
             PathSet *carried = argsets[i];
             INode *site = pwLendSite(nodesGet(call->args, i));
             uint32_t own = site ? loanAt(site) : 0;
-            if (own && pathSetHas(carried, own) && !itypeHoldsBorrowOf(argtype->vtexp,
+            if (own && pathSetHas(carried, own) && !itypeHoldsBorrowOf(storedin,
                     itypeGetTypeDcl(((RefNode *)iexpGetTypeDcl(site))->vtexp)))
                 carried = pathSetWithout(carried, own);
             others = pathSetUnion(others, carried);
         }
         if (others == NULL)
             continue;
+        // The callee may store what it reads through an argument, so which
+        // of the loans its borrows point at is not known: every one is near
+        others = pathSetLoansAs(others, 0);
+        uint32_t local = loanLocalIn(others);
         Place target;
         int found = 1;
         if (at == 0 && recvpl)
             target = *recvpl;
         else
             found = pwStoreTarget(arg, &target);
-        // Where the place may outlive the function -- or is nowhere the walk
-        // follows, when the reference itself is all there is to go by -- what
-        // is stored there may carry no borrow of the function's own storage
-        uint32_t local = loanLocalIn(others);
-        if (local && (found ? pwPlaceOutlives(&target) : loanMayPointOut(argsets[at], argtype->vtexp)))
+        if (!found) {
+            // Nowhere the walk follows: the argument's own loans are all
+            // there is to go by, where its borrows point and further on
+            int beyond = depth > 1;
+            if (local && loanMayPointOut(argsets[at], isref && !beyond ? storedin : NULL, beyond))
+                loanEscape((INode *)call, local, LoanEscapeCall);
+            else
+                pwStoreApart((INode *)call, argsets[at], beyond, others, LoanEscapeCall);
+            pwStoreLands(argsets[at], beyond, others, 0);
+            continue;
+        }
+        // The nearest place it may land in is the target, where a reference
+        // points, or a borrow past the place a value is read from; the
+        // furthest, 'depth' borrows past the argument
+        int from = pwPlaceLevel(&target) + !isref;
+        int to = from + depth - 1;
+        Place reach = target;
+        if (to > pwPlaceLevel(&target)) {
+            reach.deref = 1;
+            reach.far = to > 1;
+            reach.referent = NULL;
+        }
+        // Where it may outlive the function, what is stored there may carry
+        // no borrow of the function's own storage
+        if (local && pwPlaceOutlives(&reach))
             loanEscape((INode *)call, local, LoanEscapeCall);
-        else if (!found || target.deref)
-            pwStoreApart((INode *)call, found ? pathVars[target.var].holds : argsets[at], others, LoanEscapeCall);
-        // Where what the argument points at is itself a writable borrow
-        // ('put(&mut p, v)' for 'x &mut &mut &R', 'p' a '&mut &R' lent from
-        // 'q'), the callee may store through it too ('**x = v'), so the store
-        // may land where that borrow points: stored as through a reference
-        // ('*p = v'), which reaches every place 'p''s loans borrow from, at
-        // any depth, since a borrow of a holder carries what it holds
-        int through = target.deref;
-        INode *inner = itypeGetTypeDcl(argtype->vtexp);
-        if (pwIsBorrowed(inner) && (permGetFlags(((RefNode *)inner)->perm) & MayWrite))
-            through = 1;
-        if (found)
-            pwStoreInto(target.var, through, others);
+        else if (reach.deref)
+            pwStoreApart((INode *)call, pathVars[target.var].holds, reach.far, others, LoanEscapeCall);
+        pwStoreInto(target.var, from, to > 2 ? 2 : to, others);
     }
 }
 
@@ -1097,9 +1202,11 @@ static PathSet *pwCall(FnCallNode *call) {
         else
             loanReturnedBy(recvloan, ((NameUseNode *)call->objfn)->namesym);
     }
-    if (!pwParmShares(sig, 0, sig ? sig->rettype : NULL))
-        return result;
-    return pathSetUnion(result, recvholds);
+    // What the result's borrows point at may be anything its arguments reach
+    // ('h.r' returned from '&h'): every loan is near
+    if (pwParmShares(sig, 0, sig ? sig->rettype : NULL))
+        result = pathSetUnion(result, recvholds);
+    return pathSetLoansAs(result, 0);
 }
 
 // Store a value carrying 'holds' into an lval. 'rvalp' is the value's slot,
@@ -1135,7 +1242,7 @@ static void pwStore(INode **lvalp, PathSet *holds, INode **rvalp) {
     if (pathDrops && !pl.deref && pathVars[pl.var].tracked && flowLvalRootVar(*lvalp) == pathVars[pl.var].var)
         dropPartStore(pl.var, *lvalp);
     pwStoreEscapes(*lvalp, &pl, holds);
-    pwStoreInto(pl.var, pl.deref, holds);
+    pwStoreInto(pl.var, pwPlaceLevel(&pl), pwPlaceLevel(&pl), holds);
 }
 
 static PathSet *pwAssign(AssignNode *node) {
@@ -1175,6 +1282,7 @@ static void pwSwap(SwapNode *node) {
             pl->shared = 0;
             pl->sharedlen = 0;
             pl->owned = 0;
+            pl->far = 0;
             pl->use = *sides[i];
             pl->referent = NULL;
             holds[i] = pathVars[whole[i]].holds;

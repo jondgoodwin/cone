@@ -65,6 +65,12 @@ int itypeCarriesBorrow(INode *type);
 // to a trait?
 int itypeHoldsBorrowOf(INode *type, INode *want);
 
+// How many writable borrows deep can a store into a value of this type reach,
+// to store a borrow there, up to 'most'? A callee handed a '&mut H', 'H'
+// holding a '&mut &R', may store through both: 2. 0 when it holds no writable
+// borrow whose referent can hold a borrow.
+int itypeWritableBorrowDepth(INode *type, int most);
+
 // May a value of this type, dying, read a borrowed reference it holds: does
 // it hold one where a 'final' method can reach it? Rust's drop check, with
 // what a raw pointer reaches (a collection's elements) taken as finalized,

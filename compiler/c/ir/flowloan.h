@@ -23,6 +23,18 @@
 // Start one function's walk: its loans and pending conflicts are its own
 void loanWalkBegin();
 
+// A value's loans are of two kinds, kept apart in one set. A *near* loan is
+// one of a place the value's own borrows point at: what a reference points
+// at, what a struct's borrow fields do. A *far* loan is one those places hold
+// in turn, a borrow or more further on: borrowing 'q', which holds the
+// caller's borrow, points at 'q' (near) and reaches the caller's place only
+// through it (far). A store through the reference lands in the near places
+// only. An entry is a loan's id, with LoanFar set for a far one. Where the
+// walk cannot tell (a value read through a reference, or a call's result),
+// every loan is near, which only refuses more.
+#define LoanFar 0x80000000u
+#define loanOf(entry) ((entry) & ~LoanFar)
+
 // The access a borrow with the permission 'perm' makes of what it borrows
 int loanBorrowAccess(INode *perm);
 
@@ -38,6 +50,10 @@ uint32_t loanCaller(uint32_t var);
 // The variable at the root of the place a loan borrows
 uint32_t loanRoot(uint32_t loan);
 
+// Does a loan borrow what its root variable points at -- a reborrow through
+// a reference, or what a caller lent -- rather than the variable's own storage?
+int loanThrough(uint32_t loan);
+
 // Is a loan rooted in this function's own storage -- a local, or a by-value
 // parameter, or what an owner held in one owns -- so that it ends with the
 // call? A caller loan, a loan of a global and a reborrow through a reference
@@ -50,10 +66,12 @@ uint32_t loanLocalIn(PathSet *set);
 
 // May a reference holding 'refholds' point somewhere that outlives this
 // function: at what a caller lent, at a global, at what an owner others may
-// own too owns ('Rc'), or at nothing the walk knows of? 'referent', the type
-// it points at where known (else NULL), sets aside loans of other structs,
-// which are held in what it points at rather than pointed at.
-int loanMayPointOut(PathSet *refholds, INode *referent);
+// own too owns ('Rc'), or at nothing the walk knows of? Only its near loans
+// are where it points, unless 'beyond' asks about every place it reaches, a
+// borrow or more further on too. 'referent', the type it points at where
+// known (else NULL), sets aside loans of other structs, which are held in
+// what it points at rather than pointed at.
+int loanMayPointOut(PathSet *refholds, INode *referent, int beyond);
 
 // A value carrying the local loan 'loan' escapes the function at 'node':
 // returned, stored where it may outlive the function, or handed to a call
@@ -75,10 +93,11 @@ void loanEscape(INode *node, uint32_t loan, int how);
 uint32_t loanCallerApart(PathSet *set, INode *wanted);
 
 // A caller loan among 'stored' that may not be stored where a reference
-// holding 'refholds' points: what a borrowed parameter points at holds only
-// the lifetimes its type gives it there. Returns 0, or the loan, with the
-// parameter whose place it may not go in as 'through'.
-uint32_t loanStoredApart(PathSet *stored, PathSet *refholds, VarDclNode **through);
+// holding 'refholds' points (its near loans, or every one with 'beyond'):
+// what a borrowed parameter points at holds only the lifetimes its type gives
+// it there. Returns 0, or the loan, with the parameter whose place it may not
+// go in as 'through'.
+uint32_t loanStoredApart(PathSet *stored, PathSet *refholds, int beyond, VarDclNode **through);
 
 // A loan in 'set' that is not global -- a caller loan, or one of this
 // function's own storage -- or 0

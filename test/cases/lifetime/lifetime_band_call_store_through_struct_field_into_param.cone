@@ -1,0 +1,42 @@
+// A callee handed '&mut h', 'h' a local struct whose field reborrows what the
+// parameter 'q' points at, may store its other argument through that field
+// ('*h.r = v'): into the caller's place. A borrow of a local stored there
+// outlives the local.
+//
+// Verdict: refuse, ErrorCallEscape at the call.
+// Basis: reflifefn.html, "Mutable borrowed reference parameters" -- a call
+// handed a writable borrow may store any other borrow it was handed through
+// every writable borrow it reaches, a struct's fields included; what a
+// borrowed parameter points at outlives the function (decision 1, 1 Oct 2026).
+// Master b306a838: accepted, and it reads freed memory -- main, run, prints
+// "final" (for 's') and then "read = 1473456562496" through 'q'.
+
+mod lifetime_band_call_store_through_struct_field_into_param;
+
+import stdio use *;
+
+struct R {
+  pub n i64;
+  fn final(self &uni) {
+    printStr("final\n");
+  }
+}
+
+struct H { pub r &mut &R; }
+
+fn st(h &mut H, v &R) { *h.r = v; }
+
+fn f(q &mut &R) {
+  imm s = new So[R](42);
+  mut h = new H(&mut *q);
+  st(&mut h, &*s);      //~ ErrorCallEscape
+}
+
+fn main() {
+  imm outer = new R(1);
+  mut q = &outer;
+  f(&mut q);
+  printStr("read = ");
+  printInt(q.n);
+  printStr("\n");
+}

@@ -1,0 +1,59 @@
+// A callee handed, by value, a struct 'w' whose field is a '&mut &R' lent
+// from 'q', may store its other argument through that field ('*w.w = v'):
+// into 'q' itself. So 'q' holds that borrow afterwards, and its source may
+// not end while 'q' is used. The struct handed as a variable, and as a value
+// made in the call.
+//
+// Verdict: refuse, ErrorFrozen where each 's' is declared (it ends first).
+// Basis: borrow-freezing rule (26 Sep 2026) -- a store through a reference
+// puts the stored borrow's loans into what it points at; a by-value argument
+// carrying a borrow is a borrowed argument too (lifetimes are infectious,
+// 1 Oct 2026).
+// Master b306a838: accepted both, and each reads freed memory -- run, the
+// first prints "final" (for 's') and then "read = 1772727688928" through
+// 'q', the second "final" and "read = 2373901225456".
+
+mod lifetime_free_call_store_through_byvalue_struct_frozen;
+
+import stdio use *;
+
+struct R {
+  pub n i64;
+  fn final(self &uni) {
+    printStr("final\n");
+  }
+}
+
+struct W { pub w &mut &R; }
+
+fn st(w W, v &R) { *w.w = v; }
+
+fn asVariable() {
+  imm outer = new R(1);
+  mut q = &outer;
+  {
+    imm s = new So[R](42);   //~ ErrorFrozen
+    imm w = new W(&mut q);
+    st(w, &*s);
+  }
+  printStr("read = ");
+  printInt(q.n);
+  printStr("\n");
+}
+
+fn asValue() {
+  imm outer = new R(1);
+  mut q = &outer;
+  {
+    imm s = new So[R](42);   //~ ErrorFrozen
+    st(new W(&mut q), &*s);
+  }
+  printStr("read = ");
+  printInt(q.n);
+  printStr("\n");
+}
+
+fn main() {
+  asVariable();
+  asValue();
+}

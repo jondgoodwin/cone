@@ -218,6 +218,91 @@ int itypeHoldsBorrowOf(INode *type, INode *want) {
     }
 }
 
+// How many writable borrows deep a store into a value of this type can reach,
+// at most 'most': 0 when it holds no writable borrowed reference whose
+// referent can hold a borrow; else one more than what such a referent reaches
+// in turn. A field, a variant, an element, and what an owning reference or a
+// pointer owns are the value's own; a read-only borrow is no way through.
+// The structs being asked, each with the depth left when it was asked: a type
+// reaching itself through what it owns adds nothing round the loop, and one
+// reaching itself through a writable borrow is asked again with one less, so
+// it ends at 'most'. Asked only of a call that may store through an argument,
+// so the answer is not remembered.
+#define WritableAskingMax 16
+static INode *writableAsking[WritableAskingMax];
+static int writableAskingMost[WritableAskingMax];
+static int writableAskingCnt = 0;
+
+int itypeWritableBorrowDepth(INode *type, int most) {
+    if (type == NULL || most <= 0)
+        return 0;
+    switch (type->tag) {
+    case NameUseTag:
+        return isTypeNode(type) ? itypeWritableBorrowDepth(itypeGetTypeDcl(type), most) : 0;
+    case AliasDclTag:
+        return itypeWritableBorrowDepth(((AliasDclNode *)type)->target, most);
+    case RefTag:
+    case ArrayRefTag:
+    case VirtRefTag:
+    {
+        RefNode *ref = (RefNode *)type;
+        if (itypeGetTypeDcl(ref->region) != borrowRef)
+            return itypeWritableBorrowDepth(ref->vtexp, most);
+        if (type->tag == VirtRefTag || !(permGetFlags(ref->perm) & MayWrite)
+            || !isTypeNode(ref->vtexp) || !itypeCarriesBorrow(ref->vtexp))
+            return 0;
+        return 1 + itypeWritableBorrowDepth(ref->vtexp, most - 1);
+    }
+    case PtrTag:
+        return itypeWritableBorrowDepth(((StarNode *)type)->vtexp, most);
+    case ArrayTag:
+        return itypeWritableBorrowDepth(arrayElemType(type), most);
+    case TTupleTag: {
+        int depth = 0;
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodesFor(((TupleNode *)type)->elems, cnt, nodesp)) {
+            int d = itypeWritableBorrowDepth(*nodesp, most);
+            if (d > depth)
+                depth = d;
+        }
+        return depth;
+    }
+    case StructTag:
+    {
+        if (!itypeCarriesBorrow(type))
+            return 0;
+        for (int i = 0; i < writableAskingCnt; ++i) {
+            if (writableAsking[i] == type && writableAskingMost[i] == most)
+                return 0;
+        }
+        if (writableAskingCnt == WritableAskingMax)
+            return most;
+        writableAsking[writableAskingCnt] = type;
+        writableAskingMost[writableAskingCnt++] = most;
+        int depth = 0;
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodelistFor(&((StructNode *)type)->fields, cnt, nodesp)) {
+            int d = itypeWritableBorrowDepth(((IExpNode *)*nodesp)->vtype, most);
+            if (d > depth)
+                depth = d;
+        }
+        if (((StructNode *)type)->derived) {
+            for (nodesFor(((StructNode *)type)->derived, cnt, nodesp)) {
+                int d = itypeWritableBorrowDepth(*nodesp, most);
+                if (d > depth)
+                    depth = d;
+            }
+        }
+        --writableAskingCnt;
+        return depth;
+    }
+    default:
+        return 0;
+    }
+}
+
 // The structs itypeDropReadsBorrow is asking about. A type reaching itself (a
 // node owning the next) adds nothing round the loop: what it reads is found
 // where it was first asked. Asked only where a holder dies with a conflict
