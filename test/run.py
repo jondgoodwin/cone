@@ -78,6 +78,7 @@ TIERS = {
     "ref": 1,
     "move": 1,
     "region": 2,
+    "lifetime": 2,
     "trait": 2,
     "collection": 2,
     "each": 2,

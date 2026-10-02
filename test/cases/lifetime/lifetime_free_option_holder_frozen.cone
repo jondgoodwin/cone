@@ -1,0 +1,33 @@
+// A borrow held in an 'Option' keeps its source frozen.
+//
+// Verdict: refuse, ErrorFrozen at the replacement.
+// Basis: the freezing design Jon ruled 26 Sep 2026 (freezing-design.md 1,
+// rule 4; step 4).
+// Master d331baab: accepted, and it reads freed memory -- main, run, prints
+// "final" (the replaced owner) and then "read = <garbage>". xfail until
+// Stage 3.
+
+mod lifetime_free_option_holder_frozen;
+
+import stdio use *;
+
+struct R {
+  pub n i64;
+  fn final(self &uni) {
+    printStr("final\n");
+  }
+}
+
+fn main() {
+  mut s = new So[R](42);
+  imm o Option[&R] = Some[&R][&*s];
+  s = new So[R](7);          //~ ErrorFrozen
+  match o {
+    case imm v Some {
+      printStr("read = ");
+      printInt(v.value.n);
+      printStr("\n");
+    }
+    else {}
+  }
+}

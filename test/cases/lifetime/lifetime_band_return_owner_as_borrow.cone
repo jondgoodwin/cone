@@ -1,0 +1,35 @@
+// A 'So' owner handed back where a borrow is declared: the function owns the
+// value and must end it at the return, so the borrow it returns would point
+// at freed memory -- unless the value is never freed, which is a leak.
+//
+// Verdict: refuse, ErrorEscape at the returned owner.
+// Basis: agent's reading (design note lifetimes-design-2026-10-01.md, 4.8;
+// freezing-design.md 2.8, "the owning-local-returned-as-a-borrow shape"):
+// returning the borrow and keeping the owner's end cannot both hold.
+// Master d331baab: accepted, and it leaks -- main, run, prints "read = 42"
+// and "end" but never "final": the owner is not ended. xfail until Stage 1.
+
+mod lifetime_band_return_owner_as_borrow;
+
+import stdio use *;
+
+struct R {
+  pub n i64;
+  fn final(self &uni) {
+    printStr("final\n");
+  }
+}
+
+fn handBack(s So[R]) &R {
+  s;                         //~ ErrorEscape
+}
+
+fn main() {
+  {
+    imm r = handBack(new So[R](42));
+    printStr("read = ");
+    printInt(r.n);
+    printStr("\n");
+  }
+  printStr("end\n");
+}

@@ -1,0 +1,727 @@
+# lifetime - the lifetime and borrow scenario corpus. Tier 2, because its cases
+# use owners, collections and pools.
+#
+# Key reference: compiler/c/doc/diagnostics/test-suite.md, "cases.toml keys".
+#
+# Unlike the other groups, this one is organised by case rather than by
+# compiler stage: one small program per point, named for the point, so that a
+# rule can be refined case by case. Jon asked for it on 1 Oct 2026 -- many
+# simple cases on the bands (global, the caller's, the function's own), a few
+# on borrows made inside relating to those from outside, and most on when a
+# borrowed source is free again. The three prefixes follow that:
+#
+#   lifetime_band_  global vs the caller band vs the function: parameters
+#                   (borrowed, by value, 'self' by value, owners by value),
+#                   returns, stores into globals and through '&mut'/'&uni'
+#                   parameters, unannotated and named lifetimes, calls.
+#   lifetime_mix_   borrows made inside meeting those from outside: a
+#                   variable's lifetime following what it holds (decision 2,
+#                   ruled 2 Oct), temporaries outliving their statement
+#                   (Rust's rule, ruled 2 Oct), structs holding one or two
+#                   borrows.
+#   lifetime_free_  when the source is free again: last use, one arm and not
+#                   the others, loops, reborrows, two-phase receivers,
+#                   disjoint fields, reassignment, borrows held in values,
+#                   NLL's four problem cases and Polonius's exemplars
+#                   translated to Cone.
+#
+# Every file's header gives the verdict a correct compiler reaches, its basis
+# (a ruling of Jon's with its date, a manual page, Rust's behaviour and where
+# that comes from -- Rust was read, never run -- or "agent's reading"), and
+# what master did when the file was written. Rust's '&mut' is Cone's '&uni';
+# Cone's '&mut' is shared and freezes a source reached through it only
+# against ending, so Rust examples are translated through that.
+#
+# Where master is wrong the expectation is still the correct one, marked
+# xfail, and the header names the stage that fixes it. The stages are those
+# of the lifetimes plan (Jon's Incubator, Ruminations\lifetimes-stages-
+# 2026-10-02.md), each of which removes the xfail marks it earns:
+#
+#   1  five measured fixes: by-value parameters, a parameter's borrow stored,
+#      returned 'if'/'match'/block, owner returned as a borrow, reborrow
+#      through a local
+#   2  the call-site store check widened from '&mut &T' to any '&mut' whose
+#      target holds a borrow
+#   3  a borrow inside a value (struct, Option, List) freezes its source
+#   4  a value's lifetime from its loans: escapes through values and through
+#      a variable that follows what it holds
+#   5  temporaries outliving their statement, Rust's rule
+#   6  named lifetimes on signatures
+#
+# A dangling case's header says how master's wrong answer was shown to be
+# dangerous: a stale stack slot read back through clobber(), or a finalizer
+# printing "final" before the read.
+#
+# Left out deliberately, because the rule depends on something not yet
+# decided (the plan's open list): lifetime where clauses (no spelling yet),
+# lifetimes on struct types and two borrowed fields of different named
+# lifetimes, invariant lifetimes ('=a), owner fields reached through a shared
+# 'mut' path (decision 6), and whether 'new H(...)' extends a temporary the
+# way Rust's struct literal does.
+
+support = []
+
+# -------- the bands: global, the caller's, the function's --------
+
+[scenario.lifetime_band_return_param]
+category = "run"
+description = "A borrowed parameter's borrow is the caller's and may be returned"
+tags = ["flow", "runtime"]
+
+[scenario.lifetime_band_return_param_field]
+category = "run"
+description = "A field reached through a borrowed parameter may be borrowed and returned"
+tags = ["flow", "runtime"]
+
+[scenario.lifetime_band_return_slice_element]
+category = "run"
+description = "An element of a slice parameter may be borrowed and returned"
+tags = ["flow", "runtime"]
+
+[scenario.lifetime_band_return_global]
+category = "run"
+description = "A borrow of a global may be returned"
+tags = ["flow", "runtime"]
+
+[scenario.lifetime_band_return_string_literal]
+category = "run"
+description = "A string literal, chosen by an 'if', returned from a function handed no borrow"
+tags = ["flow", "runtime"]
+
+[scenario.lifetime_band_return_through_owner_field_of_param]
+category = "run"
+description = "A borrow through an owner held in a borrowed parameter's field is the caller's and may be returned"
+tags = ["flow", "runtime"]
+
+[scenario.lifetime_band_return_if_params]
+category = "run"
+description = "An 'if' choosing between two unannotated borrowed parameters may be returned"
+tags = ["flow", "runtime"]
+
+[scenario.lifetime_band_return_match_params]
+category = "run"
+description = "A 'match' whose arms give borrowed parameters or a global may be returned"
+tags = ["flow", "runtime"]
+
+[scenario.lifetime_band_return_call_param_and_global]
+category = "run"
+description = "A call handed a parameter's borrow and a global's returns the caller's lifetime, which may be returned"
+tags = ["flow", "runtime"]
+
+[scenario.lifetime_band_return_call_param_and_local]
+category = "reject"
+description = "A call handed a parameter's borrow and a local's returns the local's lifetime, which may not be returned"
+tags = ["flow"]
+
+[scenario.lifetime_band_return_call_value_carrying_param]
+category = "run"
+description = "A by-value struct carrying a parameter's borrow into a call: the result may be returned"
+tags = ["flow", "runtime"]
+
+[scenario.lifetime_band_return_call_value_carrying_local]
+category = "reject"
+description = "A by-value struct carrying a local's borrow into a call: the result may not be returned"
+tags = ["flow"]
+xfail = true
+
+[scenario.lifetime_band_return_byvalue_param]
+category = "reject"
+description = "A borrow of a by-value parameter may not be returned"
+tags = ["flow"]
+xfail = true
+
+[scenario.lifetime_band_return_byvalue_struct_field]
+category = "reject"
+description = "A borrow of a field of a by-value struct parameter may not be returned"
+tags = ["flow"]
+xfail = true
+
+[scenario.lifetime_band_return_byvalue_self]
+category = "reject"
+description = "A borrow of a field of 'self' taken by value may not be returned"
+tags = ["flow"]
+xfail = true
+
+[scenario.lifetime_band_return_byvalue_so_owner]
+category = "reject"
+description = "A borrow through a 'So' owner passed by value may not be returned"
+tags = ["flow"]
+xfail = true
+
+[scenario.lifetime_band_return_byvalue_rc_owner]
+category = "reject"
+description = "A borrow through a 'Rc' owner passed by value may not be returned"
+tags = ["flow"]
+xfail = true
+
+[scenario.lifetime_band_return_byvalue_through_call]
+category = "reject"
+description = "A by-value parameter's borrow passed through a call: the result may not be returned"
+tags = ["flow"]
+xfail = true
+
+[scenario.lifetime_band_return_rc_local_borrow]
+category = "reject"
+description = "A borrow through a 'Rc' owner held in a local may not be returned"
+tags = ["flow"]
+
+[scenario.lifetime_band_return_owner_as_borrow]
+category = "reject"
+description = "A 'So' parameter handed back where a borrow is declared"
+tags = ["flow"]
+xfail = true
+
+[scenario.lifetime_band_return_owner_local_as_borrow]
+category = "reject"
+description = "A 'So' local handed back where a borrow is declared"
+tags = ["flow"]
+xfail = true
+
+[scenario.lifetime_band_return_block_local]
+category = "reject"
+description = "A tail block's value borrowing a local declared inside it may not be returned"
+tags = ["flow"]
+xfail = true
+
+[scenario.lifetime_band_return_if_param_or_local]
+category = "reject"
+description = "A returned 'if' choosing a parameter's borrow or a local's, the parameter's arm first"
+tags = ["flow"]
+xfail = true
+
+[scenario.lifetime_band_return_if_local_or_param]
+category = "reject"
+description = "A returned 'if' choosing a local's borrow or a parameter's, the local's arm first"
+tags = ["flow"]
+xfail = true
+
+[scenario.lifetime_band_return_if_via_local_param_first]
+category = "reject"
+description = "An 'if' value held in a local and returned, the parameter's arm first"
+tags = ["flow"]
+xfail = true
+
+[scenario.lifetime_band_return_if_via_local_local_first]
+category = "reject"
+description = "An 'if' value held in a local and returned, the local's arm first"
+tags = ["flow"]
+
+[scenario.lifetime_band_return_match_local]
+category = "reject"
+description = "A returned 'match' one of whose arms borrows a local"
+tags = ["flow"]
+xfail = true
+
+[scenario.lifetime_band_return_local_from_loop]
+category = "reject"
+description = "A 'return' from inside a loop: a parameter's borrow may leave, a local's may not"
+tags = ["flow"]
+
+[scenario.lifetime_band_return_field_through_local_ref]
+category = "run"
+description = "A field borrowed through a local holding a parameter's borrow may be returned"
+tags = ["flow", "runtime"]
+xfail = true
+
+[scenario.lifetime_band_return_reborrow_through_local]
+category = "run"
+description = "A reborrow through a local holding a parameter's borrow may be returned"
+tags = ["flow", "runtime"]
+xfail = true
+
+[scenario.lifetime_band_store_global_into_global]
+category = "run"
+description = "A borrow of a global stored into a global"
+tags = ["flow", "runtime"]
+
+[scenario.lifetime_band_store_global_through_param]
+category = "run"
+description = "A borrow of a global stored through a '&mut &T' parameter"
+tags = ["flow", "runtime"]
+
+[scenario.lifetime_band_store_param_through_param]
+category = "run"
+description = "A callee storing one unannotated borrowed parameter through another"
+tags = ["flow", "runtime"]
+
+[scenario.lifetime_band_store_local_into_global]
+category = "reject"
+description = "A borrow of a local may not be stored into a global"
+tags = ["flow"]
+
+[scenario.lifetime_band_store_byvalue_param_into_global]
+category = "reject"
+description = "A borrow of a by-value parameter may not be stored into a global"
+tags = ["flow"]
+
+[scenario.lifetime_band_store_param_into_global]
+category = "reject"
+description = "A borrowed parameter, in the caller band, may not be stored into a global"
+tags = ["flow"]
+xfail = true
+
+[scenario.lifetime_band_store_byvalue_param_through_param]
+category = "reject"
+description = "A borrow of a by-value parameter may not be stored through a '&mut &T' parameter"
+tags = ["flow"]
+xfail = true
+
+[scenario.lifetime_band_store_local_through_uni_param]
+category = "reject"
+description = "A borrow of a local may not be stored through a '&uni &T' parameter"
+tags = ["flow"]
+
+[scenario.lifetime_band_call_no_borrow_input_into_global]
+category = "run"
+description = "A call handed no borrow returns the global lifetime, which may be stored into a global"
+tags = ["flow", "runtime"]
+
+[scenario.lifetime_band_call_store_longer_into_struct_field]
+category = "run"
+description = "A callee given '&mut H' and a borrow as long-lived as the struct may store it"
+tags = ["flow", "runtime"]
+
+[scenario.lifetime_band_call_store_into_struct_field]
+category = "reject"
+description = "A callee given '&mut H' and a shorter borrow could store it in the struct: refused at the call"
+tags = ["flow"]
+xfail = true
+
+[scenario.lifetime_band_call_setter_method]
+category = "reject"
+description = "A 'self &mut' setter handed a shorter borrow than its receiver: refused at the call"
+tags = ["flow"]
+xfail = true
+
+[scenario.lifetime_band_call_push_onto_list_param]
+category = "reject"
+description = "A callee given '&mut List[&R]' and a shorter borrow could push it: refused at the call"
+tags = ["flow"]
+xfail = true
+
+[scenario.lifetime_band_named_same_name_return]
+category = "run"
+description = "A result named 'a is the 'a parameter, kept as long as the 'a argument"
+tags = ["parse", "typecheck", "flow", "runtime"]
+xfail = true
+
+[scenario.lifetime_band_named_refswitch_returns_unnamed]
+category = "run"
+description = "The manual's 'refswitch' with 'ref2' named apart: the result outlives 'inner'"
+tags = ["parse", "typecheck", "flow", "runtime"]
+xfail = true
+
+[scenario.lifetime_band_named_refswitch_returns_named]
+category = "reject"
+description = "The manual's 'refswitch' with 'ref1' named apart: the result may not outlive 'inner'"
+tags = ["parse", "typecheck", "flow"]
+xfail = true
+
+[scenario.lifetime_band_named_refstore_independent]
+category = "run"
+description = "The manual's 'tryit' with 'refval' named apart: the call is allowed"
+tags = ["parse", "typecheck", "flow", "runtime"]
+xfail = true
+
+[scenario.lifetime_band_named_return_other_name]
+category = "reject"
+description = "A result declared 'a may not be the 'b parameter"
+tags = ["parse", "typecheck", "flow"]
+xfail = true
+
+[scenario.lifetime_band_named_unnamed_differs]
+category = "reject"
+description = "A result declared unnamed may not be the 'a parameter"
+tags = ["parse", "typecheck", "flow"]
+xfail = true
+
+[scenario.lifetime_band_named_if_two_names]
+category = "reject"
+description = "An 'if' choosing 'a or 'b may be returned as neither"
+tags = ["parse", "typecheck", "flow"]
+xfail = true
+
+[scenario.lifetime_band_named_store_without_where]
+category = "reject"
+description = "Storing a 'a borrow into a 'b place with no where clause is refused"
+tags = ["parse", "typecheck", "flow"]
+xfail = true
+
+# -------- borrows made inside meeting those from outside --------
+
+[scenario.lifetime_mix_param_kept_in_local_returned]
+category = "run"
+description = "A parameter's borrow copied into a local may be returned from it"
+tags = ["flow", "runtime"]
+
+[scenario.lifetime_mix_param_in_struct_returned]
+category = "run"
+description = "A struct holding a parameter's borrow may be returned"
+tags = ["flow", "runtime"]
+
+[scenario.lifetime_mix_param_pushed_onto_local_list]
+category = "run"
+description = "A parameter's borrow pushed onto a local list of borrows"
+tags = ["flow", "runtime"]
+
+[scenario.lifetime_mix_call_param_and_local_used_inside]
+category = "run"
+description = "A call's result tied to a parameter and a local, used only inside the function"
+tags = ["flow", "runtime"]
+
+[scenario.lifetime_mix_if_param_or_local_used_inside]
+category = "run"
+description = "An 'if' choosing a parameter's borrow or a local's, used only inside the function"
+tags = ["flow", "runtime"]
+
+[scenario.lifetime_mix_store_local_through_param]
+category = "reject"
+description = "A local's borrow may not be stored through a '&mut &T' parameter"
+tags = ["flow"]
+
+[scenario.lifetime_mix_store_local_into_param_field]
+category = "reject"
+description = "A local's borrow may not be stored into a field of a '&mut' parameter"
+tags = ["flow"]
+
+[scenario.lifetime_mix_push_local_onto_param_list]
+category = "reject"
+description = "A local's borrow may not be pushed onto a list the caller lent as '&mut'"
+tags = ["flow"]
+xfail = true
+
+[scenario.lifetime_mix_setter_local_on_param]
+category = "reject"
+description = "A local's borrow may not be handed to a setter on a struct the caller lent as '&mut'"
+tags = ["flow"]
+xfail = true
+
+[scenario.lifetime_mix_local_in_struct_returned]
+category = "reject"
+description = "A struct holding a local's borrow may not be returned"
+tags = ["flow"]
+xfail = true
+
+[scenario.lifetime_mix_local_in_option_returned]
+category = "reject"
+description = "An 'Option' holding a local's borrow may not be returned"
+tags = ["flow"]
+xfail = true
+
+[scenario.lifetime_mix_laundered_local_returned]
+category = "reject"
+description = "Decision 2: a variable reassigned a local's borrow may not then be returned"
+tags = ["flow"]
+xfail = true
+
+[scenario.lifetime_mix_flow_inner_borrow_used_inside]
+category = "run"
+description = "Decision 2: a variable given an inner block's borrow and used inside that block"
+tags = ["flow", "runtime"]
+xfail = true
+
+[scenario.lifetime_mix_flow_inner_borrow_used_after]
+category = "reject"
+description = "Decision 2: a variable still holding an inner block's borrow used after the block"
+tags = ["flow"]
+xfail = true
+
+[scenario.lifetime_mix_flow_reassigned_back_returned]
+category = "run"
+description = "Decision 2: a variable given an inner borrow, then the parameter's back, then returned"
+tags = ["flow", "runtime"]
+xfail = true
+
+[scenario.lifetime_mix_flow_join_returned]
+category = "reject"
+description = "Decision 2: a variable given a local's borrow on one path may not be returned after the join"
+tags = ["flow"]
+xfail = true
+
+[scenario.lifetime_mix_temp_used_within_statement]
+category = "run"
+description = "A borrow of a temporary used within its statement; the temporary ends after the use"
+tags = ["flow", "runtime"]
+
+[scenario.lifetime_mix_temp_borrow_extended]
+category = "run"
+description = "Rust's extension: 'imm r = &mk();' keeps the temporary to the block's end"
+tags = ["flow", "runtime"]
+xfail = true
+
+[scenario.lifetime_mix_temp_owner_coerced_extended]
+category = "run"
+description = "Rust's extension: a temporary owner coerced to a borrow in an initializer lives to the block's end, and is ended there"
+tags = ["flow", "runtime"]
+xfail = true
+
+[scenario.lifetime_mix_temp_through_call_refused]
+category = "reject"
+description = "Rust's E0716: a temporary passed through a call is not extended, so keeping the result is refused"
+tags = ["flow"]
+xfail = true
+
+[scenario.lifetime_mix_temp_method_receiver_refused]
+category = "reject"
+description = "Rust's E0716: a temporary method receiver is not extended, so keeping the result is refused"
+tags = ["flow"]
+xfail = true
+
+[scenario.lifetime_mix_struct_two_fields_params_returned]
+category = "run"
+description = "A struct of two borrows of the one unnamed caller lifetime may be returned"
+tags = ["flow", "runtime"]
+
+[scenario.lifetime_mix_struct_two_fields_param_and_local_returned]
+category = "reject"
+description = "A struct of a parameter's borrow and a local's has the local's lifetime and may not be returned"
+tags = ["flow"]
+xfail = true
+
+[scenario.lifetime_mix_struct_two_fields_inner_used_after]
+category = "reject"
+description = "A struct of an outer and an inner borrow has the inner lifetime: used after the inner block is refused"
+tags = ["flow"]
+xfail = true
+
+[scenario.lifetime_mix_struct_from_inner_block_used_inside]
+category = "run"
+description = "A struct rebuilt around an inner block's borrow and used only inside the block"
+tags = ["flow", "runtime"]
+
+[scenario.lifetime_mix_struct_getter_result_returned]
+category = "reject"
+description = "An unannotated getter's result is tied to the borrow of its struct, a local, and may not be returned"
+tags = ["flow"]
+
+# -------- when the source is free again --------
+
+[scenario.lifetime_free_nll1_after_last_use]
+category = "run"
+description = "NLL problem case #1: the source is free after a held borrow's last use"
+tags = ["flow", "runtime"]
+
+[scenario.lifetime_free_nll1_used_after_push]
+category = "reject"
+description = "NLL problem case #1 with the borrow used again after the push"
+tags = ["flow"]
+
+[scenario.lifetime_free_nll2_option_arm]
+category = "run"
+description = "NLL problem case #2: a borrow bound in one 'match' arm, the source changed in the other"
+tags = ["flow", "runtime"]
+
+[scenario.lifetime_free_nll2_bare_arm]
+category = "run"
+description = "NLL problem case #2 with a bare element borrow in one 'if' arm"
+tags = ["flow", "runtime"]
+
+[scenario.lifetime_free_nll3_get_default]
+category = "run"
+description = "NLL problem case #3, get-or-insert: a borrow returned on one path, the pool added to on the other"
+tags = ["flow", "runtime"]
+
+[scenario.lifetime_free_nll3_option_used_after_add]
+category = "reject"
+description = "The unsafe neighbour of problem case #3: the 'Option' borrow used after an 'add'"
+tags = ["flow"]
+xfail = true
+
+[scenario.lifetime_free_nll3_bare_returned_on_one_path]
+category = "run"
+description = "Problem case #3 with a bare borrow taken before the branch"
+tags = ["flow", "runtime"]
+
+[scenario.lifetime_free_nll3_bare_used_after_push]
+category = "reject"
+description = "The unsafe neighbour: the bare borrow returned after the push"
+tags = ["flow"]
+
+[scenario.lifetime_free_nll4_reassign_reborrowed_ref]
+category = "run"
+description = "NLL problem case #4: a reference reassigned while a reborrow of its old target is live"
+tags = ["flow", "runtime"]
+
+[scenario.lifetime_free_polonius_loop_return]
+category = "run"
+description = "Polonius: a borrow returned from inside a loop on one path, the list pushed after the loop"
+tags = ["flow", "runtime"]
+
+[scenario.lifetime_free_lending_return_from_loop]
+category = "run"
+description = "Polonius's lending iterator: an item returned from a loop, the cursor borrowed again on the other path"
+tags = ["flow", "runtime"]
+
+[scenario.lifetime_free_lending_two_items_live]
+category = "reject"
+description = "Two items of a lending iterator held at once"
+tags = ["flow"]
+
+[scenario.lifetime_free_if_arm_read_other_arm]
+category = "run"
+description = "A mutable borrow used in one 'if' arm; the other arm reads the source"
+tags = ["flow", "runtime"]
+
+[scenario.lifetime_free_if_arm_used_after_join]
+category = "reject"
+description = "The same with the borrow used after the 'if': the other arm's change is refused"
+tags = ["flow"]
+
+[scenario.lifetime_free_match_arm_write_other_arm]
+category = "run"
+description = "A mutable borrow used in one 'match' arm; another arm changes the source"
+tags = ["flow", "runtime"]
+
+[scenario.lifetime_free_nested_if_inner_arm]
+category = "run"
+description = "A borrow used in one arm of a nested 'if'; every other arm changes the source"
+tags = ["flow", "runtime"]
+
+[scenario.lifetime_free_early_return]
+category = "run"
+description = "A borrow used on a path that returns early; the source changed on the other"
+tags = ["flow", "runtime"]
+
+[scenario.lifetime_free_if_value_either_frozen]
+category = "reject"
+description = "An 'if' value that may borrow either local keeps both frozen until its last use"
+tags = ["flow"]
+
+[scenario.lifetime_free_if_value_after_last_use]
+category = "run"
+description = "After an 'if' value's last use both of its sources are free"
+tags = ["flow", "runtime"]
+
+[scenario.lifetime_free_call_result_keeps_arg_frozen]
+category = "reject"
+description = "A borrow returned by a call keeps the argument's source frozen while used"
+tags = ["flow"]
+
+[scenario.lifetime_free_call_result_after_last_use]
+category = "run"
+description = "After a returned borrow's last use the argument's source is free"
+tags = ["flow", "runtime"]
+
+[scenario.lifetime_free_unnamed_pick_keeps_both_frozen]
+category = "reject"
+description = "A call handed two unannotated borrows keeps both sources frozen while its result is used"
+tags = ["flow"]
+
+[scenario.lifetime_free_named_pick_frees_other]
+category = "run"
+description = "With one parameter named apart, its source is free while the result is used"
+tags = ["parse", "typecheck", "flow", "runtime"]
+xfail = true
+
+[scenario.lifetime_free_condition_temporary_borrow]
+category = "run"
+description = "A returned borrow read in an 'if' condition and never held frees the list for the body"
+tags = ["flow", "runtime"]
+
+[scenario.lifetime_free_slice_used_after_push]
+category = "reject"
+description = "A slice view of a list used after a push"
+tags = ["flow"]
+
+[scenario.lifetime_free_slice_after_last_use]
+category = "run"
+description = "A slice view's last use before a push"
+tags = ["flow", "runtime"]
+
+[scenario.lifetime_free_loop_dead_before_next_iteration]
+category = "run"
+description = "An element borrow reassigned each iteration is dead at every push"
+tags = ["flow", "runtime"]
+
+[scenario.lifetime_free_loop_carried_used_before_change]
+category = "run"
+description = "A borrow carried round the back edge, used before the push and replaced after it"
+tags = ["flow", "runtime"]
+
+[scenario.lifetime_free_loop_break_carries_borrow]
+category = "run"
+description = "A borrow leaving a loop by 'break' is not held on the paths that go round"
+tags = ["flow", "runtime"]
+
+[scenario.lifetime_free_break_path_change]
+category = "run"
+description = "The source changed on the path that breaks out, the borrow used on the paths that go round"
+tags = ["flow", "runtime"]
+
+[scenario.lifetime_free_while_condition_uses_borrow]
+category = "reject"
+description = "A loop condition reading through a borrow keeps the source frozen in the body"
+tags = ["flow"]
+
+[scenario.lifetime_free_reborrow_chain]
+category = "run"
+description = "A chain of reborrows used and given back in turn"
+tags = ["flow", "runtime"]
+
+[scenario.lifetime_free_reborrow_through_shared_mut]
+category = "run"
+description = "Cone's '&mut' is shared: writing through it while a reborrow of it lives is allowed"
+tags = ["flow", "runtime"]
+
+[scenario.lifetime_free_uni_param_frozen]
+category = "reject"
+description = "Through a '&uni' parameter (Rust's '&mut'), a write while a reborrow lives is refused"
+tags = ["flow"]
+
+[scenario.lifetime_free_uni_param_after_last_use]
+category = "run"
+description = "A '&uni' parameter is usable again after its reborrow's last use"
+tags = ["flow", "runtime"]
+
+[scenario.lifetime_free_two_phase_user_method]
+category = "run"
+description = "Two-phase receiver: 'c.add(c.get())' on a user struct"
+tags = ["flow", "runtime"]
+
+[scenario.lifetime_free_disjoint_two_mut_fields]
+category = "run"
+description = "Mutable borrows of two different fields live at once"
+tags = ["flow", "runtime"]
+
+[scenario.lifetime_free_field_borrow_whole_read]
+category = "reject"
+description = "A mutable field borrow freezes the whole struct against being copied out"
+tags = ["flow"]
+
+[scenario.lifetime_free_conditional_reassign_may_hold]
+category = "reject"
+description = "A borrow reassigned on one path only may still hold its first source after the join"
+tags = ["flow"]
+
+[scenario.lifetime_free_conditional_reassign_other_path]
+category = "run"
+description = "A borrow reassigned to another source frees the first on that path"
+tags = ["flow", "runtime"]
+
+[scenario.lifetime_free_struct_holder_frozen]
+category = "reject"
+description = "A borrow held in a struct keeps its source frozen while the struct is used"
+tags = ["flow"]
+xfail = true
+
+[scenario.lifetime_free_struct_holder_dead_before_change]
+category = "run"
+description = "A struct holding a borrow, dead before its source changes"
+tags = ["flow", "runtime"]
+
+[scenario.lifetime_free_option_holder_frozen]
+category = "reject"
+description = "A borrow held in an 'Option' keeps its source frozen while the 'Option' is used"
+tags = ["flow"]
+xfail = true
+
+[scenario.lifetime_free_list_holder_frozen]
+category = "reject"
+description = "A borrow pushed onto a list keeps its source frozen while the list is used"
+tags = ["flow"]
+xfail = true
+
+[scenario.lifetime_free_list_holder_dead_before_change]
+category = "run"
+description = "A list of borrows, dead before its source is replaced"
+tags = ["flow", "runtime"]

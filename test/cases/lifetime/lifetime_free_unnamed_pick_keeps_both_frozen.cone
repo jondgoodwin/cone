@@ -1,0 +1,24 @@
+// A call handed two unannotated borrows returns a borrow tied to both, so
+// both sources stay frozen while it is used -- even 'b', which this 'pick'
+// never returns.
+//
+// Verdict: refuse, ErrorFrozen at the change of 'b'.
+// Basis: reflifefn.html (all unannotated borrows share one lifetime; its
+// status note: "A returned borrowed reference keeps every borrowed argument
+// frozen"); Jon, 1 Oct 2026 (WI\lifetimes.md): unannotated borrows are one
+// lifetime.
+// Rust: elision would refuse to compile 'pick' without annotations
+// (E0106); Cone's rule differs on purpose (by reading, not run).
+// Master d331baab: correct.
+
+mod lifetime_free_unnamed_pick_keeps_both_frozen;
+
+fn pick(a &i64, b &i64) &i64 { a; }
+
+fn f() i64 {
+  mut a = 1i64;
+  mut b = 2i64;
+  imm r = pick(&a, &b);
+  b = 5;                     //~ ErrorFrozen
+  *r;
+}

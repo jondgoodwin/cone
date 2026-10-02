@@ -1,0 +1,43 @@
+// A struct with two borrow fields, rebuilt in an inner block from an outer
+// borrow and an inner one, and used after the block: the struct value has
+// the shorter of its fields' lifetimes, the inner block's, so it may not be
+// kept past that block.
+//
+// Verdict: refuse, ErrorFrozen at the inner owner, which goes out of scope
+// while 'w' still holds a borrow of it (ref_flow_freeze's idiom; position the
+// agent's reading -- under decision 2's flow rule the store itself is legal).
+// Basis: Jon, 2 Oct 2026 ~00:15 (WI\lifetimes.md, Rulings): a struct is
+// infected with the lifetime of any borrowed field, and with two the shorter
+// of them where their order is known -- here two blocks of one function,
+// ordered by execution scope; decision 2 RULED (b). Rust refuses it (E0597;
+// by reading, not run).
+// Master d331baab: accepted, and it reads freed memory -- main, run, prints
+// "final" and then "read = 1 + <garbage>". xfail until Stage 3.
+
+mod lifetime_mix_struct_two_fields_inner_used_after;
+
+import stdio use *;
+
+struct R {
+  pub n i64;
+  fn final(self &uni) {
+    printStr("final\n");
+  }
+}
+
+struct P2 {
+  pub a &R;
+  pub b &R;
+}
+
+fn main() {
+  imm o = new R(1);
+  mut w = new P2(&o, &o);
+  {
+    imm s = new So[R](42);   //~ ErrorFrozen
+    w = new P2(&o, &*s);
+  }
+  printStr("read = ");
+  printInt(w.a.n + w.b.n);
+  printStr("\n");
+}

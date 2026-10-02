@@ -1,0 +1,33 @@
+// A borrow held in a struct keeps its source frozen exactly as a bare borrow
+// does: replacing the owner it borrows through, while the struct is still to
+// be used, is refused.
+//
+// Verdict: refuse, ErrorFrozen at the replacement.
+// Basis: the freezing design Jon ruled 26 Sep 2026 (freezing-design.md 1,
+// rule 4: "A copy of a borrow, and any value holding one, keeps the source
+// frozen exactly as the borrow does"; step 4).
+// Master d331baab: accepted, and it reads freed memory -- main, run, prints
+// "final" (the replaced owner) and then a garbage value through the struct.
+// xfail until Stage 3.
+
+mod lifetime_free_struct_holder_frozen;
+
+import stdio use *;
+
+struct R {
+  pub n i64;
+  fn final(self &uni) {
+    printStr("final\n");
+  }
+}
+
+struct H { pub r &R; }
+
+fn main() {
+  mut s = new So[R](42);
+  imm h = new H(&*s);
+  s = new So[R](7);          //~ ErrorFrozen
+  printStr("read = ");
+  printInt(h.r.n);
+  printStr("\n");
+}

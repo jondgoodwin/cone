@@ -1,0 +1,38 @@
+// The manual's 'refswitch', with 'ref2' marked by a lifetime of its own: the
+// result shares only 'ref1''s lifetime, so the caller may keep it past
+// 'inner''s block.
+//
+// Spelling: '&'a i32' with no permission reads the same under the EBNF's
+// order ('&' lifetime perm type) and the 2020 post's ('&' perm lifetime type),
+// so this case does not wait on decision 4's choice between them.
+//
+// Verdict: accept; prints 5.
+// Basis: reflifefn.html, "Returned borrowed references" (this program is its
+// example, "caller's logic is safe").
+// Master d331baab: refused at parse ("Missing ':' after lifetime" -- 'a is
+// read as a loop label). xfail until Stage 6.
+
+mod lifetime_band_named_refswitch_returns_unnamed;
+
+import stdio use *;
+
+fn show(label &[]u8, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+fn refswitch(nbr i32, ref1 &i32, ref2 &'a i32) &i32 {
+  ref1;
+}
+
+fn main() {
+  mut ref &i32;
+  imm outer = 5;
+  {
+    imm inner = 10;
+    ref = refswitch(1, &outer, &inner);
+  }
+  show("named-refswitch", i64.from(*ref));
+}

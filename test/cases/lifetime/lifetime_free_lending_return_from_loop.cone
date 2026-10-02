@@ -1,0 +1,52 @@
+// A lending iterator: each item 'next' hands out borrows the cursor itself.
+// An item is returned from inside the loop on one path; on the path that goes
+// round again it is dead, so the cursor may be borrowed again by the next
+// 'next'.
+//
+// Verdict: accept; prints 3 and 9.
+// Basis: the freezing design Jon ruled 26 Sep 2026 (freezing-design.md 2.10,
+// per-path holds, and 3.3, loops); Jon, 1 Oct 2026 (WI\lifetimes.md): a borrow
+// locks out its source "as short as possible while still being as long as
+// used".
+// Rust: the Polonius lending-iterator exemplar ('while let Some(x) =
+// iter.next() { if p(&x) { return Some(x); } }'), refused by NLL as "mutable
+// borrow starts here in previous iteration of loop" (E0499) and accepted by
+// Polonius -- from the Polonius update (Inside Rust blog, 6 Oct 2023), which
+// names lending iterators among the shapes Polonius is for; not run. Rust's
+// '&mut Cursor' is Cone's '&uni Cursor'.
+// Master d331baab: correct.
+
+mod lifetime_free_lending_return_from_loop;
+
+import stdio use *;
+
+fn show(label &[]u8, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+struct Cursor {
+  pub n i64;
+  pub fn next(self &mut) &mut i64 {
+    n = n + 1;
+    &mut n;
+  }
+}
+
+fn firstAbove(c &uni Cursor, k i64) &mut i64 {
+  mut i = 0;
+  while i < 5 {
+    imm e = c.next();
+    if *e > k { return e; }
+    i = i + 1;
+  }
+  c.next();
+}
+
+fn main() {
+  imm c = new So[Cursor](new Cursor(0));
+  show("found-in-loop", *firstAbove(c, 2));
+  show("after-loop", *firstAbove(c, 100));
+}

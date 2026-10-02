@@ -1,0 +1,39 @@
+// A borrow of a temporary passed through a call and kept in a variable: Rust
+// does not extend a temporary that is a call's argument, so it ends with the
+// statement while the variable still holds a borrow of it.
+//
+// Verdict: refuse, ErrorFrozen at the statement whose temporary ends while
+// 'r' still holds a borrow of it (the code and position are the agent's
+// reading; the refusal is the point).
+// Basis: Jon, 2 Oct 2026 ~00:20 (WI\lifetimes.md, Rulings): follow Rust --
+// extend where Rust extends, "refuse the rest (Rust's E0716)". Rust:
+// 'let r = id(&*make()); r.n' is E0716, "temporary value dropped while
+// borrowed" (function arguments are not extending expressions); by reading,
+// not run.
+// Master d331baab: accepted, and the temporary is never ended -- main, run,
+// prints "read = 3" and "end" with no "final" (the leak WI\lifetimes.md
+// records from #241). xfail until Stage 5.
+
+mod lifetime_mix_temp_through_call_refused;
+
+import stdio use *;
+
+struct R {
+  pub n i64;
+  fn final(self &uni) {
+    printStr("final\n");
+  }
+}
+
+fn mkso(n i64) So[R] { new So[R](n); }
+fn id(r &R) &R { r; }
+
+fn main() {
+  {
+    imm r = id(mkso(3));     //~ ErrorFrozen
+    printStr("read = ");
+    printInt(r.n);
+    printStr("\n");
+  }
+  printStr("end\n");
+}

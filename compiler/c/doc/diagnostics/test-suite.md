@@ -66,6 +66,7 @@ as that group's own subject requires.
 | 1 | `ref` | Borrowed references, static permissions, lifetime annotations, function references |
 | 1 | `move` | Move types and semantics |
 | 2 | `region` | Owning references, region strategies, lock permissions, weak references |
+| 2 | `lifetime` | The lifetime and borrow scenario corpus: one small case per point -- the bands (global, the caller's, the function's blocks), returns and stores, borrows inside values, and when a borrowed source is free again. Each case cites the basis of its verdict; a wrong verdict on master is `xfail`, naming the stage of the lifetimes plan that fixes it. `ref` keeps the per-diagnostic files; this group is organised by case, not by stage |
 | 2 | `trait` | Traits, virtual references and the dispatch through them, closure references |
 | 2 | `collection` | Collection types, array references and slices |
 | 2 | `each` | `each` and iteration |

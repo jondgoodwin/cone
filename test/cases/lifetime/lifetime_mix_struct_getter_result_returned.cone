@@ -1,0 +1,30 @@
+// A struct holding a parameter's borrow, built in a local, and a getter's
+// result returned. The getter's signature is unannotated, so its result is
+// tied to the borrow of the struct -- a local -- and may not be returned,
+// although the field it reads is the caller's. Saying "the result comes from
+// what H holds, not from the borrow of H" needs a lifetime on the struct type,
+// whose spelling is open (the stage plan's open list).
+//
+// Verdict: refuse, ErrorEscape at the returned call.
+// Basis: reflifefn.html (all unannotated borrows in a signature share one
+// lifetime, so 'get''s result has the shortest of its inputs, '&h''s) --
+// agent's reading. Rust agrees for the elided getter: 'fn get(&self) -> &R'
+// ties the result to '&self', so 'h.get()' returned from a local 'h' is
+// E0515 (by reading, not run); Rust accepts it only with 'impl<'a> H<'a> {
+// fn get(&self) -> &'a R }'. The design note (c9c) listed this refusal as
+// wrong; the unannotated program is refused by the rule.
+// Master d331baab: correct.
+
+mod lifetime_mix_struct_getter_result_returned;
+
+struct R { pub n i64; }
+
+struct H {
+  pub r &R;
+  pub fn get(self &) &R { r; }
+}
+
+fn f(p &R) &R {
+  imm h = new H(p);
+  h.get();                   //~ ErrorEscape
+}

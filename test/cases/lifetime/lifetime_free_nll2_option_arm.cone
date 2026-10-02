@@ -1,0 +1,46 @@
+// NLL's problem case #2: a borrow made by the scrutinee lives in the arm that
+// binds it; the other arm changes the source.
+//
+// Verdict: accept; prints 6 and 1.
+// Basis: the freezing design Jon ruled 26 Sep 2026 (freezing-design.md 1,
+// rule 3, and 2.10: a loan made on one path and an access on another never
+// meet); Jon, 1 Oct 2026 (WI\lifetimes.md): "the borrow would be active in
+// one branch ... but not in the others, and therefore could be used in
+// those".
+// Rust: RFC 2094, "Problem case #2: conditional control flow" ('match
+// map.get_mut(&key) { Some(value) => process(value), None => {
+// map.insert(key, V::default()); } }') -- NLL accepts (from the RFC; not run).
+// Master d331baab: correct, but only because a borrow inside an 'Option'
+// freezes nothing yet; the stage that makes it freeze (Stage 3) must keep
+// this passing.
+
+mod lifetime_free_nll2_option_arm;
+
+import stdio use *;
+import pool use *;
+
+fn show(label &[]u8, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+struct Mon { pub hp i64; }
+
+fn processOrDefault(p &uni Pool[Mon], r Ref[Mon]) {
+  match p.getMut(r) {
+    case mut v Some { v.value.hp = v.value.hp + 1; }
+    else { p.add(new Mon(0)); }
+  }
+}
+
+fn main() {
+  imm p = new So[Pool[Mon]](Pool[Mon].empty());
+  imm a = p.add(new Mon(5));
+  processOrDefault(p, a);
+  show("processed", p[a].hp);
+  p.remove(a);
+  processOrDefault(p, a);
+  show("defaulted-count", i64.from(p.len()));
+}

@@ -1,0 +1,41 @@
+// A parameter's borrow copied into a local, then reborrowed through that
+// local and returned: the reborrow points at what the parameter points at,
+// the caller's, so it may be returned. The local holding the borrow is not
+// what the reborrow points at.
+//
+// Verdict: accept; prints 8.
+// Basis: agent's reading of Jon, 1 Oct 2026 (WI\lifetimes.md, Rulings): "the
+// parameter value really does not have a lifetime at all, only the borrow you
+// take of it does. the lifetime is baked into the type expression" -- 'q''s
+// type carries the caller's lifetime, and '&mut *q' borrows its target.
+// Design note lifetimes-design-2026-10-01.md, c8h. refborref.html, "Lifetime
+// Constraints", says a borrow "from ... another reference" is bounded by the
+// block where it is taken; that sentence is stricter than the rule and the
+// stage that lands this rewrites it ("the lifetime of what that reference
+// points at"). Rust: accepted -- 'let q = p; &mut *q' returned from
+// 'fn f(p: &mut i64) -> &mut i64' (by reading, not run).
+// Master d331baab: refused, ErrorEscape at '&mut *q' -- safe code refused.
+// xfail until Stage 1.
+
+mod lifetime_band_return_reborrow_through_local;
+
+import stdio use *;
+
+fn show(label &[]u8, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+fn f(p &mut i64) &mut i64 {
+  imm q = p;
+  &mut *q;
+}
+
+fn main() {
+  mut k = 7i64;
+  imm r = f(&mut k);
+  *r = *r + 1;
+  show("reborrow-through-local", *r);
+}

@@ -1,0 +1,38 @@
+// A setter called on a struct the caller lent as '&mut', handed a borrow of
+// a local: the struct outlives the local.
+//
+// Verdict: refuse, ErrorCallEscape at the call.
+// Basis: reflifefn.html, "Mutable borrowed reference parameters", widened to
+// a receiver holding a borrow -- agent's reading (design note, case 9).
+// Master d331baab: accepted, and it reads freed memory -- main, run, prints
+// "final" and then "read = 1797696174192". xfail until Stage 2.
+
+mod lifetime_mix_setter_local_on_param;
+
+import stdio use *;
+
+struct R {
+  pub n i64;
+  fn final(self &uni) {
+    printStr("final\n");
+  }
+}
+
+struct H {
+  pub r &R;
+  pub fn set(self &mut, r &R) { self.r = r; }
+}
+
+fn fill(h &mut H) {
+  imm x = new So[R](42);
+  h.set(&*x);                //~ ErrorCallEscape
+}
+
+fn main() {
+  imm outer = new R(1);
+  mut h = new H(&outer);
+  fill(&mut h);
+  printStr("read = ");
+  printInt(h.r.n);
+  printStr("\n");
+}

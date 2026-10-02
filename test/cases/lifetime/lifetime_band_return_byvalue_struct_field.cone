@@ -1,0 +1,30 @@
+// A field of a struct passed by value is the function's own storage, so a
+// borrow of it may not be returned.
+//
+// Verdict: refuse, ErrorEscape at the returned borrow.
+// Basis: Jon, 1 Oct 2026, decision 1 RULED (WI\lifetimes.md): a borrow of a
+// by-value parameter is like a borrow of a local.
+// Master d331baab: accepted, and it dangles -- main, run, prints
+// 140708072690497, not 42. xfail until Stage 1.
+
+mod lifetime_band_return_byvalue_struct_field;
+
+import stdio use *;
+
+struct Pt { pub x i64; pub y i64; }
+
+fn clobber(n i64) i64 {
+  mut a Array[i64, 16] = [n, n, n, n, n, n, n, n, n, n, n, n, n, n, n, n];
+  a[3] + a[9];
+}
+
+fn xOf(p Pt) &i64 {
+  &p.x;                      //~ ErrorEscape
+}
+
+fn main() {
+  imm r = xOf(new Pt(42, 43));
+  clobber(21);
+  printInt(*r);
+  printStr("\n");
+}

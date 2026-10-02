@@ -1,0 +1,36 @@
+// A local initialized with a parameter's borrow, then reassigned a borrow of
+// a local, then returned: what it holds at the return is the local's borrow.
+//
+// Verdict: refuse, ErrorEscape at the return.
+// Basis: Jon, 2 Oct 2026 ~00:20, decision 2 RULED (b), flow (WI\lifetimes.md,
+// Rulings): this is the program decision 2 put to him, and "you can't allow
+// it to return" -- the store 'r = &x' is legal, the return is refused;
+// refborref.html, "Lifetime Constraints". Rust refuses it (E0515; by
+// reading, not run).
+// Master d331baab: accepted, and it dangles -- main, run, prints 0, not 42.
+// (ref_flow_return pins the 'mut chosen &i32;' spelling of this as compiling;
+// Stage 4 flips that line too.) xfail until Stage 4.
+
+mod lifetime_mix_laundered_local_returned;
+
+import stdio use *;
+
+fn clobber(n i64) i64 {
+  mut a Array[i64, 16] = [n, n, n, n, n, n, n, n, n, n, n, n, n, n, n, n];
+  a[3] + a[9];
+}
+
+fn launder(p &i64) &i64 {
+  mut r = p;
+  imm x = 42i64;
+  r = &x;
+  r;                         //~ ErrorEscape
+}
+
+fn main() {
+  imm one = 1i64;
+  imm r = launder(&one);
+  clobber(21);
+  printInt(*r);
+  printStr("\n");
+}

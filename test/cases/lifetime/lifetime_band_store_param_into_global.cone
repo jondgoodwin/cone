@@ -1,0 +1,43 @@
+// A borrowed parameter's borrow stored into a global: the caller band is
+// shorter than global, so the store is refused. (Nothing in the signature
+// says the argument is global.)
+//
+// Verdict: refuse, ErrorInvType at the store.
+// Basis: Jon, 1 Oct 2026 (WI\lifetimes.md, Rulings): a borrow from the caller
+// is "longer than the function, but shorter than global (thus, 1 instead of
+// 0)"; refborref.html: a borrow "may only be stored in a place whose lifetime
+// is the same or smaller".
+// Master d331baab: accepted (the parameter's declared type reads as global),
+// and it dangles -- main, run, prints 0, not 42. xfail until Stage 1.
+
+mod lifetime_band_store_param_into_global;
+
+import stdio use *;
+
+fn clobber(n i64) i64 {
+  mut a Array[i64, 16] = [n, n, n, n, n, n, n, n, n, n, n, n, n, n, n, n];
+  a[3] + a[9];
+}
+
+mut D i64 = 0;
+mut G &i64;
+
+fn @initpure init() {
+  G = &D;
+}
+
+fn stash(r &i64) {
+  G = r;                     //~ ErrorInvType
+}
+
+fn fill() {
+  imm x = 42i64;
+  stash(&x);
+}
+
+fn main() {
+  fill();
+  clobber(21);
+  printInt(*G);
+  printStr("\n");
+}

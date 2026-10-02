@@ -1,0 +1,48 @@
+// NLL's problem case #3, get-or-insert across a function boundary: the
+// borrow 'get' makes is returned on one path; on the other path it is dead,
+// so the pool may be added to before a fresh borrow is returned.
+//
+// Verdict: accept; prints 5, 0 and 2.
+// Basis: the freezing design Jon ruled 26 Sep 2026 (freezing-design.md 1,
+// "Still allowed", the 'found' example, written for exactly this shape).
+// Rust: RFC 2094, "Problem case #3: conditional control flow across
+// functions" ('get_default'); rustc's NLL refuses it, Polonius accepts it
+// ("Polonius update", Inside Rust blog, 6 Oct 2023) -- from documentation,
+// not run. Rust's '&'r mut HashMap' is translated to a '&uni' pool here, a
+// 'uni' source, since Cone's '&mut' is shared and would not freeze it.
+// Master d331baab: correct, but only because a borrow inside an 'Option'
+// freezes nothing yet; Stage 3 must keep this passing.
+
+mod lifetime_free_nll3_get_default;
+
+import stdio use *;
+import pool use *;
+
+fn show(label &[]u8, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+struct Mon { pub hp i64; }
+
+fn getDefault(p &uni Pool[Mon], r Ref[Mon]) &Mon {
+  match p.get(r) {
+    case imm e Some { return e.value; }
+    else {
+      imm n = p.add(new Mon(0));
+      return p[n];
+    }
+  }
+}
+
+fn main() {
+  imm p = new So[Pool[Mon]](Pool[Mon].empty());
+  imm a = p.add(new Mon(5));
+  show("found", getDefault(p, a).hp);
+  p.remove(a);
+  show("defaulted", getDefault(p, a).hp);
+  p.add(new Mon(7));
+  show("pool-len-after", i64.from(p.len()));
+}
