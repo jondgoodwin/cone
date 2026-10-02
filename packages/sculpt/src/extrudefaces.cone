@@ -1,0 +1,85 @@
+// ======== Face extrusion: regions and single faces ========
+
+// Extrude a region of faces (Blender's Extrude Region, moved along the
+// normal): the faces numbered in 'faces' are moved 'distance' along their
+// region's normal, and joined to where they were by walls of quads. Each
+// connected piece of the selection (faces joined across an edge) is a region
+// of its own and moves along its own normal, the area-weighted mean of its
+// faces' normals, so the region moves rigidly: a flat region's top keeps its
+// shape and size, and its walls stand square to it. Walls rise from the
+// region's rim, the edges with only one side in the region (the mesh's
+// boundary edges among them, as extruding a lone square makes an open box);
+// the edges between two of its faces get none. A negative distance pushes
+// the region in, and the walls still face outward, into the pocket.
+//
+// Numbering: a vertex inside a region is moved and keeps its number; each
+// vertex on a rim keeps its place and number for the faces about it that
+// stay, and a copy of it is made for the region, numbered from V on in the
+// order the selected faces, each from its first corner, first meet it.
+// Faces keep their numbers, the selected ones now the region's top; the
+// walls follow, loop by loop round each rim, from F on. A vertex where a
+// region touches itself only at that vertex gets one copy for each side.
+//
+// Channels: a copy takes its vertex's values; the top keeps its own face,
+// corner and edge values (its uv is unchanged); a wall takes the face values
+// of the face it rises from, and its corners that face's corner values at
+// its two vertices, but for "uv", which on the walls is their own map, u
+// along the rim by length from 0 to 1, v from 0 at the foot to 1 at the top;
+// a wall's foot and its top edge both keep the edge values of the edge they
+// come from ("crease" too, so a creased rim stays creased above and below);
+// the walls' upright edges are new, 0 in every edge channel.
+pub fn extrudeFaces(m &PolyMesh, faces &[]u32, distance f32) PolyMesh {
+  imm region = faceRegions(m, faces, false);
+  imm nrm = regionNormals(m, &region);
+  mut shift = List[Vec3].withCapacity(nrm.len());
+  mut f = 0usize;
+  while f < nrm.len() {
+    shift.push(*nrm[f] * distance);
+    f = f + 1usize;
+  }
+  imm rim = zeros(m.hVertex.len());
+  shiftRegions(m, &region, &shift, &rim, false);
+}
+
+// The same, every region moved by the one vector 'offset' (Blender's
+// Extrude Region moved freely)
+pub fn extrudeFacesAlong(m &PolyMesh, faces &[]u32, offset Vec3) PolyMesh {
+  imm region = faceRegions(m, faces, false);
+  mut shift = List[Vec3].withCapacity(m.fHalfedge.len());
+  mut f = 0usize;
+  while f < m.fHalfedge.len() {
+    shift.push(offset);
+    f = f + 1usize;
+  }
+  imm rim = zeros(m.hVertex.len());
+  shiftRegions(m, &region, &shift, &rim, false);
+}
+
+// Extrude each face numbered in 'faces' on its own (Blender's Extrude
+// Individual Faces): each moves 'distance' along its own normal, with its own
+// four (or n) walls, so two selected neighbours each get a wall on the edge
+// between them. Numbering and channels as 'extrudeFaces''s, each face its own
+// region: a face's n corners each get a new vertex.
+pub fn extrudeIndividual(m &PolyMesh, faces &[]u32, distance f32) PolyMesh {
+  imm region = faceRegions(m, faces, true);
+  imm nrm = regionNormals(m, &region);
+  mut shift = List[Vec3].withCapacity(nrm.len());
+  mut f = 0usize;
+  while f < nrm.len() {
+    shift.push(*nrm[f] * distance);
+    f = f + 1usize;
+  }
+  imm rim = zeros(m.hVertex.len());
+  shiftRegions(m, &region, &shift, &rim, false);
+}
+
+// A list of n (0, 0, 0)s
+fn zeros(n usize) List[Vec3] {
+  mut out = List[Vec3].withCapacity(n);
+  mut i = 0usize;
+  while i < n {
+    out.push(new Vec3(0., 0., 0.));
+    i = i + 1usize;
+  }
+  out;
+}

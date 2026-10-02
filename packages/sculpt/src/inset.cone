@@ -1,0 +1,207 @@
+// ======== Inset: faces shrunk inside a border ========
+
+// Inset a region of faces (Blender's Inset Faces, region mode, with even
+// thickness): each connected piece of the selection is shrunk inward from
+// its rim by 'thickness', and a border of quads fills the band between the
+// rim and the shrunk faces. Edges inside the region stay as they are, but for
+// their ends on the rim, which move with it. With 'depth', the shrunk faces
+// are also moved that far along the region's normal (the area-weighted mean
+// of its faces' normals), out for a positive depth and in for a negative.
+//
+// Even thickness: each rim vertex moves along the bisector of its two rim
+// sides' inward directions (each side's, in the plane of the face it bounds)
+// by thickness / cos(half the angle between them), a mitre, so the shrunk
+// rim runs parallel to the rim at the thickness from it; where the two sides
+// lie in different faces (a region folding over an edge), the vertex slides
+// along the fold. A vertex where the rim runs straight moves the thickness
+// straight in.
+//
+// The clamp: a mitred inset is exact only until a shrunk side shrinks to
+// nothing (a convex face's inner face to a point or a segment), and past
+// that the inner face would turn inside out. So the thickness is clamped,
+// region by region (the thickness stays even within each), to the largest
+// at which no shrunk side has turned back. A concave region (one with a
+// rim corner turning the other way) can also cross itself before that, a
+// reflex corner reaching another side, so for one of those the thickness is
+// also held to D / 2M, D the least distance from a rim vertex to a rim side
+// not on it and M the greatest mitre per unit of thickness: no vertex then
+// moves as far as half the gap to any side, which is enough to keep the
+// shrunk rim from crossing itself, and is conservative (a straight skeleton
+// gives the true limit, and the inset that goes past it). A negative
+// thickness is taken as 0 (no outset).
+//
+// Numbering: a vertex inside a region is moved by the depth and keeps its
+// number; each rim vertex keeps its place and number, and gets a new vertex
+// for the region, numbered from V on in the order the selected faces, each
+// from its first corner, first meet it. Faces keep their numbers, the
+// selected ones now the shrunk faces; the border quads follow, loop by loop
+// round each rim, from F on, each (a, b, b', a') for a rim side a -> b.
+//
+// Channels: a new vertex takes its vertex's values; a border quad takes the
+// face values of the face it was cut from; its corners at a and b take that
+// face's corner values there, and every corner at a new vertex (of a border
+// quad or a shrunk face) takes its face's corner values carried across the
+// face with it, so the texture is not stretched: a uv map that is affine
+// over a flat face (as a planar or box map is) carries exactly. A rim side
+// and its shrunk copy both keep the edge values of the edge they come from
+// ("crease" too); the sides joining a rim vertex to its new vertex are new, 0
+// in every edge channel.
+pub fn inset(m &PolyMesh, faces &[]u32, thickness f32, depth f32) PolyMesh {
+  imm region = faceRegions(m, faces, false);
+  insetRegions(m, &region, thickness, depth);
+}
+
+// Inset each face numbered in 'faces' on its own (Blender's Inset Faces,
+// Individual): each shrinks inside its own border, and moves 'depth' along
+// its own normal. As 'inset', each face its own region (and its own clamp).
+pub fn insetIndividual(m &PolyMesh, faces &[]u32, thickness f32, depth f32) PolyMesh {
+  imm region = faceRegions(m, faces, true);
+  insetRegions(m, &region, thickness, depth);
+}
+
+fn insetRegions(m &PolyMesh, region &List[u32], thickness f32, depth f32) PolyMesh {
+  imm nf = m.fHalfedge.len();
+  imm nh = m.hVertex.len();
+  imm nrm = regionNormals(m, region);
+  imm t = if thickness > 0. {thickness;} else {0.;};
+
+  // Each rim half-edge's mitre (the move of its sector's vertex per unit of
+  // thickness), and each region's limit, concavity and rim (chained)
+  mut mitre = zeros(nh);
+  mut limit = List[f32].withCapacity(nf);
+  mut concave = List[Bool].withCapacity(nf);
+  mut rimHead = List[u32].withCapacity(nf);
+  mut f = 0usize;
+  while f < nf {
+    limit.push(t);
+    concave.push(false);
+    rimHead.push(NoIndex);
+    f = f + 1usize;
+  }
+  mut rimNext = List[u32].withCapacity(nh);
+  mut h = 0usize;
+  while h < nh {
+    rimNext.push(NoIndex);
+    h = h + 1usize;
+  }
+  f = 0usize;
+  while f < nf {
+    imm r = *region[f];
+    if r != NoIndex {
+      imm hs = m.faceHalfedges(u32.from(f));
+      mut k = 0usize;
+      while k < hs.len() {
+        imm c = *hs[k];
+        if !acrossSame(m, region, c) {
+          imm o = sectorOut(m, region, c);
+          mitre.set(usize.from(c), mitreOf(m, c, o));
+          if isReflex(m, c, o) { concave.set(usize.from(r), true); }
+          rimNext.set(usize.from(c), *rimHead[usize.from(r)]);
+          rimHead.set(usize.from(r), c);
+        }
+        k = k + 1usize;
+      }
+    }
+    f = f + 1usize;
+  }
+
+  // The clamp, region by region
+  f = 0usize;
+  while f < nf {
+    if *rimHead[f] != NoIndex {
+      // No shrunk side turns back: along side a -> b, the ends close by
+      // t (mitre(a) - mitre(b)) . d, which must stay within its length
+      mut g = *rimHead[f];
+      while g != NoIndex {
+        imm a = *m.positions[usize.from(m.fromVertex(g))];
+        imm b = *m.positions[usize.from(m.toVertex(g))];
+        imm len = (b - a).length();
+        if len > 0. {
+          imm ma = *mitre[usize.from(sectorIn(m, region, m.prev(g)))];
+          imm closing = (ma - *mitre[usize.from(g)]).dot(b - a) / len;
+          if closing > 0. and len / closing < *limit[f] { limit.set(f, len / closing); }
+        }
+        g = *rimNext[usize.from(g)];
+      }
+      if *concave[f] {
+        mut most f32 = 0.;
+        mut gap f32 = -1.;
+        mut p = *rimHead[f];
+        while p != NoIndex {
+          imm ml = mitre[usize.from(p)].length();
+          if ml > most { most = ml; }
+          imm pv = m.toVertex(p);
+          imm at = *m.positions[usize.from(pv)];
+          mut q = *rimHead[f];
+          while q != NoIndex {
+            if m.fromVertex(q) != pv and m.toVertex(q) != pv {
+              imm dist = segmentDistance(at, *m.positions[usize.from(m.fromVertex(q))],
+                *m.positions[usize.from(m.toVertex(q))]);
+              if gap < 0. or dist < gap { gap = dist; }
+            }
+            q = *rimNext[usize.from(q)];
+          }
+          p = *rimNext[usize.from(p)];
+        }
+        if most > 0. and gap >= 0. and gap / (2. * most) < *limit[f] { limit.set(f, gap / (2. * most)); }
+      }
+    }
+    f = f + 1usize;
+  }
+
+  mut shift = List[Vec3].withCapacity(nf);
+  f = 0usize;
+  while f < nf {
+    shift.push(*nrm[f] * depth);
+    f = f + 1usize;
+  }
+  mut rim = zeros(nh);
+  h = 0usize;
+  while h < nh {
+    imm hf = m.face(u32.from(h));
+    if hf != NoIndex and *region[usize.from(hf)] != NoIndex {
+      rim.set(h, *mitre[h] * *limit[usize.from(*region[usize.from(hf)])]);
+    }
+    h = h + 1usize;
+  }
+  shiftRegions(m, region, &shift, &rim, true);
+}
+
+// The mitre at the vertex between rim half-edges c (incoming) and o
+// (outgoing): each side's inward direction (its face's normal across the
+// side's direction, pointing into the face), and their bisector, scaled by
+// 1 / cos(half the angle between them) so that the vertex stays a unit from
+// both sides. Sides that fold straight back on each other (no bisector) give
+// the first side's inward direction; the scale is held to 10000.
+fn mitreOf(m &PolyMesh, c u32, o u32) Vec3 {
+  imm u = *m.positions[usize.from(m.fromVertex(c))];
+  imm v = *m.positions[usize.from(m.toVertex(c))];
+  imm w = *m.positions[usize.from(m.toVertex(o))];
+  imm in1 = unit(m.faceNormal(m.face(c)).cross(unit(v - u)));
+  imm in2 = unit(m.faceNormal(m.face(o)).cross(unit(w - v)));
+  imm sum = in1 + in2;
+  if sum.length() < 0.000001 { return in1; }
+  imm dir = unit(sum);
+  imm cosHalf = dir.dot(in1);
+  if cosHalf < 0.0001 { return dir * 10000.; }
+  dir * (1. / cosHalf);
+}
+
+// Whether the rim turns against its faces at the vertex between c and o (a
+// reflex corner, where the region is concave)
+fn isReflex(m &PolyMesh, c u32, o u32) Bool {
+  imm u = *m.positions[usize.from(m.fromVertex(c))];
+  imm v = *m.positions[usize.from(m.toVertex(c))];
+  imm w = *m.positions[usize.from(m.toVertex(o))];
+  imm up = m.faceNormal(m.face(c)) + m.faceNormal(m.face(o));
+  (v - u).cross(w - v).dot(up) < 0.;
+}
+
+// The distance from point p to the segment from a to b
+fn segmentDistance(p Vec3, a Vec3, b Vec3) f32 {
+  imm ab = b - a;
+  imm l2 = ab.lengthSquared();
+  if l2 <= 0. { return (p - a).length(); }
+  imm s = clampf((p - a).dot(ab) / l2, 0., 1.);
+  (p - (a + ab * s)).length();
+}

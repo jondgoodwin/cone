@@ -1,0 +1,416 @@
+// The sculpt package's inset, checked with the testing package against
+// values worked out by hand; only a failure prints, so insets.out holds the
+// summary alone.
+//
+// Areas are signed, seen from +z (half the z of a face's Newell vector), so
+// a flat mesh whose faces all face +z keeps its area exactly when inset, and
+// a face turned over would subtract.
+//
+// - The square: vertices 0 (0, 0), 1 (2, 0), 2 (2, 2), 3 (0, 2) in z = 0,
+//   face 0 (0, 1, 2, 3) facing +z. Channels: vertex "w" = v, face "id" 10,
+//   edge "crease" 2 on 0-1, corner "uv" (x / 2, y / 2) (a planar map).
+//   Inset by 0.5: at corner 0, the side 3 -> 0 runs (0, -1), its inward
+//   direction +z x (0, -1) = (1, 0); the side 0 -> 1 runs (1, 0), inward
+//   (0, 1); their bisector (1, 1) / sqrt 2 makes 45 degrees with each, so the
+//   mitre is (1, 1) / sqrt 2 / cos 45 = (1, 1), and vertex 0's new vertex is
+//   0 + 0.5 (1, 1) = (0.5, 0.5), 0.5 from both sides. New vertices in corner
+//   order: 4 (0.5, 0.5), 5 (1.5, 0.5), 6 (1.5, 1.5), 7 (0.5, 1.5); face 0
+//   becomes (4, 5, 6, 7), area 1. The loop starts at the half-edge 3 -> 0:
+//   borders 1 (3, 0, 4, 7), 2 (0, 1, 5, 4), 3 (1, 2, 6, 5), 4 (2, 3, 7, 6),
+//   each a trapezoid of area (2 + 1) / 2 x 0.5 = 0.75: 1 + 4 x 0.75 = 4, the
+//   square's. 8 vertices, 4 + 4 + 4 = 12 edges, 5 faces, 4 on the boundary.
+//   Channels: 5's w is 1's; border 2's id is 10; crease 2 on the rim side
+//   0-1 and its shrunk copy 4-5, 0 on the spoke 0-4: two edges of 2, ten
+//   of 0. The uvs carry with the corners: face 0's corner at 4 is
+//   (0.5, 0.5) / 2 = (0.25, 0.25), border 2's corner at 5 (0.75, 0.25), and
+//   at 1 the rim's own, (1, 0).
+//   With depth 0.25, the inner square rises to z = 0.25: vertex 4 is
+//   (0.5, 0.5, 0.25), and the volume under the frustum (the square lies in
+//   z = 0, through the origin, adding nothing) is h / 3 (A1 + A2 +
+//   sqrt(A1 A2)) = 0.25 / 3 (4 + 1 + 2) = 7 / 12 = 0.583333.
+//   Inset by 5: each side a -> b closes by t (mitre(a) - mitre(b)) . d =
+//   t ((1, 1) - (-1, 1)) . (1, 0) = 2t over its length 2, so the thickness
+//   is clamped to 1, and the inner square shrinks to its centre: 4 to 7 all
+//   at (1, 1).
+// - The hexagon: circumradius 1, vertex k at angle 60 k degrees, (1, 0),
+//   (0.5, s), (-0.5, s), (-1, 0), (-0.5, -s), (0.5, -s), s = sqrt 3 / 2;
+//   face 0 the six of them. Inset by 0.25 with depth 0.5: the sides' inward
+//   directions are 60 degrees apart, so each mitre is 1 / cos 30 = 2 /
+//   sqrt 3 along the bisector, toward the centre: 0.25 x 2 / sqrt 3 =
+//   0.288675, the new circumradius 0.711325. New vertex 6 (0.711325, 0,
+//   0.5), 7 0.711325 (0.5, s) = (0.355662, 0.616025, 0.5). Even thickness:
+//   side 0-1's outward normal is (s, 0.5), and 6 and 7 both lie
+//   (v0 - p) . (s, 0.5) = 0.25 inside it: (1 - 0.711325) s = 0.25 and
+//   (1 - 0.355662) s - 0.616025 x 0.5 = 0.25. 12 vertices, 18 edges, 7
+//   faces. Volume under the hexagonal frustum: A1 = 3 sqrt 3 / 2 = 2.598076,
+//   A2 = A1 0.711325^2 = 1.314583, 0.5 / 3 (A1 + A2 + sqrt(A1 A2)) =
+//   0.960122. Inset by 1: each side's ends close by 2 / sqrt 3 over its
+//   length 1, so the thickness is clamped to sqrt 3 / 2, the apothem, and
+//   vertex 6 is at the centre.
+// - The grid of extrusions.cone (3 x 2 unit squares, vertex j 4 + i at (i,
+//   j, 0)), faces 0 and 1 inset as one region by 0.25: the rim is the
+//   rectangle (0, 0)-(2, 1). Its corners move (0.25, 0.25) in; vertices 1
+//   and 5, where the rim runs straight, move 0.25 straight in (the mitre of
+//   two sides with one inward direction is that direction). New vertices:
+//   face 0 (0, 1, 5, 4) gives 12 (0.25, 0.25), 13 (1, 0.25), 14 (1, 0.75),
+//   15 (0.25, 0.75); face 1 (1, 2, 6, 5) 16 (1.75, 0.25), 17 (1.75, 0.75).
+//   The inside edge 1-5 becomes 13-14; 1-5 itself is on no face and goes.
+//   18 vertices, 17 - 1 + 7 + 6 = 29 edges, 6 + 6 = 12 faces; area 6.
+//   Individually: face 0 gives 12 (0.25, 0.25) to 15 (0.25, 0.75), face 1
+//   16 (1.25, 0.25), 17 (1.75, 0.25), 18 (1.75, 0.75), 19 (1.25, 0.75); 20
+//   vertices, 17 + 8 + 8 = 33 edges, 6 + 8 = 14 faces; area 6.
+// - The fold: the cube's front and top (faces 1 and 5) inset as one region by
+//   0.25. At vertex 7 (1, 1, 1) the rim comes up the front's side 5 -> 7,
+//   inward +z x +y = -x, and leaves along the top's side 7 -> 3, inward +y x
+//   -z = -x: the mitre is -x, and 7's new vertex slides along the fold to
+//   (0.75, 1, 1). New vertices: face 1 (4, 5, 7, 6) gives 8 (-0.75, -0.75,
+//   1), 9 (0.75, -0.75, 1), 10 (0.75, 1, 1), 11 (-0.75, 1, 1); face 5 (2, 6,
+//   7, 3) gives 12 (-0.75, 1, -0.75) and 13 (0.75, 1, -0.75). 14 vertices,
+//   12 - 1 + 7 + 6 = 24 edges, 12 faces, closed, and the volume still 8
+//   (every face on the cube, every face outward).
+// - The L: 0 (0, 0), 1 (2, 0), 2 (2, 1), 3 (1, 1), 4 (1, 2), 5 (0, 2),
+//   area 3, its corner at 3 reflex. Every corner is square, so every mitre
+//   is sqrt 2 long: (1, 1) at 0, (-1, 1) at 1, (-1, -1) at 2, 3 and 4,
+//   (1, -1) at 5. Inset by 0.25: 6 (0.25, 0.25), 7 (1.75, 0.25), 8 (1.75,
+//   0.75), 9 (0.75, 0.75), 10 (0.75, 1.75), 11 (0.25, 1.75); the inner L's
+//   area is 1.5 x 0.5 + 0.5 x 1 = 1.25. Inset by 1: the sides 1-2 and 4-5
+//   (length 1, closing by 2t) allow 0.5, but the L is concave, so the
+//   thickness is held to D / 2M: D, the least distance from a vertex to a
+//   side not on it, is 1 (2 to side 3-4, for one), M = sqrt 2, so
+//   1 / (2 sqrt 2) = 0.353553: 6 (0.353553, 0.353553), 9 (0.646447,
+//   0.646447). Area 3 either way, every face facing +z.
+
+mod insets;
+
+import testing use *;
+import collections use *;
+import geomath use *;
+import mesh use *;
+import sculpt use *;
+
+imm near = 0.00001d;
+
+fn point(got Vec3, x f32, y f32, z f32, label &[]u8) {
+  expectFloat(got.x, x, near, label);
+  expectFloat(got.y, y, near, label);
+  expectFloat(got.z, z, near, label);
+}
+
+fn point2(got Vec2, x f32, y f32, label &[]u8) {
+  expectFloat(got.x, x, near, label);
+  expectFloat(got.y, y, near, label);
+}
+
+fn clean(m &PolyMesh, label &[]u8) {
+  imm problems = m.validate();
+  expectInt(i64.from(problems.len()), 0, label);
+}
+
+fn counts(m &PolyMesh, nv i64, ne i64, nf i64, label &[]u8) {
+  expectInt(i64.from(m.vertexCount()), nv, label);
+  expectInt(i64.from(m.edgeCount()), ne, label);
+  expectInt(i64.from(m.faceCount()), nf, label);
+}
+
+fn face(m &PolyMesh, f u32, a u32, b u32, c u32, d u32, label &[]u8) {
+  imm vs = m.faceVertices(f);
+  expectInt(i64.from(vs.len()), 4, label);
+  if vs.len() == 4usize {
+    expectInt(i64.from(*vs[0usize]), i64.from(a), label);
+    expectInt(i64.from(*vs[1usize]), i64.from(b), label);
+    expectInt(i64.from(*vs[2usize]), i64.from(c), label);
+    expectInt(i64.from(*vs[3usize]), i64.from(d), label);
+  }
+}
+
+fn edgeOf(m &PolyMesh, a u32, b u32) u32 {
+  mut e = 0u32;
+  while usize.from(e) < m.edgeCount() {
+    imm p = *m.hVertex[usize.from(2u32 * e)];
+    imm q = *m.hVertex[usize.from(2u32 * e + 1u32)];
+    if (p == a and q == b) or (p == b and q == a) { return e; }
+    e = e + 1u32;
+  }
+  NoIndex;
+}
+
+fn boundaryEdges(m &PolyMesh) i64 {
+  mut n = 0i64;
+  mut e = 0u32;
+  while usize.from(e) < m.edgeCount() {
+    if m.isBoundaryEdge(e) { n = n + 1; }
+    e = e + 1u32;
+  }
+  n;
+}
+
+fn countEdgesWith(m &PolyMesh, name &[]u8, value f32) i64 {
+  imm ch = m.findFloatChannel(EdgeDomain, name);
+  if ch == NoIndex { return -1; }
+  mut n = 0i64;
+  mut e = 0u32;
+  while usize.from(e) < m.edgeCount() {
+    if m.float(ch, e) == value { n = n + 1; }
+    e = e + 1u32;
+  }
+  n;
+}
+
+fn volume(m &PolyMesh) f32 {
+  mut sum f32 = 0.;
+  mut f = 0usize;
+  while f < m.faceCount() {
+    imm pts = m.facePositions(u32.from(f));
+    mut i = 1usize;
+    while i + 1usize < pts.len() {
+      sum = sum + pts[0usize].dot(pts[i].cross(*pts[i + 1usize]));
+      i = i + 1usize;
+    }
+    f = f + 1usize;
+  }
+  sum / 6.;
+}
+
+// A face's area seen from +z: negative if it faces -z
+fn areaZ(m &PolyMesh, f u32) f32 {
+  imm pts = m.facePositions(f);
+  imm n = pts.len();
+  mut sum f32 = 0.;
+  mut i = 0usize;
+  while i < n {
+    imm a = *pts[i];
+    imm b = *pts[(i + 1usize) % n];
+    sum = sum + (a.x - b.x) * (a.y + b.y);
+    i = i + 1usize;
+  }
+  sum / 2.;
+}
+
+// The sum of every face's area seen from +z, and whether every face faces +z
+fn flatArea(m &PolyMesh, area f32, label &[]u8) {
+  mut sum f32 = 0.;
+  mut up = true;
+  mut f = 0u32;
+  while usize.from(f) < m.faceCount() {
+    imm a = areaZ(m, f);
+    sum = sum + a;
+    if a < 0. { up = false; }
+    f = f + 1u32;
+  }
+  expectFloat(sum, area, near, label);
+  require(up, label);
+}
+
+fn uvAt(m &PolyMesh, f u32, v u32) Vec2 {
+  imm hs = m.faceHalfedges(f);
+  mut i = 0usize;
+  while i < hs.len() {
+    if m.toVertex(*hs[i]) == v { return m.vec2(m.findVec2Channel(CornerDomain, "uv"), *hs[i]); }
+    i = i + 1usize;
+  }
+  new Vec2(-1., -1.);
+}
+
+// One face in z = 0 from the points given, counterclockwise
+fn polygon(pts &[]Vec3) PolyMesh {
+  mut sizes = List[u32].empty();
+  sizes.push(u32.from(pts.len));
+  mut idx = List[u32].empty();
+  mut i = 0usize;
+  while i < pts.len {
+    idx.push(u32.from(i));
+    i = i + 1usize;
+  }
+  mut problems = List[String].empty();
+  PolyMesh.fromPolygons(pts, sizes.view(), idx.view(), &mut problems);
+}
+
+fn grid() PolyMesh {
+  mut pts = List[Vec3].empty();
+  mut j = 0u32;
+  while j < 3u32 {
+    mut i = 0u32;
+    while i < 4u32 {
+      pts.push(new Vec3(f32.from(i), f32.from(j), 0.));
+      i = i + 1u32;
+    }
+    j = j + 1u32;
+  }
+  mut sizes = List[u32].empty();
+  mut idx = List[u32].empty();
+  j = 0u32;
+  while j < 2u32 {
+    mut i = 0u32;
+    while i < 3u32 {
+      sizes.push(4u32);
+      idx.push(4u32 * j + i);
+      idx.push(4u32 * j + i + 1u32);
+      idx.push(4u32 * (j + 1u32) + i + 1u32);
+      idx.push(4u32 * (j + 1u32) + i);
+      i = i + 1u32;
+    }
+    j = j + 1u32;
+  }
+  mut problems = List[String].empty();
+  PolyMesh.fromPolygons(pts.view(), sizes.view(), idx.view(), &mut problems);
+}
+
+fn square() {
+  imm pts Array[Vec3, 4] = [new Vec3(0., 0., 0.), new Vec3(2., 0., 0.), new Vec3(2., 2., 0.), new Vec3(0., 2., 0.)];
+  mut sq = polygon(&pts);
+  imm w = sq.addFloatChannel(VertexDomain, "w", 0.);
+  mut v = 0u32;
+  while v < 4u32 {
+    sq.setFloat(w, v, f32.from(v));
+    v = v + 1u32;
+  }
+  sq.addFloatChannel(FaceDomain, "id", 10.);
+  imm crease = sq.addFloatChannel(EdgeDomain, "crease", 0.);
+  sq.setFloat(crease, edgeOf(&sq, 0u32, 1u32), 2.);
+  imm uv = sq.addVec2Channel(CornerDomain, "uv", new Vec2(0., 0.));
+  imm hs = sq.faceHalfedges(0u32);
+  mut i = 0usize;
+  while i < hs.len() {
+    imm p = *sq.positions[usize.from(sq.toVertex(*hs[i]))];
+    sq.setVec2(uv, *hs[i], new Vec2(p.x / 2., p.y / 2.));
+    i = i + 1usize;
+  }
+
+  imm sel Array[u32, 1] = [0u32];
+  imm m = inset(&sq, &sel, 0.5, 0.);
+  clean(&m, "square: validates");
+  counts(&m, 8, 12, 5, "square: 8 vertices, 12 edges, 5 faces");
+  expectInt(boundaryEdges(&m), 4, "square: 4 boundary edges");
+  point(*m.positions[4usize], 0.5, 0.5, 0., "square: 4, the mitre (1, 1) at 0");
+  point(*m.positions[5usize], 1.5, 0.5, 0., "square: 5");
+  point(*m.positions[6usize], 1.5, 1.5, 0., "square: 6");
+  point(*m.positions[7usize], 0.5, 1.5, 0., "square: 7");
+  face(&m, 0u32, 4u32, 5u32, 6u32, 7u32, "square: face 0 shrunk");
+  face(&m, 1u32, 3u32, 0u32, 4u32, 7u32, "square: border 1");
+  face(&m, 2u32, 0u32, 1u32, 5u32, 4u32, "square: border 2");
+  face(&m, 3u32, 1u32, 2u32, 6u32, 5u32, "square: border 3");
+  face(&m, 4u32, 2u32, 3u32, 7u32, 6u32, "square: border 4");
+  expectFloat(areaZ(&m, 0u32), 1., near, "square: the inner face's area");
+  expectFloat(areaZ(&m, 2u32), 0.75, near, "square: a border's area");
+  flatArea(&m, 4., "square: area 4, every face +z");
+  imm wc = m.findFloatChannel(VertexDomain, "w");
+  expectFloat(m.float(wc, 5u32), 1., near, "square: 5's w is 1's");
+  imm id = m.findFloatChannel(FaceDomain, "id");
+  expectFloat(m.float(id, 2u32), 10., near, "square: border 2's id");
+  imm cr = m.findFloatChannel(EdgeDomain, "crease");
+  expectFloat(m.float(cr, edgeOf(&m, 0u32, 1u32)), 2., near, "square: the rim side keeps its crease");
+  expectFloat(m.float(cr, edgeOf(&m, 4u32, 5u32)), 2., near, "square: its shrunk copy too");
+  expectFloat(m.float(cr, edgeOf(&m, 0u32, 4u32)), 0., near, "square: the spoke has none");
+  expectInt(countEdgesWith(&m, "crease", 2.), 2, "square: two edges of crease 2");
+  expectInt(countEdgesWith(&m, "crease", 0.), 10, "square: ten of 0");
+  point2(uvAt(&m, 0u32, 4u32), 0.25, 0.25, "square: face 0's uv at 4 carried");
+  point2(uvAt(&m, 2u32, 5u32), 0.75, 0.25, "square: border 2's uv at 5 carried");
+  point2(uvAt(&m, 2u32, 1u32), 1., 0., "square: border 2's uv at 1, the rim's");
+
+  imm raised = inset(&sq, &sel, 0.5, 0.25);
+  clean(&raised, "square raised: validates");
+  point(*raised.positions[4usize], 0.5, 0.5, 0.25, "square raised: 4");
+  expectFloat(volume(&raised), 0.5833333, near, "square raised: the frustum's volume, 7/12");
+
+  imm clamped = inset(&sq, &sel, 5., 0.);
+  clean(&clamped, "square clamped: validates");
+  point(*clamped.positions[4usize], 1., 1., 0., "square clamped: 4 at the centre");
+  point(*clamped.positions[5usize], 1., 1., 0., "square clamped: 5 at the centre");
+  point(*clamped.positions[6usize], 1., 1., 0., "square clamped: 6 at the centre");
+  point(*clamped.positions[7usize], 1., 1., 0., "square clamped: 7 at the centre");
+}
+
+fn hexagon() {
+  imm s f32 = 0.8660254;
+  imm pts Array[Vec3, 6] = [new Vec3(1., 0., 0.), new Vec3(0.5, s, 0.), new Vec3(-0.5, s, 0.), new Vec3(-1., 0., 0.),
+    new Vec3(-0.5, -s, 0.), new Vec3(0.5, -s, 0.)];
+  imm hex = polygon(&pts);
+  imm sel Array[u32, 1] = [0u32];
+  imm m = inset(&hex, &sel, 0.25, 0.5);
+  clean(&m, "hexagon: validates");
+  counts(&m, 12, 18, 7, "hexagon: 12 vertices, 18 edges, 7 faces");
+  point(*m.positions[6usize], 0.7113249, 0., 0.5, "hexagon: 6, the mitre 2 / sqrt 3");
+  point(*m.positions[7usize], 0.3556624, 0.6160254, 0.5, "hexagon: 7");
+  imm out = new Vec3(s, 0.5, 0.);
+  imm a = *m.positions[6usize];
+  imm b = *m.positions[7usize];
+  expectFloat((new Vec3(1., 0., 0.) - new Vec3(a.x, a.y, 0.)).dot(out), 0.25, near, "hexagon: 6 is 0.25 inside side 0-1");
+  expectFloat((new Vec3(1., 0., 0.) - new Vec3(b.x, b.y, 0.)).dot(out), 0.25, near, "hexagon: 7 is 0.25 inside side 0-1");
+  expectFloat(volume(&m), 0.9601225, near, "hexagon: the frustum's volume, every face outward");
+  point(m.faceNormal(0u32), 0., 0., 1., "hexagon: the inner face faces +z");
+
+  imm clamped = inset(&hex, &sel, 1., 0.);
+  clean(&clamped, "hexagon clamped: validates");
+  point(*clamped.positions[6usize], 0., 0., 0., "hexagon clamped: 6 at the centre");
+}
+
+fn gridRegion() {
+  imm g = grid();
+  imm sel Array[u32, 2] = [0u32, 1u32];
+  imm m = inset(&g, &sel, 0.25, 0.);
+  clean(&m, "grid region: validates");
+  counts(&m, 18, 29, 12, "grid region: 18 vertices, 29 edges, 12 faces");
+  point(*m.positions[12usize], 0.25, 0.25, 0., "grid region: 12");
+  point(*m.positions[13usize], 1., 0.25, 0., "grid region: 13, straight in");
+  point(*m.positions[14usize], 1., 0.75, 0., "grid region: 14, straight in");
+  point(*m.positions[15usize], 0.25, 0.75, 0., "grid region: 15");
+  point(*m.positions[16usize], 1.75, 0.25, 0., "grid region: 16");
+  point(*m.positions[17usize], 1.75, 0.75, 0., "grid region: 17");
+  require(edgeOf(&m, 1u32, 5u32) == NoIndex, "grid region: 1-5 is gone");
+  require(edgeOf(&m, 13u32, 14u32) != NoIndex, "grid region: the inside edge is 13-14");
+  flatArea(&m, 6., "grid region: area 6, every face +z");
+
+  imm ind = insetIndividual(&g, &sel, 0.25, 0.);
+  clean(&ind, "grid individual: validates");
+  counts(&ind, 20, 33, 14, "grid individual: 20 vertices, 33 edges, 14 faces");
+  point(*ind.positions[13usize], 0.75, 0.25, 0., "grid individual: 13");
+  point(*ind.positions[16usize], 1.25, 0.25, 0., "grid individual: 16");
+  point(*ind.positions[18usize], 1.75, 0.75, 0., "grid individual: 18");
+  flatArea(&ind, 6., "grid individual: area 6, every face +z");
+}
+
+fn fold() {
+  imm c = PolyMesh.cube(1.);
+  imm sel Array[u32, 2] = [1u32, 5u32];
+  imm m = inset(&c, &sel, 0.25, 0.);
+  clean(&m, "fold: validates");
+  counts(&m, 14, 24, 12, "fold: 14 vertices, 24 edges, 12 faces");
+  expectInt(boundaryEdges(&m), 0, "fold: closed");
+  expectFloat(volume(&m), 8., near, "fold: volume 8, every face outward");
+  point(*m.positions[8usize], -0.75, -0.75, 1., "fold: 8");
+  point(*m.positions[10usize], 0.75, 1., 1., "fold: 10 slides along the fold");
+  point(*m.positions[11usize], -0.75, 1., 1., "fold: 11 slides along the fold");
+  point(*m.positions[13usize], 0.75, 1., -0.75, "fold: 13");
+}
+
+fn ell() {
+  imm pts Array[Vec3, 6] = [new Vec3(0., 0., 0.), new Vec3(2., 0., 0.), new Vec3(2., 1., 0.), new Vec3(1., 1., 0.),
+    new Vec3(1., 2., 0.), new Vec3(0., 2., 0.)];
+  imm l = polygon(&pts);
+  imm sel Array[u32, 1] = [0u32];
+  imm m = inset(&l, &sel, 0.25, 0.);
+  clean(&m, "L: validates");
+  point(*m.positions[6usize], 0.25, 0.25, 0., "L: 6");
+  point(*m.positions[7usize], 1.75, 0.25, 0., "L: 7");
+  point(*m.positions[8usize], 1.75, 0.75, 0., "L: 8");
+  point(*m.positions[9usize], 0.75, 0.75, 0., "L: 9, the reflex corner's");
+  point(*m.positions[10usize], 0.75, 1.75, 0., "L: 10");
+  point(*m.positions[11usize], 0.25, 1.75, 0., "L: 11");
+  expectFloat(areaZ(&m, 0u32), 1.25, near, "L: the inner L's area");
+  flatArea(&m, 3., "L: area 3, every face +z");
+
+  imm clamped = inset(&l, &sel, 1., 0.);
+  clean(&clamped, "L clamped: validates");
+  point(*clamped.positions[6usize], 0.3535534, 0.3535534, 0., "L clamped: 6");
+  point(*clamped.positions[9usize], 0.6464466, 0.6464466, 0., "L clamped: 9");
+  flatArea(&clamped, 3., "L clamped: area 3, every face +z");
+}
+
+fn main() i32 {
+  square();
+  hexagon();
+  gridRegion();
+  fold();
+  ell();
+  done();
+}
