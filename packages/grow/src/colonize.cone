@@ -1,0 +1,165 @@
+// ======== Space colonization: growth toward attraction points ========
+//
+// Runions, Lane and Prusinkiewicz, "Modeling trees with a space
+// colonization algorithm" (2007), the PL·A2 entry of the plants survey. A
+// cloud of attraction points stands for the space a plant may fill (the
+// light a crown reaches for, the soil a root mines, the gaps a vine
+// creeps into). Each step, every attractor pulls on the node nearest it,
+// if that node is within 'reach'; every node pulled grows one new node
+// 'step' away, in the average of the directions it is pulled; and every
+// attractor a node has come within 'kill' of is consumed. Growth stops when
+// no node is pulled, or after 'steps' steps. Branches compete for the
+// attractors, so they spread to fill the cloud without crossing each other;
+// several plants grown into clouds of their own and laid together do cross,
+// and tangle.
+//
+// Three additions, each off at 0: 'tropism', a vector added to every
+// growth direction (gravity, light, a current), its length its weight
+// against the pull's unit direction; 'inertia', the weight of the direction
+// the node itself grew in, so a strand keeps on and curves rather than
+// zigzags; and 'jitter', the length of a random vector added (a hash of
+// the seed, the node and the step), so strands wander.
+//
+// Each attractor keeps its nearest node, checked only against the nodes
+// added since (Runions et al.'s own economy), so a whole growth costs one
+// distance per attractor and node.
+
+// The dials of a growth. 'make' gives the three distances, no tropism,
+// inertia or jitter, seed 0 and at most 1000 steps; set the others as
+// wanted. 'kill' should be at least 'step', or a node can overshoot an
+// attractor and oscillate about it until the steps run out
+pub struct Growth {
+  pub step f32;          // how far each new node is from its parent
+  pub reach f32;         // the farthest an attractor pulls (Runions' radius of influence)
+  pub kill f32;          // an attractor this near a node is consumed
+  pub tropism Vec3;      // added to every growth direction
+  pub inertia f32;       // the weight of the direction a node grew in
+  pub jitter f32;        // the length of the random vector added
+  pub seed u32;
+  pub steps u32;         // at most this many steps
+
+  pub fn make(step f32, reach f32, kill f32) Growth {
+    new Growth(step, reach, kill, new Vec3(0., 0., 0.), 0., 0., 0u32, 1000u32);
+  }
+}
+
+// A random vector in the cube from -1 to 1 on each axis: hashes of i, j and
+// the seed
+fn hashedVector(i i32, j i32, seed u32) Vec3 {
+  imm h = noise.hash2(i, j, seed);
+  new Vec3(noise.toSigned(h.x), noise.toSigned(h.y), noise.toSigned(h.z));
+}
+
+// 'graph' grown from the nodes it holds into the cloud 'attractors' by
+// space colonization (above), new nodes added after the old, each with its
+// step as its birth. The number of steps that grew something. A node out
+// of every attractor's reach never grows, so a root must start within
+// 'reach' of the cloud (or a trunk be added to carry it there)
+pub fn colonize(graph &mut BranchGraph, attractors &[]Vec3, growth &Growth) u32 {
+  imm count = attractors.len;
+  imm reach2 = growth.reach * growth.reach;
+  imm kill2 = growth.kill * growth.kill;
+  // Each attractor's nearest node and the square of its distance; consumed
+  // attractors are no longer live
+  mut live = List[Bool].withCapacity(count);
+  mut nearest = List[u32].withCapacity(count);
+  mut nearest2 = List[f32].withCapacity(count);
+  mut j = 0usize;
+  while j < count {
+    imm a = attractors[j];
+    mut best = 3.4028235e38;
+    mut which = NoParent;
+    mut i = 0usize;
+    while i < graph.position.len() {
+      imm d2 = (*graph.position[i] - a).lengthSquared();
+      if d2 < best { best = d2; which = u32.from(i); }
+      i = i + 1usize;
+    }
+    live.push(which != NoParent and best >= kill2);
+    nearest.push(which);
+    nearest2.push(best);
+    j = j + 1usize;
+  }
+
+  mut step = 1u32;
+  while step <= growth.steps {
+    imm n = graph.position.len();
+    // The pull on each node: the sum of unit directions to the attractors
+    // whose nearest it is
+    mut pull = List[Vec3].withCapacity(n);
+    mut pulled = List[u32].withCapacity(n);
+    mut i = 0usize;
+    while i < n {
+      pull.push(new Vec3(0., 0., 0.));
+      pulled.push(0u32);
+      i = i + 1usize;
+    }
+    j = 0usize;
+    while j < count {
+      if *live[j] and *nearest2[j] <= reach2 {
+        imm k = usize.from(*nearest[j]);
+        pull.set(k, *pull[k] + (attractors[j] - *graph.position[k]).normalize());
+        pulled.set(k, *pulled[k] + 1u32);
+      }
+      j = j + 1usize;
+    }
+    // Each node pulled grows one node
+    i = 0usize;
+    while i < n {
+      if *pulled[i] > 0u32 {
+        imm at = *graph.position[i];
+        imm sum = *pull[i];
+        mut dir = if sum.length() > 0.000001 { sum.normalize(); } else { new Vec3(0., 0., 0.); };
+        imm p = *graph.parent[i];
+        if growth.inertia != 0. and p != NoParent {
+          dir = dir + (at - *graph.position[usize.from(p)]).normalize() * growth.inertia;
+        }
+        dir = dir + growth.tropism;
+        if growth.jitter != 0. {
+          dir = dir + hashedVector(i32.from(i), i32.from(step), growth.seed) * growth.jitter;
+        }
+        if dir.length() > 0.000001 {
+          graph.add(at + dir.normalize() * growth.step, u32.from(i), step);
+        }
+      }
+      i = i + 1usize;
+    }
+    if graph.position.len() == n { return step - 1u32; }
+    // The attractors' nearest nodes, against the new nodes only; those now
+    // within 'kill' consumed
+    j = 0usize;
+    while j < count {
+      if *live[j] {
+        imm a = attractors[j];
+        mut m = n;
+        while m < graph.position.len() {
+          imm d2 = (*graph.position[m] - a).lengthSquared();
+          if d2 < *nearest2[j] {
+            nearest2.set(j, d2);
+            nearest.set(j, u32.from(m));
+          }
+          m = m + 1usize;
+        }
+        if *nearest2[j] < kill2 { live.set(j, false); }
+      }
+      j = j + 1usize;
+    }
+    step = step + 1u32;
+  }
+  growth.steps;
+}
+
+// 'count' points spread uniformly at random through 'box', each a hash of
+// its index and the seed
+pub fn scatter(box Aabb3, count u32, seed u32) List[Vec3] {
+  mut points = List[Vec3].withCapacity(usize.from(count));
+  imm size = box.max - box.min;
+  mut i = 0u32;
+  while i < count {
+    imm h = noise.hash2(i32.from(i), 0, seed);
+    points.push(new Vec3(box.min.x + size.x * noise.toUnit(h.x), box.min.y + size.y * noise.toUnit(h.y),
+      box.min.z + size.z * noise.toUnit(h.z)));
+    i = i + 1u32;
+  }
+  points;
+}

@@ -1,0 +1,274 @@
+// ======== Branch graphs: the skeleton a growth leaves ========
+
+// The parent of a root: none
+pub const NoParent = 0xFFFFFFFFu32;
+
+// A forest of branching strands: node i is the point 'position[i]', joined
+// to 'parent[i]' (NoParent for a root), grown in step 'birth[i]' (0 for a
+// root), its radius 'radius[i]' (0 until 'pipeRadii' gives it one). A
+// parent is always numbered before its children, so walking the nodes
+// backwards visits every child before its parent. Each node but a root is
+// the far end of one segment, from its parent to it.
+pub struct BranchGraph {
+  pub position List[Vec3];
+  pub parent List[u32];
+  pub birth List[u32];
+  pub radius List[f32];
+
+  pub fn empty() BranchGraph {
+    new BranchGraph(List[Vec3].empty(), List[u32].empty(), List[u32].empty(), List[f32].empty());
+  }
+
+  pub fn count(self &) usize { position.len(); }
+
+  // A new root at p; its number
+  pub fn addRoot(self &mut, p Vec3) u32 { self.add(p, NoParent, 0u32); }
+
+  // A new node at p, the child of 'parent' (NoParent for a root, otherwise
+  // a node already in the graph), grown in step 'birth'; its number
+  pub fn add(self &mut, p Vec3, parent u32, birth u32) u32 {
+    imm n = u32.from(self.position.len());
+    self.position.push(p);
+    self.parent.push(parent);
+    self.birth.push(birth);
+    self.radius.push(0.);
+    n;
+  }
+
+  // How many children each node has (a tip none, a fork two or more)
+  pub fn childCounts(self &) List[u32] {
+    imm n = self.position.len();
+    mut c = List[u32].withCapacity(n);
+    mut i = 0usize;
+    while i < n {
+      c.push(0u32);
+      i = i + 1usize;
+    }
+    i = 0usize;
+    while i < n {
+      imm p = *self.parent[i];
+      if p != NoParent { c.set(usize.from(p), *c[usize.from(p)] + 1u32); }
+      i = i + 1usize;
+    }
+    c;
+  }
+
+  // The graph cut into strands, each a path to be drawn as one tube: from
+  // a root, or from the fork a side branch leaves, along each node's main
+  // child (the one carrying the most nodes; of equal ones, the first) to a
+  // tip. A strand
+  // leaving a fork starts with the fork's node, so consecutive nodes of a
+  // strand are always a segment, and every segment is in exactly one
+  // strand. Strands come in the order of their first new node
+  pub fn strands(self &) Strands {
+    imm n = self.position.len();
+    imm main = mainChildren(self);
+    mut nodes = List[u32].empty();
+    mut starts = List[u32].empty();
+    mut i = 0usize;
+    while i < n {
+      imm p = *self.parent[i];
+      if p == NoParent or *main[usize.from(p)] != u32.from(i) {
+        starts.push(u32.from(nodes.len()));
+        if p != NoParent { nodes.push(p); }
+        mut at = u32.from(i);
+        while at != NoParent {
+          nodes.push(at);
+          at = *main[usize.from(at)];
+        }
+      }
+      i = i + 1usize;
+    }
+    starts.push(u32.from(nodes.len()));
+    new Strands(nodes, starts);
+  }
+
+  // How many tips (nodes with no children) the graph has
+  pub fn tipCount(self &) usize {
+    imm c = self.childCounts();
+    mut t = 0usize;
+    mut i = 0usize;
+    while i < c.len() {
+      if *c[i] == 0u32 { t = t + 1usize; }
+      i = i + 1usize;
+    }
+    t;
+  }
+}
+
+// A graph's strands ('BranchGraph.strands'): strand s is the nodes from
+// nodes[starts[s]] up to nodes[starts[s + 1]]
+pub struct Strands {
+  pub nodes List[u32];
+  pub starts List[u32];
+
+  pub fn count(self &) usize { starts.len() - 1usize; }
+}
+
+// Each node's radius by the pipe model (Shinozaki, Yoda, Hozumi and Kira,
+// 1964; da Vinci's rule when 'exponent' is 2, Murray's law when 3): every
+// tip has radius 'tip', and a node with children has radius
+// (sum of its children's radius^exponent)^(1 / exponent), so a strand
+// thickens toward its root by as much as it carries. A node with one child
+// has that child's radius: the taper happens at the forks. The exponent's
+// powers go through libc's powf
+pub fn pipeRadii(graph &mut BranchGraph, tip f32, exponent f32) {
+  imm n = graph.position.len();
+  if n == 0usize { return; }
+  imm tipPower = libc.powf(tip, exponent);
+  imm inverse = 1. / exponent;
+  mut sum = List[f32].withCapacity(n);
+  mut i = 0usize;
+  while i < n {
+    sum.push(0.);
+    i = i + 1usize;
+  }
+  // Backwards: every child before its parent
+  i = n;
+  while i > 0usize {
+    i = i - 1usize;
+    imm s = *sum[i];
+    imm power = if s > 0. { s; } else { tipPower; };
+    graph.radius.set(i, if s > 0. { libc.powf(s, inverse); } else { tip; });
+    imm p = *graph.parent[i];
+    if p != NoParent { sum.set(usize.from(p), *sum[usize.from(p)] + power); }
+  }
+}
+
+// Each node's main child, as 'strands' chooses it: the one carrying the
+// most nodes (itself and all beneath it), of equal ones the first;
+// NoParent for a tip
+fn mainChildren(graph &BranchGraph) List[u32] {
+  imm n = graph.position.len();
+  mut main = List[u32].withCapacity(n);
+  mut size = List[u32].withCapacity(n);
+  mut i = 0usize;
+  while i < n {
+    main.push(NoParent);
+    size.push(1u32);
+    i = i + 1usize;
+  }
+  // Backwards, every child before its parent
+  i = n;
+  while i > 0usize {
+    i = i - 1usize;
+    imm p = *graph.parent[i];
+    if p != NoParent { size.set(usize.from(p), *size[usize.from(p)] + *size[i]); }
+  }
+  i = 0usize;
+  while i < n {
+    imm p = *graph.parent[i];
+    if p != NoParent {
+      imm m = *main[usize.from(p)];
+      if m == NoParent or *size[i] > *size[usize.from(m)] { main.set(usize.from(p), u32.from(i)); }
+    }
+    i = i + 1usize;
+  }
+  main;
+}
+
+// Twigs pruned: a twig is the unbranched run of nodes from a fork out to a
+// tip, and each one shorter than 'length' (along its segments, from the
+// fork) is removed, unless it is the fork's main child (as 'strands'
+// chooses it), so a strand is never shortened. One pass: a fork left with
+// one child is not pruned again. The nodes left keep their order, so
+// parents still come before children; radii are kept, so call
+// 'pipeRadii' again for the forks that lost a branch. The number of nodes
+// removed. Space colonization grows a twig to each stray attractor near a
+// strand; this takes them off
+pub fn pruneTwigs(graph &mut BranchGraph, length f32) usize {
+  imm n = graph.position.len();
+  imm counts = graph.childCounts();
+  imm main = mainChildren(graph);
+  mut keep = List[Bool].withCapacity(n);
+  mut i = 0usize;
+  while i < n {
+    keep.push(true);
+    i = i + 1usize;
+  }
+  mut removed = 0usize;
+  mut t = 0usize;
+  while t < n {
+    if *counts[t] == 0u32 {
+      // Up from the tip to the fork
+      mut along f32 = 0.;
+      mut at = t;
+      mut fork = NoParent;
+      while *graph.parent[at] != NoParent and fork == NoParent {
+        imm p = usize.from(*graph.parent[at]);
+        along = along + (*graph.position[at] - *graph.position[p]).length();
+        if *counts[p] >= 2u32 { fork = u32.from(p); } else { at = p; }
+      }
+      if fork != NoParent and along < length and *main[usize.from(fork)] != u32.from(at) {
+        mut x = t;
+        while x != at {
+          keep.set(x, false);
+          x = usize.from(*graph.parent[x]);
+          removed = removed + 1usize;
+        }
+        keep.set(at, false);
+        removed = removed + 1usize;
+      }
+    }
+    t = t + 1usize;
+  }
+  if removed == 0usize { return 0usize; }
+  // The nodes kept, renumbered in order
+  mut number = List[u32].withCapacity(n);
+  mut kept = BranchGraph.empty();
+  i = 0usize;
+  while i < n {
+    if *keep[i] {
+      number.push(u32.from(kept.position.len()));
+      imm p = *graph.parent[i];
+      kept.add(*graph.position[i], if p == NoParent { NoParent; } else { *number[usize.from(p)]; }, *graph.birth[i]);
+      kept.radius.set(kept.position.len() - 1usize, *graph.radius[i]);
+    } else {
+      number.push(NoParent);
+    }
+    i = i + 1usize;
+  }
+  *graph = kept;
+  removed;
+}
+
+// The kinks of growth smoothed out of each strand: 'rounds' times, every
+// node with a parent and exactly one child moves the fraction 'amount' of
+// the way to the midpoint of its parent and its child (Laplacian
+// smoothing, every node moved from the positions before the round). Roots,
+// tips and forks stay where they are, so the branching keeps its shape
+pub fn smoothBranches(graph &mut BranchGraph, rounds u32, amount f32) {
+  imm n = graph.position.len();
+  imm counts = graph.childCounts();
+  // Each node's one child, where it has exactly one
+  mut child = List[u32].withCapacity(n);
+  mut i = 0usize;
+  while i < n {
+    child.push(NoParent);
+    i = i + 1usize;
+  }
+  i = 0usize;
+  while i < n {
+    imm p = *graph.parent[i];
+    if p != NoParent { child.set(usize.from(p), u32.from(i)); }
+    i = i + 1usize;
+  }
+  mut r = 0u32;
+  while r < rounds {
+    mut moved = List[Vec3].withCapacity(n);
+    i = 0usize;
+    while i < n {
+      imm at = *graph.position[i];
+      imm p = *graph.parent[i];
+      if p != NoParent and *counts[i] == 1u32 {
+        imm mid = (*graph.position[usize.from(p)] + *graph.position[usize.from(*child[i])]) * 0.5;
+        moved.push(at.lerp(mid, amount));
+      } else {
+        moved.push(at);
+      }
+      i = i + 1usize;
+    }
+    graph.position = moved;
+    r = r + 1u32;
+  }
+}

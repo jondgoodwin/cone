@@ -106,6 +106,23 @@ the groove's steepest slope, so it stays a bound (a conservative one: the
 fine flutes' ratio measures 0.75, so a tracer steps short there). Each
 evaluation of a fluted horn takes an atan2 and a sin per cell.
 
+**Many capsules** (`capsules.cone`, CPU only): `Capsules.make(blend,
+reach)`, then `add(from, to, fromRadius, toRadius)` (a tapered capsule, a
+chain of its own) or `extend(...)` (one more capsule on the last one's
+chain), then `build(cell)` (cubic buckets `cell` a side) and `distance(p)`;
+`distanceAll(p)` asks every capsule, `bounds()`, `cap()` (reach - 12
+blend). A chain is the hard union of its capsules, so a strand of segments
+end to end has no bulge at its joints; chains are smooth-unioned, so forks
+and crossings fuse. At a point with hard union m, the field is the smooth
+union, in the order added, of the chains nearer than m + 8 blend, started
+from m + 4 blend, held to the cap: a chain at the limit could not change
+the union, so the field never jumps as chains come and go, and is
+1-Lipschitz, a bound everywhere, between m - 4 blend and m under the cap. A
+bucket lists the capsules within `reach` of it; that gives every capsule's
+bits wherever m is under reach - 8 blend, and both are held to the cap
+elsewhere. Outside the grid's box: the cap plus the distance to the box.
+A skeleton of thousands of segments: a tree, roots, veins, struts.
+
 **Gradient** (`shape.cone`): the `Shape` trait (`distance(p)`), `FnShape`
 (a `&fn(p Vec3) f32` as a Shape), `gradient(shape, p, h)` (central
 differences, six evaluations), `normal(shape, p, h)` (Quilez's tetrahedron,
@@ -157,6 +174,17 @@ Two findings shaped the code:
   that is not built. The horn's tube is itself cells, round cones along
   chords (a tube whose radius depends on the nearest point's arc length is
   not Lipschitz near the centre of curvature either).
+- **Many capsules: which ones count must not move the field.** A first
+  `Capsules` smooth-unioned its bucket's capsules from infinity and held the
+  result to `reach`: a capsule just beyond `reach` of a bucket still blended
+  into an intermediate value, so the field differed from every capsule's by
+  up to 4.8e-6 and jumped at buckets' edges (ratio 1.089 over 8192 pairs
+  1/256 apart). Starting the union from m + 4 blend and taking only chains
+  nearer than m + 8 blend makes the set's edge invisible: the grid gives
+  every capsule's bits at 8192 points, ratio 0.9998. A second finding: the
+  smooth union of two capsules meeting end to end swells the joint by the
+  blend, which beads a strand of short segments like a caterpillar; hence
+  chains, hard-unioned within.
 - **hg_sdf's Columns switches to the plain union outside its band**, which
   cuts the field where a column crosses the band's edge (measured ratio
   6.7). `unionColumns` clips the columns to the band instead: the same

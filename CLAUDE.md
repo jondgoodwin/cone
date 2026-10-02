@@ -122,7 +122,9 @@ Visual Studio projects stay at the root.
   repetition, elongation), hg_sdf's fillets, repetition along a curve (an
   `Arc`, or a `sculpt.Path` as a `PathCurve`) in its rotation-minimizing
   frames as the exact union of every copy, `Horn` (the ribbed, tapering,
-  curling horn, and `fluted`, twisted flutes along it), the gradient and
+  curling horn, and `fluted`, twisted flutes along it), `Capsules` (thousands
+  of tapered capsules in chains, smooth-unioned so forks fuse, found
+  through a grid of buckets; CPU only), the gradient and
   normal, and noise detail; the same
   functions for shaders in `src/sdf.slang`, which its `parity` test checks
   on a real GPU; and meshing on the CPU (`mesher.cone`): `surfaceNet`,
@@ -138,6 +140,14 @@ Visual Studio projects stay at the root.
   wet ground beside a Blinn-Phong twin, its mesh hashes pinned, its
   distances compared with the GPU's by `hornparity.slang`, and `--dump`,
   the video's frames);
+  `grow` is shapes that grow, as graphs of points, over `geomath` and
+  `noise`: `BranchGraph` (a forest of nodes, parents numbered first),
+  space colonization (`colonize` with its `Growth` dials, Runions et al.'s,
+  plus tropism, inertia and seeded jitter; `scatter`, attractors in a box),
+  `pipeRadii` (the pipe model), `smoothBranches`, `pruneTwigs` and
+  `strands` (the graph cut into paths for tubes or chains); its example
+  `vines.cone` grows the night swamp's knotted roots, fuses them in sdf's
+  `Capsules`, meshes and draws them;
   `testing` is the checks a package's tests call (`expectInt`, `require…`,
   `done`), ordinary library code the compiler knows nothing of;
   `textdiff` is the line diff of two lists of lines or two texts: the edit

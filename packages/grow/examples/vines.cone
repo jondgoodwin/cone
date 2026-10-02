@@ -1,0 +1,313 @@
+// vines: the knotted mass of glossy black roots and tendrils over dark
+// water in Elizabeth's "landscape 1" (the night swamp), roughly reproduced
+// from general primitives: grow's space colonization and pipe-model radii
+// make the strands, sdf's Capsules fuses them into one field, and sdf's
+// surface nets mesh it. Nothing here is in a library: this file is the
+// whole description of the mass.
+//
+//   congo run --release packages/grow/examples/vines.cone
+//   congo run --release packages/grow/examples/vines.cone -- --shots DIR/vines --obj DIR/vines
+//
+// THE MASS, step by step (y is up, the water is y = 0, a river winds along
+// -z away from the camera):
+// - PLANTS roots, alternately on either bank, a little under the water;
+// - each grown by space colonization into a cloud of its own: points
+//   scattered round it, kept densely near the water and thinly higher up,
+//   and over the river only high enough to arch across it. Each plant's
+//   strands fill its cloud without crossing each other, but the clouds
+//   overlap, so the plants' strands cross, tangle and fuse;
+// - inertia and seeded jitter make the strands wander and curl, a slight
+//   downward tropism keeps them low; twigs under 0.25 long are pruned,
+//   and smoothing takes out the steps;
+// - pipe-model radii: thin at the tips, thickening toward each root as the
+//   branches join;
+// - the graph cut into strands (root or fork to tip along the thickest
+//   child), each a chain of tapered capsules, hard-joined so its joints do
+//   not bulge; all in one Capsules, whose smooth union of the chains
+//   fuses the forks and wherever two strands touch.
+//
+// '--shots PREFIX' (default 'vines') writes PREFIX-hero.bmp (low over the
+// water, as the reference looks), PREFIX-side.bmp and PREFIX-above.bmp at
+// 1920 x 1080; '--obj PREFIX' writes PREFIX-lod0.obj and PREFIX-lod1.obj.
+// It prints the strands' counts and each mesh's counts, time and meshHash,
+// and exits 0 only if the hashes are the pinned ones, every shot was
+// written, no Vulkan call failed and the validation layer said nothing.
+//
+// It needs a GPU driver with Vulkan 1.3 and SDL3.dll on PATH (and SDL3.lib
+// on LIB to link); no window and no display.
+
+mod vines;
+
+import stdio use *;
+import libc;
+import sdl;
+import collections use *;
+import geomath use *;
+import mesh;
+import noise;
+import gpu use *;
+import render use *;
+import sdf use *;
+import grow use *;
+
+// ---- The dials ----
+
+const SEED = 2026u32;
+const PLANTS = 10;
+const POINTS = 900u32;             // scattered round each plant, before thinning
+const TIP f32 = 0.015;             // a tip's radius
+const PIPE f32 = 2.0;              // the pipe model's exponent
+const BLEND f32 = 0.008;           // the fillets where strands fuse
+const CELL f32 = 0.015;            // the finest mesh's cells
+const LEVELS = 2usize;
+imm PINNED Array[u32, 2] = [0x7c1d558eu32, 0x0ac03532u32];
+const WIDTH = 1920u32;
+const HEIGHT = 1080u32;
+
+fn v(x f32, y f32, z f32) Vec3 { new Vec3(x, y, z); }
+fn unit(i i32, salt u32) f32 { noise.toUnit(noise.hash1(i, SEED + salt)); }
+
+// The river's middle and half-width at z, winding away along -z, widening
+// toward the camera
+fn riverX(z f32) f32 { 0.5 * sin(0.8 * z + 0.4); }
+fn riverHalf(z f32) f32 { 0.42 + 0.06 * z; }
+
+// ---- The strands ----
+
+fn plant(k i32) BranchGraph {
+  imm side = if k % 2 == 0 { 1.; } else { -1.; };
+  imm z = 0.3 - 4. * unit(k, 1u32);
+  imm root = v(riverX(z) + side * (riverHalf(z) + 0.15 + 1.3 * unit(k, 2u32)), -0.08, z);
+  // Its cloud: kept with a chance falling with height, and over the river
+  // only above 0.35, and rarely
+  imm salt = SEED + u32.from(k) * 7919u32;
+  imm box = new Aabb3(root + v(-1.7, 0., -1.5), root + v(1.7, 1.3, 1.5));
+  imm all = scatter(box, POINTS, salt);
+  mut cloud = List[Vec3].empty();
+  mut i = 0usize;
+  while i < all.len() {
+    imm p = *all[i];
+    imm chance = noise.toUnit(noise.hash1(i32.from(u32.from(i)), salt + 1u32));
+    imm overRiver = libc.fabsf(p.x - riverX(p.z)) < riverHalf(p.z);
+    imm keep = if overRiver { p.y > 0.35 and chance < 0.12; } else { chance < libc.expf(0. - p.y / 0.4); };
+    if keep and p.z < 0.8 { cloud.push(p); }
+    i = i + 1usize;
+  }
+  mut g = BranchGraph.empty();
+  g.addRoot(root);
+  mut growth = Growth.make(0.05, 0.6, 0.2);
+  growth.tropism = v(0., -0.05, 0.);
+  growth.inertia = 0.8;
+  growth.jitter = 0.3;
+  growth.seed = salt + 2u32;
+  colonize(&mut g, cloud.view(), &growth);
+  pruneTwigs(&mut g, 0.25);
+  smoothBranches(&mut g, 6u32, 0.5);
+  pipeRadii(&mut g, TIP, PIPE);
+  g;
+}
+
+// Every plant's segments, as tapered capsules in one field
+fn strands() Capsules {
+  mut c = Capsules.make(BLEND, 0.17);
+  mut nodes = 0usize;
+  mut tips = 0usize;
+  mut k = 0;
+  while k < PLANTS {
+    imm g = plant(k);
+    nodes = nodes + g.count();
+    tips = tips + g.tipCount();
+    // Each strand a chain, starting at its own radius at the fork it leaves,
+    // which the smooth union then fills
+    imm s = g.strands();
+    mut j = 0usize;
+    while j < s.count() {
+      mut at = usize.from(*s.starts[j]);
+      imm end = usize.from(*s.starts[j + 1usize]);
+      while at + 1usize < end {
+        imm p = usize.from(*s.nodes[at]);
+        imm q = usize.from(*s.nodes[at + 1usize]);
+        imm first = at == usize.from(*s.starts[j]);
+        imm ra = if first { *g.radius[q]; } else { *g.radius[p]; };
+        if first { c.add(*g.position[p], *g.position[q], ra, *g.radius[q]); }
+        else { c.extend(*g.position[p], *g.position[q], ra, *g.radius[q]); }
+        at = at + 1usize;
+      }
+      j = j + 1usize;
+    }
+    k = k + 1;
+  }
+  c.build(0.12);
+  print <- PLANTS; print <- " plants, "; print <- nodes; print <- " nodes, "; print <- tips; print <- " tips, ";
+  print <- c.count(); print <- " capsules\n";
+  c;
+}
+
+// ---- Arguments ----
+
+fn cstrEquals(a *u8, b &[]u8) Bool {
+  mut i = 0usize;
+  while i < b.len {
+    if *(a + i) != b[i] { return false; }
+    i = i + 1usize;
+  }
+  *(a + b.len) == 0u8;
+}
+
+fn appendCstr(s &mut String, c *u8) {
+  mut i = 0usize;
+  while *(c + i) != 0u8 {
+    s.appendByte(*(c + i));
+    i = i + 1usize;
+  }
+}
+
+fn named(prefix &String, suffix &[]u8) String {
+  mut s = prefix.copy();
+  s <- suffix;
+  s;
+}
+
+// ---- The demo ----
+
+fn main(argc i32, argv **u8) i32 {
+  mut shots = String.empty();
+  shots <- "vines";
+  mut objPrefix = String.empty();
+  mut a = 1;
+  while a + 1 < argc {
+    imm arg = *(argv + usize.from(a));
+    if cstrEquals(arg, "--shots") { shots = String.empty(); appendCstr(&mut shots, *(argv + usize.from(a + 1))); }
+    elif cstrEquals(arg, "--obj") { appendCstr(&mut objPrefix, *(argv + usize.from(a + 1))); }
+    else { print <- "Unknown argument; use --shots PREFIX and --obj PREFIX\n"; return 2; }
+    a = a + 2;
+  }
+
+  // The strands, meshed at LEVELS levels
+  mut started = sdl.GetPerformanceCounter();
+  imm field = strands();
+  print <- "grown in "; print <- f64.from(sdl.GetPerformanceCounter() - started) / f64.from(sdl.GetPerformanceFrequency()); print <- " s\n";
+  imm box = field.bounds().expand(BLEND);
+  mut meshes = List[mesh.Mesh].empty();
+  mut ok = true;
+  mut cell = CELL;
+  mut level = 0usize;
+  while level < LEVELS {
+    started = sdl.GetPerformanceCounter();
+    imm net = surfaceNet(&field, box, cell, 1u32, true);
+    imm m = net.toMesh();
+    imm h = meshHash(&m);
+    print <- "level "; print <- level; print <- ": cells of "; print <- cell; print <- ", ";
+    print <- m.vertexCount(); print <- " vertices, "; print <- m.triangleCount(); print <- " triangles, ";
+    print <- net.evaluations; print <- " distances, ";
+    print <- f64.from(sdl.GetPerformanceCounter() - started) / f64.from(sdl.GetPerformanceFrequency()); print <- " s; hash ";
+    mut hex = String.empty();
+    hex.appendHex(u64.from(h), 8usize);
+    printStr(hex.view());
+    if h == PINNED[level] { print <- " (as pinned)\n"; } else { print <- " (NOT as pinned)\n"; ok = false; }
+    if objPrefix.len() > 0usize {
+      mut name = objPrefix.copy();
+      name <- "-lod";
+      name.appendByte(u8.from('0') + u8.from(level));
+      name <- ".obj";
+      if !mesh.writeObj(&m, name.view()) { print <- "Could NOT write "; printStr(name.view()); print <- "\n"; ok = false; }
+    }
+    meshes.push(m);
+    cell = cell * 2.;
+    level = level + 1usize;
+  }
+
+  // The GPU, no window
+  mut instance = Instance.create("vines");
+  mut none = Surface.none();
+  imm powerEnv = libc.getenv(&"GPU_POWER_PREFERENCE" as *u8);
+  mut preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
+  if (powerEnv as usize) != 0usize and libc.strcmp(powerEnv, &"low-power" as *u8) == 0i32 { preference = POWER_PREFERENCE_LOW_POWER; }
+  mut adapter = instance.requestAdapter(&none, preference);
+  if !instance.isValid() or !adapter.isValid() {
+    print <- "No GPU can draw\n";
+    return 1;
+  }
+  print <- "Adapter: "; printStr(adapter.name.view());
+  if instance.validation { print <- "; validation on\n"; } else { print <- "; validation off\n"; }
+  mut device = adapter.requestDevice();
+  mut renderer = Renderer.create(&mut device, TEXTURE_FORMAT_RGBA16_FLOAT, TEXTURE_FORMAT_DEPTH32_FLOAT);
+
+  // Night: an overcast sky, the moon low behind the mass, so every wet
+  // edge is rimmed
+  mut sky = Sky.dusk(radians(20.), radians(168.));
+  sky.sunColor = new Color(9., 10., 13., 1.);
+  sky.zenith = new Color(0.004, 0.005, 0.009, 1.);
+  sky.horizon = new Color(0.028, 0.032, 0.045, 1.);
+  sky.horizonSharpness = 4.;
+  sky.glow = new Color(0.10, 0.11, 0.15, 1.);
+  sky.glowSharpness = 8.;
+  sky.ground = new Color(0.003, 0.003, 0.004, 1.);
+  sky.groundFade = 6.;
+  sky.cloud = new Color(0.10, 0.11, 0.14, 1.);
+  sky.cloudCover = 0.6;
+  sky.cloudScale = 1.1;
+  sky.cloudStretch = 3.;
+  sky.cloudSeed = 3u32;
+  renderer.setSky(&mut device, &sky);
+  imm light = sky.sunLight(new Color(1.8, 1.9, 2.3, 1.), new Color(0.02, 0.02, 0.03, 1.));
+
+  // The strands: wet black under a clear coat; the water black and glassy
+  mut wet = PbrMaterial.standard(new Color(0.006, 0.007, 0.010, 1.), 0., 0.35);
+  wet.clearcoat = 1.;
+  wet.clearcoatRoughness = 0.06;
+  imm strandM = renderer.addPbrMaterial(&mut device, &wet);
+  mut water = PbrMaterial.standard(new Color(0.002, 0.002, 0.003, 1.), 0., 0.6);
+  water.clearcoat = 1.;
+  water.clearcoatRoughness = 0.03;
+  imm waterM = renderer.addPbrMaterial(&mut device, &water);
+  imm strandMesh = renderer.addMesh(&mut device, meshes[0usize]);
+  imm planeMesh = mesh.Mesh.plane(8, 1.);
+  imm plane = renderer.addMesh(&mut device, &planeMesh);
+
+  mut list = DrawList.empty();
+  list.add(strandMesh, strandM, Mat4.identity());
+  list.add(plane, waterM, Mat4.fromTrs(v(0., 0., -2.), Quat.identity(), v(40., 1., 40.)));
+
+  // The shots: low over the water up the river, from the side, from above
+  imm targetDesc = new TextureDescriptor(WIDTH, HEIGHT, TEXTURE_FORMAT_RGBA8_UNORM_SRGB,
+    TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
+  mut target = device.createTexture(&targetDesc);
+  imm depthDesc = new TextureDescriptor(WIDTH, HEIGHT, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT);
+  mut depth = device.createTexture(&depthDesc);
+  mut post = Post.create(&mut device, TEXTURE_FORMAT_RGBA8_UNORM_SRGB, WIDTH, HEIGHT);
+  mut readback = device.createBuffer(u64.from(WIDTH) * u64.from(HEIGHT) * 4u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  if !renderer.isValid() or !post.isValid() or !target.isValid() {
+    print <- "The renderer could not be made\n";
+    return 1;
+  }
+  mut camera = Camera.make();
+  camera.fov = radians(50.);
+  camera.near = 0.05;
+  camera.far = 200.;
+  imm names Array[&[]u8, 3] = ["-hero.bmp", "-side.bmp", "-above.bmp"];
+  imm eyes Array[Vec3, 3] = [v(0.3, 0.6, 2.4), v(4.2, 1.4, -1.0), v(0.6, 4.2, 1.8)];
+  imm targets Array[Vec3, 3] = [v(0., 0.2, -2.), v(0., 0.25, -1.6), v(0., 0., -1.7)];
+  mut s = 0usize;
+  while s < 3usize {
+    camera.lookAt(eyes[s], targets[s], v(0., 1., 0.));
+    mut encoder = device.createCommandEncoder();
+    renderer.render(&mut device, &mut encoder, &post.hdr, &depth, &camera, &light, &list);
+    post.apply(&mut encoder, &target);
+    encoder.copyTextureToBuffer(&target, &readback);
+    device.queue.submit(encoder.finish());
+    device.endFrame();
+    device.waitIdle();
+    imm shot = Image.fromTexels(readback.mappedRange(), i32.from(WIDTH), i32.from(HEIGHT), false);
+    imm name = named(&shots, names[s]);
+    if shot.save(name.view()) { print <- "Shot: "; printStr(name.view()); print <- "\n"; }
+    else { print <- "Could NOT write "; printStr(name.view()); print <- "\n"; ok = false; }
+    s = s + 1usize;
+  }
+
+  print <- "Vulkan failures: "; print <- u64.from(failures());
+  print <- "; validation messages: "; print <- u64.from(validationMessages()); print <- "\n";
+  if !ok or failures() != 0u32 or validationMessages() != 0u32 { print <- "FAILED\n"; return 1; }
+  print <- "OK\n";
+  0;
+}
