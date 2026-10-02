@@ -1,0 +1,41 @@
+// pebble: smoothing with and without shrinking. A box 2 x 1 x 0.6 is cut into
+// a finer cage by two levels of Catmull-Clark (96 quads), and that cage is
+// smoothed 20 times by the plain Laplacian (factor 0.5), which rounds it and
+// shrinks it, and 20 times by Taubin's lambda|mu (lambda 0.5, mu from the
+// pass-band 0.1), which rounds it and keeps its size.
+//
+//   congo run packages/sculpt/examples/pebble.cone
+//
+// It writes pebble-laplacian.obj and pebble-taubin.obj in the current folder,
+// triangulated with smooth normals, and prints each one's size.
+
+mod pebble;
+
+import stdio use *;
+import collections use *;
+import geomath use *;
+import mesh use *;
+import sculpt use *;
+
+fn write(pm &PolyMesh, name &[]u8) Bool {
+  imm b = pm.bounds();
+  imm size = b.max - b.min;
+  printStr(name); print <- ": "; print <- pm.faceCount(); print <- " faces, "; print <- size.x; print <- " x ";
+  print <- size.y; print <- " x "; print <- size.z; print <- "\n";
+  imm tri = pm.triangulate(true);
+  writeObj(&tri, name);
+}
+
+fn main() i32 {
+  imm rect = Profile.rectangle(2., 1.);
+  imm box = extrude(&rect, new Vec3(0., 0., 0.6), 1u32, true);
+  imm cage = subdivide(&box, 2u32);
+  imm plain = smooth(&cage, 0.5, 20u32);
+  imm kept = smoothTaubin(&cage, 0.5, taubinMu(0.5, TaubinPassBand), 20u32);
+  mut ok = write(&plain, "pebble-laplacian.obj");
+  ok = ok and write(&kept, "pebble-taubin.obj");
+  if ok {0;} else {
+    print <- "Could not write a file\n";
+    1;
+  };
+}

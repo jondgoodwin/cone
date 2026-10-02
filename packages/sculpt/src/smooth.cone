@@ -1,0 +1,193 @@
+// ======== Smoothing: Laplacian and Taubin ========
+//
+// Each moves the vertices of a PolyMesh and returns the result as a new
+// PolyMesh, as the deformers do: the same vertices, half-edges and faces in
+// the same order, and every attribute channel carried over unchanged; only
+// the positions move.
+//
+// One step moves each vertex a factor of the way towards the mean of the
+// vertices it smooths towards (the uniform, "umbrella" Laplacian): with S
+// where it is and M that mean, it goes to S + factor w (M - S), w its weight.
+// Every step makes all the new positions from the old ones (a Jacobi step,
+// not Gauss-Seidel), so the result does not depend on the order the vertices
+// are visited in; each mean is summed in the vertex's one-ring order, so the
+// same mesh gives the same bits.
+//
+// Which vertices a vertex smooths towards is chosen once, from the topology
+// and the "crease" channels, as subdivision chooses its vertex rules (see
+// subdivide.cone): an edge is sharp when it is on the boundary or its edge
+// "crease" is above 0, and then
+// - a vertex with a vertex "crease" above 0, or with three sharp edges or
+//   more, is a corner, and stays where it is;
+// - a vertex with two sharp edges smooths along them only, towards their
+//   two far ends, so a crease (or a boundary) slides along itself and a
+//   straight one stays straight;
+// - any other (no sharp edge, or one: a dart) smooths towards all its
+//   neighbours.
+// The boundary is held one of two ways: 'SmoothBoundaryAlong', the default,
+// smooths a boundary vertex along the boundary by the rules above, and keeps
+// a boundary vertex on only one face (the corner of a grid) where it is, as
+// subdivision's default keeps its boundary corners; 'SmoothBoundaryPinned'
+// keeps every boundary vertex where it is. An isolated vertex stays.
+//
+// A weight, when asked for, is a vertex channel of f32 named by the caller:
+// vertex v's step is scaled by its value there (0 holds it, 1 moves it the
+// full factor). An empty name, or a name with no such vertex channel, weighs
+// every vertex 1.
+//
+// Plain Laplacian smoothing shrinks: a closed mesh contracts towards its
+// centre, a ring of n points by 1 - factor (1 - cos(2 pi / n)) of its radius
+// each step. Taubin, "A signal processing approach to fair surface design",
+// SIGGRAPH 1995, smooths without shrinking by following each step of factor
+// lambda (> 0) with one of factor mu (< -lambda, a step back out, larger):
+// the pair damps the high frequencies of the surface and passes the low ones,
+// so the shape keeps its size. Its pass-band frequency is
+// kPB = 1 / lambda + 1 / mu, which the paper keeps between 0.01 and 0.1;
+// 'taubinMu' gives mu from lambda and kPB, and TaubinPassBand, 0.1, is the
+// usual choice.
+//
+// Cotangent-weighted implicit fairing (Desbrun, Meyer, Schroder and Barr,
+// SIGGRAPH 1999), the curvature flow Blender's Laplacian Smooth is, is not
+// built: it is next.
+
+pub const SmoothBoundaryPinned = 0u32;
+pub const SmoothBoundaryAlong = 1u32;
+
+// Taubin's usual pass-band frequency, kPB = 1 / lambda + 1 / mu
+pub const TaubinPassBand = 0.1;
+
+// The mu of Taubin's lambda|mu smoothing for a lambda and a pass-band
+// frequency kPB: from kPB = 1 / lambda + 1 / mu, mu = 1 / (kPB - 1 / lambda).
+// With lambda 0.5 and kPB 0.1, mu = 1 / (0.1 - 2) = -10 / 19 = -0.5263158.
+// It needs 0 < lambda and kPB < 1 / lambda.
+pub fn taubinMu(lambda f32, passBand f32) f32 {1. / (passBand - 1. / lambda);}
+
+// The mesh smoothed 'iterations' times by the uniform Laplacian, each vertex
+// moved 'factor' of the way to the mean of its neighbours, the boundary
+// smoothed along itself, every vertex weighed 1 (Blender's Smooth Vertices
+// and Smooth modifier, all axes). 0 iterations gives a copy.
+pub fn smooth(m &PolyMesh, factor f32, iterations u32) PolyMesh {
+  smoothWith(m, factor, iterations, SmoothBoundaryAlong, "");
+}
+
+// The same, with the boundary rule (SmoothBoundaryAlong or
+// SmoothBoundaryPinned) and the name of a vertex channel of weights ("" for
+// none) given
+pub fn smoothWith(m &PolyMesh, factor f32, iterations u32, boundary u32, weight &[]u8) PolyMesh {
+  smoothPasses(m, factor, 0., false, iterations, boundary, weight);
+}
+
+// The mesh smoothed by Taubin's lambda|mu: 'iterations' times a step of
+// 'lambda' then a step of 'mu' (taubinMu(lambda, TaubinPassBand) is the
+// usual mu), the boundary smoothed along itself, every vertex weighed 1
+pub fn smoothTaubin(m &PolyMesh, lambda f32, mu f32, iterations u32) PolyMesh {
+  smoothTaubinWith(m, lambda, mu, iterations, SmoothBoundaryAlong, "");
+}
+
+// The same, with the boundary rule and the weight channel's name given
+pub fn smoothTaubinWith(m &PolyMesh, lambda f32, mu f32, iterations u32, boundary u32, weight &[]u8) PolyMesh {
+  smoothPasses(m, lambda, mu, true, iterations, boundary, weight);
+}
+
+// 'iterations' passes, each a step of factor a, and with 'taubin' a step of
+// factor b after it
+fn smoothPasses(m &PolyMesh, a f32, b f32, taubin Bool, iterations u32, boundary u32, weight &[]u8) PolyMesh {
+  mut starts = List[u32].empty();
+  mut targets = List[u32].empty();
+  smoothTargets(m, boundary, &mut starts, &mut targets);
+  imm weights = smoothWeights(m, weight);
+  mut pos = copyList[Vec3](&m.positions);
+  mut i = 0u32;
+  while i < iterations {
+    imm next = smoothStep(&pos, &starts, &targets, &weights, a);
+    pos = next;
+    if taubin {
+      imm back = smoothStep(&pos, &starts, &targets, &weights, b);
+      pos = back;
+    }
+    i = i + 1u32;
+  }
+  withPositions(m, pos);
+}
+
+// The vertices each vertex smooths towards: vertex v's are targets[starts[v]]
+// up to targets[starts[v + 1]], none for a vertex that stays
+fn smoothTargets(m &PolyMesh, boundary u32, starts &mut List[u32], targets &mut List[u32]) {
+  imm nv = m.positions.len();
+  imm ech = m.findFloatChannel(EdgeDomain, "crease");
+  imm vch = m.findFloatChannel(VertexDomain, "crease");
+  mut v = 0usize;
+  while v < nv {
+    starts.push(u32.from(targets.len()));
+    imm vu = u32.from(v);
+    imm hs = m.vertexOutgoing(vu);
+    imm onBoundary = m.isBoundaryVertex(vu);
+    mut faces = 0usize;
+    mut sharp = List[f32].withCapacity(hs.len());
+    mut k = 0usize;
+    while k < hs.len() {
+      imm h = *hs[k];
+      if m.face(h) != NoIndex { faces = faces + 1usize; }
+      imm e = m.edge(h);
+      if m.isBoundaryEdge(e) { sharp.push(SharpnessInfinite); }
+      elif ech != NoIndex { sharp.push(m.float(ech, e)); }
+      else { sharp.push(0.); }
+      k = k + 1usize;
+    }
+    imm vs = if vch != NoIndex {m.float(vch, vu);} else {0.;};
+    imm held = hs.len() == 0usize or (onBoundary and (boundary == SmoothBoundaryPinned or faces <= 1usize));
+    if !held {
+      imm rule = ruleOf(vs, &sharp);
+      if rule != RuleCorner {
+        k = 0usize;
+        while k < hs.len() {
+          if rule == RuleSmooth or *sharp[k] > 0. { targets.push(m.toVertex(*hs[k])); }
+          k = k + 1usize;
+        }
+      }
+    }
+    v = v + 1usize;
+  }
+  starts.push(u32.from(targets.len()));
+}
+
+// Each vertex's weight: its value in the vertex channel named, or 1
+fn smoothWeights(m &PolyMesh, weight &[]u8) List[f32] {
+  imm nv = m.positions.len();
+  imm ch = if weight.len > 0usize {m.findFloatChannel(VertexDomain, weight);} else {NoIndex;};
+  mut out = List[f32].withCapacity(nv);
+  mut v = 0usize;
+  while v < nv {
+    if ch != NoIndex { out.push(m.float(ch, u32.from(v))); } else { out.push(1.); }
+    v = v + 1usize;
+  }
+  out;
+}
+
+// One Jacobi step: every vertex moved 'factor' times its weight of the way to
+// the mean of its targets, all from the old positions
+fn smoothStep(pos &List[Vec3], starts &List[u32], targets &List[u32], weights &List[f32], factor f32) List[Vec3] {
+  imm nv = pos.len();
+  mut out = List[Vec3].withCapacity(nv);
+  mut v = 0usize;
+  while v < nv {
+    imm p = *pos[v];
+    imm s = usize.from(*starts[v]);
+    imm t = usize.from(*starts[v + 1usize]);
+    if t > s {
+      mut sum = new Vec3(0., 0., 0.);
+      mut k = s;
+      while k < t {
+        sum = sum + *pos[usize.from(*targets[k])];
+        k = k + 1usize;
+      }
+      imm mean = sum * (1. / f32.from(t - s));
+      imm w = *weights[v];
+      out.push(p + (mean - p) * (factor * w));
+    } else {
+      out.push(p);
+    }
+    v = v + 1usize;
+  }
+  out;
+}
