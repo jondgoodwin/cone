@@ -2,9 +2,10 @@
 //
 // Mirror, array and weld each make a new PolyMesh whose every element comes
 // from an element of the mesh they were given: a vertex from a vertex, a
-// face from a face, a corner from a corner, an edge from an edge. 'assemble'
-// builds such a mesh and carries every attribute channel across by those
-// links; 'collapse' merges vertices into their clusters' representatives and
+// face from a face, a corner from a corner, an edge from an edge; extrude and
+// inset too, but for the new sides joining a vertex to its copy, which come
+// from no edge. 'assemble' builds such a mesh and carries every attribute
+// channel across by those links; 'collapse' merges vertices into their clusters' representatives and
 // removes what that makes degenerate.
 
 // A PolyMesh made of elements drawn from m's, every channel carried. The new
@@ -20,6 +21,9 @@
 // an edge's from the source edge of the first face, in order, that runs
 // along it, except that the "crease" edge channel takes the greatest of the
 // edges merged into it, so a sharp edge stays sharp whichever side marked it.
+// An eSrc of NoIndex names no edge: such a side is new (extrude's and
+// inset's sides joining a vertex to its copy) and takes nothing, and an edge
+// that no face's side names keeps 0 in every edge channel.
 fn assemble(m &PolyMesh, pos &List[Vec3], vSrc &List[u32], counts &List[u32], idx &List[u32], cSrc &List[u32],
     eSrc &List[u32], fSrc &List[u32]) PolyMesh {
   mut problems = List[String].empty();
@@ -123,13 +127,16 @@ fn carryChannel(out &PolyMesh, domain u32, vals &List[Vec3], isCrease Bool, vSrc
       if domain == CornerDomain {
         res.set(usize.from(h), *vals[usize.from(*cSrc[base + k])]);
       } else {
-        imm e = usize.from(h / 2u32);
-        imm val = *vals[usize.from(*eSrc[base + k])];
-        if !*seen[e] {
-          res.set(e, val);
-          seen.set(e, true);
-        } elif isCrease and val.x > res[e].x {
-          res.set(e, val);
+        imm src = *eSrc[base + k];
+        if src != NoIndex {
+          imm e = usize.from(h / 2u32);
+          imm val = *vals[usize.from(src)];
+          if !*seen[e] {
+            res.set(e, val);
+            seen.set(e, true);
+          } elif isCrease and val.x > res[e].x {
+            res.set(e, val);
+          }
         }
       }
       k = k + 1usize;

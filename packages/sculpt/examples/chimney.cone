@@ -1,0 +1,44 @@
+// chimney: a cube grown by face operators. Its top is inset and the inner
+// square extruded up into a stack, whose top is inset again and pushed down
+// into a flue; the four sides are inset and pushed in a little, as panels.
+// The cage is written as it is and subdivided twice by Catmull-Clark.
+//
+//   congo run packages/sculpt/examples/chimney.cone
+//
+// It writes chimney-cage.obj and chimney-l2.obj in the current folder,
+// triangulated with smooth normals, and prints each one's counts.
+
+mod chimney;
+
+import stdio use *;
+import collections use *;
+import geomath use *;
+import mesh use *;
+import sculpt use *;
+
+fn write(pm &PolyMesh, name &[]u8) Bool {
+  imm tri = pm.triangulate(true);
+  printStr(name); print <- ": "; print <- pm.vertexCount(); print <- " vertices, "; print <- pm.faceCount();
+  print <- " faces, "; print <- tri.triangleCount(); print <- " triangles\n";
+  writeObj(&tri, name);
+}
+
+fn main() i32 {
+  imm cube = PolyMesh.cube(1.);
+  // The cube's faces: back 0, front 1, left 2, right 3, bottom 4, top 5
+  imm top Array[u32, 1] = [5u32];
+  imm a = inset(&cube, &top, 0.5, 0.);
+  // The inset keeps the top's number for the shrunk face
+  imm b = extrudeFaces(&a, &top, 1.5);
+  imm c = inset(&b, &top, 0.15, 0.);
+  imm d = extrudeFaces(&c, &top, -1.2);
+  imm sides Array[u32, 4] = [0u32, 1u32, 2u32, 3u32];
+  imm cage = insetIndividual(&d, &sides, 0.2, -0.1);
+  imm levels = subdivisionLevels(&cage, 2u32);
+  mut ok = write(&cage, "chimney-cage.obj");
+  ok = ok and write(levels[2usize], "chimney-l2.obj");
+  if ok {0;} else {
+    print <- "Could not write a file\n";
+    1;
+  };
+}
