@@ -152,6 +152,15 @@ Visual Studio projects stay at the root.
   normalize, `/` out); `env` is environment variables (get, set, unset);
   what is Windows-only beneath them is `posix`'s mapping onto the C runtime
   and its `opendir`, `readdir` and `lstat`, written over `_findfirst64`;
+  `process` runs a program and waits for it (`run`: a list of arguments, a
+  working folder, a time limit that stops the child and everything it
+  started; an `Output` of the full 32-bit exit code, a value and not an
+  error, and standard output and error captured apart, or shared with
+  `inherit`; `runLine` for a line written by hand, `commandLine`, `args`
+  and `currentExe`), a failure to start a `ProcessError`; its interface is
+  no OS's, its insides Windows only (`kernel32`'s `CreateProcessW`,
+  overlapped pipes and a job object, `shell32`'s `CommandLineToArgvW`), a
+  POSIX one to come with Linux;
   `collections` is a growable `List[T]`, an owned `String` and a string-keyed
   `Dict[K, V]`, each holding its elements in one block from `libc`'s
   allocator and moving them with core's `mem` intrinsics; `arena` is an

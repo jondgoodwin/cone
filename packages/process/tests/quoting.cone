@@ -1,0 +1,112 @@
+// The command line 'run' writes, character for character, worked out by
+// hand from the rules Windows' CommandLineToArgvW and the C runtime read it
+// back by. (The children test sends every string of up to four of the
+// troublesome characters through a real child and back; this one pins the
+// text itself.)
+//
+// To keep the cases readable, each is written with '/' for a backslash and
+// "'" for a double quote; 'spelled' turns them back. The few cases about
+// those two characters themselves are written out in full.
+
+mod quoting;
+
+import testing use *;
+import collections use *;
+import process;
+
+// s with '/' as '\' and ''' as '"'
+fn spelled(s &[]u8) String {
+  mut out = String.from(s);
+  out.replaceByte('/', '\\');
+  out.replaceByte('\'', '"');
+  out;
+}
+
+fn lineOf(args &List[String]) String { process.commandLine(args.view()); }
+
+// The program 'p' and one argument
+fn arg(a &[]u8, want &[]u8, label &[]u8) {
+  mut args = List[String].empty();
+  args.push(String.from("p"));
+  args.push(spelled(a));
+  imm got = lineOf(&args);
+  imm w = spelled(want);
+  expectStr(got.view(), w.view(), label);
+}
+
+// The program alone
+fn program(p &[]u8, want &[]u8, label &[]u8) {
+  mut args = List[String].empty();
+  args.push(spelled(p));
+  imm got = lineOf(&args);
+  imm w = spelled(want);
+  expectStr(got.view(), w.view(), label);
+}
+
+fn main() i32 {
+  // Arguments that need nothing
+  arg("abc", "p abc", "plain");
+  arg("a/b", "p a/b", "a backslash alone is itself");
+  arg("a//b", "p a//b", "two backslashes are themselves");
+  arg("/", "p /", "just a backslash");
+  arg("//server/share/", "p //server/share/", "a share's path, a trailing backslash with no quote");
+  arg("C:/dir/", "p C:/dir/", "a folder with no space");
+  arg("é", "p é", "UTF-8 needs nothing");
+  arg("--flag=x", "p --flag=x", "a flag");
+
+  // Arguments that must be quoted
+  arg("", "p ''", "the empty string");
+  arg("a b", "p 'a b'", "a space");
+  arg("a\tb", "p 'a\tb'", "a tab");
+  arg("a\nb", "p 'a\nb'", "a line break");
+  arg("a\x0Bb", "p 'a\x0Bb'", "a vertical tab");
+  arg(" ", "p ' '", "a space alone");
+  arg("日本 語", "p '日本 語'", "UTF-8 with a space");
+
+  // Quotes, and the backslashes before them
+  arg("'", "p '/''", "a quote alone");
+  arg("''", "p '/'/''", "two quotes");
+  arg("a'b", "p 'a/'b'", "a quote inside");
+  arg("a/'b", "p 'a///'b'", "one backslash before a quote: three");
+  arg("a//'b", "p 'a/////'b'", "two backslashes before a quote: five");
+  arg("/'", "p '///''", "a backslash then a quote");
+  arg("'/", "p '/'//'","a quote then a backslash: the backslash before the closing quote doubled");
+
+  // Backslashes before the closing quote, doubled; elsewhere left alone
+  arg("a b/", "p 'a b//'", "one trailing backslash, quoted: two");
+  arg("a b//", "p 'a b////'", "two trailing backslashes, quoted: four");
+  arg("C:/dir with space/", "p 'C:/dir with space//'", "a folder with a space");
+  arg("a/ b", "p 'a/ b'", "a backslash before a space");
+
+  // The program: quoted only for a space or a tab, its backslashes never
+  // doubled, since Windows reads it up to the next quote
+  program("p", "p", "a plain program");
+  program("C:/Program Files/x.exe", "'C:/Program Files/x.exe'", "a program with a space");
+  program("C:/a b/", "'C:/a b/'", "a program's trailing backslash stays one");
+  program("", "''", "an empty program");
+  program("a\tb", "'a\tb'", "a program with a tab");
+
+  // '/' and ''' themselves need nothing
+  mut slashes = List[String].empty();
+  slashes.push(String.from("C:/x/y.exe"));
+  slashes.push(String.from("a/b"));
+  slashes.push(String.from("it's"));
+  imm s = lineOf(&slashes);
+  expectStr(s.view(), "C:/x/y.exe a/b it's", "a forward slash and an apostrophe");
+
+  // Several arguments, one space between
+  mut several = List[String].empty();
+  several.push(String.from("prog"));
+  several.push(String.from("a"));
+  several.push(String.from("b c"));
+  several.push(String.empty());
+  several.push(String.from("d"));
+  imm m = lineOf(&several);
+  expectStr(m.view(), "prog a \"b c\" \"\" d", "several arguments");
+
+  // None at all
+  mut none = List[String].empty();
+  imm n = lineOf(&none);
+  expectStr(n.view(), "", "no arguments, no line");
+  done();
+}

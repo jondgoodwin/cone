@@ -1,0 +1,874 @@
+// The process package: run another program and wait for it, synchronously,
+// with what it writes captured; and this program's own arguments and path.
+//
+//   mod build;
+//   import collections use *;
+//   import process;
+//
+//   fn main() i32 {
+//     mut args = List[String].empty();
+//     args.push(String.from("conec"));
+//     args.push(String.from("-o"));
+//     args.push(String.from("build/debug"));
+//     args.push(String.from("app.conebuild"));
+//     match process.run(args.view(), new process.Options(timeoutMs: 60000u64)) {
+//       case imm ok Ok {
+//         imm o = &ok.value;
+//         if o.timedOut { ... }                  // stopped after 60 s
+//         if o.exitCode != 0u32 { ... o.stderr.view() ... }
+//       }
+//       case imm e Error {
+//         imm m = e.value.message();             // 'run conec: The system cannot find the file specified'
+//         ...
+//       }
+//     }
+//     0i32;
+//   }
+//
+// What it has:
+//
+//   process.run(args, opts)       run args[0] with the rest as its arguments
+//   process.runLine(line, opts)   run a command line written out by hand
+//   process.Options               dir, timeoutMs, inherit; each has a default
+//   process.Output                exitCode, timedOut, stdout, stderr, success()
+//   process.ProcessError          op, program, dir, code, message(), notFound()
+//   process.commandLine(args)     the line 'run' hands Windows for args
+//   process.args()                this program's arguments, in UTF-8
+//   process.currentExe()          this program's executable
+//
+// **Running.** 'run' starts the program, waits until it ends, and answers
+// an Output. By default the child reads its standard input from NUL (it
+// finds nothing there, never this program's keyboard), and what it writes
+// to its standard output and its standard error is captured, the two kept
+// apart, byte for byte: a C program's text mode writes '\n' as '\r\n', and
+// that is what comes back. Both are read at once, so a child that writes a
+// great deal to both never stalls on a full pipe. With 'inherit: true' the
+// child shares this program's standard input, output and error instead, and
+// nothing is captured: what 'congo run' wants. Flush what this program has
+// printed first ('stdio.printFlush()'), or the child's lines come before it.
+//
+// A child shares this program's console, where it has one, so Ctrl+C
+// reaches both. From a program with no console, a console child is started
+// with CREATE_NO_WINDOW, so that no window opens for it.
+//
+// **The exit code is a value, not an error.** 'exitCode' is all 32 bits of
+// it, a u32: 0, 1, 255, or an NTSTATUS such as 3221225477 (0xC0000005, an
+// access violation) or 3221226505 (0xC0000409), what a Cone panic ends with
+// on Windows. 'success()' is exit code 0 within the time. Go's 'Run' makes
+// a nonzero exit an error; here, as in Python's 'run' and Rust's 'output',
+// it is the answer, which the caller reads. An Error is only a program that
+// could not be started: none of that name, a folder that is not there, an
+// argument Windows cannot be given.
+//
+// **The time limit.** With 'timeoutMs' above 0, the child is stopped when
+// that many milliseconds have passed since it started, and so is every
+// program it has started and not yet seen end: it runs in a Windows job
+// object of its own, and the whole job is ended. The Output then says
+// 'timedOut', its exit code is 1, and what it wrote until then is kept. With
+// no limit nothing is put in a job, and a program it starts that is still
+// running when it ends is left running, which a linker's helper may need to
+// be. A child that ends, though, while a program it started still holds its
+// output open has not finished writing: 'run' waits for that too, as Python's
+// does, which only a time limit cuts short.
+//
+// **The environment.** The child inherits this program's environment as it
+// is when 'run' is called: set a variable with the env package first. There
+// is no environment of the child's own to pass yet.
+//
+// **Arguments.** Windows hands a program one command line, and the program
+// splits it. 'run' writes args as the line that Windows' own splitter,
+// CommandLineToArgvW, and the C runtime's both read back as they were: an
+// argument with a space, a tab, a line break or a '"', or an empty one, in
+// double quotes, each '"' escaped with a backslash, and the backslashes
+// before a '"' doubled ('commandLine' shows the line). The program's name,
+// first, is read by a simpler rule, so it is quoted only when it holds a
+// space or a tab, and may not hold a '"' at all. Everything is UTF-8, and
+// goes to Windows as UTF-16; an argument that is not UTF-8 is refused
+// (ERROR_NO_UNICODE_TRANSLATION), as is one holding a NUL
+// (ERROR_INVALID_PARAMETER). A batch file ('.bat', '.cmd') is run by
+// cmd.exe, which reads its line by cmd's rules, not these: an argument from
+// outside the program is not safe on a batch file's line.
+//
+// 'runLine' hands Windows a line as it is written, for a program with rules
+// of its own: 'cmd /c' and what follows it, as Congo runs 'vcvars64.bat'.
+//
+// **Finding the program.** As Windows' CreateProcessW finds it: a name with
+// no folder is looked for in the folder this program's executable is in,
+// then the current folder, then Windows' system folders, then each folder
+// on PATH, with '.exe' added when it has no extension. A relative path is
+// read from this program's current folder, never from 'dir'.
+//
+// **Failure.** An Error holds a ProcessError: what was being done ('op'),
+// the program, the folder it was to start in, and Windows' error number
+// ('code', GetLastError's). Its 'message()' is one line for a person, in
+// Windows' own words (in English where the system has them): 'run nosuch:
+// The system cannot find the file specified', 'run conec in build/x: The
+// directory name is invalid'. 'notFound()' asks whether there was no such
+// program.
+//
+// **This program.** 'args()' is this program's own arguments, its name
+// first, in UTF-8 whatever the system's code page, as Windows' parser splits
+// them: 'main''s argv says the same for ASCII, and loses whatever the code
+// page cannot hold. 'currentExe()' is the path of this program's executable,
+// normalized, every separator '/'.
+//
+// **What is Windows-only.** The package's interface (a list of arguments, a
+// folder, a time limit; an exit code and two captured outputs) is not
+// Windows': it is what Go, Rust, Python, Zig and Odin each give. Its
+// insides are Windows only, said here as plainly as can be: written over
+// kernel32 (CreateProcessW, named pipes read with overlapped I/O, a job
+// object) and shell32's CommandLineToArgvW, with nothing of ISO C or POSIX
+// beneath it, since neither can start a program with its outputs apart, in a
+// folder, under a time limit. What changes on POSIX is the inside: fork and
+// exec (or posix_spawn) with pipes and poll, a process group stopped by a
+// signal, an argument list that needs no quoting, an exit code of 0 to 255
+// and a signal beside it. A POSIX implementation comes when Linux does.
+
+mod process;
+
+import libc;
+import collections use String, List;
+import path use normalize;
+
+// ---------------------------------------------------------------------------
+// Windows: kernel32, and shell32's command-line parser. Everything the
+// package asks of the OS is in this section.
+// ---------------------------------------------------------------------------
+
+struct SecurityAttributes {
+  pub nLength u32;
+  pub lpSecurityDescriptor *u8;
+  pub bInheritHandle i32;
+}
+
+// STARTUPINFOEXW: STARTUPINFOW and the attribute list after it
+struct StartupInfoEx {
+  pub cb u32;
+  pub lpReserved *u16;
+  pub lpDesktop *u16;
+  pub lpTitle *u16;
+  pub dwX u32;
+  pub dwY u32;
+  pub dwXSize u32;
+  pub dwYSize u32;
+  pub dwXCountChars u32;
+  pub dwYCountChars u32;
+  pub dwFillAttribute u32;
+  pub dwFlags u32;
+  pub wShowWindow u16;
+  pub cbReserved2 u16;
+  pub lpReserved2 *u8;
+  pub hStdInput usize;
+  pub hStdOutput usize;
+  pub hStdError usize;
+  pub lpAttributeList *u8;
+}
+
+struct ProcessInformation {
+  pub hProcess usize;
+  pub hThread usize;
+  pub dwProcessId u32;
+  pub dwThreadId u32;
+}
+
+struct Overlapped {
+  pub internal usize;
+  pub internalHigh usize;
+  pub offset u32;
+  pub offsetHigh u32;
+  pub hEvent usize;
+}
+
+extern {
+  fn @c(system) CreateProcessW(app *u16, cmd *u16, pattr *u8, tattr *u8, inherit i32, flags u32,
+      env *u8, cwd *u16, si &mut StartupInfoEx, pi &mut ProcessInformation) i32;
+  fn @c(system) CreateFileW(name *u16, access u32, share u32, sa &SecurityAttributes,
+      disposition u32, flags u32, template usize) usize;
+  fn @c(system) CreateNamedPipeW(name *u16, openMode u32, pipeMode u32, instances u32,
+      outSize u32, inSize u32, timeout u32, sa *u8) usize;
+  fn @c(system) CreateEventW(sa *u8, manual i32, initial i32, name *u16) usize;
+  fn @c(system) ReadFile(h usize, buf *u8, size u32, read *u32, ov &mut Overlapped) i32;
+  fn @c(system) GetOverlappedResult(h usize, ov &mut Overlapped, got &mut u32, block i32) i32;
+  fn @c(system) CancelIoEx(h usize, ov &mut Overlapped) i32;
+  fn @c(system) WaitForSingleObject(h usize, ms u32) u32;
+  fn @c(system) WaitForMultipleObjects(count u32, handles *usize, all i32, ms u32) u32;
+  fn @c(system) GetExitCodeProcess(h usize, code &mut u32) i32;
+  fn @c(system) TerminateProcess(h usize, code u32) i32;
+  fn @c(system) ResumeThread(h usize) u32;
+  fn @c(system) CloseHandle(h usize) i32;
+  fn @c(system) GetLastError() u32;
+  fn @c(system) CreateJobObjectW(sa *u8, name *u16) usize;
+  fn @c(system) AssignProcessToJobObject(job usize, h usize) i32;
+  fn @c(system) TerminateJobObject(job usize, code u32) i32;
+  fn @c(system) InitializeProcThreadAttributeList(list *u8, count u32, flags u32, size &mut usize) i32;
+  fn @c(system) UpdateProcThreadAttribute(list *u8, flags u32, attribute usize, value *u8,
+      size usize, previous *u8, returned *usize) i32;
+  fn @c(system) DeleteProcThreadAttributeList(list *u8);
+  fn @c(system) GetStdHandle(which u32) usize;
+  fn @c(system) GetCurrentProcess() usize;
+  fn @c(system) DuplicateHandle(fromProcess usize, from usize, toProcess usize, to &mut usize,
+      access u32, inherit i32, options u32) i32;
+  fn @c(system) GetConsoleWindow() usize;
+  fn @c(system) GetCurrentProcessId() u32;
+  fn @c(system) GetCurrentThreadId() u32;
+  fn @c(system) GetTickCount64() u64;
+  fn @c(system) MultiByteToWideChar(page u32, flags u32, from *u8, fromLen i32, to *u16, toLen i32) i32;
+  fn @c(system) WideCharToMultiByte(page u32, flags u32, from *u16, fromLen i32, to *u8, toLen i32,
+      fallback *u8, usedFallback *i32) i32;
+  fn @c(system) FormatMessageW(flags u32, source *u8, id u32, language u32, buf *u16, size u32,
+      args *u8) u32;
+  fn @c(system) GetModuleFileNameW(module usize, buf *u16, size u32) u32;
+  fn @c(system) GetCommandLineW() *u16;
+  fn @c(system) LocalFree(p *u8) usize;
+  fn @c(system) CommandLineToArgvW(line *u16, count &mut i32) **u16;
+}
+
+const genericRead = 0x80000000u32;
+const genericWrite = 0x40000000u32;
+const shareReadWrite = 3u32;                     // FILE_SHARE_READ | FILE_SHARE_WRITE
+const openExisting = 3u32;                       // OPEN_EXISTING
+const pipeAccessInbound = 1u32;                  // PIPE_ACCESS_INBOUND
+const flagOverlapped = 0x40000000u32;            // FILE_FLAG_OVERLAPPED
+const flagFirstInstance = 0x80000u32;            // FILE_FLAG_FIRST_PIPE_INSTANCE
+const pipeRejectRemote = 8u32;                   // PIPE_TYPE_BYTE | PIPE_REJECT_REMOTE_CLIENTS
+const pipeSize = 65536u32;
+const useStdHandles = 0x100u32;                  // STARTF_USESTDHANDLES
+const createSuspended = 0x4u32;                  // CREATE_SUSPENDED
+const createNoWindow = 0x8000000u32;             // CREATE_NO_WINDOW
+const extendedStartupInfo = 0x80000u32;          // EXTENDED_STARTUPINFO_PRESENT
+const attributeHandleList = 0x20002usize;        // PROC_THREAD_ATTRIBUTE_HANDLE_LIST
+const waitTimeout = 0x102u32;                    // WAIT_TIMEOUT
+const infinite = 0xFFFFFFFFu32;                  // INFINITE
+const stdInput = 0xFFFFFFF6u32;                  // STD_INPUT_HANDLE, (DWORD)-10
+const stdOutput = 0xFFFFFFF5u32;                 // STD_OUTPUT_HANDLE, (DWORD)-11
+const stdError = 0xFFFFFFF4u32;                  // STD_ERROR_HANDLE, (DWORD)-12
+const invalidHandle = 0xFFFFFFFFFFFFFFFFusize;   // INVALID_HANDLE_VALUE
+const duplicateSameAccess = 2u32;                // DUPLICATE_SAME_ACCESS
+const formatFromSystem = 0x1200u32;              // FORMAT_MESSAGE_FROM_SYSTEM | IGNORE_INSERTS
+const english = 0x409u32;                        // MAKELANGID(LANG_ENGLISH, SUBLANG_ENGLISH_US)
+const utf8Page = 65001u32;                       // CP_UTF8
+const invalidUtf8Fails = 8u32;                   // MB_ERR_INVALID_CHARS
+const stoppedCode = 1u32;                        // the exit code a child stopped by a timeout gets
+
+// Windows' error numbers the package gives or reads
+pub const errorFileNotFound = 2u32;              // ERROR_FILE_NOT_FOUND
+pub const errorPathNotFound = 3u32;              // ERROR_PATH_NOT_FOUND
+pub const errorInvalidParameter = 87u32;         // ERROR_INVALID_PARAMETER
+pub const errorInvalidName = 123u32;             // ERROR_INVALID_NAME
+pub const errorDirectory = 267u32;               // ERROR_DIRECTORY
+pub const errorNoUnicodeTranslation = 1113u32;   // ERROR_NO_UNICODE_TRANSLATION
+const errorBrokenPipe = 109u32;                  // ERROR_BROKEN_PIPE
+const errorIoPending = 997u32;                   // ERROR_IO_PENDING
+
+// ---------------------------------------------------------------------------
+// Failure
+// ---------------------------------------------------------------------------
+
+// Why a program could not be run, or a question about this one not answered
+pub struct ProcessError {
+  // The function that failed: "run", "runLine", "currentExe"
+  pub op String;
+  // The program, as 'run' was given it ('runLine''s whole line)
+  pub program String;
+  // The working folder it was to start in, or "" for this program's own
+  pub dir String;
+  // Windows' error number (GetLastError): errorFileNotFound, errorDirectory, ...
+  pub code u32;
+
+  // One line for a person: 'run nosuch: The system cannot find the file
+  // specified', or 'run conec in build/x: The directory name is invalid'
+  pub fn message(self &) String {
+    mut out = String.from(op.view());
+    if not program.isEmpty() {
+      out.append(" ");
+      out.append(program.view());
+    }
+    if not dir.isEmpty() {
+      out.append(" in ");
+      out.append(dir.view());
+    }
+    out.append(": ");
+    imm text = systemText(code);
+    out.append(text.view());
+    out;
+  }
+
+  // Whether it failed because there is no such program (or no folder on its
+  // path), ERROR_FILE_NOT_FOUND or ERROR_PATH_NOT_FOUND
+  pub fn notFound(self &) Bool { code == errorFileNotFound or code == errorPathNotFound; }
+}
+
+fn failure(op &[]u8, program &[]u8, dir &[]u8, code u32) ProcessError {
+  new ProcessError(String.from(op), String.from(program), String.from(dir), code);
+}
+
+// Windows' text for an error number, in English where the system has it,
+// with no line end or full stop; 'Windows error N' where it has none
+fn systemText(code u32) String {
+  mut buf = new Array[u16, 512] <- fill 0u16;
+  imm bp *u16 = &[]buf;
+  mut n = FormatMessageW(formatFromSystem, 0usize as *u8, code, english, bp, 512u32, 0usize as *u8);
+  if n == 0u32 {
+    n = FormatMessageW(formatFromSystem, 0usize as *u8, code, 0u32, bp, 512u32, 0usize as *u8);
+  }
+  mut out = String.empty();
+  if n == 0u32 {
+    out.append("Windows error ");
+    out.appendUInt(u64.from(code));
+    return out;
+  }
+  imm text = narrow(bp, i32.from(n));
+  imm trimmed = text.trim();
+  out.append(trimmed.view());
+  if out.endsWith(".") {
+    imm cut = out.sub(0usize, out.len() - 1usize);
+    return cut;
+  }
+  out;
+}
+
+// ---------------------------------------------------------------------------
+// UTF-8 and UTF-16
+// ---------------------------------------------------------------------------
+
+// s as UTF-16 ending in a 0, in a block from libc's malloc the caller frees;
+// a null pointer when s is not UTF-8
+fn widen(s &[]u8) *u16 {
+  if s.len == 0usize {
+    imm p = libc.malloc(2usize) as *u16;
+    *p = 0u16;
+    return p;
+  }
+  if s.len > 0x3FFFFFFFusize { return 0usize as *u16; }
+  imm len = i32.from(s.len);
+  imm n = MultiByteToWideChar(utf8Page, invalidUtf8Fails, s, len, 0usize as *u16, 0i32);
+  if n == 0i32 { return 0usize as *u16; }
+  imm count = usize.from(n);
+  imm p = libc.malloc((count + 1usize) * 2usize) as *u16;
+  MultiByteToWideChar(utf8Page, invalidUtf8Fails, s, len, p, n);
+  *(p + count) = 0u16;
+  p;
+}
+
+// UTF-16 as UTF-8: n units from p, or up to its 0 when n is -1. A lone
+// surrogate, which is no character, becomes U+FFFD.
+fn narrow(p *u16, n i32) String {
+  mut out = String.empty();
+  if n == 0i32 { return out; }
+  imm size = WideCharToMultiByte(utf8Page, 0u32, p, n, 0usize as *u8, 0i32, 0usize as *u8, 0usize as *i32);
+  if size <= 0i32 { return out; }
+  imm buf = libc.malloc(usize.from(size));
+  WideCharToMultiByte(utf8Page, 0u32, p, n, buf, size, 0usize as *u8, 0usize as *i32);
+  // Counted up to the 0, the 0 is among the bytes
+  imm len = if n < 0i32 {usize.from(size) - 1usize;} else {usize.from(size);};
+  out.append(mem.sliceFromParts(buf, len));
+  libc.free(buf);
+  out;
+}
+
+// ---------------------------------------------------------------------------
+// The command line
+// ---------------------------------------------------------------------------
+
+fn hasByte(s &[]u8, b u8) Bool {
+  mut i = 0usize;
+  while i < s.len {
+    if s[i] == b { return true; }
+    i = i + 1usize;
+  }
+  false;
+}
+
+fn appendBackslashes(out &mut String, n usize) {
+  mut k = 0usize;
+  while k < n {
+    out.appendByte('\\');
+    k = k + 1usize;
+  }
+}
+
+// One argument after the program, written so that CommandLineToArgvW, and
+// the C runtime's own parser, read it back as it is: as it is when nothing
+// in it needs quoting; otherwise in double quotes, each '"' after a
+// backslash, and the backslashes before a '"' (or before the closing one)
+// doubled
+fn quoteArg(out &mut String, a &[]u8) {
+  mut plain = a.len > 0usize;
+  mut i = 0usize;
+  while i < a.len {
+    imm c = a[i];
+    if c == ' ' or c == '\t' or c == '\n' or c == 0x0Bu8 or c == '"' { plain = false; }
+    i = i + 1usize;
+  }
+  if plain {
+    out.append(a);
+    return;
+  }
+  out.appendByte('"');
+  mut slashes = 0usize;
+  i = 0usize;
+  while i < a.len {
+    imm c = a[i];
+    if c == '\\' {
+      slashes = slashes + 1usize;
+    }
+    else {
+      if c == '"' {
+        appendBackslashes(out, slashes * 2usize + 1usize);
+      }
+      else {
+        appendBackslashes(out, slashes);
+      }
+      slashes = 0usize;
+      out.appendByte(c);
+    }
+    i = i + 1usize;
+  }
+  appendBackslashes(out, slashes * 2usize);
+  out.appendByte('"');
+}
+
+// The program, first on the line, which Windows reads by a rule of its own:
+// up to the next space, or, after a '"', up to the next '"', backslashes and
+// all. So it is quoted only where it holds a space or a tab, or is empty,
+// and can hold no '"', which 'run' refuses.
+fn quoteProgram(out &mut String, p &[]u8) {
+  if p.len > 0usize and not hasByte(p, ' ') and not hasByte(p, '\t') {
+    out.append(p);
+    return;
+  }
+  out.appendByte('"');
+  out.append(p);
+  out.appendByte('"');
+}
+
+// The command line 'run' hands Windows for args: the program, then each
+// argument, quoted where it must be, one space between them. A program
+// holding a '"' cannot be written, and is written as it is.
+pub fn commandLine(args &[]String) String {
+  mut out = String.empty();
+  mut i = 0usize;
+  while i < args.len {
+    if i == 0usize {
+      quoteProgram(&mut out, args[i].view());
+    }
+    else {
+      out.appendByte(' ');
+      quoteArg(&mut out, args[i].view());
+    }
+    i = i + 1usize;
+  }
+  out;
+}
+
+// ---------------------------------------------------------------------------
+// Running
+// ---------------------------------------------------------------------------
+
+// How to run a program; each has a default
+pub struct Options {
+  // The folder it starts in; "" for this program's current folder
+  pub dir &[]u8 = "";
+  // Stop it, and every program it started, after this many milliseconds;
+  // 0 waits as long as it runs
+  pub timeoutMs u64 = 0u64;
+  // Share this program's standard input, output and error rather than
+  // reading from NUL and capturing what it writes
+  pub inherit Bool = false;
+}
+
+// What a run gives back
+pub struct Output {
+  // Its exit code, all 32 bits: 0, 1, 255, or 3221226505 (0xC0000409),
+  // what a Cone panic exits with on Windows
+  pub exitCode u32;
+  // Whether it was stopped because its time ran out; its exit code is then 1
+  pub timedOut Bool;
+  // What it wrote to its standard output and its standard error, apart,
+  // byte for byte; empty when it inherited them
+  pub stdout String;
+  pub stderr String;
+
+  // It finished in time, with exit code 0
+  pub fn success(self &) Bool { exitCode == 0u32 and not timedOut; }
+}
+
+// Run a program and wait for it: args[0] is the program, the rest its
+// arguments. Its exit code is in the Output, whatever it is; an Error is a
+// program that could not be started.
+pub fn run(args &[]String, opts Options = new Options()) Result[Output, ProcessError] {
+  if args.len == 0usize {
+    return Error[Output, ProcessError][failure("run", "", opts.dir, errorInvalidParameter)];
+  }
+  imm program = args[0usize].view();
+  mut i = 0usize;
+  while i < args.len {
+    if hasByte(args[i].view(), 0u8) {
+      return Error[Output, ProcessError][failure("run", program, opts.dir, errorInvalidParameter)];
+    }
+    i = i + 1usize;
+  }
+  if hasByte(program, '"') {
+    return Error[Output, ProcessError][failure("run", program, opts.dir, errorInvalidName)];
+  }
+  imm line = commandLine(args);
+  start("run", program, line.view(), opts);
+}
+
+// Run a command line as it is, for a program that reads its own line by
+// rules of its own, as 'cmd /c' does; otherwise as 'run'
+pub fn runLine(line &[]u8, opts Options = new Options()) Result[Output, ProcessError] {
+  if hasByte(line, 0u8) {
+    return Error[Output, ProcessError][failure("runLine", line, opts.dir, errorInvalidParameter)];
+  }
+  start("runLine", line, line, opts);
+}
+
+// One of the child's streams, read without blocking: our end of its pipe,
+// the read in flight, and what has come
+struct Stream {
+  pub pipe usize;
+  pub ov Overlapped;
+  pub buf *u8;
+  pub data String;
+  pub active Bool;
+}
+
+fn noStream() Stream {
+  new Stream(0usize, new Overlapped(0usize, 0usize, 0u32, 0u32, 0usize), 0usize as *u8, String.empty(), false);
+}
+
+// Each pipe a name of its own: this process, this thread, and a count
+mut @threadlocal pipeSerial = 0u32;
+
+// A pipe for one of the child's outputs: our end, to read without blocking,
+// goes in s; the child's end, inheritable, is returned, or 0 on failure
+fn makePipe(s &mut Stream) usize {
+  mut tries = 0u32;
+  while tries < 8u32 {
+    tries = tries + 1u32;
+    pipeSerial = pipeSerial + 1u32;
+    mut name = String.from("\\\\.\\pipe\\cone-process-");
+    name.appendUInt(u64.from(GetCurrentProcessId()));
+    name.append("-");
+    name.appendUInt(u64.from(GetCurrentThreadId()));
+    name.append("-");
+    name.appendUInt(u64.from(pipeSerial));
+    imm wname = widen(name.view());
+    imm ours = CreateNamedPipeW(wname, pipeAccessInbound | flagOverlapped | flagFirstInstance,
+      pipeRejectRemote, 1u32, pipeSize, pipeSize, 0u32, 0usize as *u8);
+    if ours != invalidHandle {
+      imm sa = new SecurityAttributes(24u32, 0usize as *u8, 1i32);
+      imm theirs = CreateFileW(wname, genericWrite, 0u32, &sa, openExisting, 0u32, 0usize);
+      libc.free(wname as *u8);
+      imm event = CreateEventW(0usize as *u8, 1i32, 0i32, 0usize as *u16);
+      if theirs == invalidHandle or event == 0usize {
+        closeIf(theirs);
+        closeIf(event);
+        CloseHandle(ours);
+        return 0usize;
+      }
+      s.pipe = ours;
+      s.ov.hEvent = event;
+      s.buf = libc.malloc(usize.from(pipeSize));
+      s.active = true;
+      return theirs;
+    }
+    libc.free(wname as *u8);
+  }
+  0usize;
+}
+
+// The NUL device, inheritable, to read from or write to
+fn openNul(access u32) usize {
+  imm sa = new SecurityAttributes(24u32, 0usize as *u8, 1i32);
+  imm wname = widen("NUL");
+  imm h = CreateFileW(wname, access, shareReadWrite, &sa, openExisting, 0u32, 0usize);
+  libc.free(wname as *u8);
+  if h == invalidHandle {0usize;} else {h;};
+}
+
+// An inheritable copy of one of this program's standard handles, or NUL
+// where it has none
+fn inheritStd(which u32, access u32) usize {
+  imm h = GetStdHandle(which);
+  if h != 0usize and h != invalidHandle {
+    mut copy = 0usize;
+    imm me = GetCurrentProcess();
+    if DuplicateHandle(me, h, me, &mut copy, 0u32, 1i32, duplicateSameAccess) != 0i32 {
+      return copy;
+    }
+  }
+  openNul(access);
+}
+
+fn closeIf(h usize) {
+  if h != 0usize and h != invalidHandle { CloseHandle(h); }
+}
+
+// Start the next read; a pipe the child has closed, all its handles gone,
+// ends the stream (ERROR_BROKEN_PIPE)
+fn readNext(s &mut Stream) {
+  s.ov.internal = 0usize;
+  s.ov.internalHigh = 0usize;
+  if ReadFile(s.pipe, s.buf, pipeSize, 0usize as *u32, &mut s.ov) == 0i32 {
+    if GetLastError() != errorIoPending { s.active = false; }
+  }
+}
+
+// A read has finished: keep what it brought, and start the next
+fn harvest(s &mut Stream) {
+  mut got = 0u32;
+  if GetOverlappedResult(s.pipe, &mut s.ov, &mut got, 0i32) == 0i32 {
+    s.active = false;
+    return;
+  }
+  if got > 0u32 { s.data.append(mem.sliceFromParts(s.buf, usize.from(got))); }
+  readNext(s);
+}
+
+// Stop reading: cancel the read in flight, and wait until Windows is done
+// with the buffer, keeping whatever it brought
+fn cancel(s &mut Stream) {
+  if not s.active { return; }
+  CancelIoEx(s.pipe, &mut s.ov);
+  mut got = 0u32;
+  if GetOverlappedResult(s.pipe, &mut s.ov, &mut got, 1i32) != 0i32 and got > 0u32 {
+    s.data.append(mem.sliceFromParts(s.buf, usize.from(got)));
+  }
+  s.active = false;
+}
+
+fn closeStream(s &mut Stream) {
+  closeIf(s.pipe);
+  closeIf(s.ov.hEvent);
+  if s.buf as usize != 0usize { libc.free(s.buf); }
+}
+
+// Milliseconds left until deadline, for a wait; INFINITE when there is none
+fn remaining(deadline u64) u32 {
+  if deadline == 0u64 { return infinite; }
+  imm now = GetTickCount64();
+  if now >= deadline { return 0u32; }
+  imm left = deadline - now;
+  if left >= u64.from(infinite) {infinite - 1u32;} else {u32.from(left);};
+}
+
+// Stop the child, and with it every program it started, where they are in
+// its job
+fn stop(job usize, child usize) {
+  if job != 0usize {
+    if TerminateJobObject(job, stoppedCode) != 0i32 { return; }
+  }
+  TerminateProcess(child, stoppedCode);
+}
+
+// Start line, read what it writes, wait for it
+fn start(op &[]u8, program &[]u8, line &[]u8, opts Options) Result[Output, ProcessError] {
+  imm wline = widen(line);
+  if wline as usize == 0usize {
+    return Error[Output, ProcessError][failure(op, program, opts.dir, errorNoUnicodeTranslation)];
+  }
+  mut wdir = 0usize as *u16;
+  if opts.dir.len > 0usize {
+    if hasByte(opts.dir, 0u8) {
+      libc.free(wline as *u8);
+      return Error[Output, ProcessError][failure(op, program, opts.dir, errorInvalidParameter)];
+    }
+    wdir = widen(opts.dir);
+    if wdir as usize == 0usize {
+      libc.free(wline as *u8);
+      return Error[Output, ProcessError][failure(op, program, opts.dir, errorNoUnicodeTranslation)];
+    }
+  }
+
+  // The child's three standard handles, each inheritable
+  mut so = noStream();
+  mut se = noStream();
+  mut childIn = 0usize;
+  mut childOut = 0usize;
+  mut childErr = 0usize;
+  if opts.inherit {
+    childIn = inheritStd(stdInput, genericRead);
+    childOut = inheritStd(stdOutput, genericWrite);
+    childErr = inheritStd(stdError, genericWrite);
+  }
+  else {
+    childIn = openNul(genericRead);
+    childOut = makePipe(&mut so);
+    childErr = makePipe(&mut se);
+  }
+
+  // Only those three are inherited: no other handle this program has open,
+  // a pipe another thread's run is making among them
+  mut handles = new Array[usize, 3] <- fill 0usize;
+  handles[0usize] = childIn;
+  handles[1usize] = childOut;
+  handles[2usize] = childErr;
+  imm hp *usize = &[]handles;
+  mut listSize = 0usize;
+  InitializeProcThreadAttributeList(0usize as *u8, 1u32, 0u32, &mut listSize);
+  imm list = libc.malloc(listSize);
+  mut failed = true;
+  mut code = 0u32;
+  if childIn == 0usize or childOut == 0usize or childErr == 0usize {
+    code = GetLastError();
+  }
+  elif InitializeProcThreadAttributeList(list, 1u32, 0u32, &mut listSize) == 0i32 {
+    code = GetLastError();
+  }
+  elif UpdateProcThreadAttribute(list, 0u32, attributeHandleList, hp as *u8, 24usize,
+      0usize as *u8, 0usize as *usize) == 0i32 {
+    code = GetLastError();
+    DeleteProcThreadAttributeList(list);
+  }
+  else {
+    failed = false;
+  }
+
+  mut pi = new ProcessInformation(0usize, 0usize, 0u32, 0u32);
+  imm timed = opts.timeoutMs > 0u64;
+  if not failed {
+    mut si = new StartupInfoEx(112u32, 0usize as *u16, 0usize as *u16, 0usize as *u16,
+      0u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32, useStdHandles, 0u16, 0u16, 0usize as *u8,
+      childIn, childOut, childErr, list);
+    mut flags = extendedStartupInfo;
+    if timed { flags = flags | createSuspended; }
+    // A console program started from a program with no console would open a
+    // window of its own
+    if GetConsoleWindow() == 0usize { flags = flags | createNoWindow; }
+    if CreateProcessW(0usize as *u16, wline, 0usize as *u8, 0usize as *u8, 1i32, flags,
+        0usize as *u8, wdir, &mut si, &mut pi) == 0i32 {
+      failed = true;
+      code = GetLastError();
+    }
+    DeleteProcThreadAttributeList(list);
+  }
+  libc.free(list);
+  libc.free(wline as *u8);
+  if wdir as usize != 0usize { libc.free(wdir as *u8); }
+  // The child's ends are the child's now: with ours closed, a pipe ends when
+  // the child, and whatever it started, has closed it
+  closeIf(childIn);
+  closeIf(childOut);
+  closeIf(childErr);
+  if failed {
+    closeStream(&mut so);
+    closeStream(&mut se);
+    if code == 0u32 { code = errorInvalidParameter; }
+    return Error[Output, ProcessError][failure(op, program, opts.dir, code)];
+  }
+
+  // With a time limit, the child goes in a job of its own before it runs,
+  // so that the programs it starts are in it too and stop with it
+  mut job = 0usize;
+  mut deadline = 0u64;
+  if timed {
+    job = CreateJobObjectW(0usize as *u8, 0usize as *u16);
+    if job != 0usize and AssignProcessToJobObject(job, pi.hProcess) == 0i32 {
+      CloseHandle(job);
+      job = 0usize;
+    }
+    deadline = GetTickCount64() + opts.timeoutMs;
+    ResumeThread(pi.hThread);
+  }
+
+  // Both outputs at once, so that a child blocked writing one is never
+  // waiting on a reader blocked on the other
+  mut timedOut = false;
+  if so.active { readNext(&mut so); }
+  if se.active { readNext(&mut se); }
+  mut events = new Array[usize, 2] <- fill 0usize;
+  imm ep *usize = &[]events;
+  while so.active or se.active {
+    mut n = 0u32;
+    if so.active {
+      events[0usize] = so.ov.hEvent;
+      n = 1u32;
+    }
+    if se.active {
+      events[usize.from(n)] = se.ov.hEvent;
+      n = n + 1u32;
+    }
+    imm r = WaitForMultipleObjects(n, ep, 0i32, remaining(deadline));
+    if r == waitTimeout {
+      timedOut = true;
+      stop(job, pi.hProcess);
+      cancel(&mut so);
+      cancel(&mut se);
+    }
+    elif r >= n {
+      // The wait itself failed: stop reading
+      cancel(&mut so);
+      cancel(&mut se);
+    }
+    elif so.active and events[usize.from(r)] == so.ov.hEvent {
+      harvest(&mut so);
+    }
+    else {
+      harvest(&mut se);
+    }
+  }
+
+  if not timedOut and WaitForSingleObject(pi.hProcess, remaining(deadline)) == waitTimeout {
+    timedOut = true;
+    stop(job, pi.hProcess);
+  }
+  WaitForSingleObject(pi.hProcess, infinite);
+  mut exitCode = 0u32;
+  GetExitCodeProcess(pi.hProcess, &mut exitCode);
+  CloseHandle(pi.hThread);
+  CloseHandle(pi.hProcess);
+  closeIf(job);
+  closeStream(&mut so);
+  closeStream(&mut se);
+  mut out = String.empty();
+  mut err = String.empty();
+  out <=> so.data;
+  err <=> se.data;
+  Ok[Output, ProcessError][new Output(exitCode, timedOut, out, err)];
+}
+
+// ---------------------------------------------------------------------------
+// This program
+// ---------------------------------------------------------------------------
+
+// This program's arguments, its own name first, as Windows' parser
+// (CommandLineToArgvW) splits its command line, each in UTF-8, whatever the
+// system's code page: what 'main''s argv holds when every one is ASCII
+pub fn args() List[String] {
+  mut out = List[String].empty();
+  mut n = 0i32;
+  imm argv = CommandLineToArgvW(GetCommandLineW(), &mut n);
+  if argv as usize == 0usize { return out; }
+  mut i = 0usize;
+  imm count = usize.from(n);
+  while i < count {
+    out.push(narrow(*(argv + i), -1i32));
+    i = i + 1usize;
+  }
+  LocalFree(argv as *u8);
+  out;
+}
+
+// The path of this program's executable, normalized ('C:/work/build/app.exe')
+pub fn currentExe() Result[String, ProcessError] {
+  mut size = 260u32;
+  while size <= 0x10000u32 {
+    imm buf = libc.malloc(usize.from(size) * 2usize) as *u16;
+    imm n = GetModuleFileNameW(0usize, buf, size);
+    if n == 0u32 {
+      imm code = GetLastError();
+      libc.free(buf as *u8);
+      return Error[String, ProcessError][failure("currentExe", "", "", code)];
+    }
+    if n < size {
+      imm got = narrow(buf, i32.from(n));
+      libc.free(buf as *u8);
+      return Ok[String, ProcessError][normalize(got.view())];
+    }
+    libc.free(buf as *u8);
+    size = size * 2u32;
+  }
+  Error[String, ProcessError][failure("currentExe", "", "", errorInvalidParameter)];
+}
