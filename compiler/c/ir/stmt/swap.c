@@ -67,14 +67,14 @@ void swapFlow(FlowState *fstate, SwapNode **nodep) {
 
     uint16_t lvalscope;
     INode *lvalperm;
-    iexpGetLvalInfo(node->lval, &lvalperm, &lvalscope);
+    iexpGetStoreLvalInfo(node->lval, &lvalperm, &lvalscope);
     if (!(MayWrite & permGetFlags(lvalperm))) {
         errorMsgNode(node->lval, ErrorNoMut, "You do not have permission to modify lval");
         return;
     }
 
     uint16_t rvalscope;
-    iexpGetLvalInfo(node->rval, &lvalperm, &rvalscope);
+    iexpGetStoreLvalInfo(node->rval, &lvalperm, &rvalscope);
     if (!(MayWrite & permGetFlags(lvalperm))) {
         errorMsgNode(node->rval, ErrorNoMut, "You do not have permission to modify rval");
         return;

@@ -229,7 +229,7 @@ int assignlvalrtype(INode *lval, INode *rtype, HollowNode **hollowrel) {
     // Ensure lval is either mutable or var in need of initialization or mutable.
     uint16_t lvalscope;
     INode *lvalperm;
-    INode *lvalvar = iexpGetLvalInfo(lval, &lvalperm, &lvalscope);
+    INode *lvalvar = iexpGetStoreLvalInfo(lval, &lvalperm, &lvalscope);
     if (!(MayWrite & permGetFlags(lvalperm)) &&
         (!lvalIsName || ((VarDclNode*)lvalvar)->flowtempflags & VarInitialized)) {
         errorMsgNode(lval, ErrorNoMut, "You do not have permission to modify lval");

@@ -156,8 +156,8 @@ reference, not a slice or a virtual reference), wanted as a borrowed reference
 whose permission may be shared (`&`, `&imm`, `&mut`, `&mut1`, `&opaq`), is an
 `EqMatch`, and handed over as it is it would move. `iexpCoerce` rewrites it to
 the reborrow `&mut *p` a programmer could write (`borrowUniReborrow`: the
-target's permission, and the holding variable's scope, as `borrowTypeCheck`
-gives a written one), so it is lent, and recovered after the borrow's last use
+target's permission, and the lifetime of a borrow of `*p` from
+`iexpGetLvalInfo`, as `borrowTypeCheck` gives a written one), so it is lent, and recovered after the borrow's last use
 (`refperm.html`, "Borrowed reference recovery"). Every coercion site gets it:
 an argument and a method's receiver (`fnCallFinalizeArgs`), a declaration or
 an assignment, a branch's value. A `&uni` wanted as a `&uni` is not rewritten,

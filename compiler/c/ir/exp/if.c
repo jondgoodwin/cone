@@ -233,25 +233,35 @@ void ifTypeCheck(TypeCheckState *pstate, IfNode *ifnode, INode *expectType) {
     }
 
     // When expectType specified, all branches have been coerced (or not w/ errors)
-    if (expectType != unknownType) {
+    if (expectType != unknownType)
         ifnode->vtype = expectType;
-        return;
-    }
+    else {
+        // If expected type is unknown, set the inferred type
+        ifnode->vtype = maybeType;
 
-    // If expected type is unknown, set the inferred type
-    ifnode->vtype = maybeType;
-
-    //  If coercion is needed for some blocks, perform them as needed
-    if (match == ConvSubtype || match == CastSubtype) {
-        for (nodesFor(ifnode->condblk, cnt, nodesp)) {
-            ++nodesp; --cnt;
-            // Since generation requires this node to be a block,
-            // perform coercion on the last statement
-            BlockNode *blk = (BlockNode *)*nodesp;
-            if (!ifBlockJumps(blk))
-                iexpCoerce(&nodesLast(blk->stmts), maybeType);
+        //  If coercion is needed for some blocks, perform them as needed
+        if (match == ConvSubtype || match == CastSubtype) {
+            for (nodesFor(ifnode->condblk, cnt, nodesp)) {
+                ++nodesp; --cnt;
+                // Since generation requires this node to be a block,
+                // perform coercion on the last statement
+                BlockNode *blk = (BlockNode *)*nodesp;
+                if (!ifBlockJumps(blk))
+                    iexpCoerce(&nodesLast(blk->stmts), maybeType);
+            }
         }
     }
+
+    // The 'if' gives whichever arm's value runs, so a borrowed reference lives
+    // only as long as its shortest-lived arm's, not its first's or the type
+    // expected of it
+    uint16_t narrowest = 0;
+    for (nodesFor(ifnode->condblk, cnt, nodesp)) {
+        ++nodesp; --cnt;
+        if (!ifBlockJumps((BlockNode *)*nodesp))
+            narrowest = iexpNarrowerScope(narrowest, *nodesp);
+    }
+    ifnode->vtype = iexpNarrowestType(ifnode->vtype, (INode*)ifnode, narrowest);
 }
 
 // Perform data flow analysis on an if expression

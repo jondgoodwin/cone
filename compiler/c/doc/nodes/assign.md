@@ -179,7 +179,11 @@ Per target:
 5. **Borrow lifetime.** When both sides are references and the lval is a borrow,
    `lvalscope < rvaltype->scope` is `ErrorInvType`, "lval outlives the borrowed
    reference you are storing". A slice carries the same scope as a single
-   reference, so both tags are subject to it.
+   reference, so both tags are subject to it. `lvalscope` comes from
+   `iexpGetStoreLvalInfo`: the place's lifetime as a borrow of it would have it
+   ([references](references.md)), except that a parameter and its by-value
+   parts stay at the caller band its type promises, 1, since what is stored
+   there is read back out with its type's lifetime.
 
 `assignMultRetFlow` runs `assignlvalrtype` per lval, then the same
 `flowHandleMoveOrCopy` on the one rval: a destructured call result is a

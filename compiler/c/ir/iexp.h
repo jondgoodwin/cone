@@ -33,8 +33,23 @@ TypeCompare iexpMatches(INode **from, INode *totype, SubtypeConstraint constrain
 int iexpCoerce(INode **from, INode *totypep);
 
 // The type a value coerced to 'totypedcl' carries: a borrowed reference keeps
-// the lifetime (scope) it was borrowed with, on a copy of the type coerced to
+// the lifetime (scope) it was borrowed with, and an owner lent as a borrowed
+// reference takes the lifetime of a borrow through it, on a copy of the type
+// coerced to
 INode *iexpCoerceType(INode *from, INode *totypedcl);
+
+// Is this the type of a borrowed reference, whose scope is a lifetime?
+int iexpIsBorrowType(INode *type);
+
+// A copy of the borrowed-reference type 'typedcl' carrying the lifetime 'scope'
+INode *iexpScopedBorrowType(INode *typedcl, INode *lexnode, uint16_t scope);
+
+// The type of a value that may be any of several, given the narrowest lifetime
+// among them: a borrowed-reference type carries that lifetime
+INode *iexpNarrowestType(INode *type, INode *lexnode, uint16_t scope);
+
+// Widen 'scope', the narrowest lifetime seen so far, by the value 'exp'
+uint16_t iexpNarrowerScope(uint16_t scope, INode *exp);
 
 // Perform full type check on from-node and ensure it is an expression.
 // Then coerce from-node's type to 'to' expected type, if needed
@@ -68,8 +83,13 @@ int iexpIsLval(INode *lval);
 // Ensure it is a lval, return error and 0 if not.
 int iexpIsLvalError(INode *lval);
 
-// Extract lval variable, scope and overall permission from lval
+// Extract lval variable, scope and overall permission from lval. The scope is
+// the lifetime a borrow of the place has.
 INode *iexpGetLvalInfo(INode *lval, INode **lvalperm, uint16_t *scope);
+
+// The same for a place stored into, whose scope is the lifetime a borrowed
+// reference stored there must have at least
+INode *iexpGetStoreLvalInfo(INode *lval, INode **lvalperm, uint16_t *scope);
 
 // Are types the same (no coercion)
 int iexpSameType(INode *to, INode **from);

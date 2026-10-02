@@ -20,7 +20,9 @@
 			type is written out. A borrow assigned to a variable after its initialization, or
 			stored in a struct's field, is not yet followed there, so returning that variable
 			or field is not refused (kept in a variable past what it borrows from and used,
-			it is refused by freezing).
+			it is refused by freezing). For the same reason, a borrow through another reference
+			held in a mutable local variable is given that variable's block, not the lifetime of
+			what the reference points at.
 			Freezing is enforced for a borrow held in a local variable, including one a
 			method or function returns (an element taken with <span class="pre">list[0usize]</span>,
 			an allocation from an arena), and between the arguments of one call;
@@ -238,9 +240,19 @@ imm ref = &amp;mut a;   // Creates a mutable borrowed reference to a's value
 	<ul>
 	<li>A reference borrowed from a global variable or function is granted a 'global lifetime.
 		This means it can last for as long as it wants.</li>
-	<li>A reference borrowed from a local variable or another reference has its lifetime constrained
-		to the block where the borrow took place. The compiler prohibits it from surviving beyond the end of the block.</li>
+	<li>A borrowed reference passed in as a parameter comes from the caller: it outlives the function,
+		so it may be returned, but it may not be stored in a global variable, which may outlive the caller.</li>
+	<li>A reference borrowed from a local variable has its lifetime constrained
+		to the block where the borrow took place. The compiler prohibits it from surviving beyond the end of the block.
+		A parameter passed by value, <span class="pre">self</span> taken by value, and whatever an owner
+		passed by value owns belong to the function, as its local variables do:
+		a borrow of them may be used anywhere in the function, but never returned or stored outside it.</li>
+	<li>A reference borrowed through another borrowed reference has the lifetime of what that reference points at,
+		not of the variable holding it. So a field of what a borrowed parameter points at may be borrowed
+		and returned, even through a local variable the parameter was copied into.</li>
 	</ul>
+	<p>A value chosen by an <span class="pre">if</span>, a <span class="pre">match</span> or a block
+		has the lifetime of the shortest-lived value it could give.</p>
 
 	<p>This example demonstrates the importance of this lifetime constraint to memory safety:</p>
 <pre>

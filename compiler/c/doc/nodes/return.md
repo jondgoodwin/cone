@@ -104,9 +104,13 @@ Two jobs, both in `blockFlow` and `flowScopeDealias`:
   body's per-iteration release list hangs.
 
 `returnFlow` → `returnFlowEscape` enforces the one rule `return` owns: **a
-returned borrowed reference may not point at a local.** Scope 0 is a global, 1 a
-parameter, 2+ a local, so the test is `region == borrowRef && scope > 1`,
-reported as `ErrorEscape`. A returned value tuple is checked element by element;
+returned borrowed reference may not point at a local.** Scope 0 is a global, 1
+the caller band (what a borrowed parameter points at), 2+ a block of the
+function — a by-value parameter's own storage among them, in its top block — so
+the test is `region == borrowRef && scope > 1`, reported as `ErrorEscape`. A
+returned `if` (a `match` is one) is checked arm by arm, each arm that does not
+jump away, and a returned block by its last value and its breaks' values, so
+the diagnostic lands on the value that would dangle. A returned value tuple is checked element by element;
 where the several values arrive as one expression instead — a call returning a
 tuple — there are no element expressions to walk, so the elements of the tuple
 type `fnCallFinalizeArgs` built for that call are read in their place.

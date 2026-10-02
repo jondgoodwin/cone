@@ -1,0 +1,37 @@
+// An 'if' choosing a local's borrow or a global's, stored into a global: the
+// value has the shorter lifetime, the local's, whichever arm runs.
+//
+// Verdict: refuse, ErrorInvType at the store.
+// Basis: language rule (26 Sep 2026) -- at a join, a borrow takes the shorter
+// of its arms' lifetimes; the band ordering (1 Oct 2026).
+// Master 277f509d: accepted (the 'if' took the global's declared type, which
+// carries no lifetime), and it dangles -- main, run, prints 0, not 42.
+// Stage 1 fixed it.
+
+mod lifetime_band_store_if_with_local_into_global;
+
+import stdio use *;
+
+fn clobber(n i64) i64 {
+  mut a Array[i64, 16] = [n, n, n, n, n, n, n, n, n, n, n, n, n, n, n, n];
+  a[3] + a[9];
+}
+
+mut D i64 = 0;
+mut G &i64;
+
+fn @initpure init() {
+  G = &D;
+}
+
+fn stash(c Bool) {
+  imm x = 42i64;
+  G = if c { &x; } else { &D; };   //~ ErrorInvType
+}
+
+fn main() {
+  stash(true);
+  clobber(21);
+  printInt(*G);
+  printStr("\n");
+}

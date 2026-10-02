@@ -52,10 +52,11 @@ void returnNameRes(NameResState *nstate, BreakRetNode *retnode) {
 // at a call that could store one; this enforces it at the function's own
 // return value.
 //
-// Borrow scopes count outward from the value borrowed from: 0 is a global, 1 is
-// a parameter (parseFnSig stamps every parameter with scope 1), and 2 or more is
-// a local of this function or of a block inside it. A global or a parameter
-// outlives the call; anything deeper is gone by the time the caller reads it.
+// A borrow's lifetime is a scope number: 0 is global, 1 the caller band (what a
+// borrowed parameter points at), and 2 or more a block of this function -- 2 its
+// top block, where its parameters' own storage and its outermost locals live
+// (iexpGetLvalInfo). Global and the caller band outlive the call; anything
+// deeper is gone by the time the caller reads it.
 static void returnFlowEscape(INode *exp) {
     if (!isExpNode(exp))
         return;
@@ -65,6 +66,33 @@ static void returnFlowEscape(INode *exp) {
         uint32_t cnt;
         for (nodesFor(((TupleNode*)exp)->elems, cnt, elemp))
             returnFlowEscape(*elemp);
+        return;
+    }
+    // An 'if' (a 'match' is one) returns whichever arm runs, and a block its last
+    // value or a break's, so each value is checked where it is written. An arm
+    // ending in a jump gives none; a 'return' there is checked as its own.
+    if (exp->tag == IfTag) {
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodesFor(((IfNode*)exp)->condblk, cnt, nodesp)) {
+            ++nodesp; --cnt;
+            if (!ifBlockJumps((BlockNode *)*nodesp))
+                returnFlowEscape(*nodesp);
+        }
+        return;
+    }
+    if (exp->tag == BlockTag && !(exp->flags & FlagLoop)) {
+        BlockNode *blk = (BlockNode *)exp;
+        if (blk->stmts->used > 0) {
+            INode *last = nodesLast(blk->stmts);
+            returnFlowEscape(last->tag == BlockRetTag ? ((BreakRetNode *)last)->exp : last);
+        }
+        if (blk->breaks) {
+            INode **nodesp;
+            uint32_t cnt;
+            for (nodesFor(blk->breaks, cnt, nodesp))
+                returnFlowEscape(((BreakRetNode *)*nodesp)->exp);
+        }
         return;
     }
     RefNode *reftype = (RefNode *)((IExpNode*)exp)->vtype;

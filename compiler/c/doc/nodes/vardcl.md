@@ -179,15 +179,22 @@ parameter names**.
 2. Check the declared type. **A non-type here abandons the rest of the
    function**, so such a declaration gets exactly one diagnostic and neither the
    literal nor the size rule runs.
-3. No `value` and no declared type → `ErrorNoType`.
-4. With a `value`: coerce it to the declared type; **infer only on success and
+3. A **parameter** (`scope == 1`) whose type is a borrowed reference takes a
+   copy of it carrying the caller band, scope 1 (`iexpScopedBorrowType`): the
+   declared type is shared and carries none, and without it a parameter's
+   borrow read as global, so `G = r` stored a caller's borrow into a global.
+   What the parameter points at is then the caller's however it is reached;
+   a borrow of the parameter's own storage is the function's
+   ([references](references.md)).
+4. No `value` and no declared type → `ErrorNoType`.
+5. With a `value`: coerce it to the declared type; **infer only on success and
    only when the type is still `unknownType`**. A declared borrowed-reference
    type is a shared node with no lifetime, so on success the variable takes
    instead a copy of it carrying the coerced value's scope (`iexpCoerceType`),
    as an inferred one carries the value's own: the local keeps its
    initializer's lifetime either way, and returning or storing it is judged by
    it ([references](references.md)).
-5. **Literal rule.** `scope <= 1` — that is, a global or a parameter default —
+6. **Literal rule.** `scope <= 1` — that is, a global or a parameter default —
    or `FlagStatic` folds the value (`litFoldConst`: an expression of constants
    becomes the literal it computes, [literals](literals.md), "Folding a
    constant expression") and then requires `litIsLiteral(value)`, unless the
@@ -218,7 +225,7 @@ parameter names**.
    functions' statics of one name stay apart. In an `inline` function the body
    is copied into every caller, so a static there would be one copy per call
    site: `ErrorBadStatic`.
-6. **Size rule.** `itypeNoSizeCause` — this is where a struct that holds itself
+7. **Size rule.** `itypeNoSizeCause` — this is where a struct that holds itself
    by value is caught, and where one recursing through a reference correctly is
    not.
 

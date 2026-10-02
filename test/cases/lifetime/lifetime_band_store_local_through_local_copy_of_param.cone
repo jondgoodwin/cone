@@ -1,0 +1,35 @@
+// A '&mut &T' parameter copied into a local, and a borrow of a local stored
+// through the copy: the place written is the caller's, exactly as it is
+// through the parameter itself.
+//
+// Verdict: refuse, ErrorInvType at the store.
+// Basis: language rule (1 Oct 2026) -- the lifetime is in the borrow's type,
+// not in the variable holding it, so '*q' is the caller's place;
+// refborref.html: a borrow "may only be stored in a place whose lifetime is
+// the same or smaller".
+// Master 277f509d: accepted (the store took the place to live as long as the
+// local 'q'), and it dangles -- main, run, prints 0, not 42. Stage 1 fixed it.
+
+mod lifetime_band_store_local_through_local_copy_of_param;
+
+import stdio use *;
+
+fn clobber(n i64) i64 {
+  mut a Array[i64, 16] = [n, n, n, n, n, n, n, n, n, n, n, n, n, n, n, n];
+  a[3] + a[9];
+}
+
+fn point(dst &mut &i64) {
+  imm q = dst;
+  imm x = 42i64;
+  *q = &x;                   //~ ErrorInvType
+}
+
+fn main() {
+  imm zero = 0i64;
+  mut r = &zero;
+  point(&mut r);
+  clobber(21);
+  printInt(*r);
+  printStr("\n");
+}
