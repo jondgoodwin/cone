@@ -1,0 +1,149 @@
+// ======== Fractal refinement of a 2-D outline ========
+//
+// A coastline from a coarse outline: each edge is split in two, the split
+// point moved off the line by a random amount, and each half split again, down
+// to 'levels' levels, so an edge becomes 2^levels pieces with inlets and
+// headlands at every scale (Fournier, Fussell and Carpenter's midpoint
+// displacement, 1982).
+//
+// The split point is kept inside a quadrilateral, as Amit Patel's "noisy
+// edges" do (Red Blob Games): an edge A B carries two more corners P and Q,
+// one either side of it, and its split point M is on the segment from Q to P.
+// The half A M then carries the corners A + s (P - A) and A + s (Q - A), and
+// the half M B carries B + s (P - B) and B + s (Q - B), where s is the shrink
+// (0 < s < 1). Each half's quadrilateral lies inside its parent's, on its own
+// side of the line through P and Q, so two pieces of one edge never cross, and
+// everything below an edge stays inside that edge's first quadrilateral (which
+// is what lets 'fractalRefineWithin' skip, exactly, every edge whose
+// quadrilateral misses a window). Patel halves the corners (s = 1/2); here
+// s = 2^-h, so a smaller h keeps the quadrilaterals wider as the pieces
+// shorten, and the outline rougher.
+//
+// What the guarantee costs. Every quadrilateral below a base edge keeps that
+// edge's Q P direction (a half's corners are its parent's shrunk towards one
+// end), so an edge's refinement is a graph over the edge: it never turns back
+// on itself, and every wiggle is displaced along the one direction. With
+// h < 1 a half's split sits s / 2 of its parent from its own end, past its
+// middle, and as the quadrilaterals widen against their pieces the deep
+// levels become needles all leaning one way, a comb. At h = 1 (Patel's) the
+// outline is even and coast-like.
+//
+// Every random number is a hash of (seed, edge, level, index within the
+// level), never a stream: a piece is the same however much else is made,
+// and a coarse refinement's points are exactly the points a finer one keeps
+// at the same places. A base edge's first corners are P, Q = its middle plus
+// and minus 'width' times its length, square to it.
+//
+// The dials beyond roughness, each giving up the plain fractal's evenness:
+//
+// - tail, tailCap: the displacement is noise.heavySigned, so a rare split runs
+//   to its quadrilateral's edge (a ratio of 1 is the plain uniform draw).
+// - intermittency: a cascade; each piece multiplies the amplitude it hands to
+//   its halves by 1 + intermittency u (u in [-1, 1)), so detail clusters.
+// - heteroStrength, heteroScale: the amplitude is scaled by
+//   max(0, 1 + strength g), g a gradient noise of the split's middle at
+//   'heteroScale' cells per unit: calm stretches and wild ones.
+
+// The dials of a fractal refinement
+pub struct Fractal {
+  pub seed u32;
+  pub levels i32;          // splits per base edge: 2^levels pieces
+  pub shrink f32;          // the corners' shrink per level, 2^-h, in (0, 1)
+  pub amplitude f32;       // the displacement's scale, as a fraction of the way from the middle of Q P to P
+  pub width f32;           // a base edge's corners, as a fraction of its length
+  pub tail f32;            // heavySigned's ratio: 1 for none
+  pub tailCap i32;         // heavySigned's cap
+  pub intermittency f32;   // the cascade: 0 for none
+  pub heteroStrength f32;  // the heterogeneity field's strength: 0 for none
+  pub heteroScale f32;     // its cells per unit length
+}
+
+// A plain refinement: roughness 'h' (held to at least 1/64), a displacement
+// 'amplitude', a base width of 0.4, and no tail, cascade or heterogeneity
+pub fn fractal(seed u32, levels i32, h f32, amplitude f32) Fractal {
+  imm hh = if h < 0.015625 {0.015625;} else {h;};
+  new Fractal(seed, levels, libc.powf(2., -hh), amplitude, 0.4, 1., 0, 0., 0., 1.);
+}
+
+// A point of a refined outline and its place: base edge e's piece i at the
+// finest level is e 2^levels + i, and the point is that piece's start
+pub struct FractalPoint {
+  pub index u64;
+  pub point Vec2;
+}
+
+fn quadBox(a Vec2, b Vec2, p Vec2, q Vec2) Aabb2 {
+  new Aabb2(a.min(b).min(p.min(q)), a.max(b).max(p.max(q)));
+}
+
+fn clampF(v f32, lo f32, hi f32) f32 { if v < lo {lo;} elif v > hi {hi;} else {v;}; }
+
+// Split piece 'index' of base edge 'edge' at 'level', running a to b inside
+// the quadrilateral a p b q, 'carry' the cascade's factor from above; push
+// its finest points, skipping a piece whose quadrilateral misses 'window'
+// when 'cull'
+fn fractalSplit(f &Fractal, edge u32, level i32, index u32, a Vec2, b Vec2, p Vec2, q Vec2, carry f32,
+    cull Bool, window Aabb2, out &mut List[FractalPoint]) {
+  if cull and !quadBox(a, b, p, q).overlaps(window) { return; }
+  if level >= f.levels {
+    out.push(new FractalPoint(u64.from(edge) * (1u64 << u64.from(f.levels)) + u64.from(index), a));
+    return;
+  }
+  imm h = noise.pcg4d(new noise.UVec4(edge, index, u32.from(level), f.seed));
+  imm w = 1. + f.intermittency * noise.toSigned(h.z);
+  mut amp = f.amplitude * carry * w;
+  if f.heteroStrength != 0. {
+    imm mid = (a + b) * 0.5;
+    imm g = noise.gradient2(mid * f.heteroScale, noise.hash1(-1, f.seed)).value;
+    imm k = 1. + f.heteroStrength * g;
+    amp = if k > 0. {amp * k;} else {0.;};
+  }
+  imm d = amp * noise.heavySigned(h.x, h.y, f.tail, f.tailCap);
+  imm t = clampF(0.5 + 0.5 * d, 0.05, 0.95);
+  imm m = q.lerp(p, t);
+  imm s = f.shrink;
+  fractalSplit(f, edge, level + 1, index * 2u32, a, m, a.lerp(p, s), a.lerp(q, s), carry * w, cull, window, out);
+  fractalSplit(f, edge, level + 1, index * 2u32 + 1u32, m, b, b.lerp(p, s), b.lerp(q, s), carry * w, cull, window, out);
+}
+
+fn fractalEdges(base &Profile, f &Fractal, cull Bool, window Aabb2) List[FractalPoint] {
+  imm n = base.points.len();
+  mut out = List[FractalPoint].empty();
+  if n < 2usize { return out; }
+  imm edges = if base.closed {n;} else {n - 1usize;};
+  mut e = 0usize;
+  while e < edges {
+    imm a = *base.points[e];
+    imm b = *base.points[(e + 1usize) % n];
+    imm mid = (a + b) * 0.5;
+    imm side = (b - a).perp() * f.width;
+    fractalSplit(f, u32.from(e), 0, 0u32, a, b, mid + side, mid - side, 1., cull, window, &mut out);
+    e = e + 1usize;
+  }
+  out;
+}
+
+// The outline refined: every point, in order, closed as the base is (an
+// open base keeps its last point too). A base of fewer than 2 points comes
+// back as it is.
+pub fn fractalRefine(base &Profile, f &Fractal) Profile {
+  imm window = Aabb2.empty();
+  imm pts = fractalEdges(base, f, false, window);
+  mut out = List[Vec2].withCapacity(pts.len() + 1usize);
+  mut i = 0usize;
+  while i < pts.len() {
+    out.push(pts[i].point);
+    i = i + 1usize;
+  }
+  imm n = base.points.len();
+  if n < 2usize { return Profile.fromPoints(base.points.view(), base.closed); }
+  if !base.closed { out.push(*base.points[n - 1usize]); }
+  new Profile(out, base.closed);
+}
+
+// Only the finest points whose pieces could reach 'window' (each piece's
+// quadrilateral meets it), with their places, in order: the same bits as
+// the points at those places in 'fractalRefine', for detail made on demand
+pub fn fractalRefineWithin(base &Profile, f &Fractal, window Aabb2) List[FractalPoint] {
+  fractalEdges(base, f, true, window);
+}

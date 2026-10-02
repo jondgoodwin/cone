@@ -103,12 +103,18 @@ Visual Studio projects stay at the root.
   corner uvs, the deformers `bend`, `twist`, `taper` and `curveDeform`,
   and Catmull-Clark `subdivide` (boundary rules, semi-sharp creases,
   face-varying uvs) with `subdivisionLevels`, a cage's level-of-detail
-  chain;
+  chain, and `fractalRefine`, a 2-D outline split fractally inside nested
+  quadrilaterals (so an edge's pieces never cross), every random number a
+  hash of (seed, edge, level, index), with `fractalRefineWithin` for one
+  window's points, the same bits; its example `coast.cone` is the island
+  coastline experiments;
   `noise` is coherent noise over `geomath`, a pure function of a seed and a
   point: the PCG integer hashes (`pcg`, `pcg2d`, `pcg3d`, `pcg4d`, seeded
   lattice hashes, exact hash to float), value and gradient noise with
   analytic derivatives (and periodic forms), cellular noise (F1, F2, cell
-  id), fBm, ridged and billowed sums, domain warp, and Phacelle stripes
+  id), fBm, ridged and billowed sums, domain warp, a heavy-tailed draw
+  (`heavySigned`) and a multiplicative cascade (`cascade2`), both CPU only
+  for now, and Phacelle stripes
   (`phacelle.cone` and `phacelle.slang`, under the MPL 2.0); the same
   functions for shaders in `src/noise.slang`, bit for bit the same on the
   GPU but for square roots and Phacelle, which its `parity` test checks on
