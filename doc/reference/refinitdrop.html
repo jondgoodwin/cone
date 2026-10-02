@@ -21,10 +21,9 @@
 		and the owning references a value holds are released with it, however deep. A value
 		assigned over is finalized as it is replaced, and one moved out, or given a value, on only
 		some paths is finalized on the paths that still hold it. A temporary is finalized at the
-		end of its statement, condition or operand, except one that a borrow, or a raw pointer,
-		made from it may outlive &mdash; an owner lent to a variable, or to a call whose result
-		can hold the borrow &mdash; which is not finalized at all: whether such a borrow lengthens
-		the temporary's life is not yet decided. A module's
+		end of its statement, condition or operand, and one a variable's initializer borrows at
+		the end of its block, as described below; one that a raw pointer made from it may
+		outlive is not finalized at all. A module's
 		global variable is finalized by its module's finalizer when the program shuts down,
 		whatever it holds: a value whose type finalizes, a tuple or an array of them, or an
 		owning reference, which is released. Initializers are implemented: every struct's
@@ -213,6 +212,24 @@ take(open(name));            // moved: take closes it
 if open(name).length > 0 {   // closed here, before the branch runs
   ...
 }
+</pre>
+	<p>A temporary a variable's initializer borrows lives longer, to the end of the block the
+		variable is declared in, as Rust extends it: so the borrow is good for as long as the
+		variable can be used. That is a temporary the initializer borrows directly
+		(<span class="pre">&amp;make()</span>), a part of one (<span class="pre">&amp;make().x</span>),
+		what a temporary owner owns (<span class="pre">&amp;*makeOwner()</span>), or a temporary owner
+		the initializer lends where a borrowed reference is declared
+		(<span class="pre">imm r &amp;R = makeOwner()</span>), whether the borrow is the whole
+		initializer or an element of a tuple, an array or a variant literal it builds
+		(<span class="pre">(&amp;make(), 1)</span>, <span class="pre">Some[&amp;R][&amp;make()]</span>).
+		Such a temporary dies at the end of its block, with the block's locals, the latest first.
+		A temporary passed to a function, or a method's receiver, is not extended, even
+		in an initializer: it dies at the end of its statement, and a variable still holding a
+		borrow of it may not be used after that.</p>
+<pre>
+imm r = &amp;make();             // the temporary lives to the end of the block
+imm s &amp;R = makeOwner();       // so does the owner, and what it owns
+imm t = pick(makeOwner());    // the owner dies here: t may not be used after this statement
 </pre>
 	<p>A value dies on the path that still holds it, and only there. Where a variable's value was
 		moved out, or given, on only some of the paths that reach the end of its scope

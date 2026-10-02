@@ -1,0 +1,44 @@
+// An extended temporary in a loop's body is a local of that body: each pass
+// makes its own and ends it as the pass ends, and a 'break' out of the body
+// ends the one that pass made before it leaves.
+//
+// Verdict: accept; prints "read 0", "final 0", "read 1", "final 1",
+// "read 2", "final 2" (ended by the 'break'), then "end".
+// Basis: language rule (2 Oct 2026) -- temporaries that outlive their
+// statement follow Rust, extended to the end of the enclosing block, here the
+// loop's body. Rust: 'loop { let r = &temp(i); .. }' drops each pass's
+// temporary at the body's end, and on 'break' (The Rust Reference,
+// "Destructors": an extended temporary's scope is the block containing the
+// 'let'); by reading, not run.
+// Master 39affbc9: refused, ErrorBadLval at 'mk(i)' ("May not borrow a
+// temporary value").
+
+mod lifetime_mix_temp_extended_in_loop;
+
+import stdio use *;
+
+struct R {
+  pub n i64;
+  fn final(self &uni) {
+    printStr("final ");
+    printInt(self.n);
+    printStr("\n");
+  }
+}
+
+fn mk(n i64) R { new R(n); }
+
+fn main() {
+  mut i = 0i64;
+  while true {
+    imm r = &mk(i);
+    printStr("read ");
+    printInt(r.n);
+    printStr("\n");
+    if r.n == 2 {
+      break;
+    }
+    i = i + 1;
+  }
+  printStr("end\n");
+}

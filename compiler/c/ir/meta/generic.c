@@ -417,6 +417,7 @@ static void genericDemandMatch(StructNode *trait, StructNode *type) {
             tstate.typenode = (INode*)trait;
             tstate.fn = NULL;
             tstate.scope = 0;
+            tstate.extend = NULL;
             inodeTypeCheckAny(&tstate, nodesp);
         }
         INode *binding = namespaceFind(&type->namespace, ((FnDclNode*)*nodesp)->namesym);
@@ -1027,6 +1028,7 @@ INode *genericInstantiate(TypeCheckState *pstate, FnCallNode *srcgencall, INode 
         tstate.typenode = owner;
         tstate.fn = NULL;
         tstate.scope = 0;
+        tstate.extend = NULL;
         inodeTypeCheckAny(&tstate, &instance);
     }
     else

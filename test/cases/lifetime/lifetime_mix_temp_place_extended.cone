@@ -1,0 +1,47 @@
+// A borrow of a place inside a temporary, in a variable's initializer: a
+// field of a value a call made ('&mk(5).n'), and what a temporary owner owns
+// ('&*mkso(6)'). The temporary the place is part of, or is reached through,
+// lasts to the end of the enclosing block, and is ended there, the later one
+// first, as locals are.
+//
+// Verdict: accept; prints "read 5 6", then "final 6" and "final 5" at the
+// block's end, then "end".
+// Basis: language rule (2 Oct 2026) -- temporaries that outlive their
+// statement follow Rust, extended where Rust extends. Rust: "If a borrow,
+// dereference, field, or tuple indexing expression has an extended temporary
+// scope, then so does its operand" (The Rust Reference, "Destructors",
+// temporary lifetime extension), so 'let a = &mk().n;' and
+// 'let b = &*make_box();' extend the temporary; by reading, not run.
+// Master 39affbc9: refused -- ErrorBadLval at 'mk(5).n' ("May not borrow a
+// temporary value"), and '&*mkso(6)' borrowed with no type at all (the
+// borrow of a place reached through a temporary owner went untyped), so
+// 'b.n' was refused as an invalid operation on a reference.
+
+mod lifetime_mix_temp_place_extended;
+
+import stdio use *;
+
+struct R {
+  pub n i64;
+  fn final(self &uni) {
+    printStr("final ");
+    printInt(self.n);
+    printStr("\n");
+  }
+}
+
+fn mk(n i64) R { new R(n); }
+fn mkso(n i64) So[R] { new So[R](n); }
+
+fn main() {
+  {
+    imm a = &mk(5).n;
+    imm b = &*mkso(6);
+    printStr("read ");
+    printInt(*a);
+    printStr(" ");
+    printInt(b.n);
+    printStr("\n");
+  }
+  printStr("end\n");
+}

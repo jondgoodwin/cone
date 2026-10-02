@@ -17,6 +17,7 @@
 
 Name *anonName;
 Name *tempName;
+Name *tempLocalName;
 Name *selfName;
 Name *selfTypeName;
 Name *thisName;

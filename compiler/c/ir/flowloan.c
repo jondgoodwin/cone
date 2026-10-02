@@ -460,11 +460,34 @@ static uint32_t loanColumn(INode *node) {
     return (uint32_t)(node->srcp - node->linep) + 1;
 }
 
+// Is a loan's source a temporary: one that ends with its statement (a
+// stand-in, pwTemp), or one a variable's initializer keeps to the end of its
+// block (a hidden local, varDclExtend)?
+enum LoanTemp {
+    LoanTempNone,
+    LoanTempStatement,
+    LoanTempBlock,
+};
+static int loanTempKind(Place *pl) {
+    PathVar *pv = &pathVars[pl->var];
+    if (pv->temp)
+        return LoanTempStatement;
+    return pv->var->namesym == tempLocalName ? LoanTempBlock : LoanTempNone;
+}
+
 // The name of a loan's source, as the reader would write it
 static char *loanSourceName(Place *pl, char *buf, size_t size) {
     VarDclNode *var = pathVars[pl->var].var;
-    snprintf(buf, size, "%s%s", pl->deref ? "*" : "", &var->namesym->namestr);
+    if (loanTempKind(pl) != LoanTempNone)
+        snprintf(buf, size, "the temporary made at %u:%u", var->linenbr, loanColumn((INode *)var));
+    else
+        snprintf(buf, size, "%s%s", pl->deref ? "*" : "", &var->namesym->namestr);
     return buf;
+}
+
+// How long a temporary lasts, for a message
+static char *loanTempEnds(int kind) {
+    return kind == LoanTempStatement ? "ends with its statement" : "lasts to the end of its block";
 }
 
 // Where a loan was made, as the reader would find it: at the borrow, or, for
@@ -500,6 +523,19 @@ void loanEscape(INode *node, uint32_t loan, int how) {
     char where[160];
     loanSourceName(&loans[loan].place, srcname, sizeof(srcname));
     loanWhere(&loans[loan], where, sizeof(where));
+    int temp = loanTempKind(&loans[loan].place);
+    if (temp != LoanTempNone) {
+        if (how == LoanEscapeReturn)
+            errorMsgNode(node, ErrorEscape,
+                "Returned value carries a borrow of a temporary (made %s), which %s: the borrow would outlive it.",
+                where, loanTempEnds(temp));
+        else
+            errorMsgNode(node, how == LoanEscapeStore ? ErrorEscape : ErrorCallEscape,
+                "%s where it may outlive this function, a value carries a borrow of a temporary (made %s), which %s.",
+                how == LoanEscapeStore ? "Stored" : "Handed to a call that could store it", where,
+                loanTempEnds(temp));
+        return;
+    }
     switch (how) {
     case LoanEscapeReturn:
         errorMsgNode(node, ErrorEscape,
@@ -534,6 +570,19 @@ static void loanReport(Pending *pend, INode *usenode) {
     else
         snprintf(used, sizeof(used), "at %u:%u", usenode->linenbr, loanColumn(usenode));
     char *mutably = loan->writes ? " mutably" : "";
+    int temp = loanTempKind(&loan->place);
+    if (pend->kind == AccessEnd && temp == LoanTempStatement) {
+        errorMsgNode(pend->access, ErrorFrozen,
+            "The temporary made here ends with its statement while '%s' still holds a borrow of it (made %s), used again %s. A temporary lasts to the end of its block only where a variable's initializer borrows it ('imm r = &make();'); keep it in a variable first.",
+            &holder->namesym->namestr, where, used);
+        return;
+    }
+    if (pend->kind == AccessEnd && temp == LoanTempBlock) {
+        errorMsgNode(pend->access, ErrorFrozen,
+            "The temporary made here, kept to the end of its block, goes out of scope while '%s' still holds a borrow of it (made %s), used again %s.",
+            &holder->namesym->namestr, where, used);
+        return;
+    }
     if (pend->kind == AccessEnd) {
         errorMsgNode(pend->access, ErrorFrozen,
             "'%s', declared here, goes out of scope while '%s' still holds a borrow of it (made %s), used again %s.",
@@ -630,9 +679,15 @@ void loanFlightAccess(Place *pl, int access, INode *node) {
             char where[160];
             loanSourceName(&loan->place, srcname, sizeof(srcname));
             loanWhere(loan, where, sizeof(where));
-            errorMsgNode(node, ErrorFrozen,
-                "'%s' is borrowed%s (%s) for a call or value still being made, which uses that borrow. It may not be %s before then.",
-                srcname, loan->writes ? " mutably" : "", where, loanAttempt(access));
+            int temp = loanTempKind(&loan->place);
+            if (access == AccessEnd && temp != LoanTempNone)
+                errorMsgNode(node, ErrorFrozen,
+                    "The temporary made here %s, while a value still being handed on carries a borrow of it (made %s).",
+                    loanTempEnds(temp), where);
+            else
+                errorMsgNode(node, ErrorFrozen,
+                    "'%s' is borrowed%s (%s) for a call or value still being made, which uses that borrow. It may not be %s before then.",
+                    srcname, loan->writes ? " mutably" : "", where, loanAttempt(access));
             return;
         }
     }

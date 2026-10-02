@@ -72,6 +72,15 @@ Every statement but the last is checked with `noCareType`. A nested plain block
 may not end in `break`/`continue` (`blockNoBreak`) — `if` arms are exempt,
 because they are reached through `ifTypeCheck`.
 
+**A statement declaring a local may grow hidden locals before it.** Each
+declaration is checked between `varDclExtendBegin` and `varDclExtendEnd`
+(`blockStmtTypeCheck`): a temporary its initializer extends, Rust's way,
+becomes a hidden local of this block ([VarDcl](vardcl.md), "Temporaries an
+initializer extends"), handed back in the order they run. They are inserted
+just before the statement once the whole block is checked (`blockHoist`), the
+last thing before either return, since the checks after the statement loop
+still hold pointers into the statement list.
+
 The last statement splits:
 
 - **Loop block**: may not end in `break`/`continue`/`return`; checked with
@@ -128,9 +137,10 @@ list does not exempt it (`flowresult` is NULL). `if c { imm x = mk(); x; }`
 finalizes `x` at the branch's end.
 
 **Each statement that made a temporary is walked again** once flow has walked
-it (`blockTempEscape`), so that a temporary a borrow going out of it may point
-into is kept: a variable's initializer, and a `return`'s, a `break`'s or a used
-block's value, go out ([Flow](../phases/flow.md), "Temporaries").
+it (`blockTempEscape`), so that a temporary a raw pointer going out of it may
+point into is kept: a variable's initializer, and a `return`'s, a `break`'s or
+a used block's value, go out ([Flow](../phases/flow.md), "Temporaries"). A
+borrow of one going out is the loan walk's to check.
 
 ## Generation
 

@@ -24,6 +24,9 @@ typedef struct Name {
 // Common symbols - see nametbl.c
 extern Name *anonName;  // "_" - the absence of a name
 extern Name *tempName;    // "-_"
+// "-temp": the hidden local of a block that a temporary its borrow extends
+// becomes ('imm r = &make();', varDclExtend). No source can spell it.
+extern Name *tempLocalName;
 extern Name *selfName;  // "self"
 extern Name *selfTypeName; // "Self"
 extern Name *thisName;  // "this"

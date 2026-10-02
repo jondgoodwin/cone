@@ -1,0 +1,73 @@
+// A borrow of a temporary as an element of a literal that is a variable's
+// initializer: a tuple's, an array's, a variant's ('Some[..]'). Each
+// temporary lasts to the end of the enclosing block, and is ended there, the
+// latest first. What the literal runs before an extended temporary still runs
+// before it ("a" before "make 2"), and what it runs after still runs after
+// ("b").
+//
+// Verdict: accept; prints "a make 2 b |", then "make 4 |", then "make 5 make 6 |",
+// then "read 1 2 3 4 5 6", then "final 6", "final 5", "final 4", "final 2" at
+// the block's end, then "end".
+// Basis: language rule (2 Oct 2026) -- temporaries that outlive their
+// statement follow Rust, extended where Rust extends. Rust: the operands of an
+// extending tuple or array expression, and the arguments of a tuple enum
+// variant's constructor, are extending expressions, so '(&temp(),)',
+// '[&temp()]' and 'Some(&temp())' in a 'let' initializer extend the temporary
+// (The Rust Reference, "Destructors", temporary lifetime extension); a
+// literal's operands run left to right (The Rust Reference, "Evaluation
+// order of operands"); by reading, not run.
+// Master 39affbc9: refused, ErrorBadLval at each borrowed temporary ("May not
+// borrow a temporary value").
+
+mod lifetime_mix_temp_literal_extended;
+
+import stdio use *;
+
+struct R {
+  pub n i64;
+  fn final(self &uni) {
+    printStr("final ");
+    printInt(self.n);
+    printStr("\n");
+  }
+}
+
+fn mk(n i64) R {
+  printStr("make ");
+  printInt(n);
+  printStr(" ");
+  new R(n);
+}
+
+fn say(s &[]u8, n i64) i64 {
+  printStr(s);
+  printStr(" ");
+  n;
+}
+
+fn main() {
+  {
+    imm t = (say("a", 1), &mk(2), say("b", 3));
+    printStr("|\n");
+    imm o Option[&R] = Some[&R][&mk(4)];
+    printStr("|\n");
+    imm a = [&mk(5), &mk(6)];
+    printStr("|\nread ");
+    printInt(t.0);
+    printStr(" ");
+    printInt((t.1).n);
+    printStr(" ");
+    printInt(t.2);
+    printStr(" ");
+    match o {
+      case imm v Some { printInt(v.value.n); }
+      else { printStr("none"); }
+    }
+    printStr(" ");
+    printInt(a[0].n);
+    printStr(" ");
+    printInt(a[1].n);
+    printStr("\n");
+  }
+  printStr("end\n");
+}

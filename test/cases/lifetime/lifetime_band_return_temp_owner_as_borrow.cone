@@ -1,0 +1,40 @@
+// A temporary owner handed back where a borrow is declared: the function
+// makes the owner and nothing keeps it, so the borrow it returns would point
+// at memory the temporary's end frees -- unless the temporary is never ended,
+// which is a leak.
+//
+// Verdict: refuse, ErrorEscape at the returned value.
+// Basis: language rule (2 Oct 2026) -- temporaries follow Rust; a returned
+// value may carry no borrow of the function's own storage (the lifetimes
+// plan's Stage 4 rule), and a temporary is that. Rust: 'fn f() -> &'static R
+// { &*make_box() }' is E0515, "cannot return reference to temporary value";
+// by reading, not run.
+// Master 39affbc9: accepted, and it leaks -- main, run, prints "read = 7" and
+// "end" but never "final": the temporary is not ended (#241's fallback).
+
+mod lifetime_band_return_temp_owner_as_borrow;
+
+import stdio use *;
+
+struct R {
+  pub n i64;
+  fn final(self &uni) {
+    printStr("final\n");
+  }
+}
+
+fn mkso(n i64) So[R] { new So[R](n); }
+
+fn handBack() &R {
+  mkso(7);                   //~ ErrorEscape
+}
+
+fn main() {
+  {
+    imm r = handBack();
+    printStr("read = ");
+    printInt(r.n);
+    printStr("\n");
+  }
+  printStr("end\n");
+}

@@ -63,4 +63,40 @@ void varDclTypeCheck(TypeCheckState *pstate, VarDclNode *node);
 // Perform data flow analysis
 void varDclFlow(FlowState *fstate, VarDclNode **vardclnode);
 
+// A temporary a borrow in a local's initializer is rooted in, made a hidden
+// local in case the borrow extends it (vardcl.c, "Temporaries an initializer
+// extends")
+typedef struct VarDclTemp {
+    VarDclNode *var;    // the hidden local, whose value is the temporary's expression
+    INode **slot;       // where that expression was: now a name use of the local
+    INode *borrowed;    // the borrow's operand as written, where a refusal is reported
+    uint8_t place;      // that operand was a place all the same ('*makeOwner()')
+    uint8_t kept;       // the borrow extends it
+} VarDclTemp;
+
+// A block's statement declaring a local, while it is type checked
+struct VarDclExtend {
+    VarDclExtend *outer;    // the statement this one's block is within, if any
+    VarDclNode *var;        // the local the statement declares
+    VarDclTemp *temps;
+    uint32_t ntemps;
+    uint32_t tempcap;
+    INode ***pending;       // elements of a literal run before the next hidden local, still in place
+    uint32_t npending;
+    uint32_t pendcap;
+    uint32_t flushes;       // how many times 'pending' was made hidden locals
+    Nodes *hoisted;         // the hidden locals declared before the statement, in the order they run
+};
+
+// Type checking a block's statement declaring 'var' begins and ends. The end
+// hands back the hidden locals to declare before it, in order, or NULL.
+void varDclExtendBegin(TypeCheckState *pstate, VarDclExtend *ext, VarDclNode *var);
+Nodes *varDclExtendEnd(TypeCheckState *pstate, VarDclExtend *ext);
+
+// A borrow, type checked within such a statement, of a place whose root
+// 'slot' is a temporary: make the temporary a hidden local, which the borrow
+// then borrows. 'borrowed' is the borrow's operand. Returns 0, changing
+// nothing, outside such a statement.
+int varDclExtendTemp(TypeCheckState *pstate, INode **slot, INode *borrowed);
+
 #endif

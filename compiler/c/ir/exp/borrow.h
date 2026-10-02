@@ -27,6 +27,13 @@ int borrowAutoMatches(INode *from, RefNode *totype);
 // an array literal of constants, or a named constant holding either?
 int borrowIsConstLit(INode *node);
 
+// The slot of the temporary a type-checked place is rooted in, or NULL: the
+// value made here -- a call's result, a literal -- that the place is part of,
+// or whose owning reference it is reached through ('make().x', '*makeOwner()',
+// or 'makeOwner()' itself). A place reached through a borrowed reference or a
+// pointer, or rooted in a variable or a constant, has none.
+INode **borrowTempRoot(INode **nodep);
+
 // Retype a borrowed constant array literal to the reference type it is wanted as
 int borrowConstLitCoerce(INode *from, INode *totypedcl);
 

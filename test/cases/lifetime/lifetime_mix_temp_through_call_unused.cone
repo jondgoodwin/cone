@@ -1,0 +1,34 @@
+// A borrow of a temporary passed through a call and kept in a variable that
+// is never used again: the temporary ends with its statement, and nothing
+// reads the borrow after that, so nothing is refused.
+//
+// Verdict: accept; prints "final" once, as the statement ends, then "next",
+// then "end".
+// Basis: language rule (2 Oct 2026) -- temporaries follow Rust, and a borrow
+// is checked by where it is used (the flow rule). Rust:
+// 'let r = id(&*make());' with 'r' never used compiles under NLL (E0716 only
+// where 'r' is used after the statement; RFC 2094); by reading, not run.
+// Master 39affbc9: accepted, and the temporary is never ended -- main, run,
+// prints "next" and "end" with no "final" (a leak left by #241).
+
+mod lifetime_mix_temp_through_call_unused;
+
+import stdio use *;
+
+struct R {
+  pub n i64;
+  fn final(self &uni) {
+    printStr("final\n");
+  }
+}
+
+fn mkso(n i64) So[R] { new So[R](n); }
+fn id(r &R) &R { r; }
+
+fn main() {
+  {
+    imm r = id(mkso(3));
+    printStr("next\n");
+  }
+  printStr("end\n");
+}

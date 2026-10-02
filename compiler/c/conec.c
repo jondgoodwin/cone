@@ -76,6 +76,7 @@ void doAnalysis(ConeOptions *opt, ProgramNode **pgm) {
     tstate.typenode = NULL;
     tstate.fn = NULL;
     tstate.scope = 0;
+    tstate.extend = NULL;
     inodeTypeCheckAny(&tstate, (INode**)pgm);
     // Where a traced reference may be held: judged over the places type check
     // noted, now that every type is laid out (ir/types/region.c)

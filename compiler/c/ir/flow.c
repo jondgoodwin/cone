@@ -978,6 +978,7 @@ void flowTempRead(INode **nodep) {
     temp->vtype = ((IExpNode *)*nodep)->vtype;
     temp->exp = *nodep;
     temp->moved = NULL;
+    temp->walkvar = NULL;
     temp->kept = 0;
     *nodep = (INode *)temp;
     ++flowTempCount;
@@ -1041,42 +1042,57 @@ static int flowTempHoldsPtr(INode *type, int depth) {
     }
 }
 
-// May a value of this type point into a temporary: does it hold a borrowed
-// reference, or a raw pointer?
-static int flowTempCarries(INode *type) {
-    return type != NULL && (itypeCarriesBorrow(type) || flowTempHoldsPtr(type, 0));
+// How a value goes out of its statement (flowTempEscape's 'out'): not at all;
+// through values that may hold a borrow, which the loan walk follows; or, at
+// some step, through a value holding a raw pointer, which nothing follows
+enum {
+    TempOutNone = 0,
+    TempOutBorrow = 1,
+    TempOutPtr = 2,
+};
+
+// How a part of a value going out as 'out' goes out, the part of type 'type':
+// not at all, if it can hold neither a borrow nor a pointer
+static int flowTempOut(int out, INode *type) {
+    if (out == TempOutNone || type == NULL)
+        return TempOutNone;
+    if (flowTempHoldsPtr(type, 0))
+        return TempOutPtr;
+    return itypeCarriesBorrow(type) ? out : TempOutNone;
 }
 
 // May this call keep what an argument points at beyond itself: is an argument
 // a '&mut' reference, or a pointer, to something that can hold a borrow or a
-// pointer?
+// pointer? Returns how what it keeps goes out.
 static int flowTempCallStores(FnCallNode *call) {
     INode **argsp;
     uint32_t cnt;
+    int out = TempOutNone;
     for (nodesFor(call->args, cnt, argsp)) {
         INode *type = iexpGetTypeDcl(*argsp);
-        if (type->tag == PtrTag) {
-            if (flowTempCarries(((StarNode *)type)->vtexp))
-                return 1;
-        }
+        int stores = TempOutNone;
+        if (type->tag == PtrTag)
+            stores = flowTempOut(TempOutBorrow, ((StarNode *)type)->vtexp);
         else if ((type->tag == RefTag || type->tag == ArrayRefTag || type->tag == VirtRefTag)
             && itypeGetTypeDcl(((RefNode *)type)->region) == borrowRef
-            && (permGetFlags(((RefNode *)type)->perm) & MayWrite)
-            && flowTempCarries(((RefNode *)type)->vtexp))
-            return 1;
+            && (permGetFlags(((RefNode *)type)->perm) & MayWrite))
+            stores = flowTempOut(TempOutBorrow, ((RefNode *)type)->vtexp);
+        if (stores > out)
+            out = stores;
     }
-    return 0;
+    return out;
 }
 
-// A temporary is finalized at its statement's end only if nothing that
-// outlives the statement may point into it. A borrow of it -- an owner lent to
-// a call as '&', '&*make()' -- or a pointer made from it lives on only in what
-// its value goes into: a call's result whose type can hold one, an aggregate,
-// a store, a value the statement hands back. So the walk carries 'out' down
-// from where a value leaves the statement, kept only through values that can
-// hold a borrow or a pointer, and a temporary it reaches is kept: not
-// finalized, as no temporary was before (the extension of a temporary's life
-// to its borrow's is a lifetime question, not settled here).
+// A temporary is finalized at its statement's end. A borrow of it may outlive
+// the statement only in what its value goes into -- a call's result that can
+// hold one, an aggregate, a store, a value the statement hands back -- and the
+// loan walk refuses any use of that after the temporary is gone (flowpath.c);
+// where Rust's rule extends a temporary, it is a hidden local of the block
+// already (varDclExtend). A raw pointer into it nothing follows: so the walk
+// here carries 'out' down from where a value leaves the statement, through
+// values that can hold a borrow or a pointer, and a temporary it reaches
+// through a value holding a pointer is kept -- never finalized, which leaks
+// it, as every temporary once was, rather than leave the pointer dangling.
 void flowTempEscape(INode *node, int out) {
     if (isNameUseNode(node))
         return;
@@ -1086,7 +1102,7 @@ void flowTempEscape(INode *node, int out) {
     case TempTag:
     {
         TempNode *temp = (TempNode *)node;
-        if (out)
+        if (out == TempOutPtr)
             temp->kept = 1;
         flowTempEscape(temp->exp, out);
         return;
@@ -1094,9 +1110,12 @@ void flowTempEscape(INode *node, int out) {
     case FnCallTag:
     {
         FnCallNode *call = (FnCallNode *)node;
-        int argsout = (out && flowTempCarries(call->vtype)) || flowTempCallStores(call);
+        int argsout = flowTempOut(out, call->vtype);
+        int stores = flowTempCallStores(call);
+        if (stores > argsout)
+            argsout = stores;
         if (!isNameUseNode(call->objfn))
-            flowTempEscape(call->objfn, 0);
+            flowTempEscape(call->objfn, TempOutNone);
         for (nodesFor(call->args, cnt, nodesp))
             flowTempEscape(*nodesp, argsout);
         return;
@@ -1105,38 +1124,38 @@ void flowTempEscape(INode *node, int out) {
     case ArrIndexTag:
     {
         FnCallNode *access = (FnCallNode *)node;
-        flowTempEscape(access->objfn, out && flowTempCarries(access->vtype));
+        flowTempEscape(access->objfn, flowTempOut(out, access->vtype));
         if (node->tag == ArrIndexTag) {
             for (nodesFor(access->args, cnt, nodesp))
-                flowTempEscape(*nodesp, 0);
+                flowTempEscape(*nodesp, TempOutNone);
         }
         return;
     }
     case DerefTag:
-        flowTempEscape(((StarNode *)node)->vtexp, out && flowTempCarries(((StarNode *)node)->vtype));
+        flowTempEscape(((StarNode *)node)->vtexp, flowTempOut(out, ((StarNode *)node)->vtype));
         return;
     case BorrowTag:
     case ArrayBorrowTag:
         flowTempEscape(((RefNode *)node)->vtexp, out);
         return;
     case CastTag:
-        flowTempEscape(((CastNode *)node)->exp, out && flowTempCarries(((CastNode *)node)->vtype));
+        flowTempEscape(((CastNode *)node)->exp, flowTempOut(out, ((CastNode *)node)->vtype));
         return;
     case IsTag:
-        flowTempEscape(((CastNode *)node)->exp, 0);
+        flowTempEscape(((CastNode *)node)->exp, TempOutNone);
         return;
     case NotLogicTag:
-        flowTempEscape(((LogicNode *)node)->lexp, 0);
+        flowTempEscape(((LogicNode *)node)->lexp, TempOutNone);
         return;
     case OrLogicTag:
     case AndLogicTag:
-        flowTempEscape(((LogicNode *)node)->lexp, 0);
-        flowTempEscape(((LogicNode *)node)->rexp, 0);
+        flowTempEscape(((LogicNode *)node)->lexp, TempOutNone);
+        flowTempEscape(((LogicNode *)node)->rexp, TempOutNone);
         return;
     case VTupleTag:
     case ArrayLitTag:
     {
-        int elemout = out && flowTempCarries(((IExpNode *)node)->vtype);
+        int elemout = flowTempOut(out, ((IExpNode *)node)->vtype);
         Nodes *elems = node->tag == VTupleTag ? ((TupleNode *)node)->elems : ((ArrayNode *)node)->elems;
         for (nodesFor(elems, cnt, nodesp))
             flowTempEscape(*nodesp, elemout);
@@ -1144,17 +1163,17 @@ void flowTempEscape(INode *node, int out) {
     }
     case TypeLitTag:
     {
-        int elemout = out && flowTempCarries(((IExpNode *)node)->vtype);
+        int elemout = flowTempOut(out, ((IExpNode *)node)->vtype);
         for (nodesFor(((FnCallNode *)node)->args, cnt, nodesp))
             flowTempEscape((*nodesp)->tag == NamedValTag ? ((NamedValNode *)*nodesp)->val : *nodesp, elemout);
         return;
     }
     case AllocateTag:
-        flowTempEscape(((RefNode *)node)->vtexp, out && flowTempCarries(((RefNode *)node)->vtype));
+        flowTempEscape(((RefNode *)node)->vtexp, flowTempOut(out, ((RefNode *)node)->vtype));
         return;
     case AssignTag:
-        flowTempEscape(((AssignNode *)node)->lval, 0);
-        flowTempEscape(((AssignNode *)node)->rval, 1);
+        flowTempEscape(((AssignNode *)node)->lval, TempOutNone);
+        flowTempEscape(((AssignNode *)node)->rval, TempOutBorrow);
         return;
     case RefCountTag:
         flowTempEscape(((RefCountNode *)node)->exp, out);
@@ -1168,7 +1187,7 @@ void flowTempEscape(INode *node, int out) {
     case IfTag:
         for (nodesFor(((IfNode *)node)->condblk, cnt, nodesp)) {
             if (*nodesp != elseCond)
-                flowTempEscape(*nodesp, 0);
+                flowTempEscape(*nodesp, TempOutNone);
             nodesp++; cnt--;
         }
         return;

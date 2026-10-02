@@ -193,7 +193,8 @@ parameter names**.
    instead a copy of it carrying the coerced value's scope (`iexpCoerceType`),
    as an inferred one carries the value's own: the local keeps its
    initializer's lifetime either way, and returning or storing it is judged by
-   it ([references](references.md)).
+   it ([references](references.md)). Before that, a local's initializer has
+   the temporaries it extends made hidden locals (`varDclExtend`, below).
 6. **Literal rule.** `scope <= 1` — that is, a global or a parameter default —
    or `FlagStatic` folds the value (`litFoldConst`: an expression of constants
    becomes the literal it computes, [literals](literals.md), "Folding a
@@ -245,6 +246,51 @@ recursive-struct catch.
 
 `constDclTypeCheck` has no permission, coerces, infers, then folds and
 requires a literal.
+
+### Temporaries an initializer extends
+
+A temporary dies at the end of its statement ([Flow](../phases/flow.md),
+"Temporaries"), but Rust extends one to the end of the enclosing block where a
+`let`'s initializer borrows it, and Cone follows (`refinitdrop.html`). The
+*extending positions* of a local's initializer are the initializer itself and,
+recursively, the operand of a borrow or a recast in one, and each element of a
+tuple, array or variant literal (`Some[..]`, a `TypeLitTag` with `FlagIndex`)
+in one. What a borrow there reaches is extended: the temporary at the root of
+its place (`borrowTempRoot`: the value a field or an element is part of, or the
+owning reference a dereference reads through — `&mk()`, `&mk().n`,
+`&*mkso()`, never a place reached through a borrowed reference or a pointer);
+so is the owner a recast lends there as a borrow (`imm r &R = mkso()`, read as
+Rust's `&*`). A call's arguments, a method's receiver, an `if`'s or a block's
+value and a construction's arguments (`new H(..)`) are not extending.
+
+An extended temporary becomes a **hidden local** of the block: a `VarDclNode`
+named `tempLocalName` (`-temp`, which no source can spell), `uni` since only
+the borrow reaches it, holding the temporary's expression, scoped as the
+declared local, marked `TypeChecked` (its value is), and declared just before
+the statement (`blockHoist`, [Block](block.md)); a name use of it takes the
+expression's place. From there it is an ordinary local: released at the
+block's end, drop-flagged, a loan root, its borrow scoped to the block.
+
+The mechanics are in two halves, because a borrow is type checked before
+anything shows whether it is extending. `blockStmtTypeCheck` opens a
+`VarDclExtend` for each declaration (`pstate->extend`, saved and restored, so a
+declaration in a nested block has its own; a function checked on demand gets a
+fresh state). While it is open, `borrowTypeCheck` makes every temporary a
+borrow is rooted in a hidden local (`varDclExtendTemp`), and the borrow checks
+as a borrow of a local. Once the initializer is coerced, `varDclExtend` walks
+its extending positions in the order they run, keeping each hidden local a
+borrow there reaches (with what its own value extends, first) and making one
+for an owner a recast lends (retyping the recast to the block's lifetime).
+`varDclExtendEnd` settles the rest: a hidden local no extending borrow reached
+is a borrow of a temporary, refused (`ErrorBadLval`, at the borrow's operand,
+as before), unless the operand was a place all the same (`id(&*mkso())`),
+whose temporary goes back where it was.
+
+**Order is kept.** A hidden local runs at its declaration, before the
+statement. So an element of a literal that runs before an extended temporary
+and is not a constant becomes a hidden local too, ahead of it (`pending`, made
+hidden locals when the next one is declared); so do an extending index's index
+expressions. `(f(), &mk())` runs `f()` then `mk()`.
 
 **Circularity is not detected here.** It is in `nameUseTypeCheck`, which tests a
 re-entered declaration whose type is *still* `unknownType`. That catches exactly

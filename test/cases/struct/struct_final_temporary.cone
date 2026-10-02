@@ -21,11 +21,13 @@
 // owner's memory goes back without finalizing it, as a hollowed variable's
 // does.
 //
-// Pinned as it is, a question of lifetimes belonging elsewhere: a temporary a
-// borrow of which outlives its statement -- an owner lent to a local
-// ('imm r &R = mkso(19)'), or to a call whose result can hold the borrow -- is
-// not finalized, as no temporary was before, rather than freed while the
-// borrow lives on.
+// A borrow of a temporary handed through a call's result and read within the
+// statement ('mkso(30).me().n') is done with by the statement's end. What a
+// variable's initializer borrows, or an owner it lends where a borrow is
+// wanted ('imm r &R = mkso(29)'), is no temporary: it lasts to the end of the
+// block, as Rust extends it, and is finalized there with the block's locals. A
+// borrow of a temporary held past its statement any other way is refused (the
+// lifetime group).
 //
 // The regions print what they do, so the output is the whole assertion.
 
@@ -94,8 +96,8 @@ fn soMovedOut() { imm v = *mkso(25); printStr("moved "); }
 fn rcFieldRead() { imm f = mkrc(26).n; printStr("next "); }
 fn rcLent() { imm h = g(mkrc(27)); printStr("next "); }
 fn rcCopiedOut() { imm r = mkholder(28).rc; printStr("copied "); }
-fn soKept() { imm r &R = mkso(29); printInt(i64.from(r.n)); printStr(" next "); }
-fn soKeptByCall() { imm r = mkso(30).me(); printInt(i64.from(r.n)); printStr(" next "); }
+fn soExtended() { imm r &R = mkso(29); printInt(i64.from(r.n)); printStr(" next "); }
+fn soLentThrough() { imm n = mkso(30).me().n; printStr("next "); }
 
 fn main() i32 {
   thrownAway(); line("thrown away");
@@ -123,7 +125,7 @@ fn main() i32 {
   rcFieldRead(); line("counted owner read through");
   rcLent(); line("counted owner lent");
   rcCopiedOut(); line("counted owner copied out");
-  soKept(); line("lent to a local: kept");
-  soKeptByCall(); line("lent through a call's borrow: kept");
+  soLentThrough(); line("lent through a call's borrow, read in the statement");
+  soExtended(); line("lent to a local: to the block's end");
   0;
 }

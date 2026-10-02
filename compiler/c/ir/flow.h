@@ -210,16 +210,19 @@ typedef struct {
 // keeps the value in a slot of its own and finalizes it, newest first, at the
 // end of the statement that made it, or of the 'if' or 'while' condition, or
 // of the right operand of 'and' or 'or', that made it.
+// A borrow of it may not be used once it is gone: the loan walk roots a borrow
+// of it in 'walkvar', a stand-in variable that ends where it dies
+// (flowpath.c), so a variable holding the borrow and used later is refused.
 // 'moved' holds each move-source expression that took its referent, or an
 // element of it, out through it, as a HollowNode's does: it is released
-// hollow. 'kept' says it is never finalized: a borrow of it, or a pointer
-// into it, may outlive its statement (flowTempEscape), or a value moved out
-// of it by value left it with a hole, as a local array is left when an
-// element moves out of it.
+// hollow. 'kept' says it is never finalized: a pointer into it may outlive
+// its statement (flowTempEscape), or a value moved out of it by value left it
+// with a hole, as a local array is left when an element moves out of it.
 typedef struct {
     IExpNodeHdr;
     INode *exp;
     Nodes *moved;
+    VarDclNode *walkvar;
     uint8_t kept;
 } TempNode;
 
@@ -229,9 +232,9 @@ void flowTempRead(INode **nodep);
 // How many temporaries flow has made: a statement that made none needs no walk
 extern uint32_t flowTempCount;
 // The walk over a statement that made temporaries, once flow has walked it:
-// each temporary that a borrow or a pointer going out of the statement may
-// point into is kept. 'out' says the value of 'node' goes out of the
-// statement: stored, or handed back.
+// each temporary that a pointer going out of the statement may point into is
+// kept. 'out' says the value of 'node' goes out of the statement: stored, or
+// handed back.
 void flowTempEscape(INode *node, int out);
 
 // What a drop flag holds at run time: which value, if any, its variable holds

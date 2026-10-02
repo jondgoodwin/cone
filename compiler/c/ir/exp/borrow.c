@@ -273,6 +273,43 @@ int borrowIsConstLit(INode *node) {
         || (node->tag == ArrayLitTag && arrayLitIsLiteral((ArrayNode*)node));
 }
 
+// Is this a reference type whose referent is not the reference's own: a
+// borrowed reference, or a pointer?
+static int borrowRefersAway(INode *typedcl) {
+    if (typedcl->tag == PtrTag)
+        return 1;
+    return (typedcl->tag == RefTag || typedcl->tag == ArrayRefTag || typedcl->tag == VirtRefTag)
+        && itypeGetTypeDcl(((RefNode*)typedcl)->region) == borrowRef;
+}
+
+INode **borrowTempRoot(INode **nodep) {
+    while (1) {
+        INode *node = *nodep;
+        if (isNameUseNode(node) || borrowIsConstLit(node))
+            return NULL;
+        switch (node->tag) {
+        case FldAccessTag:
+        case ArrIndexTag:
+            nodep = &((FnCallNode*)node)->objfn;
+            if (borrowRefersAway(iexpGetTypeDcl(*nodep)))
+                return NULL;
+            break;
+        case DerefTag:
+            nodep = &((StarNode*)node)->vtexp;
+            if (borrowRefersAway(iexpGetTypeDcl(*nodep)))
+                return NULL;
+            break;
+        case CastTag:
+            if (node->flags & FlagConvert)
+                return nodep;
+            nodep = &((CastNode*)node)->exp;
+            break;
+        default:
+            return nodep;
+        }
+    }
+}
+
 // Retype a borrowed constant array literal to the reference type it is wanted
 // as, when their element types differ: '&[1, 2, 3]' wanted as a '&[]u32'. The
 // literal was typed from its elements alone, since a borrow passes no expected
@@ -343,6 +380,13 @@ void borrowTypeCheck(TypeCheckState *pstate, RefNode **nodep) {
     // into the literals they compute (litFoldConst), so '&[R | G, B]' is one.
     if (node->vtexp->tag == ArrayLitTag)
         litFoldConst(&node->vtexp);
+    // A place rooted in a temporary, borrowed in a local's initializer, may be
+    // one Rust's rule extends to the end of the block: the temporary becomes a
+    // hidden local of the block, kept if the borrow turns out to extend it
+    // (vardcl.c, "Temporaries an initializer extends")
+    INode **temp = borrowTempRoot(&node->vtexp);
+    if (temp)
+        varDclExtendTemp(pstate, temp, node->vtexp);
     if (!iexpIsLval(node->vtexp) && !borrowIsConstLit(node->vtexp)) {
         errorMsgNode(node->vtexp, ErrorBadLval,
             "May not borrow a temporary value. A borrowed reference needs a place in memory to point at.");

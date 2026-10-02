@@ -103,7 +103,8 @@ typedef struct {
     PathSet *jholds;
     PathSet *jpending;
     uint8_t holder;     // its type carries a borrow, so it may hold a loan
-    uint8_t state;      // drop-flag client: what it may hold here (DropState bits)
+    uint8_t temp;       // a temporary's stand-in (TempNode.walkvar), ending with its statement
+    uint8_t state;     // drop-flag client: what it may hold here (DropState bits)
     uint8_t jstate;     // scratch: a join
     uint8_t tracked;    // drop-flag client: its state is followed (flowDropTracked)
     uint8_t dies;       // drop-flag client: it has something to do as it dies (itypeNeedsFinal)
