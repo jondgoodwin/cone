@@ -1,0 +1,382 @@
+// The module tree of one package (congo.py's Module, scan_folder_module,
+// scan_organisational, scan_package and check_module_loops). A tree is held
+// flat, in a list: modules[0] is the root, and each module names its parent
+// and its children, in name order, by their places in the list.
+
+// An import line that names another package: the import's name, and the
+// package's index in the registry
+struct Line {
+  pub name String;
+  pub pkg usize;
+}
+
+struct Module {
+  pub name String;
+  pub files List[String];
+  pub children List[usize];
+  pub hasParent Bool;
+  pub parent usize;
+  pub imports List[Import];
+  pub hasExtends Bool;
+  pub extended Import;      // from the 'mod' line of its first file
+  pub lines List[Line];    // what resolving its imports found, in import order
+}
+
+fn newModule(name &[]u8, file &[]u8, hasParent Bool, parent usize) Module {
+  mut files = List[String].empty();
+  files.push(String.from(file));
+  new Module(String.from(name), files, List[usize].empty(), hasParent, parent,
+    List[Import].empty(), false, noImport(), List[Line].empty());
+}
+
+// A file's imports join its module's, each once
+fn addImports(m &mut Module, header &Header) {
+  if header.hasExtends and not m.hasExtends {
+    m.hasExtends = true;
+    m.extended = header.extended.copy();
+  }
+  mut i = 0usize;
+  while i < header.imports.len() {
+    imm imp = header.imports[i];
+    mut seen = false;
+    mut j = 0usize;
+    while j < m.imports.len() {
+      if m.imports[j].written.equals(imp.written.view()) { seen = true; }
+      j = j + 1usize;
+    }
+    if not seen { m.imports.push(imp.copy()); }
+    i = i + 1usize;
+  }
+}
+
+// A folder's .cone files and its subfolders, each by name
+struct Listing {
+  pub files List[String];
+  pub folders List[String];
+}
+
+fn coneFiles(folder &[]u8) Listing {
+  mut entries = List[fs.DirEntry].empty();
+  match fs.readDir(folder) {
+    case mut ok Ok { entries <=> ok.value; }
+    case imm e Error {
+      fail(e.value.message());
+    }
+  }
+  mut out = new Listing(List[String].empty(), List[String].empty());
+  mut i = 0usize;
+  while i < entries.len() {
+    imm entry = entries[i];
+    imm full = joined(folder, entry.name.view());
+    // A link is what it leads to, as Path.is_file and is_dir follow it
+    imm isFile = if entry.isLink {fs.isFile(full.view());} else {entry.isFile;};
+    imm isDir = if entry.isLink {fs.isDir(full.view());} else {entry.isDir;};
+    imm ext = path.extension(entry.name.view());
+    if isFile and ext.equals(".cone") { out.files.push(full.copy()); }
+    if isDir { out.folders.push(full); }
+    i = i + 1usize;
+  }
+  out;
+}
+
+// A child's name and place, to sort children by name
+struct Named {
+  pub name String;
+  pub index usize;
+}
+
+fn byName(a &Named, b &Named) i32 { a.name.compare(b.name.view()); }
+
+// Give module m its children, sorted by name
+fn setChildren(mods &mut List[Module], m usize, kids &List[usize]) {
+  mut named = List[Named].empty();
+  mut i = 0usize;
+  while i < kids.len() {
+    imm k = *kids[i];
+    named.push(new Named(mods[k].name.copy(), k));
+    i = i + 1usize;
+  }
+  named.sortBy(&byName);
+  imm module = &mut mods[m];
+  i = 0usize;
+  while i < named.len() {
+    module.children.push(named[i].index);
+    i = i + 1usize;
+  }
+}
+
+// A module folder, by the rules the compiler's own folder sweep follows
+// (compiler/c/doc/nodes/module.md, "The folder tree"): the designated file,
+// then the folder's other files by name, then each organisational
+// subfolder's files at any depth. A file that opens with its own 'mod' line
+// is a one-file submodule, and a subfolder holding its designated file is a
+// submodule. Answers the module's place in mods.
+fn scanFolderModule(mods &mut List[Module], name &[]u8, folder &[]u8, designated &[]u8,
+    hasParent Bool, parent usize) usize {
+  imm me = mods.len();
+  mods.push(newModule(name, designated, hasParent, parent));
+  imm first = scanHeader(designated);
+  addImports(&mut mods[me], &first);
+  mut kids = List[usize].empty();
+  imm listing = coneFiles(folder);
+  mut i = 0usize;
+  while i < listing.files.len() {
+    imm file = listing.files[i].view();
+    if not samePath(file, designated) {
+      imm header = scanHeader(file);
+      if header.hasMod {
+        imm stem = path.stem(file);
+        imm fault = nameFault(stem.view());
+        if not fault.isEmpty() {
+          fail(cat(file, ": a one-file module is named by its file: '", stem.view(), "' ", fault.view(),
+            "; rename the file and its 'mod' line"));
+        }
+        imm child = mods.len();
+        mods.push(newModule(stem.view(), file, true, me));
+        addImports(&mut mods[child], &header);
+        kids.push(child);
+      }
+      else {
+        // No 'mod' line, so no imports: a module's imports are all in its
+        // designated file, and the compiler refuses any here
+        imm here = &mut mods[me];
+        here.files.push(String.from(file));
+      }
+    }
+    i = i + 1usize;
+  }
+  i = 0usize;
+  while i < listing.folders.len() {
+    imm sub = listing.folders[i].view();
+    imm subName = path.name(sub);
+    if not subName.equals("build") {
+      imm innerName = cat(subName.view(), ".cone");
+      imm inner = joined(sub, innerName.view());
+      if fs.isFile(inner.view()) {
+        imm fault = nameFault(subName.view());
+        if not fault.isEmpty() {
+          fail(cat(inner.view(), ": a module folder names its module: '", subName.view(), "' ", fault.view(),
+            "; rename the folder, its designated file and its 'mod' line"));
+        }
+        kids.push(scanFolderModule(mods, subName.view(), sub, inner.view(), true, me));
+      }
+      else {
+        scanOrganisational(mods, me, sub);
+      }
+    }
+    i = i + 1usize;
+  }
+  setChildren(mods, me, &kids);
+  me;
+}
+
+// An organisational folder's files join the module around it, at any
+// depth. A module cannot sit there, since a module sits directly in its
+// parent's folder.
+fn scanOrganisational(mods &mut List[Module], m usize, folder &[]u8) {
+  imm listing = coneFiles(folder);
+  mut i = 0usize;
+  while i < listing.files.len() {
+    imm file = listing.files[i].view();
+    imm header = scanHeader(file);
+    if header.hasMod {
+      fail(cat(file, ": a file opening with 'mod' is a module, and a module must sit directly in its parent module's folder, not in the organisational folder ", folder));
+    }
+    // Like any file of the module but its designated one, it has no imports
+    imm here = &mut mods[m];
+    here.files.push(String.from(file));
+    i = i + 1usize;
+  }
+  i = 0usize;
+  while i < listing.folders.len() {
+    imm sub = listing.folders[i].view();
+    imm subName = path.name(sub);
+    imm innerName = cat(subName.view(), ".cone");
+    imm inner = joined(sub, innerName.view());
+    if fs.isFile(inner.view()) {
+      fail(cat(inner.view(), ": a module must sit directly in its parent module's folder, not in the organisational folder ", folder));
+    }
+    scanOrganisational(mods, m, sub);
+    i = i + 1usize;
+  }
+}
+
+// The package's module tree. A package's root module is src/, whose
+// designated file is src/<name>.cone, the package's name standing in for the
+// folder's, which the compiler's own sweep would not see, since 'src' is not
+// 'name'. Congo lists the files, so the compiler never sweeps. A lone file is
+// a module of its own and nothing beside it joins.
+fn scanPackage(pkg &Package) List[Module] {
+  if not fs.isFile(pkg.src.view()) {
+    imm place = shown(pkg.src.view());
+    fail(cat("package ", pkg.name.view(), " has no ", place.view(),
+      ": a package's root module is src/<name>.cone, named as its manifest names it"));
+  }
+  mut mods = List[Module].empty();
+  if pkg.lone {
+    mods.push(newModule(pkg.name.view(), pkg.src.view(), false, 0usize));
+    imm header = scanHeader(pkg.src.view());
+    addImports(&mut mods[0usize], &header);
+    return mods;
+  }
+  imm folder = parentOf(pkg.src.view());
+  scanFolderModule(&mut mods, pkg.name.view(), folder.view(), pkg.src.view(), false, 0usize);
+  mods;
+}
+
+// The modules in walk order: each module, then each of its children's walks
+fn walkOrder(mods &List[Module]) List[usize] {
+  mut out = List[usize].empty();
+  walkFrom(mods, 0usize, &mut out);
+  out;
+}
+
+fn walkFrom(mods &List[Module], m usize, out &mut List[usize]) {
+  out.push(m);
+  mut i = 0usize;
+  while i < mods[m].children.len() {
+    walkFrom(mods, *mods[m].children[i], out);
+    i = i + 1usize;
+  }
+}
+
+// The child of parent named name, the last of that name as a dictionary of
+// them keeps it; answers whether there is one
+fn sisterNamed(mods &List[Module], m usize, name &[]u8, found &mut usize) Bool {
+  if not mods[m].hasParent { return false; }
+  imm parent = mods[m].parent;
+  mut any = false;
+  mut i = 0usize;
+  while i < mods[parent].children.len() {
+    imm c = *mods[parent].children[i];
+    if mods[c].name.equals(name) {
+      *found = c;
+      any = true;
+    }
+    i = i + 1usize;
+  }
+  any;
+}
+
+fn qualified(mods &List[Module], m usize) String {
+  if not mods[m].hasParent { return mods[m].name.copy(); }
+  mut q = qualified(mods, mods[m].parent);
+  q <- ".", mods[m].name.view();
+  q;
+}
+
+// One step of a module's dependencies: what kind, to which module, and the
+// import that wrote it, where one did
+const edgeContains = 0u8;
+const edgeImports = 1u8;
+const edgeExtends = 2u8;
+const edgeImportsName = 3u8;
+
+struct Step {
+  pub from usize;
+  pub kind u8;
+  pub to usize;
+  pub imp Import;
+}
+
+// What a module depends on: each sister it imports or extends, its parent
+// where it imports a name of the parent, and each of its own submodules
+fn edges(mods &List[Module], reg &Registry, m usize) List[Step] {
+  mut out = List[Step].empty();
+  mut sister = 0usize;
+  imm module = mods[m];
+  if module.hasExtends and sisterNamed(mods, m, module.extended.name.view(), &mut sister) {
+    out.push(new Step(m, edgeExtends, sister, module.extended.copy()));
+  }
+  mut i = 0usize;
+  while i < module.imports.len() {
+    imm imp = module.imports[i];
+    if imp.hasName and not imp.name.equals("core") {
+      if sisterNamed(mods, m, imp.name.view(), &mut sister) {
+        out.push(new Step(m, edgeImports, sister, imp.copy()));
+      }
+      elif not reg.has(imp.name.view()) and module.hasParent {
+        out.push(new Step(m, edgeImportsName, module.parent, imp.copy()));
+      }
+    }
+    i = i + 1usize;
+  }
+  i = 0usize;
+  while i < module.children.len() {
+    out.push(new Step(m, edgeContains, *module.children[i], noImport()));
+    i = i + 1usize;
+  }
+  out;
+}
+
+fn stepText(mods &List[Module], s &Step) String {
+  imm from = qualified(mods, s.from);
+  imm to = qualified(mods, s.to);
+  if s.kind == edgeContains { return cat(from.view(), " contains ", to.view()); }
+  mut verb = String.empty();
+  if s.kind == edgeImports { verb <- "imports"; }
+  elif s.kind == edgeExtends { verb <- "extends"; }
+  else { verb <- "imports ", s.imp.name.view(), " of"; }
+  imm place = s.imp.location();
+  cat(from.view(), " ", verb.view(), " ", to.view(), " at ", place.view());
+}
+
+// Imports are a DAG between the modules of a package too. A module depends
+// on each sister it imports or extends, on its parent where it imports a
+// name of the parent, and on each of its own submodules: so a child that
+// imports a name of its parent closes a loop of two. A loop is refused,
+// naming it, as the compiler would refuse it (ErrorImportLoop); the
+// compiler's own check is the backstop for a direct conec run.
+fn checkModuleLoops(pkg &Package, mods &List[Module], reg &Registry) {
+  mut state = List[u8].empty();
+  mut i = 0usize;
+  while i < mods.len() {
+    state.push(0u8);
+    i = i + 1usize;
+  }
+  mut steps = List[Step].empty();
+  visitModule(pkg, mods, reg, 0usize, &mut state, &mut steps);
+}
+
+const unvisited = 0u8;
+const visiting = 1u8;
+const visited = 2u8;
+
+fn visitModule(pkg &Package, mods &List[Module], reg &Registry, m usize,
+    state &mut List[u8], steps &mut List[Step]) {
+  state.set(m, visiting);
+  imm out = edges(mods, reg, m);
+  mut e = 0usize;
+  while e < out.len() {
+    imm step = out[e];
+    imm to = step.to;
+    steps.push(new Step(step.from, step.kind, to, step.imp.copy()));
+    if *state[to] == visiting {
+      mut at = 0usize;
+      while steps[at].from != to { at = at + 1usize; }
+      mut chain = String.empty();
+      mut text = String.empty();
+      mut contains = false;
+      mut j = at;
+      while j < steps.len() {
+        imm q = qualified(mods, steps[j].from);
+        chain <- q.view(), " -> ";
+        imm t = stepText(mods, steps[j]);
+        if j > at { text <- "; "; }
+        text <- t.view();
+        if steps[j].kind == edgeContains { contains = true; }
+        j = j + 1usize;
+      }
+      imm last = qualified(mods, to);
+      chain <- last.view();
+      mut hint &[]u8 = "";
+      if contains { hint = " A module may not depend on a module that contains it: move what they share into a sister both import."; }
+      fail(cat("import loop between modules of package ", pkg.name.view(), ": ", chain.view(),
+        ". Imports between modules must not loop (", text.view(), ").", hint));
+    }
+    if *state[to] == unvisited { visitModule(pkg, mods, reg, to, state, steps); }
+    steps.pop();
+    e = e + 1usize;
+  }
+  state.set(m, visited);
+}

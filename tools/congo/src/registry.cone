@@ -1,0 +1,387 @@
+// Packages: the manifest a package folder holds (congo.py's Package,
+// read_manifest and read_link), the machine config, and the registry of
+// packages found in the registry folders.
+
+// One package of a build: from its manifest, or a lone file standing as one
+struct Package {
+  pub name String;
+  pub version String;          // "" for a lone file, which has none
+  pub output String;           // "executable" or "library"
+  pub root String;             // the package folder; a lone file's own folder
+  pub src String;              // the root module's designated file
+  pub lone Bool;
+  pub libraries List[String];  // [link] libraries
+  pub linkPaths List[String];  // [link] paths, absolute
+
+  pub fn label(self &) String {
+    if version.isEmpty() { return name.copy(); }
+    cat(name.view(), " v", version.view());
+  }
+
+  // Where an include file written by hand used to sit, <name>.cone at the
+  // package root. Congo no longer reads one, and says so where it finds one.
+  pub fn handInclude(self &) String {
+    imm file = cat(name.view(), ".cone");
+    joined(root.view(), file.view());
+  }
+}
+
+fn emptyPackage() Package {
+  new Package(String.empty(), String.empty(), String.empty(), String.empty(), String.empty(),
+    false, List[String].empty(), List[String].empty());
+}
+
+fn copyStrings(from &List[String]) List[String] {
+  mut out = List[String].withCapacity(from.len());
+  mut i = 0usize;
+  while i < from.len() {
+    out.push(from[i].copy());
+    i = i + 1usize;
+  }
+  out;
+}
+
+// MAJOR.MINOR.PATCH, each 0 or a number not starting with 0
+fn isVersion(v &[]u8) Bool {
+  mut parts = 0usize;
+  mut i = 0usize;
+  while parts < 3usize {
+    imm start = i;
+    while i < v.len and v[i] >= '0' and v[i] <= '9' { i = i + 1usize; }
+    if i == start or (v[start] == '0' and i > start + 1usize) { return false; }
+    parts = parts + 1usize;
+    if parts < 3usize {
+      if i >= v.len or v[i] != '.' { return false; }
+      i = i + 1usize;
+    }
+  }
+  i == v.len;
+}
+
+// A C library as the linker is told it, without its prefix or suffix
+fn isLibraryName(lib &[]u8) Bool {
+  if lib.len == 0usize or not isNameByte(lib[0usize]) { return false; }
+  mut i = 1usize;
+  while i < lib.len {
+    imm b = lib[i];
+    if not (isNameByte(b) or b == '.' or b == '+' or b == '-') { return false; }
+    i = i + 1usize;
+  }
+  mut lower = String.from(lib);
+  lower.lowerAscii();
+  not (lower.endsWith(".lib") or lower.endsWith(".a") or lower.endsWith(".so")
+    or lower.endsWith(".dylib") or lower.endsWith(".dll"));
+}
+
+// A file's text as Python's read_text gives it: every line end '\n'
+fn readText(file &[]u8) Result[String, String] {
+  match fs.readFile(file) {
+    case mut ok Ok {
+      mut text = String.empty();
+      text <=> ok.value;
+      text.replace("\r\n", "\n");
+      text.replaceByte('\r', '\n');
+      Ok[String, String][text];
+    }
+    case imm e Error { Error[String, String][e.value.message()]; }
+  }
+}
+
+// The TOML document in a file, or the reason it cannot be read
+fn readToml(file &[]u8) Result[toml.Document, String] {
+  mut text = String.empty();
+  match readText(file) {
+    case mut ok Ok { text <=> ok.value; }
+    case mut e Error {
+      mut m = String.empty();
+      m <=> e.value;
+      return Error[toml.Document, String][m];
+    }
+  }
+  match toml.parse(text.view()) {
+    case mut ok Ok {
+      mut doc = new toml.Document();
+      doc <=> ok.value;
+      Ok[toml.Document, String][doc];
+    }
+    case imm e Error { Error[toml.Document, String][e.value.message()]; }
+  }
+}
+
+fn manifestError(file &[]u8, m String) Result[Package, String] {
+  Error[Package, String][cat(file, ": ", m.view())];
+}
+
+// [link]: the C libraries a program using this package must be linked with,
+// and folders to search for them, relative to the package folder. Into pkg;
+// "" or what is wrong.
+fn readLink(file &[]u8, table &toml.Table, pkg &mut Package) String {
+  imm keys = table.keys();
+  mut i = 0usize;
+  while i < keys.len() {
+    imm key = keys[i].view();
+    if key != "libraries" and key != "paths" {
+      return cat(file, ": '", key, "' is not a [link] key; the keys are libraries and paths");
+    }
+    i = i + 1usize;
+  }
+  mut libraries = List[String].empty();
+  mut paths = List[String].empty();
+  if table.has("libraries") {
+    match table.getStrings("libraries") {
+      case mut l Some { libraries <=> l.value; }
+      case is None { return cat(file, ": [link] libraries must be a list of strings"); }
+    }
+  }
+  if table.has("paths") {
+    match table.getStrings("paths") {
+      case mut l Some { paths <=> l.value; }
+      case is None { return cat(file, ": [link] paths must be a list of strings"); }
+    }
+  }
+  i = 0usize;
+  while i < libraries.len() {
+    imm lib = libraries[i].view();
+    if not isLibraryName(lib) {
+      return cat(file, ": [link] library \"", lib, "\" must be the library's bare name, such as \"SDL3\": no folder, prefix or suffix, which Congo adds for the linker (and paths says where to look)");
+    }
+    i = i + 1usize;
+  }
+  i = 0usize;
+  while i < paths.len() {
+    imm user = expandUser(paths[i].view());
+    imm vars = expandVars(user.view());
+    mut folder = winPath(vars.view());
+    if not path.isAbsolute(folder.view()) {
+      imm up = parentOf(file);
+      folder = joined(up.view(), folder.view());
+    }
+    pkg.linkPaths.push(resolved(folder.view()));
+    i = i + 1usize;
+  }
+  pkg.libraries = libraries;
+  String.empty();
+}
+
+// congo.toml: a [package] table with name, version and output, and, for a
+// package that needs C libraries linked, a [link] table. There is no
+// dependencies section: the imports in the source are the dependency list,
+// and the registries say where each one is.
+fn readManifest(file &[]u8) Result[Package, String] {
+  mut doc = new toml.Document();
+  match readToml(file) {
+    case mut ok Ok { doc <=> ok.value; }
+    case imm e Error {
+      return manifestError(file, cat("cannot read the manifest: ", e.value.view()));
+    }
+  }
+  // Every top-level key, as tomllib's dict holds them: the root's keys, then
+  // the tables, in the order written
+  mut tops = doc.root.keys();
+  imm names = doc.names();
+  mut i = 0usize;
+  while i < names.len() {
+    tops.push(names[i].copy());
+    i = i + 1usize;
+  }
+  i = 0usize;
+  while i < tops.len() {
+    imm key = tops[i].view();
+    if key != "package" and key != "link" {
+      mut extra &[]u8 = "";
+      if key == "dependencies" { extra = " There is no dependencies section: a package's imports are its dependencies."; }
+      return manifestError(file, cat("[", key, "] is not part of a Congo manifest, which holds [package] and [link].", extra));
+    }
+    i = i + 1usize;
+  }
+  if not doc.has("package") {
+    return manifestError(file, String.from("the manifest needs a [package] table with name, version and output"));
+  }
+  imm table = doc["package"];
+  imm keys = table.keys();
+  i = 0usize;
+  while i < keys.len() {
+    imm key = keys[i].view();
+    if key != "name" and key != "version" and key != "output" {
+      return manifestError(file, cat("'", key, "' is not a [package] key; the keys are name, version and output"));
+    }
+    i = i + 1usize;
+  }
+  mut pkg = emptyPackage();
+  match table.getString("name") {
+    case mut n Some { pkg.name <=> n.value; }
+    case is None {}
+  }
+  if not isConeName(pkg.name.view()) {
+    return manifestError(file, String.from("[package] name must be a Cone name, such as \"hello\""));
+  }
+  imm fault = nameFault(pkg.name.view());
+  if not fault.isEmpty() {
+    return manifestError(file, cat("[package] name '", pkg.name.view(), "' ", fault.view(), "; choose another"));
+  }
+  match table.getString("version") {
+    case mut v Some { pkg.version <=> v.value; }
+    case is None {}
+  }
+  if not isVersion(pkg.version.view()) {
+    return manifestError(file, String.from("[package] version must be MAJOR.MINOR.PATCH, such as \"0.1.0\""));
+  }
+  match table.getString("output") {
+    case mut o Some { pkg.output <=> o.value; }
+    case is None {}
+  }
+  if not (pkg.output.equals("executable") or pkg.output.equals("library")) {
+    return manifestError(file, String.from("[package] output must be \"executable\" or \"library\""));
+  }
+  if doc.has("link") {
+    imm wrong = readLink(file, doc["link"], &mut pkg);
+    if not wrong.isEmpty() { return Error[Package, String][wrong]; }
+  }
+  elif doc.root.has("link") {
+    return manifestError(file, String.from("[link] must be a table, with libraries and paths"));
+  }
+  imm folder = parentOf(file);
+  pkg.root = resolved(folder.view());
+  imm srcName = cat(pkg.name.view(), ".cone");
+  imm srcDir = joined(pkg.root.view(), "src");
+  pkg.src = joined(srcDir.view(), srcName.view());
+  Ok[Package, String][pkg];
+}
+
+// -------- the machine config and the registries --------
+
+// The Congo home: CONGO_HOME, or ~/.congo
+fn congoHome() String {
+  imm named = envOr("CONGO_HOME", "");
+  if not named.isEmpty() { return winPath(named.view()); }
+  imm home = expandUser("~");
+  imm h = winPath(home.view());
+  joined(h.view(), ".congo");
+}
+
+fn configPath() String {
+  imm home = congoHome();
+  joined(home.view(), "config.toml");
+}
+
+// The package folders searched, in order: the Cone repository's packages/
+// first, then each folder the machine config lists. The machine config is
+// <Congo home>/config.toml:
+//
+//     [registry]
+//     folders = ["D:/cone/mypackages", "~/cone/vendor"]
+//
+// A relative folder is relative to the config file's own folder.
+fn registryFolders(repo &[]u8) List[String] {
+  mut folders = List[String].empty();
+  if repo.len > 0usize {
+    imm packages = joined(repo, "packages");
+    if fs.isDir(packages.view()) { folders.push(packages); }
+  }
+  imm config = configPath();
+  if fs.isFile(config.view()) {
+    mut doc = new toml.Document();
+    match readToml(config.view()) {
+      case mut ok Ok { doc <=> ok.value; }
+      case imm e Error {
+        fail(cat(config.view(), ": cannot read the machine config: ", e.value.view()));
+      }
+    }
+    mut listed = List[String].empty();
+    if doc.has("registry") and doc["registry"].has("folders") {
+      match doc["registry"].getStrings("folders") {
+        case mut l Some { listed <=> l.value; }
+        case is None {
+          fail(cat(config.view(), ": [registry] folders must be a list of folder paths"));
+        }
+      }
+    }
+    mut i = 0usize;
+    while i < listed.len() {
+      imm user = expandUser(listed[i].view());
+      imm vars = expandVars(user.view());
+      mut folder = winPath(vars.view());
+      if not path.isAbsolute(folder.view()) {
+        imm up = parentOf(config.view());
+        folder = joined(up.view(), folder.view());
+      }
+      folders.push(resolved(folder.view()));
+      i = i + 1usize;
+    }
+  }
+  folders;
+}
+
+// Package name -> its package, answered from the registry folders in order.
+// A package folder is a folder whose subfolders are packages, each found by
+// its congo.toml and named by it, not by the subfolder. 'packages' also holds
+// the lone file being built, after the registry's.
+struct Registry {
+  pub folders List[String];
+  pub packages List[Package];
+  pub byName Dict[String, usize];
+
+  // The package of that name, or None
+  pub fn find(self &, name &[]u8) Option[usize] {
+    if not byName.contains(name) { return None[usize][]; }
+    Some[usize][*byName[name]];
+  }
+
+  pub fn has(self &, name &[]u8) Bool { byName.contains(name); }
+
+  // The folders searched, for a message
+  pub fn searched(self &) String {
+    if folders.len() == 0usize { return String.from("(no registry folders)"); }
+    String.join(folders.view(), ", ");
+  }
+
+  // Add a package that is in no registry (a lone file), answering its index
+  pub fn add(self &mut, pkg Package) usize {
+    packages.push(pkg);
+    packages.len() - 1usize;
+  }
+}
+
+fn readRegistry(folders List[String]) Registry {
+  mut reg = new Registry(folders, List[Package].empty(), Dict[String, usize].empty());
+  mut f = 0usize;
+  while f < reg.folders.len() {
+    imm folder = reg.folders[f].copy();
+    if not fs.isDir(folder.view()) {
+      warn(cat("warning: registry folder ", folder.view(), " does not exist"));
+    }
+    else {
+      mut entries = List[fs.DirEntry].empty();
+      match fs.readDir(folder.view()) {
+        case mut ok Ok { entries <=> ok.value; }
+        case imm e Error {
+          fail(e.value.message());
+        }
+      }
+      mut i = 0usize;
+      while i < entries.len() {
+        imm sub = joined(folder.view(), entries[i].name.view());
+        imm manifest = joined(sub.view(), "congo.toml");
+        if fs.isFile(manifest.view()) {
+          match readManifest(manifest.view()) {
+            case mut ok Ok {
+              mut pkg = emptyPackage();
+              pkg <=> ok.value;
+              if not reg.byName.contains(pkg.name.view()) {
+                imm name = pkg.name.copy();
+                reg.packages.push(pkg);
+                reg.byName.insert(name, reg.packages.len() - 1usize);
+              }
+            }
+            case imm e Error {
+              warn(cat("warning: skipped: ", e.value.view()));
+            }
+          }
+        }
+        i = i + 1usize;
+      }
+    }
+    f = f + 1usize;
+  }
+  reg;
+}

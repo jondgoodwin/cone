@@ -545,6 +545,64 @@ Each program is compiled against the include files its packages' compiles
 generated. The test suite (`test/run.py`) does not run Congo, and does not run
 the packages' tests: `congo test` in `packages/` does.
 
+## Congo in Cone
+
+Congo is being ported to Cone, in stages, so that nothing needs Python. The
+port is a package here, beside `congo.py`: `tools/congo/congo.toml`, its root
+`src/congo.cone` (the only file that imports) and the files joining its module
+(`header.cone`, `paths.cone`, `registry.cone`, `modules.cone`, `order.cone`,
+`linker.cone`, `build.cone`, `sha1.cone`, `util.cone`). It is built by
+`congo.py`, which stays as the way to build it:
+
+```
+cd tools/congo
+python congo.py build
+```
+
+which writes `tools/congo/build/debug/congo.exe` (`--release`,
+`build/release/congo.exe`). Windows only, as its `process` package and its
+linking are for now.
+
+**Stage 1 is a lone file:** `congo run [--release] <file.cone> [-- args...]`
+and `congo clean <file.cone>`, matching `congo.py` message for message, file for
+file and exit status for exit status — the header scan, the registries (the
+repository's `packages/` and the machine config's folders, every manifest in
+them read and checked), the build order and its loop refusals, the build
+descriptions, `conec`, `[link]`, the linker found through `vcvars64.bat`, and
+the program run with its exit status passed back. Everything that needs the
+current package's manifest (`new`, `build`, `test`, and `run` or `clean` with
+no file) says so and exits 1; `congo.py` does it. The repository is the nearest
+folder above the executable holding `packages/core`, as `conec` finds its
+packages folder.
+
+`CONGO_EXE` points `test_congo.py` at it:
+
+```
+$env:CONGO_EXE = "tools\congo\build\debug\congo.exe"; python tools/congo/test_congo.py
+```
+
+runs every lone-file scenario against the Cone Congo and skips the scenarios
+that need more of Congo, saying why.
+
+Where it differs from `congo.py`, beyond what it does not do yet:
+
+- A manifest or machine config outside the TOML subset the `toml` package reads
+  is refused with that package's reason (`line 2: a list may hold only
+  strings`), where `tomllib` either reads it or words its error its own way.
+- A lone file's build folder is named from its path lower-cased in ASCII only;
+  `congo.py` lower-cases the whole of Unicode, so a path with an upper-case
+  letter beyond ASCII (`Ü`) gets another folder from each.
+- The header scan reads every byte beyond ASCII as a letter of a name, where
+  Python's `isalpha()` takes most such characters but not all.
+- A path is made absolute from its text (`..` read off), and a symbolic link,
+  junction or short (8.3) name in it is kept as written, where `Path.resolve()`
+  follows it; and a source file's time is in whole seconds when Congo asks
+  whether `conec` is stale.
+- What `conec`, the linker and `vcvars64.bat` print is read as `congo.py` reads
+  it, in the locale's code page, Windows-1252 here (so a UTF-8 path in a
+  compiler message shows as `cafÃ©`, by both): on a machine whose code page is
+  another, the two would read it differently.
+
 ## Not built yet
 
 - A package of C sources, which Congo would compile; a C package whose root

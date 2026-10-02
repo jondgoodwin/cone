@@ -1,0 +1,337 @@
+// Paths as congo.py's pathlib spells them on Windows: '\' between names, as
+// str(Path) writes a path; absolute where congo.py resolves one; shown
+// relative to the current folder where it is below it. And the environment
+// lookups congo.py makes through os.environ and os.path.
+
+// A path as Path(p) spells it: every separator '\', two or more together one
+// (but for the two that start a share), each '.' name dropped, no separator
+// after the last name but a root's; "" is '.'
+fn winPath(given &[]u8) String {
+  mut s = String.from(given);
+  s.replaceByte('/', '\\');
+  imm p = s.view();
+  // ntpath.splitroot: the drive ('C:' or '\\server\share'), the root, and
+  // the rest
+  mut restStart = 0usize;
+  if p.len >= 2usize and p[0usize] == '\\' and p[1usize] == '\\' {
+    imm a = findByte(p, '\\', 2usize);
+    imm b = if a < p.len {findByte(p, '\\', a + 1usize);} else {p.len;};
+    restStart = if b < p.len {b + 1usize;} else {p.len;};
+  }
+  elif p.len >= 1usize and p[0usize] == '\\' {
+    restStart = 1usize;
+  }
+  elif p.len >= 2usize and p[1usize] == ':' {
+    restStart = if p.len > 2usize and p[2usize] == '\\' {3usize;} else {2usize;};
+  }
+  mut out = String.from(&p[..restStart]);
+  mut names = 0usize;
+  mut start = restStart;
+  mut i = restStart;
+  while i <= p.len {
+    if i == p.len or p[i] == '\\' {
+      if i > start and &p[start..i] != "." {
+        if names > 0usize { out.appendByte('\\'); }
+        out <- &p[start..i];
+        names = names + 1usize;
+      }
+      start = i + 1usize;
+    }
+    i = i + 1usize;
+  }
+  if out.len() == 0usize { out.appendByte('.'); }
+  out;
+}
+
+// The absolute path, '..' read off and every separator '\' (Path.resolve()
+// without following links)
+fn resolved(p &[]u8) String {
+  mut full = String.empty();
+  match fs.absolute(p) {
+    case mut ok Ok { full <=> ok.value; }
+    case is Error { full = String.from(p); }
+  }
+  full.replaceByte('/', '\\');
+  full;
+}
+
+// a / b, as pathlib joins them
+fn joined(a &[]u8, b &[]u8) String {
+  imm j = path.join(a, b);
+  winPath(j.view());
+}
+
+// The folder a path is in: Path.parent
+fn parentOf(p &[]u8) String {
+  imm up = path.parent(p);
+  if up.isEmpty() { return String.from("."); }
+  up;
+}
+
+// Two paths the same, as Windows compares them: ASCII case ignored
+fn samePath(a &[]u8, b &[]u8) Bool {
+  imm s = String.from(a);
+  s.equalsIgnoreAsciiCase(b);
+}
+
+// A path as a message shows it: relative to the current folder where it is
+// below it (Path.relative_to, case ignored as Windows ignores it), else as it is
+fn shown(p &[]u8) String {
+  if not path.isAbsolute(p) { return String.from(p); }
+  mut here = String.empty();
+  match fs.currentDir() {
+    case mut ok Ok { here <=> ok.value; }
+    case is Error { return String.from(p); }
+  }
+  imm hereParts = path.parts(here.view());
+  imm parts = path.parts(p);
+  if hereParts.len() > parts.len() { return String.from(p); }
+  mut i = 0usize;
+  while i < hereParts.len() {
+    imm a = winPath(hereParts[i].view());
+    imm b = winPath(parts[i].view());
+    if not a.equalsIgnoreAsciiCase(b.view()) { return String.from(p); }
+    i = i + 1usize;
+  }
+  if i == parts.len() { return String.from("."); }
+  mut out = String.empty();
+  while i < parts.len() {
+    if not out.isEmpty() { out.appendByte('\\'); }
+    out <- parts[i].view();
+    i = i + 1usize;
+  }
+  out;
+}
+
+// A variable's value, or None when it is not set; Windows' names ignore case
+fn envGet(name &[]u8) Option[String] { env.get(name); }
+
+// A variable's value, or otherwise when it is not set
+fn envOr(name &[]u8, otherwise &[]u8) String {
+  match env.get(name) {
+    case mut v Some {
+      mut s = String.empty();
+      s <=> v.value;
+      s;
+    }
+    case is None { String.from(otherwise); }
+  }
+}
+
+fn envHas(name &[]u8) Bool { env.get(name) is Some; }
+
+// os.path.expanduser, Windows' way: '~' or '~user' at the start, from
+// USERPROFILE, else HOMEDRIVE and HOMEPATH
+fn expandUser(p &[]u8) String {
+  if p.len == 0usize or p[0usize] != '~' { return String.from(p); }
+  mut i = 1usize;
+  while i < p.len and not path.isSeparator(p[i]) { i = i + 1usize; }
+  mut home = String.empty();
+  if envHas("USERPROFILE") {
+    home = envOr("USERPROFILE", "");
+  }
+  elif not envHas("HOMEPATH") {
+    return String.from(p);
+  }
+  else {
+    imm drive = envOr("HOMEDRIVE", "");
+    imm hp = envOr("HOMEPATH", "");
+    home = ntJoin(drive.view(), hp.view());
+  }
+  if i != 1usize {
+    imm target = &p[1usize..i];
+    imm hasUser = envHas("USERNAME");
+    imm current = envOr("USERNAME", "");
+    if not (hasUser and current.view() == target) {
+      imm base = path.name(home.view());
+      if not (hasUser and current.view() == base.view()) { return String.from(p); }
+      imm up = path.parent(home.view());
+      home = ntJoin(up.view(), target);
+    }
+  }
+  home <- &p[i..];
+  home;
+}
+
+// ntpath.join of two pieces: b after a, with a '\' between unless a ends in
+// a separator or is a drive alone; b with a root or a drive replaces a
+fn ntJoin(a &[]u8, b &[]u8) String {
+  if b.len > 0usize and path.isSeparator(b[0usize]) {
+    imm v = path.volume(a);
+    mut out = String.from(v.view());
+    out <- b;
+    return out;
+  }
+  imm bv = path.volume(b);
+  if not bv.isEmpty() { return String.from(b); }
+  mut out = String.from(a);
+  if a.len > 0usize and not path.isSeparator(a[a.len - 1usize]) and not (a.len == 2usize and a[1usize] == ':') {
+    out.appendByte('\\');
+  }
+  out <- b;
+  out;
+}
+
+fn isVarByte(b u8) Bool { isNameByte(b) or b == '-'; }
+
+// The index of byte b in p at or after from, or p.len
+fn findByte(p &[]u8, b u8, from usize) usize {
+  mut i = from;
+  while i < p.len and p[i] != b { i = i + 1usize; }
+  i;
+}
+
+// os.path.expandvars, Windows' way: '%var%', '${var}' and '$var' replaced by
+// the variable's value, an unknown one left as written; '%%' and '$$' are one
+// '%' and one '$'; nothing inside single quotes is expanded
+fn expandVars(p &[]u8) String {
+  mut out = String.empty();
+  mut i = 0usize;
+  while i < p.len {
+    imm c = p[i];
+    if c == '\'' {
+      imm q = findByte(p, '\'', i + 1usize);
+      if q == p.len {
+        out <- &p[i..];
+        i = p.len;
+      }
+      else {
+        out <- &p[i..q + 1usize];
+        i = q + 1usize;
+      }
+    }
+    elif c == '%' {
+      if i + 1usize < p.len and p[i + 1usize] == '%' {
+        out.appendByte('%');
+        i = i + 2usize;
+      }
+      else {
+        imm q = findByte(p, '%', i + 1usize);
+        if q == p.len {
+          out <- &p[i..];
+          i = p.len;
+        }
+        else {
+          imm name = &p[i + 1usize..q];
+          match envGet(name) {
+            case imm v Some { out <- v.value.view(); }
+            case is None { out <- "%", name, "%"; }
+          }
+          i = q + 1usize;
+        }
+      }
+    }
+    elif c == '$' {
+      if i + 1usize < p.len and p[i + 1usize] == '$' {
+        out.appendByte('$');
+        i = i + 2usize;
+      }
+      elif i + 1usize < p.len and p[i + 1usize] == '{' {
+        imm q = findByte(p, '}', i + 2usize);
+        if q == p.len {
+          out <- &p[i..];
+          i = p.len;
+        }
+        else {
+          imm name = &p[i + 2usize..q];
+          match envGet(name) {
+            case imm v Some { out <- v.value.view(); }
+            case is None { out <- "${", name, "}"; }
+          }
+          i = q + 1usize;
+        }
+      }
+      else {
+        mut q = i + 1usize;
+        while q < p.len and isVarByte(p[q]) { q = q + 1usize; }
+        imm name = &p[i + 1usize..q];
+        match envGet(name) {
+          case imm v Some { out <- v.value.view(); }
+          case is None { out <- "$", name; }
+        }
+        i = q;
+      }
+    }
+    else {
+      out.appendByte(c);
+      i = i + 1usize;
+    }
+  }
+  out;
+}
+
+// shutil.which on Windows: the current folder first (unless
+// NoDefaultCurrentDirectoryInExePath is set), then each folder of the PATH
+// given, each name tried as it is (when its extension is one of PATHEXT's)
+// and then with each of PATHEXT's extensions; a folder that is spelled the
+// same as one before (case ignored) is not looked in twice. "" when none.
+fn which(cmd &[]u8, pathList &[]u8) String {
+  if path.isSeparator(cmd[0usize]) or findByte(cmd, '\\', 0usize) < cmd.len or findByte(cmd, '/', 0usize) < cmd.len {
+    imm folder = path.parent(cmd);
+    imm base = path.name(cmd);
+    return whichIn(cmd, folder.view(), base.view());
+  }
+  if pathList.len == 0usize { return String.empty(); }
+  mut folders = String.empty();
+  if not envHas("NoDefaultCurrentDirectoryInExePath") { folders <- ".;"; }
+  folders <- pathList;
+  whichIn(cmd, folders.view(), cmd);
+}
+
+fn whichIn(cmd &[]u8, folderList &[]u8, file &[]u8) String {
+  imm pathext = envOr("PATHEXT", ".COM;.EXE;.BAT;.CMD;.VBS;.JS;.WS;.MSC");
+  imm exts = pathext.split(';');
+  mut files = List[String].empty();
+  mut direct = false;
+  mut i = 0usize;
+  while i < exts.len() {
+    mut ext = exts[i].copy();
+    while ext.endsWith(".") { ext = ext.sub(0usize, ext.len() - 1usize); }
+    if not ext.isEmpty() {
+      mut upper = String.from(file);
+      upper.upperAscii();
+      mut e = ext.copy();
+      e.upperAscii();
+      if upper.endsWith(e.view()) { direct = true; }
+      files.push(cat(file, ext.view()));
+    }
+    i = i + 1usize;
+  }
+  if direct {
+    mut all = List[String].empty();
+    all.push(String.from(file));
+    i = 0usize;
+    while i < files.len() {
+      all.push(files[i].copy());
+      i = i + 1usize;
+    }
+    files = all;
+  }
+  imm folders = splitText(folderList, ';');
+  mut seen = List[String].empty();
+  i = 0usize;
+  while i < folders.len() {
+    imm dir = folders[i].view();
+    // os.path.normcase: '/' as '\', lower case
+    mut norm = String.from(dir);
+    norm.replaceByte('/', '\\');
+    norm.lowerAscii();
+    mut before = false;
+    mut s = 0usize;
+    while s < seen.len() {
+      if seen[s].equals(norm.view()) { before = true; }
+      s = s + 1usize;
+    }
+    if not before {
+      seen.push(norm);
+      mut f = 0usize;
+      while f < files.len() {
+        imm candidate = ntJoin(dir, files[f].view());
+        if fs.exists(candidate.view()) and not fs.isDir(candidate.view()) { return candidate; }
+        f = f + 1usize;
+      }
+    }
+    i = i + 1usize;
+  }
+  String.empty();
+}
