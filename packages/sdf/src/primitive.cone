@@ -136,6 +136,53 @@ pub fn triangle(p Vec3, a Vec3, b Vec3, c Vec3) f32 {
   sqrtf(minf(dot3(qa, qa), minf(dot3(qb, qb), dot3(qc, qc))));
 }
 
+// The distance to a membrane stretched between two spars, a0 to a1 and b0 to
+// b1: the bilinear patch through the four points (a ruled sheet, flat when
+// they lie in a plane, twisted when not; b0 = b1 makes it a triangle).
+// 'scallop' cuts the b edge, when it is free skin between two bone tips,
+// back toward the a spar by that fraction of the way at its middle, 4 u (1 -
+// u) of it, where u runs along the spars. Panels that share a spar meet
+// along it and nowhere else, so a fan of them is a frame's skin without the
+// creases of a triangle fan: a wing, a sail, a fin, a leaf between veins.
+// Two-sided, no thickness, never negative: less a half-thickness, a panel.
+// The nearest point is found by sixteen steps of Gauss-Newton from the
+// middle, over (u, w) with the fraction across v = w (1 - scallop 4 u (1 -
+// u)), each step clamped to the unit square, and the straight edges on the
+// sheet are taken too; so it is exact where the steps converge and otherwise
+// the distance to some point on the sheet, never less than the true one. The
+// tests measure its Lipschitz ratio on a twisted, scalloped panel
+pub fn membrane(p Vec3, a0 Vec3, a1 Vec3, b0 Vec3, b1 Vec3, scallop f32) f32 {
+  mut u f32 = 0.5;
+  mut w f32 = 0.5;
+  mut i = 0;
+  while i < 16 {
+    imm m = 1. - scallop * 4. * u * (1. - u);
+    imm v = w * m;
+    imm a = a0.lerp(a1, u);
+    imm b = b0.lerp(b1, u);
+    imm f = a.lerp(b, v) - p;
+    imm sv = b - a;
+    imm su = (a1 - a0) * (1. - v) + (b1 - b0) * v + sv * (w * scallop * -4. * (1. - 2. * u));
+    imm sw = sv * m;
+    imm g1 = dot3(su, f);
+    imm g2 = dot3(sw, f);
+    imm aa = dot3(su, su);
+    imm cc = dot3(sw, sw);
+    imm bb = dot3(su, sw);
+    imm eps = 0.000001 * (aa + cc) + 1e-20;
+    imm det = (aa + eps) * (cc + eps) - bb * bb;
+    if det <= 0. { break; }
+    u = clampf(u - ((cc + eps) * g1 - bb * g2) / det, 0., 1.);
+    w = clampf(w - ((aa + eps) * g2 - bb * g1) / det, 0., 1.);
+    i = i + 1;
+  }
+  imm v = w * (1. - scallop * 4. * u * (1. - u));
+  mut d = len3(a0.lerp(a1, u).lerp(b0.lerp(b1, u), v) - p);
+  d = minf(d, minf(capsule(p, a0, a1, 0.), minf(capsule(p, a0, b0, 0.), capsule(p, a1, b1, 0.))));
+  if scallop <= 0. { d = minf(d, capsule(p, b0, b1, 0.)); }
+  d;
+}
+
 // The half-space below the plane through the points p with n.p + offset = 0,
 // 'n' unit length (the solid side is where n.p + offset < 0). Exact
 pub fn plane(p Vec3, n Vec3, offset f32) f32 { dot3(p, n) + offset; }
