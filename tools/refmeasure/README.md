@@ -22,8 +22,9 @@ has them). Run it as `python tools/refmeasure/refmeasure.py <command> ...`.
   `compare-worst-tiles.png` (each worst tile enlarged, the reference above ours), and both skeletons.
 - `fitcamera <sheet.json> <out> [--minutes 20] [--width 384] [--popsize 16]`: CMA-ES over the camera (target,
   distance, azimuth, elevation, roll, field of view), rendering the starship for every candidate and
-  maximising silhouette IoU. Starts from the starship's hero camera and from its mirror below.
-  Writes `fitcamera.json`.
+  maximising silhouette IoU. Starts from the starship's hero camera and from its mirror below, or, with
+  `--start=ARG` (repeatable), from the cameras given and each one's mirror below (its elevation negated),
+  the time split evenly between the starts. Writes `fitcamera.json`.
 - `render <prefix> --camera=ARG [--size WxH] [--fine]`: one shot and its mask from the starship example.
 
 Camera arguments are `ex,ey,ez,tx,ty,tz,ux,uy,uz,fov` (eye, target, up, vertical field of view in
@@ -48,7 +49,9 @@ The box and discs steer the mask; head and tail choose the spine's ends. The she
 - `mask.py`: per-pixel evidence in Lab (lightness, warmth a*+b*, pinkness a*, local detail) seeds GrabCut,
   which runs on a three-channel image of that evidence rather than on colour; then morphology.
 - `outline.py`: contour, RDP, corners, Schneider's cubic Bezier fit with a per-segment error bound.
-- `skeleton.py`: medial axis, spur pruning, spine, side branches, wings, regions, image moments.
+- `skeleton.py`: medial axis, spur pruning, spine, side branches, wings, regions, image moments. With a
+  hint, the branches through the head and tail points are never pruned: on a thick, spiky silhouette the
+  repeated pruning otherwise ate the main axis from the blunt head, so the spine started at a wing tip.
 - `colour.py`: Lab k-means palettes, ramps along paths, CIEDE2000.
 - `texture.py`: spectral slope and Hurst exponent, structure-tensor grain and coherence, Gabor hump
   wavelength, edge density; its docstring says which `noise` or `sculpt` dial each one maps to.

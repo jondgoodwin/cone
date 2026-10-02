@@ -80,7 +80,8 @@ HERO = (np.array([-3.0, 12.0, 12.5]), np.array([6.0, -0.3, 2.0]), np.array([0.6,
 def starship_landmarks():
     """The head's tip and the tail's, from starship.cone's own numbers."""
     def spine_at(t):
-        return np.array([0.1 + 11.5 * t, 0.18 * math.sin(5.65 * t) + 0.9 * t ** 3, 0.0])
+        arch = (0.55 + 0.5 * (1 - t) ** 2) * math.sin(3.14159 * t)
+        return np.array([0.1 + 11.5 * t, 0.18 * math.sin(5.65 * t) + arch + 0.9 * t ** 3, 0.0])
     end = spine_at(1.0)
     last = end - spine_at(31 / 32)
     tail = end + last / np.linalg.norm(last) * 1.7

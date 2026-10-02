@@ -33,8 +33,14 @@ def _neighbours(sk):
     return cv2.filter2D(sk.astype(np.uint8), -1, k, borderType=cv2.BORDER_CONSTANT)
 
 
-def _prune(sk, dist, k_radius=1.6, min_px=12, rounds=12):
+def _prune(sk, dist, k_radius=1.6, min_px=12, rounds=12, keep=()):
+    """Removes terminal branches shorter than k_radius times the radius where
+    they join, repeatedly. A branch passing within 3 px of a point in keep
+    (the hint's head and tail, snapped to the raw skeleton) is never removed:
+    on a thick, spiky shape the repeated pruning otherwise eats the main axis
+    from its blunt end, one short segment between spike junctions per round."""
     sk = sk.copy()
+    keep = [np.asarray(k, float) for k in keep]
     for _ in range(rounds):
         nb = _neighbours(sk)
         ends = np.argwhere(sk & (nb == 1))
@@ -63,6 +69,8 @@ def _prune(sk, dist, k_radius=1.6, min_px=12, rounds=12):
                     break
             if junction_r is None:
                 continue  # an isolated piece; leave it
+            if keep and any(np.hypot(*(np.asarray(pp, float) - k)) <= 3 for pp in path for k in keep):
+                continue
             if len(path) < max(min_px, k_radius * junction_r):
                 for (yy, xx) in path:
                     sk[yy, xx] = False
@@ -124,7 +132,11 @@ def analyse(mask, hint=None, smooth_px=3, stations=21):
     if smooth_px:
         m = cv2.GaussianBlur(m.astype(np.float32), (0, 0), smooth_px) > 0.5
     sk, dist = medial_axis(m, return_distance=True)
-    sk = _prune(sk, dist)
+    keep = ()
+    if hint and "head" in hint and "tail" in hint:
+        raw = np.argwhere(sk)
+        keep = [tuple(raw[np.argmin(np.hypot(raw[:, 1] - h[0], raw[:, 0] - h[1]))]) for h in (hint["head"], hint["tail"])]
+    sk = _prune(sk, dist, keep=keep)
     # keep the largest skeleton piece
     lab, n = ndi.label(sk, structure=np.ones((3, 3)))
     if n > 1:

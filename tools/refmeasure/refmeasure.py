@@ -461,6 +461,17 @@ def cmd_fitcamera(a):
     other = below.copy()
     other[4] += 180                    # from below, the other side
     starts.append(("below-other-side", other))
+    if a.start:
+        # Given cameras replace the default starts; each also starts mirrored
+        # below (its elevation negated), to settle above against below
+        starts = []
+        for i, arg in enumerate(a.start):
+            v = [float(t) for t in arg.split(",")]
+            x = cam.to_params(v[0:3], v[3:6], v[6:9], v[9])
+            b = x.copy()
+            b[5] = -b[5]
+            starts += [(f"start{i}", x), (f"start{i}-below", b)]
+        hero_x = starts[0][1]
     # bounds: target within the ship's box, distance 5..80, fov 15..70
     lo = np.array([-2, -3, -6, math.log(5), -360, -89, -180, 15])
     hi = np.array([14, 4, 6, math.log(80), 360, 89, 180, 70])
@@ -534,6 +545,8 @@ def main():
     f.add_argument("--minutes", type=float, default=20); f.add_argument("--width", type=int, default=384)
     f.add_argument("--popsize", type=int, default=16)
     f.add_argument("--landmark-weight", type=float, default=1.0)
+    f.add_argument("--start", action="append",
+                   help="a camera ARG to start from, as --start=ARG (repeatable); replaces the default starts")
     f.set_defaults(fn=cmd_fitcamera)
     r = sub.add_parser("render")
     r.add_argument("prefix"); r.add_argument("--camera", required=True); r.add_argument("--size", default="1280x1280")
