@@ -1,0 +1,800 @@
+// The toml package: a reader for a subset of TOML, enough for Congo's
+// manifests ('congo.toml') and its machine config, and for any small
+// configuration file that keeps to it.
+//
+//   mod where;
+//   import collections use *;
+//   import toml;
+//
+//   fn main() i32 {
+//     imm text = "[package]\nname = \"hello\"\n\n[link]\nlibraries = [\"SDL3\"]\n";
+//     mut doc = new toml.Document();
+//     match toml.parse(text) {
+//       case mut ok Ok { doc <=> ok.value; }        // the Document moved out
+//       case imm e Error {
+//         imm m = e.value.message();               // such as 'line 3: floats are not supported'
+//         return 1i32;
+//       }
+//     }
+//     if not doc.has("package") { return 1i32; }
+//     match doc["package"].getString("name") {
+//       case imm n Some { ... n.value.view() ... } // "hello"
+//       case is None { ... }                       // not there, or not a string
+//     }
+//     0i32;
+//   }
+//
+// **What it reads.** Tables ('[package]'), each holding keys set to values
+// ('name = "hello"'); keys before the first table belong to the document's
+// root table. A value is one of:
+// - a string in double quotes, with TOML 1.0's escapes: '\b', '\t', '\n',
+//   '\f', '\r', '\"', '\\', '\uXXXX' and '\UXXXXXXXX' (a character by its
+//   code point, in hex); TOML 1.1's '\e' and '\xHH' are bad escapes here;
+// - an integer in decimal, i64's range, with an optional sign and with '_'
+//   allowed between two digits ('1_000');
+// - 'true' or 'false';
+// - a list of strings, '["a", "b"]', which may run over several lines, hold
+//   comments between its strings, and end with a ','.
+// A '#' starts a comment, to the end of the line, wherever a space could go
+// but inside a string. Lines end in '\n' or '\r\n'. The text must be UTF-8.
+// A key, and a table's name, is bare: letters, digits, '_' and '-'.
+//
+// **What it refuses.** The rest of TOML is outside the subset, and each part
+// of it is refused by name, with its line, never read as something else:
+// dates and times, floats (and 'inf' and 'nan'), integers in hex, octal or
+// binary, literal strings ('...'), multi-line strings ('"""' and "'''"),
+// inline tables ('{...}'), arrays of tables ('[[...]]'), dotted keys and
+// table names ('a.b'), quoted keys and table names, and lists holding
+// anything but strings.
+// So is malformed text: a key set twice in one table, a table defined twice
+// (or named like a key of the root), a bad escape, a string or a list not
+// closed, a control character, a lone '\r', text that is not UTF-8, and
+// anything after a value or a table's name but a comment.
+//
+// **Failure** is a core 'Result': 'parse' answers 'Ok' with the Document or
+// 'Error' with a TomlError, which holds the line (from 1) and the reason, and
+// whose 'message()' is the one line to show a person, 'line 3: inline tables
+// ('{...}') are not supported'. Cone has no '?' yet, so a caller matches the
+// Result; the Document is moved out of a matched 'Ok' by swapping an empty one
+// in ('doc <=> ok.value'). A key that is not there, or holds another kind of
+// value, is not a failure: each typed getter answers None, and 'has' and
+// 'kindOf' tell the two apart.
+//
+// Tables and keys keep the order they were written in ('names', 'keys'), so
+// a program can refuse what it does not know, naming it, in that order.
+// Lookups compare names byte for byte and read the tables and keys in turn,
+// which is quick for a file of the size this is for.
+
+mod toml;
+
+import collections use String, List, parseInt;
+
+// -------- failure --------
+
+// Why a text could not be read: the line it was found on, counted from 1, and
+// what was wrong
+pub struct TomlError {
+  pub line u32;
+  pub reason String;
+
+  // One line for a person: 'line 3: dates and times are not supported'
+  pub fn message(self &) String {
+    mut out = String.from("line ");
+    out.appendUInt(u64.from(line));
+    out.append(": ");
+    out.append(reason.view());
+    out;
+  }
+}
+
+// -------- the document --------
+
+// The kinds of value the subset holds
+pub enum Kind {
+  Text, Integer, Boolean, List;
+}
+
+// One value, as written: its kind, the line its key is on, and, in the field
+// its kind names, the value itself (the other fields hold nothing)
+pub struct Value {
+  pub kind Kind;
+  pub line u32;
+  // Text: the string, its escapes decoded
+  pub text String;
+  // Integer
+  pub integer i64;
+  // Boolean
+  pub boolean Bool;
+  // List: the strings, in order
+  pub list List[String];
+}
+
+// One key of a table and its value
+pub struct Entry {
+  pub key String;
+  pub value Value;
+}
+
+// A table: its name ("" for the root), the line its header is on (0 for the
+// root) and its keys, in the order written
+pub struct Table {
+  pub name String;
+  pub line u32;
+  pub entries List[Entry];
+
+  // An empty table, the root's
+  pub fn initEmpty overload init(self &new) {
+    *self = new Table(String.empty(), 0u32, List[Entry].empty());
+  }
+
+  // Where key is among the entries, or their count when it is not there
+  fn find(self &, key &[]u8) usize {
+    mut i = 0usize;
+    while i < entries.len() {
+      if entries[i].key.view() == key { return i; }
+      i = i + 1usize;
+    }
+    entries.len();
+  }
+
+  // Whether it sets key, to a value of any kind
+  pub fn has(self &, key &[]u8) Bool { self.find(key) < entries.len(); }
+
+  // Its keys, in the order written
+  pub fn keys(self &) List[String] {
+    mut out = List[String].withCapacity(entries.len());
+    mut i = 0usize;
+    while i < entries.len() {
+      out.push(entries[i].key.copy());
+      i = i + 1usize;
+    }
+    out;
+  }
+
+  // The kind of key's value, or None when it is not there
+  pub fn kindOf(self &, key &[]u8) Option[Kind] {
+    imm i = self.find(key);
+    if i == entries.len() { return None[Kind][]; }
+    Some[Kind][entries[i].value.kind];
+  }
+
+  // The line key is set on, or 0 when it is not there
+  pub fn lineOf(self &, key &[]u8) u32 {
+    imm i = self.find(key);
+    if i == entries.len() { return 0u32; }
+    entries[i].value.line;
+  }
+
+  // key's string, or None when it is not there or is not a string
+  pub fn getString(self &, key &[]u8) Option[String] {
+    imm i = self.find(key);
+    if i == entries.len() or entries[i].value.kind != Kind.Text[] { return None[String][]; }
+    Some[String][entries[i].value.text.copy()];
+  }
+
+  // key's integer, or None when it is not there or is not an integer
+  pub fn getInt(self &, key &[]u8) Option[i64] {
+    imm i = self.find(key);
+    if i == entries.len() or entries[i].value.kind != Kind.Integer[] { return None[i64][]; }
+    Some[i64][entries[i].value.integer];
+  }
+
+  // key's 'true' or 'false', or None when it is not there or is not one
+  pub fn getBool(self &, key &[]u8) Option[Bool] {
+    imm i = self.find(key);
+    if i == entries.len() or entries[i].value.kind != Kind.Boolean[] { return None[Bool][]; }
+    Some[Bool][entries[i].value.boolean];
+  }
+
+  // A copy of key's list of strings, or None when it is not there or is not
+  // a list
+  pub fn getStrings(self &, key &[]u8) Option[List[String]] {
+    imm i = self.find(key);
+    if i == entries.len() or entries[i].value.kind != Kind.List[] { return None[List[String]][]; }
+    imm items = entries[i].value.list.view();
+    mut out = List[String].withCapacity(items.len);
+    mut j = 0usize;
+    while j < items.len {
+      out.push(items[j].copy());
+      j = j + 1usize;
+    }
+    Some[List[String]][out];
+  }
+}
+
+// A document: its root table, holding the keys written before any table's
+// header, and its tables, in the order written
+pub struct Document {
+  pub root Table;
+  pub tables List[Table];
+
+  // An empty document, what an empty text reads as
+  pub fn initEmpty overload init(self &new) {
+    *self = new Document(new Table(), List[Table].empty());
+  }
+
+  // Where the table named name is, or the count of tables when none is
+  fn find(self &, name &[]u8) usize {
+    mut i = 0usize;
+    while i < tables.len() {
+      if tables[i].name.view() == name { return i; }
+      i = i + 1usize;
+    }
+    tables.len();
+  }
+
+  // Whether it has a table of that name
+  pub fn has(self &, name &[]u8) Bool { self.find(name) < tables.len(); }
+
+  // The names of its tables, in the order written, the root's left out
+  pub fn names(self &) List[String] {
+    mut out = List[String].withCapacity(tables.len());
+    mut i = 0usize;
+    while i < tables.len() {
+      out.push(tables[i].name.copy());
+      i = i + 1usize;
+    }
+    out;
+  }
+
+  // A borrow of the table named name. One it does not have is a program
+  // error, a panic at the line of the caller: ask 'has' first.
+  pub fn `[]`(self &, name &[]u8, file &[]u8 = srcFile(), line u32 = srcLine()) &Table {
+    imm i = self.find(name);
+    if i == tables.len() {
+      mut m = String.from("toml: the document has no table [");
+      m.append(name);
+      m.append("]");
+      panic(m.view(), file, line);
+    }
+    tables[i];
+  }
+}
+
+// -------- reading --------
+
+// Where reading has got to, and the first failure, if there has been one.
+// Its fields are public only so that the functions below, which are not its
+// methods, can reach them; the struct itself is the package's own.
+struct Reader {
+  pub pos usize;
+  pub line u32;
+  pub failed Bool;
+  pub errLine u32;
+  pub reason String;
+}
+
+// No table yet: keys go into the root
+const rootTable = 0xFFFFFFFFFFFFFFFFusize;
+
+// Read text as TOML: the Document it holds, or why it cannot be read
+pub fn parse(text &[]u8) Result[Document, TomlError] {
+  mut r = new Reader(0usize, 1u32, false, 0u32, String.empty());
+  mut doc = new Document();
+  imm bad = badUtf8Line(text);
+  if bad != 0u32 {
+    failAt(&mut r, bad, "the text is not UTF-8");
+  }
+  mut current = rootTable;
+  while not r.failed and r.pos < text.len {
+    skipSpace(text, &mut r);
+    if r.pos < text.len and text[r.pos] == '[' {
+      header(text, &mut r, &mut doc, &mut current);
+    }
+    elif r.pos < text.len and text[r.pos] != '#' and text[r.pos] != '\n' and text[r.pos] != '\r' {
+      keyValue(text, &mut r, &mut doc, current);
+    }
+    else {
+      endLine(text, &mut r, "");
+    }
+  }
+  if r.failed {
+    mut reason = String.empty();
+    reason <=> r.reason;
+    return Error[Document, TomlError][new TomlError(r.errLine, reason)];
+  }
+  Ok[Document, TomlError][doc];
+}
+
+// The first failure is the one kept
+fn failAt(r &mut Reader, line u32, reason &[]u8) {
+  if r.failed { return; }
+  r.failed = true;
+  r.errLine = line;
+  r.reason = String.from(reason);
+}
+
+fn fail(r &mut Reader, reason &[]u8) { failAt(r, r.line, reason); }
+
+fn isDigit(c u8) Bool { c >= '0' and c <= '9'; }
+
+// A byte a bare key is made of
+fn isKeyByte(c u8) Bool {
+  (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or isDigit(c) or c == '_' or c == '-';
+}
+
+// A control character: one TOML allows nowhere but as a line's end, and a
+// tab, which is a space
+fn isControl(c u8) Bool { (c < 0x20u8 and c != '\t') or c == 0x7Fu8; }
+
+// Whether text holds want at pos
+fn startsAt(text &[]u8, pos usize, want &[]u8) Bool {
+  pos + want.len <= text.len and &text[pos..pos + want.len] == want;
+}
+
+fn skipSpace(text &[]u8, r &mut Reader) {
+  while r.pos < text.len and (text[r.pos] == ' ' or text[r.pos] == '\t') {
+    r.pos = r.pos + 1usize;
+  }
+}
+
+// At '#': past the comment, up to the line's end
+fn skipComment(text &[]u8, r &mut Reader) {
+  r.pos = r.pos + 1usize;
+  while r.pos < text.len and text[r.pos] != '\n' and text[r.pos] != '\r' {
+    if isControl(text[r.pos]) {
+      fail(r, "a comment may not hold a control character");
+      return;
+    }
+    r.pos = r.pos + 1usize;
+  }
+}
+
+// At a line's end, '\n' or '\r\n': past it. False, having failed, at a '\r'
+// with no '\n' after it, and at anything else.
+fn newline(text &[]u8, r &mut Reader) Bool {
+  if text[r.pos] == '\n' {
+    r.pos = r.pos + 1usize;
+    r.line = r.line + 1u32;
+    return true;
+  }
+  if startsAt(text, r.pos, "\r\n") {
+    r.pos = r.pos + 2usize;
+    r.line = r.line + 1u32;
+    return true;
+  }
+  if text[r.pos] == '\r' {
+    fail(r, "a carriage return must be followed by a line feed");
+  }
+  false;
+}
+
+// Spaces, a comment if there is one, then the line's end or the text's.
+// Anything else fails with 'what'.
+fn endLine(text &[]u8, r &mut Reader, what &[]u8) {
+  skipSpace(text, r);
+  if r.pos < text.len and text[r.pos] == '#' { skipComment(text, r); }
+  if r.failed or r.pos >= text.len { return; }
+  if not newline(text, r) { fail(r, what); }
+}
+
+// A bare key, appended to dest: false, having failed, when there is none
+fn readKey(text &[]u8, r &mut Reader, dest &mut String, what &[]u8) Bool {
+  imm start = r.pos;
+  while r.pos < text.len and isKeyByte(text[r.pos]) { r.pos = r.pos + 1usize; }
+  if r.pos > start {
+    dest.append(&text[start..r.pos]);
+    return true;
+  }
+  if r.pos < text.len and (text[r.pos] == '"' or text[r.pos] == '\'') {
+    mut m = String.from("quoted ");
+    m.append(what);
+    m.append("s are not supported: a ");
+    m.append(what);
+    m.append(" is letters, digits, '_' and '-'");
+    fail(r, m.view());
+    return false;
+  }
+  mut m = String.from("expected a ");
+  m.append(what);
+  m.append(": letters, digits, '_' and '-'");
+  fail(r, m.view());
+  false;
+}
+
+// At '[': a table's header, which starts the table its keys go into
+fn header(text &[]u8, r &mut Reader, doc &mut Document, current &mut usize) {
+  imm at = r.line;
+  r.pos = r.pos + 1usize;
+  if r.pos < text.len and text[r.pos] == '[' {
+    fail(r, "arrays of tables ('[[...]]') are not supported");
+    return;
+  }
+  skipSpace(text, r);
+  mut name = String.empty();
+  if not readKey(text, r, &mut name, "table name") { return; }
+  skipSpace(text, r);
+  if r.pos < text.len and text[r.pos] == '.' {
+    fail(r, "dotted table names ('[a.b]') are not supported");
+    return;
+  }
+  if r.pos >= text.len or text[r.pos] != ']' {
+    fail(r, "expected ']' after the table's name");
+    return;
+  }
+  r.pos = r.pos + 1usize;
+  if doc.has(name.view()) {
+    mut m = String.from("table [");
+    m.append(name.view());
+    m.append("] is defined twice; the first is on line ");
+    m.appendUInt(u64.from(doc[name.view()].line));
+    fail(r, m.view());
+    return;
+  }
+  if doc.root.has(name.view()) {
+    mut m = String.from("table [");
+    m.append(name.view());
+    m.append("] has the name of a key set on line ");
+    m.appendUInt(u64.from(doc.root.lineOf(name.view())));
+    fail(r, m.view());
+    return;
+  }
+  doc.tables.push(new Table(name, at, List[Entry].empty()));
+  *current = doc.tables.len() - 1usize;
+  endLine(text, r, "expected the end of the line after the table's name");
+}
+
+// A key, '=' and its value, into the current table
+fn keyValue(text &[]u8, r &mut Reader, doc &mut Document, current usize) {
+  imm at = r.line;
+  mut key = String.empty();
+  if not readKey(text, r, &mut key, "key") { return; }
+  skipSpace(text, r);
+  if r.pos < text.len and text[r.pos] == '.' {
+    fail(r, "dotted keys ('a.b = ...') are not supported");
+    return;
+  }
+  if r.pos >= text.len or text[r.pos] != '=' {
+    fail(r, "expected '=' after the key");
+    return;
+  }
+  r.pos = r.pos + 1usize;
+  skipSpace(text, r);
+  mut value = new Value(Kind.Text[], at, String.empty(), 0i64, false, List[String].empty());
+  if not readValue(text, r, &mut value) { return; }
+  if current == rootTable {
+    addEntry(&mut doc.root, key, value, r);
+  }
+  else {
+    addEntry(&mut doc.tables[current], key, value, r);
+  }
+  endLine(text, r, "expected the end of the line after the value");
+}
+
+// key and its value into t, unless t has the key already
+fn addEntry(t &mut Table, key String, value Value, r &mut Reader) {
+  if t.has(key.view()) {
+    mut m = String.from("key '");
+    m.append(key.view());
+    m.append("' is set twice");
+    if t.name.len() > 0usize {
+      m.append(" in [");
+      m.append(t.name.view());
+      m.append("]");
+    }
+    m.append("; the first is on line ");
+    m.appendUInt(u64.from(t.lineOf(key.view())));
+    failAt(r, value.line, m.view());
+    return;
+  }
+  t.entries.push(new Entry(key, value));
+}
+
+// The value after '=', into dest: false, having failed, when there is none
+// the subset holds
+fn readValue(text &[]u8, r &mut Reader, dest &mut Value) Bool {
+  if r.pos >= text.len or text[r.pos] == '\n' or text[r.pos] == '\r' or text[r.pos] == '#' {
+    fail(r, "expected a value after '='");
+    return false;
+  }
+  imm c = text[r.pos];
+  if c == '"' or c == '\'' {
+    dest.kind = Kind.Text[];
+    return readString(text, r, &mut dest.text);
+  }
+  if c == '[' {
+    dest.kind = Kind.List[];
+    return readList(text, r, &mut dest.list);
+  }
+  if c == '{' {
+    fail(r, "inline tables ('{...}') are not supported");
+    return false;
+  }
+  // A word: up to a space, a comment, or the line's end
+  imm start = r.pos;
+  while r.pos < text.len and not isWordEnd(text[r.pos]) { r.pos = r.pos + 1usize; }
+  imm word = &text[start..r.pos];
+  if word == "true" or word == "false" {
+    dest.kind = Kind.Boolean[];
+    dest.boolean = word == "true";
+    return true;
+  }
+  dest.kind = Kind.Integer[];
+  readInteger(word, r, &mut dest.integer);
+}
+
+fn isWordEnd(c u8) Bool {
+  c == ' ' or c == '\t' or c == '\n' or c == '\r' or c == '#' or c == ',' or c == ']';
+}
+
+fn hasByte(s &[]u8, b u8) Bool {
+  mut i = 0usize;
+  while i < s.len {
+    if s[i] == b { return true; }
+    i = i + 1usize;
+  }
+  false;
+}
+
+// word as a decimal integer, into dest: false, having failed, when it is
+// another kind of value or none at all
+fn readInteger(word &[]u8, r &mut Reader, dest &mut i64) Bool {
+  imm signed = word.len > 0usize and (word[0usize] == '+' or word[0usize] == '-');
+  imm body = if signed {&word[1usize..];} else {word;};
+  if body == "inf" or body == "nan" {
+    fail(r, "floats are not supported");
+    return false;
+  }
+  if body.len == 0usize or not isDigit(body[0usize]) {
+    fail(r, "expected a value: a string in \"...\", an integer, true, false or a list of strings");
+    return false;
+  }
+  // A time has a ':', a date a '-' after its first digit, a float a '.' or
+  // an exponent (whose '-' is not a date's)
+  if hasByte(word, ':') {
+    fail(r, "dates and times are not supported");
+    return false;
+  }
+  if body.len > 1usize and body[0usize] == '0' and (body[1usize] == 'x' or body[1usize] == 'o' or body[1usize] == 'b') {
+    fail(r, "hexadecimal, octal and binary integers are not supported");
+    return false;
+  }
+  if hasByte(body, '.') or hasByte(body, 'e') or hasByte(body, 'E') {
+    fail(r, "floats are not supported");
+    return false;
+  }
+  if hasByte(body, '-') {
+    fail(r, "dates and times are not supported");
+    return false;
+  }
+  // Digits, a '_' only between two
+  mut digits = String.empty();
+  if signed { digits.appendByte(word[0usize]); }
+  mut i = 0usize;
+  while i < body.len {
+    imm c = body[i];
+    if isDigit(c) {
+      digits.appendByte(c);
+    }
+    elif c == '_' and i > 0usize and i + 1usize < body.len and isDigit(body[i - 1usize]) and isDigit(body[i + 1usize]) {
+    }
+    else {
+      fail(r, "an integer is decimal digits, with '_' only between two of them");
+      return false;
+    }
+    i = i + 1usize;
+  }
+  if body.len > 1usize and body[0usize] == '0' {
+    fail(r, "an integer may not start with 0");
+    return false;
+  }
+  match parseInt(digits.view()) {
+    case imm n Some {
+      *dest = n.value;
+      true;
+    }
+    case is None {
+      fail(r, "the integer is beyond i64's range");
+      false;
+    }
+  }
+}
+
+// At '"': the string, its escapes decoded, appended to dest. False, having
+// failed, at a string the subset does not hold or one not closed.
+fn readString(text &[]u8, r &mut Reader, dest &mut String) Bool {
+  if startsAt(text, r.pos, "\"\"\"") or startsAt(text, r.pos, "'''") {
+    fail(r, "multi-line strings are not supported");
+    return false;
+  }
+  if text[r.pos] == '\'' {
+    fail(r, "literal strings ('...') are not supported: write the string in \"...\"");
+    return false;
+  }
+  r.pos = r.pos + 1usize;
+  while true {
+    if r.pos >= text.len or text[r.pos] == '\n' or text[r.pos] == '\r' {
+      fail(r, "the string is not closed with '\"' on its line");
+      return false;
+    }
+    imm c = text[r.pos];
+    if c == '"' {
+      r.pos = r.pos + 1usize;
+      return true;
+    }
+    if c == '\\' {
+      if not readEscape(text, r, dest) { return false; }
+    }
+    elif isControl(c) {
+      fail(r, "a control character in a string must be written as an escape");
+      return false;
+    }
+    else {
+      dest.appendByte(c);
+      r.pos = r.pos + 1usize;
+    }
+  }
+  false;
+}
+
+// At '\' in a string: the character it stands for, appended to dest
+fn readEscape(text &[]u8, r &mut Reader, dest &mut String) Bool {
+  r.pos = r.pos + 1usize;
+  if r.pos >= text.len {
+    fail(r, "the string is not closed with '\"' on its line");
+    return false;
+  }
+  imm e = text[r.pos];
+  r.pos = r.pos + 1usize;
+  if e == 'b' { dest.appendByte(8u8); }
+  elif e == 't' { dest.appendByte('\t'); }
+  elif e == 'n' { dest.appendByte('\n'); }
+  elif e == 'f' { dest.appendByte(12u8); }
+  elif e == 'r' { dest.appendByte('\r'); }
+  elif e == '"' { dest.appendByte('"'); }
+  elif e == '\\' { dest.appendByte('\\'); }
+  elif e == 'u' { return readCodePoint(text, r, 4usize, dest); }
+  elif e == 'U' { return readCodePoint(text, r, 8usize, dest); }
+  else {
+    mut m = String.from("bad escape");
+    if e > ' ' and e < 0x7Fu8 {
+      m.append(" '\\");
+      m.appendByte(e);
+      m.append("'");
+    }
+    m.append(" in a string: the escapes are \\b \\t \\n \\f \\r \\\" \\\\ \\uXXXX and \\UXXXXXXXX");
+    fail(r, m.view());
+    return false;
+  }
+  true;
+}
+
+fn hexValue(c u8) u32 {
+  if isDigit(c) { return u32.from(c - '0'); }
+  if c >= 'a' and c <= 'f' { return u32.from(c - 'a') + 10u32; }
+  if c >= 'A' and c <= 'F' { return u32.from(c - 'A') + 10u32; }
+  16u32;
+}
+
+// The n hex digits after '\u' or '\U': the character they name, appended to
+// dest in UTF-8
+fn readCodePoint(text &[]u8, r &mut Reader, n usize, dest &mut String) Bool {
+  mut cp = 0u32;
+  mut i = 0usize;
+  while i < n {
+    imm d = if r.pos + i < text.len {hexValue(text[r.pos + i]);} else {16u32;};
+    if d == 16u32 {
+      if n == 4usize { fail(r, "'\\u' must be followed by 4 hex digits"); }
+      else { fail(r, "'\\U' must be followed by 8 hex digits"); }
+      return false;
+    }
+    if cp > 0x10FFFFu32 { cp = 0x110000u32; } else { cp = cp * 16u32 + d; }
+    i = i + 1usize;
+  }
+  r.pos = r.pos + n;
+  if cp > 0x10FFFFu32 or (cp >= 0xD800u32 and cp <= 0xDFFFu32) {
+    fail(r, "the escape names no character: a surrogate, or beyond U+10FFFF");
+    return false;
+  }
+  if cp < 0x80u32 {
+    dest.appendByte(u8.from(cp));
+  }
+  elif cp < 0x800u32 {
+    dest.appendByte(0xC0u8 | u8.from(cp >> 6u32));
+    dest.appendByte(0x80u8 | u8.from(cp & 0x3Fu32));
+  }
+  elif cp < 0x10000u32 {
+    dest.appendByte(0xE0u8 | u8.from(cp >> 12u32));
+    dest.appendByte(0x80u8 | u8.from((cp >> 6u32) & 0x3Fu32));
+    dest.appendByte(0x80u8 | u8.from(cp & 0x3Fu32));
+  }
+  else {
+    dest.appendByte(0xF0u8 | u8.from(cp >> 18u32));
+    dest.appendByte(0x80u8 | u8.from((cp >> 12u32) & 0x3Fu32));
+    dest.appendByte(0x80u8 | u8.from((cp >> 6u32) & 0x3Fu32));
+    dest.appendByte(0x80u8 | u8.from(cp & 0x3Fu32));
+  }
+  true;
+}
+
+// Inside a list: spaces, line ends and comments
+fn skipListSpace(text &[]u8, r &mut Reader) {
+  while not r.failed and r.pos < text.len {
+    imm c = text[r.pos];
+    if c == ' ' or c == '\t' { r.pos = r.pos + 1usize; }
+    elif c == '#' { skipComment(text, r); }
+    elif c == '\n' or c == '\r' {
+      if not newline(text, r) { return; }
+    }
+    else { return; }
+  }
+}
+
+// At '[': a list of strings, each appended to dest
+fn readList(text &[]u8, r &mut Reader, dest &mut List[String]) Bool {
+  imm at = r.line;
+  r.pos = r.pos + 1usize;
+  while true {
+    skipListSpace(text, r);
+    if r.failed { return false; }
+    if r.pos >= text.len {
+      failAt(r, at, "the list is not closed with ']'");
+      return false;
+    }
+    imm c = text[r.pos];
+    if c == ']' {
+      r.pos = r.pos + 1usize;
+      return true;
+    }
+    if c == ',' {
+      fail(r, "expected a string before ','");
+      return false;
+    }
+    if c != '"' and c != '\'' {
+      fail(r, "a list may hold only strings");
+      return false;
+    }
+    mut s = String.empty();
+    if not readString(text, r, &mut s) { return false; }
+    dest.push(s);
+    skipListSpace(text, r);
+    if r.failed { return false; }
+    if r.pos >= text.len {
+      failAt(r, at, "the list is not closed with ']'");
+      return false;
+    }
+    if text[r.pos] == ']' {
+      r.pos = r.pos + 1usize;
+      return true;
+    }
+    if text[r.pos] != ',' {
+      fail(r, "expected ',' or ']' after a string in a list");
+      return false;
+    }
+    r.pos = r.pos + 1usize;
+  }
+  false;
+}
+
+// The line of the first byte that is not well-formed UTF-8, or 0 when every
+// one is: no overlong form, no surrogate, nothing beyond U+10FFFF
+fn badUtf8Line(text &[]u8) u32 {
+  mut line = 1u32;
+  mut i = 0usize;
+  while i < text.len {
+    imm b = text[i];
+    if b < 0x80u8 {
+      if b == '\n' { line = line + 1u32; }
+      i = i + 1usize;
+      continue;
+    }
+    mut more = 0usize;
+    mut cp = 0u32;
+    mut least = 0u32;
+    if b >= 0xC2u8 and b <= 0xDFu8 { more = 1usize; cp = u32.from(b & 0x1Fu8); least = 0x80u32; }
+    elif b >= 0xE0u8 and b <= 0xEFu8 { more = 2usize; cp = u32.from(b & 0x0Fu8); least = 0x800u32; }
+    elif b >= 0xF0u8 and b <= 0xF4u8 { more = 3usize; cp = u32.from(b & 0x07u8); least = 0x10000u32; }
+    else { return line; }
+    if i + more >= text.len { return line; }
+    mut k = 1usize;
+    while k <= more {
+      imm c = text[i + k];
+      if (c & 0xC0u8) != 0x80u8 { return line; }
+      cp = (cp << 6u32) | u32.from(c & 0x3Fu8);
+      k = k + 1usize;
+    }
+    if cp < least or cp > 0x10FFFFu32 or (cp >= 0xD800u32 and cp <= 0xDFFFu32) { return line; }
+    i = i + more + 1usize;
+  }
+  0u32;
+}

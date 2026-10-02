@@ -1,0 +1,88 @@
+// What Congo does with toml: read a package's manifest, check it holds only
+// what a manifest may, and take its values out; and what a person sees when
+// a manifest strays outside the subset. Run it with
+//
+//   congo run packages/toml/examples/manifest.cone
+//
+// and it prints
+//
+//   window 0.1.0, a library
+//   links: SDL3, user32
+//   congo.toml: line 3: dates and times are not supported
+
+mod manifest;
+
+import stdio use *;
+import collections use *;
+import toml;
+
+// The manifest's package, or the reason it cannot be read
+fn describe(text &[]u8) Result[String, String] {
+  mut doc = new toml.Document();
+  match toml.parse(text) {
+    case mut ok Ok { doc <=> ok.value; }
+    case imm e Error { return Error[String, String][e.value.message()]; }
+  }
+  // Only Congo's tables, each table only Congo's keys
+  imm names = doc.names();
+  mut i = 0usize;
+  while i < names.len() {
+    if not (names[i].equals("package") or names[i].equals("link")) {
+      mut m = String.from("[");
+      m.append(names[i].view());
+      m.append("] is not part of a Congo manifest");
+      return Error[String, String][m];
+    }
+    i = i + 1usize;
+  }
+  if not doc.has("package") {
+    return Error[String, String][String.from("the manifest needs a [package] table")];
+  }
+  imm pkg = doc["package"];
+  mut out = String.empty();
+  match pkg.getString("name") {
+    case imm n Some { out.append(n.value.view()); }
+    case is None { return Error[String, String][String.from("[package] name must be a string")]; }
+  }
+  match pkg.getString("version") {
+    case imm v Some {
+      out.append(" ");
+      out.append(v.value.view());
+    }
+    case is None { return Error[String, String][String.from("[package] version must be a string")]; }
+  }
+  match pkg.getString("output") {
+    case imm o Some {
+      out.append(", a ");
+      out.append(o.value.view());
+    }
+    case is None { return Error[String, String][String.from("[package] output must be a string")]; }
+  }
+  if doc.has("link") {
+    match doc["link"].getStrings("libraries") {
+      case imm l Some {
+        out.append("\nlinks: ");
+        imm shown = String.join(l.value.view(), ", ");
+        out.append(shown.view());
+      }
+      case is None { return Error[String, String][String.from("[link] libraries must be a list of strings")]; }
+    }
+  }
+  Ok[String, String][out];
+}
+
+fn show(text &[]u8) {
+  match describe(text) {
+    case imm ok Ok { printStr(ok.value.view()); }
+    case imm e Error {
+      printStr("congo.toml: ");
+      printStr(e.value.view());
+    }
+  }
+  printStr("\n");
+}
+
+fn main() {
+  show("[package]\nname = \"window\"   # the package\nversion = \"0.1.0\"\noutput = \"library\"\n\n[link]\nlibraries = [\n  \"SDL3\",\n  \"user32\",\n]\n");
+  show("[package]\nname = \"window\"\nreleased = 2026-10-01\n");
+}

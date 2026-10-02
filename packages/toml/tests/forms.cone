@@ -1,0 +1,257 @@
+// Every form the subset reads, and what the Document makes of it: tables
+// and the root, in the order written; strings with each escape, raw UTF-8
+// and a raw tab; integers (signs, '_', the ends of i64's range); booleans;
+// lists of strings, empty, on one line, over several with comments between
+// and a ',' at the end; comments and spaces in every place TOML allows them,
+// and '#' inside a string, which is no comment; '\r\n' line ends; an empty
+// text, one of only comments, and a last line with no line end. Then the
+// getters: each answers None for a key not there and for a value of another
+// kind, and 'has', 'kindOf', 'lineOf', 'keys' and 'names' answer what was
+// written. A string's bytes are compared in hex, so an escape in this
+// file's own literals is never what is being tested.
+
+mod forms;
+
+import testing use *;
+import collections use *;
+import toml;
+
+// The Document text holds, or an empty one, the failure counted
+fn parsed(text &[]u8, label &[]u8) toml.Document {
+  mut doc = new toml.Document();
+  match toml.parse(text) {
+    case mut ok Ok { doc <=> ok.value; }
+    case imm e Error {
+      imm m = e.value.message();
+      expectStr(m.view(), "<parsed>", label);
+    }
+  }
+  doc;
+}
+
+fn hexOf(s &[]u8) String {
+  mut h = String.empty();
+  mut i = 0usize;
+  while i < s.len {
+    h.appendHex(u64.from(s[i]), 2usize);
+    i = i + 1usize;
+  }
+  h;
+}
+
+// key's string, or "<none>"
+fn str(t &toml.Table, key &[]u8) String {
+  match t.getString(key) {
+    case imm v Some { v.value.copy(); }
+    case is None { String.from("<none>"); }
+  }
+}
+
+fn strHex(t &toml.Table, key &[]u8) String {
+  imm s = str(t, key);
+  hexOf(s.view());
+}
+
+// key's integer, or -1
+fn int(t &toml.Table, key &[]u8) i64 {
+  match t.getInt(key) {
+    case imm v Some { v.value; }
+    case is None { -1i64; }
+  }
+}
+
+// key's boolean as "true", "false" or "<none>"
+fn boolean(t &toml.Table, key &[]u8) String {
+  match t.getBool(key) {
+    case imm v Some { if v.value {String.from("true");} else {String.from("false");}; }
+    case is None { String.from("<none>"); }
+  }
+}
+
+// key's list, its strings joined by '|', or "<none>"
+fn list(t &toml.Table, key &[]u8) String {
+  match t.getStrings(key) {
+    case imm v Some { String.join(v.value.view(), "|"); }
+    case is None { String.from("<none>"); }
+  }
+}
+
+fn kind(t &toml.Table, key &[]u8) String {
+  match t.kindOf(key) {
+    case imm k Some {
+      if k.value == toml.Kind.Text[] {String.from("text");}
+      elif k.value == toml.Kind.Integer[] {String.from("integer");}
+      elif k.value == toml.Kind.Boolean[] {String.from("boolean");}
+      else {String.from("list");};
+    }
+    case is None { String.from("<none>"); }
+  }
+}
+
+fn isStr(t &toml.Table, key &[]u8, want &[]u8, label &[]u8) {
+  imm got = str(t, key);
+  expectStr(got.view(), want, label);
+}
+
+fn isHex(t &toml.Table, key &[]u8, want &[]u8, label &[]u8) {
+  imm got = strHex(t, key);
+  expectStr(got.view(), want, label);
+}
+
+fn isBool(t &toml.Table, key &[]u8, want &[]u8, label &[]u8) {
+  imm got = boolean(t, key);
+  expectStr(got.view(), want, label);
+}
+
+fn isList(t &toml.Table, key &[]u8, want &[]u8, label &[]u8) {
+  imm got = list(t, key);
+  expectStr(got.view(), want, label);
+}
+
+fn isKind(t &toml.Table, key &[]u8, want &[]u8, label &[]u8) {
+  imm got = kind(t, key);
+  expectStr(got.view(), want, label);
+}
+
+fn isJoined(l &List[String], want &[]u8, label &[]u8) {
+  imm got = String.join(l.view(), "|");
+  expectStr(got.view(), want, label);
+}
+
+fn strings() {
+  // Each escape: b t n f r '"' and '\', then u00e9, U0001F600 and u0041
+  imm doc = parsed("s = \"\\b\\t\\n\\f\\r\\\"\\\\\\u00e9\\U0001F600\\u0041\"\n", "escapes");
+  isHex(&doc.root, "s", "08090a0c0d225cc3a9f09f988041", "every escape");
+  // \u for one, two and three bytes, \U for four, both cases of hex
+  imm cps = parsed("s = \"\\u007F\\u0080\\u07ff\\u0800\\uFFFF\\U00010000\\U0010ffff\"\n", "code points");
+  isHex(&cps.root, "s", "7fc280dfbfe0a080efbfbff0908080f48fbfbf", "UTF-8 at each length's ends");
+  // \u0000 is a character too
+  imm nul = parsed("s = \"a\\u0000b\"\n", "NUL");
+  isHex(&nul.root, "s", "610062", "a NUL by escape");
+  // Raw UTF-8, a raw tab, '#' and '[' and '=' inside, the empty string
+  imm raw = parsed("s = \"é 日本\"\nt = \"a\tb\"\nh = \"# no comment [x] = y\"\ne = \"\"\n", "raw");
+  isHex(&raw.root, "s", "c3a920e697a5e69cac", "UTF-8 as written");
+  isHex(&raw.root, "t", "610962", "a raw tab");
+  isStr(&raw.root, "h", "# no comment [x] = y", "'#' in a string is no comment");
+  isStr(&raw.root, "e", "", "the empty string");
+  isKind(&raw.root, "e", "text", "the empty string is a string");
+}
+
+fn integers() {
+  imm doc = parsed("a = 0\nb = -17\nc = +42\nd = 1_000_000\ne = 9223372036854775807\nf = -9223372036854775808\ng = -0\nh = +0\ni = 5_0\n", "integers");
+  expectInt(int(&doc.root, "a"), 0i64, "0");
+  expectInt(int(&doc.root, "b"), -17i64, "a negative");
+  expectInt(int(&doc.root, "c"), 42i64, "a '+'");
+  expectInt(int(&doc.root, "d"), 1000000i64, "'_' between digits");
+  expectInt(int(&doc.root, "e"), 9223372036854775807i64, "i64's largest");
+  expectInt(int(&doc.root, "f"), -9223372036854775807i64 - 1i64, "i64's smallest");
+  expectInt(int(&doc.root, "g"), 0i64, "-0");
+  expectInt(int(&doc.root, "h"), 0i64, "+0");
+  expectInt(int(&doc.root, "i"), 50i64, "'_' after the first digit");
+}
+
+fn booleans() {
+  imm doc = parsed("yes = true\nno = false\n", "booleans");
+  isBool(&doc.root, "yes", "true", "true");
+  isBool(&doc.root, "no", "false", "false");
+}
+
+fn lists() {
+  imm doc = parsed("e = []\nf = [ ]\no = [\"one\"]\nt = [\"a\", \"b\",\"c\"]\nc = [\"x\",]\n", "lists");
+  isList(&doc.root, "e", "", "an empty list");
+  isKind(&doc.root, "e", "list", "an empty list is a list");
+  isList(&doc.root, "f", "", "an empty list with a space");
+  isList(&doc.root, "o", "one", "one string");
+  isList(&doc.root, "t", "a|b|c", "three, spaced or not");
+  isList(&doc.root, "c", "x", "a ',' at the end");
+  imm many = parsed("[link]\nlibraries = [  # the libraries\n  \"SDL3\",   # first\n\n  # a line of its own\n  \"user32\" ,\n\t\"é\\t\"\n  ,\n]  # done\nnext = 1\n", "a list over lines");
+  imm link = many["link"];
+  isList(link, "libraries", "SDL3|user32|é\t", "a list over lines, with comments");
+  expectUInt(u64.from(link.lineOf("libraries")), 2u64, "a list's line is its key's");
+  expectUInt(u64.from(link.lineOf("next")), 10u64, "lines counted through a list");
+}
+
+fn layout() {
+  // Comments and spaces everywhere they may go; no line end at the end
+  imm text = "# first\n\n   # indented\n  top = \"root\"   # after a value\n\t[ package ]  # after a header\n  name\t=\t\"x\"\n\n[link]\npaths=[\"a\"]#tight\n# last, with no line end";
+  imm doc = parsed(text, "layout");
+  isStr(&doc.root, "top", "root", "a key of the root");
+  expect(doc.has("package"), "a header with spaces inside its brackets");
+  isStr(doc["package"], "name", "x", "tabs around '='");
+  isList(doc["link"], "paths", "a", "no spaces at all");
+  imm names = doc.names();
+  isJoined(&names, "package|link", "the tables in order");
+  expectUInt(u64.from(doc["package"].line), 5u64, "a table's line");
+  expectUInt(u64.from(doc["package"].lineOf("name")), 6u64, "a key's line");
+
+  // The same with '\r\n' line ends
+  imm crlf = parsed("# c\r\n[package]\r\nname = \"x\"  # c\r\nlibs = [\r\n  \"a\",\r\n]\r\nn = 3\r\n", "CRLF");
+  isStr(crlf["package"], "name", "x", "CRLF: a string");
+  isList(crlf["package"], "libs", "a", "CRLF: a list over lines");
+  expectInt(int(crlf["package"], "n"), 3i64, "CRLF: an integer");
+  expectUInt(u64.from(crlf["package"].lineOf("n")), 7u64, "CRLF: lines counted");
+
+  // Nothing at all, only comments and blank lines, and spaces alone
+  imm empty = parsed("", "empty");
+  expectUInt(u64.from(empty.tables.len()), 0u64, "an empty text has no tables");
+  expectUInt(u64.from(empty.root.entries.len()), 0u64, "and nothing in its root");
+  imm notes = parsed("# only\n\n   \n\t# comments\r\n", "comments");
+  expectUInt(u64.from(notes.tables.len() + notes.root.entries.len()), 0u64, "only comments");
+  imm spaces = parsed("   ", "spaces");
+  expectUInt(u64.from(spaces.tables.len() + spaces.root.entries.len()), 0u64, "only spaces");
+  // An empty table, and a table followed by another at once
+  imm bare = parsed("[a]\n[b]\nk = 1\n", "empty tables");
+  expectUInt(u64.from(bare["a"].entries.len()), 0u64, "an empty table");
+  expectInt(int(bare["b"], "k"), 1i64, "the next table's key");
+}
+
+fn getters() {
+  imm doc = parsed("[t]\ns = \"text\"\ni = 7\nb = true\nl = [\"x\"]\nkey-with_dash-9 = 1\n", "getters");
+  imm t = doc["t"];
+  // The right kind
+  isStr(t, "s", "text", "getString");
+  expectInt(int(t, "i"), 7i64, "getInt");
+  isBool(t, "b", "true", "getBool");
+  isList(t, "l", "x", "getStrings");
+  expectInt(int(t, "key-with_dash-9"), 1i64, "a key of letters, digits, '_' and '-'");
+  // The wrong kind, and none
+  isStr(t, "i", "<none>", "getString on an integer");
+  expectInt(int(t, "s"), -1i64, "getInt on a string");
+  isBool(t, "l", "<none>", "getBool on a list");
+  isList(t, "s", "<none>", "getStrings on a string");
+  isStr(t, "missing", "<none>", "getString on no key");
+  isList(t, "missing", "<none>", "getStrings on no key");
+  // has, kindOf, lineOf, keys
+  expect(t.has("b"), "has");
+  expect(not t.has("B"), "has: case counts");
+  isKind(t, "s", "text", "kindOf a string");
+  isKind(t, "i", "integer", "kindOf an integer");
+  isKind(t, "b", "boolean", "kindOf a boolean");
+  isKind(t, "l", "list", "kindOf a list");
+  isKind(t, "missing", "<none>", "kindOf no key");
+  expectUInt(u64.from(t.lineOf("l")), 5u64, "lineOf");
+  expectUInt(u64.from(t.lineOf("missing")), 0u64, "lineOf no key");
+  imm keys = t.keys();
+  isJoined(&keys, "s|i|b|l|key-with_dash-9", "keys in the order written");
+  expect(not doc.has("u"), "has no such table");
+  expect(not doc.has(""), "the root is not a named table");
+  expectStr(t.name.view(), "t", "a table's name");
+  // A copy is a copy
+  match t.getStrings("l") {
+    case mut v Some {
+      v.value.push(String.from("more"));
+      isList(t, "l", "x", "getStrings gives a copy");
+    }
+    case is None { expect(false, "getStrings gives a copy"); }
+  }
+}
+
+fn main() i32 {
+  strings();
+  integers();
+  booleans();
+  lists();
+  layout();
+  getters();
+  done();
+}
