@@ -1,0 +1,37 @@
+// Problem case #3 with a bare borrow, taken before the branch: returned on
+// one path, dead on the other, where the list is pushed onto.
+//
+// Verdict: accept; prints 3 and 7.
+// Basis: borrow-freezing rule (26 Sep 2026) -- holds are per path, so a loan
+// made on one path and a conflicting access on another never meet.
+// Rust: the same shape ('let e = &v[0]; if c { return e; } v.push(7); &v[0]'
+// with 'v: &'r mut Vec') is the problem case #3 pattern: rustc's NLL refuses
+// it (the returned borrow's region covers the whole function), Polonius
+// accepts it -- by reading the RFC and the Polonius update; not run.
+// Master d331baab: correct.
+
+mod lifetime_free_nll3_bare_returned_on_one_path;
+
+import stdio use *;
+import collections use *;
+
+fn show(label &[]u8, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+fn firstOrPush(c Bool, l &uni List[i64]) &i64 {
+  imm e = l[0usize];
+  if c { return e; }
+  l.push(7);
+  l[1usize];
+}
+
+fn main() {
+  imm l = new So[List[i64]](List[i64].empty());
+  l.push(3);
+  show("returned-on-one-path", *firstOrPush(true, l));
+  show("pushed-on-the-other", *firstOrPush(false, l));
+}

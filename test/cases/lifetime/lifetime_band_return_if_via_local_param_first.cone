@@ -1,0 +1,32 @@
+// An 'if' choosing a parameter's borrow or a local's, held in a local and
+// then returned: the local holding it has the shorter of the two, so
+// returning it is refused, whichever arm comes first.
+//
+// Verdict: refuse, ErrorEscape at the return.
+// Basis: language rule (26 Sep 2026) -- at a join, a borrow takes the shorter
+// of its arms' lifetimes.
+// Master d331baab: accepted (an 'if' value takes its first arm's lifetime),
+// and it dangles -- main, run, prints 0, not 42. xfail until Stage 1.
+
+mod lifetime_band_return_if_via_local_param_first;
+
+import stdio use *;
+
+fn clobber(n i64) i64 {
+  mut a Array[i64, 16] = [n, n, n, n, n, n, n, n, n, n, n, n, n, n, n, n];
+  a[3] + a[9];
+}
+
+fn f(c Bool, a &i64) &i64 {
+  imm x = 42i64;
+  imm r = if c { a; } else { &x; };
+  r;                         //~ ErrorEscape
+}
+
+fn main() {
+  imm k = 1i64;
+  imm r = f(false, &k);
+  clobber(21);
+  printInt(*r);
+  printStr("\n");
+}

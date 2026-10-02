@@ -1,0 +1,37 @@
+// The manual's 'tryit' with 'refval' marked by a lifetime of its own: the
+// callee promises not to store one borrow in the other, so the call is
+// allowed with 'b' shorter than 'a'.
+//
+// Verdict: accept; prints 10 (the value copied through, not the borrow).
+// Basis: reflifefn.html, "Mutable borrowed reference parameters" ("make the
+// refstore function promise it won't store one reference inside the other").
+// The manual writes 'refmut &mut &i32', through which '**refmut = ...' could
+// not write; '&mut &mut i32' keeps its point. Unannotated, the same program
+// is refused at the call today (ErrorCallEscape, measured), as it should be.
+// Master d331baab: refused at parse ('b read as a loop label). xfail until
+// Stage 6.
+
+mod lifetime_band_named_refstore_independent;
+
+import stdio use *;
+
+fn show(label &[]u8, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+fn refstore(refmut &mut &mut i32, refval &'b i32) {
+  **refmut = *refval;
+}
+
+fn main() {
+  mut i = 5;
+  mut a = &mut i;
+  {
+    imm b = 10;
+    refstore(&mut a, &b);
+  }
+  show("named-refstore", i64.from(i));
+}

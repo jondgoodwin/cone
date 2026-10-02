@@ -1,0 +1,29 @@
+// A by-value parameter is the function's own storage, gone at the return, so
+// a borrow of it may be used anywhere in the function but never returned.
+//
+// Verdict: refuse, ErrorEscape at the returned borrow.
+// Basis: language rule (1 Oct 2026) -- a by-value parameter has the lifetime
+// of a local variable of the function: a borrow of it may be used anywhere in
+// the function but never returned or stored outward.
+// Master d331baab: accepted, and it dangles -- main, run, prints 0, not 42
+// (the dead frame's slot, reused by clobber). xfail until Stage 1.
+
+mod lifetime_band_return_byvalue_param;
+
+import stdio use *;
+
+fn clobber(n i64) i64 {
+  mut a Array[i64, 16] = [n, n, n, n, n, n, n, n, n, n, n, n, n, n, n, n];
+  a[3] + a[9];
+}
+
+fn f(x i64) &i64 {
+  &x;                        //~ ErrorEscape
+}
+
+fn main() {
+  imm r = f(42);
+  clobber(21);
+  printInt(*r);
+  printStr("\n");
+}

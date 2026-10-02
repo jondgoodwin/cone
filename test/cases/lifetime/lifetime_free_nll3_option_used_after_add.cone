@@ -1,0 +1,40 @@
+// The unsafe neighbour of lifetime_free_nll3_get_default: the borrow inside
+// 'get''s 'Option' is still to be used after an 'add' that may move every
+// value in the pool.
+//
+// Verdict: refuse, ErrorFrozen at the 'add'.
+// Basis: borrow-freezing rule (26 Sep 2026) -- a borrow a method hands back
+// inside a value keeps the receiver frozen ('p.get(id)').
+// Rust: refused by NLL and Polonius alike (E0502; by reading, not run).
+// Master d331baab: accepted, and the borrow is left pointing into the pool's
+// freed block -- main, run, prints "still-points-at-the-value = 0" (the adds
+// moved the value; 'e' still points where it was). xfail until Stage 3.
+
+mod lifetime_free_nll3_option_used_after_add;
+
+import stdio use *;
+import pool use *;
+
+struct Mon { pub hp i64; }
+
+fn readAfterAdd(p &uni Pool[Mon], r Ref[Mon]) i64 {
+  match p.get(r) {
+    case imm e Some {
+      mut i = 0;
+      while i < 100 {
+        p.add(new Mon(i));   //~ ErrorFrozen
+        i = i + 1;
+      }
+      if e.value === p[r] { 1; } else { 0; };
+    }
+    else { 2; }
+  }
+}
+
+fn main() {
+  imm p = new So[Pool[Mon]](Pool[Mon].empty());
+  imm a = p.add(new Mon(42));
+  printStr("still-points-at-the-value = ");
+  printInt(readAfterAdd(p, a));
+  printStr("\n");
+}

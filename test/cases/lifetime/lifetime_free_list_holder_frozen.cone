@@ -1,0 +1,33 @@
+// A borrow pushed onto a local list of borrows keeps its source frozen while
+// the list is still to be used.
+//
+// Verdict: refuse, ErrorFrozen at the replacement.
+// Basis: borrow-freezing rule (26 Sep 2026) -- a value holding a borrow
+// freezes its source until its last use, and a store through a reference
+// puts the stored borrow's loans into its target: the push's loans go into
+// the list.
+// Master d331baab: accepted, and it reads freed memory -- main, run, prints
+// "final" (the replaced owner) and then a garbage value through the list.
+// xfail until Stage 3.
+
+mod lifetime_free_list_holder_frozen;
+
+import stdio use *;
+import collections use *;
+
+struct R {
+  pub n i64;
+  fn final(self &uni) {
+    printStr("final\n");
+  }
+}
+
+fn main() {
+  mut s = new So[R](42);
+  mut l = List[&R].empty();
+  l.push(&*s);
+  s = new So[R](7);          //~ ErrorFrozen
+  printStr("read = ");
+  printInt((*l[0usize]).n);
+  printStr("\n");
+}

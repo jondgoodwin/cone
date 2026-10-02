@@ -1,0 +1,37 @@
+// A setter method, 'self &mut', storing its argument in a borrow field: the
+// receiver is a '&mut' to a place that holds a borrow, so the argument must
+// live as long as the receiver's place.
+//
+// Verdict: refuse, ErrorCallEscape at the call.
+// Basis: reflifefn.html, "Mutable borrowed reference parameters", widened to
+// a receiver holding a borrow -- a reading of that rule.
+// Master d331baab: accepted, and it reads freed memory -- main, run, prints
+// "final" and then "read = 1338330988176". xfail until Stage 2.
+
+mod lifetime_band_call_setter_method;
+
+import stdio use *;
+
+struct R {
+  pub n i64;
+  fn final(self &uni) {
+    printStr("final\n");
+  }
+}
+
+struct H {
+  pub r &R;
+  pub fn set(self &mut, r &R) { self.r = r; }
+}
+
+fn main() {
+  imm outer = new R(1);
+  mut h = new H(&outer);
+  {
+    imm s = new So[R](42);
+    h.set(&*s);              //~ ErrorCallEscape
+  }
+  printStr("read = ");
+  printInt(h.r.n);
+  printStr("\n");
+}

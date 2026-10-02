@@ -1,0 +1,34 @@
+// A callee pushing a borrow onto a '&mut List[&R]': the list may hold the
+// borrow after the call, so the borrow must live as long as the list.
+//
+// Verdict: refuse, ErrorCallEscape at the call.
+// Basis: reflifefn.html, "Mutable borrowed reference parameters", widened to
+// a '&mut' to a collection of borrows -- a reading of that rule: a store
+// through a '&mut' may put the borrow anywhere its target can hold one.
+// Master d331baab: accepted, and it reads freed memory -- main, run, prints
+// "final" and then "read = 1865774899744". xfail until Stage 2.
+
+mod lifetime_band_call_push_onto_list_param;
+
+import stdio use *;
+import collections use *;
+
+struct R {
+  pub n i64;
+  fn final(self &uni) {
+    printStr("final\n");
+  }
+}
+
+fn stash(l &mut List[&R], r &R) { l.push(r); }
+
+fn main() {
+  mut l = List[&R].empty();
+  {
+    imm s = new So[R](42);
+    stash(&mut l, &*s);      //~ ErrorCallEscape
+  }
+  printStr("read = ");
+  printInt((*l[0usize]).n);
+  printStr("\n");
+}

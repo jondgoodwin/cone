@@ -1,0 +1,32 @@
+// A 'So' owner passed by value is the function's: it ends, and frees its
+// value, at the return, so a borrow through it may not be returned.
+//
+// Verdict: refuse, ErrorEscape at the returned borrow.
+// Basis: language rule (1 Oct 2026) -- a borrow of what a by-value owner owns
+// is like a borrow of a local; and, by reading of the rules, an owning
+// reference carries no lifetime limit of its own, so a borrow through one is
+// bounded by whoever holds the owner -- here the callee.
+// Master d331baab: accepted, and it reads freed memory -- main, run, prints
+// "final" and then "read = 1447514055808". xfail until Stage 1.
+
+mod lifetime_band_return_byvalue_so_owner;
+
+import stdio use *;
+
+struct R {
+  pub n i64;
+  fn final(self &uni) {
+    printStr("final\n");
+  }
+}
+
+fn inner(s So[R]) &R {
+  &*s;                       //~ ErrorEscape
+}
+
+fn main() {
+  imm r = inner(new So[R](42));
+  printStr("read = ");
+  printInt(r.n);
+  printStr("\n");
+}

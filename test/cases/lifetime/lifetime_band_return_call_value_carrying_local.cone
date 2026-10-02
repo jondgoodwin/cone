@@ -1,0 +1,40 @@
+// A struct passed by value carries a borrow of a local into a call that
+// returns a borrow: the result may be that borrow, so it has the local's
+// lifetime and may not be returned.
+//
+// Verdict: refuse, ErrorEscape at the returned call.
+// Basis: reading of reflifefn.html (the result has the shortest borrowed
+// argument's lifetime) with the language rule (1 Oct 2026) that lifetimes are
+// infectious (the 2019 post "Infectious Typing"): a value holding a borrow is
+// a borrowed argument too.
+// Master d331baab: accepted, and it reads freed memory -- main, run, prints
+// "final" and then "read = 1893463730336". (Earlier measurement covered only
+// the stored form, which freezing refuses; the returned form is new.) xfail
+// until Stage 4.
+
+mod lifetime_band_return_call_value_carrying_local;
+
+import stdio use *;
+
+struct R {
+  pub n i64;
+  fn final(self &uni) {
+    printStr("final\n");
+  }
+}
+
+struct H { pub r &R; }
+
+fn get(h H) &R { h.r; }
+
+fn f() &R {
+  imm x = new So[R](42);
+  get(new H(&*x));           //~ ErrorEscape
+}
+
+fn main() {
+  imm r = f();
+  printStr("read = ");
+  printInt(r.n);
+  printStr("\n");
+}

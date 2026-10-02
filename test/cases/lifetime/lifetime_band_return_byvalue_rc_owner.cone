@@ -1,0 +1,32 @@
+// A 'Rc' owner passed by value is the function's own counted owner: it is
+// released at the return, and with no other owner the value is freed, so a
+// borrow through it may not be returned.
+//
+// Verdict: refuse, ErrorEscape at the returned borrow.
+// Basis: language rule (1 Oct 2026) -- a borrow of what a by-value owner owns
+// is like a borrow of a local: never returned or stored outward.
+// Master d331baab: accepted, and it reads freed memory -- main, run, prints
+// "final" before "read = 42" (the freed block not yet reused). xfail until
+// Stage 1.
+
+mod lifetime_band_return_byvalue_rc_owner;
+
+import stdio use *;
+
+struct R {
+  pub n i64;
+  fn final(self &uni) {
+    printStr("final\n");
+  }
+}
+
+fn inner(r Rc[mut, R]) &R {
+  &*r;                       //~ ErrorEscape
+}
+
+fn main() {
+  imm r = inner(new Rc[mut, R](42));
+  printStr("read = ");
+  printInt(r.n);
+  printStr("\n");
+}

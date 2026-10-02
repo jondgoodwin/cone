@@ -1,0 +1,32 @@
+// A borrow of a by-value parameter passed through a call comes back with the
+// borrow's lifetime, the function's own, so the call's result may not be
+// returned either.
+//
+// Verdict: refuse, ErrorEscape at the returned call.
+// Basis: language rule (1 Oct 2026) -- a borrow of a by-value parameter is
+// never returned; reflifefn.html (a returned borrow has the lifetime of the
+// shortest borrow passed in).
+// Master d331baab: accepted, and it dangles -- main, run, prints 0, not 42.
+// xfail until Stage 1.
+
+mod lifetime_band_return_byvalue_through_call;
+
+import stdio use *;
+
+fn clobber(n i64) i64 {
+  mut a Array[i64, 16] = [n, n, n, n, n, n, n, n, n, n, n, n, n, n, n, n];
+  a[3] + a[9];
+}
+
+fn same(x &i64) &i64 { x; }
+
+fn f(y i64) &i64 {
+  same(&y);                  //~ ErrorEscape
+}
+
+fn main() {
+  imm r = f(42);
+  clobber(21);
+  printInt(*r);
+  printStr("\n");
+}

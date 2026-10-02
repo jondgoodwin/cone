@@ -1,0 +1,37 @@
+// A variable holding a parameter's borrow is given a local's borrow on one
+// path only, then returned: after the join it may hold the local's, so the
+// return is refused.
+//
+// Verdict: refuse, ErrorEscape at the return.
+// Basis: language rule (2 Oct 2026), the flow rule -- a variable's lifetime
+// follows what it currently holds, and one that may hold a local's borrow may
+// not be returned; language rule (26 Sep 2026): at a join, a borrow takes the
+// shorter of its arms' lifetimes. Rust refuses it (E0515; by reading,
+// not run).
+// Master d331baab: accepted ('r' keeps its initializer's lifetime and the
+// store is within the same block), and it dangles -- main, run, prints 0,
+// not 42. xfail until Stage 4.
+
+mod lifetime_mix_flow_join_returned;
+
+import stdio use *;
+
+fn clobber(n i64) i64 {
+  mut a Array[i64, 16] = [n, n, n, n, n, n, n, n, n, n, n, n, n, n, n, n];
+  a[3] + a[9];
+}
+
+fn f(c Bool, p &i64) &i64 {
+  imm x = 42i64;
+  mut r = p;
+  if c { r = &x; }
+  r;                         //~ ErrorEscape
+}
+
+fn main() {
+  imm one = 1i64;
+  imm r = f(true, &one);
+  clobber(21);
+  printInt(*r);
+  printStr("\n");
+}

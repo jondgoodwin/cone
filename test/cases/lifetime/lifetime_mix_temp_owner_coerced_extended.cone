@@ -1,0 +1,39 @@
+// A temporary owner coerced to a borrow in a variable's initializer: the
+// coercion borrows what the temporary owns, so -- as Rust does for
+// 'let r: &R = &*make();' -- the temporary lives to the end of the enclosing
+// block, and is ended there.
+//
+// Verdict: accept; prints "read = 2", then "final" at the block's end, then
+// "end".
+// Basis: language rule (2 Oct 2026) -- temporaries that outlive their
+// statement follow Rust, extended where Rust extends. Rust: the
+// operand of an extending borrow, and of a dereference under it, is extended
+// (The Rust Reference, "Destructors", temporary lifetime extension); by
+// reading, not run. Reading Cone's implicit owner-to-borrow coercion as
+// Rust's '&*' is a reading of the rules.
+// Master d331baab: accepted, but the temporary is never ended -- main, run,
+// prints "read = 2" and "end" with no "final" (a leak left by #241). xfail
+// until Stage 5.
+
+mod lifetime_mix_temp_owner_coerced_extended;
+
+import stdio use *;
+
+struct R {
+  pub n i64;
+  fn final(self &uni) {
+    printStr("final\n");
+  }
+}
+
+fn mkso(n i64) So[R] { new So[R](n); }
+
+fn main() {
+  {
+    imm r &R = mkso(2);
+    printStr("read = ");
+    printInt(r.n);
+    printStr("\n");
+  }
+  printStr("end\n");
+}

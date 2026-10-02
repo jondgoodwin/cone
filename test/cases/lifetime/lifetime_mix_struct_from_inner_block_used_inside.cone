@@ -1,0 +1,36 @@
+// A struct variable rebuilt in an inner block around that block's local and
+// used only inside it: the struct follows what it holds now, so this is
+// safe.
+//
+// Verdict: accept; prints 42 and 1.
+// Basis: language rules (2 Oct 2026) -- the flow rule (a variable's lifetime
+// follows what it currently holds) and the struct rule (a struct takes its
+// borrowed field's lifetime). Rust: accepted (by reading, not run).
+// Master d331baab: correct (whole-struct stores are unchecked today, so this
+// passes for the wrong reason; Stages 3 and 4 must keep it passing).
+
+mod lifetime_mix_struct_from_inner_block_used_inside;
+
+import stdio use *;
+
+fn show(label &[]u8, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+struct R { pub n i64; }
+struct H { pub r &R; }
+
+fn main() {
+  imm o = new R(1);
+  mut h = new H(&o);
+  {
+    imm s = new R(42);
+    h = new H(&s);
+    show("inner-struct", h.r.n);
+  }
+  h = new H(&o);
+  show("outer-again", h.r.n);
+}

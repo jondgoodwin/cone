@@ -1,0 +1,41 @@
+// A struct with two borrow fields, one a parameter's and one a local's,
+// returned: it has the shorter lifetime, the local's, so it may not leave.
+//
+// Verdict: refuse, ErrorEscape at the returned struct.
+// Basis: language rule (2 Oct 2026) -- a struct with two borrowed fields
+// takes the shorter where their order is known -- the caller band outlives a
+// top-block local (the band ordering, 1 Oct 2026); reflifefn.html,
+// "Lifetime Annotations on Fields": this is its 'makewrap', "lifetime-
+// constrained to this function and may not be returned". Rust refuses it
+// (E0515; by reading, not run).
+// Master d331baab: accepted, and it reads freed memory -- main, run, prints
+// "final" and then "read = 1 + <garbage>". xfail until Stage 4.
+
+mod lifetime_mix_struct_two_fields_param_and_local_returned;
+
+import stdio use *;
+
+struct R {
+  pub n i64;
+  fn final(self &uni) {
+    printStr("final\n");
+  }
+}
+
+struct P2 {
+  pub a &R;
+  pub b &R;
+}
+
+fn pair(p &R) P2 {
+  imm s = new So[R](42);
+  new P2(p, &*s);            //~ ErrorEscape
+}
+
+fn main() {
+  imm o = new R(1);
+  imm w = pair(&o);
+  printStr("read = ");
+  printInt(w.a.n + w.b.n);
+  printStr("\n");
+}
