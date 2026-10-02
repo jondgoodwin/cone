@@ -26,20 +26,12 @@ sys.path.insert(0, str(HERE))
 import congo  # noqa: E402
 
 # CONGO_EXE names a Congo executable to drive in place of congo.py: the Cone
-# Congo, tools/congo/build/debug/congo.exe (README.md, "Congo in Cone"). It
-# does everything but 'congo test' so far, so the scenarios of 'congo test'
-# are skipped against it. The checks of congo.py's own functions run either
-# way.
+# Congo, tools/congo/build/debug/congo.exe (README.md, "Congo in Cone"). Every
+# scenario runs against either. The checks of congo.py's own functions run
+# either way.
 CONGO_EXE = os.environ.get("CONGO_EXE")
 CONGO = [CONGO_EXE] if CONGO_EXE else [sys.executable, str(HERE / "congo.py")]
 IS_WINDOWS = congo.IS_WINDOWS
-
-
-def needs_congo_test(test):
-    """A scenario of 'congo test', which the Cone Congo does not do yet:
-    skipped when CONGO_EXE names it."""
-    return unittest.skipIf(CONGO_EXE, "needs 'congo test', which the Congo CONGO_EXE"
-                                      " names does not do yet")(test)
 
 
 def write(path: Path, text: str) -> None:
@@ -1141,7 +1133,6 @@ class Scenarios(unittest.TestCase):
         self.assertFalse((self.root / "if").exists())
 
 
-@needs_congo_test
 class Testing(unittest.TestCase):
     """congo test: a package's tests/ programs built against its generated
     include file, run, and compared; its examples/ programs built."""

@@ -559,7 +559,7 @@ Congo is being ported to Cone, in stages, so that nothing needs Python. The
 port is a package here, beside `congo.py`: `tools/congo/congo.toml`, its root
 `src/congo.cone` (the only file that imports) and the files joining its module
 (`commands.cone`, `header.cone`, `paths.cone`, `registry.cone`, `modules.cone`,
-`order.cone`, `linker.cone`, `build.cone`, `sha1.cone`, `util.cone`). `congo.py`
+`order.cone`, `linker.cone`, `build.cone`, `test.cone`, `sha1.cone`, `util.cone`). `congo.py`
 builds it first:
 
 ```
@@ -576,10 +576,13 @@ links is the Congo running, that Congo is first moved aside to
 build folder while it runs from it; `congo.py clean` can. Windows only, as its
 `process` package and its linking are for now.
 
-**It does everything but `congo test`:** `congo new` (the manifest and the
+**It does everything `congo.py` does:** `congo new` (the manifest and the
 template, byte for byte), `congo build` (debug and `--release`, a program
 linked or a library's object, the build folder, the descriptions), `congo run`
-of the current package or a lone file, and `congo clean` of either, matching
+of the current package or a lone file, `congo test` (above, "Testing a
+package": the package built, each test built, run within its time and
+compared with its `.out`, `.exit` and `.err`, `--bless`, the name filter, the
+examples built, a folder of packages), and `congo clean` of either, matching
 `congo.py` message for message, file for file and exit status for exit status
 — the current package's manifest found by walking up and checked as
 `congo.py` checks it, the header scan, the package's folder module tree and its
@@ -587,9 +590,16 @@ loop refusals, the registries (the repository's `packages/` and the machine
 config's folders, every manifest in them read and checked), the build order
 and its loop refusals, `conec`, `[link]`, the linker found through
 `vcvars64.bat`, and the program run with its exit status passed back. Like
-`congo.py`, it builds the whole of a build every time. `congo test` says it is
-not here yet and exits 1. The repository is the nearest folder above the
-executable holding `packages/core`, as `conec` finds its packages folder.
+`congo.py`, it builds the whole of a build every time. The repository is the
+nearest folder above the executable holding `packages/core`, as `conec` finds
+its packages folder.
+
+Cone has no exceptions, so what `congo test` goes on after (a source it
+cannot scan or resolve, a compile or link that fails, no `conec` or linker)
+is answered as a value, a `Result` whose `Error` is the message `congo.py`'s
+`CongoError` carries; `build` and `run` end on the first, as `congo.py` does.
+As in `congo.py`, a test's build shares one session with the package's: each
+package is compiled into the build folder once, and the linker is found once.
 
 `CONGO_EXE` points `test_congo.py` at it:
 
@@ -597,10 +607,9 @@ executable holding `packages/core`, as `conec` finds its packages folder.
 $env:CONGO_EXE = "tools\congo\build\debug\congo.exe"; python tools/congo/test_congo.py
 ```
 
-runs every scenario but those of `congo test` against the Cone Congo, and
-skips those, saying why.
+runs every scenario against the Cone Congo.
 
-Where it differs from `congo.py`, beyond what it does not do yet:
+Where it differs from `congo.py`:
 
 - A manifest or machine config outside the TOML subset the `toml` package reads
   is refused with that package's reason (`line 2: a list may hold only
@@ -615,7 +624,20 @@ Where it differs from `congo.py`, beyond what it does not do yet:
   follows it; and a source file's time is in whole seconds when Congo asks
   whether `conec` is stale.
 - Where `congo.py` stops with a Python traceback (a folder or file it cannot
-  make, write or remove), it says `congo: error:` and why, and exits 1.
+  make, write, read or remove, a test program it cannot start), it says
+  `congo: error:` and why, and exits 1.
+- `congo test` puts a folder's tests and examples in order by their names
+  lower-cased in ASCII only, as it lower-cases a lone file's path.
+- A `.exit` file is read as an optional sign and the digits 0 to 9 (with
+  `_` between two of them), between spaces and control characters: Python's
+  `int()` and `strip()` take other Unicode digits (`٣`) and spaces (a
+  no-break space) too, which the Cone Congo refuses as not an integer.
+- An expected `.out` or `.err` file that is not UTF-8 is compared byte for
+  byte, where `congo.py` stops with a decoding traceback.
+- A failing test's diff is `textdiff`'s minimal edit. Where several edits
+  are equally small, or `difflib`'s is not the smallest, the two can pair
+  lines differently and print other hunks; where the edit is forced, as for
+  one changed, added or removed run of lines, they print the same.
 
 ## Not built yet
 

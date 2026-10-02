@@ -29,8 +29,12 @@ fn warn(msg String) {
 }
 
 // A failure Congo reports as one message and exit status 1, as congo.py
-// reports a CongoError. Cone has no exceptions, and nothing in what Congo
-// runs here goes on after one, so it ends the program where it is found.
+// reports a CongoError that reaches its main. Cone has no exceptions: what
+// 'congo test' goes on after (a test or a package that does not build) is
+// answered as a value, a Result whose Error is the message, and the
+// commands that stop at the first one, 'build' and 'run', end the program
+// here with it. So does what congo.py would stop at with a traceback: a
+// file or folder Congo cannot write, or a program it cannot start.
 fn fail(msg String) Never {
   printFlush();
   eprintStr("congo: error: ");
@@ -39,6 +43,9 @@ fn fail(msg String) Never {
   eprintFlush();
   libc.exit(1i32);
 }
+
+// What a step that answers nothing answers when it did not fail
+fn succeeded() Result[void, String] { Ok[void, String][nil]; }
 
 // A code point as UTF-8
 fn appendUtf8(s &mut String, cp u32) {
@@ -107,9 +114,9 @@ fn utf8At(b &[]u8, i usize, ok &mut Bool) usize {
   need + 1usize;
 }
 
-// What conec, or vswhere with -utf8, printed: UTF-8, as congo.py reads it
-// with decode('utf-8', 'replace'), and every line end made '\n'
-fn utf8Text(bytes &[]u8) String {
+// Bytes read as UTF-8, as Python's decode('utf-8', 'replace') reads them:
+// each piece that is not well formed one U+FFFD
+fn utf8Decode(bytes &[]u8) String {
   mut out = String.withCapacity(bytes.len);
   mut i = 0usize;
   while i < bytes.len {
@@ -119,7 +126,14 @@ fn utf8Text(bytes &[]u8) String {
     else { appendUtf8(&mut out, 0xFFFDu32); }
     i = i + n;
   }
-  newlines(out.view());
+  out;
+}
+
+// What conec, or vswhere with -utf8, printed: UTF-8, and every line end
+// made '\n'
+fn utf8Text(bytes &[]u8) String {
+  imm text = utf8Decode(bytes);
+  newlines(text.view());
 }
 
 // kernel32's, for the text a console program writes

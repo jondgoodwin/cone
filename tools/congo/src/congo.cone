@@ -1,14 +1,17 @@
-// Congo, the Cone build tool, written in Cone: stage 2 of the port from
-// congo.py, which it matches message for message on what it does.
+// Congo, the Cone build tool, written in Cone: the port of congo.py, which
+// it matches message for message.
 //
 //     congo new <name> [--lib]          make a package folder
 //     congo build [--release]           build the package the current folder is in
 //     congo run [--release] [file.cone] [-- args...]
 //                                       build it (or one lone file) and run it
+//     congo test [name] [--release] [--bless]
+//                                       build the package, run each program in
+//                                       its tests/ and build each in examples/
 //     congo clean [file.cone]           delete what a build wrote
 //
-// 'congo test' is not here yet; tools/congo/congo.py does it, and is how
-// this program is first built (README.md, "Congo in Cone").
+// tools/congo/congo.py is how this program is first built (README.md,
+// "Congo in Cone").
 //
 // CONGO DISCOVERS, THE COMPILER IS TOLD. Congo reads each source file's
 // header -- its leading comments, its 'mod' line and its 'import' lines, and
@@ -30,8 +33,8 @@
 // registry), modules.cone (a package's module tree and its loops), order.cone
 // (the build order and the build descriptions), linker.cone (conec, conestd
 // and Microsoft's linker), build.cone (the compiles, the link and a build),
-// sha1.cone and util.cone. Windows only, as the process package and Congo's
-// linking are for now.
+// test.cone ('congo test'), sha1.cone and util.cone. Windows only, as the
+// process package and Congo's linking are for now.
 
 mod congo;
 
@@ -43,6 +46,7 @@ import path;
 import env;
 import process;
 import toml;
+import textdiff;
 
 // The Cone repository this Congo belongs to: the nearest folder above its
 // executable holding packages/core, as conec finds its packages folder; ""
@@ -82,6 +86,7 @@ fn commandUsage(command &[]u8) String {
   if command == "new" { usage <- " [--lib] name [path]"; }
   elif command == "build" { usage <- " [--release]"; }
   elif command == "run" { usage <- " [--release] [file]"; }
+  elif command == "test" { usage <- " [--release] [--bless] [name]"; }
   else { usage <- " [file]"; }
   usage;
 }
@@ -146,16 +151,17 @@ fn commandHelp(command &[]u8) i32 {
     printStr("  -h, --help  show this help message and exit\n  --release   an optimised build\n\n");
     printStr("Arguments after '--' are passed to the program.\n");
   }
+  elif command == "test" {
+    printStr("positional arguments:\n  name        only the tests and examples whose file name contains this\n\noptions:\n");
+    printStr("  -h, --help  show this help message and exit\n  --release   an optimised build\n");
+    printStr("  --bless     write the expected output of a test that has none, from a run;\n");
+    printStr("              check it by hand against the source\n");
+  }
   else {
     printStr("positional arguments:\n  file        a lone .cone file whose build to delete\n\noptions:\n");
     printStr("  -h, --help  show this help message and exit\n");
   }
   0i32;
-}
-
-// What this Congo cannot do yet
-fn notYet() i32 {
-  fail(String.from("'congo test' is not in this Congo (written in Cone, stage 2) yet; Python's tools/congo/congo.py runs a package's tests"));
 }
 
 fn main() i32 {
@@ -185,16 +191,17 @@ fn main() i32 {
     return usageError(cat("argument command: invalid choice: '", command,
       "' (choose from new, build, run, test, clean)"));
   }
-  if command == "test" { return notYet(); }
   // new name [path] [--lib]; build [--release]; run [--release] [file];
-  // clean [file]. Each option is a flag, read where it stands, as is '-h'
+  // test [name] [--release] [--bless]; clean [file]. Each option is a
+  // flag, read where it stands, as is '-h'
   mut release = false;
   mut lib = false;
+  mut bless = false;
   mut positionals = List[String].empty();
   mut most = 1usize;
   if command == "new" { most = 2usize; }
   elif command == "build" { most = 0usize; }
-  imm hasRelease = command == "build" or command == "run";
+  imm hasRelease = command == "build" or command == "run" or command == "test";
   i = at + 1usize;
   while i < argv.len() {
     imm arg = argv[i].view();
@@ -207,12 +214,14 @@ fn main() i32 {
       if opt == "-h" or isOption(opt, "--help") { explicit = "-h/--help"; }
       elif hasRelease and isOption(opt, "--release") { explicit = "--release"; }
       elif command == "new" and isOption(opt, "--lib") { explicit = "--lib"; }
+      elif command == "test" and isOption(opt, "--bless") { explicit = "--bless"; }
     }
     if explicit.len > 0usize {
       return commandError(command, cat("argument ", explicit, ": ignored explicit argument '", &arg[eq + 1usize..], "'"));
     }
     if hasRelease and isOption(arg, "--release") { release = true; }
     elif command == "new" and isOption(arg, "--lib") { lib = true; }
+    elif command == "test" and isOption(arg, "--bless") { bless = true; }
     elif looksLikeOption(arg) or positionals.len() >= most { extras.push(String.from(arg)); }
     else { positionals.push(String.from(arg)); }
     i = i + 1usize;
@@ -229,6 +238,10 @@ fn main() i32 {
     return cmdNew(positionals[0usize].view(), "", lib);
   }
   if command == "build" { return cmdBuild(release); }
+  if command == "test" {
+    if positionals.len() > 0usize { return cmdTest(positionals[0usize].view(), true, release, bless); }
+    return cmdTest("", false, release, bless);
+  }
   imm hasFile = positionals.len() > 0usize;
   mut file = String.empty();
   if hasFile { file = positionals[0usize].copy(); }
