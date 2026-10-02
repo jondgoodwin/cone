@@ -1,5 +1,21 @@
-/** Lifetime Annotations (Variables)
+/** Named lifetimes on a function's signature
  * @file
+ *
+ * A borrowed reference type written in a function's signature may name its
+ * lifetime, right after the '&': '&'a T', '&'a mut T', '&[]'a u8'. Each name is
+ * one lifetime of the caller's, distinct from every other, and a borrow written
+ * with none has the unnamed lifetime, one more name, shared by every
+ * unannotated borrow in the signature -- and by every borrow a value of another
+ * type holds (a struct's field, an 'Option''s element), since a name is written
+ * only on a reference. ''static' is the global lifetime: it outlives every name
+ * and ties nothing to anything.
+ *
+ * A name means something only in the signature it is written in, so names are
+ * compared by identity, and only between the types of one signature: a
+ * callee's own, while its body is checked, or the one a call is made through.
+ * No order between two names is ever inferred. RefNode.lifename holds the name
+ * (NULL for the unnamed lifetime); RefNode.scope stays the band (0 global, 1 the
+ * caller's, 2+ a block of the function), which the names divide no further.
  *
  * This source file is part of the Cone Programming Language C compiler
  * See Copyright Notice in conec.h
@@ -8,38 +24,38 @@
 #ifndef lifetime_h
 #define lifetime_h
 
-typedef struct NameUseNode NameUseNode;
+struct FnSigNode;
 
-// A lifetime is effectively two numbers from 0-255 that describe a partial order.
-// - Group. Two lifetimes with different groups (>1) cannot be subtypes of each other
-//     A new group is assigned for each implicit/explicit lifetime annotation on a generic
-//     'static and local scopes have a group of 0.
-// - Scope. A higher number is a subtype of a lower number. 0='static, 16+=local scopes
-typedef uint16_t Lifetime;
+// Does a value of this type hold a borrow of the caller lifetime 'life' (NULL
+// for the unnamed one)? A borrow of ''static' is held by nothing in this sense:
+// it ties the value to no caller lifetime.
+int lifeHolds(INode *type, Name *life);
 
-// Lifetime type info
-typedef struct LifetimeNode {
-    ITypeNodeHdr;
-    Name *namesym;
-    Lifetime life;
-} LifetimeNode;
+// Do values of two types of one signature hold borrows of some caller lifetime
+// in common?
+int lifeShared(INode *a, INode *b);
 
-// Create a new lifetime declaration node
-LifetimeNode *newLifetimeDclNode(Name *namesym, Lifetime life);
+// What a store through a value of this type lands in: what a borrowed
+// reference points at, or else the value itself
+INode *lifePointee(INode *type);
 
-// Create a copy of lifetime dcl
-INode *cloneLifetimeDclNode(CloneState *cstate, LifetimeNode *node);
+// Is this a borrowed reference type whose lifetime is written ''static'?
+int lifeIsStatic(INode *type);
 
-// Create a new lifetime use node
-INode *newLifetimeUseNode(LifetimeNode *lifedcl);
+// Is ''static' named inside a parameter's type, anywhere but on the parameter's
+// own reference? Nothing checks there that a caller's borrow is global.
+int lifeParmStaticInside(INode *parmtype);
 
-// Serialize a lifetime node
-void lifePrint(LifetimeNode *node);
+// Do two signatures promise the same about lifetimes? Each parameter must share
+// a lifetime with the result in both or in neither, be ''static' in both or in
+// neither, and share one with what each writable borrowed parameter points at
+// in both or in neither: those are all a call is checked against.
+int lifeSigsAgree(struct FnSigNode *a, struct FnSigNode *b);
 
-// Are the lifetimes the same?
-int lifeIsSame(INode *node1, INode *node2);
-
-// Will 'from' lifetime coerce to the target?
-int lifeMatches(INode *to, INode *from);
+// Spell what a signature promises about lifetimes into a type's symbol name
+// (nameType), where it differs from what the signature promises unannotated:
+// 'G' (where v0 puts a signature's lifetimes), a digit per promise, '_'. Two
+// signatures that agree spell alike.
+char *lifeSigSpell(char *bufp, struct FnSigNode *sig);
 
 #endif

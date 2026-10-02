@@ -169,7 +169,6 @@ enum NodeTags {
 
     // Named type nodes
     EnumTag,        // Enumerated value
-    LifetimeTag,
 
     // Named type nodes that support methods
     IntNbrTag,      // Integer

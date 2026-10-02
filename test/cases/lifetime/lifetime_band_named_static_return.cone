@@ -1,0 +1,57 @@
+// ''static' is the global lifetime. A result declared '&'static T' (a slice:
+// '&[]'static u8') may be a borrow of a global or a string literal, and ties
+// the caller to none of its arguments: it is kept past the block of the local
+// it was asked about ('v'). A parameter declared '&'static T' holds a global
+// borrow, which it may hand back under any lifetime ('keep', whose result its
+// caller still ties to 'n', the unnamed lifetime's argument).
+//
+// Verdict: accept; prints "positive", 100 and "kept".
+// Basis: refmodule.html and reftoken.html name the global lifetime ''static',
+// as Rust does; language rule (1 Oct 2026): global (band 0) travels anywhere
+// and outlives every caller lifetime. Unannotated, 'sign''s and 'bound''s
+// results would share 'v''s lifetime and could not be kept past its block
+// (refused, measured).
+
+mod lifetime_band_named_static_return;
+
+import stdio use *;
+
+fn show(label &[]u8, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+mut Low i64 = 1;
+mut High i64 = 100;
+
+fn sign(x &i64) &[]'static u8 {
+  if *x > 0 { "positive"; } else { "not positive"; }
+}
+
+fn bound(x &i64) &'static i64 {
+  if *x > 50 { &High; } else { &Low; }
+}
+
+fn keep(s &[]'static u8, n &i64) &[]u8 {
+  s;
+}
+
+fn main() {
+  mut s &[]u8 = "";
+  mut b = &Low;
+  {
+    imm v = 75i64;
+    s = sign(&v);
+    b = bound(&v);
+  }
+  printStr(s);
+  printStr("\n");
+  show("static-bound", *b);
+  {
+    imm n = 3i64;
+    printStr(keep("kept", &n));
+    printStr("\n");
+  }
+}

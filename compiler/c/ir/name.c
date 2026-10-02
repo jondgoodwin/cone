@@ -19,6 +19,7 @@ Name *anonName;
 Name *tempName;
 Name *tempLocalName;
 Name *selfName;
+Name *staticLifeName;
 Name *selfTypeName;
 Name *thisName;
 Name *cloneName;
@@ -355,7 +356,7 @@ static char *nameRegionPerm(char *bufp, RefNode *reftype) {
 // Spell a type and return the position after it. The distinctions drawn are
 // the ones itypeIsSame draws: a reference's region, permission and target,
 // but not its lifetime; an array's dimensions; a signature's parameter and
-// return types.
+// return types, and what its named lifetimes promise (lifeSigSpell).
 char *nameType(char *bufp, INode *vtype) {
     if (isNameUseNode(vtype) && isTypeNode(vtype))
         return nameType(bufp, nameTypeDcl(vtype));
@@ -438,6 +439,7 @@ char *nameType(char *bufp, INode *vtype) {
         INode **nodesp;
         uint32_t cnt;
         *bufp++ = 'F';
+        bufp = lifeSigSpell(bufp, fnsig);
         for (nodesFor(fnsig->parms, cnt, nodesp))
             bufp = nameType(bufp, ((IExpNode *)*nodesp)->vtype);
         *bufp++ = 'E';

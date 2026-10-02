@@ -46,6 +46,8 @@ typedef struct ParseState {
     INsTypeNode *typenode;  // Current type
     int inrettype;          // Non-zero while parseFnSig reads a return type, where a '{' opens the declared function's body
     int intype;             // Non-zero while parseType reads a type, where '&new' is a permission, not a borrow of a construction
+    FnSigNode *lifesig;     // The signature whose types are being read, where a borrowed reference may name its lifetime ('&'a T');
+                            // NULL elsewhere, and inside a type's arguments
     int entryparen;         // Non-zero while an entry after '<-' is begun: a '(' first is a parenthesized list of entries (parseEntry)
     ModuleNode *core;       // The core package, once loaded: every module loaded after it imports it
     BuildModule *build;     // The build description's entry for the current module; NULL where it is not described

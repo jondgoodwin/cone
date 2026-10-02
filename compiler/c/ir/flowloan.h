@@ -65,6 +65,33 @@ enum LoanEscape {
 };
 void loanEscape(INode *node, uint32_t loan, int how);
 
+// Named lifetimes (lifetime.h). A caller loan stands for the lifetimes its
+// parameter's type holds: a value may carry it where its type shares one of
+// them (lifeShared). The function's own signature is the one compared with.
+//
+// A caller loan in 'set' whose parameter shares no lifetime with a value of
+// the type 'wanted' -- one returned, say -- or 0
+uint32_t loanCallerApart(PathSet *set, INode *wanted);
+
+// A caller loan among 'stored' that may not be stored where a reference
+// holding 'refholds' points: what a borrowed parameter points at holds only
+// the lifetimes its type gives it there. Returns 0, or the loan, with the
+// parameter whose place it may not go in as 'through'.
+uint32_t loanStoredApart(PathSet *stored, PathSet *refholds, VarDclNode **through);
+
+// A loan in 'set' that is not global -- a caller loan, or one of this
+// function's own storage -- or 0
+uint32_t loanNotGlobalIn(PathSet *set);
+
+// Report a caller loan whose lifetime may not go where it is carried at
+// 'node': returned (LoanEscapeReturn), stored where 'through' points
+// (LoanEscapeStore), or handed to a call that may store it there
+// (LoanEscapeCall)
+void loanApart(INode *node, uint32_t loan, VarDclNode *through, int how);
+
+// Report a loan that is not global handed to a ''static' parameter at 'node'
+void loanNotGlobal(INode *node, uint32_t loan);
+
 // The loan the borrow at 'site' made, or 0
 uint32_t loanAt(INode *site);
 

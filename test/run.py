@@ -1700,9 +1700,11 @@ def object_extension(options: tuple[str, ...]) -> str:
 #           | 'N' ('v'|'t') [path] ident a value / a type, nested in its owner;
 #                                        no parent path when the owner is the root
 #           | 'I' path {type} 'E'        an instance of a generic, with its type arguments
-#   type    = basic-letter | path | 'T' {type} 'E' | 'F' {type} 'E' type
+#   type    = basic-letter | path | 'T' {type} 'E' | 'F' [lifetimes] {type} 'E' type
 #           | 'A' type decimal '_' | 'R' ident ident type | 'S' ident ident type
 #           | 'V' ident ident path | 'P' type
+#   lifetimes = 'G' {digit} '_'          what a signature's named lifetimes promise, where
+#                                        that differs from the same signature unannotated
 #   ident   = decimal ['_'] bytes        bytes all [A-Za-z0-9_]; '_' when they start with '_' or a digit
 #           | 'u' decimal '_' bytes      punycode over that basic set, '_' the delimiter
 #           | 'o' code                   an operator method name
@@ -1910,12 +1912,19 @@ class Demangler:
             self.take()
             return f"({','.join(elems)})"
         if ch == "F":
+            lifetimes = ""
+            if self.peek() == "G":
+                self.take()
+                while self.peek() != "_":
+                    lifetimes += self.take()
+                self.take()
+                lifetimes = f"'{lifetimes}"
             parms = []
             while self.peek() != "E":
                 parms.append(self.type())
             self.take()
             ret = self.type()
-            return f"fn({','.join(parms)})" + ("" if ret == "void" else f" {ret}")
+            return f"fn{lifetimes}({','.join(parms)})" + ("" if ret == "void" else f" {ret}")
         if ch == "A":
             elem, sizes = self.array_parts()
             return f"Array[{elem}, {', '.join(str(size) for size in sizes)}]"
@@ -2006,6 +2015,7 @@ DEMANGLE_EXAMPLES = [
     ("_CINv11passThroughAAx3_2_E", "passThrough[Array[i64, 2, 3]]"),
     ("_CINv11passThroughR02roFxExE", "passThrough[&ro fn(i64) i64]"),
     ("_CINv11passThroughFEuE", "passThrough[fn()]"),
+    ("_CINv11passThroughR04opaqFG10_R02roxR02roxER02roxE", "passThrough[&opaq fn'10(&ro i64,&ro i64) &ro i64]"),
     ("_CINv11passThroughuE", "passThrough[void]"),
     ("_CINv11passThroughPhE", "passThrough[*u8]"),
     ("_CNvC1mu9_gre_6ka8i", "m.größe"),

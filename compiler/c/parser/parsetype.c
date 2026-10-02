@@ -1192,6 +1192,9 @@ INode *parseFnSig(ParseState *parse, int reftype) {
     // there opens no enclosing block, whoever this signature belongs to.
     int svinrettype = parse->inrettype;
     parse->inrettype = 0;
+    // Its parameters' and result's types may name lifetimes of its own
+    FnSigNode *svlifesig = parse->lifesig;
+    parse->lifesig = fnsig;
 
     // Process parameter declarations
     if (lexIsToken(LParenToken)) {
@@ -1247,6 +1250,7 @@ INode *parseFnSig(ParseState *parse, int reftype) {
         inodeLexCopy(fnsig->rettype, (INode*)fnsig);  // Make invisible void show up in error msg
     }
     parse->inrettype = svinrettype;
+    parse->lifesig = svlifesig;
 
     return (INode*)fnsig;
 }

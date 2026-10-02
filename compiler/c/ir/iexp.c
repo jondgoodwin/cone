@@ -87,6 +87,7 @@ INode *iexpScopedBorrowType(INode *typedcl, INode *lexnode, uint16_t scope) {
     RefNode *ref = (RefNode*)typedcl;
     RefNode *scoped = newRefNodeFull(typedcl->tag, lexnode, borrowRef, ref->perm, ref->vtexp);
     scoped->scope = scope;
+    scoped->lifename = ref->lifename;
     return (INode*)scoped;
 }
 

@@ -28,7 +28,8 @@ typedef struct {
     INode *perm;      // Permission
     INode *region;    // Region
     RefTypeInfo *typeinfo; // normalized ref info
-    uint16_t scope;   // Lifetime
+    uint16_t scope;   // Lifetime: its band, 0 global, 1 the caller's, 2+ a block
+    Name *lifename;   // The lifetime a signature names on it, or NULL (lifetime.h)
     // Written '+R-perm T' (parsePlus). As an allocation that spelling is
     // refused (allocateTypeCheck, ErrorPlusAlloc); as a single or virtual
     // reference type it is refused (refTypeCheck), except at a match pattern's

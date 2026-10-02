@@ -324,6 +324,52 @@ uint32_t loanAt(INode *site) {
     return mapGet(site, 0, 0);
 }
 
+// The parameter a caller loan stands for
+static VarDclNode *loanParm(uint32_t id) {
+    return pathVars[loans[id].place.var].var;
+}
+
+uint32_t loanCallerApart(PathSet *set, INode *wanted) {
+    if (set == NULL)
+        return 0;
+    uint32_t n = set == &pathSetAll ? nloans : set->cnt;
+    for (uint32_t i = set == &pathSetAll ? 1 : 0; i < n; ++i) {
+        uint32_t id = set == &pathSetAll ? i : set->ids[i];
+        if (loans[id].kind == LoanCaller && !lifeShared(loanParm(id)->vtype, wanted))
+            return id;
+    }
+    return 0;
+}
+
+uint32_t loanStoredApart(PathSet *stored, PathSet *refholds, VarDclNode **through) {
+    if (refholds == NULL || stored == NULL)
+        return 0;
+    uint32_t n = refholds == &pathSetAll ? nloans : refholds->cnt;
+    for (uint32_t i = refholds == &pathSetAll ? 1 : 0; i < n; ++i) {
+        uint32_t id = refholds == &pathSetAll ? i : refholds->ids[i];
+        if (loans[id].kind != LoanCaller)
+            continue;
+        uint32_t apart = loanCallerApart(stored, lifePointee(loanParm(id)->vtype));
+        if (apart) {
+            *through = loanParm(id);
+            return apart;
+        }
+    }
+    return 0;
+}
+
+uint32_t loanNotGlobalIn(PathSet *set) {
+    if (set == NULL)
+        return 0;
+    uint32_t n = set == &pathSetAll ? nloans : set->cnt;
+    for (uint32_t i = set == &pathSetAll ? 1 : 0; i < n; ++i) {
+        uint32_t id = set == &pathSetAll ? i : set->ids[i];
+        if (loans[id].kind == LoanCaller || loanIsLocal(id))
+            return id;
+    }
+    return 0;
+}
+
 void loanHeldBy(uint32_t var, PathSet *holds) {
     if (holds == &pathSetAll) {
         for (uint32_t i = 0; i < nsaturated; ++i) {
@@ -553,6 +599,47 @@ void loanEscape(INode *node, uint32_t loan, int how) {
             srcname, where);
         break;
     }
+}
+
+void loanApart(INode *node, uint32_t loan, VarDclNode *through, int how) {
+    if (mapGet(node, 0, 1))
+        return;
+    mapPut(node, 0, 1, 1);
+    char *lent = &loanParm(loan)->namesym->namestr;
+    switch (how) {
+    case LoanEscapeReturn:
+        errorMsgNode(node, ErrorEscape,
+            "Returned value carries the borrow the caller lent through '%s', whose lifetime the result's type does not name. Lifetimes named apart are unrelated: only a borrow of a lifetime the result names, or a global one, may be returned.",
+            lent);
+        break;
+    case LoanEscapeStore:
+        errorMsgNode(node, ErrorEscape,
+            "Stored where '%s' points, the value carries the borrow the caller lent through '%s', whose lifetime is not one held there. Lifetimes named apart are unrelated, and nothing orders them.",
+            &through->namesym->namestr, lent);
+        break;
+    default:
+        errorMsgNode(node, ErrorCallEscape,
+            "Call could store the borrow the caller lent through '%s' where '%s' points, which holds no borrow of its lifetime. Lifetimes named apart are unrelated, and nothing orders them.",
+            lent, &through->namesym->namestr);
+        break;
+    }
+}
+
+void loanNotGlobal(INode *node, uint32_t loan) {
+    if (mapGet(node, 0, 1))
+        return;
+    mapPut(node, 0, 1, 1);
+    char srcname[128];
+    char where[160];
+    loanSourceName(&loans[loan].place, srcname, sizeof(srcname));
+    if (loans[loan].kind == LoanCaller)
+        errorMsgNode(node, ErrorCallEscape,
+            "This parameter's lifetime is ''static', so what is handed to it must be global, but it carries the borrow the caller lent through '%s'.",
+            &loanParm(loan)->namesym->namestr);
+    else
+        errorMsgNode(node, ErrorCallEscape,
+            "This parameter's lifetime is ''static', so what is handed to it must be global, but it carries a borrow of '%s' (made %s).",
+            srcname, loanWhere(&loans[loan], where, sizeof(where)));
 }
 
 // A use of a holder is a node naming it, or, where its value dies with a

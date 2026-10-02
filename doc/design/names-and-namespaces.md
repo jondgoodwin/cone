@@ -756,7 +756,9 @@ spells the empty string and is named `anon` at generation.
 
 **Types** are spelled by `nameType`, which draws exactly the distinctions
 `itypeIsSame` draws: a reference's region, permission and target but not its
-lifetime; an array's extents; a signature's parameter and return types. The
+lifetime; an array's extents; a signature's parameter and return types, and
+what the lifetimes it names promise, where that differs from the same
+signature unannotated. The
 letters are v0's, matched by node identity against the corelib globals, so a
 user type named `i64` inside a module is still a path:
 
@@ -771,7 +773,13 @@ they name — `2So`, `2Rc`, `3mut`, `2ro`, `4opaq` — and a borrowed reference,
 which names no region, spells the empty identifier `0`: `R2So3mutl` is
 `So[mut, i32]`, `R04opaqFxEx` is `&opaq fn(i64) i64`. An array of several
 dimensions is an array of arrays, one `A` per dimension and the extents
-innermost first: `AAx3_2_` is `Array[i64, 2, 3]`.
+innermost first: `AAx3_2_` is `Array[i64, 2, 3]`. A signature whose named
+lifetimes promise other than it would unannotated spells the promises after
+its `F`, where v0 puts a signature's lifetimes: `G`, a digit per parameter (1
+shares a lifetime with the result, 2 is `'static`, 4 may be stored through)
+followed, for each that may, by a digit per other parameter (1 may be stored
+there), then `_` — so `fn(a &i64, b &'b i64) &i64` is
+`FG10_R02roxR02roxER02rox` (`lifeSigSpell`).
 
 #### How to read a symbol
 
@@ -849,8 +857,8 @@ in the type's namespace, so `Nt` then `Nv` says it directly and reads as
 **D5 · Types.** v0's letters where the type coincides, and Cone's own `R`,
 `S`, `V` and `P` for what v0 cannot say, region and permission spelled as the
 identifiers of the declarations they name. Region and permission are always
-spelled and lifetime never, because those are the distinctions `itypeIsSame`
-draws — an encoding that omitted the region would spell `So[mut, T]` and
+spelled, and lifetime only as what a signature's named lifetimes promise,
+because those are the distinctions `itypeIsSame` draws — an encoding that omitted the region would spell `So[mut, T]` and
 `Rc[mut, T]` alike, a collision rather than a distinction. Not v0's `R`/`Q`
 for `&`/`&mut`: they carry no region, and permission is not two-valued in
 Cone. Not v0's `K…` const encoding for array extents: decimal is readable,
