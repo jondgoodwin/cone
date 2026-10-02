@@ -987,8 +987,18 @@ static void pwCallStores(FnCallNode *call, PathSet **argsets, Place *recvpl) {
             loanEscape((INode *)call, local, LoanEscapeCall);
         else if (!found || target.deref)
             pwStoreApart((INode *)call, found ? pathVars[target.var].holds : argsets[at], others, LoanEscapeCall);
+        // Where what the argument points at is itself a writable borrow
+        // ('put(&mut p, v)' for 'x &mut &mut &R', 'p' a '&mut &R' lent from
+        // 'q'), the callee may store through it too ('**x = v'), so the store
+        // may land where that borrow points: stored as through a reference
+        // ('*p = v'), which reaches every place 'p''s loans borrow from, at
+        // any depth, since a borrow of a holder carries what it holds
+        int through = target.deref;
+        INode *inner = itypeGetTypeDcl(argtype->vtexp);
+        if (pwIsBorrowed(inner) && (permGetFlags(((RefNode *)inner)->perm) & MayWrite))
+            through = 1;
         if (found)
-            pwStoreInto(target.var, target.deref, others);
+            pwStoreInto(target.var, through, others);
     }
 }
 

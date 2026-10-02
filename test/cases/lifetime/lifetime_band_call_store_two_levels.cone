@@ -1,0 +1,38 @@
+// A callee handed '&mut p', 'p' a '&mut &R' lent from 'q', may store its
+// other argument two levels down ('**x = v'): into 'q' itself. So 'q' holds
+// that borrow afterwards, and its source may not end while 'q' is used.
+//
+// Verdict: refuse, ErrorFrozen where 's' is declared (it ends first).
+// Basis: borrow-freezing rule (26 Sep 2026) -- a store through a reference
+// puts the stored borrow's loans into what the reference points at, through
+// as many writable borrows as the parameter's type writes through;
+// reflifefn.html, "Mutable borrowed reference parameters".
+// Master 020beb7f: accepted, and it reads freed memory -- main, run, prints
+// "final" (for 's') and then "read = 2577741815328" through 'q'. The store
+// was recorded on 'p', not on the 'q' it lands in.
+
+mod lifetime_band_call_store_two_levels;
+
+import stdio use *;
+
+struct R {
+  pub n i64;
+  fn final(self &uni) {
+    printStr("final\n");
+  }
+}
+
+fn put(x &mut &mut &R, v &R) { **x = v; }
+
+fn main() {
+  imm outer = new R(1);
+  mut q = &outer;
+  {
+    imm s = new So[R](42);   //~ ErrorFrozen
+    mut p = &mut q;
+    put(&mut p, &*s);
+  }
+  printStr("read = ");
+  printInt(q.n);
+  printStr("\n");
+}

@@ -1,0 +1,38 @@
+// A callee handed '&mut p', 'p' a '&mut &R' lent from 'q', may store its
+// other argument into 'q' ('**x = v'), so 'q' keeps that borrow's source
+// frozen while 'q' is used: the owner may not be replaced before the read.
+//
+// Verdict: refuse, ErrorFrozen at the replacement.
+// Basis: borrow-freezing rule (26 Sep 2026) -- a store through a reference
+// puts the stored borrow's loans into what the reference points at, through
+// as many writable borrows as the parameter's type writes through;
+// reflifefn.html, "Mutable borrowed reference parameters".
+// Master 020beb7f: accepted -- the store was recorded on 'p', not on 'q',
+// so replacing 's' (which frees what 'q' then points at) was allowed.
+
+mod lifetime_free_call_store_two_levels_frozen;
+
+import stdio use *;
+
+struct R {
+  pub n i64;
+  fn final(self &uni) {
+    printStr("final\n");
+  }
+}
+
+fn put(x &mut &mut &R, v &R) { **x = v; }
+
+fn main() {
+  imm outer = new R(1);
+  mut s = new So[R](42);
+  mut q = &outer;
+  {
+    mut p = &mut q;
+    put(&mut p, &*s);
+  }
+  s = new So[R](7);          //~ ErrorFrozen
+  printStr("read = ");
+  printInt(q.n);
+  printStr("\n");
+}

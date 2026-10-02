@@ -725,8 +725,12 @@ o, &x)`, `fill(r, v)` for `r &mut Option[&T]`) may store there anything its
 other arguments carry, under the same one-lifetime rule as its result below,
 which `fnCallFlowStoredBorrow` reads for lifetimes; so that place takes them,
 as a store through the reference would (`pwCallStores`, the target found from
-the argument by `pwStoreTarget`). One exception keeps two such places lent to
-one call apart: a borrow written as an argument is stored only where the
+the argument by `pwStoreTarget`). Where what the argument points at is itself a
+writable borrow (`put(&mut p, &x)` for `x &mut &mut &R`), the callee may store
+through that one too (`**x = v`), so the place takes them as a store through
+`p` would (`*p = v`): every holder `p`'s loans borrow from, at any depth, since
+a borrow of a holder carries what it holds. One exception keeps two such places
+lent to one call apart: a borrow written as an argument is stored only where the
 place's type can hold a borrow of what it borrows (`itypeHoldsBorrowOf`), so
 `arrive(&mut world, &mut seen, name)` leaves `world`, a `List[Named]`, holding
 nothing of `seen`, a `List[&[]u8]`, and each is free while the other is used.
