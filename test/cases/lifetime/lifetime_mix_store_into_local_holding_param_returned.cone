@@ -1,0 +1,31 @@
+// The counterpart of lifetime_mix_store_into_local_holding_param: the store
+// through '&mut q' is legal, but 'q' then holds a borrow of the local 's',
+// and returning it hands the caller a borrow that outlives 's'.
+//
+// Verdict: refuse, ErrorEscape at the return.
+// Basis: language rule (2 Oct 2026), the flow rule -- a variable's lifetime
+// follows what it holds now, and a returned value may hold no borrow of the
+// function's own storage (decision 1, 1 Oct 2026).
+// Master b306a838: refused, but at the store ("Stored where it may outlive
+// this function"), which is legal.
+
+mod lifetime_mix_store_into_local_holding_param_returned;
+
+import stdio use *;
+
+struct R { pub n i64; }
+
+fn g(r &R) &R {
+  imm s = new R(3);
+  mut q = r;
+  {
+    mut p = &mut q;
+    *p = &s;
+  }
+  return q;     //~ ErrorEscape
+}
+
+fn main() {
+  imm one = new R(1);
+  printInt(g(&one).n);
+}

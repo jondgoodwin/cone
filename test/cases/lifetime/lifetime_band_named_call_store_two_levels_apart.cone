@@ -1,0 +1,42 @@
+// With lifetimes named, a callee handed '&mut p', 'p' a reborrow of what the
+// parameter 'q' points at, may store its other argument two levels down
+// ('**x = v'): into the caller's place, which holds borrows of ''a'. The
+// argument is a borrow of ''b', which nothing orders against ''a'.
+//
+// Verdict: refuse, ErrorCallEscape at the call.
+// Basis: language rule (1 Oct 2026) -- caller lifetimes named apart do not
+// compare, so storing one where the other is held needs a where clause;
+// reflifefn.html, "Mutable borrowed reference parameters".
+// Master b306a838: accepted, and it reads freed memory -- main, run, prints
+// "final" (for 's') and then "read = 1814434213760" through 'q'. Only the
+// first level, 'p', a local, was checked.
+
+mod lifetime_band_named_call_store_two_levels_apart;
+
+import stdio use *;
+
+struct R {
+  pub n i64;
+  fn final(self &uni) {
+    printStr("final\n");
+  }
+}
+
+fn put(x &mut &mut &R, v &R) { **x = v; }
+
+fn f(q &'a mut &'a R, r &'b R) {
+  mut p = &mut *q;
+  put(&mut p, r);       //~ ErrorCallEscape
+}
+
+fn main() {
+  imm outer = new R(1);
+  mut q = &outer;
+  {
+    imm s = new So[R](42);
+    f(&mut q, &*s);
+  }
+  printStr("read = ");
+  printInt(q.n);
+  printStr("\n");
+}

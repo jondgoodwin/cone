@@ -76,17 +76,18 @@ static inline void flowGateResult(FlowState *fstate, INode *exp) {
     }
 }
 
-// Gate trigger: a call storing through a '&mut X' argument beside another
-// argument carrying a borrow -- so a call of two arguments or more, one of
-// them a reference
+// Gate trigger: a call storing through a '&mut X' argument, or a struct
+// holding one, beside another argument carrying a borrow -- so a call of two
+// arguments or more, one of them a reference or a struct that may hold one
 static inline void flowGateCall(FlowState *fstate, Nodes *args) {
     if (args == NULL || args->used < 2 || !flowGateOpen(fstate, FlowGateStore))
         return;
     INode **argsp;
     uint32_t cnt;
     for (nodesFor(args, cnt, argsp)) {
-        uint16_t tag = flowGateNamed(((IExpNode *)*argsp)->vtype)->tag;
-        if (tag == RefTag || tag == AliasDclTag) {
+        INode *named = flowGateNamed(((IExpNode *)*argsp)->vtype);
+        if (named->tag == RefTag || named->tag == AliasDclTag
+            || (named->tag == StructTag && ((StructNode *)named)->carriesborrow != CarriesBorrowNo)) {
             flowGateCallAsk(fstate, args);
             return;
         }

@@ -1708,6 +1708,12 @@ void flowGateCallAsk(FlowState *fstate, Nodes *args) {
             storer = *argsp;
             break;
         }
+        // A value holding a writable borrow ('st(w, v)', 'w' a struct holding
+        // a '&mut &R') may be stored through as well
+        if (argtype->tag == StructTag && itypeWritableBorrowDepth((INode *)argtype, 1)) {
+            storer = *argsp;
+            break;
+        }
     }
     if (storer == NULL)
         return;

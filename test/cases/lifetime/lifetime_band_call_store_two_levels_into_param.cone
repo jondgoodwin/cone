@@ -1,0 +1,40 @@
+// A callee handed '&mut p', 'p' a reborrow of what the parameter 'q' points
+// at, may store its other argument two levels down ('**x = v'): into the
+// caller's place. A borrow of a local stored there outlives the local.
+//
+// Verdict: refuse, ErrorCallEscape at the call.
+// Basis: reflifefn.html, "Mutable borrowed reference parameters" -- a call
+// handed a writable borrow may store any other borrow it was handed through
+// every writable borrow it reaches; what a borrowed parameter points at is
+// the caller's, and outlives the function (decision 1, 1 Oct 2026).
+// Master b306a838: accepted, and it reads freed memory -- main, run, prints
+// "final" (for 's') and then "read = 1654829998112" through 'q'. Only the
+// first level, 'p', a local, was checked for where the store lands.
+
+mod lifetime_band_call_store_two_levels_into_param;
+
+import stdio use *;
+
+struct R {
+  pub n i64;
+  fn final(self &uni) {
+    printStr("final\n");
+  }
+}
+
+fn put(x &mut &mut &R, v &R) { **x = v; }
+
+fn f(q &mut &R) {
+  imm s = new So[R](42);
+  mut p = &mut *q;
+  put(&mut p, &*s);     //~ ErrorCallEscape
+}
+
+fn main() {
+  imm outer = new R(1);
+  mut q = &outer;
+  f(&mut q);
+  printStr("read = ");
+  printInt(q.n);
+  printStr("\n");
+}

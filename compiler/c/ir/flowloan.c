@@ -240,6 +240,10 @@ uint32_t loanRoot(uint32_t loan) {
     return loans[loan].place.var;
 }
 
+int loanThrough(uint32_t loan) {
+    return loans[loan].place.deref;
+}
+
 // A variable whose storage outlives every call: a global, or a static
 static int loanVarIsGlobal(VarDclNode *var) {
     return var->scope == 0 || (var->flags & FlagStatic);
@@ -262,8 +266,8 @@ uint32_t loanLocalIn(PathSet *set) {
     if (set == NULL)
         return 0;
     for (uint32_t i = 0; i < set->cnt; ++i) {
-        if (loanIsLocal(set->ids[i]))
-            return set->ids[i];
+        if (loanIsLocal(loanOf(set->ids[i])))
+            return loanOf(set->ids[i]);
     }
     return 0;
 }
@@ -274,13 +278,14 @@ static int loanIsBorrowType(INode *type) {
         && itypeGetTypeDcl(((RefNode *)type)->region) == borrowRef;
 }
 
-// May a reference to a 'referent' point at what this loan borrows? A
-// reference's loans are what it points at and what that holds, in one set; a
-// loan of a struct of another type than the referent is one of the second
-// kind (a borrow is coerced only to a trait, its own or a base's, or to a
-// slice), and so is the caller loan of a parameter that is no reference,
-// which stands for the borrows it holds. Anything not known to be one may be
-// the first.
+// May a reference to a 'referent' point at what this near loan borrows? Where
+// the walk could not tell near from far -- the reference is a call's result,
+// or was read through another reference -- its near loans hold some of what
+// it points at holds too. A loan of a struct of another type than the
+// referent is one of those (a borrow is coerced only to a trait, its own or a
+// base's, or to a slice), and so is the caller loan of a parameter that is no
+// reference, which stands for the borrows it holds. Anything not known to be
+// one may be what it points at.
 static int loanMayBePointee(Loan *loan, INode *referent) {
     if (referent == NULL)
         return 1;
@@ -303,17 +308,21 @@ static int loanMayBePointee(Loan *loan, INode *referent) {
         || (b->flags & TraitType) || (r->flags & TraitType);
 }
 
-int loanMayPointOut(PathSet *refholds, INode *referent) {
+int loanMayPointOut(PathSet *refholds, INode *referent, int beyond) {
     if (refholds == NULL || refholds == &pathSetAll)
         return 1;
     int local = 0;
     for (uint32_t i = 0; i < refholds->cnt; ++i) {
-        Loan *loan = &loans[refholds->ids[i]];
+        // A far loan is held where the reference points, not pointed at
+        if ((refholds->ids[i] & LoanFar) && !beyond)
+            continue;
+        uint32_t id = loanOf(refholds->ids[i]);
+        Loan *loan = &loans[id];
         // A reborrow through another reference points where that one does,
         // and what that one held came along with it
         if ((loan->kind != LoanCaller && loan->place.deref) || !loanMayBePointee(loan, referent))
             continue;
-        if (!loanIsLocal(refholds->ids[i]) || loan->place.owned)
+        if (!loanIsLocal(id) || loan->place.owned)
             return 1;
         local = 1;
     }
@@ -334,19 +343,22 @@ uint32_t loanCallerApart(PathSet *set, INode *wanted) {
         return 0;
     uint32_t n = set == &pathSetAll ? nloans : set->cnt;
     for (uint32_t i = set == &pathSetAll ? 1 : 0; i < n; ++i) {
-        uint32_t id = set == &pathSetAll ? i : set->ids[i];
+        uint32_t id = set == &pathSetAll ? i : loanOf(set->ids[i]);
         if (loans[id].kind == LoanCaller && !lifeShared(loanParm(id)->vtype, wanted))
             return id;
     }
     return 0;
 }
 
-uint32_t loanStoredApart(PathSet *stored, PathSet *refholds, VarDclNode **through) {
+uint32_t loanStoredApart(PathSet *stored, PathSet *refholds, int beyond, VarDclNode **through) {
     if (refholds == NULL || stored == NULL)
         return 0;
     uint32_t n = refholds == &pathSetAll ? nloans : refholds->cnt;
     for (uint32_t i = refholds == &pathSetAll ? 1 : 0; i < n; ++i) {
         uint32_t id = refholds == &pathSetAll ? i : refholds->ids[i];
+        if ((id & LoanFar) && !beyond)
+            continue;
+        id = loanOf(id);
         if (loans[id].kind != LoanCaller)
             continue;
         uint32_t apart = loanCallerApart(stored, lifePointee(loanParm(id)->vtype));
@@ -363,7 +375,7 @@ uint32_t loanNotGlobalIn(PathSet *set) {
         return 0;
     uint32_t n = set == &pathSetAll ? nloans : set->cnt;
     for (uint32_t i = set == &pathSetAll ? 1 : 0; i < n; ++i) {
-        uint32_t id = set == &pathSetAll ? i : set->ids[i];
+        uint32_t id = set == &pathSetAll ? i : loanOf(set->ids[i]);
         if (loans[id].kind == LoanCaller || loanIsLocal(id))
             return id;
     }
@@ -382,7 +394,7 @@ void loanHeldBy(uint32_t var, PathSet *holds) {
         return;
     }
     for (uint32_t i = 0; i < holds->cnt; ++i) {
-        Loan *loan = &loans[holds->ids[i]];
+        Loan *loan = &loans[loanOf(holds->ids[i])];
         uint16_t k;
         for (k = 0; k < loan->nmay; ++k) {
             if (maypool[loan->mayhold + k] == var)
@@ -476,7 +488,7 @@ static uint32_t loanPending(INode *access, int kind, uint32_t loan, uint32_t hol
 
 static void loanPend(INode *node, int access, uint32_t loan, uint32_t holder) {
     PathVar *hv = &pathVars[holder];
-    if (!pathSetHas(hv->holds, loan))
+    if (!pathSetHas(hv->holds, loan) && !pathSetHas(hv->holds, loan | LoanFar))
         return;
     uint32_t pend = loanPending(node, access, loan, holder);
     if (!pathSetHas(hv->pending, pend))
@@ -759,7 +771,7 @@ void loanFlightAccess(Place *pl, int access, INode *node) {
     for (uint32_t f = 0; f < nflights; ++f) {
         PathSet *set = flights[f].loans;
         for (uint32_t i = 0; i < set->cnt; ++i) {
-            uint32_t id = set->ids[i];
+            uint32_t id = loanOf(set->ids[i]);
             Loan *loan = &loans[id];
             if (loan->place.var != pl->var || loan->place.deref != pl->deref)
                 continue;
@@ -794,8 +806,9 @@ void loanFlightActivate(uint32_t mark, uint32_t receiver, int access, INode *nod
             continue;
         PathSet *set = flights[f].loans;
         for (uint32_t i = 0; i < set->cnt; ++i) {
-            Loan *loan = &loans[set->ids[i]];
-            if (set->ids[i] == receiver || loan->place.var != recv->place.var
+            uint32_t id = loanOf(set->ids[i]);
+            Loan *loan = &loans[id];
+            if (id == receiver || loan->place.var != recv->place.var
                 || loan->place.deref != recv->place.deref
                 || !loanConflicts(access, loan, &recv->place) || !placeOverlaps(&loan->place, &recv->place))
                 continue;
