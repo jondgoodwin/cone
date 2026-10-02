@@ -1,0 +1,37 @@
+// lifetime_mix_swap_into_struct_field with the sides written the other way
+// round: 't <=> h.r' is the same exchange, so the struct holds the inner
+// owner's borrow after the block all the same.
+//
+// Verdict: refuse, ErrorFrozen at the inner owner, which goes out of scope
+// while 'h' still holds a borrow of it (ref_flow_freeze's idiom).
+// Basis: a swap is a store in both directions (ref_flow_swap), in either
+// position; language rule (2 Oct 2026), the flow rule -- a variable's
+// lifetime follows what it holds now.
+// Master b705e902: accepted, and it reads freed memory -- main, run, prints
+// "final" and then "read = <garbage>".
+
+mod lifetime_mix_swap_into_struct_field_reversed;
+
+import stdio use *;
+
+struct R {
+  pub n i64;
+  fn final(self &uni) {
+    printStr("final\n");
+  }
+}
+
+struct H { pub r &R; }
+
+fn main() {
+  imm outer = new R(1);
+  mut h = new H(&outer);
+  {
+    imm s = new So[R](42);   //~ ErrorFrozen
+    mut t = &*s;
+    t <=> h.r;
+  }
+  printStr("read = ");
+  printInt(h.r.n);
+  printStr("\n");
+}

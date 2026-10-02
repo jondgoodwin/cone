@@ -1,0 +1,35 @@
+// A borrow swapped into a struct's field keeps its source frozen exactly as
+// one assigned there does: replacing the owner it borrows, while the struct
+// is still to be used, is refused.
+//
+// Verdict: refuse, ErrorFrozen at the replacement.
+// Basis: a swap is a store in both directions (ref_flow_swap);
+// borrow-freezing rule (26 Sep 2026) -- any value holding a borrow keeps the
+// source frozen exactly as the borrow does.
+// Master b705e902: accepted, and it reads freed memory -- main, run, prints
+// "final" (the replaced owner) and then "read = <garbage>".
+
+mod lifetime_free_swap_into_struct_field_frozen;
+
+import stdio use *;
+
+struct R {
+  pub n i64;
+  fn final(self &uni) {
+    printStr("final\n");
+  }
+}
+
+struct H { pub r &R; }
+
+fn main() {
+  imm outer = new R(1);
+  mut h = new H(&outer);
+  mut s = new So[R](42);
+  mut t = &*s;
+  h.r <=> t;
+  s = new So[R](7);          //~ ErrorFrozen
+  printStr("read = ");
+  printInt(h.r.n);
+  printStr("\n");
+}

@@ -1,0 +1,38 @@
+// An inner block's borrow swapped into a field of an outer struct, which is
+// used after the block: the struct now holds a borrow of the inner owner, so
+// it may not be kept past that owner's end -- as 'h.r = t' may not.
+//
+// Verdict: refuse, ErrorFrozen at the inner owner, which goes out of scope
+// while 'h' still holds a borrow of it (ref_flow_freeze's idiom).
+// Basis: a swap is a store in both directions (ref_flow_swap), so 'h.r <=> t'
+// stores 't''s borrow into 'h' as 'h.r = t' does; language rule (2 Oct
+// 2026), the flow rule -- a variable's lifetime follows what it holds now.
+// Master b705e902: accepted, and it reads freed memory -- main, run, prints
+// "final" and then "read = <garbage>": the loan walk gave the other side's
+// loans to a whole variable swapped, never to the holder of a part.
+
+mod lifetime_mix_swap_into_struct_field;
+
+import stdio use *;
+
+struct R {
+  pub n i64;
+  fn final(self &uni) {
+    printStr("final\n");
+  }
+}
+
+struct H { pub r &R; }
+
+fn main() {
+  imm outer = new R(1);
+  mut h = new H(&outer);
+  {
+    imm s = new So[R](42);   //~ ErrorFrozen
+    mut t = &*s;
+    h.r <=> t;
+  }
+  printStr("read = ");
+  printInt(h.r.n);
+  printStr("\n");
+}

@@ -1297,10 +1297,18 @@ static void pwSwap(SwapNode *node) {
             found[i] = 1;
         }
     }
-    // Each side is a store of the other's value
+    // Each side is a store of the other's value. A side that is part of a
+    // holder ('h.r', 'a[1]', 'g.h.r') is stored into as pwStore stores into
+    // one: the holder there holds the other side's loans from here on, so
+    // 'h.r <=> t' keeps what 't' borrowed alive while 'h' is used.
     for (int i = 0; i < 2; ++i) {
-        if (found[i])
-            pwStoreEscapes(*sides[i], &places[i], holds[1 - i]);
+        if (!found[i])
+            continue;
+        pwStoreEscapes(*sides[i], &places[i], holds[1 - i]);
+        if (!whole[i]) {
+            int level = pwPlaceLevel(&places[i]);
+            pwStoreInto(places[i].var, level, level, holds[1 - i]);
+        }
     }
     // Two holders exchange what they hold, and what each is pending on goes
     // with its value; a part of a holder gains what the other side held

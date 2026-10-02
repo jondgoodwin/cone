@@ -1,0 +1,46 @@
+// The safe neighbours of lifetime_mix_swap_into_struct_field: a borrow of as
+// long-lived an owner swapped into a struct's field and read after the
+// block; and an inner block's borrow swapped into a field and read only
+// inside that block, the struct not used after it.
+//
+// Verdict: accept; prints the values each side holds after its swap.
+// Basis: a swap is a store in both directions (ref_flow_swap); language rule
+// (2 Oct 2026), the flow rule -- a variable's lifetime follows what it holds
+// now, so holding a shorter borrow is refused only where it is used past
+// that borrow's source.
+// Master b705e902: correct.
+
+mod lifetime_mix_swap_into_struct_field_safe;
+
+import stdio use *;
+
+fn show(label &[]u8, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+struct R { pub n i64; }
+struct H { pub r &R; }
+
+fn main() {
+  imm outer = new R(1);
+  imm other = new R(2);
+  mut h = new H(&outer);
+  {
+    mut t = &other;
+    h.r <=> t;
+    show("t", t.n);
+  }
+  show("h.r", h.r.n);
+
+  mut h2 = new H(&outer);
+  {
+    imm s = new So[R](42);
+    mut t = &*s;
+    h2.r <=> t;
+    show("inside h2.r", h2.r.n);
+    show("inside t", t.n);
+  }
+}
