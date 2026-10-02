@@ -1,0 +1,105 @@
+// The noise package's heavy-tailed draw and multiplicative cascade, checked
+// against values worked out by hand. Only a failure prints.
+//
+// heavySigned(u, coin, ratio, cap) is toSigned(u) times ratio once for each
+// low bit of coin that is set, counted up to the first clear one, at most cap
+// times. toSigned(0xC0000000) is exactly 0.5 (its top 24 bits, 0xC00000, are
+// 1.5 times 2^23) and toSigned(0) is -1, so:
+// - coin 0: 0.5; coin 7 (bits 0, 1, 2), ratio 2: 0.5 x 8 = 4; coin 0xB
+//   (bits 0, 1, then a clear bit 2): 0.5 x 4 = 2; coin 0xFFFFFFFF, cap 5:
+//   0.5 x 32 = 16; cap 0: 0.5; ratio 1: 0.5; ratio 1.5, coin 3: 0.5 x 2.25 =
+//   1.125; toSigned(0) = -1, coin 1: -2.
+// - The tail: with uniform u and coin bits, N set bits has chance 2^-(n+1) of
+//   being n, and |u| 2^N >= 1 needs N >= 1 and |u| >= 2^-N, chance 1 - 2^-N.
+//   So the chance is the sum over n >= 1 of 2^-(n+1) (1 - 2^-n) = 1/2 - 1/6
+//   = 1/3. Over 65536 hashed draws (cap 30), within 0.01 (the binomial's
+//   standard deviation is 0.0018).
+//
+// cascade2(p, seed, octaves, lacunarity, gain, c):
+// - c = 0 is fbm2's value, bit for bit, at 64 points.
+// - One octave is (1 + c w) n, w the gradient noise at p seeded by
+//   hash1(0, pcg(seed)) and n the one seeded by hash1(0, seed): bit for bit.
+// - Two octaves: w0 n0 + w0 g w1 n1, the second octave's noises at 2p
+//   (lacunarity 2), within 1e-6.
+// - Its weights have mean 1: over a 64 x 64 grid, the mean of c = 0.9's
+//   one-octave weight 1 + c w is within 0.05 of 1 (gradient noise averages
+//   about 0).
+
+mod cascade;
+
+import testing use *;
+import geomath use *;
+import noise use *;
+
+fn heavy() {
+  imm half = 0xC0000000u32;
+  expectFloat(f64.from(heavySigned(half, 0u32, 2., 5)), 0.5d, 0d, "coin 0: toSigned");
+  expectFloat(f64.from(heavySigned(half, 7u32, 2., 5)), 4d, 0d, "coin 7: three doublings");
+  expectFloat(f64.from(heavySigned(half, 0xBu32, 2., 5)), 2d, 0d, "coin 0xB: stops at the clear bit 2");
+  expectFloat(f64.from(heavySigned(half, 0xFFFFFFFFu32, 2., 5)), 16d, 0d, "all bits set: held to cap 5");
+  expectFloat(f64.from(heavySigned(half, 0xFFFFFFFFu32, 2., 0)), 0.5d, 0d, "cap 0: toSigned");
+  expectFloat(f64.from(heavySigned(half, 0xFFFFFFFFu32, 1., 9)), 0.5d, 0d, "ratio 1: toSigned");
+  expectFloat(f64.from(heavySigned(half, 3u32, 1.5, 5)), 1.125d, 0d, "ratio 1.5, coin 3: 0.5 x 2.25");
+  expectFloat(f64.from(heavySigned(0u32, 1u32, 2., 5)), -2d, 0d, "toSigned(0) = -1, doubled");
+
+  mut big = 0;
+  mut i = 0u32;
+  while i < 65536u32 {
+    imm h = pcg2d(new UVec2(i, 7u32));
+    imm v = heavySigned(h.x, h.y, 2., 30);
+    if v >= 1. or v <= -1. { big = big + 1; }
+    i = i + 1u32;
+  }
+  expectFloat(f64.from(big) / 65536d, 1d / 3d, 0.01d, "chance of |draw| >= 1 is 1/3");
+}
+
+fn sameBits(a f32, b f32) Bool { (a as u32) == (b as u32); }
+
+fn cascades() {
+  imm seed = 9u32;
+  mut agree = 0;
+  mut j = 0;
+  while j < 8 {
+    mut i = 0;
+    while i < 8 {
+      imm p = new Vec2(f32.from(i) * 0.41 - 1.3, f32.from(j) * 0.37 + 0.2);
+      if sameBits(cascade2(p, seed, 5, 2., 0.5, 0.), fbm2(p, seed, 5, 2., 0.5).value) { agree = agree + 1; }
+      i = i + 1;
+    }
+    j = j + 1;
+  }
+  expectInt(i64.from(agree), 64, "intermittency 0 is fbm2, bit for bit, at 64 points");
+
+  imm p = new Vec2(0.731, -1.214);
+  imm c f32 = 0.7;
+  imm w0 = gradient2(p, hash1(0, pcg(seed))).value;
+  imm n0 = gradient2(p, hash1(0, seed)).value;
+  expect(sameBits(cascade2(p, seed, 1, 2., 0.5, c), (1. + c * w0) * n0), "one octave: (1 + c w) n, bit for bit");
+
+  imm p2 = new Vec2(p.x * 2., p.y * 2.);
+  imm w1 = gradient2(p2, hash1(1, pcg(seed))).value;
+  imm n1 = gradient2(p2, hash1(1, seed)).value;
+  imm a0 = 1. + c * w0;
+  imm a1 = 1. + c * w1;
+  imm want = f64.from(a0 * n0) + f64.from(a0) * 0.5d * f64.from(a1) * f64.from(n1);
+  expectFloat(f64.from(cascade2(p, seed, 2, 2., 0.5, c)), want, 0.000001d, "two octaves: w0 n0 + w0 g w1 n1");
+
+  mut sum = 0d;
+  j = 0;
+  while j < 64 {
+    mut i = 0;
+    while i < 64 {
+      imm q = new Vec2(f32.from(i) * 0.173, f32.from(j) * 0.191);
+      sum = sum + f64.from(1. + 0.9 * gradient2(q, hash1(0, pcg(seed))).value);
+      i = i + 1;
+    }
+    j = j + 1;
+  }
+  expectFloat(sum / 4096d, 1d, 0.05d, "the cascade's weights have mean 1");
+}
+
+fn main() i32 {
+  heavy();
+  cascades();
+  done();
+}

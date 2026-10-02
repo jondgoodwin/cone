@@ -1,0 +1,642 @@
+// coast: fractal island coastlines, the three experiments of the fractal
+// survey's section 8.2, written as 8-bit PGM masks (land 255, sea 0) and
+// point files into the current folder, with the measured numbers printed:
+//
+//   congo run --release packages/sculpt/examples/coast.cone
+//
+// The same island is made two ways. As a polyline: a jittered 12-gon refined
+// by sculpt's fractalRefine. As a contour: land where the base 12-gon's
+// inside distance plus noise is positive. Then:
+//
+//   1. e1-poly-h*.pgm, e1-cont-h*.pgm: each way at H = 0.3, 0.5, 0.7, 2048
+//      pixels across, for box counting; the polyline's self-crossings counted
+//      (printed).
+//   2. e2-<way>-v<k>-s<seed>.pgm: 16 seeds of each variant, 512 across:
+//      v0 plain, v1 a heterogeneity field, v2 heavy-tailed draws, v3 a
+//      cascade, v4 a direction field (contour: noise stretched along a slowly
+//      turning direction; polyline: its points moved by a smooth warp).
+//   3. Zoom consistency, printed: a polyline refined 6 levels and 16, and
+//      only the pieces reaching a small window refined 16 levels; every point
+//      compared bit for bit. e3-*.pgm and e3-*.bin are the pictures' inputs.
+//
+// Every number is a pure function of the seeds: run it twice and every file
+// is the same. The box counting and the peninsula counts are a Python script's
+// (kept with the results), on these masks.
+
+mod coast;
+
+import stdio use *;
+import libc;
+import geomath use *;
+import collections use *;
+import fs;
+import noise use *;
+import sculpt use *;
+
+// ======== output ========
+
+fn putText(out &mut List[u8], s &[]u8) {
+  mut i = 0usize;
+  while i < s.len {
+    out.push(s[i]);
+    i = i + 1usize;
+  }
+}
+
+fn putInt(out &mut List[u8], n i32) {
+  mut s = String.empty();
+  s <- i64.from(n);
+  putText(out, s.view());
+}
+
+fn put32(out &mut List[u8], v u32) {
+  out.push(u8.from(v & 0xFFu32));
+  out.push(u8.from((v >> 8u32) & 0xFFu32));
+  out.push(u8.from((v >> 16u32) & 0xFFu32));
+  out.push(u8.from((v >> 24u32) & 0xFFu32));
+}
+
+fn writeBytes(name &[]u8, data &List[u8]) {
+  imm v = data.view();
+  if !(fs.writeFile(name, v) is Ok) { printStr("could not write "); printStr(name); printStr("\n"); }
+}
+
+// A square mask, 'n' pixels across, as a binary PGM
+fn writePgm(name &[]u8, n i32, pix &List[u8]) {
+  mut out = List[u8].withCapacity(pix.len() + 32usize);
+  putText(&mut out, "P5\n");
+  putInt(&mut out, n);
+  putText(&mut out, " ");
+  putInt(&mut out, n);
+  putText(&mut out, "\n255\n");
+  imm v = pix.view();
+  mut i = 0usize;
+  while i < v.len {
+    out.push(v[i]);
+    i = i + 1usize;
+  }
+  writeBytes(name, &out);
+}
+
+// Points with their places, as little-endian (u64 index, f32 x, f32 y)
+fn writePoints(name &[]u8, pts &List[FractalPoint]) {
+  mut out = List[u8].withCapacity(pts.len() * 16usize);
+  mut i = 0usize;
+  while i < pts.len() {
+    imm fp = *pts[i];
+    put32(&mut out, u32.from(fp.index & 0xFFFFFFFFu64));
+    put32(&mut out, u32.from(fp.index >> 32u64));
+    put32(&mut out, fp.point.x as u32);
+    put32(&mut out, fp.point.y as u32);
+    i = i + 1usize;
+  }
+  writeBytes(name, &out);
+}
+
+fn nameOf(prefix &[]u8, a i32, b i32) String {
+  mut s = String.from(prefix);
+  s <- i64.from(a);
+  s <- "-s";
+  if b < 10 { s <- "0"; }
+  s <- i64.from(b);
+  s <- ".pgm";
+  s;
+}
+
+// ======== the island's base: a jittered 12-gon ========
+
+fn baseOutline(seed u32) Profile {
+  mut pts = List[Vec2].withCapacity(12usize);
+  mut i = 0;
+  while i < 12 {
+    imm a = 2. * pi * f32.from(i) / 12.;
+    imm r = 0.55 * (1. + 0.3 * toSigned(hash1(i, seed ^ 0xB5u32)));
+    pts.push(new Vec2(r * cos(a), r * sin(a)));
+    i = i + 1;
+  }
+  new Profile(pts, true);
+}
+
+// Quilez's exact signed distance to a polygon, negative inside
+fn sdPolygon(p Vec2, v &[]Vec2) f32 {
+  imm n = v.len;
+  mut d = (p - v[0usize]).lengthSquared();
+  mut s f32 = 1.;
+  mut i = 0usize;
+  mut j = n - 1usize;
+  while i < n {
+    imm e = v[j] - v[i];
+    imm w = p - v[i];
+    mut t = w.dot(e) / e.dot(e);
+    if t < 0. { t = 0.; }
+    if t > 1. { t = 1.; }
+    imm b = w - e * t;
+    imm bb = b.dot(b);
+    if bb < d { d = bb; }
+    imm c1 = p.y >= v[i].y;
+    imm c2 = p.y < v[j].y;
+    imm c3 = e.x * w.y > e.y * w.x;
+    if (c1 and c2 and c3) or (!c1 and !c2 and !c3) { s = -s; }
+    j = i;
+    i = i + 1usize;
+  }
+  s * libc.sqrtf(d);
+}
+
+// ======== rasterizing a closed polyline (even-odd, pixel centres) ========
+
+// Shell sort of xs[from .. to)
+fn sortRange(xs &mut List[f32], from usize, to usize) {
+  imm n = to - from;
+  mut gap = n / 2usize;
+  while gap > 0usize {
+    mut i = from + gap;
+    while i < to {
+      imm v = *xs[i];
+      mut j = i;
+      while j >= from + gap and *xs[j - gap] > v {
+        xs.set(j, *xs[j - gap]);
+        j = j - gap;
+      }
+      xs.set(j, v);
+      i = i + 1usize;
+    }
+    gap = gap / 2usize;
+  }
+}
+
+// The polygon's inside as an n x n mask of the square centred on (cx, cy),
+// 'half' across each way; row 0 at the top
+fn rasterize(poly &[]Vec2, n i32, cx f32, cy f32, half f32) List[u8] {
+  imm step = 2. * half / f32.from(n);
+  imm top = cy + half;
+  imm left = cx - half;
+  imm m = poly.len;
+  mut counts = List[u32].withCapacity(usize.from(n) + 1usize);
+  mut r = 0;
+  while r <= n { counts.push(0u32); r = r + 1; }
+  // Two passes: count each row's crossings, then place them
+  mut pass = 0;
+  mut xs = List[f32].empty();
+  mut starts = List[u32].withCapacity(usize.from(n) + 1usize);
+  while pass < 2 {
+    mut fill = List[u32].empty();
+    if pass == 1 {
+      mut total = 0u32;
+      r = 0;
+      while r <= n { starts.push(total); fill.push(total); total = total + *counts[usize.from(r)]; r = r + 1; }
+      mut k = 0u32;
+      while k < total { xs.push(0.); k = k + 1u32; }
+    }
+    mut i = 0usize;
+    while i < m {
+      imm a = poly[i];
+      imm b = poly[(i + 1usize) % m];
+      imm ylo = if a.y < b.y {a.y;} else {b.y;};
+      imm yhi = if a.y < b.y {b.y;} else {a.y;};
+      mut j0 = i32.from(libc.floorf((top - yhi) / step - 0.5)) - 1;
+      mut j1 = i32.from(libc.floorf((top - ylo) / step - 0.5)) + 1;
+      if j0 < 0 { j0 = 0; }
+      if j1 > n - 1 { j1 = n - 1; }
+      mut j = j0;
+      while j <= j1 {
+        imm yc = top - (f32.from(j) + 0.5) * step;
+        if (a.y <= yc) != (b.y <= yc) {
+          if pass == 0 {
+            counts.set(usize.from(j), *counts[usize.from(j)] + 1u32);
+          } else {
+            imm x = a.x + (yc - a.y) * (b.x - a.x) / (b.y - a.y);
+            imm at = *fill[usize.from(j)];
+            xs.set(usize.from(at), x);
+            fill.set(usize.from(j), at + 1u32);
+          }
+        }
+        j = j + 1;
+      }
+      i = i + 1usize;
+    }
+    pass = pass + 1;
+  }
+  mut pix = List[u8].withCapacity(usize.from(n * n));
+  r = 0;
+  while r < n {
+    imm from = usize.from(*starts[usize.from(r)]);
+    imm to = usize.from(*starts[usize.from(r + 1)]);
+    sortRange(&mut xs, from, to);
+    mut k = from;
+    mut c = 0;
+    while c < n {
+      imm x = left + (f32.from(c) + 0.5) * step;
+      while k < to and *xs[k] <= x { k = k + 1usize; }
+      pix.push(if ((k - from) & 1usize) == 1usize {255u8;} else {0u8;});
+      c = c + 1;
+    }
+    r = r + 1;
+  }
+  pix;
+}
+
+// ======== self-crossings of a closed polyline ========
+
+fn orient(a Vec2, b Vec2, c Vec2) f32 { (b - a).cross(c - a); }
+
+// Pairs of non-neighbouring pieces that properly cross, by brute force with
+// a box test first
+fn crossings(p &[]Vec2) i64 {
+  imm n = p.len;
+  mut lo = List[Vec2].withCapacity(n);
+  mut hi = List[Vec2].withCapacity(n);
+  mut i = 0usize;
+  while i < n {
+    imm a = p[i];
+    imm b = p[(i + 1usize) % n];
+    lo.push(a.min(b));
+    hi.push(a.max(b));
+    i = i + 1usize;
+  }
+  mut count = 0i64;
+  i = 0usize;
+  while i < n {
+    imm li = *lo[i];
+    imm hii = *hi[i];
+    mut j = i + 2usize;
+    while j < n {
+      if !(i == 0usize and j == n - 1usize) {
+        imm lj = *lo[j];
+        imm hj = *hi[j];
+        if li.x <= hj.x and lj.x <= hii.x and li.y <= hj.y and lj.y <= hii.y {
+          imm a = p[i];
+          imm b = p[(i + 1usize) % n];
+          imm c = p[j];
+          imm d = p[(j + 1usize) % n];
+          imm o1 = orient(a, b, c);
+          imm o2 = orient(a, b, d);
+          imm o3 = orient(c, d, a);
+          imm o4 = orient(c, d, b);
+          if ((o1 > 0. and o2 < 0.) or (o1 < 0. and o2 > 0.)) and ((o3 > 0. and o4 < 0.) or (o3 < 0. and o4 > 0.)) {
+            count = count + 1i64;
+          }
+        }
+      }
+      j = j + 1usize;
+    }
+    i = i + 1usize;
+  }
+  count;
+}
+
+// ======== the polyline way ========
+
+const POLY_AMP f32 = 0.6;
+
+// Variant k's refinement of seed's island at roughness h
+fn polyDials(k i32, seed u32, levels i32, h f32) Fractal {
+  mut f = fractal(seed, levels, h, POLY_AMP);
+  if k == 1 { f.heteroStrength = 1.6; f.heteroScale = 2.; }
+  elif k == 2 { f.amplitude = 0.35; f.tail = 2.; f.tailCap = 6; }
+  elif k == 3 { f.intermittency = 0.9; }
+  f;
+}
+
+// A smooth warp of the plane: each point moved by two fBm's
+fn warpPoint(p Vec2, seed u32) Vec2 {
+  imm q = p * 2.;
+  imm dx = fbm2(q, seed ^ 0x3A7u32, 4, 2., 0.5).value;
+  imm dy = fbm2(new Vec2(q.x + 5.25, q.y + 1.25), seed ^ 0x3A7u32, 4, 2., 0.5).value;
+  new Vec2(p.x + 0.12 * dx, p.y + 0.12 * dy);
+}
+
+fn polyIsland(k i32, seed u32, levels i32, h f32) Profile {
+  imm base = baseOutline(seed);
+  imm f = polyDials(k, seed, levels, h);
+  mut out = fractalRefine(&base, &f);
+  if k == 4 {
+    mut i = 0usize;
+    while i < out.points.len() {
+      out.points.set(i, warpPoint(*out.points[i], seed));
+      i = i + 1usize;
+    }
+  }
+  out;
+}
+
+// ======== the contour way ========
+
+const CONT_AMP f32 = 0.22;
+const CONT_FREQ f32 = 2.5;
+
+// fBm whose octaves are each scaled by a smooth field of heavy-tailed
+// magnitudes (|heavySigned| at the octave's lattice points, blended by the
+// quintic fade, divided by their mean of 1.75): most of the coast ordinary,
+// here and there a bump many times the usual size
+fn heavyFbm(p Vec2, seed u32, octaves i32, gain f32) f32 {
+  mut sum f32 = 0.;
+  mut amp f32 = 1.;
+  mut freq f32 = 1.;
+  mut i = 0;
+  while i < octaves {
+    imm q = new Vec2(p.x * freq, p.y * freq);
+    imm n = gradient2(q, hash1(i, seed)).value;
+    imm fx = libc.floorf(q.x);
+    imm fy = libc.floorf(q.y);
+    imm ix = i32.from(fx);
+    imm iy = i32.from(fy);
+    imm hs = hash1(i, seed ^ 0x7E1u32);
+    imm a = heavyAt(ix, iy, hs);
+    imm b = heavyAt(ix + 1, iy, hs);
+    imm c = heavyAt(ix, iy + 1, hs);
+    imm d = heavyAt(ix + 1, iy + 1, hs);
+    imm u = fade(q.x - fx);
+    imm v = fade(q.y - fy);
+    imm m = (a + (b - a) * u) * (1. - v) + (c + (d - c) * u) * v;
+    sum = sum + amp * n * m * 0.5714286;
+    amp = amp * gain;
+    freq = freq * 2.;
+    i = i + 1;
+  }
+  sum;
+}
+
+fn heavyAt(x i32, y i32, seed u32) f32 {
+  imm h = hash2(x, y, seed);
+  libc.fabsf(heavySigned(h.x, h.y, 2., 5));
+}
+
+fn fade(t f32) f32 { t * t * t * (t * (t * 6. - 15.) + 10.); }
+
+// Variant k's land field at p: positive on land
+fn contField(k i32, p Vec2, seed u32, h f32, octaves i32, base &[]Vec2) f32 {
+  imm q = p * CONT_FREQ;
+  imm gain = libc.powf(2., -h);
+  imm n = if k == 1 {
+    // the heterogeneity field sets H locally: h + 0.8 g, held to [0.05, 1.2]
+    imm g = gradient2(p * 1.2, seed ^ 0x51EDu32).value;
+    mut hl = h + 0.8 * g;
+    if hl < 0.05 { hl = 0.05; }
+    if hl > 1.2 { hl = 1.2; }
+    fbm2(q, seed, octaves, 2., libc.powf(2., -hl)).value;
+  } elif k == 2 {
+    heavyFbm(q, seed, octaves, gain);
+  } elif k == 3 {
+    cascade2(q, seed, octaves, 2., gain, 0.9);
+  } elif k == 4 {
+    // stretched four times along a direction that turns slowly over the island
+    imm th = pi * gradient2(p * 0.8, seed ^ 0xD1u32).value * 1.5;
+    imm d = new Vec2(cos(th), sin(th));
+    fbm2(q - d * (q.dot(d) * 0.75), seed, octaves, 2., gain).value;
+  } else {
+    fbm2(q, seed, octaves, 2., gain).value;
+  };
+  CONT_AMP * n - sdPolygon(p, base);
+}
+
+// The field's mask over the square centred on (cx, cy), 'half' across, n
+// pixels a side, pixel (c, r) at the centre computed from its own indices
+fn contMask(k i32, seed u32, h f32, octaves i32, n i32, cx f32, cy f32, half f32) List[u8] {
+  imm base = baseOutline(seed);
+  imm bv = base.points.view();
+  imm step = 2. * half / f32.from(n);
+  mut pix = List[u8].withCapacity(usize.from(n * n));
+  mut r = 0;
+  while r < n {
+    mut c = 0;
+    while c < n {
+      imm p = new Vec2(cx - half + (f32.from(c) + 0.5) * step, cy + half - (f32.from(r) + 0.5) * step);
+      pix.push(if contField(k, p, seed, h, octaves, bv) > 0. {255u8;} else {0u8;});
+      c = c + 1;
+    }
+    r = r + 1;
+  }
+  pix;
+}
+
+// ======== experiment 1: polyline against contour ========
+
+fn hName(prefix &[]u8, h i32) String {
+  mut s = String.from(prefix);
+  s <- "0.";
+  s <- i64.from(h);
+  s <- ".pgm";
+  s;
+}
+
+fn experiment1() {
+  printStr("== experiment 1: polyline against contour, seed 1\n");
+  mut hi = 3;
+  while hi <= 7 {
+    imm h = f32.from(hi) * 0.1;
+    imm island = polyIsland(0, 1u32, 13, h);
+    imm pv = island.points.view();
+    imm mask = rasterize(pv, 2048, 0., 0., 1.);
+    imm pn = hName("e1-poly-h", hi);
+    writePgm(pn.view(), 2048, &mask);
+    imm coarse = polyIsland(0, 1u32, 10, h);
+    printStr("H 0.");
+    printInt(i64.from(hi));
+    printStr(": polyline ");
+    printInt(i64.from(island.points.len()));
+    printStr(" points; self-crossings at 10 levels (12288 pieces): ");
+    printInt(crossings(coarse.points.view()));
+    printStr("\n");
+    imm cm = contMask(0, 1u32, h, 11, 2048, 0., 0., 1.);
+    imm cn = hName("e1-cont-h", hi);
+    writePgm(cn.view(), 2048, &cm);
+    hi = hi + 2;
+  }
+}
+
+// The polyline's two dials side by side: amplitude 0.3, 0.6, 0.9 (a) against
+// roughness 0.3, 0.5, 0.7, 1.0 (h; 1.0 is Red Blob's halving), seed 1, 512
+// across
+fn experiment1Sweep() {
+  mut ai = 1;
+  while ai <= 3 {
+    mut hi = 0;
+    while hi < 4 {
+      imm h = if hi == 0 {0.3;} elif hi == 1 {0.5;} elif hi == 2 {0.7;} else {1.;};
+      imm base = baseOutline(1u32);
+      imm f = fractal(1u32, 11, h, 0.3 * f32.from(ai));
+      imm island = fractalRefine(&base, &f);
+      imm mask = rasterize(island.points.view(), 512, 0., 0., 1.);
+      imm name = nameOf("e1-sweep-a", ai, hi);
+      writePgm(name.view(), 512, &mask);
+      hi = hi + 1;
+    }
+    ai = ai + 1;
+  }
+}
+
+// ======== experiment 2: galleries ========
+
+fn experiment2() {
+  printStr("== experiment 2: galleries, H 0.5\n");
+  mut k = 0;
+  while k < 5 {
+    mut s = 1;
+    mut crossed = 0i64;
+    while s <= 16 {
+      imm island = polyIsland(k, u32.from(s), 11, 0.5);
+      imm mask = rasterize(island.points.view(), 512, 0., 0., 1.);
+      imm pn = nameOf("e2-poly-v", k, s);
+      writePgm(pn.view(), 512, &mask);
+      imm coarse = polyIsland(k, u32.from(s), 9, 0.5);
+      crossed = crossed + crossings(coarse.points.view());
+      imm cm = contMask(k, u32.from(s), 0.5, 9, 512, 0., 0., 1.);
+      imm cn = nameOf("e2-cont-v", k, s);
+      writePgm(cn.view(), 512, &cm);
+      s = s + 1;
+    }
+    printStr("polyline variant ");
+    printInt(i64.from(k));
+    printStr(": self-crossings over 16 seeds at 9 levels: ");
+    printInt(crossed);
+    printStr("\n");
+    k = k + 1;
+  }
+}
+
+// ======== experiment 3: zoom consistency ========
+
+fn sameBits(a Vec2, b Vec2) Bool { (a.x as u32) == (b.x as u32) and (a.y as u32) == (b.y as u32); }
+
+fn experiment3() {
+  printStr("== experiment 3: zoom consistency, polyline, seed 1, H 0.5\n");
+  imm base = baseOutline(1u32);
+  imm fine = fractal(1u32, 16, 0.5, POLY_AMP);
+  imm coarseF = fractal(1u32, 6, 0.5, POLY_AMP);
+  imm unbounded = new Aabb2(new Vec2(-1000000., -1000000.), new Vec2(1000000., 1000000.));
+  imm all = fractalRefineWithin(&base, &fine, unbounded);
+  imm coarse = fractalRefineWithin(&base, &coarseF, unbounded);
+  imm full = fractalRefine(&base, &fine);
+  printStr("full points: ");
+  printInt(i64.from(all.len()));
+  printStr("; coarse points: ");
+  printInt(i64.from(coarse.len()));
+  printStr("\n");
+
+  // fractalRefine and an unbounded window agree
+  mut agree = all.len() == full.points.len();
+  mut i = 0usize;
+  while agree and i < all.len() {
+    if !sameBits(all[i].point, *full.points[i]) or all[i].index != u64.from(i) { agree = false; }
+    i = i + 1usize;
+  }
+  printStr("fractalRefine equals the unbounded window, bit for bit: ");
+  printStr(if agree {"yes\n";} else {"NO\n";});
+
+  // The coarse outline is unchanged: coarse point i is fine point i 2^10
+  mut kept = 0;
+  mut moved = 0;
+  i = 0usize;
+  while i < coarse.len() {
+    imm at = usize.from(coarse[i].index) * 1024usize;
+    if sameBits(coarse[i].point, all[at].point) { kept = kept + 1; } else { moved = moved + 1; }
+    i = i + 1usize;
+  }
+  printStr("coarse points kept bit for bit by the 16-level outline: ");
+  printInt(i64.from(kept));
+  printStr(" of ");
+  printInt(i64.from(kept + moved));
+  printStr("\n");
+
+  // Zoom into an inlet: a window round coarse point 200, 0.02 across
+  imm c = coarse[200usize].point;
+  imm half f32 = 0.01;
+  imm window = new Aabb2(new Vec2(c.x - half, c.y - half), new Vec2(c.x + half, c.y + half));
+  imm part = fractalRefineWithin(&base, &fine, window);
+  mut same = 0;
+  mut differ = 0;
+  i = 0usize;
+  while i < part.len() {
+    if sameBits(part[i].point, all[usize.from(part[i].index)].point) { same = same + 1; } else { differ = differ + 1; }
+    i = i + 1usize;
+  }
+  // Every full point inside the window was made by the zoomed run
+  mut inside = 0;
+  mut missing = 0;
+  mut k = 0usize;
+  i = 0usize;
+  while i < all.len() {
+    if window.contains(all[i].point) {
+      inside = inside + 1;
+      while k < part.len() and part[k].index < u64.from(i) { k = k + 1usize; }
+      if !(k < part.len() and part[k].index == u64.from(i)) { missing = missing + 1; }
+    }
+    i = i + 1usize;
+  }
+  printStr("window centre (");
+  printFloat(f64.from(c.x));
+  printStr(", ");
+  printFloat(f64.from(c.y));
+  printStr("), 0.02 across: made ");
+  printInt(i64.from(part.len()));
+  printStr(" points of ");
+  printInt(i64.from(all.len()));
+  printStr("; equal to the full run's bit for bit: ");
+  printInt(i64.from(same));
+  printStr(", different: ");
+  printInt(i64.from(differ));
+  printStr("; full points inside the window: ");
+  printInt(i64.from(inside));
+  printStr(", missing from the zoomed run: ");
+  printInt(i64.from(missing));
+  printStr("\n");
+  writePoints("e3-coarse.bin", &coarse);
+  writePoints("e3-zoom.bin", &part);
+  imm fv = full.points.view();
+  imm wmask = rasterize(fv, 1024, c.x, c.y, half);
+  writePgm("e3-poly-window-full.pgm", 1024, &wmask);
+
+  // The contour: a window rendered alone against the same pixels of the
+  // whole, and the coast's change when octaves are added
+  printStr("== experiment 3: contour, seed 1, H 0.5\n");
+  imm whole = contMask(0, 1u32, 0.5, 16, 4096, 0., 0., 1.);
+  // pixels 2048..2303 across and 1024..1279 down: a 256-pixel window,
+  // whose centre is pixel 2176, 1152
+  imm step f32 = 2. / 4096.;
+  imm wx = -1. + 2048. * step + 128. * step;
+  imm wy = 1. - 1024. * step - 128. * step;
+  imm win = contMask(0, 1u32, 0.5, 16, 256, wx, wy, 128. * step);
+  mut eq = 0;
+  mut ne = 0;
+  mut r = 0;
+  while r < 256 {
+    mut cc = 0;
+    while cc < 256 {
+      if *win[usize.from(r * 256 + cc)] == *whole[usize.from((r + 1024) * 4096 + cc + 2048)] { eq = eq + 1; } else { ne = ne + 1; }
+      cc = cc + 1;
+    }
+    r = r + 1;
+  }
+  printStr("contour window of 256 x 256 alone against the 4096 x 4096 whole: equal ");
+  printInt(i64.from(eq));
+  printStr(", different ");
+  printInt(i64.from(ne));
+  printStr("\n");
+  writePgm("e3-cont-window.pgm", 256, &win);
+  imm c6 = contMask(0, 1u32, 0.5, 6, 1024, 0., 0., 1.);
+  imm c16 = contMask(0, 1u32, 0.5, 16, 1024, 0., 0., 1.);
+  writePgm("e3-cont-oct6.pgm", 1024, &c6);
+  writePgm("e3-cont-oct16.pgm", 1024, &c16);
+  mut flips = 0;
+  mut land = 0;
+  i = 0usize;
+  while i < c6.len() {
+    if *c6[i] == 255u8 { land = land + 1; }
+    if *c6[i] != *c16[i] { flips = flips + 1; }
+    i = i + 1usize;
+  }
+  printStr("contour at 1024 x 1024, 6 octaves against 16: pixels changed ");
+  printInt(i64.from(flips));
+  printStr(" (land at 6 octaves: ");
+  printInt(i64.from(land));
+  printStr(")\n");
+}
+
+fn main() i32 {
+  experiment1();
+  experiment1Sweep();
+  experiment2();
+  experiment3();
+  0;
+}
