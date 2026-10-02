@@ -146,6 +146,14 @@ add_executable(conec
 
 target_link_libraries(conec ${llvm_libs})
 
+# On Windows the manifest makes UTF-8 the process's code page, so that
+# conec's arguments, environment and file names arrive, and are opened, in
+# the UTF-8 it holds paths in (compiler/c/doc/compiler/architecture.md,
+# "Paths are UTF-8")
+if(WIN32)
+	target_sources(conec PRIVATE compiler/c/conec.manifest)
+endif()
+
 # The fallback packages folder, where core and stdio are: this repository's
 # own. conec first takes the CONE_PACKAGES environment variable, then the
 # nearest packages folder at or above its own executable's folder (which, from

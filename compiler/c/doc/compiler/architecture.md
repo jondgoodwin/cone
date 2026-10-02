@@ -111,6 +111,22 @@ alike.
 field (`llvmtype`, `llvmvar`, `typeinfo`) that the front end sets to NULL and
 never reads.
 
+## Paths are UTF-8
+
+Every path `conec` holds is UTF-8 bytes, on every platform: what it opens,
+creates and lists, what it prints in a message, and what it hands LLVM, whose
+file functions read a `char *` path as UTF-8. The C code calls the narrow
+functions (`fopen`, `_findfirst`, `_getcwd`, `getenv`, `GetModuleFileNameA`)
+and receives a narrow `argv`. On Windows those speak the process's code page,
+and the application manifest, `compiler/c/conec.manifest`, embedded at link
+by both build systems, makes that code page UTF-8 (`activeCodePage`, Windows
+10 version 1903 and later). That is why there is no wide-character code: a
+path under `café日本` arrives in `argv`, is opened and is printed as the same
+bytes. The C locale stays `"C"`, so character classification and what is
+written to a console are untouched. `tools/congo/test_congo.py`,
+`test_a_lone_file_under_a_non_ascii_folder`, holds it, since the suite's
+scenarios are checked-in files with ASCII names.
+
 ## Hazards
 
 - **Adding a field to a node means auditing its clone function.** A clone that

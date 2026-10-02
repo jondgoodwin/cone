@@ -365,6 +365,31 @@ class Scenarios(unittest.TestCase):
         self.congo("clean", "lone.cone", cwd=self.root)
         self.assertEqual(list((self.root / "home" / "lone").iterdir()), [])
 
+    def test_a_lone_file_under_a_non_ascii_folder(self):
+        # A path beyond ASCII, in the folder and the file's name, reaches conec
+        # whole: the source is read, and the build description, the object and
+        # the executable are written into a build folder named for the file,
+        # which conec and the linker are given
+        name = "café日本"
+        write(self.root / name / f"{name}.cone", """
+            mod lone;
+
+            import stdio use *;
+
+            fn main() i32 {
+              print <- "lone ";
+              print <- 6i64 * 7i64;
+              print <- "\\n";
+              0i32;
+            }
+            """)
+        run = self.congo("run", f"{name}/{name}.cone", cwd=self.root)
+        self.assertEqual(self.program_output(run), "lone 42\n")
+        spelled = str((self.root / name / f"{name}.cone").resolve())
+        digest = hashlib.sha1((spelled.lower() if IS_WINDOWS else spelled).encode()).hexdigest()
+        self.assertTrue((self.root / "home" / "lone" / f"{name}-{digest[:10]}" / "debug"
+                         / f"lone{congo.EXE_EXT}").is_file())
+
     def test_a_package_from_the_registry_importing_stdio(self):
         packages = self.root / "mypackages"
         self.registry(packages)
