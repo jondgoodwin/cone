@@ -292,7 +292,7 @@ Visual Studio projects stay at the root.
   `python tools/congo/test_congo.py` checks it against a built `conec`.
   `tools/congo/` is also the package of its port to Cone (`congo.toml`,
   `src/congo.cone`), which `congo.py build` there builds first and which then
-  builds itself, and which so far does everything but `congo test`;
+  builds itself, and which does everything `congo.py` does, `congo test` too;
   `CONGO_EXE` points `test_congo.py` at its build (README, "Congo in Cone").
 - `tools/shaders/`: `shaders.py` compiles each package's Slang shaders
   (`.slang`) ahead of time to SPIR-V (`.spv`, committed beside them) with the

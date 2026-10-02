@@ -5,22 +5,22 @@
 
 // CONEC names the compiler; else the Cone repository's own build,
 // build/x64-release/conec.exe; else 'conec' on PATH
-fn findConec(repo &[]u8) String {
+fn findConec(repo &[]u8) Result[String, String] {
   imm named = envOr("CONEC", "");
   if not named.isEmpty() {
     imm p = winPath(named.view());
-    if not fs.isFile(p.view()) { fail(cat("CONEC names ", p.view(), ", which does not exist")); }
-    return p;
+    if not fs.isFile(p.view()) { return Error[String, String][cat("CONEC names ", p.view(), ", which does not exist")]; }
+    return Ok[String, String][p];
   }
   imm build = joined(repo, "build\\x64-release\\conec.exe");
   if repo.len > 0usize and fs.isFile(build.view()) {
     warnIfStale(repo, build.view());
-    return build;
+    return Ok[String, String][build];
   }
   imm pathList = envOr("PATH", "");
   imm onPath = which("conec", pathList.view());
-  if not onPath.isEmpty() { return onPath; }
-  fail(cat("no conec: set CONEC to the compiler, build it at ", build.view(), ", or put conec on PATH"));
+  if not onPath.isEmpty() { return Ok[String, String][onPath]; }
+  Error[String, String][cat("no conec: set CONEC to the compiler, build it at ", build.view(), ", or put conec on PATH")];
 }
 
 // A stale conec fails good sources in ways that look like a language
@@ -62,7 +62,7 @@ fn warnIfStale(repo &[]u8, conec &[]u8) {
 }
 
 // CONESTD names the runtime library; else it is the one built beside conec
-fn findConestd(conec &[]u8) String {
+fn findConestd(conec &[]u8) Result[String, String] {
   imm named = envOr("CONESTD", "");
   mut lib = String.empty();
   if not named.isEmpty() { lib = winPath(named.view()); }
@@ -71,9 +71,9 @@ fn findConestd(conec &[]u8) String {
     lib = joined(folder.view(), "conestd.lib");
   }
   if not fs.isFile(lib.view()) {
-    fail(cat("no conestd library at ", lib.view(), "; build it with conec, or set CONESTD"));
+    return Error[String, String][cat("no conestd library at ", lib.view(), "; build it with conec, or set CONESTD")];
   }
-  lib;
+  Ok[String, String][lib];
 }
 
 // Arguments for process.run, from slices
@@ -221,9 +221,9 @@ struct Vcvars {
 // vcvars64.bat's environment, taken on by Congo itself (for the link, and
 // undone after it), run in the environment Congo has. It keeps what LIB
 // already lists, behind its own folders.
-fn runVcvars(changes &mut EnvChanges) Vcvars {
+fn runVcvars(changes &mut EnvChanges) Result[Vcvars, String] {
   imm vcvars = findVcvars();
-  if vcvars.isEmpty() { fail(String.from("no Visual Studio C++ tools (vcvars64.bat) to link with")); }
+  if vcvars.isEmpty() { return Error[Vcvars, String][String.from("no Visual Studio C++ tools (vcvars64.bat) to link with")]; }
   // The line as written, not quoted again: cmd would not recognise the
   // batch path. The marker divides what vcvars64.bat prints, in the
   // console's code page, from the environment, which 'cmd /u' prints in
@@ -259,7 +259,7 @@ fn runVcvars(changes &mut EnvChanges) Vcvars {
     case is None { printed = consoleText(raw); }
   }
   if code != 0u32 or variables.isEmpty() {
-    fail(cat(vcvars.view(), " failed:\n", printed.view(), err.view()));
+    return Error[Vcvars, String][cat(vcvars.view(), " failed:\n", printed.view(), err.view())];
   }
   // Each variable set printed, in any spelling of its name, where its value
   // is not what it already is
@@ -277,7 +277,7 @@ fn runVcvars(changes &mut EnvChanges) Vcvars {
     i = i + 1usize;
   }
   printed <- err.view();
-  new Vcvars(true, vcvars, printed);
+  Ok[Vcvars, String][new Vcvars(true, vcvars, printed)];
 }
 
 // Why no Microsoft link.exe was found: which vcvars64.bat ran and how its
@@ -308,32 +308,84 @@ fn noLinker(tool &[]u8, pathList &[]u8, ran &Vcvars) String {
   text;
 }
 
+// The linker a build links with: link.exe, conestd, and the environment the
+// link runs in, each variable it sets beyond Congo's own
+struct Linker {
+  pub tool String;
+  pub conestd String;
+  pub names List[String];
+  pub values List[String];
+
+  // Set the link's environment in Congo's own, in changes, for one link
+  pub fn apply(self &, changes &mut EnvChanges) {
+    mut i = 0usize;
+    while i < names.len() {
+      changes.set(names[i].view(), values[i].view());
+      i = i + 1usize;
+    }
+  }
+}
+
+fn noLinkerYet() Linker {
+  new Linker(String.empty(), String.empty(), List[String].empty(), List[String].empty());
+}
+
 // The system linker, with the environment it needs: Microsoft's link.exe in
 // the environment vcvars64.bat sets up, which Congo produces itself, so no
 // Developer Command Prompt is needed. An inherited environment is used only
 // when its link.exe is Microsoft's and links for x64, as conec's objects
 // are: Visual Studio's default Developer Command Prompt links for x86. The
-// environment it needs is set in Congo's own, in changes, for the link.
-fn findLinker(changes &mut EnvChanges) String {
+// environment is worked out in Congo's own and put back after; the Linker
+// holds what it set, for each link.
+fn findLinker(conestd &[]u8) Result[Linker, String] {
+  mut changes = noChanges();
+  match linkerIn(&mut changes) {
+    case imm ok Ok {
+      mut linker = new Linker(ok.value.copy(), String.from(conestd), List[String].empty(), List[String].empty());
+      mut i = 0usize;
+      while i < changes.names.len() {
+        imm name = changes.names[i].view();
+        linker.names.push(String.from(name));
+        linker.values.push(envOr(name, ""));
+        i = i + 1usize;
+      }
+      changes.restore();
+      Ok[Linker, String][linker];
+    }
+    case imm e Error {
+      changes.restore();
+      Error[Linker, String][e.value.copy()];
+    }
+  }
+}
+
+// link.exe, its environment set in Congo's own, in changes
+fn linkerIn(changes &mut EnvChanges) Result[String, String] {
   mut ran = new Vcvars(false, String.empty(), String.empty());
   imm startPath = envOr("PATH", "");
   imm inherited = which("link.exe", startPath.view());
+  mut vcvarsNeeded = false;
   if not (not inherited.isEmpty() and isMsvcLinker(inherited.view())) {
-    ran = runVcvars(changes);
+    vcvarsNeeded = true;
   }
   else {
     imm target = msvcTarget(inherited.view());
     if not (target.isEmpty() or target.equals("x64")) {
       // Silently, as when there is no linker: nothing is the user's to fix
       withoutVsLibs(changes);
-      ran = runVcvars(changes);
+      vcvarsNeeded = true;
+    }
+  }
+  if vcvarsNeeded {
+    match runVcvars(changes) {
+      case mut ok Ok { ran <=> ok.value; }
+      case imm e Error { return Error[String, String][e.value.copy()]; }
     }
   }
   imm pathList = envOr("PATH", "");
   imm tool = which("link.exe", pathList.view());
   if tool.isEmpty() or not isMsvcLinker(tool.view()) {
-    imm why = noLinker(tool.view(), pathList.view(), &ran);
-    fail(why);
+    return Error[String, String][noLinker(tool.view(), pathList.view(), &ran)];
   }
-  tool;
+  Ok[String, String][tool];
 }

@@ -36,6 +36,8 @@ struct Header {
   pub c Bool;                // 'mod @c ...': a C-named module
 }
 
+fn noHeader() Header { new Header(false, String.empty(), List[Import].empty(), false, noImport(), false); }
+
 // -------- names --------
 
 // Whether word is one of the space-separated words
@@ -274,17 +276,17 @@ fn withoutBom(text String) String {
 // 'use' are passed over. 'mod trait' declares a module trait and is not a
 // 'mod' line. An 'import' is 'import name' or 'import "path"', optionally with
 // 'pub', and whatever 'use' clause follows.
-fn scanHeader(file &[]u8) Header {
+fn scanHeader(file &[]u8) Result[Header, String] {
   mut text = String.empty();
   match fs.readFile(file) {
     case mut ok Ok { text <=> ok.value; }
     case imm e Error {
       imm m = e.value.message();
-      fail(cat("cannot read ", file, ": ", m.view()));
+      return Error[Header, String][cat("cannot read ", file, ": ", m.view())];
     }
   }
   mut toks = new Toks(withoutBom(text), 0usize, 1u32, List[Tok].empty(), 0usize);
-  mut header = new Header(false, String.empty(), List[Import].empty(), false, noImport(), false);
+  mut header = noHeader();
   mut k = if toks.isName("pub", 0usize) {1usize;} else {0usize;};
   if toks.isName("mod", k) and not toks.isName("trait", k + 1usize) {
     mut j = 0usize;
@@ -334,5 +336,5 @@ fn scanHeader(file &[]u8) Header {
     }
     toks.skipStatement();
   }
-  header;
+  Ok[Header, String][header];
 }
