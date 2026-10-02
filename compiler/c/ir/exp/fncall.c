@@ -2325,6 +2325,10 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
 
     // Virtual reference
     case VirtRefTag: {
+        // Calling the reference itself calls the trait's '()' method, as it does
+        // through a regular reference
+        if (node->methfld == NULL && !(node->flags & FlagIndex))
+            node->methfld = (INode*)newMemberUseNode(parensName);
         if (fnCallIsValueCompare(opname))
             fnCallRefNoCompare(node, opname, "comparing what two virtual references refer to is not built");
         else if (node->methfld) {
