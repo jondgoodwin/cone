@@ -46,8 +46,8 @@ typedef struct ParseState {
     INsTypeNode *typenode;  // Current type
     int inrettype;          // Non-zero while parseFnSig reads a return type, where a '{' opens the declared function's body
     int intype;             // Non-zero while parseType reads a type, where '&new' is a permission, not a borrow of a construction
-    FnSigNode *lifesig;     // The signature whose types are being read, where a borrowed reference may name its lifetime ('&'a T');
-                            // NULL elsewhere, and inside a type's arguments
+    FnSigNode *lifesig;     // The signature whose types are being read, where a type may name lifetimes ('&'a T', 'Cursor['a]'); NULL elsewhere
+    StructNode *lifestruct; // The struct (or enum) whose field's type is being read, which may name its lifetimes; NULL elsewhere
     int entryparen;         // Non-zero while an entry after '<-' is begun: a '(' first is a parenthesized list of entries (parseEntry)
     ModuleNode *core;       // The core package, once loaded: every module loaded after it imports it
     BuildModule *build;     // The build description's entry for the current module; NULL where it is not described
@@ -115,10 +115,12 @@ void parseExternFnCheck(FnDclNode *fn);
 INode *parseFn(ParseState *parse, uint16_t mayflags);
 // Parse a macro declaration
 MacroDclNode *parseMacro(ParseState *parse);
-// Parse a list of generic variables and add to the genericnode
-Nodes *parseGenericParms(ParseState *parse, int annotate);
-// Parse a 'where' clause, with the lexer on 'where', into '*wherep'
-void parseWhere(ParseState *parse, Nodes **wherep);
+// Parse a list of generic variables and add to the genericnode; a struct's
+// lifetimes among them go to '*lifes' (NULL refuses them)
+Nodes *parseGenericParms(ParseState *parse, int annotate, LifeParms **lifes);
+// Parse a 'where' clause, with the lexer on 'where', into '*wherep', and its
+// lifetime comparisons into '*orderp' (NULL refuses them)
+void parseWhere(ParseState *parse, Nodes **wherep, LifeOrder **orderp);
 INode *parseIf(ParseState *parse);
 INode *parseMatch(ParseState *parse);
 INode *parseWhile(ParseState *parse, Name *lifesym, int stmtflag);

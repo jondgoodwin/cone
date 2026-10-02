@@ -212,6 +212,8 @@ int lexNextIsWord(char *word);
 // In a function-reference type's parameter list, does the name the lexer is on
 // begin a type ('geomath.Vec3', 'List[i32]') rather than name a parameter?
 int lexIdentOpensType();
+// Is the token after the current one a lifetime ('a)? The lexer is left where it was.
+int lexPeekIsLifetime();
 // With the lexer on a name, does a value follow it rather than an operator or
 // other continuation of an expression the name begins? ('fill' after '<-')
 int lexNextOpensValue();

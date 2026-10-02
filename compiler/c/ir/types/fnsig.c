@@ -16,6 +16,8 @@ FnSigNode *newFnSigNode() {
     sig->parms = newNodes(8);
     sig->rettype = unknownType;
     sig->lifenamed = 0;
+    sig->lifeorder = NULL;
+    sig->lifechecked = 0;
     return sig;
 }
 
@@ -98,6 +100,7 @@ void fnSigTypeCheck(TypeCheckState *pstate, FnSigNode *sig) {
                 "''static' is named on a parameter's own reference ('p &'static T') or in the result, not inside a parameter's type: what a caller passes there is not checked to be global.");
     }
     itypeTypeCheck(pstate, &sig->rettype);
+    lifeSigCheck(sig);
 }
 
 // Compare two function signatures to see if they are equivalent

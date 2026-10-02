@@ -20,6 +20,7 @@ NameUseNode *newNameUseNode(Name *namesym) {
     name->vtype = unknownType;
     name->dclnode = NULL;
     name->namesym = namesym;
+    name->lifeuse = NULL;
     return name;
 }
 
@@ -432,6 +433,9 @@ void nameUseTypeCheckType(TypeCheckState *pstate, NameUseNode **namep) {
         if (dcl)
             inodeTypeCheckAny(pstate, &dcl);
     }
+    // The lifetimes a use names are the struct's to declare
+    if (name->lifeuse)
+        lifeUseCheck(name);
 }
 
 // Ensure variable has a usable value

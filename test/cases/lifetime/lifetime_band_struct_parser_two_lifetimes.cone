@@ -1,0 +1,71 @@
+// A parser holding two borrows of unrelated lifetimes, ''src' for the text it
+// reads and ''ar' for the scratch arena it counts in, used both ways:
+// - text old, arena young: 'firstWord' returns 'p.word()', a word of the
+//   text its caller lent, while the arena is its own local;
+// - arena old, texts young: each pass of a loop parses a text of its own and
+//   writes the arena while the word is still used.
+// 'word' returns '&[]'src u8', so its result carries what the parser holds
+// in ''src' and not what it holds in ''ar': neither the local arena (first)
+// nor the arena's borrow (second) is tied to the word.
+//
+// Verdict: accept; prints "cone" and "hi hi hi 33".
+// Basis: two unrelated lifetimes in one struct are allowed, and a value is
+// usable wherever all its lifetimes hold; a call carries of what its receiver
+// holds only the lifetimes its result may hold.
+// Master b07a3adc: refused at parse (ErrorBadTok: a lifetime in a struct's
+// brackets).
+
+mod lifetime_band_struct_parser_two_lifetimes;
+
+import stdio use *;
+
+struct Scratch { pub count i64; }
+
+struct Parser['src, 'ar] {
+  pub text &[]'src u8;
+  pub ar &'ar mut Scratch;
+  pub at usize;
+  // The next word: where the text points, never into the arena
+  pub fn word(self &mut) &[]'src u8 {
+    while at < text.len() and text[at] == 32u8 {
+      at = at + 1usize;
+    }
+    imm start = at;
+    while at < text.len() and text[at] != 32u8 {
+      at = at + 1usize;
+    }
+    ar.count = ar.count + 1;
+    &text[start..at];
+  }
+}
+
+// Text old, arena young: the word outlives the arena
+fn firstWord(text &[]u8) &[]u8 {
+  mut scratch = new Scratch(0);
+  mut p = new Parser(text, &mut scratch, 0usize);
+  p.word();
+}
+
+// Arena old, texts young: each word dies with its text, the arena lives on
+fn countWords() i64 {
+  mut scratch = new Scratch(0);
+  mut i = 0;
+  while i < 3 {
+    imm buf Array[u8, 3] = [104u8, 105u8, 32u8];
+    mut p = new Parser(&[]buf, &mut scratch, 0usize);
+    imm w = p.word();
+    scratch.count = scratch.count + 10;
+    printStr(w);
+    printStr(" ");
+    i = i + 1;
+  }
+  scratch.count;
+}
+
+fn main() {
+  imm line Array[u8, 9] = [99u8, 111u8, 110u8, 101u8, 32u8, 114u8, 117u8, 110u8, 115u8];
+  printStr(firstWord(&[]line));
+  printStr("\n");
+  printInt(countWords());
+  printStr("\n");
+}

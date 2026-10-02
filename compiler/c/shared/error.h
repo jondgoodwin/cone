@@ -430,7 +430,10 @@ enum ErrorCode {
     ErrorConstShift = 1231,     // A shift of a constant by its type's width or more, or by a negative amount
 
     // Named lifetimes (ir/types/lifetime.h)
-    ErrorLifetimePlace = 1232,  // A lifetime named where none is checked: outside a function's signature, inside a type's arguments, on a borrow, or ''static' inside a parameter's reference
+    ErrorLifetimePlace = 1232,  // A lifetime named where none is checked: outside a function's signature or a struct's fields, on a borrow, in a function's brackets, or ''static' inside a parameter's reference
+    ErrorLifetimeUndeclared = 1233, // A lifetime a struct's fields or a 'where' clause name that is not declared: a struct's second undeclared name, a borrow of none in a struct declaring lifetimes, a name no type of the signature holds
+    ErrorLifetimeArgs = 1234,   // A use naming lifetimes its type does not declare, or not as many as it declares
+    ErrorLifetimeOr = 1235,     // A lifetime comparison under 'or' or 'not' in a 'where' clause: lifetimes are never instanced, so only 'and' joins one
 
     // Warnings
     WarnCode = 3000,

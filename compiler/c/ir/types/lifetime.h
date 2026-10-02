@@ -1,21 +1,44 @@
-/** Named lifetimes on a function's signature
+/** Named lifetimes: on a function's signature, on a struct, and ordered
  * @file
  *
  * A borrowed reference type written in a function's signature may name its
  * lifetime, right after the '&': '&'a T', '&'a mut T', '&[]'a u8'. Each name is
- * one lifetime of the caller's, distinct from every other, and a borrow written
- * with none has the unnamed lifetime, one more name, shared by every
- * unannotated borrow in the signature -- and by every borrow a value of another
- * type holds (a struct's field, an 'Option''s element), since a name is written
- * only on a reference. ''static' is the global lifetime: it outlives every name
- * and ties nothing to anything.
+ * one lifetime of the caller's, and a borrow written with none has the unnamed
+ * lifetime, one more name, shared by every unannotated borrow in the signature
+ * -- and by every borrow an unannotated value of another type holds (a field of
+ * a struct that declares no lifetimes). ''static' is the global lifetime: it
+ * outlives every name and ties nothing to anything.
+ *
+ * A struct (or enum) may declare lifetimes in its bracket list, apart from its
+ * type parameters: 'struct Cursor['a] { items &[]'a R; }'. Its fields name them
+ * and nothing else; a struct whose fields name one lifetime and whose brackets
+ * declare none takes that one as declared. A lifetime changes no layout and no
+ * code, so it is never instanced: 'Cursor['a]' and 'Cursor' are one type. A use
+ * names the struct's lifetimes positionally in brackets ('Cursor['a]',
+ * 'Parser['s, 'r]'), before any type arguments ('Cursor['a, T]'); a use naming
+ * none gives each the unnamed lifetime; and 'Self', inside the struct's
+ * methods, names its own, so that a method's result may point where a field
+ * points ('&'a R'), not into the value. A struct holding no borrow holds no
+ * lifetime, whatever it declares.
  *
  * A name means something only in the signature it is written in, so names are
  * compared by identity, and only between the types of one signature: a
  * callee's own, while its body is checked, or the one a call is made through.
- * No order between two names is ever inferred. RefNode.lifename holds the name
- * (NULL for the unnamed lifetime); RefNode.scope stays the band (0 global, 1 the
- * caller's, 2+ a block of the function), which the names divide no further.
+ * Two names are unordered unless the signature's 'where' clause orders them
+ * ('where 'a >= 'b': ''a' lasts at least as long as ''b'), or the 'where' clause
+ * of a struct a parameter or the result uses does; '>=' is transitive, and
+ * nothing else is inferred. RefNode.lifename holds a reference's name (NULL for
+ * the unnamed lifetime); RefNode.scope stays the band (0 global, 1 the caller's,
+ * 2+ a block of the function), which the names divide no further.
+ *
+ * What a caller lends through a parameter is held apart in parts: what the
+ * parameter's own reference points at ('LifePartOwn', of its lifetime), and
+ * what that holds -- or what a parameter passed by value holds --, as a whole
+ * ('LifePartHeld') or, for a struct declaring lifetimes, one part per lifetime
+ * ('LifePartSlot' + k, its k-th, a "slot"). The flow walk keeps a caller loan
+ * per part, and a call carries an argument's loans by the parts whose
+ * lifetimes the result may hold (lifeCarry). compiler/c/doc/phases/flow.md,
+ * "Named lifetimes", is the note.
  *
  * This source file is part of the Cone Programming Language C compiler
  * See Copyright Notice in conec.h
@@ -25,15 +48,129 @@
 #define lifetime_h
 
 struct FnSigNode;
+struct StructNode;
+struct FieldDclNode;
+struct NameUseNode;
 
-// Does a value of this type hold a borrow of the caller lifetime 'life' (NULL
-// for the unnamed one)? A borrow of ''static' is held by nothing in this sense:
-// it ties the value to no caller lifetime.
+// At most this many lifetimes a struct declares: a slot is a bit of a mask
+#define LifeMaxSlots 31
+#define LifeAllSlots 0xFFFFFFFFu
+
+// An order among lifetimes: each pair says its first lasts at least as long as
+// its second ('a >= 'b'); '==' is two pairs. 'at' holds where each pair was
+// written, for a diagnostic.
+typedef struct LifeOrder {
+    Name **pairs;       // 2 * count: longer, shorter
+    INode **at;         // count
+    uint32_t count;
+    uint32_t cap;
+} LifeOrder;
+
+// The lifetimes a struct declares (StructNode.lifeparms), shared by its
+// variants and by every instance of a generic one
+typedef struct LifeParms {
+    Name **names;       // declared, in order: slot k is names[k]
+    uint32_t *contains; // per slot: the slots whose borrows its places may hold, by the struct's order
+    LifeOrder *order;   // its 'where' clause's lifetime comparisons, in its own names
+    Nodes *usedat;      // while it is parsed: each name a field writes, as a name use where written
+    uint16_t count;
+    uint8_t inferred;   // the one name its fields write, not declared in brackets
+} LifeParms;
+
+// The lifetimes a type's use names (NameUseNode.lifeuse): a struct's declared
+// ones, positionally ('Cursor['a]'), and a generic instance's type arguments as
+// written, where they hold a borrow ('Option[&'a R]': one instance serves every
+// use, whatever lifetimes it names, so they are read from the use)
+typedef struct LifeUse {
+    Name **names;       // positional names for the struct's declared lifetimes, or NULL
+    Nodes *typeargs;    // a generic instance's type arguments, or NULL
+    INode *at;          // where the names are written
+    uint16_t count;
+} LifeUse;
+
+// The parts a caller lends through a parameter (above)
+enum LifePart {
+    LifePartOwn = 0,
+    LifePartHeld = 1,
+    LifePartSlot = 2,   // + k
+};
+
+// How a value of one type may hold what an argument carries (lifeCarry)
+enum LifeCarry {
+    LifeCarryNone,      // none of it
+    LifeCarryWhole,     // all of it: the parameter's own lifetime is one it holds
+    LifeCarryHeld,      // only what the argument's reference points at holds, or, by slot, what a value holds
+};
+
+LifeOrder *newLifeOrder();
+void lifeOrderAdd(LifeOrder *order, Name *longer, Name *shorter, INode *at);
+
+// A struct's lifetimes, none declared yet
+LifeParms *newLifeParms();
+
+// Declare one more of a struct's lifetimes, written at 'at': 0 for a name
+// declared twice, or one too many
+int lifeParmsDeclare(LifeParms *parms, Name *name, INode *at);
+
+// A copy of a type with no lifetime named in it, outside a function type's
+// signature: what a generic is instanced at, since a lifetime is never instanced
+INode *lifeErased(INode *type);
+
+// Does a value of this type hold a borrow of the lifetime 'life' (NULL for the
+// unnamed one)? A borrow of ''static' is held by nothing in this sense: it ties
+// the value to no caller lifetime.
 int lifeHolds(INode *type, Name *life);
 
-// Do values of two types of one signature hold borrows of some caller lifetime
-// in common?
-int lifeShared(INode *a, INode *b);
+// May a borrow held by a value of type 'from' be held by one of type 'to', in
+// the signature 'sig': does 'from' hold a lifetime lasting at least as long as
+// one 'to' holds, by the signature's order?
+int lifeFlows(struct FnSigNode *sig, INode *from, INode *to);
+
+// The struct with declared lifetimes a type (looking through a name) is, or NULL
+struct StructNode *lifeSlotted(INode *type);
+
+// The lifetime a use of a struct with declared lifetimes gives its slot 'k'
+Name *lifeSlotName(INode *use, uint32_t k);
+
+// What a parameter of this type holds beyond its own reference: what a
+// borrowed reference points at, or the value itself; NULL where that holds no
+// borrow
+INode *lifeHeld(INode *parmtype);
+
+// Is this a borrowed reference whose own lifetime a caller lends: no
+// function's, no ''static'?
+int lifeIsOwnBorrow(INode *parmtype);
+
+// How a value of the type 'to' may hold what the argument for a parameter of
+// the type 'parm' carries, in the signature 'sig' (NULL: an unannotated one,
+// every borrow in it sharing one lifetime, so always the whole). For
+// LifeCarryHeld, '*slots' is the mask of the held struct's slots whose
+// lifetimes 'to' may hold, LifeAllSlots for a held value declaring none.
+int lifeCarry(struct FnSigNode *sig, INode *parm, INode *to, uint32_t *slots);
+
+// May a value of the type 'to' hold the part 'part' of what a caller lends
+// through a parameter of the type 'parm', in the signature 'sig'?
+int lifePartFlows(struct FnSigNode *sig, INode *parm, uint32_t part, INode *to);
+
+// May that part be stored in the slots 'slots' of 'to', a use of a struct
+// declaring lifetimes: in any one of them ('all' 0), or in every one
+int lifePartFlowsSlots(struct FnSigNode *sig, INode *parm, uint32_t part, INode *to, uint32_t slots, int all);
+
+// Are the slots of the struct 'pointee' uses named apart in 'sig' -- each by
+// its own name, related by no order beyond the struct's own -- so that a call
+// cannot move a borrow from one slot to another the struct's order does not
+// allow? An unannotated signature names none apart.
+int lifeSlotsApart(struct FnSigNode *sig, INode *pointee);
+
+// The slots a struct's field holds, as a mask; and the slots whose borrows a
+// read of places holding 'slots' may carry: those, and every slot its struct's
+// order lets borrows into them from
+uint32_t lifeFieldSlots(struct StructNode *strnode, struct FieldDclNode *field);
+uint32_t lifeSlotsReach(struct StructNode *strnode, uint32_t slots);
+
+// The one slot a field holds, as a loan's tag (slot + 1), or 0 for a field
+// holding none or several
+uint32_t lifeFieldTag(struct StructNode *strnode, struct FieldDclNode *field);
 
 // What a store through a value of this type lands in: what a borrowed
 // reference points at, or else the value itself
@@ -46,10 +183,36 @@ int lifeIsStatic(INode *type);
 // own reference? Nothing checks there that a caller's borrow is global.
 int lifeParmStaticInside(INode *parmtype);
 
-// Do two signatures promise the same about lifetimes? Each parameter must share
-// a lifetime with the result in both or in neither, be ''static' in both or in
-// neither, and share one with what each writable borrowed parameter points at
-// in both or in neither: those are all a call is checked against.
+// Settle a struct's declared lifetimes once its body is parsed: a name its
+// fields write that it does not declare is refused where written, but for the
+// one name of a struct declaring none, which it takes as declared
+void lifeStructDeclare(struct StructNode *strnode);
+
+// Check a struct's fields once they are type checked: every borrow a struct
+// declaring lifetimes holds is of one of them, never the unnamed lifetime
+void lifeStructCheck(struct StructNode *strnode);
+
+// Check a use naming lifetimes, once it is resolved: the struct must declare
+// as many as it names
+void lifeUseCheck(struct NameUseNode *use);
+
+// A generic instance's use: keep the type arguments it is given where one
+// holds a borrow, and the lifetimes the generic's own use named
+void lifeUseInstance(struct NameUseNode *instuse, INode *genuse, Nodes *typeargs);
+
+// Check a signature's lifetimes once its types are: mark it as naming
+// lifetimes where one of its types does ('Self' of a struct declaring them
+// too), refuse a 'where' clause naming a lifetime none of its types does, and
+// add to its order what the structs its parameters and result use order
+void lifeSigCheck(struct FnSigNode *sig);
+
+// Do two signatures promise the same about lifetimes? Each part of each
+// parameter must flow to the result in both or in neither, a parameter be
+// ''static' in both or in neither, and each part flow to what each writable
+// borrowed parameter points at in both or in neither, its slots apart in both
+// or in neither: those are all a call is checked against. Where their
+// parameters lend different parts (a trait's 'Self' and a struct's declaring
+// lifetimes), each parameter is compared whole.
 int lifeSigsAgree(struct FnSigNode *a, struct FnSigNode *b);
 
 // Spell what a signature promises about lifetimes into a type's symbol name

@@ -283,13 +283,23 @@ constants comes back to itself is `ErrorCircular`, the code every definition
 in terms of itself wears.
 
 A lifetime named where nothing checks it is `ErrorLifetimePlace`, wherever it
-is written — a field's type, a variable's, a type's arguments, a borrow, or
-`'static` inside a parameter's type — because the remedy is one: name it on a
-signature's own reference, or not at all. A named lifetime that is checked and
-broken is not this code: returned or stored where its lifetime does not reach
-is `ErrorEscape`, and a call that could store it so, or a borrow not global
-handed to a `'static` parameter, is `ErrorCallEscape`, as for any borrow that
-would outlive what it borrows.
+is written — a variable's type, a borrow, a construction's type arguments, a
+function's brackets, or `'static` inside a parameter's type or declared by a
+struct — because the remedy is one: name it in a signature's or a struct
+field's type, or not at all. A lifetime named where it is checked but not
+declared there is `ErrorLifetimeUndeclared`: a struct's field naming one its
+brackets lack (a struct naming only one may leave it undeclared), a borrow of
+none in a struct that declares lifetimes, or a `where` clause ordering one its
+declaration does not have; the remedy is to declare it, or to fix the
+spelling. A use naming a struct's lifetimes otherwise than it declares them —
+too many, too few, or any for a type declaring none — is `ErrorLifetimeArgs`,
+the use's own mistake. A lifetime comparison under `or` or `not` in a `where`
+clause is `ErrorLifetimeOr`, apart from `ErrorWhereForm`: the form is one the
+clause reads, and refused for what it would mean. A named lifetime that is
+checked and broken is none of these: returned or stored where its lifetime
+does not reach, nor one ordered shorter, is `ErrorEscape`, and a call that
+could store it so, or a borrow not global handed to a `'static` parameter, is
+`ErrorCallEscape`, as for any borrow that would outlive what it borrows.
 
 ## The one code with no scenario
 

@@ -1037,6 +1037,16 @@ INode *genericInstantiate(TypeCheckState *pstate, FnCallNode *srcgencall, INode 
     return instance;
 }
 
+// The use of an instance, standing where 'srcgencall' named it. A type's use
+// keeps the lifetimes the generic's name was given and the type arguments as
+// 'written', for what lifetimes they name (lifeUseInstance).
+static INode *genericInstanceUse(INode *instance, FnCallNode *srcgencall, Nodes *written) {
+    INode *use = newNameUseFromDclNode(instance, (INode*)srcgencall);
+    if (instance->tag == StructTag)
+        lifeUseInstance((NameUseNode*)use, srcgencall->objfn, written);
+    return use;
+}
+
 // Verify arguments are types, check if instantiated, instantiate if needed and return ptr to it
 //
 // A type argument list the generic cannot be instantiated from yields a node
@@ -1093,12 +1103,21 @@ INode *genericMemoize(TypeCheckState *pstate, FnCallNode *srcgencall, INode *nod
         }
         if (match) {
             // Return a namenode pointing to dcl instance
-            return newNameUseFromDclNode(*nodesp, (INode*)srcgencall);
+            return genericInstanceUse(*nodesp, srcgencall, srcgencall->args);
         }
     }
 
-    // No match found. A constraint the arguments do not meet refuses the instance
-    // here, before anything of it is made.
+    // No match found. The instance is made from its arguments with no
+    // lifetime named in them: a lifetime is never instanced, so one instance
+    // serves every use, whatever lifetimes each names, and its use keeps the
+    // arguments as written (genericInstanceUse).
+    Nodes *written = srcgencall->args;
+    srcgencall->args = newNodes(written->used);
+    for (nodesFor(written, cnt, nodesp))
+        nodesAdd(&srcgencall->args, lifeErased(*nodesp));
+
+    // A constraint the arguments do not meet refuses the instance here, before
+    // anything of it is made.
     if (!genericRequirementsMet(srcgencall, nodetoclone, genericinfo, name))
         return newErrorNode((INode*)srcgencall);
 
@@ -1183,7 +1202,7 @@ INode *genericMemoize(TypeCheckState *pstate, FnCallNode *srcgencall, INode *nod
     }
     genericInstantiateExit();
 
-    return newNameUseFromDclNode(retinstance, (INode*)srcgencall);
+    return genericInstanceUse(retinstance, srcgencall, written);
 }
 
 // Obtain GenericInfo from node, if it exists

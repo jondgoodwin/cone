@@ -1,0 +1,38 @@
+// A use names a struct's lifetimes in brackets, positionally: 'pick' takes a
+// 'Cursor['a]' by value and a fallback of the unnamed lifetime, and promises
+// an 'Option[&'a R]'. What the cursor holds in ''a' may be returned; the
+// fallback, of a lifetime ''a' is not ordered against, may not. The caller
+// keeps the cursor's slice, and not the fallback's source, borrowed while
+// the result is used.
+//
+// Verdict: refuse, ErrorEscape at the returned fallback; 'pick' is accepted.
+// Basis: a use names a struct's lifetimes positionally; distinct caller
+// lifetimes are unrelated unless a where clause orders them.
+// Master b07a3adc: refused at parse (ErrorBadTok: a lifetime in a struct's
+// brackets).
+
+mod lifetime_band_struct_use_named_param;
+
+struct R { pub n i64; }
+
+struct Cursor['a] {
+  pub items &[]'a R;
+  pub at usize;
+  pub fn next(self &mut) Option[&'a R] {
+    if at < items.len() {
+      imm r = &items[at];
+      at = at + 1usize;
+      return Some[&R][r];
+    }
+    None[&R][];
+  }
+}
+
+fn pick(c Cursor['a], fallback &R) Option[&'a R] {
+  mut cur = c;
+  cur.next();
+}
+
+fn pickFallback(c Cursor['a], fallback &R) Option[&'a R] {
+  Some[&R][fallback];        //~ ErrorEscape
+}

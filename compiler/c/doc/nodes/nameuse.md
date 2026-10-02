@@ -17,6 +17,7 @@ state are diagnosed. Generation loads.
 | `namesym` | the interned name — compared by pointer identity, never by string |
 | `dclnode` | the declaration it names. **NULL until name resolution**, and NULL for a member name until type check selects the member |
 | `vtype` | the declaration's type, taken during type check |
+| `lifeuse` | on a type's use, the lifetimes it names (`LifeUse`, `ir/types/lifetime.h`), or NULL: a struct's declared ones, positionally, as the parser takes them out of its brackets (`Cursor['a]` is this name, no call); and on a generic instance's use, the type arguments as written where one holds a borrow, since one instance, made with every lifetime erased, serves uses naming different lifetimes (`lifeUseInstance`) |
 
 `FlagQualified` says the name was reached through a namespace — `math3d.Point3`
 — rather than written bare. The path collapse in `fnCallNameRes` stamps it, and

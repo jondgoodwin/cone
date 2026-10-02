@@ -194,7 +194,20 @@ so `from` must promise exactly that. The same agreement is part of
 `fnSigEqual` and `fnSigVrefEqual`, so a module's or a struct's method meets a
 trait's requirement only promising what the requirement does, and two
 signatures that promise differently are two types (spelled apart by
-`lifeSigSpell`).
+`lifeSigSpell`). What a signature promises is read part by part of each
+parameter -- its own reference's lifetime, and what that holds, by slot for a
+struct declaring lifetimes -- with its `where` clause's order and its
+structs' (`lifeSigCheck`, run as the signature is type checked, which also
+marks a signature naming a lifetime only through a struct's `Self`). Two
+signatures whose parameters lend different parts -- a trait's `Self`, and the
+`Self` of a struct declaring lifetimes that implements it -- agree where each
+parameter's lending flows alike as a whole: a call through the trait carries
+the receiver whole wherever the implementation carries any part of it, the
+cautious side. A
+lifetime is never instanced: a generic is instanced at its type arguments
+with every lifetime erased from them (`lifeErased`), a function type's
+promises excepted, and the instance's use keeps the arguments as written for
+the lifetimes they name (`NameUseNode.lifeuse`).
 
 ## 6. Unifying branches
 

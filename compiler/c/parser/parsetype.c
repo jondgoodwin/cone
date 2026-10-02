@@ -419,14 +419,20 @@ ModUseNode *parseModUse(ParseState *parse, uint16_t pubflag) {
 // field from a bare-name variant until the name has been read and what follows it
 // looked at -- and the node has to be built while the lexer is still on the name,
 // so that a diagnostic about the member points there and not at its type.
-static FieldDclNode *parseFieldDclBody(ParseState *parse, FieldDclNode *fldnode) {
+//
+// Its type may name the lifetimes of 'lifeowner', the struct it is a field of
+// (an enum, for its variants' fields): lifeStructDeclare checks them.
+static FieldDclNode *parseFieldDclBody(ParseState *parse, FieldDclNode *fldnode, StructNode *lifeowner) {
     INode *vtype;
 
     // Get value type, if provided
+    StructNode *svlifestruct = parse->lifestruct;
+    parse->lifestruct = lifeowner;
     if (parseIsTagType())
         fldnode->vtype = parseTagType(parse);
     else if ((vtype = parseType(parse)))
         fldnode->vtype = vtype;
+    parse->lifestruct = svlifestruct;
 
     // Get initialization value after '=', if provided
     if (lexIsToken(AssgnToken)) {
@@ -694,11 +700,18 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
     if (strnode->flags & TraitType)
         methflags |= ParseMaySig;
 
-    // Handle if generic parameters are found
+    // Handle if generic parameters are found. Its lifetimes are declared in
+    // the same brackets, held apart: a lifetime is never instanced, so a
+    // struct declaring only lifetimes is no generic.
     if (lexIsToken(LBracketToken)) {
-        strnode->genericinfo = newGenericInfo();
-        strnode->genericinfo->parms = parseGenericParms(parse, 1);
+        Nodes *parms = parseGenericParms(parse, 1, &strnode->lifeparms);
+        if (parms->used > 0 || strnode->lifeparms == NULL) {
+            strnode->genericinfo = newGenericInfo();
+            strnode->genericinfo->parms = parms;
+        }
     }
+    // The struct whose fields name its lifetimes: an enum's, for its variants
+    StructNode *lifeowner = isvariant ? (StructNode*)svtype : strnode;
 
     // A variant may pin its tag value, written where its name is so that the
     // bare-name form and the struct form read the same way
@@ -837,16 +850,16 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
     }
 
     // A generic type's constraints, just before its block: requirements its
-    // arguments must meet for an instance to exist at all
+    // arguments must meet for an instance to exist at all; and the order
+    // among the lifetimes it declares
     if (lexIsToken(WhereToken)) {
-        if (strnode->genericinfo)
-            parseWhere(parse, &strnode->genericinfo->where);
-        else {
-            errorMsgLex(ErrorWhereNoParms, "%s has no type parameters, so a 'where' clause has nothing to constrain.",
+        INode *whereat = (INode*)newNameUseNode(anonName);
+        Nodes *ignored = NULL;
+        parseWhere(parse, strnode->genericinfo ? &strnode->genericinfo->where : &ignored,
+            strnode->lifeparms ? &strnode->lifeparms->order : NULL);
+        if (ignored)
+            errorMsgNode(whereat, ErrorWhereNoParms, "%s has no type parameters, so a 'where' clause has nothing to constrain.",
                 &strnode->namesym->namestr);
-            Nodes *ignored = NULL;
-            parseWhere(parse, &ignored);
-        }
     }
 
     // If block has been provided, process field or method definitions
@@ -1023,7 +1036,7 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
                     continue;
                 }
 
-                parseFieldDclBody(parse, field);
+                parseFieldDclBody(parse, field, lifeowner);
                 // A common field is part of every variant's layout, the copies of the
                 // base's included, and their methods were written against the
                 // base's: the fields they read sit where the base put them. The
@@ -1149,6 +1162,16 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
             errorMsgNode(underlying, ErrorInvType, "An integer type here lays out the enum's tag values, and this enum has no variants to number.");
     }
 
+    // The lifetimes its fields name, its variants' too, are settled once they
+    // are all read: a variant declares none of its own
+    if (isvariant && strnode->lifeparms) {
+        errorMsgNode((INode*)strnode, ErrorVariantDcl, "%s takes its enum's lifetimes; it may not declare its own.",
+            &strnode->namesym->namestr);
+        strnode->lifeparms = NULL;
+    }
+    if (!isvariant)
+        lifeStructDeclare(strnode);
+
     parse->typenode = svtype;
     return (INode*)strnode;
 }
@@ -1192,9 +1215,12 @@ INode *parseFnSig(ParseState *parse, int reftype) {
     // there opens no enclosing block, whoever this signature belongs to.
     int svinrettype = parse->inrettype;
     parse->inrettype = 0;
-    // Its parameters' and result's types may name lifetimes of its own
+    // Its parameters' and result's types may name lifetimes of its own, even
+    // where it is the type of a struct's field
     FnSigNode *svlifesig = parse->lifesig;
     parse->lifesig = fnsig;
+    StructNode *svlifestruct = parse->lifestruct;
+    parse->lifestruct = NULL;
 
     // Process parameter declarations
     if (lexIsToken(LParenToken)) {
@@ -1251,6 +1277,7 @@ INode *parseFnSig(ParseState *parse, int reftype) {
     }
     parse->inrettype = svinrettype;
     parse->lifesig = svlifesig;
+    parse->lifestruct = svlifestruct;
 
     return (INode*)fnsig;
 }

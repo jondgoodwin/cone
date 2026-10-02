@@ -776,10 +776,14 @@ dimensions is an array of arrays, one `A` per dimension and the extents
 innermost first: `AAx3_2_` is `Array[i64, 2, 3]`. A signature whose named
 lifetimes promise other than it would unannotated spells the promises after
 its `F`, where v0 puts a signature's lifetimes: `G`, a digit per parameter (1
-shares a lifetime with the result, 2 is `'static`, 4 may be stored through)
-followed, for each that may, by a digit per other parameter (1 may be stored
-there), then `_` — so `fn(a &i64, b &'b i64) &i64` is
-`FG10_R02roxR02roxER02rox` (`lifeSigSpell`).
+the result may hold what it lends, 2 is `'static`, 4 may be stored through),
+and after it, for a parameter lending several parts -- its own reference and
+what that holds, or a struct's lifetimes one by one -- a digit per part (1 the
+result may hold it); then, for each parameter that may be stored through, the
+same digits of every other parameter for what it points at, and, where that is
+a struct declaring lifetimes, a digit saying they are named apart; then `_` —
+so `fn(a &i64, b &'b i64) &i64` is `FG10_R02roxR02roxER02rox` (`lifeSigSpell`).
+A struct's lifetimes are never spelled: `Cursor['a]` is `Cursor`.
 
 #### How to read a symbol
 

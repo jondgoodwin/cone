@@ -37,6 +37,8 @@ extern PathSet pathSetAll;
 PathSet *pathSetAdd(PathSet *set, uint32_t id);
 PathSet *pathSetUnion(PathSet *a, PathSet *b);
 int pathSetHas(PathSet *set, uint32_t id);
+// Does a loan set hold the loan 'loan', near or far, with any tag (flowloan.h)?
+int pathSetHasLoan(PathSet *set, uint32_t loan);
 
 // A place: somewhere a value lives. A root variable, or what the root variable
 // (a borrowed reference) points at, and a path of steps from it. Two places
@@ -64,6 +66,9 @@ typedef struct {
     INode *use;         // the name use of the root variable, where a use of it is reported
     INode *referent;    // deref: the type the root variable, read itself as the reference, points
                         // at; NULL when the reference was read from a part of it
+    StructNode *slotted; // A struct declaring lifetimes whose field the path's first step is, where
+                        // the root variable's loans are tagged by its slots (flowloan.h); else NULL
+    uint32_t slots;     // then, the slots of that field (lifeFieldSlots)
 } Place;
 // A step is a field's name (a Name pointer, so even), a tuple element's index
 // ((n << 2) | 2), an element of an array (any index: all overlap), or a

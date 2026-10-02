@@ -1441,6 +1441,11 @@ int lexNextOpensValue() {
 // resolution refuses as a type) by the ';' those brackets hold at their own
 // level. Read off the text as
 // lexNextIsWord is, so nothing is lexed twice.
+int lexPeekIsLifetime() {
+    char *srcp = lexSkipTrivia(lex->srcp);
+    return srcp[0] == '\'' && isalpha(srcp[1]) && srcp[2] != '\'';
+}
+
 int lexIdentOpensType() {
     char *srcp = lexSkipTrivia(lex->srcp);
     if (*srcp == '.')

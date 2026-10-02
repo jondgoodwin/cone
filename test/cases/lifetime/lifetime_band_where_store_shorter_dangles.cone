@@ -1,0 +1,45 @@
+// The reverse of lifetime_band_where_store_longer: with ''a >= 'b', a ''b'
+// borrow stored where ''a' ones are held. The caller, reading the order as
+// the callee promises it, keeps 'd' (''a') unaffected by the store, so 'd'
+// would outlive what it then points at.
+//
+// Verdict: refuse, ErrorEscape at the store.
+// Basis: ''a >= 'b' lets a ''a' borrow go where a ''b' one may, and not the
+// reverse.
+// Master b07a3adc: refused at parse (ErrorWhereForm: a 'where' clause is a
+// type parameter's name, 'is', and a trait). This compiler with the store's refusal
+// turned off accepts it, and main, run, prints "final" and then a value read
+// from the freed 'R'.
+
+mod lifetime_band_where_store_shorter_dangles;
+
+import stdio use *;
+
+struct R {
+  pub n i64;
+  fn final(self &uni) {
+    printStr("final\n");
+  }
+}
+
+fn putRev(d &mut &'a R, s &'b R) where 'a >= 'b {
+  *d = s;                    //~ ErrorEscape
+}
+
+fn clobber(n i64) i64 {
+  mut a Array[i64, 16] = [n, n, n, n, n, n, n, n, n, n, n, n, n, n, n, n];
+  a[3] + a[9];
+}
+
+fn main() {
+  imm long = new R(1);
+  mut d = &long;
+  {
+    imm short = new So[R](42);
+    putRev(&mut d, &*short);
+  }
+  clobber(21);
+  printStr("read = ");
+  printInt(d.n);
+  printStr("\n");
+}
