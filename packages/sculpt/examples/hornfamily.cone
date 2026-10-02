@@ -1,0 +1,540 @@
+// hornfamily: the horn experiments of the fractal survey's section 8.3, for
+// Jon's "fractal variation, not only precise geometry". Every horn is made
+// from general sculpt operators: an outline (an ellipse, the blade) swept
+// along a curved path, each ring scaled by the taper, a rib height written
+// into a vertex channel, and displaceAlongNormal by it. Nothing here extends
+// sdf's bespoke Horn.
+//
+//   congo run --release packages/sculpt/examples/hornfamily.cone -- --out DIR
+//
+// 1. Melting ribs. One horn, its ribs built up a term at a time (sculpt's
+//    RibField): regular ribs; + a warp of the phase; + an envelope that
+//    fades them in patches; + each rib's own height (and some missing);
+//    + two phase vortices (a rib that forks and rejoins). Then the margin
+//    ring (sculpt's marginRing): a ring of cells round the growing edge,
+//    run as an oscillating reaction-diffusion as the horn grows; each ring
+//    of the horn is the cells' state when it was laid down. Each stage is
+//    drawn from the front and the back (DIR/e1-<stage>-front.bmp, -back.bmp)
+//    and its rib height unrolled (DIR/e1-<stage>-map.bmp: around across,
+//    base at the bottom).
+// 2. A family. Ten dials, each a noise.FamilyDial (a mean, a spread, and how
+//    much two latent numbers and the horn's own draw move it), every random
+//    number keyed by (family seed, individual, dial). Individuals 0..24 are
+//    drawn one per shot at one scale (DIR/e2-horn-NN.bmp); 400 individuals'
+//    measured bend and rib cover go to DIR/e2-range.csv; individuals 0..24
+//    in a row in chitin on dark ground, seen as landscape 2 is, are
+//    DIR/e2-row.bmp.
+//
+// The meshes are made on the CPU and are a pure function of the seeds: the
+// program prints the stage horns' meshHash and exits 0 only if they are the
+// pinned ones, every shot was written, no Vulkan call failed and the
+// validation layer said nothing. It needs a GPU driver with Vulkan 1.3 and
+// SDL3.dll on PATH; no window.
+
+mod hornfamily;
+
+import stdio use *;
+import libc;
+import sdl;
+import collections use *;
+import geomath use *;
+import mesh;
+import noise;
+import fs;
+import sculpt use *;
+import gpu use *;
+import render use *;
+import sdf;
+
+const AROUND = 64u32;     // outline points
+const RINGS = 360u32;     // path segments: about 16 rings a rib at 22 ribs
+const FAMILY_SEED = 2010u32;
+const GALLERY = 25u32;
+const RANGE = 400u32;
+
+fn v(x f32, y f32, z f32) Vec3 { new Vec3(x, y, z); }
+fn up() Vec3 { v(0., 1., 0.); }
+fn clampF(x f32, lo f32, hi f32) f32 { if x < lo {lo;} elif x > hi {hi;} else {x;}; }
+
+// ======== a horn's shape ========
+
+struct Shape {
+  pub length f32;    // along its path, metres
+  pub girth f32;     // the base's radius over the length
+  pub bend f32;      // how far the tip turns from upright, radians (a circular arc)
+  pub heading f32;   // which way it bends, radians round from +x towards +z
+  pub twist f32;     // the outline's turn from base to tip, radians
+  pub taper f32;     // radius = base (1 - u)^taper, u the fraction along
+  pub blade f32;     // the outline's width over its depth (1 round)
+}
+
+// The path: a circular arc of 'bend' radians and the horn's length, as one
+// cubic Bezier (the arc's usual four-thirds-tangent fit)
+fn hornPath(s &Shape) Path {
+  imm side = v(cos(s.heading), 0., sin(s.heading));
+  imm origin = v(0., 0., 0.);
+  if s.bend < 0.02 { return Path.line(origin, up() * s.length, RINGS); }
+  imm rho = s.length / s.bend;
+  imm tip = side * (rho * (1. - cos(s.bend))) + up() * (rho * sin(s.bend));
+  imm tipDir = side * sin(s.bend) + up() * cos(s.bend);
+  imm k = 4. / 3. * tan(s.bend / 4.) * rho;
+  Path.fromCubic(new CubicBezier3(origin, up() * k, tip - tipDir * k, tip), RINGS);
+}
+
+fn radiusAt(s &Shape, u f32) f32 {
+  imm r0 = s.girth * s.length;
+  r0 * (0.03 + 0.97 * libc.powf(1. - clampF(u, 0., 1.), s.taper));
+}
+
+// The bare horn: the blade swept along the path at unit scale, then each
+// ring scaled about its path point by the taper. (sweepScaled takes the
+// taper as a function, which cannot carry this horn's dials, so the rings
+// are scaled here: ring i is vertices i AROUND to i AROUND + AROUND - 1.)
+fn bareHorn(s &Shape) mesh.PolyMesh {
+  mut pts = List[Vec2].withCapacity(usize.from(AROUND));
+  imm w = libc.sqrtf(s.blade);
+  mut j = 0u32;
+  while j < AROUND {
+    imm a = 2. * pi * f32.from(j) / f32.from(AROUND);
+    pts.push(new Vec2(cos(a) * w, sin(a) / w));
+    j = j + 1u32;
+  }
+  imm outline = Profile.fromPoints(pts.view(), true);
+  imm path = hornPath(s);
+  mut m = sweep(&outline, &path, s.twist, 1., 1., true);
+  imm frames = path.frames();
+  imm along = m.findFloatChannel(mesh.VertexDomain, "along");
+  mut k = 0usize;
+  while k < m.vertexCount() {
+    imm ring = k / usize.from(AROUND);
+    imm o = frames[ring].origin;
+    imm p = *m.positions[k];
+    m.positions.set(k, o + (p - o) * radiusAt(s, m.float(along, u32.from(k))));
+    k = k + 1usize;
+  }
+  m;
+}
+
+// The horn with its ribs: the "ribs" channel (crest height 1) times the
+// local radius times 'height', displaced along the normals
+fn ribbedHorn(m &mut mesh.PolyMesh, s &Shape, height f32) mesh.PolyMesh {
+  imm ribs = m.findFloatChannel(mesh.VertexDomain, "ribs");
+  imm along = m.findFloatChannel(mesh.VertexDomain, "along");
+  imm lift = m.addFloatChannel(mesh.VertexDomain, "lift", 0.);
+  mut k = 0u32;
+  while k < u32.from(m.vertexCount()) {
+    m.setFloat(lift, k, m.float(ribs, k) * height * radiusAt(s, m.float(along, k)));
+    k = k + 1u32;
+  }
+  displaceAlongNormal(m, "lift", 1.);
+}
+
+// The "ribs" channel unrolled as an image, AROUND across, RINGS + 1 up
+fn ribMap(m &mesh.PolyMesh, name &[]u8) Image {
+  imm ribs = m.findFloatChannel(mesh.VertexDomain, name);
+  imm w = i32.from(AROUND);
+  imm h = i32.from(RINGS) + 1;
+  mut img = new Image(w, h, 3, List[u8].withCapacity(usize.from(w * h * 3)));
+  // Image.save writes row 0 at the bottom: the base at the bottom
+  mut y = 0;
+  while y < h {
+    imm ring = y;
+    mut x = 0;
+    while x < w {
+      imm val = clampF(m.float(ribs, u32.from(ring * w + x)) * 170., 0., 255.);
+      imm b = u8.from(val + 0.5);
+      img.pixels.push(b); img.pixels.push(b); img.pixels.push(b);
+      x = x + 1;
+    }
+    y = y + 1;
+  }
+  img;
+}
+
+// ======== the family ========
+
+// The dials, in order: each a noise.FamilyDial
+const D_LENGTH = 0u32;
+const D_GIRTH = 1u32;
+const D_BEND = 2u32;
+const D_TWIST = 3u32;
+const D_TAPER = 4u32;
+const D_BLADE = 5u32;
+const D_RIBBED = 6u32;
+const D_RIBS = 7u32;
+const D_COVER = 8u32;
+const D_WARP = 9u32;
+const D_HEADING = 10u32;   // uniform round the compass: no family bytes
+
+// Spires: mean, spread, then how much vigour (latent 0), wildness (latent 1)
+// and the horn's own draw move each dial, and its bounds
+fn spires() List[noise.FamilyDial] {
+  mut d = List[noise.FamilyDial].empty();
+  d.push(new noise.FamilyDial(3.0, 0.9, 1., 0., 0.5, 1.6, 4.4));     // length: vigour
+  d.push(new noise.FamilyDial(0.12, 0.03, -0.5, 0., 0.5, 0.07, 0.18)); // girth: the long ones slimmer
+  d.push(new noise.FamilyDial(0.9, 0.9, 0., 1., 0.5, 0., 2.6));      // bend: wildness
+  d.push(new noise.FamilyDial(0., 1.2, 0., 0.5, 1., -2.5, 2.5));     // twist
+  d.push(new noise.FamilyDial(1.0, 0.5, -0.5, 0., 0.7, 0.4, 2.));    // taper
+  d.push(new noise.FamilyDial(1.6, 0.6, 0., 0.5, 1., 1., 2.6));      // blade
+  d.push(new noise.FamilyDial(0.7, 0.3, 0.5, -0.5, 0., 0., 1.));     // ribbed: a chance
+  d.push(new noise.FamilyDial(22., 8., 1., 0., 0.5, 10., 36.));      // rib count
+  d.push(new noise.FamilyDial(0.6, 0.35, 0., -1., 0.5, 0.05, 1.));   // rib cover
+  d.push(new noise.FamilyDial(0.25, 0.25, 0., 1., 0.5, 0., 0.7));    // rib warp
+  d;
+}
+
+// One individual: its shape and its rib field
+struct Individual {
+  pub shape Shape;
+  pub ribs RibField;
+  pub ribbed Bool;
+}
+
+fn individual(dials &List[noise.FamilyDial], i u32) Individual {
+  imm lat = noise.familyLatents(FAMILY_SEED, i);
+  imm heading = 2. * pi * noise.familyUnit(FAMILY_SEED, i, D_HEADING);
+  imm shape = new Shape(dials[usize.from(D_LENGTH)].draw(FAMILY_SEED, i, D_LENGTH, lat),
+    dials[usize.from(D_GIRTH)].draw(FAMILY_SEED, i, D_GIRTH, lat),
+    dials[usize.from(D_BEND)].draw(FAMILY_SEED, i, D_BEND, lat), heading,
+    dials[usize.from(D_TWIST)].draw(FAMILY_SEED, i, D_TWIST, lat),
+    dials[usize.from(D_TAPER)].draw(FAMILY_SEED, i, D_TAPER, lat),
+    dials[usize.from(D_BLADE)].draw(FAMILY_SEED, i, D_BLADE, lat));
+  imm ribbed = dials[usize.from(D_RIBBED)].chance(FAMILY_SEED, i, D_RIBBED, lat);
+  mut r = RibField.plain(dials[usize.from(D_RIBS)].draw(FAMILY_SEED, i, D_RIBS, lat), noise.hash1(i32.from(i), FAMILY_SEED));
+  r.warp = dials[usize.from(D_WARP)].draw(FAMILY_SEED, i, D_WARP, lat);
+  r.warpScale = 1.2;
+  r.cover = dials[usize.from(D_COVER)].draw(FAMILY_SEED, i, D_COVER, lat);
+  r.coverScale = 0.9;
+  r.spread = 0.4;
+  r.absent = 0.1;
+  r.defects = 1u32;
+  r.defectAspect = 1. / (shape.girth * 0.6);
+  new Individual(shape, r, ribbed);
+}
+
+// The horn's ribbed mesh. A smooth horn keeps a zero "ribs" channel.
+fn grow(ind &Individual) mesh.PolyMesh {
+  mut bare = bareHorn(&ind.shape);
+  if ind.ribbed { ribField(&mut bare, "ribs", &ind.ribs); }
+  else { bare.addFloatChannel(mesh.VertexDomain, "ribs", 0.); }
+  ribbedHorn(&mut bare, &ind.shape, 0.2);
+}
+
+// Measured, not dialled: the angle between the path's first and last
+// tangents (degrees), and the fraction of the horn's lower 90% whose rib
+// amplitude (the "ribsAmp" channel ribField writes) is at least 0.3
+fn measuredBend(s &Shape) f32 {
+  imm path = hornPath(s);
+  imm frames = path.frames();
+  imm a = frames[0usize].tangent;
+  imm b = frames[frames.len() - 1usize].tangent;
+  degrees(acos(clampF(a.dot(b), -1., 1.)));
+}
+
+fn measuredCover(m &mesh.PolyMesh) f32 {
+  imm amp = m.findFloatChannel(mesh.VertexDomain, "ribsAmp");
+  imm along = m.findFloatChannel(mesh.VertexDomain, "along");
+  if amp == mesh.NoIndex { return 0.; }
+  mut n = 0u32;
+  mut hit = 0u32;
+  mut k = 0u32;
+  while k < u32.from(m.vertexCount()) {
+    if m.float(along, k) < 0.9 {
+      n = n + 1u32;
+      if m.float(amp, k) >= 0.3 { hit = hit + 1u32; }
+    }
+    k = k + 1u32;
+  }
+  f32.from(hit) / f32.from(n);
+}
+
+// ======== output ========
+
+fn cstrEquals(a *u8, b &[]u8) Bool {
+  mut i = 0usize;
+  while i < b.len {
+    if *(a + i) != b[i] { return false; }
+    i = i + 1usize;
+  }
+  *(a + b.len) == 0u8;
+}
+
+fn appendCstr(s &mut String, c *u8) {
+  mut i = 0usize;
+  while *(c + i) != 0u8 {
+    s.appendByte(*(c + i));
+    i = i + 1usize;
+  }
+}
+
+fn named(dir &String, name &[]u8) String {
+  mut s = dir.copy();
+  s <- "/";
+  s <- name;
+  s;
+}
+
+fn numbered(dir &String, prefix &[]u8, n u32, suffix &[]u8) String {
+  mut s = dir.copy();
+  s <- "/";
+  s <- prefix;
+  if n < 10u32 { s <- "0"; }
+  s <- u64.from(n);
+  s <- suffix;
+  s;
+}
+
+fn appendFixed(s &mut String, x f32) {
+  // three decimals, enough for the plot
+  mut y = x;
+  if y < 0. { *s <- "-"; y = 0. - y; }
+  imm whole = u64.from(libc.floorf(y));
+  imm frac = u64.from(libc.floorf((y - libc.floorf(y)) * 1000. + 0.5));
+  *s <- whole;
+  *s <- ".";
+  if frac < 100u64 { *s <- "0"; }
+  if frac < 10u64 { *s <- "0"; }
+  *s <- frac;
+}
+
+// ======== drawing ========
+
+// The device is the last field, so it is the last thing let go of
+struct Scene {
+  pub renderer Renderer;
+  pub post Post;
+  pub target Texture;
+  pub depth Texture;
+  pub readback Buffer;
+  pub width u32;
+  pub height u32;
+  pub device Device;
+}
+
+fn shoot(sc &mut Scene, camera &Camera, light &Light, list &DrawList, name &String) Bool {
+  mut encoder = sc.device.createCommandEncoder();
+  sc.renderer.render(&mut sc.device, &mut encoder, &sc.post.hdr, &sc.depth, camera, light, list);
+  sc.post.apply(&mut encoder, &sc.target);
+  encoder.copyTextureToBuffer(&sc.target, &sc.readback);
+  sc.device.queue.submit(encoder.finish());
+  sc.device.endFrame();
+  sc.device.waitIdle();
+  imm shot = Image.fromTexels(sc.readback.mappedRange(), i32.from(sc.width), i32.from(sc.height), false);
+  if shot.save(name.view()) { print <- "Shot: "; printStr(name.view()); print <- "\n"; return true; }
+  print <- "Could NOT write "; printStr(name.view()); print <- "\n";
+  false;
+}
+
+// The stage horn of experiment 1
+fn stageShape() Shape { new Shape(3., 0.12, 0.9, 0., 0., 1., 1.25); }
+
+// Stage k's rib field: 0 regular, then one term more a stage up to 4 (two
+// vortices, one pair); 5 the regular ribs with only the vortex pair, so the
+// fork is plain to see; 6 every term stronger, three pairs
+fn stageRibs(k u32) RibField {
+  mut r = RibField.plain(22., 7u32);
+  imm aspect = 1. / (0.12 * 0.6);
+  if k == 5u32 { r.defects = 1u32; r.defectAspect = aspect; return r; }
+  if k >= 1u32 { r.warp = 0.35; r.warpScale = 1.2; }
+  if k >= 2u32 { r.cover = 0.6; r.coverScale = 0.9; }
+  if k >= 3u32 { r.spread = 0.45; r.absent = 0.12; }
+  if k >= 4u32 { r.defects = 1u32; r.defectAspect = aspect; }
+  if k == 6u32 { r.warp = 0.6; r.warpScale = 2.; r.cover = 0.75; r.defects = 3u32; }
+  r;
+}
+
+// The margin ring: 7 gently uneven and tightly coupled, 8 more uneven and
+// loosely coupled, 9 very uneven and barely coupled
+fn stageRing(k u32) MarginRing {
+  mut g = MarginRing.plain(22., 7u32);
+  if k == 7u32 { g.unevenness = 0.08; }
+  if k == 8u32 { g.unevenness = 0.3; g.spreadA = 0.1; g.spreadB = 0.1; }
+  if k == 9u32 { g.unevenness = 0.4; g.spreadA = 0.02; g.spreadB = 0.02; g.drift = 0.4; }
+  g;
+}
+
+const NSTAGES = 10u32;
+imm STAGES Array[&[]u8, 10] = ["s0-regular", "s1-warp", "s2-envelope", "s3-per-rib", "s4-vortices", "s4b-vortices-alone",
+  "s5-all-stronger", "rd-weak", "rd-strong", "rd-loose"];
+imm PINNED Array[u32, 10] = [0x383fe153u32, 0x9f0b7d1cu32, 0x2ff6bd4au32, 0x0a8831ccu32, 0x9837102bu32, 0xb79c2bfeu32,
+  0x3b825647u32, 0x53fb7362u32, 0xbe821aedu32, 0x07014adfu32];
+
+fn main(argc i32, argv **u8) i32 {
+  mut dir = String.empty();
+  dir <- ".";
+  mut a = 1;
+  while a + 1 < argc {
+    imm arg = *(argv + usize.from(a));
+    if cstrEquals(arg, "--out") { dir = String.empty(); appendCstr(&mut dir, *(argv + usize.from(a + 1))); }
+    else { print <- "Unknown argument; use --out DIR\n"; return 2; }
+    a = a + 2;
+  }
+  mut ok = true;
+  imm hz = f64.from(sdl.GetPerformanceFrequency());
+
+  // ---- experiment 1's meshes ----
+  imm shape = stageShape();
+  mut stages = List[mesh.Mesh].empty();
+  mut k = 0u32;
+  while k < NSTAGES {
+    imm t0 = sdl.GetPerformanceCounter();
+    mut b = bareHorn(&shape);
+    if k < 7u32 {
+      imm r = stageRibs(k);
+      ribField(&mut b, "ribs", &r);
+    } else {
+      imm g = stageRing(k);
+      marginRing(&mut b, "ribs", &g);
+    }
+    imm horn = ribbedHorn(&mut b, &shape, 0.14);
+    imm tri = horn.triangulate(true);
+    imm t1 = sdl.GetPerformanceCounter();
+    imm h = sdf.meshHash(&tri);
+    printStr(STAGES[usize.from(k)]); print <- ": "; print <- tri.vertexCount(); print <- " vertices; ";
+    print <- f64.from(t1 - t0) / hz * 1000.; print <- " ms; cover "; print <- f64.from(measuredCover(&horn));
+    print <- "; hash ";
+    mut hex = String.empty();
+    hex.appendHex(u64.from(h), 8usize);
+    printStr(hex.view());
+    if h == PINNED[usize.from(k)] { print <- " (as pinned)\n"; } else { print <- " (NOT as pinned)\n"; ok = false; }
+    imm map = ribMap(&b, "ribs");
+    mut mapName = named(&dir, "e1-");
+    mapName <- STAGES[usize.from(k)];
+    mapName <- "-map.bmp";
+    if !map.save(mapName.view()) { ok = false; }
+    stages.push(tri);
+    k = k + 1u32;
+  }
+
+  // ---- experiment 2's family ----
+  imm dials = spires();
+  mut gallery = List[mesh.Mesh].empty();
+  mut csv = String.empty();
+  csv <- "individual,bend_deg,rib_cover,ribbed,length,girth,bend,twist,taper,blade,ribs,cover,warp,vigour,wildness\n";
+  imm f0 = sdl.GetPerformanceCounter();
+  mut i = 0u32;
+  while i < RANGE {
+    imm ind = individual(&dials, i);
+    imm horn = grow(&ind);
+    imm lat = noise.familyLatents(FAMILY_SEED, i);
+    csv <- u64.from(i); csv <- ",";
+    appendFixed(&mut csv, measuredBend(&ind.shape)); csv <- ",";
+    appendFixed(&mut csv, measuredCover(&horn)); csv <- ",";
+    if ind.ribbed { csv <- "1,"; } else { csv <- "0,"; }
+    appendFixed(&mut csv, ind.shape.length); csv <- ",";
+    appendFixed(&mut csv, ind.shape.girth); csv <- ",";
+    appendFixed(&mut csv, ind.shape.bend); csv <- ",";
+    appendFixed(&mut csv, ind.shape.twist); csv <- ",";
+    appendFixed(&mut csv, ind.shape.taper); csv <- ",";
+    appendFixed(&mut csv, ind.shape.blade); csv <- ",";
+    appendFixed(&mut csv, ind.ribs.frequency); csv <- ",";
+    appendFixed(&mut csv, ind.ribs.cover); csv <- ",";
+    appendFixed(&mut csv, ind.ribs.warp); csv <- ",";
+    appendFixed(&mut csv, lat.x); csv <- ",";
+    appendFixed(&mut csv, lat.y); csv <- "\n";
+    if i < GALLERY { gallery.push(horn.triangulate(true)); }
+    i = i + 1u32;
+  }
+  imm f1 = sdl.GetPerformanceCounter();
+  print <- "Family: "; print <- u64.from(RANGE); print <- " horns grown and measured in ";
+  print <- f64.from(f1 - f0) / hz; print <- " s\n";
+  imm csvName = named(&dir, "e2-range.csv");
+  if !(fs.writeFile(csvName.view(), csv.view()) is Ok) { print <- "Could NOT write the csv\n"; ok = false; }
+
+  // ---- the GPU, no window ----
+  mut instance = Instance.create("hornfamily");
+  mut none = Surface.none();
+  mut adapter = instance.requestAdapter(&none, POWER_PREFERENCE_HIGH_PERFORMANCE);
+  if !instance.isValid() or !adapter.isValid() { print <- "No GPU can draw\n"; return 1; }
+  print <- "Adapter: "; printStr(adapter.name.view()); print <- "\n";
+  mut device = adapter.requestDevice();
+  mut renderer = Renderer.create(&mut device, TEXTURE_FORMAT_RGBA16_FLOAT, TEXTURE_FORMAT_DEPTH32_FLOAT);
+  // A dusk with the sun low to the side, so the ribs cast their relief
+  imm sky = Sky.dusk(radians(14.), radians(70.));
+  renderer.setSky(&mut device, &sky);
+  imm light = sky.sunLight(new Color(2.6, 2.2, 2.0, 1.), new Color(0.2, 0.22, 0.3, 1.));
+  // Slate: pale enough that the relief reads; and chitin for the row
+  imm slate = PbrMaterial.standard(new Color(0.20, 0.22, 0.27, 1.), 0., 0.42);
+  imm slateM = renderer.addPbrMaterial(&mut device, &slate);
+  imm chitin = PbrMaterial.chitin(180., 520., 7u32);
+  imm chitinM = renderer.addPbrMaterial(&mut device, &chitin);
+  imm mud = PbrMaterial.standard(new Color(0.025, 0.024, 0.03, 1.), 0., 0.7);
+  imm mudM = renderer.addPbrMaterial(&mut device, &mud);
+  imm groundMesh = mesh.Mesh.plane(8, 1.);
+  imm ground = renderer.addMesh(&mut device, &groundMesh);
+
+  imm W = 720u32;
+  imm H = 960u32;
+  imm targetDesc = new TextureDescriptor(W, H, TEXTURE_FORMAT_RGBA8_UNORM_SRGB, TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
+  imm depthDesc = new TextureDescriptor(W, H, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT);
+  mut target = device.createTexture(&targetDesc);
+  mut depth = device.createTexture(&depthDesc);
+  mut post = Post.create(&mut device, TEXTURE_FORMAT_RGBA8_UNORM_SRGB, W, H);
+  mut readback = device.createBuffer(u64.from(W) * u64.from(H) * 4u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  if !renderer.isValid() or !post.isValid() or !target.isValid() { print <- "The renderer could not be made\n"; return 1; }
+  mut sc = new Scene(renderer, post, target, depth, readback, W, H, device);
+  mut camera = Camera.make();
+  camera.fov = radians(36.);
+  camera.near = 0.2;
+  camera.far = 500.;
+
+  // Experiment 1: each stage from the front and the back
+  imm groundAt = Mat4.fromTrs(v(0., 0., 0.), Quat.identity(), v(30., 1., 30.));
+  k = 0u32;
+  while k < NSTAGES {
+    imm hm = sc.renderer.addMesh(&mut sc.device, stages[usize.from(k)]);
+    mut side = 0u32;
+    while side < 2u32 {
+      mut list = DrawList.empty();
+      // the back: turned a half turn about x = 0.6, the middle of its bend
+      list.add(hm, slateM, Mat4.fromTrs(v(1.2 * f32.from(side), 0., 0.), Quat.angleAxis(pi * f32.from(side), up()), v(1., 1., 1.)));
+      list.add(ground, mudM, groundAt);
+      camera.lookAt(v(0.6, 1.5, 4.9), v(0.6, 1.35, 0.), up());
+      mut name = named(&dir, "e1-");
+      name <- STAGES[usize.from(k)];
+      if side == 0u32 { name <- "-front.bmp"; } else { name <- "-back.bmp"; }
+      ok = shoot(&mut sc, &camera, &light, &list, &name) and ok;
+      side = side + 1u32;
+    }
+    k = k + 1u32;
+  }
+
+  // Experiment 2: each of the 25 at one scale, seen across its bend
+  i = 0u32;
+  mut handles = List[MeshHandle].empty();
+  while i < GALLERY {
+    imm hm = sc.renderer.addMesh(&mut sc.device, gallery[usize.from(i)]);
+    handles.push(hm);
+    imm ind = individual(&dials, i);
+    mut list = DrawList.empty();
+    // turn it so its bend lies across the view (+x)
+    list.add(hm, slateM, Mat4.fromTrs(v(0., 0., 0.), Quat.angleAxis(ind.shape.heading, up()), v(1., 1., 1.)));
+    list.add(ground, mudM, groundAt);
+    camera.lookAt(v(1.2, 2.0, 7.6), v(1.2, 1.8, 0.), up());
+    imm name = numbered(&dir, "e2-horn-", i, ".bmp");
+    ok = shoot(&mut sc, &camera, &light, &list, &name) and ok;
+    i = i + 1u32;
+  }
+
+  // The row: all 25 in chitin, close together along a line on dark ground,
+  // the bends as they fell, seen from above one side as landscape 2 is
+  mut row = DrawList.empty();
+  imm big = Mat4.fromTrs(v(0., 0., -20.), Quat.identity(), v(60., 1., 60.));
+  row.add(ground, mudM, big);
+  i = 0u32;
+  while i < GALLERY {
+    imm z = 0. - 2.3 * f32.from(i);
+    imm x = 0.5 * sin(1.3 * f32.from(i));
+    row.add(*handles[usize.from(i)], chitinM, Mat4.fromTrs(v(x, -0.05, z), Quat.identity(), v(1., 1., 1.)));
+    i = i + 1u32;
+  }
+  camera.lookAt(v(-7., 5.5, 5.), v(0.5, 0.8, -14.), up());
+  imm rowName = named(&dir, "e2-row.bmp");
+  ok = shoot(&mut sc, &camera, &light, &row, &rowName) and ok;
+
+  print <- "Vulkan failures: "; print <- u64.from(failures());
+  print <- "; validation messages: "; print <- u64.from(validationMessages()); print <- "\n";
+  if !ok or failures() != 0u32 or validationMessages() != 0u32 { print <- "FAILED\n"; return 1; }
+  print <- "OK\n";
+  0;
+}
