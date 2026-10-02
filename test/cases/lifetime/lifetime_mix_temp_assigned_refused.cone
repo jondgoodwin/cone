@@ -1,0 +1,40 @@
+// A variable assigned a borrow of a temporary, through a call, and used
+// later: an assignment is not a variable's initializer and extends nothing, so
+// the temporary ends with the assignment while the variable still holds a
+// borrow of it.
+//
+// Verdict: refuse, ErrorFrozen at the temporary, ending while 'r' still holds
+// a borrow of it (code and position a reading of the rules).
+// Basis: language rule (2 Oct 2026) -- temporaries follow Rust: refuse what
+// Rust does not extend. Rust: 'r = id(&*make()); r.n' is E0716 (only a 'let'
+// initializer extends; The Rust Reference, "Destructors", temporary lifetime
+// extension); by reading, not run.
+// Master 39affbc9: accepted, and the temporary is never ended -- main, run,
+// prints "read = 4", "end", then one "final", the first value's (a leak left
+// by #241).
+
+mod lifetime_mix_temp_assigned_refused;
+
+import stdio use *;
+
+struct R {
+  pub n i64;
+  fn final(self &uni) {
+    printStr("final\n");
+  }
+}
+
+fn mkso(n i64) So[R] { new So[R](n); }
+fn id(r &R) &R { r; }
+
+fn main() {
+  imm first = mkso(1);
+  {
+    mut r &R = first;
+    r = id(mkso(4));         //~ ErrorFrozen
+    printStr("read = ");
+    printInt(r.n);
+    printStr("\n");
+  }
+  printStr("end\n");
+}

@@ -174,12 +174,57 @@ void blockNameRes(NameResState *pstate, BlockNode *blk) {
 // 3. Performs bidirectional inference to ensure block (and any breaks) return same-typed value
 //    All breaks must resolve to either the expected type or the same inferred supertype
 //    Coercion is performed on breaks as needed to accomplish this, or errors result
+// Type check a block's statement, its value unwanted. One declaring a local
+// may extend a temporary its initializer borrows into a hidden local
+// (varDclExtendBegin); 'hoists' gathers, for each such statement, its hidden
+// locals in order and then the statement, for blockHoist.
+static void blockStmtTypeCheck(TypeCheckState *pstate, INode **stmtp, Nodes **hoists) {
+    if ((*stmtp)->tag != VarDclTag) {
+        inodeTypeCheck(pstate, stmtp, noCareType);
+        return;
+    }
+    VarDclExtend ext;
+    INode *stmt = *stmtp;
+    varDclExtendBegin(pstate, &ext, (VarDclNode *)stmt);
+    inodeTypeCheck(pstate, stmtp, noCareType);
+    Nodes *hoisted = varDclExtendEnd(pstate, &ext);
+    if (hoisted == NULL)
+        return;
+    if (*hoists == NULL)
+        *hoists = newNodes(hoisted->used + 1);
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(hoisted, cnt, nodesp))
+        nodesAdd(hoists, *nodesp);
+    nodesAdd(hoists, stmt);
+}
+
+// Declare each hidden local just before the statement whose initializer
+// extends it. Done once nothing holds a pointer into the statement list.
+static void blockHoist(BlockNode *blk, Nodes *hoists) {
+    if (hoists == NULL)
+        return;
+    uint32_t from = 0;
+    for (uint32_t at = 0; at < blk->stmts->used && from < hoists->used; ++at) {
+        uint32_t to = from;
+        while (nodesGet(hoists, to)->tag == VarDclTag
+            && ((VarDclNode *)nodesGet(hoists, to))->namesym == tempLocalName)
+            ++to;
+        if (nodesGet(blk->stmts, at) != nodesGet(hoists, to))
+            continue;
+        for (uint32_t h = from; h < to; ++h)
+            nodesInsert(&blk->stmts, nodesGet(hoists, h), at++);
+        from = to + 1;
+    }
+}
+
 void blockTypeCheck(TypeCheckState *pstate, BlockNode *blk, INode *expectType) {
     INode *inferredType = unknownType;
     TypeCompare match = EqMatch;
     INode **laststmtp = NULL;
     INode **lastexp = NULL;
-        
+    Nodes *hoists = NULL;
+
     // Save and adjust pstate for block
     // This includes block stack, used for gathering all breaks that might belong to some block
     ++pstate->scope;
@@ -201,7 +246,7 @@ void blockTypeCheck(TypeCheckState *pstate, BlockNode *blk, INode *expectType) {
         // Handle statement differently depending on whether it is last one
         if (cnt > 1) {
             // All stmt nodes except the last one
-            inodeTypeCheck(pstate, nodesp, noCareType); // we don't care about the type
+            blockStmtTypeCheck(pstate, nodesp, &hoists);
             if (cnt > lastpos && ((*nodesp)->tag == BreakTag || (*nodesp)->tag == ContinueTag))
                 errorMsgNode(*nodesp, ErrorBadStmt, "break/continue may only be the last statement in the block");
         }
@@ -218,7 +263,7 @@ void blockTypeCheck(TypeCheckState *pstate, BlockNode *blk, INode *expectType) {
             errorMsgNode((INode*)*laststmtp, ErrorBadStmt, "Don't end loop block with break, continue or return");
 
         if (laststmtp)
-            inodeTypeCheck(pstate, laststmtp, noCareType); // we don't care about the type
+            blockStmtTypeCheck(pstate, laststmtp, &hoists);
 
         // Warn if the loop block has no breaks, as loop may never stop
         if (blk->breaks->used == 0)
@@ -249,7 +294,7 @@ void blockTypeCheck(TypeCheckState *pstate, BlockNode *blk, INode *expectType) {
             // nil' added just below. '{}' is legal, and so is the outer block an
             // 'each' builds before it knows what it is iterating over.
             if (laststmtp)
-                inodeTypeCheck(pstate, laststmtp, noCareType); // we don't care about the type
+                blockStmtTypeCheck(pstate, laststmtp, &hoists);
             // Add 'blockret nil' to end of empty block, or block ending without expression/break/cont/return
             BreakRetNode *retnode = newReturnNode();
             retnode->tag = BlockRetTag;
@@ -278,6 +323,7 @@ void blockTypeCheck(TypeCheckState *pstate, BlockNode *blk, INode *expectType) {
     // notice until a declaration could be analyzed from the middle of a body.
     if (expectType == noCareType) {
         blk->vtype = inferredType;
+        blockHoist(blk, hoists);
         --pstate->scope;
         return;
     }
@@ -308,6 +354,7 @@ void blockTypeCheck(TypeCheckState *pstate, BlockNode *blk, INode *expectType) {
             narrowest = iexpNarrowerScope(narrowest, ((BreakRetNode *)*nodesp)->exp);
     }
     blk->vtype = iexpNarrowestType(blk->vtype, (INode*)blk, narrowest);
+    blockHoist(blk, hoists);
 
     // Restore pstate to prior condition
     --pstate->scope;

@@ -1086,6 +1086,7 @@ ModuleNode *modInstantiate(TypeCheckState *pstate, FnCallNode *srcgencall, Modul
     tstate.typenode = NULL;
     tstate.fn = NULL;
     tstate.scope = 0;
+    tstate.extend = NULL;
     INode *instnode = (INode*)inst;
     inodeTypeCheckAny(&tstate, &instnode);
     return inst;

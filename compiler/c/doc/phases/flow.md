@@ -461,7 +461,7 @@ depends on:
 | `HollowTag` | `flowScopeDealias`, in a `dealias` list, for a hollowed variable or one whose part the scope hands back; `assignSingleFlow`, wrapped round the value stored into a hollowed variable (and the drop-flag client, where a later pass of a loop reaches the store hollow) | `genlHollowRelease`: the owner goes, and a death frees without what moved — after the new value is evaluated, for the wrapper, as `genlStore` orders a whole release; with `test` set, only when the drop flag says hollow |
 | `DropFlagTag` | the drop-flag client, in a `dealias` list, round the release of a variable whose state differs by path there | the release runs only when the variable's drop flag holds the state it names |
 | `VarDropFlag` | the drop-flag client, on a variable given a flag | `genlDropFlagBegin` makes the flag where the variable begins; each store over it, and each marked move, updates it |
-| `TempTag` | `flowTempRead`, round a temporary where it is read or thrown away; `moved` by `flowTempHollow`, `kept` by `flowTempEscape` or a move out of it by value ("Temporaries", below) | `genlTempKeep` keeps its value in a slot; the end of its statement, condition or operand finalizes it (`genlTempsEnd`), hollow where `moved` says; a `kept` one is never finalized |
+| `TempTag` | `flowTempRead`, round a temporary where it is read or thrown away; `moved` by `flowTempHollow`, `kept` by `flowTempEscape` (a raw pointer into it going out) or a move out of it by value ("Temporaries", below); `walkvar` by the loan walk (§6) | `genlTempKeep` keeps its value in a slot; the end of its statement, condition or operand finalizes it (`genlTempsEnd`), hollow where `moved` says; a `kept` one is never finalized |
 
 **A reference-count node is built only for a counted reference, or a value
 holding one.** `flowInjectRefCountAmt` returns early unless the type is a
@@ -547,8 +547,12 @@ stored, passed by value, handed back or moved — whose death does something
 first (`doc/reference/refinitdrop.html`). Flow finds each where it is read or
 thrown away and wraps it in a `TempNode` (`flowTempRead`); generation keeps it
 in a slot and finalizes it at the end of its part ([Generation](generation.md),
-"Temporaries"). Nothing else in flow tracks it: a temporary is never a
-variable, so it has no flags, no drop flag, and nothing the path walk follows.
+"Temporaries"). A temporary is never a variable here, so it has no flags and
+no drop flag; the loan walk gives one a stand-in variable where a borrow of it
+is made (§6, "Temporaries"). What Rust's rule extends past its statement — what
+a variable's initializer borrows, or the owner it lends — is no temporary by
+flow's time: type check made it a hidden local of the block
+([VarDcl](../nodes/vardcl.md), "Temporaries an initializer extends").
 
 **Where a value is a temporary.** `flowIsTemp` is the test: an expression that
 does not read a place that keeps its value (`flowIsLvalRead`), and is not an
@@ -575,22 +579,25 @@ through a temporary sole owner: the move is noted in the node's `moved`
 is. Reaching one by value marks it `kept`, as a local array an element moved
 out of is left unreleased.
 
-**A temporary a borrow outlives is kept.** Once a statement that made a
+**A borrow of a temporary does not keep it.** A borrow of a temporary that
+outlives its statement — `imm r = id(mkso())`, `imm r = mkso().me()`, a
+`return` or a store of one — is the loan walk's to refuse where it is used
+after the temporary dies (§6, "Temporaries"), so the temporary is finalized at
+its statement's end all the same. **A temporary a raw pointer outlives is
+kept**, since nothing follows a pointer. Once a statement that made a
 temporary is walked, `blockTempEscape` walks it again (`flowTempEscape`),
-carrying down whether the value at each node goes out of the statement: a
+carrying down how the value at each node goes out of the statement — a
 variable's initializer, an assignment's value, a returned, broken-out or
-handed-back value. Out passes only through values that can hold a borrow or a
-raw pointer (`flowTempCarries`: `itypeCarriesBorrow`, or a pointer within a
-few levels): a call's arguments when its result can, every argument of a call
-that could store one (`flowTempCallStores`: a `&mut` or a pointer argument to
-something that can hold one), a literal's or an allocation's elements, a
-cast's operand, a field's or an element's base, a borrow's place. A
-`TempNode` reached while out is set `kept`: a borrow or a pointer made from it
-may outlive its statement, and it is not finalized, as no temporary was
-before. So `imm r &R = mkso()` and `imm r = mkso().me()` keep the owner;
-`g(mkso())`, `mkso().get()` and `imm n = mkso().n` do not. Whether such a
-borrow lengthens the temporary's life is a lifetime question this does not
-settle.
+handed-back value — through values that can hold a borrow or a raw pointer
+(`flowTempOut`: `itypeCarriesBorrow`, or a pointer within a few levels): a
+call's arguments when its result can, every argument of a call that could
+store one (`flowTempCallStores`: a `&mut` or a pointer argument to something
+that can hold one), a literal's or an allocation's elements, a cast's operand,
+a field's or an element's base, a borrow's place. Out becomes `TempOutPtr` at
+the first value on the way that holds a pointer, and a `TempNode` reached so
+is set `kept`: never finalized, which leaks it rather than leave the pointer
+dangling. So `imm p = id(mkso()) as *R` keeps the owner; `imm r =
+id(mkso())`, `g(mkso())` and `imm n = mkso().n` do not.
 
 ## 6. The loan walk
 
@@ -819,6 +826,24 @@ source in a variable of the function is refused. A block handing a value on to a
 expression, or a `break`'s — keeps what that value carries in flight while its
 variables end (`pwScopeEndHanding`), so `imm h = { imm x = ..; new H(&x); }`
 is refused at `x`.
+
+**Temporaries.** A temporary at the root of a place — read through (`*mkso()`,
+`mk().n`), lent as an owner to a call or a method (`id(mkso())`,
+`mkso().me()`) — is a root like a variable: `pwTemp` walks its value and gives
+the `TempNode` a stand-in variable (`walkvar`, made once, `PathVar.temp`),
+which holds what that value carries if its type can, and which is pushed on a
+stack of the temporaries the statements being walked made. Where generation
+finalizes them, they end, the newest first (`pwTempsEnd`): at each statement's
+end (`pwStmts`), with a `break`'s or a used block's value still in flight;
+at an `if` condition's end; at the end of an `and`'s or `or`'s right operand.
+Ending is the access a variable's scope end is, so a holder still holding a
+borrow of one and used later is refused at the temporary — `imm r =
+id(mkso(3)); r.n` is Rust's E0716 — and a block value carrying one is refused
+at once. A loan of a stand-in is local, so a `return` or a store away of a
+borrow of a temporary (`fn f() &R { mkso(); }`) is an escape. A temporary a
+variable's initializer extends arrives as a hidden local (`tempLocalName`),
+an ordinary variable of its block; the messages name both kinds as
+temporaries (`loanTempKind`).
 
 **Escapes.** A loan is *local* when its place is rooted in the function's own
 storage — a local, a by-value parameter, what an owner held in one owns —

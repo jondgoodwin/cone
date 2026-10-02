@@ -2307,6 +2307,7 @@ static void structCheckTraitReqs(StructNode *node) {
                 tstate.typenode = (INode*)trait;
                 tstate.fn = NULL;
                 tstate.scope = 0;
+                tstate.extend = NULL;
                 inodeTypeCheckAny(&tstate, nodesp);
                 traitmeth = (FnDclNode*)*nodesp;
             }
@@ -2847,6 +2848,7 @@ static void structCheckMembers(StructNode *node) {
     tstate.typenode = (INode*)node;
     tstate.fn = NULL;
     tstate.scope = 0;
+    tstate.extend = NULL;
 
     // A generated drop fn carries its mark already, and is passed by. An atomic
     // value refused for what it holds has its methods passed by too: each
@@ -2902,6 +2904,7 @@ static void structWorkQueues(void) {
             tstate.typenode = (INode*)node;
             tstate.fn = NULL;
             tstate.scope = 0;
+            tstate.extend = NULL;
             // Counted as in flight, so that no member is checked until every one
             // of them is laid out
             ++structLayoutDepth;

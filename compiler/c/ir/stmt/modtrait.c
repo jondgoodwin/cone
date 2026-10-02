@@ -109,6 +109,7 @@ void modTraitTypeCheck(TypeCheckState *pstate, ModTraitNode *trait) {
     tstate.typenode = (INode*)trait;
     tstate.fn = NULL;
     tstate.scope = 0;
+    tstate.extend = NULL;
     INode **nodesp;
     uint32_t cnt;
     for (nodesFor(trait->nodes, cnt, nodesp))
@@ -285,6 +286,7 @@ static FnDclNode *modTraitFindFn(TypeCheckState *pstate, INode *dcl, FnDclNode *
     tstate.typenode = NULL;
     tstate.fn = NULL;
     tstate.scope = 0;
+    tstate.extend = NULL;
     while (cnt--) {
         FnDclNode *candidate = (FnDclNode*)*candidatep++;
         // A generic function has a signature per instance, and none a host could call

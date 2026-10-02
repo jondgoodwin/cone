@@ -378,6 +378,7 @@ void nameUseTypeCheck(TypeCheckState *pstate, NameUseNode **namep) {
         tstate.typenode = owner;
         tstate.fn = NULL;
         tstate.scope = 0;
+        tstate.extend = NULL;
         inodeTypeCheckAny(&tstate, &name->dclnode);
     }
     else

@@ -1,0 +1,36 @@
+// An extended temporary lasts to the end of the block whose variable's
+// initializer borrowed it, and no further: a borrow of it stored in a variable
+// declared outside, and used after that block, would read it after its end.
+//
+// Verdict: refuse, ErrorFrozen at the temporary, which goes out of scope
+// while 'h' still holds a borrow of it (code and position a reading of the
+// rules).
+// Basis: language rule (2 Oct 2026) -- temporaries follow Rust, extended to
+// the end of the enclosing block only; a variable follows what it holds (the
+// flow rule, 2 Oct 2026). Rust: '{ let r = &temp(); h = r; } h.n' is E0716,
+// "temporary value dropped while borrowed"; by reading, not run.
+// Master 39affbc9: refused, but at the borrow of the temporary itself
+// (ErrorBadLval), which every such borrow was.
+
+mod lifetime_mix_temp_extended_used_after_block;
+
+import stdio use *;
+
+struct R {
+  pub n i64;
+  fn final(self &uni) {
+    printStr("final\n");
+  }
+}
+
+fn mk(n i64) R { new R(n); }
+
+fn main() {
+  imm outer = mk(1);
+  mut h = &outer;
+  {
+    imm r = &mk(2);          //~ ErrorFrozen
+    h = r;
+  }
+  printInt(h.n);
+}

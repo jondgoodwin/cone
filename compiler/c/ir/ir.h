@@ -36,6 +36,7 @@ typedef struct Name Name;        // ../nametbl.h
 typedef struct Lexer Lexer;        // ../../parser/lexer.h
 typedef struct NameResState NameResState;
 typedef struct TypeCheckState TypeCheckState;
+typedef struct VarDclExtend VarDclExtend;  // stmt/vardcl.h
 typedef struct GenericInfo GenericInfo;
 typedef struct DclInfo DclInfo;          // dclinfo.h
 typedef struct DclSpans DclSpans;        // dclspan.h
@@ -157,6 +158,7 @@ typedef struct TypeCheckState {
     INode *typenode;        // Current type (e.g., struct)
     FnDclNode *fn;          // The function and its signature/block (for returned processing)
     uint16_t scope;         // The current block scope (0=global, 1=fnsig, 2+=blocks)
+    VarDclExtend *extend;   // The block statement declaring a local, while it is checked, else NULL
 } TypeCheckState;
 
 #endif

@@ -788,6 +788,7 @@ void fnCallDemandCandidates(INode *binding) {
         tstate.typenode = owner;
         tstate.fn = NULL;
         tstate.scope = 0;
+        tstate.extend = NULL;
         inodeTypeCheckAny(&tstate, &cand);
     }
 }

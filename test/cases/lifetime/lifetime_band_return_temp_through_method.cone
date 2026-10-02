@@ -1,0 +1,40 @@
+// A method called on a temporary owner returns a borrow of it, and that
+// borrow is handed back: the temporary ends with the function's statement, so
+// the borrow would point at freed memory -- unless the temporary is never
+// ended, which is a leak.
+//
+// Verdict: refuse, ErrorEscape at the returned value.
+// Basis: language rule (2 Oct 2026) -- temporaries follow Rust; a returned
+// value may carry no borrow of the function's own storage. Rust:
+// 'fn f() -> &'static R { make_box().me() }' is E0515, "cannot return value
+// referencing temporary value"; by reading, not run.
+// Master 39affbc9: accepted, and it leaks -- main, run, prints "read = 8" and
+// "end" but never "final" (#241's fallback).
+
+mod lifetime_band_return_temp_through_method;
+
+import stdio use *;
+
+struct R {
+  pub n i64;
+  pub fn me(self &) &R { self; }
+  fn final(self &uni) {
+    printStr("final\n");
+  }
+}
+
+fn mkso(n i64) So[R] { new So[R](n); }
+
+fn handBack() &R {
+  mkso(8).me();              //~ ErrorEscape
+}
+
+fn main() {
+  {
+    imm r = handBack();
+    printStr("read = ");
+    printInt(r.n);
+    printStr("\n");
+  }
+  printStr("end\n");
+}

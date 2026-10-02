@@ -17,14 +17,18 @@ struct Counter {
 }
 
 // A borrow needs a place in memory to point at. A computed value has none.
+// Where a variable's initializer borrows one ('imm r = &(a + 1);'), the
+// temporary becomes a hidden local lasting to the end of the block, as Rust
+// extends it (lifetime_mix_temp_borrow_extended); so each borrow here is a
+// statement of its own, which extends nothing.
 fn borrowComputed() {
   mut a = 3;
-  imm r = &(a + 1);      //~ ErrorBadLval:15 "May not borrow a temporary value"
+  &(a + 1);              //~ ErrorBadLval:7 "May not borrow a temporary value"
 }
 
 // Nor does a literal, which the compiler is free to keep in the instruction
 fn borrowLiteral() {
-  imm r = &5;            //~ ErrorBadLval:12 "May not borrow a temporary value"
+  &5;                    //~ ErrorBadLval:4 "May not borrow a temporary value"
 }
 
 // A borrow applies to the whole suffixed term, so '&c.doubled()' borrows what
@@ -33,7 +37,7 @@ fn borrowLiteral() {
 // receiver.
 fn borrowMethodResult() {
   mut c = new Counter(3);
-  imm r = &c.doubled();  //~ ErrorBadLval:13 "May not borrow a temporary value"
+  &c.doubled();          //~ ErrorBadLval:5 "May not borrow a temporary value"
 }
 
 // '&g[i]' hands the type's own '&[]' the read-only borrow '&g' as its receiver.
@@ -62,7 +66,7 @@ fn borrowIndexReadOnlyParam(g &Grid, i usize) {
 // A constructed literal is a temporary too, so a reference type's own literal
 // syntax is not a way to allocate one
 fn borrowConstructed() {
-  imm r = &new Counter(4);  //~ ErrorBadLval:12 "May not borrow a temporary value"
+  &new Counter(4);       //~ ErrorBadLval:4 "May not borrow a temporary value"
 }
 
 // Dereference needs a reference or a pointer. A number is neither.

@@ -234,6 +234,9 @@ In order: re-associate `&v[i]` into `(&v)[i]` when the operand is an index, so a
 type's own `` `&[]` `` method receives the borrowed receiver — but not when its
 list is type arguments (`fnCallHasTypeArgs`): `&half[i64]` borrows the generic's
 instance, and an index of `&half` by a type means nothing; check the operand;
+within a local's declaration, make the temporary the operand's place is rooted
+in a hidden local, which the declaration keeps if the borrow extends it and
+otherwise refuses ([vardcl](vardcl.md), "Temporaries an initializer extends");
 **refuse a temporary** with its own message rather than "must be lval", because
 every operand a borrow refuses is refused for that one reason; **refuse an
 inline function** (`ErrorInlineRef`), which generation gives no symbol, so a

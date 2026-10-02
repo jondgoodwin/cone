@@ -31,6 +31,10 @@
 			<span class="pre">list[0usize]</span>, an allocation from an arena, the
 			<span class="pre">Option</span> a pool's <span class="pre">get</span> returns),
 			and between the arguments of one call.
+			A temporary a variable's initializer borrows lives to the end of the block, and a
+			borrow of any other temporary is refused where it is used after its statement; an
+			<span class="pre">if</span>'s or <span class="pre">match</span>'s arms, or a block's
+			value, extend no temporary yet, though Rust extends through them.
 			An element borrowed from a resizable collection reached through a shared path is not
 			yet refused, and a change through another reference to that collection leaves the
 			element dangling. Each of these compiles today, <span class="pre">p</span> a value
@@ -196,7 +200,8 @@ imm ref4 = &amp;mut list[key];  // passes &amp;mut list as self to list's `&amp;
 	<p>A method name after the dot operator is <i>not</i> such a case.
 		The ampersand applies to the whole term, so the method is called first
 		and the ampersand is then applied to what it returned &mdash; a temporary
-		value with no place to point at, which is rejected.
+		value with no place to point at, which is rejected, except where it is a variable's
+		initializer (see <a href="#temporary">Borrowing a temporary</a> below).
 		To call a method on a borrowed reference, borrow it explicitly:
 		<span class="pre">(&amp;pointer).someref(key)</span>.</p>
 	</li>
@@ -287,9 +292,31 @@ fn getval() i32 {
 		However, sometimes it needs help in the form of
 		<a href="reflifefn.html">lifetime annotations</a>.</p>
 
+	<h3 id="temporary">Borrowing a temporary</h3>
+	<p>A temporary &mdash; a value a call or a literal makes that no variable holds &mdash; dies
+		at the end of the statement that made it (see <a href="refinitdrop.html">finalizers</a>).
+		Where a variable's initializer borrows one, it lives longer instead, to the end of the
+		variable's block, as Rust extends it, so the borrow may be used for as long as the
+		variable can be:</p>
+<pre>
+imm r = &amp;make();          // the temporary lives to the end of the block
+imm n = &amp;make().count;    // so does this one, of which n borrows a field
+imm o &amp;R = makeOwner();   // and an owner lent as a borrow
+imm t = (&amp;make(), 1);     // and one borrowed in a tuple, array or variant literal
+</pre>
+	<p>Nothing else extends a temporary: one passed to a function, a method's receiver, a value
+		an <span class="pre">if</span> or a block gives. A variable holding a borrow of such a
+		temporary may not be used after its statement, nor may the borrow be returned or stored
+		away. An explicit borrow of a temporary anywhere but such an initializer is refused.</p>
+<pre>
+imm p = pick(makeOwner());   // fine while p is not used again;
+p.count;                     // but refused here: the owner died with the statement above
+</pre>
+
 	<h3>Freezing access to the source of a borrow</h3>
-	<p>When a borrowed reference is created, its source is always a named variable.
-		That source variable either holds or points to the value we are borrowing a pointer to.
+	<p>When a borrowed reference is created, its source is a named variable, or a temporary
+		as above.
+		That source either holds or points to the value we are borrowing a pointer to.
 		When we borrow from the source, we are not just gaining access to the value,
 		we are also gaining some or all of its access permissions.
 		To preserve the borrowed reference's guarantees, its source is frozen

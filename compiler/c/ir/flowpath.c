@@ -167,6 +167,11 @@ static uint32_t *decls = NULL;
 static uint32_t ndecls = 0;
 static uint32_t declcap = 0;
 
+// The stand-ins of the temporaries the statements being walked made, newest last
+static uint32_t *temps = NULL;
+static uint32_t ntemps = 0;
+static uint32_t tempcap = 0;
+
 static PathFrame *frames = NULL;
 static uint32_t nframes = 0;
 static uint32_t framecap = 0;
@@ -239,6 +244,7 @@ static uint32_t pathVar(VarDclNode *var) {
     // a method's receiver is: 'k += k' reads 'k' while it is borrowed.
     pv->holder = var->scope > 0 && !(var->flags & FlagStatic) && var->namesym != tempName
         && pwCarries(var->vtype);
+    pv->temp = 0;
     var->flowindex = index;
     return index;
 }
@@ -378,6 +384,7 @@ static PathDelta *pathDeltaPush(PathDelta *list, PathDelta *delta) {
 static PathSet *pwValue(INode **nodep, int move);
 static PathSet *pwBlock(BlockNode *blk, int fnblock, int move);
 static PathSet *pwLend(INode *site, Place *pl, INode *perm, int access, uint32_t *loan);
+static void pwHolderDies(uint32_t var);
 
 // An access to a place, asked of borrow freezing only when some loan is rooted
 // at the place's variable: what kind of access it is is not worked out otherwise
@@ -397,6 +404,58 @@ static VarDclNode *pwNamedVar(INode *node) {
 static PathSet *pwPlaceHolds(Place *pl, INode *node) {
     PathVar *pv = &pathVars[pl->var];
     return pv->holder && pwCarries(((IExpNode *)node)->vtype) ? pv->holds : NULL;
+}
+
+// A temporary as the root of a place ('*make()', 'make().x', an owner made
+// here and lent to a call): its value is walked, and it gets a stand-in
+// variable, which holds what that value carries and ends where the temporary
+// dies (pwTempsEnd). A borrow of it is a loan rooted there, so a holder still
+// holding one when it ends, used again, is refused, as for a local leaving
+// its scope; and one returned or stored beyond the function is a loan of the
+// function's own storage.
+static uint32_t pwTemp(TempNode *temp) {
+    PathSet *holds = pwValue(&temp->exp, 0);
+    if (temp->walkvar == NULL) {
+        VarDclNode *var = newVarDclFull(tempName, VarDclTag, temp->vtype, (INode *)immPerm, NULL);
+        inodeLexCopy((INode *)var, (INode *)temp);
+        var->scope = 2;         // the function's own, but nobody's to release
+        var->flowtracked = 1;
+        temp->walkvar = var;
+    }
+    uint32_t index = pathVar(temp->walkvar);
+    PathVar *pv = &pathVars[index];
+    pv->temp = 1;
+    pv->holder = pwCarries(temp->vtype);
+    if (pv->holder)
+        pathSetFacts(index, holds, NULL);
+    if (ntemps == tempcap)
+        temps = (uint32_t *)pathGrow(temps, &tempcap, sizeof(uint32_t));
+    temps[ntemps++] = index;
+    return index;
+}
+
+// The temporaries made since 'mark' die, the newest first, as a scope's
+// locals do (pwScopeEnd): each ends, which conflicts with a loan of it a
+// holder still holds -- or that 'value', a value still being handed on, carries
+static void pwTempsEnd(uint32_t mark, PathSet *value) {
+    if (ntemps == mark)
+        return;
+    uint32_t flight = loanFlightMark();
+    loanFlightPush(value, 0);
+    for (uint32_t i = ntemps; i > mark; --i) {
+        uint32_t index = temps[i - 1];
+        PathVar *pv = &pathVars[index];
+        if (pv->holder && (pv->holds || pv->pending)) {
+            pwHolderDies(index);
+            pathSetFacts(index, NULL, NULL);
+        }
+        if (pv->loans) {
+            Place pl = { index, 0, 0 };
+            pwAccess(&pl, AccessEnd, (INode *)pv->var);
+        }
+    }
+    loanFlightPop(flight);
+    ntemps = mark;
 }
 
 static void pwStep(Place *pl, uintptr_t step) {
@@ -499,6 +558,16 @@ static int pwPlace(INode **nodep, Place *pl, PathSet **base) {
         return 1;
     }
     switch (node->tag) {
+    case TempTag:
+        pl->var = pwTemp((TempNode *)node);
+        pl->deref = 0;
+        pl->nsteps = 0;
+        pl->shared = 0;
+        pl->sharedlen = 0;
+        pl->owned = 0;
+        pl->use = node;
+        pl->referent = NULL;
+        return 1;
     case CastTag:
         if (node->flags & FlagConvert)
             break;
@@ -1165,6 +1234,9 @@ static PathSet *pwStmts(BlockNode *blk, int move) {
     for (nodesFor(blk->stmts, cnt, nodesp)) {
         if (dead)
             break;
+        // The temporaries a statement makes die at its end, a value it hands
+        // on still carrying what it borrowed of them
+        uint32_t tempmark = ntemps;
         switch ((*nodesp)->tag) {
         case VarDclTag:
             pwVarDcl((VarDclNode *)*nodesp);
@@ -1176,6 +1248,7 @@ static PathSet *pwStmts(BlockNode *blk, int move) {
         {
             BreakRetNode *brk = (BreakRetNode *)*nodesp;
             PathSet *brkval = brk->exp->tag == NilLitTag ? NULL : pwValue(&brk->exp, 1);
+            pwTempsEnd(tempmark, brkval);
             pwJump(brk->block, brkval, 0, *nodesp);
             break;
         }
@@ -1207,8 +1280,10 @@ static PathSet *pwStmts(BlockNode *blk, int move) {
                 if (loop)
                     value = NULL;
             }
-            if (!dead)
+            if (!dead) {
+                pwTempsEnd(tempmark, move ? value : NULL);
                 pwExit(*nodesp, frames[nframes - 1].declstart);
+            }
             break;
         }
         default:
@@ -1216,6 +1291,10 @@ static PathSet *pwStmts(BlockNode *blk, int move) {
                 pwValue(nodesp, 0);
             break;
         }
+        if (dead)
+            ntemps = tempmark;
+        else
+            pwTempsEnd(tempmark, NULL);
     }
     return value;
 }
@@ -1343,8 +1422,12 @@ static PathSet *pwIf(IfNode *ifnode, int move) {
     for (nodesFor(ifnode->condblk, cnt, nodesp)) {
         if (*nodesp == elseCond)
             haselse = 1;
-        else
+        else {
+            // What the condition makes dies once it is decided
+            uint32_t tempmark = ntemps;
             pwValue(nodesp, 0);
+            pwTempsEnd(tempmark, NULL);
+        }
         if (first) {
             // What the first condition did holds on every path
             mark = nlog;
@@ -1448,7 +1531,9 @@ static PathSet *pwValue(INode **nodep, int move) {
         LogicNode *logic = (LogicNode *)node;
         pwValue(&logic->lexp, 0);
         uint32_t mark = nlog;
+        uint32_t tempmark = ntemps;
         pwValue(&logic->rexp, 0);
+        pwTempsEnd(tempmark, NULL);
         PathDelta *path = pathDelta(mark, NULL);
         pathRollback(mark);
         pathJoin(path, 1);
@@ -1497,6 +1582,7 @@ void flowPathWalk(FnDclNode *fndcl, int loans, int drops) {
         pathVars = (PathVar *)pathGrow(pathVars, &varcap, sizeof(PathVar));
     nlog = 0;
     ndecls = 0;
+    ntemps = 0;
     nframes = 0;
     dead = 0;
 
