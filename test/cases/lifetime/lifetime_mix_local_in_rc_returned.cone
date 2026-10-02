@@ -1,0 +1,35 @@
+// An 'Rc' owning a struct built around a local's borrow, returned: the owner
+// outlives the function, the borrow inside it does not.
+//
+// Verdict: refuse, ErrorEscape at the returned 'Rc'.
+// Basis: language rule (1 Oct 2026) -- lifetimes are infectious (the 2019
+// post "Infectious Typing"): a value holding a borrow takes on its lifetime,
+// and so does the owner of such a value; reflifefn.html, "Lifetime
+// Annotations on Fields" ('makewrap': "may not be returned").
+// Master 2274ee9d: accepted, and it reads freed memory -- main, run, prints
+// "final" and then "read = 2000979077168". Stage 4 fixed it.
+
+mod lifetime_mix_local_in_rc_returned;
+
+import stdio use *;
+
+struct R {
+  pub n i64;
+  fn final(self &uni) {
+    printStr("final\n");
+  }
+}
+
+struct Holder { pub r &R; }
+
+fn mk() Rc[Holder] {
+  imm x = new So[R](42);
+  new Rc[Holder](new Holder(&*x)); //~ ErrorEscape
+}
+
+fn main() {
+  imm h = mk();
+  printStr("read = ");
+  printInt(h.r.n);
+  printStr("\n");
+}

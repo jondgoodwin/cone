@@ -1,0 +1,49 @@
+// A local's borrow stored through a reference to a local struct -- one that
+// holds a parameter's borrow, or is a copy of a by-value parameter -- and
+// read back inside the function: the place is the function's own, so the
+// store is legal, though what the struct held came from the caller.
+//
+// Verdict: accept; prints 5 and 6.
+// Basis: language rule (2 Oct 2026), the flow rule -- a variable's lifetime
+// follows what it holds now; refborref.html, "Lifetime Constraints": the
+// struct outlives nothing it is given here.
+// Rust: accepted (by reading, not run).
+// Master 2274ee9d: accepted. Pinned because the check that refuses a store
+// through a reference reaching the caller must tell a struct the reference
+// points at from the borrows that struct holds.
+
+mod lifetime_mix_store_through_ref_to_local;
+
+import stdio use *;
+
+struct R { pub n i64; }
+struct H { pub r &R; }
+
+fn show(label &[]u8, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+fn holdsParams(p &R) i64 {
+  mut lh = new H(p);
+  imm x = new R(5);
+  imm q = &mut lh;
+  q.r = &x;
+  lh.r.n;
+}
+
+fn copyOfByValue(h H) i64 {
+  mut lh = h;
+  imm x = new R(6);
+  imm q = &mut lh;
+  q.r = &x;
+  lh.r.n;
+}
+
+fn main() {
+  imm one = new R(1);
+  show("holds-param", holdsParams(&one));
+  show("copy-of-byvalue", copyOfByValue(new H(&one)));
+}

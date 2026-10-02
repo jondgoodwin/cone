@@ -2,14 +2,8 @@
 // finalizing gap is left to pin: a value assigned over through '&mut pool[r]'
 // is finalized as it is replaced (finalize.cone).
 //
-// THE HOLES, which compile today and dangle, so no check here can pin what
-// they print. Written out so a reader knows what is not yet safe:
-//
-//   fn escapes() Option[&Pt] {
-//     mut p = Pool[Pt].empty();
-//     imm r = p.add(new Pt(1, 2));
-//     p.get(r);                  // the pool dies here; the borrow in the
-//   }                            // Option is returned and dangles
+// THE HOLE, which compiles today and dangles, so no check here can pin what
+// it prints. Written out so a reader knows what is not yet safe:
 //
 //   fn frozen(p &mut Pool[Pt], q &mut Pool[Pt]) i64 {
 //     imm r = p.add(new Pt(1, 2));
@@ -19,17 +13,7 @@
 //     x.x;                       // shared path, which a borrow does not
 //   }                            // freeze, so x reads a finalized value
 //
-// The first: a borrow held inside another value carries no lifetime, so the
-// borrow in 'get's and 'getMut's Option is not checked against the pool it
-// came from. Returning the Option, storing it through a parameter, and
-// matching the borrow out of it and returning that all compile. (Stored in an
-// outer variable that is used after the pool ends, it is refused: held in a
-// local, it freezes the pool as a bare borrow does.)
-// 'pool[r]' and '&mut pool[r]' return a bare borrow, which IS checked: the
-// compiler's suite pins that returning one or storing it where it outlives
-// the pool is refused (test/cases/region/region_flow_pool_escape.cone). So
-// 'if pool.alive(r) { ...pool[r]... }' is the checked form today.
-// The second is freezing through a shared path. A borrow from 'pool[r]' or
+// It is freezing through a shared path. A borrow from 'pool[r]' or
 // '&mut pool[r]', or an Option from 'get' or 'getMut', held in a local
 // freezes a local pool: 'remove', an 'add'
 // (which may move every value), and moving or dropping it are refused while
@@ -38,6 +22,23 @@
 // reach it; Jon's rule refuses such a borrow, and waits on 'uni' reborrowing.
 // A static pool (a module's global) changed by a function called while a
 // borrow of it lives is not seen.
+//
+// No longer a hole: a borrow from a pool, bare or inside the Option 'get' and
+// 'getMut' return, carries the pool's loan wherever it goes. Returning the
+// Option from the function holding the pool, storing it through a parameter,
+// and matching the borrow out of it and returning that are refused, as
+// returning or storing away a bare 'pool[r]' is; kept in an outer variable
+// and used after the pool ends, any of them is refused too. The compiler's
+// suite pins each route (test/cases/region/region_flow_pool_escape.cone).
+//
+//   fn escapes() Option[&Pt] {
+//     mut p = Pool[Pt].empty();
+//     imm r = p.add(new Pt(1, 2));
+//     p.get(r);                  // refused: the pool dies here, and the
+//   }                            // borrow in the Option would be returned
+//
+// Held in a variable of the function and used while the pool lives, any of
+// these borrows is fine.
 
 mod gaps;
 

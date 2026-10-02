@@ -1666,11 +1666,12 @@ void flowStateInit(FlowState *fstate, FnSigNode *fnsig) {
     fstate->jumped = 0;
 }
 
-// A bare borrowed reference handed out keeps its existing check (its scope
-// number); a borrow inside another value has none
+// A value handed out that carries a borrow: what it holds, and so how long it
+// may live, only the walk knows -- a bare borrowed reference's scope number
+// does not follow a borrow through a variable, a value holding it, or a call's
+// by-value argument
 void flowGateResultAsk(FlowState *fstate, INode *type) {
-    INode *typedcl = flowGateTypeDcl(type);
-    if (!flowGateIsBorrowRef(typedcl) && itypeCarriesBorrow(typedcl))
+    if (itypeCarriesBorrow(flowGateTypeDcl(type)))
         fstate->gate |= FlowGateResult;
 }
 

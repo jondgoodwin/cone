@@ -13,9 +13,9 @@
 // check; it was reading scope 0 for every element. fnCallFinalizeArgs now builds
 // the call its own tuple type, whose borrowed elements carry the call's scope.
 //
-// Each refusal below pairs an lval that outlives the borrow with one the borrow
-// outlives, because the check is per element against its own lval: the same call
-// is refused for one and allowed for the other, in either position.
+// Returned, the elements are checked against the call's scope; kept in
+// variables, they are followed by the loan walk, which gives each element the
+// loans of every argument.
 //
 // Every diagnostic here is a flow diagnostic. Flow keeps going after one of its
 // own within a function, so the stores share one function; the returning cases
@@ -45,44 +45,82 @@ mut G i32 = 7;
 fn globalPair() &i32, &i32 { &G, &G; }
 fn globalPairAlias() RefPair { &G, &G; }
 
-fn storesTupleResults() {
+// Each element is kept in an outer variable past the block its argument lives
+// in, and used there, so the argument may not end while it is still held, as
+// ref_flow_call refuses 'r = same(&inner)' kept and used; the element kept in
+// a variable of that block beside it is no trouble.
+fn storesTupleResults() i32 {
   imm outer = 0;
   mut r1 &i32 = &outer;
   mut r2 &i32 = &outer;
   mut n i32 = 0;
+  mut seen = 0;
+
+  // A returned element carries the argument's borrow
+  {
+    imm inner = 1;                    //~ ErrorFrozen
+    mut near &i32 = &inner;
+    r1, near = two(&inner);
+  }
+  seen = seen + *r1;
+
+  // ... and the second element is no different from the first
+  {
+    imm inner = 1;                    //~ ErrorFrozen
+    mut near &i32 = &inner;
+    near, r2 = two(&inner);
+  }
+  seen = seen + *r2;
+
+  // Two borrows: every element carries both, whichever parameter the body
+  // happens to return in which position
+  {
+    imm inner = 1;                    //~ ErrorFrozen
+    mut near &i32 = &inner;
+    r1, near = pick(&outer, &inner);
+  }
+  seen = seen + *r1;
+
+  // The borrow survives a call nested in the call
+  {
+    imm inner = 1;                    //~ ErrorFrozen
+    mut near &i32 = &inner;
+    r1, near = two(same(&inner));
+  }
+  seen = seen + *r1;
+
+  // A tuple mixing a borrow with a plain value
+  {
+    imm inner = 1;                    //~ ErrorFrozen
+    r1, n = mixed(&inner);
+  }
+  seen = seen + *r1 + n;
+
+  // The tuple named by an alias is refused on the same terms, in either
+  // position, since resolving the name is all that stands between the
+  // assignment and the element list
+  {
+    imm inner = 1;                    //~ ErrorFrozen
+    mut near &i32 = &inner;
+    r1, near = twoAlias(&inner);
+  }
+  seen = seen + *r1;
+  {
+    imm inner = 1;                    //~ ErrorFrozen
+    mut near &i32 = &inner;
+    near, r2 = twoAlias(&inner);
+  }
+  seen = seen + *r2;
+
+  // What is not refused, and what makes the above a lifetime rule rather than
+  // a refusal of multi-value assignment: elements borrowed from a global keep
+  // their global lifetime, a call handed no borrow returns the declaration's
+  // own global scope, borrows of the lvals' own scope are fine, and so is
+  // holding both elements in variables of the block they were borrowed in
   {
     imm inner = 1;
     mut near &i32 = &inner;
     mut near2 &i32 = &inner;
-
-    // A returned element carries the argument borrow's scope, so storing it is
-    // refused exactly as 'r1 = same(&inner)' is in ref_flow_call
-    r1, near = two(&inner);           //~ ErrorInvType:5 "lval outlives the borrowed reference you are storing"
-
-    // ... and the second element is no different from the first
-    near, r2 = two(&inner);           //~ ErrorInvType:11 "lval outlives the borrowed reference you are storing"
-
-    // Two borrows of different scopes: every element takes the narrower,
-    // whichever parameter the body happens to return in which position
-    r1, near = pick(&outer, &inner);  //~ ErrorInvType:5 "lval outlives the borrowed reference you are storing"
-
-    // The scope survives a call nested in the call
-    r1, near = two(same(&inner));     //~ ErrorInvType:5 "lval outlives the borrowed reference you are storing"
-
-    // A tuple mixing a borrow with a plain value refuses only the borrow
-    r1, n = mixed(&inner);            //~ ErrorInvType:5 "lval outlives the borrowed reference you are storing"
-
-    // The tuple named by an alias is refused on the same terms, in either
-    // position, since resolving the name is all that stands between the
-    // assignment and the element list the check reads
-    r1, near = twoAlias(&inner);      //~ ErrorInvType:5 "lval outlives the borrowed reference you are storing"
-    near, r2 = twoAlias(&inner);      //~ ErrorInvType:11 "lval outlives the borrowed reference you are storing"
-
-    // What is not refused, and what makes the above a lifetime rule rather than
-    // a refusal of multi-value assignment: elements borrowed from a global keep
-    // their global lifetime, a call handed no borrow returns the declaration's
-    // own global scope, borrows of the lvals' own scope are fine, and so is
-    // holding both elements in variables of the block they were borrowed in
     r1, r2 = two(&G);
     r1, r2 = globalPair();
     r1, r2 = two(&outer);
@@ -90,7 +128,9 @@ fn storesTupleResults() {
     r1, r2 = globalPairAlias();
     r1, r2 = twoAlias(&outer);
     near, near2 = twoAlias(&inner);
+    seen = seen + *near + *near2;
   }
+  seen + *r1 + *r2;
 }
 
 // Returning the tuple meets returnFlowEscape, as returning the single-value

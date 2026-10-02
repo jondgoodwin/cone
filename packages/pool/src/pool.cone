@@ -48,21 +48,21 @@
 // ended; one from '&mut pool[r]' or 'getMut' freezes it entirely. Pool
 // declares 'ShapeChanging' (a provisional name), which nothing reads yet.
 //
+// A borrow from a pool carries the pool's loan wherever it goes, bare or
+// inside the Option 'get' and 'getMut' return: returning it from the
+// function holding the pool, storing it through a parameter or into a
+// global, or keeping it in a variable past the pool's end and using it
+// there, is refused, and so is a borrow matched out of that Option and
+// returned. The compiler's suite pins each route
+// (test/cases/region/region_flow_pool_escape.cone); held in a variable of
+// the function and used before the pool ends, any of them is fine.
+//
 // THE HOLES. That freezing reaches only so far, so today:
 // - A pool reached through a shared path -- a '&mut Pool' parameter, a field
 //   of 'self', a 'Rc[mut, T]' owner -- is not frozen by a borrow from it: a
 //   change through another reference to the same pool compiles while the
 //   borrow is used, and the borrow then reads a finalized value or freed
 //   memory. Jon's rule refuses such a borrow; it waits on 'uni' reborrowing.
-// - The borrow INSIDE the Option that 'get' and 'getMut' return carries no
-//   lifetime of its own (it freezes the pool while held, but where it goes
-//   is not checked), so returning the Option, storing it through a
-//   parameter, or matching the borrow out of it and returning that, all
-//   compile and may dangle. 'pool[r]' and '&mut pool[r]'
-//   return a bare borrow, which the compiler does check: returning one from
-//   the function holding the pool, or storing it where it would outlive the
-//   pool, is refused (test/cases/region/region_flow_pool_escape.cone). So
-//   'if pool.alive(r) { ...pool[r]... }' is the checked form today.
 // - A Ref is not paired with the pool it came from (the design's invariant
 //   lifetimes, key and lock, are not built). Used with another pool of the
 //   same type it is checked there like any Ref: it reaches nothing, or,

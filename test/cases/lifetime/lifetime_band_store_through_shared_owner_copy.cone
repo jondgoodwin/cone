@@ -1,0 +1,39 @@
+// A borrow of a local stored into what a 'Rc' owns, through a local copy of
+// the owner the caller handed in: the caller still owns it too, and reads the
+// borrow after the local is gone.
+//
+// Verdict: refuse, ErrorEscape at the store.
+// Basis: refborref.html, "Lifetime Constraints"; reading of the rules: what
+// an owner others may own too owns may be reached from anywhere they are,
+// so it may outlive the function, as what a parameter points at does.
+// Master 2274ee9d: accepted (the place took the local owner's block), and it
+// reads freed memory -- main, run, prints "final", then
+// "read = 2273785847312". Stage 4 fixed it.
+
+mod lifetime_band_store_through_shared_owner_copy;
+
+import stdio use *;
+
+struct R {
+  pub n i64;
+  fn final(self &uni) {
+    printStr("final\n");
+  }
+}
+
+struct H { pub r &R; }
+
+fn fill(rc Rc[mut, H]) {
+  imm rc2 = rc;
+  imm x = new So[R](42);
+  rc2.r = &*x;               //~ ErrorEscape
+}
+
+fn main() {
+  imm g = new R(1);
+  imm rc = new Rc[mut, H](new H(&g));
+  fill(rc);
+  printStr("read = ");
+  printInt(rc.r.n);
+  printStr("\n");
+}

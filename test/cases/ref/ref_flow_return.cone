@@ -107,20 +107,15 @@ fn declaredLocalOfParam(q &mut R) &mut R {
   p;
 }
 
-// What the check does not reach, established here rather than claimed: a borrow
-// laundered through a variable by assignment. The scope of a borrow lives on the
-// type node the borrow expression itself produced, and an assignment does not
-// carry it onto the variable's type, which keeps its initializer's lifetime or
-// none, so by the time this returns 'chosen' the return sees a plain '&i32' of
-// global scope. assignlvalrtype does not catch it either,
-// because 'chosen' and 'outer' share a scope and storing one in the other is
-// legal. Closing this needs lifetimes tracked through variables, which is what
-// doc/reference/reflifefn.html's unimplemented annotations are for.
-//
-// This function compiles clean, and that is the assertion.
+// A borrow laundered through a variable by assignment. The scope of a borrow
+// lives on the type node the borrow expression itself produced, and an
+// assignment does not carry it onto the variable's type, which keeps its
+// initializer's lifetime or none; storing it is legal, since a variable's
+// lifetime follows what it holds now. The loan walk follows it: 'chosen'
+// holds the borrow of 'outer' when it is returned.
 fn escapesThroughAVariable() &i32 {
   mut chosen &i32;
   imm outer = 5;
   chosen = &outer;
-  chosen;
+  chosen;                    //~ ErrorEscape "carries a borrow of 'outer'"
 }

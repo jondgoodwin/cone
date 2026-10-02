@@ -11,7 +11,9 @@
 // no syntax, every borrowed reference in a signature shares one lifetime, so a
 // returned reference is understood to have the shortest lifetime among the
 // borrowed-reference arguments. fnCallFinalizeArgs puts that scope on a
-// reference node built for the call, where the two existing checks read it.
+// reference node built for the call, where the return check and the store
+// check read it; the loan walk carries every argument's loans into the result,
+// so a result kept in a variable keeps its arguments' sources alive.
 //
 // Every diagnostic here is a flow diagnostic. Flow keeps going after one of its
 // own within a function, so the stores share one function; the returning case
@@ -32,43 +34,67 @@ struct S {
   pub fn get(self &) &i32 { &self.x; }
 }
 
-fn storesCallResults() {
+// Each result is kept in an outer variable past the block its argument lives
+// in, and used there: the argument's variable may not end while it is still
+// held, exactly as 'r = &inner' kept and used is refused in ref_flow. (Held
+// and not used again, it may be: a variable's lifetime follows what it holds.)
+fn storesCallResults() i32 {
   imm outer = 0;
   imm outerArr Array[i32, 2] = [0, 0];
   mut r &i32 = &outer;
   mut slice &[]i32 = &[]outerArr;
+  mut seen = 0;
+
+  // The call's result carries the argument's borrow
+  {
+    imm inner = 1;                  //~ ErrorFrozen
+    r = same(&inner);
+  }
+  seen = seen + *r;
+
+  // ... and keeps it through a call nested in a call
+  {
+    imm inner = 1;                  //~ ErrorFrozen
+    r = same(same(&inner));
+  }
+  seen = seen + *r;
+
+  // Two borrows: the result carries both, whichever parameter the body
+  // happens to return
+  {
+    imm inner = 1;                  //~ ErrorFrozen
+    r = pick(&outer, &inner);
+  }
+  seen = seen + *r;
+
+  // A slice borrows exactly as a single reference does
+  {
+    imm innerArr Array[i32, 2] = [1, 2]; //~ ErrorFrozen
+    slice = sameSlice(&[]innerArr);
+  }
+  seen = seen + slice[0];
+
+  // A method call is a call: the receiver borrow is its first argument
+  {
+    imm s = new S(2);               //~ ErrorFrozen
+    r = (&s).get();
+  }
+  seen = seen + *r;
+
+  // What is not refused, and what makes the above a lifetime rule rather than
+  // a refusal of calls: a borrow of a global keeps its global lifetime through
+  // a call, a call handed no borrow returns one of the declaration's own
+  // global scope, a borrow of the lval's own scope is fine, and so is holding
+  // the result inside the block it was borrowed in
   {
     imm inner = 1;
-    imm innerArr Array[i32, 2] = [1, 2];
-    imm s = new S(2);
-
-    // The call's result carries the argument borrow's scope, so the store is
-    // refused exactly as 'r = &inner' is in ref_flow
-    r = same(&inner);               //~ ErrorInvType:5 "lval outlives the borrowed reference you are storing"
-
-    // ... and the scope survives a call nested in a call
-    r = same(same(&inner));         //~ ErrorInvType:5 "lval outlives the borrowed reference you are storing"
-
-    // Two borrows of different scopes: the result takes the narrower, whichever
-    // parameter the body happens to return
-    r = pick(&outer, &inner);       //~ ErrorInvType:5 "lval outlives the borrowed reference you are storing"
-
-    // A slice borrows exactly as a single reference does
-    slice = sameSlice(&[]innerArr); //~ ErrorInvType:5 "lval outlives the borrowed reference you are storing"
-
-    // A method call is a call: the receiver borrow is its first argument
-    r = (&s).get();                 //~ ErrorInvType:5 "lval outlives the borrowed reference you are storing"
-
-    // What is not refused, and what makes the above a lifetime rule rather than
-    // a refusal of calls: a borrow of a global keeps its global lifetime through
-    // a call, a call handed no borrow returns one of the declaration's own
-    // global scope, a borrow of the lval's own scope is fine, and so is holding
-    // the result inside the block it was borrowed in
     r = same(&G);
     r = fromGlobal();
     r = same(&outer);
     imm kept = same(&inner);
+    seen = seen + *kept;
   }
+  seen + *r + slice[0];
 }
 
 // Returning the call's result meets returnFlowEscape, as returning '&inner'

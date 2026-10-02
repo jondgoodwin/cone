@@ -10,11 +10,11 @@
 //   was lent to, which may also allocate into it for its caller.
 //
 // What must NOT compile -- a borrow returned from the function holding its
-// scratch, or stored where it would outlive the scratch -- cannot be a test
-// here, since each test is a program that runs. The compiler's own suite pins
-// those refusals: test/cases/region/region_flow_arena_escape.cone. What a
-// failed block allocation does is tests/nomemory.cone's and
-// tests/overflow.cone's.
+// scratch, or stored where it would outlive the scratch, or kept past the
+// scratch and used -- cannot be a test here, since each test is a program
+// that runs. The compiler's own suite pins those refusals:
+// test/cases/region/region_flow_arena_escape.cone. What a failed block
+// allocation does is tests/nomemory.cone's and tests/overflow.cone's.
 //
 // An allocation held in a local keeps its scratch alive: 'consume(a)',
 // '{ imm b = a; }', 'a <=> other' and 'a = Arena.empty()' while one is still
@@ -22,21 +22,21 @@
 // loans nothing else of the scratch, so several live at once and a function
 // lent the scratch may allocate into it twice for its caller (allocForCaller).
 //
-// THE HOLES, which compile today and read freed memory, so no check here can
-// pin what they print. Written out so a reader knows what is not yet safe:
+// A borrow held inside another value carries the scratch's loan as a bare
+// allocation does, so these are refused too (region_flow_arena_escape):
 //
 //   struct Holder { pub r &mut Pt; }
 //   fn field() Holder {
 //     mut a = Arena.empty();
-//     new Holder(a.alloc(new Pt(1, 2)));   // a borrow in a field of a returned value:
-//   }                                      // a field's borrow is not checked
+//     new Holder(a.alloc(new Pt(1, 2)));   // a borrow in a field of a returned value
+//   }
 //
-// It is a borrow held inside another value, which carries no lifetime;
-// returning a 'new Rc[Holder](...)' or an 'Option' holding the borrow, and
-// returning one read back out of a list ('*seen[0usize]'), are the same hole.
-// Held in a local, such a value keeps the scratch alive as a bare allocation
-// does: 'outer = new Holder(a.alloc(..))' in an inner block, with 'outer'
-// used after the scratch ends, is refused (region_flow_arena_freeze).
+// and so are returning a 'new Rc[Holder](...)' or an 'Option' holding the
+// borrow, returning one read back out of a list ('*seen[0usize]'), and
+// storing any of them through a parameter. Held in a local, such a value
+// keeps the scratch alive as a bare allocation does: 'outer = new
+// Holder(a.alloc(..))' in an inner block, with 'outer' used after the scratch
+// ends, is refused (region_flow_arena_freeze).
 
 mod scratch;
 

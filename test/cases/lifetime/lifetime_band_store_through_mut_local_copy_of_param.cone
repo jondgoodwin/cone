@@ -1,0 +1,42 @@
+// A borrow of a local stored into a field through a mutable local holding a
+// copy of a '&mut' parameter: it lands in the caller's struct.
+// (lifetime_band_store_local_through_local_copy_of_param is the immutable
+// local's form.)
+//
+// Verdict: refuse, ErrorEscape at the store.
+// Basis: refborref.html, "Lifetime Constraints"; the band ordering (1 Oct
+// 2026): what a parameter points at outlives the function, and a variable
+// holding the parameter's borrow points at the same place (language rule,
+// 2 Oct 2026: a variable's lifetime follows what it holds).
+// Master 2274ee9d: accepted (a place reached through a mutable local was
+// given that local's block, the type a mutable local's borrow records being
+// possibly stale), and it reads freed memory -- main, run, prints "final",
+// then "read = 2177832795968". Stage 4 fixed it.
+
+mod lifetime_band_store_through_mut_local_copy_of_param;
+
+import stdio use *;
+
+struct R {
+  pub n i64;
+  fn final(self &uni) {
+    printStr("final\n");
+  }
+}
+
+struct H { pub r &R; }
+
+fn fill(p &mut H) {
+  mut q = p;
+  imm x = new So[R](42);
+  q.r = &*x;                 //~ ErrorEscape
+}
+
+fn main() {
+  imm g = new R(1);
+  mut h = new H(&g);
+  fill(&mut h);
+  printStr("read = ");
+  printInt(h.r.n);
+  printStr("\n");
+}

@@ -1,0 +1,50 @@
+// A callee handed the caller's '&mut Option[&R]' and, by value, an 'Option'
+// carrying a borrow of a local stores the one in the other: the borrow
+// outlives the local it points at.
+//
+// Verdict: refuse, ErrorCallEscape at the call.
+// Basis: reflifefn.html, "Mutable borrowed reference parameters" (a call
+// handed a writable borrow of a place that can hold a borrow may store any
+// other borrow it was handed there) with the reading that a by-value
+// argument carrying a borrow is a borrowed argument too (lifetimes are
+// infectious, 1 Oct 2026); the place is what a parameter points at, which
+// outlives the function.
+// Master 2274ee9d: accepted, and it reads freed memory -- main, run, prints
+// "final" and then "read = 2112962274304". Stage 4 fixed it.
+
+mod lifetime_band_call_value_carrying_local_through_param;
+
+import stdio use *;
+
+struct R {
+  pub n i64;
+  fn final(self &uni) {
+    printStr("final\n");
+  }
+}
+
+fn st(o &mut Option[&R], v Option[&R]) { *o = v; }
+
+fn g(o &mut Option[&R]) {
+  imm s = new So[R](42);
+  st(o, Some[&R][&*s]);      //~ ErrorCallEscape
+}
+
+fn clobber(n i64) i64 {
+  mut a Array[i64, 16] = [n, n, n, n, n, n, n, n, n, n, n, n, n, n, n, n];
+  a[3] + a[9];
+}
+
+fn main() {
+  mut o Option[&R] = None[&R][];
+  g(&mut o);
+  clobber(21);
+  match o {
+    case imm e Some {
+      printStr("read = ");
+      printInt(e.value.n);
+      printStr("\n");
+    }
+    else {}
+  }
+}

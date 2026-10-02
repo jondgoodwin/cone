@@ -1,0 +1,40 @@
+// An 'Option' holding a borrow of a local stored through a '&mut' parameter
+// into the caller's 'Option'.
+//
+// Verdict: refuse, ErrorEscape at the store.
+// Basis: language rule (1 Oct 2026) -- lifetimes are infectious: a value
+// holding a borrow takes on its lifetime; refborref.html, "Lifetime
+// Constraints"; the band ordering (1 Oct 2026): what a parameter points at
+// outlives the function.
+// Master 2274ee9d: accepted (only a bare borrow stored was checked), and it
+// reads freed memory -- main, run, prints "final" and then
+// "read = 1966530470912". Stage 4 fixed it.
+
+mod lifetime_band_store_value_carrying_local_through_param;
+
+import stdio use *;
+
+struct R {
+  pub n i64;
+  fn final(self &uni) {
+    printStr("final\n");
+  }
+}
+
+fn fill(o &mut Option[&R]) {
+  imm x = new So[R](42);
+  *o = Some[&R][&*x];        //~ ErrorEscape
+}
+
+fn main() {
+  mut o Option[&R] = None[&R][];
+  fill(&mut o);
+  match o {
+    case imm e Some {
+      printStr("read = ");
+      printInt(e.value.n);
+      printStr("\n");
+    }
+    else {}
+  }
+}

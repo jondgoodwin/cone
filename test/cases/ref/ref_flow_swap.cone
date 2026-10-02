@@ -1,63 +1,96 @@
 // A swap is a store in both directions, so each side is held to the lifetime
-// rule assignment applies: neither may outlive a borrowed reference it receives
-// from the other.
+// rule assignment applies: neither may keep a borrowed reference it receives
+// from the other past what that reference points at.
 //
 // ref_flow asserts the rule for 'r = t'. swapFlow checked only that both sides
 // were writable, so 'r <=> t' -- which leaves r holding exactly what 'r = t'
 // would -- compiled clean, and r pointed at 'inner' after its block had ended.
 // swapFlow now runs assignment's check (assignBorrowLifetimeCheck) once for
-// each direction. The diagnostic lands on whichever side outlives what it
-// receives, in either position.
+// each direction, which holds a place outliving the function -- what a
+// parameter points at, a global -- to the lifetime of the borrow it receives.
+// Two variables of the function exchange what they hold, as the loan walk
+// follows it: a variable's lifetime follows what it holds now, so the side
+// kept past the source and used there is refused at the source's end, in
+// either position.
 //
-// Every diagnostic here is a flow diagnostic, so the swaps share one function.
+// Every diagnostic here is a flow diagnostic, so the swaps share a function,
+// but for the store through a parameter, which the walk would not reach
+// beside it.
 
 mod ref_flow_swap;
 
 struct Pt { pub x i32; pub y i32; }
 
 // A borrow handed back by a call, as an arena's 'alloc' hands back a borrow of
-// the arena: the call's result carries its receiver's scope
+// the arena: the call's result carries its receiver's borrow
 struct Holder {
   pub pt Pt;
   pub fn get(self &mut) &mut Pt { &mut self.pt; }
 }
 
-fn swaps() {
+fn swaps() i32 {
   mut outer = new Pt(0, 0);
-  mut outer2 = new Pt(5, 6);
   mut r = &mut outer;
-  mut r2 = &mut outer2;
   mut arr Array[i32, 2] = [0, 0];
   mut slice = &[]mut arr;
+  mut seen = 0;
+
+  // The outer variable receives a borrow of 'inner'
   {
-    mut inner = new Pt(1, 2);
+    mut inner = new Pt(1, 2);       //~ ErrorFrozen
     mut t = &mut inner;
+    r <=> t;
+  }
+  seen = seen + r.x;
 
-    // The outer variable would receive a borrow of 'inner'
-    r <=> t;                        //~ ErrorInvType:5 "lval outlives the borrowed reference you are storing"
+  // ... in either position
+  {
+    mut inner = new Pt(1, 2);       //~ ErrorFrozen
+    mut t = &mut inner;
+    t <=> r;
+  }
+  seen = seen + r.x;
 
-    // ... in either position
-    t <=> r;                        //~ ErrorInvType:11 "lval outlives the borrowed reference you are storing"
-
-    // A borrow a method call returned, of a local of this block
-    mut h = new Holder(new Pt(3, 4));
+  // A borrow a method call returned, of a local of this block
+  {
+    mut h = new Holder(new Pt(3, 4)); //~ ErrorFrozen
     mut hp = h.get();
-    r <=> hp;                       //~ ErrorInvType:5 "lval outlives the borrowed reference you are storing"
+    r <=> hp;
+  }
+  seen = seen + r.x;
 
-    // A slice borrows exactly as a single reference does
-    mut innerArr Array[i32, 2] = [1, 2];
+  // A slice borrows exactly as a single reference does
+  {
+    mut innerArr Array[i32, 2] = [1, 2]; //~ ErrorFrozen
     mut s = &[]mut innerArr;
-    slice <=> s;                    //~ ErrorInvType:5 "lval outlives the borrowed reference you are storing"
+    slice <=> s;
+  }
+  seen = seen + slice[0];
 
-    // What is not refused, and what makes the above a lifetime rule rather than
-    // a refusal of swapping borrows: two borrows of the same scope, and an
-    // inner variable holding a borrow of the outer scope, which each side
-    // then outlives nothing it receives
-    r <=> r2;
-    mut u = &mut outer2;
-    r <=> u;
+  // What is not refused, and what makes the above a lifetime rule rather than
+  // a refusal of swapping borrows: two borrows of the same scope, an inner
+  // variable holding a borrow of the outer scope, and an outer variable
+  // given an inner borrow it does not keep past the block
+  mut outer2 = new Pt(5, 6);
+  mut r2 = &mut outer2;
+  r <=> r2;
+  {
+    mut outer3 = new Pt(7, 8);
+    mut u = &mut outer3;
+    u <=> r2;
+    seen = seen + u.x;
     mut inner2 = new Pt(7, 8);
     mut t2 = &mut inner2;
-    t <=> t2;
+    r2 <=> t2;
+    seen = seen + r2.x;
   }
+  seen + r.x;
+}
+
+// Through a parameter: what it points at outlives the call, so it may not
+// receive a borrow of this function's local
+fn swapsThroughParameter(p &mut &mut Pt) {
+  mut inner = new Pt(1, 2);
+  mut t = &mut inner;
+  *p <=> t;                         //~ ErrorInvType "lval outlives the borrowed reference you are storing"
 }

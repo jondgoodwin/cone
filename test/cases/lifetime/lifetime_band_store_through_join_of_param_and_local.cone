@@ -1,0 +1,44 @@
+// A borrow of a local stored through a variable that points, on one path, at
+// a local struct and, on the other, at the caller's: after the join it may
+// be the caller's, so the store is refused -- even though the local struct
+// holds a borrow from the caller too.
+//
+// Verdict: refuse, ErrorEscape at the store.
+// Basis: refborref.html, "Lifetime Constraints"; language rule (26 Sep
+// 2026): at a join, a borrow takes the shorter of its arms' lifetimes -- here
+// the place stored into is the longer-lived of the two it may be, which is
+// the caller's; language rule (2 Oct 2026): a variable's lifetime follows
+// what it holds. Rust refuses it (E0597; by reading, not run).
+// Master 2274ee9d: accepted (a place reached through a mutable local was
+// given that local's block), and it reads freed memory -- main, run, prints
+// "final", then "read = 2218246843328". Stage 4 fixed it.
+
+mod lifetime_band_store_through_join_of_param_and_local;
+
+import stdio use *;
+
+struct R {
+  pub n i64;
+  fn final(self &uni) {
+    printStr("final\n");
+  }
+}
+
+struct H { pub r &R; }
+
+fn fill(c Bool, p &mut H) {
+  mut lh = new H(p.r);
+  mut q = p;
+  if c { q = &mut lh; }
+  imm x = new So[R](42);
+  q.r = &*x;                 //~ ErrorEscape
+}
+
+fn main() {
+  imm g = new R(1);
+  mut h = new H(&g);
+  fill(false, &mut h);
+  printStr("read = ");
+  printInt(h.r.n);
+  printStr("\n");
+}

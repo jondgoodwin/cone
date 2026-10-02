@@ -30,8 +30,40 @@ int loanBorrowAccess(INode *perm);
 // 'perm'. A site walked again (a loop body) makes the same loan.
 uint32_t loanMake(INode *site, Place *pl, INode *perm);
 
+// The caller loan of the parameter 'var': a stand-in for whatever the caller
+// lent through it, which no access here conflicts with and which outlives the
+// call. A parameter whose type carries a borrow holds it from the start.
+uint32_t loanCaller(uint32_t var);
+
 // The variable at the root of the place a loan borrows
 uint32_t loanRoot(uint32_t loan);
+
+// Is a loan rooted in this function's own storage -- a local, or a by-value
+// parameter, or what an owner held in one owns -- so that it ends with the
+// call? A caller loan, a loan of a global and a reborrow through a reference
+// are not: a reborrow's lifetime is that of the loans the reference held,
+// which come along with it.
+int loanIsLocal(uint32_t loan);
+
+// A loan in 'set' rooted in this function's own storage, or 0
+uint32_t loanLocalIn(PathSet *set);
+
+// May a reference holding 'refholds' point somewhere that outlives this
+// function: at what a caller lent, at a global, at what an owner others may
+// own too owns ('Rc'), or at nothing the walk knows of? 'referent', the type
+// it points at where known (else NULL), sets aside loans of other structs,
+// which are held in what it points at rather than pointed at.
+int loanMayPointOut(PathSet *refholds, INode *referent);
+
+// A value carrying the local loan 'loan' escapes the function at 'node':
+// returned, stored where it may outlive the function, or handed to a call
+// that may store it so
+enum LoanEscape {
+    LoanEscapeReturn,
+    LoanEscapeStore,
+    LoanEscapeCall,
+};
+void loanEscape(INode *node, uint32_t loan, int how);
 
 // The loan the borrow at 'site' made, or 0
 uint32_t loanAt(INode *site);

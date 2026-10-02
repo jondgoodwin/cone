@@ -23,10 +23,10 @@ typedef struct VarDclNode VarDclNode;
 typedef struct FnSigNode FnSigNode;
 
 // Why a function would need a walk that follows borrows along each path: the
-// gate, set as the walk meets each trigger. Nothing reads it yet; -V 2 counts it.
+// gate, set as the walk meets each trigger; fnDclTypeCheck reads it, -V 2 counts it.
 enum FlowGate {
     FlowGateHolder = 0x1,   // a local declared, assigned or swapped whose type carries a borrow
-    FlowGateResult = 0x2,   // a value a scope hands out carrying a borrow, not as a bare borrowed reference
+    FlowGateResult = 0x2,   // a value a scope hands out carrying a borrow, a bare borrowed reference too
     FlowGateStore  = 0x4,   // a call with a '&mut X' argument, X carrying a borrow, beside another argument carrying one
     FlowGateInCall = 0x8,   // a variable named while an operand's borrow of it waits for its call or literal
 };

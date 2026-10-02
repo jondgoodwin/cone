@@ -4,20 +4,23 @@
 // borrow of 'a' it was called through, so the rules for any borrow of a local
 // apply to it: it may not be returned from the function holding the arena,
 // alone, through a variable, in a tuple, or back through a call that
-// allocated it; nor stored in a variable, a field or an element that outlives
-// the arena, whether that is an outer local, a caller's value reached through
-// a parameter, or a value of a longer-lived arena. The arena package's own
-// tests (packages/arena/tests/scratch.cone) run what a scratch may do.
+// allocated it; nor stored in a caller's value reached through a parameter,
+// or a value of a longer-lived arena; nor kept past the arena in an outer
+// variable, a field or an element of one, and used there. A value built around
+// an allocation -- a struct, an 'Rc' owning one -- carries the arena's loan,
+// and so does one read back out of a list of the arena's, and may not be
+// returned or stored through a parameter either. The arena
+// package's own tests (packages/arena/tests/scratch.cone) run what a scratch
+// may do.
 //
 // The arena may not be moved, replaced or ended while an allocation held in a
 // local, bare or inside a value built around it, is still used:
-// region_flow_arena_freeze. What still compiles, and dangles, is not here: a
-// value built around an allocation and returned, or stored through a
-// parameter, is not checked (doc/design/safety.md, the scorecard).
+// region_flow_arena_freeze.
 
 mod region_flow_arena_escape;
 
 import arena use *;
+import collections use *;
 
 struct Pt { pub x i64; pub y i64; }
 struct Holder { pub r &mut Pt; }
@@ -45,36 +48,65 @@ fn returnedThroughCall() &mut Pt {
   allocFor(&mut a);             //~ ErrorEscape:11 "outlives"
 }
 
-fn outerVariable() {
+// Kept in an outer variable, or a field or an element of one, past the arena
+// and used there
+fn outerVariable() i64 {
   mut dummy = new Pt(0, 0);
   mut r = &mut dummy;
   {
-    mut a = Arena.empty();
-    r = a.alloc(new Pt(1, 2));  //~ ErrorInvType:5 "outlives"
+    mut a = Arena.empty();      //~ ErrorFrozen "goes out of scope"
+    r = a.alloc(new Pt(1, 2));
   }
+  r.x;
 }
 
-fn outerField() {
+fn outerField() i64 {
   mut dummy = new Pt(0, 0);
   mut h = new Holder(&mut dummy);
   {
-    mut a = Arena.empty();
-    h.r = a.alloc(new Pt(1, 2));  //~ ErrorInvType:6 "outlives"
+    mut a = Arena.empty();      //~ ErrorFrozen "goes out of scope"
+    h.r = a.alloc(new Pt(1, 2));
   }
+  h.r.x;
 }
 
-fn outerElement() {
+fn outerElement() i64 {
   mut dummy = new Pt(0, 0);
-  mut arr = [&mut dummy, &mut dummy];
+  mut dummy2 = new Pt(0, 0);
+  mut arr = [&mut dummy, &mut dummy2];
   {
-    mut a = Arena.empty();
-    arr[0] = a.alloc(new Pt(1, 2)); //~ ErrorInvType:8 "outlives"
+    mut a = Arena.empty();      //~ ErrorFrozen "goes out of scope"
+    arr[0] = a.alloc(new Pt(1, 2));
   }
+  arr[1].x;
 }
 
 fn callersValue(h &mut Holder) {
   mut a = Arena.empty();
   h.r = a.alloc(new Pt(1, 2));  //~ ErrorInvType:4 "outlives"
+}
+
+// A value built around an allocation, returned or stored through a parameter
+fn returnedHolder() Holder {
+  mut a = Arena.empty();
+  new Holder(a.alloc(new Pt(1, 2))); //~ ErrorEscape "carries a borrow of 'a'"
+}
+
+fn returnedRcHolder() Rc[Holder] {
+  mut a = Arena.empty();
+  new Rc[Holder](new Holder(a.alloc(new Pt(1, 2)))); //~ ErrorEscape "carries a borrow of 'a'"
+}
+
+fn returnedFromList() &mut Pt {
+  mut a = Arena.empty();
+  imm seen = a.alloc(List[&mut Pt].empty());
+  seen.push(a.alloc(new Pt(1, 2)));
+  *seen[0usize];                 //~ ErrorEscape "carries a borrow of 'a'"
+}
+
+fn storedHolder(h &mut Holder) {
+  mut a = Arena.empty();
+  *h = new Holder(a.alloc(new Pt(1, 2))); //~ ErrorEscape "carries a borrow of 'a'"
 }
 
 fn intoLongerArena() {

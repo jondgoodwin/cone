@@ -74,9 +74,8 @@ The `pool` package's `Pool[T]` is a generational pool: `add` returns a
 `Ref[T]`, a slot's index and generation, which owns nothing and is checked
 against the slot each time it is used, through the pool value — `get` answers
 an `Option` of a borrow, `None` once the value is removed. The borrow `pool[r]`
-returns is checked like the scratch arena's; the one inside `get`'s `Option`
-freezes a local pool while it is held, but is not checked where it goes (a
-borrow held inside another value carries no lifetime), and no
+returns is checked like the scratch arena's, and so is the one inside `get`'s
+`Option`, which carries the pool's loan wherever it goes; and no
 invariant lifetime yet pairs a `Ref` with its own pool, so one used with
 another pool of its type is merely bounds- and generation-checked there.
 A third region ref is a library package too: `rcweak`'s `Rcw`, reference
@@ -436,12 +435,14 @@ gap:
   semantics you did not ask for.
 - **`&mut T` is invariant.** Coming from a language where mutability implies
   more permissive subtyping, this is backwards.
-- **A borrow's lifetime is checked at three sites only.** Storing (by
-  assignment, or by a swap in either direction), returning, and passing one beside a `&mut` or `&uni` argument (a method's receiver included) to a place that can hold a borrow. Capturing it, storing it in a
-  field, or laundering it through a variable by assignment and returning it
-  are all unchecked (a variable does keep its initializer's lifetime) — see [Safety](safety.md). A laundered borrow used past the end of
-  its source's block is refused, but by freezing (the source's end conflicts
-  with the borrow still held), not by its lifetime.
+- **A variable's lifetime is what it holds now, not its type.** A borrow is
+  checked where it may leave the function — returned, stored into a global or
+  through a reference, passed beside a `&mut` or `&uni` argument (a method's
+  receiver included) to a place that can hold a borrow — bare, held in a
+  field, an `Option` or an `Rc`, or held by a variable it was assigned to. A
+  variable of the function may be given a shorter borrow than it was
+  initialized with; kept past its source's block and used there, it is
+  refused at the source's end, by freezing — see [Safety](safety.md).
 - **The permission on a reference is not the permission on the binding.**
   `imm fixed = &mut target` is a writable target through an unrebindable name.
 - **`&[]x` on a non-array is legal** and yields a one-element slice.
