@@ -7,41 +7,35 @@
 //   congo run --release packages/sdf/examples/starship.cone
 //   congo run --release packages/sdf/examples/starship.cone -- --shots DIR/ship --obj DIR/ship
 //
-// THE SHIP, part by part (x runs from the skull to the tail, y is up, the
-// wings reach along z; every part is mirrored across z = 0):
-// - a spine, a planar curve sampled into a polyline, arched up over the
-//   neck and chest; the body a chain of tapered capsules along it, its
-//   radius a function of the way along (a neck, a deep chest, a tail that
-//   stays thick far out), smooth-unioned;
-// - a heavy jaw and throat, and a keel under the chest down to the wings'
-//   roots, two chains of tapered capsules;
-// - biomechanical strands, three a side, tapered capsules offset from the
-//   spine out to the tail's end;
-// - vertebrae repeated along the spine (repeatAlongCells over a PathCurve),
-//   each scaled by the body's radius there: a knob, a dorsal spike swept
-//   back (its height jittered by a hash of its index), and over the chest a
-//   pair of ribs, three tapered capsules each, swept back as they go down;
-// - a tail spike continuing the spine;
-// - a skull of tapered capsules (cranium, snout, brows, cheeks, jaw bones,
-//   two pairs of swept-back horns, teeth), its mouth and eye sockets cut
-//   out, drawn SKULL times its size about the snout's tip;
-// - two bat wings, hanging steeply: arm, finger and spar bones (tapered capsules), spikes
-//   along the leading edge, and a membrane of triangles between the bones,
-//   thickened, its trailing edge scalloped by balls cut out between the
-//   finger tips. The membrane is a field of its own, meshed apart and drawn
-//   in a darker, rougher material;
-// - over all of it, a fine, faint relief of ridged fBm added near the
-//   surface: only the texture left below the structure.
-// The proportions, the wings' pose and the relief's dials were set by
-// measuring renders against the reference with tools/refmeasure (the
-// starship pilot, 2 Oct 2026), not by eye. The sub-structure (a slimmer
-// core inside its ribs, the ribs' period and roundness, the tail's comb,
-// three strands a side, the wing's spar, seams and oval panel, the wide-set
-// eyes, crest and prongs) was found by zooming into crops of the reference
-// (the zoom-in test, 2 Oct 2026: tools/refmeasure's period, elements,
-// rectify and profile).
-// The lights (eyes, mouth, the strip along each wing's leading edge) are
-// small spheres in an over-bright Blinn-Phong material, so they bloom.
+// THE SHIP, part by part, as the artist's procedure names them (the part
+// table is Demos\starship\artist\parts.md in the design corpus; x runs from
+// the snout to the tail, y is up, the wings reach along z; every part is
+// mirrored across z = 0):
+// - the gesture: one S-curve, traced on the reference at twelve points and
+//   back-projected through the fitted camera onto the mid-plane: the head
+//   dips, the neck rises in a C to a crest over the shoulders, the torso
+//   falls straight, the tail lifts to a lance;
+// - a lean core, a chain of tapered capsules along it;
+// - over the neck, the rib comb: 18 slender round ribs arching out and
+//   sweeping back, graded (their period and radius measured); along the
+//   back, a dorsal ridge of knobs and paired processes; along the tail's
+//   top, a fin comb of tall thin spines shrinking to the lance (all in
+//   repeatAlongCells over the spine);
+// - three strands a side along the flanks;
+// - the lance: smooth, with a collar and two barbs where the comb ends;
+// - the head: a long narrow armoured snout; the maw cut into its front and
+//   ringed with amber lights; two mandibles curving forward past it;
+// - the belly: a gondola of knotted lumps under the chest;
+// - the shoulder: three bosses and a tall hooked horn;
+// - each wing a FRAME: the main spar to the tip (carrying the lights), an
+//   inner ridge-bone beside it, an upper spar along the top edge with
+//   hooked spikes, a rear spar from the tip back up to a tall spike, two
+//   cross-bones; and the membrane, taut triangles in the frame's panels,
+//   scalloped between the spikes, meshed apart in a darker material;
+// - over all of it, a faint relief of ridged fBm.
+// The lights (the wings' strips, the head's pairs, the belly's specks, the
+// maw's ring) are small spheres in an over-bright Blinn-Phong material, so
+// they bloom.
 //
 // '--shots PREFIX' (default 'starship') writes PREFIX-hero.bmp (framed as
 // the reference), PREFIX-side.bmp and PREFIX-front.bmp at 1920 x 1080;
@@ -56,10 +50,14 @@
 // silhouette, PREFIX-...-mask.bmp: the ship white (its lights too) on
 // black, with no sky, stars, planet, bloom or tone mapping; '--coarse'
 // meshes and draws only the coarser level, several times faster; '--size
-// WxH' takes the shots W by H (W a multiple of 64) instead. It prints each mesh's counts, time and meshHash (the
-// same every run: meshing is on the CPU), and exits 0 only if the hashes
-// are the pinned ones, every shot was written, no Vulkan call failed and
-// the validation layer said nothing.
+// WxH' takes the shots W by H (W a multiple of 64) instead; '--without
+// NAME' (repeatable) leaves one part out, for measuring what it is worth:
+// gesture (the spine straightened), core, ribs, belly, ridge, spars,
+// membrane, spikes, shoulder, fins, lance, head, maw, lights, strands,
+// relief. It prints each mesh's counts, time and meshHash (the same every
+// run: meshing is on the CPU), and exits 0 only if the hashes are the
+// pinned ones (with every part drawn), every shot was written, no Vulkan
+// call failed and the validation layer said nothing.
 //
 // It needs a GPU driver with Vulkan 1.3 and SDL3.dll on PATH (and SDL3.lib
 // on LIB to link); no window and no display. GPU_POWER_PREFERENCE=low-power
@@ -81,43 +79,89 @@ import sdf use *;
 
 // ---- The numbers ----
 
-const SEGMENTS = 32;                // the spine's polyline
+const SEGMENTS = 40;                // the body's polyline
 const VERTEBRAE = 56;
 const SEED = 1977u32;
 const MEMBRANE f32 = 0.045;         // the membrane's half-thickness
 const RELIEF f32 = 0.012;           // the relief on the frame, per unit of ridged fBm
 const MEMBRANE_RELIEF f32 = 0.008;  // and on the membranes
 const GRAIN f32 = 9.;               // its first octave's frequency
-const CORE f32 = 0.72;              // the hull's core, of the envelope its ribs and spines fill
 const STRETCH f32 = 0.4;            // its grain: features 1 / STRETCH times longer along x
 const LEVELS = 2usize;
 const FINEST f32 = 0.03;
 // Each mesh's meshHash: the frame's levels, then the membrane's
-imm PINNED Array[u32, 4] = [0x14878edfu32, 0xf3e2af98u32, 0xc3d5fec9u32, 0xbf8abab1u32];
+imm PINNED Array[u32, 4] = [0x7a976e45u32, 0x87ff6630u32, 0xecb59af6u32, 0x6ff2c475u32];
 imm PARTS Array[&[]u8, 2] = ["frame", "membrane"];
 const WIDTH = 1920u32;
 const HEIGHT = 1080u32;
 
+// The parts, one bit each in this order, so any can be left out
+imm PART_NAMES Array[&[]u8, 16] = ["gesture", "core", "ribs", "belly", "ridge", "spars", "membrane", "spikes",
+  "shoulder", "fins", "lance", "head", "maw", "lights", "strands", "relief"];
+const GESTURE = 1u32;
+const CORE = 2u32;
+const RIBS = 4u32;
+const BELLY = 8u32;
+const RIDGE = 16u32;
+const SPARS = 32u32;
+const SKIN = 64u32;
+const SPIKES = 128u32;
+const SHOULDER = 256u32;
+const FINS = 512u32;
+const LANCE = 1024u32;
+const HEAD = 2048u32;
+const MAW = 4096u32;
+const LIGHTS = 8192u32;
+const STRANDS = 16384u32;
+const TEXTURE = 32768u32;
+const ALL = 65535u32;
+
 fn v(x f32, y f32, z f32) Vec3 { new Vec3(x, y, z); }
 fn absf(a f32) f32 { libc.fabsf(a); }
 fn minf(a f32, b f32) f32 { if a < b { a; } else { b; }; }
-imm SNOUT Vec3 = new Vec3(-1.33, -0.12, 0.);   // the snout's tip, where the measuring tool expects it
-const SKULL f32 = 1.5;              // the skull's scale about it
-fn toHead(p Vec3) Vec3 { SNOUT + (p - SNOUT) * SKULL; }
+fn maxf(a f32, b f32) f32 { if a > b { a; } else { b; }; }
 fn jitter(i i32, salt u32) f32 { noise.toSigned(noise.hash1(i, SEED + salt)); }
 
 extern {
   fn @c("atof") atof(s *u8) f64;
 }
 
-// The spine at t, 0 (the back of the skull) to 1 (the tail's root): a long
-// gentle wave, rising towards the tail
-fn spineAt(t f32) Vec3 { v(0.1 + 11.5 * t, 0.18 * sin(5.65 * t) + (0.55 + 0.5 * (1. - t) * (1. - t)) * sin(3.14159 * t) + 0.9 * t * t * t, 0.); }
+// ---- The gesture: the line of action, an S ----
 
-// The body's radius at t: a neck, a deep chest at a third, a thin tail
+// The dorsal line, traced on the reference at twelve points and
+// back-projected through the fitted camera onto the mid-plane: the snout,
+// the head, the neck rising in a C to a crest over the shoulders (y 1.95),
+// the torso falling straight, the tail's trough and the lance lifting
+imm SPX Array[f32, 12] = [-0.73, -0.08, 0.72, 1.6, 2.65, 3.77, 5.28, 7.14, 8.88, 10.6, 11.94, 13.31];
+imm SPY Array[f32, 12] = [-0.26, -0.03, 0.41, 1.16, 1.8, 1.95, 1.53, 0.98, 0.67, 0.66, 0.91, 1.17];
+
+// Control point i; without the gesture, on the straight line from the
+// first to the last
+fn ctrl(i usize, straight Bool) Vec3 {
+  if straight { return v(SPX[i], SPY[0usize] + (SPY[11usize] - SPY[0usize]) * (SPX[i] - SPX[0usize]) / (SPX[11usize] - SPX[0usize]), 0.); }
+  v(SPX[i], SPY[i], 0.);
+}
+
+// Catmull-Rom between b and c
+fn catmull(a Vec3, b Vec3, c Vec3, d Vec3, t f32) Vec3 {
+  imm t2 = t * t;
+  ((b * 2.) + (c - a) * t + (a * 2. - b * 5. + c * 4. - d) * t2 + (b * 3. - a - c * 3. + d) * (t2 * t)) * 0.5;
+}
+
+// The body's spine at t, 0 (the head, control point 1) to 1 (where the
+// lance begins, control point 9)
+fn spineAt(t f32, straight Bool) Vec3 {
+  imm s = t * 8.;
+  mut k = usize.from(i32.from(s));
+  if k > 7usize { k = 7usize; }
+  catmull(ctrl(k, straight), ctrl(k + 1usize, straight), ctrl(k + 2usize, straight), ctrl(k + 3usize, straight), s - f32.from(k));
+}
+
+// The core's radius at t: lean (about a third of the mask's envelope; the
+// ribs, belly and wings make the rest), a neck, a chest at 0.62, a tail
 fn radiusAt(t f32) f32 {
-  imm c = (t - 0.32) / 0.22;
-  0.26 + 0.22 * (1. - t) + 0.3 * libc.expf(0. - c * c);
+  imm c = (t - 0.62) / 0.15;
+  0.16 + 0.1 * minf(t / 0.45, 1.) + 0.14 * libc.expf(0. - c * c) - 0.1 * maxf(0., (t - 0.75) / 0.25);
 }
 
 // Whether a part held by the ball 'r' about 'c' can change 'd' by a smooth
@@ -132,55 +176,60 @@ fn chain(p Vec3, a Vec3, b Vec3, c Vec3, r0 f32, r1 f32, r2 f32) f32 {
 
 // ---- The relief: ridged fBm added near the surface ----
 
-// 'd' raised by 'amp' times ridged fBm: three octaves from GRAIN, gain 0.6,
-// the edge density, spectral slope, grain angle and coherence each within
-// a few per cent of the reference's; within 4 amp of the surface only (the
-// relief is under 2 amp, so outside that band the sign cannot change)
+// 'd' raised by 'amp' times ridged fBm (three octaves from GRAIN, gain 0.6);
+// within 4 amp of the surface only
 fn relief(p Vec3, d f32, amp f32, seed u32) f32 {
   if absf(d) > 4. * amp { return d; }
   d - amp * noise.ridged3(v(p.x * STRETCH, p.y, p.z) * GRAIN, SEED + seed, 3, 2., 0.6).value;
 }
 
-// ---- The vertebrae: one copy each, scaled by the body there ----
+// ---- The vertebrae: the rib comb, the dorsal ridge and the fin comb ----
 
 struct Vertebrae {
-  pub up f32;            // +1 or -1: which way the spine's frames' normal points from the back
-  pub radius List[f32];  // the body's radius at each copy, found once
+  pub up f32;            // +1 or -1: which way the frames' up axis points from the back
+  pub swap Bool;         // up is the frames' binormal (else their normal)
+  pub radius List[f32];  // the core's radius at each copy, found once
+  pub has u32;           // the parts drawn
 
   pub fn repeatedDistance(self &, q Vec3, index i32, u f32) f32 {
     imm r = *radius[usize.from(index)];
-    // Out to the side (mirrored), up and along, in the copy's frame
-    imm l = v(absf(q.y), q.x * self.up, q.z);
-    // The knob on the back
-    mut d = capsule(l, v(0., r * 0.8, -0.06), v(0., r * 0.8, 0.06), 0.03 + r * 0.28);
-    // The dorsal spike, swept back towards the tail
-    if u > 0.04 and u < 0.94 {
-      imm h = (0.18 + 0.75 * r) * (1. + 0.35 * jitter(index, 1u32));
-      d = smoothUnion(d, taperedCapsule(l, v(0., r * 0.9, 0.), v(0., r + h, 0.55 * h), 0.03 + 0.12 * r, 0.004), 0.03);
+    // Out to the side (mirrored), up and along (towards the tail), in the copy's frame
+    imm l = if swap { v(absf(q.x), q.y * self.up, q.z); } else { v(absf(q.y), q.x * self.up, q.z); };
+    mut d f32 = 3.4028235e38;
+    // The dorsal ridge: a knob on the back, and over the torso a pair of
+    // short processes
+    if (has & RIDGE) != 0u32 {
+      d = capsule(l, v(0., r * 0.85, -0.05), v(0., r * 0.85, 0.05), 0.03 + r * 0.25);
+      if u > 0.42 and u < 0.8 {
+        d = smoothUnion(d, taperedCapsule(l, v(r * 0.3, r * 0.8, 0.), v(r * 0.45, r + 0.18, 0.08), 0.04, 0.01), 0.02);
+      }
     }
-    // Over the neck and the chest, ribs: thin round tubes (their period, 0.21
-    // of a unit, and their roundness measured on the reference's neck), a
-    // cage wider than the core inside it, swept back as they go down
-    if u > 0.02 and u < 0.62 {
-      imm rr = 0.02 + 0.012 * r;
-      // One rib, zoomed in (level 2): round, a spindle thickest at its
-      // shoulder, and hooked over at its top where it leaves the spine
-      imm rib = chain(l, v(r * 0.35, r * 0.7, 0.), v(r * 1.3, r * 0.3, 0.04 + 0.3 * r), v(r * 1.32, r * -0.5, 0.08 + 0.75 * r), rr * 0.7, rr * 1.15, rr * 0.8);
-      imm hook = taperedCapsule(l, v(r * 0.35, r * 0.7, 0.), v(r * 0.2, r * 0.95, -0.06), rr * 0.7, rr * 0.35);
-      d = smoothUnion(d, minf(minf(rib, hook), taperedCapsule(l, v(r * 1.32, r * -0.5, 0.08 + 0.75 * r), v(r * 0.75, r * -1.1, 0.1 + 1.05 * r), rr * 0.8, rr * 0.4)), 0.03);
+    // The rib comb over the neck: 18 slender round ribs (period 0.21 units,
+    // radius 0.028, both measured), arching out from the spine and sweeping
+    // back and down, their length graded, longest mid-neck
+    if (has & RIBS) != 0u32 and u > 0.04 and u < 0.42 {
+      imm g = sin(3.14159 * (u - 0.04) / 0.38);
+      imm len = 0.45 + 0.5 * g;
+      imm rr = 0.045;
+      imm a = v(r * 0.3, r * 0.8, 0.);
+      imm b = v(r + 0.5 * len, r * 0.6, 0.15 * len);
+      imm c = v(r + 0.8 * len, -0.1 * len, 0.5 * len);
+      d = smoothUnion(d, chain(l, a, b, c, rr * 1.2, rr, rr * 0.4), 0.02);
     }
-    // Along the tail, a comb: a pair of thin spines out to the sides and up,
-    // swept back
-    if u > 0.6 and u < 0.97 {
-      imm s = 0.3 + 0.4 * r;
-      d = smoothUnion(d, taperedCapsule(l, v(r * 0.55, r * 0.35, 0.), v(r * 0.55 + 0.8 * s, r * 0.35 + 0.45 * s, 0.45 * s), 0.025, 0.004), 0.02);
+    // The fin comb along the tail's top: tall thin spines swept back,
+    // close-set, shrinking towards the lance (the period, 15 px, measured
+    // irregular, so each one's height is jittered)
+    if (has & FINS) != 0u32 and u > 0.62 and u < 0.99 {
+      imm f = (u - 0.62) / 0.37;
+      imm h = (0.75 - 0.55 * f) * (1. + 0.3 * jitter(index, 1u32));
+      d = minf(d, taperedCapsule(l, v(0., r * 0.8, 0.), v(0., r + h, 0.7 * h), 0.035, 0.004));
     }
     d;
   }
 
   pub fn bound(self &, index i32, u f32) f32 {
     imm r = *radius[usize.from(index)];
-    r + 1.5 * (0.18 + 0.75 * r) + 0.15;
+    r + 1.4;
   }
 }
 
@@ -191,25 +240,34 @@ struct Ship {
   pub radii List[f32];
   pub cells CurveCells;
   pub vertebrae Vertebrae;
-  // The wing on +z (back-projected from the reference's outline at the
-  // fitted camera, then tuned): shoulder, elbow, wrist, four finger tips, and the root
-  // where the membrane meets the body behind
+  // The wing on +z, its joints back-projected from the reference through
+  // the fitted camera onto the wing's plane, in the order below; the three
+  // roots then moved up and in to meet the torso's side (the squint showed
+  // a gap between the body and the wing)
   pub wing List[Vec3];
+  pub has u32;           // the parts drawn
   pub membrane Bool;     // the membranes alone, or everything else
 
-  pub fn make(membrane Bool) Ship {
+  pub fn make(membrane Bool, has u32) Ship {
+    imm straight = (has & GESTURE) == 0u32;
     mut spine = List[Vec3].empty();
     mut radii = List[f32].empty();
     mut i = 0;
     while i <= SEGMENTS {
       imm t = f32.from(i) / f32.from(SEGMENTS);
-      spine.push(spineAt(t));
-      radii.push(radiusAt(t) * CORE);
+      spine.push(spineAt(t, straight));
+      radii.push(radiusAt(t));
       i = i + 1;
     }
     imm path = sculpt.Path.fromPoints(spine.view(), false);
     imm curve = PathCurve.fromPath(&path);
-    imm up = if curve.frameAt(0.).normal.y < 0. { -1.; } else { 1.; };
+    // Which of the frames' axes is up: the binormal on this path (the
+    // side view showed the ribs standing up as a mane when the normal was
+    // taken for up), and its sign
+    imm f0 = curve.frameAt(0.);
+    imm swap = absf(f0.binormal.y) > absf(f0.normal.y);
+    imm upAxis = if swap { f0.binormal.y; } else { f0.normal.y; };
+    imm up = if upAxis < 0. { -1.; } else { 1.; };
     mut radius = List[f32].empty();
     i = 0;
     while i < VERTEBRAE {
@@ -217,20 +275,30 @@ struct Ship {
       i = i + 1;
     }
     mut wing = List[Vec3].empty();
-    wing.push(v(4.61, -0.3, 0.5));
-    wing.push(v(4.57, -0.47, 3.13));
-    wing.push(v(4.51, -1.09, 5.33));
-    wing.push(v(3.57, -1.96, 7.47));
-    wing.push(v(4.95, -1.3, 6.46));
-    wing.push(v(6.5, -0.26, 5.4));
-    wing.push(v(7.8, -0.57, 4.57));
-    wing.push(v(7.52, -0.27, 0.5));
-    new Ship(spine, radii, curveCells(&curve, VERTEBRAE), new Vertebrae(up, radius), wing, membrane);
+    wing.push(v(5.4, 0.9, 0.45));      // 0 the main spar's root, in the torso's side
+    wing.push(v(4.9, -0.85, 3.36));    // 1 the main spar, a third out
+    wing.push(v(4.64, -1.32, 5.35));   // 2 two thirds out
+    wing.push(v(3.42, -2.05, 7.76));   // 3 the tip
+    wing.push(v(6.0, 0.8, 0.5));       // 4 the inner ridge-bone's root
+    wing.push(v(5.11, -1.01, 4.32));   // 5 its middle
+    wing.push(v(6.6, 1.0, 0.45));      // 6 the upper spar's root
+    wing.push(v(7.29, -0.01, 1.48));   // 7 the upper spar
+    wing.push(v(7.14, -0.32, 2.79));   // 8 its end
+    wing.push(v(5.89, -1.16, 5.68));   // 9 the rear spar, from the tip back
+    wing.push(v(7.26, -0.64, 4.41));   // 10 the rear spike's base
+    wing.push(v(7.75, 0.1, 4.0));      // 11 the rear spike's point
+    wing.push(v(4.82, -0.95, 3.76));   // 12, 13 a cross-bone, main spar to rear spar
+    wing.push(v(6.75, -0.81, 4.78));
+    wing.push(v(4.48, -1.37, 5.46));   // 14, 15 another
+    wing.push(v(5.3, -1.38, 6.21));
+    new Ship(spine, radii, curveCells(&curve, VERTEBRAE), new Vertebrae(up, swap, radius, has), wing, has, membrane);
   }
 
   pub fn w(self &, i usize) Vec3 { *wing[i]; }
+  pub fn on(self &, part u32) Bool { (has & part) != 0u32; }
+  pub fn straight(self &) Bool { (has & GESTURE) == 0u32; }
 
-  // The body, its tubes and the tail spike
+  // The core along the spine, and the strands along its flanks
   pub fn body(self &, q Vec3) f32 {
     mut d f32 = 3.4028235e38;
     mut i = 0usize;
@@ -240,11 +308,10 @@ struct Ship {
       imm ra = *radii[i];
       imm rb = *radii[i + 1usize];
       if near(q, a, (b - a).length() + ra + 0.2, d, 0.06) {
-        d = smoothUnion(d, taperedCapsule(q, a, b, ra, rb), 0.06);
-        // The strands along the flanks, three a side, out to the tail's end
-        // (long parallel tubes, measured along the reference's tail)
+        if self.on(CORE) { d = smoothUnion(d, taperedCapsule(q, a, b, ra, rb), 0.06); }
+        // The strands along the flanks, three a side, behind the rib comb
         imm t = f32.from(i) / f32.from(SEGMENTS);
-        if t > 0.04 and t < 0.97 {
+        if self.on(STRANDS) and t > 0.3 and t < 0.98 {
           imm low = taperedCapsule(q, a + v(0., ra * -0.35, ra * 0.95), b + v(0., rb * -0.35, rb * 0.95), 0.02 + ra * 0.16, 0.02 + rb * 0.16);
           imm high = taperedCapsule(q, a + v(0., ra * 0.5, ra * 0.75), b + v(0., rb * 0.5, rb * 0.75), 0.015 + ra * 0.1, 0.015 + rb * 0.1);
           imm under = taperedCapsule(q, a + v(0., ra * -0.85, ra * 0.5), b + v(0., rb * -0.85, rb * 0.5), 0.015 + ra * 0.12, 0.015 + rb * 0.12);
@@ -253,173 +320,157 @@ struct Ship {
       }
       i = i + 1usize;
     }
-    // The tail spike, on along the spine's last piece
-    imm end = *spine[usize.from(SEGMENTS)];
-    imm last = end - *spine[usize.from(SEGMENTS) - 1usize];
-    smoothUnion(d, taperedCapsule(q, end, end + last.normalize() * 1.7, 0.25, 0.02), 0.03);
+    d;
   }
 
-  // The skull, at the front, facing -x
-  pub fn skull(self &, q Vec3) f32 {
-    mut d = smoothUnion(taperedCapsule(q, v(0.15, 0.05, 0.), v(-0.55, -0.02, 0.), 0.36, 0.22),
-      taperedCapsule(q, v(-0.55, -0.02, 0.), v(-1.25, -0.12, 0.), 0.22, 0.08), 0.08);
-    d = smoothUnion(d, taperedCapsule(q, v(-0.7, 0.1, 0.1), v(-0.1, 0.27, 0.24), 0.04, 0.08), 0.05);
-    d = smoothUnion(d, taperedCapsule(q, v(-0.3, -0.1, 0.22), v(0.1, -0.05, 0.3), 0.07, 0.1), 0.05);
-    // Brow bosses round the eyes, set wide (the reference's pair of eye
-    // lights, back-projected, sit 0.47 either side of the midline)
-    d = smoothUnion(d, sphere(q - v(-0.6, 0.09, 0.27), 0.12), 0.06);
-    // A crest of small ridges along the top of the skull, swept back
-    mut c = 0;
-    while c < 6 {
-      imm x = -1.05 + 0.2 * f32.from(c);
-      imm top = if x < -0.55 { -0.12 + (x + 1.25) / 0.7 * 0.1 + 0.08 + (x + 1.25) / 0.7 * 0.14; }
-        else { -0.02 + (x + 0.55) / 0.7 * 0.07 + 0.22 + (x + 0.55) / 0.7 * 0.14; };
-      d = smoothUnion(d, taperedCapsule(q, v(x, top - 0.03, 0.), v(x + 0.14, top + 0.09, 0.), 0.035, 0.006), 0.03);
-      c = c + 1;
-    }
-    // The mouth and the eyes cut out
-    d = smoothSubtract(d, capsule(q, v(-0.3, -0.16, 0.), v(-1.35, -0.2, 0.), 0.065), 0.02);
-    d = smoothSubtract(d, sphere(q - v(-0.6, 0.09, 0.3), 0.075), 0.02);
-    // The jaw bones
-    d = smoothUnion(d, taperedCapsule(q, v(0.05, -0.2, 0.22), v(-1.1, -0.3, 0.06), 0.09, 0.04), 0.04);
-    // Two pairs of horns swept back along the neck
-    d = smoothUnion(d, chain(q, v(0., 0.25, 0.2), v(0.65, 0.48, 0.4), v(1.35, 0.6, 0.5), 0.1, 0.065, 0.03), 0.05);
-    d = minf(d, taperedCapsule(q, v(1.35, 0.6, 0.5), v(2.0, 0.58, 0.52), 0.03, 0.003));
-    d = smoothUnion(d, chain(q, v(0.1, -0.05, 0.3), v(0.7, -0.05, 0.55), v(1.25, 0.02, 0.62), 0.07, 0.04, 0.004), 0.04);
-    // A lower prong from the jaw's corner, swept back and out (the
-    // reference's whiskers at the side of the head)
-    d = smoothUnion(d, chain(q, v(-0.3, -0.22, 0.24), v(0.35, -0.32, 0.5), v(0.9, -0.2, 0.7), 0.05, 0.03, 0.004), 0.03);
-    // Teeth
+  // The lance: smooth, continuing the spine to its point, a small collar
+  // and two barbs where the comb ends
+  pub fn lance(self &, q Vec3) f32 {
+    imm a = ctrl(9usize, self.straight());
+    imm b = ctrl(10usize, self.straight());
+    imm c = ctrl(11usize, self.straight());
+    mut d = chain(q, a, b, c, 0.16, 0.08, 0.006);
+    imm dir = (b - a).normalize();
+    d = smoothUnion(d, taperedCapsule(q, a - dir * 0.05, a + dir * 0.3, 0.24, 0.14), 0.04);
+    d = minf(d, taperedCapsule(q, a + dir * 0.25 + v(0., 0., 0.12), a + dir * -0.15 + v(0., -0.3, 0.35), 0.05, 0.005));
+    d;
+  }
+
+  // The head: a long narrow snout, armoured, tapering forward
+  pub fn head(self &, q Vec3) f32 {
+    imm n = ctrl(2usize, self.straight());
+    imm h = ctrl(1usize, self.straight());
+    imm s = ctrl(0usize, self.straight());
+    mut d = chain(q, n, h, s, 0.22, 0.19, 0.11);
+    // Armour: a ridge along the top and a plate either side
+    d = smoothUnion(d, taperedCapsule(q, h + v(0.2, 0.2, 0.), s + v(0.1, 0.1, 0.), 0.07, 0.03), 0.04);
+    d = smoothUnion(d, taperedCapsule(q, h + v(0., 0., 0.17), s + v(0.15, -0.02, 0.1), 0.08, 0.04), 0.04);
+    d;
+  }
+
+  // The maw's dark slot, cut into the snout's front, and the mandibles:
+  // two thin prongs from the jaw's sides curving forward past it
+  pub fn maw(self &, q Vec3, d f32) f32 {
+    imm s = ctrl(0usize, self.straight());
+    mut e = smoothSubtract(d, sphere(q - (s + v(-0.06, -0.02, 0.)), 0.09), 0.02);
+    e = smoothUnion(e, chain(q, s + v(0.75, -0.12, 0.2), s + v(0.15, -0.2, 0.3), s + v(-0.4, -0.18, 0.12), 0.05, 0.035, 0.006), 0.03);
+    e;
+  }
+
+  // The belly: a gondola of knotted machinery under the chest
+  pub fn belly(self &, q Vec3) f32 {
+    mut d = ellipsoid(q - v(2.6, 0.95, 0.), v(0.55, 0.45, 0.45));
+    d = smoothUnion(d, ellipsoid(q - v(3.4, 0.45, 0.), v(0.75, 0.75, 0.55)), 0.2);
+    d = smoothUnion(d, ellipsoid(q - v(4.4, 0.05, 0.), v(0.75, 0.6, 0.5)), 0.2);
+    d = smoothUnion(d, ellipsoid(q - v(5.2, 0.35, 0.), v(0.5, 0.45, 0.4)), 0.2);
+    // Knots: a few lumps on its flanks
     mut k = 0;
-    while k < 5 {
-      imm x = -1.15 + 0.17 * f32.from(k);
-      d = minf(d, taperedCapsule(q, v(x, -0.14, 0.07), v(x - 0.02, -0.29, 0.07), 0.025, 0.003));
+    while k < 6 {
+      imm x = 2.7 + 0.45 * f32.from(k);
+      imm y = 0.75 - 0.25 * f32.from(k) + 0.1 * jitter(k, 3u32);
+      d = smoothUnion(d, sphere(q - v(x, y, 0.4 + 0.08 * jitter(k, 4u32)), 0.17), 0.08);
       k = k + 1;
     }
     d;
   }
 
-  // A wing's membrane: triangles from the shoulder and the wrist,
-  // thickened, the trailing edge scalloped by a ball cut out between each
-  // pair of tips
-  pub fn membraneAt(self &, q Vec3) f32 {
-    imm sh = self.w(0usize);
-    imm wr = self.w(2usize);
-    mut m = minf(triangle(q, sh, self.w(1usize), wr), minf(triangle(q, sh, wr, self.w(6usize)), triangle(q, sh, self.w(6usize), self.w(7usize))));
-    mut f = 3usize;
-    while f < 6usize {
-      m = minf(m, triangle(q, wr, self.w(f), self.w(f + 1usize)));
-      f = f + 1usize;
+  // The shoulder: three bosses on the wing's root, and a tall hooked horn
+  pub fn shoulder(self &, q Vec3) f32 {
+    mut d = sphere(q - v(5.3, 0.35, 1.0), 0.3);
+    d = smoothUnion(d, sphere(q - v(5.85, 0.9, 0.85), 0.28), 0.1);
+    d = smoothUnion(d, sphere(q - v(6.57, 0.4, 0.95), 0.3), 0.1);
+    d = smoothUnion(d, chain(q, v(6.5, 0.6, 0.9), v(7.1, 1.25, 1.0), v(7.9, 1.55, 0.9), 0.13, 0.07, 0.008), 0.05);
+    d;
+  }
+
+  // The wing's frame: the main spar (armoured) to the tip, the inner
+  // ridge-bone beside it, the upper spar along the top edge, the rear spar
+  // from the tip back up to a tall spike, and two cross-bones
+  pub fn spars(self &, q Vec3) f32 {
+    mut b = chain(q, self.w(0usize), self.w(1usize), self.w(2usize), 0.15, 0.12, 0.09);
+    b = minf(b, taperedCapsule(q, self.w(2usize), self.w(3usize), 0.09, 0.03));
+    b = smoothUnion(b, chain(q, self.w(4usize), self.w(5usize), self.w(3usize).lerp(self.w(2usize), 0.15), 0.08, 0.06, 0.03), 0.03);
+    b = smoothUnion(b, chain(q, self.w(6usize), self.w(7usize), self.w(8usize), 0.1, 0.08, 0.05), 0.03);
+    b = smoothUnion(b, chain(q, self.w(3usize), self.w(9usize), self.w(10usize), 0.03, 0.06, 0.06), 0.03);
+    b = minf(b, taperedCapsule(q, self.w(10usize), self.w(11usize), 0.06, 0.004));
+    b = smoothUnion(b, taperedCapsule(q, self.w(12usize), self.w(13usize), 0.045, 0.035), 0.03);
+    b = smoothUnion(b, taperedCapsule(q, self.w(14usize), self.w(15usize), 0.04, 0.03), 0.03);
+    b;
+  }
+
+  // The hooked spikes along the upper spar, curving towards the tip
+  pub fn spikes(self &, q Vec3) f32 {
+    mut d f32 = 3.4028235e38;
+    mut s = 0;
+    while s < 3 {
+      mut base = self.w(8usize);
+      if s == 0 { base = self.w(6usize).lerp(self.w(7usize), 0.6); }
+      if s == 1 { base = self.w(7usize).lerp(self.w(8usize), 0.5); }
+      imm h = 0.5 - 0.08 * f32.from(s);
+      d = minf(d, chain(q, base, base + v(0.15 * h, 0.7 * h, 0.2 * h), base + v(0.55 * h, 1.0 * h, 0.5 * h), 0.06, 0.035, 0.004));
+      s = s + 1;
     }
+    d;
+  }
+
+  // The membrane: taut skin in the frame's panels, a fan of triangles from
+  // the main spar's root, thickened; the top edge scalloped between the
+  // spikes
+  pub fn membraneAt(self &, q Vec3) f32 {
+    imm r = self.w(0usize);
+    mut m = minf(triangle(q, r, self.w(1usize), self.w(9usize)), triangle(q, self.w(1usize), self.w(3usize), self.w(9usize)));
+    m = minf(m, minf(triangle(q, r, self.w(9usize), self.w(10usize)), triangle(q, r, self.w(10usize), self.w(8usize))));
+    m = minf(m, minf(triangle(q, r, self.w(8usize), self.w(7usize)), triangle(q, r, self.w(7usize), self.w(6usize))));
     m = m - MEMBRANE;
-    f = 3usize;
-    while f < 7usize {
-      imm a = self.w(f);
-      imm b = self.w(f + 1usize);
+    if self.on(SPIKES) {
+      imm a = self.w(8usize);
+      imm b = self.w(10usize);
       imm mid = (a + b) * 0.5;
-      imm from = if f == 6usize { sh; } else { wr; };
       imm span = (b - a).length();
-      imm r = 0.55 * span;
-      m = smoothSubtract(m, sphere(q - (mid + (mid - from).normalize() * (r - 0.08 * span)), r), 0.02);
-      f = f + 1usize;
+      imm out = (mid - r).normalize();
+      m = smoothSubtract(m, sphere(q - (mid + out * (0.5 * span)), 0.58 * span), 0.02);
     }
     m;
   }
 
-  // A wing's bones
-  pub fn wingAt(self &, q Vec3) f32 {
-    imm sh = self.w(0usize);
-    imm el = self.w(1usize);
-    imm wr = self.w(2usize);
-    mut b = smoothUnion(taperedCapsule(q, sh, el, 0.15, 0.11), taperedCapsule(q, el, wr, 0.11, 0.08), 0.04);
-    b = smoothUnion(b, sphere(q - wr, 0.12), 0.04);
-    mut f = 3usize;
-    while f < 7usize {
-      imm from = if f == 6usize { sh; } else { wr; };
-      b = smoothUnion(b, taperedCapsule(q, wr, self.w(f), 0.1, 0.04), 0.03);
-      // A thin spar between each pair of fingers, stopping short of the scallop
-      b = smoothUnion(b, taperedCapsule(q, from, from.lerp(self.w(f).lerp(self.w(f + 1usize), 0.5), 0.72), 0.065, 0.035), 0.03);
-      f = f + 1usize;
-    }
-    // Found on the reference's membrane, rectified onto the wing's plane: a
-    // spar parallel to the leading edge, a third of the way back; behind it
-    // a band of plates, their seams raised strips across it about 0.6 apart;
-    // ahead of it, near the root, an oval panel in a raised rim. The seams
-    // and the rim are capsules cut to the membrane, so they stand 0.06
-    // proud of it (two cells of the fine mesh) and stop at its edge.
-    imm root = self.w(7usize);
-    imm s0 = sh.lerp(root, 0.35);
-    imm s1 = wr.lerp(self.w(6usize), 0.3);
-    b = smoothUnion(b, taperedCapsule(q, s0, s1, 0.09, 0.05), 0.04);
-    imm along = (s1 - s0).normalize();
-    imm back = (root - sh) - along * (root - sh).dot(along);
-    imm aft = back.normalize();
-    imm skin = self.membraneAt(q) - 0.06;
-    if skin < b + 0.1 {
-      mut seams f32 = 3.4028235e38;
-      mut k = 1;
-      while k < 10 {
-        imm at = s0.lerp(s1, f32.from(k) / 10.);
-        seams = minf(seams, capsule(q, at, at + aft * 2.4, 0.1));
-        k = k + 1;
-      }
-      // The oval's rim: an ellipse of capsules in the plane ahead of the spar
-      imm fore = (sh.lerp(self.w(1usize), 0.55) - s0.lerp(s1, 0.25)) * 0.5;
-      imm c = s0.lerp(s1, 0.25) + fore;
-      imm ax = along * 1.5;
-      mut j = 0;
-      while j < 16 {
-        imm a0 = 6.2831853 * f32.from(j) / 16.;
-        imm a1 = 6.2831853 * f32.from(j + 1) / 16.;
-        seams = minf(seams, capsule(q, c + ax * cos(a0) + fore * (0.8 * sin(a0)), c + ax * cos(a1) + fore * (0.8 * sin(a1)), 0.1));
-        j = j + 1;
-      }
-      imm cut = if seams > skin { seams; } else { skin; };
-      b = smoothUnion(b, cut, 0.02);
-    }
-    // Spikes along the leading edge, up and back, asked only when the edge
-    // is near enough to change the union
-    if minf(capsule(q, sh, el, 0.), capsule(q, el, wr, 0.)) - 0.45 < b + 0.08 {
-      mut s = 0;
-      while s < 9 {
-        imm along = (f32.from(s) + 0.5) / 9.;
-        imm base = if along < 0.33 { sh.lerp(el, along * 3.); } else { el.lerp(wr, (along - 0.33) * 1.5); };
-        imm h = 0.22 + 0.1 * jitter(s, 2u32);
-        b = smoothUnion(b, taperedCapsule(q, base, base + v(0.6 * h, h, 0.15 * h), 0.045, 0.004), 0.02);
-        s = s + 1;
-      }
-    }
-    b;
-  }
-
   pub fn distance(self &, p Vec3) f32 {
     imm q = v(p.x, p.y, absf(p.z));
-    if membrane { return relief(p, self.membraneAt(q), MEMBRANE_RELIEF, 2u32); }
+    if membrane {
+      if !self.on(SKIN) { return 1.; }
+      imm m = self.membraneAt(q);
+      if !self.on(TEXTURE) { return m; }
+      return relief(p, m, MEMBRANE_RELIEF, 2u32);
+    }
     mut d = self.body(q);
-    // The vertebrae reach less than 1.6 from the spine
-    mut axis f32 = 3.4028235e38;
-    mut i = 0usize;
-    while i < usize.from(SEGMENTS) {
-      axis = minf(axis, capsule(q, *spine[i], *spine[i + 1usize], 0.));
-      i = i + 1usize;
+    // The vertebrae reach less than 1.5 from the spine
+    if (has & (RIBS | RIDGE | FINS)) != 0u32 {
+      mut axis f32 = 3.4028235e38;
+      mut i = 0usize;
+      while i < usize.from(SEGMENTS) {
+        axis = minf(axis, capsule(q, *spine[i], *spine[i + 1usize], 0.));
+        i = i + 1usize;
+      }
+      if axis - 1.5 < d { d = minf(d, repeatAlongCells(&cells, &vertebrae, p)); }
     }
-    if axis - 1.6 < d { d = minf(d, repeatAlongCells(&cells, &vertebrae, p)); }
-    // A heavy jaw and throat under the skull and the neck, and a keel under
-    // the chest down to the wings' roots
-    if near(q, v(3.3, -0.3, 0.), 4.8, d, 0.15) {
-      d = smoothUnion(d, chain(q, v(-0.9, -0.45, 0.), v(0.6, -0.55, 0.), v(2.6, -0.35, 0.), 0.15, 0.22, 0.28), 0.15);
-      d = smoothUnion(d, chain(q, v(2.6, -0.35, 0.), v(5.0, -0.2, 0.), v(7.6, 0.1, 0.), 0.32, 0.36, 0.22), 0.15);
+    if self.on(LANCE) and near(q, v(12., 0.9, 0.), 2.2, d, 0.04) { d = smoothUnion(d, self.lance(q), 0.04); }
+    if near(q, v(0., 0., 0.), 1.6, d, 0.05) {
+      if self.on(HEAD) { d = smoothUnion(d, self.head(q), 0.05); }
+      if self.on(MAW) { d = self.maw(q, d); }
     }
-    // The skull drawn SKULL times its size about the snout's tip
-    if near(q, toHead(v(-0.2, 0.15, 0.)), 2.6 * SKULL, d, 0.06) { d = smoothUnion(d, self.skull(SNOUT + (q - SNOUT) * (1. / SKULL)) * SKULL, 0.06); }
-    if near(q, v(6.0, -1.6, 3.8), 5.0, d, 0.08) { d = smoothUnion(d, self.wingAt(q), 0.08); }
+    if self.on(BELLY) and near(q, v(3.9, 0.4, 0.), 2.2, d, 0.2) { d = smoothUnion(d, self.belly(q), 0.2); }
+    if self.on(SHOULDER) and near(q, v(6.5, 0.9, 1.), 1.8, d, 0.1) { d = smoothUnion(d, self.shoulder(q), 0.1); }
+    if near(q, v(5.6, -0.8, 4.4), 4.6, d, 0.08) {
+      if self.on(SPARS) { d = smoothUnion(d, self.spars(q), 0.08); }
+      if self.on(SPIKES) { d = smoothUnion(d, self.spikes(q), 0.02); }
+    }
+    if !self.on(TEXTURE) { return d; }
     relief(p, d, RELIEF, 1u32);
   }
 
   // A box holding the ship, or the membranes
   pub fn bounds(self &) Aabb3 {
-    if membrane { return new Aabb3(v(3.6, -3.7, -7.6), v(8.8, 0.6, 7.6)); }
-    new Aabb3(v(-1.5, -3.9, -7.7), v(13.6, 2.5, 7.7));
+    if membrane { return new Aabb3(v(2.9, -2.6, -8.3), v(8.4, 1.0, 8.3)); }
+    new Aabb3(v(-1.6, -2.7, -8.3), v(13.9, 3.2, 8.3));
   }
 }
 
@@ -427,25 +478,49 @@ struct Ship {
 
 fn lights(ship &Ship) List[Vec4] {
   mut l = List[Vec4].empty();
+  imm s = ctrl(0usize, ship.straight());
+  imm h = ctrl(1usize, ship.straight());
   mut side = -1.;
   while side < 2. {
-    imm eye = toHead(v(-0.6, 0.09, 0.27 * side));
-    l.push(new Vec4(eye.x, eye.y, eye.z, 0.06 * SKULL));
-    mut k = 0;
-    while k < 28 {
-      imm along = (f32.from(k) + 0.5) / 28.;
-      imm at = if along < 0.4 { ship.w(0usize).lerp(ship.w(1usize), along * 2.5); }
-        else { ship.w(1usize).lerp(ship.w(2usize), (along - 0.4) / 0.6); };
-      l.push(new Vec4(at.x - 0.2, at.y - 0.12, at.z * side, 0.028));
-      k = k + 1;
+    if ship.on(LIGHTS) {
+      // The strip along each wing's main spar: 31 (period 13 px, measured
+      // regular), below its leading side
+      mut k = 0;
+      while k < 31 {
+        imm along = (f32.from(k) + 0.5) / 31.;
+        imm at = if along < 0.5 { ship.w(0usize).lerp(ship.w(1usize), along * 2.); }
+          else { ship.w(1usize).lerp(ship.w(2usize), (along - 0.5) * 2.); };
+        l.push(new Vec4(at.x - 0.14, at.y - 0.1, at.z * side, 0.028));
+        k = k + 1;
+      }
+      // Amber lights in pairs along the head's sides
+      mut e = 0;
+      while e < 2 {
+        imm at = s.lerp(h, 0.45 + 0.3 * f32.from(e)) + v(0., 0.06, 0.19);
+        l.push(new Vec4(at.x, at.y, at.z * side, 0.045));
+        e = e + 1;
+      }
+      // Warm specks on the belly
+      e = 0;
+      while e < 4 {
+        imm at = v(2.9 + 0.55 * f32.from(e), 0.7 - 0.3 * f32.from(e), 0.62);
+        l.push(new Vec4(at.x, at.y, at.z * side, 0.04));
+        e = e + 1;
+      }
     }
     side = side + 2.;
   }
-  mut k = 0;
-  while k < 5 {
-    imm m = toHead(v(-0.45 - 0.17 * f32.from(k), -0.2, 0.));
-    l.push(new Vec4(m.x, m.y, m.z, 0.035 * SKULL));
-    k = k + 1;
+  // The maw: a ring of amber lights round the snout's front
+  if ship.on(MAW) {
+    imm dir = (s - h).normalize();
+    mut k = 0;
+    while k < 8 {
+      imm a = 6.2831853 * f32.from(k) / 8.;
+      imm at = s + dir * -0.02 + v(0., 0.11 * cos(a), 0.11 * sin(a));
+      l.push(new Vec4(at.x, at.y, at.z, 0.04));
+      k = k + 1;
+    }
+    l.push(new Vec4(s.x + 0.02, s.y - 0.02, 0., 0.07));
   }
   l;
 }
@@ -523,6 +598,16 @@ fn parseCamera(text *u8, out &mut Array[f32, 10]) Bool {
   false;
 }
 
+// The bit of the part named 'text', or 0
+fn partBit(text *u8) u32 {
+  mut i = 0usize;
+  while i < 16usize {
+    if cstrEquals(text, PART_NAMES[i]) { return 1u32 << u32.from(i); }
+    i = i + 1usize;
+  }
+  0u32;
+}
+
 // ---- The demo ----
 
 fn main(argc i32, argv **u8) i32 {
@@ -534,6 +619,7 @@ fn main(argc i32, argv **u8) i32 {
   mut first = 0usize;           // the finest level meshed
   mut width = WIDTH;
   mut height = HEIGHT;
+  mut has = ALL;
   mut a = 1;
   while a < argc {
     imm arg = *(argv + usize.from(a));
@@ -550,7 +636,12 @@ fn main(argc i32, argv **u8) i32 {
       if !parseCamera(*(argv + usize.from(a + 1)), &mut c) { print <- "--camera wants ten numbers: ex,ey,ez,tx,ty,tz,ux,uy,uz,fov\n"; return 2; }
       cameras.push(c);
     }
-    else { print <- "Unknown argument; use --shots PREFIX, --obj PREFIX, --camera ..., --size WxH, --mask and --coarse\n"; return 2; }
+    elif cstrEquals(arg, "--without") {
+      imm bit = partBit(*(argv + usize.from(a + 1)));
+      if bit == 0u32 { print <- "--without wants a part: gesture, core, ribs, belly, ridge, spars, membrane, spikes, shoulder, fins, lance, head, maw, lights, strands or relief\n"; return 2; }
+      has = has & (ALL ^ bit);
+    }
+    else { print <- "Unknown argument; use --shots PREFIX, --obj PREFIX, --camera ..., --size WxH, --without PART, --mask and --coarse\n"; return 2; }
     a = a + 2;
   }
 
@@ -559,7 +650,7 @@ fn main(argc i32, argv **u8) i32 {
   mut ok = true;
   mut part = 0usize;
   while part < 2usize {
-    imm ship = Ship.make(part == 1usize);
+    imm ship = Ship.make(part == 1usize, has);
     mut cell = FINEST;
     mut level = 0usize;
     while level < first { cell = cell * 2.; level = level + 1usize; }
@@ -591,6 +682,7 @@ fn main(argc i32, argv **u8) i32 {
     }
     part = part + 1usize;
   }
+  if has != ALL { print <- "Parts left out, so the hashes are not the pinned ones\n"; }
 
   // The GPU, no window
   mut instance = Instance.create("starship");
@@ -632,7 +724,9 @@ fn main(argc i32, argv **u8) i32 {
   imm blue = Material.plain(new Color(50., 60., 200., 1.));
   imm glowBlue = renderer.addMaterial(&mut device, &blue);
   imm frameMesh = renderer.addMesh(&mut device, meshes[0usize]);
-  imm membraneMesh = renderer.addMesh(&mut device, meshes[LEVELS - first]);
+  // Without the membrane its mesh is empty, and is not drawn
+  imm skin = meshes[LEVELS - first].triangleCount() > 0usize;
+  imm membraneMesh = if skin { renderer.addMesh(&mut device, meshes[LEVELS - first]); } else { frameMesh; };
   imm ballMesh = mesh.Mesh.sphere(1., 10);
   imm ball = renderer.addMesh(&mut device, &ballMesh);
   // The planet: a great rust-red ball below and beyond
@@ -653,8 +747,8 @@ fn main(argc i32, argv **u8) i32 {
 
   mut list = DrawList.empty();
   list.add(frameMesh, frameM, Mat4.identity());
-  list.add(membraneMesh, membraneM, Mat4.identity());
-  imm ship = Ship.make(false);
+  if skin { list.add(membraneMesh, membraneM, Mat4.identity()); }
+  imm ship = Ship.make(false, has);
   imm glows = lights(&ship);
   mut i = 0usize;
   while i < glows.len() {
@@ -669,7 +763,7 @@ fn main(argc i32, argv **u8) i32 {
   imm white = renderer.addMaterial(&mut device, &flatWhite);
   mut maskList = DrawList.empty();
   maskList.add(frameMesh, white, Mat4.identity());
-  maskList.add(membraneMesh, white, Mat4.identity());
+  if skin { maskList.add(membraneMesh, white, Mat4.identity()); }
   i = 0usize;
   while i < glows.len() {
     imm l = *glows[i];

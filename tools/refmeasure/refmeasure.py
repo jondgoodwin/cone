@@ -28,6 +28,7 @@ import outline as outl  # noqa: E402
 import skeleton  # noqa: E402
 import texture  # noqa: E402
 import zoom  # noqa: E402
+import gates  # noqa: E402
 from common import (REGION_COLOURS, bgr_to_lab, dim, ensure_dir, find_photo_crop, load_bgr, put_label,  # noqa: E402
                     read_json, save_png, write_json)
 from mask import mask_overlay, render_mask, subject_mask  # noqa: E402
@@ -554,6 +555,7 @@ def main():
     r.add_argument("--fine", action="store_true"); r.add_argument("--exe")
     r.set_defaults(fn=cmd_render)
     zoom.register(sub)
+    gates.register(sub)
     a = p.parse_args()
     a.fn(a)
 

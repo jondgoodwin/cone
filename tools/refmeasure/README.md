@@ -49,6 +49,15 @@ Zooming in (`zoom.py`), for finding a part's sub-structure in a crop. Each comma
   box: IoU, edge density, grain, the element summary, the gradient-orientation histograms' L1 distance,
   and the period along the same line in both.
 
+The artist's gates (`gates.py`), for the coarse-to-fine procedure's checks:
+
+- `gates <sheet.json> <render> <mask> <out> [--levels 8,32] [--name gates]`: the render against the
+  reference on the subject alone (each picture masked by its own mask): SSIM after blurring to S/8 (the
+  squint) and S/32 (the middle forms), S being the reference's spine length; a 3-value notan (background,
+  dark mass, light mass, each picture split at its own median after blurring to S/32) and its agreement;
+  the busy map (edge density blurred to S/16), its correlation and each one's busy share; and IoU. Writes
+  `<name>.json` and `<name>.png` (the blurred pairs and the notan pair).
+
 A box in reference pixels compares whatever our model puts there: unless the macro shape matches part for
 part, not just in silhouette, the two crops can hold different anatomy.
 
@@ -59,8 +68,9 @@ degrees). Pass them as `--camera=...`, with the equals sign, because they start 
 
 `packages/sdf/examples/starship.cone` takes `--camera ARG` (repeatable: one shot per camera, meshing once),
 `--mask` (a silhouette beside each shot: the ship and its lights flat white on black, with no sky, planet,
-stars, bloom or tone mapping), `--size WxH` (W a multiple of 64) and `--coarse` (mesh and draw only the
-coarser level). The tool finds the built example under `~\.congo\lone\starship-*`, or takes `--exe`.
+stars, bloom or tone mapping), `--size WxH` (W a multiple of 64), `--coarse` (mesh and draw only the
+coarser level) and `--without PART` (repeatable: leave a part out, for the procedure's cumulative steps and
+the leverage ablation; the parts are listed in the example's header). The tool finds the built example under `~\.congo\lone\starship-*`, or takes `--exe`.
 It puts `C:\libs\SDL3-3.4.16\lib\x64` (or `SDL3_DIR`) on PATH for it.
 
 ## A hint
@@ -80,4 +90,6 @@ The box and discs steer the mask; head and tail choose the spine's ends. The she
 - `colour.py`: Lab k-means palettes, ramps along paths, CIEDE2000.
 - `texture.py`: spectral slope and Hurst exponent, structure-tensor grain and coherence, Gabor hump
   wavelength, edge density; its docstring says which `noise` or `sculpt` dial each one maps to.
-- `camera.py`: the render package's camera in numpy, the search's parameters, the starship's landmarks.
+- `camera.py`: the render package's camera in numpy, the search's parameters, the starship's landmarks
+  and spine (from the example's SPX and SPY control points).
+- `gates.py`: the artist's gates (blur pyramid, notan, busy map).
