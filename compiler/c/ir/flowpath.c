@@ -829,14 +829,21 @@ static void pwStoreApart(INode *node, PathSet *refholds, PathSet *stored, int ho
 
 // A value carrying 'holds' is stored at 'lval', the place 'pl': where that
 // place may outlive the function, the value may carry no borrow of the
-// function's own storage, and where it is reached through a reference, no
+// function's own storage; where it is rooted at a global, which outlives
+// every caller too, no borrow the caller lent (a caller loan: what a
+// borrowed parameter points at, or what it holds, read through '*x' or
+// carried inside a value); and where it is reached through a reference, no
 // borrow of a lifetime that place does not hold
 static void pwStoreEscapes(INode *lval, Place *pl, PathSet *holds) {
     if (!pathLoans)
         return;
     uint32_t local = loanLocalIn(holds);
+    VarDclNode *root = pathVars[pl->var].var;
+    uint32_t caller;
     if (local && pwPlaceOutlives(pl))
         loanEscape(lval, local, LoanEscapeStore);
+    else if ((root->scope == 0 || (root->flags & FlagStatic)) && (caller = loanNotGlobalIn(holds)))
+        loanEscape(lval, caller, LoanEscapeStore);
     else if (pl->deref)
         pwStoreApart(lval, pathVars[pl->var].holds, holds, LoanEscapeStore);
 }

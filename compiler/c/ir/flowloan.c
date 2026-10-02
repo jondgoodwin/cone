@@ -565,6 +565,13 @@ void loanEscape(INode *node, uint32_t loan, int how) {
     if (mapGet(node, 0, 1))
         return;
     mapPut(node, 0, 1, 1);
+    // A caller loan escapes only by a store into a global (pwStoreEscapes)
+    if (loans[loan].kind == LoanCaller) {
+        errorMsgNode(node, ErrorEscape,
+            "Stored into a global, the value carries the borrow the caller lent through '%s', which the global would outlive: only a global borrow may be stored in a global.",
+            &loanParm(loan)->namesym->namestr);
+        return;
+    }
     char srcname[128];
     char where[160];
     loanSourceName(&loans[loan].place, srcname, sizeof(srcname));

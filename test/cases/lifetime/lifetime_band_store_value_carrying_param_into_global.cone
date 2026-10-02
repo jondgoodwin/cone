@@ -1,0 +1,46 @@
+// An 'Option' holding a borrowed parameter's borrow stored into a global:
+// lifetimes are infectious, so the value is in the caller band, and the
+// global would outlive it.
+//
+// Verdict: refuse, ErrorEscape at the store.
+// Basis: language rule (1 Oct 2026) -- lifetimes are infectious: a value
+// holding a borrow takes on its lifetime; a borrow from the caller lives
+// shorter than global; refborref.html, "Lifetime Constraints".
+// Master 78fdce5a: accepted (only a value carrying a local's borrow was
+// checked against a global), and it dangles -- main, run, prints 0, not 42.
+
+mod lifetime_band_store_value_carrying_param_into_global;
+
+import stdio use *;
+
+fn clobber(n i64) i64 {
+  mut a Array[i64, 16] = [n, n, n, n, n, n, n, n, n, n, n, n, n, n, n, n];
+  a[3] + a[9];
+}
+
+mut GO Option[&i64];
+
+fn @initpure init() {
+  GO = None[&i64][];
+}
+
+fn stash(r &i64) {
+  GO = Some[&i64][r];        //~ ErrorEscape
+}
+
+fn fill() {
+  imm v = 42i64;
+  stash(&v);
+}
+
+fn main() {
+  fill();
+  clobber(21);
+  match GO {
+    case imm e Some {
+      printInt(*e.value);
+      printStr("\n");
+    }
+    else {}
+  }
+}

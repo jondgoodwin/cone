@@ -1,0 +1,46 @@
+// A by-value parameter of a struct holding a borrow, stored into a global:
+// the borrow it holds is the caller's, in the caller band, so the global
+// would outlive it.
+//
+// Verdict: refuse, ErrorEscape at the store.
+// Basis: language rule (1 Oct 2026) -- lifetimes are infectious: a value
+// holding a borrow takes on its lifetime; a borrow from the caller lives
+// shorter than global; refborref.html, "Lifetime Constraints".
+// Master 78fdce5a: accepted (only a value carrying a local's borrow was
+// checked against a global), and it dangles -- main, run, prints 0, not 42.
+
+mod lifetime_band_store_byvalue_holder_param_into_global;
+
+import stdio use *;
+
+fn clobber(n i64) i64 {
+  mut a Array[i64, 16] = [n, n, n, n, n, n, n, n, n, n, n, n, n, n, n, n];
+  a[3] + a[9];
+}
+
+struct H {
+  pub r &i64;
+}
+
+mut D i64 = 0;
+mut GH H;
+
+fn @initpure init() {
+  GH = new H(&D);
+}
+
+fn stash(h H) {
+  GH = h;                    //~ ErrorEscape
+}
+
+fn fill() {
+  imm v = 42i64;
+  stash(new H(&v));
+}
+
+fn main() {
+  fill();
+  clobber(21);
+  printInt(*GH.r);
+  printStr("\n");
+}

@@ -1,0 +1,44 @@
+// The borrow a '&mut &T' parameter points at, read through it ('*x') and
+// stored into a global: it is the caller's borrow, in the caller band, so
+// the global would outlive it.
+//
+// Verdict: refuse, ErrorEscape at the store.
+// Basis: language rule (1 Oct 2026) -- a borrow from the caller lives longer
+// than the function but shorter than global; refborref.html: a borrow "may
+// only be stored in a place whose lifetime is the same or smaller".
+// Master 78fdce5a: accepted (only a parameter's own borrow was checked
+// against a global, not one read through it), and it dangles -- main, run,
+// prints 140708072690497, not 42.
+
+mod lifetime_band_store_param_pointee_into_global;
+
+import stdio use *;
+
+fn clobber(n i64) i64 {
+  mut a Array[i64, 16] = [n, n, n, n, n, n, n, n, n, n, n, n, n, n, n, n];
+  a[3] + a[9];
+}
+
+mut D i64 = 0;
+mut G &i64;
+
+fn @initpure init() {
+  G = &D;
+}
+
+fn stash(x &mut &i64) {
+  G = *x;                    //~ ErrorEscape
+}
+
+fn fill() {
+  imm v = 42i64;
+  mut r = &v;
+  stash(&mut r);
+}
+
+fn main() {
+  fill();
+  clobber(21);
+  printInt(*G);
+  printStr("\n");
+}

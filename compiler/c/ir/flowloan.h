@@ -57,7 +57,8 @@ int loanMayPointOut(PathSet *refholds, INode *referent);
 
 // A value carrying the local loan 'loan' escapes the function at 'node':
 // returned, stored where it may outlive the function, or handed to a call
-// that may store it so
+// that may store it so; or one carrying the caller loan 'loan' is stored
+// into a global
 enum LoanEscape {
     LoanEscapeReturn,
     LoanEscapeStore,
