@@ -1,0 +1,281 @@
+// ======== Lattice: free-form deformation ========
+//
+// A lattice (Sederberg and Parry, "Free-form deformation of solid geometric
+// models", SIGGRAPH 1986; Blender's Lattice object and modifier) is a box
+// and a grid of control points over it. The box is spanned from 'origin' by
+// three axis vectors, sAxis, tAxis and uAxis (any three that are not
+// coplanar, so the box may be sheared): a point's local coordinates (s, t,
+// u) say where it is in the box, origin + sAxis s + tAxis t + uAxis u, each
+// 0 to 1 across it. The grid has l, m and n points along the three axes (2
+// or more each), control point (i, j, k) resting at
+//     origin + sAxis i / (l - 1) + tAxis j / (m - 1) + uAxis k / (n - 1),
+// the regular grid, numbered i + l (j + m k). Moving control points reshapes
+// whatever lies in the box: a few numbers ("pull this corner up") reshape a
+// dense mesh.
+//
+// 'latticeDeform' moves each vertex by the weighted sum of the control
+// points' moves from their rest positions:
+//     p' = p + sum over (i, j, k) of Wi(s) Wj(t) Wk(u) (P(i,j,k) - R(i,j,k)),
+// R the regular grid, the weights one of three interpolations:
+// - LatticeBernstein: the Bernstein polynomials of degree l - 1 (and m - 1,
+//   n - 1), Wi(s) = C(l - 1, i) s^i (1 - s)^(l - 1 - i): the Bezier volume,
+//   Sederberg and Parry's FFD, every control point pulling on the whole box;
+// - LatticeLinear: trilinear in the grid's cell holding the point, the
+//   eight corners of its cell weighted by the point's place in it;
+// - LatticeBSpline: the clamped uniform B-spline of degree min(3, l - 1),
+//   its knots 0 repeated degree + 1 times, then evenly spaced, then 1
+//   repeated as often, so it passes through the box's corner control points
+//   and is cubic and smooth inside, each control point pulling on a few
+//   cells round it. With 2 points it is the linear one, with 3 (or 4) the
+//   Bernstein one.
+// Each interpolation's weights sum to 1, and the Bernstein and linear ones
+// reproduce linear functions, so for them p' is the classic sum of W P
+// itself; the B-spline's control points would have to sit at its Greville
+// abscissae to reproduce the box, not the regular grid, so the deformation
+// is made from the moves, and for every interpolation a lattice whose points
+// have not moved gives the mesh back with its bits unchanged.
+//
+// A vertex outside the box is moved as the nearest point of the box in
+// local coordinates is: s, t and u are each held to 0 to 1 for the weights,
+// so it is carried with the box's face, edge or corner nearest it, and the
+// deformation is continuous across the box's surface. Blender's manual does
+// not say what its lattice does outside; this is the deterministic choice.
+//
+// The topology is unchanged, so every attribute channel is carried over as
+// it was and only the positions move (deform.cone's 'withPositions'). A box
+// with no volume gives the mesh back unchanged.
+
+pub const LatticeBernstein = 0u32;
+pub const LatticeLinear = 1u32;
+pub const LatticeBSpline = 2u32;
+
+// A box from 'origin' spanned by three axis vectors, and its l x m x n
+// control points, numbered i + l (j + m k)
+pub struct Lattice {
+  pub origin Vec3;
+  pub sAxis Vec3;
+  pub tAxis Vec3;
+  pub uAxis Vec3;
+  pub l u32;
+  pub m u32;
+  pub n u32;
+  pub points List[Vec3];
+
+  // The regular lattice: l x m x n control points (each held to at least 2)
+  // at their rest positions, evenly over the box
+  pub fn regular(origin Vec3, sAxis Vec3, tAxis Vec3, uAxis Vec3, l u32, m u32, n u32) Lattice {
+    imm cl = if l < 2u32 {2u32;} else {l;};
+    imm cm = if m < 2u32 {2u32;} else {m;};
+    imm cn = if n < 2u32 {2u32;} else {n;};
+    mut pts = List[Vec3].withCapacity(usize.from(cl * cm * cn));
+    mut k = 0u32;
+    while k < cn {
+      mut j = 0u32;
+      while j < cm {
+        mut i = 0u32;
+        while i < cl {
+          pts.push(restPoint(origin, sAxis, tAxis, uAxis, cl, cm, cn, i, j, k));
+          i = i + 1u32;
+        }
+        j = j + 1u32;
+      }
+      k = k + 1u32;
+    }
+    new Lattice(origin, sAxis, tAxis, uAxis, cl, cm, cn, pts);
+  }
+
+  // The number of control point (i, j, k)
+  pub fn index(self &, i u32, j u32, k u32) usize {usize.from(i + l * (j + m * k));}
+
+  // Where control point (i, j, k) rests, on the regular grid
+  pub fn rest(self &, i u32, j u32, k u32) Vec3 {restPoint(origin, sAxis, tAxis, uAxis, l, m, n, i, j, k);}
+
+  // Where control point (i, j, k) is
+  pub fn point(self &, i u32, j u32, k u32) Vec3 {*points[self.index(i, j, k)];}
+
+  // Control point (i, j, k) put at p
+  pub fn setPoint(self &mut, i u32, j u32, k u32, p Vec3) {
+    imm at = self.index(i, j, k);
+    points.set(at, p);
+  }
+
+  // Control point (i, j, k) moved by delta
+  pub fn movePoint(self &mut, i u32, j u32, k u32, delta Vec3) {
+    imm at = self.index(i, j, k);
+    imm p = *points[at];
+    points.set(at, p + delta);
+  }
+}
+
+// Where control point (i, j, k) of an l x m x n grid over the box rests
+fn restPoint(origin Vec3, sAxis Vec3, tAxis Vec3, uAxis Vec3, l u32, m u32, n u32, i u32, j u32, k u32) Vec3 {
+  origin + sAxis * (f32.from(i) / f32.from(l - 1u32)) + tAxis * (f32.from(j) / f32.from(m - 1u32))
+    + uAxis * (f32.from(k) / f32.from(n - 1u32));
+}
+
+// The weights of 'count' control points along one axis at s (0 to 1), by
+// the interpolation; an unknown interpolation is the linear one
+pub fn latticeWeights(interpolation u32, count u32, s f32) List[f32] {
+  imm n = usize.from(if count < 2u32 {2u32;} else {count;});
+  imm x = clampf(s, 0., 1.);
+  if interpolation == LatticeBernstein {
+    bernsteinWeights(n, x);
+  } elif interpolation == LatticeBSpline {
+    bsplineWeights(n, x);
+  } else {
+    linearWeights(n, x);
+  };
+}
+
+// The Bernstein polynomials of degree n - 1 at s: C(n - 1, i) s^i (1 - s)^(n - 1 - i)
+fn bernsteinWeights(n usize, s f32) List[f32] {
+  imm d = n - 1usize;
+  mut w = List[f32].withCapacity(n);
+  mut binom f32 = 1.;
+  mut i = 0usize;
+  while i < n {
+    mut v = binom;
+    mut a = 0usize;
+    while a < i { v = v * s; a = a + 1usize; }
+    a = 0usize;
+    while a < d - i { v = v * (1. - s); a = a + 1usize; }
+    w.push(v);
+    // C(d, i + 1) = C(d, i) (d - i) / (i + 1)
+    binom = binom * f32.from(d - i) / f32.from(i + 1usize);
+    i = i + 1usize;
+  }
+  w;
+}
+
+// Linear in the cell holding s: n - 1 cells, the last closed at s = 1
+fn linearWeights(n usize, s f32) List[f32] {
+  imm x = s * f32.from(n - 1usize);
+  mut c = usize.from(u32.from(libc.floorf(x)));
+  if c > n - 2usize { c = n - 2usize; }
+  imm f = x - f32.from(c);
+  mut w = List[f32].withCapacity(n);
+  mut i = 0usize;
+  while i < n {
+    w.push(if i == c {1. - f;} elif i == c + 1usize {f;} else {0.;});
+    i = i + 1usize;
+  }
+  w;
+}
+
+// Knot j of the clamped uniform knot vector for n control points of degree
+// p: p + 1 zeros, the interior knots evenly spaced, p + 1 ones
+fn clampedKnot(j usize, n usize, p usize) f32 {
+  if j <= p {0.;} elif j >= n {1.;} else {f32.from(j - p) / f32.from(n - p);};
+}
+
+// The clamped uniform B-spline basis of degree min(3, n - 1) at s, by the
+// Cox-de Boor triangle (Piegl and Tiller, The NURBS Book, A2.2): only the
+// p + 1 functions on the knot span holding s are non-zero
+fn bsplineWeights(n usize, s f32) List[f32] {
+  imm p = if n - 1usize < 3usize {n - 1usize;} else {3usize;};
+  // The span: t[k] <= s < t[k + 1], k from p to n - 1 (s = 1 in the last)
+  mut k = p;
+  while k < n - 1usize and s >= clampedKnot(k + 1usize, n, p) { k = k + 1usize; }
+  mut basis = List[f32].withCapacity(p + 1usize);
+  mut left = List[f32].withCapacity(p + 1usize);
+  mut right = List[f32].withCapacity(p + 1usize);
+  basis.push(1.);
+  left.push(0.);
+  right.push(0.);
+  mut j = 1usize;
+  while j <= p {
+    left.push(s - clampedKnot(k + 1usize - j, n, p));
+    right.push(clampedKnot(k + j, n, p) - s);
+    mut saved f32 = 0.;
+    mut r = 0usize;
+    while r < j {
+      imm temp = *basis[r] / (*right[r + 1usize] + *left[j - r]);
+      basis.set(r, saved + *right[r + 1usize] * temp);
+      saved = *left[j - r] * temp;
+      r = r + 1usize;
+    }
+    basis.push(saved);
+    j = j + 1usize;
+  }
+  mut w = List[f32].withCapacity(n);
+  mut i = 0usize;
+  while i < n {
+    w.push(if i + p >= k and i <= k {*basis[i + p - k];} else {0.;});
+    i = i + 1usize;
+  }
+  w;
+}
+
+// The mesh deformed by the lattice, its weights by the interpolation
+// (LatticeBernstein, LatticeLinear or LatticeBSpline): each vertex moved by
+// the weighted moves of the control points at its local (s, t, u), held to
+// the box (see above). The sum runs over k, then j, then i, skipping zero
+// weights, so the same input gives the same bits.
+pub fn latticeDeform(m &PolyMesh, lattice &Lattice, interpolation u32) PolyMesh {
+  imm a = lattice.sAxis;
+  imm b = lattice.tAxis;
+  imm c = lattice.uAxis;
+  imm bc = b.cross(c);
+  imm ca = c.cross(a);
+  imm ab = a.cross(b);
+  imm det = a.dot(bc);
+  // The control points' moves, in their numbering
+  imm count = lattice.points.len();
+  mut moves = List[Vec3].withCapacity(count);
+  mut moved = false;
+  mut kk = 0u32;
+  while kk < lattice.n {
+    mut jj = 0u32;
+    while jj < lattice.m {
+      mut ii = 0u32;
+      while ii < lattice.l {
+        imm d = lattice.point(ii, jj, kk) - lattice.rest(ii, jj, kk);
+        if d.x != 0. or d.y != 0. or d.z != 0. { moved = true; }
+        moves.push(d);
+        ii = ii + 1u32;
+      }
+      jj = jj + 1u32;
+    }
+    kk = kk + 1u32;
+  }
+  imm nv = m.positions.len();
+  mut out = List[Vec3].withCapacity(nv);
+  mut v = 0usize;
+  while v < nv {
+    imm p = *m.positions[v];
+    if det == 0. or !moved {
+      out.push(p);
+    } else {
+      imm q = p - lattice.origin;
+      imm ws = latticeWeights(interpolation, lattice.l, q.dot(bc) / det);
+      imm wt = latticeWeights(interpolation, lattice.m, q.dot(ca) / det);
+      imm wu = latticeWeights(interpolation, lattice.n, q.dot(ab) / det);
+      mut sum = new Vec3(0., 0., 0.);
+      mut k = 0usize;
+      while k < usize.from(lattice.n) {
+        imm wk = *wu[k];
+        if wk != 0. {
+          mut j = 0usize;
+          while j < usize.from(lattice.m) {
+            imm wjk = *wt[j] * wk;
+            if wjk != 0. {
+              mut i = 0usize;
+              while i < usize.from(lattice.l) {
+                imm w = *ws[i] * wjk;
+                if w != 0. {
+                  sum = sum + *moves[i + usize.from(lattice.l) * (j + usize.from(lattice.m) * k)] * w;
+                }
+                i = i + 1usize;
+              }
+            }
+            j = j + 1usize;
+          }
+        }
+        k = k + 1usize;
+      }
+      out.push(p + sum);
+    }
+    v = v + 1usize;
+  }
+  withPositions(m, out);
+}
