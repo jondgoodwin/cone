@@ -290,6 +290,10 @@ Visual Studio projects stay at the root.
   build description per package, compiles each package on its own with `conec`,
   and links with `conestd`. `tools/congo/README.md` is its guide and design;
   `python tools/congo/test_congo.py` checks it against a built `conec`.
+  `tools/congo/` is also the package of its port to Cone (`congo.toml`,
+  `src/congo.cone`), which `congo.py build` there builds and which so far runs
+  and cleans a lone file; `CONGO_EXE` points `test_congo.py` at its build
+  (README, "Congo in Cone").
 - `tools/shaders/`: `shaders.py` compiles each package's Slang shaders
   (`.slang`) ahead of time to SPIR-V (`.spv`, committed beside them) with the
   Vulkan SDK's `slangc`, and embeds the words in the Cone file that draws

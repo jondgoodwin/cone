@@ -1,0 +1,370 @@
+// The order packages are built in, and each one's build description
+// (congo.py's resolve_imports, build_order, prelude_needs, closure and
+// description).
+
+// One package of the build, scanned, with what its modules import resolved:
+// the packages it imports, in the order first seen, and each module's import
+// lines (in its Module)
+struct Unit {
+  pub pkg usize;
+  pub mods List[Module];
+  pub deps List[usize];
+}
+
+fn holds(list &List[usize], v usize) Bool {
+  mut i = 0usize;
+  while i < list.len() {
+    if *list[i] == v { return true; }
+    i = i + 1usize;
+  }
+  false;
+}
+
+// Which of each module's imports name another package. A submodule's import
+// of a sister is answered inside the package, and one of a name of its
+// parent too: those get no line. An import of 'core' names the prelude,
+// which the compiler loads from the same include file its package line names.
+fn resolveImports(reg &Registry, p usize, scanned List[Module]) Unit {
+  mut mods = scanned;
+  mut deps = List[usize].empty();
+  imm pkg = reg.packages[p];
+  imm order = walkOrder(&mods);
+  mut w = 0usize;
+  while w < order.len() {
+    imm m = *order[w];
+    imm imports = importsOf(mods[m]);
+    mut i = 0usize;
+    while i < imports.len() {
+      imm imp = imports[i];
+      mut sister = 0usize;
+      if not imp.hasName {
+        imm place = imp.location();
+        fail(cat(place.view(), ": import ", imp.written.view(),
+          ": a Congo build imports a package by its name, not by a path"));
+      }
+      elif sisterNamed(&mods, m, imp.name.view(), &mut sister) {
+        // a sister, answered inside the package
+      }
+      elif imp.name.equals("core") {
+        // The prelude is loaded already; an explicit import of it names the
+        // very file it was loaded from, so the two are one module
+        match reg.find("core") {
+          case imm c Some {
+            if not pkg.name.equals("core") { addLine(&mut mods[m], imp.name.view(), c.value); }
+          }
+          case is None {}
+        }
+      }
+      else {
+        match reg.find(imp.name.view()) {
+          case imm f Some {
+            if not holds(&deps, f.value) { deps.push(f.value); }
+            addLine(&mut mods[m], imp.name.view(), f.value);
+          }
+          case is None {
+            // A name of the parent, which the compiler resolves
+            if not mods[m].hasParent {
+              imm place = imp.location();
+              imm searched = reg.searched();
+              fail(cat(place.view(), ": import ", imp.name.view(), ": no package named '", imp.name.view(),
+                "' in the registries searched: ", searched.view()));
+            }
+          }
+        }
+      }
+      i = i + 1usize;
+    }
+    w = w + 1usize;
+  }
+  checkModuleLoops(pkg, &mods, reg);
+  new Unit(p, mods, deps);
+}
+
+fn importsOf(m &Module) List[Import] {
+  mut out = List[Import].empty();
+  mut i = 0usize;
+  while i < m.imports.len() {
+    out.push(m.imports[i].copy());
+    i = i + 1usize;
+  }
+  out;
+}
+
+// An import line for name, replacing one already there
+fn addLine(m &mut Module, name &[]u8, pkg usize) {
+  mut i = 0usize;
+  while i < m.lines.len() {
+    if m.lines[i].name.equals(name) {
+      m.lines.set(i, new Line(String.from(name), pkg));
+      return;
+    }
+    i = i + 1usize;
+  }
+  m.lines.push(new Line(String.from(name), pkg));
+}
+
+// The first import of name in the package, in walk order
+fn firstImport(unit &Unit, name &[]u8) Import {
+  imm order = walkOrder(&unit.mods);
+  mut w = 0usize;
+  while w < order.len() {
+    imm m = *order[w];
+    mut i = 0usize;
+    while i < unit.mods[m].imports.len() {
+      if unit.mods[m].imports[i].name.equals(name) { return unit.mods[m].imports[i].copy(); }
+      i = i + 1usize;
+    }
+    w = w + 1usize;
+  }
+  unreachable("an import the package was found to make");
+}
+
+// The packages of a build, each scanned once, and the order they are built
+// in, each after what it imports: 'order' holds places in 'units'
+struct Plan {
+  pub units List[Unit];
+  pub order List[usize];
+  pub state Dict[String, u8];
+  pub stack List[usize];
+
+  // The unit of the package named name, in the order
+  pub fn unitNamed(self &, reg &Registry, name &[]u8, found &mut usize) Bool {
+    mut i = 0usize;
+    while i < order.len() {
+      imm u = *order[i];
+      if reg.packages[units[u].pkg].name.equals(name) {
+        *found = u;
+        return true;
+      }
+      i = i + 1usize;
+    }
+    false;
+  }
+
+  pub fn stateOf(self &, name &[]u8) u8 {
+    if not state.contains(name) { return unvisited; }
+    *state[name];
+  }
+
+  pub fn visit(self &mut, reg &Registry, p usize) {
+    imm name = reg.packages[p].name.view();
+    state.insert(String.from(name), visiting);
+    imm scanned = scanPackage(reg.packages[p]);
+    imm unit = resolveImports(reg, p, scanned);
+    units.push(unit);
+    imm u = units.len() - 1usize;
+    stack.push(u);
+    imm deps = depsOf(units[u]);
+    mut d = 0usize;
+    while d < deps.len() {
+      imm dep = *deps[d];
+      imm depName = reg.packages[dep].name.view();
+      if self.stateOf(depName) == visiting {
+        mut at = 0usize;
+        while not reg.packages[units[*stack[at]].pkg].name.equals(depName) { at = at + 1usize; }
+        mut chain = String.empty();
+        mut text = String.empty();
+        mut j = at;
+        while j < stack.len() {
+          imm unitHere = units[*stack[j]];
+          imm here = reg.packages[unitHere.pkg].name.view();
+          imm next = if j + 1usize < stack.len() {reg.packages[units[*stack[j + 1usize]].pkg].name.view();} else {depName;};
+          chain <- here, " -> ";
+          if j > at { text <- "; "; }
+          imm first = firstImport(unitHere, next);
+          imm place = first.location();
+          text <- here, " imports ", next, " at ", place.view();
+          j = j + 1usize;
+        }
+        chain <- depName;
+        fail(cat("import loop between packages: ", chain.view(), ". Imports between packages must not loop (",
+          text.view(), ")."));
+      }
+      if self.stateOf(depName) == unvisited { self.visit(reg, dep); }
+      d = d + 1usize;
+    }
+    stack.pop();
+    state.insert(String.from(name), visited);
+    order.push(u);
+  }
+}
+
+fn depsOf(unit &Unit) List[usize] {
+  mut out = List[usize].empty();
+  mut i = 0usize;
+  while i < unit.deps.len() {
+    out.push(*unit.deps[i]);
+    i = i + 1usize;
+  }
+  out;
+}
+
+fn emptyPlan() Plan {
+  new Plan(List[Unit].empty(), List[usize].empty(), Dict[String, u8].empty(), List[usize].empty());
+}
+
+// Every package the build needs, each after what it imports. Imports are a
+// DAG between packages: a loop is refused, naming it. The prelude, core,
+// comes first of all, since every package uses it -- after the packages core
+// itself imports (libc), which are C packages, given no prelude by the
+// compiler, and so built before it. A package core imports, built on its
+// own, needs no core at all.
+fn buildOrder(reg &Registry, top usize) Plan {
+  mut plan = emptyPlan();
+  imm topName = reg.packages[top].name.view();
+  if topName != "core" {
+    match reg.find("core") {
+      case imm c Some { plan.visit(reg, c.value); }
+      case is None {
+        imm searched = reg.searched();
+        fail(cat("no package named 'core', the prelude, in the registries searched: ", searched.view()));
+      }
+    }
+    if plan.state.contains(topName) {
+      // One of core's own imports: built with what it imports, and no core
+      plan = emptyPlan();
+    }
+  }
+  plan.visit(reg, top);
+  plan;
+}
+
+// The packages core imports, directly or not: the C packages the prelude
+// rests on (libc). Each is built before core and gets no prelude, so its
+// description has no package line for core, whose include file does not
+// exist yet when it is compiled.
+fn preludeNeeds(plan &Plan, reg &Registry) List[usize] {
+  mut needs = List[usize].empty();
+  mut core = 0usize;
+  if plan.unitNamed(reg, "core", &mut core) { needsOf(plan, reg, core, &mut needs); }
+  needs;
+}
+
+fn needsOf(plan &Plan, reg &Registry, u usize, needs &mut List[usize]) {
+  mut i = 0usize;
+  while i < plan.units[u].deps.len() {
+    imm dep = *plan.units[u].deps[i];
+    if not holds(needs, dep) {
+      needs.push(dep);
+      mut du = 0usize;
+      if plan.unitNamed(reg, reg.packages[dep].name.view(), &mut du) { needsOf(plan, reg, du, needs); }
+    }
+    i = i + 1usize;
+  }
+}
+
+// Every package in the unit's dependency closure, direct or indirect, in
+// build order (each after what it imports), the prelude first, after what
+// the prelude itself imports. These are the description's PACKAGE LINES: an
+// include file is a module file like any other and may import, and what its
+// imports reach is found there -- so core's include file's import of libc is
+// answered by libc's line, in every description that has core's. The
+// prelude's line is also where conec loads the prelude from. A package core
+// imports gets neither: it is built before core, and has no prelude.
+fn closure(plan &Plan, reg &Registry, u usize) List[usize] {
+  mut seen = List[usize].empty();
+  imm p = plan.units[u].pkg;
+  mut core = 0usize;
+  if not reg.packages[p].name.equals("core") and plan.unitNamed(reg, "core", &mut core) {
+    imm needs = preludeNeeds(plan, reg);
+    if not holds(&needs, p) {
+      closureOf(plan, reg, core, &mut seen);
+      seen.push(plan.units[core].pkg);
+    }
+  }
+  closureOf(plan, reg, u, &mut seen);
+  seen;
+}
+
+fn closureOf(plan &Plan, reg &Registry, u usize, seen &mut List[usize]) {
+  mut i = 0usize;
+  while i < plan.units[u].deps.len() {
+    imm dep = *plan.units[u].deps[i];
+    if not holds(seen, dep) {
+      mut du = 0usize;
+      if plan.unitNamed(reg, reg.packages[dep].name.view(), &mut du) { closureOf(plan, reg, du, seen); }
+      seen.push(dep);
+    }
+    i = i + 1usize;
+  }
+}
+
+// What an importer of a package is compiled against: the include file the
+// package's own compile generated, <name>.cone in the build folder, beside
+// its object. Every package of a build is compiled into that one folder,
+// each before what imports it, so the file is there, and current, when an
+// importer's compile reads it.
+fn includeFor(pkg &Package, out &[]u8) String {
+  imm file = cat(pkg.name.view(), ".cone");
+  joined(out, file.view());
+}
+
+// A path as a build description writes it: absolute, with '/', since the
+// description is read as Cone source and a backslash begins an escape
+fn conePath(p &[]u8) String {
+  mut s = resolved(p);
+  s.replaceByte('\\', '/');
+  s.replace("\"", "\\\"");
+  s;
+}
+
+// The build description of one package; 'out' is the folder the include
+// files of the packages it imports are in. Its lines end as Python's
+// write_text ends them on Windows, in '\r\n'.
+fn description(reg &Registry, unit &Unit, mode &[]u8, output &[]u8, out &[]u8, packages &List[usize]) String {
+  imm pkg = reg.packages[unit.pkg];
+  imm label = pkg.label();
+  mut text = String.empty();
+  text <- "// The build description of ", label.view(), ", written by Congo for conec;\r\n";
+  text <- "// rewritten on every build, so edit the source, not this.\r\n";
+  text <- "\r\n";
+  text <- "build: ", mode, "\r\n";
+  text <- "output: ", output, "\r\n";
+  text <- "\r\n";
+  // The package lines: where each package of the closure is found, for an
+  // include file's own imports and, for core, for the prelude. Each is the
+  // include file that package's compile generated into 'out'. The package's
+  // own modules import only what their own lines, below, give them
+  mut i = 0usize;
+  while i < packages.len() {
+    imm dep = reg.packages[*packages[i]];
+    imm incl = includeFor(dep, out);
+    imm place = conePath(incl.view());
+    text <- "import ", dep.name.view(), ": \"", place.view(), "\"\r\n";
+    i = i + 1usize;
+  }
+  if packages.len() > 0usize { text <- "\r\n"; }
+  emit(reg, unit, 0usize, 0usize, out, &mut text);
+  text;
+}
+
+fn emit(reg &Registry, unit &Unit, m usize, depth usize, out &[]u8, text &mut String) {
+  mut pad = String.empty();
+  mut d = 0usize;
+  while d < depth {
+    pad <- "    ";
+    d = d + 1usize;
+  }
+  imm module = unit.mods[m];
+  text <- pad.view(), module.name.view(), ": {\r\n";
+  mut i = 0usize;
+  while i < module.files.len() {
+    imm place = conePath(module.files[i].view());
+    text <- pad.view(), "    \"", place.view(), "\"\r\n";
+    i = i + 1usize;
+  }
+  i = 0usize;
+  while i < module.lines.len() {
+    imm line = module.lines[i];
+    imm incl = includeFor(reg.packages[line.pkg], out);
+    imm place = conePath(incl.view());
+    text <- pad.view(), "    import ", line.name.view(), ": \"", place.view(), "\"\r\n";
+    i = i + 1usize;
+  }
+  i = 0usize;
+  while i < module.children.len() {
+    emit(reg, unit, *module.children[i], depth + 1usize, out, text);
+    i = i + 1usize;
+  }
+  text <- pad.view(), "}\r\n";
+}

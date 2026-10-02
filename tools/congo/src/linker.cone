@@ -1,0 +1,331 @@
+// The compiler, conestd and the linker (congo.py's find_conec,
+// warn_if_stale, find_conestd, find_vcvars, is_msvc_linker, msvc_target,
+// without_vs_libs and Linker). Windows only, as Congo's linking is for now:
+// Microsoft's link.exe in the environment vcvars64.bat sets up.
+
+// CONEC names the compiler; else the Cone repository's own build,
+// build/x64-release/conec.exe; else 'conec' on PATH
+fn findConec(repo &[]u8) String {
+  imm named = envOr("CONEC", "");
+  if not named.isEmpty() {
+    imm p = winPath(named.view());
+    if not fs.isFile(p.view()) { fail(cat("CONEC names ", p.view(), ", which does not exist")); }
+    return p;
+  }
+  imm build = joined(repo, "build\\x64-release\\conec.exe");
+  if repo.len > 0usize and fs.isFile(build.view()) {
+    warnIfStale(repo, build.view());
+    return build;
+  }
+  imm pathList = envOr("PATH", "");
+  imm onPath = which("conec", pathList.view());
+  if not onPath.isEmpty() { return onPath; }
+  fail(cat("no conec: set CONEC to the compiler, build it at ", build.view(), ", or put conec on PATH"));
+}
+
+// A stale conec fails good sources in ways that look like a language
+// regression. The repository's build is checked against its sources, as the
+// test runner checks it.
+fn warnIfStale(repo &[]u8, conec &[]u8) {
+  mut stamp = 0i64;
+  match fs.stat(conec) {
+    case imm s Ok { stamp = s.value.modified; }
+    case is Error { return; }
+  }
+  imm sources = joined(repo, "compiler\\c");
+  mut entries = List[fs.DirEntry].empty();
+  match fs.walk(sources.view()) {
+    case mut ok Ok { entries <=> ok.value; }
+    case is Error { return; }
+  }
+  mut i = 0usize;
+  while i < entries.len() {
+    imm entry = entries[i];
+    imm ext = path.extension(entry.name.view());
+    if ext.equals(".c") or ext.equals(".h") {
+      match fs.stat(entry.path.view()) {
+        case imm s Ok {
+          if s.value.modified > stamp {
+            // The file relative to the repository, as Path.relative_to gives it
+            imm full = winPath(entry.path.view());
+            imm rest = full.sub(repo.len + 1usize, full.len());
+            warn(cat("warning: ", conec, " is older than ", rest.view(),
+              "; rebuild it (python test/run.py --build) before trusting what it reports"));
+            return;
+          }
+        }
+        case is Error {}
+      }
+    }
+    i = i + 1usize;
+  }
+}
+
+// CONESTD names the runtime library; else it is the one built beside conec
+fn findConestd(conec &[]u8) String {
+  imm named = envOr("CONESTD", "");
+  mut lib = String.empty();
+  if not named.isEmpty() { lib = winPath(named.view()); }
+  else {
+    imm folder = parentOf(conec);
+    lib = joined(folder.view(), "conestd.lib");
+  }
+  if not fs.isFile(lib.view()) {
+    fail(cat("no conestd library at ", lib.view(), "; build it with conec, or set CONESTD"));
+  }
+  lib;
+}
+
+// Arguments for process.run, from slices
+fn argList(a &[]u8, b &[]u8 = "", c &[]u8 = "", d &[]u8 = "", e &[]u8 = "", f &[]u8 = "",
+    g &[]u8 = "", h &[]u8 = "", i &[]u8 = "") List[String] {
+  mut out = List[String].empty();
+  out.push(String.from(a));
+  if b.len > 0usize { out.push(String.from(b)); }
+  if c.len > 0usize { out.push(String.from(c)); }
+  if d.len > 0usize { out.push(String.from(d)); }
+  if e.len > 0usize { out.push(String.from(e)); }
+  if f.len > 0usize { out.push(String.from(f)); }
+  if g.len > 0usize { out.push(String.from(g)); }
+  if h.len > 0usize { out.push(String.from(h)); }
+  if i.len > 0usize { out.push(String.from(i)); }
+  out;
+}
+
+// vcvars64.bat: where vswhere says Visual Studio's C++ tools are, else in
+// Visual Studio 2022's usual folders; "" when there is none
+fn findVcvars() String {
+  imm programs = envOr("ProgramFiles(x86)", "C:\\Program Files (x86)");
+  imm pf = winPath(programs.view());
+  imm vswhere = joined(pf.view(), "Microsoft Visual Studio\\Installer\\vswhere.exe");
+  if fs.exists(vswhere.view()) {
+    imm args = argList(vswhere.view(), "-latest", "-products", "*",
+      "-requires", "Microsoft.VisualStudio.Component.VC.Tools.x86.x64", "-property", "installationPath");
+    match process.run(args.view()) {
+      case imm ok Ok {
+        imm out = textOf(ok.value.stdout.view());
+        imm trimmed = out.trim();
+        imm roots = splitLines(trimmed.view());
+        if roots.len() > 0usize {
+          imm root = winPath(roots[0usize].view());
+          imm candidate = joined(root.view(), "VC\\Auxiliary\\Build\\vcvars64.bat");
+          if fs.exists(candidate.view()) { return candidate; }
+        }
+      }
+      case is Error {}
+    }
+  }
+  imm editions = splitText("Community Professional Enterprise BuildTools", ' ');
+  mut i = 0usize;
+  while i < editions.len() {
+    imm folder = joined("C:\\Program Files\\Microsoft Visual Studio\\2022", editions[i].view());
+    imm candidate = joined(folder.view(), "VC\\Auxiliary\\Build\\vcvars64.bat");
+    if fs.exists(candidate.view()) { return candidate; }
+    i = i + 1usize;
+  }
+  String.empty();
+}
+
+// Git for Windows ships a coreutils link.exe, which is not a linker at all,
+// so an inherited link.exe is trusted only when it says it is Microsoft's
+fn isMsvcLinker(tool &[]u8) Bool {
+  imm args = argList(tool, "/?");
+  match process.run(args.view(), new process.Options(timeoutMs: 20000u64)) {
+    case imm ok Ok {
+      if ok.value.timedOut { return false; }
+      mut both = textOf(ok.value.stdout.view());
+      imm err = textOf(ok.value.stderr.view());
+      both <- err.view();
+      both.contains("Microsoft");
+    }
+    case is Error { false; }
+  }
+}
+
+// The machine a Microsoft link.exe links for, lower-cased (x64, x86,
+// arm64), or "" when nothing says. Its folder says first,
+// bin\Host<host>\<target>, since that is the linker that would run; else
+// what VsDevCmd.bat and vcvars*.bat record, VSCMD_ARG_TGT_ARCH.
+fn msvcTarget(tool &[]u8) String {
+  imm folder = parentOf(tool);
+  imm above = parentOf(folder.view());
+  mut host = path.name(above.view());
+  host.lowerAscii();
+  if host.startsWith("host") {
+    mut target = path.name(folder.view());
+    target.lowerAscii();
+    return target;
+  }
+  mut target = envOr("VSCMD_ARG_TGT_ARCH", "");
+  target.lowerAscii();
+  target;
+}
+
+// A folder as os.path.normcase(os.path.normpath()) spells it, with a '\'
+// after it
+fn normFolder(p &[]u8) String {
+  mut n = path.normalize(p);
+  n.replaceByte('/', '\\');
+  n.lowerAscii();
+  if not n.endsWith("\\") { n <- "\\"; }
+  n;
+}
+
+// LIB with the folders a Visual Studio environment put on it taken out --
+// each entry under the Visual Studio or Windows SDK folder the environment
+// names -- and every other entry, the user's own, kept in order.
+// vcvars64.bat puts its own folders in front of what LIB already lists, and
+// an x86 environment's left behind them would still be searched. (PATH
+// keeps its x86 folders: vcvars64.bat's link.exe is found first.)
+fn withoutVsLibs(changes &mut EnvChanges) {
+  if not envHas("LIB") { return; }
+  mut roots = List[String].empty();
+  imm names = splitText("VSINSTALLDIR WindowsSdkDir UniversalCRTSdkDir", ' ');
+  mut i = 0usize;
+  while i < names.len() {
+    imm root = envOr(names[i].view(), "");
+    if not root.isEmpty() { roots.push(normFolder(root.view())); }
+    i = i + 1usize;
+  }
+  imm lib = envOr("LIB", "");
+  imm entries = lib.split(';');
+  mut kept = List[String].empty();
+  i = 0usize;
+  while i < entries.len() {
+    imm entry = entries[i].view();
+    if entry.len > 0usize {
+      imm place = normFolder(entry);
+      mut there = false;
+      mut r = 0usize;
+      while r < roots.len() {
+        if place.startsWith(roots[r].view()) { there = true; }
+        r = r + 1usize;
+      }
+      if not there { kept.push(String.from(entry)); }
+    }
+    i = i + 1usize;
+  }
+  imm cleaned = String.join(kept.view(), ";");
+  changes.set("LIB", cleaned.view());
+}
+
+// What running vcvars64.bat said: the batch file, and what it printed,
+// which a failure to find link.exe shows
+struct Vcvars {
+  pub ran Bool;
+  pub file String;
+  pub printed String;
+}
+
+// vcvars64.bat's environment, taken on by Congo itself (for the link, and
+// undone after it), run in the environment Congo has. It keeps what LIB
+// already lists, behind its own folders.
+fn runVcvars(changes &mut EnvChanges) Vcvars {
+  imm vcvars = findVcvars();
+  if vcvars.isEmpty() { fail(String.from("no Visual Studio C++ tools (vcvars64.bat) to link with")); }
+  // The line as written, not quoted again: cmd would not recognise the
+  // batch path. The marker divides what vcvars64.bat prints from the
+  // environment set prints.
+  imm marker &[]u8 = "--congo: vcvars64.bat's environment--";
+  imm line = cat("cmd /c \"\"", vcvars.view(), "\" && echo ", marker, "&& set\"");
+  mut out = String.empty();
+  mut err = String.empty();
+  mut code = 0u32;
+  match process.runLine(line.view()) {
+    case imm ok Ok {
+      out = textOf(ok.value.stdout.view());
+      err = textOf(ok.value.stderr.view());
+      code = ok.value.exitCode;
+    }
+    case imm e Error {
+      fail(e.value.message());
+    }
+  }
+  mut printed = String.empty();
+  mut variables = String.empty();
+  match out.find(marker) {
+    case imm at Some {
+      printed = out.sub(0usize, at.value);
+      variables = out.sub(at.value + marker.len, out.len());
+    }
+    case is None { printed = out.copy(); }
+  }
+  if code != 0u32 or variables.isEmpty() {
+    fail(cat(vcvars.view(), " failed:\n", printed.view(), err.view()));
+  }
+  // Each variable set printed, in any spelling of its name, where its value
+  // is not what it already is
+  imm lines = splitLines(variables.view());
+  mut i = 0usize;
+  while i < lines.len() {
+    imm l = lines[i].view();
+    imm eq = findByte(l, '=', 0usize);
+    if eq < l.len and eq > 0usize {
+      imm name = &l[..eq];
+      imm value = &l[eq + 1usize..];
+      imm now = envOr(name, "");
+      if not envHas(name) or now.view() != value { changes.set(name, value); }
+    }
+    i = i + 1usize;
+  }
+  printed <- err.view();
+  new Vcvars(true, vcvars, printed);
+}
+
+// Why no Microsoft link.exe was found: which vcvars64.bat ran and how its
+// output ended, and the folders searched
+fn noLinker(tool &[]u8, pathList &[]u8, ran &Vcvars) String {
+  mut text = String.from("no Microsoft link.exe: install Visual Studio's C++ tools (Congo runs vcvars64.bat to find it)");
+  if tool.len > 0usize { text <- "\nthe link.exe found, ", tool, ", is not Microsoft's"; }
+  if ran.ran {
+    imm trimmed = ran.printed.trim();
+    imm all = splitLines(trimmed.view());
+    imm from = if all.len() > 15usize {all.len() - 15usize;} else {0usize;};
+    mut said &[]u8 = "(the end of it):";
+    if all.len() == 0usize { said = "nothing"; }
+    text <- "\nran ", ran.file.view(), ", which printed ", said;
+    mut i = from;
+    while i < all.len() {
+      text <- "\n    ", all[i].view();
+      i = i + 1usize;
+    }
+  }
+  text <- "\nsearched for link.exe in PATH's folders:";
+  imm folders = splitText(pathList, ';');
+  mut i = 0usize;
+  while i < folders.len() {
+    if not folders[i].isEmpty() { text <- "\n    ", folders[i].view(); }
+    i = i + 1usize;
+  }
+  text;
+}
+
+// The system linker, with the environment it needs: Microsoft's link.exe in
+// the environment vcvars64.bat sets up, which Congo produces itself, so no
+// Developer Command Prompt is needed. An inherited environment is used only
+// when its link.exe is Microsoft's and links for x64, as conec's objects
+// are: Visual Studio's default Developer Command Prompt links for x86. The
+// environment it needs is set in Congo's own, in changes, for the link.
+fn findLinker(changes &mut EnvChanges) String {
+  mut ran = new Vcvars(false, String.empty(), String.empty());
+  imm startPath = envOr("PATH", "");
+  imm inherited = which("link.exe", startPath.view());
+  if not (not inherited.isEmpty() and isMsvcLinker(inherited.view())) {
+    ran = runVcvars(changes);
+  }
+  else {
+    imm target = msvcTarget(inherited.view());
+    if not (target.isEmpty() or target.equals("x64")) {
+      // Silently, as when there is no linker: nothing is the user's to fix
+      withoutVsLibs(changes);
+      ran = runVcvars(changes);
+    }
+  }
+  imm pathList = envOr("PATH", "");
+  imm tool = which("link.exe", pathList.view());
+  if tool.isEmpty() or not isMsvcLinker(tool.view()) {
+    imm why = noLinker(tool.view(), pathList.view(), &ran);
+    fail(why);
+  }
+  tool;
+}

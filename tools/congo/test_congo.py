@@ -10,6 +10,7 @@ it prints from, not copied from a run.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import shutil
@@ -24,8 +25,21 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import congo  # noqa: E402
 
-CONGO = [sys.executable, str(HERE / "congo.py")]
+# CONGO_EXE names a Congo executable to drive in place of congo.py: the Cone
+# Congo, tools/congo/build/debug/congo.exe (README.md, "Congo in Cone"). It
+# builds and runs a lone file and no more yet, so the scenarios that need more
+# of Congo are skipped against it. The checks of congo.py's own functions run
+# either way.
+CONGO_EXE = os.environ.get("CONGO_EXE")
+CONGO = [CONGO_EXE] if CONGO_EXE else [sys.executable, str(HERE / "congo.py")]
 IS_WINDOWS = congo.IS_WINDOWS
+
+
+def beyond_a_lone_file(test):
+    """A scenario that needs more than the Cone Congo's lone-file 'run' and
+    'clean': skipped when CONGO_EXE names it."""
+    return unittest.skipIf(CONGO_EXE, "needs more of Congo than a lone file, which the"
+                                      " Congo CONGO_EXE names does not do yet")(test)
 
 
 def write(path: Path, text: str) -> None:
@@ -101,6 +115,12 @@ class NotNames(unittest.TestCase):
         corelib = (congo.REPO / "compiler" / "c" / "corelib" / "corelib.c").read_text()
         self.assertEqual(congo.PERMISSIONS,
                          set(re.findall(r'newPermNodeStr\("(\w+)"', corelib)))
+        # The Cone Congo keeps the same three lists, in src/header.cone
+        header = (HERE / "src" / "header.cone").read_text(encoding="utf-8")
+        lists = {name: set(words.split()) for name, words in
+                 re.findall(r'fn (is\w+)\(w &\[\]u8\) Bool \{\s*inWords\(w, "([^"]*)"\)', header)}
+        self.assertEqual(lists, {"isKeyword": congo.KEYWORDS, "isReserved": congo.RESERVED,
+                                 "isPermission": congo.PERMISSIONS})
         self.assertIsNone(congo.name_fault("usecheck"))
         self.assertIn("keyword", congo.name_fault("use"))
         self.assertIn("reserved", congo.name_fault("yield"))
@@ -200,6 +220,7 @@ class Scenarios(unittest.TestCase):
         listed = ", ".join(f'"{f.as_posix()}"' for f in folders)
         write(self.root / "home" / "config.toml", f"[registry]\nfolders = [{listed}]\n")
 
+    @beyond_a_lone_file
     def test_new_then_run(self):
         self.congo("new", "hello", cwd=self.root)
         pkg = self.root / "hello"
@@ -245,6 +266,7 @@ class Scenarios(unittest.TestCase):
         self.congo("clean", cwd=pkg)
         self.assertFalse((pkg / "build").exists())
 
+    @beyond_a_lone_file
     def test_a_package_with_submodules_importing_stdio(self):
         self.congo("new", "show", cwd=self.root)
         pkg = self.root / "show"
@@ -332,8 +354,14 @@ class Scenarios(unittest.TestCase):
             """)
         run = self.congo("run", "lone.cone", cwd=self.root)
         self.assertEqual(self.program_output(run), "lone 42\n")
-        # Nothing is written beside the file: a lone file's build is in the home
+        # Nothing is written beside the file: a lone file's build is in the
+        # home, in a folder named for the file and the first ten hex digits of
+        # the SHA-1 of its absolute path, lower-cased on Windows
         self.assertFalse((self.root / "build").exists())
+        spelled = str((self.root / "lone.cone").resolve())
+        digest = hashlib.sha1((spelled.lower() if IS_WINDOWS else spelled).encode()).hexdigest()
+        self.assertTrue((self.root / "home" / "lone" / f"lone-{digest[:10]}" / "debug"
+                         / f"lone{congo.EXE_EXT}").is_file())
         self.congo("clean", "lone.cone", cwd=self.root)
         self.assertEqual(list((self.root / "home" / "lone").iterdir()), [])
 
@@ -802,6 +830,7 @@ class Scenarios(unittest.TestCase):
         # 3 * 14 = 42
         self.assertEqual(self.program_output(run), "42\n")
 
+    @beyond_a_lone_file
     def test_the_prelude_rests_on_libc(self):
         # core imports libc, a C package the compiler gives no prelude, so libc
         # is compiled first, with no package line for core, whose include file
@@ -832,6 +861,7 @@ class Scenarios(unittest.TestCase):
         self.assertEqual([u.pkg.name for u in congo.build_order(core, registry)],
                          ["libc", "core"])
 
+    @beyond_a_lone_file
     @unittest.skipUnless(IS_WINDOWS, "libc and posix bind the Windows C runtime")
     def test_the_os_layer_sample(self):
         # samples/oslayer, copied here and run: libc and posix from the
@@ -949,6 +979,7 @@ class Scenarios(unittest.TestCase):
         self.assertEqual(run.returncode, 1)
         self.assertIn("import loop between packages: ping -> pong -> ping", run.stderr)
 
+    @beyond_a_lone_file
     def test_an_import_loop_between_modules_is_refused(self):
         # Two sisters importing each other, and, once that is fixed, a child
         # importing a name of its parent: both loops, found before conec runs
@@ -997,6 +1028,7 @@ class Scenarios(unittest.TestCase):
         run = self.congo("run", "p.cone", cwd=self.root, ok=False)
         self.assertIn("p.cone:1: import nosuch: no package named 'nosuch'", run.stderr)
 
+    @beyond_a_lone_file
     def test_a_manifest_is_checked(self):
         self.congo("new", "lib1", "--lib", cwd=self.root)
         pkg = self.root / "lib1"
@@ -1025,7 +1057,7 @@ class Scenarios(unittest.TestCase):
         write(pkg / "congo.toml", head + '[link]\nlibraries = ["SDL2"]\npaths = ["x"]\n')
         self.congo("build", cwd=pkg)     # a library links nothing, so names are only read
 
-    def test_a_keyword_cannot_name_a_module(self):
+    def test_a_keyword_cannot_name_a_lone_file(self):
         # Wherever Congo takes a module's name from a file or a folder, a word
         # the compiler never reads as a name is refused, naming the file, before
         # a build description is written that the compiler could not read
@@ -1044,6 +1076,9 @@ class Scenarios(unittest.TestCase):
         write(self.root / "use.cone", "mod usecheck;\n\n" + main)
         self.congo("run", "use.cone", cwd=self.root)
 
+    @beyond_a_lone_file
+    def test_a_keyword_cannot_name_a_module(self):
+        # The same, where a package's file or folder names a module
         self.congo("new", "shelf", "--lib", cwd=self.root)
         pkg = self.root / "shelf"
         write(pkg / "src" / "mut.cone", "mod mut;\n")
@@ -1066,6 +1101,7 @@ class Scenarios(unittest.TestCase):
         self.assertFalse((self.root / "if").exists())
 
 
+@beyond_a_lone_file
 class Testing(unittest.TestCase):
     """congo test: a package's tests/ programs built against its generated
     include file, run, and compared; its examples/ programs built."""

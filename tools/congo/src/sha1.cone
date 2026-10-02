@@ -1,0 +1,92 @@
+// SHA-1 (FIPS 180-4), for the name of a lone file's build folder, which
+// congo.py takes from the first 10 hex digits of the SHA-1 of the file's
+// path, so that both Congos build a lone file in the same folder.
+
+fn rotl(x u32, n u32) u32 { (x << n) | (x >> (32u32 - n)); }
+
+// The SHA-1 of data, as 40 lower-case hex digits
+fn sha1Hex(data &[]u8) String {
+  mut h0 = 0x67452301u32;
+  mut h1 = 0xEFCDAB89u32;
+  mut h2 = 0x98BADCFEu32;
+  mut h3 = 0x10325476u32;
+  mut h4 = 0xC3D2E1F0u32;
+  // The message, a 1 bit, zeros to 56 bytes past a multiple of 64, and its
+  // length in bits, big-endian
+  mut msg = List[u8].withCapacity(data.len + 72usize);
+  mut i = 0usize;
+  while i < data.len {
+    msg.push(data[i]);
+    i = i + 1usize;
+  }
+  msg.push(0x80u8);
+  while msg.len() % 64usize != 56usize { msg.push(0u8); }
+  imm bits = u64.from(data.len) * 8u64;
+  mut s = 56u64;
+  while true {
+    msg.push(u8.from((bits >> s) & 0xFFu64));
+    if s == 0u64 { break; }
+    s = s - 8u64;
+  }
+  mut w = new Array[u32, 80] <- fill 0u32;
+  mut chunk = 0usize;
+  while chunk < msg.len() {
+    mut t = 0usize;
+    while t < 16usize {
+      imm at = chunk + t * 4usize;
+      w[t] = (u32.from(*msg[at]) << 24u32) | (u32.from(*msg[at + 1usize]) << 16u32)
+        | (u32.from(*msg[at + 2usize]) << 8u32) | u32.from(*msg[at + 3usize]);
+      t = t + 1usize;
+    }
+    while t < 80usize {
+      w[t] = rotl(w[t - 3usize] ^ w[t - 8usize] ^ w[t - 14usize] ^ w[t - 16usize], 1u32);
+      t = t + 1usize;
+    }
+    mut a = h0;
+    mut b = h1;
+    mut c = h2;
+    mut d = h3;
+    mut e = h4;
+    t = 0usize;
+    while t < 80usize {
+      mut f = 0u32;
+      mut k = 0u32;
+      if t < 20usize {
+        f = (b & c) | ((b ^ 0xFFFFFFFFu32) & d);
+        k = 0x5A827999u32;
+      }
+      elif t < 40usize {
+        f = b ^ c ^ d;
+        k = 0x6ED9EBA1u32;
+      }
+      elif t < 60usize {
+        f = (b & c) | (b & d) | (c & d);
+        k = 0x8F1BBCDCu32;
+      }
+      else {
+        f = b ^ c ^ d;
+        k = 0xCA62C1D6u32;
+      }
+      imm temp = rotl(a, 5u32) + f + e + k + w[t];
+      e = d;
+      d = c;
+      c = rotl(b, 30u32);
+      b = a;
+      a = temp;
+      t = t + 1usize;
+    }
+    h0 = h0 + a;
+    h1 = h1 + b;
+    h2 = h2 + c;
+    h3 = h3 + d;
+    h4 = h4 + e;
+    chunk = chunk + 64usize;
+  }
+  mut out = String.empty();
+  out.appendHex(u64.from(h0), 8usize);
+  out.appendHex(u64.from(h1), 8usize);
+  out.appendHex(u64.from(h2), 8usize);
+  out.appendHex(u64.from(h3), 8usize);
+  out.appendHex(u64.from(h4), 8usize);
+  out;
+}

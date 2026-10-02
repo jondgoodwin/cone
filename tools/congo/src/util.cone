@@ -1,0 +1,173 @@
+// What every part of Congo uses: messages, text put together, a failure,
+// and the text a child program prints, read as congo.py reads it.
+
+// Text put together from up to nine pieces
+fn cat(a &[]u8, b &[]u8 = "", c &[]u8 = "", d &[]u8 = "", e &[]u8 = "", f &[]u8 = "",
+    g &[]u8 = "", h &[]u8 = "", i &[]u8 = "") String {
+  mut s = String.from(a);
+  s <- b, c, d, e, f, g, h, i;
+  s;
+}
+
+// One progress line, Cargo's shape: a right-aligned verb, then what
+fn say(verb &[]u8, rest &[]u8) {
+  mut v = String.from(verb);
+  v.padStart(12usize);
+  printStr(v.view());
+  printStr(" ");
+  printStr(rest);
+  printStr("\n");
+  printFlush();
+}
+
+// A line to standard error: a warning
+fn warn(msg String) {
+  printFlush();
+  eprintStr(msg.view());
+  eprintStr("\n");
+  eprintFlush();
+}
+
+// A failure Congo reports as one message and exit status 1, as congo.py
+// reports a CongoError. Cone has no exceptions, and nothing in what Congo
+// runs here goes on after one, so it ends the program where it is found.
+fn fail(msg String) Never {
+  printFlush();
+  eprintStr("congo: error: ");
+  eprintStr(msg.view());
+  eprintStr("\n");
+  eprintFlush();
+  libc.exit(1i32);
+}
+
+// A code point as UTF-8
+fn appendUtf8(s &mut String, cp u32) {
+  if cp < 0x80u32 {
+    s.appendByte(u8.from(cp));
+  }
+  elif cp < 0x800u32 {
+    s.appendByte(u8.from(0xC0u32 | (cp >> 6u32)));
+    s.appendByte(u8.from(0x80u32 | (cp & 0x3Fu32)));
+  }
+  else {
+    s.appendByte(u8.from(0xE0u32 | (cp >> 12u32)));
+    s.appendByte(u8.from(0x80u32 | ((cp >> 6u32) & 0x3Fu32)));
+    s.appendByte(u8.from(0x80u32 | (cp & 0x3Fu32)));
+  }
+}
+
+// What Windows-1252 makes of the bytes 0x80 to 0x9F; 0xFFFD for the five it
+// leaves undefined, as Python's codec with errors='replace' does
+fn cp1252High(b u8) u32 {
+  imm table = [0x20ACu32, 0xFFFDu32, 0x201Au32, 0x0192u32, 0x201Eu32, 0x2026u32, 0x2020u32, 0x2021u32,
+    0x02C6u32, 0x2030u32, 0x0160u32, 0x2039u32, 0x0152u32, 0xFFFDu32, 0x017Du32, 0xFFFDu32,
+    0xFFFDu32, 0x2018u32, 0x2019u32, 0x201Cu32, 0x201Du32, 0x2022u32, 0x2013u32, 0x2014u32,
+    0x02DCu32, 0x2122u32, 0x0161u32, 0x203Au32, 0x0153u32, 0xFFFDu32, 0x017Eu32, 0x0178u32];
+  table[usize.from(b - 0x80u8)];
+}
+
+// What a child program printed, as congo.py reads it with
+// subprocess.run(text=True, errors='replace'): decoded in the locale's code
+// page, Windows-1252 here, and every line end made '\n'
+fn textOf(bytes &[]u8) String {
+  mut out = String.withCapacity(bytes.len);
+  mut i = 0usize;
+  while i < bytes.len {
+    imm b = bytes[i];
+    if b == '\r' {
+      out.appendByte('\n');
+      if i + 1usize < bytes.len and bytes[i + 1usize] == '\n' { i = i + 1usize; }
+    }
+    elif b < 0x80u8 { out.appendByte(b); }
+    elif b < 0xA0u8 { appendUtf8(&mut out, cp1252High(b)); }
+    else { appendUtf8(&mut out, u32.from(b)); }
+    i = i + 1usize;
+  }
+  out;
+}
+
+// The lines of a text, as Python's splitlines() breaks them: at '\n', '\r',
+// '\r\n', and the vertical tab, form feed and file, group and record
+// separators; no line for an end after the last
+fn splitLines(text &[]u8) List[String] {
+  mut out = List[String].empty();
+  mut start = 0usize;
+  mut i = 0usize;
+  while i < text.len {
+    imm b = text[i];
+    if b == '\n' or b == '\r' or b == 0x0Bu8 or b == 0x0Cu8 or b == 0x1Cu8 or b == 0x1Du8 or b == 0x1Eu8 {
+      out.push(String.from(&text[start..i]));
+      if b == '\r' and i + 1usize < text.len and text[i + 1usize] == '\n' { i = i + 1usize; }
+      start = i + 1usize;
+    }
+    i = i + 1usize;
+  }
+  if start < text.len { out.push(String.from(&text[start..])); }
+  out;
+}
+
+// The pieces of a text between each sep
+fn splitText(s &[]u8, sep u8) List[String] {
+  imm t = String.from(s);
+  t.split(sep);
+}
+
+fn isBlank(s &[]u8) Bool {
+  mut i = 0usize;
+  while i < s.len {
+    if not (isSpace(s[i]) or s[i] == 0x0Bu8 or s[i] == 0x0Cu8) { return false; }
+    i = i + 1usize;
+  }
+  true;
+}
+
+// Changes Congo makes to its own environment for one child, and undoes
+// after it: a child inherits the environment as it is when it starts
+struct EnvChanges {
+  pub names List[String];
+  pub had List[Bool];
+  pub values List[String];
+
+  // Set name to value, remembering what it was the first time
+  pub fn set(self &mut, name &[]u8, value &[]u8) {
+    mut seen = false;
+    mut i = 0usize;
+    while i < names.len() {
+      if names[i].equalsIgnoreAsciiCase(name) { seen = true; }
+      i = i + 1usize;
+    }
+    if not seen {
+      names.push(String.from(name));
+      match env.get(name) {
+        case mut v Some {
+          mut old = String.empty();
+          old <=> v.value;
+          had.push(true);
+          values.push(old);
+        }
+        case is None {
+          had.push(false);
+          values.push(String.empty());
+        }
+      }
+    }
+    env.set(name, value);
+  }
+
+  // Put back what was there before, last change first
+  pub fn restore(self &mut) {
+    mut i = names.len();
+    while i > 0usize {
+      i = i - 1usize;
+      if *had[i] { env.set(names[i].view(), values[i].view()); }
+      else { env.unset(names[i].view()); }
+    }
+    names.clear();
+    had.clear();
+    values.clear();
+  }
+}
+
+fn noChanges() EnvChanges {
+  new EnvChanges(List[String].empty(), List[Bool].empty(), List[String].empty());
+}

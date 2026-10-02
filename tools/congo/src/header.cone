@@ -1,0 +1,338 @@
+// The header scan: a source file's leading comments, its 'mod' line and its
+// 'import' lines, and nothing after them (congo.py's HeaderTokens and
+// scan_header), and the words that cannot name a package or a module.
+
+// What one import line names: a package by its name, or a quoted path, which
+// a Congo build refuses
+struct Import {
+  pub hasName Bool;
+  pub name String;      // "" for a quoted path
+  pub written String;   // as written, for messages
+  pub file String;
+  pub line u32;
+
+  pub fn copy(self &) Import {
+    new Import(hasName, name.copy(), written.copy(), file.copy(), line);
+  }
+
+  // 'file:line', for messages
+  pub fn location(self &) String {
+    mut s = shown(file.view());
+    s <- ":";
+    s.appendUInt(u64.from(line));
+    s;
+  }
+}
+
+fn noImport() Import { new Import(false, String.empty(), String.empty(), String.empty(), 0u32); }
+
+// A file's header
+struct Header {
+  pub hasMod Bool;
+  pub modName String;            // the name on the 'mod' line
+  pub imports List[Import];
+  pub hasExtends Bool;
+  pub extended Import;        // 'mod a extends b': b, where the line says so
+  pub c Bool;                // 'mod @c ...': a C-named module
+}
+
+// -------- names --------
+
+// Whether word is one of the space-separated words
+fn inWords(word &[]u8, words &[]u8) Bool {
+  mut start = 0usize;
+  mut i = 0usize;
+  while i <= words.len {
+    if i == words.len or words[i] == ' ' {
+      if i > start and &words[start..i] == word { return true; }
+      start = i + 1usize;
+    }
+    i = i + 1usize;
+  }
+  false;
+}
+
+// The words the compiler's lexer never reads as a name: its keywords, the
+// words it reserves for features not built yet (compiler/c/parser/lexer.c,
+// keywordInit), and the permissions (compiler/c/corelib/corelib.c), as
+// congo.py lists them; test_congo.py checks congo.py's lists against the
+// compiler's own
+fn isKeyword(w &[]u8) Bool {
+  inWords(w, "include import extern pub static macro fn overload const alias typedef struct mod actor trait extends mixin use but enum return with if elif else case match while each in by break continue not or and as is into inline where new trynew void nil true false undef");
+}
+fn isReserved(w &[]u8) Bool {
+  inWords(w, "async baseurl context local selfmethod using wait yield throw catch spawn");
+}
+fn isPermission(w &[]u8) Bool { inWords(w, "uni mut imm ro mut1 opaq"); }
+
+fn isNameStart(b u8) Bool { (b >= 'a' and b <= 'z') or (b >= 'A' and b <= 'Z') or b == '_'; }
+fn isNameByte(b u8) Bool { isNameStart(b) or (b >= '0' and b <= '9'); }
+
+// A Cone name: a letter or '_', then letters, digits or '_' (NAME_RE)
+fn isConeName(w &[]u8) Bool {
+  if w.len == 0usize or not isNameStart(w[0usize]) { return false; }
+  mut i = 1usize;
+  while i < w.len {
+    if not isNameByte(w[i]) { return false; }
+    i = i + 1usize;
+  }
+  true;
+}
+
+// Why a word cannot name a package or a module, or "" where it can
+fn nameFault(name &[]u8) String {
+  if not isConeName(name) {
+    return String.from("is not a Cone name: a letter or '_', then letters, digits or '_'");
+  }
+  if isKeyword(name) {
+    return String.from("is a Cone keyword, and a keyword cannot name a package or a module");
+  }
+  if isReserved(name) {
+    return String.from("is reserved for a Cone feature not built yet, and cannot name a package or a module");
+  }
+  if isPermission(name) {
+    return String.from("is a Cone permission, and a permission cannot name a package or a module");
+  }
+  String.empty();
+}
+
+// -------- the tokens --------
+
+const tokEof = 0u8;
+const tokName = 1u8;
+const tokString = 2u8;
+const tokPunct = 3u8;
+
+struct Tok {
+  pub kind u8;
+  pub value String;
+  pub line u32;
+}
+
+// Just enough of Cone's lexer for a file's header: names, strings and single
+// punctuation, with white space and comments (line, and nested block) passed
+// over. A malformed token ends the header, and the compiler reports it. A
+// byte beyond ASCII counts as a letter, as congo.py's isalpha() counts most.
+struct Toks {
+  pub text String;
+  pub pos usize;
+  pub line u32;
+  pub ahead List[Tok];
+  pub head usize;
+
+  pub fn at(self &, i usize) u8 { text[i]; }
+
+  pub fn startsAt(self &, i usize, s &[]u8) Bool {
+    if i + s.len > text.len() { return false; }
+    imm t = text.view();
+    &t[i..i + s.len] == s;
+  }
+
+  pub fn skip(self &mut) {
+    imm n = text.len();
+    while pos < n {
+      imm ch = self.at(pos);
+      if ch == '\n' {
+        line = line + 1u32;
+        pos = pos + 1usize;
+      }
+      elif ch == ' ' or ch == '\t' or ch == '\r' or ch == 0x0Cu8 or ch == 0x0Bu8 {
+        pos = pos + 1usize;
+      }
+      elif self.startsAt(pos, "//") {
+        while pos < n and self.at(pos) != '\n' { pos = pos + 1usize; }
+      }
+      elif self.startsAt(pos, "/*") {
+        mut nest = 1usize;
+        pos = pos + 2usize;
+        while pos < n and nest > 0usize {
+          if self.startsAt(pos, "*/") {
+            nest = nest - 1usize;
+            pos = pos + 2usize;
+          }
+          elif self.startsAt(pos, "/*") {
+            nest = nest + 1usize;
+            pos = pos + 2usize;
+          }
+          else {
+            if self.at(pos) == '\n' { line = line + 1u32; }
+            pos = pos + 1usize;
+          }
+        }
+      }
+      else {
+        return;
+      }
+    }
+  }
+
+  pub fn read(self &mut) Tok {
+    self.skip();
+    imm start = pos;
+    imm n = text.len();
+    if start >= n { return new Tok(tokEof, String.empty(), line); }
+    imm ch = self.at(start);
+    if isNameStart(ch) or ch >= 0x80u8 {
+      mut end = start + 1usize;
+      while end < n and (isNameByte(self.at(end)) or self.at(end) >= 0x80u8) { end = end + 1usize; }
+      pos = end;
+      return new Tok(tokName, text.sub(start, end), line);
+    }
+    if ch == '"' {
+      mut end = start + 1usize;
+      while end < n and self.at(end) != '"' and self.at(end) != '\n' {
+        end = end + (if self.at(end) == '\\' {2usize;} else {1usize;});
+      }
+      pos = if end + 1usize < n {end + 1usize;} else {n;};
+      imm last = if end < n {end;} else {n;};
+      return new Tok(tokString, text.sub(start + 1usize, last), line);
+    }
+    pos = start + 1usize;
+    new Tok(tokPunct, text.sub(start, start + 1usize), line);
+  }
+
+  // Make sure the token k ahead has been read
+  pub fn fill(self &mut, k usize) {
+    while ahead.len() <= head + k {
+      imm t = self.read();
+      ahead.push(t);
+    }
+  }
+
+  pub fn kindAt(self &mut, k usize) u8 {
+    self.fill(k);
+    ahead[head + k].kind;
+  }
+
+  pub fn valueAt(self &mut, k usize) String {
+    self.fill(k);
+    ahead[head + k].value.copy();
+  }
+
+  pub fn lineAt(self &mut, k usize) u32 {
+    self.fill(k);
+    ahead[head + k].line;
+  }
+
+  pub fn isTok(self &mut, k usize, kind u8, value &[]u8) Bool {
+    self.fill(k);
+    imm t = ahead[head + k];
+    t.kind == kind and t.value.view() == value;
+  }
+
+  pub fn isName(self &mut, word &[]u8, k usize) Bool { self.isTok(k, tokName, word); }
+
+  // Pass over the next token, answering whether it was the punctuation p
+  pub fn nextIs(self &mut, kind u8, value &[]u8) Bool {
+    imm was = self.isTok(0usize, kind, value);
+    head = head + 1usize;
+    was;
+  }
+
+  pub fn next(self &mut) { self.fill(0usize); head = head + 1usize; }
+
+  // Pass over the rest of a statement: up to its ';', with any brackets in
+  // it (a 'use { ... }' block) balanced
+  pub fn skipStatement(self &mut) {
+    mut depth = 0i64;
+    while true {
+      imm kind = self.kindAt(0usize);
+      imm value = self.valueAt(0usize);
+      self.next();
+      if kind == tokEof { return; }
+      if kind == tokPunct {
+        imm v = value.view();
+        if v == "(" or v == "{" or v == "[" { depth = depth + 1i64; }
+        elif v == ")" or v == "}" or v == "]" { depth = depth - 1i64; }
+        elif v == ";" and depth <= 0i64 { return; }
+      }
+    }
+  }
+
+  // Pass over tokens up to and including the punctuation p, or to the end
+  pub fn passTo(self &mut, p &[]u8) {
+    while self.kindAt(0usize) != tokEof and not self.nextIs(tokPunct, p) {}
+  }
+}
+
+// The text of a file without its leading byte order marks
+fn withoutBom(text String) String {
+  mut start = 0usize;
+  imm t = text.view();
+  while start + 3usize <= t.len and t[start] == 0xEFu8 and t[start + 1usize] == 0xBBu8 and t[start + 2usize] == 0xBFu8 {
+    start = start + 3usize;
+  }
+  if start == 0usize { return text; }
+  text.sub(start, t.len);
+}
+
+// A source file's header: comments, then its 'mod' line, then its 'import'
+// lines, and then Congo stops reading. The 'mod' line is 'mod name',
+// optionally 'pub' before and '@c' or '@c(...)' after the keyword, and a
+// generic module's '[T, ...]' after the name, then whatever clauses follow:
+// 'extends' is read, since it is a dependency like an import, and 'is' and
+// 'use' are passed over. 'mod trait' declares a module trait and is not a
+// 'mod' line. An 'import' is 'import name' or 'import "path"', optionally with
+// 'pub', and whatever 'use' clause follows.
+fn scanHeader(file &[]u8) Header {
+  mut text = String.empty();
+  match fs.readFile(file) {
+    case mut ok Ok { text <=> ok.value; }
+    case imm e Error {
+      imm m = e.value.message();
+      fail(cat("cannot read ", file, ": ", m.view()));
+    }
+  }
+  mut toks = new Toks(withoutBom(text), 0usize, 1u32, List[Tok].empty(), 0usize);
+  mut header = new Header(false, String.empty(), List[Import].empty(), false, noImport(), false);
+  mut k = if toks.isName("pub", 0usize) {1usize;} else {0usize;};
+  if toks.isName("mod", k) and not toks.isName("trait", k + 1usize) {
+    mut j = 0usize;
+    while j <= k {
+      toks.next();
+      j = j + 1usize;
+    }
+    if toks.isTok(0usize, tokPunct, "@") {
+      toks.next();
+      header.c = toks.nextIs(tokName, "c");
+      if toks.isTok(0usize, tokPunct, "(") { toks.passTo(")"); }
+    }
+    if toks.kindAt(0usize) == tokName {
+      header.hasMod = true;
+      header.modName = toks.valueAt(0usize);
+      toks.next();
+      // A generic module's type parameters, 'mod stack[T]', come before its
+      // clauses
+      if toks.isTok(0usize, tokPunct, "[") { toks.passTo("]"); }
+      if toks.isName("extends", 0usize) {
+        toks.next();
+        if toks.kindAt(0usize) == tokName {
+          imm v = toks.valueAt(0usize);
+          header.hasExtends = true;
+          header.extended = new Import(true, v.copy(), v.copy(), String.from(file), toks.lineAt(0usize));
+        }
+      }
+    }
+    toks.skipStatement();
+  }
+  while true {
+    k = if toks.isName("pub", 0usize) {1usize;} else {0usize;};
+    if not toks.isName("import", k) { break; }
+    mut j = 0usize;
+    while j <= k {
+      toks.next();
+      j = j + 1usize;
+    }
+    imm kind = toks.kindAt(0usize);
+    imm v = toks.valueAt(0usize);
+    imm line = toks.lineAt(0usize);
+    if kind == tokName {
+      header.imports.push(new Import(true, v.copy(), v.copy(), String.from(file), line));
+    }
+    elif kind == tokString {
+      header.imports.push(new Import(false, String.empty(), cat("\"", v.view(), "\""), String.from(file), line));
+    }
+    toks.skipStatement();
+  }
+  header;
+}

@@ -1,0 +1,294 @@
+// Building: each package's compile, the link, and a lone file standing as a
+// package (congo.py's compile_unit, Session, build, lone_package and
+// lone_build_root).
+
+// A lone file's build goes under the Congo home, not beside the file: the
+// folder a lone file sits in is nobody's package, and may well hold a
+// 'build' folder of its own that 'congo clean' must not delete. Named for the
+// file and the SHA-1 of its absolute path, lower-cased, as congo.py names it.
+fn loneBuildRoot(file &[]u8) String {
+  mut spelled = resolved(file);
+  spelled.lowerAscii();
+  imm digest = sha1Hex(spelled.view());
+  imm home = congoHome();
+  imm lone = joined(home.view(), "lone");
+  imm stem = path.stem(file);
+  imm short = digest.sub(0usize, 10usize);
+  imm folder = cat(stem.view(), "-", short.view());
+  joined(lone.view(), folder.view());
+}
+
+// A lone file with no manifest is a program of one module, named by its
+// 'mod' line. A file with none is named by the file here, and the compiler
+// refuses it for the missing line (ErrorNoModDcl).
+fn lonePackage(given &[]u8) Package {
+  imm p = winPath(given);
+  imm file = resolved(p.view());
+  if not fs.isFile(file.view()) { fail(cat("no file ", file.view())); }
+  imm header = scanHeader(file.view());
+  imm name = if header.hasMod {header.modName.copy();} else {path.stem(file.view());};
+  imm fault = nameFault(name.view());
+  if not header.hasMod and not fault.isEmpty() {
+    fail(cat(file.view(), ": with no 'mod' line it is named by its file: '", name.view(), "' ", fault.view(),
+      "; give the file a 'mod' line"));
+  }
+  if not fault.isEmpty() {
+    fail(cat(file.view(), ": 'mod ", name.view(), "': '", name.view(), "' ", fault.view(),
+      "; rename the module, and the file where it is named for it"));
+  }
+  imm folder = parentOf(file.view());
+  new Package(name, String.empty(), String.from("executable"), folder, file.copy(), true,
+    List[String].empty(), List[String].empty());
+}
+
+// Write the package's build description into the build folder and compile
+// the package on its own. Every package but the one being built is a
+// library; the one being built is what its manifest says. 'packages' is the
+// unit's dependency closure, which the description lists for its include
+// files. A library's compile writes its include file beside its object,
+// which is what every package compiled after it that imports it is compiled
+// against.
+fn compileUnit(conec &[]u8, reg &Registry, plan &Plan, u usize, out &[]u8, mode &[]u8, top Bool) String {
+  imm unit = plan.units[u];
+  imm pkg = reg.packages[unit.pkg];
+  imm output = if top {pkg.output.copy();} else {String.from("library");};
+  imm descName = cat(pkg.name.view(), ".conebuild");
+  imm desc = joined(out, descName.view());
+  imm packages = closure(plan, reg, u);
+  imm text = description(reg, unit, mode, output.view(), out, &packages);
+  match fs.writeFile(desc.view(), text.view()) {
+    case is Ok {}
+    case imm e Error {
+      fail(e.value.message());
+    }
+  }
+  // A library's include file is written afresh, so one left by an earlier
+  // build never stands in for it
+  imm incl = includeFor(pkg, out);
+  match fs.removeFile(incl.view()) {
+    case is Ok {}
+    case imm e Error {
+      if not e.value.notFound() {
+        fail(e.value.message());
+      }
+    }
+  }
+  imm label = pkg.label();
+  imm compiling = cat(label.view(), " (", pkg.root.view(), ")");
+  say("Compiling", compiling.view());
+  imm args = argList(conec, "-o", out, desc.view());
+  mut chatter = String.empty();
+  mut code = 0u32;
+  match process.run(args.view()) {
+    case imm ok Ok {
+      chatter = textOf(ok.value.stdout.view());
+      imm err = textOf(ok.value.stderr.view());
+      chatter <- err.view();
+      code = ok.value.exitCode;
+    }
+    case imm e Error {
+      fail(e.value.message());
+    }
+  }
+  imm lines = splitLines(chatter.view());
+  mut shownLines = List[String].empty();
+  mut i = 0usize;
+  while i < lines.len() {
+    if not isBlank(lines[i].view()) and not lines[i].startsWith("Compile finished") {
+      shownLines.push(lines[i].copy());
+    }
+    i = i + 1usize;
+  }
+  if shownLines.len() > 0usize {
+    imm said = String.join(shownLines.view(), "\n");
+    printStr(said.view());
+    printStr("\n");
+    printFlush();
+  }
+  if code != 0u32 {
+    fail(cat("could not compile ", pkg.name.view(), " (build description: ", desc.view(), ")"));
+  }
+  imm objName = cat(pkg.name.view(), ".obj");
+  imm obj = joined(out, objName.view());
+  if not fs.isFile(obj.view()) { fail(cat("conec wrote no object at ", obj.view())); }
+  if output.equals("library") and not fs.isFile(incl.view()) {
+    fail(cat("conec wrote no include file for ", pkg.name.view(), " at ", incl.view()));
+  }
+  obj;
+}
+
+fn makeFolder(folder &[]u8) {
+  match fs.makeDirAll(folder) {
+    case is Ok {}
+    case imm e Error {
+      fail(e.value.message());
+    }
+  }
+}
+
+// Compile every unit of the plan, each after what it imports, into out;
+// answer the objects in the order's order. 'top' gets the output its
+// manifest says; every other package is a library.
+fn compileAll(reg &Registry, plan &Plan, top usize, out &[]u8, mode &[]u8, conec &[]u8) List[String] {
+  makeFolder(out);
+  mut changes = noChanges();
+  // Every package after core loads the prelude from core's generated
+  // include file, which its package line names. core's own compile has no
+  // such line, and loads the prelude from the package search path, which
+  // must give the very file core is compiled from, or the two are two
+  // modules named core: so the packages folder conec takes it from is the
+  // registry folder Congo found core in
+  mut core = 0usize;
+  if plan.unitNamed(reg, "core", &mut core) {
+    imm root = reg.packages[plan.units[core].pkg].root.view();
+    imm folder = parentOf(root);
+    changes.set("CONE_PACKAGES", folder.view());
+  }
+  // An include file written by hand at a package's root is no longer read:
+  // say so, once, so that nobody edits it expecting it to count
+  mut i = 0usize;
+  while i < plan.order.len() {
+    imm pkg = reg.packages[plan.units[*plan.order[i]].pkg];
+    imm hand = pkg.handInclude();
+    if not pkg.lone and fs.isFile(hand.view()) {
+      warn(cat("warning: ", hand.view(), " is not used: a package's importers compile against the include file its own compile generates, build/<mode>/",
+        pkg.name.view(), ".cone"));
+    }
+    i = i + 1usize;
+  }
+  mut objs = List[String].empty();
+  i = 0usize;
+  while i < plan.order.len() {
+    imm u = *plan.order[i];
+    makeFolder(out);
+    objs.push(compileUnit(conec, reg, plan, u, out, mode, plan.units[u].pkg == top));
+    i = i + 1usize;
+  }
+  changes.restore();
+  objs;
+}
+
+// Whether list holds a path the same as p, as Windows compares them
+fn holdsPath(list &List[String], p &[]u8) Bool {
+  mut i = 0usize;
+  while i < list.len() {
+    if list[i].equalsIgnoreAsciiCase(p) { return true; }
+    i = i + 1usize;
+  }
+  false;
+}
+
+// Link the objects into exe: the program's object first, then the packages
+// it imports, last built first; and the C libraries every one of them names,
+// in the same order, each once. A C package's own object is linked like any
+// other: it defines nothing (as core's does not), and so needs no case of
+// its own.
+fn link(reg &Registry, plan &Plan, objs &List[String], exe &[]u8, conec &[]u8) {
+  imm conestd = findConestd(conec);
+  mut changes = noChanges();
+  imm tool = findLinker(&mut changes);
+  // The units, the program's first, then the rest last built first
+  mut units = List[usize].empty();
+  mut objOrder = List[String].empty();
+  imm n = plan.order.len();
+  units.push(*plan.order[n - 1usize]);
+  objOrder.push(objs[n - 1usize].copy());
+  mut i = n - 1usize;
+  while i > 0usize {
+    i = i - 1usize;
+    units.push(*plan.order[i]);
+    objOrder.push(objs[i].copy());
+  }
+  mut libraries = List[String].empty();
+  mut paths = List[String].empty();
+  i = 0usize;
+  while i < units.len() {
+    imm pkg = reg.packages[plan.units[*units[i]].pkg];
+    mut j = 0usize;
+    while j < pkg.libraries.len() {
+      mut seen = false;
+      mut k = 0usize;
+      while k < libraries.len() {
+        if libraries[k].equals(pkg.libraries[j].view()) { seen = true; }
+        k = k + 1usize;
+      }
+      if not seen { libraries.push(pkg.libraries[j].copy()); }
+      j = j + 1usize;
+    }
+    j = 0usize;
+    while j < pkg.linkPaths.len() {
+      if not holdsPath(&paths, pkg.linkPaths[j].view()) { paths.push(pkg.linkPaths[j].copy()); }
+      j = j + 1usize;
+    }
+    i = i + 1usize;
+  }
+  // The link line: the objects, conestd, then the C libraries the packages'
+  // [link] tables name, each searched for first in their [link] paths
+  mut command = List[String].empty();
+  command.push(tool.copy());
+  command.push(String.from("/NOLOGO"));
+  i = 0usize;
+  while i < objOrder.len() {
+    command.push(objOrder[i].copy());
+    i = i + 1usize;
+  }
+  command.push(conestd.copy());
+  i = 0usize;
+  while i < paths.len() {
+    command.push(cat("/LIBPATH:", paths[i].view()));
+    i = i + 1usize;
+  }
+  i = 0usize;
+  while i < libraries.len() {
+    command.push(cat(libraries[i].view(), ".lib"));
+    i = i + 1usize;
+  }
+  command.push(cat("/OUT:", exe));
+  command.push(String.from("/SUBSYSTEM:CONSOLE"));
+  command.push(String.from("msvcrt.lib"));
+  command.push(String.from("legacy_stdio_definitions.lib"));
+  imm place = shown(exe);
+  say("Linking", place.view());
+  match fs.removeFile(exe) {
+    case is Ok {}
+    case imm e Error {
+      if not e.value.notFound() {
+        fail(e.value.message());
+      }
+    }
+  }
+  mut code = 0u32;
+  mut said = String.empty();
+  match process.run(command.view()) {
+    case imm ok Ok {
+      code = ok.value.exitCode;
+      said = textOf(ok.value.stdout.view());
+      imm err = textOf(ok.value.stderr.view());
+      said <- err.view();
+    }
+    case imm e Error {
+      fail(e.value.message());
+    }
+  }
+  changes.restore();
+  if code != 0u32 {
+    mut named = String.empty();
+    i = 0usize;
+    while i < units.len() {
+      imm pkg = reg.packages[plan.units[*units[i]].pkg];
+      if pkg.libraries.len() > 0usize {
+        if not named.isEmpty() { named <- "; "; }
+        imm libs = String.join(pkg.libraries.view(), ", ");
+        named <- pkg.name.view(), " names ", libs.view();
+      }
+      i = i + 1usize;
+    }
+    imm line = String.join(command.view(), " ");
+    mut m = cat("link failed:\n", line.view(), "\n", said.view());
+    if not named.isEmpty() {
+      m <- "\nC libraries linked (", named.view(),
+        "): the linker looks for each in the folders [link] paths names, then in the folders the LIB environment variable lists";
+    }
+    fail(m);
+  }
+}
