@@ -15,6 +15,7 @@ FnSigNode *newFnSigNode() {
     sig->flags |= OpaqueType;
     sig->parms = newNodes(8);
     sig->rettype = unknownType;
+    sig->lifenamed = 0;
     return sig;
 }
 
@@ -90,6 +91,11 @@ void fnSigTypeCheck(TypeCheckState *pstate, FnSigNode *sig) {
             && ((VarDclNode*)*nodesp)->vtype->tag == RefTag;
         inodeTypeCheckAny(pstate, nodesp);
         refAllowNewPerm = 0;
+        // A caller's argument is checked to be global only where the
+        // parameter's own reference is written ''static'
+        if (sig->lifenamed && lifeParmStaticInside(((VarDclNode*)*nodesp)->vtype))
+            errorMsgNode(*nodesp, ErrorLifetimePlace,
+                "''static' is named on a parameter's own reference ('p &'static T') or in the result, not inside a parameter's type: what a caller passes there is not checked to be global.");
     }
     itypeTypeCheck(pstate, &sig->rettype);
 }
@@ -114,7 +120,7 @@ int fnSigEqual(FnSigNode *node1, FnSigNode *node2) {
             return 0;
         nodes2p++;
     }
-    return 1;
+    return lifeSigsAgree(node1, node2);
 }
 
 // Is an implementation's type 'impl' the type a trait requirement's 'req' names?
@@ -187,7 +193,9 @@ int fnSigVrefEqual(FnSigNode *node1, FnSigNode *node2, INode *selftype) {
             return 0;
         nodes2p++;
     }
-    return 1;
+    // A call through the requirement is checked against its lifetimes, so the
+    // implementation must promise the same
+    return lifeSigsAgree(node1, node2);
 }
 
 // Do two signatures declare the same parameter types (ignoring return type)?
@@ -236,6 +244,11 @@ TypeCompare fnSigMatches(FnSigNode *to, FnSigNode *from, SubtypeConstraint const
         }
         fromnodesp++;
     }
+
+    // A call through 'to' is checked against its lifetimes, so 'from' must
+    // promise the same
+    if (!lifeSigsAgree(to, from))
+        return NoMatch;
 
     // Return type is covariant
     switch (itypeMatches(to->rettype, from->rettype, constraint)) {

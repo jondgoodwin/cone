@@ -455,20 +455,49 @@ static int fnCallIsBorrowType(INode *type) {
         && ((RefNode*)type)->region == borrowRef;
 }
 
-// The narrowest lifetime among a call's borrowed-reference arguments, as the
-// highest scope number: 0 when no argument is a borrow. Without annotations
-// every borrowed reference in a signature shares one lifetime, and the only
-// lifetime the arguments have in common is the shortest (doc/reference/reflifefn.html).
-static uint16_t fnCallNarrowestBorrowScope(FnCallNode *node) {
+// The narrowest lifetime among the borrowed-reference arguments whose borrows
+// a value of the type 'wanted' may hold -- the result, or what a writable
+// argument points at -- as the highest scope number: 0 when there is none.
+// Every borrowed reference in a signature written without a lifetime shares
+// one, and every one written with a name shares it with the others written
+// with that name and with nothing else (doc/reference/reflifefn.html): so
+// 'wanted' may hold the borrows of an argument whose parameter shares a
+// lifetime with it (lifeShared), and the only lifetime those arguments have in
+// common is the shortest.
+static uint16_t fnCallNarrowestBorrowScope(FnCallNode *node, FnSigNode *fnsig, INode *wanted) {
     uint16_t narrowest = 0;
     INode **argsp;
     uint32_t cnt;
+    uint32_t i = 0;
     for (nodesFor(node->args, cnt, argsp)) {
         INode *argtype = iexpGetTypeDcl(*argsp);
-        if (fnCallIsBorrowType(argtype) && ((RefNode*)argtype)->scope > narrowest)
+        if (fnCallIsBorrowType(argtype) && ((RefNode*)argtype)->scope > narrowest
+            && (fnsig == NULL || !fnsig->lifenamed || i >= fnsig->parms->used
+                || lifeShared(((IExpNode*)nodesGet(fnsig->parms, i))->vtype, wanted)))
             narrowest = ((RefNode*)argtype)->scope;
+        ++i;
     }
     return narrowest;
+}
+
+// A parameter whose reference is written ''static' takes only a global borrow.
+// A variable holding a borrow its type does not record is the loan walk's to
+// check (pwCall).
+static void fnCallStaticArgs(FnCallNode *node, FnSigNode *fnsig) {
+    INode **argsp;
+    uint32_t cnt;
+    uint32_t i = 0;
+    for (nodesFor(node->args, cnt, argsp)) {
+        if (i >= fnsig->parms->used)
+            break;
+        INode *argtype = iexpGetTypeDcl(*argsp);
+        if (lifeIsStatic(((IExpNode*)nodesGet(fnsig->parms, i))->vtype)
+            && fnCallIsBorrowType(argtype) && ((RefNode*)argtype)->scope != 0)
+            errorMsgNode(*argsp, ErrorCallEscape,
+                "This parameter's lifetime is ''static', so the borrow handed to it must be global: this one lives only as long as %s.",
+                ((RefNode*)argtype)->scope == 1 ? "a borrow this function's caller lent" : "a value of this function");
+        ++i;
+    }
 }
 
 // A copy of a returned borrowed reference's type belonging to this call site,
@@ -607,8 +636,12 @@ void fnCallFinalizeArgs(FnCallNode *node) {
     // fnCallArrIndex builds one for an element borrow; the lifetime checks in
     // assignlvalrtype and returnFlowEscape then read it from there. A call
     // returning several values gets a tuple of its own on the same terms.
-    // With no borrowed argument the declaration's own global scope stands.
-    uint16_t narrowest = fnCallNarrowestBorrowScope(node);
+    // With no borrowed argument the declaration's own global scope stands, and
+    // so it does for a result whose lifetime no parameter shares: ''static',
+    // or a name no parameter is given.
+    if (fnsig->lifenamed)
+        fnCallStaticArgs(node, fnsig);
+    uint16_t narrowest = fnCallNarrowestBorrowScope(node, fnsig, fnsig->rettype);
     INode *rettype = itypeGetTypeDcl(fnsig->rettype);
     if (narrowest == 0)
         return;
@@ -2388,18 +2421,26 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
 // borrowed reference parameters"). So what that argument points at may not
 // outlive the narrowest borrow passed alongside it -- the same comparison
 // assignlvalrtype makes for the store the callee might write. A place no
-// longer-lived than every borrow beside it may take any of them.
+// longer-lived than every borrow beside it may take any of them. With
+// lifetimes named, only a borrow whose parameter shares a lifetime with what
+// the writable one points at may be stored there.
 static void fnCallFlowStoredBorrow(FnCallNode *node) {
-    uint16_t narrowest = fnCallNarrowestBorrowScope(node);
+    FnSigNode *fnsig = (FnSigNode*)iexpGetDerefTypeDcl(node->objfn);
+    if (fnsig->tag != FnSigTag || !fnsig->lifenamed)
+        fnsig = NULL;
     INode **argsp;
     uint32_t cnt;
+    uint32_t i = 0;
     for (nodesFor(node->args, cnt, argsp)) {
         INode *argtype = iexpGetTypeDcl(*argsp);
+        uint32_t at = i++;
         if (!fnCallIsBorrowType(argtype)
             || !(permGetFlags(((RefNode*)argtype)->perm) & MayWrite)
             || !itypeCarriesBorrow(((RefNode*)argtype)->vtexp))
             continue;
-        if (((RefNode*)argtype)->scope < narrowest) {
+        INode *pointee = fnsig && at < fnsig->parms->used
+            ? lifePointee(((IExpNode*)nodesGet(fnsig->parms, at))->vtype) : NULL;
+        if (((RefNode*)argtype)->scope < fnCallNarrowestBorrowScope(node, fnsig, pointee)) {
             errorMsgNode((INode*)node, ErrorCallEscape,
                 "Call could store a borrowed reference where it would outlive the value it points to");
             return;

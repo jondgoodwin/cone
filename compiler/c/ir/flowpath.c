@@ -809,13 +809,51 @@ static int pwPlaceOutlives(Place *pl) {
     return pl->deref && loanMayPointOut(pathVars[pl->var].holds, pl->referent);
 }
 
+// The signature of the function being walked
+static FnSigNode *pwSig = NULL;
+
+// A value carrying 'stored' goes where a reference holding 'refholds' points,
+// at 'node': what a borrowed parameter points at holds only the lifetimes its
+// type names there, so a borrow the caller lent through a parameter of
+// another lifetime may not go in it ('how', LoanEscapeStore or
+// LoanEscapeCall). Asked only where the function names lifetimes: unnamed,
+// every borrow in its signature shares one.
+static void pwStoreApart(INode *node, PathSet *refholds, PathSet *stored, int how) {
+    if (!pwSig->lifenamed)
+        return;
+    VarDclNode *through;
+    uint32_t apart = loanStoredApart(stored, refholds, &through);
+    if (apart)
+        loanApart(node, apart, through, how);
+}
+
 // A value carrying 'holds' is stored at 'lval', the place 'pl': where that
 // place may outlive the function, the value may carry no borrow of the
-// function's own storage
+// function's own storage, and where it is reached through a reference, no
+// borrow of a lifetime that place does not hold
 static void pwStoreEscapes(INode *lval, Place *pl, PathSet *holds) {
-    uint32_t local = pathLoans ? loanLocalIn(holds) : 0;
+    if (!pathLoans)
+        return;
+    uint32_t local = loanLocalIn(holds);
     if (local && pwPlaceOutlives(pl))
         loanEscape(lval, local, LoanEscapeStore);
+    else if (pl->deref)
+        pwStoreApart(lval, pathVars[pl->var].holds, holds, LoanEscapeStore);
+}
+
+// The signature of the function a call calls, where it names lifetimes, which
+// the call is checked against (lifetime.h); else NULL, every borrow in it
+// sharing one lifetime
+static FnSigNode *pwNamedSig(FnCallNode *call) {
+    FnSigNode *sig = (FnSigNode *)iexpGetDerefTypeDcl(call->objfn);
+    return sig->tag == FnSigTag && sig->lifenamed ? sig : NULL;
+}
+
+// May a value of the type 'wanted' carry what the argument at 'i' carries:
+// does its parameter share a lifetime with it? With no names, all share one.
+static int pwParmShares(FnSigNode *sig, uint32_t i, INode *wanted) {
+    return sig == NULL || i >= sig->parms->used
+        || lifeShared(((IExpNode *)nodesGet(sig->parms, i))->vtype, wanted);
 }
 
 // Where a store through the reference argument 'ref' lands, keyed as pwPlace
@@ -893,12 +931,14 @@ static INode *pwLendSite(INode *arg) {
 // 'l.push(x)', 'stash(&mut outer, v)', 'fill(r, v)' for 'r &mut Option[&T]'
 // -- may store there anything its other arguments carry: every borrow in an
 // unannotated signature shares one lifetime (reflifefn.html), as
-// fnCallFlowStoredBorrow reads it. So that place's holder holds those loans
-// from here on. 'argsets' is what each argument carries; 'recvpl' the place
-// of a receiver taken by reference, or NULL.
+// fnCallFlowStoredBorrow reads it, and with lifetimes named, anything whose
+// parameter shares one with what that parameter points at. So that place's
+// holder holds those loans from here on. 'argsets' is what each argument
+// carries; 'recvpl' the place of a receiver taken by reference, or NULL.
 static void pwCallStores(FnCallNode *call, PathSet **argsets, Place *recvpl) {
     if (call->args == NULL || call->args->used < 2)
         return;
+    FnSigNode *sig = pwNamedSig(call);
     uint32_t nargs = call->args->used;
     for (uint32_t at = 0; at < nargs; ++at) {
         INode *arg = nodesGet(call->args, at);
@@ -906,9 +946,11 @@ static void pwCallStores(FnCallNode *call, PathSet **argsets, Place *recvpl) {
         if ((argtype->tag != RefTag && argtype->tag != ArrayRefTag) || !pwIsBorrowed((INode *)argtype)
             || !(permGetFlags(argtype->perm) & MayWrite) || !pwCarries(argtype->vtexp))
             continue;
+        INode *pointee = sig && at < sig->parms->used
+            ? lifePointee(((IExpNode *)nodesGet(sig->parms, at))->vtype) : NULL;
         PathSet *others = NULL;
         for (uint32_t i = 0; i < nargs; ++i) {
-            if (i == at || argsets[i] == NULL)
+            if (i == at || argsets[i] == NULL || !pwParmShares(sig, i, pointee))
                 continue;
             // A borrow written as the argument is stored itself only where
             // the place's type can hold a borrow of what it borrows: the
@@ -936,8 +978,26 @@ static void pwCallStores(FnCallNode *call, PathSet **argsets, Place *recvpl) {
         uint32_t local = loanLocalIn(others);
         if (local && (found ? pwPlaceOutlives(&target) : loanMayPointOut(argsets[at], argtype->vtexp)))
             loanEscape((INode *)call, local, LoanEscapeCall);
+        else if (!found || target.deref)
+            pwStoreApart((INode *)call, found ? pathVars[target.var].holds : argsets[at], others, LoanEscapeCall);
         if (found)
             pwStoreInto(target.var, target.deref, others);
+    }
+}
+
+// An argument for a parameter whose reference is written ''static' may carry
+// no loan but of a global: fnCallStaticArgs checks a borrow's lifetime, and
+// this what a variable holds now
+static void pwStaticArgs(FnCallNode *call, FnSigNode *sig, PathSet **argsets) {
+    if (call->args == NULL)
+        return;
+    uint32_t nargs = call->args->used < sig->parms->used ? call->args->used : sig->parms->used;
+    for (uint32_t i = 0; i < nargs; ++i) {
+        if (!lifeIsStatic(((IExpNode *)nodesGet(sig->parms, i))->vtype))
+            continue;
+        uint32_t loan = loanNotGlobalIn(argsets[i]);
+        if (loan)
+            loanNotGlobal(nodesGet(call->args, i), loan);
     }
 }
 
@@ -946,15 +1006,19 @@ static void pwCallStores(FnCallNode *call, PathSet **argsets, Place *recvpl) {
 // the call returns (or a value holding one) carries every argument's loans --
 // Cone's rule for an unannotated signature is that every borrow in it shares
 // one lifetime (reflifefn.html) -- so a borrow a method returns keeps its
-// receiver loaned while it is used. A container declaring a no-loan kind
-// ('NoLoanMut', an arena; 'NoLoanRead', for a read-only borrow) lends with
-// no loan on it: its receiver's place gets only a pin, which forbids moving,
-// replacing or ending it.
+// receiver loaned while it is used. Where the signature names lifetimes, it
+// carries the loans only of the arguments whose parameters share a lifetime
+// with the result, and an argument for a ''static' parameter may carry no
+// loan but of a global. A container declaring a no-loan kind ('NoLoanMut', an
+// arena; 'NoLoanRead', for a read-only borrow) lends with no loan on it: its
+// receiver's place gets only a pin, which forbids moving, replacing or ending
+// it.
 static PathSet *pwCall(FnCallNode *call) {
     INode *objfn = call->objfn;
     if (pwNamedVar(objfn) || objfn->tag == DerefTag || objfn->tag == FldAccessTag)
         pwValue(&call->objfn, 0);
     FnDclNode *meth = pwMethod(call);
+    FnSigNode *sig = pwNamedSig(call);
     int carries = pwCarries(call->vtype);
     uint32_t mark = loanFlightMark();
     PathSet *result = NULL;
@@ -983,10 +1047,12 @@ static PathSet *pwCall(FnCallNode *call) {
         }
         carried = pwValue(argsp, 1);
         loanFlightPush(carried, 0);
-        argsets[argi++] = carried;
-        if (carries)
+        if (carries && pwParmShares(sig, argi, sig ? sig->rettype : NULL))
             result = pathSetUnion(result, carried);
+        argsets[argi++] = carried;
     }
+    if (sig && pathLoans)
+        pwStaticArgs(call, sig, argsets);
     // The receiver's borrow activated: against what the other arguments carry,
     // and then as the access it is, against every loan still held
     if (twophase)
@@ -1014,6 +1080,8 @@ static PathSet *pwCall(FnCallNode *call) {
         else
             loanReturnedBy(recvloan, ((NameUseNode *)call->objfn)->namesym);
     }
+    if (!pwParmShares(sig, 0, sig ? sig->rettype : NULL))
+        return result;
     return pathSetUnion(result, recvholds);
 }
 
@@ -1258,13 +1326,18 @@ static PathSet *pwStmts(BlockNode *blk, int move) {
         case ReturnTag:
         {
             // What it hands the caller may carry no borrow of this function's
-            // own storage, whatever its type. Then every variable, a local of
-            // this function, dies with it.
+            // own storage, whatever its type, and of what the caller lent,
+            // only what a parameter sharing a lifetime with the result lent.
+            // Then every variable, a local of this function, dies with it.
             BreakRetNode *ret = (BreakRetNode *)*nodesp;
             if (ret->exp && ret->exp != unknownType && isExpNode(ret->exp)) {
-                uint32_t local = loanLocalIn(pwValue(&ret->exp, 1));
+                PathSet *carried = pwValue(&ret->exp, 1);
+                uint32_t local = loanLocalIn(carried);
+                uint32_t apart;
                 if (local)
                     loanEscape(ret->exp, local, LoanEscapeReturn);
+                else if (pwSig->lifenamed && (apart = loanCallerApart(carried, pwSig->rettype)))
+                    loanApart(ret->exp, apart, NULL, LoanEscapeReturn);
             }
             pwExit(*nodesp, 0);
             pwScopeEnd(0);
@@ -1588,13 +1661,15 @@ void flowPathWalk(FnDclNode *fndcl, int loans, int drops) {
 
     // The parameters are variables of the function's block; what a caller lent
     // through one is the caller's to freeze, and outlives the call: each holds
-    // its caller loan
+    // its caller loan. One whose lifetime is ''static' holds a global borrow,
+    // which is no loan.
     INode **nodesp;
     uint32_t cnt;
-    pwParms = ((FnSigNode *)fndcl->vtype)->parms;
+    pwSig = (FnSigNode *)fndcl->vtype;
+    pwParms = pwSig->parms;
     for (nodesFor(pwParms, cnt, nodesp)) {
         uint32_t index = pathVar((VarDclNode *)*nodesp);
-        if (loans && pathVars[index].holder)
+        if (loans && pathVars[index].holder && !lifeIsStatic(((VarDclNode *)*nodesp)->vtype))
             pathSetFacts(index, pathSetAdd(NULL, loanCaller(index)), NULL);
     }
     pwBlock((BlockNode *)fndcl->value, 1, 1);

@@ -410,10 +410,11 @@ void varDclTypeCheck(TypeCheckState *pstate, VarDclNode *name) {
     // lifetime is the caller band (1). Its declared type is shared, so it takes
     // a copy scoped so: what it points at is then the caller's however it is
     // reached, and a return or a store reads that from the type. A borrow of the
-    // parameter itself is the function's (iexpGetLvalInfo).
+    // parameter itself is the function's (iexpGetLvalInfo). One whose type
+    // names ''static' holds a global borrow, and keeps the global lifetime.
     if (name->scope == 1) {
         INode *vtypedcl = itypeGetTypeDcl(name->vtype);
-        if (iexpIsBorrowType(vtypedcl))
+        if (iexpIsBorrowType(vtypedcl) && !lifeIsStatic(vtypedcl))
             name->vtype = iexpScopedBorrowType(vtypedcl, name->vtype, 1);
     }
 

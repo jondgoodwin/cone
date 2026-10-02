@@ -1955,6 +1955,7 @@ Nodes *parseIncludeCheck(ProgramNode *pgm, BuildDesc *desc, char *text, char *ur
     parse.typenode = NULL;
     parse.inrettype = 0;
     parse.intype = 0;
+    parse.lifesig = NULL;
     parse.entryparen = 0;
     parse.core = NULL;
     parse.build = NULL;
@@ -2031,6 +2032,7 @@ ProgramNode *parsePgm(ConeOptions *opt, BuildDesc *desc) {
     parse.typenode = NULL;
     parse.inrettype = 0;
     parse.intype = 0;
+    parse.lifesig = NULL;
     parse.entryparen = 0;
     parse.core = NULL;
     parse.build = NULL;

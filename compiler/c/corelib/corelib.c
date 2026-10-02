@@ -25,7 +25,6 @@ PermNode *roPerm;
 PermNode *mut1Perm;
 PermNode *opaqPerm;
 PermNode *newPerm;
-LifetimeNode *staticLifetimeNode;
 NbrNode *boolType;
 NbrNode *i8Type;
 NbrNode *i16Type;
@@ -133,7 +132,6 @@ void stdlibInit(int ptrsize) {
     borrowRef = (INode*)newAbsenceNode();
     borrowRef->tag = BorrowRegTag;
 
-    staticLifetimeNode = newLifetimeDclNode(nametblFind("'static", 7), 0);
     stdPermInit();
     stdNbrInit(ptrsize);
 

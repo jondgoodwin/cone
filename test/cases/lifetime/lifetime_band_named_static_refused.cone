@@ -1,0 +1,37 @@
+// ''static' promises a global borrow, so a borrow the caller lent may not be
+// returned as one, named or not, and a borrow of a local may not be handed to
+// a ''static' parameter -- written there, or held by a variable that was
+// given one after a global's.
+//
+// Verdict: refuse: ErrorEscape at each return, ErrorCallEscape at each call.
+// Basis: language rule (1 Oct 2026): a caller's lifetime is shorter than
+// global, and two lifetimes compare only where their order is known; Rust
+// refuses the same (E0621/lifetime may not live long enough, by reading).
+
+mod lifetime_band_named_static_refused;
+
+fn leak(x &i64) &'static i64 {
+  x;                         //~ ErrorEscape
+}
+
+fn leakNamed(x &'a i64) &'static i64 {
+  x;                         //~ ErrorEscape
+}
+
+fn keep(s &'static i64) i64 {
+  *s;
+}
+
+mut G i64 = 1;
+
+fn caller() i64 {
+  imm v = 5i64;
+  keep(&v);                  //~ ErrorCallEscape
+}
+
+fn callerHeld() i64 {
+  imm v = 5i64;
+  mut r = &G;
+  r = &v;
+  keep(r);                   //~ ErrorCallEscape
+}

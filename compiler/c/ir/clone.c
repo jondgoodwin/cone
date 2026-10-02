@@ -132,8 +132,6 @@ INode *cloneNode(CloneState *cstate, INode *nodep) {
     case ArrayRefTag:
     case VirtRefTag:
         node = cloneRefNode(cstate, (RefNode *)nodep); break;
-    case LifetimeTag:
-        node = cloneLifetimeDclNode(cstate, (LifetimeNode *)nodep); break;
     case UintNbrTag:
     case IntNbrTag:
     case FloatNbrTag:

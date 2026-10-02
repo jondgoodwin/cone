@@ -148,6 +148,7 @@ void nametblInit() {
     tempName = nametblFind("-_", 2);
     tempLocalName = nametblFind("-temp", 5);
     selfName = nametblFind("self", 4);
+    staticLifeName = nametblFind("'static", 7);
     selfTypeName = nametblFind("Self", 4);
     thisName = nametblFind("this", 4);
     cloneName = nametblFind("clone", 5);

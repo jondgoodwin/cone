@@ -160,8 +160,6 @@ void inodePrintNode(INode *node) {
         nbrTypePrint((NbrNode *)node); break;
     case PermTag:
         permPrint((PermNode *)node); break;
-    case LifetimeTag:
-        lifePrint((LifetimeNode *)node); break;
     case BorrowRegTag:
         inodeFprint("borrow"); break;
     case TTupleTag:
@@ -581,8 +579,6 @@ Name *inodeGetName(INode *node) {
         return ((GenVarDclNode *)node)->namesym;
 
     // Type declarations
-    case LifetimeTag:
-        return ((LifetimeNode*)node)->namesym;
     case StructTag:
         return ((StructNode*)node)->namesym;
     case ModuleTag:
@@ -774,7 +770,6 @@ static NodeTagFacts nodeTagFacts[NodeTagCount] = {
     [UnknownTag] = {TypeGroup, 0, 0},
 
     [EnumTag] = {TypeGroup, 1, 0},
-    [LifetimeTag] = {TypeGroup, 1, 0},
 
     [IntNbrTag] = {TypeGroup, 1, 1},
     [UintNbrTag] = {TypeGroup, 1, 1},

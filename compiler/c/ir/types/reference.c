@@ -20,6 +20,7 @@ RefNode *newRefNode(uint16_t tag) {
     // Left uninitialized, the lifetime checks in assign.c and return.c read
     // whatever the allocator last held there.
     refnode->scope = 0;
+    refnode->lifename = NULL;
     refnode->plusSpelled = 0;
     return refnode;
 }
@@ -146,6 +147,8 @@ RefNode *newArrayDerefNodeFrom(RefNode *refnode) {
 // Serialize a pointer type
 void refPrint(RefNode *node) {
     inodeFprint("&(");
+    if (node->lifename)
+        inodeFprint("%s ", &node->lifename->namestr);
     inodePrintNode(node->region);
     inodeFprint(" ");
     inodePrintNode((INode*)node->perm);

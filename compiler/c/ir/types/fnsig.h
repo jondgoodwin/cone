@@ -17,6 +17,7 @@ typedef struct FnSigNode {
     INodeHdr;
     Nodes *parms;            // Declared parameter nodes w/ defaults (VarDclTag)
     INode *rettype;        // void, a single type or a type tuple
+    uint8_t lifenamed;     // A lifetime is named on one of its types (lifetime.h)
 } FnSigNode;
 
 FnSigNode *newFnSigNode();

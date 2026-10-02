@@ -1,0 +1,41 @@
+// A call through a trait's method, or through a function reference, is
+// checked against that signature's lifetimes, so what implements it must
+// promise the same: an implementation whose result may hold a borrow the
+// requirement names apart does not meet it, nor does a function whose
+// result may hold one the reference's type keeps apart. The names themselves
+// need not match: 'Named' meets 'Keyed' with ''q' for ''k'.
+//
+// Verdict: refuse, ErrorInvType where 'Pair' claims the trait and where the
+// function is taken as the reference.
+// Basis: language rule (1 Oct 2026): names compare only to themselves; a
+// caller of 'get' through 'Keyed' takes the result to hold no borrow of 'k'.
+
+mod lifetime_band_named_signatures_agree;
+
+trait Keyed {
+  fn get(self &, k &'k i64) &i64;
+}
+
+struct Pair is Keyed {    //~ ErrorInvType
+  pub n i64;
+  fn get(self &, k &i64) &i64 {
+    k;
+  }
+}
+
+struct Named is Keyed {
+  pub n i64;
+  fn get(self &, key &'q i64) &i64 {
+    &n;
+  }
+}
+
+fn pickBoth(a &i64, b &i64) &i64 {
+  a;
+}
+
+fn caller() i64 {
+  imm f &fn(a &i64, b &'b i64) &i64 = &pickBoth;     //~ ErrorInvType
+  imm x = 1i64;
+  *f(&x, &x);
+}

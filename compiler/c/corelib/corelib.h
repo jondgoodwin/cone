@@ -27,9 +27,6 @@ extern PermNode *opaqPerm;
 // token.
 extern PermNode *newPerm;
 
-// Built-in lifetimes
-extern LifetimeNode *staticLifetimeNode;
-
 // Primitive numeric types - for implicit (nondeclared but known) types
 extern NbrNode *boolType;    // i1
 extern NbrNode *i8Type;

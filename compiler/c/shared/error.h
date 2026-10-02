@@ -429,6 +429,9 @@ enum ErrorCode {
     ErrorConstDivZero = 1230,   // A division or remainder of constants by zero
     ErrorConstShift = 1231,     // A shift of a constant by its type's width or more, or by a negative amount
 
+    // Named lifetimes (ir/types/lifetime.h)
+    ErrorLifetimePlace = 1232,  // A lifetime named where none is checked: outside a function's signature, inside a type's arguments, on a borrow, or ''static' inside a parameter's reference
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name

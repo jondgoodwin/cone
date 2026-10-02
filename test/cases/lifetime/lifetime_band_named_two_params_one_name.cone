@@ -1,0 +1,27 @@
+// One name on two parameters: the result may be either, so it lives only as
+// long as the shorter of the two arguments given that name, and a caller may
+// not keep it past either -- while the argument for the third parameter,
+// named apart, is free to end.
+//
+// Verdict: refuse, ErrorFrozen where 'inner' goes out of scope while 'r', used
+// after, holds the call's borrow of it; 'key' ending is no error.
+// Basis: language rule (1 Oct 2026): a lifetime is one name, the unnamed one
+// included; reflifefn.html ("treated as having the same lifetime ... their
+// understood lifetime would be the shortest one").
+
+mod lifetime_band_named_two_params_one_name;
+
+fn either(c Bool, a &'a i64, b &'a i64, key &'k i64) &'a i64 {
+  if c { a; } else { b; }
+}
+
+fn caller() i64 {
+  imm outer = 1i64;
+  mut r = &outer;
+  {
+    imm inner = 2i64;        //~ ErrorFrozen
+    imm key = 3i64;
+    r = either(true, &outer, &inner, &key);
+  }
+  *r;
+}

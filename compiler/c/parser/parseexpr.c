@@ -254,7 +254,17 @@ static INode *parseIndexArg(ParseState *parse) {
 // missing start is 0, and a missing end, 'a..', is the array's end. A range is
 // held on the index as FlagRange, its arguments the start and, unless it runs
 // to the end, the end; FlagRangeIncl says the end was written with '...'.
+static Nodes *parseIndexArgsIn(ParseState *parse, FnCallNode *fncall);
 static Nodes *parseIndexArgs(ParseState *parse, FnCallNode *fncall) {
+    // A type's arguments are no signature's own: no lifetime is named there
+    FnSigNode *svlifesig = parse->lifesig;
+    parse->lifesig = NULL;
+    Nodes *args = parseIndexArgsIn(parse, fncall);
+    parse->lifesig = svlifesig;
+    return args;
+}
+
+static Nodes *parseIndexArgsIn(ParseState *parse, FnCallNode *fncall) {
     lexNextToken();
     Nodes *args = newNodes(2);
     INode *start = NULL;
@@ -371,6 +381,7 @@ INode *parsePrefix(ParseState *parse);
 
 // Parse an "ampersand term" for a borrowed ref type or constructor:
 // - Some reference type ('&', '&[]' or '&<')
+// - Lifetime, in a type
 // - Static permission
 // - Borrowed ref term (including to an anonymous function or closure)
 INode *parseAmper(ParseState *parse) {
@@ -385,6 +396,24 @@ INode *parseAmper(ParseState *parse) {
         anode = newRefNode(VirtRefTag); break;
     }
     lexNextToken();
+
+    // Lifetime (optional), before the permission, as the grammar and Rust
+    // place it: '&'a mut T'. It is named only on a borrowed reference type in a
+    // function's signature, outside a type's arguments, where it is checked
+    // (lifetime.h).
+    if (lexIsToken(LifetimeToken)) {
+        if (parse->intype && parse->lifesig) {
+            anode->lifename = lex->val.ident;
+            parse->lifesig->lifenamed = 1;
+        }
+        else if (parse->intype)
+            errorMsgLex(ErrorLifetimePlace,
+                "A lifetime is named only on a borrowed reference in a function's signature, not inside a type's arguments, nor in a field's or a variable's type: lifetimes on types holding borrows are not built yet.");
+        else
+            errorMsgLex(ErrorLifetimePlace,
+                "A lifetime is named on a borrowed reference type ('&'a T'), not on a borrow.");
+        lexNextToken();
+    }
 
     // Static permission (optional). In a type, 'new' is the permission of an
     // initializer's 'self', '&new'; in a value, '&new Point(1, 2)' is a borrow

@@ -188,6 +188,13 @@ receiver, which is not recast) still moves.
 `fnSigMatches` is the one matcher whose variance is easy to get backwards:
 **parameters are contravariant** (it flips `to` and `from`), **the return type is
 covariant**, and the overall verdict is the most expensive of all the parts.
+Lifetimes named on the two signatures match only by agreeing
+(`lifeSigsAgree`): a call through `to` is checked against what `to` promises,
+so `from` must promise exactly that. The same agreement is part of
+`fnSigEqual` and `fnSigVrefEqual`, so a module's or a struct's method meets a
+trait's requirement only promising what the requirement does, and two
+signatures that promise differently are two types (spelled apart by
+`lifeSigSpell`).
 
 ## 6. Unifying branches
 

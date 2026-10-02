@@ -28,6 +28,7 @@ extern Name *tempName;    // "-_"
 // becomes ('imm r = &make();', varDclExtend). No source can spell it.
 extern Name *tempLocalName;
 extern Name *selfName;  // "self"
+extern Name *staticLifeName;  // "'static", the global lifetime (lifetime.h)
 extern Name *selfTypeName; // "Self"
 extern Name *thisName;  // "this"
 extern Name *dropName;  // "drop"

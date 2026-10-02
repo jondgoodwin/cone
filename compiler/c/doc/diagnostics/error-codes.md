@@ -282,6 +282,15 @@ is a literal as written that does not fit; a constant whose chain of named
 constants comes back to itself is `ErrorCircular`, the code every definition
 in terms of itself wears.
 
+A lifetime named where nothing checks it is `ErrorLifetimePlace`, wherever it
+is written — a field's type, a variable's, a type's arguments, a borrow, or
+`'static` inside a parameter's type — because the remedy is one: name it on a
+signature's own reference, or not at all. A named lifetime that is checked and
+broken is not this code: returned or stored where its lifetime does not reach
+is `ErrorEscape`, and a call that could store it so, or a borrow not global
+handed to a `'static` parameter, is `ErrorCallEscape`, as for any borrow that
+would outlive what it borrows.
+
 ## The one code with no scenario
 
 `ErrorUnreachable` is reported by `errorUnreachable` and by nothing else. It
