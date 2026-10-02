@@ -1,0 +1,43 @@
+// The neighbour of lifetime_free_final_holder_frozen: the struct whose
+// finalizer reads its borrow is moved away first, its finalizer run by the
+// callee while the source is alive, so nothing is left to finalize at the
+// scope's end and the source is free after the move.
+//
+// Verdict: accept; the moved struct's finalizer reads 42 before the owner is
+// replaced.
+// Basis: borrow-freezing rule (26 Sep 2026) -- a holder moved away is dead
+// on that path: its value, and its finalizer's use of the borrow, went with
+// the move.
+// Master 42f45409: correct (a borrow inside a struct froze nothing).
+
+mod lifetime_free_final_holder_moved_first;
+
+import stdio use *;
+
+struct R {
+  pub n i64;
+  fn final(self &uni) {
+    printStr("final ");
+    printInt(self.n);
+    printStr("\n");
+  }
+}
+
+struct H {
+  pub r &R;
+  fn final(self &uni) {
+    printStr("finalizer reads ");
+    printInt(self.r.n);
+    printStr("\n");
+  }
+}
+
+fn consume(h H) {}
+
+fn main() {
+  mut s = new So[R](42);
+  imm h = new H(&*s);
+  consume(h);
+  s = new So[R](7);
+  printStr("replaced\n");
+}

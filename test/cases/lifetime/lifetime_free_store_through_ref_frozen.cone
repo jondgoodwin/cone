@@ -1,0 +1,37 @@
+// A borrow stored through a reference to a local 'Option' is held by the
+// 'Option', which keeps its source frozen while it is used.
+//
+// Verdict: refuse, ErrorFrozen at the replacement.
+// Basis: borrow-freezing rule (26 Sep 2026) -- a store through a reference
+// puts the stored borrow's loans wherever the reference points: into the
+// local it borrows.
+// Master 42f45409: accepted, and it reads freed memory -- main, run, prints
+// "final" (the replaced owner) and then "read = <garbage>". Stage 3 fixed
+// it.
+
+mod lifetime_free_store_through_ref_frozen;
+
+import stdio use *;
+
+struct R {
+  pub n i64;
+  fn final(self &uni) {
+    printStr("final\n");
+  }
+}
+
+fn main() {
+  mut s = new So[R](42);
+  mut o Option[&R] = None[&R][];
+  imm r = &mut o;
+  *r = Some[&R][&*s];
+  s = new So[R](7);          //~ ErrorFrozen
+  match o {
+    case imm v Some {
+      printStr("read = ");
+      printInt(v.value.n);
+      printStr("\n");
+    }
+    else {}
+  }
+}

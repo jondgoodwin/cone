@@ -210,6 +210,14 @@ uint32_t loanMake(INode *site, Place *pl, INode *perm) {
     return id;
 }
 
+uint32_t loanRoot(uint32_t loan) {
+    return loans[loan].place.var;
+}
+
+uint32_t loanAt(INode *site) {
+    return mapGet(site, 0, 0);
+}
+
 void loanHeldBy(uint32_t var, PathSet *holds) {
     if (holds == &pathSetAll) {
         for (uint32_t i = 0; i < nsaturated; ++i) {
@@ -370,29 +378,35 @@ static char *loanAttempt(int access) {
     case AccessBorrowImm: return "borrowed as 'imm'";
     case AccessBorrowUni: return "borrowed as 'uni'";
     case AccessMove: return "moved";
+    case AccessEnd: return "ended";
     default: return "changed";
     }
 }
 
+// A use of a holder is a node naming it, or, where its value dies with a
+// finalizer that may read what it holds, its declaration (pwHolderDies)
 static void loanReport(Pending *pend, INode *usenode) {
     Loan *loan = &loans[pend->loan];
     char srcname[128];
     char where[160];
+    char used[160];
     loanSourceName(&loan->place, srcname, sizeof(srcname));
     loanWhere(loan, where, sizeof(where));
-    uint32_t uline = usenode->linenbr;
-    uint32_t ucol = loanColumn(usenode);
+    VarDclNode *holder = pathVars[pend->holder].var;
+    if (usenode->tag == VarDclTag)
+        snprintf(used, sizeof(used), "when '%s''s value is finalized", &holder->namesym->namestr);
+    else
+        snprintf(used, sizeof(used), "at %u:%u", usenode->linenbr, loanColumn(usenode));
     char *mutably = loan->writes ? " mutably" : "";
     if (pend->kind == AccessEnd) {
-        VarDclNode *holder = pathVars[pend->holder].var;
         errorMsgNode(pend->access, ErrorFrozen,
-            "'%s', declared here, goes out of scope while '%s' still holds a borrow of it (made %s), used again at %u:%u.",
-            srcname, &holder->namesym->namestr, where, uline, ucol);
+            "'%s', declared here, goes out of scope while '%s' still holds a borrow of it (made %s), used again %s.",
+            srcname, &holder->namesym->namestr, where, used);
         return;
     }
     errorMsgNode(pend->access, ErrorFrozen,
-        "'%s' is borrowed%s (%s), and that borrow is used again at %u:%u. It may not be %s until after that last use.",
-        srcname, mutably, where, uline, ucol, loanAttempt(pend->kind));
+        "'%s' is borrowed%s (%s), and that borrow is used again %s. It may not be %s until after that last use.",
+        srcname, mutably, where, used, loanAttempt(pend->kind));
 }
 
 void loanUse(uint32_t var, INode *usenode) {

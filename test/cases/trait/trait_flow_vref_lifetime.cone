@@ -100,17 +100,18 @@ fn returnsParmPassedThrough(s &<Shape) &<Shape {
   sameVref(s);
 }
 
-// -------- what is deliberately not checked --------
+// -------- kept past the value through a narrowed binding --------
 
-// A lifetime does not survive a variable (compiler/c/doc/phases/flow.md, hazard 3): a
-// declared type carries no scope, so a borrow laundered through a binding is
-// forgotten. Narrowing a virtual reference back to its concrete type binds such
-// a variable, and is forgotten for the same reason a plain '&Circle' held in
-// one is -- ref_flow_return asserts that absence. Both compile clean here.
-fn narrowingIsNotTracked() i32 {
+// A lifetime does not survive a variable (compiler/c/doc/phases/flow.md, "What
+// a reader from Rust will get wrong", item 3): a declared type carries no
+// scope, so the store into 'out' is not refused. But narrowing a virtual
+// reference back to its concrete type binds a variable holding the borrow the
+// virtual reference held, and 'out' holds it once stored: 'c' ending while
+// 'out' still holds its borrow, used afterwards, is the loan walk's refusal.
+fn narrowingIsTracked() i32 {
   mut out &Circle = &global;
   {
-    imm c = new Circle(3);
+    imm c = new Circle(3);  //~ ErrorFrozen:9 "goes out of scope while 'out' still holds a borrow of it"
     imm v &<Shape = &c;
     match v {
       case imm n &Circle {out = n;}

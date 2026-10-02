@@ -2,8 +2,9 @@
 // arena: every allocation is fresh and never moved, so the arena declares
 // 'NoLoanMut' and a second 'a.alloc' while the first allocation is used is
 // fine (region_arena_freeze in collection_freeze_success runs it). What an
-// allocation keeps is the arena's life: while one is still to be used the
-// arena may not be moved away, replaced, swapped or ended. And an owning
+// allocation keeps is the arena's life: while one is still to be used, bare
+// or held in a value built around it, the arena may not be moved away,
+// replaced, swapped or ended. And an owning
 // reference coerced to a borrowed one lends what it owns: the owner may not be
 // moved while the borrow is used. Each error is reported at the touch.
 
@@ -12,6 +13,7 @@ mod region_flow_arena_freeze;
 import arena use *;
 
 struct Pt { pub x i64; pub y i64; }
+struct Holder { pub r &mut Pt; }
 
 fn consume(a Arena) {}
 fn consumePt(p So[Pt]) {}
@@ -55,4 +57,16 @@ fn ownerMoved() i64 {
   imm b &Pt = u;
   consumePt(u);                 //~ ErrorFrozen:13 "may not be moved"
   b.x;
+}
+
+// Ended while a struct built around an allocation, in a variable that
+// outlives the arena, is still to be used
+fn endedWhileHeld() i64 {
+  mut dummy = new Pt(0, 0);
+  mut h = new Holder(&mut dummy);
+  {
+    mut a = Arena.empty();      //~ ErrorFrozen:9 "goes out of scope while 'h' still holds a borrow of it"
+    h = new Holder(a.alloc(new Pt(1, 2)));
+  }
+  h.r.x;
 }

@@ -25,11 +25,13 @@
 			it is refused by freezing). For the same reason, a borrow through another reference
 			held in a mutable local variable is given that variable's block, not the lifetime of
 			what the reference points at.
-			Freezing is enforced for a borrow held in a local variable, including one a
-			method or function returns (an element taken with <span class="pre">list[0usize]</span>,
-			an allocation from an arena), and between the arguments of one call;
-			a borrow held inside another value (a struct's field, an <span class="pre">Option</span>)
-			does not yet freeze anything.
+			Freezing is enforced for a borrow held in a local variable, bare or inside a value
+			the local holds (a struct's field, an <span class="pre">Option</span>, an array, a list),
+			including one a method or function returns (an element taken with
+			<span class="pre">list[0usize]</span>, an allocation from an arena, the
+			<span class="pre">Option</span> a pool's <span class="pre">get</span> returns),
+			and between the arguments of one call; a value holding a borrow that is returned,
+			or stored through a parameter, is not yet checked against what it borrows.
 			An element borrowed from a resizable collection reached through a shared path is not
 			yet refused, and a change through another reference to that collection leaves the
 			element dangling. Each of these compiles today, <span class="pre">p</span> a value
@@ -336,7 +338,12 @@ fn bump(p &amp;mut Point) {
 		Once nothing will use the borrow again, the source is free, even in the middle of the
 		block that made it. The last use may be on any path the program can take:
 		a later iteration of a loop, or the code after it, is a use too.
-		A copy of a borrowed reference keeps the source frozen exactly as the borrow does.
+		A copy of a borrowed reference, and any value holding one &mdash; a struct, an
+		<span class="pre">Option</span>, an array or a list it was put in, by building the value,
+		by storing into it, or by a call handed a <span class="pre">&amp;mut</span> of it that may
+		store the borrow there &mdash; keeps the source frozen exactly as the borrow does,
+		until that value's last use. A value whose type has a <span class="pre">final</span>
+		method that may read the borrow uses it again when it dies.
 		"Ended" covers the source going out of scope, being moved away
 		(passed to a function that takes it, or assigned to another variable),
 		and being replaced whole (assigned or swapped).</p>

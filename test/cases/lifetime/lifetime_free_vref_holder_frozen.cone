@@ -1,0 +1,40 @@
+// A borrow coerced to a virtual reference is still a borrow: it keeps its
+// source frozen while it is used, so moving the source away first is
+// refused.
+//
+// Verdict: refuse, ErrorFrozen at the move.
+// Basis: borrow-freezing rule (26 Sep 2026) -- a copy of a borrow, and any
+// value holding one, keeps the source frozen exactly as the borrow does;
+// refvirtref.html -- a virtual reference is a borrowed reference carrying a
+// vtable.
+// Master 42f45409: accepted, and it reads a finalized value -- main, run,
+// prints "final" (the moved Circle, finalized by 'consume') and then
+// "area = 5" read through the virtual reference. The coercion dropped the
+// borrow's loan. Stage 3 fixed it.
+
+mod lifetime_free_vref_holder_frozen;
+
+import stdio use *;
+
+trait Shape {
+  pub fn area(self &) i64;
+}
+
+struct Circle is Shape {
+  pub r i64;
+  fn area(self &) i64 { self.r; }
+  fn final(self &uni) {
+    printStr("final\n");
+  }
+}
+
+fn consume(c Circle) {}
+
+fn main() {
+  mut c = new Circle(5);
+  imm v &<Shape = &c;
+  consume(c);                //~ ErrorFrozen
+  printStr("area = ");
+  printInt(v.area());
+  printStr("\n");
+}

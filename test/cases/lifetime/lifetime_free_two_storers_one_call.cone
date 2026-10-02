@@ -1,0 +1,44 @@
+// One call handed writable borrows of two local lists that each hold
+// borrows: each may receive the borrows the call's other arguments carry,
+// but neither can hold a borrow of the other list, whose type it has no
+// room for, so after the call each list is free while the other is used.
+//
+// Verdict: accept; prints 8, 3 and 3.
+// Basis: borrow-freezing rule (26 Sep 2026) -- a store through a reference
+// puts the stored borrow's loans into its target; a value of a type is
+// stored only where that type fits, so the borrow written as one argument
+// goes only where its type can be held. Rust: accepted (each '&mut' has its
+// own elided lifetime; by reading, not run). The shape of the pool
+// package's 'game' example.
+// Master 42f45409: correct (a borrow inside a list froze nothing).
+
+mod lifetime_free_two_storers_one_call;
+
+import stdio use *;
+import collections use *;
+
+fn show(label &[]u8, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+struct Named { pub name &[]u8; pub n i64; }
+
+fn arrive(world &mut List[Named], seen &mut List[&[]u8], name &[]u8, n i64) {
+  world.push(new Named(name, n));
+  seen.push(name);
+}
+
+fn main() {
+  mut world = List[Named].empty();
+  mut seen = List[&[]u8].empty();
+  arrive(&mut world, &mut seen, "orc", 10);
+  arrive(&mut world, &mut seen, "elf", 8);
+  seen.push("troll");
+  show("world-n", (*world[1usize]).n);
+  world.push(new Named("goblin", 6));
+  show("seen", i64.from(seen.len()));
+  show("world", i64.from(world.len()));
+}

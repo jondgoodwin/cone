@@ -30,6 +30,12 @@ int loanBorrowAccess(INode *perm);
 // 'perm'. A site walked again (a loop body) makes the same loan.
 uint32_t loanMake(INode *site, Place *pl, INode *perm);
 
+// The variable at the root of the place a loan borrows
+uint32_t loanRoot(uint32_t loan);
+
+// The loan the borrow at 'site' made, or 0
+uint32_t loanAt(INode *site);
+
 // An access to a place: each holder that may hold a loan it conflicts with gets
 // a pending conflict, which fires if the holder is used again
 void loanAccess(Place *pl, int access, INode *node);
