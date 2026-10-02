@@ -77,25 +77,35 @@ def camera_dict(eye, target, up, fov):
 HERO = (np.array([-3.0, 12.0, 12.5]), np.array([6.0, -0.3, 2.0]), np.array([0.6, 1.0, 0.0]), 35.0)
 
 
+# starship.cone's line of action: its SPX and SPY control points (Catmull-Rom
+# through them; the body runs from point 1 to point 9, the lance on to 11)
+STARSHIP_SPX = [-0.73, -0.08, 0.72, 1.6, 2.65, 3.77, 5.28, 7.14, 8.88, 10.6, 11.94, 13.31]
+STARSHIP_SPY = [-0.26, -0.03, 0.41, 1.16, 1.8, 1.95, 1.53, 0.98, 0.67, 0.66, 0.91, 1.17]
+
+
+def _starship_spine_at(t):
+    """starship.cone's spineAt: the body's spine at t in [0, 1]."""
+    s = t * 8.0
+    k = min(int(s), 7)
+    a, b, c, d = (np.array([STARSHIP_SPX[k + i], STARSHIP_SPY[k + i], 0.0]) for i in range(4))
+    u = s - k
+    return 0.5 * (2 * b + (c - a) * u + (2 * a - 5 * b + 4 * c - d) * u * u + (3 * b - a - 3 * c + d) * u ** 3)
+
+
 def starship_landmarks():
-    """The head's tip and the tail's, from starship.cone's own numbers."""
-    def spine_at(t):
-        arch = (0.55 + 0.5 * (1 - t) ** 2) * math.sin(3.14159 * t)
-        return np.array([0.1 + 11.5 * t, 0.18 * math.sin(5.65 * t) + arch + 0.9 * t ** 3, 0.0])
-    end = spine_at(1.0)
-    last = end - spine_at(31 / 32)
-    tail = end + last / np.linalg.norm(last) * 1.7
-    head = np.array([-1.33, -0.12, 0.0])       # the snout capsule's end, less its radius
+    """The head's tip and the tail's, from starship.cone's own numbers: the
+    snout's control point less its tip radius, and the lance's point."""
+    head = np.array([STARSHIP_SPX[0] - 0.11, STARSHIP_SPY[0], 0.0])
+    tail = np.array([STARSHIP_SPX[11], STARSHIP_SPY[11], 0.0])
     return {"head": head, "tail": tail}
 
 
 def starship_spine(t0=0.0, t1=1.0, n=200, lift=0.0):
-    """Points along starship.cone's spine (the same formula as its spineAt),
+    """Points along starship.cone's spine (the same curve as its spineAt),
     from t0 to t1, raised `lift` units in y (towards the back), and the
     cumulative 3-D arc length at each."""
-    t = np.linspace(t0, t1, n)
-    arch = (0.55 + 0.5 * (1 - t) ** 2) * np.sin(3.14159 * t)
-    pts = np.stack([0.1 + 11.5 * t, 0.18 * np.sin(5.65 * t) + arch + 0.9 * t ** 3 + lift, 0 * t], 1)
+    pts = np.array([_starship_spine_at(t) for t in np.linspace(t0, t1, n)])
+    pts[:, 1] += lift
     arc = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(pts, axis=0), axis=1))])
     return pts, arc
 
