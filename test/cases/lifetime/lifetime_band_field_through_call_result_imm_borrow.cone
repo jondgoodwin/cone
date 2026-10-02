@@ -1,0 +1,25 @@
+// A field reached through the reference a call returned keeps the field's own
+// permission, as one reached through a reference held in a variable does: an
+// 'imm' field may not be borrowed '&mut', even through a '&mut' reference,
+// while a 'mut' one may.
+//
+// Verdict: refuse, ErrorBadPerm at the '&mut' borrow of the 'imm' field.
+// Basis: refstruct.html -- the container's permission and the field's
+// together govern what may be done to the field.
+// Master 8963c337: refused, but for the wrong reason -- both borrows were
+// left untyped, so each use as an argument was refused with ErrorInvType, the
+// 'mut' field's included.
+
+mod lifetime_band_field_through_call_result_imm_borrow;
+
+struct Q { pub imm k i64; pub mut v i64; }
+
+fn idm(q &mut Q) &mut Q { q; }
+
+fn get(r &mut i64) i64 { *r; }
+
+fn main() {
+  mut x = new Q(1, 2);
+  get(&mut idm(&mut x).v);
+  get(&mut idm(&mut x).k);   //~ ErrorBadPerm
+}

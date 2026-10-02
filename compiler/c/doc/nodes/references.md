@@ -474,7 +474,14 @@ the arm that would dangle.
 - **a place reached through a borrowed reference has that reference's
   lifetime**, read from its type (`iexpScopeThroughRef`) when the reference is
   held in no variable (a borrow expression, a call's result) or is the whole
-  value of a variable whose type says what it holds. A borrowed parameter's type
+  value of a variable whose type says what it holds. Such a place has no
+  variable at its root, and is a place all the same: `&id(&x).n` borrows `x`'s
+  field, with the lifetime of the reference the call returned and the field's
+  own permission, and flow sees the call's loans on `x`. A place rooted in a
+  temporary is not one of these: it is given a lifetime only where an
+  initializer has made the temporary a hidden local (`varDclExtendTemp`), and
+  elsewhere `borrowTypeCheck` still leaves its borrow untyped
+  (`get(&*mkso(5))` as a statement). A borrowed parameter's type
   carries the caller band, 1, on a copy `varDclTypeCheck` gives it, and nothing
   shorter may be stored into it, so what it points at is the caller's however
   it is reached — through an immutable local copy of it too, whose type carries

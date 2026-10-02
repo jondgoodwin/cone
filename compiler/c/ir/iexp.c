@@ -465,9 +465,10 @@ static INode *iexpLvalInfo(INode *lval, INode **lvalperm, uint16_t *scope, int s
     case FldAccessTag:
     {
         FnCallNode *element = (FnCallNode *)lval;
+        // A field of a place with no variable at its root -- reached through
+        // the reference a call returned -- still takes the permission and the
+        // lifetime the steps below give it; only the variable is absent.
         INode *lvalvar = iexpLvalInfo(element->objfn, lvalperm, scope, stored);
-        if (lvalvar == NULL)
-            return NULL;
         // A field reached through a virtual reference takes the permission from
         // the reference, exactly as DerefTag does for a plain one. It has to be
         // done here because no dereference is injected for a virtual reference:

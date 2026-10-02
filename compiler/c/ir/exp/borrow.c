@@ -444,8 +444,14 @@ void borrowTypeCheck(TypeCheckState *pstate, RefNode **nodep) {
     if (!borrowIsConstLit(lval)) {
         // lval is the variable or variable sub-structure we want to get a reference to
         // From it, obtain variable we are borrowing from and actual/calculated permission
+        // A place reached through a reference held in no variable -- the one
+        // a call returned, '&id(&x).n' or '&*id(&x)' -- has no variable at its
+        // root, but is still a place: it is where that reference points, and
+        // lives as long as the reference's type says (iexpScopeThroughRef), as
+        // a place reached through a reference held in a variable does. Only a
+        // place rooted in a temporary itself has no lifetime here.
         INode *lvalvar = iexpGetLvalInfo(lval, &lvalperm, &scope);
-        if (lvalvar == NULL) {
+        if (lvalvar == NULL && borrowTempRoot(&node->vtexp) != NULL) {
             node->vtype = (INode*)newRefNodeFull(RefTag, (INode*)node, node->region, node->perm, (INode*)unknownType); // To avoid a crash later
             return;
         }
