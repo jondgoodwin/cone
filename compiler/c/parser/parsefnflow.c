@@ -372,6 +372,8 @@ INode *parseEach(ParseState *parse, Name *lifesym, int stmtflag) {
     }
     lexNextToken();
     INode *iter = parseSimpleExpr(parse);
+    if (iter == NULL)       // Not a term, and already reported as such
+        return (INode *)outerblk;
     INode *step = NULL;
     int isrange = 0;
     if (iter->tag == FnCallTag && ((FnCallNode*)iter)->methfld) {
