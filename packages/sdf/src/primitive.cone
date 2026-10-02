@@ -83,6 +83,59 @@ pub fn roundCone(p Vec3, bottom f32, top f32, height f32) f32 {
   qx * a + qy * b - bottom;
 }
 
+// A tapered capsule: the hull of a sphere of radius 'ra' at a and one of
+// radius 'rb' at b, any two points (roundCone, placed and turned). A bone, a
+// branch, a spike or a horn's segment; chained, a tube whose radius changes
+// along a path. When one ball holds the other, it is that ball. Exact
+pub fn taperedCapsule(p Vec3, a Vec3, b Vec3, ra f32, rb f32) f32 {
+  imm ba = b - a;
+  imm pa = p - a;
+  imm h = len3(ba);
+  imm dr = ra - rb;
+  if h <= absf(dr) {
+    return if ra > rb { len3(pa) - ra; } else { len3(p - b) - rb; };
+  }
+  imm inv = 1. / h;
+  imm axis = new Vec3(ba.x * inv, ba.y * inv, ba.z * inv);
+  // In the half-plane through the axis and p: (distance from the axis, along it)
+  imm y = dot3(pa, axis);
+  imm qx = len3(new Vec3(pa.x - axis.x * y, pa.y - axis.y * y, pa.z - axis.z * y));
+  // The side's slope: the sine and cosine of its angle to the axis
+  imm sb = dr / h;
+  imm ca = sqrtf(maxf(1. - sb * sb, 0.));
+  imm k = qx * (0. - sb) + y * ca;
+  if k < 0. { return len2(qx, y) - ra; }
+  if k > ca * h { return len2(qx, y - h) - rb; }
+  qx * ca + y * sb - ra;
+}
+
+// The distance to the triangle a, b, c: a flat, two-sided sheet with no
+// thickness, never negative. Less a thickness, a membrane, a sail, a leaf,
+// a roof's plane; several, a polygon or a folded surface. A degenerate
+// triangle is its edges. Exact
+pub fn triangle(p Vec3, a Vec3, b Vec3, c Vec3) f32 {
+  imm ba = b - a;
+  imm cb = c - b;
+  imm ac = a - c;
+  imm pa = p - a;
+  imm pb = p - b;
+  imm pc = p - c;
+  imm n = cross3(ba, ac);
+  imm nn = dot3(n, n);
+  // Over the triangle when p is on the inner side of all three edges
+  if nn > 0. and dot3(cross3(ba, n), pa) >= 0. and dot3(cross3(cb, n), pb) >= 0. and dot3(cross3(ac, n), pc) >= 0. {
+    return absf(dot3(n, pa)) / sqrtf(nn);
+  }
+  // Otherwise the nearest edge
+  imm ea = clampf(dot3(ba, pa) / maxf(dot3(ba, ba), 1e-30), 0., 1.);
+  imm eb = clampf(dot3(cb, pb) / maxf(dot3(cb, cb), 1e-30), 0., 1.);
+  imm ec = clampf(dot3(ac, pc) / maxf(dot3(ac, ac), 1e-30), 0., 1.);
+  imm qa = new Vec3(pa.x - ba.x * ea, pa.y - ba.y * ea, pa.z - ba.z * ea);
+  imm qb = new Vec3(pb.x - cb.x * eb, pb.y - cb.y * eb, pb.z - cb.z * eb);
+  imm qc = new Vec3(pc.x - ac.x * ec, pc.y - ac.y * ec, pc.z - ac.z * ec);
+  sqrtf(minf(dot3(qa, qa), minf(dot3(qb, qb), dot3(qc, qc))));
+}
+
 // The half-space below the plane through the points p with n.p + offset = 0,
 // 'n' unit length (the solid side is where n.p + offset < 0). Exact
 pub fn plane(p Vec3, n Vec3, offset f32) f32 { dot3(p, n) + offset; }

@@ -1,0 +1,548 @@
+// starship: Elizabeth's "Starship 1", the skeletal dragon ship, roughly
+// reproduced as signed distance fields composed from the sdf package's
+// primitives, meshed on the CPU by surface nets and drawn offscreen against
+// stars and a red planet. Nothing here is in the library: this file is the
+// whole description of the ship.
+//
+//   congo run --release packages/sdf/examples/starship.cone
+//   congo run --release packages/sdf/examples/starship.cone -- --shots DIR/ship --obj DIR/ship
+//
+// THE SHIP, part by part (x runs from the skull to the tail, y is up, the
+// wings reach along z; every part is mirrored across z = 0):
+// - a spine, a planar curve sampled into a polyline; the body a chain of
+//   tapered capsules along it, its radius a function of the way along (a
+//   thin neck, a deep chest, a long thin tail), smooth-unioned;
+// - biomechanical tubes, two a side, tapered capsules offset from the spine;
+// - vertebrae repeated along the spine (repeatAlongCells over a PathCurve),
+//   each scaled by the body's radius there: a knob, a dorsal spike swept
+//   back (its height jittered by a hash of its index), and over the chest a
+//   pair of ribs, three tapered capsules each;
+// - a tail spike continuing the spine;
+// - a skull of tapered capsules (cranium, snout, brows, cheeks, jaw bones,
+//   two pairs of swept-back horns, teeth), its mouth and eye sockets cut out;
+// - two bat wings: arm, finger and spar bones (tapered capsules), spikes
+//   along the leading edge, and a membrane of triangles between the bones,
+//   thickened, its trailing edge scalloped by balls cut out between the
+//   finger tips. The membrane is a field of its own, meshed apart and drawn
+//   in a darker, rougher material.
+// The lights (eyes, mouth, the strip along each wing's leading edge) are
+// small spheres in an over-bright Blinn-Phong material, so they bloom.
+//
+// '--shots PREFIX' (default 'starship') writes PREFIX-hero.bmp (framed as
+// the reference), PREFIX-side.bmp and PREFIX-front.bmp at 1920 x 1080;
+// '--obj PREFIX' writes PREFIX-frame-lod0.obj, PREFIX-membrane-lod0.obj and
+// the coarser levels. It prints each mesh's counts, time and meshHash (the
+// same every run: meshing is on the CPU), and exits 0 only if the hashes
+// are the pinned ones, every shot was written, no Vulkan call failed and
+// the validation layer said nothing.
+//
+// It needs a GPU driver with Vulkan 1.3 and SDL3.dll on PATH (and SDL3.lib
+// on LIB to link); no window and no display. GPU_POWER_PREFERENCE=low-power
+// picks an integrated GPU where there are two.
+
+mod starship;
+
+import stdio use *;
+import libc;
+import sdl;
+import collections use *;
+import geomath use *;
+import mesh;
+import noise;
+import sculpt;
+import gpu use *;
+import render use *;
+import sdf use *;
+
+// ---- The numbers ----
+
+const SEGMENTS = 32;                // the spine's polyline
+const VERTEBRAE = 56;
+const SEED = 1977u32;
+const MEMBRANE f32 = 0.045;         // the membrane's half-thickness
+const LEVELS = 2usize;
+const FINEST f32 = 0.03;
+// Each mesh's meshHash: the frame's levels, then the membrane's
+imm PINNED Array[u32, 4] = [0x9b4c812au32, 0x99a9fba1u32, 0x9a19502bu32, 0xe441f6b3u32];
+imm PARTS Array[&[]u8, 2] = ["frame", "membrane"];
+const WIDTH = 1920u32;
+const HEIGHT = 1080u32;
+
+fn v(x f32, y f32, z f32) Vec3 { new Vec3(x, y, z); }
+fn absf(a f32) f32 { libc.fabsf(a); }
+fn minf(a f32, b f32) f32 { if a < b { a; } else { b; }; }
+fn jitter(i i32, salt u32) f32 { noise.toSigned(noise.hash1(i, SEED + salt)); }
+
+// The spine at t, 0 (the back of the skull) to 1 (the tail's root): a long
+// gentle wave, rising towards the tail
+fn spineAt(t f32) Vec3 { v(0.1 + 11.5 * t, 0.18 * sin(5.65 * t) + 0.9 * t * t * t, 0.); }
+
+// The body's radius at t: a neck, a deep chest at a third, a thin tail
+fn radiusAt(t f32) f32 {
+  imm c = (t - 0.32) / 0.22;
+  0.04 + 0.2 * (1. - t) + 0.36 * libc.expf(0. - c * c);
+}
+
+// Whether a part held by the ball 'r' about 'c' can change 'd' by a smooth
+// union reaching 'k' (the quadratic smooth minimum blends only within 4k,
+// so skipping a part that cannot leaves the union exactly as it is)
+fn near(p Vec3, c Vec3, r f32, d f32, k f32) Bool { (p - c).length() - r < d + 4. * k; }
+
+// Two tapered capsules end to end, through a, b and c
+fn chain(p Vec3, a Vec3, b Vec3, c Vec3, r0 f32, r1 f32, r2 f32) f32 {
+  minf(taperedCapsule(p, a, b, r0, r1), taperedCapsule(p, b, c, r1, r2));
+}
+
+// ---- The vertebrae: one copy each, scaled by the body there ----
+
+struct Vertebrae {
+  pub up f32;            // +1 or -1: which way the spine's frames' normal points from the back
+  pub radius List[f32];  // the body's radius at each copy, found once
+
+  pub fn repeatedDistance(self &, q Vec3, index i32, u f32) f32 {
+    imm r = *radius[usize.from(index)];
+    // Out to the side (mirrored), up and along, in the copy's frame
+    imm l = v(absf(q.y), q.x * self.up, q.z);
+    // The knob on the back
+    mut d = capsule(l, v(0., r * 0.8, -0.06), v(0., r * 0.8, 0.06), 0.03 + r * 0.28);
+    // The dorsal spike, swept back towards the tail
+    if u > 0.04 and u < 0.94 {
+      imm h = (0.18 + 0.75 * r) * (1. + 0.35 * jitter(index, 1u32));
+      d = smoothUnion(d, taperedCapsule(l, v(0., r * 0.9, 0.), v(0., r + h, 0.55 * h), 0.03 + 0.12 * r, 0.004), 0.03);
+    }
+    // Over the chest, ribs: a cage wider than the body inside it
+    if u > 0.1 and u < 0.62 {
+      imm rr = 0.018 + 0.05 * r;
+      imm rib = chain(l, v(r * 0.35, r * 0.7, 0.), v(r * 1.3, r * 0.3, 0.04), v(r * 1.32, r * -0.5, 0.08), rr, rr * 0.9, rr * 0.7);
+      d = smoothUnion(d, minf(rib, taperedCapsule(l, v(r * 1.32, r * -0.5, 0.08), v(r * 0.75, r * -1.1, 0.1), rr * 0.7, rr * 0.4)), 0.03);
+    }
+    d;
+  }
+
+  pub fn bound(self &, index i32, u f32) f32 {
+    imm r = *radius[usize.from(index)];
+    r + 1.5 * (0.18 + 0.75 * r) + 0.15;
+  }
+}
+
+// ---- The ship ----
+
+struct Ship {
+  pub spine List[Vec3];
+  pub radii List[f32];
+  pub cells CurveCells;
+  pub vertebrae Vertebrae;
+  // The wing on +z: shoulder, elbow, wrist, four finger tips, and the root
+  // where the membrane meets the body behind
+  pub wing List[Vec3];
+  pub membrane Bool;     // the membranes alone, or everything else
+
+  pub fn make(membrane Bool) Ship {
+    mut spine = List[Vec3].empty();
+    mut radii = List[f32].empty();
+    mut i = 0;
+    while i <= SEGMENTS {
+      imm t = f32.from(i) / f32.from(SEGMENTS);
+      spine.push(spineAt(t));
+      radii.push(radiusAt(t));
+      i = i + 1;
+    }
+    imm path = sculpt.Path.fromPoints(spine.view(), false);
+    imm curve = PathCurve.fromPath(&path);
+    imm up = if curve.frameAt(0.).normal.y < 0. { -1.; } else { 1.; };
+    mut radius = List[f32].empty();
+    i = 0;
+    while i < VERTEBRAE {
+      radius.push(radiusAt((f32.from(i) + 0.5) / f32.from(VERTEBRAE)));
+      i = i + 1;
+    }
+    mut wing = List[Vec3].empty();
+    wing.push(v(3.2, 0.3, 0.4));
+    wing.push(v(2.6, 0.6, 2.6));
+    wing.push(v(4.0, 0.2, 4.8));
+    wing.push(v(7.2, -1.3, 7.4));
+    wing.push(v(7.9, -0.9, 5.6));
+    wing.push(v(8.3, -0.5, 3.8));
+    wing.push(v(8.2, -0.2, 2.2));
+    wing.push(v(7.8, 0.0, 0.35));
+    new Ship(spine, radii, curveCells(&curve, VERTEBRAE), new Vertebrae(up, radius), wing, membrane);
+  }
+
+  pub fn w(self &, i usize) Vec3 { *wing[i]; }
+
+  // The body, its tubes and the tail spike
+  pub fn body(self &, q Vec3) f32 {
+    mut d f32 = 3.4028235e38;
+    mut i = 0usize;
+    while i < usize.from(SEGMENTS) {
+      imm a = *spine[i];
+      imm b = *spine[i + 1usize];
+      imm ra = *radii[i];
+      imm rb = *radii[i + 1usize];
+      if near(q, a, (b - a).length() + ra + 0.2, d, 0.06) {
+        d = smoothUnion(d, taperedCapsule(q, a, b, ra, rb), 0.06);
+        // The tubes along the flanks, over most of the body
+        imm t = f32.from(i) / f32.from(SEGMENTS);
+        if t > 0.04 and t < 0.75 {
+          imm low = taperedCapsule(q, a + v(0., ra * -0.35, ra * 0.8), b + v(0., rb * -0.35, rb * 0.8), 0.02 + ra * 0.12, 0.02 + rb * 0.12);
+          imm high = taperedCapsule(q, a + v(0., ra * 0.45, ra * 0.6), b + v(0., rb * 0.45, rb * 0.6), 0.015 + ra * 0.07, 0.015 + rb * 0.07);
+          d = smoothUnion(d, minf(low, high), 0.03);
+        }
+      }
+      i = i + 1usize;
+    }
+    // The tail spike, on along the spine's last piece
+    imm end = *spine[usize.from(SEGMENTS)];
+    imm last = end - *spine[usize.from(SEGMENTS) - 1usize];
+    smoothUnion(d, taperedCapsule(q, end, end + last.normalize() * 1.7, 0.045, 0.003), 0.03);
+  }
+
+  // The skull, at the front, facing -x
+  pub fn skull(self &, q Vec3) f32 {
+    mut d = smoothUnion(taperedCapsule(q, v(0.15, 0.05, 0.), v(-0.55, -0.02, 0.), 0.36, 0.22),
+      taperedCapsule(q, v(-0.55, -0.02, 0.), v(-1.25, -0.12, 0.), 0.22, 0.08), 0.08);
+    d = smoothUnion(d, taperedCapsule(q, v(-0.7, 0.1, 0.1), v(-0.1, 0.27, 0.24), 0.04, 0.08), 0.05);
+    d = smoothUnion(d, taperedCapsule(q, v(-0.3, -0.1, 0.22), v(0.1, -0.05, 0.3), 0.07, 0.1), 0.05);
+    // The mouth and the eyes cut out
+    d = smoothSubtract(d, capsule(q, v(-0.3, -0.16, 0.), v(-1.35, -0.2, 0.), 0.065), 0.02);
+    d = smoothSubtract(d, sphere(q - v(-0.45, 0.09, 0.2), 0.075), 0.02);
+    // The jaw bones
+    d = smoothUnion(d, taperedCapsule(q, v(0.05, -0.2, 0.22), v(-1.1, -0.3, 0.06), 0.09, 0.04), 0.04);
+    // Two pairs of horns swept back along the neck
+    d = smoothUnion(d, chain(q, v(0., 0.25, 0.2), v(0.65, 0.48, 0.4), v(1.35, 0.6, 0.5), 0.1, 0.065, 0.03), 0.05);
+    d = minf(d, taperedCapsule(q, v(1.35, 0.6, 0.5), v(2.0, 0.58, 0.52), 0.03, 0.003));
+    d = smoothUnion(d, chain(q, v(0.1, -0.05, 0.3), v(0.7, -0.05, 0.55), v(1.25, 0.02, 0.62), 0.07, 0.04, 0.004), 0.04);
+    // Teeth
+    mut k = 0;
+    while k < 5 {
+      imm x = -1.15 + 0.17 * f32.from(k);
+      d = minf(d, taperedCapsule(q, v(x, -0.14, 0.07), v(x - 0.02, -0.29, 0.07), 0.025, 0.003));
+      k = k + 1;
+    }
+    d;
+  }
+
+  // A wing's membrane: triangles from the shoulder and the wrist,
+  // thickened, the trailing edge scalloped by a ball cut out between each
+  // pair of tips
+  pub fn membraneAt(self &, q Vec3) f32 {
+    imm sh = self.w(0usize);
+    imm wr = self.w(2usize);
+    mut m = minf(triangle(q, sh, self.w(1usize), wr), minf(triangle(q, sh, wr, self.w(6usize)), triangle(q, sh, self.w(6usize), self.w(7usize))));
+    mut f = 3usize;
+    while f < 6usize {
+      m = minf(m, triangle(q, wr, self.w(f), self.w(f + 1usize)));
+      f = f + 1usize;
+    }
+    m = m - MEMBRANE;
+    f = 3usize;
+    while f < 7usize {
+      imm a = self.w(f);
+      imm b = self.w(f + 1usize);
+      imm mid = (a + b) * 0.5;
+      imm from = if f == 6usize { sh; } else { wr; };
+      imm span = (b - a).length();
+      imm r = 0.55 * span;
+      m = smoothSubtract(m, sphere(q - (mid + (mid - from).normalize() * (r - 0.25 * span)), r), 0.02);
+      f = f + 1usize;
+    }
+    m;
+  }
+
+  // A wing's bones
+  pub fn wingAt(self &, q Vec3) f32 {
+    imm sh = self.w(0usize);
+    imm el = self.w(1usize);
+    imm wr = self.w(2usize);
+    mut b = smoothUnion(taperedCapsule(q, sh, el, 0.15, 0.11), taperedCapsule(q, el, wr, 0.11, 0.08), 0.04);
+    b = smoothUnion(b, sphere(q - wr, 0.12), 0.04);
+    mut f = 3usize;
+    while f < 7usize {
+      imm from = if f == 6usize { sh; } else { wr; };
+      b = smoothUnion(b, taperedCapsule(q, wr, self.w(f), 0.1, 0.04), 0.03);
+      // A thin spar between each pair of fingers, stopping short of the scallop
+      b = smoothUnion(b, taperedCapsule(q, from, from.lerp(self.w(f).lerp(self.w(f + 1usize), 0.5), 0.72), 0.065, 0.035), 0.03);
+      f = f + 1usize;
+    }
+    // Spikes along the leading edge, up and back, asked only when the edge
+    // is near enough to change the union
+    if minf(capsule(q, sh, el, 0.), capsule(q, el, wr, 0.)) - 0.45 < b + 0.08 {
+      mut s = 0;
+      while s < 9 {
+        imm along = (f32.from(s) + 0.5) / 9.;
+        imm base = if along < 0.33 { sh.lerp(el, along * 3.); } else { el.lerp(wr, (along - 0.33) * 1.5); };
+        imm h = 0.22 + 0.1 * jitter(s, 2u32);
+        b = smoothUnion(b, taperedCapsule(q, base, base + v(0.6 * h, h, 0.15 * h), 0.045, 0.004), 0.02);
+        s = s + 1;
+      }
+    }
+    b;
+  }
+
+  pub fn distance(self &, p Vec3) f32 {
+    imm q = v(p.x, p.y, absf(p.z));
+    if membrane { return self.membraneAt(q); }
+    mut d = self.body(q);
+    // The vertebrae reach less than 1.6 from the spine
+    mut axis f32 = 3.4028235e38;
+    mut i = 0usize;
+    while i < usize.from(SEGMENTS) {
+      axis = minf(axis, capsule(q, *spine[i], *spine[i + 1usize], 0.));
+      i = i + 1usize;
+    }
+    if axis - 1.6 < d { d = minf(d, repeatAlongCells(&cells, &vertebrae, p)); }
+    if near(q, v(-0.2, 0.15, 0.), 2.6, d, 0.06) { d = smoothUnion(d, self.skull(q), 0.06); }
+    if near(q, v(5.4, -0.3, 3.9), 4.8, d, 0.08) { d = smoothUnion(d, self.wingAt(q), 0.08); }
+    d;
+  }
+
+  // A box holding the ship, or the membranes
+  pub fn bounds(self &) Aabb3 {
+    if membrane { return new Aabb3(v(2.5, -1.4, -7.5), v(8.4, 0.7, 7.5)); }
+    new Aabb3(v(-1.5, -1.6, -7.7), v(13.6, 2.5, 7.7));
+  }
+}
+
+// ---- The lights: small bright spheres, (x, y, z, radius) ----
+
+fn lights(ship &Ship) List[Vec4] {
+  mut l = List[Vec4].empty();
+  mut side = -1.;
+  while side < 2. {
+    l.push(new Vec4(-0.45, 0.09, 0.19 * side, 0.05));
+    mut k = 0;
+    while k < 28 {
+      imm along = (f32.from(k) + 0.5) / 28.;
+      imm at = if along < 0.4 { ship.w(0usize).lerp(ship.w(1usize), along * 2.5); }
+        else { ship.w(1usize).lerp(ship.w(2usize), (along - 0.4) / 0.6); };
+      l.push(new Vec4(at.x - 0.12, at.y - 0.05, at.z * side, 0.022));
+      k = k + 1;
+    }
+    side = side + 2.;
+  }
+  mut k = 0;
+  while k < 5 {
+    l.push(new Vec4(-0.45 - 0.17 * f32.from(k), -0.2, 0., 0.035));
+    k = k + 1;
+  }
+  l;
+}
+
+// ---- The stars: short segments far away ----
+
+fn stars(group u32) List[Vec3] {
+  mut s = List[Vec3].empty();
+  mut i = 0;
+  while i < 700 {
+    imm h = noise.hash2(i, i32.from(group), SEED);
+    imm z = noise.toSigned(h.x);
+    imm a = noise.toUnit(h.y) * 6.2831853;
+    imm r = (1. - z * z).sqrt();
+    imm d = v(r * cos(a), z, r * sin(a)) * 300.;
+    s.push(d);
+    s.push(d + v(0.12, 0.12, 0.));
+    i = i + 1;
+  }
+  s;
+}
+
+// ---- Arguments ----
+
+fn cstrEquals(a *u8, b &[]u8) Bool {
+  mut i = 0usize;
+  while i < b.len {
+    if *(a + i) != b[i] { return false; }
+    i = i + 1usize;
+  }
+  *(a + b.len) == 0u8;
+}
+
+fn appendCstr(s &mut String, c *u8) {
+  mut i = 0usize;
+  while *(c + i) != 0u8 {
+    s.appendByte(*(c + i));
+    i = i + 1usize;
+  }
+}
+
+fn named(prefix &String, suffix &[]u8) String {
+  mut s = prefix.copy();
+  s <- suffix;
+  s;
+}
+
+// ---- The demo ----
+
+fn main(argc i32, argv **u8) i32 {
+  mut shots = String.empty();
+  shots <- "starship";
+  mut objPrefix = String.empty();
+  mut a = 1;
+  while a + 1 < argc {
+    imm arg = *(argv + usize.from(a));
+    if cstrEquals(arg, "--shots") { shots = String.empty(); appendCstr(&mut shots, *(argv + usize.from(a + 1))); }
+    elif cstrEquals(arg, "--obj") { appendCstr(&mut objPrefix, *(argv + usize.from(a + 1))); }
+    else { print <- "Unknown argument; use --shots PREFIX and --obj PREFIX\n"; return 2; }
+    a = a + 2;
+  }
+
+  // The frame and the membranes, each meshed at LEVELS levels
+  mut meshes = List[mesh.Mesh].empty();
+  mut ok = true;
+  mut part = 0usize;
+  while part < 2usize {
+    imm ship = Ship.make(part == 1usize);
+    mut cell = FINEST;
+    mut level = 0usize;
+    while level < LEVELS {
+      imm started = sdl.GetPerformanceCounter();
+      imm net = surfaceNet(&ship, ship.bounds(), cell, 1u32, true);
+      imm m = net.toMesh();
+      imm h = meshHash(&m);
+      printStr(PARTS[part]); print <- ", level "; print <- level; print <- ": cells of "; print <- cell; print <- ", ";
+      print <- m.vertexCount(); print <- " vertices, "; print <- m.triangleCount(); print <- " triangles, ";
+      print <- net.evaluations; print <- " distances, ";
+      print <- f64.from(sdl.GetPerformanceCounter() - started) / f64.from(sdl.GetPerformanceFrequency()); print <- " s; hash ";
+      mut hex = String.empty();
+      hex.appendHex(u64.from(h), 8usize);
+      printStr(hex.view());
+      if h == PINNED[part * LEVELS + level] { print <- " (as pinned)\n"; } else { print <- " (NOT as pinned)\n"; ok = false; }
+      if objPrefix.len() > 0usize {
+        mut name = objPrefix.copy();
+        name <- "-";
+        name <- PARTS[part];
+        name <- "-lod";
+        name.appendByte(u8.from('0') + u8.from(level));
+        name <- ".obj";
+        if !mesh.writeObj(&m, name.view()) { print <- "Could NOT write "; printStr(name.view()); print <- "\n"; ok = false; }
+      }
+      meshes.push(m);
+      cell = cell * 2.;
+      level = level + 1usize;
+    }
+    part = part + 1usize;
+  }
+
+  // The GPU, no window
+  mut instance = Instance.create("starship");
+  mut none = Surface.none();
+  imm powerEnv = libc.getenv(&"GPU_POWER_PREFERENCE" as *u8);
+  mut preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
+  if (powerEnv as usize) != 0usize and libc.strcmp(powerEnv, &"low-power" as *u8) == 0i32 { preference = POWER_PREFERENCE_LOW_POWER; }
+  mut adapter = instance.requestAdapter(&none, preference);
+  if !instance.isValid() or !adapter.isValid() {
+    print <- "No GPU can draw\n";
+    return 1;
+  }
+  print <- "Adapter: "; printStr(adapter.name.view());
+  if instance.validation { print <- "; validation on\n"; } else { print <- "; validation off\n"; }
+  mut device = adapter.requestDevice();
+  mut renderer = Renderer.create(&mut device, TEXTURE_FORMAT_RGBA16_FLOAT, TEXTURE_FORMAT_DEPTH32_FLOAT);
+
+  // Space: black, the planet's dim red light from below (for the
+  // image-based lighting), a cold sun low on the right, behind the ship
+  mut sky = Sky.dusk(radians(30.), radians(22.));
+  sky.sunColor = new Color(6., 6.5, 8., 1.);
+  sky.zenith = new Color(0.001, 0.0012, 0.003, 1.);
+  sky.horizon = new Color(0.006, 0.004, 0.005, 1.);
+  sky.glow = new Color(0.02, 0.022, 0.03, 1.);
+  sky.ground = new Color(0.01, 0.003, 0.002, 1.);
+  sky.groundFade = 3.;
+  renderer.setSky(&mut device, &sky);
+  imm light = sky.sunLight(new Color(3.0, 3.2, 3.8, 1.), new Color(0.05, 0.05, 0.05, 1.));
+
+  // The frame: blue-grey metal under a coat; the membrane darker and rougher
+  mut metal = PbrMaterial.standard(new Color(0.11, 0.12, 0.16, 1.), 0.85, 0.35);
+  metal.clearcoat = 0.6;
+  metal.clearcoatRoughness = 0.12;
+  imm frameM = renderer.addPbrMaterial(&mut device, &metal);
+  imm leather = PbrMaterial.standard(new Color(0.035, 0.04, 0.065, 1.), 0.5, 0.6);
+  imm membraneM = renderer.addPbrMaterial(&mut device, &leather);
+  imm warm = Material.plain(new Color(160., 70., 20., 1.));
+  imm glowWarm = renderer.addMaterial(&mut device, &warm);
+  imm blue = Material.plain(new Color(50., 60., 200., 1.));
+  imm glowBlue = renderer.addMaterial(&mut device, &blue);
+  imm frameMesh = renderer.addMesh(&mut device, meshes[0usize]);
+  imm membraneMesh = renderer.addMesh(&mut device, meshes[LEVELS]);
+  imm ballMesh = mesh.Mesh.sphere(1., 10);
+  imm ball = renderer.addMesh(&mut device, &ballMesh);
+  // The planet: a great rust-red ball below and beyond
+  imm planetMesh = mesh.Mesh.sphere(1., 96);
+  imm planet = renderer.addMesh(&mut device, &planetMesh);
+  imm rust = PbrMaterial.standard(new Color(0.32, 0.1, 0.05, 1.), 0., 0.9);
+  imm planetM = renderer.addPbrMaterial(&mut device, &rust);
+  mut starMeshes = List[MeshHandle].empty();
+  mut g = 0u32;
+  while g < 3u32 {
+    imm s = stars(g);
+    mut idx = List[u32].empty();
+    mut j = 0u32;
+    while j < u32.from(s.len()) { idx.push(j); j = j + 1u32; }
+    starMeshes.push(renderer.addLines(&mut device, s.view(), idx.view()));
+    g = g + 1u32;
+  }
+
+  mut list = DrawList.empty();
+  list.add(frameMesh, frameM, Mat4.identity());
+  list.add(membraneMesh, membraneM, Mat4.identity());
+  imm ship = Ship.make(false);
+  imm glows = lights(&ship);
+  mut i = 0usize;
+  while i < glows.len() {
+    imm l = *glows[i];
+    imm material = if l.w > 0.03 { glowWarm; } else { glowBlue; };
+    list.add(ball, material, Mat4.fromTrs(v(l.x, l.y, l.z), Quat.identity(), v(l.w, l.w, l.w)));
+    i = i + 1usize;
+  }
+  list.add(planet, planetM, Mat4.fromTrs(v(171., -169., -13.), Quat.identity(), v(150., 150., 150.)));
+  imm starColors Array[f32, 3] = [0.6, 1.5, 4.];
+  i = 0usize;
+  while i < 3usize {
+    imm c = starColors[i];
+    list.addLines(*starMeshes[i], Mat4.identity(), new Color(c, c, c * 1.1, 1.));
+    i = i + 1usize;
+  }
+
+  // The shots: as the reference frames it, from the side, from ahead
+  imm targetDesc = new TextureDescriptor(WIDTH, HEIGHT, TEXTURE_FORMAT_RGBA8_UNORM_SRGB,
+    TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
+  mut target = device.createTexture(&targetDesc);
+  imm depthDesc = new TextureDescriptor(WIDTH, HEIGHT, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT);
+  mut depth = device.createTexture(&depthDesc);
+  mut post = Post.create(&mut device, TEXTURE_FORMAT_RGBA8_UNORM_SRGB, WIDTH, HEIGHT);
+  mut readback = device.createBuffer(u64.from(WIDTH) * u64.from(HEIGHT) * 4u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  if !renderer.isValid() or !post.isValid() or !target.isValid() {
+    print <- "The renderer could not be made\n";
+    return 1;
+  }
+  mut camera = Camera.make();
+  camera.fov = radians(35.);
+  camera.near = 0.5;
+  camera.far = 600.;
+  imm names Array[&[]u8, 3] = ["-hero.bmp", "-side.bmp", "-front.bmp"];
+  imm eyes Array[Vec3, 3] = [v(-3., 12., 12.5), v(5., 1.5, 19.), v(-8., 3.5, 7.)];
+  imm targets Array[Vec3, 3] = [v(6., -0.3, 2.), v(5.5, 0.3, 0.), v(3.5, 0., 0.)];
+  imm ups Array[Vec3, 3] = [v(0.6, 1., 0.), v(0., 1., 0.), v(0., 1., 0.)];
+  mut s = 0usize;
+  while s < 3usize {
+    camera.lookAt(eyes[s], targets[s], ups[s]);
+    mut encoder = device.createCommandEncoder();
+    renderer.render(&mut device, &mut encoder, &post.hdr, &depth, &camera, &light, &list);
+    post.apply(&mut encoder, &target);
+    encoder.copyTextureToBuffer(&target, &readback);
+    device.queue.submit(encoder.finish());
+    device.endFrame();
+    device.waitIdle();
+    imm shot = Image.fromTexels(readback.mappedRange(), i32.from(WIDTH), i32.from(HEIGHT), false);
+    imm name = named(&shots, names[s]);
+    if shot.save(name.view()) { print <- "Shot: "; printStr(name.view()); print <- "\n"; }
+    else { print <- "Could NOT write "; printStr(name.view()); print <- "\n"; ok = false; }
+    s = s + 1usize;
+  }
+
+  print <- "Vulkan failures: "; print <- u64.from(failures());
+  print <- "; validation messages: "; print <- u64.from(validationMessages()); print <- "\n";
+  if !ok or failures() != 0u32 or validationMessages() != 0u32 { print <- "FAILED\n"; return 1; }
+  print <- "OK\n";
+  0;
+}

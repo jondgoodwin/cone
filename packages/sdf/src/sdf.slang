@@ -12,7 +12,8 @@
 // 'Horn.make') this has a function ('makeArc', 'makeArcCells', 'makeHorn');
 // a rotation is a float4 (x, y, z, w) for geomath's Quat; the Cone traits Shape, Curve
 // and Repeated are the interfaces IShape, ICurve and IRepeated, and the
-// generic functions are Slang generics over them. PathCurve is CPU only.
+// generic functions are Slang generics over them. PathCurve and CurveCells
+// are CPU only.
 // Lengths and dot products are written out ('len3', 'dot3'), never Slang's
 // 'length' or 'dot', whose order of additions a driver chooses. The parity
 // test, tests/parity.cone, checks this module against the Cone package on a
@@ -31,6 +32,7 @@ float sdfMod(float x, float y) { return x - y * floor(x / y); }
 float len2(float x, float y) { return sqrt(x * x + y * y); }
 float len3(float3 v) { return sqrt(v.x * v.x + v.y * v.y + v.z * v.z); }
 float dot3(float3 a, float3 b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
+float3 cross3(float3 a, float3 b) { return float3(a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x); }
 
 struct Blend {
     float distance;
@@ -109,6 +111,44 @@ float roundCone(float3 p, float bottom, float top, float height) {
     if (k < 0.0) return len2(qx, qy) - bottom;
     if (k > a * height) return len2(qx, qy - height) - top;
     return qx * a + qy * b - bottom;
+}
+
+float taperedCapsule(float3 p, float3 a, float3 b, float ra, float rb) {
+    float3 ba = b - a;
+    float3 pa = p - a;
+    float h = len3(ba);
+    float dr = ra - rb;
+    if (h <= abs(dr)) return ra > rb ? len3(pa) - ra : len3(p - b) - rb;
+    float inv = 1.0 / h;
+    float3 axis = float3(ba.x * inv, ba.y * inv, ba.z * inv);
+    float y = dot3(pa, axis);
+    float qx = len3(float3(pa.x - axis.x * y, pa.y - axis.y * y, pa.z - axis.z * y));
+    float sb = dr / h;
+    float ca = sqrt(max(1.0 - sb * sb, 0.0));
+    float k = qx * (0.0 - sb) + y * ca;
+    if (k < 0.0) return len2(qx, y) - ra;
+    if (k > ca * h) return len2(qx, y - h) - rb;
+    return qx * ca + y * sb - ra;
+}
+
+float triangle(float3 p, float3 a, float3 b, float3 c) {
+    float3 ba = b - a;
+    float3 cb = c - b;
+    float3 ac = a - c;
+    float3 pa = p - a;
+    float3 pb = p - b;
+    float3 pc = p - c;
+    float3 n = cross3(ba, ac);
+    float nn = dot3(n, n);
+    if (nn > 0.0 && dot3(cross3(ba, n), pa) >= 0.0 && dot3(cross3(cb, n), pb) >= 0.0 && dot3(cross3(ac, n), pc) >= 0.0)
+        return abs(dot3(n, pa)) / sqrt(nn);
+    float ea = clamp(dot3(ba, pa) / max(dot3(ba, ba), 1e-30), 0.0, 1.0);
+    float eb = clamp(dot3(cb, pb) / max(dot3(cb, cb), 1e-30), 0.0, 1.0);
+    float ec = clamp(dot3(ac, pc) / max(dot3(ac, ac), 1e-30), 0.0, 1.0);
+    float3 qa = float3(pa.x - ba.x * ea, pa.y - ba.y * ea, pa.z - ba.z * ea);
+    float3 qb = float3(pb.x - cb.x * eb, pb.y - cb.y * eb, pb.z - cb.z * eb);
+    float3 qc = float3(pc.x - ac.x * ec, pc.y - ac.y * ec, pc.z - ac.z * ec);
+    return sqrt(min(dot3(qa, qa), min(dot3(qb, qb), dot3(qc, qc))));
 }
 
 float plane(float3 p, float3 n, float offset) { return dot3(p, n) + offset; }
