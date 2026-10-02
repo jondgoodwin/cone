@@ -100,10 +100,11 @@ fn findVcvars() String {
   imm vswhere = joined(pf.view(), "Microsoft Visual Studio\\Installer\\vswhere.exe");
   if fs.exists(vswhere.view()) {
     imm args = argList(vswhere.view(), "-latest", "-products", "*",
-      "-requires", "Microsoft.VisualStudio.Component.VC.Tools.x86.x64", "-property", "installationPath");
+      "-requires", "Microsoft.VisualStudio.Component.VC.Tools.x86.x64", "-property", "installationPath",
+      "-utf8");
     match process.run(args.view()) {
       case imm ok Ok {
-        imm out = textOf(ok.value.stdout.view());
+        imm out = utf8Text(ok.value.stdout.view());
         imm trimmed = out.trim();
         imm roots = splitLines(trimmed.view());
         if roots.len() > 0usize {
@@ -133,8 +134,8 @@ fn isMsvcLinker(tool &[]u8) Bool {
   match process.run(args.view(), new process.Options(timeoutMs: 20000u64)) {
     case imm ok Ok {
       if ok.value.timedOut { return false; }
-      mut both = textOf(ok.value.stdout.view());
-      imm err = textOf(ok.value.stderr.view());
+      mut both = consoleText(ok.value.stdout.view());
+      imm err = consoleText(ok.value.stderr.view());
       both <- err.view();
       both.contains("Microsoft");
     }
@@ -224,17 +225,18 @@ fn runVcvars(changes &mut EnvChanges) Vcvars {
   imm vcvars = findVcvars();
   if vcvars.isEmpty() { fail(String.from("no Visual Studio C++ tools (vcvars64.bat) to link with")); }
   // The line as written, not quoted again: cmd would not recognise the
-  // batch path. The marker divides what vcvars64.bat prints from the
-  // environment set prints.
+  // batch path. The marker divides what vcvars64.bat prints, in the
+  // console's code page, from the environment, which 'cmd /u' prints in
+  // UTF-16 so that every value arrives whole.
   imm marker &[]u8 = "--congo: vcvars64.bat's environment--";
-  imm line = cat("cmd /c \"\"", vcvars.view(), "\" && echo ", marker, "&& set\"");
+  imm line = cat("cmd /c \"\"", vcvars.view(), "\" && echo ", marker, "&& cmd /u /c set\"");
   mut out = String.empty();
   mut err = String.empty();
   mut code = 0u32;
   match process.runLine(line.view()) {
     case imm ok Ok {
-      out = textOf(ok.value.stdout.view());
-      err = textOf(ok.value.stderr.view());
+      out = ok.value.stdout.copy();
+      err = consoleText(ok.value.stderr.view());
       code = ok.value.exitCode;
     }
     case imm e Error {
@@ -243,12 +245,18 @@ fn runVcvars(changes &mut EnvChanges) Vcvars {
   }
   mut printed = String.empty();
   mut variables = String.empty();
+  imm raw = out.view();
   match out.find(marker) {
     case imm at Some {
-      printed = out.sub(0usize, at.value);
-      variables = out.sub(at.value + marker.len, out.len());
+      printed = consoleText(&raw[..at.value]);
+      // After the line end echo writes
+      mut from = at.value + marker.len;
+      if from + 2usize <= raw.len and raw[from] == '\r' and raw[from + 1usize] == '\n' {
+        from = from + 2usize;
+      }
+      variables = utf16Text(&raw[from..]);
     }
-    case is None { printed = out.copy(); }
+    case is None { printed = consoleText(raw); }
   }
   if code != 0u32 or variables.isEmpty() {
     fail(cat(vcvars.view(), " failed:\n", printed.view(), err.view()));

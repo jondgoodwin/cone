@@ -390,6 +390,28 @@ class Scenarios(unittest.TestCase):
         self.assertTrue((self.root / "home" / "lone" / f"{name}-{digest[:10]}" / "debug"
                          / f"lone{congo.EXE_EXT}").is_file())
 
+    def test_a_compile_error_names_a_non_ascii_path(self):
+        # conec prints the path in UTF-8, and Congo reads it as UTF-8 and
+        # writes it so: the message names the file as it is spelled
+        name = "café日本"
+        write(self.root / name / "bad.cone", """
+            mod bad;
+
+            fn main() i32 {
+              nosuch();
+              0i32;
+            }
+            """)
+        run = subprocess.run([*CONGO, "run", f"{name}/bad.cone"], cwd=self.root,
+                             env=self.env, capture_output=True)
+        out = run.stdout.decode("utf-8").replace("\r\n", "\n")
+        err = run.stderr.decode("utf-8").replace("\r\n", "\n")
+        self.assertEqual(run.returncode, 1, out + err)
+        spelled = (self.root / name / "bad.cone").resolve().as_posix()
+        self.assertIn("Error 1019: The name nosuch does not refer to a declared name\n", out)
+        self.assertIn(f"^--- {spelled}:4:3\n", out)
+        self.assertIn("congo: error: could not compile bad", err)
+
     def test_a_package_from_the_registry_importing_stdio(self):
         packages = self.root / "mypackages"
         self.registry(packages)

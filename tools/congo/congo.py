@@ -39,6 +39,7 @@ user's guide.
 from __future__ import annotations
 
 import argparse
+import codecs
 import difflib
 import hashlib
 import os
@@ -890,6 +891,33 @@ def find_conestd(conec: Path) -> Path:
     return path
 
 
+def newlines(text: str) -> str:
+    """Every line end made '\\n', as text=True's universal newlines make '\\r\\n'
+    and a lone '\\r'."""
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def utf8_text(data: bytes) -> str:
+    """What conec, or vswhere with -utf8, printed: UTF-8."""
+    return newlines(data.decode("utf-8", "replace"))
+
+
+def console_text(data: bytes) -> str:
+    """What a console program Congo starts printed, link.exe and cmd among
+    them: text in the code page of the console it shares with Congo, or, when
+    Congo has none, of the console Windows makes for it, whose code page is
+    the OEM one. Read through Windows' own conversion, as the Cone Congo
+    reads it."""
+    if not IS_WINDOWS:
+        return utf8_text(data)
+    import ctypes
+    kernel32 = ctypes.windll.kernel32
+    page = kernel32.GetConsoleOutputCP() or kernel32.GetOEMCP()
+    if page == 65001:
+        return utf8_text(data)
+    return newlines(codecs.code_page_decode(page, data, "replace", True)[0])
+
+
 def find_vcvars() -> str | None:
     vswhere = Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")) \
         / "Microsoft Visual Studio" / "Installer" / "vswhere.exe"
@@ -897,9 +925,9 @@ def find_vcvars() -> str | None:
         result = subprocess.run(
             [str(vswhere), "-latest", "-products", "*",
              "-requires", "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
-             "-property", "installationPath"],
-            capture_output=True, text=True)
-        root = result.stdout.strip().splitlines()
+             "-property", "installationPath", "-utf8"],
+            capture_output=True)
+        root = utf8_text(result.stdout).strip().splitlines()
         if root:
             candidate = Path(root[0]) / "VC" / "Auxiliary" / "Build" / "vcvars64.bat"
             if candidate.exists():
@@ -916,11 +944,11 @@ def is_msvc_linker(tool: str) -> bool:
     """Git for Windows ships a coreutils link.exe, which is not a linker at all,
     so an inherited link.exe is trusted only when it says it is Microsoft's."""
     try:
-        banner = subprocess.run([tool, "/?"], capture_output=True, text=True,
-                                errors="replace", stdin=subprocess.DEVNULL, timeout=20)
+        banner = subprocess.run([tool, "/?"], capture_output=True,
+                                stdin=subprocess.DEVNULL, timeout=20)
     except (OSError, subprocess.SubprocessError):
         return False
-    return "Microsoft" in banner.stdout + banner.stderr
+    return "Microsoft" in console_text(banner.stdout) + console_text(banner.stderr)
 
 
 def env_value(env: dict[str, str], name: str) -> str | None:
@@ -1042,14 +1070,23 @@ class Linker:
             raise CongoError("no Visual Studio C++ tools (vcvars64.bat) to link with")
         # A single string, not a list: list2cmdline would escape the quotes
         # around the batch path, and cmd would not recognise it. The marker
-        # divides what vcvars64.bat prints from the environment set prints.
+        # divides what vcvars64.bat prints, in the console's code page, from
+        # the environment, which 'cmd /u' prints in UTF-16 so that every value
+        # arrives whole.
         marker = "--congo: vcvars64.bat's environment--"
-        result = subprocess.run(f'cmd /c ""{vcvars}" && echo {marker}&& set"', env=base,
-                                capture_output=True, text=True, errors="replace")
-        printed, _, variables = result.stdout.partition(marker)
+        result = subprocess.run(f'cmd /c ""{vcvars}" && echo {marker}&& cmd /u /c set"',
+                                env=base, capture_output=True)
+        before, found, after = result.stdout.partition(marker.encode())
+        printed = console_text(before)
+        variables = ""
+        if found:
+            # After the line end echo writes
+            after = after[2:] if after.startswith(b"\r\n") else after
+            variables = newlines(after.decode("utf-16-le", "replace"))
+        err = console_text(result.stderr)
         if result.returncode != 0 or not variables:
-            raise CongoError(f"{vcvars} failed:\n{printed}{result.stderr}")
-        return with_set_output(base, variables), (vcvars, printed + result.stderr)
+            raise CongoError(f"{vcvars} failed:\n{printed}{err}")
+        return with_set_output(base, variables), (vcvars, printed + err)
 
     def command(self, objs: list[Path], exe: Path, libraries: list[str] = (),
                 paths: list[Path] = ()) -> list[str]:
@@ -1091,8 +1128,9 @@ def compile_unit(conec: Path, unit: Unit, out: Path, mode: str, top: bool,
     if announce:
         say("Compiling", f"{unit.pkg.label()} ({unit.pkg.root})")
     result = subprocess.run([str(conec), "-o", str(out), str(desc)], env=env,
-                            capture_output=True, text=True, errors="replace")
-    chatter = [line for line in (result.stdout + result.stderr).splitlines()
+                            capture_output=True)
+    said = utf8_text(result.stdout) + utf8_text(result.stderr)
+    chatter = [line for line in said.splitlines()
                if line.strip() and not line.startswith("Compile finished")]
     if chatter:
         print("\n".join(chatter), flush=True)
@@ -1204,8 +1242,7 @@ class Session:
         if announce:
             say("Linking", shown(exe))
         exe.unlink(missing_ok=True)
-        result = subprocess.run(command, env=linker.env, capture_output=True, text=True,
-                                errors="replace")
+        result = subprocess.run(command, env=linker.env, capture_output=True)
         if result.returncode != 0:
             named = "; ".join(f"{u.pkg.name} names {', '.join(u.pkg.libraries)}"
                               for u in units if u.pkg.libraries)
@@ -1213,8 +1250,8 @@ class Session:
                      else "the linker's own search path")
             hint = (f"\nC libraries linked ({named}): the linker looks for each in the"
                     f" folders [link] paths names, then in {where}" if named else "")
-            raise CongoError(f"link failed:\n{' '.join(command)}\n{result.stdout}"
-                             f"{result.stderr}{hint}")
+            raise CongoError(f"link failed:\n{' '.join(command)}\n{console_text(result.stdout)}"
+                             f"{console_text(result.stderr)}{hint}")
 
 
 def build(pkg: Package, mode: str, session: Session | None = None) -> Path:

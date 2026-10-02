@@ -56,34 +56,130 @@ fn appendUtf8(s &mut String, cp u32) {
   }
 }
 
-// What Windows-1252 makes of the bytes 0x80 to 0x9F; 0xFFFD for the five it
-// leaves undefined, as Python's codec with errors='replace' does
-fn cp1252High(b u8) u32 {
-  imm table = [0x20ACu32, 0xFFFDu32, 0x201Au32, 0x0192u32, 0x201Eu32, 0x2026u32, 0x2020u32, 0x2021u32,
-    0x02C6u32, 0x2030u32, 0x0160u32, 0x2039u32, 0x0152u32, 0xFFFDu32, 0x017Du32, 0xFFFDu32,
-    0xFFFDu32, 0x2018u32, 0x2019u32, 0x201Cu32, 0x201Du32, 0x2022u32, 0x2013u32, 0x2014u32,
-    0x02DCu32, 0x2122u32, 0x0161u32, 0x203Au32, 0x0153u32, 0xFFFDu32, 0x017Eu32, 0x0178u32];
-  table[usize.from(b - 0x80u8)];
-}
-
-// What a child program printed, as congo.py reads it with
-// subprocess.run(text=True, errors='replace'): decoded in the locale's code
-// page, Windows-1252 here, and every line end made '\n'
-fn textOf(bytes &[]u8) String {
-  mut out = String.withCapacity(bytes.len);
+// Text with every line end made '\n', as Python's universal newlines make
+// '\r\n' and a lone '\r'
+fn newlines(text &[]u8) String {
+  mut out = String.withCapacity(text.len);
   mut i = 0usize;
-  while i < bytes.len {
-    imm b = bytes[i];
+  while i < text.len {
+    imm b = text[i];
     if b == '\r' {
       out.appendByte('\n');
-      if i + 1usize < bytes.len and bytes[i + 1usize] == '\n' { i = i + 1usize; }
+      if i + 1usize < text.len and text[i + 1usize] == '\n' { i = i + 1usize; }
     }
-    elif b < 0x80u8 { out.appendByte(b); }
-    elif b < 0xA0u8 { appendUtf8(&mut out, cp1252High(b)); }
-    else { appendUtf8(&mut out, u32.from(b)); }
+    else { out.appendByte(b); }
     i = i + 1usize;
   }
   out;
+}
+
+// How many bytes from i make one well-formed UTF-8 character, with ok
+// true; else, ok false, how many of them begin one that is cut short (at
+// least 1): the maximal subpart, which Python's decoder replaces with one
+// U+FFFD
+fn utf8At(b &[]u8, i usize, ok &mut Bool) usize {
+  imm b0 = b[i];
+  *ok = true;
+  if b0 < 0x80u8 { return 1usize; }
+  *ok = false;
+  mut need = 0usize;
+  mut lo = 0x80u8;
+  mut hi = 0xBFu8;
+  if b0 >= 0xC2u8 and b0 <= 0xDFu8 { need = 1usize; }
+  elif b0 == 0xE0u8 { need = 2usize; lo = 0xA0u8; }
+  elif b0 == 0xEDu8 { need = 2usize; hi = 0x9Fu8; }
+  elif b0 >= 0xE1u8 and b0 <= 0xEFu8 { need = 2usize; }
+  elif b0 == 0xF0u8 { need = 3usize; lo = 0x90u8; }
+  elif b0 == 0xF4u8 { need = 3usize; hi = 0x8Fu8; }
+  elif b0 >= 0xF1u8 and b0 <= 0xF3u8 { need = 3usize; }
+  else { return 1usize; }
+  mut k = 1usize;
+  while k <= need {
+    if i + k >= b.len { return k; }
+    imm c = b[i + k];
+    if k == 1usize {
+      if c < lo or c > hi { return 1usize; }
+    }
+    elif c < 0x80u8 or c > 0xBFu8 { return k; }
+    k = k + 1usize;
+  }
+  *ok = true;
+  need + 1usize;
+}
+
+// What conec, or vswhere with -utf8, printed: UTF-8, as congo.py reads it
+// with decode('utf-8', 'replace'), and every line end made '\n'
+fn utf8Text(bytes &[]u8) String {
+  mut out = String.withCapacity(bytes.len);
+  mut i = 0usize;
+  while i < bytes.len {
+    mut ok = true;
+    imm n = utf8At(bytes, i, &mut ok);
+    if ok { out.append(&bytes[i..i + n]); }
+    else { appendUtf8(&mut out, 0xFFFDu32); }
+    i = i + n;
+  }
+  newlines(out.view());
+}
+
+// kernel32's, for the text a console program writes
+extern {
+  fn @c(system) GetConsoleOutputCP() u32;
+  fn @c(system) GetOEMCP() u32;
+  fn @c(system) MultiByteToWideChar(page u32, flags u32, from *u8, fromLen i32, to *u16, toLen i32) i32;
+  fn @c(system) WideCharToMultiByte(page u32, flags u32, from *u16, fromLen i32, to *u8, toLen i32,
+      fallback *u8, usedFallback *i32) i32;
+}
+
+const utf8Page = 65001u32;
+
+// n UTF-16 units from p, as UTF-8; a lone surrogate becomes U+FFFD
+fn fromUtf16(p *u16, n i32) String {
+  mut out = String.empty();
+  if n <= 0i32 { return out; }
+  imm size = WideCharToMultiByte(utf8Page, 0u32, p, n, 0usize as *u8, 0i32, 0usize as *u8, 0usize as *i32);
+  if size <= 0i32 { return out; }
+  imm buf = libc.malloc(usize.from(size));
+  WideCharToMultiByte(utf8Page, 0u32, p, n, buf, size, 0usize as *u8, 0usize as *i32);
+  out.append(mem.sliceFromParts(buf, usize.from(size)));
+  libc.free(buf);
+  out;
+}
+
+// What a console program Congo starts printed, link.exe and cmd among
+// them: text in the code page of the console it shares with Congo, or,
+// when Congo has none, of the console Windows makes for it, whose code page
+// is the OEM one. congo.py reads it the same way, through Windows' own
+// conversion; every line end made '\n'
+fn consoleText(bytes &[]u8) String {
+  mut page = GetConsoleOutputCP();
+  if page == 0u32 { page = GetOEMCP(); }
+  if page == utf8Page { return utf8Text(bytes); }
+  if bytes.len == 0usize or bytes.len > 0x3FFFFFFFusize { return String.empty(); }
+  imm len = i32.from(bytes.len);
+  imm n = MultiByteToWideChar(page, 0u32, bytes, len, 0usize as *u16, 0i32);
+  if n <= 0i32 { return String.empty(); }
+  imm wide = libc.malloc(usize.from(n) * 2usize) as *u16;
+  MultiByteToWideChar(page, 0u32, bytes, len, wide, n);
+  imm text = fromUtf16(wide, n);
+  libc.free(wide as *u8);
+  newlines(text.view());
+}
+
+// UTF-16, little-endian, as UTF-8, as congo.py reads it with
+// decode('utf-16-le', 'replace'): an odd byte left at the end is U+FFFD;
+// every line end made '\n'
+fn utf16Text(bytes &[]u8) String {
+  imm units = bytes.len / 2usize;
+  mut text = String.empty();
+  if units > 0usize and units <= 0x3FFFFFFFusize {
+    imm wide = libc.malloc(units * 2usize);
+    libc.memcpy(wide, bytes, units * 2usize);
+    text = fromUtf16(wide as *u16, i32.from(units));
+    libc.free(wide);
+  }
+  if bytes.len % 2usize == 1usize { appendUtf8(&mut text, 0xFFFDu32); }
+  newlines(text.view());
 }
 
 // The lines of a text, as Python's splitlines() breaks them: at '\n', '\r',

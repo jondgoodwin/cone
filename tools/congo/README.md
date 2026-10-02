@@ -507,6 +507,14 @@ Everything is rebuilt every time.
   puts its x64 folders in front of what `LIB` still lists. When no Microsoft
   `link.exe` is found even so, the error names the `vcvars64.bat` run, the end
   of what it printed, and the folders searched. Elsewhere, `cc` or `gcc`.
+
+What these tools print, Congo reads in the encoding each writes: `conec`'s
+messages, and `vswhere`'s answer (asked with `-utf8`), as UTF-8; what
+`link.exe` and `vcvars64.bat` print, in the code page of the console Congo
+shares with them (the OEM code page, 437 or 850, say, of the console Windows
+makes for them when Congo has none), which cannot hold every character, so a
+path beyond it shows as `?` where the linker wrote one; and the environment
+`vcvars64.bat` leaves, which a nested `cmd /u` lists in UTF-16, whole.
 - **The prelude.** Every package compiled after `core` loads the prelude from
   `core`'s generated include file, which its description's package line for
   `core` names, after a line for `libc`, which `core`'s include file imports.
@@ -598,10 +606,6 @@ Where it differs from `congo.py`, beyond what it does not do yet:
   junction or short (8.3) name in it is kept as written, where `Path.resolve()`
   follows it; and a source file's time is in whole seconds when Congo asks
   whether `conec` is stale.
-- What `conec`, the linker and `vcvars64.bat` print is read as `congo.py` reads
-  it, in the locale's code page, Windows-1252 here (so a UTF-8 path in a
-  compiler message shows as `cafÃ©`, by both): on a machine whose code page is
-  another, the two would read it differently.
 
 ## Not built yet
 
