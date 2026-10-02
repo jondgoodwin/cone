@@ -27,7 +27,7 @@ measured against emitted IR.*
 | `vtexp` | **the pointed-at type** on a type node; **the value expression** on an expression node |
 | `vtype` | unused on a type node; the **constructed reference type** on an expression node |
 | `typeinfo` | interned `RefTypeInfo` — the LLVM handles. **Interned by what the reference refers to**, so reference types that agree at run time share one record and generation memoizes the LLVM type on it |
-| `scope` | lifetime: 0 global, 1 parameter, 2+ local |
+| `scope` | lifetime: 0 global, 1 the caller band (what a borrowed parameter points at), 2+ a block of the function, 2 its top block (where its parameters' own storage lives too) |
 
 ⚠ **A cloned reference re-interns, in `cloneRefNode`.** Cloning is how a trait's
 method becomes an implementer's and a generic's becomes an instance's, and both
@@ -450,28 +450,64 @@ once in each direction for a swap, which stores both ways — `returnFlowEscape`
 `fnCallFlowStoredBorrow` when one is passed to a call beside a `&mut &T`
 argument that points at a longer-lived place. Each reads `RefTag`, `ArrayRefTag`
 and `VirtRefTag` alike: a virtual reference is a borrowed reference carrying a
-vtable, and a slice borrows as a single reference does. Three sites propagate
-scope into a reference type they build: `fnCallArrIndex` into a borrowed
-element's; `fnCallFinalizeArgs` into a call's result, which takes the narrowest
-scope among the borrowed arguments on a `RefNode` of the call's own, the
-declared return type being shared by every call site and unable to carry it;
-and `iexpCoerce` into the `CastNode` it injects for a borrow coerced to another
+vtable, and a slice borrows as a single reference does. `returnFlowEscape`
+looks into a returned `if`, `match` (an `if` once desugared) or block and checks
+each arm's or the block's last value where it is written, so the refusal names
+the arm that would dangle.
+
+**The lifetime of a borrow is that of the place borrowed**, which
+`iexpGetLvalInfo` computes for every borrow, written or injected
+(`borrowTypeCheck`, `borrowMutRef`, `borrowAuto`, `borrowUniReborrow` for a
+`&uni` lent as a shareable borrow, `borrowOwnerLend` for a sole owner lent as a
+`&uni`):
+
+- a variable's own storage has its block's scope, a global 0 — and a
+  **parameter's own storage is the function's top block, 2**, not the caller
+  band: a borrow of a by-value parameter, of `self` by value, or of what an
+  owner passed by value owns is the function's, never returned or stored
+  outward;
+- **a place reached through a borrowed reference has that reference's
+  lifetime**, read from its type (`iexpScopeThroughRef`) when the reference is
+  held in no variable (a borrow expression, a call's result) or is the whole
+  value of a variable whose type says what it holds. A borrowed parameter's type
+  carries the caller band, 1, on a copy `varDclTypeCheck` gives it, and nothing
+  shorter may be stored into it, so what it points at is the caller's however
+  it is reached — through an immutable local copy of it too, whose type carries
+  its initializer's lifetime. A mutable local may since have been given a
+  borrow its type does not record (a variable's lifetime does not yet follow
+  what it holds), and a reference held in a field or an element carries no
+  lifetime of its own (the declared field type is shared), so a place reached
+  through either keeps the holding variable's scope;
+- a place reached through an owning reference lives as long as the owner's
+  holder, so an owner lent as a borrowed reference — `iexpCoerceType` on the
+  recast `iexpCoerce` injects — carries the lifetime of a borrow through it: a
+  `So` parameter handed back as `&R` is refused as `&*s` is.
+
+**A store asks a different question** (`iexpGetStoreLvalInfo`, from
+`assignlvalrtype` and `swapFlow`): how long must what is stored live. The answer
+differs only at a parameter, which stays at the caller band its type promises:
+what is stored into it, or into a part of it held by value, can be read back
+out with the lifetime its type gives, which no flow tracks yet.
+
+Sites that build a reference type carry the scope onto it: `fnCallArrIndex` into
+a borrowed element's; `fnCallFinalizeArgs` into a call's result, which takes the
+narrowest scope among the borrowed arguments on a `RefNode` of the call's own,
+the declared return type being shared by every call site and unable to carry
+it; `iexpCoerce` into the `CastNode` it injects for a borrow coerced to another
 reference type — which is how a virtual reference is built at all, and how one
-is widened to a base trait's reference — the type coerced to being a declared
-node, interned and shared by everything written with it, so the scope goes on a
-copy of it belonging to that coercion. A call returning several
-values gets a `TupleNode` of its own on the same terms, each borrowed element
-carrying that scope, because a multi-value assignment checks every element
-against its own lval. A borrow the compiler
-injects records its lval's scope where it is built (`borrowMutRef`,
-`borrowAuto`, `borrowUniReborrow` for a `&uni` lent as a shareable
-borrow, and `borrowOwnerLend` for a sole owner lent as a `&uni`), so it reaches a call as the written borrow would; and
-`iexpGetLvalInfo` gives a dereferenced borrow expression or call result the
-scope on that reference's own type, since no variable holds it — a reference
-held in a variable keeps the variable's scope, because the variable's type
-carries at most its initializer's lifetime (`varDclTypeCheck` scopes a declared
-borrowed-reference type as an inferred one is), not that of a borrow assigned
-to it later. Nothing checks a borrow stored in a field or captured.
+is widened to a base trait's reference — or for an owner lent as a borrow; and
+`ifTypeCheck` and `blockTypeCheck` into the value of an `if`, a `match` or a
+block, which takes the **narrowest** scope among the arms, or the last value and
+the breaks, that can give it (`iexpNarrowestType`), whatever type was expected
+of it. Each puts the scope on a copy belonging to that use
+(`iexpScopedBorrowType`), the declared type being interned and shared by
+everything written with it. A call returning several values gets a `TupleNode`
+of its own on the same terms, each borrowed element carrying that scope,
+because a multi-value assignment checks every element against its own lval.
+A variable's type carries at most its initializer's lifetime
+(`varDclTypeCheck` scopes a declared borrowed-reference type as an inferred one
+is), not that of a borrow assigned to it later. Nothing checks a borrow stored
+in a field or captured.
 
 ## Generation
 

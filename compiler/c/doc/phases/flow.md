@@ -101,8 +101,13 @@ Put these first, because every one of them is load-bearing.
    does; it deactivates nothing and records nothing about the borrow.
 2. **A lifetime is a `uint16_t` block-nesting depth on the borrow expression's
    type node.** Not a constraint variable, not region inference. 0 is global, 1
-   is a parameter, 2+ is a local. The rule is a numeric comparison at three
-   sites. A call's result carries the narrowest scope among its borrowed
+   is the caller band (what a borrowed parameter points at), 2+ is a block of
+   the function — 2 its top block, where a by-value parameter's own storage
+   lives too, so a borrow of one never leaves the function. A borrow through a
+   borrowed reference takes that reference's lifetime, not its holder's block
+   ([references](../nodes/references.md)). The rule is a numeric comparison at three
+   sites. An `if`, a `match` or a block used as a value carries the narrowest
+   scope among the values it can give. A call's result carries the narrowest scope among its borrowed
    arguments, on a reference node `fnCallFinalizeArgs` builds for that call — or,
    where the call returns several values, on the borrowed elements of a tuple
    type it builds for it: without annotation syntax every borrowed reference in a
@@ -110,7 +115,8 @@ Put these first, because every one of them is load-bearing.
    common. A borrow coerced to another reference type — widened to a base
    trait's reference, or turned into a virtual reference — keeps its scope on a
    copy of the target type that `iexpCoerce` gives the cast, the declared type
-   being shared and unable to carry one.
+   being shared and unable to carry one; an owner lent as a borrowed reference
+   takes there the lifetime of a borrow through it.
    `lifeMatches` exists and is called from nowhere.
 3. **Lifetime tracking survives a variable's initializer, not an assignment.**
    A local takes its initializer's lifetime: an undeclared one its type, a
@@ -208,9 +214,11 @@ and the walk of such a function costs little.
 
 **Flow computes no lifetimes of its own.** `VarDclNode.scope` is set during name
 resolution; `RefNode.scope` during type check by `borrowTypeCheck`, by
-`borrowMutRef` and `borrowAuto` for a borrow the compiler injects, and by
-`fnCallArrIndex`, `fnCallFinalizeArgs`, `iexpCoerce` and `varDclTypeCheck` for
-a type derived from one. Flow only compares them.
+`borrowMutRef` and `borrowAuto` for a borrow the compiler injects, each from
+`iexpGetLvalInfo`, and by `fnCallArrIndex`, `fnCallFinalizeArgs`, `iexpCoerce`,
+`ifTypeCheck`, `blockTypeCheck` and `varDclTypeCheck` (a parameter's caller
+band, a local's initializer's) for a type derived from one. Flow only compares
+them.
 
 The live state is on the declarations, in `VarDclNode.flowtempflags`:
 
@@ -885,7 +893,7 @@ filled `self`'s fields is an ordinary store.
 | Analysis | In flow? | Enforced | Not enforced |
 | --- | --- | --- | --- |
 | **Move / ownership** | yes | `ErrorMove` on use of a moved-out or uninitialized variable, and on a borrow of a moved-out one; move out of a field, or of a global, or out through a borrowed or a shared owning reference, refused; a use some path reaching it moved, hollowed or never gave a value (a loop's earlier pass included), by the path walk | element granularity — moving `a[0]` deactivates all of `a` |
-| **Escape / lifetime** | representation in type check, enforcement here | storing a borrow into a longer-lived lval, by assignment or by either direction of a swap; returning a borrow of a local, or a local initialized with one, its type declared or not; a borrow arriving through a call's result, singly or as one of several values destructured into lvals, each carrying the narrowest argument borrow's scope; a `&mut &T` argument whose pointee would outlive another borrow passed with it; a borrow coerced to another reference type, whether widened to a base trait's reference or made a virtual reference | a borrow laundered through a variable by assignment and returned (kept past its source's scope and used, it is refused by freezing, below); a borrow stored in a field or captured; distinguishing parameter lifetimes — there is no lifetime annotation syntax |
+| **Escape / lifetime** | representation in type check, enforcement here | storing a borrow into a longer-lived lval, by assignment or by either direction of a swap; returning a borrow of a local, or a local initialized with one, its type declared or not; returning or storing outward a borrow of a by-value parameter, of `self` by value or through an owner passed by value; storing a borrowed parameter's borrow into a global; a returned `if`, `match` or block, arm by arm, and one used as a value carrying its shortest arm's lifetime; an owner handed back, or stored, as a borrow; a borrow through a borrowed reference held in a local, which has that reference's lifetime; a borrow arriving through a call's result, singly or as one of several values destructured into lvals, each carrying the narrowest argument borrow's scope; a `&mut &T` argument whose pointee would outlive another borrow passed with it; a borrow coerced to another reference type, whether widened to a base trait's reference or made a virtual reference | a borrow laundered through a variable by assignment and returned (kept past its source's scope and used, it is refused by freezing, below); a borrow stored in a field or captured; distinguishing parameter lifetimes — there is no lifetime annotation syntax |
 | **Freezing** | the loan walk, on a gated function | a borrow held in a local whose type is a borrowed reference, and its copies, freeze the source until the last use, and so does a borrow a call returns, of every argument (from a `NoLoanMut` or `NoLoanRead` container, only its life): `ErrorFrozen` at a change, a move, a conflicting borrow, the source's end, and, under a mutable borrow, a read — for a source reached as `uni`; for one reached through a shared path, only its owner's move, replacement or end, a change or mutable borrow of the owner where it is held, and an `&uni` or `&imm` borrow | an element borrow through a shared path (Jon's rule refuses it for a `ShapeChanging` container; not built); a borrow held inside another value; two copies of one `&mut`; a global a callee changes |
 | **De-aliasing / drops** | flow decides, generation executes | scope-exit release of owning refs, of drop-fn structs and enums, and of tuples and arrays holding what finalizes or owns, from a jump down to the block it names; the previous value's release at a store over a variable, a part of one, or a place reached through a reference; each on the paths that hold the value, by a drop flag where they differ; a temporary's at the end of its statement, condition or operand, newest first, hollow where a value moved out through it | an array an element was moved out of leaks the rest; a value stored into a field of a variable holding nothing leaks; a temporary a borrow or a pointer made from it may outlive is kept, and leaks — see Hazards |
 | **Permission** | `MayWrite` and `MayRead` | `ErrorNoMut` on assignment and swap; `ErrorNoRead` on a read through a reference — a dereference, an index, or a field of a virtual reference | `MayAliasWrite` and `IsLockless` are populated and read nowhere; `RaceSafe` is read by the thread check, a type check question (`refThreadBinds`) |

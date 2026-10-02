@@ -74,28 +74,68 @@ TypeCompare iexpMatches(INode **from, INode *totype, SubtypeConstraint constrain
 }
 
 // Is this the type of a borrowed reference, whose scope is a lifetime?
-static int iexpIsBorrowType(INode *type) {
+int iexpIsBorrowType(INode *type) {
     return (type->tag == RefTag || type->tag == ArrayRefTag || type->tag == VirtRefTag)
         && ((RefNode*)type)->region == borrowRef;
+}
+
+// A copy of the borrowed-reference type 'typedcl' carrying the lifetime 'scope'.
+// A declared type is one node shared by everything written with it, so a
+// lifetime known only where the type is used goes on a copy belonging to that
+// use -- exactly as fnCallFinalizeArgs builds one for a call's result.
+INode *iexpScopedBorrowType(INode *typedcl, INode *lexnode, uint16_t scope) {
+    RefNode *ref = (RefNode*)typedcl;
+    RefNode *scoped = newRefNodeFull(typedcl->tag, lexnode, borrowRef, ref->perm, ref->vtexp);
+    scoped->scope = scope;
+    return (INode*)scoped;
+}
+
+// The type of a value that may be any of several -- an 'if' or 'match' arm, a
+// block's last value or one of its breaks -- given 'scope', the narrowest
+// lifetime among them (the highest number). Whichever value is given, it lives
+// only as long as the shortest-lived could, so a borrowed-reference type carries
+// that lifetime.
+INode *iexpNarrowestType(INode *type, INode *lexnode, uint16_t scope) {
+    INode *typedcl = itypeGetTypeDcl(type);
+    if (!iexpIsBorrowType(typedcl) || scope <= ((RefNode*)typedcl)->scope)
+        return type;
+    return iexpScopedBorrowType(typedcl, lexnode, scope);
+}
+
+// Widen 'scope', the narrowest lifetime seen so far, by the value 'exp'
+uint16_t iexpNarrowerScope(uint16_t scope, INode *exp) {
+    if (!isExpNode(exp))
+        return scope;
+    INode *type = iexpGetTypeDcl(exp);
+    if (iexpIsBorrowType(type) && ((RefNode*)type)->scope > scope)
+        return ((RefNode*)type)->scope;
+    return scope;
 }
 
 // The type a coercion's result carries. A borrowed reference keeps the lifetime
 // it was borrowed with when it is widened to a base trait's reference or turned
 // into a virtual reference: the value still points at what it was borrowed from.
-// The type coerced to is a declared node, normalized by typetblFind and shared
-// by everything written with it, so the scope goes on a copy belonging to this
-// coercion -- exactly as fnCallFinalizeArgs builds one for a call's result.
-// varDclTypeCheck gives a local declared with a borrowed-reference type the
-// same copy, so the local keeps its initializer's lifetime.
+// An owning reference held in a place and wanted as a borrowed one is borrowed
+// from ('&*owner'), so the result has the lifetime of a borrow through the
+// owner: the place's, a by-value parameter's or a local's never reaching the
+// caller. The type coerced to is a declared node, so the scope goes on a copy
+// belonging to this coercion. varDclTypeCheck gives a local declared with a
+// borrowed-reference type the same copy, so the local keeps its initializer's
+// lifetime.
 INode *iexpCoerceType(INode *from, INode *totypedcl) {
-    INode *fromtype = iexpGetTypeDcl(from);
-    if (!iexpIsBorrowType(totypedcl) || !iexpIsBorrowType(fromtype)
-        || ((RefNode*)fromtype)->scope == 0)
+    if (!iexpIsBorrowType(totypedcl))
         return totypedcl;
-    RefNode *toref = (RefNode*)totypedcl;
-    RefNode *scoped = newRefNodeFull(totypedcl->tag, from, borrowRef, toref->perm, toref->vtexp);
-    scoped->scope = ((RefNode*)fromtype)->scope;
-    return (INode*)scoped;
+    INode *fromtype = iexpGetTypeDcl(from);
+    uint16_t scope = 0;
+    if (iexpIsBorrowType(fromtype))
+        scope = ((RefNode*)fromtype)->scope;
+    else if ((fromtype->tag == RefTag || fromtype->tag == VirtRefTag) && iexpIsLval(from)) {
+        INode *lvalperm;
+        iexpGetLvalInfo(from, &lvalperm, &scope);
+    }
+    if (scope == 0)
+        return totypedcl;
+    return iexpScopedBorrowType(totypedcl, from, scope);
 }
 
 // Coerce from-node's type to 'to' expected type, if needed
@@ -331,14 +371,52 @@ int iexpIsLvalError(INode *lval) {
     return 0;
 }
 
-// Extract lval variable, scope and overall permission from lval
-INode *iexpGetLvalInfo(INode *lval, INode **lvalperm, uint16_t *scope) {
+// A place reached through the borrowed reference 'refexp' lives as long as the
+// reference's lifetime says, not as long as whatever holds the reference: what a
+// borrowed parameter points at is the caller's however it is reached. The
+// lifetime is on the reference's type where the reference is held in no
+// variable -- a borrow expression or a call's result, typed by borrowTypeCheck or
+// fnCallFinalizeArgs -- and where it is the whole value of a variable whose type
+// says what it holds: a parameter's type carries the caller band, and nothing
+// shorter may be stored into it; an immutable local's carries its initializer's
+// (varDclTypeCheck). A mutable local may since have been given a borrow its type
+// does not record, and one held in a field or an element carries no lifetime of
+// its own (the field's declared type is shared), so the place keeps the scope of
+// the variable holding it. A place reached through an owning reference lives as
+// long as the owner's holder.
+static void iexpScopeThroughRef(INode *refexp, INode *lvalvar, RefNode *reftype, uint16_t *scope) {
+    if (reftype->region != borrowRef)
+        return;
+    if (lvalvar == NULL)
+        *scope = reftype->scope;
+    else if (isNameUseNode(refexp) && lvalvar->tag == VarDclTag) {
+        VarDclNode *var = (VarDclNode *)lvalvar;
+        if (var->scope == 1 || !(permGetFlags(var->perm) & MayWrite))
+            *scope = reftype->scope;
+    }
+}
+
+// Extract lval variable, scope and overall permission from lval, for a borrow
+// of the place ('stored' 0) or a store into it ('stored' 1). The two differ only
+// at a parameter.
+static INode *iexpLvalInfo(INode *lval, INode **lvalperm, uint16_t *scope, int stored) {
     // A variable or named function node
     if (isNameUseNode(lval) && isExpNode(lval)) {
         INode *lvalvar = ((NameUseNode *)lval)->dclnode;
         if (lvalvar->tag == VarDclTag) {
-            *lvalperm = ((VarDclNode *)lvalvar)->perm;
-            *scope = ((VarDclNode *)lvalvar)->scope;
+            VarDclNode *var = (VarDclNode *)lvalvar;
+            *lvalperm = var->perm;
+            // A parameter (scope 1) is the function's own storage, gone at its
+            // return like a local of its top block: a borrow of it, of 'self' by
+            // value or of what an owner passed by value owns lives in that block
+            // (2), usable anywhere in the function and never handed back. Only
+            // what a borrowed parameter points at is the caller's, reached
+            // through it (iexpScopeThroughRef). A store into a parameter, or
+            // into a part of it held by value, is held to the caller band all
+            // the same: what is stored can be read back out with the lifetime
+            // its type gives -- a borrowed parameter's is the caller band, and
+            // a field's carries none yet -- so nothing shorter-lived goes there.
+            *scope = (var->scope == 1 && !stored) ? 2 : var->scope;
         }
         else {
             *lvalperm = (INode*)opaqPerm; // Function
@@ -349,16 +427,12 @@ INode *iexpGetLvalInfo(INode *lval, INode **lvalperm, uint16_t *scope) {
     switch (lval->tag) {
     case DerefTag:
     {
-        INode *lvalvar = iexpGetLvalInfo(((StarNode *)lval)->vtexp, lvalperm, scope);
-        RefNode *vtype = (RefNode*)iexpGetTypeDcl(((StarNode *)lval)->vtexp);
+        INode *refexp = ((StarNode *)lval)->vtexp;
+        INode *lvalvar = iexpLvalInfo(refexp, lvalperm, scope, stored);
+        RefNode *vtype = (RefNode*)iexpGetTypeDcl(refexp);
         if (vtype->tag == RefTag || vtype->tag == ArrayRefTag) {
             *lvalperm = vtype->perm;
-            // A reference held in no variable -- a borrow expression, a call's
-            // result -- has its lifetime on its own type node, where borrowTypeCheck
-            // or fnCallFinalizeArgs put it. A variable's declared type carries
-            // none, so a reference held in one keeps the variable's scope.
-            if (lvalvar == NULL && vtype->region == borrowRef)
-                *scope = vtype->scope;
+            iexpScopeThroughRef(refexp, lvalvar, vtype, scope);
         }
         else if (vtype->tag == PtrTag)
             *lvalperm = (INode*)mutPerm;
@@ -370,7 +444,7 @@ INode *iexpGetLvalInfo(INode *lval, INode **lvalperm, uint16_t *scope) {
     {
         FnCallNode *element = (FnCallNode *)lval;
         // flowLoadValue(fstate, nodesFind(element->args, 0), 0);
-        INode *lvalvar = iexpGetLvalInfo(element->objfn, lvalperm, scope);
+        INode *lvalvar = iexpLvalInfo(element->objfn, lvalperm, scope, stored);
         INode *objtype = iexpGetTypeDcl(element->objfn);
         // Indexing through any reference takes the permission from the
         // reference, exactly as DerefTag does. RefTag belongs here because a
@@ -378,8 +452,10 @@ INode *iexpGetLvalInfo(INode *lval, INode **lvalperm, uint16_t *scope) {
         // dereference; leaving it out took the permission of the variable
         // holding the reference instead, so 'v[0] = x' on a '&mut Array[i32, 3]'
         // parameter was refused while '(*v)[0] = x' was allowed.
-        if (objtype->tag == ArrayRefTag || objtype->tag == RefTag)
+        if (objtype->tag == ArrayRefTag || objtype->tag == RefTag) {
             *lvalperm = ((RefNode*)objtype)->perm;
+            iexpScopeThroughRef(element->objfn, lvalvar, (RefNode*)objtype, scope);
+        }
         else if (objtype->tag == PtrTag)
             *lvalperm = (INode*)mutPerm;
         return lvalvar;
@@ -389,7 +465,7 @@ INode *iexpGetLvalInfo(INode *lval, INode **lvalperm, uint16_t *scope) {
     case FldAccessTag:
     {
         FnCallNode *element = (FnCallNode *)lval;
-        INode *lvalvar = iexpGetLvalInfo(element->objfn, lvalperm, scope);
+        INode *lvalvar = iexpLvalInfo(element->objfn, lvalperm, scope, stored);
         if (lvalvar == NULL)
             return NULL;
         // A field reached through a virtual reference takes the permission from
@@ -399,8 +475,10 @@ INode *iexpGetLvalInfo(INode *lval, INode **lvalperm, uint16_t *scope) {
         // access keeps the virtual reference as its objfn and the permission
         // would otherwise be that of the binding holding it.
         RefNode *objtype = (RefNode*)iexpGetTypeDcl(element->objfn);
-        if (objtype->tag == VirtRefTag)
+        if (objtype->tag == VirtRefTag) {
             *lvalperm = objtype->perm;
+            iexpScopeThroughRef(element->objfn, lvalvar, objtype, scope);
+        }
         // Downgrade overall static permission if the field may not be written.
         // Ask the permission for its flags rather than comparing node pointers:
         // a permission written in source is a name use wrapping the singleton,
@@ -430,6 +508,18 @@ INode *iexpGetLvalInfo(INode *lval, INode **lvalperm, uint16_t *scope) {
     default:
         return NULL;
     }
+}
+
+// Extract lval variable, scope and overall permission from lval. The scope is
+// the lifetime a borrow of the place has.
+INode *iexpGetLvalInfo(INode *lval, INode **lvalperm, uint16_t *scope) {
+    return iexpLvalInfo(lval, lvalperm, scope, 0);
+}
+
+// The same for a place stored into, whose scope is the lifetime a borrowed
+// reference stored there must have at least
+INode *iexpGetStoreLvalInfo(INode *lval, INode **lvalperm, uint16_t *scope) {
+    return iexpLvalInfo(lval, lvalperm, scope, 1);
 }
 
 // Are types the same (no coercion)

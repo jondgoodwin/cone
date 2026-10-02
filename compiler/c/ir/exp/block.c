@@ -283,24 +283,31 @@ void blockTypeCheck(TypeCheckState *pstate, BlockNode *blk, INode *expectType) {
     }
 
     // When expectType specified, all branches have been coerced (or not w/ errors)
-    if (expectType != unknownType) {
+    if (expectType != unknownType)
         blk->vtype = expectType;
-        --pstate->scope;
-        return;
-    }
+    else {
+        // If no specific type is expected, set the inferred type
+        blk->vtype = inferredType;
 
-    // If no specific type is expected, set the inferred type
-    blk->vtype = inferredType;
-
-    // If we have inferred a supertype, we need to re-coerce all expressions
-    if (match == ConvSubtype || match == CastSubtype) {
-        for (nodesFor(blk->breaks, cnt, nodesp)) {
-            INode **breakexp = &((BreakRetNode *)*nodesp)->exp;
-            iexpCoerce(breakexp, inferredType);
+        // If we have inferred a supertype, we need to re-coerce all expressions
+        if (match == ConvSubtype || match == CastSubtype) {
+            for (nodesFor(blk->breaks, cnt, nodesp)) {
+                INode **breakexp = &((BreakRetNode *)*nodesp)->exp;
+                iexpCoerce(breakexp, inferredType);
+            }
+            if (lastexp)
+                iexpCoerce(lastexp, inferredType);
         }
-        if (lastexp)
-            iexpCoerce(lastexp, inferredType);
     }
+
+    // The block gives its last value or a break's, so a borrowed reference lives
+    // only as long as the shortest-lived of them, not as the type expected of it
+    uint16_t narrowest = lastexp ? iexpNarrowerScope(0, *lastexp) : 0;
+    if (blk->breaks && blk != (BlockNode*)pstate->fn->value) {
+        for (nodesFor(blk->breaks, cnt, nodesp))
+            narrowest = iexpNarrowerScope(narrowest, ((BreakRetNode *)*nodesp)->exp);
+    }
+    blk->vtype = iexpNarrowestType(blk->vtype, (INode*)blk, narrowest);
 
     // Restore pstate to prior condition
     --pstate->scope;

@@ -118,7 +118,7 @@ int borrowUniReborrows(INode *from, INode *totypedcl) {
 
 // Rewrite the reference 'from' to the borrow '&perm *from', typed as a borrowed
 // reference to 'vtexp', as borrowTypeCheck would build it if written out: the
-// lifetime of the variable the reference is held in. The permission has already
+// lifetime of a borrow of '*from' (iexpGetLvalInfo). The permission has already
 // been checked by the match that asked for it.
 static void borrowDerefOf(INode **from, INode *perm, INode *vtexp) {
     StarNode *deref = newStarNode(DerefTag);
@@ -128,9 +128,7 @@ static void borrowDerefOf(INode **from, INode *perm, INode *vtexp) {
 
     INode *lvalperm = (INode*)immPerm;
     uint16_t scope = 0;
-    INode *lvalvar = iexpGetLvalInfo((INode*)deref, &lvalperm, &scope);
-    if (lvalvar && lvalvar->tag == VarDclTag)
-        scope = ((VarDclNode*)lvalvar)->scope;
+    iexpGetLvalInfo((INode*)deref, &lvalperm, &scope);
 
     RefNode *reftype = newRefNodeFull(RefTag, *from, borrowRef, perm, vtexp);
     reftype->scope = scope;
@@ -409,9 +407,6 @@ void borrowTypeCheck(TypeCheckState *pstate, RefNode **nodep) {
         }
         // Refused once; the reference is still typed, so its uses check quietly
         refused = borrowRefusesConst(lval);
-        // Set lifetime of reference to borrowed variable's lifetime
-        if (lvalvar->tag == VarDclTag)
-            scope = ((VarDclNode*)lvalvar)->scope;
     }
     INode *lvaltype = ((IExpNode*)lval)->vtype;
 

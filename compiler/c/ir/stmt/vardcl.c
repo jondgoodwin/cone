@@ -144,6 +144,17 @@ void varDclTypeCheck(TypeCheckState *pstate, VarDclNode *name) {
             dclInfoJoin((INode*)name, (INode*)pstate->fn);
     }
 
+    // A parameter holding a borrowed reference holds one of the caller's, whose
+    // lifetime is the caller band (1). Its declared type is shared, so it takes
+    // a copy scoped so: what it points at is then the caller's however it is
+    // reached, and a return or a store reads that from the type. A borrow of the
+    // parameter itself is the function's (iexpGetLvalInfo).
+    if (name->scope == 1) {
+        INode *vtypedcl = itypeGetTypeDcl(name->vtype);
+        if (iexpIsBorrowType(vtypedcl))
+            name->vtype = iexpScopedBorrowType(vtypedcl, name->vtype, 1);
+    }
+
     // An initializer need not be specified, but if not, it must have a declared type
     if (name->value == NULL) {
         if (name->vtype == unknownType) {

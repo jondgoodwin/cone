@@ -1,0 +1,36 @@
+// A method borrowing its receiver, called on a 'So' owner passed by value:
+// the call's result borrows what the function owns and frees at its return,
+// so it may not be returned.
+//
+// Verdict: refuse, ErrorEscape at the returned call.
+// Basis: language rule (1 Oct 2026) -- a borrow of what a by-value owner owns
+// is like a borrow of a local: never returned or stored outward;
+// reflifefn.html (a returned borrow has the lifetime of the shortest borrow
+// passed in, the receiver's here).
+// Master 277f509d: accepted, and it reads freed memory -- main, run, prints
+// "final" and then "read = 2797651418256". Stage 1 fixed it.
+
+mod lifetime_band_return_byvalue_owner_method;
+
+import stdio use *;
+
+struct R {
+  pub n i64;
+  pub fn nRef(self &) &i64 {
+    &self.n;
+  }
+  fn final(self &uni) {
+    printStr("final\n");
+  }
+}
+
+fn inner(s So[R]) &i64 {
+  s.nRef();                  //~ ErrorEscape
+}
+
+fn main() {
+  imm r = inner(new So[R](42));
+  printStr("read = ");
+  printInt(*r);
+  printStr("\n");
+}
