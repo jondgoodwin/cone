@@ -31,7 +31,17 @@
 // '--shots PREFIX' (default 'starship') writes PREFIX-hero.bmp (framed as
 // the reference), PREFIX-side.bmp and PREFIX-front.bmp at 1920 x 1080;
 // '--obj PREFIX' writes PREFIX-frame-lod0.obj, PREFIX-membrane-lod0.obj and
-// the coarser levels. It prints each mesh's counts, time and meshHash (the
+// the coarser levels.
+//
+// For measuring against the reference (tools/refmeasure):
+// '--camera ex,ey,ez,tx,ty,tz,ux,uy,uz,fov' (repeatable) takes a shot from
+// the eye (ex, ey, ez) looking at (tx, ty, tz) with (ux, uy, uz) up and a
+// vertical field of view of 'fov' degrees, PREFIX-cam0.bmp, -cam1 and on,
+// instead of the three shots; '--mask' writes beside each shot its
+// silhouette, PREFIX-...-mask.bmp: the ship white (its lights too) on
+// black, with no sky, stars, planet, bloom or tone mapping; '--coarse'
+// meshes and draws only the coarser level, several times faster; '--size
+// WxH' takes the shots W by H (W a multiple of 64) instead. It prints each mesh's counts, time and meshHash (the
 // same every run: meshing is on the CPU), and exits 0 only if the hashes
 // are the pinned ones, every shot was written, no Vulkan call failed and
 // the validation layer said nothing.
@@ -72,6 +82,10 @@ fn v(x f32, y f32, z f32) Vec3 { new Vec3(x, y, z); }
 fn absf(a f32) f32 { libc.fabsf(a); }
 fn minf(a f32, b f32) f32 { if a < b { a; } else { b; }; }
 fn jitter(i i32, salt u32) f32 { noise.toSigned(noise.hash1(i, SEED + salt)); }
+
+extern {
+  fn @c("atof") atof(s *u8) f64;
+}
 
 // The spine at t, 0 (the back of the skull) to 1 (the tail's root): a long
 // gentle wave, rising towards the tail
@@ -365,10 +379,40 @@ fn appendCstr(s &mut String, c *u8) {
   }
 }
 
-fn named(prefix &String, suffix &[]u8) String {
-  mut s = prefix.copy();
-  s <- suffix;
-  s;
+// A count's digits at 'at', and where they stop
+fn digits(at *u8, n &mut u32) *u8 {
+  mut p = at;
+  *n = 0u32;
+  while *p >= u8.from('0') and *p <= u8.from('9') {
+    *n = *n * 10u32 + u32.from(*p - u8.from('0'));
+    p = p + 1usize;
+  }
+  p;
+}
+
+// The shots' size from '--size WxH'; false unless the width is a multiple
+// of 64 (the readback's rows must be 256 bytes) and both are given
+fn parseSize(text *u8, w &mut u32, h &mut u32) Bool {
+  imm x = digits(text, w);
+  if *x != u8.from('x') { return false; }
+  imm end = digits(x + 1usize, h);
+  *end == 0u8 and *w > 0u32 and *h > 0u32 and *w % 64u32 == 0u32;
+}
+
+// A camera from '--camera': ten numbers, comma-separated, into 'out' (the
+// eye, the target, up, then the field of view in degrees); false unless
+// there were ten
+fn parseCamera(text *u8, out &mut Array[f32, 10]) Bool {
+  mut at = text;
+  mut n = 0usize;
+  while n < 10usize {
+    out[n] = f32.from(atof(at));
+    n = n + 1usize;
+    while *at != 0u8 and *at != u8.from(',') { at = at + 1usize; }
+    if *at == 0u8 { return n == 10usize; }
+    at = at + 1usize;
+  }
+  false;
 }
 
 // ---- The demo ----
@@ -377,12 +421,28 @@ fn main(argc i32, argv **u8) i32 {
   mut shots = String.empty();
   shots <- "starship";
   mut objPrefix = String.empty();
+  mut cameras = List[Array[f32, 10]].empty();
+  mut masks = false;
+  mut first = 0usize;           // the finest level meshed
+  mut width = WIDTH;
+  mut height = HEIGHT;
   mut a = 1;
-  while a + 1 < argc {
+  while a < argc {
     imm arg = *(argv + usize.from(a));
-    if cstrEquals(arg, "--shots") { shots = String.empty(); appendCstr(&mut shots, *(argv + usize.from(a + 1))); }
+    if cstrEquals(arg, "--mask") { masks = true; a = a + 1; continue; }
+    if cstrEquals(arg, "--coarse") { first = 1usize; a = a + 1; continue; }
+    if a + 1 >= argc { print <- "Missing the value after an argument\n"; return 2; }
+    if cstrEquals(arg, "--size") {
+      if !parseSize(*(argv + usize.from(a + 1)), &mut width, &mut height) { print <- "--size wants WxH, W a multiple of 64\n"; return 2; }
+    }
+    elif cstrEquals(arg, "--shots") { shots = String.empty(); appendCstr(&mut shots, *(argv + usize.from(a + 1))); }
     elif cstrEquals(arg, "--obj") { appendCstr(&mut objPrefix, *(argv + usize.from(a + 1))); }
-    else { print <- "Unknown argument; use --shots PREFIX and --obj PREFIX\n"; return 2; }
+    elif cstrEquals(arg, "--camera") {
+      mut c = new Array[f32, 10] <- fill 0f;
+      if !parseCamera(*(argv + usize.from(a + 1)), &mut c) { print <- "--camera wants ten numbers: ex,ey,ez,tx,ty,tz,ux,uy,uz,fov\n"; return 2; }
+      cameras.push(c);
+    }
+    else { print <- "Unknown argument; use --shots PREFIX, --obj PREFIX, --camera ..., --size WxH, --mask and --coarse\n"; return 2; }
     a = a + 2;
   }
 
@@ -394,6 +454,7 @@ fn main(argc i32, argv **u8) i32 {
     imm ship = Ship.make(part == 1usize);
     mut cell = FINEST;
     mut level = 0usize;
+    while level < first { cell = cell * 2.; level = level + 1usize; }
     while level < LEVELS {
       imm started = sdl.GetPerformanceCounter();
       imm net = surfaceNet(&ship, ship.bounds(), cell, 1u32, true);
@@ -463,7 +524,7 @@ fn main(argc i32, argv **u8) i32 {
   imm blue = Material.plain(new Color(50., 60., 200., 1.));
   imm glowBlue = renderer.addMaterial(&mut device, &blue);
   imm frameMesh = renderer.addMesh(&mut device, meshes[0usize]);
-  imm membraneMesh = renderer.addMesh(&mut device, meshes[LEVELS]);
+  imm membraneMesh = renderer.addMesh(&mut device, meshes[LEVELS - first]);
   imm ballMesh = mesh.Mesh.sphere(1., 10);
   imm ball = renderer.addMesh(&mut device, &ballMesh);
   // The planet: a great rust-red ball below and beyond
@@ -494,6 +555,20 @@ fn main(argc i32, argv **u8) i32 {
     list.add(ball, material, Mat4.fromTrs(v(l.x, l.y, l.z), Quat.identity(), v(l.w, l.w, l.w)));
     i = i + 1usize;
   }
+  // The silhouette: the ship and its lights in one flat white, lit by an
+  // ambient white alone, so every pixel of it is 1
+  imm flatWhite = Material.plain(new Color(1., 1., 1., 1.));
+  imm white = renderer.addMaterial(&mut device, &flatWhite);
+  mut maskList = DrawList.empty();
+  maskList.add(frameMesh, white, Mat4.identity());
+  maskList.add(membraneMesh, white, Mat4.identity());
+  i = 0usize;
+  while i < glows.len() {
+    imm l = *glows[i];
+    maskList.add(ball, white, Mat4.fromTrs(v(l.x, l.y, l.z), Quat.identity(), v(l.w, l.w, l.w)));
+    i = i + 1usize;
+  }
+  imm flat = Light.directional(v(0., -1., 0.), new Color(0., 0., 0., 1.), new Color(1., 1., 1., 1.));
   list.add(planet, planetM, Mat4.fromTrs(v(171., -169., -13.), Quat.identity(), v(150., 150., 150.)));
   imm starColors Array[f32, 3] = [0.6, 1.5, 4.];
   i = 0usize;
@@ -504,13 +579,13 @@ fn main(argc i32, argv **u8) i32 {
   }
 
   // The shots: as the reference frames it, from the side, from ahead
-  imm targetDesc = new TextureDescriptor(WIDTH, HEIGHT, TEXTURE_FORMAT_RGBA8_UNORM_SRGB,
+  imm targetDesc = new TextureDescriptor(width, height, TEXTURE_FORMAT_RGBA8_UNORM_SRGB,
     TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
   mut target = device.createTexture(&targetDesc);
-  imm depthDesc = new TextureDescriptor(WIDTH, HEIGHT, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT);
+  imm depthDesc = new TextureDescriptor(width, height, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT);
   mut depth = device.createTexture(&depthDesc);
-  mut post = Post.create(&mut device, TEXTURE_FORMAT_RGBA8_UNORM_SRGB, WIDTH, HEIGHT);
-  mut readback = device.createBuffer(u64.from(WIDTH) * u64.from(HEIGHT) * 4u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  mut post = Post.create(&mut device, TEXTURE_FORMAT_RGBA8_UNORM_SRGB, width, height);
+  mut readback = device.createBuffer(u64.from(width) * u64.from(height) * 4u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
   if !renderer.isValid() or !post.isValid() or !target.isValid() {
     print <- "The renderer could not be made\n";
     return 1;
@@ -519,24 +594,62 @@ fn main(argc i32, argv **u8) i32 {
   camera.fov = radians(35.);
   camera.near = 0.5;
   camera.far = 600.;
-  imm names Array[&[]u8, 3] = ["-hero.bmp", "-side.bmp", "-front.bmp"];
-  imm eyes Array[Vec3, 3] = [v(-3., 12., 12.5), v(5., 1.5, 19.), v(-8., 3.5, 7.)];
-  imm targets Array[Vec3, 3] = [v(6., -0.3, 2.), v(5.5, 0.3, 0.), v(3.5, 0., 0.)];
-  imm ups Array[Vec3, 3] = [v(0.6, 1., 0.), v(0., 1., 0.), v(0., 1., 0.)];
+  imm names Array[&[]u8, 3] = ["-hero", "-side", "-front"];
+  mut eyes = List[Vec3].empty();
+  mut targets = List[Vec3].empty();
+  mut ups = List[Vec3].empty();
+  mut fovs = List[f32].empty();
+  if cameras.len() == 0usize {
+    eyes.push(v(-3., 12., 12.5)); eyes.push(v(5., 1.5, 19.)); eyes.push(v(-8., 3.5, 7.));
+    targets.push(v(6., -0.3, 2.)); targets.push(v(5.5, 0.3, 0.)); targets.push(v(3.5, 0., 0.));
+    ups.push(v(0.6, 1., 0.)); ups.push(v(0., 1., 0.)); ups.push(v(0., 1., 0.));
+    fovs.push(35.); fovs.push(35.); fovs.push(35.);
+  }
+  mut c = 0usize;
+  while c < cameras.len() {
+    imm n = *cameras[c];
+    eyes.push(v(n[0usize], n[1usize], n[2usize]));
+    targets.push(v(n[3usize], n[4usize], n[5usize]));
+    ups.push(v(n[6usize], n[7usize], n[8usize]));
+    fovs.push(n[9usize]);
+    c = c + 1usize;
+  }
+  imm bloom = post.bloom;
+  imm toneMapper = post.toneMapper;
+  imm passes = if masks { 2; } else { 1; };
   mut s = 0usize;
-  while s < 3usize {
-    camera.lookAt(eyes[s], targets[s], ups[s]);
-    mut encoder = device.createCommandEncoder();
-    renderer.render(&mut device, &mut encoder, &post.hdr, &depth, &camera, &light, &list);
-    post.apply(&mut encoder, &target);
-    encoder.copyTextureToBuffer(&target, &readback);
-    device.queue.submit(encoder.finish());
-    device.endFrame();
-    device.waitIdle();
-    imm shot = Image.fromTexels(readback.mappedRange(), i32.from(WIDTH), i32.from(HEIGHT), false);
-    imm name = named(&shots, names[s]);
-    if shot.save(name.view()) { print <- "Shot: "; printStr(name.view()); print <- "\n"; }
-    else { print <- "Could NOT write "; printStr(name.view()); print <- "\n"; ok = false; }
+  while s < eyes.len() {
+    camera.lookAt(*eyes[s], *targets[s], *ups[s]);
+    camera.fov = radians(*fovs[s]);
+    mut name = shots.copy();
+    if cameras.len() == 0usize { name <- names[s]; }
+    else {
+      name <- "-cam";
+      if s >= 10usize { name.appendByte(u8.from('0') + u8.from(s / 10usize % 10usize)); }
+      name.appendByte(u8.from('0') + u8.from(s % 10usize));
+    }
+    mut pass = 0;
+    while pass < passes {
+      // The mask: no sky, no bloom, no tone mapping
+      renderer.drawSky = pass == 0;
+      post.bloom = if pass == 0 { bloom; } else { 0.; };
+      post.toneMapper = if pass == 0 { toneMapper; } else { TONE_MAP_NONE; };
+      mut encoder = device.createCommandEncoder();
+      if pass == 0 { renderer.render(&mut device, &mut encoder, &post.hdr, &depth, &camera, &light, &list); }
+      else { renderer.render(&mut device, &mut encoder, &post.hdr, &depth, &camera, &flat, &maskList); }
+      post.apply(&mut encoder, &target);
+      encoder.copyTextureToBuffer(&target, &readback);
+      device.queue.submit(encoder.finish());
+      device.endFrame();
+      device.waitIdle();
+      imm shot = Image.fromTexels(readback.mappedRange(), i32.from(width), i32.from(height), false);
+      mut file = name.copy();
+      if pass == 1 { file <- "-mask"; }
+      file <- ".bmp";
+      if shot.save(file.view()) { print <- "Shot: "; printStr(file.view()); print <- "\n"; }
+      else { print <- "Could NOT write "; printStr(file.view()); print <- "\n"; ok = false; }
+      pass = pass + 1;
+    }
     s = s + 1usize;
   }
 
