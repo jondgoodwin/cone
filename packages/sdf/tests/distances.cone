@@ -15,6 +15,17 @@
 // - Fillets: hg_sdf's quarter-round with a = b = 1/4, r = 1/2 is r - the
 //   distance from (a, b) to (r, r): 0.5 - sqrt(0.125); far from both
 //   shapes each fillet is the plain union.
+// - Membranes: the flat 2 x 1 sheet between the spars (0,0,0)-(2,0,0) and
+//   (0,0,1)-(2,0,1) is 1/2 from a point 1/2 above or below it, 0 on it, 1
+//   from a point 1 beyond its u = 1 edge. Scalloped by 1/2, its free edge
+//   is at z = 1 - 2 u (1 - u), 1/2 in the middle, so (1, 0, 0.9) is 0.4
+//   from it (squared distance 0.16 + 2.4 du^2), (1, 0.3, 0.5) is 0.3 above
+//   that edge point (squared distance 0.09 + 4 du^2 + ...), and the corner
+//   (0, 0, 1) stays. With b0 = b1 = (0,0,2) it is the triangle (0,0,0), (2,0,0),
+//   (0,0,2), and (0.5, 1, 0.5) is 1 above it. The twisted sheet between
+//   (0,0,0)-(1,0,0) and (0,0,1)-(1,1,1) is (u, uv, v); at (1/2, 1/2) its
+//   normal is (1/2, -1, 1/2) / sqrt(3/2), and the point 0.1 along it is 0.1
+//   away (within 1e-4: the sheet's curvature radius there is over 1).
 
 mod distances;
 
@@ -162,8 +173,28 @@ fn fillets() {
   expect(ok, "columns never exceed the union");
 }
 
+fn membranes() {
+  imm o = new Vec3(0., 0., 0.);
+  imm x2 = new Vec3(2., 0., 0.);
+  imm z1 = new Vec3(0., 0., 1.);
+  imm xz = new Vec3(2., 0., 1.);
+  near(membrane(new Vec3(1., 0.5, 0.5), o, x2, z1, xz, 0.), 0.5d, "membrane above");
+  near(membrane(new Vec3(1., -0.5, 0.25), o, x2, z1, xz, 0.), 0.5d, "membrane below");
+  near(membrane(new Vec3(1.5, 0., 0.75), o, x2, z1, xz, 0.), 0d, "membrane on it");
+  near(membrane(new Vec3(3., 0., 0.5), o, x2, z1, xz, 0.), 1d, "membrane beyond an edge");
+  near(membrane(new Vec3(1., 0., 0.9), o, x2, z1, xz, 0.5), 0.4d, "membrane: beyond the scallop");
+  near(membrane(new Vec3(1., 0., 0.4), o, x2, z1, xz, 0.5), 0d, "membrane: inside the scallop");
+  near(membrane(new Vec3(1., 0.3, 0.5), o, x2, z1, xz, 0.5), 0.3d, "membrane: above the scallop's edge");
+  near(membrane(new Vec3(0., 0., 1.5), o, x2, z1, xz, 0.5), 0.5d, "membrane: the scallop keeps the corner");
+  imm z2 = new Vec3(0., 0., 2.);
+  near(membrane(new Vec3(0.5, 1., 0.5), o, x2, z2, z2, 0.), 1d, "membrane as a triangle");
+  imm tw = new Vec3(0.5, 0.25, 0.5) + new Vec3(0.5, -1., 0.5) * (0.1 / 1.22474487);
+  expectFloat(f64.from(membrane(tw, o, new Vec3(1., 0., 0.), z1, new Vec3(1., 1., 1.), 0.)), 0.1d, 0.0001d, "membrane twisted");
+}
+
 fn main() i32 {
   primitives();
+  membranes();
   operators();
   domains();
   fillets();
