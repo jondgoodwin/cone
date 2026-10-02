@@ -7,7 +7,10 @@
 //   'struct __finddata64_t' are: 56 and 304 bytes, measured with cl.exe;
 // - setenv sets a variable, keeps it where 'overwrite' is zero, and replaces it
 //   where it is not; a command the program starts sees it; unsetenv removes
-//   it, and removing it again is no error;
+//   it, and removing it again is no error; a name and value beyond ASCII
+//   read back as the UTF-8 written, and a value that is not UTF-8 is EINVAL
+//   (getenv is posix's, read through Windows' wide environment, so libc's is
+//   left out of the fold);
 // - mkdir makes a directory and refuses to make it again, chdir goes into it
 //   and back out, and getcwd and realpath both name it: the text they give is
 //   the one before plus the directory's name, checked without printing a path;
@@ -30,7 +33,7 @@
 mod bindings;
 
 import stdio use *;
-import libc use *;
+import libc use * but getenv;
 import posix use *;
 
 fn show(label &[]u8, n i64) {
@@ -96,6 +99,11 @@ fn environment() {
   showText("getenv-kept", getenv(name));
   show("setenv-replace", i64.from(setenv(name, &[]"second", 1i32)));
   showText("getenv-replaced", getenv(name));
+  imm wide = &[]"CONE_POSIX_TEST_É";
+  show("setenv-utf8", i64.from(setenv(wide, &[]"日本 é", 1i32)));
+  show("getenv-utf8-same", same(getenv(wide), &[]"日本 é"));
+  show("unsetenv-utf8", i64.from(unsetenv(wide)));
+  show("setenv-not-utf8-EINVAL", yes(setenv(wide, &[]"\xFF", 1i32) == EINVAL));
 }
 
 // After the processes have seen it
