@@ -42,7 +42,7 @@
 // the pieces of a cell by their first edge), sums are made in that order,
 // and nothing depends on addresses or timing: the same shape and numbers
 // give the same bits every run and in debug and release builds.
-// 'meshHash' is a hash of those bits, for pinning them.
+// mesh's 'meshHash' is a hash of those bits, for pinning them.
 //
 // Surface nets rounds sharp edges and corners off (a vertex is an average,
 // not where the faces' planes meet): dual contouring, which keeps them, is
@@ -53,6 +53,16 @@ const NetBlock = 4usize;
 
 // A piece number meaning "the surface does not cross this edge"
 const NoPiece = 255u8;
+
+// sdf's scalar helpers (private to it), written as it writes them, so the
+// mesh is the same bits as when the mesher lived there
+fn minf(a f32, b f32) f32 { if a < b { a; } else { b; }; }
+fn maxf(a f32, b f32) f32 { if a > b { a; } else { b; }; }
+fn absf(a f32) f32 { libc.fabsf(a); }
+fn clampf(v f32, lo f32, hi f32) f32 { minf(maxf(v, lo), hi); }
+fn sqrtf(a f32) f32 { a.sqrt(); }
+fn len3(v Vec3) f32 { sqrtf(v.x * v.x + v.y * v.y + v.z * v.z); }
+fn dot3(a Vec3, b Vec3) f32 { a.x * b.x + a.y * b.y + a.z * b.z; }
 
 // A shape made into a surface net: vertices (one per piece of surface in a
 // crossed cell), their gradient normals, and quads, four vertex indices
@@ -527,36 +537,4 @@ pub fn netLevels[S Shape](shape &S, box Aabb3, finest f32, count u32, relax u32)
     i = i + 1u32;
   }
   out;
-}
-
-// A hash of a mesh's bits, for pinning a mesh and comparing it across runs,
-// builds and machines: its vertex and index counts, then every position's
-// and normal's coordinates as their f32 bits, then every index, each word
-// folded in by noise's PCG hash, h = pcg(h ^ word), in that order. Two
-// meshes with the same hash have, almost surely, the same bits
-pub fn meshHash(m &mesh.Mesh) u32 {
-  mut h = noise.pcg(u32.from(m.positions.len()));
-  h = noise.pcg(h ^ u32.from(m.indices.len()));
-  mut i = 0usize;
-  while i < m.positions.len() {
-    imm p = *m.positions[i];
-    h = noise.pcg(h ^ (p.x as u32));
-    h = noise.pcg(h ^ (p.y as u32));
-    h = noise.pcg(h ^ (p.z as u32));
-    i = i + 1usize;
-  }
-  i = 0usize;
-  while i < m.normals.len() {
-    imm n = *m.normals[i];
-    h = noise.pcg(h ^ (n.x as u32));
-    h = noise.pcg(h ^ (n.y as u32));
-    h = noise.pcg(h ^ (n.z as u32));
-    i = i + 1usize;
-  }
-  i = 0usize;
-  while i < m.indices.len() {
-    h = noise.pcg(h ^ *m.indices[i]);
-    i = i + 1usize;
-  }
-  h;
 }

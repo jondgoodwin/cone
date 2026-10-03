@@ -72,6 +72,25 @@ pub struct Queue {
     submitCommands(self, cmd.backend.cmd, new vulkan.Fence(0u64), 0u32, null);
   }
 
+  // Submit as 'submit' does, and signal 'fence' (one from 'createFence',
+  // not submitted before) once the GPU has finished these commands and
+  // everything submitted before them. False, and the fence not submitted,
+  // if nothing was.
+  pub fn submitSignalling(self &mut, cmd CommandBuffer, fence &mut Fence) Bool {
+    if isNull(cmd.backend.cmd) or fence.fence.h == 0u64 or fence.submitted { return false; }
+    fence.submitted = submitCommands(self, cmd.backend.cmd, fence.fence, 0u32, null);
+    fence.submitted;
+  }
+
+  // Signal 'fence' (one from 'createFence', not submitted before) once the
+  // GPU has finished everything submitted so far, and the uploads asked for
+  // since: a submission of no commands of its own
+  pub fn signal(self &mut, fence &mut Fence) Bool {
+    if fence.fence.h == 0u64 or fence.submitted { return false; }
+    fence.submitted = submitCommands(self, nullCommandBuffer(), fence.fence, 0u32, null);
+    fence.submitted;
+  }
+
   // Write 'size' bytes from 'data' into 'buffer' at 'offset', which must be
   // a buffer with BUFFER_USAGE_COPY_DST. The bytes are copied now (into
   // staging memory), and into the buffer by the GPU ahead of whatever is

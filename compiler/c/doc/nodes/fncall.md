@@ -236,7 +236,9 @@ reject an overload name everywhere else. Bail if `objfn` is already marked
   not called, its value is constructed with `new`.
 - **A bare method or field name** (`FlagMethFld`, not `FlagQualified`) →
   rewrite to `self.method`, synthesizing a resolved `self` from parameter 0.
-- **An overload set** → `fnCallLowerOverloadFn` picks the concrete candidate.
+- **An overload set** → `fnCallLowerOverloadFn` type checks every candidate not
+  yet analyzed (`fnCallDemandCandidates`, as a member name's are below), then
+  picks the concrete candidate.
 - **`FlagLvalOp`** → borrow the receiver as `&mut`, or hand an operator-assign
   on a method type to `fnCallOpAssgn`. A receiver that is already a reference
   (`fnCallIsRefReceiver`) is passed as it is, exactly as the reference arm of
@@ -654,6 +656,17 @@ carries ([intrinsic](intrinsic.md)).
 `FldAccessTag` splits on `FlagBorrow`: with it, `StructGEP` the receiver's
 address; without it, load the **whole aggregate** and `extractvalue`. Getting
 the flag wrong is not a type error.
+
+`ArrIndexTag` splits the same way: without `FlagBorrow`, load the element
+from its address; with it, the address is the value. **A borrowed index's
+receiver is a reference, but the borrow node only at the root of the chain.**
+`borrowReassocIndex` turns `&m[1][0]` into `((&m)[1])[0]`, each link
+`FlagBorrow`: the inner link's receiver is the borrow `&m`, which generation
+steps around to index `m`'s own place, while the outer link's receiver is the
+inner link, a reference value holding the row's address, which `genlAddr`
+and `genlSubslice` index through as through any reference to an array or
+slice. The same holds where the receiver is a reference some call returned,
+`&mut list[i][j]` for a list of arrays.
 
 **A range index** (`FlagRange`, set by the parser's `parseIndexArgs`) is a slice
 of part of an array or a slice, and exists only borrowed: `fnCallTypeCheck`

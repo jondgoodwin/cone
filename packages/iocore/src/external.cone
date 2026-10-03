@@ -1,0 +1,77 @@
+// External operations: an operation whose answer comes from outside the
+// kernel and the pool -- another thread, a GPU fence's watcher, a library
+// with callbacks of its own -- delivered into the loop as any answer is,
+// under the same contract (see the package's header, EXTERNAL OPERATIONS).
+//
+// How it is built. 'lp.external' makes a record in flight, as any
+// operation's, and a JobBox (the pool's) on no lane, holding the buffer and
+// a waker of the loop; the Completer holds the box. Ending it writes the
+// outcome into the box and posts the box to the loop's port (keyJob),
+// exactly as a lane's thread posts a job that has run, so everything the
+// loop does with a job's answer -- a cancel asked while it runs, a deadline
+// and its prompt TimedOut, a box come back after its answer and dropped,
+// a loop that has died -- holds for it unchanged. The loop's cancel sets
+// the box's 'asked' flag, which the completer may read.
+
+// The other side of an external operation: whoever holds it ends the
+// operation, once, from any thread. A move type, Sendable; its death
+// without an ending ends the operation Failed, ERROR_OPERATION_ABORTED, so
+// the operation still answers exactly once. It declares Sendable, a promise
+// taken on trust, for its box's raw pointer: the box is its alone until it
+// ends the operation, but for the 'asked' flag, an atomic the loop sets
+pub struct Completer is Move, Sendable {
+  box *JobBox;
+  op OpId;
+  waker Waker;
+
+  // The operation it ends
+  pub fn id(self &) OpId {op;}
+
+  // Whether it can still end its operation: false once it has, or when the
+  // operation was answered at submit (its group cancelled, its deadline
+  // past) and nothing is left to end
+  pub fn isLive(self &) Bool {box as usize != 0usize;}
+
+  // Whether the operation's cancel has been asked (by lp.cancel, a Request,
+  // its group, or its deadline): a watcher that can stop early ends it
+  // with 'cancelled()'. The answer is still the completer's to give
+  pub fn isCancelRequested(self &) Bool {
+    if box as usize == 0usize {return false;}
+    (*box).asked.load() != 0u32;
+  }
+
+  // The buffer lent with the operation, to write into before ending it. A
+  // panic, at the caller's line, once it has ended
+  pub fn buf(self &mut, file &[]u8 = srcFile(), line u32 = srcLine()) &mut IoBuf {
+    if box as usize == 0usize {panic("iocore: Completer.buf after its operation ended", file, line);}
+    &mut (*box).buf;
+  }
+
+  // End it Done, with a count (bytes, or any number: a fence's value)
+  pub fn done(self &mut, n usize) Bool {self.end(Outcome.Done[n]);}
+
+  // End it Failed, with an error number
+  pub fn fail(self &mut, code u32) Bool {self.end(Outcome.Failed[code]);}
+
+  // End it Cancelled: the completer stopped because the cancel was asked
+  pub fn cancelled(self &mut) Bool {self.end(Outcome.Cancelled[]);}
+
+  // End it as o: true once the ending is on its way to the loop; false if
+  // it had ended already, or the loop has gone (its buffer then goes home)
+  pub fn end(self &mut, o Outcome) Bool {
+    if box as usize == 0usize {return false;}
+    imm b = box;
+    box = null;
+    imm alive = not waker.isGone();
+    settleBox(b, o);
+    alive;
+  }
+
+  fn final(self &uni) {
+    if box as usize != 0usize {
+      imm b = box;
+      box = null;
+      settleBox(b, Outcome.Failed[errorOperationAborted]);
+    }
+  }
+}

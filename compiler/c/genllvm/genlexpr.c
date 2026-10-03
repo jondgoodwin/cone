@@ -1683,20 +1683,31 @@ void genlBoundsCheck(GenState *gen, INode *site, LLVMValueRef index, LLVMValueRe
 // a and the count b - a ('a...b' counts b too), once a <= b <= the count it is
 // taken from is checked at run time, as an index is. The receiver is what the
 // borrow was of: an array (reached directly or through a reference, whose
-// dereference genlAddr reads through), or a slice's dereference.
+// dereference genlAddr reads through), or a slice's dereference. In a nested
+// chain, '&v[i][a..b]' or '&v[a..b][c..d]', it is the inner link instead, a
+// reference to an array or a slice.
 static LLVMValueRef genlSubslice(GenState *gen, FnCallNode *fncall) {
     INode *obj = fncall->objfn;
     INode *objtype = iexpGetTypeDcl(obj);
     LLVMValueRef base, count;
     LLVMTypeRef elemtype;   // What 'base' points at
-    if (objtype->tag == ArrayTag) {
-        ULitNode *dimen = (ULitNode*)nodesGet(((ArrayNode*)objtype)->dimens, 0);
+    INode *arraydcl = objtype->tag == RefTag ? itypeGetTypeDcl(((RefNode*)objtype)->vtexp) : objtype;
+    if (arraydcl->tag == ArrayTag) {
+        ULitNode *dimen = (ULitNode*)nodesGet(((ArrayNode*)arraydcl)->dimens, 0);
         assert(dimen->tag == ULitTag);
         count = LLVMConstInt(genlUsize(gen), dimen->uintlit, 0);
         LLVMValueRef zeros[2] = {LLVMConstInt(genlUsize(gen), 0, 0), LLVMConstInt(genlUsize(gen), 0, 0)};
-        LLVMTypeRef arraytype = genlType(gen, genlAddrType(obj));
-        base = LLVMBuildGEP2(gen->builder, arraytype, genlAddr(gen, obj), zeros, 2, "");
+        // An array is memory, whose address is taken; a reference holds it
+        LLVMTypeRef arraytype = genlType(gen, objtype->tag == RefTag ? arraydcl : genlAddrType(obj));
+        LLVMValueRef arrayp = objtype->tag == RefTag ? genlExpr(gen, obj) : genlAddr(gen, obj);
+        base = LLVMBuildGEP2(gen->builder, arraytype, arrayp, zeros, 2, "");
         elemtype = LLVMGetElementType(arraytype);   // an array's element, not a pointer's
+    }
+    else if (objtype->tag == ArrayRefTag) {
+        LLVMValueRef arrref = genlExpr(gen, obj);
+        count = LLVMBuildExtractValue(gen->builder, arrref, 1, "count");
+        base = LLVMBuildExtractValue(gen->builder, arrref, 0, "sliceptr");
+        elemtype = genlPointeeType(gen, objtype);
     }
     else {
         // fnCallArrIndex accepts a range only on an array or a slice, and a
@@ -2354,10 +2365,14 @@ static LLVMValueRef genlTerm(GenState *gen, INode *termnode) {
         if (!(termnode->flags & FlagBorrow))
             return LLVMBuildLoad2(gen->builder, genlType(gen, genlAddrType(termnode)), genlAddr(gen, termnode), "");
 
-        // If borrowing, alter fncall to shortcut around the borrow node
+        // If borrowing, the receiver is a reference. At the root of the chain
+        // it is the borrow borrowReassocIndex made, '&v' in '&v[i]': shortcut
+        // around it to index the place it borrows. Further out it is the
+        // inner link, '&v[i]' in '&v[i][j]', whose value is the address of
+        // the array it reached, indexed through as any reference is.
         FnCallNode *fncall = (FnCallNode *)termnode;
-        assert(fncall->objfn->tag == BorrowTag);
-        fncall->objfn = ((RefNode *)fncall->objfn)->vtexp;
+        if (fncall->objfn->tag == BorrowTag)
+            fncall->objfn = ((RefNode *)fncall->objfn)->vtexp;
         if (termnode->flags & FlagRange)
             return genlSubslice(gen, fncall);
         return genlAddr(gen, termnode);

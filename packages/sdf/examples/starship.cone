@@ -84,6 +84,7 @@ import sculpt;
 import gpu use *;
 import render use *;
 import sdf use *;
+import sdfmesh use *;
 
 // ---- The numbers ----
 
@@ -367,8 +368,8 @@ struct Ship {
   pub spine List[Vec3];
   pub radii List[f32];
   pub keels List[f32];
-  pub ribCells CurveCells;
-  pub bladeCells CurveCells;
+  pub ribFrames List[CurveFrame];     // the ribbing's cells' frames along the spine
+  pub bladeFrames List[CurveFrame];   // the blades'; each viewed as CurveCells where the distance is found
   pub ribbing Ribbing;
   pub blades Blades;
   pub headFrame HeadFrame;
@@ -389,7 +390,9 @@ struct Ship {
       i = i + 1;
     }
     imm path = sculpt.Path.fromPoints(spine.view(), false);
-    imm curve = PathCurve.fromPath(&path);
+    imm pathFrames = path.curveFrames();
+    imm pathDistances = path.distances();
+    imm curve = PathCurve.make(pathFrames.view(), pathDistances.view());
     // Which of the frames' axes is up: the binormal on this path, and its sign
     imm f0 = curve.frameAt(0.);
     imm swap = absf(f0.binormal.y) > absf(f0.normal.y);
@@ -397,20 +400,24 @@ struct Ship {
     imm up = if upAxis < 0. { -1.; } else { 1.; };
     mut ribR = List[f32].empty();
     mut ribK = List[f32].empty();
+    mut ribFrames = List[CurveFrame].withCapacity(usize.from(RIBS_N));
     i = 0;
     while i < RIBS_N {
       imm t = (f32.from(i) + 0.5) / f32.from(RIBS_N);
       ribR.push(radiusAt(t));
       ribK.push(if (has & KEEL) != 0u32 { keelAt(t); } else { 0.; });
+      ribFrames.push(curveCellFrame(&curve, i, RIBS_N));
       i = i + 1;
     }
     mut bladeR = List[f32].empty();
+    mut bladeFrames = List[CurveFrame].withCapacity(usize.from(BLADES_N));
     i = 0;
     while i < BLADES_N {
       bladeR.push(radiusAt((f32.from(i) + 0.5) / f32.from(BLADES_N)));
+      bladeFrames.push(curveCellFrame(&curve, i, BLADES_N));
       i = i + 1;
     }
-    new Ship(spine, radii, keels, curveCells(&curve, RIBS_N), curveCells(&curve, BLADES_N),
+    new Ship(spine, radii, keels, ribFrames, bladeFrames,
       new Ribbing(up, swap, ribR, ribK, has), new Blades(up, swap, bladeR, has), HeadFrame.make(straight), has, membrane);
   }
 
@@ -628,8 +635,14 @@ struct Ship {
         i = i + 1usize;
       }
       if axis - 1.6 < d {
-        if (has & (RIBS | KEEL)) != 0u32 { d = smoothUnion(d, repeatAlongCells(&ribCells, &ribbing, p), 0.008); }
-        if self.on(BLADES) { d = minf(d, repeatAlongCells(&bladeCells, &blades, p)); }
+        if (has & (RIBS | KEEL)) != 0u32 {
+          imm ribCells = new CurveCells(ribFrames.view());
+          d = smoothUnion(d, repeatAlongCells(&ribCells, &ribbing, p), 0.008);
+        }
+        if self.on(BLADES) {
+          imm bladeCells = new CurveCells(bladeFrames.view());
+          d = minf(d, repeatAlongCells(&bladeCells, &blades, p));
+        }
       }
     }
     if self.on(LANCE) and near(q, v(12., 0.9, 0.), 2.4, d, 0.04) { d = smoothUnion(d, self.lance(q), 0.04); }
@@ -841,7 +854,7 @@ fn main(argc i32, argv **u8) i32 {
       imm started = sdl.GetPerformanceCounter();
       imm net = surfaceNet(&ship, ship.bounds(), cell, 1u32, true);
       imm m = net.toMesh();
-      imm h = meshHash(&m);
+      imm h = mesh.meshHash(&m);
       printStr(PARTS[part]); print <- ", level "; print <- level; print <- ": cells of "; print <- cell; print <- ", ";
       print <- m.vertexCount(); print <- " vertices, "; print <- m.triangleCount(); print <- " triangles, ";
       print <- net.evaluations; print <- " distances, ";

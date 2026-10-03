@@ -29,6 +29,48 @@ pub struct Device {
     if self.isValid() { check(vulkan.deviceWaitIdle(backend.device), "vkDeviceWaitIdle"); }
   }
 
+  // Whether the GPU has finished frame 'frame' (the 'frameNumber' it was
+  // recorded under: every command submitted in it, and the uploads before
+  // them). Never waits. False while the frame is still being recorded, since
+  // its fence is signalled only when it ends ('endFrame', or a swapchain's
+  // 'present').
+  pub fn frameDone(self &, frame u64) Bool {
+    if frame >= frameNumber { return false; }
+    if !self.isValid() { return true; }
+    // Its state comes round again FRAMES_IN_FLIGHT frames on, and the frame
+    // that reuses it waited for its fence when it began
+    imm reuser = frame + u64.from(FRAMES_IN_FLIGHT);
+    if reuser < frameNumber or (reuser == frameNumber and queue.backend.inFrame) { return true; }
+    imm i = usize.from(frame % u64.from(FRAMES_IN_FLIGHT));
+    if !queue.backend.frames[i].pending { return true; }
+    mut fence = queue.backend.frames[i].fence;
+    vulkan.waitForFences(backend.device, 1u32, &mut fence as *vulkan.Fence, vulkan.TRUE, 0u64) == vulkan.SUCCESS;
+  }
+
+  // Wait until the GPU has finished frame 'frame', and nothing submitted
+  // after it. A frame still being recorded is not waited for, since it would
+  // never finish: end it first.
+  pub fn waitFrame(self &mut, frame u64) {
+    if frame >= frameNumber or self.frameDone(frame) { return; }
+    imm i = usize.from(frame % u64.from(FRAMES_IN_FLIGHT));
+    mut fence = queue.backend.frames[i].fence;
+    check(vulkan.waitForFences(backend.device, 1u32, &mut fence as *vulkan.Fence, vulkan.TRUE, NO_TIMEOUT),
+      "vkWaitForFences");
+  }
+
+  // A fence of its own, unsignalled, for one submission
+  // ('queue.submitSignalling' or 'queue.signal'), which another thread may
+  // wait on: it is never reset or reused, as a frame's fence is. Check
+  // 'isValid'.
+  pub fn createFence(self &) Fence {
+    mut fence = new vulkan.Fence(0u64);
+    if self.isValid() {
+      imm fci = new vulkan.FenceCreateInfo();
+      check(vulkan.createFence(backend.device, &fci, nullp(), &mut fence), "vkCreateFence");
+    }
+    new Fence(backend.device, fence, false);
+  }
+
   // A command encoder, recording into a command buffer of this frame's
   pub fn createCommandEncoder(self &mut) CommandEncoder {
     beginQueueFrame(&mut queue);

@@ -970,13 +970,14 @@ class Scenarios(unittest.TestCase):
     def test_the_geomath_example(self):
         # packages/geomath/examples/tour.cone, run where it stands as a lone
         # file: geomath from the registry, compiled alone as a library over
-        # libc and collections, and the example linked against its object. Its
-        # build is in the home, so nothing is written into the repository
+        # libc (it needs no collections), and the example linked against its
+        # object. Its build is in the home, so nothing is written into the
+        # repository
         example = congo.REPO_PACKAGES / "geomath" / "examples" / "tour.cone"
         run = self.congo("run", str(example), cwd=self.root)
         compiled = [line.split()[1] for line in run.stdout.splitlines()
                     if line.strip().startswith("Compiling")]
-        self.assertEqual(compiled, ["libc", "core", "stdio", "collections", "geomath", "tour"])
+        self.assertEqual(compiled, ["libc", "core", "stdio", "geomath", "tour"])
         self.assertEqual(self.program_output(run), textwrap.dedent("""\
             perspective, 60 degrees, 16:9:
                  0.9743   0.0000   0.0000   0.0000
@@ -1010,8 +1011,6 @@ class Scenarios(unittest.TestCase):
             the ray from the eye meets the box after 4.3081, at (0.0000, 0.4000, 1.0000)
             the arch's middle: (1.0000, 1.5000)
             which way it runs there: (3.0000, 0.0000)
-            the hull of seven points has 5 corners, area 5.0000
-            cut into 3 triangles
 
             orange: 1.0000 0.5000 0.0000 alpha 1.0000
             screen: 1280 by 720

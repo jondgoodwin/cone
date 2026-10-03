@@ -1,28 +1,36 @@
 // The Loop: its in-flight table, its handle table, its timers and its wait.
 //
 // How it is built. Every operation and timer is a record in the in-flight
-// table, which owns it, and so its buffer, its target and its addresses,
-// until its answer is delivered (I2, I18). A record begins with the
-// OVERLAPPED the kernel holds, so the address a completion hands back is
+// table, which owns it, and so its buffer, its target, its group and its
+// addresses, until its answer is delivered (I2, I18). A record begins with
+// the OVERLAPPED the kernel holds, so the address a completion hands back is
 // the record's. Records live in blocks of 64 that never move or shrink while
 // the loop lives (the kernel holds their addresses), reused through a free
 // list; an OpId is a record's index and generation, and the generation moves
-// on when the record is freed, so an old id finds nothing. A record is in
-// one of three states: free; in flight (the kernel or the wheel holds it);
-// decided (its outcome is known, and its answer waits in 'decided' to be
-// delivered at the end of this pass of poll). Every answer is built and
-// delivered in one place, 'deliver', which frees the record: a record is
-// delivered once, which is the exactly-once invariant (I1) by construction.
+// on when the record's answer is delivered, so an old id finds nothing. A
+// record is in one of four states: free; in flight (the kernel, the wheel or
+// the blocking pool holds it); decided (its outcome is known, and its answer
+// waits in 'decided' to be delivered at the end of this pass of poll); or
+// abandoned (its answer, a prompt TimedOut, has been delivered, but the
+// kernel still holds its buffer: the record waits for the kernel's
+// completion, then gives the buffer back to its pool and is free). Every
+// answer is built and delivered in one place, 'deliver', which moves the
+// generation on: a record is delivered once, which is the exactly-once
+// invariant (I1) by construction. A decision made before the kernel has
+// answered (a prompt TimedOut) is replaced by the kernel's own outcome if
+// the kernel answers before the decision is delivered: the reply says how
+// the operation really ended whenever the loop can know it.
 //
-// Its Move fields (the buffer, the shared bytes, the target) are written
-// into a record's raw memory once, as empty values, when its block is made,
-// and from then on only swapped in and out, so the memory always holds
-// valid values; they are finalized when the loop frees the block.
+// Its Move fields (the buffer, the shared bytes, the target, the group) are
+// written into a record's raw memory once, as empty values, when its block
+// is made, and from then on only swapped in and out, so the memory always
+// holds valid values; they are finalized when the loop frees the block.
 //
 // Timers are a timewheel.Wheel, its token a record's index and generation:
-// a timer record (after) fires Done; an operation's deadline (submitBy)
-// asks its cancel, and marks its answer TimedOut. The wait: GetQueuedCompl-
-// etionStatusEx, for at most a batch of 128, its timeout the nearer of
+// a timer record (after) fires Done; an operation's deadline (submitBy,
+// submitIn) asks its cancel, then gives the kernel 'grace' to answer the
+// cancel before answering TimedOut without the buffer. The wait: GetQueued-
+// CompletionStatusEx, for at most a batch of 128, its timeout the nearer of
 // 'until' and the wheel's next expiry. The high-resolution waitable timer is
 // armed for that instant and associated with the port through a wait
 // completion packet, which the kernel queues on the port when the timer is
@@ -35,6 +43,7 @@
 const stFree = 0u32;
 const stFlight = 1u32;
 const stDecided = 2u32;
+const stAbandoned = 3u32;
 
 // What a cancel of an operation in flight should answer
 const askedNone = 0u32;
@@ -52,13 +61,21 @@ struct Rec {
   state u32;
   kind u32;
   asked u32;              // askedCancel, askedDeadline: a cancel has been asked, and why
+  hit Bool;               // its deadline has passed: the grace is running, or has run
+  abandon Bool;           // decided TimedOut while the kernel or the pool still holds it
   nextFree u32;
   handle usize;           // the OS handle the operation is on, for CancelIoEx
   newSock usize;          // Accept's or Connect's new socket, until registered
   newHandle Handle;       // ...and its handle once registered
   family u16;             // Accept's listener's family
+  sock Handle;            // the socket or file the operation names
+  at u64;                 // ReadAt's and WriteAt's offset; Call's argument
+  peer SocketAddr;        // Connect's address
+  lane Lane;              // Call's lane and work, and its job while the pool holds it
+  work WorkFn;
+  job *JobBox;
   token u64;
-  timer TimerId;          // its deadline's timer, or a timer record's own
+  timer TimerId;          // its deadline's (or grace's) timer, or a timer record's own
   submitted Instant;
   dequeued Instant;
   status u32;             // decided: its outcome
@@ -67,6 +84,7 @@ struct Rec {
   buf IoBuf;
   bytes Option[Bytes];
   target Target;
+  group Option[CancelGroup];
   addr Array[u8, 96];     // AcceptEx's two addresses; Connect's address
 }
 
@@ -75,15 +93,24 @@ fn blankRec(index u32, next u32) Rec {
     ov: new Overlapped(0usize, 0usize, 0u32, 0u32, 0usize),
     wsa: new WsaBuf(0u32, null),
     flags: 0u32, index: index, gen: 1u32, state: stFree, kind: 0u32, asked: askedNone,
+    hit: false, abandon: false,
     nextFree: next, handle: 0usize, newSock: invalidHandle, newHandle: Handle.none(),
-    family: 0u16, token: 0u64, timer: TimerId.none(),
+    family: 0u16, sock: Handle.none(), at: 0u64,
+    peer: new SocketAddr(new Array[u8, 28] <- fill 0u8, 0i32),
+    lane: new Lane(0u32), work: &noWork, job: null,
+    token: 0u64, timer: TimerId.none(),
     submitted: new Instant(), dequeued: new Instant(),
     status: 0u32, n: 0usize, code: 0u32,
     buf: IoBuf.empty(), bytes: None[Bytes][], target: Target.Here[0u64],
+    group: None[CancelGroup][],
     addr: new Array[u8, 96] <- fill 0u8);
 }
 
 const recsPerBlock = 64u32;
+
+// Whether an operation of kind k is held in a JobBox: a pool job, or an
+// external operation
+fn boxed(k u32) Bool {k == diag.kindCall or k == diag.kindExternal;}
 
 // What a handle is
 const hFree = 0u32;
@@ -103,6 +130,10 @@ struct HEntry {
 // The most completions one wait takes from the kernel
 const batch = 128u32;
 
+// The longest a poll waits while answers are held for a full channel: they
+// are tried again after it
+const heldRetryNs = 1000000i64;
+
 // ---------------------------------------------------------------------------
 // Loop
 // ---------------------------------------------------------------------------
@@ -117,7 +148,11 @@ pub struct Loop {
   recCount u32;
   freeRec u32;
   kernelHeld u32;         // records the kernel holds: it has not completed them
+  grouped u32;            // records in flight in a cancel group
+  groupsDirty Bool;       // a group's cancel has been posted: look at the grouped records
   decided List[u32];
+  heldC List[Completion]; // answers held back by a full channel...
+  heldT List[Target];     // ...and where they go
   handles List[HEntry];
   freeHandle u32;
   wheel Wheel;
@@ -128,6 +163,7 @@ pub struct Loop {
   associated Bool;        // the packet is associated, and not yet taken from the port
   armedFor Instant;       // the instant the timer is set for
   woken Bool;
+  grace Duration;         // after a deadline, how long the kernel has to give the buffer back
   stats diag.Counters;
   sub diag.Subscriber;
   subscribed Bool;
@@ -169,10 +205,12 @@ pub struct Loop {
     new Loop(
       loopId: diag.nextLoopId(), port: shared, portHandle: port,
       blocks: List[*Rec].empty(), recCount: 0u32, freeRec: noEntry, kernelHeld: 0u32,
-      decided: List[u32].empty(), handles: List[HEntry].empty(), freeHandle: noEntry,
+      grouped: 0u32, groupsDirty: false,
+      decided: List[u32].empty(), heldC: List[Completion].empty(), heldT: List[Target].empty(),
+      handles: List[HEntry].empty(), freeHandle: noEntry,
       wheel: Wheel.make(Instant.now()), expiries: List[Expiry].empty(),
       entries: entries, timer: timer, packet: packet, associated: false,
-      armedFor: new Instant(), woken: false,
+      armedFor: new Instant(), woken: false, grace: Duration.fromMillis(1i64),
       stats: diag.Counters.zero(), sub: &diag.noSubscriber, subscribed: false);
   }
 
@@ -193,6 +231,16 @@ pub struct Loop {
 
   // A Waker for this loop: Sendable; copied to share
   pub fn waker(self &) Waker {new Waker(port);}
+
+  // How long after an operation's deadline the loop waits for the kernel
+  // (or the pool) to answer its cancel and give the buffer back, before it
+  // answers TimedOut without the buffer (see the package's header,
+  // DEADLINES). 1 ms unless set; zero answers at the deadline itself
+  pub fn setGrace(self &mut, d Duration) {grace = d;}
+
+  // A Request for operation id: a handle whose death cancels it, which may
+  // be held on any thread (see the package's header, REQUESTS)
+  pub fn request(self &, id OpId) Request {new Request(new Waker(port), id, not id.isNone());}
 
   // -------------------------------------------------------------------------
   // Handles
@@ -306,8 +354,7 @@ pub struct Loop {
     h.index;
   }
 
-  // The OS handle h names, if it is of kind (or a socket of either kind,
-  // for kind hSocket where 'either'); invalidHandle if not
+  // The OS handle h names, if it is of kind; invalidHandle if not
   fn rawOf(self &, h Handle, kind u32) usize {
     imm i = self.handleIndex(h);
     if i == noEntry {return invalidHandle;}
@@ -345,11 +392,14 @@ pub struct Loop {
     freeRec = r.nextFree;
     r.state = stFlight;
     r.asked = askedNone;
+    r.hit = false;
+    r.abandon = false;
     r.submitted = Instant.now();
     r.dequeued = r.submitted;
     r.newSock = invalidHandle;
     r.newHandle = Handle.none();
     r.timer = TimerId.none();
+    r.job = null;
     stats.submit();
     i;
   }
@@ -361,13 +411,17 @@ pub struct Loop {
   }
 
   // The outcome of record i is known: it waits for delivery at the end of
-  // this pass of poll (or the next one)
+  // this pass of poll (or the next one). A record decided already and not
+  // yet delivered -- a prompt TimedOut the kernel has now answered after
+  // all -- takes the kernel's outcome instead, its buffer back with it
   fn decide(self &mut, i u32, status u32, n usize, code u32) {
     imm r = self.recAt(i) as &mut Rec;
-    r.state = stDecided;
     r.status = status;
     r.n = n;
     r.code = code;
+    r.abandon = false;
+    if r.state == stDecided {return;}
+    r.state = stDecided;
     if not r.timer.isNone() {
       wheel.cancel(r.timer);
       r.timer = TimerId.none();
@@ -375,39 +429,162 @@ pub struct Loop {
     decided.push(i);
   }
 
-  // Build record i's answer, free the record, and send the answer where its
-  // target says: appended to out (Here: how many, 1) or posted (Post: 0)
+  // Record i's deadline has passed and the kernel (or the pool) still holds
+  // it: answer TimedOut now, without its buffer, which goes home when the
+  // kernel gives it back
+  fn abandonRec(self &mut, i u32) {
+    self.decide(i, diag.outcomeTimedOut, 0usize, 0u32);
+    (self.recAt(i) as &mut Rec).abandon = true;
+  }
+
+  // Build record i's answer, free the record (or leave it abandoned to the
+  // kernel), and send the answer where its target says: how many went to out
   fn deliver(self &mut, i u32, out &mut List[Completion], at Instant) usize {
     imm r = self.recAt(i) as &mut Rec;
+    // A record abandoned to the kernel keeps its buffer, and its bytes, for
+    // the kernel; a job's buffer is in its box, which comes back by itself
+    imm keep = r.abandon and not boxed(r.kind);
     mut b = IoBuf.empty();
-    b <=> r.buf;
+    if not keep {
+      b <=> r.buf;
+      r.bytes = None[Bytes][];
+    }
+    if r.abandon {stats.promptTimeouts = stats.promptTimeouts + 1u64;}
     mut t Target = Target.Here[0u64];
     t <=> r.target;
-    r.bytes = None[Bytes][];
+    mut g Option[CancelGroup] = None[CancelGroup][];
+    g <=> r.group;
+    match g {
+      case is None[CancelGroup] {}
+      else {grouped = grouped - 1u32;}
+    }
     imm c = new Completion(loopId, new OpId(i, r.gen), r.token, r.kind, r.status, r.n, r.code,
       b, r.newHandle, r.submitted, r.dequeued, at);
     stats.count(r.status);
-    // Free it: its id names nothing from now on
-    r.state = stFree;
+    // Its id names nothing from now on
     r.gen = if r.gen == 0xFFFFFFFFu32 {1u32;} else {r.gen + 1u32;};
+    r.job = null;
+    if keep {
+      r.state = stAbandoned;
+    } else {
+      self.freeRecord(i);
+    }
+    self.send(c, t, out);
+  }
+
+  fn freeRecord(self &mut, i u32) {
+    imm r = self.recAt(i) as &mut Rec;
+    r.state = stFree;
+    r.abandon = false;
     r.nextFree = freeRec;
     freeRec = i;
-    match t {
-      case imm p Post {
+  }
+
+  // Hand the subscriber an answer this loop sends to another thread (one
+  // posted to another loop is recorded there)
+  fn note(self &, c &Completion) {
+    if subscribed {
+      imm rec = c.record();
+      (sub)(&rec);
+    }
+  }
+
+  // Send answer c where t says: to out (Here: 1) or elsewhere (0)
+  fn send(self &mut, c Completion, t Target, out &mut List[Completion]) usize {
+    // A channel's send may find it full: the answer is held, and tried again
+    mut back = blankCompletion();
+    mut hold = false;
+    mut n = 0usize;
+    mut to = t;
+    match &mut to {
+      case imm p &mut Post {
         if p.waker.post(c) {
           stats.postsSent = stats.postsSent + 1u64;
         } else {
           stats.postsDropped = stats.postsDropped + 1u64;
         }
-        0usize;
+      }
+      case imm ch &mut Chan {
+        self.note(&c);
+        hold = self.tryChan(&ch.tx, c, &mut back);
+      }
+      case mut o &mut Once {
+        self.note(&c);
+        match o.tx.send(c) {
+          case is None[Completion] {stats.handedOff = stats.handedOff + 1u64;}
+          else {stats.handedDropped = stats.handedDropped + 1u64;}
+        }
+      }
+      case imm s &mut Status {
+        self.note(&c);
+        s.board.put(s.slot, c);
+        stats.handedOff = stats.handedOff + 1u64;
       }
       else {
-        if subscribed {
-          imm rec = c.record();
-          (sub)(&rec);
-        }
+        self.note(&c);
         out.push(c);
-        1usize;
+        n = 1usize;
+      }
+    }
+    if hold {
+      stats.held = stats.held + 1u64;
+      heldC.push(back);
+      heldT.push(to);
+    }
+    n;
+  }
+
+  // Send c on a channel without waiting: false when it is taken, or its
+  // receiver has gone (c dropped, its buffer home); true when the channel
+  // is full, c handed back in 'back'
+  fn tryChan(self &mut, tx &Sender[Completion], c Completion, back &mut Completion) Bool {
+    mut full = false;
+    match tx.trySend(c) {
+      case mut s Some {
+        if tx.isClosed() {
+          stats.handedDropped = stats.handedDropped + 1u64;
+        } else {
+          *back <=> s.value;
+          full = true;
+        }
+      }
+      else {stats.handedOff = stats.handedOff + 1u64;}
+    }
+    full;
+  }
+
+  // Try again the answers a full channel held back: those it takes, or
+  // whose receiver has gone, are done with
+  fn retryHeld(self &mut) {
+    if heldC.len() == 0usize {return;}
+    mut k = 0usize;
+    while k < heldC.len() {
+      mut c = blankCompletion();
+      imm slot = &mut heldC[k];
+      c <=> *slot;
+      mut back = blankCompletion();
+      mut still = false;
+      // Out of the list into a local, to be narrowed to its variant
+      mut to Target = Target.Here[0u64];
+      imm tslot = &mut heldT[k];
+      to <=> *tslot;
+      match &mut to {
+        case imm ch &mut Chan {still = self.tryChan(&ch.tx, c, &mut back);}
+        else {}
+      }
+      if still {
+        imm again = &mut heldC[k];
+        back <=> *again;
+        imm tagain = &mut heldT[k];
+        to <=> *tagain;
+        k = k + 1usize;
+      } else {
+        // Done with: the last goes into its place
+        imm last = heldC.len() - 1usize;
+        heldC.swap(k, last);
+        heldT.swap(k, last);
+        heldC.pop();
+        heldT.pop();
       }
     }
   }
@@ -433,93 +610,264 @@ pub struct Loop {
 
   // Start an operation; its answer goes where 'to' says (see the package's
   // header, OPERATIONS and TARGETS). Its id, for cancel
-  pub fn submit(self &mut, op Op, to Target) OpId {
-    self.start(op, to, false, new Instant());
+  pub fn submit(self &mut, op Op, to Target, file &[]u8 = srcFile(), line u32 = srcLine()) OpId {
+    self.start(op, to, forever(), None[CancelGroup][], file, line);
   }
 
-  // Start an operation that answers TimedOut, its buffer back, if it has not
-  // finished by deadline (see the package's header, CANCEL)
-  pub fn submitBy(self &mut, op Op, to Target, deadline Instant) OpId {
-    self.start(op, to, true, deadline);
+  // Start an operation that answers TimedOut if it has not finished by
+  // deadline (see the package's header, DEADLINES)
+  pub fn submitBy(self &mut, op Op, to Target, deadline Instant,
+      file &[]u8 = srcFile(), line u32 = srcLine()) OpId {
+    self.start(op, to, deadline, None[CancelGroup][], file, line);
+  }
+
+  // Start an operation in a cancel group: the group's cancel cancels it, and
+  // its deadline is the tighter of 'deadline' and the group's (forever()
+  // for the group's alone). Answered Cancelled at once, never started, when
+  // the group is cancelled already (see the package's header, CANCEL GROUPS)
+  pub fn submitIn(self &mut, op Op, to Target, group CancelGroup, deadline Instant,
+      file &[]u8 = srcFile(), line u32 = srcLine()) OpId {
+    self.start(op, to, deadline, Some[CancelGroup][group], file, line);
   }
 
   // A timer: it answers Done (n 0) at 'at', to its target, unless cancelled
-  pub fn after(self &mut, at Instant, to Target) OpId {
+  pub fn after(self &mut, at Instant, to Target, file &[]u8 = srcFile(), line u32 = srcLine()) OpId {
+    self.startTimer(at, to, None[CancelGroup][], file, line);
+  }
+
+  // A timer in a cancel group: the group's cancel cancels it
+  pub fn afterIn(self &mut, at Instant, to Target, group CancelGroup,
+      file &[]u8 = srcFile(), line u32 = srcLine()) OpId {
+    self.startTimer(at, to, Some[CancelGroup][group], file, line);
+  }
+
+  // An external operation: one ended by whoever holds the Completer this
+  // answers -- another thread, a GPU fence's watcher -- from any thread,
+  // its answer delivered where 'to' says as any operation's is (see the
+  // package's header, EXTERNAL OPERATIONS). buf is lent to the completer
+  // (IoBuf.empty() for none) and comes back in the answer
+  pub fn external(self &mut, to Target, buf IoBuf, file &[]u8 = srcFile(), line u32 = srcLine()) Completer {
+    self.startExternal(to, buf, forever(), None[CancelGroup][], file, line);
+  }
+
+  // An external operation in a cancel group, with a deadline (forever()
+  // for the group's alone)
+  pub fn externalIn(self &mut, to Target, buf IoBuf, group CancelGroup, deadline Instant,
+      file &[]u8 = srcFile(), line u32 = srcLine()) Completer {
+    self.startExternal(to, buf, deadline, Some[CancelGroup][group], file, line);
+  }
+
+  fn startExternal(self &mut, to Target, buf IoBuf, deadline Instant, group Option[CancelGroup],
+      file &[]u8, line u32) Completer {
+    imm token = to.token;
+    mut t = self.claim(to, file, line);
+    imm i = self.allocRec();
+    imm r = self.recAt(i) as &mut Rec;
+    r.token = token;
+    r.target <=> t;
+    r.kind = diag.kindExternal;
+    mut b = buf;
+    r.buf <=> b;
+    imm gen = r.gen;
+    mut dl = deadline;
+    match group {
+      case imm s Some {if s.value.deadline() < dl {dl = s.value.deadline();}}
+      else {}
+    }
+    if self.join(i, group) {
+      stats.atSubmit = stats.atSubmit + 1u64;
+      self.decide(i, diag.outcomeCancelled, 0usize, 0u32);
+      return new Completer(null, new OpId(i, gen), new Waker(port));
+    }
+    if dl <= r.submitted {
+      stats.atSubmit = stats.atSubmit + 1u64;
+      self.decide(i, diag.outcomeTimedOut, 0usize, 0u32);
+      return new Completer(null, new OpId(i, gen), new Waker(port));
+    }
+    imm box = newBox(&noWork, 0u64, new Waker(port), i, gen, null);
+    (box as &mut JobBox).buf <=> r.buf;
+    (*box).state = boxRunning;
+    r.job = box;
+    if dl < forever() {
+      r.timer = wheel.insert(dl, self.tokenOf(i));
+    }
+    new Completer(box, new OpId(i, gen), new Waker(port));
+  }
+
+  // The target's own part of a submit: a status slot is claimed. The target
+  // passes through
+  fn claim(self &mut, to Target, file &[]u8, line u32) Target {
+    match &to {
+      case imm s &Status {
+        if not s.board.arm(s.slot) {
+          panic("iocore: a status slot given an operation while it holds one, or out of range", file, line);
+        }
+      }
+      else {}
+    }
+    to;
+  }
+
+  // The group's part of a submit: the record joins it, and the loop is told
+  // when it is cancelled. True when it is cancelled already
+  fn join(self &mut, i u32, group Option[CancelGroup]) Bool {
+    imm r = self.recAt(i) as &mut Rec;
+    mut g = group;
+    r.group <=> g;
+    mut cancelled = false;
+    match r.group {
+      case imm s Some {
+        grouped = grouped + 1u32;
+        imm w = new Waker(port);
+        s.value.register(loopId, &w);
+        // After the registration: a cancel since is either seen here or
+        // posted to this loop
+        cancelled = s.value.isCancelled();
+      }
+      else {}
+    }
+    cancelled;
+  }
+
+  fn startTimer(self &mut, at Instant, to Target, group Option[CancelGroup],
+      file &[]u8, line u32) OpId {
+    imm token = to.token;
+    mut t = self.claim(to, file, line);
     imm i = self.allocRec();
     imm r = self.recAt(i) as &mut Rec;
     r.kind = diag.kindTimer;
-    r.token = to.token;
-    mut t = to;
+    r.token = token;
     r.target <=> t;
-    r.timer = wheel.insert(at, self.tokenOf(i));
-    new OpId(i, r.gen);
+    imm gen = r.gen;
+    if self.join(i, group) {
+      stats.atSubmit = stats.atSubmit + 1u64;
+      self.decide(i, diag.outcomeCancelled, 0usize, 0u32);
+    } else {
+      r.timer = wheel.insert(at, self.tokenOf(i));
+    }
+    new OpId(i, gen);
   }
 
-  fn start(self &mut, op Op, to Target, timed Bool, deadline Instant) OpId {
+  fn start(self &mut, op Op, to Target, deadline Instant, group Option[CancelGroup],
+      file &[]u8, line u32) OpId {
+    imm token = to.token;
+    mut t = self.claim(to, file, line);
     imm i = self.allocRec();
     imm p = self.recAt(i);
     imm r = p as &mut Rec;
-    r.token = to.token;
-    mut t = to;
+    r.token = token;
     r.target <=> t;
     r.ov.internal = 0usize;
     r.ov.internalHigh = 0usize;
     r.ov.offset = 0u32;
     r.ov.offsetHigh = 0u32;
     r.ov.hEvent = 0usize;
-    mut code = 0u32;
+    // What it is, and what it owns, into the record
     match op {
       case imm o Connect {
         r.kind = diag.kindConnect;
-        code = self.startConnect(p, o.addr);
+        r.peer = o.addr;
       }
       case imm o Accept {
         r.kind = diag.kindAccept;
-        code = self.startAccept(p, o.listener);
+        r.sock = o.listener;
       }
       case mut o Recv {
         r.kind = diag.kindRecv;
         r.buf <=> o.buf;
-        code = self.startRecv(p, o.sock, false);
+        r.sock = o.sock;
       }
       case imm o RecvReady {
         r.kind = diag.kindRecvReady;
-        code = self.startRecv(p, o.sock, true);
+        r.sock = o.sock;
       }
       case mut o Send {
         r.kind = diag.kindSend;
         r.buf <=> o.buf;
-        code = self.startSend(p, o.sock, r.buf.base(), r.buf.len());
+        r.sock = o.sock;
       }
       case imm o SendBytes {
         r.kind = diag.kindSend;
-        imm v = o.bytes.view();
         r.bytes = Some[Bytes][o.bytes];
-        code = self.startSend(p, o.sock, v, v.len);
+        r.sock = o.sock;
       }
       case mut o ReadAt {
         r.kind = diag.kindReadAt;
         r.buf <=> o.buf;
-        code = self.startFile(p, o.file, o.at, false);
+        r.sock = o.file;
+        r.at = o.at;
       }
       case mut o WriteAt {
         r.kind = diag.kindWriteAt;
         r.buf <=> o.buf;
-        code = self.startFile(p, o.file, o.at, true);
+        r.sock = o.file;
+        r.at = o.at;
+      }
+      case mut o Call {
+        r.kind = diag.kindCall;
+        r.buf <=> o.buf;
+        r.lane = o.lane;
+        r.work = o.work;
+        r.at = o.arg;
       }
     }
     imm gen = r.gen;
+    // Its deadline: the tighter of its own and its group's
+    mut dl = deadline;
+    match group {
+      case imm s Some {if s.value.deadline() < dl {dl = s.value.deadline();}}
+      else {}
+    }
+    // Cancelled is a state: an operation in a cancelled group, or whose
+    // deadline has passed, is answered at once and never started
+    if self.join(i, group) {
+      stats.atSubmit = stats.atSubmit + 1u64;
+      self.decide(i, diag.outcomeCancelled, 0usize, 0u32);
+      return new OpId(i, gen);
+    }
+    if dl <= r.submitted {
+      stats.atSubmit = stats.atSubmit + 1u64;
+      self.decide(i, diag.outcomeTimedOut, 0usize, 0u32);
+      return new OpId(i, gen);
+    }
+    imm code = self.launch(p);
     if code == errorHandleEof {
       self.decide(i, diag.outcomeDone, 0usize, 0u32);
     } elif code != 0u32 {
+      stats.atSubmit = stats.atSubmit + 1u64;
       self.decide(i, diag.outcomeFailed, 0usize, code);
     } else {
-      kernelHeld = kernelHeld + 1u32;
-      if timed {
-        r.timer = wheel.insert(deadline, self.tokenOf(i));
+      if r.kind != diag.kindCall {kernelHeld = kernelHeld + 1u32;}
+      if dl < forever() {
+        r.timer = wheel.insert(dl, self.tokenOf(i));
       }
     }
     new OpId(i, gen);
+  }
+
+  // Hand record p's operation to the kernel or the pool: 0, it holds it now
+  // (its completion will come to the port); or the error that stopped it
+  // before it was taken
+  fn launch(self &mut, p *Rec) u32 {
+    imm r = p as &mut Rec;
+    imm k = r.kind;
+    if k == diag.kindConnect {return self.startConnect(p, r.peer);}
+    if k == diag.kindAccept {return self.startAccept(p, r.sock);}
+    if k == diag.kindRecv {return self.startRecv(p, r.sock, false);}
+    if k == diag.kindRecvReady {return self.startRecv(p, r.sock, true);}
+    if k == diag.kindSend {
+      match r.bytes {
+        case imm b Some {
+          imm v = b.value.view();
+          return self.startSend(p, r.sock, v, v.len);
+        }
+        else {}
+      }
+      return self.startSend(p, r.sock, r.buf.base(), r.buf.len());
+    }
+    if k == diag.kindReadAt {return self.startFile(p, r.sock, r.at, false);}
+    if k == diag.kindWriteAt {return self.startFile(p, r.sock, r.at, true);}
+    self.startCall(p);
   }
 
   // Each starts its kind of operation in record p: 0, the kernel holds it
@@ -645,6 +993,24 @@ pub struct Loop {
     0u32;
   }
 
+  // A job for the blocking pool: boxed with a waker of this loop, its
+  // buffer moved into the box, and queued on its lane
+  fn startCall(self &mut, p *Rec) u32 {
+    imm r = p as &mut Rec;
+    imm l = laneAt(r.lane.id);
+    if l as usize == 0usize {return errorInvalidParameter;}
+    imm b = newBox(r.work, r.at, new Waker(port), r.index, r.gen, l);
+    (b as &mut JobBox).buf <=> r.buf;
+    if not enqueueBox(b) {
+      r.buf <=> (b as &mut JobBox).buf;
+      dropBox(b);
+      return errorBusy;
+    }
+    r.job = b;
+    stats.jobs = stats.jobs + 1u64;
+    0u32;
+  }
+
   // -------------------------------------------------------------------------
   // Cancel
   // -------------------------------------------------------------------------
@@ -654,20 +1020,66 @@ pub struct Loop {
   // an id that names nothing
   pub fn cancel(self &mut, id OpId) Bool {
     if id.isNone() or id.index >= recCount {return false;}
-    imm p = self.recAt(id.index);
-    imm r = p as &mut Rec;
+    imm r = self.recAt(id.index) as &mut Rec;
     if r.gen != id.gen or r.state != stFlight {return false;}
-    if r.kind == diag.kindTimer {
-      stats.cancelsAsked = stats.cancelsAsked + 1u64;
-      self.decide(id.index, diag.outcomeCancelled, 0usize, 0u32);
-      return true;
-    }
     if r.asked == askedNone {
       stats.cancelsAsked = stats.cancelsAsked + 1u64;
-      r.asked = askedCancel;
-      CancelIoEx(r.handle, p as *u8);
+      self.askCancel(id.index, askedCancel);
     }
     true;
+  }
+
+  // Ask record i's cancel, for 'why': a timer, or a job still queued, is
+  // decided at once (a job with its buffer back); the kernel is asked
+  // (CancelIoEx); a running job answers when it returns
+  fn askCancel(self &mut, i u32, why u32) {
+    imm p = self.recAt(i);
+    imm r = p as &mut Rec;
+    imm outcome = if why == askedDeadline {diag.outcomeTimedOut;} else {diag.outcomeCancelled;};
+    if r.kind == diag.kindTimer {
+      self.decide(i, outcome, 0usize, 0u32);
+      return;
+    }
+    if r.asked != askedNone {return;}
+    r.asked = why;
+    if r.kind == diag.kindExternal {
+      // Nothing to interrupt: its completer is told, and answers
+      if r.job as usize != 0usize {(*r.job).asked.store(1u32);}
+      return;
+    }
+    if r.kind == diag.kindCall {
+      if r.job as usize != 0usize and removeBox(r.job) {
+        r.buf <=> (r.job as &mut JobBox).buf;
+        dropBox(r.job);
+        r.job = null;
+        self.decide(i, outcome, 0usize, 0u32);
+      }
+      return;
+    }
+    CancelIoEx(r.handle, p as *u8);
+  }
+
+  // A cancel group has been cancelled: every operation in flight in a
+  // cancelled group is asked to end
+  fn sweepGroups(self &mut) {
+    groupsDirty = false;
+    if grouped == 0u32 {return;}
+    mut i = 0u32;
+    while i < recCount {
+      imm r = self.recAt(i) as &mut Rec;
+      if r.state == stFlight and r.asked == askedNone {
+        mut hit = false;
+        match r.group {
+          case imm s Some {hit = s.value.isCancelled();}
+          else {}
+        }
+        if hit {
+          stats.groupCancels = stats.groupCancels + 1u64;
+          self.askCancel(i, askedCancel);
+        }
+      }
+      i = i + 1u32;
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -678,6 +1090,19 @@ pub struct Loop {
   fn complete(self &mut, p *Rec, bytes u32, at Instant) {
     imm r = p as &mut Rec;
     kernelHeld = kernelHeld - 1u32;
+    if r.state == stAbandoned {
+      // Its answer went long ago: the buffer goes home, the record is free
+      if r.newSock != invalidHandle {
+        closesocket(r.newSock);
+        r.newSock = invalidHandle;
+      }
+      mut b = IoBuf.empty();
+      b <=> r.buf;
+      r.bytes = None[Bytes][];
+      stats.lateReturns = stats.lateReturns + 1u64;
+      self.freeRecord(r.index);
+      return;
+    }
     r.dequeued = at;
     imm status = r.ov.internal & 0xFFFFFFFFusize;
     imm n = usize.from(bytes);
@@ -712,6 +1137,33 @@ pub struct Loop {
     }
   }
 
+  // A job has come back from the pool: its record takes its buffer and its
+  // outcome; a job answered already (a prompt TimedOut) is dropped, its
+  // buffer going home
+  fn completeJob(self &mut, b *JobBox, at Instant) {
+    imm j = b as &mut JobBox;
+    imm i = j.rec;
+    if i >= recCount {
+      dropBox(b);
+      return;
+    }
+    imm r = self.recAt(i) as &mut Rec;
+    if r.gen != j.gen or r.job != b or (r.state != stFlight and r.state != stDecided) {
+      stats.lateReturns = stats.lateReturns + 1u64;
+      dropBox(b);
+      return;
+    }
+    r.job = null;
+    r.dequeued = at;
+    r.buf <=> j.buf;
+    mut status = j.status;
+    if status == diag.outcomeCancelled and r.asked == askedDeadline {
+      status = diag.outcomeTimedOut;
+    }
+    self.decide(i, status, if status == diag.outcomeDone {j.n;} else {0usize;}, j.code);
+    dropBox(b);
+  }
+
   // An accepted or connected socket is finished and registered: 0, or the
   // error that stopped it (the socket is then closed)
   fn adopt(self &mut, p *Rec) u32 {
@@ -741,7 +1193,8 @@ pub struct Loop {
   }
 
   // Fire what the wheel says is due by now: a timer answers Done; an
-  // operation's deadline asks its cancel, to answer TimedOut
+  // operation's deadline asks its cancel and starts its grace; a grace run
+  // out answers TimedOut without the buffer
   fn fireTimers(self &mut, now Instant) {
     if wheel.isEmpty() {return;}
     wheel.expired(now, &mut expiries);
@@ -752,16 +1205,26 @@ pub struct Loop {
       imm gen = u32.from(token >> 32u64);
       k = k + 1usize;
       if i >= recCount {continue;}
-      imm p = self.recAt(i);
-      imm r = p as &mut Rec;
+      imm r = self.recAt(i) as &mut Rec;
       if r.gen != gen or r.state != stFlight {continue;}
       r.timer = TimerId.none();
       if r.kind == diag.kindTimer {
         r.dequeued = now;
         self.decide(i, diag.outcomeDone, 0usize, 0u32);
-      } elif r.asked == askedNone {
-        r.asked = askedDeadline;
-        CancelIoEx(r.handle, p as *u8);
+      } elif not r.hit {
+        // The deadline
+        r.hit = true;
+        if r.asked == askedNone {self.askCancel(i, askedDeadline);}
+        if r.state == stFlight {
+          if grace.nanos() <= 0i64 {
+            self.abandonRec(i);
+          } else {
+            r.timer = wheel.insert(now + grace, token);
+          }
+        }
+      } else {
+        // The grace has run out, and the kernel still holds it
+        self.abandonRec(i);
       }
     }
     expiries.clear();
@@ -776,9 +1239,10 @@ pub struct Loop {
   pub fn poll(self &mut, until Instant, out &mut List[Completion]) usize {
     stats.polls = stats.polls + 1u64;
     woken = false;
-    imm postedBefore = stats.postsSent + stats.postsDropped;
+    imm elsewhere = stats.postsSent + stats.postsDropped + stats.handedOff + stats.handedDropped;
     mut n = 0usize;
     while true {
+      self.retryHeld();
       imm now = Instant.now();
       // How long the kernel may keep us: not at all when answers are ready
       // or a timer is due
@@ -789,6 +1253,10 @@ pub struct Loop {
           case imm s Some {if s.value < wakeAt {wakeAt = s.value;}}
           case is None[Instant] {}
         }
+        if heldC.len() > 0usize {
+          imm retry = now + Duration.fromNanos(heldRetryNs);
+          if retry < wakeAt {wakeAt = retry;}
+        }
         if wakeAt > now {ms = self.armFor(wakeAt, now);}
       }
       n = n + self.dequeue(ms, out);
@@ -796,9 +1264,12 @@ pub struct Loop {
       self.fireTimers(after);
       n = n + self.flush(out);
       if n > 0usize or woken or after >= until {return n;}
-      // Answers posted to other loops are progress too: the driver may be
-      // waiting for its operations to be done
-      if stats.postsSent + stats.postsDropped != postedBefore {return n;}
+      // Answers sent elsewhere -- another loop, a channel, a one-shot, a
+      // status slot -- are progress too: the driver may be waiting for its
+      // operations to be done
+      if stats.postsSent + stats.postsDropped + stats.handedOff + stats.handedDropped != elsewhere {
+        return n;
+      }
     }
     n;
   }
@@ -846,12 +1317,20 @@ pub struct Loop {
       imm key = (*e).key;
       if key == keyIo {
         self.complete((*e).ov as *Rec, (*e).bytes, at);
+      } elif key == keyJob {
+        self.completeJob((*e).ov as *JobBox, at);
       } elif key == keyTimer {
         associated = false;
         stats.timerExpiries = stats.timerExpiries + 1u64;
       } elif key == keyWake {
         woken = true;
         stats.wakes = stats.wakes + 1u64;
+      } elif key == keyCancel {
+        imm number = u64.from((*e).ov as usize);
+        stats.remoteCancels = stats.remoteCancels + 1u64;
+        self.cancel(new OpId(u32.from(number & 0xFFFFFFFFu64), u32.from(number >> 32u64)));
+      } elif key == keyGroup {
+        groupsDirty = true;
       } elif key == keyPost {
         imm block = (*e).ov as *Completion;
         mut c = mem.readRaw[Completion](block);
@@ -867,6 +1346,7 @@ pub struct Loop {
       }
       k = k + 1usize;
     }
+    if groupsDirty {self.sweepGroups();}
     n;
   }
 
@@ -894,13 +1374,22 @@ pub struct Loop {
       h = h + 1usize;
     }
     // Connections still being made hold sockets of their own; timers answer
-    // Cancelled
+    // Cancelled; jobs still queued are taken out, and those running are left
+    // to their threads, which find this loop gone and drop them
     mut i = 0u32;
     while i < recCount {
       imm p = self.recAt(i);
       imm r = p as &mut Rec;
-      if r.state == stFlight {
+      if r.state == stFlight or r.state == stAbandoned {
         if r.kind == diag.kindTimer {
+          self.decide(i, diag.outcomeCancelled, 0usize, 0u32);
+        } elif boxed(r.kind) {
+          if r.kind == diag.kindExternal and r.job as usize != 0usize {(*r.job).asked.store(1u32);}
+          if r.job as usize != 0usize and removeBox(r.job) {
+            r.buf <=> (r.job as &mut JobBox).buf;
+            dropBox(r.job);
+          }
+          r.job = null;
           self.decide(i, diag.outcomeCancelled, 0usize, 0u32);
         } elif r.kind == diag.kindConnect and r.newSock != invalidHandle {
           CancelIoEx(r.newSock, null);
@@ -911,7 +1400,8 @@ pub struct Loop {
       i = i + 1u32;
     }
     // Wait until the kernel has given back every record, and deliver what
-    // was owed to other loops; what was owed here dies, buffers going home
+    // was owed to other loops and threads; what was owed here dies, buffers
+    // going home
     mut scratch = List[Completion].empty();
     self.flush(&mut scratch);
     scratch.clear();
@@ -920,6 +1410,11 @@ pub struct Loop {
       self.flush(&mut scratch);
       scratch.clear();
     }
+    // Answers a full channel still holds back are tried once more, then go
+    self.retryHeld();
+    stats.handedDropped = stats.handedDropped + u64.from(heldC.len());
+    heldC.clear();
+    heldT.clear();
     if packet != 0usize {
       NtCancelWaitCompletionPacket(packet, 1u8);
       CloseHandle(packet);

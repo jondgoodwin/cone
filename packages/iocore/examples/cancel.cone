@@ -1,0 +1,415 @@
+// What cancel, the targets, the blocking pool and external operations cost,
+// measured, not assumed: run it with
+//
+//   congo run --release packages/iocore/examples/cancel.cone
+//
+// 1. Reply latency by target: an answer the loop takes from its port, from
+//    that moment (its 'dequeued') to its receiver holding it -- the loop's
+//    own poll (Here); a thread asleep in a channel's recv (Chan); a thread
+//    asleep on a one-shot (Once); a thread looking at a status slot without
+//    sleeping (Status). 5,000 each.
+// 2. Cancel: lp.cancel on a receive in flight (the call, and the call to
+//    the Cancelled answer); a Request cancelled by another thread (the
+//    Request handed over a channel, to the Cancelled answer); a group of
+//    1,000 receives cancelled at once (the call, and the time until all
+//    1,000 are answered); 1,000 jobs taken out of a lane's queue by cancel;
+//    a submit and cancel of a timer, with and without a group.
+// 3. The blocking pool's hand-off: a job that does nothing, one at a time
+//    (submit to answer, the lane's thread woken each time), and 10,000 at
+//    once on four threads.
+// 4. External operations: a Completer ended on another thread, from its
+//    end to the answer in a loop asleep in poll(forever()).
+
+mod cancel;
+
+import stdio use *;
+import thread;
+import sync use Sender, Receiver, Channel, Oneshot, OneshotSender, OneshotReceiver;
+import collections use List;
+import time use Instant, Duration;
+import iobuf use *;
+import iocore use *;
+import diag use Histogram;
+
+const n = 5000u64;
+
+fn spinFor(ns i64) {
+  imm until = Instant.now() + Duration.fromNanos(ns);
+  while Instant.now() < until {}
+}
+
+fn noWork(arg u64, buf &mut IoBuf) Outcome {Outcome.Done[0usize];}
+
+fn sleepWork(arg u64, buf &mut IoBuf) Outcome {
+  thread.sleep(Duration.fromMillis(i64.from(arg)));
+  Outcome.Done[0usize];
+}
+
+fn waitFor(lp &mut Loop, out &mut List[Completion], k usize) {
+  while out.len() < k {lp.poll(forever(), out);}
+}
+
+// A connected pair of sockets on lp
+fn pair(lp &mut Loop) Handle, Handle {
+  imm listener = lp.mustListen(SocketAddr.localhost(0u16));
+  mut port = 0u16;
+  match lp.localAddr(listener) {
+    case imm a Ok {port = a.value.port();}
+    case imm e Error {}
+  }
+  lp.submit(Op.Accept[listener], Target.Here[1u64]);
+  lp.submit(Op.Connect[SocketAddr.localhost(port)], Target.Here[2u64]);
+  mut out = List[Completion].empty();
+  waitFor(lp, &mut out, 2usize);
+  mut a = Handle.none();
+  mut b = Handle.none();
+  mut k = 0usize;
+  while k < out.len() {
+    if out[k].token == 1u64 {a = out[k].handle;} else {b = out[k].handle;}
+    k = k + 1usize;
+  }
+  a, b;
+}
+
+// Receivers on other threads, each timing its answers from their dequeue
+fn chanReceiver(rx Receiver[Completion]) Histogram {
+  mut r = rx;
+  mut h = Histogram.make();
+  mut more = true;
+  while more {
+    match r.recv() {
+      case imm s Some {h.record((Instant.now() - s.value.dequeued).nanos());}
+      case is None[Completion] {more = false;}
+    }
+  }
+  h;
+}
+
+fn onceReceiver(rx Receiver[OneshotReceiver[Completion]]) Histogram {
+  mut r = rx;
+  mut h = Histogram.make();
+  mut more = true;
+  while more {
+    match r.recv() {
+      case mut s Some {
+        match s.value.recv() {
+          case imm c Some {h.record((Instant.now() - c.value.dequeued).nanos());}
+          case is None[Completion] {}
+        }
+      }
+      case is None[OneshotReceiver[Completion]] {more = false;}
+    }
+  }
+  h;
+}
+
+fn statusWatcher(board StatusArray) Histogram {
+  mut h = Histogram.make();
+  mut got = List[Completion].empty();
+  mut k = 0u64;
+  while k < n {
+    if board.take(0u32, &mut got) {
+      h.record((Instant.now() - got[0usize].dequeued).nanos());
+      got.clear();
+      k = k + 1u64;
+    }
+  }
+  h;
+}
+
+fn requestCanceller(rx Receiver[Request]) u64 {
+  mut r = rx;
+  mut k = 0u64;
+  mut more = true;
+  while more {
+    match r.recv() {
+      case mut s Some {
+        s.value.cancel();
+        k = k + 1u64;
+      }
+      case is None[Request] {more = false;}
+    }
+  }
+  k;
+}
+
+// Ends each Completer that arrives, stamping the moment into its count
+fn ender(rx Receiver[Completer]) u64 {
+  mut r = rx;
+  mut k = 0u64;
+  mut more = true;
+  while more {
+    match r.recv() {
+      case mut s Some {
+        spinFor(20000i64);
+        s.value.done(usize.from(Instant.now().nanos()));
+        k = k + 1u64;
+      }
+      case is None[Completer] {more = false;}
+    }
+  }
+  k;
+}
+
+fn main() i32 {
+  imm pool = Pool.make();
+  mut lp = Loop.mustMake();
+  mut out = List[Completion].empty();
+
+  // 1. Reply latency by target
+  printStr("1. reply latency, from the loop taking the answer to its receiver holding it\n");
+  {
+    mut here = Histogram.make();
+    mut k = 0u64;
+    while k < n {
+      mut c = lp.external(Target.Here[0u64], IoBuf.empty());
+      c.done(0usize);
+      waitFor(&mut lp, &mut out, 1usize);
+      here.record((out[0usize].delivered - out[0usize].dequeued).nanos());
+      out.clear();
+      k = k + 1u64;
+    }
+    here.printLine("   Here, the loop's own poll");
+
+    mut tx Sender[Completion];
+    mut rx Receiver[Completion];
+    tx, rx = Channel[Completion].make();
+    imm ct = thread.start(rx, &chanReceiver);
+    k = 0u64;
+    while k < n {
+      spinFor(30000i64);
+      imm before = lp.counters().handedOff;
+      mut c = lp.external(Target.Chan[0u64, tx.clone()], IoBuf.empty());
+      c.done(0usize);
+      while lp.counters().handedOff == before {lp.poll(forever(), &mut out);}
+      k = k + 1u64;
+    }
+    {
+      imm gone = tx;
+    }
+    ct.join().printLine("   Chan, a thread asleep in recv");
+
+    mut otx Sender[OneshotReceiver[Completion]];
+    mut orx Receiver[OneshotReceiver[Completion]];
+    otx, orx = Channel[OneshotReceiver[Completion]].make();
+    imm ot = thread.start(orx, &onceReceiver);
+    k = 0u64;
+    while k < n {
+      mut stx OneshotSender[Completion];
+      mut srx OneshotReceiver[Completion];
+      stx, srx = Oneshot[Completion].make();
+      otx.send(srx);
+      spinFor(30000i64);
+      imm before = lp.counters().handedOff;
+      mut c = lp.external(Target.Once[0u64, stx], IoBuf.empty());
+      c.done(0usize);
+      while lp.counters().handedOff == before {lp.poll(forever(), &mut out);}
+      k = k + 1u64;
+    }
+    {
+      imm gone = otx;
+    }
+    ot.join().printLine("   Once, a thread asleep on a one-shot");
+
+    imm board = StatusArray.make(1u32);
+    imm st = thread.start(board, &statusWatcher);
+    k = 0u64;
+    while k < n {
+      while not board.isFree(0u32) {}
+      spinFor(5000i64);
+      mut c = lp.external(Target.Status[0u64, board, 0u32], IoBuf.empty());
+      c.done(0usize);
+      imm before = lp.counters().handedOff;
+      while lp.counters().handedOff == before {lp.poll(forever(), &mut out);}
+      k = k + 1u64;
+    }
+    st.join().printLine("   Status, a thread looking without sleeping");
+  }
+
+  // 2. Cancel
+  printStr("2. cancel\n");
+  {
+    mut a = Handle.none();
+    mut b = Handle.none();
+    a, b = pair(&mut lp);
+    mut call = Histogram.make();
+    mut reply = Histogram.make();
+    mut k = 0u64;
+    while k < n {
+      imm id = lp.submit(Op.Recv[a, pool.mustTake(64usize)], Target.Here[0u64]);
+      imm t0 = Instant.now();
+      lp.cancel(id);
+      imm t1 = Instant.now();
+      waitFor(&mut lp, &mut out, 1usize);
+      call.record((t1 - t0).nanos());
+      reply.record((out[0usize].delivered - t0).nanos());
+      out.clear();
+      k = k + 1u64;
+    }
+    call.printLine("   lp.cancel, the call (CancelIoEx)");
+    reply.printLine("   lp.cancel, the call to the Cancelled answer");
+
+    mut rtx Sender[Request];
+    mut rrx Receiver[Request];
+    rtx, rrx = Channel[Request].make();
+    imm rt = thread.start(rrx, &requestCanceller);
+    mut remote = Histogram.make();
+    k = 0u64;
+    while k < n {
+      imm id = lp.submit(Op.Recv[a, pool.mustTake(64usize)], Target.Here[0u64]);
+      imm t0 = Instant.now();
+      rtx.send(lp.request(id));
+      waitFor(&mut lp, &mut out, 1usize);
+      remote.record((out[0usize].delivered - t0).nanos());
+      out.clear();
+      spinFor(20000i64);
+      k = k + 1u64;
+    }
+    {
+      imm gone = rtx;
+    }
+    rt.join();
+    remote.printLine("   a Request cancelled on another thread, handed over to answered");
+
+    // A group of 1,000 receives, on 1,000 sockets' worth of records: one socket
+    // holds one receive at a time, so 1,000 pairs
+    mut socks = List[Handle].empty();
+    k = 0u64;
+    while k < 1000u64 {
+      mut x = Handle.none();
+      mut y = Handle.none();
+      x, y = pair(&mut lp);
+      socks.push(x);
+      k = k + 1u64;
+    }
+    mut groupCall = Histogram.make();
+    mut groupAll = Histogram.make();
+    mut rep = 0u32;
+    while rep < 5u32 {
+      imm g = CancelGroup.make();
+      mut j = 0usize;
+      while j < socks.len() {
+        lp.submitIn(Op.Recv[*socks[j], pool.mustTake(64usize)], Target.Here[0u64], g, forever());
+        j = j + 1usize;
+      }
+      imm t0 = Instant.now();
+      g.cancel();
+      imm t1 = Instant.now();
+      waitFor(&mut lp, &mut out, 1000usize);
+      groupCall.record((t1 - t0).nanos());
+      groupAll.record((Instant.now() - t0).nanos());
+      out.clear();
+      rep = rep + 1u32;
+    }
+    groupCall.printLine("   a group of 1,000 receives: cancel, the call");
+    groupAll.printLine("   ...the call to all 1,000 answered");
+
+    imm one = addLane(new LaneConfig(name: "one", maxThreads: 1u32, queueBound: 2000u32));
+    // A job holding the lane's one thread, so the 1,000 behind it stay queued
+    lp.submit(Op.Call[one, &sleepWork, 300u64, IoBuf.empty()], Target.Here[0u64]);
+    mut ids = List[OpId].empty();
+    k = 0u64;
+    while k < 1000u64 {
+      ids.push(lp.submit(Op.Call[one, &noWork, 0u64, pool.mustTake(64usize)], Target.Here[0u64]));
+      k = k + 1u64;
+    }
+    imm t0 = Instant.now();
+    mut j = 0usize;
+    while j < ids.len() {
+      lp.cancel(*ids[j]);
+      j = j + 1usize;
+    }
+    imm t1 = Instant.now();
+    waitFor(&mut lp, &mut out, 1000usize);
+    printStr("   1,000 jobs cancelled out of a queue: ");
+    printUInt(u64.from((t1 - t0).nanos()) / 1000u64);
+    printStr(" ns a cancel; all answered in ");
+    diag.printNanos(u64.from(t0.elapsed().nanos()));
+    printStr("\n");
+    out.clear();
+    waitFor(&mut lp, &mut out, 1usize);
+    out.clear();
+
+    imm g = CancelGroup.make();
+    imm reps = 100000u64;
+    imm s0 = Instant.now();
+    k = 0u64;
+    while k < reps {
+      imm id = lp.after(Instant.now() + Duration.fromSeconds(1i64), Target.Here[0u64]);
+      lp.cancel(id);
+      k = k + 1u64;
+    }
+    imm s1 = Instant.now();
+    k = 0u64;
+    while k < reps {
+      imm id = lp.afterIn(Instant.now() + Duration.fromSeconds(1i64), Target.Here[0u64], g);
+      lp.cancel(id);
+      k = k + 1u64;
+    }
+    imm s2 = Instant.now();
+    while lp.inFlight() > 0u64 {
+      lp.poll(Instant.now(), &mut out);
+      out.clear();
+    }
+    printStr("   a timer submitted and cancelled: ");
+    printUInt(u64.from((s1 - s0).nanos()) / reps);
+    printStr(" ns alone, ");
+    printUInt(u64.from((s2 - s1).nanos()) / reps);
+    printStr(" ns in a group\n");
+  }
+
+  // 3. The pool's hand-off
+  printStr("3. the blocking pool, a job that does nothing\n");
+  {
+    mut rt = Histogram.make();
+    mut k = 0u64;
+    while k < n {
+      imm t0 = Instant.now();
+      lp.submit(Op.Call[Lane.general(), &noWork, 0u64, IoBuf.empty()], Target.Here[0u64]);
+      waitFor(&mut lp, &mut out, 1usize);
+      rt.record((out[0usize].delivered - t0).nanos());
+      out.clear();
+      spinFor(20000i64);
+      k = k + 1u64;
+    }
+    rt.printLine("   one at a time, submit to answer (its thread woken each time)");
+    imm t0 = Instant.now();
+    k = 0u64;
+    while k < 10000u64 {
+      lp.submit(Op.Call[Lane.general(), &noWork, 0u64, IoBuf.empty()], Target.Here[0u64]);
+      if k % 1000u64 == 999u64 {
+        waitFor(&mut lp, &mut out, 1000usize);
+        out.clear();
+      }
+      k = k + 1u64;
+    }
+    printStr("   10,000 in batches of 1,000 on four threads: ");
+    diag.printNanos(u64.from(t0.elapsed().nanos()) / 10000u64);
+    printStr(" a job\n");
+  }
+
+  // 4. External operations
+  printStr("4. an external operation ended on another thread\n");
+  {
+    mut etx Sender[Completer];
+    mut erx Receiver[Completer];
+    etx, erx = Channel[Completer].make();
+    imm et = thread.start(erx, &ender);
+    mut h = Histogram.make();
+    mut k = 0u64;
+    while k < n {
+      etx.send(lp.external(Target.Here[0u64], IoBuf.empty()));
+      lp.poll(forever(), &mut out);
+      while out.len() == 0usize {lp.poll(forever(), &mut out);}
+      h.record(out[0usize].delivered.nanos() - i64.from(out[0usize].n));
+      out.clear();
+      k = k + 1u64;
+    }
+    {
+      imm gone = etx;
+    }
+    et.join();
+    h.printLine("   ended to answered, the loop asleep in poll(forever())");
+  }
+  0i32;
+}
