@@ -254,7 +254,12 @@ re-decision flips only an operand that was not a type and now is.
 parameter's `Name` directly to the **argument node**. `cloneNode`, meeting a
 use bound to a generic parameter itself, then reads `namesym->node` and clones
 it. So substitution is by *name*, through a global, at clone time — and the
-argument is **deep-copied at every use site**. The use must be bound to the
+argument is **deep-copied at every use site**, but for a number type standing in
+it as its declaration, not a name — what a string literal's `Array[u8, n]` holds,
+since type check built it. A number type is one declaration for the whole
+program, and `itypeIsSame` compares it by identity, so a copy would be another
+type: the copy of `Option[Array[u8, 5]]` naming its own enum would miss the memo
+and instantiate it again, without end. The use must be bound to the
 parameter, not to a type alias of it: `alias Item = T` in a generic module,
 used as `Item`, is a use of the alias, whose own copy substitutes `T`, and
 the name `Item` is hooked to nothing.
@@ -515,6 +520,10 @@ are requirements at its instance.
 because every expansion is a fresh node — nothing ever returns to the same node.
 `genericInstantiateEnter` counts and refuses past `TypeCheckLoopMax` (256) with
 `ErrorInstDepth`. Past that it is the C stack that gives out, with no diagnostic.
+Once it has refused, it refuses every expansion until the outermost one has
+unwound, without reporting again: each level the refusal returns through would
+otherwise start its next expansion down to the limit again, and one that
+expands twice a level would report the limit an exponential number of times.
 
 **Macros differ from generics in three ways**: arguments are never checked for
 being types, never type checked before substitution, and never memoized. That is

@@ -938,22 +938,32 @@ int genericReportTemplateMember(INode *errnode, FnDclNode *fn) {
     return 1;
 }
 
-// How deeply expansion is currently nested. See generic.h.
+// How deeply expansion is currently nested, and whether the outermost
+// expansion now unwinding was refused at the limit. See generic.h.
 static uint32_t instantiateDepth = 0;
+static int instantiateRefused = 0;
 
 int genericInstantiateEnter(INode *errnode) {
     if (instantiateDepth >= TypeCheckLoopMax) {
         errorMsgNode(errnode, ErrorInstDepth,
             "Generic or macro expansion nested more than %d deep. It likely expands itself endlessly.",
             TypeCheckLoopMax);
+        instantiateRefused = 1;
         return 0;
     }
+    // Every level the refusal unwinds through would otherwise start its next
+    // expansion down to the limit again: one that expands twice a level is
+    // exponential, reporting the limit without end. So the rest of that
+    // outermost expansion is refused too, already reported.
+    if (instantiateRefused)
+        return 0;
     ++instantiateDepth;
     return 1;
 }
 
 void genericInstantiateExit() {
-    --instantiateDepth;
+    if (--instantiateDepth == 0)
+        instantiateRefused = 0;
 }
 
 // Reserve the instance of a generic type before it is cloned, and map the
