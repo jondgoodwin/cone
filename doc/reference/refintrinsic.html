@@ -80,7 +80,8 @@ mem.writeRaw[Point](p, new Point(1., 2.));
 	<p>A type argument must be of the kind the intrinsic accepts. Every intrinsic
 		below needs a type with a size: one declared <span class="pre">@opaque</span>,
 		for example, is refused where the intrinsic is instantiated for it. The atomic
-		operations accept fewer types still, stated with them.</p>
+		operations and an integer's bit operations accept fewer types still, stated with
+		them.</p>
 
 	<h3>Fallback bodies</h3>
 
@@ -98,8 +99,8 @@ pub fn @intrinsic readRaw[T](p *T) T {*p;}
 		agree.</p>
 
 	<p>Today's LLVM back end implements every intrinsic itself. Those with a fallback
-		body are <span class="pre">readRaw</span>, <span class="pre">moveRaw</span> and
-		the atomic operations.</p>
+		body are <span class="pre">readRaw</span>, <span class="pre">moveRaw</span>, the
+		atomic operations and <a href="#bits">an integer's bit operations</a>.</p>
 
 	<h2>The intrinsics</h2>
 
@@ -613,6 +614,59 @@ seen, stored = mem.atomicCompareSwap[i32](p, 0i32, 1i32,
 		carrying both orderings. <span class="pre">Relaxed</span> is LLVM's
 		<span class="pre">monotonic</span>. A <span class="pre">Bool</span> is operated on
 		as an <span class="pre">i8</span>.</p>
+
+	<h2 id="bits">An integer's bits</h2>
+
+	<p>Seven operations on an integer's bits. <span class="pre">T</span> is an integer type of
+		8 to 64 bits, <span class="pre">usize</span> and <span class="pre">isize</span> among
+		them; any other type is refused where the intrinsic is instantiated for it. None needs
+		trust. Each is also a method of every integer type, <span class="pre">x.leadingZeros()</span>
+		for <span class="pre">mem.leadingZeros(x)</span>, which the compiler builds with the type
+		(<a href="refnumber.html#bits">Number Types</a>). Each has a fallback body, which works a
+		bit at a time.</p>
+
+	<h3>countOnes, leadingZeros and trailingZeros</h3>
+<pre>
+fn @intrinsic countOnes[T](x T) u32
+fn @intrinsic leadingZeros[T](x T) u32
+fn @intrinsic trailingZeros[T](x T) u32
+</pre>
+	<p>How many bits of <span class="pre">x</span> are 1; how many are 0 above its highest 1;
+		how many are 0 below its lowest 1. A signed <span class="pre">x</span> is counted as its
+		bits, the sign's among them. Defined for 0: <span class="pre">leadingZeros</span> and
+		<span class="pre">trailingZeros</span> of 0 are the width, never undefined.</p>
+
+	<h3>rotateLeft and rotateRight</h3>
+<pre>
+fn @intrinsic rotateLeft[T](x T, n u32) T
+fn @intrinsic rotateRight[T](x T, n u32) T
+</pre>
+	<p><span class="pre">x</span>'s bits moved by <span class="pre">n</span> modulo the width, those
+		shifted out of one end coming in at the other. Every <span class="pre">n</span> is
+		defined, and one that is a multiple of the width gives <span class="pre">x</span>.</p>
+
+	<h3>shlMasked and shrMasked</h3>
+<pre>
+fn @intrinsic shlMasked[T](x T, n u32) T
+fn @intrinsic shrMasked[T](x T, n u32) T
+</pre>
+	<p><span class="pre">x</span> shifted by <span class="pre">n</span> modulo the width, left
+		or right: one instruction on most processors. <span class="pre">shrMasked</span> is
+		arithmetic, filling with the sign bit, for a signed <span class="pre">T</span>, and
+		logical, filling with zeros, for an unsigned one. They differ from the operators
+		<span class="pre">&lt;&lt;</span> and <span class="pre">&gt;&gt;</span> only when
+		<span class="pre">n</span> is the width or more: there the operators shift every bit out
+		(<a href="refexpr.html#shift">Shift operators</a>), and these shift by what is left after
+		taking whole widths off.</p>
+
+	<h3>How LLVM does them</h3>
+
+	<p>The counts are <span class="pre">llvm.ctpop</span>, <span class="pre">llvm.ctlz</span> and
+		<span class="pre">llvm.cttz</span>, the last two told that 0 is not poison, their result
+		resized to a <span class="pre">u32</span>; the rotates <span class="pre">llvm.fshl</span>
+		and <span class="pre">llvm.fshr</span> with <span class="pre">x</span> as both halves; and
+		the masked shifts a <span class="pre">shl</span>, <span class="pre">ashr</span> or
+		<span class="pre">lshr</span> by the amount's low bits.</p>
 
 	<p style="text-align: right; margin-top: 2em;">
 		<a href="reftoken.html"><img alt="_" src="next.png" /></a>

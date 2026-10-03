@@ -260,6 +260,95 @@ static LLVMValueRef genlVtableForTag(GenState *gen, Vtable *vtable, StructNode *
     return chosen;
 }
 
+// Call one of LLVM's intrinsic functions overloaded on one integer type, by
+// its name: 'llvm.ctpop' on an i16 is llvm.ctpop.i16
+static LLVMValueRef genlCallLlvmIntrinsic(GenState *gen, char *name, LLVMTypeRef type, LLVMValueRef *args, unsigned nargs) {
+    unsigned id = LLVMLookupIntrinsicID(name, strlen(name));
+    LLVMValueRef fn = LLVMGetIntrinsicDeclaration(gen->module, id, &type, 1);
+    return LLVMBuildCall2(gen->builder, LLVMIntrinsicGetType(gen->context, id, &type, 1), fn, args, nargs, "");
+}
+
+// An integer value of one width as another, its low bits kept or zeros added
+static LLVMValueRef genlIntResize(GenState *gen, LLVMValueRef val, LLVMTypeRef to) {
+    unsigned from = LLVMGetIntTypeWidth(LLVMTypeOf(val));
+    unsigned width = LLVMGetIntTypeWidth(to);
+    if (from < width)
+        return LLVMBuildZExt(gen->builder, val, to, "");
+    if (from > width)
+        return LLVMBuildTrunc(gen->builder, val, to, "");
+    return val;
+}
+
+// '<<' and '>>' on an integer, defined for every amount [Jon 3 Oct 2026]: the
+// bits shifted past either end are gone, so an amount of the width or more
+// leaves 0, or for '>>' on a signed integer the sign in every bit. The amount
+// is of the integer's own type and is compared unsigned, so a negative amount
+// of a signed type is past the width too. LLVM's shift by the width or more is
+// poison, so the amount is compared first and the shift's result used only
+// below the width; a constant amount needs no compare, and the optimizer drops
+// the one it can prove, as for 'n & 63'. A constant shift is folded and
+// refused past the width before this (litFoldConst, ErrorConstShift).
+static LLVMValueRef genlShift(GenState *gen, int16_t op, LLVMValueRef x, LLVMValueRef n) {
+    LLVMTypeRef type = LLVMTypeOf(x);
+    unsigned width = LLVMGetIntTypeWidth(type);
+    if (LLVMIsAConstantInt(n)) {
+        if (LLVMConstIntGetZExtValue(n) < width) {
+            if (op == ShlIntrinsic)
+                return LLVMBuildShl(gen->builder, x, n, "");
+            return op == SShrIntrinsic ? LLVMBuildAShr(gen->builder, x, n, "") : LLVMBuildLShr(gen->builder, x, n, "");
+        }
+        return op == SShrIntrinsic ? LLVMBuildAShr(gen->builder, x, LLVMConstInt(type, width - 1, 0), "")
+            : LLVMConstNull(type);
+    }
+    LLVMValueRef inrange = LLVMBuildICmp(gen->builder, LLVMIntULT, n, LLVMConstInt(type, width, 0), "shiftinrange");
+    // A signed right shift past the width is one by width - 1: the sign in every bit
+    if (op == SShrIntrinsic) {
+        LLVMValueRef amount = LLVMBuildSelect(gen->builder, inrange, n, LLVMConstInt(type, width - 1, 0), "");
+        return LLVMBuildAShr(gen->builder, x, amount, "");
+    }
+    LLVMValueRef shifted = op == ShlIntrinsic ? LLVMBuildShl(gen->builder, x, n, "") : LLVMBuildLShr(gen->builder, x, n, "");
+    return LLVMBuildSelect(gen->builder, inrange, shifted, LLVMConstNull(type), "");
+}
+
+// Expand a call to one of an integer's bit intrinsics, mem.countOnes and the
+// rest, or the integer method that is its instance. A count of 0's bits is the
+// width, so ctlz and cttz are told 0 is not poison; an amount is a u32, taken
+// modulo the width: fshl and fshr do that themselves, and for a masked shift
+// the width is a power of two, so keeping the amount's low bits does.
+static LLVMValueRef genlBitIntrinsic(GenState *gen, int16_t kind, INode *type, LLVMValueRef *fnargs) {
+    LLVMTypeRef inttype = genlType(gen, type);
+    unsigned width = LLVMGetIntTypeWidth(inttype);
+    LLVMTypeRef u32 = LLVMInt32TypeInContext(gen->context);
+    LLVMValueRef args[3];
+    args[0] = fnargs[0];
+    switch (kind) {
+    case CountOnesIntrinsic:
+        return genlIntResize(gen, genlCallLlvmIntrinsic(gen, "llvm.ctpop", inttype, args, 1), u32);
+    case LeadingZerosIntrinsic:
+    case TrailingZerosIntrinsic:
+        args[1] = LLVMConstInt(LLVMInt1TypeInContext(gen->context), 0, 0);
+        return genlIntResize(gen, genlCallLlvmIntrinsic(gen,
+            kind == LeadingZerosIntrinsic ? "llvm.ctlz" : "llvm.cttz", inttype, args, 2), u32);
+    case RotateLeftIntrinsic:
+    case RotateRightIntrinsic:
+        args[1] = fnargs[0];
+        args[2] = genlIntResize(gen, fnargs[1], inttype);
+        return genlCallLlvmIntrinsic(gen, kind == RotateLeftIntrinsic ? "llvm.fshl" : "llvm.fshr", inttype, args, 3);
+    case ShlMaskedIntrinsic:
+    case ShrMaskedIntrinsic: {
+        LLVMValueRef amount = LLVMBuildAnd(gen->builder, genlIntResize(gen, fnargs[1], inttype),
+            LLVMConstInt(inttype, width - 1, 0), "");
+        if (kind == ShlMaskedIntrinsic)
+            return LLVMBuildShl(gen->builder, fnargs[0], amount, "");
+        return itypeGetTypeDcl(type)->tag == IntNbrTag ? LLVMBuildAShr(gen->builder, fnargs[0], amount, "")
+            : LLVMBuildLShr(gen->builder, fnargs[0], amount, "");
+    }
+    default:
+        errorExit(ExitGen, "Internal error: no generation for bit intrinsic %d", (int)kind);
+        return NULL;
+    }
+}
+
 // Expand a call to an intrinsic declared in core with '@intrinsic'. What each
 // one means is the registry's (ir/stmt/intrinsic.c) and the reference manual's
 // (refintrinsic.html); this is LLVM's implementation of it. The type it acts on
@@ -329,6 +418,16 @@ static LLVMValueRef genlDeclaredIntrinsic(GenState *gen, FnDclNode *fndcl, LLVMV
         LLVMBuildMemMove(gen->builder, fnargs[0], align, fnargs[1], align, bytes);
         return NULL;
     }
+
+    // An integer's bits
+    case CountOnesIntrinsic:
+    case LeadingZerosIntrinsic:
+    case TrailingZerosIntrinsic:
+    case RotateLeftIntrinsic:
+    case RotateRightIntrinsic:
+    case ShlMaskedIntrinsic:
+    case ShrMaskedIntrinsic:
+        return genlBitIntrinsic(gen, intrinsic->intrinsicFn, type, fnargs);
 
     default:
         errorExit(ExitGen, "Internal error: no generation for declared intrinsic %d", (int)intrinsic->intrinsicFn);
@@ -748,9 +847,11 @@ LLVMValueRef genlFnCallInternal(GenState *gen, int dispatch, INode *objfn, uint3
             case AndIntrinsic: fncallret = LLVMBuildAnd(gen->builder, fnargs[0], fnargs[1], ""); break;
             case OrIntrinsic: fncallret = LLVMBuildOr(gen->builder, fnargs[0], fnargs[1], ""); break;
             case XorIntrinsic: fncallret = LLVMBuildXor(gen->builder, fnargs[0], fnargs[1], ""); break;
-            case ShlIntrinsic: fncallret = LLVMBuildShl(gen->builder, fnargs[0], fnargs[1], ""); break;
-            case ShrIntrinsic: fncallret = LLVMBuildLShr(gen->builder, fnargs[0], fnargs[1], ""); break;
-            case SShrIntrinsic: fncallret = LLVMBuildAShr(gen->builder, fnargs[0], fnargs[1], ""); break;
+            case ShlIntrinsic:
+            case ShrIntrinsic:
+            case SShrIntrinsic:
+                fncallret = genlShift(gen, ((IntrinsicNode *)fndcl->value)->intrinsicFn, fnargs[0], fnargs[1]);
+                break;
             }
         }
         break;
@@ -1495,18 +1596,18 @@ LLVMValueRef genlSrcFileSlice(GenState *gen, char *text, size_t len) {
     return LLVMConstStructInContext(gen->context, parts, 2, 0);
 }
 
-// The C runtime's entry for each failure the compiler checks for
-// (packages/conestd/panic.c), and how many values it reports before the
+// The runtime's entry for each failure the compiler checks for
+// (packages/conestd/panic.cone), and how many values it reports before the
 // location
 static char *genlPanicEntry[] = {"cone_panicIndex", "cone_panicSlice", "cone_panicAlloc"};
 static unsigned genlPanicValCnt[] = {2, 3, 1};
 
 // End the program where a check the compiler inserted has failed: a call to
-// the C runtime's entry for the failure, handed the values it reports (each a
+// the runtime's entry for the failure, handed the values it reports (each a
 // usize) and the source location of 'site', then 'unreachable'. The entry is
 // declared 'noreturn' and 'cold', so the check costs the hot path a compare
 // and a branch LLVM expects never to take, and the call is placed out of line.
-// WebAssembly has no C runtime linked in, and traps.
+// WebAssembly links no conestd, and traps.
 void genlPanic(GenState *gen, INode *site, GenlPanicKind kind, LLVMValueRef *vals) {
     if (gen->opt->wasm) {
         LLVMValueRef trap = LLVMGetNamedFunction(gen->module, "llvm.trap");

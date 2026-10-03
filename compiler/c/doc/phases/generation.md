@@ -393,7 +393,7 @@ is, so a struct holding one needs nothing more.
 Only a Cone **struct** is lowered (`StructTag` whose LLVM type is a struct). A
 slice, a virtual reference, a tuple or an array has no C counterpart and keeps
 Cone's convention — a slice's pointer and length arrive as two arguments, which
-is how conestd's `printStr(char *, size_t)` takes them. A struct the
+is how a C function's `(char *, size_t)` takes them. A struct the
 nullable-pointer optimization made a bare pointer is a pointer.
 
 The lowering is applied at the four places a function's values cross:
@@ -734,7 +734,7 @@ no allocator.
 **Every function holding a traced reference on its stack links a frame of them
 into one chain** while it runs, so a collector can find every live one:
 `mem.traceRoots(mode)` is a call to conestd's `cone_traceRoots`
-(`packages/conestd/roots.c`), which walks the chain from its head,
+(`packages/conestd/roots.cone`), which walks the chain from its head,
 `cone_gcframes`, and calls each root's record's trace. A **root** is a stack
 slot whose type holds a traced reference (`itypeHoldsTraced`), noted as it is
 made (`genlRootNote`, on `gen->roots`):
@@ -897,6 +897,18 @@ Concrete hazards, each of which has been gotten wrong here before:
   into the LLVM-type switch. An atomic one is taken before either, in
   `genlFnCall`, by `genlAtomicIntrinsic`, since its orderings are the call's
   arguments rather than its instance's.
+- **A shift is a compare and a select, never a bare LLVM shift.** Cone's `<<`
+  and `>>` are defined for every amount: the width or more gives 0, or the sign
+  for `>>` on a signed integer, the amount read unsigned so a negative one is
+  past the width too (`doc/reference/refexpr.html`, "Shift operators"). LLVM's
+  `shl`, `lshr` and `ashr` by the width or more are poison, so `genlShift`
+  compares a run-time amount with the width and uses the shift's result only
+  below it (a signed `>>` instead clamps its amount to width - 1), and writes no
+  compare for a constant amount. The optimizer removes the compare where it can
+  prove the amount below the width (`n & 63`, `core_genllvm_shift`). An LLVM
+  shift written for a Cone shift anywhere else brings the poison back; the
+  masked shifts, whose amount is masked first, are the one other place one is
+  written (`genlBitIntrinsic`).
 - **`genlRecast` picks by generated LLVM kinds, not Cone tags** — deliberately,
   because a reference is not always a plain pointer once fat pointers are in
   play.
@@ -979,7 +991,7 @@ type, which type check stored as the body block's `vtype`. This is how the regio
 checks the compiler inserts — an index against its count, a slice's range
 against its count, a region's `alloc` answering null — each branch to a block
 of their own that calls conestd's entry for the failure (`cone_panicIndex`,
-`cone_panicSlice`, `cone_panicAlloc`, in `packages/conestd/panic.c`), handing
+`cone_panicSlice`, `cone_panicAlloc`, in `packages/conestd/panic.cone`), handing
 it the values compared (each a usize), the source file's name and the line,
 and ends in `unreachable`. The entries are declared `noreturn`, `cold` and
 `nounwind`, so the check costs the hot path a compare and a branch LLVM
@@ -1177,6 +1189,8 @@ variables.
 | | `genlAddrType` | the Cone type of what `genlAddr`'s address points at |
 | | `genlFnCallInternal` | indirect calls, virtual dispatch, generator-level inlining, the intrinsic switch |
 | | `genlDeclaredIntrinsic` | the LLVM implementation of each intrinsic declared in core, by kind and Cone type |
+| | `genlBitIntrinsic` | an integer's bit intrinsics and the integer methods built from them: counts, rotates, masked shifts |
+| | `genlShift` | `<<` and `>>` on an integer, defined past the width: a compare and a select, none for a constant amount |
 | | `genlAtomicIntrinsic` | an atomic intrinsic, reached from `genlFnCall` with the call's constant orderings |
 | | `genlConvert`, `genlRecast`, `genlIsType` | the three cast forms |
 | | `genlArrayIndex`, `genlBoundsCheck` | multi-dimensional GEP and its checks |
@@ -1195,7 +1209,7 @@ variables.
 | | `genlTypeRecord`, `genlTypeRecordOf`, `genlTypeRecFn`, `genlTypeRecNothing` | a type's record, once per object: its size, alignment, finalizer function, trace function and flags; what an `alloc` that asks is handed, `mem.typeRecord`, and a root map's entries |
 | | `genlTraceAt`, `genlTraceWalk`, `genlTraceRef`, `genlTraceVariants` | a value's traced references, each handed to its region's `mark`: a record's trace, and `mem.trace` |
 | | `genlBarrierAt`, `genlHoldsBarriered` | the write barrier: the same walk over a value just stored, each reference into a region with a `writeBarrier` handed to it |
-| `packages/conestd/roots.c` | `cone_gcframes`, `cone_traceRoots` | the head of the chain of frames, and its walk, which `mem.traceRoots` calls |
+| `packages/conestd/roots.cone` | `cone_gcframes`, `cone_traceRoots` | the head of the chain of frames, and its walk, which `mem.traceRoots` calls |
 | `ir/types/reference.h` | `enum ManagedRefFields` | `RegionField`, `PermField`, `ValueField` |
 | `ir/name.c` | `nameSymbol`, `nameType`, `nameVtable`, `nameVtableImpl`, `nameVtableList` | spelling a symbol from a node's owner chain and facts, and a type argument within it — the rules are in [Names and Namespaces](../../../../doc/design/names-and-namespaces.md), "Symbols" |
 | `ir/dclinfo.c` | `dclInfoJoin` | writes the declaration facts where a declaration joins its namespace |
