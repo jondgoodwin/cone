@@ -104,15 +104,26 @@
 // such shape is refused, in both roles, with the reason): Transfer-Encoding
 // beside Content-Length; Transfer-Encoding in an HTTP/1.0 message, chunked
 // not last or given twice, or any coding but chunked; Content-Lengths that
-// differ, or are not decimal; a field line folded onto the next (obs-fold),
-// a space before a field's colon, a name that is not a token, a value with
-// a control character, NUL, CR or LF; a bare CR, or an LF without its CR,
-// anywhere in a head or a chunk's line; a request line with more or fewer
+// differ, or are not decimal; in a request, a field line folded onto the
+// next (obs-fold); a space before a field's colon, a name that is not a
+// token, a value with a control character, NUL, CR or LF; a bare CR
+// anywhere in a head or a chunk's line, and in a request an LF without its
+// CR; a request line with more or fewer
 // than two single spaces; no Host, or two, in an HTTP/1.1 request; a chunk's
 // data not followed by CRLF; and a 101 or a CONNECT (not supported). A
 // server's failure sends the matching status first, with 'Connection:
 // close' (400, 408, 414, 431, 501, 503 or 505), when 'autoErrorResponse' is
 // set and no response has begun.
+//
+// LENIENT, A CLIENT ONLY. Where RFC 9112 lets a recipient be lenient and
+// leniency smuggles nothing past a client, a client reading a response is:
+// a line may end in an LF alone (section 2.2) -- the status line, a field
+// line, the empty line ending the head or the trailers, a chunk's size line,
+// the line end after a chunk's data; and a field line folded onto the next
+// (obs-fold) is unfolded, each fold one space (section 5.2), as a user agent
+// must. A fold before any field line is still refused, and so is a bare CR.
+// A server reading a request is strict as above: there two readers framing
+// a message differently is how requests are smuggled.
 //
 // BOUNDS AND TIMEOUTS (CONFIG, each a field of Config, each passed a
 // visible Failed, never silent growth): 'maxHeadBytes' (16 KiB) a head or
@@ -168,8 +179,7 @@
 // absolute form for proxies (a server reads them, a client never writes
 // them); transfer codings other than chunked; reading a request's body that
 // a server has already answered (the connection closes instead); keeping an
-// HTTP/1.0 peer alive; obs-fold and bare LF read leniently, which RFC 9112
-// allows and this refuses; parsing a head in place when it lies in one
+// HTTP/1.0 peer alive; parsing a head in place when it lies in one
 // segment (it is copied out to be read); and the client layer above (pools,
 // retries, redirects, the scheduler: httpclient).
 
@@ -485,6 +495,12 @@ pub struct Connection is Move {
         return self.deliver();
       }
       if rs == ReadState.ChunkEnd[] {
+        // A client takes an LF alone for the CRLF (RFC 9112, 2.2)
+        if clientRole and input.len() >= 1usize and input.byteAt(0usize) == '\n' {
+          input.advance(1usize);
+          rs = ReadState.ChunkSize[];
+          continue;
+        }
         if input.len() < 2usize {
           if eof {return self.closedMidBody();}
           return Event.NeedData[];
@@ -818,11 +834,20 @@ pub struct Connection is Move {
     while i < lim {
       imm c = v[i];
       if c == '\n' {
-        if i == 0usize or v[i - 1usize] != '\r' {
+        imm bare = i == 0usize or v[i - 1usize] != '\r';
+        if bare and not clientRole {
           self.fail(ErrorKind.Malformed[], 400u16, "a line ends in an LF without its CR");
           return 0usize;
         }
-        if i >= 3usize and v[i - 2usize] == '\n' and v[i - 3usize] == '\r' {
+        if clientRole {
+          // A response's line may end in an LF alone (RFC 9112, 2.2): its
+          // head ends at a line with nothing before its CR or LF
+          imm lineAt = if bare {i;} else {i - 1usize;};
+          if lineAt == 0usize or v[lineAt - 1usize] == '\n' {
+            headScan = 0usize;
+            return i + 1usize;
+          }
+        } elif i >= 3usize and v[i - 2usize] == '\n' and v[i - 3usize] == '\r' {
           headScan = 0usize;
           return i + 1usize;
         }
@@ -878,7 +903,7 @@ pub struct Connection is Move {
         bad(&mut err, ErrorKind.TooLarge[], 414u16, "the request line is longer than maxLineBytes");
       } else {
         ok = parseRequestLine(&h[0usize .. first], &mut head, &mut err) and
-          parseFields(h, first + 2usize, &cfg, true, true, &mut head.headers, &mut host, &mut hosts, &mut err);
+          parseFields(h, lineNext(h, first), &cfg, true, true, &mut head.headers, &mut host, &mut hosts, &mut err);
       }
     }
     self.consumeHead(len);
@@ -920,7 +945,7 @@ pub struct Connection is Move {
         bad(&mut err, ErrorKind.TooLarge[], 0u16, "the status line is longer than maxLineBytes");
       } else {
         ok = parseStatusLine(&h[0usize .. first], &mut head, &mut err) and
-          parseFields(h, first + 2usize, &cfg, false, false, &mut head.headers, &mut host, &mut hosts, &mut err);
+          parseFields(h, lineNext(h, first), &cfg, false, false, &mut head.headers, &mut host, &mut hosts, &mut err);
       }
     }
     self.consumeHead(len);
@@ -1037,15 +1062,31 @@ pub struct Connection is Move {
   fn chunkSize(self &mut) Bool {
     mut at = 0usize;
     mut found = false;
-    match input.find("\r\n") {
-      case imm p Some {
-        at = p.value;
-        found = true;
+    mut skip = 2usize;              // the line's end: CRLF, or (a client's) an LF alone
+    if clientRole {
+      match input.findByte('\n') {
+        case imm p Some {
+          at = p.value;
+          found = true;
+          skip = 1usize;
+          if at > 0usize and input.byteAt(at - 1usize) == '\r' {
+            at = at - 1usize;
+            skip = 2usize;
+          }
+        }
+        case is None[usize] {}
       }
-      case is None[usize] {}
+    } else {
+      match input.find("\r\n") {
+        case imm p Some {
+          at = p.value;
+          found = true;
+        }
+        case is None[usize] {}
+      }
     }
-    // A bare LF or CR before the line's CRLF (or before what has arrived of
-    // it) is refused at once
+    // A bare CR before the line's end (or before what has arrived of it) is
+    // refused at once, and so, in a request, is a bare LF
     imm upTo = if found {at;} else {input.len();};
     match input.findByte('\n') {
       case imm p Some {
@@ -1105,7 +1146,7 @@ pub struct Connection is Move {
       self.failWith(err);
       return false;
     }
-    input.advance(at + 2usize);
+    input.advance(at + skip);
     if size == 0u64 {
       rs = ReadState.Trailers[];
     } else {
@@ -1117,6 +1158,10 @@ pub struct Connection is Move {
 
   // The trailer section after the last chunk: End once it is whole
   fn readTrailers(self &mut) Event {
+    if clientRole and input.len() >= 1usize and input.byteAt(0usize) == '\n' {
+      input.advance(1usize);
+      return self.endMessage(Headers.empty());
+    }
     if input.len() < 2usize {
       if eof {return self.closedMidBody();}
       return Event.NeedData[];

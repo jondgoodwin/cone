@@ -1,7 +1,7 @@
 // ======== Reading: a head's lines, its fields, and how its body is framed ========
 //
 // Every function here reads a slice of bytes already gathered and checked
-// for bare CRs and LFs, and either fills what it was handed and says true,
+// for bare CRs (and, in a request, LFs without their CR), and either fills what it was handed and says true,
 // or fills 'err' with the kind, the status a server answers with, and why,
 // and says false. None of them reads a byte past the slice.
 
@@ -20,9 +20,16 @@ fn indexOf(s &[]u8, c u8, from usize) usize {
   i;
 }
 
-// The end of the line starting at from: the offset of its CR (the gather
-// has checked that an LF follows every CR)
-fn lineEnd(h &[]u8, from usize) usize {indexOf(h, '\r', from);}
+// The end of the line starting at from: the offset of its CR, or of its LF
+// where an LF alone ends it (which the gather lets through only in a
+// response a client reads; it has checked that an LF follows every CR)
+fn lineEnd(h &[]u8, from usize) usize {
+  imm lf = indexOf(h, '\n', from);
+  if lf > from and h[lf - 1usize] == '\r' {lf - 1usize;} else {lf;};
+}
+
+// Where the line after the one ending at end starts: past its LF
+fn lineNext(h &[]u8, end usize) usize {indexOf(h, '\n', end) + 1usize;}
 
 // HTTP-version, 'HTTP/1.1': 11 for 1.1 (and any later 1.x, read as 1.1, RFC
 // 9110 section 6.2), 10 for 1.0, 0 for another major version, and 1 for text
@@ -96,19 +103,52 @@ fn parseStatusLine(line &[]u8, head &mut ResponseHead, err &mut HttpError) Bool 
 
 // The field lines of h from offset 'from' up to the empty line that ends
 // them, added to headers. A request's Host goes to 'host' instead (counted
-// in hostCount) when takeHost is set
+// in hostCount) when takeHost is set. In a request every line is a field of
+// its own, and one starting with a space or a tab (obs-fold) is refused; in
+// a response (a client reading it, RFC 9112, 5.2) such a line continues the
+// field before it, the fold replaced by one space
 fn parseFields(h &[]u8, from usize, cfg &Config, request Bool, takeHost Bool, headers &mut Headers,
     host &mut String, hostCount &mut usize, err &mut HttpError) Bool {
   imm status = if request {431u16;} else {0u16;};
   imm malformed = if request {400u16;} else {0u16;};
   mut at = from;
   mut n = 0usize;
+  // The field read last, not yet added: its name and value in h, and its
+  // value unfolded when a continuation line has followed it
+  mut pending = false;
+  mut nameAt = 0usize;
+  mut nameEnd = 0usize;
+  mut valueAt = 0usize;
+  mut valueEnd = 0usize;
+  mut folded = false;
+  mut unfolded = String.empty();
   while true {
     imm end = lineEnd(h, at);
     if end == at {break;}                     // the empty line
     imm line = &h[at .. end];
     if line.len > cfg.maxLineBytes {return bad(err, ErrorKind.TooLarge[], status, "a field line is longer than maxLineBytes");}
-    if isOws(line[0usize]) {return bad(err, ErrorKind.Malformed[], malformed, "a field line starts with a space or a tab (obs-fold)");}
+    if isOws(line[0usize]) {
+      if request {return bad(err, ErrorKind.Malformed[], malformed, "a field line starts with a space or a tab (obs-fold)");}
+      if not pending {return bad(err, ErrorKind.Malformed[], malformed, "the first field line starts with a space or a tab");}
+      imm more = trimOws(line);
+      imm whyMore = checkFieldValue(more);
+      if whyMore.len != 0usize {return bad(err, ErrorKind.Malformed[], malformed, whyMore);}
+      if not folded {
+        unfolded = String.from(&h[valueAt .. valueEnd]);
+        folded = true;
+      }
+      if more.len > 0usize {
+        if unfolded.len() > 0usize {unfolded.append(" ");}
+        unfolded.append(more);
+      }
+      at = lineNext(h, end);
+      continue;
+    }
+    if pending {
+      addField(&h[nameAt .. nameEnd], if folded {unfolded.view();} else {&h[valueAt .. valueEnd];},
+        takeHost, headers, host, hostCount);
+      folded = false;
+    }
     imm colon = indexOf(line, ':', 0usize);
     if colon == line.len {return bad(err, ErrorKind.Malformed[], malformed, "a field line has no colon");}
     imm name = &line[0usize .. colon];
@@ -119,15 +159,30 @@ fn parseFields(h &[]u8, from usize, cfg &Config, request Bool, takeHost Bool, he
     if whyValue.len != 0usize {return bad(err, ErrorKind.Malformed[], malformed, whyValue);}
     n = n + 1usize;
     if n > cfg.maxHeaders {return bad(err, ErrorKind.TooLarge[], status, "more fields than maxHeaders");}
-    if takeHost and eqIgnoreCase(name, "Host") {
-      *hostCount = *hostCount + 1usize;
-      *host = String.from(value);
-    } else {
-      headers.add(name, value);
-    }
-    at = end + 2usize;
+    pending = true;
+    nameAt = at;
+    nameEnd = at + colon;
+    // The value's place in h: trimOws gave a slice of the line
+    valueAt = at + colon + 1usize;
+    while valueAt < end and isOws(h[valueAt]) {valueAt = valueAt + 1usize;}
+    valueEnd = valueAt + value.len;
+    at = lineNext(h, end);
+  }
+  if pending {
+    addField(&h[nameAt .. nameEnd], if folded {unfolded.view();} else {&h[valueAt .. valueEnd];},
+      takeHost, headers, host, hostCount);
   }
   true;
+}
+
+// A field read and checked: to headers, or a request's Host to host
+fn addField(name &[]u8, value &[]u8, takeHost Bool, headers &mut Headers, host &mut String, hostCount &mut usize) {
+  if takeHost and eqIgnoreCase(name, "Host") {
+    *hostCount = *hostCount + 1usize;
+    *host = String.from(value);
+  } else {
+    headers.add(name, value);
+  }
 }
 
 // How a received message's body is framed
