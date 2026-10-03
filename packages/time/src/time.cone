@@ -1,0 +1,302 @@
+// The time package: time values, the one way every Cone package says how
+// long and when. A length of time is a Duration; a moment read from the
+// machine's steady clock, for measuring, is an Instant; a moment on the
+// calendar's clock, UTC, is a Timestamp; and a Clock is where a program
+// reads Instants from, the real clock or a synthetic one moved by hand, so
+// that code that measures time can be run on time a test chooses.
+//
+//   mod work;
+//   import time use Duration, Instant;
+//   import thread;
+//
+//   fn main() i32 {
+//     imm start = Instant.now();
+//     thread.sleep(Duration.fromMillis(5));
+//     imm took = start.elapsed();             // a Duration, at least 5 ms
+//     if took > Duration.fromSeconds(1) { ... }
+//     imm ms = took.millis();                 // whole milliseconds
+//     imm s = took.secondsF64();              // seconds, with the fraction
+//     0i32;
+//   }
+//
+//   Duration     a signed length of time, in nanoseconds         (DURATION)
+//   Instant      a moment of the steady clock, for measuring     (INSTANT)
+//   Timestamp    a moment of UTC, nanoseconds since 1970         (TIMESTAMP)
+//   Clock        the real steady clock, or a synthetic one       (CLOCK)
+//
+// DURATION. A signed 64-bit count of nanoseconds: about 292 years either
+// way. Negative durations are values like any other: an Instant less a later
+// one is negative.
+//
+//   Duration.zero()                 no time
+//   Duration.fromNanos(n)           n nanoseconds; and fromMicros, fromMillis,
+//   Duration.fromSeconds(n)         fromSeconds, fromMinutes, fromHours, each
+//                                   taking an i64 count of its unit
+//   d.nanos()                       the whole count of each unit, the
+//   d.micros()  d.millis()          fraction dropped, toward zero (as Cone's
+//   d.seconds() d.minutes()         integer division does): 1.9 s is 1
+//   d.hours()                       second, and -1.9 s is -1
+//   d.secondsF64()                  seconds as an f64, with the fraction
+//   d + e   d - e   -d              sums, differences, the negation
+//   d * n   d / n                   times or divided by an i64 (toward zero)
+//   ==  !=  <  <=  >  >=            compared as their nanoseconds are
+//   d.abs()  d.isZero()  d.isNegative()
+//
+// 'new Duration()' is zero too, and is the spelling a field's or a
+// parameter's default takes, since a default must be a constant and a call
+// is not one: 'pub timeout Duration = new Duration();'. Likewise 'new
+// Instant()' is the steady clock's origin and 'new Timestamp()' the epoch.
+//
+// OVERFLOW is whatever Cone's i64 arithmetic does, which today is to wrap,
+// two's complement, with no check and no panic: 'Duration.fromHours(n)' for
+// an n past about 2.5 million hours, a sum past 292 years, or the 'abs' of
+// the most negative duration, wraps round silently. A duration divided by 0,
+// or the most negative one divided by -1, is undefined, as an i64 division
+// is (on x86 the program stops with a hardware fault). No checked or
+// saturating forms are here yet.
+//
+// INSTANT. A moment of the machine's steady (monotonic) clock: it never goes
+// back, and is not moved when the calendar clock is set. It is for measuring
+// how long something took, and for deadlines. What one Instant holds on its
+// own means nothing; two of them, from one run of the program, give the time
+// between them.
+//
+//   Instant.now()                   the steady clock now
+//   i.elapsed()                     Instant.now() - i, a Duration
+//   i + d   i - d                   an Instant a Duration later or earlier
+//   i - j                           the Duration from j to i (negative if j
+//                                   is later)
+//   ==  !=  <  <=  >  >=            earlier is less
+//   i.nanos(), Instant.fromNanos(n) the nanoseconds since the clock's origin
+//                                   (on Windows, near the machine's start),
+//                                   for a program that keeps a count of its
+//                                   own; only differences mean anything
+//
+// TIMESTAMP. A moment of Coordinated Universal Time: a signed 64-bit count of
+// nanoseconds since 1970-01-01 00:00:00 UTC, Unix time's epoch, so before
+// 1970 it is negative. Its range is about 1678 to 2262. Leap seconds are
+// ignored, as Unix time ignores them: every day is 86400 seconds. It is read
+// from the calendar clock, which may be set back or forward while a program
+// runs, so measure with an Instant, never with two Timestamps.
+//
+//   Timestamp.now()                 UTC now, to the clock's precision
+//   Timestamp.fromUnixSeconds(s)    s whole seconds after the epoch, as
+//                                   libc.time() and a file's time count them
+//   Timestamp.fromUnixNanos(n)      n nanoseconds after it
+//   t.unixSeconds()                 the whole seconds, rounded down (toward
+//                                   the past, as Unix time does: half a
+//                                   second before 1970 is -1)
+//   t.unixNanos()                   the nanoseconds
+//   t + d   t - d                   a Timestamp a Duration later or earlier
+//   t - u                           the Duration from u to t
+//   ==  !=  <  <=  >  >=            earlier is less
+//
+// No calendar here yet: no years, months and days, no formatting or parsing
+// of dates, and no time zones.
+//
+// CLOCK. Where a program that measures time reads it, so that it can be
+// handed a synthetic clock instead of the real one: a test, a replay, a
+// simulation run faster than the wall. A real clock reads Instant.now(); a
+// synthetic one starts at Instant.fromNanos(0) and moves only when it is
+// advanced, by exactly what it is advanced by.
+//
+//   Clock.real()                    the steady clock
+//   Clock.synth()                   a synthetic clock, at its origin
+//   c.now()                         the clock's Instant now
+//   c.advance(d)                    move a synthetic clock on by d (d is not
+//                                   negative: the clock never goes back)
+//   c.synthetic                     whether it is synthetic
+//
+//   fn timed(clock &Clock) Duration {
+//     imm start = clock.now();
+//     ... the work ...
+//     clock.now() - start;
+//   }
+//
+// WHAT IS WINDOWS-ONLY. The values and their arithmetic are no OS's, and
+// Timestamp.now() is ISO C's: C11's 'timespec_get' with TIME_UTC (libc's
+// binding), seconds and nanoseconds since 1970, which the Windows runtime
+// fills from the system clock in steps of 100 ns. Instant.now() is the one
+// Windows-only part: ISO C reaches no steady clock (C11 has none; C23's
+// TIME_MONOTONIC is optional, and not in the Windows runtime), so it is
+// kernel32's QueryPerformanceCounter, its count scaled to nanoseconds by
+// QueryPerformanceFrequency (split, so the multiplication cannot overflow).
+// On POSIX it will be clock_gettime's CLOCK_MONOTONIC.
+//
+// THE NAME. The package's name is also the name of libc's 'time()', the C
+// library's whole seconds since 1970. A module that imports this package
+// and folds all of libc's names in collides on it ('time is already a name
+// of this module'), and leaves libc's out: 'import libc use * but time;',
+// then 'libc.time(null)' where it is wanted.
+
+mod time;
+
+import libc;
+
+// ---------------------------------------------------------------------------
+// Windows: kernel32's steady clock, on every link line already, the one
+// thing the package asks of the OS beyond ISO C
+// ---------------------------------------------------------------------------
+
+extern {
+  fn @c(system) QueryPerformanceCounter(count *i64) i32;
+  fn @c(system) QueryPerformanceFrequency(freq *i64) i32;
+}
+
+// The steady clock's count, in nanoseconds
+fn steadyNs() i64 {
+  mut count = 0i64;
+  mut freq = 0i64;
+  QueryPerformanceCounter(&mut count as *i64);
+  QueryPerformanceFrequency(&mut freq as *i64);
+  // Split, so that count * 10^9 cannot overflow
+  (count / freq) * nsPerSecond + (count % freq) * nsPerSecond / freq;
+}
+
+// ---------------------------------------------------------------------------
+// ISO C: the calendar clock, C11's timespec_get
+// ---------------------------------------------------------------------------
+
+// UTC now, in nanoseconds since 1970
+fn utcNs() i64 {
+  mut ts = new libc.Timespec(0i64, 0i32);
+  libc.timespec_get(&mut ts as *libc.Timespec, libc.TIME_UTC);
+  ts.tv_sec * nsPerSecond + i64.from(ts.tv_nsec);
+}
+
+// ---------------------------------------------------------------------------
+// Duration
+// ---------------------------------------------------------------------------
+
+const nsPerMicro = 1000i64;
+const nsPerMilli = 1000000i64;
+const nsPerSecond = 1000000000i64;
+const nsPerMinute = 60000000000i64;
+const nsPerHour = 3600000000000i64;
+
+// A signed length of time, in nanoseconds
+pub struct Duration {
+  ns i64 = 0i64;
+
+  pub fn zero() Duration {new Duration(0i64);}
+  pub fn fromNanos(n i64) Duration {new Duration(n);}
+  pub fn fromMicros(n i64) Duration {new Duration(n * nsPerMicro);}
+  pub fn fromMillis(n i64) Duration {new Duration(n * nsPerMilli);}
+  pub fn fromSeconds(n i64) Duration {new Duration(n * nsPerSecond);}
+  pub fn fromMinutes(n i64) Duration {new Duration(n * nsPerMinute);}
+  pub fn fromHours(n i64) Duration {new Duration(n * nsPerHour);}
+
+  // The whole count of each unit, toward zero
+  pub fn nanos(self) i64 {ns;}
+  pub fn micros(self) i64 {ns / nsPerMicro;}
+  pub fn millis(self) i64 {ns / nsPerMilli;}
+  pub fn seconds(self) i64 {ns / nsPerSecond;}
+  pub fn minutes(self) i64 {ns / nsPerMinute;}
+  pub fn hours(self) i64 {ns / nsPerHour;}
+
+  // Seconds, with the fraction. Split, so that the whole seconds convert
+  // exactly and only the fraction is divided
+  pub fn secondsF64(self) f64 {
+    f64.from(ns / nsPerSecond) + f64.from(ns % nsPerSecond) / 1000000000.0d;
+  }
+
+  pub fn isZero(self) Bool {ns == 0i64;}
+  pub fn isNegative(self) Bool {ns < 0i64;}
+  pub fn abs(self) Duration {if ns < 0i64 {new Duration(0i64 - ns);} else {self;};}
+
+  pub fn add overload `+`(self, o Duration) Duration {new Duration(ns + o.ns);}
+  pub fn sub overload `-`(self, o Duration) Duration {new Duration(ns - o.ns);}
+  pub fn neg overload `-`(self) Duration {new Duration(0i64 - ns);}
+  pub fn mul overload `*`(self, n i64) Duration {new Duration(ns * n);}
+  pub fn div overload `/`(self, n i64) Duration {new Duration(ns / n);}
+
+  pub fn eq overload `==`(self, o Duration) Bool {ns == o.ns;}
+  pub fn lt overload `<`(self, o Duration) Bool {ns < o.ns;}
+  pub fn le overload `<=`(self, o Duration) Bool {ns <= o.ns;}
+  pub fn gt overload `>`(self, o Duration) Bool {ns > o.ns;}
+  pub fn ge overload `>=`(self, o Duration) Bool {ns >= o.ns;}
+}
+
+// ---------------------------------------------------------------------------
+// Instant
+// ---------------------------------------------------------------------------
+
+// A moment of the steady clock: nanoseconds from a fixed, arbitrary origin
+pub struct Instant {
+  ns i64 = 0i64;
+
+  pub fn now() Instant {new Instant(steadyNs());}
+  pub fn fromNanos(n i64) Instant {new Instant(n);}
+  pub fn nanos(self) i64 {ns;}
+
+  // The time since this moment
+  pub fn elapsed(self) Duration {Duration.fromNanos(steadyNs() - ns);}
+
+  pub fn later overload `+`(self, d Duration) Instant {new Instant(ns + d.nanos());}
+  pub fn earlier overload `-`(self, d Duration) Instant {new Instant(ns - d.nanos());}
+  pub fn since overload `-`(self, o Instant) Duration {Duration.fromNanos(ns - o.ns);}
+
+  pub fn eq overload `==`(self, o Instant) Bool {ns == o.ns;}
+  pub fn lt overload `<`(self, o Instant) Bool {ns < o.ns;}
+  pub fn le overload `<=`(self, o Instant) Bool {ns <= o.ns;}
+  pub fn gt overload `>`(self, o Instant) Bool {ns > o.ns;}
+  pub fn ge overload `>=`(self, o Instant) Bool {ns >= o.ns;}
+}
+
+// ---------------------------------------------------------------------------
+// Timestamp
+// ---------------------------------------------------------------------------
+
+// A moment of UTC: nanoseconds since 1970-01-01 00:00:00 UTC, leap seconds
+// ignored
+pub struct Timestamp {
+  ns i64 = 0i64;
+
+  pub fn now() Timestamp {new Timestamp(utcNs());}
+  pub fn fromUnixSeconds(s i64) Timestamp {new Timestamp(s * nsPerSecond);}
+  pub fn fromUnixNanos(n i64) Timestamp {new Timestamp(n);}
+
+  // Whole seconds since the epoch, rounded down: toward the past
+  pub fn unixSeconds(self) i64 {
+    imm q = ns / nsPerSecond;
+    if ns % nsPerSecond < 0i64 {q - 1i64;} else {q;};
+  }
+  pub fn unixNanos(self) i64 {ns;}
+
+  pub fn later overload `+`(self, d Duration) Timestamp {new Timestamp(ns + d.nanos());}
+  pub fn earlier overload `-`(self, d Duration) Timestamp {new Timestamp(ns - d.nanos());}
+  pub fn since overload `-`(self, o Timestamp) Duration {Duration.fromNanos(ns - o.ns);}
+
+  pub fn eq overload `==`(self, o Timestamp) Bool {ns == o.ns;}
+  pub fn lt overload `<`(self, o Timestamp) Bool {ns < o.ns;}
+  pub fn le overload `<=`(self, o Timestamp) Bool {ns <= o.ns;}
+  pub fn gt overload `>`(self, o Timestamp) Bool {ns > o.ns;}
+  pub fn ge overload `>=`(self, o Timestamp) Bool {ns >= o.ns;}
+}
+
+// ---------------------------------------------------------------------------
+// Clock
+// ---------------------------------------------------------------------------
+
+// Where Instants are read from: the steady clock, or a synthetic one that
+// moves only when advanced
+pub struct Clock {
+  pub synthetic Bool;
+  at Instant;
+
+  pub fn real() Clock {new Clock(false, Instant.fromNanos(0i64));}
+  pub fn synth() Clock {new Clock(true, Instant.fromNanos(0i64));}
+
+  // The clock's time now
+  pub fn now(self &) Instant {
+    if synthetic {return at;}
+    Instant.now();
+  }
+
+  // Move a synthetic clock on by d, which is not negative
+  pub fn advance(self &mut, d Duration) {
+    assert(synthetic, "only a synthetic clock is advanced");
+    assert(!d.isNegative(), "a clock is not moved back");
+    at = at + d;
+  }
+}

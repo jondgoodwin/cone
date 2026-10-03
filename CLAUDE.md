@@ -178,6 +178,27 @@ Visual Studio projects stay at the root.
   no OS's, its insides Windows only (`kernel32`'s `CreateProcessW`,
   overlapped pipes and a job object, `shell32`'s `CommandLineToArgvW`), a
   POSIX one to come with Linux;
+  `iobuf` is owned buffers for I/O, the async I/O runtime's first package:
+  `IoBuf`, a 4 KiB-aligned block of whole pages and its length, a move type
+  lent to an operation by moving it (never a borrow) and Sendable, whose
+  death gives its block back to its pool from any thread; `Pool`, size
+  classes of 4 KiB to 1 MiB (larger is a block of its own) under a lock, two
+  bounds (what it holds from the OS, a take past it refused and counted; what
+  it keeps idle) and exact counters; `Bytes`, a buffer frozen into shared,
+  read-only bytes (`Arc[imm, IoBuf]` and a range) for a send fanned out; and
+  `Chain`, a stream's bytes in the buffers they arrived in, parsed across
+  segment boundaries on System.IO.Pipelines' model and consumed with
+  `advance`, bounded; its blocks come from `VirtualAlloc`, Windows only, and
+  its example `churn.cone` times a million takes and drops;
+  `time` is time values, the one way every package says how long and when:
+  `Duration` (signed nanoseconds, an i64), `Instant` (the steady clock, for
+  measuring and deadlines), `Timestamp` (UTC, nanoseconds since 1970, leap
+  seconds ignored) and `Clock` (the real steady clock, or a synthetic one
+  advanced by hand, for tests); `sync`'s timeouts, `thread.sleep`,
+  `process`'s time limit and `fs`'s file times take them; no calendar yet;
+  its values no OS's, `Timestamp.now` ISO C's (C11 `timespec_get`, bound
+  in `libc`), and `Instant.now` Windows only (`QueryPerformanceCounter`:
+  ISO C reaches no steady clock);
   `collections` is a growable `List[T]`, an owned `String` and a string-keyed
   `Dict[K, V]`, each holding its elements in one block from `libc`'s
   allocator and moving them with core's `mem` intrinsics; `arena` is an

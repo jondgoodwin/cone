@@ -1,0 +1,144 @@
+// A segment chain, as an HTTP/1.1 parser uses one: a request arrives in
+// pieces split at awkward places, each piece a pooled buffer pushed onto the
+// chain. The parser finds the end of the head ("\r\n\r\n") across segment
+// boundaries, peeks, copies the head out, and consumes it; the body's bytes
+// carry over, and each segment wholly consumed goes back to its pool at once.
+
+mod chain;
+
+import testing use *;
+import iobuf use *;
+
+fn piece(pool &Pool, text &[]u8) IoBuf {
+  mut b = pool.mustTake(text.len);
+  b.append(text);
+  b;
+}
+
+fn pushed(o Option[IoBuf]) Bool {
+  o is None[IoBuf];
+}
+
+fn main() i32 {
+  imm pool = Pool.make();
+  {
+    mut c = Chain.make(65536usize);
+    expect(c.isEmpty(), "a new chain is empty");
+    expect(c.find("\r\n") is None[usize], "nothing to find in an empty chain");
+    // The request "GET /a HTTP/1.1\r\nHost: x\r\n\r\nhello", split so that
+    // the head's end straddles three segments
+    expect(pushed(c.push(piece(&pool, "GET /a HT"))), "pushed 1");
+    expect(pushed(c.push(piece(&pool, "TP/1.1\r\nHost: x\r"))), "pushed 2");
+    expect(pushed(c.push(piece(&pool, "\n\r"))), "pushed 3");
+    expect(pushed(c.push(piece(&pool, "\nhel"))), "pushed 4");
+    expect(pushed(c.push(piece(&pool, "lo"))), "pushed 5");
+    expect(pushed(c.push(IoBuf.empty())), "an empty buffer is accepted and dropped");
+    expectUInt(u64.from(c.segments()), 5u64, "five segments");
+    expectUInt(u64.from(c.len()), 33u64, "33 bytes");
+    expectUInt(pool.stats().lent, 5u64, "five buffers lent, held by the chain");
+
+    // Delimiters across boundaries
+    match c.find("\r\n\r\n") {
+      case imm at Some {expectUInt(u64.from(at.value), 24u64, "the head ends at 24");}
+      case is None[usize] {expect(false, "the head's end found");}
+    }
+    match c.find("\r\n") {
+      case imm at Some {expectUInt(u64.from(at.value), 15u64, "the request line ends at 15");}
+      case is None[usize] {expect(false, "the first line end found");}
+    }
+    match c.find("\r\n", 16usize) {
+      case imm at Some {expectUInt(u64.from(at.value), 24u64, "the next line end, across a boundary");}
+      case is None[usize] {expect(false, "the second line end found");}
+    }
+    match c.find("HTTP/1.1") {
+      case imm at Some {expectUInt(u64.from(at.value), 7u64, "a token split across segments");}
+      case is None[usize] {expect(false, "the version found");}
+    }
+    expect(c.find("\r\n\r\n\r") is None[usize], "a pattern not there");
+    expect(c.find("lo!") is None[usize], "a pattern running past the end");
+    match c.findByte(' ', 4usize) {
+      case imm at Some {expectUInt(u64.from(at.value), 6u64, "the second space");}
+      case is None[usize] {expect(false, "the second space found");}
+    }
+    expect(c.matchesAt(0usize, "GET "), "matchesAt the start");
+    expect(c.matchesAt(9usize, "TP/1.1"), "matchesAt a segment's start");
+    expect(!c.matchesAt(9usize, "TP/1.0"), "matchesAt refuses a mismatch");
+
+    // Peeking
+    expectUInt(u64.from(c.byteAt(9usize)), u64.from('T'), "byteAt the second segment's first byte");
+    expectUInt(u64.from(c.byteAt(32usize)), u64.from('o'), "byteAt the last byte");
+    expect(c.peek(33usize) is None[u8], "peek past the end");
+
+    // Contiguous when within a segment, None across a boundary
+    match c.contiguous(9usize, 6usize) {
+      case imm s Some {expectStr(s.value, "TP/1.1", "contiguous within a segment");}
+      case is None[&[]u8] {expect(false, "contiguous within a segment");}
+    }
+    expect(c.contiguous(7usize, 8usize) is None[&[]u8], "None across a boundary");
+
+    // Copy the head out and consume it: three segments wholly consumed die
+    mut head = new Array[u8, 64] <- fill 0u8;
+    imm n = c.copyOut(0usize, &mut head[0usize .. 28usize]);
+    expectUInt(u64.from(n), 28u64, "the head and its blank line copied out");
+    expectStr(&head[0usize .. 28usize], "GET /a HTTP/1.1\r\nHost: x\r\n\r\n", "the head");
+    c.advance(28usize);
+    expectUInt(u64.from(c.len()), 5u64, "the body's 5 bytes carried over");
+    expectUInt(u64.from(c.segments()), 2u64, "two segments left");
+    expectUInt(pool.stats().lent, 2u64, "the three consumed segments back in the pool");
+    expect(c.matchesAt(0usize, "hello"), "the body starts at offset 0");
+
+    // Take 2 bytes; then pop the rest a segment at a time
+    mut two = new Array[u8, 2] <- fill 0u8;
+    expectUInt(u64.from(c.take(&mut two[0usize .. 2usize])), 2u64, "took 2");
+    expectStr(&two[0usize .. 2usize], "he", "the two taken");
+    mut first = IoBuf.empty();
+    match c.popFront() {
+      case mut s Some {first <=> s.value;}
+      case is None[IoBuf] {expect(false, "a segment popped");}
+    }
+    expectStr(first.view(), "l", "the popped segment holds only its unconsumed byte, at its start");
+    expectUInt(u64.from(c.len()), 2u64, "two bytes left");
+  }
+  expectUInt(pool.stats().lent, 0u64, "the chain's death gives its last segment back, and the popped one died too");
+
+  // The bound: a push that would pass it is refused, its buffer handed back
+  {
+    mut c = Chain.make(10usize);
+    expect(pushed(c.push(piece(&pool, "0123456"))), "7 bytes in");
+    mut back = IoBuf.empty();
+    match c.push(piece(&pool, "789ab")) {
+      case mut s Some {back <=> s.value;}
+      case is None[IoBuf] {expect(false, "refused past the bound");}
+    }
+    expectStr(back.view(), "789ab", "the refused buffer handed back whole");
+    expectUInt(u64.from(c.len()), 7u64, "nothing of it taken");
+    c.advance(7usize);
+    expect(pushed(c.push(back)), "in once room is made");
+    expectUInt(u64.from(c.len()), 5u64, "its 5 bytes");
+  }
+
+  // Many small segments: the ring grows, and wraps
+  {
+    mut c = Chain.make(1000000usize);
+    mut i = 0u32;
+    mut sum = 0u64;
+    while i < 100u32 {
+      c.push(piece(&pool, "ab"));
+      if i % 3u32 == 0u32 {
+        sum = sum + u64.from(c.byteAt(0usize));
+        c.advance(1usize);
+      }
+      i = i + 1u32;
+    }
+    expectUInt(u64.from(c.len()), 200u64 - 34u64, "pushed 200, consumed 34");
+    expectUInt(sum, 17u64 * 97u64 + 17u64 * 98u64, "the bytes consumed: a, b, a, b, ...");
+    expectUInt(u64.from(c.segments()), 83u64, "83 segments: 17 wholly consumed");
+    expect(c.find("bb") is None[usize], "never two b's together");
+    match c.find("ba") {
+      case imm at Some {expectUInt(u64.from(at.value), 1u64, "an a first, after an even number consumed");}
+      case is None[usize] {expect(false, "ba found");}
+    }
+  }
+  expectUInt(pool.stats().lent, 0u64, "every segment back");
+  done();
+}

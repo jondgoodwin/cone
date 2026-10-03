@@ -1,0 +1,84 @@
+// The pool's two bounds. 'maxBytes' bounds what it holds from the OS, lent
+// and idle together: a take past it is refused, a None the caller sees, and
+// counted, never silent growth. Before refusing, it gives idle blocks of
+// other classes back to the OS to make room. 'keepBytes' bounds the idle
+// blocks it keeps: a block coming back past it goes back to the OS. 'trim'
+// gives every idle block back at once.
+
+mod bound;
+
+import testing use *;
+import iobuf use *;
+
+fn refused(o Option[IoBuf]) Bool {
+  o is None[IoBuf];
+}
+
+fn main() i32 {
+  initAll();
+  // At most 64 KiB held: sixteen 4 KiB blocks
+  imm pool = Pool.make(65536usize, 65536usize);
+  {
+    mut held = Chain.make(1000000usize);
+    mut i = 0u32;
+    while i < 16u32 {
+      mut b = pool.mustTake(1usize);
+      b.append("x");
+      held.push(b);
+      i = i + 1u32;
+    }
+    expectUInt(u64.from(pool.stats().heldBytes), 65536u64, "16 blocks held: the bound");
+    expect(refused(pool.take(1usize)), "the 17th is refused");
+    expect(refused(pool.take(65536usize)), "so is a larger one");
+    imm s = pool.stats();
+    expectUInt(s.refused, 2u64, "two refusals counted");
+    expectUInt(s.lent, 16u64, "sixteen lent");
+    held.advance(1usize);   // one segment consumed: its block comes back
+    expectUInt(pool.stats().lent, 15u64, "fifteen lent");
+    expect(!refused(pool.take(1usize)), "a take succeeds once one is back");
+  }
+  expectUInt(u64.from(pool.stats().idleBytes), 65536u64, "all sixteen idle now");
+
+  // A 64 KiB take finds no idle 64 KiB block and no room: the idle 4 KiB
+  // blocks go back to the OS to make it
+  {
+    imm before = pool.stats();
+    imm big = pool.mustTake(65536usize);
+    imm s = pool.stats();
+    expectUInt(s.osFrees - before.osFrees, 16u64, "sixteen idle 4 KiB blocks freed to make room");
+    expectUInt(u64.from(s.heldBytes), 65536u64, "held: the one 64 KiB block");
+    expectUInt(u64.from(s.idleBytes), 0u64, "nothing idle");
+  }
+
+  // keepBytes: at most 8 KiB idle. Of three 4 KiB blocks coming back, two
+  // are kept and the third goes back to the OS
+  {
+    imm small = Pool.make(65536usize, 8192usize);
+    {
+      imm a = small.mustTake(1usize);
+      imm b = small.mustTake(1usize);
+      imm c = small.mustTake(1usize);
+    }
+    imm s = small.stats();
+    expectUInt(u64.from(s.idleBytes), 8192u64, "two kept idle");
+    expectUInt(s.osFrees, 1u64, "the third freed");
+    expectUInt(u64.from(s.heldBytes), 8192u64, "held: the two idle");
+    small.trim();
+    imm t = small.stats();
+    expectUInt(u64.from(t.heldBytes), 0u64, "trim gives every idle block back");
+    expectUInt(t.osFrees, 3u64, "three freed in all");
+    expect(refused(small.take(70000usize)), "a take larger than the whole bound is refused");
+  }
+
+  // An oversize block is never kept idle, however much room keepBytes has
+  {
+    imm roomy = Pool.make(4194304usize, 4194304usize);
+    {
+      imm big = roomy.mustTake(2000000usize);
+      expectUInt(u64.from(big.capacity()), 2002944u64, "oversize, rounded to pages");
+      expectUInt(u64.from(roomy.stats().heldBytes), 2002944u64, "and counted against the bound");
+    }
+    expectUInt(u64.from(roomy.stats().heldBytes), 0u64, "the oversize block went back to the OS");
+  }
+  done();
+}

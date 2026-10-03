@@ -70,8 +70,8 @@
 // 'opendir', 'readdir' and 'lstat' are written over the runtime's
 // '_findfirst64'. The 'path' rules it relies on are Windows' too (drive
 // letters, shares, '\'). Where Windows behaves differently from POSIX it is
-// said beside the function: 'rename' does not replace, and 'modified' is in
-// whole seconds.
+// said beside the function: 'rename' does not replace, and 'modified' (a
+// time.Timestamp) is in whole seconds.
 
 mod fs;
 
@@ -79,6 +79,7 @@ import libc;
 import posix;
 import collections use String, List;
 import path use join, normalize, parent;
+import time;
 
 // -------- failure --------
 
@@ -170,9 +171,9 @@ fn useUtf8() {
 pub struct FileInfo {
   // Its size in bytes; 0 for a folder
   pub size i64;
-  // When it was last written, in whole seconds since 1970 (UTC), as
-  // libc.time() counts
-  pub modified i64;
+  // When it was last written, a Timestamp of the time package (UTC), in
+  // whole seconds: the C runtime's stat counts no finer
+  pub modified time.Timestamp;
   pub isDir Bool;
   // A regular file: not a folder, a device or anything else
   pub isFile Bool;
@@ -190,7 +191,8 @@ pub fn stat(path &[]u8) Result[FileInfo, FsError] {
   mut st = emptyStat();
   if posix.stat(c.cstr(), &mut st) != 0i32 { return fail[FileInfo]("stat", path, lastErrno()); }
   imm kind = st.st_mode & posix.S_IFMT;
-  Ok[FileInfo, FsError][new FileInfo(st.st_size, st.st_mtime, kind == posix.S_IFDIR, kind == posix.S_IFREG)];
+  Ok[FileInfo, FsError][new FileInfo(st.st_size, time.Timestamp.fromUnixSeconds(st.st_mtime),
+    kind == posix.S_IFDIR, kind == posix.S_IFREG)];
 }
 
 // The file-type bits of what a path names, or 0 when it cannot be seen

@@ -13,19 +13,7 @@ mod condvar;
 import testing use *;
 import thread;
 import sync use *;
-
-extern {
-  fn @c(system) QueryPerformanceCounter(count *i64) i32;
-  fn @c(system) QueryPerformanceFrequency(freq *i64) i32;
-}
-
-fn nowNs() i64 {
-  mut count = 0i64;
-  mut freq = 0i64;
-  QueryPerformanceCounter(&mut count as *i64);
-  QueryPerformanceFrequency(&mut freq as *i64);
-  i64.from(f64.from(count) * 1000000000.0d / f64.from(freq));
-}
+import time use Duration, Instant;
 
 const perProducer = 2000u64;
 const slots = 4u64;
@@ -134,11 +122,11 @@ fn main() i32 {
 
   // A timed wait with nobody to notify
   m.lock();
-  imm before = nowNs();
-  imm woken = notFull.condWaitTimeout(&m, 20000000u64);
-  imm took = nowNs() - before;
+  imm before = Instant.now();
+  imm woken = notFull.condWaitTimeout(&m, Duration.fromMillis(20));
+  imm took = before.elapsed();
   expect(!woken, "a timed wait nobody notified returns false");
-  expect(took >= 19000000i64, "having slept its 20 ms (to the timer's rounding)");
+  expect(took >= Duration.fromMillis(19), "having slept its 20 ms (to the timer's rounding)");
   expect(!m.tryLock(), "with the Mutex held again");
   m.unlock();
 
@@ -150,7 +138,7 @@ fn main() i32 {
   imm w1 = thread.start(0u32, &awaitFlag);
   imm w2 = thread.start(0u32, &awaitFlag);
   imm w3 = thread.start(0u32, &awaitFlag);
-  while waiting.load() < 3u32 { thread.sleep(1000000u64); }
+  while waiting.load() < 3u32 { thread.sleep(Duration.fromMillis(1)); }
   m.lock();
   flag = true;
   notEmpty.notifyAll();
