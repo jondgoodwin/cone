@@ -438,11 +438,15 @@ enum ErrorCode {
     // A type's members (ir/stmt/fielddcl.c)
     ErrorPubFieldPrivType = 1236, // A 'pub' field whose type names a type private to its module: code outside the module would reach into a type it cannot name
 
+    // Literals and implicit coercion
+    ErrorNullNotPtr = 1237,     // A 'null' wanted as something other than a raw pointer, or where nothing says which raw pointer type it is
+    ErrorBoolNotNbr = 1238,     // A Bool where a number is wanted: a Bool converts to a number only explicitly, 'T.from(b)'
+
     // Lock permissions: a struct declaring 'LockPermission' in a managed reference's permission slot (ir/types/permission.c, ir/exp/borrow.c)
-    ErrorNotLockPerm = 1237,    // A struct in a managed reference's permission slot that does not declare 'is LockPermission'
-    ErrorLockPermShape = 1238,  // A lock permission whose methods are not the shape the compiler calls: no 'acquireMut' and 'releaseMut', a read pair half declared, a method taking more than 'self' or returning a value
-    ErrorLockRegion = 1239,     // A lock permission on a region it does not fit: one owner ('So'), a region not counting owners, a cross-thread lock on a single-thread region or the reverse, or a virtual reference (a traced region is ErrorTracedPerm)
-    ErrorLockAccess = 1240,     // A lock-managed reference read, written or lent without the borrow that takes its lock: '&mut *p', '&*p'
+    ErrorNotLockPerm = 1239,    // A struct in a managed reference's permission slot that does not declare 'is LockPermission'
+    ErrorLockPermShape = 1240,  // A lock permission whose methods are not the shape the compiler calls: no 'acquireMut' and 'releaseMut', a read pair half declared, a method taking more than 'self' or returning a value
+    ErrorLockRegion = 1241,     // A lock permission on a region it does not fit: one owner ('So'), a region not counting owners, a cross-thread lock on a single-thread region or the reverse, or a virtual reference (a traced region is ErrorTracedPerm)
+    ErrorLockAccess = 1242,     // A lock-managed reference read, written or lent without the borrow that takes its lock: '&mut *p', '&*p'
 
     // Warnings
     WarnCode = 3000,

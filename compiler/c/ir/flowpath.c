@@ -2064,6 +2064,7 @@ static PathSet *pwValue(INode **nodep, int move) {
         return pwValue(&((TempNode *)node)->exp, move);
     case SizeofTag:
     case NilLitTag:
+    case NullLitTag:
     case ULitTag:
     case FLitTag:
     case StringLitTag:

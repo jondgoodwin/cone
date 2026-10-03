@@ -1,0 +1,88 @@
+// Where 'null' is refused: anywhere nothing says it is a raw pointer, and
+// anywhere something says it is not one.
+//
+// A raw pointer is always nullable, so a raw pointer type is the only type
+// 'null' takes. A reference is never null, a number is not a pointer, and an
+// Option's absence is 'None'. Where nothing wants a type -- an initializer with
+// no declared type, a statement, the receiver of a call -- there is no pointer
+// type to take, and 'imm p = null' has to say which.
+//
+// Type check stage only. The accepted positions are safety_null's.
+
+mod safety_typecheck_null;
+
+struct Holder {
+  pub r &i32;
+}
+
+fn wantRef(r &i32) {}
+fn wantInt(n i32) {}
+fn wantOption(o Option[*i32]) {}
+
+fn inferred() {
+  imm p = null;                   //~ ErrorNullNotPtr:11 "Nothing here says which raw pointer type"
+}
+
+fn statement() {
+  null;                           //~ ErrorNullNotPtr:3 "Nothing here says which raw pointer type"
+}
+
+fn asReference() {
+  imm r &i32 = null;              //~ ErrorNullNotPtr:16 "and a reference is wanted here"
+}
+
+fn asNumber() {
+  mut n usize = 1usize;
+  n = null;                       //~ ErrorNullNotPtr:7 "and usize is wanted here"
+}
+
+fn asArguments() {
+  wantRef(null);                  //~ ErrorNullNotPtr:11 "and a reference is wanted here"
+  wantInt(null);                  //~ ErrorNullNotPtr:11 "and i32 is wanted here"
+  wantOption(null);               //~ ErrorNullNotPtr:14 "and Option is wanted here"
+}
+
+fn asReturn() i32 {
+  return null;                    //~ ErrorNullNotPtr:10 "and i32 is wanted here"
+}
+
+fn asField(x &i32) {
+  imm h = new Holder(r: null);    //~ ErrorNullNotPtr:25 "and a reference is wanted here"
+}
+
+fn comparedWithReference(r &i32) Bool {
+  r == null;                      //~ ErrorNullNotPtr:8 "and a reference is wanted here"
+}
+
+fn comparedWithNumber(n i32) Bool {
+  null != n;                      //~ ErrorNullNotPtr:3 "and i32 is wanted here"
+}
+
+fn comparedWithNull() Bool {
+  null == null;                   //~ ErrorNullNotPtr:3 "Nothing here says which raw pointer type"
+}
+
+// A function reference, the C-facing kind included, is a reference and never null
+fn asFunctionReference() {
+  imm f &fn(x i32) i32 = null;    //~ ErrorNullNotPtr:26 "and a reference is wanted here"
+}
+
+// A condition wants a Bool. A pointer is one through isTrue, but a 'null' is
+// not yet any pointer to ask
+fn asCondition() {
+  if null {wantInt(1);}           //~ ErrorNullNotPtr:6 "and Bool is wanted here"
+}
+
+// A generic's type parameter is not inferred from a 'null', which is any pointer
+fn same[T](x T) T { x; }
+fn generic() {
+  imm g = same(null);             //~ ErrorInvType:15 "Could not infer all of generic's type parameters"
+}
+
+fn reinterpreted() {
+  imm n = null as usize;          //~ ErrorNullNotPtr:11 "and usize is wanted here"
+}
+
+fn called() {
+  imm v = null.isTrue();          //~ ErrorNullNotPtr:11 "Nothing here says which raw pointer type"
+}

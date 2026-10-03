@@ -14,6 +14,7 @@
 INode *unknownType;
 INode *noCareType;
 INode *errorType;
+INode *nullLitType;
 INode *elseCond;
 INode *borrowRef;
 INode *neverType;
@@ -130,6 +131,11 @@ void stdlibInit(int ptrsize) {
     // of a cascade descending from the first.
     errorType = (INode*)newAbsenceNode();
     errorType->tag = UnknownTag;
+    // A 'null' is any raw pointer type until the type it is wanted as says
+    // which (litAdoptNullType). Distinct by identity, so that one left without
+    // a pointer type is noticed rather than read as not inferred yet.
+    nullLitType = (INode*)newAbsenceNode();
+    nullLitType->tag = UnknownTag;
     elseCond = (INode*)newAbsenceNode();
     borrowRef = (INode*)newAbsenceNode();
     borrowRef->tag = BorrowRegTag;
