@@ -19,6 +19,7 @@ import libc;
 import posix;
 import path;
 import fs;
+import time use Duration, Timestamp;
 
 // The test's folder: TEMP's absolute path and the name, after checking
 // that it is that and nothing shorter
@@ -148,7 +149,7 @@ fn failures(root &[]u8) {
 }
 
 fn status(root &[]u8) {
-  imm before = libc.time(null);
+  imm before = Timestamp.now();
   imm p = path.join(root, "stat.txt");
   imm missing = path.join(root, "missing.txt");
   ok(fs.writeFile(p.view(), "12345"), "write for stat");
@@ -157,9 +158,10 @@ fn status(root &[]u8) {
       expectInt(s.value.size, 5, "stat size");
       expect(s.value.isFile, "stat isFile");
       expect(not s.value.isDir, "stat file is not isDir");
-      // Whole seconds, and the clock is read before: within a minute
+      // Whole seconds, rounded down, and the clock is read before: within a minute
       imm late = s.value.modified - before;
-      expect(late >= -1i64 and late <= 60i64, "modified is now");
+      expect(late > Duration.fromSeconds(-2) and late <= Duration.fromSeconds(60), "modified is now");
+      expectInt(s.value.modified.unixNanos() % 1000000000, 0, "modified is whole seconds");
     }
     case is Error { expect(false, "stat of a file"); }
   }
