@@ -1,0 +1,238 @@
+// Cancel and deadlines while a TLS handshake is under way, offline, through
+// httpconn's driver: a request's deadline, its cancel and its cancel
+// group's cancel while the server never answers the ClientHello (a socket
+// that listens and never accepts); and a deadline and a cancel while the
+// handshake waits for the OS's verifier on the blocking pool, its lane's one
+// thread held by other work. Each request gets its one final answer at
+// once, the connection is reset, the verification still queued is taken out
+// of the lane, and every buffer goes back to the pool.
+
+mod cancel;
+
+import stdio use *;
+import testing use *;
+import thread;
+import fs;
+import collections use List, String;
+import time use Instant, Duration;
+import iobuf use *;
+import iocore use Loop, Op, Target, Outcome, Lane, LaneConfig, SocketAddr, CancelGroup, Handle, addLane, forever;
+import http use *;
+import httpconn use *;
+import tls;
+
+const tokServer = 100u64;
+const tokConn = 1u64;
+const tokReq = 2u64;
+const tokBlock = 7u64;
+
+fn certs(name &[]u8) String {
+  mut p = String.from("../../../../tests/certs/");
+  p.append(name);
+  p;
+}
+
+struct TlsMaker {
+  server tls.Server;
+  pool Pool;
+
+  pub fn make(self &mut) So[Layer] {new So[tls.Stream](server.stream(pool));}
+}
+
+// Work that holds a lane's thread for arg milliseconds
+fn holdWork(arg u64, buf &mut IoBuf) Outcome {
+  thread.sleep(Duration.fromMillis(i64.from(arg)));
+  Outcome.Done[0usize];
+}
+
+struct Seen {
+  pub last EventKind;
+  pub finals u64;
+  pub closed u64;
+  pub clean u64;
+  pub serverClosed u64;
+}
+
+fn step(drv &mut Driver, lp &mut Loop, seen &mut Seen, events &mut List[Event]) {
+  drv.poll(lp, Instant.now() + Duration.fromMillis(10i64), events);
+  mut k = 0usize;
+  while k < events.len() {
+    imm e = &mut events[k];
+    k = k + 1usize;
+    if e.token == tokReq and e.isTerminal() {
+      seen.finals = seen.finals + 1u64;
+      seen.last = e.kind;
+    } elif e.token == tokConn and e.kind == EventKind.Closed[] {
+      seen.closed = seen.closed + 1u64;
+      if e.clean {seen.clean = seen.clean + 1u64;}
+    } elif e.token == tokServer and e.kind == EventKind.Closed[] {
+      seen.serverClosed = seen.serverClosed + 1u64;
+    }
+  }
+  events.clear();
+}
+
+// Drive until the request's final answer and its connection's Closed
+fn settle(drv &mut Driver, lp &mut Loop, seen &mut Seen, events &mut List[Event], finals u64, closed u64) {
+  imm giveUp = Instant.now() + Duration.fromSeconds(10i64);
+  while (seen.finals < finals or seen.closed < closed) and Instant.now() < giveUp {step(drv, lp, seen, events);}
+  requireUInt(seen.finals, finals, "the request has its final answer");
+  requireUInt(seen.closed, closed, "its connection has closed");
+}
+
+// Drive for a while
+fn idle(drv &mut Driver, lp &mut Loop, seen &mut Seen, events &mut List[Event], ms i64) {
+  imm until = Instant.now() + Duration.fromMillis(ms);
+  while Instant.now() < until {step(drv, lp, seen, events);}
+}
+
+fn report(label &[]u8, seen &Seen, want EventKind, asked Instant) {
+  imm took = Instant.now() - asked;
+  printStr(label);
+  printStr(": ");
+  printStr(eventName(seen.last));
+  printStr("\n");
+  expect(seen.last == want, label);
+  expect(took < Duration.fromSeconds(2i64), "...promptly");
+}
+
+fn main() i32 {
+  imm pool = Pool.make();
+  mut lp = Loop.mustMake();
+  mut drv = Driver.make(Config.make(), pool);
+  mut events = List[Event].empty();
+  mut seen = new Seen(EventKind.Done[], 0u64, 0u64, 0u64, 0u64);
+  mut roots = tls.ClientConfig.make();
+  roots.verify = tls.Verifier.roots(readText("ca.pem").view());
+  imm rootsClient = mustClient(roots);
+  imm before = tls.stats();
+
+  // A server that never answers: a socket that listens on another loop and
+  // never accepts, so the kernel completes the connection and holds the
+  // ClientHello
+  mut quiet = Loop.mustMake();
+  mut silentPort = 0u16;
+  match quiet.listen(SocketAddr.localhost(0u16)) {
+    case imm h Ok {
+      match quiet.localAddr(h.value) {
+        case imm a Ok {silentPort = a.value.port();}
+        case imm e Error {}
+      }
+    }
+    case imm e Error {}
+  }
+  require(silentPort != 0u16, "the silent server listens");
+
+  // A deadline during the handshake
+  mut c = drv.connectWith(&mut lp, "127.0.0.1", silentPort, new So[tls.Stream](rootsClient.stream("localhost", pool)),
+    Sink.Here[tokConn]);
+  mut asked = Instant.now();
+  drv.requestBy(&mut lp, c, RequestHead.get("/", "localhost"), BodyLength.empty(), Sink.Here[tokReq],
+    asked + Duration.fromMillis(150i64));
+  settle(&mut drv, &mut lp, &mut seen, &mut events, 1u64, 1u64);
+  report("deadline during the handshake", &seen, EventKind.TimedOut[], asked);
+  expect(Instant.now() - asked >= Duration.fromMillis(140i64), "...not before its deadline");
+
+  // A cancel during the handshake
+  c = drv.connectWith(&mut lp, "127.0.0.1", silentPort, new So[tls.Stream](rootsClient.stream("localhost", pool)),
+    Sink.Here[tokConn]);
+  imm r2 = drv.request(&mut lp, c, RequestHead.get("/", "localhost"), BodyLength.empty(), Sink.Here[tokReq]);
+  idle(&mut drv, &mut lp, &mut seen, &mut events, 50i64);
+  asked = Instant.now();
+  expect(drv.cancel(&mut lp, r2), "the cancel is taken");
+  settle(&mut drv, &mut lp, &mut seen, &mut events, 2u64, 2u64);
+  report("cancel during the handshake", &seen, EventKind.Cancelled[], asked);
+
+  // A cancel group's cancel during the handshake
+  c = drv.connectWith(&mut lp, "127.0.0.1", silentPort, new So[tls.Stream](rootsClient.stream("localhost", pool)),
+    Sink.Here[tokConn]);
+  imm group = CancelGroup.make();
+  drv.requestIn(&mut lp, c, RequestHead.get("/", "localhost"), BodyLength.empty(), Sink.Here[tokReq], group, forever());
+  idle(&mut drv, &mut lp, &mut seen, &mut events, 50i64);
+  asked = Instant.now();
+  group.cancel();
+  settle(&mut drv, &mut lp, &mut seen, &mut events, 3u64, 3u64);
+  report("group cancel during the handshake", &seen, EventKind.Cancelled[], asked);
+  expectUInt(tls.stats().handshakes - before.handshakes, 0u64, "no handshake finished");
+
+  // The OS's verifier on a lane of one thread, held by other work
+  match tls.Server.make(tls.ServerConfig.make(certs("server.pem").view(), certs("server.key").view())) {
+    case imm r Ok {
+      imm srv = r.value;
+      match drv.listenWith(&mut lp, SocketAddr.localhost(0u16), new So[TlsMaker](new TlsMaker(srv, pool)),
+          Sink.Here[tokServer]) {
+        case imm l Ok {
+          match drv.localAddr(&lp, l.value) {
+            case imm a Ok {silentPort = a.value.port();}
+            case imm e Error {}
+          }
+        }
+        case imm e Error {}
+      }
+    }
+    case imm e Error {printStr(e.value.message().view());}
+  }
+  imm lane = addLane(new LaneConfig(name: "test verify", maxThreads: 1u32, queueBound: 16u32));
+  mut platform = tls.ClientConfig.make();
+  platform.offline = true;
+  platform.verifyLane = lane;
+  imm platformClient = mustClient(platform);
+
+  // A deadline while the verification waits for the lane
+  lp.submit(Op.Call[lane, &holdWork, 400u64, IoBuf.empty()], Target.Here[tokBlock]);
+  imm v0 = tls.stats().verifications;
+  c = drv.connectWith(&mut lp, "127.0.0.1", silentPort, new So[tls.Stream](platformClient.stream("localhost", pool)),
+    Sink.Here[tokConn]);
+  asked = Instant.now();
+  drv.requestBy(&mut lp, c, RequestHead.get("/", "localhost"), BodyLength.empty(), Sink.Here[tokReq],
+    asked + Duration.fromMillis(150i64));
+  settle(&mut drv, &mut lp, &mut seen, &mut events, 4u64, 4u64);
+  report("deadline during the OS's verification", &seen, EventKind.TimedOut[], asked);
+  expectUInt(tls.stats().verifications - v0, 1u64, "...which had been handed to the pool");
+  idle(&mut drv, &mut lp, &mut seen, &mut events, 400i64);
+  expectUInt(lane.stats().cancelled, 1u64, "the queued verification was taken out of the lane");
+
+  // A cancel while the verification waits for the lane
+  lp.submit(Op.Call[lane, &holdWork, 400u64, IoBuf.empty()], Target.Here[tokBlock]);
+  c = drv.connectWith(&mut lp, "127.0.0.1", silentPort, new So[tls.Stream](platformClient.stream("localhost", pool)),
+    Sink.Here[tokConn]);
+  imm r5 = drv.request(&mut lp, c, RequestHead.get("/", "localhost"), BodyLength.empty(), Sink.Here[tokReq]);
+  imm giveUp = Instant.now() + Duration.fromSeconds(5i64);
+  while tls.stats().verifications - v0 < 2u64 and Instant.now() < giveUp {step(&mut drv, &mut lp, &mut seen, &mut events);}
+  requireUInt(tls.stats().verifications - v0, 2u64, "the verification is handed to the pool");
+  asked = Instant.now();
+  drv.cancel(&mut lp, r5);
+  settle(&mut drv, &mut lp, &mut seen, &mut events, 5u64, 5u64);
+  report("cancel during the OS's verification", &seen, EventKind.Cancelled[], asked);
+  idle(&mut drv, &mut lp, &mut seen, &mut events, 400i64);
+  expectUInt(lane.stats().cancelled, 2u64, "...taken out of the lane too");
+
+  expectUInt(seen.clean, 0u64, "each connection was reset, none closed cleanly");
+  expectUInt(tls.stats().handshakes - before.handshakes, 0u64, "still no handshake finished");
+  imm giveUp2 = Instant.now() + Duration.fromSeconds(5i64);
+  while drv.live() > 0u32 and Instant.now() < giveUp2 {step(&mut drv, &mut lp, &mut seen, &mut events);}
+  expectUInt(u64.from(drv.live()), 0u64, "no connection left");
+  drv.abortAll(&mut lp);
+  expectUInt(pool.stats().lent, 0u64, "every buffer back in the pool");
+  done();
+}
+
+fn readText(name &[]u8) String {
+  mut out = String.empty();
+  match fs.readFile(certs(name).view()) {
+    case mut r Ok {out <=> r.value;}
+    case imm e Error {}
+  }
+  out;
+}
+
+fn mustClient(cfg tls.ClientConfig) tls.Client {
+  match tls.Client.make(cfg) {
+    case imm r Ok {
+      imm c = r.value;
+      return c;
+    }
+    case imm e Error {printStr(e.value.message().view());}
+  }
+  panic("no client");
+}

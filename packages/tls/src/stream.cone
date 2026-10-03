@@ -1,0 +1,156 @@
+// Stream: a Session with buffers, in the shape of httpconn's Layer (see the
+// package's header, STREAMS). The wire's bytes come in as IoBufs and go into
+// the session; what the session has to send comes out in buffers taken from
+// the pool; the protocol's plaintext goes in as IoBufs and, decrypted, comes
+// out in buffers of up to one record's plaintext (16 KiB).
+
+const recordPlain = 16384usize;       // the most plaintext one record carries
+const wireBound = 1048576usize;       // ciphertext held unread, at most, before receiving stops
+const sendChunk = 65536usize;         // the most one wire buffer carries
+
+// A TLS session as a byte-stream layer
+pub struct Stream is Move {
+  s Session;
+  pool Pool;
+  waiting Chain;        // the protocol's bytes, until the handshake is done
+  closeAsked Bool;
+
+  pub fn make(s Session, pool Pool) Stream {
+    new Stream(s: s, pool: pool, waiting: Chain.make(0xFFFFFFFFFFFFFFFFusize), closeAsked: false);
+  }
+
+  // Its session: its info, its error
+  pub fn session(self &) &Session {&s;}
+
+  // Bytes that came off the socket; an empty buffer is the peer's FIN
+  pub fn wireIn(self &mut, buf IoBuf, now Instant) {
+    if buf.len() == 0usize {
+      s.feedEnd();
+    } else {
+      s.feed(buf.view());
+    }
+    self.flushWaiting();
+  }
+
+  // The next bytes for the socket, moved out; empty when there are none
+  pub fn wireOut(self &mut, now Instant) IoBuf {
+    self.flushWaiting();
+    imm n = s.pending();
+    if n == 0usize {return IoBuf.empty();}
+    mut b = IoBuf.empty();
+    match pool.take(if n < sendChunk {n;} else {sendChunk;}) {
+      case mut t Some {b <=> t.value;}
+      case is None[IoBuf] {}
+    }
+    if b.capacity() == 0usize {return b;}
+    imm got = s.transmit(b.spare());
+    b.setLen(got);
+    b;
+  }
+
+  // How many more wire bytes it will take now
+  pub fn wireRoom(self &) usize {
+    imm held = BIO_ctrl_pending(s.rbio);
+    if held >= wireBound {0usize;} else {wireBound - held;}
+  }
+
+  // The protocol's bytes to send: protected at once when the session is
+  // open, else kept until it is
+  pub fn plainIn(self &mut, buf IoBuf) {
+    if buf.len() == 0usize {return;}
+    if s.isOpen() and waiting.len() == 0usize and not s.closed() {
+      s.write(buf.view());
+      return;
+    }
+    waiting.push(buf);
+  }
+
+  // The next of the protocol's bytes that came, moved out; empty when none
+  pub fn plainOut(self &mut) IoBuf {
+    if not s.canRead() {return IoBuf.empty();}
+    mut b = IoBuf.empty();
+    match pool.take(recordPlain) {
+      case mut t Some {b <=> t.value;}
+      case is None[IoBuf] {}
+    }
+    if b.capacity() == 0usize {return b;}
+    imm got = s.read(b.spare());
+    if got == 0usize {return IoBuf.empty();}
+    b.setLen(got);
+    b;
+  }
+
+  // Bytes it holds that are ready to go out on the wire. The protocol's
+  // bytes waiting for the handshake are not among them: a connection given
+  // up before its handshake ends need not wait for them
+  pub fn pending(self &) usize {s.pending();}
+
+  // Whether the protocol's bytes flow: the handshake is done
+  pub fn isOpen(self &) Bool {s.isOpen();}
+
+  // Whether the peer's stream has ended and every byte of it was taken
+  pub fn peerEnded(self &) Bool {s.peerEnded();}
+
+  // No more of the protocol's bytes will be sent: close_notify, once what
+  // waits has gone into the session
+  pub fn closeSend(self &mut) {
+    closeAsked = true;
+    self.flushWaiting();
+    if not s.isOpen() {s.close();}
+  }
+
+  // Whether it has failed: reported once what it had to send (an alert)
+  // has gone out
+  pub fn failed(self &) Bool {s.isFailed() and s.pending() == 0usize;}
+
+  // Windows' error number when the OS gave the reason, else 0
+  pub fn failureCode(self &) u32 {s.error().osError;}
+
+  // Why it failed, in words: its kind, and its detail unless the reason is
+  // Windows' error, whose number and text the driver adds itself
+  pub fn failureText(self &) String {
+    imm e = s.error();
+    mut out = String.from(errorName(e.kind));
+    if e.osError == 0u32 {
+      out.append(": ");
+      out.append(e.detail.view());
+    }
+    out;
+  }
+
+  // What it negotiated, for diagnostics: its info's text, once the
+  // handshake is done ('handshaking' before; its error once it has failed)
+  pub fn describe(self &) String {
+    if s.isOpen() or (s.peerEnded() and not s.isFailed() and not s.isHandshaking()) {return s.info().text();}
+    if s.isFailed() {return s.error().message();}
+    String.from("handshaking");
+  }
+
+  // Whether it has work for the blocking pool: the OS's verifier
+  pub fn wantsCall(self &) Bool {s.wantsVerify();}
+
+  // That work, as a pool operation
+  pub fn takeCall(self &mut) Op {s.verifyOp(&pool);}
+
+  // Its answer
+  pub fn callDone(self &mut, c &mut Completion, now Instant) {
+    s.verifyDone(c);
+    self.flushWaiting();
+  }
+
+  // What waited for the handshake goes in once it is done; then
+  // close_notify, if it was asked for
+  fn flushWaiting(self &mut) {
+    if not s.isOpen() {return;}
+    while waiting.len() > 0usize {
+      mut b = IoBuf.empty();
+      match waiting.popFront() {
+        case mut t Some {b <=> t.value;}
+        case is None[IoBuf] {}
+      }
+      if b.len() == 0usize {break;}
+      s.write(b.view());
+    }
+    if closeAsked {s.close();}
+  }
+}

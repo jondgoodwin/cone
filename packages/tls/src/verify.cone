@@ -1,0 +1,243 @@
+// The verifiers' halves that are not the session's: the callback OpenSSL
+// makes when the server's chain has come, and the operating system's
+// verifier, which runs on the blocking pool (see the package's header,
+// VERIFIERS).
+//
+// The OS's verifier is a plain function of a buffer, so it can run on any
+// thread and touches nothing of the session's: the buffer holds the name
+// asked for and the chain the server sent, and comes back holding the
+// verdict. The job's layout, each number four bytes, little-endian:
+//
+//   name length, name bytes, certificate count, then for each certificate
+//   its length and its DER bytes, the server's own first
+//
+// and the answer, Done[4]: the four bytes of Windows' error (0: trusted).
+
+// OpenSSL calls this when the server's chain has come, in place of its own
+// check (SSL_CTX_set_cert_verify_callback). It reads the session's verdict
+// from the SSL object's slot 0; while there is none, it stops the handshake
+// (SSL_set_retry_verify) for the session to find one
+fn @c("coneTlsVerifyChain") verifyChain(store *u8, arg *u8) i32 {
+  imm ssl = X509_STORE_CTX_get_ex_data(store, SSL_get_ex_data_X509_STORE_CTX_idx());
+  if ssl as usize == 0usize {return 0i32;}
+  imm v = SSL_get_ex_data(ssl, 0i32) as usize;
+  if v == verdictTrusted {return 1i32;}
+  if v == verdictRefused {
+    X509_STORE_CTX_set_error(store, x509ApplicationVerification);
+    return 0i32;
+  }
+  if SSL_ctrl(ssl, ctrlSetRetryVerify, 0i32, null) > 0i32 {1i32;} else {0i32;}
+}
+
+// The OS's verifier as pool work: the job in buf, its verdict back in it.
+// arg 1: offline, fetching nothing
+pub fn verifyWork(arg u64, buf &mut IoBuf) Outcome {
+  imm code = osVerify(buf.view(), arg == 1u64);
+  buf.clear();
+  mut c = code;
+  buf.append(mem.sliceFromParts(&mut c as *u8, 4usize));
+  Outcome.Done[4usize];
+}
+
+// A job that could not be given its buffer
+fn refusedWork(arg u64, buf &mut IoBuf) Outcome {Outcome.Failed[8u32];}     // ERROR_NOT_ENOUGH_MEMORY
+
+// ---------------------------------------------------------------------------
+// crypt32: the chain engine and the SSL policy
+// ---------------------------------------------------------------------------
+
+// CERT_ENHKEY_USAGE
+struct EnhKeyUsage {
+  count u32;
+  ids **u8;
+}
+
+// CERT_USAGE_MATCH
+struct UsageMatch {
+  kind u32;
+  usage EnhKeyUsage;
+}
+
+// CERT_CHAIN_PARA with its extra fields (96 bytes, as cl.exe lays it out)
+struct ChainPara {
+  size u32;
+  usage UsageMatch;
+  issuancePolicy UsageMatch;
+  urlTimeout u32;              // dwUrlRetrievalTimeout, milliseconds
+  checkFreshness i32;
+  freshness u32;
+  cacheResync *u8;
+  strongSign *u8;
+  strongSignFlags u32;
+}
+
+// CERT_CHAIN_POLICY_PARA
+struct PolicyPara {
+  size u32;
+  flags u32;
+  extra *u8;
+}
+
+// SSL_EXTRA_CERT_CHAIN_POLICY_PARA. Its first member is a union of two
+// DWORDs (cbStruct, cbSize), so one u32 stands for it
+struct SslPolicyPara {
+  size u32;
+  authType u32;
+  checks u32;
+  serverName *u16;
+}
+
+// CERT_CHAIN_POLICY_STATUS
+struct PolicyStatus {
+  size u32;
+  error u32;
+  chainIndex i32;
+  elementIndex i32;
+  extra *u8;
+}
+
+extern {
+  fn @c(system) CertOpenStore(provider usize, encoding u32, prov usize, flags u32, para *u8) *u8;
+  fn @c(system) CertCloseStore(store *u8, flags u32) i32;
+  fn @c(system) CertAddEncodedCertificateToStore(store *u8, encoding u32, der *u8, len u32,
+      disposition u32, out **u8) i32;
+  fn @c(system) CertGetCertificateChain(engine *u8, cert *u8, time *u8, extra *u8, para &ChainPara,
+      flags u32, reserved *u8, chain &mut *u8) i32;
+  fn @c(system) CertVerifyCertificateChainPolicy(oid usize, chain *u8, para &PolicyPara,
+      status &mut PolicyStatus) i32;
+  fn @c(system) CertFreeCertificateChain(chain *u8);
+  fn @c(system) CertFreeCertificateContext(cert *u8) i32;
+  fn @c(system) GetLastError() u32;
+}
+
+const storeProvMemory = 2usize;               // CERT_STORE_PROV_MEMORY
+const encodingX509 = 0x10001u32;              // X509_ASN_ENCODING | PKCS_7_ASN_ENCODING
+const storeAddAlways = 4u32;                  // CERT_STORE_ADD_ALWAYS
+const policySsl = 4usize;                     // CERT_CHAIN_POLICY_SSL
+const authTypeServer = 2u32;                  // AUTHTYPE_SERVER
+const chainRevocationEndCert = 0x10000000u32; // CERT_CHAIN_REVOCATION_CHECK_END_CERT
+const chainAccumulativeTimeout = 0x08000000u32;  // CERT_CHAIN_REVOCATION_ACCUMULATIVE_TIMEOUT
+const chainCacheOnly = 0x4u32;                // CERT_CHAIN_CACHE_ONLY_URL_RETRIEVAL
+const chainNoAutoRoots = 0x100u32;            // CERT_CHAIN_DISABLE_AUTH_ROOT_AUTO_UPDATE
+const policyIgnoreRevUnknown = 0xF00u32;      // CERT_CHAIN_POLICY_IGNORE_ALL_REV_UNKNOWN_FLAGS
+const urlTimeoutMs = 10000u32;                // every fetch of one check, together
+
+// Windows' errors for a certificate this package tells apart
+const certExpired = 0x800B0101u32;            // CERT_E_EXPIRED
+const certUntrustedRoot = 0x800B0109u32;      // CERT_E_UNTRUSTEDROOT
+const certChaining = 0x800B010Au32;           // CERT_E_CHAINING
+const certCnNoMatch = 0x800B010Fu32;          // CERT_E_CN_NO_MATCH
+const cryptRevoked = 0x80092010u32;           // CRYPT_E_REVOKED
+const trustNoSigner = 0x800B0100u32;          // TRUST_E_NOSIGNATURE
+const genericFailure = 0x80004005u32;         // E_FAIL
+
+// The OS's verdict on a job: 0 trusted, else Windows' error. It blocks
+// while the chain engine fetches, unless offline
+fn osVerify(job &[]u8, offline Bool) u32 {
+  if job.len < 8usize {return genericFailure;}
+  imm base = &job[0usize] as *u8;
+  imm hostLen = usize.from(readU32(base));
+  if 4usize + hostLen + 4usize > job.len {return genericFailure;}
+  // The name, in UTF-16 (a DNS name is ASCII), with its NUL
+  mut wide = List[u16].empty();
+  mut k = 0usize;
+  while k < hostLen {
+    wide.push(u16.from(job[4usize + k]));
+    k = k + 1usize;
+  }
+  wide.push(0u16);
+  mut at = 4usize + hostLen;
+  imm count = readU32(base + at);
+  at = at + 4usize;
+  if count == 0u32 {return trustNoSigner;}
+  imm store = CertOpenStore(storeProvMemory, 0u32, 0usize, 0u32, null);
+  if store as usize == 0usize {return GetLastError();}
+  mut leaf = null as *u8;
+  mut i = 0u32;
+  mut bad = false;
+  while i < count and not bad {
+    if at + 4usize > job.len {
+      bad = true;
+      break;
+    }
+    imm len = usize.from(readU32(base + at));
+    at = at + 4usize;
+    if at + len > job.len or len == 0usize {
+      bad = true;
+      break;
+    }
+    if i == 0u32 {
+      if CertAddEncodedCertificateToStore(store, encodingX509, base + at, u32.from(len), storeAddAlways,
+          &mut leaf as **u8) == 0i32 {bad = true;}
+    } else {
+      CertAddEncodedCertificateToStore(store, encodingX509, base + at, u32.from(len), storeAddAlways, null);
+    }
+    at = at + len;
+    i = i + 1u32;
+  }
+  if bad or leaf as usize == 0usize {
+    if leaf as usize != 0usize {CertFreeCertificateContext(leaf);}
+    CertCloseStore(store, 0u32);
+    return genericFailure;
+  }
+  // For a server: its certificate must allow server authentication
+  mut oid = &"1.3.6.1.5.5.7.3.1" as *u8;
+  imm none = new EnhKeyUsage(0u32, null);
+  imm para = new ChainPara(size: u32.from(mem.sizeof[ChainPara]()),
+    usage: new UsageMatch(0u32, new EnhKeyUsage(1u32, &mut oid as **u8)),
+    issuancePolicy: new UsageMatch(0u32, none), urlTimeout: urlTimeoutMs, checkFreshness: 0i32,
+    freshness: 0u32, cacheResync: null, strongSign: null, strongSignFlags: 0u32);
+  mut flags = chainRevocationEndCert | chainAccumulativeTimeout;
+  if offline {flags = flags | chainCacheOnly | chainNoAutoRoots;}
+  mut chain = null as *u8;
+  if CertGetCertificateChain(null, leaf, null, store, &para, flags, null, &mut chain) == 0i32 {
+    imm e = GetLastError();
+    CertFreeCertificateContext(leaf);
+    CertCloseStore(store, 0u32);
+    return if e == 0u32 {genericFailure;} else {e;};
+  }
+  mut ssl = new SslPolicyPara(u32.from(mem.sizeof[SslPolicyPara]()), authTypeServer, 0u32,
+    &mut (wide.viewMut())[0usize] as *u16);
+  imm pp = new PolicyPara(u32.from(mem.sizeof[PolicyPara]()), policyIgnoreRevUnknown, &mut ssl as *u8);
+  mut ps = new PolicyStatus(u32.from(mem.sizeof[PolicyStatus]()), 0u32, 0i32, 0i32, null);
+  mut code = 0u32;
+  if CertVerifyCertificateChainPolicy(policySsl, chain, &pp, &mut ps) == 0i32 {
+    code = GetLastError();
+    if code == 0u32 {code = genericFailure;}
+  } else {
+    code = ps.error;
+  }
+  CertFreeCertificateChain(chain);
+  CertFreeCertificateContext(leaf);
+  CertCloseStore(store, 0u32);
+  code;
+}
+
+fn readU32(p *u8) u32 {
+  u32.from(*p) | (u32.from(*(p + 1usize)) << 8u32) | (u32.from(*(p + 2usize)) << 16u32) |
+    (u32.from(*(p + 3usize)) << 24u32);
+}
+
+// A certificate the OS refused: its kind, and its words
+fn certError(code u32) TlsError {
+  mut k TlsErrorKind = TlsErrorKind.CertOther[];
+  if code == certExpired {k = TlsErrorKind.CertExpired[];}
+  elif code == certCnNoMatch {k = TlsErrorKind.CertNameMismatch[];}
+  elif code == certUntrustedRoot or code == certChaining {k = TlsErrorKind.CertUntrusted[];}
+  elif code == cryptRevoked {k = TlsErrorKind.CertRevoked[];}
+  mut e = osError(code, "");
+  e.kind = k;
+  e;
+}
+
+// Windows' error code as a TlsError: its text and its number
+fn osError(code u32, what &[]u8) TlsError {
+  mut d = String.from(what);
+  if d.len() > 0usize {d.append(": ");}
+  imm text = new IoError(code).message();
+  d.append(text.view());
+  d.append(" (Windows 0x");
+  d.appendHex(u64.from(code), 8usize);
+  d.append(")");
+  new TlsError(TlsErrorKind.CertOther[], code, code, d);
+}

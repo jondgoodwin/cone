@@ -420,7 +420,12 @@ packages/geomath/
    the registries, so a package in no registry can be tested where it stands,
    and a test reaches the copy being tested. Each test is built in
    `build/<mode>/tests/<name>/` and run there, with no arguments and no input,
-   for at most 60 seconds.
+   for at most 60 seconds. On Windows it runs as Congo's debuggee, so that a
+   crash, a panic's fail-fast above all, ends at once with the exit status
+   Windows would have given it, rather than being held by Windows Error
+   Reporting, which takes many seconds when many programs crash at once
+   (`congo.py`'s `Debuggee`; the `process` package's "A crash"). A test that
+   runs out of time shows what it wrote to stderr.
 3. **Compares** what the test printed with `tests/<name>.out`, line ends and
    trailing blank lines aside, and its exit status with 0, or with the number
    in `tests/<name>.exit` where there is one. A test that writes to stderr on

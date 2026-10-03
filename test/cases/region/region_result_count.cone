@@ -1,0 +1,76 @@
+// A counted reference handed out of a scope as a copy -- a function's value
+// or a 'return', a block's value -- is one more holder of it, unless what it
+// was read from is a variable of that scope handed over whole, which the
+// scope's release exempts instead. A field of a local, an element of one, a
+// field read through a borrowed 'self', and a variable of an enclosing scope
+// are each read and still held where they were, so the copy is counted, as
+// a copy into a variable is.
+//
+// Before, none of those copies was counted: the field of a local was handed
+// back uncounted and the local then released it, so the count reached zero
+// and the value was finalized while the caller held it; a field returned
+// through a borrowed 'self' was finalized when the copy died, while its
+// struct still held it.
+//
+// 'Tally' prints every count change: '+n' after an 'aliasRef', '-n' after a
+// 'dealiasRef', 'tfree' when the count reaches zero, and 'F<n>' is the counted
+// value's 'final'. Every line is worked out by hand.
+
+mod region_result_count;
+
+import stdio use *;
+import libc;
+
+struct Tally is RegionRef {
+  owners usize;
+  fn alloc(size usize) *u8 inline { malloc(size); }
+  fn init(self &new) inline { *self = new Tally(1usize); }
+  fn aliasRef(self &uni Tally) inline { owners = owners + 1usize; printStr("+"); printInt(i64.from(owners)); printStr(" "); }
+  fn dealiasRef(self &uni Tally) Bool inline { owners = owners - 1usize; printStr("-"); printInt(i64.from(owners)); printStr(" "); owners == 0usize; }
+  fn free(self &uni Tally) inline { printStr("tfree "); libc.free(self as *u8); }
+}
+
+struct Fin {
+  pub n i64;
+  fn final(self &uni) { printStr("F"); printInt(n); printStr(" "); }
+}
+
+struct Holder {
+  pub r Tally[mut, Fin];
+
+  fn get(self &) Tally[mut, Fin] { r; }
+}
+
+fn show(label &[]u8) { printStr(label); printStr(": "); }
+fn end() { printStr("|\n"); }
+fn got() { printStr("got "); }
+
+// A field of a local, as the function's value
+fn fieldValue() Tally[mut, Fin] { imm h = new Holder(new Tally[mut, Fin](1)); h.r; }
+// The same by 'return'
+fn fieldReturn() Tally[mut, Fin] { imm h = new Holder(new Tally[mut, Fin](2)); return h.r; }
+// An element of a local array
+fn elementValue() Tally[mut, Fin] { imm a = [new Tally[mut, Fin](3), new Tally[mut, Fin](4)]; a[1]; }
+// A local handed back whole: no count, the local's holder goes to the caller
+fn localWhole() Tally[mut, Fin] { imm r = new Tally[mut, Fin](5); r; }
+// A parameter handed back whole: the same
+fn paramWhole(r Tally[mut, Fin]) Tally[mut, Fin] { r; }
+
+fn main() i32 {
+  show("field-value"); { imm r = fieldValue(); got(); } end();
+  show("field-return"); { imm r = fieldReturn(); got(); } end();
+  show("element-value"); { imm r = elementValue(); got(); } end();
+  show("local-whole"); { imm r = localWhole(); got(); } end();
+  show("param-whole"); { imm r = paramWhole(new Tally[mut, Fin](6)); got(); } end();
+  show("borrowed-self"); {
+    imm h = new Holder(new Tally[mut, Fin](7));
+    { imm r = h.get(); got(); }
+    printStr("held ");
+  } end();
+  show("enclosing-block"); {
+    imm r = new Tally[mut, Fin](8);
+    imm y = { r; };
+    got();
+  } end();
+  0i32;
+}

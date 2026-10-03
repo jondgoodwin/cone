@@ -30,7 +30,7 @@
 //
 //   process.run(args, opts)       run args[0] with the rest as its arguments
 //   process.runLine(line, opts)   run a command line written out by hand
-//   process.Options               dir, timeout, inherit; each has a default
+//   process.Options               dir, timeout, inherit, crashReport; each has a default
 //   process.Output                exitCode, timedOut, stdout, stderr, success()
 //   process.ProcessError          op, program, dir, code, message(), notFound()
 //   process.commandLine(args)     the line 'run' hands Windows for args
@@ -73,6 +73,25 @@
 // be. A child that ends, though, while a program it started still holds its
 // output open has not finished writing: 'run' waits for that too, as Python's
 // does, which only a time limit cuts short.
+//
+// **A crash.** A child that crashes -- a Cone panic ends in a crash on
+// Windows, abort's fail-fast -- is handed by Windows to its crash reporting,
+// Windows Error Reporting, as any program's crash is. That holds the dying
+// child, and its executable locked, while it writes a report: a fifth of a
+// second on a quiet machine, and many seconds when many crash at once, since
+// one service handles them all. A test runner, whose children panic on
+// purpose, wants none of that: with 'crashReport: false' the child runs as
+// this program's debuggee, so its crash comes here first, and ends the
+// child at once, with the exit code Windows would have given it (the
+// exception's own code: 3221226505 for a panic), and nothing is reported.
+// Nothing else changes for it: the exceptions it handles itself are its
+// own, the programs it starts are no debugger's, and its heap is the one it
+// would have had (Windows gives a program started under a debugger its
+// checking debug heap, so its environment has _NO_DEBUG_HEAP=1 added, where
+// that is not set already). Neither a job object's
+// DIE_ON_UNHANDLED_EXCEPTION nor an error mode keeps a fail-fast from Windows
+// Error Reporting; a debugger is what does. No other debugger can attach to
+// such a child.
 //
 // **The environment.** The child inherits this program's environment as it
 // is when 'run' is called: set a variable with the env package first. There
@@ -120,7 +139,7 @@
 // Windows': it is what Go, Rust, Python, Zig and Odin each give. Its
 // insides are Windows only, said here as plainly as can be: written over
 // kernel32 (CreateProcessW, named pipes read with overlapped I/O, a job
-// object) and shell32's CommandLineToArgvW, with nothing of ISO C or POSIX
+// object, the debugging functions) and shell32's CommandLineToArgvW, with nothing of ISO C or POSIX
 // beneath it, since neither can start a program with its outputs apart, in a
 // folder, under a time limit. What changes on POSIX is the inside: fork and
 // exec (or posix_spawn) with pipes and poll, a process group stopped by a
@@ -183,6 +202,16 @@ struct Overlapped {
   pub hEvent usize;
 }
 
+// DEBUG_EVENT, its union read as words at its 8-byte alignment: an
+// exception's code is the low half of word 0, and dwFirstChance the low half
+// of word 19, after the 152-byte EXCEPTION_RECORD; a file handle is word 0
+struct DebugEvent {
+  pub code u32;
+  pub pid u32;
+  pub tid u32;
+  pub u Array[u64, 20];
+}
+
 extern {
   fn @c(system) CreateProcessW(app *u16, cmd *u16, pattr *u8, tattr *u8, inherit i32, flags u32,
       env *u8, cwd *u16, si &mut StartupInfoEx, pi &mut ProcessInformation) i32;
@@ -204,6 +233,11 @@ extern {
   fn @c(system) CreateJobObjectW(sa *u8, name *u16) usize;
   fn @c(system) AssignProcessToJobObject(job usize, h usize) i32;
   fn @c(system) TerminateJobObject(job usize, code u32) i32;
+  fn @c(system) WaitForDebugEvent(ev &mut DebugEvent, ms u32) i32;
+  fn @c(system) ContinueDebugEvent(pid u32, tid u32, status u32) i32;
+  fn @c(system) DebugActiveProcessStop(pid u32) i32;
+  fn @c(system) GetEnvironmentStringsW() *u16;
+  fn @c(system) FreeEnvironmentStringsW(block *u16) i32;
   fn @c(system) InitializeProcThreadAttributeList(list *u8, count u32, flags u32, size &mut usize) i32;
   fn @c(system) UpdateProcThreadAttribute(list *u8, flags u32, attribute usize, value *u8,
       size usize, previous *u8, returned *usize) i32;
@@ -252,6 +286,16 @@ const english = 0x409u32;                        // MAKELANGID(LANG_ENGLISH, SUB
 const utf8Page = 65001u32;                       // CP_UTF8
 const invalidUtf8Fails = 8u32;                   // MB_ERR_INVALID_CHARS
 const stoppedCode = 1u32;                        // the exit code a child stopped by a timeout gets
+const debugOnlyThisProcess = 0x2u32;             // DEBUG_ONLY_THIS_PROCESS
+const unicodeEnvironment = 0x400u32;             // CREATE_UNICODE_ENVIRONMENT
+const exceptionDebugEvent = 1u32;                // EXCEPTION_DEBUG_EVENT
+const createProcessDebugEvent = 3u32;            // CREATE_PROCESS_DEBUG_EVENT
+const exitProcessDebugEvent = 5u32;              // EXIT_PROCESS_DEBUG_EVENT
+const loadDllDebugEvent = 6u32;                  // LOAD_DLL_DEBUG_EVENT
+const dbgContinue = 0x00010002u32;               // DBG_CONTINUE
+const dbgNotHandled = 0x80010001u32;             // DBG_EXCEPTION_NOT_HANDLED
+const statusBreakpoint = 0x80000003u32;          // STATUS_BREAKPOINT
+const debugSlice = 10u32;                        // ms waited at a time, between a debuggee's events
 
 // Windows' error numbers the package gives or reads
 pub const errorFileNotFound = 2u32;              // ERROR_FILE_NOT_FOUND
@@ -478,6 +522,10 @@ pub struct Options {
   // Share this program's standard input, output and error rather than
   // reading from NUL and capturing what it writes
   pub inherit Bool = false;
+  // Let a crash, a panic's among them, go to the system's crash reporting,
+  // as any program's does; false ends it here at once, with the exit code
+  // the crash gives, and reports nothing (below, "A crash")
+  pub crashReport Bool = true;
 }
 
 // What a run gives back
@@ -667,6 +715,105 @@ fn stop(job usize, child usize) {
   TerminateProcess(child, stoppedCode);
 }
 
+// A child run as this program's debuggee ('crashReport: false'): its
+// process, the debug event being handled, whether the loader's breakpoint
+// has come, and whether it has exited
+struct Debuggee {
+  pub on Bool;
+  pub child usize;
+  pub seenBreakpoint Bool;
+  pub exited Bool;
+  pub ev DebugEvent;
+}
+
+// Handle the debuggee's events that come within ms milliseconds; whether it
+// has exited. Only the thread that started it may, and until one does, it
+// is stopped. A crash comes to a debugger as a second-chance exception,
+// before Windows' crash reporting would see it, and ends the child there
+// with the exception's code, the exit code Windows would have given it.
+// Everything else goes on as with no debugger: a first-chance exception to
+// the child's own handlers, the loader's breakpoint aside
+fn pump(d &mut Debuggee, ms u32) Bool {
+  mut within = ms;
+  while not d.exited and WaitForDebugEvent(&mut d.ev, within) != 0i32 {
+    within = 0u32;
+    mut status = dbgContinue;
+    if d.ev.code == exceptionDebugEvent {
+      imm code = u32.from(d.ev.u[0usize]);
+      imm firstChance = u32.from(d.ev.u[19usize]) != 0u32;
+      if firstChance and code == statusBreakpoint and not d.seenBreakpoint {
+        d.seenBreakpoint = true;
+      }
+      elif firstChance {
+        status = dbgNotHandled;
+      }
+      elif TerminateProcess(d.child, code) == 0i32 {
+        status = dbgNotHandled;
+      }
+    }
+    elif d.ev.code == createProcessDebugEvent or d.ev.code == loadDllDebugEvent {
+      // The image's file, the debugger's to close
+      closeIf(usize.from(d.ev.u[0usize]));
+    }
+    elif d.ev.code == exitProcessDebugEvent {
+      d.exited = true;
+    }
+    ContinueDebugEvent(d.ev.pid, d.ev.tid, status);
+  }
+  d.exited;
+}
+
+// The environment a debuggee is started with: this program's, with
+// _NO_DEBUG_HEAP=1 added where it is not set, since Windows gives a program
+// started under a debugger its checking debug heap otherwise, and a program
+// that runs clean on its usual heap can end in STATUS_HEAP_CORRUPTION on
+// that one. A block for CreateProcessW, from malloc, or null for this
+// program's own
+fn debuggeeEnvironment() *u16 {
+  imm block = GetEnvironmentStringsW();
+  if block as usize == 0usize { return null; }
+  imm name &[]u8 = "_NO_DEBUG_HEAP=";
+  mut found = false;
+  // Each string, to the empty one that ends the block
+  mut i = 0usize;
+  while *(block + i) != 0u16 {
+    mut j = 0usize;
+    while j < name.len and *(block + i + j) == u16.from(name[j]) { j = j + 1usize; }
+    if j == name.len { found = true; }
+    while *(block + i) != 0u16 { i = i + 1usize; }
+    i = i + 1usize;
+  }
+  imm added &[]u8 = "_NO_DEBUG_HEAP=1";
+  mut extra = 0usize;
+  if not found { extra = added.len + 1usize; }
+  imm out = libc.malloc((i + extra + 1usize) * 2usize) as *u16;
+  mut k = 0usize;
+  while k < i {
+    *(out + k) = *(block + k);
+    k = k + 1usize;
+  }
+  if not found {
+    mut m = 0usize;
+    while m < added.len {
+      *(out + k) = u16.from(added[m]);
+      k = k + 1usize;
+      m = m + 1usize;
+    }
+    *(out + k) = 0u16;
+    k = k + 1usize;
+  }
+  *(out + k) = 0u16;
+  FreeEnvironmentStringsW(block);
+  out;
+}
+
+// How long to wait for a stream or the child: until the deadline, or a
+// slice of it when there are a debuggee's events to handle between
+fn waitFor(timed Bool, deadline time.Instant, debugging Bool) u32 {
+  imm left = remaining(timed, deadline);
+  if debugging and left > debugSlice {debugSlice;} else {left;};
+}
+
 // Start line, read what it writes, wait for it
 fn start(op &[]u8, program &[]u8, line &[]u8, opts Options) Result[Output, ProcessError] {
   imm wline = widen(line);
@@ -738,14 +885,21 @@ fn start(op &[]u8, program &[]u8, line &[]u8, opts Options) Result[Output, Proce
       childIn, childOut, childErr, list);
     mut flags = extendedStartupInfo;
     if timed { flags = flags | createSuspended; }
+    mut environment *u16 = null;
+    if not opts.crashReport {
+      flags = flags | debugOnlyThisProcess;
+      environment = debuggeeEnvironment();
+      if environment as usize != 0usize { flags = flags | unicodeEnvironment; }
+    }
     // A console program started from a program with no console would open a
     // window of its own
     if GetConsoleWindow() == 0usize { flags = flags | createNoWindow; }
     if CreateProcessW(null, wline, null, null, 1i32, flags,
-        null, wdir, &mut si, &mut pi) == 0i32 {
+        environment as *u8, wdir, &mut si, &mut pi) == 0i32 {
       failed = true;
       code = GetLastError();
     }
+    if environment as usize != 0usize { libc.free(environment as *u8); }
     DeleteProcThreadAttributeList(list);
   }
   libc.free(list);
@@ -777,6 +931,10 @@ fn start(op &[]u8, program &[]u8, line &[]u8, opts Options) Result[Output, Proce
     ResumeThread(pi.hThread);
   }
 
+  // Run as this program's debuggee, its events are handled while it runs
+  mut dbg = new Debuggee(not opts.crashReport, pi.hProcess, false, false,
+    new DebugEvent(0u32, 0u32, 0u32, new Array[u64, 20] <- fill 0u64));
+
   // Both outputs at once, so that a child blocked writing one is never
   // waiting on a reader blocked on the other
   mut timedOut = false;
@@ -785,6 +943,7 @@ fn start(op &[]u8, program &[]u8, line &[]u8, opts Options) Result[Output, Proce
   mut events = new Array[usize, 2] <- fill 0usize;
   imm ep *usize = &[]events;
   while so.active or se.active {
+    if dbg.on { pump(&mut dbg, 0u32); }
     mut n = 0u32;
     if so.active {
       events[0usize] = so.ov.hEvent;
@@ -794,8 +953,17 @@ fn start(op &[]u8, program &[]u8, line &[]u8, opts Options) Result[Output, Proce
       events[usize.from(n)] = se.ov.hEvent;
       n = n + 1u32;
     }
-    imm r = WaitForMultipleObjects(n, ep, 0i32, remaining(timed, deadline));
-    if r == waitTimeout {
+    // A debuggee is stopped at each of its events until it is handled, so
+    // with one the wait is for its events, which end it at once, and the
+    // outputs are only looked at, not waited for
+    mut within = remaining(timed, deadline);
+    if dbg.on { within = 0u32; }
+    imm r = WaitForMultipleObjects(n, ep, 0i32, within);
+    if r == waitTimeout and dbg.on and not (timed and remaining(timed, deadline) == 0u32) {
+      // Nothing read: wait for its next event, for a slice at most
+      pump(&mut dbg, waitFor(timed, deadline, true));
+    }
+    elif r == waitTimeout {
       timedOut = true;
       stop(job, pi.hProcess);
       cancel(&mut so);
@@ -814,7 +982,21 @@ fn start(op &[]u8, program &[]u8, line &[]u8, opts Options) Result[Output, Proce
     }
   }
 
-  if not timedOut and WaitForSingleObject(pi.hProcess, remaining(timed, deadline)) == waitTimeout {
+  if dbg.on {
+    // Its events until it exits, or its time runs out
+    while not pump(&mut dbg, waitFor(timed, deadline, true)) and not timedOut {
+      if timed and remaining(timed, deadline) == 0u32 {
+        timedOut = true;
+        stop(job, pi.hProcess);
+      }
+    }
+    // Stopped, it still has its last events to give: for up to ten seconds,
+    // and then it is let go
+    mut waits = 0u32;
+    while not pump(&mut dbg, 50u32) and waits < 200u32 { waits = waits + 1u32; }
+    if not dbg.exited { DebugActiveProcessStop(pi.dwProcessId); }
+  }
+  elif not timedOut and WaitForSingleObject(pi.hProcess, remaining(timed, deadline)) == waitTimeout {
     timedOut = true;
     stop(job, pi.hProcess);
   }
