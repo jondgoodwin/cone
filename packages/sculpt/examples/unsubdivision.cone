@@ -1,0 +1,302 @@
+// unsubdivision: un-subdivide on a subdivided cube and on a voxel-remeshed
+// torus, drawn offscreen by render with each mesh's edges over it. Nothing
+// here is in a library: the shapes are this file's.
+//
+// - Back row: the unit cube subdivided three times (384 quads), then
+//   un-subdivided once, twice and three times: 96, 24 and the cage's 6 faces,
+//   each the cage's subdivision's connectivity again. The kept vertices keep
+//   their places, so the shape stays the rounded level-3 one and its
+//   corners stay where level 3 put them: un-subdivide undoes the
+//   connectivity, not the smoothing.
+// - Front row: a torus voxel-remeshed at 0.05 (2,128 of surface nets' quads,
+//   a regular grid only in patches), then un-subdivided once (1,975 faces)
+//   and twice (1,885): the patches that are grids halve, the faces round
+//   each irregular vertex stay as they were, and each iteration says how
+//   many it left (1,922 of 2,128, then 1,854 of 1,975).
+// - The timing: the cube subdivided seven times (98,304 quads) un-subdivided
+//   once and all seven times; a torus lathed 224 x 224 (50,176 quads,
+//   100,352 triangles) un-subdivided once and five times.
+//
+//   congo run --release packages/sculpt/examples/unsubdivision.cone
+//   congo run --release packages/sculpt/examples/unsubdivision.cone -- --shots DIR/unsub --obj DIR/unsub
+//
+// '--shots PREFIX' (default 'unsubdivision') writes PREFIX-row.bmp (the seven
+// meshes) and PREFIX-close.bmp (the remeshed torus and its first
+// un-subdivision close) at 1920 x 1080, then exits; '--obj PREFIX' writes the
+// seven meshes as .obj. It prints each mesh's counts and meshHash and each
+// line reported, and exits 0 only if the hashes are the pinned ones, the
+// lines reported are the expected ones, every shot was written, no Vulkan
+// call failed and the validation layer said nothing.
+//
+// It needs a GPU driver with Vulkan 1.3 and SDL3.lib on LIB to link (Congo
+// copies SDL3.dll from beside it to beside the program); no window and no
+// display.
+
+mod unsubdivision;
+
+import stdio use *;
+import libc;
+import sdl;
+import collections use *;
+import geomath use *;
+import mesh use PolyMesh;
+import sculpt use *;
+import gpu use *;
+import render use *;
+
+const WIDTH = 1920u32;
+const HEIGHT = 1080u32;
+const MESHES = 7usize;
+// Each mesh's meshHash (its flat triangulation)
+imm PINNED Array[u32, 7] = [0x936b3497u32, 0x69ce40acu32, 0x2d0aa5b2u32, 0xb1f295c5u32, 0x9d6ff93eu32,
+  0x72e79f0fu32, 0x103d66f7u32];
+imm NAMES Array[&[]u8, 7] = ["cube-l3", "cube-back1", "cube-back2", "cube-back3", "torus-remeshed",
+  "torus-back1", "torus-back2"];
+// The lines the torus's two un-subdivisions report: faces left, one an iteration
+const EXPECTED_LINES = 3usize;
+
+fn v(x f32, y f32, z f32) Vec3 { new Vec3(x, y, z); }
+fn up() Vec3 { v(0., 1., 0.); }
+
+fn seconds(from u64) f64 { f64.from(sdl.GetPerformanceCounter() - from) / f64.from(sdl.GetPerformanceFrequency()); }
+
+fn torus(major f32, minor f32, around u32, steps u32) PolyMesh {
+  mut pts = List[Vec2].empty();
+  mut i = 0u32;
+  while i < around {
+    imm a = 2. * pi * f32.from(i) / f32.from(around);
+    pts.push(new Vec2(major + minor * cos(a), minor * sin(a)));
+    i = i + 1u32;
+  }
+  imm prof = Profile.fromPoints(pts.view(), true);
+  lathe(&prof, up(), 2. * pi, steps);
+}
+
+fn cstrEquals(a *u8, b &[]u8) Bool {
+  mut i = 0usize;
+  while i < b.len {
+    if *(a + i) != b[i] { return false; }
+    i = i + 1usize;
+  }
+  *(a + b.len) == 0u8;
+}
+
+fn appendCstr(s &mut String, c *u8) {
+  mut i = 0usize;
+  while *(c + i) != 0u8 {
+    s.appendByte(*(c + i));
+    i = i + 1usize;
+  }
+}
+
+fn named(prefix &String, suffix &[]u8) String {
+  mut s = prefix.copy();
+  s <- suffix;
+  s;
+}
+
+fn euler(m &PolyMesh) i64 {
+  i64.from(m.vertexCount()) - i64.from(m.edgeCount()) + i64.from(m.faceCount());
+}
+
+// One mesh's counts and hash against the pinned one; its flat
+// triangulation, written as .obj if asked
+fn report(pm &PolyMesh, k usize, objPrefix &String) Bool {
+  imm m = pm.triangulate(false);
+  imm h = mesh.meshHash(&m);
+  printStr(NAMES[k]); print <- ": "; print <- pm.vertexCount(); print <- " vertices, "; print <- pm.edgeCount();
+  print <- " edges, "; print <- pm.faceCount(); print <- " faces, characteristic "; print <- euler(pm);
+  print <- "; hash ";
+  mut hex = String.empty();
+  hex.appendHex(u64.from(h), 8usize);
+  printStr(hex.view());
+  mut ok = h == PINNED[k];
+  imm bad = pm.validate();
+  if bad.len() > 0usize { print <- " NOT VALID"; ok = false; }
+  if ok { print <- " (as pinned)\n"; } else { print <- " (NOT as pinned)\n"; }
+  if objPrefix.len() > 0usize {
+    mut name = objPrefix.copy();
+    name <- "-";
+    name <- NAMES[k];
+    name <- ".obj";
+    if !mesh.writeObj(&m, name.view()) { print <- "Could NOT write "; printStr(name.view()); print <- "\n"; ok = false; }
+  }
+  ok;
+}
+
+fn said(problems &List[String]) {
+  mut i = 0usize;
+  while i < problems.len() {
+    print <- "  reported: "; printStr(problems[i].view()); print <- "\n";
+    i = i + 1usize;
+  }
+}
+
+fn main(argc i32, argv **u8) i32 {
+  mut shots = String.empty();
+  shots <- "unsubdivision";
+  mut objPrefix = String.empty();
+  mut a = 1;
+  while a + 1 < argc {
+    imm arg = *(argv + usize.from(a));
+    if cstrEquals(arg, "--shots") { shots = String.empty(); appendCstr(&mut shots, *(argv + usize.from(a + 1))); }
+    elif cstrEquals(arg, "--obj") { appendCstr(&mut objPrefix, *(argv + usize.from(a + 1))); }
+    else { print <- "Unknown argument; use --shots PREFIX and --obj PREFIX\n"; return 2; }
+    a = a + 2;
+  }
+
+  // The meshes
+  mut ok = true;
+  mut problems = List[String].empty();
+  imm cube = PolyMesh.cube(0.5);
+  imm l3 = subdivide(&cube, 3u32);
+  imm back1 = unsubdivide(&l3, 1u32, &mut problems);
+  imm back2 = unsubdivide(&l3, 2u32, &mut problems);
+  imm back3 = unsubdivide(&l3, 3u32, &mut problems);
+  imm ring = torus(0.5, 0.2, 24u32, 48u32);
+  imm remeshed = voxelRemesh(&ring, 0.05, &mut problems);
+  imm rback1 = unsubdivide(&remeshed, 1u32, &mut problems);
+  imm rback2 = unsubdivide(&remeshed, 2u32, &mut problems);
+  mut meshes = List[PolyMesh].empty();
+  meshes.push(l3);
+  meshes.push(back1);
+  meshes.push(back2);
+  meshes.push(back3);
+  meshes.push(remeshed);
+  meshes.push(rback1);
+  meshes.push(rback2);
+  said(&problems);
+  if problems.len() != EXPECTED_LINES {
+    print <- "Expected "; print <- EXPECTED_LINES; print <- " lines reported\n";
+    ok = false;
+  }
+  mut k = 0usize;
+  while k < MESHES {
+    ok = report(meshes[k], k, &objPrefix) and ok;
+    k = k + 1usize;
+  }
+
+  // The timing: about 100,000 faces
+  mut p = List[String].empty();
+  imm big = subdivide(&cube, 7u32);
+  print <- "cube level 7: "; print <- big.faceCount(); print <- " faces\n";
+  mut started = sdl.GetPerformanceCounter();
+  imm b1 = unsubdivide(&big, 1u32, &mut p);
+  print <- "  once: "; print <- b1.faceCount(); print <- " faces in "; print <- seconds(started); print <- " s\n";
+  started = sdl.GetPerformanceCounter();
+  imm b7 = unsubdivide(&big, 7u32, &mut p);
+  print <- "  seven times: "; print <- b7.faceCount(); print <- " faces in "; print <- seconds(started); print <- " s\n";
+  imm lathed = torus(1., 0.35, 224u32, 224u32);
+  print <- "torus: "; print <- lathed.faceCount(); print <- " faces\n";
+  started = sdl.GetPerformanceCounter();
+  imm t1 = unsubdivide(&lathed, 1u32, &mut p);
+  print <- "  once: "; print <- t1.faceCount(); print <- " faces in "; print <- seconds(started); print <- " s\n";
+  started = sdl.GetPerformanceCounter();
+  imm t5 = unsubdivide(&lathed, 5u32, &mut p);
+  print <- "  five times: "; print <- t5.faceCount(); print <- " faces in "; print <- seconds(started); print <- " s\n";
+  said(&p);
+  if p.len() != 0usize { ok = false; }
+
+  // The GPU, no window
+  mut instance = Instance.create("unsubdivision");
+  mut none = Surface.none();
+  mut adapter = instance.requestAdapter(&none, POWER_PREFERENCE_HIGH_PERFORMANCE);
+  if !instance.isValid() or !adapter.isValid() {
+    print <- "No GPU can draw\n";
+    return 1;
+  }
+  print <- "Adapter: "; printStr(adapter.name.view());
+  if instance.validation { print <- "; validation on\n"; } else { print <- "; validation off\n"; }
+  mut device = adapter.requestDevice();
+  mut renderer = Renderer.create(&mut device, TEXTURE_FORMAT_RGBA16_FLOAT, TEXTURE_FORMAT_DEPTH32_FLOAT);
+  mut sky = Sky.dusk(radians(35.), radians(320.));
+  sky.zenith = new Color(0.10, 0.18, 0.40, 1.);
+  sky.horizon = new Color(0.45, 0.50, 0.58, 1.);
+  sky.ground = new Color(0.10, 0.10, 0.10, 1.);
+  renderer.setSky(&mut device, &sky);
+  imm light = sky.sunLight(new Color(3., 2.9, 2.7, 1.), new Color(0.25, 0.27, 0.32, 1.));
+
+  imm clay = PbrMaterial.standard(new Color(0.72, 0.52, 0.40, 1.), 0., 0.6);
+  imm clayM = renderer.addPbrMaterial(&mut device, &clay);
+  imm stone = PbrMaterial.standard(new Color(0.55, 0.56, 0.60, 1.), 0., 0.5);
+  imm stoneM = renderer.addPbrMaterial(&mut device, &stone);
+  imm floor = PbrMaterial.standard(new Color(0.20, 0.20, 0.22, 1.), 0., 0.9);
+  imm floorM = renderer.addPbrMaterial(&mut device, &floor);
+  imm groundMesh = mesh.Mesh.plane(1, 1.);
+  imm ground = renderer.addMesh(&mut device, &groundMesh);
+  imm wireColor = new Color(0.02, 0.02, 0.02, 1.);
+  mut list = DrawList.empty();
+  list.add(ground, floorM, Mat4.fromTrs(v(0., 0., 0.), Quat.identity(), v(12., 1., 12.)));
+  mut close = DrawList.empty();
+  close.add(ground, floorM, Mat4.fromTrs(v(0., 0., 0.), Quat.identity(), v(12., 1., 12.)));
+  imm turn = Quat.angleAxis(0.6, up());
+  imm tilt = Quat.angleAxis(0.6, v(1., 0., 0.));
+  mut places = List[Mat4].empty();
+  places.push(Mat4.fromTrs(v(-3.3, 0.55, -1.3), turn, v(1.3, 1.3, 1.3)));
+  places.push(Mat4.fromTrs(v(-1.1, 0.55, -1.3), turn, v(1.3, 1.3, 1.3)));
+  places.push(Mat4.fromTrs(v(1.1, 0.55, -1.3), turn, v(1.3, 1.3, 1.3)));
+  places.push(Mat4.fromTrs(v(3.3, 0.55, -1.3), turn, v(1.3, 1.3, 1.3)));
+  places.push(Mat4.fromTrs(v(-2.4, 0.4, 1.5), tilt, v(1., 1., 1.)));
+  places.push(Mat4.fromTrs(v(0., 0.4, 1.5), tilt, v(1., 1., 1.)));
+  places.push(Mat4.fromTrs(v(2.4, 0.4, 1.5), tilt, v(1., 1., 1.)));
+  mut closePlaces = List[Mat4].empty();
+  closePlaces.push(Mat4.fromTrs(v(-0.95, 0.6, 0.), tilt, v(1.25, 1.25, 1.25)));
+  closePlaces.push(Mat4.fromTrs(v(0.95, 0.6, 0.), tilt, v(1.25, 1.25, 1.25)));
+  k = 0usize;
+  while k < MESHES {
+    imm tri = meshes[k].triangulate(false);
+    imm hm = renderer.addMesh(&mut device, &tri);
+    imm edges = polyEdges(meshes[k]);
+    imm hw = renderer.addLines(&mut device, meshes[k].positions.view(), edges.view());
+    imm mat = if k < 4usize {clayM;} else {stoneM;};
+    list.add(hm, mat, *places[k]);
+    list.addLines(hw, *places[k], wireColor);
+    if k == 4usize or k == 5usize {
+      close.add(hm, mat, *closePlaces[k - 4usize]);
+      close.addLines(hw, *closePlaces[k - 4usize], wireColor);
+    }
+    k = k + 1usize;
+  }
+
+  imm targetDesc = new TextureDescriptor(WIDTH, HEIGHT, TEXTURE_FORMAT_RGBA8_UNORM_SRGB,
+    TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
+  mut target = device.createTexture(&targetDesc);
+  imm depthDesc = new TextureDescriptor(WIDTH, HEIGHT, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT);
+  mut depth = device.createTexture(&depthDesc);
+  mut post = Post.create(&mut device, TEXTURE_FORMAT_RGBA8_UNORM_SRGB, WIDTH, HEIGHT);
+  mut readback = device.createBuffer(u64.from(WIDTH) * u64.from(HEIGHT) * 4u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  if !renderer.isValid() or !post.isValid() or !target.isValid() {
+    print <- "The renderer could not be made\n";
+    return 1;
+  }
+  mut camera = Camera.make();
+  camera.fov = radians(40.);
+  camera.near = 0.05;
+  camera.far = 100.;
+  imm names Array[&[]u8, 2] = ["-row.bmp", "-close.bmp"];
+  imm eyes Array[Vec3, 2] = [v(0., 4.4, 8.2), v(0., 2.4, 3.6)];
+  imm targets Array[Vec3, 2] = [v(0., 0.4, 0.), v(0., 0.5, 0.)];
+  mut s = 0usize;
+  while s < 2usize {
+    camera.lookAt(eyes[s], targets[s], up());
+    mut encoder = device.createCommandEncoder();
+    if s == 0usize { renderer.render(&mut device, &mut encoder, &post.hdr, &depth, &camera, &light, &list); }
+    else { renderer.render(&mut device, &mut encoder, &post.hdr, &depth, &camera, &light, &close); }
+    post.apply(&mut encoder, &target);
+    encoder.copyTextureToBuffer(&target, &readback);
+    device.queue.submit(encoder.finish());
+    device.endFrame();
+    device.waitIdle();
+    imm shot = Image.fromTexels(readback.mappedRange(), i32.from(WIDTH), i32.from(HEIGHT), false);
+    imm name = named(&shots, names[s]);
+    if shot.save(name.view()) { print <- "Shot: "; printStr(name.view()); print <- "\n"; }
+    else { print <- "Could NOT write "; printStr(name.view()); print <- "\n"; ok = false; }
+    s = s + 1usize;
+  }
+
+  print <- "Vulkan failures: "; print <- u64.from(failures());
+  print <- "; validation messages: "; print <- u64.from(validationMessages()); print <- "\n";
+  if !ok or failures() != 0u32 or validationMessages() != 0u32 { print <- "FAILED\n"; return 1; }
+  print <- "OK\n";
+  0;
+}
