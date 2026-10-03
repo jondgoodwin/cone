@@ -734,6 +734,8 @@ static INode *parseBoundAdd(LifeOrder **orderp, int ok, Name *tparm) {
         if (*orderp == NULL)
             *orderp = newLifeOrder();
         lifeOrderAdd(*orderp, lifeBoundName(tparm), life, at);
+        if (life == staticLifeName)
+            lifeStaticBoundSeen = 1;
     }
     return parseLifeClause;
 }

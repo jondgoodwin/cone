@@ -259,7 +259,20 @@ char *lifeSigSpell(char *bufp, struct FnSigNode *sig);
 // referenced value's borrows outlive: the type holds ''a' as well as its own
 // lifetime, so what it is read back out of carries what ''a' does, and a
 // value coerced to it must hold no borrow not known to last ''a' (by band,
-// by the order), which the loan walk checks where it is stored or returned.
+// by the order), which the loan walk checks where it is returned or stored
+// through a parameter; a parameter that is a virtual reference already
+// vouches by its own bound, or with none its own lifetime
+// (lifeVirtOutlives). A parameter '&<Trait + 'static' takes only a value
+// holding global borrows.
+
+// Set once the parser has read a bound of ''static': until then no
+// signature bounds a lifetime by it (FnSigNode.lifestatic) and no call need
+// look
+extern int lifeStaticBoundSeen;
+
+// Set once the parser has read a virtual reference's bound: until then no
+// value is stored or returned as one (pwBoundHolds)
+extern int lifeVirtBoundSeen;
 
 // The name a bounded type parameter's borrows take in an instance: ''+T'
 Name *lifeBoundName(Name *tparm);

@@ -1019,6 +1019,9 @@ int lifeIsStatic(INode *type) {
 // Lifetime bounds
 // *********************
 
+int lifeStaticBoundSeen = 0;
+int lifeVirtBoundSeen = 0;
+
 Name *lifeBoundName(Name *tparm) {
     char buf[260];
     int len = snprintf(buf, sizeof(buf), "'+%s", &tparm->namestr);

@@ -1108,6 +1108,8 @@ static FnSigNode *pwSig = NULL;
 // struct's field has its type in the struct's names, and was checked where
 // it was stored there.
 static void pwBoundHolds(INode *val, INode *type, PathSet *holds) {
+    if (!lifeVirtBoundSeen)
+        return;
     Name *bound = lifeVirtBound(type);
     if (bound == NULL || !pathLoans || val == NULL || !isExpNode(val))
         return;
@@ -1552,7 +1554,7 @@ static PathSet *pwCall(FnCallNode *call) {
             result = pathSetUnion(result, pwArgCarries(sig, argi, rettype, carried));
         argsets[argi++] = carried;
     }
-    if (pathLoans) {
+    if (pathLoans && (sig || lifeStaticBoundSeen)) {
         // A signature naming no lifetime may still bound one by ''static'
         FnSigNode *callsig = sig ? sig : (FnSigNode *)iexpGetDerefTypeDcl(call->objfn);
         if (callsig->tag == FnSigTag && (sig || callsig->lifestatic))

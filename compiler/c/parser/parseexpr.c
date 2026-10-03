@@ -598,8 +598,12 @@ INode *parseAmper(ParseState *parse) {
             errorMsgLex(ErrorLifetimeBound, "A lifetime bound is said of a type whose insides are unknown: a virtual reference's, '&<Trait + 'a', or a type parameter's, '[T + 'a]'. A plain reference or slice names its own lifetime, '&'a T'.");
         else if (lifeIsInvariant(bound))
             errorMsgLex(ErrorLifetimeInvariant, "A bound says what the borrows inside a type outlive, and an invariant lifetime has no order to say it with.");
-        else if (parseLifeNamed(parse, bound, NULL))
+        else if (parseLifeNamed(parse, bound, NULL)) {
             anode->bound = bound;
+            lifeVirtBoundSeen = 1;
+            if (bound == staticLifeName)
+                lifeStaticBoundSeen = 1;
+        }
         lexNextToken();
     }
     return (INode *)anode;

@@ -2699,7 +2699,7 @@ void fnCallFlow(FlowState *fstate, FnCallNode **nodep) {
     // A type parameter's ''static' bound may make an argument passed by value
     // global, which no type of it shows: what it carries is the loan walk's
     // to check (pwStaticArgs)
-    if (flowGateOpen(fstate, FlowGateStore) && node->args && node->args->used) {
+    if (lifeStaticBoundSeen && flowGateOpen(fstate, FlowGateStore) && node->args && node->args->used) {
         FnSigNode *sig = (FnSigNode*)iexpGetDerefTypeDcl(node->objfn);
         if (sig->tag == FnSigTag && sig->lifestatic)
             fstate->gate |= FlowGateStore;
