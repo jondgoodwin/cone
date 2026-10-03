@@ -80,10 +80,10 @@ fn descriptorType(kind u32, bufferType u32) u32 {
 // ---- Buffers ----
 
 struct BufferBackend {
-  pub device vulkan.Device;
-  pub buffer vulkan.Buffer;
-  pub memory vulkan.DeviceMemory;
-  pub mapped *u8;
+  device vulkan.Device;
+  buffer vulkan.Buffer;
+  memory vulkan.DeviceMemory;
+  mapped *u8;
 }
 
 // A buffer of bytes the GPU reads or writes
@@ -143,31 +143,31 @@ pub struct TextureViewDescriptor {
   pub arrayLayerCount u32 = 0u32;
 }
 
-pub struct TextureBackend {
-  pub image vulkan.Image;
-  pub view vulkan.ImageView;       // the view: of the whole texture, in a Texture
-  pub kind u32;                    // KIND_...: the layout it rests in
-  pub owned Bool;                  // made by the device, and ended with the Texture
-  pub device vulkan.Device;
-  pub memory vulkan.DeviceMemory;
-  pub baseMip u32 = 0u32;          // what the view sees: levels and layers
-  pub mipCount u32 = 1u32;
-  pub baseLayer u32 = 0u32;
-  pub layerCount u32 = 1u32;
+struct TextureBackend {
+  image vulkan.Image;
+  view vulkan.ImageView;       // the view: of the whole texture, in a Texture
+  kind u32;                    // KIND_...: the layout it rests in
+  owned Bool;                  // made by the device, and ended with the Texture
+  device vulkan.Device;
+  memory vulkan.DeviceMemory;
+  baseMip u32 = 0u32;          // what the view sees: levels and layers
+  mipCount u32 = 1u32;
+  baseLayer u32 = 0u32;
+  layerCount u32 = 1u32;
   views *ViewCache = null;  // a device-made texture's; null otherwise
 }
 
 // The views 'createViewWith' has made of a texture, each kept until the
 // texture ends: WebGPU's views are the texture's, not destroyed on their own
 struct ViewCache {
-  pub count u32;
-  pub capacity u32;
-  pub entries *ViewEntry;
+  count u32;
+  capacity u32;
+  entries *ViewEntry;
 }
 
 struct ViewEntry {
-  pub key u64;                     // the descriptor, packed
-  pub view vulkan.ImageView;
+  key u64;                     // the descriptor, packed
+  view vulkan.ImageView;
 }
 
 // A texture: one the device made ('createTexture'), or a swapchain's, which
@@ -310,12 +310,19 @@ fn endViews(device vulkan.Device, cache *ViewCache) {
 // A view of a texture, which a render pass draws into, or a bind group
 // hands shaders to sample
 pub struct TextureView {
-  pub backend TextureBackend;
+  backend TextureBackend;
   pub width u32;
   pub height u32;
   pub format u32;
 
   pub fn isValid(self &) Bool { backend.view.h != 0u64; }
+
+  // Whether this view and 'other' are one view of a texture: what
+  // 'createViewWith' answers when asked twice for the same levels and
+  // layers. An invalid view is the same as none.
+  pub fn sameView(self &, other &TextureView) Bool {
+    backend.view.h != 0u64 and backend.view.h == other.backend.view.h;
+  }
 }
 
 // What 'getCurrentTexture' answers: a texture to draw into this frame, if
