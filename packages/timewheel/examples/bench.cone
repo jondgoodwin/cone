@@ -1,0 +1,189 @@
+// Bench: what a timer costs in the wheel, per timer, on the real clock. It
+// prints
+//
+// - insert: a million timeouts armed, each 1 to 30 s off;
+// - cancel: all of them cancelled, in the order armed, then in a scrambled
+//   order (each cancel then touches an entry far from the last);
+// - expire, stepped: a million armed again, then a loop waking every
+//   millisecond of 30 simulated seconds to collect what is due, as a busy
+//   I/O loop would;
+// - expire, one call: a million armed, then all collected by one call, the
+//   whole batch sorted into deadline order;
+// - the design's mix: 100,000 armed and 99,000 of them cancelled, per timer;
+// - the precise set: insert and cancel with 1,000 deadlines in its heap.
+//
+// The wheel's own time is synthetic (a timer's deadline is an Instant the
+// program makes up); only the stopwatch is real. Build it optimised to
+// measure:
+//
+//   congo run --release packages/timewheel/examples/bench.cone
+
+mod bench;
+
+import stdio use *;
+import time use Duration, Instant;
+import collections use List;
+import timewheel use *;
+
+const million = 1000000u64;
+
+// xorshift64*, for deadlines the same on every run
+struct Rng {
+  s u64;
+  fn next(self &mut) u64 {
+    s = s ^ (s >> 12u64);
+    s = s ^ (s << 25u64);
+    s = s ^ (s >> 27u64);
+    s * 2685821657736338717u64;
+  }
+}
+
+fn report(what &[]u8, took Duration, n u64) {
+  printStr(what);
+  printFloat(f64.from(took.nanos()) / f64.from(n));
+  printStr(" ns per timer\n");
+}
+
+// n timeouts, 1 to 30 s after start, their ids in ids
+fn arm(w &mut Wheel, start Instant, n u64, rng &mut Rng, ids &mut List[TimerId]) {
+  mut k = 0u64;
+  while k < n {
+    imm off = Duration.fromSeconds(1) + Duration.fromMicros(i64.from(rng.next() % 29000000u64));
+    ids.push(w.insert(start + off, k));
+    k = k + 1u64;
+  }
+}
+
+fn main() i32 {
+  mut rng = new Rng(88172645463325252u64);
+  imm origin = Instant.fromNanos(0i64);
+  mut ids = List[TimerId].withCapacity(usize.from(million));
+  mut out = List[Expiry].withCapacity(usize.from(million));
+  mut ok = true;
+
+  // Insert, then cancel in the order armed
+  {
+    mut w = Wheel.make(origin);
+    mut t0 = Instant.now();
+    arm(&mut w, origin, million, &mut rng, &mut ids);
+    report("insert:                 ", t0.elapsed(), million);
+    t0 = Instant.now();
+    mut i = 0usize;
+    while i < ids.len() {
+      if !w.cancel(*ids[i]) { ok = false; }
+      i = i + 1usize;
+    }
+    report("cancel, in order:       ", t0.elapsed(), million);
+    ok = ok and w.isEmpty();
+  }
+
+  // Cancel in a scrambled order: a stride through the ids coprime with
+  // their count visits each once
+  {
+    ids.clear();
+    mut w = Wheel.make(origin);
+    arm(&mut w, origin, million, &mut rng, &mut ids);
+    imm t0 = Instant.now();
+    mut j = 0usize;
+    mut i = 0usize;
+    while i < ids.len() {
+      if !w.cancel(*ids[j]) { ok = false; }
+      j = (j + 7919usize) % ids.len();
+      i = i + 1usize;
+    }
+    report("cancel, scrambled:      ", t0.elapsed(), million);
+    ok = ok and w.isEmpty();
+  }
+
+  // Expire: a wake every millisecond for 31 s
+  {
+    ids.clear();
+    mut w = Wheel.make(origin);
+    arm(&mut w, origin, million, &mut rng, &mut ids);
+    imm t0 = Instant.now();
+    mut now = origin;
+    mut fired = 0usize;
+    mut step = 0u64;
+    while step < 31000u64 {
+      now = now + Duration.fromMillis(1);
+      fired = fired + w.expired(now, &mut out);
+      out.clear();
+      step = step + 1u64;
+    }
+    report("expire, stepped by 1 ms:", t0.elapsed(), million);
+    ok = ok and fired == usize.from(million) and w.isEmpty();
+  }
+
+  // Expire: one call, the whole million sorted
+  {
+    ids.clear();
+    mut w = Wheel.make(origin);
+    arm(&mut w, origin, million, &mut rng, &mut ids);
+    imm t0 = Instant.now();
+    imm fired = w.expired(origin + Duration.fromSeconds(31), &mut out);
+    report("expire, one call:       ", t0.elapsed(), million);
+    ok = ok and fired == usize.from(million) and w.isEmpty();
+    out.clear();
+  }
+
+  // The design's mix: 100,000 armed, 99% cancelled, the rest fired
+  {
+    ids.clear();
+    mut w = Wheel.make(origin);
+    imm n = 100000u64;
+    imm t0 = Instant.now();
+    arm(&mut w, origin, n, &mut rng, &mut ids);
+    mut i = 0usize;
+    while i < ids.len() {
+      if i % 100usize != 37usize { w.cancel(*ids[i]); }
+      i = i + 1usize;
+    }
+    imm fired = w.expired(origin + Duration.fromSeconds(31), &mut out);
+    report("100,000, 99% cancelled: ", t0.elapsed(), n);
+    ok = ok and fired == 1000usize and w.isEmpty();
+    out.clear();
+  }
+
+  // The precise set, 1,000 deep: insert one and cancel it, a million times
+  {
+    mut w = Wheel.make(origin);
+    mut k = 0u64;
+    while k < 1000u64 {
+      w.insertPrecise(origin + Duration.fromMicros(i64.from(rng.next() % 1000000u64)), k);
+      k = k + 1u64;
+    }
+    imm t0 = Instant.now();
+    k = 0u64;
+    while k < million {
+      imm id = w.insertPrecise(origin + Duration.fromMicros(i64.from(rng.next() % 1000000u64)), k);
+      if !w.cancel(id) { ok = false; }
+      k = k + 1u64;
+    }
+    report("precise insert+cancel:  ", t0.elapsed(), million);
+    ok = ok and w.len() == 1000usize;
+  }
+
+  // A wake with nothing due, 1,000 timeouts pending a second or more off:
+  // what every pass of a busy loop pays for its timers
+  {
+    ids.clear();
+    mut w = Wheel.make(origin);
+    arm(&mut w, origin, 1000u64, &mut rng, &mut ids);
+    imm t0 = Instant.now();
+    mut now = origin;
+    mut k = 0u64;
+    mut fired = 0usize;
+    while k < million {
+      now = now + Duration.fromNanos(500i64);
+      fired = fired + w.expired(now, &mut out);
+      k = k + 1u64;
+    }
+    printStr("a wake with nothing due:  ");
+    printFloat(f64.from(t0.elapsed().nanos()) / f64.from(million));
+    printStr(" ns per call\n");
+    ok = ok and fired == 0usize;
+  }
+
+  printStr(if ok {"every timer accounted for\n";} else {"TIMERS LOST\n";});
+  if ok {0i32;} else {1i32;};
+}

@@ -1,0 +1,122 @@
+// Long ranges: timeouts an hour, a day, a month and years off. The wheel
+// spans 64^6 ticks, about 795 days; a timer further off waits at the top
+// level and is placed again as time comes round. Each far timer moves down
+// the levels as its time approaches (cascades), never expires in place, so
+// it fires within a tick of its deadline however far off it was armed:
+// whether the loop wakes at every tick the wheel asks for, or time jumps
+// past them all in one call.
+
+mod longrange;
+
+import testing use *;
+import time use Duration, Instant, Clock;
+import collections use List;
+import timewheel use *;
+
+// An instant's nanoseconds, or -1 for None
+fn ns(o Option[Instant]) i64 {
+  mut r = -1i64;
+  match o {
+    case imm s Some { r = s.value.nanos(); }
+    case is None[Instant] {}
+  }
+  r;
+}
+
+const n = 9u64;
+
+// The deadlines, after the start: off the grid by a little, so each fires
+// late by a known fraction of a tick
+fn deadline(k u64) Duration {
+  imm extra = Duration.fromMicros(i64.from(k) * 100i64 + 50i64);
+  if k == 0u64 {return Duration.fromSeconds(5) + extra;}
+  if k == 1u64 {return Duration.fromMinutes(10) + extra;}
+  if k == 2u64 {return Duration.fromHours(1) + extra;}
+  if k == 3u64 {return Duration.fromHours(5) + extra;}
+  if k == 4u64 {return Duration.fromHours(24) + extra;}
+  if k == 5u64 {return Duration.fromHours(24 * 30) + extra;}
+  if k == 6u64 {return Duration.fromHours(24 * 400) + extra;}
+  if k == 7u64 {return Duration.fromHours(24 * 800) + extra;}    // past the span
+  Duration.fromHours(24 * 365 * 3) + extra;                       // three years
+}
+
+fn arm(w &mut Wheel, start Instant) {
+  mut k = 0u64;
+  while k < n {
+    w.insert(start + deadline(k), k);
+    k = k + 1u64;
+  }
+}
+
+fn stepped() {
+  mut clock = Clock.synth();
+  clock.advance(Duration.fromMicros(123456));
+  imm start = clock.now();
+  mut w = Wheel.make(start);
+  arm(&mut w, start);
+  mut out = new List[Expiry];
+  mut wakes = 0u64;
+  mut ok = true;
+  while true {
+    imm next = ns(w.nextExpiry());
+    if next < 0i64 { break; }
+    expect(next > clock.now().nanos(), "the wheel never asks for a past tick");
+    clock.advance(Duration.fromNanos(next - clock.now().nanos()));
+    imm from = out.len();
+    w.expired(clock.now(), &mut out);
+    wakes = wakes + 1u64;
+    mut i = from;
+    while i < out.len() {
+      imm k = out[i].token;
+      imm late = clock.now() - (start + deadline(k));
+      // The deadline is k * 100 + 50 us past whole milliseconds of the start,
+      // so it fires that much short of the next one
+      if late.nanos() != 1000000i64 - (i64.from(k) * 100000i64 + 50000i64) { ok = false; }
+      if k != u64.from(i) { ok = false; }
+      i = i + 1usize;
+    }
+  }
+  expectUInt(u64.from(out.len()), n, "all nine fired");
+  expect(ok, "each in turn, late by exactly its fraction of a tick");
+  imm s = w.stats();
+  expect(s.cascaded > 0u64, "far timers moved down the levels");
+  // Each timer moves down at most five levels, and the two past the span
+  // come round the top level once or twice more
+  expect(s.cascaded <= 6u64 * n, "a few cascades each, no more");
+  expect(wakes <= 7u64 * n, "and a few wakes each");
+}
+
+fn jumped() {
+  mut clock = Clock.synth();
+  clock.advance(Duration.fromMicros(123456));
+  imm start = clock.now();
+  mut w = Wheel.make(start);
+  arm(&mut w, start);
+  mut out = new List[Expiry];
+  // Up to just before the three-year timer's tick
+  clock.advance(deadline(8u64) + Duration.fromNanos(1000000i64 - 850000i64 - 1i64));
+  expectUInt(u64.from(w.expired(clock.now(), &mut out)), n - 1u64, "eight due in one call");
+  mut i = 0usize;
+  mut ordered = true;
+  while i < out.len() {
+    if out[i].token != u64.from(i) { ordered = false; }
+    i = i + 1usize;
+  }
+  expect(ordered, "in deadline order");
+  expectInt(ns(w.nextExpiry()), clock.now().nanos() + 1i64, "the last at the next nanosecond's tick");
+  clock.advance(Duration.fromNanos(1i64));
+  expectUInt(u64.from(w.expired(clock.now(), &mut out)), 1u64, "and then it fires");
+  expect(w.isEmpty(), "nothing left");
+
+  // A cancel far off: the top level holds it, and it goes as any other
+  imm far = w.insert(clock.now() + Duration.fromHours(24 * 900), 99u64);
+  expect(w.isPending(far), "900 days off, pending");
+  expect(w.cancel(far), "cancelled");
+  expectInt(ns(w.nextExpiry()), -1i64, "nothing to wake for");
+}
+
+fn main() i32 {
+  stepped();
+  jumped();
+  done();
+}
