@@ -1,0 +1,192 @@
+// ---- Works: jobs in flight, and their completions delivered ----
+
+// A submitted job, plain data: the number its Completion carries
+pub struct Ticket {
+  pub id u64;
+
+  pub fn none() Ticket { new Ticket(0u64); }
+  pub fn isNone(self) Bool { id == 0u64; }
+  pub fn `==`(self, o Ticket) Bool { id == o.id; }
+  pub fn `!=`(self, o Ticket) Bool { id != o.id; }
+}
+
+// Where a job's one Completion goes, and the token it carries back, which
+// gpuwork hands back and never reads. Here: to the Works' own 'poll' (and
+// 'wait'). More targets (another thread's loop, an actor) are later ones;
+// adding one changes only this.
+pub enum Target {
+  pub token u64;
+  pub struct Here {}
+}
+
+// A job's one answer: its ticket and token; whether it ran ('ok': false for
+// a job something was refused in, which did not run); its buffers back, in
+// the slots they had in the job; the frame it ran in; and when it was
+// submitted and when its completion was seen
+pub struct Completion {
+  pub ticket Ticket;
+  pub token u64;
+  pub ok Bool;
+  pub buffers List[Buffer];
+  pub frame u64;
+  pub submitted Instant;
+  pub completed Instant;
+
+  // How many buffers it holds
+  pub fn count(self &) u32 { u32.from(buffers.len()); }
+
+  // Take the buffer in slot 'slot' out of it (Buffer.none() is left there,
+  // and given for a slot it does not have)
+  pub fn take(self &mut, slot u32) Buffer {
+    mut b = Buffer.none();
+    imm s = usize.from(slot);
+    if s < buffers.len() {
+      imm r = &mut buffers[s];
+      b <=> *r;
+    }
+    b;
+  }
+
+  // The words of the buffer in slot 'slot', one the job read back
+  // ('job.readback'); none for a slot it does not have, or a buffer that
+  // was not read back
+  pub fn words(self &, slot u32) List[u32] {
+    if usize.from(slot) >= buffers.len() { return List[u32].empty(); }
+    wordsOf(buffers[usize.from(slot)]);
+  }
+}
+
+// A job in flight: what its Completion will be made of
+struct InFlight {
+  ticket Ticket;
+  token u64;
+  frame u64;
+  ok Bool;
+  submitted Instant;
+  buffers List[Buffer];
+  groups List[BindGroup];
+  live Bool;
+}
+
+// Jobs in flight on one device, and their completions: one Works for each
+// thread that submits (as a CommandEncoder is one thread's). Each job
+// submitted gets exactly one Completion, through 'poll' or 'wait'.
+pub struct Works {
+  jobs List[InFlight];
+  retired List[List[BindGroup]];   // of jobs complete, ended once nothing is in flight
+  lastId u64;
+
+  pub fn make() Works { new Works(List[InFlight].empty(), List[List[BindGroup]].empty(), 0u64); }
+
+  // How many jobs are submitted whose Completion is still to come
+  pub fn inFlight(self &) usize { jobs.len(); }
+
+  // Submit 'job': its commands go to the device's queue, and its buffers
+  // with it, until its Completion hands them back to the target 'to'. A job
+  // something was refused in (or recorded in an earlier frame) is not run:
+  // it completes not ok, its buffers back, when the frame it was recorded
+  // in is done, as a job that ran would (uploads into its buffers made in
+  // that frame are still the frame's, and a buffer dropped before they are
+  // made would leave them copying into nothing).
+  pub fn submit(self &mut, device &mut Device, job Job, to Target) Ticket {
+    mut j = job;
+    lastId = lastId + 1u64;
+    imm ticket = new Ticket(lastId);
+    mut ok = !j.failed;
+    if ok and j.frame != device.frameNumber {
+      fail("submit: the job was recorded in an earlier frame");
+      ok = false;
+    }
+    if ok { ok = device.queue.submit(j.encoder.finish()); }
+    mut buffers = List[Buffer].empty();
+    buffers <=> j.buffers;
+    mut groups = List[BindGroup].empty();
+    groups <=> j.groups;
+    jobs.push(new InFlight(ticket, to.token, j.frame, ok, Instant.now(), buffers, groups, true));
+    ticket;
+  }
+
+  // End the device's frame if a job in flight was recorded in it, so that
+  // the GPU finishes it: for a program with no swapchain, whose frames
+  // nothing else ends. (A program that presents leaves this to 'present'.)
+  pub fn flush(self &mut, device &mut Device) {
+    mut k = 0usize;
+    while k < jobs.len() {
+      if jobs[k].frame == device.frameNumber {
+        device.endFrame();
+        return;
+      }
+      k = k + 1usize;
+    }
+  }
+
+  // Append to 'out' the Completion of every job the GPU has finished, in
+  // the order submitted, and answer how many. Never waits: for a frame loop,
+  // once a frame.
+  pub fn poll(self &mut, device &Device, out &mut List[Completion]) usize {
+    imm now = Instant.now();
+    mut n = 0usize;
+    mut k = 0usize;
+    while k < jobs.len() {
+      imm e = &mut jobs[k];
+      if device.frameDone(e.frame) {
+        mut buffers = List[Buffer].empty();
+        buffers <=> e.buffers;
+        mut groups = List[BindGroup].empty();
+        groups <=> e.groups;
+        retired.push(groups);
+        out.push(new Completion(e.ticket, e.token, e.ok, buffers, e.frame, e.submitted, now));
+        e.live = false;
+        n = n + 1usize;
+      }
+      k = k + 1usize;
+    }
+    if n > 0usize { self.compact(); }
+    // A bind group's end waits for the device to be idle: only when no job
+    // of ours is in flight
+    if jobs.len() == 0usize { retired.clear(); }
+    n;
+  }
+
+  // Wait until the GPU has finished the job 'ticket' (ending its frame if it
+  // was recorded in the current one), then poll: append to 'out' every
+  // Completion ready, its own among them, and answer how many. For tools and
+  // tests; a frame loop polls.
+  pub fn waitFor(self &mut, device &mut Device, ticket Ticket, out &mut List[Completion]) usize {
+    mut k = 0usize;
+    while k < jobs.len() {
+      if jobs[k].ticket == ticket {
+        imm frame = jobs[k].frame;
+        if frame == device.frameNumber { device.endFrame(); }
+        device.waitFrame(frame);
+      }
+      k = k + 1usize;
+    }
+    self.poll(device, out);
+  }
+
+  // Wait until every job in flight is finished, and poll
+  pub fn waitAll(self &mut, device &mut Device, out &mut List[Completion]) usize {
+    self.flush(device);
+    mut k = 0usize;
+    while k < jobs.len() {
+      device.waitFrame(jobs[k].frame);
+      k = k + 1usize;
+    }
+    self.poll(device, out);
+  }
+
+  // Drop the jobs delivered, keeping the order of the rest
+  fn compact(self &mut) {
+    mut to = 0usize;
+    mut k = 0usize;
+    while k < jobs.len() {
+      if jobs[k].live {
+        if to != k { jobs.swap(to, k); }
+        to = to + 1usize;
+      }
+      k = k + 1usize;
+    }
+    while jobs.len() > to { jobs.pop(); }
+  }
+}

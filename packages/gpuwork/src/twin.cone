@@ -1,0 +1,165 @@
+// ---- The CPU twin: a kernel run on the CPU, and parity with the GPU ----
+
+// One of a dispatch's buffers as its twin sees it: 32-bit words, read as
+// u32s, i32s or f32s (their bits), or as one struct, as the GPU's kernel
+// binds the same buffer. Plain data, copied freely: a view of words the twin
+// runner owns, valid for the run, the CPU's counterpart of a binding.
+pub struct Words {
+  ptr *u32;
+  pub len usize;
+
+  pub fn u32s(self) &[]u32 { mem.sliceFromParts[u32](ptr, len); }
+  pub fn u32sMut(self) &[]mut u32 { mem.sliceFromPartsMut[u32](ptr, len); }
+  pub fn i32s(self) &[]i32 { mem.sliceFromParts[i32](ptr as *i32, len); }
+  pub fn i32sMut(self) &[]mut i32 { mem.sliceFromPartsMut[i32](ptr as *i32, len); }
+  pub fn f32s(self) &[]f32 { mem.sliceFromParts[f32](ptr as *f32, len); }
+  pub fn f32sMut(self) &[]mut f32 { mem.sliceFromPartsMut[f32](ptr as *f32, len); }
+
+  // Its first words as a T (a by-value struct parameter)
+  pub fn value[T](self) T { mem.readRaw[T](ptr as *T); }
+}
+
+// Run 'kernel''s CPU twin over 'buffers' (binding i the words of
+// 'buffers[i]', which it reads and writes in place) as a dispatch of 'x' by
+// 'y' by 'z' workgroups would: once for each invocation, workgroup by
+// workgroup (x fastest), and within one, invocation by invocation (x
+// fastest), one thread, in that fixed order. False, and nothing run, if the
+// kernel has no twin or the buffers are not one for each binding.
+pub fn runTwin(kernel &Kernel, buffers &mut List[List[u32]], x u32, y u32 = 1u32, z u32 = 1u32) Bool {
+  if !kernel.hasTwin or buffers.len() != usize.from(kernel.bindings) {
+    fail("runTwin: the kernel has no twin, or the buffers are not one for each binding");
+    return false;
+  }
+  mut words = List[Words].empty();
+  mut b = 0usize;
+  while b < buffers.len() {
+    imm v = buffers[b].view();
+    imm p = if v.len > 0usize { &v[0usize] as *u32; } else { null as *u32; };
+    words.push(new Words(p, v.len));
+    b = b + 1usize;
+  }
+  imm view = words.view();
+  imm twin = kernel.twin;
+  imm wx = kernel.workgroup[0usize];
+  imm wy = kernel.workgroup[1usize];
+  imm wz = kernel.workgroup[2usize];
+  mut gz = 0u32;
+  while gz < z {
+    mut gy = 0u32;
+    while gy < y {
+      mut gx = 0u32;
+      while gx < x {
+        mut lz = 0u32;
+        while lz < wz {
+          mut ly = 0u32;
+          while ly < wy {
+            mut lx = 0u32;
+            while lx < wx {
+              imm inv = new Invocation([gx * wx + lx, gy * wy + ly, gz * wz + lz], [lx, ly, lz], [gx, gy, gz],
+                lx + wx * (ly + wy * lz), [x, y, z]);
+              twin(inv, view);
+              lx = lx + 1u32;
+            }
+            ly = ly + 1u32;
+          }
+          lz = lz + 1u32;
+        }
+        gx = gx + 1u32;
+      }
+      gy = gy + 1u32;
+    }
+    gz = gz + 1u32;
+  }
+  true;
+}
+
+// How a kernel's GPU run and its CPU twin compared: every word of every
+// buffer the kernel writes (READ_WRITE), bit for bit
+pub struct Parity {
+  pub ran Bool;                // both ran
+  pub compared u64;            // words compared
+  pub mismatched u64;          // words that differ
+  pub firstBinding u32;        // the first that differs: its binding and index,
+  pub firstIndex u64;
+  pub gpuWord u32;             // and the two words
+  pub cpuWord u32;
+
+  // Whether the two agree, every bit of every word written
+  pub fn exact(self &) Bool { ran and mismatched == 0u64 and compared > 0u64; }
+}
+
+// Run 'kernel' on the GPU and its CPU twin on the CPU, each over its own
+// copy of 'buffers' (binding i starting as 'buffers[i]'), in 'x' by 'y' by
+// 'z' workgroups, and compare what each wrote, bit for bit. It waits for the
+// GPU (ending the device's frame): for tests and tools.
+pub fn checkParity(device &mut Device, kernel &Kernel, buffers &List[List[u32]], x u32, y u32 = 1u32,
+    z u32 = 1u32) Parity {
+  mut result = new Parity(false, 0u64, 0u64, 0u32, 0u64, 0u32, 0u32);
+  if !kernel.hasTwin or buffers.len() != usize.from(kernel.bindings) {
+    fail("checkParity: the kernel has no twin, or the buffers are not one for each binding");
+    return result;
+  }
+  // The GPU's run: its own Works, so that no one else's completions are taken
+  mut works = Works.make();
+  mut job = Job.make(device);
+  mut slots = List[u32].empty();
+  mut b = 0usize;
+  while b < buffers.len() {
+    slots.push(job.give(upload(device, buffers[b].view())));
+    b = b + 1usize;
+  }
+  job.dispatch(device, kernel, slots.view(), x, y, z);
+  mut backs = List[u32].empty();
+  b = 0usize;
+  while b < buffers.len() {
+    backs.push(if kernel.accessOf(u32.from(b)) == READ_WRITE { job.readback(device, u32.from(b)); } else { 0u32; });
+    b = b + 1usize;
+  }
+  imm ticket = works.submit(device, job, Target.Here[0u64]);
+  mut done = List[Completion].empty();
+  works.waitFor(device, ticket, &mut done);
+  if done.len() != 1usize or !done[0usize].ok { return result; }
+
+  // The twin's run, over copies
+  mut cpu = List[List[u32]].empty();
+  b = 0usize;
+  while b < buffers.len() {
+    imm src = buffers[b].view();
+    mut copy = List[u32].withCapacity(src.len);
+    mut i = 0usize;
+    while i < src.len {
+      copy.push(src[i]);
+      i = i + 1usize;
+    }
+    cpu.push(copy);
+    b = b + 1usize;
+  }
+  if !runTwin(kernel, &mut cpu, x, y, z) { return result; }
+  result.ran = true;
+
+  // Word by word
+  b = 0usize;
+  while b < buffers.len() {
+    if kernel.accessOf(u32.from(b)) == READ_WRITE {
+      imm gpuWords = done[0usize].words(*backs[b]);
+      imm cpuWords = cpu[b].view();
+      mut i = 0usize;
+      while i < cpuWords.len {
+        imm g = if i < gpuWords.len() { *gpuWords[i]; } else { 0u32; };
+        if g != cpuWords[i] {
+          if result.mismatched == 0u64 {
+            result.firstBinding = u32.from(b);
+            result.firstIndex = u64.from(i);
+            result.gpuWord = g;
+            result.cpuWord = cpuWords[i];
+          }
+          result.mismatched = result.mismatched + 1u64;
+        }
+        result.compared = result.compared + 1u64;
+        i = i + 1usize;
+      }
+    }
+    b = b + 1usize;
+  }
+  result;
+}
