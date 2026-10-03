@@ -144,41 +144,39 @@ fn appendThroughImmRef() {
   return;
 }
 
-// A private method and a private field are both out of reach from outside the
-// type, and the concrete spelling is what the check is made against
+// A private member is private to the module that declares its type, so a
+// function of the module reaches a private method and a private field of any
+// value, and none of these is refused. Code outside the module is
+// (module_privacy_typecheck); struct_privacy runs what is reached.
 fn privateMethod() {
   imm p = new Point(1);
-  p.fee();             //~ ErrorNotPublic:4 "May not access the private method/field `fee`."
+  p.fee();
   return;
 }
 
 fn privateField() {
   imm p = new Point(1);
-  imm s = p.secret;    //~ ErrorNotPublic:12 "May not access the private method/field `secret`."
+  imm s = p.secret;
   return;
 }
 
-// Privacy is the type's, so Point's own code reaches the private members of any
-// Point (struct_privacy runs that), and no other type's code does, a method or
-// a static function, in the same module or not
+// Another type's code is the module's too, a method or a static function
 struct Other {
   pub fn peek(self &, p &Point) i32 {
-    p.secret;          //~ ErrorNotPublic:6 "May not access the private method/field `secret`."
+    p.secret;
   }
   pub fn call(p Point) i32 {
-    p.fee();           //~ ErrorNotPublic:6 "May not access the private method/field `fee`."
+    p.fee();
   }
 }
 
-// A generic type's instance owns its methods, so it reaches the private members
-// of a value of that instance and not of another instance: Box[i32]'s code does
-// not see into a Box[i64]. That is the narrower of the two readings; whether
-// every instance of one generic type should see into every other is not ruled.
+// And so is every instance of a generic type: Box[i32]'s code sees into a
+// Box[i64]
 struct Box[T] {
   v T;
   pub fn make(v T) Box[T] { new Box[T](v); }
   pub fn cross(self &, o &Box[i64]) i64 {
-    o.v;               //~ ErrorNotPublic:6 "May not access the private method/field `v`."
+    o.v;
   }
 }
 
@@ -188,11 +186,11 @@ fn crossInstances() i64 {
   a.cross(&b);
 }
 
-// An enrichment is inside its base's encapsulation boundary and its own clients
-// are not, so what comes across keeps the base's visibility. Enriched's own
-// method reads Point's private field, which struct_extends runs; a caller of
-// Enriched reaches neither the field nor the private method. That asymmetry is
-// what makes an enrichment different from being handed the base's members.
+// An enrichment is inside its base's boundary, so what comes across keeps the
+// base's visibility: Enriched's own method reads Point's private field, which
+// struct_extends runs, and a function of this module reaches the same members
+// through an Enriched as through a Point. A caller outside the module reaches
+// neither.
 struct Enriched extends Point {
   pub fn viaOwnMethod(self) i32 {
     secret;
@@ -201,18 +199,19 @@ struct Enriched extends Point {
 
 fn privateOfTheBaseThroughAnEnrichment() {
   imm e Enriched = new Point(1);
-  imm s = e.secret;    //~ ErrorNotPublic:12 "May not access the private method/field `secret`."
-  e.fee();             //~ ErrorNotPublic:4 "May not access the private method/field `fee`."
+  imm s = e.secret;
+  e.fee();
   return;
 }
 
-// A private 'isTrue' is refused like any other private method, whether the
-// call is written out or injected by a coercion to Bool. The injected call is
-// positioned on the operand it wraps, so each of these reports on the value
-// being tested rather than at the end of the file.
+// A private 'isTrue' called by name is reached as any private method is. One a
+// coercion to Bool injects is checked with no function around it, so only a
+// value named 'self' reaches it, and every other is refused, in the module
+// too. The injected call is positioned on the operand it wraps, so each of
+// these reports on the value being tested rather than at the end of the file.
 fn privateIsTrueExplicit() {
   imm p = new Point(1);
-  imm b = p.isTrue();   //~ ErrorNotPublic:12 "May not access the private method/field `isTrue`."
+  imm b = p.isTrue();
   return;
 }
 

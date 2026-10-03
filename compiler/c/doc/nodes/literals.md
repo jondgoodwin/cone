@@ -286,8 +286,9 @@ struct's literal, retagged `TypeLitTag` with `FlagNew` kept, and checked as
 below; a declared one stays an `FnCallTag` with `FlagNew`, its `objfn` the
 init's name use, its arguments coerced to the parameters after `self` and the
 defaults appended, and its `vtype` the struct, the call's value
-([fncall](fncall.md), "Construction"). A declared init not `pub` is the type's
-own (`ErrorNotPublic`).
+([fncall](fncall.md), "Construction"). A declared init not `pub` is its module's
+(`ErrorNotPublic` outside it, `structSeesPrivate`), as is giving a private
+field a value in the literal.
 
 **Type literal** — `typeLitTypeCheck` requires a concrete type, then builds a
 struct's literal. **A struct's literal in brackets is `ErrorStructBracket`**,

@@ -1791,19 +1791,17 @@ static StructNode *structPrivacyEnum(INode *type) {
     return structEnclosingEnum(node);
 }
 
-// The enum is the privacy boundary for its variants: code written anywhere
-// inside its braces -- its own methods and static functions, and every
-// variant's methods -- sees the private members of the enum and of every
-// variant, through any value, not only through 'self'. An extension sees what
-// its base's code sees, the base's own variants included, and so on down a
-// chain; its copies are its own variants. Nothing else widens: a sibling
-// extension's are its own, and a base does not see what an extension adds.
+// An enum's extension is inside its base's boundary, wherever it is declared:
+// code written inside the extension's braces sees the private members of the
+// base and of the base's own variants, through any value, and so on down a
+// chain; its copies are its own variants. A sibling extension's are its own,
+// and a base does not see what an extension adds, unless the module rule
+// (structSeesPrivate) grants it.
 //
 // The code is the function being checked, and its owner is the type it is
 // written in: a method cloned into a variant or a copy is owned by the clone's
-// type, and an instance's by the instance. A function owned by a module -- a
-// free function, an anonymous one, or the instance of a generic function
-// instantiated from inside the enum -- is outside every enum's braces.
+// type, and an instance's by the instance. A function owned by a module is
+// inside no enum's braces.
 int structEnumSeesPrivate(TypeCheckState *pstate, INode *type) {
     if (pstate == NULL || pstate->fn == NULL)
         return 0;
@@ -1819,18 +1817,24 @@ int structEnumSeesPrivate(TypeCheckState *pstate, INode *type) {
     return 0;
 }
 
-// A member not 'pub' is private to its type, not to a value of it
-// (refstruct.html): the type's own methods and static functions reach it
-// through any value of the type -- a local, a parameter, a borrow written out
-// -- as they do through 'self'. The code is the function being checked and its
-// owner the type it is written in, found as structEnumSeesPrivate finds it: an
-// instance of a generic type owns its clones, so it sees the privates of that
-// instance's values and not another instance's. A function the module owns,
-// or another type's, sees none, save by the enum's boundary.
+// A member not 'pub' is private to the module that declares its type, the
+// boundary a private name of the module has (refmodule.html): every function,
+// method and type of that module reaches it through any value of the type --
+// a local, a parameter, a field, a borrow -- in any of the module's files. A
+// sister or a submodule is another module and sees none. The code is the
+// function being checked, or, where there is none (a field's default), the type
+// being checked; its module is the nearest one its owners reach, so an
+// anonymous function or a closure sees what the module it is written in sees.
+// An enum's extension declared in another module also sees its base's
+// (structEnumSeesPrivate).
 int structSeesPrivate(TypeCheckState *pstate, INode *type) {
-    if (pstate == NULL || pstate->fn == NULL || type == NULL)
+    if (pstate == NULL || type == NULL)
         return 0;
-    if (inodeGetOwner((INode*)pstate->fn) == type)
+    INode *site = pstate->fn ? (INode*)pstate->fn : pstate->typenode;
+    if (site == NULL)
+        return 0;
+    ModuleNode *typemod = dclInfoGetModule(type);
+    if (typemod != NULL && typemod == dclInfoGetModule(site))
         return 1;
     return structEnumSeesPrivate(pstate, type);
 }
