@@ -185,6 +185,10 @@ int intrinsicIsDeclared(FnDclNode *fndcl);
 // dereference, as it holds '*T' (cloneStarNode), so both are accepted.
 int typeRecordIsPtr(INode *type);
 
+// Whether a type is core's Invocation, which a compute entry point may take:
+// known by its name and its package, as the type record is
+int invocationIsCore(INode *type);
+
 // Core's TypeRecord struct, once the core package's declaration of
 // 'mem.typeRecord' has been checked against the registry; NULL before, or in a
 // compile whose core declares none. Generation builds the records of a

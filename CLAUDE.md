@@ -47,7 +47,9 @@ Visual Studio projects stay at the root.
   `isDebugBuild()`, the third intrinsic outside `mem`, beside which
   `isWindows()`, `isLinux()`, `isMacOS()`, `isWasm()`, `isDefined("NAME")`
   and `definedInt("NAME")`, for `conec -D`, are a provisional mechanism
-  whose final design is open); `stdio` prints;
+  whose final design is open; and `Invocation`, which invocation of a
+  compute dispatch is running, what a compute entry point,
+  `fn @compute(64) name(...)`, may take); `stdio` prints;
   `libc` and `posix` are C packages of raw bindings to the C library and the
   POSIX functions beyond it (Windows first), and `core` imports `libc` for its
   allocator; `sdl` is a C package of raw bindings to SDL3 (a window for
@@ -102,9 +104,9 @@ Visual Studio projects stay at the root.
   (`Target.Here`) or into an `iocore` Loop (`Target.Loop`, `onLoop`: a
   watcher thread waits on the job's own fence and wakes the loop); every
   kernel a CPU twin (`runTwin`) and `checkParity` comparing the two bit for
-  bit; its test kernels are Slang fixtures until Cone has compute entry
-  points (`fn @compute(64) name(inv Invocation, parts &[]Part, out &[]mut
-  f32)`);
+  bit; its test kernels are Slang fixtures, and a Cone compute entry point
+  (`fn @compute(64) name(inv Invocation, parts &[]Part, out &[]mut f32)`),
+  compiled by `conec` for SPIR-V's Vulkan form, is a kernel it loads too;
   `geomath` is 2-D and 3-D math, pure maths: values and operations with
   results of a known size, no collections (vectors,
   quaternions, matrices, transforms, boxes, rays, planes, frusta and their

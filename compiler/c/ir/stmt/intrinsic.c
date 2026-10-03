@@ -356,6 +356,16 @@ int typeRecordIsPtr(INode *type) {
     return typeRecordPointee(type) != NULL;
 }
 
+int invocationIsCore(INode *type) {
+    INode *dcl = type == NULL ? NULL : itypeGetTypeDcl(type);
+    if (dcl == NULL || dcl->tag != StructTag)
+        return 0;
+    StructNode *strnode = (StructNode *)dcl;
+    return strnode->namesym != NULL && strcmp(&strnode->namesym->namestr, "Invocation") == 0
+        && strnode->genericinfo == NULL && !(strnode->flags & (TraitType | EnumType))
+        && intrinsicModuleIsCore(strnode->dclinfo.owner);
+}
+
 // Core's MemOrder, known by its name and its package as TypeRecord is: the
 // enum whose variants name the orderings (MemOrderKind), in that order
 static StructNode *memOrderEnum(INode *type) {
