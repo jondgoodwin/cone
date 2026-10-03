@@ -1,0 +1,246 @@
+// ======== Reading: a head's lines, its fields, and how its body is framed ========
+//
+// Every function here reads a slice of bytes already gathered and checked
+// for bare CRs and LFs, and either fills what it was handed and says true,
+// or fills 'err' with the kind, the status a server answers with, and why,
+// and says false. None of them reads a byte past the slice.
+
+// Fill err and say false
+fn bad(err &mut HttpError, kind ErrorKind, status u16, why &[]u8) Bool {
+  err.kind = kind;
+  err.status = status;
+  err.detail = String.from(why);
+  false;
+}
+
+// The first offset of byte c in s at or after from, or s.len
+fn indexOf(s &[]u8, c u8, from usize) usize {
+  mut i = from;
+  while i < s.len and s[i] != c {i = i + 1usize;}
+  i;
+}
+
+// The end of the line starting at from: the offset of its CR (the gather
+// has checked that an LF follows every CR)
+fn lineEnd(h &[]u8, from usize) usize {indexOf(h, '\r', from);}
+
+// HTTP-version, 'HTTP/1.1': 11 for 1.1 (and any later 1.x, read as 1.1, RFC
+// 9110 section 6.2), 10 for 1.0, 0 for another major version, and 1 for text
+// that is not a version at all
+fn versionOf(v &[]u8) u32 {
+  if v.len != 8usize or not (v[0usize] == 'H' and v[1usize] == 'T' and v[2usize] == 'T' and v[3usize] == 'P' and v[4usize] == '/') {return 1u32;}
+  imm major = v[5usize];
+  imm minor = v[7usize];
+  if major < '0' or major > '9' or v[6usize] != '.' or minor < '0' or minor > '9' {return 1u32;}
+  if major != '1' {return 0u32;}
+  if minor == '0' {10u32;} else {11u32;};
+}
+
+// request-line = method SP request-target SP HTTP-version (RFC 9112, 3):
+// one space each, nothing else
+fn parseRequestLine(line &[]u8, head &mut RequestHead, err &mut HttpError) Bool {
+  imm sp1 = indexOf(line, ' ', 0usize);
+  if sp1 == line.len {return bad(err, ErrorKind.Malformed[], 400u16, "the request line has no spaces");}
+  imm method = &line[0usize .. sp1];
+  if not isToken(method) {return bad(err, ErrorKind.Malformed[], 400u16, "the method is not a token");}
+  imm sp2 = indexOf(line, ' ', sp1 + 1usize);
+  if sp2 == line.len {return bad(err, ErrorKind.Malformed[], 400u16, "the request line has one space, not two");}
+  imm target = &line[sp1 + 1usize .. sp2];
+  if target.len == 0usize {return bad(err, ErrorKind.Malformed[], 400u16, "the request target is empty (two spaces together)");}
+  mut i = 0usize;
+  while i < target.len {
+    imm c = target[i];
+    if c <= 0x20u8 or c >= 0x7Fu8 {
+      return bad(err, ErrorKind.Malformed[], 400u16, "the request target holds a space, a control character or a byte past 0x7E");
+    }
+    i = i + 1usize;
+  }
+  imm ver = versionOf(&line[sp2 + 1usize .. line.len]);
+  if ver == 1u32 {return bad(err, ErrorKind.Malformed[], 400u16, "the request line does not end in an HTTP version");}
+  if ver == 0u32 {return bad(err, ErrorKind.Unsupported[], 505u16, "the request's major version is not 1");}
+  *head = RequestHead.make(method, target, "");
+  head.version = if ver == 10u32 {Version.Http10[];} else {Version.Http11[];};
+  true;
+}
+
+// status-line = HTTP-version SP status-code SP [ reason-phrase ] (RFC 9112,
+// 4); a line that ends straight after the code is read too. The phrase is
+// checked and dropped
+fn parseStatusLine(line &[]u8, head &mut ResponseHead, err &mut HttpError) Bool {
+  if line.len < 12usize or line[8usize] != ' ' {return bad(err, ErrorKind.Malformed[], 0u16, "the status line is not 'HTTP/1.x' and a code");}
+  imm ver = versionOf(&line[0usize .. 8usize]);
+  if ver == 1u32 {return bad(err, ErrorKind.Malformed[], 0u16, "the status line does not start with an HTTP version");}
+  if ver == 0u32 {return bad(err, ErrorKind.Unsupported[], 0u16, "the response's major version is not 1");}
+  mut code = 0u16;
+  mut i = 9usize;
+  while i < 12usize {
+    imm c = line[i];
+    if c < '0' or c > '9' {return bad(err, ErrorKind.Malformed[], 0u16, "the status code is not three digits");}
+    code = code * 10u16 + u16.from(c - '0');
+    i = i + 1usize;
+  }
+  if code < 100u16 or code > 599u16 {return bad(err, ErrorKind.Malformed[], 0u16, "the status code is outside 100 to 599");}
+  if line.len > 12usize {
+    if line[12usize] != ' ' {return bad(err, ErrorKind.Malformed[], 0u16, "the status code is not three digits");}
+    i = 13usize;
+    while i < line.len {
+      imm c = line[i];
+      if not (isFieldVchar(c) or isOws(c)) {return bad(err, ErrorKind.Malformed[], 0u16, "the reason phrase holds a control character");}
+      i = i + 1usize;
+    }
+  }
+  head.status = code;
+  head.version = if ver == 10u32 {Version.Http10[];} else {Version.Http11[];};
+  true;
+}
+
+// The field lines of h from offset 'from' up to the empty line that ends
+// them, added to headers. A request's Host goes to 'host' instead (counted
+// in hostCount) when takeHost is set
+fn parseFields(h &[]u8, from usize, cfg &Config, request Bool, takeHost Bool, headers &mut Headers,
+    host &mut String, hostCount &mut usize, err &mut HttpError) Bool {
+  imm status = if request {431u16;} else {0u16;};
+  imm malformed = if request {400u16;} else {0u16;};
+  mut at = from;
+  mut n = 0usize;
+  while true {
+    imm end = lineEnd(h, at);
+    if end == at {break;}                     // the empty line
+    imm line = &h[at .. end];
+    if line.len > cfg.maxLineBytes {return bad(err, ErrorKind.TooLarge[], status, "a field line is longer than maxLineBytes");}
+    if isOws(line[0usize]) {return bad(err, ErrorKind.Malformed[], malformed, "a field line starts with a space or a tab (obs-fold)");}
+    imm colon = indexOf(line, ':', 0usize);
+    if colon == line.len {return bad(err, ErrorKind.Malformed[], malformed, "a field line has no colon");}
+    imm name = &line[0usize .. colon];
+    imm whyName = checkFieldName(name);
+    if whyName.len != 0usize {return bad(err, ErrorKind.Malformed[], malformed, whyName);}
+    imm value = trimOws(&line[colon + 1usize .. line.len]);
+    imm whyValue = checkFieldValue(value);
+    if whyValue.len != 0usize {return bad(err, ErrorKind.Malformed[], malformed, whyValue);}
+    n = n + 1usize;
+    if n > cfg.maxHeaders {return bad(err, ErrorKind.TooLarge[], status, "more fields than maxHeaders");}
+    if takeHost and eqIgnoreCase(name, "Host") {
+      *hostCount = *hostCount + 1usize;
+      *host = String.from(value);
+    } else {
+      headers.add(name, value);
+    }
+    at = end + 2usize;
+  }
+  true;
+}
+
+// How a received message's body is framed
+const frameEmpty = 0u32;      // no body
+const frameSized = 1u32;      // Content-Length bytes
+const frameChunked = 2u32;    // the chunked coding
+const frameClose = 3u32;      // until the connection closes (a response only)
+
+// A Content-Length's value: every member of every field, all the same
+// decimal number, else the message is refused (RFC 9112, 6.3, point 5)
+fn contentLength(headers &Headers, n &mut u64, err &mut HttpError, malformed u16) Bool {
+  mut seen = false;
+  mut value = 0u64;
+  mut f = 0usize;
+  while f < headers.len() {
+    if eqIgnoreCase(headers.nameAt(f), "Content-Length") {
+      imm v = headers.valueAt(f);
+      mut start = 0usize;
+      while start <= v.len {
+        imm end = indexOf(v, ',', start);
+        imm m = trimOws(&v[start .. end]);
+        if m.len == 0usize {return bad(err, ErrorKind.Malformed[], malformed, "a Content-Length is empty");}
+        if m.len > 19usize {return bad(err, ErrorKind.Malformed[], malformed, "a Content-Length has more than 19 digits");}
+        mut k = 0u64;
+        mut i = 0usize;
+        while i < m.len {
+          imm c = m[i];
+          if c < '0' or c > '9' {return bad(err, ErrorKind.Malformed[], malformed, "a Content-Length is not a decimal number");}
+          k = k * 10u64 + u64.from(c - '0');
+          i = i + 1usize;
+        }
+        if seen and k != value {return bad(err, ErrorKind.Malformed[], malformed, "Content-Length is given twice, differently");}
+        seen = true;
+        value = k;
+        start = end + 1usize;
+      }
+    }
+    f = f + 1usize;
+  }
+  *n = value;
+  true;
+}
+
+// A received message's framing (RFC 9112, 6.3), refusing every shape a
+// message could be read two ways by: Transfer-Encoding beside
+// Content-Length, Transfer-Encoding in HTTP/1.0, chunked not last or twice,
+// any coding but chunked, and Content-Lengths that disagree
+fn framingOf(headers &Headers, request Bool, http10 Bool, mode &mut u32, n &mut u64, err &mut HttpError) Bool {
+  imm malformed = if request {400u16;} else {0u16;};
+  imm hasTe = headers.has("Transfer-Encoding");
+  imm hasCl = headers.has("Content-Length");
+  if hasTe {
+    if hasCl {return bad(err, ErrorKind.Malformed[], malformed, "both Transfer-Encoding and Content-Length are given");}
+    if http10 {return bad(err, ErrorKind.Malformed[], malformed, "an HTTP/1.0 message has a Transfer-Encoding");}
+    imm te = headers.joined("Transfer-Encoding");
+    imm v = te.view();
+    mut chunked = 0u32;
+    mut start = 0usize;
+    while start <= v.len {
+      imm end = indexOf(v, ',', start);
+      imm m = trimOws(&v[start .. end]);
+      if m.len == 0usize {return bad(err, ErrorKind.Malformed[], malformed, "a Transfer-Encoding member is empty");}
+      if eqIgnoreCase(m, "chunked") {
+        chunked = chunked + 1u32;
+      } elif chunked > 0u32 {
+        return bad(err, ErrorKind.Malformed[], malformed, "chunked is not the last transfer coding");
+      } else {
+        return bad(err, ErrorKind.Unsupported[], if request {501u16;} else {0u16;}, "a transfer coding other than chunked");
+      }
+      start = end + 1usize;
+    }
+    if chunked > 1u32 {return bad(err, ErrorKind.Malformed[], malformed, "chunked is applied more than once");}
+    *mode = frameChunked;
+    *n = 0u64;
+    return true;
+  }
+  if hasCl {
+    if not contentLength(headers, n, err, malformed) {return false;}
+    *mode = frameSized;
+    return true;
+  }
+  *mode = if request {frameEmpty;} else {frameClose;};
+  *n = 0u64;
+  true;
+}
+
+// chunk-size [ chunk-ext ] (RFC 9112, 7.1), the line without its CRLF: the
+// size into size. An extension is checked for characters and skipped
+fn parseChunkLine(line &[]u8, cfg &Config, size &mut u64, err &mut HttpError) Bool {
+  mut i = 0usize;
+  mut v = 0u64;
+  while i < line.len {
+    imm c = line[i];
+    mut d = 0u64;
+    if c >= '0' and c <= '9' {d = u64.from(c - '0');}
+    elif c >= 'a' and c <= 'f' {d = u64.from(c - 'a') + 10u64;}
+    elif c >= 'A' and c <= 'F' {d = u64.from(c - 'A') + 10u64;}
+    else {break;}
+    if i >= cfg.maxChunkDigits {return bad(err, ErrorKind.TooLarge[], 400u16, "a chunk size has more digits than maxChunkDigits");}
+    v = (v << 4u64) | d;
+    i = i + 1usize;
+  }
+  if i == 0usize {return bad(err, ErrorKind.Malformed[], 400u16, "a chunk size is not hexadecimal");}
+  if i < line.len {
+    mut j = i;
+    while j < line.len and isOws(line[j]) {j = j + 1usize;}
+    if j == line.len or line[j] != ';' {return bad(err, ErrorKind.Malformed[], 400u16, "a chunk size is followed by something not an extension");}
+    while j < line.len {
+      imm c = line[j];
+      if not (isFieldVchar(c) or isOws(c)) {return bad(err, ErrorKind.Malformed[], 400u16, "a chunk extension holds a control character");}
+      j = j + 1usize;
+    }
+  }
+  *size = v;
+  true;
+}

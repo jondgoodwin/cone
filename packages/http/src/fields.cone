@@ -1,0 +1,236 @@
+// ======== Fields: names and values checked, and a message's list of them ========
+
+// ---------------------------------------------------------------------------
+// Characters (RFC 9110, section 5.6)
+// ---------------------------------------------------------------------------
+
+// A token's character: a letter, a digit, or one of !#$%&'*+-.^_`|~
+pub fn isTchar(c u8) Bool {
+  if (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or (c >= '0' and c <= '9') {return true;}
+  c == '!' or c == '#' or c == '$' or c == '%' or c == '&' or c == '\'' or c == '*' or
+    c == '+' or c == '-' or c == '.' or c == '^' or c == '_' or c == '`' or c == '|' or c == '~';
+}
+
+// One or more token characters
+pub fn isToken(s &[]u8) Bool {
+  if s.len == 0usize {return false;}
+  mut i = 0usize;
+  while i < s.len {
+    if not isTchar(s[i]) {return false;}
+    i = i + 1usize;
+  }
+  true;
+}
+
+// A field value's visible character: VCHAR, or obs-text (0x80 and above)
+pub fn isFieldVchar(c u8) Bool {(c >= 0x21u8 and c <= 0x7Eu8) or c >= 0x80u8;}
+
+// Optional whitespace: a space or a tab
+pub fn isOws(c u8) Bool {c == ' ' or c == '\t';}
+
+// s without the spaces and tabs at either end
+pub fn trimOws(s &[]u8) &[]u8 {
+  mut a = 0usize;
+  mut b = s.len;
+  while a < b and isOws(s[a]) {a = a + 1usize;}
+  while b > a and isOws(s[b - 1usize]) {b = b - 1usize;}
+  &s[a .. b];
+}
+
+// Why s is not a field name, or "" when it is one
+pub fn checkFieldName(s &[]u8) &[]u8 {
+  if s.len == 0usize {return "a field's name is empty";}
+  mut i = 0usize;
+  while i < s.len {
+    imm c = s[i];
+    if isOws(c) {return "a field's name has a space or a tab in it, or before its colon";}
+    if not isTchar(c) {return "a field's name has a character no token may hold";}
+    i = i + 1usize;
+  }
+  "";
+}
+
+// Why s, its ends already trimmed, is not a field value, or "" when it is
+// one
+pub fn checkFieldValue(s &[]u8) &[]u8 {
+  mut i = 0usize;
+  while i < s.len {
+    imm c = s[i];
+    if c == '\r' or c == '\n' {return "a field's value holds a CR or an LF";}
+    if c == 0u8 {return "a field's value holds a NUL";}
+    if not isFieldVchar(c) and not isOws(c) {return "a field's value holds a control character";}
+    i = i + 1usize;
+  }
+  "";
+}
+
+// ASCII's lower case of c
+pub fn lowerAscii(c u8) u8 {if c >= 'A' and c <= 'Z' {c + 32u8;} else {c;};}
+
+// Whether a and b are the same, ignoring ASCII case
+pub fn eqIgnoreCase(a &[]u8, b &[]u8) Bool {
+  if a.len != b.len {return false;}
+  mut i = 0usize;
+  while i < a.len {
+    if lowerAscii(a[i]) != lowerAscii(b[i]) {return false;}
+    i = i + 1usize;
+  }
+  true;
+}
+
+// Whether the comma-separated list 'list' has 'token' as a member, ignoring
+// case and the spaces around each member
+pub fn listHas(list &[]u8, token &[]u8) Bool {
+  mut start = 0usize;
+  while start <= list.len {
+    mut end = start;
+    while end < list.len and list[end] != ',' {end = end + 1usize;}
+    if eqIgnoreCase(trimOws(&list[start .. end]), token) {return true;}
+    start = end + 1usize;
+  }
+  false;
+}
+
+// ---------------------------------------------------------------------------
+// Headers
+// ---------------------------------------------------------------------------
+
+// One field: its name as written, and its value
+pub struct Field {
+  fname String;
+  fvalue String;
+
+  pub fn blank() Field {new Field(String.empty(), String.empty());}
+  pub fn name(self &) &[]u8 {fname.view();}
+  pub fn value(self &) &[]u8 {fvalue.view();}
+}
+
+// A message's header or trailer fields, in order (see the package's header,
+// FIELDS)
+pub struct Headers {
+  fields List[Field];
+
+  // No fields: 'new Headers()'
+  pub fn initEmpty overload init(self &new) {*self = new Headers(List[Field].empty());}
+  pub fn empty() Headers {new Headers(List[Field].empty());}
+
+  pub fn len(self &) usize {fields.len();}
+  pub fn isEmpty(self &) Bool {fields.len() == 0usize;}
+  pub fn nameAt(self &, i usize) &[]u8 {fields[i].fname.view();}
+  pub fn valueAt(self &, i usize) &[]u8 {fields[i].fvalue.view();}
+
+  // Add a field after the others: false, and nothing added, when the name is
+  // not a token or the value, its spaces and tabs at either end dropped, is
+  // not a field value
+  pub fn add(self &mut, name &[]u8, value &[]u8) Bool {
+    imm v = trimOws(value);
+    if checkFieldName(name).len != 0usize or checkFieldValue(v).len != 0usize {return false;}
+    fields.push(new Field(String.from(name), String.from(v)));
+    true;
+  }
+
+  // Add a field whose value is a number written in decimal
+  pub fn addUInt(self &mut, name &[]u8, n u64) Bool {
+    mut s = String.empty();
+    s.appendUInt(n);
+    self.add(name, s.view());
+  }
+
+  // Replace every field of this name with one holding value: false, and
+  // nothing changed, when add would refuse it
+  pub fn set(self &mut, name &[]u8, value &[]u8) Bool {
+    imm v = trimOws(value);
+    if checkFieldName(name).len != 0usize or checkFieldValue(v).len != 0usize {return false;}
+    self.remove(name);
+    fields.push(new Field(String.from(name), String.from(v)));
+    true;
+  }
+
+  // Remove every field of this name: how many
+  pub fn remove(self &mut, name &[]u8) usize {
+    mut gone = 0usize;
+    mut rev = List[Field].empty();
+    while fields.len() > 0usize {
+      mut f = Field.blank();
+      match fields.pop() {
+        case mut s Some {f <=> s.value;}
+        case is None[Field] {}
+      }
+      if eqIgnoreCase(f.fname.view(), name) {gone = gone + 1usize;}
+      else {rev.push(f);}
+    }
+    while rev.len() > 0usize {
+      mut f = Field.blank();
+      match rev.pop() {
+        case mut s Some {f <=> s.value;}
+        case is None[Field] {}
+      }
+      fields.push(f);
+    }
+    gone;
+  }
+
+  // The first value of a field of this name, or None
+  pub fn get(self &, name &[]u8) Option[&[]u8] {
+    mut i = 0usize;
+    while i < fields.len() {
+      if eqIgnoreCase(fields[i].fname.view(), name) {return Some[&[]u8][fields[i].fvalue.view()];}
+      i = i + 1usize;
+    }
+    None[&[]u8][];
+  }
+
+  // How many fields have this name
+  pub fn count(self &, name &[]u8) usize {
+    mut n = 0usize;
+    mut i = 0usize;
+    while i < fields.len() {
+      if eqIgnoreCase(fields[i].fname.view(), name) {n = n + 1usize;}
+      i = i + 1usize;
+    }
+    n;
+  }
+
+  pub fn has(self &, name &[]u8) Bool {self.count(name) > 0usize;}
+
+  // Whether any field of this name lists token among its comma-separated
+  // members, ignoring case: 'hasToken("Connection", "close")'
+  pub fn hasToken(self &, name &[]u8, token &[]u8) Bool {
+    mut i = 0usize;
+    while i < fields.len() {
+      if eqIgnoreCase(fields[i].fname.view(), name) and listHas(fields[i].fvalue.view(), token) {return true;}
+      i = i + 1usize;
+    }
+    false;
+  }
+
+  // Every value of this name, in order, joined by ", " (RFC 9110, 5.3); ""
+  // when there is none
+  pub fn joined(self &, name &[]u8) String {
+    mut out = String.empty();
+    mut first = true;
+    mut i = 0usize;
+    while i < fields.len() {
+      if eqIgnoreCase(fields[i].fname.view(), name) {
+        if not first {out.append(", ");}
+        out.append(fields[i].fvalue.view());
+        first = false;
+      }
+      i = i + 1usize;
+    }
+    out;
+  }
+
+  // Another Headers holding the same fields
+  pub fn copy(self &) Headers {
+    mut h = Headers.empty();
+    mut i = 0usize;
+    while i < fields.len() {
+      h.fields.push(new Field(fields[i].fname.copy(), fields[i].fvalue.copy()));
+      i = i + 1usize;
+    }
+    h;
+  }
+
+  pub fn clear(self &mut) {fields.clear();}
+}

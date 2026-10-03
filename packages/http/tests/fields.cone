@@ -1,0 +1,83 @@
+// Header fields: names compared ignoring case and kept as written, order
+// kept, repeats kept and joined only when asked; list members found by
+// hasToken; set and remove; and RFC 9110's rules for names and values, a
+// field breaking them refused and its reason given.
+
+mod fields;
+
+import testing use *;
+import collections use String;
+import http use *;
+
+fn value(h &Headers, name &[]u8) String {
+  match h.get(name) {
+    case imm v Some {String.from(v.value);}
+    case is None[&[]u8] {String.from("(none)");}
+  }
+}
+
+fn listing(h &Headers) String {
+  mut s = String.empty();
+  mut i = 0usize;
+  while i < h.len() {
+    s.append(h.nameAt(i));
+    s.append("=");
+    s.append(h.valueAt(i));
+    s.append(";");
+    i = i + 1usize;
+  }
+  s;
+}
+
+fn main() i32 {
+  mut h = Headers.empty();
+  expect(h.add("Content-Type", "text/html"), "a field");
+  expect(h.add("Set-Cookie", "a=1"), "a cookie");
+  expect(h.add("set-cookie", "b=2"), "another, its name in another case");
+  expect(h.add("Accept", "  text/*  \t"), "spaces at a value's ends dropped");
+  expectUInt(u64.from(h.len()), 4u64, "four fields");
+  expectStr(value(&h, "content-type").view(), "text/html", "found ignoring case");
+  expectStr(value(&h, "SET-COOKIE").view(), "a=1", "the first of two");
+  expectStr(value(&h, "Accept").view(), "text/*", "trimmed");
+  expectStr(value(&h, "Missing").view(), "(none)", "none");
+  expectUInt(u64.from(h.count("Set-Cookie")), 2u64, "both cookies kept");
+  expectStr(h.joined("set-cookie").view(), "a=1, b=2", "joined only when asked");
+  expectStr(listing(&h).view(), "Content-Type=text/html;Set-Cookie=a=1;set-cookie=b=2;Accept=text/*;",
+    "in order, names as written");
+
+  mut c = Headers.empty();
+  c.add("Connection", "keep-alive, Upgrade");
+  c.add("Connection", " CLOSE ");
+  expect(c.hasToken("connection", "close"), "a member of the second field, ignoring case");
+  expect(c.hasToken("Connection", "upgrade"), "a member of a list");
+  expect(not c.hasToken("Connection", "keep"), "only whole members");
+  expect(not c.hasToken("Transfer-Encoding", "chunked"), "no such field");
+
+  expect(h.set("Accept", "*/*"), "set");
+  expectStr(listing(&h).view(), "Content-Type=text/html;Set-Cookie=a=1;set-cookie=b=2;Accept=*/*;", "set replaces");
+  expectUInt(u64.from(h.remove("SET-cookie")), 2u64, "remove takes every one of a name");
+  expectStr(listing(&h).view(), "Content-Type=text/html;Accept=*/*;", "the rest in order");
+  imm k = h.copy();
+  h.clear();
+  expectStr(listing(&k).view(), "Content-Type=text/html;Accept=*/*;", "a copy is its own");
+  expect(h.isEmpty(), "cleared");
+
+  expect(not h.add("Bad Name", "v"), "a name with a space refused");
+  expect(not h.add("", "v"), "an empty name refused");
+  expect(not h.add("X", "a\r\nInjected: 1"), "CR and LF in a value refused");
+  expect(not h.add("X", "a\x00b"), "NUL refused");
+  expect(h.add("X", "a \t b"), "spaces and tabs inside a value are fine");
+  expect(h.add("X-Obs", "caf\xC3\xA9"), "bytes past 0x7F (obs-text) are fine");
+  expect(h.add("!#$%&'*+-.^_`|~09azAZ", "v"), "every token character");
+  expectUInt(u64.from(h.len()), 3u64, "the refused were not added");
+  expectStr(checkFieldName("A B"), "a field's name has a space or a tab in it, or before its colon", "why a name fails");
+  expectStr(checkFieldName("A/B"), "a field's name has a character no token may hold", "a separator");
+  expectStr(checkFieldName(""), "a field's name is empty", "empty");
+  expectStr(checkFieldName("Ok-Name"), "", "a good name");
+  expectStr(checkFieldValue("a\x7Fb"), "a field's value holds a control character", "DEL");
+  expectStr(checkFieldValue("a\nb"), "a field's value holds a CR or an LF", "LF");
+  expectStr(checkFieldValue(""), "", "an empty value is a value");
+  expect(isToken("GET") and not isToken("G T") and not isToken(""), "tokens");
+  expectStr(trimOws(" \t x y \t"), "x y", "trimOws");
+  done();
+}

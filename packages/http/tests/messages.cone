@@ -1,0 +1,50 @@
+// Methods, statuses, heads, bodies and errors: the version-independent
+// facts every core shares. Methods are tokens compared case-sensitively,
+// safe and idempotent per RFC 9110; reason phrases are the registered ones;
+// a response to HEAD, a 1xx, 204 and 304 have no body.
+
+mod messages;
+
+import testing use *;
+import collections use String;
+import http use *;
+
+fn main() i32 {
+  expect(methodOf("GET") == Method.Get[], "GET");
+  expect(methodOf("PATCH") == Method.Patch[], "PATCH");
+  expect(methodOf("get") == Method.Other[], "methods are case-sensitive");
+  expectStr(methodToken(Method.Delete[]), "DELETE", "a method's token");
+  expect(isSafe(Method.Head[]) and not isSafe(Method.Post[]), "safe");
+  expect(isIdempotent(Method.Put[]) and isIdempotent(Method.Delete[]) and not isIdempotent(Method.Post[])
+    and not isIdempotent(Method.Patch[]), "idempotent");
+
+  imm r = RequestHead.make("PURGE", "/cache", "example.com");
+  expect(r.method == Method.Other[], "an extension method");
+  expectStr(r.methodName(), "PURGE", "keeps its spelling");
+  imm g = RequestHead.get("/", "h:8080");
+  expectStr(g.methodName(), "GET", "a registered method's name");
+  expectStr(g.authority.view(), "h:8080", "the authority");
+  expect(g.version == Version.Http11[] and g.headers.isEmpty(), "HTTP/1.1, no fields yet");
+
+  expectStr(reasonPhrase(200u16), "OK", "200");
+  expectStr(reasonPhrase(404u16), "Not Found", "404");
+  expectStr(reasonPhrase(413u16), "Content Too Large", "413's RFC 9110 name");
+  expectStr(reasonPhrase(431u16), "Request Header Fields Too Large", "431");
+  expectStr(reasonPhrase(299u16), "", "an unregistered code");
+  expect(isInformational(103u16) and isSuccess(206u16) and isRedirect(308u16) and isClientError(451u16)
+    and isServerError(503u16), "classes");
+  expect(not responseHasBody(Method.Head[], 200u16), "a response to HEAD has no body");
+  expect(not responseHasBody(Method.Get[], 204u16) and not responseHasBody(Method.Get[], 304u16)
+    and not responseHasBody(Method.Get[], 100u16), "204, 304 and 1xx have none");
+  expect(responseHasBody(Method.Get[], 200u16) and responseHasBody(Method.Post[], 404u16), "others have one");
+
+  imm e = BodyLength.empty();
+  imm s = BodyLength.sized(42u64);
+  imm u = BodyLength.unsized();
+  expect(e.isEmpty() and s.isSized() and s.length == 42u64 and u.isUnsized(), "body lengths");
+
+  imm err = HttpError.make(ErrorKind.TooLarge[], 431u16, "the head is longer than maxHeadBytes");
+  expectStr(err.message().view(), "too large: the head is longer than maxHeadBytes", "an error's message");
+  expect(err.status == 431u16 and not err.noResponse, "its status");
+  done();
+}

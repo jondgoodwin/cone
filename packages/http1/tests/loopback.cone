@@ -1,0 +1,470 @@
+// HTTP/1.1 over real sockets, checked: the http1 core driven by iocore, as
+// examples/loopback.cone drives it (which is this work at full size,
+// timed). A server and a client on two OS threads, each driving its own
+// Loop and one Connection, over one kept-alive TCP connection on 127.0.0.1
+// (never 0.0.0.0, so the firewall is never asked): 1,000 GETs of sized
+// bodies, each with a Date written by calendar.httpDate and read back; 20
+// chunked POSTs streamed back chunked by the server, each Data buffer it
+// reads the one it sends; and one GET of an 8 MiB body streamed with
+// credit. Checked: every byte; every exchange counted by both ends; no
+// failure; the client's buffers bounded while the large body streamed;
+// and every buffer back in both pools at the end.
+
+mod loopback;
+
+import testing use *;
+import stdio use *;
+import thread;
+import sync use *;
+import collections use List, String;
+import time use Instant, Duration, Timestamp;
+import iobuf use *;
+import iocore use *;
+import diag use Histogram;
+import http use *;
+import http1 use *;
+import calendar;
+
+const gets = 1000u64;
+const posts = 20u64;
+const largeSize = 8388608u64;            // 8 MiB
+const recvSize = 65536usize;             // each receive's buffer
+const sendDepth = 8u32;                  // sends in flight at most
+const largeChunk = 65536usize;           // the large body is sent in these
+
+const tokConnect = 1u64;
+const tokRecv = 2u64;
+const tokSend = 3u64;
+
+// The byte at offset k of small body i, of post j, and of the large body
+fn smallByte(i u64, k u64) u8 {u8.from((i * 31u64 + k * 7u64) % 256u64);}
+fn postByte(j u64, k u64) u8 {u8.from(97u64 + (j * 5u64 + k) % 26u64);}
+fn largeByte(k u64) u8 {u8.from((k / 4096u64 + k * 3u64) & 255u64);}
+
+fn smallLen(i u64) u64 {64u64 + i % 64u64;}
+fn postLen(j u64) u64 {1024u64 + (j * 4099u64) % 23552u64;}
+
+// ---------------------------------------------------------------------------
+// The driver, the same for both sides
+// ---------------------------------------------------------------------------
+
+// One side of the TCP connection: its socket, its protocol core, and what
+// it has in flight
+struct Side {
+  pub sock Handle;
+  pub conn Connection;
+  pub recvOut Bool;
+  pub sendsOut u32;
+  pub sockClosed Bool;
+}
+
+// Hand the kernel what the core has to send, and a buffer to receive into
+// when the core has credit for one; close the socket once the core is done
+fn drive(lp &mut Loop, s &mut Side, pool &Pool) {
+  if s.sock.isNone() or s.sockClosed {return;}
+  imm now = Instant.now();
+  while s.sendsOut < sendDepth {
+    mut b = s.conn.pollTransmit(now);
+    if b.len() == 0usize {break;}
+    lp.submit(Op.Send[s.sock, b], Target.Here[tokSend]);
+    s.sendsOut = s.sendsOut + 1u32;
+  }
+  if not s.recvOut and not s.conn.isClosed() and s.conn.readCredit() >= recvSize {
+    lp.submit(Op.Recv[s.sock, pool.mustTake(recvSize)], Target.Here[tokRecv]);
+    s.recvOut = true;
+  }
+  if s.conn.shouldClose() and s.sendsOut == 0u32 {
+    lp.close(s.sock);
+    s.sockClosed = true;
+  }
+}
+
+// Whether this side is over: its socket closed and nothing of it in flight
+// (so there is nothing left to wait for)
+fn finished(s &Side) Bool {s.sockClosed and not s.recvOut and s.sendsOut == 0u32;}
+
+// Wait in the loop until something completes or the core's deadline comes,
+// then hand the core what came, and the time
+fn settle(lp &mut Loop, s &mut Side, out &mut List[Completion]) {
+  mut until = forever();
+  match s.conn.pollTimeout() {
+    case imm d Some {until = d.value;}
+    case is None[Instant] {}
+  }
+  lp.poll(until, out);
+  imm now = Instant.now();
+  mut k = 0usize;
+  while k < out.len() {
+    imm c = &mut out[k];
+    if c.token == tokConnect {
+      s.sock = c.handle;
+    } elif c.token == tokRecv {
+      s.recvOut = false;
+      if c.count() > 0usize {
+        mut b = IoBuf.empty();
+        b <=> c.buf;
+        s.conn.handleInput(b, now);
+      } else {
+        s.conn.handleInput(IoBuf.empty(), now);       // the end of the stream, or a failure
+      }
+    } elif c.token == tokSend {
+      s.sendsOut = s.sendsOut - 1u32;
+      if not c.isDone() {s.conn.abort();}
+    }
+    k = k + 1usize;
+  }
+  out.clear();
+  s.conn.handleTimeout(now);
+}
+
+// ---------------------------------------------------------------------------
+// The server
+// ---------------------------------------------------------------------------
+
+struct ServerArgs {
+  pub portTx Sender[u16];
+}
+
+struct ServerReport {
+  pub requests u64;
+  pub failures u64;
+  pub exchanges u64;
+}
+
+// What the server is answering
+struct Answer {
+  pub route u32;            // 0 none, 1 a small GET, 2 an echo, 3 the large body
+  pub index u64;
+  pub largeOff u64;
+  pub held IoBuf;           // an echo buffer the send queue refused, to retry
+}
+
+fn serve(a ServerArgs) ServerReport {
+  imm pool = Pool.make();
+  mut lp = Loop.mustMake();
+  imm listener = lp.mustListen(SocketAddr.localhost(0u16));
+  mut port = 0u16;
+  match lp.localAddr(listener) {
+    case imm r Ok {port = r.value.port();}
+    case imm e Error {}
+  }
+  a.portTx.send(port);
+  lp.submit(Op.Accept[listener], Target.Here[tokConnect]);
+  mut s = new Side(Handle.none(), Connection.server(Config.make(), pool, Instant.now()), false, 0u32, false);
+  mut ans = new Answer(0u32, 0u64, 0u64, IoBuf.empty());
+  mut rep = new ServerReport(0u64, 0u64, 0u64);
+  mut out = List[Completion].empty();
+  while true {
+    respond(&mut s.conn, &pool, &mut ans, &mut rep);
+    drive(&mut lp, &mut s, &pool);
+    if finished(&s) {break;}
+    settle(&mut lp, &mut s, &mut out);
+  }
+  rep.exchanges = s.conn.exchangeCount();
+  rep;
+}
+
+// Act on the server's events: route each request, stream its answer
+fn respond(c &mut Connection, pool &Pool, ans &mut Answer, rep &mut ServerReport) {
+  // The large body goes out as the send queue has room
+  if ans.route == 3u32 {
+    while ans.largeOff < largeSize and c.writeRoom() >= largeChunk {
+      mut b = pool.mustTake(largeChunk);
+      imm room = b.whole();
+      mut i = 0usize;
+      while i < largeChunk {
+        room[i] = largeByte(ans.largeOff + u64.from(i));
+        i = i + 1usize;
+      }
+      b.setLen(largeChunk);
+      c.sendData(b);
+      ans.largeOff = ans.largeOff + u64.from(largeChunk);
+    }
+    if ans.largeOff == largeSize {
+      c.finish();
+      ans.route = 0u32;
+    }
+  }
+  // An echo buffer refused earlier goes first
+  if ans.held.len() > 0usize {
+    mut b = IoBuf.empty();
+    b <=> ans.held;
+    imm n = b.len();
+    match c.sendData(b) {
+      case mut back Some {
+        ans.held <=> back.value;
+        return;
+      }
+      case is None[IoBuf] {c.release(n);}
+    }
+  }
+  while true {
+    match c.pollEvent() {
+      case mut e Request {
+        rep.requests = rep.requests + 1u64;
+        imm t = e.head.target.view();
+        mut h = ResponseHead.make(200u16);
+        h.headers.add("Date", calendar.httpDate(Timestamp.now()).view());
+        h.headers.add("Server", "cone-http1-loopback");
+        if e.head.method == Method.Post[] {
+          ans.route = 2u32;
+          h.headers.add("Content-Type", "application/octet-stream");
+          c.sendResponse(h, BodyLength.unsized());
+        } elif t == "/large" {
+          ans.route = 3u32;
+          ans.largeOff = 0u64;
+          c.sendResponse(h, BodyLength.sized(largeSize));
+        } else {
+          // /small/<i>
+          mut i = 0u64;
+          mut k = 7usize;
+          while k < t.len {
+            i = i * 10u64 + u64.from(t[k] - '0');
+            k = k + 1usize;
+          }
+          ans.route = 1u32;
+          ans.index = i;
+        }
+      }
+      case mut d Data {
+        // An echo: the buffer that came is the one sent back
+        imm n = d.buf.len();
+        mut b = IoBuf.empty();
+        b <=> d.buf;
+        match c.sendData(b) {
+          case mut back Some {
+            ans.held <=> back.value;
+            return;
+          }
+          case is None[IoBuf] {c.release(n);}
+        }
+      }
+      case is End {
+        if ans.route == 1u32 {
+          imm n = smallLen(ans.index);
+          mut h = ResponseHead.make(200u16);
+          h.headers.add("Date", calendar.httpDate(Timestamp.now()).view());
+          h.headers.add("Content-Type", "application/octet-stream");
+          c.sendResponse(h, BodyLength.sized(n));
+          mut b = pool.mustTake(usize.from(n));
+          imm room = b.whole();
+          mut k = 0u64;
+          while k < n {
+            room[usize.from(k)] = smallByte(ans.index, k);
+            k = k + 1u64;
+          }
+          b.setLen(usize.from(n));
+          c.sendData(b);
+          c.finish();
+          ans.route = 0u32;
+        } elif ans.route == 2u32 {
+          c.finish();
+          ans.route = 0u32;
+        }
+      }
+      case is Failed {rep.failures = rep.failures + 1u64;}
+      case is Closed {return;}
+      case is NeedData {return;}
+      case is Paused {return;}
+      case is Response {return;}
+      case is Interim {}
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The client
+// ---------------------------------------------------------------------------
+
+struct ClientArgs {
+  pub port u16;
+}
+
+struct ClientReport {
+  pub getRtt Histogram;
+  pub postRtt Histogram;
+  pub getsDone u64;
+  pub postsDone u64;
+  pub largeBytes u64;
+  pub largeTook Duration;
+  pub checkTook Duration;   // of it, the client's checking every byte
+  pub wrong u64;
+  pub badDates u64;
+  pub failures u64;
+  pub peakHeld usize;
+  pub exchanges u64;
+}
+
+fn client(a ClientArgs) ClientReport {
+  imm pool = Pool.make();
+  mut lp = Loop.mustMake();
+  mut rep = new ClientReport(Histogram.make(), Histogram.make(), 0u64, 0u64, 0u64, Duration.zero(),
+    Duration.zero(), 0u64, 0u64, 0u64, 0usize, 0u64);
+  lp.submit(Op.Connect[SocketAddr.localhost(a.port)], Target.Here[tokConnect]);
+  mut s = new Side(Handle.none(), Connection.client(Config.make(), pool, Instant.now()), false, 0u32, false);
+  mut out = List[Completion].empty();
+  mut phase = 0u32;          // 0 GETs, 1 POSTs, 2 the large GET, 3 done
+  mut n = 0u64;              // requests made in this phase
+  mut inFlight = false;
+  mut sentAt = Instant.now();
+  mut largeAt = Instant.now();
+  mut offset = 0u64;         // body bytes checked so far
+  mut status = 0u16;
+  while true {
+    // The events: check every byte, release it, time each exchange
+    while inFlight {
+      match s.conn.pollEvent() {
+        case mut e Response {
+          status = e.head.status;
+          offset = 0u64;
+          if phase == 0u32 {
+            match e.head.headers.get("Date") {
+              case imm d Some {
+                match calendar.parseHttpDate(d.value) {
+                  case imm ok Ok {}
+                  case imm bad Error {rep.badDates = rep.badDates + 1u64;}
+                }
+              }
+              case is None[&[]u8] {rep.badDates = rep.badDates + 1u64;}
+            }
+          }
+        }
+        case mut d Data {
+          imm v = d.buf.view();
+          imm checkAt = Instant.now();
+          mut k = 0usize;
+          mut bad = false;
+          if phase == 2u32 {
+            while k < v.len {
+              if v[k] != largeByte(offset + u64.from(k)) {bad = true;}
+              k = k + 1usize;
+            }
+            rep.checkTook = rep.checkTook + (Instant.now() - checkAt);
+            imm held = pool.stats().heldBytes;
+            if held > rep.peakHeld {rep.peakHeld = held;}
+          } else {
+            while k < v.len {
+              imm at = offset + u64.from(k);
+              imm want = if phase == 0u32 {smallByte(n, at);} else {postByte(n, at);};
+              if v[k] != want {bad = true;}
+              k = k + 1usize;
+            }
+          }
+          if bad {rep.wrong = rep.wrong + 1u64;}
+          offset = offset + u64.from(v.len);
+          s.conn.release(v.len);
+        }
+        case is End {
+          inFlight = false;
+          imm took = (Instant.now() - sentAt).nanos();
+          if phase == 0u32 {
+            if status != 200u16 or offset != smallLen(n) {rep.wrong = rep.wrong + 1u64;}
+            rep.getRtt.record(took);
+            rep.getsDone = rep.getsDone + 1u64;
+            n = n + 1u64;
+            if n == gets {
+              phase = 1u32;
+              n = 0u64;
+            }
+          } elif phase == 1u32 {
+            if status != 200u16 or offset != postLen(n) {rep.wrong = rep.wrong + 1u64;}
+            rep.postRtt.record(took);
+            rep.postsDone = rep.postsDone + 1u64;
+            n = n + 1u64;
+            if n == posts {
+              phase = 2u32;
+              n = 0u64;
+            }
+          } else {
+            if status != 200u16 or offset != largeSize {rep.wrong = rep.wrong + 1u64;}
+            rep.largeBytes = offset;
+            rep.largeTook = Instant.now() - largeAt;
+            phase = 3u32;
+          }
+        }
+        case mut f Failed {
+          rep.failures = rep.failures + 1u64;
+          printStr("client: ");
+          printStr(f.error.message().view());
+          printStr("\n");
+          inFlight = false;
+          phase = 3u32;
+        }
+        case is Closed {
+          inFlight = false;
+          phase = 3u32;
+        }
+        case is NeedData {break;}
+        case is Paused {break;}
+        case is Request {break;}
+        case is Interim {}
+      }
+    }
+    // The next request, when the connection is free
+    if not inFlight and not s.sock.isNone() and phase < 3u32 and s.conn.canSendRequest() {
+      sentAt = Instant.now();
+      if phase == 0u32 {
+        mut t = String.from("/small/");
+        t.appendUInt(n);
+        s.conn.sendRequest(RequestHead.get(t.view(), "127.0.0.1"), BodyLength.empty());
+      } elif phase == 1u32 {
+        s.conn.sendRequest(RequestHead.make("POST", "/echo", "127.0.0.1"), BodyLength.unsized());
+        imm len = postLen(n);
+        mut at = 0u64;
+        while at < len {
+          imm piece = if len - at < 3072u64 {len - at;} else {3072u64;};
+          mut b = pool.mustTake(usize.from(piece));
+          imm room = b.whole();
+          mut k = 0u64;
+          while k < piece {
+            room[usize.from(k)] = postByte(n, at + k);
+            k = k + 1u64;
+          }
+          b.setLen(usize.from(piece));
+          s.conn.sendData(b);
+          at = at + piece;
+        }
+        s.conn.finish();
+      } else {
+        largeAt = Instant.now();
+        s.conn.sendRequest(RequestHead.get("/large", "127.0.0.1"), BodyLength.empty());
+      }
+      inFlight = true;
+    }
+    if phase == 3u32 and not s.conn.isClosed() {s.conn.abort();}
+    drive(&mut lp, &mut s, &pool);
+    if finished(&s) {break;}
+    settle(&mut lp, &mut s, &mut out);
+  }
+  rep.exchanges = s.conn.exchangeCount();
+  rep;
+}
+
+fn main() i32 {
+  mut portTx Sender[u16];
+  mut portRx Receiver[u16];
+  portTx, portRx = Channel[u16].make();
+  imm server = thread.start(new ServerArgs(portTx), &serve);
+  mut port = 0u16;
+  match portRx.recv() {
+    case imm p Some {port = p.value;}
+    case is None[u16] {}
+  }
+  require(port != 0u16, "the server is listening");
+  imm cl = thread.start(new ClientArgs(port), &client);
+  imm c = cl.join();
+  imm s = server.join();
+
+  expectUInt(c.getsDone, gets, "1,000 GETs answered");
+  expectUInt(c.postsDone, posts, "20 chunked POSTs echoed");
+  expectUInt(c.largeBytes, largeSize, "the 8 MiB body streamed whole");
+  expectUInt(c.wrong, 0u64, "every byte and every length right");
+  expectUInt(c.badDates, 0u64, "every Date read back");
+  expectUInt(c.failures + s.failures, 0u64, "no failure on either side");
+  expectUInt(c.exchanges, gets + posts + 1u64, "the client counted every exchange on one connection");
+  expectUInt(s.exchanges, gets + posts + 1u64, "so did the server");
+  expectUInt(s.requests, gets + posts + 1u64, "every request read");
+  expect(c.peakHeld <= 1048576usize, "the client held at most 1 MiB of buffers while 8 MiB streamed");
+  expectUInt(osBlocks(), 0u64, "every buffer back, every pool gone");
+  done();
+}

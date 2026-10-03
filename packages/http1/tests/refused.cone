@@ -1,0 +1,315 @@
+// What is refused, and why. Every shape of message that two readers could
+// frame differently (RFC 9112, sections 6.3 and 11.2: how requests are
+// smuggled) fails the connection with its reason, in both roles; so do
+// malformed lines and fields, heads and lines past their bounds, and bad
+// chunks. A server that has not begun a response answers the failure with
+// its status and 'Connection: close' first, then is to be closed. A client
+// reads its peer's failures the same way, and says whether any byte of the
+// response had arrived (whether a retry could be safe).
+
+mod refused;
+
+import testing use *;
+import collections use String;
+import time use Instant, Duration;
+import iobuf use *;
+import http use *;
+import http1 use *;
+
+fn feed(c &mut Connection, pool &Pool, text &[]u8, at Instant) {
+  mut i = 0usize;
+  while i < text.len {
+    mut b = pool.mustTake(4096usize);
+    imm n = b.append(&text[i .. text.len]);
+    c.handleInput(b, at);
+    i = i + n;
+  }
+}
+
+fn drain(c &mut Connection, at Instant) String {
+  mut s = String.empty();
+  while true {
+    imm b = c.pollTransmit(at);
+    if b.len() == 0usize {break;}
+    s.append(b.view());
+  }
+  s;
+}
+
+// The connection's events until it stops, as 'failed <message>' and the
+// like; the head and body events by name only. noResponse is the failure's
+const want0 = 0u32;
+
+fn outcome(c &mut Connection, noResponse &mut Bool) String {
+  mut log = String.empty();
+  while true {
+    match c.pollEvent() {
+      case is Request {log.append("request\n");}
+      case is Response {log.append("response\n");}
+      case is Interim {log.append("interim\n");}
+      case mut d Data {c.release(d.buf.len());}
+      case is End {log.append("end\n");}
+      case mut f Failed {
+        log.append("failed ");
+        log.append(f.error.message().view());
+        log.append("\n");
+        *noResponse = f.error.noResponse;
+      }
+      case is Closed {
+        log.append("closed\n");
+        return log;
+      }
+      case is NeedData {
+        log.append("need\n");
+        return log;
+      }
+      case is Paused {
+        log.append("paused\n");
+        return log;
+      }
+    }
+  }
+  log;
+}
+
+// A server reading text fails with why, answers with status, and is to be
+// closed
+fn refuses(pool &Pool, text &[]u8, why &[]u8, status &[]u8) {
+  imm t = Instant.fromNanos(1000000000i64);
+  mut c = Connection.server(Config.make(), *pool, t);
+  feed(&mut c, pool, text, t);
+  mut nr = false;
+  imm log = outcome(&mut c, &mut nr);
+  mut want = String.from(why);
+  want.append("closed\n");
+  if not log.endsWith(want.view()) {
+    expectStr(log.view(), want.view(), why);
+    return;
+  }
+  imm sent = drain(&mut c, t);
+  mut line = String.from("HTTP/1.1 ");
+  line.append(status);
+  line.append("\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
+  expectStr(sent.view(), line.view(), why);
+  expect(c.shouldClose(), "and then closes");
+}
+
+// A client that asked for a GET and read text fails with why
+fn clientRefuses(pool &Pool, text &[]u8, close Bool, why &[]u8, noResponse Bool) {
+  imm t = Instant.fromNanos(1000000000i64);
+  mut c = Connection.client(Config.make(), *pool, t);
+  c.sendRequest(RequestHead.get("/", "h"), BodyLength.empty());
+  drain(&mut c, t);
+  feed(&mut c, pool, text, t);
+  if close {c.handleInput(IoBuf.empty(), t);}
+  mut nr = false;
+  imm log = outcome(&mut c, &mut nr);
+  mut want = String.from(why);
+  want.append("closed\n");
+  expect(log.endsWith(want.view()), why);
+  if not log.endsWith(want.view()) {expectStr(log.view(), want.view(), "...was");}
+  expectBool(nr, noResponse, "...noResponse");
+  expect(c.shouldClose(), "...and is to be closed");
+}
+
+fn repeat(s &mut String, piece &[]u8, n usize) {
+  mut i = 0usize;
+  while i < n {
+    s.append(piece);
+    i = i + 1usize;
+  }
+}
+
+fn smuggling(pool &Pool) {
+  refuses(pool, "POST / HTTP/1.1\r\nHost: h\r\nContent-Length: 5\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n",
+    "failed malformed: both Transfer-Encoding and Content-Length are given\n", "400 Bad Request");
+  refuses(pool, "POST / HTTP/1.1\r\nHost: h\r\nTransfer-Encoding: chunked\r\nContent-Length: 5\r\n\r\n",
+    "failed malformed: both Transfer-Encoding and Content-Length are given\n", "400 Bad Request");
+  refuses(pool, "POST / HTTP/1.1\r\nHost: h\r\nContent-Length: 5\r\nContent-Length: 6\r\n\r\nhello",
+    "failed malformed: Content-Length is given twice, differently\n", "400 Bad Request");
+  refuses(pool, "POST / HTTP/1.1\r\nHost: h\r\nContent-Length: 5, 6\r\n\r\nhello",
+    "failed malformed: Content-Length is given twice, differently\n", "400 Bad Request");
+  refuses(pool, "POST / HTTP/1.1\r\nHost: h\r\nContent-Length: +5\r\n\r\nhello",
+    "failed malformed: a Content-Length is not a decimal number\n", "400 Bad Request");
+  refuses(pool, "POST / HTTP/1.1\r\nHost: h\r\nContent-Length: 0x10\r\n\r\n",
+    "failed malformed: a Content-Length is not a decimal number\n", "400 Bad Request");
+  refuses(pool, "POST / HTTP/1.1\r\nHost: h\r\nContent-Length: 5,\r\n\r\n",
+    "failed malformed: a Content-Length is empty\n", "400 Bad Request");
+  refuses(pool, "POST / HTTP/1.1\r\nHost: h\r\nContent-Length: 18446744073709551616\r\n\r\n",
+    "failed malformed: a Content-Length has more than 19 digits\n", "400 Bad Request");
+  refuses(pool, "POST / HTTP/1.0\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n",
+    "failed malformed: an HTTP/1.0 message has a Transfer-Encoding\n", "400 Bad Request");
+  refuses(pool, "POST / HTTP/1.1\r\nHost: h\r\nTransfer-Encoding: gzip, chunked\r\n\r\n",
+    "failed unsupported: a transfer coding other than chunked\n", "501 Not Implemented");
+  refuses(pool, "POST / HTTP/1.1\r\nHost: h\r\nTransfer-Encoding: chunked, gzip\r\n\r\n",
+    "failed malformed: chunked is not the last transfer coding\n", "400 Bad Request");
+  refuses(pool, "POST / HTTP/1.1\r\nHost: h\r\nTransfer-Encoding: chunked\r\nTransfer-Encoding: chunked\r\n\r\n",
+    "failed malformed: chunked is applied more than once\n", "400 Bad Request");
+  refuses(pool, "POST / HTTP/1.1\r\nHost: h\r\nTransfer-Encoding: chunked,\r\n\r\n",
+    "failed malformed: a Transfer-Encoding member is empty\n", "400 Bad Request");
+  refuses(pool, "GET / HTTP/1.1\r\nHost: h\r\nX-A: 1\r\n folded\r\n\r\n",
+    "failed malformed: a field line starts with a space or a tab (obs-fold)\n", "400 Bad Request");
+  refuses(pool, "GET / HTTP/1.1\r\nHost : h\r\n\r\n",
+    "failed malformed: a field's name has a space or a tab in it, or before its colon\n", "400 Bad Request");
+  refuses(pool, "GET / HTTP/1.1\nHost: h\n\n",
+    "failed malformed: a line ends in an LF without its CR\n", "400 Bad Request");
+  refuses(pool, "GET / HTTP/1.1\r\nHost: h\r\nX: a\rb\r\n\r\n",
+    "failed malformed: a CR is not followed by its LF\n", "400 Bad Request");
+  refuses(pool, "GET / HTTP/1.1\r\nHost: h\r\nX: a\x00b\r\n\r\n",
+    "failed malformed: a field's value holds a NUL\n", "400 Bad Request");
+  refuses(pool, "GET / HTTP/1.1\r\nHost: h\r\nX: a\x01b\r\n\r\n",
+    "failed malformed: a field's value holds a control character\n", "400 Bad Request");
+}
+
+fn lines(pool &Pool) {
+  refuses(pool, "GET  / HTTP/1.1\r\nHost: h\r\n\r\n",
+    "failed malformed: the request target is empty (two spaces together)\n", "400 Bad Request");
+  refuses(pool, "GET / HTTP/1.1 \r\nHost: h\r\n\r\n",
+    "failed malformed: the request line does not end in an HTTP version\n", "400 Bad Request");
+  refuses(pool, "GET / http/1.1\r\nHost: h\r\n\r\n",
+    "failed malformed: the request line does not end in an HTTP version\n", "400 Bad Request");
+  refuses(pool, "GET /\r\nHost: h\r\n\r\n",
+    "failed malformed: the request line has one space, not two\n", "400 Bad Request");
+  refuses(pool, "GET / HTTP/2.0\r\nHost: h\r\n\r\n",
+    "failed unsupported: the request's major version is not 1\n", "505 HTTP Version Not Supported");
+  refuses(pool, "G(T / HTTP/1.1\r\nHost: h\r\n\r\n",
+    "failed malformed: the method is not a token\n", "400 Bad Request");
+  refuses(pool, "GET /a\x7Fb HTTP/1.1\r\nHost: h\r\n\r\n",
+    "failed malformed: the request target holds a space, a control character or a byte past 0x7E\n", "400 Bad Request");
+  refuses(pool, "GET / HTTP/1.1\r\n\r\n",
+    "failed malformed: an HTTP/1.1 request has no Host\n", "400 Bad Request");
+  refuses(pool, "GET / HTTP/1.1\r\nHost: a\r\nHost: b\r\n\r\n",
+    "failed malformed: the request has more than one Host\n", "400 Bad Request");
+  refuses(pool, "CONNECT h:443 HTTP/1.1\r\nHost: h:443\r\n\r\n",
+    "failed unsupported: CONNECT is not supported\n", "501 Not Implemented");
+  refuses(pool, "GET / HTTP/1.1\r\nHost: h\r\nX@Y: 1\r\n\r\n",
+    "failed malformed: a field's name has a character no token may hold\n", "400 Bad Request");
+  refuses(pool, "GET / HTTP/1.1\r\nHost: h\r\n: v\r\n\r\n",
+    "failed malformed: a field's name is empty\n", "400 Bad Request");
+  refuses(pool, "GET / HTTP/1.1\r\nHost: h\r\nNoColon\r\n\r\n",
+    "failed malformed: a field line has no colon\n", "400 Bad Request");
+}
+
+fn bounds(pool &Pool) {
+  {
+    mut s = String.from("GET / HTTP/1.1\r\nHost: h\r\n");
+    mut i = 0usize;
+    while i < 40usize {
+      s.append("X-Pad: ");
+      repeat(&mut s, "p", 500usize);
+      s.append("\r\n");
+      i = i + 1usize;
+    }
+    s.append("\r\n");
+    refuses(pool, s.view(), "failed too large: the head is longer than maxHeadBytes\n", "431 Request Header Fields Too Large");
+  }
+  {
+    mut s = String.from("GET / HTTP/1.1\r\nHost: h\r\nX-Long: ");
+    repeat(&mut s, "q", 9000usize);
+    s.append("\r\n\r\n");
+    refuses(pool, s.view(), "failed too large: a field line is longer than maxLineBytes\n", "431 Request Header Fields Too Large");
+  }
+  {
+    mut s = String.from("GET /");
+    repeat(&mut s, "u", 9000usize);
+    s.append(" HTTP/1.1\r\nHost: h\r\n\r\n");
+    refuses(pool, s.view(), "failed too large: the request line is longer than maxLineBytes\n", "414 URI Too Long");
+  }
+  {
+    mut s = String.from("GET / HTTP/1.1\r\nHost: h\r\n");
+    repeat(&mut s, "A: 1\r\n", 101usize);
+    s.append("\r\n");
+    refuses(pool, s.view(), "failed too large: more fields than maxHeaders\n", "431 Request Header Fields Too Large");
+  }
+  {
+    // Exactly the bound's 100 field lines, Host among them, is read
+    mut s = String.from("GET / HTTP/1.1\r\nHost: h\r\n");
+    repeat(&mut s, "A: 1\r\n", 99usize);
+    s.append("\r\n");
+    imm t = Instant.fromNanos(1000000000i64);
+    mut c = Connection.server(Config.make(), *pool, t);
+    feed(&mut c, pool, s.view(), t);
+    mut nr = false;
+    expectStr(outcome(&mut c, &mut nr).view(), "request\nend\npaused\n", "100 fields: read");
+  }
+}
+
+fn chunks(pool &Pool) {
+  imm head = "POST / HTTP/1.1\r\nHost: h\r\nTransfer-Encoding: chunked\r\n\r\n";
+  mut s = String.from(head);
+  s.append("zz\r\n");
+  refuses(pool, s.view(), "failed malformed: a chunk size is not hexadecimal\n", "400 Bad Request");
+  s = String.from(head);
+  s.append("00000000000000001\r\na\r\n0\r\n\r\n");
+  refuses(pool, s.view(), "failed too large: a chunk size has more digits than maxChunkDigits\n", "400 Bad Request");
+  s = String.from(head);
+  s.append("3\r\nabcX\r\n0\r\n\r\n");
+  refuses(pool, s.view(), "failed malformed: a chunk's data is not followed by CRLF\n", "400 Bad Request");
+  s = String.from(head);
+  s.append("3\nabc\r\n0\r\n\r\n");
+  refuses(pool, s.view(), "failed malformed: a chunk's size line ends in an LF without its CR\n", "400 Bad Request");
+  s = String.from(head);
+  s.append("3 x\r\nabc\r\n0\r\n\r\n");
+  refuses(pool, s.view(), "failed malformed: a chunk size is followed by something not an extension\n", "400 Bad Request");
+  s = String.from(head);
+  s.append("3;a=\x01\r\nabc\r\n0\r\n\r\n");
+  refuses(pool, s.view(), "failed malformed: a chunk extension holds a control character\n", "400 Bad Request");
+  s = String.from(head);
+  s.append("3;");
+  repeat(&mut s, "e", 2000usize);
+  s.append("\r\nabc\r\n0\r\n\r\n");
+  refuses(pool, s.view(), "failed too large: a chunk's size line is longer than maxChunkLineBytes\n", "400 Bad Request");
+  s = String.from(head);
+  s.append("0\r\nX: 1\r\nX  : 2\r\n\r\n");
+  refuses(pool, s.view(), "failed malformed: a field's name has a space or a tab in it, or before its colon\n", "400 Bad Request");
+}
+
+fn responses(pool &Pool) {
+  clientRefuses(pool, "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nTransfer-Encoding: chunked\r\n\r\n", false,
+    "failed malformed: both Transfer-Encoding and Content-Length are given\n", false);
+  clientRefuses(pool, "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nContent-Length: 3\r\n\r\nab", false,
+    "failed malformed: Content-Length is given twice, differently\n", false);
+  clientRefuses(pool, "HTTP/1.1 200 OK\r\nTransfer-Encoding: gzip\r\n\r\n", false,
+    "failed unsupported: a transfer coding other than chunked\n", false);
+  clientRefuses(pool, "HTTP/1.1 2000 OK\r\n\r\n", false,
+    "failed malformed: the status code is not three digits\n", false);
+  clientRefuses(pool, "HTTP/1.1 099 Low\r\n\r\n", false,
+    "failed malformed: the status code is outside 100 to 599\n", false);
+  clientRefuses(pool, "HTTP/2 200\r\n\r\n", false,
+    "failed malformed: the status line is not 'HTTP/1.x' and a code\n", false);
+  clientRefuses(pool, "HTTP/1.1 101 Switching Protocols\r\nUpgrade: x\r\n\r\n", false,
+    "failed unsupported: 101 Switching Protocols: upgrades are not supported\n", false);
+  clientRefuses(pool, "HTTP/1.1 200 OK\r\nX: 1\r\n\tfolded\r\n\r\n", false,
+    "failed malformed: a field line starts with a space or a tab (obs-fold)\n", false);
+  clientRefuses(pool, "", true, "failed closed: the connection closed before a response\n", true);
+  clientRefuses(pool, "HTTP/1.1 200 OK\r\nContent-", true,
+    "failed closed: the connection closed in the middle of a head\n", false);
+  clientRefuses(pool, "HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nshort", true,
+    "failed closed: the connection closed in the middle of a body\n", false);
+  clientRefuses(pool, "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nab", true,
+    "failed closed: the connection closed in the middle of a body\n", false);
+  clientRefuses(pool, "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nabcde\r\n", true,
+    "failed closed: the connection closed in the middle of a chunked body\n", false);
+  {
+    // Bytes from a server when no request is outstanding
+    imm t = Instant.fromNanos(1000000000i64);
+    mut c = Connection.client(Config.make(), *pool, t);
+    feed(&mut c, pool, "HTTP/1.1 200 OK\r\n\r\n", t);
+    mut nr = false;
+    expectStr(outcome(&mut c, &mut nr).view(), "failed malformed: bytes arrived with no request outstanding\nclosed\n",
+      "bytes with no request outstanding");
+  }
+}
+
+fn main() i32 {
+  {
+    imm pool = Pool.make();
+    smuggling(&pool);
+    lines(&pool);
+    bounds(&pool);
+    chunks(&pool);
+    responses(&pool);
+    expectUInt(pool.stats().lent, 0u64, "every buffer back in the pool");
+  }
+  done();
+}
