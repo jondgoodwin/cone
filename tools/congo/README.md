@@ -26,8 +26,7 @@ congo run -D FAST -D N=2   a constant for isDefined and definedInt (provisional)
 every `conec` compile of the build, the packages it imports included, where
 core's `isDefined` and `definedInt` read them. They are a provisional
 mechanism whose final design is open (`doc/reference/refintrinsic.html`,
-"Constants of the build"), and `congo.py`'s alone: Congo in Cone does not take
-them yet.
+"Constants of the build").
 
 Run it as `tools/congo/congo` (a shell script) or `tools\congo\congo.bat`, or
 as `python tools/congo/congo.py`. Put `tools/congo/` on `PATH` to type `congo`.
@@ -584,11 +583,10 @@ links is the Congo running, that Congo is first moved aside to
 build folder while it runs from it; `congo.py clean` can. Windows only, as its
 `process` package and its linking are for now.
 
-**It does everything `congo.py` does** but `-D`, the provisional constants
-passed to `conec` (above): `congo new` (the manifest and the
-template, byte for byte), `congo build` (debug and `--release`, a program
-linked or a library's object, the build folder, the descriptions), `congo run`
-of the current package or a lone file, `congo test` (above, "Testing a
+**It does everything `congo.py` does:** `congo new` (the manifest and the
+template, byte for byte), `congo build` (debug and `--release`, `-D`, a
+program linked or a library's object, the build folder, the descriptions),
+`congo run` of the current package or a lone file, `congo test` (above, "Testing a
 package": the package built, each test built, run within its time and
 compared with its `.out`, `.exit` and `.err`, `--bless`, the name filter, the
 examples built, a folder of packages), and `congo clean` of either, matching

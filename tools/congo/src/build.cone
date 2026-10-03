@@ -32,21 +32,26 @@ struct Session {
   pub conec String;                // found at the first compile; "" before
   pub hasLinker Bool;
   pub linker Linker;               // found at the first link
+  // TEMPORARY, a provisional mechanism whose final design is open: each
+  // '-D NAME' or '-D NAME=123' given to build, run or test, passed to every
+  // conec compile of the build, the packages it imports included (conec's
+  // isDefined, definedInt)
+  pub defines List[String];
 }
 
-fn newSession(repo &[]u8, reg Registry, out &[]u8, mode &[]u8) Session {
+fn newSession(repo &[]u8, reg Registry, out &[]u8, mode &[]u8, defines &List[String]) Session {
   new Session(String.from(repo), reg, String.from(out), String.from(mode), Dict[String, String].empty(),
-    List[String].empty(), String.empty(), false, noLinkerYet());
+    List[String].empty(), String.empty(), false, noLinkerYet(), copyStrings(defines));
 }
 
 // Build pkg and everything it imports into its build folder, each package
 // compiled on its own; answer the executable, or for a library its object.
 // A build is whole every time: every description written, every package
 // compiled, nothing kept from a build before. The first failure ends Congo.
-fn buildPackage(repo &[]u8, pkg Package, mode &[]u8) String {
+fn buildPackage(repo &[]u8, pkg Package, mode &[]u8, defines &List[String]) String {
   imm folders = registryFolders(repo);
   imm out = buildFolder(&pkg, mode);
-  mut s = newSession(repo, readRegistry(folders), out.view(), mode);
+  mut s = newSession(repo, readRegistry(folders), out.view(), mode, defines);
   imm top = s.reg.add(pkg);
   match build(&mut s, top) {
     case mut ok Ok {
@@ -176,7 +181,7 @@ fn lonePackage(given &[]u8) Result[Package, String] {
 // which is what every package compiled after it that imports it is compiled
 // against.
 fn compileUnit(conec &[]u8, reg &Registry, plan &Plan, u usize, out &[]u8, includes &[]u8, mode &[]u8,
-    top Bool, announce Bool) Result[String, String] {
+    defines &List[String], top Bool, announce Bool) Result[String, String] {
   imm unit = plan.units[u];
   imm pkg = reg.packages[unit.pkg];
   imm output = if top {pkg.output.copy();} else {String.from("library");};
@@ -206,7 +211,16 @@ fn compileUnit(conec &[]u8, reg &Registry, plan &Plan, u usize, out &[]u8, inclu
     imm compiling = cat(label.view(), " (", pkg.root.view(), ")");
     say("Compiling", compiling.view());
   }
-  imm args = argList(conec, "-o", out, desc.view());
+  mut args = argList(conec);
+  mut d = 0usize;
+  while d < defines.len() {
+    args.push(String.from("-D"));
+    args.push(defines[d].copy());
+    d = d + 1usize;
+  }
+  args.push(String.from("-o"));
+  args.push(String.from(out));
+  args.push(desc.copy());
   mut chatter = String.empty();
   mut code = 0u32;
   match process.run(args.view()) {
@@ -313,7 +327,8 @@ fn compile(s &mut Session, plan &Plan, top usize, topOut &[]u8, announce Bool) R
       imm dest = if own {String.from(topOut);} else {out.copy();};
       makeFolder(dest.view());
       mut obj = String.empty();
-      match compileUnit(s.conec.view(), &s.reg, plan, u, dest.view(), out.view(), s.mode.view(), isTop, announce or not isTop) {
+      match compileUnit(s.conec.view(), &s.reg, plan, u, dest.view(), out.view(), s.mode.view(), &s.defines, isTop,
+        announce or not isTop) {
         case mut ok Ok { obj <=> ok.value; }
         case imm e Error {
           changes.restore();

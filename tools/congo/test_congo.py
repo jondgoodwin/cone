@@ -355,9 +355,7 @@ class Scenarios(unittest.TestCase):
         self.congo("clean", "lone.cone", cwd=self.root)
         self.assertEqual(list((self.root / "home" / "lone").iterdir()), [])
 
-    # TEMPORARY, a provisional mechanism whose final design is open; congo.py's
-    # alone for now, so Congo in Cone does not run it
-    @unittest.skipIf(CONGO_EXE, "-D is congo.py's alone for now")
+    # TEMPORARY, a provisional mechanism whose final design is open
     def test_define_reaches_the_compile(self):
         write(self.root / "flags.cone", """
             mod flags;
