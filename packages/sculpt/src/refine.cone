@@ -308,7 +308,8 @@ fn vec3ToVec2s(src &List[Vec3]) List[Vec2] {
 }
 
 // A channel's values carried to the child's elements, by domain, as Vec3.
-// 'isCrease': the "crease" sharpness channel, which wears down instead.
+// 'isCrease': a sharpness channel (the edge "crease" or the vertex
+// "crease_vert"), which wears down instead.
 fn refineChannel(m &PolyMesh, child &PolyMesh, domain u32, vals &List[Vec3], isCrease Bool, boundary u32,
     fvar u32, eSharp &List[f32], vSharp &List[f32], cEdgeParent &List[u32], parentFace &List[u32],
     parentHalf &List[u32]) List[Vec3] {
@@ -357,7 +358,7 @@ fn subdivideOnce(m &PolyMesh, boundary u32, fvar u32) PolyMesh {
 
   // Sharpness: the crease channels, and boundary edges infinitely sharp
   imm creaseE = m.findFloatChannel(EdgeDomain, "crease");
-  imm creaseV = m.findFloatChannel(VertexDomain, "crease");
+  imm creaseV = m.findFloatChannel(VertexDomain, "crease_vert");
   mut eSharp = List[f32].withCapacity(ne);
   mut e = 0usize;
   while e < ne {
@@ -431,11 +432,12 @@ fn subdivideOnce(m &PolyMesh, boundary u32, fvar u32) PolyMesh {
   mut i = 0usize;
   while i < m.floats.len() {
     imm domain = m.floats[i].domain;
-    imm isCrease = m.floats[i].name.equals("crease") and (domain == EdgeDomain or domain == VertexDomain);
+    imm isCrease = (domain == EdgeDomain and m.floats[i].name.equals("crease"))
+      or (domain == VertexDomain and m.floats[i].name.equals("crease_vert"));
     imm vals = floatChannelVec3s(m, i);
     imm out = refineChannel(m, &child, domain, &vals, isCrease, boundary, fvar, &eSharp, &vSharp,
       &cEdgeParent, &parentFace, &parentHalf);
-    child.floats.push(new Channel[f32](String.from(m.floats[i].name.view()), domain, vec3ToFloats(&out)));
+    child.floats.push(new Channel[f32](String.from(m.floats[i].name.view()), domain, vec3ToFloats(&out), m.floats[i].fill));
     i = i + 1usize;
   }
   i = 0usize;
@@ -444,7 +446,7 @@ fn subdivideOnce(m &PolyMesh, boundary u32, fvar u32) PolyMesh {
     imm vals = vec2ChannelVec3s(m, i);
     imm out = refineChannel(m, &child, domain, &vals, false, boundary, fvar, &eSharp, &vSharp,
       &cEdgeParent, &parentFace, &parentHalf);
-    child.vec2s.push(new Channel[Vec2](String.from(m.vec2s[i].name.view()), domain, vec3ToVec2s(&out)));
+    child.vec2s.push(new Channel[Vec2](String.from(m.vec2s[i].name.view()), domain, vec3ToVec2s(&out), m.vec2s[i].fill));
     i = i + 1usize;
   }
   i = 0usize;
@@ -453,7 +455,7 @@ fn subdivideOnce(m &PolyMesh, boundary u32, fvar u32) PolyMesh {
     imm vals = vec3ChannelVec3s(m, i);
     imm out = refineChannel(m, &child, domain, &vals, false, boundary, fvar, &eSharp, &vSharp,
       &cEdgeParent, &parentFace, &parentHalf);
-    child.vec3s.push(new Channel[Vec3](String.from(m.vec3s[i].name.view()), domain, out));
+    child.vec3s.push(new Channel[Vec3](String.from(m.vec3s[i].name.view()), domain, out, m.vec3s[i].fill));
     i = i + 1usize;
   }
   child;
