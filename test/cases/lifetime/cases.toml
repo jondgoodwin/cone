@@ -13,7 +13,9 @@
 #   lifetime_band_  global vs the caller band vs the function: parameters
 #                   (borrowed, by value, 'self' by value, owners by value),
 #                   returns, stores into globals and through '&mut'/'&uni'
-#                   parameters, unannotated and named lifetimes, calls.
+#                   parameters, unannotated and named lifetimes, lifetimes on
+#                   structs (lifetime_band_struct_), where clauses ordering
+#                   them (lifetime_band_where_), calls.
 #   lifetime_mix_   borrows made inside meeting those from outside: a
 #                   variable's lifetime following what it holds (the flow
 #                   rule, 2 Oct 2026), temporaries outliving their statement
@@ -47,17 +49,18 @@
 #      a variable that follows what it holds
 #   5  temporaries outliving their statement, Rust's rule
 #   6  named lifetimes on signatures
+#   7  lifetimes on structs, and where clauses ordering lifetimes
 #
 # A dangling case's header says how master's wrong answer was shown to be
 # dangerous: a stale stack slot read back through clobber(), or a finalizer
-# printing "final" before the read.
+# printing "final" before the read. Where master refuses the spelling at
+# parse, the case was run against the compiler that refuses it with that
+# refusal turned off.
 #
 # Left out deliberately, because the rule depends on something not yet
-# decided: lifetime where clauses (no spelling yet),
-# lifetimes on struct types and two borrowed fields of different named
-# lifetimes, invariant lifetimes ('=a), owner fields reached through a shared
-# 'mut' path, and whether 'new H(...)' extends a temporary the
-# way Rust's struct literal does.
+# decided: invariant lifetimes ('=a), '+ 'a' bounds on a type parameter or a
+# virtual reference, owner fields reached through a shared 'mut' path, and
+# whether 'new H(...)' extends a temporary the way Rust's struct literal does.
 
 support = []
 
@@ -132,6 +135,11 @@ tags = ["flow"]
 category = "reject"
 description = "Unannotated: the Option a '&mut self' method of a local returns shares that borrow's lifetime, and may not be returned"
 tags = ["flow"]
+
+[scenario.lifetime_band_struct_method_returns_where_field_points]
+category = "run"
+description = "Annotated 'Cursor['a]': 'next' returns where 'items' points, so 'c.next()' of a local cursor may be returned"
+tags = ["parse", "typecheck", "flow", "runtime"]
 
 [scenario.lifetime_band_return_byvalue_param]
 category = "reject"
@@ -520,7 +528,7 @@ tags = ["parse", "runtime"]
 
 [scenario.lifetime_band_named_place_refused]
 category = "reject"
-description = "A lifetime named on a field, a variable, a type's argument or a borrow is refused"
+description = "A lifetime named in a variable's type, on a borrow, in a construction's type arguments or in a function's brackets is refused"
 tags = ["parse"]
 
 [scenario.lifetime_band_named_static_inside_parm]
@@ -729,6 +737,11 @@ tags = ["flow", "runtime"]
 category = "reject"
 description = "An unannotated getter's result is tied to the borrow of its struct, a local, and may not be returned"
 tags = ["flow"]
+
+[scenario.lifetime_mix_struct_getter_annotated_result_returned]
+category = "run"
+description = "A getter of 'H['a]' returning '&'a R' is where the field points: its result on a local may be returned"
+tags = ["parse", "typecheck", "flow", "runtime"]
 
 [scenario.lifetime_mix_block_value_kept_past_local]
 category = "reject"
@@ -1066,3 +1079,105 @@ tags = ["flow", "runtime"]
 category = "reject"
 description = "A borrow swapped into a struct's field keeps its source frozen while the struct is used"
 tags = ["flow"]
+
+# Stage 7: lifetimes on structs, and where clauses ordering lifetimes
+
+[scenario.lifetime_band_struct_parser_two_lifetimes]
+category = "run"
+description = "'Parser['src, 'ar]': its word carries the text, not the arena, with text old and arena young and the reverse"
+tags = ["parse", "typecheck", "flow", "runtime"]
+
+[scenario.lifetime_band_struct_parser_one_lifetime]
+category = "reject"
+description = "The parser with one name for both fields: its word carries the local arena, and may not be returned"
+tags = ["flow"]
+
+[scenario.lifetime_band_struct_one_name_inferred]
+category = "run"
+description = "A struct whose fields name one lifetime, its brackets none, declares that one"
+tags = ["parse", "typecheck", "flow", "runtime"]
+
+[scenario.lifetime_band_struct_undeclared_name]
+category = "reject"
+description = "A struct's second undeclared lifetime, a name its brackets lack, and a where clause ordering what it does not declare are refused"
+tags = ["parse"]
+
+[scenario.lifetime_band_struct_generic_and_enum]
+category = "run"
+description = "'Cursor['a, T]': a lifetime beside a type parameter; 'Tok['a]': an enum's lifetime its variants name"
+tags = ["parse", "typecheck", "flow", "runtime"]
+
+[scenario.lifetime_band_struct_meets_trait]
+category = "run"
+description = "A struct declaring lifetimes implements a trait naming none, and is called through a virtual reference"
+tags = ["typecheck", "flow", "runtime"]
+
+[scenario.lifetime_band_struct_trait_promise_differs]
+category = "reject"
+description = "A struct's method promising another lifetime than its trait's requirement does not meet it"
+tags = ["typecheck"]
+
+[scenario.lifetime_band_struct_use_named_param]
+category = "reject"
+description = "A by-value 'Cursor['a]' parameter: what it holds may be returned as ''a', an unnamed fallback may not"
+tags = ["flow"]
+
+[scenario.lifetime_band_struct_use_names]
+category = "reject"
+description = "An unnamed borrow in a struct declaring lifetimes, and a use naming the wrong number of lifetimes, are refused"
+tags = ["typecheck"]
+
+[scenario.lifetime_band_struct_method_points_into_self_dangles]
+category = "reject"
+description = "A method returning a borrow of its struct as the struct's lifetime is refused"
+tags = ["flow"]
+
+[scenario.lifetime_band_struct_slot_other_lifetime_dangles]
+category = "reject"
+description = "A method returning what one of its struct's lifetimes holds as another, unordered, is refused"
+tags = ["flow"]
+
+[scenario.lifetime_band_struct_where_order]
+category = "reject"
+description = "'Pair['a, 'b] where 'a >= 'b': a method may move ''a' into ''b', not ''b' into ''a'"
+tags = ["parse", "flow"]
+
+[scenario.lifetime_band_struct_call_merges_slots]
+category = "reject"
+description = "A call naming a struct's lifetimes as one may move borrows between its fields: what it holds is no longer known by field"
+tags = ["flow"]
+
+[scenario.lifetime_band_where_store_longer]
+category = "run"
+description = "With ''a >= 'b', a ''a' borrow is stored where ''b' is held and returned as ''b'"
+tags = ["parse", "typecheck", "flow", "runtime"]
+
+[scenario.lifetime_band_where_store_shorter_dangles]
+category = "reject"
+description = "With ''a >= 'b', a ''b' borrow stored where ''a' is held is refused"
+tags = ["flow"]
+
+[scenario.lifetime_band_where_equal_both_ways]
+category = "run"
+description = "''a == 'b' lets a borrow of either be stored where the other's is held"
+tags = ["parse", "flow", "runtime"]
+
+[scenario.lifetime_band_where_transitive]
+category = "reject"
+description = "'>=' is transitive: ''a >= 'b and 'b >= 'c' returns ''a' as ''c', not ''c' as ''a'"
+tags = ["flow"]
+
+[scenario.lifetime_band_where_generic_mixed]
+category = "run"
+description = "A lifetime comparison and a type clause joined by 'and' on a generic function and on a generic type's method"
+tags = ["parse", "typecheck", "flow", "runtime"]
+
+[scenario.lifetime_band_where_or_refused]
+category = "reject"
+description = "A lifetime comparison under 'or' or 'not', or of another form, is refused"
+tags = ["parse"]
+
+[scenario.lifetime_band_where_unknown_name]
+category = "reject"
+description = "A function's where clause naming a lifetime none of its types names is refused"
+tags = ["typecheck"]

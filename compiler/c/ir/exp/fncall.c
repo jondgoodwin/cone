@@ -460,22 +460,37 @@ static int fnCallIsBorrowType(INode *type) {
 // argument points at -- as the highest scope number: 0 when there is none.
 // Every borrowed reference in a signature written without a lifetime shares
 // one, and every one written with a name shares it with the others written
-// with that name and with nothing else (doc/reference/reflifefn.html): so
-// 'wanted' may hold the borrows of an argument whose parameter shares a
-// lifetime with it (lifeShared), and the only lifetime those arguments have in
-// common is the shortest.
+// with that name, and with those its 'where' clause orders shorter, and with
+// nothing else (doc/reference/reflifefn.html): so 'wanted' may hold the borrows
+// of an argument whose parameter's own lifetime flows to it (lifeCarry), or,
+// where only what that points at holds one that does, the borrows held there,
+// and the only lifetime those have in common is the shortest. What a borrowed
+// struct holds has no scope here: the loan walk follows it.
 static uint16_t fnCallNarrowestBorrowScope(FnCallNode *node, FnSigNode *fnsig, INode *wanted) {
+    if (fnsig && !fnsig->lifenamed)
+        fnsig = NULL;
     uint16_t narrowest = 0;
     INode **argsp;
     uint32_t cnt;
     uint32_t i = 0;
     for (nodesFor(node->args, cnt, argsp)) {
         INode *argtype = iexpGetTypeDcl(*argsp);
-        if (fnCallIsBorrowType(argtype) && ((RefNode*)argtype)->scope > narrowest
-            && (fnsig == NULL || !fnsig->lifenamed || i >= fnsig->parms->used
-                || lifeShared(((IExpNode*)nodesGet(fnsig->parms, i))->vtype, wanted)))
-            narrowest = ((RefNode*)argtype)->scope;
-        ++i;
+        uint32_t at = i++;
+        if (!fnCallIsBorrowType(argtype))
+            continue;
+        uint32_t slots;
+        int carry = fnsig == NULL || at >= fnsig->parms->used ? LifeCarryWhole
+            : lifeCarry(fnsig, ((IExpNode*)nodesGet(fnsig->parms, at))->vtype, wanted, &slots);
+        uint16_t scope = 0;
+        if (carry == LifeCarryWhole)
+            scope = ((RefNode*)argtype)->scope;
+        else if (carry == LifeCarryHeld) {
+            INode *held = itypeGetTypeDcl(((RefNode*)argtype)->vtexp);
+            if (fnCallIsBorrowType(held))
+                scope = ((RefNode*)held)->scope;
+        }
+        if (scope > narrowest)
+            narrowest = scope;
     }
     return narrowest;
 }
@@ -2422,8 +2437,8 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
 // outlive the narrowest borrow passed alongside it -- the same comparison
 // assignlvalrtype makes for the store the callee might write. A place no
 // longer-lived than every borrow beside it may take any of them. With
-// lifetimes named, only a borrow whose parameter shares a lifetime with what
-// the writable one points at may be stored there.
+// lifetimes named, only a borrow whose lifetime flows to one of those what the
+// writable one points at holds may be stored there (fnCallNarrowestBorrowScope).
 static void fnCallFlowStoredBorrow(FnCallNode *node) {
     FnSigNode *fnsig = (FnSigNode*)iexpGetDerefTypeDcl(node->objfn);
     if (fnsig->tag != FnSigTag || !fnsig->lifenamed)

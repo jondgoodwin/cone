@@ -36,6 +36,7 @@ typedef struct {
     uint16_t maycap;
     uint8_t kind;       // LoanKind
     uint8_t writes;     // the borrow may write, for the message
+    uint8_t part;       // a caller loan: the part of its parameter it lends (LifePart)
 } Loan;
 
 // A pending conflict: 'access' conflicted with 'loan', held by 'holder'
@@ -61,6 +62,9 @@ static uint32_t maypoolcap = 0;
 
 // Holders whose loans were widened to all of them, by a loop that would not settle
 static uint32_t nflights;
+
+// The caller loans of a parameter's own reference this walk has made
+static uint32_t ncallerown = 0;
 
 static uint32_t *saturated = NULL;
 static uint32_t nsaturated = 0;
@@ -158,6 +162,7 @@ void loanWalkBegin() {
     nmaypool = 0;
     nsaturated = 0;
     nflights = 0;
+    ncallerown = 0;
 }
 
 // *********************
@@ -192,6 +197,10 @@ uint32_t loanMake(INode *site, Place *pl, INode *perm) {
     uint32_t id = mapGet(site, 0, 0);
     if (id)
         return id;
+    if (nloans > LoanIdMask) {
+        errorUnreachable(site, "more loans in one function than an entry of a loan set can name");
+        return 0;
+    }
     if (nloans >= loancap)
         loans = (Loan *)pathGrow(loans, &loancap, sizeof(Loan));
     id = nloans++;
@@ -204,6 +213,7 @@ uint32_t loanMake(INode *site, Place *pl, INode *perm) {
     loan->maycap = 0;
     loan->kind = loanKindOf(perm, pl);
     loan->writes = (permGetFlags(perm) & MayWrite) != 0;
+    loan->part = 0;
     // Linked from its root variable, so an access finds it
     loan->next = pathVars[pl->var].loans;
     pathVars[pl->var].loans = id;
@@ -211,12 +221,20 @@ uint32_t loanMake(INode *site, Place *pl, INode *perm) {
     return id;
 }
 
-// A caller loan is not linked from its parameter: no access here meets it
-uint32_t loanCaller(uint32_t var) {
+// A caller loan is not linked from its parameter: no access here meets it.
+// Each part's is keyed by the parameter and the part, apart from every other
+// key the map holds: a borrow's (site, 0, 0), a report's (node, 0, 1) and a
+// pending conflict's (access, loan, holder), whose loan is never 0.
+#define loanCallerKey(part) (0x80000000u | (part))
+uint32_t loanCaller(uint32_t var, uint32_t part) {
     VarDclNode *parm = pathVars[var].var;
-    uint32_t id = mapGet(parm, 0, 0);
+    uint32_t id = mapGet(parm, 0, loanCallerKey(part));
     if (id)
         return id;
+    if (nloans > LoanIdMask) {
+        errorUnreachable((INode *)parm, "more loans in one function than an entry of a loan set can name");
+        return 0;
+    }
     if (nloans >= loancap)
         loans = (Loan *)pathGrow(loans, &loancap, sizeof(Loan));
     id = nloans++;
@@ -232,8 +250,19 @@ uint32_t loanCaller(uint32_t var) {
     loan->maycap = 0;
     loan->kind = LoanCaller;
     loan->writes = 0;
-    mapPut(parm, 0, 0, id);
+    loan->part = (uint8_t)part;
+    if (part == LifePartOwn)
+        ++ncallerown;
+    mapPut(parm, 0, loanCallerKey(part), id);
     return id;
+}
+
+int loanIsCallerOwn(uint32_t loan) {
+    return loans[loan].kind == LoanCaller && loans[loan].part == LifePartOwn;
+}
+
+int loanAnyCallerOwn() {
+    return ncallerown > 0;
 }
 
 uint32_t loanRoot(uint32_t loan) {
@@ -242,6 +271,10 @@ uint32_t loanRoot(uint32_t loan) {
 
 int loanThrough(uint32_t loan) {
     return loans[loan].place.deref;
+}
+
+int loanWhole(uint32_t loan) {
+    return loans[loan].place.nsteps == 0 && !loans[loan].place.far;
 }
 
 // A variable whose storage outlives every call: a global, or a static
@@ -294,6 +327,10 @@ static int loanMayBePointee(Loan *loan, INode *referent) {
         INode *parmtype = itypeGetTypeDcl(pathVars[loan->place.var].var->vtype);
         if (!loanIsBorrowType(parmtype))
             return 0;
+        // What a parameter's reference points at holds: a reference holding
+        // that may point anywhere in it
+        if (loan->part != LifePartOwn)
+            return 1;
         borrowed = ((RefNode *)parmtype)->vtexp;
     }
     else {
@@ -338,22 +375,38 @@ static VarDclNode *loanParm(uint32_t id) {
     return pathVars[loans[id].place.var].var;
 }
 
-uint32_t loanCallerApart(PathSet *set, INode *wanted) {
+uint32_t loanCallerApart(FnSigNode *sig, PathSet *set, INode *wanted) {
     if (set == NULL)
         return 0;
     uint32_t n = set == &pathSetAll ? nloans : set->cnt;
     for (uint32_t i = set == &pathSetAll ? 1 : 0; i < n; ++i) {
         uint32_t id = set == &pathSetAll ? i : loanOf(set->ids[i]);
-        if (loans[id].kind == LoanCaller && !lifeShared(loanParm(id)->vtype, wanted))
+        if (loans[id].kind == LoanCaller && !lifePartFlows(sig, loanParm(id)->vtype, loans[id].part, wanted))
             return id;
     }
     return 0;
 }
 
-uint32_t loanStoredApart(PathSet *stored, PathSet *refholds, int beyond, VarDclNode **through) {
+// The type of what a reference holding the caller loan 'id' near points at:
+// what the parameter's own reference points at, or, for what that holds,
+// what the held borrows point at -- for a struct declaring lifetimes, the
+// struct itself, whose slots each hold their own
+static INode *loanCallerPlace(uint32_t id) {
+    INode *parmtype = loanParm(id)->vtype;
+    if (loans[id].part == LifePartOwn)
+        return lifePointee(parmtype);
+    INode *held = lifeHeld(parmtype);
+    if (held == NULL)
+        return lifePointee(parmtype);
+    return loans[id].part == LifePartHeld ? lifePointee(held) : held;
+}
+
+uint32_t loanStoredApart(FnSigNode *sig, PathSet *stored, PathSet *refholds, int beyond, uint32_t landing,
+        VarDclNode **through) {
     if (refholds == NULL || stored == NULL)
         return 0;
     uint32_t n = refholds == &pathSetAll ? nloans : refholds->cnt;
+    uint32_t nstored = stored == &pathSetAll ? nloans : stored->cnt;
     for (uint32_t i = refholds == &pathSetAll ? 1 : 0; i < n; ++i) {
         uint32_t id = refholds == &pathSetAll ? i : refholds->ids[i];
         if ((id & LoanFar) && !beyond)
@@ -361,10 +414,32 @@ uint32_t loanStoredApart(PathSet *stored, PathSet *refholds, int beyond, VarDclN
         id = loanOf(id);
         if (loans[id].kind != LoanCaller)
             continue;
-        uint32_t apart = loanCallerApart(stored, lifePointee(loanParm(id)->vtype));
-        if (apart) {
-            *through = loanParm(id);
-            return apart;
+        VarDclNode *parm = loanParm(id);
+        INode *place = loanCallerPlace(id);
+        int slotted = lifeSlotted(place) != NULL;
+        // The field a store lands in is known only where it is in what the
+        // parameter's own reference points at
+        uint32_t slots = loans[id].part == LifePartOwn && !beyond ? landing : 0;
+        for (uint32_t k = stored == &pathSetAll ? 1 : 0; k < nstored; ++k) {
+            uint32_t sid = stored == &pathSetAll ? k : loanOf(stored->ids[k]);
+            if (loans[sid].kind != LoanCaller)
+                continue;
+            VarDclNode *sparm = loanParm(sid);
+            uint32_t spart = loans[sid].part;
+            int flows;
+            if (slotted && slots)
+                flows = lifePartFlowsSlots(sig, sparm->vtype, spart, place, slots, 0);
+            // What the parameter's own struct holds, moved within it to a
+            // field not known: the caller's view of its slots keeps it where
+            // it was, so it must be at home in every one
+            else if (slotted && sparm == parm && spart != LifePartOwn)
+                flows = lifePartFlowsSlots(sig, sparm->vtype, spart, place, LifeAllSlots, 1);
+            else
+                flows = lifePartFlows(sig, sparm->vtype, spart, place);
+            if (!flows) {
+                *through = parm;
+                return sid;
+            }
         }
     }
     return 0;
@@ -488,7 +563,7 @@ static uint32_t loanPending(INode *access, int kind, uint32_t loan, uint32_t hol
 
 static void loanPend(INode *node, int access, uint32_t loan, uint32_t holder) {
     PathVar *hv = &pathVars[holder];
-    if (!pathSetHas(hv->holds, loan) && !pathSetHas(hv->holds, loan | LoanFar))
+    if (!pathSetHasLoan(hv->holds, loan))
         return;
     uint32_t pend = loanPending(node, access, loan, holder);
     if (!pathSetHas(hv->pending, pend))
@@ -620,25 +695,42 @@ void loanEscape(INode *node, uint32_t loan, int how) {
     }
 }
 
+// How a caller loan is named in a message: its parameter, and, for a slot of
+// a struct declaring lifetimes, the slot's lifetime there
+static char *loanLentThrough(uint32_t loan, char *buf, size_t size) {
+    VarDclNode *parm = loanParm(loan);
+    Name *life = NULL;
+    if (loans[loan].part >= LifePartSlot) {
+        INode *held = lifeHeld(parm->vtype);
+        life = held ? lifeSlotName(held, loans[loan].part - LifePartSlot) : NULL;
+    }
+    if (life)
+        snprintf(buf, size, "'%s' (its '%s')", &parm->namesym->namestr, &life->namestr);
+    else
+        snprintf(buf, size, "'%s'", &parm->namesym->namestr);
+    return buf;
+}
+
 void loanApart(INode *node, uint32_t loan, VarDclNode *through, int how) {
     if (mapGet(node, 0, 1))
         return;
     mapPut(node, 0, 1, 1);
-    char *lent = &loanParm(loan)->namesym->namestr;
+    char lent[160];
+    loanLentThrough(loan, lent, sizeof(lent));
     switch (how) {
     case LoanEscapeReturn:
         errorMsgNode(node, ErrorEscape,
-            "Returned value carries the borrow the caller lent through '%s', whose lifetime the result's type does not name. Lifetimes named apart are unrelated: only a borrow of a lifetime the result names, or a global one, may be returned.",
+            "Returned value carries the borrow the caller lent through %s, whose lifetime the result's type does not name, nor one its 'where' clause orders shorter. Lifetimes named apart are unrelated: only a borrow of a lifetime the result names, or a global one, may be returned.",
             lent);
         break;
     case LoanEscapeStore:
         errorMsgNode(node, ErrorEscape,
-            "Stored where '%s' points, the value carries the borrow the caller lent through '%s', whose lifetime is not one held there. Lifetimes named apart are unrelated, and nothing orders them.",
+            "Stored where '%s' points, the value carries the borrow the caller lent through %s, whose lifetime is not one held there, nor ordered longer than one by a 'where' clause. Lifetimes named apart are unrelated.",
             &through->namesym->namestr, lent);
         break;
     default:
         errorMsgNode(node, ErrorCallEscape,
-            "Call could store the borrow the caller lent through '%s' where '%s' points, which holds no borrow of its lifetime. Lifetimes named apart are unrelated, and nothing orders them.",
+            "Call could store the borrow the caller lent through %s where '%s' points, which holds no borrow of its lifetime, nor of one a 'where' clause orders shorter. Lifetimes named apart are unrelated.",
             lent, &through->namesym->namestr);
         break;
     }

@@ -17,7 +17,9 @@ typedef struct FnSigNode {
     INodeHdr;
     Nodes *parms;            // Declared parameter nodes w/ defaults (VarDclTag)
     INode *rettype;        // void, a single type or a type tuple
+    LifeOrder *lifeorder;  // The order among its lifetimes its 'where' clause and its structs' give (lifetime.h), or NULL
     uint8_t lifenamed;     // A lifetime is named on one of its types (lifetime.h)
+    uint8_t lifechecked;   // lifeSigCheck has settled 'lifenamed' and 'lifeorder'
 } FnSigNode;
 
 FnSigNode *newFnSigNode();

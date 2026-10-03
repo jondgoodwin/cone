@@ -641,21 +641,69 @@ static void parseWhereNot() {
 // Join two conditions with 'and' or 'or', positioned where the left one is
 static INode *parseWhereJoin(int16_t tag, INode *lhs, INode *rhs) {
     LogicNode *join = newLogicNode(tag);
-    inodeLexCopy((INode*)join, lhs);
+    // A lifetime comparison stands in a condition as a node with no position
+    inodeLexCopy((INode*)join, lhs->lexer ? lhs : rhs);
     join->lexp = lhs;
     join->rexp = rhs;
     return (INode*)join;
 }
 
-static INode *parseWhereOr(ParseState *parse);
+static INode *parseWhereOr(ParseState *parse, LifeOrder **orderp);
+
+// What a lifetime comparison leaves in a condition: it is recorded in the
+// order as it is read, and stands in the condition only so that an 'or' or a
+// 'not' over it is found and refused
+static INode parseLifeClauseNode;
+#define parseLifeClause (&parseLifeClauseNode)
+
+// Does a condition hold a lifetime comparison?
+static int parseWhereHasLife(INode *cond) {
+    if (cond == parseLifeClause)
+        return 1;
+    if (cond->tag == AndLogicTag || cond->tag == OrLogicTag)
+        return parseWhereHasLife(((LogicNode*)cond)->lexp) || parseWhereHasLife(((LogicNode*)cond)->rexp);
+    return 0;
+}
+
+// A lifetime comparison, with the lexer on its first lifetime: ''a >= 'b'
+// (''a' lasts at least as long as ''b') or ''a == 'b' (each as long as the
+// other), recorded in '*orderp', the order of the declaration's lifetimes
+// (lifetime.h). NULL, reported, where it is malformed or nothing has lifetimes.
+static INode *parseWhereLife(ParseState *parse, LifeOrder **orderp) {
+    INode *at = (INode*)newNameUseNode(lex->val.ident);
+    Name *longer = lex->val.ident;
+    lexNextToken();
+    int equal = lexIsToken(EqToken);
+    if (!equal && !lexIsToken(GeToken)) {
+        errorMsgLex(ErrorWhereForm, "A lifetime clause compares two lifetimes: ''a >= 'b', ''a' lasting at least as long as ''b', or ''a == 'b'.");
+        return NULL;
+    }
+    lexNextToken();
+    if (!lexIsToken(LifetimeToken)) {
+        errorMsgLex(ErrorWhereForm, "A lifetime is compared with a lifetime: ''a >= 'b'.");
+        return NULL;
+    }
+    Name *shorter = lex->val.ident;
+    lexNextToken();
+    if (orderp == NULL) {
+        errorMsgNode(at, ErrorLifetimeUndeclared, "This declares no lifetimes for a 'where' clause to order.");
+        return NULL;
+    }
+    if (*orderp == NULL)
+        *orderp = newLifeOrder();
+    lifeOrderAdd(*orderp, longer, shorter, at);
+    if (equal)
+        lifeOrderAdd(*orderp, shorter, longer, at);
+    return parseLifeClause;
+}
 
 // One term of a 'where' condition: 'T is Name', a trait joined to another by
-// '+' as in the inline form (the two clauses joined by 'and'), or a condition
-// in parentheses. NULL, reported, for anything else.
-static INode *parseWhereTerm(ParseState *parse) {
+// '+' as in the inline form (the two clauses joined by 'and'), a lifetime
+// comparison, or a condition in parentheses. NULL, reported, for anything else.
+static INode *parseWhereTerm(ParseState *parse, LifeOrder **orderp) {
     if (lexIsToken(LParenToken)) {
         lexNextToken();
-        INode *inner = parseWhereOr(parse);
+        INode *inner = parseWhereOr(parse, orderp);
         if (inner == NULL)
             return NULL;
         if (!lexIsToken(RParenToken)) {
@@ -665,7 +713,14 @@ static INode *parseWhereTerm(ParseState *parse) {
         lexNextToken();
         return inner;
     }
+    if (lexIsToken(LifetimeToken))
+        return parseWhereLife(parse, orderp);
     if (lexIsToken(NotToken)) {
+        // Over a lifetime comparison, 'not' is refused for what it would mean
+        if (lexPeekIsLifetime()) {
+            errorMsgLex(ErrorLifetimeOr, "A lifetime comparison is never under 'not': a lifetime is never instanced, so the body could rely on nothing it would say.");
+            return NULL;
+        }
         parseWhereNot();
         return NULL;
     }
@@ -704,50 +759,65 @@ static INode *parseWhereTerm(ParseState *parse) {
 }
 
 // Terms joined by 'and', which binds tighter than 'or', as in an expression
-static INode *parseWhereAnd(ParseState *parse) {
-    INode *lhs = parseWhereTerm(parse);
+static INode *parseWhereAnd(ParseState *parse, LifeOrder **orderp) {
+    INode *lhs = parseWhereTerm(parse, orderp);
     while (lhs && lexIsToken(AndToken)) {
         lexNextToken();
-        INode *rhs = parseWhereTerm(parse);
+        INode *rhs = parseWhereTerm(parse, orderp);
         lhs = rhs ? parseWhereJoin(AndLogicTag, lhs, rhs) : NULL;
     }
     return lhs;
 }
 
-// A whole condition: 'and'-joined terms, joined by 'or'
-static INode *parseWhereOr(ParseState *parse) {
-    INode *lhs = parseWhereAnd(parse);
+// A whole condition: 'and'-joined terms, joined by 'or'. A lifetime comparison
+// may not be an alternative: a lifetime is never instanced, so no instance
+// settles which alternative holds, and the body could rely on none of them.
+static INode *parseWhereOr(ParseState *parse, LifeOrder **orderp) {
+    INode *lhs = parseWhereAnd(parse, orderp);
     while (lhs && lexIsToken(OrToken)) {
+        INode *orat = (INode*)newNameUseNode(anonName);
         lexNextToken();
-        INode *rhs = parseWhereAnd(parse);
+        INode *rhs = parseWhereAnd(parse, orderp);
+        if (rhs && (parseWhereHasLife(lhs) || parseWhereHasLife(rhs))) {
+            errorMsgNode(orat, ErrorLifetimeOr,
+                "A lifetime comparison is joined to the rest of a 'where' clause by 'and' only: a lifetime is never instanced, so an 'or' would leave the body nothing it could rely on.");
+            return NULL;
+        }
         lhs = rhs ? parseWhereJoin(OrLogicTag, lhs, rhs) : NULL;
     }
     return lhs;
 }
 
 // Append a condition to a 'where' list, each operand of an 'and' at its top
-// an element of its own, in the order written
+// an element of its own, in the order written. A lifetime comparison is in
+// the order already, and is no element.
 static void parseWhereAdd(Nodes **wherep, INode *cond) {
+    if (cond == parseLifeClause)
+        return;
     if (cond->tag == AndLogicTag) {
         parseWhereAdd(wherep, ((LogicNode*)cond)->lexp);
         parseWhereAdd(wherep, ((LogicNode*)cond)->rexp);
     }
-    else
+    else {
+        if (*wherep == NULL)
+            *wherep = newNodes(4);
         nodesAdd(wherep, cond);
+    }
 }
 
 // Parse a 'where' clause, with the lexer on 'where', appending its condition
-// to '*wherep' (generic.h): 'T is Name', a trait joined to another by '+' as
-// in the inline form, clauses joined by 'and' and 'or', 'and' binding tighter,
-// and parentheses grouping [Jon 27 Sep]. What else the manual shows a clause
-// saying -- a relation between two parameters, 'T < Y', and a constraint on a
-// type expression, 'Option[T] is Node' -- and 'not' are not built, and are
-// refused here: a refused clause adds nothing, and the rest of it is skipped.
-void parseWhere(ParseState *parse, Nodes **wherep) {
+// to '*wherep' (generic.h), left NULL where it holds no clause about a type:
+// 'T is Name', a trait joined to another by '+' as in the inline form,
+// clauses joined by 'and' and 'or', 'and' binding tighter, and parentheses
+// grouping. A lifetime comparison, ''a >= 'b' or ''a == 'b', goes to
+// '*orderp' instead (lifetime.h), NULL where the declaration has no lifetimes
+// to order. What else the manual shows a clause saying -- a relation between
+// two type parameters, 'T < Y', and a constraint on a type expression,
+// 'Option[T] is Node' -- and 'not' are not built, and are refused here: a
+// refused clause adds nothing, and the rest of it is skipped.
+void parseWhere(ParseState *parse, Nodes **wherep, LifeOrder **orderp) {
     lexNextToken();  // past 'where'
-    if (*wherep == NULL)
-        *wherep = newNodes(4);
-    INode *cond = parseWhereOr(parse);
+    INode *cond = parseWhereOr(parse, orderp);
     if (cond == NULL) {
         parseWhereSkip();
         return;
@@ -766,10 +836,30 @@ void parseWhere(ParseState *parse, Nodes **wherep) {
 // and neither is. 'annotate' is set for a generic function or type; a macro's
 // parameter and a generic module's take no annotation yet, and it is refused
 // here as it always was.
-Nodes *parseGenericParms(ParseState *parse, int annotate) {
+//
+// A struct declares its lifetimes in the same brackets, ''a', apart from its
+// type parameters: they go to '*lifes' (lifetime.h), NULL for a declaration
+// that declares none, which refuses them.
+Nodes *parseGenericParms(ParseState *parse, int annotate, LifeParms **lifes) {
     lexNextToken(); // Go past left square bracket
     Nodes *parms = newNodes(2);
-    while (lexIsToken(IdentToken)) {
+    int nlifes = 0;
+    while (lexIsToken(IdentToken) || lexIsToken(LifetimeToken)) {
+        if (lexIsToken(LifetimeToken)) {
+            INode *at = (INode*)newNameUseNode(lex->val.ident);
+            if (lifes == NULL)
+                errorMsgLex(ErrorLifetimePlace, "Only a struct or an enum declares lifetimes in its brackets: a function names its own in its signature.");
+            else {
+                if (*lifes == NULL)
+                    *lifes = newLifeParms();
+                lifeParmsDeclare(*lifes, lex->val.ident, at);
+            }
+            ++nlifes;
+            lexNextToken();
+            if (lexIsToken(CommaToken))
+                lexNextToken();
+            continue;
+        }
         GenVarDclNode *parm = newGVarDclNode(lex->val.ident);
         nodesAdd(&parms, (INode*)parm);
         lexNextToken();
@@ -823,7 +913,7 @@ Nodes *parseGenericParms(ParseState *parse, int annotate) {
     // 'fn f[]()' declares a generic with nothing to substitute, so no call can
     // ever instantiate it and the declaration would generate nothing at all.
     // That is worth saying rather than leaving the function silently absent.
-    if (parms->used == 0)
+    if (parms->used == 0 && nlifes == 0)
         errorMsgLex(ErrorNoGenParms, "A type parameter list must declare at least one parameter.");
     return parms;
 }
@@ -838,7 +928,7 @@ MacroDclNode *parseMacro(ParseState *parse) {
     MacroDclNode *macro = newMacroDclNode(lex->val.ident);
     lexNextToken();
     if (lexIsToken(LBracketToken)) {
-        macro->parms = parseGenericParms(parse, 0);
+        macro->parms = parseGenericParms(parse, 0, NULL);
     }
     macro->body = parseExprBlock(parse, 0);
     return macro;
@@ -907,7 +997,7 @@ INode *parseFn(ParseState *parse, uint16_t mayflags) {
         lexNextToken();
         if (lexIsToken(LBracketToken)) {
             fnnode->genericinfo = newGenericInfo();
-            fnnode->genericinfo->parms = parseGenericParms(parse, 1);
+            fnnode->genericinfo->parms = parseGenericParms(parse, 1, NULL);
         }
     }
     else {
@@ -953,9 +1043,10 @@ INode *parseFn(ParseState *parse, uint16_t mayflags) {
     }
 
     // Its constraints, just before the block: a generic function's
-    // requirements, or a generic type's method's conditions for existing
+    // requirements, or a generic type's method's conditions for existing; and
+    // any function's order among its signature's lifetimes
     if (lexIsToken(WhereToken))
-        parseWhere(parse, &fnnode->where);
+        parseWhere(parse, &fnnode->where, &((FnSigNode*)fnnode->vtype)->lifeorder);
 
     // '@c' names a symbol, so it goes only where a function has one of its own
     if (hasc) {

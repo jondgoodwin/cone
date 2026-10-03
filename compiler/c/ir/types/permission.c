@@ -27,6 +27,7 @@ INode *newPermUseNode(PermNode *permdcl) {
     perm->vtype = NULL;
     perm->namesym = permdcl->namesym;
     perm->dclnode = (INode*)permdcl;
+    perm->lifeuse = NULL;
     return (INode*)perm;
 }
 

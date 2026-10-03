@@ -29,6 +29,7 @@ StructNode *newStructNode(Name *namesym) {
     snode->lifecycle = NULL;
     snode->vtable = NULL;
     snode->genericinfo = NULL;
+    snode->lifeparms = NULL;
     snode->tagnbr = 0;
     snode->tagstate = TagNonNeg;
     snode->spans = NULL;
@@ -3163,6 +3164,8 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
     }
     if (node != structTagWidthDeferred)
         structSetTagWidth(node);
+    // Every borrow a struct declaring lifetimes holds is of one of them
+    lifeStructCheck(node);
 
     // The layout is settled, which is what an 'is' asserts about: the fields the
     // abstractions require are declared here, in order, at position 0

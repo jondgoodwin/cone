@@ -1,0 +1,34 @@
+// The parser of lifetime_band_struct_parser_two_lifetimes with one name for
+// both its fields: the text and the arena share ''a', so 'p.word()' carries
+// all 'p' holds in ''a' -- the arena, a local, with the text -- and may not
+// be returned.
+//
+// Verdict: refuse, ErrorEscape at the returned call.
+// Basis: a value is usable only where all its lifetimes hold, and one name is
+// one lifetime: the word may hold anything the parser holds.
+// Master b07a3adc: refused at parse (ErrorBadTok: a lifetime in a struct's
+// brackets).
+
+mod lifetime_band_struct_parser_one_lifetime;
+
+struct Scratch { pub count i64; }
+
+struct Parser['a] {
+  pub text &[]'a u8;
+  pub ar &'a mut Scratch;
+  pub at usize;
+  pub fn word(self &mut) &[]'a u8 {
+    imm start = at;
+    while at < text.len() and text[at] != 32u8 {
+      at = at + 1usize;
+    }
+    ar.count = ar.count + 1;
+    &text[start..at];
+  }
+}
+
+fn firstWord(text &[]u8) &[]u8 {
+  mut scratch = new Scratch(0);
+  mut p = new Parser(text, &mut scratch, 0usize);
+  p.word();                  //~ ErrorEscape
+}

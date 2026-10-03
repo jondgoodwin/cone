@@ -1071,7 +1071,7 @@ void parseModuleDcl(ParseState *parse, ModuleNode *mod, int atmodstart, uint16_t
     GenericInfo *genericinfo = NULL;
     if (lexIsToken(LBracketToken)) {
         genericinfo = newGenericInfo();
-        genericinfo->parms = parseGenericParms(parse, 0);
+        genericinfo->parms = parseGenericParms(parse, 0, NULL);
     }
 
     // 'extends' names the one module this one reuses, by the name it is reached
@@ -1956,6 +1956,7 @@ Nodes *parseIncludeCheck(ProgramNode *pgm, BuildDesc *desc, char *text, char *ur
     parse.inrettype = 0;
     parse.intype = 0;
     parse.lifesig = NULL;
+    parse.lifestruct = NULL;
     parse.entryparen = 0;
     parse.core = NULL;
     parse.build = NULL;
@@ -2033,6 +2034,7 @@ ProgramNode *parsePgm(ConeOptions *opt, BuildDesc *desc) {
     parse.inrettype = 0;
     parse.intype = 0;
     parse.lifesig = NULL;
+    parse.lifestruct = NULL;
     parse.entryparen = 0;
     parse.core = NULL;
     parse.build = NULL;

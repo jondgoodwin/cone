@@ -1,0 +1,34 @@
+// What a struct declaring lifetimes holds, and what a use of one names, are
+// checked against its declaration: a borrow it holds names one of its
+// lifetimes, never the unnamed one; a use names each of them, in order, or
+// none; and a type declaring none is named with none.
+//
+// Verdict: refuse, ErrorLifetimeUndeclared at the unnamed borrow,
+// ErrorLifetimeArgs at each use naming the wrong lifetimes.
+// Basis: a struct declaring lifetimes names one on every borrow it holds (a
+// borrow of none would be of every signature's unnamed lifetime); a use names
+// a struct's lifetimes positionally.
+// Master b07a3adc: refused at parse (ErrorBadTok: a lifetime in a struct's
+// brackets).
+
+mod lifetime_band_struct_use_names;
+
+struct R { pub n i64; }
+
+struct Mixed['a] {
+  pub named &'a R;
+  pub unnamed &R;            //~ ErrorLifetimeUndeclared "holds a borrow of none"
+}
+
+struct One['a] {
+  pub r &'a R;
+}
+
+fn tooMany(o One['p, 'q]) {  //~ ErrorLifetimeArgs "declares 1 lifetime"
+}
+
+fn none(r R['p]) {           //~ ErrorLifetimeArgs "declares no lifetimes"
+}
+
+fn fine(o One['p], unnamed One) {
+}

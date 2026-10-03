@@ -47,6 +47,8 @@ typedef struct FieldDclNode {
     struct FieldDclNode *hop;  // On a folded copy: the field of this type it is reached through; NULL on a declared field
     uint16_t index;            // field's index within the type
     uint16_t vtblidx;          // field's index within the type's vtable
+    uint32_t lifeslots;        // The slots of its struct's declared lifetimes it holds (lifeFieldSlots)
+    uint8_t lifeknown;         // 'lifeslots' is settled
 } FieldDclNode;
 
 

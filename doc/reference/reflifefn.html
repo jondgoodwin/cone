@@ -13,33 +13,38 @@
 
     <div class="text">
 
-	<p style="margin-left: 40px;"><i>Note: Lifetime annotations on a function's signature
-			are implemented. A lifetime is written right after the reference's
+	<p style="margin-left: 40px;"><i>Note: Lifetime annotations on a function's signature,
+			on a struct's fields and uses, and the <span class="pre">where</span> clause
+			ordering lifetimes are implemented. A lifetime is written right after the reference's
 			<span class="pre">&amp;</span>, before its permission:
 			<span class="pre">&amp;'a i32</span>, <span class="pre">&amp;'a mut i32</span>,
 			<span class="pre">&amp;[]'a u8</span>; and the global lifetime is
 			<span class="pre">'static</span>. Parameters are written
 			<span class="pre">name type</span>, without the colon some examples below still show.
 			A returned borrowed reference has the lifetime of the shortest borrowed
-			reference passed to the call for a parameter sharing a lifetime with it,
+			reference passed to the call for a parameter whose lifetime it may hold,
 			and keeps those arguments frozen while it is used, a method's receiver
 			included (see <a href="refborref.html#returned">borrowed references</a>);
-			a call is refused when a mutable or unique borrowed reference to a place
+			where only a lifetime of what an argument points at may be held -- a
+			struct's, held by the receiver of one of its methods -- it keeps frozen
+			only what the argument holds in that lifetime, not the argument.
+			A call is refused when a mutable or unique borrowed reference to a place
 			that can hold a borrowed reference (a method's receiver included) could
 			store there one, of a lifetime that place holds, that lives less long.
 			A value passed by value that holds a borrowed reference counts as one of the
-			unnamed lifetime, for both rules. Inside the function, a borrowed reference
-			the caller lent may be returned only as a lifetime its parameter is
-			written with, and stored only where what a parameter points at holds
-			that lifetime; no order between two names is inferred, and there is no
-			<span class="pre">where</span> clause to declare one yet.
+			lifetimes its type names, the unnamed one where it names none, for both rules.
+			Inside the function, a borrowed reference the caller lent may be returned only
+			as a lifetime it is written with, or one its <span class="pre">where</span> clause
+			orders shorter, and stored only where what a parameter points at holds such a
+			lifetime; no order between two names is inferred but what a
+			<span class="pre">where</span> clause declares.
 			A <span class="pre">'static</span> parameter takes only a global borrow, and
 			<span class="pre">'static</span> may be written on a parameter's own
 			reference or in the result, not inside a parameter's type.
 			A value holding borrowed references has the lifetime of the shortest of them, as
-			<span class="pre">makewrap</span> below shows; annotations on fields
-			and types, including a type's arguments (<span class="pre">Option[&amp;'a i32]</span>),
-			are not implemented.</i></p>
+			<span class="pre">makewrap</span> below shows. Not yet implemented: a
+			<span class="pre">+ 'a</span> bound on a type parameter or a virtual reference,
+			and invariant lifetimes.</i></p>
 	
 	<p>To ensure borrowed references are always safe to use, they carry 
 		a lifetime constraint that restricts them from living beyond the scope
@@ -226,14 +231,14 @@ fn refstore(refmut &amp;mut &amp;i32, refval &amp;'b i32) {
 	<h2>Lifetime Annotations on Fields</h2>
 	<p>It is not enough to just constrain the lifetimes of borrowed references,
 		we must also constrain the lifetimes of any data structures that
-		contain borrowed references as fields. Consider:</p>		
+		contain borrowed references as fields. Consider:</p>
 <pre>
-struct Wrapper {
+struct Wrapper['a, 'b] {
   pub refa &amp;'a u32;
   pub refb &amp;'b u32;
 }
 </pre>
-	<p>Every <span class="pre">Wrapper</span> value contains two fields, 
+	<p>Every <span class="pre">Wrapper</span> value contains two fields,
 		both borrowed references, each with a different lifetime constraint.
 		The lifetime of this value will be constrained by whichever ends up as the
 		shorter of the two lifetimes:</p>
@@ -254,6 +259,23 @@ fn makewrap(valref &amp;i32) Wrapper {
 		Therefore, this value is lifetime-constrained
 		to this function and may not be returned to <span class="pre">process</span>.</p>
 
+	<h3>Declaring a struct's lifetimes</h3>
+	<p>A struct (or an enum) declares the lifetimes its fields name in its square brackets,
+		apart from its type parameters: <span class="pre">struct Wrapper['a, 'b]</span>,
+		<span class="pre">struct Cursor['a, T]</span>. Its fields name those lifetimes and no
+		others. A struct whose fields name exactly one lifetime may leave its brackets
+		without it, and that one is taken as declared; one whose fields name two or more
+		declares them all, so that a misspelled name is caught rather than taken for one more
+		lifetime. Every borrowed reference a struct declaring lifetimes holds names one of them:
+		an unnamed borrow there would be of whatever lifetime each signature using the struct
+		leaves unnamed.</p>
+	<p>A lifetime changes neither a struct's layout nor its code, so it is never instanced:
+		<span class="pre">Wrapper['a, 'b]</span> and <span class="pre">Wrapper</span> are one type,
+		and a generic struct has one instance per type argument, none per lifetime. A struct is
+		constrained by a lifetime only by holding a borrow: one declaring lifetimes but holding
+		no borrow travels anywhere, and a generic one is constrained per instance
+		(<span class="pre">List[&amp;R]</span> is, <span class="pre">List[i32]</span> is not).</p>
+
 	<h3>Lifetime Annotations on Types</h3>
 	<p>The same lifetime annotation principles we discussed earlier
 		apply to functions that receive or return values
@@ -263,27 +285,115 @@ fn process() {
   imm val = 5;
   makewrap(&amp;val);
 }
-	
+
 fn makewrap(valref &amp;i32) &amp;i32 {
   imm val = 10;
   getref(new Wrapper(valref, &amp;val));
 }
-	
-fn getref(wrap: Wrapper&lt;'a, 'b&gt;) &amp;'a i32 {
+
+fn getref(wrap Wrapper['a, 'b]) &amp;'a i32 {
   wrap.refa;
 }
 </pre>
 	<p><span class="pre">getref</span> shows
-		how lifetime annotations are specified differently on aggregate types:
-		inside angled brackets are two lifetimes, 
-		one for each borrowed reference in the struct.
+		how lifetime annotations are specified on aggregate types:
+		inside the struct's square brackets are two lifetimes,
+		one for each lifetime the struct declares, in the order it declares them.
 		Notice that the function returns the borrowed reference
 		held by <span class="pre">refa</span> (the longer one),
-		also signalled by the lifetime annotation on the return type.</p>
+		also signalled by the lifetime annotation on the return type.
+		A use naming none, <span class="pre">Wrapper</span>, gives every lifetime the struct
+		declares the signature's unnamed lifetime.</p>
 	<p>Were we to change <span class="pre">getref</span> to return
 		<span class="pre">refb</span> instead, the <span class="pre">makewrap</span>
 		function will be smacked with an error for trying to return
 		a borrowed reference it created and which must not outlive its scope.</p>
+
+	<h3>Lifetimes in a struct's methods</h3>
+	<p>Inside a struct's methods, <span class="pre">Self</span> (and so an unwritten
+		<span class="pre">self</span> type) is the struct with its own lifetimes, which act there as
+		the caller's lifetimes do. A method may so promise that its result points where a field
+		points, not into the struct:</p>
+<pre>
+struct Cursor['a] {
+  pub items &amp;[]'a R;
+  pub at usize;
+  pub fn next(self &amp;mut) Option[&amp;'a R] {
+    if at &lt; items.len() {
+      imm r = &amp;items[at];
+      at = at + 1usize;
+      return Some[&amp;R][r];
+    }
+    None[&amp;R][];
+  }
+}
+
+fn firstOf(items &amp;[]R) Option[&amp;R] {
+  mut c = new Cursor(items, 0usize);
+  c.next();     // Ok: points where items points, not into c
+}
+</pre>
+	<p>Because <span class="pre">next</span>'s result is of the cursor's
+		<span class="pre">'a</span>, not of the <span class="pre">&amp;mut</span> borrow of
+		<span class="pre">self</span>, a call keeps frozen only what the cursor holds in
+		<span class="pre">'a</span>, and the result may outlive the cursor. Written without
+		lifetimes, the result would share the receiver's borrow, and could not be returned.
+		The method in turn may return only what its fields of <span class="pre">'a</span> point at:
+		<span class="pre">&amp;self.at</span>, a borrow of the cursor itself, is of
+		<span class="pre">self</span>'s own lifetime, not <span class="pre">'a</span>.</p>
+
+	<h3>Two lifetimes in one struct</h3>
+	<p>A struct may hold borrows of two unrelated lifetimes. A value of it is usable wherever
+		all its lifetimes hold, and what one of them holds is kept apart from the other's:</p>
+<pre>
+struct Parser['src, 'ar] {
+  pub text &amp;[]'src u8;
+  pub ar &amp;'ar mut Scratch;
+  pub at usize;
+  pub fn word(self &amp;mut) &amp;[]'src u8 { ... }
+}
+
+fn firstWord(text &amp;[]u8) &amp;[]u8 {
+  mut scratch = new Scratch(0);
+  mut p = new Parser(text, &amp;mut scratch, 0usize);
+  p.word();     // Ok: the word is of the text, not of the local scratch
+}
+</pre>
+	<p>With one lifetime for both fields, the word could hold anything the parser holds,
+		the local scratch arena included, and could not be returned. A borrow of one of two
+		unrelated lifetimes may not be stored where the other's are held: that needs a
+		<span class="pre">where</span> clause ordering them (below). A call whose signature
+		names the struct's lifetimes as one, or orders them beyond the struct's own order,
+		may move a borrow from one field to another, so after it the caller no longer knows
+		which field holds which borrow, and keeps them all as one.</p>
+
+	<h2 id="where">Where clauses ordering lifetimes</h2>
+	<p>Two lifetimes a signature names are unrelated unless its
+		<a href="refgeneric.html#where"><span class="pre">where</span> clause</a> orders them.
+		<span class="pre">'a &gt;= 'b</span> says <span class="pre">'a</span> lasts at least as long as
+		<span class="pre">'b</span>: a borrow of <span class="pre">'a</span> may then be stored where
+		<span class="pre">'b</span> borrows are held, and returned where a <span class="pre">'b</span>
+		one is promised, but not the reverse. <span class="pre">'a == 'b</span> orders each at least
+		as long as the other. The order is transitive, and nothing beyond what the clauses say,
+		and their transitive closure, is inferred.</p>
+<pre>
+fn put(d &amp;mut &amp;'b R, s &amp;'a R) where 'a &gt;= 'b {
+  *d = s;       // Ok: 'a lasts at least as long as 'b
+}
+fn pick[T](x &amp;'a T, y &amp;'b T) &amp;'b T where 'a &gt;= 'b and T is Copy {
+  x;
+}
+</pre>
+	<p>A caller reads the same order: it keeps <span class="pre">put</span>'s second argument
+		alive as long as the place its first points at is used. A where clause orders lifetimes
+		on any function, generic or not, among the lifetimes its signature names; on a struct,
+		<span class="pre">struct Pair['a, 'b] where 'a &gt;= 'b</span>, among those it declares, in its
+		methods and in every signature using it; and on a generic type's methods. Lifetime
+		comparisons join each other and type clauses by <span class="pre">and</span> only: a
+		lifetime is never instanced, so no instance settles which alternative of an
+		<span class="pre">or</span> holds, and the body could rely on none of them. An
+		<span class="pre">or</span> or a <span class="pre">not</span> over a lifetime comparison is
+		refused.</p>
 
 
 			<p style="text-align: right; margin-top: 2em;">

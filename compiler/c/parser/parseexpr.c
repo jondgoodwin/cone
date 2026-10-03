@@ -245,7 +245,50 @@ static INode *parseIndexArg(ParseState *parse) {
         lexNextToken();
         return perm;
     }
+    // A lifetime: 'Cursor['a]'. Held as a name use of its name, which begins
+    // with the quote no other name can, until parseIndexArgs takes it out.
+    if (lexIsToken(LifetimeToken)) {
+        INode *life = (INode*)newNameUseNode(lex->val.ident);
+        lexNextToken();
+        return life;
+    }
     return parseArg(parse);
+}
+
+// Is this an argument parseIndexArg read as a lifetime?
+static int parseIsLifeArg(INode *arg) {
+    return arg->tag == NameUseTag && ((NameUseNode*)arg)->namesym->namestr == '\'';
+}
+
+// A lifetime is named only in a type of a function's signature, or of a
+// struct's field, where it is checked (lifetime.h): answer whether it may be
+// here, refusing it if not. A field's names are noted for its struct to
+// declare or check (lifeStructDeclare). 'at' is where the name is written,
+// or NULL while the lexer is on it.
+static int parseLifeNamed(ParseState *parse, Name *name, INode *at) {
+    if (parse->intype && parse->lifesig) {
+        parse->lifesig->lifenamed = 1;
+        return 1;
+    }
+    if (parse->intype && parse->lifestruct) {
+        if (name != staticLifeName) {
+            if (parse->lifestruct->lifeparms == NULL)
+                parse->lifestruct->lifeparms = newLifeParms();
+            LifeParms *parms = parse->lifestruct->lifeparms;
+            if (parms->usedat == NULL)
+                parms->usedat = newNodes(4);
+            nodesAdd(&parms->usedat, at ? at : (INode*)newNameUseNode(name));
+        }
+        return 1;
+    }
+    char *msg = parse->intype
+        ? "A lifetime is named in the types of a function's signature and of a struct's fields, not in a variable's type."
+        : "A lifetime is named on a borrowed reference type ('&'a T') or on a type's use ('Cursor['a]'), not on a borrow or a value.";
+    if (at)
+        errorMsgNode(at, ErrorLifetimePlace, "%s", msg);
+    else
+        errorMsgLex(ErrorLifetimePlace, "%s", msg);
+    return 0;
 }
 
 // Parse the arguments of an index, 'x[...]': a list of expressions, or one range
@@ -254,14 +297,50 @@ static INode *parseIndexArg(ParseState *parse) {
 // missing start is 0, and a missing end, 'a..', is the array's end. A range is
 // held on the index as FlagRange, its arguments the start and, unless it runs
 // to the end, the end; FlagRangeIncl says the end was written with '...'.
+//
+// The lifetimes a type's use names, 'Cursor['a]', 'Parser['s, 'r]', or
+// 'Cursor['a, T]' beside its type arguments, are taken out of the arguments
+// into the name's LifeUse (lifetime.h), in the order written: a lifetime is
+// never instanced, so it is no argument of the instance. Where a lifetime may
+// not be named (parseLifeNamed), or on a type not named alone, it is refused.
 static Nodes *parseIndexArgsIn(ParseState *parse, FnCallNode *fncall);
 static Nodes *parseIndexArgs(ParseState *parse, FnCallNode *fncall) {
-    // A type's arguments are no signature's own: no lifetime is named there
-    FnSigNode *svlifesig = parse->lifesig;
-    parse->lifesig = NULL;
     Nodes *args = parseIndexArgsIn(parse, fncall);
-    parse->lifesig = svlifesig;
-    return args;
+    uint32_t nlifes = 0;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(args, cnt, nodesp)) {
+        if (parseIsLifeArg(*nodesp))
+            ++nlifes;
+    }
+    if (nlifes == 0)
+        return args;
+    Nodes *types = newNodes(args->used - nlifes + 1);
+    LifeUse *lifeuse = memAllocBlk(sizeof(LifeUse));
+    lifeuse->names = memAllocBlk(nlifes * sizeof(Name *));
+    lifeuse->count = 0;
+    lifeuse->typeargs = NULL;
+    lifeuse->at = NULL;
+    int allowed = 1;
+    for (nodesFor(args, cnt, nodesp)) {
+        if (!parseIsLifeArg(*nodesp)) {
+            nodesAdd(&types, *nodesp);
+            continue;
+        }
+        Name *name = ((NameUseNode*)*nodesp)->namesym;
+        if (lifeuse->at == NULL)
+            lifeuse->at = *nodesp;
+        if (allowed && !parseLifeNamed(parse, name, *nodesp))
+            allowed = 0;
+        lifeuse->names[lifeuse->count++] = name;
+    }
+    if (allowed) {
+        if (fncall->objfn && fncall->objfn->tag == NameUseTag)
+            ((NameUseNode*)fncall->objfn)->lifeuse = lifeuse;
+        else
+            errorMsgNode(lifeuse->at, ErrorLifetimeArgs, "Lifetimes are named on a struct's use by its name: 'Cursor['a]'.");
+    }
+    return types;
 }
 
 static Nodes *parseIndexArgsIn(ParseState *parse, FnCallNode *fncall) {
@@ -347,6 +426,10 @@ INode *parseSuffix(ParseState *parse, INode *node, uint16_t flags) {
             FnCallNode *fncall = newFnCallNode(node, 0);
             fncall->flags |= flags | FlagIndex;
             fncall->args = parseIndexArgs(parse, fncall);
+            // A struct's use naming only its lifetimes, 'Cursor['a]', is the
+            // name itself, which holds them
+            if (fncall->args->used == 0 && node->tag == NameUseTag && ((NameUseNode*)node)->lifeuse)
+                continue;
             node = (INode*)fncall;
         }
 
@@ -399,19 +482,11 @@ INode *parseAmper(ParseState *parse) {
 
     // Lifetime (optional), before the permission, as the grammar and Rust
     // place it: '&'a mut T'. It is named only on a borrowed reference type in a
-    // function's signature, outside a type's arguments, where it is checked
+    // function's signature or a struct's field, where it is checked
     // (lifetime.h).
     if (lexIsToken(LifetimeToken)) {
-        if (parse->intype && parse->lifesig) {
+        if (parseLifeNamed(parse, lex->val.ident, NULL))
             anode->lifename = lex->val.ident;
-            parse->lifesig->lifenamed = 1;
-        }
-        else if (parse->intype)
-            errorMsgLex(ErrorLifetimePlace,
-                "A lifetime is named only on a borrowed reference in a function's signature, not inside a type's arguments, nor in a field's or a variable's type: lifetimes on types holding borrows are not built yet.");
-        else
-            errorMsgLex(ErrorLifetimePlace,
-                "A lifetime is named on a borrowed reference type ('&'a T'), not on a borrow.");
         lexNextToken();
     }
 

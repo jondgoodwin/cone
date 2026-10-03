@@ -32,8 +32,20 @@ void loanWalkBegin();
 // only. An entry is a loan's id, with LoanFar set for a far one. Where the
 // walk cannot tell (a value read through a reference, or a call's result),
 // every loan is near, which only refuses more.
+//
+// An entry may also carry a slot's tag: held by a struct declaring lifetimes
+// (lifetime.h), it says in which of them the loan is held -- the struct the
+// holder's own type is, or, for a borrowed reference, the one it points at.
+// A read of a field carries only the loans of the slots it holds, and those
+// with no tag, which may be anywhere. A tag is set only where it is known
+// exactly (a struct literal's field, a store into a field, a parameter's
+// caller loans), and dropped wherever a value leaves the struct.
 #define LoanFar 0x80000000u
-#define loanOf(entry) ((entry) & ~LoanFar)
+#define LoanTagShift 24
+#define LoanTagMask (0x1Fu << LoanTagShift)
+#define LoanIdMask 0x00FFFFFFu
+#define loanOf(entry) ((entry) & LoanIdMask)
+#define loanTag(entry) (((entry) & LoanTagMask) >> LoanTagShift)
 
 // The access a borrow with the permission 'perm' makes of what it borrows
 int loanBorrowAccess(INode *perm);
@@ -42,10 +54,21 @@ int loanBorrowAccess(INode *perm);
 // 'perm'. A site walked again (a loop body) makes the same loan.
 uint32_t loanMake(INode *site, Place *pl, INode *perm);
 
-// The caller loan of the parameter 'var': a stand-in for whatever the caller
+// A caller loan of the parameter 'var': a stand-in for whatever the caller
 // lent through it, which no access here conflicts with and which outlives the
-// call. A parameter whose type carries a borrow holds it from the start.
-uint32_t loanCaller(uint32_t var);
+// call, one per part of what it lends (LifePart, lifetime.h): what its own
+// reference points at, and what that holds, whole or by slot. A parameter
+// whose type carries a borrow holds them from the start.
+uint32_t loanCaller(uint32_t var, uint32_t part);
+
+// Is a loan a caller loan of what a parameter's own reference points at? It
+// stands for exactly that place, so a value read through it, or a borrow of
+// something further on, does not point there.
+int loanIsCallerOwn(uint32_t loan);
+
+// Has this walk made any such loan? Where none is, nothing read through a
+// reference has one to leave out.
+int loanAnyCallerOwn();
 
 // The variable at the root of the place a loan borrows
 uint32_t loanRoot(uint32_t loan);
@@ -53,6 +76,10 @@ uint32_t loanRoot(uint32_t loan);
 // Does a loan borrow what its root variable points at -- a reborrow through
 // a reference, or what a caller lent -- rather than the variable's own storage?
 int loanThrough(uint32_t loan);
+
+// Does a loan borrow the whole of its root, or of what its root points at,
+// not a part of it?
+int loanWhole(uint32_t loan);
 
 // Is a loan rooted in this function's own storage -- a local, or a by-value
 // parameter, or what an owner held in one owns -- so that it ends with the
@@ -84,20 +111,23 @@ enum LoanEscape {
 };
 void loanEscape(INode *node, uint32_t loan, int how);
 
-// Named lifetimes (lifetime.h). A caller loan stands for the lifetimes its
-// parameter's type holds: a value may carry it where its type shares one of
-// them (lifeShared). The function's own signature is the one compared with.
+// Named lifetimes (lifetime.h). A caller loan stands for the lifetimes of the
+// part of its parameter it lends: a value may carry it where its type holds
+// one they flow to by the signature's order (lifePartFlows). 'sig' is the
+// function's own signature.
 //
-// A caller loan in 'set' whose parameter shares no lifetime with a value of
-// the type 'wanted' -- one returned, say -- or 0
-uint32_t loanCallerApart(PathSet *set, INode *wanted);
+// A caller loan in 'set' whose part flows to no lifetime a value of the type
+// 'wanted' holds -- one returned, say -- or 0
+uint32_t loanCallerApart(FnSigNode *sig, PathSet *set, INode *wanted);
 
 // A caller loan among 'stored' that may not be stored where a reference
 // holding 'refholds' points (its near loans, or every one with 'beyond'):
 // what a borrowed parameter points at holds only the lifetimes its type gives
-// it there. Returns 0, or the loan, with the parameter whose place it may not
-// go in as 'through'.
-uint32_t loanStoredApart(PathSet *stored, PathSet *refholds, int beyond, VarDclNode **through);
+// it there -- in the field the store lands in, where 'landing' names its
+// slots, of a struct declaring lifetimes. Returns 0, or the loan, with the
+// parameter whose place it may not go in as 'through'.
+uint32_t loanStoredApart(FnSigNode *sig, PathSet *stored, PathSet *refholds, int beyond, uint32_t landing,
+    VarDclNode **through);
 
 // A loan in 'set' that is not global -- a caller loan, or one of this
 // function's own storage -- or 0

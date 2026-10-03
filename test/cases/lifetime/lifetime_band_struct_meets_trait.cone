@@ -1,0 +1,42 @@
+// A struct declaring lifetimes implements a trait whose methods name none:
+// 'size' promises nothing of lifetimes, and 'first', returning '&'a R', where
+// the cursor's slice points, promises no more than the trait's '&R' tied to
+// the receiver. Called through a virtual reference, the trait's signature is
+// the one read, which ties the result to the whole receiver.
+//
+// Verdict: accept; prints 7.
+// Basis: an implementation meets a requirement when it promises what the
+// requirement does; a struct's lifetimes are parts of its receiver the
+// trait's 'Self' does not have, so the two are compared receiver by receiver,
+// and a call through the trait, holding the result to all the receiver
+// holds, is the cautious side.
+// Master b07a3adc: refused at parse (ErrorBadTok: a lifetime in a struct's
+// brackets).
+
+mod lifetime_band_struct_meets_trait;
+
+import stdio use *;
+
+struct R { pub n i64; }
+
+trait Sized {
+  pub fn size(self &) usize;
+  pub fn first(self &) &R;
+}
+
+struct Cursor['a] is Sized {
+  pub items &[]'a R;
+  pub fn size(self &) usize { items.len(); }
+  pub fn first(self &) &'a R { &items[0usize]; }
+}
+
+fn firstOf(s &<Sized) i64 {
+  s.first().n;
+}
+
+fn main() {
+  imm a Array[R, 2] = [new R(7), new R(9)];
+  imm c = new Cursor(&[]a);
+  printInt(firstOf(&c));
+  printStr("\n");
+}

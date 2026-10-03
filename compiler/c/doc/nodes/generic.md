@@ -95,6 +95,15 @@ never instantiated.
 a generic that recurses at the *same* arguments terminate — the inner call
 memo-hits the half-built instance.
 
+**A lifetime is never instanced.** A memo hit compares arguments by
+`itypeIsSame`, which ignores a reference's lifetime, so `Option[&'a R]` and
+`Option[&R]` are one instance; and the instance is cloned from its arguments
+with every lifetime erased (`lifeErased`, a function type's promises excepted,
+being part of that type), so no use's names leak into the instance's own
+types. The use `genericMemoize` returns keeps the arguments as written, and
+the lifetimes the generic's own name was given, for what they name
+(`genericInstanceUse`, `NameUseNode.lifeuse`).
+
 **`GenVarDclNode`** is `{ IExpNodeHdr; Name *namesym; Nodes *annot; }`. Its
 `vtype` is set NULL and never assigned; `gVarDclTypeCheck` is empty. `namesym`
 sits at the same offset as `VarDclNode.namesym` and `NameUseNode.namesym`, which

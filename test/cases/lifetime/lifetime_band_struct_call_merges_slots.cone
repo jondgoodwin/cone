@@ -1,0 +1,56 @@
+// A callee whose signature does not name a struct's lifetimes apart may move
+// a borrow from one of its slots to another: 'mix' takes 'Holder' unnamed,
+// so its two fields hold one lifetime there, and it moves 'r''s borrow into
+// 's'. After the call the caller no longer knows which borrow is in which
+// field, so 'h.getS()' keeps 'short' borrowed as well as 'long', and 'short'
+// may not end while 'got' is used.
+//
+// Verdict: refuse, ErrorFrozen where 'short' goes out of scope.
+// Basis: a call may move borrows between the slots of a struct its signature
+// names with one lifetime, or orders beyond the struct's own order; what the
+// struct holds is then known by slot no longer.
+// Master b07a3adc: refused at parse (ErrorBadTok: a lifetime in a struct's
+// brackets). This compiler, keeping the slots apart across the call, accepts it,
+// and main, run, prints "final" (for 'short') and then a value read from the
+// freed 'R'.
+
+mod lifetime_band_struct_call_merges_slots;
+
+import stdio use *;
+
+struct R {
+  pub n i64;
+  fn final(self &uni) {
+    printStr("final\n");
+  }
+}
+
+struct Holder['s, 'r] {
+  pub s &'s R;
+  pub r &'r R;
+  pub fn getS(self &) &'s R { s; }
+}
+
+fn mix(h &mut Holder) {
+  h.s = h.r;
+}
+
+fn clobber(n i64) i64 {
+  mut a Array[i64, 16] = [n, n, n, n, n, n, n, n, n, n, n, n, n, n, n, n];
+  a[3] + a[9];
+}
+
+fn main() {
+  imm long = new R(1);
+  mut got = &long;
+  {
+    imm short = new So[R](42);       //~ ErrorFrozen
+    mut h = new Holder(&long, &*short);
+    mix(&mut h);
+    got = h.getS();
+  }
+  clobber(21);
+  printStr("read = ");
+  printInt(got.n);
+  printStr("\n");
+}

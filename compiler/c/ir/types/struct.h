@@ -45,6 +45,7 @@ typedef struct StructNode {
     NodeList fields;        // Ordered list of all fields
     Vtable *vtable;         // Pointer to vtable info (may be NULL)
     GenericInfo *genericinfo;     // Link to generic parms, etc (or NULL if not generic)
+    LifeParms *lifeparms;   // The lifetimes it declares, apart from its type parameters (lifetime.h), or NULL
     int64_t tagnbr;         // If a tagged struct, the number in the tag field, read as 'tagstate' says
     DclSpans *spans;        // Where each member of its braces sits in its file, in the order parsed (dclspan.h); NULL for none
     uint8_t carriesborrow;  // itypeCarriesBorrow's remembered answer (CarriesBorrow*), once the type is checked

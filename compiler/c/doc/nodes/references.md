@@ -28,7 +28,7 @@ measured against emitted IR.*
 | `vtype` | unused on a type node; the **constructed reference type** on an expression node |
 | `typeinfo` | interned `RefTypeInfo` — the LLVM handles. **Interned by what the reference refers to**, so reference types that agree at run time share one record and generation memoizes the LLVM type on it |
 | `scope` | lifetime: 0 global, 1 the caller band (what a borrowed parameter points at), 2+ a block of the function, 2 its top block (where its parameters' own storage lives too) |
-| `lifename` | the lifetime a function's signature writes on this borrowed reference type (`&'a T`), interned (`staticLifeName` for `'static`); NULL for the unnamed one, and on every type outside a signature |
+| `lifename` | the lifetime a function's signature or a struct's field writes on this borrowed reference type (`&'a T`), interned (`staticLifeName` for `'static`); NULL for the unnamed one, and on every type outside those, a generic's instance's own types among them (`lifeErased`) |
 
 ⚠ **A cloned reference re-interns, in `cloneRefNode`.** Cloning is how a trait's
 method becomes an implementer's and a generic's becomes an instance's, and both
@@ -44,11 +44,14 @@ implementer's type. `trait_inherited_defaults` pins both.
 the band, compared as a number wherever a borrow is returned, stored or handed
 to a call. `lifename` is read only on a signature's own types — a parameter's
 declared type (the copy `varDclTypeCheck` scopes keeps it) and the result —
-by `lifeShared` and its neighbours (`ir/types/lifetime.h`), which say which
-parameters a result or a store may draw on; within the band, two names are
-told apart by the loan walk's caller loans, never by `scope`. A name is never
-compared across two signatures, so a copy of a callee's type that reaches a
-caller (a call's result) carries a name nothing reads there.
+and on a struct's fields, by `lifeCarry`, `lifeFlows` and their neighbours
+(`ir/types/lifetime.h`), which say what of each argument a result or a store
+may draw on; within the band, two names are told apart by the loan walk's
+caller loans, never by `scope`. A name is never compared across two
+signatures, so a copy of a callee's type that reaches a caller (a call's
+result) carries a name nothing reads there. A struct's lifetimes, named on a
+use of it (`Cursor['a]`), are no reference's: they are the use's
+`NameUseNode.lifeuse`, read by the same functions.
 
 ### The seven tags
 
@@ -108,10 +111,12 @@ The differences are worth knowing:
 - `&` leaves an absent permission as `unknownType`, deferred to type check.
   `+` defaults to `uni` **at parse time**.
 - `&` may name a lifetime right after its token, before the permission
-  (`&'a mut T`, `&[]'a u8`), only while `ParseState.lifesig` is set: the types
-  of a signature's parameters and result, outside a type's arguments, which
-  `parseIndexArgs` clears it for. It sets `lifenamed` on that signature.
-  Anywhere else the lifetime is `ErrorLifetimePlace`, and read past.
+  (`&'a mut T`, `&[]'a u8`), only while `ParseState.lifesig` is set (the types
+  of a signature's parameters and result, a type's arguments there included),
+  where it sets `lifenamed` on that signature, or `ParseState.lifestruct` (a
+  struct's field's type), where it is noted for the struct to declare
+  (`lifeStructDeclare`). Anywhere else the lifetime is `ErrorLifetimePlace`,
+  and read past (`parseLifeNamed`).
 - `&` has two escapes `+` does not: a `fn` operand, where the presence of a body
   decides closure-versus-signature; and a `,` or `)` operand, where `vtexp` is
   left `unknownType` for later `Self` inference in a parameter position.
@@ -515,9 +520,11 @@ out with the lifetime its type gives, which no flow tracks yet.
 
 Sites that build a reference type carry the scope onto it: `fnCallArrIndex` into
 a borrowed element's; `fnCallFinalizeArgs` into a call's result, which takes the
-narrowest scope among the borrowed arguments for parameters sharing a lifetime
-with it (`fnCallNarrowestBorrowScope`; all of them where the signature names
-none) on a `RefNode` of the call's own,
+narrowest scope among the borrowed arguments whose parameter's own lifetime
+flows to one it holds, or, where only what the parameter's reference points
+at holds one, of the borrow the argument points at, where that is a borrowed
+reference with a scope (`fnCallNarrowestBorrowScope`, by `lifeCarry`; all of
+them where the signature names none) on a `RefNode` of the call's own,
 the declared return type being shared by every call site and unable to carry
 it; `iexpCoerce` into the `CastNode` it injects for a borrow coerced to another
 reference type — which is how a virtual reference is built at all, and how one

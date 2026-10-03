@@ -370,7 +370,13 @@ it. How long a borrow *freezes* its source is a different question, and is not
 in the type at all: flow's loan walk records which loans each local may hold,
 per path, and a borrow's source stays frozen until the last use of whatever
 holds its loan ([Flow Analysis](../../compiler/c/doc/phases/flow.md), "The loan
-walk").
+walk"). Named lifetimes — on a signature's references (`&'a T`), declared by a
+struct and named on its uses (`struct Cursor['a]`, `Cursor['a]`), ordered by a
+`where` clause (`'a >= 'b`) — divide the caller band by identity within one
+signature, never by a number: the loan walk keeps a caller loan per part of
+what a parameter lends, a struct's lifetimes one by one, and compares the
+parts' names (Flow Analysis, "Named lifetimes", "Slots"). A name, like the
+scope, is no part of type identity, and is never instanced.
 
 **That integer is a placeholder for a much larger design.** The intent is an
 encoding of source variable, *invariance group*, and relative scope, forming a
