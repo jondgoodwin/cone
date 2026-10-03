@@ -14,6 +14,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <errno.h>
 
 // List of option ids
 enum
@@ -121,8 +122,8 @@ static void usage()
         "  --version, -v   Print the version of the compiler and exit.\n"
         "  --help, -h      Print this help text and exit.\n"
         "  --debug, -d     Don't optimise the output.\n"
-        "  --define, -D    Define the specified build flag.\n"
-        "    =name\n"
+        "  --define, -D    Define a constant, which isDefined and definedInt\n"
+        "    =name         answer (1), or with =123 that integer. Provisional.\n"
         "  --strip, -s     Strip debug info.\n"
         "  --path, -p      Add folders to the package search path.\n"
         "    =path;path    Searched in order, before the packages folder.\n"
@@ -284,6 +285,51 @@ static void coneOptPackages(ConeOptions *opt) {
     coneOptPath(beside ? beside : CONE_PACKAGES_DIR, opt);
 }
 
+// TEMPORARY, a provisional mechanism whose final design is open: '-D NAME'
+// defines NAME as 1, and '-D NAME=123' as that integer (decimal, or 0x hex,
+// optionally negative), C's convention. A name given twice takes the last.
+// Answers 0, having said why, for a name that is not an identifier or a value
+// that is not an integer
+static int coneOptDefine(char *arg, ConeOptions *opt) {
+    char *eq = strchr(arg, '=');
+    size_t namelen = eq ? (size_t)(eq - arg) : strlen(arg);
+    int isname = namelen > 0 && !(arg[0] >= '0' && arg[0] <= '9');
+    for (size_t i = 0; isname && i < namelen; ++i) {
+        char c = arg[i];
+        isname = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_';
+    }
+    if (!isname) {
+        printf("-D needs a name made of letters, digits and '_', optionally '=' and an integer: %s\n", arg);
+        return 0;
+    }
+    int64_t value = 1;
+    if (eq) {
+        char *end;
+        errno = 0;
+        value = (int64_t)strtoll(eq + 1, &end, 0);
+        if (eq[1] == '\0' || *end != '\0' || errno == ERANGE) {
+            printf("-D %.*s takes an integer from -2^63 to 2^63-1 after '=': %s\n", (int)namelen, arg, eq + 1);
+            return 0;
+        }
+    }
+    char *name = memAllocStr(arg, namelen);
+    name[namelen] = '\0';
+    for (int i = 0; i < opt->ndefines; ++i) {
+        if (strcmp(opt->defines[i].name, name) == 0) {
+            opt->defines[i].value = value;
+            return 1;
+        }
+    }
+    ConeDefine *defines = (ConeDefine *)memAllocBlk((opt->ndefines + 1) * sizeof(ConeDefine));
+    if (opt->ndefines)
+        memcpy(defines, opt->defines, opt->ndefines * sizeof(ConeDefine));
+    defines[opt->ndefines].name = name;
+    defines[opt->ndefines].value = value;
+    opt->defines = defines;
+    ++opt->ndefines;
+    return 1;
+}
+
 int coneOptSet(ConeOptions *opt, int *argc, char **argv) {
     opt_state_t s;
     int id;
@@ -333,7 +379,8 @@ int coneOptSet(ConeOptions *opt, int *argc, char **argv) {
         }
         break;
         case OPT_BUILDFLAG:
-            // define_build_flag(s.arg_val); 
+            if (!coneOptDefine(s.arg_val, opt))
+                ok = 0;
             break;
         case OPT_PATHS:
             coneOptPath(s.arg_val, opt);

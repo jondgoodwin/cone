@@ -1,0 +1,55 @@
+// The target's OS (TEMPORARY, a provisional mechanism; its final design is
+// open): isWindows, isLinux, isMacOS and isWasm are constants of the compile,
+// read from its target triple with no flag. On this, a Windows build,
+// isWindows holds and the others do not.
+//
+// Only the side of an 'if' on them that the build takes is generated, in a
+// debug build as in a release one. Each side not taken calls a function
+// declared 'extern' and defined nowhere, so the program links only because no
+// call to one, and so no reference to its symbol, reaches the object. Both
+// sides are still type checked: what is written there must be valid Cone.
+
+mod intrinsic_buildconst_os;
+
+import stdio use *;
+
+extern fn notWindowsDefinedNowhere();
+extern fn linuxDefinedNowhere() i32;
+extern fn macDefinedNowhere();
+extern fn wasmDefinedNowhere();
+
+fn pick(n i32) {
+  // A condition known only as it runs, then constants: the first generated as
+  // a test, the dead one not at all, the 'else' reached from the first's test
+  if n > 5 {printStr("n > 5\n");}
+  elif isLinux() {linuxDefinedNowhere();}
+  else {printStr("n <= 5\n");}
+}
+
+fn main() {
+  if isWindows() {printStr("windows\n");} else {notWindowsDefinedNowhere();}
+
+  // A chain of constants: only the true one's block is generated
+  if isLinux() {linuxDefinedNowhere(); printStr("linux\n");}
+  elif isMacOS() {macDefinedNowhere(); printStr("macos\n");}
+  elif isWasm() {wasmDefinedNowhere();}
+  else {printStr("neither linux, macos nor wasm\n");}
+
+  // '!', 'and' and 'or' of constants are constants
+  if !isWindows() or isWasm() {notWindowsDefinedNowhere();}
+  if isWindows() and !isLinux() {printStr("windows, not linux\n");}
+
+  // A true constant is the 'else' of what follows it
+  if isWindows() {printStr("first\n");} elif isMacOS() {macDefinedNowhere();} else {wasmDefinedNowhere();}
+
+  // An 'if' giving a value, its dead side giving one too
+  imm bits = if isWindows() {64;} else {linuxDefinedNowhere();};
+  printInt(bits);
+  printStr("\n");
+
+  // No side is taken: nothing is generated, and the program goes on
+  if isMacOS() {macDefinedNowhere();}
+
+  pick(9);
+  pick(2);
+}

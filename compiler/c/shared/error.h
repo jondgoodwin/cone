@@ -442,11 +442,14 @@ enum ErrorCode {
     ErrorNullNotPtr = 1237,     // A 'null' wanted as something other than a raw pointer, or where nothing says which raw pointer type it is
     ErrorBoolNotNbr = 1238,     // A Bool where a number is wanted: a Bool converts to a number only explicitly, 'T.from(b)'
 
+    // Constants of the build (TEMPORARY, a provisional mechanism whose final design is open)
+    ErrorDefineName = 1239,     // isDefined or definedInt given a '-D' name that is not a string literal
+
     // Lock permissions: a struct declaring 'LockPermission' in a managed reference's permission slot (ir/types/permission.c, ir/exp/borrow.c)
-    ErrorNotLockPerm = 1239,    // A struct in a managed reference's permission slot that does not declare 'is LockPermission'
-    ErrorLockPermShape = 1240,  // A lock permission whose methods are not the shape the compiler calls: no 'acquireMut' and 'releaseMut', a read pair half declared, a method taking more than 'self' or returning a value
-    ErrorLockRegion = 1241,     // A lock permission on a region it does not fit: one owner ('So'), a region not counting owners, a cross-thread lock on a single-thread region or the reverse, or a virtual reference (a traced region is ErrorTracedPerm)
-    ErrorLockAccess = 1242,     // A lock-managed reference read, written or lent without the borrow that takes its lock: '&mut *p', '&*p'
+    ErrorNotLockPerm = 1240,    // A struct in a managed reference's permission slot that does not declare 'is LockPermission'
+    ErrorLockPermShape = 1241,  // A lock permission whose methods are not the shape the compiler calls: no 'acquireMut' and 'releaseMut', a read pair half declared, a method taking more than 'self' or returning a value
+    ErrorLockRegion = 1242,     // A lock permission on a region it does not fit: one owner ('So'), a region not counting owners, a cross-thread lock on a single-thread region or the reverse, or a virtual reference (a traced region is ErrorTracedPerm)
+    ErrorLockAccess = 1243,     // A lock-managed reference read, written or lent without the borrow that takes its lock: '&mut *p', '&*p'
 
     // Warnings
     WarnCode = 3000,
