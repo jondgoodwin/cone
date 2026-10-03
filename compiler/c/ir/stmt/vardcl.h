@@ -69,8 +69,6 @@ void varDclFlow(FlowState *fstate, VarDclNode **vardclnode);
 typedef struct VarDclTemp {
     VarDclNode *var;    // the hidden local, whose value is the temporary's expression
     INode **slot;       // where that expression was: now a name use of the local
-    INode *borrowed;    // the borrow's operand as written, where a refusal is reported
-    uint8_t place;      // that operand was a place all the same ('*makeOwner()')
     uint8_t kept;       // the borrow extends it
 } VarDclTemp;
 
@@ -98,8 +96,9 @@ Nodes *varDclExtendEnd(TypeCheckState *pstate, VarDclExtend *ext);
 
 // A borrow, type checked within such a statement, of a place whose root
 // 'slot' is a temporary: make the temporary a hidden local, which the borrow
-// then borrows. 'borrowed' is the borrow's operand. Returns 0, changing
-// nothing, outside such a statement.
-int varDclExtendTemp(TypeCheckState *pstate, INode **slot, INode *borrowed);
+// then borrows, and which goes back in place, a temporary of the statement,
+// where no extending borrow reaches it. Returns 0, changing nothing, outside
+// such a statement.
+int varDclExtendTemp(TypeCheckState *pstate, INode **slot);
 
 #endif

@@ -552,8 +552,9 @@ failed to resolve.
 
 A temporary is a value an expression makes that nothing takes — not bound,
 stored, passed by value, handed back or moved — whose death does something
-(`itypeNeedsFinal`); it dies at the end of the statement that made it, newest
-first (`doc/reference/refinitdrop.html`). Flow finds each where it is read or
+(`itypeNeedsFinal`), or which a borrow points at, whatever its type; it dies at
+the end of the statement that made it, newest first
+(`doc/reference/refinitdrop.html`). Flow finds each where it is read or
 thrown away and wraps it in a `TempNode` (`flowTempRead`); generation keeps it
 in a slot and finalizes it at the end of its part ([Generation](generation.md),
 "Temporaries"). A temporary is never a variable here, so it has no flags and
@@ -575,7 +576,7 @@ is consumed without being taken:
 | `blockFlow`, the final expression of a block that throws its value away (`blockDiscards`: a loop's, or one with no value, as a statement's and a statement `if`'s branches are; a function's own block only when it returns nothing) | the same; and the block hands nothing back, so a local its final expression names is not exempted from the release (`flowresult` is NULL) |
 | `flowLoadThroughRef` | the value a dereference, a field access or an index reads: `mk().n`, `*mkso()`, `mkarr()[1]` |
 | `flowLoadValue`, `CastTag` and `IsTag` | the operand of an `is`, and of a cast that does not hand its operand on (`flowCastHandsOn`): an owner lent as a borrowed reference (`g(mkso())`, `mkso().get()`), a conversion |
-| `borrowFlowPlace` | the root of a borrowed place: `&*mkso()`, as a method borrowing its receiver builds |
+| `borrowFlowPlace` | the root of a borrowed place: `&*mkso()`, as a method borrowing its receiver builds; and, through `flowTempBorrowed`, a value borrowed itself or a part of one, `&mk()`, `&mk().n`, `&(a + 1)`, `mk().get()`, whatever its type: the borrow needs it in a slot, and the loan walk a root that ends with the statement. One whose death does nothing is `kept`, so generation pushes no finalization for it |
 
 A value taken — a variable's initializer, an assignment's value, an argument,
 a field of a literal, a returned or handed-back value — reaches

@@ -300,9 +300,9 @@ its extending positions in the order they run, keeping each hidden local a
 borrow there reaches (with what its own value extends, first) and making one
 for an owner a recast lends (retyping the recast to the block's lifetime).
 `varDclExtendEnd` settles the rest: a hidden local no extending borrow reached
-is a borrow of a temporary, refused (`ErrorBadLval`, at the borrow's operand,
-as before), unless the operand was a place all the same (`id(&*mkso())`),
-whose temporary goes back where it was.
+goes back where it was, a temporary of the statement (`id(&mk())`,
+`id(&*mkso())`), which a borrow points at until the statement's end, as one
+outside any initializer is ([Flow](../phases/flow.md), "Temporaries").
 
 **Order is kept.** A hidden local runs at its declaration, before the
 statement. So an element of a literal that runs before an extended temporary

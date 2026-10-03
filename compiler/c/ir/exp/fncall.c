@@ -854,10 +854,11 @@ void fnCallDemandCandidates(INode *binding) {
 // method borrows for reading even from a mutable variable, then 'mut'. The
 // borrow is made by borrowMutRef, so its permission and lifetime are the ones a
 // hand-written '&mut v' gets: a 'self &mut' method on an immutable variable is
-// ErrorBadPerm. A temporary has no place to borrow, so a call whose only
-// candidates want a borrowed self is ErrorBadLval, once, as '&' of it is.
+// ErrorBadPerm. A temporary is borrowed where it is, as '&' of it is, and
+// lives to the end of its statement (borrowTempRef).
 // Returns the selected method, with the borrow now the receiver, or NULL.
-static FnDclNode *fnCallBorrowReceiver(FnCallNode *callnode, INode *foundnode, enum OverloadMatch *status) {
+static FnDclNode *fnCallBorrowReceiver(TypeCheckState *pstate, FnCallNode *callnode, INode *foundnode,
+        enum OverloadMatch *status) {
     INode *obj = callnode->objfn;
     INode *objtype = iexpGetTypeDcl(obj);
     if (fnCallIsRefReceiver(objtype) || objtype->tag == PtrTag || !isMethodType(objtype))
@@ -881,12 +882,8 @@ static FnDclNode *fnCallBorrowReceiver(FnCallNode *callnode, INode *foundnode, e
         }
         if (iexpIsLval(obj))
             borrowMutRef(&callnode->objfn, objtype, perm);
-        else {
-            errorMsgNode(obj, ErrorBadLval,
-                "May not borrow a temporary value. `%s` takes a borrowed self, which needs a place in memory to point at.",
-                &((NameUseNode*)callnode->methfld)->namesym->namestr);
-            callnode->objfn = probe;
-        }
+        else
+            borrowTempRef(&callnode->objfn, objtype, perm, borrowTempScope(pstate));
         return selected;
     }
     return NULL;
@@ -1020,7 +1017,7 @@ int fnCallLowerMethod(TypeCheckState *pstate, FnCallNode *callnode) {
     // A receiver held as a value reaches a method declaring 'self &' or
     // 'self &mut' by being borrowed (fnCallBorrowReceiver)
     if (selected == NULL && status == OverloadNone)
-        selected = fnCallBorrowReceiver(callnode, foundnode, &status);
+        selected = fnCallBorrowReceiver(pstate, callnode, foundnode, &status);
 
     if (selected == NULL) {
         if (!fnCallRefIndexWantsMut(callnode, foundnode, methsym, status))

@@ -154,10 +154,9 @@ void varDclNameRes(NameResState *pstate, VarDclNode *name) {
 // through that arm only, which its drop flag follows. A borrow of a place rooted in
 // a temporary is made a borrow of such a local as it is type checked
 // (varDclExtendTemp, from borrowTypeCheck), before anything shows whether it
-// is extending; the walk here keeps it if it is, and the statement's end
-// refuses the borrow if not ("May not borrow a temporary value"), or puts the
-// temporary back where the borrow could reach it as a place anyway
-// ('id(&*makeOwner())').
+// is extending; the walk here keeps it if it is, and the statement's end puts
+// it back where it was if not ('id(&make())', 'id(&*makeOwner())'): a
+// temporary of the statement, which a borrow may point at until its end.
 //
 // A hidden local runs where its declaration is, before the statement: so an
 // element of a literal that runs before an extended temporary, and is not a
@@ -188,7 +187,7 @@ static VarDclNode *varDclHide(VarDclExtend *ext, INode **slot) {
     return var;
 }
 
-int varDclExtendTemp(TypeCheckState *pstate, INode **slot, INode *borrowed) {
+int varDclExtendTemp(TypeCheckState *pstate, INode **slot) {
     VarDclExtend *ext = pstate->extend;
     if (ext == NULL)
         return 0;
@@ -201,8 +200,6 @@ int varDclExtendTemp(TypeCheckState *pstate, INode **slot, INode *borrowed) {
         ext->tempcap = cap;
     }
     VarDclTemp *temp = &ext->temps[ext->ntemps++];
-    temp->place = iexpIsLval(borrowed);
-    temp->borrowed = borrowed;
     temp->slot = slot;
     temp->kept = 0;
     temp->var = varDclHide(ext, slot);
@@ -451,13 +448,8 @@ Nodes *varDclExtendEnd(TypeCheckState *pstate, VarDclExtend *ext) {
     pstate->extend = ext->outer;
     for (uint32_t i = 0; i < ext->ntemps; ++i) {
         VarDclTemp *temp = &ext->temps[i];
-        if (temp->kept)
-            continue;
-        if (temp->place)
+        if (!temp->kept)
             *temp->slot = temp->var->value;
-        else
-            errorMsgNode(temp->borrowed, ErrorBadLval,
-                "May not borrow a temporary value. A borrowed reference needs a place in memory to point at; a temporary is one only where a variable's initializer borrows it ('imm r = &make();').");
     }
     return ext->hoisted;
 }

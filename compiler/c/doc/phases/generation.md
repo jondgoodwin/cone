@@ -990,7 +990,8 @@ each in a `TempNode` ([Flow](flow.md), "Temporaries"). Generating one
 (`genlTerm`, or `genlAddr` where its field or element is wanted) generates its
 value, stores it into an alloca of its own (`genlTempKeep`) and pushes that slot
 on `GenState.temps`, a stack in evaluation order; a `kept` one is generated as
-its value alone. The end of each part that makes temporaries finalizes those
+its value alone, or, where its address is wanted, stored in its slot and never
+finalized. The end of each part that makes temporaries finalizes those
 it pushed, newest first, and pops them (`genlTempsEnd`), each as a local dies
 (`genlFinalizeAt`), or hollow where flow noted a value moved out through it
 (`genlTempRelease`, `genlMovedPath` walking to the node instead of a variable):

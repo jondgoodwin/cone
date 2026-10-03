@@ -83,6 +83,15 @@ void borrowMutRef(INode **nodep, INode* type, INode *perm) {
     *nodep = (INode*)borrownode;
 }
 
+void borrowTempRef(INode **nodep, INode *type, INode *perm, uint16_t scope) {
+    INode *node = *nodep;
+    RefNode *reftype = newRefNodeFull(RefTag, node, borrowRef, perm, type);
+    reftype->scope = scope;
+    RefNode *borrownode = newRefNodeFull(BorrowTag, node, borrowRef, perm, node);
+    borrownode->vtype = (INode*)reftype;
+    *nodep = (INode*)borrownode;
+}
+
 // Auto-inject a borrow note in front of 'from', to create totypedcl type
 void borrowAuto(INode **from, INode *totypedcl) {
     // Borrow from array to create arrayref (only one supported currently)
@@ -352,6 +361,10 @@ int borrowConstLitCoerce(INode *from, INode *totypedcl) {
     return 1;
 }
 
+uint16_t borrowTempScope(TypeCheckState *pstate) {
+    return (uint16_t)pstate->scope;
+}
+
 // Analyze borrow node
 void borrowTypeCheck(TypeCheckState *pstate, RefNode **nodep) {
     RefNode *node = *nodep;
@@ -370,28 +383,24 @@ void borrowTypeCheck(TypeCheckState *pstate, RefNode **nodep) {
     if (iexpTypeCheckAny(pstate, &node->vtexp) == 0)
         return;
 
-    // Every operand a borrow refuses is refused for one reason, so the borrow says
-    // that reason rather than iexpIsLvalError's "must be lval", which explains an
-    // assignment target and not this. A borrow reaches the whole suffixed term, so
-    // '&p.sum()' is the call's result -- a temporary -- and '(&p).sum()' is how a
-    // method is called on a borrowed receiver. A constant literal is not a
-    // temporary: it has a place in a constant global. An array literal's
-    // elements computed from constants alone are constants too, folded here
-    // into the literals they compute (litFoldConst), so '&[R | G, B]' is one.
+    // A borrow reaches the whole suffixed term, so '&p.sum()' borrows the
+    // call's result -- a temporary -- and '(&p).sum()' is how a method is
+    // called on a borrowed receiver. A constant literal is not a temporary: it
+    // has a place in a constant global. An array literal's elements computed
+    // from constants alone are constants too, folded here into the literals
+    // they compute (litFoldConst), so '&[R | G, B]' is one.
     if (node->vtexp->tag == ArrayLitTag)
         litFoldConst(&node->vtexp);
     // A place rooted in a temporary, borrowed in a local's initializer, may be
     // one Rust's rule extends to the end of the block: the temporary becomes a
     // hidden local of the block, kept if the borrow turns out to extend it
-    // (vardcl.c, "Temporaries an initializer extends")
+    // (vardcl.c, "Temporaries an initializer extends"). Any other is borrowed
+    // where it is, and lives to the end of its statement, as Rust's does: flow
+    // keeps it in a slot (flowTempBorrowed), and the loan walk refuses a borrow
+    // of it used after that.
     INode **temp = borrowTempRoot(&node->vtexp);
     if (temp)
-        varDclExtendTemp(pstate, temp, node->vtexp);
-    if (!iexpIsLval(node->vtexp) && !borrowIsConstLit(node->vtexp)) {
-        errorMsgNode(node->vtexp, ErrorBadLval,
-            "May not borrow a temporary value. A borrowed reference needs a place in memory to point at.");
-        return;
-    }
+        varDclExtendTemp(pstate, temp);
 
     // An inline function has no code of its own: generation copies its body
     // into each caller and emits no symbol, so a reference to it would point at
@@ -448,13 +457,14 @@ void borrowTypeCheck(TypeCheckState *pstate, RefNode **nodep) {
         // a call returned, '&id(&x).n' or '&*id(&x)' -- has no variable at its
         // root, but is still a place: it is where that reference points, and
         // lives as long as the reference's type says (iexpScopeThroughRef), as
-        // a place reached through a reference held in a variable does. Only a
-        // place rooted in a temporary itself has no lifetime here.
+        // a place reached through a reference held in a variable does. A place
+        // rooted in a temporary itself is reached through nothing but this
+        // borrow ('uni', unless an owner or a field on the way says less), and
+        // lives no longer than the block it is made in (borrowTempScope).
+        lvalperm = (INode*)uniPerm;
         INode *lvalvar = iexpGetLvalInfo(lval, &lvalperm, &scope);
-        if (lvalvar == NULL && borrowTempRoot(&node->vtexp) != NULL) {
-            node->vtype = (INode*)newRefNodeFull(RefTag, (INode*)node, node->region, node->perm, (INode*)unknownType); // To avoid a crash later
-            return;
-        }
+        if (lvalvar == NULL && borrowTempRoot(&node->vtexp) != NULL)
+            scope = borrowTempScope(pstate);
         // Refused once; the reference is still typed, so its uses check quietly
         refused = borrowRefusesConst(lval);
     }
@@ -511,8 +521,9 @@ static void borrowFlowPlace(FlowState *fstate, INode **placep) {
         nameuseFlowBorrowed(fstate, (NameUseNode**)placep);
         return;
     }
-    // A place rooted in a temporary -- '&*make()', which a method borrowing its
-    // receiver builds -- borrows it until its statement's end (flowTempRead)
+    // A place rooted in a temporary -- '&make()', '&make().x', '&*make()',
+    // which a method borrowing its receiver builds -- borrows it until its
+    // statement's end (flowTempRead, flowTempBorrowed)
     switch (place->tag) {
     case DerefTag:
         flowLoadValue(fstate, &((StarNode *)place)->vtexp);
@@ -543,11 +554,12 @@ static void borrowFlowPlace(FlowState *fstate, INode **placep) {
             break;
         }
         flowLoadValue(fstate, placep);
-        flowTempRead(placep);
+        flowTempBorrowed(placep);
         break;
+    // A temporary borrowed, or a part of one: kept in a slot to its statement's end
     default:
         flowLoadValue(fstate, placep);
-        flowTempRead(placep);
+        flowTempBorrowed(placep);
         break;
     }
 }

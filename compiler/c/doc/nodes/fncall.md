@@ -470,8 +470,9 @@ Three adjustments, two of them asymmetric on purpose:
   `&mut v`'s — `ErrorBadPerm` for `&mut` of an immutable variable, and the
   borrow's scope carried into a returned borrow. It runs only after both
   selections above found nothing, so a by-value candidate is always preferred.
-  A temporary is `ErrorBadLval`, once, where a borrowed candidate would have
-  been selected. **A pointer is never borrowed from** — a pointer receiver,
+  A temporary is borrowed where it is (`borrowTempRef`), with the block's
+  lifetime (`borrowTempScope`), and lives to its statement's end, as `&` of it
+  does: `mk().get()`. **A pointer is never borrowed from** — a pointer receiver,
   and a dereference of one written out, are left as the deref retry left them.
   An ambiguity among the probed candidates is reported as one.
 - **An operator on a pointer does not reach through.** `p + 2` offsets the
