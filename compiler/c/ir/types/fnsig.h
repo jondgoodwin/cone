@@ -20,6 +20,7 @@ typedef struct FnSigNode {
     LifeOrder *lifeorder;  // The order among its lifetimes its 'where' clause and its structs' give (lifetime.h), or NULL
     uint8_t lifenamed;     // A lifetime is named on one of its types (lifetime.h)
     uint8_t lifechecked;   // lifeSigCheck has settled 'lifenamed' and 'lifeorder'
+    uint8_t lifestatic;    // Its order bounds a lifetime by ''static': a type parameter's bound (lifetime.h)
 } FnSigNode;
 
 FnSigNode *newFnSigNode();

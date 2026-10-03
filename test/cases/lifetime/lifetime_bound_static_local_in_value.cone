@@ -1,0 +1,72 @@
+// A type parameter bounded by ''static' handed a local's borrow where no
+// type shows it: inside an 'Option' passed by value, and through a variable
+// first given a global's borrow and then a local's. The body stores what it
+// is handed in a global.
+//
+// Verdict: refuse, ErrorLifetimeBound at each argument.
+// Basis: language rule (3 Oct 2026): 'T + 'static' says T holds no
+// non-static borrow, however deep; a variable's lifetime follows what it
+// holds (the flow rule, 2 Oct 2026), so the loan walk judges what each
+// argument carries (reflifefn.html, "Lifetime bounds").
+// Master 2cb190a1: refused at parse. This compiler with the refusal turned
+// off accepts it, and main, run, prints "final" as s dies and then the value
+// read through the global from s's freed block.
+
+mod lifetime_bound_static_local_in_value;
+
+import stdio use *;
+
+struct R {
+  pub n i64;
+  fn final(self &uni) {
+    printStr("final\n");
+  }
+}
+
+mut D R;
+mut G Option[&R];
+
+fn @initpure init() {
+  D = new R(1);
+  G = None[&R][];
+}
+
+fn stashOpt[T + 'static](x T) {
+  G = x;
+}
+
+fn stash[T + 'static](x T) {
+  G = Some[&R][x];
+}
+
+fn clobber(n i64) i64 {
+  mut a Array[i64, 16] = [n, n, n, n, n, n, n, n, n, n, n, n, n, n, n, n];
+  a[3] + a[9];
+}
+
+fn leave() {
+  imm s = new So[R](42);
+  stashOpt(Some[&R][&*s]);   //~ ErrorLifetimeBound "carries a borrow of"
+}
+
+fn leaveHeld() {
+  imm s = new So[R](43);
+  mut r = &D;
+  r = &*s;
+  stash(r);                  //~ ErrorLifetimeBound "carries a borrow of"
+}
+
+fn main() {
+  initAll();
+  leave();
+  clobber(21);
+  match G {
+    case imm e Some {
+      printStr("read = ");
+      printInt(e.value.n);
+      printStr("\n");
+    }
+    else {}
+  }
+  leaveHeld();
+}

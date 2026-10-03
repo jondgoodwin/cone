@@ -1,0 +1,58 @@
+// A type parameter bounded by ''static' handed a borrow of a local, written
+// as the argument: the body stores what it is handed in a global, which
+// would then point at the local after it is gone.
+//
+// Verdict: refuse, ErrorLifetimeBound at the argument.
+// Basis: language rule (3 Oct 2026): 'T + 'static' says T holds no
+// non-static borrow; a borrow of a value of this function lasts no lifetime
+// of a callee's signature, ''static' least of all (reflifefn.html,
+// "Lifetime bounds").
+// Master 2cb190a1: refused at parse. This compiler with the refusal turned
+// off (here and in the loan walk) accepts it, and main, run, prints "final"
+// as s dies and then the value read through the global from s's freed
+// block.
+
+mod lifetime_bound_static_local_borrow;
+
+import stdio use *;
+
+struct R {
+  pub n i64;
+  fn final(self &uni) {
+    printStr("final\n");
+  }
+}
+
+mut G Option[&R];
+
+fn @initpure init() {
+  G = None[&R][];
+}
+
+fn stash[T + 'static](x T) {
+  G = Some[&R][x];
+}
+
+fn clobber(n i64) i64 {
+  mut a Array[i64, 16] = [n, n, n, n, n, n, n, n, n, n, n, n, n, n, n, n];
+  a[3] + a[9];
+}
+
+fn leave() {
+  imm s = new So[R](42);
+  stash(&*s);                //~ ErrorLifetimeBound "bounded by ''static'"
+}
+
+fn main() {
+  initAll();
+  leave();
+  clobber(21);
+  match G {
+    case imm e Some {
+      printStr("read = ");
+      printInt(e.value.n);
+      printStr("\n");
+    }
+    else {}
+  }
+}

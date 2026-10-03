@@ -522,12 +522,23 @@ static void fnCallStaticArgs(FnCallNode *node, FnSigNode *fnsig) {
         if (i >= fnsig->parms->used)
             break;
         INode *argtype = iexpGetTypeDcl(*argsp);
-        if (lifeIsStatic(((IExpNode*)nodesGet(fnsig->parms, i))->vtype)
-            && fnCallIsBorrowType(argtype) && ((RefNode*)argtype)->scope != 0)
+        INode *parmtype = ((IExpNode*)nodesGet(fnsig->parms, i))->vtype;
+        ++i;
+        if (!fnCallIsBorrowType(argtype) || ((RefNode*)argtype)->scope == 0)
+            continue;
+        char *lives = ((RefNode*)argtype)->scope == 1 ? "a borrow this function's caller lent" : "a value of this function";
+        if (lifeIsStatic(parmtype))
             errorMsgNode(*argsp, ErrorCallEscape,
                 "This parameter's lifetime is ''static', so the borrow handed to it must be global: this one lives only as long as %s.",
-                ((RefNode*)argtype)->scope == 1 ? "a borrow this function's caller lent" : "a value of this function");
-        ++i;
+                lives);
+        // A type parameter's ''static' bound makes the parameter's own
+        // reference global in the instance (lifetime.h, "Lifetime bounds")
+        else if (fnsig->lifestatic && lifeIsOwnBorrow(parmtype) && lifePartStatic(fnsig, parmtype, LifePartOwn)) {
+            Name *tparm = lifeStaticBoundOf(fnsig, parmtype);
+            errorMsgNode(*argsp, ErrorLifetimeBound,
+                "The type parameter %s is bounded by ''static' ('%s + 'static'), so the borrow handed in for it must be global: this one lives only as long as %s.",
+                tparm ? &tparm->namestr : "here", tparm ? &tparm->namestr : "T", lives);
+        }
     }
 }
 
@@ -2685,6 +2696,14 @@ void fnCallFlow(FlowState *fstate, FnCallNode **nodep) {
     }
     flowGateOperandsEnd(fstate, inflight);
     flowGateCall(fstate, node->args);
+    // A type parameter's ''static' bound may make an argument passed by value
+    // global, which no type of it shows: what it carries is the loan walk's
+    // to check (pwStaticArgs)
+    if (lifeStaticBoundSeen && flowGateOpen(fstate, FlowGateStore) && node->args && node->args->used) {
+        FnSigNode *sig = (FnSigNode*)iexpGetDerefTypeDcl(node->objfn);
+        if (sig->tag == FnSigTag && sig->lifestatic)
+            fstate->gate |= FlowGateStore;
+    }
 }
 
 // Perform data flow analysis on array index node

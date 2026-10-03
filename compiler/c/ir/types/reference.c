@@ -21,6 +21,7 @@ RefNode *newRefNode(uint16_t tag) {
     // whatever the allocator last held there.
     refnode->scope = 0;
     refnode->lifename = NULL;
+    refnode->bound = NULL;
     refnode->plusSpelled = 0;
     return refnode;
 }
@@ -156,6 +157,8 @@ void refPrint(RefNode *node) {
     inodePrintNode((INode*)node->perm);
     inodeFprint(" ");
     inodePrintNode(node->vtexp);
+    if (node->bound)
+        inodeFprint(" + %s", &node->bound->namestr);
     inodeFprint(")");
 }
 

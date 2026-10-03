@@ -1071,7 +1071,7 @@ void parseModuleDcl(ParseState *parse, ModuleNode *mod, int atmodstart, uint16_t
     GenericInfo *genericinfo = NULL;
     if (lexIsToken(LBracketToken)) {
         genericinfo = newGenericInfo();
-        genericinfo->parms = parseGenericParms(parse, 0, NULL);
+        genericinfo->parms = parseGenericParms(parse, 0, NULL, NULL);
     }
 
     // 'extends' names the one module this one reuses, by the name it is reached

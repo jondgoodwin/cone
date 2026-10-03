@@ -126,14 +126,29 @@ uint32_t loanStoredApart(FnSigNode *sig, PathSet *stored, PathSet *refholds, int
 // function's own storage -- or 0
 uint32_t loanNotGlobalIn(PathSet *set);
 
+// The same, among only its near loans ('near'), its far ones ('far'), or both
+uint32_t loanNotGlobalInAs(PathSet *set, int near, int far);
+
+// A far loan in 'set' -- held inside what a value points at -- not known to
+// last 'bound' in the signature 'sig': one of this function's own storage,
+// or a caller loan of a part whose lifetime its order does not say outlasts
+// 'bound'; or 0
+uint32_t loanNotBoundIn(FnSigNode *sig, PathSet *set, Name *bound);
+
 // Report a caller loan whose lifetime may not go where it is carried at
 // 'node': returned (LoanEscapeReturn), stored where 'through' points
 // (LoanEscapeStore), or handed to a call that may store it there
 // (LoanEscapeCall)
 void loanApart(INode *node, uint32_t loan, VarDclNode *through, int how);
 
-// Report a loan that is not global handed to a ''static' parameter at 'node'
-void loanNotGlobal(INode *node, uint32_t loan);
+// Report a loan that is not global handed to a ''static' parameter at 'node',
+// or, where 'tparm' names one, for a part the type parameter's ''static'
+// bound makes global
+void loanNotGlobal(INode *node, uint32_t loan, Name *tparm);
+
+// Report, at 'node', a loan held inside a value stored or returned where a
+// virtual reference's bound says what it points at holds lasts 'bound'
+void loanNotBound(INode *node, uint32_t loan, Name *bound);
 
 // The loan the borrow at 'site' made, or 0
 uint32_t loanAt(INode *site);

@@ -183,7 +183,9 @@ Visual Studio projects stay at the root.
   allocator and moving them with core's `mem` intrinsics; `arena` is an
   `Arena`, a dynamic region whose values are finalized, newest first, and
   freed together when it dies, and which, held in a local, is the scratch
-  arena; `rcweak` is `Rcw`, a region ref counting strong owners and weak
+  arena, and `DynArena['=a]`, the invariant-lifetime dynamic arena, whose
+  `alloc` hands out keys, `&'=a mut T`, reached only through it, `ar[key]`;
+  `rcweak` is `Rcw`, a region ref counting strong owners and weak
   references, and `Weak[T]`, the weak reference, a struct reaching its value
   only by making a counted owner; `pool` is a generational `Pool[T]`, its
   values in one block of slots, each reached through a copyable `Ref[T]` (a

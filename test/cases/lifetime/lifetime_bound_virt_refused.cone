@@ -1,0 +1,77 @@
+// A struct holding a borrow coerced to a virtual reference bounded by a
+// lifetime its borrow is not known to last: stored through a parameter with
+// no 'where' clause ordering the struct's lifetime over the bound, returned
+// as one bounded by ''static', and handed, holding a local's borrow, to a
+// parameter bounded by ''static'. And a virtual reference with no bound,
+// which vouches only for its own lifetime, stored where one bounded by ''a'
+// is held.
+//
+// Verdict: refuse, ErrorLifetimeBound at the two stores, the return and the
+// argument; and ErrorFrozen at main's s and h, which go out of scope while
+// slot, handed with h to 'leak', may hold a borrow of each.
+// Basis: language rule (3 Oct 2026): coercing a value to '&<Trait + 'a'
+// requires every borrow it holds to last ''a', known by band or by the
+// order; a borrowed virtual reference with no bound promises what it points
+// at lasts its own lifetime, Rust's default for '&'r dyn Trait'
+// (refvirtref.html; reflifefn.html, "Lifetime bounds").
+// Master 2cb190a1: refused at parse. With the ErrorLifetimeBound refusals
+// turned off, this compiler still refuses main's call of 'leak', since the
+// call carries all of what h holds into slot, and nothing else here reads
+// freed memory: no use of a virtual reference reads what it points at past
+// its own lifetime. The refusals keep the type's promise, which a
+// signature's callers rely on; they were not shown to guard against a read
+// of freed memory.
+
+mod lifetime_bound_virt_refused;
+
+import stdio use *;
+
+trait Show {
+  pub fn show(self &) i64;
+}
+
+struct R {
+  pub n i64;
+  fn final(self &uni) {
+    printStr("final\n");
+  }
+}
+
+struct H['b] {
+  pub r &'b R;
+  fn show(self &) i64 {
+    r.n;
+  }
+}
+
+fn leak(slot &mut &<'r Show + 'a, h &'r H['b]) {
+  *slot = h;                 //~ ErrorLifetimeBound "holds the borrow the caller lent through 'h'"
+}
+
+fn forever(h &'r H['b]) &<'r Show + 'static {
+  h;                         //~ ErrorLifetimeBound "bounded by ''static'"
+}
+
+fn pass(slot &mut &<'r Show + 'a, v &<'r Show) {
+  *slot = v;                 //~ ErrorLifetimeBound "'v' promises only"
+}
+
+fn look(v &<Show + 'static) i64 {
+  v.show();
+}
+
+fn main() {
+  imm x0 = new R(0);
+  imm h0 = new H(&x0);
+  mut slot &<Show = &h0;
+  {
+    imm s = new So[R](42);   //~ ErrorFrozen "goes out of scope while 'slot'"
+    imm h = new H(&*s);      //~ ErrorFrozen "goes out of scope while 'slot'"
+    leak(&mut slot, &h);
+  }
+  printInt(slot.show());
+  imm x = new R(5);
+  imm hx = new H(&x);
+  printInt(look(&hx));       //~ ErrorLifetimeBound "belongs to this function"
+  printStr("\n");
+}

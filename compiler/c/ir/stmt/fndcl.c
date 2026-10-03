@@ -212,6 +212,8 @@ void fnDclNameRes(NameResState *nstate, FnDclNode *fndclnode) {
             fndclnode->namesym ? &fndclnode->namesym->namestr : "This function");
         fndclnode->where = NULL;
     }
+    // A lifetime bound, '[T + 'a]', is on one of its own type parameters
+    lifeBoundsNameRes(fndclnode, owner);
     // A parameter's default value is expanded where the function is called
     // (fnSigNameRes)
     INode *svsigfn = nstate->sigfn;

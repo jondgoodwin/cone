@@ -707,7 +707,7 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
     // the same brackets, held apart: a lifetime is never instanced, so a
     // struct declaring only lifetimes is no generic.
     if (lexIsToken(LBracketToken)) {
-        Nodes *parms = parseGenericParms(parse, 1, &strnode->lifeparms);
+        Nodes *parms = parseGenericParms(parse, 1, &strnode->lifeparms, NULL);
         if (parms->used > 0 || strnode->lifeparms == NULL) {
             strnode->genericinfo = newGenericInfo();
             strnode->genericinfo->parms = parms;
@@ -859,7 +859,7 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
         INode *whereat = (INode*)newNameUseNode(anonName);
         Nodes *ignored = NULL;
         parseWhere(parse, strnode->genericinfo ? &strnode->genericinfo->where : &ignored,
-            strnode->lifeparms ? &strnode->lifeparms->order : NULL);
+            strnode->lifeparms ? &strnode->lifeparms->order : NULL, 0);
         if (ignored)
             errorMsgNode(whereat, ErrorWhereNoParms, "%s has no type parameters, so a 'where' clause has nothing to constrain.",
                 &strnode->namesym->namestr);

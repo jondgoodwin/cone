@@ -458,6 +458,9 @@ enum ErrorCode {
     ErrorLockRegion = 1247,     // A lock permission on a region it does not fit: one owner ('So'), a region not counting owners, a cross-thread lock on a single-thread region or the reverse, or a virtual reference (a traced region is ErrorTracedPerm)
     ErrorLockAccess = 1248,     // A lock-managed reference read, written or lent without the borrow that takes its lock: '&mut *p', '&*p'
 
+    // Lifetime bounds: '[T + 'a]', 'where T + 'a', '&<Trait + 'a' (ir/types/lifetime.h)
+    ErrorLifetimeBound = 1249,  // A lifetime bound not met or not built: a borrow that is not global given for a ''static' bound, a value holding a borrow not known to last ''a' coerced to '&<Trait + 'a', a bound on a generic type's parameter
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name

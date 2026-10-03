@@ -1064,6 +1064,20 @@ static INode *genericInstanceUse(INode *instance, FnCallNode *srcgencall, Nodes 
     return use;
 }
 
+// The type argument at 'i' as an instance is made from it: with no lifetime
+// named in it, or, for a parameter the generic function bounds ('[T + 'a]'),
+// with every lifetime it names renamed the bound's ''+T' (lifetime.h,
+// "Lifetime bounds"), which the function's order holds outlasts ''a'. The
+// renaming is the parameter's, not the use's, so it multiplies no instance.
+static INode *genericInstanceArg(INode *generic, GenericInfo *info, uint32_t i, INode *arg) {
+    if (info->parms && i < info->parms->used && isTypeNode(arg)) {
+        Name *tparm = ((GenVarDclNode*)nodesGet(info->parms, i))->namesym;
+        if (lifeParmBounded(generic, tparm))
+            return lifeRenamed(arg, lifeBoundName(tparm));
+    }
+    return lifeErased(arg);
+}
+
 // Verify arguments are types, check if instantiated, instantiate if needed and return ptr to it
 //
 // A type argument list the generic cannot be instantiated from yields a node
@@ -1107,7 +1121,7 @@ INode *genericMemoize(TypeCheckState *pstate, FnCallNode *srcgencall, INode *nod
     if (lifeInvariantSeen) {
         erased = newNodes(srcgencall->args->used);
         for (nodesFor(srcgencall->args, cnt, nodesp))
-            nodesAdd(&erased, lifeErased(*nodesp));
+            nodesAdd(&erased, genericInstanceArg(nodetoclone, genericinfo, erased->used, *nodesp));
         lifeCanonBrands(erased);
     }
 
@@ -1143,14 +1157,16 @@ INode *genericMemoize(TypeCheckState *pstate, FnCallNode *srcgencall, INode *nod
     // serves every use, whatever lifetimes each names, and its use keeps the
     // arguments as written (genericInstanceUse). An invariant lifetime is the
     // exception: a key stays a key, and which of its arguments' brands are one
-    // and which apart is kept, each named by its order (lifeCanonBrands).
+    // and which apart is kept, each named by its order (lifeCanonBrands). So is
+    // a parameter the generic bounds, '[T + 'a]': its argument's lifetimes are
+    // all renamed the bound's one name (genericInstanceArg).
     Nodes *written = srcgencall->args;
     if (erased)
         srcgencall->args = erased;
     else {
         srcgencall->args = newNodes(written->used);
         for (nodesFor(written, cnt, nodesp))
-            nodesAdd(&srcgencall->args, lifeErased(*nodesp));
+            nodesAdd(&srcgencall->args, genericInstanceArg(nodetoclone, genericinfo, srcgencall->args->used, *nodesp));
     }
 
     // A constraint the arguments do not meet refuses the instance here, before

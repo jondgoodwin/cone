@@ -54,8 +54,10 @@
 			A value holding borrowed references has the lifetime of the shortest of them, as
 			<span class="pre">makewrap</span> below shows. Invariant lifetimes
 			(<span class="pre">'=a</span>) are implemented, on the <span class="pre">arena</span> package's
-			<span class="pre">DynArena</span> and its keys. Not yet implemented: a
-			<span class="pre">+ 'a</span> bound on a type parameter or a virtual reference.</i></p>
+			<span class="pre">DynArena</span> and its keys. A
+			<span class="pre">+ 'a</span> bound is implemented on a generic function's type parameter
+			and on a borrowed virtual reference (see <a href="#bounds">lifetime bounds</a>); not yet on a
+			generic type's parameter or an owning virtual reference.</i></p>
 	
 	<p>To ensure borrowed references are always safe to use, they carry 
 		a lifetime constraint that restricts them from living beyond the scope
@@ -472,6 +474,85 @@ fn inner(x &amp;'a &amp;'b R) &amp;'a R {
 		Two lifetimes no borrow relates and no <span class="pre">where</span> clause orders stay
 		unrelated. A caller reads the same order, as it reads a <span class="pre">where</span>
 		clause.</p>
+
+	<h2 id="bounds">Lifetime bounds</h2>
+	<p>A lifetime is named on a borrowed reference or on a struct's use. A type whose insides a
+		signature cannot see -- a generic function's type parameter, or what a virtual reference
+		points at -- is given a <i>bound</i> instead, <span class="pre">+ 'a</span>: any borrow
+		inside lives at least as long as <span class="pre">'a</span>, a lifetime the signature
+		names. A bound adds what it says to the signature's order, as a
+		<span class="pre">where</span> clause does; nothing is solved for.</p>
+	<p><b>On a type parameter.</b> <span class="pre">[T + 'a]</span>,
+		<span class="pre">[T Trait + 'a]</span>, or in the <span class="pre">where</span> clause,
+		<span class="pre">where T + 'a</span> or <span class="pre">where T is Trait + 'a</span>
+		(<a href="refgeneric.html#bounds">Generics</a>). Inside the function, a value of type
+		<span class="pre">T</span> may be stored where <span class="pre">'a</span> borrows are held,
+		or returned as <span class="pre">'a</span>; without the bound, the borrows a
+		<span class="pre">T</span> holds are of a lifetime of their own, which is neither:</p>
+<pre>
+fn put[T + 'a](d &amp;mut &amp;'a R, x T) {
+  *d = x;           // Ok: what T holds lasts 'a
+}
+fn pick[T + 'a](x T, y &amp;'a R) &amp;'a R {
+  x;                // Ok
+}
+fn putAny[T](d &amp;mut &amp;'a R, x T) {
+  *d = x;           // Error: what T holds is not known to last 'a
+}
+</pre>
+	<p>A type argument holding no borrow meets every bound. One holding borrows meets it where
+		each of them is known to last at least <span class="pre">'a</span>: by its band (a global
+		lasts every lifetime, and a value of the caller's own lasts no lifetime of its callee's
+		signature), by a <span class="pre">where</span> clause or by what the caller's types imply.
+		A call carries what an argument for <span class="pre">T</span> holds wherever
+		<span class="pre">'a</span> flows, so a borrow too short for where it was put is refused
+		where it is used too late, and a caller naming its own lifetimes is held to its order:</p>
+<pre>
+fn caller(d &amp;mut &amp;'x R, v &amp;'y R) {
+  put(d, v);        // Error: 'y is not known to last 'x
+}
+fn ordered(d &amp;mut &amp;'x R, v &amp;'y R) where 'y &gt;= 'x {
+  put(d, v);        // Ok
+}
+fn main() {
+  imm g = new R(1);
+  mut d = &amp;g;
+  {
+    imm local = new R(2);
+    put(&amp;mut d, &amp;local);
+  }                 // Error: local goes out of scope while d still holds a borrow of it
+  d.n;
+}
+</pre>
+	<p><span class="pre">T + 'static</span> says <span class="pre">T</span> holds no borrow but of
+		a global: inside, a value of <span class="pre">T</span> may be stored in a global or
+		returned as <span class="pre">'static</span>, and a call is refused an argument for it
+		carrying any borrow that is not global, whether written as a borrow or held inside a value
+		passed by value. A function is still instanced once per type argument, never per
+		lifetime: the bound is the parameter's, not the use's.</p>
+	<p><b>On a virtual reference.</b> <span class="pre">&amp;&lt;Trait + 'a</span>, or
+		<span class="pre">&amp;&lt;'r Trait + 'a</span> with its own lifetime: the value it points
+		at holds only borrows lasting at least <span class="pre">'a</span>, which is at least
+		<span class="pre">'r</span> (an implied bound). The type holds
+		<span class="pre">'a</span> as well as its own lifetime, so wherever it is stored and read
+		back out, what it carries goes where <span class="pre">'a</span> borrows may. A value
+		coerced to it, returned or stored through a parameter, may hold only borrows known to last
+		<span class="pre">'a</span>; a parameter <span class="pre">&amp;&lt;Trait + 'static</span>
+		is handed only a value holding global borrows. A virtual reference with no bound is
+		checked as before.</p>
+<pre>
+struct H['b] { pub r &amp;'b i64; fn show(self &amp;) i64 { *r; } }
+
+fn keep(slot &amp;mut &amp;&lt;'r Show + 'a, h &amp;'r H['b]) where 'b &gt;= 'a {
+  *slot = h;        // Ok: what h holds lasts 'a
+}
+fn leak(slot &amp;mut &amp;&lt;'r Show + 'a, h &amp;'r H['b]) {
+  *slot = h;        // Error: 'b is not known to last 'a
+}
+fn view(h &amp;'r H['b]) &amp;&lt;'r Show + 'b {
+  h;                // Ok
+}
+</pre>
 
 	<h2 id="invariant">Invariant lifetimes</h2>
 	<p>Every lifetime so far is a scope: a borrow of it may go anywhere inside that scope and

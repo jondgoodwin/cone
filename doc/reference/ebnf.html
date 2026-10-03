@@ -65,9 +65,10 @@
 		   reaches unless it declares the name itself */
 	optiontype ::= '?' type
 	ptrtype ::= '*' type
-	reftype ::= ('&' | '&<' | '&[]') lifetime_token? perm_type? type
+	reftype ::= ('&' | '&<' | '&[]') lifetime_token? perm_type? type ('+' lifetime_token)?
 		/* a borrowed reference names no region: '&mut Point', a virtual one '&<Shape', a slice '&[]u8';
-		   its lifetime is written only in a type of a function's signature or of a struct's field */
+		   its lifetime is written only in a type of a function's signature or of a struct's field.
+		   The '+' lifetime, a bound, only on a virtual reference: what it points at holds borrows lasting that long */
 	ownreftype ::= region_type ('[' type (',' type)* ']')? '[' (perm_ident ',')? type ']'
 		/* the region a struct declaring 'is RegionRef', its own type arguments first when it is
 		   generic; no permission written is 'uni'; virtual when the type is an open trait */
@@ -83,20 +84,26 @@
 	fnparm ::= perm_ident? ident_token type? ('=' (literal | ident))?
 	structtype ::= 'struct' 'trait'? ident_token? genparms? baseclause* whereclause? ('{' structstmt (',' structstmt)* '}')?
 	genparms ::= '[' genparm (',' genparm)* ']'
-	genparm ::= ident_token (genqualname ('+' genqualname)*)? | lifetime_token
+	genparm ::= ident_token (genqualname ('+' genbound)* | ('+' lifetime_token)+)? | lifetime_token
 		/* what follows the name names traits, all required, which constrain the parameter as a whereclause does
 		   ('or' is not taken here); a type or a kind there, a value or kind parameter, is not built.
+		   A lifetime after a '+' is a bound, on a generic function's type parameter only: what a value of it
+		   holds lasts that long.
 		   A macro's or a generic module's parameter takes none. A lifetime only in a struct's or an enum's
 		   brackets: it declares one of its lifetimes, which is never instanced */
+	genbound ::= genqualname | lifetime_token
 	whereclause ::= 'where' whereor
 	whereor ::= whereand ('or' whereand)*
-		/* no alternative of an 'or' holds a lifetime comparison */
+		/* no alternative of an 'or' holds a lifetime comparison or bound */
 	whereand ::= whereterm ('and' whereterm)*   /* 'and' binds tighter than 'or', as in an expression */
-	whereterm ::= '(' whereor ')' | whereitem | wherelife
-	whereitem ::= ident_token 'is' genqualname ('+' genqualname)*
+	whereterm ::= '(' whereor ')' | whereitem | wherebound | wherelife
+	whereitem ::= ident_token 'is' genqualname ('+' genbound)*
 		/* each name a trait, or a type, met by that type alone ('T is Bool');
 		   the subject is a type parameter of the generic, or of the generic type the function is a method of;
-		   on a generic's own parameters a requirement, on a method over its type's a condition for the method existing */
+		   on a generic's own parameters a requirement, on a method over its type's a condition for the method existing.
+		   A lifetime after a '+' is a bound, as in wherebound */
+	wherebound ::= ident_token ('+' lifetime_token)+
+		/* 'T + 'a': a bound on a generic function's own type parameter; 'T is 'a' is not the spelling */
 	wherelife ::= lifetime_token ('>=' | '==') lifetime_token
 		/* ''a >= 'b': ''a' lasts at least as long as ''b'; '==' both ways. On any function, of lifetimes its
 		   signature names, and on a struct, of lifetimes it declares */

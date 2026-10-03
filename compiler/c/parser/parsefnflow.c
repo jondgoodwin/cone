@@ -714,9 +714,36 @@ static INode *parseWhereLife(ParseState *parse, LifeOrder **orderp) {
     return parseLifeClause;
 }
 
+// Does the 'where' clause being parsed take its type parameters' lifetime
+// bounds: a function's does, a generic type's does not yet
+static int parseWhereBounds = 0;
+
+// A type parameter's lifetime bound, with the lexer on the lifetime after its
+// '+': ''+T' >= ''a' in '*orderp', the declaration's order (lifetime.h,
+// "Lifetime bounds"), where 'ok' allows one. Stands in a condition as a
+// lifetime comparison does, so that an 'or' or a 'not' over it is refused.
+static INode *parseBoundAdd(LifeOrder **orderp, int ok, Name *tparm) {
+    INode *at = (INode*)newNameUseNode(lex->val.ident);
+    Name *life = lex->val.ident;
+    lexNextToken();
+    if (!ok || orderp == NULL)
+        errorMsgNode(at, ErrorLifetimeBound, "A lifetime bound on a generic type's parameter is not built: a type parameter of a generic function takes one, '[T + 'a]' or 'where T + 'a'.");
+    else if (lifeIsInvariant(life))
+        errorMsgNode(at, ErrorLifetimeInvariant, "A bound says what the borrows inside a type outlive, and an invariant lifetime has no order to say it with.");
+    else {
+        if (*orderp == NULL)
+            *orderp = newLifeOrder();
+        lifeOrderAdd(*orderp, lifeBoundName(tparm), life, at);
+        if (life == staticLifeName)
+            lifeStaticBoundSeen = 1;
+    }
+    return parseLifeClause;
+}
+
 // One term of a 'where' condition: 'T is Name', a trait joined to another by
 // '+' as in the inline form (the two clauses joined by 'and'), a lifetime
-// comparison, or a condition in parentheses. NULL, reported, for anything else.
+// bound, 'T + 'a' or 'T is Name + 'a', a lifetime comparison, or a condition
+// in parentheses. NULL, reported, for anything else.
 static INode *parseWhereTerm(ParseState *parse, LifeOrder **orderp) {
     if (lexIsToken(LParenToken)) {
         lexNextToken();
@@ -746,9 +773,24 @@ static INode *parseWhereTerm(ParseState *parse, LifeOrder **orderp) {
         return NULL;
     }
     INode *subject = (INode*)newNameUseNode(lex->val.ident);
+    Name *tparm = lex->val.ident;
     lexNextToken();
+    // A lifetime bound alone, 'T + 'a', as in the inline form '[T + 'a]'
+    if (lexIsToken(PlusToken) && lexPeekIsLifetime()) {
+        INode *term = NULL;
+        while (lexIsToken(PlusToken)) {
+            lexNextToken();
+            if (!lexIsToken(LifetimeToken)) {
+                errorMsgLex(ErrorWhereForm, "A type parameter's bounds are lifetimes joined by '+', 'T + 'a + 'b'; its traits are said by 'is', 'T is Trait + 'a'.");
+                return NULL;
+            }
+            INode *bound = parseBoundAdd(orderp, parseWhereBounds, tparm);
+            term = term ? parseWhereJoin(AndLogicTag, term, bound) : bound;
+        }
+        return term;
+    }
     if (!lexIsToken(IsToken)) {
-        errorMsgLex(ErrorWhereForm, "Only 'T is Name' is built: a relation between two parameters and a constraint on a type expression are not yet.");
+        errorMsgLex(ErrorWhereForm, "Only 'T is Name' and a lifetime bound, 'T + 'a', are built: a relation between two parameters and a constraint on a type expression are not yet.");
         return NULL;
     }
     lexNextToken();
@@ -758,8 +800,24 @@ static INode *parseWhereTerm(ParseState *parse, LifeOrder **orderp) {
             parseWhereNot();
             return NULL;
         }
+        // 'T is Trait + 'a': a bound after the traits, as '[T Trait + 'a]'
+        // writes it. Alone it is 'T + 'a': T is no lifetime.
+        if (lexIsToken(LifetimeToken) && term) {
+            INode *bound = parseBoundAdd(orderp, parseWhereBounds, tparm);
+            term = parseWhereJoin(AndLogicTag, term, bound);
+            if (!lexIsToken(PlusToken))
+                return term;
+            lexNextToken();
+            // A trait after the bound is a clause with its own use of T
+            INode *again = (INode*)newNameUseNode(tparm);
+            inodeLexCopy(again, subject);
+            subject = again;
+            continue;
+        }
         if (!lexIsToken(IdentToken)) {
-            errorMsgLex(ErrorWhereForm, "What a type parameter 'is' in a 'where' clause is a trait, named.");
+            errorMsgLex(ErrorWhereForm, lexIsToken(LifetimeToken)
+                ? "A lifetime bound alone is written 'T + 'a': what a type parameter 'is' is a trait, named."
+                : "What a type parameter 'is' in a 'where' clause is a trait, named.");
             return NULL;
         }
         CastNode *clause = newIsNode(subject, parseTypeName(parse));
@@ -831,10 +889,15 @@ static void parseWhereAdd(Nodes **wherep, INode *cond) {
 // to order. What else the manual shows a clause saying -- a relation between
 // two type parameters, 'T < Y', and a constraint on a type expression,
 // 'Option[T] is Node' -- and 'not' are not built, and are refused here: a
-// refused clause adds nothing, and the rest of it is skipped.
-void parseWhere(ParseState *parse, Nodes **wherep, LifeOrder **orderp) {
+// refused clause adds nothing, and the rest of it is skipped. A type
+// parameter's lifetime bound, 'T + 'a' or 'T is Name + 'a', goes to
+// '*orderp' as ''+T' >= ''a' where 'bounds' allows one (lifetime.h,
+// "Lifetime bounds"), and stands in the condition as a comparison does.
+void parseWhere(ParseState *parse, Nodes **wherep, LifeOrder **orderp, int bounds) {
     lexNextToken();  // past 'where'
+    parseWhereBounds = bounds;
     INode *cond = parseWhereOr(parse, orderp);
+    parseWhereBounds = 0;
     if (cond == NULL) {
         parseWhereSkip();
         return;
@@ -857,7 +920,11 @@ void parseWhere(ParseState *parse, Nodes **wherep, LifeOrder **orderp) {
 // A struct declares its lifetimes in the same brackets, ''a', apart from its
 // type parameters: they go to '*lifes' (lifetime.h), NULL for a declaration
 // that declares none, which refuses them.
-Nodes *parseGenericParms(ParseState *parse, int annotate, LifeParms **lifes) {
+//
+// A type parameter's lifetime bounds, '[T + 'a]', '[T Trait + 'a]', go to
+// '*bounds' as ''+T' >= ''a' (lifetime.h, "Lifetime bounds"), for a function
+// to add to its signature's order; NULL refuses them (a generic type's).
+Nodes *parseGenericParms(ParseState *parse, int annotate, LifeParms **lifes, LifeOrder **bounds) {
     lexNextToken(); // Go past left square bracket
     Nodes *parms = newNodes(2);
     int nlifes = 0;
@@ -882,12 +949,21 @@ Nodes *parseGenericParms(ParseState *parse, int annotate, LifeParms **lifes) {
         lexNextToken();
         if (lexIsToken(CommaToken))
             lexNextToken();
-        // An annotation begins with a name: a trait's, a type's, a kind's
-        else if (annotate && lexIsToken(IdentToken)) {
-            parm->annot = newNodes(2);
-            nodesAdd(&parm->annot, parseType(parse));
+        // An annotation begins with a name: a trait's, a type's, a kind's;
+        // or, for a bound alone, '[T + 'a]', with the '+'
+        else if (annotate && (lexIsToken(IdentToken) || (lexIsToken(PlusToken) && lexPeekIsLifetime()))) {
+            if (lexIsToken(IdentToken)) {
+                parm->annot = newNodes(2);
+                nodesAdd(&parm->annot, parseType(parse));
+            }
             while (lexIsToken(PlusToken)) {
                 lexNextToken();
+                if (lexIsToken(LifetimeToken)) {
+                    parseBoundAdd(bounds, bounds != NULL, parm->namesym);
+                    continue;
+                }
+                if (parm->annot == NULL)
+                    parm->annot = newNodes(2);
                 nodesAdd(&parm->annot, parseTypeReq(parse, "'+'"));
             }
             // Every trait named here is required; a choice between them is
@@ -945,7 +1021,7 @@ MacroDclNode *parseMacro(ParseState *parse) {
     MacroDclNode *macro = newMacroDclNode(lex->val.ident);
     lexNextToken();
     if (lexIsToken(LBracketToken)) {
-        macro->parms = parseGenericParms(parse, 0, NULL);
+        macro->parms = parseGenericParms(parse, 0, NULL, NULL);
     }
     macro->body = parseExprBlock(parse, 0);
     return macro;
@@ -954,6 +1030,7 @@ MacroDclNode *parseMacro(ParseState *parse) {
 // Parse a function block
 INode *parseFn(ParseState *parse, uint16_t mayflags) {
     FnDclNode *fnnode = newFnDclNode(NULL, 0, NULL, NULL);
+    LifeOrder *bounds = NULL;   // its type parameters' lifetime bounds, '[T + 'a]'
 
     // Skip past the 'fn'.
     lexNextToken();
@@ -1014,7 +1091,7 @@ INode *parseFn(ParseState *parse, uint16_t mayflags) {
         lexNextToken();
         if (lexIsToken(LBracketToken)) {
             fnnode->genericinfo = newGenericInfo();
-            fnnode->genericinfo->parms = parseGenericParms(parse, 1, NULL);
+            fnnode->genericinfo->parms = parseGenericParms(parse, 1, NULL, &bounds);
         }
     }
     else {
@@ -1052,6 +1129,16 @@ INode *parseFn(ParseState *parse, uint16_t mayflags) {
     int reftype = (mayflags & ParseEmbedded) != 0;
     fnnode->vtype = parseFnSig(parse, reftype);
 
+    // Its type parameters' lifetime bounds join the order among its
+    // signature's lifetimes, as a 'where' clause's do
+    if (bounds && fnnode->vtype->tag == FnSigTag) {
+        LifeOrder **orderp = &((FnSigNode*)fnnode->vtype)->lifeorder;
+        if (*orderp == NULL)
+            *orderp = newLifeOrder();
+        for (uint32_t i = 0; i < bounds->count; ++i)
+            lifeOrderAdd(*orderp, bounds->pairs[2 * i], bounds->pairs[2 * i + 1], bounds->at[i]);
+    }
+
     // Handle optional specification that we are declaring an inline function,
     // one whose implementation will be "inlined" into any function that calls it
     if (lexIsToken(InlineToken)) {
@@ -1063,7 +1150,7 @@ INode *parseFn(ParseState *parse, uint16_t mayflags) {
     // requirements, or a generic type's method's conditions for existing; and
     // any function's order among its signature's lifetimes
     if (lexIsToken(WhereToken))
-        parseWhere(parse, &fnnode->where, &((FnSigNode*)fnnode->vtype)->lifeorder);
+        parseWhere(parse, &fnnode->where, &((FnSigNode*)fnnode->vtype)->lifeorder, 1);
 
     // '@c' names a symbol, so it goes only where a function has one of its own
     if (hasc) {

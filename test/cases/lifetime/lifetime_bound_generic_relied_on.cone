@@ -1,0 +1,109 @@
+// A generic function's type parameter bounded by ''a': inside, a T is stored
+// where ''a' borrows are held and returned as ''a'. Each spelling of the
+// bound says the same: in the brackets alone or after a trait, in a 'where'
+// clause alone or after an 'is'. It is instantiated with borrows lasting long
+// enough -- an outer local's, a caller's ordered by its 'where' clause or by
+// what its types imply -- and with a type holding no borrow, which meets
+// every bound. A generic type's generic method bounds its own parameter the
+// same way.
+//
+// Verdict: accept; prints 2 3 4 5 6 7 8 9 10 11.
+// Basis: language rule (3 Oct 2026): '+ 'a' bounds a type whose insides are
+// unknown, any borrow inside lasting at least ''a' (Rust's 'T: 'a'); the
+// body may rely on it; a type argument carrying no borrow meets any bound,
+// one carrying borrows meets it where each is known to last ''a' -- by band,
+// by a 'where' clause, or by implied bounds.
+// Master 2cb190a1: refused at parse (a '+' and a lifetime after a type
+// parameter).
+
+mod lifetime_bound_generic_relied_on;
+
+import stdio use *;
+
+struct R {
+  pub n i64;
+}
+
+fn put[T + 'a](d &mut &'a R, x T) {
+  *d = x;
+}
+
+fn pick[T + 'a](x T, y &'a R) &'a R {
+  x;
+}
+
+fn putCopy[T Copy + 'a](d &mut &'a R, x T) {
+  *d = x;
+}
+
+fn putWhere[T](d &mut &'a R, x T) where T + 'a {
+  *d = x;
+}
+
+fn putWhereIs[T](d &mut &'a R, x T) where T is Copy + 'a {
+  *d = x;
+}
+
+// A type holding no borrow meets the bound whatever it is
+fn first[T + 'a](x T, y &'a R) T {
+  x;
+}
+
+// The caller's own lifetimes, ordered by its 'where' clause
+fn relay(d &mut &'x R, v &'y R) where 'y >= 'x {
+  put(d, v);
+}
+
+// ... or by what its types imply: ''x' outlasts the borrow of a '&'x R'
+fn relayImplied(d &mut &'y R, h &'y &'x R) {
+  put(d, *h);
+}
+
+// A generic type's generic method, bounding its own parameter
+struct Box[T] {
+  pub v T;
+  fn put[U + 'a](self &, d &mut &'a R, x U) {
+    *d = x;
+  }
+}
+
+fn show(d &R) {
+  printInt(d.n);
+  printStr(" ");
+}
+
+fn main() {
+  imm r1 = new R(1);
+  mut d = &r1;
+  imm r2 = new R(2);
+  put(&mut d, &r2);
+  show(d);
+  imm r3 = new R(3);
+  show(pick(&r3, &r1));
+  imm r4 = new R(4);
+  putCopy(&mut d, &r4);
+  show(d);
+  imm r5 = new R(5);
+  putWhere(&mut d, &r5);
+  show(d);
+  imm r6 = new R(6);
+  putWhereIs(&mut d, &r6);
+  show(d);
+  printInt(first(7i64, &r1));
+  printStr(" ");
+  imm r8 = new R(8);
+  relay(&mut d, &r8);
+  show(d);
+  imm r9 = new R(9);
+  imm p9 = &r9;
+  relayImplied(&mut d, &p9);
+  show(d);
+  imm r10 = new R(10);
+  put[&R](&mut d, &r10);
+  show(d);
+  imm b = new Box[i64](0);
+  imm r11 = new R(11);
+  b.put(&mut d, &r11);
+  printInt(d.n);
+  printStr("\n");
+}
