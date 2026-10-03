@@ -1,0 +1,141 @@
+// membrane: a taut skin between two spars. Each spar is swept on its own:
+// a round section, open in a narrow slit on the side facing the other spar,
+// along its own straight line, swelling from nothing at one tip to its
+// thickest midway and back to nothing at the other (a parabola of the arc
+// length). The two spars are joined into one mesh, and bridgeLoops at
+// smoothness 0 (straight, so taut) joins the slit of one to the slit of the
+// other: the slit's two lips on each spar become the membrane's upper and
+// lower skins, 2 r sin(12 degrees) apart where the spar is r thick, and at
+// the tips, where each section has shrunk to a point, the band is
+// degenerate; welding at distance 0 merges each tip's coincident vertices
+// and removes those faces, leaving one closed solid. Subdivided twice.
+//
+//   congo run packages/sculpt/examples/membrane.cone
+//
+// It writes membrane-cage.obj and membrane-l2.obj in the current folder,
+// triangulated with smooth normals, and prints each one's counts, whether
+// the cage is valid and closed, its volume, and the longest side of the
+// membrane's faces (about the distance between the spars, as a band that
+// had twisted round would show by a side as long as a spar). Measured: valid
+// and closed, volume 0.42 (the spars' 0.16 and about 0.26 between the
+// skins; skins crossing from one lip to the other would cancel most of
+// that), longest side 3.16, from tip to tip (the square root of 10).
+
+mod membrane;
+
+import stdio use *;
+import collections use *;
+import geomath use *;
+import mesh use *;
+import sculpt use *;
+
+fn write(pm &PolyMesh, name &[]u8) Bool {
+  imm tri = pm.triangulate(true);
+  printStr(name); print <- ": "; print <- pm.vertexCount(); print <- " vertices, "; print <- pm.faceCount();
+  print <- " faces, "; print <- tri.triangleCount(); print <- " triangles\n";
+  writeObj(&tri, name);
+}
+
+// The spar's thickness along it: 0 at both tips, 1 midway
+fn spindle(u f32) f32 { 4. * u * (1. - u); }
+
+// A round section of radius r, open in a slit 2 x 12 degrees wide centred
+// on the direction 'facing' (an angle in the section's plane), its points
+// running counterclockwise from one lip round to the other
+fn slitSection(r f32, facing f32) Profile {
+  imm gap = 12. * pi / 180.;
+  imm n = 16u32;
+  mut pts = List[Vec2].empty();
+  mut i = 0u32;
+  while i <= n {
+    imm a = facing + gap + (2. * pi - 2. * gap) * f32.from(i) / f32.from(n);
+    pts.push(new Vec2(r * cos(a), r * sin(a)));
+    i = i + 1u32;
+  }
+  Profile.fromPoints(pts.view(), false);
+}
+
+// A spar from a to b, its slit facing 'facing' in the section's plane, 24
+// pieces along it
+fn spar(a Vec3, b Vec3, r f32, facing f32) PolyMesh {
+  mut line = List[Vec3].empty();
+  mut i = 0u32;
+  while i <= 24u32 {
+    line.push(a + (b - a) * (f32.from(i) / 24.));
+    i = i + 1u32;
+  }
+  imm path = Path.fromPoints(line.view(), false);
+  sweepScaled(&slitSection(r, facing), &path, 0., false, &spindle);
+}
+
+// The longest side of faces from 'first' on
+fn longestSide(m &PolyMesh, first u32) f32 {
+  mut most f32 = 0.;
+  mut f = first;
+  while usize.from(f) < m.faceCount() {
+    imm pts = m.facePositions(f);
+    mut i = 0usize;
+    while i < pts.len() {
+      imm d = (*pts[(i + 1usize) % pts.len()] - *pts[i]).length();
+      if d > most { most = d; }
+      i = i + 1usize;
+    }
+    f = f + 1u32;
+  }
+  most;
+}
+
+fn volume(m &PolyMesh) f32 {
+  mut sum f32 = 0.;
+  mut f = 0usize;
+  while f < m.faceCount() {
+    imm pts = m.facePositions(u32.from(f));
+    mut i = 1usize;
+    while i + 1usize < pts.len() {
+      sum = sum + pts[0usize].dot(pts[i].cross(*pts[i + 1usize]));
+      i = i + 1usize;
+    }
+    f = f + 1usize;
+  }
+  sum / 6.;
+}
+
+fn main() i32 {
+  // The section's plane: x on the frame's normal (-z for a spar along x,
+  // turned with the trailing spar's splay), y on its binormal (+y), so the
+  // slit faces +z at a half turn and -z at angle 0 (measured). The leading
+  // spar along x, the trailing one shorter, behind it in +z and splayed.
+  mut parts = List[PolyMesh].empty();
+  parts.push(spar(new Vec3(0., 0., 0.), new Vec3(5., 0., 0.), 0.12, pi));
+  parts.push(spar(new Vec3(0.4, 0., 1.6), new Vec3(4., 0., 3.), 0.08, 0.));
+  imm second = u32.from(parts[0usize].vertexCount());
+  mut problems = List[String].empty();
+  imm both = join(&parts, &mut problems);
+  imm firstBand = u32.from(both.faceCount());
+
+  // Each spar's slit is one boundary loop, named by its first vertex
+  imm loops Array[u32, 2] = [0u32, second];
+  imm bridged = bridgeLoops(&both, &loops, 0u32, 0.);
+  imm band = longestSide(&bridged, firstBand);
+  imm cage = weld(&bridged, 0.);
+
+  imm faults = cage.validate();
+  mut open = 0u32;
+  mut e = 0u32;
+  while usize.from(e) < cage.edgeCount() {
+    if cage.isBoundaryEdge(e) { open = open + 1u32; }
+    e = e + 1u32;
+  }
+  print <- "joined: "; print <- both.vertexCount(); print <- " vertices, "; print <- both.faceCount();
+  print <- " faces, "; print <- problems.len(); print <- " channels refused\n";
+  print <- "cage: "; print <- faults.len(); print <- " faults, "; print <- open; print <- " open edges, volume ";
+  print <- volume(&cage); print <- ", longest membrane side "; print <- band; print <- "\n";
+
+  imm levels = subdivisionLevels(&cage, 2u32);
+  mut ok = write(&cage, "membrane-cage.obj");
+  ok = ok and write(levels[2usize], "membrane-l2.obj");
+  if ok and faults.len() == 0usize and open == 0u32 {0;} else {
+    print <- "Not a valid closed solid, or could not write a file\n";
+    1;
+  };
+}

@@ -1,10 +1,18 @@
 // ======== PolyMesh: the editable half-edge mesh ========
 
-// A named list of values of one type, one per element of a domain
+// A named list of values of one type, one per element of a domain, and its
+// fill: the value an element is given when it has none of its own, set when
+// the channel is made (0 by default; 1 for a weight, so a missing weight
+// still means full effect; white for paint). Every value starts as the fill,
+// and joining meshes gives it to the elements of a mesh that lacked the
+// channel, so each part behaves as it did alone. Operators that make new
+// elements (a new side, a new edge inside a face) give them 0, not the fill,
+// as each says.
 pub struct Channel[T] {
   pub name String;
   pub domain u32;
   pub values List[T];
+  pub fill T;
 }
 
 // A mesh of polygons of any size, with the half-edge links between them (the
@@ -392,8 +400,9 @@ pub struct PolyMesh {
   }
 
   // A channel of f32 values for a domain, found by name or else made with
-  // every value 'fill'; its number, for 'float' and 'setFloat'. Channels are
-  // sized to the mesh as it is when they are made.
+  // every value 'fill', which it keeps as its fill; its number, for 'float'
+  // and 'setFloat'. A channel found keeps the fill it was made with.
+  // Channels are sized to the mesh as it is when they are made.
   pub fn addFloatChannel(self &mut, domain u32, name &[]u8, fill f32) u32 {
     imm found = self.findFloatChannel(domain, name);
     if found != NoIndex { return found; }
@@ -401,7 +410,7 @@ pub struct PolyMesh {
     mut values = List[f32].withCapacity(n);
     mut i = 0usize;
     while i < n { values.push(fill); i = i + 1usize; }
-    floats.push(new Channel[f32](String.from(name), domain, values));
+    floats.push(new Channel[f32](String.from(name), domain, values, fill));
     u32.from(floats.len() - 1usize);
   }
   pub fn findFloatChannel(self &, domain u32, name &[]u8) u32 {
@@ -426,7 +435,7 @@ pub struct PolyMesh {
     mut values = List[Vec2].withCapacity(n);
     mut i = 0usize;
     while i < n { values.push(fill); i = i + 1usize; }
-    vec2s.push(new Channel[Vec2](String.from(name), domain, values));
+    vec2s.push(new Channel[Vec2](String.from(name), domain, values, fill));
     u32.from(vec2s.len() - 1usize);
   }
   pub fn findVec2Channel(self &, domain u32, name &[]u8) u32 {
@@ -451,7 +460,7 @@ pub struct PolyMesh {
     mut values = List[Vec3].withCapacity(n);
     mut i = 0usize;
     while i < n { values.push(fill); i = i + 1usize; }
-    vec3s.push(new Channel[Vec3](String.from(name), domain, values));
+    vec3s.push(new Channel[Vec3](String.from(name), domain, values, fill));
     u32.from(vec3s.len() - 1usize);
   }
   pub fn findVec3Channel(self &, domain u32, name &[]u8) u32 {

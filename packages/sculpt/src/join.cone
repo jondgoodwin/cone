@@ -1,0 +1,314 @@
+// ======== Join: separately made meshes as one ========
+
+// Join (Blender's Join, and its Join Geometry node): the meshes 'parts' made
+// into one PolyMesh, part after part. Part k's vertex v becomes vertex
+// V0 + ... + V(k-1) + v (Vj part j's vertex count), and its half-edges and
+// faces are numbered on in the same way, every link offset with them, so
+// each part keeps its own half-edges, edges, boundary loops and corners
+// exactly; nothing is welded or bridged (that is 'weld' and 'bridgeLoops'
+// afterwards). Joining a mesh with an empty one gives the mesh back bit for
+// bit.
+//
+// Channels are matched by name and domain, and the result carries the union
+// of every part's channels: each type's channels in the order they are first
+// met, part by part. A part with a channel gives its own values; the elements
+// of a part without it get the channel's fill (see mesh.Channel: 0 by
+// default, 1 for a weight), so the joined mesh behaves as each part did
+// alone. Where parts give one channel different fills, the first part's is
+// kept.
+//
+// The same name with a different type (f32, Vec2, Vec3), or in a domain the
+// parts before it do not have, is refused, not converted, since it is almost
+// always a mistake: that part's channel is left out (its elements get the
+// fill of the channel kept), and a line saying why is added to 'problems',
+// as fromPolygons reports a face it leaves out. A name in more than one
+// domain in one mesh is several channels ("crease" on edges and on vertices,
+// as subdivision reads it), so a domain is refused only when the part shares
+// no domain of that name with the parts before it: a part with only an edge
+// "crease" joins one with both, its vertices getting the vertex crease's
+// fill.
+pub fn join(parts &List[PolyMesh], problems &mut List[String]) PolyMesh {
+  imm none = List[Transform3].empty();
+  joinPlaced(parts, &none, problems);
+}
+
+// The same, part k first placed by places[k] (scaled, turned, then moved, as
+// a Transform3 places a thing); a part past the end of 'places', or placed by
+// the identity exactly, stays where it is, bit for bit. Only positions move: a Vec3 channel is copied as it is, as
+// mirror and the arrays copy it. A place whose scale turns the part inside
+// out (an odd number of negative factors, a reflection) also turns its faces
+// over, each from the same first corner, as 'mirror' turns its copy, so it
+// still faces outward; its corners keep their values, and its edges theirs.
+pub fn joinPlaced(parts &List[PolyMesh], places &List[Transform3], problems &mut List[String]) PolyMesh {
+  mut out = PolyMesh.empty();
+  imm np = parts.len();
+  mut flips = List[Bool].withCapacity(np);
+  mut k = 0usize;
+  while k < np {
+    imm place = if k < places.len() {*places[k];} else {Transform3.identity();};
+    imm placed = !isIdentity(place);
+    imm flip = placed and place.scale.x * place.scale.y * place.scale.z < 0.;
+    appendPart(&mut out, parts[k], place, placed, flip);
+    flips.push(flip);
+    k = k + 1usize;
+  }
+
+  // The union of the channels: each one by the part and number it is first
+  // met at, its type 0 for f32, 1 for Vec2, 2 for Vec3
+  mut uKind = List[u32].empty();
+  mut uPart = List[usize].empty();
+  mut uIdx = List[usize].empty();
+  k = 0usize;
+  while k < np {
+    imm before = uKind.len();
+    mut kind = 0u32;
+    while kind < 3u32 {
+      mut i = 0usize;
+      while i < channelCount(parts[k], kind) {
+        imm name = channelName(parts[k], kind, i);
+        imm domain = channelDomain(parts[k], kind, i);
+        mut same = false;          // the parts before have it, this type and domain
+        mut clash = NoIndex;       // one of theirs of the name, another type
+        mut other = NoIndex;       // one of theirs of the name, this type, another domain
+        mut shared = false;        // this part has the name in one of their domains
+        mut u = 0usize;
+        while u < before {
+          imm uk = *uKind[u];
+          imm up = *uPart[u];
+          imm ui = *uIdx[u];
+          if channelNameIs(parts[up], uk, ui, name.view()) {
+            imm ud = channelDomain(parts[up], uk, ui);
+            if uk == kind and ud == domain { same = true; }
+            elif uk != kind { if clash == NoIndex { clash = u32.from(u); } }
+            elif other == NoIndex { other = u32.from(u); }
+            if hasChannelNamed(parts[k], ud, name.view()) { shared = true; }
+          }
+          u = u + 1usize;
+        }
+        if same {
+          // matched: its values join the channel's
+        } elif clash != NoIndex {
+          imm u = usize.from(clash);
+          mut s = refusedLine(k, name.view(), kind, domain);
+          s.append(": part ");
+          s.appendUInt(u64.from(*uPart[u]));
+          s.append(" has it as ");
+          s.append(kindName(*uKind[u]));
+          problems.push(s);
+        } elif other != NoIndex and !shared {
+          imm u = usize.from(other);
+          mut s = refusedLine(k, name.view(), kind, domain);
+          s.append(": part ");
+          s.appendUInt(u64.from(*uPart[u]));
+          s.append(" has it per ");
+          s.append(domainName(channelDomain(parts[*uPart[u]], *uKind[u], *uIdx[u])));
+          s.append(", and they share no domain of it");
+          problems.push(s);
+        } else {
+          uKind.push(kind);
+          uPart.push(k);
+          uIdx.push(i);
+        }
+        i = i + 1usize;
+      }
+      kind = kind + 1u32;
+    }
+    k = k + 1usize;
+  }
+
+  // Each channel's values, part by part: its own, or its fill
+  mut u = 0usize;
+  while u < uKind.len() {
+    if *uKind[u] == 0u32 {
+      imm up = *uPart[u];
+      imm ui = *uIdx[u];
+      imm name = channelName(parts[up], 0u32, ui);
+      imm domain = channelDomain(parts[up], 0u32, ui);
+      imm fill = floatFill(parts[up], ui);
+      mut values = List[f32].withCapacity(out.domainSize(domain));
+      k = 0usize;
+      while k < np {
+        appendFloats(&mut values, parts[k], domain, name.view(), fill, *flips[k]);
+        k = k + 1usize;
+      }
+      out.floats.push(new Channel[f32](String.from(name.view()), domain, values, fill));
+    }
+    u = u + 1usize;
+  }
+  u = 0usize;
+  while u < uKind.len() {
+    if *uKind[u] == 1u32 {
+      imm up = *uPart[u];
+      imm ui = *uIdx[u];
+      imm name = channelName(parts[up], 1u32, ui);
+      imm domain = channelDomain(parts[up], 1u32, ui);
+      imm fill = vec2Fill(parts[up], ui);
+      mut values = List[Vec2].withCapacity(out.domainSize(domain));
+      k = 0usize;
+      while k < np {
+        appendVec2s(&mut values, parts[k], domain, name.view(), fill, *flips[k]);
+        k = k + 1usize;
+      }
+      out.vec2s.push(new Channel[Vec2](String.from(name.view()), domain, values, fill));
+    }
+    u = u + 1usize;
+  }
+  u = 0usize;
+  while u < uKind.len() {
+    if *uKind[u] == 2u32 {
+      imm up = *uPart[u];
+      imm ui = *uIdx[u];
+      imm name = channelName(parts[up], 2u32, ui);
+      imm domain = channelDomain(parts[up], 2u32, ui);
+      imm fill = vec3Fill(parts[up], ui);
+      mut values = List[Vec3].withCapacity(out.domainSize(domain));
+      k = 0usize;
+      while k < np {
+        appendVec3s(&mut values, parts[k], domain, name.view(), fill, *flips[k]);
+        k = k + 1usize;
+      }
+      out.vec3s.push(new Channel[Vec3](String.from(name.view()), domain, values, fill));
+    }
+    u = u + 1usize;
+  }
+  out;
+}
+
+// m's vertices, half-edges and faces added after out's, every link offset;
+// with 'placed', its positions placed by 'place', and with 'flip' its faces
+// turned over: each half-edge runs the other way (its vertex its twin's, its
+// next its prev), a face's half-edge is the next one, so the face keeps its
+// first corner, and a vertex's the one before it, which leaves it and is a
+// boundary one when it was
+fn appendPart(out &mut PolyMesh, m &PolyMesh, place Transform3, placed Bool, flip Bool) {
+  imm v0 = u32.from(out.positions.len());
+  imm h0 = u32.from(out.hVertex.len());
+  imm f0 = u32.from(out.fHalfedge.len());
+  mut v = 0usize;
+  while v < m.positions.len() {
+    imm p = *m.positions[v];
+    if placed { out.positions.push(place.transformPoint(p)); } else { out.positions.push(p); }
+    imm vh = *m.vHalfedge[v];
+    if vh == NoIndex { out.vHalfedge.push(NoIndex); }
+    elif flip { out.vHalfedge.push(h0 + *m.hPrev[usize.from(vh)]); }
+    else { out.vHalfedge.push(h0 + vh); }
+    v = v + 1usize;
+  }
+  mut h = 0usize;
+  while h < m.hVertex.len() {
+    if flip {
+      out.hNext.push(h0 + *m.hPrev[h]);
+      out.hPrev.push(h0 + *m.hNext[h]);
+      out.hVertex.push(v0 + *m.hVertex[h ^ 1usize]);
+    } else {
+      out.hNext.push(h0 + *m.hNext[h]);
+      out.hPrev.push(h0 + *m.hPrev[h]);
+      out.hVertex.push(v0 + *m.hVertex[h]);
+    }
+    imm f = *m.hFace[h];
+    if f == NoIndex { out.hFace.push(NoIndex); } else { out.hFace.push(f0 + f); }
+    h = h + 1usize;
+  }
+  mut f = 0usize;
+  while f < m.fHalfedge.len() {
+    imm fh = *m.fHalfedge[f];
+    if flip { out.fHalfedge.push(h0 + *m.hNext[usize.from(fh)]); } else { out.fHalfedge.push(h0 + fh); }
+    f = f + 1usize;
+  }
+}
+
+// Whether a place leaves everything where it is, exactly
+fn isIdentity(t Transform3) Bool {
+  t.translation.x == 0. and t.translation.y == 0. and t.translation.z == 0.
+    and t.rotation.x == 0. and t.rotation.y == 0. and t.rotation.z == 0. and t.rotation.w == 1.
+    and t.scale.x == 1. and t.scale.y == 1. and t.scale.z == 1.;
+}
+
+// One part's values of a channel, added to 'values': the part's own channel
+// of that name and domain, or the fill for each of its elements. A turned
+// part's corner at half-edge h is the corner its prev ended at before.
+fn appendFloats(values &mut List[f32], m &PolyMesh, domain u32, name &[]u8, fill f32, flip Bool) {
+  imm ch = m.findFloatChannel(domain, name);
+  imm n = m.domainSize(domain);
+  mut e = 0usize;
+  while e < n {
+    if ch == NoIndex { values.push(fill); }
+    elif flip and domain == CornerDomain { values.push(m.float(ch, *m.hPrev[e])); }
+    else { values.push(m.float(ch, u32.from(e))); }
+    e = e + 1usize;
+  }
+}
+fn appendVec2s(values &mut List[Vec2], m &PolyMesh, domain u32, name &[]u8, fill Vec2, flip Bool) {
+  imm ch = m.findVec2Channel(domain, name);
+  imm n = m.domainSize(domain);
+  mut e = 0usize;
+  while e < n {
+    if ch == NoIndex { values.push(fill); }
+    elif flip and domain == CornerDomain { values.push(m.vec2(ch, *m.hPrev[e])); }
+    else { values.push(m.vec2(ch, u32.from(e))); }
+    e = e + 1usize;
+  }
+}
+fn appendVec3s(values &mut List[Vec3], m &PolyMesh, domain u32, name &[]u8, fill Vec3, flip Bool) {
+  imm ch = m.findVec3Channel(domain, name);
+  imm n = m.domainSize(domain);
+  mut e = 0usize;
+  while e < n {
+    if ch == NoIndex { values.push(fill); }
+    elif flip and domain == CornerDomain { values.push(m.vec3(ch, *m.hPrev[e])); }
+    else { values.push(m.vec3(ch, u32.from(e))); }
+    e = e + 1usize;
+  }
+}
+
+// A mesh's channels of one type (0 f32, 1 Vec2, 2 Vec3), read by number
+fn channelCount(m &PolyMesh, kind u32) usize {
+  if kind == 0u32 { m.floats.len(); } elif kind == 1u32 { m.vec2s.len(); } else { m.vec3s.len(); };
+}
+fn channelDomain(m &PolyMesh, kind u32, i usize) u32 {
+  if kind == 0u32 { m.floats[i].domain; } elif kind == 1u32 { m.vec2s[i].domain; } else { m.vec3s[i].domain; };
+}
+fn channelName(m &PolyMesh, kind u32, i usize) String {
+  if kind == 0u32 { String.from(m.floats[i].name.view()); }
+  elif kind == 1u32 { String.from(m.vec2s[i].name.view()); }
+  else { String.from(m.vec3s[i].name.view()); };
+}
+fn channelNameIs(m &PolyMesh, kind u32, i usize, name &[]u8) Bool {
+  if kind == 0u32 { m.floats[i].name.equals(name); }
+  elif kind == 1u32 { m.vec2s[i].name.equals(name); }
+  else { m.vec3s[i].name.equals(name); };
+}
+fn floatFill(m &PolyMesh, i usize) f32 {m.floats[i].fill;}
+fn vec2Fill(m &PolyMesh, i usize) Vec2 {m.vec2s[i].fill;}
+fn vec3Fill(m &PolyMesh, i usize) Vec3 {m.vec3s[i].fill;}
+
+// Whether a mesh has a channel of the name in the domain, of any type
+fn hasChannelNamed(m &PolyMesh, domain u32, name &[]u8) Bool {
+  m.findFloatChannel(domain, name) != NoIndex or m.findVec2Channel(domain, name) != NoIndex
+    or m.findVec3Channel(domain, name) != NoIndex;
+}
+
+fn kindName(kind u32) &[]u8 {
+  if kind == 0u32 { "f32"; } elif kind == 1u32 { "Vec2"; } else { "Vec3"; };
+}
+fn domainName(domain u32) &[]u8 {
+  if domain == VertexDomain { "vertex"; }
+  elif domain == EdgeDomain { "edge"; }
+  elif domain == FaceDomain { "face"; }
+  else { "corner"; };
+}
+
+// The start of a refusal's line: "part k's channel name (type, domain) is
+// left out"
+fn refusedLine(k usize, name &[]u8, kind u32, domain u32) String {
+  mut s = String.from("part ");
+  s.appendUInt(u64.from(k));
+  s.append("'s channel ");
+  s.append(name);
+  s.append(" (");
+  s.append(kindName(kind));
+  s.append(", ");
+  s.append(domainName(domain));
+  s.append(") is left out");
+  s;
+}
