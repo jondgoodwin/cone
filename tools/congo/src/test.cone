@@ -274,9 +274,22 @@ fn runTest(s &mut Session, file &[]u8, bless Bool) Verdict {
   mut code = 0u32;
   mut stdout = String.empty();
   mut stderr = String.empty();
-  match process.run(args.view(), new process.Options(dir: dest.view(), timeout: time.Duration.fromSeconds(testTimeoutSeconds))) {
+  // A crash, a panic's above all, ends at once, not held while Windows
+  // reports it (the process package's "A crash")
+  match process.run(args.view(), new process.Options(dir: dest.view(),
+      timeout: time.Duration.fromSeconds(testTimeoutSeconds), crashReport: false)) {
     case imm ok Ok {
-      if ok.value.timedOut { return new Verdict(false, String.from("timed out after 60 seconds")); }
+      if ok.value.timedOut {
+        // What it wrote to stderr says how far it got: a panic's line, say,
+        // before an end that never came
+        mut note = String.from("timed out after 60 seconds");
+        imm err = utf8Decode(ok.value.stderr.view());
+        if not isStrippedAway(err.view()) {
+          imm shownErr = indent(err.view(), "  ");
+          note <- "\nstderr:\n", shownErr.view();
+        }
+        return new Verdict(false, note);
+      }
       code = ok.value.exitCode;
       stdout = utf8Decode(ok.value.stdout.view());
       stderr = utf8Decode(ok.value.stderr.view());

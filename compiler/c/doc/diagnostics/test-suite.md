@@ -443,7 +443,18 @@ Some facts belong to the file rather than a line:
   status; a `run` program is expected to return 0 unless this says otherwise.
   A program that panics ends through the C library's `abort`, whose status
   differs by platform, so it writes `program_exit = "abort"`; its report on
-  stderr is pinned in its `.err` file.
+  stderr is pinned in its `.err` file. On Windows that `abort` is a
+  fail-fast, which Windows hands to Windows Error Reporting, and WER holds
+  the dying program, and its executable locked, while it writes a report:
+  one service for the whole machine, so many panics at once (another suite,
+  another agent's) took many seconds each and timed scenarios out. So the
+  runner starts every `run` program as its debuggee (`Debuggee` in
+  `test/run.py`): a crash comes to the runner first, which ends the program
+  at once with the crash's own code, the status Windows would have given
+  it, 0xC0000409 for a panic, and WER never sees it. A job object's
+  `DIE_ON_UNHANDLED_EXCEPTION` and an inherited `SetErrorMode` were each
+  measured and keep nothing from WER. A program that runs out of time shows
+  what it wrote to stderr, a panic's line among it.
 - **What differs from run to run on stderr**, `stderr_mask`, a list of
   regular expressions for a `run` scenario: each match in the program's stderr
   is written `<masked>` before it is compared with the `.err` file, which
