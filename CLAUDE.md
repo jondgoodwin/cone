@@ -476,6 +476,11 @@ Visual Studio projects stay at the root.
   `src/congo.cone`), which `congo.py build` there builds first and which then
   builds itself, and which does everything `congo.py` does, `congo test` too;
   `CONGO_EXE` points `test_congo.py` at its build (README, "Congo in Cone").
+- `tools/deps/`: `fetch.py` fetches the prebuilt C libraries packages bind,
+  pinned by SHA-256 and, for a signed DLL, checked for its signer (OpenSSL
+  3.5.9 from CPython's `cpython-bin-deps`), into `deps/<name>/` at the root,
+  which git ignores and where Congo looks for a `[link] runtime` DLL; the
+  binaries are never committed. Its header is the guide.
 - `tools/shaders/`: `shaders.py` compiles each package's Slang shaders
   (`.slang`) ahead of time to SPIR-V (`.spv`, committed beside them) with the
   Vulkan SDK's `slangc`, and embeds the words in the Cone file that draws
@@ -636,8 +641,9 @@ python ../tools/congo/congo.py test
 everything over it (`window`, `gpu`, `render`, `input`, `controls`, `noise`'s `parity` and `bake` and
 `vulkan`'s `runtime` test), links `SDL3.lib` and runs with `SDL3.dll`: put
 the `lib\x64` folder of SDL3's development kit (`SDL3-devel-3.x-VC.zip`;
-here `C:\libs\SDL3-3.4.16\lib\x64`) on both `LIB` and `PATH` before
-`congo test` or `congo run`.
+here `C:\libs\SDL3-3.4.16\lib\x64`) on `LIB` before `congo test` or
+`congo run`, and Congo copies `SDL3.dll` from there beside each program
+(`sdl`'s `[link] runtime`; the README's "Runtime libraries").
 
 It compiles every scenario under `test/cases/`, asserts what each one's category
 and inline `//~` annotations claim, links and runs the `run` scenarios, and

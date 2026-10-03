@@ -114,12 +114,14 @@ packages"):
 [link]
 libraries = ["SDL3", "user32"]
 paths = ["clib"]
+runtime = ["SDL3"]
 ```
 
 | Key | Value |
 | --- | --- |
 | `libraries` | the C libraries to link, each by its bare name: `SDL3`, not `SDL3.lib` or `libSDL3.a` |
 | `paths` | folders the linker searches for them first; a relative one is relative to the package folder. Optional |
+| `runtime` | the DLLs a program using the package loads when it runs, each by its bare name: `SDL3` for `SDL3.dll`. Congo copies them beside every program it links (below, "Runtime libraries"). Optional |
 
 That is the whole manifest; any other key or table is an error. **There is no
 dependencies section**: the `import` lines in the source are the dependency
@@ -315,8 +317,9 @@ holds the determinism rules.
 One more binds a library beyond the C runtime, and names it: `sdl` (SDL3: a
 window for Vulkan, its events and clocks, and loading Vulkan; `[link]` names
 `SDL3`, which is not part of the Windows SDK, so the `lib\x64` folder of
-SDL3's development kit must be on `LIB`, and `SDL3.dll`, in the same folder,
-on `PATH` to run; Congo copies no DLL). `window` opens its window through
+SDL3's development kit must be on `LIB`; its `runtime` names `SDL3` too, so
+Congo finds `SDL3.dll` in that folder and copies it beside every program that
+imports `sdl`, at any depth). `window` opens its window through
 `sdl`, and `frame`, the loop a world runs in, drives it, so building
 `frame`'s example, as `congo test` does, needs `SDL3.lib` on `LIB`, and
 running it needs a display. The tests of `sdl`, `window` and `frame` push
@@ -330,7 +333,7 @@ Their layout, constants, loader, camera, image and LOD tests run anywhere;
 `vulkan`'s `runtime` test, all of `gpu`'s (`headless`, `pipelines`,
 `offscreen`), `render`'s `offscreen` and `noise`'s `parity` run against the real Vulkan loader
 with no window, so testing `packages/` needs a GPU driver with Vulkan 1.3
-and `SDL3.dll` on `PATH`, but no display. The shaders of `gpu` and `render`
+and SDL3's `lib\x64` folder on `LIB`, but no display. The shaders of `gpu` and `render`
 are Slang compiled ahead of time to SPIR-V, committed and embedded in the
 Cone source (`tools/shaders/`), so building and testing needs no Vulkan SDK
 either; where the SDK's validation layer is installed, the tests run under
@@ -342,6 +345,53 @@ it, synchronization validation included, and fail on any message.
 of the C runtime and Windows, not a C package, and its `[link]` names
 `synchronization`: the Windows SDK's `Synchronization.lib`, which defines
 `WaitOnAddress` and its wakes and is not on the C runtime's default link line.
+
+## Runtime libraries
+
+A program that calls into a DLL needs the DLL where Windows looks when the
+program starts: beside the program, first. A package's `[link] runtime` list
+names the DLLs its importers need, and **Congo copies each one into the
+folder of every executable it links**: `congo build` and `congo run`, a lone
+file's build, and each test and example `congo test` builds (each in a folder
+of its own, so the DLLs go beside each). A library's own build links nothing
+and copies nothing.
+
+**An importer inherits the list.** The DLLs copied are those of every package
+of the build, at any depth, each once, in the order the libraries are linked:
+a program that imports `window` gets `SDL3.dll`, which `sdl` names, and a
+program importing a TLS package gets OpenSSL's DLLs, naming nothing itself.
+
+**Where Congo looks for a DLL**, `<name>.dll`, the first copy found being the
+one copied:
+
+1. the folders the build's `[link] paths` name, in the order the linker is
+   given them;
+2. each folder in the **fetched-dependencies folder** (`deps/` at the
+   repository's root, or the folder `CONE_DEPS` names), by name: where
+   `python tools/deps/fetch.py` puts the prebuilt libraries it fetches,
+   pinned and verified (`deps/openssl/` holds OpenSSL 3.5's `libssl-3.dll`
+   and `libcrypto-3.dll`, with their import libraries; the script's header
+   says what it fetches and how it checks it). Git ignores the folder;
+3. the folders `LIB` lists, where an import library's own DLL usually sits
+   beside it (SDL3's development kit keeps `SDL3.dll` beside `SDL3.lib`);
+4. the folders `PATH` lists.
+
+**A DLL found nowhere is an error** naming the DLL, the package whose list
+names it, and the places searched; the program is not linked, and one an
+earlier build left is removed:
+
+```
+congo: error: tls's [link] runtime names libssl-3, but libssl-3.dll is in none of
+the folders Congo looks in: [link] paths (none), then each folder in C:\src\cone\deps
+(python tools/deps/fetch.py fills it), then the folders LIB lists, then the folders
+PATH lists
+```
+
+**A DLL is copied only when it has changed**: where the copy beside the
+program is the same, byte for byte, it is left alone. Each copy made prints a
+`Copying` line naming where it came from (a test's or an example's does not).
+
+Windows only: elsewhere the list is read and checked, and nothing is copied.
 
 ## Testing a package
 
@@ -489,8 +539,9 @@ beside the compiler's suite, `python test/run.py`, which tests the compiler.
    `compiler/c/doc/nodes/module.md`, "A described build".
 5. **Link** the objects, the program's first, with `conestd`, the C libraries
    the packages' `[link]` tables name, and the C runtime,
-   into `build/<mode>/<name>.exe`. A library stops at its object,
-   `build/<mode>/<name>.obj`.
+   into `build/<mode>/<name>.exe`, and copy beside it the DLLs their `[link]
+   runtime` lists name (above, "Runtime libraries"). A library stops at its
+   object, `build/<mode>/<name>.obj`.
 
 Everything is rebuilt every time.
 
@@ -549,7 +600,11 @@ registry folder that itself imports `stdio` (beside a stale hand-written include
 file, which is not read), three packages chained through an include file that
 imports another package's, a library of submodules re-exported at its root whose
 include file holds nested blocks, a C package linking a Windows system library
-(shlwapi), a C library built in the test and found through `[link] paths`,
+(shlwapi), a C library built in the test and found through `[link] paths`, a
+DLL built in the test and copied beside the program by `[link] runtime` (a
+program that cannot start without it, the copy made again only when the DLL
+has changed, an importer inheriting the list, the four places searched in
+order, a missing DLL refused, and the copies beside each test and example),
 `libc` built before `core` with no prelude line, the `samples/oslayer` tour of
 `libc` and `posix` (Windows), `geomath`'s example run where it stands (Windows),
 the loop refusals between packages and between
@@ -648,6 +703,8 @@ Where it differs from `congo.py`:
 
 ## Not built yet
 
+- Runtime libraries anywhere but Windows, where the dynamic loader finds a
+  shared library by its own rules (`rpath`, `LD_LIBRARY_PATH`).
 - A package of C sources, which Congo would compile; a C package whose root
   reaches a C-named submodule (untried); library names per platform (`opengl32` on Windows is `GL`
   elsewhere); and link folders in the machine config, where a machine's own

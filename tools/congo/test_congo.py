@@ -1402,5 +1402,223 @@ class Testing(unittest.TestCase):
                       " 0 failed to build", run.stdout)
 
 
+@unittest.skipUnless(IS_WINDOWS, "runtime DLLs are copied on Windows only")
+class RuntimeLibraries(unittest.TestCase):
+    """[link] runtime: the DLLs a program needs beside it, copied there by
+    every build that links an executable, and inherited by whatever imports
+    the package that names them."""
+
+    setUp = Scenarios.setUp
+    tearDown = Scenarios.tearDown
+    congo = Scenarios.congo
+    program_output = Scenarios.program_output
+    registry = Scenarios.registry
+
+    TRI_HEAD = '[package]\nname = "tri"\nversion = "0.1.0"\noutput = "library"\n'
+
+    def tri(self, packages: Path, runtime: str | None) -> Path:
+        """A C package over a real DLL built here, tri3.dll, exporting
+        'triple', which multiplies by three, with its import library tri3.lib
+        beside it in clib/, which only [link] paths names. The folder is on no
+        PATH, so a program runs only if tri3.dll is copied beside it."""
+        pkg = packages / "tri"
+        write(pkg / "csrc" / "triple.c",
+              "__declspec(dllexport) int triple(int n) { return 3 * n; }\n")
+        (pkg / "clib").mkdir(parents=True)
+        env = congo.Linker.vs_environment()
+        found = shutil.which("cl", path=env["PATH"])
+        subprocess.run([found, "/nologo", "/LD", "triple.c", "/Fe:../clib/tri3.dll"],
+                       cwd=pkg / "csrc", env=env, check=True, capture_output=True)
+        self.manifest(pkg, runtime)
+        write(pkg / "src" / "tri.cone", "mod @c tri;\n\npub extern fn triple(n i32) i32;\n")
+        return pkg
+
+    def manifest(self, pkg: Path, runtime: str | None) -> None:
+        link = '\n[link]\nlibraries = ["tri3"]\npaths = ["clib"]\n'
+        write(pkg / "congo.toml", self.TRI_HEAD + link
+              + (f"runtime = {runtime}\n" if runtime is not None else ""))
+
+    def app(self) -> Path:
+        write(self.root / "app.cone", """
+            mod app;
+
+            import stdio;
+            import tri;
+
+            fn main() i32 {
+              stdio.print <- tri.triple(14i32);
+              stdio.print <- "\\n";
+              0i32;
+            }
+            """)
+        return self.root / "app.cone"
+
+    def test_a_runtime_dll_is_copied_beside_the_program(self):
+        packages = self.root / "cpkgs"
+        self.registry(packages)
+        pkg = self.tri(packages, None)
+        self.app()
+        # Without runtime the program links, against tri3.lib, but cannot start:
+        # Windows finds no tri3.dll beside it or on PATH
+        run = self.congo("run", "app.cone", cwd=self.root, ok=False)
+        self.assertNotEqual(run.returncode, 0)
+        out = next((self.root / "home" / "lone").glob("app-*")) / "debug"
+        self.assertTrue((out / "app.exe").is_file())
+        self.assertFalse((out / "tri3.dll").exists())
+
+        # Named in [link] runtime, it is copied beside the program, which runs:
+        # 3 * 14 = 42
+        self.manifest(pkg, '["tri3"]')
+        run = self.congo("run", "app.cone", cwd=self.root)
+        self.assertEqual(self.program_output(run), "42\n")
+        source = pkg / "clib" / "tri3.dll"
+        copying = f"Copying {source.relative_to(self.root)}\n"
+        self.assertIn(copying, run.stdout)
+        self.assertEqual((out / "tri3.dll").read_bytes(), source.read_bytes())
+
+        # Copied again only when it has changed: the copy there is left alone
+        os.utime(out / "tri3.dll", (1_000_000_000, 1_000_000_000))
+        run = self.congo("run", "app.cone", cwd=self.root)
+        self.assertEqual(self.program_output(run), "42\n")
+        self.assertNotIn("Copying", run.stdout)
+        self.assertEqual((out / "tri3.dll").stat().st_mtime, 1_000_000_000)
+        # A byte added past the end of the DLL, where Windows' loader does not
+        # look, changes the file: it is copied again
+        source.write_bytes(source.read_bytes() + b"\0")
+        run = self.congo("run", "app.cone", cwd=self.root)
+        self.assertEqual(self.program_output(run), "42\n")
+        self.assertIn(copying, run.stdout)
+        self.assertEqual((out / "tri3.dll").read_bytes(), source.read_bytes())
+
+        # One that is nowhere is an error naming it and the package that asked,
+        # and the program is not linked: the one an earlier build left is gone
+        self.manifest(pkg, '["tri3", "nosuch"]')
+        run = self.congo("run", "app.cone", cwd=self.root, ok=False)
+        self.assertEqual(run.returncode, 1)
+        self.assertIn("congo: error: tri's [link] runtime names nosuch, but nosuch.dll is in"
+                      " none of the folders Congo looks in: [link] paths (", run.stderr)
+        self.assertIn(str(pkg / "clib"), run.stderr)
+        self.assertIn("then the folders LIB lists, then the folders PATH lists", run.stderr)
+        self.assertFalse((out / "app.exe").exists())
+
+        # The list holds bare names, and is a list of strings
+        self.manifest(pkg, '["tri3.dll"]')
+        run = self.congo("run", "app.cone", cwd=self.root, ok=False)
+        self.assertIn("[link] runtime \"tri3.dll\" must be the DLL's bare name", run.stderr)
+        self.manifest(pkg, '"tri3"')
+        run = self.congo("run", "app.cone", cwd=self.root, ok=False)
+        self.assertIn("[link] runtime must be a list of strings", run.stderr)
+        write(pkg / "congo.toml", self.TRI_HEAD + '\n[link]\nruntimes = ["tri3"]\n')
+        run = self.congo("run", "app.cone", cwd=self.root, ok=False)
+        self.assertIn("'runtimes' is not a [link] key; the keys are libraries, paths and"
+                      " runtime", run.stderr)
+
+    def test_an_importer_inherits_the_list(self):
+        # A program importing a library that imports tri names nothing of
+        # tri's, and still gets tri3.dll beside it, for build and run alike
+        packages = self.root / "cpkgs"
+        self.registry(packages)
+        self.tri(packages, '["tri3"]')
+        write(packages / "wrap" / "congo.toml",
+              '[package]\nname = "wrap"\nversion = "0.1.0"\noutput = "library"\n')
+        write(packages / "wrap" / "src" / "wrap.cone", """
+            mod wrap;
+
+            import tri;
+
+            pub fn sextuple(n i32) i32 {
+              2i32 * tri.triple(n);
+            }
+            """)
+        self.congo("new", "user", cwd=self.root)
+        user = self.root / "user"
+        write(user / "src" / "user.cone", """
+            mod user;
+
+            import stdio;
+            import wrap;
+
+            fn main() i32 {
+              stdio.print <- wrap.sextuple(7i32);
+              stdio.print <- "\\n";
+              0i32;
+            }
+            """)
+        self.congo("build", cwd=user)
+        self.assertTrue((user / "build" / "debug" / "tri3.dll").is_file())
+        # 2 * 3 * 7 = 42
+        run = self.congo("run", cwd=user)
+        self.assertEqual(self.program_output(run), "42\n")
+
+    def test_where_a_runtime_dll_is_looked_for(self):
+        # [link] paths first, then each folder of the fetched-dependencies
+        # folder (CONE_DEPS here), then LIB's folders, then PATH's. Each place
+        # holds a different file named fake.dll, which the program never loads
+        packages = self.root / "cpkgs"
+        self.registry(packages)
+        pkg = packages / "fake"
+        write(pkg / "congo.toml",
+              '[package]\nname = "fake"\nversion = "0.1.0"\noutput = "library"\n'
+              '\n[link]\npaths = ["clib"]\nruntime = ["fake"]\n')
+        write(pkg / "src" / "fake.cone", "mod fake;\n\npub fn one() i32 {\n  1i32;\n}\n")
+        write(self.root / "app.cone", """
+            mod app;
+
+            import fake;
+
+            fn main() i32 {
+              fake.one() - 1i32;
+            }
+            """)
+        deps = self.root / "deps"
+        places = {"paths": pkg / "clib", "deps": deps / "b", "lib": self.root / "libdir",
+                  "path": self.root / "pathdir"}
+        (deps / "a").mkdir(parents=True)        # searched first, but holds no fake.dll
+        for name, folder in places.items():
+            folder.mkdir(parents=True, exist_ok=True)
+            (folder / "fake.dll").write_bytes(name.encode())
+        self.env["CONE_DEPS"] = str(deps)
+        self.env["LIB"] = f"{places['lib']};{self.env.get('LIB', '')}"
+        self.env["PATH"] = f"{places['path']};{self.env['PATH']}"
+        for name in ("paths", "deps", "lib", "path"):
+            self.congo("run", "app.cone", cwd=self.root)
+            copied = next((self.root / "home" / "lone").glob("app-*")) / "debug" / "fake.dll"
+            self.assertEqual(copied.read_bytes(), name.encode(), name)
+            (places[name] / "fake.dll").unlink()
+        run = self.congo("run", "app.cone", cwd=self.root, ok=False)
+        self.assertIn("fake's [link] runtime names fake, but fake.dll is in none", run.stderr)
+        self.assertIn(f"then each folder in {deps} (python tools/deps/fetch.py fills it)",
+                      run.stderr)
+
+    def test_congo_test_copies_beside_each_test_and_example(self):
+        # Each test and example is linked into a folder of its own, and the DLL
+        # goes beside each; the test passes only if tri3.dll loads
+        pkg = self.tri(self.root, '["tri3"]')
+        program = """
+            mod {name};
+
+            import stdio;
+            import tri;
+
+            fn main() i32 {{
+              stdio.print <- tri.triple(5i32);
+              stdio.print <- "\\n";
+              0i32;
+            }}
+            """
+        write(pkg / "tests" / "triples.cone", program.format(name="triples"))
+        write(pkg / "tests" / "triples.out", "15\n")
+        write(pkg / "examples" / "show.cone", program.format(name="show"))
+        run = self.congo("test", cwd=pkg)
+        self.assertIn("test triples ... ok", run.stdout)
+        self.assertIn("example show ... built", run.stdout)
+        source = (pkg / "clib" / "tri3.dll").read_bytes()
+        build = pkg / "build" / "debug"
+        for folder in (build / "tests" / "triples", build / "examples" / "show"):
+            self.assertEqual((folder / "tri3.dll").read_bytes(), source, folder)
+        # The test runs print no Copying line
+        self.assertNotIn("Copying", run.stdout)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

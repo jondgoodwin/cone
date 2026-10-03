@@ -22,8 +22,9 @@ the packages so that each is built after what it imports (refusing an import
 loop between packages, or between the modules of one), writes each package's BUILD DESCRIPTION into
 build/<mode>/, compiles each package on its own with conec, and links the
 objects with conestd, and with the C libraries the packages' [link] tables name,
-into build/<mode>/<name>.exe. The folder rules live here, in one place: conec
-never searches for a file of a Congo build.
+into build/<mode>/<name>.exe, beside which it copies the DLLs their [link]
+runtime lists name. The folder rules live here, in one place: conec never
+searches for a file of a Congo build.
 
 A package is a folder holding congo.toml and src/<name>.cone, the root module's
 designated file. A package that others import is compiled as a library, and
@@ -61,6 +62,10 @@ CONGO_DIR = Path(__file__).resolve().parent
 REPO = CONGO_DIR.parent.parent
 REPO_PACKAGES = REPO / "packages"
 REPO_CONEC = REPO / "build" / "x64-release" / ("conec.exe" if IS_WINDOWS else "conec")
+# The fetched-dependencies folder, which tools/deps/fetch.py fills and git
+# ignores: one folder per dependency (deps/openssl/), where Congo looks for a
+# runtime DLL after [link] paths. CONE_DEPS names another
+REPO_DEPS = REPO / "deps"
 
 MANIFEST = "congo.toml"
 OBJ_EXT = ".obj" if IS_WINDOWS else ".o"
@@ -141,6 +146,7 @@ class Package:
     lone: bool = False
     libraries: list[str] = field(default_factory=list)    # [link] libraries
     link_paths: list[Path] = field(default_factory=list)  # [link] paths, absolute
+    runtime: list[str] = field(default_factory=list)      # [link] runtime: DLLs, bare names
 
     @property
     def hand_include(self) -> Path:
@@ -158,17 +164,20 @@ LIBRARY_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.+-]*\Z")
 LIBRARY_SUFFIXES = (".lib", ".a", ".so", ".dylib", ".dll")
 
 
-def read_link(path: Path, table: object) -> tuple[list[str], list[Path]]:
+def read_link(path: Path, table: object) -> tuple[list[str], list[Path], list[str]]:
     """[link]: the C libraries a program using this package must be linked with,
-    and folders to search for them, relative to the package folder."""
+    folders to search for them, relative to the package folder, and the DLLs
+    the program needs beside it to run, which Congo copies there."""
     if not isinstance(table, dict):
-        raise CongoError(f"{path}: [link] must be a table, with libraries and paths")
+        raise CongoError(f"{path}: [link] must be a table, with libraries, paths and"
+                         " runtime")
     for key in table:
-        if key not in ("libraries", "paths"):
+        if key not in ("libraries", "paths", "runtime"):
             raise CongoError(f"{path}: '{key}' is not a [link] key; the keys are"
-                             " libraries and paths")
+                             " libraries, paths and runtime")
     libraries, paths = table.get("libraries", []), table.get("paths", [])
-    for key, value in (("libraries", libraries), ("paths", paths)):
+    runtime = table.get("runtime", [])
+    for key, value in (("libraries", libraries), ("paths", paths), ("runtime", runtime)):
         if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
             raise CongoError(f"{path}: [link] {key} must be a list of strings")
     for lib in libraries:
@@ -176,11 +185,16 @@ def read_link(path: Path, table: object) -> tuple[list[str], list[Path]]:
             raise CongoError(f"{path}: [link] library \"{lib}\" must be the library's bare"
                              " name, such as \"SDL3\": no folder, prefix or suffix, which"
                              " Congo adds for the linker (and paths says where to look)")
+    for dll in runtime:
+        if not LIBRARY_RE.match(dll) or dll.lower().endswith(LIBRARY_SUFFIXES):
+            raise CongoError(f"{path}: [link] runtime \"{dll}\" must be the DLL's bare"
+                             " name, such as \"SDL3\" for SDL3.dll: no folder or suffix,"
+                             " which Congo adds")
     folders = []
     for entry in paths:
         folder = Path(os.path.expandvars(os.path.expanduser(entry)))
         folders.append((folder if folder.is_absolute() else path.parent / folder).resolve())
-    return libraries, folders
+    return libraries, folders, runtime
 
 
 def read_manifest(path: Path) -> Package:
@@ -217,10 +231,11 @@ def read_manifest(path: Path) -> Package:
                          " \"0.1.0\"")
     if output not in OUTPUTS:
         raise CongoError(f"{path}: [package] output must be \"executable\" or \"library\"")
-    libraries, link_paths = read_link(path, data["link"]) if "link" in data else ([], [])
+    libraries, link_paths, runtime = (read_link(path, data["link"]) if "link" in data
+                                      else ([], [], []))
     root = path.parent.resolve()
     return Package(name, version, output, root, root / "src" / f"{name}.cone",
-                   libraries=libraries, link_paths=link_paths)
+                   libraries=libraries, link_paths=link_paths, runtime=runtime)
 
 
 def find_manifest(start: Path) -> Path | None:
@@ -1111,6 +1126,69 @@ class Linker:
 
 
 # ---------------------------------------------------------------------------
+# Runtime libraries: the DLLs a program needs beside it
+# ---------------------------------------------------------------------------
+#
+# A package's [link] runtime list names the DLLs a program using it loads at
+# run time (SDL3, OpenSSL's libssl-3 and libcrypto-3). Every executable Congo
+# links gets the DLLs of every package of its build beside it, copied into
+# its folder: so a program inherits them from whatever it imports, at any
+# depth, and names nothing itself [Jon 3 Oct]. Windows only: elsewhere the
+# list is read and nothing is copied.
+
+def deps_folder() -> Path:
+    """The fetched-dependencies folder: CONE_DEPS, else deps/ in the repository,
+    which tools/deps/fetch.py fills."""
+    named = os.environ.get("CONE_DEPS")
+    return Path(named).resolve() if named else REPO_DEPS
+
+
+def env_folders(name: str) -> list[Path]:
+    """The folders an environment variable lists, ';'-separated on Windows."""
+    return [Path(entry) for entry in os.environ.get(name, "").split(os.pathsep) if entry]
+
+
+def runtime_folders(paths: list[Path]) -> list[Path]:
+    """Where a runtime DLL is looked for, in order: the build's [link] paths,
+    in the order the linker is given them; each folder in the fetched-
+    dependencies folder, by name; the folders LIB lists, where an import
+    library's own DLL usually sits beside it (SDL3's development kit); then
+    the folders PATH lists. The first copy found is the one copied."""
+    deps = deps_folder()
+    fetched = (sorted((p for p in deps.iterdir() if p.is_dir()), key=lambda p: p.name)
+               if deps.is_dir() else [])
+    return [*paths, *fetched, *env_folders("LIB"), *env_folders("PATH")]
+
+
+def find_runtime(name: str, pkg: Package, folders: list[Path], paths: list[Path]) -> Path:
+    """The DLL a [link] runtime list names, where runtime_folders finds it first;
+    one that is nowhere is an error naming it and the package that asked."""
+    for folder in folders:
+        candidate = folder / f"{name}.dll"
+        if candidate.is_file():
+            return candidate
+    listed = ", ".join(str(p) for p in paths) or "none"
+    raise CongoError(f"{pkg.name}'s [link] runtime names {name}, but {name}.dll is in none"
+                     f" of the folders Congo looks in: [link] paths ({listed}), then each"
+                     f" folder in {deps_folder()} (python tools/deps/fetch.py fills it),"
+                     f" then the folders LIB lists, then the folders PATH lists")
+
+
+def copy_runtime(source: Path, into: Path, name: str) -> bool:
+    """Copy a runtime DLL into a program's folder, unless the copy there is the
+    same already, byte for byte; whether it copied."""
+    target = into / f"{name}.dll"
+    if (target.is_file() and target.stat().st_size == source.stat().st_size
+            and target.read_bytes() == source.read_bytes()):
+        return False
+    try:
+        shutil.copyfile(source, target)
+    except OSError as exc:
+        raise CongoError(f"cannot copy {source} to {target}: {exc}") from None
+    return True
+
+
+# ---------------------------------------------------------------------------
 # Building
 # ---------------------------------------------------------------------------
 
@@ -1247,6 +1325,23 @@ class Session:
         units = [order[-1], *reversed(order[:-1])]
         libraries = list(dict.fromkeys(lib for u in units for lib in u.pkg.libraries))
         paths = list(dict.fromkeys(p for u in units for p in u.pkg.link_paths))
+        # The runtime DLLs every one of them names, each once, found before the
+        # link: a missing one stops the build with no program linked, an
+        # earlier build's removed, as a failed link leaves none
+        runtime: dict[str, Path] = {}
+        if IS_WINDOWS:
+            folders = runtime_folders(paths)
+            try:
+                for u in units:
+                    for name in u.pkg.runtime:
+                        if name not in runtime:
+                            runtime[name] = find_runtime(name, u.pkg, folders, paths)
+            except CongoError:
+                try:
+                    exe.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                raise
         command = linker.command([objs[-1], *reversed(objs[:-1])], exe, libraries, paths)
         if announce:
             say("Linking", shown(exe))
@@ -1261,6 +1356,9 @@ class Session:
                     f" folders [link] paths names, then in {where}" if named else "")
             raise CongoError(f"link failed:\n{' '.join(command)}\n{console_text(result.stdout)}"
                              f"{console_text(result.stderr)}{hint}")
+        for name, source in runtime.items():
+            if copy_runtime(source, exe.parent, name) and announce:
+                say("Copying", shown(source))
 
 
 def build(pkg: Package, mode: str, session: Session | None = None) -> Path:
