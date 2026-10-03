@@ -51,7 +51,8 @@
 //   lp.waker()                          a Waker another thread wakes poll with
 //   lp.listen(addr) lp.mustListen(addr) a listening TCP socket     (HANDLES)
 //   lp.openFile(path, access)           a file for ReadAt and WriteAt
-//   lp.close(h)  lp.localAddr(h)  lp.isOpen(h)
+//   lp.close(h)  lp.localAddr(h)  lp.peerAddr(h)  lp.isOpen(h)
+//   lp.shutdown(h)  lp.reset(h)         a socket half-closed; closed with a reset
 //   lp.counters()  lp.subscribe(s)  lp.id()  lp.inFlight()      (DIAGNOSTICS)
 //   forever()                           an 'until' that never comes
 //
@@ -280,7 +281,13 @@
 // A handle closed (by 'close', or the loop's death) is never reached through
 // again: an operation submitted on it fails (Failed, ERROR_INVALID_HANDLE)
 // even when Windows has given its number to something new. The loop owns
-// what its handles name, and closes them all when it dies.
+// what its handles name, and closes them all when it dies. A connected
+// socket's two directions end apart: 'shutdown(h)' finishes its sending side
+// (TCP's FIN after what was sent), so the peer's receive ends, Done(0),
+// while this side still receives -- a half-close; 'close(h)' finishes both
+// (Windows resets the connection instead when received bytes were left
+// unread); 'reset(h)' closes it abortively, the peer seeing the connection
+// reset and what was not yet sent dropped.
 //
 // DIAGNOSTICS. 'lp.counters()' copies the loop's counts out, a
 // diag.Counters; submitted = delivered + in flight at every moment. With
@@ -472,7 +479,8 @@ pub struct SocketAddr {
     s;
   }
 
-  // As text: '127.0.0.1:8080', '[0:0:0:0:0:0:0:1]:8080'
+  // As text: '127.0.0.1:8080', '[2001:db8:0:0:0:0:0:1]:8080' (each group
+  // in hexadecimal without leading zeros; no '::' shortening)
   pub fn text(self &) String {
     mut out = String.empty();
     if self.isV6() {
@@ -481,7 +489,10 @@ pub struct SocketAddr {
       while g < 8usize {
         if g > 0usize {out.append(":");}
         imm v = (u64.from(raw[8usize + g * 2usize]) << 8u64) | u64.from(raw[9usize + g * 2usize]);
-        out.appendHex(v, 1usize);
+        // appendHex writes exactly the digits it is told: as many as v needs
+        mut digits = 1usize;
+        while digits < 4usize and (v >> u64.from(digits * 4usize)) != 0u64 {digits = digits + 1usize;}
+        out.appendHex(v, digits);
         g = g + 1usize;
       }
       out.append("]");

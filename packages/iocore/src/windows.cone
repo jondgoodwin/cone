@@ -82,6 +82,8 @@ extern {
   fn @c(system) bind(s usize, addr *u8, len i32) i32;
   fn @c(system) listen(s usize, backlog i32) i32;
   fn @c(system) getsockname(s usize, addr *u8, len &mut i32) i32;
+  fn @c(system) getpeername(s usize, addr *u8, len &mut i32) i32;
+  fn @c(system) shutdown(s usize, how i32) i32;
   fn @c(system) setsockopt(s usize, level i32, name i32, val *u8, len i32) i32;
   fn @c(system) GetAddrInfoW(node *u16, service *u16, hints *AddrInfo, result &mut *AddrInfo) i32;
   fn @c(system) FreeAddrInfoW(info *AddrInfo);
@@ -133,6 +135,7 @@ pub const errorOperationAborted = 995u32;           // ERROR_OPERATION_ABORTED
 pub const errorIoPending = 997u32;                  // ERROR_IO_PENDING
 pub const errorNotFound = 1168u32;                  // ERROR_NOT_FOUND
 pub const errorConnectionRefused = 1225u32;         // ERROR_CONNECTION_REFUSED
+pub const errorNetnameDeleted = 64u32;              // ERROR_NETNAME_DELETED: how a receive or send reads a reset
 pub const errorNoUnicodeTranslation = 1113u32;      // ERROR_NO_UNICODE_TRANSLATION
 
 // Files
@@ -160,6 +163,8 @@ const solSocket = 0xFFFFi32;
 const soUpdateAcceptContext = 0x700Bi32;
 const soUpdateConnectContext = 0x7010i32;
 const tcpNoDelay = 1i32;
+const soLinger = 0x0080i32;
+const sdSend = 1i32;                                // SD_SEND: shutdown's sending side
 const sioGetExtensionFunctionPointer = 0xC8000006u32;
 
 // AcceptEx's room for each address: the largest sockaddr (sockaddr_in6, 28
@@ -244,6 +249,20 @@ fn tcpSocket(family u16) usize {
 fn noDelay(s usize) {
   mut one = 1i32;
   setsockopt(s, ipprotoTcp, tcpNoDelay, &mut one as *u8, 4i32);
+}
+
+// LINGER: on, with a time of 0, makes closesocket abortive: the connection
+// is reset (RST) rather than finished (FIN), and what was not sent is dropped
+struct Linger {
+  pub onoff u16;
+  pub secs u16;
+}
+
+// Close s abortively: its peer sees the connection reset
+fn resetSocket(s usize) {
+  mut l = new Linger(1u16, 0u16);
+  setsockopt(s, solSocket, soLinger, &mut l as *u8, 4i32);
+  closesocket(s);
 }
 
 // The last Winsock error, as a Windows error number
