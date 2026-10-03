@@ -1,0 +1,63 @@
+// A pub field of a pub type may not have a private type. Such a field is
+// reached from outside the module, so its type must be one the outside can
+// name; were it private, code outside would hold values of a type it cannot
+// name and reach into them through the field. The type is private wherever the
+// field's type names it: alone, behind a reference or a pointer, as an array's
+// element, as a type argument, or through an alias. Each is refused once, at
+// the field.
+//
+// What is not refused: a private field, a private type's pub field (nothing
+// outside names the type to reach it), a field whose type is a parameter, and
+// a public generic's instance whose argument is private.
+//
+// Name resolution stage: every diagnostic below is reached.
+
+mod struct_nameres_pubfield;
+
+struct Inner {
+  pub v i32;
+}
+
+pub struct Open {
+  pub v i32;
+}
+
+struct Wrap[T] {
+  pub v T;
+}
+
+alias Nick = Inner;
+
+pub struct Holder {
+  pub direct Inner;           //~ ErrorPubFieldPrivType:7 "The field direct is pub, but its type Inner is private to its module"
+  pub borrowed &Inner;        //~ ErrorPubFieldPrivType:7 "The field borrowed is pub, but its type Inner is private"
+  pub raw *Inner;             //~ ErrorPubFieldPrivType:7 "The field raw is pub, but its type Inner is private"
+  pub many Array[Inner, 2];   //~ ErrorPubFieldPrivType:7 "The field many is pub, but its type Inner is private"
+  pub wrapped Wrap[Open];     //~ ErrorPubFieldPrivType:7 "The field wrapped is pub, but its type Wrap is private"
+  pub maybe Option[Inner];    //~ ErrorPubFieldPrivType:7 "The field maybe is pub, but its type Inner is private"
+  pub nicked Nick;            //~ ErrorPubFieldPrivType:7 "The field nicked is pub, but its type Inner is private"
+  pub open Open;
+  hidden Inner;
+}
+
+// An enum's own field and a variant's are a pub type's fields too
+pub enum Shape {
+  pub common &Inner;          //~ ErrorPubFieldPrivType:7 "The field common is pub, but its type Inner is private"
+  struct Circle {
+    pub r Inner;              //~ ErrorPubFieldPrivType:9 "The field r is pub, but its type Inner is private"
+  }
+}
+
+// Not refused
+struct Private {
+  pub inner Inner;
+}
+
+pub struct Gen[T] {
+  pub v T;
+}
+
+fn instance() i32 {
+  imm g = new Gen[Inner](new Inner(1));
+  g.v.v;
+}

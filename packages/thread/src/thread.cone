@@ -47,10 +47,8 @@
 // - The type arguments A and R are inferred from the argument and from f's
 //   signature. A number literal keeps its own type, i32 unless suffixed, and
 //   must agree with f's parameter: 'thread.start(100i64, &triangle)'.
-// - The function comes last, after the argument. A parameter typed as a
-//   function reference with a return type ('&fn(a A) R') swallows a comma
-//   after it as the start of a second return type, so it can only be the last
-//   parameter. And 'spawn', the name this was designed with, is reserved.
+// - The function comes last, after the argument. 'spawn', the name this was
+//   designed with, is reserved.
 // - A and R must be Sendable, which the compiler checks where 'start' is
 //   called: what may cross to another thread is a value the thread owns
 //   outright (a number, a struct of them, a 'So' owner, a 'uni' owner of
@@ -349,7 +347,7 @@ fn leave() {
 fn launch(entry Entry, pkt *u8, info *Info, stackSize usize) usize {
   imm stack = if stackSize > 0xFFFFFFFFusize {0xFFFFFFFFu32;} else {u32.from(stackSize);};
   mut id = 0u32;
-  imm handle = _beginthreadex(0usize as *u8, stack, entry, pkt, stackIsReservation, &mut id as *u32);
+  imm handle = _beginthreadex(null, stack, entry, pkt, stackIsReservation, &mut id as *u32);
   (*info).id.storeOrdered(id, MemOrder.Relaxed[]);
   handle;
 }
@@ -499,11 +497,11 @@ pub fn sleep(ns u64) {
     Sleep(0u32);
     return;
   }
-  imm timer = CreateWaitableTimerExW(0usize as *u8, 0usize as *u16, timerHighResolution, timerAllAccess);
+  imm timer = CreateWaitableTimerExW(null, null, timerHighResolution, timerAllAccess);
   if timer != 0usize {
     // Relative (negative), in 100 ns units, rounded up
     mut due = 0i64 - i64.from((ns + 99u64) / 100u64);
-    if SetWaitableTimer(timer, &mut due as *i64, 0i32, 0usize as *u8, 0usize as *u8, 0i32) != 0i32 {
+    if SetWaitableTimer(timer, &mut due as *i64, 0i32, null, null, 0i32) != 0i32 {
       WaitForSingleObject(timer, infinite);
       CloseHandle(timer);
       return;

@@ -951,6 +951,7 @@ static int flowIsTemp(INode *node) {
     case HollowTag:
     case DropFlagTag:
     case NilLitTag:
+    case NullLitTag:
     case ULitTag:
     case FLitTag:
     case StringLitTag:
@@ -1361,6 +1362,11 @@ void flowLoadValue(FlowState *fstate, INode **nodep) {
         arrayLitFlow(fstate, (ArrayNode**)nodep);
         break;
 
+    // A 'null' reaches here typed by every position that wants a value. One
+    // whose value nothing wanted was never told which pointer it is.
+    case NullLitTag:
+        litAdoptNullType(nodep, unknownType);
+        break;
     case SizeofTag:
     case NilLitTag:
     case ULitTag:

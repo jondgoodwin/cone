@@ -189,13 +189,13 @@ INode *structEnumBaseInstanceMember(INode *where, INode *dcl);
 int structEnumDemandSet(NameResState *pstate, StructNode *node);
 
 // May the function being checked reach a private member of 'type' through any
-// value, because both are written inside one enum's braces, or the function in
-// an extension of that enum? 'self' is granted apart from this, for every type.
+// value because it is written in an extension of the enum 'type' belongs to?
+// 'self' is granted apart from this, for every type.
 int structEnumSeesPrivate(TypeCheckState *pstate, INode *type);
 
-// May the function being checked reach a private member of 'type' through any
-// value: because the function is the type's own, or by the enum's boundary
-// (structEnumSeesPrivate)?
+// May the code being checked reach a private member of 'type' through any
+// value: because it is written in the module that declares the type, or in an
+// extension of its enum (structEnumSeesPrivate)?
 int structSeesPrivate(TypeCheckState *pstate, INode *type);
 
 // Get bottom-most base trait for some trait/struct, or NULL if there is not one

@@ -36,6 +36,31 @@ NilLitNode *newNilLitNode();
 INode *cloneNilLitNode(CloneState *cstate, NilLitNode *node);
 void nilLitPrint(NilLitNode *node);
 
+// Null literal node: the null raw pointer. Its type is the pointer type it is
+// wanted as; until one is known, it is nullLitType, which nothing else has.
+typedef struct {
+    IExpNodeHdr;
+} NullLitNode;
+
+NullLitNode *newNullLitNode();
+INode *cloneNullLitNode(CloneState *cstate, NullLitNode *node);
+void nullLitPrint(NullLitNode *node);
+
+// Is this a 'null' whose pointer type is not known yet?
+int litIsUntypedNull(INode *node);
+
+// Type check a 'null' against the type it is expected as
+void nullLitTypeCheck(TypeCheckState *pstate, NullLitNode *node, INode *expectType);
+
+// Give an untyped 'null' the type it is wanted as, which must be a raw pointer
+// type: refused otherwise, or when nothing says which pointer it is. Returns 1
+// when *nodep was an untyped 'null' (now typed, or reported and marked an
+// error), 0 when it was not one.
+int litAdoptNullType(INode **nodep, INode *totype);
+
+// Will an untyped 'null' coerce to this type?
+int litNullMatches(INode *node, INode *totype);
+
 // Create a new fake unsigned literal node
 ULitNode *newFakeULitNode(uint64_t nbr, INode *type);
 

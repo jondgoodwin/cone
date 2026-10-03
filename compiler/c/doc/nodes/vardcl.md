@@ -204,8 +204,8 @@ parameter names**.
    (`mut g (i64, i64) = 1, 2`), a borrow of a string literal (so a slice of one) or
    of an array literal of constants (`imm g = &[1, 2, 3]`) or of a named
    constant holding either (`imm g = &K`), a reinterpretation
-   of a constant to a number or pointer (`imm g *u8 = 0usize as *u8`,
-   [literals](literals.md)), and
+   of a constant to a number or pointer (`imm g *u8 = 4096usize as *u8`,
+   [literals](literals.md)), `null`, and
    a use resolved to a `ConstDclTag`, which is what makes `imm g i32 = K` legal.
    A static's value is its storage's initializer, written once before anything
    runs, which is why it is held to a global's rule wherever it is declared. The

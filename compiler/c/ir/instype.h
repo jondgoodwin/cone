@@ -63,6 +63,10 @@ INode *iNsTypeFindFnField(INsTypeNode *type, Name *name);
 // candidate, exactly one candidate, or more than one candidate accepted it.
 FnDclNode *iNsTypeFindMethod(INode *binding, INode **self, Nodes *args, enum OverloadMatch *status);
 
+// The number type, other than Bool, that some method candidate declares for the
+// parameter after 'self' numbered 'argi', or NULL when none does
+INode *iNsTypeNumberParm(INode *binding, uint32_t argi);
+
 // Find the one pointer/reference method candidate that accepts the passed arguments.
 // Every candidate is tested without altering the call, and pointer/reference
 // parameters must be the same type as self rather than merely coercible.

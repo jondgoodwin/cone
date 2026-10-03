@@ -158,6 +158,8 @@ void keywordInit() {
 
     keyAdd("void", VoidToken);
     keyAdd("nil", nilToken);
+    // The null raw pointer, typed by the pointer type it is wanted as
+    keyAdd("null", nullToken);
     keyAdd("true", trueToken);
     keyAdd("false", falseToken);
     keyAdd("undef", UndefToken);

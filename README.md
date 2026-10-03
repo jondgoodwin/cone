@@ -61,8 +61,8 @@ When finished, Cone will support these features:
 
 ## Building (Windows)
 
-The build depends on [LLVM 23.1][llvm], built with the X86 and WebAssembly
-targets, and uses CMake with the Ninja generator from a VS 2022 x64 prompt:
+The build depends on [LLVM 23.1][llvm], built with the X86, WebAssembly and
+SPIR-V targets (the test suite compiles for all three), and uses CMake with the Ninja generator from a VS 2022 x64 prompt:
 
 	cmake -S . -B build\x64-release -G Ninja -DCMAKE_BUILD_TYPE=Release -DLLVM_DIR=<llvm root>\lib\cmake\llvm
 	cmake --build build\x64-release
@@ -70,7 +70,7 @@ targets, and uses CMake with the Ninja generator from a VS 2022 x64 prompt:
 Building LLVM itself on Windows, from `llvm-project-23.1.2.src.tar.xz` at
 https://github.com/llvm/llvm-project/releases, with the same generator:
 
-	cmake -S llvm -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DLLVM_TARGETS_TO_BUILD="X86;WebAssembly" -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL -DLLVM_INCLUDE_TESTS=OFF -DLLVM_INCLUDE_EXAMPLES=OFF -DLLVM_INCLUDE_BENCHMARKS=OFF -DCMAKE_INSTALL_PREFIX=<llvm root>
+	cmake -S llvm -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DLLVM_TARGETS_TO_BUILD="X86;WebAssembly;SPIRV" -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL -DLLVM_INCLUDE_TESTS=OFF -DLLVM_INCLUDE_EXAMPLES=OFF -DLLVM_INCLUDE_BENCHMARKS=OFF -DCMAKE_INSTALL_PREFIX=<llvm root>
 	cmake --build build --target install
 
 Only the `llvm`, `cmake` and `third-party` folders of the source are needed.

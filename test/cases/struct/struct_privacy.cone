@@ -1,14 +1,17 @@
-// A member not marked 'pub' is private to its type, not to one value of it
-// (refstruct.html): the type's own methods and static functions reach it
-// through any value of the type, as they do through 'self'. A local, a
-// parameter, a borrow written out, a by-value call, a field read and a field
-// written are each done, since a method's receiver and a field's are reached
-// the same way but lowered apart.
+// A member not marked 'pub' is private to the module that declares its type,
+// not to the type and not to one value of it (refstruct.html, refmodule.html):
+// all of the module's code reaches it through any value of the type, as the
+// type's own methods do through 'self'. A local, a parameter, a borrow written
+// out, a by-value call, a field read and a field written are each done, since
+// a method's receiver and a field's are reached the same way but lowered
+// apart.
 //
-// A generic type's instance owns its methods, so it reaches the private
-// members of another value of the same instance. Another instance, another
-// type's code and a function of the module stay outside:
-// struct_typecheck_methods holds those refusals.
+// The type's own methods and static functions, a generic type's instance
+// reaching another value of itself, another type's method, a function of the
+// module, an anonymous function written in it, a construction giving private
+// fields their values, a private init and a field's default are each the
+// module's code. A module outside reaches none of it
+// (module_privacy_typecheck).
 //
 // Every value is printed and worked out beside its line, so a member read from
 // the wrong value shows as a wrong number.
@@ -76,6 +79,37 @@ struct Cell[T] {
   pub fn plus(self &, o &Cell[T]) T { v + o.v + o.peek(); }
 }
 
+// -------- the rest of the module --------
+
+struct Vault {
+  pub id i32;
+  secret i32 = 1;
+  fn peek(self &) i32 { secret * 2; }
+}
+
+// Another type's method: a private method and a private field of a parameter
+struct Teller {
+  scale i32;
+  pub fn make(s i32) Teller { new Teller(s); }
+  pub fn audit(self &, v &Vault) i32 { scale * v.peek() + v.secret; }
+}
+
+// A private init, called by a construction elsewhere in the module
+struct Sealed {
+  pub n i32;
+  fn init(self &new, a i32, b i32) { *self = new Sealed(n: a * b); }
+}
+
+// A field's default constructing a type with a private field, which is
+// checked with the holding type around it rather than a function
+struct Safe {
+  pub v Vault = new Vault(7, 8);
+}
+
+// A function of the module, reading and writing a private field
+fn openVault(v &Vault) i32 { v.secret; }
+fn rekey(v &mut Vault, k i32) { v.secret = k; }
+
 fn main() {
   mut a = Counter.make();
   show("private-method-on-a-local", a.total());    // 10, bumped twice: 12
@@ -95,4 +129,19 @@ fn main() {
   imm c = Cell[i32].make(3);
   imm d = Cell[i32].make(4);
   show("same-instance-s-private", c.plus(&d));      // 3 + 4 + 4 = 11
+
+  mut v = new Vault(1, 5);
+  show("module-fn-reads-private", i64.from(openVault(&v)));        // 5
+  show("module-fn-calls-private", i64.from(v.peek()));             // 10
+  imm t = Teller.make(3);
+  show("other-type-reaches-private", i64.from(t.audit(&v)));       // 3 * 10 + 5 = 35
+  rekey(&mut v, 9);
+  show("module-fn-writes-private", i64.from(v.secret));            // 9
+  imm w = new Vault(id: 2, secret: 6);
+  show("private-field-by-name", i64.from(w.secret));               // 6
+  show("private-init", i64.from(new Sealed(3, 4).n));              // 12
+  imm s = new Safe();
+  show("default-with-private", i64.from(s.v.secret));              // 8
+  imm f = &fn(x &Vault) i32 {x.secret + x.peek();};
+  show("anonymous-fn-reaches-private", i64.from(f(&w)));           // 6 + 12 = 18
 }

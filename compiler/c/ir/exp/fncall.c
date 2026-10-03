@@ -775,6 +775,31 @@ static int fnCallRefIndexWantsMut(FnCallNode *callnode, INode *foundnode, Name *
     return 1;
 }
 
+// An operator or an index wanting a number, given a Bool, which never coerces to
+// one: 'n + b', '1u8 == b' and 'list[b]' select nothing. That refusal is the
+// rule; this reports it as the Bool coercion it is, naming the conversion, in
+// place of the bare no-candidate message, where a candidate declares a number
+// in that argument's place. Answer whether it reported.
+static int fnCallBoolOperandWantsNumber(FnCallNode *callnode, INode *foundnode, enum OverloadMatch status) {
+    if (status != OverloadNone || !(callnode->flags & (FlagOperator | FlagIndex)) || callnode->args == NULL)
+        return 0;
+    INode **argsp;
+    uint32_t cnt;
+    uint32_t argi = 0;
+    for (nodesFor(callnode->args, cnt, argsp)) {
+        INode *wanted;
+        if (isExpNode(*argsp) && iexpGetTypeDcl(*argsp) == (INode*)boolType
+            && (wanted = iNsTypeNumberParm(foundnode, argi))) {
+            errorMsgNode(*argsp, ErrorBoolNotNbr,
+                "A Bool is not a number, and %s is wanted here. Convert it explicitly, '%s.from(b)', which gives 0 or 1.",
+                itypeName(wanted), itypeName(wanted));
+            return 1;
+        }
+        ++argi;
+    }
+    return 0;
+}
+
 // Find the one field or method that accepts the call's receiver and arguments,
 // then lower the node to a function call (objfn+args) or field access (objfn+methfld).
 // A receiver held through a reference or pointer is dereferenced where the selected
@@ -909,10 +934,9 @@ int fnCallLowerMethod(TypeCheckState *pstate, FnCallNode *callnode) {
     // that binds nothing has no visibility to refuse, and is reported missing.
     // A private member is reached through 'self': the method's own, or a macro
     // method's, which its expansion has already replaced with the use site's
-    // receiver (FlagSelfRecv). In the type's own functions it is reached through
-    // any value of the type; inside an enum's braces, through any value of the
-    // enum or its variants, because the enum is their privacy boundary
-    // (structSeesPrivate).
+    // receiver (FlagSelfRecv). Anywhere in the module that declares the type it
+    // is reached through any value of the type, because the module is the
+    // privacy boundary for members as for names (structSeesPrivate).
     INode *foundnode = iNsTypeFindFnField((INsTypeNode*)objdereftype, methsym);
     // A type in the namespace -- an enum's variant, or 'Self' -- is a name of the
     // type and never a member of its values, so it is reported missing below and
@@ -1021,7 +1045,8 @@ int fnCallLowerMethod(TypeCheckState *pstate, FnCallNode *callnode) {
         selected = fnCallBorrowReceiver(pstate, callnode, foundnode, &status);
 
     if (selected == NULL) {
-        if (!fnCallRefIndexWantsMut(callnode, foundnode, methsym, status))
+        if (!fnCallRefIndexWantsMut(callnode, foundnode, methsym, status)
+            && !fnCallBoolOperandWantsNumber(callnode, foundnode, status))
             fnCallNoCandidate((INode*)callnode, status, methsym, "method");
         return -1;
     }
@@ -1156,6 +1181,32 @@ static int fnCallIsValueCompare(Name *op) {
 // Does a value of this type have a place that '===' can ask about?
 static int fnCallHasPlace(INode *type) {
     return type->tag == RefTag || type->tag == VirtRefTag || type->tag == ArrayRefTag || type->tag == PtrTag;
+}
+
+// Type a 'null' operand of a comparison by the other operand: 'p == null' and
+// 'null != p' compare with p's raw pointer type, which a pointer's comparison
+// requires of both sides (iNsTypeFindPtrMethod). Compared with anything other
+// than a raw pointer it is refused. A 'null' receiving any other call has no
+// type to take, and is refused too. Answers 0 when the call is now an error.
+static int fnCallTypeNullOperands(FnCallNode *node) {
+    Name *op = fnCallOperatorName(node);
+    int compare = op && (fnCallIsValueCompare(op) || op == sameName || op == notSameName)
+        && node->args && node->args->used == 1;
+    INode **nullp = NULL;
+    if (compare) {
+        INode **argp = &nodesGet(node->args, 0);
+        if (litIsUntypedNull(*argp) && !litIsUntypedNull(node->objfn))
+            litAdoptNullType(nullp = argp, ((IExpNode*)node->objfn)->vtype);
+        else if (litIsUntypedNull(node->objfn) && !litIsUntypedNull(*argp))
+            litAdoptNullType(nullp = &node->objfn, ((IExpNode*)*argp)->vtype);
+    }
+    if (litIsUntypedNull(node->objfn))
+        litAdoptNullType(nullp = &node->objfn, unknownType);
+    if (nullp && inodeIsError(*nullp)) {
+        node->vtype = errorType;
+        return 0;
+    }
+    return 1;
 }
 
 // Refuse a comparison through a reference whose referent offers none
@@ -2212,6 +2263,10 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
         fnCallLowerOverloadFn(node);
         return;
     }
+
+    // A 'null' compared with a pointer, on either side, is that pointer's type
+    if (!fnCallTypeNullOperands(node))
+        return;
 
     // Handle when method operator requires an lval
     // This is true for ++, --, <- and operator-equals (+=)

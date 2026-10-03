@@ -1,5 +1,5 @@
-Six literal forms across three source pairs: `nil`, integer, float and string in
-`literal.c`; the array literal in `arraylit.c`, which **shares its node with the
+Seven literal forms across three source pairs: `nil`, `null`, integer, float and
+string in `literal.c`; the array literal in `arraylit.c`, which **shares its node with the
 array type**; and the type literal in `typelit.c`, which **shares its node with
 a call**. A struct's value is constructed `new Point(1, 2)`, and a construction
 its implicit field-wise init takes is lowered into a type literal; so is a
@@ -23,6 +23,7 @@ constants where it can.
 | Node | Tag | Payload |
 | --- | --- | --- |
 | `NilLitNode` | `NilLitTag` | none; `vtype` is a fresh void node |
+| `NullLitNode` | `NullLitTag` | none; `vtype` is `nullLitType` until the raw pointer type it is wanted as replaces it (below) |
 | `ULitNode` | `ULitTag` | `uintlit` — also carries `true`/`false` and tuple element indices |
 | `FLitNode` | `FLitTag` | `floatlit` |
 | `SLitNode` | `StringLitTag` | `strlit` pointer into the lexer's arena, plus `strlen` |
@@ -121,7 +122,7 @@ bound, because it is matched against a field by symbol later.
 ## Type check
 
 **An untyped integer literal takes the number type it is wanted as, wherever it
-meets it, and no other literal is context-typed.** `litAdoptNumberType` is the
+meets it, and no other literal is context-typed but `null` (below).** `litAdoptNumberType` is the
 one rule: a `ULitTag` carrying `FlagUnkType` against an integer type takes that
 type and drops the flag; against a float type it is replaced by an `FLitNode`
 holding the full 64-bit magnitude written, negated when `FlagLitNeg` says so,
@@ -232,6 +233,27 @@ does.
 `slitTypeCheck` sets a string's type to an array of `u8` sized from `strlen`. A
 string literal is also an lval.
 
+**A `null` takes the raw pointer type it is wanted as, and no other type.** It
+is built with `nullLitType`, an absence node distinct by identity, which says
+"any raw pointer, not yet which". `nullLitTypeCheck` gives it an expected type
+that is a pointer at once; with no expectation it waits, and every coercion
+judges it first (`litAdoptNullType`, at the head of `iexpCoerce`): a `PtrTag`
+target becomes its `vtype`; any other target, or none at all (`unknownType`,
+as an initializer with no declared type gives), is `ErrorNullNotPtr`, and its
+`vtype` becomes `errorType` so nothing that uses it reports again. A reference,
+a function reference among them, is never null, and an `Option`'s absence is
+`None`, so neither takes one. `iexpMatches` answers `EqMatch` for any pointer
+and `NoMatch` for anything else, which is what overload and init selection ask.
+Two places have no coercion to wait for and type it themselves: a
+comparison, from the other operand (`fnCallTypeNullOperands`, before the
+dispatch, since a pointer's `==` requires both sides' types to be the same),
+where a `null` receiving any other call is refused; and `null as *T`, from the
+target (`castTypeCheck`). Generic inference skips a `null` argument, so the type parameter
+comes from another argument or is named. Flow is the backstop: a `null` it
+reaches still untyped is refused there (`flowLoadValue`'s case). It is a constant
+(`litIsLiteral`), so it may be a global's, static's, constant's, field's or
+parameter's default, but never an array's count (`arrayLitDimIsConst`).
+
 **Array literal** — `arrayLitTypeCheck` checks the list form; an array's
 contents arrive already typed as the array (`contentsLowerArray`), the fill
 form among them, and are not checked again. Its fill-form arm is reached only
@@ -286,8 +308,9 @@ struct's literal, retagged `TypeLitTag` with `FlagNew` kept, and checked as
 below; a declared one stays an `FnCallTag` with `FlagNew`, its `objfn` the
 init's name use, its arguments coerced to the parameters after `self` and the
 defaults appended, and its `vtype` the struct, the call's value
-([fncall](fncall.md), "Construction"). A declared init not `pub` is the type's
-own (`ErrorNotPublic`).
+([fncall](fncall.md), "Construction"). A declared init not `pub` is its module's
+(`ErrorNotPublic` outside it, `structSeesPrivate`), as is giving a private
+field a value in the literal.
 
 **Type literal** — `typeLitTypeCheck` requires a concrete type, then builds a
 struct's literal. **A struct's literal in brackets is `ErrorStructBracket`**,
@@ -339,12 +362,11 @@ as it does a struct literal of constants.
 
 **A reinterpretation of a constant is a constant** (`litIsConstCast`): a
 `CastTag` without `FlagConvert` (an `as`) whose target is a number or
-a raw pointer and whose operand is a number literal, a `ConstDclTag` use, or
-another such cast. One to a number of a constant number is folded into a
+a raw pointer and whose operand is a number literal, a `null`, a `ConstDclTag`
+use, or another such cast. One to a number of a constant number is folded into a
 literal where a constant is required (below), so what reaches this test there
 is the one to a pointer, whose operand may itself have been folded:
-`(BASE + 16usize) as *u8`. `0usize as *T` is how a raw pointer starts out null, since
-there is no null literal. A struct target is left out:
+`(BASE + 16usize) as *u8`. A struct target is left out:
 `genlRecast` reinterprets one through a stack slot, which a global's
 initializer has none of. Type check still applies the same-size rule, and
 `genlRecast`'s `bitcast`, `inttoptr` or `ptrtoint` of a constant operand is
@@ -477,7 +499,8 @@ a field initialization is accounted exactly as a call argument would be.
 
 ## Generation
 
-Scalars are LLVM constants; `nil` is `undef` of the empty struct. An integer
+Scalars are LLVM constants; `nil` is `undef` of the empty struct, and `null` the
+null constant of its pointer type. An integer
 literal still carrying `FlagUnkType` is range-checked against its `i32` default
 first (see Type check). The constant is built from `uintlit`'s bits truncated to
 the type, which is the value itself once the range check has passed. `genlExpr`

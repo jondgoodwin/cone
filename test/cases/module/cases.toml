@@ -297,6 +297,33 @@ description = "What a path may not reach through a one-file module: its private 
 tags = ["nameres"]
 diagnostics = 2
 
+# -------- a type's private members --------
+#
+# A type's private members are private to the module that declares it, the
+# boundary its private names have. Every file of the module's folder is the
+# module, so module_privacy runs code in each file reaching the other's types'
+# privates. module_privacy_typecheck is the refusal to every other module of a
+# tree -- the parent, a sister, a one-file submodule -- and
+# module_privacy_package_typecheck to a program compiled against a package's
+# include file. Both are folders because the module tree is the subject.
+
+[scenario.module_privacy]
+category = "run"
+description = "Code in each file of a module reaching the private fields, methods and init of a type another file of the module declares"
+tags = ["typecheck", "runtime"]
+
+[scenario.module_privacy_typecheck]
+category = "reject"
+description = "A submodule's types' private fields, methods, construction values and init refused to its parent, a sister and a one-file submodule; an enum's extension in another module still reaching its base's"
+tags = ["typecheck"]
+diagnostics = 12
+
+[scenario.module_privacy_package_typecheck]
+category = "reject"
+description = "A program compiled against a package's include file refused the private method and field of the package's public type, which the include file declares for the package's inline body"
+tags = ["typecheck"]
+diagnostics = 2
+
 # -------- import within the tree --------
 #
 # A module reaches a sister by importing her NAME, resolved against the registry
@@ -1610,6 +1637,32 @@ name = "a-plain-cone-function-is-unmarked"
 target = "preir"
 contains = ["define internal i1 @plain(i1 %0, i8 %1)", "call i1 @plain(i1 "]
 
+# Both of SPIR-V's forms: the OpenCL kernel form (physical addressing) and the
+# Vulkan shader form (logical addressing). That the module is emitted at all,
+# as '.spv', is the object check every compile scenario makes.
+[scenario.module_target_spirv]
+category = "compile"
+description = "A module of plain i32 and f32 functions compiles for a SPIR-V target, in its OpenCL and its Vulkan form"
+tags = ["genllvm"]
+
+[[scenario.module_target_spirv.run]]
+name = "opencl"
+options = ["--triple=spirv64-unknown-unknown"]
+
+[[scenario.module_target_spirv.run]]
+name = "vulkan"
+options = ["--triple=spirv1.6-unknown-vulkan1.3"]
+
+[[scenario.module_target_spirv.check]]
+name = "the-module-carries-the-spirv-triple"
+target = "preir"
+contains = [
+  "target triple = \"spirv",
+  "define internal i32 @sumSquares(i32 %0, i32 %1)",
+  "call i32 @square(i32 ",
+  "define internal float @scaleAdd(float %0, float %1, float %2)",
+]
+
 [scenario.module_c_threadlocal]
 category = "compile"
 description = "An 'extern' thread-local in a C-named module: a C thread-local, reached by its C name"
@@ -2103,21 +2156,23 @@ contains = [
   "define ex.usesGeneric comdat",
   "define ex.Plain.shown comdat",
   "define ex.inner.innerPub comdat",
+  "define ex.inner.Quiet.shown comdat",
 ]
 
 # A type's function is exported when an importer can reach the type -- it is
 # public, or an expanded body names it, as viaReached names the private Reached
-# -- and the function is public, or the type holds an expanded body, which can
-# reach a private one through its receiver: WithInline.get reaches secret.
+# -- and the function is public, or the type or its module holds an expanded
+# body, which can reach a private one through a receiver: WithInline.get
+# reaches secret, and any of ex's expanded bodies could reach Plain.hidden.
 [[scenario.module_build_export.check]]
 name = "a-reachable-types-functions-are-exported"
 target = "symbols"
-contains = ["define ex.Reached.get comdat", "define ex.WithInline.secret comdat"]
+contains = ["define ex.Reached.get comdat", "define ex.WithInline.secret comdat", "define ex.Plain.hidden comdat"]
 
 # Internal: a private definition no expanded body names, whether the library
-# calls it or not, the child module's too; a private method of a type holding
-# no expanded body; and every function of a private type nothing expanded
-# names, public or not.
+# calls it or not, the child module's too; a private method of a type whose
+# module holds no expanded body; and every function of a private type nothing
+# expanded names, public or not.
 [[scenario.module_build_export.check]]
 name = "other-private-definitions-stay-internal"
 target = "symbols"
@@ -2125,7 +2180,7 @@ contains = [
   "define internal ex.privCalled comdat",
   "define internal ex.privUnreached comdat",
   "global internal ex.privGlobalUnreached comdat",
-  "define internal ex.Plain.hidden comdat",
+  "define internal ex.inner.Quiet.hidden comdat",
   "define internal ex.Hidden.get comdat",
   "define internal ex.inner.innerPriv comdat",
 ]
@@ -2396,23 +2451,38 @@ contains = [
   "define coll.map.base comdat nodeduplicate",
 ]
 
-# A private type a public one holds in a public field. The program calls the
-# private type's public method through that field, in its own code and in an
-# inline body it expands, so the type's include-file declaration carries the
-# method and the package's object exports it (DclIncluded), as it would a
-# public type's.
+# A public type may not hold a private type in a public field: code outside
+# the module would hold values of a type it cannot name and reach into them.
+# The package's own compile refuses it, before any include file is written.
 [scenario.module_include_field_reach]
+category = "reject"
+description = "A package's public type holding its private type in a public field, refused when the package is compiled"
+tags = ["nameres"]
+diagnostics = 1
+
+# A type's private members are its module's, so a package's inline body may
+# reach a public type's private field and private method, and a private type's
+# methods through that field. The program expands the body in its own object,
+# so the include file declares each method it calls, the private ones too, and
+# the package's object exports them: neither type holds an expanded body, but
+# the module does (modHoldsExpanded). The private type is in the include file
+# because the public one holds it (DclIncluded).
+[scenario.module_include_private_reach]
 category = "run"
-description = "A private type's public method reached only through a field of a public type: declared in the include file, exported by the package, and called by the program"
+description = "A package's inline body reaching its types' private field and private methods, expanded in a program: declared in the include file, exported by the package, and run"
 tags = ["genllvm", "runtime"]
 link = ["h/h.conebuild"]
 include = ["include/h.cone"]
 
-[[scenario.module_include_field_reach.check]]
-name = "h-exports-the-private-type's-method"
+[[scenario.module_include_private_reach.check]]
+name = "h-exports-the-private-methods-its-inline-body-calls"
 target = "symbols"
 object = "h"
-contains = ["define h.Inner.get comdat nodeduplicate"]
+contains = [
+  "define h.Inner.get comdat nodeduplicate",
+  "define h.Inner.twice comdat nodeduplicate",
+  "define h.Outer.tag comdat nodeduplicate",
+]
 
 # A location in code the program compiles from a package's include file names
 # the package's source file and line, not the include file's: the include file

@@ -307,9 +307,9 @@ fn failure(op &[]u8, program &[]u8, dir &[]u8, code u32) ProcessError {
 fn systemText(code u32) String {
   mut buf = new Array[u16, 512] <- fill 0u16;
   imm bp *u16 = &[]buf;
-  mut n = FormatMessageW(formatFromSystem, 0usize as *u8, code, english, bp, 512u32, 0usize as *u8);
+  mut n = FormatMessageW(formatFromSystem, null, code, english, bp, 512u32, null);
   if n == 0u32 {
-    n = FormatMessageW(formatFromSystem, 0usize as *u8, code, 0u32, bp, 512u32, 0usize as *u8);
+    n = FormatMessageW(formatFromSystem, null, code, 0u32, bp, 512u32, null);
   }
   mut out = String.empty();
   if n == 0u32 {
@@ -339,10 +339,10 @@ fn widen(s &[]u8) *u16 {
     *p = 0u16;
     return p;
   }
-  if s.len > 0x3FFFFFFFusize { return 0usize as *u16; }
+  if s.len > 0x3FFFFFFFusize { return null; }
   imm len = i32.from(s.len);
-  imm n = MultiByteToWideChar(utf8Page, invalidUtf8Fails, s, len, 0usize as *u16, 0i32);
-  if n == 0i32 { return 0usize as *u16; }
+  imm n = MultiByteToWideChar(utf8Page, invalidUtf8Fails, s, len, null, 0i32);
+  if n == 0i32 { return null; }
   imm count = usize.from(n);
   imm p = libc.malloc((count + 1usize) * 2usize) as *u16;
   MultiByteToWideChar(utf8Page, invalidUtf8Fails, s, len, p, n);
@@ -355,10 +355,10 @@ fn widen(s &[]u8) *u16 {
 fn narrow(p *u16, n i32) String {
   mut out = String.empty();
   if n == 0i32 { return out; }
-  imm size = WideCharToMultiByte(utf8Page, 0u32, p, n, 0usize as *u8, 0i32, 0usize as *u8, 0usize as *i32);
+  imm size = WideCharToMultiByte(utf8Page, 0u32, p, n, null, 0i32, null, null);
   if size <= 0i32 { return out; }
   imm buf = libc.malloc(usize.from(size));
-  WideCharToMultiByte(utf8Page, 0u32, p, n, buf, size, 0usize as *u8, 0usize as *i32);
+  WideCharToMultiByte(utf8Page, 0u32, p, n, buf, size, null, null);
   // Counted up to the 0, the 0 is among the bytes
   imm len = if n < 0i32 {usize.from(size) - 1usize;} else {usize.from(size);};
   out.append(mem.sliceFromParts(buf, len));
@@ -535,7 +535,7 @@ struct Stream {
 }
 
 fn noStream() Stream {
-  new Stream(0usize, new Overlapped(0usize, 0usize, 0u32, 0u32, 0usize), 0usize as *u8, String.empty(), false);
+  new Stream(0usize, new Overlapped(0usize, 0usize, 0u32, 0u32, 0usize), null, String.empty(), false);
 }
 
 // Each pipe a name of its own: this process, this thread, and a count
@@ -556,12 +556,12 @@ fn makePipe(s &mut Stream) usize {
     name.appendUInt(u64.from(pipeSerial));
     imm wname = widen(name.view());
     imm ours = CreateNamedPipeW(wname, pipeAccessInbound | flagOverlapped | flagFirstInstance,
-      pipeRejectRemote, 1u32, pipeSize, pipeSize, 0u32, 0usize as *u8);
+      pipeRejectRemote, 1u32, pipeSize, pipeSize, 0u32, null);
     if ours != invalidHandle {
-      imm sa = new SecurityAttributes(24u32, 0usize as *u8, 1i32);
+      imm sa = new SecurityAttributes(24u32, null, 1i32);
       imm theirs = CreateFileW(wname, genericWrite, 0u32, &sa, openExisting, 0u32, 0usize);
       libc.free(wname as *u8);
-      imm event = CreateEventW(0usize as *u8, 1i32, 0i32, 0usize as *u16);
+      imm event = CreateEventW(null, 1i32, 0i32, null);
       if theirs == invalidHandle or event == 0usize {
         closeIf(theirs);
         closeIf(event);
@@ -581,7 +581,7 @@ fn makePipe(s &mut Stream) usize {
 
 // The NUL device, inheritable, to read from or write to
 fn openNul(access u32) usize {
-  imm sa = new SecurityAttributes(24u32, 0usize as *u8, 1i32);
+  imm sa = new SecurityAttributes(24u32, null, 1i32);
   imm wname = widen("NUL");
   imm h = CreateFileW(wname, access, shareReadWrite, &sa, openExisting, 0u32, 0usize);
   libc.free(wname as *u8);
@@ -611,7 +611,7 @@ fn closeIf(h usize) {
 fn readNext(s &mut Stream) {
   s.ov.internal = 0usize;
   s.ov.internalHigh = 0usize;
-  if ReadFile(s.pipe, s.buf, pipeSize, 0usize as *u32, &mut s.ov) == 0i32 {
+  if ReadFile(s.pipe, s.buf, pipeSize, null, &mut s.ov) == 0i32 {
     if GetLastError() != errorIoPending { s.active = false; }
   }
 }
@@ -669,7 +669,7 @@ fn start(op &[]u8, program &[]u8, line &[]u8, opts Options) Result[Output, Proce
   if wline as usize == 0usize {
     return Error[Output, ProcessError][failure(op, program, opts.dir, errorNoUnicodeTranslation)];
   }
-  mut wdir = 0usize as *u16;
+  mut wdir *u16 = null;
   if opts.dir.len > 0usize {
     if hasByte(opts.dir, 0u8) {
       libc.free(wline as *u8);
@@ -707,7 +707,7 @@ fn start(op &[]u8, program &[]u8, line &[]u8, opts Options) Result[Output, Proce
   handles[2usize] = childErr;
   imm hp *usize = &[]handles;
   mut listSize = 0usize;
-  InitializeProcThreadAttributeList(0usize as *u8, 1u32, 0u32, &mut listSize);
+  InitializeProcThreadAttributeList(null, 1u32, 0u32, &mut listSize);
   imm list = libc.malloc(listSize);
   mut failed = true;
   mut code = 0u32;
@@ -718,7 +718,7 @@ fn start(op &[]u8, program &[]u8, line &[]u8, opts Options) Result[Output, Proce
     code = GetLastError();
   }
   elif UpdateProcThreadAttribute(list, 0u32, attributeHandleList, hp as *u8, 24usize,
-      0usize as *u8, 0usize as *usize) == 0i32 {
+      null, null) == 0i32 {
     code = GetLastError();
     DeleteProcThreadAttributeList(list);
   }
@@ -729,16 +729,16 @@ fn start(op &[]u8, program &[]u8, line &[]u8, opts Options) Result[Output, Proce
   mut pi = new ProcessInformation(0usize, 0usize, 0u32, 0u32);
   imm timed = opts.timeoutMs > 0u64;
   if not failed {
-    mut si = new StartupInfoEx(112u32, 0usize as *u16, 0usize as *u16, 0usize as *u16,
-      0u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32, useStdHandles, 0u16, 0u16, 0usize as *u8,
+    mut si = new StartupInfoEx(112u32, null, null, null,
+      0u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32, useStdHandles, 0u16, 0u16, null,
       childIn, childOut, childErr, list);
     mut flags = extendedStartupInfo;
     if timed { flags = flags | createSuspended; }
     // A console program started from a program with no console would open a
     // window of its own
     if GetConsoleWindow() == 0usize { flags = flags | createNoWindow; }
-    if CreateProcessW(0usize as *u16, wline, 0usize as *u8, 0usize as *u8, 1i32, flags,
-        0usize as *u8, wdir, &mut si, &mut pi) == 0i32 {
+    if CreateProcessW(null, wline, null, null, 1i32, flags,
+        null, wdir, &mut si, &mut pi) == 0i32 {
       failed = true;
       code = GetLastError();
     }
@@ -764,7 +764,7 @@ fn start(op &[]u8, program &[]u8, line &[]u8, opts Options) Result[Output, Proce
   mut job = 0usize;
   mut deadline = 0u64;
   if timed {
-    job = CreateJobObjectW(0usize as *u8, 0usize as *u16);
+    job = CreateJobObjectW(null, null);
     if job != 0usize and AssignProcessToJobObject(job, pi.hProcess) == 0i32 {
       CloseHandle(job);
       job = 0usize;

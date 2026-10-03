@@ -18,11 +18,15 @@ claim that these rule rather than describe.**
    type-starting token to `parsePrefix` — the *value* expression parser. No
    separate type grammar, no backtracking. ▸ **Forbids** a syntax that can only
    be disambiguated by knowing whether a type or a value is expected, and
-   **settles** that a new type form costs an arm in the value parser. The one
-   bit of position the parser carries is `ParseState.inrettype`, set while
+   **settles** that a new type form costs an arm in the value parser. Two bits
+   of position decide where a signature ends. `ParseState.inrettype`, set while
    `parseFnSig` reads a return type: a `{` there opens the body of the function
    being declared, so `&fn` is read as a signature alone and leaves the block to
-   its owner.
+   its owner. And `ParseState.inlist`, set inside a parenthesised or bracketed
+   list (parameters, arguments, a tuple, type arguments, an array literal) and
+   cleared inside a block: a comma after a signature's return type there
+   continues the list, so `(f &fn(u32) u32, x u32)` is two parameters, while
+   outside every list it adds a return type (`fn ceil(x i32) i32, i32`).
 2. **The lexer is line-blind.** It counts lines for diagnostics and nothing
    else: a block is delimited by braces and a statement ends at `;`, so
    indentation, line ends and columns carry no meaning to the grammar. ▸
@@ -755,7 +759,7 @@ numbers.
 | | `parseAddVariant`, `parseVariantTagPin` | joining a variant to its enum: the closed flags, the synthesized base link, the tag value written (an integer literal, which may be negative, kept whole in 64 bits; whether it fits the enum's type is type check's question) or assigned in sequence, and its name, bound in the enum's namespace while the node joins the module's list. A variant of an enum that *extends* another stays unassigned unless a value was written, because that enum's numbering continues from its base's last and the base is not resolved yet |
 | | `parseEnumExtensionMember` | what an enum extending another may not declare — a member of any kind, since a field or method every variant carries would have to reach its copies of the base's variants too, and a requirement declared there would need every copy to implement it; such a member belongs on the base, and comes along with the copies. Nor a discriminant: none is synthesized for such an enum either, its base's arriving with the fields name resolution splices in |
 | | `parseIsTagType`, `parseTagType` | `tag` recognized where a field's type is written and nowhere else, so it is not a reserved word |
-| | `parseFnSig`, `parseFnSigSettle` | parameters, `Self` inference, single or tuple return type. A `&fn` signature's parameter may be its type alone (an `anonName` parameter), and its lone names and `Self` inference wait for `parseFnSigSettle`, called once `parseAmper` or `parseFn` knows whether a body follows (section 4) |
+| | `parseFnSig`, `parseFnSigSettle` | parameters, `Self` inference, single or tuple return type; several return types separated by commas only outside every list (`ParseState.inlist`, section 1), a signature inside one returning several values parenthesising them. A `&fn` signature's parameter may be its type alone (an `anonName` parameter), and its lone names and `Self` inference wait for `parseFnSigSettle`, called once `parseAmper` or `parseFn` knows whether a body follows (section 4) |
 | | `parseVarDcl`, `parseThreadLocalAttr`, `parseFieldDclBody`, `parseConstDcl`, `parsePerm` | the declaration forms; a field's or a global's trailing `use` clause goes to `parseFoldClause`, and one on a local, a parameter or a static is `ErrorBadFold`. `@threadlocal` after the permission is `DclThreadLocal` on a module's global, the one caller passing `ParseMayThreadLocal` (`parseFnOrVar`, which also refuses one with no initial value unless `extern`, `ErrorThreadLocalInit`); `imm` with it is `ErrorThreadLocalImm`; on a local, a static, a parameter, a field, a module trait's global, after `fn` or a type's keyword, or before a global's permission it is `ErrorThreadLocalPlace`, reported and dropped. A field's node is built while the lexer is still on its name, both so a diagnostic points there and so an enum's body can decide between a field and a bare-name variant afterwards |
 | | `parseFoldClause` | `use *` with an optional `but` list, or a list of names each with an optional `as`; builds the clause on the field and an alias per listed name, bound by name resolution |
 | | `parseUseSibling`, `parseModUse`, `parseUseAdmits` | a `use` standing as a statement: in a type body it folds a sibling in, and at module scope (`parseGlobalStmts`) it folds an enum's variants or a submodule's names in, held on a `ModUseNode` — which of the two is known only once the source resolves. Both name their source and then share what follows it — every member by default, `*` refused as saying nothing more, a list with `as`, a block, or `but` |

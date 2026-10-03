@@ -121,6 +121,7 @@ enum NodeTags {
 
     // Expression nodes (having value type - or sometimes nullType)
     NilLitTag,      // 'nil' literal (of void type)
+    NullLitTag,     // 'null' literal (of the raw pointer type it is wanted as)
     ULitTag,        // Integer literal
     FLitTag,        // Float literal
     StringLitTag,   // String literal

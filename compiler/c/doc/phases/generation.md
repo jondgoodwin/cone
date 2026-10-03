@@ -226,8 +226,10 @@ answering both is what keeps the object and the include file from disagreeing:
   (`DclIncluded`, which the include-file generator writes before any code is
   generated: an importer holds values of such a type through a field or a
   signature, whether or not it can name it) — where the function is public, or the type holds an
-  expanded body (`typeHoldsExpanded`), which can reach a private method
-  through a receiver that name resolution never binds, or the function is the
+  expanded body (`typeHoldsExpanded`) or its module holds one anywhere
+  (`modHoldsExpanded`), which can reach a private method through a receiver
+  that name resolution never binds, a type's private members being its
+  module's, or the function is the
   type's `final` or `clone` (`fnIsTypeLifecycle`), which an importer's object
   calls wherever it drops or copies a value of the type, naming neither
   (`module_init_link` drops a package's type whose `final` is private), or,
@@ -1021,7 +1023,7 @@ jump leaves: a release (`dealiasRef`'s test) splits the block.
 
 `--llvmir` writes **two** files: `.preir` before the pass manager and `.ir`
 after. `--ir` is not an LLVM option at all — it dumps the Cone IR/AST.
-`--asm` adds a `.wat` or `.asm`. `--verify` runs `LLVMVerifyModule` and is off
+`--asm` adds a `.wat`, `.spvasm` or `.asm`. `--verify` runs `LLVMVerifyModule` and is off
 by default. `--debug` emits DWARF and drops optimization — it is the only
 switch here, with release as the default. Debug info covers only files,
 subprograms and each instruction's line and column, and the file name is hardcoded. A subprogram is attached only to a
@@ -1056,6 +1058,34 @@ vtables both objects build are defined in each, `linkonce_odr`, and merge at
 link: the scenario instantiates a generic function and a generic type in the
 package and in the program, at a type argument both use and at one only the
 program uses, and tests in the package a virtual reference the program built.
+
+**A SPIR-V triple emits a SPIR-V module, `.spv`, and only scalar code
+survives it.** `--triple=spirv64-unknown-unknown` is SPIR-V's OpenCL form
+(physical addressing, the `Kernel` capability) and
+`--triple=spirv1.6-unknown-vulkan1.3` its Vulkan form (logical addressing,
+`Shader`). `genlCreateMachine` initializes every target the LLVM build holds,
+so nothing in `conec` names SPIR-V but the file extension. Functions over
+numbers and structs, with calls, branches, loops, references to locals and
+module globals, come out as a module SPIR-V's validator accepts in its
+universal environment. What does not:
+
+- Every Cone pointer is LLVM address space 0, SPIR-V's `Function` storage
+  class, while SPIR-V's data layouts put globals in another (`G1`,
+  `CrossWorkgroup`, in the OpenCL form; `G10`, `Private`, in the Vulkan one).
+  So a global's address handed on as a plain pointer is a mistyped call or
+  bitcast, which `--verify` rejects: the source file's name in a failed
+  check's call makes indexing an array or a slice, and allocating, a module
+  the validator refuses; a string literal stops the OpenCL backend with
+  `LLVM ERROR` and crashes the Vulkan one.
+- A failed check calls conestd, which no GPU has; only `--wasm` traps instead.
+  An imported package's functions, `stdio`'s say, are left as imports.
+- The Vulkan form crashes LLVM's backend, in its pointer-cast legalization,
+  on a slice walked in a loop and on a region's allocation, and on a second
+  emission of the same module, so `--asm` with it crashes `conec`.
+- Nothing marks an entry point or its execution model, places a pointer in a
+  buffer's storage class, or reads a built-in such as the global invocation
+  id. Without an entry point the module is a library, carrying the `Linkage`
+  capability, which Vulkan's environment refuses.
 
 Also absent: closures with an environment — an anonymous `fn` is lifted to
 module scope and a `&fn` value is a bare function pointer with no capture

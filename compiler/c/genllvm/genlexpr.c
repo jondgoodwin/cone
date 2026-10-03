@@ -1989,6 +1989,8 @@ static LLVMValueRef genlTerm(GenState *gen, INode *termnode) {
     switch (termnode->tag) {
     case NilLitTag:
         return LLVMGetUndef(gen->emptyStructType);
+    case NullLitTag:
+        return LLVMConstPointerNull(genlType(gen, ((NullLitNode*)termnode)->vtype));
     case ULitTag:
     {
         // A literal holds its value in 64 bits, a negative one sign-extended

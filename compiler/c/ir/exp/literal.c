@@ -35,6 +35,88 @@ void nilLitPrint(NilLitNode *lit) {
     inodeFprint("nil");
 }
 
+// Create a new null literal node, its pointer type not known yet
+NullLitNode *newNullLitNode() {
+    NullLitNode *null;
+    newNode(null, NullLitNode, NullLitTag);
+    null->vtype = nullLitType;
+    return null;
+}
+
+// Clone null node. A template's 'null' has no type yet, and its instance's
+// finds one the same way, from where it is wanted.
+INode *cloneNullLitNode(CloneState *cstate, NullLitNode *lit) {
+    NullLitNode *newlit;
+    newlit = memAllocBlk(sizeof(NullLitNode));
+    memcpy(newlit, lit, sizeof(NullLitNode));
+    if (lit->vtype != nullLitType)
+        newlit->vtype = cloneNode(cstate, lit->vtype);
+    return (INode *)newlit;
+}
+
+// Serialize a null node
+void nullLitPrint(NullLitNode *lit) {
+    inodeFprint("null");
+}
+
+// Is this a 'null' whose pointer type is not known yet?
+int litIsUntypedNull(INode *node) {
+    return node->tag == NullLitTag && ((NullLitNode*)node)->vtype == nullLitType;
+}
+
+// Will an untyped 'null' coerce to this type? Only a raw pointer may be null:
+// a reference never is, and an Option's absence is 'None'.
+int litNullMatches(INode *node, INode *totype) {
+    return litIsUntypedNull(node) && itypeGetTypeDcl(totype)->tag == PtrTag;
+}
+
+// Give an untyped 'null' the raw pointer type it is wanted as. It is a literal
+// of that type from then on, generated as the pointer type's null constant, so
+// it may be anything a constant may be: a global's value, a field's or a
+// parameter's default. Wanted as anything other than a raw pointer, or where
+// nothing says which raw pointer type it is ('imm p = null'), it is refused, and
+// marked an error so that what uses it says nothing more.
+int litAdoptNullType(INode **nodep, INode *totype) {
+    if (!litIsUntypedNull(*nodep))
+        return 0;
+    NullLitNode *node = (NullLitNode*)*nodep;
+    if (totype == errorType) {
+        node->vtype = errorType;
+        return 1;
+    }
+    if (totype == unknownType || totype == noCareType) {
+        errorMsgNode((INode*)node, ErrorNullNotPtr,
+            "Nothing here says which raw pointer type 'null' is. Give it one where it is wanted, as in 'imm p *u8 = null'.");
+        node->vtype = errorType;
+        return 1;
+    }
+    INode *totypedcl = itypeGetTypeDcl(totype);
+    if (totypedcl->tag == PtrTag) {
+        node->vtype = totype;
+        return 1;
+    }
+    if (totypedcl != errorType)
+        errorMsgNode((INode*)node, ErrorNullNotPtr,
+            "'null' is a raw pointer, and %s is wanted here. Only a raw pointer type ('*T') has a null.",
+            itypeName(totype));
+    node->vtype = errorType;
+    return 1;
+}
+
+// Type check a 'null'. Wanted as a raw pointer type, it takes that type now.
+// With no expectation yet -- an argument to an overload set or an operator,
+// checked before its callee is chosen -- the coercion that follows gives it
+// one (iexpCoerce), and a 'null' whose value is not used has nothing to.
+// Any other expectation is judged by that coercion too, which says what was
+// wanted instead.
+void nullLitTypeCheck(TypeCheckState *pstate, NullLitNode *node, INode *expectType) {
+    if (node->vtype != nullLitType || expectType == NULL || expectType == unknownType)
+        return;
+    INode *nodep = (INode*)node;
+    if (expectType == noCareType || itypeGetTypeDcl(expectType)->tag == PtrTag)
+        litAdoptNullType(&nodep, expectType);
+}
+
 // Create a new unsigned literal node
 ULitNode *newFakeULitNode(uint64_t nbr, INode *type) {
     ULitNode *lit;
@@ -397,8 +479,9 @@ void slitTypeCheck(TypeCheckState *pstate, SLitNode *node) {
 }
 
 // A reinterpretation ('as') of a constant number to a number or pointer type is
-// a constant: '0usize as *u8' is the null pointer, known before anything runs.
-// The operand is a number literal, a named constant, or another such cast. This
+// a constant: '4096usize as *u8' is a fixed address, known before anything runs.
+// The operand is a number literal, a 'null', a named constant, or another such
+// cast. This
 // is answered from the tree as written, since a field's default is asked before
 // it is type checked. The target is found through name resolution's binding and
 // must be a number or a pointer: a struct target is reinterpreted through memory
@@ -416,7 +499,7 @@ static int litIsConstCast(CastNode *node) {
         return 0;
     }
     INode *exp = node->exp;
-    return exp->tag == ULitTag || exp->tag == FLitTag || nameUseNames(exp, ConstDclTag)
+    return exp->tag == ULitTag || exp->tag == FLitTag || exp->tag == NullLitTag || nameUseNames(exp, ConstDclTag)
         || (exp->tag == CastTag && litIsConstCast((CastNode*)exp));
 }
 
@@ -432,6 +515,7 @@ static int litIsConstCast(CastNode *node) {
 // literal, '&K' for 'const K = [1, 2, 3]' being '&[1, 2, 3]'.
 int litIsLiteral(INode* node) {
     return (node->tag == FLitTag || node->tag == ULitTag || node->tag == StringLitTag || node->tag == NilLitTag
+        || node->tag == NullLitTag
         || ((node->tag == BorrowTag || node->tag == ArrayBorrowTag)
             && borrowIsConstLit(((RefNode*)node)->vtexp))
         || (node->tag == ArrayLitTag && arrayLitIsLiteral((ArrayNode*)node))
