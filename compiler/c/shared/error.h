@@ -459,7 +459,7 @@ enum ErrorCode {
     ErrorLockAccess = 1248,     // A lock-managed reference read, written or lent without the borrow that takes its lock: '&mut *p', '&*p'
 
     // Lifetime bounds: '[T + 'a]', 'where T + 'a', '&<Trait + 'a' (ir/types/lifetime.h)
-    ErrorLifetimeBound = 1249,  // A lifetime bound not met or not built: a borrow that is not global given for a ''static' bound, a value holding a borrow not known to last ''a' coerced to '&<Trait + 'a', a bound on a generic type's parameter
+    ErrorLifetimeBound = 1249,  // A lifetime bound not met or not built: a borrow that is not global given for a ''static' bound, a value holding a borrow not known to last ''a' coerced to '&<Trait + 'a', a value holding a borrow that is not global made an owning virtual reference ('So[Trait]', bounded by ''static'), a bound on a generic type's parameter
 
     // Warnings
     WarnCode = 3000,

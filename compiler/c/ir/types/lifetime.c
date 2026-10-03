@@ -118,13 +118,19 @@ INode *lifeErased(INode *type) {
     {
         RefNode *ref = (RefNode *)type;
         INode *vtexp = lifeErased(ref->vtexp);
-        if (lifeErasedName(ref->lifename) == ref->lifename && vtexp == ref->vtexp && ref->bound == NULL)
+        if (lifeErasedName(ref->lifename) == ref->lifename && vtexp == ref->vtexp && ref->bound == NULL
+            && ref->scope == 0)
             return type;
         RefNode *copy = memAllocBlk(sizeof(RefNode));
         memcpy(copy, ref, sizeof(RefNode));
         copy->lifename = lifeErasedName(ref->lifename);
         copy->bound = NULL;
         copy->vtexp = vtexp;
+        // An argument inferred from a borrow carries the caller's band, which
+        // is no lifetime of the instance's: as a written type argument has
+        // none, it has none. What the instance's body does with a T is the
+        // loan walk's, which holds what a parameter lends as the caller's.
+        copy->scope = 0;
         return (INode *)copy;
     }
     case PtrTag:

@@ -2129,6 +2129,16 @@ static PathSet *pwValue(INode **nodep, int move) {
         // its value holds came from its operand ('case imm e Some' converts
         // the matched 'Option[&T]' to its 'Some[&T]'), of no struct's slot
         PathSet *holds = pwValue(&((CastNode *)node)->exp, flowCastCarries(node) ? move : 0);
+        // One into an owning virtual reference ('So[Trait]' from a 'So[H]')
+        // keeps its operand's value under a type that names no lifetime, so
+        // nothing after follows what it holds: it may hold only global
+        // borrows, Rust's 'Box<dyn Trait>' being 'dyn Trait + 'static'
+        // (lifetime.h, "Lifetime bounds")
+        if (pathLoans && (node->flags & FlagConvert) && flowCastCarries(node)) {
+            uint32_t loan = loanNotStaticIn(pwSig, holds);
+            if (loan)
+                loanNotBoxable(node, loan);
+        }
         return pwCarries(((IExpNode *)node)->vtype) ? pathSetUntagged(holds) : NULL;
     }
     case IsTag:

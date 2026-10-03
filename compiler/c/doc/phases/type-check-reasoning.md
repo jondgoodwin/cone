@@ -226,7 +226,8 @@ the receiver whole wherever the implementation carries any part of it, the
 cautious side. A
 lifetime is never instanced: a generic is instanced at its type arguments
 with every lifetime erased from them (`lifeErased`), a function type's
-promises excepted, and the instance's use keeps the arguments as written for
+promises excepted, and every band an argument inferred from a borrow carries
+(`RefNode.scope`), and the instance's use keeps the arguments as written for
 the lifetimes they name (`NameUseNode.lifeuse`). An invariant lifetime is the
 exception, kept and named by its place ("Invariant lifetimes: brands").
 

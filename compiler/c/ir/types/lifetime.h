@@ -119,7 +119,8 @@ LifeParms *newLifeParms();
 int lifeParmsDeclare(LifeParms *parms, Name *name, INode *at);
 
 // A copy of a type with no lifetime named in it, outside a function type's
-// signature: what a generic is instanced at, since a lifetime is never instanced
+// signature, and no band (RefNode.scope) on any reference in it: what a
+// generic is instanced at, since a lifetime is never instanced
 INode *lifeErased(INode *type);
 
 // Does a value of this type hold a borrow of the lifetime 'life' (NULL for the
@@ -264,6 +265,11 @@ char *lifeSigSpell(char *bufp, struct FnSigNode *sig);
 // vouches by its own bound, or with none its own lifetime
 // (lifeVirtOutlives). A parameter '&<Trait + 'static' takes only a value
 // holding global borrows.
+//
+// An owning virtual reference, 'So[Trait]', takes no bound: it names no
+// lifetime and carries no borrow, so it is bounded by ''static' (Rust's
+// 'Box<dyn Trait>'), and a value made one, wherever the conversion is, may
+// hold only global borrows (loanNotStaticIn, the loan walk's conversion).
 
 // Set once the parser has read a bound of ''static': until then no
 // signature bounds a lifetime by it (FnSigNode.lifestatic) and no call need
