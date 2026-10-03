@@ -646,8 +646,16 @@ void fnCallFinalizeArgs(FnCallNode *node) {
         // Make sure the type matches (and coerce as needed)
         // (but not for vref as self)
         if (!iexpCoerce(argsp, ((IExpNode*)*parmp)->vtype)
-            && !(cnt == node->args->used && (node->flags & FlagVDisp)))
-            errorMsgNode(*argsp, ErrorInvType, "Expression's type does not match declared parameter");
+            && !(cnt == node->args->used && (node->flags & FlagVDisp))) {
+            // A lock-managed reference lends nothing but through a borrow
+            INode *argtype = iexpGetTypeDcl(*argsp);
+            INode *parmtype = iexpGetTypeDcl(*parmp);
+            if (argtype->tag == RefTag && permIsLock(((RefNode*)argtype)->perm)
+                && parmtype->tag == RefTag && ((RefNode*)parmtype)->region == borrowRef)
+                permLockRefused(*argsp, ((RefNode*)argtype)->perm, "lend the value");
+            else
+                errorMsgNode(*argsp, ErrorInvType, "Expression's type does not match declared parameter");
+        }
         parmp++;
     }
     if (brands) {
@@ -1147,7 +1155,14 @@ int fnCallLowerMethod(TypeCheckState *pstate, FnCallNode *callnode) {
     }
 
     if (selected == NULL) {
-        if (!fnCallRefIndexWantsMut(callnode, foundnode, methsym, status)
+        // A lock-managed reference reaches its value through a borrow only,
+        // which a method's receiver is not made of
+        INode *objtype = iexpGetTypeDcl(obj);
+        if (objtype->tag == RefTag && permIsLock(((RefNode*)objtype)->perm)) {
+            permLockRefused(obj, ((RefNode*)objtype)->perm, "call a method on the value");
+            callnode->vtype = errorType;
+        }
+        else if (!fnCallRefIndexWantsMut(callnode, foundnode, methsym, status)
             && !fnCallBoolOperandWantsNumber(callnode, foundnode, status))
             fnCallNoCandidate((INode*)callnode, status, methsym, "method");
         return -1;
@@ -1676,6 +1691,7 @@ void fnCallOpAssgn(TypeCheckState *pstate, FnCallNode **nodep) {
     BlockNode *blk = newBlockNode();
     inodeLexCopy((INode*)blk, (INode*)callnode);
     blk->vtype = callnode->vtype;
+    blk->flags |= FlagKeepTemps;
     nodesAdd(&blk->stmts, (INode*)tmpvar);
     nodesAdd(&blk->stmts, (INode*)tmpassgn);
     *((INode**)nodep) = (INode*)blk;

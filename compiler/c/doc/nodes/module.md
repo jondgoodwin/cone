@@ -2568,7 +2568,11 @@ struct at the front of the `{region, permission, value}` layout: `init` the
 header `genlallocref` reaches from the new block, the others the header found
 from the value pointer by the value's offset in that layout
 (`genlRegionHeader`), so no region's or permission's size is assumed. A lock
-permission's `init`, the same shape, fills its own part of the block next.
+permission's `init`, the same shape, fills its own part of the block next,
+and its other methods, called as a borrow through the reference begins and
+ends, are [references](references.md)' "Lock permissions". A lock fits only a
+region counting its owners (`aliasRef` and `dealiasRef`), not `Move`, and
+declaring `ThreadSafe` exactly where the lock does (`refLockCheck`).
 
 **A region asks for the value's type record by the shape of its `alloc`.** An
 `alloc` taking `ty *TypeRecord` after the size is handed, at each allocation,
@@ -2634,8 +2638,8 @@ references out of arenas, pools and collections, reported at the program's own
 instantiation where it was reached through a generic's body; and, of what a
 traced region allocates, a value holding a borrow (`ErrorTracedBorrow`), an
 owning virtual reference (`ErrorTracedRefKind`), and a
-permission taking room, which would move the value off the place right after
-the header (`ErrorTracedPerm`). A traced object may hold `Rc` and `So`
+lock permission, whose lock would move the value off the place right after
+the header and whose guards no count would cover (`ErrorTracedPerm`). A traced object may hold `Rc` and `So`
 owners, which its finalizer releases, and a borrow or a raw pointer to a value
 holding traced references goes anywhere a borrow or a pointer may. Whether a
 type holds a traced reference is final only once every type it holds inline is

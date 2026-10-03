@@ -127,6 +127,15 @@ extern Name *integerTraitName;   // "Integer", the integer types, which a constr
 extern Name *pointerTraitName;   // "Pointer", the raw pointer types, which a constraint may ask for
 extern Name *sendableTraitName;  // "Sendable", a type whose values may cross to another thread, which a constraint may ask for
 
+// The built-in trait a lock permission declares, and the methods the compiler
+// calls on it as a borrow through a lock-managed reference begins and ends
+// (ir/types/permission.c)
+extern Name *lockPermTraitName;     // "LockPermission"
+extern Name *acquireMutMethodName;  // "acquireMut", taken for a mutable borrow
+extern Name *releaseMutMethodName;  // "releaseMut"
+extern Name *acquireReadMethodName; // "acquireRead", taken for a read-only borrow, where declared
+extern Name *releaseReadMethodName; // "releaseRead"
+
 typedef struct VarDclNode VarDclNode;
 
 // Spell the linker symbol of a declaring node (fn or global variable) into buf,

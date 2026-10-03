@@ -2359,6 +2359,8 @@ static LLVMValueRef genlTerm(GenState *gen, INode *termnode) {
     case CastTag:
     {
         CastNode *node = (CastNode*)termnode;
+        if (node->flags & FlagLockAcquire)
+            return genlLockAcquire(gen, genlExpr(gen, node->exp), (RefNode *)itypeGetTypeDcl(node->vtype), termnode);
         if (node->flags & FlagConvert)
             return genlConvert(gen, node->exp, node->vtype);
         return genlRecast(gen, node->exp, node->vtype);

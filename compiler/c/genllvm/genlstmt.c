@@ -151,12 +151,16 @@ LLVMValueRef genlBlock(GenState *gen, BlockNode *blk) {
     // after a terminator is invalid IR. It is reachable in an 'each' loop block,
     // whose synthesized step sits behind the jump the reader wrote last.
     int terminated = 0;
+    // An operator's rewrite keeps every statement's temporaries to its end
+    // (FlagKeepTemps)
+    int keeptemps = blk->flags & FlagKeepTemps;
+    uint32_t blocktempmark = gen->tempcnt;
     for (nodesFor(blk->stmts, cnt, nodesp)) {
         // The temporaries a statement makes die at its end, newest first, after
         // its value and before the locals a scope's end releases. A jump
         // finalizes them before it leaves (genlBreak, genlReturn), and nothing
         // follows it to finalize them again.
-        uint32_t tempmark = gen->tempcnt;
+        uint32_t tempmark = keeptemps ? blocktempmark : gen->tempcnt;
         int jumped = 0;
         switch ((*nodesp)->tag) {
         case ContinueTag: {
@@ -212,7 +216,7 @@ LLVMValueRef genlBlock(GenState *gen, BlockNode *blk) {
         }
         if (terminated || jumped)
             gen->tempcnt = tempmark;
-        else
+        else if (!keeptemps || cnt == 1)
             genlTempsEnd(gen, tempmark);
         if (terminated)
             break;

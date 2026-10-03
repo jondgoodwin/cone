@@ -91,6 +91,11 @@ Name *atomicValueTraitName;
 Name *integerTraitName;
 Name *pointerTraitName;
 Name *sendableTraitName;
+Name *lockPermTraitName;
+Name *acquireMutMethodName;
+Name *releaseMutMethodName;
+Name *acquireReadMethodName;
+Name *releaseReadMethodName;
 
 // ---- Identifiers -----------------------------------------------------------
 //

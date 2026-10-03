@@ -1,7 +1,8 @@
 // The sync package: what threads share safely, where it needs the OS. It
 // holds 'Arc', the region whose owners of one value several threads may
 // hold; the futex, the one way a thread sleeps until another wakes it; the
-// locks built on the futex: Mutex, RwLock, Condvar and Once; and the
+// locks built on the futex: Mutex, Rwlock, Condvar and Once, the first two
+// also lock permissions, 'Arc[Mutex, T]'; and the
 // channel, a pipe of values from any number of threads to one, unbounded or
 // bounded, or from one thread to one. Windows only for now: the futex's
 // three functions, a yield, a clock and a flush of every processor's stores
@@ -15,7 +16,8 @@
 //   Arc            Rc whose count is atomic: 'new Arc[imm, T](...)'  (SHARED OWNERS)
 //   futexWait, futexWake, futexWakeAll                           (THE FUTEX)
 //   Mutex          one thread at a time                          (THE LOCKS)
-//   RwLock         many readers, or one writer
+//   Rwlock         many readers, or one writer
+//   Arc[Mutex, T], Arc[Rwlock, T]  a borrow takes the lock      (LOCK PERMISSIONS)
 //   Condvar        sleep until another thread says something changed
 //   Once           a function run exactly once, however many threads ask
 //   Channel[T]     values sent by many threads, or one, taken by one
@@ -49,9 +51,9 @@
 //   wake it: the caller keeps that true. It is 32 bits because Linux's futex
 //   is. Waiting and waking reach only the threads of this process.
 //
-// THE LOCKS: Mutex, RwLock, Condvar and Once. Each is built on the futex
+// THE LOCKS: Mutex, Rwlock, Condvar and Once. Each is built on the futex
 // alone, not on the OS's own locks, as Rust's standard library has built its
-// own since 2022: each is one Atomic[u32] (RwLock, two), holds no OS handle,
+// own since 2022: each is one Atomic[u32] (Rwlock, two), holds no OS handle,
 // needs no finalizer, and may be moved while nobody holds or waits on it.
 // Their state machines are Rust's, cited at each below. Each is made unlocked
 // by 'make()', and every operation takes it by any reference, even 'imm', as
@@ -66,15 +68,40 @@
 //     lock.unlock();
 //   }
 //
-// THESE LOCKS ARE UNCHECKED. A lock here is a plain lock, with explicit
-// 'lock()' and 'unlock()', guarding nothing the compiler can see: WHAT IT
-// PROTECTS IS THE PROGRAM'S TO KEEP. Nothing stops a thread reaching the
-// data without taking the lock, or keeping a reference to it past the unlock,
-// or forgetting to unlock, or unlocking a lock another thread holds. The
-// compiler's lock permissions -- a lock in the permission slot, 'Arc[mutex,
-// T]', where borrowing through it takes the lock and the borrow's end releases
-// it (the reference manual's lock-permission page) -- are to come, and will
-// sit on these types. Until then:
+// LOCK PERMISSIONS. Mutex and Rwlock are lock permissions too: written in
+// the permission slot of an 'Arc', the lock lives in each allocation's header
+// beside the count, and the compiler takes it and gives it back, so nothing
+// reaches the value unlocked:
+//
+//   alias Counter = Arc[Mutex, Count];
+//   imm c = new Counter(0u64);   // allocated with its Mutex, unlocked
+//   {
+//     imm n = &mut *c;           // takes the lock, waiting while another holds it
+//     n.total += 1u64;
+//   }                            // n's block ends: the lock is given back
+//   (&mut *c).total += 1u64;     // taken and given back within the statement
+//
+// The 'Arc' itself gives no access to its value: no field is read or written,
+// and no method called, except through a borrow. A borrow that may write
+// ('&mut') takes the lock alone; a read-only one ('&') takes a Mutex's one
+// lock, or a read lock of an Rwlock, which other readers share. The lock is
+// given back where the borrow's guard dies: at the end of the statement, or
+// of the block whose local's initializer borrowed it, on every way out of
+// that block. Copies of the 'Arc' cross threads as 'Arc[imm, T]' does, where
+// T may. Nothing prevents a deadlock: a thread borrowing through a Mutex it
+// already holds through another borrow sleeps forever. Core's
+// 'Rc[Rwcell, T]' is the same within one thread, where a conflicting borrow
+// panics instead of waiting. The reference manual's lock-permission page is
+// the guide. A Condvar waits on a plain Mutex only: a lock permission's lock
+// is in the header, which no program names, so no wait is offered while one
+// is held.
+//
+// PLAIN LOCKS ARE UNCHECKED. A Mutex or Rwlock held as a value is a plain
+// lock, with explicit 'lock()' and 'unlock()', guarding nothing the compiler
+// can see: WHAT IT PROTECTS IS THE PROGRAM'S TO KEEP. Nothing stops a thread
+// reaching the data without taking the lock, or keeping a reference to it
+// past the unlock, or forgetting to unlock, or unlocking a lock another thread
+// holds. So:
 //
 // - Every 'lock' is paired with one 'unlock' on the same thread, and the data
 //   is reached only between them.
@@ -96,14 +123,14 @@
 //   m.unlock()          give it up, waking a thread waiting for it
 //   m.tryLock()         take it if nobody holds it: whether it was taken
 //
-// RwLock: any number of readers at once, or one writer alone. A reader and a
+// Rwlock: any number of readers at once, or one writer alone. A reader and a
 // writer are only what the program calls them: a read lock is shared, and
 // the program keeps to reading while it holds one. A waiting writer is
 // preferred: while one waits, new readers wait too, so a stream of readers
 // cannot starve it. At most 2^30 - 2 readers may hold it at once; one more
 // ends the program.
 //
-//   RwLock.make()       an unlocked RwLock
+//   Rwlock.make()       an unlocked Rwlock
 //   l.readLock()  l.readUnlock()  l.tryReadLock()
 //   l.writeLock()  l.writeUnlock()  l.tryWriteLock()
 //
@@ -436,12 +463,21 @@ const mutexUnlocked = 0u32;
 const mutexLocked = 1u32;
 const mutexContended = 2u32;
 
-// One thread at a time: a plain, unchecked lock (see the package's header)
-pub struct Mutex is Move {
+// One thread at a time: a plain, unchecked lock held as a value, or a lock
+// permission, 'Arc[Mutex, T]', which the compiler takes and gives back (see
+// the package's header)
+pub struct Mutex is Move, LockPermission, ThreadSafe {
   state Atomic[u32];
 
   // An unlocked Mutex
-  pub fn make() Mutex {new Mutex(Atomic[u32].of(mutexUnlocked));}
+  pub fn make() Mutex {new Mutex(state: Atomic[u32].of(mutexUnlocked));}
+
+  // As a lock permission: unlocked in a new allocation's header, and taken by
+  // every borrow through the reference, read-only or not, since a Mutex has
+  // one lock. Called by the compiler alone
+  fn init(self &new) inline {*self = new Mutex(state: Atomic[u32].of(mutexUnlocked));}
+  fn acquireMut(self &opaq) inline {self.lock();}
+  fn releaseMut(self &opaq) inline {self.unlock();}
 
   // The state word, as core's mem operations reach it
   fn word(self &opaq) *u32 {&(*(self as *Mutex)).state as *u32;}
@@ -518,7 +554,7 @@ pub struct Mutex is Move {
 }
 
 // ---------------------------------------------------------------------------
-// RwLock: Rust's futex read-write lock (library/std/src/sys/sync/rwlock/
+// Rwlock: Rust's futex read-write lock (library/std/src/sys/sync/rwlock/
 // futex.rs), without its 'downgrade', which this has not taken.
 // ---------------------------------------------------------------------------
 
@@ -544,18 +580,31 @@ fn rwIsReadLockable(s u32) Bool {
   (s & rwMask) < rwMaxReaders and !rwHasReadersWaiting(s) and !rwHasWritersWaiting(s);
 }
 
-// Many readers at once, or one writer alone: a plain, unchecked lock (see the
-// package's header). Two words: the state, which readers sleep on, and a
-// counter bumped for each wake of a writer, which writers sleep on.
-pub struct RwLock is Move {
+// Many readers at once, or one writer alone: a plain, unchecked lock held as
+// a value, or a lock permission, 'Arc[Rwlock, T]', which the compiler takes
+// and gives back (see the package's header). Two words: the state, which
+// readers sleep on, and a counter bumped for each wake of a writer, which
+// writers sleep on.
+pub struct Rwlock is Move, LockPermission, ThreadSafe {
   state Atomic[u32];
   writerNotify Atomic[u32];
 
-  // An unlocked RwLock
-  pub fn make() RwLock {new RwLock(Atomic[u32].of(0u32), Atomic[u32].of(0u32));}
+  // An unlocked Rwlock
+  pub fn make() Rwlock {new Rwlock(state: Atomic[u32].of(0u32), writerNotify: Atomic[u32].of(0u32));}
 
-  fn word(self &opaq) *u32 {&(*(self as *RwLock)).state as *u32;}
-  fn notifyWord(self &opaq) *u32 {&(*(self as *RwLock)).writerNotify as *u32;}
+  // As a lock permission: unlocked in a new allocation's header; a borrow
+  // that may write takes the write lock, a read-only one a read lock. Called
+  // by the compiler alone
+  fn init(self &new) inline {
+    *self = new Rwlock(state: Atomic[u32].of(0u32), writerNotify: Atomic[u32].of(0u32));
+  }
+  fn acquireMut(self &opaq) inline {self.writeLock();}
+  fn releaseMut(self &opaq) inline {self.writeUnlock();}
+  fn acquireRead(self &opaq) inline {self.readLock();}
+  fn releaseRead(self &opaq) inline {self.readUnlock();}
+
+  fn word(self &opaq) *u32 {&(*(self as *Rwlock)).state as *u32;}
+  fn notifyWord(self &opaq) *u32 {&(*(self as *Rwlock)).writerNotify as *u32;}
 
   // Take a read lock if a reader may now: whether it was taken
   pub fn tryReadLock(self &opaq) Bool {
@@ -598,7 +647,7 @@ pub struct RwLock is Move {
         continue;
       }
       if (s & rwMask) == rwMaxReaders {
-        die("sync: RwLock.readLock with too many readers holding it\n");
+        die("sync: Rwlock.readLock with too many readers holding it\n");
       }
       // Say that a reader sleeps before sleeping
       if !rwHasReadersWaiting(s) {
@@ -616,7 +665,7 @@ pub struct RwLock is Move {
   pub fn readUnlock(self &opaq) {
     imm was = mem.atomicSub[u32](self.word(), rwReadLocked, MemOrder.Release[]);
     if rwIsUnlocked(was) or rwIsWriteLocked(was) {
-      die("sync: RwLock.readUnlock of a RwLock no reader holds\n");
+      die("sync: Rwlock.readUnlock of a Rwlock no reader holds\n");
     }
     imm s = was - rwReadLocked;
     if rwIsUnlocked(s) and rwHasWritersWaiting(s) {
@@ -687,7 +736,7 @@ pub struct RwLock is Move {
   pub fn writeUnlock(self &opaq) {
     imm was = mem.atomicSub[u32](self.word(), rwWriteLocked, MemOrder.Release[]);
     if !rwIsWriteLocked(was) {
-      die("sync: RwLock.writeUnlock of a RwLock no writer holds\n");
+      die("sync: Rwlock.writeUnlock of a Rwlock no writer holds\n");
     }
     imm s = was - rwWriteLocked;
     if rwHasWritersWaiting(s) or rwHasReadersWaiting(s) {

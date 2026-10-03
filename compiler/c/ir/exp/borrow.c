@@ -57,13 +57,18 @@ static int borrowRefusesConst(INode *place) {
 // Inject a typed, borrowed node on some node (expected to be an lval)
 void borrowMutRef(INode **nodep, INode* type, INode *perm) {
     INode *node = *nodep;
-    // Rather than borrow from a deref, just return the ptr node we are de-reffing
+    // Rather than borrow from a deref, just return the ptr node we are de-reffing.
+    // Not through a lock-managed reference: only a borrow written out takes its
+    // lock, so a method is not called on its value, nor an operator applied.
     if (node->tag == DerefTag) {
         StarNode *derefnode = (StarNode *)node;
+        INode *reftype = iexpGetTypeDcl(derefnode->vtexp);
+        if (reftype->tag == RefTag && permIsLock(((RefNode*)reftype)->perm))
+            permLockRefused(node, ((RefNode*)reftype)->perm, "borrow implicitly");
         *nodep = derefnode->vtexp;
         return;
     }
-  
+
     if (iexpIsLvalError(node) == 0) {
         errorMsgNode(node, ErrorInvType, "Auto-borrowing can only be done on an lval");
     }
@@ -75,6 +80,10 @@ void borrowMutRef(INode **nodep, INode* type, INode *perm) {
     // A constant is refused as a temporary; only a mutable borrow of one is
     // refused below, as a borrow of something not mutable
     int refused = permMatches(perm, (INode*)immPerm) && borrowRefusesConst(node);
+    if (!refused && permIsLock(lvalperm)) {
+        permLockRefused(node, lvalperm, "borrow implicitly");
+        refused = 1;
+    }
     if (!refused && !permMatches(perm, lvalperm)) {
         if (lvalvar && lvalvar->tag == VarDclTag)
             errorMsgNode((INode *)node, ErrorBadPerm, "Cannot borrow a mutable reference to `%s`, which is not mutable",
@@ -374,6 +383,72 @@ int borrowConstLitCoerce(INode *from, INode *totypedcl) {
     return 1;
 }
 
+// A borrow of a place reached through a lock-managed reference, 'Arc[Mutex,
+// T]': '&mut *p', '&*p', '&mut p.x', '&mut p[i]'. The reference itself reaches
+// nothing (permGetFlags), so the borrow reads through a guard instead: 'p'
+// becomes a conversion (FlagLockAcquire) to a reference of the same region
+// and value, whose permission says which lock it holds (permHeld) -- the
+// mutable one for a borrow that may write ('&mut', '&uni', '&mut1'), the read
+// one otherwise, where the lock has one. Generation takes the lock as it makes
+// the guard (genlLockAcquire); the guard is a new owner of the value, a copy
+// of 'p' (flow counts it, or moves a temporary 'p' in), so the value outlives
+// it whatever becomes of 'p'. It is a temporary, so it dies, giving the lock
+// back before its owner goes (genlRegionDealiasPart), at the end of the
+// statement, or of the block where a local's initializer extends it, on
+// every path out; and the borrow is a borrow of it, which the lifetime
+// checks and the loan walk keep from being used after it dies. Only the
+// reference nearest the borrow is locked: a place reached through another
+// lock-managed reference before it is a read through that one, refused.
+// Answer whether the borrow is now through a guard.
+static int borrowLockPlace(TypeCheckState *pstate, RefNode *node) {
+    INode **placep = &node->vtexp;
+    // The inner link of an index chain, '&mut p[i]', borrows the reference's
+    // value, as the dereference injected below for any other reference would
+    INode *exptype = iexpGetTypeDcl(*placep);
+    if ((node->flags & FlagSuffix) && exptype->tag == RefTag && permIsLock(((RefNode*)exptype)->perm)) {
+        StarNode *deref = newStarNode(DerefTag);
+        inodeLexCopy((INode*)deref, *placep);
+        deref->vtexp = *placep;
+        deref->vtype = ((RefNode*)exptype)->vtexp;
+        *placep = (INode*)deref;
+    }
+    while (1) {
+        INode *place = *placep;
+        INode **refp;
+        switch (place->tag) {
+        case DerefTag:
+            refp = &((StarNode*)place)->vtexp;
+            break;
+        case FldAccessTag:
+        case ArrIndexTag:
+            refp = &((FnCallNode*)place)->objfn;
+            break;
+        default:
+            return 0;
+        }
+        RefNode *reftype = (RefNode*)iexpGetTypeDcl(*refp);
+        if (reftype->tag == RefTag && permIsLock(reftype->perm)) {
+            StructNode *lock = permLockOf(reftype->perm);
+            int kind = node->perm != unknownType && isTypeNode(node->perm)
+                && (permGetFlags(node->perm) & MayWrite) ? LockHeldMut : LockHeldRead;
+            RefNode *guardtype = newRefNodeFull(RefTag, *refp, reftype->region,
+                newPermUseNode(permHeld(lock, kind)), reftype->vtexp);
+            inodeTypeCheckAny(pstate, (INode**)&guardtype);
+            CastNode *guard = newConvCastNode(*refp, (INode*)guardtype);
+            inodeLexCopy((INode*)guard, *refp);
+            guard->flags |= FlagLockAcquire;
+            *refp = (INode*)guard;
+            return 1;
+        }
+        // A place reached through any other reference, or a pointer, is
+        // wherever that points
+        if (reftype->tag == RefTag || reftype->tag == ArrayRefTag || reftype->tag == VirtRefTag
+            || reftype->tag == PtrTag)
+            return 0;
+        placep = refp;
+    }
+}
+
 uint16_t borrowTempScope(TypeCheckState *pstate) {
     return (uint16_t)pstate->scope;
 }
@@ -404,6 +479,9 @@ void borrowTypeCheck(TypeCheckState *pstate, RefNode **nodep) {
     // they compute (litFoldConst), so '&[R | G, B]' is one.
     if (node->vtexp->tag == ArrayLitTag)
         litFoldConst(&node->vtexp);
+    // A borrow through a lock-managed reference reads through the guard that
+    // takes its lock, a temporary, which the rule below extends like any other
+    borrowLockPlace(pstate, node);
     // A place rooted in a temporary, borrowed in a local's initializer, may be
     // one Rust's rule extends to the end of the block: the temporary becomes a
     // hidden local of the block, kept if the borrow turns out to extend it
@@ -476,6 +554,9 @@ void borrowTypeCheck(TypeCheckState *pstate, RefNode **nodep) {
         // lives no longer than the block it is made in (borrowTempScope).
         lvalperm = (INode*)uniPerm;
         INode *lvalvar = iexpGetLvalInfo(lval, &lvalperm, &scope);
+        // So is a lock's guard (borrowLockPlace) where no declaration
+        // extended it: it dies at the statement's end, giving the lock back,
+        // and the loan walk refuses the borrow used after that
         if (lvalvar == NULL && borrowTempRoot(&node->vtexp) != NULL)
             scope = borrowTempScope(pstate);
         // Refused once; the reference is still typed, so its uses check quietly

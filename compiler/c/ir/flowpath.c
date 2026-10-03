@@ -1751,12 +1751,16 @@ static PathSet *pwStmts(BlockNode *blk, int move) {
     PathSet *value = NULL;
     INode **nodesp;
     uint32_t cnt;
+    // An operator's rewrite keeps every statement's temporaries to its end, as
+    // generation does (FlagKeepTemps)
+    int keeptemps = blk->flags & FlagKeepTemps;
+    uint32_t blocktempmark = ntemps;
     for (nodesFor(blk->stmts, cnt, nodesp)) {
         if (dead)
             break;
         // The temporaries a statement makes die at its end, a value it hands
         // on still carrying what it borrowed of them
-        uint32_t tempmark = ntemps;
+        uint32_t tempmark = keeptemps ? blocktempmark : ntemps;
         switch ((*nodesp)->tag) {
         case VarDclTag:
             pwVarDcl((VarDclNode *)*nodesp);
@@ -1818,7 +1822,7 @@ static PathSet *pwStmts(BlockNode *blk, int move) {
         }
         if (dead)
             ntemps = tempmark;
-        else
+        else if (!keeptemps || cnt == 1)
             pwTempsEnd(tempmark, NULL);
     }
     return value;

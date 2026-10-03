@@ -320,6 +320,7 @@ static void contentsLowerEntries(TypeCheckState *pstate, FnCallNode **nodep) {
 
     BlockNode *blk = newBlockNode();
     inodeLexCopy((INode*)blk, (INode*)node);
+    blk->flags |= FlagKeepTemps;
     VarDclNode *recv = contentsVar(tempName, unknownType, immPerm, lval, (uint16_t)(pstate->scope + 1), (INode*)node);
     nodesAdd(&blk->stmts, (INode*)recv);
 

@@ -954,6 +954,42 @@ static LLVMValueRef genlRegionCall(GenState *gen, FnDclNode *meth, LLVMValueRef 
     return genlFnCallInternal(gen, SimpleDispatch, (INode*)meth, 1, &header, NULL);
 }
 
+// A lock-managed allocation keeps its lock in the header, after the region's
+// part ({region, lock, value}). A guard's permission says which of the lock's
+// locks it holds (permHeld), and the lock's method taking or giving back that
+// one is called with the lock's address: 'acquireMut' or 'acquireRead' as the
+// guard is made, 'releaseMut' or 'releaseRead' as it goes. An acquiring
+// method that also takes a file and a line is handed where the borrow is
+// ('site'), for a lock that refuses a borrow by a panic to name it.
+static void genlLockCall(GenState *gen, LLVMValueRef ref, RefNode *guardtype, int acquire, INode *site) {
+    PermNode *held = (PermNode *)itypeGetTypeDcl(guardtype->perm);
+    Name *name = held->held == LockHeldMut
+        ? (acquire ? acquireMutMethodName : releaseMutMethodName)
+        : (acquire ? acquireReadMethodName : releaseReadMethodName);
+    INode *meth = iNsTypeFindFnField((INsTypeNode *)held->lock, name);
+    if (meth == NULL || meth->tag != FnDclTag)
+        errorExit(ExitGen, "Internal error: lock permission %s has no %s, which lockPermCheck requires",
+            &held->lock->namesym->namestr, &name->namestr);
+    genlRefTypeSetup(gen, guardtype);
+    LLVMValueRef header = genlRegionHeader(gen, ref, guardtype);
+    LLVMValueRef args[3];
+    uint32_t nargs = 1;
+    args[0] = LLVMBuildStructGEP2(gen->builder, guardtype->typeinfo->structype, header, PermField, "lock");
+    FnSigNode *sig = (FnSigNode *)itypeGetTypeDcl(((FnDclNode *)meth)->vtype);
+    if (acquire && site && sig->parms->used == 3) {
+        size_t len;
+        char *file = genlSrcFileName(site, &len);
+        args[nargs++] = genlSrcFileSlice(gen, file, len);
+        args[nargs++] = LLVMConstInt(LLVMInt32TypeInContext(gen->context), site->linenbr, 0);
+    }
+    genlFnCallInternal(gen, SimpleDispatch, meth, nargs, args, NULL);
+}
+
+LLVMValueRef genlLockAcquire(GenState *gen, LLVMValueRef ref, RefNode *guardtype, INode *site) {
+    genlLockCall(gen, ref, guardtype, 1, site);
+    return ref;
+}
+
 // A path from a value inwards to a part of it that was moved out: each step is
 // the node that took it -- an element index or a dereference, never a field
 // access -- outermost last, so steps[0] is the first step inside the value.
@@ -991,6 +1027,10 @@ static void genlRegionDeath(GenState *gen, LLVMValueRef ref, LLVMValueRef valptr
 // to free. 'paths' (NULL for a whole value) are the parts moved out of what it
 // points at, starting at 'depth'.
 static void genlRegionDealiasPart(GenState *gen, LLVMValueRef ref, RefNode *refnode, MovedPath *paths, int npaths, int depth) {
+    // A guard gives its lock back before it goes, while its owner still keeps
+    // the header alive
+    if (permHeldKind(refnode->perm))
+        genlLockCall(gen, ref, refnode, 0, NULL);
     if (!regionReleaseActs(refnode->region))
         return;
     FnDclNode *dealiasmeth = regionMethod(refnode->region, dealiasRefMethodName);

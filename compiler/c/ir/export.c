@@ -92,7 +92,9 @@ static int modHoldsExpanded(ModuleNode *mod) {
 // region's 'mark' and 'writeBarrier'. A value of the type calls the first two
 // wherever it is dropped or copied, and a reference into the region calls the
 // others wherever it is allocated, copied, dropped, traced or stored, which
-// names none of them
+// names none of them; and those it calls on a lock permission, 'init' where an
+// allocation holds the lock and 'acquireMut', 'releaseMut', 'acquireRead' and
+// 'releaseRead' wherever a borrow through a reference holding it begins and ends
 int fnIsTypeLifecycle(INode *dclnode) {
     if (dclnode->tag != FnDclTag)
         return 0;
@@ -104,6 +106,10 @@ int fnIsTypeLifecycle(INode *dclnode) {
         || fn->overloadsym == finalName || fn->overloadsym == cloneName)
         return 1;
     Name *name = fn->namesym;
+    if (structDeclaresTrait((StructNode*)owner, lockPermTrait)
+        && (name == initMethodName || name == acquireMutMethodName || name == releaseMutMethodName
+            || name == acquireReadMethodName || name == releaseReadMethodName))
+        return 1;
     return regionIsRegionRef(owner)
         && (name == allocMethodName || name == initMethodName || name == aliasRefMethodName
             || name == dealiasRefMethodName || name == freeMethodName || name == markMethodName

@@ -227,6 +227,11 @@ void nametblInit() {
     integerTraitName = nametblFind("Integer", 7);
     pointerTraitName = nametblFind("Pointer", 7);
     sendableTraitName = nametblFind("Sendable", 8);
+    lockPermTraitName = nametblFind("LockPermission", 14);
+    acquireMutMethodName = nametblFind("acquireMut", 10);
+    releaseMutMethodName = nametblFind("releaseMut", 10);
+    acquireReadMethodName = nametblFind("acquireRead", 11);
+    releaseReadMethodName = nametblFind("releaseRead", 11);
 }
 
 

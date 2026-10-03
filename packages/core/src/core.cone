@@ -153,6 +153,43 @@ pub struct Rc is RegionRef {
   fn free(self &uni Rc) inline {libc.free(self as *u8);}
 }
 
+// 'Rwcell', the lock permission for owners on one thread: 'Rc[Rwcell, T]'.
+// A lock permission is a struct declaring the built-in trait
+// 'LockPermission', written in a managed reference's permission slot; its
+// value, the lock, is kept in each allocation's header after the region's
+// part, and the reference reaches its value only by a borrow through it,
+// '&mut *r' or '&*r', which takes the lock for as long as the borrow lasts.
+// The compiler calls 'init' on the lock as the allocation is made,
+// 'acquireMut' as a borrow that may write begins and 'releaseMut' as it
+// ends, and 'acquireRead' and 'releaseRead' for a read-only one; an
+// acquiring method taking a file and a line is handed the borrow's. Rwcell's
+// lock is a count of the borrows holding it: several read-only ones, or one
+// that may write, as the sync package's Rwlock allows across threads. On one
+// thread a borrow that conflicts with one still held could never be given
+// it, since the holder is the thread itself, so it panics instead of waiting.
+// It does not declare 'ThreadSafe', so it fits only a region whose owners
+// stay on one thread.
+pub struct Rwcell is LockPermission {
+  // 0 free, n > 0 held by n read-only borrows, -1 by one that may write
+  borrows isize;
+  fn init(self &new) inline {*self = new Rwcell(0isize);}
+  // The acquiring methods are handed where the borrow is, which the panic names
+  fn acquireMut(self &uni Rwcell, file &[]u8, line u32) inline {
+    if borrows != 0isize {
+      panic("Rwcell: a borrow that may write, while another borrow holds the lock", file, line);
+    }
+    borrows = -1isize;
+  }
+  fn releaseMut(self &uni Rwcell) inline {borrows = 0isize;}
+  fn acquireRead(self &uni Rwcell, file &[]u8, line u32) inline {
+    if borrows < 0isize {
+      panic("Rwcell: a read-only borrow, while a borrow that may write holds the lock", file, line);
+    }
+    borrows = borrows + 1isize;
+  }
+  fn releaseRead(self &uni Rwcell) inline {borrows = borrows - 1isize;}
+}
+
 // A type's record: what only the compiler knows about a value's type, for a
 // region that must act on values whose types it cannot name. The compiler
 // builds one constant record per type ('mem.typeRecord[T]()' is its address),

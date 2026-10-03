@@ -536,6 +536,13 @@ What follows from that:
   wider header or a permission with state moves the value and the header with
   it. The optimizer folds the byte step and the region's field GEP into one
   constant offset: for `Rc` the same address the count has always had.
+- **A lock permission's lock is the header's `PermField`.** A borrow through
+  `Arc[Mutex, T]` calls the lock's acquiring method on it as its guard is made
+  (`genlLockAcquire`), and the guard's release calls the giving-back one first
+  (`genlRegionDealiasPart`), both reaching it from the value pointer as a region
+  method reaches the header ([references](../nodes/references.md), "Lock
+  permissions"). A guard's type lays its permission out as the lock
+  (`genlType`'s `PermTag` arm), so its header is the lock-managed one's.
 - **An owning virtual reference is the fat `{ptr, ptr}` value, and its concrete
   type is read from the vtable's last slot.** `genlRefPtr`, at the entry of
   `genlRegionDealias` and `genlRegionAlias`, takes word 0, the object, so every
@@ -1014,7 +1021,7 @@ it pushed, newest first, and pops them (`genlTempsEnd`), each as a local dies
 
 | Part | Where it ends |
 | --- | --- |
-| a statement | `genlBlock`, after the statement; for a `blockret`, and an inlined body's one `return`, after its value and before the block's `dealias` |
+| a statement | `genlBlock`, after the statement; for a `blockret`, and an inlined body's one `return`, after its value and before the block's `dealias`. In a block flagged `FlagKeepTemps`, an operator's rewrite ([Flow](flow.md), "Temporaries"), after its last statement only |
 | an `if` or `elif` condition, and so a `while`'s | `genlIf`, once the condition is computed, before the branch |
 | the right operand of `and` or `or` | `genlLogic`, before the branch to the phi |
 | an array's repeated value generated in a loop | `genlArrayRun`, each time round, after the element's store |

@@ -13,59 +13,198 @@
 
     <div class="text">
 
-	<p style="margin-left: 40px;"><i>No lock permission support exists. The locks these
-		permissions are to be built on do: the <span class="pre">sync</span> package's
-		<span class="pre">Mutex</span> and <span class="pre">RwLock</span>, with explicit, unchecked
-		lock and unlock (<a href="refconc.html#locks">Concurrency</a>).</i></p>
-	
+	<p style="margin-left: 40px;"><i>Note: Three lock permissions are implemented:
+		<span class="pre">Mutex</span> and <span class="pre">Rwlock</span>, the
+		<span class="pre">sync</span> package's, on <span class="pre">Arc</span>, and
+		<span class="pre">Rwcell</span>, core's, on <span class="pre">Rc</span>. Not implemented:
+		a borrow that tries the lock and gives up rather than waiting, a time limit on the wait,
+		taking the locks of several values at once, a lock on a traced region
+		(<span class="pre">Gc</span>) or behind a virtual reference, and anything preventing a
+		deadlock, which Cone does not do.</i></p>
+
 	<p>Earlier we talked about the static permissions. In addition to these are lock permissions,
 		which can only be used on region-managed references.
 		Unlike static permissions, which are built-in compiler primitives,
-		lock permissions are library-implemented.</p>
+		lock permissions are library-implemented: each is a type, and its value is the lock.</p>
 	<p>Lock permissions are needed when we want to guarantee that only one
 		reference can change or multiple references can read the object value at-a-time
-		(aliasability xor mutability).
+		(aliasability xor mutability), while many references, held by many threads, point at it.
 		This is accommodated by having borrowing acquire the lock before
-		the underlying value can be de-referenced for read or write operation.
+		the underlying value can be read or changed.
 		When the borrowed reference expires, the lock is automatically released.</p>
 
-	<h2>List of Permissions</h2>
-	
-	<h3>mutex</h3>
-	<p>The <span class="pre">mutex</span> permission 
-		enables multiple, mutable references to be shared across threads.
-		A <span class="pre">mutex</span> reference itself 
-		cannot directly access or change the value it points to,
-		except by using atomic operations.</p>
-	<p>To obtain direct access to the value, one must first obtain a 
-		<a href="refborref.html">borrowed reference</a>
-		from the <span class="pre">mutex</span> reference.
-		Obtaining the borrowed reference automatically acquires a runtime lock
-		that ensures only one reference at a time can 
-		view or modify the value the reference points to.</p>
+	<h2>Spelling</h2>
+	<p>A static permission is a keyword, written in lower case: <span class="pre">mut</span>,
+		<span class="pre">imm</span>. A lock permission is a type, named as types are, its first
+		letter alone capitalized: <span class="pre">Mutex</span>, <span class="pre">Rwlock</span>,
+		<span class="pre">Rwcell</span>. It stands where a managed reference's permission does, and
+		the allocation's arguments go to the value's initializer, as for any allocation:</p>
 <pre>
-imm point = new Gc[mutex, Point](x: 2, y: 3);
+import sync use Arc, Mutex;
+
+alias Counter = Arc[Mutex, Count];
+imm c = new Counter(0u64);
+imm point = new Arc[Mutex, Point](x: 2, y: 3);
+</pre>
+	<p>An allocation runs in one order: the region allocates the memory, the region's part of the
+		header is initialized (the owner count), then the lock (unlocked), then the value. The lock
+		lives in the allocation's header, between the region's part and the value, so a lock-managed
+		reference is one pointer, as any managed reference is.</p>
+
+	<h2>What the reference may do</h2>
+	<p>A lock-managed reference may be copied: each copy is another owner, counted as the region
+		counts. An <span class="pre">Arc[Mutex, T]</span> or <span class="pre">Arc[Rwlock, T]</span>
+		may be handed to another thread, as an <span class="pre">Arc[imm, T]</span> may, wherever
+		<span class="pre">T</span> may cross (it is <span class="pre">Sendable</span>,
+		<a href="refconccomm.html#race">Race condition safety</a>).</p>
+	<p><b>The reference gives no direct access to its value.</b> Through it, no field is read or
+		written, the value is not read whole, no method is called on the value, it is not lent where
+		a borrowed reference is wanted, and no operator changes a field in place. Each is refused,
+		saying that the value is reached only by borrowing.</p>
+<pre>
+imm n = c.n;            // refused: a read without the lock
+c.n += 1u64;            // refused
+imm v = (&amp;*c).n;       // a borrow takes the lock: allowed
+</pre>
+
+	<h2>Borrowing takes the lock</h2>
+	<p>To reach the value, one obtains a <a href="refborref.html">borrowed reference</a> through
+		the lock-managed reference: <span class="pre">&amp;mut *p</span>,
+		<span class="pre">&amp;*p</span>, or a borrow of a part, <span class="pre">&amp;mut p.x</span>,
+		<span class="pre">&amp;mut p[i]</span>. Obtaining the borrow acquires the lock first:</p>
+	<ul>
+	<li>A borrow that may write (<span class="pre">&amp;mut</span>, <span class="pre">&amp;uni</span>)
+		takes the lock for writing, which nobody else holds at the same time.</li>
+	<li>A read-only borrow (<span class="pre">&amp;</span>, <span class="pre">&amp;imm</span>) takes
+		the lock for reading, where the lock has a read lock, which other readers may hold at the same
+		time; where it has none (<span class="pre">Mutex</span>), it takes the one lock.</li>
+	<li>On a lock for threads (<span class="pre">Mutex</span>, <span class="pre">Rwlock</span>), a
+		borrow that finds the lock held <b>waits</b> until it is given back. On
+		<span class="pre">Rwcell</span>, whose owners are all on one thread, the holder could only
+		be that thread itself, so a conflicting borrow <b>panics</b> instead, naming the line of the
+		borrow.</li>
+	</ul>
+	<p>Once granted, a borrow never waits: the lock is held for as long as the borrow lasts, and
+		no wait happens inside it. A <span class="pre">Condvar</span> waits only on a
+		<span class="pre">Mutex</span> held as a value (<a href="refconc.html#locks">Concurrency</a>),
+		never on a lock permission's, whose lock sits in a header no program can name.</p>
+
+	<h2>Where the lock is given back</h2>
+	<p>The lock is given back where the borrow can no longer be used, which is one of two places:</p>
+	<ul>
+	<li><b>A borrow a local's initializer makes</b> holds the lock to the end of the block that
+		declares the local, on every way out of that block: its end, a
+		<span class="pre">return</span>, a <span class="pre">break</span> or a
+		<span class="pre">continue</span>. In a loop's body, that is the end of each pass.</li>
+	<li><b>Any other borrow</b> &mdash; an argument, a field read or written through it, an
+		operator applied to a part of it &mdash; holds the lock to the end of its statement.</li>
+	</ul>
+<pre>
+imm point = new Arc[Mutex, Point](x: 2, y: 3);
 {
-  pointref = &amp;mut *point;     // Obtain borrowed ref to unlock access to the point
-	pointref.x += pointref.y;   // Access to point safely protected by mutex
+  imm pointref = &amp;mut *point;  // takes the lock
+  pointref.x += pointref.y;     // the point is reached only while it is held
+}                               // the block ends: the lock is given back
+bump(&amp;mut *point);              // taken and given back within the statement
+(&amp;mut *point).y = 7;           // and again
+</pre>
+	<p>Copies of the borrow live no longer than the lock: a borrow is not returned from the
+		function, nor stored where it would outlive its block, nor used after the statement whose
+		lock it holds has ended (<a href="refborref.html">Borrowed References</a>). So nothing reaches
+		the value unlocked. The borrow also keeps the value alive while it lasts, whatever becomes
+		of the reference it was made from.</p>
+	<p>A panic does not unwind: it ends the whole program, so a lock held when a panic happens is
+		never given back, and nothing runs that could wait for it
+		(<a href="refexcept.html#panic">Panics</a>).</p>
+	<p>Cone does not prevent deadlock. A thread borrowing through a <span class="pre">Mutex</span>
+		it already holds through another borrow waits forever, as do two threads each holding one
+		lock and borrowing through the other's.</p>
+
+	<h2>List of Permissions</h2>
+
+	<h3>Mutex</h3>
+	<p>The <span class="pre">Mutex</span> permission, the <span class="pre">sync</span> package's,
+		enables multiple references to one value to be shared across threads,
+		<span class="pre">Arc[Mutex, T]</span>. Every borrow through it, read-only or not, takes its
+		one lock, so one borrow at a time, on any thread, reaches the value.</p>
+<pre>
+import thread;
+import sync use Arc, Mutex;
+
+struct Count { pub n u64; }
+alias Counter = Arc[Mutex, Count];
+
+fn add(c Counter) u64 {
+  mut i = 0u64;
+  while i &lt; 100000u64 {
+    (&amp;mut *c).n += 1u64;       // one addition under the lock
+    i = i + 1u64;
+  }
+  i;
+}
+
+fn main() {
+  imm c = new Counter(0u64);
+  imm a = thread.start(c, &amp;add);   // each start copies the owner
+  imm b = thread.start(c, &amp;add);
+  a.join();
+  b.join();
+  imm total = (&amp;*c).n;              // 200000, every time
 }
 </pre>
-	<p>When the borrowed reference expires, so does the acquired lock.</p>
 
-	<h3>rwlock</h3>
-	<p>The <span class="pre">rwlock</span> permission
-		works very much the same way as <span class="pre">mutex</span>,
+	<h3>Rwlock</h3>
+	<p>The <span class="pre">Rwlock</span> permission, the <span class="pre">sync</span> package's,
+		works very much the same way as <span class="pre">Mutex</span>,
 		except that it allows multiple read-only borrowed references to be obtained
-		at the same time. 
-		However, only one mutable borrowed reference may be obtained at a time.</p>
+		at the same time, on any threads.
+		However, only one borrow that may write may be obtained at a time, and none beside it. While
+		a writer waits, new readers wait too, so a stream of readers cannot starve it.</p>
 
-	<h3>rwcell</h3>
-	<p>The <span class="pre">rwcell</span> permission
-		is quite similar to <span class="pre">rwlock</span>,
-		except that all its reference copies are constrained to say in a single thread.
-		This is useful when one withes to serialize at runtime the acquisition
-		of interior references to variant or collection values.</p>
-			
+	<h3>Rwcell</h3>
+	<p>The <span class="pre">Rwcell</span> permission, core's, so named in every module,
+		is quite similar to <span class="pre">Rwlock</span>,
+		except that all its reference copies are constrained to stay in a single thread:
+		<span class="pre">Rc[Rwcell, T]</span>. Its lock is a plain count, and a borrow that
+		conflicts with one still held panics rather than waiting.
+		This is useful when one wishes to serialize at runtime the acquisition
+		of interior references to variant or collection values shared by several owners.</p>
+
+	<h3>Which regions take which lock</h3>
+	<ul>
+	<li><span class="pre">Mutex</span> and <span class="pre">Rwlock</span> are locks for threads
+		(each declares <span class="pre">ThreadSafe</span>), and fit only a region whose owners may
+		be on several threads, one declaring <span class="pre">ThreadSafe</span>:
+		<span class="pre">Arc</span>.</li>
+	<li><span class="pre">Rwcell</span> fits only a region whose owners stay on one thread:
+		<span class="pre">Rc</span>.</li>
+	<li>A region of one owner, <span class="pre">So</span>, takes no lock: there is nobody to
+		lock against. Nor does a region counting no owners, nor, yet, a traced region or a virtual
+		reference. Each is refused where the type is written.</li>
+	</ul>
+
+	<h2>Defining a lock permission</h2>
+	<p>A lock permission is a struct declaring the built-in trait
+		<span class="pre">LockPermission</span>, whose methods the compiler calls with the lock in
+		the header as <span class="pre">self</span>:</p>
+	<ul>
+	<li><span class="pre">acquireMut</span>, as a borrow that may write begins, and
+		<span class="pre">releaseMut</span>, as it ends; both required.</li>
+	<li><span class="pre">acquireRead</span> and <span class="pre">releaseRead</span>, for a
+		read-only borrow; both, or neither, when a read-only borrow takes the mutable lock.</li>
+	<li>Each takes only <span class="pre">self</span> and returns nothing, except that an acquiring
+		method may also take <span class="pre">file &amp;[]u8, line u32</span>, and is then handed
+		where the borrow is, which <span class="pre">Rwcell</span>'s panic names.</li>
+	<li><span class="pre">init</span>, taking only <span class="pre">self &amp;new</span>, fills
+		the lock in a new allocation's header.</li>
+	<li>Declaring <span class="pre">ThreadSafe</span> beside it says the lock is for owners on
+		several threads.</li>
+	</ul>
+	<p>The <span class="pre">sync</span> package's <span class="pre">Mutex</span> and
+		<span class="pre">Rwlock</span> are the same types as its plain locks, which a program may
+		also hold as values, with explicit, unchecked lock and unlock
+		(<a href="refconc.html#locks">Concurrency</a>).</p>
+
 	<p style="text-align: right; margin-top: 2em;">
 		<a href="refweakref.html"><img alt="_" src="next.png" /></a>
 	</p>

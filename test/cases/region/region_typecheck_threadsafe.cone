@@ -5,9 +5,11 @@
 // several threads at once, its 'aliasRef' and 'dealiasRef' safe to run together:
 // the sync package's 'Arc' does, core's 'Rc' does not. The compiler cannot check the promise.
 // The thread check asks it of a reference's region, which the concurrency
-// group tests (concurrency_typecheck_sendable). All there is to refuse here is
-// its being declared by something that is no region ref, which is reported at
-// the declaration.
+// group tests (concurrency_typecheck_sendable). A lock permission declares it
+// to say its lock is for owners on several threads (the sync package's Mutex
+// and Rwlock), which region_lockperm_typecheck tests. All there is to refuse
+// here is its being
+// declared by something that is neither, which is reported at the declaration.
 
 mod region_typecheck_threadsafe;
 
@@ -28,21 +30,28 @@ struct Kept is RegionRef, ThreadSafe {
   fn alloc(size usize) *u8 inline { malloc(size); }
 }
 
+// Accepted: a lock permission declaring it
+struct Spin is LockPermission, ThreadSafe {
+  held Atomic[u32];
+  fn acquireMut(self &opaq Spin) { }
+  fn releaseMut(self &opaq Spin) { }
+}
+
 // Only a region ref declares it
-struct notRegion is ThreadSafe {   //~ ErrorThreadSafeUse "Only a region ref may declare ThreadSafe"
+struct notRegion is ThreadSafe {   //~ ErrorThreadSafeUse "Only a region ref or a lock permission may declare ThreadSafe"
   pub n i32;
 }
 
-trait safeTrait is ThreadSafe {   //~ ErrorThreadSafeUse "Only a region ref may declare ThreadSafe"
+trait safeTrait is ThreadSafe {   //~ ErrorThreadSafeUse "Only a region ref or a lock permission may declare ThreadSafe"
   fn f(self &) i32;
 }
 
-enum Picked is ThreadSafe {       //~ ErrorThreadSafeUse "Only a region ref may declare ThreadSafe"
+enum Picked is ThreadSafe {       //~ ErrorThreadSafeUse "Only a region ref or a lock permission may declare ThreadSafe"
   One, Two;
 }
 
 enum Shape {
-  struct Round is ThreadSafe { r i32; }   //~ ErrorThreadSafeUse "Only a region ref may declare ThreadSafe"
+  struct Round is ThreadSafe { r i32; }   //~ ErrorThreadSafeUse "Only a region ref or a lock permission may declare ThreadSafe"
   struct Square { s i32; }
 }
 
