@@ -14,9 +14,12 @@
 //   with it to 2e-6.
 // - Twist: a flat box turned a quarter turn about the tangent at u = 1/2
 //   lies across the other axis.
-// - A sculpt.Path through 97 points of the same arc, as a PathCurve, gives
-//   the arc's beads to 2e-3 (its pieces are chords); its cells found once
-//   ('curveCells', 'repeatAlongCells') give repeatAlong's bits.
+// - A sculpt.Path through 97 points of the same arc, read into frames and
+//   arc lengths by sculpt (Path.curveFrames, Path.distances) and viewed as
+//   a PathCurve, gives the arc's beads to 2e-3 (its pieces are chords); its
+//   cells found once ('curveCellFrame' into a List, viewed as CurveCells,
+//   'repeatAlongCells') give repeatAlong's bits, and 'curveCells' writes
+//   the same frames into a slice.
 // - The horn: at its base point, minus the base radius; a straight horn
 //   with no ribs is a cone of balls, whose distance at radial distance x
 //   and height y is x sqrt(1 - s^2) - r(y), s the radius's fall per unit
@@ -39,6 +42,7 @@ import sculpt;
 import sdf use *;
 
 fn near(got f32, want f64, within f64, label &[]u8) { expectFloat(f64.from(got), want, within, label); }
+fn sameVec(a Vec3, b Vec3) Bool { a.x == b.x and a.y == b.y and a.z == b.z; }
 
 // A box shrinking along the curve and turned 'twist' radians over its length
 struct Beads {
@@ -154,7 +158,9 @@ fn unions() {
     j = j + 1;
   }
   imm path = sculpt.Path.fromPoints(pts.view(), false);
-  imm curve = PathCurve.fromPath(&path);
+  imm pathFrames = path.curveFrames();
+  imm pathDistances = path.distances();
+  imm curve = PathCurve.make(pathFrames.view(), pathDistances.view());
   near(curve.length(), 3d, 0.001d, "path: its length");
   imm plain = new Beads(0.25, 0.);
   mut worstPath = 0d;
@@ -168,7 +174,30 @@ fn unions() {
   }
   near(f32.from(worstPath), 0d, 0.002d, "a PathCurve through the arc gives its beads");
   // Its cells found once give repeatAlong's bits, for plain and twisted beads
-  imm pathCells = curveCells(&curve, 10);
+  mut cellFrames = List[CurveFrame].withCapacity(10usize);
+  mut k = 0;
+  while k < 10 {
+    cellFrames.push(curveCellFrame(&curve, k, 10));
+    k = k + 1;
+  }
+  imm pathCells = new CurveCells(cellFrames.view());
+  // The same frames written into a slice
+  mut slot Array[CurveFrame, 10] = [*cellFrames[0usize], *cellFrames[0usize], *cellFrames[0usize], *cellFrames[0usize],
+    *cellFrames[0usize], *cellFrames[0usize], *cellFrames[0usize], *cellFrames[0usize], *cellFrames[0usize],
+    *cellFrames[0usize]];
+  curveCells(&curve, &[]mut slot);
+  mut sameFrames = 0;
+  k = 0;
+  while k < 10 {
+    imm a = slot[usize.from(k)];
+    imm b = *cellFrames[usize.from(k)];
+    if sameVec(a.origin, b.origin) and sameVec(a.normal, b.normal) and sameVec(a.binormal, b.binormal)
+      and sameVec(a.tangent, b.tangent) {
+      sameFrames = sameFrames + 1;
+    }
+    k = k + 1;
+  }
+  expect(sameFrames == 10, "curveCells writes curveCellFrame's frames");
   imm twisted = new Beads(0.25, 1.5);
   mut sameBits = 0;
   i = 0;
