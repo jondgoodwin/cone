@@ -47,10 +47,17 @@ pub const ERROR_JOB_REFUSED = 87u32;
 // lost): ERROR_GEN_FAILURE
 pub const ERROR_JOB_LOST = 31u32;
 
-// A job's one answer: its ticket and token; whether it ran ('ok': false for
-// a job something was refused in, which did not run); its buffers back, in
-// the slots they had in the job; the frame it ran in; and when it was
-// submitted and when its completion was seen
+// ...and for a job that ran, in which a Cone kernel failed on the GPU (its
+// Completion's 'failures' say how): ERROR_PROCESS_ABORTED
+pub const ERROR_KERNEL_FAILED = 1067u32;
+
+// A job's one answer: its ticket and token; whether it ran and every
+// invocation of it succeeded ('ok': false for a job something was refused
+// in, which did not run, and for one in which a Cone kernel failed on the
+// GPU); its buffers back, in the slots they had in the job; the frame it ran
+// in; when it was submitted and when its completion was seen; and the
+// failures of its Cone kernels' dispatches, one for each that failed, in
+// the order dispatched (each also printed and counted, 'kernelFailures()')
 pub struct Completion {
   pub ticket Ticket;
   pub token u64;
@@ -59,6 +66,7 @@ pub struct Completion {
   pub frame u64;
   pub submitted Instant;
   pub completed Instant;
+  pub failures List[KernelFailure];
 
   // How many buffers it holds
   pub fn count(self &) u32 { u32.from(buffers.len()); }
@@ -96,6 +104,7 @@ struct InFlight {
   live Bool;
   watched Bool;      // a Loop job: done once the watcher has seen its fence
   seq u64;           // ...the watcher's count of jobs then
+  checks List[ErrorCheck];   // its Cone kernels' error buffers
 }
 
 // ---- The watcher: the thread that waits on Loop jobs' fences ----
@@ -116,6 +125,7 @@ struct Watch {
   ticket u64;
   ran Bool;
   stop Bool;
+  errorWords List[usize];   // where its Cone kernels' error words are read
 }
 
 struct WatchArgs {
@@ -152,7 +162,9 @@ fn watch(args WatchArgs) u32 {
 // a loop woken by the answer finds its Completion in 'poll'), and end its
 // operation: Done with the ticket; Cancelled if its cancel was asked, since
 // a job on the GPU cannot be stopped, only answered when it has finished;
-// Failed for a job that did not run or whose fence could not be waited for
+// Failed for a job that did not run or whose fence could not be waited for,
+// or in which a Cone kernel failed (its error words, read here before the
+// job is counted done, after which 'poll' may drop their buffer)
 fn settle(w &mut Watch, state Arc[imm, WatchState]) {
   mut fence Option[Fence] = None[Fence][];
   fence <=> w.fence;
@@ -163,6 +175,15 @@ fn settle(w &mut Watch, state Arc[imm, WatchState]) {
     case imm f &Some[Fence] { signalled = f.value.waitSignalled(0xFFFFFFFFFFFFFFFFu64); }
     else {}
   }
+  // Read before it is counted done: until then 'poll' keeps the buffers
+  mut kernelFailed = false;
+  if signalled and w.ran {
+    mut k = 0usize;
+    while k < w.errorWords.len() {
+      if errorsAt(*w.errorWords[k]) { kernelFailed = true; }
+      k = k + 1usize;
+    }
+  }
   state.watched.add(1u64);
   state.tick.add(1u32);
   sync.futexWakeAll(&state.tick);
@@ -172,6 +193,8 @@ fn settle(w &mut Watch, state Arc[imm, WatchState]) {
         l.completer.fail(ERROR_JOB_REFUSED);
       } elif !signalled {
         l.completer.fail(ERROR_JOB_LOST);
+      } elif kernelFailed {
+        l.completer.fail(ERROR_KERNEL_FAILED);
       } elif l.completer.isCancelRequested() {
         l.completer.cancelled();
       } else {
@@ -255,7 +278,13 @@ pub struct Works {
       seq = sent;
       sent = sent + 1u64;
       self.startWatcher();
-      tx.send(new Watch(Some[Fence][fence], to, ticket.id, ok, false));
+      mut errorWords = List[usize].empty();
+      mut k = 0usize;
+      while k < j.checks.len() {
+        errorWords.push(errorWordsAt(j.checks[k]));
+        k = k + 1usize;
+      }
+      tx.send(new Watch(Some[Fence][fence], to, ticket.id, ok, false, errorWords));
     } elif ok {
       ok = device.queue.submit(j.encoder.finish());
     }
@@ -263,7 +292,9 @@ pub struct Works {
     buffers <=> j.buffers;
     mut groups = List[BindGroup].empty();
     groups <=> j.groups;
-    jobs.push(new InFlight(ticket, token, j.frame, ok, Instant.now(), buffers, groups, true, isLoop, seq));
+    mut checks = List[ErrorCheck].empty();
+    checks <=> j.checks;
+    jobs.push(new InFlight(ticket, token, j.frame, ok, Instant.now(), buffers, groups, true, isLoop, seq, checks));
     ticket;
   }
 
@@ -325,7 +356,18 @@ pub struct Works {
         mut groups = List[BindGroup].empty();
         groups <=> e.groups;
         retired.push(groups);
-        out.push(new Completion(e.ticket, e.token, e.ok, buffers, e.frame, e.submitted, now));
+        // Its Cone kernels' error buffers, read now that the GPU is done
+        mut failures = List[KernelFailure].empty();
+        if e.ok {
+          mut c = 0usize;
+          while c < e.checks.len() {
+            readFailure(e.checks[c], &mut failures);
+            c = c + 1usize;
+          }
+        }
+        e.checks.clear();
+        out.push(new Completion(e.ticket, e.token, e.ok and failures.len() == 0usize, buffers, e.frame,
+          e.submitted, now, failures));
         e.live = false;
         n = n + 1usize;
       }
@@ -391,7 +433,7 @@ pub struct Works {
   // buffers with it.
   fn final(self &uni) {
     if !started { return; }
-    tx.send(new Watch(None[Fence][], Target.Here[0u64], 0u64, false, true));
+    tx.send(new Watch(None[Fence][], Target.Here[0u64], 0u64, false, true, List[usize].empty()));
     while state.stopped.load() == 0u32 { sync.futexWait(&state.stopped, 0u32); }
   }
 }

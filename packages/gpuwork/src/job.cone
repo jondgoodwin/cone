@@ -65,11 +65,14 @@ pub struct Job {
   encoder CommandEncoder;
   frame u64;                   // the device frame it records into
   pub failed Bool;             // a request was refused: it completes, not ok, without running
+  dispatches u32;              // recorded so far
+  checks List[ErrorCheck];     // a Cone kernel's dispatch: its error buffer, read after
 
   // An empty job, recording into the device's current frame
   pub fn make(device &mut Device) Job {
     imm encoder = device.createCommandEncoder();
-    new Job(List[Buffer].empty(), List[BindGroup].empty(), encoder, device.frameNumber, false);
+    new Job(List[Buffer].empty(), List[BindGroup].empty(), encoder, device.frameNumber, false, 0u32,
+      List[ErrorCheck].empty());
   }
 
   // Move 'buffer' into the job: its slot, by which dispatches bind it and
@@ -86,7 +89,10 @@ pub struct Job {
   // slot 'slots[i]'. It sees what the job's earlier dispatches wrote. Refused
   // (and the job failed) if the slots do not match the kernel's bindings, a
   // slot is empty or is named twice, or a buffer is not a storage buffer.
-  pub fn dispatch(self &mut, device &Device, kernel &Kernel, slots &[]u32, x u32, y u32 = 1u32, z u32 = 1u32) Bool {
+  // A Cone kernel's dispatch is given an error buffer of its own, zeroed,
+  // bound after the slots, and copied after the dispatch into one the CPU
+  // reads when the job is complete (see the Completion's 'failures').
+  pub fn dispatch(self &mut, device &mut Device, kernel &Kernel, slots &[]u32, x u32, y u32 = 1u32, z u32 = 1u32) Bool {
     if !kernel.isValid() {
       return self.refuse("dispatch: the kernel is not valid");
     }
@@ -118,6 +124,20 @@ pub struct Job {
       entries.push(BindGroupEntry.buffer(u32.from(i), buffers[s]));
       i = i + 1usize;
     }
+    // A Cone kernel's error buffer, zero before the dispatch (the zeros are
+    // written ahead of whatever is submitted next, as an upload is, so it is
+    // kept with the job from now on, even if the dispatch is refused)
+    if kernel.isCone {
+      imm errors = zeroed(device, usize.from(ERROR_BUFFER_WORDS));
+      imm errorsRead = device.createBuffer(u64.from(ERROR_BUFFER_WORDS) * 4u64,
+        BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+      imm valid = errors.isValid() and errorsRead.isValid();
+      checks.push(errorCheck(errors, errorsRead, kernel, dispatches));
+      if !valid {
+        return self.refuse("dispatch: the Cone kernel's error buffer was not made");
+      }
+      entries.push(BindGroupEntry.buffer(kernel.bindings, &checks[checks.len() - 1usize].errors));
+    }
     imm group = device.createBindGroup(&kernel.groupLayout, entries.view());
     if !group.isValid() {
       return self.refuse("dispatch: the bind group was not made");
@@ -130,6 +150,12 @@ pub struct Job {
       pass.end();
     }
     groups.push(group);
+    if kernel.isCone {
+      imm c = &mut checks[checks.len() - 1usize];
+      encoder.copyBufferToBuffer(&c.errors, 0u64, &c.read, 0u64, u64.from(ERROR_BUFFER_WORDS) * 4u64);
+      c.ran = true;
+    }
+    dispatches = dispatches + 1u32;
     true;
   }
 
@@ -155,4 +181,133 @@ pub struct Job {
     failed = true;
     false;
   }
+}
+
+// ---- A Cone kernel's error buffer, and the failure it records ----
+
+// One dispatch of a Cone kernel: its error buffer, the buffer the CPU reads
+// it from, and what a failure's report names (the kernel, the dispatch's
+// place in its job, the module's source files)
+struct ErrorCheck {
+  errors Buffer;
+  read Buffer;
+  kernel String;
+  dispatch u32;
+  fileIds List[u32];
+  fileNames List[String];
+  ran Bool;                    // recorded: its copy is read when the job is done
+}
+
+fn errorCheck(errors Buffer, read Buffer, kernel &Kernel, dispatch u32) ErrorCheck {
+  mut names = List[String].empty();
+  mut ids = List[u32].empty();
+  mut k = 0usize;
+  while k < kernel.fileIds.len() {
+    ids.push(*kernel.fileIds[k]);
+    names.push(kernel.fileNames[k].copy());
+    k = k + 1usize;
+  }
+  new ErrorCheck(errors, read, kernel.name.copy(), dispatch, ids, names, false);
+}
+
+// Where the CPU reads a dispatch's error words, as a number (handed to the
+// watcher thread), or 0 if it was not recorded
+fn errorWordsAt(c &ErrorCheck) usize {
+  if c.ran { c.read.mappedRange() as usize; } else { 0usize; };
+}
+
+// Whether the error words at 'at' (errorWordsAt) say an invocation failed
+fn errorsAt(at usize) Bool {
+  at != 0usize and *(at as *u32) != 0u32;
+}
+
+// A Cone kernel's failure on the GPU, read from its error buffer once its
+// job was done: the kernel and which of its job's dispatches; how many
+// invocations failed; and of the first to fail, what failed (FAILED_INDEX,
+// FAILED_RANGE, FAILED_PANIC, FAILED_ALLOCATION), where (its source file,
+// named by the module's "cone.file" strings, "" if not known, and line),
+// in which invocation (its globalId), and the index out of bounds or the
+// range's end (0 for a panic)
+pub struct KernelFailure {
+  pub kernel String;
+  pub dispatch u32;
+  pub count u32;
+  pub kind u32;
+  pub fileId u32;
+  pub file String;
+  pub line u32;
+  pub invocation Array[u32, 3];
+  pub index u32;
+
+  // What failed, in words
+  pub fn kindName(self &) &[]u8 {
+    if kind == FAILED_INDEX { "index out of bounds"; }
+    elif kind == FAILED_RANGE { "slice range out of bounds"; }
+    elif kind == FAILED_PANIC { "panic"; }
+    elif kind == FAILED_ALLOCATION { "allocation failed"; }
+    else { "unknown failure"; };
+  }
+
+  // The failure as one line: "kernel 'oob' (dispatch 0) failed: index out
+  // of bounds at kernels.cone:57, invocation (37, 0, 0), index 1037; 1
+  // invocation failed"
+  pub fn message(self &) String {
+    mut m = String.from("kernel '");
+    m <- kernel.view();
+    m <- "' (dispatch ";
+    m <- u64.from(dispatch);
+    m <- ") failed: ";
+    m <- self.kindName();
+    if kind < FAILED_INDEX or kind > FAILED_ALLOCATION {
+      m <- " ";
+      m <- u64.from(kind);
+    }
+    m <- " at ";
+    if file.isEmpty() {
+      m <- "file ";
+      m <- u64.from(fileId);
+    } else {
+      m <- file.view();
+    }
+    m <- ":";
+    m <- u64.from(line);
+    m <- ", invocation (";
+    m <- u64.from(invocation[0usize]);
+    m <- ", ";
+    m <- u64.from(invocation[1usize]);
+    m <- ", ";
+    m <- u64.from(invocation[2usize]);
+    m <- ")";
+    if kind == FAILED_INDEX {
+      m <- ", index ";
+      m <- u64.from(index);
+    } elif kind == FAILED_RANGE {
+      m <- ", range end ";
+      m <- u64.from(index);
+    }
+    m <- "; ";
+    m <- u64.from(count);
+    m <- " invocation";
+    if count != 1u32 { m <- "s"; }
+    m <- " failed";
+    m;
+  }
+}
+
+// The failure dispatch 'c' recorded, if any, appended to 'out' and reported
+fn readFailure(c &ErrorCheck, out &mut List[KernelFailure]) {
+  imm at = errorWordsAt(c);
+  if !errorsAt(at) { return; }
+  imm w = mem.sliceFromParts[u32](at as *u32, usize.from(ERROR_BUFFER_WORDS));
+  mut file = String.empty();
+  mut k = 0usize;
+  while k < c.fileIds.len() {
+    if *c.fileIds[k] == w[2usize] { file = c.fileNames[k].copy(); }
+    k = k + 1usize;
+  }
+  imm f = new KernelFailure(c.kernel.copy(), c.dispatch, w[0usize], w[1usize], w[2usize], file, w[3usize],
+    [w[4usize], w[5usize], w[6usize]], w[7usize]);
+  imm msg = f.message();
+  failKernel(msg.view());
+  out.push(f);
 }
