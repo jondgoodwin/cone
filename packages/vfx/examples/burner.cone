@@ -1,0 +1,494 @@
+// burner: a hot-air balloon's burner flame, the first effect drawn with the
+// vfx package. A steel burner can above a wicker basket on dusky ground
+// fires in bursts: three seconds roaring, a second quiet with only the
+// pilot light, as a balloon pilot fires to lift the balloon. Every number
+// of the flame is here, in this file; the library holds only the emitter,
+// the event and the renderers.
+//
+//   congo run packages/vfx/examples/burner.cone
+//   congo run packages/vfx/examples/burner.cone -- --frames 240 --screenshot burner.bmp
+//
+// THE FLAME, in four layers, each an Emitter started by the burst's Event:
+// - the core: a short, fast, blue-white jet at the nozzle;
+// - the tongue: hundreds of particles a second, launched upward hard,
+//   lifted by buoyancy that fades as they cool, slowed by drag, wobbling
+//   wider as they rise, drawn as sprites stretched along their motion,
+//   their colour cooling from yellow-white through orange to a dull red as
+//   they fade;
+// - embers: a few sparks a second with ribbon trails, thrown higher;
+// - the pilot light: a small blue flame that never goes out.
+// Each burst is an Event (its seed a hash of the burst's number, its start
+// and stop the schedule's), so when the burner shuts off the tongue's last
+// particles detach and rise as they die. Bursts alternate between two
+// emitter slots, so the last burst's particles finish living while the
+// next burst begins.
+//
+// ON THE BALLOON. sculpt's balloon example builds the burner as a lathed
+// can on the frame (its top at y = RING_Y + 0.07 in balloon units, times the
+// balloon's size in metres). The flame would attach by placing the burst's
+// Event at the balloon's matrix times a translation to that top, and
+// drawing the emitters with this file's numbers; the burst schedule is the
+// same record that drives the lift.
+//
+// '--frames N' (or BURNER_FRAMES) draws N frames and stops; otherwise it runs
+// until quit (Escape). Time is the frame's number over 60 (seconds), so a run
+// is the same every time. At CHECK_FRAME (or the last, if sooner) it reads
+// the frame back and checks it: the flame, a metre above the nozzle, is
+// bright and warm (redder than blue) and brighter than the sky beside it.
+// '--screenshot FILE' writes that frame to FILE as a BMP, and two more beside
+// it if the run is long enough: '-shutoff' just after the burst stops (the
+// tongue detaching) and '-pilot' with only the pilot light. It prints the
+// checks and the particle counts, and exits 0 only if every check passed,
+// every shot was written, no Vulkan call failed and the validation layer
+// said nothing.
+//
+// It needs a display, a GPU driver with Vulkan 1.3, SDL3.lib on LIB to link
+// (Congo copies SDL3.dll from beside it to beside the program); with the
+// Vulkan SDK, validation is on. GPU_POWER_PREFERENCE=low-power picks an
+// integrated GPU where there are two.
+
+mod burner;
+
+import stdio use *;
+import libc;
+import sdl;
+import collections use *;
+import geomath use *;
+import mesh;
+import noise;
+import sculpt use Profile, lathe;
+import gpu use *;
+import render use *;
+import window use *;
+import vfx use *;
+
+const CHECK_FRAME = 90;          // 1.5 s: mid-burst
+const SHUTOFF_FRAME = 207;       // 3.45 s: 0.2 s after the first burst stops
+const PILOT_FRAME = 237;         // 3.95 s: only the pilot light, and the last embers
+const NOZZLE_Y f32 = 2.45;       // the top of the burner can, metres
+
+// The burst schedule: burst b fires from FIRST + b PERIOD for ON seconds
+const FIRST f64 = 0.25;
+const PERIOD f64 = 4.;
+const ON f64 = 3.;
+const SEED = 1783u32;
+
+// ---- The flame's layers ----
+
+fn tongue() Emitter {
+  mut e = Emitter.make();
+  e.layer = 1u32;
+  e.rate = 700.;
+  e.lifetime = 0.5;
+  e.lifetimeJitter = 0.35;
+  e.shape = SHAPE_DISC;
+  e.radius = 0.09;
+  e.spread = radians(9.);
+  e.speed = 6.5;
+  e.speedJitter = 0.3;
+  e.drag = 2.5;
+  e.gravity = new Vec3(0., -9.81, 0.);
+  e.buoyancy = 28.;
+  e.cooling = 3.;
+  e.wobble = 0.28;
+  e.wobbleRate = 11.;
+  e.sizeStart = 0.2;
+  e.sizeEnd = 0.6;
+  e.sizeJitter = 0.35;
+  e.stretch = 0.035;
+  e.fadeIn = 0.06;
+  e.fadeOut = 0.45;
+  e.colors = [new Color(1., 0.62, 0.26, 0.18), new Color(1., 0.42, 0.1, 0.22), new Color(1., 0.2, 0.04, 0.14),
+    new Color(0.6, 0.08, 0.02, 0.)];
+  e.colorAt = [0., 0.25, 0.6, 1.];
+  e;
+}
+
+fn core() Emitter {
+  mut e = Emitter.make();
+  e.layer = 2u32;
+  e.rate = 500.;
+  e.lifetime = 0.13;
+  e.lifetimeJitter = 0.3;
+  e.shape = SHAPE_DISC;
+  e.radius = 0.06;
+  e.spread = radians(4.);
+  e.speed = 6.;
+  e.speedJitter = 0.15;
+  e.sizeStart = 0.12;
+  e.sizeEnd = 0.2;
+  e.stretch = 0.02;
+  e.fadeIn = 0.1;
+  e.fadeOut = 0.3;
+  e.colors = [new Color(0.3, 0.5, 1., 0.3), new Color(0.6, 0.75, 1., 0.3), new Color(1., 0.8, 0.5, 0.2),
+    new Color(1., 0.6, 0.2, 0.)];
+  e.colorAt = [0., 0.3, 0.7, 1.];
+  e;
+}
+
+fn embers() Emitter {
+  mut e = Emitter.make();
+  e.layer = 3u32;
+  e.rate = 14.;
+  e.lifetime = 1.4;
+  e.lifetimeJitter = 0.4;
+  e.shape = SHAPE_DISC;
+  e.radius = 0.08;
+  e.spread = radians(22.);
+  e.speed = 7.;
+  e.speedJitter = 0.3;
+  e.drag = 0.9;
+  e.gravity = new Vec3(0., -9.81, 0.);
+  e.buoyancy = 9.;
+  e.cooling = 1.2;
+  e.wobble = 0.35;
+  e.wobbleRate = 6.;
+  e.sizeStart = 0.045;
+  e.sizeEnd = 0.025;
+  e.fadeOut = 0.5;
+  e.trailTime = 0.12;
+  e.colors = [new Color(1., 0.75, 0.35, 4.), new Color(1., 0.45, 0.1, 3.), new Color(1., 0.2, 0.03, 1.5),
+    new Color(0.5, 0.05, 0.01, 0.)];
+  e.colorAt = [0., 0.3, 0.7, 1.];
+  e;
+}
+
+fn pilot() Emitter {
+  mut e = Emitter.make();
+  e.layer = 4u32;
+  e.rate = 160.;
+  e.lifetime = 0.22;
+  e.lifetimeJitter = 0.3;
+  e.shape = SHAPE_DISC;
+  e.radius = 0.02;
+  e.spread = radians(8.);
+  e.speed = 0.7;
+  e.buoyancy = 3.;
+  e.cooling = 2.;
+  e.wobble = 0.05;
+  e.wobbleRate = 14.;
+  e.sizeStart = 0.07;
+  e.sizeEnd = 0.04;
+  e.fadeIn = 0.15;
+  e.colors = [new Color(0.3, 0.5, 1., 0.6), new Color(0.35, 0.55, 1., 0.5), new Color(0.6, 0.6, 1., 0.25),
+    new Color(1., 0.6, 0.3, 0.)];
+  e.colorAt = [0., 0.4, 0.8, 1.];
+  e;
+}
+
+// Burst 'b': its seed a hash of its number, its start and stop the schedule's
+fn burst(b i32, placement Mat4) Event {
+  imm start = FIRST + PERIOD * f64.from(b);
+  new Event(noise.hash1(b, SEED), start, start + ON, placement);
+}
+
+// ---- Arguments and checks ----
+
+fn parseCount(s *u8) i32 {
+  if (s as usize) == 0usize or *s == 0u8 { return -1; }
+  mut n = 0;
+  mut i = 0usize;
+  while *(s + i) != 0u8 {
+    imm c = *(s + i);
+    if c < '0' or c > '9' { return -1; }
+    n = n * 10 + i32.from(c - '0');
+    i = i + 1usize;
+  }
+  n;
+}
+
+fn cstrEquals(a *u8, b &[]u8) Bool {
+  mut i = 0usize;
+  while i < b.len {
+    if *(a + i) != b[i] { return false; }
+    i = i + 1usize;
+  }
+  *(a + b.len) == 0u8;
+}
+
+fn onOff(on Bool) &[]u8 { if on { return "on"; } "off"; }
+
+fn shotName(base &String, suffix &[]u8) String {
+  mut s = String.empty();
+  if base.endsWith(".bmp") { s = base.sub(0usize, base.len() - 4usize); } else { s = base.copy(); }
+  s <- suffix;
+  s <- ".bmp";
+  s;
+}
+
+fn pixelOf(viewProjection Mat4, p Vec3, w u32, h u32, x &mut i32, y &mut i32) {
+  imm clip = viewProjection * new Vec4(p.x, p.y, p.z, 1.);
+  *x = i32.from((clip.x / clip.w + 1.) * 0.5 * f32.from(w));
+  *y = i32.from((1. - clip.y / clip.w) * 0.5 * f32.from(h));
+}
+
+fn channel(p *u8, w u32, x i32, y i32, c usize, bgra Bool) i32 {
+  mut at = c;
+  if bgra { at = 2usize - c; }
+  i32.from(*(p + (usize.from(y) * usize.from(w) + usize.from(x)) * 4usize + at));
+}
+
+fn printPixel(name &[]u8, p *u8, w u32, x i32, y i32, bgra Bool) {
+  printStr(name); print <- " at ("; print <- x; print <- ", "; print <- y; print <- "): ";
+  print <- channel(p, w, x, y, 0usize, bgra); print <- " "; print <- channel(p, w, x, y, 1usize, bgra); print <- " ";
+  print <- channel(p, w, x, y, 2usize, bgra);
+}
+
+// ---- The scene ----
+
+// The burner can: a lathed steel can, its top at the nozzle
+fn burnerCan() mesh.Mesh {
+  imm pts Array[Vec2, 6] = [new Vec2(0., NOZZLE_Y - 0.36), new Vec2(0.17, NOZZLE_Y - 0.36), new Vec2(0.17, NOZZLE_Y - 0.08),
+    new Vec2(0.12, NOZZLE_Y - 0.02), new Vec2(0.1, NOZZLE_Y), new Vec2(0., NOZZLE_Y)];
+  imm profile = Profile.fromPoints(&pts, false);
+  imm can = lathe(&profile, new Vec3(0., 1., 0.), 2. * pi, 24u32);
+  can.triangulate(true);
+}
+
+fn main(argc i32, argv **u8) i32 {
+  mut maxFrames = 0;
+  mut screenshot = String.empty();
+  imm env = libc.getenv(&"BURNER_FRAMES" as *u8);
+  if (env as usize) != 0usize { maxFrames = parseCount(env); }
+  mut a = 1;
+  while a < argc {
+    imm arg = *(argv + usize.from(a));
+    if cstrEquals(arg, "--frames") and a + 1 < argc {
+      maxFrames = parseCount(*(argv + usize.from(a + 1)));
+      a = a + 1;
+    } elif cstrEquals(arg, "--screenshot") and a + 1 < argc {
+      imm s = *(argv + usize.from(a + 1));
+      mut i = 0usize;
+      while *(s + i) != 0u8 {
+        screenshot.appendByte(*(s + i));
+        i = i + 1usize;
+      }
+      a = a + 1;
+    } else {
+      print <- "Unknown argument; use --frames N and --screenshot FILE\n";
+      return 2;
+    }
+    a = a + 1;
+  }
+  if maxFrames < 0 {
+    print <- "--frames wants a whole number\n";
+    return 2;
+  }
+  mut checkFrame = CHECK_FRAME;
+  if maxFrames > 0 and maxFrames - 1 < checkFrame { checkFrame = maxFrames - 1; }
+
+  // The window and the GPU
+  mut win = Window.openVulkan("Cone: the balloon burner's flame");
+  if !win.isOpen() {
+    print <- "No window could be opened\n";
+    return 1;
+  }
+  mut instance = Instance.create("burner");
+  if !instance.isValid() {
+    print <- "No Vulkan 1.3 instance could be made\n";
+    return 1;
+  }
+  mut surface = instance.createSurface(win.sdlHandle());
+  mut preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
+  imm powerEnv = libc.getenv(&"GPU_POWER_PREFERENCE" as *u8);
+  if (powerEnv as usize) != 0usize {
+    if libc.strcmp(powerEnv, &"low-power" as *u8) == 0i32 { preference = POWER_PREFERENCE_LOW_POWER; }
+  }
+  mut adapter = instance.requestAdapter(&surface, preference);
+  if !adapter.isValid() {
+    print <- "No GPU can draw to the window\n";
+    return 1;
+  }
+  print <- "Adapter: "; printStr(adapter.name.view()); print <- "\n";
+  print <- "Validation layer: "; printStr(onOff(instance.validation));
+  print <- "; synchronization validation: "; printStr(onOff(instance.syncValidation)); print <- "\n";
+  mut device = adapter.requestDevice();
+  imm size = win.size();
+  mut swapchain = device.createSwapChain(&surface, u32.from(size.w), u32.from(size.h), TEXTURE_FORMAT_DEPTH32_FLOAT);
+  mut renderer = Renderer.create(&mut device, TEXTURE_FORMAT_RGBA16_FLOAT, TEXTURE_FORMAT_DEPTH32_FLOAT);
+  renderer.keepDepth = true;
+  mut particles = ParticleRenderer.create(&mut device, TEXTURE_FORMAT_RGBA16_FLOAT, TEXTURE_FORMAT_DEPTH32_FLOAT);
+  mut post = Post.create(&mut device, swapchain.format, u32.from(size.w), u32.from(size.h));
+  if !renderer.isValid() or !post.isValid() or !particles.isValid() {
+    print <- "The renderer could not be made\n";
+    return 1;
+  }
+
+  // Dusk, the sun just down behind the burner
+  imm sky = Sky.dusk(radians(2.), radians(200.));
+  renderer.setSky(&mut device, &sky);
+  imm light = sky.sunLight(new Color(0.5, 0.3, 0.2, 1.), new Color(0.04, 0.04, 0.07, 1.));
+
+  // The ground, the basket, its four uprights, the can
+  imm groundMesh = mesh.Mesh.plane(1, 1.);
+  imm ground = renderer.addMesh(&mut device, &groundMesh);
+  imm boxMesh = mesh.Mesh.cube(0.5);
+  imm box = renderer.addMesh(&mut device, &boxMesh);
+  imm canMesh = burnerCan();
+  imm can = renderer.addMesh(&mut device, &canMesh);
+  imm earth = PbrMaterial.standard(new Color(0.08, 0.07, 0.05, 1.), 0., 0.9);
+  imm earthM = renderer.addPbrMaterial(&mut device, &earth);
+  imm wicker = PbrMaterial.standard(new Color(0.45, 0.28, 0.12, 1.), 0., 0.85);
+  imm wickerM = renderer.addPbrMaterial(&mut device, &wicker);
+  imm steel = PbrMaterial.standard(new Color(0.6, 0.6, 0.62, 1.), 0.9, 0.3);
+  imm steelM = renderer.addPbrMaterial(&mut device, &steel);
+  mut list = DrawList.empty();
+  list.add(ground, earthM, Mat4.fromTrs(new Vec3(0., 0., 0.), Quat.identity(), new Vec3(40., 1., 40.)));
+  list.add(box, wickerM, Mat4.fromTrs(new Vec3(0., 0.55, 0.), Quat.identity(), new Vec3(1.2, 1.1, 1.2)));
+  // The uprights from the basket's corners, a square frame on them, and a
+  // cross of bars under the can
+  mut k = 0;
+  while k < 4 {
+    imm sx = if k % 2 == 0 { 0.5; } else { -0.5; };
+    imm sz = if k < 2 { 0.5; } else { -0.5; };
+    list.add(box, steelM, Mat4.fromTrs(new Vec3(sx, 1.65, sz), Quat.identity(), new Vec3(0.04, 1.1, 0.04)));
+    k = k + 1;
+  }
+  imm bars Array[f32, 6] = [0.5, -0.5, 0., 0.5, -0.5, 0.];
+  k = 0;
+  while k < 3 {
+    list.add(box, steelM, Mat4.fromTrs(new Vec3(0., 2.2, bars[usize.from(k)]), Quat.identity(), new Vec3(1.04, 0.04, 0.04)));
+    list.add(box, steelM, Mat4.fromTrs(new Vec3(bars[usize.from(k + 3)], 2.2, 0.), Quat.identity(), new Vec3(0.04, 0.04, 1.04)));
+    k = k + 1;
+  }
+  list.add(can, steelM, Mat4.identity());
+
+  // The flame: two slots a layer (bursts alternate), and the pilot
+  imm layers Array[Emitter, 3] = [core(), tongue(), embers()];
+  imm styles Array[u32, 3] = [STYLE_SPRITES, STYLE_SPRITES, STYLE_TRAILS];
+  mut slots = List[EmitterHandle].empty();
+  mut s = 0usize;
+  while s < 6usize {
+    slots.push(particles.addEmitter(&mut device, styles[s / 2usize]));
+    s = s + 1usize;
+  }
+  imm pilotEmitter = pilot();
+  imm pilotSlot = particles.addEmitter(&mut device, STYLE_SPRITES);
+  imm nozzle = Mat4.fromTranslation(new Vec3(0., NOZZLE_Y, 0.));
+  imm pilotEvent = Event.at(SEED, 0d, Mat4.fromTranslation(new Vec3(0.05, NOZZLE_Y + 0.01, 0.)));
+
+  mut camera = Camera.make();
+  camera.fov = radians(45.);
+  camera.near = 0.2;
+  camera.far = 500.;
+  camera.lookAt(new Vec3(0.6, 2.2, 7.5), new Vec3(0., 3.4, 0.), new Vec3(0., 1., 0.));
+
+  mut frames = 0;
+  mut unshown = 0;
+  mut checked = false;
+  mut checksPassed = true;
+  mut shotsWritten = true;
+  mut maxDrawn = 0u64;
+  while win.running and (maxFrames == 0 or frames < maxFrames) {
+    mut event = sdl.Event.empty();
+    while win.pollEvent(&mut event) { }
+    if win.resized {
+      imm sz = win.size();
+      swapchain.resize(u32.from(sz.w), u32.from(sz.h));
+      win.resized = false;
+    }
+    imm frame = swapchain.getCurrentTexture(&mut device);
+    if !frame.ok() {
+      sdl.Delay(10u32);
+    } else {
+      imm w = frame.texture.width;
+      imm h = frame.texture.height;
+      imm now = f64.from(frames) / 60d;
+      renderer.time = f32.from(now);
+      post.resize(&mut device, w, h);
+
+      // This burst and the one before it, each in its slot
+      mut current = i32.from(libc.floor((now - FIRST) / PERIOD));
+      if current < 0 { current = 0; }
+      mut b = current - 1;
+      while b <= current {
+        if b >= 0 {
+          imm ev = burst(b, nozzle);
+          mut l = 0usize;
+          while l < 3usize {
+            particles.update(&mut device, *slots[l * 2usize + usize.from(b % 2)], &layers[l], &ev, now);
+            l = l + 1usize;
+          }
+        }
+        b = b + 1;
+      }
+      particles.update(&mut device, pilotSlot, &pilotEmitter, &pilotEvent, now);
+
+      mut encoder = device.createCommandEncoder();
+      renderer.render(&mut device, &mut encoder, &post.hdr, &frame.depth, &camera, &light, &list);
+      particles.render(&mut device, &mut encoder, &post.hdr, &frame.depth, &camera);
+      if particles.particles > maxDrawn { maxDrawn = particles.particles; }
+      post.apply(&mut encoder, &frame.texture);
+      imm bgra = frame.texture.format == TEXTURE_FORMAT_BGRA8_UNORM_SRGB
+        or frame.texture.format == TEXTURE_FORMAT_BGRA8_UNORM;
+      imm checkNow = frames == checkFrame and !checked;
+      imm extraNow = screenshot.len() > 0usize and (frames == SHUTOFF_FRAME or frames == PILOT_FRAME);
+      if checkNow or extraNow {
+        mut readback = device.createBuffer(u64.from(w) * u64.from(h) * 4u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+        encoder.copyTextureToBuffer(&frame.texture, &readback);
+        device.queue.submit(encoder.finish());
+        if !swapchain.present(&mut device) { unshown = unshown + 1; }
+        device.waitIdle();
+        imm p = readback.mappedRange();
+        mut name = screenshot.copy();
+        if checkNow {
+          checked = true;
+          print <- "Frame "; print <- frames; print <- " ("; print <- u64.from(w); print <- " x "; print <- u64.from(h);
+          print <- "), t = "; print <- now; print <- " s: "; print <- u64.from(particles.drawCalls);
+          print <- " particle draws, "; print <- particles.particles; print <- " particles\n";
+          imm viewProjection = camera.projectionMatrix(f32.from(w) / f32.from(h)) * camera.viewMatrix();
+          mut fx = 0;
+          mut fy = 0;
+          pixelOf(viewProjection, new Vec3(0., NOZZLE_Y + 1., 0.), w, h, &mut fx, &mut fy);
+          mut sx = 0;
+          mut sy = 0;
+          pixelOf(viewProjection, new Vec3(2.5, NOZZLE_Y + 1., 0.), w, h, &mut sx, &mut sy);
+          if fx < 0 or fy < 0 or fx >= i32.from(w) or fy >= i32.from(h) or sx >= i32.from(w) {
+            print <- "  the flame: off the screen\n";
+            checksPassed = false;
+          } else {
+            printPixel("  the flame", p, w, fx, fy, bgra);
+            imm r = channel(p, w, fx, fy, 0usize, bgra);
+            imm g = channel(p, w, fx, fy, 1usize, bgra);
+            imm bl = channel(p, w, fx, fy, 2usize, bgra);
+            imm warm = r > 200 and r > bl + 40;
+            if warm { print <- ": bright and warm\n"; } else { print <- ": NOT bright and warm\n"; }
+            printPixel("  the sky beside it", p, w, sx, sy, bgra);
+            imm brighter = r + g + bl > channel(p, w, sx, sy, 0usize, bgra) + channel(p, w, sx, sy, 1usize, bgra)
+              + channel(p, w, sx, sy, 2usize, bgra) + 150;
+            if brighter { print <- ": the flame brighter\n"; } else { print <- ": the flame NOT brighter\n"; }
+            if !warm or !brighter { checksPassed = false; }
+          }
+        } else {
+          name = shotName(&screenshot, if frames == SHUTOFF_FRAME { "-shutoff"; } else { "-pilot"; });
+          print <- "Frame "; print <- frames; print <- ", t = "; print <- now; print <- " s: ";
+          print <- particles.particles; print <- " particles\n";
+        }
+        if screenshot.len() > 0usize {
+          imm shot = Image.fromTexels(p, i32.from(w), i32.from(h), bgra);
+          imm written = shot.save(name.view());
+          print <- "Screenshot: "; printStr(name.view());
+          if written { print <- "\n"; } else { print <- " could NOT be written\n"; shotsWritten = false; }
+        }
+      } else {
+        device.queue.submit(encoder.finish());
+        if !swapchain.present(&mut device) { unshown = unshown + 1; }
+      }
+      frames = frames + 1;
+    }
+  }
+  device.waitIdle();
+
+  print <- "Frames drawn: "; print <- frames; print <- "; out of date when presented: "; print <- unshown;
+  print <- "; the most particles drawn in a frame: "; print <- maxDrawn; print <- "\n";
+  print <- "Vulkan failures: "; print <- u64.from(failures());
+  print <- "; validation messages: "; print <- u64.from(validationMessages()); print <- "\n";
+  if !checked { print <- "The frame was not checked\n"; }
+  if (checked and !checksPassed) or !shotsWritten {
+    print <- "FAILED\n";
+    return 1;
+  }
+  if failures() != 0u32 or validationMessages() != 0u32 { return 1; }
+  print <- "OK\n";
+  0;
+}
