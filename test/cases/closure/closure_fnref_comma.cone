@@ -1,0 +1,134 @@
+// Where a comma after a function type's return type belongs.
+//
+// Inside a list -- a function's or a method's parameters, or a function type's
+// own -- a function type's return type ends at the comma, which goes on to the
+// next item of the list. So a function-reference parameter may stand first, in
+// the middle or last, its parameters named or written as types alone, and a
+// function type there that returns several values writes them as a tuple in
+// parentheses. Outside every list -- a function's own return types, a field's
+// or a variable's whole type -- a comma after the return type still adds
+// another return type.
+//
+// Every function below is called through and its result printed, because a
+// signature that parses as some other signature can still compile: a field
+// typed '&fn(&fn(u32) u32, u32) u32' must take two arguments, a function and a
+// number, and return what the function it holds computes from both.
+
+mod closure_fnref_comma;
+
+import stdio use *;
+
+fn show(label &[]u8, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+fn incr(n u32) u32 { n + 1u; }
+fn double(n u32) u32 { n * 2u; }
+fn tensAndOnes(n u32) (u32, u32) { n / 10u, n % 10u; }
+
+// -------- an '&fn' parameter in each position --------
+
+fn first(f &fn(u32) u32, x u32) u32 { f(x); }
+fn middle(x u32, f &fn(u32) u32, y u32) u32 { f(x) * 100u + y; }
+fn last(x u32, f &fn(u32) u32) u32 { f(x); }
+
+// The same, the function type's parameter named
+fn firstNamed(f &fn(n u32) u32, x u32) u32 { f(x); }
+fn middleNamed(x u32, f &fn(n u32) u32, y u32) u32 { f(x) * 100u + y; }
+
+// Two in one list, side by side
+fn compose(f &fn(u32) u32, g &fn(n u32) u32, x u32) u32 { g(f(x)); }
+
+// A void function type before another parameter
+fn repeat3(f &fn(n u32), x u32) { f(x); f(x + 1u); f(x + 2u); }
+mut total = 0u;
+fn addTo(n u32) { total = total + n; }
+
+// A method's parameter list reads the same way
+struct Counter {
+  pub n u32;
+  pub fn step(self &, f &fn(u32) u32, extra u32) u32 { f(n) + extra; }
+}
+
+// -------- several values from a function in a list --------
+
+// A function type returning a pair, in parentheses, before another parameter
+fn sumPair(g &fn(u32) (u32, u32), x u32) u32 {
+  mut a u32;
+  mut b u32;
+  a, b = g(x);
+  a + b;
+}
+
+// -------- a function type's own parameter list --------
+
+fn applyPlus(f &fn(u32) u32, x u32) u32 { f(x) + x; }
+
+// Two parameters, a function and a u32: the comma after the inner return type
+// begins the second parameter
+struct Applier {
+  pub run &fn(&fn(u32) u32, u32) u32;
+}
+
+// -------- outside every list, a comma still adds a return type --------
+
+fn ceil(x i32) i32, i32 {
+  if x > 6 {
+    return x, 6;
+  }
+  return x, x;
+}
+
+fn pairOf(n u32) u32, u32 { n, n * 10u; }
+
+// A field's whole type: a function returning two values
+struct Splitter {
+  pub split &fn(u32) u32, u32;
+}
+
+fn main() i32 {
+  show("first", i64.from(first(&incr, 4u)));
+  show("middle", i64.from(middle(4u, &double, 7u)));
+  show("last", i64.from(last(4u, &incr)));
+  show("first-named", i64.from(firstNamed(&double, 21u)));
+  show("middle-named", i64.from(middleNamed(5u, &incr, 3u)));
+  show("compose", i64.from(compose(&incr, &double, 10u)));
+  show("first-anonymous", i64.from(first(&fn(n u32) u32 {n * n;}, 9u)));
+  show("middle-anonymous", i64.from(middle(3u, &fn(n u32) u32 {n + 40u;}, 1u)));
+
+  repeat3(&addTo, 10u);
+  show("void-first", i64.from(total));
+
+  imm c = new Counter(5u);
+  show("method-middle", i64.from(c.step(&double, 1u)));
+
+  show("pair-first", i64.from(sumPair(&tensAndOnes, 47u)));
+  show("pair-anonymous", i64.from(sumPair(&fn(n u32) (u32, u32) {n, n * 2u;}, 6u)));
+
+  imm a = new Applier(&applyPlus);
+  imm run = a.run;
+  show("field-two-parameters", i64.from(run(&double, 8u)));
+  imm direct &fn(&fn(u32) u32, u32) u32 = &applyPlus;
+  show("variable-two-parameters", i64.from(direct(&incr, 8u)));
+
+  mut lo i32;
+  mut hi i32;
+  lo, hi = ceil(8);
+  show("ceil-8", i64.from(lo * 10 + hi));
+  lo, hi = ceil(3);
+  show("ceil-3", i64.from(lo * 10 + hi));
+
+  imm s = new Splitter(&pairOf);
+  imm split = s.split;
+  mut x u32;
+  mut y u32;
+  x, y = split(2u);
+  show("field-two-returns", i64.from(x + y));
+  imm v &fn(u32) u32, u32 = &pairOf;
+  x, y = v(3u);
+  show("variable-two-returns", i64.from(x + y));
+  0i32;
+}

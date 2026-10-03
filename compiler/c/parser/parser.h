@@ -45,6 +45,8 @@ typedef struct ParseState {
     ModuleNode *mod;        // Current module
     INsTypeNode *typenode;  // Current type
     int inrettype;          // Non-zero while parseFnSig reads a return type, where a '{' opens the declared function's body
+    int inlist;             // Non-zero inside a parenthesised or bracketed list, where a comma continues the list, so a
+                            // function signature read there ends its return type before it (parseFnSig)
     int intype;             // Non-zero while parseType reads a type, where '&new' is a permission, not a borrow of a construction
     FnSigNode *lifesig;     // The signature whose types are being read, where a type may name lifetimes ('&'a T', 'Cursor['a]'); NULL elsewhere
     StructNode *lifestruct; // The struct (or enum) whose field's type is being read, which may name its lifetimes; NULL elsewhere

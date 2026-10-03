@@ -396,7 +396,7 @@ the Cone smoke-test input.
 ### Windows
 
 The verified configuration uses a 64-bit LLVM 23.1 installation (Release, `/MD`)
-with the X86 and WebAssembly targets, the Ninja generator, and the VS 2022 x64
+with the X86, WebAssembly and SPIRV targets, the Ninja generator, and the VS 2022 x64
 toolchain. Pass `-DLLVM_DIR=<llvm root>\lib\cmake\llvm` when LLVM is not on
 CMake's search path.
 
@@ -472,7 +472,10 @@ source, and `--build` builds first (it finds the Visual Studio environment
 itself); outside the runner, build before believing any failure.
 
 Useful `conec` options: `--ir` writes an IR/AST dump, `--llvmir` writes LLVM IR
-before and after optimization, `--wasm` targets WebAssembly, and `--path=<dir>`
+before and after optimization, `--wasm` targets WebAssembly,
+`--triple=spirv64-unknown-unknown` (OpenCL's form) or
+`--triple=spirv1.6-unknown-vulkan1.3` (Vulkan's) writes a SPIR-V module, `.spv`
+(`compiler/c/doc/phases/generation.md`, section 7, says how little it covers yet), and `--path=<dir>`
 adds a package folder searched before `packages/`. A source path ending in
 `.conebuild` is a build description, which lists a package's modules and files
 itself (`compiler/c/doc/nodes/module.md`, "A described build"). The output
