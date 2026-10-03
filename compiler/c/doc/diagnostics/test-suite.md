@@ -480,13 +480,19 @@ A bug fix lands with a scenario that fails without the fix.
 #### `llvmir`
 
 Matches against the **post-optimization** dump, `<name>.ir` — the IR that
-reaches the object file. Use it for what must survive the optimizer: a vtable
-slot that holds a bitcast rather than `null`, a `%"Meter:Vtable" = type`, the
-`$main = comdat` line. **A program's definitions are all internal, so only what
-`main` reaches survives**: the optimizer deletes an internal definition nothing
-references and folds the rest into `main`, which leaves a `compile` scenario's
-dump empty of functions and a `run` scenario's holding little but `main`, its
-globals and its constants. A check on anything else belongs on `preir`.
+reaches the object file. Use it for what must survive the optimizer, or what
+it must make of the code: the `$main = comdat` line, a library's export, a
+compare the optimizer removes. **A program's definitions are all internal, so
+only what `main` reaches survives**: a release build runs LLVM's standard
+pipeline, which deletes an internal definition or declaration nothing
+references, folds the rest into `main`, and calls a method straight where it
+sees the vtable a virtual reference was made from, deleting the vtable. That
+leaves a `compile` scenario's dump empty of functions and a `run` scenario's
+holding little but `main`, its globals and its constants; a check on anything
+else belongs on `preir`, or on a scenario compiled with `--library`, whose
+public functions are exported (`core_genllvm_shift`). The optimizer also adds
+attributes of its own to a definition's line (`noundef`, `local_unnamed_addr`),
+so a check matches from the part generation decides.
 **Never write an encoded symbol's bytes into it** — `@_CNvNt2Pt3get` is a
 `symbols` assertion, below, and the reader of a check is owed `Pt.get`. Bare
 names (`@main`, a root `fn`, a C name) are their own spelling and may appear

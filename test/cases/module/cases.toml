@@ -53,10 +53,11 @@ tags = ["parse", "nameres", "typecheck", "genllvm", "runtime"]
 # Pins today's spelling of an 'extern' declaration, so the symbol-generation
 # refactor can show nothing moved: the C name exactly as written, no prefix, a
 # 'declare' that leads no COMDAT. Both forms of the declaration -- in a block
-# and on its own -- come out the same.
+# and on its own -- come out the same. Read before the optimizer, which folds
+# 'abs' and 'labs' of constants, then deletes the declarations nothing calls.
 [[scenario.module_success.check]]
 name = "extern-declares-the-bare-c-name"
-target = "llvmir"
+target = "preir"
 contains = ["declare i32 @abs(i32)", "declare i64 @labs(i64)"]
 excludes = ["$abs", "$labs", "@abs(i32) comdat", "@labs(i64) comdat"]
 
@@ -1002,12 +1003,13 @@ description = "A 'main' returning nothing exits 0, from the end of its block, af
 tags = ["genllvm", "runtime"]
 
 # Generated returning i32 0 for the C runtime, rather than an undefined value
-# of Cone's empty 'void' type. Only main is pinned: an imported function nothing
-# calls stays in the module, returning %void as it declares.
+# of Cone's empty 'void' type. Only main is pinned: every other function
+# returning nothing returns %void as it declares. The optimizer adds attributes
+# of its own before the return type, so the line is matched from it.
 [[scenario.module_main_void.check]]
 name = "a-void-main-returns-i32-zero"
 target = "llvmir"
-contains = ["define i32 @main()", "ret i32 0"]
+contains = ["i32 @main()", "ret i32 0"]
 excludes = ["define %void @main"]
 
 [scenario.module_main_status]
@@ -1393,10 +1395,11 @@ tags = ["parse", "genllvm"]
 
 # '@c(system)' gives the C name and the x86 stdcall convention; on an 'extern'
 # declaration the DLL import storage class comes with it. The declaration takes
-# no prefix and no COMDAT.
+# no prefix and no COMDAT. Read before the optimizer, which deletes a
+# declaration nothing calls.
 [[scenario.module_extern_system.check]]
 name = "extern-system-declares-a-dllimport-stdcall-symbol"
-target = "llvmir"
+target = "preir"
 contains = ["declare dllimport x86_stdcallcc i32 @GetTickCount()"]
 excludes = ["$GetTickCount", "@GetTickCount() comdat"]
 
@@ -1445,10 +1448,12 @@ excludes = [
 ]
 
 # The struct's LLVM type is named after the type alone: an LLVM type name is
-# not an object-file symbol, so it takes no module path.
+# not an object-file symbol, so it takes no module path. Read before the
+# optimizer, which deletes 'uses', since nothing calls it, and with it every
+# declaration and the type.
 [[scenario.module_symbols.check]]
 name = "imported-struct-type-carries-no-module-path"
-target = "llvmir"
+target = "preir"
 contains = ["%Gadget = type"]
 excludes = ["%modulesyms_Gadget", '%"modulesyms.Gadget"']
 
@@ -2131,7 +2136,7 @@ excludes = ["define internal", "global internal", "define addOne", "define inner
 [[scenario.module_build_lib.check]]
 name = "exports-survive-optimisation"
 target = "llvmir"
-contains = ["define i64 @_CNvC1q6viaDep(", "@_CNvC1q7counter = global i64 0"]
+contains = ["define i64 @_CNvC1q6viaDep(", "@_CNvC1q7counter = local_unnamed_addr global i64 0"]
 
 # The same symbols, mangled: what an importer of q declares.
 [[scenario.module_build_lib.check]]

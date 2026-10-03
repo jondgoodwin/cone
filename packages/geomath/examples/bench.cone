@@ -1,0 +1,211 @@
+// Bench: what geomath's matrix arithmetic costs on the CPU, per operation, on
+// the real clock. It prints
+//
+// - scale: a slice of 16,384 f32 (64 KiB, so it stays in cache) scaled in
+//   place, 12,800 times over: a loop the optimiser can vectorise without
+//   reordering any sum;
+// - Mat4 * Mat4: a thousand matrices each multiplied by a rotation, a
+//   thousand times over;
+// - Mat4 * Vec4: 100,000 vectors carried through a matrix, 100 times over;
+// - Mat4 * point: 100,000 points carried through a matrix, 100 times over;
+// - Mat3 * Mat3: a thousand matrices each multiplied by a rotation, a
+//   thousand times over;
+//
+// then a hash of every result's bits, the same on every run, build and
+// machine: a change in it is a change in what the arithmetic computed, not in
+// how fast. Build it optimised to measure:
+//
+//   congo run --release packages/geomath/examples/bench.cone
+
+mod bench;
+
+import stdio use *;
+import libc;
+import time use Duration, Instant;
+import geomath use *;
+
+// FNV-1a over 32-bit words: a value's bits folded in, so any change shows
+fn mix(h u32, bits u32) u32 {(h ^ bits) * 16777619u32;}
+
+// A slice of n values of T, from the C allocator, never given back
+fn block[T](n usize) &[]mut T {
+  mem.sliceFromPartsMut(libc.malloc(n * mem.sizeof[T]()) as *T, n);
+}
+
+fn report(what &[]u8, took Duration, n u64) {
+  printStr(what);
+  printFloat(f64.from(took.nanos()) / f64.from(n));
+  printStr(" ns each\n");
+}
+
+fn scale(s &[]mut f32, k f32) {
+  mut i = 0usize;
+  while i < s.len {
+    s[i] = s[i] * k;
+    i = i + 1usize;
+  }
+}
+
+fn main() i32 {
+  imm axis = new Vec3(1., 2., 3.).normalize();
+  imm rot4 = Mat4.fromQuat(Quat.angleAxis(0.001, axis));
+  imm rot3 = Mat3.fromQuat(Quat.angleAxis(0.001, axis));
+  mut h = 2166136261u32;
+
+  // A slice scaled in place
+  {
+    imm n = 16384usize;
+    imm s = block[f32](n);
+    mut i = 0usize;
+    while i < n {
+      s[i] = f32.from(i % 1000usize) * 0.001;
+      i = i + 1usize;
+    }
+    imm t0 = Instant.now();
+    mut pass = 0u64;
+    while pass < 12800u64 {
+      scale(s, 0.9999);
+      pass = pass + 1u64;
+    }
+    report("scale, per element:    ", t0.elapsed(), 12800u64 * u64.from(n));
+    i = 0usize;
+    while i < n {
+      h = mix(h, s[i] as u32);
+      i = i + 1usize;
+    }
+  }
+
+  // Mat4 * Mat4
+  {
+    imm n = 1000usize;
+    imm mats = block[Mat4](n);
+    imm out = block[Mat4](n);
+    mut i = 0usize;
+    while i < n {
+      imm a = f32.from(i) * 0.01;
+      mats[i] = Mat4.fromTrs(new Vec3(a, 1. - a, 2. * a), Quat.angleAxis(a, axis), new Vec3(1., 1. + a, 1.));
+      i = i + 1usize;
+    }
+    imm t0 = Instant.now();
+    mut pass = 0u64;
+    while pass < 1000u64 {
+      i = 0usize;
+      while i < n {
+        out[i] = rot4 * mats[i];
+        i = i + 1usize;
+      }
+      i = 0usize;
+      while i < n {
+        mats[i] = out[i];
+        i = i + 1usize;
+      }
+      pass = pass + 1u64;
+    }
+    report("Mat4 * Mat4:           ", t0.elapsed(), 1000u64 * u64.from(n));
+    i = 0usize;
+    while i < n {
+      mut k = 0usize;
+      while k < 16usize {
+        h = mix(h, out[i].m[k] as u32);
+        k = k + 1usize;
+      }
+      i = i + 1usize;
+    }
+  }
+
+  // Mat4 * Vec4, and Mat4 * point
+  {
+    imm n = 100000usize;
+    imm v4 = block[Vec4](n);
+    imm o4 = block[Vec4](n);
+    imm p3 = block[Vec3](n);
+    imm o3 = block[Vec3](n);
+    mut i = 0usize;
+    while i < n {
+      imm a = f32.from(i % 977usize) * 0.01;
+      v4[i] = new Vec4(a, 1. - a, 2. * a, 1.);
+      p3[i] = new Vec3(a, 1. - a, 2. * a);
+      i = i + 1usize;
+    }
+    imm m = Mat4.fromTrs(new Vec3(1., 2., 3.), Quat.angleAxis(0.5, axis), new Vec3(2., 1., 0.5));
+
+    mut t0 = Instant.now();
+    mut pass = 0u64;
+    while pass < 100u64 {
+      i = 0usize;
+      while i < n {
+        o4[i] = m * v4[i];
+        i = i + 1usize;
+      }
+      pass = pass + 1u64;
+    }
+    report("Mat4 * Vec4:           ", t0.elapsed(), 100u64 * u64.from(n));
+
+    t0 = Instant.now();
+    pass = 0u64;
+    while pass < 100u64 {
+      i = 0usize;
+      while i < n {
+        o3[i] = m * p3[i];
+        i = i + 1usize;
+      }
+      pass = pass + 1u64;
+    }
+    report("Mat4 * point:          ", t0.elapsed(), 100u64 * u64.from(n));
+
+    i = 0usize;
+    while i < n {
+      h = mix(h, o4[i].x as u32);
+      h = mix(h, o4[i].y as u32);
+      h = mix(h, o4[i].z as u32);
+      h = mix(h, o4[i].w as u32);
+      h = mix(h, o3[i].x as u32);
+      h = mix(h, o3[i].y as u32);
+      h = mix(h, o3[i].z as u32);
+      i = i + 1usize;
+    }
+  }
+
+  // Mat3 * Mat3
+  {
+    imm n = 1000usize;
+    imm mats = block[Mat3](n);
+    imm out = block[Mat3](n);
+    mut i = 0usize;
+    while i < n {
+      imm a = f32.from(i) * 0.01;
+      mats[i] = Mat3.fromQuat(Quat.angleAxis(a, axis));
+      i = i + 1usize;
+    }
+    imm t0 = Instant.now();
+    mut pass = 0u64;
+    while pass < 1000u64 {
+      i = 0usize;
+      while i < n {
+        out[i] = rot3 * mats[i];
+        i = i + 1usize;
+      }
+      i = 0usize;
+      while i < n {
+        mats[i] = out[i];
+        i = i + 1usize;
+      }
+      pass = pass + 1u64;
+    }
+    report("Mat3 * Mat3:           ", t0.elapsed(), 1000u64 * u64.from(n));
+    i = 0usize;
+    while i < n {
+      mut k = 0usize;
+      while k < 9usize {
+        h = mix(h, out[i].m[k] as u32);
+        k = k + 1usize;
+      }
+      i = i + 1usize;
+    }
+  }
+
+  printStr("hash of every result: ");
+  printInt(i64.from(h));
+  printStr("\n");
+  0;
+}
