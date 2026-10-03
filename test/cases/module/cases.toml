@@ -1675,6 +1675,55 @@ contains = [
   "define internal float @scaleAdd(float %0, float %1, float %2)",
 ]
 
+# A reference's memory kind on a GPU target, settled from its origin. Before
+# it, a global's address handed to a function failed '--verify', and a struct
+# holding a reference crashed the Vulkan form's backend; in a debug build a
+# call handed a field of a local was a module the validator refused. A library
+# compile keeps the public functions, which nothing here calls: every other
+# one is inlined into them and gone. What the validator, spirv-val, makes of
+# the module is measured by hand; the suite needs no Vulkan SDK.
+[scenario.module_target_spirv_kinds]
+category = "compile"
+description = "On a SPIR-V target every call is inlined and each reference takes the address space of what it borrows, a local or a global, at every optimization level"
+tags = ["flow", "genllvm"]
+
+[[scenario.module_target_spirv_kinds.run]]
+name = "vulkan"
+options = ["--triple=spirv1.6-unknown-vulkan1.3", "--library", "--verify"]
+
+[[scenario.module_target_spirv_kinds.run]]
+name = "vulkan-debug"
+options = ["--triple=spirv1.6-unknown-vulkan1.3", "--library", "--verify", "--debug"]
+
+[[scenario.module_target_spirv_kinds.run]]
+name = "opencl"
+options = ["--triple=spirv64-unknown-unknown", "--library", "--verify"]
+
+[[scenario.module_target_spirv_kinds.run]]
+name = "opencl-debug"
+options = ["--triple=spirv64-unknown-unknown", "--library", "--verify", "--debug"]
+
+[[scenario.module_target_spirv_kinds.check]]
+name = "a-global-is-borrowed-through-the-flat-address-space"
+target = "preir"
+contains = [
+  "addrspacecast (ptr addrspace(",
+  "alwaysinline",
+]
+
+[[scenario.module_target_spirv_kinds.check]]
+name = "inlined-each-use-is-in-its-origins-address-space"
+target = "llvmir"
+contains = [
+  "define float @fromGlobal(float %0)",
+  "load float, ptr addrspace(",
+  "store float %2, ptr addrspace(",
+  "define float @spans(float %0)",
+  "define float @pairs(float %0)",
+  "define float @methods(float %0, i32 %1)",
+]
+excludes = ["addrspacecast", " call ", "define internal", "@bump", "@apply"]
+
 [scenario.module_c_threadlocal]
 category = "compile"
 description = "An 'extern' thread-local in a C-named module: a C thread-local, reached by its C name"

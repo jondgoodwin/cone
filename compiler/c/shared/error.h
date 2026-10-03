@@ -468,6 +468,13 @@ enum ErrorCode {
     ErrorActorMember = 1251,    // What an actor's body may not hold, or a form of it not built: a 'pub' field, a static, a 'pub' function without 'self', a generic message, a macro, a 'use', an 'extern' or a 'self' of another kind; a generic actor, its 'is', 'extends' or an attribute
     ErrorActorRuntime = 1252,   // An actor declared in a module that does not import the actors package it runs on
 
+    // GPU targets: what a SPIR-V module cannot hold, refused where it is
+    // written (ir/flowloan.c, "GPU targets"; genllvm/genllvm.c, genlGpuCalls)
+    ErrorGpuRefChoice = 1253,   // A reference, or a value holding one, chosen at run time: an 'if' or 'match' whose arms point at different places, or a holder used after paths that gave it different ones
+    ErrorGpuRefIndexed = 1254,  // An array or slice whose elements hold references, indexed by a value known only at run time
+    ErrorGpuRefGlobal = 1255,   // A module global or static whose type holds a reference
+    ErrorGpuRecursion = 1256,   // A function that calls itself, directly or through others
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name

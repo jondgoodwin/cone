@@ -467,9 +467,11 @@ void fnDclTypeCheck(TypeCheckState *pstate, FnDclNode *fnnode) {
     // A function the gate marked holds a borrow in a way only a walk following
     // each path can check, or has a variable whose state may differ by path,
     // whose drops only such a walk can decide: it is walked again, once
-    // blockFlow found no error, for either or both in one walk
-    if ((fstate.gate || fstate.dropgate) && errors == errorsOnEntry)
-        flowPathWalk(fnnode, fstate.gate != 0, fstate.dropgate);
+    // blockFlow found no error, for either or both in one walk. On a GPU
+    // target every function is walked for loans, whose checks there
+    // (flowloan.h, "GPU targets") no trigger of the gate stands for
+    if ((fstate.gate || fstate.dropgate || flowGpu) && errors == errorsOnEntry)
+        flowPathWalk(fnnode, fstate.gate != 0 || flowGpu, fstate.dropgate);
     if (timerFine)
         timerBegin(svTimer);
     flowGateCount(&fstate);

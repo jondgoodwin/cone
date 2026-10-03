@@ -365,6 +365,12 @@ static int genlGloVarIsConstant(VarDclNode *glovar) {
 void genlGloVar(GenState *gen, VarDclNode *varnode) {
     LLVMValueRef global = genlGloVarGlobal(varnode);
 
+    // A GPU's logical addressing keeps no pointer in memory, so on a GPU target
+    // no global holds a borrow (a string literal's global is its text)
+    if (gen->opt->gpu && !genlGloVarHasNul(varnode) && itypeCarriesBorrow(varnode->vtype))
+        errorMsgNode((INode*)varnode, ErrorGpuRefGlobal,
+            "On a GPU target a global may not hold a reference: a pointer cannot be kept in GPU memory. Keep an index into what it would point at instead.");
+
     // An extern global is defined in some other object file; this one only
     // names it, and a declaration may not lead a COMDAT
     if (!(varnode->dclinfo.facts & DclExternal))
@@ -669,7 +675,9 @@ void genlGloVarName(GenState *gen, VarDclNode *glovar) {
         SLitNode *strnode = (SLitNode*)glovar->value;
         LLVMTypeRef nultype = LLVMArrayType(LLVMInt8TypeInContext(gen->context), strnode->strlen + 1);
         global = LLVMAddGlobal(gen->module, nultype, nameSymbol(symbol, (INode*)glovar));
-        glovar->llvmvar = LLVMConstBitCast(global, LLVMPointerType(vartype, 0));
+        // On a GPU target the global is in an address space of its own, and
+        // its uses take the flat address (genlFlatAddr)
+        glovar->llvmvar = gen->opt->gpu ? global : LLVMConstBitCast(global, LLVMPointerType(vartype, 0));
     }
     else
         global = glovar->llvmvar = LLVMAddGlobal(gen->module, vartype, nameSymbol(symbol, (INode*)glovar));
@@ -1177,15 +1185,131 @@ void genlOut(char *objpath, char *asmpath, LLVMModuleRef mod, LLVMTargetMachineR
     }
 }
 
+// *********************
+// GPU targets: every function inlined, and none calling itself
+// *********************
+
+// The functions this object defines, in an open-addressed table by their LLVM
+// value, each with its state in the walk of who calls whom
+typedef struct {
+    LLVMValueRef *fns;
+    uint8_t *state;         // 0 not yet walked, 1 on the walk's path, 2 walked
+    uint32_t mask;
+    LLVMValueRef *path;     // the walk's path, outermost caller first
+    uint32_t depth;
+} GenlCallWalk;
+
+static uint32_t genlCallSlot(GenlCallWalk *walk, LLVMValueRef fn) {
+    uint32_t i = (uint32_t)(((uintptr_t)fn >> 4) * 2654435761u) & walk->mask;
+    while (walk->fns[i] && walk->fns[i] != fn)
+        i = (i + 1) & walk->mask;
+    return i;
+}
+
+// A function's name and line, for the message: its declaration's where the
+// compiler has one, else its symbol
+static void genlCallName(GenState *gen, LLVMValueRef fn, char *buf, size_t size) {
+    INode *owner = genlSymOwner(gen, fn);
+    size_t len;
+    if (owner && owner->tag == FnDclTag)
+        snprintf(buf, size, "'%s' (line %u)", &((FnDclNode*)owner)->namesym->namestr, owner->linenbr);
+    else
+        snprintf(buf, size, "'%s'", LLVMGetValueName2(fn, &len));
+}
+
+// Report the cycle on the walk's path from 'head', which the function last on
+// the path calls
+static void genlRecursion(GenState *gen, GenlCallWalk *walk, LLVMValueRef head) {
+    char chain[1024];
+    char name[256];
+    size_t used = 0;
+    uint32_t from = 0;
+    while (walk->path[from] != head)
+        ++from;
+    chain[0] = '\0';
+    for (uint32_t i = from; i < walk->depth && used < sizeof(chain) - 1; ++i) {
+        genlCallName(gen, walk->path[i], name, sizeof(name));
+        used += snprintf(chain + used, sizeof(chain) - used, "%s%s", i == from ? "" : i == from + 1 ? " calls " : ", which calls ", name);
+    }
+    if (used < sizeof(chain) - 1)
+        snprintf(chain + used, sizeof(chain) - used, walk->depth - from > 1 ? ", which calls it again" : " calls itself");
+    INode *owner = genlSymOwner(gen, head);
+    const char *msg = "On a GPU target a function may not call itself, directly or through others: every function is inlined there, and Vulkan's SPIR-V allows no recursion. %s.";
+    if (owner)
+        errorMsgNode(owner, ErrorGpuRecursion, msg, chain);
+    else
+        errorMsg(ErrorGpuRecursion, msg, chain);
+}
+
+static void genlCallWalk(GenState *gen, GenlCallWalk *walk, LLVMValueRef fn) {
+    walk->state[genlCallSlot(walk, fn)] = 1;
+    walk->path[walk->depth++] = fn;
+    for (LLVMBasicBlockRef blk = LLVMGetFirstBasicBlock(fn); blk; blk = LLVMGetNextBasicBlock(blk)) {
+        for (LLVMValueRef inst = LLVMGetFirstInstruction(blk); inst; inst = LLVMGetNextInstruction(inst)) {
+            if (!LLVMIsACallInst(inst))
+                continue;
+            LLVMValueRef callee = LLVMGetCalledValue(inst);
+            if (!LLVMIsAFunction(callee) || LLVMIsDeclaration(callee))
+                continue;
+            uint8_t *state = &walk->state[genlCallSlot(walk, callee)];
+            if (*state == 1)
+                genlRecursion(gen, walk, callee);
+            else if (*state == 0)
+                genlCallWalk(gen, walk, callee);
+        }
+    }
+    walk->state[genlCallSlot(walk, fn)] = 2;
+    --walk->depth;
+}
+
+// A GPU has no call stack to speak of, and Vulkan's SPIR-V types a pointer by
+// the memory it points into: only with every call inlined does each borrow
+// have one origin, whose address space LLVM's inference then settles. So
+// every function this object defines is marked 'alwaysinline', which the
+// always-inliner honours at every optimization level (genpgm), and one that
+// calls itself, which no inliner can remove, is refused.
+static void genlGpuCalls(GenState *gen) {
+    uint32_t nfns = 0;
+    for (LLVMValueRef fn = LLVMGetFirstFunction(gen->module); fn; fn = LLVMGetNextFunction(fn)) {
+        if (!LLVMIsDeclaration(fn))
+            ++nfns;
+    }
+    GenlCallWalk walk;
+    uint32_t cap = 16;
+    while (cap < nfns * 2)
+        cap <<= 1;
+    walk.mask = cap - 1;
+    walk.fns = (LLVMValueRef *)memAllocBlk(cap * sizeof(LLVMValueRef));
+    walk.state = (uint8_t *)memAllocBlk(cap);
+    walk.path = (LLVMValueRef *)memAllocBlk((nfns + 1) * sizeof(LLVMValueRef));
+    walk.depth = 0;
+    memset(walk.fns, 0, cap * sizeof(LLVMValueRef));
+    memset(walk.state, 0, cap);
+    for (LLVMValueRef fn = LLVMGetFirstFunction(gen->module); fn; fn = LLVMGetNextFunction(fn)) {
+        if (LLVMIsDeclaration(fn))
+            continue;
+        walk.fns[genlCallSlot(&walk, fn)] = fn;
+        genlFnAttr(gen, fn, "alwaysinline");
+    }
+    for (LLVMValueRef fn = LLVMGetFirstFunction(gen->module); fn; fn = LLVMGetNextFunction(fn)) {
+        if (!LLVMIsDeclaration(fn) && walk.state[genlCallSlot(&walk, fn)] == 0)
+            genlCallWalk(gen, &walk, fn);
+    }
+}
+
 // Generate IR nodes into LLVM IR using LLVM
 void genpgm(GenState *gen, ProgramNode *pgm) {
     char *err;
 
     // Generate IR to LLVM IR
     genlProgram(gen, pgm);
+    if (gen->opt->gpu && !errors)
+        genlGpuCalls(gen);
 
     // Generation reports only what makes an object wrong -- a C name declared
-    // two ways (genlClaimSymbol) -- so nothing is emitted after one
+    // two ways (genlClaimSymbol); on a GPU target, a global holding a borrow
+    // (genlGloVar) or a function calling itself (genlGpuCalls) -- so nothing
+    // is emitted after one
     if (errors) {
         LLVMDisposeModule(gen->module);
         return;
@@ -1214,12 +1338,26 @@ void genpgm(GenState *gen, ProgramNode *pgm) {
     // eliminate common subexpressions, and simplify the control flow graph.
     // Then, in a release build only, inline. No target machine is given, so the
     // inliner's costs are the target-independent ones.
+    //
+    // A GPU target's pipeline begins the same way at every optimization level,
+    // debug too, since without it the module is not valid SPIR-V: inline every
+    // call (genlGpuCalls), break each struct and array into separate values
+    // (so a struct holding a reference dissolves into locals), and infer each
+    // pointer's address space from its origin, given the target machine
+    // (genlLLVMOptions names the flat space); then fold what that leaves. A
+    // release build adds the usual optimizations. Instcombine is not asked to
+    // prove it reached a fixpoint, which LLVM's own pipelines do not ask
+    // either, and which a 3x3 matrix's product does not reach in one round.
     timerBegin(OptTimer);
-    const char *pipeline = gen->opt->release
+    const char *pipeline = gen->opt->gpu
+        ? (gen->opt->release
+            ? "always-inline,function(sroa,infer-address-spaces,instcombine<no-verify-fixpoint>,reassociate,gvn,simplifycfg)"
+            : "always-inline,function(sroa,infer-address-spaces,instcombine<no-verify-fixpoint>,simplifycfg)")
+        : gen->opt->release
         ? "function(mem2reg,reassociate,gvn,simplifycfg),cgscc(inline)"
         : "function(mem2reg,reassociate,gvn,simplifycfg)";
     LLVMPassBuilderOptionsRef passopts = LLVMCreatePassBuilderOptions();
-    LLVMErrorRef passerr = LLVMRunPasses(gen->module, pipeline, NULL, passopts);
+    LLVMErrorRef passerr = LLVMRunPasses(gen->module, pipeline, gen->opt->gpu ? gen->machine : NULL, passopts);
     LLVMDisposePassBuilderOptions(passopts);
     if (passerr) {
         char *msg = LLVMGetErrorMessage(passerr);
@@ -1237,9 +1375,8 @@ void genpgm(GenState *gen, ProgramNode *pgm) {
     // SPIR-V module, named as shader tools name one
     timerBegin(CodeGenTimer);
     if (gen->machine) {
-        int spirv = strncmp(gen->opt->triple, "spirv", 5) == 0;
-        char *objfile = gen->opt->wasm? "wasm" : spirv? "spv" : objext;
-        char *asmfile = gen->opt->wasm? "wat" : spirv? "spvasm" : asmext;
+        char *objfile = gen->opt->wasm? "wasm" : gen->opt->gpu? "spv" : objext;
+        char *asmfile = gen->opt->wasm? "wat" : gen->opt->gpu? "spvasm" : asmext;
         genlOut(fileMakePath(gen->opt->output, gen->opt->srcname, objfile),
             gen->opt->print_asm? fileMakePath(gen->opt->output, gen->opt->srcname, asmfile) : NULL,
             gen->module, gen->machine);
@@ -1268,26 +1405,46 @@ static int genlComdatSupport(char *triple) {
 // CONE_LLVM_OPTIONS, separated by spaces, as a testing aid: for instance
 // '-force-opaque-pointers', which LLVM 13 reads when it creates its context.
 // So this runs before anything creates one.
-static void genlLLVMOptions() {
+//
+// A GPU target adds one of its own. Every Cone reference is in address space
+// 0, and a global's address is cast there where it is taken (genlVarSym), for
+// LLVM's address-space inference to undo once every call is inlined. That
+// inference rewrites only casts into the target's flat address space, which
+// for SPIR-V's Vulkan form is 0 but for its OpenCL form is 4 (Generic), so 0
+// is named the flat space for both. And machine CSE is off: LLVM 23's SPIR-V
+// backend lets it hoist a computation both successors of a loop's header make
+// into the header, after the OpLoopMerge it has already placed there, which
+// must come just before the branch (a loop whose body and exit both scale a
+// struct's field, once the struct is broken into values, is refused by the
+// validator in a release build).
+static void genlLLVMOptions(int gpu) {
     char *env = getenv("CONE_LLVM_OPTIONS");
-    if (env == NULL || *env == '\0')
-        return;
-    char *opts = memAllocStr(env, strlen(env));
     const char *argv[64];
     int argc = 0;
     argv[argc++] = "conec";
-    char *next = strtok(opts, " ");
-    while (next && argc < 64) {
-        argv[argc++] = next;
-        next = strtok(NULL, " ");
+    if (gpu) {
+        argv[argc++] = "-assume-default-is-flat-addrspace";
+        argv[argc++] = "-disable-machine-cse";
     }
-    LLVMParseCommandLineOptions(argc, argv, "");
+    if (env != NULL && *env != '\0') {
+        char *opts = memAllocStr(env, strlen(env));
+        char *next = strtok(opts, " ");
+        while (next && argc < 64) {
+            argv[argc++] = next;
+            next = strtok(NULL, " ");
+        }
+    }
+    if (argc > 1)
+        LLVMParseCommandLineOptions(argc, argv, "");
 }
 
 void genSetup(GenState *gen, ConeOptions *opt) {
     gen->opt = opt;
     gen->libroot = NULL;
-    genlLLVMOptions();
+    // A SPIR-V triple is a GPU target (the default triple is the host's, never
+    // one). Type check's flow reads this before anything is generated.
+    opt->gpu = opt->triple != NULL && strncmp(opt->triple, "spirv", 5) == 0;
+    genlLLVMOptions(opt->gpu);
 
     LLVMTargetMachineRef machine = genlCreateMachine(opt);
     if (!machine)

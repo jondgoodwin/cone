@@ -183,7 +183,9 @@ The walk also records whether the function holds a borrow in a way that only a
 walk following each path could check. `fnDclTypeCheck` reads it: a function it
 marks, and in which `blockFlow` reported no error, is walked again by the loan
 walk (below); any other is not, which is what keeps the cost of freezing off
-code that holds no borrow. `FlowState.gate` gathers one bit per trigger:
+code that holds no borrow. On a GPU target every function is walked, for the
+checks no trigger stands for ("GPU targets", below). `FlowState.gate` gathers
+one bit per trigger:
 
 | Bit | Set by | When |
 | --- | --- | --- |
@@ -635,7 +637,9 @@ either marks is walked once for both. The loan gate's client enforces
 last use (`ir/flowloan.c`); and **escapes**: what is returned, or stored where
 it may outlive the function, holds no loan of the function's own storage.
 Walked for drop flags alone, it makes no loans. The
-drop gate's is **drop flags** (`ir/flowdrop.c`, "Drop flags", below).
+drop gate's is **drop flags** (`ir/flowdrop.c`, "Drop flags", below). On a GPU
+target the loans have a third client, which refuses a reference chosen at run
+time ("GPU targets", below), and every function is walked for it.
 
 **It is read-only while it walks.** It injects nothing and changes no node, so it may walk a
 loop body more than once; that is its difference from the main walk, which
@@ -1104,6 +1108,51 @@ reason: flow never runs re-entrantly (`flowPathWalk` refuses to). The buffers
 come from the compiler's arena, small at first, and are kept from one walk to
 the next; a variable's index is `VarDclNode.flowindex` for the length of a walk.
 
+### GPU targets
+
+On a GPU target (`flowGpu`, set from the triple before parsing) the loan walk
+has a third client. A GPU types each pointer by the memory it points into, and
+generation settles that from where each borrow came from, once every call is
+inlined ([Generation](generation.md), section 7). SPIR-V's logical addressing,
+and WGSL, cannot choose a pointer at run time (no select or phi of pointers),
+nor keep one in memory. So whatever would give a reference more than one
+origin is refused, **whatever memory its choices are in**, two locals as well
+as a local and a global. Every function is walked for loans there
+(`fnDclTypeCheck`), since no gate trigger stands for these checks.
+
+**A choice is where paths meet and a value's near loans differ between them.**
+Near loans are exactly where a value's borrows point, so two paths whose near
+loans differ point at different places (`loanNearApart`). Three kinds of place:
+
+- an `if`'s value, between its arms (`pwIf`), and a block's, between its
+  `break`s and its end (`pwBlockExits`, `pwLoop`), reported at once, at the
+  `if` or the block (`loanChosen`); and a function's returns, each against the
+  first (`pwStmts`), reported at the return, so `fn pick(a &f32, b &f32) &f32
+  {if c {a;} else {b;};}` is refused in its own body, wherever it is called
+  from;
+- a holder at a join (`pathJoin`), loop heads included: a pending conflict of
+  its own (`loanChosenPending`, kind `PendingChosen`), fired at the holder's
+  next use, as a frozen borrow's is, and dropped when the holder is reassigned
+  whole. So `r = &a; ... r = &total; *r` in a straight line, and a reference
+  declared afresh on each pass of a loop, are no choice;
+- a call's result is none: it carries every loan its arguments do, near and
+  far (`pathSetUnsure`), but the callee is held to the same rule in its own
+  body.
+
+Each is `ErrorGpuRefChoice`, naming the two places with where each was
+borrowed, and, when one is a local and the other a global, that they are two
+kinds of memory. A choice only read through is refused too, though LLVM would
+make it a choice of value. A struct holding references is chosen as a
+reference is: its near loans are its fields'.
+
+**An array or slice whose elements hold references, indexed by a value known
+only at run time** (`pwPlace`, `pwIsLitIndex`) is `ErrorGpuRefIndexed`
+(`loanIndexedRefs`): such an array must break into separate values, which
+only a literal or a named constant's index allows.
+
+A global holding a reference, and recursion, are generation's to refuse,
+where the module's globals and its calls are known.
+
 ### Drop flags
 
 [Jon 26 Sep: runtime drop flags, and conditional handling as a general flow
@@ -1330,7 +1379,7 @@ allocation. A variable with `VarDropFlag` needs each marked move of it
 
 | File | Function | Purpose |
 | --- | --- | --- |
-| `ir/stmt/fndcl.c` | `fnDclTypeCheck` | the only entry point; the per-function error-delta gate; `FlowTimer` round `blockFlow` and the path walk under `-V 1`; the path walk on a function either gate marked, `blockFlow` having found no error in it; `flowGateCount` after it |
+| `ir/stmt/fndcl.c` | `fnDclTypeCheck` | the only entry point; the per-function error-delta gate; `FlowTimer` round `blockFlow` and the path walk under `-V 1`; the path walk on a function either gate marked, or on every function on a GPU target, `blockFlow` having found no error in it; `flowGateCount` after it |
 | `ir/flowpath.c` | `flowPathWalk`, `flowPathPrint` | the path walk (§6): its entry, for loans, drops or both, and its `-V 2` tallies |
 | | `pathSetFacts`, `pathSetState`, `pathRollback`, `pathDelta`, `pathJoin` | the state per path: set a fact (loans, or a drop state), recording the old one; undo to a fork; what a path changed; join paths |
 | | `pwValue`, `pwPlace`, `pwThrough`, `pwBorrow`, `pwLend`, `pwOwnedLent`, `pwStore`, `pwSwap`, `pwVarDcl` | the walk's dispatch: what each node accesses, which holders it uses, what loans its value carries |
@@ -1341,6 +1390,7 @@ allocation. A variable with `VarDropFlag` needs each marked move of it
 | | `pwNamedSig`, `pwArgCarries`, `pwCallerLoans`, `pwStoreApart`, `pwStaticArgs`, `pwBoundHolds` | named lifetimes: the callee's signature where it names them; what of each argument a result or a store through a writable one may carry; a parameter's caller loans, part by part; a caller loan stored apart from its lifetime; a `'static` parameter's argument, or one a `'static` bound governs; what a bounded virtual reference holds, returned or stored |
 | | `pwStmts`, `pwBlock`, `pwBlockExits`, `pwLoop`, `pwIf`, `pwJump`, `pwScopeEnd`, `pwScopeEndHanding`, `pwHolderDies`, `pwExit` | forks and joins, loops to a fixed point, jumps, a scope's end as an access (with a block's value in flight), a finalizing holder's death as a use, and an exit's record for the drop-flag client |
 | | `pwDropUse` | a use of a place's root variable, checked by the drop-flag client |
+| | `pwGpuOneValue`, `pwIsLitIndex`, `pathGpuChoices`, `pwRetFirst` | GPU targets: an `if`'s or a block's value, and a function's returns, against each other (`pathJoin` compares a holder's paths); a literal index |
 | `ir/flowdrop.c` | `dropMove`, `dropUse`, `dropRefuse` | a marked move's new state; a use some path left without its value, refused once |
 | | `dropStore`, `dropPartStore`, `dropExit` | what each variable a release releases may hold there, gathered over every walk |
 | | `dropWalkEnd`, `dropApplyExit`, `dropApplyStore`, `dropApplyPart`, `dropPrint` | a flag for each variable whose state differs at a release; each exit's list rebuilt, each store marked; the `-V 2` tally |
@@ -1348,7 +1398,8 @@ allocation. A variable with `VarDropFlag` needs each marked move of it
 | | `loanIsLocal`, `loanLocalIn`, `loanMayPointOut`, `loanMayBePointee`, `loanEscape` | a loan of the function's own storage; whether a reference may point beyond the function; an escape reported (`ErrorEscape`, `ErrorCallEscape`) |
 | | `loanCallerApart`, `loanStoredApart`, `loanNotGlobalIn`, `loanApart`, `loanNotGlobal` | named lifetimes: a caller loan whose part flows to no lifetime where it goes, or a loan that is not global, and their reports |
 | | `loanWhole` | a loan of the whole of its root, where a slot's tag stays the root's |
-| | `loanAccess`, `loanUse` | a conflicting access records a pending conflict on each holder of the loan; a use of the holder fires it (`ErrorFrozen`) |
+| | `loanAccess`, `loanUse` | a conflicting access records a pending conflict on each holder of the loan; a use of the holder fires it (`ErrorFrozen`, or `ErrorGpuRefChoice` for a `PendingChosen` one) |
+| | `loanNearApart`, `loanChosen`, `loanChosenPending`, `loanIndexedRefs`, `loanOrigin`, `loanMemory` | GPU targets: whether two paths' values point at different places; a choice reported at once, or pending on a holder; a run-time index of references refused; where each choice points, for the message |
 | `ir/stmt/module.c` | `modInitOf`, `modInitFlowBegin`, `modInitFlowEnd` | round a module's `init` only: its module's globals without a value start the pass uninitialized, as locals, so `init` assigns each once and reads none first; one never assigned is `ErrorGlobalUninit`. [module](../nodes/module.md), "Init and final" |
 | `ir/flow.c` | `flowLoadValue` | the walk's spine — tag dispatch for a value being read |
 | | `flowLoadThroughRef` | `MayRead` on the reference a value is read through; called from `derefFlow`, `fnCallArrIndexFlow` and `fnCallFldAccessFlow` |

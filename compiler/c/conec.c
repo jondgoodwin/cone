@@ -186,6 +186,7 @@ int main(int argc, char **argv) {
     // We set up generation early because we need target info, e.g.: pointer size
     timerBegin(SetupTimer);
     genSetup(&gen, &coneopt);
+    flowGpu = coneopt.gpu;
 
     // Parse source file, do semantic analysis, and generate code
     timerBegin(ParseTimer);
