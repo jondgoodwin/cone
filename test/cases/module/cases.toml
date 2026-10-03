@@ -1900,6 +1900,84 @@ contains = [
 ]
 excludes = ["addrspacecast", "getelementptr float,", "getelementptr inbounds float,", " i64 "]
 
+# What spirv-val makes of the module, valid for Vulkan 1.3 in both runs, is
+# measured by hand, and the functions' results against the CPU's on a GPU
+# (generation.md, section 7); the suite needs no Vulkan SDK.
+[scenario.module_target_spirv_math]
+category = "compile"
+description = "The C library's math functions on SPIR-V's Vulkan form: each call, by its C symbol, the LLVM intrinsic the SPIR-V back end selects as GLSL.std.450's instruction, fmod OpFRem, and nothing imported"
+tags = ["genllvm"]
+
+[[scenario.module_target_spirv_math.run]]
+name = "vulkan"
+options = ["--triple=spirv1.6-unknown-vulkan1.3", "--verify"]
+
+[[scenario.module_target_spirv_math.run]]
+name = "vulkan-debug"
+options = ["--triple=spirv1.6-unknown-vulkan1.3", "--verify", "--debug"]
+
+# Every float form, and libc's inline fabsf the float intrinsic, not fabs widened
+[[scenario.module_target_spirv_math.check]]
+name = "each-math-call-is-an-intrinsic"
+target = "llvmir"
+contains = [
+  "call float @llvm.sin.f32(",
+  "call float @llvm.cos.f32(",
+  "call float @llvm.tan.f32(",
+  "call float @llvm.asin.f32(",
+  "call float @llvm.acos.f32(",
+  "call float @llvm.atan.f32(",
+  "call float @llvm.atan2.f32(",
+  "call float @llvm.exp.f32(",
+  "call float @llvm.log.f32(",
+  "call float @llvm.pow.f32(",
+  "call float @llvm.sqrt.f32(",
+  "call float @llvm.fabs.f32(",
+  "call float @llvm.floor.f32(",
+  "call float @llvm.ceil.f32(",
+  "frem float",
+  "call double @llvm.sqrt.f64(",
+  "call double @llvm.floor.f64(",
+  "call double @llvm.ceil.f64(",
+  "frem double",
+]
+excludes = [
+  "@sinf", "@cosf", "@tanf", "@asinf", "@acosf", "@atanf", "@atan2f", "@expf", "@logf",
+  "@powf", "@sqrtf", "@fabsf", "@floorf", "@ceilf", "@fmodf",
+  "@sqrt(", "@floor(", "@ceil(", "@fmod(", "@fabs(", "@llvm.fabs.f64",
+]
+
+# What the SPIR-V back end selects: GLSL.std.450's instructions
+[[scenario.module_target_spirv_math.check]]
+name = "each-intrinsic-is-a-glsl-instruction"
+target = "asm"
+contains = [
+  "OpExtInstImport \"GLSL.std.450\"",
+  " Sin %", " Cos %", " Tan %", " Asin %", " Acos %", " Atan %", " Atan2 %",
+  " Exp %", " Log %", " Pow %", " Sqrt %", " FAbs %", " Floor %", " Ceil %",
+  "OpFRem %",
+]
+
+[scenario.module_target_spirv_switch]
+category = "compile"
+description = "An if-elif chain on one integer on SPIR-V's Vulkan form, which the optimizer makes a switch: made a tree of comparisons before the control flow is structured, so no arm branches on nothing"
+tags = ["genllvm"]
+
+[[scenario.module_target_spirv_switch.run]]
+name = "vulkan"
+options = ["--triple=spirv1.6-unknown-vulkan1.3", "--verify"]
+
+[[scenario.module_target_spirv_switch.run]]
+name = "vulkan-debug"
+options = ["--triple=spirv1.6-unknown-vulkan1.3", "--verify", "--debug"]
+
+# The switch's tree: a pivot's comparison and each arm's
+[[scenario.module_target_spirv_switch.check]]
+name = "each-arm-compares-the-integer"
+target = "llvmir"
+contains = ["icmp sge i32 ", "icmp eq i32 "]
+excludes = ["br i1 undef", "br i1 poison", "switch i32"]
+
 # On the CPU an entry point is an ordinary function, called in a loop that
 # fills Invocation as a dispatch would
 [scenario.module_compute_cpu]

@@ -1198,6 +1198,11 @@ it. So the GPU pipeline and what follows it keep to those shapes:
   branch, as a module the validator refuses, and with CodeGenPrepare on, the
   latter crashed it. A function it structures has one return, so a kernel's
   returns, one for each failed check, are made one (`genlGpuOneReturn`).
+  `structurizecfg` takes no switch: it leaves each of a switch's branches a
+  `br i1 undef`, which the validator accepts and the GPU runs as it pleases.
+  simplifycfg makes a switch of an if-elif chain on one integer, so
+  `lower-switch` makes each switch a tree of comparisons just before it
+  (`module_target_spirv_switch`).
 - **A struct or array is loaded from or stored into a storage buffer a scalar
   at a time** (`genlGpuBufferAccess`, after the pipeline): the backend gives
   the buffer's laid-out struct and a local's two SPIR-V types, and a whole
@@ -1303,7 +1308,7 @@ two halves, before its control flow is structured:
   generation (`ErrorGpuRefChoice`).
 
 The second half (`globaldce`, `infer-address-spaces` again, for what the
-folding made, `instsimplify`, `adce`, `structurizecfg`) follows. A library
+folding made, `instsimplify`, `adce`, `lower-switch`, `structurizecfg`) follows. A library
 compiled for a GPU makes no kernel of a function that is no entry point: its
 failure calls stay calls to a function the module imports, and a slice
 indexed in it has nothing to be folded into.
@@ -1311,6 +1316,50 @@ indexed in it has nothing to be folded into.
 An entry point compiled for the OpenCL form is refused
 (`ErrorComputeTarget`), and two of one name in a compile
 (`ErrorComputeAttr`), since a dispatch finds a kernel by its name.
+
+### The C library's math
+
+**No GPU has the C library, so its math is the GPU's own** (`genlGpuMath`,
+called by `genlFnCallInternal` before a call or an inline body is
+generated). A call to a function whose C symbol is one of the C library's
+math functions, `libc`'s bindings or any `@c` declaration of the same
+symbol, its arguments of the type the name says (`float` with an `f` after
+it, else `double`), is on a GPU target the LLVM intrinsic of the same
+meaning, which LLVM 23's SPIR-V backend selects as GLSL.std.450's extended
+instruction: `sqrt`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`,
+`exp`, `log`, `pow`, `fabs`, `floor` and `ceil`, each `llvm.<name>`; `fmod`
+is `frem`, SPIR-V's OpFRem, whose sign is x's, as C's is. `fabsf`, which
+`libc` writes inline as `fabs` widened and narrowed (the UCRT has no symbol
+for it), is caught before its body is expanded, so the module asks for no
+64-bit float. The OpenCL form selects OpenCL.std's instructions for the same
+intrinsics. The CPU is untouched, and the C library is called there. Core's
+`sqrt`, `sin` and `cos` methods are `llvm.sqrt`, `llvm.sin` and `llvm.cos` on
+every target.
+
+`module_target_spirv_math` pins the intrinsics and the instructions (its
+`asm` check reads `--asm`'s `.spvasm`). The double forms of `sqrt`, `fabs`,
+`floor`, `ceil` and `fmod` are valid at 64 bits, with the `Float64`
+capability; GLSL.std.450 has no 64-bit trigonometry, `exp`, `log` or `pow`,
+and the validator refuses a module that calls one. `copysign` and `ldexp`,
+which `libc` does not bind, have intrinsics LLVM 23's backend cannot select.
+
+What each computes, against the CPU's C library, was measured on an RTX 4060
+over 65,536 arguments a function: `fabs`, `floor` and `ceil` bit for bit;
+`fmod` bit for bit as the driver compiles it; `sqrt` within 1 ulp; `asin`,
+`acos`, `atan` and `atan2` within 2; `exp` within 8 over [-10, 10]; `pow`
+within 27; `log` within 87 ulp near 1, where it is near 0; `sin` and `cos`
+within 4e-7 absolute in [-pi, pi], 1e-5 in [-100, 100]; `tan` within 4e-5 in
+[-1.5, 1.5]. Vulkan's own bounds are in the [reference](../../../../doc/reference/refgpu.html).
+
+**Nothing marks a float operation `NoContraction`**, so the driver may fuse
+a multiply and an add into one rounding, and does: noise's `fbm3`, all adds,
+multiplies and `floor`, matched the CPU at a fifth of the bake test's 262,144
+voxels (within 1.2e-6), and at every voxel once a module patched after the
+fact decorated every float result `NoContraction`, as slangc's
+`-fp-mode precise` does. LLVM 23's backend emits no such decoration from
+IR (neither `!spirv.Decorations` metadata on an instruction nor
+`llvm.spv.assign.decoration` on a value reaches the module); `genlGpuPatch`
+is where it could be added.
 
 ### What invocations share
 
@@ -1391,14 +1440,11 @@ What does not work yet:
   invocations read, after a barrier, what invocations after them write (a
   workgroup's prefix sum) gives another answer on the CPU; nothing refuses
   it.
-
-- The math functions Cone takes from the C library (`floorf`, `ceilf` and
-  their kind, which noise's lattice and sdf's grid call) are left as imports,
-  so a kernel calling one carries the `Linkage` capability, which Vulkan's
-  environment refuses. An imported package's functions are left as imports
-  where a build description compiles the package on its own; found on the
-  package search path, as a direct `conec` compile finds geomath, it is
-  compiled into the kernel's object.
+- An imported package's functions are left as imports where a build
+  description compiles the package on its own, so a kernel calling one
+  carries the `Linkage` capability, which Vulkan's environment refuses; found
+  on the package search path, as a direct `conec` compile finds geomath, the
+  package is compiled into the kernel's object.
 - A library's function taking a slice, compiled for a GPU on its own, has its
   slice's elements reached by arithmetic, which the validator refuses: only
   in a kernel is there an origin to fold them into.
@@ -1470,6 +1516,7 @@ variables.
 | | `genlVtableThunk` | the function filling a slot a folded method satisfies: shift the receiver along the recorded field path, tail-call the method |
 | `genllvm/genlgpu.c` | `genlComputeEntry`, `genlGpuInvocation`, `genlGpuHandle`, `genlGpuArrayLength` | a compute entry point's kernel: its parameters from the bindings and the built-ins, each buffer's count by a call `genlGpuPatch` rewrites (section 7, "Compute entry points") |
 | | `genlGpuFailCheck`, `genlGpuPanic`, `genlIsConePanic` | on a GPU target, a failed check and core's `panic` as a call to `cone.gpu.fail` |
+| | `genlGpuMath` | on a GPU target, a call to the C library's math by its C symbol as the LLVM intrinsic, GLSL.std.450's instruction (section 7, "The C library's math") |
 | | `genlGpuEntries`, `genlGpuRecord`, `genlGpuFileId`, `genlGpuOneReturn` | each kernel settled once everything is inlined: a failure recorded in its error buffer and the kernel left, its returns made one |
 | | `genlGpuSlices`, `genlGpuFold`, `genlGpuPartOf`, `genlGpuSite` | each step by pointer arithmetic folded into an access chain of a buffer or fixed array, or refused (`ErrorGpuSliceOrigin`) where the node it was made for is |
 | | `genlGpuBufferAccess` | a struct or array loaded from or stored into a storage buffer a scalar at a time |

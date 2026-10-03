@@ -793,13 +793,15 @@ def load_group(group_dir: Path, codes: dict[str, int]) -> list[Scenario]:
         checks = []
         for entry in table.get("check", []):
             _require_keys(f"{where}.check", entry, {"name", "target", "contains", "excludes", "object"})
-            if entry.get("target") not in ("llvmir", "preir", "symbols", "stdout"):
+            if entry.get("target") not in ("llvmir", "preir", "symbols", "asm", "stdout"):
                 raise SuiteError(
-                    f"{where}.check: target must be 'llvmir', 'preir', 'symbols' or 'stdout'")
+                    f"{where}.check: target must be 'llvmir', 'preir', 'symbols', 'asm' or 'stdout'")
             # 'object' reads what a package the scenario links generated
             if "object" in entry:
                 if entry["target"] == "stdout":
                     raise SuiteError(f"{where}.check: 'object' names a generated object, which has no stdout")
+                if entry["target"] == "asm":
+                    raise SuiteError(f"{where}.check: 'asm' reads the scenario's own assembly, not a linked object's")
                 if entry["object"] not in {path.stem for path in link}:
                     raise SuiteError(
                         f"{where}.check: 'object' names {entry['object']!r}, which is not the stem"
@@ -807,7 +809,7 @@ def load_group(group_dir: Path, codes: dict[str, int]) -> list[Scenario]:
             if entry["target"] == "stdout" and category != "run":
                 raise SuiteError(
                     f"{where}.check: only a 'run' scenario produces stdout to check")
-            if entry["target"] in ("llvmir", "preir", "symbols") and category not in ("compile", "run"):
+            if entry["target"] in ("llvmir", "preir", "symbols", "asm") and category not in ("compile", "run"):
                 raise SuiteError(
                     f"{where}.check: a {category!r} scenario reaches no code generation")
             checks.append(Check(
@@ -2335,6 +2337,8 @@ class Runner:
             options.append("--checktree")
         if any(c.target in ("llvmir", "preir", "symbols") for c in scenario.checks):
             options.append("--llvmir")
+        if any(c.target == "asm" for c in scenario.checks):
+            options.append("--asm")
 
         out_rel = out_dir.relative_to(REPO).as_posix()
 
@@ -2437,6 +2441,7 @@ class Runner:
             self.check_artifacts(result, scenario, out_dir, "llvmir")
             self.check_artifacts(result, scenario, out_dir, "preir")
             self.check_artifacts(result, scenario, out_dir, "symbols")
+            self.check_artifacts(result, scenario, out_dir, "asm")
         if result.status == PASS and scenario.category == "run":
             self.link_and_run(result, scenario, spec, out_dir)
             if result.status == PASS:
@@ -2716,8 +2721,8 @@ class Runner:
     def check_artifacts(self, result: Result, scenario: Scenario,
                         out_dir: Path, target: str) -> None:
         """R2.3. Named checks against a generated artifact — LLVM IR, the
-        symbols it declares, or a run's stdout — for what has no source line
-        to attach to."""
+        symbols it declares, the target's assembly, or a run's stdout — for
+        what has no source line to attach to."""
         symbols: dict[str, str] = {}
         for check in scenario.checks:
             if check.target != target:
@@ -2761,6 +2766,17 @@ class Runner:
                     (out_dir / f"{stem}.symbols").write_text(
                         symbols[stem], encoding="utf-8")
                 text = symbols[stem]
+            elif check.target == "asm":
+                # What --asm wrote: the target's own assembly, named as its
+                # tools name it (genlOut)
+                found = [out_dir / f"{stem}.{ext}" for ext in ("spvasm", "wat", "asm", "s")
+                         if (out_dir / f"{stem}.{ext}").exists()]
+                if not found:
+                    result.status = FAIL
+                    result.problems.append(
+                        f"check {check.name!r}: no assembly for {stem}")
+                    continue
+                text = normalize(found[0].read_text(encoding="utf-8", errors="replace"))
             else:
                 text = result.program_stdout or ""
             for needle in check.contains:
