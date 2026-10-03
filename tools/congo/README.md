@@ -500,7 +500,7 @@ Everything is rebuilt every time.
   `build/x64-release/conec.exe` (Congo warns when it is older than the
   compiler's sources — a stale compiler fails good code); else `conec` on
   `PATH`.
-- **`conestd`**, the C runtime library: the one `CONESTD` names, else the one
+- **`conestd`**, the runtime library: the one `CONESTD` names, else the one
   built beside `conec` (`conestd.lib`, or `libconestd.a`).
 - **A linker.** On Windows, Microsoft's `link.exe`: Congo uses the one on `PATH`
   when it is Microsoft's and links for x64, as `conec`'s objects are (an x64

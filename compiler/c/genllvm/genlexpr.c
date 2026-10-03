@@ -1495,18 +1495,18 @@ LLVMValueRef genlSrcFileSlice(GenState *gen, char *text, size_t len) {
     return LLVMConstStructInContext(gen->context, parts, 2, 0);
 }
 
-// The C runtime's entry for each failure the compiler checks for
-// (packages/conestd/panic.c), and how many values it reports before the
+// The runtime's entry for each failure the compiler checks for
+// (packages/conestd/panic.cone), and how many values it reports before the
 // location
 static char *genlPanicEntry[] = {"cone_panicIndex", "cone_panicSlice", "cone_panicAlloc"};
 static unsigned genlPanicValCnt[] = {2, 3, 1};
 
 // End the program where a check the compiler inserted has failed: a call to
-// the C runtime's entry for the failure, handed the values it reports (each a
+// the runtime's entry for the failure, handed the values it reports (each a
 // usize) and the source location of 'site', then 'unreachable'. The entry is
 // declared 'noreturn' and 'cold', so the check costs the hot path a compare
 // and a branch LLVM expects never to take, and the call is placed out of line.
-// WebAssembly has no C runtime linked in, and traps.
+// WebAssembly links no conestd, and traps.
 void genlPanic(GenState *gen, INode *site, GenlPanicKind kind, LLVMValueRef *vals) {
     if (gen->opt->wasm) {
         LLVMValueRef trap = LLVMGetNamedFunction(gen->module, "llvm.trap");

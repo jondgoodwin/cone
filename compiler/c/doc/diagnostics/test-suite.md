@@ -444,6 +444,11 @@ Some facts belong to the file rather than a line:
   A program that panics ends through the C library's `abort`, whose status
   differs by platform, so it writes `program_exit = "abort"`; its report on
   stderr is pinned in its `.err` file.
+- **What differs from run to run on stderr**, `stderr_mask`, a list of
+  regular expressions for a `run` scenario: each match in the program's stderr
+  is written `<masked>` before it is compared with the `.err` file, which
+  writes `<masked>` in its place (a thread's identity in a panic's report,
+  `exception_thread`).
 
 ### Two choices, for lowering and codegen defects
 
@@ -577,6 +582,11 @@ tags        = ["typecheck", "genllvm", "runtime"]
 diagnostics = 0              # total count; required for 'recover'
 exit        = 0              # only where it is not the category's default
 xfail       = false          # omit unless true
+
+[scenario.exception_thread]
+category     = "run"
+program_exit = "abort"       # the program's own status; "abort" for a panic
+stderr_mask  = ['(?<=panic in thread )\d+']  # each match compared as '<masked>'
 
 [scenario.module_build_link]
 category    = "run"

@@ -1,0 +1,46 @@
+// roots: the traced references on the stack, for a collector to find.
+//
+// Every Cone function holding a traced reference on its stack links a frame
+// of them into one chain while it runs: its locals, parameters and births
+// whose types hold one (compiler/c/doc/phases/generation.md, "Roots"). The
+// compiler generates the frames, their maps and the pushes and pops; this is
+// the chain's head and the walk 'mem.traceRoots' calls.
+
+// A running function's frame, as the compiler lays it out: the frame of the
+// function it was called by (or of the nearest one before it holding roots),
+// its map, and then the address of each root, in the map's order
+pub struct Frame {
+  prev *Frame;
+  map *RootMap;
+}
+
+// A function's root map, a constant: how many roots, and then each one's
+// type record (core's TypeRecord, which the compiler builds)
+pub struct RootMap {
+  count usize;
+}
+
+// The newest frame. One chain, not one per thread: the collector is single
+// threaded, and a thread's roots would need a chain of their own,
+// thread-local
+pub mut cone_gcframes *Frame = null;
+
+// Trace every root of every running function, newest frame first: each
+// root's record's trace, which hands each traced reference the root holds to
+// its region's 'mark', with 'mode'
+pub fn cone_traceRoots(mode u32) {
+  mut f = cone_gcframes;
+  while f != null {
+    imm map = (*f).map;
+    imm recs = ((map as *u8) + core.mem.sizeof[RootMap]()) as **core.TypeRecord;
+    imm slots = ((f as *u8) + core.mem.sizeof[Frame]()) as **u8;
+    mut i = 0usize;
+    while i < (*map).count {
+      imm rec = *(recs + i);
+      imm trace = (*rec).trace;
+      trace(*(slots + i), mode);
+      i = i + 1usize;
+    }
+    f = (*f).prev;
+  }
+}
