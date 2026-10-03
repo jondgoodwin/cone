@@ -1,0 +1,132 @@
+// Answers delivered to another loop, and wakers. A service thread drives a
+// loop of its own and sends its answers to main's loop with Target.Post;
+// main, idle in its own poll, wakes the moment each arrives.
+//
+// 1. The service arms a timer and reads a file, both answering to main's
+//    loop: main receives both, the read's buffer with the file's bytes in
+//    it, each naming the service's loop and stamped submitted <= dequeued
+//    <= delivered. A third answer is posted to a loop that has died: it is
+//    dropped, counted, and its buffer goes home.
+// 2. A waker on another thread ends main's poll(forever()) after 20 ms,
+//    with nothing appended.
+// 3. A waker of a loop that has died says so.
+//
+// Every buffer is back in the pool at the end, from whichever thread.
+
+mod post;
+
+import testing use *;
+import thread;
+import collections use List;
+import time use Instant, Duration;
+import iobuf use *;
+import iocore use *;
+import diag;
+
+struct ServiceArgs {
+  pub to Waker;
+  pub dead Waker;
+  pub pool Pool;
+}
+
+struct ServiceReport {
+  pub loopId u64;
+  pub counters diag.Counters;
+  pub wrote Bool;
+}
+
+fn service(a ServiceArgs) ServiceReport {
+  mut lp = Loop.mustMake();
+  mut out = List[Completion].empty();
+  mut rep = new ServiceReport(lp.id(), diag.Counters.zero(), false);
+  mut fh = Handle.none();
+  match lp.openFile("post.tmp", Access.Create[]) {
+    case imm r Ok {fh = r.value;}
+    case imm e Error {return rep;}
+  }
+  mut b = a.pool.mustTake(4096usize);
+  b.append("posted across threads");
+  lp.submit(Op.WriteAt[fh, 0u64, b], Target.Here[0u64]);
+  while out.len() < 1usize {lp.poll(forever(), &mut out);}
+  rep.wrote = out[0usize].count() == 21usize;
+  out.clear();
+
+  lp.after(Instant.now() + Duration.fromMillis(5i64), Target.Post[1u64, a.to]);
+  lp.submit(Op.ReadAt[fh, 0u64, a.pool.mustTake(4096usize)], Target.Post[2u64, a.to]);
+  lp.submit(Op.ReadAt[fh, 0u64, a.pool.mustTake(4096usize)], Target.Post[3u64, a.dead]);
+  while lp.inFlight() > 0u64 {
+    lp.poll(forever(), &mut out);
+    out.clear();
+  }
+  rep.counters = lp.counters();
+  rep;
+}
+
+fn nudge(w Waker) Bool {
+  thread.sleep(Duration.fromMillis(20i64));
+  w.wake();
+}
+
+// A waker whose loop has died
+fn orphanWaker() Waker {
+  imm lp = Loop.mustMake();
+  lp.waker();
+}
+
+fn main() i32 {
+  {
+    imm pool = Pool.make();
+    mut m = Loop.mustMake();
+    mut out = List[Completion].empty();
+    imm dead = orphanWaker();
+
+    // 3. A dead loop's waker
+    expect(not dead.wake(), "a dead loop's waker says it reached nobody");
+
+    // 1. Answers posted here from a service thread
+    imm svc = thread.start(new ServiceArgs(m.waker(), dead, pool), &service);
+    imm limit = Instant.now() + Duration.fromSeconds(5i64);
+    while out.len() < 2usize and Instant.now() < limit {
+      m.poll(limit, &mut out);
+    }
+    imm rep = svc.join();
+    expect(rep.wrote, "the service wrote its file");
+    requireUInt(u64.from(out.len()), 2u64, "two answers posted here");
+    mut k = 0usize;
+    while k < 2usize {
+      imm c = out[k];
+      expectUInt(c.loop, rep.loopId, "each names the service's loop");
+      expect(c.loop != m.id(), "not this one");
+      expect(c.isDone(), "each Done");
+      expect(c.submitted <= c.dequeued and c.dequeued <= c.delivered, "stamped in order");
+      if c.token == 1u64 {
+        expectUInt(u64.from(c.kind), u64.from(diag.kindTimer), "the timer");
+        expectUInt(u64.from(c.buf.capacity()), 0u64, "a timer has no buffer");
+      } else {
+        expectUInt(c.token, 2u64, "the read");
+        expectStr(c.buf.view(), "posted across threads", "its buffer, across threads, with the file's bytes");
+      }
+      k = k + 1usize;
+    }
+    out.clear();
+    expectUInt(rep.counters.postsSent, 2u64, "the service posted two");
+    expectUInt(rep.counters.postsDropped, 1u64, "and dropped the one for the dead loop");
+    expectUInt(rep.counters.delivered, rep.counters.submitted, "every operation of the service answered once");
+    expectUInt(m.counters().postsReceived, 2u64, "main received two");
+
+    // 2. Woken from another thread
+    imm t0 = Instant.now();
+    imm nudger = thread.start(m.waker(), &nudge);
+    imm n = m.poll(forever(), &mut out);
+    imm took = t0.elapsed();
+    expect(nudger.join(), "the wake reached the loop");
+    expectUInt(u64.from(n), 0u64, "woken with nothing");
+    expect(took >= Duration.fromMillis(19i64), "after the 20 ms sleep");
+    expect(took < Duration.fromSeconds(2i64), "and not long after");
+    expectUInt(m.counters().wakes, 1u64, "one wake counted");
+
+    expectUInt(pool.stats().lent, 0u64, "every buffer back in the pool, the dropped one too");
+  }
+  expectUInt(osBlocks(), 0u64, "and every block back to the OS");
+  done();
+}

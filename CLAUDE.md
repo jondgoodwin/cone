@@ -219,6 +219,31 @@ Visual Studio projects stay at the root.
   in deadline order; 8 lanes each have a slop (coalescing); its tests run
   on `time`'s synthetic clock, and its example `bench.cone` times each
   operation;
+  `iocore` is the runtime's completion loop, over `iobuf`, `timewheel`,
+  `time`, `sync` and `diag`: a `Loop` per driving thread, handed an `Op`
+  (TCP `Connect`, `Accept`, `Recv`, the zero-byte `RecvReady`, `Send`,
+  `SendBytes`; file `ReadAt` and `WriteAt`), each taking an owned `IoBuf` or
+  shared `Bytes`, never a borrow (`test/cases/concurrency/
+  concurrency_iocore_submit.cone`), and a `Target` (`Here`, or `Post` to
+  another loop's `Waker`), and giving exactly one `Completion` (`Done`,
+  `Failed`, `Cancelled`, `TimedOut`) with the buffer back and its submitted,
+  dequeued and delivered instants; `poll(until, out)` the one place it waits,
+  its timeout the nearer of `until` and the wheel's next expiry, kept by a
+  high-resolution waitable timer whose expiry the kernel queues on the port
+  (`NtAssociateWaitCompletionPacket`); `cancel` idempotent, `submitBy` a
+  deadline, `after` a timer answered like I/O; handles an id and a
+  generation in the loop's own table; its death cancels, drains and closes;
+  Windows only, over kernel32, ntdll and Winsock (`AcceptEx` and `ConnectEx`
+  through `WSAIoctl`'s function pointers), all Cone; its tests include the
+  two-thread echo of 100,000 messages beside a file read through one poll,
+  and its examples `echo.cone` (kernel against delivery latency) and
+  `tick.cone` (a 1 ms tick's jitter) time it;
+  `diag` is the runtime's diagnostics: `OpRecord` (a loop's id and an
+  operation's, kind, outcome, bytes, token, submitted, dequeued and
+  delivered), `Counters` (exact, submitted = delivered + in flight), a
+  log-linear `Histogram` (p50, p99, the maximum), and `Subscriber`, a
+  function a loop hands each record to, `textSubscriber` printing a line;
+  none by default, so nothing prints;
   `collections` is a growable `List[T]`, an owned `String` and a string-keyed
   `Dict[K, V]`, each holding its elements in one block from `libc`'s
   allocator and moving them with core's `mem` intrinsics; `arena` is an

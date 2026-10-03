@@ -1,0 +1,391 @@
+// The increment's proof, timed: run it with
+//
+//   congo run --release packages/iocore/examples/echo.cone
+//
+// 1. A TCP echo server and a client on two OS threads, each driving its own
+//    Loop, exchange 100,000 64-byte messages over 127.0.0.1, while the
+//    client's same poll reads a 64 MiB file, four 1 MiB reads at a time. It
+//    prints, at p50, p99 and the maximum: the round trip; and for each kind
+//    of operation its KERNEL latency (submitted to dequeued: for a receive,
+//    mostly the wait for the peer) against its DELIVERY latency (dequeued to
+//    handed over by poll: the runtime's own cost).
+// 2. The same exchange, 20,000 messages, with the server receiving each by
+//    a zero-byte RecvReady and then a Recv, as an idle connection would, so
+//    as to pin no buffer while it waits: what that costs per message.
+// 3. Instant trigger: a service thread reads the file 64 KiB at a time and
+//    posts each answer to main's loop (Target.Post), main idle in
+//    poll(forever()). The delivery latency here is the hop between threads:
+//    from the service's loop taking the completion to main's having it.
+//
+// Every operation is counted: each loop's delivered equals its submitted.
+// The server binds 127.0.0.1 only, so the firewall is never asked.
+
+mod echo;
+
+import stdio use *;
+import thread;
+import sync use *;
+import collections use List;
+import time use Instant, Duration;
+import iobuf use *;
+import iocore use *;
+import diag use Histogram, Counters;
+import fs;
+
+const msgSize = 64usize;
+const fileSize = 67108864u64;     // 64 MiB
+const chunk = 1048576u64;
+const depth = 4u64;
+
+struct ServerArgs {
+  pub pool Pool;
+  pub portTx Sender[u16];
+  pub zeroByte Bool;
+}
+
+struct ServerReport {
+  pub recvKernel Histogram;
+  pub recvDelivery Histogram;
+  pub counters Counters;
+}
+
+fn serve(a ServerArgs) ServerReport {
+  mut lp = Loop.mustMake();
+  imm listener = lp.mustListen(SocketAddr.localhost(0u16));
+  mut port = 0u16;
+  match lp.localAddr(listener) {
+    case imm r Ok {port = r.value.port();}
+    case imm e Error {}
+  }
+  a.portTx.send(port);
+  lp.submit(Op.Accept[listener], Target.Here[0u64]);
+  mut out = List[Completion].empty();
+  mut conn = Handle.none();
+  mut rep = new ServerReport(Histogram.make(), Histogram.make(), Counters.zero());
+  mut open = true;
+  while open {
+    lp.poll(forever(), &mut out);
+    mut k = 0usize;
+    while k < out.len() {
+      imm c = &mut out[k];
+      if c.token == 0u64 {
+        conn = c.handle;
+        if a.zeroByte {lp.submit(Op.RecvReady[conn], Target.Here[3u64]);}
+        else {lp.submit(Op.Recv[conn, a.pool.mustTake(4096usize)], Target.Here[1u64]);}
+      } elif c.token == 3u64 {
+        // Readable: now take a buffer and receive what came
+        lp.submit(Op.Recv[conn, a.pool.mustTake(4096usize)], Target.Here[1u64]);
+      } elif c.token == 1u64 {
+        rep.recvKernel.record((c.dequeued - c.submitted).nanos());
+        rep.recvDelivery.record((c.delivered - c.dequeued).nanos());
+        if c.count() == 0usize {
+          open = false;
+        } else {
+          mut b = IoBuf.empty();
+          b <=> c.buf;
+          lp.submit(Op.Send[conn, b], Target.Here[2u64]);
+        }
+      } else {
+        if a.zeroByte {
+          lp.submit(Op.RecvReady[conn], Target.Here[3u64]);
+        } else {
+          mut b = IoBuf.empty();
+          b <=> c.buf;
+          b.clear();
+          lp.submit(Op.Recv[conn, b], Target.Here[1u64]);
+        }
+      }
+      k = k + 1usize;
+    }
+    out.clear();
+  }
+  rep.counters = lp.counters();
+  rep;
+}
+
+struct ClientArgs {
+  pub pool Pool;
+  pub port u16;
+  pub messages u64;
+  pub withFile Bool;
+}
+
+struct ClientReport {
+  pub rtt Histogram;
+  pub recvKernel Histogram;
+  pub recvDelivery Histogram;
+  pub sendKernel Histogram;
+  pub sendDelivery Histogram;
+  pub fileKernel Histogram;
+  pub fileDelivery Histogram;
+  pub took Duration;
+  pub fileTook Duration;
+  pub fileBytes u64;
+  pub wrong u64;
+  pub counters Counters;
+}
+
+fn fillMsg(b &mut IoBuf, i u64) {
+  imm room = b.whole();
+  mut j = 0usize;
+  while j < msgSize {
+    room[j] = u8.from((i * 31u64 + u64.from(j)) % 256u64);
+    j = j + 1usize;
+  }
+  b.setLen(msgSize);
+}
+
+fn client(a ClientArgs) ClientReport {
+  mut lp = Loop.mustMake();
+  mut rep = new ClientReport(Histogram.make(), Histogram.make(), Histogram.make(), Histogram.make(),
+    Histogram.make(), Histogram.make(), Histogram.make(), Duration.zero(), Duration.zero(), 0u64, 0u64, Counters.zero());
+  mut out = List[Completion].empty();
+  mut fh = Handle.none();
+  mut nextRead = 0u64;
+  mut readsOut = 0u64;
+  imm t0 = Instant.now();
+  if a.withFile {
+    match lp.openFile("echo.tmp", Access.Read[]) {
+      case imm r Ok {fh = r.value;}
+      case imm e Error {}
+    }
+    while nextRead < depth {
+      lp.submit(Op.ReadAt[fh, nextRead * chunk, a.pool.mustTake(usize.from(chunk))], Target.Here[100u64 + nextRead]);
+      nextRead = nextRead + 1u64;
+    }
+    readsOut = depth;
+  }
+  lp.submit(Op.Connect[SocketAddr.localhost(a.port)], Target.Here[0u64]);
+  mut conn = Handle.none();
+  mut sent = 0u64;
+  mut echoed = 0u64;
+  mut msgStart = Instant.now();
+  while echoed < a.messages or readsOut > 0u64 {
+    lp.poll(forever(), &mut out);
+    mut k = 0usize;
+    while k < out.len() {
+      imm c = &mut out[k];
+      if c.token >= 100u64 {
+        readsOut = readsOut - 1u64;
+        rep.fileKernel.record((c.dequeued - c.submitted).nanos());
+        rep.fileDelivery.record((c.delivered - c.dequeued).nanos());
+        rep.fileBytes = rep.fileBytes + u64.from(c.count());
+        if nextRead * chunk < fileSize {
+          mut b = IoBuf.empty();
+          b <=> c.buf;
+          b.clear();
+          lp.submit(Op.ReadAt[fh, nextRead * chunk, b], Target.Here[100u64 + nextRead]);
+          nextRead = nextRead + 1u64;
+          readsOut = readsOut + 1u64;
+        } elif readsOut == 0u64 {
+          rep.fileTook = t0.elapsed();
+        }
+      } elif c.token == 0u64 {
+        conn = c.handle;
+        mut b = a.pool.mustTake(msgSize);
+        fillMsg(&mut b, 0u64);
+        msgStart = Instant.now();
+        lp.submit(Op.Send[conn, b], Target.Here[1u64]);
+        sent = 1u64;
+      } elif c.token == 1u64 {
+        rep.sendKernel.record((c.dequeued - c.submitted).nanos());
+        rep.sendDelivery.record((c.delivered - c.dequeued).nanos());
+        mut b = IoBuf.empty();
+        b <=> c.buf;
+        b.clear();
+        lp.submit(Op.Recv[conn, b], Target.Here[2u64]);
+      } else {
+        rep.recvKernel.record((c.dequeued - c.submitted).nanos());
+        rep.recvDelivery.record((c.delivered - c.dequeued).nanos());
+        mut b = IoBuf.empty();
+        b <=> c.buf;
+        if c.count() == 0usize {
+          rep.wrong = rep.wrong + 1u64;
+          echoed = a.messages;
+        } elif b.len() < msgSize {
+          lp.submit(Op.Recv[conn, b], Target.Here[2u64]);
+        } else {
+          rep.rtt.record(msgStart.elapsed().nanos());
+          echoed = echoed + 1u64;
+          if sent < a.messages {
+            fillMsg(&mut b, sent);
+            msgStart = Instant.now();
+            lp.submit(Op.Send[conn, b], Target.Here[1u64]);
+            sent = sent + 1u64;
+          }
+        }
+      }
+      k = k + 1usize;
+    }
+    out.clear();
+  }
+  rep.took = t0.elapsed();
+  lp.close(conn);
+  rep.counters = lp.counters();
+  rep;
+}
+
+fn writeFile(pool &Pool) {
+  mut lp = Loop.mustMake();
+  mut fh = Handle.none();
+  match lp.openFile("echo.tmp", Access.Create[]) {
+    case imm r Ok {fh = r.value;}
+    case imm e Error {return;}
+  }
+  mut out = List[Completion].empty();
+  mut at = 0u64;
+  mut pending = 0u64;
+  while at < fileSize or pending > 0u64 {
+    while pending < 8u64 and at < fileSize {
+      mut b = pool.mustTake(usize.from(chunk));
+      imm room = b.whole();
+      mut j = 0usize;
+      while j < room.len {
+        room[j] = u8.from((at + u64.from(j)) % 253u64);
+        j = j + 1usize;
+      }
+      b.setLen(b.capacity());
+      lp.submit(Op.WriteAt[fh, at, b], Target.Here[at]);
+      at = at + chunk;
+      pending = pending + 1u64;
+    }
+    pending = pending - u64.from(lp.poll(forever(), &mut out));
+    out.clear();
+  }
+}
+
+fn line(name &[]u8, h &Histogram) {
+  printStr("  ");
+  h.printLine(name);
+}
+
+fn exchange(pool &Pool, messages u64, withFile Bool, zeroByte Bool) ClientReport, ServerReport {
+  mut portTx Sender[u16];
+  mut portRx Receiver[u16];
+  portTx, portRx = Channel[u16].make();
+  imm server = thread.start(new ServerArgs(*pool, portTx, zeroByte), &serve);
+  mut port = 0u16;
+  match portRx.recv() {
+    case imm p Some {port = p.value;}
+    case is None[u16] {}
+  }
+  imm cl = thread.start(new ClientArgs(*pool, port, messages, withFile), &client);
+  imm c = cl.join();
+  imm s = server.join();
+  c, s;
+}
+
+// Part 3: the service thread reads and posts each answer to main's loop
+struct ServiceArgs {
+  pub pool Pool;
+  pub to Waker;
+}
+
+fn service(a ServiceArgs) Counters {
+  mut lp = Loop.mustMake();
+  mut out = List[Completion].empty();
+  mut fh = Handle.none();
+  match lp.openFile("echo.tmp", Access.Read[]) {
+    case imm r Ok {fh = r.value;}
+    case imm e Error {return lp.counters();}
+  }
+  mut at = 0u64;
+  while at < fileSize {
+    lp.submit(Op.ReadAt[fh, at, a.pool.mustTake(65536usize)], Target.Post[at, a.to]);
+    while lp.inFlight() > 0u64 {lp.poll(forever(), &mut out);}
+    at = at + 65536u64;
+  }
+  lp.counters();
+}
+
+fn printCounters(name &[]u8, c &Counters) {
+  printStr("  ");
+  printStr(name);
+  printStr(": submitted ");
+  printUInt(c.submitted);
+  printStr(", delivered ");
+  printUInt(c.delivered);
+  printStr(", waits ");
+  printUInt(c.waits);
+  printStr(", largest batch ");
+  printUInt(c.largestBatch);
+  printStr(if c.delivered == c.submitted and c.inFlight == 0u64 {", every one answered once\n";} else {", ANSWERS MISSING\n";});
+}
+
+fn main() i32 {
+  imm pool = Pool.make();
+  writeFile(&pool);
+
+  // 1. Echo and the file through one poll
+  mut c ClientReport;
+  mut s ServerReport;
+  c, s = exchange(&pool, 100000u64, true, false);
+  printStr("1. 100,000 echoes of 64 bytes, two threads, a 64 MiB file read through the client's poll\n");
+  printStr("  ");
+  printUInt(100000u64);
+  printStr(" round trips in ");
+  printUInt(u64.from(c.took.millis()));
+  printStr(" ms; file ");
+  printUInt(c.fileBytes / 1048576u64);
+  printStr(" MiB in ");
+  printUInt(u64.from(c.fileTook.millis()));
+  printStr(" ms, while echoing\n");
+  line("round trip            ", &c.rtt);
+  line("client recv  kernel   ", &c.recvKernel);
+  line("client recv  delivery ", &c.recvDelivery);
+  line("client send  kernel   ", &c.sendKernel);
+  line("client send  delivery ", &c.sendDelivery);
+  line("server recv  kernel   ", &s.recvKernel);
+  line("server recv  delivery ", &s.recvDelivery);
+  line("file readAt  kernel   ", &c.fileKernel);
+  line("file readAt  delivery ", &c.fileDelivery);
+  printCounters("client loop", &c.counters);
+  printCounters("server loop", &s.counters);
+  if c.wrong != 0u64 {printStr("  MESSAGES WRONG\n");}
+
+  // 2. Zero-byte receives against direct ones
+  mut d ClientReport;
+  mut ds ServerReport;
+  d, ds = exchange(&pool, 20000u64, false, false);
+  mut z ClientReport;
+  mut zs ServerReport;
+  z, zs = exchange(&pool, 20000u64, false, true);
+  printStr("2. 20,000 echoes: the server's receive direct, then by RecvReady + Recv (no buffer pinned while idle)\n");
+  line("round trip, direct    ", &d.rtt);
+  line("round trip, zero-byte ", &z.rtt);
+  printStr("  direct ");
+  printUInt(u64.from(d.took.millis()));
+  printStr(" ms, zero-byte ");
+  printUInt(u64.from(z.took.millis()));
+  printStr(" ms\n");
+
+  // 3. Posted to an idle loop
+  mut m = Loop.mustMake();
+  imm svc = thread.start(new ServiceArgs(pool, m.waker()), &service);
+  mut out = List[Completion].empty();
+  mut kernel = Histogram.make();
+  mut hop = Histogram.make();
+  mut got = 0u64;
+  while got < fileSize / 65536u64 {
+    m.poll(forever(), &mut out);
+    mut k = 0usize;
+    while k < out.len() {
+      imm cc = out[k];
+      kernel.record((cc.dequeued - cc.submitted).nanos());
+      hop.record((cc.delivered - cc.dequeued).nanos());
+      got = got + 1u64;
+      k = k + 1usize;
+    }
+    out.clear();
+  }
+  imm sc = svc.join();
+  printStr("3. 1,024 reads of 64 KiB on a service thread, each answer posted to main's idle loop\n");
+  line("readAt kernel          ", &kernel);
+  line("delivery (thread hop)  ", &hop);
+  printCounters("service loop", &sc);
+  printStr("  pool: ");
+  printUInt(pool.stats().lent);
+  printStr(" buffers lent at the end\n");
+  fs.removeFile("echo.tmp");
+  0i32;
+}
