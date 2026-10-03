@@ -1233,12 +1233,17 @@ void genpgm(GenState *gen, ProgramNode *pgm) {
         LLVMDisposeMessage(err);
     }
 
-    // Transform IR to target's ASM and OBJ
+    // Transform IR to target's ASM and OBJ. A SPIR-V target's object is a
+    // SPIR-V module, named as shader tools name one
     timerBegin(CodeGenTimer);
-    if (gen->machine)
-        genlOut(fileMakePath(gen->opt->output, gen->opt->srcname, gen->opt->wasm? "wasm" : objext),
-            gen->opt->print_asm? fileMakePath(gen->opt->output, gen->opt->srcname, gen->opt->wasm? "wat" : asmext) : NULL,
+    if (gen->machine) {
+        int spirv = strncmp(gen->opt->triple, "spirv", 5) == 0;
+        char *objfile = gen->opt->wasm? "wasm" : spirv? "spv" : objext;
+        char *asmfile = gen->opt->wasm? "wat" : spirv? "spvasm" : asmext;
+        genlOut(fileMakePath(gen->opt->output, gen->opt->srcname, objfile),
+            gen->opt->print_asm? fileMakePath(gen->opt->output, gen->opt->srcname, asmfile) : NULL,
             gen->module, gen->machine);
+    }
 
     LLVMDisposeModule(gen->module);
     // LLVMContextDispose(gen.context);  // Only need if we created a new context
