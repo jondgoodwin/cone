@@ -184,8 +184,9 @@ Visual Studio projects stay at the root.
   seconds ignored) and `Clock` (the real steady clock, or a synthetic one
   advanced by hand, for tests); `sync`'s timeouts, `thread.sleep`,
   `process`'s time limit and `fs`'s file times take them; no calendar yet;
-  its values no OS's, its clocks Windows only (`QueryPerformanceCounter`,
-  `GetSystemTimePreciseAsFileTime`);
+  its values no OS's, `Timestamp.now` ISO C's (C11 `timespec_get`, bound
+  in `libc`), and `Instant.now` Windows only (`QueryPerformanceCounter`:
+  ISO C reaches no steady clock);
   `collections` is a growable `List[T]`, an owned `String` and a string-keyed
   `Dict[K, V]`, each holding its elements in one block from `libc`'s
   allocator and moving them with core's `mem` intrinsics; `arena` is an

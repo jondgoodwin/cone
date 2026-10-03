@@ -113,16 +113,15 @@
 //     clock.now() - start;
 //   }
 //
-// WHAT IS WINDOWS-ONLY. The values and their arithmetic are no OS's. Reading
-// the clocks is Windows only: Instant.now() is QueryPerformanceCounter, its
-// count scaled to nanoseconds by QueryPerformanceFrequency (split, so the
-// multiplication cannot overflow), and Timestamp.now() is
-// GetSystemTimePreciseAsFileTime, 100-nanosecond ticks since 1601 converted
-// to nanoseconds since 1970. ISO C reaches no steady clock (C23's
-// TIME_MONOTONIC is optional, and not in the Windows runtime); its 'time'
-// counts whole seconds, and C11's 'timespec_get' (TIME_UTC) is the one ISO
-// route to UTC finer than that, which a port may take for Timestamp. On
-// POSIX they will be clock_gettime's CLOCK_MONOTONIC and CLOCK_REALTIME.
+// WHAT IS WINDOWS-ONLY. The values and their arithmetic are no OS's, and
+// Timestamp.now() is ISO C's: C11's 'timespec_get' with TIME_UTC (libc's
+// binding), seconds and nanoseconds since 1970, which the Windows runtime
+// fills from the system clock in steps of 100 ns. Instant.now() is the one
+// Windows-only part: ISO C reaches no steady clock (C11 has none; C23's
+// TIME_MONOTONIC is optional, and not in the Windows runtime), so it is
+// kernel32's QueryPerformanceCounter, its count scaled to nanoseconds by
+// QueryPerformanceFrequency (split, so the multiplication cannot overflow).
+// On POSIX it will be clock_gettime's CLOCK_MONOTONIC.
 //
 // THE NAME. The package's name is also the name of libc's 'time()', the C
 // library's whole seconds since 1970. A module that imports this package
@@ -132,15 +131,16 @@
 
 mod time;
 
+import libc;
+
 // ---------------------------------------------------------------------------
-// Windows: kernel32's clocks, on every link line already. Everything the
-// package asks of the OS is in this section.
+// Windows: kernel32's steady clock, on every link line already, the one
+// thing the package asks of the OS beyond ISO C
 // ---------------------------------------------------------------------------
 
 extern {
   fn @c(system) QueryPerformanceCounter(count *i64) i32;
   fn @c(system) QueryPerformanceFrequency(freq *i64) i32;
-  fn @c(system) GetSystemTimePreciseAsFileTime(ticks *i64);
 }
 
 // The steady clock's count, in nanoseconds
@@ -153,15 +153,15 @@ fn steadyNs() i64 {
   (count / freq) * nsPerSecond + (count % freq) * nsPerSecond / freq;
 }
 
-// 100-nanosecond ticks from 1601-01-01 to 1970-01-01, both UTC
-const unixEpochTicks = 116444736000000000i64;
+// ---------------------------------------------------------------------------
+// ISO C: the calendar clock, C11's timespec_get
+// ---------------------------------------------------------------------------
 
-// UTC now, in nanoseconds since 1970 (a FILETIME is two u32 halves, low
-// first, which is an i64 on a little-endian machine)
+// UTC now, in nanoseconds since 1970
 fn utcNs() i64 {
-  mut ticks = 0i64;
-  GetSystemTimePreciseAsFileTime(&mut ticks as *i64);
-  (ticks - unixEpochTicks) * 100i64;
+  mut ts = new libc.Timespec(0i64, 0i32);
+  libc.timespec_get(&mut ts as *libc.Timespec, libc.TIME_UTC);
+  ts.tv_sec * nsPerSecond + i64.from(ts.tv_nsec);
 }
 
 // ---------------------------------------------------------------------------
