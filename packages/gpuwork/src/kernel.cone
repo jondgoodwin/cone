@@ -78,6 +78,51 @@ pub struct Kernel {
   pub fn accessOf(self &, i u32) u32 { if i < bindings { access[usize.from(i)]; } else { 0u32; }; }
 }
 
+// The words of the SPIR-V module in 'file': a Cone package's kernels, which
+// Congo builds into <package>.spv and copies beside every program that
+// imports the package. A relative path is read from the program's own folder,
+// so 'readSpirv("gpusample.spv")' finds it wherever the program is run from;
+// an absolute one is read as it is. Empty, and refused (refusals()), where
+// the file cannot be read or is not whole 32-bit words: Kernel.make refuses
+// an empty module in turn.
+pub fn readSpirv(file &[]u8) List[u32] {
+  mut full = String.from(file);
+  if not path.isAbsolute(file) {
+    match process.currentExe() {
+      case imm exe Ok {
+        imm folder = path.parent(exe.value.view());
+        full = path.join(folder.view(), file);
+      }
+      case is Error {}
+    }
+  }
+  mut words = List[u32].empty();
+  match fs.readFile(full.view()) {
+    case imm ok Ok {
+      imm bytes = ok.value.view();
+      if bytes.len == 0usize or bytes.len % 4usize != 0usize {
+        mut m = String.from("readSpirv: ");
+        m <- full.view(), " is not a SPIR-V module, a whole number of 32-bit words";
+        fail(m.view());
+        return words;
+      }
+      mut i = 0usize;
+      while i < bytes.len {
+        words.push(u32.from(bytes[i]) | (u32.from(bytes[i + 1usize]) << 8u32)
+          | (u32.from(bytes[i + 2usize]) << 16u32) | (u32.from(bytes[i + 3usize]) << 24u32));
+        i = i + 4usize;
+      }
+    }
+    case imm e Error {
+      mut m = String.from("readSpirv: ");
+      imm why = e.value.message();
+      m <- why.view();
+      fail(m.view());
+    }
+  }
+  words;
+}
+
 // The workgroup size of compute entry point 'name' in 'spirv' (OpEntryPoint
 // GLCompute, then its OpExecutionMode LocalSize), or zeros if there is none
 fn workgroupOf(spirv &[]u32, name &[]u8) Array[u32, 3] {

@@ -26,6 +26,14 @@ into build/<mode>/<name>.exe, beside which it copies the DLLs their [link]
 runtime lists name. The folder rules live here, in one place: conec never
 searches for a file of a Congo build.
 
+A package marked for the GPU (targets = ["native", "gpu"]) whose source holds
+compute entry points ('fn @compute') is also compiled for the GPU [Jon 3 Oct
+2026], into build/<mode>/<name>.spv, which is copied beside every program that
+imports it; Congo first refuses any package it imports that is not marked.
+That compile is the one exception to the rule above: every function on a GPU
+is inlined into its kernel, so the packages a kernel calls into are compiled
+from their source, which conec finds on its package search path.
+
 A package is a folder holding congo.toml and src/<name>.cone, the root module's
 designated file. A package that others import is compiled as a library, and
 that compile GENERATES its INCLUDE FILE, build/<mode>/<name>.cone beside its
@@ -82,6 +90,12 @@ DEFINES: list[str] = []
 NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
 VERSION_RE = re.compile(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\Z")
 OUTPUTS = ("executable", "library")
+# What [package] targets may name: the machine Congo runs on, and the GPU
+TARGETS = ("native", "gpu")
+# A GPU build's target: SPIR-V for Vulkan 1.3, whose compute entry points are
+# the kernels gpuwork loads
+GPU_TRIPLE = "spirv1.6-unknown-vulkan1.3"
+SPV_EXT = ".spv"
 
 # The words the compiler's lexer never reads as a name: its keywords and the
 # words it reserves for features not built yet (compiler/c/parser/lexer.c,
@@ -149,6 +163,7 @@ class Package:
     libraries: list[str] = field(default_factory=list)    # [link] libraries
     link_paths: list[Path] = field(default_factory=list)  # [link] paths, absolute
     runtime: list[str] = field(default_factory=list)      # [link] runtime: DLLs, bare names
+    gpu: bool = False     # [package] targets names "gpu": it may be compiled for the GPU
 
     @property
     def hand_include(self) -> Path:
@@ -220,9 +235,9 @@ def read_manifest(path: Path) -> Package:
         raise CongoError(f"{path}: the manifest needs a [package] table with name,"
                          " version and output")
     for key in table:
-        if key not in ("name", "version", "output"):
+        if key not in ("name", "version", "output", "targets"):
             raise CongoError(f"{path}: '{key}' is not a [package] key; the keys are"
-                             " name, version and output")
+                             " name, version, output and targets")
     name, version, output = table.get("name"), table.get("version"), table.get("output")
     if not isinstance(name, str) or not NAME_RE.match(name):
         raise CongoError(f"{path}: [package] name must be a Cone name, such as \"hello\"")
@@ -233,11 +248,35 @@ def read_manifest(path: Path) -> Package:
                          " \"0.1.0\"")
     if output not in OUTPUTS:
         raise CongoError(f"{path}: [package] output must be \"executable\" or \"library\"")
+    gpu = read_targets(path, table.get("targets", ["native"]), output)
     libraries, link_paths, runtime = (read_link(path, data["link"]) if "link" in data
                                       else ([], [], []))
     root = path.parent.resolve()
     return Package(name, version, output, root, root / "src" / f"{name}.cone",
-                   libraries=libraries, link_paths=link_paths, runtime=runtime)
+                   libraries=libraries, link_paths=link_paths, runtime=runtime, gpu=gpu)
+
+
+def read_targets(path: Path, targets: object, output: str) -> bool:
+    """[package] targets: what the package may be compiled for, "native" (the
+    machine Congo runs on) and "gpu"; ["native"] where it is not written.
+    Whether it names "gpu": GPU compatibility is declared per package, and a
+    GPU build refuses a package that is not marked [Jon 3 Oct 2026]. The
+    spelling is a placeholder."""
+    if not isinstance(targets, list) or not all(isinstance(t, str) for t in targets):
+        raise CongoError(f"{path}: [package] targets must be a list of targets, such as"
+                         " [\"native\", \"gpu\"]")
+    for target in targets:
+        if target not in TARGETS:
+            raise CongoError(f"{path}: [package] targets names \"{target}\", which is not a"
+                             " target; the targets are \"native\" and \"gpu\"")
+    if "native" not in targets:
+        raise CongoError(f"{path}: [package] targets must name \"native\": a package built"
+                         " for the GPU alone is not built yet")
+    if "gpu" in targets and output != "library":
+        raise CongoError(f"{path}: [package] targets names \"gpu\", and an executable is"
+                         " not built for the GPU: put its kernels in a library package it"
+                         " imports")
+    return "gpu" in targets
 
 
 def find_manifest(start: Path) -> Path | None:
@@ -419,6 +458,25 @@ def scan_header(path: Path) -> Header:
             imports.append(Import(None, f'"{value}"', path, line))
         toks.skip_statement()
     return Header(mod, imports, extends, c_named)
+
+
+def holds_kernel(path: Path) -> bool:
+    """Whether a source file declares a compute entry point, 'fn @compute':
+    read to its end with the header scan's tokens, so that one written in a
+    comment or a string does not count."""
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        raise CongoError(f"cannot read {path}: {exc}") from None
+    toks = HeaderTokens(text)
+    before = [("eof", ""), ("eof", "")]
+    while True:
+        kind, value, _ = toks.next()
+        if kind == "eof":
+            return False
+        if before == [("name", "fn"), ("punct", "@")] and (kind, value) == ("name", "compute"):
+            return True
+        before = [before[1], (kind, value)]
 
 
 # ---------------------------------------------------------------------------
@@ -610,6 +668,7 @@ class Unit:
     tree: Module
     deps: dict[str, Package]                          # other packages, first-seen order
     lines: dict[int, dict[str, Package]]              # id(module) -> import name -> package
+    kernels: bool = False     # marked for the GPU, and its source holds compute entry points
 
 
 def include_for(pkg: Package, out: Path) -> Path:
@@ -659,7 +718,11 @@ def resolve_imports(pkg: Package, tree: Module, registry: Registry) -> Unit:
             deps.setdefault(found.name, found)
             mine[imp.name] = found
     check_module_loops(pkg, tree, registry)
-    return Unit(pkg, tree, deps, lines)
+    # Only a package marked for the GPU has its kernels built, so only its
+    # source is read past the headers
+    kernels = pkg.gpu and any(holds_kernel(file) for module, _ in tree.walk()
+                              for file in module.files)
+    return Unit(pkg, tree, deps, lines, kernels)
 
 
 def check_module_loops(pkg: Package, tree: Module, registry: Registry) -> None:
@@ -1179,7 +1242,12 @@ def find_runtime(name: str, pkg: Package, folders: list[Path], paths: list[Path]
 def copy_runtime(source: Path, into: Path, name: str) -> bool:
     """Copy a runtime DLL into a program's folder, unless the copy there is the
     same already, byte for byte; whether it copied."""
-    target = into / f"{name}.dll"
+    return copy_if_changed(source, into / f"{name}.dll")
+
+
+def copy_if_changed(source: Path, target: Path) -> bool:
+    """Copy a file, unless the copy at target is the same already, byte for
+    byte; whether it copied."""
     if (target.is_file() and target.stat().st_size == source.stat().st_size
             and target.read_bytes() == source.read_bytes()):
         return False
@@ -1215,15 +1283,7 @@ def compile_unit(conec: Path, unit: Unit, out: Path, mode: str, top: bool,
     include_for(unit.pkg, out).unlink(missing_ok=True)
     if announce:
         say("Compiling", f"{unit.pkg.label()} ({unit.pkg.root})")
-    defines = [arg for define in DEFINES for arg in ("-D", define)]
-    result = subprocess.run([str(conec), *defines, "-o", str(out), str(desc)], env=env,
-                            capture_output=True)
-    said = utf8_text(result.stdout) + utf8_text(result.stderr)
-    chatter = [line for line in said.splitlines()
-               if line.strip() and not line.startswith("Compile finished")]
-    if chatter:
-        print("\n".join(chatter), flush=True)
-    if result.returncode != 0:
+    if not run_conec([str(conec), "-o", str(out), str(desc)], env):
         raise CongoError(f"could not compile {unit.pkg.name} (build description:"
                          f" {desc})")
     obj = out / f"{unit.pkg.name}{OBJ_EXT}"
@@ -1233,6 +1293,157 @@ def compile_unit(conec: Path, unit: Unit, out: Path, mode: str, top: bool,
     if output == "library" and not include.is_file():
         raise CongoError(f"conec wrote no include file for {unit.pkg.name} at {include}")
     return obj
+
+
+def run_conec(command: list[str], env: dict[str, str]) -> bool:
+    """Run conec, the -D defines put after the compiler, and show what it said
+    but its closing 'Compile finished' line; whether it succeeded."""
+    defines = [arg for define in DEFINES for arg in ("-D", define)]
+    result = subprocess.run([command[0], *defines, *command[1:]], env=env,
+                            capture_output=True)
+    said = utf8_text(result.stdout) + utf8_text(result.stderr)
+    chatter = [line for line in said.splitlines()
+               if line.strip() and not line.startswith("Compile finished")]
+    if chatter:
+        print("\n".join(chatter), flush=True)
+    return result.returncode == 0
+
+
+# ---------------------------------------------------------------------------
+# The GPU build: a package's kernels
+# ---------------------------------------------------------------------------
+#
+# GPU compatibility is declared per package [Jon 3 Oct 2026]: [package]
+# targets = ["native", "gpu"]. A package so marked whose source holds compute
+# entry points ('fn @compute(64) name(...)') is compiled for the GPU as well,
+# into build/<mode>/<name>.spv, a SPIR-V module for Vulkan whose kernels are
+# its entry points, each named as its function is. Building for the GPU,
+# Congo refuses any package it imports that is not marked, before anything
+# is compiled. Every function on a GPU target is inlined into the kernel that
+# calls it (memory kinds, question 2 (a)), so a kernel's build needs the
+# bodies of what it calls: the packages it imports are compiled from their
+# source, not against their include files. conec does that for a package it
+# finds on its package search path, so the GPU build is a direct compile of
+# a module written here that imports the package, with --path naming the
+# folders the packages are in. Which of a marked package's features a GPU
+# refuses is the compiler's to say; Congo decides only which packages may be
+# compiled for the GPU.
+
+def check_gpu_marks(unit: Unit, units: dict[str, Unit]) -> None:
+    """Refuse every package unit imports, at any depth, that is not marked for
+    the GPU, naming the imports that pulled each one in. The prelude, which
+    no package imports, is not asked; what it holds that a GPU lacks is the
+    compiler's to refuse where it is used."""
+    unmarked: dict[str, str] = {}
+    seen: set[str] = set()
+
+    def visit(here: Unit, chain: list[str]) -> None:
+        for name, dep in here.deps.items():
+            step = f"{here.pkg.name} imports {name} at {first_import(here, name).where()}"
+            if not dep.gpu:
+                unmarked.setdefault(name, "; ".join([*chain, step]))
+            elif name not in seen:
+                seen.add(name)
+                visit(units[name], [*chain, step])
+
+    visit(unit, [])
+    if unmarked:
+        listed = "\n".join(f"    {name}: {chain}" for name, chain in unmarked.items())
+        raise CongoError(f"{unit.pkg.name} is compiled for the GPU, and so is every package it"
+                         f" imports, each of which must be marked for the GPU with targets ="
+                         f" [\"native\", \"gpu\"] in its congo.toml; these are not:\n{listed}")
+
+
+def found_on_search_path(name: str, folders: list[Path]) -> Path | None:
+    """The file conec loads for 'import name' on its package search path, the
+    folders in order: in each, name.cone, then a package's source root,
+    name/src/name.cone, then name/name.cone (fileFindPackage)."""
+    for folder in folders:
+        for candidate in (folder / f"{name}.cone", folder / name / "src" / f"{name}.cone",
+                          folder / name / f"{name}.cone"):
+            if candidate.is_file():
+                return candidate
+    return None
+
+
+def gpu_search_folders(unit: Unit, packages: list[Package], core: Package) -> list[Path]:
+    """The folders a GPU build hands conec's --path: the folder each package
+    of the build is in, the package's own first, but the packages folder
+    (core's), which conec searches last anyway. Checked: conec must find each
+    package where Congo found it, which needs each in a folder named for it,
+    and none hidden by another of its name earlier on the path."""
+    packages_folder = core.root.parent
+    folders: list[Path] = []
+    for pkg in [unit.pkg, *packages]:
+        folder = pkg.root.parent
+        if folder != packages_folder and folder not in folders:
+            folders.append(folder)
+    searched = [*folders, packages_folder]
+    for pkg in [unit.pkg, *packages]:
+        found = found_on_search_path(pkg.name, searched)
+        if found is None or os.path.normcase(found.resolve()) != os.path.normcase(pkg.src.resolve()):
+            there = f"finds {found}" if found is not None else f"finds no {pkg.name}"
+            hint = (f"; it looks for a package in a folder named for it, and {pkg.name} is in"
+                    f" {pkg.root}" if pkg.root.name != pkg.name else "")
+            raise CongoError(f"{unit.pkg.name}'s GPU build compiles {pkg.name} from its source,"
+                             f" which conec finds by its name on its package search path"
+                             f" ({', '.join(str(f) for f in searched)}): there it {there},"
+                             f" not {pkg.src}{hint}")
+    return folders
+
+
+GPU_MODULE = """\
+// The GPU build of {name}, written by Congo for conec; rewritten on every
+// build. {name}'s compute entry points are the kernels of {name}{ext}.
+
+mod {module};
+
+import {name};
+"""
+
+
+def compile_gpu(conec: Path, unit: Unit, units: dict[str, Unit], core: Package, out: Path,
+                mode: str, env: dict[str, str]) -> Path:
+    """Compile a marked package's kernels into out/<name>.spv: a direct conec
+    compile, for SPIR-V's Vulkan form, of a module that imports the package,
+    in out/gpu/<name>/, so that the package and everything it imports are
+    found on the package search path and compiled from their source."""
+    pkg = unit.pkg
+    packages = closure(unit, units, core)
+    folders = gpu_search_folders(unit, packages, core)
+    work = out / "gpu" / pkg.name
+    work.mkdir(parents=True, exist_ok=True)
+    module = f"{pkg.name}_gpu"
+    source = work / f"{module}.cone"
+    source.write_text(GPU_MODULE.format(name=pkg.name, module=module, ext=SPV_EXT),
+                      encoding="utf-8")
+    spv = out / f"{pkg.name}{SPV_EXT}"
+    spv.unlink(missing_ok=True)
+    written = work / f"{module}{SPV_EXT}"
+    written.unlink(missing_ok=True)
+    say("Compiling", f"{pkg.label()} for the GPU ({pkg.root})")
+    command = [str(conec), f"--triple={GPU_TRIPLE}"]
+    if mode == "debug":
+        command.append("--debug")
+    if folders:
+        command.append("--path=" + ";".join(str(f) for f in folders))
+    if not run_conec([*command, "-o", str(work), str(source)], env):
+        raise CongoError(f"could not compile {pkg.name} for the GPU ({source})")
+    if not written.is_file():
+        raise CongoError(f"conec wrote no SPIR-V module at {written}")
+    os.replace(written, spv)
+    return spv
+
+
+def validate_kernels(spv: Path) -> tuple[bool | None, str]:
+    """spirv-val's verdict on a package's kernels, for Vulkan 1.3, and what it
+    said; None where spirv-val (the Vulkan SDK's) is not on PATH."""
+    validator = shutil.which("spirv-val")
+    if validator is None:
+        return None, ""
+    result = subprocess.run([validator, "--target-env", "vulkan1.3", str(spv)],
+                            capture_output=True)
+    return result.returncode == 0, utf8_text(result.stdout) + utf8_text(result.stderr)
 
 
 def build_folder(pkg: Package, mode: str) -> Path:
@@ -1259,6 +1470,8 @@ class Session:
         self.out = out
         self.mode = mode
         self.objs: dict[str, Path] = {}      # each library compiled into 'out'
+        self.spvs: dict[str, Path] = {}      # each package's kernels compiled into 'out'
+        self.gpu_checked: set[str] = set()   # packages whose imports were checked for the GPU
         self.warned: set[str] = set()
         self._conec: Path | None = None
         self._linker: Linker | None = None
@@ -1299,6 +1512,13 @@ class Session:
                       f" compile against the include file its own compile generates,"
                       f" build/<mode>/{unit.pkg.name}.cone", file=sys.stderr)
         by_name = {unit.pkg.name: unit for unit in order}
+        # Before anything is compiled: a package compiled for the GPU, and a
+        # marked package being built, import only packages marked for it
+        for unit in order:
+            if ((unit.kernels or (unit.pkg is top and unit.pkg.gpu))
+                    and unit.pkg.name not in self.gpu_checked):
+                check_gpu_marks(unit, by_name)
+                self.gpu_checked.add(unit.pkg.name)
         objs = []
         for unit in order:
             is_top = unit.pkg is top
@@ -1313,6 +1533,12 @@ class Session:
             if into == self.out and (not is_top or unit.pkg.output == "library"):
                 self.objs[unit.pkg.name] = obj
             objs.append(obj)
+        # Then the kernels of each marked package that has them, once a
+        # session, into the build folder, beside its object
+        for unit in order:
+            if unit.kernels and core is not None and unit.pkg.name not in self.spvs:
+                self.spvs[unit.pkg.name] = compile_gpu(conec, unit, by_name, core, self.out,
+                                                       self.mode, env)
         return objs
 
     def link(self, order: list[Unit], objs: list[Path], exe: Path,
@@ -1361,6 +1587,13 @@ class Session:
         for name, source in runtime.items():
             if copy_runtime(source, exe.parent, name) and announce:
                 say("Copying", shown(source))
+        # The kernels of every package of the build, each beside the program
+        # as a runtime DLL is, where gpuwork's readSpirv finds it by its name
+        for u in units:
+            spv = self.spvs.get(u.pkg.name)
+            if spv is not None and spv.parent != exe.parent:
+                if copy_if_changed(spv, exe.parent / spv.name) and announce:
+                    say("Copying", shown(spv))
 
 
 def build(pkg: Package, mode: str, session: Session | None = None) -> Path:
@@ -1371,7 +1604,9 @@ def build(pkg: Package, mode: str, session: Session | None = None) -> Path:
     order = build_order(pkg, session.registry)
     objs = session.compile(order, pkg)
     if pkg.output == "library":
-        say("Finished", f"{mode} library object {shown(objs[-1])}")
+        spv = session.spvs.get(pkg.name)
+        kernels = f" and kernels {shown(spv)}" if spv is not None else ""
+        say("Finished", f"{mode} library object {shown(objs[-1])}{kernels}")
         return objs[-1]
     exe = session.out / f"{pkg.name}{EXE_EXT}"
     session.link(order, objs, exe)
@@ -1794,6 +2029,24 @@ def test_package(pkg: Package, mode: str, name_filter: str | None, bless: bool) 
         tally.failures.append(f"{pkg.name}: the package does not build")
         say("Result", f"{pkg.name}: the package does not build")
         return tally
+    # Its kernels, where it has them, checked by the Vulkan SDK's validator
+    # for Vulkan 1.3, counted as a test; where the SDK is not installed they
+    # are only built, and that is said
+    spv = session.spvs.get(pkg.name)
+    if spv is not None and name_filter is None:
+        valid, said = validate_kernels(spv)
+        if valid is None:
+            print(f"     kernels {spv.name} ... built, not validated: spirv-val, the Vulkan"
+                  f" SDK's, is not on PATH", flush=True)
+        else:
+            print(f"     kernels {spv.name} ... {'valid' if valid else 'FAILED'}", flush=True)
+            if not valid:
+                if said:
+                    print(indent(said), flush=True)
+                tally.failed += 1
+                tally.failures.append(f"{pkg.name}: kernels {spv.name}")
+            else:
+                tally.passed += 1
     if not (pkg.root / TESTS).is_dir():
         say("Tests", f"none: {pkg.name} has no {TESTS} folder")
     elif pkg.output != "library" and tests:

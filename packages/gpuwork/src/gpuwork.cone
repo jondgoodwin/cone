@@ -26,7 +26,7 @@
 //   mut kept = done[0usize].take(out);             // still on the GPU: the next job's input
 //
 //   Kernel.make(device, spirv, entryPoint, access)   a kernel, made once  (KERNELS)
-//   kernel.setTwin(f)  kernel.isValid()  .bindings .workgroup .hasTwin
+//   readSpirv(file)  kernel.setTwin(f)  kernel.isValid()  .bindings .workgroup .hasTwin
 //   READ  READ_WRITE  MAX_KERNEL_BINDINGS
 //   upload(device, words)  uploadValue(device, &value)  zeroed(device, n)  (BUFFERS)
 //   wordsOf(buffer)
@@ -55,7 +55,10 @@
 // ('fn @compute(64) bake(inv Invocation, parts &[]Part, out &[]mut f32)');
 // until it has them, kernels come as SPIR-V from elsewhere (the tests'
 // fixtures are Slang, compiled by tools/shaders/; gpuwork itself depends on
-// no shading language).
+// no shading language). A Cone package's kernels are built by Congo into
+// <package>.spv, which it copies beside every program that imports the
+// package; 'readSpirv("<package>.spv")' reads it from the program's own
+// folder (tools/congo/README.md, "Kernels for the GPU").
 //
 // JOBS AND OWNERSHIP. A job owns the buffers given to it ('give' moves one
 // in and answers its slot). Its dispatches bind them by slot, each seeing
@@ -169,7 +172,7 @@
 // Its files are one module, and only this one, the root, imports:
 //
 //   gpuwork.cone  refusals
-//   kernel.cone   Kernel, and its workgroup read from the SPIR-V
+//   kernel.cone   Kernel, and its workgroup read from the SPIR-V; readSpirv
 //   job.cone      buffers made and read back, and Job
 //   works.cone    Ticket, Target, Completion and Works
 //   twin.cone     Words, runTwin, checkParity and Parity
@@ -184,6 +187,9 @@ import sync use Arc, Sender, Receiver, Channel;
 import iobuf use IoBuf;
 import iocore;
 import gpu use *;
+import fs;
+import path;
+import process;
 
 // ---------------------------------------------------------------------------
 // Failures
