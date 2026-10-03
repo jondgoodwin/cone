@@ -1,0 +1,60 @@
+// A generic function's unbounded type parameter, inferred from a borrow:
+// inside, a T is kept in a local and in an 'Option[T]', and stored where the
+// caller's '&mut &R' points. It is called from main after an inner block
+// and from inside one. Written for '&R' in place of T, the same body is
+// accepted.
+//
+// Verdict: accept; prints 2 3.
+// Basis: language rule (3 Oct 2026): a lifetime is never instanced, so an
+// inferred type argument carries no lifetime of the call, as a written one
+// carries none; the instance's body holds what a parameter of type T lends
+// as the caller's, the one unnamed lifetime its signature's borrows share
+// (reflifefn.html, "Lifetime bounds"; Rust's 'fn f<T>(dst: &mut &R, x: T)'
+// type-checks its body once, for every T).
+// Master ff2c3626: refused, ErrorInvType at '*dst = e.value': the instance
+// was made from the argument's type with the band of the first call's
+// borrow still on it, and so was 'Option[&R]', made first from it, so a T
+// read back out of the 'Option' looked shorter than the caller's lifetime
+// 'dst' points at. Which band stuck depended on which use made each
+// instance first: with 'Option[&R]' made first elsewhere from a written
+// '&R', the same program was accepted.
+
+mod lifetime_bound_generic_inferred_no_band;
+
+import stdio use *;
+
+struct R {
+  pub n i64;
+}
+
+fn viaLocal[T](dst &mut &R, x T) {
+  imm tmp T = x;
+  mut o Option[T] = Some[T][tmp];
+  match o {
+    case imm e Some {
+      *dst = e.value;
+    }
+    else {}
+  }
+}
+
+fn main() {
+  imm r1 = new R(1);
+  mut d = &r1;
+  {
+    imm r0 = new R(0);
+    d = &r0;
+  }
+  d = &r1;
+  imm r2 = new R(2);
+  viaLocal(&mut d, &r2);
+  printInt(d.n);
+  printStr(" ");
+  {
+    imm r3 = new R(3);
+    mut d3 = &r1;
+    viaLocal(&mut d3, &r3);
+    printInt(d3.n);
+  }
+  printStr("\n");
+}

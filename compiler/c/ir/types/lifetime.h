@@ -119,7 +119,8 @@ LifeParms *newLifeParms();
 int lifeParmsDeclare(LifeParms *parms, Name *name, INode *at);
 
 // A copy of a type with no lifetime named in it, outside a function type's
-// signature: what a generic is instanced at, since a lifetime is never instanced
+// signature, and no band (RefNode.scope) on any reference in it: what a
+// generic is instanced at, since a lifetime is never instanced
 INode *lifeErased(INode *type);
 
 // Does a value of this type hold a borrow of the lifetime 'life' (NULL for the

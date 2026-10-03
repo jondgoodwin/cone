@@ -101,8 +101,13 @@ key (an invariant one, below), so `Option[&'a R]` and
 `Option[&R]` are one instance; and the instance is cloned from its arguments
 with every lifetime erased (`lifeErased`, a function type's promises excepted,
 being part of that type), so no use's names leak into the instance's own
-types. The use `genericMemoize` returns keeps the arguments as written, and
-the lifetimes the generic's own name was given, for what they name
+types. So is every band (`RefNode.scope`): an argument inferred from a borrow
+(`viaLocal(&mut d, &r)` making `T` a `&R`) carries the band of that borrow,
+and an instance made from it would hold every use to the first one's, while
+one written has none. Erased, a `T` is checked in the body by the loan walk,
+which holds what a parameter of type `T` lends as the caller's. The use
+`genericMemoize` returns keeps the arguments as written, and the lifetimes
+the generic's own name was given, for what they name
 (`genericInstanceUse`, `NameUseNode.lifeuse`).
 
 **A bounded parameter's argument is renamed, not erased.** A generic
