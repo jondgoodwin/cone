@@ -824,7 +824,7 @@ takes its C name rather than `stdio`'s Cone one, and supplied by `conestd`.
 `libc` and `posix` are C packages ("How a C library becomes a Cone package",
 below): raw bindings to the ISO C library and to the POSIX functions beyond
 it, Windows first, `posix` built on `libc`, and supplied by the C runtime every
-link names. `geomath` is a Cone package over `libc` and `collections`: 2-D and
+link names. `geomath` is a Cone package over `libc`: 2-D and
 3-D math as value types (`module_package_geomath`), with its example programs in its own `examples/`
 folder and its tests in its own `tests/`, neither of which any compile of the
 package sweeps; `congo test` builds both (`tools/congo/README.md`, "Testing a
