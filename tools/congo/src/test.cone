@@ -433,6 +433,32 @@ fn testPackage(repo &[]u8, pkg Package, mode &[]u8, filter &[]u8, hasFilter Bool
       return tally;
     }
   }
+  // Its kernels, where it has them, checked by the Vulkan SDK's validator for
+  // Vulkan 1.3, counted as a test; where the SDK is not installed they are
+  // only built, and that is said
+  if s.spvs.contains(name.view()) and not hasFilter {
+    imm spv = s.spvs[name.view()].copy();
+    imm spvName = path.name(spv.view());
+    imm v = validateKernels(spv.view());
+    if not v.ran {
+      imm line = cat("     kernels ", spvName.view(), " ... built, not validated: spirv-val, the Vulkan SDK's, is not on PATH");
+      report(line.view(), "");
+    }
+    else {
+      mut outcome &[]u8 = "valid";
+      if not v.valid { outcome = "FAILED"; }
+      imm line = cat("     kernels ", spvName.view(), " ... ", outcome);
+      if v.valid {
+        report(line.view(), "");
+        tally.passed = tally.passed + 1u64;
+      }
+      else {
+        report(line.view(), v.said.view());
+        tally.failed = tally.failed + 1u64;
+        tally.failures.push(cat(name.view(), ": kernels ", spvName.view()));
+      }
+    }
+  }
   if not fs.isDir(testsFolder.view()) {
     imm none = cat("none: ", name.view(), " has no tests folder");
     say("Tests", none.view());

@@ -1,0 +1,256 @@
+// The GPU build: a package's kernels (congo.py's check_gpu_marks,
+// found_on_search_path, gpu_search_folders, compile_gpu and
+// validate_kernels).
+//
+// GPU compatibility is declared per package [Jon 3 Oct 2026]: [package]
+// targets = ["native", "gpu"]. A package so marked whose source holds compute
+// entry points ('fn @compute(64) name(...)') is compiled for the GPU as well,
+// into <name>.spv in the build folder, a SPIR-V module for Vulkan whose
+// kernels are its entry points, each named as its function is. Building for
+// the GPU, Congo refuses any package it imports that is not marked, before
+// anything is compiled. Every function on a GPU target is inlined into the
+// kernel that calls it, so a kernel's build needs the bodies of what it
+// calls: the packages it imports are compiled from their source, not against
+// their include files. conec does that for a package it finds on its package
+// search path, so the GPU build is a direct compile of a module written here
+// that imports the package, with --path naming the folders the packages are
+// in. Which of a marked package's features a GPU refuses is the compiler's to
+// say; Congo decides only which packages may be compiled for the GPU.
+
+// SPIR-V for Vulkan 1.3, whose compute entry points are the kernels gpuwork
+// loads
+const gpuTriple = "spirv1.6-unknown-vulkan1.3";
+
+// Refuse every package the unit imports, at any depth, that is not marked
+// for the GPU, naming the imports that pulled each one in. The prelude, which
+// no package imports, is not asked; what it holds that a GPU lacks is the
+// compiler's to refuse where it is used.
+fn checkGpuMarks(plan &Plan, reg &Registry, u usize) Result[void, String] {
+  mut names = List[String].empty();
+  mut chains = List[String].empty();
+  mut seen = List[String].empty();
+  visitGpuMarks(plan, reg, u, "", &mut names, &mut chains, &mut seen);
+  if names.len() == 0usize { return succeeded(); }
+  mut listed = String.empty();
+  mut i = 0usize;
+  while i < names.len() {
+    if i > 0usize { listed <- "\n"; }
+    listed <- "    ", names[i].view(), ": ", chains[i].view();
+    i = i + 1usize;
+  }
+  imm name = reg.packages[plan.units[u].pkg].name.view();
+  Error[void, String][cat(name, " is compiled for the GPU, and so is every package it imports, each of which must be marked for the GPU with targets = [\"native\", \"gpu\"] in its congo.toml; these are not:\n",
+    listed.view())];
+}
+
+// The imports of unit u, and theirs, depth first: each package not marked
+// recorded once, with the chain of imports that first reached it
+fn visitGpuMarks(plan &Plan, reg &Registry, u usize, chain &[]u8, names &mut List[String], chains &mut List[String],
+    seen &mut List[String]) {
+  imm here = reg.packages[plan.units[u].pkg].name.copy();
+  imm deps = depsOf(plan.units[u]);
+  mut d = 0usize;
+  while d < deps.len() {
+    imm dep = reg.packages[*deps[d]];
+    imm depName = dep.name.copy();
+    imm first = firstImport(plan.units[u], depName.view());
+    imm place = first.location();
+    mut step = String.from(chain);
+    if chain.len > 0usize { step <- "; "; }
+    step <- here.view(), " imports ", depName.view(), " at ", place.view();
+    if not dep.gpu {
+      if not holdsName(names, depName.view()) {
+        names.push(depName.copy());
+        chains.push(step.copy());
+      }
+    }
+    elif not holdsName(seen, depName.view()) {
+      seen.push(depName.copy());
+      mut du = 0usize;
+      if plan.unitNamed(reg, depName.view(), &mut du) {
+        visitGpuMarks(plan, reg, du, step.view(), names, chains, seen);
+      }
+    }
+    d = d + 1usize;
+  }
+}
+
+// The file conec loads for 'import name' on its package search path, the
+// folders in order: in each, name.cone, then a package's source root,
+// name/src/name.cone, then name/name.cone (fileFindPackage); "" for none
+fn foundOnSearchPath(name &[]u8, folders &List[String]) String {
+  imm file = cat(name, ".cone");
+  mut i = 0usize;
+  while i < folders.len() {
+    imm folder = folders[i].view();
+    imm loose = joined(folder, file.view());
+    if fs.isFile(loose.view()) { return loose; }
+    imm pkgFolder = joined(folder, name);
+    imm srcFolder = joined(pkgFolder.view(), "src");
+    imm source = joined(srcFolder.view(), file.view());
+    if fs.isFile(source.view()) { return source; }
+    imm designated = joined(pkgFolder.view(), file.view());
+    if fs.isFile(designated.view()) { return designated; }
+    i = i + 1usize;
+  }
+  String.empty();
+}
+
+// The folders a GPU build hands conec's --path: the folder each package of
+// the build is in, the package's own first, but the packages folder (core's),
+// which conec searches last anyway. Checked: conec must find each package
+// where Congo found it, which needs each in a folder named for it, and none
+// hidden by another of its name earlier on the path.
+fn gpuSearchFolders(plan &Plan, reg &Registry, u usize, packages &List[usize], core usize) Result[List[String], String] {
+  imm packagesFolder = parentOf(reg.packages[plan.units[core].pkg].root.view());
+  mut all = List[usize].empty();
+  all.push(plan.units[u].pkg);
+  mut i = 0usize;
+  while i < packages.len() {
+    all.push(*packages[i]);
+    i = i + 1usize;
+  }
+  mut folders = List[String].empty();
+  i = 0usize;
+  while i < all.len() {
+    imm folder = parentOf(reg.packages[*all[i]].root.view());
+    if not samePath(folder.view(), packagesFolder.view()) and not holdsPath(&folders, folder.view()) {
+      folders.push(folder);
+    }
+    i = i + 1usize;
+  }
+  mut searched = copyStrings(&folders);
+  searched.push(packagesFolder.copy());
+  i = 0usize;
+  while i < all.len() {
+    imm pkg = reg.packages[*all[i]];
+    imm found = foundOnSearchPath(pkg.name.view(), &searched);
+    mut same = false;
+    if not found.isEmpty() {
+      imm a = resolved(found.view());
+      imm b = resolved(pkg.src.view());
+      same = samePath(a.view(), b.view());
+    }
+    if not same {
+      mut there = String.empty();
+      if found.isEmpty() { there <- "finds no ", pkg.name.view(); }
+      else { there <- "finds ", found.view(); }
+      mut hint = String.empty();
+      imm folderName = path.name(pkg.root.view());
+      if not folderName.equals(pkg.name.view()) {
+        hint <- "; it looks for a package in a folder named for it, and ", pkg.name.view(), " is in ", pkg.root.view();
+      }
+      imm unitName = reg.packages[plan.units[u].pkg].name.view();
+      imm listed = String.join(searched.view(), ", ");
+      mut m = cat(unitName, "'s GPU build compiles ", pkg.name.view(), " from its source, which conec finds by its name on its package search path (",
+        listed.view(), "): there it ");
+      m <- there.view(), ", not ", pkg.src.view(), hint.view();
+      return Error[List[String], String][m];
+    }
+    i = i + 1usize;
+  }
+  Ok[List[String], String][folders];
+}
+
+// Compile a marked package's kernels into <name>.spv in the session's build
+// folder: a direct conec compile, for SPIR-V's Vulkan form, of a module that
+// imports the package, in gpu/<name>/ there, so that the package and
+// everything it imports are found on the package search path and compiled
+// from their source. Answers the module's path.
+fn compileGpu(s &mut Session, plan &Plan, u usize, core usize) Result[String, String] {
+  imm pkg = s.reg.packages[plan.units[u].pkg];
+  imm name = pkg.name.copy();
+  imm packages = closure(plan, &s.reg, u);
+  mut folders = List[String].empty();
+  match gpuSearchFolders(plan, &s.reg, u, &packages, core) {
+    case mut ok Ok { folders <=> ok.value; }
+    case imm e Error { return Error[String, String][e.value.copy()]; }
+  }
+  imm gpuRoot = joined(s.out.view(), "gpu");
+  imm work = joined(gpuRoot.view(), name.view());
+  makeFolder(work.view());
+  imm module = cat(name.view(), "_gpu");
+  imm sourceName = cat(module.view(), ".cone");
+  imm source = joined(work.view(), sourceName.view());
+  // Its lines end as Python's write_text ends them on Windows, in '\r\n'
+  mut text = String.empty();
+  text <- "// The GPU build of ", name.view(), ", written by Congo for conec; rewritten on every\r\n";
+  text <- "// build. ", name.view(), "'s compute entry points are the kernels of ", name.view(), ".spv.\r\n";
+  text <- "\r\n";
+  text <- "mod ", module.view(), ";\r\n";
+  text <- "\r\n";
+  text <- "import ", name.view(), ";\r\n";
+  match fs.writeFile(source.view(), text.view()) {
+    case is Ok {}
+    case imm e Error { fail(e.value.message()); }
+  }
+  imm spvName = cat(name.view(), ".spv");
+  imm spv = joined(s.out.view(), spvName.view());
+  imm writtenName = cat(module.view(), ".spv");
+  imm written = joined(work.view(), writtenName.view());
+  removeIfThere(spv.view());
+  removeIfThere(written.view());
+  imm label = pkg.label();
+  imm compiling = cat(label.view(), " for the GPU (", pkg.root.view(), ")");
+  say("Compiling", compiling.view());
+  mut rest = List[String].empty();
+  rest.push(cat("--triple=", gpuTriple));
+  if s.mode.equals("debug") { rest.push(String.from("--debug")); }
+  if folders.len() > 0usize {
+    imm joinedFolders = String.join(folders.view(), ";");
+    rest.push(cat("--path=", joinedFolders.view()));
+  }
+  rest.push(String.from("-o"));
+  rest.push(work.copy());
+  rest.push(source.copy());
+  if not runConec(s.conec.view(), &s.defines, rest) {
+    return Error[String, String][cat("could not compile ", name.view(), " for the GPU (", source.view(), ")")];
+  }
+  if not fs.isFile(written.view()) {
+    return Error[String, String][cat("conec wrote no SPIR-V module at ", written.view())];
+  }
+  match fs.rename(written.view(), spv.view()) {
+    case is Ok {}
+    case imm e Error { fail(e.value.message()); }
+  }
+  Ok[String, String][spv];
+}
+
+// Remove a file where there is one, or Congo stops
+fn removeIfThere(file &[]u8) {
+  match fs.removeFile(file) {
+    case is Ok {}
+    case imm e Error {
+      if not e.value.notFound() {
+        fail(e.value.message());
+      }
+    }
+  }
+}
+
+// spirv-val's verdict on a package's kernels, for Vulkan 1.3, and what it
+// said; not run where spirv-val (the Vulkan SDK's) is not on PATH
+struct Validation {
+  pub ran Bool;
+  pub valid Bool;
+  pub said String;
+}
+
+fn validateKernels(spv &[]u8) Validation {
+  imm pathList = envOr("PATH", "");
+  imm validator = which("spirv-val", pathList.view());
+  if validator.isEmpty() { return new Validation(false, false, String.empty()); }
+  imm args = argList(validator.view(), "--target-env", "vulkan1.3", spv);
+  mut said = String.empty();
+  mut code = 0u32;
+  match process.run(args.view()) {
+    case imm ok Ok {
+      said = utf8Text(ok.value.stdout.view());
+      imm err = utf8Text(ok.value.stderr.view());
+      said <- err.view();
+      code = ok.value.exitCode;
+    }
+    case imm e Error { fail(e.value.message()); }
+  }
+  new Validation(true, code == 0u32, said);
+}

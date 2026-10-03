@@ -9,6 +9,7 @@ struct Unit {
   pub pkg usize;
   pub mods List[Module];
   pub deps List[usize];
+  pub kernels Bool;      // marked for the GPU, and its source holds compute entry points
 }
 
 fn holds(list &List[usize], v usize) Bool {
@@ -80,7 +81,24 @@ fn resolveImports(reg &Registry, p usize, scanned List[Module]) Result[Unit, Str
     case is Ok {}
     case imm e Error { return Error[Unit, String][e.value.copy()]; }
   }
-  Ok[Unit, String][new Unit(p, mods, deps)];
+  // Only a package marked for the GPU has its kernels built, so only its
+  // source is read past the headers
+  mut kernels = false;
+  if pkg.gpu {
+    mut m = 0usize;
+    while m < mods.len() and not kernels {
+      mut f = 0usize;
+      while f < mods[m].files.len() and not kernels {
+        match holdsKernel(mods[m].files[f].view()) {
+          case imm ok Ok { kernels = ok.value; }
+          case imm e Error { return Error[Unit, String][e.value.copy()]; }
+        }
+        f = f + 1usize;
+      }
+      m = m + 1usize;
+    }
+  }
+  Ok[Unit, String][new Unit(p, mods, deps, kernels)];
 }
 
 fn importsOf(m &Module) List[Import] {
@@ -157,7 +175,7 @@ struct Plan {
       case mut ok Ok { scanned <=> ok.value; }
       case imm e Error { return Error[void, String][e.value.copy()]; }
     }
-    mut unit = new Unit(p, List[Module].empty(), List[usize].empty());
+    mut unit = new Unit(p, List[Module].empty(), List[usize].empty(), false);
     match resolveImports(reg, p, scanned) {
       case mut ok Ok { unit <=> ok.value; }
       case imm e Error { return Error[void, String][e.value.copy()]; }

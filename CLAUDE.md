@@ -108,7 +108,14 @@ Visual Studio projects stay at the root.
   kernel a CPU twin (`runTwin`) and `checkParity` comparing the two bit for
   bit; its test kernels are Slang fixtures, and a Cone compute entry point
   (`fn @compute(64) name(inv Invocation, parts &[]Part, out &[]mut f32)`),
-  compiled by `conec` for SPIR-V's Vulkan form, is a kernel it loads too;
+  compiled by `conec` for SPIR-V's Vulkan form, is a kernel it loads too,
+  `readSpirv("<package>.spv")` reading the module Congo built and copied
+  beside the program;
+  `gpusample` is the sample of a package marked for the GPU (`targets =
+  ["native", "gpu"]` in its `congo.toml`, as `libc`, `geomath`, `noise` and
+  `sdf` are): a kernel over `geomath`, which Congo compiles into
+  `gpusample.spv`, and a test running it on the GPU through `gpuwork` against
+  the same function on the CPU;
   `geomath` is 2-D and 3-D math, pure maths: values and operations with
   results of a known size, no collections (vectors,
   quaternions, matrices, transforms, boxes, rays, planes, frusta and their
@@ -560,7 +567,11 @@ Visual Studio projects stay at the root.
   each source file's header for its `mod` line and imports, resolves the
   imports through the package-folder registries (`packages/` first), writes one
   build description per package, compiles each package on its own with `conec`,
-  and links with `conestd`. `tools/congo/README.md` is its guide and design;
+  and links with `conestd`. A package marked for the GPU (`targets =
+  ["native", "gpu"]`) whose source holds compute entry points is also
+  compiled for the GPU into `build/<mode>/<name>.spv`, copied beside every
+  program that imports it, once every package it imports is found marked.
+  `tools/congo/README.md` is its guide and design;
   `python tools/congo/test_congo.py` checks it against a built `conec`.
   `tools/congo/` is also the package of its port to Cone (`congo.toml`,
   `src/congo.cone`), which `congo.py build` there builds first and which then

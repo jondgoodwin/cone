@@ -13,6 +13,7 @@ struct Package {
   pub libraries List[String];  // [link] libraries
   pub linkPaths List[String];  // [link] paths, absolute
   pub runtime List[String];    // [link] runtime: DLLs, bare names
+  pub gpu Bool;                // [package] targets names "gpu": it may be compiled for the GPU
 
   pub fn label(self &) String {
     if version.isEmpty() { return name.copy(); }
@@ -29,7 +30,7 @@ struct Package {
 
 fn emptyPackage() Package {
   new Package(String.empty(), String.empty(), String.empty(), String.empty(), String.empty(),
-    false, List[String].empty(), List[String].empty(), List[String].empty());
+    false, List[String].empty(), List[String].empty(), List[String].empty(), false);
 }
 
 fn copyStrings(from &List[String]) List[String] {
@@ -181,6 +182,40 @@ fn readLink(file &[]u8, table &toml.Table, pkg &mut Package) String {
   String.empty();
 }
 
+// [package] targets: what the package may be compiled for, "native" (the
+// machine Congo runs on) and "gpu"; ["native"] where it is not written.
+// Whether it names "gpu", into pkg: GPU compatibility is declared per
+// package, and a GPU build refuses a package that is not marked [Jon 3 Oct
+// 2026]. The spelling is a placeholder. "" or what is wrong.
+fn readTargets(file &[]u8, table &toml.Table, pkg &mut Package) String {
+  if not table.has("targets") { return String.empty(); }
+  mut targets = List[String].empty();
+  match table.getStrings("targets") {
+    case mut l Some { targets <=> l.value; }
+    case is None {
+      return cat(file, ": [package] targets must be a list of targets, such as [\"native\", \"gpu\"]");
+    }
+  }
+  mut native = false;
+  mut i = 0usize;
+  while i < targets.len() {
+    imm target = targets[i].view();
+    if target == "native" { native = true; }
+    elif target == "gpu" { pkg.gpu = true; }
+    else {
+      return cat(file, ": [package] targets names \"", target, "\", which is not a target; the targets are \"native\" and \"gpu\"");
+    }
+    i = i + 1usize;
+  }
+  if not native {
+    return cat(file, ": [package] targets must name \"native\": a package built for the GPU alone is not built yet");
+  }
+  if pkg.gpu and not pkg.output.equals("library") {
+    return cat(file, ": [package] targets names \"gpu\", and an executable is not built for the GPU: put its kernels in a library package it imports");
+  }
+  String.empty();
+}
+
 // congo.toml: a [package] table with name, version and output, and, for a
 // package that needs C libraries linked, a [link] table. There is no
 // dependencies section: the imports in the source are the dependency list,
@@ -220,8 +255,8 @@ fn readManifest(file &[]u8) Result[Package, String] {
   i = 0usize;
   while i < keys.len() {
     imm key = keys[i].view();
-    if key != "name" and key != "version" and key != "output" {
-      return manifestError(file, cat("'", key, "' is not a [package] key; the keys are name, version and output"));
+    if key != "name" and key != "version" and key != "output" and key != "targets" {
+      return manifestError(file, cat("'", key, "' is not a [package] key; the keys are name, version, output and targets"));
     }
     i = i + 1usize;
   }
@@ -251,6 +286,8 @@ fn readManifest(file &[]u8) Result[Package, String] {
   if not (pkg.output.equals("executable") or pkg.output.equals("library")) {
     return manifestError(file, String.from("[package] output must be \"executable\" or \"library\""));
   }
+  imm wrongTargets = readTargets(file, table, &mut pkg);
+  if not wrongTargets.isEmpty() { return Error[Package, String][wrongTargets]; }
   if doc.has("link") {
     imm wrong = readLink(file, doc["link"], &mut pkg);
     if not wrong.isEmpty() { return Error[Package, String][wrong]; }
