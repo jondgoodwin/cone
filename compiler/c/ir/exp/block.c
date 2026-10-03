@@ -404,6 +404,21 @@ static void blockResultMove(INode *result) {
         flowResultMove(result);
 }
 
+// A copy of a counted value handed out of a scope -- a return's, a block's
+// value, a break's -- is one more holder of what it counts, unless it is a
+// variable of that scope handed over whole, which the scope's release exempts
+// instead (flowScopeHandsBack). A part of a local the scope releases (a field,
+// an element, what a local owner points at), a variable of an enclosing scope,
+// a global, or a value reached through a borrow is read and still held where it
+// was, so the copy is counted as a copy into a variable is (flowHandleMoveOrCopy).
+// 'result' is the value as it stood before the walk, which is what the release
+// exemption names.
+static void blockResultCount(INode **retexp, INode *result, size_t startpos) {
+    if (iexpIsMove(*retexp) || !flowIsLvalRead(*retexp) || flowScopeHandsBack(startpos, result))
+        return;
+    flowInjectRefCount(retexp);
+}
+
 // Does this block throw its final expression's value away? A loop's loops
 // back, and a block with no value -- a statement's, a branch of an 'if' that
 // is one -- hands nothing back: the value is a temporary there, and a local
@@ -550,6 +565,7 @@ void blockFlow(FlowState *fstate, BlockNode **blknode) {
             // A returned value is moved to the caller, so it must be one this
             // function may move: not a value it reached through a borrow
             blockResultMove(*retexp);
+            blockResultCount(retexp, result, 0);
             blockTempEscape(tempmark, *retexp, 1);
         }
         // An init returns only once it has filled self
@@ -581,6 +597,8 @@ void blockFlow(FlowState *fstate, BlockNode **blknode) {
                 blockResultMove(*retexp);
             if (discards)
                 flowTempRead(retexp);
+            else
+                blockResultCount(retexp, result, svpos);
             blockTempEscape(tempmark, *retexp, !discards);
         }
         flowScopeDealias(svpos, &((BreakRetNode *)*nodesp)->dealias, result, *nodesp);
@@ -592,8 +610,10 @@ void blockFlow(FlowState *fstate, BlockNode **blknode) {
         INode *result = *brkexp;
         brknode->flowresult = result;
         flowGateResult(fstate, result);
-        if (result->tag != NilLitTag)
+        if (result->tag != NilLitTag) {
             flowLoadValue(fstate, brkexp);
+            blockResultCount(brkexp, result, blockJumpMark(brknode, svpos));
+        }
         blockTempEscape(tempmark, *brkexp, 1);
         flowScopeDealias(blockJumpMark(brknode, svpos), &brknode->dealias, result, *nodesp);
         break;

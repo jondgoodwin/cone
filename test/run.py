@@ -1615,26 +1615,156 @@ def normalize_stderr(text: str) -> str:
     return TIME_RE.sub("Compile finished in <t> sec (<n> kb).", text)
 
 
+def remove_stale(path: Path) -> None:
+    """Remove a file an earlier run left. Windows refuses to delete an
+    executable while anything still holds it, and a program killed for its
+    time can take a moment to let go of its image, or longer while Windows
+    Error Reporting has it, so a refusal is retried for up to ten seconds."""
+    deadline = time.monotonic() + 10
+    while True:
+        try:
+            path.unlink()
+            return
+        except PermissionError:
+            if time.monotonic() > deadline:
+                raise
+            time.sleep(0.05)
+
+
+class Debuggee:
+    """Windows only: a test program run as the runner's debuggee, so that its
+    crash ends here rather than in Windows Error Reporting.
+
+    A panic ends through the C library's 'abort', a fail-fast on Windows, and
+    Windows hands every fail-fast (and every other crash) to WER, which holds
+    the dying process, and its executable locked, while it collects a report.
+    WER is one service for the whole machine: forty panics at once took up to
+    1.5s each to exit, and a hundred and fifty up to 18s, so a loaded machine
+    timed panicking scenarios out. Neither a job object's
+    DIE_ON_UNHANDLED_EXCEPTION nor SetErrorMode keeps a fail-fast out of WER;
+    a debugger does. A crash reaches the debugger as a second-chance
+    exception before WER, and the runner ends the process there, with the
+    exception's own code, which is the exit status Windows would have given
+    it: 0xC0000409 for a panic. Everything else is passed on as no debugger
+    would have seen it: first-chance exceptions to the program's handlers,
+    the loader's breakpoint aside. And the program gets the heap it would
+    have had: started under a debugger, Windows gives a process its checking
+    debug heap unless _NO_DEBUG_HEAP is set, which turned a scenario that
+    passes into one ended by STATUS_HEAP_CORRUPTION (region_success).
+
+    The thread that started the process is the one that must wait for its
+    debug events, which 'pump' does; until it does, the program is stopped.
+    """
+
+    DEBUG_ONLY_THIS_PROCESS = 0x2
+    ENVIRONMENT = {"_NO_DEBUG_HEAP": "1"}
+    EXCEPTION_DEBUG_EVENT, CREATE_PROCESS_DEBUG_EVENT = 1, 3
+    EXIT_PROCESS_DEBUG_EVENT, LOAD_DLL_DEBUG_EVENT = 5, 6
+    DBG_CONTINUE, DBG_EXCEPTION_NOT_HANDLED = 0x00010002, 0x80010001
+    STATUS_BREAKPOINT = 0x80000003
+
+    _kernel32 = None
+
+    @classmethod
+    def kernel32(cls):
+        if cls._kernel32 is None:
+            import ctypes
+            from ctypes import wintypes as w
+
+            class DebugEvent(ctypes.Structure):
+                # DEBUG_EVENT: the union is read as words, at its 8-byte
+                # alignment; an exception's code is the low half of word 0,
+                # and dwFirstChance the low half of word 19, after the
+                # 152-byte EXCEPTION_RECORD; a file handle is word 0
+                _fields_ = [("code", w.DWORD), ("pid", w.DWORD), ("tid", w.DWORD),
+                            ("u", ctypes.c_uint64 * 20)]
+
+            k = ctypes.WinDLL("kernel32", use_last_error=True)
+            k.WaitForDebugEvent.argtypes = [ctypes.POINTER(DebugEvent), w.DWORD]
+            k.WaitForDebugEvent.restype = w.BOOL
+            k.ContinueDebugEvent.argtypes = [w.DWORD, w.DWORD, w.DWORD]
+            k.ContinueDebugEvent.restype = w.BOOL
+            k.TerminateProcess.argtypes = [w.HANDLE, w.UINT]
+            k.TerminateProcess.restype = w.BOOL
+            k.CloseHandle.argtypes = [w.HANDLE]
+            k.CloseHandle.restype = w.BOOL
+            k.DebugEvent = DebugEvent
+            cls._kernel32 = k
+        return cls._kernel32
+
+    def __init__(self, process: subprocess.Popen):
+        self.process = process
+        self.k = self.kernel32()
+        self.event = self.k.DebugEvent()
+        self.seen_breakpoint = False
+        self.exited = False
+
+    def pump(self, wait: float) -> bool:
+        """Handle the debug events that come within wait seconds; whether
+        the process has exited."""
+        k, ev = self.k, self.event
+        ms = max(0, int(wait * 1000))
+        while not self.exited and k.WaitForDebugEvent(ev, ms):
+            ms = 0
+            status = self.DBG_CONTINUE
+            if ev.code == self.EXCEPTION_DEBUG_EVENT:
+                code = ev.u[0] & 0xFFFFFFFF
+                first_chance = ev.u[19] & 0xFFFFFFFF
+                if first_chance and code == self.STATUS_BREAKPOINT and not self.seen_breakpoint:
+                    self.seen_breakpoint = True          # the loader's, for a debugger
+                elif first_chance:
+                    status = self.DBG_EXCEPTION_NOT_HANDLED
+                elif not k.TerminateProcess(int(self.process._handle), code):
+                    status = self.DBG_EXCEPTION_NOT_HANDLED
+            elif ev.code in (self.CREATE_PROCESS_DEBUG_EVENT, self.LOAD_DLL_DEBUG_EVENT):
+                if ev.u[0]:
+                    k.CloseHandle(ev.u[0])               # the image's file, the debugger's to close
+            elif ev.code == self.EXIT_PROCESS_DEBUG_EVENT:
+                self.exited = True
+            k.ContinueDebugEvent(ev.pid, ev.tid, status)
+        return self.exited
+
+    def finish(self) -> int:
+        """Kill it, and let it go: its exit status."""
+        self.process.kill()
+        deadline = time.monotonic() + 10
+        while not self.pump(0.05) and time.monotonic() < deadline:
+            pass
+        return self.process.wait()
+
+
 def execute(cmd: list[str], cwd: Path, out_dir: Path, stem: str,
-            timeout: float, max_bytes: int, env: dict | None = None) -> Completed:
+            timeout: float, max_bytes: int, env: dict | None = None,
+            debuggee: bool = False) -> Completed:
     """Run one process with stdin from null and a wall-clock timeout (R1.3).
 
     The timeout is not optional. A malformed source can put the parser in a
     loop emitting unbounded output, so output volume is capped too: a 20-second
     unbounded write would otherwise fill a pipe buffer or a disk before the
     clock ran out.
+
+    A test program runs as the runner's debuggee on Windows (debuggee=True),
+    so that a crash, a panic's above all, ends at once (class Debuggee).
     """
     out_path = out_dir / f"{stem}.stdout"
     err_path = out_dir / f"{stem}.stderr"
     started = time.monotonic()
     killed = None
+    debuggee = debuggee and IS_WINDOWS
+    if debuggee:
+        env = dict(os.environ if env is None else env, **Debuggee.ENVIRONMENT)
     with out_path.open("wb") as out, err_path.open("wb") as err:
         process = subprocess.Popen(
             cmd, cwd=str(cwd), stdin=subprocess.DEVNULL,
             stdout=out, stderr=err, env=env,
+            creationflags=Debuggee.DEBUG_ONLY_THIS_PROCESS if debuggee else 0,
         )
+        debugger = Debuggee(process) if debuggee else None
         while True:
-            code = process.poll()
+            if debugger:
+                code = process.wait() if debugger.pump(0.01) else None
+            else:
+                code = process.poll()
             if code is not None:
                 break
             if time.monotonic() - started > timeout:
@@ -1642,10 +1772,14 @@ def execute(cmd: list[str], cwd: Path, out_dir: Path, stem: str,
             elif out_path.stat().st_size + err_path.stat().st_size > max_bytes:
                 killed = f"produced more than {max_bytes // 1024} kb of output"
             if killed:
-                process.kill()
-                code = process.wait()
+                if debugger:
+                    code = debugger.finish()
+                else:
+                    process.kill()
+                    code = process.wait()
                 break
-            time.sleep(0.01)
+            if not debugger:
+                time.sleep(0.01)
     seconds = time.monotonic() - started
 
     def read(path: Path) -> str:
@@ -2177,7 +2311,7 @@ class Runner:
         out_dir.mkdir(parents=True, exist_ok=True)
         for stale in out_dir.iterdir():
             if stale.is_file():
-                stale.unlink()
+                remove_stale(stale)
 
         if scenario.category == "driver":
             return self.run_driver(scenario, spec, out_dir, started)
@@ -2525,10 +2659,15 @@ class Runner:
 
         result.commands.append(quote([str(exe)]))
         ran = execute([str(exe)], REPO, out_dir, "program",
-                      self.args.timeout, self.args.max_output, env=self.linker.env)
+                      self.args.timeout, self.args.max_output, env=self.linker.env,
+                      debuggee=True)
         if ran.killed:
             result.status = FAIL
             result.problems.append(f"program {ran.killed}")
+            # What it wrote to stderr says how far it got: a panic's line, say,
+            # before an end that never came
+            if ran.stderr.strip():
+                result.problems.append("stderr:\n" + indent(head(ran.stderr, 10)))
             return
         if ran.code != scenario.program_exit:
             result.status = FAIL

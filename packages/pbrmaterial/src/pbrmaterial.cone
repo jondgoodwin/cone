@@ -1,0 +1,65 @@
+// The pbrmaterial package: what goes into a physically based material, as
+// opposed to how it is lit. The render package evaluates the lighting (the
+// BRDF, the lights, the environment); this package says what the surface
+// is: the parameters a metallic-roughness material takes, and, for now,
+// textures of them baked from procedural noise. A program reaches it with
+// 'import pbrmaterial', and gets:
+//
+// - Periodic fractal sums (fractal.cone): FractalLayer, fBm, ridged or
+//   billowed gradient noise (the noise package's 'gradient2Periodic') whose
+//   lattice wraps every 'period' cells, so a tile of it repeats with no
+//   seam; an optional domain warp, periodic too.
+// - Maps (maps.cone): ScalarMap, a square grid of f32 (a height field, a
+//   mask) read with wrap-around, so a neighbourhood across an edge is the
+//   texels on the opposite edge; TexelMap, 8-bit texels in the layout
+//   render's Image keeps (rows bottom first, 3 or 4 bytes a texel), which
+//   render uploads as a texture; 'mapHash', a 64-bit FNV-1a of a map's bytes,
+//   what tests pin.
+// - Per-texel functions (texel.cone), each a pure function of its
+//   parameters (seeds among them), the texel's coordinates and, after the
+//   first, the height map: the height ('heightTexel'); from the height map,
+//   the tangent-space normal ('normalTexel'), convexity ('convexityTexel')
+//   and ambient occlusion by horizon search ('occlusionTexel'); and the
+//   surface: base colour, roughness, metallic, with edge wear and grime
+//   masks ('surfaceTexel').
+// - The bake (bake.cone): ProceduralSurface, every parameter of one
+//   material, and 'bakeTextureSet', which runs the per-texel functions over
+//   a square tile and gives a TextureSet: base colour (sRGB), an ORM map
+//   (occlusion, roughness, metallic in red, green, blue, linear: glTF's
+//   packing), a tangent-space normal map (linear, +y towards +v, glTF's
+//   and OpenGL's convention), the height, and the wear and grime masks.
+//
+// HOW IT RUNS. Two passes, as a chain of GPU kernels would: the height of
+// every texel first, then everything derived from the height map and the
+// parameters, each texel independently. Every per-texel function is pure
+// (no state, no allocation, no order), so each pass is the body of a
+// kernel; today the bake runs them in a loop on the CPU. The whole package
+// produces images, data whose size is chosen at run time: it is a tool
+// package, not a maths one, though its per-texel functions return fixed-size
+// values.
+//
+// DETERMINISM. Every random number is the noise package's integer hashing of
+// (seed, lattice point); there is no stream and no platform RNG, so a bake is
+// the same on every machine whose float operations round alike. Textures are
+// for appearance only, so the derived maps use square roots and powers (the
+// normal's length, the sRGB curve) freely.
+//
+// Coordinates: texel (x, y) is x from the left and y from the bottom of a
+// tile 'size' texels square; its centre is at u = (x + 1/2) / size,
+// v = (y + 1/2) / size, in tile units (the tile is 1 across). The height is
+// 0 to 1, scaled by the surface's 'depth' (a fraction of the tile's width)
+// into tile units wherever a slope is taken.
+//
+// Its files are one module, and only this one, the root, imports:
+//
+//   fractal.cone   FractalLayer: periodic fBm, ridged, billowed, warped
+//   maps.cone      ScalarMap, TexelMap, encodings, mapHash
+//   texel.cone     the parameters and the per-texel functions
+//   bake.cone      ProceduralSurface, TextureSet, bakeTextureSet
+
+mod pbrmaterial;
+
+import libc;
+import geomath use *;
+import collections use *;
+import noise use *;

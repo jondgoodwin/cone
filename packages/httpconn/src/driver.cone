@@ -34,6 +34,7 @@ const kConnect = 5u64;
 const kAccept = 6u64;
 const kTimer = 7u64;
 const kWatch = 8u64;
+const kCall = 9u64;          // a layer's work on the blocking pool
 const genMask = 0xFFFFFFu32;
 
 // A connection's state
@@ -62,9 +63,6 @@ const heldRetryNs = 1000000i64;      // events held for a full channel are tried
 
 fn nextGen(g u32) u32 {if g >= genMask {1u32;} else {g + 1u32;};}
 
-// A function making a connection's layer, one per accepted connection
-pub alias LayerMaker = &fn() So[Layer];
-
 // A connection: its socket, its protocol core and layer, and where it is
 struct Conn {
   gen u32;
@@ -79,6 +77,7 @@ struct Conn {
   addrs List[SocketAddr];   // a client's addresses to try, in order
   nextAddr usize;
   connOp OpId;              // the lookup or connect in flight
+  callOp OpId;              // the layer's work on the blocking pool, in flight
   connectBy Instant;
   peer SocketAddr;
   recvOut Bool;             // a receive is in flight
@@ -129,7 +128,7 @@ struct Lst {
   open Bool;
   sock Handle;
   sink Sink;
-  make LayerMaker;
+  make So[LayerMaker];
   acceptsOut u32;
 }
 
@@ -234,7 +233,7 @@ pub struct Driver {
     new Conn(gen: 1u32, state: cFree, nextFree: next, server: false, listener: ListenerId.none(),
       sock: Handle.none(), core: http1.Connection.client(cfg.protocol, pool, new Instant()),
       layer: plainLayer(), sink: Sink.Here[0u64], addrs: List[SocketAddr].empty(), nextAddr: 0usize,
-      connOp: OpId.none(), connectBy: new Instant(), peer: SocketAddr.localhost(0u16),
+      connOp: OpId.none(), callOp: OpId.none(), connectBy: new Instant(), peer: SocketAddr.localhost(0u16),
       recvOut: false, readyOut: false, readyHit: false, sendsOut: 0u32, eof: false, eofFed: false,
       shut: false, closeAsked: false, timer: OpId.none(), timerAt: new Instant(), current: noEntry,
       waiting: List[u32].empty(), flushing: List[u32].empty(), failed: false, failure: Failure.none(),
@@ -281,6 +280,7 @@ pub struct Driver {
     c.addrs.clear();
     c.nextAddr = 0usize;
     c.connOp = OpId.none();
+    c.callOp = OpId.none();
     c.recvOut = false;
     c.readyOut = false;
     c.readyHit = false;
@@ -583,6 +583,7 @@ pub struct Driver {
     if c.state != cOpen {return;}
     self.startNext(i, now);
     self.transmit(lp, i, now);
+    self.layerCall(lp, i);
     self.flushDone(lp, i);
     self.writable(i);
     self.armTimer(lp, i);
@@ -602,12 +603,20 @@ pub struct Driver {
       c.eofFed = true;
       c.core.handleInput(IoBuf.empty(), now);
     }
-    imm lf = c.layer.failure();
-    if lf != 0u32 {
+    if c.layer.failed() {
       c.failed = true;
-      c.failure = Failure.make(Stage.Read[], lf, ErrorKind.Malformed[], "the connection's layer failed");
+      imm text = c.layer.failureText();
+      c.failure = Failure.make(Stage.Tls[], c.layer.failureCode(), ErrorKind.Closed[], text.view());
       self.closeNow(lp, i, true, false);
     }
+  }
+
+  // The layer's work for the blocking pool, one at a time (a TLS session's
+  // certificate check by the OS): its answer comes back to the layer
+  fn layerCall(self &mut, lp &mut Loop, i u32) {
+    imm c = self.connAt(i) as &mut Conn;
+    if not c.callOp.isNone() or not c.layer.wantsCall() {return;}
+    c.callOp = lp.submit(c.layer.takeCall(), Target.Here[self.tok(kCall, i, c.gen)]);
   }
 
   // A client's next waiting request, when the connection is free for it
@@ -747,7 +756,8 @@ pub struct Driver {
       }
       lp.submit(Op.Send[c.sock, b], Target.Here[self.tok(kSend, i, c.gen)]);
       c.sendsOut = c.sendsOut + 1u32;
-      if c.current != noEntry {(self.reqAt(c.current) as &mut Req).wrote = true;}
+      // A layer's own bytes (a TLS handshake's) are not the request's
+      if c.current != noEntry and c.layer.isOpen() {(self.reqAt(c.current) as &mut Req).wrote = true;}
     }
   }
 
@@ -969,6 +979,11 @@ pub struct Driver {
       lp.cancel(c.connOp);
       c.connOp = OpId.none();
     }
+    // Work on the pool ends when it returns; its answer is dropped then
+    if not c.callOp.isNone() {
+      lp.cancel(c.callOp);
+      c.callOp = OpId.none();
+    }
     if not c.sock.isNone() {
       if reset {lp.reset(c.sock);} else {lp.close(c.sock);}
       c.sock = Handle.none();
@@ -1035,6 +1050,13 @@ pub struct Driver {
     if index >= connCount {return true;}
     imm c = self.connAt(index) as &mut Conn;
     if c.gen != gen or c.state == cFree {return true;}
+    if kind == kCall {
+      if comp.id != c.callOp {return true;}
+      c.callOp = OpId.none();
+      c.layer.callDone(comp, now);
+      self.markDirty(index);
+      return true;
+    }
     if kind == kRecv {
       c.recvOut = false;
       if c.state == cClosing {
@@ -1306,12 +1328,12 @@ pub struct Driver {
   // Listen at addr: each connection accepted is a server connection, its
   // life and its requests told to sink (see the package's header, SERVING)
   pub fn listen(self &mut, lp &mut Loop, addr SocketAddr, sink Sink) Result[ListenerId, IoError] {
-    self.listenWith(lp, addr, &plainLayer, sink);
+    self.listenWith(lp, addr, new So[PlainMaker](PlainMaker.start()), sink);
   }
 
   // Listen, each accepted connection's bytes passing through a layer 'make'
   // makes (see LAYERS)
-  pub fn listenWith(self &mut, lp &mut Loop, addr SocketAddr, make LayerMaker, sink Sink) Result[ListenerId, IoError] {
+  pub fn listenWith(self &mut, lp &mut Loop, addr SocketAddr, make So[LayerMaker], sink Sink) Result[ListenerId, IoError] {
     mut h = Handle.none();
     match lp.listen(addr) {
       case imm r Ok {h = r.value;}
@@ -1374,9 +1396,9 @@ pub struct Driver {
       st.refused = st.refused + 1u64;
       return;
     }
-    imm make = e.make;
+    imm layer = e.make.make();
     imm sink = copySink(&mut e.sink);
-    imm i = self.newConn(true, (make)(), sink, now);
+    imm i = self.newConn(true, layer, sink, now);
     imm c = self.connAt(i) as &mut Conn;
     c.sock = comp.handle;
     c.listener = new ListenerId(k, gen);
@@ -1584,6 +1606,15 @@ pub struct Driver {
     imm c = self.connAt(ci) as &Conn;
     c.state == cOpen and not c.server and c.current == noEntry and c.waiting.len() == 0usize and
       not c.failed and not c.closeAsked and c.core.canSendRequest();
+  }
+
+  // What a connection's layer says of itself, for diagnostics: 'plain', or a
+  // TLS session's version, cipher, ALPN and handshake time; empty when the
+  // connection names none
+  pub fn layerInfo(self &, conn ConnId) String {
+    imm ci = self.connIndex(conn);
+    if ci == noEntry {return String.empty();}
+    (self.connAt(ci) as &Conn).layer.describe();
   }
 
   // The address a connection is connected to (the one being tried, while

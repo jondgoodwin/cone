@@ -128,10 +128,14 @@ def signer_of(path: Path) -> tuple[str, str] | None:
     script = ("$s = Get-AuthenticodeSignature -LiteralPath $env:FETCH_FILE; "
               "$s.Status.ToString(); "
               "if ($s.SignerCertificate) { $s.SignerCertificate.Subject } else { '' }")
+    # Windows PowerShell finds its own modules only by its own PSModulePath:
+    # one inherited from PowerShell 7 (run from pwsh) names pwsh's modules
+    # first, and Get-AuthenticodeSignature's module then fails to load
+    env = {k: v for k, v in os.environ.items() if k.upper() != "PSMODULEPATH"}
+    env["FETCH_FILE"] = str(path)
     try:
         ran = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
-                             env=dict(os.environ, FETCH_FILE=str(path)),
-                             capture_output=True, text=True, timeout=120)
+                             env=env, capture_output=True, text=True, timeout=120)
     except (OSError, subprocess.SubprocessError):
         return None
     lines = ran.stdout.splitlines()

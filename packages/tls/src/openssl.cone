@@ -1,0 +1,173 @@
+// OpenSSL 3.5: what the package asks of libssl and libcrypto, bound by hand
+// from the 3.5 headers. Every OpenSSL object is opaque, so every handle is a
+// '*u8'. Two things to know when reading these:
+//
+// - C's 'long' and 'unsigned long' are 32 bits on Windows (LLP64), so they
+//   are i32 and u32 here; on Linux and macOS they are 64 bits, and these
+//   declarations will differ there (SSL_ctrl, SSL_CTX_ctrl, BIO_ctrl,
+//   SSL_get_verify_result, ERR_get_error).
+// - Several of OpenSSL's documented functions are macros over a control
+//   call, and are written here as that call with its command number:
+//   SSL_set_tlsext_host_name is SSL_ctrl(ssl, 55, 0, name);
+//   SSL_CTX_set_min_proto_version and _max_ are SSL_CTX_ctrl(ctx, 123 or
+//   124, version, null); SSL_CTX_set_mode is SSL_CTX_ctrl(ctx, 33, mode,
+//   null); SSL_CTX_set_session_cache_mode is SSL_CTX_ctrl(ctx, 44, mode,
+//   null); SSL_set_retry_verify is SSL_ctrl(ssl, 136, 0, null) > 0;
+//   sk_X509_num and sk_X509_value are OPENSSL_sk_num and _value.
+//
+// Each function is C-named ('@c'), so a call is made as C makes it.
+
+// The two functions OpenSSL calls back into this package (verify.cone)
+alias VerifyFn = &fn(store *u8, arg *u8) i32;
+alias AlpnSelectFn = &fn(ssl *u8, out &mut *u8, outLen &mut u8, offered *u8, offeredLen u32, arg *u8) i32;
+
+extern {
+  fn @c OpenSSL_version(t i32) *u8;
+
+  // Contexts: what every session made from one shares
+  fn @c TLS_client_method() *u8;
+  fn @c TLS_server_method() *u8;
+  fn @c SSL_CTX_new(method *u8) *u8;
+  fn @c SSL_CTX_free(ctx *u8);
+  fn @c SSL_CTX_ctrl(ctx *u8, cmd i32, larg i32, parg *u8) i32;
+  fn @c SSL_CTX_set_options(ctx *u8, op u64) u64;
+  fn @c SSL_CTX_set_verify(ctx *u8, mode i32, cb *u8);
+  fn @c SSL_CTX_set_cert_verify_callback(ctx *u8, cb VerifyFn, arg *u8);
+  fn @c SSL_CTX_set_alpn_select_cb(ctx *u8, cb AlpnSelectFn, arg *u8);
+  fn @c SSL_CTX_set_alpn_protos(ctx *u8, protos *u8, len u32) i32;   // 0 is success
+  fn @c SSL_CTX_get_cert_store(ctx *u8) *u8;
+  fn @c SSL_CTX_use_certificate_chain_file(ctx *u8, file *u8) i32;
+  fn @c SSL_CTX_use_PrivateKey_file(ctx *u8, file *u8, kind i32) i32;
+  fn @c SSL_CTX_check_private_key(ctx *u8) i32;
+  fn @c X509_STORE_add_cert(store *u8, x *u8) i32;
+
+  // Sessions
+  fn @c SSL_new(ctx *u8) *u8;
+  fn @c SSL_free(ssl *u8);
+  fn @c SSL_set_bio(ssl *u8, rbio *u8, wbio *u8);
+  fn @c SSL_set_connect_state(ssl *u8);
+  fn @c SSL_set_accept_state(ssl *u8);
+  fn @c SSL_ctrl(ssl *u8, cmd i32, larg i32, parg *u8) i32;
+  fn @c SSL_set1_host(ssl *u8, host *u8) i32;
+  fn @c SSL_do_handshake(ssl *u8) i32;
+  fn @c SSL_get_error(ssl *u8, ret i32) i32;
+  fn @c SSL_read_ex(ssl *u8, buf *u8, n usize, got &mut usize) i32;
+  fn @c SSL_write_ex(ssl *u8, buf *u8, n usize, put &mut usize) i32;
+  fn @c SSL_shutdown(ssl *u8) i32;
+  fn @c SSL_get_shutdown(ssl *u8) i32;
+  fn @c SSL_set_shutdown(ssl *u8, mode i32);
+  fn @c SSL_version(ssl *u8) i32;
+  fn @c SSL_get_version(ssl *u8) *u8;
+  fn @c SSL_get_current_cipher(ssl *u8) *u8;
+  fn @c SSL_CIPHER_get_name(c *u8) *u8;
+  fn @c SSL_get_verify_result(ssl *u8) i32;
+  fn @c SSL_get0_alpn_selected(ssl *u8, data &mut *u8, len &mut u32);
+  fn @c SSL_get1_session(ssl *u8) *u8;
+  fn @c SSL_set_session(ssl *u8, s *u8) i32;
+  fn @c SSL_session_reused(ssl *u8) i32;
+  fn @c SSL_SESSION_free(s *u8);
+  fn @c SSL_SESSION_is_resumable(s *u8) i32;
+  fn @c SSL_get_peer_cert_chain(ssl *u8) *u8;
+  fn @c SSL_set_ex_data(ssl *u8, idx i32, data *u8) i32;
+  fn @c SSL_get_ex_data(ssl *u8, idx i32) *u8;
+  fn @c SSL_get_ex_data_X509_STORE_CTX_idx() i32;
+  fn @c SSL_select_next_proto(out &mut *u8, outLen &mut u8, server *u8, serverLen u32,
+      client *u8, clientLen u32) i32;
+  fn @c SSL_alert_desc_string_long(v i32) *u8;
+
+  // Certificates
+  fn @c X509_STORE_CTX_get_ex_data(ctx *u8, idx i32) *u8;
+  fn @c X509_STORE_CTX_set_error(ctx *u8, e i32);
+  fn @c X509_verify_cert_error_string(n i32) *u8;
+  fn @c X509_free(x *u8);
+  fn @c i2d_X509(x *u8, out **u8) i32;            // out null: the length only
+  fn @c X509_get_X509_PUBKEY(x *u8) *u8;
+  fn @c i2d_X509_PUBKEY(k *u8, out **u8) i32;
+  fn @c PEM_read_bio_X509(bio *u8, x *u8, cb *u8, u *u8) *u8;
+  fn @c OPENSSL_sk_num(sk *u8) i32;
+  fn @c OPENSSL_sk_value(sk *u8, i i32) *u8;
+  fn @c EVP_sha256() *u8;
+  fn @c EVP_Digest(data *u8, n usize, md *u8, size *u32, kind *u8, engine *u8) i32;
+
+  // Memory BIOs: the bytes in and out of a session, which never sees a socket
+  fn @c BIO_s_mem() *u8;
+  fn @c BIO_new(method *u8) *u8;
+  fn @c BIO_new_mem_buf(buf *u8, len i32) *u8;
+  fn @c BIO_free(b *u8) i32;
+  fn @c BIO_read_ex(b *u8, buf *u8, n usize, got &mut usize) i32;
+  fn @c BIO_write_ex(b *u8, buf *u8, n usize, put &mut usize) i32;
+  fn @c BIO_ctrl_pending(b *u8) usize;
+
+  // The error queue (per thread)
+  fn @c ERR_get_error() u32;
+  fn @c ERR_clear_error();
+  fn @c ERR_error_string_n(e u32, buf *u8, len usize);
+}
+
+// SSL_get_error's answers
+const sslErrorNone = 0i32;
+const sslErrorSsl = 1i32;
+const sslErrorWantRead = 2i32;
+const sslErrorWantWrite = 3i32;
+const sslErrorSyscall = 5i32;
+const sslErrorZeroReturn = 6i32;
+const sslErrorWantRetryVerify = 12i32;
+
+// Control commands
+const ctrlMode = 33i32;
+const ctrlSessCacheMode = 44i32;
+const ctrlSetTlsextHostname = 55i32;
+const ctrlSetMinProtoVersion = 123i32;
+const ctrlSetMaxProtoVersion = 124i32;
+const ctrlSetRetryVerify = 136i32;
+
+const tls12Version = 0x0303i32;
+const tls13Version = 0x0304i32;
+
+const verifyNone = 0i32;
+const verifyPeer = 1i32;
+const filetypePem = 1i32;
+const sessCacheOff = 0i32;
+const sessCacheClient = 1i32;
+const sessCacheServer = 2i32;
+const modeReleaseBuffers = 0x10i32;
+const opNoRenegotiation = 0x40000000u64;     // SSL_OP_BIT(30)
+const sslSentShutdown = 1i32;
+const sslReceivedShutdown = 2i32;
+const tlsextErrOk = 0i32;
+const tlsextErrAlertFatal = 2i32;
+const npnNegotiated = 1i32;
+
+// Verify results (X509_V_...)
+const x509Ok = 0i32;
+const x509UnableToGetIssuer = 2i32;
+const x509NotYetValid = 9i32;
+const x509Expired = 10i32;
+const x509DepthZeroSelfSigned = 18i32;
+const x509SelfSignedInChain = 19i32;
+const x509UnableToGetIssuerLocally = 20i32;
+const x509Revoked = 23i32;
+const x509ApplicationVerification = 50i32;
+const x509HostnameMismatch = 62i32;
+const x509IpMismatch = 64i32;
+
+// An error code's library and reason (ERR_GET_LIB, ERR_GET_REASON, 3.x)
+const errLibSsl = 20u32;
+const errSystemFlag = 0x80000000u32;
+fn errLib(e u32) u32 {(e >> 23u32) & 0xFFu32;}
+fn errReason(e u32) u32 {e & 0x7FFFFFu32;}
+
+// Reasons in the SSL library this package tells apart (sslerr.h)
+const reasonAlertOffset = 1000u32;            // SSL_AD_REASON_OFFSET: a received alert is 1000 + its number
+const reasonCertificateVerifyFailed = 134u32;
+const reasonUnsupportedProtocol = 258u32;
+const reasonNoProtocolsAvailable = 191u32;
+const reasonWrongVersionNumber = 267u32;
+const reasonNoApplicationProtocol = 235u32;
+const reasonUnexpectedEof = 294u32;
+
+// A C string's bytes, without its terminating zero
+fn cText(p *u8) &[]u8 {
+  if p as usize == 0usize {return "";}
+  mem.sliceFromParts(p, libc.strlen(p));
+}
