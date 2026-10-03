@@ -137,22 +137,26 @@ void varDclNameRes(NameResState *pstate, VarDclNode *name) {
 // makeOwner();', read as Rust's '&*'). The initializer is an extending
 // position, and so, recursively, are the operand of an extending borrow or
 // recast and each element of an extending tuple, array or variant literal
-// ('Some[..]'); a place an extending borrow reaches extends the value it is
-// part of, or that its owner is reached through. A call's arguments, a
-// method's receiver, a block's or an 'if''s value, and a construction's
-// arguments ('new H(..)') are not extending: a temporary there ends with its
-// statement, and a borrow of it held past that is refused (flowpath.c).
+// ('Some[..]'), and the final expression of a block in one, and so of an
+// 'if''s or a 'match''s arm, as Rust 2024 extends them; a place an extending
+// borrow reaches extends the value it is part of, or that its owner is
+// reached through. A call's arguments, a method's receiver, a block's other
+// statements and a construction's arguments ('new H(..)') are not extending:
+// a temporary there ends with its statement, and a borrow of it held past
+// that is refused (flowpath.c).
 //
 // An extended temporary becomes a hidden local of the block, declared just
 // before the statement and initialized with the temporary's expression, so it
 // has all a local has: its end at the block's end, its drop flag, the loans
-// rooted in it, the lifetime a borrow of it has. A borrow of a place rooted in
+// rooted in it, the lifetime a borrow of it has. One extended from a block's
+// final expression is declared there holding nothing, and given its value
+// where the temporary ran, just before that final expression: on the paths
+// through that arm only, which its drop flag follows. A borrow of a place rooted in
 // a temporary is made a borrow of such a local as it is type checked
 // (varDclExtendTemp, from borrowTypeCheck), before anything shows whether it
-// is extending; the walk here keeps it if it is, and the statement's end
-// refuses the borrow if not ("May not borrow a temporary value"), or puts the
-// temporary back where the borrow could reach it as a place anyway
-// ('id(&*makeOwner())').
+// is extending; the walk here keeps it if it is, and the statement's end puts
+// it back where it was if not ('id(&make())', 'id(&*makeOwner())'): a
+// temporary of the statement, which a borrow may point at until its end.
 //
 // A hidden local runs where its declaration is, before the statement: so an
 // element of a literal that runs before an extended temporary, and is not a
@@ -183,7 +187,7 @@ static VarDclNode *varDclHide(VarDclExtend *ext, INode **slot) {
     return var;
 }
 
-int varDclExtendTemp(TypeCheckState *pstate, INode **slot, INode *borrowed) {
+int varDclExtendTemp(TypeCheckState *pstate, INode **slot) {
     VarDclExtend *ext = pstate->extend;
     if (ext == NULL)
         return 0;
@@ -196,8 +200,6 @@ int varDclExtendTemp(TypeCheckState *pstate, INode **slot, INode *borrowed) {
         ext->tempcap = cap;
     }
     VarDclTemp *temp = &ext->temps[ext->ntemps++];
-    temp->place = iexpIsLval(borrowed);
-    temp->borrowed = borrowed;
     temp->slot = slot;
     temp->kept = 0;
     temp->var = varDclHide(ext, slot);
@@ -232,17 +234,40 @@ static void varDclExtendPend(VarDclExtend *ext, INode **elemp) {
     ext->pending[ext->npending++] = elemp;
 }
 
-// A hidden local is declared: after what ran before it
+// A hidden local is declared: after what ran before it. Within a block's
+// final expression, which runs on some paths only, or after the block's other
+// statements, it is declared before the statement holding nothing, and given
+// its value where the temporary ran: just before that final expression, after
+// what ran there before it. Where a path does not give it one, its drop flag
+// says so, as for any local given its value on some paths.
 static void varDclExtendEmit(VarDclExtend *ext, VarDclNode *var) {
     if (ext->hoisted == NULL)
         ext->hoisted = newNodes(4);
+    Nodes **runs = &ext->hoisted;
+    if (ext->inblock) {
+        if (ext->tail == NULL)
+            ext->tail = newNodes(4);
+        runs = &ext->tail;
+    }
     if (ext->npending) {
         for (uint32_t i = 0; i < ext->npending; ++i)
-            nodesAdd(&ext->hoisted, (INode *)varDclHide(ext, ext->pending[i]));
+            nodesAdd(runs, (INode *)varDclHide(ext, ext->pending[i]));
+        ext->ran += ext->npending;
         ext->npending = 0;
         ++ext->flushes;
     }
+    ++ext->ran;
+    if (!ext->inblock) {
+        nodesAdd(&ext->hoisted, (INode *)var);
+        return;
+    }
+    INode *value = var->value;
+    var->value = NULL;
     nodesAdd(&ext->hoisted, (INode *)var);
+    AssignNode *init = newAssignNode(NormalAssign, newNameUseFromDclNode((INode *)var, value), value);
+    inodeLexCopy((INode *)init, value);
+    init->vtype = ((IExpNode *)value)->vtype;
+    nodesAdd(&ext->tail, (INode *)init);
 }
 
 static void varDclExtendExp(VarDclExtend *ext, INode **nodep);
@@ -355,10 +380,56 @@ static void varDclExtendExp(VarDclExtend *ext, INode **nodep) {
         uint32_t cnt;
         for (nodesFor(elems, cnt, elemp)) {
             INode **valp = (*elemp)->tag == NamedValTag ? &((NamedValNode *)*elemp)->val : elemp;
-            uint32_t hoisted = ext->hoisted ? ext->hoisted->used : 0;
+            uint32_t ran = ext->ran;
             varDclExtendExp(ext, valp);
-            if ((ext->hoisted ? ext->hoisted->used : 0) == hoisted)
+            if (ext->ran == ran)
                 varDclExtendPend(ext, valp);
+        }
+        return;
+    }
+    // A block's final expression, and so each arm of an 'if' or a 'match' (a
+    // block whose final expression is an 'if'), as Rust 2024 extends them.
+    // What it extends is given its value there (varDclExtendEmit).
+    case BlockTag:
+    {
+        BlockNode *blk = (BlockNode *)node;
+        if ((blk->flags & FlagLoop) || blk->stmts->used == 0 || !isExpNode(nodesLast(blk->stmts)))
+            return;
+        // Its code stays where it is, so what ran before it here is no
+        // reason to move what runs after it ('ran')
+        uint8_t svinblock = ext->inblock;
+        uint32_t svran = ext->ran;
+        Nodes *svtail = ext->tail;
+        INode ***svpending = ext->pending;
+        uint32_t svnpending = ext->npending;
+        uint32_t svpendcap = ext->pendcap;
+        ext->inblock = 1;
+        ext->tail = NULL;
+        ext->pending = NULL;
+        ext->npending = 0;
+        ext->pendcap = 0;
+        varDclExtendExp(ext, &nodesLast(blk->stmts));
+        if (ext->tail) {
+            INode **nodesp;
+            uint32_t cnt;
+            for (nodesFor(ext->tail, cnt, nodesp))
+                nodesInsert(&blk->stmts, *nodesp, blk->stmts->used - 1);
+        }
+        ext->inblock = svinblock;
+        ext->ran = svran;
+        ext->tail = svtail;
+        ext->pending = svpending;
+        ext->npending = svnpending;
+        ext->pendcap = svpendcap;
+        return;
+    }
+    case IfTag:
+    {
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodesFor(((IfNode *)node)->condblk, cnt, nodesp)) {
+            nodesp++; cnt--;
+            varDclExtendExp(ext, nodesp);
         }
         return;
     }
@@ -377,13 +448,8 @@ Nodes *varDclExtendEnd(TypeCheckState *pstate, VarDclExtend *ext) {
     pstate->extend = ext->outer;
     for (uint32_t i = 0; i < ext->ntemps; ++i) {
         VarDclTemp *temp = &ext->temps[i];
-        if (temp->kept)
-            continue;
-        if (temp->place)
+        if (!temp->kept)
             *temp->slot = temp->var->value;
-        else
-            errorMsgNode(temp->borrowed, ErrorBadLval,
-                "May not borrow a temporary value. A borrowed reference needs a place in memory to point at; a temporary is one only where a variable's initializer borrows it ('imm r = &make();').");
     }
     return ext->hoisted;
 }

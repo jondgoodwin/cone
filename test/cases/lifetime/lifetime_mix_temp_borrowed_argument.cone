@@ -1,0 +1,70 @@
+// A borrow of a temporary anywhere but where a variable's initializer extends
+// it: an argument ('show(&mk(1))', '&mk(2).n', '&mut mk(3)'), a computed
+// value, a literal, a method's result, a construction, an array literal with
+// a computed element, a temporary receiver of a method taking 'self &'
+// ('mk(5).twice()'). Each temporary is kept where it is to the end of its
+// statement, and finalized there, before the next statement runs.
+//
+// Verdict: accept; prints each value, each "final" right after the statement
+// whose temporary it is.
+// Basis: temporaries follow Rust: a temporary lives to the end of the
+// enclosing statement, and a borrow of it, as an argument or an autoref'd
+// receiver, may be used until then (The Rust Reference, "Destructors",
+// temporary scopes); by reading, not run.
+// Master 19cc839b: refused, ErrorBadLval at each borrowed temporary ("May not
+// borrow a temporary value"), and at the receiver ("`twice` takes a borrowed
+// self").
+
+mod lifetime_mix_temp_borrowed_argument;
+
+import stdio use *;
+
+struct R {
+  pub n i64;
+  pub fn twice(self &) i64 { n + n; }
+  fn final(self &uni) {
+    printStr("final ");
+    printInt(n);
+    printStr("\n");
+  }
+}
+
+fn mk(n i64) R { new R(n); }
+
+fn show(r &R) {
+  printStr("show ");
+  printInt(r.n);
+  printStr("\n");
+}
+
+fn showInt(n &i64) {
+  printStr("int ");
+  printInt(*n);
+  printStr("\n");
+}
+
+fn bump(r &mut R) i64 {
+  r.n = r.n + 10;
+  r.n;
+}
+
+fn line(n i64) {
+  printInt(n);
+  printStr("\n");
+}
+
+fn sum(s &[]i64) i64 {
+  s[0] + s[1];
+}
+
+fn main() {
+  show(&mk(1));
+  showInt(&mk(2).n);
+  line(bump(&mut mk(3)));
+  mut a = 4i64;
+  showInt(&(a + 1));
+  showInt(&6i64);
+  line(mk(5).twice());
+  &new R(7);
+  line(sum(&[][a, a + 4]));
+}

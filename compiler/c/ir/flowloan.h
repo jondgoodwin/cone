@@ -30,8 +30,10 @@ void loanWalkBegin();
 // caller's borrow, points at 'q' (near) and reaches the caller's place only
 // through it (far). A store through the reference lands in the near places
 // only. An entry is a loan's id, with LoanFar set for a far one. Where the
-// walk cannot tell (a value read through a reference, or a call's result),
-// every loan is near, which only refuses more.
+// walk cannot tell (a call's result, what a call may store), a loan is both,
+// an entry of each kind, which only refuses more; so a loan only near is
+// exactly where the value points, held by it nowhere further on, and what is
+// read through the value never carries it (pathSetThrough).
 //
 // An entry may also carry a slot's tag: held by a struct declaring lifetimes
 // (lifetime.h), it says in which of them the loan is held -- the struct the
@@ -60,15 +62,6 @@ uint32_t loanMake(INode *site, Place *pl, INode *perm);
 // reference points at, and what that holds, whole or by slot. A parameter
 // whose type carries a borrow holds them from the start.
 uint32_t loanCaller(uint32_t var, uint32_t part);
-
-// Is a loan a caller loan of what a parameter's own reference points at? It
-// stands for exactly that place, so a value read through it, or a borrow of
-// something further on, does not point there.
-int loanIsCallerOwn(uint32_t loan);
-
-// Has this walk made any such loan? Where none is, nothing read through a
-// reference has one to leave out.
-int loanAnyCallerOwn();
 
 // The variable at the root of the place a loan borrows
 uint32_t loanRoot(uint32_t loan);

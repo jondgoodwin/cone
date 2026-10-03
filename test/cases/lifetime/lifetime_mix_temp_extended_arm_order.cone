@@ -1,0 +1,51 @@
+// Extended temporaries in an array literal's elements, one of them made in
+// an 'if' arm and one in a block after a statement of its own: each runs
+// where it is written, in the order the literal's elements run, and the
+// temporaries are finalized together at the block's end, the newest first.
+// A temporary given its value in an arm is declared before the statement
+// holding nothing, so moving a later element's temporary ahead of the
+// statement moves the arm's element with it, never past it.
+//
+// Verdict: accept; prints "first", then "mk 4", "mk 5", "mk 7" (or "mk 6"
+// for the other arm), the three values, then their finals newest first.
+// Basis: temporaries follow Rust: an extending array expression's elements
+// are extending, and so is the final expression of a block and of an 'if'
+// arm in one (The Rust Reference, "Destructors"); evaluation keeps source
+// order. By reading, not run.
+// Master 19cc839b: refused, ErrorBadLval at the arms' and the block's
+// borrowed temporaries.
+
+mod lifetime_mix_temp_extended_arm_order;
+
+import stdio use *;
+
+struct R {
+  pub n i64;
+  fn final(self &uni) {
+    printStr("final ");
+    printInt(n);
+    printStr("\n");
+  }
+}
+
+fn mk(n i64) R {
+  printStr("mk ");
+  printInt(n);
+  printStr("\n");
+  new R(n);
+}
+
+fn three(c Bool) {
+  imm t = [{ printStr("first\n"); &mk(4); }, if c { &mk(5); } else { &mk(6); }, &mk(7)];
+  printInt(t[0].n);
+  printStr(" ");
+  printInt(t[1].n);
+  printStr(" ");
+  printInt(t[2].n);
+  printStr("\n");
+}
+
+fn main() {
+  three(true);
+  three(false);
+}

@@ -12,7 +12,7 @@ reference type", below), and an allocation, `new Rc[mut, Node](1)`, is a
 construction until type check makes it an `AllocateTag` node
 ("Allocation"). Type check builds the *result* type, records a
 lifetime, and interns. Flow moves or copies an allocation's value and enforces the
-lifetime at three consumers. Generation lowers a plain reference to a bare
+lifetime at two consumers, and the loan walk the rest. Generation lowers a plain reference to a bare
 pointer and two others to fat pointers.
 
 *Provenance: read from source; the LLVM shapes and the allocation header were
@@ -501,8 +501,8 @@ given back is where the guard dies, by the existing rules for a temporary:
   every path (the dealias lists, drop flags);
 - **anywhere else** it is a statement's temporary (`flowTempRead`, at the
   dereference `borrowFlowPlace` walks), finalized at the statement's end, and
-  the borrow, which `borrowTypeCheck` would otherwise leave untyped as a borrow
-  of a temporary, is typed with the block's lifetime (`pstate->scope`). The
+  the borrow, as any borrow of a temporary, is typed with the block's
+  lifetime (`borrowTempScope`). The
   lifetime checks refuse it returned or stored outward, and the loan walk,
   whose stand-in for the temporary ends with the statement (`pwTempsEnd`),
   refuses a holder of it used after (`ErrorFrozen`).
@@ -538,14 +538,13 @@ do read through — type check injects a dereference on both operands
 ([fncall](fncall.md), "A comparison on a reference") — so on an `opaq`
 reference they are `ErrorNoRead`.
 
-**The `scope` a borrow recorded is enforced at three consumers, none of them
+**The `scope` a borrow recorded is enforced at two consumers, neither of them
 the borrow site**: `assignBorrowLifetimeCheck` when a borrow is stored into a
 longer-lived lval — by `assignlvalrtype` for an assignment, and by `swapFlow`
-once in each direction for a swap, which stores both ways — `returnFlowEscape` when one is returned, and
-`fnCallFlowStoredBorrow` when one is passed to a call beside a `&mut` or
-`&uni` argument (a method's receiver included) that points at a longer-lived
-place able to hold a borrow — `&T` itself, a struct with a borrow field, an
-`Option` or `List` of borrows, a slice of them (`itypeCarriesBorrow`). Each reads `RefTag`, `ArrayRefTag`
+once in each direction for a swap, which stores both ways — and
+`returnFlowEscape` when one is returned. A borrow passed to a call beside a
+`&mut` or `&uni` argument that points at a place able to hold one is the loan
+walk's ([Flow](../phases/flow.md), "Stores through a reference"). Each reads `RefTag`, `ArrayRefTag`
 and `VirtRefTag` alike: a virtual reference is a borrowed reference carrying a
 vtable, and a slice borrows as a single reference does. `returnFlowEscape`
 looks into a returned `if`, `match` (an `if` once desugared) or block and checks
@@ -688,7 +687,7 @@ and a local returned converted is exempt from its scope's release.
 - **Coming from Rust:** `&mut T` is invariant and `&ro T` covariant; `uni` is
   not `&mut` but the *unique* permission, which is what makes owning references
   move; lifetimes are a block-nesting integer that is not part of type identity
-  and is checked at three sites, a name on a signature's reference being no
+  and is checked at two sites, the loan walk following the rest, a name on a signature's reference being no
   generic parameter but a label the loan walk compares by identity; and there
   is no borrow checker.
 

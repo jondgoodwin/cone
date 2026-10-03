@@ -48,9 +48,9 @@ void returnNameRes(NameResState *nstate, BreakRetNode *retnode) {
 }
 
 // A borrowed reference may not travel beyond the scope it was borrowed from.
-// assignlvalrtype enforces that between two variables and fnCallFlowStoredBorrow
-// at a call that could store one; this enforces it at the function's own
-// return value.
+// assignlvalrtype enforces that for a store into a global or through a
+// reference, and the loan walk at a call that could store one (pwCallStores);
+// this enforces it at the function's own return value.
 //
 // A borrow's lifetime is a scope number: 0 is global, 1 the caller band (what a
 // borrowed parameter points at), and 2 or more a block of this function -- 2 its

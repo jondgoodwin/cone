@@ -1,0 +1,62 @@
+// What a reference points at may be returned at the reference's own
+// lifetime: '*x' for 'x &'a &'b R' as ''a', a field of the struct 'x &'a
+// Pair['b]' points at as ''a', and a reborrow '&mut **x' through 'x &'a mut
+// &'b mut R' as ''a'. Each borrow of a value holding ''b' implies ''b'
+// outlasts the borrow's ''a', so a ''b' borrow may be returned where an ''a'
+// one is promised. The order an implied bound gives holds across the
+// signature: 'across(x &'a R, y &'b &'a R) &'b R' may return 'x'. The caller
+// keeps every argument's source frozen while the result is used, the shorter
+// of the two.
+//
+// Verdict: accept; prints 7 8 9 7.
+// Basis: implied bounds, as Rust's: '&'a &'b R' is well formed only where
+// ''b: 'a'.
+// Master 19cc839b: refused, ErrorEscape at each returned value ("whose
+// lifetime the result's type does not name, nor one its 'where' clause orders
+// shorter").
+
+mod lifetime_band_implied_read_through_outer;
+
+import stdio use *;
+
+struct R { pub n i64; }
+
+struct Pair['b] {
+  pub left &'b R;
+  pub right &'b R;
+}
+
+fn inner(x &'a &'b R) &'a R {
+  *x;
+}
+
+fn rightOf(x &'a Pair['b]) &'a R {
+  x.right;
+}
+
+fn reborrow(x &'a mut &'b mut R) &'a mut R {
+  &mut **x;
+}
+
+fn across(x &'a R, y &'b &'a R) &'b R {
+  x;
+}
+
+fn main() {
+  imm a = new R(7);
+  imm b = new R(8);
+  mut c = new R(1);
+  imm ra = &a;
+  printInt(inner(&ra).n);
+  printStr(" ");
+  imm p = new Pair(&a, &b);
+  printInt(rightOf(&p).n);
+  printStr(" ");
+  mut rc = &mut c;
+  imm r = reborrow(&mut rc);
+  r.n = 9;
+  printInt(c.n);
+  printStr(" ");
+  printInt(across(&a, &ra).n);
+  printStr("\n");
+}

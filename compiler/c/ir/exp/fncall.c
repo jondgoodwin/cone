@@ -456,8 +456,9 @@ static int fnCallIsBorrowType(INode *type) {
 }
 
 // The narrowest lifetime among the borrowed-reference arguments whose borrows
-// a value of the type 'wanted' may hold -- the result, or what a writable
-// argument points at -- as the highest scope number: 0 when there is none.
+// a value of the type 'wanted', the result, may hold, as the highest scope
+// number: 0 when there is none. What a call may store through a writable
+// argument is the loan walk's (pwCallStores).
 // Every borrowed reference in a signature written without a lifetime shares
 // one, and every one written with a name shares it with the others written
 // with that name, and with those its 'where' clause orders shorter, and with
@@ -887,10 +888,11 @@ void fnCallDemandCandidates(INode *binding) {
 // method borrows for reading even from a mutable variable, then 'mut'. The
 // borrow is made by borrowMutRef, so its permission and lifetime are the ones a
 // hand-written '&mut v' gets: a 'self &mut' method on an immutable variable is
-// ErrorBadPerm. A temporary has no place to borrow, so a call whose only
-// candidates want a borrowed self is ErrorBadLval, once, as '&' of it is.
+// ErrorBadPerm. A temporary is borrowed where it is, as '&' of it is, and
+// lives to the end of its statement (borrowTempRef).
 // Returns the selected method, with the borrow now the receiver, or NULL.
-static FnDclNode *fnCallBorrowReceiver(FnCallNode *callnode, INode *foundnode, enum OverloadMatch *status) {
+static FnDclNode *fnCallBorrowReceiver(TypeCheckState *pstate, FnCallNode *callnode, INode *foundnode,
+        enum OverloadMatch *status) {
     INode *obj = callnode->objfn;
     INode *objtype = iexpGetTypeDcl(obj);
     if (fnCallIsRefReceiver(objtype) || objtype->tag == PtrTag || !isMethodType(objtype))
@@ -914,12 +916,8 @@ static FnDclNode *fnCallBorrowReceiver(FnCallNode *callnode, INode *foundnode, e
         }
         if (iexpIsLval(obj))
             borrowMutRef(&callnode->objfn, objtype, perm);
-        else {
-            errorMsgNode(obj, ErrorBadLval,
-                "May not borrow a temporary value. `%s` takes a borrowed self, which needs a place in memory to point at.",
-                &((NameUseNode*)callnode->methfld)->namesym->namestr);
-            callnode->objfn = probe;
-        }
+        else
+            borrowTempRef(&callnode->objfn, objtype, perm, borrowTempScope(pstate));
         return selected;
     }
     return NULL;
@@ -1052,7 +1050,7 @@ int fnCallLowerMethod(TypeCheckState *pstate, FnCallNode *callnode) {
     // A receiver held as a value reaches a method declaring 'self &' or
     // 'self &mut' by being borrowed (fnCallBorrowReceiver)
     if (selected == NULL && status == OverloadNone)
-        selected = fnCallBorrowReceiver(callnode, foundnode, &status);
+        selected = fnCallBorrowReceiver(pstate, callnode, foundnode, &status);
 
     if (selected == NULL) {
         // A lock-managed reference reaches its value through a borrow only,
@@ -2498,42 +2496,6 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
     }
 }
 
-// A writable borrow of a place that can hold a borrowed reference -- '&mut &T',
-// or a '&mut' or '&uni' to a struct with a borrow field, an Option or List of
-// borrows, a slice of them, or a method's 'self &mut' receiver of any of these
-// -- is somewhere the callee may store any other borrowed reference it was
-// handed, and without annotations it is free to: every borrowed reference in
-// the signature shares one lifetime (doc/reference/reflifefn.html, "Mutable
-// borrowed reference parameters"). So what that argument points at may not
-// outlive the narrowest borrow passed alongside it -- the same comparison
-// assignlvalrtype makes for the store the callee might write. A place no
-// longer-lived than every borrow beside it may take any of them. With
-// lifetimes named, only a borrow whose lifetime flows to one of those what the
-// writable one points at holds may be stored there (fnCallNarrowestBorrowScope).
-static void fnCallFlowStoredBorrow(FnCallNode *node) {
-    FnSigNode *fnsig = (FnSigNode*)iexpGetDerefTypeDcl(node->objfn);
-    if (fnsig->tag != FnSigTag || !fnsig->lifenamed)
-        fnsig = NULL;
-    INode **argsp;
-    uint32_t cnt;
-    uint32_t i = 0;
-    for (nodesFor(node->args, cnt, argsp)) {
-        INode *argtype = iexpGetTypeDcl(*argsp);
-        uint32_t at = i++;
-        if (!fnCallIsBorrowType(argtype)
-            || !(permGetFlags(((RefNode*)argtype)->perm) & MayWrite)
-            || !itypeCarriesBorrow(((RefNode*)argtype)->vtexp))
-            continue;
-        INode *pointee = fnsig && at < fnsig->parms->used
-            ? lifePointee(((IExpNode*)nodesGet(fnsig->parms, at))->vtype) : NULL;
-        if (((RefNode*)argtype)->scope < fnCallNarrowestBorrowScope(node, fnsig, pointee)) {
-            errorMsgNode((INode*)node, ErrorCallEscape,
-                "Call could store a borrowed reference where it would outlive the value it points to");
-            return;
-        }
-    }
-}
-
 // Do data flow analysis for fncall node (only real function calls)
 void fnCallFlow(FlowState *fstate, FnCallNode **nodep) {
     // Handle function call aliasing
@@ -2554,7 +2516,6 @@ void fnCallFlow(FlowState *fstate, FnCallNode **nodep) {
     }
     flowGateOperandsEnd(fstate, inflight);
     flowGateCall(fstate, node->args);
-    fnCallFlowStoredBorrow(node);
 }
 
 // Perform data flow analysis on array index node

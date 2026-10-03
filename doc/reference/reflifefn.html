@@ -26,18 +26,28 @@
 			and keeps those arguments frozen while it is used, a method's receiver
 			included (see <a href="refborref.html#returned">borrowed references</a>);
 			where only a lifetime of what an argument points at may be held -- a
-			struct's, held by the receiver of one of its methods -- it keeps frozen
-			only what the argument holds in that lifetime, not the argument.
-			A call is refused when a mutable or unique borrowed reference to a place
-			that can hold a borrowed reference (a method's receiver included) could
-			store there one, of a lifetime that place holds, that lives less long.
+			struct's, held by the receiver of one of its methods, or the inner one of a
+			<span class="pre">&amp;'a mut &amp;'b T</span> -- it keeps frozen
+			only what the argument holds in that lifetime, not the argument, nor a local the
+			argument borrows (see <a href="#layers">reference layers</a>).
+			A mutable or unique borrowed reference to a place that can hold a borrowed
+			reference (a method's receiver included) handed to a call may have stored
+			there any other borrow the call is handed, of a lifetime that place holds:
+			a local of the caller's then holds it, and is refused where it is used after
+			that borrow's source is gone; a call that could store one that lives less
+			long into a place outliving the caller (a global, what a parameter points at)
+			is refused.
 			A value passed by value that holds a borrowed reference counts as one of the
 			lifetimes its type names, the unnamed one where it names none, for both rules.
 			Inside the function, a borrowed reference the caller lent may be returned only
 			as a lifetime it is written with, or one its <span class="pre">where</span> clause
-			orders shorter, and stored only where what a parameter points at holds such a
+			or its types order shorter, and stored only where what a parameter points at holds such a
 			lifetime; no order between two names is inferred but what a
-			<span class="pre">where</span> clause declares.
+			<span class="pre">where</span> clause declares and what a borrow of a value
+			holding lifetimes implies (see <a href="#implied">implied bounds</a>).
+			A trait's implementation may promise more than the trait does: a result of
+			<span class="pre">'static</span> or of a longer lifetime, a parameter of any
+			lifetime where the trait's is <span class="pre">'static</span>.
 			A <span class="pre">'static</span> parameter takes only a global borrow, and
 			<span class="pre">'static</span> may be written on a parameter's own
 			reference or in the result, not inside a parameter's type.
@@ -167,47 +177,65 @@ fn tryit() {
 	}
 }
 </pre>
-	<p>That's not going to work if it calls this function:</p>
+	<p>It may call this function:</p>
 <pre>
 fn refstore(refmut &amp;mut &amp;i32, refval &amp;i32) {
   *refmut = refval;  // Oh my!
 }
 </pre>
-	<p>What's the problem?
+	<p>Is that a problem?
 		<span class="pre">refstore</span> assumes that both borrowed references
 		point to objects of the same (smallest) lifetime.
 		<span class="pre">tryit</span> knows that smallest lifetime is the
-		scope of <span class="pre">b</span>. However, it realizes that there is a
-		risk that <span class="pre">refstore</span> might 
-		store <span class="pre">refval</span> in <span class="pre">retmut</span> (as it does!),
-		which would effectively lengthen the reference's lifetime to the scope of
-		<span class="pre">a</span>, which is longer than the known lifetime
-		of the object (<span class="pre">b</span>) it points to.
-		Because of this risk, <span class="pre">tryit</span> will trigger a compile error
-		on that call.</p>
+		scope of <span class="pre">b</span>, and that
+		<span class="pre">refstore</span> might
+		store <span class="pre">refval</span> in <span class="pre">refmut</span> (as it does!).
+		So after the call, <span class="pre">a</span> may hold a borrow of
+		<span class="pre">b</span>. That is no error by itself: a variable's lifetime is
+		that of whatever it holds now, and <span class="pre">a</span> is not used again.
+		The call is legal. What is refused is using <span class="pre">a</span> after
+		<span class="pre">b</span>'s block has ended, where it might point at
+		<span class="pre">b</span>, gone; the error is reported where <span class="pre">b</span>
+		goes out of scope while <span class="pre">a</span> still holds a borrow of it:</p>
+<pre>
+fn tryit() i32 {
+  imm i = 5;
+  mut a = &amp;i;
+  {
+    imm b = 10;        // error: b goes out of scope while a still holds a borrow of it
+    refstore(&amp;mut a, &amp;b);
+  }
+  *a;                  // used again here
+}
+</pre>
+	<p>Had <span class="pre">a</span> been what a parameter points at, or a global, which
+		outlive <span class="pre">tryit</span>, the call itself would be refused:
+		nothing after it could keep the borrow of <span class="pre">b</span> from outliving
+		<span class="pre">b</span>.</p>
 	<p>The same risk arises whenever a call is handed a mutable (or unique)
 		borrowed reference to anything that can hold a borrowed reference,
 		not just to a borrowed reference itself: a struct with a borrowed-reference
 		field, an <span class="pre">Option</span> or <span class="pre">List</span>
 		of borrowed references, or a slice of them.
 		A method's <span class="pre">self &amp;mut</span> receiver counts the same way,
-		so a setter that stores its argument into a field of its receiver,
+		so after a setter that stores its argument into a field of its receiver,
 		or a <span class="pre">push</span> onto a list of borrowed references,
-		may not be handed a borrowed reference that lives less long than the
-		receiver's value:</p>
+		the receiver may hold the borrow it was handed, and may not be used after
+		that borrow's source is gone:</p>
 <pre>
 struct Holder {
   pub r &amp;i32;
   pub fn set(self &amp;mut, r &amp;i32) { self.r = r; }
 }
 
-fn tryset() {
+fn tryset() i32 {
   imm i = 5;
   mut h = new Holder(&amp;i);
   {
-    imm b = 10;
-    h.set(&amp;b);  // error: h outlives b
+    imm b = 10;        // error: b goes out of scope while h still holds a borrow of it
+    h.set(&amp;b);
   }
+  *h.r;
 }
 </pre>
 	<p>Handing over a borrowed reference that lives at least as long as the
@@ -217,7 +245,8 @@ fn tryset() {
 		as <span class="pre">a</span>, making the lifetimes truly equivalent.
 		The other approach is to make the <span class="pre">refstore</span>
 		function promise it won't store one reference inside the other,
-		by marking their lifetimes as independent:</p>
+		by marking their lifetimes as independent, so that
+		<span class="pre">a</span> holds only what it held before:</p>
 <pre>
 fn refstore(refmut &amp;mut &amp;i32, refval &amp;'b i32) {
   **refmut = *refval;
@@ -394,6 +423,54 @@ fn pick[T](x &amp;'a T, y &amp;'b T) &amp;'b T where 'a &gt;= 'b and T is Copy {
 		<span class="pre">or</span> holds, and the body could rely on none of them. An
 		<span class="pre">or</span> or a <span class="pre">not</span> over a lifetime comparison is
 		refused.</p>
+
+	<h2 id="layers">Reference layers</h2>
+	<p>Each layer of a reference to a reference has a lifetime of its own, and what is
+		read through a layer has the lifetime written inside it, not the layer's own:</p>
+<pre>
+fn first(x &amp;'a mut &amp;'b R) &amp;'b R {
+  *x;           // Ok: what x points at holds a 'b borrow
+}
+fn caller(p &amp;R) &amp;R {
+  mut pp = p;
+  imm z = &amp;mut pp;
+  first(z);     // Ok: of what pp holds, p's borrow, not of pp
+}
+</pre>
+	<p>A borrow taken through an inner <span class="pre">uni</span> reference is a reborrow of
+		it, which lasts no longer than the outer borrow, since the inner reference may be used
+		again once the outer borrow ends: <span class="pre">&amp;uni **x</span> for
+		<span class="pre">x &amp;'a uni &amp;'b uni R</span> is of <span class="pre">'a</span>, and
+		may not be returned as <span class="pre">'b</span>. Through an inner
+		<span class="pre">mut</span> or read-only reference, which a copy may share, it is of the
+		inner lifetime.</p>
+
+	<h2 id="implied">Implied bounds</h2>
+	<p>A borrow of a value holding lifetimes cannot outlast them: the value lives no
+		longer than what it borrows, and the borrow no longer than the value. So wherever a
+		signature names such a borrow, each lifetime the borrowed value holds is understood to
+		last at least as long as the borrow's own, as if a <span class="pre">where</span>
+		clause said so. <span class="pre">&amp;'a Pair['b]</span> and
+		<span class="pre">&amp;'a &amp;'b R</span> each imply <span class="pre">'b &gt;= 'a</span>,
+		and a method's <span class="pre">self &amp;</span> in a struct declaring
+		<span class="pre">'a</span> implies that <span class="pre">'a</span> outlasts the
+		unannotated borrow of <span class="pre">self</span>. So a method written with no
+		lifetime of its own may return what a field points at, the result taking the shorter
+		lifetime of the receiver's borrow:</p>
+<pre>
+struct H['a] {
+  pub r &amp;'a R;
+  pub fn get(self &amp;) &amp;R { r; }    // Ok: 'a outlasts the borrow of self
+}
+fn inner(x &amp;'a &amp;'b R) &amp;'a R {
+  *x;           // Ok: 'b outlasts 'a
+}
+</pre>
+	<p>An implied bound runs one way only: the borrow of a <span class="pre">Pair['b]</span>,
+		of <span class="pre">'a</span>, may not be returned as <span class="pre">'b</span>.
+		Two lifetimes no borrow relates and no <span class="pre">where</span> clause orders stay
+		unrelated. A caller reads the same order, as it reads a <span class="pre">where</span>
+		clause.</p>
 
 
 			<p style="text-align: right; margin-top: 2em;">

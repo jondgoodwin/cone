@@ -418,7 +418,10 @@ Three shapes, the first two chosen in `genlSetupTaggedTrait`:
 - **Nullable pointer.** Exactly two variants under `SameSize`, one with one
   field and one with two whose second is a pointer-like: **no struct is emitted
   at all**, and the value *is* the pointer. A null pointer is the empty variant.
-  Each enum decides this for its own set: an extension's variants are copies, so an
+  A slice or a virtual reference is two words, and the value is that pair: its
+  first word, the pointer, null is the empty variant, so the literal writes that
+  word and the variant test (`genlIsType`) and the drop read it, the second word
+  left alone. Each enum decides this for its own set: an extension's variants are copies, so an
   `Option`-shaped base keeps the layout whatever extends it, and the extension, with
   a third variant for which there is no pointer to be, is tagged. The same holds per
   instance: `Option[&i32]` is a bare pointer beside a tagged instance of an enum
@@ -999,7 +1002,8 @@ each in a `TempNode` ([Flow](flow.md), "Temporaries"). Generating one
 (`genlTerm`, or `genlAddr` where its field or element is wanted) generates its
 value, stores it into an alloca of its own (`genlTempKeep`) and pushes that slot
 on `GenState.temps`, a stack in evaluation order; a `kept` one is generated as
-its value alone. The end of each part that makes temporaries finalizes those
+its value alone, or, where its address is wanted, stored in its slot and never
+finalized. The end of each part that makes temporaries finalizes those
 it pushed, newest first, and pops them (`genlTempsEnd`), each as a local dies
 (`genlFinalizeAt`), or hollow where flow noted a value moved out through it
 (`genlTempRelease`, `genlMovedPath` walking to the node instead of a variable):

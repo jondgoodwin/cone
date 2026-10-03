@@ -63,9 +63,6 @@ static uint32_t maypoolcap = 0;
 // Holders whose loans were widened to all of them, by a loop that would not settle
 static uint32_t nflights;
 
-// The caller loans of a parameter's own reference this walk has made
-static uint32_t ncallerown = 0;
-
 static uint32_t *saturated = NULL;
 static uint32_t nsaturated = 0;
 static uint32_t saturatedcap = 0;
@@ -162,7 +159,6 @@ void loanWalkBegin() {
     nmaypool = 0;
     nsaturated = 0;
     nflights = 0;
-    ncallerown = 0;
 }
 
 // *********************
@@ -251,18 +247,8 @@ uint32_t loanCaller(uint32_t var, uint32_t part) {
     loan->kind = LoanCaller;
     loan->writes = 0;
     loan->part = (uint8_t)part;
-    if (part == LifePartOwn)
-        ++ncallerown;
     mapPut(parm, 0, loanCallerKey(part), id);
     return id;
-}
-
-int loanIsCallerOwn(uint32_t loan) {
-    return loans[loan].kind == LoanCaller && loans[loan].part == LifePartOwn;
-}
-
-int loanAnyCallerOwn() {
-    return ncallerown > 0;
 }
 
 uint32_t loanRoot(uint32_t loan) {
@@ -720,17 +706,17 @@ void loanApart(INode *node, uint32_t loan, VarDclNode *through, int how) {
     switch (how) {
     case LoanEscapeReturn:
         errorMsgNode(node, ErrorEscape,
-            "Returned value carries the borrow the caller lent through %s, whose lifetime the result's type does not name, nor one its 'where' clause orders shorter. Lifetimes named apart are unrelated: only a borrow of a lifetime the result names, or a global one, may be returned.",
+            "Returned value carries the borrow the caller lent through %s, whose lifetime the result's type does not name, nor one ordered shorter by its 'where' clause or by what its types imply. Lifetimes named apart are unrelated: only a borrow of a lifetime the result names, or a global one, may be returned.",
             lent);
         break;
     case LoanEscapeStore:
         errorMsgNode(node, ErrorEscape,
-            "Stored where '%s' points, the value carries the borrow the caller lent through %s, whose lifetime is not one held there, nor ordered longer than one by a 'where' clause. Lifetimes named apart are unrelated.",
+            "Stored where '%s' points, the value carries the borrow the caller lent through %s, whose lifetime is not one held there, nor ordered longer than one by a 'where' clause or by what the signature's types imply. Lifetimes named apart are unrelated.",
             &through->namesym->namestr, lent);
         break;
     default:
         errorMsgNode(node, ErrorCallEscape,
-            "Call could store the borrow the caller lent through %s where '%s' points, which holds no borrow of its lifetime, nor of one a 'where' clause orders shorter. Lifetimes named apart are unrelated.",
+            "Call could store the borrow the caller lent through %s where '%s' points, which holds no borrow of its lifetime, nor of one ordered shorter by a 'where' clause or by what the signature's types imply. Lifetimes named apart are unrelated.",
             lent, &through->namesym->namestr);
         break;
     }
