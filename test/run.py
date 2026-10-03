@@ -1678,6 +1678,8 @@ def quote(cmd: list[str]) -> str:
 def object_extension(options: tuple[str, ...]) -> str:
     if "--wasm" in options:
         return "wasm"
+    if any(o.startswith("--triple=spirv") for o in options):
+        return "spv"
     return "obj" if IS_WINDOWS else "o"
 
 
