@@ -1244,7 +1244,10 @@ class Testing(unittest.TestCase):
         # A library declaring a public actor and a private one: its include file
         # holds each actor whole, the importer generates their declarations
         # again, and its instances of the actors package's generics reach the
-        # functions the library's object exports for them
+        # functions the library's object exports for them. The two actors'
+        # lines are ordered by their messages, not by luck: Hidden is handed
+        # the Pinger and pings it after printing, so the Pinger's last message,
+        # and so its final, comes after Hidden's line
         pkg = self.root / "pinger"
         write(pkg / "congo.toml",
               '[package]\nname = "pinger"\nversion = "0.1.0"\noutput = "library"\n')
@@ -1271,14 +1274,15 @@ class Testing(unittest.TestCase):
             }
 
             actor Hidden {
-              pub fn hello(self, n u64) {
+              pub fn hello(self, n u64, p Pinger) {
                 printStr("hidden "); printUInt(n); printStr("\\n");
+                p.ping(n);
               }
             }
 
-            pub fn useHidden() {
+            pub fn useHidden(p Pinger) {
               imm h = new Hidden();
-              h.hello(3u64);
+              h.hello(3u64, p);
             }
             """)
         write(pkg / "tests" / "useit.cone", """
@@ -1289,15 +1293,15 @@ class Testing(unittest.TestCase):
 
             fn main() {
               initAll();
-              pinger.useHidden();
               {
                 imm p = new pinger.Pinger(5u64);
                 p.ping(10u64);
+                pinger.useHidden(p);
               }
               finalAll();
             }
             """)
-        write(pkg / "tests" / "useit.out", "hidden 3\npinger 15\n")
+        write(pkg / "tests" / "useit.out", "hidden 3\npinger 18\n")
         run = self.congo("test", cwd=pkg)
         self.assertIn("test useit ... ok", run.stdout)
         include = (pkg / "build" / "debug" / "pinger.cone").read_text()
