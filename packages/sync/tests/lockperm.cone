@@ -1,0 +1,163 @@
+// Lock permissions, against the sync package compiled on its own: Mutex and
+// Rwlock in the permission slot of an Arc, the lock taken by a borrow through
+// the reference and given back where the borrow ends, the compiler calling
+// the lock's private methods across the package's boundary.
+//
+// First a Mutex guarding a List: four threads each push 2000 numbers into one
+// 'Arc[Mutex, List[u64]]', each push through a borrow made and given back
+// within its statement, and main checks the List: exactly 8000 long, every
+// number there once, each thread's in the order it pushed them. A push is a
+// read-then-write of the List's length (and, as it grows, a move to a bigger
+// block), so pushes made at once would be lost or tear the List. The race is
+// run 10 times.
+//
+// Then an Rwlock: two readers hold read-only borrows at once, which a shared
+// read lock allows, while a writer's borrow waits for both to finish, and
+// finds nobody inside.
+//
+// Each allocation's value dies once, after its last owner, the borrows'
+// guards counted and let go: two finalized in all.
+
+mod lockperm;
+
+import testing use *;
+import thread;
+import collections use *;
+import sync use *;
+
+const perThread = 2000u64;
+
+// How many values have been finalized; the gate four pushers wait at; the
+// readers inside and main's word to them
+imm finals Atomic[u32];
+imm ready Atomic[u32];
+imm go Atomic[u32];
+imm inside Atomic[u32];
+imm release Atomic[Bool];
+
+fn @initpure init() {
+  finals = Atomic[u32].of(0u32);
+  ready = Atomic[u32].of(0u32);
+  go = Atomic[u32].of(0u32);
+  inside = Atomic[u32].of(0u32);
+  release = Atomic[Bool].of(false);
+}
+
+struct Items {
+  pub list List[u64];
+  fn final(self &uni) {finals.add(1u32);}
+}
+alias Shared = Arc[Mutex, Items];
+
+struct Push {
+  pub items Shared;
+  pub k u64;
+}
+
+fn atGate() {
+  ready.add(1u32);
+  while go.load() == 0u32 {
+    sync.futexWait(&go, 0u32);
+  }
+}
+
+// Push perThread numbers, thread k's being k * 1000000 + i
+fn pushMany(p Push) u64 {
+  atGate();
+  mut i = 0u64;
+  while i < perThread {
+    (&mut *p.items).list.push(p.k * 1000000u64 + i);
+    i = i + 1u64;
+  }
+  i;
+}
+
+// One race: whether the List came out whole
+fn race(items Shared) Bool {
+  ready.store(0u32);
+  go.store(0u32);
+  imm a = thread.start(new Push(items, 0u64), &pushMany);
+  imm b = thread.start(new Push(items, 1u64), &pushMany);
+  imm c = thread.start(new Push(items, 2u64), &pushMany);
+  imm d = thread.start(new Push(items, 3u64), &pushMany);
+  while ready.load() < 4u32 {
+    thread.yieldNow();
+  }
+  go.store(1u32);
+  sync.futexWakeAll(&go);
+  imm made = a.join() + b.join() + c.join() + d.join();
+  imm l = &*items;
+  if made != 4u64 * perThread or l.list.len() != usize.from(4u64 * perThread) {
+    return false;
+  }
+  mut next = new Array[u64, 4] <- fill 0u64;
+  mut i = 0usize;
+  while i < l.list.len() {
+    imm v = *l.list[i];
+    imm k = v / 1000000u64;
+    if k >= 4u64 or v % 1000000u64 != next[k] {
+      return false;
+    }
+    next[k] = next[k] + 1u64;
+    i = i + 1usize;
+  }
+  next[0] == perThread and next[1] == perThread and next[2] == perThread and next[3] == perThread;
+}
+
+struct Settings {
+  pub scale u64;
+  fn final(self &uni) {finals.add(1u32);}
+}
+alias Watched = Arc[Rwlock, Settings];
+
+fn reader(s Watched) u64 {
+  imm r = &*s;
+  inside.add(1u32);
+  while !release.load() {
+    thread.yieldNow();
+  }
+  imm seen = r.scale;
+  inside.sub(1u32);
+  seen;
+}
+
+fn writer(s Watched) u32 {
+  imm w = &mut *s;
+  w.scale = 20u64;
+  inside.load();
+}
+
+fn main() i32 {
+  initAll();
+  {
+    imm items = new Shared(List[u64].empty());
+    mut whole = 0u64;
+    mut run = 0;
+    while run < 10 {
+      (&mut *items).list.clear();
+      if race(items) { whole = whole + 1u64; }
+      run = run + 1;
+    }
+    expectUInt(whole, 10u64, "races whose List came out exactly 8000 long, every push there");
+    expectUInt(u64.from((&*items).list.len()), 8000u64, "the last race's List");
+  }
+  expectUInt(u64.from(finals.load()), 1u64, "the List finalized once, after its last owner");
+
+  {
+    imm s = new Watched(10u64);
+    imm a = thread.start(s, &reader);
+    imm b = thread.start(s, &reader);
+    while inside.load() < 2u32 {
+      thread.yieldNow();
+    }
+    expectUInt(u64.from(inside.load()), 2u64, "two readers hold read-only borrows at once");
+    imm w = thread.start(s, &writer);
+    release.store(true);
+    expectUInt(a.join(), 10u64, "the first reader read the scale before the writer");
+    expectUInt(b.join(), 10u64, "and so did the second");
+    expectUInt(u64.from(w.join()), 0u64, "the writer found no reader inside");
+    expectUInt((&*s).scale, 20u64, "the writer's change");
+  }
+  expectUInt(u64.from(finals.load()), 2u64, "the settings finalized once too");
+  done();
+}

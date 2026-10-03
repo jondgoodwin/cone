@@ -1,0 +1,113 @@
+// Lock permissions, to play with. Four tellers, each on its own thread, move
+// money between the four accounts of one bank, an 'Arc[Mutex, Bank]': the
+// Mutex is the reference's permission, so the bank is reached only through a
+// borrow, and a borrow through it takes the lock and gives it back where the
+// borrow ends. Each transfer is one borrow, so nobody ever sees money that has
+// left one account and not reached the other. After every transfer a teller
+// audits the bank, through a read-only borrow, and counts the audits whose
+// total was wrong. A rate card, an 'Arc[Rwlock, Rates]', is read by the four
+// at once through read-only borrows, which share its read lock.
+//
+//   congo run packages/sync/examples/bank.cone
+//
+// prints the same on every run:
+//
+//   balances 11500 9500 9500 9500
+//   total    40000
+//   audits that saw money in flight: 0
+//
+// Things to try:
+//
+// - Set 'splitTransfers' to true. Each transfer then takes the lock twice,
+//   once to take the money out and once to put it in, and another teller's
+//   audit may come between: some audits now see money in flight (how many
+//   differs from run to run), though the balances still come out the same.
+// - Read the bank without a borrow, 'bank.accounts[0]', or call a method on
+//   it, 'bank.total()': the compiler refuses both, since only a borrow takes
+//   the lock.
+// - Keep a borrow past its statement: 'mut b = &mut *bank;' in a teller's
+//   loop holds the lock to the end of each pass, and 'imm b = &mut *bank;'
+//   before the loop holds it until the teller returns, the other tellers
+//   waiting meanwhile. Two such borrows on one thread wait for each other
+//   forever: Cone does not prevent a deadlock.
+// - Change 'Arc[Mutex, Bank]' to 'Rc[Mutex, Bank]': refused, since an Rc's
+//   owners stay on one thread. 'Rc[Rwcell, Bank]' is the one-thread lock,
+//   whose conflicting borrow panics rather than waits.
+
+mod bank;
+
+import stdio use *;
+import thread;
+import sync use Arc, Mutex, Rwlock;
+
+const splitTransfers = false;
+const transfers = 500;
+
+struct Bank {
+  pub accounts Array[i64, 4];
+  fn total(self &) i64 {
+    accounts[0] + accounts[1] + accounts[2] + accounts[3];
+  }
+}
+
+struct Rates {
+  pub fee i64;
+}
+
+// What a teller is handed: the bank, the rate card, and which teller it is
+struct Teller {
+  pub bank Arc[Mutex, Bank];
+  pub rates Arc[Rwlock, Rates];
+  pub k i32;
+}
+
+// Teller k moves k + 1 to the next account, 'transfers' times, and answers
+// how many of its audits saw a total that was not 40000
+fn work(t Teller) i32 {
+  imm from = usize.from(t.k);
+  imm to = usize.from((t.k + 1) % 4);
+  imm amount = i64.from(t.k + 1) + (&*t.rates).fee;   // the read lock, shared
+  mut wrong = 0;
+  mut i = 0;
+  while i < transfers {
+    if splitTransfers {
+      (&mut *t.bank).accounts[from] -= amount;       // the lock, given back here,
+      (&mut *t.bank).accounts[to] += amount;         // and taken again
+    }
+    else {
+      imm b = &mut *t.bank;                          // one borrow, the lock held
+      b.accounts[from] -= amount;                    // across both changes
+      b.accounts[to] += amount;
+    }                                                // and given back here
+    if (&*t.bank).total() != 40000 {
+      wrong += 1;
+    }
+    i += 1;
+  }
+  wrong;
+}
+
+fn main() {
+  imm bank = new Arc[Mutex, Bank](new Array[i64, 4] <- fill 10000);
+  imm rates = new Arc[Rwlock, Rates](0);
+  imm a = thread.start(new Teller(bank, rates, 0), &work);
+  imm b = thread.start(new Teller(bank, rates, 1), &work);
+  imm c = thread.start(new Teller(bank, rates, 2), &work);
+  imm d = thread.start(new Teller(bank, rates, 3), &work);
+  imm wrong = a.join() + b.join() + c.join() + d.join();
+
+  imm end = &*bank;
+  printStr("balances ");
+  printInt(end.accounts[0]);
+  printStr(" ");
+  printInt(end.accounts[1]);
+  printStr(" ");
+  printInt(end.accounts[2]);
+  printStr(" ");
+  printInt(end.accounts[3]);
+  printStr("\ntotal    ");
+  printInt(end.total());
+  printStr("\naudits that saw money in flight: ");
+  printInt(i64.from(wrong));
+  printStr("\n");
+}

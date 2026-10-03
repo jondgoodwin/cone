@@ -1,0 +1,105 @@
+// What type check refuses of lock permissions.
+//
+// A lock permission is a struct declaring 'LockPermission', written in a
+// managed reference's permission slot. It is held to the methods a borrow
+// calls: 'acquireMut' and 'releaseMut', and 'acquireRead' with 'releaseRead'
+// or neither, each taking the lock as 'self' and returning nothing, an
+// acquiring one also allowed the borrow's file and line (ErrorLockPermShape).
+// Any other struct in the slot is no permission (ErrorNotLockPerm).
+//
+// Which regions a lock fits (ErrorLockRegion): a lock declaring ThreadSafe
+// (sync's Mutex and Rwlock) only a region declaring it too (Arc), one not
+// declaring it (core's Rwcell) only a region not declaring it (Rc); never a
+// region of one owner (So), nor one counting no owners, nor a virtual
+// reference. A traced region is refused with its own rules
+// (region_typecheck_traced_place).
+//
+// A lock-managed reference reaches its value only by a borrow written out,
+// which takes the lock (ErrorLockAccess): no method is called on the value
+// through it, the value is not lent to a borrowed parameter, and an operator
+// does not change a field in place through it. Reading and writing through it
+// are flow's to refuse (region_lockperm_flow).
+//
+// An 'Arc[Mutex, T]' crosses threads where T may, as 'Arc[imm, T]' does: one
+// holding an 'Rc[imm, T]' may not (ErrorNotSendable).
+
+mod region_lockperm_typecheck;
+
+import thread;
+import sync use Arc, Mutex, Rwlock;
+
+struct Point {
+  pub x i32;
+  pub y i32;
+  fn sum(self &) i32 {x + y;}
+}
+fn show(p &Point) i32 {p.x;}
+
+// The shapes a lock permission is held to
+struct NoRelease is LockPermission {    //~ ErrorLockPermShape "must declare 'fn acquireMut(self &NoRelease)' and 'fn releaseMut(self &NoRelease)'"
+  held u32;
+  fn acquireMut(self &uni NoRelease) {}
+}
+struct HalfRead is LockPermission {     //~ ErrorLockPermShape "declares one of 'acquireRead' and 'releaseRead'"
+  held u32;
+  fn acquireMut(self &uni HalfRead) {}
+  fn releaseMut(self &uni HalfRead) {}
+  fn acquireRead(self &uni HalfRead) {}
+}
+struct BadShape is LockPermission {
+  held u32;
+  fn acquireMut(self &uni BadShape, n u32) {}   //~ ErrorLockPermShape "or 'fn acquireMut(self &BadShape, file &[]u8, line u32)'"
+  fn releaseMut(self &uni BadShape) Bool {false;}   //~ ErrorLockPermShape "releaseMut must be declared 'fn releaseMut(self &BadShape)'"
+}
+trait LockTrait is LockPermission {     //~ ErrorLockPermShape "Only a struct may declare LockPermission"
+  fn f(self &) i32;
+}
+
+// Accepted: an acquiring method handed where the borrow is
+struct Sited is LockPermission {
+  held u32;
+  fn acquireMut(self &uni Sited, file &[]u8, line u32) {}
+  fn releaseMut(self &uni Sited) {}
+}
+
+// A region counting no owners
+struct Plain is RegionRef {
+  fn alloc(size usize) *u8 inline { malloc(size); }
+}
+
+trait Shape { fn area(self &) i32; }
+struct Sq is Shape { pub s i32; fn area(self &) i32 { s * s; } }
+
+struct Holder {
+  pub r Rc[imm, i32];
+}
+
+fn regions() {
+  imm a = new Arc[Mutex, Point](1, 2);
+  imm b = new Arc[Rwlock, Point](1, 2);
+  imm c = new Rc[Rwcell, Point](1, 2);
+  imm d = new Rc[Sited, Point](1, 2);
+  imm e = new Rc[Mutex, Point](1, 2);       //~ ErrorLockRegion "Mutex is a lock for owners on several threads, and Rc's owners stay on one thread"
+  imm f = new Arc[Rwcell, Point](1, 2);     //~ ErrorLockRegion "Rwcell is a lock for owners on one thread, and Arc's owners may be on several at once"
+  imm g = new So[Mutex, Point](1, 2);       //~ ErrorLockRegion "So has one owner per value"
+  imm h = new So[Rwcell, Point](1, 2);      //~ ErrorLockRegion "So has one owner per value"
+  imm i = new Plain[Rwcell, Point](1, 2);   //~ ErrorLockRegion "Plain does not count its owners"
+  imm j = new Arc[Point, Point](1, 2);      //~ ErrorNotLockPerm "Point is not a permission"
+}
+
+fn virtual(v Arc[Mutex, Shape]) {}          //~ ErrorLockRegion "A lock permission is not built on a virtual reference"
+
+fn access(p Arc[Mutex, Point]) {
+  imm s = p.sum();                          //~ ErrorLockAccess "May not call a method on the value through a reference whose permission is the lock Mutex"
+  imm v = show(p);                          //~ ErrorLockAccess "May not lend the value"
+  p.x += 1;                                 //~ ErrorLockAccess "May not borrow implicitly"
+}
+
+fn hold(h Arc[Mutex, Holder]) i32 {0;}
+
+fn crosses() {
+  imm ok = thread.start(new Arc[Mutex, Point](1, 2), &show2);
+  imm bad = thread.start(new Arc[Mutex, Holder](new Rc[imm, i32](1)), &hold);  //~ ErrorNotSendable
+}
+
+fn show2(p Arc[Mutex, Point]) i32 {(&*p).x;}

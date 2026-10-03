@@ -24,6 +24,7 @@ creates basic blocks only when it has to.
 | --- | --- |
 | `FlagLoop` | a loop block. **Set only by `newLoopBlockNode`** |
 | `FlagLoopStep` | the last statement is `each`'s synthesized step |
+| `FlagKeepTemps` | an operator's rewrite (`fnCallOpAssgn`, `contentsLower`): its statements' temporaries die at its end, not each statement's ([Flow](../phases/flow.md), "Temporaries") |
 
 ## Parse
 

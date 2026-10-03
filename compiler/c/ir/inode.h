@@ -297,6 +297,12 @@ enum NodeTags {
 // A flag rather than a pointer field, because cloneBlockNode memcpy's the flags
 // and clones 'stmts', so a pointer would be left aimed into the original.
 #define FlagLoopStep  0x0002        // Block: last statement is 'each's synthesized step
+// An operator changing its operand in place is rewritten to a block, '{imm tmp
+// = &mut x; *tmp = *tmp + 1}' (fnCallOpAssgn, contentsLower), which was one
+// statement as written: a temporary its operand's place is rooted in ('mk().n
+// += 1', or the guard of '(&mut *p).n += 1', which holds a lock) lives to the
+// block's end, not its first statement's, since the rest still reach it.
+#define FlagKeepTemps 0x0004        // Block: its statements' temporaries die at its end
 
 #define FlagSuffix    0x0001        // Borrow: part of a borrow chain
 

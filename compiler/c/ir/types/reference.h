@@ -87,6 +87,10 @@ void refNameRes(NameResState *pstate, RefNode *node);
 // A slot naming something other than a type is given the error type.
 void refRegionCheck(INode **regionp);
 
+// Judge a managed reference type whose permission is a struct: it must be a
+// lock permission, and its region one the lock fits (ir/types/permission.c)
+void refLockCheck(RefNode *node);
+
 // Type check a reference node
 void refTypeCheck(TypeCheckState *pstate, RefNode *name);
 

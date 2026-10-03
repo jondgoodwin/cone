@@ -498,6 +498,10 @@ LLVMTypeRef _genlType(GenState *gen, char *name, INode *typ) {
     }
 
     case PermTag:
+        // A guard's permission is its lock, in the header as the lock-managed
+        // reference's allocation lays it out
+        if (((PermNode *)typ)->lock)
+            return genlType(gen, (INode *)((PermNode *)typ)->lock);
         return gen->emptyStructType;
 
     case StructTag:

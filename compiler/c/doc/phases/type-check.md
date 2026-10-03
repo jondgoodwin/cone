@@ -593,7 +593,10 @@ which the rules of section 2 together forbid.
 5. If there is no body, or it is a trait's default method, stop.
 6. Check that a method's `self` parameter matches its enclosing type.
 7. Turn an implicit final-expression return into an explicit one.
-8. **→** Analyze the body, with `fn` and `scope` saved and reset.
+8. **→** Analyze the body, with `fn`, `scope` and `extend` saved and reset:
+   a function demanded from inside another's local declaration would
+   otherwise make a temporary its own borrow reaches a hidden local of the
+   other function's block (`varDclExtendTemp`).
 9. Run flow analysis on the body — escape, permission, lifetime, move — and skip
    it if this function raised anything.
 

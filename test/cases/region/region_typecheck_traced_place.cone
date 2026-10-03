@@ -16,8 +16,9 @@
 //    (ErrorTracedRaw);
 // 5. an owning virtual reference into a traced region, whose value type the
 //    trace could not find (ErrorTracedRefKind);
-// 6. a traced region's reference whose permission takes room, putting the value
-//    somewhere other than right after the header (ErrorTracedPerm).
+// 6. a traced region's reference whose permission is a lock permission, whose
+//    lock would sit where the collector finds the value, taking room or not
+//    (ErrorTracedPerm).
 //
 // What a traced region allocates may hold 'Rc' and 'So' owners, which its
 // finalizer releases; a borrow or a raw pointer to a value holding traced
@@ -85,15 +86,20 @@ struct Kinds {
   pub vr Tr[mut, Shape];            //~ ErrorTracedRefKind "a single reference"
 }
 
-// Rule 6: a permission that takes room
-struct Lock { pub held i32; }
-struct Locked {
-  pub l Tr[Lock, Leaf];              //~ ErrorTracedPerm "Lock does"
+// Rule 6: a lock permission, taking room or not
+struct Lock is LockPermission {
+  pub held i32;
+  fn acquireMut(self &uni Lock) { }
+  fn releaseMut(self &uni Lock) { }
 }
-
-// Accepted: nothing held behind a permission taking no room
-struct Unlock { }
-struct Unlocked { pub l Tr[Unlock, Leaf]; }
+struct Locked {
+  pub l Tr[Lock, Leaf];              //~ ErrorTracedPerm "a lock permission, Lock, is not built on a traced region"
+}
+struct Unlock is LockPermission {
+  fn acquireMut(self &uni Unlock) { }
+  fn releaseMut(self &uni Unlock) { }
+}
+struct Unlocked { pub l Tr[Unlock, Leaf]; }  //~ ErrorTracedPerm "a lock permission, Unlock"
 
 // Rule 4: the raw moves, directly and through a collection
 fn raw(p *Pair, q *Pair, v Pair) {

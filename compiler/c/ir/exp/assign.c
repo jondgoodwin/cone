@@ -232,7 +232,10 @@ int assignlvalrtype(INode *lval, INode *rtype, HollowNode **hollowrel) {
     INode *lvalvar = iexpGetStoreLvalInfo(lval, &lvalperm, &lvalscope);
     if (!(MayWrite & permGetFlags(lvalperm)) &&
         (!lvalIsName || ((VarDclNode*)lvalvar)->flowtempflags & VarInitialized)) {
-        errorMsgNode(lval, ErrorNoMut, "You do not have permission to modify lval");
+        if (permIsLock(lvalperm))
+            permLockRefused(lval, lvalperm, "write");
+        else
+            errorMsgNode(lval, ErrorNoMut, "You do not have permission to modify lval");
         return 0;
     }
 

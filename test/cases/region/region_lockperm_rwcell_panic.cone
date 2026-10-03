@@ -1,0 +1,36 @@
+// A borrow through an 'Rc[Rwcell, T]' that conflicts with one still held
+// panics: on one thread the holder is the thread itself, so waiting would
+// never end. A read-only borrow is held by 'r' to the end of main's block;
+// a second read-only one shares the lock; then a borrow that may write,
+// in an argument, finds the lock held, and the program ends there, the
+// panic naming the line of that borrow. Nothing after it runs, and no
+// finalizer: a panic does not unwind, so the value's 'final' never prints.
+//
+// Worked out by hand: 'reading 3', then 'shared 3' (x 1 + y 2 through each
+// borrow); the panic, at line 34, is on stderr.
+
+mod region_lockperm_rwcell_panic;
+
+import stdio use *;
+
+struct Point {
+  pub x i32;
+  pub y i32;
+  fn sum(self &) i32 {x + y;}
+  fn final(self &uni) {printStr("final\n");}
+}
+
+fn set(p &mut Point) {
+  p.x = 9;
+}
+
+fn main() {
+  imm p = new Rc[Rwcell, Point](1, 2);
+  imm r = &*p;
+  printStr("reading ");
+  printInt(i64.from(r.sum()));
+  printStr("\nshared ");
+  printInt(i64.from((&*p).sum()));
+  set(&mut *p);
+  printStr("\nnot reached\n");
+}

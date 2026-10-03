@@ -405,16 +405,22 @@ void fnDclTypeCheck(TypeCheckState *pstate, FnDclNode *fnnode) {
     //
     // Rule 8: this declaration may have been reached by demand, from the middle
     // of some other function's body, so the walk context describes somewhere
-    // else. Saving and resetting both is what makes analyzing a declaration
-    // independent of where it was analyzed from. Scope 1 is the signature's,
-    // matching what fnDclNameRes sets, so the body's own block is scope 2.
+    // else. Saving and resetting all three is what makes analyzing a
+    // declaration independent of where it was analyzed from. Scope 1 is the
+    // signature's, matching what fnDclNameRes sets, so the body's own block is
+    // scope 2. The declaration whose initializer may extend a temporary is the
+    // other function's: left open, a borrow of a temporary here would make it a
+    // hidden local of that function's block (vardcl.c, varDclExtendTemp).
     FnDclNode *svFn = pstate->fn;
     uint16_t svScope = pstate->scope;
+    VarDclExtend *svExtend = pstate->extend;
     pstate->fn = fnnode;
     pstate->scope = 1;
+    pstate->extend = NULL;
     inodeTypeCheck(pstate, &fnnode->value, noCareType);
     pstate->scope = svScope;
     pstate->fn = svFn;
+    pstate->extend = svExtend;
 
     // An inline body is generated in each caller as a block whose value is the
     // call's, its returns breaking out of it with that value. Every path ends in

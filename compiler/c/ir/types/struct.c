@@ -2883,12 +2883,18 @@ static void structCheckMembers(StructNode *node) {
     // 'RegionRef' requires nothing an ordinary requirement can state: each region
     // method is optional, with a fixed shape where declared. 'Traced' says
     // something only of a region ref, which regionRefCheck holds to its 'mark',
-    // and so does 'ThreadSafe'.
+    // and so does 'ThreadSafe', but for a lock permission, where it says the
+    // lock is for owners on several threads. 'LockPermission' holds the struct
+    // to the methods a borrow calls (lockPermCheck).
+    int lockperm = structDeclaresTrait(node, lockPermTrait);
+    if (lockperm)
+        lockPermCheck(node);
     if (regionIsRegionRef((INode*)node))
         regionRefCheck(node);
     else {
         regionTracedUseCheck(node);
-        regionThreadSafeUseCheck(node);
+        if (!lockperm)
+            regionThreadSafeUseCheck(node);
     }
 
     structCheckCopy(node);

@@ -563,6 +563,20 @@ a variable's initializer borrows, or the owner it lends — is no temporary by
 flow's time: type check made it a hidden local of the block
 ([VarDcl](../nodes/vardcl.md), "Temporaries an initializer extends").
 
+**An operator's rewrite is one statement.** An operator changing its operand
+in place is rewritten to a block, `{imm tmp = &mut x; *tmp = *tmp + 1}`
+(`fnCallOpAssgn`; `contentsLower` for `<-`), flagged `FlagKeepTemps`: a
+temporary its first statement makes (`mk().n += 1`, or the guard of
+`(&mut *p).n += 1`, which holds a lock) dies at the block's end, after the
+store, in generation and in the loan walk alike, not after the declaration
+that borrowed it.
+
+**A lock's guard** (`FlagLockAcquire`, [references](../nodes/references.md),
+"Lock permissions") is a conversion that is a temporary itself and takes its
+operand: `flowLoadValue` moves or copies the operand into it
+(`flowHandleMoveOrCopy`, counting a copied owner) rather than wrapping the
+operand as a temporary of its own.
+
 **Where a value is a temporary.** `flowIsTemp` is the test: an expression that
 does not read a place that keeps its value (`flowIsLvalRead`), and is not an
 assignment (its value is what its target keeps), a literal, a call that never

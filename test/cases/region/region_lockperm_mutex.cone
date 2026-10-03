@@ -1,0 +1,114 @@
+// A lock permission, the sync package's Mutex in the permission slot of an
+// Arc: 'Arc[Mutex, T]'. The lock is in each allocation's header, between the
+// count and the value; the reference reaches the value only by a borrow
+// through it, which takes the lock, and the lock is given back where the
+// borrow's guard dies: at the end of the statement, or of the block where a
+// local's initializer made the borrow.
+//
+// First the reference manual's example, on one thread: a Point allocated
+// with its Mutex, borrowed mutably in a block, and read back. Then the same
+// shape from two threads: each adds 1 to one shared counter 100000 times,
+// one through a borrow made and given back within each statement, the other
+// through a local holding the borrow to the end of each pass of its loop.
+// A read-modify-write of 'n' that two threads made at once would lose
+// additions, so the exact total, 200000, says each was made under the lock.
+// A Mutex is not reentrant: had any borrow not given its lock back, the next
+// one, on any thread, would wait forever, and the run would time out.
+//
+// Each borrow's guard is an owner of the counter as well, counted and let go,
+// so the counter dies once, after the last owner: its 'final' prints 'final'
+// after main's last read, and only once.
+//
+// Worked out by hand:
+//   point: x 2 + y 3 = 5, so x is 5 and y 3; the sum is 8
+//   bumped: 5 + 10 = 15
+//   total: 2 * 100000 = 200000, then 'bump' through '&mut c.n' twice more
+//   is 200002, and a '&*c' read borrow (a Mutex's one lock) reads it
+
+mod region_lockperm_mutex;
+
+import stdio use *;
+import thread;
+import sync use Arc, Mutex;
+
+struct Point {
+  pub x i32;
+  pub y i32;
+  fn sum(self &) i32 {x + y;}
+}
+
+fn bumpPoint(p &mut Point) {
+  p.x += 10;
+}
+
+struct Count {
+  pub n u64;
+  fn final(self &uni) {printStr("final\n");}
+}
+alias Counter = Arc[Mutex, Count];
+
+// A borrow made and given back within each statement
+fn addByStatement(c Counter) u64 {
+  mut i = 0u64;
+  while i < 100000u64 {
+    (&mut *c).n += 1u64;
+    i = i + 1u64;
+  }
+  i;
+}
+
+// A borrow held by a local to the end of each pass
+fn addByBlock(c Counter) u64 {
+  mut i = 0u64;
+  while i < 100000u64 {
+    imm r = &mut *c;
+    r.n = r.n + 1u64;
+    i = i + 1u64;
+  }
+  i;
+}
+
+fn bumpCount(n &mut u64) {
+  *n = *n + 1u64;
+}
+
+fn main() {
+  // The manual's example
+  imm point = new Arc[Mutex, Point](2, 3);
+  {
+    imm pointref = &mut *point;     // takes the lock
+    pointref.x += pointref.y;       // reached only while it is held
+  }                                 // and given back here
+  {
+    imm seen = &*point;             // a Mutex's one lock, for a read too
+    printStr("point ");
+    printInt(i64.from(seen.x));
+    printStr(" ");
+    printInt(i64.from(seen.y));
+    printStr(" sum ");
+    printInt(i64.from(seen.sum()));
+    printStr("\n");
+  }
+  bumpPoint(&mut *point);           // taken and given back within the statement
+  printStr("bumped ");
+  printInt(i64.from((&*point).x));
+  printStr("\n");
+
+  // Two threads, one counter
+  imm c = new Counter(0u64);
+  {
+    imm a = thread.start(c, &addByStatement);  // each start copies the owner
+    imm b = thread.start(c, &addByBlock);
+    a.join();
+    b.join();
+  }
+  bumpCount(&mut c.n);              // a field borrowed through the lock
+  bumpCount(&mut c.n);
+  {
+    imm total = &*c;
+    printStr("total ");
+    printInt(i64.from(total.n));
+    printStr("\n");
+  }
+  printStr("end of main\n");
+}                                   // main's owner goes, the last: 'final'
