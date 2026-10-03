@@ -404,7 +404,17 @@ void genlSameSizeTrait(GenState *gen, StructNode *base) {
         ownend = LLVMOffsetOfElement(gen->datalayout, owntype, basecnt - 1)
             + LLVMStoreSizeOfType(gen->datalayout, basetypes[basecnt - 1]);
     }
-    if (maxsize > ownend)
+    // On a GPU target the alignment is carried by the padding itself, as
+    // bytes out to the strictest alignment and then integers of that size,
+    // since a zero-length array is a runtime array to SPIR-V, which its
+    // OpenCL form refuses outright. Integers have no holes either.
+    unsigned long long wordstart = (ownend + maxalign - 1) / maxalign * maxalign;
+    if (gen->opt->gpu && maxaligntype && maxalign <= 8 && maxsize > wordstart) {
+        if (wordstart > ownend)
+            basetypes[basecnt++] = LLVMArrayType(LLVMInt8TypeInContext(gen->context), (unsigned int)(wordstart - ownend));
+        basetypes[basecnt++] = LLVMArrayType(LLVMIntTypeInContext(gen->context, maxalign * 8), (unsigned int)((maxsize - wordstart) / maxalign));
+    }
+    else if (maxsize > ownend)
         basetypes[basecnt++] = LLVMArrayType(LLVMInt8TypeInContext(gen->context), (unsigned int)(maxsize - ownend));
     LLVMTypeRef sofar = LLVMStructTypeInContext(gen->context, basetypes, basecnt, 0);
     if (maxaligntype && LLVMABIAlignmentOfType(gen->datalayout, sofar) < maxalign)
