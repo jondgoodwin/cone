@@ -85,7 +85,10 @@ struct VarDclExtend {
     uint32_t npending;
     uint32_t pendcap;
     uint32_t flushes;       // how many times 'pending' was made hidden locals
+    uint32_t ran;           // how many hidden locals moved code ahead of where it was written
     Nodes *hoisted;         // the hidden locals declared before the statement, in the order they run
+    Nodes *tail;            // within a block's final expression, what runs before it there
+    uint8_t inblock;        // extending within a block's final expression (an 'if''s arm, a 'match''s)
 };
 
 // Type checking a block's statement declaring 'var' begins and ends. The end

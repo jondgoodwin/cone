@@ -1,0 +1,37 @@
+// Only an arm's final expression extends: a temporary borrowed in a
+// statement of the arm before it is the statement's own, and ends there, so
+// a borrow of it handed on as the arm's value is used after it ends.
+//
+// Verdict: refuse, ErrorFrozen at the statement whose temporary ends while
+// 'x' still holds a borrow of it.
+// Basis: temporaries follow Rust: a call's argument is not an extending
+// expression, wherever the call is; Rust: 'let r = if c { let x =
+// id(&*make()); x } else { .. }; r.n' is E0716; by reading, not run.
+// Master 19cc839b: refused, ErrorFrozen at the same statement.
+
+mod lifetime_mix_temp_arm_statement_not_extended;
+
+import stdio use *;
+
+struct R {
+  pub n i64;
+  fn final(self &uni) {
+    printStr("final\n");
+  }
+}
+
+fn mkso(n i64) So[R] { new So[R](n); }
+fn id(r &R) &R { r; }
+
+fn main() {
+  imm a = new R(0);
+  imm c = true;
+  imm r = if c {
+    imm x = id(mkso(1));     //~ ErrorFrozen
+    x;
+  } else {
+    &a;
+  };
+  printInt(r.n);
+  printStr("\n");
+}
