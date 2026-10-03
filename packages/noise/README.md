@@ -115,7 +115,15 @@ These are the reproduction plan's rules (§3) as this package keeps them.
 **CPU.** conec generates code for a `generic` x86-64 CPU (no FMA
 instructions) and emits separate `fmul` and `fadd` with no fast-math flags,
 so LLVM does not contract or reassociate; debug and release builds of the
-parity test gave the same bits.
+parity test gave the same bits. With `--cpu=native` on a CPU that has FMA
+instructions it still emits a separate multiply and add.
+
+**conec on the GPU.** A kernel conec compiles for SPIR-V's Vulkan form has
+every float operation but the remainder decorated `NoContraction`, as
+`-fp-mode precise` does for Slang. On the RTX 4060 the bake's `fbm3`,
+compiled by conec, matched the CPU at all 262,144 voxels, value and
+derivatives (undecorated: 52,304), and every noise matched exactly but
+cellular F1 and F2 (the square root, within 1 ulp) and Phacelle.
 
 **Slang.** With slangc 2026.13.1 (Vulkan SDK 1.4.357), the `precise`
 keyword on a variable or function emits **no** `NoContraction` decoration in

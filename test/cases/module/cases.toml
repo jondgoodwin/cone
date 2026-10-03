@@ -1958,6 +1958,48 @@ contains = [
   "OpFRem %",
 ]
 
+# Float arithmetic in a GPU module decorated NoContraction (genlGpuNoContraction),
+# so a driver neither fuses a multiply-add nor reassociates. The assembly
+# carries the decorations the module does; spirv-val accepts the module.
+[scenario.module_target_spirv_nocontract]
+category = "compile"
+description = "A kernel's float arithmetic on SPIR-V's Vulkan form, a multiply-add, a subtraction, a division and a negation, decorated NoContraction, so the driver fuses no multiply-add and the GPU rounds as the CPU does"
+tags = ["genllvm"]
+
+[[scenario.module_target_spirv_nocontract.run]]
+name = "vulkan"
+options = ["--triple=spirv1.6-unknown-vulkan1.3", "--verify"]
+
+[[scenario.module_target_spirv_nocontract.run]]
+name = "vulkan-debug"
+options = ["--triple=spirv1.6-unknown-vulkan1.3", "--verify", "--debug"]
+
+[[scenario.module_target_spirv_nocontract.check]]
+name = "each-float-result-is-decorated"
+target = "asm"
+contains = [" NoContraction", "OpFMul %", "OpFAdd %", "OpFSub %", "OpFDiv %", "OpFNegate %"]
+
+# A remainder is left free: the CPU's fmod is exact, and the GPU's matched it
+# bit for bit only undecorated
+[scenario.module_target_spirv_nocontract_frem]
+category = "compile"
+description = "A kernel whose only float arithmetic is fmod, OpFRem, on SPIR-V's Vulkan form: left undecorated, since C's fmod is exact and a GPU's remainder matches it only when the driver may fuse inside it"
+tags = ["genllvm"]
+
+[[scenario.module_target_spirv_nocontract_frem.run]]
+name = "vulkan"
+options = ["--triple=spirv1.6-unknown-vulkan1.3", "--verify"]
+
+[[scenario.module_target_spirv_nocontract_frem.run]]
+name = "vulkan-debug"
+options = ["--triple=spirv1.6-unknown-vulkan1.3", "--verify", "--debug"]
+
+[[scenario.module_target_spirv_nocontract_frem.check]]
+name = "the-remainder-is-not-decorated"
+target = "asm"
+contains = ["OpFRem %"]
+excludes = ["NoContraction"]
+
 [scenario.module_target_spirv_switch]
 category = "compile"
 description = "An if-elif chain on one integer on SPIR-V's Vulkan form, which the optimizer makes a switch: made a tree of comparisons before the control flow is structured, so no arm branches on nothing"

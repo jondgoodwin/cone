@@ -1268,7 +1268,7 @@ a function (`OpFunctionCall`, five words) becomes `OpArrayLength` of the
 handle it was handed (the variable's copy), member 0 (five words), and the
 declarations, their names and linkage decorations go, with the `Linkage`
 capability when nothing else is imported. `--asm` writes LLVM's assembly,
-which shows the calls.
+which shows the calls (and the decorations against contraction, below).
 
 **A failed check records itself and leaves the kernel.** On a GPU target
 `genlPanic` calls `cone.gpu.fail(kind, file, line, value)`, declared and never
@@ -1349,15 +1349,37 @@ within 27; `log` within 87 ulp near 1, where it is near 0; `sin` and `cos`
 within 4e-7 absolute in [-pi, pi], 1e-5 in [-100, 100]; `tan` within 4e-5 in
 [-1.5, 1.5]. Vulkan's own bounds are in the [reference](../../../../doc/reference/refgpu.html).
 
-**Nothing marks a float operation `NoContraction`**, so the driver may fuse
-a multiply and an add into one rounding, and does: noise's `fbm3`, all adds,
-multiplies and `floor`, matched the CPU at a fifth of the bake test's 262,144
-voxels (within 1.2e-6), and at every voxel once a module patched after the
-fact decorated every float result `NoContraction`, as slangc's
-`-fp-mode precise` does. LLVM 23's backend emits no such decoration from
+**Every float operation but the remainder is decorated `NoContraction`**
+(`genlGpuNoContraction`), as slangc's `-fp-mode precise` does, so no driver
+fuses a multiply and an add into one rounding or reassociates, and each is
+rounded on its own as the CPU rounds it. Undecorated, the RTX 4060's driver
+fuses: noise's `fbm3`, all adds, multiplies and `floor`, matched the CPU at
+52,304 of the bake's 262,144 voxels (within 1.2e-6); decorated, at all of
+them, value and derivatives. LLVM 23's backend emits no such decoration from
 IR (neither `!spirv.Decorations` metadata on an instruction nor
-`llvm.spv.assign.decoration` on a value reaches the module); `genlGpuPatch`
-is where it could be added.
+`llvm.spv.assign.decoration` on a value reaches the module), so it is added
+to the emitted module after `genlGpuPatch`: an `OpDecorate <id>
+NoContraction` for the result of each `OpFNegate`, `OpFAdd`, `OpFSub`,
+`OpFMul`, `OpFDiv`, `OpVectorTimesScalar`, the matrix products,
+`OpOuterProduct` and `OpDot` (every arithmetic instruction on floats SPIR-V
+has), after the module's last annotation. `OpFRem` and `OpFMod` are left
+free: the CPU's `fmod` is exact, and the RTX 4060's remainder matched it bit
+for bit undecorated and at 62% of arguments decorated (within 3.8e-6), the
+driver's own expansion of it needing the fused multiply-add. `--asm`'s text
+gets the same decorations (`genlGpuNoContractionAsm`), so the `asm` check
+target sees them (`module_target_spirv_nocontract`, and
+`module_target_spirv_nocontract_frem` for the remainder). It is always on,
+with no switch to turn it off; the bake's dispatch took about 9% longer
+(100 to 109 microseconds for 64^3 voxels on the RTX 4060). `NoContraction`
+needs the `Shader` capability, so the OpenCL form cannot carry it; that form
+has no kernels (an entry point there is refused), and its own equivalent,
+the `ContractionOff` execution mode, would go on a kernel's entry point.
+
+The CPU never fuses: generation marks no float operation `contract` or fast
+and emits no `llvm.fmuladd`, and LLVM's target machine fuses only those
+(`FPOpFusion::Standard`, the default the C API leaves), so `--cpu=native`
+on a CPU with FMA instructions emits `vmulss` and `vaddss`, no `vfmadd`, as
+`generic` does.
 
 What does not work yet:
 
@@ -1442,6 +1464,7 @@ variables.
 | | `genlGpuSlices`, `genlGpuFold`, `genlGpuPartOf`, `genlGpuSite` | each step by pointer arithmetic folded into an access chain of a buffer or fixed array, or refused (`ErrorGpuSliceOrigin`) where the node it was made for is |
 | | `genlGpuBufferAccess` | a struct or array loaded from or stored into a storage buffer a scalar at a time |
 | | `genlGpuOut`, `genlGpuPatch` | the Vulkan form's module emitted to memory, `OpArrayLength` and the source files' list written into it |
+| | `genlGpuNoContraction`, `genlGpuNoContractionAsm` | every float operation's result but a remainder's decorated `NoContraction`, in the module and in `--asm`'s text (section 7, "The C library's math") |
 | `genllvm/genlcabi.c` | `genlCAbiTarget`, `genlIsCAbiFn`, `genlCAbiPass` | which C ABI the target follows, which functions cross by it, and how one struct crosses |
 | | `genlCAbiExtend`, `genlCAbiMarkExtends` | the `zeroext` or `signext` a narrow integer crosses with, marked on a declaration or a call |
 | | `genlFnDclType`, `genlCAbiDeclare`, `genlFnDclCall`, `genlFnDclParm`, `genlFnDclReturn` | a declared function's LLVM type, its `sret` and widening marks, a direct call to it, its prologue's parameters and its returns — lowered for a C-named one |
