@@ -5,7 +5,10 @@
 // What it covers: standard output and standard error captured apart, byte
 // for byte; a megabyte written to each at once, in turns (the deadlock a
 // reader of one pipe at a time would meet); exit codes 0, 1, 255, a crash's
-// 3221225477 and a Cone panic's 3221226505; a child that sleeps, stopped by
+// 3221225477 and a Cone panic's 3221226505; with 'crashReport: false', a
+// panic's code, output and line the same, with a time limit and without, a
+// breakpoint's crash ending with its own code, captured output and a time
+// limit as without the option; a child that sleeps, stopped by
 // its time limit, and one whose own child sleeps, both stopped (the
 // grandchild's death checked by its process id); the working folder, a
 // UTF-8 one among them; standard input read from NUL; a variable set
@@ -42,6 +45,7 @@ extern {
   fn @c(system) WaitForSingleObject(h usize, ms u32) u32;
   fn @c(system) CloseHandle(h usize) i32;
   fn @c(system) GetEnvironmentVariableW(name *u16, buf *u16, size u32) u32;
+  fn @c(system) DebugBreak();
 }
 
 const synchronize = 0x100000u32;     // SYNCHRONIZE
@@ -150,6 +154,13 @@ fn child(a &List[String], argc i32, argv **u8) i32 {
   if mode.equals("panic") {
     out("before the panic\n");
     panic("on purpose");
+  }
+  if mode.equals("break") {
+    // A breakpoint no debugger handles: a crash, STATUS_BREAKPOINT
+    out("before the breakpoint\n");
+    libc.fflush(libc.stdout());
+    DebugBreak();
+    return 0i32;
   }
   if mode.equals("sleep") {
     Sleep(u32.from(number(a[3usize])));
@@ -340,6 +351,63 @@ fn panics(exe &[]u8) {
   expectBool(o.success(), false, "a panic is no success");
 }
 
+// With 'crashReport: false': a crash ends the child here, with the exit
+// code Windows would have given it, and everything else is as without it
+fn crashesUnreported(exe &[]u8) {
+  imm c = childCommand(exe, "panic");
+  imm o = ran(process.run(c.view(), new process.Options(crashReport: false)), "unreported panic");
+  expectUInt(u64.from(o.exitCode), 3221226505u64, "an unreported panic's exit code");
+  expectStr(o.stdout.view(), "before the panic\r\n", "what it wrote before an unreported panic");
+  expectBool(o.stderr.startsWith("panic at "), true, "an unreported panic's line on stderr");
+  expectBool(o.stderr.contains("on purpose"), true, "an unreported panic's message on stderr");
+
+  // In a job, as a time limit puts it
+  imm t = ran(process.run(c.view(), new process.Options(timeout: Duration.fromSeconds(30), crashReport: false)),
+    "unreported panic in time");
+  expectUInt(u64.from(t.exitCode), 3221226505u64, "an unreported panic's exit code, with a time limit");
+  expectBool(t.timedOut, false, "an unreported panic in time");
+  expectStr(t.stdout.view(), "before the panic\r\n", "what it wrote before, with a time limit");
+
+  // A breakpoint is a crash after the loader's own, which a debugger is given
+  imm b = childCommand(exe, "break");
+  imm k = ran(process.run(b.view(), new process.Options(crashReport: false)), "unreported breakpoint");
+  expectUInt(u64.from(k.exitCode), 2147483651u64, "an unreported breakpoint's exit code, STATUS_BREAKPOINT");
+  expectStr(k.stdout.view(), "before the breakpoint\r\n", "what it wrote before the breakpoint");
+
+  // The heap it would have had with no debugger: _NO_DEBUG_HEAP=1, '1' in
+  // UTF-16 (the rest of its environment is this test's: 'environment')
+  mut v = childCommand(exe, "env");
+  v.push(String.from("_NO_DEBUG_HEAP"));
+  imm heap = ran(process.run(v.view(), new process.Options(crashReport: false)), "unreported env");
+  expectStr(heap.stdout.view(), "49", "_NO_DEBUG_HEAP=1, crashes unreported");
+
+  imm h = childCommand(exe, "hello");
+  imm o2 = ran(process.run(h.view(), new process.Options(crashReport: false)), "unreported hello");
+  expectStr(o2.stdout.view(), "to stdout\r\n", "stdout captured, crashes unreported");
+  expectStr(o2.stderr.view(), "to stderr\r\n", "stderr captured, crashes unreported");
+  expectBool(o2.success(), true, "hello succeeds, crashes unreported");
+
+  imm size = 1048576usize;
+  mut s = childCommand(exe, "streams");
+  s.push(String.from("1048576"));
+  imm big = ran(process.run(s.view(), new process.Options(timeout: Duration.fromSeconds(30), crashReport: false)),
+    "unreported streams");
+  expectBool(big.timedOut, false, "a megabyte each, crashes unreported: in time");
+  expectUInt(u64.from(big.stdout.len()), u64.from(size), "a megabyte to stdout, crashes unreported");
+  expectUInt(u64.from(big.stderr.len()), u64.from(size), "a megabyte to stderr, crashes unreported");
+
+  mut z = childCommand(exe, "sleep");
+  z.push(String.from("10000"));
+  imm began = Instant.now();
+  imm slept = ran(process.run(z.view(), new process.Options(timeout: Duration.fromMillis(300), crashReport: false)),
+    "unreported sleep");
+  imm took = began.elapsed();
+  expectBool(slept.timedOut, true, "a sleeping child stopped by its time limit, crashes unreported");
+  expectUInt(u64.from(slept.exitCode), 1u64, "a stopped child's exit code, crashes unreported");
+  expectBool(took >= Duration.fromMillis(300) and took < Duration.fromSeconds(5), true,
+    "stopped after 300 ms, not 10 s, crashes unreported");
+}
+
 fn bigStreams(exe &[]u8) {
   imm size = 1048576usize;
   mut c = childCommand(exe, "streams");
@@ -455,6 +523,9 @@ fn environment(exe &[]u8) {
   // 'inherited, é 日本' in UTF-16
   expectStr(o.stdout.view(), "105 110 104 101 114 105 116 101 100 44 32 233 32 26085 26412",
     "a variable set before the run, UTF-8 into UTF-16");
+  imm d = ran(process.run(c.view(), new process.Options(crashReport: false)), "env, crashes unreported");
+  expectStr(d.stdout.view(), "105 110 104 101 114 105 116 101 100 44 32 233 32 26085 26412",
+    "a variable set before the run, crashes unreported");
   mut g = childCommand(exe, "envget");
   g.push(String.from("CONE_PROCESS_TEST"));
   imm r = ran(process.run(g.view()), "envget");
@@ -642,6 +713,7 @@ fn main(argc i32, argv **u8) i32 {
   captured(exe.view());
   exitCodes(exe.view());
   panics(exe.view());
+  crashesUnreported(exe.view());
   bigStreams(exe.view());
   timesOut(exe.view());
   treeStopped(exe.view(), root.view());

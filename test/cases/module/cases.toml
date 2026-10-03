@@ -1729,6 +1729,76 @@ contains = [
 ]
 excludes = ["addrspacecast", " call ", "define internal", "@bump", "@apply"]
 
+# Struct values, a struct's array field indexed in a loop, fields read through
+# a reference to their struct, and early returns, on a SPIR-V target. Each
+# crashed LLVM's SPIR-V backend, the Vulkan form's compile of geomath among
+# them, or made a module its validator refused; the OpenCL form refused the
+# enum's zero-length array outright. A struct is carried as its scalar fields
+# wherever control flow joins, an address is never a byte offset, a first
+# field's address is taken from its struct's type and a field of a field's in
+# one step from the outer struct, and the control flow is structured. That the
+# compile finishes is what pins LLVM's loop strength
+# reduction and CodeGenPrepare being off, and, with '--asm', the assembly
+# being emitted from a copy of the module. What spirv-val makes of the
+# module, valid in every run, is measured by hand.
+[scenario.module_target_spirv_values]
+category = "compile"
+description = "On a SPIR-V target struct values, arrays held in structs and early returns compile, in both forms, at every optimization level"
+tags = ["genllvm"]
+
+[[scenario.module_target_spirv_values.run]]
+name = "vulkan"
+options = ["--triple=spirv1.6-unknown-vulkan1.3", "--library", "--verify"]
+
+[[scenario.module_target_spirv_values.run]]
+name = "vulkan-debug"
+options = ["--triple=spirv1.6-unknown-vulkan1.3", "--library", "--verify", "--debug"]
+
+[[scenario.module_target_spirv_values.run]]
+name = "vulkan-asm"
+options = ["--triple=spirv1.6-unknown-vulkan1.3", "--library", "--verify", "--asm"]
+
+[[scenario.module_target_spirv_values.run]]
+name = "opencl"
+options = ["--triple=spirv64-unknown-unknown", "--library", "--verify"]
+
+[[scenario.module_target_spirv_values.run]]
+name = "opencl-debug"
+options = ["--triple=spirv64-unknown-unknown", "--library", "--verify", "--debug"]
+
+[[scenario.module_target_spirv_values.check]]
+name = "a-struct-crosses-control-flow-as-its-fields"
+target = "llvmir"
+contains = ["define %V4 @normalize(%V4 %0)", "phi float"]
+excludes = ["= phi %", "= phi {", "= phi ["]
+
+[[scenario.module_target_spirv_values.check]]
+name = "every-address-is-typed-from-its-struct"
+target = "llvmir"
+contains = [
+  "getelementptr %Box, ptr %b, i64 0, i32 0, i64 ",
+  "getelementptr inbounds %Dial, ptr %0, i32 0, i32 0",
+  "getelementptr inbounds %Field, ptr %0, i32 0, i32 1, i32 1",
+]
+excludes = [
+  "getelementptr i8,",
+  "getelementptr inbounds i8,",
+  "getelementptr inbounds nuw i8,",
+  "getelementptr inbounds %Grid,",
+  "getelementptr inbounds nuw %Grid,",
+]
+
+[[scenario.module_target_spirv_values.check]]
+name = "an-enum-is-aligned-by-its-padding"
+target = "llvmir"
+contains = ["%Option = type { i8, [3 x i8], [1 x i32] }"]
+excludes = ["[0 x "]
+
+[[scenario.module_target_spirv_values.check]]
+name = "early-returns-are-structured"
+target = "llvmir"
+contains = ["define %Option @firstHit(", "Flow:"]
+
 [scenario.module_c_threadlocal]
 category = "compile"
 description = "An 'extern' thread-local in a C-named module: a C thread-local, reached by its C name"

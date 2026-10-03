@@ -51,6 +51,8 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
+import time
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -1582,17 +1584,150 @@ def build_program(session: Session, file: Path, into: Path) -> Path:
     return exe
 
 
+class Debuggee:
+    """Windows only: a test program run as Congo's debuggee, so that its crash
+    ends here rather than in Windows Error Reporting (test/run.py's Debuggee,
+    the same).
+
+    A panic ends through the C library's 'abort', a fail-fast on Windows, and
+    Windows hands every fail-fast (and every other crash) to WER, which holds
+    the dying process, and its executable locked, while it collects a report.
+    WER is one service for the whole machine: forty panics at once took up to
+    1.5s each to exit, and a hundred and fifty up to 18s. Neither a job
+    object's DIE_ON_UNHANDLED_EXCEPTION nor SetErrorMode keeps a fail-fast
+    out of WER; a debugger does. A crash reaches the debugger as a
+    second-chance exception before WER, and Congo ends the process there,
+    with the exception's own code, which is the exit status Windows would
+    have given it: 3221226505 (0xC0000409) for a panic. Everything else is
+    passed on as no debugger would have seen it: first-chance exceptions to
+    the program's handlers, the loader's breakpoint aside. And the program
+    gets the heap it would have had: started under a debugger, Windows gives
+    a process its checking debug heap unless _NO_DEBUG_HEAP is set.
+
+    The thread that started the process is the one that must wait for its
+    debug events, which 'pump' does; until it does, the program is stopped.
+    """
+
+    DEBUG_ONLY_THIS_PROCESS = 0x2
+    ENVIRONMENT = {"_NO_DEBUG_HEAP": "1"}
+    EXCEPTION_DEBUG_EVENT, CREATE_PROCESS_DEBUG_EVENT = 1, 3
+    EXIT_PROCESS_DEBUG_EVENT, LOAD_DLL_DEBUG_EVENT = 5, 6
+    DBG_CONTINUE, DBG_EXCEPTION_NOT_HANDLED = 0x00010002, 0x80010001
+    STATUS_BREAKPOINT = 0x80000003
+
+    _kernel32 = None
+
+    @classmethod
+    def kernel32(cls):
+        if cls._kernel32 is None:
+            import ctypes
+            from ctypes import wintypes as w
+
+            class DebugEvent(ctypes.Structure):
+                # DEBUG_EVENT: the union is read as words, at its 8-byte
+                # alignment; an exception's code is the low half of word 0,
+                # and dwFirstChance the low half of word 19, after the
+                # 152-byte EXCEPTION_RECORD; a file handle is word 0
+                _fields_ = [("code", w.DWORD), ("pid", w.DWORD), ("tid", w.DWORD),
+                            ("u", ctypes.c_uint64 * 20)]
+
+            k = ctypes.WinDLL("kernel32", use_last_error=True)
+            k.WaitForDebugEvent.argtypes = [ctypes.POINTER(DebugEvent), w.DWORD]
+            k.WaitForDebugEvent.restype = w.BOOL
+            k.ContinueDebugEvent.argtypes = [w.DWORD, w.DWORD, w.DWORD]
+            k.ContinueDebugEvent.restype = w.BOOL
+            k.TerminateProcess.argtypes = [w.HANDLE, w.UINT]
+            k.TerminateProcess.restype = w.BOOL
+            k.CloseHandle.argtypes = [w.HANDLE]
+            k.CloseHandle.restype = w.BOOL
+            k.DebugEvent = DebugEvent
+            cls._kernel32 = k
+        return cls._kernel32
+
+    def __init__(self, process: subprocess.Popen):
+        self.process = process
+        self.k = self.kernel32()
+        self.event = self.k.DebugEvent()
+        self.seen_breakpoint = False
+        self.exited = False
+
+    def pump(self, wait: float) -> bool:
+        """Handle the debug events that come within wait seconds; whether
+        the process has exited."""
+        k, ev = self.k, self.event
+        ms = max(0, int(wait * 1000))
+        while not self.exited and k.WaitForDebugEvent(ev, ms):
+            ms = 0
+            status = self.DBG_CONTINUE
+            if ev.code == self.EXCEPTION_DEBUG_EVENT:
+                code = ev.u[0] & 0xFFFFFFFF
+                first_chance = ev.u[19] & 0xFFFFFFFF
+                if first_chance and code == self.STATUS_BREAKPOINT and not self.seen_breakpoint:
+                    self.seen_breakpoint = True          # the loader's, for a debugger
+                elif first_chance:
+                    status = self.DBG_EXCEPTION_NOT_HANDLED
+                elif not k.TerminateProcess(int(self.process._handle), code):
+                    status = self.DBG_EXCEPTION_NOT_HANDLED
+            elif ev.code in (self.CREATE_PROCESS_DEBUG_EVENT, self.LOAD_DLL_DEBUG_EVENT):
+                if ev.u[0]:
+                    k.CloseHandle(ev.u[0])               # the image's file, the debugger's to close
+            elif ev.code == self.EXIT_PROCESS_DEBUG_EVENT:
+                self.exited = True
+            k.ContinueDebugEvent(ev.pid, ev.tid, status)
+        return self.exited
+
+
+def run_program(exe: Path, cwd: Path, timeout: float) -> subprocess.CompletedProcess:
+    """Run a test program with no input, what it writes captured, for at most
+    timeout seconds: a returncode of None is one stopped for its time, with
+    what it wrote until then. On Windows it runs as Congo's debuggee
+    (Debuggee), so that a crash, a panic's above all, ends at once."""
+    if not IS_WINDOWS:
+        try:
+            return subprocess.run([str(exe)], cwd=cwd, capture_output=True,
+                                  stdin=subprocess.DEVNULL, timeout=timeout)
+        except subprocess.TimeoutExpired as e:
+            return subprocess.CompletedProcess(e.cmd, None, e.output or b"", e.stderr or b"")
+    process = subprocess.Popen([str(exe)], cwd=cwd, stdin=subprocess.DEVNULL,
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                               env=dict(os.environ, **Debuggee.ENVIRONMENT),
+                               creationflags=Debuggee.DEBUG_ONLY_THIS_PROCESS)
+    debugger = Debuggee(process)
+    # Its outputs are read on a thread of their own, both at once, while this
+    # one, the debugger, waits for its events
+    captured: list[bytes] = []
+    reader = threading.Thread(target=lambda: captured.extend(process.communicate()))
+    reader.start()
+    deadline = time.monotonic() + timeout
+    timed_out = False
+    while not debugger.pump(0.05):
+        if time.monotonic() > deadline:
+            timed_out = True
+            process.kill()
+            # Once killed it ends at once, its last events aside
+            stop = time.monotonic() + 10
+            while not debugger.pump(0.05) and time.monotonic() < stop:
+                pass
+            break
+    reader.join()
+    code = None if timed_out else process.wait()
+    stdout, stderr = captured if len(captured) == 2 else (b"", b"")
+    return subprocess.CompletedProcess([str(exe)], code, stdout, stderr)
+
+
 def run_test(session: Session, file: Path, bless: bool) -> tuple[bool, str]:
     """Build, run and compare one test program: (passed, what to show)."""
     into = session.out / TESTS / file.stem
     exe = build_program(session, file, into)
-    try:
-        # Run in its own build folder, so a file it writes by a relative name
-        # lands there and not in the package's source
-        ran = subprocess.run([str(exe)], cwd=into, capture_output=True,
-                             stdin=subprocess.DEVNULL, timeout=TEST_TIMEOUT)
-    except subprocess.TimeoutExpired:
-        return False, f"timed out after {TEST_TIMEOUT} seconds"
+    # Run in its own build folder, so a file it writes by a relative name
+    # lands there and not in the package's source
+    ran = run_program(exe, into, TEST_TIMEOUT)
+    if ran.returncode is None:
+        # What it wrote to stderr says how far it got: a panic's line, say,
+        # before an end that never came
+        err = ran.stderr.decode("utf-8", errors="replace")
+        return False, (f"timed out after {TEST_TIMEOUT} seconds"
+                       + (f"\nstderr:\n{indent(err, '  ')}" if err.strip() else ""))
     stdout = ran.stdout.decode("utf-8", errors="replace")
     stderr = ran.stderr.decode("utf-8", errors="replace")
     expected_path = file.with_suffix(".out")

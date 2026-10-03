@@ -1032,6 +1032,33 @@ static int fnCallIndexAsMut(TypeCheckState *pstate, FnCallNode *callnode) {
     return 1;
 }
 
+// A virtual dispatch reaches a member through its slot in the trait's vtable,
+// and the vtable holds public members only (structMakeVtable): a private member
+// is not a requirement an implementer meets, so there is nothing to load for
+// it. Module-wide privacy lets the trait's own module name it through any
+// value, a virtual reference included, so the call is refused here, the member
+// and the trait named. Not where the virtual reference is made: one that never
+// reaches the private member is sound. A member already refused as not visible
+// is not reported twice. The call is still lowered as it would have been, so
+// its type is the member's and nothing around it reports a consequence; the
+// error keeps generation, which would read the slot index, from running.
+static void fnCallPrivateVtable(FnCallNode *callnode, INode *member, INode *trait, int notpublic) {
+    if (!(callnode->flags & FlagVDisp) || notpublic || !inodeIsPrivate(member))
+        return;
+    Name *name = member->tag == FieldDclTag ? ((FieldDclNode*)member)->namesym : ((FnDclNode*)member)->namesym;
+    Name *traitname = ((StructNode*)trait)->namesym;
+    // An enum's method is dispatched on the variant through a plain reference
+    // too (fnCallLowerTraitMethod), by the same vtable
+    if (trait->flags & EnumType)
+        errorMsgNode((INode*)callnode, ErrorPrivateVtable,
+            "`%s` is private, so %s's vtable has no slot for it, and a call dispatched on the variant goes through that vtable. Declare it 'pub' in %s.",
+            &name->namestr, &traitname->namestr, &traitname->namestr);
+    else
+        errorMsgNode((INode*)callnode, ErrorPrivateVtable,
+            "`%s` is private, so %s's vtable has no slot for it and it cannot be reached through a virtual reference. Declare it 'pub' in %s.",
+            &name->namestr, &traitname->namestr, &traitname->namestr);
+}
+
 // Returns 1 when lowered, 0 when the receiver's type supports no methods at all
 // (so the caller may try another way), and -1 when a diagnostic was reported.
 int fnCallLowerMethod(TypeCheckState *pstate, FnCallNode *callnode) {
@@ -1060,13 +1087,12 @@ int fnCallLowerMethod(TypeCheckState *pstate, FnCallNode *callnode) {
     // has no visibility to refuse here
     if (foundnode && foundnode->tag == StructTag)
         foundnode = NULL;
-    int isprivate = foundnode && inodeIsPrivate(foundnode);
-    if (isprivate && !(callnode->flags & FlagSelfRecv)
+    int notpublic = foundnode && inodeIsPrivate(foundnode) && !(callnode->flags & FlagSelfRecv)
         && !(isNameUseNode(obj) && isExpNode(obj)
              && ((VarDclNode*)((NameUseNode*)obj)->dclnode)->namesym == selfName)
-        && !structSeesPrivate(pstate, objdereftype)) {
+        && !structSeesPrivate(pstate, objdereftype);
+    if (notpublic)
         errorMsgNode((INode*)callnode, ErrorNotPublic, "May not access the private method/field `%s`.", &methsym->namestr);
-    }
     // A method the type holds by folding is bound to an alias; the visibility
     // just checked was the alias's own, and everything from here on is the
     // method's. A folded field is a copy in the namespace directly.
@@ -1103,6 +1129,7 @@ int fnCallLowerMethod(TypeCheckState *pstate, FnCallNode *callnode) {
     if (foundnode->tag == FieldDclTag) {
         if (callnode->args != NULL)
             errorMsgNode((INode*)callnode, ErrorFldArgs, "May not provide arguments for a field access");
+        fnCallPrivateVtable(callnode, foundnode, objdereftype, notpublic);
 
         // A folded copy is reached through the field it was folded through:
         // the receiver becomes the access to that field, and this node the
@@ -1201,6 +1228,8 @@ int fnCallLowerMethod(TypeCheckState *pstate, FnCallNode *callnode) {
             fnCallNoCandidate((INode*)callnode, status, methsym, "method");
         return -1;
     }
+
+    fnCallPrivateVtable(callnode, (INode*)selected, objdereftype, notpublic);
 
     // An enum's equality reads its discriminant, which is the whole of the value
     // only where every variant is empty. Where a variant carries fields, those

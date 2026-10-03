@@ -460,6 +460,17 @@ type agree — or in an extension of the receiver's enum (`structSeesPrivate`,
 a coercion injects is lowered with no state (`iexpCoerce` passes none), so only
 `self` reaches a private one.
 
+⚠ **Visible is not reachable through a vtable.** A call or field access with
+`FlagVDisp` reads the member's slot, and a private member has none
+([struct](struct.md), `structMakeVtable`), so `fnCallPrivateVtable` refuses it
+with `ErrorPrivateVtable`, naming the member and the trait: the selected
+candidate's privacy for a method, since a public overload name may select a
+private one. It fires only where visibility let the name through, in the trait's
+own module; a member already refused as `ErrorNotPublic` is not reported twice.
+The call is lowered as usual after the report, so its type is the member's and
+nothing around it reports a consequence; generation, which would index the
+vtable with the unset `vtblidx`, never runs.
+
 Three adjustments, two of them asymmetric on purpose:
 
 - **The deref retry.** A receiver held through a reference still satisfies a

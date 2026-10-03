@@ -213,10 +213,12 @@ Visual Studio projects stay at the root.
   working folder, a time limit that stops the child and everything it
   started; an `Output` of the full 32-bit exit code, a value and not an
   error, and standard output and error captured apart, or shared with
-  `inherit`; `runLine` for a line written by hand, `commandLine`, `args`
-  and `currentExe`), a failure to start a `ProcessError`; its interface is
-  no OS's, its insides Windows only (`kernel32`'s `CreateProcessW`,
-  overlapped pipes and a job object, `shell32`'s `CommandLineToArgvW`), a
+  `inherit`; `crashReport: false`, a crash ended at once and unreported,
+  as test runners run their programs; `runLine` for a line written by
+  hand, `commandLine`, `args` and `currentExe`), a failure to start a
+  `ProcessError`; its interface is no OS's, its insides Windows only
+  (`kernel32`'s `CreateProcessW`, overlapped pipes, a job object and the
+  debugging functions, `shell32`'s `CommandLineToArgvW`), a
   POSIX one to come with Linux;
   `iobuf` is owned buffers for I/O, the async I/O runtime's first package:
   `IoBuf`, a 4 KiB-aligned block of whole pages and its length, a move type

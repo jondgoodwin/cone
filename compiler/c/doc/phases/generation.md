@@ -455,6 +455,11 @@ Three shapes, the first two chosen in `genlSetupTaggedTrait`:
     byte 1 beside an `i32` at byte 4 — was lost in the copy. The enum's own
     fields are the discriminant and any common fields, which begin every variant
     at the same offsets, so a common field or the tag is still read by index.
+  - **On a GPU target the padding carries the alignment itself**: bytes out to
+    the strictest alignment, then integers of that size (`Option[f32]` is
+    `{ i8, [3 x i8], [1 x i32] }`), since a zero-length array is a runtime
+    array to SPIR-V, which its OpenCL form refuses (`LLVM ERROR`). Integers
+    have no holes either. An alignment past 8 keeps the zero-length array.
   - **Every variant is in exactly one enum's list**, so an extension's copies are
     padded to the extension's size and the base's own variants to the base's.
 - **Unpadded**, for an `@unsized` enum: each variant keeps its own size, the
@@ -1107,17 +1112,17 @@ link: the scenario instantiates a generic function and a generic type in the
 package and in the program, at a type argument both use and at one only the
 program uses, and tests in the package a virtual reference the program built.
 
-**A SPIR-V triple emits a SPIR-V module, `.spv`, and only scalar code
+**A SPIR-V triple emits a SPIR-V module, `.spv`, and code with no slices
 survives it.** `--triple=spirv64-unknown-unknown` is SPIR-V's OpenCL form
 (physical addressing, the `Kernel` capability) and
 `--triple=spirv1.6-unknown-vulkan1.3` its Vulkan form (logical addressing,
 `Shader`). `genlCreateMachine` initializes every target the LLVM build holds;
 `genSetup` marks a triple starting `spirv` a GPU target (`ConeOptions.gpu`),
-which flow reads too (`flowGpu`). Functions over numbers and structs, with
-calls, branches, loops, references to locals, to parts of them and to module
-globals, structs holding references, and string literals, come out at every
-optimization level as a module SPIR-V's validator accepts in its universal
-environment.
+which flow reads too (`flowGpu`). Functions over numbers, structs, arrays held
+in structs and enums, with calls, branches, early returns, loops, references to
+locals, to parts of them and to module globals, structs holding references, and
+string literals, come out at every optimization level as a module SPIR-V's
+validator accepts in its universal environment. A slice does not (below).
 
 **A GPU types each pointer by the memory it points into**, its kind: SPIR-V's
 storage class, LLVM's address space. Every Cone reference is address space 0,
@@ -1151,6 +1156,53 @@ holding references indexed at run time (`ErrorGpuRefIndexed`) by the loan walk
 (`ErrorGpuRefGlobal`, `genlGloVar`) and a function calling itself, which no
 inliner removes (`ErrorGpuRecursion`, `genlGpuCalls`), here.
 
+**LLVM 23's SPIR-V backend takes only some shapes of IR**, and on the rest it
+crashes, in its own passes, or emits a module the validator refuses. With
+opaque pointers it types a pointer by the address computations made from it,
+and it expects structured control flow and no struct moving whole through
+it. So the GPU pipeline and what follows it keep to those shapes:
+
+- **Addresses stay typed.** The pipeline folds with `instsimplify`, not
+  `instcombine`, which rewrites a field's address as a byte offset from its
+  struct's (`getelementptr i8`), and `genlLLVMOptions` turns off two code
+  generation passes made for a CPU: loop strength reduction, which walks an
+  array in a loop by a pointer stepped a byte count at a time, and
+  CodeGenPrepare, after which a field's address computed from a parameter in
+  one block and used in another crashed the pointer-cast legalisation. LLVM
+  also drops an address computation whose indices are all zero (instsimplify,
+  GVN and the inliner each fold it), so a struct's first field is read
+  through the struct's own pointer and its array field indexed from it, and
+  the backend indexes the struct itself; `genlGpuRetypeFn` puts the zero
+  indices back, from the type an alloca, a global, an address computation or
+  a parameter's uses say the pointer points to. And an address computed from
+  another made in another block (a field of a parameter's field, read by an
+  inlined method after two early returns) crashed the pointer-cast
+  legalisation; `genlGpuGepChainsFn` computes such an address in one step
+  from where the other starts, as instcombine would, or, when it steps from
+  the other rather than into it, computes the other again beside it.
+- **The control flow is structured** (`structurizecfg`, last in the
+  pipeline): each branch merges before the next is taken. The backend's own
+  structurizer leaves a chain of three early returns, or a loop's body
+  returning early from within a branch, as a module the validator refuses,
+  and with CodeGenPrepare on, the latter crashed it.
+- **A struct or array value is carried as its scalar leaves**
+  (`genlGpuAggregates`, after the pipeline). A phi of a struct crashed the
+  backend when an incoming value was a parameter (geomath's `Vec4.normalize`,
+  an `if` choosing between `self` and a new vector), and broke dominance when
+  one was a constant (an `Option` returned early) or when the value was made in
+  a loop and used after it; and the backend breaks a function returning a
+  struct taken whole out of another. So a phi or select of one becomes one per
+  leaf, inserting and extracting parts only renames leaves, a parameter, load
+  or call making one has its leaves extracted just after it, and a use taking
+  it whole (a return, a store, a call) gets it rebuilt just before. One of
+  more than 256 leaves is left whole.
+- **`--asm` emits from a copy of the module**, since the backend rewrites the
+  module it emits and crashes emitting it again (`genlOut`).
+
+Where the backend still crashes, `conec` says where, as `llc` does: `genSetup`
+enables LLVM's pretty stack trace, so the crash names the pass and the
+function it was in.
+
 `genlLLVMOptions` also turns machine CSE off on a GPU target: LLVM 23's SPIR-V
 backend lets it hoist a computation a loop header's two successors share into
 the header, after the `OpLoopMerge` already placed there, which must come just
@@ -1165,12 +1217,15 @@ What does not work yet:
   global, where conestd's signature has a `Function` pointer. An imported
   package's functions, `stdio`'s say, are left as imports, and are not
   inlined.
-- The Vulkan form crashes LLVM's backend in its own passes on what GPU code
-  will not hold: a whole package such as `geomath` compiled for it stops in
-  `SPIRV split region exit blocks` on a function building a `List`; and
-  the OpenCL form refuses a runtime array (`LLVM ERROR`). A second emission
-  of the same module can crash it, so `--asm` crashes `conec` on a module
-  with a struct holding a reference, in either form.
+- A slice is a pointer and a count, and indexing it is pointer arithmetic,
+  which logical addressing has none of: the Vulkan form's access chain loses
+  the index, typed from a byte pointer, and the OpenCL form types the pointer
+  inside the slice's struct as a byte pointer where it is used as the
+  element's; the validator refuses both. So does a struct holding a slice,
+  and the Vulkan form's backend crashes in its pointer-cast legalisation on
+  sdf's `Capsules.distance`, which reads nine slices out of a struct it is
+  handed by reference, in a release build. A slice needs a buffer's runtime
+  array to stand for it.
 - Nothing marks an entry point or its execution model, places a pointer in a
   buffer's storage class, or reads a built-in such as the global invocation
   id. Without an entry point the module is a library, carrying the `Linkage`
@@ -1211,10 +1266,13 @@ variables.
 | File | Function | Purpose |
 | --- | --- | --- |
 | `conec.c` | `main` | calls `genSetup` **before** parsing, for target pointer size |
-| `genllvm/genllvm.c` | `genSetup`, `genClose` | target machine, data layout, context, `%void` |
-| | `genlLLVMOptions` | the LLVM options `CONE_LLVM_OPTIONS` names, and a GPU target's own two, parsed before the context exists |
-| | `genpgm` | generate, verify, dump, optimize (release: LLVM's `default<O2>` for the target machine; a GPU target's pipeline inlines, breaks up aggregates and infers address spaces at every level), emit; nothing past generation once it reported an error |
+| `genllvm/genllvm.c` | `genSetup`, `genClose` | target machine, data layout, context, `%void`; LLVM's pretty stack trace, for a crash inside LLVM |
+| | `genlLLVMOptions` | the LLVM options `CONE_LLVM_OPTIONS` names, and a GPU target's own (the flat address space; machine CSE, loop strength reduction and CodeGenPrepare off), parsed before the context exists |
+| | `genpgm` | generate, verify, dump, optimize (release: LLVM's `default<O2>` for the target machine; a GPU target's pipeline inlines, breaks up aggregates, infers address spaces and structures the control flow at every level), emit; nothing past generation once it reported an error |
 | | `genlGpuCalls`, `genlCallWalk`, `genlRecursion` | on a GPU target, every defined function marked `alwaysinline`, and a cycle of calls refused (section 7) |
+| | `genlGpuAggregates`, `genlGpuAggregatesFn`, `genlAggLeaves` | on a GPU target, after optimization, each struct or array value carried as its scalar leaves (section 7) |
+| | `genlGpuRetypeFn`, `genlGpuPointee` | on a GPU target, after optimization, a first field's address computed from its struct's type again (section 7) |
+| | `genlGpuGepChainsFn` | on a GPU target, after optimization, an address computed from another in one step, or beside it (section 7) |
 | | `genlProgram` | create the module with the target's triple and data layout, the two-pass symbols-then-implementations walk, then the stitched pair |
 | | `genlStitchFn`, `genlStitch` | the program's stitched init and final: declared on the first call to `initAll()` or `finalAll()`, built last, every module's `init` in the module order and every finalizer in the reverse |
 | | `genlGlobalSyms`, `genlGlobalImpl` | declare a node's symbol; emit its body |
@@ -1228,7 +1286,7 @@ variables.
 | | `genlLinkage`, `genlDefinition`, `genlIsDefinedHere`, `genlVtableDefinition` | linkage, storage class and calling convention, together, from the declaration facts and what this object does with the symbol: declares it, defines it, defines and exports it, or defines it shared |
 | | `genlComdat`, `genlNameAnonFn` | the per-definition COMDAT that lets the linker drop a symbol, its kind read off the linkage; the private name an anonymous `fn` needs to have one |
 | | `genlComdatSupport` | what the target's object format does with COMDATs |
-| | `genlOut` | emit object and asm |
+| | `genlOut` | emit object and asm, the asm from a copy of the module on a GPU target |
 | `ir/export.c` | `dclIsInstance` | whether a declaration is a generic's instance or a member of one — every function and global of a generic module's instance among them |
 | | `dclIsExported`, `typeHoldsExpanded` | whether a library compile exports a definition to its importers; the include-file generator asks the same |
 | `genllvm/genltype.c` | `genlType`, `_genlType` | the memoizing entry, which generates the queued pointees once the outermost type is done, and the per-tag lowering switch |
