@@ -1340,9 +1340,15 @@ the registry as a folder's would.
 **A type the include file declares is marked `DclIncluded`**, and the export
 rule treats it as it treats a type an expanded body names: its public methods,
 `final`, `clone` and trait methods are exported (`dclIsExported`). An importer
-holds values of every such type, through a field or a signature, whether or
-not it can name the type, and calls its public methods through them
-(`module_include_field_reach`: a private type held in a public field).
+holds values of every such type, through a signature or a public type's private
+field, whether or not it can name the type, and the package's expanded bodies
+call its methods through them (`module_include_private_reach`: a private type
+held in a public type's private field, reached by the package's inline body). A
+type's private members are its module's, so a private method of any type the
+module declares is exported too when the module holds an expanded body anywhere
+(`modHoldsExpanded`): such a body may call it through a value, which name
+resolution never binds. A public type may not hold a private one in a public
+field at all (`ErrorPubFieldPrivType`, `module_include_field_reach`).
 
 **The file is checked before it is written.** It is parsed as the package's
 module beside the program (`parseIncludeCheck`), its blocks' modules beside it
@@ -1372,7 +1378,7 @@ include file.
 
 `module_build_link`, `module_init_link`, `module_generic_link`,
 `module_include_roundtrip`, `module_include_nested` and
-`module_include_field_reach` compile programs against the include files their
+`module_include_private_reach` compile programs against the include files their
 packages generate, each pinned as a golden file the program's description names
 (the runner's `include` key), and link and run them. `module_include_nested` is
 a collections package — `vec`, `map` holding `slot`, a one-file `kinds`, a
@@ -2867,12 +2873,16 @@ a reference names is a type, and that is what is built.
   before any code. A compile that generates no include file marks nothing, and
   `--emit-include` without `output: library` exports nothing whatever it marks.
 - **A method an expanded body reaches only through a receiver is exported where
-  its type holds an expanded body, the body names the type, or the include file
-  declares the type** (`typeHoldsExpanded`, `DclExpandReached`, `DclIncluded`).
-  Before `DclIncluded`, a private type held in a public type's field had its
-  public methods left internal and out of the include file, and a program
-  calling one through the field failed to type check (measured,
-  `module_include_field_reach`).
+  its type or its module holds an expanded body, the body names the type, or the
+  include file declares the type** (`typeHoldsExpanded`, `modHoldsExpanded`,
+  `DclExpandReached`, `DclIncluded`). The module's test is conservative: a
+  generic body is type checked only in the instances an importer makes, so the
+  library compile cannot see which private methods it calls, and every private
+  method of a reachable type is exported once the module holds any expanded
+  body (`module_build_export`: `Plain.hidden` exported, `inner.Quiet.hidden`
+  internal). Without it a program expanding such a body failed to type check
+  against an include file that left the method out
+  (`module_include_private_reach`).
 - **The self-check of a compile with no build description looks for its imports
   beside the root's first file**, and names its lexer
   `<folder>/<package>.include.cone`, a file that does not exist, so what it

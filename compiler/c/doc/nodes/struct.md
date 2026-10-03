@@ -128,35 +128,43 @@ type that may be extended has its representation in its contract. That is a
 documentation obligation and it is discharged in
 [refinherit](../../../../doc/reference/refinherit.html).
 
-**A type is the privacy boundary for its members, not a value of it.** A private
-member "can only be accessed by the struct's methods"
-([refstruct](../../../../doc/reference/refstruct.html)), so the type's own methods
-and static functions reach it through any value of the type — a local, a
-parameter, a borrow written out — as they do through `self`; another type's code,
-in the module or not, and a function the module owns do not. The code is judged
-by its owner, as the enum boundary below judges it, so a generic type's instance
-sees the privates of a value of that instance and not of another instance of the
-generic — ⚠ *the narrower reading, not a ruling*. The mechanism is
-`structSeesPrivate`, asked by `fnCallLowerMethod`; a type literal's private field
-is checked against `pstate->typenode` (`typeLitStructReorder`).
+**The module is the privacy boundary for a type's members, as for its names.** A
+member not `pub` is private to the module that declares the type
+([refmodule](../../../../doc/reference/refmodule.html), "Types as Namespaces"):
+every function, method and type of that module, in any file of its folder,
+reaches it through any value of the type — a local, a parameter, a field, a
+borrow written out — as the type's own methods do through `self`. A sister, a
+submodule and the parent are other modules. One boundary serves names and members
+alike, so the code that sees a type's private state is decided by where it is
+written, not by a list the type declares; a type that needs isolation from its
+neighbours is given a module of its own. An enum's variants are in its module,
+so every variant, the enum and the rest of the module see each other's privates.
 
-**The enum is the privacy boundary for its variants** — Jon, 23 Sep 2026. A
-closed enum is one type written in one place, so code anywhere inside its braces
-— the enum's methods (and each variant's clone of them), its statics, every
-variant's methods — reaches every variant's private members, and the enum's,
-through any value; an extension of it is inside the same boundary. ▸ **Settles**
-that `pub` on a variant's member means "part of the enum's interface", where
-before it was the only way for the enum's own code to read it. It is the privacy
-half of the names rule (everything an enum declares is bare inside its braces).
-▸ **Forbids** nothing new, and widens nothing else: a function the module owns is
-outside every enum, including one written or instantiated inside the braces. ⚠ *That
-last clause is Penny's reading of the ruling, not Jon's: an anonymous function
-written inside the braces, or a generic function instantiated from inside them,
-counts as the module's — her default, standing unless he objects* [Penny 23 Sep].
-The mechanism is `structEnumSeesPrivate`, asked by `fnCallLowerMethod` and the type
-literal's private-field check; the site is the owner of `pstate->fn`, because
-`pstate->typenode` is inherited by a generic function's instance from wherever it
-was first called.
+The code is judged by its owner's module: the function being checked
+(`pstate->fn`), or, where there is none — a field's default — the type being
+checked (`pstate->typenode`), and the module is the nearest one its owner chain
+reaches (`dclInfoGetModule`). So a generic type's instance, a generic function's
+instance, an anonymous function and a closure each see what the module they were
+written in sees. The one widening past the module is an enum's extension, inside
+its base's boundary wherever it is declared: code in the extension's braces sees
+the base's privates, and its base's variants', through any value
+(`structEnumSeesPrivate`). The mechanism is `structSeesPrivate`, asked by
+`fnCallLowerMethod`, by the type literal's private-field check
+(`typeLitStructReorder`, its caller and `genericInferStructParms`) and by a
+construction through a private `init`.
+
+A call to `isTrue` that a coercion to `Bool` injects (`iexpCoerce`) is lowered
+with no type check state, so only a receiver named `self` reaches a private one;
+every other is refused, in the module too. The state is not threaded through
+`iexpCoerce`'s callers.
+
+**A `pub` field of a `pub` type names no type private to its module**
+(`ErrorPubFieldPrivType`, `fieldDclNameRes`). Such a field is reached from
+outside the module, so code there would hold values of a type it cannot name and
+reach into them. The field's type is walked through references, pointers,
+arrays, tuples, type arguments and aliases; a variant answers for its enum. A
+private type's `pub` field is left alone: nothing outside names the type to reach
+it, short of a signature, which is not checked.
 
 **Composition is compile-time flattening; polymorphism moves out to traits.**
 The author's term is **delegated inheritance**: a field's `use` clause folds
@@ -1545,10 +1553,12 @@ receiver's type belongs to. A copy's clone of a base variant's method is owned b
 the copy, whose enum is the extension, so it reaches what the extension's own code
 reaches — the base's variants' privates included. So does the extension's own code:
 its method's clone in a copy is owned by the copy, and its static function by the
-extension. The walk never goes the other way,
-so the base does not reach an added variant's privates, and two extensions of one
-base do not reach each other's: the sibling rule an enrichment keeps (Name folding)
-holds here too. enum_privacy and enum_typecheck_privacy pin both directions.
+extension. The walk matters only across modules, since code in the receiver's
+module sees its privates anyway (`structSeesPrivate`). It never goes the other way,
+so from another module the base does not reach an added variant's privates, and
+two extensions of one base do not reach each other's: the sibling rule an
+enrichment keeps (Name folding) holds here too. enum_privacy runs the reach;
+module_privacy_typecheck pins an extension in another module reaching its base's.
 
 **What an extension may not do**, all `ErrorEnumExtends` unless named otherwise:
 declare a requirement, since a copy has no body to meet it in; declare a common

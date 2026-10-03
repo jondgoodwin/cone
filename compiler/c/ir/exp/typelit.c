@@ -135,8 +135,9 @@ int typeLitGetName(Nodes *args, uint32_t argi, Name *name) {
     return 0;
 }
 
-// Reorder the literal's field values to the same order as the type's fields
-// Also prevent the specification of a value for a private field outside the type's methods
+// Reorder the literal's field values to the same order as the type's fields.
+// Also refuse a value for a private field where 'private' says the literal is
+// written outside the module that declares the type.
 int typeLitStructReorder(FnCallNode *arrlit, StructNode *strnode, int private) {
 
     int retcode = 1;
@@ -175,9 +176,10 @@ int typeLitStructReorder(FnCallNode *arrlit, StructNode *strnode, int private) {
                     continue;
                 }
             }
-            // Don't allow the literal to give a value for a private field outside of the type's methods
+            // A private field is given a value only by its type's module
             if (!private && inodeIsPrivate((INode*)field)) {
-                errorMsgNode(*litval, ErrorNotTyped, "Only a method in the type may specify a value for the private field %s.", &field->namesym->namestr);
+                errorMsgNode(*litval, ErrorNotPublic, "May not give a value to the private field %s from outside the module that declares %s.",
+                    &field->namesym->namestr, &strnode->namesym->namestr);
                 retcode = 0;
             }
         }
@@ -207,9 +209,9 @@ void typeLitStructCheck(TypeCheckState *pstate, FnCallNode *arrlit, StructNode *
     itypeTypeCheck(pstate, &arrlit->vtype);
 
     // Reorder the literal's arguments to match the type's field order. A private
-    // field is given a value by the type's own code, or by any code inside the
-    // braces of the enum it belongs to (structEnumSeesPrivate).
-    int private = (INode*)strnode == pstate->typenode || structEnumSeesPrivate(pstate, (INode*)strnode);
+    // field is given a value by any code of the module that declares the type
+    // (structSeesPrivate).
+    int private = (INode*)strnode == pstate->typenode || structSeesPrivate(pstate, (INode*)strnode);
     if (typeLitStructReorder(arrlit, strnode, private) == 0)
         return;
 
@@ -702,10 +704,10 @@ static void typeLitNewChecked(TypeCheckState *pstate, FnCallNode **nodep, int ar
     }
 
     // A declared init, called with the memory to fill. One not declared 'pub'
-    // is the type's own.
+    // is its module's.
     if (inodeIsPrivate(inits) && !structSeesPrivate(pstate, (INode*)strnode)) {
         errorMsgNode((INode*)node, ErrorNotPublic,
-            "May not construct %s with its private init: only the type's own methods may, unless it is declared 'pub fn init'.",
+            "May not construct %s with its private init: only code in the module that declares it may, unless it is declared 'pub fn init'.",
             &strnode->namesym->namestr);
         return;
     }

@@ -1,12 +1,12 @@
-// What the enum's privacy boundary leaves private. Code inside an enum's braces
-// reaches the private members of the enum and of every variant, and an extension
-// reaches its base's (enum_privacy). Everything else is outside: a function of
-// the module, a generic function instantiated from inside the enum, a sibling
-// extension, and the base reaching into what extends it. A struct's own code
-// reaching another value of it is struct_privacy's.
+// An enum's private members, and its variants', are private to the module that
+// declares the enum, as every type's are: all of the module's code reaches
+// them through any value, not only the code inside the enum's braces
+// (enum_privacy runs that). So none of these is refused: a function of the
+// module, a generic function instantiated from inside the enum, a sibling
+// extension, and the base reaching into what extends it. What a module
+// outside reaches is module_privacy_typecheck's.
 //
-// Type-check stage only: this file parses and resolves cleanly, so every
-// diagnostic below is reached.
+// Type-check stage: the file compiles with no diagnostic.
 
 mod enum_typecheck_privacy;
 
@@ -27,33 +27,31 @@ enum Gauge {
   pub fn viaGeneric(l &Low) i32 {peekLo[i32](l, 1);}
 }
 
-// A function of the module reads, calls and builds nothing private
+// A function of the module reads, calls and builds what is private
 fn outside(g &Gauge, l &Gauge.Low) i32 {
-  imm a = l.lo;          //~ ErrorNotPublic:12 "May not access the private method/field `lo`"
-  imm b = l.half();      //~ ErrorNotPublic:12 "May not access the private method/field `half`"
-  imm c = g.secret;      //~ ErrorNotPublic:12 "May not access the private method/field `secret`"
+  imm a = l.lo;
+  imm b = l.half();
+  imm c = g.secret;
   a + b + c;
 }
 
 fn build() Gauge.Low {
-  Gauge.Low[1, 2, 3];    //~ ErrorNotTyped:16 "private field secret"
-                         //~^ ErrorNotTyped:19 "private field lo"
+  Gauge.Low[1, 2, 3];
 }
 
 fn peekLo[T](l &Gauge.Low, t T) i32 {
-  l.lo;                  //~ ErrorNotPublic:4 "May not access the private method/field `lo`"
+  l.lo;
 }
 
-// Two extensions of one enum are siblings: each one's variants, its copies
-// among them, are its own. And the base does not reach into what extends it.
+// Two extensions of one enum, and the base, are all the module's
 enum Warm extends Gauge {
   struct Ember {
     ember i32;
     pub fn peekFrost(self &, f &Cold.Frost) i32 {
-      f.frost;           //~ ErrorNotPublic:8 "May not access the private method/field `frost`"
+      f.frost;
     }
     pub fn peekColdCopy(self &, l &Cold.Low) i32 {
-      l.lo;              //~ ErrorNotPublic:8 "May not access the private method/field `lo`"
+      l.lo;
     }
   }
 }
@@ -68,7 +66,7 @@ enum Base {
   pub id i32;
   struct Plain {}
   pub fn peekAdded(a &Added.Extra) i32 {
-    a.extra;             //~ ErrorNotPublic:6 "May not access the private method/field `extra`"
+    a.extra;
   }
 }
 
