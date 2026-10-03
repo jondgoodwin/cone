@@ -178,11 +178,23 @@ fn @compute(64) bake(inv Invocation, parts &amp;[]Part, out &amp;[]mut f32) {
 		<span class="pre">tan</span>, inverse trigonometry, <span class="pre">exp</span>,
 		<span class="pre">log</span> or <span class="pre">pow</span>, and refuses a module
 		that asks for one.</p>
-	<p>A GPU's driver may also fuse a multiply and an add into one rounding, which the CPU
-		does not. Until conec marks a kernel's float operations against it (SPIR-V's
-		NoContraction), even adds, multiplies and <span class="pre">floor</span> may differ
-		from the CPU in the last bits: <span class="pre">noise</span>'s fBm, measured, matches
-		the CPU at about a fifth of its points, and at every point once they are marked.</p>
+	<p>A GPU's driver may also fuse a multiply and an add into one rounding, or reorder a
+		sum, which the CPU does not. conec forbids both in everything it compiles for the
+		GPU: each float addition, subtraction, multiplication, division and negation is
+		rounded on its own, in the order written, as the CPU rounds it (SPIR-V's
+		NoContraction, on every such result). Vulkan rounds an addition, a subtraction and a
+		multiplication correctly, so arithmetic built only from those,
+		<span class="pre">floor</span>, <span class="pre">ceil</span>,
+		<span class="pre">fabs</span> and comparisons gives the same bits on every GPU as on
+		the CPU, a subnormal result aside, which Vulkan lets a GPU flush to zero.
+		<span class="pre">noise</span>'s fBm, measured, matches the CPU at every one of its
+		bake's 262,144 points, value and derivatives, as do its value and gradient noise,
+		its other fractal sums and its warps. What takes a square root, a division (Vulkan's
+		bound 2.5 ulp, measured within 2) or another function of the table above is close,
+		not identical. A remainder, <span class="pre">fmod</span>, is left free to fuse,
+		since that is how the RTX 4060 computes C's exact remainder: forbidden, it matched at
+		62% of arguments. The CPU never fuses, on any CPU conec targets, one with fused
+		multiply-add instructions too (<span class="pre">--cpu=native</span>).</p>
 
 	<h2 id="packages">A package's kernels</h2>
 	<p>Whether a package may run on a GPU is said by the package: its manifest marks it,
