@@ -1,0 +1,155 @@
+// Order and exactly-once delivery. 2,000 timers on deadlines chosen so that
+// many tie, a seventh of them precise, are delivered twice over: once by a
+// single call after all are due, in deadline order with ties in the order
+// armed; and once by a loop that wakes when nextExpiry says, where each call
+// delivers in deadline order, nothing fires before its deadline, a timeout
+// at most a tick after it, a precise timer exactly on it, and every timer
+// exactly once.
+
+mod order;
+
+import testing use *;
+import time use Duration, Instant, Clock;
+import collections use List;
+import timewheel use *;
+
+const count = 2000u64;
+
+// xorshift64*, for deadlines the same on every run
+struct Rng {
+  s u64;
+  fn next(self &mut) u64 {
+    s = s ^ (s >> 12u64);
+    s = s ^ (s << 25u64);
+    s = s ^ (s >> 27u64);
+    s * 2685821657736338717u64;
+  }
+}
+
+// An instant's nanoseconds, or -1 for None
+fn ns(o Option[Instant]) i64 {
+  mut r = -1i64;
+  match o {
+    case imm s Some { r = s.value.nanos(); }
+    case is None[Instant] {}
+  }
+  r;
+}
+
+// Arm the 2,000: deadlines in steps of 250 us up to 1 s, so many tie, and
+// every seventh precise. A timer's token is the order it was armed in
+fn arm(w &mut Wheel, start Instant) {
+  mut rng = new Rng(88172645463325252u64);
+  mut k = 0u64;
+  while k < count {
+    imm at = start + Duration.fromMicros(i64.from(rng.next() % 4000u64) * 250i64 + 1000i64);
+    if k % 7u64 == 3u64 { w.insertPrecise(at, k); } else { w.insert(at, k); }
+    k = k + 1u64;
+  }
+}
+
+// Whether out[from..] is in deadline order, ties in the order armed
+fn sorted(out &List[Expiry], from usize) Bool {
+  mut i = from + 1usize;
+  while i < out.len() {
+    imm a = out[i - 1usize];
+    imm b = out[i];
+    if a.deadline > b.deadline { return false; }
+    if a.deadline == b.deadline and a.token >= b.token { return false; }
+    i = i + 1usize;
+  }
+  true;
+}
+
+// Whether every token is in out exactly once
+fn once(out &List[Expiry]) Bool {
+  mut seen = List[u8].withCapacity(usize.from(count));
+  mut k = 0u64;
+  while k < count { seen.push(0u8); k = k + 1u64; }
+  mut i = 0usize;
+  while i < out.len() {
+    imm t = usize.from(out[i].token);
+    if *seen[t] != 0u8 { return false; }
+    seen.set(t, 1u8);
+    i = i + 1usize;
+  }
+  out.len() == usize.from(count);
+}
+
+fn oneCall() {
+  mut clock = Clock.synth();
+  mut w = Wheel.make(clock.now());
+  arm(&mut w, clock.now());
+  mut out = new List[Expiry];
+  clock.advance(Duration.fromMillis(999));
+  imm before = w.expired(clock.now(), &mut out);
+  expect(before < usize.from(count), "not all due at 999 ms");
+  expect(sorted(&out, 0usize), "the first part in order");
+  clock.advance(Duration.fromSeconds(9));
+  imm rest = w.expired(clock.now(), &mut out);
+  expectUInt(u64.from(before + rest), count, "all 2,000 delivered");
+  expect(sorted(&out, before), "the rest in deadline order, ties as armed");
+  expect(once(&out), "each exactly once");
+  expect(w.isEmpty(), "nothing left");
+
+  // Ties: five on one instant, armed in a scrambled order of tokens
+  imm at = clock.now() + Duration.fromMillis(5);
+  w.insert(at, 30u64);
+  w.insert(at, 10u64);
+  w.insertPrecise(at, 50u64);
+  w.insert(at, 20u64);
+  w.insert(at + Duration.fromNanos(1i64), 5u64);
+  out.clear();
+  clock.advance(Duration.fromMillis(6));
+  expectUInt(u64.from(w.expired(clock.now(), &mut out)), 5u64, "five");
+  expectUInt(out[0usize].token, 30u64, "ties go in the order armed: first");
+  expectUInt(out[1usize].token, 10u64, "second");
+  expectUInt(out[2usize].token, 50u64, "third, the precise one among them");
+  expectUInt(out[3usize].token, 20u64, "fourth");
+  expectUInt(out[4usize].token, 5u64, "a nanosecond later goes last");
+}
+
+fn stepped() {
+  mut clock = Clock.synth();
+  mut w = Wheel.make(clock.now());
+  arm(&mut w, clock.now());
+  mut out = new List[Expiry];
+  mut calls = 0u64;
+  mut ordered = true;
+  mut early = 0u64;
+  mut tooLate = 0u64;
+  mut maxLate = 0i64;
+  while true {
+    imm next = ns(w.nextExpiry());
+    if next < 0i64 { break; }
+    if next > clock.now().nanos() { clock.advance(Duration.fromNanos(next - clock.now().nanos())); }
+    imm from = out.len();
+    w.expired(clock.now(), &mut out);
+    calls = calls + 1u64;
+    if !sorted(&out, from) { ordered = false; }
+    mut i = from;
+    while i < out.len() {
+      imm late = clock.now().nanos() - out[i].deadline.nanos();
+      if late < 0i64 { early = early + 1u64; }
+      if late >= tickNanos { tooLate = tooLate + 1u64; }
+      if out[i].token % 7u64 == 3u64 and late != 0i64 { tooLate = tooLate + 1u64; }
+      if late > maxLate { maxLate = late; }
+      i = i + 1usize;
+    }
+  }
+  expect(once(&out), "stepped: each exactly once");
+  expect(ordered, "each call in deadline order");
+  expectUInt(early, 0u64, "none early");
+  expectUInt(tooLate, 0u64, "no timeout a tick late, no precise timer late at all");
+  expect(maxLate < tickNanos, "lateness under a tick");
+  expect(calls <= count, "no more wakes than timers");
+  imm s = w.stats();
+  expectUInt(s.fired, count, "2,000 fired");
+  expect(s.wakes <= calls, "a wake delivers, or moves timers down a level");
+}
+
+fn main() i32 {
+  oneCall();
+  stepped();
+  done();
+}
