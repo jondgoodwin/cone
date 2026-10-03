@@ -655,6 +655,17 @@ carries ([intrinsic](intrinsic.md)).
 address; without it, load the **whole aggregate** and `extractvalue`. Getting
 the flag wrong is not a type error.
 
+`ArrIndexTag` splits the same way: without `FlagBorrow`, load the element
+from its address; with it, the address is the value. **A borrowed index's
+receiver is a reference, but the borrow node only at the root of the chain.**
+`borrowReassocIndex` turns `&m[1][0]` into `((&m)[1])[0]`, each link
+`FlagBorrow`: the inner link's receiver is the borrow `&m`, which generation
+steps around to index `m`'s own place, while the outer link's receiver is the
+inner link, a reference value holding the row's address, which `genlAddr`
+and `genlSubslice` index through as through any reference to an array or
+slice. The same holds where the receiver is a reference some call returned,
+`&mut list[i][j]` for a list of arrays.
+
 **A range index** (`FlagRange`, set by the parser's `parseIndexArgs`) is a slice
 of part of an array or a slice, and exists only borrowed: `fnCallTypeCheck`
 refuses it on any other receiver before a `[]` method could take its two ends
