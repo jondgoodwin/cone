@@ -1,0 +1,91 @@
+// A histogram's buckets, percentiles and exact extremes; counters' sums; a
+// record's two latencies. Each expected value is worked out from the bucket
+// rule: below 16 a value is its own bucket; above, every power of two is cut
+// in 16, so a percentile is the top of its bucket, within 1/16 above the
+// value, and never above the maximum.
+
+mod histogram;
+
+import testing use *;
+import time use Instant, Duration;
+import diag use *;
+
+fn main() i32 {
+  // Small values are exact
+  mut h = Histogram.make();
+  mut v = 1i64;
+  while v <= 10i64 {
+    h.record(v);
+    v = v + 1i64;
+  }
+  expectUInt(h.count(), 10u64, "ten counted");
+  expectUInt(h.percentile(0.5d), 5u64, "the median of 1..10 is 5");
+  expectUInt(h.percentile(0.99d), 10u64, "p99 of 1..10 is 10");
+  expectUInt(h.min(), 1u64, "min");
+  expectUInt(h.max(), 10u64, "max");
+  expectUInt(h.mean(), 5u64, "mean 5.5, whole");
+
+  // 1,000,000 ns: 2^19 <= v < 2^20, so its bucket is [16 + m] << 15 with
+  // m = (1000000 >> 15) & 15 = 30 & 15 = 14: 983040 .. 1015807
+  mut g = Histogram.make();
+  g.record(1000000i64);
+  g.record(1000000i64);
+  g.record(5000000i64);
+  expectUInt(g.percentile(0.5d), 1015807u64, "the median is the top of 1000000's bucket");
+  expectUInt(g.max(), 5000000u64, "the maximum is exact");
+  // 5,000,000: 2^22 <= v < 2^23, m = (5000000 >> 18) & 15 = 19 & 15 = 3:
+  // top (16 + 3 + 1) << 18 - 1 = 5242879, capped at the max, 5000000
+  expectUInt(g.percentile(0.99d), 5000000u64, "p99 is the largest");
+
+  // Many: 1..100000; p50 within 1/16 above 50000, p99 within 1/16 above 99000
+  mut big = Histogram.make();
+  mut k = 1i64;
+  while k <= 100000i64 {
+    big.record(k);
+    k = k + 1i64;
+  }
+  imm p50 = big.percentile(0.5d);
+  expect(p50 >= 50000u64 and p50 <= 53125u64, "p50 within a sixteenth above 50000");
+  imm p99 = big.percentile(0.99d);
+  expect(p99 >= 99000u64 and p99 <= 100000u64, "p99 within a sixteenth above 99000, capped at the max");
+  expectUInt(big.max(), 100000u64, "max of 1..100000");
+  expectUInt(big.mean(), 50000u64, "mean 50000.5, whole");
+
+  // A negative value counts as 0
+  mut z = Histogram.make();
+  z.record(-5i64);
+  expectUInt(z.max(), 0u64, "a negative value counts as 0");
+
+  // Merging
+  big.merge(&g);
+  expectUInt(big.count(), 100003u64, "merged counts");
+  expectUInt(big.max(), 5000000u64, "merged max");
+
+  // Counters: submitted = delivered + inFlight throughout
+  mut c = Counters.zero();
+  c.submit();
+  c.submit();
+  c.submit();
+  c.count(outcomeDone);
+  c.count(outcomeCancelled);
+  expectUInt(c.submitted, 3u64, "three submitted");
+  expectUInt(c.delivered + c.inFlight, c.submitted, "delivered + in flight = submitted");
+  expectUInt(c.maxInFlight, 3u64, "three in flight at most");
+  expectUInt(c.done, 1u64, "one done");
+  expectUInt(c.cancelled, 1u64, "one cancelled");
+
+  // A record's latencies
+  imm t0 = Instant.fromNanos(1000i64);
+  imm r = new OpRecord(1u64, 2u64, kindRecv, outcomeDone, 0u32, 64u64, 9u64,
+    t0, t0 + Duration.fromMicros(12i64), t0 + Duration.fromMicros(13i64));
+  expectInt(r.kernelLatency().nanos(), 12000i64, "kernel latency");
+  expectInt(r.deliveryLatency().nanos(), 1000i64, "delivery latency");
+  expectStr(kindName(kindReadAt), "readAt", "a kind's name");
+  expectStr(outcomeName(outcomeTimedOut), "timedOut", "an outcome's name");
+
+  // Loop ids are unique and increasing
+  imm a = nextLoopId();
+  imm b = nextLoopId();
+  expect(b > a, "loop ids increase");
+  done();
+}

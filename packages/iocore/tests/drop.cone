@@ -1,0 +1,87 @@
+// A loop that dies with operations in flight cancels them, waits for the
+// kernel to give every buffer back, and only then frees its table (I18).
+// What it owed its own thread dies with it, buffers going home; what it owed
+// another loop is still delivered there, Cancelled, with its buffer.
+//
+// The dying loop holds a receive on each end of a silent connection (one
+// answering here, one posted to main's loop), an Accept nobody connects to,
+// and two timers ten seconds off (one here, one posted). After it dies, main
+// receives exactly the two posted answers, both Cancelled, the receive's
+// buffer in its answer; the pool then has nothing lent.
+
+mod drop;
+
+import testing use *;
+import collections use List;
+import time use Instant, Duration;
+import iobuf use *;
+import iocore use *;
+import diag;
+
+fn waitFor(lp &mut Loop, out &mut List[Completion], n usize) {
+  imm limit = Instant.now() + Duration.fromSeconds(5i64);
+  while out.len() < n and Instant.now() < limit {
+    lp.poll(limit, out);
+  }
+}
+
+fn main() i32 {
+  {
+    imm pool = Pool.make();
+    mut m = Loop.mustMake();
+    mut out = List[Completion].empty();
+    {
+      mut lp = Loop.mustMake();
+      mut mine = List[Completion].empty();
+      imm listener = lp.mustListen(SocketAddr.localhost(0u16));
+      mut port = 0u16;
+      match lp.localAddr(listener) {
+        case imm r Ok {port = r.value.port();}
+        case imm e Error {}
+      }
+      lp.submit(Op.Accept[listener], Target.Here[10u64]);
+      lp.submit(Op.Connect[SocketAddr.localhost(port)], Target.Here[11u64]);
+      waitFor(&mut lp, &mut mine, 2usize);
+      mut a = Handle.none();
+      mut b = Handle.none();
+      mut k = 0usize;
+      while k < mine.len() {
+        if mine[k].token == 10u64 {a = mine[k].handle;} else {b = mine[k].handle;}
+        k = k + 1usize;
+      }
+      mine.clear();
+
+      lp.submit(Op.Recv[a, pool.mustTake(100usize)], Target.Here[1u64]);
+      lp.submit(Op.Recv[b, pool.mustTake(100usize)], Target.Post[2u64, m.waker()]);
+      lp.submit(Op.Accept[listener], Target.Here[3u64]);
+      lp.after(Instant.now() + Duration.fromSeconds(10i64), Target.Post[4u64, m.waker()]);
+      lp.after(Instant.now() + Duration.fromSeconds(10i64), Target.Here[5u64]);
+      lp.poll(Instant.now() + Duration.fromMillis(10i64), &mut mine);
+      expectUInt(u64.from(mine.len()), 0u64, "all five still in flight");
+      expectUInt(lp.inFlight(), 5u64, "five in flight");
+      expectUInt(pool.stats().lent, 2u64, "two buffers lent to the kernel");
+    }
+    // The loop has died: its own answers went with it; one buffer is in the
+    // answer posted to main
+    expectUInt(pool.stats().lent, 1u64, "the buffer owed here went home; the posted one travels");
+    waitFor(&mut m, &mut out, 2usize);
+    requireUInt(u64.from(out.len()), 2u64, "main received the two answers owed to it");
+    mut k = 0usize;
+    while k < 2usize {
+      imm c = out[k];
+      expectUInt(u64.from(c.status), u64.from(diag.outcomeCancelled), "each Cancelled by the loop's death");
+      if c.token == 2u64 {
+        expectUInt(u64.from(c.buf.capacity()), 4096u64, "the receive's buffer came with it");
+      } else {
+        expectUInt(c.token, 4u64, "the timer's answer");
+      }
+      k = k + 1usize;
+    }
+    out.clear();
+    m.poll(Instant.now() + Duration.fromMillis(20i64), &mut out);
+    expectUInt(u64.from(out.len()), 0u64, "and nothing more");
+    expectUInt(pool.stats().lent, 0u64, "every buffer back in the pool");
+  }
+  expectUInt(osBlocks(), 0u64, "and every block back to the OS");
+  done();
+}

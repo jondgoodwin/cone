@@ -81,7 +81,7 @@ include file — a generic type's method, an inline function — answers with th
 package's source file and line, which the include file's line marks give it
 (`compiler/c/doc/nodes/module.md`, "Generating the include file").
 
-**The report** (`packages/conestd/panic.c`): stdout is flushed; one line goes
+**The report** (`packages/conestd/panic.cone`): stdout is flushed; one line goes
 to stderr, `panic at <file>:<line>: <message>`, or `panic in thread <id> at
 ...` on a thread other than the one the program started on; the hook, if one
 is set, is called with the message and the location; then the C library's

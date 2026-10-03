@@ -219,6 +219,31 @@ Visual Studio projects stay at the root.
   in deadline order; 8 lanes each have a slop (coalescing); its tests run
   on `time`'s synthetic clock, and its example `bench.cone` times each
   operation;
+  `iocore` is the runtime's completion loop, over `iobuf`, `timewheel`,
+  `time`, `sync` and `diag`: a `Loop` per driving thread, handed an `Op`
+  (TCP `Connect`, `Accept`, `Recv`, the zero-byte `RecvReady`, `Send`,
+  `SendBytes`; file `ReadAt` and `WriteAt`), each taking an owned `IoBuf` or
+  shared `Bytes`, never a borrow (`test/cases/concurrency/
+  concurrency_iocore_submit.cone`), and a `Target` (`Here`, or `Post` to
+  another loop's `Waker`), and giving exactly one `Completion` (`Done`,
+  `Failed`, `Cancelled`, `TimedOut`) with the buffer back and its submitted,
+  dequeued and delivered instants; `poll(until, out)` the one place it waits,
+  its timeout the nearer of `until` and the wheel's next expiry, kept by a
+  high-resolution waitable timer whose expiry the kernel queues on the port
+  (`NtAssociateWaitCompletionPacket`); `cancel` idempotent, `submitBy` a
+  deadline, `after` a timer answered like I/O; handles an id and a
+  generation in the loop's own table; its death cancels, drains and closes;
+  Windows only, over kernel32, ntdll and Winsock (`AcceptEx` and `ConnectEx`
+  through `WSAIoctl`'s function pointers), all Cone; its tests include the
+  two-thread echo of 100,000 messages beside a file read through one poll,
+  and its examples `echo.cone` (kernel against delivery latency) and
+  `tick.cone` (a 1 ms tick's jitter) time it;
+  `diag` is the runtime's diagnostics: `OpRecord` (a loop's id and an
+  operation's, kind, outcome, bytes, token, submitted, dequeued and
+  delivered), `Counters` (exact, submitted = delivered + in flight), a
+  log-linear `Histogram` (p50, p99, the maximum), and `Subscriber`, a
+  function a loop hands each record to, `textSubscriber` printing a line;
+  none by default, so nothing prints;
   `collections` is a growable `List[T]`, an owned `String` and a string-keyed
   `Dict[K, V]`, each holding its elements in one block from `libc`'s
   allocator and moving them with core's `mem` intrinsics; `arena` is an
@@ -334,8 +359,12 @@ Visual Studio projects stay at the root.
   `phases/` (one per compiler phase), `nodes/` (what is true of every IR node,
   plus per-node notes), `compiler/` (how `conec` itself is built and stays
   fast), and `diagnostics/` (measuring, error codes, test suite).
-- `packages/conestd/`: the C implementation of the standard-library component:
-  printing, the chain of traced roots, and what a panic does.
+- `packages/conestd/`: the runtime every native program links: printing, the
+  chain of traced roots, and what a panic does. It is Cone, one C-named module
+  (`conestd.cone` and the files beside it) that the build compiles with the
+  `conec` it has just built, and one C file, `mainthread.c`, recording the
+  thread the program started on before `main` runs, which Cone cannot say.
+  Not a Congo package: nothing imports it.
 - `doc/design/`: the language design notes — what Cone is aiming at and how far
   the compiler is, the notes that would survive a rewrite — plus the naming
   rules (`names-and-namespaces.md`). `doc/design/_index.md` is the entry point
@@ -487,7 +516,11 @@ by folder. Update them in the same change as `CMakeLists.txt`.
 `CMakeLists.txt` uses `find_package(LLVM 23.1 REQUIRED CONFIG)` and defines the
 `conec` executable and `conestd` library. Configure and build with the
 repository's existing CMake setup; do not change the LLVM major version
-without updating source compatibility and both build systems.
+without updating source compatibility and both build systems. `conestd`'s
+Cone is compiled by the `conec` the same build makes, so the library follows
+the compiler. It binds the Windows C runtime (its streams through `libc`,
+`GetCurrentThreadId`, and Win64's `va_list`), so it is Windows only for now,
+as `libc`'s bindings are.
 
 ## Validating a change
 

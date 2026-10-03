@@ -1,0 +1,86 @@
+// Timers through the loop, on the real clock: a 1 ms tick and a spread of
+// timeouts. Windows' own wait is as fine as its timer tick, 15.6 ms by
+// default; the loop's high-resolution timer, its expiry delivered to the
+// port, is what makes a millisecond possible. (examples/tick.cone prints the
+// jitter; this checks what must hold on any machine.)
+//
+// 1. A 1 ms tick, 500 times: each tick k is armed when tick k-1 is
+//    delivered, for start + k ms, so each is due less than a tick ahead and
+//    goes in the wheel's precise set. None is early; each answers once; and
+//    the median lateness is well under the 15.6 ms an ordinary wait would
+//    give -- the high-resolution path is the one in use.
+// 2. 200 timeouts armed at once, 5 to 204 ms off, through the wheel: each
+//    answers once, in deadline order, none early.
+
+mod tick;
+
+import testing use *;
+import collections use List;
+import time use Instant, Duration;
+import iocore use *;
+import diag;
+
+fn main() i32 {
+  mut lp = Loop.mustMake();
+  mut out = List[Completion].empty();
+
+  // 1. The tick
+  imm start = Instant.now();
+  mut late = diag.Histogram.make();
+  mut early = 0u64;
+  mut k = 1i64;
+  lp.after(start + Duration.fromMillis(1i64), Target.Here[1u64]);
+  while k <= 500i64 {
+    lp.poll(forever(), &mut out);
+    mut j = 0usize;
+    while j < out.len() {
+      imm c = out[j];
+      imm due = start + Duration.fromMillis(i64.from(c.token));
+      if c.dequeued < due {early = early + 1u64;}
+      late.record((c.dequeued - due).nanos());
+      k = k + 1i64;
+      if k <= 500i64 {
+        lp.after(start + Duration.fromMillis(k), Target.Here[u64.from(k)]);
+      }
+      j = j + 1usize;
+    }
+    out.clear();
+  }
+  expectUInt(late.count(), 500u64, "500 ticks, each once");
+  expectUInt(early, 0u64, "none early");
+  expect(late.percentile(0.5d) < 5000000u64, "the median tick under 5 ms late: the high-resolution timer is in use");
+  expect(lp.counters().timerExpiries > 0u64, "its expiries came to the port");
+
+  // 2. Timeouts through the wheel
+  imm t0 = Instant.now();
+  mut i = 0i64;
+  while i < 200i64 {
+    // 5 to 204 ms, armed out of order
+    imm ms = 5i64 + (i * 37i64) % 200i64;
+    lp.after(t0 + Duration.fromMillis(ms), Target.Here[u64.from(ms)]);
+    i = i + 1i64;
+  }
+  mut got = 0u64;
+  mut lastDue = 0u64;
+  mut ordered = true;
+  mut earlyT = 0u64;
+  while got < 200u64 {
+    lp.poll(forever(), &mut out);
+    mut j = 0usize;
+    while j < out.len() {
+      imm c = out[j];
+      if c.token < lastDue {ordered = false;}
+      lastDue = c.token;
+      if c.dequeued < t0 + Duration.fromMillis(i64.from(c.token)) {earlyT = earlyT + 1u64;}
+      got = got + 1u64;
+      j = j + 1usize;
+    }
+    out.clear();
+  }
+  expectUInt(got, 200u64, "200 timeouts, each once");
+  expect(ordered, "in deadline order");
+  expectUInt(earlyT, 0u64, "none early");
+  imm c = lp.counters();
+  expectUInt(c.delivered, c.submitted, "every timer answered");
+  done();
+}

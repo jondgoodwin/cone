@@ -1,0 +1,124 @@
+// panic: the end of a program that cannot go on.
+//
+// Every panic ends here: core's 'panic' (and 'assert', 'unreachable' and
+// 'todo', which call it), and the checks the compiler inserts (genlPanic): an
+// index out of bounds, a slice's range out of bounds, a region's allocation
+// that failed. What happens is one fixed sequence:
+//
+// - stdout is flushed, so what the program printed before is kept;
+// - one line goes to stderr, 'panic at <file>:<line>: <message>', naming the
+//   thread ('panic in thread <id> at ...') when it is not the one the program
+//   started on;
+// - the hook the program set with core's 'setPanicHook', if any, is called
+//   with the message and the location. It runs after the line is written, so
+//   a hook that fails cannot lose the report;
+// - the program ends through the C library's 'abort': SIGABRT, or on Windows
+//   a fail-fast (exit status 0xC0000409), where a debugger stops. Nothing
+//   unwinds, and no finalizer runs.
+//
+// A second panic on a thread already panicking -- the hook panicking, say --
+// writes one line and aborts at once.
+//
+// The message and the file are written as C's '%.*s' writes them, up to a
+// NUL if one comes first.
+
+// The hook a program sets with core's 'setPanicHook', or none: a Cone
+// function taking the message, the file and the line. It is kept as its
+// address, 0 for none, which is what an atomic operation can hold
+alias Hook = &fn(msg &[]u8, file &[]u8, line u32);
+mut panicHook = 0usize;
+
+// Whether this thread is panicking already
+mut @threadlocal panicking = false;
+
+// The thread the program started on, which mainthread.c records before
+// 'main' runs: the one thing here Cone cannot do
+extern imm cone_mainThread u64;
+
+// This thread's identity: kernel32's
+extern fn @c(system) GetCurrentThreadId() u32;
+
+pub fn cone_setPanicHook(hook Hook) {
+  core.mem.atomicStore[usize](&panicHook as *usize, hook as usize, core.MemOrder.SeqCst[]);
+}
+
+pub fn cone_panic(msg &[]u8, file &[]u8, line u32) Never {
+  libc.fflush(libc.stdout());
+  mut out = newText(libc.stderr());
+  if panicking {
+    out.text("panic while panicking, at ");
+    out.text(file);
+    out.text(":");
+    out.decimal(u64.from(line));
+    out.text(": ");
+    out.text(msg);
+    out.text("\n");
+    out.write();
+    libc.fflush(libc.stderr());
+    libc.abort();
+  }
+  panicking = true;
+
+  imm thread = u64.from(GetCurrentThreadId());
+  if thread == cone_mainThread {
+    out.text("panic at ");
+  }
+  else {
+    out.text("panic in thread ");
+    out.decimal(thread);
+    out.text(" at ");
+  }
+  out.text(file);
+  out.text(":");
+  out.decimal(u64.from(line));
+  out.text(": ");
+  out.text(msg);
+  out.text("\n");
+  out.write();
+  libc.fflush(libc.stderr());
+
+  imm hook = core.mem.atomicLoad[usize](&panicHook as *usize, core.MemOrder.SeqCst[]);
+  if hook != 0usize {
+    imm call = hook as Hook;
+    call(msg, file, line);
+  }
+  libc.fflush(libc.stdout());
+  libc.fflush(libc.stderr());
+  libc.abort();
+}
+
+// The compiler's checks: each formats what it reports, then panics. Each
+// takes the file as its pointer and its length, as the compiler passes it
+
+pub fn cone_panicIndex(index usize, count usize, file *u8, filelen usize, line u32) Never {
+  mut msg = newText(null);
+  msg.text("index ");
+  msg.decimal(u64.from(index));
+  msg.text(" is out of bounds for a count of ");
+  msg.decimal(u64.from(count));
+  cone_panic(msg.view(), core.mem.sliceFromParts[u8](file, filelen), line);
+}
+
+pub fn cone_panicSlice(start usize, end usize, count usize, file *u8, filelen usize, line u32) Never {
+  mut msg = newText(null);
+  msg.text("slice ");
+  msg.decimal(u64.from(start));
+  msg.text("..");
+  msg.decimal(u64.from(end));
+  if start > end {
+    msg.text(" starts after it ends");
+  }
+  else {
+    msg.text(" is out of bounds for a count of ");
+    msg.decimal(u64.from(count));
+  }
+  cone_panic(msg.view(), core.mem.sliceFromParts[u8](file, filelen), line);
+}
+
+pub fn cone_panicAlloc(size usize, file *u8, filelen usize, line u32) Never {
+  mut msg = newText(null);
+  msg.text("out of memory allocating ");
+  msg.decimal(u64.from(size));
+  msg.text(" bytes");
+  cone_panic(msg.view(), core.mem.sliceFromParts[u8](file, filelen), line);
+}

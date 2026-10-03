@@ -10,14 +10,17 @@
 # scenario says 'program_exit = "abort"', and pins its report, the one line on
 # stderr, in its .err file beside the .out. One scenario per panic, since a
 # program panics once. What each .err says was worked out from the source by
-# hand: the file's name, the line of the call, the message.
+# hand: the file's name, the line of the call, the message. Those of
+# exception_flush, exception_message_nul, exception_message_long and
+# exception_thread are what the C library printed before conestd, which does
+# the work, was written in Cone, so they pin the report byte for byte.
 #
-# Left out deliberately:
+# A panic on a thread other than the one the program started on names the
+# thread by an identity that differs from run to run, which exception_thread
+# masks ('stderr_mask').
 #
-# - A panic on a thread other than the one the program started on, whose line
-#   names the thread by an identity that differs from run to run. The thread
-#   package's own test, panic.cone, runs one and asserts the exit status.
-# - WebAssembly, where the compiler's checks trap: the suite runs no WebAssembly.
+# Left out deliberately: WebAssembly, where the compiler's checks trap: the
+# suite runs no WebAssembly.
 
 support = []
 
@@ -154,6 +157,32 @@ category = "run"
 description = "An allocation whose region's 'alloc' answers null panics, naming the size asked for"
 tags = ["genllvm", "runtime"]
 program_exit = "abort"
+
+# How the runtime writes the report, pinned from the C library's
+[scenario.exception_flush]
+category = "run"
+description = "A panic flushes stdout, a line not yet ended included, before its report; the hook runs after it; a slice's range past 32 bits is reported whole"
+tags = ["runtime"]
+program_exit = "abort"
+
+[scenario.exception_message_nul]
+category = "run"
+description = "A panic's message is written up to a NUL in it, as C's '%.*s' wrote it"
+tags = ["runtime"]
+program_exit = "abort"
+
+[scenario.exception_message_long]
+category = "run"
+description = "A panic's message longer than the runtime gathers for one write is reported whole"
+tags = ["runtime"]
+program_exit = "abort"
+
+[scenario.exception_thread]
+category = "run"
+description = "A panic on a thread the program started names the thread, 'panic in thread <id> at', and ends the whole program"
+tags = ["runtime"]
+program_exit = "abort"
+stderr_mask = ['(?<=panic in thread )\d+']
 
 # -------- type check stage --------
 

@@ -23,7 +23,7 @@
  *
  * Only a struct is lowered. A slice, a virtual reference, a tuple or an array
  * has no C counterpart, and keeps Cone's own convention: a slice's pointer and
- * length arrive as two arguments, as conestd's 'printStr(char *, size_t)'
+ * length arrive as two arguments, as a C function's '(char *, size_t)'
  * takes them.
  *
  * This source file is part of the Cone Programming Language C compiler
