@@ -137,7 +137,10 @@ Visual Studio projects stay at the root.
   window's points, the same bits, and `voxelRemesh` (a closed mesh rebuilt
   as even quads at a voxel size: inside by exact ray parity, distances in a
   band, meshed by `sdfmesh`'s surface nets, channels from the nearest
-  point); its example `coast.cone` is the island coastline experiments;
+  point), and `bevelEdges` and `bevelVertices` (Blender's Bevel: strips with a
+  superellipse profile, sharp mitres, a box's corner patched on the
+  superellipsoid, one clamp factor for overlap, selections by list, angle or
+  a bevel-weight channel, channels blended by place); its example `coast.cone` is the island coastline experiments;
   `noise` is coherent noise over `geomath`, a pure function of a seed and a
   point: the PCG integer hashes (`pcg`, `pcg2d`, `pcg3d`, `pcg4d`, seeded
   lattice hashes, exact hash to float), value and gradient noise with

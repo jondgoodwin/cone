@@ -1,0 +1,360 @@
+// bevel: edge and vertex bevels on blocks and on the boolean rook, drawn
+// offscreen by render. Nothing here is in a library: the shapes are this
+// file's.
+//
+// - A cube chamfered: every edge, width 0.12, 1 segment.
+// - A cube rounded: every edge, width 0.15, 4 segments, the corners eighths
+//   of a sphere.
+// - An L-shaped block (an L extruded, with caps) bevelled round by angle
+//   (edges whose faces turn by more than 30 degrees), width 0.06, 3
+//   segments: its inner edge filleted, its outer edges rounded.
+// - A cube with its four top corners cut off by vertex bevel, width 0.3, 3
+//   segments.
+// - A chess rook: its lathed body's profile corners selected by angle and
+//   bevelled 0.03 in 3 segments, then hollowed and crenellated by booleans as
+//   rook.cone cuts it. (Bevelling after the booleans meets their slivers:
+//   edges of 1e-8 where the hollow meets the top, which the clamp, scaling
+//   every width by one factor, follows down to nothing.)
+// - The timing: a torus lathed 224 x 224 (100,352 triangles) with every
+//   edge bevelled in 1 segment, and every eighth ring of edges in 3.
+//
+//   congo run --release packages/sculpt/examples/bevel.cone
+//   congo run --release packages/sculpt/examples/bevel.cone -- --shots DIR/bevel --obj DIR/bevel
+//
+// '--shots PREFIX' (default 'bevel') writes PREFIX-row.bmp (the five
+// bevelled meshes side by side) and PREFIX-close.bmp (the rounded cube and
+// the L-block close) at 1920 x 1080, then exits; '--obj PREFIX' writes the
+// five meshes as .obj. It prints each mesh's counts, volume, clamp factor and
+// meshHash, and exits 0 only if the hashes are the pinned ones, nothing was
+// reported, every shot was written, no Vulkan call failed and the validation
+// layer said nothing.
+//
+// It needs a GPU driver with Vulkan 1.3 and SDL3.lib on LIB to link (Congo
+// copies SDL3.dll from beside it to beside the program); no window and no
+// display.
+
+mod bevel;
+
+import stdio use *;
+import libc;
+import sdl;
+import collections use *;
+import geomath use *;
+import mesh use PolyMesh;
+import sculpt use *;
+import gpu use *;
+import render use *;
+
+const WIDTH = 1920u32;
+const HEIGHT = 1080u32;
+// Each mesh's meshHash (its flat triangulation)
+imm PINNED Array[u32, 5] = [0xf360abc9u32, 0x0329af5au32, 0xf03faddeu32, 0xe11f8970u32, 0x59c823e8u32];
+imm NAMES Array[&[]u8, 5] = ["cube-chamfered", "cube-rounded", "l-block", "cube-corners", "rook"];
+
+fn v(x f32, y f32, z f32) Vec3 { new Vec3(x, y, z); }
+fn up() Vec3 { v(0., 1., 0.); }
+
+fn seconds(from u64) f64 { f64.from(sdl.GetPerformanceCounter() - from) / f64.from(sdl.GetPerformanceFrequency()); }
+
+// The signed volume, by the divergence theorem over each face's fan, in f64
+fn volume(m &PolyMesh) f64 {
+  mut sum = 0.d;
+  mut f = 0usize;
+  while f < m.faceCount() {
+    imm pts = m.facePositions(u32.from(f));
+    mut i = 1usize;
+    while i + 1usize < pts.len() {
+      imm a = DVec3.from(*pts[0usize]);
+      imm b = DVec3.from(*pts[i]);
+      imm c = DVec3.from(*pts[i + 1usize]);
+      sum = sum + a.x * (b.y * c.z - b.z * c.y) + a.y * (b.z * c.x - b.x * c.z) + a.z * (b.x * c.y - b.y * c.x);
+      i = i + 1usize;
+    }
+    f = f + 1usize;
+  }
+  sum / 6.d;
+}
+
+fn box(lo Vec3, hi Vec3) PolyMesh {
+  mut parts = List[PolyMesh].empty();
+  parts.push(PolyMesh.cube(0.5));
+  mut places = List[Transform3].empty();
+  places.push(new Transform3((lo + hi) * 0.5, Quat.identity(), hi - lo));
+  mut problems = List[String].empty();
+  joinPlaced(&parts, &places, &mut problems);
+}
+
+fn torus(major f32, minor f32, around u32, steps u32) PolyMesh {
+  mut pts = List[Vec2].empty();
+  mut i = 0u32;
+  while i < around {
+    imm a = 2. * pi * f32.from(i) / f32.from(around);
+    pts.push(new Vec2(major + minor * cos(a), minor * sin(a)));
+    i = i + 1u32;
+  }
+  imm prof = Profile.fromPoints(pts.view(), true);
+  lathe(&prof, up(), 2. * pi, steps);
+}
+
+// The rook, as rook.cone cuts it
+fn rookBody() PolyMesh {
+  imm pts Array[Vec2, 9] = [new Vec2(0., 0.), new Vec2(0.9, 0.), new Vec2(0.9, 0.15), new Vec2(0.75, 0.25),
+    new Vec2(0.6, 0.35), new Vec2(0.55, 1.2), new Vec2(0.7, 1.35), new Vec2(0.7, 1.7), new Vec2(0., 1.7)];
+  imm profile = Profile.fromPoints(&pts, false);
+  lathe(&profile, up(), 2. * pi, 32u32);
+}
+
+// The rook's body hollowed and crenellated, as rook.cone cuts it
+fn rookCut(body &PolyMesh, problems &mut List[String]) PolyMesh {
+  imm rect Array[Vec2, 4] = [new Vec2(0., 1.45), new Vec2(0.5, 1.45), new Vec2(0.5, 2.), new Vec2(0., 2.)];
+  imm hollowProfile = Profile.fromPoints(&rect, false);
+  imm hollow = lathe(&hollowProfile, up(), 2. * pi, 32u32);
+  imm cup = booleanDifference(body, &hollow, problems);
+  imm once = booleanDifference(&cup, &box(v(-1., 1.5, -0.12), v(1., 2., 0.12)), problems);
+  booleanDifference(&once, &box(v(-0.12, 1.5, -1.), v(0.12, 2., 1.)), problems);
+}
+
+// Every edge selected
+fn allEdges(m &PolyMesh) List[f32] {
+  mut w = List[f32].empty();
+  mut e = 0usize;
+  while e < m.edgeCount() {
+    w.push(1.);
+    e = e + 1usize;
+  }
+  w;
+}
+
+fn cstrEquals(a *u8, b &[]u8) Bool {
+  mut i = 0usize;
+  while i < b.len {
+    if *(a + i) != b[i] { return false; }
+    i = i + 1usize;
+  }
+  *(a + b.len) == 0u8;
+}
+
+fn appendCstr(s &mut String, c *u8) {
+  mut i = 0usize;
+  while *(c + i) != 0u8 {
+    s.appendByte(*(c + i));
+    i = i + 1usize;
+  }
+}
+
+fn named(prefix &String, suffix &[]u8) String {
+  mut s = prefix.copy();
+  s <- suffix;
+  s;
+}
+
+// One mesh's counts and volume, its bevel's faces and clamp, and its hash
+// against the pinned one; its flat triangulation, written as .obj if asked
+fn report(pm &PolyMesh, b &Bevelled, k usize, objPrefix &String) Bool {
+  imm m = pm.triangulate(false);
+  imm h = mesh.meshHash(&m);
+  printStr(NAMES[k]); print <- ": "; print <- pm.vertexCount(); print <- " vertices, "; print <- pm.faceCount();
+  print <- " faces ("; print <- b.stripFaces.len(); print <- " strip, "; print <- b.cornerFaces.len();
+  print <- " corner), volume "; print <- volume(pm); print <- ", clamp "; print <- f64.from(b.clamp);
+  print <- "; hash ";
+  mut hex = String.empty();
+  hex.appendHex(u64.from(h), 8usize);
+  printStr(hex.view());
+  mut ok = h == PINNED[k];
+  imm bad = pm.validate();
+  if bad.len() > 0usize { print <- " NOT VALID"; ok = false; }
+  if ok { print <- " (as pinned)\n"; } else { print <- " (NOT as pinned)\n"; }
+  if objPrefix.len() > 0usize {
+    mut name = objPrefix.copy();
+    name <- "-";
+    name <- NAMES[k];
+    name <- ".obj";
+    if !mesh.writeObj(&m, name.view()) { print <- "Could NOT write "; printStr(name.view()); print <- "\n"; ok = false; }
+  }
+  ok;
+}
+
+fn problemsSaid(problems &List[String]) Bool {
+  mut i = 0usize;
+  while i < problems.len() {
+    print <- "  reported: "; printStr(problems[i].view()); print <- "\n";
+    i = i + 1usize;
+  }
+  problems.len() == 0usize;
+}
+
+fn main(argc i32, argv **u8) i32 {
+  mut shots = String.empty();
+  shots <- "bevel";
+  mut objPrefix = String.empty();
+  mut a = 1;
+  while a + 1 < argc {
+    imm arg = *(argv + usize.from(a));
+    if cstrEquals(arg, "--shots") { shots = String.empty(); appendCstr(&mut shots, *(argv + usize.from(a + 1))); }
+    elif cstrEquals(arg, "--obj") { appendCstr(&mut objPrefix, *(argv + usize.from(a + 1))); }
+    else { print <- "Unknown argument; use --shots PREFIX and --obj PREFIX\n"; return 2; }
+    a = a + 2;
+  }
+
+  // The meshes
+  mut ok = true;
+  mut problems = List[String].empty();
+  imm cube = PolyMesh.cube(0.5);
+  imm cubeAll = allEdges(&cube);
+  imm chamfered = bevelEdgesWith(&cube, cubeAll.view(), 0.12, BevelOffset, 1u32, 0.5, true, BevelVertexMeshGrid,
+    &mut problems);
+  imm rounded = bevelEdgesWith(&cube, cubeAll.view(), 0.15, BevelOffset, 4u32, 0.5, true, BevelVertexMeshGrid,
+    &mut problems);
+  imm ell Array[Vec2, 6] = [new Vec2(-0.5, -0.5), new Vec2(0.5, -0.5), new Vec2(0.5, -0.15), new Vec2(-0.15, -0.15),
+    new Vec2(-0.15, 0.5), new Vec2(-0.5, 0.5)];
+  imm ellProfile = Profile.fromPoints(&ell, true);
+  imm ellBlock = extrude(&ellProfile, v(0., 0., 0.5), 1u32, true);
+  imm ellSel = bevelSelectByAngle(&ellBlock, radians(30.));
+  imm lBlock = bevelEdgesWith(&ellBlock, ellSel.view(), 0.06, BevelOffset, 3u32, 0.5, true, BevelVertexMeshGrid,
+    &mut problems);
+  imm tops Array[u32, 4] = [2u32, 3u32, 6u32, 7u32];
+  imm cornerSel = bevelSelectVertices(&cube, &tops, &mut problems);
+  imm corners = bevelVerticesWith(&cube, cornerSel.view(), 0.3, 3u32, 0.5, true, &mut problems);
+  // The rook: its lathed body's profile corners bevelled, then cut
+  imm body = rookBody();
+  imm bodySel = bevelSelectByAngle(&body, radians(30.));
+  mut started = sdl.GetPerformanceCounter();
+  imm rookB = bevelEdgesWith(&body, bodySel.view(), 0.03, BevelOffset, 3u32, 0.5, true, BevelVertexMeshGrid,
+    &mut problems);
+  print <- "rook body bevelled in "; print <- seconds(started); print <- " s\n";
+  imm rook = rookCut(&rookB.mesh, &mut problems);
+  ok = problemsSaid(&problems) and ok;
+  ok = report(&chamfered.mesh, &chamfered, 0usize, &objPrefix) and ok;
+  ok = report(&rounded.mesh, &rounded, 1usize, &objPrefix) and ok;
+  ok = report(&lBlock.mesh, &lBlock, 2usize, &objPrefix) and ok;
+  ok = report(&corners.mesh, &corners, 3usize, &objPrefix) and ok;
+  ok = report(&rook, &rookB, 4usize, &objPrefix) and ok;
+
+  // The timing: 100,352 triangles
+  imm big = torus(1., 0.35, 224u32, 224u32);
+  print <- "torus: "; print <- big.faceCount() * 2usize; print <- " triangles\n";
+  imm bigAll = allEdges(&big);
+  mut p = List[String].empty();
+  started = sdl.GetPerformanceCounter();
+  imm t1 = bevelEdgesWith(&big, bigAll.view(), 0.002, BevelOffset, 1u32, 0.5, true, BevelVertexMeshGrid, &mut p);
+  print <- "  every edge, 1 segment: "; print <- t1.mesh.faceCount(); print <- " faces in "; print <- seconds(started);
+  print <- " s, clamp "; print <- f64.from(t1.clamp); print <- "\n";
+  // Every eighth ring of edges round the tube: the edges between lathe steps
+  mut rings = List[f32].empty();
+  mut e = 0usize;
+  while e < big.edgeCount() {
+    imm he = u32.from(2usize * e);
+    imm pa = *big.positions[usize.from(big.fromVertex(he))];
+    imm pb = *big.positions[usize.from(big.toVertex(he))];
+    // An edge round the tube keeps its angle about the axis
+    imm angA = atan2(pa.z, pa.x);
+    imm angB = atan2(pb.z, pb.x);
+    imm step = 2. * pi / 224.;
+    imm k = libc.floorf((angA + pi) / step + 0.5);
+    imm same = absf(angA - angB) < 0.25 * step;
+    if same and (u32.from(k) % 8u32) == 0u32 { rings.push(1.); } else { rings.push(0.); }
+    e = e + 1usize;
+  }
+  started = sdl.GetPerformanceCounter();
+  imm t3 = bevelEdgesWith(&big, rings.view(), 0.01, BevelOffset, 3u32, 0.5, true, BevelVertexMeshGrid, &mut p);
+  print <- "  every eighth ring, 3 segments: "; print <- t3.stripFaces.len(); print <- " strip faces, ";
+  print <- t3.mesh.faceCount(); print <- " faces in "; print <- seconds(started); print <- " s\n";
+  ok = problemsSaid(&p) and ok;
+
+  // The GPU, no window
+  mut instance = Instance.create("bevel");
+  mut none = Surface.none();
+  mut adapter = instance.requestAdapter(&none, POWER_PREFERENCE_HIGH_PERFORMANCE);
+  if !instance.isValid() or !adapter.isValid() {
+    print <- "No GPU can draw\n";
+    return 1;
+  }
+  print <- "Adapter: "; printStr(adapter.name.view());
+  if instance.validation { print <- "; validation on\n"; } else { print <- "; validation off\n"; }
+  mut device = adapter.requestDevice();
+  mut renderer = Renderer.create(&mut device, TEXTURE_FORMAT_RGBA16_FLOAT, TEXTURE_FORMAT_DEPTH32_FLOAT);
+  mut sky = Sky.dusk(radians(35.), radians(320.));
+  sky.zenith = new Color(0.10, 0.18, 0.40, 1.);
+  sky.horizon = new Color(0.45, 0.50, 0.58, 1.);
+  sky.ground = new Color(0.10, 0.10, 0.10, 1.);
+  renderer.setSky(&mut device, &sky);
+  imm light = sky.sunLight(new Color(3., 2.9, 2.7, 1.), new Color(0.25, 0.27, 0.32, 1.));
+
+  imm brass = PbrMaterial.standard(new Color(0.80, 0.62, 0.32, 1.), 0.9, 0.35);
+  imm brassM = renderer.addPbrMaterial(&mut device, &brass);
+  imm clay = PbrMaterial.standard(new Color(0.72, 0.52, 0.40, 1.), 0., 0.6);
+  imm clayM = renderer.addPbrMaterial(&mut device, &clay);
+  imm stone = PbrMaterial.standard(new Color(0.55, 0.56, 0.60, 1.), 0., 0.5);
+  imm stoneM = renderer.addPbrMaterial(&mut device, &stone);
+  imm floor = PbrMaterial.standard(new Color(0.20, 0.20, 0.22, 1.), 0., 0.9);
+  imm floorM = renderer.addPbrMaterial(&mut device, &floor);
+  imm groundMesh = mesh.Mesh.plane(1, 1.);
+  imm ground = renderer.addMesh(&mut device, &groundMesh);
+  mut list = DrawList.empty();
+  list.add(ground, floorM, Mat4.fromTrs(v(0., 0., 0.), Quat.identity(), v(10., 1., 10.)));
+  mut close = DrawList.empty();
+  close.add(ground, floorM, Mat4.fromTrs(v(0., 0., 0.), Quat.identity(), v(10., 1., 10.)));
+  // Flat shading for the chamfer and the cut corners, smooth for the rounds
+  imm tChamfered = chamfered.mesh.triangulate(false);
+  imm tRounded = rounded.mesh.triangulate(true);
+  imm tL = lBlock.mesh.triangulate(true);
+  imm tCorners = corners.mesh.triangulate(false);
+  imm tRook = rook.triangulate(false);
+  imm hChamfered = renderer.addMesh(&mut device, &tChamfered);
+  imm hRounded = renderer.addMesh(&mut device, &tRounded);
+  imm hL = renderer.addMesh(&mut device, &tL);
+  imm hCorners = renderer.addMesh(&mut device, &tCorners);
+  imm hRook = renderer.addMesh(&mut device, &tRook);
+  imm turn = Quat.angleAxis(0.6, up());
+  list.add(hChamfered, clayM, Mat4.fromTrs(v(-4., 0.5, 0.), turn, v(1., 1., 1.)));
+  list.add(hRounded, brassM, Mat4.fromTrs(v(-2., 0.5, 0.), turn, v(1., 1., 1.)));
+  list.add(hL, clayM, Mat4.fromTrs(v(0., 0.25, 0.), Quat.angleAxis(-0.5 * pi, v(1., 0., 0.)), v(1.4, 1.4, 1.4)));
+  list.add(hCorners, clayM, Mat4.fromTrs(v(2., 0.5, 0.), turn, v(1., 1., 1.)));
+  list.add(hRook, stoneM, Mat4.fromTrs(v(4., 0., 0.), Quat.identity(), v(0.6, 0.6, 0.6)));
+  close.add(hRounded, brassM, Mat4.fromTrs(v(-0.75, 0.5, 0.), turn, v(1., 1., 1.)));
+  close.add(hL, clayM, Mat4.fromTrs(v(0.85, 0.35, 0.), Quat.angleAxis(-0.5 * pi, v(1., 0., 0.)), v(1.4, 1.4, 1.4)));
+
+  imm targetDesc = new TextureDescriptor(WIDTH, HEIGHT, TEXTURE_FORMAT_RGBA8_UNORM_SRGB,
+    TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
+  mut target = device.createTexture(&targetDesc);
+  imm depthDesc = new TextureDescriptor(WIDTH, HEIGHT, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT);
+  mut depth = device.createTexture(&depthDesc);
+  mut post = Post.create(&mut device, TEXTURE_FORMAT_RGBA8_UNORM_SRGB, WIDTH, HEIGHT);
+  mut readback = device.createBuffer(u64.from(WIDTH) * u64.from(HEIGHT) * 4u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  if !renderer.isValid() or !post.isValid() or !target.isValid() {
+    print <- "The renderer could not be made\n";
+    return 1;
+  }
+  mut camera = Camera.make();
+  camera.fov = radians(40.);
+  camera.near = 0.05;
+  camera.far = 100.;
+  imm names Array[&[]u8, 2] = ["-row.bmp", "-close.bmp"];
+  imm eyes Array[Vec3, 2] = [v(0., 3.2, 8.6), v(0.2, 1.9, 3.2)];
+  imm targets Array[Vec3, 2] = [v(0., 0.6, 0.), v(0.05, 0.45, 0.)];
+  mut s = 0usize;
+  while s < 2usize {
+    camera.lookAt(eyes[s], targets[s], up());
+    mut encoder = device.createCommandEncoder();
+    if s == 0usize { renderer.render(&mut device, &mut encoder, &post.hdr, &depth, &camera, &light, &list); }
+    else { renderer.render(&mut device, &mut encoder, &post.hdr, &depth, &camera, &light, &close); }
+    post.apply(&mut encoder, &target);
+    encoder.copyTextureToBuffer(&target, &readback);
+    device.queue.submit(encoder.finish());
+    device.endFrame();
+    device.waitIdle();
+    imm shot = Image.fromTexels(readback.mappedRange(), i32.from(WIDTH), i32.from(HEIGHT), false);
+    imm name = named(&shots, names[s]);
+    if shot.save(name.view()) { print <- "Shot: "; printStr(name.view()); print <- "\n"; }
+    else { print <- "Could NOT write "; printStr(name.view()); print <- "\n"; ok = false; }
+    s = s + 1usize;
+  }
+
+  print <- "Vulkan failures: "; print <- u64.from(failures());
+  print <- "; validation messages: "; print <- u64.from(validationMessages()); print <- "\n";
+  if !ok or failures() != 0u32 or validationMessages() != 0u32 { print <- "FAILED\n"; return 1; }
+  print <- "OK\n";
+  0;
+}
+
+fn absf(a f32) f32 { if a < 0. { -a; } else { a; }; }

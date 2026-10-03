@@ -1,0 +1,1605 @@
+// ======== Bevel: edges and corners cut back into strips of faces ========
+//
+// Blender's Bevel (the edit tool, the modifier and the Mesh Bevel node), edge
+// and vertex modes, rebuilt from its manual and the geometry, not its source.
+//
+// EDGE BEVEL. Each selected edge is replaced by a strip of 'segments' faces
+// running along it, flat (a chamfer) or rounded by a profile, and each vertex
+// where selected edges end is cut back to fit.
+//
+// - THE WIDTH is Blender's Offset: in each of the edge's two faces, the strip's
+//   side runs parallel to the edge, 'width' from it in the face's plane (times
+//   the edge's selection weight, see below). 'BevelWidth' measures the distance
+//   between the strip's two sides instead, 'BevelDepth' the distance from the
+//   edge to the chord joining them, each turned into an offset per edge by the
+//   angle between its faces.
+// - AT A VERTEX each face corner that touches a selected edge is moved: where
+//   two selected edges meet in a face, to the point where their offset lines
+//   cross (a sharp mitre, Blender's Sharp miter, inner and outer alike; lines
+//   that are parallel, as along a straight run, give the point straight in);
+//   where a selected edge meets an edge that is not selected, along that edge
+//   to where the offset line crosses it (Blender's loop slide; when selected
+//   edges lie on both sides of it, the mean of the two). An edge that is not
+//   selected and has no selected edge beside it keeps the vertex as its end.
+// - THE PROFILE across the strip, from the point A in one face to B in the
+//   other, is a superellipse in the frame its corner gives: P = (1 - y) A +
+//   (1 - x) B + (x + y - 1) C with x^r + y^r = 1, C the profile's corner on the
+//   edge's line. Sampled at equal angles (x, y) = (cos t, sin t) / ||(cos t,
+//   sin t)||_r, t = 0 to 90 degrees in 'segments' steps, symmetric to the bit.
+//   'shape' is Blender's profile shape: 0.5 a circular arc, 1 the original
+//   sharp corner, 0 a cove into the opposite corner; r = ln 4 / ln(1 / shape),
+//   so 0.25 is a straight chamfer whatever the segments (the profile's middle
+//   lies at the square root of 'shape' along the diagonal from the far corner
+//   to C).
+// - THE CORNER where selected edges meet (the vertex mesh):
+//   - one selected edge ending at a vertex of three edges: the strip's end is
+//     set into the face beyond it, its profile in that face's plane, as a
+//     bevelled cube edge rounds the corner of the end face;
+//   - two selected edges passing through or turning at a vertex, with nothing
+//     else in the way (an elbow of a cube, or a loop running through a vertex
+//     of four edges): the two strips share one profile, a mitred joint;
+//   - three selected edges at a vertex of three edges (a box's corner): a patch
+//     of quads on the superellipsoid that the three profiles bound, x^r + y^r
+//     + z^r = 1 in the frame of the three mitre points about its centre (the
+//     point nearest the three edges' profile axes), a grid of quads round a
+//     centre point or, for an odd number of segments, a centre triangle
+//     (Blender's Grid Fill); exactly an eighth of a sphere at a cube's corner;
+//   - anything else, and the box's corner with 'BevelVertexMeshCutoff': one
+//     polygon through every new point round the vertex (Blender's Cutoff),
+//     or, where the vertex stays as the end of edges in runs apart, one
+//     polygon between each run and the next, through the vertex;
+//   - a vertex on the mesh's boundary: no face; the boundary runs round it.
+// - CLAMP OVERLAP: with 'clamp', every width is scaled by one factor, the
+//   largest up to 1 at which no two new points that move along one of the
+//   mesh's old sides (a face's side, the line of a strip's side or an edge a
+//   corner slides along) pass each other. At that factor some do meet: they
+//   stay distinct vertices at one place. Without 'clamp', widths are taken as
+//   given and faces may cross. The factor used is returned.
+//
+// VERTEX BEVEL ('bevelVertices'): each selected vertex is cut off. Every edge
+// leaving it gets a point 'width' along it (times the vertex's weight), each
+// face corner there becomes the profile from the point on one of its sides to
+// the point on the other, its corner C the vertex itself (so the profile lies
+// in the face), and the hole is one polygon, unless the vertex is on the
+// boundary. Clamped as above.
+//
+// SELECTION. A selection is a list of weights, one per edge (or per vertex),
+// a weight above 0 selecting the element and scaling its width: Blender's
+// bevel weight, which its modifier multiplies the width by. Lists are made by
+// 'bevelSelectEdges' (listed edges, weight 1), 'bevelSelectVertices',
+// 'bevelSelectByAngle' (edges whose faces' normals differ by more than an
+// angle, Blender's Angle limit) and 'bevelSelectByChannel' (an f32 edge or
+// vertex channel's values, "bevel_weight_edge" and "bevel_weight_vert" being
+// Blender's names for them), or computed by any formula.
+//
+// CHANNELS. Every channel of the input is carried, with its name, domain and
+// fill:
+// - a vertex that stays keeps its values; a new vertex's are blended from the
+//   original vertices by its place: a point on an edge from the edge's ends, a
+//   mitre point from its face's corner and the corner's two neighbours (by
+//   affine weights in the corner's two sides), a profile point as its position
+//   blends A, B and C, a patch point as its position blends the three mitre
+//   points and the centre. A channel that is a linear function of position
+//   stays exactly that on planar faces;
+// - a face keeps its values; a strip takes those of the lower-numbered of its
+//   edge's two faces, a corner face (cap or patch) the lowest-numbered face
+//   round its vertex;
+// - a corner keeps its values at a vertex that stays; a corner moved within its
+//   face takes its face's corner values carried by the same affine weights (so
+//   a planar uv map is not stretched); a strip's corners blend, along the
+//   profile, the two faces' corner values at its ends; a patch corner blends
+//   the three mitre points' by its weights; a cap corner takes the face's value
+//   it was cut from;
+// - an edge that stays, or is shortened, keeps its values; every edge the bevel
+//   makes (the strips' sides and rungs, the corner faces' edges, the side
+//   between two new points in one face) takes each edge channel's fill: it has
+//   no value of its own (Join's rule), so a bevelled edge's "crease" or bevel
+//   weight does not pass to its strip.
+//
+// REFUSED AND REPORTED, never stopped: a mesh that is not valid, a width that
+// is not a number of 0 or more, no segments, a shape outside 0 to 1, a width
+// type or vertex mesh not known, or a selection whose length is not the edge
+// (vertex) count: a line in 'problems' and the mesh unchanged. Edge or vertex
+// numbers that do not exist are reported and left out; selected edges on the
+// boundary (with a face on one side only) are reported and not bevelled.
+//
+// NOT OFFERED: Blender's Percent and Absolute width types, loop slide off,
+// Patch and Arc miters (every miter is sharp), the patch at corners of more
+// than three edges or mixed corners (they are one polygon), custom profiles,
+// harden normals (a PolyMesh keeps no custom normals), mark seam and mark
+// sharp (no seam or sharp channel by convention), the face strength mode,
+// spread, and bevelling an edge on the boundary.
+//
+// NUMBERING AND ORDER. The vertices that stay keep their order, first; then
+// the new points, vertex by vertex in order, each vertex's points round its
+// one-ring from its own half-edge (ends of edges that slide, then mitre
+// points), then the profiles' inner points, vertex by vertex, then the
+// patches'. Faces keep their numbers; the strips follow, edge by edge in order,
+// then the corner faces, vertex by vertex. Every step is visited in a fixed
+// order and the patch relaxation runs a fixed count, so the same mesh and
+// numbers give the same bits every run and in debug and release builds.
+
+pub const BevelOffset = 0u32;          // the width is Blender's Offset (see above)
+pub const BevelWidth = 1u32;           // the width is between the strip's two sides
+pub const BevelDepth = 2u32;           // the width is from the edge to the chord across the strip
+
+pub const BevelVertexMeshGrid = 0u32;   // a box's corner patched by a grid of quads
+pub const BevelVertexMeshCutoff = 1u32; // every corner one polygon
+
+// What a bevel made: the mesh, its strip faces and its corner faces (each in
+// order: what a later step may select), and the factor the clamp scaled every
+// width by (1 when nothing overlapped, or without the clamp)
+pub struct Bevelled {
+  pub mesh PolyMesh;
+  pub stripFaces List[u32];
+  pub cornerFaces List[u32];
+  pub clamp f32;
+}
+
+// The vertex types for edge bevel's corners
+const BevelNone = 0u32;
+const BevelOther = 1u32;      // one polygon, or none on the boundary
+const BevelPatch = 2u32;      // a box's corner: the superellipsoid
+const BevelElbow = 3u32;      // two strips sharing one profile
+const BevelTerminal = 4u32;   // one strip ending in a face beyond it
+
+// -------- selections --------
+
+// Weight 1 for each edge listed, 0 for the rest; a number past the last edge
+// is reported and left out
+pub fn bevelSelectEdges(m &PolyMesh, edges &[]u32, problems &mut List[String]) List[f32] {
+  bevelSelectList(m.edgeCount(), edges, "edge ", problems);
+}
+
+// Weight 1 for each vertex listed, 0 for the rest; a number past the last
+// vertex is reported and left out
+pub fn bevelSelectVertices(m &PolyMesh, vertices &[]u32, problems &mut List[String]) List[f32] {
+  bevelSelectList(m.vertexCount(), vertices, "vertex ", problems);
+}
+
+fn bevelSelectList(n usize, items &[]u32, what &[]u8, problems &mut List[String]) List[f32] {
+  mut out = List[f32].withCapacity(n);
+  mut i = 0usize;
+  while i < n {
+    out.push(0.);
+    i = i + 1usize;
+  }
+  i = 0usize;
+  while i < items.len {
+    if usize.from(items[i]) < n {
+      out.set(usize.from(items[i]), 1.);
+    } else {
+      mut s = String.from(what);
+      s.appendUInt(u64.from(items[i]));
+      s.append(" does not exist and is not bevelled");
+      problems.push(s);
+    }
+    i = i + 1usize;
+  }
+  out;
+}
+
+// Weight 1 for each edge whose two faces' normals differ by more than 'angle'
+// (radians; Blender's Angle limit method, whose default is 30 degrees), 0 for
+// the rest and for every edge on the boundary
+pub fn bevelSelectByAngle(m &PolyMesh, angle f32) List[f32] {
+  imm ne = m.edgeCount();
+  imm limit = angle.cos();
+  mut out = List[f32].withCapacity(ne);
+  mut e = 0usize;
+  while e < ne {
+    imm f = m.face(u32.from(2usize * e));
+    imm g = m.face(u32.from(2usize * e + 1usize));
+    mut w f32 = 0.;
+    if f != NoIndex and g != NoIndex and m.faceNormal(f).dot(m.faceNormal(g)) < limit { w = 1.; }
+    out.push(w);
+    e = e + 1usize;
+  }
+  out;
+}
+
+// The values of the f32 channel named 'name' in 'domain' (EdgeDomain or
+// VertexDomain) as a selection: Blender's "bevel_weight_edge" and
+// "bevel_weight_vert". A channel not found is reported, and every weight is 0.
+pub fn bevelSelectByChannel(m &PolyMesh, domain u32, name &[]u8, problems &mut List[String]) List[f32] {
+  imm n = m.domainSize(domain);
+  mut out = List[f32].withCapacity(n);
+  imm ch = m.findFloatChannel(domain, name);
+  if ch == NoIndex {
+    mut s = String.from("there is no f32 channel named ");
+    s.append(name);
+    s.append(" in that domain; nothing is selected");
+    problems.push(s);
+  }
+  mut i = 0usize;
+  while i < n {
+    if ch == NoIndex { out.push(0.); } else { out.push(m.float(ch, u32.from(i))); }
+    i = i + 1usize;
+  }
+  out;
+}
+
+// -------- the operators --------
+
+// The listed edges bevelled by 'width' (Blender's Offset) into 'segments'
+// faces with a circular profile, the overlap clamped, each box corner patched
+// (see above); the mesh unchanged, with a line in 'problems', when refused
+pub fn bevelEdges(m &PolyMesh, edges &[]u32, width f32, segments u32, problems &mut List[String]) PolyMesh {
+  imm sel = bevelSelectEdges(m, edges, problems);
+  mut b = bevelEdgesWith(m, sel.view(), width, BevelOffset, segments, 0.5, true, BevelVertexMeshGrid, problems);
+  mut out = PolyMesh.empty();
+  out <=> b.mesh;
+  out;
+}
+
+// Edges bevelled with every option: 'weights' one per edge (above 0 selects
+// the edge and scales its width), the width measured by 'widthType'
+// (BevelOffset, BevelWidth or BevelDepth), 'segments' faces across each strip,
+// the profile's 'shape' (0 to 1, 0.5 circular), 'clamp' overlap, and
+// 'vertexMesh' (BevelVertexMeshGrid or BevelVertexMeshCutoff) for a box's
+// corners
+pub fn bevelEdgesWith(m &PolyMesh, weights &[]f32, width f32, widthType u32, segments u32, shape f32, clamp Bool,
+    vertexMesh u32, problems &mut List[String]) Bevelled {
+  bevelRun(m, true, weights, width, widthType, segments, shape, clamp, vertexMesh, problems);
+}
+
+// The listed vertices bevelled (cut off) by 'width' along each edge, into
+// 'segments' with a circular profile, the overlap clamped
+pub fn bevelVertices(m &PolyMesh, vertices &[]u32, width f32, segments u32, problems &mut List[String]) PolyMesh {
+  imm sel = bevelSelectVertices(m, vertices, problems);
+  mut b = bevelVerticesWith(m, sel.view(), width, segments, 0.5, true, problems);
+  mut out = PolyMesh.empty();
+  out <=> b.mesh;
+  out;
+}
+
+// Vertices bevelled with every option: 'weights' one per vertex (above 0
+// selects the vertex and scales its width), 'segments', the profile's 'shape'
+// and 'clamp'
+pub fn bevelVerticesWith(m &PolyMesh, weights &[]f32, width f32, segments u32, shape f32, clamp Bool,
+    problems &mut List[String]) Bevelled {
+  bevelRun(m, false, weights, width, BevelOffset, segments, shape, clamp, BevelVertexMeshCutoff, problems);
+}
+
+// -------- the work --------
+
+// The output being built: its vertices with their recipes (the original
+// vertices their values blend), and its faces with each corner's recipe (the
+// original corners its values blend), the edge each corner's incoming side
+// keeps (NoIndex for a new one) and each face's source face
+struct BevelBuild {
+  pub pos List[Vec3];
+  pub off List[Vec3];      // per point: its move at the full width (a point that moves before the clamp)
+  pub kind List[u32];      // per point: 0 its recipe made, 1 on edge (pa -> pb), 2 a mitre at corner pa
+  pub pa List[u32];
+  pub pb List[u32];
+  pub rStart List[u32];    // per point: its recipe's first term
+  pub rCount List[u32];
+  pub rSrc List[u32];
+  pub rW List[f32];
+  pub counts List[u32];
+  pub idx List[u32];
+  pub eSrc List[u32];      // per corner given
+  pub cStart List[u32];    // per corner given: its recipe's first term
+  pub cCount List[u32];
+  pub cSrc List[u32];
+  pub cW List[f32];
+  pub fSrc List[u32];
+
+  fn addPoint(self &mut, p Vec3) u32 {
+    pos.push(p);
+    off.push(new Vec3(0., 0., 0.));
+    kind.push(0u32);
+    pa.push(NoIndex);
+    pb.push(NoIndex);
+    rStart.push(u32.from(rSrc.len()));
+    rCount.push(0u32);
+    u32.from(pos.len() - 1usize);
+  }
+
+  // Begin point p's recipe here: its terms must follow, all together
+  fn beginRecipe(self &mut, p u32) {
+    rStart.set(usize.from(p), u32.from(rSrc.len()));
+    rCount.set(usize.from(p), 0u32);
+  }
+
+  fn addTerm(self &mut, p u32, src u32, w f32) {
+    rSrc.push(src);
+    rW.push(w);
+    rCount.set(usize.from(p), *rCount[usize.from(p)] + 1u32);
+  }
+
+  // Point q's recipe, scaled, added to p's
+  fn addScaled(self &mut, p u32, q u32, s f32) {
+    imm st = usize.from(*rStart[usize.from(q)]);
+    imm n = usize.from(*rCount[usize.from(q)]);
+    mut i = 0usize;
+    while i < n {
+      imm src = *rSrc[st + i];
+      imm w = *rW[st + i];
+      self.addTerm(p, src, w * s);
+      i = i + 1usize;
+    }
+  }
+
+  // A corner of the face being given, at point p, its incoming side keeping
+  // edge e (NoIndex for none); its recipe's terms must follow
+  fn beginCorner(self &mut, p u32, e u32) {
+    idx.push(p);
+    eSrc.push(e);
+    cStart.push(u32.from(cSrc.len()));
+    cCount.push(0u32);
+  }
+
+  fn cornerTerm(self &mut, src u32, w f32) {
+    cSrc.push(src);
+    cW.push(w);
+    imm last = cCount.len() - 1usize;
+    cCount.set(last, *cCount[last] + 1u32);
+  }
+
+  // The values that m's corner c (of a face) carries to point p within its
+  // face, scaled: the corner's, its predecessor's and its successor's, by the
+  // affine weights of p's move from c's vertex in the corner's two sides
+  fn cornerRule(self &mut, m &PolyMesh, c u32, p Vec3, scale f32) {
+    imm w = cornerWeights(m, c, p - *m.positions[usize.from(m.toVertex(c))]);
+    self.cornerTerm(c, (1. - w.x - w.y) * scale);
+    if w.x != 0. { self.cornerTerm(m.prev(c), w.x * scale); }
+    if w.y != 0. { self.cornerTerm(m.next(c), w.y * scale); }
+  }
+}
+
+// The per-half-edge lists the work keeps
+struct BevelLinks {
+  pub chStart List[u32];   // per corner (a half-edge ending at a bevelled vertex, in a face): its chain
+  pub chLen List[u32];
+  pub chIds List[u32];     // the chains: the points replacing the corner's vertex, in the face's order
+  pub endOf List[u32];     // per half-edge leaving a bevelled vertex along an edge not bevelled: its end there
+  pub profStart List[u32]; // per half-edge leaving a vertex along a bevelled edge (edge mode), or per
+                           // corner (vertex mode): its profile's points
+  pub profIds List[u32];
+
+  fn first(self &, c u32) u32 {*chIds[usize.from(*chStart[usize.from(c)])];}
+  fn last(self &, c u32) u32 {*chIds[usize.from(*chStart[usize.from(c)] + *chLen[usize.from(c)] - 1u32)];}
+  fn prof(self &, h u32, t u32) u32 {*profIds[usize.from(*profStart[usize.from(h)] + t)];}
+}
+
+fn bevelRun(m &PolyMesh, edgeMode Bool, weights &[]f32, width f32, widthType u32, segments u32, shape f32,
+    clamp Bool, vertexMesh u32, problems &mut List[String]) Bevelled {
+  imm nv = m.vertexCount();
+  imm nh = m.halfedgeCount();
+  imm ne = m.edgeCount();
+  imm nf = m.faceCount();
+  mut refused = false;
+  if !(width >= 0.) or width > 3.4e38 {
+    problems.push(String.from("the bevel width must be a number, 0 or more; nothing is bevelled"));
+    refused = true;
+  }
+  if segments == 0u32 {
+    problems.push(String.from("a bevel needs at least 1 segment; nothing is bevelled"));
+    refused = true;
+  }
+  if !(shape >= 0.) or shape > 1. {
+    problems.push(String.from("the bevel's profile shape must be from 0 to 1; nothing is bevelled"));
+    refused = true;
+  }
+  if widthType > BevelDepth {
+    problems.push(String.from("the bevel's width type is not one of BevelOffset, BevelWidth, BevelDepth; nothing is bevelled"));
+    refused = true;
+  }
+  if vertexMesh > BevelVertexMeshCutoff {
+    problems.push(String.from("the bevel's vertex mesh is not BevelVertexMeshGrid or BevelVertexMeshCutoff; nothing is bevelled"));
+    refused = true;
+  }
+  imm size = if edgeMode {ne;} else {nv;};
+  if weights.len != size {
+    mut s = String.from("the bevel's selection has ");
+    s.appendUInt(u64.from(weights.len));
+    s.append(" weights for ");
+    s.appendUInt(u64.from(size));
+    if edgeMode { s.append(" edges"); } else { s.append(" vertices"); }
+    s.append("; nothing is bevelled");
+    problems.push(s);
+    refused = true;
+  }
+  if !refused {
+    imm v = m.validate();
+    if v.len() > 0usize {
+      mut s = String.from("the mesh is not valid (");
+      s.append(v[0usize].view());
+      s.append("); nothing is bevelled");
+      problems.push(s);
+      refused = true;
+    }
+  }
+  if refused { return bevelUnchanged(m); }
+
+  // The selection: weights above 0; selected boundary edges reported and dropped
+  mut sel = List[f32].withCapacity(size);
+  mut any = false;
+  mut onBoundary = 0u64;
+  mut firstBoundary = 0u64;
+  mut i = 0usize;
+  while i < size {
+    mut w = weights[i];
+    if !(w > 0.) or w > 3.4e38 { w = 0.; }
+    if w > 0. and edgeMode and m.isBoundaryEdge(u32.from(i)) {
+      if onBoundary == 0u64 { firstBoundary = u64.from(i); }
+      onBoundary = onBoundary + 1u64;
+      w = 0.;
+    }
+    if w > 0. and !edgeMode and m.isIsolated(u32.from(i)) { w = 0.; }
+    if w > 0. { any = true; }
+    sel.push(w);
+    i = i + 1usize;
+  }
+  if onBoundary > 0u64 {
+    mut s = String.empty();
+    s.appendUInt(onBoundary);
+    s.append(" selected edges are on the boundary and are not bevelled (the first, edge ");
+    s.appendUInt(firstBoundary);
+    s.append(")");
+    problems.push(s);
+  }
+  if !any or width == 0. { return bevelUnchanged(m); }
+
+  imm rInf = shape >= 1.;
+  imm sh = if shape < 0.001 {0.001d;} else {f64.from(shape);};
+  imm r = if rInf {1.d;} else {libc.log(4.d) / -libc.log(sh);};
+  imm n = segments;
+
+  mut nrm = List[Vec3].withCapacity(nf);
+  mut f = 0usize;
+  while f < nf {
+    nrm.push(m.faceNormal(u32.from(f)));
+    f = f + 1usize;
+  }
+
+  // Each edge's offset (edge mode) or each vertex's (vertex mode)
+  mut we = List[f32].withCapacity(size);
+  i = 0usize;
+  while i < size {
+    mut w = width * *sel[i];
+    if edgeMode and w > 0. and widthType != BevelOffset {
+      w = w * bevelOffsetFactor(m, &nrm, u32.from(i), widthType);
+    }
+    we.push(w);
+    i = i + 1usize;
+  }
+
+  // Which vertices are bevelled, and which of them stay as an edge's end
+  mut isBev = List[Bool].withCapacity(nv);
+  mut keep = List[Bool].withCapacity(nv);
+  mut v = 0usize;
+  while v < nv {
+    isBev.push(false);
+    keep.push(false);
+    v = v + 1usize;
+  }
+  if edgeMode {
+    mut e = 0usize;
+    while e < ne {
+      if *we[e] > 0. {
+        isBev.set(usize.from(m.fromVertex(u32.from(2usize * e))), true);
+        isBev.set(usize.from(m.toVertex(u32.from(2usize * e))), true);
+      }
+      e = e + 1usize;
+    }
+    v = 0usize;
+    while v < nv {
+      if *isBev[v] {
+        imm ring = m.vertexOutgoing(u32.from(v));
+        mut j = 0usize;
+        while j < ring.len() {
+          imm g = *ring[j];
+          if *we[usize.from(m.edge(g))] == 0. and !bevelSlides(m, &we, g) { keep.set(v, true); }
+          j = j + 1usize;
+        }
+      }
+      v = v + 1usize;
+    }
+  } else {
+    v = 0usize;
+    while v < nv {
+      if *we[v] > 0. { isBev.set(v, true); }
+      v = v + 1usize;
+    }
+  }
+
+  mut b = new BevelBuild(pos: List[Vec3].empty(), off: List[Vec3].empty(), kind: List[u32].empty(),
+    pa: List[u32].empty(), pb: List[u32].empty(), rStart: List[u32].empty(), rCount: List[u32].empty(),
+    rSrc: List[u32].empty(), rW: List[f32].empty(), counts: List[u32].empty(), idx: List[u32].empty(),
+    eSrc: List[u32].empty(), cStart: List[u32].empty(), cCount: List[u32].empty(), cSrc: List[u32].empty(),
+    cW: List[f32].empty(), fSrc: List[u32].empty());
+  mut lk = new BevelLinks(chStart: List[u32].empty(), chLen: List[u32].empty(), chIds: List[u32].empty(),
+    endOf: List[u32].empty(), profStart: List[u32].empty(), profIds: List[u32].empty());
+  mut h = 0usize;
+  while h < nh {
+    lk.chStart.push(NoIndex);
+    lk.chLen.push(0u32);
+    lk.endOf.push(NoIndex);
+    lk.profStart.push(NoIndex);
+    h = h + 1usize;
+  }
+
+  // The vertices that stay, first, in order
+  mut newId = List[u32].withCapacity(nv);
+  v = 0usize;
+  while v < nv {
+    if !*isBev[v] or *keep[v] {
+      imm p = b.addPoint(*m.positions[v]);
+      b.addTerm(p, u32.from(v), 1.);
+      newId.push(p);
+    } else {
+      newId.push(NoIndex);
+    }
+    v = v + 1usize;
+  }
+
+  // The points that move, at the full width, and each corner's chain
+  v = 0usize;
+  while v < nv {
+    if *isBev[v] {
+      imm vu = u32.from(v);
+      imm at = *m.positions[v];
+      imm ring = m.vertexOutgoing(vu);
+      imm k = ring.len();
+      // Each edge's end here
+      mut j = 0usize;
+      while j < k {
+        imm g = *ring[j];
+        imm u = m.toVertex(g);
+        imm dir = unit(*m.positions[usize.from(u)] - at);
+        if !edgeMode {
+          imm p = b.addPoint(at);
+          b.off.set(usize.from(p), dir * *we[v]);
+          b.kind.set(usize.from(p), 1u32);
+          b.pa.set(usize.from(p), vu);
+          b.pb.set(usize.from(p), u);
+          lk.endOf.set(usize.from(g), p);
+        } elif *we[usize.from(m.edge(g))] == 0. {
+          mut sum f32 = 0.;
+          mut cnt f32 = 0.;
+          imm fg = m.face(g);
+          if fg != NoIndex {
+            imm c = m.prev(g);
+            imm ein = usize.from(m.edge(c));
+            if *we[ein] > 0. {
+              imm nIn = unit(nrm[usize.from(fg)].cross(unit(at - *m.positions[usize.from(m.fromVertex(c))])));
+              sum = sum + *we[ein] / maxf(dir.dot(nIn), 0.1);
+              cnt = cnt + 1.;
+            }
+          }
+          imm tg = m.twin(g);
+          imm ft = m.face(tg);
+          if ft != NoIndex {
+            imm h2 = m.next(tg);
+            imm eout = usize.from(m.edge(h2));
+            if *we[eout] > 0. {
+              imm nOut = unit(nrm[usize.from(ft)].cross(unit(*m.positions[usize.from(m.toVertex(h2))] - at)));
+              sum = sum + *we[eout] / maxf(dir.dot(nOut), 0.1);
+              cnt = cnt + 1.;
+            }
+          }
+          if cnt > 0. {
+            imm p = b.addPoint(at);
+            b.off.set(usize.from(p), dir * (sum / cnt));
+            b.kind.set(usize.from(p), 1u32);
+            b.pa.set(usize.from(p), vu);
+            b.pb.set(usize.from(p), u);
+            lk.endOf.set(usize.from(g), p);
+          } else {
+            lk.endOf.set(usize.from(g), *newId[v]);
+          }
+        }
+        j = j + 1usize;
+      }
+      // Each face corner's chain
+      j = 0usize;
+      while j < k {
+        imm hj = *ring[j];
+        imm fj = m.face(hj);
+        if fj != NoIndex {
+          imm c = m.prev(hj);
+          lk.chStart.set(usize.from(c), u32.from(lk.chIds.len()));
+          imm ein = usize.from(m.edge(c));
+          imm eout = usize.from(m.edge(hj));
+          if !edgeMode {
+            lk.chIds.push(*lk.endOf[usize.from(m.twin(c))]);
+            lk.chIds.push(*lk.endOf[usize.from(hj)]);
+          } elif *we[ein] > 0. and *we[eout] > 0. {
+            imm fn3 = *nrm[usize.from(fj)];
+            imm nIn = unit(fn3.cross(unit(at - *m.positions[usize.from(m.fromVertex(c))])));
+            imm nOut = unit(fn3.cross(unit(*m.positions[usize.from(m.toVertex(hj))] - at)));
+            imm p = b.addPoint(at);
+            b.off.set(usize.from(p), bevelMitre(nIn, nOut, *we[ein], *we[eout]));
+            b.kind.set(usize.from(p), 2u32);
+            b.pa.set(usize.from(p), c);
+            lk.chIds.push(p);
+          } elif *we[ein] > 0. {
+            lk.chIds.push(*lk.endOf[usize.from(hj)]);
+          } elif *we[eout] > 0. {
+            lk.chIds.push(*lk.endOf[usize.from(m.twin(c))]);
+          } else {
+            imm a = *lk.endOf[usize.from(m.twin(c))];
+            imm z = *lk.endOf[usize.from(hj)];
+            lk.chIds.push(a);
+            if z != a { lk.chIds.push(z); }
+          }
+          lk.chLen.set(usize.from(c), u32.from(lk.chIds.len()) - *lk.chStart[usize.from(c)]);
+        }
+        j = j + 1usize;
+      }
+    }
+    v = v + 1usize;
+  }
+
+  // The clamp: no two points moving along one old side pass each other
+  mut scale f32 = 1.;
+  if clamp {
+    f = 0usize;
+    while f < nf {
+      imm hs = m.faceHalfedges(u32.from(f));
+      mut q = 0usize;
+      while q < hs.len() {
+        imm hq = *hs[q];
+        imm av = m.fromVertex(hq);
+        imm bv = m.toVertex(hq);
+        imm pA = *m.positions[usize.from(av)];
+        imm side = *m.positions[usize.from(bv)] - pA;
+        imm len = side.length();
+        if len > 0. {
+          imm dir = side * (1. / len);
+          mut ta f32 = 0.;
+          mut tb f32 = 0.;
+          if *isBev[usize.from(av)] { ta = b.off[usize.from(lk.last(m.prev(hq)))].dot(dir); }
+          if *isBev[usize.from(bv)] { tb = -b.off[usize.from(lk.first(hq))].dot(dir); }
+          if ta + tb > 0. and len / (ta + tb) < scale { scale = len / (ta + tb); }
+        }
+        q = q + 1usize;
+      }
+      f = f + 1usize;
+    }
+  }
+
+  // The moved points' places and recipes
+  mut p = 0usize;
+  while p < b.pos.len() {
+    imm kd = *b.kind[p];
+    if kd != 0u32 {
+      imm pu = u32.from(p);
+      b.pos.set(p, *b.pos[p] + *b.off[p] * scale);
+      b.beginRecipe(pu);
+      if kd == 1u32 {
+        imm a = *b.pa[p];
+        imm z = *b.pb[p];
+        imm pA = *m.positions[usize.from(a)];
+        imm d = *m.positions[usize.from(z)] - pA;
+        imm l2 = d.lengthSquared();
+        imm t = if l2 > 0. {(*b.pos[p] - pA).dot(d) / l2;} else {0.;};
+        b.addTerm(pu, a, 1. - t);
+        b.addTerm(pu, z, t);
+      } else {
+        imm c = *b.pa[p];
+        imm vx = m.toVertex(c);
+        imm w = cornerWeights(m, c, *b.pos[p] - *m.positions[usize.from(vx)]);
+        b.addTerm(pu, vx, 1. - w.x - w.y);
+        b.addTerm(pu, m.fromVertex(c), w.x);
+        b.addTerm(pu, m.toVertex(m.next(c)), w.y);
+      }
+      b.kind.set(p, 0u32);
+    }
+    p = p + 1usize;
+  }
+
+  // The corners' types and the profiles' inner points
+  mut vType = List[u32].withCapacity(nv);
+  mut centre = List[Vec3].withCapacity(nv);
+  v = 0usize;
+  while v < nv {
+    vType.push(BevelNone);
+    centre.push(new Vec3(0., 0., 0.));
+    v = v + 1usize;
+  }
+  v = 0usize;
+  while v < nv {
+    if *isBev[v] {
+      imm vu = u32.from(v);
+      imm at = *m.positions[v];
+      imm ring = m.vertexOutgoing(vu);
+      imm k = ring.len();
+      if edgeMode {
+        // The type
+        mut nb = 0usize;
+        mut b0 = NoIndex;
+        mut b1 = NoIndex;
+        mut j = 0usize;
+        while j < k {
+          if *we[usize.from(m.edge(*ring[j]))] > 0. {
+            if nb == 0usize { b0 = *ring[j]; } elif nb == 1usize { b1 = *ring[j]; }
+            nb = nb + 1usize;
+          }
+          j = j + 1usize;
+        }
+        mut ty = BevelOther;
+        if !m.isBoundaryVertex(vu) {
+          if k == 3usize and nb == 3usize and vertexMesh == BevelVertexMeshGrid {
+            ty = BevelPatch;
+          } elif nb == 2usize {
+            imm a0 = lk.first(m.twin(b0));
+            imm z0 = lk.last(m.prev(b0));
+            imm a1 = lk.first(m.twin(b1));
+            imm z1 = lk.last(m.prev(b1));
+            if a0 == z1 and z0 == a1 and a0 != z0 { ty = BevelElbow; }
+          } elif nb == 1usize and k == 3usize {
+            ty = BevelTerminal;
+          }
+        }
+        vType.set(v, ty);
+        // A box's corner: the centre nearest the three profiles' axes
+        if ty == BevelPatch {
+          centre.set(v, bevelPatchCentre(m, &lk, &b.pos, vu, &ring));
+        }
+        // Each bevelled edge's profile at this end
+        mut done = 0usize;
+        j = 0usize;
+        while j < k {
+          imm hj = *ring[j];
+          if *we[usize.from(m.edge(hj))] > 0. {
+            imm idA = lk.first(m.twin(hj));
+            imm idB = lk.last(m.prev(hj));
+            lk.profStart.set(usize.from(hj), u32.from(lk.profIds.len()));
+            if ty == BevelElbow and done == 1usize {
+              // The second strip shares the first's profile, reversed
+              mut t = 0u32;
+              while t <= n {
+                lk.profIds.push(lk.prof(b0, n - t));
+                t = t + 1u32;
+              }
+            } else {
+              lk.profIds.push(idA);
+              mut t = 1u32;
+              while t < n {
+                if idA == idB {
+                  lk.profIds.push(idA);
+                } else {
+                  imm u = m.toVertex(hj);
+                  imm pA = *b.pos[usize.from(idA)];
+                  imm pB = *b.pos[usize.from(idB)];
+                  imm pu = *m.positions[usize.from(u)];
+                  // The profile's corner C on the edge's line
+                  mut cp = at;
+                  if ty == BevelPatch {
+                    cp = pA + pB - *centre[v];
+                  } elif ty == BevelOther {
+                    imm d = unit(pu - at);
+                    cp = at + d * ((pA + pB) * 0.5 - at).dot(d);
+                  }
+                  imm ed = pu - at;
+                  imm el2 = ed.lengthSquared();
+                  imm tau = if ty == BevelElbow or ty == BevelTerminal or el2 == 0. {0.;} else {(cp - at).dot(ed) / el2;};
+                  imm xy = bevelProfileXY(t, n, rInf, r);
+                  imm wa = 1.d - xy.y;
+                  imm wb = 1.d - xy.x;
+                  imm wc = xy.x + xy.y - 1.d;
+                  imm q = (DVec3.from(pA) * wa + DVec3.from(pB) * wb + DVec3.from(cp) * wc).toVec3();
+                  imm np = b.addPoint(q);
+                  b.addScaled(np, idA, f32.from(wa));
+                  b.addScaled(np, idB, f32.from(wb));
+                  b.addTerm(np, vu, f32.from(wc) * (1. - tau));
+                  if tau != 0. { b.addTerm(np, u, f32.from(wc) * tau); }
+                  lk.profIds.push(np);
+                }
+                t = t + 1u32;
+              }
+              lk.profIds.push(idB);
+            }
+            done = done + 1usize;
+          }
+          j = j + 1usize;
+        }
+      } else {
+        // Vertex mode: each face corner's profile, its corner C the vertex
+        mut j = 0usize;
+        while j < k {
+          imm hj = *ring[j];
+          if m.face(hj) != NoIndex {
+            imm c = m.prev(hj);
+            imm idA = lk.first(c);
+            imm idB = lk.last(c);
+            lk.profStart.set(usize.from(c), u32.from(lk.profIds.len()));
+            lk.profIds.push(idA);
+            imm pA = *b.pos[usize.from(idA)];
+            imm pB = *b.pos[usize.from(idB)];
+            mut t = 1u32;
+            while t < n {
+              imm xy = bevelProfileXY(t, n, rInf, r);
+              imm wa = 1.d - xy.y;
+              imm wb = 1.d - xy.x;
+              imm wc = xy.x + xy.y - 1.d;
+              imm q = (DVec3.from(pA) * wa + DVec3.from(pB) * wb + DVec3.from(at) * wc).toVec3();
+              imm np = b.addPoint(q);
+              b.addScaled(np, idA, f32.from(wa));
+              b.addScaled(np, idB, f32.from(wb));
+              b.addTerm(np, vu, f32.from(wc));
+              lk.profIds.push(np);
+              t = t + 1u32;
+            }
+            lk.profIds.push(idB);
+          }
+          j = j + 1usize;
+        }
+      }
+    }
+    v = v + 1usize;
+  }
+
+  // The original faces, each corner at a bevelled vertex replaced by its chain
+  f = 0usize;
+  while f < nf {
+    imm hs = m.faceHalfedges(u32.from(f));
+    imm before = b.idx.len();
+    mut q = 0usize;
+    while q < hs.len() {
+      imm c = *hs[q];
+      imm vx = m.toVertex(c);
+      imm ec = m.edge(c);
+      imm keepE = if edgeMode and *we[usize.from(ec)] > 0. {NoIndex;} else {ec;};
+      if !*isBev[usize.from(vx)] {
+        b.beginCorner(*newId[usize.from(vx)], keepE);
+        b.cornerTerm(c, 1.);
+      } elif !edgeMode {
+        mut t = 0u32;
+        while t <= n {
+          imm id = lk.prof(c, t);
+          b.beginCorner(id, if t == 0u32 {keepE;} else {NoIndex;});
+          b.cornerRule(m, c, *b.pos[usize.from(id)], 1.);
+          t = t + 1u32;
+        }
+      } else {
+        // A terminal corner takes the strip's end into this face
+        mut hb = NoIndex;
+        if *vType[usize.from(vx)] == BevelTerminal and *we[usize.from(ec)] == 0.
+            and *we[usize.from(m.edge(m.next(c)))] == 0. {
+          imm ring = m.vertexOutgoing(vx);
+          mut j = 0usize;
+          while j < ring.len() {
+            if *we[usize.from(m.edge(*ring[j]))] > 0. { hb = *ring[j]; }
+            j = j + 1usize;
+          }
+          if hb != NoIndex and (lk.prof(hb, 0u32) != lk.first(c) or lk.prof(hb, n) != lk.last(c)) { hb = NoIndex; }
+        }
+        if hb != NoIndex {
+          mut t = 0u32;
+          while t <= n {
+            imm id = lk.prof(hb, t);
+            b.beginCorner(id, if t == 0u32 {keepE;} else {NoIndex;});
+            b.cornerRule(m, c, *b.pos[usize.from(id)], 1.);
+            t = t + 1u32;
+          }
+        } else {
+          imm st = *lk.chStart[usize.from(c)];
+          imm cl = *lk.chLen[usize.from(c)];
+          mut t = 0u32;
+          while t < cl {
+            imm id = *lk.chIds[usize.from(st + t)];
+            b.beginCorner(id, if t == 0u32 {keepE;} else {NoIndex;});
+            b.cornerRule(m, c, *b.pos[usize.from(id)], 1.);
+            t = t + 1u32;
+          }
+        }
+      }
+      q = q + 1usize;
+    }
+    b.counts.push(u32.from(b.idx.len() - before));
+    b.fSrc.push(u32.from(f));
+    f = f + 1usize;
+  }
+
+  // The strips, edge by edge
+  mut stripFaces = List[u32].empty();
+  if edgeMode {
+    mut e = 0usize;
+    while e < ne {
+      if *we[e] > 0. {
+        imm he = u32.from(2usize * e);
+        imm ht = he + 1u32;
+        imm fa = m.face(he);
+        imm fb = m.face(ht);
+        imm src = if fa < fb {fa;} else {fb;};
+        mut t = 0u32;
+        while t < n {
+          // (q[t + 1], p[t + 1], p[t], q[t]), p at the start's end, q[t] = the far end's [n - t]
+          mut ids Array[u32, 4] = [lk.prof(ht, n - t - 1u32), lk.prof(he, t + 1u32), lk.prof(he, t), lk.prof(ht, n - t)];
+          imm hsel Array[u32, 4] = [ht, he, he, ht];
+          imm tsel Array[u32, 4] = [n - t - 1u32, t + 1u32, t, n - t];
+          imm before = b.idx.len();
+          mut q = 0usize;
+          while q < 4usize {
+            imm prevId = ids[(q + 3usize) % 4usize];
+            if ids[q] != prevId {
+              b.beginCorner(ids[q], NoIndex);
+              bevelStripCorner(&mut b, m, &lk, hsel[q], tsel[q], n);
+            }
+            q = q + 1usize;
+          }
+          imm made = b.idx.len() - before;
+          if made >= 3usize {
+            b.counts.push(u32.from(made));
+            b.fSrc.push(src);
+            stripFaces.push(u32.from(b.counts.len() - 1usize));
+          } else {
+            bevelDropCorners(&mut b, before);
+          }
+          t = t + 1u32;
+        }
+      }
+      e = e + 1usize;
+    }
+  }
+
+  // The corner faces, vertex by vertex
+  mut cornerFaces = List[u32].empty();
+  mut capIds = List[u32].empty();
+  mut capKind = List[u32].empty();   // 0: a point in a face corner (capA the corner); 1: a profile's point (capA the half-edge, capB its place)
+  mut capA = List[u32].empty();
+  mut capB = List[u32].empty();
+  v = 0usize;
+  while v < nv {
+    imm vu = u32.from(v);
+    if *isBev[v] and !m.isBoundaryVertex(vu) and *vType[v] != BevelElbow and *vType[v] != BevelTerminal {
+      imm ring = m.vertexOutgoing(vu);
+      imm k = ring.len();
+      capIds.clear();
+      capKind.clear();
+      capA.clear();
+      capB.clear();
+      mut src = NoIndex;
+      mut j = 0usize;
+      while j < k {
+        imm hj = *ring[j];
+        if edgeMode and *we[usize.from(m.edge(hj))] > 0. {
+          mut t = 0u32;
+          while t <= n {
+            bevelCapPush(&mut capIds, &mut capKind, &mut capA, &mut capB, lk.prof(hj, t), 1u32, hj, t);
+            t = t + 1u32;
+          }
+        }
+        imm fj = m.face(hj);
+        if fj != NoIndex {
+          if fj < src { src = fj; }
+          imm c = m.prev(hj);
+          if edgeMode {
+            imm st = *lk.chStart[usize.from(c)];
+            mut t = *lk.chLen[usize.from(c)];
+            while t > 0u32 {
+              bevelCapPush(&mut capIds, &mut capKind, &mut capA, &mut capB, *lk.chIds[usize.from(st + t - 1u32)], 0u32, c, 0u32);
+              t = t - 1u32;
+            }
+          } else {
+            mut t = n + 1u32;
+            while t > 0u32 {
+              bevelCapPush(&mut capIds, &mut capKind, &mut capA, &mut capB, lk.prof(c, t - 1u32), 0u32, c, 0u32);
+              t = t - 1u32;
+            }
+          }
+        }
+        j = j + 1usize;
+      }
+      // Round the loop: the last the same as the first goes
+      while capIds.len() > 1usize and *capIds[capIds.len() - 1usize] == *capIds[0usize] {
+        capIds.pop();
+        capKind.pop();
+        capA.pop();
+        capB.pop();
+      }
+      mut patched = false;
+      if *vType[v] == BevelPatch and n >= 2u32 and capIds.len() == 3usize * usize.from(n) {
+        patched = bevelPatch(&mut b, m, &lk, &mut cornerFaces, vu, &ring, *centre[v], &capIds, &capKind, &capA, &capB,
+          n, rInf, r, src);
+      }
+      if !patched and capIds.len() >= 3usize {
+        // The vertex, where it stays, may be met more than once round the
+        // loop (runs of edges that keep it, apart): one polygon from each
+        // meeting to the next
+        imm kept = *newId[v];
+        mut starts = List[usize].empty();
+        mut q = 0usize;
+        while q < capIds.len() {
+          if kept != NoIndex and *capIds[q] == kept { starts.push(q); }
+          q = q + 1usize;
+        }
+        if starts.len() < 2usize {
+          starts.clear();
+          starts.push(0usize);
+        }
+        imm total = capIds.len();
+        mut sp = 0usize;
+        while sp < starts.len() {
+          imm from = *starts[sp];
+          imm to = if sp + 1usize < starts.len() {*starts[sp + 1usize];} else {*starts[0usize] + total;};
+          if to - from >= 3usize {
+            q = from;
+            while q < to {
+              imm qq = q % total;
+              b.beginCorner(*capIds[qq], NoIndex);
+              bevelCapCorner(&mut b, m, &lk, *capKind[qq], *capA[qq], *capB[qq], *capIds[qq], n);
+              q = q + 1usize;
+            }
+            b.counts.push(u32.from(to - from));
+            b.fSrc.push(src);
+            cornerFaces.push(u32.from(b.counts.len() - 1usize));
+          }
+          sp = sp + 1usize;
+        }
+      }
+    }
+    v = v + 1usize;
+  }
+
+  // Made, and the channels carried
+  mut made = List[String].empty();
+  mut out = PolyMesh.fromPolygons(b.pos.view(), b.counts.view(), b.idx.view(), &mut made);
+  if out.faceCount() != b.counts.len() {
+    mut s = String.from("the bevel made a face that could not be added");
+    if made.len() > 0usize {
+      s.append(" (");
+      s.append(made[0usize].view());
+      s.append(")");
+    }
+    s.append("; nothing is bevelled");
+    problems.push(s);
+    return bevelUnchanged(m);
+  }
+  bevelChannels(m, &mut out, &b);
+  new Bevelled(out, stripFaces, cornerFaces, scale);
+}
+
+// Whether an edge not bevelled, leaving its vertex as g, has a bevelled edge
+// beside it in a face, so that its end slides along it
+fn bevelSlides(m &PolyMesh, we &List[f32], g u32) Bool {
+  if m.face(g) != NoIndex and *we[usize.from(m.edge(m.prev(g)))] > 0. { return true; }
+  imm tg = m.twin(g);
+  m.face(tg) != NoIndex and *we[usize.from(m.edge(m.next(tg)))] > 0.;
+}
+
+// The move to where two offset lines cross, in a face: n1 and n2 the two
+// edges' inward directions in the face (unit, across each edge), w1 and w2
+// their offsets. Lines (nearly) parallel give the mean offset straight in.
+fn bevelMitre(n1 Vec3, n2 Vec3, w1 f32, w2 f32) Vec3 {
+  imm c = n1.dot(n2);
+  imm det = 1. - c * c;
+  if det < 0.000001 {
+    imm s = n1 + n2;
+    if s.lengthSquared() < 0.000001 { return n1 * w1; }
+    return unit(s) * ((w1 + w2) * 0.5);
+  }
+  imm x = (w1 - c * w2) / det;
+  imm y = (w2 - c * w1) / det;
+  n1 * x + n2 * y;
+}
+
+// The factor turning a width or a depth into edge e's offset, by the angle
+// between its two faces (each held so that no factor passes 100)
+fn bevelOffsetFactor(m &PolyMesh, nrm &List[Vec3], e u32, widthType u32) f32 {
+  imm he = 2u32 * e;
+  imm d = unit(*m.positions[usize.from(m.toVertex(he))] - *m.positions[usize.from(m.fromVertex(he))]);
+  imm nF = unit(nrm[usize.from(m.face(he))].cross(d));
+  imm nG = unit(nrm[usize.from(m.face(he + 1u32))].cross(d * -1.));
+  imm c = clampf(nF.dot(nG), -1., 1.);
+  if widthType == BevelWidth {
+    imm s = ((1. - c) * 0.5).sqrt();
+    1. / (2. * maxf(s, 0.005));
+  } else {
+    imm s = ((1. + c) * 0.5).sqrt();
+    1. / maxf(s, 0.01);
+  }
+}
+
+fn maxf(a f32, b f32) f32 {if a > b {a;} else {b;};}
+
+// The profile's (x, y) at step t of n: (cos, sin) of t quarter turns over n,
+// over its r-norm (the max-norm when 'rInf'); step n - t is step t mirrored,
+// to the bit
+fn bevelProfileXY(t u32, n u32, rInf Bool, r f64) DVec3 {
+  imm cs = bevelCosSin(t, n);
+  imm len = bevelNorm(cs, rInf, r);
+  new DVec3(cs.x / len, cs.y / len, 0.d);
+}
+
+// (cos, sin) of t quarter turns over n, step n - t the mirror of step t
+fn bevelCosSin(t u32, n u32) DVec3 {
+  if 2u32 * t > n {
+    imm m = bevelCosSin(n - t, n);
+    return new DVec3(m.y, m.x, 0.d);
+  }
+  if 2u32 * t == n { return new DVec3(0.70710678118654752d, 0.70710678118654752d, 0.d); }
+  imm a = 1.5707963267948966d * f64.from(t) / f64.from(n);
+  new DVec3(a.cos(), a.sin(), 0.d);
+}
+
+// The r-norm of v, computed from its largest component so it does not
+// overflow; the max-norm when 'rInf'
+fn bevelNorm(v DVec3, rInf Bool, r f64) f64 {
+  imm ax = absd(v.x);
+  imm ay = absd(v.y);
+  imm az = absd(v.z);
+  mut big = ax;
+  if ay > big { big = ay; }
+  if az > big { big = az; }
+  if big == 0.d or rInf { return big; }
+  imm s = libc.pow(ax / big, r) + libc.pow(ay / big, r) + libc.pow(az / big, r);
+  big * libc.pow(s, 1.d / r);
+}
+
+// A box corner's centre: the point nearest, by least squares, the three
+// profile axes (each the line along its edge through A + B - C, C the foot of
+// the profile's middle on the edge), or their mean when that is not one point
+fn bevelPatchCentre(m &PolyMesh, lk &BevelLinks, pos &List[Vec3], v u32, ring &List[u32]) Vec3 {
+  imm at = DVec3.from(*m.positions[usize.from(v)]);
+  mut a11 = 0.d; mut a12 = 0.d; mut a13 = 0.d; mut a22 = 0.d; mut a23 = 0.d; mut a33 = 0.d;
+  mut rhs = new DVec3(0.d, 0.d, 0.d);
+  mut mean = new DVec3(0.d, 0.d, 0.d);
+  mut j = 0usize;
+  while j < ring.len() {
+    imm hj = *ring[j];
+    imm pA = DVec3.from(*pos[usize.from(lk.first(m.twin(hj)))]);
+    imm pB = DVec3.from(*pos[usize.from(lk.last(m.prev(hj)))]);
+    mut d = DVec3.from(*m.positions[usize.from(m.toVertex(hj))]) - at;
+    imm dl = d.length();
+    if dl > 0.d { d = d * (1.d / dl); }
+    imm mid = (pA + pB) * 0.5d;
+    imm foot = at + d * (mid - at).dot(d);
+    imm o = pA + pB - foot;
+    mean = mean + o;
+    // (I - d d^T), and (I - d d^T) o
+    a11 = a11 + 1.d - d.x * d.x; a12 = a12 - d.x * d.y; a13 = a13 - d.x * d.z;
+    a22 = a22 + 1.d - d.y * d.y; a23 = a23 - d.y * d.z; a33 = a33 + 1.d - d.z * d.z;
+    imm od = o.dot(d);
+    rhs = rhs + o - d * od;
+    j = j + 1usize;
+  }
+  mean = mean * (1.d / f64.from(ring.len()));
+  imm c11 = a22 * a33 - a23 * a23;
+  imm c12 = a13 * a23 - a12 * a33;
+  imm c13 = a12 * a23 - a13 * a22;
+  imm det = a11 * c11 + a12 * c12 + a13 * c13;
+  imm tr = a11 + a22 + a33;
+  if absd(det) <= 0.000001d * tr * tr * tr { return mean.toVec3(); }
+  imm c22 = a11 * a33 - a13 * a13;
+  imm c23 = a12 * a13 - a11 * a23;
+  imm c33 = a11 * a22 - a12 * a12;
+  new DVec3((c11 * rhs.x + c12 * rhs.y + c13 * rhs.z) / det, (c12 * rhs.x + c22 * rhs.y + c23 * rhs.z) / det,
+    (c13 * rhs.x + c23 * rhs.y + c33 * rhs.z) / det).toVec3();
+}
+
+// One point of a corner face's loop, unless it is the one before it
+fn bevelCapPush(ids &mut List[u32], kinds &mut List[u32], aa &mut List[u32], bs &mut List[u32], id u32, kd u32, a u32,
+    bb u32) {
+  if ids.len() > 0usize and *ids[ids.len() - 1usize] == id { return; }
+  ids.push(id);
+  kinds.push(kd);
+  aa.push(a);
+  bs.push(bb);
+}
+
+// A strip's corner at point t of the profile of half-edge h: the corner values
+// of the faces at its two ends, blended along the profile
+fn bevelStripCorner(b &mut BevelBuild, m &PolyMesh, lk &BevelLinks, h u32, t u32, n u32) {
+  imm wb = f32.from(t) / f32.from(n);
+  imm idA = lk.prof(h, 0u32);
+  imm idB = lk.prof(h, n);
+  if wb < 1. { b.cornerRule(m, m.twin(h), *b.pos[usize.from(idA)], 1. - wb); }
+  if wb > 0. { b.cornerRule(m, m.prev(h), *b.pos[usize.from(idB)], wb); }
+}
+
+// A corner face's corner: from the face corner it was cut from, or as the
+// strip's at a profile's point
+fn bevelCapCorner(b &mut BevelBuild, m &PolyMesh, lk &BevelLinks, kd u32, a u32, bb u32, id u32, n u32) {
+  if kd == 1u32 {
+    bevelStripCorner(b, m, lk, a, bb, n);
+  } else {
+    b.cornerRule(m, a, *b.pos[usize.from(id)], 1.);
+  }
+}
+
+// Take back the corners given from 'from' on (a face not made)
+fn bevelDropCorners(b &mut BevelBuild, from usize) {
+  while b.idx.len() > from {
+    b.idx.pop();
+    b.eSrc.pop();
+    imm cs = usize.from(*b.cStart[b.cStart.len() - 1usize]);
+    while b.cSrc.len() > cs {
+      b.cSrc.pop();
+      b.cW.pop();
+    }
+    b.cStart.pop();
+    b.cCount.pop();
+  }
+}
+
+// A box corner's patch: the loop 'capIds' (3n points, three sides of n from
+// the mitre points M2, M0, M1, each side along a profile) filled with rings of
+// quads round a centre point (n even) or a centre triangle (n odd). Each
+// inner point's coefficients over the three directions M_i - O are relaxed on
+// the unit sphere (Gauss-Seidel, a fixed count of sweeps, each point the unit
+// mean of its neighbours) and then put on the superellipsoid: P = O + sum c_i
+// (M_i - O), c the coefficients over their r-norm. False, and nothing made,
+// when the loop does not start at the mitre points as it should.
+fn bevelPatch(b &mut BevelBuild, m &PolyMesh, lk &BevelLinks, cornerFaces &mut List[u32], v u32, ring &List[u32],
+    o Vec3, capIds &List[u32], capKind &List[u32], capA &List[u32], capB &List[u32], n u32, rInf Bool, r f64,
+    src u32) Bool {
+  imm nn = usize.from(n);
+  // The mitre points M0, M1, M2 (M_i in face i of the ring) and their corners
+  mut mid Array[u32, 3] = [0u32, 0u32, 0u32];
+  mut mc Array[u32, 3] = [0u32, 0u32, 0u32];
+  mut i = 0usize;
+  while i < 3usize {
+    mc[i] = m.prev(*ring[i]);
+    mid[i] = lk.last(mc[i]);
+    i = i + 1usize;
+  }
+  // Ring 0 is side j's points t = 0..n-1, side j from M_(j-1) along profile j
+  if *capIds[0usize] != mid[2usize] or *capIds[nn] != mid[0usize] or *capIds[2usize * nn] != mid[1usize] { return false; }
+
+  // Local points: ring m starts at base[m], with sides of n - 2m
+  mut base = List[usize].empty();
+  mut coef = List[DVec3].empty();
+  mut fixed = List[Bool].empty();
+  mut gid = List[u32].empty();
+  mut rm = 0usize;
+  mut count = 0usize;
+  while 2usize * rm <= nn {
+    imm l = nn - 2usize * rm;
+    base.push(count);
+    if l == 0usize { count = count + 1usize; } else { count = count + 3usize * l; }
+    rm = rm + 1usize;
+  }
+  imm rings = base.len();
+  imm inv3 = 0.57735026918962576d;
+  mut q = 0usize;
+  while q < count {
+    if q < 3usize * nn {
+      imm j = q / nn;
+      imm t = q % nn;
+      imm ia = (j + 2usize) % 3usize;
+      mut cv Array[f64, 3] = [0.d, 0.d, 0.d];
+      imm cs = bevelCosSin(u32.from(t), n);
+      cv[ia] = cs.x;
+      cv[j] = cs.y;
+      coef.push(new DVec3(cv[0usize], cv[1usize], cv[2usize]));
+      fixed.push(true);
+      gid.push(*capIds[q]);
+    } else {
+      coef.push(new DVec3(inv3, inv3, inv3));
+      fixed.push(false);
+      gid.push(NoIndex);
+    }
+    q = q + 1usize;
+  }
+
+  // The faces, as local points
+  mut fc = List[u32].empty();
+  mut fi = List[u32].empty();
+  rm = 0usize;
+  while rm + 1usize < rings {
+    imm l = nn - 2usize * rm;
+    mut j = 0usize;
+    while j < 3usize {
+      imm jp = (j + 2usize) % 3usize;
+      fc.push(4u32);
+      fi.push(bevelGridAt(&base, nn, rm, jp, l - 1usize));
+      fi.push(bevelGridAt(&base, nn, rm, j, 0usize));
+      fi.push(bevelGridAt(&base, nn, rm, j, 1usize));
+      fi.push(bevelGridAt(&base, nn, rm + 1usize, j, 0usize));
+      mut t = 1usize;
+      while t + 1usize < l {
+        fc.push(4u32);
+        fi.push(bevelGridAt(&base, nn, rm, j, t));
+        fi.push(bevelGridAt(&base, nn, rm, j, t + 1usize));
+        fi.push(bevelGridAt(&base, nn, rm + 1usize, j, t));
+        fi.push(bevelGridAt(&base, nn, rm + 1usize, j, t - 1usize));
+        t = t + 1usize;
+      }
+      j = j + 1usize;
+    }
+    rm = rm + 1usize;
+  }
+  if nn - 2usize * (rings - 1usize) == 1usize {
+    fc.push(3u32);
+    fi.push(bevelGridAt(&base, nn, rings - 1usize, 0usize, 0usize));
+    fi.push(bevelGridAt(&base, nn, rings - 1usize, 1usize, 0usize));
+    fi.push(bevelGridAt(&base, nn, rings - 1usize, 2usize, 0usize));
+  }
+
+  // Neighbours, from the faces' sides
+  mut nbStart = List[u32].empty();
+  mut nbIds = List[u32].empty();
+  mut nbs = List[u32].empty();
+  q = 0usize;
+  while q < count {
+    nbs.clear();
+    mut s = 0usize;
+    mut fq = 0usize;
+    while fq < fc.len() {
+      imm d = usize.from(*fc[fq]);
+      mut c = 0usize;
+      while c < d {
+        if usize.from(*fi[s + c]) == q {
+          imm a = *fi[s + (c + d - 1usize) % d];
+          imm z = *fi[s + (c + 1usize) % d];
+          bevelAddOnce(&mut nbs, a);
+          bevelAddOnce(&mut nbs, z);
+        }
+        c = c + 1usize;
+      }
+      s = s + d;
+      fq = fq + 1usize;
+    }
+    nbStart.push(u32.from(nbIds.len()));
+    mut c = 0usize;
+    while c < nbs.len() {
+      nbIds.push(*nbs[c]);
+      c = c + 1usize;
+    }
+    q = q + 1usize;
+  }
+  nbStart.push(u32.from(nbIds.len()));
+
+  // Relaxed on the unit sphere
+  imm sweeps = 4usize * nn * nn + 16usize;
+  mut sw = 0usize;
+  while sw < sweeps {
+    q = 3usize * nn;
+    while q < count {
+      mut sum = new DVec3(0.d, 0.d, 0.d);
+      mut c = usize.from(*nbStart[q]);
+      while c < usize.from(*nbStart[q + 1usize]) {
+        sum = sum + *coef[usize.from(*nbIds[c])];
+        c = c + 1usize;
+      }
+      imm l = sum.length();
+      if l > 0.d { coef.set(q, sum * (1.d / l)); }
+      q = q + 1usize;
+    }
+    sw = sw + 1usize;
+  }
+
+  // The inner points on the superellipsoid, with their recipes: (1 - sum c)
+  // O + sum c_i M_i, O's recipe (2/3) sum M_i - (1/3) sum C_i, C_i = M_(i-1) +
+  // M_i - O on edge i
+  imm od = DVec3.from(o);
+  imm vp = *m.positions[usize.from(v)];
+  mut dirs Array[DVec3, 3] = [od, od, od];
+  i = 0usize;
+  while i < 3usize {
+    dirs[i] = DVec3.from(*b.pos[usize.from(mid[i])]) - od;
+    i = i + 1usize;
+  }
+  mut tau Array[f32, 3] = [0., 0., 0.];
+  mut far Array[u32, 3] = [0u32, 0u32, 0u32];
+  i = 0usize;
+  while i < 3usize {
+    imm hj = *ring[i];
+    far[i] = m.toVertex(hj);
+    imm ci = *b.pos[usize.from(mid[(i + 2usize) % 3usize])] + *b.pos[usize.from(mid[i])] - o;
+    imm ed = *m.positions[usize.from(far[i])] - vp;
+    imm el2 = ed.lengthSquared();
+    tau[i] = if el2 > 0. {(ci - vp).dot(ed) / el2;} else {0.;};
+    i = i + 1usize;
+  }
+  q = 3usize * nn;
+  while q < count {
+    imm cq = *coef[q];
+    imm len = bevelNorm(cq, rInf, r);
+    imm c0 = cq.x / len;
+    imm c1 = cq.y / len;
+    imm c2 = cq.z / len;
+    imm pt = (od + dirs[0usize] * c0 + dirs[1usize] * c1 + dirs[2usize] * c2).toVec3();
+    imm np = b.addPoint(pt);
+    imm rest = 1.d - c0 - c1 - c2;
+    imm cs Array[f64, 3] = [c0, c1, c2];
+    i = 0usize;
+    while i < 3usize {
+      b.addScaled(np, mid[i], f32.from(cs[i] + rest * 0.66666666666666667d));
+      i = i + 1usize;
+    }
+    imm third = f32.from(rest / 3.d);
+    i = 0usize;
+    while i < 3usize {
+      b.addTerm(np, v, -third * (1. - tau[i]));
+      if tau[i] != 0. { b.addTerm(np, far[i], -third * tau[i]); }
+      i = i + 1usize;
+    }
+    gid.set(q, np);
+    q = q + 1usize;
+  }
+
+  // The faces given
+  mut s = 0usize;
+  mut fq = 0usize;
+  while fq < fc.len() {
+    imm d = usize.from(*fc[fq]);
+    mut c = 0usize;
+    while c < d {
+      imm lq = usize.from(*fi[s + c]);
+      imm id = *gid[lq];
+      b.beginCorner(id, NoIndex);
+      if lq < 3usize * nn {
+        bevelCapCorner(b, m, lk, *capKind[lq], *capA[lq], *capB[lq], id, n);
+      } else {
+        imm cq = *coef[lq];
+        imm tot = cq.x + cq.y + cq.z;
+        imm ws Array[f64, 3] = [cq.x / tot, cq.y / tot, cq.z / tot];
+        i = 0usize;
+        while i < 3usize {
+          b.cornerRule(m, mc[i], *b.pos[usize.from(mid[i])], f32.from(ws[i]));
+          i = i + 1usize;
+        }
+      }
+      c = c + 1usize;
+    }
+    b.counts.push(u32.from(d));
+    b.fSrc.push(src);
+    cornerFaces.push(u32.from(b.counts.len() - 1usize));
+    s = s + d;
+    fq = fq + 1usize;
+  }
+  true;
+}
+
+// The local number of ring rm's side j's point t (t at the side's length is the
+// next side's corner; a ring of no length is the centre)
+fn bevelGridAt(base &List[usize], n usize, rm usize, j usize, t usize) u32 {
+  imm l = n - 2usize * rm;
+  if l == 0usize { return u32.from(*base[rm]); }
+  mut jj = j;
+  mut tt = t;
+  if tt >= l {
+    jj = (jj + 1usize) % 3usize;
+    tt = tt - l;
+  }
+  u32.from(*base[rm] + jj * l + tt);
+}
+
+fn bevelAddOnce(l &mut List[u32], x u32) {
+  mut i = 0usize;
+  while i < l.len() {
+    if *l[i] == x { return; }
+    i = i + 1usize;
+  }
+  l.push(x);
+}
+
+// The output's channels from m's, by the recipes (see the top)
+fn bevelChannels(m &PolyMesh, out &mut PolyMesh, b &BevelBuild) {
+  // Per output corner (half-edge) its corner given, and per output edge the
+  // edge it keeps
+  imm onh = out.hVertex.len();
+  mut given = List[u32].withCapacity(onh);
+  mut h = 0usize;
+  while h < onh {
+    given.push(NoIndex);
+    h = h + 1usize;
+  }
+  imm one = out.edgeCount();
+  mut keptE = List[u32].withCapacity(one);
+  mut e = 0usize;
+  while e < one {
+    keptE.push(NoIndex);
+    e = e + 1usize;
+  }
+  mut q = 0usize;
+  mut f = 0usize;
+  while f < out.fHalfedge.len() {
+    imm hs = out.faceHalfedges(u32.from(f));
+    mut k = 0usize;
+    while k < hs.len() {
+      imm hk = usize.from(*hs[k]);
+      given.set(hk, u32.from(q));
+      imm src = *b.eSrc[q];
+      if src != NoIndex and *keptE[hk / 2usize] == NoIndex { keptE.set(hk / 2usize, src); }
+      q = q + 1usize;
+      k = k + 1usize;
+    }
+    f = f + 1usize;
+  }
+
+  mut c = 0usize;
+  while c < m.floats.len() {
+    imm vals = floatChannelVec3s(m, c);
+    imm fill = new Vec3(m.floats[c].fill, 0., 0.);
+    imm res = bevelCarry(out, b, m.floats[c].domain, &vals, fill, &given, &keptE);
+    out.floats.push(new Channel[f32](String.from(m.floats[c].name.view()), m.floats[c].domain, vec3ToFloats(&res),
+      m.floats[c].fill));
+    c = c + 1usize;
+  }
+  c = 0usize;
+  while c < m.vec2s.len() {
+    imm vals = vec2ChannelVec3s(m, c);
+    imm fl = m.vec2s[c].fill;
+    imm res = bevelCarry(out, b, m.vec2s[c].domain, &vals, new Vec3(fl.x, fl.y, 0.), &given, &keptE);
+    out.vec2s.push(new Channel[Vec2](String.from(m.vec2s[c].name.view()), m.vec2s[c].domain, vec3ToVec2s(&res), fl));
+    c = c + 1usize;
+  }
+  c = 0usize;
+  while c < m.vec3s.len() {
+    imm vals = vec3ChannelVec3s(m, c);
+    imm res = bevelCarry(out, b, m.vec3s[c].domain, &vals, m.vec3s[c].fill, &given, &keptE);
+    out.vec3s.push(new Channel[Vec3](String.from(m.vec3s[c].name.view()), m.vec3s[c].domain, res, m.vec3s[c].fill));
+    c = c + 1usize;
+  }
+}
+
+// One channel's values (as Vec3) for the output's elements
+fn bevelCarry(out &PolyMesh, b &BevelBuild, domain u32, vals &List[Vec3], fill Vec3, given &List[u32],
+    keptE &List[u32]) List[Vec3] {
+  imm n = out.domainSize(domain);
+  mut res = List[Vec3].withCapacity(n);
+  mut i = 0usize;
+  while i < n {
+    if domain == VertexDomain {
+      res.push(bevelBlend(vals, &b.rSrc, &b.rW, usize.from(*b.rStart[i]), usize.from(*b.rCount[i])));
+    } elif domain == FaceDomain {
+      res.push(*vals[usize.from(*b.fSrc[i])]);
+    } elif domain == EdgeDomain {
+      imm k = *keptE[i];
+      if k == NoIndex { res.push(fill); } else { res.push(*vals[usize.from(k)]); }
+    } else {
+      imm g = *given[i];
+      if g == NoIndex {
+        res.push(fill);
+      } else {
+        res.push(bevelBlend(vals, &b.cSrc, &b.cW, usize.from(*b.cStart[usize.from(g)]),
+          usize.from(*b.cCount[usize.from(g)])));
+      }
+    }
+    i = i + 1usize;
+  }
+  res;
+}
+
+// The sum of a recipe's terms over 'vals', the first term as it is
+fn bevelBlend(vals &List[Vec3], src &List[u32], w &List[f32], start usize, count usize) Vec3 {
+  mut acc = *vals[usize.from(*src[start])] * *w[start];
+  mut i = 1usize;
+  while i < count {
+    acc = acc + *vals[usize.from(*src[start + i])] * *w[start + i];
+    i = i + 1usize;
+  }
+  acc;
+}
+
+// The mesh as it was, every list and channel copied, nothing bevelled
+fn bevelUnchanged(m &PolyMesh) Bevelled {
+  mut out = PolyMesh.empty();
+  out.positions = copyList(&m.positions);
+  out.vHalfedge = copyList(&m.vHalfedge);
+  out.hNext = copyList(&m.hNext);
+  out.hPrev = copyList(&m.hPrev);
+  out.hVertex = copyList(&m.hVertex);
+  out.hFace = copyList(&m.hFace);
+  out.fHalfedge = copyList(&m.fHalfedge);
+  mut c = 0usize;
+  while c < m.floats.len() {
+    imm vals = floatChannelVec3s(m, c);
+    out.floats.push(new Channel[f32](String.from(m.floats[c].name.view()), m.floats[c].domain, vec3ToFloats(&vals),
+      m.floats[c].fill));
+    c = c + 1usize;
+  }
+  c = 0usize;
+  while c < m.vec2s.len() {
+    imm vals = vec2ChannelVec3s(m, c);
+    out.vec2s.push(new Channel[Vec2](String.from(m.vec2s[c].name.view()), m.vec2s[c].domain, vec3ToVec2s(&vals),
+      m.vec2s[c].fill));
+    c = c + 1usize;
+  }
+  c = 0usize;
+  while c < m.vec3s.len() {
+    imm vals = vec3ChannelVec3s(m, c);
+    out.vec3s.push(new Channel[Vec3](String.from(m.vec3s[c].name.view()), m.vec3s[c].domain, vals,
+      m.vec3s[c].fill));
+    c = c + 1usize;
+  }
+  new Bevelled(out, List[u32].empty(), List[u32].empty(), 1.);
+}
