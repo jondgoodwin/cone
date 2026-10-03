@@ -254,7 +254,7 @@ void castNameRes(NameResState *pstate, CastNode *node) {
 // Give a rough idea of comparable type size for use with type checking reinterpretation casts
 uint32_t castBitsize(INode *type) {
     if (type->tag == UintNbrTag || type->tag == IntNbrTag || type->tag == FloatNbrTag) {
-        if (type == (INode*)usizeType)
+        if (type == (INode*)usizeType || type == (INode*)isizeType)
             return ptrsize;
         return ((NbrNode *)type)->bits;
     }

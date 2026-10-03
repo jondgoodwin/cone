@@ -161,10 +161,12 @@ target's, so no reinterpretation joins either of them to a fixed-width number
 `ErrorPtrSizedAs`, whose message names the conversion, `usize.from(x)` or
 `u64.from(x)`. That test comes before the size test, so what compiles for x64
 compiles for wasm32. The size test then decides the rest the same on every
-target, through the sentinel width `castBitsize` gives `usize`, a pointer and a
-reference (twice it for a slice): `usize` reinterprets as a raw pointer or a
-reference and back; `isize`, which keeps its own width, reinterprets as neither
-`usize` nor a pointer (`ErrorInvType`).
+target, through the sentinel width `castBitsize` gives `usize`, `isize`, a
+pointer and a reference (twice it for a slice): `usize` and `isize` reinterpret
+as each other, keeping the bits (`-1isize as usize` is all ones), and as a raw
+pointer or a reference and back; a slice reinterprets as neither
+(`ErrorInvType`). Generation picks `ptrtoint`, `inttoptr` or a bitcast by the
+LLVM kinds, so it needs nothing of its own for them.
 
 **Convert** is a bound pattern's conversion (`FlagMatchBind`), the only one
 type check sees: an injected conversion is built already typed. It permits,
