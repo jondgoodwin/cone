@@ -2,7 +2,9 @@
 // used, the Rust way: 'list[0usize]' borrows 'list' read-only, so while the
 // element is still to be used the list may be read but not changed -- a push
 // may move every element -- and a method returning a mutable borrow freezes
-// its receiver entirely. A call's arguments are in flight until it is made: an
+// its receiver entirely: while the slice 'viewMut' lends is still to be used,
+// the list may not be pushed onto, lent again by 'viewMut', or read through
+// 'view' (a write through the slice is collections' own 'list' test). A call's arguments are in flight until it is made: an
 // argument may not touch what an earlier one borrowed in a way that borrow
 // forbids, except that a method receiver's mutable borrow is two-phase and
 // meets the arguments as a read-only borrow would ('v.push(v.len())' is
@@ -47,6 +49,44 @@ fn pushWhileElementHeld() i64 {
   imm first = list[0usize];
   list.push(new Pt(3, 4));      //~ ErrorFrozen:3 "may not be borrowed mutably"
   first.x;
+}
+
+// Pushed onto while the mutable slice 'viewMut' lent is still to be used
+fn pushWhileViewMutHeld() i64 {
+  mut list = List[i64].empty();
+  list.push(1);
+  imm s = list.viewMut();
+  list.push(2);                 //~ ErrorFrozen:3 "may not be borrowed"
+  s[0usize] = 5;
+  s[0usize];
+}
+
+// Lent mutably a second time while the first mutable slice is still to be used
+fn secondViewMut() {
+  mut list = List[i64].empty();
+  list.push(1);
+  imm s = list.viewMut();
+  imm t = list.viewMut();       //~ ErrorFrozen:11 "may not be borrowed"
+  s[0usize] = 5;
+  t[0usize] = 6;
+}
+
+// Read through 'view' while the mutable slice is still to be used
+fn viewUnderViewMut() i64 {
+  mut list = List[i64].empty();
+  list.push(1);
+  imm s = list.viewMut();
+  imm r = list.view();          //~ ErrorFrozen:11 "may not be borrowed"
+  s[0usize] = 5;
+  r[0usize];
+}
+
+// A String grown while the mutable slice of its bytes is still to be used
+fn appendWhileBytesHeld() {
+  mut str = String.from("ab");
+  imm b = str.viewMut();
+  str.appendByte('c');          //~ ErrorFrozen:3 "may not be borrowed"
+  b[0usize] = 'x';
 }
 
 // Read while a mutable borrow a method returned is still to be used

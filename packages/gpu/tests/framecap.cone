@@ -1,0 +1,219 @@
+// A frame that runs out of command buffers, on a real GPU. A frame holds
+// 16; the 17th encoder made in it is refused, once, with one failure, and
+// is not valid. Every command asked of it, and of the passes it begins, is
+// not done and nothing crashes: a compute pass and a render pass with and
+// without depth, every command each takes, the copies, the timestamps; and
+// finishing it gives a command buffer the queue does not submit. A copy the
+// refused encoder was asked to make does not land, and the frame's own 16
+// command buffers run. An encoder once finished does nothing more either.
+// The next frame records as before. Only a failure prints (and gpu's own
+// one line, to stderr, for the refusal); nothing printed depends on which
+// GPU is present.
+//
+// GPU_POWER_PREFERENCE=low-power tests the integrated GPU where there are
+// two. It needs a GPU driver with Vulkan 1.3 and SDL3.dll; with the Vulkan
+// SDK, validation and synchronization validation are on, and must say
+// nothing.
+
+mod framecap;
+
+import testing use *;
+import libc;
+import geomath use *;
+import gpu use *;
+
+// The power preference GPU_POWER_PREFERENCE asks for
+fn preference() u32 {
+  imm env = libc.getenv(&"GPU_POWER_PREFERENCE" as *u8);
+  if (env as usize) != 0usize and libc.strcmp(env, &"low-power" as *u8) == 0i32 { return POWER_PREFERENCE_LOW_POWER; }
+  POWER_PREFERENCE_HIGH_PERFORMANCE;
+}
+
+// How many of 'p''s first 'n' bytes are not 'value'
+fn notEqual(p *u8, n usize, value u8) u32 {
+  mut wrong = 0u32;
+  mut b = 0usize;
+  while b < n {
+    if *(p + b) != value { wrong = wrong + 1u32; }
+    b = b + 1usize;
+  }
+  wrong;
+}
+
+fn main() i32 {
+  mut instance = Instance.create("framecap");
+  require(instance.isValid(), "a Vulkan 1.3 instance");
+  mut none = Surface.none();
+  mut adapter = instance.requestAdapter(&none, preference());
+  require(adapter.isValid(), "an adapter");
+  mut device = adapter.requestDevice();
+  require(device.isValid(), "a device");
+
+  // ---- What the commands use, made in a frame of their own ----
+  imm colorDesc = new TextureDescriptor(16u32, 16u32, TEXTURE_FORMAT_RGBA8_UNORM,
+    TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
+  mut color = device.createTexture(&colorDesc);
+  imm depthDesc = new TextureDescriptor(16u32, 16u32, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT);
+  mut depth = device.createTexture(&depthDesc);
+  mut source = device.createBuffer(256u64, BUFFER_USAGE_MAP_WRITE | BUFFER_USAGE_COPY_SRC);
+  mut target = device.createBuffer(256u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  mut pixels = device.createBuffer(1024u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  mut indirect = device.createBuffer(64u64, BUFFER_USAGE_INDIRECT | BUFFER_USAGE_INDEX | BUFFER_USAGE_VERTEX
+    | BUFFER_USAGE_UNIFORM);
+  mut resolved = device.createBuffer(256u64, BUFFER_USAGE_QUERY_RESOLVE);
+  require(color.isValid() and depth.isValid() and source.isValid() and target.isValid() and pixels.isValid()
+    and indirect.isValid() and resolved.isValid(), "the textures and buffers");
+  mut shader = device.createShaderModule(&TRIANGLE_SPIRV);
+  mut emptyLayout = device.createEmptyPipelineLayout(16u32);
+  imm attributes = [new VertexAttribute(VERTEX_FORMAT_FLOAT32X2, 0u64, 0u32),
+    new VertexAttribute(VERTEX_FORMAT_FLOAT32X3, 8u64, 1u32)];
+  imm buffers = [new VertexBufferLayout(arrayStride: 20u64, attributes: &attributes)];
+  imm drawDesc = new RenderPipelineDescriptor(layout: &emptyLayout, vertexModule: &shader, buffers: &buffers,
+    fragmentModule: &shader, colorFormat: TEXTURE_FORMAT_RGBA8_UNORM);
+  mut drawPipeline = device.createRenderPipeline(&drawDesc);
+  imm entries = [new BindGroupLayoutEntry(binding: 0u32, visibility: SHADER_STAGE_VERTEX)];
+  mut groupLayout = device.createBindGroupLayout(&entries);
+  imm groupEntries = [BindGroupEntry.buffer(0u32, &indirect)];
+  mut group = device.createBindGroup(&groupLayout, &groupEntries);
+  require(drawPipeline.isValid() and group.isValid(), "a render pipeline and a bind group");
+  // No compute shader here: the pipeline of no module is not valid, which
+  // the refused pass never looks at
+  mut noShader = device.createShaderModule(&TRIANGLE_SPIRV[..0]);
+  imm computeDesc = new ComputePipelineDescriptor(layout: &emptyLayout, module: &noShader);
+  mut computePipeline = device.createComputePipeline(&computeDesc);
+  expectBool(computePipeline.isValid(), false, "a compute pipeline of no shader is not valid");
+  imm timing = device.timestampPeriod > 0.;
+  mut queries = QuerySet.none();
+  if timing { queries = device.createQuerySet(QUERY_TYPE_TIMESTAMP, 2u32); }
+  imm src = source.mappedRange();
+  imm dst = target.mappedRange();
+  libc.memset(src, 7i32, 256usize);
+  libc.memset(dst, 0i32, 256usize);
+  device.endFrame();
+  device.waitIdle();
+  require(failures() == 0u32, "everything made");
+
+  // ---- A frame of 16 command buffers, the last copying 'source' ----
+  mut i = 0;
+  while i < 15 {
+    mut encoder = device.createCommandEncoder();
+    expectBool(encoder.isValid(), true, "an encoder within the frame's 16");
+    expectBool(device.queue.submit(encoder.finish()), true, "an empty command buffer submitted");
+    i = i + 1;
+  }
+  mut last = device.createCommandEncoder();
+  last.copyBufferToBuffer(&source, 0u64, &target, 0u64, 128u64);
+  imm lastBuffer = last.finish();
+  expectBool(last.isValid(), false, "a finished encoder records nothing more");
+  last.copyBufferToBuffer(&source, 0u64, &target, 128u64, 128u64);   // not done: it is finished
+  expectBool(device.queue.submit(lastBuffer), true, "the 16th command buffer submitted");
+  expectUInt(u64.from(failures()), 0u64, "16 command buffers in a frame");
+
+  // ---- The 17th: refused, and everything asked of it not done ----
+  mut refused = device.createCommandEncoder();
+  expectBool(refused.isValid(), false, "the 17th encoder of a frame is not valid");
+  expectUInt(u64.from(failures()), 1u64, "the 17th encoder refused, with one failure");
+  imm immediates = new Array[u32, 4] <- fill 0u32;
+  {
+    mut pass = refused.beginComputePass();
+    pass.setPipeline(&computePipeline);
+    pass.setBindGroup(0u32, &group);
+    pass.setImmediates(0u32, &immediates as *u8, 16u32);
+    pass.dispatchWorkgroups(1u32);
+    pass.dispatchWorkgroupsIndirect(&indirect, 0u64);
+    pass.end();
+  }
+  {
+    imm attachment = new RenderPassColorAttachment(view: color.createView(), clearValue: new Color(1., 0., 0., 1.));
+    mut pass = refused.beginRenderPass(&attachment);
+    pass.setPipeline(&drawPipeline);
+    pass.setBindGroup(0u32, &group);
+    pass.setVertexBuffer(0u32, &indirect, 0u64);
+    pass.setIndexBuffer(&indirect, INDEX_FORMAT_UINT16, 0u64);
+    pass.setImmediates(0u32, &immediates as *u8, 16u32);
+    pass.setViewport(0., 0., 8., 8., 0., 1.);
+    pass.setScissorRect(0u32, 0u32, 8u32, 8u32);
+    pass.draw(3u32, 1u32, 0u32, 0u32);
+    pass.drawIndexed(3u32, 1u32, 0u32, 0i32, 0u32);
+    pass.drawIndirect(&indirect, 0u64);
+    pass.drawIndexedIndirect(&indirect, 0u64);
+    pass.end();
+  }
+  {
+    imm attachment = new RenderPassColorAttachment(view: color.createView(), clearValue: new Color(1., 0., 0., 1.));
+    imm depthAttachment = new RenderPassDepthStencilAttachment(view: depth.createView());
+    mut pass = refused.beginRenderPassWithDepth(&attachment, &depthAttachment);
+    pass.draw(3u32, 1u32, 0u32, 0u32);
+    pass.end();
+  }
+  if timing {
+    refused.writeTimestamp(&queries, 0u32);
+    refused.resolveQuerySet(&queries, 0u32, 1u32, &resolved, 0u64);
+  }
+  refused.copyTextureToBuffer(&color, &pixels);
+  refused.copyBufferToBuffer(&source, 0u64, &target, 128u64, 128u64);
+  expectBool(device.queue.submit(refused.finish()), false, "the refused encoder's command buffer not submitted");
+  device.endFrame();
+  device.waitIdle();
+  expectUInt(u64.from(failures()), 1u64, "nothing asked of the refused encoder counted again");
+  expectUInt(u64.from(notEqual(dst, 128usize, 7u8)), 0u64, "the 16th command buffer's copy made");
+  expectUInt(u64.from(notEqual(dst + 128usize, 128usize, 0u8)), 0u64,
+    "the copies asked of the finished and the refused encoders not made");
+
+  // ---- The next frame records as before ----
+  mut next = device.createCommandEncoder();
+  expectBool(next.isValid(), true, "the next frame's encoder is valid");
+  next.copyBufferToBuffer(&source, 0u64, &target, 128u64, 128u64);
+  expectBool(device.queue.submit(next.finish()), true, "the next frame's command buffer submitted");
+  device.endFrame();
+  device.waitIdle();
+  expectUInt(u64.from(notEqual(dst, 256usize, 7u8)), 0u64, "the next frame's copy made");
+
+  expectUInt(u64.from(failures()), 1u64, "one refusal in all, and no Vulkan call failed");
+  expectUInt(u64.from(validationMessages()), 0u64, "no validation message");
+  done();
+}
+
+// spirv-begin ../examples/triangle.spv TRIANGLE_SPIRV
+// Written by tools/shaders/shaders.py from triangle.slang (sha256 93171130353cc50b96079be8955252183d92fc3a4dba39b62ad345baf90ddff8): do not edit.
+imm TRIANGLE_SPIRV Array[u32, 225] = [
+  0x07230203u32, 0x00010500u32, 0x00280000u32, 0x0000002eu32, 0x00000000u32, 0x00020011u32,
+  0x00000001u32, 0x0003000eu32, 0x00000000u32, 0x00000001u32, 0x000a000fu32, 0x00000000u32,
+  0x00000002u32, 0x74726576u32, 0x614d7865u32, 0x00006e69u32, 0x00000021u32, 0x00000025u32,
+  0x00000012u32, 0x0000001cu32, 0x0009000fu32, 0x00000004u32, 0x00000028u32, 0x67617266u32,
+  0x746e656du32, 0x6e69614du32, 0x00000000u32, 0x0000002du32, 0x0000002bu32, 0x00030010u32,
+  0x00000028u32, 0x00000007u32, 0x00030003u32, 0x0000000bu32, 0x00000001u32, 0x00060005u32,
+  0x00000012u32, 0x75706e69u32, 0x6f702e74u32, 0x69746973u32, 0x00006e6fu32, 0x00050005u32,
+  0x0000001cu32, 0x75706e69u32, 0x6f632e74u32, 0x00726f6cu32, 0x000b0005u32, 0x00000025u32,
+  0x72746e65u32, 0x696f5079u32, 0x6150746eu32, 0x5f6d6172u32, 0x74726576u32, 0x614d7865u32,
+  0x632e6e69u32, 0x726f6c6fu32, 0x00000000u32, 0x00050005u32, 0x00000002u32, 0x74726576u32,
+  0x614d7865u32, 0x00006e69u32, 0x00050005u32, 0x0000002bu32, 0x75706e69u32, 0x6f632e74u32,
+  0x00726f6cu32, 0x000a0005u32, 0x0000002du32, 0x72746e65u32, 0x696f5079u32, 0x6150746eu32,
+  0x5f6d6172u32, 0x67617266u32, 0x746e656du32, 0x6e69614du32, 0x00000000u32, 0x00060005u32,
+  0x00000028u32, 0x67617266u32, 0x746e656du32, 0x6e69614du32, 0x00000000u32, 0x00040047u32,
+  0x00000012u32, 0x0000001eu32, 0x00000000u32, 0x00040047u32, 0x0000001cu32, 0x0000001eu32,
+  0x00000001u32, 0x00040047u32, 0x00000021u32, 0x0000000bu32, 0x00000000u32, 0x00040047u32,
+  0x00000025u32, 0x0000001eu32, 0x00000000u32, 0x00040047u32, 0x0000002bu32, 0x0000001eu32,
+  0x00000000u32, 0x00040047u32, 0x0000002du32, 0x0000001eu32, 0x00000000u32, 0x00020013u32,
+  0x00000001u32, 0x00030021u32, 0x00000003u32, 0x00000001u32, 0x00030016u32, 0x00000006u32,
+  0x00000020u32, 0x00040017u32, 0x00000007u32, 0x00000006u32, 0x00000004u32, 0x00040017u32,
+  0x00000008u32, 0x00000006u32, 0x00000003u32, 0x00040017u32, 0x0000000fu32, 0x00000006u32,
+  0x00000002u32, 0x00040020u32, 0x00000011u32, 0x00000001u32, 0x0000000fu32, 0x0004002bu32,
+  0x00000006u32, 0x00000014u32, 0x00000000u32, 0x0004002bu32, 0x00000006u32, 0x00000015u32,
+  0x3f800000u32, 0x00040020u32, 0x0000001bu32, 0x00000001u32, 0x00000008u32, 0x00040020u32,
+  0x00000020u32, 0x00000003u32, 0x00000007u32, 0x00040020u32, 0x00000024u32, 0x00000003u32,
+  0x00000008u32, 0x0004003bu32, 0x00000011u32, 0x00000012u32, 0x00000001u32, 0x0004003bu32,
+  0x0000001bu32, 0x0000001cu32, 0x00000001u32, 0x0004003bu32, 0x00000020u32, 0x00000021u32,
+  0x00000003u32, 0x0004003bu32, 0x00000024u32, 0x00000025u32, 0x00000003u32, 0x0004003bu32,
+  0x0000001bu32, 0x0000002bu32, 0x00000001u32, 0x0004003bu32, 0x00000020u32, 0x0000002du32,
+  0x00000003u32, 0x00050036u32, 0x00000001u32, 0x00000002u32, 0x00000000u32, 0x00000003u32,
+  0x000200f8u32, 0x00000004u32, 0x0004003du32, 0x0000000fu32, 0x00000010u32, 0x00000012u32,
+  0x00060050u32, 0x00000007u32, 0x00000013u32, 0x00000010u32, 0x00000014u32, 0x00000015u32,
+  0x0004003du32, 0x00000008u32, 0x0000001au32, 0x0000001cu32, 0x0003003eu32, 0x00000021u32,
+  0x00000013u32, 0x0003003eu32, 0x00000025u32, 0x0000001au32, 0x000100fdu32, 0x00010038u32,
+  0x00050036u32, 0x00000001u32, 0x00000028u32, 0x00000000u32, 0x00000003u32, 0x000200f8u32,
+  0x00000029u32, 0x0004003du32, 0x00000008u32, 0x0000002au32, 0x0000002bu32, 0x00050050u32,
+  0x00000007u32, 0x0000002cu32, 0x0000002au32, 0x00000015u32, 0x0003003eu32, 0x0000002du32,
+  0x0000002cu32, 0x000100fdu32, 0x00010038u32
+];
+// spirv-end

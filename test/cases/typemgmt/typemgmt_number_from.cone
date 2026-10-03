@@ -1,6 +1,8 @@
 // A number type's conversion, its method 'from', between every pair of number
-// families: signed and unsigned widened and narrowed, across the sign, integer
-// to float and back, float to float, and Bool both ways. Then the ways a
+// families: signed and unsigned widened and narrowed, across the sign, the
+// pointer-sized usize and isize to and from the 64-bit types (and, by 'as',
+// which keeps the bits, to and from each other and a pointer), integer to float
+// and back, float to float, and Bool both ways. Then the ways a
 // conversion's target is named: a type parameter (the target alone, and both
 // ends, and one whose argument is a number in one instance and a struct
 // declaring its own 'from' in another), an alias, an untyped literal as the
@@ -80,6 +82,32 @@ fn crossSign(m1 i8, m32 i32, u u8, umax u64) {
   show("u8-to-i64", i64.from(u));
   show("u64-to-i32", i32.from(umax));
   show("u64-to-i64", i64.from(umax));
+}
+
+// usize and isize to and from the 64-bit types, the conversions 'as' refuses
+// (typemgmt_typecheck_cast): the value is kept, a negative isize's sign too
+fn pointerSized(wide u64, neg i64, u usize, s isize) {
+  showU("u64-to-usize", u64.from(usize.from(wide)));
+  showU("usize-to-u64", u64.from(u));
+  show("i64-to-isize", i64.from(isize.from(neg)));
+  show("isize-to-i64", i64.from(s));
+  show("isize-to-i32", i64.from(i32.from(s)));
+}
+
+// What 'as' does allow them: usize and isize are both as wide as a pointer on
+// every target, so each reinterprets as the other, keeping the bits (-1 is all
+// ones, usize's largest value), and as a raw pointer or a reference and back
+fn pointerSizedAs(neg isize, max usize, r &i32) {
+  imm ones = neg as usize;
+  showU("isize-as-usize", u64.from(ones));
+  showB("isize-as-usize-is-max", ones == 18446744073709551615usize);
+  show("usize-as-isize", i64.from(max as isize));
+  imm p = r as *i32;
+  imm a = p as isize;
+  showB("ptr-as-isize-is-ptr-as-usize", a as usize == p as usize);
+  showB("ref-as-isize-is-ptr-as-isize", r as isize == a);
+  showB("isize-as-ptr-is-ptr", a as *i32 == p);
+  show("isize-as-ref-deref", i64.from(*(a as &i32)));
 }
 
 fn intToFloat(m i32, umax u32, wmax u64, big i64) {
@@ -191,6 +219,9 @@ fn main() {
   signed(-5i8, 300i64, 70000);
   unsigned(200u8, 4294967297u64, 65794u32);
   crossSign(-1i8, -1, 200u8, 18446744073709551615u64);
+  pointerSized(4294967297u64, -5i64, 12345678901usize, -7isize);
+  mut target = 42;
+  pointerSizedAs(-1isize, 18446744073709551615usize, &target);
   intToFloat(-7, 4294967295u32, 18446744073709551615u64, 9007199254740993i64);
   floatToInt(-2.75d, 3.99d, 10000000000.0, -100.9d);
   negativeToUnsigned(-0.75d);

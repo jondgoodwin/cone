@@ -1156,8 +1156,16 @@ LLVMTargetMachineRef genlCreateMachine(ConeOptions *opt) {
     // Create a specific target machine
     opt_level = opt->release? LLVMCodeGenLevelAggressive : LLVMCodeGenLevelNone;
     reloc = (opt->pic || opt->library)? LLVMRelocPIC : LLVMRelocDefault;
+    // The CPU is the portable baseline unless named. 'native', which LLVM's
+    // target machine does not know, is this machine's CPU and every feature it
+    // has, as clang's -march=native means
     if (!opt->cpu)
         opt->cpu = "generic";
+    else if (strcmp(opt->cpu, "native") == 0) {
+        opt->cpu = LLVMGetHostCPUName();
+        if (!opt->features)
+            opt->features = LLVMGetHostCPUFeatures();
+    }
     if (!opt->features)
         opt->features = "";
     if (!(machine = LLVMCreateTargetMachine(target, opt->triple, opt->cpu, opt->features, opt_level, reloc, LLVMCodeModelDefault))) {
@@ -1333,14 +1341,19 @@ void genpgm(GenState *gen, ProgramNode *pgm) {
         LLVMDisposeMessage(err);
     }
 
-    // Optimize the generated LLVM IR, through LLVM's new pass manager. Each
-    // function in turn: promote allocas to registers, reassociate expressions,
-    // eliminate common subexpressions, and simplify the control flow graph.
-    // Then, in a release build only, inline. No target machine is given, so the
-    // inliner's costs are the target-independent ones.
+    // Optimize the generated LLVM IR, through LLVM's new pass manager. A
+    // release build runs LLVM's standard O2 pipeline (what clang's -O2 runs:
+    // inlining, SROA, instcombine, LICM, unrolling, the loop and SLP
+    // vectorizers), given the target machine, so that every cost model is the
+    // CPU's that --cpu and --features name. O3 was measured against it and
+    // compiled slower for no run time worth having. Generation marks no float
+    // operation fast or contractable, so nothing reorders a float sum. A debug
+    // build only promotes allocas to registers, reassociates, eliminates
+    // common subexpressions and simplifies the control flow graph, each
+    // function in turn, with no target machine.
     //
-    // A GPU target's pipeline begins the same way at every optimization level,
-    // debug too, since without it the module is not valid SPIR-V: inline every
+    // A GPU target's pipeline is its own at every optimization level, debug
+    // too, since without it the module is not valid SPIR-V: inline every
     // call (genlGpuCalls), break each struct and array into separate values
     // (so a struct holding a reference dissolves into locals), and infer each
     // pointer's address space from its origin, given the target machine
@@ -1354,10 +1367,11 @@ void genpgm(GenState *gen, ProgramNode *pgm) {
             ? "always-inline,function(sroa,infer-address-spaces,instcombine<no-verify-fixpoint>,reassociate,gvn,simplifycfg)"
             : "always-inline,function(sroa,infer-address-spaces,instcombine<no-verify-fixpoint>,simplifycfg)")
         : gen->opt->release
-        ? "function(mem2reg,reassociate,gvn,simplifycfg),cgscc(inline)"
+        ? "default<O2>"
         : "function(mem2reg,reassociate,gvn,simplifycfg)";
     LLVMPassBuilderOptionsRef passopts = LLVMCreatePassBuilderOptions();
-    LLVMErrorRef passerr = LLVMRunPasses(gen->module, pipeline, gen->opt->gpu ? gen->machine : NULL, passopts);
+    LLVMErrorRef passerr = LLVMRunPasses(gen->module, pipeline,
+        gen->opt->gpu || gen->opt->release ? gen->machine : NULL, passopts);
     LLVMDisposePassBuilderOptions(passopts);
     if (passerr) {
         char *msg = LLVMGetErrorMessage(passerr);
