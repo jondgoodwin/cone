@@ -1,0 +1,106 @@
+// Duration: 'new Duration()' as zero, and as a field's default; each
+// constructor and accessor (whole units toward zero, seconds as an f64),
+// the arithmetic (sum, difference, negation, times and divided by an
+// integer), comparison, zero, abs, and negative durations throughout.
+// Overflow wraps, as i64 arithmetic does: pinned here so a change to it is
+// seen.
+
+mod duration;
+
+import testing use *;
+import time use Duration;
+
+// A field defaulting to a Duration: a default is a constant, so 'new Duration()'
+struct Options {
+  pub limit Duration = new Duration();
+}
+
+fn defaults() {
+  expect(new Duration() == Duration.zero(), "new Duration() is zero");
+  expect(new Options().limit.isZero(), "a field's default of new Duration() is zero");
+  expectInt(new Options(limit: Duration.fromSeconds(2)).limit.millis(), 2000, "and is given like any field");
+}
+
+fn units() {
+  expectInt(Duration.fromNanos(7).nanos(), 7, "fromNanos");
+  expectInt(Duration.fromMicros(3).nanos(), 3000, "fromMicros");
+  expectInt(Duration.fromMillis(3).nanos(), 3000000, "fromMillis");
+  expectInt(Duration.fromSeconds(3).nanos(), 3000000000, "fromSeconds");
+  expectInt(Duration.fromMinutes(2).nanos(), 120000000000, "fromMinutes");
+  expectInt(Duration.fromHours(2).nanos(), 7200000000000, "fromHours");
+  expectInt(Duration.zero().nanos(), 0, "zero");
+
+  imm d = Duration.fromNanos(5432109876543);   // 1 h 30 min 32.109876543 s
+  expectInt(d.micros(), 5432109876, "micros");
+  expectInt(d.millis(), 5432109, "millis");
+  expectInt(d.seconds(), 5432, "seconds");
+  expectInt(d.minutes(), 90, "minutes");
+  expectInt(d.hours(), 1, "hours");
+  expectFloat(d.secondsF64(), 5432.109876543d, 0.000000001d, "secondsF64");
+
+  // Toward zero, both ways
+  expectInt(Duration.fromMillis(1999).seconds(), 1, "1.999 s is 1 whole second");
+  expectInt(Duration.fromMillis(-1999).seconds(), -1, "-1.999 s is -1 whole second");
+  expectFloat(Duration.fromMillis(-1500).secondsF64(), -1.5d, 0.000000001d, "secondsF64 negative");
+  // Far past 2^53 ns (104 days), the fraction still counts as far as an
+  // f64 holds it
+  imm big = Duration.fromHours(100000) + Duration.fromMillis(1);
+  expectFloat(big.secondsF64() - 360000000.0d, 0.001d, 0.0000001d, "secondsF64 past 2^53 ns");
+}
+
+fn arithmetic() {
+  imm a = Duration.fromSeconds(5);
+  imm b = Duration.fromMillis(1500);
+  expectInt((a + b).millis(), 6500, "sum");
+  expectInt((a - b).millis(), 3500, "difference");
+  expectInt((b - a).millis(), -3500, "a negative difference");
+  expectInt((-a).millis(), -5000, "negation");
+  expectInt((a * 3).millis(), 15000, "times an integer");
+  expectInt((a * -2).millis(), -10000, "times a negative integer");
+  expectInt((a / 4).millis(), 1250, "divided by an integer");
+  expectInt((Duration.fromNanos(-7) / 2).nanos(), -3, "division is toward zero");
+  mut sum = Duration.zero();
+  sum += a;
+  sum += b;
+  sum -= Duration.fromMillis(500);
+  expectInt(sum.millis(), 6000, "+= and -=");
+  expectInt(Duration.fromSeconds(-3).abs().seconds(), 3, "abs of a negative");
+  expectInt(Duration.fromSeconds(3).abs().seconds(), 3, "abs of a positive");
+  expect(Duration.zero().isZero(), "zero isZero");
+  expect(!a.isZero(), "5 s is not zero");
+  expect((b - a).isNegative(), "isNegative");
+  expect(!a.isNegative(), "5 s is not negative");
+  expect(!Duration.zero().isNegative(), "zero is not negative");
+}
+
+fn comparison() {
+  imm a = Duration.fromMillis(1000);
+  imm b = Duration.fromSeconds(1);
+  imm c = Duration.fromMicros(999999);
+  imm n = Duration.fromSeconds(-1);
+  expect(a == b, "1000 ms == 1 s");
+  expect(!(a != b), "not 1000 ms != 1 s");
+  expect(c != a, "999999 us != 1 s");
+  expect(c < a, "<");
+  expect(c <= a and a <= b, "<=");
+  expect(a > c, ">");
+  expect(a >= c and a >= b, ">=");
+  expect(n < Duration.zero(), "a negative is less than zero");
+  expect(!(a < b) and !(a > b), "equal is neither less nor greater");
+}
+
+fn overflow() {
+  // i64 arithmetic wraps: 2^63 - 1 ns plus one is -2^63 ns
+  imm top = Duration.fromNanos(9223372036854775807);
+  expectInt((top + Duration.fromNanos(1)).nanos(), -9223372036854775807i64 - 1i64, "a sum past the top wraps");
+  expect((top + Duration.fromNanos(1)).isNegative(), "and is negative");
+}
+
+fn main() i32 {
+  defaults();
+  units();
+  arithmetic();
+  comparison();
+  overflow();
+  done();
+}

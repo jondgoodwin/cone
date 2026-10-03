@@ -15,19 +15,7 @@ mod channel;
 
 import testing use *;
 import sync use *;
-
-extern {
-  fn @c(system) QueryPerformanceCounter(count *i64) i32;
-  fn @c(system) QueryPerformanceFrequency(freq *i64) i32;
-}
-
-fn nowNs() i64 {
-  mut count = 0i64;
-  mut freq = 0i64;
-  QueryPerformanceCounter(&mut count as *i64);
-  QueryPerformanceFrequency(&mut freq as *i64);
-  i64.from(f64.from(count) * 1000000000.0d / f64.from(freq));
-}
+import time use Duration, Instant;
 
 // A value whose deaths are counted
 mut deaths u64 = 0u64;
@@ -175,14 +163,14 @@ fn timeouts() {
   mut tx Sender[u64];
   mut rx Receiver[u64];
   tx, rx = Channel[u64].make();
-  imm start = nowNs();
-  expectUInt(got(rx.recvTimeout(30000000u64)), 0u64, "recvTimeout on an empty channel is None");
-  imm waited = nowNs() - start;
-  expect(waited >= 30000000i64, "after waiting at least the 30 ms");
+  imm start = Instant.now();
+  expectUInt(got(rx.recvTimeout(Duration.fromMillis(30))), 0u64, "recvTimeout on an empty channel is None");
+  expect(start.elapsed() >= Duration.fromMillis(30), "after waiting at least the 30 ms");
   tx <- 14u64;
-  expectUInt(got(rx.recvTimeout(30000000u64)), 14u64, "a value there is answered at once");
+  expectUInt(got(rx.recvTimeout(Duration.fromMillis(30))), 14u64, "a value there is answered at once");
   dropSender(tx);
-  expectUInt(got(rx.recvTimeout(sync.forever)), 0u64, "a closed, empty channel answers None");
+  // An hour: a closed channel answers at once, and a wait would time the test out
+  expectUInt(got(rx.recvTimeout(Duration.fromHours(1))), 0u64, "a closed, empty channel answers None");
 }
 
 // Values that count their deaths, by value and owned

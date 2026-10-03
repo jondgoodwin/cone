@@ -1,0 +1,52 @@
+// A stopwatch: the same work timed by the real clock and by a synthetic one,
+// and the wall-clock time it finished at.
+//
+//   congo run packages/time/examples/stopwatch.cone
+//
+// The work is a loop of steps, each of which a game or a simulation would
+// take as a frame. On the real clock it takes however long the machine
+// takes; on a synthetic clock, advanced 16 ms a step by the program itself,
+// 60 steps take 960 ms exactly, every run: the way a test runs timed code
+// on time it chooses.
+
+mod stopwatch;
+
+import stdio use *;
+import time use Duration, Instant, Timestamp, Clock;
+
+// Run 'steps' steps of work, timed by 'clock', which a synthetic clock is
+// advanced through by a frame's length a step
+fn run(clock &mut Clock, steps u32) Duration {
+  imm start = clock.now();
+  mut sum = 0u64;
+  mut i = 0u32;
+  while i < steps {
+    mut k = 0u64;
+    while k < 100000u64 {
+      sum = sum + k * k;
+      k = k + 1u64;
+    }
+    if clock.synthetic { clock.advance(Duration.fromMillis(16)); }
+    i = i + 1u32;
+  }
+  if sum == 0u64 { printStr("(no work)\n"); }
+  clock.now() - start;
+}
+
+fn main() {
+  mut real = Clock.real();
+  imm took = run(&mut real, 60u32);
+  printStr("real clock: 60 steps took ");
+  printInt(took.micros());
+  printStr(" us\n");
+
+  mut synth = Clock.synth();
+  imm simulated = run(&mut synth, 60u32);
+  printStr("synthetic clock: 60 steps took ");
+  printInt(simulated.millis());
+  printStr(" ms\n");
+
+  printStr("finished at ");
+  printInt(Timestamp.now().unixSeconds());
+  printStr(" seconds after 1970-01-01 UTC\n");
+}

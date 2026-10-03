@@ -1,0 +1,50 @@
+// Clock: a synthetic clock starts at its origin, stands still until advanced
+// and then moves by exactly what it was advanced by, so code timed by it sees
+// the time the test chose; a real clock follows Instant.now().
+
+mod clock;
+
+import testing use *;
+import time use Duration, Instant, Clock;
+
+// Code that measures how long its work takes, by whatever clock it is handed
+fn timed(clock &mut Clock, steps i64) Duration {
+  imm start = clock.now();
+  mut i = 0i64;
+  while i < steps {
+    if clock.synthetic { clock.advance(Duration.fromMillis(16)); }
+    i = i + 1i64;
+  }
+  clock.now() - start;
+}
+
+fn synthetic() {
+  mut c = Clock.synth();
+  expect(c.synthetic, "synth is synthetic");
+  expectInt(c.now().nanos(), 0, "a synthetic clock starts at its origin");
+  expect(c.now() == c.now(), "and stands still");
+  c.advance(Duration.fromMillis(5));
+  expectInt(c.now().nanos(), 5000000, "advanced by 5 ms");
+  c.advance(Duration.zero());
+  expectInt(c.now().nanos(), 5000000, "advanced by nothing");
+  c.advance(Duration.fromNanos(1));
+  expectInt(c.now().nanos(), 5000001, "advanced by 1 ns");
+  expectInt(timed(&mut c, 60).millis(), 960, "60 synthetic steps of 16 ms take 960 ms exactly");
+}
+
+fn real() {
+  mut c = Clock.real();
+  expect(!c.synthetic, "real is not synthetic");
+  imm before = Instant.now();
+  imm t = c.now();
+  imm after = Instant.now();
+  expect(t >= before and t <= after, "a real clock reads the steady clock");
+  imm took = timed(&mut c, 60);
+  expect(!took.isNegative() and took < Duration.fromSeconds(5), "real time measured is real");
+}
+
+fn main() i32 {
+  synthetic();
+  real();
+  done();
+}

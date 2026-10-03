@@ -16,19 +16,7 @@ mod channelspsc;
 
 import testing use *;
 import sync use *;
-
-extern {
-  fn @c(system) QueryPerformanceCounter(count *i64) i32;
-  fn @c(system) QueryPerformanceFrequency(freq *i64) i32;
-}
-
-fn nowNs() i64 {
-  mut count = 0i64;
-  mut freq = 0i64;
-  QueryPerformanceCounter(&mut count as *i64);
-  QueryPerformanceFrequency(&mut freq as *i64);
-  i64.from(f64.from(count) * 1000000000.0d / f64.from(freq));
-}
+import time use Duration, Instant;
 
 // A value whose deaths are counted
 mut deaths u64 = 0u64;
@@ -170,21 +158,21 @@ fn timeouts() {
   mut rx Receiver[u64];
   tx, rx = Channel[u64].spsc(2u64);
   tx <- (1u64, 2u64);
-  imm start = nowNs();
-  expectUInt(got(tx.sendTimeout(3u64, 30000000u64)), 3u64, "sendTimeout on a full channel hands its value back");
-  imm waited = nowNs() - start;
-  expect(waited >= 30000000i64, "after waiting at least the 30 ms");
+  imm start = Instant.now();
+  expectUInt(got(tx.sendTimeout(3u64, Duration.fromMillis(30))), 3u64, "sendTimeout on a full channel hands its value back");
+  expect(start.elapsed() >= Duration.fromMillis(30), "after waiting at least the 30 ms");
   expectUInt(got(rx.recv()), 1u64, "the values before are still there");
-  expectUInt(got(tx.sendTimeout(4u64, 30000000u64)), 0u64, "with room, sendTimeout sends at once");
+  expectUInt(got(tx.sendTimeout(4u64, Duration.fromMillis(30))), 0u64, "with room, sendTimeout sends at once");
   expectUInt(got(rx.recv()), 2u64, "in order");
   expectUInt(got(rx.recv()), 4u64, "the timed send's value after them");
-  imm start2 = nowNs();
-  expectUInt(got(rx.recvTimeout(30000000u64)), 0u64, "recvTimeout on an empty channel is None");
-  expect(nowNs() - start2 >= 30000000i64, "after waiting at least the 30 ms");
+  imm start2 = Instant.now();
+  expectUInt(got(rx.recvTimeout(Duration.fromMillis(30))), 0u64, "recvTimeout on an empty channel is None");
+  expect(start2.elapsed() >= Duration.fromMillis(30), "after waiting at least the 30 ms");
   expectBool(rx.isClosed(), false, "and it is still open");
   dropSender(tx);
   expectBool(rx.isClosed(), true, "the sender's going closes it");
-  expectUInt(got(rx.recvTimeout(sync.forever)), 0u64, "a closed, empty channel answers None");
+  // An hour: a closed channel answers at once, and a wait would time the test out
+  expectUInt(got(rx.recvTimeout(Duration.fromHours(1))), 0u64, "a closed, empty channel answers None");
 }
 
 fn closing() {
@@ -196,7 +184,7 @@ fn closing() {
   expectBool(rx.isClosed(), true, "close closes it");
   expectUInt(got(tx.trySend(9u64)), 9u64, "trySend after close gets its value back");
   expectUInt(got(tx.send(10u64)), 10u64, "and send, without waiting, full as it is");
-  expectUInt(got(tx.sendTimeout(11u64, sync.forever)), 11u64, "and sendTimeout");
+  expectUInt(got(tx.sendTimeout(11u64, Duration.fromHours(1))), 11u64, "and sendTimeout");
   expectUInt(got((tx <- 12u64)), 12u64, "and '<-'");
   expectUInt(got(rx.recv()), 7u64, "what came before the close still comes out");
   expectUInt(got(rx.recv()), 8u64, "all of it");
