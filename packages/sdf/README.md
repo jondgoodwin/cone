@@ -41,7 +41,7 @@ video's frames. The meshing is the `sdfmesh` package's (its README).
 known in advance, nothing allocated, so all of it can run on a GPU. It
 imports only `geomath`, `noise` and `libc`. Frames along a curve are kept
 by their owner (a `List` on the CPU) and viewed by `PathCurve` and
-`CurveCells`.
+`CurveCells`; so are many capsules and their grid, viewed by `Capsules`.
 
 ## API
 
@@ -111,6 +111,29 @@ the groove's steepest slope, so it stays a bound (a conservative one: the
 fine flutes' ratio measures 0.75, so a tracer steps short there). Each
 evaluation of a fluted horn takes an atan2 and a sin per cell.
 
+**Many capsules** (`capsules.cone`): `Capsules` is a view of tapered
+capsules and the grid of buckets that finds them, kept and built by their
+owner (morphogen's `CapsuleSet`: `make(blend, reach)`, `add`, `extend`,
+`build(cell)`, `view()`). Its slices: capsule i from `a[i]` (radius
+`ra[i]`) to `b[i]` (radius `rb[i]`) in chain `chain[i]`, its bounding ball
+`centre[i]`, `radius[i]` (`capsuleCentre`, `capsuleBallRadius`); bucket
+k's capsules `items[start[k]]` to `items[start[k + 1]]`, the grid's shape a
+`CapsuleGrid` (`none()`, or `over(box, cell)`, buckets placed by
+`capsuleBox` and `capsuleBucket`); `blend` and `reach`. `distance(p)`;
+`distanceAll(p)` asks every capsule, `bounds()`, `cap()` (reach - 12
+blend). A chain is the hard union of its capsules, so a strand of segments
+end to end has no bulge at its joints; chains are smooth-unioned, so forks
+and crossings fuse. At a point with hard union m, the field is the smooth
+union, in the order added, of the chains nearer than m + 8 blend, started
+from m + 4 blend, held to the cap: a chain at the limit could not change
+the union, so the field never jumps as chains come and go, and is
+1-Lipschitz, a bound everywhere, between m - 4 blend and m under the cap. A
+bucket lists the capsules within `reach` of it; that gives every capsule's
+bits wherever m is under reach - 8 blend, and both are held to the cap
+elsewhere. Outside the grid's box: the cap plus the distance to the box.
+With no grid every capsule is asked. A skeleton of thousands of segments:
+a tree, roots, veins, struts. No Slang twin yet.
+
 **Gradient** (`shape.cone`): the `Shape` trait (`distance(p)`),
 `gradient(shape, p, h)` (central
 differences, six evaluations), `normal(shape, p, h)` (Quilez's tetrahedron,
@@ -162,6 +185,19 @@ Two findings shaped the code:
   that is not built. The horn's tube is itself cells, round cones along
   chords (a tube whose radius depends on the nearest point's arc length is
   not Lipschitz near the centre of curvature either).
+- **Many capsules: which ones count must not move the field.** A first
+  `Capsules` smooth-unioned its bucket's capsules from infinity and held the
+  result to `reach`: a capsule just beyond `reach` of a bucket still blended
+  into an intermediate value, so the field differed from every capsule's by
+  up to 4.8e-6 and jumped at buckets' edges (ratio 1.089 over 8192 pairs
+  1/256 apart). Starting the union from m + 4 blend and taking only chains
+  nearer than m + 8 blend makes the set's edge invisible: the grid gives
+  every capsule's bits at 8192 points, ratio 0.9998 (morphogen's
+  `tests/capsules.cone`, which builds the grid; `tests/capsules.cone`
+  here checks the view with none). A second finding: the
+  smooth union of two capsules meeting end to end swells the joint by the
+  blend, which beads a strand of short segments like a caterpillar; hence
+  chains, hard-unioned within.
 - **hg_sdf's Columns switches to the plain union outside its band**, which
   cuts the field where a column crosses the band's edge (measured ratio
   6.7). `unionColumns` clips the columns to the band instead: the same

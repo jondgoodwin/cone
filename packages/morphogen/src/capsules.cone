@@ -1,0 +1,157 @@
+// ======== CapsuleSet: tapered capsules in chains, and their grid ========
+//
+// The owner of a field of many tapered capsules: their ends, radii,
+// chains and bounding balls, and the grid of buckets that finds the ones
+// near a point, all in Lists it keeps. sdf's 'Capsules' is the field
+// itself, a view of these Lists ('view'), made where the distance is
+// evaluated; sdf's capsules.cone says what the field is, and what holds of
+// it.
+//
+// 'add' starts a chain of one capsule, 'extend' continues the last one's:
+// a chain is hard-unioned, so a strand of segments end to end (a
+// BranchGraph's strand) has no bulge at its joints, and chains are
+// smooth-unioned, so forks and crossings fuse. 'build' sorts the capsules
+// into cubic buckets 'cell' a side; capsules added after it are in the
+// view, but a point finds them only once the set is built again. Before
+// 'build', or for a set built empty, the view asks every capsule.
+
+pub struct CapsuleSet {
+  pub a List[Vec3];
+  pub b List[Vec3];
+  pub ra List[f32];
+  pub rb List[f32];
+  pub chain List[u32];   // capsules of one chain are hard-unioned ('extend')
+  pub blend f32;
+  pub reach f32;
+  // Each capsule's bounding ball, for skipping it
+  centre List[Vec3];
+  radius List[f32];
+  // The grid, and each bucket's capsules: bucket k's from items[start[k]]
+  // to items[start[k + 1]]
+  grid sdf.CapsuleGrid;
+  start List[u32];
+  items List[u32];
+
+  // An empty set, its fillets reaching 'blend', its buckets' margin 'reach'
+  pub fn make(blend f32, reach f32) CapsuleSet {
+    new CapsuleSet(List[Vec3].empty(), List[Vec3].empty(), List[f32].empty(), List[f32].empty(), List[u32].empty(),
+      blend, reach, List[Vec3].empty(), List[f32].empty(), sdf.CapsuleGrid.none(), List[u32].empty(), List[u32].empty());
+  }
+
+  pub fn count(self &) usize { a.len(); }
+
+  // The field: a view of the capsules and the grid as they are now
+  pub fn view(self &) sdf.Capsules {
+    new sdf.Capsules(a.view(), b.view(), ra.view(), rb.view(), chain.view(), centre.view(), radius.view(),
+      start.view(), items.view(), grid, blend, reach);
+  }
+
+  // The box holding every capsule (empty if there are none)
+  pub fn bounds(self &) Aabb3 { self.view().bounds(); }
+
+  // A tapered capsule from 'from' (radius 'fromRadius') to 'to' (radius
+  // 'toRadius'), a chain of its own
+  pub fn add(self &mut, from Vec3, to Vec3, fromRadius f32, toRadius f32) {
+    imm n = self.chain.len();
+    self.push(from, to, fromRadius, toRadius, if n == 0usize { 0u32; } else { *self.chain[n - 1usize] + 1u32; });
+  }
+
+  // A tapered capsule added to the last one's chain: hard-unioned with it,
+  // so a strand of segments meeting end to end has no bulge at its joints
+  // (the first capsule starts a chain)
+  pub fn extend(self &mut, from Vec3, to Vec3, fromRadius f32, toRadius f32) {
+    imm n = self.chain.len();
+    self.push(from, to, fromRadius, toRadius, if n == 0usize { 0u32; } else { *self.chain[n - 1usize]; });
+  }
+
+  fn push(self &mut, from Vec3, to Vec3, fromRadius f32, toRadius f32, chain u32) {
+    self.chain.push(chain);
+    self.a.push(from);
+    self.b.push(to);
+    self.ra.push(fromRadius);
+    self.rb.push(toRadius);
+    self.centre.push(sdf.capsuleCentre(from, to));
+    self.radius.push(sdf.capsuleBallRadius(from, to, fromRadius, toRadius));
+  }
+
+  // The grid built over the capsules, in buckets 'cell' a side: a bucket
+  // lists, in the order added, every capsule whose box grown by 'reach'
+  // meets it
+  pub fn build(self &mut, cell f32) {
+    imm n = self.a.len();
+    self.grid = sdf.CapsuleGrid.none();
+    self.start = List[u32].empty();
+    self.items = List[u32].empty();
+    if n == 0usize { return; }
+    imm grid = sdf.CapsuleGrid.over(self.bounds().expand(self.reach), cell);
+    imm buckets = grid.buckets();
+    // Count each bucket's capsules, then place them, in the order added
+    mut counts = List[u32].withCapacity(buckets + 1usize);
+    mut k = 0usize;
+    while k <= buckets {
+      counts.push(0u32);
+      k = k + 1usize;
+    }
+    mut pass = 0;
+    mut items = List[u32].empty();
+    while pass < 2 {
+      mut i = 0usize;
+      while i < n {
+        imm reachBox = sdf.capsuleBox(*self.a[i], *self.b[i], maxf(*self.ra[i], *self.rb[i])).expand(self.reach);
+        imm x0 = sdf.capsuleBucket(reachBox.min.x - grid.origin.x, cell, grid.nx);
+        imm x1 = sdf.capsuleBucket(reachBox.max.x - grid.origin.x, cell, grid.nx);
+        imm y0 = sdf.capsuleBucket(reachBox.min.y - grid.origin.y, cell, grid.ny);
+        imm y1 = sdf.capsuleBucket(reachBox.max.y - grid.origin.y, cell, grid.ny);
+        imm z0 = sdf.capsuleBucket(reachBox.min.z - grid.origin.z, cell, grid.nz);
+        imm z1 = sdf.capsuleBucket(reachBox.max.z - grid.origin.z, cell, grid.nz);
+        mut z = z0;
+        while z <= z1 {
+          mut y = y0;
+          while y <= y1 {
+            mut x = x0;
+            while x <= x1 {
+              imm at = grid.index(x, y, z);
+              if pass == 0 {
+                counts.set(at + 1usize, *counts[at + 1usize] + 1u32);
+              } else {
+                items.set(usize.from(*counts[at]), u32.from(i));
+                counts.set(at, *counts[at] + 1u32);
+              }
+              x = x + 1u32;
+            }
+            y = y + 1u32;
+          }
+          z = z + 1u32;
+        }
+        i = i + 1usize;
+      }
+      if pass == 0 {
+        // Counts to starts: bucket k's capsules begin at counts[k]
+        k = 1usize;
+        while k <= buckets {
+          counts.set(k, *counts[k] + *counts[k - 1usize]);
+          k = k + 1usize;
+        }
+        mut starts = List[u32].withCapacity(buckets + 1usize);
+        k = 0usize;
+        while k <= buckets {
+          starts.push(*counts[k]);
+          k = k + 1usize;
+        }
+        self.start = starts;
+        imm total = usize.from(*counts[buckets]);
+        items = List[u32].withCapacity(total);
+        k = 0usize;
+        while k < total {
+          items.push(0u32);
+          k = k + 1usize;
+        }
+      }
+      pass = pass + 1;
+    }
+    self.items = items;
+    self.grid = grid;
+  }
+}
+
+fn maxf(a f32, b f32) f32 { if a > b { a; } else { b; }; }

@@ -157,7 +157,10 @@ Visual Studio projects stay at the root.
   in its rotation-minimizing frames as the exact union of every copy, cells
   found once (`curveCells` into a caller's slice, `curveCellFrame`, and
   `CurveCells`, a view of them), `Horn` (the ribbed, tapering,
-  curling horn, and `fluted`, twisted flutes along it), the gradient and
+  curling horn, and `fluted`, twisted flutes along it), `Capsules` (a view
+  of thousands of tapered capsules in chains and the grid of buckets that
+  finds them, smooth-unioned so forks fuse; built and owned by
+  `morphogen`'s `CapsuleSet`; CPU only), the gradient and
   normal, and noise detail; the same
   functions for shaders in `src/sdf.slang`, which its `parity` test checks
   on a real GPU; its
@@ -175,6 +178,16 @@ Visual Studio projects stay at the root.
   far from the surface skipped, into a `mesh.Mesh` or `PolyMesh`, and
   `netLevels` (levels of detail); a GPU mesher is to join it; its README
   holds what was measured;
+  `morphogen` is form that arises from growth rules, as graphs of points,
+  over `geomath`, `collections`, `noise` and `sdf`: `BranchGraph` (a forest
+  of nodes, parents numbered first), space colonization (`colonize` with
+  its `Growth` dials, Runions et al.'s, plus tropism, inertia and seeded
+  jitter; `scatter`, attractors in a box), `pipeRadii` (the pipe model),
+  `smoothBranches`, `pruneTwigs` and `strands` (the graph cut into paths for
+  tubes or chains), and `CapsuleSet` (tapered capsules in chains, with
+  their grid of buckets, in Lists it owns, lent as an `sdf.Capsules`
+  view); its example `vines.cone` grows the night swamp's knotted roots,
+  fuses them as capsules, meshes and draws them;
   `testing` is the checks a package's tests call (`expectInt`, `require…`,
   `done`), ordinary library code the compiler knows nothing of;
   `textdiff` is the line diff of two lists of lines or two texts: the edit

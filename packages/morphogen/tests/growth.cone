@@ -1,0 +1,296 @@
+// Branch graphs and space colonization. Only a failure prints.
+//
+// - The pipe model by hand: a root, one node, and two tips of radius 1
+//   under it give the node and the root sqrt 2 (exponent 2) or the cube
+//   root of 2 (exponent 3); a lone root is a tip. Its strands: root,
+//   node, first tip; then node, second tip (or the second first, once more grows from it).
+// - Smoothing: a zigzag root (0,0,0), (1,1,0), (2,0,0) moves its middle
+//   halfway to (1,0,0) at amount 0.5; roots, tips and forks stay put.
+// - Pruning: of a twig 0.2 long and a branch 0.6 long off one node, a
+//   length of 0.3 removes the twig alone, the rest renumbered in order;
+//   pruned again, nothing more.
+// - One attractor 1 above a root, step 0.1, kill 0.15: a straight strand
+//   of 9 nodes up to (0, 0.9, 0), each the child of the one before, born
+//   in steps 1 to 9; then nothing pulls and growth stops.
+// - Three attractors far above and one close behind: the root grows up,
+//   then forks back to the near one (two tips, one fork, at the root,
+//   each attractor within kill of a tip).
+// - Two attractors mirrored about the strand: it rises between them and
+//   stops level with them, unforked, where their pulls cancel.
+// - A root out of reach never grows.
+// - Grown into 600 scattered points with tropism, inertia and jitter: the
+//   same bits twice, another seed something else; every parent numbered
+//   before its child, every segment 'step' long; every attractor either
+//   consumed or out of reach of every node.
+// - 'scatter' stays in its box and is the same twice.
+
+mod growth;
+
+import testing use *;
+import geomath use *;
+import collections use *;
+import morphogen use *;
+
+fn v(x f32, y f32, z f32) Vec3 { new Vec3(x, y, z); }
+fn near(got f32, want f64, within f64, label &[]u8) { expectFloat(f64.from(got), want, within, label); }
+
+fn pipes() {
+  mut g = BranchGraph.empty();
+  imm root = g.addRoot(v(0., 0., 0.));
+  imm mid = g.add(v(0., 1., 0.), root, 1u32);
+  g.add(v(-1., 2., 0.), mid, 2u32);
+  g.add(v(1., 2., 0.), mid, 2u32);
+  pipeRadii(&mut g, 1., 2.);
+  near(*g.radius[0usize], 1.41421356d, 1e-6d, "pipe 2: root");
+  near(*g.radius[1usize], 1.41421356d, 1e-6d, "pipe 2: fork");
+  near(*g.radius[2usize], 1d, 0d, "pipe 2: tip");
+  pipeRadii(&mut g, 1., 3.);
+  near(*g.radius[1usize], 1.25992105d, 1e-6d, "pipe 3: fork");
+  expectInt(i64.from(g.tipCount()), 2, "two tips");
+  // Strands: the root through the fork to the first tip, then the fork to
+  // the second
+  imm s = g.strands();
+  expectInt(i64.from(s.count()), 2, "two strands");
+  mut seen = String.empty();
+  mut i = 0usize;
+  while i < s.nodes.len() {
+    seen <- i64.from(*s.nodes[i]);
+    i = i + 1usize;
+  }
+  expectStr(seen.view(), "01213", "strand nodes");
+  expectInt(i64.from(*s.starts[1usize]), 3, "the second strand starts at the fork");
+  // A second child carrying more is the main one
+  g.add(v(1., 3., 0.), 3u32, 3u32);
+  imm t = g.strands();
+  mut main = String.empty();
+  i = 0usize;
+  while i < t.nodes.len() {
+    main <- i64.from(*t.nodes[i]);
+    i = i + 1usize;
+  }
+  expectStr(main.view(), "013412", "the child carrying more carries the strand");
+  mut lone = BranchGraph.empty();
+  lone.addRoot(v(0., 0., 0.));
+  pipeRadii(&mut lone, 0.5, 2.);
+  near(*lone.radius[0usize], 0.5d, 0d, "a lone root is a tip");
+}
+
+fn smoothing() {
+  mut g = BranchGraph.empty();
+  imm root = g.addRoot(v(0., 0., 0.));
+  imm a = g.add(v(1., 1., 0.), root, 1u32);
+  imm b = g.add(v(2., 0., 0.), a, 2u32);
+  imm c = g.add(v(3., 1., 0.), b, 3u32);
+  g.add(v(3., -1., 0.), b, 3u32);
+  smoothBranches(&mut g, 1u32, 0.5);
+  imm m = *g.position[1usize];
+  near(m.x, 1d, 1e-6d, "smoothed x");
+  near(m.y, 0.5d, 1e-6d, "smoothed y");
+  near(g.position[0usize].y, 0d, 0d, "root stays");
+  near(g.position[2usize].y, 0d, 0d, "fork stays");
+  near(g.position[3usize].y, 1d, 0d, "tip stays");
+}
+
+// A strand of four segments with a twig of one (0.2 long) and a branch of
+// three (0.6) off its second node: pruning at 0.3 takes the twig alone,
+// renumbering the rest in order
+fn pruning() {
+  mut g = BranchGraph.empty();
+  imm root = g.addRoot(v(0., 0., 0.));
+  imm a = g.add(v(0., 1., 0.), root, 1u32);
+  imm twig = g.add(v(0.2, 1., 0.), a, 2u32);
+  imm b = g.add(v(0., 2., 0.), a, 2u32);
+  imm s1 = g.add(v(-0.2, 1., 0.), a, 2u32);
+  imm s2 = g.add(v(-0.4, 1., 0.), s1, 3u32);
+  imm s3 = g.add(v(-0.6, 1., 0.), s2, 4u32);
+  imm c = g.add(v(0., 3., 0.), b, 3u32);
+  pipeRadii(&mut g, 0.1, 2.);
+  imm gone = pruneTwigs(&mut g, 0.3);
+  expectInt(i64.from(gone), 1, "pruning: one node removed");
+  expectInt(i64.from(g.count()), 7, "pruning: seven left");
+  expectInt(i64.from(g.tipCount()), 2, "pruning: two tips");
+  near(g.position[2usize].y, 2d, 0d, "pruning: renumbered in order");
+  expectInt(i64.from(*g.parent[2usize]), 1, "pruning: parents renumbered");
+  expectInt(i64.from(*g.parent[6usize]), 2, "pruning: the last node's parent");
+  expectInt(i64.from(pruneTwigs(&mut g, 0.3)), 0, "pruning again: nothing");
+}
+
+fn straight() {
+  mut g = BranchGraph.empty();
+  g.addRoot(v(0., 0., 0.));
+  imm points Array[Vec3, 1] = [v(0., 1., 0.)];
+  imm dials = Growth.make(0.1, 2., 0.15);
+  imm steps = colonize(&mut g, &points, &dials);
+  expectInt(i64.from(steps), 9, "nine steps");
+  expectInt(i64.from(g.count()), 10, "ten nodes");
+  imm last = *g.position[9usize];
+  near(last.y, 0.9d, 1e-5d, "the strand reaches 0.9");
+  near(last.x, 0d, 0d, "the strand is straight");
+  mut chained = true;
+  mut i = 1usize;
+  while i < 10usize {
+    if *g.parent[i] != u32.from(i - 1usize) or *g.birth[i] != u32.from(i) { chained = false; }
+    i = i + 1usize;
+  }
+  expect(chained, "each node the child of the one before, born in its step");
+}
+
+fn forked() {
+  mut g = BranchGraph.empty();
+  g.addRoot(v(0., 0., 0.));
+  // Three attractors far above and one close behind, to the right: the
+  // first node grows mostly up, leaving the one behind nearer the root,
+  // which then grows a second branch to it
+  imm points Array[Vec3, 4] = [v(0., 2., 0.), v(0.01, 2., 0.), v(-0.01, 2., 0.), v(0.25, -0.05, 0.)];
+  imm dials = Growth.make(0.1, 3., 0.15);
+  colonize(&mut g, &points, &dials);
+  expectInt(i64.from(g.tipCount()), 2, "two tips");
+  imm counts = g.childCounts();
+  expectInt(i64.from(*counts[0usize]), 2, "the root forks");
+  mut forks = 0;
+  mut i = 0usize;
+  while i < counts.len() {
+    if *counts[i] >= 2u32 { forks = forks + 1; }
+    i = i + 1usize;
+  }
+  expectInt(i64.from(forks), 1, "one fork");
+  mut reached = 0;
+  mut k = 0usize;
+  while k < 4usize {
+    i = 0usize;
+    mut hit = false;
+    while i < g.count() {
+      if *counts[i] == 0u32 and (*g.position[i] - points[k]).length() < 0.15 { hit = true; }
+      i = i + 1usize;
+    }
+    if hit { reached = reached + 1; }
+    k = k + 3usize;
+  }
+  expectInt(i64.from(reached), 2, "both attractors reached");
+}
+
+// Two attractors mirrored about the strand: it rises between them and stops
+// where their pulls cancel, unforked (Runions et al.'s algorithm as written;
+// jitter breaks the tie)
+fn stalled() {
+  mut g = BranchGraph.empty();
+  g.addRoot(v(0., 0., 0.));
+  imm points Array[Vec3, 2] = [v(-1., 1.5, 0.), v(1., 1.5, 0.)];
+  imm dials = Growth.make(0.1, 3., 0.15);
+  colonize(&mut g, &points, &dials);
+  expectInt(i64.from(g.tipCount()), 1, "mirrored: one strand");
+  imm top = *g.position[g.count() - 1usize];
+  near(top.x, 0d, 0d, "mirrored: straight up");
+  near(top.y, 1.5d, 0.05d, "mirrored: stops level with them");
+}
+
+fn outOfReach() {
+  mut g = BranchGraph.empty();
+  g.addRoot(v(0., 0., 0.));
+  imm points Array[Vec3, 1] = [v(0., 5., 0.)];
+  imm dials = Growth.make(0.1, 2., 0.15);
+  imm steps = colonize(&mut g, &points, &dials);
+  expectInt(i64.from(steps), 0, "out of reach: no steps");
+  expectInt(i64.from(g.count()), 1, "out of reach: the root alone");
+}
+
+fn growIn(seed u32) BranchGraph {
+  imm box = new Aabb3(v(-1., 0., -1.), v(1., 1., 1.));
+  imm points = scatter(box, 600u32, 7u32);
+  mut g = BranchGraph.empty();
+  g.addRoot(v(-0.9, 0.1, 0.));
+  g.addRoot(v(0.9, 0.1, 0.));
+  mut growth = Growth.make(0.05, 0.4, 0.08);
+  growth.tropism = v(0., -0.1, 0.);
+  growth.inertia = 0.6;
+  growth.jitter = 0.4;
+  growth.seed = seed;
+  colonize(&mut g, points.view(), &growth);
+  g;
+}
+
+fn sameGraph(a &BranchGraph, b &BranchGraph) Bool {
+  if a.count() != b.count() { return false; }
+  mut i = 0usize;
+  while i < a.count() {
+    imm p = *a.position[i];
+    imm q = *b.position[i];
+    if p.x != q.x or p.y != q.y or p.z != q.z or *a.parent[i] != *b.parent[i] { return false; }
+    i = i + 1usize;
+  }
+  true;
+}
+
+fn cloud() {
+  imm g = growIn(11u32);
+  expect(g.count() > 200usize, "the cloud grows a few hundred nodes");
+  imm again = growIn(11u32);
+  imm other = growIn(12u32);
+  expect(sameGraph(&g, &again), "the same bits twice");
+  expect(!sameGraph(&g, &other), "another seed, another graph");
+  mut ordered = true;
+  mut steps = true;
+  mut i = 0usize;
+  while i < g.count() {
+    imm p = *g.parent[i];
+    if p != NoParent {
+      if usize.from(p) >= i { ordered = false; }
+      imm len = (*g.position[i] - *g.position[usize.from(p)]).length();
+      if len < 0.04999 or len > 0.05001 { steps = false; }
+    }
+    i = i + 1usize;
+  }
+  expect(ordered, "every parent before its child");
+  expect(steps, "every segment a step long");
+  // Every attractor consumed, or out of reach of every node
+  imm points = scatter(new Aabb3(v(-1., 0., -1.), v(1., 1., 1.)), 600u32, 7u32);
+  mut left = 0;
+  mut ok = true;
+  mut j = 0usize;
+  while j < points.len() {
+    mut best = 3.4028235e38;
+    i = 0usize;
+    while i < g.count() {
+      imm d = (*g.position[i] - *points[j]).length();
+      if d < best { best = d; }
+      i = i + 1usize;
+    }
+    if best >= 0.08 {
+      left = left + 1;
+      if best <= 0.4 { ok = false; }
+    }
+    j = j + 1usize;
+  }
+  expect(ok, "every attractor consumed or out of reach");
+}
+
+fn scattering() {
+  imm box = new Aabb3(v(1., 2., 3.), v(2., 4., 7.));
+  imm a = scatter(box, 200u32, 3u32);
+  imm b = scatter(box, 200u32, 3u32);
+  mut inside = true;
+  mut same = true;
+  mut i = 0usize;
+  while i < a.len() {
+    imm p = *a[i];
+    if !box.contains(p) { inside = false; }
+    if p.x != b[i].x or p.y != b[i].y or p.z != b[i].z { same = false; }
+    i = i + 1usize;
+  }
+  expectInt(i64.from(a.len()), 200, "scatter: count");
+  expect(inside, "scatter: inside the box");
+  expect(same, "scatter: the same twice");
+}
+
+fn main() i32 {
+  pipes();
+  smoothing();
+  pruning();
+  straight();
+  forked();
+  stalled();
+  outOfReach();
+  cloud();
+  scattering();
+  done();
+}
