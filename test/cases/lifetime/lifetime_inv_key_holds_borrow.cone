@@ -1,0 +1,45 @@
+// What a key names lives in its arena, which may be returned and outlive
+// every scope of the function that filled it, so a value a key names holds
+// no borrow: a key type naming one is refused, and so is an allocation
+// whose key would.
+//
+// Verdict: refuse, ErrorKeyBorrow at the field's type and at the allocation.
+// Basis: a value carrying an invariant lifetime may flow anywhere (invariant
+// lifetimes, settled 3 Oct 2026); a borrow inside the arena would go with it,
+// past what it borrows. A key is no borrow, so the loan walk follows nothing
+// through it: the refusal is the type's.
+// Master 1117c92a: no DynArena, and ''=a' refused at lex. This compiler with
+// the refusal turned off accepts it, and main, run, prints a value read
+// through the borrow of make's local after make has returned.
+
+mod lifetime_inv_key_holds_borrow;
+
+import stdio use *;
+import arena use *;
+
+struct Holder { pub r &i64; }
+
+struct Box['=a] {
+  pub ar DynArena['=a];
+  pub h &'=a mut Holder;            //~ ErrorKeyBorrow
+}
+
+fn make() Box['=a] {
+  imm x = 77i64;
+  mut ar = DynArena.empty();
+  imm h = ar.alloc(new Holder(&x)); //~ ErrorKeyBorrow
+  new Box(ar, h);
+}
+
+fn clobber(n i64) i64 {
+  mut a Array[i64, 16] = [n, n, n, n, n, n, n, n, n, n, n, n, n, n, n, n];
+  a[3] + a[9];
+}
+
+fn main() {
+  imm b = make();
+  clobber(21);
+  printStr("read = ");
+  printInt(*b.ar[b.h].r);
+  printStr("\n");
+}

@@ -113,9 +113,12 @@ int itypeCarriesBorrow(INode *type) {
     case ArrayRefTag:
     case VirtRefTag:
         // A borrowed reference to a function is global: a function is never
-        // a local, so its borrow can neither dangle nor hold anything frozen
+        // a local, so its borrow can neither dangle nor hold anything frozen.
+        // A key is no borrow: its invariant lifetime ends nowhere, and what it
+        // names lives in its arena.
         if (itypeGetTypeDcl(((RefNode *)type)->region) == borrowRef)
-            return !(type->tag == RefTag && isTypeNode(((RefNode *)type)->vtexp)
+            return !lifeIsInvariant(((RefNode *)type)->lifename)
+                && !(type->tag == RefTag && isTypeNode(((RefNode *)type)->vtexp)
                 && itypeGetTypeDcl(((RefNode *)type)->vtexp)->tag == FnSigTag);
         return itypeCarriesBorrow(((RefNode *)type)->vtexp);
     case PtrTag:

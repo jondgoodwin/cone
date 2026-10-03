@@ -1057,8 +1057,10 @@ INode *genericInstantiate(TypeCheckState *pstate, FnCallNode *srcgencall, INode 
 // 'written', for what lifetimes they name (lifeUseInstance).
 static INode *genericInstanceUse(INode *instance, FnCallNode *srcgencall, Nodes *written) {
     INode *use = newNameUseFromDclNode(instance, (INode*)srcgencall);
-    if (instance->tag == StructTag)
-        lifeUseInstance((NameUseNode*)use, srcgencall->objfn, written);
+    // A function's use keeps them too where they carry brands: a call binds
+    // the instance's brands, named by place, to those (fnCallFinalizeArgs)
+    if (instance->tag == StructTag || (lifeInvariantSeen && instance->tag == FnDclTag))
+        lifeUseInstance((NameUseNode*)use, instance->tag == StructTag ? srcgencall->objfn : NULL, written);
     return use;
 }
 
@@ -1099,6 +1101,16 @@ INode *genericMemoize(TypeCheckState *pstate, FnCallNode *srcgencall, INode *nod
     if (!genericinfo->memonodes)
         genericinfo->memonodes = newNodes(2);
 
+    // The arguments as an instance is made from them (below), for their
+    // brands, which an instance keeps by their order (lifeCanonBrands)
+    Nodes *erased = NULL;
+    if (lifeInvariantSeen) {
+        erased = newNodes(srcgencall->args->used);
+        for (nodesFor(srcgencall->args, cnt, nodesp))
+            nodesAdd(&erased, lifeErased(*nodesp));
+        lifeCanonBrands(erased);
+    }
+
     // Check whether these types have already been instantiated for this generic
     // memonodes holds pairs of nodes: an FnCallNode and what it instantiated
     // A match is the first FnCallNode whose types match what we want
@@ -1109,12 +1121,16 @@ INode *genericMemoize(TypeCheckState *pstate, FnCallNode *srcgencall, INode *nod
         INode **priornodesp;
         uint32_t priorcnt;
         INode **nownodesp = &nodesGet(srcgencall->args, 0);
+        INode **erasednodesp = erased ? &nodesGet(erased, 0) : NULL;
         for (nodesFor(fncallprior->args, priorcnt, priornodesp)) {
-            if (!itypeIsSame(*priornodesp, *nownodesp)) {
+            if (!itypeIsSame(*priornodesp, *nownodesp)
+                || (erasednodesp && !lifeBrandsEqual(*priornodesp, *erasednodesp))) {
                 match = 0;
                 break;
             }
             nownodesp++;
+            if (erasednodesp)
+                erasednodesp++;
         }
         if (match) {
             // Return a namenode pointing to dcl instance
@@ -1125,11 +1141,17 @@ INode *genericMemoize(TypeCheckState *pstate, FnCallNode *srcgencall, INode *nod
     // No match found. The instance is made from its arguments with no
     // lifetime named in them: a lifetime is never instanced, so one instance
     // serves every use, whatever lifetimes each names, and its use keeps the
-    // arguments as written (genericInstanceUse).
+    // arguments as written (genericInstanceUse). An invariant lifetime is the
+    // exception: a key stays a key, and which of its arguments' brands are one
+    // and which apart is kept, each named by its order (lifeCanonBrands).
     Nodes *written = srcgencall->args;
-    srcgencall->args = newNodes(written->used);
-    for (nodesFor(written, cnt, nodesp))
-        nodesAdd(&srcgencall->args, lifeErased(*nodesp));
+    if (erased)
+        srcgencall->args = erased;
+    else {
+        srcgencall->args = newNodes(written->used);
+        for (nodesFor(written, cnt, nodesp))
+            nodesAdd(&srcgencall->args, lifeErased(*nodesp));
+    }
 
     // A constraint the arguments do not meet refuses the instance here, before
     // anything of it is made.

@@ -259,6 +259,11 @@ void refTypeCheck(TypeCheckState *pstate, RefNode *node) {
         return;
     refRefuseRegionRef(node);
     refAdoptInfections(node);
+    // What a key names lives in its arena, past every scope, so it holds no
+    // borrow. A generic's instance is judged where it is called (lifeKeyBorrow).
+    if (lifeIsInvariant(node->lifename) && node->instnode == NULL && itypeCarriesBorrow(node->vtexp))
+        errorMsgNode((INode*)node, ErrorKeyBorrow,
+            "A key names a value in its arena, which outlives every scope, so that value may hold no borrow: this one's type does.");
     // Where a traced reference may be held, judged once every type is laid out
     regionTracedRefNote(node);
 
@@ -292,7 +297,11 @@ void refvirtTypeCheck(TypeCheckState *pstate, RefNode *node) {
 
 // Compare two reference signatures to see if they are equivalent
 int refIsSame(RefNode *node1, RefNode *node2) {
-    return itypeIsSame(node1->vtexp,node2->vtexp) 
+    // A key and a borrow are not one type: only a key's arena reaches what it
+    // names. Which brand a key carries is compared where a value meets a type
+    // (lifeBrandsCoerce), not here: a generic's instance serves every brand.
+    return lifeIsInvariant(node1->lifename) == lifeIsInvariant(node2->lifename)
+        && itypeIsSame(node1->vtexp,node2->vtexp)
         && permIsSame(node1->perm, node2->perm)
         && itypeIsSame(node1->region, node2->region);
 }
@@ -339,6 +348,10 @@ int refHeldMoveSeenAsCopy(INode *to, INode *from) {
 
 // Will from-reference coerce to a to-reference (we know they are not the same)
 TypeCompare refMatches(RefNode *to, RefNode *from, SubtypeConstraint constraint) {
+
+    // A key is never a borrow, nor a borrow a key (refIsSame)
+    if (lifeIsInvariant(to->lifename) != lifeIsInvariant(from->lifename))
+        return NoMatch;
 
     // Start with matching the references' regions
     TypeCompare result = regionMatches(to->region, from->region, constraint);
@@ -395,6 +408,10 @@ TypeCompare refvirtMatchesRef(RefNode *to, RefNode *from, SubtypeConstraint cons
     // Given this performs a runtime conversion to a completely different type, 
     // it does not make sense for monomorphization
     if (constraint == Monomorph)
+        return NoMatch;
+
+    // A key reaches nothing on its own, so it is never dispatched through
+    if (lifeIsInvariant(from->lifename))
         return NoMatch;
 
     // Start with matching the references' regions

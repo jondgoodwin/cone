@@ -1,0 +1,46 @@
+// An 'if' whose arms give keys of two arenas has no one brand to give its
+// value: the key it gives could be either arena's, so it is refused there,
+// before it can meet an arena.
+//
+// Verdict: refuse, ErrorBrand at the second arm.
+// Basis: a value carries exactly one brand per invariant lifetime its type
+// names, compared by identity; values of two brands do not join (invariant
+// lifetimes, settled 3 Oct 2026).
+// Master 1117c92a: no DynArena, and ''=a' refused at lex. This compiler with
+// the brand check turned off accepts it, and main, run, prints "final" as b
+// dies and then a value read from b's freed block through a's '[]'.
+
+mod lifetime_inv_branch_merge;
+
+import stdio use *;
+import arena use *;
+
+struct R {
+  pub n i64;
+  fn final(self &uni) {
+    printStr("final\n");
+  }
+}
+
+fn clobber(n i64) i64 {
+  mut a Array[i64, 16] = [n, n, n, n, n, n, n, n, n, n, n, n, n, n, n, n];
+  a[3] + a[9];
+}
+
+fn pick(fromB Bool) {
+  mut a = DynArena.empty();
+  imm ka = a.alloc(new R(1));
+  imm kb = {
+    mut b = DynArena.empty();
+    b.alloc(new R(42));
+  };
+  imm k = if fromB { kb; } else { ka; };   //~ ErrorBrand
+  clobber(21);
+  printStr("read = ");
+  printInt(a[k].n);                 //~ ErrorBrand follow-on
+  printStr("\n");
+}
+
+fn main() {
+  pick(true);
+}

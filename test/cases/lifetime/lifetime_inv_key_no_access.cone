@@ -1,0 +1,48 @@
+// A key reaches nothing on its own: a dereference, a field read and a method
+// call through one are each refused. Only its arena reaches what it names.
+//
+// Verdict: refuse, ErrorKeyAccess at each.
+// Basis: the key alone gives no access; the only way in is 'arena[key]'
+// (invariant lifetimes, settled 3 Oct 2026). A key may outlive its arena --
+// 'leak' returns one whose arena dies at the return, which is harmless while
+// nothing but an arena of its brand can open it -- so a key used on its own
+// could read freed memory.
+// Master 1117c92a: no DynArena, and ''=a' refused at lex. This compiler with
+// the key-access check turned off accepts the field read and the
+// dereference (the method call is still refused, by its receiver's type, a
+// key being no borrow), and main, run without the method call, prints
+// "final" as leak's arena dies and then a value read from the freed block.
+
+mod lifetime_inv_key_no_access;
+
+import stdio use *;
+import arena use *;
+
+struct R {
+  pub n i64;
+  pub fn get(self &) i64 { n; }
+  fn final(self &uni) {
+    printStr("final\n");
+  }
+}
+
+fn leak() &'=a R {
+  mut a = DynArena.empty();
+  a.alloc(new R(42));
+}
+
+fn clobber(n i64) i64 {
+  mut a Array[i64, 16] = [n, n, n, n, n, n, n, n, n, n, n, n, n, n, n, n];
+  a[3] + a[9];
+}
+
+fn main() {
+  imm k = leak();
+  clobber(21);
+  printStr("read = ");
+  printInt(k.n);                    //~ ErrorKeyAccess
+  printStr(" ");
+  printInt(k.get());                //~ ErrorKeyAccess
+  imm r = *k;                       //~ ErrorKeyAccess
+  printStr("\n");
+}

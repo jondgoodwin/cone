@@ -301,6 +301,21 @@ does not reach, nor one ordered shorter, is `ErrorEscape`, and a call that
 could store it so, or a borrow not global handed to a `'static` parameter, is
 `ErrorCallEscape`, as for any borrow that would outlive what it borrows.
 
+An invariant lifetime has codes of its own, one per remedy. A value of one
+brand where another is wanted -- another arena's key at an arena's `[]`, an
+arena or key stored over one of another brand, two brands joined by a branch
+or given one name of a callee's or a struct's, a brand lost or gained -- is
+`ErrorBrand`: the remedy is to use the value with its own arena. The one
+case of it whose remedy differs is `ErrorBrandLoop`, a brand a loop's pass
+minted kept for a later pass or carried out of the loop: the arena belongs
+inside the pass, or outside the loop. A key reached through on its own
+(dereferenced, a field, a method) is `ErrorKeyAccess`: go through its arena.
+A key to a value holding a borrow is `ErrorKeyBorrow`: what an arena holds
+outlives every scope. A spelling an invariant lifetime does not take -- `>=`
+with one, `==` with an ordinary one, one on a slice or virtual reference, one
+in an ordinary one's place or left unnamed in a signature, one a body names
+that its signature does not -- is `ErrorLifetimeInvariant`.
+
 ## The one code with no scenario
 
 `ErrorUnreachable` is reported by `errorUnreachable` and by nothing else. It

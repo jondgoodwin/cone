@@ -445,6 +445,13 @@ enum ErrorCode {
     // Constants of the build (TEMPORARY, a provisional mechanism whose final design is open)
     ErrorDefineName = 1239,     // isDefined or definedInt given a '-D' name that is not a string literal
 
+    // Invariant lifetimes (ir/types/lifetime.h)
+    ErrorBrand = 1240,          // A value of one invariant lifetime where another is wanted: another arena's key, an arena and a key of different brands, or a brand lost or gained
+    ErrorBrandLoop = 1241,      // A value whose invariant lifetime a loop's pass minted, kept where a later pass or the code after the loop could use it
+    ErrorKeyAccess = 1242,      // A key, a reference of an invariant lifetime, dereferenced or reached through: only its arena's '[]' reaches what it names
+    ErrorLifetimeInvariant = 1243, // An invariant lifetime ordered by '>=', equated with an ordinary one, named where an ordinary one is declared, on a slice or virtual reference, or not one the function names
+    ErrorKeyBorrow = 1244,      // A key to a value that holds a borrow: a value in a dynamic arena outlives every scope
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name

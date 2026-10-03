@@ -1,0 +1,61 @@
+// A value carrying an invariant lifetime goes anywhere: a struct holding a
+// dynamic arena and keys into it is built in one function, returned, and
+// walked by another, every step through the arena. Each call of 'build'
+// mints the brand its result carries.
+//
+// Verdict: accept; prints 10 and 3.
+// Basis: an invariant lifetime is not bounded by execution scope; a function
+// whose return type carries one that appears in none of its inputs creates a
+// fresh one at each call site; a struct may declare one in its brackets
+// (invariant lifetimes, settled 3 Oct 2026).
+// Master 1117c92a: no DynArena, and ''=a' refused at lex.
+
+mod lifetime_inv_returned_with_arena;
+
+import stdio use *;
+import arena use *;
+
+struct Node['=a] {
+  pub val i64;
+  pub next Option[&'=a mut Node['=a]];
+}
+
+struct Chain['=a] {
+  pub ar DynArena['=a];
+  pub first Option[&'=a mut Node['=a]];
+
+  pub fn total(self &) i64 {
+    mut sum = 0i64;
+    mut at = first;
+    while {
+      match at {
+        case imm s Some[&'=a mut Node['=a]] {
+          sum = sum + ar[s.value].val;
+          at = ar[s.value].next;
+        }
+        else { break; }
+      }
+    }
+    sum;
+  }
+}
+
+fn build(n i64) Chain['=a] {
+  mut ar = DynArena.empty();
+  mut head Option[&'=a mut Node['=a]] = None[&'=a mut Node['=a]][];
+  mut i = 0i64;
+  while i < n {
+    head = Some[ar.alloc(new Node(i, head))];
+    i = i + 1;
+  }
+  new Chain(ar, head);
+}
+
+fn main() {
+  imm five = build(5);
+  imm three = build(3);
+  printInt(five.total());
+  printStr(" ");
+  printInt(three.total());
+  printStr("\n");
+}

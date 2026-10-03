@@ -666,9 +666,13 @@ A *holder* is a local or a parameter whose type carries a borrow
 tuple, array, list or owner holding one. It may hold loans, and holds them as
 a whole variable: a struct holding two borrows keeps both sources frozen for
 as long as either field is used -- but for a struct declaring lifetimes,
-whose loans are kept by lifetime (below, "Slots"). The variable a `match`
-keeps its scrutinee in, and each binding a `case` makes, are holders like any
-other. A parameter holder starts out holding its *caller loans*
+whose loans are kept by lifetime (below, "Slots"). A key, a reference of an
+invariant lifetime (`&'=a T`), is no borrow: it ends with no scope, so it
+holds no loan and makes nothing a holder, and the walk never sees it; its
+arena and its brand are type check's ([Type Check
+Reasoning](type-check-reasoning.md), "Invariant lifetimes: brands"). The
+variable a `match` keeps its scrutinee in, and each binding a `case` makes,
+are holders like any other. A parameter holder starts out holding its *caller loans*
 (`loanCaller`, `pwCallerLoans`): stand-ins for whatever the caller lent
 through it, which nothing here conflicts with (the caller froze it) and which
 outlive the call; they are linked from no variable, so no access meets them.

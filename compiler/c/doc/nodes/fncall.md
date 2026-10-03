@@ -291,11 +291,11 @@ by value, an array and a function go on to the table's own rows.
 | Receiver type | Goes to |
 | --- | --- |
 | `FnSigTag` | `fnCallFnSigTypeCheck` — a plain call |
-| struct, number | fill in `()`/`[]`/`&[]` as `methfld` if absent, then `fnCallLowerMethod` |
+| struct, number | fill in `()`/`[]`/`&[]` as `methfld` if absent, then `fnCallLowerMethod`; an index in set position on a type declaring `&[]` (`fnCallSetIndex`) takes `&[]` |
 | `TTupleTag` | `fnCallLowerIntField` — element by literal index, its type read from the resolved tuple, since the receiver's `vtype` may be an alias naming it |
 | `ArrayTag` | `fnCallArrIndex` under `FlagIndex`; a comparison with a slice to `fnCallArrayAsSlice` |
 | `ArrayRefTag` | index; `==`, `!=` or an ordering to `fnCallLowerSliceCompare`; else `fnCallLowerPtrMethod` against `arrayRefType` |
-| `RefTag` | function-by-ref, array index, a comparison to `fnCallLowerRefCompare`, or `fnCallLowerPtrMethod`, then `fnCallLowerTraitMethod` and failing that `fnCallLowerMethod` |
+| `RefTag` | a key (`lifeIsKey`) refused for anything but `===` and `!==` (`ErrorKeyAccess`); else function-by-ref, array index, a comparison to `fnCallLowerRefCompare`, or `fnCallLowerPtrMethod`, then `fnCallLowerTraitMethod` and failing that `fnCallLowerMethod` |
 | `VirtRefTag` | fill in `()` as `methfld` if absent and not indexing, so `f(u)` calls the trait's `()` as ``f.`()`(u)`` does; `==`, `!=` or an ordering is `ErrorRefNoCompare`; else `fnCallLowerPtrMethod`, else set `FlagVDisp` and `fnCallLowerMethod`, whose selection (`fnSigViableCall`) takes only a method whose `self` permission the receiver's grants, and where `fnCallFinalizeArgs` lends an owning receiver as a borrowed virtual reference (`fnCallLendVirtOwner`) |
 | `PtrTag` | the pointer's own operators first, then the value's fields and named methods |
 
@@ -482,6 +482,19 @@ Three adjustments, two of them asymmetric on purpose:
   the other way round, reading through both operands, which the retry cannot
   do because it dereferences only the receiver — `fnCallLowerRefCompare` does
   it before `fnCallLowerMethod` is reached.
+
+**An index in set position.** `x[i] = v`, `x[i].f = v` and an operator
+changing `x[i]` or a field of it in place write to the element, so where
+`x`'s type declares `&[]` the index is lowered as `&mut x[i]` is: the
+assignment, or the `FlagLvalOp` call, marks the index at the root of the
+place (`fnCallSetIndexRoot`, through field reads only) in `fnCallSetIndex`,
+`fnCallTypeCheck` sets `FlagBorrow` on that node and names `&[]`, and an
+assignment to the index itself stores through the reference it returns
+(`derefInject`). A method called on `x[i]` that no candidate takes with the
+read-only element is retried with the element `&[]` lends, the index lowered
+again from its checked receiver and arguments, where the receiver may be
+borrowed mutably (`fnCallIndexAsMut`). Rust chooses `IndexMut` the same way;
+a dynamic arena's `ar[key] = v` is the case it was built for.
 
 When nothing is selected, `fnCallNoCandidate` reports it. Two cases have a
 message of their own. An indexed borrow `&x[i]` reaches `` `&[]` `` with the

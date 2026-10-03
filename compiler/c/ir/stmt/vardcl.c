@@ -484,6 +484,11 @@ void varDclTypeCheck(TypeCheckState *pstate, VarDclNode *name) {
             name->vtype = iexpScopedBorrowType(vtypedcl, name->vtype, 1);
     }
 
+    // A local's declared type names only invariant lifetimes its function's
+    // signature does
+    if (name->scope >= 2 && name->vtype != unknownType)
+        lifeBrandKnown(name->vtype, (INode*)name);
+
     // An initializer need not be specified, but if not, it must have a declared type
     if (name->value == NULL) {
         if (name->vtype == unknownType) {

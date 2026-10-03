@@ -1,0 +1,42 @@
+// One arena's key handed to another arena: the brands differ, so the lock
+// refuses the key, at compile time.
+//
+// Verdict: refuse, ErrorBrand at the key.
+// Basis: 'ar[key]' is allowed only where the arena and the key carry exactly
+// the same invariant lifetime as the function sees them; each call of
+// DynArena.empty() mints its own (invariant lifetimes, settled 3 Oct 2026).
+// Master 1117c92a: no DynArena, and ''=a' refused at lex. This compiler with
+// the brand check turned off accepts it, and main, run, prints "final" as b
+// dies and then a value read from b's freed block through a's '[]'.
+
+mod lifetime_inv_cross_arena;
+
+import stdio use *;
+import arena use *;
+
+struct R {
+  pub n i64;
+  fn final(self &uni) {
+    printStr("final\n");
+  }
+}
+
+fn clobber(n i64) i64 {
+  mut a Array[i64, 16] = [n, n, n, n, n, n, n, n, n, n, n, n, n, n, n, n];
+  a[3] + a[9];
+}
+
+fn main() {
+  mut a = DynArena.empty();
+  imm ka = a.alloc(new R(1));
+  imm kb = {
+    mut b = DynArena.empty();
+    b.alloc(new R(42));
+  };
+  clobber(21);
+  printStr("read = ");
+  printInt(a[kb].n);                //~ ErrorBrand
+  printStr(" ");
+  printInt(a[ka].n);
+  printStr("\n");
+}

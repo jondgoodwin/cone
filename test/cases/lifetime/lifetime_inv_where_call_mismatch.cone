@@ -1,0 +1,54 @@
+// A callee's 'where '=a == '=b' holds of its callers: handed an arena and
+// another arena's key, the call is refused, since inside the callee the key
+// opens the arena. Without the clause, the same callee may not use one with
+// the other.
+//
+// Verdict: refuse, ErrorBrand at the call and at the index.
+// Basis: a where clause declares two invariant names one brand; a key with a
+// different brand is refused at compile time (invariant lifetimes, settled
+// 3 Oct 2026).
+// Master 1117c92a: no DynArena, and ''=a' refused at lex. This compiler with
+// the brand check turned off accepts 'mixed', and main, run, prints "final"
+// as b dies and then a value read from b's freed block.
+
+mod lifetime_inv_where_call_mismatch;
+
+import stdio use *;
+import arena use *;
+
+struct R {
+  pub n i64;
+  fn final(self &uni) {
+    printStr("final\n");
+  }
+}
+
+fn readN(ar &DynArena['=a], k &'=b R) i64 where '=a == '=b {
+  ar[k].n;
+}
+
+fn apart(ar &DynArena['=a], k &'=b R) i64 {
+  ar[k].n;                          //~ ErrorBrand
+}
+
+fn clobber(n i64) i64 {
+  mut a Array[i64, 16] = [n, n, n, n, n, n, n, n, n, n, n, n, n, n, n, n];
+  a[3] + a[9];
+}
+
+fn mixed() {
+  mut a = DynArena.empty();
+  a.alloc(new R(1));
+  imm kb = {
+    mut b = DynArena.empty();
+    b.alloc(new R(42));
+  };
+  clobber(21);
+  printStr("read = ");
+  printInt(readN(&a, kb));          //~ ErrorBrand
+  printStr("\n");
+}
+
+fn main() {
+  mixed();
+}
