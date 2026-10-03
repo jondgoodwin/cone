@@ -1174,7 +1174,12 @@ it. So the GPU pipeline and what follows it keep to those shapes:
   through the struct's own pointer and its array field indexed from it, and
   the backend indexes the struct itself; `genlGpuRetypeFn` puts the zero
   indices back, from the type an alloca, a global, an address computation or
-  a parameter's uses say the pointer points to.
+  a parameter's uses say the pointer points to. And an address computed from
+  another made in another block (a field of a parameter's field, read by an
+  inlined method after two early returns) crashed the pointer-cast
+  legalisation; `genlGpuGepChainsFn` computes such an address in one step
+  from where the other starts, as instcombine would, or, when it steps from
+  the other rather than into it, computes the other again beside it.
 - **The control flow is structured** (`structurizecfg`, last in the
   pipeline): each branch merges before the next is taken. The backend's own
   structurizer leaves a chain of three early returns, or a loop's body
@@ -1194,6 +1199,10 @@ it. So the GPU pipeline and what follows it keep to those shapes:
 - **`--asm` emits from a copy of the module**, since the backend rewrites the
   module it emits and crashes emitting it again (`genlOut`).
 
+Where the backend still crashes, `conec` says where, as `llc` does: `genSetup`
+enables LLVM's pretty stack trace, so the crash names the pass and the
+function it was in.
+
 `genlLLVMOptions` also turns machine CSE off on a GPU target: LLVM 23's SPIR-V
 backend lets it hoist a computation a loop header's two successors share into
 the header, after the `OpLoopMerge` already placed there, which must come just
@@ -1212,8 +1221,11 @@ What does not work yet:
   which logical addressing has none of: the Vulkan form's access chain loses
   the index, typed from a byte pointer, and the OpenCL form types the pointer
   inside the slice's struct as a byte pointer where it is used as the
-  element's; the validator refuses both. So does a struct holding a slice.
-  A slice needs a buffer's runtime array to stand for it.
+  element's; the validator refuses both. So does a struct holding a slice,
+  and the Vulkan form's backend crashes in its pointer-cast legalisation on
+  sdf's `Capsules.distance`, which reads nine slices out of a struct it is
+  handed by reference, in a release build. A slice needs a buffer's runtime
+  array to stand for it.
 - Nothing marks an entry point or its execution model, places a pointer in a
   buffer's storage class, or reads a built-in such as the global invocation
   id. Without an entry point the module is a library, carrying the `Linkage`
@@ -1254,12 +1266,13 @@ variables.
 | File | Function | Purpose |
 | --- | --- | --- |
 | `conec.c` | `main` | calls `genSetup` **before** parsing, for target pointer size |
-| `genllvm/genllvm.c` | `genSetup`, `genClose` | target machine, data layout, context, `%void` |
+| `genllvm/genllvm.c` | `genSetup`, `genClose` | target machine, data layout, context, `%void`; LLVM's pretty stack trace, for a crash inside LLVM |
 | | `genlLLVMOptions` | the LLVM options `CONE_LLVM_OPTIONS` names, and a GPU target's own (the flat address space; machine CSE, loop strength reduction and CodeGenPrepare off), parsed before the context exists |
 | | `genpgm` | generate, verify, dump, optimize (release: LLVM's `default<O2>` for the target machine; a GPU target's pipeline inlines, breaks up aggregates, infers address spaces and structures the control flow at every level), emit; nothing past generation once it reported an error |
 | | `genlGpuCalls`, `genlCallWalk`, `genlRecursion` | on a GPU target, every defined function marked `alwaysinline`, and a cycle of calls refused (section 7) |
 | | `genlGpuAggregates`, `genlGpuAggregatesFn`, `genlAggLeaves` | on a GPU target, after optimization, each struct or array value carried as its scalar leaves (section 7) |
 | | `genlGpuRetypeFn`, `genlGpuPointee` | on a GPU target, after optimization, a first field's address computed from its struct's type again (section 7) |
+| | `genlGpuGepChainsFn` | on a GPU target, after optimization, an address computed from another in one step, or beside it (section 7) |
 | | `genlProgram` | create the module with the target's triple and data layout, the two-pass symbols-then-implementations walk, then the stitched pair |
 | | `genlStitchFn`, `genlStitch` | the program's stitched init and final: declared on the first call to `initAll()` or `finalAll()`, built last, every module's `init` in the module order and every finalizer in the reverse |
 | | `genlGlobalSyms`, `genlGlobalImpl` | declare a node's symbol; emit its body |

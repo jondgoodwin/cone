@@ -18,6 +18,7 @@
 #include <llvm-c/Analysis.h>
 #include <llvm-c/BitWriter.h>
 #include <llvm-c/Comdat.h>
+#include <llvm-c/ErrorHandling.h>
 #include <llvm-c/Support.h>
 #include <llvm-c/Transforms/PassBuilder.h>
 
@@ -1811,6 +1812,65 @@ static void genlGpuRetypeFn(GenState *gen, LLVMValueRef fn) {
     }
 }
 
+// LLVM 23's SPIR-V backend crashes in its pointer-cast legalisation on an
+// address computed from one made in another block, from a parameter, once
+// the function has returned early twice. So on a GPU target an address
+// computed from another starting at it (its first index zero) is computed
+// in one step from where that one starts, as instcombine would have it; and
+// one computed by stepping from another made in another block computes that
+// other again just before it.
+static void genlGpuGepChainsFn(GenState *gen, LLVMValueRef fn) {
+    for (LLVMBasicBlockRef blk = LLVMGetFirstBasicBlock(fn); blk; blk = LLVMGetNextBasicBlock(blk)) {
+        LLVMValueRef inst = LLVMGetFirstInstruction(blk);
+        while (inst) {
+            LLVMValueRef next = LLVMGetNextInstruction(inst);
+            LLVMValueRef base = LLVMIsAGetElementPtrInst(inst) ? LLVMGetOperand(inst, 0) : NULL;
+            if (!base || !LLVMIsAGetElementPtrInst(base)) {
+                inst = next;
+                continue;
+            }
+            LLVMValueRef first = LLVMGetOperand(inst, 1);
+            int nbase = LLVMGetNumOperands(base);
+            int nops = LLVMGetNumOperands(inst);
+            if (LLVMIsAConstantInt(first) && LLVMConstIntGetZExtValue(first) == 0
+                && LLVMGetGEPSourceElementType(inst) == genlGepResultType(base) && nbase + nops <= 64) {
+                LLVMValueRef idx[64];
+                int n = 0;
+                for (int op = 1; op < nbase; ++op)
+                    idx[n++] = LLVMGetOperand(base, op);
+                for (int op = 2; op < nops; ++op)
+                    idx[n++] = LLVMGetOperand(inst, op);
+                LLVMPositionBuilderBefore(gen->builder, inst);
+                LLVMTypeRef type = LLVMGetGEPSourceElementType(base);
+                LLVMValueRef ptr = LLVMGetOperand(base, 0);
+                LLVMValueRef gep = LLVMIsInBounds(inst) && LLVMIsInBounds(base)
+                    ? LLVMBuildInBoundsGEP2(gen->builder, type, ptr, idx, n, "")
+                    : LLVMBuildGEP2(gen->builder, type, ptr, idx, n, "");
+                LLVMReplaceAllUsesWith(inst, gep);
+                LLVMInstructionEraseFromParent(inst);
+                if (!LLVMGetFirstUse(base))
+                    LLVMInstructionEraseFromParent(base);
+                // The merged address may itself start from another
+                inst = gep;
+                continue;
+            }
+            // Stepping from an address made elsewhere: make it again here
+            LLVMValueRef user = inst;
+            while (LLVMIsAGetElementPtrInst(base) && LLVMGetInstructionParent(base) != blk) {
+                LLVMValueRef copy = LLVMInstructionClone(base);
+                LLVMPositionBuilderBefore(gen->builder, user);
+                LLVMInsertIntoBuilder(gen->builder, copy);
+                LLVMSetOperand(user, 0, copy);
+                if (!LLVMGetFirstUse(base))
+                    LLVMInstructionEraseFromParent(base);
+                user = copy;
+                base = LLVMGetOperand(copy, 0);
+            }
+            inst = next;
+        }
+    }
+}
+
 static void genlGpuAggregates(GenState *gen) {
     GenlAggMap map;
     map.mask = 255;
@@ -1822,6 +1882,7 @@ static void genlGpuAggregates(GenState *gen) {
             continue;
         genlGpuAggregatesFn(gen, &map, fn);
         genlGpuRetypeFn(gen, fn);
+        genlGpuGepChainsFn(gen, fn);
         for (uint32_t i = 0; i <= map.mask; ++i)
             free(map.slots[i].leaves);
         memset(map.slots, 0, (map.mask + 1) * sizeof(GenlAggSlot));
@@ -2000,6 +2061,9 @@ void genSetup(GenState *gen, ConeOptions *opt) {
     // one). Type check's flow reads this before anything is generated.
     opt->gpu = opt->triple != NULL && strncmp(opt->triple, "spirv", 5) == 0;
     genlLLVMOptions(opt->gpu);
+    // A crash inside LLVM then names the pass and the function it was in, as
+    // llc's does, rather than ending conec without a word
+    LLVMEnablePrettyStackTrace();
 
     LLVMTargetMachineRef machine = genlCreateMachine(opt);
     if (!machine)
