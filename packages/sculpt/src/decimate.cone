@@ -1,0 +1,1400 @@
+// ======== Decimate: fewer faces by quadric error metrics ========
+//
+// 'decimate' (Blender's Decimate modifier in Collapse mode, and its Decimate
+// Geometry tool) cuts a mesh to fewer faces by collapsing edges, the
+// cheapest first, each cost measured by quadric error metrics (Garland and
+// Heckbert, "Surface simplification using quadric error metrics", SIGGRAPH
+// 1997):
+//
+// - The mesh is cut into triangles first (each face as 'triangulate' cuts
+//   it), and the result is triangles.
+// - Each vertex holds a quadric: the sum, over the triangles about it, of
+//   the squared distance to each triangle's plane, weighted by the
+//   triangle's area. A sharp side (a boundary edge, an edge whose "crease"
+//   is above 0, or a seam, where the corner channels differ across the
+//   edge) adds a penalty plane through it, square to its triangle,
+//   weighted by DecimateSharpWeight times the side's length squared, so the
+//   side keeps its line. An f32 vertex channel named by the caller scales a
+//   vertex's quadric (a missing name or channel weighs 1, as smoothing's
+//   weight): a vertex weighed 2 is twice as costly to collapse near, one
+//   weighed 0 costs nothing.
+// - An edge's cost is its two quadrics' sum at the point the edge collapses
+//   to, over the two vertices' summed triangle areas: a mean squared
+//   distance, whose square root is the error 'decimateWith' reports, in the
+//   mesh's units. The point is the cheapest of: either end (where the other
+//   end moves to it), the quadric's own minimum (when its 3 x 3 part is
+//   well conditioned and the minimum lies within the edge's length of the
+//   edge's middle), and the middle; an end wins a tie, so a vertex keeps its
+//   place when moving it gains nothing (a flat grid's corners, a cube's).
+//   Costs within (0.000001 of the bounding box's diagonal) squared of each
+//   other are a tie, and a cost below it is 0: that is rounding, finer than
+//   an f32 position can show.
+// - The edges wait in a binary heap ordered by cost, then by their two
+//   vertex numbers, a total order, so the same mesh gives the same bits on
+//   every machine. After each collapse the surviving vertex's edges are
+//   costed again; an edge popped whose cost has risen goes back in.
+// - A collapse is refused when it would turn a triangle over (or flatten one
+//   to no area), when the result would not be a manifold (the link
+//   condition: the two vertices share no neighbour but the triangles on the
+//   edge; no two triangles left the same; no triangle hanging by a vertex),
+//   when it would join two boundary vertices across the inside, or leave a
+//   vertex with no triangle. A vertex whose vertex "crease" is above 0 never
+//   moves (an edge may collapse onto it).
+// - It stops at the target count of triangles, at the first collapse whose
+//   error would pass 'maxError' (when it is 0 or more), or when nothing
+//   more can collapse.
+//
+// Channels, at a collapse of vertex o into vertex k at point p, a fraction t
+// of the way from k to o (0 when p is k's place):
+// - vertex values: k's become its own blended with o's by t;
+// - corner values (the corners of the triangles about the two vertices): if
+//   neither vertex is on a seam (every corner at it alike in every corner
+//   channel), every corner at k or o takes k's value blended with o's by t.
+//   Otherwise the collapse must keep an end, k, in place; each corner at o
+//   takes the value at k of the triangle on the edge whose corner at o
+//   matches it, so a uv seam stays a seam and no uv is smeared across it. A
+//   collapse that would need a corner at o with no such match (a seam that
+//   does not run along the edge), or two matches that disagree at k, is
+//   refused;
+// - face values: each triangle keeps its source face's;
+// - edge values: each side keeps its source edge's; where the triangles on
+//   the edge go, its two other sides become one edge, which takes the first
+//   face's value, but "crease", which takes the greater (as 'assemble'
+//   carries edges). A cut made by the first triangulation is a new side, 0
+//   in every edge channel.
+//
+// Symmetry (Blender's Symmetry option): with an axis, each collapse is made
+// together with its mirror image across that axis's plane through the
+// origin (x = 0 for DecimateSymmetryX), the mirror's point the reflection of
+// the first's. A vertex's mirror is the vertex within 0.00001 of the
+// bounding box's diagonal of its reflection; a vertex that is its own
+// mirror lies on the plane and stays on it (an edge along the plane
+// collapses to a point on it, an edge from it collapses onto it). A vertex
+// with no mirror decimates alone.
+//
+// Numbering: the vertices left keep their order; the triangles keep the
+// order the first triangulation made them in, each from its source face's
+// corners.
+
+pub const DecimateSymmetryNone = 0u32;
+pub const DecimateSymmetryX = 1u32;
+pub const DecimateSymmetryY = 2u32;
+pub const DecimateSymmetryZ = 3u32;
+
+// A sharp side's penalty plane's weight, per unit of the side's length
+// squared (a triangle's own plane weighs its area)
+pub const DecimateSharpWeight = 100.;
+
+// What 'decimateWith' made
+pub struct Decimated {
+  pub mesh PolyMesh;     // the decimated mesh, triangles
+  pub error f32;         // the greatest error of a collapse made: about how far the surface moved there
+  pub collapses u32;     // how many edges collapsed
+}
+
+// The mesh cut to 'ratio' (0 to 1) of its triangles (a face of n corners
+// counts n - 2), rounded to the nearest, by collapsing edges: no error
+// limit, no symmetry, every vertex weighed 1
+pub fn decimate(m &PolyMesh, ratio f32) PolyMesh {
+  mut d = decimateWith(m, decimateTarget(m, ratio), -1., DecimateSymmetryNone, "");
+  mut out = PolyMesh.empty();
+  out <=> d.mesh;
+  out;
+}
+
+// The number of triangles 'ratio' (held to 0 to 1) of m's is, rounded to
+// the nearest
+pub fn decimateTarget(m &PolyMesh, ratio f32) u32 {
+  imm r = f64.from(clampf(ratio, 0., 1.));
+  u32.from(r * f64.from(triangleCount(m)) + 0.5d);
+}
+
+// How many triangles m makes, a face of n corners n - 2
+pub fn triangleCount(m &PolyMesh) usize {
+  mut n = 0usize;
+  mut f = 0u32;
+  while usize.from(f) < m.faceCount() {
+    imm d = m.faceDegree(f);
+    if d >= 3usize { n = n + d - 2usize; }
+    f = f + 1u32;
+  }
+  n;
+}
+
+// The mesh cut to at most 'faces' triangles (fewer when a collapse would
+// pass 'maxError', when that is 0 or more, or when no edge can collapse),
+// mirrored about 'symmetry''s plane (DecimateSymmetryNone, X, Y or Z), each
+// vertex's quadric scaled by its value in the f32 vertex channel named
+// 'weight' ("" for none)
+pub fn decimateWith(m &PolyMesh, faces u32, maxError f32, symmetry u32, weight &[]u8) Decimated {
+  mut te = List[u32].empty();
+  mut tf = List[u32].empty();
+  mut c = startCollapser(m, symmetry, weight, &mut te, &mut tf);
+  imm nt = c.tv.len() / 3usize;
+  mut live = nt;
+  imm target = usize.from(faces);
+  mut worst = 0.d;
+  mut collapses = 0u32;
+  imm limit = f64.from(maxError);
+
+  while live > target and c.hn > 0usize {
+    imm e = c.popMin();
+    imm a = *c.eA[usize.from(e)];
+    imm b = *c.eB[usize.from(e)];
+    imm cost = *c.eCost[usize.from(e)];
+    imm fresh = *c.alive[usize.from(a)] and *c.alive[usize.from(b)] and *c.ver[usize.from(a)] == *c.eVa[usize.from(e)]
+      and *c.ver[usize.from(b)] == *c.eVb[usize.from(e)];
+    c.release(e);
+    if fresh and c.evaluate(a, b) {
+      if c.cCost > cost {
+        c.pushEdge(a, b, c.cCost);
+      } elif limit >= 0.d and c.cCost.sqrt() > limit {
+        live = target;   // stop: everything left costs more
+      } else {
+        imm chosen = c.cCost;
+        imm removed = c.collapseWithMirror();
+        if removed > 0usize {
+          if chosen > worst { worst = chosen; }
+          live = live - removed;
+          collapses = collapses + 1u32;
+        }
+      }
+    }
+  }
+  imm out = c.finish(m, &te, &tf);
+  new Decimated(out, f32.from(worst.sqrt()), collapses);
+}
+
+// A quadric: the sum of squared distances to planes, as the symmetric 4 x 4
+// matrix (A b; b c), A its 3 x 3 part
+struct Quadric {
+  pub a2 f64; pub ab f64; pub ac f64; pub ad f64;
+  pub b2 f64; pub bc f64; pub bd f64;
+  pub c2 f64; pub cd f64;
+  pub d2 f64;
+
+  fn zero() Quadric {new Quadric(0.d, 0.d, 0.d, 0.d, 0.d, 0.d, 0.d, 0.d, 0.d, 0.d);}
+
+  // w times the squared distance to the plane n . x + d = 0 (n unit length)
+  fn plane(n DVec3, d f64, w f64) Quadric {
+    new Quadric(w * n.x * n.x, w * n.x * n.y, w * n.x * n.z, w * n.x * d, w * n.y * n.y, w * n.y * n.z, w * n.y * d,
+      w * n.z * n.z, w * n.z * d, w * d * d);
+  }
+
+  fn add overload `+`(self, o Quadric) Quadric {
+    new Quadric(a2 + o.a2, ab + o.ab, ac + o.ac, ad + o.ad, b2 + o.b2, bc + o.bc, bd + o.bd, c2 + o.c2, cd + o.cd,
+      d2 + o.d2);
+  }
+
+  fn scaled(self, s f64) Quadric {
+    new Quadric(a2 * s, ab * s, ac * s, ad * s, b2 * s, bc * s, bd * s, c2 * s, cd * s, d2 * s);
+  }
+
+  // The quadric at p
+  fn at(self, p DVec3) f64 {
+    imm x = p.x;
+    imm y = p.y;
+    imm z = p.z;
+    a2 * x * x + 2.d * ab * x * y + 2.d * ac * x * z + 2.d * ad * x + b2 * y * y + 2.d * bc * y * z + 2.d * bd * y
+      + c2 * z * z + 2.d * cd * z + d2;
+  }
+
+  // The point where the quadric is least, into 'out', when A is well
+  // conditioned: its determinant above 10^-8 of the cube of its trace (an
+  // even A has 1/27 of it; one whose planes are all parallel, or all
+  // through one line, has 0)
+  fn solve(self, out &mut DVec3) Bool {
+    imm c00 = b2 * c2 - bc * bc;
+    imm c01 = ac * bc - ab * c2;
+    imm c02 = ab * bc - b2 * ac;
+    imm det = a2 * c00 + ab * c01 + ac * c02;
+    imm s = a2 + b2 + c2;
+    if s <= 0.d or absd(det) <= 0.00000001d * s * s * s { return false; }
+    imm c11 = a2 * c2 - ac * ac;
+    imm c12 = ab * ac - a2 * bc;
+    imm c22 = a2 * b2 - ab * ab;
+    imm inv = 1.d / det;
+    *out = new DVec3(-(c00 * ad + c01 * bd + c02 * cd) * inv, -(c01 * ad + c11 * bd + c12 * cd) * inv,
+      -(c02 * ad + c12 * bd + c22 * cd) * inv);
+    true;
+  }
+}
+
+fn absd(a f64) f64 {if a < 0.d {-a;} else {a;};}
+
+fn dcross(a DVec3, b DVec3) DVec3 {new DVec3(a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x);}
+
+// The decimation's working state: the triangles, each vertex's triangles,
+// quadrics and channel values, and the heap of edges
+struct Collapser {
+  pub pos List[DVec3];        // per vertex, relative to 'origin'
+  pub origin DVec3;
+  pub quad List[Quadric];     // per vertex
+  pub area List[f64];         // per vertex: its triangles' summed area
+  pub alive List[Bool];       // per vertex: not yet collapsed into another
+  pub ver List[u32];          // per vertex: bumped at each change, to tell a stale heap entry
+  pub pinned List[Bool];      // per vertex: never moves (a vertex crease above 0)
+  pub mirror List[u32];       // per vertex: its mirror image, NoIndex for none
+  pub axis u32;               // the symmetry
+  pub tie f64;                // costs within it are alike: (0.000001 of the box's diagonal) squared
+  pub tv List[u32];           // per triangle corner: its vertex
+  pub tAlive List[Bool];      // per triangle
+  pub incHead List[u32];      // per vertex: the first node of its triangles' chain
+  pub incNext List[u32];      // per node: the next in its chain
+  pub incTri List[u32];       // per node: its triangle
+  pub nvSlots usize;          // vertex channels
+  pub vvals List[Vec3];       // per vertex channel and vertex: slot * V + v
+  pub ncSlots usize;          // corner channels
+  pub cvals List[Vec3];       // per corner channel and triangle corner: slot * 3T + c
+  // The collapse 'evaluate' or 'check' chose: 'cOther' into 'cKeep' at
+  // 'cPos', a fraction 'cT' of the way from cKeep to cOther, keeping cKeep's
+  // place when 'cHalf'
+  pub cFound Bool;
+  pub cKeep u32;
+  pub cOther u32;
+  pub cPos DVec3;
+  pub cT f32;
+  pub cCost f64;
+  pub cHalf Bool;
+  // The heap: entries' numbers in heap order, the first 'hn' in use
+  pub hp List[u32];
+  pub hn usize;
+  pub eCost List[f64];
+  pub eA List[u32];
+  pub eB List[u32];
+  pub eVa List[u32];
+  pub eVb List[u32];
+  pub free List[u32];         // entries free for reuse, the first 'freeN'
+  pub freeN usize;
+
+  // -------- the heap --------
+
+  fn before(self &, i u32, j u32) Bool {
+    imm ci = *eCost[usize.from(i)];
+    imm cj = *eCost[usize.from(j)];
+    if ci != cj { return ci < cj; }
+    imm ai = *eA[usize.from(i)];
+    imm aj = *eA[usize.from(j)];
+    if ai != aj { return ai < aj; }
+    *eB[usize.from(i)] < *eB[usize.from(j)];
+  }
+
+  fn pushEdge(self &mut, a u32, b u32, cost f64) {
+    mut id = 0u32;
+    if freeN > 0usize {
+      freeN = freeN - 1usize;
+      id = *free[freeN];
+      eCost.set(usize.from(id), cost);
+      eA.set(usize.from(id), a);
+      eB.set(usize.from(id), b);
+      eVa.set(usize.from(id), *ver[usize.from(a)]);
+      eVb.set(usize.from(id), *ver[usize.from(b)]);
+    } else {
+      id = u32.from(eA.len());
+      eCost.push(cost);
+      eA.push(a);
+      eB.push(b);
+      eVa.push(*ver[usize.from(a)]);
+      eVb.push(*ver[usize.from(b)]);
+    }
+    if hn < hp.len() { hp.set(hn, id); } else { hp.push(id); }
+    mut i = hn;
+    hn = hn + 1usize;
+    while i > 0usize {
+      imm up = (i - 1usize) / 2usize;
+      if self.before(*hp[i], *hp[up]) {
+        hp.swap(i, up);
+        i = up;
+      } else {
+        i = 0usize;
+      }
+    }
+  }
+
+  // An entry popped and read, kept for reuse
+  fn release(self &mut, id u32) {
+    if freeN < free.len() { free.set(freeN, id); } else { free.push(id); }
+    freeN = freeN + 1usize;
+  }
+
+  // The cheapest entry, taken off the heap
+  fn popMin(self &mut) u32 {
+    imm top = *hp[0usize];
+    hn = hn - 1usize;
+    if hn > 0usize {
+      hp.set(0usize, *hp[hn]);
+      mut i = 0usize;
+      mut going = true;
+      while going {
+        imm l = 2usize * i + 1usize;
+        imm r = l + 1usize;
+        mut least = i;
+        if l < hn and self.before(*hp[l], *hp[least]) { least = l; }
+        if r < hn and self.before(*hp[r], *hp[least]) { least = r; }
+        if least != i {
+          hp.swap(i, least);
+          i = least;
+        } else {
+          going = false;
+        }
+      }
+    }
+    top;
+  }
+
+  // -------- reading the triangles --------
+
+  // The live triangles about v, in its chain's order
+  fn liveTris(self &, v u32) List[u32] {
+    mut out = List[u32].withCapacity(16usize);
+    mut n = *incHead[usize.from(v)];
+    while n != NoIndex {
+      imm t = *incTri[usize.from(n)];
+      if *tAlive[usize.from(t)] { out.push(t); }
+      n = *incNext[usize.from(n)];
+    }
+    out;
+  }
+
+  fn hasVertex(self &, t u32, v u32) Bool {
+    imm b = 3usize * usize.from(t);
+    *tv[b] == v or *tv[b + 1usize] == v or *tv[b + 2usize] == v;
+  }
+
+  // Triangle t's corner at v (3t + k)
+  fn cornerAt(self &, t u32, v u32) usize {
+    imm b = 3usize * usize.from(t);
+    if *tv[b] == v {b;} elif *tv[b + 1usize] == v {b + 1usize;} else {b + 2usize;};
+  }
+
+  // Two corners alike in every corner channel
+  fn sameCorner(self &, c1 usize, c2 usize) Bool {
+    imm nc = tv.len();
+    mut s = 0usize;
+    while s < ncSlots {
+      imm x = *cvals[s * nc + c1];
+      imm y = *cvals[s * nc + c2];
+      if x.x != y.x or x.y != y.y or x.z != y.z { return false; }
+      s = s + 1usize;
+    }
+    true;
+  }
+
+  // Every corner at v alike: v is on no seam
+  fn seamFree(self &, v u32, tris &List[u32]) Bool {
+    if ncSlots == 0usize or tris.len() == 0usize { return true; }
+    imm first = self.cornerAt(*tris[0usize], v);
+    mut i = 1usize;
+    while i < tris.len() {
+      if !self.sameCorner(first, self.cornerAt(*tris[i], v)) { return false; }
+      i = i + 1usize;
+    }
+    true;
+  }
+
+  // v's neighbours through 'tris', each with how many of them it is on (1:
+  // a boundary edge)
+  fn ring(self &, v u32, tris &List[u32], nb &mut List[u32], cnt &mut List[u32]) {
+    mut i = 0usize;
+    while i < tris.len() {
+      imm b = 3usize * usize.from(*tris[i]);
+      mut k = 0usize;
+      while k < 3usize {
+        imm w = *tv[b + k];
+        if w != v {
+          mut j = 0usize;
+          mut found = false;
+          while j < nb.len() and !found {
+            if *nb[j] == w {
+              cnt.set(j, *cnt[j] + 1u32);
+              found = true;
+            }
+            j = j + 1usize;
+          }
+          if !found {
+            nb.push(w);
+            cnt.push(1u32);
+          }
+        }
+        k = k + 1usize;
+      }
+      i = i + 1usize;
+    }
+  }
+
+  // -------- whether a collapse may be made --------
+
+  // Whether collapsing edge a-b keeps the mesh a manifold: 'flank' the
+  // triangles on the edge, ta and tb those about a and b
+  fn topologyOk(self &, a u32, b u32, ta &List[u32], tb &List[u32], flank &List[u32]) Bool {
+    mut na = List[u32].withCapacity(16usize);
+    mut ca = List[u32].withCapacity(16usize);
+    mut nb = List[u32].withCapacity(16usize);
+    mut cb = List[u32].withCapacity(16usize);
+    self.ring(a, ta, &mut na, &mut ca);
+    self.ring(b, tb, &mut nb, &mut cb);
+    mut bndA = false;
+    mut i = 0usize;
+    while i < ca.len() {
+      if *ca[i] == 1u32 { bndA = true; }
+      i = i + 1usize;
+    }
+    mut bndB = false;
+    i = 0usize;
+    while i < cb.len() {
+      if *cb[i] == 1u32 { bndB = true; }
+      i = i + 1usize;
+    }
+    // Two boundary vertices joined across the inside would pinch
+    if bndA and bndB and flank.len() != 1usize { return false; }
+    // The vertices opposite the edge
+    mut opp = List[u32].withCapacity(4usize);
+    i = 0usize;
+    while i < flank.len() {
+      imm base = 3usize * usize.from(*flank[i]);
+      mut k = 0usize;
+      while k < 3usize {
+        imm w = *tv[base + k];
+        if w != a and w != b { opp.push(w); }
+        k = k + 1usize;
+      }
+      i = i + 1usize;
+    }
+    // The link condition: the common neighbours are exactly those
+    mut common = 0usize;
+    i = 0usize;
+    while i < na.len() {
+      imm x = *na[i];
+      if x != b {
+        mut j = 0usize;
+        while j < nb.len() {
+          if *nb[j] == x {
+            common = common + 1usize;
+            mut isOpp = false;
+            mut k = 0usize;
+            while k < opp.len() {
+              if *opp[k] == x { isOpp = true; }
+              k = k + 1usize;
+            }
+            if !isOpp { return false; }
+            // An ear: both sides to an opposite vertex on the boundary
+            if *ca[i] == 1u32 and *cb[j] == 1u32 { return false; }
+          }
+          j = j + 1usize;
+        }
+      }
+      i = i + 1usize;
+    }
+    if common != opp.len() { return false; }
+    // No two triangles left the same: two that would be are (a, y, z) and
+    // (b, y, z), y and z common neighbours, so the two opposite vertices
+    if opp.len() == 2usize and self.holds(ta, *opp[0usize], *opp[1usize], b)
+        and self.holds(tb, *opp[0usize], *opp[1usize], a) {
+      return false;
+    }
+    // Something left about the vertex that stays
+    ta.len() + tb.len() > 2usize * flank.len();
+  }
+
+  // Whether 'tris' holds a triangle with vertices w and x and not y
+  fn holds(self &, tris &List[u32], w u32, x u32, y u32) Bool {
+    mut i = 0usize;
+    while i < tris.len() {
+      imm t = *tris[i];
+      if self.hasVertex(t, w) and self.hasVertex(t, x) and !self.hasVertex(t, y) { return true; }
+      i = i + 1usize;
+    }
+    false;
+  }
+
+  // Whether moving a and b to p turns no triangle about them over or flat
+  // (those on the edge go, so they are not asked); ta and tb hold the
+  // triangles about the two, in either order
+  fn flipFree(self &, a u32, b u32, p DVec3, ta &List[u32], tb &List[u32]) Bool {
+    mut i = 0usize;
+    while i < ta.len() {
+      imm t = *ta[i];
+      if !(self.hasVertex(t, a) and self.hasVertex(t, b)) and self.flips(t, a, b, p) { return false; }
+      i = i + 1usize;
+    }
+    i = 0usize;
+    while i < tb.len() {
+      imm t = *tb[i];
+      if !(self.hasVertex(t, a) and self.hasVertex(t, b)) and self.flips(t, a, b, p) { return false; }
+      i = i + 1usize;
+    }
+    true;
+  }
+
+  // Whether triangle t turns over, or loses its area, with a and b moved to p
+  fn flips(self &, t u32, a u32, b u32, p DVec3) Bool {
+    imm base = 3usize * usize.from(t);
+    imm v0 = *tv[base];
+    imm v1 = *tv[base + 1usize];
+    imm v2 = *tv[base + 2usize];
+    imm p0 = *pos[usize.from(v0)];
+    imm p1 = *pos[usize.from(v1)];
+    imm p2 = *pos[usize.from(v2)];
+    imm q0 = if v0 == a or v0 == b {p;} else {p0;};
+    imm q1 = if v1 == a or v1 == b {p;} else {p1;};
+    imm q2 = if v2 == a or v2 == b {p;} else {p2;};
+    imm before = dcross(p1 - p0, p2 - p0);
+    imm after = dcross(q1 - q0, q2 - q0);
+    before.lengthSquared() > 0.d and before.dot(after) <= 0.d;
+  }
+
+  // Whether 'other' may collapse into 'keep' in place: each corner at
+  // 'other' (in a triangle that stays) matches the corner at 'other' of a
+  // triangle on the edge, and every such match agrees at 'keep'
+  fn compatible(self &, keep u32, other u32, tOther &List[u32], flank &List[u32]) Bool {
+    if ncSlots == 0usize { return true; }
+    mut i = 0usize;
+    while i < tOther.len() {
+      imm t = *tOther[i];
+      if !self.hasVertex(t, keep) {
+        imm c = self.cornerAt(t, other);
+        mut found = 0usize;
+        mut any = false;
+        mut j = 0usize;
+        while j < flank.len() {
+          imm f = *flank[j];
+          if self.sameCorner(self.cornerAt(f, other), c) {
+            imm k = self.cornerAt(f, keep);
+            if !any {
+              found = k;
+              any = true;
+            } elif !self.sameCorner(found, k) {
+              return false;
+            }
+          }
+          j = j + 1usize;
+        }
+        if !any { return false; }
+      }
+      i = i + 1usize;
+    }
+    true;
+  }
+
+  // The triangles of 'ta' on edge a-b
+  fn flanking(self &, ta &List[u32], b u32) List[u32] {
+    mut out = List[u32].withCapacity(16usize);
+    mut i = 0usize;
+    while i < ta.len() {
+      if self.hasVertex(*ta[i], b) { out.push(*ta[i]); }
+      i = i + 1usize;
+    }
+    out;
+  }
+
+  fn onPlane(self &, p DVec3) DVec3 {
+    if axis == DecimateSymmetryX { new DVec3(0.d, p.y, p.z); }
+    elif axis == DecimateSymmetryY { new DVec3(p.x, 0.d, p.z); }
+    else { new DVec3(p.x, p.y, 0.d); };
+  }
+
+  fn reflect(self &, p DVec3) DVec3 {
+    if axis == DecimateSymmetryX { new DVec3(-p.x, p.y, p.z); }
+    elif axis == DecimateSymmetryY { new DVec3(p.x, -p.y, p.z); }
+    else { new DVec3(p.x, p.y, -p.z); };
+  }
+
+  // The cost of collapsing to p: the quadric there over the area
+  fn costAt(self &, q Quadric, w f64, p DVec3) f64 {
+    mut e = q.at(p);
+    if w > 0.d { e = e / w; }
+    if e <= tie { 0.d; } else { e; };
+  }
+
+  // The fraction of the way from k to o that p lies, along the edge, held
+  // to 0 to 1
+  fn along(self &, k u32, o u32, p DVec3) f32 {
+    imm pk = *pos[usize.from(k)];
+    imm d = *pos[usize.from(o)] - pk;
+    imm l2 = d.lengthSquared();
+    if l2 <= 0.d { return 0.; }
+    mut t = (p - pk).dot(d) / l2;
+    if t < 0.d { t = 0.d; }
+    if t > 1.d { t = 1.d; }
+    f32.from(t);
+  }
+
+  // A candidate collapse, taken when it is cheaper than the one found so
+  // far and turns nothing over
+  fn consider(self &mut, keep u32, other u32, p DVec3, half Bool, q Quadric, w f64, ta &List[u32], tb &List[u32]) {
+    imm cost = self.costAt(q, w, p);
+    if cFound and cost >= cCost - tie { return; }
+    if !self.flipFree(keep, other, p, ta, tb) { return; }
+    cFound = true;
+    cKeep = keep;
+    cOther = other;
+    cPos = p;
+    cHalf = half;
+    cCost = cost;
+    cT = if half {0.;} else {self.along(keep, other, p);};
+  }
+
+  // The cheapest allowed collapse of edge a-b, into the c fields; false
+  // when none is allowed
+  fn evaluate(self &mut, a u32, b u32) Bool {
+    cFound = false;
+    if a == b or !*alive[usize.from(a)] or !*alive[usize.from(b)] { return false; }
+    imm ta = self.liveTris(a);
+    imm tb = self.liveTris(b);
+    imm flank = self.flanking(&ta, b);
+    if flank.len() == 0usize or flank.len() > 2usize { return false; }
+    if !self.topologyOk(a, b, &ta, &tb, &flank) { return false; }
+    imm pa = *pos[usize.from(a)];
+    imm pb = *pos[usize.from(b)];
+    imm q = *quad[usize.from(a)] + *quad[usize.from(b)];
+    imm w = *area[usize.from(a)] + *area[usize.from(b)];
+    imm pinA = *pinned[usize.from(a)];
+    imm pinB = *pinned[usize.from(b)];
+    imm sym = axis != DecimateSymmetryNone;
+    imm planeA = sym and *mirror[usize.from(a)] == a;
+    imm planeB = sym and *mirror[usize.from(b)] == b;
+    imm crossing = sym and *mirror[usize.from(a)] == b and *mirror[usize.from(b)] == a;
+    // An end kept in place
+    if !pinB and !(planeB and !planeA) and !crossing and self.compatible(a, b, &tb, &flank) {
+      self.consider(a, b, pa, true, q, w, &ta, &tb);
+    }
+    if !pinA and !(planeA and !planeB) and !crossing and self.compatible(b, a, &ta, &flank) {
+      self.consider(b, a, pb, true, q, w, &ta, &tb);
+    }
+    // Both moved, to the quadric's least point or the middle
+    if !pinA and !pinB and planeA == planeB and self.seamFree(a, &ta) and self.seamFree(b, &tb) {
+      imm keep = if a < b {a;} else {b;};
+      imm other = if a < b {b;} else {a;};
+      imm project = (planeA and planeB) or crossing;
+      imm mid0 = (pa + pb) * 0.5d;
+      imm mid = if project {self.onPlane(mid0);} else {mid0;};
+      mut opt = mid;
+      if q.solve(&mut opt) {
+        if project { opt = self.onPlane(opt); }
+        if (opt - mid0).lengthSquared() <= (pb - pa).lengthSquared() {
+          self.consider(keep, other, opt, false, q, w, &ta, &tb);
+        }
+      }
+      self.consider(keep, other, mid, false, q, w, &ta, &tb);
+    }
+    cFound;
+  }
+
+  // Whether the given collapse ('other' into 'keep' at p, in place when
+  // 'half') is allowed, setting the c fields when it is: the mirror of a
+  // collapse chosen by 'evaluate'
+  fn check(self &mut, keep u32, other u32, p DVec3, half Bool) Bool {
+    cFound = false;
+    if keep == other or !*alive[usize.from(keep)] or !*alive[usize.from(other)] { return false; }
+    if *pinned[usize.from(other)] or (!half and *pinned[usize.from(keep)]) { return false; }
+    imm ta = self.liveTris(keep);
+    imm tb = self.liveTris(other);
+    imm flank = self.flanking(&ta, other);
+    if flank.len() == 0usize or flank.len() > 2usize { return false; }
+    if !self.topologyOk(keep, other, &ta, &tb, &flank) { return false; }
+    if half {
+      if !self.compatible(keep, other, &tb, &flank) { return false; }
+    } elif !self.seamFree(keep, &ta) or !self.seamFree(other, &tb) {
+      return false;
+    }
+    if !self.flipFree(keep, other, p, &ta, &tb) { return false; }
+    cFound = true;
+    cKeep = keep;
+    cOther = other;
+    cPos = p;
+    cHalf = half;
+    cT = if half {0.;} else {self.along(keep, other, p);};
+    true;
+  }
+
+  // -------- making a collapse --------
+
+  // Make the collapse in the c fields; the number of triangles removed
+  fn apply(self &mut) usize {
+    imm keep = cKeep;
+    imm other = cOther;
+    imm t = cT;
+    imm tk = self.liveTris(keep);
+    imm to = self.liveTris(other);
+    imm flank = self.flanking(&tk, other);
+    imm nc = tv.len();
+    imm nv = pos.len();
+    // Corner values
+    if ncSlots > 0usize {
+      if cHalf {
+        mut i = 0usize;
+        while i < to.len() {
+          imm tri = *to[i];
+          if !self.hasVertex(tri, keep) {
+            imm c = self.cornerAt(tri, other);
+            mut j = 0usize;
+            mut done = false;
+            while j < flank.len() and !done {
+              imm f = *flank[j];
+              if self.sameCorner(self.cornerAt(f, other), c) {
+                imm k = self.cornerAt(f, keep);
+                mut s = 0usize;
+                while s < ncSlots {
+                  cvals.set(s * nc + c, *cvals[s * nc + k]);
+                  s = s + 1usize;
+                }
+                done = true;
+              }
+              j = j + 1usize;
+            }
+          }
+          i = i + 1usize;
+        }
+      } else {
+        imm ck = self.cornerAt(*flank[0usize], keep);
+        imm co = self.cornerAt(*flank[0usize], other);
+        mut blend = List[Vec3].withCapacity(ncSlots);
+        mut s = 0usize;
+        while s < ncSlots {
+          blend.push((*cvals[s * nc + ck]).lerp(*cvals[s * nc + co], t));
+          s = s + 1usize;
+        }
+        mut i = 0usize;
+        while i < tk.len() {
+          imm tri = *tk[i];
+          if !self.hasVertex(tri, other) {
+            imm c = self.cornerAt(tri, keep);
+            s = 0usize;
+            while s < ncSlots {
+              cvals.set(s * nc + c, *blend[s]);
+              s = s + 1usize;
+            }
+          }
+          i = i + 1usize;
+        }
+        i = 0usize;
+        while i < to.len() {
+          imm tri = *to[i];
+          if !self.hasVertex(tri, keep) {
+            imm c = self.cornerAt(tri, other);
+            s = 0usize;
+            while s < ncSlots {
+              cvals.set(s * nc + c, *blend[s]);
+              s = s + 1usize;
+            }
+          }
+          i = i + 1usize;
+        }
+      }
+    }
+    // Vertex values, place and quadric
+    if !cHalf {
+      mut s = 0usize;
+      while s < nvSlots {
+        imm vk = *vvals[s * nv + usize.from(keep)];
+        vvals.set(s * nv + usize.from(keep), vk.lerp(*vvals[s * nv + usize.from(other)], t));
+        s = s + 1usize;
+      }
+    }
+    pos.set(usize.from(keep), cPos);
+    quad.set(usize.from(keep), *quad[usize.from(keep)] + *quad[usize.from(other)]);
+    area.set(usize.from(keep), *area[usize.from(keep)] + *area[usize.from(other)]);
+    // The triangles: those on the edge go, the others at 'other' move to 'keep'
+    mut i = 0usize;
+    while i < flank.len() {
+      tAlive.set(usize.from(*flank[i]), false);
+      i = i + 1usize;
+    }
+    i = 0usize;
+    while i < to.len() {
+      imm tri = *to[i];
+      if *tAlive[usize.from(tri)] {
+        imm c = self.cornerAt(tri, other);
+        tv.set(c, keep);
+      }
+      i = i + 1usize;
+    }
+    // other's chain put before keep's, and the dead triangles dropped
+    imm oh = *incHead[usize.from(other)];
+    if oh != NoIndex {
+      mut last = oh;
+      while *incNext[usize.from(last)] != NoIndex { last = *incNext[usize.from(last)]; }
+      incNext.set(usize.from(last), *incHead[usize.from(keep)]);
+      incHead.set(usize.from(keep), oh);
+      incHead.set(usize.from(other), NoIndex);
+    }
+    self.prune(keep);
+    // The vertices opposite the edge lost a triangle each
+    i = 0usize;
+    while i < flank.len() {
+      imm base = 3usize * usize.from(*flank[i]);
+      mut k = 0usize;
+      while k < 3usize {
+        imm w = *tv[base + k];
+        if w != keep and w != other { self.prune(w); }
+        k = k + 1usize;
+      }
+      i = i + 1usize;
+    }
+    alive.set(usize.from(other), false);
+    ver.set(usize.from(keep), *ver[usize.from(keep)] + 1u32);
+    flank.len();
+  }
+
+  // v's chain without its dead triangles
+  fn prune(self &mut, v u32) {
+    mut prev = NoIndex;
+    mut n = *incHead[usize.from(v)];
+    while n != NoIndex {
+      imm nx = *incNext[usize.from(n)];
+      if *tAlive[usize.from(*incTri[usize.from(n)])] {
+        prev = n;
+      } elif prev == NoIndex {
+        incHead.set(usize.from(v), nx);
+      } else {
+        incNext.set(usize.from(prev), nx);
+      }
+      n = nx;
+    }
+  }
+
+  // Cost every edge from v again, into the heap
+  fn requeue(self &mut, v u32) {
+    imm tris = self.liveTris(v);
+    mut nb = List[u32].empty();
+    mut cnt = List[u32].empty();
+    self.ring(v, &tris, &mut nb, &mut cnt);
+    mut i = 0usize;
+    while i < nb.len() {
+      imm w = *nb[i];
+      imm a = if v < w {v;} else {w;};
+      imm b = if v < w {w;} else {v;};
+      if self.evaluate(a, b) { self.pushEdge(a, b, cCost); }
+      i = i + 1usize;
+    }
+  }
+
+  // Make the collapse 'evaluate' chose, and its mirror image when there is
+  // symmetry; the number of triangles removed (0 when the mirror is refused)
+  fn collapseWithMirror(self &mut) usize {
+    imm keep = cKeep;
+    imm other = cOther;
+    imm p = cPos;
+    imm half = cHalf;
+    imm cost = cCost;
+    if axis == DecimateSymmetryNone {
+      imm removed = self.apply();
+      self.requeue(keep);
+      return removed;
+    }
+    imm mk = *mirror[usize.from(keep)];
+    imm mo = *mirror[usize.from(other)];
+    imm selfMirror = (mk == keep and mo == other) or (mk == other and mo == keep);
+    if mk == NoIndex or mo == NoIndex or selfMirror {
+      // Alone: on the plane it stays there; else its mirror link breaks
+      imm removed = self.apply();
+      if selfMirror {
+        mirror.set(usize.from(keep), keep);
+      } else {
+        if !half { self.unlinkMirror(keep); }
+        self.unlinkMirror(other);
+      }
+      self.requeue(keep);
+      return removed;
+    }
+    // The mirror's point: an end kept in place stays where it is
+    imm pm = if half {*pos[usize.from(mk)];} else {self.reflect(p);};
+    if mk != keep {
+      // Disjoint: the mirror must be allowed before the first is made
+      if !self.check(mk, mo, pm, half) { return 0usize; }
+    }
+    // Back to the first collapse's fields
+    cKeep = keep;
+    cOther = other;
+    cPos = p;
+    cHalf = half;
+    cT = if half {0.;} else {self.along(keep, other, p);};
+    cCost = cost;
+    mut removed = self.apply();
+    if self.check(mk, mo, pm, half) {
+      removed = removed + self.apply();
+      mirror.set(usize.from(mo), NoIndex);
+      mirror.set(usize.from(other), NoIndex);
+      mirror.set(usize.from(keep), mk);
+      mirror.set(usize.from(mk), keep);
+      self.requeue(mk);
+    } else {
+      self.unlinkMirror(keep);
+      self.unlinkMirror(other);
+    }
+    self.requeue(keep);
+    removed;
+  }
+
+  // v and its mirror no longer mirror each other
+  fn unlinkMirror(self &mut, v u32) {
+    imm w = *mirror[usize.from(v)];
+    if w != NoIndex and w != v {
+      mirror.set(usize.from(w), NoIndex);
+      mirror.set(usize.from(v), NoIndex);
+    }
+  }
+
+  // -------- the result --------
+
+  fn finish(self &, m &PolyMesh, te &List[u32], tf &List[u32]) PolyMesh {
+    imm nv = pos.len();
+    imm nc = tv.len();
+    mut newIdx = List[u32].withCapacity(nv);
+    mut outPos = List[Vec3].empty();
+    mut vSrc = List[u32].empty();
+    mut v = 0usize;
+    while v < nv {
+      if *alive[v] {
+        newIdx.push(u32.from(outPos.len()));
+        outPos.push((*pos[v] + origin).toVec3());
+        vSrc.push(u32.from(v));
+      } else {
+        newIdx.push(NoIndex);
+      }
+      v = v + 1usize;
+    }
+    mut counts = List[u32].empty();
+    mut idx = List[u32].empty();
+    mut cSrc = List[u32].empty();
+    mut eSrc = List[u32].empty();
+    mut fSrc = List[u32].empty();
+    mut t = 0usize;
+    while 3usize * t < nc {
+      if *tAlive[t] {
+        counts.push(3u32);
+        mut k = 0usize;
+        while k < 3usize {
+          imm c = 3usize * t + k;
+          idx.push(*newIdx[usize.from(*tv[c])]);
+          cSrc.push(u32.from(c));
+          eSrc.push(*te[c]);
+          k = k + 1usize;
+        }
+        fSrc.push(*tf[t]);
+      }
+      t = t + 1usize;
+    }
+    mut problems = List[String].empty();
+    mut out = PolyMesh.fromPolygons(outPos.view(), counts.view(), idx.view(), &mut problems);
+    mut given = List[u32].empty();
+    mut first = List[u32].empty();
+    madeFaces(&out, &counts, &idx, &mut given, &mut first);
+
+    // Each channel: vertex and corner values from the working values, face
+    // and edge values from the source mesh's
+    mut vs = 0usize;
+    mut cs = 0usize;
+    mut ch = 0usize;
+    while ch < m.floats.len() {
+      imm domain = m.floats[ch].domain;
+      imm isCrease = domain == EdgeDomain and m.floats[ch].name.equals("crease");
+      imm vals = self.slotValues(m, domain, floatChannelVec3s(m, ch), &mut vs, &mut cs);
+      imm res = carryChannel(&out, domain, &vals, isCrease, &vSrc, &cSrc, &eSrc, &fSrc, &given, &first);
+      out.floats.push(new Channel[f32](String.from(m.floats[ch].name.view()), domain, vec3ToFloats(&res)));
+      ch = ch + 1usize;
+    }
+    ch = 0usize;
+    while ch < m.vec2s.len() {
+      imm domain = m.vec2s[ch].domain;
+      imm vals = self.slotValues(m, domain, vec2ChannelVec3s(m, ch), &mut vs, &mut cs);
+      imm res = carryChannel(&out, domain, &vals, false, &vSrc, &cSrc, &eSrc, &fSrc, &given, &first);
+      out.vec2s.push(new Channel[Vec2](String.from(m.vec2s[ch].name.view()), domain, vec3ToVec2s(&res)));
+      ch = ch + 1usize;
+    }
+    ch = 0usize;
+    while ch < m.vec3s.len() {
+      imm domain = m.vec3s[ch].domain;
+      imm vals = self.slotValues(m, domain, vec3ChannelVec3s(m, ch), &mut vs, &mut cs);
+      imm res = carryChannel(&out, domain, &vals, false, &vSrc, &cSrc, &eSrc, &fSrc, &given, &first);
+      out.vec3s.push(new Channel[Vec3](String.from(m.vec3s[ch].name.view()), domain, res));
+      ch = ch + 1usize;
+    }
+    out;
+  }
+
+  // A channel's values to carry: a vertex or corner channel's working values
+  // (its slot, counted in vs or cs), else the source's own
+  fn slotValues(self &, m &PolyMesh, domain u32, src List[Vec3], vs &mut usize, cs &mut usize) List[Vec3] {
+    if domain == VertexDomain {
+      imm nv = pos.len();
+      mut out = List[Vec3].withCapacity(nv);
+      mut i = 0usize;
+      while i < nv {
+        out.push(*vvals[*vs * nv + i]);
+        i = i + 1usize;
+      }
+      *vs = *vs + 1usize;
+      return out;
+    }
+    if domain == CornerDomain {
+      imm nc = tv.len();
+      mut out = List[Vec3].withCapacity(nc);
+      mut i = 0usize;
+      while i < nc {
+        out.push(*cvals[*cs * nc + i]);
+        i = i + 1usize;
+      }
+      *cs = *cs + 1usize;
+      return out;
+    }
+    src;
+  }
+}
+
+// The working state for m: its faces cut into triangles (each corner's
+// source edge, of the side coming into it, into te, NoIndex for a cut;
+// each triangle's source face into tf), the quadrics, the channel values,
+// the mirror links, and every edge costed into the heap
+fn startCollapser(m &PolyMesh, symmetry u32, weight &[]u8, te &mut List[u32], tf &mut List[u32]) Collapser {
+  imm nv = m.positions.len();
+  // The triangles, and each corner's source half-edge
+  mut tv = List[u32].empty();
+  mut th = List[u32].empty();
+  mut cut = List[u32].empty();
+  mut f = 0usize;
+  while f < m.fHalfedge.len() {
+    imm hs = m.faceHalfedges(u32.from(f));
+    imm n = hs.len();
+    cut.clear();
+    m.cutFace(u32.from(f), &mut cut);
+    mut i = 0usize;
+    while i + 2usize < cut.len() {
+      mut k = 0usize;
+      while k < 3usize {
+        imm here = usize.from(*cut[i + k]);
+        imm before = usize.from(*cut[i + (k + 2usize) % 3usize]);
+        imm h = *hs[here];
+        tv.push(m.toVertex(h));
+        th.push(h);
+        // The side from the corner before is the face's own when they are
+        // neighbours round it
+        if (before + 1usize) % n == here { te.push(h / 2u32); } else { te.push(NoIndex); }
+        k = k + 1usize;
+      }
+      tf.push(u32.from(f));
+      i = i + 3usize;
+    }
+    f = f + 1usize;
+  }
+  imm nc = tv.len();
+  imm nt = nc / 3usize;
+
+  // Positions relative to the box's centre (its symmetry axis kept at 0)
+  imm box = m.bounds();
+  mut origin = new DVec3(0.d, 0.d, 0.d);
+  if nv > 0usize {
+    origin = (DVec3.from(box.min) + DVec3.from(box.max)) * 0.5d;
+    if symmetry == DecimateSymmetryX { origin = new DVec3(0.d, origin.y, origin.z); }
+    elif symmetry == DecimateSymmetryY { origin = new DVec3(origin.x, 0.d, origin.z); }
+    elif symmetry == DecimateSymmetryZ { origin = new DVec3(origin.x, origin.y, 0.d); }
+  }
+  mut pos = List[DVec3].withCapacity(nv);
+  mut v = 0usize;
+  while v < nv {
+    pos.push(DVec3.from(*m.positions[v]) - origin);
+    v = v + 1usize;
+  }
+
+  // Channel values: vertex channels by vertex, corner channels by triangle
+  // corner, each kind's channels in order (f32, Vec2, Vec3)
+  mut vvals = List[Vec3].empty();
+  mut cvals = List[Vec3].empty();
+  mut nvSlots = 0usize;
+  mut ncSlots = 0usize;
+  mut ch = 0usize;
+  while ch < m.floats.len() {
+    imm vals = floatChannelVec3s(m, ch);
+    if m.floats[ch].domain == VertexDomain { appendAll(&mut vvals, &vals); nvSlots = nvSlots + 1usize; }
+    if m.floats[ch].domain == CornerDomain { appendByCorner(&mut cvals, &vals, &th); ncSlots = ncSlots + 1usize; }
+    ch = ch + 1usize;
+  }
+  ch = 0usize;
+  while ch < m.vec2s.len() {
+    imm vals = vec2ChannelVec3s(m, ch);
+    if m.vec2s[ch].domain == VertexDomain { appendAll(&mut vvals, &vals); nvSlots = nvSlots + 1usize; }
+    if m.vec2s[ch].domain == CornerDomain { appendByCorner(&mut cvals, &vals, &th); ncSlots = ncSlots + 1usize; }
+    ch = ch + 1usize;
+  }
+  ch = 0usize;
+  while ch < m.vec3s.len() {
+    imm vals = vec3ChannelVec3s(m, ch);
+    if m.vec3s[ch].domain == VertexDomain { appendAll(&mut vvals, &vals); nvSlots = nvSlots + 1usize; }
+    if m.vec3s[ch].domain == CornerDomain { appendByCorner(&mut cvals, &vals, &th); ncSlots = ncSlots + 1usize; }
+    ch = ch + 1usize;
+  }
+
+  // Each vertex's weight, and whether it is pinned
+  imm wch = if weight.len > 0usize {m.findFloatChannel(VertexDomain, weight);} else {NoIndex;};
+  imm vcrease = m.findFloatChannel(VertexDomain, "crease");
+  imm ecrease = m.findFloatChannel(EdgeDomain, "crease");
+  mut wts = List[f64].withCapacity(nv);
+  mut pinned = List[Bool].withCapacity(nv);
+  v = 0usize;
+  while v < nv {
+    wts.push(if wch != NoIndex {f64.from(m.float(wch, u32.from(v)));} else {1.d;});
+    pinned.push(vcrease != NoIndex and m.float(vcrease, u32.from(v)) > 0.);
+    v = v + 1usize;
+  }
+
+  // The quadrics: each triangle's plane by its area, each sharp side's
+  // penalty plane
+  mut quad = List[Quadric].withCapacity(nv);
+  mut area = List[f64].withCapacity(nv);
+  v = 0usize;
+  while v < nv {
+    quad.push(Quadric.zero());
+    area.push(0.d);
+    v = v + 1usize;
+  }
+  imm sharpW = f64.from(DecimateSharpWeight);
+  mut t = 0usize;
+  while t < nt {
+    imm p0 = *pos[usize.from(*tv[3usize * t])];
+    imm p1 = *pos[usize.from(*tv[3usize * t + 1usize])];
+    imm p2 = *pos[usize.from(*tv[3usize * t + 2usize])];
+    imm n = dcross(p1 - p0, p2 - p0);
+    imm len = n.length();
+    if len > 0.d {
+      imm nu = n * (1.d / len);
+      imm qt = Quadric.plane(nu, -nu.dot(p0), len * 0.5d);
+      mut k = 0usize;
+      while k < 3usize {
+        imm vk = usize.from(*tv[3usize * t + k]);
+        quad.set(vk, *quad[vk] + qt.scaled(*wts[vk]));
+        area.set(vk, *area[vk] + len * 0.5d);
+        k = k + 1usize;
+      }
+      // Sharp sides: boundary, creased, or a seam
+      k = 0usize;
+      while k < 3usize {
+        imm c = 3usize * t + k;
+        imm e = *te[c];
+        if e != NoIndex and (m.isBoundaryEdge(e) or (ecrease != NoIndex and m.float(ecrease, e) > 0.) or seamEdge(m, e)) {
+          imm va = usize.from(*tv[3usize * t + (k + 2usize) % 3usize]);
+          imm vb = usize.from(*tv[c]);
+          imm d = *pos[vb] - *pos[va];
+          imm l2 = d.lengthSquared();
+          imm pn = dcross(d, nu);
+          imm pl = pn.length();
+          if l2 > 0.d and pl > 0.d {
+            imm pu = pn * (1.d / pl);
+            imm qs = Quadric.plane(pu, -pu.dot(*pos[va]), sharpW * l2);
+            quad.set(va, *quad[va] + qs.scaled(*wts[va]));
+            quad.set(vb, *quad[vb] + qs.scaled(*wts[vb]));
+          }
+        }
+        k = k + 1usize;
+      }
+    }
+    t = t + 1usize;
+  }
+
+  // Each vertex's chain of triangles
+  mut incHead = List[u32].withCapacity(nv);
+  v = 0usize;
+  while v < nv {
+    incHead.push(NoIndex);
+    v = v + 1usize;
+  }
+  mut incNext = List[u32].withCapacity(nc);
+  mut incTri = List[u32].withCapacity(nc);
+  // Chained from the last triangle back, so each chain runs in triangle order
+  mut c = nc;
+  while c > 0usize {
+    c = c - 1usize;
+    imm vc = usize.from(*tv[c]);
+    incNext.push(*incHead[vc]);
+    incTri.push(u32.from(c / 3usize));
+    incHead.set(vc, u32.from(incTri.len() - 1usize));
+  }
+
+  mut tAlive = List[Bool].withCapacity(nt);
+  t = 0usize;
+  while t < nt {
+    tAlive.push(true);
+    t = t + 1usize;
+  }
+  mut alive = List[Bool].withCapacity(nv);
+  mut ver = List[u32].withCapacity(nv);
+  v = 0usize;
+  while v < nv {
+    alive.push(true);
+    ver.push(0u32);
+    v = v + 1usize;
+  }
+  imm mirror = mirrorLinks(&pos, symmetry, box);
+  imm diag = if nv > 0usize {f64.from((box.max - box.min).length());} else {0.d;};
+  imm tie = 0.000000000001d * diag * diag;
+
+  mut col = new Collapser(pos: pos, origin: origin, quad: quad, area: area, alive: alive, ver: ver, pinned: pinned,
+    mirror: mirror, axis: symmetry, tie: tie, tv: tv, tAlive: tAlive, incHead: incHead, incNext: incNext, incTri: incTri,
+    nvSlots: nvSlots, vvals: vvals, ncSlots: ncSlots, cvals: cvals,
+    cFound: false, cKeep: 0u32, cOther: 0u32, cPos: new DVec3(0.d, 0.d, 0.d), cT: 0., cCost: 0.d, cHalf: false,
+    hp: List[u32].empty(), hn: 0usize, eCost: List[f64].empty(), eA: List[u32].empty(), eB: List[u32].empty(),
+    eVa: List[u32].empty(), eVb: List[u32].empty(), free: List[u32].empty(), freeN: 0usize);
+
+  // Every edge, once, from its lower vertex
+  v = 0usize;
+  while v < nv {
+    imm vu = u32.from(v);
+    imm tris = col.liveTris(vu);
+    mut nb = List[u32].empty();
+    mut cnt = List[u32].empty();
+    col.ring(vu, &tris, &mut nb, &mut cnt);
+    mut i = 0usize;
+    while i < nb.len() {
+      imm w = *nb[i];
+      if w > vu and col.evaluate(vu, w) { col.pushEdge(vu, w, col.cCost); }
+      i = i + 1usize;
+    }
+    v = v + 1usize;
+  }
+  col;
+}
+
+fn appendAll(dst &mut List[Vec3], src &List[Vec3]) {
+  mut i = 0usize;
+  while i < src.len() {
+    dst.push(*src[i]);
+    i = i + 1usize;
+  }
+}
+
+// A corner channel's values, one per triangle corner, from its half-edge
+fn appendByCorner(dst &mut List[Vec3], src &List[Vec3], th &List[u32]) {
+  mut i = 0usize;
+  while i < th.len() {
+    dst.push(*src[usize.from(*th[i])]);
+    i = i + 1usize;
+  }
+}
+
+// Whether edge e, with a face on each side, is a seam: a corner channel's
+// values differ across it at either end
+fn seamEdge(m &PolyMesh, e u32) Bool {
+  imm h = 2u32 * e;
+  imm tw = h + 1u32;
+  if m.face(h) == NoIndex or m.face(tw) == NoIndex { return false; }
+  // At h's end: h's corner and the twin's previous; at the twin's end: the
+  // twin's corner and h's previous
+  cornersDiffer(m, h, m.prev(tw)) or cornersDiffer(m, tw, m.prev(h));
+}
+
+// Whether two corners (half-edges) differ in any corner channel of m
+fn cornersDiffer(m &PolyMesh, h1 u32, h2 u32) Bool {
+  mut c = 0usize;
+  while c < m.floats.len() {
+    if m.floats[c].domain == CornerDomain and m.float(u32.from(c), h1) != m.float(u32.from(c), h2) { return true; }
+    c = c + 1usize;
+  }
+  c = 0usize;
+  while c < m.vec2s.len() {
+    if m.vec2s[c].domain == CornerDomain {
+      imm x = m.vec2(u32.from(c), h1);
+      imm y = m.vec2(u32.from(c), h2);
+      if x.x != y.x or x.y != y.y { return true; }
+    }
+    c = c + 1usize;
+  }
+  c = 0usize;
+  while c < m.vec3s.len() {
+    if m.vec3s[c].domain == CornerDomain {
+      imm x = m.vec3(u32.from(c), h1);
+      imm y = m.vec3(u32.from(c), h2);
+      if x.x != y.x or x.y != y.y or x.z != y.z { return true; }
+    }
+    c = c + 1usize;
+  }
+  false;
+}
+
+// Each vertex's mirror across the symmetry plane: the lowest-numbered vertex
+// within 0.00001 of the box's diagonal of its reflection, itself when it is
+// that close to the plane; NoIndex for none, or when the two do not name
+// each other. All NoIndex without symmetry.
+fn mirrorLinks(pos &List[DVec3], symmetry u32, box Aabb3) List[u32] {
+  imm n = pos.len();
+  mut mirror = List[u32].withCapacity(n);
+  mut v = 0usize;
+  while v < n {
+    mirror.push(NoIndex);
+    v = v + 1usize;
+  }
+  if symmetry == DecimateSymmetryNone or n == 0usize { return mirror; }
+  imm diag = f64.from((box.max - box.min).length());
+  imm tol = 0.00001d * diag;
+  imm size = if tol > 0.d {2.d * tol;} else {1.d;};
+  // The spatial hash, as weld's, over cells twice the tolerance wide
+  mut slots = 1usize;
+  while slots < 2usize * n { slots = slots * 2usize; }
+  imm mask = u32.from(slots - 1usize);
+  mut head = List[u32].withCapacity(slots);
+  mut i = 0usize;
+  while i < slots {
+    head.push(NoIndex);
+    i = i + 1usize;
+  }
+  mut next = List[u32].withCapacity(n);
+  v = 0usize;
+  while v < n {
+    imm p = *pos[v];
+    imm s = usize.from(cellHash(dcell(p.x, size), dcell(p.y, size), dcell(p.z, size)) & mask);
+    next.push(*head[s]);
+    head.set(s, u32.from(v));
+    v = v + 1usize;
+  }
+  imm tol2 = tol * tol;
+  v = 0usize;
+  while v < n {
+    imm p = *pos[v];
+    imm r = if symmetry == DecimateSymmetryX {new DVec3(-p.x, p.y, p.z);}
+      elif symmetry == DecimateSymmetryY {new DVec3(p.x, -p.y, p.z);}
+      else {new DVec3(p.x, p.y, -p.z);};
+    if (r - p).lengthSquared() <= tol2 {
+      mirror.set(v, u32.from(v));
+    } else {
+      imm cx = dcell(r.x, size);
+      imm cy = dcell(r.y, size);
+      imm cz = dcell(r.z, size);
+      mut best = NoIndex;
+      mut dz = -1i32;
+      while dz <= 1i32 {
+        mut dy = -1i32;
+        while dy <= 1i32 {
+          mut dx = -1i32;
+          while dx <= 1i32 {
+            imm s = usize.from(cellHash(cx + dx, cy + dy, cz + dz) & mask);
+            mut w = *head[s];
+            while w != NoIndex {
+              imm wu = usize.from(w);
+              if wu != v and w < best and (*pos[wu] - r).lengthSquared() <= tol2 { best = w; }
+              w = *next[wu];
+            }
+            dx = dx + 1i32;
+          }
+          dy = dy + 1i32;
+        }
+        dz = dz + 1i32;
+      }
+      mirror.set(v, best);
+    }
+    v = v + 1usize;
+  }
+  // Only links both ends name
+  v = 0usize;
+  while v < n {
+    imm w = *mirror[v];
+    if w != NoIndex and *mirror[usize.from(w)] != u32.from(v) { mirror.set(v, NoIndex); }
+    v = v + 1usize;
+  }
+  mirror;
+}
+
+// The cell a coordinate falls in, held to a billion cells either way
+fn dcell(x f64, size f64) i32 {
+  mut c = libc.floor(x / size);
+  if c < -1000000000.d { c = -1000000000.d; }
+  if c > 1000000000.d { c = 1000000000.d; }
+  i32.from(c);
+}

@@ -1,0 +1,58 @@
+// lod: levels of detail by decimation. A 2 x 1 x 0.6 box is rounded by six
+// levels of Catmull-Clark (24,576 quads, 49,152 triangles) and smoothed by
+// Taubin's lambda|mu, a dense mesh that did not come from a few faces' worth
+// of cage; it is decimated by quadric error metrics to a quarter, a
+// twentieth, a hundredth and a five-hundredth of its triangles, and each
+// level's triangle count and error (about how far the surface moved, in the
+// box's units) printed. Then a box whose faces stay flat (every edge creased
+// before subdividing) is dissolved back to its six faces.
+//
+//   congo run --release packages/sculpt/examples/lod.cone
+//
+// It writes lod-0.obj (the dense mesh) to lod-4.obj and lod-flat.obj in the
+// current folder, triangulated with smooth normals.
+
+mod lod;
+
+import stdio use *;
+import collections use *;
+import geomath use *;
+import mesh use *;
+import sculpt use *;
+
+fn write(pm &PolyMesh, name &[]u8) Bool {
+  imm tri = pm.triangulate(true);
+  writeObj(&tri, name);
+}
+
+fn main() i32 {
+  imm rect = Profile.rectangle(2., 1.);
+  imm box = extrude(&rect, new Vec3(0., 0., 0.6), 1u32, true);
+  imm fine = subdivide(&box, 6u32);
+  imm dense = smoothTaubin(&fine, 0.5, taubinMu(0.5, TaubinPassBand), 10u32);
+  print <- "level 0: "; print <- triangleCount(&dense); print <- " triangles\n";
+  mut ok = write(&dense, "lod-0.obj");
+
+  imm ratios Array[f32, 4] = [0.25, 0.05, 0.01, 0.002];
+  imm names Array[&[]u8, 4] = ["lod-1.obj", "lod-2.obj", "lod-3.obj", "lod-4.obj"];
+  mut i = 0usize;
+  while i < 4usize {
+    imm d = decimateWith(&dense, decimateTarget(&dense, ratios[i]), -1., DecimateSymmetryNone, "");
+    print <- "level "; print <- i + 1usize; print <- ": "; print <- d.mesh.faceCount(); print <- " triangles, error ";
+    print <- d.error; print <- "\n";
+    ok = ok and write(&d.mesh, names[i]);
+    i = i + 1usize;
+  }
+
+  mut cage = PolyMesh.cube(1.);
+  cage.addFloatChannel(EdgeDomain, "crease", SharpnessInfinite);
+  imm flat = subdivide(&cage, 3u32);
+  imm back = dissolvePlanar(&flat, 0.01);
+  print <- "flat box: "; print <- flat.faceCount(); print <- " quads dissolved to "; print <- back.faceCount();
+  print <- " faces, "; print <- back.vertexCount(); print <- " vertices\n";
+  ok = ok and write(&back, "lod-flat.obj");
+  if ok {0;} else {
+    print <- "Could not write a file\n";
+    1;
+  };
+}
