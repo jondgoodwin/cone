@@ -945,6 +945,17 @@ block. An arm whose last statement is a return, break or continue contributes no
 fallthrough and no phi edge. `while` is not a generation concept: it arrives as
 a loop block containing `if not cond { break }`.
 
+**An arm whose condition is a constant of the build is decided at
+generation.** `genlIf` asks `intrinsicBuildConst` of each condition:
+`isDebugBuild()`, the provisional target-OS and `-D` constants beside it
+(TEMPORARY; its final design is open), or `!`, `and`, `or` of them. A false
+arm generates nothing, not even its test; a true one generates its body as the
+`else` would and ends the chain, the arms after it generating nothing. A call
+on an untaken side therefore never reaches the object, in either build, and an
+`extern` only that side names is declared and never referenced. Everything
+before generation still sees both sides ([intrinsic](../nodes/intrinsic.md),
+"Constants of the build drop the untaken side at generation").
+
 Short-circuit `and`/`or` are two blocks and a 2-way `i1` phi. `not` is
 `xor i1 %x, true`.
 

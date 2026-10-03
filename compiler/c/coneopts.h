@@ -11,6 +11,14 @@
 #include <stdint.h>
 #include <stddef.h>
 
+// TEMPORARY, a provisional mechanism whose final design is open: a constant
+// named on the command line, '-D NAME' (1) or '-D NAME=123', which core's
+// isDefined and definedInt answer (ir/stmt/intrinsic.c, intrinsicBuildConst)
+typedef struct ConeDefine {
+    char *name;
+    int64_t value;
+} ConeDefine;
+
 // Compiler options
 typedef struct ConeOptions {
 
@@ -32,6 +40,9 @@ typedef struct ConeOptions {
     //typecheck_t check;
 
     void* data; // User-defined data for unit test callbacks
+
+    ConeDefine *defines;    // TEMPORARY: each '-D', in the order given
+    int ndefines;
 
     int ptrsize;    // Size of a pointer (in bits)
 

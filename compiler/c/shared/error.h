@@ -442,6 +442,9 @@ enum ErrorCode {
     ErrorNullNotPtr = 1237,     // A 'null' wanted as something other than a raw pointer, or where nothing says which raw pointer type it is
     ErrorBoolNotNbr = 1238,     // A Bool where a number is wanted: a Bool converts to a number only explicitly, 'T.from(b)'
 
+    // Constants of the build (TEMPORARY, a provisional mechanism whose final design is open)
+    ErrorDefineName = 1239,     // isDefined or definedInt given a '-D' name that is not a string literal
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name

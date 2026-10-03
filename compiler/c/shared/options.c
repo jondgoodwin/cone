@@ -110,16 +110,17 @@ static void optParseShortOpt(opt_state_t* s) {
         s->remove++;
 }
 
-// Extract argument from short option
+// Extract argument from short option: the next argument ("-o dir"), or what
+// follows the option's letter in its own ("-odir", "-o=dir", "-DNAME=1"). The
+// letter has been stripped, so what follows starts after the '-'. 'opt_end'
+// marks where the first '=' was before the strip and is not used: an '=' inside
+// the value ("-DNAME=1") is part of it
 static void optParseShortOptArg(opt_state_t* s)
 {
-    if (*s->opt_end) {
-        s->arg_val = s->opt_end;
-        s->opt_start += strlen(s->opt_start);
-    } else if (*(s->opt_start) != '-') {
+    if (*(s->opt_start) != '-') {
         s->arg_val = s->argv[s->idx + 1];
     } else {
-        s->arg_val = s->opt_start + 1;
+        s->arg_val = s->opt_start + 1 + (s->opt_start[1] == '=');
         s->opt_start += strlen(s->opt_start);
     }
     s->remove++;
