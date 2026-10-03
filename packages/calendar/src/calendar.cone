@@ -1,0 +1,184 @@
+// The calendar package: the civil calendar over the time package's
+// Timestamp. A Timestamp read as the calendar reads it is a DateTime, a Date
+// and a TimeOfDay in UTC; and RFC 3339's dates and HTTP's are written and
+// read. No time zones yet: a DateTime is UTC, and a written offset ('+05:30')
+// is only read, into UTC.
+//
+//   mod when;
+//   import time use Timestamp;
+//   import calendar use Date, DateTime;
+//
+//   fn main() i32 {
+//     imm now = DateTime.fromTimestamp(Timestamp.now());
+//     imm today = now.date();                   // a Date: today.year(), ...
+//     imm text = now.rfc3339();                 // '2026-10-03T14:05:09.25Z'
+//     match Date.fromYmd(2026, 12, 25) {
+//       case imm d Some { ... d.value.daysSince(today) ... }
+//       case is None { ... }                    // no such date
+//     }
+//     match calendar.parseHttpDate("Sun, 06 Nov 1994 08:49:37 GMT") {
+//       case imm ok Ok { ... ok.value ... }     // a Timestamp
+//       case imm e Error { ... e.value.message() ... }
+//     }
+//     0i32;
+//   }
+//
+//   Date         a year, a month and a day                       (DATE)
+//   Weekday      Monday to Sunday                                (DATE)
+//   TimeOfDay    an hour, a minute, a second, a nanosecond       (TIME OF DAY)
+//   DateTime     a Date and a TimeOfDay, in UTC                  (DATETIME)
+//   TimeError    why a text is not a date or a time              (FORMATS)
+//
+// WHY A PACKAGE OF ITS OWN. The time package is a foundation that sync,
+// thread, fs and process import, and it needs nothing but libc. The calendar
+// writes its text into a collections String, so it sits a layer above, and
+// a program that only measures time or sleeps does not take it in.
+//
+// THE CALENDAR. The proleptic Gregorian calendar: its leap-year rule run
+// back before 1582, when it was adopted, and on past 9999, years counted
+// astronomically (year 0 is 1 BC, -1 is 2 BC), as ISO 8601 counts them.
+// Every day is 86400 seconds, as a Timestamp's is: no leap second. No names
+// of months or days but HTTP's English ones, and no pattern language
+// ('%Y-%m-%d'): each format is a function of its own. All of it is
+// arithmetic, no OS's. A part out of its range is never wrapped or carried
+// into a value: construction answers an Option, None for a date or a time
+// that does not exist, and reading a text a core Result.
+//
+// DATE. A year (an i32), a month (1 to 12) and a day of the month, made
+// only when the day exists. The days since 1970-01-01 are Howard Hinnant's
+// days_from_civil and civil_from_days, exact for every year a Date holds.
+//
+//   Date.fromYmd(y, m, d)           Some Date, or None: Date.fromYmd(2026,
+//                                   2, 29) is None
+//   Date.fromUnixDays(n)            the date n days after 1970-01-01
+//   d.unixDays()                    the days since 1970-01-01, negative
+//                                   before it
+//   d.year() d.month() d.day()      an i32, an i8, an i8
+//   d.weekday()                     a Weekday: Weekday.Monday[] to Sunday[]
+//   d.isoWeekday()                  ISO 8601's number for it, 1 (Monday) to 7
+//   d.dayOfYear()                   1 to 365, or 366
+//   d.isLeapYear()  d.daysInMonth()  d.daysInYear()
+//   d.addDays(n)  d.subDays(n)      n days later, or earlier
+//   d.daysSince(e)                  the days from e to d, negative when e is
+//                                   later
+//   ==  !=  <  <=  >  >=            earlier is less
+//   calendar.isLeapYear(y)          the same rules, for a year alone
+//   calendar.daysInMonth(y, m)      (0 for a month not 1 to 12)
+//
+// 'new Date()' is 1970-01-01, the spelling a field's default takes. A year
+// that arithmetic carries past i32's range (about two billion years) wraps,
+// as the time package's overflow does.
+//
+// TIME OF DAY. An hour (0 to 23), a minute and a second (0 to 59) and a
+// nanosecond (0 to 999999999).
+//
+//   TimeOfDay.fromHms(h, m, s)      Some TimeOfDay, or None; a fourth
+//   TimeOfDay.fromHms(h, m, s, ns)  argument, the nanoseconds, defaults to 0
+//   tod.hour() tod.minute()         i8s
+//   tod.second()
+//   tod.nanosecond()                an i32
+//   tod.sinceMidnight()             a Duration
+//   ==  !=  <  <=  >  >=            earlier is less
+//
+// 'new TimeOfDay()' is midnight.
+//
+// DATETIME. A Date and a TimeOfDay, in UTC: the calendar's reading of a
+// Timestamp, over any year a Date holds, where a Timestamp holds only 1677
+// to 2262.
+//
+//   DateTime.fromParts(date, tod)
+//   DateTime.fromYmdHms(y, mo, d, h, mi, s)       Some DateTime, or None;
+//   DateTime.fromYmdHms(y, mo, d, h, mi, s, ns)   ns defaults to 0
+//   DateTime.fromTimestamp(t)       every Timestamp has one
+//   dt.toTimestamp()                Some Timestamp, or None outside
+//                                   1677-09-21T00:12:43.145224192Z to
+//                                   2262-04-11T23:47:16.854775807Z
+//   dt.date()  dt.time()
+//   dt + d   dt - d                 a Duration later or earlier, carried
+//                                   across days, months and years
+//   dt - e                          the Duration from e to dt (wrapping past
+//                                   292 years, as a Duration does)
+//   ==  !=  <  <=  >  >=            earlier is less
+//
+// 'new DateTime()' is 1970-01-01T00:00:00Z, the epoch.
+//
+// FORMATS. Each is written exactly and read strictly: the whole text, the
+// format and nothing else, every part in its range; anything else is
+// refused, never read as some other moment. A refusal is a core Result's
+// Error holding a TimeError: the byte it stopped at (from 0) and the reason,
+// and its 'message()' the line to show a person, 'at byte 5: the month is
+// 13, outside 01 to 12'. Cone has no '?' yet, so a caller matches it (as
+// above). What is written is a collections String. A Timestamp is written
+// and read by the package's own functions, since it is the time package's
+// type: calendar.rfc3339(t), calendar.httpDate(t) and their parsers.
+//
+// RFC 3339, in UTC: '2026-10-03T14:05:09Z'.
+//
+//   d.rfc3339()                     '2026-10-03', a full-date
+//   tod.rfc3339()                   '14:05:09', a partial-time
+//   dt.rfc3339()                    '2026-10-03T14:05:09Z'
+//   calendar.rfc3339(t)             the same, of a Timestamp
+//   Date.parseRfc3339(text)         each reads what its type writes
+//   TimeOfDay.parseRfc3339(text)
+//   DateTime.parseRfc3339(text)
+//   calendar.parseRfc3339(text)     a Timestamp
+//
+// A fraction of a second is written only when there is one, in as few
+// digits as hold it exactly ('14:05:09.5', '14:05:09.000000001'), and read
+// in one to nine digits; more than nine is refused, not rounded. A
+// date-time is read with its offset, which RFC 3339 requires: 'Z', or
+// '+hh:mm' or '-hh:mm', converted to UTC ('-00:00' is UTC too); 't' and 'z'
+// may be lower case, as RFC 3339 allows; a space for the 'T' is refused. A
+// second of 60, a leap second, is refused, since a Timestamp does not count
+// them. RFC 3339's years are 0000 to 9999; a year outside them is written,
+// and read, in ISO 8601's expanded form, a sign and at least six digits
+// ('+010000-01-01', '-000044-03-15'), so that every DateTime is written and
+// read back. A Timestamp's text outside its range is refused, by
+// calendar.parseRfc3339, with the range.
+//
+// HTTP's dates (RFC 9110, section 5.6.7), of a Timestamp only:
+//
+//   calendar.httpDate(t)            IMF-fixdate, 'Sun, 06 Nov 1994 08:49:37
+//                                   GMT', the fraction of a second dropped
+//                                   toward the past
+//   calendar.parseHttpDate(text)    any of the three forms
+//   calendar.parseHttpDateAsOf(text, now)
+//
+// A recipient must read all three forms, RFC 9110 says, and these do:
+// IMF-fixdate, RFC 850's ('Sunday, 06-Nov-94 08:49:37 GMT') and asctime's
+// ('Sun Nov  6 08:49:37 1994'), every name case-sensitive, as HTTP-date
+// is. RFC 850's two-digit year is the latest year ending in those digits
+// that is not more than 50 years after now, as RFC 9110 rules: 'now' is
+// Timestamp.now() for parseHttpDate, and the Timestamp given to
+// parseHttpDateAsOf, for a test or a replay. The day's name must be the
+// date's: 'Mon, 06 Nov 1994' is refused, since 6 November 1994 was a
+// Sunday. A leap second is refused, as in RFC 3339.
+
+mod calendar;
+
+import time use Duration, Timestamp;
+import collections use String;
+
+const nsPerSecond = 1000000000i64;
+
+// ---------------------------------------------------------------------------
+// A Timestamp written and read
+// ---------------------------------------------------------------------------
+
+// RFC 3339 in UTC, as DateTime's: '2026-10-03T14:05:09.25Z'
+pub fn rfc3339(t Timestamp) String { DateTime.fromTimestamp(t).rfc3339(); }
+
+// An RFC 3339 date-time, converted to UTC by its offset, as a Timestamp, or
+// why not
+pub fn parseRfc3339(text &[]u8) Result[Timestamp, TimeError] { parseTimestamp(text); }
+
+// HTTP's IMF-fixdate, 'Sun, 06 Nov 1994 08:49:37 GMT', the fraction of a
+// second dropped
+pub fn httpDate(t Timestamp) String { httpDateOf(t); }
+
+// An HTTP date in any of its three forms, or why not; RFC 850's two-digit
+// year read against Timestamp.now()
+pub fn parseHttpDate(text &[]u8) Result[Timestamp, TimeError] { parseHttp(text, Timestamp.now()); }
+
+// The same, RFC 850's two-digit year read against now
+pub fn parseHttpDateAsOf(text &[]u8, now Timestamp) Result[Timestamp, TimeError] { parseHttp(text, now); }

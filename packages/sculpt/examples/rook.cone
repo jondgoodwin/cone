@@ -1,0 +1,87 @@
+// rook: a chess rook cut by booleans. The body is a profile lathed about y
+// (a closed solid: the profile starts and ends on the axis); its top is
+// hollowed by a cylinder (a lathed rectangle) taken away, then notched into
+// four crenellations by two crossing bars taken away, each a box. Three
+// differences in a row, each result the next one's input.
+//
+//   congo run packages/sculpt/examples/rook.cone
+//
+// It writes rook.obj in the current folder, triangulated with flat normals,
+// and prints each step's counts and volume.
+
+mod rook;
+
+import stdio use *;
+import collections use *;
+import geomath use *;
+import mesh use *;
+import sculpt use *;
+
+// A box from lo to hi: the cube cage, scaled and moved
+fn box(lo Vec3, hi Vec3) PolyMesh {
+  mut parts = List[PolyMesh].empty();
+  parts.push(PolyMesh.cube(0.5));
+  mut places = List[Transform3].empty();
+  places.push(new Transform3((lo + hi) * 0.5, Quat.identity(), hi - lo));
+  mut problems = List[String].empty();
+  joinPlaced(&parts, &places, &mut problems);
+}
+
+// The signed volume, by the divergence theorem over each face's fan
+fn volume(m &PolyMesh) f32 {
+  mut sum f32 = 0.;
+  mut f = 0usize;
+  while f < m.faceCount() {
+    imm pts = m.facePositions(u32.from(f));
+    mut i = 1usize;
+    while i + 1usize < pts.len() {
+      sum = sum + pts[0usize].dot(pts[i].cross(*pts[i + 1usize]));
+      i = i + 1usize;
+    }
+    f = f + 1usize;
+  }
+  sum / 6.;
+}
+
+fn show(name &[]u8, m &PolyMesh, problems &List[String]) {
+  printStr(name); print <- ": "; print <- m.vertexCount(); print <- " vertices, "; print <- m.faceCount();
+  print <- " faces, volume "; print <- f64.from(volume(m));
+  imm bad = m.validate();
+  if bad.len() > 0usize { print <- " (not valid)"; }
+  print <- "\n";
+  mut i = 0usize;
+  while i < problems.len() {
+    print <- "  "; printStr(problems[i].view()); print <- "\n";
+    i = i + 1usize;
+  }
+}
+
+fn main() i32 {
+  imm pts Array[Vec2, 9] = [new Vec2(0., 0.), new Vec2(0.9, 0.), new Vec2(0.9, 0.15), new Vec2(0.75, 0.25),
+    new Vec2(0.6, 0.35), new Vec2(0.55, 1.2), new Vec2(0.7, 1.35), new Vec2(0.7, 1.7), new Vec2(0., 1.7)];
+  imm profile = Profile.fromPoints(&pts, false);
+  imm body = lathe(&profile, new Vec3(0., 1., 0.), 2. * pi, 32u32);
+  mut problems = List[String].empty();
+  show("body", &body, &problems);
+
+  // The hollow: a cylinder of radius 0.5 from 1.45 up through the top
+  imm rect Array[Vec2, 4] = [new Vec2(0., 1.45), new Vec2(0.5, 1.45), new Vec2(0.5, 2.), new Vec2(0., 2.)];
+  imm hollowProfile = Profile.fromPoints(&rect, false);
+  imm hollow = lathe(&hollowProfile, new Vec3(0., 1., 0.), 2. * pi, 32u32);
+  imm cup = booleanDifference(&body, &hollow, &mut problems);
+  show("hollowed", &cup, &problems);
+
+  // The crenellations: two bars 0.24 wide, cutting 0.2 down from the top
+  imm bar1 = box(new Vec3(-1., 1.5, -0.12), new Vec3(1., 2., 0.12));
+  imm bar2 = box(new Vec3(-0.12, 1.5, -1.), new Vec3(0.12, 2., 1.));
+  imm once = booleanDifference(&cup, &bar1, &mut problems);
+  show("one bar", &once, &problems);
+  imm rook = booleanDifference(&once, &bar2, &mut problems);
+  show("rook", &rook, &problems);
+
+  imm tri = rook.triangulate(false);
+  if writeObj(&tri, "rook.obj") {0;} else {
+    print <- "Could not write rook.obj\n";
+    1;
+  };
+}

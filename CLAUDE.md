@@ -195,10 +195,30 @@ Visual Studio projects stay at the root.
   measuring and deadlines), `Timestamp` (UTC, nanoseconds since 1970, leap
   seconds ignored) and `Clock` (the real steady clock, or a synthetic one
   advanced by hand, for tests); `sync`'s timeouts, `thread.sleep`,
-  `process`'s time limit and `fs`'s file times take them; no calendar yet;
+  `process`'s time limit and `fs`'s file times take them; it imports only
+  `libc`, and has no calendar;
   its values no OS's, `Timestamp.now` ISO C's (C11 `timespec_get`, bound
   in `libc`), and `Instant.now` Windows only (`QueryPerformanceCounter`:
   ISO C reaches no steady clock);
+  `calendar` is the civil calendar over `time`'s `Timestamp`, pure
+  arithmetic, no time zones: `Date` (proleptic Gregorian, any i32 year,
+  Hinnant's day-count algorithms), `TimeOfDay`, `DateTime` (UTC, to and from
+  a `Timestamp`) and `Weekday`, made only when they exist, and RFC 3339 and
+  HTTP's dates (all three of RFC 9110's forms read) written and read
+  strictly, a refusal a `TimeError` (the byte and why); a package of its
+  own, over `time` and `collections`, so that `time` stays on `libc` alone;
+  `timewheel` is the async I/O runtime's timers, pure data (no threads, no
+  OS): a `Wheel` holding timeouts in tokio's hierarchical wheel (six levels
+  of 64 slots, a 1 ms tick, a bit per slot; arm and cancel O(1), a timer
+  firing up to a tick late, cascading rather than expiring in place) and
+  on-time deadlines in a small precise set (a heap), anything due within a
+  tick going precise by itself; `insert(at, token)` takes an `Instant` and
+  a plain `u64` token and gives a `TimerId` with a generation; `cancel` is
+  idempotent; `nextExpiry` and `nextPrecise` bound the loop's wait and set
+  its high-resolution timer; `expired(now, out)` delivers each timer once,
+  in deadline order; 8 lanes each have a slop (coalescing); its tests run
+  on `time`'s synthetic clock, and its example `bench.cone` times each
+  operation;
   `collections` is a growable `List[T]`, an owned `String` and a string-keyed
   `Dict[K, V]`, each holding its elements in one block from `libc`'s
   allocator and moving them with core's `mem` intrinsics; `arena` is an

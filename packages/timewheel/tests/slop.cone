@@ -1,0 +1,91 @@
+// Slop: a lane whose timers may fire up to 10 ms late rounds each up to the
+// next 10 ms of the wheel's grid, so timers near one another fire in one wake
+// (a background lane's idle timeouts, say), while lane 0, with none, fires
+// each at its own tick. A lane's slop is whole ticks; one under two ticks is
+// none. Changing it moves no timer already armed, and a deadline under a
+// tick away is precise in any lane.
+
+mod slop;
+
+import testing use *;
+import time use Duration, Instant, Clock;
+import collections use List;
+import timewheel use *;
+
+// An instant's nanoseconds, or -1 for None
+fn ns(o Option[Instant]) i64 {
+  mut r = -1i64;
+  match o {
+    case imm s Some { r = s.value.nanos(); }
+    case is None[Instant] {}
+  }
+  r;
+}
+
+// Wake as the loop would, and say how many fired
+fn wake(w &mut Wheel, clock &mut Clock, out &mut List[Expiry]) usize {
+  imm next = ns(w.nextExpiry());
+  if next > clock.now().nanos() { clock.advance(Duration.fromNanos(next - clock.now().nanos())); }
+  w.expired(clock.now(), out);
+}
+
+fn main() i32 {
+  mut clock = Clock.synth();
+  mut w = Wheel.make(clock.now());
+  mut out = new List[Expiry];
+  imm t0 = clock.now();
+  expectInt(w.slopOf(1u32).nanos(), 0i64, "lanes start with no slop");
+  w.setSlop(1u32, Duration.fromMillis(10));
+  expectInt(w.slopOf(1u32).nanos(), 10000000i64, "lane 1: 10 ms");
+  w.setSlop(2u32, Duration.fromMicros(1900));
+  expectInt(w.slopOf(2u32).nanos(), 1000000i64, "1.9 ms is one whole tick");
+
+  // Six in lane 1 between 1 and 9.9 ms, one in lane 0 at 4 ms, one in lane 2
+  w.insertIn(1u32, t0 + Duration.fromMicros(9900), 6u64);
+  w.insertIn(1u32, t0 + Duration.fromMicros(1000), 1u64);
+  w.insertIn(1u32, t0 + Duration.fromMicros(2500), 2u64);
+  w.insertIn(1u32, t0 + Duration.fromMicros(7000), 5u64);
+  w.insertIn(1u32, t0 + Duration.fromMicros(3000), 3u64);
+  w.insertIn(1u32, t0 + Duration.fromMicros(5000), 4u64);
+  w.insert(t0 + Duration.fromMicros(4000), 100u64);
+  w.insertIn(2u32, t0 + Duration.fromMicros(6500), 200u64);
+  // A deadline under a tick is precise even in a lane with slop
+  imm now = w.insertIn(1u32, t0 + Duration.fromMicros(400), 50u64);
+  expect(w.isPrecise(now), "under a tick: precise in any lane");
+
+  expectUInt(u64.from(wake(&mut w, &mut clock, &mut out)), 1u64, "first wake: the precise one");
+  expectInt(clock.now().nanos(), 400000i64, "exactly on time");
+  expectUInt(u64.from(wake(&mut w, &mut clock, &mut out)), 1u64, "second: lane 0's, alone");
+  expectInt(clock.now().nanos(), 4000000i64, "at its tick, 4 ms");
+  expectUInt(out[1usize].token, 100u64, "lane 0's");
+  expectUInt(u64.from(wake(&mut w, &mut clock, &mut out)), 1u64, "third: lane 2's, no slop to speak of");
+  expectInt(clock.now().nanos(), 7000000i64, "at its own tick");
+  expectUInt(u64.from(wake(&mut w, &mut clock, &mut out)), 6u64, "fourth: lane 1's six in one wake");
+  expectInt(clock.now().nanos(), 10000000i64, "at 10 ms");
+  mut k = 0usize;
+  mut ordered = true;
+  mut maxLate = 0i64;
+  while k < 6usize {
+    imm e = out[3usize + k];
+    if e.token != u64.from(k) + 1u64 { ordered = false; }
+    imm late = clock.now().nanos() - e.deadline.nanos();
+    if late > maxLate { maxLate = late; }
+    k = k + 1usize;
+  }
+  expect(ordered, "in deadline order");
+  expectInt(maxLate, 9000000i64, "the 1 ms one 9 ms late, within its slop");
+  expectInt(ns(w.nextExpiry()), -1i64, "all fired");
+  expectUInt(w.stats().wakes, 4u64, "nine timers, four wakes");
+
+  // Changing a lane's slop moves no timer already armed
+  imm a = w.insertIn(1u32, clock.now() + Duration.fromMicros(12500), 7u64);
+  w.setSlop(1u32, Duration.zero());
+  imm b = w.insertIn(1u32, clock.now() + Duration.fromMicros(12500), 8u64);
+  expectInt(ns(w.nextExpiry()), 23000000i64, "the new one at its own tick, 23 ms");
+  expectUInt(u64.from(wake(&mut w, &mut clock, &mut out)), 1u64, "fires alone");
+  expectUInt(out[9usize].token, 8u64, "b");
+  expectInt(ns(w.nextExpiry()), 30000000i64, "the old one still on the 10 ms grid, 30 ms");
+  expect(w.isPending(a), "a waits");
+  expect(!w.isPending(b), "b fired");
+  done();
+}
