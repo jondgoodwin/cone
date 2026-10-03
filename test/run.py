@@ -129,6 +129,7 @@ ANNOTATABLE = ("reject", "warn")
 SCENARIO_KEYS = {
     "category", "description", "tags", "diagnostics", "exit", "xfail",
     "run", "unlocated", "check", "argv", "link", "include", "program_exit",
+    "stderr_mask",
 }
 
 
@@ -637,6 +638,10 @@ class Scenario:
     includes: tuple[Path, ...] = ()
     # 'run' only: the exit status the program itself must return
     program_exit: int = 0
+    # 'run' only: patterns whose matches in the program's stderr are written
+    # '<masked>' before it is compared with the .err file: what differs from
+    # run to run, such as a thread's identity
+    stderr_mask: tuple[str, ...] = ()
     xfail: bool = False
     annotations: list[Annotation] = field(default_factory=list)
 
@@ -760,6 +765,17 @@ def load_group(group_dir: Path, codes: dict[str, int]) -> list[Scenario]:
         elif not isinstance(program_exit, int):
             raise SuiteError(f"{where}: 'program_exit' is an integer, or \"abort\" for a program"
                              f" that panics")
+        stderr_mask = table.get("stderr_mask", [])
+        if "stderr_mask" in table and category != "run":
+            raise SuiteError(f"{where}: only a 'run' scenario's program writes stderr, so"
+                             f" 'stderr_mask' belongs to one")
+        if not isinstance(stderr_mask, list) or not all(isinstance(m, str) for m in stderr_mask):
+            raise SuiteError(f"{where}: 'stderr_mask' is a list of regular expressions")
+        for mask in stderr_mask:
+            try:
+                re.compile(mask)
+            except re.error as exc:
+                raise SuiteError(f"{where}: 'stderr_mask' {mask!r} is not a regular expression: {exc}")
 
         # R2.10 names the total diagnostic count as recover's file-level
         # expectation. It asserts the count rather than each diagnostic, so
@@ -819,6 +835,7 @@ def load_group(group_dir: Path, codes: dict[str, int]) -> list[Scenario]:
             link=link,
             includes=includes,
             program_exit=program_exit,
+            stderr_mask=tuple(stderr_mask),
             xfail=bool(table.get("xfail", False)),
         )
         if source is not None:
@@ -2543,6 +2560,8 @@ class Runner:
         if err_path.exists():
             expected_err = normalize(err_path.read_text(encoding="utf-8"))
             actual_err = normalize(ran.stderr)
+            for mask in scenario.stderr_mask:
+                actual_err = re.sub(mask, "<masked>", actual_err)
             if trimmed(actual_err) != trimmed(expected_err):
                 result.status = FAIL
                 result.problems.append("stderr does not match "
