@@ -154,6 +154,7 @@ A name use analyzes the declaration it names, then reads what it needs:
 | `nameUseTypeCheck` | a value declaration — variable, function, field, constant |
 | `fnCallTypeCheck` | its callee, arguments and receiver |
 | `fnCallLowerMethod` | every candidate a member name declares, before selection compares signatures (`fnCallDemandCandidates`) |
+| `fnCallLowerOverloadFn` | every candidate an overload name declares, a type's or a module's, the same way |
 | `structCheckTraitReqs` | each method a mixed-in trait requires, before the type's own is compared with it |
 | `itypeTypeCheck` | any type named in a signature or a declared type |
 
@@ -166,6 +167,12 @@ signature's reference parameter matches no receiver. `self.later()` was
 walk state of the candidate's own type rather than the caller's (Rule 8:
 `fnDclTypeCheck` compares a method's `self` with `pstate->typenode`). A number
 type's methods are skipped: corenumber builds them typed and nothing checks them.
+**An overload name is a use too**, and the call through it skips the name-use
+check, so its selection demands each candidate the same way; a module's function
+is checked with no type around it, as the module's walk checks it. An unchecked
+candidate declared later in its module compares its parameters, but its return
+type is still the generic call written, `List[Vec2]`, so the call's value fits
+nothing that wants the instance.
 **A bare name is demanded the same way** (`nameUseTypeCheck`): a member of a type
 not yet begun is analyzed under its own type's walk state, not the use's. A bare
 call in a generic enum's variant is bound to the enum instance's own method, and
