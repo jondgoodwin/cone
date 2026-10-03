@@ -1,0 +1,361 @@
+// Sessions in memory, sans-IO: a client and a server made from the test
+// certificates (tests/certs, README there), their bytes moved between them
+// by hand, with no socket and no loop. Checked: the handshake (TLS 1.3 and
+// 1.2, ALPN), data both ways, a body larger than many records, close_notify
+// both ways, a stream that ends without it, resumption, and each refusal:
+// a wrong name, an expired certificate, an untrusted root, pinning both
+// ways, the OS's verifier offline against the test root, no shared version,
+// no shared application protocol, garbage for a handshake, and contexts
+// that cannot be made.
+
+mod memory;
+
+import stdio use *;
+import testing use *;
+import fs;
+import collections use List, String;
+import tls;
+
+// A file of the certificates' folder, tests/certs: congo test runs a test
+// in build/<mode>/tests/<name>/, four folders below the package's
+fn certs(name &[]u8) String {
+  mut p = String.from("../../../../tests/certs/");
+  p.append(name);
+  p;
+}
+
+fn readText(name &[]u8) String {
+  imm p = certs(name);
+  mut out = String.empty();
+  match fs.readFile(p.view()) {
+    case mut r Ok {
+      out <=> r.value;
+      return out;
+    }
+    case imm e Error {}
+  }
+  printStr("cannot read ");
+  printStr(p.view());
+  printStr("\n");
+  String.empty();
+}
+
+fn client(v tls.Verifier) tls.Client {
+  mut cfg = tls.ClientConfig.make();
+  cfg.verify = v;
+  cfg.offline = true;
+  clientWith(cfg);
+}
+
+fn clientWith(cfg tls.ClientConfig) tls.Client {
+  match tls.Client.make(cfg) {
+    case mut r Ok {return r.value;}
+    case imm e Error {
+      printStr(e.value.message().view());
+      printStr("\n");
+    }
+  }
+  panic("the client context could not be made");
+}
+
+fn server(cert &[]u8, key &[]u8) tls.Server {
+  imm cfg = tls.ServerConfig.make(certs(cert).view(), certs(key).view());
+  serverWith(cfg);
+}
+
+fn serverWith(cfg tls.ServerConfig) tls.Server {
+  match tls.Server.make(cfg) {
+    case mut r Ok {return r.value;}
+    case imm e Error {
+      printStr(e.value.message().view());
+      printStr("\n");
+    }
+  }
+  panic("the server context could not be made");
+}
+
+fn roots() tls.Verifier {tls.Verifier.roots(readText("ca.pem").view());}
+
+// Move what each side has to send to the other until neither has any;
+// the OS's verifier, when asked for, is run here. Plaintext read on each
+// side is appended to its string
+fn pump(c &mut tls.Session, s &mut tls.Session, cin &mut String, sin &mut String) {
+  mut buf = new Array[u8, 20000] <- fill 0u8;
+  mut moved = true;
+  while moved {
+    moved = false;
+    if c.wantsVerify() {c.verifyNow();}
+    while c.pending() > 0usize {
+      imm n = c.transmit(&mut buf[0usize .. 20000usize]);
+      s.feed(&buf[0usize .. n]);
+      moved = true;
+    }
+    while s.pending() > 0usize {
+      imm n = s.transmit(&mut buf[0usize .. 20000usize]);
+      c.feed(&buf[0usize .. n]);
+      moved = true;
+    }
+    while c.canRead() {
+      imm n = c.read(&mut buf[0usize .. 20000usize]);
+      if n == 0usize {break;}
+      cin.append(&buf[0usize .. n]);
+    }
+    while s.canRead() {
+      imm n = s.read(&mut buf[0usize .. 20000usize]);
+      if n == 0usize {break;}
+      sin.append(&buf[0usize .. n]);
+    }
+  }
+}
+
+fn kindName(s &tls.Session) &[]u8 {
+  if s.isFailed() {tls.errorName(s.error().kind);} else {"none";}
+}
+
+// A handshake that must fail: the client's error kind, and the server's
+fn refused(label &[]u8, c &mut tls.Session, s &mut tls.Session, want tls.TlsErrorKind) {
+  mut a = String.empty();
+  mut b = String.empty();
+  pump(c, s, &mut a, &mut b);
+  printStr(label);
+  printStr(": client ");
+  printStr(kindName(c));
+  printStr(", server ");
+  printStr(kindName(s));
+  printStr("\n");
+  if c.isFailed() {
+    printStr("  ");
+    printStr(c.error().message().view());
+    printStr("\n");
+  }
+  expect(c.isFailed() and c.error().kind == want, label);
+  expect(not c.isOpen() and not s.isOpen(), "neither side is open");
+}
+
+fn main() i32 {
+  printStr("back end: ");
+  imm bv = tls.backendVersion();
+  printStr(&bv[0usize .. 13usize]);
+  printStr("\n");
+  imm srv = server("server.pem", "server.key");
+  imm cl = client(roots());
+
+  // A handshake, ALPN, data both ways
+  mut c = cl.session("localhost");
+  mut s = srv.session();
+  mut cin = String.empty();
+  mut sin = String.empty();
+  pump(&mut c, &mut s, &mut cin, &mut sin);
+  require(c.isOpen() and s.isOpen(), "the handshake is done on both sides");
+  expect(c.pollEvent() == tls.SessionEvent.HandshakeDone[], "the client hears HandshakeDone");
+  expect(c.pollEvent() == tls.SessionEvent.Nothing[], "once");
+  expect(s.pollEvent() == tls.SessionEvent.HandshakeDone[], "the server hears HandshakeDone");
+  imm ci = c.info();
+  printStr("first: ");
+  printStr(ci.versionName.view());
+  printStr(" ");
+  printStr(ci.cipher.view());
+  printStr(", ALPN ");
+  printStr(ci.alpn.view());
+  printStr(", verified by ");
+  printStr(tls.verifyKindName(ci.verifiedBy));
+  printStr("\n");
+  expect(ci.version == tls.TlsVersion.Tls13[], "TLS 1.3 by default");
+  expectStr(ci.alpn.view(), "http/1.1", "ALPN chose http/1.1");
+  expectStr(s.info().alpn.view(), "http/1.1", "the server says so too");
+  expect(not ci.resumed, "a first session is not resumed");
+  expectUInt(u64.from(c.write("GET / HTTP/1.1\r\n\r\n")), 18u64, "the client writes");
+  pump(&mut c, &mut s, &mut cin, &mut sin);
+  expectStr(sin.view(), "GET / HTTP/1.1\r\n\r\n", "the server reads it");
+  // A body of 200,000 bytes: thirteen records
+  mut body = String.empty();
+  mut k = 0u32;
+  while k < 200000u32 {
+    body.appendByte(u8.from(k % 251u32));
+    k = k + 1u32;
+  }
+  expectUInt(u64.from(s.write(body.view())), 200000u64, "the server writes the body whole");
+  pump(&mut c, &mut s, &mut cin, &mut sin);
+  expectUInt(u64.from(cin.len()), 200000u64, "the client reads every byte");
+  expect(cin.view() == body.view(), "the bytes are the same");
+
+  // close_notify, both ways
+  imm before = tls.stats();
+  c.close();
+  pump(&mut c, &mut s, &mut cin, &mut sin);
+  expect(s.peerEnded(), "the server sees the client's close_notify");
+  expect(s.info().closeNotify and not s.info().truncated, "...as close_notify, not a cut");
+  expect(s.pollEvent() == tls.SessionEvent.PeerClosed[], "the server hears PeerClosed");
+  s.close();
+  pump(&mut c, &mut s, &mut cin, &mut sin);
+  expect(c.peerEnded() and c.info().closeNotify, "the client sees the server's");
+  imm after = tls.stats();
+  expectUInt(after.closeNotifySent - before.closeNotifySent, 2u64, "two close_notify sent");
+  expectUInt(after.closeNotifyReceived - before.closeNotifyReceived, 2u64, "two received");
+  expectUInt(u64.from(cl.cachedSessions()), 0u64, "nothing cached while the session lives");
+  // The first dies, its session kept to resume; one that never opened keeps none
+  c = cl.session("never.example");
+  expectUInt(u64.from(cl.cachedSessions()), 1u64, "the first session is kept to resume");
+  c = cl.session("localhost");
+  expectUInt(u64.from(cl.cachedSessions()), 0u64, "the new session took it");
+  s = srv.session();
+  pump(&mut c, &mut s, &mut cin, &mut sin);
+  require(c.isOpen(), "the second handshake is done");
+  expect(c.info().resumed, "the second session is resumed");
+  expect(s.info().resumed, "the server says so too");
+
+  // A stream that ends without close_notify
+  s.write("last words");
+  cin = String.empty();
+  pump(&mut c, &mut s, &mut cin, &mut sin);
+  c.feedEnd();
+  mut x = String.empty();
+  pump(&mut c, &mut s, &mut x, &mut sin);
+  expectStr(cin.view(), "last words", "what came before the end is read");
+  expect(c.peerEnded() and c.info().truncated and not c.info().closeNotify, "the end with no close_notify is truncated");
+
+  // TLS 1.2, and its resumption
+  mut c12cfg = tls.ClientConfig.make();
+  c12cfg.verify = roots();
+  c12cfg.maxVersion = tls.TlsVersion.Tls12[];
+  imm cl12 = clientWith(c12cfg);
+  c = cl12.session("localhost");
+  s = srv.session();
+  pump(&mut c, &mut s, &mut cin, &mut sin);
+  require(c.isOpen(), "a TLS 1.2 handshake");
+  expect(c.info().version == tls.TlsVersion.Tls12[], "TLS 1.2");
+  expectStr(c.info().versionName.view(), "TLSv1.2", "named TLSv1.2");
+  expectStr(c.info().alpn.view(), "http/1.1", "ALPN in TLS 1.2 too");
+  c = cl12.session("never.example");
+  c = cl12.session("localhost");
+  s = srv.session();
+  pump(&mut c, &mut s, &mut cin, &mut sin);
+  expect(c.isOpen() and c.info().resumed, "a TLS 1.2 session is resumed");
+
+  // A name the certificate does not hold
+  c = cl.session("wrong.example");
+  s = srv.session();
+  refused("wrong name", &mut c, &mut s, tls.TlsErrorKind.CertNameMismatch[]);
+  // An address it does hold, and one it does not
+  c = cl.session("127.0.0.1");
+  s = srv.session();
+  pump(&mut c, &mut s, &mut cin, &mut sin);
+  expect(c.isOpen(), "127.0.0.1 is in the certificate");
+  c = cl.session("127.0.0.2");
+  s = srv.session();
+  refused("wrong address", &mut c, &mut s, tls.TlsErrorKind.CertNameMismatch[]);
+
+  // An expired certificate, and one under a root the client is not given
+  imm expired = server("expired.pem", "expired.key");
+  c = cl.session("localhost");
+  s = expired.session();
+  refused("expired", &mut c, &mut s, tls.TlsErrorKind.CertExpired[]);
+  imm untrusted = server("untrusted.pem", "untrusted.key");
+  c = cl.session("localhost");
+  s = untrusted.session();
+  refused("untrusted", &mut c, &mut s, tls.TlsErrorKind.CertUntrusted[]);
+
+  // Pinning: the server's key; another key; the right key under a wrong name
+  imm pin = readText("server.pin");
+  imm pinned = client(tls.Verifier.pinnedSha256(pin.view()));
+  c = pinned.session("localhost");
+  s = srv.session();
+  pump(&mut c, &mut s, &mut cin, &mut sin);
+  expect(c.isOpen(), "the pinned key is accepted");
+  expect(c.info().verifiedBy == tls.VerifyKind.Pinned[], "verified by its pin");
+  c = pinned.session("anything.example");
+  s = srv.session();
+  pump(&mut c, &mut s, &mut cin, &mut sin);
+  expect(c.isOpen(), "a pin does not check the name");
+  c = pinned.session("localhost");
+  s = untrusted.session();
+  refused("another key", &mut c, &mut s, tls.TlsErrorKind.CertUntrusted[]);
+  imm twoPins = client(tls.Verifier.pinnedSha256(
+    "0000000000000000000000000000000000000000000000000000000000000000, 1aedc52c31f02d0dcefa5f639a8f7b5770d49c47b6f76a9214a93eeeead9360e"));
+  c = twoPins.session("localhost");
+  s = srv.session();
+  pump(&mut c, &mut s, &mut cin, &mut sin);
+  expect(c.isOpen(), "the second of two pins is accepted");
+
+  // The OS's verifier, offline: the test root is no root of the machine's
+  imm platform = client(tls.Verifier.platform());
+  c = platform.session("localhost");
+  s = srv.session();
+  mut a = String.empty();
+  mut b = String.empty();
+  // Run by hand, to see the handshake stop for it
+  mut buf = new Array[u8, 20000] <- fill 0u8;
+  mut n = c.transmit(&mut buf[0usize .. 20000usize]);
+  s.feed(&buf[0usize .. n]);
+  n = s.transmit(&mut buf[0usize .. 20000usize]);
+  c.feed(&buf[0usize .. n]);
+  expect(c.wantsVerify(), "the handshake waits for the OS's verifier");
+  expect(c.pollEvent() == tls.SessionEvent.VerifyNeeded[], "and says so");
+  expect(c.isHandshaking() and not c.isOpen(), "still handshaking");
+  refused("the OS's verifier, offline", &mut c, &mut s, tls.TlsErrorKind.CertUntrusted[]);
+  expectUInt(u64.from(c.error().osError), 0x800B0109u64, "CERT_E_UNTRUSTEDROOT");
+  expect(c.pollEvent() == tls.SessionEvent.Failed[], "the client hears Failed");
+
+  // No version both allow
+  mut v13 = tls.ClientConfig.make();
+  v13.verify = roots();
+  v13.minVersion = tls.TlsVersion.Tls13[];
+  imm cl13 = clientWith(v13);
+  mut s12cfg = tls.ServerConfig.make(certs("server.pem").view(), certs("server.key").view());
+  s12cfg.maxVersion = tls.TlsVersion.Tls12[];
+  imm srv12 = serverWith(s12cfg);
+  c = cl13.session("localhost");
+  s = srv12.session();
+  refused("versions", &mut c, &mut s, tls.TlsErrorKind.ProtocolVersion[]);
+
+  // No application protocol both speak
+  mut h2 = tls.ClientConfig.make();
+  h2.verify = roots();
+  h2.alpn.clear();
+  h2.alpn.push(String.from("h2"));
+  imm clh2 = clientWith(h2);
+  c = clh2.session("localhost");
+  s = srv.session();
+  refused("ALPN", &mut c, &mut s, tls.TlsErrorKind.NoAlpnMatch[]);
+  expect(s.isFailed() and s.error().kind == tls.TlsErrorKind.NoAlpnMatch[], "the server refused it");
+
+  // Nothing checked: development only
+  imm anyone = client(tls.Verifier.insecureDevelopmentOnly());
+  c = anyone.session("wrong.example");
+  s = untrusted.session();
+  pump(&mut c, &mut s, &mut cin, &mut sin);
+  expect(c.isOpen(), "the insecure verifier accepts anything");
+
+  // Garbage where the server's hello should be
+  c = cl.session("localhost");
+  c.feed("HTTP/1.1 400 Bad Request\r\n\r\n");
+  printStr("garbage: ");
+  printStr(kindName(&c));
+  printStr("\n");
+  expect(c.isFailed() and c.error().kind == tls.TlsErrorKind.Protocol[], "garbage is a protocol error");
+  // The end of the stream during a handshake
+  c = cl.session("localhost");
+  c.feedEnd();
+  expect(c.isFailed() and c.error().kind == tls.TlsErrorKind.Protocol[], "the end during the handshake");
+
+  // Contexts that cannot be made
+  match tls.Server.make(tls.ServerConfig.make(certs("missing.pem").view(), certs("server.key").view())) {
+    case imm r Ok {expect(false, "a missing certificate file is refused");}
+    case imm e Error {expect(e.value.kind == tls.TlsErrorKind.Config[], "a missing certificate file is refused");}
+  }
+  match tls.Server.make(tls.ServerConfig.make(certs("server.pem").view(), certs("expired.key").view())) {
+    case imm r Ok {expect(false, "a key that is not the certificate's is refused");}
+    case imm e Error {
+      printStr(e.value.message().view());
+      printStr("\n");
+      expect(e.value.kind == tls.TlsErrorKind.Config[], "a key that is not the certificate's is refused");
+    }
+  }
+  mut empty = tls.ClientConfig.make();
+  empty.verify = tls.Verifier.roots("no certificates here");
+  match tls.Client.make(empty) {
+    case imm r Ok {expect(false, "an empty bundle is refused");}
+    case imm e Error {expect(e.value.kind == tls.TlsErrorKind.Config[], "an empty bundle is refused");}
+  }
+  done();
+}

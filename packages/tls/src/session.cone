@@ -1,0 +1,590 @@
+// Session: one TLS connection's state, sans-IO, over an OpenSSL SSL object
+// and two memory BIOs: ciphertext is written into one and read out of the
+// other, and OpenSSL never sees a socket (see the package's header,
+// SESSIONS).
+//
+// How it is built. A session is in one of four phases: the handshake, the
+// handshake stopped for the OS's verifier, open, or failed. The handshake
+// is driven by SSL_do_handshake whenever bytes arrive; when the server's
+// chain has come, OpenSSL calls verifyChain (verify.cone), which stops it
+// with SSL_set_retry_verify unless the session has already given its
+// verdict, which verifyChain reads from the SSL object's slot 0 (app data):
+// so nothing of Cone's is reached from OpenSSL's callback but that number.
+// A pinned key is checked at once, on this thread; the OS's chain engine
+// is handed out as a pool operation. Events are bits, each reported once.
+
+// Phases
+const pHandshake = 0u32;
+const pVerify = 1u32;       // stopped: the OS's verifier has the chain
+const pOpen = 2u32;
+const pFailed = 3u32;
+
+// The verdict in the SSL object's slot 0, which verifyChain reads
+const verdictNone = 0usize;
+const verdictTrusted = 1usize;
+const verdictRefused = 2usize;
+
+// Events, each reported once by pollEvent
+const evHandshake = 1u32;
+const evVerify = 2u32;
+const evClosed = 4u32;
+const evFailed = 8u32;
+
+// What happened, once each (see the package's header, SESSIONS)
+pub enum SessionEvent {
+  Nothing,        // nothing new
+  HandshakeDone,  // open: plaintext may be written and read
+  VerifyNeeded,   // the OS's verifier must run: verifyOp or verifyNow
+  PeerClosed,     // the peer's stream has ended (close_notify, or its end)
+  Failed;         // the session failed: error()
+}
+
+// One TLS connection, in either role (see the package's header, SESSIONS)
+pub struct Session is Move {
+  ssl *u8;
+  rbio *u8;           // the network's bytes, for OpenSSL to read
+  wbio *u8;           // OpenSSL's bytes, for the network
+  state Shared;
+  isServer Bool;
+  kind VerifyKind;
+  pins List[u8];
+  resume Bool;
+  lane Lane;
+  offline Bool;
+  host String;
+  phase u32;
+  events u32;
+  verifyWanted Bool;  // the chain is ready for the OS's verifier
+  ownError Bool;      // the error was this package's verdict: OpenSSL's that follows is not the cause
+  verifyAt Instant;
+  verifyTime Duration;
+  begun Bool;         // its first handshake bytes have gone out or come in
+  begunAt Instant;
+  handshakeTime Duration;
+  wasOpen Bool;
+  mayRead Bool;       // bytes have come since a read last found none
+  eof Bool;           // the transport's stream has ended
+  gotClose Bool;      // the peer's close_notify came
+  endTold Bool;       // ...or the end without one has been reported
+  sentClose Bool;
+  err TlsError;
+
+  fn blank(st Shared, server Bool) Session {
+    imm s = &*st;
+    mut pins = List[u8].empty();
+    mut k = 0usize;
+    while k < s.pins.len() {
+      pins.push(*s.pins[k]);
+      k = k + 1usize;
+    }
+    imm kind = s.kind;
+    imm resume = s.resume;
+    imm lane = s.lane;
+    imm offline = s.offline;
+    imm ctx = s.ctx;
+    ERR_clear_error();
+    imm ssl = SSL_new(ctx);
+    if ssl as usize == 0usize {panic("tls: SSL_new failed: out of memory");}
+    imm r = BIO_new(BIO_s_mem());
+    imm w = BIO_new(BIO_s_mem());
+    SSL_set_bio(ssl, r, w);
+    new Session(ssl: ssl, rbio: r, wbio: w, state: st, isServer: server, kind: kind, pins: pins,
+      resume: resume, lane: lane, offline: offline, host: String.empty(), phase: pHandshake,
+      events: 0u32, verifyWanted: false, ownError: false, verifyAt: new Instant(),
+      verifyTime: Duration.zero(), begun: false, begunAt: new Instant(), handshakeTime: Duration.zero(),
+      wasOpen: false, mayRead: false, eof: false, gotClose: false,
+      endTold: false, sentClose: false, err: TlsError.none());
+  }
+
+  fn client(st Shared, serverName &[]u8) Session {
+    mut s = Session.blank(st, false);
+    s.host = String.from(serverName);
+    SSL_set_connect_state(s.ssl);
+    mut name = String.from(serverName);
+    imm cname = name.cstr();
+    // SNI carries a DNS name, never an address (RFC 6066)
+    if not isAddress(serverName) {SSL_ctrl(s.ssl, ctrlSetTlsextHostname, 0i32, cname);}
+    // The Roots verifier checks the name in OpenSSL; the others, themselves
+    if s.kind == VerifyKind.Roots[] {SSL_set1_host(s.ssl, cname);}
+    if s.resume {
+      imm cached = (&mut *s.state).takeCached(serverName);
+      if cached as usize != 0usize {
+        SSL_set_session(s.ssl, cached);
+        SSL_SESSION_free(cached);
+      }
+    }
+    // The ClientHello is ready to go at once
+    s.advance();
+    s;
+  }
+
+  fn server(st Shared) Session {
+    mut s = Session.blank(st, true);
+    SSL_set_accept_state(s.ssl);
+    s;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Bytes in and out
+  // ---------------------------------------------------------------------------
+
+  // Ciphertext that arrived: every byte is taken (how many)
+  pub fn feed(self &mut, cipher &[]u8) usize {
+    if cipher.len == 0usize or phase == pFailed {return cipher.len;}
+    self.begin();
+    mut put = 0usize;
+    BIO_write_ex(rbio, &cipher[0usize] as *u8, cipher.len, &mut put);
+    mayRead = true;
+    self.advance();
+    cipher.len;
+  }
+
+  // The transport's stream has ended (a TCP FIN)
+  pub fn feedEnd(self &mut) {
+    if eof {return;}
+    eof = true;
+    mayRead = true;
+    if phase == pHandshake or phase == pVerify {
+      self.fail(TlsErrorKind.Protocol[], 0u32, "the peer closed the connection during the handshake");
+    }
+  }
+
+  // Bytes ready to go out on the wire
+  pub fn pending(self &) usize {BIO_ctrl_pending(wbio);}
+
+  // Copy bytes to go out into out: how many
+  pub fn transmit(self &mut, out &[]mut u8) usize {
+    if out.len == 0usize {return 0usize;}
+    mut got = 0usize;
+    if BIO_read_ex(wbio, &mut out[0usize] as *u8, out.len, &mut got) != 1i32 {return 0usize;}
+    self.begin();
+    got;
+  }
+
+  // The handshake's clock starts with its first bytes, out or in
+  fn begin(self &mut) {
+    if begun {return;}
+    begun = true;
+    begunAt = Instant.now();
+  }
+
+  // Plaintext to protect and send: how many bytes were taken, all of them
+  // once the session is open, none before
+  pub fn write(self &mut, plain &[]u8) usize {
+    if phase != pOpen or sentClose or plain.len == 0usize {return 0usize;}
+    ERR_clear_error();
+    mut put = 0usize;
+    if SSL_write_ex(ssl, &plain[0usize] as *u8, plain.len, &mut put) == 1i32 {return put;}
+    self.failFromSsl(SSL_get_error(ssl, 0i32));
+    0usize;
+  }
+
+  // Whether plaintext may be waiting to be read
+  pub fn canRead(self &) Bool {phase == pOpen and mayRead and not gotClose;}
+
+  // Plaintext that came, into out: how many bytes; 0 when none is ready
+  pub fn read(self &mut, out &[]mut u8) usize {
+    if phase != pOpen or gotClose or out.len == 0usize {return 0usize;}
+    ERR_clear_error();
+    mut got = 0usize;
+    if SSL_read_ex(ssl, &mut out[0usize] as *u8, out.len, &mut got) == 1i32 {return got;}
+    imm e = SSL_get_error(ssl, 0i32);
+    if e == sslErrorWantRead or e == sslErrorWantWrite {
+      mayRead = false;
+      if eof and not gotClose and not endTold {
+        // The stream ended with no close_notify: an end all the same
+        endTold = true;
+        nTruncated.add(1u64);
+        events = events | evClosed;
+      }
+      return 0usize;
+    }
+    if e == sslErrorZeroReturn {
+      gotClose = true;
+      mayRead = false;
+      nCloseReceived.add(1u64);
+      events = events | evClosed;
+      return 0usize;
+    }
+    self.failFromSsl(e);
+    0usize;
+  }
+
+  // Queue close_notify: no more plaintext will be written
+  pub fn close(self &mut) {
+    if sentClose {return;}
+    sentClose = true;
+    if phase != pOpen {return;}
+    ERR_clear_error();
+    SSL_shutdown(ssl);
+    ERR_clear_error();
+    nCloseSent.add(1u64);
+  }
+
+  // ---------------------------------------------------------------------------
+  // State
+  // ---------------------------------------------------------------------------
+
+  // What has happened, once each, in the order the kinds are listed
+  pub fn pollEvent(self &mut) SessionEvent {
+    if (events & evHandshake) != 0u32 {
+      events = events & ~evHandshake;
+      return SessionEvent.HandshakeDone[];
+    }
+    if (events & evVerify) != 0u32 {
+      events = events & ~evVerify;
+      return SessionEvent.VerifyNeeded[];
+    }
+    if (events & evClosed) != 0u32 {
+      events = events & ~evClosed;
+      return SessionEvent.PeerClosed[];
+    }
+    if (events & evFailed) != 0u32 {
+      events = events & ~evFailed;
+      return SessionEvent.Failed[];
+    }
+    SessionEvent.Nothing[];
+  }
+
+  // The handshake is done: plaintext flows
+  pub fn isOpen(self &) Bool {phase == pOpen;}
+
+  // The handshake has not ended yet (waiting for the OS's verifier too)
+  pub fn isHandshaking(self &) Bool {phase == pHandshake or phase == pVerify;}
+
+  pub fn isFailed(self &) Bool {phase == pFailed;}
+
+  // The peer's stream has ended, and every byte of it has been read
+  pub fn peerEnded(self &) Bool {gotClose or (eof and not mayRead);}
+
+  // Why it failed (TlsError.none() while it has not)
+  pub fn error(self &) &TlsError {&err;}
+
+  // Whether close_notify has been queued
+  pub fn closed(self &) Bool {sentClose;}
+
+  // What it negotiated
+  pub fn info(self &) TlsInfo {
+    mut ap = null as *u8;
+    mut alen = 0u32;
+    SSL_get0_alpn_selected(ssl, &mut ap, &mut alen);
+    mut alpn = String.empty();
+    if alen > 0u32 {alpn.append(mem.sliceFromParts(ap, usize.from(alen)));}
+    imm v = if SSL_version(ssl) == tls13Version {TlsVersion.Tls13[];} else {TlsVersion.Tls12[];};
+    new TlsInfo(version: v, versionName: String.from(cText(SSL_get_version(ssl))),
+      cipher: String.from(cText(SSL_CIPHER_get_name(SSL_get_current_cipher(ssl)))), alpn: alpn,
+      resumed: SSL_session_reused(ssl) == 1i32, verifiedBy: kind, handshakeTime: handshakeTime,
+      verifyTime: verifyTime, closeNotify: gotClose, truncated: eof and not gotClose);
+  }
+
+  // ---------------------------------------------------------------------------
+  // The handshake
+  // ---------------------------------------------------------------------------
+
+  // Drive the handshake as far as the bytes it has allow
+  fn advance(self &mut) {
+    while phase == pHandshake {
+      ERR_clear_error();
+      imm r = SSL_do_handshake(ssl);
+      if r == 1i32 {
+        phase = pOpen;
+        wasOpen = true;
+        if begun {handshakeTime = Instant.now() - begunAt;}
+        events = events | evHandshake;
+        // Records may have come behind the last of the handshake
+        mayRead = true;
+        nHandshakes.add(1u64);
+        if SSL_session_reused(ssl) == 1i32 {nResumed.add(1u64);}
+        return;
+      }
+      imm e = SSL_get_error(ssl, r);
+      if e == sslErrorWantRead or e == sslErrorWantWrite {return;}
+      if e == sslErrorWantRetryVerify {
+        if kind == VerifyKind.Pinned[] {
+          self.checkPins();
+          continue;
+        }
+        phase = pVerify;
+        verifyWanted = true;
+        events = events | evVerify;
+        return;
+      }
+      // It fails, which ends the loop
+      self.failFromSsl(e);
+    }
+  }
+
+  // Pinning: the end certificate's public key against the pins, now
+  fn checkPins(self &mut) {
+    imm chain = SSL_get_peer_cert_chain(ssl);
+    mut hash = new Array[u8, 32] <- fill 0u8;
+    mut found = false;
+    if chain as usize != 0usize and OPENSSL_sk_num(chain) > 0i32 {
+      if spkiSha256(OPENSSL_sk_value(chain, 0i32), &mut hash) {
+        mut k = 0usize;
+        while k + 32usize <= pins.len() {
+          mut same = true;
+          mut j = 0usize;
+          while j < 32usize {
+            if *pins[k + j] != hash[j] {same = false;}
+            j = j + 1usize;
+          }
+          if same {found = true;}
+          k = k + 32usize;
+        }
+      }
+    }
+    if found {
+      SSL_set_ex_data(ssl, 0i32, verdictTrusted as *u8);
+      return;
+    }
+    SSL_set_ex_data(ssl, 0i32, verdictRefused as *u8);
+    err = TlsError.make(TlsErrorKind.CertUntrusted[], 0u32, "no pinned key matches the server's certificate");
+    ownError = true;
+  }
+
+  // The session fails: its error, reported once
+  fn fail(self &mut, kind TlsErrorKind, code u32, detail &[]u8) {
+    if phase == pFailed {return;}
+    if not ownError {err = TlsError.make(kind, code, detail);}
+    phase = pFailed;
+    verifyWanted = false;
+    events = events | evFailed;
+    nFailures.add(1u64);
+  }
+
+  // OpenSSL said e: why, as a TlsError
+  fn failFromSsl(self &mut, e i32) {
+    mut text = String.empty();
+    imm first = sslErrors(&mut text);
+    if ownError {
+      self.fail(err.kind, err.code, "");
+      return;
+    }
+    if e == sslErrorSyscall and first == 0u32 {
+      self.fail(TlsErrorKind.Protocol[], 0u32, "the transport ended");
+      return;
+    }
+    if e != sslErrorSsl {
+      mut d = String.from("OpenSSL said ");
+      d.appendInt(i64.from(e));
+      if text.len() > 0usize {
+        d.append(": ");
+        d.append(text.view());
+      }
+      self.fail(TlsErrorKind.Backend[], u32.from(e), d.view());
+      return;
+    }
+    imm reason = errReason(first);
+    if errLib(first) == errLibSsl and (first & errSystemFlag) == 0u32 {
+      if reason == reasonCertificateVerifyFailed {
+        // OpenSSL's own check, against the Roots verifier's bundle
+        imm vr = SSL_get_verify_result(ssl);
+        mut d = String.from(cText(X509_verify_cert_error_string(vr)));
+        d.append(" (OpenSSL's verify result ");
+        d.appendInt(i64.from(vr));
+        d.append(")");
+        self.fail(certKindOfVerifyResult(vr), u32.from(vr), d.view());
+        return;
+      }
+      if reason >= reasonAlertOffset and reason < reasonAlertOffset + 256u32 {
+        imm alert = reason - reasonAlertOffset;
+        mut d = String.from("the peer sent the fatal alert ");
+        d.append(cText(SSL_alert_desc_string_long(i32.from(alert))));
+        d.append(" (");
+        d.appendUInt(u64.from(alert));
+        d.append(")");
+        mut k TlsErrorKind = TlsErrorKind.Alert[];
+        if alert == 70u32 {k = TlsErrorKind.ProtocolVersion[];}
+        elif alert == 120u32 {k = TlsErrorKind.NoAlpnMatch[];}
+        self.fail(k, alert, d.view());
+        return;
+      }
+      if reason == reasonUnsupportedProtocol or reason == reasonNoProtocolsAvailable {
+        self.fail(TlsErrorKind.ProtocolVersion[], first, text.view());
+        return;
+      }
+      if reason == reasonNoApplicationProtocol {
+        self.fail(TlsErrorKind.NoAlpnMatch[], first, text.view());
+        return;
+      }
+    }
+    self.fail(TlsErrorKind.Protocol[], first, text.view());
+  }
+
+  // ---------------------------------------------------------------------------
+  // The OS's verifier (see the package's header, VERIFIERS)
+  // ---------------------------------------------------------------------------
+
+  // Whether the handshake waits for the OS's verifier, its job not yet
+  // handed out
+  pub fn wantsVerify(self &) Bool {verifyWanted;}
+
+  // The OS's verifier as a pool operation on the client's 'verifyLane': the
+  // chain the server sent and the name asked for, in a buffer from pool.
+  // Its completion goes to verifyDone
+  pub fn verifyOp(self &mut, pool &Pool) Op {
+    mut job = List[u8].empty();
+    self.verifyJob(&mut job);
+    mut b = IoBuf.empty();
+    match pool.take(job.len()) {
+      case mut s Some {b <=> s.value;}
+      case is None[IoBuf] {}
+    }
+    if b.capacity() < job.len() {
+      self.fail(TlsErrorKind.Backend[], 0u32, "the buffer pool refused the verifier's buffer");
+      return Op.Call[lane, &refusedWork, 0u64, b];
+    }
+    b.append(job.view());
+    Op.Call[lane, &verifyWork, if offline {1u64;} else {0u64;}, b];
+  }
+
+  // The OS's verifier's answer, from the pool
+  pub fn verifyDone(self &mut, c &mut Completion) {
+    if phase != pVerify {return;}
+    verifyTime = Instant.now() - verifyAt;
+    if c.isDone() and c.buf.len() >= 4usize {
+      self.verified(*(c.buf.base() as *u32));
+    } elif c.isDone() {
+      self.verified(0x80004005u32);
+    } else {
+      imm code = c.code;
+      ownError = true;
+      err = osError(code, "the OS's verifier could not be run");
+      self.verified(if code == 0u32 {0x80004005u32;} else {code;});
+    }
+  }
+
+  // The OS's verifier, run here: it blocks, perhaps fetching over the
+  // network. For a program with no loop
+  pub fn verifyNow(self &mut) {
+    if not verifyWanted {return;}
+    mut job = List[u8].empty();
+    self.verifyJob(&mut job);
+    imm code = osVerify(job.view(), offline);
+    verifyTime = Instant.now() - verifyAt;
+    self.verified(code);
+  }
+
+  // The job: the name, then the chain the server sent, each certificate in
+  // DER (see verify.cone)
+  fn verifyJob(self &mut, job &mut List[u8]) {
+    verifyWanted = false;
+    verifyAt = Instant.now();
+    nVerifications.add(1u64);
+    putU32(job, u32.from(host.len()));
+    appendBytes(job, host.view());
+    imm chain = SSL_get_peer_cert_chain(ssl);
+    imm n = if chain as usize == 0usize {0i32;} else {OPENSSL_sk_num(chain);};
+    putU32(job, u32.from(n));
+    mut k = 0i32;
+    while k < n {
+      imm x = OPENSSL_sk_value(chain, k);
+      imm len = i2d_X509(x, null);
+      if len <= 0i32 {
+        putU32(job, 0u32);
+      } else {
+        putU32(job, u32.from(len));
+        imm at = job.len();
+        mut j = 0i32;
+        while j < len {
+          job.push(0u8);
+          j = j + 1i32;
+        }
+        mut p = &mut (job.viewMut())[at] as *u8;
+        i2d_X509(x, &mut p as **u8);
+      }
+      k = k + 1i32;
+    }
+  }
+
+  // The verdict: 0 trusted, else the OS's error; the handshake goes on
+  fn verified(self &mut, code u32) {
+    if phase != pVerify {return;}
+    if code == 0u32 {
+      SSL_set_ex_data(ssl, 0i32, verdictTrusted as *u8);
+    } else {
+      SSL_set_ex_data(ssl, 0i32, verdictRefused as *u8);
+      if not ownError {
+        err = certError(code);
+        ownError = true;
+      }
+    }
+    phase = pHandshake;
+    self.advance();
+    if code != 0u32 and phase != pFailed {self.fail(err.kind, err.code, "");}
+  }
+
+  fn final(self &uni) {
+    // A client keeps its session to resume the server with, when it can be
+    if not isServer and resume and wasOpen and phase != pFailed {
+      imm sess = SSL_get1_session(ssl);
+      if sess as usize != 0usize {
+        if SSL_SESSION_is_resumable(sess) == 1i32 {
+          (&mut *state).putCached(host.view(), sess);
+          // Freed with no close_notify sent, OpenSSL would mark the session
+          // it is keeping not resumable (ssl_clear_bad_session); the
+          // connection did not fail, so it is let go as if it had closed
+          SSL_set_shutdown(ssl, sslSentShutdown | sslReceivedShutdown);
+        } else {
+          SSL_SESSION_free(sess);
+        }
+      }
+    }
+    SSL_free(ssl);
+  }
+}
+
+// Whether a server's name is an IP address (written as one) rather than a
+// DNS name
+fn isAddress(name &[]u8) Bool {
+  if name.len == 0usize {return false;}
+  mut k = 0usize;
+  while k < name.len {
+    imm c = name[k];
+    if c == ':' {return true;}
+    if not ((c >= '0' and c <= '9') or c == '.') {return false;}
+    k = k + 1usize;
+  }
+  true;
+}
+
+// The kind of a certificate error OpenSSL's verify result names
+fn certKindOfVerifyResult(vr i32) TlsErrorKind {
+  if vr == x509Expired or vr == x509NotYetValid {TlsErrorKind.CertExpired[];}
+  elif vr == x509HostnameMismatch or vr == x509IpMismatch {TlsErrorKind.CertNameMismatch[];}
+  elif vr == x509UnableToGetIssuer or vr == x509UnableToGetIssuerLocally or vr == x509DepthZeroSelfSigned or
+    vr == x509SelfSignedInChain {TlsErrorKind.CertUntrusted[];}
+  elif vr == x509Revoked {TlsErrorKind.CertRevoked[];}
+  else {TlsErrorKind.CertOther[];}
+}
+
+// The SHA-256 of a certificate's public key, its DER SubjectPublicKeyInfo
+fn spkiSha256(x *u8, out &mut Array[u8, 32]) Bool {
+  imm pk = X509_get_X509_PUBKEY(x);
+  if pk as usize == 0usize {return false;}
+  imm len = i2d_X509_PUBKEY(pk, null);
+  if len <= 0i32 {return false;}
+  imm der = libc.malloc(usize.from(len));
+  mut p = der;
+  i2d_X509_PUBKEY(pk, &mut p as **u8);
+  mut size = 32u32;
+  imm ok = EVP_Digest(der, usize.from(len), out as *u8, &mut size as *u32, EVP_sha256(), null) == 1i32;
+  libc.free(der);
+  ok;
+}
+
+fn putU32(l &mut List[u8], v u32) {
+  l.push(u8.from(v & 255u32));
+  l.push(u8.from((v >> 8u32) & 255u32));
+  l.push(u8.from((v >> 16u32) & 255u32));
+  l.push(u8.from(v >> 24u32));
+}
+
+fn appendBytes(l &mut List[u8], b &[]u8) {
+  mut k = 0usize;
+  while k < b.len {
+    l.push(b[k]);
+    k = k + 1usize;
+  }
+}
