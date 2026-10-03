@@ -50,17 +50,19 @@ call. Each expands to `if isDebugBuild() {assert(cond, ...);} else {}`.
 `isDebugBuild()` is a core intrinsic, a constant for the compile: true under
 `conec --debug` or `build: debug` (Congo's default for `build`, `run` and
 `test`; `--release` for the other), false otherwise. In a release build the
-branch is folded away (LLVM's `simplifycfg`, which both builds run), so the
-condition is never evaluated and nothing of the use reaches the object;
+branch is never generated (generation emits only the side of an `if` on a
+constant of the build that the build takes, `genlIf`), so the condition is
+never evaluated and nothing of the use reaches the object;
 `exception_assertdebug_release` pins both, the second with an IR check. A
 macro takes no default argument, so the form with a message has a name of its
 own. Plain `assert` stays a function: as one it takes a default message and
 the forwarded `file` and `line`, which a macro cannot, and it loses nothing by
 evaluating its condition, which it always does. The camelCase `assertDebug`
 is for now: whether Cone has a naming convention is a question Jon has queued
-for review, as is whether `conec` should take compile-time constants on its
-command line (C's `-D` and `#if`), of which `isDebugBuild()` is the first,
-narrow case.
+for review, as is the design of compile-time constants (C's `-D` and `#if`),
+of which `isDebugBuild()` was the first, narrow case. The target's OS and
+`conec -D` are built beside it as a provisional mechanism whose final design
+is open (`doc/reference/refintrinsic.html`, "Constants of the build").
 
 **The location is a default argument.** `srcFile()` and `srcLine()` are core
 intrinsics answering where their call is written, the file's name without its

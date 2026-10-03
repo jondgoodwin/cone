@@ -43,7 +43,10 @@ Visual Studio projects stay at the root.
   work is conestd's, with `srcFile` and `srcLine`, intrinsics outside `mem`,
   which as a parameter's default give a caller's location; and the macros
   `assertDebug` and `assertDebugMsg`, checked in a debug build only, through
-  `isDebugBuild()`, the third intrinsic outside `mem`); `stdio` prints;
+  `isDebugBuild()`, the third intrinsic outside `mem`, beside which
+  `isWindows()`, `isLinux()`, `isMacOS()`, `isWasm()`, `isDefined("NAME")`
+  and `definedInt("NAME")`, for `conec -D`, are a provisional mechanism
+  whose final design is open); `stdio` prints;
   `libc` and `posix` are C packages of raw bindings to the C library and the
   POSIX functions beyond it (Windows first), and `core` imports `libc` for its
   allocator; `sdl` is a C package of raw bindings to SDL3 (a window for

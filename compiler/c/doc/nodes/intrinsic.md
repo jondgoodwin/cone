@@ -25,7 +25,7 @@ reaches with the call's own arguments.
 **The registry is the definition of record, and it speaks Cone.** Each entry in
 `intrinsicRegistry` (`ir/stmt/intrinsic.c`) is a name, its signature as shapes
 over the one type parameter `T` (or over none: `traceRoots`, `srcFile`,
-`srcLine` and `isDebugBuild` are the entries without it, and their instances carry no `typearg`), whether a call can break memory safety (and so
+`srcLine`, `isDebugBuild` and the provisional constants of the build beside it are the entries without it, and their instances carry no `typearg`), whether a call can break memory safety (and so
 belongs in `trust`), whether a Cone fallback body may be written, the phase that
 answers it, whether this back end lowers it itself, and the class of types `T`
 may be where that is narrower than every type with a size (`IntrinsicClass`: the
@@ -153,7 +153,20 @@ type while each call gives its own orderings.
 | `atomicSwap[T]`, `atomicAdd[T]` … `atomicXor[T]` | operation | an `atomicrmw` (`xchg`, `add`, `sub`, `and`, `or`, `xor`), answering the value before |
 | `atomicCompareSwap[T]` | operation | a strong `cmpxchg` with both orderings, its `{T, i1}` rebuilt as the result tuple |
 | `srcFile`, `srcLine` | expansion | constants of where the call is, the source file's name without its folders (a private constant, one per file per module) and the line, `genlFnCall`. Declared at core's top level rather than in `mem`. Each may be a parameter's default value, the one default that is not a literal (`varDclTypeCheck`); `fnCallFinalizeArgs` appends a copy placed at the call taking the default (`intrinsicSrcCallAt`), so each call answers its own place. Written in a macro's body, each answers where the macro is used: `macroExpand` sets `CloneState.srcsite` to the outermost use (`macroSrcSite`), and `cloneFnCallNode` places a call to either there, while an argument keeps its own place ([generic](generic.md), "Macros") |
-| `isDebugBuild` | constant | an `i1`, true where `opt->release` is 0 (`conec --debug`, or `build: debug` in a build description), `genlDeclaredIntrinsic`. A constant of the build, not of a type: the side of an `if` on it that the build does not take is removed by `simplifycfg`, which both builds' pipelines run. Declared at core's top level; core's `assertDebug` and `assertDebugMsg` macros branch on it |
+| `isDebugBuild` | constant | an `i1`, true where `opt->release` is 0 (`conec --debug`, or `build: debug` in a build description), answered in `genlFnCall` by `intrinsicBuildConst` before any argument is generated. A constant of the build, not of a type: `genlIf` generates only the side of an `if` on it that the build takes (below). Declared at core's top level; core's `assertDebug` and `assertDebugMsg` macros branch on it |
+| `isWindows`, `isLinux`, `isMacOS`, `isWasm` | constant | TEMPORARY, a provisional mechanism whose final design is open. An `i1` read from `opt->triple` (filled in with the host's by `genlCreateMachine` before parse): `windows` or `win32`, `linux`, `darwin` or `macos` in it, or a `wasm` architecture. Answered and branched on as `isDebugBuild` is |
+| `isDefined(name)`, `definedInt(name)` | constant | TEMPORARY, as above. Whether `-D` defined `name`, an `i1`, and its integer, an `i64`, 0 when it was not (`opt->defines`, parsed by `coneOptDefine`). `name` must be a string literal under its borrow and coercion (`intrinsicCallCheck`, `ErrorDefineName`); the literal is read, never generated |
+
+**Constants of the build drop the untaken side at generation.**
+`intrinsicBuildConst` answers whether a node is one of the constants above, or
+`!`, `and` or `or` of them, and its value. `genlIf` asks it of each condition:
+a false one's block is not generated at all, and a true one's is generated as
+an `else` would be, with nothing after it. So no call on the untaken side, and
+no reference to its symbol, reaches the object, in a debug build as in a
+release one: a call to an `extern` only another platform defines links. Name
+resolution, type check and flow analysis still see both sides, so every name on
+either side must resolve on every target; generic instances and functions
+reached only from the untaken side are still generated.
 
 Each atomic instruction is aligned as `T` is (`LLVMABIAlignmentOfType`), and
 its ordering is LLVM's name for the `MemOrder` (`genlAtomicOrdering`: `Relaxed`
