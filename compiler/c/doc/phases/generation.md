@@ -1196,6 +1196,11 @@ it. So the GPU pipeline and what follows it keep to those shapes:
   branch, as a module the validator refuses, and with CodeGenPrepare on, the
   latter crashed it. A function it structures has one return, so a kernel's
   returns, one for each failed check, are made one (`genlGpuOneReturn`).
+  `structurizecfg` takes no switch: it leaves each of a switch's branches a
+  `br i1 undef`, which the validator accepts and the GPU runs as it pleases.
+  simplifycfg makes a switch of an if-elif chain on one integer, so
+  `lower-switch` makes each switch a tree of comparisons just before it
+  (`module_target_spirv_switch`).
 - **A struct or array is loaded from or stored into a storage buffer a scalar
   at a time** (`genlGpuBufferAccess`, after the pipeline): the backend gives
   the buffer's laid-out struct and a local's two SPIR-V types, and a whole
@@ -1301,7 +1306,7 @@ two halves, before its control flow is structured:
   generation (`ErrorGpuRefChoice`).
 
 The second half (`globaldce`, `infer-address-spaces` again, for what the
-folding made, `instsimplify`, `adce`, `structurizecfg`) follows. A library
+folding made, `instsimplify`, `adce`, `lower-switch`, `structurizecfg`) follows. A library
 compiled for a GPU makes no kernel of a function that is no entry point: its
 failure calls stay calls to a function the module imports, and a slice
 indexed in it has nothing to be folded into.
