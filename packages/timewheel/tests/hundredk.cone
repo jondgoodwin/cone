@@ -1,0 +1,151 @@
+// The design's program for the wheel (Phase A, increment 1): 100,000
+// timeouts armed and 99% cancelled, with the survivors' lateness reported
+// against a synthetic clock. As a server's request timeouts are: for ten
+// seconds a loop wakes every millisecond and arms ten timeouts, each 1 to 30
+// seconds off; 99 in every 100 are cancelled 50 ms later, their operation
+// having finished in time; then the loop sleeps until the wheel says, until
+// the last survivor has fired. Every cancel finds its timer pending, every
+// survivor fires exactly once, none early and none a tick late.
+
+mod hundredk;
+
+import testing use *;
+import stdio use *;
+import time use Duration, Instant, Clock;
+import collections use List;
+import timewheel use *;
+
+const total = 100000u64;
+const perStep = 10u64;
+const ring = 500u64;          // 50 ms of arms: a timer is cancelled 500 arms later
+
+// xorshift64*, for timeouts the same on every run
+struct Rng {
+  s u64;
+  fn next(self &mut) u64 {
+    s = s ^ (s >> 12u64);
+    s = s ^ (s << 25u64);
+    s = s ^ (s >> 27u64);
+    s * 2685821657736338717u64;
+  }
+}
+
+fn survives(k u64) Bool { k % 100u64 == 37u64; }
+
+// An instant's nanoseconds, or -1 for None
+fn ns(o Option[Instant]) i64 {
+  mut r = -1i64;
+  match o {
+    case imm s Some { r = s.value.nanos(); }
+    case is None[Instant] {}
+  }
+  r;
+}
+
+struct Tally {
+  pub fired u64;
+  pub twice u64;
+  pub early u64;
+  pub maxLate i64;
+  pub sumLate i64;
+}
+
+fn count(out &mut List[Expiry], now Instant, seen &mut List[u8], t &mut Tally) {
+  mut i = 0usize;
+  while i < out.len() {
+    imm e = out[i];
+    imm k = usize.from(e.token);
+    if *seen[k] != 0u8 { t.twice = t.twice + 1u64; }
+    seen.set(k, 1u8);
+    imm late = (now - e.deadline).nanos();
+    if late < 0i64 { t.early = t.early + 1u64; }
+    if late > t.maxLate { t.maxLate = late; }
+    t.sumLate = t.sumLate + late;
+    t.fired = t.fired + 1u64;
+    i = i + 1usize;
+  }
+  out.clear();
+}
+
+fn main() i32 {
+  mut clock = Clock.synth();
+  mut w = Wheel.make(clock.now());
+  mut rng = new Rng(2463534242u64);
+  mut out = new List[Expiry];
+  mut seen = List[u8].withCapacity(usize.from(total));
+  mut ids = List[TimerId].withCapacity(usize.from(ring));
+  mut t = new Tally(0u64, 0u64, 0u64, 0i64, 0i64);
+  mut k = 0u64;
+  while k < total { seen.push(0u8); k = k + 1u64; }
+  k = 0u64;
+  while k < ring { ids.push(TimerId.none()); k = k + 1u64; }
+
+  mut cancels = 0u64;
+  mut refused = 0u64;
+  mut peak = 0usize;
+  mut wakes = 0u64;
+  k = 0u64;
+  while k < total + ring {
+    if k % perStep == 0u64 {
+      clock.advance(Duration.fromMillis(1));
+      w.expired(clock.now(), &mut out);
+      wakes = wakes + 1u64;
+      count(&mut out, clock.now(), &mut seen, &mut t);
+    }
+    // Cancel the timer armed 50 ms ago, unless it is a survivor
+    if k >= ring and !survives(k - ring) {
+      if w.cancel(*ids[usize.from(k % ring)]) { cancels = cancels + 1u64; } else { refused = refused + 1u64; }
+    }
+    if k < total {
+      imm off = Duration.fromSeconds(1) + Duration.fromMicros(i64.from(rng.next() % 29000000u64));
+      ids.set(usize.from(k % ring), w.insert(clock.now() + off, k));
+      if w.len() > peak { peak = w.len(); }
+    }
+    k = k + 1u64;
+  }
+  expectUInt(cancels, 99000u64, "99,000 cancelled");
+  expectUInt(refused, 0u64, "every cancel found its timer pending");
+  expectUInt(u64.from(w.len()), 1000u64 - t.fired, "the survivors still pending");
+
+  // The loop sleeps until the wheel says, until none is left
+  while true {
+    imm next = ns(w.nextExpiry());
+    if next < 0i64 { break; }
+    clock.advance(Duration.fromNanos(next - clock.now().nanos()));
+    w.expired(clock.now(), &mut out);
+    wakes = wakes + 1u64;
+    count(&mut out, clock.now(), &mut seen, &mut t);
+  }
+  expectUInt(t.fired, 1000u64, "1,000 survivors fired");
+  expectUInt(t.twice, 0u64, "none twice");
+  expectUInt(t.early, 0u64, "none early");
+  expect(t.maxLate < tickNanos, "none a tick late");
+  mut missing = 0u64;
+  k = 0u64;
+  while k < total {
+    if survives(k) and *seen[usize.from(k)] == 0u8 { missing = missing + 1u64; }
+    if !survives(k) and *seen[usize.from(k)] != 0u8 { missing = missing + 1u64; }
+    k = k + 1u64;
+  }
+  expectUInt(missing, 0u64, "exactly the survivors fired");
+  imm s = w.stats();
+  expectUInt(s.armed, total, "100,000 armed");
+  expectUInt(s.cancelled, 99000u64, "the wheel counted 99,000 cancels");
+  expectUInt(s.fired, 1000u64, "and 1,000 fired");
+  expect(w.isEmpty(), "and nothing is left");
+
+  printStr("peak pending ");
+  printInt(i64.from(peak));
+  printStr(", survivors' lateness: max ");
+  printInt(t.maxLate / 1000i64);
+  printStr(" us, mean ");
+  printInt(t.sumLate / i64.from(t.fired) / 1000i64);
+  printStr(" us\nwakes ");
+  printInt(i64.from(wakes));
+  printStr(", of them delivering ");
+  printInt(i64.from(s.wakes));
+  printStr("; cascades ");
+  printInt(i64.from(s.cascaded));
+  printStr("\n");
+  done();
+}
