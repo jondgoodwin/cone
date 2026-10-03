@@ -1,0 +1,158 @@
+// Cancel groups: a value handed to many operations, on any loops and from
+// any threads, whose one 'cancel' asks every one of them to end (see the
+// package's header, CANCEL GROUPS).
+//
+// How it is built. A group is an Arc to its state: a flag, its deadline, its
+// parent (a child is cancelled with it), whether it is a shield, and the
+// loops to tell. A loop that submits an operation in a group registers with
+// it -- and with each of its ancestors, up to a shield -- once, by its id and
+// its waker; 'cancel' sets the flag and posts every registered loop a packet
+// (keyGroup), and that loop then asks the cancel of each of its operations
+// whose group is cancelled. The registration and the cancel take the
+// group's lock, and the registering loop reads the flag again after its
+// registration, so a cancel and a registration racing on two threads are
+// ordered by the lock: either the cancel sees the loop in the list and tells
+// it, or the loop sees the flag set and answers its operation Cancelled at
+// once. A registered loop whose port has closed is dropped from the list at
+// the next registration. Reading the flag is a load, up the chain of
+// parents: cancelled is a state, checked at every submit.
+
+imm groupSeq Atomic[u64];
+
+// A group's state, shared through an Arc by every copy of it and by every
+// operation in it. It declares Sendable, a promise taken on trust: the flag
+// and the first loop's id are atomics; the lists change only under 'lock'
+struct GroupState is Sendable {
+  flag Atomic[u32];         // 1 once cancelled
+  first Atomic[u64];        // the first loop registered: the fast path
+  deadline Instant;         // the tighter of its own and its parent's (a shield: its own)
+  shield Bool;              // its parent's cancel and deadline do not reach it
+  parent Option[CancelGroup];
+  lock Mutex;
+  loops List[u64];          // the loops registered: their ids...
+  wakers List[Waker];       // ...and how to tell them
+  gid u64;
+
+  // Its lists, changed under its lock through a shared reference
+  fn lists(self &) &mut GroupState {
+    imm p = self as *GroupState;
+    p as &mut GroupState;
+  }
+}
+
+// A cancel group (see the package's header, CANCEL GROUPS). Copying it
+// makes another handle on the same group
+pub struct CancelGroup {
+  s Arc[imm, GroupState];
+
+  // A new group, live, with no deadline
+  pub fn make() CancelGroup {CancelGroup.made(forever(), false, None[CancelGroup][]);}
+
+  // A new group, live, whose operations answer TimedOut at deadline
+  pub fn until(deadline Instant) CancelGroup {CancelGroup.made(deadline, false, None[CancelGroup][]);}
+
+  fn made(deadline Instant, shield Bool, parent Option[CancelGroup]) CancelGroup {
+    new CancelGroup(new Arc[imm, GroupState](new GroupState(
+      flag: Atomic[u32].of(0u32), first: Atomic[u64].of(0u64), deadline: deadline,
+      shield: shield, parent: parent, lock: Mutex.make(),
+      loops: List[u64].empty(), wakers: List[Waker].empty(),
+      gid: groupSeq.add(1u64) + 1u64)));
+  }
+
+  // A child: cancelled when this group is, or by its own cancel (which does
+  // not reach this group); its deadline this group's
+  pub fn child(self &) CancelGroup {
+    CancelGroup.made(s.deadline, false, Some[CancelGroup][*self]);
+  }
+
+  // A child whose deadline is the tighter of this group's and 'deadline'
+  pub fn childUntil(self &, deadline Instant) CancelGroup {
+    imm d = if deadline < s.deadline {deadline;} else {s.deadline;};
+    CancelGroup.made(d, false, Some[CancelGroup][*self]);
+  }
+
+  // A shield, for cleanup: a group that this group's cancel and deadline do
+  // not reach, its deadline its own, so work started to clean up after a
+  // cancel runs, bounded by its own deadline. Its own cancel still ends it
+  pub fn shield(self &, deadline Instant) CancelGroup {
+    CancelGroup.made(deadline, true, Some[CancelGroup][*self]);
+  }
+
+  // Ask every operation in the group, and in its children, to end: each
+  // still answers once, saying how it ended. True the first time; false
+  // once it was cancelled already (idempotent). From any thread
+  pub fn cancel(self &) Bool {
+    if s.flag.swap(1u32) != 0u32 {return false;}
+    imm st = s.lists();
+    st.lock.lock();
+    mut k = 0usize;
+    while k < st.wakers.len() {
+      st.wakers[k].signal(keyGroup);
+      k = k + 1usize;
+    }
+    st.lock.unlock();
+    true;
+  }
+
+  // Whether this group is cancelled: by its own cancel, or an ancestor's up
+  // to a shield. A state: true from the cancel on
+  pub fn isCancelled(self &) Bool {
+    if s.flag.load() != 0u32 {return true;}
+    if s.shield {return false;}
+    match s.parent {
+      case imm p Some {p.value.isCancelled();}
+      else {false;}
+    }
+  }
+
+  // Its deadline: the tighter of its own and its parent's, forever() when
+  // it has none
+  pub fn deadline(self &) Instant {s.deadline;}
+
+  // Whether it is a shield
+  pub fn isShield(self &) Bool {s.shield;}
+
+  // Its id, unique in the process: 1, 2, 3...
+  pub fn id(self &) u64 {s.gid;}
+
+  // Tell the loop when this group, or an ancestor up to a shield, is
+  // cancelled: once per loop
+  fn register(self &, loopId u64, w &Waker) {
+    if s.first.load() == loopId {return;}
+    self.registerChain(loopId, w);
+  }
+
+  fn registerChain(self &, loopId u64, w &Waker) {
+    imm st = s.lists();
+    st.lock.lock();
+    mut found = false;
+    mut k = 0usize;
+    while k < st.loops.len() {
+      if *st.loops[k] == loopId {
+        found = true;
+        k = k + 1usize;
+      } elif st.wakers[k].isGone() {
+        // A loop that has died: its entry goes, last into its place
+        imm last = st.loops.len() - 1usize;
+        st.loops.swap(k, last);
+        st.wakers.swap(k, last);
+        st.loops.pop();
+        st.wakers.pop();
+      } else {
+        k = k + 1usize;
+      }
+    }
+    if not found {
+      st.loops.push(loopId);
+      st.wakers.push(*w);
+      if st.loops.len() == 1usize {st.first.store(loopId);}
+    }
+    st.lock.unlock();
+    if not s.shield {
+      match s.parent {
+        case imm p Some {p.value.registerChain(loopId, w);}
+        else {}
+      }
+    }
+  }
+}

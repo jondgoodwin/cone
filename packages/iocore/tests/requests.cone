@@ -1,0 +1,142 @@
+// Requests: a handle on an operation whose death cancels it. It may be held
+// on any thread; its cancel is posted to the operation's loop, which still
+// answers the operation exactly once.
+//
+// 1. A Request dropped: its receive answers Cancelled, with its buffer.
+// 2. A Request moved to another thread and cancelled there, twice: the
+//    loop, idle in poll(forever()), wakes with the one Cancelled answer.
+// 3. A Request detached: its death does nothing, and its receive goes on
+//    to Done.
+// 4. A Request dropped after its operation's answer: nothing happens; the
+//    old id names nothing.
+
+mod requests;
+
+import testing use *;
+import thread;
+import collections use List;
+import time use Instant, Duration;
+import iobuf use *;
+import iocore use *;
+import diag;
+
+fn waitFor(lp &mut Loop, out &mut List[Completion], n usize) {
+  imm limit = Instant.now() + Duration.fromSeconds(5i64);
+  while out.len() < n and Instant.now() < limit {
+    lp.poll(limit, out);
+  }
+}
+
+fn pair(lp &mut Loop) Handle, Handle {
+  imm listener = lp.mustListen(SocketAddr.localhost(0u16));
+  mut port = 0u16;
+  match lp.localAddr(listener) {
+    case imm a Ok {port = a.value.port();}
+    case imm e Error {}
+  }
+  lp.submit(Op.Accept[listener], Target.Here[9001u64]);
+  lp.submit(Op.Connect[SocketAddr.localhost(port)], Target.Here[9002u64]);
+  mut out = List[Completion].empty();
+  waitFor(lp, &mut out, 2usize);
+  mut a = Handle.none();
+  mut b = Handle.none();
+  mut k = 0usize;
+  while k < out.len() {
+    if out[k].token == 9001u64 {a = out[k].handle;} else {b = out[k].handle;}
+    k = k + 1usize;
+  }
+  lp.close(listener);
+  a, b;
+}
+
+// Cancel twice from this thread, after a while
+fn cancelLater(r Request) Bool {
+  mut q = r;
+  thread.sleep(Duration.fromMillis(20i64));
+  imm first = q.cancel();
+  imm second = q.cancel();
+  first and second;
+}
+
+fn main() i32 {
+  {
+    imm pool = Pool.make();
+    mut lp = Loop.mustMake();
+    mut out = List[Completion].empty();
+    mut a = Handle.none();
+    mut b = Handle.none();
+    a, b = pair(&mut lp);
+
+    // 1. Dropped
+    {
+      imm id = lp.submit(Op.Recv[a, pool.mustTake(100usize)], Target.Here[1u64]);
+      {
+        imm r = lp.request(id);
+        expect(r.id() == id, "the request names its operation");
+        lp.poll(Instant.now() + Duration.fromMillis(10i64), &mut out);
+        expectUInt(u64.from(out.len()), 0u64, "in flight while its request lives");
+      }
+      waitFor(&mut lp, &mut out, 1usize);
+      requireUInt(u64.from(out.len()), 1u64, "the request's death: one answer");
+      expectUInt(u64.from(out[0usize].status), u64.from(diag.outcomeCancelled), "Cancelled");
+      expectUInt(u64.from(out[0usize].buf.capacity()), 4096u64, "with its buffer");
+      expectUInt(lp.counters().remoteCancels, 1u64, "a cancel posted to the loop");
+      out.clear();
+    }
+
+    // 2. From another thread
+    {
+      imm id = lp.submit(Op.Recv[a, pool.mustTake(100usize)], Target.Here[2u64]);
+      imm t = thread.start(lp.request(id), &cancelLater);
+      lp.poll(forever(), &mut out);
+      expect(t.join(), "both cancels reached the loop");
+      requireUInt(u64.from(out.len()), 1u64, "the idle loop woke with one answer");
+      expectUInt(u64.from(out[0usize].status), u64.from(diag.outcomeCancelled), "Cancelled");
+      out.clear();
+      lp.poll(Instant.now() + Duration.fromMillis(10i64), &mut out);
+      expectUInt(u64.from(out.len()), 0u64, "and only one");
+    }
+
+    // 3. Detached
+    {
+      imm id = lp.submit(Op.Recv[a, pool.mustTake(100usize)], Target.Here[3u64]);
+      {
+        mut r = lp.request(id);
+        r.detach();
+      }
+      lp.poll(Instant.now() + Duration.fromMillis(10i64), &mut out);
+      expectUInt(u64.from(out.len()), 0u64, "a detached request's death cancels nothing");
+      mut x = pool.mustTake(1usize);
+      x.append("q");
+      lp.submit(Op.Send[b, x], Target.Here[4u64]);
+      waitFor(&mut lp, &mut out, 2usize);
+      mut k = 0usize;
+      while k < out.len() {
+        if out[k].token == 3u64 {expect(out[k].isDone() and out[k].count() == 1usize, "the receive Done");}
+        k = k + 1usize;
+      }
+      out.clear();
+    }
+
+    // 4. After the answer
+    {
+      imm id = lp.submit(Op.Recv[a, pool.mustTake(100usize)], Target.Here[5u64]);
+      imm r = lp.request(id);
+      mut x = pool.mustTake(1usize);
+      x.append("w");
+      lp.submit(Op.Send[b, x], Target.Here[6u64]);
+      waitFor(&mut lp, &mut out, 2usize);
+      expectUInt(u64.from(out.len()), 2u64, "both answered");
+      out.clear();
+    }
+    lp.poll(Instant.now() + Duration.fromMillis(10i64), &mut out);
+    expectUInt(u64.from(out.len()), 0u64, "a request dropped after its answer: nothing more");
+
+    imm cs = lp.counters();
+    expectUInt(cs.delivered, cs.submitted, "every operation answered once");
+    expectUInt(cs.inFlight, 0u64, "nothing in flight");
+    expectUInt(pool.stats().lent, 0u64, "every buffer back in the pool");
+  }
+  expectUInt(osBlocks(), 0u64, "and every block back to the OS");
+  done();
+}
