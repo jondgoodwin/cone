@@ -187,6 +187,18 @@ int iexpCoerce(INode **from, INode *totype) {
         // So may a borrowed constant one, and the borrow then match as it is
         if (borrowConstLitCoerce(*from, totypedcl))
             return iexpMatches(from, totypedcl, Coercion) != NoMatch && iexpCoerce(from, totype);
+        // A Bool wanted as a number is refused here, naming the conversion that
+        // would say what it means. The conversion is then built anyway, so what
+        // uses the value sees the type it wanted and says nothing more.
+        if (iexpGetTypeDcl(*from) == (INode*)boolType && isNbr(totypedcl)) {
+            errorMsgNode(*from, ErrorBoolNotNbr,
+                "A Bool is not a number, and %s is wanted here. Convert it explicitly, '%s.from(b)', which gives 0 or 1.",
+                itypeName(totypedcl), itypeName(totypedcl));
+            INode *conv = (INode*)newConvCastNode(*from, totypedcl);
+            inodeLexCopy(conv, *from);
+            *from = conv;
+            return 1;
+        }
         return 0;
     case EqMatch:
         // A '&uni' wanted as a shareable borrowed reference is lent, not moved

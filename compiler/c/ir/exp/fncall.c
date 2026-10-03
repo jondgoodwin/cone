@@ -774,6 +774,31 @@ static int fnCallRefIndexWantsMut(FnCallNode *callnode, INode *foundnode, Name *
     return 1;
 }
 
+// An operator or an index wanting a number, given a Bool, which never coerces to
+// one: 'n + b', '1u8 == b' and 'list[b]' select nothing. That refusal is the
+// rule; this reports it as the Bool coercion it is, naming the conversion, in
+// place of the bare no-candidate message, where a candidate declares a number
+// in that argument's place. Answer whether it reported.
+static int fnCallBoolOperandWantsNumber(FnCallNode *callnode, INode *foundnode, enum OverloadMatch status) {
+    if (status != OverloadNone || !(callnode->flags & (FlagOperator | FlagIndex)) || callnode->args == NULL)
+        return 0;
+    INode **argsp;
+    uint32_t cnt;
+    uint32_t argi = 0;
+    for (nodesFor(callnode->args, cnt, argsp)) {
+        INode *wanted;
+        if (isExpNode(*argsp) && iexpGetTypeDcl(*argsp) == (INode*)boolType
+            && (wanted = iNsTypeNumberParm(foundnode, argi))) {
+            errorMsgNode(*argsp, ErrorBoolNotNbr,
+                "A Bool is not a number, and %s is wanted here. Convert it explicitly, '%s.from(b)', which gives 0 or 1.",
+                itypeName(wanted), itypeName(wanted));
+            return 1;
+        }
+        ++argi;
+    }
+    return 0;
+}
+
 // Find the one field or method that accepts the call's receiver and arguments,
 // then lower the node to a function call (objfn+args) or field access (objfn+methfld).
 // A receiver held through a reference or pointer is dereferenced where the selected
@@ -1023,7 +1048,8 @@ int fnCallLowerMethod(TypeCheckState *pstate, FnCallNode *callnode) {
         selected = fnCallBorrowReceiver(callnode, foundnode, &status);
 
     if (selected == NULL) {
-        if (!fnCallRefIndexWantsMut(callnode, foundnode, methsym, status))
+        if (!fnCallRefIndexWantsMut(callnode, foundnode, methsym, status)
+            && !fnCallBoolOperandWantsNumber(callnode, foundnode, status))
             fnCallNoCandidate((INode*)callnode, status, methsym, "method");
         return -1;
     }

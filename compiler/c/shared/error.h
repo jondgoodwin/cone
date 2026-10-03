@@ -437,6 +437,7 @@ enum ErrorCode {
 
     // Literals and implicit coercion
     ErrorNullNotPtr = 1236,     // A 'null' wanted as something other than a raw pointer, or where nothing says which raw pointer type it is
+    ErrorBoolNotNbr = 1237,     // A Bool where a number is wanted: a Bool converts to a number only explicitly, 'T.from(b)'
 
     // Warnings
     WarnCode = 3000,
