@@ -477,6 +477,15 @@ enum ErrorCode {
     ErrorGpuRefGlobal = 1255,   // A module global or static whose type holds a reference
     ErrorGpuRecursion = 1256,   // A function that calls itself, directly or through others
 
+    // Compute entry points, '@compute(x, y, z)' (ir/stmt/fndcl.c, fnDclComputeCheck;
+    // genllvm/genlgpu.c), and what a kernel's slices may come from
+    ErrorComputeSize = 1259,    // A workgroup size that is not a constant integer from 1, or one over WebGPU's limits: more than 256 invocations, or z over 64
+    ErrorComputeAttr = 1260,    // '@compute' where no entry point can be: a method, a generic, an inline or intrinsic function, one with '@c', an anonymous one; or two entry points of one name
+    ErrorComputeSig = 1261,     // An entry point's signature: a return value, a parameter neither Invocation, a slice nor a struct by value, a second Invocation, or more buffers than a kernel binds
+    ErrorComputeData = 1262,    // What a kernel's buffer holds: anything but 32-bit numbers and structs and fixed arrays of them
+    ErrorComputeTarget = 1263,  // An entry point compiled for SPIR-V's OpenCL form, which has none
+    ErrorGpuSliceOrigin = 1264, // In a kernel, an element of a slice or pointer reached by arithmetic from something that is neither a buffer parameter nor a fixed array
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name

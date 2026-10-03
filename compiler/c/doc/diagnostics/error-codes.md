@@ -356,6 +356,23 @@ walk's ([Flow Analysis](../phases/flow.md), "GPU targets"); the last two
 generation's (`genlGloVar`, `genlGpuCalls`), reported only for a program
 nothing earlier refused.
 
+A compute entry point takes five codes, one per thing to fix. Its workgroup
+size, not constant integers of at least 1 or past WebGPU's limits (256
+invocations, 64 along z), is `ErrorComputeSize`, where the size is written.
+`@compute` where no dispatch can run the function by its name (a method, a
+generic, an `inline`, intrinsic, `@c` or anonymous function), or on two
+functions of one name in a compile, is `ErrorComputeAttr`. Its signature (a
+return value; a parameter that is neither core's `Invocation`, a slice nor a
+struct by value; `Invocation` twice; more than seven buffers) is
+`ErrorComputeSig`, and what a buffer holds, anything but 32-bit numbers and
+structs and fixed arrays of them, `ErrorComputeData`, naming the field: both
+type check's (`fnDclComputeCheck`), on every target. One compiled for SPIR-V's
+OpenCL form is `ErrorComputeTarget`, generation's (`genlComputeEntry`). In a
+kernel, an element reached by pointer arithmetic from something that is
+neither a buffer parameter nor a fixed array is `ErrorGpuSliceOrigin`,
+generation's once everything is inlined (`genlGpuFold`), at the index that
+made it.
+
 ## The one code with no scenario
 
 `ErrorUnreachable` is reported by `errorUnreachable` and by nothing else. It

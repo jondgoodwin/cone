@@ -1018,7 +1018,9 @@ and ends in `unreachable`. The entries are declared `noreturn`, `cold` and
 expects never to take, and the call is laid out of line. Nothing joins back
 from the failure block: the allocation's phi has one incoming edge, not two,
 unless a `?` allocation's null path is one. WebAssembly links no conestd, so
-there each failure is `llvm.trap` and `unreachable`.
+there each failure is `llvm.trap` and `unreachable`. Nor has a GPU: there it
+is a call to `cone.gpu.fail`, which a kernel turns into a record in its error
+buffer and a return (section 7, "Compute entry points").
 
 The file is the name without its folders (`genlSrcFileName`), a private
 constant made once per file per module; `srcFile()` and `srcLine()` generate
@@ -1112,17 +1114,20 @@ link: the scenario instantiates a generic function and a generic type in the
 package and in the program, at a type argument both use and at one only the
 program uses, and tests in the package a virtual reference the program built.
 
-**A SPIR-V triple emits a SPIR-V module, `.spv`, and code with no slices
-survives it.** `--triple=spirv64-unknown-unknown` is SPIR-V's OpenCL form
-(physical addressing, the `Kernel` capability) and
+**A SPIR-V triple emits a SPIR-V module, `.spv`.** `--triple=spirv64-unknown-unknown`
+is SPIR-V's OpenCL form (physical addressing, the `Kernel` capability) and
 `--triple=spirv1.6-unknown-vulkan1.3` its Vulkan form (logical addressing,
 `Shader`). `genlCreateMachine` initializes every target the LLVM build holds;
 `genSetup` marks a triple starting `spirv` a GPU target (`ConeOptions.gpu`),
-which flow reads too (`flowGpu`). Functions over numbers, structs, arrays held
-in structs and enums, with calls, branches, early returns, loops, references to
-locals, to parts of them and to module globals, structs holding references, and
-string literals, come out at every optimization level as a module SPIR-V's
-validator accepts in its universal environment. A slice does not (below).
+which flow reads too (`flowGpu`), and one naming `vulkan` the Vulkan form
+(`ConeOptions.vulkan`), whose `usize` is 32 bits: it addresses logically, with
+no pointer to measure, and WebGPU has no 64-bit integer. Functions over
+numbers, structs, arrays held in structs and enums, with calls, branches,
+early returns, loops, references to locals, to parts of them and to module
+globals, structs holding references, and string literals, come out at every
+optimization level as a module SPIR-V's validator accepts in its universal
+environment. A compute entry point is a kernel, valid in the Vulkan
+environment, slices and all ("Compute entry points", below).
 
 **A GPU types each pointer by the memory it points into**, its kind: SPIR-V's
 storage class, LLVM's address space. Every Cone reference is address space 0,
@@ -1174,17 +1179,27 @@ it. So the GPU pipeline and what follows it keep to those shapes:
   through the struct's own pointer and its array field indexed from it, and
   the backend indexes the struct itself; `genlGpuRetypeFn` puts the zero
   indices back, from the type an alloca, a global, an address computation or
-  a parameter's uses say the pointer points to. And an address computed from
+  a parameter's uses say the pointer points to. GVN does the opposite too:
+  an array field's address and its first element's are one number, so it
+  takes the one for the other, and the array is then indexed from its first
+  element's address; `genlGpuRetypeFn` drops the trailing zero indices that
+  made it the element's. And an address computed from
   another made in another block (a field of a parameter's field, read by an
   inlined method after two early returns) crashed the pointer-cast
   legalisation; `genlGpuGepChainsFn` computes such an address in one step
   from where the other starts, as instcombine would, or, when it steps from
   the other rather than into it, computes the other again beside it.
 - **The control flow is structured** (`structurizecfg`, last in the
-  pipeline): each branch merges before the next is taken. The backend's own
-  structurizer leaves a chain of three early returns, or a loop's body
-  returning early from within a branch, as a module the validator refuses,
-  and with CodeGenPrepare on, the latter crashed it.
+  pipeline, run by itself after the kernels are settled): each branch merges
+  before the next is taken. The backend's own structurizer leaves a chain of
+  three early returns, or a loop's body returning early from within a
+  branch, as a module the validator refuses, and with CodeGenPrepare on, the
+  latter crashed it. A function it structures has one return, so a kernel's
+  returns, one for each failed check, are made one (`genlGpuOneReturn`).
+- **A struct or array is loaded from or stored into a storage buffer a scalar
+  at a time** (`genlGpuBufferAccess`, after the pipeline): the backend gives
+  the buffer's laid-out struct and a local's two SPIR-V types, and a whole
+  one's store between them is a pointer cast the validator refuses.
 - **A struct or array value is carried as its scalar leaves**
   (`genlGpuAggregates`, after the pipeline). A phi of a struct crashed the
   backend when an incoming value was a parameter (geomath's `Vec4.normalize`,
@@ -1209,29 +1224,106 @@ the header, after the `OpLoopMerge` already placed there, which must come just
 before the branch, so the release build of such a loop was a module the
 validator refused.
 
+### Compute entry points
+
+**A compute entry point is a kernel beside its function** (`genlgpu.c`). A
+function declared `@compute(x, y, z)` (the parser reads the size; type check,
+`fnDclComputeCheck`, its signature and what its buffers hold;
+[reference](../../../../doc/reference/refgpu.html)) is generated as every
+function is, internal and inlined, and on the Vulkan form `genlComputeEntry`
+makes the kernel: an LLVM function of no parameters named as the Cone function
+is (which, if its symbol is the same, takes `.body` after its name), marked as
+Clang's HLSL marks a compute shader (`"hlsl.shader"="compute"`,
+`"hlsl.numthreads"="x,y,z"`, which LLVM's SPIR-V backend reads for
+`OpEntryPoint GLCompute` and `LocalSize`), and external, so a compile that is
+no library keeps it. It fills each parameter and calls the function:
+
+- core's `Invocation` from LLVM's SPIR-V built-in intrinsics
+  (`llvm.spv.thread.id`, `.thread.id.in.group`, `.group.id`,
+  `.flattened.thread.id.in.group`, `.num.workgroups`);
+- a slice from a storage buffer: a handle (`llvm.spv.resource.handlefrombinding`,
+  a `spirv.VulkanBuffer` of a run-time array of the element, storage class 12,
+  written or not), set 0, the binding its place among the buffer parameters;
+  the slice's pointer its first element's (`llvm.spv.resource.getpointer`,
+  address space 11, cast to the flat 0), and its count the run-time array's
+  length;
+- a struct by value from a buffer of one (`getbasepointer`), a scalar at a
+  time.
+
+A binding's name, which the backend reads from a constant global and keeps one
+variable per, is `<kernel>.<parameter>`, held as 32-bit words so that the
+module asks for no 8-bit integers.
+
+**The count is SPIR-V's `OpArrayLength`, which LLVM 23 cannot select**: its
+`getdimensions` intrinsics are for images. So the kernel calls
+`cone.arraylength.<kernel>.<binding>`, a function declared and never defined
+(`memory(none)`, so an unused one goes), and `genlGpuOut` emits the module to
+memory and `genlGpuPatch` rewrites it before it is written: each call to such
+a function (`OpFunctionCall`, five words) becomes `OpArrayLength` of the
+handle it was handed (the variable's copy), member 0 (five words), and the
+declarations, their names and linkage decorations go, with the `Linkage`
+capability when nothing else is imported. `--asm` writes LLVM's assembly,
+which shows the calls.
+
+**A failed check records itself and leaves the kernel.** On a GPU target
+`genlPanic` calls `cone.gpu.fail(kind, file, line, value)`, declared and never
+defined, instead of conestd, and a call to core's `panic` (conestd's
+`cone_panic`, which `assert`, `unreachable` and `todo` call) becomes the same
+call (`genlGpuPanic`), its message dropped. Once the GPU pipeline has inlined
+everything into a kernel, `genlGpuEntries` settles it, between the pipeline's
+two halves, before its control flow is structured:
+
+- **Each failure call becomes a record and a return** (`genlGpuRecord`). The
+  error buffer is the read-write storage buffer bound after the last buffer
+  parameter, eight words: the count of invocations that failed, added to by
+  `atomicrmw add` (device scope, acquire-release, which Vulkan asks of a
+  storage buffer's atomic); then, written only by the invocation that made
+  the count 1, the kind (1 index, 2 range, 3 panic, 4 allocation), the
+  source file's id, the line, the invocation's global id, and the index or
+  the range's end. The file's id is its place in the module's list of source
+  files (`genlSrcFileId`), read from the global holding its name that the
+  call was handed, through casts, selects and phis; `genlGpuPatch` lists the
+  files in the module as OpSourceExtension `"cone.file <id> <name>"`. Then
+  the invocation returns. The checks are kept in every build.
+- **Each step by pointer arithmetic is folded into an access chain**
+  (`genlGpuSlices`, `genlGpuFold`): an address computation whose first index
+  is not zero, as indexing a slice or cutting one is, steps from what the
+  slice's pointer came from, found through casts and through the insertions
+  and extractions of a struct that carried it (`genlGpuPartOf`). From a
+  buffer's element, it is the buffer's element that many on
+  (`getpointer` with the indices added); from a fixed array, all of it or as
+  its first field however deep (an alloca, a global, an address computation,
+  a buffer's struct), the array indexed; from an element of a fixed array,
+  that element's index added to. From anything else it is refused,
+  `ErrorGpuSliceOrigin`, at the node the computation was made for, which
+  generation marks on it (`genlGpuSite`, metadata `cone.site`, an index into
+  `GenState.gpusites`). A reference chosen at run time was refused before
+  generation (`ErrorGpuRefChoice`).
+
+The second half (`globaldce`, `infer-address-spaces` again, for what the
+folding made, `instsimplify`, `adce`, `structurizecfg`) follows. A library
+compiled for a GPU makes no kernel of a function that is no entry point: its
+failure calls stay calls to a function the module imports, and a slice
+indexed in it has nothing to be folded into.
+
+An entry point compiled for the OpenCL form is refused
+(`ErrorComputeTarget`), and two of one name in a compile
+(`ErrorComputeAttr`), since a dispatch finds a kernel by its name.
+
 What does not work yet:
 
-- A failed check calls conestd, which no GPU has; only `--wasm` traps instead.
-  So indexing an array or a slice, and allocating, make a module the Vulkan
-  validator refuses: the call passes the source file's name, a `Private`
-  global, where conestd's signature has a `Function` pointer. An imported
-  package's functions, `stdio`'s say, are left as imports, and are not
-  inlined.
-- A slice is a pointer and a count, and indexing it is pointer arithmetic,
-  which logical addressing has none of: the Vulkan form's access chain loses
-  the index, typed from a byte pointer, and the OpenCL form types the pointer
-  inside the slice's struct as a byte pointer where it is used as the
-  element's; the validator refuses both. So does a struct holding a slice,
-  and the Vulkan form's backend crashes in its pointer-cast legalisation on
-  sdf's `Capsules.distance`, which reads nine slices out of a struct it is
-  handed by reference, in a release build. A slice needs a buffer's runtime
-  array to stand for it.
-- Nothing marks an entry point or its execution model, places a pointer in a
-  buffer's storage class, or reads a built-in such as the global invocation
-  id. Without an entry point the module is a library, carrying the `Linkage`
-  capability, which Vulkan's environment refuses; and without one, a compile
-  that is no library keeps no function, since every one is internal and
-  inlined into nothing.
+- The math functions Cone takes from the C library (`floorf`, `ceilf` and
+  their kind, which noise's lattice and sdf's grid call) are left as imports,
+  so a kernel calling one carries the `Linkage` capability, which Vulkan's
+  environment refuses. An imported package's functions are left as imports
+  where a build description compiles the package on its own; found on the
+  package search path, as a direct `conec` compile finds geomath, it is
+  compiled into the kernel's object.
+- A library's function taking a slice, compiled for a GPU on its own, has its
+  slice's elements reached by arithmetic, which the validator refuses: only
+  in a kernel is there an origin to fold them into.
+- A program with a `main` compiled for the Vulkan form crashes LLVM's SPIR-V
+  backend ("No unique definition is found for the virtual register").
 
 Also absent: closures with an environment — an anonymous `fn` is lifted to
 module scope and a `&fn` value is a bare function pointer with no capture
@@ -1268,10 +1360,10 @@ variables.
 | `conec.c` | `main` | calls `genSetup` **before** parsing, for target pointer size |
 | `genllvm/genllvm.c` | `genSetup`, `genClose` | target machine, data layout, context, `%void`; LLVM's pretty stack trace, for a crash inside LLVM |
 | | `genlLLVMOptions` | the LLVM options `CONE_LLVM_OPTIONS` names, and a GPU target's own (the flat address space; machine CSE, loop strength reduction and CodeGenPrepare off), parsed before the context exists |
-| | `genpgm` | generate, verify, dump, optimize (release: LLVM's `default<O2>` for the target machine; a GPU target's pipeline inlines, breaks up aggregates, infers address spaces and structures the control flow at every level), emit; nothing past generation once it reported an error |
-| | `genlGpuCalls`, `genlCallWalk`, `genlRecursion` | on a GPU target, every defined function marked `alwaysinline`, and a cycle of calls refused (section 7) |
+| | `genpgm` | generate, verify, dump, optimize (release: LLVM's `default<O2>` for the target machine; a GPU target's pipeline inlines, breaks up aggregates and infers address spaces, then the kernels are settled, then the control flow is structured, at every level), emit; nothing past generation once it reported an error, nor once a kernel's slice was refused |
+| | `genlGpuCalls`, `genlCallWalk`, `genlRecursion` | on a GPU target, every defined function but a kernel marked `alwaysinline`, and a cycle of calls refused (section 7) |
 | | `genlGpuAggregates`, `genlGpuAggregatesFn`, `genlAggLeaves` | on a GPU target, after optimization, each struct or array value carried as its scalar leaves (section 7) |
-| | `genlGpuRetypeFn`, `genlGpuPointee` | on a GPU target, after optimization, a first field's address computed from its struct's type again (section 7) |
+| | `genlGpuRetypeFn`, `genlGpuPointee` | on a GPU target, after optimization, a first field's address computed from its struct's type again, and an array's from its first element's (section 7) |
 | | `genlGpuGepChainsFn` | on a GPU target, after optimization, an address computed from another in one step, or beside it (section 7) |
 | | `genlProgram` | create the module with the target's triple and data layout, the two-pass symbols-then-implementations walk, then the stitched pair |
 | | `genlStitchFn`, `genlStitch` | the program's stitched init and final: declared on the first call to `initAll()` or `finalAll()`, built last, every module's `init` in the module order and every finalizer in the reverse |
@@ -1290,11 +1382,18 @@ variables.
 | `ir/export.c` | `dclIsInstance` | whether a declaration is a generic's instance or a member of one — every function and global of a generic module's instance among them |
 | | `dclIsExported`, `typeHoldsExpanded` | whether a library compile exports a definition to its importers; the include-file generator asks the same |
 | `genllvm/genltype.c` | `genlType`, `_genlType` | the memoizing entry, which generates the queued pointees once the outermost type is done, and the per-tag lowering switch |
+| | `genlUsize` | `usize`'s LLVM type: `ConeOptions.ptrsize` bits, the target's pointer, but 32 on SPIR-V's Vulkan form (section 7) |
 | | `genlPointee`, `genlPointeeType` | the Cone type a reference, pointer or slice points at, and its LLVM type: what every load, GEP and call through it is typed by |
 | | `genlVtableSlotFnType` | a vtable slot's function type, self erased to `*u8`: the slot's type, a thunk's, and a virtual call's |
 | | `genlSetupTaggedTrait`, `genlSameSizeTrait` | the three enum shapes |
 | | `genlVtable`, `genlVtableImpl` | vtable type, per-struct constants (the implementer's type record last), the virtref fat pointer |
 | | `genlVtableThunk` | the function filling a slot a folded method satisfies: shift the receiver along the recorded field path, tail-call the method |
+| `genllvm/genlgpu.c` | `genlComputeEntry`, `genlGpuInvocation`, `genlGpuHandle`, `genlGpuArrayLength` | a compute entry point's kernel: its parameters from the bindings and the built-ins, each buffer's count by a call `genlGpuPatch` rewrites (section 7, "Compute entry points") |
+| | `genlGpuFailCheck`, `genlGpuPanic`, `genlIsConePanic` | on a GPU target, a failed check and core's `panic` as a call to `cone.gpu.fail` |
+| | `genlGpuEntries`, `genlGpuRecord`, `genlGpuFileId`, `genlGpuOneReturn` | each kernel settled once everything is inlined: a failure recorded in its error buffer and the kernel left, its returns made one |
+| | `genlGpuSlices`, `genlGpuFold`, `genlGpuPartOf`, `genlGpuSite` | each step by pointer arithmetic folded into an access chain of a buffer or fixed array, or refused (`ErrorGpuSliceOrigin`) where the node it was made for is |
+| | `genlGpuBufferAccess` | a struct or array loaded from or stored into a storage buffer a scalar at a time |
+| | `genlGpuOut`, `genlGpuPatch` | the Vulkan form's module emitted to memory, `OpArrayLength` and the source files' list written into it |
 | `genllvm/genlcabi.c` | `genlCAbiTarget`, `genlIsCAbiFn`, `genlCAbiPass` | which C ABI the target follows, which functions cross by it, and how one struct crosses |
 | | `genlCAbiExtend`, `genlCAbiMarkExtends` | the `zeroext` or `signext` a narrow integer crosses with, marked on a declaration or a call |
 | | `genlFnDclType`, `genlCAbiDeclare`, `genlFnDclCall`, `genlFnDclParm`, `genlFnDclReturn` | a declared function's LLVM type, its `sret` and widening marks, a direct call to it, its prologue's parameters and its returns — lowered for a C-named one |
