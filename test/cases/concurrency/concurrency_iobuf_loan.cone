@@ -1,0 +1,56 @@
+// A buffer is lent to an operation by moving it, never by a borrow, against
+// the iobuf package: what a submission takes is an IoBuf by value, the one
+// owner, and what crosses to the thread a completion arrives on must be
+// Sendable. So a borrow of a buffer is refused both where an IoBuf is wanted
+// and where it would cross a thread, while the buffer itself, its frozen
+// Bytes, a Chain of them and the pool's handle all cross. Frozen, a buffer
+// is an 'Arc[imm, IoBuf]', which many threads may hold at once because
+// nothing can write through it: its methods that write are refused. The
+// lines without annotations compile.
+//
+// 'submit' stands in for the completion layer's submission, which is not
+// built yet: it takes the buffer and hands it back, as a completion will.
+
+mod concurrency_iobuf_loan;
+
+import thread;
+import sync use *;
+import iobuf use *;
+
+fn submit(b IoBuf) IoBuf {b;}
+
+fn fill(b IoBuf) IoBuf {b;}
+fn fillBorrowed(b &mut IoBuf) u64 {0u64;}
+fn readBytes(b Bytes) u64 {0u64;}
+fn parse(c Chain) u64 {0u64;}
+fn usePool(p Pool) u64 {0u64;}
+
+fn lend(pool &Pool) {
+  mut buf = pool.mustTake(4096usize);
+  imm r = submit(&mut buf);   //~ ErrorInvType "does not match declared parameter"
+  imm s = submit(buf);
+}
+
+fn cross(pool &Pool) {
+  mut buf = pool.mustTake(4096usize);
+  imm bad = thread.start(&mut buf, &fillBorrowed);   //~ ErrorNotSendable "start requires A is Sendable, and &mut IoBuf is not Sendable"
+  imm t = thread.start(buf, &fill);
+  imm u = thread.start(pool.mustTake(1usize).freeze(), &readBytes);
+  imm v = thread.start(Chain.make(4096usize), &parse);
+  imm w = thread.start(*pool, &usePool);
+  mut tx Sender[&mut IoBuf];   //~ ErrorNotSendable "Sender requires T is Sendable, and &mut IoBuf is not Sendable"
+}
+
+fn frozen(pool &Pool) {
+  imm shared = new Arc[imm, IoBuf](pool.mustTake(1usize));
+  imm v = shared.view();
+  imm room = shared.spare();   //~ ErrorNoCandidate
+  shared.clear();              //~ ErrorNoCandidate
+}
+
+fn main() {
+  imm pool = Pool.make();
+  lend(&pool);
+  cross(&pool);
+  frozen(&pool);
+}
