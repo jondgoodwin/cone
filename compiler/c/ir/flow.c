@@ -1342,6 +1342,8 @@ void flowLoadValue(FlowState *fstate, INode **nodep) {
         break;
     case CastTag: case IsTag:
         flowLoadValue(fstate, &((CastNode *)*nodep)->exp);
+        if ((*nodep)->tag == CastTag)
+            flowGateBoxed(fstate, *nodep);
         // A lock's guard is a new owner of the value its operand points at:
         // the operand is copied in, counted, or a temporary moved in
         // (borrowLockPlace), and the guard is the temporary
@@ -1700,7 +1702,7 @@ int flowGateCountAll = 0;
 // Functions walked, functions gated, and functions each trigger fired in
 static uint32_t flowGateFns = 0;
 static uint32_t flowGateGated = 0;
-static uint32_t flowGateByTrigger[4] = { 0, 0, 0, 0 };
+static uint32_t flowGateByTrigger[5] = { 0, 0, 0, 0, 0 };
 
 // Is this type (a declaration) a bare borrowed reference?
 static int flowGateIsBorrowRef(INode *typedcl) {
@@ -1827,6 +1829,13 @@ void flowGateOperandAsk(FlowState *fstate, INode *operand) {
     fstate->inflight[fstate->inflightcnt++] = root;
 }
 
+// A value whose type carries a borrow made an owning virtual reference: the
+// loan walk checks that every borrow it holds is global (pwValue)
+void flowGateBoxedAsk(FlowState *fstate, INode *cast) {
+    if (flowCastCarries(cast) && itypeCarriesBorrow(((IExpNode *)((CastNode *)cast)->exp)->vtype))
+        fstate->gate |= FlowGateBoxed;
+}
+
 void flowGateUse(FlowState *fstate, VarDclNode *var) {
     for (uint16_t i = 0; i < fstate->inflightcnt; ++i) {
         if (fstate->inflight[i] == var) {
@@ -1840,14 +1849,14 @@ void flowGateCount(FlowState *fstate) {
     ++flowGateFns;
     if (fstate->gate)
         ++flowGateGated;
-    for (int bit = 0; bit < 4; ++bit) {
+    for (int bit = 0; bit < 5; ++bit) {
         if (fstate->gate & (1 << bit))
             ++flowGateByTrigger[bit];
     }
 }
 
 void flowGatePrint() {
-    printf("Flow gate: %u of %u functions (holder %u, result %u, store %u, in-call %u)\n\n",
+    printf("Flow gate: %u of %u functions (holder %u, result %u, store %u, in-call %u, boxed %u)\n\n",
         flowGateGated, flowGateFns, flowGateByTrigger[0], flowGateByTrigger[1],
-        flowGateByTrigger[2], flowGateByTrigger[3]);
+        flowGateByTrigger[2], flowGateByTrigger[3], flowGateByTrigger[4]);
 }

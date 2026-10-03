@@ -264,6 +264,11 @@ char *lifeSigSpell(char *bufp, struct FnSigNode *sig);
 // vouches by its own bound, or with none its own lifetime
 // (lifeVirtOutlives). A parameter '&<Trait + 'static' takes only a value
 // holding global borrows.
+//
+// An owning virtual reference, 'So[Trait]', takes no bound: it names no
+// lifetime and carries no borrow, so it is bounded by ''static' (Rust's
+// 'Box<dyn Trait>'), and a value made one, wherever the conversion is, may
+// hold only global borrows (loanNotStaticIn, the loan walk's conversion).
 
 // Set once the parser has read a bound of ''static': until then no
 // signature bounds a lifetime by it (FnSigNode.lifestatic) and no call need

@@ -1,0 +1,86 @@
+// Values made owning virtual references that hold no borrow but a global
+// one: a struct holding no borrow, boxed into a 'So[Show]' and an
+// 'Rc[Show]'; a struct holding a global's borrow, boxed where a local is
+// declared, and through a parameter whose borrow is ''static'; a type
+// parameter bounded by ''static' boxed, instanced with a struct holding a
+// global's borrow; and an unbounded one instanced with a struct holding
+// none. A borrowed virtual reference to a local's struct is untouched.
+//
+// Verdict: accept; prints 3 4 7 7 7 5 6.
+// Basis: Rust's behaviour: 'Box<dyn Trait>' is 'Box<dyn Trait + 'static>'
+// (the Reference, "Default trait object lifetime bounds"), which a value
+// holding no borrow, or only ''static' ones, meets; a borrowed trait object
+// '&'r dyn Trait' defaults to ''r' instead (refvirtref.html;
+// reflifefn.html, "Lifetime bounds").
+// Master ff2c3626: correct.
+
+mod lifetime_bound_owning_virt_accepted;
+
+import stdio use *;
+
+trait Show {
+  pub fn show(self &) i64;
+}
+
+struct R {
+  pub n i64;
+}
+
+struct H is Show {
+  pub r &R;
+  fn show(self &) i64 {
+    self.r.n;
+  }
+}
+
+struct Circle is Show {
+  pub n i64;
+  fn show(self &) i64 {
+    self.n;
+  }
+}
+
+mut D R;
+
+fn @initpure init() {
+  D = new R(7);
+}
+
+fn boxStatic(r &'static R) So[Show] {
+  new So[H](new H(r));
+}
+
+fn boxStaticT[T Show + 'static](x T) So[Show] {
+  new So[T](x);
+}
+
+fn boxAny[T Show](x T) So[Show] {
+  new So[T](x);
+}
+
+fn look(v &<Show) i64 {
+  v.show();
+}
+
+fn main() {
+  initAll();
+  imm k So[Show] = new So[Circle](new Circle(3));
+  printInt(k.show());
+  printStr(" ");
+  imm c Rc[Show] = new Rc[Circle](new Circle(4));
+  printInt(c.show());
+  printStr(" ");
+  imm g So[Show] = new So[H](new H(&D));
+  printInt(g.show());
+  printStr(" ");
+  printInt(boxStatic(&D).show());
+  printStr(" ");
+  printInt(boxStaticT(new H(&D)).show());
+  printStr(" ");
+  printInt(boxAny(new Circle(5)).show());
+  printStr(" ");
+  imm x = new R(6);
+  imm h = new H(&x);
+  printInt(look(&h));
+  printStr("\n");
+}

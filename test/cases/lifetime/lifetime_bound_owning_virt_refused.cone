@@ -1,0 +1,84 @@
+// A value holding a borrow made an owning virtual reference, whose type
+// names no lifetime: a struct holding a borrow the caller lent, boxed into a
+// 'So[Show]', and into an 'Arc[Show]', and returned; one holding a local's
+// borrow, boxed where a local is declared and where an argument is handed;
+// an 'Rc[H]' converted to an 'Rc[Show]'; and a generic function's unbounded
+// T boxed, instanced with a struct holding a borrow.
+//
+// Verdict: refuse, ErrorLifetimeBound at each conversion.
+// Basis: Rust's behaviour: a trait object's lifetime bound, left out
+// behind an owning pointer, defaults to ''static' ('Box<dyn Trait>' is
+// 'Box<dyn Trait + 'static>'; the Reference, "Default trait object lifetime
+// bounds"), so a value holding a borrow that is not global may not become
+// one. 'So[Trait]', 'Rc[Trait]' and 'Arc[Trait]' read the same way
+// (refvirtref.html; reflifefn.html, "Lifetime bounds").
+// Master ff2c3626: accepted, and main, run, prints "final" as the boxed
+// value's R dies at the end of the inner block, and then a value read
+// through 'keep' from that R's freed block: the conversion dropped every
+// loan the value held.
+
+mod lifetime_bound_owning_virt_refused;
+
+import stdio use *;
+import sync use Arc;
+
+trait Show {
+  pub fn show(self &) i64;
+}
+
+struct R {
+  pub n i64;
+  fn final(self &uni) {
+    printStr("final\n");
+  }
+}
+
+struct H is Show {
+  pub r &R;
+  fn show(self &) i64 {
+    self.r.n;
+  }
+}
+
+fn boxit(h H) So[Show] {
+  new So[H](h);              //~ ErrorLifetimeBound "the caller lent through 'h'"
+}
+
+fn arcit(h H) Arc[Show] {
+  new Arc[H](h);             //~ ErrorLifetimeBound "the caller lent through 'h'"
+}
+
+fn take(b So[Show]) i64 {
+  b.show();
+}
+
+fn boxAny[T Show](x T) So[Show] {
+  new So[T](x);              //~ ErrorLifetimeBound "the caller lent through 'x'"
+}
+
+fn clobber(n i64) i64 {
+  mut a Array[i64, 16] = [n, n, n, n, n, n, n, n, n, n, n, n, n, n, n, n];
+  a[3] + a[9];
+}
+
+fn generic() {
+  imm x = new R(4);
+  printInt(boxAny(new H(&x)).show());
+}
+
+fn main() {
+  imm g = new R(1);
+  mut keep So[Show] = boxit(new H(&g));
+  {
+    imm r = new So[R](42);
+    keep = boxit(new H(&*r));
+  }
+  clobber(21);
+  printInt(keep.show());
+  imm x = new R(2);
+  imm b So[Show] = new So[H](new H(&x));   //~ ErrorLifetimeBound "a borrow of 'x'"
+  printInt(take(new So[H](new H(&x))));    //~ ErrorLifetimeBound "a borrow of 'x'"
+  imm a = new Rc[H](new H(&x));
+  imm c Rc[Show] = a;        //~ ErrorLifetimeBound "a borrow of 'x'"
+  printStr("\n");
+}

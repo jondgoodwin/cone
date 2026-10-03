@@ -458,6 +458,21 @@ uint32_t loanNotBoundIn(FnSigNode *sig, PathSet *set, Name *bound) {
     return 0;
 }
 
+uint32_t loanNotStaticIn(FnSigNode *sig, PathSet *set) {
+    if (set == NULL)
+        return 0;
+    uint32_t n = set == &pathSetAll ? nloans : set->cnt;
+    for (uint32_t i = set == &pathSetAll ? 1 : 0; i < n; ++i) {
+        uint32_t id = set == &pathSetAll ? i : loanOf(set->ids[i]);
+        if (loanIsLocal(id))
+            return id;
+        if (loans[id].kind == LoanCaller
+            && !lifePartOutlives(sig, loanParm(id)->vtype, loans[id].part, staticLifeName))
+            return id;
+    }
+    return 0;
+}
+
 uint32_t loanNotGlobalInAs(PathSet *set, int near, int far) {
     if (set == NULL || set == &pathSetAll)
         return near || far ? loanNotGlobalIn(set) : 0;
@@ -790,6 +805,25 @@ void loanNotBound(INode *node, uint32_t loan, Name *bound) {
     errorMsgNode(node, ErrorLifetimeBound,
         "A virtual reference bounded by '%s' points at a value whose borrows all last '%s', but this one holds a borrow of '%s' (made %s), which belongs to this function.",
         &bound->namestr, &bound->namestr, srcname, loanWhere(&loans[loan], where, sizeof(where)));
+}
+
+void loanNotBoxable(INode *node, uint32_t loan) {
+    if (mapGet(node, 0, 1))
+        return;
+    mapPut(node, 0, 1, 1);
+    char srcname[128];
+    char where[160];
+    if (loans[loan].kind == LoanCaller) {
+        char lent[160];
+        errorMsgNode(node, ErrorLifetimeBound,
+            "An owning virtual reference ('So[Trait]', 'Rc[Trait]') names no lifetime, so it may outlive any borrow: the value made one may hold only global borrows, as if bounded by ''static'. This one holds the borrow the caller lent through %s, which is not ordered to last ''static'.",
+            loanLentThrough(loan, lent, sizeof(lent)));
+        return;
+    }
+    loanSourceName(&loans[loan].place, srcname, sizeof(srcname));
+    errorMsgNode(node, ErrorLifetimeBound,
+        "An owning virtual reference ('So[Trait]', 'Rc[Trait]') names no lifetime, so it may outlive any borrow: the value made one may hold only global borrows, as if bounded by ''static'. This one holds a borrow of '%s' (made %s), which belongs to this function.",
+        srcname, loanWhere(&loans[loan], where, sizeof(where)));
 }
 
 // A use of a holder is a node naming it, or, where its value dies with a

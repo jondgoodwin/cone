@@ -30,6 +30,7 @@ enum FlowGate {
     FlowGateStore  = 0x4,   // a call with a '&mut X' argument, X carrying a borrow, or a struct holding
                             // such a writable borrow, beside another argument carrying one
     FlowGateInCall = 0x8,   // a variable named while an operand's borrow of it waits for its call or literal
+    FlowGateBoxed  = 0x10,  // a value whose type carries a borrow converted to an owning virtual reference
 };
 
 // How many operands' borrows the gate remembers waiting at once; past that,
@@ -119,6 +120,8 @@ void flowGateResultAsk(FlowState *fstate, INode *type);
 void flowGateCallAsk(FlowState *fstate, Nodes *args);
 // An operand just walked may be a borrow
 void flowGateOperandAsk(FlowState *fstate, INode *operand);
+// A conversion may make an owning virtual reference of a value holding a borrow
+void flowGateBoxedAsk(FlowState *fstate, INode *cast);
 #define flowGateOperandsEnd(fstate, mark) ((fstate)->inflightcnt = (mark))
 
 // A variable is named while an operand's borrow waits: gate trigger when it is
