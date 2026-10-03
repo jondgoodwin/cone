@@ -413,6 +413,14 @@ diagnostic at all: measured, the generic form reaches depth ~702 and the macro
 form ~2282 before it does, while the deepest legitimate expansion in the test
 corpus is 1.
 
+Depth alone bounds the stack, not the work. An expansion that expands itself
+twice a level, at two different arguments, is a tree of 2^256 instances, and
+each level the refusal returns through would start its next expansion down to
+the limit again. So once `genericInstantiateEnter` has refused, it refuses
+everything until the outermost expansion has unwound, reporting only what
+reaches the limit itself: the compile ends with the limit reported on each line
+of the innermost instance.
+
 ## 9. The walk context
 
 **Each walk carries its own state**, `NameResState` and `TypeCheckState`. They
