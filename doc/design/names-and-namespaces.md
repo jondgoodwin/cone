@@ -809,7 +809,7 @@ demangler in `test/run.py`:
 | `push` of generic module `mod stack[T]`, a submodule of the root, at `i64`; its global `count` | `_CNvIC5stackxE4push`, `_CNvIC5stackxE5count` | `stack[i64].push`, `stack[i64].count` — the module instance is the owner, and its members' components are bare |
 | a method of `struct Entry` in `stack[i64]`; `tally[T]`'s `see` at a type of module `user` | `_CNvNtIC5stackxE5Entry7doubled`, `_CNvIC5tallyNtC4user3TagE3see` | `stack[i64].Entry.doubled`, `tally[user.Tag].see` |
 | `Meter`'s default `reading` inherited by `Gauge` | `_CNvNt5Gauge7reading` | `Gauge.reading` — spelled as an override written there |
-| the `drop` the compiler synthesizes for `Bundle` | `_CNvNt6Bundle4drop` | `Bundle.drop` |
+| the drop the compiler synthesizes for `Bundle`, named `-drop` | `_CNvNt6Bundleu11_drop_9b166b` | ``Bundle.`-drop` `` — `drop` is an ordinary method name, so a type may declare one beside it |
 | `Vec.-`, `Vec.+=`, `List.&[]` | `_CNvNt3Vecomi`, `_CNvNt3VecopL`, `_CNvNt4Listorx` | `Vec.-`, `Vec.+=`, `List.&[]` |
 | `Gauge`'s vtable for trait `Meter` | `_CYNt5GaugeNt5Meter` | `Gauge as Meter (vtable)` |
 | the thunk filling `Powered`'s `thrust` slot in `Car`'s vtable, `thrust` being folded from a field | `_CYNt3CarNt7Powered6thrust` | `Car as Powered.thrust (thunk)` — a method in everything but name and namespace |
@@ -1037,7 +1037,7 @@ which is where the `symbols` check target reads them.
 | instance of a generic `fn` | `define internal i64 @_CINv4pickxE(i64 %0, i64 %1) comdat {` — `pick[i64]` | internal · `nodeduplicate` |
 | method of a generic type's instance | `define internal i64 @_CNvINt6HolderxE5tally(%Holder %0) comdat {` — `Holder[i64].tally`; the instance is the owner, so `fn tally(self) i64` is told apart across instances | internal · `nodeduplicate` |
 | trait default cloned into an implementer | `define internal i32 @_CNvNt5Gauge7reading(%Gauge* %0) comdat {` — spelled exactly as an override written there, `Gauge.reading`; no arguments, since a copy is not an instance | internal · `nodeduplicate` |
-| synthesized drop function | `_CNvNt6Bundle4drop` — `Bundle.drop` | as its type's methods |
+| synthesized drop function | `_CNvNt6Bundleu11_drop_9b166b` — ``Bundle.`-drop` `` | as its type's methods |
 | vtable | `@_CYNt5GaugeNt5Meter = internal constant %"Meter:Vtable" { ... }, comdat` — `Gauge as Meter` | internal · `nodeduplicate` |
 | vtable list | `@_CLNt5Meter = internal constant [2 x ptr] [...], comdat` — one per trait, so LLVM never uniquifies one | internal · `nodeduplicate` |
 | `extern` in a Cone-named module | `declare i64 @_CNvC12moduleextern5twice(i64)` — `moduleextern.twice`, the module's Cone name; in the root, bare, as every root declaration is | external · none |

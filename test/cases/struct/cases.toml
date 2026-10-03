@@ -248,14 +248,16 @@ excludes = [" hidden "]
 
 # A finalizer generates a function of its own. A struct whose field needs
 # dropping gets a second, generated one named for the type, which calls the
-# type's own finalizer and then the field's.
+# type's own finalizer and then the field's. It is named '-drop', which no
+# plainly written method has, since 'drop' is an ordinary method name
+# (struct_drop_method).
 [[scenario.struct_methods.check]]
 name = "finalizer-generates-a-drop-function"
 target = "symbols"
 contains = [
   "define internal Resource.final comdat nodeduplicate",
   "define internal Bundle.final comdat nodeduplicate",
-  "define internal Bundle.drop comdat nodeduplicate",
+  "define internal Bundle.`-drop` comdat nodeduplicate",
 ]
 
 [scenario.struct_operators]
@@ -395,6 +397,23 @@ tags = ["flow", "genllvm", "runtime"]
 category = "run"
 description = "A value stored over is finalized as it is replaced -- a struct, a field, an element, a tuple, an enum, a parameter, in a loop, in a parallel assignment, through a reference -- on the paths where its holder holds it, and nothing is finalized where the holder, or the variable a field is part of, holds nothing"
 tags = ["flow", "genllvm", "runtime"]
+
+# 'drop' is an ordinary method name: a type the compiler gives a drop may
+# declare a method named 'drop' too, and the two are distinct declarations
+# with distinct symbols. Before, both were named 'drop' and the compile was
+# abandoned as a compiler defect.
+[scenario.struct_drop_method]
+category = "run"
+description = "A method named 'drop', declared beside the drop the compiler generates, is an ordinary method and not the finalizer: on a struct with a finalizing field and an owner, beside its own 'final', with the generated drop's own signature, on a generic's instance, on a type with nothing generated, on an enum's variant, as an enum's default, and as an enum's static function"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[[scenario.struct_drop_method.check]]
+name = "a-drop-method-beside-the-generated-drop"
+target = "symbols"
+contains = [
+  "define internal Held.drop comdat nodeduplicate",
+  "define internal Held.`-drop` comdat nodeduplicate",
+]
 
 [scenario.struct_extends]
 category = "run"

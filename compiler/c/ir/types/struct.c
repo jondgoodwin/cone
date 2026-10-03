@@ -2503,7 +2503,8 @@ void structSetDropFn(StructNode *node) {
     BlockNode *block = newBlockNode();
     // Pub, because the value may be dropped wherever it travels: the
     // symbol is reached from any module that holds one of these.
-    FnDclNode *newdropfn = newFnDclNode(dropName, FlagMethFld | FlagPub, (INode*)fnsig, (INode*)block);
+    // Named '-drop', not 'drop', since 'drop' is a method any type may declare
+    FnDclNode *newdropfn = newFnDclNode(typeDropName, FlagMethFld | FlagPub, (INode*)fnsig, (INode*)block);
     inodeLexCopy((INode*)newdropfn, (INode*)node);
     // Built lowered, so it carries the mark a check would have left, and
     // the walk over this type's members (structCheckMembers) passes it by
@@ -2560,7 +2561,7 @@ void structSetEnumDropFn(StructNode *node) {
     FnSigNode *fnsig = newFnSigNode();
     nodesAdd(&fnsig->parms, selfDcl);
     fnsig->rettype = (INode*)newVoidNode();
-    FnDclNode *dropfn = newFnDclNode(dropName, FlagPub, (INode*)fnsig, (INode*)newBlockNode());
+    FnDclNode *dropfn = newFnDclNode(typeDropName, FlagPub, (INode*)fnsig, (INode*)newBlockNode());
     inodeLexCopy((INode*)dropfn, (INode*)node);
     dropfn->flags |= TypeChecked;
     nodelistAdd(&node->nodelist, (INode*)dropfn);
@@ -2572,7 +2573,7 @@ void structSetEnumDropFn(StructNode *node) {
 // a struct's (structSetDropFn) -- whose body generation builds from the layout,
 // rather than a type's own 'final' standing as its drop?
 int structIsGeneratedDropFn(INode *fn) {
-    if (fn->tag != FnDclTag || ((FnDclNode*)fn)->namesym != dropName)
+    if (fn->tag != FnDclTag || ((FnDclNode*)fn)->namesym != typeDropName)
         return 0;
     INode *owner = ((FnDclNode*)fn)->dclinfo.owner;
     return owner && owner->tag == StructTag && ((StructNode*)owner)->dropfn == fn;
