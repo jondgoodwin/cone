@@ -169,6 +169,71 @@ LLVMValueRef genlGpuPanic(GenState *gen, LLVMValueRef *args) {
     return genlGpuCall(gen, genlGpuFailFn(gen), fargs, 4);
 }
 
+// ---- The C library's math ---------------------------------------------------
+
+// No GPU has the C library. A call to one of its math functions, by its C
+// symbol (libc's bindings, or any '@c' declaration of the same symbol), is on
+// a GPU target the LLVM intrinsic of the same meaning, which LLVM's SPIR-V
+// backend selects as the GLSL.std.450 extended instruction ('fmod' is LLVM's
+// 'frem', SPIR-V's OpFRem, which also takes its sign from x). The table
+// holds each function C names in its double form and its float form, 'f'
+// after it.
+typedef struct GenlGpuMathFn {
+    const char *cname;      // the double form's C name
+    const char *intrinsic;  // LLVM's intrinsic, overloaded on the float type; NULL for 'frem'
+    unsigned nargs;
+} GenlGpuMathFn;
+
+static const GenlGpuMathFn genlGpuMathFns[] = {
+    {"sqrt", "llvm.sqrt", 1},
+    {"sin", "llvm.sin", 1},
+    {"cos", "llvm.cos", 1},
+    {"tan", "llvm.tan", 1},
+    {"asin", "llvm.asin", 1},
+    {"acos", "llvm.acos", 1},
+    {"atan", "llvm.atan", 1},
+    {"atan2", "llvm.atan2", 2},
+    {"exp", "llvm.exp", 1},
+    {"log", "llvm.log", 1},
+    {"pow", "llvm.pow", 2},
+    {"fabs", "llvm.fabs", 1},
+    {"floor", "llvm.floor", 1},
+    {"ceil", "llvm.ceil", 1},
+    {"fmod", NULL, 2},
+};
+
+// On a GPU target, a call to a C library math function as its intrinsic,
+// given its arguments, or NULL when the function is no such one. 'fabsf',
+// which libc writes inline as 'fabs' widened and narrowed (the UCRT has no
+// symbol for it), is caught here before its body is expanded, so the module
+// asks for no 64-bit float.
+LLVMValueRef genlGpuMath(GenState *gen, FnDclNode *fndcl, LLVMValueRef *args, unsigned nargs) {
+    if (!(fndcl->dclinfo.facts & DclCName) || nargs == 0 || nargs > 2)
+        return NULL;
+    char symbol[2048];
+    nameSymbol(symbol, (INode*)fndcl);
+    size_t len = strlen(symbol);
+    LLVMTypeRef ftype = LLVMTypeOf(args[0]);
+    LLVMTypeKind want = LLVMDoubleTypeKind;
+    if (len > 1 && symbol[len - 1] == 'f') {
+        want = LLVMFloatTypeKind;
+        --len;
+    }
+    for (size_t i = 0; i < sizeof(genlGpuMathFns) / sizeof(genlGpuMathFns[0]); ++i) {
+        const GenlGpuMathFn *mathfn = &genlGpuMathFns[i];
+        if (strlen(mathfn->cname) != len || strncmp(mathfn->cname, symbol, len) != 0 || mathfn->nargs != nargs)
+            continue;
+        for (unsigned a = 0; a < nargs; ++a) {
+            if (LLVMGetTypeKind(LLVMTypeOf(args[a])) != want)
+                return NULL;
+        }
+        if (mathfn->intrinsic == NULL)
+            return LLVMBuildFRem(gen->builder, args[0], args[1], "");
+        return genlGpuCall(gen, genlGpuIntrinsic(gen, mathfn->intrinsic, &ftype, 1), args, nargs);
+    }
+    return NULL;
+}
+
 // ---- The kernel -------------------------------------------------------------
 
 // The name a binding is given in the module (an OpName): LLVM's SPIR-V

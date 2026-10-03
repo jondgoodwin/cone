@@ -477,7 +477,7 @@ overload name's candidates were each declared (`symbols`).
 
 ### Generated-artifact assertions: named checks
 
-An assertion against LLVM IR, the symbols it declares, or a run's stdout has no
+An assertion against LLVM IR, the symbols it declares, the target's assembly, or a run's stdout has no
 source line to attach to. Write it as a named check in `cases.toml`:
 
 ```toml
@@ -528,6 +528,14 @@ loads are still there, and an inline method's body is pasted in whole, its
 parameters stored to allocas of their own — and are read out of the dump
 rather than chosen. The same rule about symbol bytes
 applies.
+
+#### `asm`
+
+Matches against what `--asm` wrote, the target's own assembly: `<name>.spvasm`
+on a SPIR-V target, `<name>.wat` on WebAssembly, the CPU's otherwise. Use it
+for what only the back end decides: the instruction LLVM's SPIR-V back end
+selects for an intrinsic (`OpExtInst ... Floor`, GLSL.std.450's), which no
+IR dump shows. It reads the scenario's own compile, never a linked object's.
 
 #### `symbols`
 
@@ -629,7 +637,7 @@ message = "may not be used as an expression"  # the output folder, which has no 
 
 [[scenario.core_overload.check]]
 name     = "overload-lowers-to-concrete"
-target   = "symbols"           # or "llvmir", "preir", or "stdout" for a 'run' scenario
+target   = "symbols"           # or "llvmir", "preir", "asm", or "stdout" for a 'run' scenario
 contains = ["define internal scaleInt comdat nodeduplicate"]
 excludes = ["scale "]          # a definition's name is followed by its COMDAT
 

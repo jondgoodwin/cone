@@ -194,6 +194,18 @@ pub struct Driver {
     tokBase | (kind << 48u64) | (u64.from(gen & genMask) << 24u64) | u64.from(index & genMask);
   }
 
+  // A token in this driver's space for the layer above it, to submit its
+  // own operations to the same loop with (httpclient's deadlines and
+  // groups): its kind byte has the top bit set, which no operation of the
+  // driver's has, so 'complete' leaves its completion (false) and 'owns' is
+  // true of it. 'n' is the layer's own, its low 48 bits kept
+  pub fn upperToken(self &, kind u8, n u64) u64 {
+    tokBase | ((u64.from(kind) | 128u64) << 48u64) | (n & 0xFFFFFFFFFFFFu64);
+  }
+
+  // Whether a token is one 'upperToken' made, and its kind and n
+  pub fn isUpperToken(self &, token u64) Bool {self.owns(token) and ((token >> 48u64) & 128u64) != 0u64;}
+
   // ---------------------------------------------------------------------------
   // The tables
   // ---------------------------------------------------------------------------
@@ -1032,6 +1044,7 @@ pub struct Driver {
     imm token = comp.token;
     if not self.owns(token) {return false;}
     imm kind = (token >> 48u64) & 255u64;
+    if kind >= 128u64 {return false;}     // the layer above's (upperToken)
     imm index = u32.from(token & u64.from(genMask));
     imm gen = u32.from((token >> 24u64) & u64.from(genMask));
     imm now = Instant.now();

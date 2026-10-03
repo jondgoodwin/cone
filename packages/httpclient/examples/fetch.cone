@@ -1,0 +1,102 @@
+// fetch <url>: one URL fetched by the client, http or https, the server's
+// certificate checked by Windows' own verifier, redirects followed. It
+// prints the URL that answered, the status, every header field, the body's
+// size (the body itself is read and dropped), and when it got there: the
+// time to the first byte and to the end, the attempts and redirects it
+// took. Run it with
+//
+//   congo run packages/httpclient/examples/fetch.cone -- https://example.com/
+//   congo run packages/httpclient/examples/fetch.cone -- http://github.com/
+//
+// It needs the network, so it is an example and never a test: 'congo test'
+// builds it and does not run it. A failure prints its stage and why, and
+// the exit status is 1.
+
+mod fetch;
+
+import stdio use *;
+import process;
+import collections use List, String;
+import time use Instant, Duration;
+import iobuf use Pool;
+import iocore use Loop, forever;
+import http use *;
+import httpclient use *;
+
+fn millis(d Duration) {
+  imm tenths = d.nanos() / 100000i64;
+  printInt(tenths / 10i64);
+  printStr(".");
+  printInt(tenths % 10i64);
+  printStr(" ms");
+}
+
+fn main() i32 {
+  imm args = process.args();
+  if args.len() < 2usize {
+    printStr("usage: fetch <url>\n");
+    return 2i32;
+  }
+  mut lp = Loop.mustMake();
+  mut client = Client.make(Config.make(), Pool.make());
+  mut req = Request.get(args[1usize].view());
+  req.deadline = Instant.now() + Duration.fromSeconds(30i64);
+  client.send(&mut lp, req, Sink.Here[1u64]);
+  mut events = List[Event].empty();
+  mut bytes = 0u64;
+  mut status = 1i32;
+  mut going = true;
+  while going {
+    client.poll(&mut lp, forever(), &mut events);
+    mut k = 0usize;
+    while k < events.len() {
+      imm e = &mut events[k];
+      k = k + 1usize;
+      if e.kind == EventKind.Response[] {
+        printStr(e.url.view());
+        printStr("\nHTTP/1.1 ");
+        printUInt(u64.from(e.response.status));
+        printStr(" ");
+        printStr(reasonPhrase(e.response.status));
+        printStr("\n");
+        mut j = 0usize;
+        while j < e.response.headers.len() {
+          printStr(e.response.headers.nameAt(j));
+          printStr(": ");
+          printStr(e.response.headers.valueAt(j));
+          printStr("\n");
+          j = j + 1usize;
+        }
+      } elif e.kind == EventKind.Data[] {
+        bytes = bytes + u64.from(e.buf.len());
+        client.release(e.id, e.buf.len());
+      } elif e.kind == EventKind.Done[] {
+        printStr("\n");
+        printUInt(bytes);
+        printStr(" bytes of body; first byte after ");
+        millis(e.timing.firstByte - e.timing.queued);
+        printStr(", done after ");
+        millis(e.timing.ended - e.timing.queued);
+        printStr("; ");
+        printUInt(u64.from(e.timing.attempts));
+        printStr(" request(s), ");
+        printUInt(u64.from(e.timing.redirects));
+        printStr(" redirect(s)\n");
+        status = 0i32;
+        going = false;
+      } elif e.isTerminal() {
+        printStr(eventName(e.kind));
+        if e.kind == EventKind.Failed[] {
+          printStr(": ");
+          printStr(e.failure.message().view());
+        }
+        printStr("\n");
+        going = false;
+      }
+    }
+    events.clear();
+  }
+  client.abortAll(&mut lp);
+  client.pump(&mut lp, &mut events);
+  status;
+}

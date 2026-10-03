@@ -1,0 +1,595 @@
+// The httpclient package: HTTP fetched by URL, in one call. A Client takes
+// a request for a URL -- 'http://' or 'https://' -- and answers it with the
+// response's events and then exactly one final answer, as httpconn does for
+// one connection; between the two it does what a program should not have
+// to: it keeps a pool of connections per origin and reuses them, opens new
+// ones within its limits, holds the requests that wait in four intents and
+// decides which one the next free connection takes, retries a request that
+// is safe to repeat when a connection fails under it, follows redirects,
+// and carries each request's cancel, group and deadline down to the
+// connection. It is the request scheduler of the async I/O design: the one
+// layer that holds the real order of what is fetched.
+//
+//   mod fetch;
+//   import collections use List;
+//   import iobuf use Pool;
+//   import iocore use Loop, forever;
+//   import httpclient use *;
+//
+//   fn main() {
+//     mut lp = Loop.mustMake();
+//     mut client = Client.make(Config.make(), Pool.make());
+//     client.get(&mut lp, "https://example.com/", Sink.Here[1u64]);
+//     mut events = List[Event].empty();
+//     mut going = true;
+//     while going {
+//       client.poll(&mut lp, forever(), &mut events);     // waits in the loop, and only there
+//       mut k = 0usize;
+//       while k < events.len() {
+//         imm e = &mut events[k];
+//         if e.kind == EventKind.Response[] { ... e.response.status ... e.url ... }
+//         elif e.kind == EventKind.Data[] { ... e.buf.view() ...; client.release(e.id, e.buf.len()); }
+//         elif e.isTerminal() {going = false;}            // exactly one: Done, Failed,
+//         k = k + 1usize;                                 // Cancelled or TimedOut
+//       }
+//       events.clear();
+//     }
+//     // or, in one call, the whole body up to a limit:
+//     imm r = client.fetchWhole(&mut lp, Request.get("https://example.com/"), 1048576usize);
+//     if r.isOk() { ... r.status ... r.body.view() ... } else { ... r.failure.message() ... }
+//   }
+//
+//   Client.make(config, pool)  getWhole(url, limit)                   (THE CLIENT)
+//   c.get(lp, url, sink)  c.send(lp, request, sink)  c.fetchWhole(lp, request, limit)  (FETCHING)
+//   c.release(id, n)  c.cancel(lp, id)  c.reprioritize(id, intent, score)
+//   c.closeIdle(lp)  c.abortAll(lp)
+//   c.poll(lp, until, events)  c.complete(lp, c)  c.pump(lp, events)  c.wakeAt()  (DRIVING)
+//   c.stats()  c.driverStats()  c.live()  c.queued()  c.held()  c.isLive(id)
+//   Config.make(): conn tlsConfig maxPerOrigin maxTotal idleTimeout maxQueued  (CONFIGURATION)
+//     maxRetries maxRedirects userAgent
+//   Request.get(url)  Request.make(method, url)  Request.to(method, Url)  (REQUESTS)
+//     r.url r.headers r.body r.intent r.score r.deadline r.group r.maxRedirects
+//   Intent: Urgent Visible Prefetch Background;  intentName(i)           (INTENTS)
+//   Sink.Here[token]  Sink.Chan[token, tx]                              (SINKS)
+//   Event: e.kind e.token e.id, and per kind e.response e.body e.url e.buf  (EVENTS)
+//     e.trailers e.failure e.timing;  e.isTerminal()
+//   EventKind: Response Data End Done Failed Cancelled TimedOut;  eventName(k)
+//   Response: r.outcome r.status r.headers r.body r.url r.failure r.timing r.isOk()
+//   Failure: f.stage f.code f.error f.unsent f.attempts f.message();  Stage  (FAILURES)
+//   Timing: t.queued t.dispatched t.firstByte t.ended t.attempts t.redirects t.reused
+//
+// THE CLIENT. One per Loop, driven by the loop's thread, as httpconn's
+// Driver is, which it owns: every connection it makes is one of its
+// driver's. It never waits: 'poll(lp, until, events)' is the loop's poll,
+// waiting at most until 'until' (and not at all while events are ready),
+// then everything the completions moved, the client's events for this
+// thread appended to 'events'. A program that also runs other work on the
+// loop (a server's driver of its own, its own operations) polls the loop
+// itself and hands each completion to 'complete' (true when it was the
+// client's), then calls 'pump'; its poll may wait no later than 'wakeAt()'.
+//
+// FETCHING. 'get(lp, url, sink)' is a GET of a URL written as text;
+// 'send(lp, request, sink)' sends a Request, which says its method, URL,
+// header fields, body (whole, as bytes: sent with its Content-Length, so a
+// retry or a 307 can send it again; streaming a request's body is not here
+// yet), intent and score, deadline, group, and how many redirects it
+// follows. Each gives a FetchId and later exactly one final answer, Done,
+// Failed, Cancelled or TimedOut, and nothing after it (invariant I1). Before
+// it: Response (the head of the response that will be the answer, after any
+// redirects, with the URL that gave it), Data (the body's bytes, in order,
+// each an IoBuf the program owns), End (the body is whole, with its trailer
+// fields). A fetch that cannot be made is answered at once: a URL that does
+// not parse or is not http or https (Stage.Url), the queue full (Queue), its
+// group cancelled or its deadline passed. A request's header fields are its
+// own, but for Host (written from the URL), the framing fields (written
+// from the body) and a few the client adds when they are missing:
+// User-Agent (the config's) and 'Accept: */*'. It asks for no content
+// coding (no Accept-Encoding): bodies arrive as the server stores them.
+// 'fetchWhole(lp, request, limit)' does it all in one call: it drives the
+// loop until the fetch's final answer and gives a Response, its status,
+// fields and whole body, or its failure; a body longer than limit fails it
+// (Stage.Limit). Events for other fetches that arrive meanwhile are kept
+// for the next poll; it polls the loop as 'poll' does, so a loop that also
+// runs other work (a server's driver) cannot use it, since what completes
+// for that work would be dropped. 'getWhole(url, limit)' is the same with
+// its own loop and client, for a program that wants one URL and nothing
+// more.
+//
+// POOLS. Connections are pooled per ORIGIN, the URL's scheme, host and port
+// ('https://example.com:443'): a connection that ends an exchange with both
+// sides willing to keep it is idle in its origin's pool, and the next
+// request for that origin takes it rather than a new one. At most
+// 'maxPerOrigin' connections are open to an origin (6, as browsers keep
+// over HTTP/1.1) and 'maxTotal' in all (64); an idle one is closed after
+// 'idleTimeout' (90 s, reqwest's), or when the total is reached and another
+// origin needs a connection; 'closeIdle(lp)' closes every idle one now. A
+// connection closing (its FIN sent, the server's awaited) counts toward
+// neither limit. HTTP/1.1 carries one request at a time on a connection
+// (no pipelining), so these are also the most requests under way at once.
+// Every https connection takes its TLS session from one tls.Client the
+// client makes from 'config.tlsConfig' (Windows' own verifier unless it
+// says otherwise), so a new connection to a server resumes the TLS session
+// of one that has ended: the tls package keeps a session to resume when
+// its connection ends, so a connection opened while another to the same
+// server is still pooled makes a full handshake. A connection that cannot
+// be made (its name not found, no connection within connectTimeout, a TLS
+// handshake or certificate refused) fails every request waiting for its
+// origin when no other connection to the origin is up: they would meet the
+// same failure.
+//
+// INTENTS AND THE ORDER. Every request has an intent, the design's four
+// (section 4.6): Urgent (the frame waits on it), Visible (in view now; the
+// default), Prefetch (likely soon) and Background (speculative); and a
+// score within its intent, higher first, which its owner may recompute as
+// often as it likes ('reprioritize(id, intent, score)', the design's
+// priority accumulator: whatever has not gone keeps what its owner gives
+// it). Requests wait in their origin's queue; when a connection to the
+// origin is free, the request that takes it is the first by intent, then
+// score, then the order asked (so equal requests go first come, first
+// served); when connections must be opened, the origins whose first
+// request is first get them first. A request is given a connection only
+// once it is free -- connected, idle -- never queued behind another's
+// exchange, so a request asked for later at a higher intent overtakes every
+// one still waiting. Under way, a request's intent changes nothing more
+// over HTTP/1.1 (no priority on the wire; HTTP/2 and HTTP/3's
+// PRIORITY_UPDATE to come). An intent is strict: a Background request waits
+// while any Urgent one does for the same connections.
+//
+// RETRIES (invariant I21). A request is tried again, on another connection,
+// when its connection failed under it -- reset, closed, a receive or send
+// failed (httpconn's stages Read, Write and Closed) -- and it is known safe
+// to repeat: no byte of it reached the socket (httpconn's 'unsent'), or its
+// method is idempotent (GET, HEAD, OPTIONS, TRACE, PUT, DELETE) and no byte
+// of a response arrived ('noResponse'). At most 'maxRetries' times (2), and
+// never once its Response has gone to its sink. A connection that could not
+// be made, a TLS failure, a protocol refusal and a timeout are not retried.
+// A retried request keeps its place in the order.
+//
+// REDIRECTS. A response of 301, 302, 303, 307 or 308 with a Location is
+// followed, up to 'maxRedirects' (10, reqwest's) or the request's own;
+// past it the request fails (Stage.Redirect); with 0 none is followed and
+// the 3xx is the answer. The Location is resolved against the URL that
+// answered (RFC 3986), the redirect's body read and dropped (cut off past
+// 64 KiB). 303 makes the next request a GET (a HEAD stays a HEAD), as 301
+// and 302 do of a POST, as browsers and reqwest do; its body and its
+// Content- fields go. 307 and 308 send the same method and body again. A
+// redirect to another origin drops the request's Authorization,
+// Proxy-Authorization and Cookie fields: credentials never cross origins.
+// The fetch's events tell only of the response that ends it; its Timing
+// counts the redirects.
+//
+// CANCEL AND DEADLINES. The cancellation contract is iocore's. 'cancel(lp,
+// id)' asks a fetch to end: waiting, it is taken out and answered Cancelled
+// at once; under way, its connection's exchange is ended (HTTP/1.1 can only
+// reset the connection) and the answer says how it ended -- Cancelled, or
+// what it had come to first. A Request's 'deadline' (an absolute Instant)
+// answers it TimedOut then, waiting or under way, across its retries and
+// redirects; its 'group', an iocore CancelGroup, cancels it with the
+// group's 'cancel', from any thread, and gives it the group's deadline when
+// that is the tighter. The client watches each such fetch with one timer on
+// the loop, in its group, so a cancel from another thread wakes the loop.
+//
+// SINKS AND CREDIT (invariant I9: bounded memory). Where a fetch's events go,
+// and the token they carry back: Sink.Here[token], appended for this thread
+// by poll and pump; Sink.Chan[token, tx], sent on a sync channel to
+// another thread, never waiting: a full channel holds the event, and the
+// fetch's later events wait behind it, tried again at every pump (poll waits
+// at most a millisecond then). A response's body bytes are on loan to the
+// program until it says it is done with them: 'release(id, n)' for Data
+// delivered Here; for a channel, as the channel takes them. Its connection
+// reads no more than httpconn's body window (256 KiB) ahead of what was
+// released, and TCP holds the server: a slow consumer slows the link, never
+// fills memory. A fetch's final answer releases what it still had out (the
+// bytes the program holds then are its own). Nothing queues without a
+// bound: at most 'maxQueued' requests wait (10,000; past it, Failed at
+// once, Stage.Queue: a full queue is a visible error, never silent growth),
+// 'maxTotal' connections, the body window per connection, and a channel's
+// own bound.
+//
+// FAILURES. A Failed answer carries a Failure: the stage it failed at (Url,
+// Queue, Resolve, Connect, Read, Write, Http, Tls, Closed, Limit, Redirect),
+// the Windows error number when the OS gave one, an http.HttpError (its
+// kind, detail, and noResponse), 'unsent', and how many attempts were made.
+//
+// DIAGNOSTICS. 'stats()' counts fetches by their final answer, retries,
+// redirects, requests sent on a kept connection against new ones,
+// connections opened and closed, events delivered, held and dropped, the
+// queue now and at its deepest; 'driverStats()' is the driver's own. Done
+// carries the fetch's Timing: when it was asked for, last given a
+// connection, its response's first byte, its end, the attempts and
+// redirects it took, and whether its connection was reused.
+//
+// MEASURED, release, an i7-13700HX on Windows 11, other work on the machine
+// (examples/bench.cone; numbers vary run to run). Every request is a GET
+// answered 200 with 64 bytes over 127.0.0.1; latency is from the fetch
+// being asked for to its Done:
+//
+// - One at a time, the server's driver on the client's own loop: 47,000 to
+//   56,000 a second, p50 16 to 19 us; httpconn alone the same way, the same
+//   hour, 68,000, p50 13.8 us: the client adds 2.5 to 5 us a request (a URL
+//   read, the head built, the order kept, the events moved).
+// - The server on a thread of its own, plain: one at a time on a kept
+//   connection 26,000 to 31,000 a second, p50 28 to 33 us; 64 at once over
+//   six connections, the client's queue holding the rest, 70,000 to 82,000
+//   a second (p50 0.7 to 0.85 ms, mostly the queue); each on a new
+//   connection (cold) 4,400 to 5,500 a second, p50 0.18 to 0.22 ms.
+// - Over TLS 1.3, the same: one at a time 18,000 to 25,000 a second, p50 35
+//   to 45 us; 64 at once 55,000 to 61,000 a second; each on a new
+//   connection resuming the last one's session 840 to 1,000 a second, p50
+//   1.0 to 1.1 ms; each on a new client, a full handshake, 520 to 590 a
+//   second, p50 1.4 to 1.5 ms.
+// - Memory per pooled idle connection, both its ends in one process, no
+//   buffer held: plain, 8.2 KB of private bytes the first time a thousand
+//   are opened at once (the connections' records at both ends, and the
+//   request and fetch tables grown for a thousand at once; httpconn's own
+//   measure, the same way, 6.3 KB), 1.3 to 1.6 KB once those tables have
+//   grown (the records reused); TLS 94 to 116 KB, 70 to 94 KB, OpenSSL's
+//   sessions most of it. The client's own record of a pooled connection is
+//   32 bytes.
+//
+// Not here yet: a request body streamed (it is sent whole); HTTP/2 and
+// HTTP/3 (and their priorities on the wire), Alt-Svc and HTTPS records;
+// compression (no Accept-Encoding is sent, and a Content-Encoding is left to
+// the program); cookies; proxies; authentication (a URL's user information
+// is never sent); a cache; happy eyeballs (httpconn tries a name's addresses
+// in turn); a Request handle whose death cancels (cancel by id or by a
+// group); actors (a sink to come, as httpconn's); and the browser back end
+// over fetch().
+
+mod httpclient;
+
+import libc;
+import collections use List, String;
+import time use Instant, Duration;
+import sync use Sender;
+import iobuf use IoBuf, Pool;
+import iocore use Loop, Completion, OpId, CancelGroup, Target, IoError, forever;
+import http use *;
+import httpconn;
+import tls;
+import url use Url, UrlError;
+import diag;
+
+// ---------------------------------------------------------------------------
+// Intents
+// ---------------------------------------------------------------------------
+
+// How much a request matters now (see the package's header, INTENTS AND
+// THE ORDER)
+pub enum Intent {
+  Urgent,        // the frame is waiting on it
+  Visible,       // in view now: the default
+  Prefetch,      // likely soon
+  Background;    // speculative
+}
+
+// The name of an intent
+pub fn intentName(i Intent) &[]u8 {
+  if i == Intent.Urgent[] {"urgent";}
+  elif i == Intent.Visible[] {"visible";}
+  elif i == Intent.Prefetch[] {"prefetch";}
+  else {"background";}
+}
+
+// Its place in the order: 0 first
+fn intentRank(i Intent) u32 {
+  if i == Intent.Urgent[] {0u32;}
+  elif i == Intent.Visible[] {1u32;}
+  elif i == Intent.Prefetch[] {2u32;}
+  else {3u32;}
+}
+
+// ---------------------------------------------------------------------------
+// Ids
+// ---------------------------------------------------------------------------
+
+const noEntry = 4294967295u32;
+
+// A fetch: an entry of its client's table and which of its occupants it
+// was, so an id kept after its final answer names nothing
+pub struct FetchId {
+  index u32;
+  gen u32;
+
+  pub fn none() FetchId {new FetchId(noEntry, 0u32);}
+  pub fn isNone(self) Bool {gen == 0u32;}
+  pub fn number(self) u64 {(u64.from(gen) << 32u64) | u64.from(index);}
+  pub fn `==`(self, o FetchId) Bool {index == o.index and gen == o.gen;}
+  pub fn `!=`(self, o FetchId) Bool {index != o.index or gen != o.gen;}
+}
+
+// ---------------------------------------------------------------------------
+// Configuration
+// ---------------------------------------------------------------------------
+
+// A client's bounds, limits and timeouts (see the package's header)
+pub struct Config {
+  pub conn httpconn.Config;     // its driver's: connect timeout, buffers, and http1's bounds and timeouts
+  pub tlsConfig tls.ClientConfig;  // its https connections' TLS: the verifier, versions, resumption
+  pub maxPerOrigin u32;         // connections open to one origin
+  pub maxTotal u32;             // connections open in all
+  pub idleTimeout Duration;     // an idle pooled connection is closed after it
+  pub maxQueued u32;            // requests waiting for a connection, in all
+  pub maxRetries u32;           // retries of one request (see RETRIES)
+  pub maxRedirects u32;         // redirects followed, unless a request says otherwise
+  pub userAgent String;         // User-Agent, when a request has none
+
+  // The defaults
+  pub fn make() Config {
+    new Config(conn: httpconn.Config.make(), tlsConfig: tls.ClientConfig.make(), maxPerOrigin: 6u32,
+      maxTotal: 64u32, idleTimeout: Duration.fromSeconds(90i64), maxQueued: 10000u32, maxRetries: 2u32,
+      maxRedirects: 10u32, userAgent: String.from("cone-httpclient/0.1"));
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Requests
+// ---------------------------------------------------------------------------
+
+const useConfig = 4294967295u32;
+
+// What to fetch, and how (see the package's header, FETCHING)
+pub struct Request {
+  pub method Method;
+  pub url Url;
+  pub headers Headers;
+  pub body String;              // sent whole, with its Content-Length; empty: no body
+  pub intent Intent;
+  pub score i64;                // within its intent, higher first
+  pub deadline Instant;         // answered TimedOut then; forever() for none
+  pub group Option[CancelGroup];
+  pub maxRedirects u32;         // the most it follows; the config's unless set
+  methodText String;            // Method.Other's token
+  urlError UrlError;            // why the URL it was made from did not parse
+
+  // A request of any method token for a URL written as text. A URL that
+  // does not parse makes a request that is answered Failed (Stage.Url)
+  pub fn make(method &[]u8, text &[]u8) Request {
+    mut u = Url.empty();
+    mut e = UrlError.none();
+    match Url.parse(text) {
+      case mut r Ok {u <=> r.value;}
+      case mut x Error {e <=> x.value;}
+    }
+    mut r = Request.to(method, u);
+    r.urlError <=> e;
+    r;
+  }
+
+  // A GET of a URL written as text
+  pub fn get(text &[]u8) Request {Request.make("GET", text);}
+
+  // A request of any method token for a Url
+  pub fn to(method &[]u8, u Url) Request {
+    imm m = methodOf(method);
+    imm o = if m == Method.Other[] {String.from(method);} else {String.empty();};
+    new Request(method: m, url: u, headers: Headers.empty(), body: String.empty(), intent: Intent.Visible[],
+      score: 0i64, deadline: forever(), group: None[CancelGroup][], maxRedirects: useConfig, methodText: o,
+      urlError: UrlError.none());
+  }
+
+  // The method's token: 'GET', or an extension's spelling
+  pub fn methodName(self &) &[]u8 {
+    if method == Method.Other[] {methodText.view();} else {methodToken(method);};
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Failures and timing
+// ---------------------------------------------------------------------------
+
+// Where a fetch failed
+pub enum Stage {
+  Url,           // its URL did not parse, or is not http or https
+  Queue,         // maxQueued requests already waited
+  Resolve,       // looking its host up
+  Connect,       // connecting to it
+  Read,          // a receive failed: the connection was reset, or broke
+  Write,         // a send failed
+  Http,          // the response broke HTTP/1.1, or one of its timeouts passed
+  Tls,           // TLS failed: the handshake, the certificate, a record
+  Closed,        // its connection closed before the exchange ended
+  Limit,         // a bound refused it (fetchWhole's limit; a pool's buffers)
+  Redirect;      // too many redirects, or a Location that cannot be followed
+}
+
+// The name of a stage, in lower case
+pub fn stageName(s Stage) &[]u8 {
+  if s == Stage.Url[] {"url";}
+  elif s == Stage.Queue[] {"queue";}
+  elif s == Stage.Resolve[] {"resolve";}
+  elif s == Stage.Connect[] {"connect";}
+  elif s == Stage.Read[] {"read";}
+  elif s == Stage.Write[] {"write";}
+  elif s == Stage.Http[] {"http";}
+  elif s == Stage.Tls[] {"tls";}
+  elif s == Stage.Closed[] {"closed";}
+  elif s == Stage.Limit[] {"limit";}
+  else {"redirect";}
+}
+
+// Why a fetch failed (see the package's header, FAILURES)
+pub struct Failure {
+  pub stage Stage;
+  pub code u32;           // Windows' error number, or 0
+  pub error HttpError;    // its kind, detail, and noResponse
+  pub unsent Bool;        // no byte of the last attempt reached the socket
+  pub attempts u32;       // attempts made, retries and redirects among them
+
+  pub fn make(stage Stage, code u32, kind ErrorKind, detail &[]u8) Failure {
+    new Failure(stage, code, HttpError.make(kind, 0u16, detail), false, 0u32);
+  }
+
+  // Nothing: a fetch that has not failed
+  pub fn none() Failure {new Failure(Stage.Closed[], 0u32, HttpError.empty(), false, 0u32);}
+
+  pub fn copy(self &) Failure {
+    mut e = HttpError.make(error.kind, error.status, error.detail.view());
+    e.noResponse = error.noResponse;
+    new Failure(stage, code, e, unsent, attempts);
+  }
+
+  // A connection's failure, as a fetch's
+  pub fn fromConn(f &httpconn.Failure) Failure {
+    imm s = f.stage;
+    mut st Stage = Stage.Closed[];
+    if s == httpconn.Stage.Resolve[] {st = Stage.Resolve[];}
+    elif s == httpconn.Stage.Connect[] {st = Stage.Connect[];}
+    elif s == httpconn.Stage.Read[] {st = Stage.Read[];}
+    elif s == httpconn.Stage.Write[] {st = Stage.Write[];}
+    elif s == httpconn.Stage.Http[] {st = Stage.Http[];}
+    elif s == httpconn.Stage.Tls[] {st = Stage.Tls[];}
+    elif s == httpconn.Stage.Limit[] {st = Stage.Limit[];}
+    mut e = HttpError.make(f.error.kind, f.error.status, f.error.detail.view());
+    e.noResponse = f.error.noResponse;
+    new Failure(st, f.code, e, f.unsent, 0u32);
+  }
+
+  // 'connect: closed: the connection could not be made (Windows error
+  // 10061: No connection could be made ...)'
+  pub fn message(self &) String {
+    mut out = String.from(stageName(stage));
+    out.append(": ");
+    out.append(error.message().view());
+    if code != 0u32 {
+      out.append(" (Windows error ");
+      out.appendUInt(u64.from(code));
+      out.append(": ");
+      out.append(new IoError(code).message().view());
+      out.append(")");
+    }
+    out;
+  }
+}
+
+// When a fetch reached each point: zero where it did not
+pub struct Timing {
+  pub queued Instant;       // asked for
+  pub dispatched Instant;   // last given a connection
+  pub firstByte Instant;    // the head of the response that answered it
+  pub ended Instant;        // its final answer
+  pub attempts u32;         // requests sent: 1, plus its retries and redirects
+  pub redirects u32;
+  pub reused Bool;          // its last connection had carried an exchange before
+
+  pub fn zero() Timing {
+    new Timing(new Instant(), new Instant(), new Instant(), new Instant(), 0u32, 0u32, false);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Sinks and events
+// ---------------------------------------------------------------------------
+
+// Where a fetch's events go, and the token they carry back (see the
+// package's header, SINKS AND CREDIT)
+pub enum Sink {
+  pub token u64;
+  pub struct Here {}
+  pub struct Chan {pub tx Sender[Event];}
+}
+
+// What an event says happened (see the package's header, FETCHING)
+pub enum EventKind {
+  Response,      // the head of the response that answers it: response, body, url
+  Data,          // body bytes: buf
+  End,           // the body is whole: trailers
+  Done,          // FINAL: timing
+  Failed,        // FINAL: failure, timing
+  Cancelled,     // FINAL
+  TimedOut;      // FINAL
+}
+
+// The name of an event's kind
+pub fn eventName(k EventKind) &[]u8 {
+  if k == EventKind.Response[] {"Response";}
+  elif k == EventKind.Data[] {"Data";}
+  elif k == EventKind.End[] {"End";}
+  elif k == EventKind.Done[] {"Done";}
+  elif k == EventKind.Failed[] {"Failed";}
+  elif k == EventKind.Cancelled[] {"Cancelled";}
+  else {"TimedOut";}
+}
+
+// What happened to a fetch: its kind, and the fields that kind fills (the
+// rest are empty). A struct, so a program reads it in place in its list
+pub struct Event {
+  pub kind EventKind;
+  pub token u64;               // its sink's token
+  pub id FetchId;
+  pub response ResponseHead;   // Response: the head
+  pub body BodyLength;         // Response: what is known of the body
+  pub url String;              // Response: the URL that answered, after any redirects
+  pub buf IoBuf;               // Data: the bytes, the program's now
+  pub trailers Headers;        // End: the trailer fields
+  pub failure Failure;         // Failed: why
+  pub timing Timing;           // every final answer
+
+  // An event of kind k about fetch id, every other field empty
+  pub fn make(k EventKind, token u64, id FetchId) Event {
+    new Event(kind: k, token: token, id: id, response: ResponseHead.empty(), body: BodyLength.empty(),
+      url: String.empty(), buf: IoBuf.empty(), trailers: Headers.empty(), failure: Failure.none(),
+      timing: Timing.zero());
+  }
+
+  // Whether it is a fetch's final answer
+  pub fn isTerminal(self &) Bool {
+    kind == EventKind.Done[] or kind == EventKind.Failed[] or kind == EventKind.Cancelled[] or
+      kind == EventKind.TimedOut[];
+  }
+}
+
+// A whole response, as fetchWhole gives it: how the fetch ended, and when
+// it ended Done, its status, fields and body
+pub struct Response {
+  pub outcome EventKind;     // Done, Failed, Cancelled or TimedOut
+  pub status u16;
+  pub headers Headers;
+  pub body String;           // the whole body, as bytes
+  pub url String;            // the URL that answered, after any redirects
+  pub failure Failure;       // Failed: why
+  pub timing Timing;
+
+  pub fn blank() Response {
+    new Response(EventKind.Failed[], 0u16, Headers.empty(), String.empty(), String.empty(), Failure.none(),
+      Timing.zero());
+  }
+
+  // Whether it ended Done
+  pub fn isOk(self &) Bool {outcome == EventKind.Done[];}
+}
+
+// ---------------------------------------------------------------------------
+// Statistics
+// ---------------------------------------------------------------------------
+
+// A client's counters, as 'stats' copies them out
+pub struct ClientStats {
+  pub fetches u64;        // fetches asked for
+  pub done u64;           // final answers, by outcome
+  pub failed u64;
+  pub cancelled u64;
+  pub timedOut u64;
+  pub refused u64;        // ...of the failed, refused at once: a bad URL, the queue full
+  pub retries u64;        // requests sent again after their connection failed
+  pub redirects u64;      // redirects followed
+  pub sent u64;           // requests given a connection (attempts)
+  pub reused u64;         // ...on a connection that had carried an exchange before
+  pub connects u64;       // connections opened
+  pub closed u64;         // connections ended
+  pub events u64;         // events handed to sinks
+  pub held u64;           // events held for a full channel
+  pub dropped u64;        // events dropped: their channel's receiver had gone
+  pub unclaimed u64;      // completions poll was given that were not the client's
+  pub queuedNow u32;      // requests waiting for a connection, now
+  pub queuedMax u32;      // ...at the most
+  pub activeNow u32;      // requests under way, now
+  pub openNow u32;        // connections open or being made, now
+  pub idleNow u32;        // ...of them idle in their pools
+  pub origins u32;        // origins the client has pooled for
+
+  pub fn zero() ClientStats {
+    new ClientStats(0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64,
+      0u64, 0u64, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32);
+  }
+}

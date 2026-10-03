@@ -1,0 +1,160 @@
+// Reading URLs: each one's parts and how it is written back, every
+// expectation worked out by hand from RFC 3986 and the package's rules; and
+// the refusals, each with its reason and where it was found.
+
+mod parse;
+
+import testing use *;
+import collections use String;
+import url use *;
+
+// u read, written back as want, its origin, authority and target as given
+fn reads(text &[]u8, want &[]u8, origin &[]u8, authority &[]u8, target &[]u8) {
+  match Url.parse(text) {
+    case imm r Ok {
+      expectStr(r.value.text().view(), want, text);
+      expectStr(r.value.origin().view(), origin, "...its origin");
+      expectStr(r.value.authority().view(), authority, "...its authority");
+      expectStr(r.value.target().view(), target, "...its target");
+    }
+    case imm e Error {
+      expectStr(e.value.message().view(), want, text);
+    }
+  }
+}
+
+// text refused, the message as given
+fn refused(text &[]u8, want &[]u8) {
+  match Url.parse(text) {
+    case imm r Ok {expectStr(r.value.text().view(), want, text);}
+    case imm e Error {expectStr(e.value.message().view(), want, text);}
+  }
+}
+
+fn main() i32 {
+  // Tidied: the scheme and host lower-cased, the default port left out of
+  // the text (kept in the origin), dot segments removed
+  reads("HTTPS://Example.COM:443/a/./b/../c?x=1#top", "https://example.com/a/c?x=1#top",
+    "https://example.com:443", "example.com", "/a/c?x=1");
+  reads("http://example.com", "http://example.com/", "http://example.com:80", "example.com", "/");
+  reads("http://example.com:8080/p", "http://example.com:8080/p", "http://example.com:8080",
+    "example.com:8080", "/p");
+  reads("http://example.com:/p", "http://example.com/p", "http://example.com:80", "example.com", "/p");
+  reads("http://example.com?q", "http://example.com/?q", "http://example.com:80", "example.com", "/?q");
+  reads("http://example.com/p?", "http://example.com/p?", "http://example.com:80", "example.com", "/p?");
+  reads("  http://h/x  \t", "http://h/x", "http://h:80", "h", "/x");
+  // Hosts: IPv4 and IPv6 literals
+  reads("http://127.0.0.1:8000/", "http://127.0.0.1:8000/", "http://127.0.0.1:8000", "127.0.0.1:8000", "/");
+  reads("http://[::1]:8443/x", "http://[::1]:8443/x", "http://[::1]:8443", "[::1]:8443", "/x");
+  reads("https://[2001:DB8::1]/", "https://[2001:db8::1]/", "https://[2001:db8::1]:443", "[2001:db8::1]", "/");
+  reads("http://[::ffff:192.0.2.1]/", "http://[::ffff:192.0.2.1]/", "http://[::ffff:192.0.2.1]:80",
+    "[::ffff:192.0.2.1]", "/");
+  reads("http://[1:2:3:4:5:6:7:8]/", "http://[1:2:3:4:5:6:7:8]/", "http://[1:2:3:4:5:6:7:8]:80",
+    "[1:2:3:4:5:6:7:8]", "/");
+  // User information is kept in the text, never in the authority
+  reads("http://user:pw@host/p", "http://user:pw@host/p", "http://host:80", "host", "/p");
+  // Encoded as read: spaces, bytes past ASCII; a '%' kept as it is
+  reads("http://h/a b?c d#e f", "http://h/a%20b?c%20d#e%20f", "http://h:80", "h", "/a%20b?c%20d");
+  reads("http://h/caf\xC3\xA9", "http://h/caf%C3%A9", "http://h:80", "h", "/caf%C3%A9");
+  reads("http://h/%zz%41", "http://h/%zz%41", "http://h:80", "h", "/%zz%41");
+  reads("http://h/a|b{c}", "http://h/a%7Cb%7Bc%7D", "http://h:80", "h", "/a%7Cb%7Bc%7D");
+  // Another scheme: no host needed, its own syntax kept
+  reads("mailto:someone@example.com", "mailto:someone@example.com", "mailto://:0", "", "someone@example.com");
+  reads("file:///C:/x/../y", "file:///C:/y", "file://:0", "", "/C:/y");
+
+  // The parts themselves
+  match Url.parse("https://u@[::1]:9/p?q#f") {
+    case imm r Ok {
+      imm u = &r.value;
+      expectStr(u.scheme.view(), "https", "scheme");
+      expectStr(u.userinfo.view(), "u", "userinfo");
+      expectStr(u.host.view(), "::1", "host, without its brackets");
+      expect(u.hostKind == HostKind.Ipv6[], "host kind");
+      expectUInt(u64.from(u.port), 9u64, "port");
+      expect(u.hasPort, "hasPort");
+      expectStr(u.path.view(), "/p", "path");
+      expectStr(u.query.view(), "q", "query");
+      expectStr(u.fragment.view(), "f", "fragment");
+      expect(u.isSecure() and u.isHttp(), "https is http, secure");
+      expectUInt(u64.from(u.effectivePort()), 9u64, "effective port");
+    }
+    case imm e Error {expect(false, "a URL with every part");}
+  }
+  match Url.parse("http://example.org/") {
+    case imm r Ok {
+      expect(r.value.hostKind == HostKind.Name[], "a name");
+      expectUInt(u64.from(r.value.effectivePort()), 80u64, "http's default port");
+      expect(not r.value.hasPort, "no port written");
+    }
+    case imm e Error {expect(false, "a name");}
+  }
+  match Url.parse("http://10.0.0.1/") {
+    case imm r Ok {expect(r.value.hostKind == HostKind.Ipv4[], "an IPv4 address");}
+    case imm e Error {expect(false, "an IPv4 address");}
+  }
+  match Url.parse("http://10.0.0.256/") {
+    case imm r Ok {expect(r.value.hostKind == HostKind.Name[], "256: a name, not an address");}
+    case imm e Error {expect(false, "10.0.0.256");}
+  }
+
+  // Origins
+  match Url.parse("http://a:80/x") {
+    case imm r Ok {
+      match Url.parse("http://A/y") {
+        case imm s Ok {expect(r.value.sameOrigin(&s.value), "the default port written or not: one origin");}
+        case imm e Error {expect(false, "origin");}
+      }
+      match Url.parse("https://a/y") {
+        case imm s Ok {expect(not r.value.sameOrigin(&s.value), "another scheme: another origin");}
+        case imm e Error {expect(false, "origin");}
+      }
+      match Url.parse("http://a:81/y") {
+        case imm s Ok {expect(not r.value.sameOrigin(&s.value), "another port: another origin");}
+        case imm e Error {expect(false, "origin");}
+      }
+    }
+    case imm e Error {expect(false, "origin");}
+  }
+
+  // Refused, each with its reason and place
+  refused("example.com/x", "url: a URL starts with its scheme, as 'https:' (at 0)");
+  refused("ht tp://x/", "url: a scheme is a letter, then letters, digits, '+', '-' and '.' (at 0)");
+  refused("1http://x/", "url: a scheme is a letter, then letters, digits, '+', '-' and '.' (at 0)");
+  refused("http://h:99999/", "url: a port is 0 to 65535 (at 9)");
+  refused("http://h:8a/", "url: a port is written in decimal digits (at 10)");
+  refused("http:///x", "url: an http or https URL has a host (at 0)");
+  refused("http:x", "url: an http or https URL has a host (at 0)");
+  refused("http://[::1/", "url: an IPv6 address in a URL ends with ']' (at 7)");
+  refused("http://[1:2:3]/", "url: an IPv6 address is eight groups of up to four hex digits, '::' standing for the zeros left out (at 8)");
+  refused("http://[1::2::3]/", "url: an IPv6 address is eight groups of up to four hex digits, '::' standing for the zeros left out (at 8)");
+  refused("http://[12345::]/", "url: an IPv6 address is eight groups of up to four hex digits, '::' standing for the zeros left out (at 8)");
+  refused("http://[::1]x/", "url: an IPv6 address in brackets is followed by ':' and its port, or nothing (at 12)");
+  refused("http://[v1.x]/", "url: an IPvFuture address ('[v1.x]') is not read yet (at 8)");
+  refused("http://[fe80::1%25eth0]/", "url: an IPv6 zone ('%25eth0') is not read yet (at 15)");
+  refused("http://b\xC3\xBCcher.de/", "url: an internationalized host name is not read yet (IDNA) (at 8)");
+  refused("http://a%20b/", "url: a percent-encoded host name is not read yet (at 8)");
+  refused("http://a<b/", "url: a host name holds a character no host may (at 8)");
+  refused("http://h/a\nb", "url: a URL holds a control character (at 10)");
+  refused("http://h/?a\x7Fb", "url: a URL holds a control character (at 11)");
+
+  // The helpers
+  expectStr(encodeComponent("a b&c/d~").view(), "a%20b%26c%2Fd~", "encodeComponent");
+  match decode("a%20b%2fc") {
+    case imm s Some {expectStr(s.value.view(), "a b/c", "decode");}
+    case is None[String] {expect(false, "decode");}
+  }
+  match decode("%2") {
+    case imm s Some {expect(false, "decode %2: refused");}
+    case is None[String] {expect(true, "decode %2: refused");}
+  }
+  match decode("%zz") {
+    case imm s Some {expect(false, "decode %zz: refused");}
+    case is None[String] {expect(true, "decode %zz: refused");}
+  }
+  expectStr(removeDotSegments("/a/b/c/./../../g").view(), "/a/g", "RFC 3986 5.2.4's first example");
+  expectStr(removeDotSegments("mid/content=5/../6").view(), "mid/6", "...and its second");
+  expectUInt(u64.from(defaultPort("http")), 80u64, "http: 80");
+  expectUInt(u64.from(defaultPort("https")), 443u64, "https: 443");
+  expectUInt(u64.from(defaultPort("ftp")), 0u64, "another scheme: none");
+  done();
+}
