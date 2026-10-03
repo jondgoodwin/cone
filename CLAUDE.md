@@ -183,7 +183,11 @@ Visual Studio projects stay at the root.
   measuring and deadlines), `Timestamp` (UTC, nanoseconds since 1970, leap
   seconds ignored) and `Clock` (the real steady clock, or a synthetic one
   advanced by hand, for tests); `sync`'s timeouts, `thread.sleep`,
-  `process`'s time limit and `fs`'s file times take them; no calendar yet;
+  `process`'s time limit and `fs`'s file times take them; and the civil
+  calendar, no time zones: `Date` (proleptic Gregorian, any i32 year,
+  Hinnant's day-count algorithms), `TimeOfDay`, `DateTime` (UTC) and
+  `Weekday`, made only when they exist, and RFC 3339 and HTTP's dates
+  written and read strictly, a refusal a `TimeError` (the byte and why);
   its values no OS's, `Timestamp.now` ISO C's (C11 `timespec_get`, bound
   in `libc`), and `Instant.now` Windows only (`QueryPerformanceCounter`:
   ISO C reaches no steady clock);

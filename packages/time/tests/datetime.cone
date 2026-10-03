@@ -1,0 +1,221 @@
+// TimeOfDay and DateTime: a time made only when each part is in range; a
+// DateTime to and from a Timestamp, against moments computed independently
+// (Python's datetime), the ends of a Timestamp's range included, and round
+// trips over the whole of it, before 1970 and with fractions of a second;
+// a moment outside the range refused; a Duration added across days, months,
+// years and leap days, the Duration between two, and comparison.
+
+mod datetime;
+
+import testing use *;
+import time use Duration, Timestamp, Date, TimeOfDay, DateTime;
+
+fn tod(h i64, m i64, s i64, ns i64) TimeOfDay {
+  match TimeOfDay.fromHms(h, m, s, ns) {
+    case imm t Some { t.value; }
+    case is None {
+      require(false, "the test's time exists");
+      new TimeOfDay();
+    }
+  }
+}
+
+fn todExists(h i64, m i64, s i64, ns i64) Bool {
+  match TimeOfDay.fromHms(h, m, s, ns) {
+    case is Some { true; }
+    case is None { false; }
+  }
+}
+
+fn dt(y i64, mo i64, d i64, h i64, mi i64, s i64, ns i64) DateTime {
+  match DateTime.fromYmdHms(y, mo, d, h, mi, s, ns) {
+    case imm t Some { t.value; }
+    case is None {
+      require(false, "the test's date-time exists");
+      new DateTime();
+    }
+  }
+}
+
+fn dtExists(y i64, mo i64, d i64, h i64, mi i64, s i64) Bool {
+  match DateTime.fromYmdHms(y, mo, d, h, mi, s) {
+    case is Some { true; }
+    case is None { false; }
+  }
+}
+
+// The Timestamp of a DateTime, or the epoch and a failed check
+fn stamp(x DateTime, label &[]u8) Timestamp {
+  match Timestamp.fromDateTime(x) {
+    case imm t Some { t.value; }
+    case is None {
+      expect(false, label);
+      new Timestamp();
+    }
+  }
+}
+
+fn inRange(x DateTime) Bool {
+  match Timestamp.fromDateTime(x) {
+    case is Some { true; }
+    case is None { false; }
+  }
+}
+
+fn timeOfDay() {
+  imm t = tod(14, 5, 9, 250000000);
+  expectInt(t.hour(), 14, "hour");
+  expectInt(t.minute(), 5, "minute");
+  expectInt(t.second(), 9, "second");
+  expectInt(t.nanosecond(), 250000000, "nanosecond");
+  expectInt(t.sinceMidnight().millis(), 50709250, "since midnight");
+  match TimeOfDay.fromHms(23, 59, 59) {
+    case imm x Some { expectInt(x.value.nanosecond(), 0, "the nanoseconds default to 0"); }
+    case is None { expect(false, "23:59:59 exists"); }
+  }
+  expect(new TimeOfDay() == tod(0, 0, 0, 0), "new TimeOfDay() is midnight");
+  expect(todExists(23, 59, 59, 999999999), "the day's last nanosecond");
+  expect(not todExists(24, 0, 0, 0), "no hour 24");
+  expect(not todExists(12, 60, 0, 0), "no minute 60");
+  expect(not todExists(23, 59, 60, 0), "no second 60: no leap second");
+  expect(not todExists(12, 0, 0, 1000000000), "no nanosecond 10^9");
+  expect(not todExists(-1, 0, 0, 0), "no hour -1");
+  expect(not todExists(0, 0, 0, -1), "no nanosecond -1");
+  expect(tod(1, 0, 0, 0) < tod(1, 0, 0, 1), "a nanosecond later is greater");
+  expect(tod(1, 59, 59, 0) < tod(2, 0, 0, 0), "the hour before the minute");
+  expect(tod(5, 0, 0, 0) >= tod(5, 0, 0, 0) and tod(5, 0, 0, 0) <= tod(5, 0, 0, 0), ">= and <=");
+  expect(tod(5, 0, 0, 0) > tod(4, 0, 0, 0) and tod(5, 0, 0, 0) != tod(4, 0, 0, 0), "> and !=");
+}
+
+fn construction() {
+  imm x = dt(2026, 10, 3, 14, 5, 9, 0);
+  expect(x.date() == Date.fromUnixDays(20729), "the date");
+  expect(x.time() == tod(14, 5, 9, 0), "the time");
+  expect(DateTime.fromParts(Date.fromUnixDays(20729), tod(14, 5, 9, 0)) == x, "fromParts");
+  expect(new DateTime() == dt(1970, 1, 1, 0, 0, 0, 0), "new DateTime() is the epoch");
+  expect(not dtExists(2026, 2, 29, 0, 0, 0), "no 29 February 2026");
+  expect(not dtExists(2026, 2, 28, 24, 0, 0), "no hour 24");
+  expect(not dtExists(2026, 13, 1, 0, 0, 0), "no month 13");
+  expect(dtExists(2024, 2, 29, 23, 59, 59), "29 February 2024");
+}
+
+// A Timestamp's nanoseconds and its DateTime, each pair from Python's
+// datetime; seconds and the fraction split as Unix time does (toward the past)
+fn pair(ns i64, x DateTime, label &[]u8) {
+  imm t = Timestamp.fromUnixNanos(ns);
+  expect(DateTime.fromTimestamp(t) == x, label);
+  expectInt(stamp(x, label).unixNanos(), ns, label);
+}
+
+fn known() {
+  pair(0, dt(1970, 1, 1, 0, 0, 0, 0), "the epoch");
+  pair(-1, dt(1969, 12, 31, 23, 59, 59, 999999999), "a nanosecond before it");
+  pair(1, dt(1970, 1, 1, 0, 0, 0, 1), "a nanosecond after it");
+  pair(-1000000000, dt(1969, 12, 31, 23, 59, 59, 0), "a second before it");
+  pair(-999999999, dt(1969, 12, 31, 23, 59, 59, 1), "just under a second before it");
+  pair(951782400000000000, dt(2000, 2, 29, 0, 0, 0, 0), "2000's leap day");
+  pair(-14182939500000000, dt(1969, 7, 20, 20, 17, 40, 500000000), "the Moon landing and a half");
+  pair(784111777000000000, dt(1994, 11, 6, 8, 49, 37, 0), "RFC 9110's example");
+  pair(-9223372036854775807i64 - 1i64, dt(1677, 9, 21, 0, 12, 43, 145224192), "the first Timestamp");
+  pair(9223372036854775807, dt(2262, 4, 11, 23, 47, 16, 854775807), "the last Timestamp");
+  pair(8261657684473197624, dt(2231, 10, 21, 0, 54, 44, 473197624), "a random moment, 2231");
+  pair(2784249659845191438, dt(2058, 3, 25, 2, 40, 59, 845191438), "2058");
+  pair(-8531699129511414324, dt(1699, 8, 22, 11, 34, 30, 488585676), "1699");
+  pair(-1509457273540090022, dt(1922, 3, 3, 10, 18, 46, 459909978), "1922");
+  pair(-3881023613069443411, dt(1847, 1, 6, 17, 53, 6, 930556589), "1847");
+  pair(-5757763313810287289, dt(1787, 7, 18, 5, 18, 6, 189712711), "1787");
+  pair(-5424104304150091343, dt(1798, 2, 12, 0, 21, 35, 849908657), "1798");
+  pair(585135223364038996, dt(1988, 7, 17, 9, 33, 43, 364038996), "1988");
+}
+
+fn range() {
+  expect(not inRange(dt(1677, 9, 21, 0, 12, 43, 145224191)), "a nanosecond before the first Timestamp is outside");
+  expect(not inRange(dt(2262, 4, 11, 23, 47, 16, 854775808)), "a nanosecond after the last is outside");
+  expect(not inRange(dt(1677, 9, 20, 23, 59, 59, 0)), "the day before");
+  expect(not inRange(dt(2262, 4, 12, 0, 0, 0, 0)), "the day after");
+  expect(not inRange(dt(1, 1, 1, 0, 0, 0, 0)), "year 1");
+  expect(not inRange(dt(9999, 12, 31, 0, 0, 0, 0)), "year 9999");
+  expect(inRange(dt(1677, 9, 21, 0, 12, 43, 145224192)), "the first is inside");
+  expect(inRange(dt(2262, 4, 11, 23, 47, 16, 854775807)), "the last is inside");
+}
+
+// Timestamp -> DateTime -> Timestamp over the whole range, at a stride that
+// lands on every part of a second and of a day, and from both ends
+fn roundTrips() {
+  mut bad = 0i64;
+  mut count = 0i64;
+  mut ns = -9223372036854775807i64 - 1i64;
+  imm stride = 9223372036854775i64 + 123456789i64;     // just under 2000 steps
+  while ns < 9223372036854775807i64 - stride {
+    imm t = Timestamp.fromUnixNanos(ns);
+    match Timestamp.fromDateTime(DateTime.fromTimestamp(t)) {
+      case imm back Some { if back.value != t { bad = bad + 1i64; } }
+      case is None { bad = bad + 1i64; }
+    }
+    ns = ns + stride;
+    count = count + 1i64;
+  }
+  expectInt(bad, 0, "every stride round trips");
+  expectInt(count, 1999, "1999 of them");
+  // Every nanosecond around midnight before and after 1970, and around the epoch
+  bad = 0i64;
+  imm points = [-86400000000000i64, 0i64, 86400000000000i64, -2208988800000000000i64];
+  mut p = 0usize;
+  while p < 4usize {
+    mut k = -1000i64;
+    while k <= 1000i64 {
+      imm t = Timestamp.fromUnixNanos(points[p] + k);
+      match Timestamp.fromDateTime(DateTime.fromTimestamp(t)) {
+        case imm back Some { if back.value != t { bad = bad + 1i64; } }
+        case is None { bad = bad + 1i64; }
+      }
+      k = k + 1i64;
+    }
+    p = p + 1usize;
+  }
+  expectInt(bad, 0, "every nanosecond near midnights round trips");
+}
+
+fn addition() {
+  imm x = dt(2026, 10, 3, 23, 30, 0, 0);
+  expect(x + Duration.fromHours(1) == dt(2026, 10, 4, 0, 30, 0, 0), "over midnight");
+  expect(x + Duration.fromHours(24 * 29) == dt(2026, 11, 1, 23, 30, 0, 0), "over a month");
+  expect(dt(2026, 12, 31, 23, 59, 59, 999999999) + Duration.fromNanos(1) == dt(2027, 1, 1, 0, 0, 0, 0), "over a year by a nanosecond");
+  expect(dt(2024, 2, 28, 12, 0, 0, 0) + Duration.fromHours(24) == dt(2024, 2, 29, 12, 0, 0, 0), "onto a leap day");
+  expect(dt(1970, 1, 1, 0, 0, 0, 0) - Duration.fromNanos(1) == dt(1969, 12, 31, 23, 59, 59, 999999999), "back across 1970");
+  expect(x + Duration.fromHours(-24) == dt(2026, 10, 2, 23, 30, 0, 0), "a negative Duration goes back");
+  expect(dt(1, 1, 1, 0, 0, 0, 0) - Duration.fromSeconds(1) == dt(0, 12, 31, 23, 59, 59, 0), "back across year 1");
+  // The largest Durations either way, which no sum may overflow
+  imm big = Duration.fromNanos(9223372036854775807);
+  expect(DateTime.fromTimestamp(Timestamp.fromUnixNanos(0)) + big == dt(2262, 4, 11, 23, 47, 16, 854775807), "the largest Duration");
+  expect(dt(2262, 4, 11, 23, 47, 16, 854775807) - big == new DateTime(), "and back");
+  expect(dt(9000, 1, 1, 12, 0, 0, 0) + big > dt(9292, 1, 1, 0, 0, 0, 0), "from a year a Timestamp cannot hold");
+  expectInt((dt(2026, 10, 4, 0, 0, 0, 0) - dt(2026, 10, 3, 23, 0, 0, 0)).minutes(), 60, "DateTime - DateTime");
+  expectInt((dt(1969, 12, 31, 0, 0, 0, 0) - dt(1970, 1, 1, 0, 0, 0, 1)).nanos(), -86400000000001, "negative across 1970");
+  // Adding agrees with the Timestamp's own arithmetic
+  imm t = Timestamp.fromUnixNanos(-1509457273540090022);
+  imm d = Duration.fromNanos(123456789012345678);
+  expect(DateTime.fromTimestamp(t) + d == DateTime.fromTimestamp(t + d), "DateTime + Duration agrees with Timestamp + Duration");
+  expect(DateTime.fromTimestamp(t) - d == DateTime.fromTimestamp(t - d), "and minus");
+}
+
+fn comparison() {
+  imm a = dt(2026, 10, 3, 14, 5, 9, 0);
+  imm b = dt(2026, 10, 3, 14, 5, 9, 1);
+  imm c = dt(2026, 10, 4, 0, 0, 0, 0);
+  expect(a < b and b < c, "earlier is less");
+  expect(c > a and c >= a and a <= a and a >= a, "> >= <=");
+  expect(a == dt(2026, 10, 3, 14, 5, 9, 0) and a != b, "== and !=");
+  expect(dt(2026, 10, 2, 23, 59, 59, 0) < dt(2026, 10, 3, 0, 0, 0, 0), "the date before the time");
+}
+
+fn main() i32 {
+  timeOfDay();
+  construction();
+  known();
+  range();
+  roundTrips();
+  addition();
+  comparison();
+  done();
+}

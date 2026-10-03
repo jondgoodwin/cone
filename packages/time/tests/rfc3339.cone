@@ -1,0 +1,239 @@
+// RFC 3339: dates, times and date-times written exactly (a fraction only
+// when there is one, in as few digits as hold it; a year outside 0000 to
+// 9999 in ISO 8601's expanded form), against strings computed independently
+// (Python's datetime); RFC 3339's own examples read, offsets converted to
+// UTC, lower-case 't' and 'z'; Timestamps written and read back over the
+// whole range; and every malformed text refused, the byte and the reason
+// pinned to the whole message.
+
+mod rfc3339;
+
+import testing use *;
+import collections use *;
+import time use Duration, Timestamp, Date, TimeOfDay, DateTime;
+
+fn ymd(y i64, m i64, d i64) Date {
+  match Date.fromYmd(y, m, d) {
+    case imm s Some { s.value; }
+    case is None {
+      require(false, "the test's date exists");
+      new Date();
+    }
+  }
+}
+
+fn tod(h i64, m i64, s i64, ns i64) TimeOfDay {
+  match TimeOfDay.fromHms(h, m, s, ns) {
+    case imm t Some { t.value; }
+    case is None {
+      require(false, "the test's time exists");
+      new TimeOfDay();
+    }
+  }
+}
+
+fn dt(y i64, mo i64, d i64, h i64, mi i64, s i64, ns i64) DateTime {
+  DateTime.fromParts(ymd(y, mo, d), tod(h, mi, s, ns));
+}
+
+// What reading text as a DateTime gives: its RFC 3339 form again, or the
+// error's message
+fn readDateTime(text &[]u8) String {
+  match DateTime.parseRfc3339(text) {
+    case imm ok Ok { ok.value.rfc3339(); }
+    case imm e Error { e.value.message(); }
+  }
+}
+
+fn readTimestamp(text &[]u8) String {
+  match Timestamp.parseRfc3339(text) {
+    case imm ok Ok { ok.value.rfc3339(); }
+    case imm e Error { e.value.message(); }
+  }
+}
+
+fn readDate(text &[]u8) String {
+  match Date.parseRfc3339(text) {
+    case imm ok Ok { ok.value.rfc3339(); }
+    case imm e Error { e.value.message(); }
+  }
+}
+
+fn readTime(text &[]u8) String {
+  match TimeOfDay.parseRfc3339(text) {
+    case imm ok Ok { ok.value.rfc3339(); }
+    case imm e Error { e.value.message(); }
+  }
+}
+
+fn reads(text &[]u8, want &[]u8, label &[]u8) {
+  imm got = readDateTime(text);
+  expectStr(got.view(), want, label);
+}
+
+fn writing() {
+  expectStr(ymd(2026, 10, 3).rfc3339().view(), "2026-10-03", "a date");
+  expectStr(ymd(1, 1, 1).rfc3339().view(), "0001-01-01", "year 1, four digits");
+  expectStr(ymd(0, 2, 29).rfc3339().view(), "0000-02-29", "year 0");
+  expectStr(ymd(9999, 12, 31).rfc3339().view(), "9999-12-31", "year 9999");
+  expectStr(ymd(10000, 1, 1).rfc3339().view(), "+010000-01-01", "year 10000, expanded");
+  expectStr(ymd(-1, 1, 1).rfc3339().view(), "-000001-01-01", "year -1, expanded");
+  expectStr(ymd(-44, 3, 15).rfc3339().view(), "-000044-03-15", "year -44");
+  expectStr(ymd(-2147483648, 1, 1).rfc3339().view(), "-2147483648-01-01", "the first year a Date holds");
+  expectStr(ymd(2147483647, 12, 31).rfc3339().view(), "+2147483647-12-31", "the last");
+  expectStr(tod(14, 5, 9, 0).rfc3339().view(), "14:05:09", "a time, no fraction");
+  expectStr(tod(14, 5, 9, 500000000).rfc3339().view(), "14:05:09.5", "half a second");
+  expectStr(tod(0, 0, 0, 1).rfc3339().view(), "00:00:00.000000001", "a nanosecond");
+  expectStr(tod(23, 59, 59, 999999999).rfc3339().view(), "23:59:59.999999999", "the day's last nanosecond");
+  expectStr(tod(1, 2, 3, 120000000).rfc3339().view(), "01:02:03.12", "trailing zeros dropped");
+  expectStr(tod(1, 2, 3, 1000).rfc3339().view(), "01:02:03.000001", "a microsecond");
+  expectStr(dt(2026, 10, 3, 14, 5, 9, 0).rfc3339().view(), "2026-10-03T14:05:09Z", "a date-time");
+  expectStr(dt(10000, 1, 1, 0, 0, 0, 0).rfc3339().view(), "+010000-01-01T00:00:00Z", "an expanded one");
+}
+
+// A Timestamp's nanoseconds and its RFC 3339 form, from Python's datetime;
+// written, and read back to the same nanosecond
+fn stamped(ns i64, want &[]u8, label &[]u8) {
+  imm t = Timestamp.fromUnixNanos(ns);
+  expectStr(t.rfc3339().view(), want, label);
+  match Timestamp.parseRfc3339(want) {
+    case imm ok Ok { expectInt(ok.value.unixNanos(), ns, label); }
+    case imm e Error { expectStr(e.value.message().view(), "<read>", label); }
+  }
+}
+
+fn timestamps() {
+  stamped(-9223372036854775807i64 - 1i64, "1677-09-21T00:12:43.145224192Z", "the first Timestamp");
+  stamped(9223372036854775807, "2262-04-11T23:47:16.854775807Z", "the last");
+  stamped(0, "1970-01-01T00:00:00Z", "the epoch");
+  stamped(-1, "1969-12-31T23:59:59.999999999Z", "a nanosecond before");
+  stamped(1, "1970-01-01T00:00:00.000000001Z", "a nanosecond after");
+  stamped(-1000000000, "1969-12-31T23:59:59Z", "a second before");
+  stamped(-999999999, "1969-12-31T23:59:59.000000001Z", "just under a second before");
+  stamped(951782400000000000, "2000-02-29T00:00:00Z", "2000's leap day");
+  stamped(-14182939500000000, "1969-07-20T20:17:40.5Z", "the Moon landing and a half");
+  stamped(784111777000000000, "1994-11-06T08:49:37Z", "RFC 9110's example");
+  stamped(8261657684473197624, "2231-10-21T00:54:44.473197624Z", "random 1");
+  stamped(2784249659845191438, "2058-03-25T02:40:59.845191438Z", "random 2");
+  stamped(-8531699129511414324, "1699-08-22T11:34:30.488585676Z", "random 3");
+  stamped(-1509457273540090022, "1922-03-03T10:18:46.459909978Z", "random 4");
+  stamped(8258772313671944433, "2231-09-17T15:25:13.671944433Z", "random 5");
+  stamped(1577960769301841103, "2020-01-02T10:26:09.301841103Z", "random 6");
+  stamped(8785356068037452444, "2248-05-25T08:41:08.037452444Z", "random 7");
+  stamped(-3881023613069443411, "1847-01-06T17:53:06.930556589Z", "random 8");
+  stamped(750522153793611428, "1993-10-13T14:22:33.793611428Z", "random 9");
+  stamped(3357357195551156271, "2076-05-22T07:13:15.551156271Z", "random 10");
+  stamped(-5757763313810287289, "1787-07-18T05:18:06.189712711Z", "random 11");
+  stamped(1187385434856157239, "2007-08-17T21:17:14.856157239Z", "random 12");
+  stamped(-5424104304150091343, "1798-02-12T00:21:35.849908657Z", "random 13");
+  stamped(585135223364038996, "1988-07-17T09:33:43.364038996Z", "random 14");
+  // Written and read back across the range, at a stride
+  mut bad = 0i64;
+  mut ns = -9223372036854775807i64 - 1i64;
+  imm stride = 92233720368547758i64 + 987654321i64;
+  while ns < 9223372036854775807i64 - stride {
+    imm t = Timestamp.fromUnixNanos(ns);
+    match Timestamp.parseRfc3339(t.rfc3339().view()) {
+      case imm ok Ok { if ok.value != t { bad = bad + 1i64; } }
+      case is Error { bad = bad + 1i64; }
+    }
+    ns = ns + stride;
+  }
+  expectInt(bad, 0, "every stride written and read back");
+}
+
+fn readingGood() {
+  // RFC 3339's own examples (section 5.8), but for its leap second
+  reads("1985-04-12T23:20:50.52Z", "1985-04-12T23:20:50.52Z", "RFC 3339: a fraction");
+  reads("1996-12-19T16:39:57-08:00", "1996-12-20T00:39:57Z", "RFC 3339: eight hours west");
+  reads("1937-01-01T12:00:27.87+00:20", "1937-01-01T11:40:27.87Z", "RFC 3339: twenty minutes east");
+  reads("2026-10-03T14:05:09Z", "2026-10-03T14:05:09Z", "UTC");
+  reads("2026-10-03t14:05:09z", "2026-10-03T14:05:09Z", "'t' and 'z' in lower case, as RFC 3339 allows");
+  reads("2026-10-03T19:35:09+05:30", "2026-10-03T14:05:09Z", "an offset east");
+  reads("2026-10-03T10:05:09-04:00", "2026-10-03T14:05:09Z", "an offset west");
+  reads("2026-10-03T14:05:09-00:00", "2026-10-03T14:05:09Z", "-00:00, UTC with the local offset unknown");
+  reads("2027-01-01T01:00:00+02:00", "2026-12-31T23:00:00Z", "an offset back across a year");
+  reads("1969-12-31T20:00:00-04:00", "1970-01-01T00:00:00Z", "an offset forward across 1970");
+  reads("2024-03-01T00:30:00+01:00", "2024-02-29T23:30:00Z", "an offset back onto a leap day");
+  reads("2026-10-03T14:05:09.000000001Z", "2026-10-03T14:05:09.000000001Z", "nine digits");
+  reads("2026-10-03T14:05:09.100Z", "2026-10-03T14:05:09.1Z", "trailing zeros read");
+  reads("+010000-01-01T00:00:00Z", "+010000-01-01T00:00:00Z", "an expanded year");
+  reads("-000044-03-15T12:00:00Z", "-000044-03-15T12:00:00Z", "a negative one");
+  reads("0000-01-01T00:30:00+01:00", "-000001-12-31T23:30:00Z", "back across year 0");
+  expectStr(readDate("2026-10-03").view(), "2026-10-03", "a full-date");
+  expectStr(readDate("2024-02-29").view(), "2024-02-29", "a leap day");
+  expectStr(readTime("14:05:09").view(), "14:05:09", "a partial-time");
+  expectStr(readTime("14:05:09.25").view(), "14:05:09.25", "with a fraction");
+  expectStr(readTimestamp("2262-04-12T01:00:00+02:00").view(), "2262-04-11T23:00:00Z", "an offset back into a Timestamp's range");
+}
+
+fn readingBad() {
+  reads("", "at byte 0: the text is empty", "empty");
+  reads("26-10-03T14:05:09Z", "at byte 2: expected four digits for the year", "a two-digit year");
+  reads("2026/10/03T14:05:09Z", "at byte 4: expected '-' after the year", "slashes");
+  reads("2026-1-03T14:05:09Z", "at byte 6: expected two digits for the month", "a one-digit month");
+  reads("2026-10-3T14:05:09Z", "at byte 9: expected two digits for the day", "a one-digit day");
+  reads("2026-13-01T00:00:00Z", "at byte 5: the month is 13, outside 01 to 12", "month 13");
+  reads("2026-00-01T00:00:00Z", "at byte 5: the month is 00, outside 01 to 12", "month 0");
+  reads("2026-02-29T00:00:00Z", "at byte 8: the day is 29, and 2026-02 has 28 days", "29 February 2026");
+  reads("1900-02-29T00:00:00Z", "at byte 8: the day is 29, and 1900-02 has 28 days", "29 February 1900");
+  reads("2026-04-31T00:00:00Z", "at byte 8: the day is 31, and 2026-04 has 30 days", "31 April");
+  reads("2026-10-00T00:00:00Z", "at byte 8: the day is 00, and 2026-10 has 31 days", "day 0");
+  reads("2026-10-03", "at byte 10: a date without a time: expected 'T' and the time", "a date alone");
+  reads("2026-10-03 14:05:09Z", "at byte 10: a space between the date and the time: RFC 3339 writes 'T'", "a space");
+  reads("2026-10-03X14:05:09Z", "at byte 10: expected 'T' between the date and the time", "another separator");
+  reads("2026-10-03T24:00:00Z", "at byte 11: the hour is 24, outside 00 to 23", "hour 24");
+  reads("2026-10-03T14:60:00Z", "at byte 14: the minute is 60, outside 00 to 59", "minute 60");
+  reads("2026-10-03T14:05:61Z", "at byte 17: the second is 61, outside 00 to 59", "second 61");
+  reads("1990-12-31T23:59:60Z",
+    "at byte 17: the second is 60, a leap second, which this package does not count (a Timestamp ignores leap seconds)",
+    "RFC 3339's leap second");
+  reads("2026-10-03T4:05:09Z", "at byte 12: expected two digits for the hour", "a one-digit hour");
+  reads("2026-10-03T14:05Z", "at byte 16: expected ':' after the minute", "no seconds");
+  reads("2026-10-03T14:05:09.Z", "at byte 20: expected a digit after '.'", "a '.' and no digit");
+  reads("2026-10-03T14:05:09.1234567891Z",
+    "at byte 29: more than nine digits of a fraction of a second: a nanosecond is the finest", "ten digits");
+  reads("2026-10-03T14:05:09,5Z", "at byte 19: expected the offset: 'Z' or '+hh:mm' or '-hh:mm'", "a decimal comma");
+  reads("2026-10-03T14:05:09",
+    "at byte 19: the date-time has no offset: RFC 3339 ends it with 'Z' or '+hh:mm' or '-hh:mm'", "no offset");
+  reads("2026-10-03T14:05:09 Z", "at byte 19: expected the offset: 'Z' or '+hh:mm' or '-hh:mm'", "a space before Z");
+  reads("2026-10-03T14:05:09+0530", "at byte 22: expected ':' between the offset's hours and minutes", "no colon in the offset");
+  reads("2026-10-03T14:05:09+5:30", "at byte 21: expected two digits for the offset's hours", "a one-digit offset hour");
+  reads("2026-10-03T14:05:09+24:00", "at byte 20: the offset's hour is 24, outside 00 to 23", "offset hour 24");
+  reads("2026-10-03T14:05:09+05:60", "at byte 23: the offset's minute is 60, outside 00 to 59", "offset minute 60");
+  reads("2026-10-03T14:05:09+05", "at byte 22: expected ':' between the offset's hours and minutes", "an offset cut short");
+  reads("2026-10-03T14:05:09Z ", "at byte 20: unexpected text after the date-time", "a trailing space");
+  reads("2026-10-03T14:05:09ZZ", "at byte 20: unexpected text after the date-time", "a second Z");
+  reads(" 2026-10-03T14:05:09Z", "at byte 0: expected four digits for the year", "a leading space");
+  reads("+10000-01-01T00:00:00Z", "at byte 0: a year with a sign (ISO 8601's expanded form) has at least six digits", "five digits and a sign");
+  reads("-000000-01-01T00:00:00Z", "at byte 0: the year -000000 is not allowed: year zero is 0000", "minus year zero");
+  reads("+2147483648-01-01T00:00:00Z", "at byte 0: the year is outside the range of a Date, -2147483648 to +2147483647", "a year past i32");
+  reads("+99999999999-01-01T00:00:00Z", "at byte 0: the year is outside the range of a Date, -2147483648 to +2147483647", "eleven digits");
+  reads("20261-01-01T00:00:00Z", "at byte 4: expected '-' after the year", "five digits, no sign");
+  // A Timestamp's range
+  expectStr(readTimestamp("2263-01-01T00:00:00Z").view(),
+    "at byte 0: the moment is outside a Timestamp's range, 1677-09-21T00:12:43.145224192Z to 2262-04-11T23:47:16.854775807Z",
+    "after a Timestamp's range");
+  expectStr(readTimestamp("1677-09-21T00:12:43.145224191Z").view(),
+    "at byte 0: the moment is outside a Timestamp's range, 1677-09-21T00:12:43.145224192Z to 2262-04-11T23:47:16.854775807Z",
+    "a nanosecond before it");
+  expectStr(readTimestamp("+010000-01-01T00:00:00Z").view(),
+    "at byte 0: the moment is outside a Timestamp's range, 1677-09-21T00:12:43.145224192Z to 2262-04-11T23:47:16.854775807Z",
+    "an expanded year");
+  expectStr(readTimestamp("2026-13-01T00:00:00Z").view(), "at byte 5: the month is 13, outside 01 to 12", "a Timestamp's text, malformed");
+  // The parts alone
+  expectStr(readDate("2026-10-03T00:00:00Z").view(), "at byte 10: unexpected text after the date", "a date with more");
+  expectStr(readDate("").view(), "at byte 0: the text is empty", "an empty date");
+  expectStr(readDate("2026-02-30").view(), "at byte 8: the day is 30, and 2026-02 has 28 days", "30 February");
+  expectStr(readTime("14:05:09Z").view(), "at byte 8: unexpected text after the time", "a time with an offset");
+  expectStr(readTime("1:05:09").view(), "at byte 1: expected two digits for the hour", "a one-digit hour");
+  expectStr(readTime("").view(), "at byte 0: expected two digits for the hour", "an empty time");
+}
+
+fn main() i32 {
+  writing();
+  timestamps();
+  readingGood();
+  readingBad();
+  done();
+}
