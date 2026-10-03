@@ -1,0 +1,64 @@
+// Each reference layer's own lifetime governs what is read through it: for
+// 'second(x &'a mut &'b R) &'b R', the result is of ''b', what 'x' points at
+// holds, not of ''a', the borrow 'x' itself is. So a caller handing it a
+// reference held in a local variable 'z', which borrows the local 'pp', gets
+// a result carrying what 'pp' holds -- the caller's own parameter's borrow --
+// and not 'pp': it may be returned, and 'pp' may be changed while it is used.
+// The same holds of a value read through such a local reference: '*z' is a
+// copy of what 'pp' holds. 'first(x &'a mut &'b R) &'b R { *x; }' itself is
+// the same rule inside the callee.
+//
+// Verdict: accept; prints 7 7 7 9.
+// Basis: Rust: 'fn second<'a, 'b>(x: &'a mut &'b R) -> &'b R { *x }', and a
+// caller passing 'let z = &mut pp;' may return the result as long as 'pp''s
+// borrow lives (the result's lifetime is ''b', unrelated to the borrow of
+// 'pp'), and may assign 'pp' while the result is used (NLL); by reading, not
+// run.
+// Master 19cc839b: 'first' accepted, but the callers refused, ErrorEscape at
+// the returned 'w' and '*z' ("Returned value carries a borrow of 'pp'"), and
+// ErrorFrozen at 'pp = &b' ('pp' borrowed while 'w' is used).
+
+mod lifetime_band_layer_read_through_local_ref;
+
+import stdio use *;
+
+struct R { pub n i64; }
+
+fn first(x &'a mut &'b R) &'b R {
+  *x;
+}
+
+fn viaLocalRef(p &'c R) &'c R {
+  mut pp = p;
+  imm z = &mut pp;
+  imm w = first(z);
+  w;
+}
+
+fn readThroughLocalRef(p &R) &R {
+  mut pp = p;
+  imm z = &mut pp;
+  *z;
+}
+
+fn changeWhileUsed(p &R, b &R) i64 {
+  mut pp = p;
+  imm z = &mut pp;
+  imm w = first(z);
+  pp = b;
+  w.n + pp.n - b.n;
+}
+
+fn main() {
+  imm a = new R(7);
+  imm b = new R(9);
+  printInt(viaLocalRef(&a).n);
+  printStr(" ");
+  printInt(readThroughLocalRef(&a).n);
+  printStr(" ");
+  printInt(changeWhileUsed(&a, &b));
+  printStr(" ");
+  mut q = &b;
+  printInt(first(&mut q).n);
+  printStr("\n");
+}

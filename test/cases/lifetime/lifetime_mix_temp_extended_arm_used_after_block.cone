@@ -1,0 +1,37 @@
+// A temporary an 'if' arm's value extends lasts to the end of the block
+// declaring the variable, not beyond it: a borrow of it copied into a
+// variable of an outer block and used after the inner block ends reads a
+// finalized value.
+//
+// Verdict: refuse, ErrorFrozen at the arm's temporary ("kept to the end of
+// its block, goes out of scope while 'keep' still holds a borrow of it").
+// Basis: temporaries follow Rust: extended to the end of the enclosing
+// block, and no further (E0716 where a borrow of one is used after it); by
+// reading, not run.
+// Master 19cc839b: refused, but at the borrow of the temporary itself
+// (ErrorBadLval).
+
+mod lifetime_mix_temp_extended_arm_used_after_block;
+
+import stdio use *;
+
+struct R {
+  pub n i64;
+  fn final(self &uni) {
+    printStr("final\n");
+  }
+}
+
+fn mk(n i64) R { new R(n); }
+
+fn main() {
+  imm a = new R(0);
+  imm c = true;
+  mut keep = &a;
+  {
+    imm r = if c { &mk(1); } else { &a; };  //~ ErrorFrozen "goes out of scope while 'keep' still holds"
+    keep = r;
+  }
+  printInt(keep.n);
+  printStr("\n");
+}

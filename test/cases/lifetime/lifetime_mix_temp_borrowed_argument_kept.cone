@@ -1,0 +1,42 @@
+// A borrow of a temporary handed through a call and kept: the temporary ends
+// with its statement, so a variable still holding the borrow may not be used
+// after it; nor may a borrow of one be returned. In a loop, the slot a
+// temporary is kept in is made again on the next pass, so a borrow kept from
+// an earlier pass would see a later one's value.
+//
+// Verdict: refuse, ErrorFrozen at each statement whose temporary ends while a
+// variable still holds a borrow of it, and ErrorEscape at the return.
+// Basis: temporaries follow Rust: Rust's E0716 ("temporary value dropped
+// while borrowed") for the kept ones, E0515 for the return; by reading, not
+// run.
+// Master 19cc839b: refused, ErrorBadLval at each borrowed temporary.
+
+mod lifetime_mix_temp_borrowed_argument_kept;
+
+import stdio use *;
+
+struct R { pub n i64; }
+
+fn mk(n i64) R { new R(n); }
+fn id(r &R) &R { r; }
+
+fn handBack() &R {
+  id(&mk(1));                //~ ErrorEscape
+}
+
+fn main() {
+  imm r = id(&mk(3));        //~ ErrorFrozen
+  printInt(r.n);
+  imm zero = mk(0);
+  mut keep = &zero;
+  mut i = 0;
+  while i < 3 {
+    imm q = id(&mk(i));      //~ ErrorFrozen
+    if i == 0 {
+      keep = q;
+    }
+    i = i + 1;
+  }
+  printInt(keep.n);
+  printStr("\n");
+}

@@ -16,6 +16,11 @@ INode *newBorrowMutRef(INode *node, INode* type, INode *perm);
 // Inject a borrow mutable node on some node (expected to be an lval)
 void borrowMutRef(INode **node, INode* type, INode *perm);
 
+// Inject a typed borrow of the temporary at 'node' ('make().get()', for a
+// method taking 'self &'), with the lifetime 'scope' (borrowTempScope): it is
+// reached through nothing else, so any permission may be asked
+void borrowTempRef(INode **node, INode *type, INode *perm, uint16_t scope);
+
 // Auto-inject a borrow note in front of 'from', to create totypedcl type
 void borrowAuto(INode **from, INode *totypedcl);
 
@@ -33,6 +38,11 @@ int borrowIsConstLit(INode *node);
 // or 'makeOwner()' itself). A place reached through a borrowed reference or a
 // pointer, or rooted in a variable or a constant, has none.
 INode **borrowTempRoot(INode **nodep);
+
+// The lifetime, as a scope number, of a borrow of a temporary, or of a place
+// rooted in one: no longer than the block it is made in, since it dies at the
+// end of its statement, or, extended, of that block
+uint16_t borrowTempScope(TypeCheckState *pstate);
 
 // Retype a borrowed constant array literal to the reference type it is wanted as
 int borrowConstLitCoerce(INode *from, INode *totypedcl);

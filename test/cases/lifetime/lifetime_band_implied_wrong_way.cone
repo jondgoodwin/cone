@@ -1,0 +1,29 @@
+// An implied bound runs one way: 'x &'a Pair['b]' implies ''b' outlasts
+// ''a', not the reverse. So the borrow of the pair itself, of ''a', may not
+// be returned as ''b': a caller reading the result as ''b' keeps only what the
+// pair holds frozen, not the pair, and could use the result after the pair
+// is gone. Two names a signature relates by no bound and no 'where' clause
+// stay unrelated.
+//
+// Verdict: refuse, ErrorEscape at each returned value.
+// Basis: implied bounds give ''b >= 'a' for '&'a Pair['b]' and nothing more,
+// as Rust's do; distinct caller lifetimes compare only where an order is
+// declared or implied.
+// Master 19cc839b: refused, ErrorEscape at both.
+
+mod lifetime_band_implied_wrong_way;
+
+struct R { pub n i64; }
+
+struct Pair['b] {
+  pub left &'b R;
+  pub right &'b R;
+}
+
+fn leak(x &'a Pair['b]) &'b Pair['b] {
+  x;                         //~ ErrorEscape
+}
+
+fn other(x &'a R, y &'b &'b R) &'b R {
+  x;                         //~ ErrorEscape
+}

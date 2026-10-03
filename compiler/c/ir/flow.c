@@ -970,9 +970,7 @@ static int flowIsTemp(INode *node) {
     return vtype != NULL && vtype != unknownType && itypeNeedsFinal(vtype);
 }
 
-void flowTempRead(INode **nodep) {
-    if (!flowIsTemp(*nodep))
-        return;
+static void flowTempWrap(INode **nodep) {
     TempNode *temp;
     newNode(temp, TempNode, TempTag);
     inodeLexCopy((INode *)temp, *nodep);
@@ -983,6 +981,25 @@ void flowTempRead(INode **nodep) {
     temp->kept = 0;
     *nodep = (INode *)temp;
     ++flowTempCount;
+}
+
+void flowTempRead(INode **nodep) {
+    if (flowIsTemp(*nodep))
+        flowTempWrap(nodep);
+}
+
+void flowTempBorrowed(INode **nodep) {
+    INode *node = *nodep;
+    if (flowIsTemp(node)) {
+        flowTempWrap(nodep);
+        return;
+    }
+    // A constant literal is kept in a constant global
+    if (!isExpNode(node) || flowIsLvalRead(node) || node->tag == TempTag || borrowIsConstLit(node)
+        || (node->tag == FnCallTag && fnCallIsNever(node)))
+        return;
+    flowTempWrap(nodep);
+    ((TempNode *)*nodep)->kept = 1;
 }
 
 // Does this cast's value hold what its operand held, so that the operand is

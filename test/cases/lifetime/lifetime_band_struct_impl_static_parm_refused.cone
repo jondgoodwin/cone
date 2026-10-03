@@ -1,0 +1,32 @@
+// An implementation may not require more than its requirement: 'keep' takes
+// only a ''static' borrow, which it may store in a global, where the trait's
+// 'keep' takes any. A call through the trait would hand it a local's borrow,
+// left in the global after the local is gone.
+//
+// Verdict: refuse, ErrorInvType at the struct (the requirement unmet).
+// Basis: an implementation meets a requirement only where every call checked
+// against the requirement is safe with it: a parameter is ''static' only where
+// the requirement's is; Rust refuses an impl whose method takes a ''static'
+// where the trait's takes any lifetime (E0195 / lifetime mismatch); by
+// reading, not run.
+// Master 19cc839b: refused, ErrorInvType at the struct.
+
+mod lifetime_band_struct_impl_static_parm_refused;
+
+struct R { pub n i64; }
+
+mut Z R = new R(0);
+mut G &R;
+
+fn @initpure init() {
+  G = &Z;
+}
+
+trait Keeper {
+  pub fn keep(self &, x &R);
+}
+
+struct K is Keeper {          //~ ErrorInvType "Keeper requires"
+  pub k i64;
+  pub fn keep(self &, x &'static R) { G = x; }
+}

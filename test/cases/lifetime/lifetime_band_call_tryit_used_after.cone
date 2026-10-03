@@ -1,0 +1,41 @@
+// The manual's 'tryit' with 'a' used after 'b''s block: 'refstore' may have
+// stored 'b''s borrow in 'a', so the read of 'a' there may read 'b', gone.
+// The same for 'tryset''s holder. Refused where 'b' ends while 'a' (or 'h')
+// still holds a borrow of it, and that holder is used again.
+//
+// Verdict: refuse, ErrorFrozen at each 'b'.
+// Basis: reflifefn.html, "Mutable borrowed reference parameters"; Rust:
+// E0597, "'b' does not live long enough", at the same spot; by reading, not
+// run.
+// Master 19cc839b: refused, ErrorCallEscape at each call.
+
+mod lifetime_band_call_tryit_used_after;
+
+fn refstore(refmut &mut &i32, refval &i32) {
+  *refmut = refval;
+}
+
+struct Holder {
+  pub r &i32;
+  pub fn set(self &mut, r &i32) { self.r = r; }
+}
+
+fn tryit() i32 {
+  imm i = 5;
+  mut a = &i;
+  {
+    imm b = 10;              //~ ErrorFrozen "goes out of scope while 'a' still holds"
+    refstore(&mut a, &b);
+  }
+  *a;
+}
+
+fn tryset() i32 {
+  imm i = 5;
+  mut h = new Holder(&i);
+  {
+    imm b = 10;              //~ ErrorFrozen "goes out of scope while 'h' still holds"
+    h.set(&b);
+  }
+  *h.r;
+}

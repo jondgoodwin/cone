@@ -114,8 +114,8 @@ the diagnostic lands on the value that would dangle. A returned value tuple is c
 where the several values arrive as one expression instead — a call returning a
 tuple — there are no element expressions to walk, so the elements of the tuple
 type `fnCallFinalizeArgs` built for that call are read in their place.
-[Flow Analysis](../phases/flow.md) owns the borrow-lifetime rule this site,
-`assignlvalrtype` and `fnCallFlowStoredBorrow` implement.
+[Flow Analysis](../phases/flow.md) owns the borrow-lifetime rule this site
+and `assignlvalrtype` implement, and the loan walk where a call may store one.
 
 A returned move value is moved to the caller, so after walking the result
 `blockFlow` hands it to `flowResultMove`, which refuses one whose source the
