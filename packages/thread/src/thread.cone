@@ -26,7 +26,7 @@
 //   thread.current()                   the running thread, as a ThreadRef
 //   r.id()  r.name()  r.unpark()  r.copy()
 //   thread.parallelism()               how many threads can run at once
-//   thread.sleep(ns)                   sleep, to within about a millisecond
+//   thread.sleep(d)                    sleep for a time.Duration, to within about a millisecond
 //   thread.yieldNow()                  let another thread run
 //   thread.park()                      sleep until this thread is unparked
 //
@@ -127,11 +127,13 @@
 // It is not the number this process may use, which an affinity mask or a job
 // object can make smaller.
 //
-// 'thread.sleep(ns)' sleeps at least ns nanoseconds, on Windows' high
+// 'thread.sleep(d)' sleeps at least d, a Duration of the time package
+// ('thread.sleep(time.Duration.fromMillis(5))'), on Windows' high
 // resolution waitable timer: a 1 ms sleep takes 1 to 2 ms, where a plain
 // Win32 'Sleep' can take up to the 15.6 ms of the system's timer tick. Where
 // that timer is not available (before Windows 10 version 1803), it falls
-// back to 'Sleep', rounded up to whole milliseconds. 'sleep(0)' gives up the
+// back to 'Sleep', rounded up to whole milliseconds. A sleep of zero (or of
+// a negative duration) gives up the
 // rest of the thread's time slice to another thread of the same priority
 // that is ready to run. 'yieldNow()' gives it to any thread ready to run on
 // the same processor. Each returns at once if there is none.
@@ -148,7 +150,8 @@
 // thread's identity.
 //
 // THE FUTEX, AND THE LOCKS, are the sync package's: 'sync.futexWait(&word,
-// expected, timeoutNs)', 'sync.futexWake(&word)' and 'sync.futexWakeAll(&word)'
+// expected)', 'sync.futexWaitTimeout(&word, expected, d)',
+// 'sync.futexWake(&word)' and 'sync.futexWakeAll(&word)'
 // on an Atomic[u32] word, and Mutex, Rwlock, Condvar and Once over them. The
 // futex was this package's first, on a raw '*u32'; it moved to sync when the
 // word became an Atomic[u32], since sync's locks need it and this package
@@ -170,6 +173,7 @@ mod thread;
 
 import libc;
 import sync;
+import time;
 
 // ---------------------------------------------------------------------------
 // Windows: the C runtime's thread start, and kernel32. A thread is started by
@@ -491,12 +495,14 @@ pub fn yieldNow() {
   SwitchToThread();
 }
 
-// Sleep at least ns nanoseconds, on the high resolution timer where there is one
-pub fn sleep(ns u64) {
-  if ns == 0u64 {
+// Sleep at least d, on the high resolution timer where there is one; zero or
+// less gives up the rest of the time slice
+pub fn sleep(d time.Duration) {
+  if d.nanos() <= 0i64 {
     Sleep(0u32);
     return;
   }
+  imm ns = u64.from(d.nanos());
   imm timer = CreateWaitableTimerExW(null, null, timerHighResolution, timerAllAccess);
   if timer != 0usize {
     // Relative (negative), in 100 ns units, rounded up

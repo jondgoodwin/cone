@@ -5,8 +5,9 @@
 // also lock permissions, 'Arc[Mutex, T]'; and the
 // channel, a pipe of values from any number of threads to one, unbounded or
 // bounded, or from one thread to one. Windows only for now: the futex's
-// three functions, a yield, a clock and a flush of every processor's stores
-// are the package's only calls to the OS.
+// three functions, a yield and a flush of every processor's stores are the
+// package's only calls to the OS. Every timeout is a Duration of the time
+// package, whose steady clock (time.Instant) the channels measure by.
 //
 // The atomic value they are built on, Atomic[T], an integer, a Bool or a raw
 // pointer changed only indivisibly, is core's, in every module without an
@@ -14,7 +15,7 @@
 // 'core::sync::atomic'). core.cone's ATOMIC VALUES section is its guide.
 //
 //   Arc            Rc whose count is atomic: 'new Arc[imm, T](...)'  (SHARED OWNERS)
-//   futexWait, futexWake, futexWakeAll                           (THE FUTEX)
+//   futexWait, futexWaitTimeout, futexWake, futexWakeAll         (THE FUTEX)
 //   Mutex          one thread at a time                          (THE LOCKS)
 //   Rwlock         many readers, or one writer
 //   Arc[Mutex, T], Arc[Rwlock, T]  a borrow takes the lock      (LOCK PERMISSIONS)
@@ -27,22 +28,23 @@
 // package's parking is built on: a 32-bit atomic word that threads sleep on
 // while it holds a value, and are woken from.
 //
-// - 'sync.futexWait(&word, expected, timeoutNs)': if the word still holds
-//   'expected' -- checked by the OS atomically with going to sleep, so a
-//   change and wake made between the caller's own check and this call is not
-//   missed -- sleep until woken or until the timeout. It returns false only
-//   when the timeout passed; true when it was woken, when the word already
+// - 'sync.futexWait(&word, expected)': if the word still holds 'expected'
+//   -- checked by the OS atomically with going to sleep, so a change and
+//   wake made between the caller's own check and this call is not missed --
+//   sleep until woken. It returns when it was woken, when the word already
 //   differed, or spuriously, which the OS permits. So a caller loops:
 //
 //     while word.load() == 0u32 {
 //       sync.futexWait(&word, 0u32);
 //     }
 //
-// - 'timeoutNs' is nanoseconds, 'sync.forever' by default. It is rounded up
-//   to whole milliseconds, and its resolution is the system's timer tick, up
-//   to 15.6 ms: a 30 ms timeout may take 45. A timeout of 2^32 - 1 ms (49.7
-//   days) or more is that long, not forever. 0 checks the word and returns
-//   false at once if it still holds 'expected'.
+// - 'sync.futexWaitTimeout(&word, expected, d)': the same, sleeping at most
+//   d, a Duration of the time package. It returns false only when the
+//   timeout passed; true otherwise. The timeout is rounded up to whole
+//   milliseconds, and its resolution is the system's timer tick, up to
+//   15.6 ms: a 30 ms timeout may take 45. A timeout of 2^32 - 1 ms (49.7
+//   days) or more is that long, not forever. Zero, or a negative duration,
+//   checks the word and returns false at once if it still holds 'expected'.
 // - 'sync.futexWake(&word)' wakes one thread waiting on the word, and
 //   'futexWakeAll(&word)' every one. A wake is not remembered: with no thread
 //   waiting it does nothing, so store the new value first, then wake.
@@ -149,9 +151,9 @@
 //   Condvar.make()               a Condvar
 //   c.condWait(&m)               unlock m, sleep until notified, lock m
 //                                again. m must be locked by this thread.
-//   c.condWaitTimeout(&m, ns)    the same, sleeping at most ns nanoseconds
-//                                (as futexWait rounds them): false only if
-//                                the timeout passed
+//   c.condWaitTimeout(&m, d)     the same, sleeping at most d, a Duration
+//                                (as futexWaitTimeout rounds it): false
+//                                only if the timeout passed
 //   c.notifyOne()                wake one waiting thread
 //   c.notifyAll()                wake every waiting thread
 //
@@ -227,7 +229,7 @@
 //                            'tx <- (a, b)' sends each in turn
 //   tx.trySend(v)            send, but never waiting: Some[v] back when a
 //                            bounded channel is full, too
-//   tx.sendTimeout(v, ns)    send, waiting at most ns nanoseconds for room
+//   tx.sendTimeout(v, d)     send, waiting at most d, a Duration, for room
 //                            (the futex's resolution: it may run over by a
 //                            tick): Some[v] back when none came
 //   tx.clone()               another Sender on the same channel (not a
@@ -236,7 +238,7 @@
 //                            None once the channel is closed and every value
 //                            sent has been taken
 //   rx.tryRecv()             the next value if one is there; never waits
-//   rx.recvTimeout(ns)       recv, waiting at most ns nanoseconds (the
+//   rx.recvTimeout(d)        recv, waiting at most d, a Duration (the
 //                            futex's resolution: it may run over by a tick)
 //   rx.close()               refuse every later send, handing its value
 //                            back; what was sent before still comes out
@@ -288,6 +290,7 @@
 mod sync;
 
 import libc;
+import time;
 
 // A lock misused, a channel's memory exhausted: a panic, reported at the line calling 'die'. Each message ends in
 // a line end, which the panic's own line leaves off
@@ -359,11 +362,12 @@ pub struct Arc is RegionRef, ThreadSafe {
 // ---------------------------------------------------------------------------
 // Windows: WaitOnAddress and its two wakes, the api set
 // api-ms-win-core-synch-l1-2-0, linked through Synchronization.lib, which
-// this package's congo.toml names; and, for the channels, kernel32's yield,
-// its high resolution clock and FlushProcessWriteBuffers (the single-sender
-// kind's asymmetric fence), on every link line already. They are the
-// package's only calls to the OS; a posix side (Linux's futex, sched_yield,
-// clock_gettime, membarrier) is to come beside them.
+// this package's congo.toml names; and, for the channels, kernel32's yield
+// and FlushProcessWriteBuffers (the single-sender kind's asymmetric fence),
+// on every link line already. They are the package's only calls to the OS
+// (the clock the channels measure their timeouts by is the time package's);
+// a posix side (Linux's futex, sched_yield, membarrier) is to come beside
+// them.
 // ---------------------------------------------------------------------------
 
 extern {
@@ -372,8 +376,6 @@ extern {
   fn @c(system) WakeByAddressAll(address *u32);
   fn @c(system) GetLastError() u32;
   fn @c(system) SwitchToThread() i32;
-  fn @c(system) QueryPerformanceCounter(count *i64) i32;
-  fn @c(system) QueryPerformanceFrequency(freq *i64) i32;
   fn @c(system) FlushProcessWriteBuffers();
 }
 
@@ -384,8 +386,15 @@ const errorTimeout = 1460u32;                  // ERROR_TIMEOUT
 // The futex
 // ---------------------------------------------------------------------------
 
-// A timeout that never passes
-pub const forever = 0xFFFFFFFFFFFFFFFFu64;
+// Inside, a timeout is nanoseconds, a u64, and this one never passes: no
+// Duration is this long, since a Duration's nanoseconds are an i64
+const forever = 0xFFFFFFFFFFFFFFFFu64;
+
+// A Duration as the nanoseconds inside: zero or less is 0
+fn durationNs(d time.Duration) u64 {
+  imm ns = d.nanos();
+  if ns <= 0i64 {0u64;} else {u64.from(ns);};
+}
 
 // Nanoseconds as whole milliseconds, rounded up, and short of INFINITE
 fn msCeil(ns u64) u32 {
@@ -393,10 +402,16 @@ fn msCeil(ns u64) u32 {
   if ms >= u64.from(infinite) {infinite - 1u32;} else {u32.from(ms);};
 }
 
-// Sleep while the word holds expected, until woken or timeoutNs passes:
-// false only if the timeout passed
-pub fn futexWait(word &opaq Atomic[u32], expected u32, timeoutNs u64 = forever) Bool {
-  rawWait(word as *u32, expected, timeoutNs);
+// Sleep while the word holds expected, until woken. It may return
+// spuriously: a caller loops
+pub fn futexWait(word &opaq Atomic[u32], expected u32) Bool {
+  rawWait(word as *u32, expected, forever);
+}
+
+// Sleep while the word holds expected, until woken or d passes: false only
+// if the timeout passed
+pub fn futexWaitTimeout(word &opaq Atomic[u32], expected u32, d time.Duration) Bool {
+  rawWait(word as *u32, expected, durationNs(d));
 }
 
 // Wake one thread waiting on the word
@@ -848,12 +863,16 @@ pub struct Condvar is Move {
   // Unlock the Mutex, which this thread holds, sleep until notified, and lock
   // it again. It may return spuriously, so the caller loops.
   pub fn condWait(self &opaq, mutex &opaq Mutex) {
-    self.condWaitTimeout(mutex, forever);
+    self.waitFor(mutex, forever);
   }
 
-  // The same, sleeping at most timeoutNs: false only if the timeout passed.
-  // The Mutex is locked again either way.
-  pub fn condWaitTimeout(self &opaq, mutex &opaq Mutex, timeoutNs u64) Bool {
+  // The same, sleeping at most d: false only if the timeout passed. The
+  // Mutex is locked again either way.
+  pub fn condWaitTimeout(self &opaq, mutex &opaq Mutex, d time.Duration) Bool {
+    self.waitFor(mutex, durationNs(d));
+  }
+
+  fn waitFor(self &opaq, mutex &opaq Mutex, timeoutNs u64) Bool {
     imm p = self.word();
     imm seen = loadRelaxed(p);
     mutex.unlock();
@@ -1129,16 +1148,10 @@ fn chanRelease[T](c *Chan[T]) {
   }
 }
 
-// The clock recvTimeout measures by: nanoseconds from some fixed moment
+// The clock the timeouts measure by: the time package's steady clock, in
+// nanoseconds from its fixed origin, which are never negative
 fn nowNs() u64 {
-  mut count = 0i64;
-  mut freq = 0i64;
-  QueryPerformanceCounter(&mut count as *i64);
-  QueryPerformanceFrequency(&mut freq as *i64);
-  imm c = u64.from(count);
-  imm f = u64.from(freq);
-  // Split, so that count * 10^9 cannot overflow
-  (c / f) * 1000000000u64 + (c % f) * 1000000000u64 / f;
+  u64.from(time.Instant.now().nanos());
 }
 
 // ---------------------------------------------------------------------------
@@ -1577,13 +1590,13 @@ pub struct Sender[T Sendable] is Sendable {
     ringSend[T](chan, v, false, 0u64);
   }
 
-  // send, waiting at most ns nanoseconds for room: Some[v] back when there
-  // was none in that time, or the channel is closed
-  pub fn sendTimeout(self &, v T, ns u64) Option[T] {
+  // send, waiting at most d for room: Some[v] back when there was none in
+  // that time, or the channel is closed
+  pub fn sendTimeout(self &, v T, d time.Duration) Option[T] {
     if (*chan).ring as usize == 0usize {
       return self.listSend(v);
     }
-    ringSend[T](chan, v, true, ns);
+    ringSend[T](chan, v, true, durationNs(d));
   }
 
   // An unbounded channel's send
@@ -1714,10 +1727,10 @@ pub struct SoloSender[T Sendable] is Sendable {
     self.put(v, false, 0u64);
   }
 
-  // send, waiting at most ns nanoseconds for room: Some[v] back when there
-  // was none in that time, or the channel is closed
-  pub fn sendTimeout(self &mut, v T, ns u64) Option[T] {
-    self.put(v, true, ns);
+  // send, waiting at most d for room: Some[v] back when there was none in
+  // that time, or the channel is closed
+  pub fn sendTimeout(self &mut, v T, d time.Duration) Option[T] {
+    self.put(v, true, durationNs(d));
   }
 
   // 'tx <- v' is send: what it answers is send's
@@ -1905,10 +1918,11 @@ pub struct Receiver[T Sendable] is Sendable {
     None[T][];
   }
 
-  // The next value, waiting at most ns nanoseconds for one; None when none
-  // came in that time, or the channel is closed and empty. The sleep is the
-  // futex's, so it may run over by up to the system's timer tick.
-  pub fn recvTimeout(self &mut, ns u64) Option[T] {
+  // The next value, waiting at most d for one; None when none came in that
+  // time, or the channel is closed and empty. The sleep is the futex's, so
+  // it may run over by up to the system's timer tick.
+  pub fn recvTimeout(self &mut, d time.Duration) Option[T] {
+    imm ns = durationNs(d);
     if ring as usize != 0usize {
       if solo {
         return self.soloRecv(ns);

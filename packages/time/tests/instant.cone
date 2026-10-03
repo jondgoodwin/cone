@@ -1,0 +1,60 @@
+// Instant: the steady clock never goes back over a hundred thousand reads,
+// and moves; elapsed after a sleep is at least the sleep and not far over;
+// an Instant plus and minus a Duration, the Duration between two, either
+// way round, and comparison.
+
+mod instant;
+
+import testing use *;
+import time use Duration, Instant;
+import thread;
+
+fn monotonic() {
+  imm first = Instant.now();
+  mut last = first;
+  mut back = 0u64;
+  mut i = 0u32;
+  while i < 100000u32 {
+    imm t = Instant.now();
+    if t < last { back = back + 1u64; }
+    last = t;
+    i = i + 1u32;
+  }
+  expectUInt(back, 0u64, "the steady clock never goes back");
+  expect(last > first, "and it moves");
+}
+
+fn elapsed() {
+  imm start = Instant.now();
+  thread.sleep(Duration.fromMillis(20));
+  imm took = start.elapsed();
+  expect(took >= Duration.fromMillis(20), "elapsed after a 20 ms sleep is at least 20 ms");
+  expect(took < Duration.fromSeconds(5), "and less than 5 s");
+  imm later = Instant.now();
+  expect(later - start >= took, "a later read is further from the start");
+}
+
+fn arithmetic() {
+  imm t = Instant.fromNanos(1000000000);
+  imm d = Duration.fromMillis(250);
+  expectInt((t + d).nanos(), 1250000000, "Instant + Duration");
+  expectInt((t - d).nanos(), 750000000, "Instant - Duration");
+  expectInt(((t + d) - t).millis(), 250, "Instant - Instant");
+  expectInt((t - (t + d)).millis(), -250, "Instant - a later Instant is negative");
+  expect(t + d > t, ">");
+  expect(t - d < t, "<");
+  expect(t <= t and t >= t, "<= and >= of one Instant");
+  expect(t == Instant.fromNanos(1000000000), "==");
+  expectInt(new Instant().nanos(), 0, "new Instant() is the origin");
+  expect(t != t + Duration.fromNanos(1), "!=");
+  mut u = t;
+  u += d;
+  expect(u == t + d, "+=");
+}
+
+fn main() i32 {
+  monotonic();
+  elapsed();
+  arithmetic();
+  done();
+}

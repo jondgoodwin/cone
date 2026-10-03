@@ -4,6 +4,7 @@
 //   mod build;
 //   import collections use *;
 //   import process;
+//   import time use Duration;
 //
 //   fn main() i32 {
 //     mut args = List[String].empty();
@@ -11,7 +12,7 @@
 //     args.push(String.from("-o"));
 //     args.push(String.from("build/debug"));
 //     args.push(String.from("app.conebuild"));
-//     match process.run(args.view(), new process.Options(timeoutMs: 60000u64)) {
+//     match process.run(args.view(), new process.Options(timeout: Duration.fromSeconds(60))) {
 //       case imm ok Ok {
 //         imm o = &ok.value;
 //         if o.timedOut { ... }                  // stopped after 60 s
@@ -29,7 +30,7 @@
 //
 //   process.run(args, opts)       run args[0] with the rest as its arguments
 //   process.runLine(line, opts)   run a command line written out by hand
-//   process.Options               dir, timeoutMs, inherit; each has a default
+//   process.Options               dir, timeout, inherit; each has a default
 //   process.Output                exitCode, timedOut, stdout, stderr, success()
 //   process.ProcessError          op, program, dir, code, message(), notFound()
 //   process.commandLine(args)     the line 'run' hands Windows for args
@@ -60,8 +61,10 @@
 // could not be started: none of that name, a folder that is not there, an
 // argument Windows cannot be given.
 //
-// **The time limit.** With 'timeoutMs' above 0, the child is stopped when
-// that many milliseconds have passed since it started, and so is every
+// **The time limit.** With 'timeout', a Duration of the time package, above
+// zero, the child is stopped when that long has passed since it started
+// (measured on the time package's steady clock, and waited for in whole
+// milliseconds, rounded up), and so is every
 // program it has started and not yet seen end: it runs in a Windows job
 // object of its own, and the whole job is ended. The Output then says
 // 'timedOut', its exit code is 1, and what it wrote until then is kept. With
@@ -129,6 +132,7 @@ mod process;
 import libc;
 import collections use String, List;
 import path use normalize;
+import time;
 
 // ---------------------------------------------------------------------------
 // Windows: kernel32, and shell32's command-line parser. Everything the
@@ -211,7 +215,6 @@ extern {
   fn @c(system) GetConsoleWindow() usize;
   fn @c(system) GetCurrentProcessId() u32;
   fn @c(system) GetCurrentThreadId() u32;
-  fn @c(system) GetTickCount64() u64;
   fn @c(system) MultiByteToWideChar(page u32, flags u32, from *u8, fromLen i32, to *u16, toLen i32) i32;
   fn @c(system) WideCharToMultiByte(page u32, flags u32, from *u16, fromLen i32, to *u8, toLen i32,
       fallback *u8, usedFallback *i32) i32;
@@ -469,9 +472,9 @@ pub fn commandLine(args &[]String) String {
 pub struct Options {
   // The folder it starts in; "" for this program's current folder
   pub dir &[]u8 = "";
-  // Stop it, and every program it started, after this many milliseconds;
-  // 0 waits as long as it runs
-  pub timeoutMs u64 = 0u64;
+  // Stop it, and every program it started, once this has passed; zero (or
+  // less) waits as long as it runs
+  pub timeout time.Duration = new time.Duration();
   // Share this program's standard input, output and error rather than
   // reading from NUL and capturing what it writes
   pub inherit Bool = false;
@@ -645,13 +648,14 @@ fn closeStream(s &mut Stream) {
   if s.buf as usize != 0usize { libc.free(s.buf); }
 }
 
-// Milliseconds left until deadline, for a wait; INFINITE when there is none
-fn remaining(deadline u64) u32 {
-  if deadline == 0u64 { return infinite; }
-  imm now = GetTickCount64();
-  if now >= deadline { return 0u32; }
-  imm left = deadline - now;
-  if left >= u64.from(infinite) {infinite - 1u32;} else {u32.from(left);};
+// Milliseconds left until deadline, rounded up, for a wait; INFINITE when
+// there is none
+fn remaining(timed Bool, deadline time.Instant) u32 {
+  if not timed { return infinite; }
+  imm left = (deadline - time.Instant.now()).nanos();
+  if left <= 0i64 { return 0u32; }
+  imm ms = (left + 999999i64) / 1000000i64;
+  if ms >= i64.from(infinite) {infinite - 1u32;} else {u32.from(ms);};
 }
 
 // Stop the child, and with it every program it started, where they are in
@@ -727,7 +731,7 @@ fn start(op &[]u8, program &[]u8, line &[]u8, opts Options) Result[Output, Proce
   }
 
   mut pi = new ProcessInformation(0usize, 0usize, 0u32, 0u32);
-  imm timed = opts.timeoutMs > 0u64;
+  imm timed = opts.timeout > time.Duration.zero();
   if not failed {
     mut si = new StartupInfoEx(112u32, null, null, null,
       0u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32, useStdHandles, 0u16, 0u16, null,
@@ -762,14 +766,14 @@ fn start(op &[]u8, program &[]u8, line &[]u8, opts Options) Result[Output, Proce
   // With a time limit, the child goes in a job of its own before it runs,
   // so that the programs it starts are in it too and stop with it
   mut job = 0usize;
-  mut deadline = 0u64;
+  mut deadline = time.Instant.fromNanos(0i64);
   if timed {
     job = CreateJobObjectW(null, null);
     if job != 0usize and AssignProcessToJobObject(job, pi.hProcess) == 0i32 {
       CloseHandle(job);
       job = 0usize;
     }
-    deadline = GetTickCount64() + opts.timeoutMs;
+    deadline = time.Instant.now() + opts.timeout;
     ResumeThread(pi.hThread);
   }
 
@@ -790,7 +794,7 @@ fn start(op &[]u8, program &[]u8, line &[]u8, opts Options) Result[Output, Proce
       events[usize.from(n)] = se.ov.hEvent;
       n = n + 1u32;
     }
-    imm r = WaitForMultipleObjects(n, ep, 0i32, remaining(deadline));
+    imm r = WaitForMultipleObjects(n, ep, 0i32, remaining(timed, deadline));
     if r == waitTimeout {
       timedOut = true;
       stop(job, pi.hProcess);
@@ -810,7 +814,7 @@ fn start(op &[]u8, program &[]u8, line &[]u8, opts Options) Result[Output, Proce
     }
   }
 
-  if not timedOut and WaitForSingleObject(pi.hProcess, remaining(deadline)) == waitTimeout {
+  if not timedOut and WaitForSingleObject(pi.hProcess, remaining(timed, deadline)) == waitTimeout {
     timedOut = true;
     stop(job, pi.hProcess);
   }
