@@ -54,10 +54,23 @@ static LLVMValueRef genlFnSym(GenState *gen, FnDclNode *fndcl) {
         return LLVMConstBitCast(fndcl->llvmvar, LLVMPointerType(genlType(gen, fndcl->vtype), 0));
     return fndcl->llvmvar;
 }
+// The address of a global, as a Cone reference holds it. On a GPU target a
+// global lives in an address space of its own (the target's datalayout puts
+// it there: Private in SPIR-V's Vulkan form, CrossWorkgroup in its OpenCL
+// form), and every Cone reference is in address space 0, the flat one. So a
+// global's address is cast to the flat space where it is taken, and once
+// every function is inlined, LLVM's address-space inference gives each use
+// the space of its origin back (genpgm). Elsewhere every global is in 0.
+static LLVMValueRef genlFlatAddr(GenState *gen, LLVMValueRef global) {
+    if (gen->opt->gpu && LLVMGetPointerAddressSpace(LLVMTypeOf(global)) != 0)
+        return LLVMConstAddrSpaceCast(global, LLVMPointerTypeInContext(gen->context, 0));
+    return global;
+}
+
 static LLVMValueRef genlVarSym(GenState *gen, VarDclNode *var) {
     if (var->llvmvar == NULL && var->scope == 0)
         genlGloVarName(gen, var);
-    return var->llvmvar;
+    return var->llvmvar ? genlFlatAddr(gen, var->llvmvar) : NULL;
 }
 
 // Generate an if statement
@@ -1562,7 +1575,8 @@ char *genlSrcFileName(INode *node, size_t *len) {
 // The address of a constant copy of a source file's name: a private constant
 // global, made once per name in a module. The names already made are few (one
 // per file whose code this object holds), so a short list remembers them;
-// one found nowhere in it is made again, which costs bytes, not correctness
+// one found nowhere in it is made again, which costs bytes, not correctness.
+// Its address is the flat one, as every global's is (genlFlatAddr).
 #define GenlSrcFileMax 32
 static struct {
     LLVMModuleRef module;
@@ -1571,7 +1585,12 @@ static struct {
 } genlSrcFiles[GenlSrcFileMax];
 static int genlSrcFileCnt = 0;
 
+static LLVMValueRef genlSrcFileGlobal(GenState *gen, char *text, size_t len);
 static LLVMValueRef genlSrcFileText(GenState *gen, char *text, size_t len) {
+    return genlFlatAddr(gen, genlSrcFileGlobal(gen, text, len));
+}
+
+static LLVMValueRef genlSrcFileGlobal(GenState *gen, char *text, size_t len) {
     for (int i = 0; i < genlSrcFileCnt; ++i) {
         if (genlSrcFiles[i].module == gen->module && genlSrcFiles[i].text == text)
             return genlSrcFiles[i].global;
@@ -1860,6 +1879,8 @@ LLVMValueRef genlAddr(GenState *gen, INode *lval) {
         // the literal's type [strlen] u8 does not count it. The global is one
         // byte longer than that type, and its address is recast to a pointer
         // to the type, so every use sees the text's length and nothing more.
+        // (Under opaque pointers the recast folds away; on a GPU target the
+        // address is the flat one, genlFlatAddr.)
         SLitNode *strnode = (SLitNode *)lval;
         LLVMValueRef strconst = LLVMConstStringInContext2(gen->context, strnode->strlit, strnode->strlen, 0);
         LLVMValueRef sglobal = LLVMAddGlobal(gen->module, LLVMTypeOf(strconst), "string");
@@ -1867,6 +1888,8 @@ LLVMValueRef genlAddr(GenState *gen, INode *lval) {
         LLVMSetGlobalConstant(sglobal, 1);
         genlComdat(gen, sglobal);
         LLVMSetInitializer(sglobal, strconst);
+        if (gen->opt->gpu)
+            return genlFlatAddr(gen, sglobal);
         return LLVMConstBitCast(sglobal, LLVMPointerType(genlType(gen, strnode->vtype), 0));
     }
     case ArrayLitTag:
@@ -1884,7 +1907,7 @@ LLVMValueRef genlAddr(GenState *gen, INode *lval) {
             LLVMSetGlobalConstant(aglobal, 1);
             genlComdat(gen, aglobal);
             LLVMSetInitializer(aglobal, arrval);
-            return aglobal;
+            return genlFlatAddr(gen, aglobal);
         }
         LLVMValueRef temparray = genlAlloca(gen, LLVMTypeOf(arrval), "temparray");
         LLVMBuildStore(gen->builder, arrval, temparray);

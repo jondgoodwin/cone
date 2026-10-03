@@ -6,7 +6,9 @@ a struct of another size, which only the data layout measures
 ([cast](../nodes/cast.md)); and an untyped integer literal too large for the
 `i32` default that nothing replaced, which only generation reaches after
 everything that could have typed it has run ([literals](../nodes/literals.md),
-`ErrorLitRange`). Every assumption in section 5 is a hard prerequisite,
+`ErrorLitRange`); and on a GPU target, a global holding a reference and a
+function calling itself, which only the module's globals and its calls show
+(section 7). Every assumption in section 5 is a hard prerequisite,
 and what guards them is uneven — the sites that meant *unreachable* report and
 exit, while the ordinary value asserts beside them are compiled out of the
 release build. Section 5 says which is which.
@@ -1096,29 +1098,72 @@ program uses, and tests in the package a virtual reference the program built.
 survives it.** `--triple=spirv64-unknown-unknown` is SPIR-V's OpenCL form
 (physical addressing, the `Kernel` capability) and
 `--triple=spirv1.6-unknown-vulkan1.3` its Vulkan form (logical addressing,
-`Shader`). `genlCreateMachine` initializes every target the LLVM build holds,
-so nothing in `conec` names SPIR-V but the file extension. Functions over
-numbers and structs, with calls, branches, loops, references to locals and
-module globals, come out as a module SPIR-V's validator accepts in its
-universal environment. What does not:
+`Shader`). `genlCreateMachine` initializes every target the LLVM build holds;
+`genSetup` marks a triple starting `spirv` a GPU target (`ConeOptions.gpu`),
+which flow reads too (`flowGpu`). Functions over numbers and structs, with
+calls, branches, loops, references to locals, to parts of them and to module
+globals, structs holding references, and string literals, come out at every
+optimization level as a module SPIR-V's validator accepts in its universal
+environment.
 
-- Every Cone pointer is LLVM address space 0, SPIR-V's `Function` storage
-  class, while SPIR-V's data layouts put globals in another (`G1`,
-  `CrossWorkgroup`, in the OpenCL form; `G10`, `Private`, in the Vulkan one).
-  So a global's address handed on as a plain pointer is a mistyped call or
-  bitcast, which `--verify` rejects: the source file's name in a failed
-  check's call makes indexing an array or a slice, and allocating, a module
-  the validator refuses; a string literal stops the OpenCL backend with
-  `LLVM ERROR` and crashes the Vulkan one.
+**A GPU types each pointer by the memory it points into**, its kind: SPIR-V's
+storage class, LLVM's address space. Every Cone reference is address space 0,
+while the data layouts put a global in another (`G1`, `CrossWorkgroup`, in the
+OpenCL form; `G10`, `Private`, in the Vulkan one). The kind is not written in
+Cone, nor carried in a reference's type; it comes from the origin, the way
+HLSL's compilers settle it:
+
+- **At the origin**, a global's address, a string literal's or a constant
+  array's, is cast to address space 0 where it is taken (`genlFlatAddr`), so
+  the IR is well typed whatever it is handed to.
+- **Every call is inlined.** `genlGpuCalls` marks every function this object
+  defines `alwaysinline`, and the GPU pipeline runs the always-inliner at every
+  optimization level, `--debug` too; an internal function is then gone. Once
+  inlined, each borrow has one origin, and one function used with a local and
+  a global is in effect a copy per kind, with no instancing in Cone.
+- **Structs and arrays break into separate values** (`sroa`), so a struct
+  holding a reference dissolves into locals: logical addressing keeps no
+  pointer in memory.
+- **LLVM's address-space inference** (`infer-address-spaces`) then gives each
+  use its origin's space back. It rewrites only casts into the target's flat
+  space, which for the OpenCL form is 4, `Generic`; `genlLLVMOptions` names 0
+  the flat space for both forms (`-assume-default-is-flat-addrspace`).
+
+What inference cannot settle LLVM does not report: a choice of pointer becomes
+an invalid `select` or a `Generic` pointer, and only the validator sees it. So
+what would leave a pointer unsettled is refused before generation, in Cone's
+terms: a reference chosen at run time (`ErrorGpuRefChoice`) and an array
+holding references indexed at run time (`ErrorGpuRefIndexed`) by the loan walk
+([Flow Analysis](flow.md), "GPU targets"); a global holding a reference
+(`ErrorGpuRefGlobal`, `genlGloVar`) and a function calling itself, which no
+inliner removes (`ErrorGpuRecursion`, `genlGpuCalls`), here.
+
+`genlLLVMOptions` also turns machine CSE off on a GPU target: LLVM 23's SPIR-V
+backend lets it hoist a computation a loop header's two successors share into
+the header, after the `OpLoopMerge` already placed there, which must come just
+before the branch, so the release build of such a loop was a module the
+validator refused.
+
+What does not work yet:
+
 - A failed check calls conestd, which no GPU has; only `--wasm` traps instead.
-  An imported package's functions, `stdio`'s say, are left as imports.
-- The Vulkan form crashes LLVM's backend, in its pointer-cast legalization,
-  on a slice walked in a loop and on a region's allocation, and on a second
-  emission of the same module, so `--asm` with it crashes `conec`.
+  So indexing an array or a slice, and allocating, make a module the Vulkan
+  validator refuses: the call passes the source file's name, a `Private`
+  global, where conestd's signature has a `Function` pointer. An imported
+  package's functions, `stdio`'s say, are left as imports, and are not
+  inlined.
+- The Vulkan form crashes LLVM's backend in its own passes on what GPU code
+  will not hold: a whole package such as `geomath` compiled for it stops in
+  `SPIRV split region exit blocks` on a function building a `List`; and
+  the OpenCL form refuses a runtime array (`LLVM ERROR`). A second emission
+  of the same module can crash it, so `--asm` crashes `conec` on a module
+  with a struct holding a reference, in either form.
 - Nothing marks an entry point or its execution model, places a pointer in a
   buffer's storage class, or reads a built-in such as the global invocation
   id. Without an entry point the module is a library, carrying the `Linkage`
-  capability, which Vulkan's environment refuses.
+  capability, which Vulkan's environment refuses; and without one, a compile
+  that is no library keeps no function, since every one is internal and
+  inlined into nothing.
 
 Also absent: closures with an environment — an anonymous `fn` is lifted to
 module scope and a `&fn` value is a bare function pointer with no capture
@@ -1154,8 +1199,9 @@ variables.
 | --- | --- | --- |
 | `conec.c` | `main` | calls `genSetup` **before** parsing, for target pointer size |
 | `genllvm/genllvm.c` | `genSetup`, `genClose` | target machine, data layout, context, `%void` |
-| | `genlLLVMOptions` | the LLVM options `CONE_LLVM_OPTIONS` names, parsed before the context exists |
-| | `genpgm` | generate, verify, dump, optimize, emit; nothing past generation once it reported an error |
+| | `genlLLVMOptions` | the LLVM options `CONE_LLVM_OPTIONS` names, and a GPU target's own two, parsed before the context exists |
+| | `genpgm` | generate, verify, dump, optimize (a GPU target's pipeline inlines, breaks up aggregates and infers address spaces at every level), emit; nothing past generation once it reported an error |
+| | `genlGpuCalls`, `genlCallWalk`, `genlRecursion` | on a GPU target, every defined function marked `alwaysinline`, and a cycle of calls refused (section 7) |
 | | `genlProgram` | create the module with the target's triple and data layout, the two-pass symbols-then-implementations walk, then the stitched pair |
 | | `genlStitchFn`, `genlStitch` | the program's stitched init and final: declared on the first call to `initAll()` or `finalAll()`, built last, every module's `init` in the module order and every finalizer in the reverse |
 | | `genlGlobalSyms`, `genlGlobalImpl` | declare a node's symbol; emit its body |
@@ -1184,6 +1230,7 @@ variables.
 | `genllvm/genlstmt.c` | `genlBlock` | block creation, phi state, terminator suppression; each statement's temporaries finalized at its end |
 | | `genlBreak`, `genlReturn` | phi edges, temporaries and dealias; inlined-return-as-break |
 | `genllvm/genlexpr.c` | `genlExpr`, `genlAddr`, `genlStore` | the value / address / store trio — section 4 |
+| | `genlFlatAddr`, `genlVarSym` | a global's address as a reference holds it: cast to the flat address space on a GPU target (section 7) |
 | | `genlTerm`, `genlIsBirth`, `genlAddrThroughRef`, `genlExprForLocal` | an expression's value, and whether it is a birth to root (section 3, "Roots") |
 | | `genlStoreBarrier` | after a store through a reference or pointer, the barrier on what was stored (section 3, "The write barrier") |
 | | `genlAddrType` | the Cone type of what `genlAddr`'s address points at |

@@ -1,0 +1,48 @@
+// On a GPU target a reference held in a variable may not be given different
+// places on paths that meet, and then used: that use is a choice made at run
+// time. Each is refused at the use, as a frozen borrow is, so a variable
+// reassigned before its next use is no choice (module_target_spirv_kinds).
+
+mod ref_gpu_choice_held;
+
+mut total f32 = 0.0;
+mut scale f32 = 1.0;
+
+// Given another place on one arm of an 'if'
+fn afterIf(c Bool, x f32) f32 {
+  imm a = x;
+  mut r = &a;
+  if c {
+    r = &scale;
+  }
+  *r;  //~ ErrorGpuRefChoice "'r', used here"
+}
+
+// Two locals, one per arm, with no reference to a global at all
+fn bothArms(c Bool, x f32) f32 {
+  mut a = x;
+  mut b = x;
+  mut r = &mut a;
+  if c {
+    r = &mut a;
+  }
+  else {
+    r = &mut b;
+  }
+  *r = 2.0;  //~ ErrorGpuRefChoice
+  a + b;
+}
+
+// Reassigned in a loop, and used on the next pass
+fn aroundLoop(n u32) f32 {
+  imm a = 1.0;
+  mut r = &a;
+  mut sum = 0.0;
+  mut i = 0u32;
+  while i < n {
+    sum = sum + *r;  //~ ErrorGpuRefChoice
+    r = &total;
+    i = i + 1;
+  }
+  sum;
+}
