@@ -147,7 +147,10 @@ Visual Studio projects stay at the root.
   point), and `bevelEdges` and `bevelVertices` (Blender's Bevel: strips with a
   superellipse profile, sharp mitres, a box's corner patched on the
   superellipsoid, one clamp factor for overlap, selections by list, angle or
-  a bevel-weight channel, channels blended by place); its example `coast.cone` is the island coastline experiments;
+  a bevel-weight channel, channels blended by place), and `unsubdivide` (Blender's
+  Un-Subdivide: a grid of one subdivision level halved per iteration, the
+  kept vertices where they were, so a subdivided cage returns to its
+  connectivity; what is not on a grid kept and reported); its example `coast.cone` is the island coastline experiments;
   `noise` is coherent noise over `geomath`, a pure function of a seed and a
   point: the PCG integer hashes (`pcg`, `pcg2d`, `pcg3d`, `pcg4d`, seeded
   lattice hashes, exact hash to float), value and gradient noise with
