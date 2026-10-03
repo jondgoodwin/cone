@@ -418,7 +418,10 @@ Three shapes, the first two chosen in `genlSetupTaggedTrait`:
 - **Nullable pointer.** Exactly two variants under `SameSize`, one with one
   field and one with two whose second is a pointer-like: **no struct is emitted
   at all**, and the value *is* the pointer. A null pointer is the empty variant.
-  Each enum decides this for its own set: an extension's variants are copies, so an
+  A slice or a virtual reference is two words, and the value is that pair: its
+  first word, the pointer, null is the empty variant, so the literal writes that
+  word and the variant test (`genlIsType`) and the drop read it, the second word
+  left alone. Each enum decides this for its own set: an extension's variants are copies, so an
   `Option`-shaped base keeps the layout whatever extends it, and the extension, with
   a third variant for which there is no pointer to be, is tagged. The same holds per
   instance: `Option[&i32]` is a bare pointer beside a tagged instance of an enum
