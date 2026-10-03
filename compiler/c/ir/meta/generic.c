@@ -622,33 +622,33 @@ static void genericBindingsCat(char *buf, size_t size, INode *cond, Nodes *parms
         snprintf(buf, size, "these arguments");
 }
 
-// Refuse an instance whose argument 'arg', for parameter 'parm', is not
-// Sendable, saying what binds it to its thread and where that sits in it. A
-// borrow or a permission is the cause most often met through a local, and a
-// local's own 'mut' is not what is checked, so the message says so.
-static void genericNotSendableMsg(INode *errnode, Name *name, GenVarDclNode *parm, INode *arg) {
-    char argname[256] = "";
-    genericTypeNameCat(argname, sizeof(argname), arg, 0);
+// Why a type is not Sendable: into 'what', where the culprit sits in it
+// ('Job.data is Rc[mut, Log],', or 'it is'), and into 'reason', what kind of
+// thing binds it to its thread. Returns whether the cause is one most often met
+// through a local -- a borrow or a permission -- whose own 'mut' is not what is
+// checked. Each buffer holds 512 bytes.
+int genericNotSendableWhy(INode *arg, char *what, char *reason) {
     char path[256];
     INode *culprit = itypeThreadBoundWhy(arg, path, sizeof(path));
-    char what[512] = "";
+    const size_t whatsize = 512, reasonsize = 512;
+    what[0] = '\0';
+    reason[0] = '\0';
     if (path[0] != '\0' && culprit) {
-        snprintf(what, sizeof(what), "%s is ", path);
-        itypeSpellCat(what, sizeof(what), culprit, 0);
+        snprintf(what, whatsize, "%s is ", path);
+        itypeSpellCat(what, whatsize, culprit, 0);
         strcat(what, ",");
     }
     else
-        snprintf(what, sizeof(what), "it is");
-    char reason[512] = "";
+        snprintf(what, whatsize, "it is");
     int local = 0;
     INode *culpritdcl = culprit ? itypeGetTypeDcl(culprit) : NULL;
     if (culpritdcl == NULL)
-        snprintf(reason, sizeof(reason), "a type bound to its thread");
+        snprintf(reason, reasonsize, "a type bound to its thread");
     else if (culpritdcl->tag == PtrTag)
-        snprintf(reason, sizeof(reason),
+        snprintf(reason, reasonsize,
             "a raw pointer, whose target the compiler cannot check. A type holding raw pointers it shares safely across threads says so by declaring 'is Sendable', a promise the compiler takes on trust");
     else if (culpritdcl->tag == StructTag)
-        snprintf(reason, sizeof(reason),
+        snprintf(reason, reasonsize,
             "a trait, whose implementers are not all known here, so what a reference to one points at cannot be checked");
     else {
         RefNode *ref = (RefNode *)culpritdcl;
@@ -659,30 +659,42 @@ static void genericNotSendableMsg(INode *errnode, Name *name, GenVarDclNode *par
         switch (refThreadBinds(ref)) {
         case RefBindsBorrow:
             local = 1;
-            snprintf(reason, sizeof(reason),
+            snprintf(reason, reasonsize,
                 "a borrowed reference, and no borrow may leave its thread: its lifetime is checked in that thread alone");
             break;
         case RefBindsTraced:
-            snprintf(reason, sizeof(reason),
+            snprintf(reason, reasonsize,
                 "a reference the %s collector traces, and a collector is single threaded, so a traced reference may not leave its thread",
                 regname);
             break;
         case RefBindsPerm:
             local = 1;
-            snprintf(reason, sizeof(reason),
+            snprintf(reason, reasonsize,
                 "an owner whose permission, %s, is not race-safe: only a uni, imm or opaq reference may be shared with or sent to another thread",
                 permname ? &permname->namestr : "?");
             break;
         case RefBindsShared:
-            snprintf(reason, sizeof(reason),
+            snprintf(reason, reasonsize,
                 "an owner that may be copied, and %s does not declare ThreadSafe: its copies could not be made and dropped on several threads at once. It may cross as a uni owner, which moves it, or as an owner of a region declaring ThreadSafe, such as Arc",
                 regname);
             break;
         default:
-            snprintf(reason, sizeof(reason), "a reference bound to its thread");
+            snprintf(reason, reasonsize, "a reference bound to its thread");
             break;
         }
     }
+    return local;
+}
+
+// Refuse an instance whose argument 'arg', for parameter 'parm', is not
+// Sendable, saying what binds it to its thread and where that sits in it. A
+// borrow or a permission is the cause most often met through a local, and a
+// local's own 'mut' is not what is checked, so the message says so.
+static void genericNotSendableMsg(INode *errnode, Name *name, GenVarDclNode *parm, INode *arg) {
+    char argname[256] = "";
+    genericTypeNameCat(argname, sizeof(argname), arg, 0);
+    char what[512], reason[512];
+    int local = genericNotSendableWhy(arg, what, reason);
     errorMsgNode(errnode, ErrorNotSendable, "%s requires %s is Sendable, and %s is not Sendable: %s %s.%s",
         &name->namestr, &parm->namesym->namestr, argname, what, reason,
         local ? " What is checked is the types of the references a value holds, not how a variable was declared: a local declared 'mut x = 5' holds a number, which is Sendable." : "");

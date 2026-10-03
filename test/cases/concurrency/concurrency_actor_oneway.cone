@@ -1,0 +1,77 @@
+// One actor sending to another, one way, and many actors made with 'new' in
+// a loop. Main makes a Sink, then 1000 Sources in a loop, each made with its
+// number and a copy of the sink's handle, which its state keeps; each is told
+// to send its number on 3 times. The sink adds up what arrives. Each source
+// dies once main's handle to it has gone and its one message is handled,
+// letting go of its handle to the sink; the sink dies after the last of
+// them, and its finalizer prints the exact sum: 3 * (0 + 1 + ... + 999) =
+// 1498500, from 3000 messages. Main counts the sources' deaths.
+
+mod concurrency_actor_oneway;
+
+import stdio use *;
+import actors;
+
+const sources = 1000u64;
+
+struct Results {
+  pub sourceFinals Atomic[u64];
+}
+
+imm results Results;
+
+fn @initpure init() {
+  results = new Results(Atomic[u64].of(0u64));
+}
+
+actor Sink {
+  sum u64 = 0u64;
+  heard u64 = 0u64;
+
+  pub fn hear(self, n u64) {
+    sum = sum + n;
+    heard = heard + 1u64;
+  }
+
+  fn final(self &uni) {
+    printStr("heard "); printUInt(heard); printStr("\n");
+    printStr("sum "); printUInt(sum); printStr("\n");
+  }
+}
+
+actor Source {
+  id u64;
+  to Sink;
+
+  fn init(self &new, id u64, to Sink) {
+    *self = new Self(id: id, to: to);
+  }
+
+  pub fn send(self, times u64) {
+    mut i = 0u64;
+    while i < times {
+      to.hear(id);
+      i = i + 1u64;
+    }
+  }
+
+  fn final(self &uni) {
+    results.sourceFinals.add(1u64);
+  }
+}
+
+fn main() {
+  initAll();
+  actors.configure(new actors.Options(workers: 4u32));
+  {
+    imm sink = new Sink();
+    mut i = 0u64;
+    while i < sources {
+      imm s = new Source(i, sink);
+      s.send(3u64);
+      i = i + 1u64;
+    }
+  }
+  finalAll();
+  printStr("sources finalized "); printUInt(results.sourceFinals.load()); printStr("\n");
+}

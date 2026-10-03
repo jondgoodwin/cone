@@ -40,6 +40,19 @@ typedef struct BuildDesc {
     int library;            // 'output: library': the root is named, and prefixes every symbol
 } BuildDesc;
 
+// Where a field's or a parameter's type and default value are written, which
+// an 'actor' copies into the declarations it generates (parseactor.c)
+typedef struct DclText {
+    INode *dcl;             // The field or parameter
+    char *type, *typeend;   // Its type as written; NULL where none is
+    char *value, *valueend; // Its default value, after the '='; NULL where none is
+} DclText;
+
+typedef struct DclTexts {
+    DclText *items;
+    uint32_t count, avail;
+} DclTexts;
+
 typedef struct ParseState {
     ProgramNode *pgm;       // Program node
     ModuleNode *mod;        // Current module
@@ -65,7 +78,20 @@ typedef struct ParseState {
     char *bodyendp;         // Just past that body or value
     char *nameendp;         // A variable: just past its name
     int typed;              // A variable: its type is written
+    char *typep;            // A variable: where its type is written, and just past it; NULL where none is
+    char *typeendp;
+
+    // While an actor's body is read, where each field's and parameter's type
+    // and default value are written (parseFieldDclBody, parseFnSig); else NULL
+    DclTexts *dcltexts;
 } ParseState;
+
+// Record where a field's or a parameter's type and value are written, when an
+// actor's body is being read
+void parseDclText(ParseState *parse, INode *dcl, char *type, char *typeend, char *value, char *valueend);
+
+// actor: 'actor Name { ... }', with the lexer on 'actor' (parseactor.c)
+void parseActor(ParseState *parse, uint16_t pubflag);
 
 // When parsing a variable definition, what syntax is allowed?
 enum ParseFlags {
@@ -112,6 +138,10 @@ void parseBadStatic(uint16_t staticflag);
 int parseCAttr(DclInfo *dclinfo, int onmod);
 // Report 'extern' on an inline or generic fn, whose body its user must have
 void parseExternFnCheck(FnDclNode *fn);
+// A module's 'fn' or global, added to the module
+INode *parseFnOrVar(ParseState *parse, uint16_t flags);
+// Skip a declaration's '{ ... }' whole, or resync at the next ';'
+void parseSkipDclBody();
 
 // parsefnflow.c
 INode *parseFn(ParseState *parse, uint16_t mayflags);

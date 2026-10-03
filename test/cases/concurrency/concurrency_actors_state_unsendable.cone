@@ -7,6 +7,12 @@
 // Keeper, the handle, owns that Mailbox and nothing of the state, so it
 // crosses both ways the state may not: the lines without annotations compile.
 // (concurrency_actors_rcstate runs such an actor.)
+//
+// The actor is written out by hand, in the shape an 'actor' declaration
+// generates (compiler/c/parser/parseactor.c), because a declared actor's state
+// has a name no source can spell: this drives the actors package's own
+// machinery directly. The dispatch function is handed each message where it
+// lies in its node, and moves each argument out of it.
 
 mod concurrency_actors_state_unsendable;
 
@@ -16,29 +22,30 @@ import actors;
 
 struct Log {pub n u64;}
 
-enum Keeper_msg {
+enum Keeper_msg is Sendable {
   struct Note {pub n u64;}
 }
 
 struct Keeper_state {
   log Rc[mut, Log];
 
-  pub fn made() Keeper_state {new Keeper_state(new Rc[mut, Log](0u64));}
+  fn init(self &new) {*self = new Keeper_state(new Rc[mut, Log](0u64));}
 
   fn note(self &mut, n u64) {log.n = log.n + n;}
 }
 
-fn Keeper_dispatch(self &mut Keeper_state, msg Keeper_msg) {
-  match msg {
-    case imm m Keeper_msg.Note {self.note(m.n);}
+fn Keeper_dispatch(self &mut Keeper_state, msg *Keeper_msg) {
+  if &*msg is &Keeper_msg.Note {
+    imm p = msg as *Keeper_msg.Note;
+    self.note(mem.readRaw[u64](&(*p).n as *u64));
   }
 }
 
 struct Keeper {
   mb Arc[opaq, actors.Mailbox[Keeper_msg]];
 
-  pub fn start() Keeper {
-    new Keeper(actors.startActor[Keeper_state, Keeper_msg](Keeper_state.made(), &Keeper_dispatch));
+  fn init(self &new) {
+    *self = new Keeper(mb: actors.startActor[Keeper_state, Keeper_msg](new Keeper_state(), &Keeper_dispatch));
   }
   pub fn note(self &, n u64) {
     actors.send[Keeper_msg](mb, Keeper_msg.Note[n]);
@@ -51,9 +58,9 @@ fn keepHandle(k Keeper) u64 {0u64;}
 fn main() {
   // The state may not cross
   mut tx Sender[Keeper_state];   //~ ErrorNotSendable "Keeper_state.log is Rc[mut, Log], an owner whose permission, mut, is not race-safe"
-  imm t = thread.start(Keeper_state.made(), &keepState);   //~ ErrorNotSendable "start requires A is Sendable, and Keeper_state is not Sendable"
+  imm t = thread.start(new Keeper_state(), &keepState);   //~ ErrorNotSendable "start requires A is Sendable, and Keeper_state is not Sendable"
 
   // Its handle may
   mut htx Sender[Keeper];
-  imm h = thread.start(Keeper.start(), &keepHandle);
+  imm h = thread.start(new Keeper(), &keepHandle);
 }

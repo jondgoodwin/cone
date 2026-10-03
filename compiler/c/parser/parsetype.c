@@ -79,6 +79,7 @@ VarDclNode *parseVarDcl(ParseState *parse, PermNode *defperm, uint16_t flags) {
         errorMsgLex(ErrorNoIdent, "Expected variable name for declaration");
         parse->bodyp = parse->bodyendp = parse->nameendp = NULL;
         parse->typed = 0;
+        parse->typep = parse->typeendp = NULL;
         return newVarDclFull(anonName, VarDclTag, unknownType, perm, NULL);
     }
     varnode = newVarDclNode(lex->val.ident, VarDclTag, perm);
@@ -93,8 +94,10 @@ VarDclNode *parseVarDcl(ParseState *parse, PermNode *defperm, uint16_t flags) {
     char *nameendp = lex->prevend;
 
     // Get value type, if provided
+    char *typep = lex->tokp;
     varnode->vtype = parseType(parse);
     int typed = varnode->vtype != unknownType;
+    char *typeendp = lex->prevend;
 
     // Get initialization value after '=', if provided
     char *bodyp = NULL, *bodyendp = NULL;
@@ -139,6 +142,8 @@ VarDclNode *parseVarDcl(ParseState *parse, PermNode *defperm, uint16_t flags) {
     parse->bodyendp = bodyendp;
     parse->nameendp = nameendp;
     parse->typed = typed;
+    parse->typep = typed ? typep : NULL;
+    parse->typeendp = typed ? typeendp : NULL;
     return varnode;
 }
 
@@ -431,17 +436,24 @@ static FieldDclNode *parseFieldDclBody(ParseState *parse, FieldDclNode *fldnode,
     // Get value type, if provided
     StructNode *svlifestruct = parse->lifestruct;
     parse->lifestruct = lifeowner;
+    char *typep = lex->tokp;
     if (parseIsTagType())
         fldnode->vtype = parseTagType(parse);
     else if ((vtype = parseType(parse)))
         fldnode->vtype = vtype;
     parse->lifestruct = svlifestruct;
+    char *typeendp = lex->prevend;
 
     // Get initialization value after '=', if provided
+    char *valuep = NULL, *valueendp = NULL;
     if (lexIsToken(AssgnToken)) {
         lexNextToken();
+        valuep = lex->tokp;
         fldnode->value = parseAnyExpr(parse);
+        valueendp = lex->prevend;
     }
+    if (parse->dcltexts)
+        parseDclText(parse, (INode*)fldnode, fldnode->vtype != unknownType ? typep : NULL, typeendp, valuep, valueendp);
 
     // A fold clause takes its names from the field's type, so the type is written
     if (parseIsFoldClause()) {
@@ -1244,8 +1256,12 @@ INode *parseFnSig(ParseState *parse, int reftype) {
                 parm = newVarDclNode(anonName, VarDclTag, (INode*)immPerm);
                 parm->vtype = parseType(parse);
             }
-            else
+            else {
                 parm = parseVarDcl(parse, immPerm, parseflags);
+                if (parse->dcltexts)
+                    parseDclText(parse, (INode*)parm, parse->typep, parse->typeendp,
+                        parse->bodyp ? parse->bodyp + 1 : NULL, parse->bodyendp);
+            }
             parm->flowtempflags |= VarInitialized;   // parameter vars always start with a valid value
             // Do special inference if function is a type's method. A '&fn'
             // signature's waits for parseFnSigSettle, since a lone name there

@@ -1242,6 +1242,70 @@ class Testing(unittest.TestCase):
         self.assertTrue((build / "tests" / "doubles" / f"doubles{congo.EXE_EXT}").is_file())
         self.assertFalse((build / "examples" / "broken" / f"broken{congo.EXE_EXT}").exists())
 
+    def test_a_package_exports_an_actor(self):
+        # A library declaring a public actor and a private one: its include file
+        # holds each actor whole, the importer generates their declarations
+        # again, and its instances of the actors package's generics reach the
+        # functions the library's object exports for them
+        pkg = self.root / "pinger"
+        write(pkg / "congo.toml",
+              '[package]\nname = "pinger"\nversion = "0.1.0"\noutput = "library"\n')
+        write(pkg / "src" / "pinger.cone", """
+            mod pinger;
+
+            import stdio use *;
+            import actors;
+
+            pub actor Pinger {
+              count u64;
+
+              pub fn init(self &new, start u64) {
+                *self = new Self(count: start);
+              }
+
+              pub fn ping(self, n u64) {
+                count = count + n;
+              }
+
+              fn final(self &uni) {
+                printStr("pinger "); printUInt(count); printStr("\\n");
+              }
+            }
+
+            actor Hidden {
+              pub fn hello(self, n u64) {
+                printStr("hidden "); printUInt(n); printStr("\\n");
+              }
+            }
+
+            pub fn useHidden() {
+              imm h = new Hidden();
+              h.hello(3u64);
+            }
+            """)
+        write(pkg / "tests" / "useit.cone", """
+            mod useit;
+
+            import pinger;
+            import actors;
+
+            fn main() {
+              initAll();
+              pinger.useHidden();
+              {
+                imm p = new pinger.Pinger(5u64);
+                p.ping(10u64);
+              }
+              finalAll();
+            }
+            """)
+        write(pkg / "tests" / "useit.out", "hidden 3\npinger 15\n")
+        run = self.congo("test", cwd=pkg)
+        self.assertIn("test useit ... ok", run.stdout)
+        include = (pkg / "build" / "debug" / "pinger.cone").read_text()
+        self.assertIn("pub actor Pinger {", include)
+        self.assertIn("actor Hidden {", include)
+
     def test_a_non_ascii_diff_to_a_pipe(self):
         # Congo's stdout here is a pipe, which Python would write in the
         # locale's code page (1252 on Windows) unless told otherwise: a diff

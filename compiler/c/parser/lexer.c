@@ -59,6 +59,9 @@ Lexer *lexNew(char *src, char *url) {
     newlex->prevend = src;
     newlex->prevlinep = src;
     newlex->prevlinenbr = 1;
+    newlex->genat = NULL;
+    newlex->gennames = NULL;
+    newlex->ngennames = 0;
     return newlex;
 }
 
@@ -939,6 +942,20 @@ void lexScanTickedIdent(char *srcp) {
         lex->toktype = IdentToken;
         lex->srcp = namend < eol ? namend + 1 : eol;
         return;
+    }
+
+    // In a source the compiler generated, '`#n`' is the nth name it was given,
+    // one no source can spell (Lexer.gennames)
+    if (lex->gennames && srcbeg[1] == '#') {
+        uint32_t n = 0;
+        for (char *p = srcbeg + 2; p < srcp; ++p)
+            n = n * 10 + (uint32_t)(*p - '0');
+        if (n < lex->ngennames) {
+            lex->val.ident = lex->gennames[n];
+            lex->toktype = IdentToken;
+            lex->srcp = srcp + 1;
+            return;
+        }
     }
 
     // Find identifier token in name table and preserve info about it

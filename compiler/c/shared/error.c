@@ -88,11 +88,33 @@ void errorOutCode(char *tokp, uint32_t linenbr, char *linep, char *url, int code
 // would bury the diagnostic itself under hundreds of identical frames.
 #define ErrorInstTraceMax 4
 
+// A position in a source the compiler generated (Lexer.genat) is reported at
+// the declaration it was generated from, and then the generated line itself
+// is shown, so that what went wrong can still be seen
+static void errorOutGen(Lexer *lexer, char *tokp, char *linep, int code, const char *msg, va_list args) {
+    INode *at = lexer->genat;
+    errorOutCode(at->srcp, at->linenbr, at->linep, at->lexer->url, code, msg, args);
+    fputs("     in the code the compiler generates for it: ", stderr);
+    char *srcp = linep;
+    while (srcp < tokp && (*srcp == ' ' || *srcp == '\t'))
+        ++srcp;
+    while (*srcp && *srcp != '\n')
+        fputc(*srcp++, stderr);
+    fputc('\n', stderr);
+}
+
+static void errorOutNode(INode *node, int code, const char *msg, va_list args) {
+    if (node->lexer && node->lexer->genat)
+        errorOutGen(node->lexer, node->srcp, node->linep, code, msg, args);
+    else
+        errorOutCode(node->srcp, node->linenbr, node->linep, node->lexer->url, code, msg, args);
+}
+
 // One frame of an instantiation trace, without following the chain further
 static void errorMsgFrame(INode *node, int code, const char *msg, ...) {
     va_list argptr;
     va_start(argptr, msg);
-    errorOutCode(node->srcp, node->linenbr, node->linep, node->lexer->url, code, msg, argptr);
+    errorOutNode(node, code, msg, argptr);
     va_end(argptr);
 }
 
@@ -100,7 +122,7 @@ static void errorMsgFrame(INode *node, int code, const char *msg, ...) {
 void errorMsgNode(INode *node, int code, const char *msg, ...) {
     va_list argptr;
     va_start(argptr, msg);
-    errorOutCode(node->srcp, node->linenbr, node->linep, node->lexer->url, code, msg, argptr);
+    errorOutNode(node, code, msg, argptr);
     va_end(argptr);
 
     // Name what instantiated this node, and what instantiated that, outward
@@ -124,7 +146,10 @@ void errorMsgNode(INode *node, int code, const char *msg, ...) {
 void errorMsgLexAfter(int code, const char *msg, ...) {
     va_list argptr;
     va_start(argptr, msg);
-    errorOutCode(lex->prevend, lex->prevlinenbr, lex->prevlinep, lex->url, code, msg, argptr);
+    if (lex->genat)
+        errorOutGen(lex, lex->prevend, lex->prevlinep, code, msg, argptr);
+    else
+        errorOutCode(lex->prevend, lex->prevlinenbr, lex->prevlinep, lex->url, code, msg, argptr);
     va_end(argptr);
 }
 
@@ -132,7 +157,10 @@ void errorMsgLexAfter(int code, const char *msg, ...) {
 void errorMsgLex(int code, const char *msg, ...) {
     va_list argptr;
     va_start(argptr, msg);
-    errorOutCode(lex->tokp, lex->linenbr, lex->linep, lex->url, code, msg, argptr);
+    if (lex->genat)
+        errorOutGen(lex, lex->tokp, lex->linep, code, msg, argptr);
+    else
+        errorOutCode(lex->tokp, lex->linenbr, lex->linep, lex->url, code, msg, argptr);
     va_end(argptr);
 }
 

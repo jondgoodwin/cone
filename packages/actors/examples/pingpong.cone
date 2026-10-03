@@ -8,14 +8,10 @@
 //
 // An argument, the number of workers, overrides the default of one per
 // logical processor: '-- 1' runs everything on one worker.
-//
-// The actor is written by hand in the shape the compiler is to generate for
-// an 'actor' declaration (the reference manual's "Actors" section).
 
 mod pingpong;
 
 import stdio use *;
-import sync use Arc;
 import actors;
 
 extern {
@@ -46,25 +42,18 @@ fn digits(p *u8) u32 {
   n;
 }
 
-// The messages, declared first (the actors package header says why)
-enum Player_msg {
-  struct Meet {pub p Player;}
-  struct Ball {pub n u64;}
-  struct Leave {}
-}
-
-struct Player_state {
+actor Player {
   peer Option[Player];
 
-  pub fn made() Player_state {
-    new Player_state(None[Player][]);
+  fn init(self &new) {
+    *self = new Self(None[Player][]);
   }
 
-  fn meet(self &mut, p Player) {
+  pub fn meet(self, p Player) {
     peer = Some[Player][p];
   }
 
-  fn ball(self &mut, n u64) {
+  pub fn ball(self, n u64) {
     if n + 1u64 < balls {
       match peer {
         case imm p Some {p.value.ball(n + 1u64);}
@@ -79,33 +68,8 @@ struct Player_state {
     }
   }
 
-  fn leave(self &mut) {
+  pub fn leave(self) {
     peer = None[Player][];
-  }
-}
-
-fn Player_dispatch(self &mut Player_state, msg Player_msg) {
-  match msg {
-    case imm m Player_msg.Meet {self.meet(m.p);}
-    case imm m Player_msg.Ball {self.ball(m.n);}
-    case is Player_msg.Leave {self.leave();}
-  }
-}
-
-struct Player {
-  mb Arc[opaq, actors.Mailbox[Player_msg]];
-
-  pub fn start() Player {
-    new Player(actors.startActor[Player_state, Player_msg](Player_state.made(), &Player_dispatch));
-  }
-  pub fn meet(self &, p Player) {
-    actors.send[Player_msg](mb, Player_msg.Meet[p]);
-  }
-  pub fn ball(self &, n u64) {
-    actors.send[Player_msg](mb, Player_msg.Ball[n]);
-  }
-  pub fn leave(self &) {
-    actors.send[Player_msg](mb, Player_msg.Leave[]);
   }
 }
 
@@ -118,8 +82,8 @@ fn main(argc i32, argv **u8) {
   actors.configure(new actors.Options(workers: workers));
   imm t0 = nowNs();
   {
-    imm ping = Player.start();
-    imm pong = Player.start();
+    imm ping = new Player();
+    imm pong = new Player();
     ping.meet(pong);
     pong.meet(ping);
     ping.ball(0u64);
