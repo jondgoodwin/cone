@@ -18,6 +18,10 @@
 //   ...
 //   works.poll(&device, &mut done);                // once a frame: never waits
 //   // or: works.waitFor(&mut device, ticket, &mut done)   (tools and tests)
+//   // or, a frame loop asleep in iocore's poll, woken when the GPU is done:
+//   //   works.submit(&mut device, job, onLoop(&mut lp, iocore.Target.Here[9u64], 7u64));
+//   //   lp.poll(until, &mut io);                    // the answer: Done, c.n the ticket
+//   //   works.poll(&device, &mut done);             // its Completion, the buffers back
 //   imm words = done[0usize].words(back);          // the GPU's results
 //   mut kept = done[0usize].take(out);             // still on the GPU: the next job's input
 //
@@ -31,6 +35,8 @@
 //   Works.make()  works.submit(device, job, to)  works.poll(device, out)    (WORKS)
 //   works.flush(device)  works.waitFor(device, ticket, out)  works.waitAll(device, out)
 //   works.inFlight()
+//   Target.Loop[token, completer]  onLoop(lp, to, token)          (DELIVERY INTO AN IOCORE LOOP)
+//   onLoopIn(lp, to, group, deadline, token)  ERROR_JOB_REFUSED  ERROR_JOB_LOST
 //   Target.Here[token]  Ticket  Completion: c.ticket c.token c.ok c.buffers c.frame
 //     c.submitted c.completed, c.take(slot) c.words(slot) c.count()       (ANSWERS)
 //   Invocation  Words  runTwin(kernel, buffers, x, y, z)                  (THE TWIN)
@@ -42,11 +48,11 @@
 // binding i is parameter i, group 0, each one storage buffer, READ (a
 // read-only slice, '&[]T', or a struct passed by value, which is a small
 // read-only storage buffer: there are no push constants, which WebGPU lacks)
-// or READ_WRITE (a slice it writes, '&mut []T'); at most 8. A buffer holds
+// or READ_WRITE (a slice it writes, '&[]mut T'); at most 8. A buffer holds
 // 32-bit numbers (u32, i32, f32) and structs and fixed arrays of them. Its
 // workgroup's size is read from the SPIR-V. These are the rules of the
 // compute entry points the Cone compiler will have
-// ('fn @compute(64) bake(inv Invocation, parts &[]Part, out &mut []f32)');
+// ('fn @compute(64) bake(inv Invocation, parts &[]Part, out &[]mut f32)');
 // until it has them, kernels come as SPIR-V from elsewhere (the tests'
 // fixtures are Slang, compiled by tools/shaders/; gpuwork itself depends on
 // no shading language).
@@ -84,6 +90,52 @@
 // changes nothing else. A Works belongs to the thread that submits through
 // it, as a CommandEncoder does.
 //
+// DELIVERY INTO AN IOCORE LOOP. 'Target.Loop[token, completer]' (or
+// 'onLoop(lp, to, token)', which makes the completer with
+// 'lp.external(to, IoBuf.empty())'; 'onLoopIn' with a cancel group and a
+// deadline) ties the job to an iocore external operation. The job's
+// commands then signal a fence of their own (gpu's Fence, never reset, so
+// another thread may wait on it), and the Works' watcher, a thread started
+// with its first Loop job, waits on each such fence in the order submitted
+// and ends the operation when it is signalled. Its answer goes into the
+// iocore Loop through the completion port, to the operation's own iocore
+// target (Here, Post, Chan, Once or Status), waking a loop asleep in poll:
+// a frame loop sleeps in iocore's poll and learns of the GPU's work as of
+// any I/O. The answer is Done with the job's ticket number ('c.n'); Failed
+// with ERROR_JOB_REFUSED for a job that did not run, or ERROR_JOB_LOST for
+// one whose fence could not be waited for; and Cancelled for a job whose
+// cancel was asked (lp.cancel, a Request, its group) while it ran. A job on
+// the GPU cannot be stopped, so a cancel never makes the answer come early:
+// it comes when the GPU has finished, saying the cancel was asked. A job
+// whose operation was answered before it was submitted (its group already
+// cancelled, its deadline past) is not run. A deadline that passes while
+// the job runs is iocore's: TimedOut, promptly, and the watcher's later
+// ending dropped.
+//
+// The buffers do not travel in the iocore answer, which is Sendable and
+// I/O-shaped (an IoBuf); a gpu Buffer is the device's thread's. They stay
+// in the Works, and the job's Completion, buffers and all, is in the Works'
+// 'poll' (or 'waitFor', 'waitAll') once the watcher has seen the fence,
+// which it records before it ends the operation: a loop woken by the answer
+// finds the Completion in its next 'poll', every time. The answer is the
+// wake and the ticket; the Completion is the ownership coming back. A Loop
+// job is complete when the GPU has finished it, without waiting for its
+// frame to end, so several may run in one frame (each takes two of the
+// frame's 16 command buffers). The watcher is ended with its Works, after
+// it has seen every fence given it and ended every operation (each fence
+// was submitted, so the wait is the GPU's remaining work), and its thread is
+// joined: a Works with a Loop job in flight ends without hanging, the
+// operation still answered, the buffers dying with it.
+//
+// MEASURED, release, RTX 4060 Laptop and UHD 770 (examples/wake.cone; a
+// scramble of 64 words read back, 1,950 rounds each): from submit to a
+// loop woken in poll, p50 164 to 205 us, p99 330 to 380 us on the RTX;
+// p50 205 to 246 us, p99 440 to 820 us on the UHD (four runs each). A
+// thread blocking on the job's frame itself ('waitFor') is no faster: p50
+// 188 to 238 us and 205 to 246 us. The watcher's hop is within the histogram's resolution (iocore
+// measures an external operation ended on another thread, to a loop asleep
+// in poll, at 5 us p50).
+//
 // THE TWIN. Every kernel can have a CPU version, its twin: a function called
 // once for each Invocation of a dispatch, with the dispatch's buffers as
 // Words (32-bit words, read as u32s, i32s, f32s or one struct). A twin is
@@ -109,7 +161,8 @@
 //
 // Not here yet: the parallel building blocks (count-then-write, prefix sums,
 // compaction), which wait for Cone kernels with workgroup memory; delivery to
-// another thread's iocore loop or to an actor; reusing bind groups across
+// an actor; a Here job that completes without its frame ending (a Loop job
+// does); reusing bind groups across
 // jobs; GPU memory as a region; textures; and whether a read-only input is
 // moved into a job or shared immutably (today every buffer is moved).
 //
@@ -126,6 +179,10 @@ mod gpuwork;
 import libc;
 import collections use List, String;
 import time use Instant;
+import thread;
+import sync use Arc, Sender, Receiver, Channel;
+import iobuf use IoBuf;
+import iocore;
 import gpu use *;
 
 // ---------------------------------------------------------------------------

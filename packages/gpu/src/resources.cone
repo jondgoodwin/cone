@@ -114,6 +114,46 @@ pub struct Buffer {
   }
 }
 
+// ---- Fences ----
+
+// A fence of one submission's ('device.createFence', then
+// 'queue.submitSignalling' or 'queue.signal'), signalled once the GPU has
+// finished it and everything submitted before it. Unlike a frame's fence it
+// is never reset or reused, so a thread other than the device's may wait on
+// it ('waitSignalled'): Vulkan's fence wait asks no synchronization of its fences.
+// It declares Sendable, a promise taken on trust, for the device's handle
+// it holds. Its end waits for it, if it was submitted, and destroys it; it
+// must come before its Device's.
+pub struct Fence is Move, Sendable {
+  device vulkan.Device;
+  fence vulkan.Fence;
+  submitted Bool;
+
+  pub fn isValid(self &) Bool { fence.h != 0u64; }
+
+  // Whether it was submitted ('submitSignalling', 'signal'), and so will
+  // be signalled
+  pub fn isSubmitted(self &) Bool { submitted; }
+
+  // Wait at most 'nanos' nanoseconds (0: not at all) for it to be
+  // signalled: whether it is. False at once for one never submitted, which
+  // nothing will signal.
+  pub fn waitSignalled(self &, nanos u64) Bool {
+    if !submitted { return false; }
+    mut f = fence;
+    vulkan.waitForFences(device, 1u32, &mut f as *vulkan.Fence, vulkan.TRUE, nanos) == vulkan.SUCCESS;
+  }
+
+  fn final(self &uni) {
+    if fence.h == 0u64 { return; }
+    if submitted {
+      mut f = fence;
+      vulkan.waitForFences(device, 1u32, &mut f as *vulkan.Fence, vulkan.TRUE, NO_TIMEOUT);
+    }
+    vulkan.destroyFence(device, fence, nullp());
+  }
+}
+
 // ---- Textures ----
 
 // What 'createTexture' makes. A 2-D texture of several layers
