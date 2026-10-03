@@ -138,6 +138,10 @@ static IntrinsicSpec intrinsicRegistry[] = {
         1, 3, {ShapePtrT, ShapeT, ShapeOrder}, ShapeT, 1, 1, PhaseOperation, 1, ClassInt | ClassBool},
     {"atomicXor", AtomicXorIntrinsic, "atomicXor[T](p *T, value T, order MemOrder) T",
         1, 3, {ShapePtrT, ShapeT, ShapeOrder}, ShapeT, 1, 1, PhaseOperation, 1, ClassInt | ClassBool},
+    {"atomicMin", AtomicMinIntrinsic, "atomicMin[T](p *T, value T, order MemOrder) T",
+        1, 3, {ShapePtrT, ShapeT, ShapeOrder}, ShapeT, 1, 1, PhaseOperation, 1, ClassInt},
+    {"atomicMax", AtomicMaxIntrinsic, "atomicMax[T](p *T, value T, order MemOrder) T",
+        1, 3, {ShapePtrT, ShapeT, ShapeOrder}, ShapeT, 1, 1, PhaseOperation, 1, ClassInt},
     {"atomicCompareSwap", AtomicCompareSwapIntrinsic,
         "atomicCompareSwap[T](p *T, expected T, desired T, success MemOrder, failure MemOrder) T, Bool",
         1, 5, {ShapePtrT, ShapeT, ShapeT, ShapeOrder, ShapeOrder}, ShapeTBool, 1, 1, PhaseOperation, 1,
@@ -182,6 +186,12 @@ static IntrinsicSpec intrinsicRegistry[] = {
         1, 2, {ShapeT, ShapeU32}, ShapeT, 0, 1, PhaseOperation, 1, ClassInt},
     {"shrMasked", ShrMaskedIntrinsic, "shrMasked[T](x T, n u32) T",
         1, 2, {ShapeT, ShapeU32}, ShapeT, 0, 1, PhaseOperation, 1, ClassInt},
+    // A GPU workgroup's barriers, an instruction each there and nothing on the
+    // CPU, which runs one invocation at a time: the empty fallback
+    {"workgroupBarrier", WorkgroupBarrierIntrinsic, "workgroupBarrier()",
+        0, 0, {0}, ShapeVoid, 0, 1, PhaseOperation, 1},
+    {"storageBarrier", StorageBarrierIntrinsic, "storageBarrier()",
+        0, 0, {0}, ShapeVoid, 0, 1, PhaseOperation, 1},
 };
 
 #define IntrinsicCount (sizeof(intrinsicRegistry) / sizeof(IntrinsicSpec))

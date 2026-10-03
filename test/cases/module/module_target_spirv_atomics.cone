@@ -1,0 +1,106 @@
+// What a GPU's invocations share, on SPIR-V's Vulkan form. A buffer of
+// Atomic[u32] or Atomic[i32] is a buffer of numbers each changed only by
+// core's atomic operations, the same methods as on the CPU; a '@workgroup'
+// global is one copy for each workgroup, in the Workgroup storage class
+// (LLVM's address space 3), with no initial value; workgroupBarrier() and
+// storageBarrier() are OpControlBarrier. Each atomic operation's scope is its
+// memory's (the device's for a buffer, the workgroup's for workgroup memory),
+// sequential consistency is acquire-release, relaxed stays relaxed, and a
+// compareSwap is LLVM's SPIR-V intrinsic for one: its 'cmpxchg' crashes the
+// backend. An atomic at a constant place in workgroup memory, the global
+// itself or its first element, is reached by an address computation that is
+// an instruction: folded into the global, it crashed the backend too.
+//
+// The kernels are the proof's: a stream compaction, each kept element
+// claiming its slot with a relaxed add; a workgroup's inclusive prefix sum
+// (Hillis-Steele) through workgroup memory and barriers; a histogram counted
+// in the workgroup's own bins, then added into the buffer's; and every
+// operation, on a buffer, in a buffer's struct and in workgroup memory.
+
+mod module_target_spirv_atomics;
+
+fn @compute(64) compact(inv Invocation, input &[]u32, count &[]mut Atomic[u32], out &[]mut u32) {
+  imm i = usize.from(inv.globalId[0]);
+  if i < input.len {
+    imm v = input[i];
+    if v % 3u32 == 0u32 {
+      imm slot = count[0usize].addOrdered(1u32, MemOrder.Relaxed[]);
+      out[usize.from(slot)] = v;
+    }
+  }
+}
+
+mut @workgroup scan Array[u32, 256];
+
+fn @compute(256) prefix(inv Invocation, input &[]u32, out &[]mut u32) {
+  imm g = usize.from(inv.globalId[0]);
+  imm l = usize.from(inv.localIndex);
+  scan[l] = if g < input.len {input[g];} else {0u32;};
+  workgroupBarrier();
+  mut step = 1usize;
+  while step < 256usize {
+    imm add = if l >= step {scan[l - step];} else {0u32;};
+    workgroupBarrier();
+    scan[l] = scan[l] + add;
+    workgroupBarrier();
+    step = step * 2usize;
+  }
+  if g < out.len {
+    out[g] = scan[l];
+  }
+}
+
+mut @workgroup bins Array[Atomic[u32], 64];
+
+fn @compute(256) histogram(inv Invocation, input &[]u32, hist &[]mut Atomic[u32]) {
+  imm l = usize.from(inv.localIndex);
+  if l < 64usize {
+    bins[l].store(0u32);
+  }
+  workgroupBarrier();
+  imm g = usize.from(inv.globalId[0]);
+  if g < input.len {
+    bins[usize.from(input[g] % 64u32)].add(1u32);
+  }
+  workgroupBarrier();
+  if l < 64usize {
+    hist[l].add(bins[l].load());
+  }
+}
+
+struct Tally {
+  pub hits Atomic[u32];
+  pub low Atomic[i32];
+}
+
+mut @workgroup cell Atomic[i32];
+
+fn @compute(64) every(inv Invocation, a &[]mut Atomic[u32], t &[]mut Tally, out &[]mut u32) {
+  imm i = usize.from(inv.globalId[0]);
+  if inv.localIndex == 0u32 { cell.store(0i32); }
+  workgroupBarrier();
+  imm v = inv.globalId[0];
+  a[0usize].add(v);
+  a[1usize].sub(v);
+  a[2usize].min(v);
+  a[3usize].max(v);
+  a[4usize].bitAnd(~(1u32 << (v % 32u32)));
+  a[5usize].bitOr(1u32 << (v % 32u32));
+  a[6usize].bitXor(v);
+  a[7usize].swap(v);
+  t[0usize].hits.add(1u32);
+  t[0usize].low.min(i32.from(v) - 32i32);
+  t[1usize].low.max(i32.from(v) - 32i32);
+  cell.add(1i32);
+  cell.minOrdered(-5i32, MemOrder.Acquire[]);
+  mut seen = 0u32;
+  mut stored = false;
+  seen, stored = a[8usize].compareSwap(v, v + 1u32);
+  a[9usize].storeOrdered(a[10usize].loadOrdered(MemOrder.Relaxed[]), MemOrder.Release[]);
+  storageBarrier();
+  workgroupBarrier();
+  if i < out.len {
+    out[i] = if stored {seen;} else {9999u32;};
+  }
+  if inv.localIndex == 0u32 { t[2usize].low.store(cell.load()); }
+}

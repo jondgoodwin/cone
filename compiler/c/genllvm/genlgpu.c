@@ -640,7 +640,7 @@ static LLVMValueRef genlGpuAddIndex(GenState *gen, LLVMValueRef a, LLVMValueRef 
 
 // The source node an address computation was made for, recorded as it was
 // generated (genlGpuSite), or NULL
-static INode *genlGpuSiteOf(GenState *gen, LLVMValueRef inst) {
+INode *genlGpuSiteOf(GenState *gen, LLVMValueRef inst) {
     unsigned kind = LLVMGetMDKindIDInContext(gen->context, "cone.site", 9);
     LLVMValueRef md = LLVMGetMetadata(inst, kind);
     if (md == NULL || gen->gpusites == NULL)
@@ -1028,6 +1028,7 @@ void genlGpuOut(GenState *gen, char *objpath, char *asmpath) {
     uint32_t *words = (uint32_t *)malloc((nwords ? nwords : 1) * sizeof(uint32_t));
     memcpy(words, LLVMGetBufferStart(buf), nwords * 4);
     LLVMDisposeMemoryBuffer(buf);
+    nwords = genlGpuSyncPatch(&words, nwords);
     nwords = genlGpuPatch(gen, &words, nwords);
     FILE *file = fopen(objpath, "wb");
     if (file == NULL || fwrite(words, 4, nwords, file) != nwords)

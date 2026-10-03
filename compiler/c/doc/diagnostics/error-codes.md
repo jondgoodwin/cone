@@ -232,6 +232,19 @@ value. `ErrorThreadLocalFinal` is one whose type needs finalizing, since
 nothing yet finalizes a thread's copy as its thread ends. An initial value that
 is not a literal wears `ErrorNotLit`, as on any global.
 
+A `@workgroup` global takes four codes on the same plan. `ErrorWorkgroupPlace`
+is `@workgroup` anywhere `@threadlocal` would be misplaced, and also beside
+`@threadlocal`, since a global has one storage; `ErrorWorkgroupImm` is one on
+an `imm` global, which nothing would ever write; `ErrorWorkgroupInit` is one
+with an initial value, zero among them, since a workgroup's copy starts
+undefined; `ErrorWorkgroupData` is what it holds, held to a kernel's buffer's
+rule (32-bit numbers, their atomics, structs and fixed arrays of them) or a
+type that needs finalizing. `ErrorGpuAtomicPlace` is an atomic operation in a
+kernel on memory no other invocation reaches, a local or a global not
+`@workgroup`: found only once everything is inlined into the kernel, so it is
+reported by generation, at mem's call where the program wrote one, else at
+the kernel.
+
 The built-in marker `AtomicValue` takes three codes, again one per remedy.
 `ErrorAtomicValueShape` is the marker on something that is not a struct of
 exactly one field — a trait, an enum, a variant, a struct of none or several —

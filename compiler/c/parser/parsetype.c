@@ -53,26 +53,47 @@ INode *parseDclPerm(PermNode *defperm) {
     return perm;
 }
 
-// '@threadlocal' is written after a module global's permission: every thread
-// has its own copy of the global, each starting from its initial value. It is
-// read wherever a declaration's permission is, so that written on a local, a
-// static, a parameter, a field or a module trait's global it is refused by its
-// own diagnostic, and the declaration after it still parses.
-int parseThreadLocalAttr(int allowed) {
-    if (!lexIsToken(ThreadLocalToken))
+// '@threadlocal' and '@workgroup' are written after a module global's
+// permission. With '@threadlocal' every thread has its own copy of the global,
+// each starting from its initial value; with '@workgroup', on a GPU, every
+// workgroup has its own, which its invocations share. Each is read wherever a
+// declaration's permission is, so that written on a local, a static, a
+// parameter, a field or a module trait's global it is refused by its own
+// diagnostic, and the declaration after it still parses. A global has one
+// kind of storage, so the two together are refused.
+uint16_t parseStorageAttr(int allowed) {
+    uint16_t facts = 0;
+    while (lexIsToken(ThreadLocalToken) || lexIsToken(WorkgroupToken)) {
+        if (lexIsToken(ThreadLocalToken)) {
+            if (!allowed)
+                errorMsgLex(ErrorThreadLocalPlace,
+                    "Only a global declared at module scope may be '@threadlocal', which gives it one copy per thread: 'mut @threadlocal name'.");
+            else if (facts & DclWorkgroup)
+                errorMsgLex(ErrorWorkgroupPlace,
+                    "A global is '@threadlocal' or '@workgroup', not both: one is a copy for each thread, the other a copy for each workgroup of a GPU's invocations.");
+            facts |= DclThreadLocal;
+        }
+        else {
+            if (!allowed)
+                errorMsgLex(ErrorWorkgroupPlace,
+                    "Only a global declared at module scope may be '@workgroup', which gives it one copy for each workgroup of a GPU's invocations: 'mut @workgroup name'.");
+            else if (facts & DclThreadLocal)
+                errorMsgLex(ErrorWorkgroupPlace,
+                    "A global is '@threadlocal' or '@workgroup', not both: one is a copy for each thread, the other a copy for each workgroup of a GPU's invocations.");
+            facts |= DclWorkgroup;
+        }
+        lexNextToken();
+    }
+    if (!allowed || facts == (DclThreadLocal | DclWorkgroup))
         return 0;
-    if (!allowed)
-        errorMsgLex(ErrorThreadLocalPlace,
-            "Only a global declared at module scope may be '@threadlocal', which gives it one copy per thread: 'mut @threadlocal name'.");
-    lexNextToken();
-    return allowed;
+    return facts;
 }
 
 // Parse a variable declaration
 VarDclNode *parseVarDcl(ParseState *parse, PermNode *defperm, uint16_t flags) {
     VarDclNode *varnode;
     INode *perm = parseDclPerm(defperm);
-    int threadlocal = parseThreadLocalAttr(flags & ParseMayThreadLocal);
+    uint16_t storage = parseStorageAttr(flags & ParseMayThreadLocal);
 
     // Obtain variable's name
     if (!lexIsToken(IdentToken)) {
@@ -84,12 +105,19 @@ VarDclNode *parseVarDcl(ParseState *parse, PermNode *defperm, uint16_t flags) {
     }
     varnode = newVarDclNode(lex->val.ident, VarDclTag, perm);
     lexNextToken();
-    if (threadlocal) {
+    if (storage & DclThreadLocal) {
         varnode->dclinfo.facts |= DclThreadLocal;
         // A copy per thread of a value no thread can change is one copy
         if (itypeGetTypeDcl(perm) == (INode*)immPerm)
             errorMsgNode((INode*)varnode, ErrorThreadLocalImm,
                 "A thread-local global is a copy per thread so that each thread may change its own. An 'imm' global never changes, so every copy would be the same: declare it 'mut', or drop '@threadlocal'.");
+    }
+    if (storage & DclWorkgroup) {
+        varnode->dclinfo.facts |= DclWorkgroup;
+        // Nothing writes a value into a workgroup's copy but its invocations
+        if (itypeGetTypeDcl(perm) == (INode*)immPerm)
+            errorMsgNode((INode*)varnode, ErrorWorkgroupImm,
+                "A '@workgroup' global is a copy for each workgroup, there for its invocations to write and read: declare it 'mut'. An 'imm' one would never hold a value.");
     }
     char *nameendp = lex->prevend;
 
@@ -688,8 +716,8 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
             dclInfoInit(&ignored);
             parseCAttr(&ignored, 0);
         }
-        else if (lex->toktype == ThreadLocalToken)
-            parseThreadLocalAttr(0);
+        else if (lex->toktype == ThreadLocalToken || lex->toktype == WorkgroupToken)
+            parseStorageAttr(0);
         else
             break;
     }
@@ -1006,7 +1034,7 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
             }
             else if (lexIsToken(PermToken) || lexIsToken(IdentToken)) {
                 INode *perm = parseDclPerm(mutPerm);
-                parseThreadLocalAttr(0);
+                parseStorageAttr(0);
                 if (!lexIsToken(IdentToken)) {
                     errorMsgLex(ErrorNoIdent, "Expected field name for declaration");
                     parseSkipToNextStmt();

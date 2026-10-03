@@ -1,0 +1,54 @@
+// '@workgroup' where the parser refuses it. Only a module's global may be a
+// GPU workgroup's: after its permission, 'mut', with no initial value, since
+// each workgroup's copy starts undefined and its invocations write it. Like
+// '@threadlocal', each misplaced one is reported at the attribute and
+// dropped, so the declaration it was written on still parses; the one before
+// the permission is last, reported with its whole statement skipped.
+
+mod module_workgroup_parse;
+
+// A local, and a function's static, belong to one call or one function
+fn locals() {
+  mut @workgroup x = 1u32;   //~ ErrorWorkgroupPlace
+  static mut @workgroup n = 0u32;   //~ ErrorWorkgroupPlace
+}
+
+// A parameter
+fn parms(mut @workgroup p u32) {   //~ ErrorWorkgroupPlace
+}
+
+// A field, and a type's static
+struct Holder {
+  mut @workgroup f u32;   //~ ErrorWorkgroupPlace
+  static mut @workgroup s u32 = 0u32;   //~ ErrorWorkgroupPlace
+}
+
+// A function and a type have no storage to copy
+fn @workgroup named() {   //~ ErrorWorkgroupPlace
+}
+
+struct @workgroup Empty {   //~ ErrorWorkgroupPlace
+}
+
+// A module trait's global is a requirement, which a conforming module meets
+mod trait Needs {
+  mut @workgroup g u32;   //~ ErrorWorkgroupPlace
+}
+
+// A copy for each thread and a copy for each workgroup are two storages
+mut @threadlocal @workgroup both u32 = 0u32;   //~ ErrorWorkgroupPlace
+
+// 'imm': nothing would ever write a workgroup's copy
+imm @workgroup fixed u32;   //~ ErrorWorkgroupImm
+
+// An initial value: nothing writes one into a workgroup's copy, not even zero
+mut @workgroup zeroed u32 = 0u32;   //~ ErrorWorkgroupInit
+
+// None: what the invocations write first, before a barrier, is what it holds
+mut @workgroup tile Array[f32, 256];
+
+// Before the permission rather than after it
+@workgroup mut early u32;   //~ ErrorWorkgroupPlace
+
+fn after() {
+}

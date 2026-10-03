@@ -1,0 +1,69 @@
+// On the CPU a kernel's atomics are core's atomic operations, a '@workgroup'
+// global is an ordinary global, one copy, and a barrier is nothing: the loop
+// that runs a kernel on the CPU runs one invocation at a time, workgroup by
+// workgroup. So a kernel whose invocations, after a barrier, read only what
+// the invocations before them wrote runs the same on both: here a stream
+// compaction claiming slots with a relaxed add, and a workgroup's sum
+// gathered in workgroup memory and written out by its last invocation.
+
+mod module_compute_atomic_cpu;
+
+import stdio use *;
+
+fn @compute(4) compact(inv Invocation, input &[]u32, count &[]mut Atomic[u32], out &[]mut u32) {
+  imm i = usize.from(inv.globalId[0]);
+  if i < input.len {
+    imm v = input[i];
+    if v % 3u32 == 0u32 {
+      imm slot = count[0usize].addOrdered(1u32, MemOrder.Relaxed[]);
+      out[usize.from(slot)] = v;
+    }
+  }
+}
+
+mut @workgroup total Atomic[u32];
+
+fn @compute(4) sums(inv Invocation, input &[]u32, out &[]mut u32) {
+  imm l = inv.localIndex;
+  if l == 0u32 { total.store(0u32); }
+  workgroupBarrier();
+  total.add(input[usize.from(inv.globalId[0])]);
+  workgroupBarrier();
+  if l == 3u32 { out[usize.from(inv.groupId[0])] = total.load(); }
+}
+
+fn main() {
+  mut input Array[u32, 12] = [3u32, 4u32, 6u32, 7u32, 9u32, 10u32, 11u32, 12u32, 13u32, 15u32, 16u32, 18u32];
+  mut count Array[Atomic[u32], 1] = [Atomic[u32].of(0u32)];
+  mut kept Array[u32, 12] = [0u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32];
+  mut group Array[u32, 3] = [0u32, 0u32, 0u32];
+  // A dispatch of 3 workgroups of 4, each kernel in turn
+  mut g = 0u32;
+  while g < 3u32 {
+    mut l = 0u32;
+    while l < 4u32 {
+      imm inv = new Invocation([g * 4u32 + l, 0u32, 0u32], [l, 0u32, 0u32], [g, 0u32, 0u32], l, [3u32, 1u32, 1u32]);
+      compact(inv, &input, &mut count, &mut kept);
+      sums(inv, &input, &mut group);
+      l = l + 1u32;
+    }
+    g = g + 1u32;
+  }
+  imm n = count[0usize].load();
+  printStr("kept ");
+  printUInt(u64.from(n));
+  printStr(":");
+  mut i = 0usize;
+  while i < usize.from(n) {
+    printStr(" ");
+    printUInt(u64.from(kept[i]));
+    i = i + 1usize;
+  }
+  printStr("\nsums: ");
+  printUInt(u64.from(group[0usize]));
+  printStr(" ");
+  printUInt(u64.from(group[1usize]));
+  printStr(" ");
+  printUInt(u64.from(group[2usize]));
+  printStr("\n");
+}
