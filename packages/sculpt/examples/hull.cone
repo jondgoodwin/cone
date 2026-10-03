@@ -1,0 +1,62 @@
+// hull: a boat's hull lofted through its stations. Five cross-sections (each
+// an open curve from the port gunwale down to the keel and up to the
+// starboard one, seven points, so the loft joins keel to keel and chine to
+// chine) stand along z from the transom to the bow, where the section
+// narrows to a stem. The loft runs a smooth spline through them, three rings
+// between each pair; the hull is given a skin 0.03 thick and subdivided twice.
+//
+//   congo run packages/sculpt/examples/hull.cone
+//
+// It writes hull-cage.obj and hull-l2.obj in the current folder,
+// triangulated with smooth normals, and prints each one's counts.
+
+mod hull;
+
+import stdio use *;
+import collections use *;
+import geomath use *;
+import mesh use *;
+import sculpt use *;
+
+fn write(pm &PolyMesh, name &[]u8) Bool {
+  imm tri = pm.triangulate(true);
+  printStr(name); print <- ": "; print <- pm.vertexCount(); print <- " vertices, "; print <- pm.faceCount();
+  print <- " faces, "; print <- tri.triangleCount(); print <- " triangles\n";
+  writeObj(&tri, name);
+}
+
+// A station: half-breadth b at the gunwale, keel depth d, gunwale height h
+fn section(b f32, d f32, h f32) Profile {
+  imm pts Array[Vec2, 7] = [new Vec2(-b, h), new Vec2(-0.92 * b, 0.45 * h), new Vec2(-0.6 * b, 0.1 * h),
+    new Vec2(0., -d), new Vec2(0.6 * b, 0.1 * h), new Vec2(0.92 * b, 0.45 * h), new Vec2(b, h)];
+  Profile.fromPoints(&pts, false);
+}
+
+// Profile x across the beam (+x), y up (+y), the stations advancing along +z
+fn station(z f32) Frame {
+  new Frame(new Vec3(0., 0., z), new Vec3(0., 0., 1.), new Vec3(1., 0., 0.), new Vec3(0., 1., 0.));
+}
+
+fn main() i32 {
+  mut sections = List[Profile].empty();
+  mut frames = List[Frame].empty();
+  sections.push(section(0.9, 0.25, 0.7));
+  frames.push(station(0.));
+  sections.push(section(1., 0.35, 0.75));
+  frames.push(station(1.5));
+  sections.push(section(0.95, 0.38, 0.8));
+  frames.push(station(3.));
+  sections.push(section(0.6, 0.32, 0.9));
+  frames.push(station(4.5));
+  sections.push(section(0.03, 0.2, 1.05));
+  frames.push(station(5.6));
+  imm skin = loft(&sections, &frames, 0u32, 3u32, true, false);
+  imm cage = solidify(&skin, 0.03, -1., true, true);
+  imm levels = subdivisionLevels(&cage, 2u32);
+  mut ok = write(&cage, "hull-cage.obj");
+  ok = ok and write(levels[2usize], "hull-l2.obj");
+  if ok {0;} else {
+    print <- "Could not write a file\n";
+    1;
+  };
+}
