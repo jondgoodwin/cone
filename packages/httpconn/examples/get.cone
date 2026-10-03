@@ -1,0 +1,108 @@
+// A GET from a real server over plain HTTP (no TLS yet: the Layer seam
+// waits for a binding), its host looked up on iocore's DNS lane. Run it
+// with
+//
+//   congo run packages/httpconn/examples/get.cone -- example.com /
+//
+// It needs the network, so it is an example and never a test: 'congo test'
+// builds it and does not run it. Prints the status, the header fields, the
+// body's length and its first 400 bytes, and the request's timing; or, when
+// it fails, the stage and why.
+
+mod get;
+
+import stdio use *;
+import process;
+import collections use List, String;
+import time use Instant, Duration;
+import iobuf use *;
+import iocore use Loop, forever;
+import http use *;
+import httpconn use *;
+
+fn main() i32 {
+  imm args = process.args();
+  if args.len() < 2usize {
+    printStr("usage: get <host> [path] [port]\n");
+    return 2i32;
+  }
+  imm host = args[1usize].view();
+  mut path &[]u8 = "/";
+  if args.len() > 2usize {path = args[2usize].view();}
+  mut port = 80u16;
+  if args.len() > 3usize {
+    match collections.parseUInt(args[3usize].view()) {
+      case imm p Some {port = u16.from(p.value);}
+      case is None[u64] {}
+    }
+  }
+  imm pool = Pool.make();
+  mut lp = Loop.mustMake();
+  mut drv = Driver.make(Config.make(), pool);
+  imm conn = drv.connect(&mut lp, host, port, Sink.Here[1u64]);
+  mut req = RequestHead.get(path, host);
+  req.headers.add("User-Agent", "cone-httpconn-example");
+  req.headers.add("Accept", "*/*");
+  drv.requestBy(&mut lp, conn, req, BodyLength.empty(), Sink.Here[2u64], Instant.now() + Duration.fromSeconds(20i64));
+  mut events = List[Event].empty();
+  mut body = String.empty();
+  mut total = 0u64;
+  mut going = true;
+  mut status = 1i32;
+  while going {
+    drv.poll(&mut lp, forever(), &mut events);
+    mut k = 0usize;
+    while k < events.len() {
+      imm e = &mut events[k];
+      k = k + 1usize;
+      if e.kind == EventKind.Connected[] {
+        printStr("connected to ");
+        printStr(e.peer.text().view());
+        printStr("\n");
+      } elif e.kind == EventKind.Response[] {
+        printStr("HTTP/1.1 ");
+        printUInt(u64.from(e.response.status));
+        printStr(" ");
+        printStr(reasonPhrase(e.response.status));
+        printStr("\n");
+        mut f = 0usize;
+        while f < e.response.headers.len() {
+          printStr(e.response.headers.nameAt(f));
+          printStr(": ");
+          printStr(e.response.headers.valueAt(f));
+          printStr("\n");
+          f = f + 1usize;
+        }
+      } elif e.kind == EventKind.Data[] {
+        total = total + u64.from(e.buf.len());
+        if body.len() < 400usize {
+          imm v = e.buf.view();
+          imm want = 400usize - body.len();
+          body.append(&v[0usize .. if v.len < want {v.len;} else {want;}]);
+        }
+        drv.release(e.req, e.buf.len());
+      } elif e.kind == EventKind.Done[] {
+        printStr("\n");
+        printStr(body.view());
+        printStr("\n... ");
+        printUInt(total);
+        printStr(" bytes of body; first byte after ");
+        printUInt(u64.from((e.timing.firstByte - e.timing.submitted).millis()));
+        printStr(" ms, done after ");
+        printUInt(u64.from((e.timing.ended - e.timing.submitted).millis()));
+        printStr(" ms\n");
+        status = 0i32;
+        going = false;
+      } elif e.isTerminal() {
+        printStr(eventName(e.kind));
+        printStr(": ");
+        printStr(e.failure.message().view());
+        printStr("\n");
+        going = false;
+      }
+    }
+    events.clear();
+  }
+  drv.abortAll(&mut lp);
+  status;
+}

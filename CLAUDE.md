@@ -273,7 +273,9 @@ Visual Studio projects stay at the root.
   high-resolution waitable timer whose expiry the kernel queues on the port
   (`NtAssociateWaitCompletionPacket`); `cancel` idempotent, `submitBy` a
   deadline, `after` a timer answered like I/O; handles an id and a
-  generation in the loop's own table; its death cancels, drains and closes;
+  generation in the loop's own table (a socket also half-closed by
+  `shutdown`, reset by `reset`, its peer by `peerAddr`); its death cancels,
+  drains and closes;
   Windows only, over kernel32, ntdll and Winsock (`AcceptEx` and `ConnectEx`
   through `WSAIoctl`'s function pointers), all Cone; its tests include the
   two-thread echo of 100,000 messages beside a file read through one poll,

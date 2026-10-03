@@ -1,0 +1,165 @@
+// A connection's two directions, and its ends, over 127.0.0.1 on one Loop:
+//
+// 1. peerAddr: each end's peer is the other's local address.
+// 2. shutdown, a half-close: one end sends, then shuts its sending side;
+//    the other receives the bytes, then the end of the stream (Done(0)),
+//    and can still send back, which the first still receives. A send after
+//    the shutdown fails.
+// 3. reset: the peer's pending receive fails (the connection reset), not
+//    Done(0), with ERROR_NETNAME_DELETED (64), the NTSTATUS of a reset as
+//    a Windows error number.
+// 4. close with received bytes left unread: Windows resets the connection
+//    rather than finishing it, so the peer's receive fails the same way.
+// 5. close with nothing unread: the peer sees the end of the stream.
+
+mod halfclose;
+
+import testing use *;
+import collections use List;
+import time use Instant, Duration;
+import iobuf use *;
+import iocore use *;
+import diag;
+
+// Poll until the answer with token tok comes; its status, count and code
+// (status 99 when none came in time)
+struct Got {
+  pub status u32;
+  pub n usize;
+  pub code u32;
+  pub handle Handle;
+}
+
+fn await1(lp &mut Loop, tok u64) Got {
+  mut out = List[Completion].empty();
+  imm until = Instant.now() + Duration.fromSeconds(3i64);
+  while Instant.now() < until {
+    lp.poll(until, &mut out);
+    mut k = 0usize;
+    while k < out.len() {
+      imm c = &mut out[k];
+      if c.token == tok {
+        imm g = new Got(c.status, c.n, c.code, c.handle);
+        out.clear();
+        return g;
+      }
+      k = k + 1usize;
+    }
+    out.clear();
+  }
+  new Got(99u32, 0usize, 0u32, Handle.none());
+}
+
+// A connected pair: the client's end and the accepted one
+fn pair(lp &mut Loop, l Handle, port u16) Handle, Handle {
+  lp.submit(Op.Accept[l], Target.Here[1u64]);
+  lp.submit(Op.Connect[SocketAddr.localhost(port)], Target.Here[2u64]);
+  mut a = Handle.none();
+  mut b = Handle.none();
+  mut out = List[Completion].empty();
+  imm until = Instant.now() + Duration.fromSeconds(3i64);
+  while (a.isNone() or b.isNone()) and Instant.now() < until {
+    lp.poll(until, &mut out);
+    mut k = 0usize;
+    while k < out.len() {
+      imm c = &mut out[k];
+      if c.token == 1u64 {a = c.handle;}
+      if c.token == 2u64 {b = c.handle;}
+      k = k + 1usize;
+    }
+    out.clear();
+  }
+  b, a;
+}
+
+fn send(lp &mut Loop, pool &Pool, h Handle, text &[]u8, tok u64) Got {
+  mut b = pool.mustTake(64usize);
+  b.append(text);
+  lp.submit(Op.Send[h, b], Target.Here[tok]);
+  await1(lp, tok);
+}
+
+fn recv(lp &mut Loop, pool &Pool, h Handle, tok u64) Got {
+  lp.submit(Op.Recv[h, pool.mustTake(4096usize)], Target.Here[tok]);
+  await1(lp, tok);
+}
+
+fn main() i32 {
+  imm pool = Pool.make();
+  {
+    mut lp = Loop.mustMake();
+    imm l = lp.mustListen(SocketAddr.localhost(0u16));
+    mut port = 0u16;
+    match lp.localAddr(l) {
+      case imm a Ok {port = a.value.port();}
+      case imm e Error {}
+    }
+
+    // 1. peerAddr
+    mut c Handle;
+    mut s Handle;
+    c, s = pair(&mut lp, l, port);
+    match lp.peerAddr(c) {
+      case imm a Ok {expectUInt(u64.from(a.value.port()), u64.from(port), "1: the client's peer is the listener's port");}
+      case imm e Error {expect(false, "1: the client's peer");}
+    }
+    mut cport = 0u16;
+    match lp.localAddr(c) {
+      case imm a Ok {cport = a.value.port();}
+      case imm e Error {}
+    }
+    match lp.peerAddr(s) {
+      case imm a Ok {expectUInt(u64.from(a.value.port()), u64.from(cport), "1: the server's peer is the client's port");}
+      case imm e Error {expect(false, "1: the server's peer");}
+    }
+    expectUInt(u64.from(lp.shutdown(l)), u64.from(errorInvalidHandle), "1: a listener is no connected socket to shut");
+
+    // 2. A half-close
+    expect(send(&mut lp, &pool, c, "x", 10u64).status == diag.outcomeDone, "2: the client sends");
+    expectUInt(u64.from(lp.shutdown(c)), 0u64, "2: ...then shuts its sending side");
+    imm g1 = recv(&mut lp, &pool, s, 11u64);
+    expect(g1.status == diag.outcomeDone and g1.n == 1usize, "2: the server receives the byte");
+    imm g2 = recv(&mut lp, &pool, s, 12u64);
+    expect(g2.status == diag.outcomeDone and g2.n == 0usize, "2: ...then the end of the stream");
+    expect(send(&mut lp, &pool, s, "yz", 13u64).status == diag.outcomeDone, "2: the server still sends");
+    imm g3 = recv(&mut lp, &pool, c, 14u64);
+    expect(g3.status == diag.outcomeDone and g3.n == 2usize, "2: ...and the client still receives");
+    expect(send(&mut lp, &pool, c, "late", 15u64).status == diag.outcomeFailed, "2: a send after the shutdown fails");
+    lp.close(c);
+    lp.close(s);
+
+    // 3. A reset
+    c, s = pair(&mut lp, l, port);
+    lp.submit(Op.Recv[c, pool.mustTake(4096usize)], Target.Here[20u64]);
+    expect(lp.reset(s), "3: reset");
+    expect(not lp.isOpen(s), "3: ...names nothing from now on");
+    expect(not lp.reset(s), "3: ...and a second reset says false");
+    imm g4 = await1(&mut lp, 20u64);
+    expect(g4.status == diag.outcomeFailed, "3: the peer's receive fails");
+    expectUInt(u64.from(g4.code), u64.from(errorNetnameDeleted), "3: ...ERROR_NETNAME_DELETED, as Windows says a reset");
+    lp.close(c);
+
+    // 4. close with unread bytes: a reset
+    c, s = pair(&mut lp, l, port);
+    send(&mut lp, &pool, c, "unread", 30u64);
+    // Let the bytes arrive at the server's end before it closes
+    lp.after(Instant.now() + Duration.fromMillis(20i64), Target.Here[31u64]);
+    await1(&mut lp, 31u64);
+    lp.submit(Op.Recv[c, pool.mustTake(4096usize)], Target.Here[32u64]);
+    lp.close(s);
+    imm g5 = await1(&mut lp, 32u64);
+    expect(g5.status == diag.outcomeFailed, "4: close with bytes unread: the peer's receive fails (a reset)");
+    expectUInt(u64.from(g5.code), u64.from(g4.code), "4: ...as a reset does");
+    lp.close(c);
+
+    // 5. close with nothing unread: the end of the stream
+    c, s = pair(&mut lp, l, port);
+    lp.submit(Op.Recv[c, pool.mustTake(4096usize)], Target.Here[40u64]);
+    lp.close(s);
+    imm g6 = await1(&mut lp, 40u64);
+    expect(g6.status == diag.outcomeDone and g6.n == 0usize, "5: close with nothing unread: the end of the stream");
+    lp.close(c);
+  }
+  expectUInt(pool.stats().lent, 0u64, "every buffer back in the pool");
+  done();
+}

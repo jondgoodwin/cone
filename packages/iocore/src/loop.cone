@@ -289,6 +289,19 @@ pub struct Loop {
     Ok[SocketAddr, IoError][a];
   }
 
+  // The address of a connected socket's peer
+  pub fn peerAddr(self &, h Handle) Result[SocketAddr, IoError] {
+    imm raw = self.rawOf(h, hSocket);
+    if raw == invalidHandle {return Error[SocketAddr, IoError][new IoError(errorInvalidHandle)];}
+    mut a = new SocketAddr(new Array[u8, 28] <- fill 0u8, 28i32);
+    mut len = 28i32;
+    if getpeername(raw, &mut a as *u8, &mut len) != 0i32 {
+      return Error[SocketAddr, IoError][new IoError(wsaError())];
+    }
+    a.size = len;
+    Ok[SocketAddr, IoError][a];
+  }
+
   // A file, for ReadAt and WriteAt
   pub fn openFile(self &mut, path &[]u8, access Access) Result[Handle, IoError] {
     imm w = widen(path);
@@ -323,6 +336,36 @@ pub struct Loop {
     imm e = &mut handles[usize.from(i)];
     CancelIoEx(e.raw, null);
     if e.kind == hFile {CloseHandle(e.raw);} else {closesocket(e.raw);}
+    e.kind = hFree;
+    e.raw = 0usize;
+    e.gen = if e.gen == 0xFFFFFFFFu32 {1u32;} else {e.gen + 1u32;};
+    e.nextFree = freeHandle;
+    freeHandle = i;
+    true;
+  }
+
+  // A connected socket's sending side is finished (a half-close: TCP's FIN
+  // goes after what was sent): its peer's receive ends, Done(0), while this
+  // side can still receive. 0, or Winsock's error; a send submitted after
+  // it fails. ERROR_INVALID_HANDLE when h is no connected socket
+  pub fn shutdown(self &mut, h Handle) u32 {
+    imm raw = self.rawOf(h, hSocket);
+    if raw == invalidHandle {return errorInvalidHandle;}
+    if iocore.shutdown(raw, sdSend) != 0i32 {return wsaError();}
+    0u32;
+  }
+
+  // Close a connected socket abortively: its peer sees the connection
+  // reset (RST), not finished, and what was not yet sent is dropped. As
+  // 'close' otherwise: everything in flight on it is cancelled, and h names
+  // nothing from now on. False if it named no socket
+  pub fn reset(self &mut, h Handle) Bool {
+    imm i = self.handleIndex(h);
+    if i == noEntry {return false;}
+    imm e = &mut handles[usize.from(i)];
+    if e.kind != hSocket {return false;}
+    CancelIoEx(e.raw, null);
+    resetSocket(e.raw);
     e.kind = hFree;
     e.raw = 0usize;
     e.gen = if e.gen == 0xFFFFFFFFu32 {1u32;} else {e.gen + 1u32;};

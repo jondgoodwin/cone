@@ -1,0 +1,1731 @@
+// The Driver: its tables, the completions it is handed, and the pump that
+// moves each connection along.
+//
+// How it is built. Connections and requests are records in two tables,
+// each in blocks of 64 that never move while the driver lives, reused
+// through free lists; a ConnId or ReqId is a record's index and generation,
+// and the generation moves on when the record is freed, so an old id finds
+// nothing. Every operation the driver submits to the loop carries a token
+// with the driver's mark in its top byte, then what the operation is, then
+// its record's generation and index: a completion whose generation is not
+// its record's any more (the record was freed while the operation was in
+// flight) is dropped, its buffer going home. Nothing waits for those
+// operations: a connection is freed the moment it closes, and the loop
+// answers what it still had in flight on its own.
+//
+// A completion changes a connection's state and marks it dirty; 'pump'
+// drives every dirty connection once: the bytes that came go into its
+// core, its events go to their sinks, the next waiting request starts,
+// what the core has to send goes to the kernel, its deadline is armed, a
+// receive is posted when the core has room, and it closes when the core
+// says so. Every final answer goes through 'finishReq', which frees the
+// request: so each request is answered once, by construction (I1). Every
+// connection ends in 'closeNow', which answers what is left on it, sends
+// its one Closed, and frees it.
+
+// A token: the driver's mark (the top bit, and its number in the next
+// seven), the operation's kind, the record's generation and index
+const tokTop = 0x8000000000000000u64;
+const kRecv = 1u64;
+const kReady = 2u64;
+const kSend = 3u64;
+const kResolve = 4u64;
+const kConnect = 5u64;
+const kAccept = 6u64;
+const kTimer = 7u64;
+const kWatch = 8u64;
+const genMask = 0xFFFFFFu32;
+
+// A connection's state
+const cFree = 0u32;
+const cResolving = 1u32;
+const cConnecting = 2u32;
+const cOpen = 3u32;
+const cClosing = 4u32;
+
+// A request's state
+const rFree = 0u32;
+const rWaiting = 1u32;      // on a connection, not yet started
+const rActive = 2u32;       // started: its exchange under way
+const rFlushing = 3u32;     // a server's, answered whole, its bytes still going out
+
+// A request's final answer
+const endDone = 0u32;
+const endFailed = 1u32;
+const endCancelled = 2u32;
+const endTimedOut = 3u32;
+
+const recsPerBlock = 64u32;
+const lingerSize = 4096usize;        // a closing connection's receive, read and dropped
+const resolveSize = 4096usize;       // a lookup's buffer: room for 128 addresses
+const heldRetryNs = 1000000i64;      // events held for a full channel are tried again after this
+
+fn nextGen(g u32) u32 {if g >= genMask {1u32;} else {g + 1u32;};}
+
+// A function making a connection's layer, one per accepted connection
+pub alias LayerMaker = &fn() So[Layer];
+
+// A connection: its socket, its protocol core and layer, and where it is
+struct Conn {
+  gen u32;
+  state u32;
+  nextFree u32;
+  server Bool;
+  listener ListenerId;
+  sock Handle;
+  core http1.Connection;
+  layer So[Layer];
+  sink Sink;
+  addrs List[SocketAddr];   // a client's addresses to try, in order
+  nextAddr usize;
+  connOp OpId;              // the lookup or connect in flight
+  connectBy Instant;
+  peer SocketAddr;
+  recvOut Bool;             // a receive is in flight
+  readyOut Bool;            // a zero-byte receive is in flight
+  readyHit Bool;            // ...and has said data is there: the next receive takes it
+  sendsOut u32;
+  eof Bool;                 // the socket's receiving side has ended, or failed
+  eofFed Bool;              // ...and the core has been told
+  shut Bool;                // its sending side is shut
+  closeAsked Bool;          // 'close': end once what was asked of it is done
+  timer OpId;               // the core's deadline, or the linger, on the loop's timers
+  timerAt Instant;
+  current u32;              // the request under way, or noEntry
+  waiting List[u32];        // a client's requests waiting their turn
+  flushing List[u32];       // a server's requests answered whole, their bytes going out
+  failed Bool;
+  failure Failure;
+  dirty Bool;
+  held u32;                 // its events held for a full channel
+  inAtStart u64;            // the core's bytes received when the current request started
+}
+
+// A request
+struct Req {
+  gen u32;
+  state u32;
+  nextFree u32;
+  conn u32;
+  connGen u32;
+  server Bool;
+  sink Sink;
+  head RequestHead;         // a client's, until it starts
+  body BodyLength;
+  isHead Bool;              // a HEAD request: its response has no body
+  watch OpId;               // the timer for its deadline and group, or none
+  wrote Bool;               // a byte of it has gone to the kernel
+  responded Bool;           // a server's response has begun
+  finished Bool;            // what it sends is whole
+  readDone Bool;            // what it reads is whole
+  gotResponse Bool;         // a client's response head (or an interim one) has come
+  wantWritable Bool;        // tell it when it may send again
+  timing Timing;
+}
+
+// A listening socket
+struct Lst {
+  gen u32;
+  open Bool;
+  sock Handle;
+  sink Sink;
+  make LayerMaker;
+  acceptsOut u32;
+}
+
+// The driver of HTTP/1.1 connections on one Loop (see the package's header,
+// THE DRIVER)
+pub struct Driver {
+  cfg Config;
+  pool Pool;
+  tokBase u64;
+  connBlocks List[*Conn];
+  connCount u32;
+  freeConn u32;
+  liveConns u32;
+  reqBlocks List[*Req];
+  reqCount u32;
+  freeReq u32;
+  listeners List[Lst];
+  acceptsOut u32;
+  rearm Bool;
+  dirty List[u32];
+  work List[u32];
+  ready List[Event];        // events for this thread, until pump hands them over
+  heldE List[Event];        // events held for a full channel, in order...
+  heldS List[Sink];         // ...where each goes,
+  heldC List[u32];          // ...its connection and generation,
+  heldG List[u32];
+  heldN List[usize];        // ...and the body bytes it releases once taken
+  comps List[Completion];
+  st DriverStats;
+
+  // A driver whose connections take cfg's bounds and buffers from pool
+  pub fn make(cfg Config, pool Pool) Driver {
+    imm tag = u64.from(driverSeq.add(1u32) & 127u32);
+    new Driver(cfg: cfg, pool: pool, tokBase: tokTop | (tag << 56u64),
+      connBlocks: List[*Conn].empty(), connCount: 0u32, freeConn: noEntry, liveConns: 0u32,
+      reqBlocks: List[*Req].empty(), reqCount: 0u32, freeReq: noEntry,
+      listeners: List[Lst].empty(), acceptsOut: 0u32, rearm: false,
+      dirty: List[u32].empty(), work: List[u32].empty(), ready: List[Event].empty(),
+      heldE: List[Event].empty(), heldS: List[Sink].empty(), heldC: List[u32].empty(),
+      heldG: List[u32].empty(), heldN: List[usize].empty(), comps: List[Completion].empty(),
+      st: DriverStats.zero());
+  }
+
+  // Its counters, as they are now
+  pub fn stats(self &) DriverStats {st;}
+
+  // Connections open or being made
+  pub fn live(self &) u32 {liveConns;}
+
+  // Events held for full channels, still to be delivered. A driver with any
+  // must go on being driven (poll or pump) even once every connection has
+  // closed: a channel's events may be held behind a Closed that went to
+  // another sink
+  pub fn held(self &) usize {heldE.len();}
+
+  // Its configuration
+  pub fn config(self &) Config {cfg;}
+
+  // Whether a token is one of this driver's operations
+  pub fn owns(self &, token u64) Bool {(token >> 56u64) == (tokBase >> 56u64);}
+
+  fn tok(self &, kind u64, index u32, gen u32) u64 {
+    tokBase | (kind << 48u64) | (u64.from(gen & genMask) << 24u64) | u64.from(index & genMask);
+  }
+
+  // ---------------------------------------------------------------------------
+  // The tables
+  // ---------------------------------------------------------------------------
+
+  fn connAt(self &, i u32) *Conn {
+    *connBlocks[usize.from(i / recsPerBlock)] + usize.from(i % recsPerBlock);
+  }
+
+  fn reqAt(self &, i u32) *Req {
+    *reqBlocks[usize.from(i / recsPerBlock)] + usize.from(i % recsPerBlock);
+  }
+
+  // The live connection id names, or noEntry
+  fn connIndex(self &, id ConnId) u32 {
+    if id.isNone() or id.index >= connCount {return noEntry;}
+    imm c = self.connAt(id.index) as &Conn;
+    if c.gen != id.gen or c.state == cFree {return noEntry;}
+    id.index;
+  }
+
+  // The live request id names, or noEntry
+  fn reqIndex(self &, id ReqId) u32 {
+    if id.isNone() or id.index >= reqCount {return noEntry;}
+    imm r = self.reqAt(id.index) as &Req;
+    if r.gen != id.gen or r.state == rFree {return noEntry;}
+    id.index;
+  }
+
+  fn connIdOf(self &, i u32) ConnId {new ConnId(i, (self.connAt(i) as &Conn).gen);}
+
+  fn reqIdOf(self &, ri u32) ReqId {
+    imm r = self.reqAt(ri) as &Req;
+    new ReqId(new ConnId(r.conn, r.connGen), ri, r.gen);
+  }
+
+  fn blankConn(self &, next u32) Conn {
+    new Conn(gen: 1u32, state: cFree, nextFree: next, server: false, listener: ListenerId.none(),
+      sock: Handle.none(), core: http1.Connection.client(cfg.protocol, pool, new Instant()),
+      layer: plainLayer(), sink: Sink.Here[0u64], addrs: List[SocketAddr].empty(), nextAddr: 0usize,
+      connOp: OpId.none(), connectBy: new Instant(), peer: SocketAddr.localhost(0u16),
+      recvOut: false, readyOut: false, readyHit: false, sendsOut: 0u32, eof: false, eofFed: false,
+      shut: false, closeAsked: false, timer: OpId.none(), timerAt: new Instant(), current: noEntry,
+      waiting: List[u32].empty(), flushing: List[u32].empty(), failed: false, failure: Failure.none(),
+      dirty: false, held: 0u32, inAtStart: 0u64);
+  }
+
+  fn blankReq(self &, next u32) Req {
+    new Req(gen: 1u32, state: rFree, nextFree: next, conn: noEntry, connGen: 0u32, server: false,
+      sink: Sink.Here[0u64], head: RequestHead.empty(), body: BodyLength.empty(), isHead: false,
+      watch: OpId.none(), wrote: false, responded: false, finished: false, readDone: false,
+      gotResponse: false, wantWritable: false, timing: Timing.zero());
+  }
+
+  // A new connection, its core in its role, its layer and sink given
+  fn newConn(self &mut, server Bool, layer So[Layer], sink Sink, now Instant) u32 {
+    if freeConn == noEntry {
+      imm block = libc.malloc(usize.from(recsPerBlock) * mem.sizeof[Conn]()) as *Conn;
+      if block as usize == 0usize {panic("httpconn: out of memory for the connection table");}
+      imm base = connCount;
+      mut j = 0u32;
+      while j < recsPerBlock {
+        imm next = if j + 1u32 < recsPerBlock {base + j + 1u32;} else {noEntry;};
+        mem.writeRaw[Conn](block + usize.from(j), self.blankConn(next));
+        j = j + 1u32;
+      }
+      connBlocks.push(block);
+      connCount = connCount + recsPerBlock;
+      freeConn = base;
+    }
+    imm i = freeConn;
+    imm c = self.connAt(i) as &mut Conn;
+    freeConn = c.nextFree;
+    liveConns = liveConns + 1u32;
+    c.nextFree = noEntry;
+    c.server = server;
+    c.listener = ListenerId.none();
+    c.sock = Handle.none();
+    c.core = if server {http1.Connection.server(cfg.protocol, pool, now);}
+      else {http1.Connection.client(cfg.protocol, pool, now);};
+    mut l = layer;
+    c.layer <=> l;
+    mut s = sink;
+    c.sink <=> s;
+    c.addrs.clear();
+    c.nextAddr = 0usize;
+    c.connOp = OpId.none();
+    c.recvOut = false;
+    c.readyOut = false;
+    c.readyHit = false;
+    c.sendsOut = 0u32;
+    c.eof = false;
+    c.eofFed = false;
+    c.shut = false;
+    c.closeAsked = false;
+    c.timer = OpId.none();
+    c.current = noEntry;
+    c.waiting.clear();
+    c.flushing.clear();
+    c.failed = false;
+    c.failure = Failure.none();
+    c.dirty = false;
+    c.held = 0u32;
+    c.inAtStart = 0u64;
+    c.state = cOpen;
+    i;
+  }
+
+  // The connection has closed: its record is free, and what it held goes
+  fn freeConnRec(self &mut, i u32) {
+    imm c = self.connAt(i) as &mut Conn;
+    c.state = cFree;
+    c.gen = nextGen(c.gen);
+    c.core = http1.Connection.client(cfg.protocol, pool, new Instant());
+    c.layer = plainLayer();
+    c.sink = Sink.Here[0u64];
+    c.addrs.clear();
+    c.waiting.clear();
+    c.flushing.clear();
+    c.failure = Failure.none();
+    c.nextFree = freeConn;
+    freeConn = i;
+    liveConns = liveConns - 1u32;
+    rearm = true;
+  }
+
+  fn newReq(self &mut) u32 {
+    if freeReq == noEntry {
+      imm block = libc.malloc(usize.from(recsPerBlock) * mem.sizeof[Req]()) as *Req;
+      if block as usize == 0usize {panic("httpconn: out of memory for the request table");}
+      imm base = reqCount;
+      mut j = 0u32;
+      while j < recsPerBlock {
+        imm next = if j + 1u32 < recsPerBlock {base + j + 1u32;} else {noEntry;};
+        mem.writeRaw[Req](block + usize.from(j), self.blankReq(next));
+        j = j + 1u32;
+      }
+      reqBlocks.push(block);
+      reqCount = reqCount + recsPerBlock;
+      freeReq = base;
+    }
+    imm ri = freeReq;
+    imm r = self.reqAt(ri) as &mut Req;
+    freeReq = r.nextFree;
+    r.nextFree = noEntry;
+    r.state = rActive;
+    r.watch = OpId.none();
+    r.wrote = false;
+    r.responded = false;
+    r.finished = false;
+    r.readDone = false;
+    r.gotResponse = false;
+    r.wantWritable = false;
+    r.isHead = false;
+    r.body = BodyLength.empty();
+    r.timing = Timing.zero();
+    ri;
+  }
+
+  fn freeReqRec(self &mut, ri u32) {
+    imm r = self.reqAt(ri) as &mut Req;
+    r.state = rFree;
+    r.gen = nextGen(r.gen);
+    r.sink = Sink.Here[0u64];
+    r.head = RequestHead.empty();
+    r.nextFree = freeReq;
+    freeReq = ri;
+  }
+
+  fn markDirty(self &mut, i u32) {
+    imm c = self.connAt(i) as &mut Conn;
+    if not c.dirty {
+      c.dirty = true;
+      dirty.push(i);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Events to sinks
+  // ---------------------------------------------------------------------------
+
+  // Hand e to its sink. 'conn' and 'gen' name the connection whose events
+  // keep their order behind a held one (noEntry for none); 'credit' is the
+  // body bytes a Data event releases once a channel takes it
+  fn emit(self &mut, sink &mut Sink, conn u32, gen u32, credit usize, e Event) {
+    st.events = st.events + 1u64;
+    if not isChan(sink) {
+      ready.push(e);
+      return;
+    }
+    if conn != noEntry {
+      imm c = self.connAt(conn) as &mut Conn;
+      if c.gen == gen and c.held > 0u32 {
+        self.hold(sink, conn, gen, credit, e);
+        return;
+      }
+    }
+    mut s Sink = Sink.Here[0u64];
+    s <=> *sink;
+    mut back = blankEvent();
+    mut sent = sinkTaken;
+    s, sent = trySink(s, e, &mut back);
+    *sink <=> s;
+    if sent == sinkFull {
+      self.hold(sink, conn, gen, credit, back);
+      return;
+    }
+    if sent == sinkGone {st.dropped = st.dropped + 1u64;}
+    self.releaseTo(conn, gen, credit);
+  }
+
+  fn hold(self &mut, sink &mut Sink, conn u32, gen u32, credit usize, e Event) {
+    st.held = st.held + 1u64;
+    heldE.push(e);
+    heldS.push(copySink(sink));
+    heldC.push(conn);
+    heldG.push(gen);
+    heldN.push(credit);
+    if conn != noEntry {
+      imm c = self.connAt(conn) as &mut Conn;
+      if c.gen == gen {c.held = c.held + 1u32;}
+    }
+  }
+
+  // Body bytes a channel has taken (or dropped) go back to the core as credit
+  fn releaseTo(self &mut, conn u32, gen u32, n usize) {
+    if n == 0usize or conn == noEntry {return;}
+    imm c = self.connAt(conn) as &mut Conn;
+    if c.gen != gen or c.state == cFree {return;}
+    c.core.release(n);
+    self.markDirty(conn);
+  }
+
+  // Try again the events held for full channels, in order: a connection's
+  // later events stay behind its first still held
+  fn retryHeld(self &mut) {
+    if heldE.len() == 0usize {return;}
+    mut ke = List[Event].empty();
+    mut ks = List[Sink].empty();
+    mut kc = List[u32].empty();
+    mut kg = List[u32].empty();
+    mut kn = List[usize].empty();
+    mut blocked = List[u64].empty();
+    mut k = 0usize;
+    while k < heldE.len() {
+      mut e = blankEvent();
+      imm es = &mut heldE[k];
+      e <=> *es;
+      mut s Sink = Sink.Here[0u64];
+      imm ss = &mut heldS[k];
+      s <=> *ss;
+      imm conn = *heldC[k];
+      imm gen = *heldG[k];
+      imm n = *heldN[k];
+      k = k + 1usize;
+      imm key = (u64.from(gen) << 32u64) | u64.from(conn);
+      mut stay = false;
+      mut j = 0usize;
+      while j < blocked.len() {
+        if *blocked[j] == key {stay = true;}
+        j = j + 1usize;
+      }
+      if not stay {
+        // Tried: e goes into the channel, or comes back in e2
+        mut e2 = blankEvent();
+        mut sent = sinkTaken;
+        s, sent = trySink(s, e, &mut e2);
+        if sent == sinkGone {st.dropped = st.dropped + 1u64;}
+        if sent != sinkFull {
+          if conn != noEntry {
+            imm c = self.connAt(conn) as &mut Conn;
+            if c.gen == gen and c.held > 0u32 {
+              c.held = c.held - 1u32;
+              self.markDirty(conn);
+            }
+          }
+          self.releaseTo(conn, gen, n);
+          continue;
+        }
+        blocked.push(key);
+        ke.push(e2);
+      } else {
+        ke.push(e);
+      }
+      ks.push(s);
+      kc.push(conn);
+      kg.push(gen);
+      kn.push(n);
+    }
+    heldE <=> ke;
+    heldS <=> ks;
+    heldC <=> kc;
+    heldG <=> kg;
+    heldN <=> kn;
+  }
+
+  // Events for this thread, moved to out: how many
+  fn handOver(self &mut, out &mut List[Event]) usize {
+    imm n = ready.len();
+    if n == 0usize {return 0usize;}
+    if out.len() == 0usize {
+      *out <=> ready;
+      return n;
+    }
+    mut k = 0usize;
+    while k < n {
+      mut e = blankEvent();
+      imm slot = &mut ready[k];
+      e <=> *slot;
+      out.push(e);
+      k = k + 1usize;
+    }
+    ready.clear();
+    n;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Driving
+  // ---------------------------------------------------------------------------
+
+  // The latest a poll of the loop may wait to (see the package's header,
+  // THE DRIVER)
+  pub fn wakeAt(self &) Instant {
+    if dirty.len() > 0usize or ready.len() > 0usize {return new Instant();}
+    if heldE.len() > 0usize {return Instant.now() + Duration.fromNanos(heldRetryNs);}
+    forever();
+  }
+
+  // Poll the loop, at most until 'until' and not at all while events are
+  // ready; hand the driver what completed; drive what it touched; append the
+  // events for this thread to out: how many. A completion that is not the
+  // driver's is dropped (counted: stats().unclaimed)
+  pub fn poll(self &mut, lp &mut Loop, until Instant, out &mut List[Event]) usize {
+    mut n = self.pump(lp, out);
+    mut limit = until;
+    imm w = self.wakeAt();
+    if w < limit {limit = w;}
+    if n > 0usize {limit = new Instant();}
+    mut cs = List[Completion].empty();
+    cs <=> comps;
+    lp.poll(limit, &mut cs);
+    mut k = 0usize;
+    while k < cs.len() {
+      imm c = &mut cs[k];
+      if not self.complete(lp, c) {st.unclaimed = st.unclaimed + 1u64;}
+      k = k + 1usize;
+    }
+    cs.clear();
+    comps <=> cs;
+    n + self.pump(lp, out);
+  }
+
+  // Drive every connection a completion or a call has touched, and append
+  // the events for this thread to out: how many
+  pub fn pump(self &mut, lp &mut Loop, out &mut List[Event]) usize {
+    self.retryHeld();
+    if rearm {self.rearmAccepts(lp);}
+    while dirty.len() > 0usize {
+      work <=> dirty;
+      mut k = 0usize;
+      while k < work.len() {
+        imm i = *work[k];
+        imm c = self.connAt(i) as &mut Conn;
+        c.dirty = false;
+        if c.state != cFree {self.drive(lp, i);}
+        k = k + 1usize;
+      }
+      work.clear();
+    }
+    if rearm {self.rearmAccepts(lp);}
+    self.handOver(out);
+  }
+
+  // Move connection i as far as it can go now
+  fn drive(self &mut, lp &mut Loop, i u32) {
+    imm c = self.connAt(i) as &mut Conn;
+    imm now = Instant.now();
+    if c.state == cClosing {
+      self.lingerRecv(lp, i);
+      return;
+    }
+    if c.state != cOpen {return;}
+    self.feed(lp, i, now);
+    if c.state != cOpen {return;}
+    self.startNext(i, now);
+    self.events(lp, i, now);
+    if c.state != cOpen {return;}
+    self.startNext(i, now);
+    self.transmit(lp, i, now);
+    self.flushDone(lp, i);
+    self.writable(i);
+    self.armTimer(lp, i);
+    self.receive(lp, i);
+    self.maybeClose(lp, i, now);
+  }
+
+  // The bytes the layer has for the core, and the end of the stream
+  fn feed(self &mut, lp &mut Loop, i u32, now Instant) {
+    imm c = self.connAt(i) as &mut Conn;
+    while true {
+      imm b = c.layer.plainOut();
+      if b.len() == 0usize {break;}
+      c.core.handleInput(b, now);
+    }
+    if c.layer.peerEnded() and not c.eofFed {
+      c.eofFed = true;
+      c.core.handleInput(IoBuf.empty(), now);
+    }
+    imm lf = c.layer.failure();
+    if lf != 0u32 {
+      c.failed = true;
+      c.failure = Failure.make(Stage.Read[], lf, ErrorKind.Malformed[], "the connection's layer failed");
+      self.closeNow(lp, i, true, false);
+    }
+  }
+
+  // A client's next waiting request, when the connection is free for it
+  fn startNext(self &mut, i u32, now Instant) {
+    imm c = self.connAt(i) as &mut Conn;
+    if c.server or c.current != noEntry or c.waiting.len() == 0usize or c.failed {return;}
+    if not c.core.canSendRequest() {return;}
+    imm ri = *c.waiting[0usize];
+    removeAt(&mut c.waiting, 0usize);
+    imm r = self.reqAt(ri) as &mut Req;
+    mut h = RequestHead.empty();
+    h <=> r.head;
+    c.core.sendRequest(h, r.body);
+    r.state = rActive;
+    r.timing.started = now;
+    c.current = ri;
+    c.inAtStart = c.core.bytesReceived();
+    if r.body.isEmpty() {
+      r.finished = true;
+    } else {
+      r.wantWritable = true;
+    }
+  }
+
+  // The core's events, to their sinks
+  fn events(self &mut, lp &mut Loop, i u32, now Instant) {
+    imm c = self.connAt(i) as &mut Conn;
+    while c.held == 0u32 and c.state == cOpen {
+      match c.core.pollEvent() {
+        case is NeedData {return;}
+        case is Paused {return;}
+        case is Closed {return;}
+        case mut q Request {
+          // A server's request: its record, and the program told
+          if c.current != noEntry {self.toFlushing(i, c.current);}
+          imm ri = self.newReq();
+          imm r = self.reqAt(ri) as &mut Req;
+          r.server = true;
+          r.conn = i;
+          r.connGen = c.gen;
+          r.sink = copySink(&mut c.sink);
+          r.isHead = q.head.method == Method.Head[];
+          r.body = q.body;
+          r.timing.submitted = now;
+          r.timing.started = now;
+          c.current = ri;
+          st.requests = st.requests + 1u64;
+          mut ev = Event.make(EventKind.Request[], r.sink.token, self.connIdOf(i), self.reqIdOf(ri));
+          ev.request <=> q.head;
+          ev.body = q.body;
+          self.emit(&mut r.sink, i, c.gen, 0usize, ev);
+        }
+        case mut p Response {
+          if c.current != noEntry {
+            imm r = self.reqAt(c.current) as &mut Req;
+            r.gotResponse = true;
+            r.timing.firstByte = now;
+            mut ev = Event.make(EventKind.Response[], r.sink.token, self.connIdOf(i), self.reqIdOf(c.current));
+            ev.response <=> p.head;
+            ev.body = p.body;
+            self.emit(&mut r.sink, i, c.gen, 0usize, ev);
+          }
+        }
+        case mut p Interim {
+          if c.current != noEntry {
+            imm r = self.reqAt(c.current) as &mut Req;
+            r.gotResponse = true;
+            mut ev = Event.make(EventKind.Interim[], r.sink.token, self.connIdOf(i), self.reqIdOf(c.current));
+            ev.response <=> p.head;
+            self.emit(&mut r.sink, i, c.gen, 0usize, ev);
+          }
+        }
+        case mut d Data {
+          imm n = d.buf.len();
+          if c.current != noEntry {
+            imm r = self.reqAt(c.current) as &mut Req;
+            imm credit = if isChan(&mut r.sink) {n;} else {0usize;};
+            mut ev = Event.make(EventKind.Data[], r.sink.token, self.connIdOf(i), self.reqIdOf(c.current));
+            ev.buf <=> d.buf;
+            self.emit(&mut r.sink, i, c.gen, credit, ev);
+          } else {
+            c.core.release(n);
+          }
+        }
+        case mut e End {
+          if c.current != noEntry {
+            imm ri = c.current;
+            imm r = self.reqAt(ri) as &mut Req;
+            r.readDone = true;
+            mut ev = Event.make(EventKind.End[], r.sink.token, self.connIdOf(i), self.reqIdOf(ri));
+            ev.trailers <=> e.trailers;
+            self.emit(&mut r.sink, i, c.gen, 0usize, ev);
+            if not c.server {
+              c.current = noEntry;
+              self.finishReq(lp, ri, endDone, Failure.none());
+            } elif r.finished {
+              self.toFlushing(i, ri);
+            }
+          }
+        }
+        case mut f Failed {
+          // The core refused what came, or a deadline of its passed: every
+          // request on the connection is answered now; the connection
+          // sends what the core still has (a server's error status), then
+          // closes
+          mut e = HttpError.empty();
+          e <=> f.error;
+          c.failed = true;
+          c.failure = new Failure(Stage.Http[], 0u32, e, false);
+          self.answerAll(lp, i, false);
+        }
+      }
+    }
+  }
+
+  // A server's request answered whole and read whole: done once its bytes
+  // have gone
+  fn toFlushing(self &mut, i u32, ri u32) {
+    imm c = self.connAt(i) as &mut Conn;
+    imm r = self.reqAt(ri) as &mut Req;
+    r.state = rFlushing;
+    c.flushing.push(ri);
+    if c.current == ri {c.current = noEntry;}
+  }
+
+  // What the core has to send, through the layer, to the kernel
+  fn transmit(self &mut, lp &mut Loop, i u32, now Instant) {
+    imm c = self.connAt(i) as &mut Conn;
+    if c.shut {return;}
+    while c.sendsOut < cfg.sendDepth {
+      mut b = c.layer.wireOut(now);
+      if b.len() == 0usize {
+        imm p = c.core.pollTransmit(now);
+        if p.len() == 0usize {break;}
+        c.layer.plainIn(p);
+        continue;
+      }
+      lp.submit(Op.Send[c.sock, b], Target.Here[self.tok(kSend, i, c.gen)]);
+      c.sendsOut = c.sendsOut + 1u32;
+      if c.current != noEntry {(self.reqAt(c.current) as &mut Req).wrote = true;}
+    }
+  }
+
+  // Everything sent and taken by the kernel: a server's answered requests
+  // are done
+  fn flushDone(self &mut, lp &mut Loop, i u32) {
+    imm c = self.connAt(i) as &mut Conn;
+    if c.flushing.len() == 0usize or not self.flushed(i) {return;}
+    while c.flushing.len() > 0usize {
+      imm ri = *c.flushing[0usize];
+      removeAt(&mut c.flushing, 0usize);
+      self.finishReq(lp, ri, endDone, Failure.none());
+    }
+  }
+
+  fn flushed(self &, i u32) Bool {
+    imm c = self.connAt(i) as &Conn;
+    c.sendsOut == 0u32 and c.core.queued() == 0usize and c.layer.pending() == 0usize;
+  }
+
+  // A request waiting to send its body hears when it may
+  fn writable(self &mut, i u32) {
+    imm c = self.connAt(i) as &mut Conn;
+    if c.current == noEntry {return;}
+    imm r = self.reqAt(c.current) as &mut Req;
+    if not r.wantWritable or r.finished {return;}
+    if c.core.writeRoom() < cfg.protocol.writeWatermark / 2usize {return;}
+    r.wantWritable = false;
+    self.emit(&mut r.sink, i, c.gen, 0usize,
+      Event.make(EventKind.Writable[], r.sink.token, self.connIdOf(i), self.reqIdOf(c.current)));
+  }
+
+  // The core's deadline on the loop's timers. A timer armed earlier than
+  // needed is left to fire (the core finds nothing due, and the next is
+  // armed then), so a deadline pushed back by every arrival costs nothing
+  fn armTimer(self &mut, lp &mut Loop, i u32) {
+    imm c = self.connAt(i) as &mut Conn;
+    match c.core.pollTimeout() {
+      case imm t Some {
+        if c.timer.isNone() or t.value < c.timerAt {
+          if not c.timer.isNone() {lp.cancel(c.timer);}
+          c.timer = lp.after(t.value, Target.Here[self.tok(kTimer, i, c.gen)]);
+          c.timerAt = t.value;
+        }
+      }
+      case is None[Instant] {}
+    }
+  }
+
+  // A receive, when the core has room for one: a buffer's only while a
+  // message is being read (a client's response, a server's request body)
+  // or bytes are known to be waiting; otherwise a zero-byte one, which pins
+  // no buffer and says when bytes (a next request, the end of the stream, a
+  // reset) come
+  fn receive(self &mut, lp &mut Loop, i u32) {
+    imm c = self.connAt(i) as &mut Conn;
+    if c.recvOut or c.readyOut or c.eof or c.shut {return;}
+    if c.core.readCredit() < cfg.recvSize or c.layer.wireRoom() < cfg.recvSize {return;}
+    imm reading = c.current != noEntry and not (self.reqAt(c.current) as &Req).readDone;
+    if not reading and cfg.idleRecvReady and not c.readyHit {
+      lp.submit(Op.RecvReady[c.sock], Target.Here[self.tok(kReady, i, c.gen)]);
+      c.readyOut = true;
+      return;
+    }
+    c.readyHit = false;
+    mut b = IoBuf.empty();
+    match pool.take(cfg.recvSize) {
+      case mut s Some {b <=> s.value;}
+      case is None[IoBuf] {}
+    }
+    if b.capacity() == 0usize {
+      c.failed = true;
+      c.failure = Failure.make(Stage.Limit[], 0u32, ErrorKind.TooLarge[], "the buffer pool refused a receive buffer");
+      self.closeNow(lp, i, true, false);
+      return;
+    }
+    lp.submit(Op.Recv[c.sock, b], Target.Here[self.tok(kRecv, i, c.gen)]);
+    c.recvOut = true;
+  }
+
+  // Close the connection once the core says it is over and all it sent has
+  // gone: its sending side shut, then what the peer still sends read and
+  // dropped until it closes too, or the linger passes
+  fn maybeClose(self &mut, lp &mut Loop, i u32, now Instant) {
+    imm c = self.connAt(i) as &mut Conn;
+    if c.state != cOpen {return;}
+    imm idle = c.current == noEntry and c.waiting.len() == 0usize and c.flushing.len() == 0usize;
+    if c.closeAsked and idle and not c.core.isClosed() {c.core.abort();}
+    if not c.core.shouldClose() {return;}
+    if c.sendsOut > 0u32 or c.layer.pending() > 0usize {return;}
+    if not c.shut {
+      c.layer.closeSend();
+      if c.layer.pending() > 0usize {
+        self.transmit(lp, i, now);
+        return;
+      }
+    }
+    // Requests still waiting can no longer be sent on it
+    self.answerAll(lp, i, false);
+    if c.eof {
+      self.closeNow(lp, i, false, false);
+      return;
+    }
+    c.state = cClosing;
+    c.shut = true;
+    lp.shutdown(c.sock);
+    if not c.timer.isNone() {lp.cancel(c.timer);}
+    c.timer = lp.after(now + cfg.lingerTimeout, Target.Here[self.tok(kTimer, i, c.gen)]);
+    c.timerAt = now + cfg.lingerTimeout;
+    self.lingerRecv(lp, i);
+  }
+
+  // A closing connection reads what still comes, and drops it
+  fn lingerRecv(self &mut, lp &mut Loop, i u32) {
+    imm c = self.connAt(i) as &mut Conn;
+    if c.eof or c.recvOut or c.readyOut {return;}
+    mut b = IoBuf.empty();
+    match pool.take(lingerSize) {
+      case mut s Some {b <=> s.value;}
+      case is None[IoBuf] {}
+    }
+    if b.capacity() == 0usize {
+      self.closeNow(lp, i, false, false);
+      return;
+    }
+    lp.submit(Op.Recv[c.sock, b], Target.Here[self.tok(kRecv, i, c.gen)]);
+    c.recvOut = true;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Endings
+  // ---------------------------------------------------------------------------
+
+  // Request ri's one final answer: sent to its sink, and the request freed
+  fn finishReq(self &mut, lp &mut Loop, ri u32, how u32, f Failure) {
+    imm r = self.reqAt(ri) as &mut Req;
+    if r.state == rFree {return;}
+    if not r.watch.isNone() {
+      lp.cancel(r.watch);
+      r.watch = OpId.none();
+    }
+    r.timing.ended = Instant.now();
+    imm id = self.reqIdOf(ri);
+    mut k EventKind = EventKind.Done[];
+    if how == endDone {
+      st.done = st.done + 1u64;
+    } elif how == endFailed {
+      st.failed = st.failed + 1u64;
+      k = EventKind.Failed[];
+    } elif how == endCancelled {
+      st.cancelled = st.cancelled + 1u64;
+      k = EventKind.Cancelled[];
+    } else {
+      st.timedOut = st.timedOut + 1u64;
+      k = EventKind.TimedOut[];
+    }
+    mut ev = Event.make(k, r.sink.token, id.conn, id);
+    ev.timing = r.timing;
+    if how == endFailed {ev.failure = f;}
+    self.emit(&mut r.sink, r.conn, r.connGen, 0usize, ev);
+    self.freeReqRec(ri);
+  }
+
+  // Why request ri failed when its connection did, or closed under it
+  fn failureFor(self &, i u32, ri u32, waiting Bool) Failure {
+    imm c = self.connAt(i) as &Conn;
+    imm r = self.reqAt(ri) as &Req;
+    mut f = Failure.none();
+    imm opened = c.failed and c.failure.stage != Stage.Resolve[] and c.failure.stage != Stage.Connect[] and
+      c.failure.stage != Stage.Limit[];
+    if c.failed and not (waiting and opened) {
+      f = c.failure.copy();
+    } elif waiting {
+      f = Failure.make(Stage.Closed[], 0u32, ErrorKind.Closed[], "the connection closed before the request was sent");
+    } else {
+      f = Failure.make(Stage.Closed[], 0u32, ErrorKind.Closed[], "the connection closed before the exchange ended");
+    }
+    f.unsent = waiting or not r.wrote;
+    if f.stage != Stage.Http[] or waiting {
+      f.error.noResponse = waiting or (not r.gotResponse and c.core.bytesReceived() == c.inAtStart);
+    }
+    f;
+  }
+
+  // Answer every request on connection i: Cancelled when cancelAll; else a
+  // server's answered and sent whole is Done, any other Failed
+  fn answerAll(self &mut, lp &mut Loop, i u32, cancelAll Bool) {
+    imm c = self.connAt(i) as &mut Conn;
+    imm sent = self.flushed(i);
+    while c.flushing.len() > 0usize {
+      imm ri = *c.flushing[0usize];
+      removeAt(&mut c.flushing, 0usize);
+      if cancelAll {self.finishReq(lp, ri, endCancelled, Failure.none());}
+      elif sent {self.finishReq(lp, ri, endDone, Failure.none());}
+      else {self.finishReq(lp, ri, endFailed, self.failureFor(i, ri, false));}
+    }
+    if c.current != noEntry {
+      imm ri = c.current;
+      c.current = noEntry;
+      imm r = self.reqAt(ri) as &Req;
+      if cancelAll {self.finishReq(lp, ri, endCancelled, Failure.none());}
+      elif r.server and r.finished and sent {self.finishReq(lp, ri, endDone, Failure.none());}
+      else {self.finishReq(lp, ri, endFailed, self.failureFor(i, ri, false));}
+    }
+    while c.waiting.len() > 0usize {
+      imm ri = *c.waiting[0usize];
+      removeAt(&mut c.waiting, 0usize);
+      if cancelAll {self.finishReq(lp, ri, endCancelled, Failure.none());}
+      else {self.finishReq(lp, ri, endFailed, self.failureFor(i, ri, true));}
+    }
+  }
+
+  // Connection i ends now: its socket closed (reset, when 'reset'), what is
+  // left on it answered, its one Closed sent, its record freed
+  fn closeNow(self &mut, lp &mut Loop, i u32, reset Bool, cancelAll Bool) {
+    imm c = self.connAt(i) as &mut Conn;
+    if c.state == cFree {return;}
+    if not c.connOp.isNone() {
+      lp.cancel(c.connOp);
+      c.connOp = OpId.none();
+    }
+    if not c.sock.isNone() {
+      if reset {lp.reset(c.sock);} else {lp.close(c.sock);}
+      c.sock = Handle.none();
+    }
+    if not c.timer.isNone() {
+      lp.cancel(c.timer);
+      c.timer = OpId.none();
+    }
+    c.core.abort();
+    self.answerAll(lp, i, cancelAll);
+    imm clean = not c.failed;
+    st.closed = st.closed + 1u64;
+    if clean {st.cleanCloses = st.cleanCloses + 1u64;}
+    mut ev = Event.make(EventKind.Closed[], c.sink.token, self.connIdOf(i), ReqId.none());
+    ev.clean = clean;
+    if not clean {ev.failure = c.failure.copy();}
+    ev.peer = c.peer;
+    self.emit(&mut c.sink, i, c.gen, 0usize, ev);
+    self.freeConnRec(i);
+  }
+
+  // A connection that could not be made, or broke: every request on it
+  // answered, and it ends
+  fn failConn(self &mut, lp &mut Loop, i u32, stage Stage, code u32, kind ErrorKind, detail &[]u8) {
+    imm c = self.connAt(i) as &mut Conn;
+    if c.state == cFree {return;}
+    if c.state == cClosing {
+      // It was closing anyway: the peer's reset or close ends the linger
+      c.eof = true;
+      self.closeNow(lp, i, false, false);
+      return;
+    }
+    c.failed = true;
+    c.failure = Failure.make(stage, code, kind, detail);
+    self.closeNow(lp, i, false, false);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Completions
+  // ---------------------------------------------------------------------------
+
+  // A completion from the loop: true if it was this driver's, which takes
+  // what it needs from it (its buffer); false if it was not (see the
+  // package's header, THE DRIVER)
+  pub fn complete(self &mut, lp &mut Loop, comp &mut Completion) Bool {
+    imm token = comp.token;
+    if not self.owns(token) {return false;}
+    imm kind = (token >> 48u64) & 255u64;
+    imm index = u32.from(token & u64.from(genMask));
+    imm gen = u32.from((token >> 24u64) & u64.from(genMask));
+    imm now = Instant.now();
+    if kind == kAccept {
+      self.accepted(lp, index, gen, comp, now);
+      return true;
+    }
+    if kind == kWatch {
+      if index >= reqCount {return true;}
+      imm r = self.reqAt(index) as &mut Req;
+      if r.gen != gen or r.state == rFree or r.watch != comp.id {return true;}
+      r.watch = OpId.none();
+      self.cancelReq(lp, index, comp.status == diag.outcomeDone);
+      return true;
+    }
+    if index >= connCount {return true;}
+    imm c = self.connAt(index) as &mut Conn;
+    if c.gen != gen or c.state == cFree {return true;}
+    if kind == kRecv {
+      c.recvOut = false;
+      if c.state == cClosing {
+        if comp.count() > 0usize {
+          self.markDirty(index);
+        } else {
+          c.eof = true;
+          self.closeNow(lp, index, false, false);
+        }
+        return true;
+      }
+      if comp.isDone() {
+        imm n = comp.count();
+        st.bytesIn = st.bytesIn + u64.from(n);
+        if n == 0usize {
+          c.eof = true;
+          c.layer.wireIn(IoBuf.empty(), now);
+        } else {
+          mut b = IoBuf.empty();
+          b <=> comp.buf;
+          c.layer.wireIn(b, now);
+        }
+        self.markDirty(index);
+      } elif comp.status == diag.outcomeFailed {
+        c.eof = true;
+        self.failConn(lp, index, Stage.Read[], comp.code, ErrorKind.Closed[], "a receive failed: the connection was reset, or broke");
+      }
+    } elif kind == kReady {
+      c.readyOut = false;
+      if comp.isDone() {
+        c.readyHit = true;
+        self.markDirty(index);
+      } elif comp.status == diag.outcomeFailed {
+        c.eof = true;
+        self.failConn(lp, index, Stage.Read[], comp.code, ErrorKind.Closed[], "a receive failed: the connection was reset, or broke");
+      }
+    } elif kind == kSend {
+      c.sendsOut = c.sendsOut - 1u32;
+      if comp.isDone() and comp.n == comp.buf.len() {
+        st.bytesOut = st.bytesOut + u64.from(comp.n);
+        self.markDirty(index);
+      } elif comp.status != diag.outcomeCancelled {
+        self.failConn(lp, index, Stage.Write[], comp.code, ErrorKind.Closed[], "a send failed: the connection was reset, or broke");
+      }
+    } elif kind == kTimer {
+      if comp.id != c.timer {return true;}
+      c.timer = OpId.none();
+      if not comp.isDone() {return true;}
+      if c.state == cClosing {
+        // The linger is over
+        self.closeNow(lp, index, false, false);
+      } elif c.state == cOpen {
+        c.core.handleTimeout(now);
+        self.markDirty(index);
+      }
+    } elif kind == kResolve {
+      c.connOp = OpId.none();
+      if c.state != cResolving {return true;}
+      if comp.isDone() {
+        c.addrs = addressesIn(&comp.buf);
+        if c.addrs.len() == 0usize {
+          self.failConn(lp, index, Stage.Resolve[], 11001u32, ErrorKind.Closed[], "the name has no address");
+        } else {
+          self.connectNext(lp, index);
+        }
+      } elif comp.status == diag.outcomeTimedOut {
+        self.failConn(lp, index, Stage.Resolve[], 0u32, ErrorKind.TimedOut[], "no address within connectTimeout");
+      } elif comp.status == diag.outcomeFailed {
+        self.failConn(lp, index, Stage.Resolve[], comp.code, ErrorKind.Closed[], "the name could not be looked up");
+      }
+    } elif kind == kConnect {
+      c.connOp = OpId.none();
+      if c.state != cConnecting {return true;}
+      if comp.isDone() {
+        c.sock = comp.handle;
+        c.state = cOpen;
+        st.connected = st.connected + 1u64;
+        mut ev = Event.make(EventKind.Connected[], c.sink.token, self.connIdOf(index), ReqId.none());
+        ev.peer = c.peer;
+        self.emit(&mut c.sink, index, c.gen, 0usize, ev);
+        self.markDirty(index);
+      } elif comp.status == diag.outcomeTimedOut {
+        self.failConn(lp, index, Stage.Connect[], 0u32, ErrorKind.TimedOut[], "no connection within connectTimeout");
+      } elif comp.status == diag.outcomeFailed {
+        if c.nextAddr < c.addrs.len() and now < c.connectBy {
+          self.connectNext(lp, index);
+        } else {
+          self.failConn(lp, index, Stage.Connect[], comp.code, ErrorKind.Closed[], "the connection could not be made");
+        }
+      }
+    }
+    true;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Clients
+  // ---------------------------------------------------------------------------
+
+  // A client connection to host:port, its life told to sink (see the
+  // package's header, CONNECTIONS)
+  pub fn connect(self &mut, lp &mut Loop, host &[]u8, port u16, sink Sink) ConnId {
+    self.connectWith(lp, host, port, plainLayer(), sink);
+  }
+
+  // A client connection whose bytes pass through layer (see LAYERS)
+  pub fn connectWith(self &mut, lp &mut Loop, host &[]u8, port u16, layer So[Layer], sink Sink) ConnId {
+    imm now = Instant.now();
+    imm i = self.openClient(lp, layer, sink, now);
+    imm c = self.connAt(i) as &mut Conn;
+    imm id = self.connIdOf(i);
+    if c.state == cFree {return id;}
+    match parseV4(host, port) {
+      case imm a Some {
+        c.addrs.push(a.value);
+        self.connectNext(lp, i);
+      }
+      case is None[SocketAddr] {
+        mut b = IoBuf.empty();
+        match pool.take(resolveSize) {
+          case mut s Some {b <=> s.value;}
+          case is None[IoBuf] {}
+        }
+        if b.capacity() == 0usize {
+          self.failConn(lp, i, Stage.Limit[], 0u32, ErrorKind.TooLarge[], "the buffer pool refused a lookup's buffer");
+          return id;
+        }
+        c.state = cResolving;
+        c.connOp = lp.submitBy(resolveOp(host, port, b), Target.Here[self.tok(kResolve, i, c.gen)], c.connectBy);
+      }
+    }
+    id;
+  }
+
+  // A client connection to an address, with no lookup
+  pub fn connectAddr(self &mut, lp &mut Loop, addr SocketAddr, sink Sink) ConnId {
+    imm i = self.openClient(lp, plainLayer(), sink, Instant.now());
+    imm c = self.connAt(i) as &mut Conn;
+    imm id = self.connIdOf(i);
+    if c.state == cFree {return id;}
+    c.addrs.push(addr);
+    self.connectNext(lp, i);
+    id;
+  }
+
+  // A client connection's record; one past maxConnections is refused at
+  // once, its Closed saying so
+  fn openClient(self &mut, lp &mut Loop, layer So[Layer], sink Sink, now Instant) u32 {
+    imm full = liveConns >= cfg.maxConnections;
+    imm i = self.newConn(false, layer, sink, now);
+    imm c = self.connAt(i) as &mut Conn;
+    c.connectBy = now + cfg.connectTimeout;
+    c.state = cConnecting;
+    st.connects = st.connects + 1u64;
+    if full {
+      // Its Closed goes to its sink like any connection's
+      self.failConn(lp, i, Stage.Limit[], 0u32, ErrorKind.TooLarge[], "the driver holds maxConnections connections");
+    }
+    i;
+  }
+
+  // Connect to the next address to try
+  fn connectNext(self &mut, lp &mut Loop, i u32) {
+    imm c = self.connAt(i) as &mut Conn;
+    imm a = *c.addrs[c.nextAddr];
+    c.nextAddr = c.nextAddr + 1usize;
+    c.state = cConnecting;
+    c.peer = a;
+    c.connOp = lp.submitBy(Op.Connect[a], Target.Here[self.tok(kConnect, i, c.gen)], c.connectBy);
+  }
+
+  // A request on a client connection, its events to sink (see the package's
+  // header, REQUESTS)
+  pub fn request(self &mut, lp &mut Loop, conn ConnId, head RequestHead, body BodyLength, sink Sink,
+      file &[]u8 = srcFile(), line u32 = srcLine()) ReqId {
+    self.ask(lp, conn, head, body, sink, None[CancelGroup][], forever(), file, line);
+  }
+
+  // A request answered TimedOut if it has not ended by deadline
+  pub fn requestBy(self &mut, lp &mut Loop, conn ConnId, head RequestHead, body BodyLength, sink Sink,
+      deadline Instant, file &[]u8 = srcFile(), line u32 = srcLine()) ReqId {
+    self.ask(lp, conn, head, body, sink, None[CancelGroup][], deadline, file, line);
+  }
+
+  // A request in a cancel group: the group's cancel cancels it, and its
+  // deadline is the tighter of 'deadline' and the group's
+  pub fn requestIn(self &mut, lp &mut Loop, conn ConnId, head RequestHead, body BodyLength, sink Sink,
+      group CancelGroup, deadline Instant, file &[]u8 = srcFile(), line u32 = srcLine()) ReqId {
+    self.ask(lp, conn, head, body, sink, Some[CancelGroup][group], deadline, file, line);
+  }
+
+  fn ask(self &mut, lp &mut Loop, conn ConnId, head RequestHead, body BodyLength, sink Sink,
+      group Option[CancelGroup], deadline Instant, file &[]u8, line u32) ReqId {
+    checkHead(&head, file, line);
+    imm now = Instant.now();
+    imm ri = self.newReq();
+    imm r = self.reqAt(ri) as &mut Req;
+    mut s = sink;
+    r.sink <=> s;
+    mut h = head;
+    r.head <=> h;
+    r.body = body;
+    r.server = false;
+    r.isHead = r.head.method == Method.Head[];
+    r.conn = conn.index;
+    r.connGen = conn.gen;
+    r.timing.submitted = now;
+    r.state = rWaiting;
+    st.requests = st.requests + 1u64;
+    imm id = self.reqIdOf(ri);
+    imm ci = self.connIndex(conn);
+    if ci == noEntry {
+      self.refuse(lp, ri, Stage.Closed[], "the connection is closed, or names nothing");
+      return id;
+    }
+    imm c = self.connAt(ci) as &mut Conn;
+    if c.server {panic("httpconn: request on a server's connection", file, line);}
+    if c.state == cClosing or c.failed or c.closeAsked {
+      self.refuse(lp, ri, Stage.Closed[], "the connection is closing");
+      return id;
+    }
+    imm busy = c.state != cOpen or c.current != noEntry or c.waiting.len() > 0usize;
+    if busy and c.waiting.len() >= usize.from(cfg.maxWaiting) {
+      self.refuse(lp, ri, Stage.Limit[], "maxWaiting requests already wait on the connection");
+      return id;
+    }
+    mut dl = deadline;
+    mut cancelled = false;
+    match group {
+      case imm g Some {
+        if g.value.isCancelled() {cancelled = true;}
+        if g.value.deadline() < dl {dl = g.value.deadline();}
+      }
+      else {}
+    }
+    if cancelled {
+      self.finishReq(lp, ri, endCancelled, Failure.none());
+      return id;
+    }
+    if dl <= now {
+      self.finishReq(lp, ri, endTimedOut, Failure.none());
+      return id;
+    }
+    match group {
+      case imm g Some {
+        imm at = if dl < forever() {dl;} else {now + Duration.fromHours(87600i64);};
+        r.watch = lp.afterIn(at, Target.Here[self.tok(kWatch, ri, r.gen)], g.value);
+      }
+      else {
+        if dl < forever() {r.watch = lp.after(dl, Target.Here[self.tok(kWatch, ri, r.gen)]);}
+      }
+    }
+    c.waiting.push(ri);
+    self.markDirty(ci);
+    id;
+  }
+
+  // A request that cannot be made is answered Failed at once, never sent
+  fn refuse(self &mut, lp &mut Loop, ri u32, stage Stage, detail &[]u8) {
+    mut f = Failure.make(stage, 0u32, if stage == Stage.Limit[] {ErrorKind.TooLarge[];} else {ErrorKind.Closed[];}, detail);
+    f.unsent = true;
+    f.error.noResponse = true;
+    self.finishReq(lp, ri, endFailed, f);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Servers
+  // ---------------------------------------------------------------------------
+
+  // Listen at addr: each connection accepted is a server connection, its
+  // life and its requests told to sink (see the package's header, SERVING)
+  pub fn listen(self &mut, lp &mut Loop, addr SocketAddr, sink Sink) Result[ListenerId, IoError] {
+    self.listenWith(lp, addr, &plainLayer, sink);
+  }
+
+  // Listen, each accepted connection's bytes passing through a layer 'make'
+  // makes (see LAYERS)
+  pub fn listenWith(self &mut, lp &mut Loop, addr SocketAddr, make LayerMaker, sink Sink) Result[ListenerId, IoError] {
+    mut h = Handle.none();
+    match lp.listen(addr) {
+      case imm r Ok {h = r.value;}
+      case imm e Error {return Error[ListenerId, IoError][e.value];}
+    }
+    imm k = u32.from(listeners.len());
+    listeners.push(new Lst(1u32, true, h, sink, make, 0u32));
+    self.armAccepts(lp, k);
+    Ok[ListenerId, IoError][new ListenerId(k, 1u32)];
+  }
+
+  // The address a listener is bound to (its port, when it asked for 0)
+  pub fn localAddr(self &, lp &Loop, l ListenerId) Result[SocketAddr, IoError] {
+    if l.index >= u32.from(listeners.len()) {return Error[SocketAddr, IoError][new IoError(6u32)];}
+    lp.localAddr(listeners[usize.from(l.index)].sock);
+  }
+
+  // Stop accepting: the connections it made go on
+  pub fn stopListening(self &mut, lp &mut Loop, l ListenerId) Bool {
+    if l.index >= u32.from(listeners.len()) {return false;}
+    imm e = &mut listeners[usize.from(l.index)];
+    if e.gen != l.gen or not e.open {return false;}
+    e.open = false;
+    lp.close(e.sock);
+    true;
+  }
+
+  // Keep a listener's accepts outstanding, within maxConnections
+  fn armAccepts(self &mut, lp &mut Loop, k u32) {
+    imm gen = listeners[usize.from(k)].gen;
+    imm t = self.tok(kAccept, k, gen);
+    while true {
+      imm e = &mut listeners[usize.from(k)];
+      if not e.open or e.acceptsOut >= cfg.acceptDepth or liveConns + acceptsOut >= cfg.maxConnections {break;}
+      lp.submit(Op.Accept[e.sock], Target.Here[t]);
+      e.acceptsOut = e.acceptsOut + 1u32;
+      acceptsOut = acceptsOut + 1u32;
+    }
+  }
+
+  fn rearmAccepts(self &mut, lp &mut Loop) {
+    rearm = false;
+    mut k = 0u32;
+    while k < u32.from(listeners.len()) {
+      self.armAccepts(lp, k);
+      k = k + 1u32;
+    }
+  }
+
+  // An accept completed
+  fn accepted(self &mut, lp &mut Loop, k u32, gen u32, comp &mut Completion, now Instant) {
+    if k >= u32.from(listeners.len()) {return;}
+    imm e = &mut listeners[usize.from(k)];
+    e.acceptsOut = e.acceptsOut - 1u32;
+    acceptsOut = acceptsOut - 1u32;
+    rearm = true;
+    if not comp.isDone() {return;}
+    if e.gen != gen or not e.open or liveConns >= cfg.maxConnections {
+      lp.close(comp.handle);
+      st.refused = st.refused + 1u64;
+      return;
+    }
+    imm make = e.make;
+    imm sink = copySink(&mut e.sink);
+    imm i = self.newConn(true, (make)(), sink, now);
+    imm c = self.connAt(i) as &mut Conn;
+    c.sock = comp.handle;
+    c.listener = new ListenerId(k, gen);
+    match lp.peerAddr(c.sock) {
+      case imm a Ok {c.peer = a.value;}
+      case imm x Error {}
+    }
+    st.accepted = st.accepted + 1u64;
+    mut ev = Event.make(EventKind.Accepted[], c.sink.token, self.connIdOf(i), ReqId.none());
+    ev.listener = c.listener;
+    ev.peer = c.peer;
+    self.emit(&mut c.sink, i, c.gen, 0usize, ev);
+    self.markDirty(i);
+  }
+
+  // A server's response to request req (see the package's header,
+  // SERVING): its body, if any, by sendData and finish. False if the
+  // request has ended (its connection closed)
+  pub fn respond(self &mut, req ReqId, head ResponseHead, body BodyLength,
+      file &[]u8 = srcFile(), line u32 = srcLine()) Bool {
+    imm ri = self.reqIndex(req);
+    if ri == noEntry {return false;}
+    imm r = self.reqAt(ri) as &mut Req;
+    if not r.server {panic("httpconn: respond to a client's request", file, line);}
+    if r.responded {panic("httpconn: respond twice to one request", file, line);}
+    imm c = self.connAt(r.conn) as &mut Conn;
+    imm status = head.status;
+    c.core.sendResponse(head, body, file, line);
+    r.responded = true;
+    if r.isHead or status == 204u16 or status == 304u16 or body.isEmpty() or (body.isSized() and body.length == 0u64) {
+      self.finished(ri);
+    }
+    self.markDirty(r.conn);
+    true;
+  }
+
+  // A server's interim response, a 1xx other than 101, before its final one
+  pub fn sendInterim(self &mut, req ReqId, head ResponseHead, file &[]u8 = srcFile(), line u32 = srcLine()) Bool {
+    imm ri = self.reqIndex(req);
+    if ri == noEntry {return false;}
+    imm r = self.reqAt(ri) as &Req;
+    if not r.server {panic("httpconn: sendInterim on a client's request", file, line);}
+    (self.connAt(r.conn) as &mut Conn).core.sendInterim(head, file, line);
+    self.markDirty(r.conn);
+    true;
+  }
+
+  // '100 Continue': the server wants the request's body
+  pub fn sendContinue(self &mut, req ReqId, file &[]u8 = srcFile(), line u32 = srcLine()) Bool {
+    self.sendInterim(req, ResponseHead.make(100u16), file, line);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Bodies, credit, cancel, closing
+  // ---------------------------------------------------------------------------
+
+  // Body bytes for a request (a client's) or a response (a server's),
+  // moved in: None once queued (or dropped, when the request has ended);
+  // Some[buf] back, refused, when the connection's send queue is at its
+  // watermark or the request has not started -- Writable says when to try
+  // again (see the package's header, CREDIT)
+  pub fn sendData(self &mut, req ReqId, buf IoBuf, file &[]u8 = srcFile(), line u32 = srcLine()) Option[IoBuf] {
+    imm ri = self.reqIndex(req);
+    if ri == noEntry {return None[IoBuf][];}
+    imm r = self.reqAt(ri) as &mut Req;
+    if r.state == rWaiting {
+      r.wantWritable = true;
+      return Some[IoBuf][buf];
+    }
+    if r.finished {panic("httpconn: sendData after the body was finished", file, line);}
+    imm c = self.connAt(r.conn) as &mut Conn;
+    mut back = IoBuf.empty();
+    mut refused = false;
+    match c.core.sendData(buf, file, line) {
+      case mut s Some {
+        back <=> s.value;
+        refused = true;
+      }
+      case is None[IoBuf] {}
+    }
+    self.markDirty(r.conn);
+    if refused {
+      r.wantWritable = true;
+      return Some[IoBuf][back];
+    }
+    None[IoBuf][];
+  }
+
+  // The body is whole
+  pub fn finish(self &mut, req ReqId, file &[]u8 = srcFile(), line u32 = srcLine()) {
+    self.finishWith(req, Headers.empty(), file, line);
+  }
+
+  // The body is whole, and these trailer fields follow it (a chunked body)
+  pub fn finishWith(self &mut, req ReqId, trailers Headers, file &[]u8 = srcFile(), line u32 = srcLine()) {
+    imm ri = self.reqIndex(req);
+    if ri == noEntry {return;}
+    imm r = self.reqAt(ri) as &mut Req;
+    if r.state == rWaiting {panic("httpconn: finish before the request has started (wait for Writable)", file, line);}
+    if r.finished {return;}
+    imm c = self.connAt(r.conn) as &mut Conn;
+    c.core.finishWith(trailers, file, line);
+    self.finished(ri);
+    self.markDirty(r.conn);
+  }
+
+  fn finished(self &mut, ri u32) {
+    imm r = self.reqAt(ri) as &mut Req;
+    r.finished = true;
+    r.wantWritable = false;
+    if r.server and r.readDone {self.toFlushing(r.conn, ri);}
+  }
+
+  // The program is done with n bytes of body that Data events to this
+  // thread handed it: credit back to the connection, which reads again
+  pub fn release(self &mut, req ReqId, n usize) {
+    imm ci = self.connIndex(req.conn);
+    if ci == noEntry or n == 0usize {return;}
+    (self.connAt(ci) as &mut Conn).core.release(n);
+    self.markDirty(ci);
+  }
+
+  // Ask a request to end (see the package's header, CANCEL AND DEADLINES):
+  // true while its answer is still to come
+  pub fn cancel(self &mut, lp &mut Loop, req ReqId) Bool {
+    imm ri = self.reqIndex(req);
+    if ri == noEntry {return false;}
+    self.cancelReq(lp, ri, false);
+    true;
+  }
+
+  // Request ri is cancelled, or its deadline has come
+  fn cancelReq(self &mut, lp &mut Loop, ri u32, timedOut Bool) {
+    imm r = self.reqAt(ri) as &mut Req;
+    if r.state == rFree {return;}
+    imm how = if timedOut {endTimedOut;} else {endCancelled;};
+    imm ci = r.conn;
+    imm c = self.connAt(ci) as &mut Conn;
+    if c.gen != r.connGen or c.state == cFree {
+      self.finishReq(lp, ri, how, Failure.none());
+      return;
+    }
+    if r.state == rWaiting {
+      removeValue(&mut c.waiting, ri);
+      self.finishReq(lp, ri, how, Failure.none());
+      self.markDirty(ci);
+      return;
+    }
+    // Under way: HTTP/1.1 stops an exchange only by ending its connection
+    if c.current == ri {c.current = noEntry;}
+    removeValue(&mut c.flushing, ri);
+    self.finishReq(lp, ri, how, Failure.none());
+    c.failed = true;
+    c.failure = Failure.make(Stage.Closed[], 0u32, ErrorKind.Closed[], "the connection was reset to end a request under way");
+    self.closeNow(lp, ci, true, false);
+  }
+
+  // Close a connection once what was asked of it is done (see the
+  // package's header, CONNECTIONS): false if it names none
+  pub fn close(self &mut, lp &mut Loop, conn ConnId) Bool {
+    imm ci = self.connIndex(conn);
+    if ci == noEntry {return false;}
+    (self.connAt(ci) as &mut Conn).closeAsked = true;
+    self.markDirty(ci);
+    true;
+  }
+
+  // Reset a connection now: every request on it answered Cancelled
+  pub fn abort(self &mut, lp &mut Loop, conn ConnId) Bool {
+    imm ci = self.connIndex(conn);
+    if ci == noEntry {return false;}
+    imm c = self.connAt(ci) as &mut Conn;
+    c.failed = true;
+    c.failure = Failure.make(Stage.Closed[], 0u32, ErrorKind.Closed[], "the connection was aborted");
+    self.closeNow(lp, ci, true, true);
+    true;
+  }
+
+  // Abort every connection and stop every listener
+  pub fn abortAll(self &mut, lp &mut Loop) {
+    mut k = 0u32;
+    while k < u32.from(listeners.len()) {
+      imm g = listeners[usize.from(k)].gen;
+      self.stopListening(lp, new ListenerId(k, g));
+      k = k + 1u32;
+    }
+    mut i = 0u32;
+    while i < connCount {
+      imm c = self.connAt(i) as &Conn;
+      if c.state != cFree {self.abort(lp, new ConnId(i, c.gen));}
+      i = i + 1u32;
+    }
+  }
+
+  // Whether a connection is open: connected (or accepted), not yet closing
+  pub fn isOpen(self &, conn ConnId) Bool {
+    imm ci = self.connIndex(conn);
+    ci != noEntry and (self.connAt(ci) as &Conn).state == cOpen;
+  }
+
+  // Whether a client connection is open and free: a request on it starts at once
+  pub fn isIdle(self &, conn ConnId) Bool {
+    imm ci = self.connIndex(conn);
+    if ci == noEntry {return false;}
+    imm c = self.connAt(ci) as &Conn;
+    c.state == cOpen and not c.server and c.current == noEntry and c.waiting.len() == 0usize and
+      not c.failed and not c.closeAsked and c.core.canSendRequest();
+  }
+
+  // The address a connection is connected to (the one being tried, while
+  // it connects)
+  pub fn peer(self &, conn ConnId) SocketAddr {
+    imm ci = self.connIndex(conn);
+    if ci == noEntry {return SocketAddr.localhost(0u16);}
+    (self.connAt(ci) as &Conn).peer;
+  }
+
+  // Its death: the tables' blocks, every record's values with them. The
+  // sockets are the loop's, which closes them when it dies; 'abortAll'
+  // first closes them now
+  fn final(self &uni) {
+    mut b = 0usize;
+    while b < connBlocks.len() {
+      imm block = *connBlocks[b];
+      mut j = 0u32;
+      while j < recsPerBlock {
+        mem.finalize[Conn](block + usize.from(j));
+        j = j + 1u32;
+      }
+      libc.free(block as *u8);
+      b = b + 1usize;
+    }
+    b = 0usize;
+    while b < reqBlocks.len() {
+      imm block = *reqBlocks[b];
+      mut j = 0u32;
+      while j < recsPerBlock {
+        mem.finalize[Req](block + usize.from(j));
+        j = j + 1u32;
+      }
+      libc.free(block as *u8);
+      b = b + 1usize;
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+// An event holding nothing, to swap one out of where it is held
+fn blankEvent() Event {Event.make(EventKind.Writable[], 0u64, ConnId.none(), ReqId.none());}
+
+// What a channel sink did with an event
+const sinkTaken = 0u32;
+const sinkFull = 1u32;      // full: the event is handed back
+const sinkGone = 2u32;      // its receiver has gone: the event is dropped
+
+// Send e on a channel sink, never waiting; the sink is moved in and handed
+// back, so that it is a local here, to be matched (error 1034 otherwise).
+// A full channel hands e back in 'back'
+fn trySink(s Sink, e Event, back &mut Event) Sink, u32 {
+  mut here = s;
+  mut how = sinkTaken;
+  match &here {
+    case imm ch &Chan {
+      match ch.tx.trySend(e) {
+        case mut r Some {
+          if ch.tx.isClosed() {
+            how = sinkGone;
+          } else {
+            *back <=> r.value;
+            how = sinkFull;
+          }
+        }
+        else {}
+      }
+    }
+    else {}
+  }
+  here, how;
+}
+
+fn removeAt(l &mut List[u32], k usize) {
+  mut j = k;
+  while j + 1usize < l.len() {
+    l.swap(j, j + 1usize);
+    j = j + 1usize;
+  }
+  l.pop();
+}
+
+fn removeValue(l &mut List[u32], v u32) {
+  mut k = 0usize;
+  while k < l.len() {
+    if *l[k] == v {
+      removeAt(l, k);
+      return;
+    }
+    k = k + 1usize;
+  }
+}
+
+// host as an IPv4 address written as one ('127.0.0.1'), with port
+fn parseV4(host &[]u8, port u16) Option[SocketAddr] {
+  mut parts = new Array[u8, 4] <- fill 0u8;
+  mut part = 0usize;
+  mut v = 0u32;
+  mut digits = 0u32;
+  mut k = 0usize;
+  while k <= host.len {
+    if k == host.len or host[k] == '.' {
+      if digits == 0u32 or v > 255u32 or part >= 4usize {return None[SocketAddr][];}
+      parts[part] = u8.from(v);
+      part = part + 1usize;
+      v = 0u32;
+      digits = 0u32;
+    } elif host[k] >= '0' and host[k] <= '9' {
+      v = v * 10u32 + u32.from(host[k] - '0');
+      digits = digits + 1u32;
+      if digits > 3u32 {return None[SocketAddr][];}
+    } else {
+      return None[SocketAddr][];
+    }
+    k = k + 1usize;
+  }
+  if part != 4usize {return None[SocketAddr][];}
+  Some[SocketAddr][SocketAddr.v4(parts[0usize], parts[1usize], parts[2usize], parts[3usize], port)];
+}
+
+// A request head's program errors, reported at the caller's line (the core
+// checks them again where it writes the head)
+fn checkHead(head &RequestHead, file &[]u8, line u32) {
+  if not isToken(head.methodName()) {panic("httpconn: the request's method is not a token", file, line);}
+  if head.method == Method.Connect[] {panic("httpconn: CONNECT is not supported", file, line);}
+  if not isVisible(head.target.view()) {panic("httpconn: the request's target is empty or holds a space or a control character", file, line);}
+  if not isVisible(head.authority.view()) {panic("httpconn: a request needs an authority, written as Host, without spaces", file, line);}
+  if head.headers.has("Host") {panic("httpconn: Host is written from the head's authority, not its fields", file, line);}
+  if head.headers.has("Content-Length") or head.headers.has("Transfer-Encoding") {
+    panic("httpconn: framing fields are the core's to write: say the body's length with a BodyLength", file, line);
+  }
+}
+
+fn isVisible(s &[]u8) Bool {
+  if s.len == 0usize {return false;}
+  mut i = 0usize;
+  while i < s.len {
+    if s[i] <= 0x20u8 or s[i] >= 0x7Fu8 {return false;}
+    i = i + 1usize;
+  }
+  true;
+}

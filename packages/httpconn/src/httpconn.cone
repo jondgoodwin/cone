@@ -1,0 +1,591 @@
+// The httpconn package: HTTP/1.1 connections over the completion loop. It
+// joins http1's sans-IO core to real sockets on an iocore Loop, in both
+// roles: a CLIENT connection resolves its host on the pool's DNS lane,
+// connects with ConnectEx by a deadline, sends requests and streams their
+// responses back; a SERVER listens, accepts with AcceptEx, and runs one
+// connection per accepted socket, streaming each request to the program
+// and its response back out. A Driver is the whole of it for one Loop: it
+// owns every connection's socket, protocol core and records, feeds each
+// core the bytes that arrived, sends what the core gives, arms the core's
+// deadline on the loop's timers, and hands each request's events to where
+// the request said they go. It never waits: the loop's 'poll' is still the
+// one place anything waits, and the driver is told what completed.
+//
+//   mod get;
+//   import collections use List;
+//   import iobuf use *;
+//   import iocore use Loop, forever;
+//   import http use *;
+//   import httpconn use *;
+//
+//   fn main() {
+//     mut lp = Loop.mustMake();
+//     mut drv = Driver.make(Config.make(), Pool.make());
+//     imm conn = drv.connect(&mut lp, "example.com", 80u16, Sink.Here[1u64]);
+//     drv.request(&mut lp, conn, RequestHead.get("/", "example.com"), BodyLength.empty(), Sink.Here[2u64]);
+//     mut events = List[Event].empty();
+//     mut going = true;
+//     while going {
+//       drv.poll(&mut lp, forever(), &mut events);    // waits in the loop, and only there
+//       mut k = 0usize;
+//       while k < events.len() {
+//         imm e = &mut events[k];
+//         if e.kind == EventKind.Response[] { ... e.response.status ... }
+//         elif e.kind == EventKind.Data[] { ... e.buf.view() ...; drv.release(e.req, e.buf.len()); }
+//         elif e.isTerminal() {going = false;}        // exactly one: Done, Failed,
+//         k = k + 1usize;                             // Cancelled or TimedOut
+//       }
+//       events.clear();
+//     }
+//   }
+//
+//   Driver.make(config, pool)                                         (THE DRIVER)
+//   d.connect(lp, host, port, sink)  d.connectAddr(lp, addr, sink)   (CONNECTIONS)
+//   d.connectWith(lp, host, port, layer, sink)
+//   d.listen(lp, addr, sink)  d.listenWith(lp, addr, make, sink)  d.stopListening(lp, l)
+//   d.localAddr(lp, l)  d.close(lp, conn)  d.abort(lp, conn)
+//   d.isOpen(conn)  d.isIdle(conn)  d.peer(conn)
+//   d.request(lp, conn, head, body, sink)                              (REQUESTS)
+//   d.requestBy(..., deadline)  d.requestIn(..., group, deadline)
+//   d.respond(req, head, body)  d.sendInterim(req, head)  d.sendContinue(req)  (SERVING)
+//   d.sendData(req, buf)  d.finish(req)  d.finishWith(req, trailers)   (BODIES)
+//   d.release(req, n)                                                   (CREDIT)
+//   d.cancel(lp, req)                                                   (CANCEL)
+//   d.poll(lp, until, events)  d.complete(lp, c)  d.pump(lp, events)  d.wakeAt()  (DRIVING)
+//   d.owns(token)  d.stats()  d.live()  d.held()  d.abortAll(lp)
+//   Sink.Here[token]  Sink.Chan[token, tx]                             (SINKS)
+//   Event: e.kind e.token e.conn e.req, and per kind e.peer e.clean e.failure  (EVENTS)
+//     e.request e.response e.body e.buf e.trailers e.timing;  e.isTerminal()
+//   EventKind: Connected Accepted Closed Request Response Interim Data End
+//     Writable Done Failed Cancelled TimedOut;  eventName(k)
+//   Failure: f.stage f.code f.error f.unsent f.message()               (FAILURES)
+//   Timing: t.submitted t.started t.firstByte t.ended
+//   Layer, Plain                                                        (LAYERS)
+//
+// THE DRIVER. One per Loop, driven by the loop's thread, as the loop is.
+// The program polls the loop as it always does and hands the driver every
+// completion: 'd.complete(lp, &mut c)' says whether it was the driver's (its
+// token is the driver's: 'd.owns(token)'), taking what it needs from it; then
+// 'd.pump(lp, &mut events)' moves every connection the completions touched
+// as far as it can go and appends the events for this thread. A loop that
+// does nothing else uses 'd.poll(lp, until, &mut events)', which does all
+// three, waiting at most until 'until' (and not at all while events are
+// ready); a completion that is not the driver's is then dropped, counted in
+// 'stats().unclaimed'. A program that also submits its own operations to
+// the loop must keep its tokens clear of the driver's (the driver's have
+// the top bit set) and use complete and pump. 'wakeAt()' is the latest
+// instant the program's own poll may wait to: forever, unless the driver has
+// work ready (now) or events held for a full channel (a millisecond on).
+//
+// CONNECTIONS. A client connection is made by 'connect(lp, host, port,
+// sink)': the host is looked up on iocore's DNS lane (unless it is an IPv4
+// address written as one, '127.0.0.1'), each address it gives is tried in
+// turn with ConnectEx, and the whole is bounded by 'connectTimeout' from the
+// call. Requests may be made on it at once: they wait for it. A server
+// connection is made by 'listen': each connection the listener accepts
+// (AcceptEx, 'acceptDepth' of them outstanding) is a server connection of
+// its own, its requests going to the listener's sink. Every connection's
+// life is told to its sink: Connected (a client's) or Accepted (a server's)
+// first, and EXACTLY ONE Closed last, after every request on it has had its
+// final answer: 'clean' when it ended as HTTP meant it to (keep-alive's end,
+// an idle timeout, 'Connection: close', 'close'), with the failure when it
+// did not. 'close(lp, conn)' lets what was asked of it finish, then closes
+// it; 'abort(lp, conn)' resets it now, every request on it answered
+// Cancelled. A connection is closed politely: its sending side is shut
+// (TCP's FIN), and what the peer still sends is read and dropped until it
+// closes too or 'lingerTimeout' passes, so a reset never cuts off a response
+// the peer has not finished reading. A connection whose peer resets it, or
+// whose receive or send fails, closes at once.
+//
+// KEEP-ALIVE. A client connection carries one request at a time (HTTP/1.1
+// without pipelining), and is kept for the next once an exchange ends with
+// both sides willing; 'isIdle(conn)' says it is free. Up to 'maxWaiting'
+// requests may wait on a connection that is busy or still connecting: each
+// is sent when the one before it has ended, with no round trip through the
+// program. A request past that bound is answered at once, Failed (stage
+// Limit). The client above this (httpclient: pools per origin, limits,
+// retries) decides which connection each request goes on.
+//
+// REQUESTS. 'request(lp, conn, head, body, sink)' asks for an exchange on a
+// client connection, its events going to sink. It gets EXACTLY ONE final
+// answer -- Done, Failed, Cancelled or TimedOut -- and nothing after it
+// (invariant I1). Before it: Response (the head; Interim for a 1xx before
+// it), Data (the body's bytes, in order, each an IoBuf the program owns),
+// then End (the response is whole, with its trailer fields), then Done. A
+// request with a body (BodyLength sized or unsized) sends it by 'sendData'
+// and 'finish' once it is under way: Writable says so. A request that cannot
+// be made -- the connection closed, failed or a server's; the waiting bound
+// reached; its group cancelled; its deadline past -- is answered at once,
+// never sent.
+//
+// SERVING. A server's sink gets Accepted for each connection, then Request
+// for each request read (its head and what is known of its body), its Data
+// and End, and the program answers with 'respond(req, head, body)', then
+// 'sendData' and 'finish' for a body. The request's final answer is Done
+// once the response has gone to the kernel whole, or Failed if the
+// connection ended first; a server's 'cancel' resets the connection. A
+// server answers one request at a time per connection; a pipelined one is
+// read when the answer before it is whole.
+//
+// SINKS. Where events go, and the token they carry back (plain data the
+// driver never reads, as iocore's targets are). Sink.Here[token]: to this
+// thread, appended by pump or poll. Sink.Chan[token, tx]: sent on a sync
+// channel (a Sender[Event]) to another thread, never waiting: when the
+// channel is full the event is held, the connection's later events wait
+// behind it, its reading stops, and it is tried again at every pump --
+// so the channel's bound bounds what the connection holds. Events keep their
+// order per sink, not across sinks: a request's events held for a channel
+// may still be on their way after its connection's Closed has gone Here, so
+// a program drives the driver until 'held()' is 0 before it stops. Moving to
+// actors changes the sink and nothing else: an actor's mailbox is one more
+// variant.
+//
+// CREDIT (invariant I9: bounded memory). A connection reads only while its
+// core has room ('recvSize' at a time, one receive outstanding), and a
+// response body's bytes are on loan to the program until it says it is done
+// with them: 'release(req, n)' for events delivered Here -- the credit is
+// the connection's, so bytes released after the request's Done still count
+// -- (the core pauses
+// once 'bodyWindow' bytes are out unreleased, the driver stops reading, and
+// TCP holds the peer); for a channel, the bytes are released as the channel
+// takes them, so the channel's own bound is the window. Sending is bounded
+// by the core's watermark: 'sendData' hands a buffer back, refused, when it
+// is reached, and Writable comes when there is room again. Nothing queues
+// without a bound: requests wait 'maxWaiting' deep, connections are at most
+// 'maxConnections' (an accept past it is not made), sends 'sendDepth' deep,
+// and a connection holds a receive buffer only while it reads a message (a
+// client's response, a server's request body): otherwise, idle or answering,
+// it waits with a zero-byte receive and pins no buffer ('idleRecvReady').
+//
+// CANCEL AND DEADLINES. The cancellation contract is iocore's. 'cancel(lp,
+// req)' asks a request to end: still waiting, it is taken out and answered
+// Cancelled; under way, HTTP/1.1's only way to stop it is to end the
+// connection, so the connection is reset, the request answered Cancelled
+// and any waiting behind it Failed, unsent. 'requestBy' gives a deadline, an
+// absolute Instant (never a duration, I6): the request is answered TimedOut
+// then, the same way. 'requestIn' puts it in an iocore CancelGroup as well,
+// whose cancel -- from any thread -- cancels it, and whose deadline it
+// inherits as the tighter. The driver watches each such request with one
+// iocore timer in its group, so the group's cancel wakes the loop. A
+// connection's own deadlines are its core's (head, body, idle, expect:
+// http1's Config) and connectTimeout.
+//
+// FAILURES. A Failed answer, and a Closed that is not clean, carry a
+// Failure: the stage it failed at (Resolve, Connect, Read, Write, Http --
+// the core refused what came, or its deadline passed -- Closed, Limit); the
+// Windows error number when the OS gave one (a peer's reset reads as
+// ERROR_NETNAME_DELETED, 64); an http.HttpError (its kind,
+// detail, and 'noResponse', no byte of a response arrived); and 'unsent',
+// no byte of the request reached the socket. A request may be retried on
+// another connection when unsent, or when idempotent and noResponse: the
+// client layer's decision (invariant I21), which these two say exactly.
+//
+// LAYERS: the seam for TLS. Between the socket and the protocol core is a
+// byte-stream layer, a Layer: the bytes that came off the wire go in by
+// 'wireIn', the protocol's bytes come out by 'plainOut'; the protocol's
+// bytes to send go in by 'plainIn', the wire's come out by 'wireOut'. Plain
+// passes them through untouched, moving each buffer whole (no copy); a TLS
+// session, sans-IO, is the same shape with a handshake and records inside
+// it, and slots in per connection ('connectWith', 'listenWith') with no
+// change to the driver: a Layer is a trait, a connection holds it behind an
+// owning virtual reference, and a type complies by having its methods.
+//
+// DIAGNOSTICS. 'stats()' counts connections made, accepted, refused and
+// closed, requests by their final answer, events delivered, held and
+// dropped, and bytes; Done carries the request's Timing (submitted,
+// started on the wire, first byte of the response, ended).
+//
+// MEASURED, release, an i7-13700HX on Windows 11, other work on the machine
+// (examples/load.cone; numbers vary run to run). Every request is a GET
+// answered 200 with 64 bytes, each connection making its requests one after
+// another; latency is from the request being asked for to its Done, so with
+// many connections it is mostly the queue every connection's next request
+// waits in (Little's law: connections / throughput):
+//
+// - One connection, server and client on one thread: 59,000 requests a
+//   second, p50 15 us, p99 20 us. Server on a thread of its own: 35,000 a
+//   second, p50 25 us, p99 65 us (each request crosses threads twice).
+// - 256 connections: one thread 49,000 a second; two threads 92,000 to
+//   101,000 (p50 2.5 ms, p99 3.4 ms).
+// - 1,000 connections: one thread 37,000 to 40,000 a second; two threads
+//   68,000 to 70,000 (p50 14 ms, p99 19 ms).
+// - Memory per idle kept-alive connection, both its ends in one process,
+//   2,000 of them: about 6 KB of private bytes and no buffer (each end
+//   waiting with a zero-byte receive); with idleRecvReady off, 39 KB, 32 KiB
+//   of it the two ends' receive buffers. The kernel's own socket memory is
+//   not in these.
+//
+// Not here yet: TLS (the Layer seam waits for a binding); happy eyeballs
+// (addresses are tried one after another, not raced); a request's cancel
+// that drains a short response instead of resetting; HTTP/2 and HTTP/3 cores
+// under the same driver; a Request handle (cancel by a group instead);
+// priorities; actors (a sink to come).
+
+mod httpconn;
+
+import libc;
+import collections use List, String;
+import time use Instant, Duration;
+import sync use Sender;
+import iobuf use IoBuf, Pool, Chain;
+import iocore use Loop, Op, Target, Completion, Handle, OpId, SocketAddr, CancelGroup, IoError, forever, resolveOp, addressesIn;
+import http use *;
+import http1;
+import diag;
+
+fn @initpure init() {
+  driverSeq = Atomic[u32].of(0u32);
+}
+
+imm driverSeq Atomic[u32];
+
+const noEntry = 4294967295u32;
+
+// ---------------------------------------------------------------------------
+// Ids
+// ---------------------------------------------------------------------------
+
+// A connection: an entry of its driver's table and which of its occupants
+// it was, so an id kept after the connection closed names nothing
+pub struct ConnId {
+  index u32;
+  gen u32;
+
+  pub fn none() ConnId {new ConnId(noEntry, 0u32);}
+  pub fn isNone(self) Bool {gen == 0u32;}
+  pub fn number(self) u64 {(u64.from(gen) << 32u64) | u64.from(index);}
+  pub fn `==`(self, o ConnId) Bool {index == o.index and gen == o.gen;}
+  pub fn `!=`(self, o ConnId) Bool {index != o.index or gen != o.gen;}
+}
+
+// A request, and the connection it is on
+pub struct ReqId {
+  conn ConnId;
+  index u32;
+  gen u32;
+
+  pub fn none() ReqId {new ReqId(ConnId.none(), noEntry, 0u32);}
+  pub fn isNone(self) Bool {gen == 0u32;}
+  pub fn connId(self) ConnId {conn;}
+  pub fn number(self) u64 {(u64.from(gen) << 32u64) | u64.from(index);}
+  pub fn `==`(self, o ReqId) Bool {index == o.index and gen == o.gen and conn == o.conn;}
+  pub fn `!=`(self, o ReqId) Bool {index != o.index or gen != o.gen or conn != o.conn;}
+}
+
+// A listening socket
+pub struct ListenerId {
+  index u32;
+  gen u32;
+
+  pub fn none() ListenerId {new ListenerId(noEntry, 0u32);}
+  pub fn isNone(self) Bool {gen == 0u32;}
+  pub fn `==`(self, o ListenerId) Bool {index == o.index and gen == o.gen;}
+}
+
+// ---------------------------------------------------------------------------
+// Configuration
+// ---------------------------------------------------------------------------
+
+// A driver's bounds and timeouts (see the package's header). Every
+// connection's core takes 'protocol', http1's own Config
+pub struct Config {
+  pub protocol http1.Config;
+  pub connectTimeout Duration;   // a client connection's lookup and connect, from the call
+  pub recvSize usize;            // each receive's buffer
+  pub sendDepth u32;             // sends in flight per connection
+  pub maxConnections u32;        // connections the driver holds at once
+  pub maxWaiting u32;            // requests waiting on a busy or connecting connection
+  pub lingerTimeout Duration;    // after its FIN, how long a closing connection waits for the peer's
+  pub acceptDepth u32;           // accepts outstanding per listener
+  pub idleRecvReady Bool;        // an idle connection waits with a zero-byte receive
+
+  // The defaults
+  pub fn make() Config {
+    new Config(protocol: http1.Config.make(), connectTimeout: Duration.fromSeconds(10i64),
+      recvSize: 16384usize, sendDepth: 4u32, maxConnections: 10000u32, maxWaiting: 1u32,
+      lingerTimeout: Duration.fromSeconds(2i64), acceptDepth: 4u32, idleRecvReady: true);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Failures and timing
+// ---------------------------------------------------------------------------
+
+// Where a connection or a request failed
+pub enum Stage {
+  Resolve,       // looking the host up
+  Connect,       // connecting to it
+  Read,          // a receive failed: the connection was reset, or broke
+  Write,         // a send failed
+  Http,          // the core refused what came, or one of its deadlines passed
+  Closed,        // the connection closed, or was reset, before the request could finish
+  Limit;         // a bound refused it
+}
+
+// The name of a stage, in lower case
+pub fn stageName(s Stage) &[]u8 {
+  if s == Stage.Resolve[] {"resolve";}
+  elif s == Stage.Connect[] {"connect";}
+  elif s == Stage.Read[] {"read";}
+  elif s == Stage.Write[] {"write";}
+  elif s == Stage.Http[] {"http";}
+  elif s == Stage.Closed[] {"closed";}
+  else {"limit";}
+}
+
+// Why a request or a connection failed (see the package's header, FAILURES)
+pub struct Failure {
+  pub stage Stage;
+  pub code u32;           // Windows' error number, or 0
+  pub error HttpError;    // its kind, detail, and noResponse
+  pub unsent Bool;        // no byte of the request reached the socket
+
+  pub fn make(stage Stage, code u32, kind ErrorKind, detail &[]u8) Failure {
+    new Failure(stage, code, HttpError.make(kind, 0u16, detail), false);
+  }
+
+  // Nothing: a connection that has not failed
+  pub fn none() Failure {new Failure(Stage.Closed[], 0u32, HttpError.empty(), false);}
+
+  pub fn copy(self &) Failure {
+    mut e = HttpError.make(error.kind, error.status, error.detail.view());
+    e.noResponse = error.noResponse;
+    new Failure(stage, code, e, unsent);
+  }
+
+  // 'connect: timed out: no connection within connectTimeout'; with the
+  // Windows error's number and text when there is one
+  pub fn message(self &) String {
+    mut out = String.from(stageName(stage));
+    out.append(": ");
+    out.append(error.message().view());
+    if code != 0u32 {
+      out.append(" (Windows error ");
+      out.appendUInt(u64.from(code));
+      out.append(": ");
+      out.append(new IoError(code).message().view());
+      out.append(")");
+    }
+    out;
+  }
+}
+
+// When a request reached each point: zero where it did not
+pub struct Timing {
+  pub submitted Instant;  // asked for
+  pub started Instant;    // handed to the connection's core: its bytes on their way
+  pub firstByte Instant;  // its response's head arrived
+  pub ended Instant;      // its final answer
+
+  pub fn zero() Timing {new Timing(new Instant(), new Instant(), new Instant(), new Instant());}
+}
+
+// ---------------------------------------------------------------------------
+// Sinks and events
+// ---------------------------------------------------------------------------
+
+// Where events go, and the token they carry back (see the package's
+// header, SINKS)
+pub enum Sink {
+  pub token u64;
+  pub struct Here {}
+  pub struct Chan {pub tx Sender[Event];}
+}
+
+// A second sink to the same place: a channel's sender cloned. (The sink
+// is swapped into a local to be matched: Cone narrows only a local's
+// variant, error 1034)
+fn copySink(s &mut Sink) Sink {
+  mut here Sink = Sink.Here[0u64];
+  here <=> *s;
+  mut out Sink = Sink.Here[here.token];
+  match &here {
+    case imm c &Chan {out = Sink.Chan[here.token, c.tx.clone()];}
+    else {}
+  }
+  *s <=> here;
+  out;
+}
+
+// Whether a sink is a channel
+fn isChan(s &mut Sink) Bool {
+  mut here Sink = Sink.Here[0u64];
+  here <=> *s;
+  mut yes = false;
+  match &here {
+    case is &Chan {yes = true;}
+    else {}
+  }
+  *s <=> here;
+  yes;
+}
+
+// What an event says happened (see the package's header, CONNECTIONS,
+// REQUESTS, SERVING)
+pub enum EventKind {
+  Connected,     // a client connection is made: peer
+  Accepted,      // a server connection is accepted: listener, peer
+  Closed,        // a connection has ended, its last event: clean, failure
+  Request,       // a server's request has arrived: request, body
+  Response,      // a client's response head: response, body
+  Interim,       // a 1xx before it: response
+  Data,          // body bytes: buf
+  End,           // the message being read is whole: trailers
+  Writable,      // a request may send body bytes again
+  Done,          // FINAL: the exchange ended as it should: timing
+  Failed,        // FINAL: failure
+  Cancelled,     // FINAL
+  TimedOut;      // FINAL
+}
+
+// The name of an event's kind
+pub fn eventName(k EventKind) &[]u8 {
+  if k == EventKind.Connected[] {"Connected";}
+  elif k == EventKind.Accepted[] {"Accepted";}
+  elif k == EventKind.Closed[] {"Closed";}
+  elif k == EventKind.Request[] {"Request";}
+  elif k == EventKind.Response[] {"Response";}
+  elif k == EventKind.Interim[] {"Interim";}
+  elif k == EventKind.Data[] {"Data";}
+  elif k == EventKind.End[] {"End";}
+  elif k == EventKind.Writable[] {"Writable";}
+  elif k == EventKind.Done[] {"Done";}
+  elif k == EventKind.Failed[] {"Failed";}
+  elif k == EventKind.Cancelled[] {"Cancelled";}
+  else {"TimedOut";}
+}
+
+// What happened: its kind, and the fields that kind fills (the rest are
+// empty). A struct, as iocore's Completion is, so a program reads it in
+// place in its list, with no swap to narrow it
+pub struct Event {
+  pub kind EventKind;
+  pub token u64;             // its sink's token
+  pub conn ConnId;           // the connection it is about
+  pub req ReqId;             // the request it is about, or ReqId.none()
+  pub listener ListenerId;   // Accepted: the listener
+  pub peer SocketAddr;       // Connected, Accepted: the other end
+  pub clean Bool;            // Closed: it ended as HTTP meant it to
+  pub failure Failure;       // Closed when not clean, Failed: why
+  pub request RequestHead;   // Request: the head
+  pub response ResponseHead; // Response, Interim: the head
+  pub body BodyLength;       // Request, Response: what is known of the body
+  pub buf IoBuf;             // Data: the bytes, the program's now
+  pub trailers Headers;      // End: the trailer fields
+  pub timing Timing;         // Done: when it reached each point
+
+  // An event of kind k, about conn and req, every other field empty
+  pub fn make(k EventKind, token u64, conn ConnId, req ReqId) Event {
+    new Event(kind: k, token: token, conn: conn, req: req, listener: ListenerId.none(),
+      peer: SocketAddr.localhost(0u16), clean: false, failure: Failure.none(),
+      request: RequestHead.empty(), response: ResponseHead.empty(), body: BodyLength.empty(),
+      buf: IoBuf.empty(), trailers: Headers.empty(), timing: Timing.zero());
+  }
+
+  // Whether it is a request's final answer
+  pub fn isTerminal(self &) Bool {
+    kind == EventKind.Done[] or kind == EventKind.Failed[] or kind == EventKind.Cancelled[] or
+      kind == EventKind.TimedOut[];
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Statistics
+// ---------------------------------------------------------------------------
+
+// A driver's counters, as 'stats' copies them out
+pub struct DriverStats {
+  pub connects u64;       // client connections asked for
+  pub connected u64;      // ...that connected
+  pub accepted u64;       // server connections accepted
+  pub refused u64;        // accepted sockets closed at once: maxConnections reached
+  pub closed u64;         // connections closed (each with its one Closed)
+  pub cleanCloses u64;    // ...of them, cleanly
+  pub requests u64;       // requests asked for, and requests read (a server's)
+  pub done u64;           // final answers, by outcome
+  pub failed u64;
+  pub cancelled u64;
+  pub timedOut u64;
+  pub events u64;         // events handed to sinks
+  pub held u64;           // events held for a full channel
+  pub dropped u64;        // events dropped: their channel's receiver had gone
+  pub unclaimed u64;      // completions poll was given that were not the driver's
+  pub bytesIn u64;        // bytes received
+  pub bytesOut u64;       // bytes sent
+
+  pub fn zero() DriverStats {
+    new DriverStats(0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64,
+      0u64, 0u64, 0u64, 0u64, 0u64);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Layers: the byte stream between the socket and the protocol core
+// ---------------------------------------------------------------------------
+
+// A byte-stream layer (see the package's header, LAYERS). Sans-IO: it does
+// no I/O and reads no clock
+pub trait Layer {
+  // Bytes that came off the socket; an empty buffer is the peer's FIN
+  pub fn wireIn(self &mut, buf IoBuf, now Instant);
+  // The next bytes for the socket, moved out; empty when there are none
+  pub fn wireOut(self &mut, now Instant) IoBuf;
+  // How many more wire bytes it will take now
+  pub fn wireRoom(self &) usize;
+  // The protocol's bytes to send
+  pub fn plainIn(self &mut, buf IoBuf);
+  // The next of the protocol's bytes that came, moved out; empty when none
+  pub fn plainOut(self &mut) IoBuf;
+  // Bytes it holds that are still to go out on the wire
+  pub fn pending(self &) usize;
+  // Whether the protocol's bytes flow: true once a handshake (if any) is done
+  pub fn isOpen(self &) Bool;
+  // Whether the peer's stream has ended and every byte of it was taken
+  pub fn peerEnded(self &) Bool;
+  // No more of the protocol's bytes will be sent: tell the peer (a TLS
+  // close_notify; nothing for Plain)
+  pub fn closeSend(self &mut);
+  // 0, or the layer's own code for why it failed (a TLS alert)
+  pub fn failure(self &) u32;
+}
+
+const noBound = 0xFFFFFFFFFFFFFFFFusize;
+
+// The plain layer: bytes pass through as they are, each buffer moved whole
+pub struct Plain {
+  inq Chain;
+  outq Chain;
+  ended Bool;
+
+  pub fn make() Plain {new Plain(Chain.make(noBound), Chain.make(noBound), false);}
+
+  pub fn wireIn(self &mut, buf IoBuf, now Instant) {
+    if buf.len() == 0usize {
+      ended = true;
+      return;
+    }
+    inq.push(buf);
+  }
+
+  pub fn wireOut(self &mut, now Instant) IoBuf {Plain.front(&mut outq);}
+  pub fn wireRoom(self &) usize {noBound;}
+  pub fn plainIn(self &mut, buf IoBuf) {outq.push(buf);}
+  pub fn plainOut(self &mut) IoBuf {Plain.front(&mut inq);}
+  pub fn pending(self &) usize {outq.len();}
+  pub fn isOpen(self &) Bool {true;}
+  pub fn peerEnded(self &) Bool {ended and inq.len() == 0usize;}
+  pub fn closeSend(self &mut) {}
+  pub fn failure(self &) u32 {0u32;}
+
+  fn front(q &mut Chain) IoBuf {
+    mut b = IoBuf.empty();
+    match q.popFront() {
+      case mut s Some {b <=> s.value;}
+      case is None[IoBuf] {}
+    }
+    b;
+  }
+}
+
+// A Plain layer, as a connection holds one
+pub fn plainLayer() So[Layer] {new So[Plain](Plain.make());}

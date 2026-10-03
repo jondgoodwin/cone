@@ -1,0 +1,377 @@
+// Deadlines, pinned. One Loop, one Driver, a server and its clients over
+// 127.0.0.1, the server's answer chosen by the request's target (a stall
+// that never answers; a plain 'ok' after a pause of 'p' ms, '/ok/<p>').
+//
+// 1. requestBy, the server stalling: TimedOut at the deadline (not before,
+//    and well before a second), the connection reset (Closed, not clean).
+// 2. A CancelGroup's deadline, inherited by a request with none of its
+//    own: TimedOut at the group's.
+// 3. A deadline already past: TimedOut at once, never sent.
+// 4. A request waiting behind another times out while it waits: TimedOut,
+//    never sent; the one ahead is Done and the connection lives on.
+// 5. The core's own head timeout (http1's headTimeout, 100 ms here), the
+//    server stalling: Failed at the Http stage, kind 'timed out', with
+//    noResponse (no byte of a response came) and not unsent.
+// 6. connectTimeout, connecting to a port nothing listens on: the
+//    connection fails at the Connect stage, timed out (Windows retries a
+//    refused loopback connect rather than refusing it at once: within 200
+//    ms it has not said refused), and the request waiting on it is Failed,
+//    unsent.
+// 7. A deadline that does not pass: the request is Done, and its watch is
+//    let go (nothing fires later).
+
+mod deadlines;
+
+import testing use *;
+import collections use List, String;
+import time use Instant, Duration;
+import iobuf use *;
+import iocore use Loop, SocketAddr, CancelGroup, forever;
+import http use *;
+import httpconn use *;
+
+const tokServer = 1000u64;
+const slots = 16usize;
+
+struct Slot {
+  pub status u16;
+  pub bytes u64;
+  pub finals u32;
+  pub after u32;
+  pub kind EventKind;
+  pub stage Stage;
+  pub errKind ErrorKind;
+  pub code u32;
+  pub noResponse Bool;
+  pub unsent Bool;
+  pub closes u32;
+  pub clean Bool;
+  pub at Instant;
+}
+
+fn blankSlot() Slot {
+  new Slot(0u16, 0u64, 0u32, 0u32, EventKind.Writable[], Stage.Closed[], ErrorKind.Malformed[], 0u32,
+    false, false, 0u32, false, new Instant());
+}
+
+struct State {
+  pub req List[Slot];
+  pub conn List[Slot];
+  pub pend List[ReqId];       // the server's answers waiting for their pause
+  pub pendAt List[Instant];
+}
+
+fn serve(drv &mut Driver, st &mut State, e &mut Event) {
+  imm t = e.request.target.view();
+  if t == "/stall" {return;}
+  // '/ok/<p>': answer after p ms
+  mut p = 0i64;
+  mut k = 4usize;
+  while k < t.len {
+    p = p * 10i64 + i64.from(t[k] - '0');
+    k = k + 1usize;
+  }
+  st.pend.push(e.req);
+  st.pendAt.push(Instant.now() + Duration.fromMillis(p));
+}
+
+fn answerDue(drv &mut Driver, st &mut State, pool &Pool) {
+  mut k = 0usize;
+  while k < st.pend.len() {
+    if *st.pendAt[k] <= Instant.now() {
+      imm req = *st.pend[k];
+      drv.respond(req, ResponseHead.make(200u16), BodyLength.sized(2u64));
+      mut b = pool.mustTake(16usize);
+      b.append("ok");
+      drv.sendData(req, b);
+      drv.finish(req);
+      imm last = st.pend.len() - 1usize;
+      st.pend.swap(k, last);
+      st.pendAt.swap(k, last);
+      st.pend.pop();
+      st.pendAt.pop();
+    } else {
+      k = k + 1usize;
+    }
+  }
+}
+
+fn run(drv &mut Driver, lp &mut Loop, st &mut State, pool &Pool, ms i64, tok u64) {
+  imm until = Instant.now() + Duration.fromMillis(ms);
+  mut events = List[Event].empty();
+  while Instant.now() < until {
+    if tok != 0u64 and st.req[usize.from(tok)].finals > 0u32 {return;}
+    answerDue(drv, st, pool);
+    mut wake = until;
+    if st.pend.len() > 0usize {wake = Instant.now() + Duration.fromMillis(1i64);}
+    drv.poll(lp, wake, &mut events);
+    mut k = 0usize;
+    while k < events.len() {
+      imm e = &mut events[k];
+      k = k + 1usize;
+      if e.token == tokServer {
+        if e.kind == EventKind.Request[] {serve(drv, st, e);}
+      } elif e.token >= 100u64 {
+        imm s = &mut st.conn[usize.from(e.token - 100u64)];
+        if e.kind == EventKind.Closed[] {
+          s.closes = s.closes + 1u32;
+          s.clean = e.clean;
+          s.stage = e.failure.stage;
+          s.errKind = e.failure.error.kind;
+          s.code = e.failure.code;
+          s.at = Instant.now();
+        }
+      } else {
+        imm s = &mut st.req[usize.from(e.token)];
+        if s.finals > 0u32 {s.after = s.after + 1u32;}
+        if e.kind == EventKind.Response[] {s.status = e.response.status;}
+        elif e.kind == EventKind.Data[] {
+          s.bytes = s.bytes + u64.from(e.buf.len());
+          drv.release(e.req, e.buf.len());
+        } elif e.isTerminal() {
+          s.finals = s.finals + 1u32;
+          s.kind = e.kind;
+          s.stage = e.failure.stage;
+          s.errKind = e.failure.error.kind;
+          s.code = e.failure.code;
+          s.noResponse = e.failure.error.noResponse;
+          s.unsent = e.failure.unsent;
+          s.at = Instant.now();
+        }
+      }
+    }
+    events.clear();
+  }
+}
+
+fn get(drv &mut Driver, lp &mut Loop, conn ConnId, target &[]u8, tok u64) ReqId {
+  drv.request(lp, conn, RequestHead.get(target, "127.0.0.1"), BodyLength.empty(), Sink.Here[tok]);
+}
+
+fn getBy(drv &mut Driver, lp &mut Loop, conn ConnId, target &[]u8, tok u64, at Instant) ReqId {
+  drv.requestBy(lp, conn, RequestHead.get(target, "127.0.0.1"), BodyLength.empty(), Sink.Here[tok], at);
+}
+
+fn main() i32 {
+  imm pool = Pool.make();
+  mut lp = Loop.mustMake();
+  mut cfg = Config.make();
+  cfg.maxWaiting = 4u32;
+  mut drv = Driver.make(cfg, pool);
+  mut st = new State(List[Slot].empty(), List[Slot].empty(), List[ReqId].empty(), List[Instant].empty());
+  mut i = 0usize;
+  while i < slots {
+    st.req.push(blankSlot());
+    st.conn.push(blankSlot());
+    i = i + 1usize;
+  }
+  mut listener = ListenerId.none();
+  match drv.listen(&mut lp, SocketAddr.localhost(0u16), Sink.Here[tokServer]) {
+    case imm r Ok {listener = r.value;}
+    case imm e Error {}
+  }
+  mut port = 0u16;
+  match drv.localAddr(&lp, listener) {
+    case imm a Ok {port = a.value.port();}
+    case imm e Error {}
+  }
+  require(port != 0u16, "the server listens");
+
+  // 1. requestBy, the server stalling
+  {
+    imm c = drv.connect(&mut lp, "127.0.0.1", port, Sink.Here[100u64]);
+    imm t0 = Instant.now();
+    getBy(&mut drv, &mut lp, c, "/stall", 1u64, t0 + Duration.fromMillis(50i64));
+    run(&mut drv, &mut lp, &mut st, &pool, 3000i64, 1u64);
+    imm s = st.req[1usize];
+    expectUInt(u64.from(s.finals), 1u64, "1: one final answer");
+    expect(s.kind == EventKind.TimedOut[], "1: ...TimedOut");
+    imm took = (s.at - t0).millis();
+    expect(took >= 50i64 and took < 1000i64, "1: ...at its deadline");
+    run(&mut drv, &mut lp, &mut st, &pool, 50i64, 0u64);
+    expectUInt(u64.from(st.conn[0usize].closes), 1u64, "1: the connection reset: one Closed");
+    expect(not st.conn[0usize].clean, "1: ...not clean");
+  }
+
+  // 2. A group's deadline, inherited
+  {
+    imm c = drv.connect(&mut lp, "127.0.0.1", port, Sink.Here[101u64]);
+    imm t0 = Instant.now();
+    imm g = CancelGroup.until(t0 + Duration.fromMillis(60i64));
+    drv.requestIn(&mut lp, c, RequestHead.get("/stall", "127.0.0.1"), BodyLength.empty(), Sink.Here[2u64], g, forever());
+    run(&mut drv, &mut lp, &mut st, &pool, 3000i64, 2u64);
+    imm s = st.req[2usize];
+    expect(s.kind == EventKind.TimedOut[], "2: TimedOut");
+    imm took = (s.at - t0).millis();
+    expect(took >= 60i64 and took < 1000i64, "2: ...at the group's deadline");
+  }
+
+  // 3. A deadline already past
+  {
+    imm c = drv.connect(&mut lp, "127.0.0.1", port, Sink.Here[102u64]);
+    imm before = drv.stats().requests;
+    getBy(&mut drv, &mut lp, c, "/ok/0", 3u64, Instant.now() - Duration.fromMillis(1i64));
+    run(&mut drv, &mut lp, &mut st, &pool, 3000i64, 3u64);
+    expect(st.req[3usize].kind == EventKind.TimedOut[], "3: TimedOut at once");
+    expectUInt(drv.stats().requests - before, 1u64, "3: ...never sent: the server read nothing");
+    drv.close(&mut lp, c);
+  }
+
+  // 4. A waiting request times out; the one ahead is Done
+  {
+    imm c = drv.connect(&mut lp, "127.0.0.1", port, Sink.Here[103u64]);
+    get(&mut drv, &mut lp, c, "/ok/150", 4u64);
+    imm t0 = Instant.now();
+    getBy(&mut drv, &mut lp, c, "/ok/0", 5u64, t0 + Duration.fromMillis(40i64));
+    run(&mut drv, &mut lp, &mut st, &pool, 3000i64, 4u64);
+    imm s5 = st.req[5usize];
+    expect(s5.kind == EventKind.TimedOut[], "4: the waiting one: TimedOut");
+    imm took = (s5.at - t0).millis();
+    expect(took >= 40i64 and took < 140i64, "4: ...at its deadline, while still waiting");
+    expect(st.req[4usize].kind == EventKind.Done[], "4: the one ahead: Done");
+    expectUInt(st.req[4usize].bytes, 2u64, "4: ...its body");
+    expect(drv.isIdle(c), "4: the connection lives on");
+    drv.close(&mut lp, c);
+  }
+
+  // 5. The core's head timeout
+  {
+    mut c5 = Config.make();
+    c5.protocol.headTimeout = Duration.fromMillis(100i64);
+    mut d5 = Driver.make(c5, pool);
+    imm c = d5.connect(&mut lp, "127.0.0.1", port, Sink.Here[104u64]);
+    imm t0 = Instant.now();
+    d5.request(&mut lp, c, RequestHead.get("/stall", "127.0.0.1"), BodyLength.empty(), Sink.Here[6u64]);
+    // Two drivers on one loop: d5's completions are its own, the server's
+    // the other's
+    mut events = List[Event].empty();
+    mut comps = List[iocore.Completion].empty();
+    imm until = t0 + Duration.fromSeconds(3i64);
+    while st.req[6usize].finals == 0u32 and Instant.now() < until {
+      d5.pump(&mut lp, &mut events);
+      drv.pump(&mut lp, &mut events);
+      mut w = d5.wakeAt();
+      if drv.wakeAt() < w {w = drv.wakeAt();}
+      if events.len() > 0usize {w = new Instant();}
+      lp.poll(if w < until {w;} else {until;}, &mut comps);
+      mut k = 0usize;
+      while k < comps.len() {
+        imm cp = &mut comps[k];
+        if not d5.complete(&mut lp, cp) {drv.complete(&mut lp, cp);}
+        k = k + 1usize;
+      }
+      comps.clear();
+      d5.pump(&mut lp, &mut events);
+      drv.pump(&mut lp, &mut events);
+      k = 0usize;
+      while k < events.len() {
+        imm e = &mut events[k];
+        k = k + 1usize;
+        if e.token == 6u64 and e.isTerminal() {
+          imm s = &mut st.req[6usize];
+          s.finals = s.finals + 1u32;
+          s.kind = e.kind;
+          s.stage = e.failure.stage;
+          s.errKind = e.failure.error.kind;
+          s.noResponse = e.failure.error.noResponse;
+          s.unsent = e.failure.unsent;
+          s.at = Instant.now();
+        }
+      }
+      events.clear();
+    }
+    imm s = st.req[6usize];
+    expect(s.kind == EventKind.Failed[], "5: Failed");
+    expect(s.stage == Stage.Http[], "5: ...at the Http stage");
+    expect(s.errKind == ErrorKind.TimedOut[], "5: ...timed out");
+    expect(s.noResponse, "5: ...no byte of a response");
+    expect(not s.unsent, "5: ...but the request was sent");
+    imm took = (s.at - t0).millis();
+    expect(took >= 100i64 and took < 1000i64, "5: ...at headTimeout");
+    d5.abortAll(&mut lp);
+  }
+
+  // 6. connectTimeout, to a port nothing listens on
+  {
+    // A port that was listened on and is closed now
+    mut dead = 0u16;
+    {
+      mut lp2 = Loop.mustMake();
+      imm h = lp2.mustListen(SocketAddr.localhost(0u16));
+      match lp2.localAddr(h) {
+        case imm a Ok {dead = a.value.port();}
+        case imm e Error {}
+      }
+      lp2.close(h);
+    }
+    mut c6 = Config.make();
+    c6.connectTimeout = Duration.fromMillis(200i64);
+    mut d6 = Driver.make(c6, pool);
+    imm t0 = Instant.now();
+    imm c = d6.connect(&mut lp, "127.0.0.1", dead, Sink.Here[105u64]);
+    d6.request(&mut lp, c, RequestHead.get("/ok/0", "127.0.0.1"), BodyLength.empty(), Sink.Here[7u64]);
+    mut events = List[Event].empty();
+    imm until = t0 + Duration.fromSeconds(5i64);
+    mut closedAt = new Instant();
+    mut closed Event = Event.make(EventKind.Writable[], 0u64, ConnId.none(), ReqId.none());
+    mut gotClosed = false;
+    mut req7 = 0u32;
+    mut req7Unsent = false;
+    mut req7Stage Stage = Stage.Closed[];
+    while not gotClosed and Instant.now() < until {
+      d6.poll(&mut lp, until, &mut events);
+      mut k = 0usize;
+      while k < events.len() {
+        imm e = &mut events[k];
+        k = k + 1usize;
+        if e.token == 105u64 and e.kind == EventKind.Closed[] {
+          gotClosed = true;
+          closedAt = Instant.now();
+          closed.clean = e.clean;
+          closed.failure = e.failure.copy();
+        } elif e.token == 7u64 and e.isTerminal() {
+          req7 = req7 + 1u32;
+          req7Unsent = e.failure.unsent;
+          req7Stage = e.failure.stage;
+        }
+      }
+      events.clear();
+    }
+    expect(gotClosed, "6: the connection: Closed");
+    expect(not closed.clean, "6: ...not clean");
+    expect(closed.failure.stage == Stage.Connect[], "6: ...at the Connect stage");
+    imm took = (closedAt - t0).millis();
+    expect(took < 1000i64, "6: ...within connectTimeout's bound");
+    expectUInt(u64.from(req7), 1u64, "6: its request: one final answer");
+    expect(req7Unsent, "6: ...unsent");
+    expect(req7Stage == Stage.Connect[], "6: ...at the Connect stage");
+    expect(closed.failure.error.kind == ErrorKind.TimedOut[], "6: ...timed out: Windows had not refused it within 200 ms");
+  }
+
+  // 7. A deadline that does not pass
+  {
+    imm c = drv.connect(&mut lp, "127.0.0.1", port, Sink.Here[106u64]);
+    getBy(&mut drv, &mut lp, c, "/ok/0", 8u64, Instant.now() + Duration.fromMillis(80i64));
+    run(&mut drv, &mut lp, &mut st, &pool, 3000i64, 8u64);
+    expect(st.req[8usize].kind == EventKind.Done[], "7: Done");
+    // Past the deadline: nothing more comes
+    run(&mut drv, &mut lp, &mut st, &pool, 150i64, 0u64);
+    expectUInt(u64.from(st.req[8usize].after), 0u64, "7: ...and nothing after it");
+    drv.close(&mut lp, c);
+  }
+
+  run(&mut drv, &mut lp, &mut st, &pool, 200i64, 0u64);
+  mut k = 1usize;
+  mut finals = 0u64;
+  mut after = 0u64;
+  while k < 9usize {
+    finals = finals + u64.from(st.req[k].finals);
+    after = after + u64.from(st.req[k].after);
+    k = k + 1usize;
+  }
+  expectUInt(finals, 7u64, "seven requests here, seven final answers (the seventh's is counted apart)");
+  expectUInt(after, 0u64, "nothing after any");
+  drv.abortAll(&mut lp);
+  expectUInt(pool.stats().lent, 0u64, "every buffer back in the pool");
+  done();
+}

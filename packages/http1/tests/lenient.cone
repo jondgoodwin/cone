@@ -1,0 +1,193 @@
+// A client reads responses leniently where RFC 9112 lets a recipient: a
+// line may end in an LF alone (section 2.2) -- the status line, field
+// lines, the empty line ending the head, a chunk's size line, the line end
+// after a chunk's data, trailer lines and the empty line ending them -- and
+// a field line folded onto the next (obs-fold) is unfolded, the fold
+// replaced by one space (section 5.2). Each shape is read whole, then again
+// fed one byte at a time, and must give the same events. What stays
+// refused in a response: a bare CR, a fold before any field, and every
+// smuggling shape (Content-Length beside Transfer-Encoding). And a server
+// still refuses each of these shapes in a request, exactly as before.
+
+mod lenient;
+
+import testing use *;
+import collections use String;
+import time use Instant, Duration;
+import iobuf use *;
+import http use *;
+import http1 use *;
+
+fn feed(c &mut Connection, pool &Pool, text &[]u8, at Instant, step usize) {
+  mut i = 0usize;
+  while i < text.len {
+    mut b = pool.mustTake(4096usize);
+    imm end = if i + step < text.len {i + step;} else {text.len;};
+    imm n = b.append(&text[i .. end]);
+    c.handleInput(b, at);
+    i = i + n;
+  }
+}
+
+fn drain(c &mut Connection, at Instant) String {
+  mut s = String.empty();
+  while true {
+    imm b = c.pollTransmit(at);
+    if b.len() == 0usize {break;}
+    s.append(b.view());
+  }
+  s;
+}
+
+fn putFields(out &mut String, h &Headers) {
+  mut i = 0usize;
+  while i < h.len() {
+    out.append(" [");
+    out.append(h.nameAt(i));
+    out.append(": ");
+    out.append(h.valueAt(i));
+    out.append("]");
+    i = i + 1usize;
+  }
+}
+
+// The events a connection gives until it stops, a line each, a body's
+// bytes joined
+fn events(c &mut Connection) String {
+  mut log = String.empty();
+  mut body = String.empty();
+  while true {
+    match c.pollEvent() {
+      case mut e Request {
+        log.append("request ");
+        log.append(e.head.target.view());
+        putFields(&mut log, &e.head.headers);
+        log.append("\n");
+      }
+      case mut e Response {
+        log.append("response ");
+        log.appendUInt(u64.from(e.head.status));
+        putFields(&mut log, &e.head.headers);
+        log.append("\n");
+      }
+      case is Interim {log.append("interim\n");}
+      case mut d Data {
+        body.append(d.buf.view());
+        c.release(d.buf.len());
+      }
+      case mut e End {
+        if body.len() > 0usize {
+          log.append("body ");
+          log.append(body.view());
+          log.append("\n");
+          body.clear();
+        }
+        log.append("end");
+        putFields(&mut log, &e.trailers);
+        log.append("\n");
+      }
+      case mut f Failed {
+        log.append("failed ");
+        log.append(f.error.message().view());
+        log.append("\n");
+      }
+      case is Closed {
+        log.append("closed\n");
+        return log;
+      }
+      case is NeedData {return log;}
+      case is Paused {return log;}
+    }
+  }
+  log;
+}
+
+// A client that sent a GET and read response, fed 'step' bytes at a time
+fn clientReads(pool &Pool, response &[]u8, step usize) String {
+  imm t = Instant.fromNanos(1000000000i64);
+  mut c = Connection.client(Config.make(), *pool, t);
+  c.sendRequest(RequestHead.get("/x", "h"), BodyLength.empty());
+  drain(&mut c, t);
+  feed(&mut c, pool, response, t, step);
+  mut log = events(&mut c);
+  if c.canSendRequest() {log.append("reusable\n");}
+  log;
+}
+
+// Read whole and a byte at a time, each giving want
+fn accepts(pool &Pool, response &[]u8, want &[]u8, label &[]u8) {
+  expectStr(clientReads(pool, response, 100000usize).view(), want, label);
+  expectStr(clientReads(pool, response, 1usize).view(), want, label);
+}
+
+// A server reading request fails with why, and is to be closed
+fn serverRefuses(pool &Pool, request &[]u8, why &[]u8) {
+  imm t = Instant.fromNanos(1000000000i64);
+  mut c = Connection.server(Config.make(), *pool, t);
+  feed(&mut c, pool, request, t, 100000usize);
+  imm log = events(&mut c);
+  mut want = String.from(why);
+  want.append("closed\n");
+  expect(log.endsWith(want.view()), why);
+  if not log.endsWith(want.view()) {expectStr(log.view(), want.view(), "...was");}
+  expect(c.shouldClose() or drain(&mut c, t).len() > 0usize, "...and is to be closed");
+}
+
+fn bareLf(pool &Pool) {
+  accepts(pool, "HTTP/1.1 200 OK\nContent-Length: 2\nX-A: 1\n\nhi",
+    "response 200 [Content-Length: 2] [X-A: 1]\nbody hi\nend\nreusable\n", "LF alone throughout a head");
+  accepts(pool, "HTTP/1.1 200 OK\r\nContent-Length: 2\nX-A: 1\r\n\nhi",
+    "response 200 [Content-Length: 2] [X-A: 1]\nbody hi\nend\nreusable\n", "CRLF and LF mixed");
+  accepts(pool, "HTTP/1.1 204 No Content\n\n",
+    "response 204\nend\nreusable\n", "a head of a status line alone, LF");
+  accepts(pool, "HTTP/1.1 200 OK\nTransfer-Encoding: chunked\n\n3\nabc\n2;ext=1\nde\n0\n\n",
+    "response 200 [Transfer-Encoding: chunked]\nbody abcde\nend\nreusable\n", "chunk lines and data ends, LF");
+  accepts(pool, "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nabc\n0\nX-Sum: 9\nX-Two: 2\r\n\n",
+    "response 200 [Transfer-Encoding: chunked]\nbody abc\nend [X-Sum: 9] [X-Two: 2]\nreusable\n", "trailers, LF");
+}
+
+fn obsFold(pool &Pool) {
+  accepts(pool, "HTTP/1.1 200 OK\r\nX-Long: one\r\n two\r\n\tthree\r\nContent-Length: 0\r\n\r\n",
+    "response 200 [X-Long: one two three] [Content-Length: 0]\nend\nreusable\n", "obs-fold unfolded, one space a fold");
+  accepts(pool, "HTTP/1.1 200 OK\nX-Long: a\n    b  \nContent-Length: 0\n\n",
+    "response 200 [X-Long: a b] [Content-Length: 0]\nend\nreusable\n", "obs-fold with LF alone, its spaces trimmed");
+  accepts(pool, "HTTP/1.1 200 OK\r\nX-Empty:\r\n then\r\nContent-Length: 0\r\n\r\n",
+    "response 200 [X-Empty: then] [Content-Length: 0]\nend\nreusable\n", "obs-fold after an empty value");
+  accepts(pool, "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n0\r\nX-T: a\r\n b\r\n\r\n",
+    "response 200 [Transfer-Encoding: chunked]\nend [X-T: a b]\nreusable\n", "obs-fold in a trailer");
+}
+
+fn stillRefused(pool &Pool) {
+  expectStr(clientReads(pool, "HTTP/1.1 200 OK\r\nX: a\rb\r\n\r\n", 100000usize).view(),
+    "failed malformed: a CR is not followed by its LF\nclosed\n", "a client: a bare CR");
+  expectStr(clientReads(pool, "HTTP/1.1 200 OK\n folded\nX: 1\n\n", 100000usize).view(),
+    "failed malformed: the first field line starts with a space or a tab\nclosed\n", "a client: a fold before any field");
+  expectStr(clientReads(pool, "HTTP/1.1 200 OK\nContent-Length: 2\nTransfer-Encoding: chunked\n\n", 100000usize).view(),
+    "failed malformed: both Transfer-Encoding and Content-Length are given\nclosed\n", "a client: CL beside TE, LF alone");
+  expectStr(clientReads(pool, "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nTransfer-\r\n Encoding: chunked\r\n\r\n", 100000usize).view(),
+    "failed malformed: a field line has no colon\nclosed\n", "a client: a fold cannot make a field name");
+  // A server, reading requests, refuses every shape as before
+  serverRefuses(pool, "GET / HTTP/1.1\nHost: h\n\n", "failed malformed: a line ends in an LF without its CR\n");
+  serverRefuses(pool, "GET / HTTP/1.1\r\nHost: h\nX: 1\r\n\r\n", "failed malformed: a line ends in an LF without its CR\n");
+  serverRefuses(pool, "GET / HTTP/1.1\r\nHost: h\r\nX-A: 1\r\n two\r\n\r\n",
+    "failed malformed: a field line starts with a space or a tab (obs-fold)\n");
+  serverRefuses(pool, "POST / HTTP/1.1\r\nHost: h\r\nTransfer-Encoding: chunked\r\n\r\n3\nabc\r\n0\r\n\r\n",
+    "failed malformed: a chunk's size line ends in an LF without its CR\n");
+  serverRefuses(pool, "POST / HTTP/1.1\r\nHost: h\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nabc\n0\r\n\r\n",
+    "failed malformed: a chunk's data is not followed by CRLF\n");
+  serverRefuses(pool, "POST / HTTP/1.1\r\nHost: h\r\nTransfer-Encoding: chunked\r\n\r\n0\r\nX: 1\n\r\n",
+    "failed malformed: a line ends in an LF without its CR\n");
+  serverRefuses(pool, "POST / HTTP/1.1\r\nHost: h\r\nContent-Length: 2\r\nTransfer-Encoding: chunked\r\n\r\n",
+    "failed malformed: both Transfer-Encoding and Content-Length are given\n");
+}
+
+fn main() i32 {
+  {
+    imm pool = Pool.make();
+    bareLf(&pool);
+    obsFold(&pool);
+    stillRefused(&pool);
+    expectUInt(pool.stats().lent, 0u64, "every buffer back in the pool");
+  }
+  done();
+}
