@@ -1,0 +1,314 @@
+// remesh: voxel remesh on two inputs, drawn offscreen by render. Nothing here
+// is in a library: the shapes are this file's.
+//
+// - A blockout: a lathed egg of a body, a tilted torus ring round its waist,
+//   a bar through it for arms and a subdivided cube for a head, placed and
+//   joined into one mesh. Join does not fuse them: the parts pass through
+//   each other, and a renderer shows their seams. Remeshed at 0.035, they are
+//   one closed surface of even quads, fused where they overlapped.
+// - A chess rook cut by booleans (as rook.cone cuts it: a lathed body, a
+//   lathed hollow and two bars taken away), its long thin faces remeshed at
+//   0.03 into even quads, its sharp edges rounded to about a cell.
+// - The timing: a torus lathed 224 x 224 (100,352 triangles) remeshed at
+//   voxel sizes 0.04, 0.02 and 0.01.
+//
+//   congo run --release packages/sculpt/examples/remesh.cone
+//   congo run --release packages/sculpt/examples/remesh.cone -- --shots DIR/remesh --obj DIR/remesh
+//
+// '--shots PREFIX' (default 'remesh') writes PREFIX-row.bmp (the four meshes
+// side by side: the blockout as joined, remeshed, the rook as cut, remeshed)
+// and PREFIX-close.bmp (the remeshed blockout close) at 1920 x 1080, then
+// exits; '--obj PREFIX' writes the four meshes as .obj. It prints each
+// mesh's counts, volume and meshHash, and exits 0 only if the hashes are the
+// pinned ones, nothing was reported, every shot was written, no Vulkan call
+// failed and the validation layer said nothing.
+//
+// It needs a GPU driver with Vulkan 1.3 and SDL3.lib on LIB to link (Congo
+// copies SDL3.dll from beside it to beside the program); no window and no
+// display.
+
+mod remesh;
+
+import stdio use *;
+import sdl;
+import collections use *;
+import geomath use *;
+import mesh use PolyMesh;
+import sculpt use *;
+import gpu use *;
+import render use *;
+
+const WIDTH = 1920u32;
+const HEIGHT = 1080u32;
+// Each mesh's meshHash (its flat triangulation): the blockout joined and
+// remeshed, the rook cut and remeshed
+imm PINNED Array[u32, 4] = [0x18e18b4fu32, 0x2b4cc6feu32, 0x80fac5e1u32, 0x3a00ab78u32];
+imm NAMES Array[&[]u8, 4] = ["blockout-joined", "blockout-remeshed", "rook-cut", "rook-remeshed"];
+
+fn v(x f32, y f32, z f32) Vec3 { new Vec3(x, y, z); }
+fn up() Vec3 { v(0., 1., 0.); }
+
+fn seconds(from u64) f64 { f64.from(sdl.GetPerformanceCounter() - from) / f64.from(sdl.GetPerformanceFrequency()); }
+
+// The signed volume, by the divergence theorem over each face's fan, in f64
+fn volume(m &PolyMesh) f64 {
+  mut sum = 0.d;
+  mut f = 0usize;
+  while f < m.faceCount() {
+    imm pts = m.facePositions(u32.from(f));
+    mut i = 1usize;
+    while i + 1usize < pts.len() {
+      imm a = DVec3.from(*pts[0usize]);
+      imm b = DVec3.from(*pts[i]);
+      imm c = DVec3.from(*pts[i + 1usize]);
+      sum = sum + a.x * (b.y * c.z - b.z * c.y) + a.y * (b.z * c.x - b.x * c.z) + a.z * (b.x * c.y - b.y * c.x);
+      i = i + 1usize;
+    }
+    f = f + 1usize;
+  }
+  sum / 6.d;
+}
+
+fn box(lo Vec3, hi Vec3) PolyMesh {
+  mut parts = List[PolyMesh].empty();
+  parts.push(PolyMesh.cube(0.5));
+  mut places = List[Transform3].empty();
+  places.push(new Transform3((lo + hi) * 0.5, Quat.identity(), hi - lo));
+  mut problems = List[String].empty();
+  joinPlaced(&parts, &places, &mut problems);
+}
+
+fn torus(major f32, minor f32, around u32, steps u32) PolyMesh {
+  mut pts = List[Vec2].empty();
+  mut i = 0u32;
+  while i < around {
+    imm a = 2. * pi * f32.from(i) / f32.from(around);
+    pts.push(new Vec2(major + minor * cos(a), minor * sin(a)));
+    i = i + 1u32;
+  }
+  imm prof = Profile.fromPoints(pts.view(), true);
+  lathe(&prof, up(), 2. * pi, steps);
+}
+
+// The blockout's parts, placed and joined (overlapping, not fused)
+fn blockout() PolyMesh {
+  imm egg Array[Vec2, 7] = [new Vec2(0., 0.), new Vec2(0.38, 0.06), new Vec2(0.52, 0.35), new Vec2(0.5, 0.7),
+    new Vec2(0.36, 1.0), new Vec2(0.18, 1.12), new Vec2(0., 1.15)];
+  imm eggProfile = Profile.fromPoints(&egg, false);
+  mut parts = List[PolyMesh].empty();
+  parts.push(lathe(&eggProfile, up(), 2. * pi, 24u32));
+  parts.push(torus(0.5, 0.09, 12u32, 32u32));
+  imm arm = Profile.circle(12u32, 0.11);
+  parts.push(extrude(&arm, v(0., 0., 1.6), 1u32, true));
+  imm c = PolyMesh.cube(0.5);
+  parts.push(subdivide(&c, 2u32));
+  mut places = List[Transform3].empty();
+  places.push(Transform3.identity());
+  places.push(new Transform3(v(0., 0.5, 0.), Quat.angleAxis(0.35, v(1., 0., 0.)), v(1., 1., 1.)));
+  places.push(new Transform3(v(-0.8, 0.8, 0.), Quat.angleAxis(0.5 * pi, up()), v(1., 1., 1.)));
+  places.push(new Transform3(v(0., 1.3, 0.), Quat.angleAxis(0.4, up()), v(0.42, 0.42, 0.42)));
+  mut problems = List[String].empty();
+  joinPlaced(&parts, &places, &mut problems);
+}
+
+// The rook, as rook.cone cuts it
+fn rook(problems &mut List[String]) PolyMesh {
+  imm pts Array[Vec2, 9] = [new Vec2(0., 0.), new Vec2(0.9, 0.), new Vec2(0.9, 0.15), new Vec2(0.75, 0.25),
+    new Vec2(0.6, 0.35), new Vec2(0.55, 1.2), new Vec2(0.7, 1.35), new Vec2(0.7, 1.7), new Vec2(0., 1.7)];
+  imm profile = Profile.fromPoints(&pts, false);
+  imm body = lathe(&profile, up(), 2. * pi, 32u32);
+  imm rect Array[Vec2, 4] = [new Vec2(0., 1.45), new Vec2(0.5, 1.45), new Vec2(0.5, 2.), new Vec2(0., 2.)];
+  imm hollowProfile = Profile.fromPoints(&rect, false);
+  imm hollow = lathe(&hollowProfile, up(), 2. * pi, 32u32);
+  imm cup = booleanDifference(&body, &hollow, problems);
+  imm once = booleanDifference(&cup, &box(v(-1., 1.5, -0.12), v(1., 2., 0.12)), problems);
+  booleanDifference(&once, &box(v(-0.12, 1.5, -1.), v(0.12, 2., 1.)), problems);
+}
+
+fn cstrEquals(a *u8, b &[]u8) Bool {
+  mut i = 0usize;
+  while i < b.len {
+    if *(a + i) != b[i] { return false; }
+    i = i + 1usize;
+  }
+  *(a + b.len) == 0u8;
+}
+
+fn appendCstr(s &mut String, c *u8) {
+  mut i = 0usize;
+  while *(c + i) != 0u8 {
+    s.appendByte(*(c + i));
+    i = i + 1usize;
+  }
+}
+
+fn named(prefix &String, suffix &[]u8) String {
+  mut s = prefix.copy();
+  s <- suffix;
+  s;
+}
+
+// One mesh's counts, volume and hash against the pinned one; its flat
+// triangulation, written as .obj if asked
+fn report(pm &PolyMesh, k usize, objPrefix &String) Bool {
+  imm m = pm.triangulate(false);
+  imm h = mesh.meshHash(&m);
+  printStr(NAMES[k]); print <- ": "; print <- pm.vertexCount(); print <- " vertices, "; print <- pm.faceCount();
+  print <- " faces, volume "; print <- volume(pm); print <- "; hash ";
+  mut hex = String.empty();
+  hex.appendHex(u64.from(h), 8usize);
+  printStr(hex.view());
+  mut ok = h == PINNED[k];
+  if ok { print <- " (as pinned)\n"; } else { print <- " (NOT as pinned)\n"; }
+  if objPrefix.len() > 0usize {
+    mut name = objPrefix.copy();
+    name <- "-";
+    name <- NAMES[k];
+    name <- ".obj";
+    if !mesh.writeObj(&m, name.view()) { print <- "Could NOT write "; printStr(name.view()); print <- "\n"; ok = false; }
+  }
+  ok;
+}
+
+fn problemsSaid(problems &List[String]) Bool {
+  mut i = 0usize;
+  while i < problems.len() {
+    print <- "  reported: "; printStr(problems[i].view()); print <- "\n";
+    i = i + 1usize;
+  }
+  problems.len() == 0usize;
+}
+
+fn main(argc i32, argv **u8) i32 {
+  mut shots = String.empty();
+  shots <- "remesh";
+  mut objPrefix = String.empty();
+  mut a = 1;
+  while a + 1 < argc {
+    imm arg = *(argv + usize.from(a));
+    if cstrEquals(arg, "--shots") { shots = String.empty(); appendCstr(&mut shots, *(argv + usize.from(a + 1))); }
+    elif cstrEquals(arg, "--obj") { appendCstr(&mut objPrefix, *(argv + usize.from(a + 1))); }
+    else { print <- "Unknown argument; use --shots PREFIX and --obj PREFIX\n"; return 2; }
+    a = a + 2;
+  }
+
+  // The meshes
+  mut ok = true;
+  mut problems = List[String].empty();
+  imm joined = blockout();
+  mut started = sdl.GetPerformanceCounter();
+  imm fused = voxelRemesh(&joined, 0.035, &mut problems);
+  print <- "blockout remeshed in "; print <- seconds(started); print <- " s\n";
+  imm cut = rook(&mut problems);
+  started = sdl.GetPerformanceCounter();
+  imm even = voxelRemesh(&cut, 0.03, &mut problems);
+  print <- "rook remeshed in "; print <- seconds(started); print <- " s\n";
+  ok = problemsSaid(&problems) and ok;
+  ok = report(&joined, 0usize, &objPrefix) and ok;
+  ok = report(&fused, 1usize, &objPrefix) and ok;
+  ok = report(&cut, 2usize, &objPrefix) and ok;
+  ok = report(&even, 3usize, &objPrefix) and ok;
+
+  // The timing: 100,352 triangles at three voxel sizes
+  imm big = torus(1., 0.35, 224u32, 224u32);
+  print <- "torus: "; print <- big.faceCount() * 2usize; print <- " triangles\n";
+  imm sizes Array[f32, 3] = [0.04, 0.02, 0.01];
+  mut s = 0usize;
+  while s < 3usize {
+    mut p = List[String].empty();
+    started = sdl.GetPerformanceCounter();
+    imm r = voxelRemesh(&big, sizes[s], &mut p);
+    imm took = seconds(started);
+    print <- "  voxel "; print <- sizes[s]; print <- ": "; print <- r.faceCount(); print <- " quads in "; print <- took;
+    print <- " s\n";
+    ok = problemsSaid(&p) and ok;
+    s = s + 1usize;
+  }
+
+  // The GPU, no window
+  mut instance = Instance.create("remesh");
+  mut none = Surface.none();
+  mut adapter = instance.requestAdapter(&none, POWER_PREFERENCE_HIGH_PERFORMANCE);
+  if !instance.isValid() or !adapter.isValid() {
+    print <- "No GPU can draw\n";
+    return 1;
+  }
+  print <- "Adapter: "; printStr(adapter.name.view());
+  if instance.validation { print <- "; validation on\n"; } else { print <- "; validation off\n"; }
+  mut device = adapter.requestDevice();
+  mut renderer = Renderer.create(&mut device, TEXTURE_FORMAT_RGBA16_FLOAT, TEXTURE_FORMAT_DEPTH32_FLOAT);
+  mut sky = Sky.dusk(radians(35.), radians(320.));
+  sky.zenith = new Color(0.10, 0.18, 0.40, 1.);
+  sky.horizon = new Color(0.45, 0.50, 0.58, 1.);
+  sky.ground = new Color(0.10, 0.10, 0.10, 1.);
+  renderer.setSky(&mut device, &sky);
+  imm light = sky.sunLight(new Color(3., 2.9, 2.7, 1.), new Color(0.25, 0.27, 0.32, 1.));
+
+  imm clay = PbrMaterial.standard(new Color(0.72, 0.52, 0.40, 1.), 0., 0.6);
+  imm clayM = renderer.addPbrMaterial(&mut device, &clay);
+  imm stone = PbrMaterial.standard(new Color(0.55, 0.56, 0.60, 1.), 0., 0.5);
+  imm stoneM = renderer.addPbrMaterial(&mut device, &stone);
+  imm floor = PbrMaterial.standard(new Color(0.20, 0.20, 0.22, 1.), 0., 0.9);
+  imm floorM = renderer.addPbrMaterial(&mut device, &floor);
+  imm groundMesh = mesh.Mesh.plane(1, 1.);
+  imm ground = renderer.addMesh(&mut device, &groundMesh);
+  mut list = DrawList.empty();
+  list.add(ground, floorM, Mat4.fromTrs(v(0., 0., 0.), Quat.identity(), v(8., 1., 8.)));
+  mut close = DrawList.empty();
+  close.add(ground, floorM, Mat4.fromTrs(v(0., 0., 0.), Quat.identity(), v(8., 1., 8.)));
+  imm joinedTri = joined.triangulate(false);
+  imm fusedTri = fused.triangulate(false);
+  imm cutTri = cut.triangulate(false);
+  imm evenTri = even.triangulate(false);
+  imm hJoined = renderer.addMesh(&mut device, &joinedTri);
+  imm hFused = renderer.addMesh(&mut device, &fusedTri);
+  imm hCut = renderer.addMesh(&mut device, &cutTri);
+  imm hEven = renderer.addMesh(&mut device, &evenTri);
+  list.add(hJoined, clayM, Mat4.fromTrs(v(-3.3, 0., 0.), Quat.identity(), v(1., 1., 1.)));
+  list.add(hFused, clayM, Mat4.fromTrs(v(-1.1, 0., 0.), Quat.identity(), v(1., 1., 1.)));
+  list.add(hCut, stoneM, Mat4.fromTrs(v(1.1, 0., 0.), Quat.identity(), v(1., 1., 1.)));
+  list.add(hEven, stoneM, Mat4.fromTrs(v(3.3, 0., 0.), Quat.identity(), v(1., 1., 1.)));
+  close.add(hFused, clayM, Mat4.identity());
+
+  imm targetDesc = new TextureDescriptor(WIDTH, HEIGHT, TEXTURE_FORMAT_RGBA8_UNORM_SRGB,
+    TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
+  mut target = device.createTexture(&targetDesc);
+  imm depthDesc = new TextureDescriptor(WIDTH, HEIGHT, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT);
+  mut depth = device.createTexture(&depthDesc);
+  mut post = Post.create(&mut device, TEXTURE_FORMAT_RGBA8_UNORM_SRGB, WIDTH, HEIGHT);
+  mut readback = device.createBuffer(u64.from(WIDTH) * u64.from(HEIGHT) * 4u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  if !renderer.isValid() or !post.isValid() or !target.isValid() {
+    print <- "The renderer could not be made\n";
+    return 1;
+  }
+  mut camera = Camera.make();
+  camera.fov = radians(40.);
+  camera.near = 0.05;
+  camera.far = 100.;
+  imm names Array[&[]u8, 2] = ["-row.bmp", "-close.bmp"];
+  imm eyes Array[Vec3, 2] = [v(0., 2.6, 7.2), v(1.3, 1.6, 2.2)];
+  imm targets Array[Vec3, 2] = [v(0., 0.8, 0.), v(0., 0.75, 0.)];
+  s = 0usize;
+  while s < 2usize {
+    camera.lookAt(eyes[s], targets[s], up());
+    mut encoder = device.createCommandEncoder();
+    if s == 0usize { renderer.render(&mut device, &mut encoder, &post.hdr, &depth, &camera, &light, &list); }
+    else { renderer.render(&mut device, &mut encoder, &post.hdr, &depth, &camera, &light, &close); }
+    post.apply(&mut encoder, &target);
+    encoder.copyTextureToBuffer(&target, &readback);
+    device.queue.submit(encoder.finish());
+    device.endFrame();
+    device.waitIdle();
+    imm shot = Image.fromTexels(readback.mappedRange(), i32.from(WIDTH), i32.from(HEIGHT), false);
+    imm name = named(&shots, names[s]);
+    if shot.save(name.view()) { print <- "Shot: "; printStr(name.view()); print <- "\n"; }
+    else { print <- "Could NOT write "; printStr(name.view()); print <- "\n"; ok = false; }
+    s = s + 1usize;
+  }
+
+  print <- "Vulkan failures: "; print <- u64.from(failures());
+  print <- "; validation messages: "; print <- u64.from(validationMessages()); print <- "\n";
+  if !ok or failures() != 0u32 or validationMessages() != 0u32 { print <- "FAILED\n"; return 1; }
+  print <- "OK\n";
+  0;
+}

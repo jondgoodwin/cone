@@ -199,6 +199,10 @@ pub struct Renderer {
   pub time f32;                    // seconds: what the physically based material's film drifts by
   pub environmentStrength f32;     // how strongly the environment lights (1: as the sky is)
   pub pbrMaterialLayout BindGroupLayout;   // a physically based material's group: materialLayout's, then its three maps
+  // Store the depth buffer at the end of 'render' (it is discarded
+  // otherwise), so that a later pass into the same target -- glowing
+  // particles drawn additively, say -- is depth tested against the scene
+  pub keepDepth Bool = false;
 
   // A renderer drawing into targets of 'colorFormat', with a depth texture
   // of 'depthFormat' (TEXTURE_FORMAT_DEPTH32_FLOAT). For physically based
@@ -592,7 +596,8 @@ pub struct Renderer {
     imm order = self.drawOrder(list, eye);
 
     imm color = new RenderPassColorAttachment(view: target.createView(), clearValue: camera.background);
-    imm depthAttachment = new RenderPassDepthStencilAttachment(view: depth.createView(), depthStoreOp: STORE_OP_DISCARD);
+    imm depthStore = if keepDepth { STORE_OP_STORE; } else { STORE_OP_DISCARD; };
+    imm depthAttachment = new RenderPassDepthStencilAttachment(view: depth.createView(), depthStoreOp: depthStore);
     mut pass = encoder.beginRenderPassWithDepth(&color, &depthAttachment);
     mut bound = BOUND_NONE;
     mut boundMaterial = Ref[MaterialSlot].none();

@@ -71,7 +71,7 @@ Visual Studio projects stay at the root.
   by the texture), `Sampler`, `Buffer` (storage and indirect ones too),
   `ShaderModule`, `BindGroupLayout` (uniform and storage buffers, textures,
   storage textures, samplers), `PipelineLayout` with immediates,
-  `RenderPipeline`, `ComputePipeline`, `BindGroup`, `QuerySet` (GPU
+  `RenderPipeline` (blending too), `ComputePipeline`, `BindGroup`, `QuerySet` (GPU
   timestamps)), holding programs to WebGPU's default limits (a workgroup of
   at most 256 invocations, 8 storage buffers and 4 storage textures a
   stage) so the browser path stays open, with
@@ -132,8 +132,10 @@ Visual Studio projects stay at the root.
   chain, and `fractalRefine`, a 2-D outline split fractally inside nested
   quadrilaterals (so an edge's pieces never cross), every random number a
   hash of (seed, edge, level, index), with `fractalRefineWithin` for one
-  window's points, the same bits; its example `coast.cone` is the island
-  coastline experiments;
+  window's points, the same bits, and `voxelRemesh` (a closed mesh rebuilt
+  as even quads at a voxel size: inside by exact ray parity, distances in a
+  band, meshed by `sdfmesh`'s surface nets, channels from the nearest
+  point); its example `coast.cone` is the island coastline experiments;
   `noise` is coherent noise over `geomath`, a pure function of a seed and a
   point: the PCG integer hashes (`pcg`, `pcg2d`, `pcg3d`, `pcg4d`, seeded
   lattice hashes, exact hash to float), value and gradient noise with
@@ -200,6 +202,19 @@ Visual Studio projects stay at the root.
   and normal maps plus the masks, its maps pinned by `mapHash` in its test;
   its example `spheres.cone` bakes three materials and draws them on spheres
   through render;
+  `vfx` is visual effects over `gpu`, `render`, `geomath` and `noise`,
+  beginning with particles: `Emitter`, a stateless emitter (a particle a
+  closed-form function of event seed, layer seed, spawn index and age: a
+  rate and lifetimes, a point, disc or sphere and a launch cone, gravity,
+  linear drag, buoyancy fading as it cools, a widening wobble, four HDR
+  colour keys and fades; every random number a PCG hash), `Event` (seed,
+  start, stop, placement: the record a world shares), `EmitterParams` with
+  `particleAt`, the CPU twin of `src/vfx.slang` (its `parity` test compares
+  them on a real GPU), and `ParticleRenderer`, which adds emitters into
+  render's HDR frame as velocity-stretched glowing sprites or ribbon trails
+  (`src/sprites.slang`, additive, depth tested against the depth render
+  keeps with `keepDepth`), before bloom and tone mapping; its example
+  `burner.cone` is the hot-air balloon's burner flame, fired in bursts;
   `testing` is the checks a package's tests call (`expectInt`, `require…`,
   `done`), ordinary library code the compiler knows nothing of;
   `textdiff` is the line diff of two lists of lines or two texts: the edit
@@ -432,7 +447,7 @@ Visual Studio projects stay at the root.
   `src/ibl.slang`: prefiltered specular and diffuse cubes, the split sum's
   table), `Post` (`src/post.slang`: the half-float frame, bloom, and tone
   mapping by AgX, ACES's fit or Reinhard), a `DrawList` drawn in one
-  render pass, the model matrix in the immediates, and `Image` (BMP read
+  render pass (its depth kept for a later pass with `keepDepth`), the model matrix in the immediates, and `Image` (BMP read
   and written); its tests need a GPU driver but no window, and its examples
   are `pipevk.cone`, the pipe demo: `sculpt`'s bent, subdivided pipe, the
   cage and three levels side by side, lit, on Vulkan, checked by pixels

@@ -1,0 +1,716 @@
+// ======== Voxel remesh: a closed mesh rebuilt as an even surface of quads ========
+//
+// Blender's Voxel Remesh: the mesh's solid sampled on a grid of cubic cells
+// 'voxelSize' a side, as a signed distance (negative inside), and meshed again
+// by sdfmesh's surface nets, so the result is an even, all-quad, closed and
+// manifold surface whatever the input's faces were: long thin triangles, n-gons,
+// overlapping parts joined into one mesh (fused, since the field is of the
+// solid they fill together), all become quads about one cell across.
+//
+// THE FIELD, sampled where surface nets samples it (the grid over the mesh's
+// box and one cell more on every side):
+//
+// - INSIDE OR OUTSIDE, EXACTLY. Each row of samples along x is one ray, and
+//   the triangles it crosses are found exactly: the ray's (y, z) inside a
+//   triangle's shadow on the yz plane by exact orientations (Shewchuk's
+//   predicates, exact.cone), a ray through an edge or a corner moved
+//   symbolically off it by (eps, eps^2) in (y, z), so a ray through an edge
+//   two triangles share crosses exactly one of them, and a triangle seen
+//   edge-on is never crossed. Where along the ray a triangle is crossed, and
+//   so which samples lie before it, is decided by the exact orientation of the
+//   sample against the triangle's plane (a sample exactly on it counted as if
+//   moved by eps along x), found for each crossing by bisection, since it
+//   changes once along the row. A sample's winding number is the sum of the
+//   crossings beyond it, each +1 where the surface faces +x and -1 where it
+//   faces -x, and the sample is inside where that is not 0 (the nonzero rule).
+//   Ray parity with exact predicates rather than the generalized winding
+//   number (Jacobson et al. 2013): the input must be closed anyway, and for a
+//   closed mesh the parity count is exactly its winding number, decided
+//   without rounding, at a ray's cost per row of samples instead of a sum over
+//   the triangles per sample. Overlapping closed parts count 2 and are inside;
+//   a cavity (a shell facing inward inside another) counts 0 and stays empty;
+//   a mesh inside out counts -1 and is still a solid.
+// - HOW FAR, IN A BAND. Each triangle measures the samples within 1.5 cells
+//   of it (Ericson's nearest point on a triangle, in f64), each sample keeping
+//   the least, so a sample within 1.5 cells of the surface has its exact
+//   distance and every other sample 1.5 cells, and the order the triangles
+//   are visited in cannot change a bit. Surface nets reads distances only at
+//   the two ends of a grid edge the surface crosses, each within one cell of
+//   it, so the band's width beyond that changes no bit of the mesh (2 cells
+//   gave the same hashes, measured). A triangle walks the samples near its
+//   plane only: along the axis its normal leans on most, those within the
+//   band of the plane, so a large triangle costs its area, not its box.
+//
+// The field is handed to sdfmesh's 'surfaceNet' as a Shape whose distance at
+// a grid sample (the same arithmetic as the mesher's, to the bit) is the
+// stored value and elsewhere the trilinear blend of the eight around it (only
+// the mesher's normals ask there; the PolyMesh keeps none). Nothing is relaxed:
+// a vertex is the average of its cell's crossings, as surface nets places it.
+//
+// What surface nets gives up, this gives up: sharp edges and corners are
+// rounded to about a cell, and parts thinner than a cell may vanish or
+// fuse; a smaller voxel keeps more, at the square of the cost in faces.
+//
+// OPTIONS, from Blender's: the voxel size; 'preserveVolume', each new vertex
+// then moved to the nearest point of the input's surface (Blender's manual
+// says only that it tries to keep the volume; projecting does, and brings
+// rounded edges back towards the input's); and the channels (Blender's
+// preserve attributes), see below. Not offered: adaptivity (fewer faces where
+// flat; 'decimate' and 'dissolvePlanar' afterwards do that), fix poles (a
+// quad-remesher's cleanup), and Blender's other remesh modes.
+//
+// CHANNELS ('keepChannels'), each new element's values from the nearest point
+// of the input (Blender's preserve attributes transfers from the nearest
+// point): a vertex's, blended across the input triangle nearest it by the
+// nearest point's barycentric weights; a face's, the value of the input face
+// nearest its centroid; a corner's, blended across the input triangle nearest
+// its vertex from that triangle's corners (a uv seam lands inside the faces
+// that straddle it, as any per-corner transfer puts it). An edge has no
+// source: every edge channel is kept with each value its fill, the same rule
+// as 'join', so a "crease" is 0 everywhere. Each channel keeps its name,
+// domain and fill. Without 'keepChannels' the result has no channels.
+//
+// REFUSED AND REPORTED, never stopped: a mesh that is not valid or not closed
+// (an edge with a face on one side only) gives an empty mesh and a line in
+// 'problems' saying why; so does a voxel size that is not a positive number or
+// a grid of more than 2^28 samples. A face of no area is not refused: no ray
+// crosses it, and its neighbours close the surface without it.
+//
+// DETERMINISTIC. Rows, triangles and samples are visited in a fixed order, a
+// distance is a minimum (which no order changes), every inside-outside
+// decision is exact, and the mesher is deterministic: the same mesh and
+// numbers give the same bits every run and in debug and release builds.
+
+// The band of exact distances, in cells
+const RemeshBand f64 = 1.5d;
+// The most samples a grid may have
+const RemeshMaxSamples = 268435456usize;
+
+// The mesh rebuilt as an even surface of quads 'voxelSize' across, its
+// channels carried from the nearest point (see above)
+pub fn voxelRemesh(m &PolyMesh, voxelSize f32, problems &mut List[String]) PolyMesh {
+  voxelRemeshWith(m, voxelSize, false, true, problems);
+}
+
+// The same, with 'preserveVolume' (each new vertex moved to the nearest point
+// of the input) and 'keepChannels' (the channels carried, or none) chosen
+pub fn voxelRemeshWith(m &PolyMesh, voxelSize f32, preserveVolume Bool, keepChannels Bool,
+    problems &mut List[String]) PolyMesh {
+  imm empty = PolyMesh.empty();
+  if !(voxelSize > 0.) or voxelSize > 3.4e38 {
+    problems.push(String.from("the voxel size must be a positive number"));
+    return empty;
+  }
+  if !solidChecked(m, "the mesh", problems) { return empty; }
+  if m.faceCount() == 0usize { return empty; }
+  mut ignored = List[String].empty();
+  mut ok = true;
+  imm t = triMeshOf(m, "the mesh", 0i32, 0.d, &mut ignored, &mut ok);
+  imm bvh = Bvh.build(&t.tlo, &t.thi);
+
+  // The grid, as surfaceNet makes it
+  imm box = m.bounds();
+  imm cs = voxelSize;
+  imm lo = box.min - new Vec3(cs, cs, cs);
+  imm extent = box.max - box.min;
+  imm nx = usize.from(libc.ceilf(extent.x / cs)) + 2usize;
+  imm ny = usize.from(libc.ceilf(extent.y / cs)) + 2usize;
+  imm nz = usize.from(libc.ceilf(extent.z / cs)) + 2usize;
+  imm px = nx + 1usize;
+  imm py = ny + 1usize;
+  imm pz = nz + 1usize;
+  if px > RemeshMaxSamples / py or px * py > RemeshMaxSamples / pz {
+    mut s = String.from("the grid would have more than 2^28 samples (");
+    s.appendUInt(u64.from(px)); s.append(" x "); s.appendUInt(u64.from(py)); s.append(" x "); s.appendUInt(u64.from(pz));
+    s.append("); choose a larger voxel size");
+    problems.push(s);
+    return empty;
+  }
+  imm grid = new RemeshGrid(lo, cs, px, py, pz);
+  if !grid.aligned() {
+    problems.push(String.from("the grid's samples could not be found again by their coordinates (a voxel size too small for the coordinates)"));
+    return empty;
+  }
+
+  // The distances in the band, then each row's signs
+  mut values = bandDistances(&t, &grid);
+  signRows(&t, &bvh, &grid, &mut values);
+
+  // Meshed by surface nets
+  imm field = new RemeshField(values.view(), grid);
+  imm net = sdfmesh.surfaceNet(&field, box, cs, 0u32, false);
+  mut netProblems = List[String].empty();
+  mut out = net.toPolyMesh(&mut netProblems);
+  if netProblems.len() > 0usize {
+    mut s = String.from("surface nets left out faces: ");
+    s.append(netProblems[0usize].view());
+    problems.push(s);
+  }
+
+  // Each new vertex's nearest point of the input
+  if preserveVolume or keepChannels {
+    imm nv = out.vertexCount();
+    mut nearTri = List[u32].withCapacity(nv);
+    mut nearW = List[DVec3].withCapacity(nv);
+    mut cands = List[u32].empty();
+    mut stack = List[u32].empty();
+    mut v = 0usize;
+    while v < nv {
+      mut w = new DVec3(1.d, 0.d, 0.d);
+      imm tri = nearestTriangle(&t, &bvh, *out.positions[v], cs, &mut w, &mut cands, &mut stack);
+      nearTri.push(tri);
+      nearW.push(w);
+      v = v + 1usize;
+    }
+    if preserveVolume {
+      v = 0usize;
+      while v < nv {
+        imm tri = *nearTri[v];
+        if tri != NoIndex { out.positions.set(v, triPointAt(&t, usize.from(tri), *nearW[v]).toVec3()); }
+        v = v + 1usize;
+      }
+    }
+    if keepChannels { carryNearest(m, &t, &bvh, &mut out, &nearTri, &nearW, cs); }
+  }
+  out;
+}
+
+// ---- The grid ----
+
+// The samples: (lo.x + cs x, lo.y + cs y, lo.z + cs z) for x below px, y
+// below py and z below pz, sample (x, y, z) number x + px (y + py z)
+struct RemeshGrid {
+  pub lo Vec3;
+  pub cs f32;
+  pub px usize;
+  pub py usize;
+  pub pz usize;
+
+  // A sample's coordinate along an axis, as the mesher computes it
+  fn coord(self &, axis u32, i usize) f32 {
+    if axis == 0u32 { lo.x + cs * f32.from(i); } elif axis == 1u32 { lo.y + cs * f32.from(i); } else { lo.z + cs * f32.from(i); };
+  }
+  fn count(self &, axis u32) usize { if axis == 0u32 { px; } elif axis == 1u32 { py; } else { pz; }; }
+
+  // The sample number along an axis whose coordinate is c exactly, or
+  // NoIndex if none is
+  fn exactIndex(self &, axis u32, c f32) u32 {
+    imm base = if axis == 0u32 { lo.x; } elif axis == 1u32 { lo.y; } else { lo.z; };
+    imm f = libc.floorf((c - base) / cs + 0.5);
+    if !(f >= 0.) or f >= f32.from(self.count(axis)) { return NoIndex; }
+    imm i = usize.from(f);
+    if self.coord(axis, i) == c { u32.from(i); } else { NoIndex; };
+  }
+
+  // Whether every sample is found again by its coordinates
+  fn aligned(self &) Bool {
+    mut axis = 0u32;
+    while axis < 3u32 {
+      mut i = 0usize;
+      while i < self.count(axis) {
+        if self.exactIndex(axis, self.coord(axis, i)) != u32.from(i) { return false; }
+        i = i + 1usize;
+      }
+      axis = axis + 1u32;
+    }
+    true;
+  }
+}
+
+// The sampled field as a Shape for surfaceNet: a grid sample's stored value,
+// elsewhere the trilinear blend of the eight samples round the point (held to
+// the grid)
+struct RemeshField['a] {
+  pub values &[]'a f32;
+  pub grid RemeshGrid;
+
+  pub fn distance(self &, p Vec3) f32 {
+    imm ix = grid.exactIndex(0u32, p.x);
+    imm iy = grid.exactIndex(1u32, p.y);
+    imm iz = grid.exactIndex(2u32, p.z);
+    if ix != NoIndex and iy != NoIndex and iz != NoIndex {
+      return values[usize.from(ix) + grid.px * (usize.from(iy) + grid.py * usize.from(iz))];
+    }
+    imm fx = clampf((p.x - grid.lo.x) / grid.cs, 0., f32.from(grid.px - 1usize));
+    imm fy = clampf((p.y - grid.lo.y) / grid.cs, 0., f32.from(grid.py - 1usize));
+    imm fz = clampf((p.z - grid.lo.z) / grid.cs, 0., f32.from(grid.pz - 1usize));
+    imm x0 = minUsize(usize.from(libc.floorf(fx)), grid.px - 2usize);
+    imm y0 = minUsize(usize.from(libc.floorf(fy)), grid.py - 2usize);
+    imm z0 = minUsize(usize.from(libc.floorf(fz)), grid.pz - 2usize);
+    imm tx = fx - f32.from(x0);
+    imm ty = fy - f32.from(y0);
+    imm tz = fz - f32.from(z0);
+    imm at = x0 + grid.px * (y0 + grid.py * z0);
+    imm sy = grid.px;
+    imm sz = grid.px * grid.py;
+    imm c00 = values[at] + (values[at + 1usize] - values[at]) * tx;
+    imm c10 = values[at + sy] + (values[at + sy + 1usize] - values[at + sy]) * tx;
+    imm c01 = values[at + sz] + (values[at + sz + 1usize] - values[at + sz]) * tx;
+    imm c11 = values[at + sy + sz] + (values[at + sy + sz + 1usize] - values[at + sy + sz]) * tx;
+    imm c0 = c00 + (c10 - c00) * ty;
+    imm c1 = c01 + (c11 - c01) * ty;
+    c0 + (c1 - c0) * tz;
+  }
+}
+
+fn minUsize(a usize, b usize) usize { if a < b { a; } else { b; }; }
+
+fn axisOf(v DVec3, axis u32) f64 { if axis == 0u32 { v.x; } elif axis == 1u32 { v.y; } else { v.z; }; }
+
+// The least sample number along an axis whose coordinate may be at least c,
+// and the greatest that may be at most c (each a step generous)
+fn indexAtOrAbove(g &RemeshGrid, axis u32, c f64) usize {
+  imm base = f64.from(if axis == 0u32 { g.lo.x; } elif axis == 1u32 { g.lo.y; } else { g.lo.z; });
+  imm f = libc.ceil((c - base) / f64.from(g.cs)) - 1.d;
+  if !(f > 0.d) { return 0usize; }
+  if f >= f64.from(g.count(axis)) { return g.count(axis); }
+  usize.from(f);
+}
+fn indexAtOrBelow(g &RemeshGrid, axis u32, c f64) usize {
+  // one past the last, so a range is [above, below)
+  imm base = f64.from(if axis == 0u32 { g.lo.x; } elif axis == 1u32 { g.lo.y; } else { g.lo.z; });
+  imm f = libc.floor((c - base) / f64.from(g.cs)) + 2.d;
+  if !(f > 0.d) { return 0usize; }
+  if f >= f64.from(g.count(axis)) { return g.count(axis); }
+  usize.from(f);
+}
+
+// ---- How far: the band ----
+
+// Every sample's distance to the surface, held to the band: the least of the
+// triangles near it
+fn bandDistances(t &TriMesh, g &RemeshGrid) List[f32] {
+  imm n = g.px * g.py * g.pz;
+  imm band = RemeshBand * f64.from(g.cs);
+  imm far = f32.from(band);
+  imm band2 = band * band;
+  mut values = List[f32].withCapacity(n);
+  mut i = 0usize;
+  while i < n { values.push(far); i = i + 1usize; }
+  mut s = 0usize;
+  while s < t.triCount() {
+    imm a = *t.pos[usize.from(*t.tv[3usize * s])];
+    imm b = *t.pos[usize.from(*t.tv[3usize * s + 1usize])];
+    imm c = *t.pos[usize.from(*t.tv[3usize * s + 2usize])];
+    imm nrm = crossD(b - a, c - a);
+    imm ax = absd(nrm.x);
+    imm ay = absd(nrm.y);
+    imm az = absd(nrm.z);
+    // The axis the normal leans on most is walked last, near the plane only
+    imm main = if ax >= ay and ax >= az { 0u32; } elif ay >= az { 1u32; } else { 2u32; };
+    imm u = (main + 1u32) % 3u32;
+    imm w = (main + 2u32) % 3u32;
+    imm tlo = DVec3.from(*t.tlo[s]);
+    imm thi = DVec3.from(*t.thi[s]);
+    imm u0 = indexAtOrAbove(g, u, axisOf(tlo, u) - band);
+    imm u1 = indexAtOrBelow(g, u, axisOf(thi, u) + band);
+    imm w0 = indexAtOrAbove(g, w, axisOf(tlo, w) - band);
+    imm w1 = indexAtOrBelow(g, w, axisOf(thi, w) + band);
+    imm m0 = indexAtOrAbove(g, main, axisOf(tlo, main) - band);
+    imm m1 = indexAtOrBelow(g, main, axisOf(thi, main) + band);
+    imm nm = axisOf(nrm, main);
+    imm nlen = nrm.length();
+    // How far along the main axis the band reaches from the plane
+    imm reach = if nm != 0.d { band * nlen / absd(nm); } else { 0.d; };
+    mut iw = w0;
+    while iw < w1 {
+      imm cw = f64.from(g.coord(w, iw));
+      mut iu = u0;
+      while iu < u1 {
+        imm cu = f64.from(g.coord(u, iu));
+        mut k0 = m0;
+        mut k1 = m1;
+        if nm != 0.d {
+          imm onPlane = axisOf(a, main) - (axisOf(nrm, u) * (cu - axisOf(a, u)) + axisOf(nrm, w) * (cw - axisOf(a, w))) / nm;
+          imm p0 = indexAtOrAbove(g, main, onPlane - reach);
+          imm p1 = indexAtOrBelow(g, main, onPlane + reach);
+          if p0 > k0 { k0 = p0; }
+          if p1 < k1 { k1 = p1; }
+        }
+        mut im = k0;
+        while im < k1 {
+          mut x = 0usize;
+          mut y = 0usize;
+          mut z = 0usize;
+          axisToXyz3(main, im, iu, iw, &mut x, &mut y, &mut z);
+          imm p = new DVec3(f64.from(g.coord(0u32, x)), f64.from(g.coord(1u32, y)), f64.from(g.coord(2u32, z)));
+          // Beyond the band from the triangle's box: no nearer than the band
+          if boxDistance2(p, tlo, thi) <= band2 {
+            mut wts = new DVec3(0.d, 0.d, 0.d);
+            nearestOnTriangle(p, a, b, c, &mut wts);
+            imm q = a * wts.x + b * wts.y + c * wts.z;
+            imm d = f32.from((p - q).length());
+            imm at = x + g.px * (y + g.py * z);
+            if d < *values[at] { values.set(at, d); }
+          }
+          im = im + 1usize;
+        }
+        iu = iu + 1usize;
+      }
+      iw = iw + 1usize;
+    }
+    s = s + 1usize;
+  }
+  values;
+}
+
+// Coordinates along (a, a + 1, a + 2) back to (x, y, z)
+fn axisToXyz3(a u32, pa usize, pu usize, pv usize, x &mut usize, y &mut usize, z &mut usize) {
+  if a == 0u32 { *x = pa; *y = pu; *z = pv; }
+  elif a == 1u32 { *y = pa; *z = pu; *x = pv; }
+  else { *z = pa; *x = pu; *y = pv; }
+}
+
+// The squared distance from p to the box from lo to hi
+fn boxDistance2(p DVec3, lo DVec3, hi DVec3) f64 {
+  imm dx = if p.x < lo.x { lo.x - p.x; } elif p.x > hi.x { p.x - hi.x; } else { 0.d; };
+  imm dy = if p.y < lo.y { lo.y - p.y; } elif p.y > hi.y { p.y - hi.y; } else { 0.d; };
+  imm dz = if p.z < lo.z { lo.z - p.z; } elif p.z > hi.z { p.z - hi.z; } else { 0.d; };
+  dx * dx + dy * dy + dz * dz;
+}
+
+fn crossD(a DVec3, b DVec3) DVec3 {
+  new DVec3(a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x);
+}
+
+// The point of triangle (a, b, c) nearest p, as barycentric weights (on a,
+// b, c in x, y, z): Ericson, "Real-Time Collision Detection" (2005), 5.1.5,
+// by the Voronoi regions of the corners, the sides and the face. A triangle
+// of no area is taken as its three sides
+fn nearestOnTriangle(p DVec3, a DVec3, b DVec3, c DVec3, wts &mut DVec3) {
+  imm ab = b - a;
+  imm ac = c - a;
+  imm ap = p - a;
+  imm d1 = ab.dot(ap);
+  imm d2 = ac.dot(ap);
+  if d1 <= 0.d and d2 <= 0.d { *wts = new DVec3(1.d, 0.d, 0.d); return; }
+  imm bp = p - b;
+  imm d3 = ab.dot(bp);
+  imm d4 = ac.dot(bp);
+  if d3 >= 0.d and d4 <= d3 { *wts = new DVec3(0.d, 1.d, 0.d); return; }
+  imm vc = d1 * d4 - d3 * d2;
+  if vc <= 0.d and d1 >= 0.d and d3 <= 0.d and d1 - d3 > 0.d {
+    imm v = d1 / (d1 - d3);
+    *wts = new DVec3(1.d - v, v, 0.d);
+    return;
+  }
+  imm cp = p - c;
+  imm d5 = ab.dot(cp);
+  imm d6 = ac.dot(cp);
+  if d6 >= 0.d and d5 <= d6 { *wts = new DVec3(0.d, 0.d, 1.d); return; }
+  imm vb = d5 * d2 - d1 * d6;
+  if vb <= 0.d and d2 >= 0.d and d6 <= 0.d and d2 - d6 > 0.d {
+    imm w = d2 / (d2 - d6);
+    *wts = new DVec3(1.d - w, 0.d, w);
+    return;
+  }
+  imm va = d3 * d6 - d5 * d4;
+  if va <= 0.d and d4 - d3 >= 0.d and d5 - d6 >= 0.d and (d4 - d3) + (d5 - d6) > 0.d {
+    imm w = (d4 - d3) / ((d4 - d3) + (d5 - d6));
+    *wts = new DVec3(0.d, 1.d - w, w);
+    return;
+  }
+  imm sum = va + vb + vc;
+  if sum > 0.d {
+    imm denom = 1.d / sum;
+    imm v = vb * denom;
+    imm w = vc * denom;
+    *wts = new DVec3(1.d - v - w, v, w);
+    return;
+  }
+  // No area: the nearest of the three sides
+  mut best = new DVec3(1.d, 0.d, 0.d);
+  mut bestD = (p - a).lengthSquared();
+  imm s0 = segmentParam(p, a, b);
+  imm q0 = a + (b - a) * s0;
+  if (p - q0).lengthSquared() < bestD { bestD = (p - q0).lengthSquared(); best = new DVec3(1.d - s0, s0, 0.d); }
+  imm s1 = segmentParam(p, b, c);
+  imm q1 = b + (c - b) * s1;
+  if (p - q1).lengthSquared() < bestD { bestD = (p - q1).lengthSquared(); best = new DVec3(0.d, 1.d - s1, s1); }
+  imm s2 = segmentParam(p, c, a);
+  imm q2 = c + (a - c) * s2;
+  if (p - q2).lengthSquared() < bestD { best = new DVec3(s2, 0.d, 1.d - s2); }
+  *wts = best;
+}
+
+// Where along the segment a b the point nearest p is, 0 to 1
+fn segmentParam(p DVec3, a DVec3, b DVec3) f64 {
+  imm ab = b - a;
+  imm len2 = ab.lengthSquared();
+  if len2 <= 0.d { return 0.d; }
+  imm s = (p - a).dot(ab) / len2;
+  if s < 0.d { 0.d; } elif s > 1.d { 1.d; } else { s; };
+}
+
+// Triangle s's point at barycentric weights w
+fn triPointAt(t &TriMesh, s usize, w DVec3) DVec3 {
+  imm a = *t.pos[usize.from(*t.tv[3usize * s])];
+  imm b = *t.pos[usize.from(*t.tv[3usize * s + 1usize])];
+  imm c = *t.pos[usize.from(*t.tv[3usize * s + 2usize])];
+  a * w.x + b * w.y + c * w.z;
+}
+
+// ---- Inside or outside: the rows ----
+
+// Each sample inside the solid made negative (a distance of 0 there the
+// least negative number, so the mesher sees it inside), row by row along x
+fn signRows(t &TriMesh, bvh &Bvh, g &RemeshGrid, values &mut List[f32]) {
+  mut cands = List[u32].empty();
+  mut stack = List[u32].empty();
+  mut diff = List[i32].withCapacity(g.px + 1usize);
+  mut i = 0usize;
+  while i <= g.px { diff.push(0i32); i = i + 1usize; }
+  imm x0 = g.coord(0u32, 0usize);
+  imm x1 = g.coord(0u32, g.px - 1usize);
+  mut z = 0usize;
+  while z < g.pz {
+    imm cz = g.coord(2u32, z);
+    mut y = 0usize;
+    while y < g.py {
+      imm cy = g.coord(1u32, y);
+      bvh.query(new Vec3(x0, cy, cz), new Vec3(x1, cy, cz), &mut cands, &mut stack);
+      if cands.len() > 0usize {
+        i = 0usize;
+        while i <= g.px { diff.set(i, 0i32); i = i + 1usize; }
+        imm qy = f64.from(cy);
+        imm qz = f64.from(cz);
+        mut any = false;
+        mut k = 0usize;
+        while k < cands.len() {
+          imm s = usize.from(*cands[k]);
+          imm a = *t.pos[usize.from(*t.tv[3usize * s])];
+          imm b = *t.pos[usize.from(*t.tv[3usize * s + 1usize])];
+          imm c = *t.pos[usize.from(*t.tv[3usize * s + 2usize])];
+          imm sx = rayCrosses(a, b, c, qy, qz);
+          if sx != 0i32 {
+            // The first sample not before the crossing: before it means in
+            // front of the plane against the way it faces along x
+            mut lo = 0usize;
+            mut hi = g.px;
+            while lo < hi {
+              imm mid = (lo + hi) / 2usize;
+              imm p = new DVec3(f64.from(g.coord(0u32, mid)), qy, qz);
+              imm o = orient3dSign(a, b, c, p);
+              if o == -sx { lo = mid + 1usize; } else { hi = mid; }
+            }
+            diff.set(lo, *diff[lo] + sx);
+            any = true;
+          }
+          k = k + 1usize;
+        }
+        if any {
+          // A sample's winding: the crossings beyond it, those whose first
+          // sample not before is after it
+          mut wind = 0i32;
+          mut x = g.px;
+          while x > 0usize {
+            wind = wind + *diff[x];
+            x = x - 1usize;
+            if wind != 0i32 {
+              imm at = x + g.px * (y + g.py * z);
+              imm d = *values[at];
+              values.set(at, if d > 0. { -d; } else { -1.0e-30; });
+            }
+          }
+        }
+      }
+      y = y + 1usize;
+    }
+    z = z + 1usize;
+  }
+}
+
+// Whether the ray along +x at (qy, qz) crosses triangle (a, b, c): 1 where
+// the triangle faces +x, -1 where it faces -x, 0 where it is missed. The
+// ray's point is moved symbolically by (eps, eps^2) in (y, z), so a ray
+// through a side or a corner is decided as if just beside it, the same way
+// for both triangles that share the side
+fn rayCrosses(a DVec3, b DVec3, c DVec3, qy f64, qz f64) i32 {
+  imm s0 = side2(a, b, qy, qz);
+  if s0 == 0i32 { return 0i32; }
+  imm s1 = side2(b, c, qy, qz);
+  if s1 != s0 { return 0i32; }
+  imm s2 = side2(c, a, qy, qz);
+  if s2 != s0 { return 0i32; }
+  s0;
+}
+
+// The perturbed sign of the orientation of (a, b, q) in the (y, z) plane:
+// the exact sign, else its derivative along y (a.z - b.z), else along z
+// (b.y - a.y); 0 only for a side of no length in that plane
+fn side2(a DVec3, b DVec3, qy f64, qz f64) i32 {
+  imm o = orient2dSign(a.y, a.z, b.y, b.z, qy, qz);
+  if o != 0i32 { return o; }
+  if a.z > b.z { return 1i32; }
+  if a.z < b.z { return -1i32; }
+  if b.y > a.y { return 1i32; }
+  if b.y < a.y { return -1i32; }
+  0i32;
+}
+
+// ---- The nearest point ----
+
+// The input triangle nearest p (the lowest number among equals), and the
+// nearest point's barycentric weights in 'w'; the search starts within two
+// cells and widens until it finds one. NoIndex if there are no triangles
+fn nearestTriangle(t &TriMesh, bvh &Bvh, p Vec3, cs f32, w &mut DVec3, cands &mut List[u32], stack &mut List[u32]) u32 {
+  if t.triCount() == 0usize { return NoIndex; }
+  imm pd = DVec3.from(p);
+  mut r = 2. * cs;
+  mut best = NoIndex;
+  mut bestD = 0.d;
+  while best == NoIndex {
+    bvh.query(p - new Vec3(r, r, r), p + new Vec3(r, r, r), cands, stack);
+    mut k = 0usize;
+    while k < cands.len() {
+      imm s = *cands[k];
+      imm su = usize.from(s);
+      imm a = *t.pos[usize.from(*t.tv[3usize * su])];
+      imm b = *t.pos[usize.from(*t.tv[3usize * su + 1usize])];
+      imm c = *t.pos[usize.from(*t.tv[3usize * su + 2usize])];
+      mut wts = new DVec3(0.d, 0.d, 0.d);
+      nearestOnTriangle(pd, a, b, c, &mut wts);
+      imm q = a * wts.x + b * wts.y + c * wts.z;
+      imm d = (pd - q).lengthSquared();
+      if best == NoIndex or d < bestD or (d == bestD and s < best) {
+        best = s;
+        bestD = d;
+        *w = wts;
+      }
+      k = k + 1usize;
+    }
+    // A triangle found in the box may not be the nearest beyond it: accept
+    // it only if it is within the box's half width
+    if best != NoIndex and bestD > f64.from(r) * f64.from(r) { best = NoIndex; }
+    r = r * 2.;
+  }
+  best;
+}
+
+// The channels of m carried to 'out' from the nearest points (see the top)
+fn carryNearest(m &PolyMesh, t &TriMesh, bvh &Bvh, out &mut PolyMesh, nearTri &List[u32], nearW &List[DVec3], cs f32) {
+  // Each new face's nearest input face, by its centroid
+  imm nf = out.faceCount();
+  mut faceSrc = List[u32].withCapacity(nf);
+  mut cands = List[u32].empty();
+  mut stack = List[u32].empty();
+  mut f = 0usize;
+  while f < nf {
+    mut w = new DVec3(1.d, 0.d, 0.d);
+    imm tri = nearestTriangle(t, bvh, out.faceCentroid(u32.from(f)), cs, &mut w, &mut cands, &mut stack);
+    faceSrc.push(if tri == NoIndex { NoIndex; } else { *t.tf[usize.from(tri)]; });
+    f = f + 1usize;
+  }
+  mut i = 0usize;
+  while i < m.floats.len() {
+    imm domain = m.floats[i].domain;
+    imm fill = m.floats[i].fill;
+    imm n = out.domainSize(domain);
+    mut vals = List[f32].withCapacity(n);
+    mut e = 0usize;
+    while e < n {
+      mut val = fill;
+      imm src = nearSource(out, domain, e, nearTri, &faceSrc);
+      if src != NoIndex {
+        if domain == FaceDomain { val = m.float(u32.from(i), src); }
+        elif domain == VertexDomain or domain == CornerDomain {
+          imm w = *nearW[usize.from(src)];
+          imm s = 3usize * usize.from(*nearTri[usize.from(src)]);
+          imm k0 = sourceElement(t, domain, s);
+          imm k1 = sourceElement(t, domain, s + 1usize);
+          imm k2 = sourceElement(t, domain, s + 2usize);
+          val = blend3(m.float(u32.from(i), k0), m.float(u32.from(i), k1), m.float(u32.from(i), k2), w);
+        }
+      }
+      vals.push(val);
+      e = e + 1usize;
+    }
+    out.floats.push(new Channel[f32](String.from(m.floats[i].name.view()), domain, vals, fill));
+    i = i + 1usize;
+  }
+  i = 0usize;
+  while i < m.vec2s.len() {
+    imm domain = m.vec2s[i].domain;
+    imm fill = m.vec2s[i].fill;
+    imm n = out.domainSize(domain);
+    mut vals = List[Vec2].withCapacity(n);
+    mut e = 0usize;
+    while e < n {
+      mut val = fill;
+      imm src = nearSource(out, domain, e, nearTri, &faceSrc);
+      if src != NoIndex {
+        if domain == FaceDomain { val = m.vec2(u32.from(i), src); }
+        elif domain == VertexDomain or domain == CornerDomain {
+          imm w = *nearW[usize.from(src)];
+          imm s = 3usize * usize.from(*nearTri[usize.from(src)]);
+          imm a = m.vec2(u32.from(i), sourceElement(t, domain, s));
+          imm b = m.vec2(u32.from(i), sourceElement(t, domain, s + 1usize));
+          imm c = m.vec2(u32.from(i), sourceElement(t, domain, s + 2usize));
+          val = new Vec2(blend3(a.x, b.x, c.x, w), blend3(a.y, b.y, c.y, w));
+        }
+      }
+      vals.push(val);
+      e = e + 1usize;
+    }
+    out.vec2s.push(new Channel[Vec2](String.from(m.vec2s[i].name.view()), domain, vals, fill));
+    i = i + 1usize;
+  }
+  i = 0usize;
+  while i < m.vec3s.len() {
+    imm domain = m.vec3s[i].domain;
+    imm fill = m.vec3s[i].fill;
+    imm n = out.domainSize(domain);
+    mut vals = List[Vec3].withCapacity(n);
+    mut e = 0usize;
+    while e < n {
+      mut val = fill;
+      imm src = nearSource(out, domain, e, nearTri, &faceSrc);
+      if src != NoIndex {
+        if domain == FaceDomain { val = m.vec3(u32.from(i), src); }
+        elif domain == VertexDomain or domain == CornerDomain {
+          imm w = *nearW[usize.from(src)];
+          imm s = 3usize * usize.from(*nearTri[usize.from(src)]);
+          imm a = m.vec3(u32.from(i), sourceElement(t, domain, s));
+          imm b = m.vec3(u32.from(i), sourceElement(t, domain, s + 1usize));
+          imm c = m.vec3(u32.from(i), sourceElement(t, domain, s + 2usize));
+          val = new Vec3(blend3(a.x, b.x, c.x, w), blend3(a.y, b.y, c.y, w), blend3(a.z, b.z, c.z, w));
+        }
+      }
+      vals.push(val);
+      e = e + 1usize;
+    }
+    out.vec3s.push(new Channel[Vec3](String.from(m.vec3s[i].name.view()), domain, vals, fill));
+    i = i + 1usize;
+  }
+}
+
+// Where new element e of a domain takes its value from: a face's nearest
+// input face; a vertex's own number, or a corner's vertex's, whose nearest
+// triangle and weights are kept; NoIndex for an edge, a boundary corner, or
+// nothing found
+fn nearSource(out &PolyMesh, domain u32, e usize, nearTri &List[u32], faceSrc &List[u32]) u32 {
+  if domain == FaceDomain { return *faceSrc[e]; }
+  if domain == VertexDomain {
+    if *nearTri[e] == NoIndex { return NoIndex; }
+    return u32.from(e);
+  }
+  if domain == CornerDomain {
+    if *out.hFace[e] == NoIndex { return NoIndex; }
+    imm v = *out.hVertex[e];
+    if *nearTri[usize.from(v)] == NoIndex { return NoIndex; }
+    return v;
+  }
+  NoIndex;
+}
+
+// Three values blended by barycentric weights, in f64 and rounded once, so
+// three equal values give that value exactly
+fn blend3(a f32, b f32, c f32, w DVec3) f32 {
+  f32.from(f64.from(a) * w.x + f64.from(b) * w.y + f64.from(c) * w.z);
+}
+
+// Triangle corner k's element of the input in a domain: its vertex, or its
+// corner (half-edge)
+fn sourceElement(t &TriMesh, domain u32, k usize) u32 {
+  if domain == VertexDomain { *t.tv[k]; } else { *t.tc[k]; };
+}
