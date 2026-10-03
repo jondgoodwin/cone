@@ -1,0 +1,245 @@
+// The blocking pool: work with no completion form, run on a lane's threads
+// and answered into the loop that asked, as the kernel's answers are.
+//
+// 1. A name looked up on the DNS lane: 'localhost' and '127.0.0.1', each
+//    address carrying the port asked for.
+// 2. A file's metadata: its size; a folder is a folder; a file that is not
+//    there fails with ERROR_FILE_NOT_FOUND.
+// 3. 1,000 file reads at once, opened, read and closed on the general
+//    lane's threads, every one answered into this one loop with the right
+//    bytes; the lane's queue depth and threads stay within its bounds.
+// 4. A slow resolver does not delay disk work: while six look-ups that
+//    take 200 ms each hold the DNS lane, 200 file reads on the general lane
+//    are all answered before the first look-up is.
+// 5. A lane's queue is bounded: past it a submit is refused at once,
+//    Failed with ERROR_BUSY, its buffer back.
+// 6. A lane keeps its least threads, grows to its most while jobs wait, and
+//    shrinks back after its idle time.
+
+mod pool;
+
+import testing use *;
+import thread;
+import collections use List, String;
+import time use Instant, Duration;
+import iobuf use *;
+import iocore use *;
+import diag;
+
+fn waitFor(lp &mut Loop, out &mut List[Completion], n usize) {
+  imm limit = Instant.now() + Duration.fromSeconds(10i64);
+  while out.len() < n and Instant.now() < limit {
+    lp.poll(limit, out);
+  }
+}
+
+fn slowWork(arg u64, buf &mut IoBuf) Outcome {
+  thread.sleep(Duration.fromMillis(i64.from(arg)));
+  Outcome.Done[0usize];
+}
+
+fn fileName(i u64) String {
+  mut s = String.from("pool");
+  s.appendUInt(i);
+  s.append(".tmp");
+  s;
+}
+
+fn main() i32 {
+  {
+    imm pool = Pool.make();
+    mut lp = Loop.mustMake();
+    mut out = List[Completion].empty();
+
+    // 1. Names
+    {
+      lp.submit(resolveOp("localhost", 8080u16, pool.mustTake(4096usize)), Target.Here[1u64]);
+      lp.submit(resolveOp("127.0.0.1", 443u16, pool.mustTake(4096usize)), Target.Here[2u64]);
+      waitFor(&mut lp, &mut out, 2usize);
+      requireUInt(u64.from(out.len()), 2u64, "both looked up");
+      mut k = 0usize;
+      while k < 2usize {
+        imm c = out[k];
+        expectUInt(u64.from(c.kind), u64.from(diag.kindCall), "a pool job");
+        require(c.isDone() and c.count() >= 1usize, "found");
+        imm addrs = addressesIn(&c.buf);
+        expectUInt(u64.from(addrs.len()), u64.from(c.count()), "as many addresses as it says");
+        mut loopback = false;
+        mut ports = true;
+        mut j = 0usize;
+        while j < addrs.len() {
+          imm t = addrs[j].text();
+          if t.equals("127.0.0.1:8080") or t.equals("[0:0:0:0:0:0:0:1]:8080") or t.equals("127.0.0.1:443") {
+            loopback = true;
+          }
+          if addrs[j].port() != (if c.token == 1u64 {8080u16;} else {443u16;}) {ports = false;}
+          j = j + 1usize;
+        }
+        expect(loopback, "this machine's address among them");
+        expect(ports, "each with the port asked for");
+        k = k + 1usize;
+      }
+      out.clear();
+    }
+
+    // The files the rest reads: eight of 4,096 bytes, file i filled with
+    // the letter 'a' + i
+    mut f = 0u64;
+    while f < 8u64 {
+      match lp.openFile(fileName(f).view(), Access.Create[]) {
+        case imm r Ok {
+          mut b = pool.mustTake(4096usize);
+          {
+            imm w = b.whole();
+            mut j = 0usize;
+            while j < 4096usize {
+              w[j] = 97u8 + u8.from(f);
+              j = j + 1usize;
+            }
+          }
+          b.setLen(4096usize);
+          lp.submit(Op.WriteAt[r.value, 0u64, b], Target.Here[0u64]);
+          waitFor(&mut lp, &mut out, 1usize);
+          out.clear();
+          lp.close(r.value);
+        }
+        case imm e Error {}
+      }
+      f = f + 1u64;
+    }
+
+    // 2. Metadata
+    {
+      lp.submit(statOp("pool3.tmp", Lane.general(), pool.mustTake(4096usize)), Target.Here[1u64]);
+      lp.submit(statOp(".", Lane.general(), pool.mustTake(4096usize)), Target.Here[2u64]);
+      lp.submit(statOp("no such file.tmp", Lane.general(), pool.mustTake(4096usize)), Target.Here[3u64]);
+      waitFor(&mut lp, &mut out, 3usize);
+      requireUInt(u64.from(out.len()), 3u64, "three asked");
+      mut k = 0usize;
+      while k < 3usize {
+        imm c = out[k];
+        if c.token == 1u64 {
+          expect(c.isDone(), "a file's metadata");
+          imm s = fileStatIn(&c.buf);
+          expectUInt(s.size, 4096u64, "its size");
+          expect(not s.isDir(), "not a folder");
+          expect(s.modified.unixSeconds() > 1700000000i64, "written lately");
+        } elif c.token == 2u64 {
+          expect(c.isDone() and fileStatIn(&c.buf).isDir(), "a folder");
+        } else {
+          expectUInt(u64.from(c.status), u64.from(diag.outcomeFailed), "a file not there: Failed");
+          expectUInt(u64.from(c.code), u64.from(errorFileNotFound), "ERROR_FILE_NOT_FOUND");
+        }
+        k = k + 1usize;
+      }
+      out.clear();
+    }
+
+    // 3. A thousand reads at once
+    {
+      mut i = 0u64;
+      while i < 1000u64 {
+        lp.submit(readFileOp(fileName(i % 8u64).view(), (i % 4u64) * 1024u64, Lane.general(),
+          pool.mustTake(1024usize)), Target.Here[1000u64 + i]);
+        i = i + 1u64;
+      }
+      waitFor(&mut lp, &mut out, 1000usize);
+      requireUInt(u64.from(out.len()), 1000u64, "all 1,000 answered into this loop");
+      mut right = 0u64;
+      mut k = 0usize;
+      while k < out.len() {
+        imm c = out[k];
+        imm want = 97u8 + u8.from((c.token - 1000u64) % 8u64);
+        imm v = c.buf.view();
+        // Each read from its offset to the end of the 4,096 bytes, as much
+        // as the 4,096-byte buffer holds
+        imm expected = 4096usize - usize.from(((c.token - 1000u64) % 4u64) * 1024u64);
+        if c.isDone() and v.len == expected and v[0usize] == want and v[v.len - 1usize] == want {
+          right = right + 1u64;
+        }
+        k = k + 1usize;
+      }
+      expectUInt(right, 1000u64, "each with its file's bytes, from its offset");
+      out.clear();
+      imm st = Lane.general().stats();
+      expect(st.maxQueued > 0u32 and st.maxQueued <= 1024u32, "jobs queued, within the lane's bound");
+      expect(st.threads <= 4u32 and st.started >= 1u64, "on at most four threads");
+      expectUInt(u64.from(st.queued), 0u64, "none waiting now");
+    }
+
+    // 4. A slow resolver beside the disk
+    {
+      mut i = 0u64;
+      while i < 6u64 {
+        lp.submit(Op.Call[Lane.dns(), &slowWork, 200u64, IoBuf.empty()], Target.Here[1u64]);
+        i = i + 1u64;
+      }
+      i = 0u64;
+      while i < 200u64 {
+        lp.submit(readFileOp(fileName(i % 8u64).view(), 0u64, Lane.general(), pool.mustTake(4096usize)),
+          Target.Here[2u64]);
+        i = i + 1u64;
+      }
+      waitFor(&mut lp, &mut out, 206usize);
+      requireUInt(u64.from(out.len()), 206u64, "all answered");
+      mut firstSlow = out.len();
+      mut lastDisk = 0usize;
+      mut k = 0usize;
+      while k < out.len() {
+        if out[k].token == 1u64 and firstSlow == out.len() {firstSlow = k;}
+        if out[k].token == 2u64 {lastDisk = k;}
+        k = k + 1usize;
+      }
+      expect(lastDisk < firstSlow, "every disk read answered before the first slow look-up");
+      expect(Lane.dns().stats().maxQueued >= 4u32, "the look-ups queued on their own lane");
+      out.clear();
+    }
+
+    // 5. A bounded queue
+    {
+      imm tiny = addLane(new LaneConfig(name: "tiny", maxThreads: 1u32, queueBound: 2u32));
+      lp.submit(Op.Call[tiny, &slowWork, 100u64, IoBuf.empty()], Target.Here[1u64]);
+      lp.poll(Instant.now() + Duration.fromMillis(20i64), &mut out);
+      lp.submit(Op.Call[tiny, &slowWork, 0u64, IoBuf.empty()], Target.Here[2u64]);
+      lp.submit(Op.Call[tiny, &slowWork, 0u64, IoBuf.empty()], Target.Here[3u64]);
+      lp.submit(Op.Call[tiny, &slowWork, 0u64, pool.mustTake(10usize)], Target.Here[4u64]);
+      lp.poll(Instant.now(), &mut out);
+      requireUInt(u64.from(out.len()), 1u64, "the one past the bound answered at once");
+      expectUInt(out[0usize].token, 4u64, "the fourth");
+      expectUInt(u64.from(out[0usize].status), u64.from(diag.outcomeFailed), "Failed");
+      expectUInt(u64.from(out[0usize].code), u64.from(errorBusy), "ERROR_BUSY");
+      expectUInt(u64.from(out[0usize].buf.capacity()), 4096u64, "its buffer back");
+      out.clear();
+      waitFor(&mut lp, &mut out, 3usize);
+      expectUInt(u64.from(out.len()), 3u64, "the three within it ran");
+      out.clear();
+      imm st = tiny.stats();
+      expectUInt(st.refused, 1u64, "one refused");
+      expectUInt(u64.from(st.maxQueued), 2u64, "two queued at most");
+    }
+
+    // 6. Threads grow and shrink
+    {
+      imm l = addLane(new LaneConfig(name: "elastic", minThreads: 1u32, maxThreads: 3u32, idleMillis: 50u32));
+      expectUInt(u64.from(l.stats().threads), 1u64, "its least thread, from the start");
+      mut i = 0u64;
+      while i < 3u64 {
+        lp.submit(Op.Call[l, &slowWork, 60u64, IoBuf.empty()], Target.Here[1u64]);
+        i = i + 1u64;
+      }
+      lp.poll(Instant.now() + Duration.fromMillis(20i64), &mut out);
+      expectUInt(u64.from(l.stats().threads), 3u64, "three while three jobs wait");
+      waitFor(&mut lp, &mut out, 3usize);
+      out.clear();
+      thread.sleep(Duration.fromMillis(400i64));
+      expectUInt(u64.from(l.stats().threads), 1u64, "back to its least after its idle time");
+    }
+
+    imm cs = lp.counters();
+    expectUInt(cs.delivered, cs.submitted, "every operation answered once");
+    expectUInt(cs.inFlight, 0u64, "nothing in flight");
+    expectUInt(pool.stats().lent, 0u64, "every buffer back in the pool");
+  }
+  expectUInt(osBlocks(), 0u64, "and every block back to the OS");
+  done();
+}

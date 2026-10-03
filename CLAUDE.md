@@ -238,10 +238,31 @@ Visual Studio projects stay at the root.
   through `WSAIoctl`'s function pointers), all Cone; its tests include the
   two-thread echo of 100,000 messages beside a file read through one poll,
   and its examples `echo.cone` (kernel against delivery latency) and
-  `tick.cone` (a 1 ms tick's jitter) time it;
+  `tick.cone` (a 1 ms tick's jitter) time it; the cancellation contract on
+  top: `CancelGroup`, a value (Sendable) whose one `cancel` asks every
+  operation in it, on any loop, to end, cancelled a state (an operation
+  submitted into it answered at once), children, deadlines absolute and
+  inherited as the tighter (`submitIn`, `childUntil`), and a shield for
+  cleanup; `Request`, a handle whose death or `cancel` from any thread
+  posts the cancel to the loop; a deadline's prompt `TimedOut` past the
+  loop's grace (`setGrace`), without the buffer, which goes home when the
+  kernel lets it go; the blocking pool (`Op.Call[lane, work, arg, buf]`, a
+  plain function run on a lane's threads, lanes bounded and sized apart so
+  a slow resolver never delays the disk; `resolveOp` over `GetAddrInfoW`,
+  `statOp`, `readFileOp`); the thread targets `Target.Chan` (a sync
+  channel, held and retried when full), `Target.Once` (a sync one-shot)
+  and `Target.Status` (a `StatusArray` slot looked at without waiting);
+  and external operations, `lp.external`, ended from any thread by a
+  `Completer` (a GPU fence's watcher, a callback library) under the same
+  contract; its tests include `race.cone`, a million operations each
+  racing completion, a cross-thread cancel and its deadline, every one
+  answered exactly once, and its example `cancel.cone` times the targets,
+  cancels and the pool;
   `diag` is the runtime's diagnostics: `OpRecord` (a loop's id and an
   operation's, kind, outcome, bytes, token, submitted, dequeued and
-  delivered), `Counters` (exact, submitted = delivered + in flight), a
+  delivered), `Counters` (exact, submitted = delivered + in flight; cancels
+  by group and by Request, answers at submit, prompt TimedOuts and their
+  late returns, answers handed to other threads), a
   log-linear `Histogram` (p50, p99, the maximum), and `Subscriber`, a
   function a loop hands each record to, `textSubscriber` printing a line;
   none by default, so nothing prints;
@@ -301,7 +322,9 @@ Visual Studio projects stay at the root.
   on the futex alone, Rust's way, the locks `Mutex`, `Rwlock`,
   `Condvar` and `Once`, unchecked with explicit lock and unlock when held
   as values, `Mutex` and `Rwlock` also lock permissions (`Arc[Mutex, T]`,
-  the lock taken by a borrow through it); `actors` is the runtime an `actor`
+  the lock taken by a borrow through it); the channels (unbounded and
+  bounded MPSC, SPSC) and `Oneshot[T]`, one value sent once from one thread
+  to one; `actors` is the runtime an `actor`
   declaration runs on, over `thread` and `sync`, Windows only: mailboxes, a
   work-stealing scheduler of worker threads that start with the first actor,
   actors counted through `Arc` and finalized once when their last handle and

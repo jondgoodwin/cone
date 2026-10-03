@@ -62,9 +62,15 @@
 // high-resolution timer's expiries, and the waits that ended on the port's
 // own coarse timeout instead (0 while that timer keeps time); wakes;
 // answers posted to other loops,
-// received from them, and dropped because their loop had gone; cancels
-// asked for. delivered + inFlight = submitted at every moment, which is the
-// exactly-once check (iocore's invariant I1).
+// received from them, and dropped because their loop had gone; answers
+// handed to a channel, a one-shot or a status slot, those whose receiver had
+// gone, and those held back a pass by a full channel; cancels asked for, by
+// a cancel group and by a Request among them; operations answered at submit
+// without starting (their group cancelled, their deadline passed, a lane's
+// queue full); TimedOut answered promptly while the kernel or a pool thread
+// still held the buffer, and those buffers given back since; jobs handed to
+// the blocking pool. delivered + inFlight = submitted at every moment, which
+// is the exactly-once check (iocore's invariant I1).
 //
 // HISTOGRAMS. A Histogram counts values (nanoseconds, by its use here) in
 // log-linear buckets: every power of two split in 16, so a percentile is
@@ -115,6 +121,8 @@ pub const kindSend = 4u32;
 pub const kindReadAt = 5u32;
 pub const kindWriteAt = 6u32;
 pub const kindTimer = 7u32;
+pub const kindCall = 8u32;        // work run on the blocking pool
+pub const kindExternal = 9u32;    // ended by another thread or source: a Completer
 
 pub fn kindName(k u32) &[]u8 {
   if k == kindConnect {"connect";}
@@ -125,6 +133,8 @@ pub fn kindName(k u32) &[]u8 {
   elif k == kindReadAt {"readAt";}
   elif k == kindWriteAt {"writeAt";}
   elif k == kindTimer {"timer";}
+  elif k == kindCall {"call";}
+  elif k == kindExternal {"external";}
   else {"?";}
 }
 
@@ -190,10 +200,22 @@ pub struct Counters {
   pub postsReceived u64;    // answers posted here by another loop
   pub postsDropped u64;     // answers whose loop had gone: their buffers went home
   pub cancelsAsked u64;     // cancel calls that found an operation to cancel
+  pub handedOff u64;        // answers sent to a channel, a one-shot or a status slot
+  pub handedDropped u64;    // ...whose receiver had gone: their buffers went home
+  pub held u64;             // answers held back a pass because their channel was full
+  pub atSubmit u64;         // answered at submit, never started: their cancel group
+                            // cancelled, their deadline passed, or a lane's queue full
+  pub groupCancels u64;     // cancels asked through a cancel group
+  pub remoteCancels u64;    // cancels asked by a Request, from any thread
+  pub promptTimeouts u64;   // TimedOut answered while the kernel or a pool thread
+                            // still held the buffer: the answer carried none
+  pub lateReturns u64;      // ...and those buffers given back to their pools since
+  pub jobs u64;             // operations handed to the blocking pool
 
   pub fn zero() Counters {
     new Counters(0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64,
-      0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64);
+      0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64,
+      0u64, 0u64);
   }
 
   // A reply delivered, with its outcome
@@ -234,6 +256,15 @@ pub struct Counters {
     line(prefix, "postsReceived", postsReceived);
     line(prefix, "postsDropped", postsDropped);
     line(prefix, "cancelsAsked", cancelsAsked);
+    line(prefix, "handedOff", handedOff);
+    line(prefix, "handedDropped", handedDropped);
+    line(prefix, "held", held);
+    line(prefix, "atSubmit", atSubmit);
+    line(prefix, "groupCancels", groupCancels);
+    line(prefix, "remoteCancels", remoteCancels);
+    line(prefix, "promptTimeouts", promptTimeouts);
+    line(prefix, "lateReturns", lateReturns);
+    line(prefix, "jobs", jobs);
   }
 }
 

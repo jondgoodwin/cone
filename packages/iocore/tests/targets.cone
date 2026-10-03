@@ -1,0 +1,312 @@
+// The thread targets: an operation's answer delivered to a sync channel, to
+// a one-shot another thread waits on, or into a status slot a thread looks
+// at when it chooses.
+//
+// 1. Chan: a consumer thread receives every answer from the channel, each
+//    with its buffer; the loop's poll returns as each is handed off.
+// 2. Chan, bounded and full: the answers it cannot take are held by the
+//    loop and tried again each pass, never lost and never sent twice; a
+//    channel whose receiver has gone drops its answer, buffer home.
+// 3. Once: a synchronous call -- another thread asks this loop's thread to
+//    read a file, handing it a one-shot, and waits on it; the answer comes
+//    with the file's bytes. A one-shot whose receiver has gone drops its
+//    answer.
+// 4. Status: answers left in numbered slots, looked at without waiting: a
+//    slot is not ready until its answer is in it, its answer is taken once,
+//    and a slot taken from is free for the next operation; a service
+//    thread's reads land in main's slots while main never waits.
+
+mod targets;
+
+import testing use *;
+import thread;
+import sync use Sender, Receiver, Channel, Oneshot, OneshotSender, OneshotReceiver;
+import collections use List, String;
+import time use Instant, Duration;
+import iobuf use *;
+import iocore use *;
+import diag;
+
+fn waitFor(lp &mut Loop, out &mut List[Completion], n usize) {
+  imm limit = Instant.now() + Duration.fromSeconds(5i64);
+  while out.len() < n and Instant.now() < limit {
+    lp.poll(limit, out);
+  }
+}
+
+// What a consumer thread found
+struct Got {
+  pub n u64;
+  pub withBuf u64;
+  pub tokens u64;           // the sum of their tokens
+}
+
+fn consume(rx Receiver[Completion]) Got {
+  mut r = rx;
+  mut g = new Got(0u64, 0u64, 0u64);
+  mut more = true;
+  while more {
+    match r.recv() {
+      case imm s Some {
+        g.n = g.n + 1u64;
+        if s.value.buf.capacity() == 4096usize {g.withBuf = g.withBuf + 1u64;}
+        g.tokens = g.tokens + s.value.token;
+      }
+      case is None[Completion] {more = false;}
+    }
+  }
+  g;
+}
+
+// A synchronous call: the path to read, and where the answer goes
+struct Call {
+  pub path String;
+  pub reply OneshotSender[Completion];
+}
+
+struct Caller {
+  pub calls Sender[Call];
+  pub wake Waker;
+}
+
+// Ask the service thread for a file, and wait for its answer
+fn caller(c Caller) String {
+  mut otx OneshotSender[Completion];
+  mut orx OneshotReceiver[Completion];
+  otx, orx = Oneshot[Completion].make();
+  c.calls.send(new Call(String.from("targets.tmp"), otx));
+  c.wake.wake();
+  mut text = String.empty();
+  match orx.recv() {
+    case imm s Some {
+      if s.value.isDone() {text.append(s.value.buf.view());}
+    }
+    case is None[Completion] {}
+  }
+  text;
+}
+
+// A service thread that reads into main's status slots
+struct Reader {
+  pub board StatusArray;
+  pub pool Pool;
+}
+
+fn reader(r Reader) u64 {
+  mut lp = Loop.mustMake();
+  mut out = List[Completion].empty();
+  mut fh = Handle.none();
+  match lp.openFile("targets.tmp", Access.Read[]) {
+    case imm o Ok {fh = o.value;}
+    case imm e Error {return 0u64;}
+  }
+  mut i = 0u32;
+  while i < 8u32 {
+    lp.submit(Op.ReadAt[fh, u64.from(i), r.pool.mustTake(64usize)], Target.Status[u64.from(i), r.board, i]);
+    i = i + 1u32;
+  }
+  while lp.inFlight() > 0u64 {
+    lp.poll(forever(), &mut out);
+  }
+  lp.counters().handedOff;
+}
+
+fn main() i32 {
+  {
+    imm pool = Pool.make();
+    mut lp = Loop.mustMake();
+    mut out = List[Completion].empty();
+    // The file the reads read
+    match lp.openFile("targets.tmp", Access.Create[]) {
+      case imm r Ok {
+        mut b = pool.mustTake(64usize);
+        b.append("abcdefghij");
+        lp.submit(Op.WriteAt[r.value, 0u64, b], Target.Here[0u64]);
+        waitFor(&mut lp, &mut out, 1usize);
+        out.clear();
+        lp.close(r.value);
+      }
+      case imm e Error {}
+    }
+
+    // 1. A channel to a consumer thread
+    {
+      mut tx Sender[Completion];
+      mut rx Receiver[Completion];
+      tx, rx = Channel[Completion].make();
+      imm t = thread.start(rx, &consume);
+      mut k = 0u64;
+      while k < 10u64 {
+        lp.submit(statOp("targets.tmp", Lane.general(), pool.mustTake(64usize)), Target.Chan[k, tx.clone()]);
+        k = k + 1u64;
+      }
+      imm before = lp.counters().handedOff;
+      while lp.counters().handedOff - before < 10u64 {
+        lp.poll(forever(), &mut out);
+      }
+      expectUInt(u64.from(out.len()), 0u64, "nothing answered here");
+      {
+        imm gone = tx;
+      }
+      imm g = t.join();
+      expectUInt(g.n, 10u64, "the consumer received all ten");
+      expectUInt(g.withBuf, 10u64, "each with its buffer");
+      expectUInt(g.tokens, 45u64, "each once");
+    }
+
+    // 2. A bounded channel, full
+    {
+      mut tx Sender[Completion];
+      mut rx Receiver[Completion];
+      tx, rx = Channel[Completion].bounded(1u64);
+      imm before = lp.counters().held;
+      mut k = 0u64;
+      while k < 3u64 {
+        lp.after(Instant.now(), Target.Chan[100u64 + k, tx.clone()]);
+        k = k + 1u64;
+      }
+      lp.poll(Instant.now() + Duration.fromMillis(5i64), &mut out);
+      expect(lp.counters().held - before >= 2u64, "two held back: the channel holds one");
+      mut sum = 0u64;
+      mut n = 0u64;
+      imm limit = Instant.now() + Duration.fromSeconds(5i64);
+      while n < 3u64 and Instant.now() < limit {
+        match rx.tryRecv() {
+          case imm s Some {
+            n = n + 1u64;
+            sum = sum + s.value.token;
+          }
+          case is None[Completion] {lp.poll(Instant.now() + Duration.fromMillis(2i64), &mut out);}
+        }
+      }
+      expectUInt(n, 3u64, "all three came through, one at a time");
+      expectUInt(sum, 303u64, "each once");
+      lp.poll(Instant.now() + Duration.fromMillis(5i64), &mut out);
+      expect(match rx.tryRecv() {case is None[Completion] {true;} else {false;}}, "and no more");
+
+      // The receiver gone
+      {
+        imm gone = rx;
+      }
+      imm dropped = lp.counters().handedDropped;
+      lp.submit(statOp("targets.tmp", Lane.general(), pool.mustTake(64usize)), Target.Chan[7u64, tx.clone()]);
+      imm limit2 = Instant.now() + Duration.fromSeconds(5i64);
+      while lp.inFlight() > 0u64 and Instant.now() < limit2 {
+        lp.poll(limit2, &mut out);
+      }
+      expectUInt(lp.counters().handedDropped - dropped, 1u64, "a channel whose receiver went: the answer dropped");
+      expectUInt(pool.stats().lent, 0u64, "its buffer home");
+    }
+
+    // 3. A synchronous call through a one-shot
+    {
+      mut ctx Sender[Call];
+      mut crx Receiver[Call];
+      ctx, crx = Channel[Call].make();
+      imm handed = lp.counters().handedOff;
+      imm t = thread.start(new Caller(ctx, lp.waker()), &caller);
+      mut served = false;
+      imm limit = Instant.now() + Duration.fromSeconds(5i64);
+      while not served and Instant.now() < limit {
+        lp.poll(limit, &mut out);
+        match crx.tryRecv() {
+          case mut s Some {
+            mut reply OneshotSender[Completion];
+            mut orx OneshotReceiver[Completion];
+            reply, orx = Oneshot[Completion].make();
+            // The caller's one-shot moves into the target: swapped out of
+            // the call, as Cone moves nothing out of a field
+            reply <=> s.value.reply;
+            lp.submit(readFileOp(s.value.path.view(), 2u64, Lane.general(), pool.mustTake(64usize)),
+              Target.Once[1u64, reply]);
+            served = true;
+          }
+          case is None[Call] {}
+        }
+      }
+      // The answer is delivered by this thread's poll: the caller waits
+      // for it, so poll until it is handed off, then join
+      while lp.counters().handedOff == handed and Instant.now() < limit {
+        lp.poll(limit, &mut out);
+      }
+      expectStr(t.join().view(), "cdefghij", "the caller had its answer: the file from byte 2");
+
+      // A one-shot whose receiver has gone
+      mut otx OneshotSender[Completion];
+      {
+        mut orx OneshotReceiver[Completion];
+        otx, orx = Oneshot[Completion].make();
+      }
+      imm dropped = lp.counters().handedDropped;
+      lp.after(Instant.now(), Target.Once[2u64, otx]);
+      lp.poll(Instant.now() + Duration.fromMillis(5i64), &mut out);
+      expectUInt(lp.counters().handedDropped - dropped, 1u64, "a one-shot whose receiver went: dropped");
+      expectUInt(u64.from(out.len()), 0u64, "and nothing here");
+    }
+
+    // 4. Status slots
+    {
+      imm board = StatusArray.make(4u32);
+      expectUInt(u64.from(board.len()), 4u64, "four slots");
+      lp.after(Instant.now() + Duration.fromMillis(10i64), Target.Status[1u64, board, 0u32]);
+      lp.submit(readFileOp("targets.tmp", 0u64, Lane.general(), pool.mustTake(64usize)), Target.Status[2u64, board, 3u32]);
+      expect(not board.isReady(0u32) and not board.isFree(0u32), "slot 0 armed, not ready");
+      expect(board.isFree(1u32), "slot 1 free");
+      mut got = List[Completion].empty();
+      expect(not board.take(0u32, &mut got), "nothing to take yet");
+      imm limit = Instant.now() + Duration.fromSeconds(5i64);
+      while not (board.isReady(0u32) and board.isReady(3u32)) and Instant.now() < limit {
+        lp.poll(Instant.now() + Duration.fromMillis(1i64), &mut out);
+      }
+      expect(board.take(0u32, &mut got), "the timer's answer taken");
+      expect(not board.take(0u32, &mut got), "once");
+      expect(board.take(3u32, &mut got), "the read's answer taken");
+      requireUInt(u64.from(got.len()), 2u64, "two answers");
+      expect(got[0usize].token == 1u64 and got[0usize].isDone(), "the timer's");
+      expectStr(got[1usize].buf.view(), "abcdefghij", "the read's, with its bytes");
+      expect(board.isFree(0u32) and board.isFree(3u32), "both slots free again");
+      got.clear();
+
+      // From another thread, while this one never waits
+      imm many = StatusArray.make(8u32);
+      imm t = thread.start(new Reader(many, pool), &reader);
+      mut seen = 0u32;
+      mut text = String.empty();
+      mut frames = 0u32;
+      mut taken = new Array[Bool, 8] <- fill false;
+      imm limit2 = Instant.now() + Duration.fromSeconds(5i64);
+      while seen < 8u32 and Instant.now() < limit2 {
+        // One frame: look at every slot, wait for none
+        mut i = 0u32;
+        while i < 8u32 {
+          if not taken[usize.from(i)] and many.take(i, &mut got) {
+            taken[usize.from(i)] = true;
+            seen = seen + 1u32;
+          }
+          i = i + 1u32;
+        }
+        frames = frames + 1u32;
+        thread.sleep(Duration.fromMillis(1i64));
+      }
+      expectUInt(t.join(), 8u64, "the service handed off eight answers");
+      expectUInt(u64.from(seen), 8u64, "all eight seen, slot by slot");
+      mut right = 0u32;
+      mut k = 0usize;
+      while k < got.len() {
+        imm off = usize.from(got[k].token);
+        imm v = got[k].buf.view();
+        if v.len == 10usize - off and v[0usize] == 97u8 + u8.from(off) {right = right + 1u32;}
+        k = k + 1usize;
+      }
+      expectUInt(u64.from(right), 8u64, "each from its own offset");
+      got.clear();
+    }
+
+    imm cs = lp.counters();
+    expectUInt(cs.delivered, cs.submitted, "every operation answered once");
+    expectUInt(cs.inFlight, 0u64, "nothing in flight");
+    expectUInt(pool.stats().lent, 0u64, "every buffer back in the pool");
+  }
+  expectUInt(osBlocks(), 0u64, "and every block back to the OS");
+  done();
+}

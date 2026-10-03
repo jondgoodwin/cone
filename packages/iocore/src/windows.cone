@@ -59,6 +59,7 @@ extern {
       fallback *u8, usedFallback *i32) i32;
   fn @c(system) FormatMessageW(flags u32, source *u8, id u32, language u32, buf *u16, size u32,
       args *u8) u32;
+  fn @c(system) GetFileAttributesExW(name *u16, level i32, info *u8) i32;
 
   // ntdll: the wait completion packet (Windows 8 and later), and NTSTATUS
   fn @c(system) NtCreateWaitCompletionPacket(out &mut usize, access u32, attrs *u8) i32;
@@ -82,6 +83,20 @@ extern {
   fn @c(system) listen(s usize, backlog i32) i32;
   fn @c(system) getsockname(s usize, addr *u8, len &mut i32) i32;
   fn @c(system) setsockopt(s usize, level i32, name i32, val *u8, len i32) i32;
+  fn @c(system) GetAddrInfoW(node *u16, service *u16, hints *AddrInfo, result &mut *AddrInfo) i32;
+  fn @c(system) FreeAddrInfoW(info *AddrInfo);
+}
+
+// ADDRINFOW: one address GetAddrInfoW found, linked to the next
+struct AddrInfo {
+  pub flags i32;
+  pub family i32;
+  pub socktype i32;
+  pub protocol i32;
+  pub addrlen usize;
+  pub canonname *u16;
+  pub addr *u8;
+  pub next *AddrInfo;
 }
 
 // AcceptEx and ConnectEx, as WSAIoctl hands them out
@@ -95,6 +110,9 @@ const keyIo = 1usize;          // an operation's completion: its OVERLAPPED is i
 const keyTimer = 2usize;       // the high-resolution timer expired
 const keyWake = 3usize;        // a waker's wake
 const keyPost = 4usize;        // an answer posted by another loop: its block
+const keyCancel = 5usize;      // a Request's cancel: the operation's id, as the pointer
+const keyGroup = 6usize;       // a cancel group this loop has operations in was cancelled
+const keyJob = 7usize;         // a blocking-pool job has run: its JobBox
 
 const invalidHandle = 0xFFFFFFFFFFFFFFFFusize;     // INVALID_HANDLE_VALUE, INVALID_SOCKET
 const infinite = 0xFFFFFFFFu32;                     // INFINITE
@@ -105,7 +123,9 @@ const statusCancelled = 0xC0000120usize;            // STATUS_CANCELLED
 const statusEndOfFile = 0xC0000011usize;            // STATUS_END_OF_FILE
 
 // Windows' error numbers iocore gives or reads
+pub const errorFileNotFound = 2u32;                 // ERROR_FILE_NOT_FOUND
 pub const errorHandleEof = 38u32;                   // ERROR_HANDLE_EOF
+pub const errorBusy = 170u32;                       // ERROR_BUSY: a lane's queue is full
 pub const errorInvalidParameter = 87u32;            // ERROR_INVALID_PARAMETER
 pub const errorInsufficientBuffer = 122u32;         // ERROR_INSUFFICIENT_BUFFER
 pub const errorInvalidHandle = 6u32;                // ERROR_INVALID_HANDLE

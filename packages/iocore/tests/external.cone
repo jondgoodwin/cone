@@ -1,0 +1,207 @@
+// External operations: answers from outside the kernel and the pool --
+// another thread, a GPU fence's watcher -- delivered into a loop under the
+// same contract as any operation's.
+//
+// 1. A Completer moved to another thread, which writes into the lent
+//    buffer and ends it Done(n): the loop, idle in poll(forever()), wakes
+//    with the answer, its token, its count and its buffer. A second ending
+//    says false.
+// 2. A Completer dropped without an ending: Failed, ERROR_OPERATION_ABORTED.
+// 3. A cancel: the completer sees it asked, and ends the operation
+//    Cancelled; the answer is the completer's.
+// 4. A deadline the completer misses: TimedOut after the grace, without the
+//    buffer; the completer's late ending is dropped and the buffer goes
+//    home.
+// 5. In a cancelled group: answered Cancelled at submit, and the Completer
+//    has nothing to end.
+// 6. A loop that has died: ending its operation says false, and the buffer
+//    goes home.
+// 7. 20,000 external operations ended by another thread, each answered
+//    exactly once.
+
+mod external;
+
+import testing use *;
+import thread;
+import sync use Sender, Receiver, Channel;
+import collections use List;
+import time use Instant, Duration;
+import iobuf use *;
+import iocore use *;
+import diag;
+
+fn waitFor(lp &mut Loop, out &mut List[Completion], n usize) {
+  imm limit = Instant.now() + Duration.fromSeconds(5i64);
+  while out.len() < n and Instant.now() < limit {
+    lp.poll(limit, out);
+  }
+}
+
+fn finishLater(c Completer) Bool {
+  mut q = c;
+  thread.sleep(Duration.fromMillis(20i64));
+  q.buf().append("fence 42");
+  imm first = q.done(42usize);
+  first and not q.done(43usize);
+}
+
+// End each Completer that comes, Done with its index
+fn finisher(rx Receiver[Completer]) u64 {
+  mut r = rx;
+  mut n = 0u64;
+  mut more = true;
+  while more {
+    match r.recv() {
+      case mut s Some {
+        s.value.done(usize.from(n));
+        n = n + 1u64;
+      }
+      case is None[Completer] {more = false;}
+    }
+  }
+  n;
+}
+
+// A completer of a loop that has died
+fn orphan(pool &Pool) Completer {
+  mut lp = Loop.mustMake();
+  lp.external(Target.Here[0u64], pool.mustTake(10usize));
+}
+
+fn main() i32 {
+  {
+    imm pool = Pool.make();
+    mut lp = Loop.mustMake();
+    mut out = List[Completion].empty();
+
+    // 1. Ended on another thread
+    {
+      imm c = lp.external(Target.Here[1u64], pool.mustTake(64usize));
+      expect(c.isLive(), "live");
+      imm id = c.id();
+      imm t = thread.start(c, &finishLater);
+      lp.poll(forever(), &mut out);
+      expect(t.join(), "ended once; the second ending said false");
+      requireUInt(u64.from(out.len()), 1u64, "the idle loop woke with the answer");
+      imm a = out[0usize];
+      expect(a.id == id and a.token == 1u64, "its id and token");
+      expectUInt(u64.from(a.kind), u64.from(diag.kindExternal), "an external operation");
+      expect(a.isDone() and a.count() == 42usize, "Done, with the completer's count");
+      expectStr(a.buf.view(), "fence 42", "and the buffer it wrote");
+      out.clear();
+      lp.poll(Instant.now() + Duration.fromMillis(5i64), &mut out);
+      expectUInt(u64.from(out.len()), 0u64, "answered once");
+    }
+
+    // 2. Dropped
+    {
+      {
+        imm c = lp.external(Target.Here[2u64], IoBuf.empty());
+      }
+      waitFor(&mut lp, &mut out, 1usize);
+      expectUInt(u64.from(out[0usize].status), u64.from(diag.outcomeFailed), "a dropped completer: Failed");
+      expectUInt(u64.from(out[0usize].code), u64.from(errorOperationAborted), "ERROR_OPERATION_ABORTED");
+      out.clear();
+    }
+
+    // 3. Cancelled
+    {
+      mut c = lp.external(Target.Here[3u64], pool.mustTake(64usize));
+      expect(not c.isCancelRequested(), "no cancel asked yet");
+      expect(lp.cancel(c.id()), "the cancel asked");
+      lp.poll(Instant.now() + Duration.fromMillis(5i64), &mut out);
+      expectUInt(u64.from(out.len()), 0u64, "the answer is the completer's to give");
+      expect(c.isCancelRequested(), "the completer sees it asked");
+      c.cancelled();
+      waitFor(&mut lp, &mut out, 1usize);
+      expectUInt(u64.from(out[0usize].status), u64.from(diag.outcomeCancelled), "Cancelled");
+      expectUInt(u64.from(out[0usize].buf.capacity()), 4096u64, "with its buffer");
+      out.clear();
+    }
+
+    // 4. A deadline missed
+    {
+      mut c = lp.externalIn(Target.Here[4u64], pool.mustTake(64usize), CancelGroup.make(),
+        Instant.now() + Duration.fromMillis(20i64));
+      waitFor(&mut lp, &mut out, 1usize);
+      expectUInt(u64.from(out[0usize].status), u64.from(diag.outcomeTimedOut), "TimedOut");
+      expectUInt(u64.from(out[0usize].buf.capacity()), 0u64, "without the buffer the completer holds");
+      expect(c.isCancelRequested(), "the completer was asked to stop");
+      out.clear();
+      imm late = lp.counters().lateReturns;
+      c.done(1usize);
+      lp.poll(Instant.now() + Duration.fromMillis(10i64), &mut out);
+      expectUInt(u64.from(out.len()), 0u64, "its late ending answers nothing");
+      expectUInt(lp.counters().lateReturns - late, 1u64, "and its buffer came back");
+    }
+
+    // 5. A cancelled group
+    {
+      imm g = CancelGroup.make();
+      g.cancel();
+      mut c = lp.externalIn(Target.Here[5u64], pool.mustTake(64usize), g, forever());
+      expect(not c.isLive(), "nothing to end");
+      expect(not c.done(0usize), "ending it says false");
+      lp.poll(Instant.now(), &mut out);
+      requireUInt(u64.from(out.len()), 1u64, "answered at submit");
+      expectUInt(u64.from(out[0usize].status), u64.from(diag.outcomeCancelled), "Cancelled");
+      expectUInt(u64.from(out[0usize].buf.capacity()), 4096u64, "with its buffer");
+      out.clear();
+    }
+
+    // 6. A loop that has died
+    {
+      mut c = orphan(&pool);
+      expect(not c.done(0usize), "its loop gone: false");
+      expectUInt(pool.stats().lent, 0u64, "the buffer home");
+    }
+
+    // 7. Twenty thousand, from another thread
+    {
+      mut tx Sender[Completer];
+      mut rx Receiver[Completer];
+      tx, rx = Channel[Completer].make();
+      imm t = thread.start(rx, &finisher);
+      mut i = 0u64;
+      while i < 20000u64 {
+        tx.send(lp.external(Target.Here[i], IoBuf.empty()));
+        i = i + 1u64;
+      }
+      {
+        imm gone = tx;
+      }
+      mut seen = List[Bool].empty();
+      i = 0u64;
+      while i < 20000u64 {
+        seen.push(false);
+        i = i + 1u64;
+      }
+      mut twice = 0u64;
+      mut wrong = 0u64;
+      mut got = 0u64;
+      imm limit = Instant.now() + Duration.fromSeconds(20i64);
+      while got < 20000u64 and Instant.now() < limit {
+        lp.poll(limit, &mut out);
+        mut k = 0usize;
+        while k < out.len() {
+          imm s = usize.from(out[k].token);
+          if *seen[s] {twice = twice + 1u64;} else {seen.set(s, true); got = got + 1u64;}
+          if not out[k].isDone() {wrong = wrong + 1u64;}
+          k = k + 1usize;
+        }
+        out.clear();
+      }
+      expectUInt(t.join(), 20000u64, "the other thread ended all 20,000");
+      expectUInt(got, 20000u64, "each answered");
+      expectUInt(twice, 0u64, "none twice");
+      expectUInt(wrong, 0u64, "each Done");
+    }
+
+    imm cs = lp.counters();
+    expectUInt(cs.delivered, cs.submitted, "every operation answered once");
+    expectUInt(cs.inFlight, 0u64, "nothing in flight");
+    expectUInt(pool.stats().lent, 0u64, "every buffer back in the pool");
+  }
+  expectUInt(osBlocks(), 0u64, "and every block back to the OS");
+  done();
+}

@@ -39,9 +39,14 @@
 //
 //   Loop.make()  Loop.mustMake()        a loop, for the thread that drives it  (THE LOOP)
 //   lp.submit(op, to)                   start an operation: its OpId
-//   lp.submitBy(op, to, deadline)       ...that answers TimedOut at deadline
-//   lp.after(at, to)                    a timer: answers Done at 'at'
+//   lp.submitBy(op, to, deadline)       ...that answers TimedOut at deadline  (DEADLINES)
+//   lp.submitIn(op, to, group, deadline) ...in a cancel group           (CANCEL GROUPS)
+//   lp.after(at, to)  lp.afterIn(at, to, group)   a timer: answers Done at 'at'
 //   lp.cancel(id)                       ask an operation to end           (CANCEL)
+//   lp.request(id)                      a Request: its death cancels    (REQUESTS)
+//   lp.setGrace(d)                      how long a deadline waits for the buffer
+//   lp.external(to, buf)  lp.externalIn(to, buf, group, deadline)
+//                                       an operation a Completer ends  (EXTERNAL OPERATIONS)
 //   lp.poll(until, out)                 wait for answers, append them to out (POLL)
 //   lp.waker()                          a Waker another thread wakes poll with
 //   lp.listen(addr) lp.mustListen(addr) a listening TCP socket     (HANDLES)
@@ -53,7 +58,17 @@
 //   Op.Connect[addr]  Op.Accept[listener]                   (OPERATIONS)
 //   Op.Recv[sock, buf]  Op.RecvReady[sock]  Op.Send[sock, buf]  Op.SendBytes[sock, bytes]
 //   Op.ReadAt[file, at, buf]  Op.WriteAt[file, at, buf]
+//   Op.Call[lane, work, arg, buf]       work run on the blocking pool (THE BLOCKING POOL)
+//   resolveOp(host, port, buf)  statOp(path, lane, buf)  readFileOp(path, at, lane, buf)
+//   addressesIn(&buf)  fileStatIn(&buf)  Lane.general()  Lane.dns()  addLane(cfg)  l.stats()
 //   Target.Here[token]  Target.Post[token, waker]           (TARGETS)
+//   Target.Chan[token, tx]  Target.Once[token, oneshotTx]  Target.Status[token, board, slot]
+//   StatusArray.make(n): s.isReady(i) s.isFree(i) s.take(i, out) s.len()
+//   CancelGroup.make()  .until(deadline): g.child() g.childUntil(d) g.shield(d)
+//     g.cancel() g.isCancelled() g.deadline() g.id()
+//   Request: r.cancel() r.detach() r.id()
+//   Completer: c.done(n) c.fail(code) c.cancelled() c.end(outcome) c.buf()
+//     c.isCancelRequested() c.isLive() c.id()
 //   Completion: c.id c.token c.kind c.status c.n c.code c.buf c.handle, the stamps,
 //     c.outcome() c.isDone() c.count() c.record()            (ANSWERS)
 //   Outcome.Done[n]  Outcome.Failed[code]  Outcome.Cancelled[]  Outcome.TimedOut[]
@@ -65,7 +80,9 @@
 // in flight, closes every handle it holds, and waits for the kernel to give
 // each buffer back before it frees anything (I18). Answers it owed to its own
 // thread are dropped then, their buffers going home to their pools; answers
-// owed to another loop are still posted there. Loops on other threads are
+// owed to another loop or thread are still delivered there. A job running
+// on the pool is not waited for: its thread finds the loop gone and drops
+// it. Loops on other threads are
 // other Loops: one per driving thread.
 //
 // OPERATIONS. Each data-carrying operation takes an OWNER of its bytes, never
@@ -100,8 +117,27 @@
 // waker wakes, posted into its port, so that a thread idle in its own poll
 // wakes the instant the answer exists -- how a frame loop learns of a read a
 // service thread finished. The token is plain data the loop hands back and
-// never reads (I11): the driver decides what it means. More targets (a
-// channel, a one-shot, a status slot) are the next increment's.
+// never reads (I11): the driver decides what it means. Three targets hand
+// the answer to another thread with no loop of its own:
+//
+// - Target.Chan[token, tx]: sent on a sync channel (a Sender[Completion]);
+//   the receiving thread recv's it. The loop never waits on the channel: a
+//   bounded one that is full has the answer held by the loop and tried
+//   again every pass of poll (poll waits at most a millisecond while any is
+//   held), so it is never lost or sent twice; a channel whose receiver has
+//   gone drops the answer, its buffer going home (counted).
+// - Target.Once[token, tx]: sent on a sync one-shot (a OneshotSender) a
+//   thread waits on: a synchronous call, the caller blocking on its
+//   OneshotReceiver while the loop's thread does the operation.
+// - Target.Status[token, board, slot]: left in slot 'slot' of a StatusArray,
+//   which a thread looks at when it chooses and never waits on (DirectStorage's
+//   status arrays): 'isReady(i)', then 'take(i, out)'. The slot is claimed
+//   at submit and free again once taken; a slot given a second operation
+//   while it holds one, or out of range, is a panic at the caller's line.
+//
+// Each of these answers is stamped delivered when the loop hands it over,
+// and a loop whose answers all go elsewhere still sees its poll return as
+// each goes.
 //
 // ANSWERS. Every operation gets exactly one terminal answer, a Completion
 // (I1): its OpId, its token, its kind (diag's kind numbers), its outcome --
@@ -125,11 +161,96 @@
 // once its answer is decided or for an id that names nothing. A timer
 // cancelled answers Cancelled, decided there and then (so a second cancel
 // of it says false). Closing a handle cancels everything in flight
-// on it. 'submitBy' gives an operation a deadline: at it the loop asks the
-// cancel itself, and the answer is TimedOut, with the buffer (the kernel's
-// cancel is prompt for sockets and local files). Cancel groups, deadlines
-// inherited, and a prompt TimedOut that leaves a stuck buffer to the
-// in-flight table are the next increment's.
+// on it. A job queued on the blocking pool is taken out of its queue and
+// answered Cancelled at once, its buffer back; one running cannot be
+// stopped, and answers how it ended when it returns. An external operation's
+// Completer is told (EXTERNAL OPERATIONS). Cancel does not abandon anything:
+// what is still the kernel's stays in the in-flight table until it is not.
+//
+// DEADLINES. A deadline is an absolute Instant, never a duration (I6):
+// 'submitBy', or the deadline of 'submitIn', whichever is tighter with the
+// group's. An operation whose deadline has already passed is answered
+// TimedOut at submit and never started. At the deadline the loop asks the
+// operation's cancel, and the answer says TimedOut. Then the kernel (or the
+// pool's thread) has the loop's grace -- 1 ms unless 'setGrace' says
+// otherwise -- to give the buffer back: a socket's or a local file's cancel
+// is answered in microseconds, and the TimedOut comes with its buffer. Past
+// the grace the loop answers TimedOut at once WITHOUT the buffer, promptly,
+// as a frame loop needs even when a read on a hung share is stuck; the
+// buffer goes home to its pool when the kernel or the job lets it go (a
+// late return, counted), and the record waits for it in the in-flight
+// table. After such a prompt TimedOut the operation's effect is unknown: a
+// receive may have taken bytes, a send may have sent. If the kernel answers
+// between the loop's decision and its delivery, the kernel's own outcome is
+// the answer, buffer and all. A job still queued at its deadline is taken
+// out of its queue and answered TimedOut with its buffer, never run.
+//
+// CANCEL GROUPS. A CancelGroup is a value -- copied, handed to many
+// operations, on any loops, passed between threads (Sendable) -- whose one
+// 'cancel()' asks every operation in it to end: the browser's AbortSignal,
+// tokio's cancellation token. Each operation still answers exactly once,
+// saying how it ended. Cancelled is a state, not an event (I7): from the
+// cancel on, 'isCancelled()' is true, and an operation submitted in the
+// group is answered Cancelled at once, its buffer back, never started.
+// 'cancel' is idempotent: true the first time. 'g.child()' is cancelled
+// with g, and by its own cancel, which does not reach g; 'g.childUntil(d)'
+// is a child whose deadline is the tighter of g's and d -- deadlines are
+// inherited as the tighter, all the way down. 'CancelGroup.until(d)' is a
+// group with a deadline: every operation in it answers TimedOut by d. A
+// shield, 'g.shield(d)', is for cleanup after a cancel: g's cancel and
+// deadline do not reach it, its own deadline d bounds it, and its own
+// cancel still ends it. A group cancelled from another thread posts a
+// packet to each loop with operations in it, so a loop asleep in poll wakes
+// at once; the loop then asks the cancel of each of its operations in a
+// cancelled group.
+//
+// REQUESTS. 'lp.request(id)' is a Request: a handle on operation id that
+// asks its cancel when it dies -- dropping it sends a cancel and abandons
+// nothing; the operation still answers, to its target. It is Sendable: a
+// thread that is not the loop's holds it, and its 'cancel()' (idempotent)
+// or its death posts the cancel to the loop, which acts on it at its next
+// poll, waking if it sleeps. 'detach()' lets it go without cancelling; a
+// Request that dies after its operation's answer posts a cancel the loop
+// finds names nothing, so a holder that knows the answer has come detaches.
+//
+// THE BLOCKING POOL. Work with no completion form -- a file's metadata, a
+// name looked up (getaddrinfo), a file opened and read where no overlapped
+// form will do -- runs on the pool's threads and is answered into the loop
+// that asked, like the kernel's answers, under the same contract:
+// Op.Call[lane, work, arg, buf], 'work' a plain function '&fn(arg u64, buf
+// &mut IoBuf) Outcome' run on one of the lane's threads with the buffer
+// moved to it, its Outcome the answer (Done with a count, or Failed). One
+// pool, in lanes: each lane its own bounded queue and its own threads
+// (between a least and a most, started as jobs wait and leaving after an
+// idle time), so a slow resolver holds up only other look-ups, never the
+// disk. Lane.general() (4 threads, 1,024 queued) and Lane.dns() (2 threads,
+// 256 queued) every process has; 'addLane(new LaneConfig(name: ...,
+// minThreads: ..., maxThreads: ..., queueBound: ..., idleMillis: ...))' makes
+// more (64 in all), one per storage device for the file service to come. A
+// submit past a lane's bound is answered at once, Failed with ERROR_BUSY,
+// its buffer back (I9). 'l.stats()' counts its queue depth now and at most,
+// threads, jobs run, cancelled out of the queue and refused, and the time
+// jobs waited queued. The pool comes with three kinds of work, each an Op
+// built by a function: 'resolveOp(host, port, buf)' (DNS lane; Done(n), the
+// buffer holding n addresses for 'addressesIn'), 'statOp(path, lane, buf)'
+// (Done; 'fileStatIn(&buf)' gives size, attributes and modified time) and
+// 'readFileOp(path, at, lane, buf)' (Done(n), the bytes from 'at'). The
+// lanes and their threads live as long as the process.
+//
+// EXTERNAL OPERATIONS. An operation whose answer comes from outside the
+// kernel and the pool -- another thread, a GPU fence's watcher, a library
+// with callbacks of its own -- is made by 'lp.external(to, buf)' (or
+// 'externalIn', with a group and a deadline), which answers a Completer.
+// The Completer is Sendable: whoever holds it ends the operation once, from
+// any thread, with 'done(n)' (n any count: bytes, a fence's value), 'fail(code)'
+// or 'cancelled()', having written into 'buf()' if it was lent one; the
+// answer is delivered into the loop, to the operation's target, waking a
+// poll that sleeps. Everything else holds as for any operation: its cancel
+// (by lp.cancel, a Request, its group) is told to the Completer
+// ('isCancelRequested()'), which gives the answer; its deadline gives a
+// prompt TimedOut past the grace, and a later ending is dropped, the buffer
+// going home; a Completer that dies without an ending ends its operation
+// Failed with ERROR_OPERATION_ABORTED, so it still answers exactly once.
 //
 // POLL. 'lp.poll(until, out)' is the only place the loop waits. It appends
 // to out every answer ready for this loop, at most a batch of 128 completions
@@ -186,32 +307,56 @@
 //   The counter waitTimeouts says how often a wait ended on the port's
 //   coarse backstop rather than the timer's packet: 0 to 4 in 4,000. A poll
 //   with nothing ready costs about 0.3 us.
+// - An answer from the loop's taking it to its receiver holding it (5,000
+//   each, examples/cancel.cone): Here 0.1 us p50; Chan, to a thread asleep
+//   in recv, 4.8 us p50, p99 60 to 90 us; Once, to a thread asleep on a
+//   one-shot, 4.6 to 4.8 us p50, p99 40 to 60 us; Status, to a thread
+//   looking without sleeping, 0.3 us p50, p99 0.5 us.
+// - Cancel: lp.cancel on a receive, the call (CancelIoEx) 0.7 us p50, and
+//   0.6 us more to the Cancelled answer; a Request cancelled on another
+//   thread, from being handed over a channel to the answer, 10.7 us p50; a
+//   group of 1,000 receives, cancel() itself 1 us, all 1,000 answered in
+//   1.4 ms; a job taken out of a lane's queue, 39 ns a cancel; a timer
+//   submitted and cancelled 243 ns, 310 ns in a group.
+// - The pool: a job that does nothing, submit to answer with its thread
+//   woken each time, 9.7 us p50, p99 28 us; 10,000 at once on four threads,
+//   1.3 us a job. An external operation ended on another thread, to the
+//   answer in a loop asleep in poll(forever()), 4.8 to 5.6 us p50.
+// - The cancellation contract, raced (tests/race.cone): 500,000 receives
+//   and 500,000 jobs, each racing its completion, a cancel from another
+//   thread and its deadline, all within microseconds: every one answered
+//   exactly once, in 4 to 6 s and 2.6 s.
 //
-// Not here yet: the blocking pool and its lanes, cancel groups, inherited
-// deadlines and the prompt TimedOut, the Chan, Once and Status targets (all
-// the next increment); several receives outstanding per socket, UDP and its
+// Not here yet: several receives outstanding per socket, UDP and its
 // batching, skipping the port on synchronous success, unbuffered file I/O,
-// IoRing and socket notifications (Windows 11 accelerators, detected at run
-// time behind this interface), and Linux and the browser.
+// a wait on a Windows handle through the port (an event, a fence exported
+// as one), interrupting a running pool job (CancelSynchronousIo), priority
+// within a lane, IoRing and socket notifications (Windows 11 accelerators,
+// detected at run time behind this interface), and Linux and the browser.
 //
 // What is Windows-only: everything beneath the interface (windows.cone),
-// which is kernel32's completion port, overlapped files and waitable timer,
-// ntdll's wait completion packet, and Winsock, AcceptEx and ConnectEx reached
-// through WSAIoctl and called through function pointers, all from Cone with
-// no C between.
+// which is kernel32's completion port, overlapped files, waitable timer and
+// file attributes, ntdll's wait completion packet, and Winsock, AcceptEx and
+// ConnectEx reached through WSAIoctl and called through function pointers,
+// and GetAddrInfoW, all from Cone with no C between; the pool's threads and
+// locks are the thread and sync packages'.
 
 mod iocore;
 
 import libc;
-import sync use Arc, Once;
+import thread;
+import sync use Arc, Once, Mutex, Condvar, Sender, OneshotSender;
 import collections use List, String;
-import time use Instant, Duration;
+import time use Instant, Duration, Timestamp;
 import iobuf use IoBuf, Bytes;
 import timewheel use Wheel, TimerId, Expiry;
 import diag;
 
 fn @initpure init() {
   startOnce = Once.make();
+  groupSeq = Atomic[u64].of(0u64);
+  laneOnce = Once.make();
+  laneLock = Mutex.make();
 }
 
 // An instant that never comes, for 'poll(forever(), out)'
@@ -369,6 +514,7 @@ pub enum Op {
   pub struct SendBytes {pub sock Handle; pub bytes Bytes;}
   pub struct ReadAt {pub file Handle; pub at u64; pub buf IoBuf;}
   pub struct WriteAt {pub file Handle; pub at u64; pub buf IoBuf;}
+  pub struct Call {pub lane Lane; pub work WorkFn; pub arg u64; pub buf IoBuf;}
 }
 
 // Where an operation's answer goes, and the token it carries back (see the
@@ -377,6 +523,9 @@ pub enum Target {
   pub token u64;
   pub struct Here {}
   pub struct Post {pub waker Waker;}
+  pub struct Chan {pub tx Sender[Completion];}
+  pub struct Once {pub tx OneshotSender[Completion];}
+  pub struct Status {pub board StatusArray; pub slot u32;}
 }
 
 // How an operation ended: its one terminal reply (I1)
@@ -420,6 +569,12 @@ pub struct Completion {
   }
 }
 
+// A Completion holding nothing, to swap one out of where it is held
+fn blankCompletion() Completion {
+  new Completion(0u64, OpId.none(), 0u64, 0u32, 0u32, 0usize, 0u32, IoBuf.empty(),
+    Handle.none(), new Instant(), new Instant(), new Instant());
+}
+
 // ---------------------------------------------------------------------------
 // The port, shared by a loop and its wakers
 // ---------------------------------------------------------------------------
@@ -447,6 +602,8 @@ struct Port is Sendable {
         if (*e).key == keyPost {
           mem.finalize[Completion]((*e).ov as *Completion);
           libc.free((*e).ov);
+        } elif (*e).key == keyJob {
+          dropBox((*e).ov as *JobBox);
         }
         k = k + 1usize;
       }
@@ -479,5 +636,57 @@ pub struct Waker {
       return false;
     }
     true;
+  }
+
+  // Whether its loop has gone
+  fn isGone(self &) Bool {port.closed.load();}
+
+  // A packet carrying nothing but its key (keyGroup): false if the loop
+  // has gone
+  fn signal(self &, key usize) Bool {
+    if port.closed.load() {return false;}
+    PostQueuedCompletionStatus(port.handle, 0u32, key, null) != 0i32;
+  }
+
+  // Ask the loop to cancel operation id: false if the loop has gone
+  fn postCancel(self &, id OpId) Bool {
+    if port.closed.load() {return false;}
+    PostQueuedCompletionStatus(port.handle, 0u32, keyCancel, usize.from(id.number()) as *u8) != 0i32;
+  }
+
+  // Hand a job that has run back to its loop: false, and the box still the
+  // caller's, if the loop has gone
+  fn postJob(self &, b *JobBox) Bool {
+    if port.closed.load() {return false;}
+    PostQueuedCompletionStatus(port.handle, 0u32, keyJob, b as *u8) != 0i32;
+  }
+}
+
+// A handle on an operation that cancels it when the handle dies (see the
+// package's header, REQUESTS). Sendable: it may be held on another thread,
+// whose cancel is posted to the operation's loop
+pub struct Request is Move {
+  waker Waker;
+  op OpId;
+  armed Bool;             // its death still cancels: neither cancelled nor detached
+
+  // The operation it names
+  pub fn id(self &) OpId {op;}
+
+  // Ask the operation to end, from any thread: the loop cancels it at its
+  // next poll, as 'lp.cancel(id)' would. True once asked; false if the loop
+  // has gone. Idempotent
+  pub fn cancel(self &mut) Bool {
+    if not armed {return not waker.isGone();}
+    armed = false;
+    waker.postCancel(op);
+  }
+
+  // Let the handle go without cancelling: its death does nothing. For when
+  // the answer has come
+  pub fn detach(self &mut) {armed = false;}
+
+  fn final(self &uni) {
+    if armed {waker.postCancel(op);}
   }
 }
