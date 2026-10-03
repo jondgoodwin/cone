@@ -17,16 +17,14 @@
 // alone. Where parts give one channel different fills, the first part's is
 // kept.
 //
-// The same name with a different type (f32, Vec2, Vec3), or in a domain the
-// parts before it do not have, is refused, not converted, since it is almost
-// always a mistake: that part's channel is left out (its elements get the
-// fill of the channel kept), and a line saying why is added to 'problems',
-// as fromPolygons reports a face it leaves out. A name in more than one
-// domain in one mesh is several channels ("crease" on edges and on vertices,
-// as subdivision reads it), so a domain is refused only when the part shares
-// no domain of that name with the parts before it: a part with only an edge
-// "crease" joins one with both, its vertices getting the vertex crease's
-// fill.
+// The same name with a different type (f32, Vec2, Vec3) or a different
+// domain in two parts is refused, not converted, since it is almost always a
+// mistake: the later part's channel is left out (its elements get the fill
+// of the channel kept), and a line saying why is added to 'problems', as
+// fromPolygons reports a face it leaves out; the join is still made. Each
+// part is checked against the channels of the parts before it, so the first
+// part's form of a name is the one kept. (The edge "crease" and the vertex
+// "crease_vert" are two names, so they never clash.)
 pub fn join(parts &List[PolyMesh], problems &mut List[String]) PolyMesh {
   imm none = List[Transform3].empty();
   joinPlaced(parts, &none, problems);
@@ -34,8 +32,8 @@ pub fn join(parts &List[PolyMesh], problems &mut List[String]) PolyMesh {
 
 // The same, part k first placed by places[k] (scaled, turned, then moved, as
 // a Transform3 places a thing); a part past the end of 'places', or placed by
-// the identity exactly, stays where it is, bit for bit. Only positions move: a Vec3 channel is copied as it is, as
-// mirror and the arrays copy it. A place whose scale turns the part inside
+// the identity exactly, stays where it is, bit for bit. Only positions move:
+// a Vec3 channel is copied as it is, as mirror and the arrays copy it. A place whose scale turns the part inside
 // out (an odd number of negative factors, a reflection) also turns its faces
 // over, each from the same first corner, as 'mirror' turns its copy, so it
 // still faces outward; its corners keep their values, and its edges theirs.
@@ -70,7 +68,6 @@ pub fn joinPlaced(parts &List[PolyMesh], places &List[Transform3], problems &mut
         mut same = false;          // the parts before have it, this type and domain
         mut clash = NoIndex;       // one of theirs of the name, another type
         mut other = NoIndex;       // one of theirs of the name, this type, another domain
-        mut shared = false;        // this part has the name in one of their domains
         mut u = 0usize;
         while u < before {
           imm uk = *uKind[u];
@@ -81,7 +78,6 @@ pub fn joinPlaced(parts &List[PolyMesh], places &List[Transform3], problems &mut
             if uk == kind and ud == domain { same = true; }
             elif uk != kind { if clash == NoIndex { clash = u32.from(u); } }
             elif other == NoIndex { other = u32.from(u); }
-            if hasChannelNamed(parts[k], ud, name.view()) { shared = true; }
           }
           u = u + 1usize;
         }
@@ -95,14 +91,13 @@ pub fn joinPlaced(parts &List[PolyMesh], places &List[Transform3], problems &mut
           s.append(" has it as ");
           s.append(kindName(*uKind[u]));
           problems.push(s);
-        } elif other != NoIndex and !shared {
+        } elif other != NoIndex {
           imm u = usize.from(other);
           mut s = refusedLine(k, name.view(), kind, domain);
           s.append(": part ");
           s.appendUInt(u64.from(*uPart[u]));
           s.append(" has it per ");
           s.append(domainName(channelDomain(parts[*uPart[u]], *uKind[u], *uIdx[u])));
-          s.append(", and they share no domain of it");
           problems.push(s);
         } else {
           uKind.push(kind);
@@ -281,12 +276,6 @@ fn channelNameIs(m &PolyMesh, kind u32, i usize, name &[]u8) Bool {
 fn floatFill(m &PolyMesh, i usize) f32 {m.floats[i].fill;}
 fn vec2Fill(m &PolyMesh, i usize) Vec2 {m.vec2s[i].fill;}
 fn vec3Fill(m &PolyMesh, i usize) Vec3 {m.vec3s[i].fill;}
-
-// Whether a mesh has a channel of the name in the domain, of any type
-fn hasChannelNamed(m &PolyMesh, domain u32, name &[]u8) Bool {
-  m.findFloatChannel(domain, name) != NoIndex or m.findVec2Channel(domain, name) != NoIndex
-    or m.findVec3Channel(domain, name) != NoIndex;
-}
 
 fn kindName(kind u32) &[]u8 {
   if kind == 0u32 { "f32"; } elif kind == 1u32 { "Vec2"; } else { "Vec3"; };

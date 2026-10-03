@@ -31,15 +31,16 @@
 //   (uv: refused as A has it as Vec2): two lines, in that order. The result
 //   has A's w and uv only, no Vec3 channel; B's vertices take w's fill 0 and
 //   its corners uv's fill (0.5, 0.5).
-// - A domain clash: A has vertex "mark" 3, B face "mark" 4: the same name,
-//   type and no domain in common, refused; the result has the vertex mark
-//   only, B's vertices 0.
-// - "crease" in two domains is two channels: A has edge crease (edge 0 is 3)
-//   and vertex crease (vertex 0 is 1), B edge crease (edge 2 is 4). A, B:
-//   nothing refused (they share the edge domain); B's vertex 4 takes the
-//   vertex crease's fill 0, B's edge 6 keeps 4. B, A: nothing refused; B's
-//   edge crease is met first, A's vertex crease second, B's vertex 0 takes
-//   0 and A's vertex 4 keeps 1.
+// - A domain clash: A has vertex "mark" 3, B face "mark" 4: the same name
+//   and type in another domain, refused; the result has the vertex mark
+//   only, B's vertices 0. And A has edge "crease" 2 on edge 1, B a vertex
+//   channel also named "crease" (10 at vertex 0): refused, "part 0 has it
+//   per edge"; the result has the edge crease only, B's edges 0 in it.
+// - The edge "crease" and the vertex "crease_vert" are two names: A has edge
+//   crease (edge 0 is 3) and crease_vert (vertex 0 is 1), B edge crease (edge
+//   2 is 4). A, B: nothing refused; B's vertex 4 takes crease_vert's fill 0,
+//   B's edge 6 keeps 4. B, A: nothing refused; B's edge crease is met first,
+//   A's crease_vert second, B's vertex 0 takes 0 and A's vertex 4 keeps 1.
 // - The same bits: a square swept along a bent path ("uv", "along",
 //   "around", and an edge crease 2 on edge 3) joined alone, with an empty mesh
 //   after it, and with one before it, equals itself exactly: every list,
@@ -314,20 +315,43 @@ fn domainClash() {
   expectInt(i64.from(problems.len()), 1, "domain clash: one refused");
   if problems.len() == 1usize {
     expectStr(problems[0usize].view(),
-      "part 1's channel mark (f32, face) is left out: part 0 has it per vertex, and they share no domain of it",
+      "part 1's channel mark (f32, face) is left out: part 0 has it per vertex",
       "domain clash: the line");
   }
   expectInt(i64.from(m.floats.len()), 1, "domain clash: one channel");
   expectInt(i64.from(m.findFloatChannel(FaceDomain, "mark")), i64.from(NoIndex), "domain clash: no face mark");
   expectFloat(floatAt(&m, VertexDomain, "mark", 1u32), 3., near, "domain clash: A's vertex keeps 3");
   expectFloat(floatAt(&m, VertexDomain, "mark", 5u32), 0., near, "domain clash: B's vertex takes 0");
+
+  // A vertex channel named "crease" against an edge crease
+  mut c = quad(0.);
+  imm ce = c.addFloatChannel(EdgeDomain, "crease", 0.);
+  c.setFloat(ce, 1u32, 2.);
+  mut d = quad(2.);
+  imm dv = d.addFloatChannel(VertexDomain, "crease", 0.);
+  d.setFloat(dv, 0u32, 10.);
+  mut cd = List[PolyMesh].empty();
+  cd.push(c);
+  cd.push(d);
+  mut lines = List[String].empty();
+  imm n = join(&cd, &mut lines);
+  expectInt(i64.from(lines.len()), 1, "crease per vertex: refused");
+  if lines.len() == 1usize {
+    expectStr(lines[0usize].view(), "part 1's channel crease (f32, vertex) is left out: part 0 has it per edge",
+      "crease per vertex: the line");
+  }
+  expectInt(i64.from(n.floats.len()), 1, "crease per vertex: the edge crease only");
+  expectInt(i64.from(n.findFloatChannel(VertexDomain, "crease")), i64.from(NoIndex),
+    "crease per vertex: no vertex crease");
+  expectFloat(floatAt(&n, EdgeDomain, "crease", 1u32), 2., near, "crease per vertex: A's edge 1 keeps 2");
+  expectFloat(floatAt(&n, EdgeDomain, "crease", 5u32), 0., near, "crease per vertex: B's edge 5 takes 0");
 }
 
 fn creasedBoth() PolyMesh {
   mut a = quad(0.);
   imm e = a.addFloatChannel(EdgeDomain, "crease", 0.);
   a.setFloat(e, 0u32, 3.);
-  imm v = a.addFloatChannel(VertexDomain, "crease", 0.);
+  imm v = a.addFloatChannel(VertexDomain, "crease_vert", 0.);
   a.setFloat(v, 0u32, 1.);
   a;
 }
@@ -345,12 +369,12 @@ fn twoDomains() {
   parts.push(creasedEdge());
   mut problems = List[String].empty();
   imm m = join(&parts, &mut problems);
-  expectInt(i64.from(problems.len()), 0, "crease both ways: nothing refused");
-  expectInt(i64.from(m.floats.len()), 2, "crease both ways: two channels");
-  expectFloat(floatAt(&m, VertexDomain, "crease", 0u32), 1., near, "crease both ways: A's vertex crease");
-  expectFloat(floatAt(&m, VertexDomain, "crease", 4u32), 0., near, "crease both ways: B's vertex takes 0");
-  expectFloat(floatAt(&m, EdgeDomain, "crease", 0u32), 3., near, "crease both ways: A's edge 0");
-  expectFloat(floatAt(&m, EdgeDomain, "crease", 6u32), 4., near, "crease both ways: B's edge 2 is 6");
+  expectInt(i64.from(problems.len()), 0, "two crease names: nothing refused");
+  expectInt(i64.from(m.floats.len()), 2, "two crease names: two channels");
+  expectFloat(floatAt(&m, VertexDomain, "crease_vert", 0u32), 1., near, "two crease names: A's vertex crease");
+  expectFloat(floatAt(&m, VertexDomain, "crease_vert", 4u32), 0., near, "two crease names: B's vertex takes 0");
+  expectFloat(floatAt(&m, EdgeDomain, "crease", 0u32), 3., near, "two crease names: A's edge 0");
+  expectFloat(floatAt(&m, EdgeDomain, "crease", 6u32), 4., near, "two crease names: B's edge 2 is 6");
 
   mut back = List[PolyMesh].empty();
   back.push(creasedEdge());
@@ -362,8 +386,8 @@ fn twoDomains() {
     expectInt(i64.from(n.floats[0usize].domain), i64.from(EdgeDomain), "crease, edge first: the edge's first");
     expectInt(i64.from(n.floats[1usize].domain), i64.from(VertexDomain), "crease, edge first: the vertex's second");
   }
-  expectFloat(floatAt(&n, VertexDomain, "crease", 0u32), 0., near, "crease, edge first: B's vertex takes 0");
-  expectFloat(floatAt(&n, VertexDomain, "crease", 4u32), 1., near, "crease, edge first: A's vertex keeps 1");
+  expectFloat(floatAt(&n, VertexDomain, "crease_vert", 0u32), 0., near, "crease, edge first: B's vertex takes 0");
+  expectFloat(floatAt(&n, VertexDomain, "crease_vert", 4u32), 1., near, "crease, edge first: A's vertex keeps 1");
   expectFloat(floatAt(&n, EdgeDomain, "crease", 2u32), 4., near, "crease, edge first: B's edge 2");
   expectFloat(floatAt(&n, EdgeDomain, "crease", 4u32), 3., near, "crease, edge first: A's edge 0 is 4");
 }
