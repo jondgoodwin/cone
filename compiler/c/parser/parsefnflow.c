@@ -1129,8 +1129,8 @@ INode *parseFn(ParseState *parse, uint16_t mayflags) {
         intrinsic = 1;
         lexNextToken();
     }
-    // A function has no storage to give each thread a copy of
-    parseThreadLocalAttr(0);
+    // A function has no storage to give each thread or workgroup a copy of
+    parseStorageAttr(0);
     if (!compute)
         compute = parseComputeAttr(fnnode);
     if (initpure)

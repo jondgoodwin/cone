@@ -7,6 +7,7 @@
 
 #include "../ir.h"
 
+#include <stdio.h>
 #include <string.h>
 #include <assert.h>
 
@@ -466,6 +467,25 @@ static void varDclSizeCheck(TypeCheckState *pstate, INode *node, void *extra) {
     }
 }
 
+// A '@workgroup' global is GPU memory its workgroup's invocations share, as a
+// kernel's buffer is memory a dispatch's share: it holds what a buffer may
+// (fnDclComputeData), on every target, so that the CPU and the GPU agree on one
+// source. Nothing finalizes a workgroup's copy, which none of that needs.
+static void varDclWorkgroupCheck(TypeCheckState *pstate, INode *node, void *extra) {
+    VarDclNode *name = (VarDclNode *)node;
+    char path[256];
+    snprintf(path, sizeof(path), "%s", &name->namesym->namestr);
+    const char *why = fnDclComputeData(name->vtype, path, sizeof(path));
+    if (why)
+        errorMsgNode((INode *)name, ErrorWorkgroupData,
+            "'%s' is %s. A '@workgroup' global holds what a GPU's invocations share: 32-bit numbers (i32, u32, f32), Atomic[u32] and Atomic[i32], and structs and fixed arrays of them.",
+            path, why);
+    else if (itypeNeedsFinal(name->vtype))
+        errorMsgNode((INode *)name, ErrorWorkgroupData,
+            "'@workgroup' global %s's type needs finalizing, and nothing finalizes a workgroup's copy as its workgroup ends.",
+            &name->namesym->namestr);
+}
+
 // Type check variable against its initial value
 void varDclTypeCheck(TypeCheckState *pstate, VarDclNode *name) {
     itypeTypeCheck(pstate, (INode**)&name->perm);
@@ -553,6 +573,12 @@ void varDclTypeCheck(TypeCheckState *pstate, VarDclNode *name) {
         structDeferCheck(pstate, varDclSizeCheck, (INode*)name, NULL);
     else
         varDclSizeCheck(pstate, (INode*)name, NULL);
+    if (name->dclinfo.facts & DclWorkgroup) {
+        if (structTargetDeferring())
+            structDeferCheck(pstate, varDclWorkgroupCheck, (INode*)name, NULL);
+        else
+            varDclWorkgroupCheck(pstate, (INode*)name, NULL);
+    }
 }
 
 // Perform data flow analysis

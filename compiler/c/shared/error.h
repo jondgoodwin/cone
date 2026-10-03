@@ -486,6 +486,14 @@ enum ErrorCode {
     ErrorComputeTarget = 1263,  // An entry point compiled for SPIR-V's OpenCL form, which has none
     ErrorGpuSliceOrigin = 1264, // In a kernel, an element of a slice or pointer reached by arithmetic from something that is neither a buffer parameter nor a fixed array
 
+    // What a GPU's invocations share: '@workgroup' globals (parser/parsetype.c,
+    // ir/stmt/vardcl.c) and atomics (genllvm/genlgpusync.c)
+    ErrorWorkgroupPlace = 1265, // '@workgroup' anywhere but after a module global's permission, or beside '@threadlocal'
+    ErrorWorkgroupImm = 1266,   // '@workgroup' on an 'imm' global: a workgroup's copy is there for its invocations to change
+    ErrorWorkgroupInit = 1267,  // A '@workgroup' global given an initial value: a workgroup's copy starts undefined, and nothing writes a value into it
+    ErrorWorkgroupData = 1268,  // What a '@workgroup' global holds: anything but 32-bit numbers, their atomics, and structs and fixed arrays of them
+    ErrorGpuAtomicPlace = 1269, // In a kernel, an atomic operation on memory invocations do not share: a local, or a global not '@workgroup'
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name

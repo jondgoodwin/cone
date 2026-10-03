@@ -49,7 +49,9 @@ Visual Studio projects stay at the root.
   and `definedInt("NAME")`, for `conec -D`, are a provisional mechanism
   whose final design is open; and `Invocation`, which invocation of a
   compute dispatch is running, what a compute entry point,
-  `fn @compute(64) name(...)`, may take); `stdio` prints;
+  `fn @compute(64) name(...)`, may take, with `workgroupBarrier` and
+  `storageBarrier`, a compute workgroup's barriers, intrinsics outside `mem`);
+  `stdio` prints;
   `libc` and `posix` are C packages of raw bindings to the C library and the
   POSIX functions beyond it (Windows first), and `core` imports `libc` for its
   allocator; `sdl` is a C package of raw bindings to SDL3 (a window for
@@ -147,7 +149,10 @@ Visual Studio projects stay at the root.
   point), and `bevelEdges` and `bevelVertices` (Blender's Bevel: strips with a
   superellipse profile, sharp mitres, a box's corner patched on the
   superellipsoid, one clamp factor for overlap, selections by list, angle or
-  a bevel-weight channel, channels blended by place); its example `coast.cone` is the island coastline experiments;
+  a bevel-weight channel, channels blended by place), and `unsubdivide` (Blender's
+  Un-Subdivide: a grid of one subdivision level halved per iteration, the
+  kept vertices where they were, so a subdivided cage returns to its
+  connectivity; what is not on a grid kept and reported); its example `coast.cone` is the island coastline experiments;
   `noise` is coherent noise over `geomath`, a pure function of a seed and a
   point: the PCG integer hashes (`pcg`, `pcg2d`, `pcg3d`, `pcg4d`, seeded
   lattice hashes, exact hash to float), value and gradient noise with

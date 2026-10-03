@@ -2047,9 +2047,9 @@ diagnostics = 6
 
 [scenario.module_compute_data]
 category = "reject"
-description = "What a kernel's buffer holds: Bool, 8, 16 and 64-bit numbers, usize, pointers, Options and enums refused, however deep in a struct; 32-bit numbers and structs and fixed arrays of them accepted"
+description = "What a kernel's buffer holds: Bool, 8, 16 and 64-bit numbers, usize, pointers, Options, enums and Atomics of a u64 or a Bool refused, however deep in a struct; 32-bit numbers, Atomic[u32] and Atomic[i32], and structs and fixed arrays of them accepted"
 tags = ["typecheck"]
-diagnostics = 10
+diagnostics = 12
 
 [scenario.module_compute_target]
 category = "reject"
@@ -2084,6 +2084,103 @@ options = ["--triple=spirv1.6-unknown-vulkan1.3"]
 [[scenario.module_gpu_slice_origin.run]]
 name = "vulkan-debug"
 options = ["--triple=spirv1.6-unknown-vulkan1.3", "--debug"]
+
+# What a GPU's invocations share, on SPIR-V's Vulkan form (genllvm/genlgpusync.c):
+# buffers of Atomic[u32] and Atomic[i32] (in a buffer's struct too), '@workgroup'
+# globals in the Workgroup storage class with no initial value, and the two
+# barriers. Each atomic's scope is its memory's, SeqCst is acquire-release and
+# Relaxed stays monotonic; a compareSwap is LLVM's SPIR-V intrinsic for one, its
+# cmpxchg crashing the backend. Once the module is emitted, conec makes a relaxed
+# operation's semantics None and takes out the two insertions the backend writes
+# after a compare-and-swap (genlGpuSyncPatch), which the suite does not see. What
+# spirv-val makes of the module, valid for Vulkan 1.3 in both runs, and what the
+# kernels compute on a real GPU, are measured by hand; the suite needs no Vulkan
+# SDK.
+[scenario.module_target_spirv_atomics]
+category = "compile"
+description = "Atomics on buffer elements and in workgroup memory, workgroup globals and barriers on SPIR-V's Vulkan form: a stream compaction, a workgroup prefix sum, a histogram and every operation"
+tags = ["parse", "typecheck", "genllvm"]
+
+[[scenario.module_target_spirv_atomics.run]]
+name = "vulkan"
+options = ["--triple=spirv1.6-unknown-vulkan1.3", "--verify"]
+
+[[scenario.module_target_spirv_atomics.run]]
+name = "vulkan-debug"
+options = ["--triple=spirv1.6-unknown-vulkan1.3", "--verify", "--debug"]
+
+[[scenario.module_target_spirv_atomics.check]]
+name = "a-workgroup-global-is-in-the-workgroup-space-and-a-barrier-is-a-control-barrier"
+target = "preir"
+contains = [
+  "@scan = internal addrspace(3) global [256 x i32] undef",
+  "@bins = internal addrspace(3) global [64 x %Atomic] undef",
+  "@cell = internal addrspace(3) global %Atomic.0 undef",
+  "call void @llvm.spv.group.memory.barrier.with.group.sync()",
+  "call void @llvm.spv.device.memory.barrier.with.group.sync()",
+]
+
+# The compaction's relaxed add; the histogram's and the every kernel's at the
+# workgroup's scope; min and max signed or unsigned; the compareSwap at the
+# device's scope, acquire-release, its failure acquire (SPIR-V's 1, 72 and 66)
+[[scenario.module_target_spirv_atomics.check]]
+name = "each-atomic-takes-its-memorys-scope-and-an-ordering-vulkan-has"
+target = "llvmir"
+contains = [
+  "i32 1 syncscope(\"device\") monotonic",
+  "atomicrmw add ptr addrspace(3) ",
+  "syncscope(\"workgroup\") acq_rel",
+  "store atomic i32 0, ptr addrspace(3) ",
+  "syncscope(\"workgroup\") release",
+  "load atomic i32, ptr addrspace(3) ",
+  "atomicrmw umin ptr addrspace(11) ",
+  "atomicrmw umax ptr addrspace(11) ",
+  "atomicrmw min ptr addrspace(11) ",
+  "atomicrmw max ptr addrspace(11) ",
+  "atomicrmw min ptr addrspace(3) ",
+  "getelementptr inbounds %Atomic.0, ptr addrspace(3) @cell, i32 0, i32 0",
+  ", i32 1, i32 72, i32 66)",
+  "@llvm.spv.cmpxchg.p11(",
+]
+excludes = ["seq_cst", "cmpxchg ptr", "addrspacecast", "atomicrmw add ptr addrspace(3) @cell"]
+
+[scenario.module_workgroup_parse]
+category = "reject"
+description = "'@workgroup' anywhere but after a module global's 'mut', beside '@threadlocal', on an 'imm' global, or with an initial value; one with none accepted"
+tags = ["parse"]
+diagnostics = 12
+
+[scenario.module_workgroup_data]
+category = "reject"
+description = "What a '@workgroup' global holds: Bool, a 64-bit number and its Atomic, a struct holding a Bool, a pointer, an Option and a type that needs finalizing refused; 32-bit numbers, their Atomics, and structs and arrays of them accepted"
+tags = ["typecheck"]
+diagnostics = 7
+
+[scenario.module_gpu_atomic_place]
+category = "reject"
+description = "In a kernel, an atomic operation on a local Atomic, on a global not '@workgroup', and mem's intrinsic on a local's address: refused at the kernel for an Atomic's method, where the intrinsic is called otherwise"
+tags = ["genllvm"]
+diagnostics = 3
+
+[[scenario.module_gpu_atomic_place.run]]
+name = "vulkan"
+options = ["--triple=spirv1.6-unknown-vulkan1.3"]
+
+[[scenario.module_gpu_atomic_place.run]]
+name = "vulkan-debug"
+options = ["--triple=spirv1.6-unknown-vulkan1.3", "--debug"]
+
+# On the CPU a '@workgroup' global is an ordinary global and a barrier nothing
+[scenario.module_compute_atomic_cpu]
+category = "run"
+description = "Atomics, a '@workgroup' global and barriers in kernels run on the CPU, one invocation at a time: a compaction claiming slots, and a workgroup's sum gathered in workgroup memory by its last invocation"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[[scenario.module_compute_atomic_cpu.check]]
+name = "a-workgroup-global-is-an-ordinary-global-on-the-cpu"
+target = "preir"
+contains = ["@total = internal global %Atomic zeroinitializer"]
+excludes = ["addrspace(3)", "barrier"]
 
 [scenario.module_c_threadlocal]
 category = "compile"

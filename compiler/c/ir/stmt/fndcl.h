@@ -26,6 +26,12 @@ typedef struct FnDclNode {
 // Whether a function is a compute entry point, '@compute(...)'
 #define fnDclIsCompute(fn) ((fn)->compute[0] != 0)
 
+// Why 'type' may not be in GPU memory -- a kernel's buffer, a '@workgroup'
+// global -- or NULL when it may: 32-bit numbers, their atomics, and structs and
+// fixed arrays of them. 'path' names the field or element at fault, appended to
+// in place
+const char *fnDclComputeData(INode *type, char *path, size_t size);
+
 // Overloaded function/method declaration node.
 // It is the namespace binding for an explicitly declared overload name.
 // It has no type, value, or generated symbol: every executable implementation

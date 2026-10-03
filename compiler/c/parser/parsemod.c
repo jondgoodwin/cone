@@ -724,6 +724,12 @@ INode *parseFnOrVar(ParseState *parse, uint16_t flags) {
             errorMsgNode((INode*)node, ErrorThreadLocalInit,
                 "Thread-local %s needs an initial value, a literal: every thread's copy starts from it. A module's 'init' runs on one thread, so it could give a value to that thread's copy alone.",
                 &node->namesym->namestr);
+        // A workgroup's copy of a '@workgroup' global is undefined as the
+        // workgroup starts: no value is written into it but by its invocations
+        if ((node->dclinfo.facts & DclWorkgroup) && node->value != NULL)
+            errorMsgNode((INode*)node, ErrorWorkgroupInit,
+                "'@workgroup' global %s may not have an initial value: each workgroup's copy starts undefined, and its invocations write what they will read, before a barrier.",
+                &node->namesym->namestr);
         node->flowtempflags |= VarInitialized;   // Globals always hold a valid value
         parseEndOfStatement();
         modAddNode(parse->mod, node->namesym, (INode*)node);
@@ -1506,6 +1512,13 @@ void parseGlobalStmts(ParseState *parse, ModuleNode *mod, int atmodstart) {
         case ThreadLocalToken:
             errorMsgLex(ErrorThreadLocalPlace,
                 "'@threadlocal' is written after the global's permission: 'mut @threadlocal name'.");
+            lexNextToken();
+            parseSkipToNextStmt();
+            spankind = SpanOther;
+            break;
+        case WorkgroupToken:
+            errorMsgLex(ErrorWorkgroupPlace,
+                "'@workgroup' is written after the global's permission: 'mut @workgroup name'.");
             lexNextToken();
             parseSkipToNextStmt();
             spankind = SpanOther;

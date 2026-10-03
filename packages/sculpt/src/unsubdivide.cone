@@ -1,0 +1,558 @@
+// ======== Un-subdivide: a grid's alternate edge loops removed ========
+//
+// Un-subdivide (Blender's Decimate modifier in Un-Subdivide mode) undoes a
+// regular subdivision's connectivity: one iteration finds the three kinds of
+// vertex one level of Catmull-Clark (or any split of each face into quads
+// about a middle point) makes, and keeps only the first:
+// - a vertex point, the old vertex (V);
+// - an edge point, on an old edge, between two vertex points (E);
+// - a face point, in the middle of an old face, its quads round it (F).
+// Every quad of one level runs V, E, F, E. Each face point's fan of quads
+// becomes one face, its corners the vertex points round it; an edge point
+// between two such faces (or on the boundary beside one) goes, its two
+// sides becoming one. The vertices kept keep their positions: un-subdivide
+// gives the cage's connectivity, not its positions (it does not invert the
+// smoothing), as Blender's keeps the remaining vertices where they are.
+//
+// Reading the grid: the vertices are labelled by propagation through the
+// quads, from a seed: a vertex point's or a face point's quad gives the
+// vertex across it the other of the two and its two neighbours E. Each
+// region of quads is read four ways (its lowest-numbered unlabelled vertex a
+// vertex point, a face point, or an edge point beside its lowest-numbered
+// neighbour read either way), and the reading under which the most quads
+// collapse is kept, the earlier on a tie. So the first reading, the lowest
+// vertex a vertex point, wins wherever both readings collapse everything
+// (on a closed mesh vertex points and face points can swap roles: the cube
+// subdivided once is also the octahedron subdivided once); 'subdivide'
+// numbers vertex points first, so its output always returns to its cage's
+// connectivity, numbering and face order included. 'unsubdivideWith' names
+// vertices to keep, which settles a reading where the numbering would not.
+//
+// What is not on a grid stays: a face point collapses only when it is
+// inside the mesh, every face round it is a quad labelled V, E, F, E with
+// no vertex labelled two ways, and its loop passes no vertex twice; an edge
+// point goes only when every face on it collapsed and it is on four edges
+// (two on the boundary, three edges). Every other face is kept as it was,
+// and an edge point kept beside a collapsed face stays a corner of it. Each
+// iteration that leaves faces reports how many, and one that finds nothing
+// to undo reports it and stops.
+//
+// Channels, by 'assemble': a kept vertex's values are its own; a collapsed
+// face's are its fan's lowest-numbered quad's; its corners' those at the same
+// vertex in the quad they came from (an edge point kept as a corner, the
+// first quad's that has it); an edge made of two halves takes the
+// lower-numbered half's values (subdivision gave both its parent's, a
+// "crease" one less: un-subdivide does not add it back); a kept face keeps
+// everything.
+//
+// Numbering: the kept vertices keep their order; faces are made in the
+// order of their first (lowest-numbered) face, a collapsed face from the
+// vertex point of its lowest-numbered quad, round its fan the way its quads
+// face.
+
+// One label for each vertex of the grid
+const UnsubNone = 0u32;
+const UnsubV = 1u32;
+const UnsubE = 2u32;
+const UnsubF = 3u32;
+
+// The mesh un-subdivided 'iterations' times, each halving a grid made by one
+// level of subdivision (see above); what is not on a grid is kept and
+// reported. 0 iterations gives a copy.
+pub fn unsubdivide(m &PolyMesh, iterations u32, problems &mut List[String]) PolyMesh {
+  imm none = List[u32].empty();
+  unsubdivideWith(m, iterations, none.view(), problems);
+}
+
+// The same, with vertices that must stay: each seeds its region's reading as
+// a vertex point, and is never removed; one the reading cannot keep as a
+// vertex point is reported, and its faces are left as they were. A number
+// past the end is reported and left out.
+pub fn unsubdivideWith(m &PolyMesh, iterations u32, keep &[]u32, problems &mut List[String]) PolyMesh {
+  imm bad = m.validate();
+  if bad.len() > 0usize {
+    mut s = String.from("the mesh is not valid (");
+    s.append(bad[0usize].view());
+    s.append("); nothing is un-subdivided");
+    problems.push(s);
+    return copyPolyMesh(m);
+  }
+  imm nv = m.vertexCount();
+  mut kept = List[u32].empty();
+  mut i = 0usize;
+  while i < keep.len {
+    if usize.from(keep[i]) < nv { kept.push(keep[i]); }
+    else {
+      mut s = String.from("vertex ");
+      s.appendUInt(u64.from(keep[i]));
+      s.append(" to keep is past the last (");
+      s.appendUInt(u64.from(nv));
+      s.append(" vertices); left out");
+      problems.push(s);
+    }
+    i = i + 1usize;
+  }
+  mut cur = copyPolyMesh(m);
+  mut it = 0u32;
+  while it < iterations {
+    mut next = PolyMesh.empty();
+    mut vmap = List[u32].empty();
+    if !unsubdivideOnce(&cur, &kept, it + 1u32, &mut next, &mut vmap, problems) { return cur; }
+    // The vertices to keep, renumbered (they are never removed)
+    i = 0usize;
+    while i < kept.len() {
+      kept.set(i, *vmap[usize.from(*kept[i])]);
+      i = i + 1usize;
+    }
+    cur <=> next;
+    it = it + 1u32;
+  }
+  cur;
+}
+
+// -------- reading the grid --------
+
+// The labels: those committed, and a trial's on top of them (a trial label
+// of UnsubNone falls through to the committed one), each with a flag for a
+// vertex given two labels
+struct UnsubLabels {
+  pub lab List[u32];
+  pub bad List[Bool];
+  pub tlab List[u32];
+  pub tbad List[Bool];
+  pub mark List[Bool];     // per vertex: in 'touched'
+  pub touched List[u32];   // the vertices this trial labelled or flagged
+  pub queue List[u32];     // V and F vertices whose quads are still to read
+
+  fn label(self &, v u32) u32 {
+    imm t = *tlab[usize.from(v)];
+    if t != UnsubNone {t;} else {*lab[usize.from(v)];};
+  }
+
+  fn isBad(self &, v u32) Bool {*bad[usize.from(v)] or *tbad[usize.from(v)];}
+
+  fn touch(self &mut, v u32) {
+    if !*mark[usize.from(v)] {
+      mark.set(usize.from(v), true);
+      touched.push(v);
+    }
+  }
+
+  // v is to be labelled l: labelled when it has none, flagged when it has another
+  fn assign(self &mut, v u32, l u32) {
+    imm cur = self.label(v);
+    if cur == UnsubNone {
+      tlab.set(usize.from(v), l);
+      self.touch(v);
+      if l != UnsubE { queue.push(v); }
+    } elif cur != l {
+      tbad.set(usize.from(v), true);
+      self.touch(v);
+    }
+  }
+
+  // The trial forgotten
+  fn reset(self &mut) {
+    mut i = 0usize;
+    while i < touched.len() {
+      imm v = usize.from(*touched[i]);
+      tlab.set(v, UnsubNone);
+      tbad.set(v, false);
+      mark.set(v, false);
+      i = i + 1usize;
+    }
+    touched.clear();
+    queue.clear();
+  }
+
+  // The trial kept
+  fn commit(self &mut) {
+    mut i = 0usize;
+    while i < touched.len() {
+      imm v = usize.from(*touched[i]);
+      if *tlab[v] != UnsubNone { lab.set(v, *tlab[v]); }
+      if *tbad[v] { bad.set(v, true); }
+      i = i + 1usize;
+    }
+    self.reset();
+  }
+}
+
+fn unsubLabels(nv usize) UnsubLabels {
+  mut lab = List[u32].withCapacity(nv);
+  mut bad = List[Bool].withCapacity(nv);
+  mut tlab = List[u32].withCapacity(nv);
+  mut tbad = List[Bool].withCapacity(nv);
+  mut mark = List[Bool].withCapacity(nv);
+  mut v = 0usize;
+  while v < nv {
+    lab.push(UnsubNone);
+    bad.push(false);
+    tlab.push(UnsubNone);
+    tbad.push(false);
+    mark.push(false);
+    v = v + 1usize;
+  }
+  new UnsubLabels(lab, bad, tlab, tbad, mark, List[u32].empty(), List[u32].empty());
+}
+
+// Whether half-edge h's face is a quad
+fn unsubQuad(m &PolyMesh, h u32) Bool {
+  if *m.hFace[usize.from(h)] == NoIndex { return false; }
+  imm h2 = m.next(m.next(h));
+  h2 != h and m.next(m.next(h2)) == h;
+}
+
+// Whether v is a corner of a quad
+fn unsubOnQuad(m &PolyMesh, v u32) Bool {
+  imm hs = m.vertexOutgoing(v);
+  mut i = 0usize;
+  while i < hs.len() {
+    if unsubQuad(m, *hs[i]) { return true; }
+    i = i + 1usize;
+  }
+  false;
+}
+
+// The labels spread from the queued vertices through their quads: across a
+// quad from a V the vertex is F, and from an F a V; beside either, E
+fn unsubSpread(m &PolyMesh, L &mut UnsubLabels) {
+  mut q = 0usize;
+  while q < L.queue.len() {
+    imm v = *L.queue[q];
+    imm l = L.label(v);
+    imm across = if l == UnsubV {UnsubF;} else {UnsubV;};
+    imm hs = m.vertexOutgoing(v);
+    mut i = 0usize;
+    while i < hs.len() {
+      imm h = *hs[i];
+      if unsubQuad(m, h) {
+        imm h1 = m.next(h);
+        imm h2 = m.next(h1);
+        L.assign(m.toVertex(h), UnsubE);
+        L.assign(m.toVertex(h2), UnsubE);
+        L.assign(m.toVertex(h1), across);
+      }
+      i = i + 1usize;
+    }
+    q = q + 1usize;
+  }
+}
+
+// How many quads collapse into face point f under the labels (0 when it
+// does not collapse; see the top)
+fn unsubFan(m &PolyMesh, L &UnsubLabels, pinned &List[Bool], f u32) usize {
+  if L.label(f) != UnsubF or L.isBad(f) or *pinned[usize.from(f)] { return 0usize; }
+  imm hs = m.vertexOutgoing(f);
+  imm n = hs.len();
+  if n < 3usize { return 0usize; }
+  mut loop = List[u32].withCapacity(2usize * n);
+  mut i = 0usize;
+  while i < n {
+    imm h = *hs[i];
+    if !unsubQuad(m, h) { return 0usize; }
+    imm h1 = m.next(h);
+    imm h2 = m.next(h1);
+    imm a = m.toVertex(h);
+    imm o = m.toVertex(h1);
+    imm b = m.toVertex(h2);
+    if L.label(a) != UnsubE or L.label(b) != UnsubE or L.label(o) != UnsubV { return 0usize; }
+    if L.isBad(a) or L.isBad(b) or L.isBad(o) { return 0usize; }
+    loop.push(a);
+    loop.push(o);
+    i = i + 1usize;
+  }
+  // The loop passes no vertex twice
+  i = 0usize;
+  while i < loop.len() {
+    mut j = i + 1usize;
+    while j < loop.len() {
+      if *loop[i] == *loop[j] { return 0usize; }
+      j = j + 1usize;
+    }
+    i = i + 1usize;
+  }
+  n;
+}
+
+// The quads that collapse under the trial: the fans of the face points it labelled
+fn unsubScore(m &PolyMesh, L &UnsubLabels, pinned &List[Bool]) usize {
+  mut sum = 0usize;
+  mut i = 0usize;
+  while i < L.touched.len() {
+    imm v = *L.touched[i];
+    if *L.tlab[usize.from(v)] == UnsubF { sum = sum + unsubFan(m, L, pinned, v); }
+    i = i + 1usize;
+  }
+  sum;
+}
+
+// One reading as a trial: 'option' 0 and 1 label s V or F; 2 and 3 label s
+// E and n V or F
+fn unsubTrial(m &PolyMesh, L &mut UnsubLabels, s u32, n u32, option u32) {
+  if option == 0u32 { L.assign(s, UnsubV); }
+  elif option == 1u32 { L.assign(s, UnsubF); }
+  else {
+    L.assign(s, UnsubE);
+    if option == 2u32 { L.assign(n, UnsubV); } else { L.assign(n, UnsubF); }
+  }
+  unsubSpread(m, L);
+}
+
+// Every vertex on a quad labelled: the vertices to keep first, each its
+// region's vertex point, then the lowest-numbered unlabelled vertex, read
+// the four ways, the one that collapses the most quads kept
+fn unsubRead(m &PolyMesh, keep &List[u32], pinned &List[Bool], iteration u32, problems &mut List[String]) UnsubLabels {
+  imm nv = m.vertexCount();
+  mut L = unsubLabels(nv);
+  mut k = 0usize;
+  while k < keep.len() {
+    imm v = *keep[k];
+    if unsubOnQuad(m, v) {
+      if L.label(v) == UnsubNone {
+        unsubTrial(m, &mut L, v, v, 0u32);
+        L.commit();
+      }
+      if L.label(v) != UnsubV {
+        mut s = String.from("iteration ");
+        s.appendUInt(u64.from(iteration));
+        s.append(": vertex ");
+        s.appendUInt(u64.from(v));
+        s.append(" is to be kept, but the grid read from the vertices kept before it removes it; its faces are left as they were");
+        problems.push(s);
+      }
+    }
+    k = k + 1usize;
+  }
+  mut s = 0usize;
+  while s < nv {
+    imm sv = u32.from(s);
+    if L.label(sv) == UnsubNone and unsubOnQuad(m, sv) {
+      // Its lowest-numbered neighbour along a quad's side
+      mut n = NoIndex;
+      imm hs = m.vertexOutgoing(sv);
+      mut i = 0usize;
+      while i < hs.len() {
+        imm h = *hs[i];
+        if unsubQuad(m, h) or unsubQuad(m, m.twin(h)) {
+          imm w = m.toVertex(h);
+          if w < n { n = w; }
+        }
+        i = i + 1usize;
+      }
+      mut best = 0u32;
+      mut bestScore = 0usize;
+      mut option = 0u32;
+      while option < 4u32 {
+        unsubTrial(m, &mut L, sv, n, option);
+        imm score = unsubScore(m, &L, pinned);
+        L.reset();
+        if score > bestScore {
+          best = option;
+          bestScore = score;
+        }
+        option = option + 1u32;
+      }
+      unsubTrial(m, &mut L, sv, n, best);
+      L.commit();
+    }
+    s = s + 1usize;
+  }
+  L;
+}
+
+// -------- one iteration --------
+
+// One level undone into 'out', each old vertex's new number into 'vmap'
+// (NoIndex for one removed); false, with a line, when nothing was undone or
+// the result would not be valid ('out' is then not made)
+fn unsubdivideOnce(m &PolyMesh, keep &List[u32], iteration u32, out &mut PolyMesh, vmap &mut List[u32],
+    problems &mut List[String]) Bool {
+  imm nv = m.vertexCount();
+  imm nf = m.faceCount();
+  mut pinned = List[Bool].withCapacity(nv);
+  mut v = 0usize;
+  while v < nv {
+    pinned.push(false);
+    v = v + 1usize;
+  }
+  mut k = 0usize;
+  while k < keep.len() {
+    pinned.set(usize.from(*keep[k]), true);
+    k = k + 1usize;
+  }
+  imm L = unsubRead(m, keep, &pinned, iteration, problems);
+
+  // The face points that collapse, and each face's fan (its face point)
+  mut fanOf = List[u32].withCapacity(nf);
+  mut f = 0usize;
+  while f < nf {
+    fanOf.push(NoIndex);
+    f = f + 1usize;
+  }
+  mut gone = List[Bool].withCapacity(nv);
+  mut fans = 0usize;
+  mut merged = 0usize;
+  v = 0usize;
+  while v < nv {
+    imm size = unsubFan(m, &L, &pinned, u32.from(v));
+    gone.push(size > 0usize);
+    if size > 0usize {
+      fans = fans + 1usize;
+      merged = merged + size;
+      imm hs = m.vertexOutgoing(u32.from(v));
+      mut i = 0usize;
+      while i < hs.len() {
+        fanOf.set(usize.from(m.face(*hs[i])), u32.from(v));
+        i = i + 1usize;
+      }
+    }
+    v = v + 1usize;
+  }
+  if fans == 0usize {
+    mut s = String.from("iteration ");
+    s.appendUInt(u64.from(iteration));
+    s.append(" found no grid to undo; stopped");
+    problems.push(s);
+    return false;
+  }
+  // The edge points that go: every face on them collapsed, on four edges
+  // inside or three on the boundary
+  v = 0usize;
+  while v < nv {
+    imm vu = u32.from(v);
+    if L.label(vu) == UnsubE and !L.isBad(vu) and !*pinned[v] {
+      imm hs = m.vertexOutgoing(vu);
+      mut all = true;
+      mut boundary = false;
+      mut i = 0usize;
+      while i < hs.len() {
+        imm fh = m.face(*hs[i]);
+        if fh == NoIndex { boundary = true; }
+        elif *fanOf[usize.from(fh)] == NoIndex { all = false; }
+        i = i + 1usize;
+      }
+      imm shape = (!boundary and hs.len() == 4usize) or (boundary and hs.len() == 3usize);
+      if all and shape { gone.set(v, true); }
+    }
+    v = v + 1usize;
+  }
+
+  // The kept vertices, in order
+  mut pos = List[Vec3].empty();
+  mut vSrc = List[u32].empty();
+  vmap.clear();
+  v = 0usize;
+  while v < nv {
+    if *gone[v] { vmap.push(NoIndex); }
+    else {
+      vmap.push(u32.from(pos.len()));
+      pos.push(*m.positions[v]);
+      vSrc.push(u32.from(v));
+    }
+    v = v + 1usize;
+  }
+
+  // The faces, in the order of their first face
+  mut counts = List[u32].empty();
+  mut idx = List[u32].empty();
+  mut cSrc = List[u32].empty();
+  mut eSrc = List[u32].empty();
+  mut fSrc = List[u32].empty();
+  mut done = List[Bool].withCapacity(nv);   // per face point: its face made
+  v = 0usize;
+  while v < nv {
+    done.push(false);
+    v = v + 1usize;
+  }
+  mut leftFaces = 0usize;
+  f = 0usize;
+  while f < nf {
+    imm fp = *fanOf[f];
+    if fp == NoIndex {
+      leftFaces = leftFaces + 1usize;
+      imm hs = m.faceHalfedges(u32.from(f));
+      mut i = 0usize;
+      while i < hs.len() {
+        imm h = *hs[i];
+        idx.push(*vmap[usize.from(m.toVertex(h))]);
+        cSrc.push(h);
+        eSrc.push(m.edge(h));
+        i = i + 1usize;
+      }
+      counts.push(u32.from(hs.len()));
+      fSrc.push(u32.from(f));
+    } elif !*done[usize.from(fp)] {
+      done.set(usize.from(fp), true);
+      // From the vertex point of this, the fan's first quad: the half-edge
+      // ending there follows the one leaving the face point
+      imm hs = m.faceHalfedges(u32.from(f));
+      mut g = NoIndex;
+      mut i = 0usize;
+      while i < hs.len() {
+        if m.fromVertex(*hs[i]) == fp { g = *hs[i]; }
+        i = i + 1usize;
+      }
+      imm start = m.next(g);
+      mut h = start;
+      mut n = 0u32;
+      mut going = true;
+      while going {
+        // The vertex point, its incoming side one half or, its edge point
+        // gone, the lower-numbered of two
+        idx.push(*vmap[usize.from(m.toVertex(h))]);
+        cSrc.push(h);
+        if *gone[usize.from(m.fromVertex(h))] {
+          imm other = m.prev(m.twin(m.prev(h)));
+          imm a = m.edge(h);
+          imm b = m.edge(other);
+          if a < b { eSrc.push(a); } else { eSrc.push(b); }
+        } else {
+          eSrc.push(m.edge(h));
+        }
+        n = n + 1u32;
+        // The edge point after it, kept or gone
+        imm he = m.next(h);
+        if !*gone[usize.from(m.toVertex(he))] {
+          idx.push(*vmap[usize.from(m.toVertex(he))]);
+          cSrc.push(he);
+          eSrc.push(m.edge(he));
+          n = n + 1u32;
+        }
+        h = m.next(m.twin(m.next(he)));
+        going = h != start;
+      }
+      counts.push(n);
+      fSrc.push(u32.from(f));
+    }
+    f = f + 1usize;
+  }
+
+  mut made = assemble(m, &pos, &vSrc, &counts, &idx, &cSrc, &eSrc, &fSrc);
+  imm check = made.validate();
+  if made.faceCount() != counts.len() or check.len() > 0usize {
+    mut s = String.from("iteration ");
+    s.appendUInt(u64.from(iteration));
+    s.append("'s result would not be a valid mesh");
+    if check.len() > 0usize {
+      s.append(" (");
+      s.append(check[0usize].view());
+      s.append(")");
+    }
+    s.append("; stopped");
+    problems.push(s);
+    return false;
+  }
+  if leftFaces > 0usize {
+    mut s = String.from("iteration ");
+    s.appendUInt(u64.from(iteration));
+    s.append(" left ");
+    s.appendUInt(u64.from(leftFaces));
+    s.append(" of ");
+    s.appendUInt(u64.from(nf));
+    s.append(" faces as they were (not on a subdivision grid)");
+    problems.push(s);
+  }
+  *out = made;
+  true;
+}

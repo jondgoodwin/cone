@@ -135,6 +135,16 @@ pub struct Invocation {
   pub groupCount Array[u32, 3];
 }
 
+// A compute workgroup's barriers: every invocation of the workgroup waits at
+// one until all have reached it, and what each wrote before it, to the
+// workgroup's '@workgroup' globals (workgroupBarrier) or to the buffers the
+// kernel binds (storageBarrier), every other reads after it. Every invocation
+// of the workgroup must reach the same barrier, so one is never written where
+// some invocations of a workgroup go and others do not. The CPU runs a kernel
+// one invocation at a time, so there each is nothing.
+pub fn @intrinsic workgroupBarrier() {}
+pub fn @intrinsic storageBarrier() {}
+
 // The two regions every module reaches. A region is a struct declaring the
 // built-in trait 'RegionRef', and the compiler knows neither of these by name:
 // it calls the methods each declares at each reference event, and what one
@@ -317,8 +327,8 @@ pub struct @opaque mem {
 
   // The atomic operations on the T at p, each indivisible: no other thread
   // sees it half done. T is an integer type of 8 to 64 bits, Bool or a raw
-  // pointer (add and sub take an integer, and and, or and xor an integer or a
-  // Bool). The order is a constant MemOrder. A read-modify-write answers the
+  // pointer (add, sub, min and max take an integer, and and, or and xor an
+  // integer or a Bool). The order is a constant MemOrder. A read-modify-write answers the
   // value p held before it, and add and sub wrap. The fallback bodies are the
   // plain operations, which are right only while one thread reaches p.
   pub fn @intrinsic atomicLoad[T](p *T, order MemOrder) T {*p;}
@@ -340,6 +350,14 @@ pub struct @opaque mem {
   }
   pub fn @intrinsic atomicXor[T](p *T, value T, order MemOrder) T {
     imm old = *p; *p = old ^ value; old;
+  }
+  // The lesser and the greater of the two, compared as T is: signed for a
+  // signed T
+  pub fn @intrinsic atomicMin[T](p *T, value T, order MemOrder) T {
+    imm old = *p; if value < old {*p = value;} old;
+  }
+  pub fn @intrinsic atomicMax[T](p *T, value T, order MemOrder) T {
+    imm old = *p; if value > old {*p = value;} old;
   }
   // Store desired at p if it holds expected: the value p held, and whether
   // the store was made. 'failure' is the order when it was not
@@ -455,6 +473,9 @@ pub struct @opaque mem {
 //                            for an integer or a Bool, as flags
 //   a.add(v), a.sub(v)       add or subtract v, answering the value before;
 //                            both wrap: for an integer only
+//   a.min(v), a.max(v)       keep the lesser or the greater of the value and
+//                            v, answering the value before, compared signed
+//                            for a signed T: for an integer only
 //
 // So 'Atomic[Bool]' is a flag, set with store or bitOr and tested with load,
 // and 'Atomic[*Node]' is the head of a lock-free list, moved on with
@@ -515,6 +536,12 @@ pub struct Atomic[T] is AtomicValue, Move where T is Integer or T is Bool or T i
   pub fn sub(self &opaq, v T) T where T is Integer {
     mem.atomicSub[T](self as *T, v, MemOrder.SeqCst[]);
   }
+  pub fn min(self &opaq, v T) T where T is Integer {
+    mem.atomicMin[T](self as *T, v, MemOrder.SeqCst[]);
+  }
+  pub fn max(self &opaq, v T) T where T is Integer {
+    mem.atomicMax[T](self as *T, v, MemOrder.SeqCst[]);
+  }
   pub fn bitAnd(self &opaq, v T) T where T is Integer or T is Bool {
     mem.atomicAnd[T](self as *T, v, MemOrder.SeqCst[]);
   }
@@ -574,6 +601,24 @@ pub struct Atomic[T] is AtomicValue, Move where T is Integer or T is Bool or T i
       case is MemOrder.Release {mem.atomicSub[T](self as *T, v, MemOrder.Release[]);}
       case is MemOrder.AcqRel {mem.atomicSub[T](self as *T, v, MemOrder.AcqRel[]);}
       else {mem.atomicSub[T](self as *T, v, MemOrder.SeqCst[]);}
+    }
+  }
+  pub fn minOrdered(self &opaq, v T, order MemOrder) T where T is Integer {
+    match order {
+      case is MemOrder.Relaxed {mem.atomicMin[T](self as *T, v, MemOrder.Relaxed[]);}
+      case is MemOrder.Acquire {mem.atomicMin[T](self as *T, v, MemOrder.Acquire[]);}
+      case is MemOrder.Release {mem.atomicMin[T](self as *T, v, MemOrder.Release[]);}
+      case is MemOrder.AcqRel {mem.atomicMin[T](self as *T, v, MemOrder.AcqRel[]);}
+      else {mem.atomicMin[T](self as *T, v, MemOrder.SeqCst[]);}
+    }
+  }
+  pub fn maxOrdered(self &opaq, v T, order MemOrder) T where T is Integer {
+    match order {
+      case is MemOrder.Relaxed {mem.atomicMax[T](self as *T, v, MemOrder.Relaxed[]);}
+      case is MemOrder.Acquire {mem.atomicMax[T](self as *T, v, MemOrder.Acquire[]);}
+      case is MemOrder.Release {mem.atomicMax[T](self as *T, v, MemOrder.Release[]);}
+      case is MemOrder.AcqRel {mem.atomicMax[T](self as *T, v, MemOrder.AcqRel[]);}
+      else {mem.atomicMax[T](self as *T, v, MemOrder.SeqCst[]);}
     }
   }
   pub fn bitAndOrdered(self &opaq, v T, order MemOrder) T where T is Integer or T is Bool {
