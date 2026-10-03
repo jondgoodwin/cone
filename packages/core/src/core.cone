@@ -337,6 +337,59 @@ pub struct @opaque mem {
     }
     old, false;
   }
+
+  // An integer's bits, T an integer type of 8 to 64 bits; each is also a
+  // method of every integer type, 'x.leadingZeros()'. A count of the bits of 0
+  // is the width. The amount of a rotate or a masked shift is taken modulo the
+  // width, and shrMasked is arithmetic for a signed T, logical for an unsigned
+  // one, where '<<' and '>>' give 0, or the sign, past the width. The fallback
+  // bodies go a bit at a time
+  pub fn @intrinsic countOnes[T](x T) u32 {
+    mut v = x;
+    mut n = 0u32;
+    while v != T.from(0) {
+      v = v & (v - T.from(1));
+      n = n + 1u32;
+    }
+    n;
+  }
+  pub fn @intrinsic leadingZeros[T](x T) u32 {
+    imm width = u32.from(mem.sizeof[T]()) * 8u32;
+    mut n = 0u32;
+    while n < width {
+      if ((x >> T.from(width - 1u32 - n)) & T.from(1)) != T.from(0) {break;}
+      n = n + 1u32;
+    }
+    n;
+  }
+  pub fn @intrinsic trailingZeros[T](x T) u32 {
+    imm width = u32.from(mem.sizeof[T]()) * 8u32;
+    mut n = 0u32;
+    while n < width {
+      if ((x >> T.from(n)) & T.from(1)) != T.from(0) {break;}
+      n = n + 1u32;
+    }
+    n;
+  }
+  // The bits rotated in are shifted logically, a signed T's sign copies masked off
+  pub fn @intrinsic rotateLeft[T](x T, n u32) T {
+    imm width = u32.from(mem.sizeof[T]()) * 8u32;
+    imm k = n % width;
+    if k == 0u32 {return x;}
+    (x << T.from(k)) | ((x >> T.from(width - k)) & ~(~T.from(0) << T.from(k)));
+  }
+  pub fn @intrinsic rotateRight[T](x T, n u32) T {
+    imm width = u32.from(mem.sizeof[T]()) * 8u32;
+    imm k = n % width;
+    if k == 0u32 {return x;}
+    ((x >> T.from(k)) & ~(~T.from(0) << T.from(width - k))) | (x << T.from(width - k));
+  }
+  pub fn @intrinsic shlMasked[T](x T, n u32) T {
+    x << T.from(n % (u32.from(mem.sizeof[T]()) * 8u32));
+  }
+  pub fn @intrinsic shrMasked[T](x T, n u32) T {
+    x >> T.from(n % (u32.from(mem.sizeof[T]()) * 8u32));
+  }
 }
 
 // ATOMIC VALUES: Atomic[T], an integer, a Bool or a raw pointer that several

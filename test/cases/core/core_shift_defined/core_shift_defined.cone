@@ -1,0 +1,145 @@
+// '<<' and '>>' are defined for every amount, the same in every build: the
+// bits shifted past either end are gone, so an amount of the integer's width or
+// more leaves 0 -- or, for '>>' on a signed integer, the sign in every bit, 0
+// or -1 -- and never LLVM's poison. Each integer type is shifted by 0, 1, its
+// width - 1, its width, its width + 1, 255, 1000 and all ones (each kept to the
+// type's own width, so some are negative for a signed type, and a negative
+// amount is past the width), left and right, a positive and a negative value
+// for a signed type. Then '<<=' and '>>=', an amount masked to below the width,
+// a constant amount past the width on a value known only as it runs, and the
+// two cases the rule was settled on: 255u64 >> 64, which printed 255 in a debug
+// build and 1 in a release one, and (1 << n) - 1 for n = 64, all ones.
+//
+// Every amount but the last two comes through 'opaque', a C function compiled
+// apart and linked beside the program (opaque.c), so the optimizer cannot fold
+// it into a constant and each shift is done as the program runs; the llvmir
+// check says the compare survives the optimizer. The last two are amounts the
+// optimizer can see, which it folds. The scenario runs optimized and with
+// --debug (cases.toml), and the one .out is both builds' answer, because the
+// difference between them is what went wrong before.
+
+mod core_shift_defined;
+
+import stdio use *;
+
+extern {
+  fn @c opaque(n u64) u64;
+}
+
+// The amount at index i, for a type of the given width
+fn amount(width u64, i usize) u64 {
+  if i == 0usize {return 0u64;}
+  if i == 1usize {return 1u64;}
+  if i == 2usize {return width - 1u64;}
+  if i == 3usize {return width;}
+  if i == 4usize {return width + 1u64;}
+  if i == 5usize {return 255u64;}
+  if i == 6usize {return 1000u64;}
+  18446744073709551615u64;
+}
+
+fn unsignedRows[T](name &[]u8, width u64, x T) {
+  mut i = 0usize;
+  while i < 8usize {
+    imm n = T.from(opaque(amount(width, i)));
+    printStr(name);
+    printStr(" ");
+    printUInt(u64.from(x));
+    printStr(" by ");
+    printUInt(u64.from(n));
+    printStr(": << ");
+    printUInt(u64.from(x << n));
+    printStr(", >> ");
+    printUInt(u64.from(x >> n));
+    printStr("\n");
+    i = i + 1usize;
+  }
+}
+
+fn signedRows[T](name &[]u8, width u64, pos T, neg T) {
+  mut i = 0usize;
+  while i < 8usize {
+    imm n = T.from(opaque(amount(width, i)));
+    printStr(name);
+    printStr(" by ");
+    printInt(i64.from(n));
+    printStr(": ");
+    printInt(i64.from(pos));
+    printStr(" << ");
+    printInt(i64.from(pos << n));
+    printStr(", >> ");
+    printInt(i64.from(pos >> n));
+    printStr("; ");
+    printInt(i64.from(neg));
+    printStr(" << ");
+    printInt(i64.from(neg << n));
+    printStr(", >> ");
+    printInt(i64.from(neg >> n));
+    printStr("\n");
+    i = i + 1usize;
+  }
+}
+
+fn showU(label &[]u8, n u64) {
+  printStr(label);
+  printStr(" = ");
+  printUInt(n);
+  printStr("\n");
+}
+
+fn showI(label &[]u8, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+fn main() {
+  unsignedRows[u8]("u8", 8u64, 0xA5u8);
+  unsignedRows[u16]("u16", 16u64, 0xA5C3u16);
+  unsignedRows[u32]("u32", 32u64, 0xA5C3F00Fu32);
+  unsignedRows[u64]("u64", 64u64, 0xA5C3F00F12345678u64);
+  unsignedRows[usize]("usize", 64u64, 0xA5C3F00F12345678usize);
+  signedRows[i8]("i8", 8u64, 0x35i8, -0x35i8);
+  signedRows[i16]("i16", 16u64, 0x35C3i16, -0x35C3i16);
+  signedRows[i32]("i32", 32u64, 0x35C3F00Fi32, -0x35C3F00Fi32);
+  signedRows[i64]("i64", 64u64, 0x35C3F00F12345678i64, -0x35C3F00F12345678i64);
+  signedRows[isize]("isize", 64u64, 0x35C3F00F12345678isize, -0x35C3F00F12345678isize);
+
+  // The assignment forms are the operators
+  mut a = 0xF0u8;
+  a <<= u8.from(opaque(8u64));
+  showU("0xF0u8 <<= 8", u64.from(a));
+  mut b = 1u64;
+  b <<= opaque(63u64);
+  showU("1u64 <<= 63", b);
+  b <<= opaque(1u64);
+  showU("then <<= 1", b);
+  mut c = -100i32;
+  c >>= i32.from(opaque(40u64));
+  showI("-100i32 >>= 40", i64.from(c));
+  mut d = 100i32;
+  d >>= i32.from(opaque(40u64));
+  showI("100i32 >>= 40", i64.from(d));
+
+  // An amount masked below the width shifts by the masked amount
+  imm big = opaque(72u64);
+  showU("0xFF00u64 >> (72 & 63)", 0xFF00u64 >> (big & 63u64));
+
+  // A constant amount past the width, on a value known only as it runs
+  showU("x >> 64u64", opaque(255u64) >> 64u64);
+  showU("x << 64u64", opaque(255u64) << 64u64);
+  showI("-x >> 64i64", i64.from(opaque(5u64)) * -1i64 >> 64i64);
+
+  // The two cases the rule was settled on
+  imm n = opaque(64u64);
+  showU("255u64 >> n, n = 64", 255u64 >> n);
+  showU("(1u64 << n) - 1u64, n = 64", (1u64 << n) - 1u64);
+
+  // And an amount the optimizer does see, in a variable rather than written
+  // at the shift: how the first was measured, when the release build printed 1
+  mut seen = 64u64;
+  showU("255u64 >> seen, seen = 64", 255u64 >> seen);
+  mut seenNeg = 70i32;
+  showI("-255i32 >> seen, seen = 70", -255i32 >> seenNeg);
+}

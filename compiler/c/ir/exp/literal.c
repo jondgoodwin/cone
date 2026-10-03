@@ -763,8 +763,9 @@ static int litFoldInt(INode *at, int16_t op, LitNbr *a, LitNbr *b, LitNbr *r) {
     case ShlIntrinsic:
     case ShrIntrinsic:
     case SShrIntrinsic:
-        // The amount is the second operand, of the same type: LLVM's shift by
-        // the width or more, a negative amount among them, is poison
+        // The amount is the second operand, of the same type. A constant
+        // shift by the width or more, a negative amount among them, is
+        // refused, though at run time it is 0 or the sign (genlShift)
         if ((b->type->tag == IntNbrTag && sy < 0) || y >= type->bits) {
             errorMsgNode(at, ErrorConstShift,
                 "This constant's shift is by %s%" PRIu64 ", so it has no value: a shift of %s is by 0 to %d.",

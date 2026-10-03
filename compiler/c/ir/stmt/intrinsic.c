@@ -166,6 +166,22 @@ static IntrinsicSpec intrinsicRegistry[] = {
         0, 1, {ShapeSliceU8}, ShapeBool, 0, 0, PhaseConstant, 1},
     {"definedInt", DefinedIntIntrinsic, "definedInt(name &[]u8) i64",
         0, 1, {ShapeSliceU8}, ShapeI64, 0, 0, PhaseConstant, 1},
+    // An integer's bits, each also a method of every integer type. A count is
+    // defined for 0, as the width; an amount is taken modulo the width
+    {"countOnes", CountOnesIntrinsic, "countOnes[T](x T) u32",
+        1, 1, {ShapeT}, ShapeU32, 0, 1, PhaseOperation, 1, ClassInt},
+    {"leadingZeros", LeadingZerosIntrinsic, "leadingZeros[T](x T) u32",
+        1, 1, {ShapeT}, ShapeU32, 0, 1, PhaseOperation, 1, ClassInt},
+    {"trailingZeros", TrailingZerosIntrinsic, "trailingZeros[T](x T) u32",
+        1, 1, {ShapeT}, ShapeU32, 0, 1, PhaseOperation, 1, ClassInt},
+    {"rotateLeft", RotateLeftIntrinsic, "rotateLeft[T](x T, n u32) T",
+        1, 2, {ShapeT, ShapeU32}, ShapeT, 0, 1, PhaseOperation, 1, ClassInt},
+    {"rotateRight", RotateRightIntrinsic, "rotateRight[T](x T, n u32) T",
+        1, 2, {ShapeT, ShapeU32}, ShapeT, 0, 1, PhaseOperation, 1, ClassInt},
+    {"shlMasked", ShlMaskedIntrinsic, "shlMasked[T](x T, n u32) T",
+        1, 2, {ShapeT, ShapeU32}, ShapeT, 0, 1, PhaseOperation, 1, ClassInt},
+    {"shrMasked", ShrMaskedIntrinsic, "shrMasked[T](x T, n u32) T",
+        1, 2, {ShapeT, ShapeU32}, ShapeT, 0, 1, PhaseOperation, 1, ClassInt},
 };
 
 #define IntrinsicCount (sizeof(intrinsicRegistry) / sizeof(IntrinsicSpec))
@@ -512,15 +528,22 @@ int intrinsicClassCheck(FnDclNode *fndcl) {
     IntrinsicSpec *spec = fndcl->namesym ? intrinsicFind(fndcl->namesym) : NULL;
     if (spec == NULL || spec->tclass == ClassSized)
         return 1;
-    // A template still holds '*T' as a dereference, and a declaration the
-    // registry refused may say anything: neither has an instance's type to judge
+    // T is read from the first parameter, a '*T' or a 'T'. A template still
+    // holds '*T' as a dereference and 'T' as its parameter, and a declaration
+    // the registry refused may say anything: none has an instance's type to judge
     FnSigNode *sig = (FnSigNode *)fndcl->vtype;
-    if (sig == NULL || sig->tag != FnSigTag || sig->parms->used != spec->nparms || spec->parms[0] != ShapePtrT)
+    if (sig == NULL || sig->tag != FnSigTag || sig->parms->used != spec->nparms
+        || (spec->parms[0] != ShapePtrT && spec->parms[0] != ShapeT))
         return 1;
-    INode *ptr = itypeGetTypeDcl(((VarDclNode *)nodesGet(sig->parms, 0))->vtype);
-    if (ptr->tag != PtrTag)
+    INode *type = ((VarDclNode *)nodesGet(sig->parms, 0))->vtype;
+    if (spec->parms[0] == ShapePtrT) {
+        INode *ptr = itypeGetTypeDcl(type);
+        if (ptr->tag != PtrTag)
+            return 1;
+        type = ((StarNode *)ptr)->vtexp;
+    }
+    else if (itypeGetTypeDcl(type)->tag == GenVarDclTag)
         return 1;
-    INode *type = ((StarNode *)ptr)->vtexp;
     if (intrinsicClassOf(type) & spec->tclass)
         return 1;
     // Reported where the program's own source chose the type: an instance
