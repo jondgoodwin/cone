@@ -23,6 +23,7 @@
 //   Once           a function run exactly once, however many threads ask
 //   Channel[T]     values sent by many threads, or one, taken by one
 //                                                                (CHANNELS)
+//   Oneshot[T]     one value, sent once, from one thread to one (ONE-SHOTS)
 //
 // THE FUTEX. The foundation every lock here is built on, and what the thread
 // package's parking is built on: a 32-bit atomic word that threads sleep on
@@ -234,6 +235,9 @@
 //                            tick): Some[v] back when none came
 //   tx.clone()               another Sender on the same channel (not a
 //                            SoloSender: it has none)
+//   tx.isClosed()            whether the channel is closed, so that a
+//                            trySend handed back on an open channel found
+//                            it full
 //   rx.recv()              the next value, waiting while there is none;
 //                            None once the channel is closed and every value
 //                            sent has been taken
@@ -278,6 +282,37 @@
 //   taking every value waiting at once ('drain'); and 'each v in rx', which
 //   needs the iteration protocol. 'select' over several channels is left out
 //   for now.
+//
+// ONE-SHOTS. A one-shot channel carries one value, once, from one thread to
+// one: the reply to a request, a synchronous call's answer (the iocore
+// package's Target.Once delivers an operation's answer on one).
+//
+//   mut tx OneshotSender[u64];
+//   mut rx OneshotReceiver[u64];
+//   tx, rx = Oneshot[u64].make();
+//   thread.start(tx, &answer);          // the sender moves to the answering thread
+//   match rx.recv() { ... }             // waits for the one value
+//
+//   Oneshot[T].make()        the two ends, a tuple as Channel's are
+//   tx.send(v)               put v in: None once it is there; Some[v] back
+//                            when a value was sent already or the receiver
+//                            has gone. Never waits. It takes tx as '&mut',
+//                            so a sender held in a field sends in place
+//   tx.isClosed()            whether a send would hand its value back
+//   rx.recv()                the value, waiting while there is none; None
+//                            when the sender went without sending, or the
+//                            value was taken already
+//   rx.recvTimeout(d)        the same, waiting at most d (a tick over, as
+//                            the futex's waits may be)
+//   rx.tryRecv()             the value if it is there; never waits
+//   rx.isReady()  rx.isClosed()
+//
+// Both ends are move types, Sendable, with no clone. A sender that dies
+// without sending closes it: its receiver, waiting or not, gets None. A
+// value sent and never taken is finalized exactly once, by whichever end
+// goes last. One allocation, a state word: a send is one swap, a receive
+// that finds the value one load, and the futex only when the receiver
+// really sleeps.
 //
 // How it is built is at the channel's own section, below. Unbounded: linked
 // blocks of 32 slots. Bounded: a ring of n cells. Both: one compare-and-swap
@@ -1682,6 +1717,14 @@ pub struct Sender[T Sendable] is Sendable {
     new Sender[T](chan);
   }
 
+  // Whether the channel is closed, by the receiver's close or its going:
+  // every send from now on hands its value back. So a trySend handed its
+  // value back on a channel that is not closed found it full. Acquire, as
+  // the receiver's isClosed.
+  pub fn isClosed(self &) Bool {
+    (mem.atomicLoad[u64](&(*chan).tail as *u64, MemOrder.Acquire[]) & chanClosed) != 0u64;
+  }
+
   // The last sender to go closes the channel, and wakes the receiver, which
   // takes what is left and then sees it closed
   fn final(self &uni) {
@@ -2214,5 +2257,179 @@ pub struct Receiver[T Sendable] is Sendable {
     }
     libc.free(block as *u8);
     chanRelease[T](c);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Oneshot: one value, from one thread to one, once. One allocation holds a
+// state word, a count of the two ends still alive, the receiver's 'gone'
+// flag and the value's slot. The sender writes the value into the slot and
+// then swaps the state to full, a release the receiver's acquiring load of
+// full pairs with; the receiver, finding nothing, swaps the state from empty
+// to waiting before it sleeps on the word, so the sender's swap sees that it
+// must wake it -- one compare-and-swap on each side, and the futex only when
+// the receiver really sleeps. Whichever end goes last frees the allocation,
+// and finalizes the value if it is still there: so a value sent just as the
+// receiver went is finalized exactly once, by whichever end is last, without
+// either end waiting for the other.
+// ---------------------------------------------------------------------------
+
+const oneEmpty = 0u32;                 // nothing sent yet
+const oneWaiting = 1u32;               // nothing yet, and the receiver sleeps, or is about to
+const oneFull = 2u32;                  // the value is in the slot
+const oneTaken = 3u32;                 // the receiver has taken it
+const oneClosed = 4u32;                // the sender went without sending
+
+struct OneSlot[T] {
+  pub state u32;
+  pub sides u32;                       // 2, less 1 as each end goes
+  pub gone u32;                        // 1 once the receiver has gone
+  pub value T;
+}
+
+// The last end to go frees the slot, finalizing a value never taken. AcqRel:
+// the other end's doings, the value written among them, come before it
+fn oneRelease[T](s *OneSlot[T]) {
+  if mem.atomicSub[u32](&(*s).sides as *u32, 1u32, MemOrder.AcqRel[]) == 1u32 {
+    if mem.atomicLoad[u32](&(*s).state as *u32, MemOrder.Acquire[]) == oneFull {
+      mem.finalize[T](&(*s).value as *T);
+    }
+    libc.free(s as *u8);
+  }
+}
+
+// The constructor: 'Oneshot[T].make()', which answers the two ends
+pub struct Oneshot[T Sendable] {
+  // A new one-shot channel: its sending end and its receiving end
+  pub fn make() OneshotSender[T], OneshotReceiver[T] {
+    imm s = libc.malloc(mem.sizeof[OneSlot[T]]()) as *OneSlot[T];
+    if s as usize == 0usize {
+      die("sync: out of memory for a one-shot channel\n");
+    }
+    (*s).state = oneEmpty;
+    (*s).sides = 2u32;
+    (*s).gone = 0u32;
+    new OneshotSender[T](s, false), new OneshotReceiver[T](s);
+  }
+}
+
+// The sending end of a one-shot channel: one value, once
+pub struct OneshotSender[T Sendable] is Sendable {
+  slot *OneSlot[T];
+  sent Bool;
+
+  // Send v: None once it is there for the receiver; Some[v], handed back,
+  // when a value was sent already or the receiver has gone. Never waits.
+  pub fn send(self &mut, v T) Option[T] {
+    if sent or mem.atomicLoad[u32](&(*slot).gone as *u32, MemOrder.Acquire[]) != 0u32 {
+      return Some[T][v];
+    }
+    sent = true;
+    mem.writeRaw[T](&(*slot).value as *T, v);
+    imm st = &(*slot).state as *u32;
+    if mem.atomicSwap[u32](st, oneFull, MemOrder.AcqRel[]) == oneWaiting {
+      rawWake(st);
+    }
+    None[T][];
+  }
+
+  // Whether a send would hand its value back: one was sent, or the
+  // receiver has gone
+  pub fn isClosed(self &) Bool {
+    sent or mem.atomicLoad[u32](&(*slot).gone as *u32, MemOrder.Acquire[]) != 0u32;
+  }
+
+  // A sender going without sending closes the channel: the receiver, asleep
+  // or not, finds nothing will come
+  fn final(self &uni) {
+    if not sent {
+      imm st = &(*slot).state as *u32;
+      if mem.atomicSwap[u32](st, oneClosed, MemOrder.Release[]) == oneWaiting {
+        rawWake(st);
+      }
+    }
+    oneRelease[T](slot);
+  }
+}
+
+// The receiving end of a one-shot channel
+pub struct OneshotReceiver[T Sendable] is Sendable {
+  slot *OneSlot[T];
+
+  // The value, waiting while there is none; None when the sender went
+  // without sending, or the value was taken already
+  pub fn recv(self &mut) Option[T] {
+    self.recvFor(forever);
+  }
+
+  // recv, waiting at most d (the futex's resolution: it may run over by a
+  // tick); None, too, when nothing came in that time
+  pub fn recvTimeout(self &mut, d time.Duration) Option[T] {
+    self.recvFor(durationNs(d));
+  }
+
+  // The value if it is there now, never waiting
+  pub fn tryRecv(self &mut) Option[T] {
+    if mem.atomicLoad[u32](&(*slot).state as *u32, MemOrder.Acquire[]) == oneFull {
+      return Some[T][self.take()];
+    }
+    None[T][];
+  }
+
+  // Whether the value is there, to be taken
+  pub fn isReady(self &) Bool {
+    mem.atomicLoad[u32](&(*slot).state as *u32, MemOrder.Acquire[]) == oneFull;
+  }
+
+  // Whether nothing more will come: the sender went without sending, or the
+  // value was taken
+  pub fn isClosed(self &) Bool {
+    imm s = mem.atomicLoad[u32](&(*slot).state as *u32, MemOrder.Acquire[]);
+    s == oneClosed or s == oneTaken;
+  }
+
+  fn take(self &mut) T {
+    imm v = mem.readRaw[T](&(*slot).value as *T);
+    mem.atomicStore[u32](&(*slot).state as *u32, oneTaken, MemOrder.Relaxed[]);
+    v;
+  }
+
+  fn recvFor(self &mut, timeoutNs u64) Option[T] {
+    imm st = &(*slot).state as *u32;
+    imm start = if timeoutNs == forever {0u64;} else {nowNs();};
+    while true {
+      imm s = mem.atomicLoad[u32](st, MemOrder.Acquire[]);
+      if s == oneFull {
+        return Some[T][self.take()];
+      }
+      if s == oneClosed or s == oneTaken {
+        return None[T][];
+      }
+      if s == oneEmpty {
+        mut seen = 0u32;
+        mut done = false;
+        seen, done = mem.atomicCompareSwap[u32](st, oneEmpty, oneWaiting, MemOrder.Acquire[], MemOrder.Acquire[]);
+        if not done {
+          continue;
+        }
+      }
+      if timeoutNs == forever {
+        rawWait(st, oneWaiting, forever);
+      } else {
+        imm waited = nowNs() - start;
+        if waited >= timeoutNs {
+          return None[T][];
+        }
+        rawWait(st, oneWaiting, timeoutNs - waited);
+      }
+    }
+    None[T][];
+  }
+
+  // The receiver's going: a later send hands its value back, and a value
+  // sent and never taken is finalized by whichever end goes last
+  fn final(self &uni) {
+    mem.atomicStore[u32](&(*slot).gone as *u32, 1u32, MemOrder.Release[]);
+    oneRelease[T](slot);
   }
 }
