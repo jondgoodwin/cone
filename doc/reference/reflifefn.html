@@ -26,8 +26,10 @@
 			and keeps those arguments frozen while it is used, a method's receiver
 			included (see <a href="refborref.html#returned">borrowed references</a>);
 			where only a lifetime of what an argument points at may be held -- a
-			struct's, held by the receiver of one of its methods -- it keeps frozen
-			only what the argument holds in that lifetime, not the argument.
+			struct's, held by the receiver of one of its methods, or the inner one of a
+			<span class="pre">&amp;'a mut &amp;'b T</span> -- it keeps frozen
+			only what the argument holds in that lifetime, not the argument, nor a local the
+			argument borrows (see <a href="#layers">reference layers</a>).
 			A call is refused when a mutable or unique borrowed reference to a place
 			that can hold a borrowed reference (a method's receiver included) could
 			store there one, of a lifetime that place holds, that lives less long.
@@ -395,6 +397,27 @@ fn pick[T](x &amp;'a T, y &amp;'b T) &amp;'b T where 'a &gt;= 'b and T is Copy {
 		<span class="pre">or</span> holds, and the body could rely on none of them. An
 		<span class="pre">or</span> or a <span class="pre">not</span> over a lifetime comparison is
 		refused.</p>
+
+	<h2 id="layers">Reference layers</h2>
+	<p>Each layer of a reference to a reference has a lifetime of its own, and what is
+		read through a layer has the lifetime written inside it, not the layer's own:</p>
+<pre>
+fn first(x &amp;'a mut &amp;'b R) &amp;'b R {
+  *x;           // Ok: what x points at holds a 'b borrow
+}
+fn caller(p &amp;R) &amp;R {
+  mut pp = p;
+  imm z = &amp;mut pp;
+  first(z);     // Ok: of what pp holds, p's borrow, not of pp
+}
+</pre>
+	<p>A borrow taken through an inner <span class="pre">uni</span> reference is a reborrow of
+		it, which lasts no longer than the outer borrow, since the inner reference may be used
+		again once the outer borrow ends: <span class="pre">&amp;uni **x</span> for
+		<span class="pre">x &amp;'a uni &amp;'b uni R</span> is of <span class="pre">'a</span>, and
+		may not be returned as <span class="pre">'b</span>. Through an inner
+		<span class="pre">mut</span> or read-only reference, which a copy may share, it is of the
+		inner lifetime.</p>
 
 	<h2 id="implied">Implied bounds</h2>
 	<p>A borrow of a value holding lifetimes cannot outlast them: the value lives no

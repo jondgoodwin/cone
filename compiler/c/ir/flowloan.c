@@ -63,9 +63,6 @@ static uint32_t maypoolcap = 0;
 // Holders whose loans were widened to all of them, by a loop that would not settle
 static uint32_t nflights;
 
-// The caller loans of a parameter's own reference this walk has made
-static uint32_t ncallerown = 0;
-
 static uint32_t *saturated = NULL;
 static uint32_t nsaturated = 0;
 static uint32_t saturatedcap = 0;
@@ -162,7 +159,6 @@ void loanWalkBegin() {
     nmaypool = 0;
     nsaturated = 0;
     nflights = 0;
-    ncallerown = 0;
 }
 
 // *********************
@@ -251,18 +247,8 @@ uint32_t loanCaller(uint32_t var, uint32_t part) {
     loan->kind = LoanCaller;
     loan->writes = 0;
     loan->part = (uint8_t)part;
-    if (part == LifePartOwn)
-        ++ncallerown;
     mapPut(parm, 0, loanCallerKey(part), id);
     return id;
-}
-
-int loanIsCallerOwn(uint32_t loan) {
-    return loans[loan].kind == LoanCaller && loans[loan].part == LifePartOwn;
-}
-
-int loanAnyCallerOwn() {
-    return ncallerown > 0;
 }
 
 uint32_t loanRoot(uint32_t loan) {

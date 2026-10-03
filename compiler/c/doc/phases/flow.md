@@ -674,13 +674,15 @@ through it, which nothing here conflicts with (the caller froze it) and which
 outlive the call; they are linked from no variable, so no access meets them.
 There is one per part of what the parameter lends (`LifePart`,
 `ir/types/lifetime.h`): what its own borrowed reference points at, near; and
-what that holds, far -- or what a parameter passed by value holds, near --
+what that holds, far -- or what a parameter passed by value holds, both near
+and far, since it stands for every borrow the value holds, however deep --
 whole, or, for a struct declaring lifetimes, one per lifetime. Each stands for
 its part's lifetimes: a value may carry it out of the function only where the
 result's type holds one they flow to, and into what a parameter points at only
 where that holds one (below). The own part stands for exactly the place the
 reference points at, so a value read through the reference, or a borrow of
-something further on, does not carry it (`pathSetThrough`). A parameter whose
+something further on through one that may alias, does not carry it
+(`pathSetThrough`). A parameter whose
 own reference is written `'static` holds a global borrow, and so no caller
 loan. An *access* is what an expression does to a place:
 
@@ -735,19 +737,26 @@ value's own borrows point at — what a reference points at, what a struct's
 borrow fields do — and a *far* loan is one those places hold in turn, a borrow
 or more further on. `mut q = r; mut p = &mut q` for a parameter `r`: `p`'s
 loan of `q` is near, and the caller loan `q` holds is far, since `p` points at
-`q`, the function's own, and reaches the caller's place only through it. A
-borrow's new loan is near; a borrow of a holder's own storage (`&mut q`,
-`&mut h.f`) makes what the holder holds far, while a reborrow through it
-(`&mut *r`, `&mut r.f`) points where it does and keeps each loan as it was. A
-value read from a holder's own storage carries its loans as they are; one read
-through a reference (`*p`), and a call's result, carry every loan near, since
-which of them that value's borrows point at is not known (`pathSetLoansAs`),
-but for a parameter's own caller loan, which a value read through the
-reference never points at (`pathSetThrough`). A parameter's own caller loan
-is near, what its reference points at holds far. A place reached through a
-reference read through another (`**pp`, `*r.g`) is `Place.far`: it stands for
-anything a borrow or more past where its variable points. Near is the cautious
-side: where the walk cannot tell, it says near, which only refuses more.
+`q`, the function's own, and reaches the caller's place only through it. Where
+the walk cannot tell which a loan is -- a call's result, what a call may store
+-- it is both, an entry of each kind (`pathSetUnsure`). So a loan *only* near
+is exactly where the value points, and held by it nowhere further on: each
+reference layer's loans are its own. A borrow's new loan is near; a borrow of a
+holder's own storage (`&mut q`, `&mut h.f`) makes what the holder holds far,
+while a reborrow through it (`&mut *r`, `&mut r.f`) points where it does and
+keeps each loan as it was. A value read from a holder's own storage carries
+its loans as they are; one read through a reference (`*p`) carries none only
+near, which is of the place it is read from, and each far one as both, since
+which of them the value's borrows point at is not known (`pathSetThrough`):
+`*z` for `z = &mut pp` carries what `pp` holds, not `pp`. A parameter's own
+caller loan is near, what its reference points at holds far. A place reached
+through a reference read through another (`**pp`, `*r.g`) is `Place.far`: it
+stands for anything a borrow or more past where its variable points. A borrow
+of one (`&**pp`) carries what `pathSetThrough` gives where the inner reference
+may alias, since a copy of it points there as well; where it is `uni`, the
+borrow is a reborrow of it, which lasts no longer than the outer borrow (Rust's
+reborrow through `&'a mut &'b mut`, `'a`), and keeps every loan, both near and
+far.
 
 **Slots.** A struct declaring lifetimes keeps its loans by lifetime, each
 lifetime a *slot*: an entry of a loan set may carry a slot's tag (bits beside
@@ -818,9 +827,11 @@ conflicts) (`pwReceiver`). A message names the method: "'list' is borrowed (by
 "every argument" narrows by part (`pwArgCarries`, from `lifeCarry`): all of an
 argument whose parameter's own lifetime flows to one the result holds, by the
 signature's order; only what its reference points at holds, where only that
-flows -- not the argument's own loan, nor a parameter's own caller loan, both
-exactly where it points, and of a struct declaring lifetimes only the slots
-that flow, and what has no tag; or nothing. `pick(a &i64, b &'b i64) &i64`
+flows -- its far loans, not one only near, which is exactly where it points
+(the borrow it is written as, a parameter's own caller loan, the local a
+variable handed as the argument borrows), so each reference layer's lifetime
+governs what is read through it -- and of a struct declaring lifetimes only
+the slots that flow, and what has no tag; or nothing. `pick(a &i64, b &'b i64) &i64`
 keeps `a`'s source frozen while its result is used, and `b`'s free; `c.next()`
 for `next(self &mut) Option[&'a R]` in `Cursor['a]` keeps what `c` holds, not
 `c`. A store through a writable argument takes of the others what flows to
@@ -987,7 +998,7 @@ Near and far tell where a reference points from what that place holds:
 is a store into a local, a list node of its own type included; a reference
 that may point at the caller's struct on one path and a local's on another is
 not. Where the walk could not tell near from far (a reference a call returned,
-or one read through another), every loan is near, and the type is the
+or one read through another), a loan is both, and the type is the
 fallback: where the reference is read from a variable itself, `Place.referent`
 (and `pwStoreTarget`) give the type it points at, and `loanMayBePointee` sets
 aside a loan of a struct of another type, and the caller loan of a parameter
@@ -1258,7 +1269,7 @@ allocation. A variable with `VarDropFlag` needs each marked move of it
 | | `pathSetFacts`, `pathSetState`, `pathRollback`, `pathDelta`, `pathJoin` | the state per path: set a fact (loans, or a drop state), recording the old one; undo to a fork; what a path changed; join paths |
 | | `pwValue`, `pwPlace`, `pwThrough`, `pwBorrow`, `pwLend`, `pwOwnedLent`, `pwStore`, `pwSwap`, `pwVarDcl` | the walk's dispatch: what each node accesses, which holders it uses, what loans its value carries |
 | | `pwStoreInto`, `pwStoreLands`, `pwPlaceLevel`, `pwCallStores`, `pwStoreTarget`, `pwLendSite` | a store into a holder or through a reference, the holders where it lands, and what a call may store through a `&mut X` argument or any writable borrow it reaches |
-| | `pathSetLoansAs`, `pathSetThrough`, `LoanFar`, `loanOf`, `loanThrough` | near and far loans: a set's loans made all far or all near, or read through a reference; a loan's id from a set's entry; whether a loan borrows through its root |
+| | `pathSetLoansAs`, `pathSetUnsure`, `pathSetThrough`, `LoanFar`, `loanOf`, `loanThrough` | near and far loans: a set's loans made all far or all near, or both where it is not known which, or read through a reference; a loan's id from a set's entry; whether a loan borrows through its root |
 | | `pathSetRemake`, `pathSetSlots`, `pathSetUntagged`, `pwSlotStep`, `pwPlaceSlots`, `pwStoreTagged`, `pwCallMoves`, `pwUntagHolder`, `loanTag` | slots: a set's entries remade; the loans of some slots; tags dropped; a field of a struct declaring lifetimes as a place's first step; what a read or a borrow of it carries; a store's tag; a call that may move borrows between slots, after which a holder's tags are dropped |
 | | `pwPlaceOutlives`, `pwStoreEscapes` | whether a place stored into may outlive the function; the store refused when it may and the value carries a local loan, or when it is rooted at a global and the value carries a caller loan |
 | | `pwNamedSig`, `pwArgCarries`, `pwCallerLoans`, `pwStoreApart`, `pwStaticArgs` | named lifetimes: the callee's signature where it names them; what of each argument a result or a store through a writable one may carry; a parameter's caller loans, part by part; a caller loan stored apart from its lifetime; a `'static` parameter's argument |
@@ -1270,7 +1281,7 @@ allocation. A variable with `VarDropFlag` needs each marked move of it
 | `ir/flowloan.c` | `loanMake`, `loanCaller`, `loanHeldBy` | a borrow's loan, a parameter's caller loan, and who may hold it |
 | | `loanIsLocal`, `loanLocalIn`, `loanMayPointOut`, `loanMayBePointee`, `loanEscape` | a loan of the function's own storage; whether a reference may point beyond the function; an escape reported (`ErrorEscape`, `ErrorCallEscape`) |
 | | `loanCallerApart`, `loanStoredApart`, `loanNotGlobalIn`, `loanApart`, `loanNotGlobal` | named lifetimes: a caller loan whose part flows to no lifetime where it goes, or a loan that is not global, and their reports |
-| | `loanIsCallerOwn`, `loanWhole` | a parameter's own caller loan; a loan of the whole of its root, where a slot's tag stays the root's |
+| | `loanWhole` | a loan of the whole of its root, where a slot's tag stays the root's |
 | | `loanAccess`, `loanUse` | a conflicting access records a pending conflict on each holder of the loan; a use of the holder fires it (`ErrorFrozen`) |
 | `ir/stmt/module.c` | `modInitOf`, `modInitFlowBegin`, `modInitFlowEnd` | round a module's `init` only: its module's globals without a value start the pass uninitialized, as locals, so `init` assigns each once and reads none first; one never assigned is `ErrorGlobalUninit`. [module](../nodes/module.md), "Init and final" |
 | `ir/flow.c` | `flowLoadValue` | the walk's spine — tag dispatch for a value being read |

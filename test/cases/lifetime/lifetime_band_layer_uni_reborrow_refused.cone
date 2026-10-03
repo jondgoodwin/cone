@@ -1,0 +1,35 @@
+// A borrow taken through a reference read through another, where that inner
+// reference is 'uni', is a reborrow of it: it lasts no longer than the outer
+// borrow, since the inner reference is usable again once the outer borrow
+// ends. So 'steal(x &'a uni &'b uni R)' may not return '&uni **x' as ''b', nor
+// '&**x' as ''b': its caller would keep the inner reference's holder free, and
+// reach one value through two references each claiming it alone.
+//
+// Verdict: refuse, ErrorEscape at each returned borrow.
+// Basis: Rust: a reborrow through '&'a mut &'b mut R' has the lifetime ''a'
+// (the borrow checker's rule for dereferencing a unique reference; E0515 /
+// lifetime error at the return); by reading, not run. Cone's 'uni' is Rust's
+// '&mut'; through a 'mut' inner reference, which may alias, a copy of it
+// points there too, and the outer borrow is not needed.
+// Master 19cc839b: accepted, and 'both', run, writes 5 through 'qq' and then
+// 7 through the stolen 'uni' while both are live, printing "7": two 'uni'
+// references to one value.
+
+mod lifetime_band_layer_uni_reborrow_refused;
+
+struct R { pub n i64; }
+
+fn steal(x &'a uni &'b uni R) &'b uni R {
+  &uni **x;                  //~ ErrorEscape
+}
+
+fn peek(x &'a uni &'b uni R) &'b R {
+  &**x;                      //~ ErrorEscape
+}
+
+fn both(qq &uni &uni R) i64 {
+  imm r = steal(&uni *qq);
+  (**qq).n = 5;
+  r.n = 7;
+  (**qq).n;
+}
