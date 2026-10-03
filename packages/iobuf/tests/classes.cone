@@ -1,0 +1,62 @@
+// Size classes: a request is served from the smallest class that holds it --
+// 4, 16, 64 and 256 KiB and 1 MiB -- and a larger one is oversize, a block of
+// its own rounded up to whole 4 KiB pages. Every block is 4 KiB-aligned. A
+// class's block comes back idle, to be reused; an oversize block goes back to
+// the OS as it dies. Once the pool and its buffers are gone, nothing is held
+// from the OS.
+
+mod classes;
+
+import testing use *;
+import iobuf use *;
+
+fn aligned(b &IoBuf) Bool {
+  (b.base() as usize) % page == 0usize;
+}
+
+// The capacity a request of size bytes gets, and whether its block is aligned
+fn check(pool &Pool, size usize, want u64) {
+  imm b = pool.mustTake(size);
+  expectUInt(u64.from(b.capacity()), want, "capacity for a request");
+  expect(aligned(&b), "aligned to 4 KiB");
+  expect(b.capacity() % page == 0usize, "a whole number of pages");
+}
+
+fn main() i32 {
+  {
+    imm pool = Pool.make();
+    check(&pool, 0usize, 4096u64);
+    check(&pool, 1usize, 4096u64);
+    check(&pool, 4096usize, 4096u64);
+    check(&pool, 4097usize, 16384u64);
+    check(&pool, 16384usize, 16384u64);
+    check(&pool, 16385usize, 65536u64);
+    check(&pool, 65536usize, 65536u64);
+    check(&pool, 65537usize, 262144u64);
+    check(&pool, 262144usize, 262144u64);
+    check(&pool, 262145usize, 1048576u64);
+    check(&pool, 1048576usize, 1048576u64);
+    // Oversize: its own block, rounded up to pages
+    check(&pool, 1048577usize, 1052672u64);
+    check(&pool, 3000000usize, 3002368u64);
+
+    imm s = pool.stats();
+    expectUInt(s.takes, 13u64, "13 takes");
+    expectUInt(s.lent, 0u64, "every buffer back");
+    // Each class's block kept idle once, and reused within its class
+    expectUInt(s.osAllocs, 7u64, "five class blocks and two oversize ones from the OS");
+    expectUInt(s.reuses, 6u64, "the rest reused");
+    expectUInt(s.osFrees, 2u64, "the oversize blocks freed as they died");
+    expectUInt(u64.from(s.idleBytes), 4096u64 + 16384u64 + 65536u64 + 262144u64 + 1048576u64,
+      "one idle block per class");
+    expectUInt(u64.from(s.heldBytes), u64.from(s.idleBytes), "held is idle: nothing lent");
+    expectUInt(osBlocks(), 5u64, "five blocks held from the OS");
+
+    // classSize names the ladder
+    expectUInt(u64.from(classSize(0u32)), 4096u64, "class 0");
+    expectUInt(u64.from(classSize(4u32)), u64.from(largestClass), "class 4 is the largest");
+  }
+  expectUInt(osBlocks(), 0u64, "the pool's death frees its idle blocks");
+  expectUInt(osBytes(), 0u64, "no bytes held from the OS");
+  done();
+}

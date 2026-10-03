@@ -1,0 +1,66 @@
+// IoBuf's basics against the package compiled on its own: a buffer taken
+// from a pool is empty, 4 KiB-aligned and as large as its class; it is filled
+// through 'spare' and 'setLen' or 'append', read through 'view'; and its
+// block goes back to the pool when it dies, which the next take of its class
+// reuses.
+
+mod basics;
+
+import testing use *;
+import iobuf use *;
+
+fn aligned(b &IoBuf) Bool {
+  (b.base() as usize) % page == 0usize;
+}
+
+fn main() i32 {
+  imm pool = Pool.make();
+  {
+    mut b = pool.mustTake(100usize);
+    expectUInt(u64.from(b.len()), 0u64, "a new buffer is empty");
+    expectUInt(u64.from(b.capacity()), 4096u64, "100 bytes come from the 4 KiB class");
+    expect(aligned(&b), "4 KiB-aligned");
+    // Fill it as the OS would: write into the spare room, then say how much
+    imm room = b.spare();
+    room[0usize] = 'G';
+    room[1usize] = 'E';
+    room[2usize] = 'T';
+    b.setLen(3usize);
+    expectStr(b.view(), "GET", "filled through spare and setLen");
+    expectUInt(u64.from(b.append(" /index.html")), 12u64, "append copies what fits");
+    expectStr(b.view(), "GET /index.html", "appended");
+    expectUInt(u64.from(b.room()), 4081u64, "the room left");
+    b.clear();
+    expectUInt(u64.from(b.len()), 0u64, "cleared");
+    imm s = pool.stats();
+    expectUInt(s.lent, 1u64, "one buffer lent");
+    expectUInt(u64.from(s.heldBytes), 4096u64, "one block held from the OS");
+  }
+  imm s = pool.stats();
+  expectUInt(s.lent, 0u64, "its death gives it back");
+  expectUInt(u64.from(s.idleBytes), 4096u64, "kept idle for reuse");
+  {
+    imm b = pool.mustTake(4096usize);
+    expectUInt(u64.from(b.capacity()), 4096u64, "exactly 4 KiB is the 4 KiB class");
+    imm t = pool.stats();
+    expectUInt(t.reuses, 1u64, "the idle block is reused");
+    expectUInt(t.osAllocs, 1u64, "and no new block got from the OS");
+  }
+
+  // A buffer may outlive its pool's handle: the pool's state lives on until
+  // the last buffer it lent has died, and then frees every block
+  imm before = osBlocks();
+  mut kept = IoBuf.empty();
+  expectUInt(u64.from(kept.capacity()), 0u64, "an empty buffer has no block");
+  {
+    imm other = Pool.make();
+    mut b = other.mustTake(20000usize);
+    b.append("outlives");
+    kept <=> b;
+  }   // the handle dies here, and b, now the empty one
+  expectStr(kept.view(), "outlives", "the buffer is still good");
+  expectUInt(osBlocks(), before + 1u64, "its block still held");
+  kept = IoBuf.empty();   // the last buffer dies: the pool's state with it
+  expectUInt(osBlocks(), before, "and freed with the pool's state");
+  done();
+}

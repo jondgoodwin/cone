@@ -178,6 +178,18 @@ Visual Studio projects stay at the root.
   no OS's, its insides Windows only (`kernel32`'s `CreateProcessW`,
   overlapped pipes and a job object, `shell32`'s `CommandLineToArgvW`), a
   POSIX one to come with Linux;
+  `iobuf` is owned buffers for I/O, the async I/O runtime's first package:
+  `IoBuf`, a 4 KiB-aligned block of whole pages and its length, a move type
+  lent to an operation by moving it (never a borrow) and Sendable, whose
+  death gives its block back to its pool from any thread; `Pool`, size
+  classes of 4 KiB to 1 MiB (larger is a block of its own) under a lock, two
+  bounds (what it holds from the OS, a take past it refused and counted; what
+  it keeps idle) and exact counters; `Bytes`, a buffer frozen into shared,
+  read-only bytes (`Arc[imm, IoBuf]` and a range) for a send fanned out; and
+  `Chain`, a stream's bytes in the buffers they arrived in, parsed across
+  segment boundaries on System.IO.Pipelines' model and consumed with
+  `advance`, bounded; its blocks come from `VirtualAlloc`, Windows only, and
+  its example `churn.cone` times a million takes and drops;
   `collections` is a growable `List[T]`, an owned `String` and a string-keyed
   `Dict[K, V]`, each holding its elements in one block from `libc`'s
   allocator and moving them with core's `mem` intrinsics; `arena` is an

@@ -1,0 +1,186 @@
+// Churn: a million buffers taken and dropped, and what each costs. It prints
+//
+// - a warm take and drop on one thread: the block comes from the pool's idle
+//   list and goes back to it, no call to the OS;
+// - a cold one: a block got from the OS and given back (VirtualAlloc and
+//   VirtualFree), beside the C runtime's _aligned_malloc and _aligned_free
+//   for the same 4 KiB and 64 KiB, which is the other way the pool could get
+//   its blocks;
+// - buffers taken on one thread and dropped on another, as completions will
+//   come home from an I/O thread: two producers send them over a channel to
+//   a consumer that drops them;
+// - and the pool's counters afterwards, which must come out exact: every
+//   buffer lent came back, and once the pool is gone nothing is held from the
+//   OS (no leak).
+//
+// Build it optimised to measure:
+//
+//   congo run --release packages/iobuf/examples/churn.cone
+
+mod churn;
+
+import stdio use *;
+import thread;
+import sync use *;
+import iobuf use *;
+
+extern {
+  fn @c(system) QueryPerformanceCounter(count *i64) i32;
+  fn @c(system) QueryPerformanceFrequency(freq *i64) i32;
+  fn @c(system) VirtualAlloc(addr *u8, size usize, kind u32, protect u32) *u8;
+  fn @c(system) VirtualFree(addr *u8, size usize, kind u32) i32;
+  fn _aligned_malloc(size usize, align usize) *u8;
+  fn _aligned_free(p *u8);
+}
+
+const cycles = 1000000u64;
+const coldCycles = 20000u64;
+const perProducer = 250000u64;
+
+fn nowNs() u64 {
+  mut count = 0i64;
+  mut freq = 0i64;
+  QueryPerformanceCounter(&mut count as *i64);
+  QueryPerformanceFrequency(&mut freq as *i64);
+  imm c = u64.from(count);
+  imm f = u64.from(freq);
+  (c / f) * 1000000000u64 + (c % f) * 1000000000u64 / f;
+}
+
+fn report(what &[]u8, ns u64, n u64) {
+  printStr(what);
+  printFloat(f64.from(ns) / f64.from(n));
+  printStr(" ns each\n");
+}
+
+// The OS's block, and the C runtime's, for size bytes n times, each touched
+// once so that its page is really there
+fn coldOs(size usize) u64 {
+  imm t0 = nowNs();
+  mut i = 0u64;
+  while i < coldCycles {
+    imm b = VirtualAlloc(null, size, 0x3000u32, 0x04u32);
+    *b = 1u8;
+    VirtualFree(b, 0usize, 0x8000u32);
+    i = i + 1u64;
+  }
+  nowNs() - t0;
+}
+
+fn coldCrt(size usize) u64 {
+  imm t0 = nowNs();
+  mut i = 0u64;
+  while i < coldCycles {
+    imm b = _aligned_malloc(size, 4096usize);
+    *b = 1u8;
+    _aligned_free(b);
+    i = i + 1u64;
+  }
+  nowNs() - t0;
+}
+
+struct Work {
+  pub pool Pool;
+  pub tx Sender[IoBuf];
+}
+
+fn produce(w Work) u64 {
+  mut k = 0u64;
+  while k < perProducer {
+    mut b = w.pool.mustTake(4096usize);
+    b.append("x");
+    w.tx.send(b);
+    k = k + 1u64;
+  }
+  k;
+}
+
+fn consume(rx Receiver[IoBuf]) u64 {
+  mut r = rx;
+  mut n = 0u64;
+  while r.recv() is Some[IoBuf] {   // each buffer dies here, on this thread
+    n = n + 1u64;
+  }
+  n;
+}
+
+fn printStats(s Stats) {
+  printStr("  takes ");
+  printInt(i64.from(s.takes));
+  printStr(", reuses ");
+  printInt(i64.from(s.reuses));
+  printStr(", lent now ");
+  printInt(i64.from(s.lent));
+  printStr(", from the OS ");
+  printInt(i64.from(s.osAllocs));
+  printStr(", back to it ");
+  printInt(i64.from(s.osFrees));
+  printStr(", refused ");
+  printInt(i64.from(s.refused));
+  printStr(", held ");
+  printInt(i64.from(s.heldBytes));
+  printStr(" bytes\n");
+}
+
+fn main() i32 {
+  initAll();
+  mut ok = true;
+  {
+    imm pool = Pool.make();
+
+    // Warm: one thread, a million take-and-drops of each size
+    mut t0 = nowNs();
+    mut i = 0u64;
+    while i < cycles {
+      mut b = pool.mustTake(4096usize);
+      b.append("x");
+      i = i + 1u64;
+    }
+    report("warm take and drop, 4 KiB:   ", nowNs() - t0, cycles);
+    t0 = nowNs();
+    i = 0u64;
+    while i < cycles {
+      mut b = pool.mustTake(65536usize);
+      b.append("x");
+      i = i + 1u64;
+    }
+    report("warm take and drop, 64 KiB:  ", nowNs() - t0, cycles);
+
+    // Cold: where a block comes from when the pool has none idle
+    report("cold, VirtualAlloc 4 KiB:    ", coldOs(4096usize), coldCycles);
+    report("cold, _aligned_malloc 4 KiB: ", coldCrt(4096usize), coldCycles);
+    report("cold, VirtualAlloc 64 KiB:   ", coldOs(65536usize), coldCycles);
+    report("cold, _aligned_malloc 64 KiB:", coldCrt(65536usize), coldCycles);
+
+    // Across threads: two producers take, one consumer drops. The channel is
+    // bounded, so the producers wait for the consumer: unbounded, they run
+    // ahead of it until the pool's bound refuses them, which is the bound
+    // doing its job (a full bound is seen, never silent growth)
+    mut tx Sender[IoBuf];
+    mut rx Receiver[IoBuf];
+    tx, rx = Channel[IoBuf].bounded(1024usize);
+    t0 = nowNs();
+    imm c = thread.start(rx, &consume);
+    mut p0 thread.Thread[u64];
+    mut p1 thread.Thread[u64];
+    {
+      p0 = thread.start(new Work(pool, tx.clone()), &produce);
+      p1 = thread.start(new Work(pool, tx), &produce);
+    }
+    imm sent = p0.join() + p1.join();
+    imm got = c.join();
+    report("taken on two threads, dropped on a third:", nowNs() - t0, got);
+
+    imm s = pool.stats();
+    printStats(s);
+    imm expected = 2u64 * cycles + sent;
+    ok = got == sent and s.takes == expected and s.lent == 0u64 and s.refused == 0u64
+      and s.heldBytes == s.idleBytes;
+  }
+  printStr("held from the OS once the pool is gone: ");
+  printInt(i64.from(osBlocks()));
+  printStr(" blocks\n");
+  ok = ok and osBlocks() == 0u64;
+  printStr(if ok {"counters exact, no leak\n";} else {"COUNTERS WRONG\n";});
+  if ok {0i32;} else {1i32;};
+}
