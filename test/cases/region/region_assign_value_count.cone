@@ -1,0 +1,62 @@
+// An assignment's value is what it stored, and its target keeps it. A copy of
+// that value -- into a second target ('a = b = make()'), a variable's
+// initializer, or an argument -- is one more holder of a counted reference, as
+// a copy read out of a variable is.
+//
+// Before, such a copy was not counted: 'a = b = new ...' left one count for
+// two holders, so the second release freed what the first had already freed.
+// region_success's chained assignment ended in heap corruption under the
+// checking debug heap for exactly this.
+//
+// 'Tally' prints every count change: '+n' after an 'aliasRef', '-n' after a
+// 'dealiasRef', 'tfree' when the count reaches zero, and 'F<n>' is the counted
+// value's 'final'. Every line is worked out by hand.
+
+mod region_assign_value_count;
+
+import stdio use *;
+import libc;
+
+struct Tally is RegionRef {
+  owners usize;
+  fn alloc(size usize) *u8 inline { malloc(size); }
+  fn init(self &new) inline { *self = new Tally(1usize); }
+  fn aliasRef(self &uni Tally) inline { owners = owners + 1usize; printStr("+"); printInt(i64.from(owners)); printStr(" "); }
+  fn dealiasRef(self &uni Tally) Bool inline { owners = owners - 1usize; printStr("-"); printInt(i64.from(owners)); printStr(" "); owners == 0usize; }
+  fn free(self &uni Tally) inline { printStr("tfree "); libc.free(self as *u8); }
+}
+
+struct Fin {
+  pub n i64;
+  fn final(self &uni) { printStr("F"); printInt(n); printStr(" "); }
+}
+
+fn show(label &[]u8) { printStr(label); printStr(": "); }
+fn end() { printStr("|\n"); }
+fn got() { printStr("got "); }
+
+fn take(r Tally[mut, Fin]) { printStr("took "); }
+
+fn main() i32 {
+  // 'b' releases 2 and takes 3; the copy into 'a' counts 3 again before 'a'
+  // releases 1. At the end 'b' and 'a' each let one go.
+  show("chained"); {
+    mut a = new Tally[mut, Fin](1);
+    mut b = new Tally[mut, Fin](2);
+    a = b = new Tally[mut, Fin](3);
+    got();
+  } end();
+  // An assignment as a variable's initializer
+  show("initializer"); {
+    mut b = new Tally[mut, Fin](4);
+    imm a = b = new Tally[mut, Fin](5);
+    got();
+  } end();
+  // An assignment as an argument: the callee's parameter is the new holder
+  show("argument"); {
+    mut b = new Tally[mut, Fin](6);
+    take((b = new Tally[mut, Fin](7)));
+    got();
+  } end();
+  0i32;
+}

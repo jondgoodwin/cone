@@ -1027,6 +1027,70 @@ MacroDclNode *parseMacro(ParseState *parse) {
     return macro;
 }
 
+// '@compute(x[, y[, z]])' after 'fn': a compute entry point, and the size of
+// its workgroup, each a constant integer, those not written 1. WebGPU
+// guarantees a workgroup of 256 invocations, and 64 along z, and no more, so
+// a larger one is refused here, where the size is written. Returns whether
+// the attribute was there; a size refused leaves the function an entry point
+// of one invocation, so that its signature is still checked.
+static int parseComputeAttr(FnDclNode *fnnode) {
+    if (!lexIsToken(ComputeAttrToken))
+        return 0;
+    lexNextToken();
+    uint64_t size[3] = {1, 1, 1};
+    int bad = 0;
+    if (!lexIsToken(LParenToken)) {
+        errorMsgLex(ErrorComputeSize, "'@compute' takes its workgroup's size: '@compute(64)', '@compute(8, 8)' or '@compute(4, 4, 4)'.");
+        bad = 1;
+    }
+    else {
+        lexNextToken();
+        int n = 0;
+        while (1) {
+            if (n == 3) {
+                errorMsgLex(ErrorComputeSize, "A workgroup has at most three dimensions: '@compute(x, y, z)'.");
+                bad = 1;
+            }
+            else if (!lexIsToken(IntLitToken)) {
+                errorMsgLex(ErrorComputeSize, "A workgroup's size is a constant integer, each of up to three written in '@compute(x, y, z)'.");
+                bad = 1;
+            }
+            if (bad) {
+                while (!lexIsToken(RParenToken) && !lexIsToken(SemiToken) && !lexIsToken(LCurlyToken) && !lexIsToken(EofToken))
+                    lexNextToken();
+                break;
+            }
+            size[n++] = lex->val.uintlit;
+            lexNextToken();
+            if (!lexIsToken(CommaToken))
+                break;
+            lexNextToken();
+        }
+        parseCloseTok(RParenToken);
+    }
+    if (!bad) {
+        if (size[0] == 0 || size[1] == 0 || size[2] == 0) {
+            errorMsgNode((INode*)fnnode, ErrorComputeSize, "A workgroup's size is at least 1 each way.");
+            bad = 1;
+        }
+        else if (size[2] > 64) {
+            errorMsgNode((INode*)fnnode, ErrorComputeSize,
+                "A workgroup may be at most 64 invocations along z, WebGPU's guaranteed limit; this one is %u.", (unsigned)size[2]);
+            bad = 1;
+        }
+        else if (size[0] > 256 || size[1] > 256 || size[0] * size[1] * size[2] > 256) {
+            errorMsgNode((INode*)fnnode, ErrorComputeSize,
+                "A workgroup may hold at most 256 invocations, WebGPU's guaranteed limit; %llu by %llu by %llu is %llu.",
+                (unsigned long long)size[0], (unsigned long long)size[1], (unsigned long long)size[2],
+                (unsigned long long)(size[0] * size[1] * size[2]));
+            bad = 1;
+        }
+    }
+    for (int i = 0; i < 3; ++i)
+        fnnode->compute[i] = bad ? 1 : (uint16_t)size[i];
+    return 1;
+}
+
 // Parse a function block
 INode *parseFn(ParseState *parse, uint16_t mayflags) {
     FnDclNode *fnnode = newFnDclNode(NULL, 0, NULL, NULL);
@@ -1043,6 +1107,9 @@ INode *parseFn(ParseState *parse, uint16_t mayflags) {
     // '@intrinsic' there too, first or after the others: a function whose meaning
     // the compiler supplies, declared in core (refintrinsic.html). Where it may
     // be and what it must say is checked by intrinsicDclNameRes
+    // '@compute(x, y, z)' there too, first or after the others: a compute
+    // entry point (fnDclComputeCheck checks its signature)
+    int compute = parseComputeAttr(fnnode);
     int intrinsic = 0;
     if (lexIsToken(IntrinsicAttrToken)) {
         intrinsic = 1;
@@ -1064,6 +1131,8 @@ INode *parseFn(ParseState *parse, uint16_t mayflags) {
     }
     // A function has no storage to give each thread a copy of
     parseThreadLocalAttr(0);
+    if (!compute)
+        compute = parseComputeAttr(fnnode);
     if (initpure)
         fnnode->dclinfo.facts |= DclInitPure;
     // An intrinsic's meaning is the compiler's, so its body is optional: the
@@ -1191,6 +1260,34 @@ INode *parseFn(ParseState *parse, uint16_t mayflags) {
             errorMsgNode((INode*)fnnode, ErrorNoImpl, "Function/method must be implemented.");
         if (!(mayflags&ParseEmbedded))
             parseEndOfStatement();
+    }
+
+    // An entry point is a function of a module's own, called by nothing but a
+    // dispatch: the GPU runs its body, and the CPU calls it by its name
+    if (compute) {
+        INsTypeNode *type = parse->typenode;
+        const char *why = NULL;
+        if (fnnode->namesym == NULL)
+            why = "An anonymous function has no name for a dispatch to run it by, so it cannot be '@compute'.";
+        else if (type)
+            why = "A method or a type's function cannot be '@compute': an entry point is a function of its module, run by its name.";
+        else if (intrinsic)
+            why = "An intrinsic's meaning is the compiler's, so it cannot be '@compute'.";
+        else if (fnnode->genericinfo)
+            why = "A generic function is no one function until instanced, so it cannot be '@compute': an entry point's types are fixed.";
+        else if (fnnode->flags & FlagInline)
+            why = "An inline function is expanded where it is called and leaves nothing for a dispatch to run, so it cannot be '@compute'.";
+        else if (hasc)
+            why = "'@c' names a function for C to call, and a compute entry point is run by a dispatch, so the two do not go together.";
+        // An 'extern' one, as a package's include file declares it, is
+        // defined in the package, and called on the CPU as any function is;
+        // one with no body where one must be written is refused as such
+        else if (fnnode->value == NULL && (mayflags & ParseMayImpl) && (mayflags & ParseMaySig))
+            why = "An entry point is defined where it is declared: '@compute' needs the function's body.";
+        if (why) {
+            errorMsgNode((INode*)fnnode, ErrorComputeAttr, "%s", why);
+            fnnode->compute[0] = fnnode->compute[1] = fnnode->compute[2] = 0;
+        }
     }
 
     // Where the body is, for the span the caller records

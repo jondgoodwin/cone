@@ -18,7 +18,13 @@ typedef struct FnDclNode {
     GenericInfo *genericinfo;     // Link to generic parms, etc (or NULL if not generic)
     Nodes *where;                 // Its constraints, conditions all required (generic.h), or NULL
     uint16_t vtblidx;             // Method ptr's index in the type's vtable
+    // A compute entry point's workgroup size, '@compute(x, y, z)', each 1 when
+    // not written; all 0 for any other function (fnDclIsCompute)
+    uint16_t compute[3];
 } FnDclNode;
+
+// Whether a function is a compute entry point, '@compute(...)'
+#define fnDclIsCompute(fn) ((fn)->compute[0] != 0)
 
 // Overloaded function/method declaration node.
 // It is the namespace binding for an explicitly declared overload name.

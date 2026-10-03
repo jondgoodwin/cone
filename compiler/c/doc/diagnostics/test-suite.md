@@ -454,7 +454,11 @@ Some facts belong to the file rather than a line:
   it, 0xC0000409 for a panic, and WER never sees it. A job object's
   `DIE_ON_UNHANDLED_EXCEPTION` and an inherited `SetErrorMode` were each
   measured and keep nothing from WER. A program that runs out of time shows
-  what it wrote to stderr, a panic's line among it.
+  what it wrote to stderr, a panic's line among it. Run as a debuggee, a
+  program gets Windows' checking debug heap, and the runner keeps it: a
+  block freed twice, used once freed or written past its end ends the
+  program with 0xC0000374 (STATUS_HEAP_CORRUPTION) where the normal heap
+  would carry on, so a miscompiled count or release fails its scenario.
 - **What differs from run to run on stderr**, `stderr_mask`, a list of
   regular expressions for a `run` scenario: each match in the program's stderr
   is written `<masked>` before it is compared with the `.err` file, which

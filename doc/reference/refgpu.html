@@ -1,0 +1,140 @@
+<html>
+  <head>
+	  <title>GPU Compute - Cone Reference</title>
+		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+	  <link rel="stylesheet" type="text/css" href="standard.css" />
+	</head>
+  <body>
+		<div id="header">
+			<a href="/"><div id="title">Cone</div></a>
+			<div id="sub">GPU Compute</div>
+		</div>
+
+    <div class="text">
+
+	<p style="margin-left: 40px;"><i>Note: Compute entry points are implemented for SPIR-V's
+		Vulkan form (<span class="pre">conec --triple=spirv1.6-unknown-vulkan1.3</span>), with
+		their buffers, their Invocation and their error buffer as described below. Not yet:
+		Congo building a package's kernels (each module is compiled with
+		<span class="pre">conec</span> directly), <span class="pre">gpuwork</span> binding the
+		error buffer itself, deciding which packages may run on a GPU,
+		refusing the features a GPU lacks where they are written, textures, atomics in buffers,
+		workgroup memory and <span class="pre">f16</span>. The math functions Cone takes from
+		the C library (<span class="pre">floorf</span> and its kind) are not yet a GPU's built-ins,
+		so a kernel calling one is not yet a module Vulkan accepts.</i></p>
+
+	<p>A GPU runs one function, a kernel, thousands of times at once, each run an
+		<i>invocation</i> working on its own part of the data. Cone writes a kernel as an
+		ordinary function marked as a compute entry point. Compiled for a GPU, it is a compute
+		shader whose parameters are what the program's dispatch binds; compiled for the CPU,
+		it is an ordinary function, which a loop over the invocations runs, so one source is
+		both the GPU's work and its twin on the CPU.</p>
+
+	<h2 id="compute">Compute entry points</h2>
+
+<pre><code>struct Part {
+  pub w Array[f32, 4];
+  pub k u32;
+}
+
+fn @compute(64) bake(inv Invocation, parts &amp;[]Part, out &amp;[]mut f32) {
+  imm i = usize.from(inv.globalId[0]);
+  if i &lt; out.len {
+    out[i] = parts[i].w[0] * f32.from(parts[i].k);
+  }
+}</code></pre>
+
+	<p><span class="pre">@compute</span>, written after <span class="pre">fn</span>, makes
+		the function a compute entry point and gives its workgroup's size: how many invocations
+		run together, along x, y and z, those not written being 1:
+		<span class="pre">@compute(64)</span>, <span class="pre">@compute(8, 8)</span>,
+		<span class="pre">@compute(4, 4, 4)</span>. Each is a constant integer of at least 1, and
+		a workgroup holds at most 256 invocations and 64 along z, the limits every WebGPU device
+		guarantees. An entry point is a function of its module: not a method, not generic, not
+		<span class="pre">inline</span>, not <span class="pre">@c</span>. An
+		<span class="pre">extern</span> one, as a package's include file declares it, is called
+		on the CPU as any function is.</p>
+
+	<p>An entry point returns nothing: what a kernel makes, it writes into a slice it was
+		given. Its parameters are what a dispatch binds, each of one of three kinds, in any
+		order:</p>
+	<ul>
+	<li><b>Invocation</b>, at most once: which invocation is running. It is core's
+		<span class="pre">Invocation</span>, a plain struct: <span class="pre">globalId</span>,
+		the invocation's id in the whole dispatch, <span class="pre">localId</span>, its id in
+		its workgroup, and <span class="pre">groupId</span>, its workgroup's, each an
+		<span class="pre">Array[u32, 3]</span>; <span class="pre">localIndex</span>, its place
+		in its workgroup counted x fastest; and <span class="pre">groupCount</span>, how many
+		workgroups the dispatch has each way. On the GPU it is filled from the invocation's
+		built-in values; on the CPU, the loop that calls the function fills it.</li>
+	<li><b>A slice</b>, one storage buffer: <span class="pre">&amp;[]T</span> the kernel only
+		reads, and <span class="pre">&amp;[]mut T</span> it writes as well. Its length is the
+		buffer's. Every invocation may write any element of a <span class="pre">&amp;[]mut</span>
+		buffer; that two do not write one element is the program's to arrange, a trusted
+		exception to Cone's rule against threads sharing what they change, until a checked form
+		is designed.</li>
+	<li><b>A struct taken by value</b>, one small read-only storage buffer holding one value:
+		the kernel's settings. (WebGPU has no push constants, and a uniform buffer lays an
+		array out in 16-byte steps, which is not Cone's layout.)</li>
+	</ul>
+	<p>A kernel binds at most seven buffers: WebGPU's eight storage buffers a stage, less the
+		error buffer (below).</p>
+
+	<p>What a buffer holds is shared byte for byte between the CPU and the GPU, so it may
+		hold only what the two lay out alike: 32-bit numbers (<span class="pre">i32</span>,
+		<span class="pre">u32</span>, <span class="pre">f32</span>), and structs and fixed arrays
+		of them, nested as deep as wanted. A <span class="pre">Bool</span>, a number of 8, 16 or
+		64 bits, <span class="pre">usize</span> or <span class="pre">isize</span> (as wide as each
+		target's addresses), a reference, slice or pointer, an enum or an
+		<span class="pre">Option</span> is refused, with the field that holds it. A struct of
+		three <span class="pre">f32</span>s is twelve bytes on both sides: Cone never makes one
+		of a GPU's vector types, which a buffer aligns to sixteen.</p>
+
+	<h3>The kernel's interface</h3>
+	<p>The buffers are bound in descriptor set 0, numbered by their place among the buffer
+		parameters, from 0: in <span class="pre">bake</span> above, <span class="pre">parts</span>
+		is binding 0 and <span class="pre">out</span> binding 1. The kernel's entry point in the
+		SPIR-V module is named as the function is.</p>
+
+	<h3 id="errors">Failures: the error buffer</h3>
+	<p>A GPU has no program to end. On one, a failed index or range check, a
+		<span class="pre">panic</span>, an <span class="pre">assert</span>, an
+		<span class="pre">unreachable</span> or a <span class="pre">todo</span> records what
+		failed in the kernel's <i>error buffer</i> and stops that invocation, the others going
+		on. The checks are kept in every build. The error buffer is a read-write storage buffer
+		bound after the last of the kernel's buffers (binding 2 in <span class="pre">bake</span>),
+		of eight 32-bit words, zero before the dispatch:</p>
+	<table>
+	<tr><th>Word</th><th>Holds</th></tr>
+	<tr><td>0</td><td>How many invocations failed; 0 when none did</td></tr>
+	<tr><td>1</td><td>What failed: 1 an index past the end, 2 a range not within its
+		array or slice, 3 a panic (an <span class="pre">assert</span> among them), 4 an
+		allocation</td></tr>
+	<tr><td>2</td><td>The source file's id: the name its module lists for it, in the debug
+		string <span class="pre">"cone.file &lt;id&gt; &lt;name&gt;"</span> (an
+		OpSourceExtension); 0 when not known</td></tr>
+	<tr><td>3</td><td>The line</td></tr>
+	<tr><td>4, 5, 6</td><td>The failed invocation's <span class="pre">globalId</span></td></tr>
+	<tr><td>7</td><td>The index that was out of bounds, or the end of the range; else 0</td></tr>
+	</table>
+	<p>The first invocation to fail writes words 1 to 7, so they describe one failure whole;
+		any that fail after it only count. The program reads the buffer after the dispatch.
+		<i>(To come: the <span class="pre">gpuwork</span> package binding and reading it
+		itself, and reporting a failure there as a panic on the CPU.)</i></p>
+
+	<h3>Slices on the GPU</h3>
+	<p>A GPU has no pointer arithmetic: it reaches an element from the variable that holds
+		it. So in a kernel a slice is indexed in what it came from: a buffer parameter, or a
+		fixed array, all of it or part, a local, a constant or a field of a buffer's struct,
+		however many functions it was handed through and however it was cut. A slice that came
+		from anything else, a pointer to a single value say, is refused where it is
+		indexed.</p>
+
+	<p style="text-align: right; margin-top: 2em;">
+		<a href="refmodule.html"><img alt="_" src="next.png" /></a>
+	</p>
+
+	</div>
+	</body>
+</html>

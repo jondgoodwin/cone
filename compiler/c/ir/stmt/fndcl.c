@@ -8,6 +8,7 @@
 #include "../ir.h"
 #include "../../shared/timer.h"
 
+#include <stdio.h>
 #include <string.h>
 #include <assert.h>
 
@@ -24,6 +25,7 @@ FnDclNode *newFnDclNode(Name *namesym, uint16_t flags, INode *type, INode *val) 
     dclInfoInit(&node->dclinfo);
     node->genericinfo = NULL;
     node->where = NULL;
+    node->compute[0] = node->compute[1] = node->compute[2] = 0;
     return node;
 }
 
@@ -330,6 +332,140 @@ void fnImplicitReturn(INode *rettype, BlockNode *blk) {
     }
 }
 
+// ---- Compute entry points ---------------------------------------------------
+//
+// A compute entry point, 'fn @compute(64) bake(inv Invocation, parts &[]Part,
+// out &[]mut f32)', is a kernel's interface. Its parameters are what a
+// dispatch binds: core's Invocation, at most once, which the GPU fills from
+// the invocation's built-ins; each slice one storage buffer, read-only for
+// '&[]T' and read-write for '&[]mut T'; and each struct taken by value one
+// small read-only storage buffer (WebGPU has no push constants, and a
+// uniform buffer's 16-byte array stride is not Cone's layout). It returns
+// nothing. What a buffer holds is shared with the CPU byte for byte, so it is
+// what Cone and WebGPU lay out alike: 32-bit numbers, and structs and fixed
+// arrays of them. The same rules hold on every target, so that the CPU, which
+// calls the function in a loop, and the GPU agree on one source. Generation
+// makes the kernel (genllvm/genlgpu.c).
+
+// The buffers a kernel binds: WebGPU's eight storage buffers a stage, less
+// the one the kernel's failed checks are recorded in (genlgpu.c)
+#define ComputeMaxBuffers 7
+
+// Whether a struct type is an enum, a trait, or one of an enum's variants
+static int fnDclComputeTagged(INode *dcl) {
+    StructNode *strnode = (StructNode *)dcl;
+    return (strnode->flags & (EnumType | HasTagField | TraitType))
+        || (strnode->basetrait && (itypeGetTypeDcl(strnode->basetrait)->flags & (EnumType | HasTagField)));
+}
+
+// Why 'type', reached through 'path' from the parameter, may not be in a
+// buffer, or NULL when it may: 'path' names the field or element at fault
+static const char *fnDclComputeData(INode *type, char *path, size_t size) {
+    INode *dcl = itypeGetTypeDcl(type);
+    switch (dcl->tag) {
+    case IntNbrTag:
+    case UintNbrTag:
+    case FloatNbrTag: {
+        unsigned bits = ((NbrNode *)dcl)->bits;
+        // Its width is each target's own, so the two sides would disagree
+        if (dcl == (INode *)usizeType || dcl == (INode *)isizeType)
+            return "a pointer-sized number, as wide as each target's addresses, so not the same on both sides";
+        if (bits == 32)
+            return NULL;
+        if (bits == 1)
+            return "a Bool, which WebGPU cannot share";
+        static char why[128];
+        snprintf(why, sizeof(why), "%s, a number of %u bits, which WebGPU cannot share", itypeName(dcl), bits);
+        return why;
+    }
+    case ArrayTag: {
+        size_t used = strlen(path);
+        if (used + 3 < size)
+            strcat(path, "[]");
+        return fnDclComputeData(arrayElemType(dcl), path, size);
+    }
+    case StructTag: {
+        StructNode *strnode = (StructNode *)dcl;
+        if (fnDclComputeTagged(dcl))
+            return "an enum, an Option or a trait, whose tag and layout are Cone's own";
+        if (strnode->flags & DeclaredOpaque)
+            return "an opaque type, whose layout is unknown";
+        size_t used = strlen(path);
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodelistFor(&strnode->fields, cnt, nodesp)) {
+            FieldDclNode *field = (FieldDclNode *)*nodesp;
+            if (field->tag != FieldDclTag || field->namesym == NULL)
+                continue;
+            path[used] = '\0';
+            if (used + strlen(&field->namesym->namestr) + 2 < size) {
+                strcat(path, ".");
+                strcat(path, &field->namesym->namestr);
+            }
+            const char *why = fnDclComputeData(field->vtype, path, size);
+            if (why)
+                return why;
+        }
+        path[used] = '\0';
+        return NULL;
+    }
+    case RefTag:
+    case ArrayRefTag:
+    case VirtRefTag:
+    case PtrTag:
+        return "a reference, slice or pointer: an address means nothing on the other side";
+    default:
+        return "not a 32-bit number, nor a struct or fixed array of them";
+    }
+}
+
+// Hold a compute entry point to the rules above. Its size, and where
+// '@compute' may be written, the parser checked.
+static void fnDclComputeCheck(FnDclNode *fnnode) {
+    FnSigNode *sig = (FnSigNode *)fnnode->vtype;
+    if (itypeGetTypeDcl(sig->rettype)->tag != VoidTag)
+        errorMsgNode(sig->rettype, ErrorComputeSig,
+            "An entry point returns nothing: what a kernel makes, it writes into a slice it was given, '&[]mut T'.");
+    int invocations = 0, buffers = 0;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(sig->parms, cnt, nodesp)) {
+        VarDclNode *parm = (VarDclNode *)*nodesp;
+        INode *dcl = itypeGetTypeDcl(parm->vtype);
+        char path[256];
+        snprintf(path, sizeof(path), "%s", &parm->namesym->namestr);
+        INode *data;
+        if (invocationIsCore(parm->vtype)) {
+            if (++invocations > 1)
+                errorMsgNode((INode *)parm, ErrorComputeSig,
+                    "An entry point takes Invocation at most once: one invocation is running.");
+            continue;
+        }
+        else if (dcl->tag == ArrayRefTag) {
+            strcat(path, "[]");
+            data = ((RefNode *)dcl)->vtexp;
+        }
+        else if (dcl->tag == StructTag && !fnDclComputeTagged(dcl)) {
+            data = parm->vtype;
+        }
+        else {
+            errorMsgNode((INode *)parm, ErrorComputeSig,
+                "An entry point's parameter '%s' is %s; it may be core's Invocation, a slice, '&[]T' read or '&[]mut T' written, or a struct taken by value, each slice and struct a buffer the dispatch binds.",
+                &parm->namesym->namestr, itypeName(parm->vtype));
+            continue;
+        }
+        if (++buffers == ComputeMaxBuffers + 1)
+            errorMsgNode((INode *)parm, ErrorComputeSig,
+                "An entry point binds at most %d buffers, its slices and structs: WebGPU's 8 storage buffers a stage, one of them recording the kernel's failed checks.",
+                ComputeMaxBuffers);
+        const char *why = fnDclComputeData(data, path, sizeof(path));
+        if (why)
+            errorMsgNode((INode *)parm, ErrorComputeData,
+                "'%s' is %s. A buffer holds what the CPU and the GPU lay out alike: 32-bit numbers (i32, u32, f32), and structs and fixed arrays of them.",
+                path, why);
+    }
+}
+
 // Type checking a function's logic does more than you might think:
 // - Turn implicit returns into explicit returns
 // - Perform type checking for all statements
@@ -374,6 +510,8 @@ void fnDclTypeCheck(TypeCheckState *pstate, FnDclNode *fnnode) {
     // declarations, so the count starts again after it.
     if (sigfailed)
         return;
+    if (fnDclIsCompute(fnnode))
+        fnDclComputeCheck(fnnode);
     errorsOnEntry = errors;
 
     if (!fnDclInitCheck(pstate, fnnode))

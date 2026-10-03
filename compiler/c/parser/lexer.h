@@ -162,6 +162,7 @@ enum TokenTypes {
     InitPureToken, // '@initpure': after 'fn', a function a module's 'init' may call, 'init' among them
     IntrinsicAttrToken, // '@intrinsic': after 'fn' in core, a function whose meaning the compiler supplies
     ThreadLocalToken, // '@threadlocal': after a global's permission, storage each thread has its own copy of
+    ComputeAttrToken, // '@compute(x, y, z)': after 'fn', a compute entry point and its workgroup's size
     ExtendsToken,  // 'extends'
     MixinToken,    // 'mixin', retired: kept a keyword so the parser can point it at 'is'
     UseToken,      // 'use'

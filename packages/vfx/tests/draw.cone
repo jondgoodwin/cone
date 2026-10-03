@@ -1,0 +1,175 @@
+// The particle renderer on a real GPU with no window: render's Renderer
+// draws a scene into Post's HDR frame keeping its depth, the
+// ParticleRenderer adds particles into it, and Post tone-maps it into a
+// 64 x 64 rgba8unorm texture, read back. Only a failure prints.
+//
+// The scene: mesh's cube reaching 0.5 each way, dark grey, at the origin,
+// on black; the camera at (0, 0, 4) looking at it. Three emitters:
+// - glow: a still cloud (no speed) of white sprites at (1.4, 0, 0), beside
+//   the cube, over the black;
+// - hidden: the same at (0, 0, -1.5), behind the cube, within its outline;
+// - trails: ribbon trails rising at 1 m/s from (-1.4, -0.5, 0).
+//
+// 1. The frame without particles: black where the glow and the trails will
+//    be, the cube grey.
+// 2. With them: the glow's pixel bright, the trails' path lit halfway up,
+//    and the cube's middle exactly as before (the hidden cloud is behind
+//    it, and fails the depth test the renderer kept); three draws. Post's
+//    bloom is off, so light does not spread onto the cube.
+// 3. The hidden cloud moved in front of the cube: the cube's middle
+//    brightens (so the check above can fail).
+// 4. The counts: a cloud of 50 a second living a second draws 52 particles
+//    (the window: every index that might be alive).
+// 5. No Vulkan call failed, and the validation layer said nothing.
+//
+// It needs a GPU driver with Vulkan 1.3 and SDL3.dll (which loads Vulkan);
+// no window, no display of its own, and no Vulkan SDK (with it, validation
+// and synchronization validation are on, and must say nothing).
+// GPU_POWER_PREFERENCE=low-power tests the integrated GPU where there are
+// two.
+
+mod draw;
+
+import testing use *;
+import libc;
+import geomath use *;
+import collections use *;
+import mesh use Mesh;
+import gpu use *;
+import render use *;
+import vfx use *;
+
+const SIZE = 64u32;
+
+// Where the point 'p' is drawn, in pixels from the top left
+fn pixelOf(viewProjection Mat4, p Vec3, x &mut usize, y &mut usize) {
+  imm clip = viewProjection * new Vec4(p.x, p.y, p.z, 1.);
+  *x = usize.from((clip.x / clip.w + 1.) * 0.5 * f32.from(SIZE));
+  *y = usize.from((1. - clip.y / clip.w) * 0.5 * f32.from(SIZE));
+}
+
+// The sum of the three channels of pixel ('x', 'y')
+fn luma(p *u8, x usize, y usize) i64 {
+  imm at = p + (y * usize.from(SIZE) + x) * 4usize;
+  i64.from(*at) + i64.from(*(at + 1usize)) + i64.from(*(at + 2usize));
+}
+
+fn main() i32 {
+  mut instance = Instance.create("vfx draw");
+  require(instance.isValid(), "a Vulkan 1.3 instance");
+  mut none = Surface.none();
+  mut preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
+  imm env = libc.getenv(&"GPU_POWER_PREFERENCE" as *u8);
+  if (env as usize) != 0usize {
+    if libc.strcmp(env, &"low-power" as *u8) == 0i32 { preference = POWER_PREFERENCE_LOW_POWER; }
+  }
+  mut adapter = instance.requestAdapter(&none, preference);
+  require(adapter.isValid(), "an adapter");
+  mut device = adapter.requestDevice();
+  require(device.isValid(), "a device");
+
+  mut renderer = Renderer.create(&mut device, TEXTURE_FORMAT_RGBA16_FLOAT, TEXTURE_FORMAT_DEPTH32_FLOAT);
+  renderer.keepDepth = true;
+  mut particles = ParticleRenderer.create(&mut device, TEXTURE_FORMAT_RGBA16_FLOAT, TEXTURE_FORMAT_DEPTH32_FLOAT);
+  mut post = Post.create(&mut device, TEXTURE_FORMAT_RGBA8_UNORM, SIZE, SIZE);
+  // No bloom: it would spread the glow's light over the cube (bloom has no
+  // threshold), and the cube's pixel is compared exactly
+  post.bloom = 0.;
+  require(renderer.isValid() and particles.isValid() and post.isValid(), "the renderers");
+  imm targetDesc = new TextureDescriptor(SIZE, SIZE, TEXTURE_FORMAT_RGBA8_UNORM,
+    TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
+  mut target = device.createTexture(&targetDesc);
+  imm depthDesc = new TextureDescriptor(SIZE, SIZE, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT);
+  mut depth = device.createTexture(&depthDesc);
+  mut readback = device.createBuffer(u64.from(SIZE * SIZE * 4u32), BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  imm p = readback.mappedRange();
+
+  imm cubeMesh = Mesh.cube(0.5);
+  imm cube = renderer.addMesh(&mut device, &cubeMesh);
+  imm grey = Material.plain(new Color(0.3, 0.3, 0.3, 1.));
+  imm greyM = renderer.addMaterial(&mut device, &grey);
+  mut list = DrawList.empty();
+  list.add(cube, greyM, Mat4.identity());
+  mut camera = Camera.make();
+  camera.lookAt(new Vec3(0., 0., 4.), new Vec3(0., 0., 0.), new Vec3(0., 1., 0.));
+  imm light = Light.directional(new Vec3(0., 0., -1.), new Color(0.5, 0.5, 0.5, 1.), new Color(0.2, 0.2, 0.2, 1.));
+
+  // The emitters
+  mut cloud = Emitter.make();
+  cloud.rate = 50.;
+  cloud.speed = 0.;
+  cloud.shape = SHAPE_SPHERE;
+  cloud.radius = 0.05;
+  cloud.sizeStart = 0.5;
+  cloud.sizeEnd = 0.5;
+  cloud.fadeOut = 0.;
+  cloud.colors = [new Color(1., 0.8, 0.6, 2.), new Color(1., 0.8, 0.6, 2.), new Color(1., 0.8, 0.6, 2.),
+    new Color(1., 0.8, 0.6, 2.)];
+  mut rising = Emitter.make();
+  rising.rate = 20.;
+  rising.speed = 1.;
+  rising.sizeStart = 0.15;
+  rising.sizeEnd = 0.15;
+  rising.fadeOut = 0.;
+  rising.trailTime = 0.5;
+  rising.colors = cloud.colors;
+  imm glow = particles.addEmitter(&mut device, STYLE_SPRITES);
+  imm hidden = particles.addEmitter(&mut device, STYLE_SPRITES);
+  imm trails = particles.addEmitter(&mut device, STYLE_TRAILS);
+  imm glowAt = new Vec3(1.4, 0., 0.);
+  imm trailFrom = new Vec3(-1.4, -0.5, 0.);
+  imm glowEvent = Event.at(1u32, 0d, Mat4.fromTranslation(glowAt));
+  imm hiddenEvent = Event.at(2u32, 0d, Mat4.fromTranslation(new Vec3(0., 0., -1.5)));
+  imm trailEvent = Event.at(3u32, 0d, Mat4.fromTranslation(trailFrom));
+  imm n = particles.update(&mut device, glow, &cloud, &glowEvent, 2d);
+  expectUInt(u64.from(n), 52u64, "the cloud draws its window of 52");
+  particles.update(&mut device, hidden, &cloud, &hiddenEvent, 2d);
+  particles.update(&mut device, trails, &rising, &trailEvent, 2d);
+
+  imm viewProjection = camera.projectionMatrix(1.) * camera.viewMatrix();
+  mut gx = 0usize;
+  mut gy = 0usize;
+  pixelOf(viewProjection, glowAt, &mut gx, &mut gy);
+  mut tx = 0usize;
+  mut ty = 0usize;
+  pixelOf(viewProjection, trailFrom + new Vec3(0., 0.5, 0.), &mut tx, &mut ty);
+  mut cx = 0usize;
+  mut cy = 0usize;
+  pixelOf(viewProjection, new Vec3(0., 0., 0.5), &mut cx, &mut cy);
+
+  // 1. Without particles, then 2. with them
+  mut before Array[i64, 3] = [0i64, 0i64, 0i64];
+  mut after Array[i64, 3] = [0i64, 0i64, 0i64];
+  mut front Array[i64, 3] = [0i64, 0i64, 0i64];
+  mut pass = 0;
+  while pass < 3 {
+    // 3. The hidden cloud moved in front of the cube: now it shows
+    if pass == 2 {
+      imm frontEvent = Event.at(2u32, 0d, Mat4.fromTranslation(new Vec3(0., 0., 1.5)));
+      particles.update(&mut device, hidden, &cloud, &frontEvent, 2d);
+    }
+    mut encoder = device.createCommandEncoder();
+    renderer.render(&mut device, &mut encoder, &post.hdr, &depth, &camera, &light, &list);
+    if pass >= 1 { particles.render(&mut device, &mut encoder, &post.hdr, &depth, &camera); }
+    post.apply(&mut encoder, &target);
+    encoder.copyTextureToBuffer(&target, &readback);
+    device.queue.submit(encoder.finish());
+    device.endFrame();
+    device.waitIdle();
+    mut got Array[i64, 3] = [luma(p, gx, gy), luma(p, tx, ty), luma(p, cx, cy)];
+    if pass == 0 { before = got; } elif pass == 1 { after = got; } else { front = got; }
+    pass = pass + 1;
+  }
+  expect(before[0] < 10i64, "black where the glow will be");
+  expect(before[1] < 10i64, "black where the trails will be");
+  expect(before[2] > 60i64, "the cube grey");
+  expect(after[0] > 300i64, "the glow bright");
+  expect(after[1] > 150i64, "the trails' path lit");
+  expectInt(after[2], before[2], "the cube's middle as before: the hidden cloud behind it");
+  expectUInt(u64.from(particles.drawCalls), 3u64, "three draws");
+  expect(front[2] > before[2] + 60i64, "the cloud in front of the cube shows");
+
+  expectUInt(u64.from(failures()), 0u64, "no Vulkan call failed");
+  expectUInt(u64.from(validationMessages()), 0u64, "no validation message");
+  done();
+}

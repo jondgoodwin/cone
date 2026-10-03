@@ -47,7 +47,9 @@ Visual Studio projects stay at the root.
   `isDebugBuild()`, the third intrinsic outside `mem`, beside which
   `isWindows()`, `isLinux()`, `isMacOS()`, `isWasm()`, `isDefined("NAME")`
   and `definedInt("NAME")`, for `conec -D`, are a provisional mechanism
-  whose final design is open); `stdio` prints;
+  whose final design is open; and `Invocation`, which invocation of a
+  compute dispatch is running, what a compute entry point,
+  `fn @compute(64) name(...)`, may take); `stdio` prints;
   `libc` and `posix` are C packages of raw bindings to the C library and the
   POSIX functions beyond it (Windows first), and `core` imports `libc` for its
   allocator; `sdl` is a C package of raw bindings to SDL3 (a window for
@@ -71,7 +73,7 @@ Visual Studio projects stay at the root.
   by the texture), `Sampler`, `Buffer` (storage and indirect ones too),
   `ShaderModule`, `BindGroupLayout` (uniform and storage buffers, textures,
   storage textures, samplers), `PipelineLayout` with immediates,
-  `RenderPipeline`, `ComputePipeline`, `BindGroup`, `QuerySet` (GPU
+  `RenderPipeline` (blending too), `ComputePipeline`, `BindGroup`, `QuerySet` (GPU
   timestamps)), holding programs to WebGPU's default limits (a workgroup of
   at most 256 invocations, 8 storage buffers and 4 storage textures a
   stage) so the browser path stays open, with
@@ -102,9 +104,9 @@ Visual Studio projects stay at the root.
   (`Target.Here`) or into an `iocore` Loop (`Target.Loop`, `onLoop`: a
   watcher thread waits on the job's own fence and wakes the loop); every
   kernel a CPU twin (`runTwin`) and `checkParity` comparing the two bit for
-  bit; its test kernels are Slang fixtures until Cone has compute entry
-  points (`fn @compute(64) name(inv Invocation, parts &[]Part, out &[]mut
-  f32)`);
+  bit; its test kernels are Slang fixtures, and a Cone compute entry point
+  (`fn @compute(64) name(inv Invocation, parts &[]Part, out &[]mut f32)`),
+  compiled by `conec` for SPIR-V's Vulkan form, is a kernel it loads too;
   `geomath` is 2-D and 3-D math, pure maths: values and operations with
   results of a known size, no collections (vectors,
   quaternions, matrices, transforms, boxes, rays, planes, frusta and their
@@ -132,8 +134,13 @@ Visual Studio projects stay at the root.
   chain, and `fractalRefine`, a 2-D outline split fractally inside nested
   quadrilaterals (so an edge's pieces never cross), every random number a
   hash of (seed, edge, level, index), with `fractalRefineWithin` for one
-  window's points, the same bits; its example `coast.cone` is the island
-  coastline experiments;
+  window's points, the same bits, and `voxelRemesh` (a closed mesh rebuilt
+  as even quads at a voxel size: inside by exact ray parity, distances in a
+  band, meshed by `sdfmesh`'s surface nets, channels from the nearest
+  point), and `bevelEdges` and `bevelVertices` (Blender's Bevel: strips with a
+  superellipse profile, sharp mitres, a box's corner patched on the
+  superellipsoid, one clamp factor for overlap, selections by list, angle or
+  a bevel-weight channel, channels blended by place); its example `coast.cone` is the island coastline experiments;
   `noise` is coherent noise over `geomath`, a pure function of a seed and a
   point: the PCG integer hashes (`pcg`, `pcg2d`, `pcg3d`, `pcg4d`, seeded
   lattice hashes, exact hash to float), value and gradient noise with
@@ -188,6 +195,31 @@ Visual Studio projects stay at the root.
   their grid of buckets, in Lists it owns, lent as an `sdf.Capsules`
   view); its example `vines.cone` grows the night swamp's knotted roots,
   fuses them as capsules, meshes and draws them;
+  `pbrmaterial` is what goes into a physically based material (render
+  evaluates the lighting; this says what the surface is), over `geomath`,
+  `collections` and `noise`, a tool package (it makes images): periodic
+  fractal noise that tiles (`FractalLayer`: fBm, ridged, billowed, warped,
+  over `noise`'s `gradient2Periodic`), `ScalarMap` and `TexelMap` (render's
+  `Image` layout), pure per-texel functions (height; from the height map
+  the tangent-space normal, convexity and horizon-search occlusion; the
+  surface with edge wear and grime masks) and `bakeTextureSet`, which runs
+  them over a tile on the CPU into base colour (sRGB), ORM (glTF's packing)
+  and normal maps plus the masks, its maps pinned by `mapHash` in its test;
+  its example `spheres.cone` bakes three materials and draws them on spheres
+  through render;
+  `vfx` is visual effects over `gpu`, `render`, `geomath` and `noise`,
+  beginning with particles: `Emitter`, a stateless emitter (a particle a
+  closed-form function of event seed, layer seed, spawn index and age: a
+  rate and lifetimes, a point, disc or sphere and a launch cone, gravity,
+  linear drag, buoyancy fading as it cools, a widening wobble, four HDR
+  colour keys and fades; every random number a PCG hash), `Event` (seed,
+  start, stop, placement: the record a world shares), `EmitterParams` with
+  `particleAt`, the CPU twin of `src/vfx.slang` (its `parity` test compares
+  them on a real GPU), and `ParticleRenderer`, which adds emitters into
+  render's HDR frame as velocity-stretched glowing sprites or ribbon trails
+  (`src/sprites.slang`, additive, depth tested against the depth render
+  keeps with `keepDepth`), before bloom and tone mapping; its example
+  `burner.cone` is the hot-air balloon's burner flame, fired in bursts;
   `testing` is the checks a package's tests call (`expectInt`, `require…`,
   `done`), ordinary library code the compiler knows nothing of;
   `textdiff` is the line diff of two lists of lines or two texts: the edit
@@ -437,15 +469,17 @@ Visual Studio projects stay at the root.
   and Blinn-Phong, a base color times a texture) and flat lines, both in
   Slang (`src/lit.slang`, `src/lines.slang`), the physically based material
   (`PbrMaterial`, `src/pbr.slang` over the `brdf` module: GGX, a clear coat,
-  everywhere or in wet patches, and a Belcour-Barla thin film whose
-  thickness is `noise`'s warped fBm), an analytic dusk `Sky`
+  everywhere or in wet patches, a Belcour-Barla thin film whose
+  thickness is `noise`'s warped fBm, and glTF's metallic-roughness, normal
+  and occlusion maps, linear textures from `addLinearTexture`, the normal
+  map's tangents from screen-space derivatives), an analytic dusk `Sky`
   (`src/sky.slang`, with a horizon line and cloud streaks where asked)
   drawn behind the scene and made
   by full-screen passes into image-based lighting (`Environment`,
   `src/ibl.slang`: prefiltered specular and diffuse cubes, the split sum's
   table), `Post` (`src/post.slang`: the half-float frame, bloom, and tone
   mapping by AgX, ACES's fit or Reinhard), a `DrawList` drawn in one
-  render pass, the model matrix in the immediates, and `Image` (BMP read
+  render pass (its depth kept for a later pass with `keepDepth`), the model matrix in the immediates, and `Image` (BMP read
   and written); its tests need a GPU driver but no window, and its examples
   are `pipevk.cone`, the pipe demo: `sculpt`'s bent, subdivided pipe, the
   cage and three levels side by side, lit, on Vulkan, checked by pixels

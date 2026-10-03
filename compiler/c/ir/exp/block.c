@@ -410,11 +410,20 @@ static void blockResultMove(INode *result) {
 // instead (flowScopeHandsBack). A part of a local the scope releases (a field,
 // an element, what a local owner points at), a variable of an enclosing scope,
 // a global, or a value reached through a borrow is read and still held where it
-// was, so the copy is counted as a copy into a variable is (flowHandleMoveOrCopy).
+// was, so the copy is counted as a copy into a variable is (flowHandleMoveOrCopy);
+// so is an assignment's value, which its target keeps (flowIsKeptRead). A
+// tuple literal hands back each element on its own.
 // 'result' is the value as it stood before the walk, which is what the release
 // exemption names.
 static void blockResultCount(INode **retexp, INode *result, size_t startpos) {
-    if (iexpIsMove(*retexp) || !flowIsLvalRead(*retexp) || flowScopeHandsBack(startpos, result))
+    if ((*retexp)->tag == VTupleTag) {
+        INode **elemp;
+        uint32_t cnt;
+        for (nodesFor(((TupleNode *)*retexp)->elems, cnt, elemp))
+            blockResultCount(elemp, *elemp, startpos);
+        return;
+    }
+    if (iexpIsMove(*retexp) || !flowIsKeptRead(*retexp) || flowScopeHandsBack(startpos, result))
         return;
     flowInjectRefCount(retexp);
 }

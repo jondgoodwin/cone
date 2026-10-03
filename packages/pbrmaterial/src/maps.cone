@@ -1,0 +1,139 @@
+// ======== Maps: grids of values and of texels ========
+
+// A square grid of f32, 'size' texels a side, rows bottom first: a height
+// field or a mask. Reads wrap round, so the tile's neighbourhoods continue
+// across its edges.
+pub struct ScalarMap {
+  pub size i32;
+  pub values List[f32];
+
+  // A map of 'size' squared zeros
+  pub fn zeros(size i32) ScalarMap {
+    imm n = usize.from(size * size);
+    mut values = List[f32].withCapacity(n);
+    mut i = 0usize;
+    while i < n {
+      values.push(0.);
+      i = i + 1usize;
+    }
+    new ScalarMap(size, values);
+  }
+
+  // The texel 'x' from the left and 'y' from the bottom, each taken round the
+  // tile (so -1 is the last column or row)
+  pub fn at(self &, x i32, y i32) f32 {
+    *values[usize.from(wrapIndex(y, size) * size + wrapIndex(x, size))];
+  }
+
+  pub fn set(self &mut, x i32, y i32, value f32) {
+    values.set(usize.from(y * size + x), value);
+  }
+
+  // The map at a point between texels ('x', 'y' in texels, texel centres at
+  // whole numbers), blended bilinearly from the four round it, wrapping
+  pub fn sample(self &, x f32, y f32) f32 {
+    imm fx = libc.floorf(x);
+    imm fy = libc.floorf(y);
+    imm ix = i32.from(fx);
+    imm iy = i32.from(fy);
+    imm tx = x - fx;
+    imm ty = y - fy;
+    imm a = self.at(ix, iy);
+    imm b = self.at(ix + 1, iy);
+    imm c = self.at(ix, iy + 1);
+    imm d = self.at(ix + 1, iy + 1);
+    imm bottom = a + (b - a) * tx;
+    imm top = c + (d - c) * tx;
+    bottom + (top - bottom) * ty;
+  }
+}
+
+// 'i' taken round 0 to n - 1
+pub fn wrapIndex(i i32, n i32) i32 {
+  if i >= 0 { return i % n; }
+  n - 1 - (-(i + 1)) % n;
+}
+
+// 8-bit texels, 'width' by 'height', rows bottom first, each 'channels'
+// bytes (1 gray, 3 red green blue, 4 with alpha), with no padding: the
+// layout of the render package's Image, which render's 'addTexture' (sRGB)
+// and 'addLinearTexture' (linear) upload with a uv's v of 0 on the bottom
+// row, as mesh's uvs have it
+pub struct TexelMap {
+  pub width i32;
+  pub height i32;
+  pub channels i32;
+  pub pixels List[u8];
+
+  pub fn withCapacity(width i32, height i32, channels i32) TexelMap {
+    new TexelMap(width, height, channels, List[u8].withCapacity(usize.from(width * height * channels)));
+  }
+
+  // Channel 'c' of the texel 'x' from the left and 'y' from the bottom
+  pub fn at(self &, x i32, y i32, c i32) u8 {
+    *pixels[usize.from((y * width + x) * channels + c)];
+  }
+}
+
+// A value from 0 to 1 as a byte from 0 to 255, rounded, held to the range
+pub fn unitByte(v f32) u8 {
+  if v <= 0. { 0u8; } elif v >= 1. { 255u8; } else { u8.from(v * 255. + 0.5); };
+}
+
+// A byte back to 0 to 1
+pub fn byteUnit(b u8) f32 { f32.from(b) * (1. / 255.); }
+
+// A linear colour component encoded by the sRGB transfer function (IEC
+// 61966-2-1), for a texture the GPU decodes as it samples
+pub fn srgbEncode(c f32) f32 {
+  if c <= 0. { return 0.; }
+  if c >= 1. { return 1.; }
+  if c <= 0.0031308 { return c * 12.92; }
+  1.055 * libc.powf(c, 1. / 2.4) - 0.055;
+}
+
+// The sRGB transfer function's inverse
+pub fn srgbDecode(c f32) f32 {
+  if c <= 0.04045 { return c * (1. / 12.92); }
+  libc.powf((c + 0.055) * (1. / 1.055), 2.4);
+}
+
+// A 64-bit FNV-1a hash of a map's shape and bytes: what a test pins, so a
+// change to any texel shows
+pub fn mapHash(m &TexelMap) u64 {
+  mut h = 14695981039346656037u64;
+  h = fnvWord(h, u32.from(m.width));
+  h = fnvWord(h, u32.from(m.height));
+  h = fnvWord(h, u32.from(m.channels));
+  imm n = m.pixels.len();
+  mut i = 0usize;
+  while i < n {
+    h = (h ^ u64.from(*m.pixels[i])) * 1099511628211u64;
+    i = i + 1usize;
+  }
+  h;
+}
+
+// The same hash of a scalar map's values' bits
+pub fn scalarMapHash(m &ScalarMap) u64 {
+  mut h = 14695981039346656037u64;
+  h = fnvWord(h, u32.from(m.size));
+  imm n = m.values.len();
+  mut i = 0usize;
+  while i < n {
+    imm f = *m.values[i];
+    h = fnvWord(h, f as u32);
+    i = i + 1usize;
+  }
+  h;
+}
+
+fn fnvWord(h u64, w u32) u64 {
+  mut r = h;
+  mut k = 0u32;
+  while k < 4u32 {
+    r = (r ^ u64.from((w >> (k * 8u32)) & 0xFFu32)) * 1099511628211u64;
+    k = k + 1u32;
+  }
+  r;
+}

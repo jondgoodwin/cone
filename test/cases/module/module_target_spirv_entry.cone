@@ -1,0 +1,98 @@
+// Compute entry points on SPIR-V's Vulkan form: each '@compute' function a
+// kernel of no parameters, a compute shader with its workgroup's size, which
+// fills the function's parameters from what a dispatch binds and calls it.
+// Core's Invocation from the invocation's built-ins; each slice a storage
+// buffer, set 0, numbered in order among the buffer parameters, '&[]T' read
+// only and '&[]mut T' read-write, its count the buffer's run-time array's
+// length; each struct taken by value a small read-only storage buffer holding
+// one. The binding after the last is the kernel's error buffer, where a
+// failed bounds check, a panic and an assert record what failed, where and in
+// which invocation, the first of them atomically, and leave the kernel.
+// Every element of a slice is an access chain into the buffer or fixed array
+// it came from: of a buffer, of part of one, of a fixed array, of part of
+// one, of a buffer's struct's array field, each handed to a function inlined.
+
+mod module_target_spirv_entry;
+
+struct Vec3 {
+  pub x f32;
+  pub y f32;
+  pub z f32;
+
+  fn dot(self, o Vec3) f32 {x * o.x + y * o.y + z * o.z;}
+  fn scale(self, s f32) Vec3 {new Vec3(x * s, y * s, z * s);}
+}
+
+struct Settings {
+  pub dir Vec3;
+  pub gain f32;
+  pub count u32;
+}
+
+struct Part {
+  pub w Array[f32, 4];
+  pub k u32;
+}
+
+fn sum(s &[]f32) f32 {
+  mut t = 0.f32;
+  mut i = 0usize;
+  while i < s.len {
+    t = t + s[i];
+    i = i + 1usize;
+  }
+  t;
+}
+
+fn check(v u32) u32 {
+  assert(v < 1000u32, "too big");
+  if v == 999u32 { panic("nine nines"); }
+  v * 2u32;
+}
+
+// Two slices read, one written
+fn @compute(64) add(inv Invocation, a &[]f32, b &[]f32, out &[]mut f32) {
+  imm i = usize.from(inv.globalId[0]);
+  if i < out.len {
+    out[i] = a[i] + b[i];
+  }
+}
+
+// A struct by value, and structs in buffers, read and written whole
+fn @compute(8, 8) shade(inv Invocation, s Settings, normals &[]Vec3, out &[]mut Vec3) {
+  imm i = usize.from(inv.globalId[0] + 8u32 * inv.globalId[1]);
+  if i >= out.len or u32.from(i) >= s.count { return; }
+  out[i] = normals[i].scale(normals[i].dot(s.dir) * s.gain);
+}
+
+// Every field of Invocation
+fn @compute(4, 2, 2) ids(inv Invocation, out &[]mut u32) {
+  imm base = usize.from(inv.localIndex + 16u32 * inv.groupId[0]) * 13usize;
+  mut k = 0usize;
+  while k < 3usize {
+    out[base + k] = inv.globalId[k];
+    out[base + 3usize + k] = inv.localId[k];
+    out[base + 6usize + k] = inv.groupId[k];
+    out[base + 10usize + k] = inv.groupCount[k];
+    k = k + 1usize;
+  }
+  out[base + 9usize] = inv.localIndex;
+}
+
+// Slices of every origin a kernel's may have
+fn @compute(64) windows(inv Invocation, a &[]f32, parts &[]Part, out &[]mut f32) {
+  imm i = usize.from(inv.globalId[0]);
+  if i + 4usize > a.len or i >= out.len or i >= parts.len { return; }
+  imm w = &a[i..i + 4usize];
+  mut arr Array[f32, 8] = [1.f32, 2.f32, 3.f32, 4.f32, 5.f32, 6.f32, 7.f32, 8.f32];
+  arr[i % 8usize] = a[i];
+  out[i] = sum(w) + sum(&arr[2usize..6usize]) + sum(&arr) + sum(&w[1usize..]) + sum(&parts[i].w);
+}
+
+// A panic and an assert, beside the bounds checks
+fn @compute(64) doubled(inv Invocation, a &[]u32, out &[]mut u32) {
+  imm i = usize.from(inv.globalId[0]);
+  if i < out.len {
+    out[i] = check(a[i]);
+  }
+}

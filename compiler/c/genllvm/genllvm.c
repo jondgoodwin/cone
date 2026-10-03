@@ -172,6 +172,10 @@ void genlFn(GenState *gen, FnDclNode *fnnode) {
     gen->tempcnt = gen->tempbase;
     gen->tempbase = svtempbase;
     genlRootsRestore(gen, &svroots);
+
+    // A compute entry point is a kernel on a GPU target, made beside it
+    if (fnDclIsCompute(fnnode))
+        genlComputeEntry(gen, fnnode);
 }
 
 // Insert every alloca before the allocaPoint in the function's entry block.
@@ -1082,6 +1086,9 @@ void genlProgram(GenState *gen, ProgramNode *pgm) {
     gen->tyrecuntraced = NULL;
     memset(&gen->roots, 0, sizeof(GenRoots));
     gen->rootmaps = 0;
+    gen->entries = NULL;
+    gen->entrycnt = gen->entrymax = 0;
+    gen->gpusites = NULL;
 
     // First, generate global symbols for all modules, so that forward references succeed
     INode **nodesp;
@@ -1306,7 +1313,12 @@ static void genlGpuCalls(GenState *gen) {
         if (LLVMIsDeclaration(fn))
             continue;
         walk.fns[genlCallSlot(&walk, fn)] = fn;
-        genlFnAttr(gen, fn, "alwaysinline");
+        // A kernel is what everything is inlined into (genlgpu.c)
+        int kernel = 0;
+        for (uint32_t e = 0; e < gen->entrycnt; ++e)
+            kernel = kernel || gen->entries[e].kernel == fn;
+        if (!kernel)
+            genlFnAttr(gen, fn, "alwaysinline");
     }
     for (LLVMValueRef fn = LLVMGetFirstFunction(gen->module); fn; fn = LLVMGetNextFunction(fn)) {
         if (!LLVMIsDeclaration(fn) && walk.state[genlCallSlot(&walk, fn)] == 0)
@@ -1722,7 +1734,7 @@ static LLVMTypeRef genlParamPointee(LLVMValueRef param) {
 }
 
 // The type a pointer is known to point to, or NULL
-static LLVMTypeRef genlGpuPointee(LLVMValueRef ptr) {
+LLVMTypeRef genlGpuPointee(LLVMValueRef ptr) {
     if (LLVMIsAAllocaInst(ptr))
         return LLVMGetAllocatedType(ptr);
     if (LLVMIsAGetElementPtrInst(ptr))
@@ -1770,6 +1782,31 @@ static void genlGpuRetypeFn(GenState *gen, LLVMValueRef fn) {
             LLVMValueRef ptr = LLVMGetOperand(inst, ptrop);
             LLVMTypeRef pointee = genlGpuPointee(ptr);
             int depth = pointee ? genlFirstFieldDepth(pointee, used) : -1;
+            // The other way about: GVN takes two addresses that are one
+            // number for one value, so an array field's address can be its
+            // first element's, then indexed as the array; the first
+            // element's address, its trailing zero indices dropped, is the
+            // array's
+            int outer = depth < 0 && pointee && LLVMIsAGetElementPtrInst(ptr) ? genlFirstFieldDepth(used, pointee) : -1;
+            if (outer > 0) {
+                int nbase = LLVMGetNumOperands(ptr);
+                int zeros = 0;
+                while (zeros < outer && nbase - 1 - zeros >= 2) {
+                    LLVMValueRef op = LLVMGetOperand(ptr, nbase - 1 - zeros);
+                    if (!LLVMIsAConstantInt(op) || LLVMConstIntGetZExtValue(op) != 0)
+                        break;
+                    ++zeros;
+                }
+                if (zeros == outer && nbase <= 64) {
+                    LLVMValueRef idx[64];
+                    int n = 0;
+                    for (int op = 1; op < nbase - zeros; ++op)
+                        idx[n++] = LLVMGetOperand(ptr, op);
+                    LLVMPositionBuilderBefore(gen->builder, inst);
+                    LLVMSetOperand(inst, ptrop, LLVMBuildInBoundsGEP2(gen->builder,
+                        LLVMGetGEPSourceElementType(ptr), LLVMGetOperand(ptr, 0), idx, n, ""));
+                }
+            }
             if (depth <= 0) {
                 inst = next;
                 continue;
@@ -1880,6 +1917,7 @@ static void genlGpuAggregates(GenState *gen) {
     for (LLVMValueRef fn = LLVMGetFirstFunction(gen->module); fn; fn = LLVMGetNextFunction(fn)) {
         if (LLVMIsDeclaration(fn))
             continue;
+        genlGpuBufferAccess(gen, fn);
         genlGpuAggregatesFn(gen, &map, fn);
         genlGpuRetypeFn(gen, fn);
         genlGpuGepChainsFn(gen, fn);
@@ -1953,22 +1991,45 @@ void genpgm(GenState *gen, ProgramNode *pgm) {
     // the usual optimizations. Then what is left of a struct or array value
     // is carried as its scalar leaves, and every field's address is computed
     // from its struct's type (genlGpuAggregates).
+    //
+    // A kernel is settled between the two halves of the GPU pipeline
+    // (genlGpuEntries): once everything is inlined into it, and before its
+    // control flow is structured, since a failed check's record ends in a
+    // return of its own. What that leaves unused goes with it.
     timerBegin(OptTimer);
     const char *pipeline = gen->opt->gpu
         ? (gen->opt->release
-            ? "always-inline,function(sroa,infer-address-spaces,instsimplify,reassociate,gvn,simplifycfg,structurizecfg)"
-            : "always-inline,function(sroa,infer-address-spaces,instsimplify,simplifycfg,structurizecfg)")
+            ? "always-inline,function(sroa,infer-address-spaces,instsimplify,reassociate,gvn,simplifycfg)"
+            : "always-inline,function(sroa,infer-address-spaces,instsimplify,simplifycfg)")
         : gen->opt->release
         ? "default<O2>"
         : "function(mem2reg,reassociate,gvn,simplifycfg)";
     LLVMPassBuilderOptionsRef passopts = LLVMCreatePassBuilderOptions();
     LLVMErrorRef passerr = LLVMRunPasses(gen->module, pipeline,
         gen->opt->gpu || gen->opt->release ? gen->machine : NULL, passopts);
+    int refused = 0;
+    if (gen->opt->gpu && !passerr) {
+        int before = errors;
+        if (gen->entrycnt > 0)
+            genlGpuEntries(gen);
+        refused = errors != before;
+        if (!refused)
+            passerr = LLVMRunPasses(gen->module,
+                gen->entrycnt > 0 ? "globaldce,function(infer-address-spaces,instsimplify,adce,structurizecfg)"
+                    : "function(structurizecfg)",
+                gen->machine, passopts);
+    }
     LLVMDisposePassBuilderOptions(passopts);
     if (passerr) {
         char *msg = LLVMGetErrorMessage(passerr);
         errorMsg(ErrorGenErr, "Could not optimize: %s", msg);
         LLVMDisposeErrorMessage(msg);
+    }
+    // A kernel's slice that came from nowhere it can be indexed was refused
+    // (genlGpuEntries), and nothing is emitted
+    if (refused) {
+        LLVMDisposeModule(gen->module);
+        return;
     }
     if (gen->opt->gpu && !passerr)
         genlGpuAggregates(gen);
@@ -1985,9 +2046,12 @@ void genpgm(GenState *gen, ProgramNode *pgm) {
     if (gen->machine) {
         char *objfile = gen->opt->wasm? "wasm" : gen->opt->gpu? "spv" : objext;
         char *asmfile = gen->opt->wasm? "wat" : gen->opt->gpu? "spvasm" : asmext;
-        genlOut(fileMakePath(gen->opt->output, gen->opt->srcname, objfile),
-            gen->opt->print_asm? fileMakePath(gen->opt->output, gen->opt->srcname, asmfile) : NULL,
-            gen->module, gen->machine);
+        char *objpath = fileMakePath(gen->opt->output, gen->opt->srcname, objfile);
+        char *asmpath = gen->opt->print_asm? fileMakePath(gen->opt->output, gen->opt->srcname, asmfile) : NULL;
+        if (gen->opt->vulkan)
+            genlGpuOut(gen, objpath, asmpath);
+        else
+            genlOut(objpath, asmpath, gen->module, gen->machine);
     }
 
     LLVMDisposeModule(gen->module);
@@ -2060,6 +2124,7 @@ void genSetup(GenState *gen, ConeOptions *opt) {
     // A SPIR-V triple is a GPU target (the default triple is the host's, never
     // one). Type check's flow reads this before anything is generated.
     opt->gpu = opt->triple != NULL && strncmp(opt->triple, "spirv", 5) == 0;
+    opt->vulkan = opt->gpu && strstr(opt->triple, "vulkan") != NULL;
     genlLLVMOptions(opt->gpu);
     // A crash inside LLVM then names the pass and the function it was in, as
     // llc's does, rather than ending conec without a word
@@ -2072,7 +2137,10 @@ void genSetup(GenState *gen, ConeOptions *opt) {
     // Obtain data layout info, particularly pointer sizes
     gen->machine = machine;
     gen->datalayout = LLVMCreateTargetDataLayout(machine);
-    opt->ptrsize = LLVMPointerSize(gen->datalayout) << 3;
+    // SPIR-V's Vulkan form addresses logically, with no pointer to measure,
+    // and WebGPU has no 64-bit integer: a GPU's sizes and indices are 32 bits
+    // there (WGSL's 'arrayLength' is a u32), so usize is
+    opt->ptrsize = opt->vulkan ? 32 : LLVMPointerSize(gen->datalayout) << 3;
 
     gen->context = LLVMContextCreate();
     gen->builder = LLVMCreateBuilderInContext(gen->context);

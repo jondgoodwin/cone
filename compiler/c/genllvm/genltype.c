@@ -677,5 +677,5 @@ LLVMValueRef genlAlignof(GenState *gen, INode *vtype) {
 
 // Generate unsigned integer whose bits are same size as a pointer
 LLVMTypeRef genlUsize(GenState *gen) {
-    return (LLVMPointerSize(gen->datalayout) == 4) ? LLVMInt32TypeInContext(gen->context) : LLVMInt64TypeInContext(gen->context);
+    return gen->opt->ptrsize == 32 ? LLVMInt32TypeInContext(gen->context) : LLVMInt64TypeInContext(gen->context);
 }

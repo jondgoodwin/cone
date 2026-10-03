@@ -286,6 +286,9 @@ void flowResultMove(INode *node);
 
 // Does this expression still hold its value after it is read?
 int flowIsLvalRead(INode *node);
+// Does a place still hold this expression's value once it is read: an lvalue,
+// or an assignment, whose target keeps what it stored?
+int flowIsKeptRead(INode *node);
 
 // Does this cast hand on what its operand holds: a recast, or a conversion
 // into an owning virtual reference, which carries the operand's owner?
@@ -293,6 +296,8 @@ int flowCastCarries(INode *cast);
 
 // If needed, inject a reference-count node for Rc references, adjusting the count by amt
 void flowInjectRefCountAmt(INode **nodep, int16_t amt);
+// The same, adding one holder
+void flowInjectRefCount(INode **nodep);
 
 // Is this type a counted (Rc) reference, single or virtual?
 int flowIsRcRef(INode *type);

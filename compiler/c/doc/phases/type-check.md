@@ -707,7 +707,14 @@ which the rules of section 2 together forbid.
    established** — this is rule 3, and it is why mutual recursion works.
 3. If the signature raised anything, stop. A body checked against a signature
    that failed reports again at every use of the types that check was meant to
-   establish.
+   establish. A compute entry point's signature is then held to what a
+   dispatch binds (`fnDclComputeCheck`): no return value
+   (`ErrorComputeSig`); each parameter core's `Invocation`, at most once, a
+   slice or a struct by value, at most seven of the last two (`ErrorComputeSig`);
+   and what each buffer holds 32-bit numbers and structs and fixed arrays of
+   them, walked field by field (`ErrorComputeData`), on every target, so the CPU
+   and the GPU agree on one source ([GPU Compute](../../../../doc/reference/refgpu.html)).
+   These do not stop the body's check.
 4. If it is an intrinsic declared in core, with its meaning from the registry,
    **→** analyze the type it acts on (its instance's type argument), which must
    have a size (`ErrorIntrinsicType`, reported at the call that instantiated it),
@@ -836,6 +843,8 @@ Kept so that reopening one is a decision rather than a rediscovery.
 | | `structTypeSettle`, `structArrayWait` | a by-value use settling what a target left waiting; an array target's element size waiting |
 | `ir/types/reference.c` | `refTargetTypeCheck` | a reference's, pointer's or slice's target resolved, laid out only where no layout is in flight; `refKeyBorrowCheck` and the vtable wait with it |
 | `ir/stmt/fndcl.c` | `fnDclTypeCheck` | the nine steps of section 10.3, including both error-delta gates |
+| | `fnDclComputeCheck`, `fnDclComputeData` | a compute entry point's signature, and what its buffers hold (step 3) |
+| `ir/stmt/intrinsic.c` | `invocationIsCore` | whether a type is core's `Invocation`, known by its name and its package |
 | `ir/stmt/intrinsic.c` | `intrinsicDclTypeCheck` | step 4 of section 10.3: a declared intrinsic's type argument must have a size |
 | `ir/stmt/vardcl.c` | `varDclTypeCheck` | section 10.4 |
 | `ir/stmt/module.c` | `modTypeCheck` | imports first, then the module-trait check, then declarations — section 10.5 — and last `modLifecycle` |

@@ -1772,11 +1772,13 @@ target = "llvmir"
 contains = ["define %V4 @normalize(%V4 %0)", "phi float"]
 excludes = ["= phi %", "= phi {", "= phi ["]
 
+# The array field's index is a usize: 64 bits in the OpenCL form, 32 in the
+# Vulkan form, whose usize is WebGPU's 32-bit index
 [[scenario.module_target_spirv_values.check]]
 name = "every-address-is-typed-from-its-struct"
 target = "llvmir"
 contains = [
-  "getelementptr %Box, ptr %b, i64 0, i32 0, i64 ",
+  "getelementptr %Box, ptr %b, i",
   "getelementptr inbounds %Dial, ptr %0, i32 0, i32 0",
   "getelementptr inbounds %Field, ptr %0, i32 0, i32 1, i32 1",
 ]
@@ -1798,6 +1800,170 @@ excludes = ["[0 x "]
 name = "early-returns-are-structured"
 target = "llvmir"
 contains = ["define %Option @firstHit(", "Flow:"]
+
+# Compute entry points on SPIR-V's Vulkan form (genllvm/genlgpu.c): each a
+# kernel of no parameters, marked the compute shader it is, filling its Cone
+# function's parameters from the bindings and the built-ins and calling it;
+# everything inlined into it; its failed checks, a panic and an assert among
+# them, recorded in the error buffer at the binding after the last, the
+# first atomically, and the kernel left; every element of a slice an access
+# chain into its buffer or fixed array, nothing reached by pointer
+# arithmetic. A compile that is no library keeps the kernels. Each buffer's
+# count is SPIR-V's OpArrayLength, which LLVM 23 cannot select: the kernel
+# calls 'cone.arraylength.<kernel>.<binding>' and conec rewrites each call as
+# the instruction once the module is emitted, which the suite does not see.
+# What spirv-val makes of the module, valid for Vulkan 1.3 in both runs, is
+# measured by hand; the suite needs no Vulkan SDK.
+[scenario.module_target_spirv_entry]
+category = "compile"
+description = "Compute entry points on SPIR-V's Vulkan form: kernels binding slices and structs as storage buffers, filling Invocation from the built-ins, recording failed checks in an error buffer, and indexing slices by access chains into their buffers and fixed arrays"
+tags = ["typecheck", "genllvm"]
+
+[[scenario.module_target_spirv_entry.run]]
+name = "vulkan"
+options = ["--triple=spirv1.6-unknown-vulkan1.3", "--verify"]
+
+[[scenario.module_target_spirv_entry.run]]
+name = "vulkan-debug"
+options = ["--triple=spirv1.6-unknown-vulkan1.3", "--verify", "--debug"]
+
+[[scenario.module_target_spirv_entry.check]]
+name = "each-entry-point-is-a-compute-shader-of-its-workgroup"
+target = "preir"
+contains = [
+  "define void @add()",
+  "\"hlsl.numthreads\"=\"64,1,1\" \"hlsl.shader\"=\"compute\"",
+  "\"hlsl.numthreads\"=\"8,8,1\" \"hlsl.shader\"=\"compute\"",
+  "\"hlsl.numthreads\"=\"4,2,2\" \"hlsl.shader\"=\"compute\"",
+]
+
+# Invocation from the built-ins; add's slices at bindings 0 to 2, read-only
+# ('_0t') or read-write ('_1t'), each counted; shade's struct by value at 0
+[[scenario.module_target_spirv_entry.check]]
+name = "each-parameter-is-what-the-dispatch-binds"
+target = "preir"
+contains = [
+  "call i32 @llvm.spv.thread.id.i32(i32 0)",
+  "call i32 @llvm.spv.thread.id.in.group.i32(i32 2)",
+  "call i32 @llvm.spv.group.id.i32(i32 1)",
+  "call i32 @llvm.spv.flattened.thread.id.in.group()",
+  "call i32 @llvm.spv.num.workgroups.i32(i32 2)",
+  "VulkanBuffer_a0f32_12_0t(i32 0, i32 0, i32 1, i32 0,",
+  "VulkanBuffer_a0f32_12_0t(i32 0, i32 1, i32 1, i32 0,",
+  "VulkanBuffer_a0f32_12_1t(i32 0, i32 2, i32 1, i32 0,",
+  "VulkanBuffer_s_Settingss_12_0t(i32 0, i32 0, i32 1, i32 0,",
+  "getbasepointer.p11.tspirv.VulkanBuffer_s_Settingss_12_0t(",
+  "call i32 @cone.arraylength.add.2(",
+]
+
+# A failed index check, a failed range check and a panic, conestd called by none
+[[scenario.module_target_spirv_entry.check]]
+name = "a-failed-check-calls-no-runtime"
+target = "preir"
+contains = [
+  "call void @cone.gpu.fail(i32 1,",
+  "call void @cone.gpu.fail(i32 2,",
+  "call void @cone.gpu.fail(i32 3,",
+]
+excludes = ["call %void @cone_panic", "@cone_panicIndex", "@cone_panicSlice"]
+
+# add's error buffer at binding 3, after its three slices; the lines of the
+# index check in add (57), and of the assert (48) and the panic (49) in check
+[[scenario.module_target_spirv_entry.check]]
+name = "a-kernel-records-its-failures-and-returns"
+target = "llvmir"
+contains = [
+  "define void @shade()",
+  "define void @ids()",
+  "define void @windows()",
+  "define void @doubled()",
+  "VulkanBuffer_a0i32_12_1t(i32 0, i32 3, i32 1, i32 0,",
+  "atomicrmw add ptr addrspace(11) ",
+  "syncscope(\"device\") acq_rel",
+  "store i32 57, ptr addrspace(11) ",
+  "store i32 48, ptr addrspace(11) ",
+  "store i32 49, ptr addrspace(11) ",
+  "kernelexit:",
+]
+excludes = ["define internal", "cone.gpu.fail", "cone_panic"]
+
+# A buffer's element by its index; a fixed array's, and an array field's in a
+# buffer's struct, through the array; nothing by arithmetic, nothing in a
+# space of its own, and usize 32 bits
+[[scenario.module_target_spirv_entry.check]]
+name = "a-slices-element-is-an-access-chain"
+target = "llvmir"
+contains = [
+  "getpointer.p11.tspirv.VulkanBuffer_a0f32_12_0t.i32(",
+  "getelementptr inbounds [8 x float], ptr ",
+  "getelementptr inbounds %Part, ptr addrspace(11) ",
+]
+excludes = ["addrspacecast", "getelementptr float,", "getelementptr inbounds float,", " i64 "]
+
+# On the CPU an entry point is an ordinary function, called in a loop that
+# fills Invocation as a dispatch would
+[scenario.module_compute_cpu]
+category = "run"
+description = "A compute entry point run on the CPU: the same function called once for each invocation of a dispatch, Invocation filled by the loop"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[scenario.module_compute_size]
+category = "reject"
+description = "A compute entry point's workgroup size: constant integers, at least 1, at most three, at most 256 invocations and 64 along z; the limits themselves accepted"
+tags = ["parse"]
+diagnostics = 7
+
+[scenario.module_compute_attr]
+category = "reject"
+description = "'@compute' on a method, a generic, an inline function and a C-named one; an 'extern' entry point accepted"
+tags = ["parse"]
+diagnostics = 4
+
+[scenario.module_compute_sig]
+category = "reject"
+description = "A compute entry point's signature: a return value, a number, a reference or an enum taken, Invocation twice, eight buffers; seven, and Invocation anywhere, accepted"
+tags = ["typecheck"]
+diagnostics = 6
+
+[scenario.module_compute_data]
+category = "reject"
+description = "What a kernel's buffer holds: Bool, 8, 16 and 64-bit numbers, usize, pointers, Options and enums refused, however deep in a struct; 32-bit numbers and structs and fixed arrays of them accepted"
+tags = ["typecheck"]
+diagnostics = 10
+
+[scenario.module_compute_target]
+category = "reject"
+description = "A compute entry point compiled for SPIR-V's OpenCL form, which has none"
+tags = ["genllvm"]
+diagnostics = 1
+
+[[scenario.module_compute_target.run]]
+name = "opencl"
+options = ["--triple=spirv64-unknown-unknown"]
+
+[scenario.module_compute_twice]
+category = "reject"
+description = "Two compute entry points of one name in one compile, a module's and its submodule's: the second made is refused"
+tags = ["genllvm"]
+diagnostics = 1
+
+[[scenario.module_compute_twice.run]]
+name = "vulkan"
+options = ["--triple=spirv1.6-unknown-vulkan1.3"]
+
+[scenario.module_gpu_slice_origin]
+category = "reject"
+description = "In a kernel, a slice made from a pointer to a local number, neither a buffer nor a fixed array, refused where it is indexed"
+tags = ["genllvm"]
+diagnostics = 1
+
+[[scenario.module_gpu_slice_origin.run]]
+name = "vulkan"
+options = ["--triple=spirv1.6-unknown-vulkan1.3"]
+
+[[scenario.module_gpu_slice_origin.run]]
+name = "vulkan-debug"
+options = ["--triple=spirv1.6-unknown-vulkan1.3", "--debug"]
 
 [scenario.module_c_threadlocal]
 category = "compile"

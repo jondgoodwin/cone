@@ -597,6 +597,12 @@ LLVMValueRef genlFnCallInternal(GenState *gen, int dispatch, INode *objfn, uint3
     LLVMValueRef fncallret = NULL;
     switch (fndcl->value? fndcl->value->tag : BlockTag) {
     case BlockTag: {
+        // No GPU has conestd: there core's 'panic' records itself as a
+        // failed check does (genlgpu.c)
+        if (gen->opt->gpu && fnargcnt == 3 && genlIsConePanic(fndcl)) {
+            fncallret = genlGpuPanic(gen, fnargs);
+            break;
+        }
         fncallret = genlFnDclCall(gen, fndcl, genlFnSym(gen, fndcl), fnargs, fnargcnt);
         break;
     }
@@ -1577,7 +1583,11 @@ char *genlSrcFileName(INode *node, size_t *len) {
 // per file whose code this object holds), so a short list remembers them;
 // one found nowhere in it is made again, which costs bytes, not correctness.
 // Its address is the flat one, as every global's is (genlFlatAddr).
-#define GenlSrcFileMax 32
+//
+// On a GPU target the list is also the module's list of source files: a
+// file's id is its place among this module's, from 1, and a kernel's failed
+// check records the id (genlgpu.c), its module listing each.
+#define GenlSrcFileMax 256
 static struct {
     LLVMModuleRef module;
     char *text;
@@ -1586,8 +1596,35 @@ static struct {
 static int genlSrcFileCnt = 0;
 
 static LLVMValueRef genlSrcFileGlobal(GenState *gen, char *text, size_t len);
-static LLVMValueRef genlSrcFileText(GenState *gen, char *text, size_t len) {
+LLVMValueRef genlSrcFileText(GenState *gen, char *text, size_t len) {
     return genlFlatAddr(gen, genlSrcFileGlobal(gen, text, len));
+}
+
+int genlSrcFileId(GenState *gen, LLVMValueRef global) {
+    int id = 0;
+    for (int i = 0; i < genlSrcFileCnt; ++i) {
+        if (genlSrcFiles[i].module != gen->module)
+            continue;
+        ++id;
+        if (genlSrcFiles[i].global == global)
+            return id;
+    }
+    return 0;
+}
+
+int genlSrcFileCount(GenState *gen) {
+    int n = 0;
+    for (int i = 0; i < genlSrcFileCnt; ++i)
+        n += genlSrcFiles[i].module == gen->module;
+    return n;
+}
+
+char *genlSrcFileAt(GenState *gen, int id) {
+    for (int i = 0; i < genlSrcFileCnt; ++i) {
+        if (genlSrcFiles[i].module == gen->module && --id == 0)
+            return genlSrcFiles[i].text;
+    }
+    return "";
 }
 
 static LLVMValueRef genlSrcFileGlobal(GenState *gen, char *text, size_t len) {
@@ -1626,8 +1663,15 @@ static unsigned genlPanicValCnt[] = {2, 3, 1};
 // usize) and the source location of 'site', then 'unreachable'. The entry is
 // declared 'noreturn' and 'cold', so the check costs the hot path a compare
 // and a branch LLVM expects never to take, and the call is placed out of line.
-// WebAssembly links no conestd, and traps.
+// WebAssembly links no conestd, and traps. Nor has a GPU: there the check
+// calls what a kernel turns into a record of it in its error buffer, and its
+// return (genlgpu.c), reporting the index or the range's end.
 void genlPanic(GenState *gen, INode *site, GenlPanicKind kind, LLVMValueRef *vals) {
+    if (gen->opt->gpu) {
+        genlGpuFailCheck(gen, site, kind, kind == PanicIndex ? vals[0] : kind == PanicSlice ? vals[1] : NULL);
+        LLVMBuildUnreachable(gen->builder);
+        return;
+    }
     if (gen->opt->wasm) {
         LLVMValueRef trap = LLVMGetNamedFunction(gen->module, "llvm.trap");
         if (!trap)
@@ -1735,8 +1779,9 @@ static LLVMValueRef genlSubslice(GenState *gen, FnCallNode *fncall) {
     LLVMPositionBuilderAtEnd(gen->builder, boundsblk);
 
     LLVMValueRef slice = LLVMGetUndef(genlType(gen, fncall->vtype));
-    slice = LLVMBuildInsertValue(gen->builder, slice,
-        LLVMBuildGEP2(gen->builder, elemtype, base, &start, 1, ""), 0, "sliceptr");
+    LLVMValueRef first = LLVMBuildGEP2(gen->builder, elemtype, base, &start, 1, "");
+    genlGpuSite(gen, first, (INode*)fncall);
+    slice = LLVMBuildInsertValue(gen->builder, slice, first, 0, "sliceptr");
     return LLVMBuildInsertValue(gen->builder, slice,
         LLVMBuildSub(gen->builder, end, start, "slicelen"), 1, "slice");
 }
@@ -1818,13 +1863,18 @@ LLVMValueRef genlAddr(GenState *gen, INode *lval) {
             assert(arraytype->tag == ArrayTag);
             return genlArrayIndex(gen, fncall, arraytype, genlExpr(gen, fncall->objfn));
         }
+        // An element of a slice, or of what a pointer points at, is reached by
+        // arithmetic, which a kernel folds into an access chain or refuses
+        // where it is written (genlgpu.c, genlGpuSite)
         case ArrayRefTag: {
             LLVMValueRef arrref = genlExpr(gen, fncall->objfn);
             LLVMValueRef count = LLVMBuildExtractValue(gen->builder, arrref, 1, "count");
             LLVMValueRef index = genlExpr(gen, nodesGet(fncall->args, 0));
             genlBoundsCheck(gen, (INode*)fncall, index, count);
             LLVMValueRef sliceptr = LLVMBuildExtractValue(gen->builder, arrref, 0, "sliceptr");
-            return LLVMBuildGEP2(gen->builder, genlPointeeType(gen, objtype), sliceptr, &index, 1, "");
+            LLVMValueRef elem = LLVMBuildGEP2(gen->builder, genlPointeeType(gen, objtype), sliceptr, &index, 1, "");
+            genlGpuSite(gen, elem, (INode*)fncall);
+            return elem;
         }
         case ArrayDerefTag: {
             StarNode *deref = (StarNode *)fncall->objfn;
@@ -1834,11 +1884,15 @@ LLVMValueRef genlAddr(GenState *gen, INode *lval) {
             LLVMValueRef index = genlExpr(gen, nodesGet(fncall->args, 0));
             genlBoundsCheck(gen, (INode*)fncall, index, count);
             LLVMValueRef sliceptr = LLVMBuildExtractValue(gen->builder, arrref, 0, "sliceptr");
-            return LLVMBuildGEP2(gen->builder, genlPointeeType(gen, objtype), sliceptr, &index, 1, "");
+            LLVMValueRef elem = LLVMBuildGEP2(gen->builder, genlPointeeType(gen, objtype), sliceptr, &index, 1, "");
+            genlGpuSite(gen, elem, (INode*)fncall);
+            return elem;
         }
         case PtrTag: {
             LLVMValueRef index = genlExpr(gen, nodesGet(fncall->args, 0));
-            return LLVMBuildGEP2(gen->builder, genlPointeeType(gen, objtype), genlExpr(gen, fncall->objfn), &index, 1, "");
+            LLVMValueRef elem = LLVMBuildGEP2(gen->builder, genlPointeeType(gen, objtype), genlExpr(gen, fncall->objfn), &index, 1, "");
+            genlGpuSite(gen, elem, (INode*)fncall);
+            return elem;
         }
         default:
             // fnCallArrIndex is the only thing that builds an ArrIndexTag, and

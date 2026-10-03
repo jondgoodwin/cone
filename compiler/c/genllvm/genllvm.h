@@ -90,7 +90,23 @@ typedef struct GenState {
 
     GenRoots roots;         // The function being generated's roots, set aside around a nested one
     uint32_t rootmaps;      // How many root maps this object has built, which numbers them
+
+    // On SPIR-V's Vulkan form (genlgpu.c): the kernels this object made, one
+    // for each compute entry point; and the node each address computation
+    // marked by genlGpuSite was made for, by its number
+    struct GenlEntry *entries;
+    uint32_t entrycnt;
+    uint32_t entrymax;
+    Nodes *gpusites;
 } GenState;
+
+// A compute entry point's kernel (genlgpu.c): the LLVM function a dispatch
+// runs, the binding its error buffer takes, and its declaration
+typedef struct GenlEntry {
+    LLVMValueRef kernel;
+    unsigned errbinding;
+    FnDclNode *fndcl;
+} GenlEntry;
 
 // What the target's object file format does with COMDATs, which is how a
 // symbol becomes individually discardable
@@ -188,6 +204,38 @@ void genlFnAttr(GenState *gen, LLVMValueRef fn, char *name);
 char *genlSrcFileName(INode *node, size_t *len);
 // A constant '&[]u8' slice of a source file's name, as genlSrcFileName gives it
 LLVMValueRef genlSrcFileSlice(GenState *gen, char *text, size_t len);
+// The address of the constant copy of a source file's name, made once a module
+LLVMValueRef genlSrcFileText(GenState *gen, char *text, size_t len);
+// A source file's id in this module, from 1, by the global holding its name
+// (0 for a global that holds none); how many it has; and the name of each
+int genlSrcFileId(GenState *gen, LLVMValueRef global);
+int genlSrcFileCount(GenState *gen);
+char *genlSrcFileAt(GenState *gen, int id);
+
+// genlgpu.c: compute entry points, and a kernel's failed checks and slices
+// Make the kernel for a compute entry point whose function was just generated
+void genlComputeEntry(GenState *gen, FnDclNode *fnnode);
+// Settle each kernel once the GPU pipeline has inlined everything into it:
+// its failed checks recorded, its slices' elements reached by access chains
+void genlGpuEntries(GenState *gen);
+// Emit a Vulkan form's module, what LLVM cannot say patched in
+void genlGpuOut(GenState *gen, char *objpath, char *asmpath);
+// Each struct or array a function loads from or stores into a storage buffer
+// whole, loaded or stored a scalar at a time
+void genlGpuBufferAccess(GenState *gen, LLVMValueRef fn);
+// Mark an address computation with the node it was made for (Vulkan form only)
+void genlGpuSite(GenState *gen, LLVMValueRef inst, INode *site);
+// A check the compiler inserted, failed, on a GPU target: the call a kernel
+// records ('kind' a GenlPanicKind; 'value' the index or the range's end, or NULL)
+void genlGpuFailCheck(GenState *gen, INode *site, int kind, LLVMValueRef value);
+// Whether a function is core's 'panic' (conestd's 'cone_panic'); and a call to
+// it on a GPU target, given its arguments
+int genlIsConePanic(FnDclNode *fndcl);
+LLVMValueRef genlGpuPanic(GenState *gen, LLVMValueRef *args);
+
+// genllvm.c: the type a pointer is known to point to (an alloca's, a global's,
+// an address computation's, a parameter's as its uses agree), or NULL
+LLVMTypeRef genlGpuPointee(LLVMValueRef ptr);
 
 // genlalloc.c
 // Build an owning reference's allocation layout, once
