@@ -31,6 +31,9 @@ void nametblInit();
 // For an unknown name, it allocates memory for the string and adds it to name table.
 Name *nametblFind(char *strp, size_t strl);
 
+// A Name for the string that is not in the table, so no source can spell it
+Name *nametblPrivate(char *strp, size_t strl);
+
 // Return how many bytes have been allocated for global name table but not yet used
 size_t nametblUnused();
 

@@ -21,18 +21,27 @@
 # compiled into each, and with them its futex, which is why the runner links
 # synchronization.lib.
 #
-# Actors: the actors package's runtime (mailbox, work-stealing scheduler,
-# quiescence, handles counted through 'Arc') driven by actors written by hand
-# in exactly the shape the compiler is to generate for an 'actor' declaration
-# (concurrency_actors_pingpong.cone's header describes it; the chapter is
-# doc/reference/refconccomm.html, "Actors"). They are here, not in the
-# package's tests/ folder, because that shape is the compiler's contract: the
-# 'actor' declaration's scenarios will sit beside them and must behave the
-# same. Each runs threads and prints only what is the same every run; each
-# calls initAll() and finalAll(), which start nothing and stop the workers.
-# Each declares its message enums first, before any state or handle: the
-# other orders meet the order-dependent refusal ErrorNoSize (1069) of a cycle
-# through an owning reference (the package header, "THE SHAPE OF AN ACTOR").
+# Actors: the 'actor' declaration (compiler/c/parser/parseactor.c; the chapter
+# is doc/reference/refconccomm.html, "Actors"), and the actors package's
+# runtime it generates declarations for (mailbox, work-stealing scheduler,
+# quiescence, handles counted through 'Arc'). The concurrency_actor_*
+# scenarios are the declaration: what 'new' makes, a message's arguments
+# moved in, many threads sending to one actor, actors made in a loop, and the
+# refusals at parse (concurrency_actor_parse), at type check
+# (concurrency_actor_typecheck) and without the package
+# (concurrency_actor_runtime). The concurrency_actors_* scenarios are the
+# runtime, driven by declared actors: the scheduler's paths, the counting
+# that decides when an actor dies, quiescence; they are here, not in the
+# package's tests/ folder, because they pin what the compiler generates. Only
+# concurrency_actors_state_unsendable writes the generated shape out by hand,
+# since a declared actor's state has a name no source can spell. Each runs
+# threads and prints only what is the same every run; each calls initAll()
+# and finalAll(), which start nothing and stop the workers.
+#
+# A declaration written above an actor that lays its handle out first meets
+# the order-dependent refusal ErrorNoSize (1069) of a type still being laid
+# out: concurrency_actor_order records it (xfail), and
+# concurrency_actors_stress declares its two actors in the order that works.
 #
 # Not covered, with reasons:
 #
@@ -99,9 +108,45 @@ tags = ["typecheck", "genllvm", "runtime"]
 
 # -------- actors --------
 
+[scenario.concurrency_actor_counter]
+category = "run"
+description = "A declared actor made by 'new Counter(100, 3)', its init running on fresh state; four threads and main send it 40007 messages through copies of its handle, each handled alone with the state 'mut', calling a private method; the total is exact at quiescence"
+tags = ["parse", "typecheck", "genllvm", "runtime"]
+
+[scenario.concurrency_actor_oneway]
+category = "run"
+description = "One actor sending to another one way: 1000 sources made with 'new' in a loop, each keeping the sink's handle in its state and sending it 3 numbers; the sink, made by its implicit initializer with field defaults, sums them exactly and dies after the last source"
+tags = ["parse", "typecheck", "genllvm", "runtime"]
+
+[scenario.concurrency_actor_moves]
+category = "run"
+description = "Messages carrying an Arc[Mutex, T], added to under the lock by three actors and kept, finalized once after its last owner; and So owners moved into an actor's state, each finalized once, with the actor"
+tags = ["parse", "typecheck", "flow", "genllvm", "runtime"]
+
+[scenario.concurrency_actor_order]
+category = "run"
+description = "An actor whose message carries its own handle, declared below an actor whose state and message hold that handle: refused as a type still being laid out (1069), which the other order is not"
+tags = ["typecheck", "genllvm", "runtime"]
+xfail = true
+
+[scenario.concurrency_actor_parse]
+category = "reject"
+description = "What an actor's declaration may not say: a message returning a value, carrying a borrow, generic, or taking 'self &uni'; a 'pub' field; a static; a 'pub' function without 'self'; 'extern'; a macro; a generic actor; one naming an abstraction"
+tags = ["parse"]
+
+[scenario.concurrency_actor_typecheck]
+category = "reject"
+description = "An actor's private state and its non-'pub' methods reached through its handle; a message's and an initializer's argument that is not Sendable, refused at the parameter"
+tags = ["typecheck"]
+
+[scenario.concurrency_actor_runtime]
+category = "reject"
+description = "An actor declared in a module that does not import the actors package"
+tags = ["parse"]
+
 [scenario.concurrency_actors_pingpong]
 category = "run"
-description = "Two hand-written actors ping-pong a million messages, each seeing its own in send order; the workers start with the first actor, and finalAll ends the program at quiescence, both finalized once"
+description = "Two declared actors ping-pong a million messages, each seeing its own in send order; the workers start with the first actor, and finalAll ends the program at quiescence, both finalized once"
 tags = ["typecheck", "genllvm", "runtime"]
 
 [scenario.concurrency_actors_fanin]

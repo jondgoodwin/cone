@@ -51,6 +51,14 @@ typedef struct Lexer {
     char *prevend;
     char *prevlinep;
     uint32_t prevlinenbr;
+
+    // A source the compiler wrote itself: the declarations an 'actor'
+    // generates (parseactor.c). In it alone, '`#n`' names gennames[n], a name
+    // no source can spell (nametblPrivate). A diagnostic against it is
+    // reported where 'genat' is, the declaration it was generated from
+    INode *genat;
+    Name **gennames;
+    uint32_t ngennames;
 } Lexer;
 
 // Lexer flags

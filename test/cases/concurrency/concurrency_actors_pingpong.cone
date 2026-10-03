@@ -8,36 +8,14 @@
 // is active and no message is in flight, then stops the workers; main then
 // prints what the players' finalizers recorded.
 //
-// The actor is written by hand in the shape the compiler is to generate for
-//
-//   actor Player {
-//     peer Option[Player];
-//     seen u64; expect u64; disorder u64;
-//     fn meet(self &mut, peer Player) {...}
-//     fn ball(self &mut, n u64) {...}
-//     fn leave(self &mut) {...}
-//   }
-//
-// (a) Player_state, the state: the fields, and the methods, which run one
-//     message at a time with the state 'mut', and 'made', its constructor;
-//     it declares nothing about Sendable, since only the runtime reaches it
-// (b) Player_msg, the message enum: one variant per method, its fields the
-//     method's parameters
-// (c) Player, the handle: an 'Arc[opaq, T]' owner of the actor's
-//     actors.Mailbox[Player_msg], with one send function per method, which
-//     builds the variant and sends it, and 'start' ('spawn' is reserved),
-//     which makes the state from its arguments, each passed through
-//     actors.sendable, and answers a handle
-// (d) Player_dispatch: one function matching on the enum and calling the
-//     method
-//
-// The actors package's header (packages/actors/src/actors.cone) states the
-// shape in general.
+// The actor is declared: its fields are its state, 'new Player(first)' runs
+// its 'init' on fresh state and answers its handle, and each 'pub' method is
+// a message the handle sends. A message carries a handle (meet's 'p'), and the
+// state holds one, of the actor's own kind.
 
 mod concurrency_actors_pingpong;
 
 import stdio use *;
-import sync use Arc;
 import actors;
 
 const balls = 1000000u64;
@@ -55,29 +33,21 @@ fn @initpure init() {
   results = new Results(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64));
 }
 
-// (b) The messages, declared first (the package header says why)
-enum Player_msg {
-  struct Meet {pub p Player;}
-  struct Ball {pub n u64;}
-  struct Leave {}
-}
-
-// (a) The state
-struct Player_state {
+actor Player {
   peer Option[Player];
   seen u64;
   expect u64;
   disorder u64;
 
-  pub fn made(first u64) Player_state {
-    new Player_state(None[Player][], 0u64, first, 0u64);
+  fn init(self &new, first u64) {
+    *self = new Self(peer: None[Player][], seen: 0u64, expect: first, disorder: 0u64);
   }
 
-  fn meet(self &mut, p Player) {
+  pub fn meet(self, p Player) {
     peer = Some[Player][p];
   }
 
-  fn ball(self &mut, n u64) {
+  pub fn ball(self, n u64) {
     if n != expect {
       disorder = disorder + 1u64;
     }
@@ -98,7 +68,7 @@ struct Player_state {
     }
   }
 
-  fn leave(self &mut) {
+  pub fn leave(self) {
     peer = None[Player][];
   }
 
@@ -109,41 +79,11 @@ struct Player_state {
   }
 }
 
-// (d) Dispatch
-fn Player_dispatch(self &mut Player_state, msg Player_msg) {
-  match msg {
-    case imm m Player_msg.Meet {self.meet(m.p);}
-    case imm m Player_msg.Ball {self.ball(m.n);}
-    case is Player_msg.Leave {self.leave();}
-  }
-}
-
-// (c) The handle, its send functions, and start
-struct Player {
-  mb Arc[opaq, actors.Mailbox[Player_msg]];
-
-  pub fn start(first u64) Player {
-    new Player(actors.startActor[Player_state, Player_msg](
-      Player_state.made(actors.sendable(first)),
-      &Player_dispatch));
-  }
-
-  pub fn meet(self &, p Player) {
-    actors.send[Player_msg](mb, Player_msg.Meet[p]);
-  }
-  pub fn ball(self &, n u64) {
-    actors.send[Player_msg](mb, Player_msg.Ball[n]);
-  }
-  pub fn leave(self &) {
-    actors.send[Player_msg](mb, Player_msg.Leave[]);
-  }
-}
-
 fn main() {
   initAll();
   {
-    imm ping = Player.start(0u64);
-    imm pong = Player.start(1u64);
+    imm ping = new Player(0u64);
+    imm pong = new Player(1u64);
     ping.meet(pong);
     pong.meet(ping);
     ping.ball(0u64);

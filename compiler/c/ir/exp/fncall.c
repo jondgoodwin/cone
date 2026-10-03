@@ -1072,6 +1072,22 @@ int fnCallLowerMethod(TypeCheckState *pstate, FnCallNode *callnode) {
         // A generic type's method this instance lacks, its 'where' clause unmet
         if (foundnode == NULL && genericReportAbsent((INode*)callnode, objdereftype, methsym))
             return -1;
+        // An actor's handle carries its messages and nothing else: its state,
+        // and the methods it does not make messages, are its own
+        StructNode *state;
+        INode *statemember = foundnode == NULL ? actorStateMember(objdereftype, methsym, &state) : NULL;
+        if (statemember) {
+            Name *actorname = ((StructNode*)objdereftype)->namesym;
+            if (statemember->tag == FieldDclTag)
+                errorMsgNode((INode*)callnode, ErrorNotPublic,
+                    "`%s` is part of actor %s's private state, which only its own methods reach, one message at a time. Send it a message that uses it.",
+                    &methsym->namestr, &actorname->namestr);
+            else
+                errorMsgNode((INode*)callnode, ErrorNotPublic,
+                    "`%s` is private to actor %s: only its 'pub' methods are messages, which its handle sends.",
+                    &methsym->namestr, &actorname->namestr);
+            return -1;
+        }
         errorMsgNode((INode*)callnode, ErrorNoMbr, "Method or field `%s` not found.", &methsym->namestr);
         return -1;
     }

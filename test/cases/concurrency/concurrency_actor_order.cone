@@ -1,0 +1,47 @@
+// The order-dependent refusal of a type still being laid out (ErrorNoSize),
+// met by actors: a defect, recorded here until it is fixed (xfail).
+//
+// A handle's one field is an Arc of the actors package's Mailbox, whose type
+// argument is the actor's message enum; and a message that carries a handle
+// of its own kind holds that handle by value. Laid out from its message enum,
+// as the compiler orders an actor's declarations, an actor needs nothing
+// still in flight. But a declaration written ABOVE the actor that lays its
+// handle out first -- here Hub, whose state and message hold a Spoke -- lays
+// out Spoke's handle, then Mailbox[Spoke's messages], then the message 'link',
+// which holds a Spoke, still being laid out: refused, at Spoke, in the code
+// generated for it. Declared the other way round, Spoke first, it compiles and
+// prints what the .out file holds. The same happens with a plain struct
+// holding a handle written above the actor whose message carries the struct.
+
+mod concurrency_actor_order;
+
+import stdio use *;
+import actors;
+
+actor Hub {
+  spoke Option[Spoke];
+
+  fn init(self &new) {*self = new Self(None[Spoke][]);}
+
+  pub fn join(self, s Spoke) {
+    spoke = Some[Spoke][s];
+    printStr("joined\n");
+  }
+}
+
+actor Spoke {
+  next Option[Spoke];
+
+  fn init(self &new) {*self = new Self(None[Spoke][]);}
+
+  pub fn link(self, n Spoke) {next = Some[Spoke][n];}
+}
+
+fn main() {
+  initAll();
+  {
+    imm h = new Hub();
+    h.join(new Spoke());
+  }
+  finalAll();
+}

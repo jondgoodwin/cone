@@ -207,7 +207,14 @@ Visual Studio projects stay at the root.
   on the futex alone, Rust's way, the locks `Mutex`, `Rwlock`,
   `Condvar` and `Once`, unchecked with explicit lock and unlock when held
   as values, `Mutex` and `Rwlock` also lock permissions (`Arc[Mutex, T]`,
-  the lock taken by a borrow through it); `render` draws lit
+  the lock taken by a borrow through it); `actors` is the runtime an `actor`
+  declaration runs on, over `thread` and `sync`, Windows only: mailboxes, a
+  work-stealing scheduler of worker threads that start with the first actor,
+  actors counted through `Arc` and finalized once when their last handle and
+  message have gone, and quiescence, which its module's finalizer waits for
+  before stopping the workers (`configure`, `stats`), its header the shape of
+  what the compiler generates for an actor and its example `pingpong.cone` the
+  timed benchmark; `render` draws lit
   meshes through `gpu` (nothing of Vulkan's in it): a `Renderer` holding
   GPU meshes made once from a `mesh.Mesh` (a vertex buffer a stream, 32-bit
   indices, a draw a material group), textures and materials in `pool`s,

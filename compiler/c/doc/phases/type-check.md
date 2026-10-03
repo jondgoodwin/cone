@@ -705,7 +705,8 @@ Kept so that reopening one is a decision rather than a rediscovery.
 
 | File | Function | Purpose |
 | --- | --- | --- |
-| `conec.c` | `doAnalysis` | runs name resolution, gates on errors, then walks the program for type check, then judges where traced references are held (`regionTracedCheckAll`), which needs every type laid out |
+| `conec.c` | `doAnalysis` | runs name resolution, gates on errors, then walks the program for type check, then judges where traced references are held (`regionTracedCheckAll`), what crosses threads where it was not settled (`genericSendableCheckAll`), and what an actor's messages and initializers carry (`actorCheckAll`, `ir/types/actor.c`), each of which needs every type laid out |
+| `ir/types/actor.c` | `actorCheckAll`, `actorStateMember` | an actor's crossing parameters refused where not Sendable, at the parameter; the member of an actor's state a use through its handle names, reported as private (`fnCallLowerMethod`'s missing member) |
 | `ir/inode.c` | `inodeTypeCheck` | the dispatch switch, where both marks are set and tested, and where a struct, array or tuple layout is counted in flight |
 | | `inodeTypeCheckAny` | the same with no expected type |
 | `ir/itype.c` | `itypeTypeCheck` | check a node expected to be a type |

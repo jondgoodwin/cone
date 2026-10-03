@@ -84,6 +84,9 @@ void doAnalysis(ConeOptions *opt, ProgramNode **pgm) {
     // What crosses threads, where a struct it reaches was not laid out when
     // the instance asking was made (ir/meta/generic.c)
     genericSendableCheckAll();
+    // What a message or an actor's initializer carries to the actor's thread
+    // (ir/types/actor.c)
+    actorCheckAll();
 
     if (opt->check_tree)
         inodeCheckTree((INode*)*pgm);

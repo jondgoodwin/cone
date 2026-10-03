@@ -158,7 +158,7 @@ summary here was thin; the note was not.**
 | [Modularity](modularity.md) | agility | Every layer — block, function, type, thread, module, program — surfacing the same six strategies | composition, namespace and encapsulation broadly present; substitution, generativity and extensibility thin out above the type layer; no thread layer; the program layer has no namespace at all |
 | [Safety](safety.md) | agility | Memory and type safety without a garbage collector, at no runtime cost | a scorecard: what is checked, what is not, and the four shapes the gaps take |
 | [Panics](panics.md) | agility | A failure that must not happen ends the program at once, saying what and where — the caller's where — at no cost to the path that does not fail | built: `panic`, `assert`, `unreachable`, `todo`, a hook, the `Never` return type and the compiler's checks reporting their values; no recovery, no unwinding, no backtraces, no build-mode checks |
-| [Expressiveness and Attention](expressiveness-and-attention.md) | **the scale, not an aim** | Programming as Lego assembly — small, uniform, opaque interfaces. Attention is the scarce resource both aims are priced in | the mechanisms meant to deliver it are the unbuilt ones: no thread layer so no actor declaration (a library runtime only), no module substitution, borrowing narrowed only by convention |
+| [Expressiveness and Attention](expressiveness-and-attention.md) | **the scale, not an aim** | Programming as Lego assembly — small, uniform, opaque interfaces. Attention is the scarce resource both aims are priced in | the mechanisms meant to deliver it are the unbuilt ones: no thread layer (actors declared, their messages one-way, on a library runtime), no module substitution, borrowing narrowed only by convention |
 
 **References and regions is where the two axes meet**, which is why it is the
 most distinctive thing in the language: one construct — a region-decorated,
@@ -253,7 +253,7 @@ design behind it.
 | **Safety and trust** | `refsafety` · `reftypesafe` · `reftrust` · `refintrinsic` | [Safety](safety.md) · [intrinsic](../../compiler/c/doc/nodes/intrinsic.md) |
 | **Error handling** | `refexcept` · `refoption` · `refresult` | [Panics](panics.md); ⚠ **no note for recoverable errors** |
 | **Metaprogramming** | `refmacro` · `refmeta` | [generic](../../compiler/c/doc/nodes/generic.md) |
-| **Concurrency** | `refconc` · `refconccomm` · `refconcio` · `refcorout` | ⚠ **no note; no thread layer in the language** (OS threads and the futex are library code, the `thread` package, described in `refconc`; the actor runtime is the `actors` package, described in `refconccomm`, "Actors") |
+| **Concurrency** | `refconc` · `refconccomm` · `refconcio` · `refcorout` | ⚠ **no note; no thread layer in the language** (OS threads and the futex are library code, the `thread` package, described in `refconc`; the `actor` declaration and the `actors` package it runs on are described in `refconccomm`, "Actors"; the parser generates an actor's declarations, [Parse](../../compiler/c/doc/phases/parse.md) section 6) |
 | **Collections** | `reftypecoll` | ⚠ **no note** |
 
 ⚠ **A reference page shows the language's *intended* shape, not only what is

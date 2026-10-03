@@ -5,8 +5,8 @@ cognitive load, and why the balance falls where it does.
 **The aim** is that programming feels like plugging together Lego blocks — a
 simple assembly operation rather than a complex algorithmic calculation. **The
 distance** is that the mechanisms meant to deliver it are the ones not yet built:
-no thread layer, so no actor declaration (only a library runtime its actors are
-written by hand for); module substitution and generativity absent; and
+no thread layer, though actors are declared now, on a library runtime, their
+messages one-way; module substitution and generativity absent; and
 borrowing not yet narrowed by anything but convention.
 
 The framing is the author's, from a conversation of 7 September 2026. It is a
@@ -102,7 +102,7 @@ sharing, means most aliasing questions never arise to be asked.
 concurrency one.** [References and Regions](references-and-regions.md) carries
 what borrowing does today.
 
-## Actors, and why they rate highly [planned]
+## Actors, and why they rate highly [differs: built with one-way messages only: no replies, no 'actor trait', no generic actor]
 
 > *"What I like about actors is how much simpler it makes talking about
 > concurrency and designing around concurrency, and the modularness of it, as
@@ -116,10 +116,11 @@ systems."*
 
 **There is no thread layer at all today**, which [Modularity](modularity.md)
 records as the largest single hole in the layer table. The `thread` package's
-OS threads and futex are library ground for one, not the layer; so is the
-`actors` package, the runtime actors are to run on (mailboxes, a work-stealing
-scheduler, quiescence), which runs only actors written by hand in the shape an
-`actor` declaration is to generate.
+OS threads and futex are library ground for one, not the layer. Actors are
+declared (`actor`, the reference manual's "Actors"): fields as private state,
+`new` making one and answering its handle, each `pub` method a message whose
+arguments must be Sendable, run one at a time on the `actors` package's
+runtime (mailboxes, a work-stealing scheduler, quiescence).
 
 ## The evidence offered that expressiveness pays
 

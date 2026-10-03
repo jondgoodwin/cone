@@ -461,6 +461,13 @@ enum ErrorCode {
     // Lifetime bounds: '[T + 'a]', 'where T + 'a', '&<Trait + 'a' (ir/types/lifetime.h)
     ErrorLifetimeBound = 1249,  // A lifetime bound not met or not built: a borrow that is not global given for a ''static' bound, a value holding a borrow not known to last ''a' coerced to '&<Trait + 'a', a value holding a borrow that is not global made an owning virtual reference ('So[Trait]', bounded by ''static'), a bound on a generic type's parameter
 
+    // Actors: 'actor Name { ... }' (parser/parseactor.c, ir/types/actor.h). A
+    // message's argument that is not Sendable is ErrorNotSendable; the state
+    // reached through a handle is ErrorNotPublic
+    ErrorActorReturn = 1250,    // An actor's message method declaring a return type: a send returns at once, and nothing comes back
+    ErrorActorMember = 1251,    // What an actor's body may not hold, or a form of it not built: a 'pub' field, a static, a 'pub' function without 'self', a generic message, a macro, a 'use', an 'extern' or a 'self' of another kind; a generic actor, its 'is', 'extends' or an attribute
+    ErrorActorRuntime = 1252,   // An actor declared in a module that does not import the actors package it runs on
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name

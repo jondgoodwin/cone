@@ -1407,24 +1407,17 @@ void parseGlobalStmts(ParseState *parse, ModuleNode *mod, int atmodstart) {
             spankind = SpanModLine;
             break;
 
-        // 'actor' is a kind the grammar admits and the compiler does not build.
-        // Naming it here is what makes 'trait' a modifier on the kind rather
-        // than a keyword of its own: the abstraction of each kind is that kind's
-        // keyword followed by 'trait'. There is nothing behind it yet, so the
-        // declaration is reported and its body skipped rather than accepted with
-        // no semantics under it.
-        case ActorToken: {
-            errorMsgLex(ErrorUnbuiltKind,
-                "'actor' names a kind the compiler does not build yet. Its abstraction is spelled 'actor trait'.");
-            lexNextToken();
-            if (lexIsToken(TraitToken))
-                lexNextToken();
-            if (lexIsToken(IdentToken))
-                lexNextToken();
-            parseSkipDclBody();
+        // 'actor' declares an actor: its state and its methods, from which the
+        // declarations the actors package runs it by are generated
+        // (parseactor.c). Naming the kind here is also what makes 'trait' a
+        // modifier on it rather than a keyword of its own: the abstraction of
+        // each kind is that kind's keyword followed by 'trait', and 'actor
+        // trait' is admitted and not built, reported where it is written.
+        case ActorToken:
+            parseBadStatic(staticflag);
+            parseActor(parse, pubflag);
             spankind = SpanOther;
             break;
-        }
 
         // 'enum' type definition: the closed family, in both size varieties.
         // Every variant is padded out to the size of the largest unless the
@@ -1965,6 +1958,8 @@ Nodes *parseIncludeCheck(ProgramNode *pgm, BuildDesc *desc, char *text, char *ur
     parse.blockmods = newNodes(4);
     parse.bodyp = parse.bodyendp = parse.nameendp = NULL;
     parse.typed = 0;
+    parse.typep = parse.typeendp = NULL;
+    parse.dcltexts = NULL;
     INode **nodesp;
     uint32_t cnt;
     for (nodesFor(root->imports, cnt, nodesp)) {
@@ -2044,6 +2039,8 @@ ProgramNode *parsePgm(ConeOptions *opt, BuildDesc *desc) {
     parse.blockmods = NULL;
     parse.bodyp = parse.bodyendp = parse.nameendp = NULL;
     parse.typed = 0;
+    parse.typep = parse.typeendp = NULL;
+    parse.dcltexts = NULL;
 
     // Create module node and set up for parsing main source file.
     // The root's file is registered like any other, so an import loop back to
