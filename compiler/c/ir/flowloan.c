@@ -39,14 +39,18 @@ typedef struct {
     uint8_t part;       // a caller loan: the part of its parameter it lends (LifePart)
 } Loan;
 
-// A pending conflict: 'access' conflicted with 'loan', held by 'holder'
+// A pending conflict: 'access' conflicted with 'loan', held by 'holder'. On a
+// GPU target, one of kind PendingChosen is instead a holder given where 'loan'
+// and 'other' point on paths that joined (loanChosenPending)
 typedef struct {
     INode *access;
     uint32_t loan;
+    uint32_t other;
     uint32_t holder;
-    uint8_t kind;       // PathAccess
+    uint8_t kind;       // PathAccess, or PendingChosen
     uint8_t fired;
 } Pending;
+#define PendingChosen 0xFF
 
 static Loan *loans = NULL;
 static uint32_t nloans = 0;
@@ -583,6 +587,7 @@ static uint32_t loanPending(INode *access, int kind, uint32_t loan, uint32_t hol
     Pending *pend = &pendings[id];
     pend->access = access;
     pend->loan = loan;
+    pend->other = 0;
     pend->holder = holder;
     pend->kind = (uint8_t)kind;
     pend->fired = 0;
@@ -865,6 +870,8 @@ static void loanReport(Pending *pend, INode *usenode) {
         srcname, mutably, where, used, loanAttempt(pend->kind));
 }
 
+static void loanChosenReport(INode *node, char *what, uint32_t la, uint32_t lb);
+
 void loanUse(uint32_t var, INode *usenode) {
     PathSet *pending = pathVars[var].pending;
     if (pending == NULL)
@@ -873,6 +880,14 @@ void loanUse(uint32_t var, INode *usenode) {
         Pending *pend = &pendings[pending->ids[i]];
         if (pend->fired)
             continue;
+        if (pend->kind == PendingChosen) {
+            pend->fired = 1;
+            char what[160];
+            snprintf(what, sizeof(what), usenode->tag == VarDclTag ? "'%s', finalized as it dies,"
+                : "'%s', used here,", &pathVars[var].var->namesym->namestr);
+            loanChosenReport(usenode, what, pend->loan, pend->other);
+            continue;
+        }
         pend->fired = 1;
         // One error per access, however many borrows it conflicts with
         if (mapGet(pend->access, 0, 1))
@@ -989,4 +1004,147 @@ void loanFlightActivate(uint32_t mark, uint32_t receiver, int access, INode *nod
             return;
         }
     }
+}
+
+// *********************
+// GPU targets: a reference chosen at run time (flowloan.h)
+// *********************
+
+// Does 'set' hold the loan 'id' near?
+static int loanHasNear(PathSet *set, uint32_t id) {
+    if (set == NULL)
+        return 0;
+    for (uint32_t i = 0; i < set->cnt; ++i) {
+        if (!(set->ids[i] & LoanFar) && loanOf(set->ids[i]) == id)
+            return 1;
+    }
+    return 0;
+}
+
+// A near loan of 'a' that 'b' does not hold near, or 0
+static uint32_t loanNearNotIn(PathSet *a, PathSet *b) {
+    if (a == NULL)
+        return 0;
+    for (uint32_t i = 0; i < a->cnt; ++i) {
+        if (!(a->ids[i] & LoanFar) && !loanHasNear(b, loanOf(a->ids[i])))
+            return loanOf(a->ids[i]);
+    }
+    return 0;
+}
+
+// Any near loan of 'set', or 0
+static uint32_t loanNearAny(PathSet *set) {
+    if (set == NULL || set == &pathSetAll)
+        return 0;
+    for (uint32_t i = 0; i < set->cnt; ++i) {
+        if (!(set->ids[i] & LoanFar))
+            return loanOf(set->ids[i]);
+    }
+    return 0;
+}
+
+int loanNearApart(PathSet *a, PathSet *b, uint32_t *la, uint32_t *lb) {
+    // Widened to every loan by a loop that would not settle: not known to agree
+    if (a == &pathSetAll || b == &pathSetAll) {
+        *la = loanNearAny(a);
+        *lb = loanNearAny(b);
+        return a != b;
+    }
+    uint32_t x = loanNearNotIn(a, b);
+    uint32_t y = loanNearNotIn(b, a);
+    if (x == 0 && y == 0)
+        return 0;
+    *la = x ? x : loanNearAny(a);
+    *lb = y ? y : loanNearAny(b);
+    return 1;
+}
+
+// The memory a loan's place is in, where the loan itself says: a local's
+// (SPIR-V's Function storage class) or a global's (Private). What a caller
+// lent, or what a reference points at, is in whatever memory its origin is.
+enum LoanMemory {
+    LoanMemUnknown,
+    LoanMemLocal,
+    LoanMemGlobal,
+};
+static int loanMemory(uint32_t id) {
+    if (id == 0 || loans[id].kind == LoanCaller || loans[id].place.deref)
+        return LoanMemUnknown;
+    return loanVarIsGlobal(pathVars[loans[id].place.var].var) ? LoanMemGlobal : LoanMemLocal;
+}
+
+// Where a loan points, for the message: its variable, what kind it is, and
+// the line and column of the borrow
+static char *loanOrigin(uint32_t id, char *buf, size_t size) {
+    if (id == 0) {
+        snprintf(buf, size, "somewhere else");
+        return buf;
+    }
+    Loan *loan = &loans[id];
+    VarDclNode *var = pathVars[loan->place.var].var;
+    if (loan->kind == LoanCaller) {
+        snprintf(buf, size, "what the parameter '%s' points at (declared at %u:%u)", &var->namesym->namestr,
+            var->linenbr, loanColumn((INode *)var));
+        return buf;
+    }
+    char where[160];
+    loanWhere(loan, where, sizeof(where));
+    if (loanTempKind(&loan->place) != LoanTempNone) {
+        char srcname[128];
+        snprintf(buf, size, "%s (borrowed %s)", loanSourceName(&loan->place, srcname, sizeof(srcname)), where);
+    }
+    else if (loan->place.deref)
+        snprintf(buf, size, "what '%s' points at (borrowed %s)", &var->namesym->namestr, where);
+    else
+        snprintf(buf, size, "%s '%s' (borrowed %s)", loanMemory(id) == LoanMemGlobal ? "the global" : "the local",
+            &var->namesym->namestr, where);
+    return buf;
+}
+
+static void loanChosenReport(INode *node, char *what, uint32_t la, uint32_t lb) {
+    if (!loanReportOnce(node))
+        return;
+    char a[320];
+    char b[320];
+    int ka = loanMemory(la);
+    int kb = loanMemory(lb);
+    errorMsgNode(node, ErrorGpuRefChoice,
+        "On a GPU target a reference may not be chosen at run time, but %s may point at %s or at %s.%s Choose the index instead ('&buf[if c {i;} else {j;}]'), or the value ('if c {a;} else {b;}').",
+        what, loanOrigin(la, a, sizeof(a)), loanOrigin(lb, b, sizeof(b)),
+        ka && kb && ka != kb ? " These are two kinds of GPU memory, a local's and a global's, which no one pointer can reach." : "");
+}
+
+void loanChosen(INode *node, uint32_t la, uint32_t lb) {
+    loanChosenReport(node, "this value", la, lb);
+}
+
+void loanIndexedRefs(INode *node) {
+    if (!loanReportOnce(node))
+        return;
+    errorMsgNode(node, ErrorGpuRefIndexed,
+        "On a GPU target an array whose elements hold references may be indexed only by a literal or a constant: a pointer cannot be kept in GPU memory, so the array must break into separate values. Index an array of the values instead.");
+}
+
+// Keyed by the holder's declaration and the two loans, bit 30 set on each:
+// apart from a pending conflict's key, whose loan is never above LoanIdMask,
+// and from a caller loan's and a report's, whose middle number is 0
+uint32_t loanChosenPending(uint32_t holder, uint32_t la, uint32_t lb) {
+    INode *key = (INode *)pathVars[holder].var;
+    uint32_t a = 0x40000000u | la;
+    uint32_t b = 0x40000000u | lb;
+    uint32_t id = mapGet(key, a, b);
+    if (id)
+        return id;
+    if (npendings >= pendingcap)
+        pendings = (Pending *)pathGrow(pendings, &pendingcap, sizeof(Pending));
+    id = npendings++;
+    Pending *pend = &pendings[id];
+    pend->access = key;
+    pend->loan = la;
+    pend->other = lb;
+    pend->holder = holder;
+    pend->kind = PendingChosen;
+    pend->fired = 0;
+    mapPut(key, a, b, id);
+    return id;
 }

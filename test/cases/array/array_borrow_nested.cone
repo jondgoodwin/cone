@@ -1,0 +1,99 @@
+// Borrowing an element of a nested array, '&m[1][0]' and '&mut m[1][0]'.
+//
+// The borrow is re-associated into the index chain, so the outer index's
+// receiver is the inner index, itself a borrow of the row: a reference value
+// holding the row's address, not the borrow node at the chain's root. Code
+// generation took every borrowed index's receiver to be that root, read the
+// inner index as one, and conec crashed. The row is now indexed through the
+// reference, as any reference to an array is.
+//
+// Every element is different, so a borrow of the wrong row or column prints
+// the wrong number rather than passing. Each value is checked by hand against
+// the source: what a read-only borrow reads, what a write through '&mut' leaves
+// in the array and beside it, in both spellings of the type, as a struct's
+// field, with three sizes, through a '&mut' parameter, and an array that is a
+// List's element, the receiver there being the reference the List's '&[]'
+// returned.
+
+mod array_borrow_nested;
+
+import stdio use *;
+import collections use *;
+
+fn show(label &[]u8, x f32) {
+  printStr(label);
+  printStr(" = ");
+  printFloat(f64.from(x));
+  printStr("\n");
+}
+
+fn showI(label &[]u8, n i32) {
+  printStr(label);
+  printStr(" = ");
+  printInt(i64.from(n));
+  printStr("\n");
+}
+
+struct Grid {
+  pub k i32;
+  pub g Array[Array[f32, 3], 2];
+}
+
+fn writeThrough(r &mut Array[Array[f32, 3], 2]) {
+  imm e = &mut r[0][2];
+  *e = 30.5;
+}
+
+fn main() {
+  mut m Array[Array[f32, 3], 2] = [[1.5, 2.5, 3.5], [4.5, 5.5, 6.5]];
+  imm r = &m[1][0];
+  show("ro-nested", *r);
+  {
+    mut w = &mut m[1][2];
+    *w = *w + 60.0;
+  }
+  show("mut-nested-written", m[1][2]);
+  show("mut-nested-neighbour", m[1][1]);
+  show("mut-nested-other-row", m[0][2]);
+
+  mut n Array[f32, 2, 3] = [[1.25, 2.25, 3.25], [4.25, 5.25, 6.25]];
+  imm q = &n[0][1];
+  show("ro-several-sizes", *q);
+  {
+    mut w = &mut n[1][0];
+    *w = 40.75;
+  }
+  show("mut-several-sizes-written", n[1][0]);
+  show("mut-several-sizes-neighbour", n[1][1]);
+
+  mut s = new Grid(7, [[1.5, 2.5, 3.5], [4.5, 5.5, 6.5]]);
+  {
+    mut w = &mut s.g[1][1];
+    *w = 50.5;
+  }
+  show("mut-field-written", s.g[1][1]);
+  imm t = &s.g[0][2];
+  show("ro-field", *t);
+  showI("field-beside", s.k);
+
+  mut c Array[i32, 2, 2, 2] = [[[1, 2], [3, 4]], [[5, 6], [7, 8]]];
+  {
+    mut w = &mut c[1][0][1];
+    *w = 60;
+  }
+  showI("mut-three-sizes-written", c[1][0][1]);
+  imm u = &c[0][1][0];
+  showI("ro-three-sizes", *u);
+
+  writeThrough(&mut m);
+  show("mut-through-reference", m[0][2]);
+
+  mut la = new List[Array[f32, 2]]();
+  la.push([1.5, 2.5]);
+  {
+    mut w = &mut la[0usize][1];
+    *w = 20.5;
+  }
+  show("mut-list-element-written", la[0usize][1]);
+  show("mut-list-element-neighbour", la[0usize][0]);
+}

@@ -48,6 +48,7 @@ typedef struct ConeOptions {
 
     // Boolean flags
     int wasm;        // 1=WebAssembly
+    int gpu;         // 1=a GPU target, a SPIR-V triple (genSetup decides it)
     int release;    // 0=debug (no optimizations). 1=release (default)
     int library;    // 1=generate a C-API compatible static library
     int described;  // 1=a build description names the package: one object of several linked together

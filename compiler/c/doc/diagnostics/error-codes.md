@@ -343,6 +343,19 @@ state itself, or `actorCheckAll` after type check -- and the state's field or
 non-`pub` method reached through the handle is `ErrorNotPublic`, as any
 private member is.
 
+A GPU target takes four codes, one per remedy, all for what SPIR-V's logical
+addressing cannot type. A reference, or a value holding one, chosen at run
+time -- by an `if`, by a function's returns, or by a variable used after paths
+that gave it different places -- is `ErrorGpuRefChoice`, whatever memory its
+choices are in: the remedy is to choose the index or the value. An array or
+slice whose elements hold references, indexed by a value known only at run
+time, is `ErrorGpuRefIndexed`: the remedy is an array of the values. A global
+holding a reference is `ErrorGpuRefGlobal`, and a function calling itself,
+directly or through others, `ErrorGpuRecursion`. The first two are the loan
+walk's ([Flow Analysis](../phases/flow.md), "GPU targets"); the last two
+generation's (`genlGloVar`, `genlGpuCalls`), reported only for a program
+nothing earlier refused.
+
 ## The one code with no scenario
 
 `ErrorUnreachable` is reported by `errorUnreachable` and by nothing else. It

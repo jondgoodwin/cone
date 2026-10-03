@@ -191,4 +191,33 @@ void loanFlightAccess(Place *pl, int access, INode *node);
 // access conflicts with what another operand pushed since 'mark' carries
 void loanFlightActivate(uint32_t mark, uint32_t receiver, int access, INode *node);
 
+// GPU targets (flowGpu). A GPU's pointers are typed by the memory they point
+// into, and SPIR-V's logical addressing, and WGSL, cannot choose one at run
+// time (no select or phi of pointers), nor keep one in memory. Once every
+// function is inlined, each borrow has one origin and its memory kind follows
+// from it, so the walk refuses whatever would give a value more than one: a
+// reference, or a value holding one, chosen at run time, of any kind. A choice
+// is where paths meet and a value's near loans differ between them: an 'if'
+// whose arms point at different places, reported at once; or a holder given
+// different ones on paths that join, reported at its next use, as a pending
+// conflict is, so a holder reassigned before it is used again is not one.
+//
+// Do the near loans of 'a' and 'b' differ? If so, 'la' is one of 'a''s that
+// 'b' lacks, or any of 'a''s, and 'lb' the same of 'b' (0 where a set has none)
+int loanNearApart(PathSet *a, PathSet *b, uint32_t *la, uint32_t *lb);
+
+// Report, at 'node', a value of an 'if', a 'match' or a block chosen at run
+// time between where 'la' and 'lb' point
+void loanChosen(INode *node, uint32_t la, uint32_t lb);
+
+// A pending conflict for the holder 'holder', given where 'la' and 'lb' point
+// on paths that joined: fired, as an ErrorGpuRefChoice, at its next use
+uint32_t loanChosenPending(uint32_t holder, uint32_t la, uint32_t lb);
+
+// Report, at 'node', an array or slice whose elements hold references indexed
+// by a value known only at run time: logical addressing keeps no pointer in
+// memory, so such an array must break into separate values, which only a
+// literal index allows
+void loanIndexedRefs(INode *node);
+
 #endif

@@ -110,7 +110,11 @@ typedef struct {
     uint32_t jcnt;
     PathSet *jholds;
     PathSet *jpending;
-    uint8_t holder;     // its type carries a borrow, so it may hold a loan
+    PathSet *jfirst;    // scratch: a join on a GPU target, what the first path gives it
+    uint32_t jla;       // scratch: a join on a GPU target, a loan of each of two paths that differ
+    uint32_t jlb;
+    uint8_t japart;     // scratch: a join on a GPU target, two paths gave it different places
+    uint8_t holder;    // its type carries a borrow, so it may hold a loan
     uint8_t temp;       // a temporary's stand-in (TempNode.walkvar), ending with its statement
     uint8_t state;     // drop-flag client: what it may hold here (DropState bits)
     uint8_t jstate;     // scratch: a join

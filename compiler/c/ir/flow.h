@@ -114,6 +114,11 @@ void flowStateInit(FlowState *fstate, FnSigNode *fnsig);
 // found settles the gate
 extern int flowGateCountAll;
 
+// Set for a GPU target (a SPIR-V triple), which can type no pointer chosen
+// at run time or kept in memory: every function is walked for loans, and the
+// walk refuses those shapes (flowloan.h, "GPU targets")
+extern int flowGpu;
+
 // A value a return, break or block end hands out has this type
 void flowGateResultAsk(FlowState *fstate, INode *type);
 // A call of two or more arguments has one that is a borrowed reference

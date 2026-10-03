@@ -1698,6 +1698,7 @@ void flowScopePop(size_t startpos) {
 // *********************
 
 int flowGateCountAll = 0;
+int flowGpu = 0;
 
 // Functions walked, functions gated, and functions each trigger fired in
 static uint32_t flowGateFns = 0;

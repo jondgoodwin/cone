@@ -364,6 +364,9 @@ static uint32_t stamp = 0;
 static int dead = 0;            // the current path has jumped away: nothing after it runs
 static int pathLoans = 1;       // borrow freezing is walking
 static int pathDrops = 0;       // drop flags are walking
+static int pathGpuChoices = 0;  // a reference chosen at run time is refused: a GPU target's loan walk
+static PathSet *pwRetFirst = NULL;  // on a GPU target, what the first 'return' walked carries
+static int pwRetSeen = 0;
 
 // -V 2 tallies
 static uint32_t statFns = 0;
@@ -519,10 +522,14 @@ static int pathJoin(PathDelta *deltas, int withcurrent) {
                 pv->jholds = NULL;
                 pv->jpending = NULL;
                 pv->jstate = 0;
+                pv->jfirst = entry->holds;
+                pv->japart = 0;
                 if (ntouched == touchedcap)
                     touched = (uint32_t *)pathGrow(touched, &touchedcap, sizeof(uint32_t));
                 touched[ntouched++] = entry->var;
             }
+            else if (pathGpuChoices && pv->holder && !pv->japart)
+                pv->japart = (uint8_t)loanNearApart(pv->jfirst, entry->holds, &pv->jla, &pv->jlb);
             ++pv->jcnt;
             pv->jholds = pathSetUnion(pv->jholds, entry->holds);
             pv->jpending = pathSetUnion(pv->jpending, entry->pending);
@@ -539,7 +546,14 @@ static int pathJoin(PathDelta *deltas, int withcurrent) {
             holds = pathSetUnion(holds, pv->holds);
             pending = pathSetUnion(pending, pv->pending);
             state |= pv->state;
+            if (pathGpuChoices && pv->holder && !pv->japart)
+                pv->japart = (uint8_t)loanNearApart(pv->jfirst, pv->holds, &pv->jla, &pv->jlb);
         }
+        // On a GPU target, a holder the paths gave different places is a
+        // reference chosen at run time, refused if it is used again
+        // (flowloan.h, "GPU targets")
+        if (pv->japart)
+            pending = pathSetAdd(pending, loanChosenPending(touched[i], pv->jla, pv->jlb));
         if (!pathSetEqual(holds, pv->holds) || !pathSetEqual(pending, pv->pending)) {
             pathSetFacts(touched[i], holds, pending);
             changed = 1;
@@ -702,6 +716,16 @@ static void pwDropUse(Place *pl, INode *node, int borrow) {
     dropUse(owner == var ? pl->var : pathVar(owner), pl->use ? pl->use : node, borrow);
 }
 
+// Is an index known as the program is compiled: a literal, or a named
+// constant, through the casts type check wraps it in?
+static int pwIsLitIndex(INode *arg) {
+    while (arg->tag == CastTag)
+        arg = ((CastNode *)arg)->exp;
+    if (isNameUseNode(arg) && ((NameUseNode *)arg)->dclnode && ((NameUseNode *)arg)->dclnode->tag == ConstDclTag)
+        return 1;
+    return arg->tag == ULitTag;
+}
+
 // May other references reach what this reference points at? Every permission
 // but 'uni' may alias.
 static int pwMayAlias(INode *reftype) {
@@ -830,10 +854,23 @@ static int pwPlace(INode **nodep, Place *pl, PathSet **base) {
         uint16_t objtag = iexpGetTypeDcl(index->objfn)->tag;
         int found = objtag == RefTag || objtag == ArrayRefTag || objtag == PtrTag
             ? pwThrough(&index->objfn, pl, base) : pwPlace(&index->objfn, pl, base);
+        // On a GPU target, elements holding references are picked only by a
+        // literal index, so that the array breaks into separate values
+        // (flowloan.h, "GPU targets"). What is indexed through a reference or
+        // a slice holds such elements where what it points at does.
+        INode *indexed = iexpGetTypeDcl(index->objfn);
+        if (objtag == RefTag || objtag == ArrayRefTag)
+            indexed = ((RefNode *)indexed)->vtexp;
+        else if (objtag == PtrTag)
+            indexed = ((StarNode *)indexed)->vtexp;
+        int holdsrefs = pathGpuChoices && pwCarries(indexed);
         INode **argsp;
         uint32_t cnt;
-        for (nodesFor(index->args, cnt, argsp))
+        for (nodesFor(index->args, cnt, argsp)) {
             pwValue(argsp, 0);
+            if (holdsrefs && !pwIsLitIndex(*argsp))
+                loanIndexedRefs(node);
+        }
         if (found)
             pwStep(pl, PlaceStepElem);
         return found;
@@ -1868,6 +1905,17 @@ static PathSet *pwStmts(BlockNode *blk, int move) {
                     loanApart(ret->exp, apart, NULL, LoanEscapeReturn);
                 else
                     pwBoundHolds(ret->exp, pwSig->rettype, carried);
+                // On a GPU target, each return hands back one place
+                // (flowloan.h, "GPU targets")
+                uint32_t la, lb;
+                if (pathGpuChoices && pwCarries(pwSig->rettype)) {
+                    if (!pwRetSeen) {
+                        pwRetFirst = carried;
+                        pwRetSeen = 1;
+                    }
+                    else if (loanNearApart(pwRetFirst, carried, &la, &lb))
+                        loanChosen(ret->exp, la, lb);
+                }
             }
             pwExit(*nodesp, 0);
             pwScopeEnd(0);
@@ -1914,6 +1962,22 @@ static PathFrame *pwFramePush(BlockNode *blk) {
     return frame;
 }
 
+// On a GPU target, the value of 'node' -- an 'if', or a block left by 'break'
+// -- must point at one place on every path it arrives by (flowloan.h, "GPU
+// targets")
+static void pwGpuOneValue(INode *node, PathDelta *paths) {
+    if (!pathGpuChoices || paths == NULL || !pwCarries(((IExpNode *)node)->vtype))
+        return;
+    // The paths are pushed, last first: the message names them as written
+    uint32_t la, lb;
+    for (PathDelta *path = paths->next; path; path = path->next) {
+        if (loanNearApart(paths->value, path->value, &la, &lb)) {
+            loanChosen(node, lb, la);
+            return;
+        }
+    }
+}
+
 // The join of the paths that left a block by 'break', or fell out of its end
 static PathSet *pwBlockExits(PathFrame *frame, PathSet *value, int fallthrough) {
     if (frame->exits == NULL)
@@ -1921,6 +1985,7 @@ static PathSet *pwBlockExits(PathFrame *frame, PathSet *value, int fallthrough) 
     PathDelta *paths = frame->exits;
     if (fallthrough)
         paths = pathDeltaPush(paths, pathDelta(frame->mark, value));
+    pwGpuOneValue((INode *)frame->blk, paths);
     pathRollback(frame->mark);
     value = NULL;
     for (PathDelta *path = paths; path; path = path->next)
@@ -2002,6 +2067,7 @@ static PathSet *pwLoop(BlockNode *blk) {
     PathFrame *frame = &frames[f];
     PathSet *value = NULL;
     if (frame->exits) {
+        pwGpuOneValue((INode *)blk, frame->exits);
         for (PathDelta *path = frame->exits; path; path = path->next)
             value = pathSetUnion(value, path->value);
         pathJoin(frame->exits, 0);
@@ -2046,7 +2112,9 @@ static PathSet *pwIf(IfNode *ifnode, int move) {
         dead = 0;
         pathRollback(condmark);
     }
-    if (!haselse)
+    if (haselse)
+        pwGpuOneValue((INode *)ifnode, paths);
+    else
         paths = pathDeltaPush(paths, pathDelta(mark, NULL));
     pathRollback(mark);
     if (paths == NULL)
@@ -2231,6 +2299,9 @@ void flowPathWalk(FnDclNode *fndcl, int loans, int drops) {
         ++statLoanFns;
     pathLoans = loans;
     pathDrops = drops;
+    pathGpuChoices = flowGpu && loans;
+    pwRetFirst = NULL;
+    pwRetSeen = 0;
     loanWalkBegin();
     if (drops)
         dropWalkBegin();

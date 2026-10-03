@@ -1,0 +1,53 @@
+// On a GPU target a reference may not be chosen at run time, whatever memory
+// its choices are in: SPIR-V's logical addressing, and WGSL, have no select or
+// phi of pointers. An 'if' whose arms point at different places is refused
+// where it is written, as is a function whose returns do. The shapes that are
+// no choice -- a reference reassigned before it is used again, one made
+// afresh on each pass of a loop, a choice of value -- are in
+// module_target_spirv_kinds.
+
+mod ref_gpu_choice;
+
+mut total f32 = 0.0;
+
+struct Cursor['a] {
+  pub at &'a f32;
+}
+
+// Between a local and a global: two kinds of GPU memory
+fn betweenKinds(c Bool, x f32) f32 {
+  imm a = x;
+  imm r = if c {&a;} else {&total;};  //~ ErrorGpuRefChoice "two kinds of GPU memory"
+  *r;
+}
+
+// Between two locals, written through
+fn betweenLocals(c Bool, x f32) f32 {
+  mut a = x;
+  mut b = x;
+  {
+    imm r = if c {&mut a;} else {&mut b;};  //~ ErrorGpuRefChoice
+    *r = 3.0;
+  }
+  a + b;
+}
+
+// A struct holding a reference, chosen
+fn betweenCursors(c Bool, x f32) f32 {
+  imm a = x;
+  imm k = if c {new Cursor(&a);} else {new Cursor(&total);};  //~ ErrorGpuRefChoice
+  *k.at;
+}
+
+// One of a function's reference arguments handed back by a choice
+fn pick(c Bool, a &f32, b &f32) &f32 {
+  if c {a;} else {b;};  //~ ErrorGpuRefChoice "what the parameter 'a' points at"
+}
+
+// The same, by two returns
+fn pickReturn(c Bool, a &f32, b &f32) &f32 {
+  if c {
+    return a;
+  }
+  b;  //~ ErrorGpuRefChoice
+}

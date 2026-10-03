@@ -1,0 +1,158 @@
+// ---- Buffers and jobs: data made on the GPU, and work recorded over it ----
+
+// The usage of every buffer gpuwork makes: bound as storage, written by
+// uploads, and copied from (to read it back, or into another buffer)
+const WORK_USAGE = BUFFER_USAGE_STORAGE | BUFFER_USAGE_COPY_DST | BUFFER_USAGE_COPY_SRC;
+
+// A buffer holding 'words', 32-bit numbers (u32, i32 or f32 bits), in the
+// GPU's own memory. The words are copied now, and into the buffer by the GPU
+// ahead of whatever is submitted next. Check 'isValid'.
+pub fn upload(device &mut Device, words &[]u32) Buffer {
+  imm bytes = u64.from(words.len) * 4u64;
+  imm buffer = device.createBuffer(if bytes == 0u64 { 4u64; } else { bytes; }, WORK_USAGE);
+  if bytes > 0u64 and buffer.isValid() { device.queue.writeBuffer(&buffer, 0u64, &words[0usize] as *u8, bytes); }
+  buffer;
+}
+
+// A buffer holding one 'value', a struct of 32-bit numbers (or fixed arrays
+// of them): what a kernel's by-value struct parameter is bound to, a small
+// read-only storage buffer. Check 'isValid'.
+pub fn uploadValue[T](device &mut Device, value &T) Buffer {
+  imm bytes = u64.from(mem.sizeof[T]());
+  imm buffer = device.createBuffer(if bytes == 0u64 { 4u64; } else { bytes; }, WORK_USAGE);
+  if bytes > 0u64 and buffer.isValid() { device.queue.writeBuffer(&buffer, 0u64, value as *u8, bytes); }
+  buffer;
+}
+
+// A buffer of 'count' words, every one zero: for a kernel to write. Check
+// 'isValid'.
+pub fn zeroed(device &mut Device, count usize) Buffer {
+  imm bytes = u64.from(count) * 4u64;
+  imm buffer = device.createBuffer(if bytes == 0u64 { 4u64; } else { bytes; }, WORK_USAGE);
+  if bytes > 0u64 and buffer.isValid() {
+    imm zeros = libc.calloc(count, 4usize);
+    device.queue.writeBuffer(&buffer, 0u64, zeros, bytes);
+    libc.free(zeros);
+  }
+  buffer;
+}
+
+// The words of a buffer the CPU reads (a job's readback, once its job is
+// complete), copied out; none for a buffer the CPU does not map
+pub fn wordsOf(buffer &Buffer) List[u32] {
+  imm p = buffer.mappedRange() as *u32;
+  imm n = usize.from(buffer.size / 4u64);
+  mut out = List[u32].withCapacity(n);
+  if (p as usize) == 0usize { return out; }
+  mut i = 0usize;
+  while i < n {
+    out.push(*(p + i));
+    i = i + 1usize;
+  }
+  out;
+}
+
+// A job: work for the GPU over buffers moved into it. Its buffers are given
+// to it ('give', each a slot number), its dispatches recorded over them
+// ('dispatch'), copies to read some back recorded ('readback'), and then it
+// is submitted ('works.submit'), the buffers going with it. They come back
+// in its Completion once the GPU has finished, the same slots. A job is
+// recorded and submitted within one frame of the device's (it records into
+// the frame's commands); one submitted in a later frame is refused.
+pub struct Job {
+  buffers List[Buffer];
+  groups List[BindGroup];      // one a dispatch, kept until the GPU is done
+  encoder CommandEncoder;
+  frame u64;                   // the device frame it records into
+  pub failed Bool;             // a request was refused: it completes, not ok, without running
+
+  // An empty job, recording into the device's current frame
+  pub fn make(device &mut Device) Job {
+    imm encoder = device.createCommandEncoder();
+    new Job(List[Buffer].empty(), List[BindGroup].empty(), encoder, device.frameNumber, false);
+  }
+
+  // Move 'buffer' into the job: its slot, by which dispatches bind it and
+  // the job's Completion hands it back
+  pub fn give(self &mut, buffer Buffer) u32 {
+    buffers.push(buffer);
+    u32.from(buffers.len() - 1usize);
+  }
+
+  // How many buffers it holds
+  pub fn count(self &) u32 { u32.from(buffers.len()); }
+
+  // Run 'kernel' in 'x' by 'y' by 'z' workgroups, binding i the buffer in
+  // slot 'slots[i]'. It sees what the job's earlier dispatches wrote. Refused
+  // (and the job failed) if the slots do not match the kernel's bindings, a
+  // slot is empty or is named twice, or a buffer is not a storage buffer.
+  pub fn dispatch(self &mut, device &Device, kernel &Kernel, slots &[]u32, x u32, y u32 = 1u32, z u32 = 1u32) Bool {
+    if !kernel.isValid() {
+      return self.refuse("dispatch: the kernel is not valid");
+    }
+    if slots.len != usize.from(kernel.bindings) {
+      return self.refuse("dispatch: the slots given are not one for each of the kernel's bindings");
+    }
+    mut entries = List[BindGroupEntry].empty();
+    mut i = 0usize;
+    while i < slots.len {
+      imm s = usize.from(slots[i]);
+      if s >= buffers.len() or !buffers[s].isValid() {
+        return self.refuse("dispatch: a slot holds no buffer");
+      }
+      if (buffers[s].usage & BUFFER_USAGE_STORAGE) == 0u32 {
+        return self.refuse("dispatch: a buffer was not made with BUFFER_USAGE_STORAGE");
+      }
+      if buffers[s].size > MAX_STORAGE_BUFFER_BINDING_SIZE {
+        return self.refuse("dispatch: a buffer is larger than WebGPU's storage binding (128 MiB)");
+      }
+      // WebGPU refuses a buffer bound twice in one dispatch when either
+      // binding writes it
+      mut j = 0usize;
+      while j < i {
+        if slots[j] == slots[i] {
+          return self.refuse("dispatch: a slot is bound twice");
+        }
+        j = j + 1usize;
+      }
+      entries.push(BindGroupEntry.buffer(u32.from(i), buffers[s]));
+      i = i + 1usize;
+    }
+    imm group = device.createBindGroup(&kernel.groupLayout, entries.view());
+    if !group.isValid() {
+      return self.refuse("dispatch: the bind group was not made");
+    }
+    {
+      mut pass = encoder.beginComputePass();
+      pass.setPipeline(&kernel.pipeline);
+      pass.setBindGroup(0u32, &group);
+      pass.dispatchWorkgroups(x, y, z);
+      pass.end();
+    }
+    groups.push(group);
+    true;
+  }
+
+  // Copy the buffer in slot 'slot', after the dispatches recorded so far,
+  // into a new buffer the CPU reads: its slot, whose words 'wordsOf' (or
+  // the Completion's 'words') gives once the job is complete. Refused (and
+  // the job failed) for an empty slot or a buffer not made with
+  // BUFFER_USAGE_COPY_SRC; the answer is then the slot count.
+  pub fn readback(self &mut, device &mut Device, slot u32) u32 {
+    imm s = usize.from(slot);
+    if s >= buffers.len() or !buffers[s].isValid() or (buffers[s].usage & BUFFER_USAGE_COPY_SRC) == 0u32 {
+      self.refuse("readback: the slot holds no buffer, or one not made with BUFFER_USAGE_COPY_SRC");
+      return u32.from(buffers.len());
+    }
+    imm size = buffers[s].size;
+    imm target = device.createBuffer(size, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+    encoder.copyBufferToBuffer(buffers[s], 0u64, &target, 0u64, size);
+    self.give(target);
+  }
+
+  fn refuse(self &mut, msg &[]u8) Bool {
+    fail(msg);
+    failed = true;
+    false;
+  }
+}
