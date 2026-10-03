@@ -29,8 +29,10 @@
 // about the direction the rings advance. With 'caps', and a closed profile
 // between open ends, the first ring is closed by an n-gon facing back and
 // the last by one facing forward. 'flip' reverses every face. us holds each
-// profile point's u and then 1; vs each ring's v and then 1. Vertex
-// (i, j)'s "along" is vs[i] and its "around" us[j].
+// profile point's u and then 1 (m + 1 values), or that for each ring in turn
+// (nr (m + 1) values, a loft's rings each with their own); vs each ring's v
+// and then 1. Vertex (i, j)'s "along" is vs[i] and its "around" ring i's
+// u[j].
 fn tube(pos &List[Vec3], m usize, nr usize, profileClosed Bool, ringsClosed Bool, caps Bool, flip Bool,
     us &List[f32], vs &List[f32], capStart &List[Vec2], capEnd &List[Vec2]) PolyMesh {
   mut along = List[f32].withCapacity(m * nr);
@@ -40,7 +42,7 @@ fn tube(pos &List[Vec3], m usize, nr usize, profileClosed Bool, ringsClosed Bool
     mut j = 0usize;
     while j < m {
       along.push(*vs[r]);
-      around.push(*us[j]);
+      around.push(ringU(us, m, r, j));
       j = j + 1usize;
     }
     r = r + 1usize;
@@ -63,18 +65,16 @@ fn tube(pos &List[Vec3], m usize, nr usize, profileClosed Bool, ringsClosed Bool
       mut j = 0usize;
       while j < ns {
         imm j1 = (j + 1usize) % m;
-        imm u0 = *us[j];
-        imm u1 = *us[j + 1usize];
         face.clear();
         fuv.clear();
         face.push(u32.from(i * m + j));
-        fuv.push(new Vec2(u0, v0));
+        fuv.push(new Vec2(ringU(us, m, i, j), v0));
         face.push(u32.from(i * m + j1));
-        fuv.push(new Vec2(u1, v0));
+        fuv.push(new Vec2(ringU(us, m, i, j + 1usize), v0));
         face.push(u32.from(i1 * m + j1));
-        fuv.push(new Vec2(u1, v1));
+        fuv.push(new Vec2(ringU(us, m, i1, j + 1usize), v1));
         face.push(u32.from(i1 * m + j));
-        fuv.push(new Vec2(u0, v1));
+        fuv.push(new Vec2(ringU(us, m, i1, j), v1));
         emitFace(&mut counts, &mut idx, &mut uvs, &face, &fuv, flip);
         j = j + 1usize;
       }
@@ -103,6 +103,12 @@ fn tube(pos &List[Vec3], m usize, nr usize, profileClosed Bool, ringsClosed Bool
     emitFace(&mut counts, &mut idx, &mut uvs, &face, &fuv, flip);
   }
   build(pos, &counts, &idx, &uvs, &along, &around);
+}
+
+// Ring r's u at profile point j (j = m the closing 1): from one list for
+// every ring, or ring r's own
+fn ringU(us &List[f32], m usize, r usize, j usize) f32 {
+  if us.len() == m + 1usize {*us[j];} else {*us[r * (m + 1usize) + j];};
 }
 
 // Add one face, its corners and their uvs, reversed when 'flip'
