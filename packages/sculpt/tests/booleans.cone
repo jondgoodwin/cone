@@ -8,11 +8,14 @@
 // bottom (y-) 4, top (y+) 5. Each quad is cut into two triangles from its
 // first corner (the front face along y = x).
 //
-// - Exact predicates: orient2d and orient3d on points whose orientation f64
-//   gets wrong or cannot tell: (0, 0), (1, 1) and (2^-60 + 0.5, 0.5) is to
-//   the left (the f64 determinant rounds to 0); a point on the line is 0; a
-//   triangle's own plane holds its centroid's f32 neighbours only when exactly
-//   on it; sign flips with the order of the points.
+// - Exact predicates: (0.5 + 2^-53, 0.5), (12, 12), (24, 24), Kettner et
+//   al.'s classroom example, whose orientation is (11.5 - u) 23.5 - 11.5
+//   (23.5 - u) = -12u for u = 2^-53, below what an f64 evaluation can resolve:
+//   -1, and its mirror image across the diagonal +1. A point an ulp to either
+//   side of y = x at 0.5 is -1 or +1, one on it 0. Far out (2^40), a point
+//   2^-20 off the line rounds onto it (0) and one an ulp (2^-12) off is +1. A
+//   point 2^-60 in front of a triangle is +1, behind its turned-over twin -1,
+//   in its plane 0; swapping two corners flips a sign.
 // - Overlapping cubes, B = A moved by (0.5, 0.25, 0.375): B is [-0.5, 1.5] x
 //   [-0.75, 1.25] x [-0.625, 1.375]. The intersection is the box [-0.5, 1] x
 //   [-0.75, 1] x [-0.625, 1], 1.5 x 1.75 x 1.625 = 4.265625: 8 vertices, 12
@@ -322,7 +325,10 @@ fn sameFaceSet(a &PolyMesh, b &PolyMesh, label &[]u8) {
 }
 
 fn exactPredicates() {
-  // (0,0), (1,1), (0.5 + 2^-60, 0.5): just right of the diagonal seen along it
+  // Kettner et al.: -12u, u = 2^-53
+  imm u = 0.00000000000000011102230246251565404236316680908203125d;
+  expectInt(i64.from(orient2dSign(0.5d + u, 0.5d, 12.d, 12.d, 24.d, 24.d)), -1, "orient2d Kettner's example");
+  expectInt(i64.from(orient2dSign(0.5d, 0.5d + u, 12.d, 12.d, 24.d, 24.d)), 1, "orient2d its mirror image");
   imm tiny = 0.000000000000000000867361737988403547205962240695953369140625d;
   expectInt(i64.from(orient2dSign(0.d, 0.d, 1.d, 1.d, 0.5d + 0.0000000000000001d, 0.5d)), -1, "orient2d right");
   expectInt(i64.from(orient2dSign(0.d, 0.d, 1.d, 1.d, 0.5d, 0.5d + 0.0000000000000001d)), 1, "orient2d left");
