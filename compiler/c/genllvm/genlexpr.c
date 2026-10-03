@@ -1402,8 +1402,14 @@ LLVMValueRef genlIsType(GenState *gen, CastNode *isnode) {
         // its tag field through the same kind of reference for the same reason.
         if (istype->tag == RefTag)
             val = LLVMBuildLoad2(gen->builder, genlPointeeType(gen, exptype), val, "nullable");
-        if (LLVMGetTypeKind(ptrtype) != LLVMPointerTypeKind)
-            val = LLVMBuildExtractValue(gen->builder, val, 0, "ptr"); // VirtRef & ArrayRef
+        // A virtual reference or a slice is two words, and the empty variant is
+        // the one whose first word, the pointer, is null -- as the variant
+        // literal builds it -- so that word is what is compared, against a null
+        // of its own type
+        if (LLVMGetTypeKind(ptrtype) != LLVMPointerTypeKind) {
+            val = LLVMBuildExtractValue(gen->builder, val, 0, "ptr");
+            ptrtype = LLVMStructGetTypeAtIndex(ptrtype, 0);
+        }
         LLVMValueRef nullptr = LLVMConstPointerNull(ptrtype);
         LLVMIntPredicate cmpop = structtype->fields.used == 1 ? LLVMIntEQ : LLVMIntNE;
         return LLVMBuildICmp(gen->builder, cmpop, val, nullptr, "isnull");
