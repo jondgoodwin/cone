@@ -1,0 +1,308 @@
+// ======== The stateless emitter: what it is, and its CPU twin ========
+//
+// An emitter is a description, never a simulation: particle i of an event
+// is born 'i / rate' seconds after the event starts, and where it is, how
+// fast it moves, how big and what colour it is at any age are closed-form
+// functions of (event seed, layer seed, i, age). vfx.slang holds the same
+// arithmetic, in the same order, for the shaders that draw particles; this
+// file is the CPU's copy, which tests pin and the parity test compares with
+// the GPU's.
+
+// Where an emitter's particles are born, in its own frame (y up)
+pub const SHAPE_POINT = 0u32;
+pub const SHAPE_DISC = 1u32;       // a disc of 'radius' in the x-z plane, uniformly
+pub const SHAPE_SPHERE = 2u32;     // the surface of a sphere of 'radius'
+
+// An event that never stops spawning
+pub const NEVER = 1.0e300d;
+
+const TAU f32 = 6.28318530717958647692;
+
+// The least difference kept between cooling and drag, per second
+pub const COOLING_APART f32 = 0.05;
+
+// What an emitter is: its rate and lifetimes, where its particles are born
+// and how they are launched, the forces on them (each with a closed form),
+// and their size and colour over life. Every particle draws its own
+// lifetime, speed, direction, birthplace, wobble phase and size from hashes
+// of its spawn index. Its numbers are general; an effect's are its own.
+pub struct Emitter {
+  pub layer u32;               // seeds this layer apart from an effect's others
+  pub rate f32;                // particles a second (more than 0)
+  pub lifetime f32;            // seconds (more than 0)
+  pub lifetimeJitter f32;      // each lifetime within this fraction of 'lifetime' (below 1)
+  pub shape u32;               // SHAPE_...
+  pub radius f32;              // of the disc or the sphere
+  pub spread f32;              // the launch cone's half angle about local +y, radians
+  pub speed f32;               // launch speed, metres a second
+  pub speedJitter f32;         // each speed within this fraction of 'speed'
+  pub drag f32;                // linear drag, per second: speed decays as e^(-drag t)
+  pub gravity Vec3;            // a constant acceleration, in the world (gravity, wind)
+  pub buoyancy f32;            // upward acceleration at birth, m/s^2, decaying as e^(-cooling t)
+  pub cooling f32;             // per second: how fast buoyancy (heat) fades (kept COOLING_APART from drag)
+  pub wobble f32;              // a horizontal spiral widening by this, metres a second of age
+  pub wobbleRate f32;          // and turning this fast, radians a second
+  pub sizeStart f32;           // the sprite's width at birth, metres
+  pub sizeEnd f32;             // and at death (linear between)
+  pub sizeJitter f32;          // each size within this fraction
+  pub stretch f32;             // seconds of motion a sprite is stretched over (0: round)
+  pub fadeIn f32;              // the fraction of life over which intensity rises from 0
+  pub fadeOut f32;             // the fraction of life over which it falls to 0
+  pub colors Array[Color, 4];  // linear HDR colour keys; each one's alpha is its intensity
+  pub colorAt Array[f32, 4];   // each key's fraction of life, ascending
+  pub trailTime f32;           // a ribbon trail's length, seconds of the particle's path
+
+  // An emitter of 100 white particles a second from a point, straight up at
+  // 1 m/s, living a second, under no force, 0.1 m across, fading out over
+  // the last half of life
+  pub fn make() Emitter {
+    imm white = new Color(1., 1., 1., 1.);
+    new Emitter(0u32, 100., 1., 0., SHAPE_POINT, 0., 0., 1., 0., 0., new Vec3(0., 0., 0.), 0., 1., 0., 0.,
+      0.1, 0.1, 0., 0., 0., 0.5, [white, white, white, white], [0., 0.33, 0.66, 1.], 0.25);
+  }
+
+  // The longest any of its particles lives
+  pub fn longestLife(self &) f32 { lifetime * (1. + libc.fabsf(lifetimeJitter)); }
+}
+
+// What starts an effect: the record that is shared world state (when and
+// where, and with which seed), from which every particle follows. 'stop'
+// is when spawning stops (NEVER, or a time): particles already born live
+// out their lives.
+pub struct Event {
+  pub seed u32;
+  pub start f64;               // seconds, on the clock 'now' is read from
+  pub stop f64;
+  pub placement Mat4;          // the emitter's frame in the world
+
+  // An event at 'start', never stopping
+  pub fn at(seed u32, start f64, placement Mat4) Event { new Event(seed, start, NEVER, placement); }
+}
+
+// What a particle is at an age
+pub struct Particle {
+  pub position Vec3;
+  pub velocity Vec3;
+  pub size f32;
+  pub color Vec4;              // linear rgb, and the intensity it is drawn with
+  pub life f32;                // its age over its lifetime: 0 at birth, 1 at death
+  pub alive Bool;              // its age is in [0, lifetime)
+}
+
+// An emitter bound to its event at a moment, as vfx.slang's EmitterParams
+// has it (17 vec4s and four words: 272 bytes), with the spawn indices drawn
+pub struct EmitterParams {
+  pub column Array[Vec4, 4];   // the placement's columns
+  pub timing Vec4;             // elapsed, interval (1 / rate), lifetime, lifetime jitter
+  pub launch Vec4;             // shape, radius, cos(spread), speed
+  pub motion Vec4;             // speed jitter, drag, stretch, size jitter
+  pub gravity Vec4;            // gravity, buoyancy
+  pub heat Vec4;               // cooling, wobble, wobble rate, trail time
+  pub sizes Vec4;              // size at birth, at death, 1 / fade in, 1 / fade out
+  pub colors Array[Vec4, 4];
+  pub colorAt Vec4;
+  pub colorInv Vec4;
+  pub seeds UVec4;             // event seed, layer seed, first index drawn, how many
+
+  // 'emitter' started by 'event', at 'now' (seconds, the event's clock): the
+  // particles to draw are those born from 'first' on, 'count' of them, the
+  // last born no later than now and before the event stopped
+  pub fn bind(emitter &Emitter, event &Event, now f64) EmitterParams {
+    imm m = event.placement.m;
+    imm elapsed = now - event.start;
+    // Cooling equal to drag divides by zero in the closed form, and nearly
+    // equal loses the buoyancy to cancellation in f32: the two are kept at
+    // least COOLING_APART per second apart (cooling raised), which no eye
+    // can tell from equal. Neither is below 0.
+    mut drag = emitter.drag;
+    if drag < 0. { drag = 0.; }
+    mut cooling = emitter.cooling;
+    if cooling < 0. { cooling = 0.; }
+    if libc.fabsf(cooling - drag) < COOLING_APART {
+      cooling = drag + COOLING_APART;
+    }
+    mut first = 0u32;
+    mut count = 0u32;
+    if elapsed >= 0d {
+      mut spawning = elapsed;
+      if event.stop - event.start < spawning { spawning = event.stop - event.start; }
+      // Once the last born has outlived the longest life, nothing is drawn
+      if spawning >= 0d and elapsed - spawning <= f64.from(emitter.longestLife()) {
+        imm last = libc.floor(spawning * f64.from(emitter.rate));
+        imm window = libc.floor(f64.from(emitter.longestLife()) * f64.from(emitter.rate)) + 2d;
+        if last + 1d > window { first = u32.from(last + 1d - window); }
+        count = u32.from(last + 1d) - first;
+      }
+    }
+    imm keys = emitter.colors;
+    imm at = emitter.colorAt;
+    new EmitterParams(
+      [new Vec4(m[0], m[1], m[2], m[3]), new Vec4(m[4], m[5], m[6], m[7]), new Vec4(m[8], m[9], m[10], m[11]),
+        new Vec4(m[12], m[13], m[14], m[15])],
+      new Vec4(f32.from(elapsed), 1. / emitter.rate, emitter.lifetime, emitter.lifetimeJitter),
+      new Vec4(f32.from(emitter.shape), emitter.radius, cos(emitter.spread), emitter.speed),
+      new Vec4(emitter.speedJitter, drag, emitter.stretch, emitter.sizeJitter),
+      new Vec4(emitter.gravity.x, emitter.gravity.y, emitter.gravity.z, emitter.buoyancy),
+      new Vec4(cooling, emitter.wobble, emitter.wobbleRate, emitter.trailTime),
+      new Vec4(emitter.sizeStart, emitter.sizeEnd, inverse(emitter.fadeIn), inverse(emitter.fadeOut)),
+      [colorVec(keys[0]), colorVec(keys[1]), colorVec(keys[2]), colorVec(keys[3])],
+      new Vec4(at[0], at[1], at[2], at[3]),
+      new Vec4(inverse(at[1] - at[0]), inverse(at[2] - at[1]), inverse(at[3] - at[2]), 0.),
+      new UVec4(event.seed, emitter.layer, first, count));
+  }
+
+  // The same, the elapsed time 'elapsed' since the event and every index
+  // from 0 drawn: the form a test evaluates particles in
+  pub fn fixed(emitter &Emitter, seed u32, elapsed f32) EmitterParams {
+    imm event = Event.at(seed, 0d, Mat4.identity());
+    EmitterParams.bind(emitter, &event, f64.from(elapsed));
+  }
+
+  // Its 68 words, as the GPU reads them
+  pub fn words(self &) Array[u32, 68] {
+    mut w = new Array[u32, 68] <- fill 0u32;
+    mut i = 0usize;
+    while i < 4usize {
+      putVec(&mut w, 4usize * i, column[i]);
+      putVec(&mut w, 40usize + 4usize * i, colors[i]);
+      i = i + 1usize;
+    }
+    putVec(&mut w, 16usize, timing);
+    putVec(&mut w, 20usize, launch);
+    putVec(&mut w, 24usize, motion);
+    putVec(&mut w, 28usize, gravity);
+    putVec(&mut w, 32usize, heat);
+    putVec(&mut w, 36usize, sizes);
+    putVec(&mut w, 56usize, colorAt);
+    putVec(&mut w, 60usize, colorInv);
+    w[64] = seeds.x;
+    w[65] = seeds.y;
+    w[66] = seeds.z;
+    w[67] = seeds.w;
+    w;
+  }
+}
+
+fn putVec(w &mut Array[u32, 68], at usize, v Vec4) {
+  w[at] = v.x as u32;
+  w[at + 1usize] = v.y as u32;
+  w[at + 2usize] = v.z as u32;
+  w[at + 3usize] = v.w as u32;
+}
+
+fn colorVec(c Color) Vec4 { new Vec4(c.red, c.green, c.blue, c.alpha); }
+
+// 1 / x, or 0 for 0 (what turns a fade or a span off)
+fn inverse(x f32) f32 { if x > 0. { 1. / x; } else { 0.; }; }
+
+// The integral of e^(-r s) over s from 0 to t, (1 - e^(-r t)) / r, by its
+// series where r t is small (vfx.slang's vfxDecay1)
+pub fn decay1(r f32, t f32) f32 {
+  imm x = r * t;
+  if x < 0.001 { return t * (1. - x * 0.5 + x * x * 0.16666667); }
+  (1. - libc.expf(0. - x)) / r;
+}
+
+// The integral of decay1 over t, (t - decay1(r, t)) / r (vfx.slang's
+// vfxDecay2)
+pub fn decay2(r f32, t f32) f32 {
+  imm x = r * t;
+  if x < 0.05 { return t * t * (0.5 - x * 0.16666667 + x * x * 0.041666668); }
+  (t - decay1(r, t)) / r;
+}
+
+fn place(e &EmitterParams, p Vec3, w f32) Vec3 {
+  e.column[0].xyz() * p.x + e.column[1].xyz() * p.y + e.column[2].xyz() * p.z + e.column[3].xyz() * w;
+}
+
+fn mix(a Vec4, b Vec4, s f32) Vec4 { a + (b - a) * s; }
+
+// Particle 'index' of 'e' at 'age' seconds: vfx.slang's particleAt
+pub fn particleAt(e &EmitterParams, index u32, age f32) Particle {
+  imm h1 = pcg4d(new UVec4(index, e.seeds.x, e.seeds.y, 0u32));
+  imm h2 = pcg4d(new UVec4(index, e.seeds.x, e.seeds.y, 1u32));
+  imm lifetime = e.timing.z * (1. + e.timing.w * toSigned(h1.x));
+  imm speed = e.launch.w * (1. + e.motion.x * toSigned(h1.y));
+
+  // The launch direction: uniform in the cone about local +y
+  imm cosTheta = 1. - toUnit(h1.z) * (1. - e.launch.z);
+  mut sq = 1. - cosTheta * cosTheta;
+  if sq < 0. { sq = 0.; }
+  imm sinTheta = sq.sqrt();
+  imm phi = TAU * toUnit(h1.w);
+  imm direction = new Vec3(sinTheta * cos(phi), cosTheta, sinTheta * sin(phi));
+
+  // Where it is born, in the emitter's frame
+  mut start = new Vec3(0., 0., 0.);
+  imm shape = u32.from(e.launch.x);
+  if shape == SHAPE_DISC {
+    imm r = e.launch.y * toUnit(h2.x).sqrt();
+    imm psi = TAU * toUnit(h2.y);
+    start = new Vec3(r * cos(psi), 0., r * sin(psi));
+  } elif shape == SHAPE_SPHERE {
+    imm z = toSigned(h2.x);
+    mut rs = 1. - z * z;
+    if rs < 0. { rs = 0.; }
+    imm ring = rs.sqrt();
+    imm psi = TAU * toUnit(h2.y);
+    start = new Vec3(ring * cos(psi), z, ring * sin(psi)) * e.launch.y;
+  }
+  imm p0 = place(e, start, 1.);
+  imm v0 = place(e, direction * speed, 0.);
+
+  // The closed form: linear drag k, a constant acceleration g, buoyancy
+  // b e^(-c t) upward
+  mut t = age;
+  if t < 0. { t = 0.; }
+  imm k = e.motion.y;
+  imm c = e.heat.x;
+  imm b = e.gravity.w;
+  imm g = e.gravity.xyz();
+  imm f1 = decay1(k, t);
+  imm f2 = decay2(k, t);
+  imm lift = b / (k - c);
+  imm rise = lift * (decay1(c, t) - f1);
+  imm riseSpeed = lift * (libc.expf(0. - c * t) - libc.expf(0. - k * t));
+  mut position = p0 + v0 * f1 + g * f2;
+  mut velocity = v0 * libc.expf(0. - k * t) + g * f1;
+  position.y = position.y + rise;
+  velocity.y = velocity.y + riseSpeed;
+
+  // The wobble: a horizontal spiral widening with age
+  imm angle = e.heat.z * t + TAU * toUnit(h2.z);
+  imm ca = cos(angle);
+  imm sa = sin(angle);
+  imm reach = e.heat.y * t;
+  position.x = position.x + reach * ca;
+  position.z = position.z + reach * sa;
+  velocity.x = velocity.x + e.heat.y * ca - reach * e.heat.z * sa;
+  velocity.z = velocity.z + e.heat.y * sa + reach * e.heat.z * ca;
+
+  // Colour and size over life
+  imm life = t / lifetime;
+  mut color = e.colors[0];
+  if life >= e.colorAt.w {
+    color = e.colors[3];
+  } elif life >= e.colorAt.z {
+    color = mix(e.colors[2], e.colors[3], (life - e.colorAt.z) * e.colorInv.z);
+  } elif life >= e.colorAt.y {
+    color = mix(e.colors[1], e.colors[2], (life - e.colorAt.y) * e.colorInv.y);
+  } elif life >= e.colorAt.x {
+    color = mix(e.colors[0], e.colors[1], (life - e.colorAt.x) * e.colorInv.x);
+  }
+  mut fade = 1f;
+  if e.sizes.z > 0. { fade = fmin(fade, life * e.sizes.z); }
+  if e.sizes.w > 0. { fade = fmin(fade, (1. - life) * e.sizes.w); }
+  if fade < 0. { fade = 0.; }
+  color.w = color.w * fade;
+  imm size = (e.sizes.x + (e.sizes.y - e.sizes.x) * life) * (1. + e.motion.w * toSigned(h2.w));
+  new Particle(position, velocity, size, color, life, age >= 0. and age < lifetime);
+}
+
+// Particle 'index' at the elapsed time 'e' was bound at: vfx.slang's
+// particleNow
+pub fn particleNow(e &EmitterParams, index u32) Particle {
+  particleAt(e, index, e.timing.x - f32.from(index) * e.timing.y);
+}
+
+fn fmin(a f32, b f32) f32 { if a < b { a; } else { b; }; }

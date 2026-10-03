@@ -1,0 +1,269 @@
+// The stateless emitter on the CPU: particle states at given (seed, index,
+// age), checked against what they must be by other means, then a table of
+// hashed states pinned bit for bit.
+//
+// - The closed form: with no drag, a launched particle is at v t + g t^2 / 2;
+//   with drag, gravity and buoyancy, at what a fine numerical integration
+//   (RK4 in f64, 20,000 steps, written here) of a = g + b e^(-c t) up - k v
+//   gives, and moving at its velocity.
+// - The wobble: a horizontal circle of radius wobble * age about the path.
+// - Colour over life: each key's colour at its fraction of life, the mean of
+//   two keys halfway between, the fades.
+// - The draws: lifetimes, speeds and launch directions within their jitter
+//   and cone; births on the disc and on the sphere; the same state for the
+//   same (seed, index, age), another for another seed.
+// - The spawn window: which indices a moment draws, before and after the
+//   event stops.
+// - The pinned table: states this code computed when the test was written,
+//   so that a change to the arithmetic or the hashing shows. They are
+//   regression pins, not independent answers; the checks above are those.
+//
+// Only a failure prints.
+
+mod emitter;
+
+import testing use *;
+import libc;
+import stdio use *;
+import collections use *;
+import geomath use *;
+import vfx use *;
+
+fn bits(f f32) u32 { f as u32; }
+
+fn near(got f32, want f64, within f64, label &[]u8) { expectFloat(f64.from(got), want, within, label); }
+
+// a = g + b e^(-c t) up - k v, from p0 and v0, integrated by RK4 in f64 for
+// 't' seconds: the position (into p) and velocity (into v)
+fn integrate(p &mut Array[f64, 3], v &mut Array[f64, 3], g Vec3, b f64, c f64, k f64, t f64) {
+  imm steps = 20000;
+  imm h = t / f64.from(steps);
+  imm gs Array[f64, 3] = [f64.from(g.x), f64.from(g.y), f64.from(g.z)];
+  mut s = 0;
+  while s < steps {
+    imm t0 = h * f64.from(s);
+    mut axis = 0usize;
+    while axis < 3usize {
+      // Each axis is independent: x' = v, v' = g + lift(t) - k v
+      imm up = if axis == 1usize { 1d; } else { 0d; };
+      imm x = p[axis];
+      imm u = v[axis];
+      imm a1 = gs[axis] + up * b * libc.exp(0d - c * t0) - k * u;
+      imm u2 = u + 0.5d * h * a1;
+      imm a2 = gs[axis] + up * b * libc.exp(0d - c * (t0 + 0.5d * h)) - k * u2;
+      imm u3 = u + 0.5d * h * a2;
+      imm a3 = gs[axis] + up * b * libc.exp(0d - c * (t0 + 0.5d * h)) - k * u3;
+      imm u4 = u + h * a3;
+      imm a4 = gs[axis] + up * b * libc.exp(0d - c * (t0 + h)) - k * u4;
+      p[axis] = x + h * (u + 2d * u2 + 2d * u3 + u4) / 6d;
+      v[axis] = u + h * (a1 + 2d * a2 + 2d * a3 + a4) / 6d;
+      axis = axis + 1usize;
+    }
+    s = s + 1;
+  }
+}
+
+fn main() i32 {
+  // ---- No drag: v t + g t^2 / 2 ----
+  mut e = Emitter.make();
+  e.speed = 4.;
+  e.gravity = new Vec3(0.5, -9.75, 0.25);
+  e.cooling = 2.;
+  imm free = EmitterParams.fixed(&e, 7u32, 0.);
+  imm q = particleAt(&free, 3u32, 1.5);
+  near(q.position.x, 0.5d * 0.5d * 2.25d, 0.000001d, "no drag: x");
+  near(q.position.y, 4d * 1.5d - 0.5d * 9.75d * 2.25d, 0.000004d, "no drag: y");
+  near(q.position.z, 0.5d * 0.25d * 2.25d, 0.000001d, "no drag: z");
+  near(q.velocity.y, 4d - 9.75d * 1.5d, 0.000004d, "no drag: vy");
+  expectBool(q.alive, false, "no drag: dead past its lifetime of 1 s");
+  imm q0 = particleAt(&free, 3u32, 0.5);
+  expectBool(q0.alive, true, "alive at half its life");
+  imm qb = particleAt(&free, 3u32, -0.25);
+  expectBool(qb.alive, false, "not alive before its birth");
+
+  // ---- Drag, gravity and buoyancy against RK4 ----
+  mut f = Emitter.make();
+  f.speed = 6.;
+  f.drag = 1.5;
+  f.gravity = new Vec3(0.75, -9.81, 0.);
+  f.buoyancy = 30.;
+  f.cooling = 3.;
+  f.lifetime = 10.;
+  imm hot = EmitterParams.fixed(&f, 11u32, 0.);
+  imm ages Array[f32, 4] = [0.0625, 0.25, 1., 3.];
+  mut i = 0usize;
+  while i < 4usize {
+    imm s = particleAt(&hot, 5u32, ages[i]);
+    mut p Array[f64, 3] = [0d, 0d, 0d];
+    mut v Array[f64, 3] = [0d, 6d, 0d];
+    integrate(&mut p, &mut v, f.gravity, 30d, 3d, 1.5d, f64.from(ages[i]));
+    near(s.position.x, p[0usize], 0.00002d, "drag and buoyancy: x");
+    near(s.position.y, p[1usize], 0.00002d, "drag and buoyancy: y");
+    near(s.velocity.x, v[0usize], 0.00002d, "drag and buoyancy: vx");
+    near(s.velocity.y, v[1usize], 0.00002d, "drag and buoyancy: vy");
+    i = i + 1usize;
+  }
+  // Cooling as fast as drag is raised COOLING_APART above it (no division
+  // by zero, no cancellation): the particle follows cooling 1.55
+  f.cooling = 1.5;
+  imm equal = EmitterParams.fixed(&f, 11u32, 0.);
+  near(equal.heat.x, 1.55d, 0.0000001d, "cooling equal to drag: raised");
+  imm se = particleAt(&equal, 5u32, 1.);
+  mut pe Array[f64, 3] = [0d, 0d, 0d];
+  mut ve Array[f64, 3] = [0d, 6d, 0d];
+  integrate(&mut pe, &mut ve, f.gravity, 30d, f64.from(equal.heat.x), 1.5d, 1d);
+  near(se.position.y, pe[1usize], 0.00003d, "cooling equal to drag: y");
+  near(se.velocity.y, ve[1usize], 0.00003d, "cooling equal to drag: vy");
+
+  // ---- The wobble: radius wobble * age about the path ----
+  mut w = Emitter.make();
+  w.speed = 2.;
+  w.wobble = 0.3;
+  w.wobbleRate = 5.;
+  w.lifetime = 4.;
+  imm wob = EmitterParams.fixed(&w, 3u32, 0.);
+  imm ws = particleAt(&wob, 9u32, 2.);
+  imm r = (ws.position.x * ws.position.x + ws.position.z * ws.position.z).sqrt();
+  near(r, 0.6d, 0.000002d, "wobble: radius");
+  near(ws.position.y, 4d, 0.000002d, "wobble: the path goes on up");
+
+  // ---- Colour over life ----
+  mut c = Emitter.make();
+  c.lifetime = 2.;
+  c.fadeOut = 0.;
+  c.colors = [new Color(4., 3., 2., 1.), new Color(2., 1., 0., 2.), new Color(1., 0., 0., 1.), new Color(0., 0., 0., 0.)];
+  c.colorAt = [0., 0.25, 0.5, 1.];
+  imm col = EmitterParams.fixed(&c, 1u32, 0.);
+  imm k0 = particleAt(&col, 0u32, 0.);
+  near(k0.color.x, 4d, 0d, "colour: the first key at birth");
+  imm k1 = particleAt(&col, 0u32, 0.5);
+  near(k1.color.x, 2d, 0d, "colour: the second key at a quarter of life");
+  near(k1.color.w, 2d, 0d, "colour: its intensity");
+  imm k15 = particleAt(&col, 0u32, 0.75);
+  near(k15.color.x, 1.5d, 0.0000005d, "colour: halfway between the second and third");
+  near(k15.color.w, 1.5d, 0.0000005d, "colour: intensity halfway");
+  imm k3 = particleAt(&col, 0u32, 1.5);
+  near(k3.color.x, 0.5d, 0.0000005d, "colour: halfway between the third and last");
+  c.fadeIn = 0.25;
+  c.fadeOut = 0.5;
+  imm fades = EmitterParams.fixed(&c, 1u32, 0.);
+  imm fi = particleAt(&fades, 0u32, 0.25);
+  near(fi.color.w, 0.5d * (1d + 0.5d), 0.000001d, "fade in: halfway through it");
+  imm fo = particleAt(&fades, 0u32, 1.5);
+  near(fo.color.w, 0.5d * 0.5d, 0.000001d, "fade out: halfway through it");
+
+  // ---- The draws ----
+  mut d = Emitter.make();
+  d.lifetime = 2.;
+  d.lifetimeJitter = 0.25;
+  d.speed = 10.;
+  d.speedJitter = 0.2;
+  d.spread = radians(20.);
+  d.shape = SHAPE_DISC;
+  d.radius = 0.5;
+  imm draws = EmitterParams.fixed(&d, 99u32, 0.);
+  mut cone = true;
+  mut speeds = true;
+  mut disc = true;
+  mut lives = true;
+  mut n = 0u32;
+  while n < 500u32 {
+    imm s = particleAt(&draws, n, 0.);
+    imm sp = s.velocity.length();
+    if sp < 7.99 or sp > 12.01 { speeds = false; }
+    if s.velocity.y / sp < cos(radians(20.)) - 0.00001 { cone = false; }
+    if s.position.y != 0. or s.position.x * s.position.x + s.position.z * s.position.z > 0.2500001 { disc = false; }
+    // Its lifetime: alive just inside the shortest, dead just past the longest
+    if !particleAt(&draws, n, 1.499).alive or particleAt(&draws, n, 2.501).alive { lives = false; }
+    n = n + 1u32;
+  }
+  expect(speeds, "every speed within 20% of 10");
+  expect(cone, "every launch within the 20 degree cone");
+  expect(disc, "every birth on the disc");
+  expect(lives, "every lifetime within 25% of 2 s");
+  d.shape = SHAPE_SPHERE;
+  imm ball = EmitterParams.fixed(&d, 99u32, 0.);
+  mut sphere = true;
+  n = 0u32;
+  while n < 200u32 {
+    imm s = particleAt(&ball, n, 0.);
+    if libc.fabsf(s.position.length() - 0.5) > 0.000001 { sphere = false; }
+    n = n + 1u32;
+  }
+  expect(sphere, "every birth on the sphere");
+  imm again = particleAt(&ball, 17u32, 0.75);
+  imm same = particleAt(&ball, 17u32, 0.75);
+  expect(bits(again.position.x) == bits(same.position.x) and bits(again.color.w) == bits(same.color.w),
+    "the same state for the same (seed, index, age)");
+  imm other = EmitterParams.fixed(&d, 100u32, 0.);
+  expect(bits(particleAt(&other, 17u32, 0.75).position.x) != bits(again.position.x), "another seed, another state");
+
+  // ---- The spawn window ----
+  mut s10 = Emitter.make();
+  s10.rate = 10.;
+  s10.lifetime = 1.;
+  imm win = EmitterParams.fixed(&s10, 1u32, 2.35);
+  expectUInt(u64.from(win.seeds.z), 12u64, "window: the first index drawn");
+  expectUInt(u64.from(win.seeds.w), 12u64, "window: how many");
+  imm early = EmitterParams.fixed(&s10, 1u32, 0.05);
+  expectUInt(u64.from(early.seeds.w), 1u64, "window: one born at the start");
+  mut stopped = Event.at(1u32, 10d, Mat4.identity());
+  stopped.stop = 11d;
+  imm after = EmitterParams.bind(&s10, &stopped, 11.5d);
+  expectUInt(u64.from(after.seeds.z), 0u64, "stopped: the first index");
+  expectUInt(u64.from(after.seeds.w), 11u64, "stopped: none born after the stop");
+  imm before = EmitterParams.bind(&s10, &stopped, 9.d);
+  expectUInt(u64.from(before.seeds.w), 0u64, "before the event: nothing");
+  imm placed = Event.at(1u32, 0d, Mat4.fromTranslation(new Vec3(1., 2., 3.)));
+  imm pp = EmitterParams.bind(&s10, &placed, 0.5d);
+  imm born = particleAt(&pp, 2u32, 0.);
+  expect(born.position.x == 1. and born.position.y == 2. and born.position.z == 3., "born where the event is placed");
+
+  // ---- The pinned table (regression pins) ----
+  mut flame = Emitter.make();
+  flame.rate = 400.;
+  flame.lifetime = 0.6;
+  flame.lifetimeJitter = 0.3;
+  flame.shape = SHAPE_DISC;
+  flame.radius = 0.08;
+  flame.spread = radians(12.);
+  flame.speed = 5.;
+  flame.speedJitter = 0.25;
+  flame.drag = 2.;
+  flame.gravity = new Vec3(0., -9.81, 0.);
+  flame.buoyancy = 25.;
+  flame.cooling = 4.;
+  flame.wobble = 0.2;
+  flame.wobbleRate = 9.;
+  flame.sizeJitter = 0.3;
+  flame.fadeIn = 0.1;
+  imm pinned = EmitterParams.fixed(&flame, 1783u32, 0.);
+  imm idx Array[u32, 4] = [0u32, 1u32, 77u32, 4000000u32];
+  imm at Array[f32, 4] = [0.125, 0.3, 0.5, 0.0625];
+  imm want Array[u32, 32] = [
+    0x3c1435cbu32, 0x3f034e56u32, 0x3d67083cu32, 0x40833a02u32, 0x3dabb95au32, 0x3f800000u32, 0x3f800000u32, 0x3e40bc3cu32,
+    0xbcd7112cu32, 0x3fad46c6u32, 0x3cfbf883u32, 0x40610029u32, 0x3d9175efu32, 0x3f800000u32, 0x3f800000u32, 0x3ed93863u32,
+    0x3dba9d2fu32, 0x3fda969au32, 0x3e7a4498u32, 0x3fb2029cu32, 0x3dc85b3au32, 0x3f800000u32, 0x3f306510u32, 0x3f27cd78u32,
+    0xbcb2d75cu32, 0x3e923689u32, 0xbd01213cu32, 0x40946606u32, 0x3d94c682u32, 0x3f800000u32, 0x3f800000u32, 0x3e000343u32];
+  imm print = (libc.getenv(&"VFX_PIN_PRINT" as *u8) as usize) != 0usize;
+  i = 0usize;
+  while i < 4usize {
+    imm s = particleAt(&pinned, idx[i], at[i]);
+    imm got Array[u32, 8] = [bits(s.position.x), bits(s.position.y), bits(s.position.z), bits(s.velocity.y),
+      bits(s.size), bits(s.color.x), bits(s.color.w), bits(s.life)];
+    mut j = 0usize;
+    while j < 8usize {
+      if print {
+        mut hex = String.empty();
+        hex <- "0x";
+        hex.appendHex(u64.from(got[j]), 8usize);
+        hex <- "u32, ";
+        printStr(hex.view());
+      } else { expectUInt(u64.from(got[j]), u64.from(want[i * 8usize + j]), "pinned state"); }
+      j = j + 1usize;
+    }
+    if print { printStr("\n"); }
+    i = i + 1usize;
+  }
+  done();
+}

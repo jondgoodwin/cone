@@ -1,0 +1,56 @@
+// The vfx package: visual effects drawn by the GPU, beginning with
+// particles. A program reaches it with 'import vfx', and gets:
+//
+// - Emitter (emitter.cone), a stateless particle emitter: a rate and
+//   lifetimes, a spawn shape (a point, a disc, a sphere) and a launch cone,
+//   forces that each have a closed form (a constant acceleration such as
+//   gravity or wind, linear drag, buoyancy that fades as the particle
+//   cools, a widening horizontal wobble), and size and colour over life (four
+//   HDR colour keys, fades in and out). Nothing is simulated or stored:
+//   particle i is born i / rate seconds after its event, and everything
+//   about it at any age is a function of (event seed, layer seed, i, age),
+//   every random number an integer hash (the noise package's PCG).
+// - Event, what starts an effect: a seed, a start, a stop, a placement. It
+//   is the record a world shares; every particle follows from it.
+// - EmitterParams, an emitter bound to its event at a moment, as the GPU
+//   reads it, and particleAt and particleNow, the CPU's twin of the shaders'
+//   evaluation (vfx.slang), which tests pin and compare with the GPU's.
+// - ParticleRenderer (renderer.cone), which draws emitters through the gpu
+//   package as glowing sprites (camera-facing, stretched along their motion
+//   across the view) or ribbon trails (each particle's own recent path),
+//   added into the render package's HDR frame after the opaque scene, depth
+//   tested against it and not written, and before bloom and tone mapping.
+//
+// A frame, with render's Renderer and Post (the renderer keeping its depth:
+// 'renderer.keepDepth = true'):
+//
+//   mut particles = ParticleRenderer.create(&mut device, TEXTURE_FORMAT_RGBA16_FLOAT, TEXTURE_FORMAT_DEPTH32_FLOAT);
+//   imm flame = particles.addEmitter(&mut device, STYLE_SPRITES);     // once
+//   ...
+//   particles.update(&mut device, flame, &emitter, &event, now);      // each frame
+//   renderer.render(&mut device, &mut encoder, &post.hdr, &depth, &camera, &light, &list);
+//   particles.render(&mut device, &mut encoder, &post.hdr, &depth, &camera);
+//   post.apply(&mut encoder, &target);
+//
+// Its files are one module, and only this one, the root, imports:
+//
+//   emitter.cone    Emitter, Event, Particle, EmitterParams, the CPU twin
+//   renderer.cone   ParticleRenderer; sprites.slang's SPIR-V
+//
+// and its shaders, Slang: sprites (the sprite and trail renderers) and the
+// module vfx (the evaluation) it imports, which imports the noise package's.
+//
+// DETERMINISM. The hashes, the spawn indices and every count are integers,
+// the same everywhere. The positions use exp, sin, cos, square roots and
+// divisions, which a GPU computes to looser bounds than the CPU, so a
+// particle's place on the GPU is close to the CPU's, not identical; the
+// parity test measures how close.
+
+mod vfx;
+
+import libc;
+import geomath use *;
+import collections use *;
+import noise use pcg4d, toUnit, toSigned, UVec4;
+import gpu use *;
+import render use Camera;
