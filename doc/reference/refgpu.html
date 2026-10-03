@@ -15,10 +15,9 @@
 
 	<p style="margin-left: 40px;"><i>Note: Compute entry points are implemented for SPIR-V's
 		Vulkan form (<span class="pre">conec --triple=spirv1.6-unknown-vulkan1.3</span>), with
-		their buffers, their Invocation and their error buffer as described below. Not yet:
-		Congo building a package's kernels (each module is compiled with
-		<span class="pre">conec</span> directly), <span class="pre">gpuwork</span> binding the
-		error buffer itself, deciding which packages may run on a GPU,
+		their buffers, their Invocation and their error buffer as described below, and Congo
+		builds a package's kernels (below, "A package's kernels"). Not yet:
+		<span class="pre">gpuwork</span> binding the error buffer itself,
 		refusing the features a GPU lacks where they are written, textures, atomics in buffers,
 		workgroup memory and <span class="pre">f16</span>. The math functions Cone takes from
 		the C library (<span class="pre">floorf</span> and its kind) are not yet a GPU's built-ins,
@@ -130,6 +129,24 @@ fn @compute(64) bake(inv Invocation, parts &amp;[]Part, out &amp;[]mut f32) {
 		however many functions it was handed through and however it was cut. A slice that came
 		from anything else, a pointer to a single value say, is refused where it is
 		indexed.</p>
+
+	<h2 id="packages">A package's kernels</h2>
+	<p>Whether a package may run on a GPU is said by the package: its manifest marks it,
+		<span class="pre">targets = ["native", "gpu"]</span> in Congo's
+		<span class="pre">congo.toml</span> (a spelling that may yet change). Congo compiles a
+		marked library whose source holds compute entry points for the GPU as well as for the
+		CPU, into one SPIR-V module, <span class="pre">&lt;package&gt;.spv</span>, holding each
+		of its kernels, and copies it beside every program that imports the package, where
+		<span class="pre">gpuwork</span>'s <span class="pre">readSpirv</span> reads it. Every
+		package a kernel's package imports, at any depth, must be marked too, or Congo refuses
+		the build before compiling anything, naming the imports that reached the unmarked one.</p>
+	<p>On a GPU every function a kernel calls is inlined into it, so no function is marked
+		for the GPU on its own and none carries its body in an include file: the marked packages
+		a kernel imports are compiled into its module from their source. Only what a kernel
+		reaches becomes part of it. Which of a marked package's features a GPU lacks is the
+		compiler's to say, where they are used.
+		(<span class="pre">tools/congo/README.md</span>, "Kernels for the GPU", is how Congo
+		does it.)</p>
 
 	<p style="text-align: right; margin-top: 2em;">
 		<a href="refmodule.html"><img alt="_" src="next.png" /></a>

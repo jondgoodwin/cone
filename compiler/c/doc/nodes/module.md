@@ -863,7 +863,8 @@ import, and its `mod` line may restate the package's name but not change it
 (`module_package_files`). These are the files Congo's scan of the package lists.
 `core`, loaded by `parseLoadCore`, is swept the same way. This lookup is the compiler's side of the
 **package folder**, and it lives only as long as the search path does; a Congo
-build names every file itself ("A described build", below).
+build names every file itself ("A described build", below), but for a
+package's kernels (below).
 
 **The packages folder is found by default.** It ends the **package search
 path**, `package_search_paths` in `coneopts.c`, which `lexInit` hands to
@@ -944,6 +945,16 @@ importer. The root generates too, and a submodule generates exactly when its
 parent does (`parseSubmoduleDraw` copies the parent's flag), so the one kind of
 module denied it is an import reached relative to its importer, together with
 every submodule of it (`module_import_submodule`).
+
+**Congo's GPU build relies on it.** On a GPU target every function is inlined
+into the kernel that calls it, so a kernel's compile needs the bodies of what
+it calls, which an include file does not carry. Congo compiles a package's
+kernels as a direct compile, for SPIR-V's Vulkan form, of a one-line module
+importing the package, with `--path` naming the folders its packages are in:
+the package and every package it imports are found on the search path and
+compiled into the kernel's module from source (`tools/congo/README.md`,
+"Kernels for the GPU"). A described build that could name a package's source
+in place of its include file would retire that.
 
 That asymmetry is the whole of the separate-compilation gap, and both sides of
 it are visible in emitted IR:
