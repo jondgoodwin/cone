@@ -31,7 +31,9 @@
 //   Lambert), a clear coat over it, and over the coat a thin film (Belcour
 //   and Barla's iridescence) whose thickness is the noise package's warped
 //   fBm, drifting with 'renderer.time'; lit by the sun and by the
-//   Environment.
+//   Environment. Its base may come from glTF's maps: base colour,
+//   metallic-roughness, occlusion and a tangent-space normal map, whose
+//   tangents the shader finds from screen-space derivatives.
 // - Sky (sky.slang), an analytic dusk, drawn behind the scene once set
 //   ('setSky'); and Environment, the image-based lighting the renderer
 //   makes from it by full-screen passes (ibl.slang): the sky's cube and its
@@ -43,7 +45,8 @@
 // - DrawList: what is drawn this frame, each a mesh, a material and a model
 //   matrix (and a tint), drawn in one render pass.
 // - Image, pixels from BMP (or made: 'Image.checker'), written as BMP too;
-//   'addTexture' hands one to the GPU.
+//   'addTexture' hands one to the GPU as sRGB colour, 'addLinearTexture' as
+//   numbers (a normal map, an ORM map).
 //
 // A frame, once a window, a device and a swapchain are open (the window and
 // gpu packages):
@@ -69,7 +72,9 @@
 // camera's view-projection matrix, its inverse and position, the light, the
 // target's size, the time and the environment's strength, written once a
 // frame ('queue.writeBuffer'). Group 1 is the material's: its parameters in
-// a uniform buffer of its own, its texture and the renderer's sampler.
+// a uniform buffer of its own, its texture and the renderer's sampler; for
+// the physically based material, its metallic-roughness, normal and
+// occlusion maps after them (its own layout, 'pbrMaterialLayout').
 // Group 2, bound for the physically based material and the sky, is the
 // environment's: the sky's parameters, its cubes and table, their sampler.
 // The
@@ -193,6 +198,7 @@ pub struct Renderer {
   pub drawSky Bool;                // draw the sky behind the scene ('setSky')
   pub time f32;                    // seconds: what the physically based material's film drifts by
   pub environmentStrength f32;     // how strongly the environment lights (1: as the sky is)
+  pub pbrMaterialLayout BindGroupLayout;   // a physically based material's group: materialLayout's, then its three maps
   // Store the depth buffer at the end of 'render' (it is discarded
   // otherwise), so that a later pass into the same target -- glowing
   // particles drawn additively, say -- is depth tested against the scene
@@ -226,7 +232,17 @@ pub struct Renderer {
       new BindGroupLayoutEntry(binding: 3u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_TEXTURE),
       new BindGroupLayoutEntry(binding: 4u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_SAMPLER)];
     mut environmentLayout = device.createBindGroupLayout(&environmentEntries);
-    imm pbrGroupLayouts = [&frameLayout, &materialLayout, &environmentLayout];
+    // A physically based material's own group: the parameters, the base
+    // colour's texture and the sampler, as the lit material's, then the
+    // metallic-roughness, normal and occlusion maps
+    imm pbrMaterialEntries = [new BindGroupLayoutEntry(binding: 0u32, visibility: SHADER_STAGE_FRAGMENT),
+      new BindGroupLayoutEntry(binding: 1u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_TEXTURE),
+      new BindGroupLayoutEntry(binding: 2u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_SAMPLER),
+      new BindGroupLayoutEntry(binding: 3u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_TEXTURE),
+      new BindGroupLayoutEntry(binding: 4u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_TEXTURE),
+      new BindGroupLayoutEntry(binding: 5u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_TEXTURE)];
+    mut pbrMaterialLayout = device.createBindGroupLayout(&pbrMaterialEntries);
+    imm pbrGroupLayouts = [&frameLayout, &pbrMaterialLayout, &environmentLayout];
     mut pbrLayout = device.createPipelineLayout(&pbrGroupLayouts, IMMEDIATE_BYTES);
 
     // Lit: three vertex buffers (position, normal, uv), back faces culled,
@@ -274,7 +290,7 @@ pub struct Renderer {
     mut r = new Renderer(colorFormat, depthFormat, litShader, linesShader, frameLayout, materialLayout, layout,
       litPipeline, linesPipeline, frameUniforms, frameGroup, sampler, Pool[MeshSlot].empty(),
       Pool[TextureSlot].empty(), Pool[MaterialSlot].empty(), TextureHandle.none(), List[MeshHandle].empty(),
-      0u32, 0u64, pbrShader, environmentLayout, pbrLayout, pbrPipeline, skyPipeline, environment, false, 0., 1.);
+      0u32, 0u64, pbrShader, environmentLayout, pbrLayout, pbrPipeline, skyPipeline, environment, false, 0., 1., pbrMaterialLayout);
     mut w = new Image(1, 1, 3, List[u8].empty());
     w.pixels.push(255u8);
     w.pixels.push(255u8);
@@ -404,6 +420,17 @@ pub struct Renderer {
   // channels (an RGB image's alpha opaque), its rows as the image has them,
   // bottom first, so a uv's v of 0 is its bottom row (mesh's uvs, v up)
   pub fn addTexture(self &mut, device &mut Device, img &Image) TextureHandle {
+    self.addTextureAs(device, img, TEXTURE_FORMAT_RGBA8_UNORM_SRGB);
+  }
+
+  // The same, its bytes read as they are, not decoded from sRGB: for maps
+  // that hold numbers rather than colours (a normal map, glTF's
+  // metallic-roughness and occlusion maps)
+  pub fn addLinearTexture(self &mut, device &mut Device, img &Image) TextureHandle {
+    self.addTextureAs(device, img, TEXTURE_FORMAT_RGBA8_UNORM);
+  }
+
+  fn addTextureAs(self &mut, device &mut Device, img &Image, format u32) TextureHandle {
     imm w = u32.from(img.width);
     imm h = u32.from(img.height);
     mut rgba = List[u8].withCapacity(usize.from(w * h * 4u32));
@@ -417,7 +444,7 @@ pub struct Renderer {
       rgba.push(if img.channels == 4 {*img.pixels[at + 3usize];} else {255u8;});
       p = p + 1usize;
     }
-    imm desc = new TextureDescriptor(w, h, TEXTURE_FORMAT_RGBA8_UNORM_SRGB, TEXTURE_USAGE_TEXTURE_BINDING | TEXTURE_USAGE_COPY_DST);
+    imm desc = new TextureDescriptor(w, h, format, TEXTURE_USAGE_TEXTURE_BINDING | TEXTURE_USAGE_COPY_DST);
     mut texture = device.createTexture(&desc);
     if n > 0usize {
       imm v = rgba.view();
@@ -446,28 +473,49 @@ pub struct Renderer {
   // directional light and the environment made from the sky
   pub fn addPbrMaterial(self &mut, device &mut Device, material &PbrMaterial) MaterialHandle {
     mut uniforms = device.createBuffer(PBR_BYTES, BUFFER_USAGE_UNIFORM | BUFFER_USAGE_COPY_DST);
-    imm params = pbrParams(material);
+    imm params = pbrParams(material, self.mapNormalScale(material, material), self.mapOcclusionStrength(material, material));
     device.queue.writeBuffer(&uniforms, 0u64, &params as *u8, PBR_BYTES);
-    mut th = material.texture;
-    if !textures.alive(th.slot) { th = white; }
-    imm view = textures[th.slot].texture.createView();
+    imm view = textures[self.orWhite(material.texture).slot].texture.createView();
+    imm mrView = textures[self.orWhite(material.metallicRoughnessTexture).slot].texture.createView();
+    imm normalView = textures[self.orWhite(material.normalTexture).slot].texture.createView();
+    imm occlusionView = textures[self.orWhite(material.occlusionTexture).slot].texture.createView();
     imm entries = [BindGroupEntry.buffer(0u32, &uniforms), BindGroupEntry.texture(1u32, &view),
-      BindGroupEntry.sampler(2u32, &sampler)];
-    mut group = device.createBindGroup(&materialLayout, &entries);
+      BindGroupEntry.sampler(2u32, &sampler), BindGroupEntry.texture(3u32, &mrView),
+      BindGroupEntry.texture(4u32, &normalView), BindGroupEntry.texture(5u32, &occlusionView)];
+    mut group = device.createBindGroup(&pbrMaterialLayout, &entries);
     imm plain = Material.plain(material.baseColor);
     new MaterialHandle(materials.add(new MaterialSlot(plain, uniforms, group, MATERIAL_PBR, *material)));
   }
 
-  // Change a physically based material's parameters (not its texture), from
-  // the next submission on
+  // Change a physically based material's parameters (not its textures,
+  // which stay those it was added with), from the next submission on
   pub fn setPbrMaterial(self &mut, device &mut Device, h MaterialHandle, material &PbrMaterial) Bool {
     if !materials.alive(h.slot) { return false; }
-    imm params = pbrParams(material);
+    imm bound = materials[h.slot].pbr;
+    imm params = pbrParams(material, self.mapNormalScale(&bound, material), self.mapOcclusionStrength(&bound, material));
     mut slot = &mut materials[h.slot];
     if slot.kind != MATERIAL_PBR { return false; }
     device.queue.writeBuffer(&slot.uniforms, 0u64, &params as *u8, PBR_BYTES);
     slot.pbr = *material;
+    slot.pbr.texture = bound.texture;
+    slot.pbr.metallicRoughnessTexture = bound.metallicRoughnessTexture;
+    slot.pbr.normalTexture = bound.normalTexture;
+    slot.pbr.occlusionTexture = bound.occlusionTexture;
     true;
+  }
+
+  // The texture 'h', or the white one if it reaches nothing
+  fn orWhite(self &, h TextureHandle) TextureHandle {
+    if textures.alive(h.slot) { h; } else { white; };
+  }
+
+  // The normal map's scale 'm' asks for, or 0 if 'bound' (the textures its
+  // group holds) has no normal map; and the occlusion map's strength
+  fn mapNormalScale(self &, bound &PbrMaterial, m &PbrMaterial) f32 {
+    if textures.alive(bound.normalTexture.slot) { m.normalScale; } else { 0.; };
+  }
+  fn mapOcclusionStrength(self &, bound &PbrMaterial, m &PbrMaterial) f32 {
+    if textures.alive(bound.occlusionTexture.slot) { m.occlusionStrength; } else { 0.; };
   }
 
   // Change a material's color and shine (not its texture), from the next

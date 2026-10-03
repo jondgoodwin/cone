@@ -27,8 +27,15 @@
 // lighting: a diffuse cube (irradiance), a specular cube prefiltered by
 // roughness, one level a roughness step, and the split sum's table.
 //
+// The base's inputs may come from glTF 2.0's maps: the base colour, a
+// metallic-roughness texture multiplying the parameters, an occlusion
+// texture dimming the environment's light, and a tangent-space normal map,
+// turned into the surface by tangents found from screen-space derivatives
+// (the meshes carry none).
+//
 // Group 0 is the frame's, group 1 the material's (its parameters, a texture
-// that multiplies the base colour, a sampler), group 2 the environment's
+// that multiplies the base colour, a sampler, then the metallic-roughness,
+// normal and occlusion textures), group 2 the environment's
 // (the sky's parameters, the cubes, the table and their sampler). The
 // immediates are the draw's: its model matrix and a tint.
 
@@ -52,6 +59,7 @@ struct PbrParams {
     float4 film;                   // 32: the film's least and greatest thickness (nm), its index, 1 if there is a film
     float4 filmNoise;              // 48: the noise's scale (a unit of model space), drift a second, warp, seed
     float4 wet;                    // 64: where the coat lies: fBm's scale (0: everywhere), level, softness, seed
+    float4 maps;                   // 80: the normal map's scale (0: no normal map), the occlusion map's strength
 };
 
 struct Immediates {
@@ -63,6 +71,13 @@ struct Immediates {
 [[vk::binding(0, 1)]] ConstantBuffer<PbrParams> material;
 [[vk::binding(1, 1)]] Texture2D baseTexture;
 [[vk::binding(2, 1)]] SamplerState baseSampler;
+// glTF 2.0's other maps, each white (or, the normal map, unread) when the
+// material has none: metallic-roughness (green roughness, blue metallic,
+// multiplying the parameters), a tangent-space normal map (+y towards +v),
+// occlusion (red)
+[[vk::binding(3, 1)]] Texture2D metallicRoughnessTexture;
+[[vk::binding(4, 1)]] Texture2D normalTexture;
+[[vk::binding(5, 1)]] Texture2D occlusionTexture;
 [[vk::binding(0, 2)]] ConstantBuffer<SkyParams> skyParams;
 [[vk::binding(1, 2)]] TextureCube irradianceCube;
 [[vk::binding(2, 2)]] TextureCube specularCube;
@@ -120,9 +135,37 @@ float filmThickness(float3 p, float t) {
     return lerp(material.film.x, material.film.y, k);
 }
 
+// The normal 'n' turned by the normal map at 'uv', in the frame of tangents
+// the position's and the uv's screen-space derivatives give (Schuler,
+// "Normal Mapping without Precomputed Tangents", ShaderX5, 2006, and his 2013
+// follow-up): no tangents in the mesh. The frame's sign is taken from the
+// parallelogram's orientation, so it holds with y up or down on the screen.
+float3 mapNormal(float3 n, float3 world, float2 uv) {
+    float3 tn = normalTexture.Sample(baseSampler, uv).xyz * 2.0 - 1.0;
+    tn.xy = tn.xy * material.maps.x;
+    float3 dp1 = ddx(world);
+    float3 dp2 = ddy(world);
+    float2 duv1 = ddx(uv);
+    float2 duv2 = ddy(uv);
+    float3 dp2perp = cross(dp2, n);
+    float3 dp1perp = cross(n, dp1);
+    float3 t = dp2perp * duv1.x + dp1perp * duv2.x;
+    float3 b = dp2perp * duv1.y + dp1perp * duv2.y;
+    float s = dot(dp1, dp2perp) < 0.0 ? -1.0 : 1.0;
+    float m = max(dot(t, t), dot(b, b));
+    if (m < 1e-30) {
+        return n;
+    }
+    float k = s * rsqrt(m);
+    return normalize(t * (k * tn.x) + b * (k * tn.y) + n * tn.z);
+}
+
 [shader("fragment")]
 float4 fragmentMain(VertexOutput input) : SV_Target {
     float3 n = normalize(input.normal);
+    if (material.maps.x > 0.0) {
+        n = mapNormal(n, input.world, input.uv);
+    }
     float3 v = normalize(frame.cameraPosition.xyz - input.world);
     // A normal facing away (at a silhouette, interpolated) is turned to face
     float nov = dot(n, v);
@@ -139,8 +182,11 @@ float4 fragmentMain(VertexOutput input) : SV_Target {
     float3 r = reflect(-v, n);
 
     float4 base = material.baseColor * baseTexture.Sample(baseSampler, input.uv) * draw.tint;
-    float metallic = material.surface.x;
-    float roughness = clamp(material.surface.y, 0.045, 1.0);
+    float4 metalRough = metallicRoughnessTexture.Sample(baseSampler, input.uv);
+    float metallic = material.surface.x * metalRough.b;
+    float roughness = clamp(material.surface.y * metalRough.g, 0.045, 1.0);
+    // Occlusion dims the environment's light, not the sun's (glTF's rule)
+    float occlusion = 1.0 + material.maps.y * (occlusionTexture.Sample(baseSampler, input.uv).r - 1.0);
     float a = roughness * roughness;
     float coat = material.surface.z;
     if (material.wet.x > 0.0) {
@@ -192,7 +238,7 @@ float4 fragmentMain(VertexOutput input) : SV_Target {
     // The coat's own Fresnel already holds its angle: the table's scale and
     // bias add only the lobe's energy
     float3 envCoat = coatPrefiltered * coatFv * (coatAb.x + coatAb.y);
-    float3 ambient = (envBase + envCoat) * strength;
+    float3 ambient = (envBase + envCoat) * (strength * occlusion);
 
     return float4(direct + ambient, base.a);
 }

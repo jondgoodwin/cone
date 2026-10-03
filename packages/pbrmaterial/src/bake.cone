@@ -1,0 +1,93 @@
+// ======== The bake: a procedural surface into a set of textures ========
+
+// Every parameter of one procedural material: its height field, its
+// undamaged surface, how its occlusion is searched (out to
+// 'occlusionRadius' tile units in 'occlusionSteps' steps a direction), the
+// radius convexity is measured at ('convexityRadius', tile units), and its
+// edge wear and grime
+pub struct ProceduralSurface {
+  pub height HeightParams;
+  pub surface SurfaceParams;
+  pub occlusionRadius f32;
+  pub occlusionSteps i32;
+  pub convexityRadius f32;
+  pub wear WeatheringParams;
+  pub grime WeatheringParams;
+}
+
+// A tile's textures, each 'size' texels square, rows bottom first, ready
+// for the render package to upload:
+// - baseColor: RGB, sRGB-encoded (upload with 'addTexture');
+// - orm: RGB, linear: occlusion, roughness, metallic (glTF's packing, its
+//   metallic-roughness texture's green and blue and its occlusion
+//   texture's red, so one texture serves both; 'addLinearTexture');
+// - normal: RGB, linear: the tangent-space unit normal times 1/2 plus 1/2,
+//   +y towards +v (glTF's and OpenGL's convention; 'addLinearTexture');
+// - heightMap, wearMask, grimeMask: gray, for looking at;
+// and the height field itself, unquantized.
+pub struct TextureSet {
+  pub size i32;
+  pub baseColor TexelMap;
+  pub orm TexelMap;
+  pub normal TexelMap;
+  pub heightMap TexelMap;
+  pub wearMask TexelMap;
+  pub grimeMask TexelMap;
+  pub height ScalarMap;
+}
+
+// The height field of 'surface' over a tile 'size' texels square: the first
+// pass, each texel 'heightTexel'
+pub fn bakeHeight(surface &ProceduralSurface, size i32) ScalarMap {
+  mut height = ScalarMap.zeros(size);
+  mut y = 0;
+  while y < size {
+    mut x = 0;
+    while x < size {
+      height.set(x, y, heightTexel(&surface.height, x, y, size));
+      x = x + 1;
+    }
+    y = y + 1;
+  }
+  height;
+}
+
+// Bake 'surface' into a tile 'size' texels square: the height pass, then,
+// for each texel from the height map, its normal, convexity and occlusion,
+// and from those its surface
+pub fn bakeTextureSet(surface &ProceduralSurface, size i32) TextureSet {
+  imm height = bakeHeight(surface, size);
+  mut baseColor = TexelMap.withCapacity(size, size, 3);
+  mut orm = TexelMap.withCapacity(size, size, 3);
+  mut normal = TexelMap.withCapacity(size, size, 3);
+  mut heightMap = TexelMap.withCapacity(size, size, 1);
+  mut wearMask = TexelMap.withCapacity(size, size, 1);
+  mut grimeMask = TexelMap.withCapacity(size, size, 1);
+  imm depth = surface.height.depth;
+  mut y = 0;
+  while y < size {
+    mut x = 0;
+    while x < size {
+      imm h = height.at(x, y);
+      imm n = normalTexel(&height, x, y, depth);
+      imm c = convexityTexel(&height, x, y, surface.convexityRadius, depth);
+      imm ao = occlusionTexel(&height, x, y, surface.occlusionRadius, surface.occlusionSteps, depth);
+      imm t = surfaceTexel(&surface.surface, &surface.wear, &surface.grime, h, c, ao, x, y, size);
+      baseColor.pixels.push(unitByte(srgbEncode(t.baseColor.red)));
+      baseColor.pixels.push(unitByte(srgbEncode(t.baseColor.green)));
+      baseColor.pixels.push(unitByte(srgbEncode(t.baseColor.blue)));
+      orm.pixels.push(unitByte(t.occlusion));
+      orm.pixels.push(unitByte(t.roughness));
+      orm.pixels.push(unitByte(t.metallic));
+      normal.pixels.push(unitByte(n.x * 0.5 + 0.5));
+      normal.pixels.push(unitByte(n.y * 0.5 + 0.5));
+      normal.pixels.push(unitByte(n.z * 0.5 + 0.5));
+      heightMap.pixels.push(unitByte(h));
+      wearMask.pixels.push(unitByte(t.wear));
+      grimeMask.pixels.push(unitByte(t.grime));
+      x = x + 1;
+    }
+    y = y + 1;
+  }
+  new TextureSet(size, baseColor, orm, normal, heightMap, wearMask, grimeMask, height);
+}

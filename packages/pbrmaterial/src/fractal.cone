@@ -1,0 +1,92 @@
+// ======== Periodic fractal sums ========
+//
+// The noise package's fBm, ridged and billowed sums take any lacunarity and
+// do not wrap. A texture tile must wrap: its right edge continues into its
+// left. This file sums the noise package's periodic gradient noise
+// ('gradient2Periodic') with lacunarity 2, so octave i has a lattice of
+// period x 2^i cells across the tile and wraps exactly there too. Octave i
+// is seeded by hash1(i, seed), as noise's sums are. The sum is divided by
+// the total amplitude, 1 + gain + gain^2 + ..., so fBm and billow lie in
+// [-1, 1] and ridged in [0, 1] (the noise package leaves its sums
+// unnormalized because a division is not exact on a GPU; a texture does not
+// need exactness).
+
+// The kinds of layer
+pub const FRACTAL_FBM = 0u32;
+pub const FRACTAL_RIDGED = 1u32;
+pub const FRACTAL_BILLOW = 2u32;
+
+// One octave's layer from gradient noise n: n itself, ridged (1 - |n|)^2, or
+// billowed 2 |n| - 1
+fn octaveLayer(kind u32, n f32) f32 {
+  if kind == FRACTAL_RIDGED {
+    (1. - libc.fabsf(n)) * (1. - libc.fabsf(n));
+  } elif kind == FRACTAL_BILLOW {
+    2. * libc.fabsf(n) - 1.;
+  } else {
+    n;
+  };
+}
+
+// The sum of 'octaves' octaves of 'kind' at the point 'p' (in cells of the
+// first octave), its lattice wrapping every 'period' cells, normalized
+pub fn periodicFractal(kind u32, p Vec2, period i32, seed u32, octaves i32, gain f32) f32 {
+  mut sum f32 = 0.;
+  mut total f32 = 0.;
+  mut amp f32 = 1.;
+  mut freq f32 = 1.;
+  mut per = period;
+  mut i = 0;
+  while i < octaves {
+    imm n = gradient2Periodic(new Vec2(p.x * freq, p.y * freq), per, hash1(i, seed));
+    sum = sum + amp * octaveLayer(kind, n.value);
+    total = total + amp;
+    amp = amp * gain;
+    freq = freq * 2.;
+    per = per * 2;
+    i = i + 1;
+  }
+  if total > 0. { sum / total; } else { 0.; };
+}
+
+// A layer of periodic fractal noise over a tile: which kind, how many
+// lattice cells across the tile its first octave has, how many octaves (each
+// twice the frequency of the last, 'gain' times its amplitude), its seed,
+// and a domain warp: the point moved by 'warp' cells of the first octave
+// along two more fractal sums of two octaves (seeded pcg(seed) and
+// pcg(seed + 1)), so the layer's features twist and stretch; 0 is no warp
+pub struct FractalLayer {
+  pub kind u32;
+  pub period i32;
+  pub octaves i32;
+  pub gain f32;
+  pub seed u32;
+  pub warp f32 = 0.;
+
+  pub fn fbm(period i32, octaves i32, gain f32, seed u32) FractalLayer {
+    new FractalLayer(FRACTAL_FBM, period, octaves, gain, seed, 0.);
+  }
+  pub fn ridged(period i32, octaves i32, gain f32, seed u32) FractalLayer {
+    new FractalLayer(FRACTAL_RIDGED, period, octaves, gain, seed, 0.);
+  }
+  pub fn billow(period i32, octaves i32, gain f32, seed u32) FractalLayer {
+    new FractalLayer(FRACTAL_BILLOW, period, octaves, gain, seed, 0.);
+  }
+
+  // The same layer, warped by 'strength' cells
+  pub fn warped(self, strength f32) FractalLayer {
+    new FractalLayer(kind, period, octaves, gain, seed, strength);
+  }
+
+  // The layer at tile coordinates ('u', 'v'): fBm and billow in [-1, 1],
+  // ridged in [0, 1]. It repeats every 1 in u and in v.
+  pub fn at(self &, u f32, v f32) f32 {
+    mut p = new Vec2(u * f32.from(period), v * f32.from(period));
+    if warp != 0. {
+      imm wx = periodicFractal(FRACTAL_FBM, p, period, pcg(seed), 2, 0.5);
+      imm wy = periodicFractal(FRACTAL_FBM, p, period, pcg(seed + 1u32), 2, 0.5);
+      p = new Vec2(p.x + warp * wx, p.y + warp * wy);
+    }
+    periodicFractal(kind, p, period, seed, octaves, gain);
+  }
+}

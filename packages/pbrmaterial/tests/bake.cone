@@ -1,0 +1,260 @@
+// The pbrmaterial package's bake: its periodic noise, its per-texel
+// functions and the texture set they make. Only a failure prints.
+//
+// - A FractalLayer repeats every 1 in u and v (to 1e-5: the point u + 1 has
+//   fewer bits below the point than u), each kind, warped and not; fBm lies
+//   in [-1, 1] and ridged in [0, 1].
+// - The bake is the per-texel function: every texel of 'bakeHeight' is
+//   'heightTexel' of its coordinates, bit for bit, and a second bake gives the
+//   same bytes.
+// - Seams: the height function just past the tile's right and top edges is
+//   its value at the left and bottom; and in every map, the step from the last
+//   column to the first (and the last row to the first) is no bigger than the
+//   biggest step between neighbours inside the tile.
+// - Normals: every float normal is unit length; every 8-bit one decodes to
+//   within 0.01 of unit length; each leans away from the uphill side; a flat
+//   field gives (0, 0, 1), occlusion 1 and convexity 0.
+// - Convexity and occlusion against a hand-made field: a bump is convex and
+//   fully open on top, a pit concave and occluded.
+// - The sRGB curve: 0, 1 and 0.5 encoded as IEC 61966-2-1 gives them, and
+//   decode undoes encode.
+// - Weathering: no amount is no mask; edge wear gathers on convex texels
+//   and grime on concave ones.
+// - The maps of one 64 x 64 surface, pinned by their FNV-1a hashes.
+
+mod bake;
+
+import testing use *;
+import libc;
+import geomath use *;
+import collections use *;
+import pbrmaterial use *;
+
+const SIZE = 64;
+
+// A test surface: ridged plates with fBm detail, steel-grey paint over metal,
+// worn on its edges and grimy in its creases
+fn testSurface() ProceduralSurface {
+  imm height = new HeightParams(FractalLayer.ridged(4, 4, 0.5, 11u32).warped(0.4), FractalLayer.fbm(16, 3, 0.5, 12u32),
+    0.15, 0.1, 1.2, 0.03);
+  imm surface = new SurfaceParams(new Color(0.05, 0.06, 0.07, 1.), new Color(0.30, 0.32, 0.35, 1.),
+    FractalLayer.fbm(8, 4, 0.5, 13u32), 0.25, 0.7, 0.45, 0.1, 0.);
+  imm wear = new WeatheringParams(1., 0.06, 0.03, FractalLayer.fbm(16, 3, 0.5, 14u32), 0.05,
+    new Color(0.6, 0.6, 0.62, 1.), 0.25, 1.);
+  imm grime = new WeatheringParams(0.9, 0.12, 0.06, FractalLayer.fbm(8, 3, 0.5, 15u32), 0.05,
+    new Color(0.03, 0.025, 0.02, 1.), 0.9, 0.);
+  new ProceduralSurface(height, surface, 0.06, 6, 0.02, wear, grime);
+}
+
+// The largest step between neighbouring texels of channel 'c' inside the
+// map, and across its wrap (last column to first, last row to first)
+fn steps(m &TexelMap, c i32, inside &mut i32, across &mut i32) {
+  mut a = 0;
+  mut b = 0;
+  mut y = 0;
+  while y < m.height {
+    mut x = 0;
+    while x < m.width {
+      imm here = i32.from(m.at(x, y, c));
+      imm right = i32.from(m.at((x + 1) % m.width, y, c));
+      imm up = i32.from(m.at(x, (y + 1) % m.height, c));
+      mut dx = here - right;
+      if dx < 0 { dx = 0 - dx; }
+      mut dy = here - up;
+      if dy < 0 { dy = 0 - dy; }
+      if x == m.width - 1 { if dx > b { b = dx; } } elif dx > a { a = dx; }
+      if y == m.height - 1 { if dy > b { b = dy; } } elif dy > a { a = dy; }
+      x = x + 1;
+    }
+    y = y + 1;
+  }
+  *inside = a;
+  *across = b;
+}
+
+fn checkSeams(m &TexelMap, name &[]u8) {
+  mut c = 0;
+  while c < m.channels {
+    mut inside = 0;
+    mut across = 0;
+    steps(m, c, &mut inside, &mut across);
+    expect(across <= inside, name);
+    c = c + 1;
+  }
+}
+
+fn main() i32 {
+  // ---- Periodic fractal noise ----
+  imm layers = [FractalLayer.fbm(4, 5, 0.5, 3u32), FractalLayer.ridged(3, 4, 0.6, 4u32),
+    FractalLayer.billow(5, 3, 0.5, 5u32), FractalLayer.fbm(4, 4, 0.5, 6u32).warped(0.7)];
+  mut worstWrap = 0d;
+  mut fbmIn = true;
+  mut ridgedIn = true;
+  mut l = 0usize;
+  while l < 4usize {
+    imm layer = layers[l];
+    mut j = 0;
+    while j < 16 {
+      imm u = f32.from(j) * 0.0625 + 0.013;
+      imm v = f32.from((j * 7) % 16) * 0.0625 + 0.029;
+      imm a = layer.at(u, v);
+      imm du = libc.fabs(f64.from(layer.at(u + 1., v) - a));
+      imm dv = libc.fabs(f64.from(layer.at(u, v + 1.) - a));
+      if du > worstWrap { worstWrap = du; }
+      if dv > worstWrap { worstWrap = dv; }
+      if l == 0usize and (a < -1. or a > 1.) { fbmIn = false; }
+      if l == 1usize and (a < 0. or a > 1.) { ridgedIn = false; }
+      j = j + 1;
+    }
+    l = l + 1usize;
+  }
+  expect(worstWrap < 0.00001d, "every layer repeats every 1 in u and in v");
+  expect(fbmIn, "fbm lies in [-1, 1]");
+  expect(ridgedIn, "ridged lies in [0, 1]");
+
+  // ---- The bake is the per-texel function ----
+  imm surface = testSurface();
+  imm set = bakeTextureSet(&surface, SIZE);
+  mut same = true;
+  mut y = 0;
+  while y < SIZE {
+    mut x = 0;
+    while x < SIZE {
+      imm h = heightTexel(&surface.height, x, y, SIZE);
+      if (h as u32) != (set.height.at(x, y) as u32) { same = false; }
+      x = x + 1;
+    }
+    y = y + 1;
+  }
+  expect(same, "each texel of the height map is heightTexel of its coordinates, bit for bit");
+  imm again = bakeTextureSet(&surface, SIZE);
+  expectUInt(mapHash(&again.baseColor), mapHash(&set.baseColor), "a second bake gives the same base colour");
+  expectUInt(mapHash(&again.normal), mapHash(&set.normal), "and the same normals");
+
+  // ---- Seams ----
+  mut seam = 0d;
+  mut k = 0;
+  while k < SIZE {
+    imm right = libc.fabs(f64.from(heightTexel(&surface.height, SIZE, k, SIZE) - heightTexel(&surface.height, 0, k, SIZE)));
+    imm top = libc.fabs(f64.from(heightTexel(&surface.height, k, SIZE, SIZE) - heightTexel(&surface.height, k, 0, SIZE)));
+    if right > seam { seam = right; }
+    if top > seam { seam = top; }
+    k = k + 1;
+  }
+  expect(seam < 0.00001d, "the height just past the right and top edges is the left and bottom's");
+  checkSeams(&set.baseColor, "base colour: no step across the wrap bigger than inside");
+  checkSeams(&set.orm, "ORM: no step across the wrap bigger than inside");
+  checkSeams(&set.normal, "normal: no step across the wrap bigger than inside");
+  checkSeams(&set.heightMap, "height: no step across the wrap bigger than inside");
+
+  // ---- Normals ----
+  mut worstUnit = 0d;
+  mut worstByte = 0d;
+  mut leans = true;
+  y = 0;
+  while y < SIZE {
+    mut x = 0;
+    while x < SIZE {
+      imm n = normalTexel(&set.height, x, y, surface.height.depth);
+      imm e = libc.fabs(f64.from(n.length()) - 1d);
+      if e > worstUnit { worstUnit = e; }
+      imm qx = byteUnit(set.normal.at(x, y, 0)) * 2. - 1.;
+      imm qy = byteUnit(set.normal.at(x, y, 1)) * 2. - 1.;
+      imm qz = byteUnit(set.normal.at(x, y, 2)) * 2. - 1.;
+      imm eb = libc.fabs(f64.from(libc.sqrtf(qx * qx + qy * qy + qz * qz)) - 1d);
+      if eb > worstByte { worstByte = eb; }
+      imm slope = set.height.at(x + 1, y) - set.height.at(x - 1, y);
+      if (slope > 0. and n.x > 0.) or (slope < 0. and n.x < 0.) { leans = false; }
+      x = x + 1;
+    }
+    y = y + 1;
+  }
+  expect(worstUnit < 0.000001d, "every float normal is unit length");
+  expect(worstByte < 0.01d, "every 8-bit normal decodes to within 0.01 of unit length");
+  expect(leans, "each normal leans away from the uphill side");
+
+  mut flat = ScalarMap.zeros(8);
+  imm fn0 = normalTexel(&flat, 3, 3, 0.05);
+  expectFloat(f64.from(fn0.x), 0d, 0d, "a flat field's normal is (0, 0, 1): x");
+  expectFloat(f64.from(fn0.y), 0d, 0d, "y");
+  expectFloat(f64.from(fn0.z), 1d, 0d, "z");
+  expectFloat(f64.from(occlusionTexel(&flat, 3, 3, 0.25, 4, 0.05)), 1d, 0d, "a flat field is open");
+  expectFloat(f64.from(convexityTexel(&flat, 3, 3, 0.125, 0.05)), 0d, 0d, "and neither convex nor concave");
+
+  // ---- Convexity and occlusion against a hand-made field ----
+  mut bump = ScalarMap.zeros(16);
+  bump.set(8, 8, 1.);
+  mut pit = ScalarMap.zeros(16);
+  y = 0;
+  while y < 16 {
+    mut x = 0;
+    while x < 16 {
+      pit.set(x, y, 1.);
+      x = x + 1;
+    }
+    y = y + 1;
+  }
+  pit.set(8, 8, 0.);
+  expect(convexityTexel(&bump, 8, 8, 0.0625, 0.05) > 0., "a bump is convex");
+  expect(convexityTexel(&pit, 8, 8, 0.0625, 0.05) < 0., "a pit is concave");
+  expectFloat(f64.from(occlusionTexel(&bump, 8, 8, 0.25, 4, 0.05)), 1d, 0d, "a bump's top is open");
+  expect(occlusionTexel(&pit, 8, 8, 0.25, 4, 0.05) < 1., "a pit's floor is occluded");
+  // One step of 1/16 of the tile (one texel): along the axes the rim, 0.05
+  // above, a tangent of 0.05 x 16 = 0.8; along the diagonals the bilinear
+  // blend at (8 + d, 8 + d), d = 0.7071, which is 1 - (1 - d)^2 of the rim
+  imm d = 0.70710678d;
+  imm ta = 0.8d;
+  imm td = (1d - (1d - d) * (1d - d)) * 0.8d;
+  imm open = 1d - (4d * ta / libc.sqrt(1d + ta * ta) + 4d * td / libc.sqrt(1d + td * td)) / 8d;
+  expectFloat(f64.from(occlusionTexel(&pit, 8, 8, 0.0625, 1, 0.05)), open, 0.00001d,
+    "the pit's openness is 1 less the mean sine of the rim's elevation");
+
+  // ---- The sRGB curve ----
+  expectFloat(f64.from(srgbEncode(0.)), 0d, 0d, "sRGB of 0 is 0");
+  expectFloat(f64.from(srgbEncode(1.)), 1d, 0d, "sRGB of 1 is 1");
+  expectFloat(f64.from(srgbEncode(0.5)), 0.735357d, 0.000001d, "sRGB of 0.5 is 0.735357");
+  expectFloat(f64.from(srgbDecode(srgbEncode(0.2))), 0.2d, 0.000001d, "decode undoes encode");
+
+  // ---- Weathering ----
+  imm none = WeatheringParams.none();
+  expectFloat(f64.from(weatheringMask(&none, 5., 0.3, 0.3)), 0d, 0d, "no amount, no mask");
+  mut wearOnConvex = 0d;
+  mut wearOnConcave = 0d;
+  mut grimeOnConvex = 0d;
+  mut grimeOnConcave = 0d;
+  mut convexCount = 0d;
+  mut concaveCount = 0d;
+  y = 0;
+  while y < SIZE {
+    mut x = 0;
+    while x < SIZE {
+      imm c = convexityTexel(&set.height, x, y, surface.convexityRadius, surface.height.depth);
+      imm w = f64.from(set.wearMask.at(x, y, 0));
+      imm g = f64.from(set.grimeMask.at(x, y, 0));
+      if c > 0.03 {
+        wearOnConvex = wearOnConvex + w;
+        grimeOnConvex = grimeOnConvex + g;
+        convexCount = convexCount + 1d;
+      } elif c < -0.03 {
+        wearOnConcave = wearOnConcave + w;
+        grimeOnConcave = grimeOnConcave + g;
+        concaveCount = concaveCount + 1d;
+      }
+      x = x + 1;
+    }
+    y = y + 1;
+  }
+  expect(convexCount > 0d and concaveCount > 0d, "the test surface has convex and concave texels");
+  expect(wearOnConvex / convexCount > wearOnConcave / concaveCount, "edge wear gathers on convex texels");
+  expect(grimeOnConcave / concaveCount > grimeOnConvex / convexCount, "grime gathers on concave texels");
+
+  // ---- The maps, pinned ----
+  expectUInt(mapHash(&set.baseColor), 2688242806316949393u64, "base colour hash");
+  expectUInt(mapHash(&set.orm), 4785266580049760213u64, "ORM hash");
+  expectUInt(mapHash(&set.normal), 462987576560406999u64, "normal hash");
+  expectUInt(mapHash(&set.heightMap), 3127703471588091859u64, "height hash");
+  expectUInt(mapHash(&set.wearMask), 14670370643135959687u64, "wear hash");
+  expectUInt(mapHash(&set.grimeMask), 7794801270977148139u64, "grime hash");
+  expectUInt(scalarMapHash(&set.height), 12296221076600457794u64, "height field hash (f32 bits)");
+  done();
+}

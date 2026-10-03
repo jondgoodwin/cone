@@ -1,0 +1,177 @@
+// The physically based material's glTF maps on a real GPU with no window: a
+// square facing the camera (mesh's plane turned up to face +z, so u runs to
+// the right on the screen and v up), drawn into a Post's frame, not tone
+// mapped, read back from a 64 x 64 rgba8unorm texture. Only a failure
+// prints.
+//
+// - The normal map's frame: with the sun coming from the right (+x), a
+//   constant normal map tilted towards +u, (0.6, 0, 0.8), lights the square
+//   more than one tilted towards -u; with the sun from above (+y), one tilted
+//   towards +v more than one towards -v. So the tangents found from the
+//   screen-space derivatives point along +u and +v, the map's convention
+//   (glTF's: +y towards +v).
+// - A flat normal map, (0, 0, 1), draws as the mesh's own normal does, to
+//   within 2 of 255 (the map's 8 bits).
+// - The ORM map: occlusion 0 (red) with strength 1 darkens the square
+//   against occlusion 1; metallic from blue (1, over a white base) changes
+//   it; a factor-only material with the white map is the same as without one.
+//
+// It needs a GPU driver with Vulkan 1.3 and SDL3.dll; with the Vulkan SDK,
+// validation and synchronization validation are on, and must say nothing.
+// GPU_POWER_PREFERENCE=low-power tests an integrated GPU where there are two.
+
+mod maps;
+
+import testing use *;
+import libc;
+import collections use *;
+import geomath use *;
+import mesh use Mesh;
+import gpu use *;
+import render use *;
+
+fn px(p *u8, x usize, y usize, c usize) i64 { i64.from(*(p + (y * 64usize + x) * 4usize + c)); }
+
+// The summed channels over the middle 16 x 16 pixels
+fn middle(p *u8) i64 {
+  mut sum = 0i64;
+  mut y = 24usize;
+  while y < 40usize {
+    mut x = 24usize;
+    while x < 40usize {
+      sum = sum + px(p, x, y, 0usize) + px(p, x, y, 1usize) + px(p, x, y, 2usize);
+      x = x + 1usize;
+    }
+    y = y + 1usize;
+  }
+  sum;
+}
+
+// A 4 x 4 image of one colour
+fn solid(r u8, g u8, b u8) Image {
+  mut img = new Image(4, 4, 3, List[u8].empty());
+  mut i = 0;
+  while i < 16 {
+    img.pixels.push(r);
+    img.pixels.push(g);
+    img.pixels.push(b);
+    i = i + 1;
+  }
+  img;
+}
+
+// A linear texture of one colour
+fn mapTexture(renderer &mut Renderer, device &mut Device, r u8, g u8, b u8) TextureHandle {
+  imm img = solid(r, g, b);
+  renderer.addLinearTexture(device, &img);
+}
+
+fn drawFrame(renderer &mut Renderer, post &mut Post, device &mut Device, color &Texture, depth &Texture,
+    readback &Buffer, camera &Camera, light &Light, list &DrawList) {
+  mut encoder = device.createCommandEncoder();
+  renderer.render(device, &mut encoder, &post.hdr, depth, camera, light, list);
+  post.apply(&mut encoder, color);
+  encoder.copyTextureToBuffer(color, readback);
+  device.queue.submit(encoder.finish());
+  device.endFrame();
+  device.waitIdle();
+}
+
+// The square drawn in 'material' under 'light': its middle's brightness
+fn brightness(renderer &mut Renderer, post &mut Post, device &mut Device, color &Texture, depth &Texture,
+    readback &Buffer, camera &Camera, light &Light, square MeshHandle, material &PbrMaterial) i64 {
+  imm m = renderer.addPbrMaterial(device, material);
+  mut list = DrawList.empty();
+  imm facing = Mat4.fromTrs(new Vec3(0., 0., 0.), Quat.angleAxis(radians(90.), new Vec3(1., 0., 0.)), new Vec3(1., 1., 1.));
+  list.add(square, m, facing);
+  drawFrame(renderer, post, device, color, depth, readback, camera, light, &list);
+  middle(readback.mappedRange());
+}
+
+fn main() i32 {
+  mut instance = Instance.create("maps");
+  require(instance.isValid(), "a Vulkan 1.3 instance");
+  mut none = Surface.none();
+  mut preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
+  imm powerEnv = libc.getenv(&"GPU_POWER_PREFERENCE" as *u8);
+  if (powerEnv as usize) != 0usize {
+    if libc.strcmp(powerEnv, &"low-power" as *u8) == 0i32 { preference = POWER_PREFERENCE_LOW_POWER; }
+  }
+  mut adapter = instance.requestAdapter(&none, preference);
+  require(adapter.isValid(), "an adapter");
+  mut device = adapter.requestDevice();
+  require(device.isValid(), "a device");
+
+  imm target = new TextureDescriptor(64u32, 64u32, TEXTURE_FORMAT_RGBA8_UNORM,
+    TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
+  mut color = device.createTexture(&target);
+  imm depthDesc = new TextureDescriptor(64u32, 64u32, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT);
+  mut depth = device.createTexture(&depthDesc);
+  mut readback = device.createBuffer(16384u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  mut renderer = Renderer.create(&mut device, TEXTURE_FORMAT_RGBA16_FLOAT, TEXTURE_FORMAT_DEPTH32_FLOAT);
+  mut post = Post.create(&mut device, TEXTURE_FORMAT_RGBA8_UNORM, 64u32, 64u32);
+  require(renderer.isValid() and post.isValid(), "a renderer and its post-processing");
+  post.bloom = 0.;
+  post.toneMapper = TONE_MAP_NONE;
+  renderer.environmentStrength = 0.3;
+
+  mut camera = Camera.make();
+  camera.fov = radians(40.);
+  camera.lookAt(new Vec3(0., 0., 3.), new Vec3(0., 0., 0.), new Vec3(0., 1., 0.));
+  imm fromRight = Light.directional(new Vec3(-0.7071068, 0., -0.7071068), Color.gray(0.6), Color.gray(0.));
+  imm fromAbove = Light.directional(new Vec3(0., -0.7071068, -0.7071068), Color.gray(0.6), Color.gray(0.));
+  imm plane = Mesh.plane(1, 1.);
+  imm square = renderer.addMesh(&mut device, &plane);
+
+  imm right = mapTexture(&mut renderer, &mut device, 204u8, 128u8, 230u8);
+  imm left = mapTexture(&mut renderer, &mut device, 51u8, 128u8, 230u8);
+  imm up = mapTexture(&mut renderer, &mut device, 128u8, 204u8, 230u8);
+  imm down = mapTexture(&mut renderer, &mut device, 128u8, 51u8, 230u8);
+  imm flat = mapTexture(&mut renderer, &mut device, 128u8, 128u8, 255u8);
+  imm grey = PbrMaterial.standard(new Color(0.5, 0.5, 0.5, 1.), 0., 0.5);
+
+  // ---- The normal map's frame ----
+  mut m = grey;
+  m.normalTexture = right;
+  imm litRight = brightness(&mut renderer, &mut post, &mut device, &color, &depth, &readback, &camera, &fromRight, square, &m);
+  m.normalTexture = left;
+  imm litLeft = brightness(&mut renderer, &mut post, &mut device, &color, &depth, &readback, &camera, &fromRight, square, &m);
+  expectBool(litRight > litLeft + 2000, true, "sun from +u: a normal tilted to +u is lit more than one tilted to -u");
+  m.normalTexture = up;
+  imm litUp = brightness(&mut renderer, &mut post, &mut device, &color, &depth, &readback, &camera, &fromAbove, square, &m);
+  m.normalTexture = down;
+  imm litDown = brightness(&mut renderer, &mut post, &mut device, &color, &depth, &readback, &camera, &fromAbove, square, &m);
+  expectBool(litUp > litDown + 2000, true, "sun from +v: a normal tilted to +v is lit more than one tilted to -v");
+
+  // ---- A flat map ----
+  imm plain = brightness(&mut renderer, &mut post, &mut device, &color, &depth, &readback, &camera, &fromRight, square, &grey);
+  m.normalTexture = flat;
+  imm flatLit = brightness(&mut renderer, &mut post, &mut device, &color, &depth, &readback, &camera, &fromRight, square, &m);
+  expectFloat(f64.from(flatLit) / 768d, f64.from(plain) / 768d, 2d, "a flat normal map draws as the mesh's normal (mean of 16 x 16 x 3)");
+
+  // ---- The ORM map ----
+  imm open = mapTexture(&mut renderer, &mut device, 255u8, 255u8, 0u8);
+  imm shut = mapTexture(&mut renderer, &mut device, 0u8, 255u8, 0u8);
+  imm metal = mapTexture(&mut renderer, &mut device, 255u8, 255u8, 255u8);
+  mut o = PbrMaterial.standard(new Color(1., 1., 1., 1.), 1., 0.5);
+  o.metallicRoughnessTexture = open;
+  o.occlusionTexture = open;
+  imm openLit = brightness(&mut renderer, &mut post, &mut device, &color, &depth, &readback, &camera, &fromRight, square, &o);
+  o.metallicRoughnessTexture = shut;
+  o.occlusionTexture = shut;
+  imm shutLit = brightness(&mut renderer, &mut post, &mut device, &color, &depth, &readback, &camera, &fromRight, square, &o);
+  expectBool(openLit > shutLit, true, "occlusion 0 darkens the square against occlusion 1");
+  o.metallicRoughnessTexture = metal;
+  o.occlusionTexture = metal;
+  imm metalLit = brightness(&mut renderer, &mut post, &mut device, &color, &depth, &readback, &camera, &fromRight, square, &o);
+  expectBool(metalLit != openLit, true, "metallic from the map's blue changes the square");
+  mut w = grey;
+  w.metallicRoughnessTexture = renderer.white;
+  w.occlusionTexture = renderer.white;
+  imm whiteMaps = brightness(&mut renderer, &mut post, &mut device, &color, &depth, &readback, &camera, &fromRight, square, &w);
+  expectInt(whiteMaps, plain, "the white maps are the same as none");
+
+  expectUInt(u64.from(failures()), 0u64, "no Vulkan call failed");
+  expectUInt(u64.from(validationMessages()), 0u64, "no validation message");
+  done();
+}
