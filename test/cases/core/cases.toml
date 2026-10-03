@@ -70,16 +70,23 @@ contains = [
 excludes = [" hidden ", "define internal main "]
 
 # 'main' is the one definition the optimizer cannot delete or fold away, so it
-# is where the COMDAT line itself is pinned as LLVM prints it. The 'define'
-# line stops before its '{' because the debug run puts a '!dbg' there, and both
-# runs read this check.
+# is where the COMDAT line itself is pinned as LLVM prints it, and where it
+# survives into the object. Its 'define' line is generation's, read before the
+# optimizer, which adds attributes of its own to it in the release run; it
+# stops before its '{' because the debug run puts a '!dbg' there, and both
+# runs read these checks.
 [[scenario.core_success.check]]
 name = "main-leads-its-own-comdat"
 target = "llvmir"
 contains = [
   "$main = comdat nodeduplicate",
-  "define i32 @main() comdat",
+  "i32 @main()",
 ]
+
+[[scenario.core_success.check]]
+name = "main-is-defined-in-its-comdat"
+target = "preir"
+contains = ["define i32 @main() comdat"]
 
 # A method of a number type lowers to what the type's declaration holds -- an
 # intrinsic -- and never to a symbol of its own. 'sqrt' is the one that leaves
@@ -346,6 +353,12 @@ contains = ["icmp ult i8", "icmp ult i16", "icmp ult i32", "icmp ult i64", "call
 category = "compile"
 description = "A shift by an amount masked below the width keeps no compare once optimized, one by a constant amount is written with none, and one by a constant past the width is 0, or the sign for a signed '>>'"
 tags = ["genllvm"]
+
+# Compiled as a library, so that its public functions are exported: in a
+# program they are internal, and the optimizer deletes what main never calls
+[[scenario.core_genllvm_shift.run]]
+name = "library"
+options = ["--library"]
 
 [[scenario.core_genllvm_shift.check]]
 name = "a-masked-amount-needs-no-compare"
