@@ -236,7 +236,9 @@ reject an overload name everywhere else. Bail if `objfn` is already marked
   not called, its value is constructed with `new`.
 - **A bare method or field name** (`FlagMethFld`, not `FlagQualified`) →
   rewrite to `self.method`, synthesizing a resolved `self` from parameter 0.
-- **An overload set** → `fnCallLowerOverloadFn` picks the concrete candidate.
+- **An overload set** → `fnCallLowerOverloadFn` type checks every candidate not
+  yet analyzed (`fnCallDemandCandidates`, as a member name's are below), then
+  picks the concrete candidate.
 - **`FlagLvalOp`** → borrow the receiver as `&mut`, or hand an operator-assign
   on a method type to `fnCallOpAssgn`. A receiver that is already a reference
   (`fnCallIsRefReceiver`) is passed as it is, exactly as the reference arm of
