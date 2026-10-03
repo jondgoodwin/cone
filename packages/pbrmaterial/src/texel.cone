@@ -1,0 +1,207 @@
+// ======== The parameters, and the per-texel functions ========
+//
+// Each function here is pure: what it returns depends only on its
+// arguments, so it can run for every texel at once, in any order, on any
+// thread or, as a kernel, on a GPU. The first pass computes the height of
+// each texel from noise; the second reads that height map to find each
+// texel's normal, convexity and occlusion, and from those its surface.
+
+// ---- Height ----
+
+// The height field: a primary layer plus 'detailWeight' of a detail layer,
+// remapped to 0 to 1 as bias + contrast x (primary + detailWeight x detail),
+// held to the range (so a high contrast makes plateaus and flat floors);
+// and 'depth', how deep the whole range 0 to 1 is, as a fraction of the
+// tile's width (0.02: the deepest pit is 2% of the tile below the highest
+// peak), which scales every slope taken from it
+pub struct HeightParams {
+  pub primary FractalLayer;
+  pub detail FractalLayer;
+  pub detailWeight f32;
+  pub bias f32;
+  pub contrast f32;
+  pub depth f32;
+}
+
+// The height, 0 to 1, of texel ('x', 'y') of a tile 'size' texels square
+pub fn heightTexel(h &HeightParams, x i32, y i32, size i32) f32 {
+  imm u = texelCentre(x, size);
+  imm v = texelCentre(y, size);
+  mut n = h.primary.at(u, v);
+  if h.detailWeight != 0. { n = n + h.detailWeight * h.detail.at(u, v); }
+  clamp01(h.bias + h.contrast * n);
+}
+
+// The centre of texel 'i' of 'size', in tile units
+pub fn texelCentre(i i32, size i32) f32 { (f32.from(i) + 0.5) / f32.from(size); }
+
+// ---- From the height map ----
+
+// The unit normal of the height field at texel ('x', 'y'), in tangent space
+// (x along +u, y along +v, z out of the surface), from central differences
+// of 'height' (wrapping), its range 'depth' tile units deep
+pub fn normalTexel(height &ScalarMap, x i32, y i32, depth f32) Vec3 {
+  imm s = f32.from(height.size);
+  // The slope in tile units: the difference over two texels, 2 / size apart
+  imm gx = (height.at(x + 1, y) - height.at(x - 1, y)) * 0.5 * s * depth;
+  imm gy = (height.at(x, y + 1) - height.at(x, y - 1)) * 0.5 * s * depth;
+  new Vec3(0. - gx, 0. - gy, 1.).normalize();
+}
+
+// The eight directions a neighbourhood is sampled in, unit length
+fn direction(i i32) Vec2 {
+  imm d f32 = 0.70710678;
+  if i == 0 { new Vec2(1., 0.); } elif i == 1 { new Vec2(d, d); } elif i == 2 { new Vec2(0., 1.); }
+  elif i == 3 { new Vec2(0. - d, d); } elif i == 4 { new Vec2(-1., 0.); } elif i == 5 { new Vec2(0. - d, 0. - d); }
+  elif i == 6 { new Vec2(0., -1.); } else { new Vec2(d, 0. - d); };
+}
+
+// How much texel ('x', 'y') stands above its surroundings at 'radius' (tile
+// units): its height less the mean of eight samples on a circle that far
+// away, scaled to tile units by 'depth' and divided by the radius, so it is
+// a slope, positive on a ridge or a bump (convex), negative in a crease or a
+// pit (concave), and the same at any resolution
+pub fn convexityTexel(height &ScalarMap, x i32, y i32, radius f32, depth f32) f32 {
+  imm r = radius * f32.from(height.size);
+  mut sum f32 = 0.;
+  mut i = 0;
+  while i < 8 {
+    imm d = direction(i);
+    sum = sum + height.sample(f32.from(x) + d.x * r, f32.from(y) + d.y * r);
+    i = i + 1;
+  }
+  (height.at(x, y) - sum * 0.125) * depth / radius;
+}
+
+// Ambient occlusion at texel ('x', 'y') from the height field alone, by
+// horizon search (as horizon-based ambient occlusion does it on a depth
+// buffer): along each of eight directions, 'steps' samples out to 'radius'
+// (tile units), the highest elevation angle seen above the texel; the
+// texel's openness is 1 less the mean of those angles' sines. 1 is open
+// sky, lower is a pit or a crease. 'depth' scales the height to tile units.
+pub fn occlusionTexel(height &ScalarMap, x i32, y i32, radius f32, steps i32, depth f32) f32 {
+  imm s = f32.from(height.size);
+  imm h0 = height.at(x, y);
+  mut sum f32 = 0.;
+  mut i = 0;
+  while i < 8 {
+    imm d = direction(i);
+    mut best f32 = 0.;              // the greatest tangent of elevation
+    mut k = 1;
+    while k <= steps {
+      imm dist = radius * f32.from(k) / f32.from(steps);        // tile units
+      imm hk = height.sample(f32.from(x) + d.x * dist * s, f32.from(y) + d.y * dist * s);
+      imm t = (hk - h0) * depth / dist;
+      if t > best { best = t; }
+      k = k + 1;
+    }
+    sum = sum + best / libc.sqrtf(1. + best * best);
+    i = i + 1;
+  }
+  1. - sum * 0.125;
+}
+
+// ---- The surface ----
+
+// The undamaged surface: a base colour from 'lowColor' at height 0 to
+// 'highColor' at height 1 (linear), its brightness varied by
+// 'colorVariation' times a noise layer (1 + variation x n); roughness from
+// 'lowRoughness' to 'highRoughness' by height, plus 'roughnessVariation'
+// times the same noise; and one metallic value
+pub struct SurfaceParams {
+  pub lowColor Color;
+  pub highColor Color;
+  pub variation FractalLayer;
+  pub colorVariation f32;
+  pub lowRoughness f32;
+  pub highRoughness f32;
+  pub roughnessVariation f32;
+  pub metallic f32;
+}
+
+// A weathering mask and the surface it leaves: where 'signal' (convexity
+// for edge wear, cavity for grime) plus 'breakupStrength' times a noise
+// layer passes 'threshold', the mask rises from 0 to 1 over 'softness'
+// either side; times 'amount'. Under the mask the surface becomes 'color',
+// 'roughness' and 'metallic'. An amount of 0 is no weathering.
+pub struct WeatheringParams {
+  pub amount f32;
+  pub threshold f32;
+  pub softness f32;
+  pub breakup FractalLayer;
+  pub breakupStrength f32;
+  pub color Color;
+  pub roughness f32;
+  pub metallic f32;
+
+  // No weathering
+  pub fn none() WeatheringParams {
+    new WeatheringParams(0., 0., 1., FractalLayer.fbm(1, 1, 0.5, 0u32), 0., new Color(0., 0., 0., 1.), 0.5, 0.);
+  }
+}
+
+// One texel's surface: the material's inputs, and the masks that made them
+pub struct SurfaceTexel {
+  pub baseColor Color;             // linear
+  pub roughness f32;               // perceptual, 0 to 1
+  pub metallic f32;
+  pub occlusion f32;               // 1 open, 0 shut
+  pub wear f32;                    // the edge wear mask, 0 to 1
+  pub grime f32;                   // the grime mask, 0 to 1
+}
+
+// The weathering mask for 'signal' at tile coordinates ('u', 'v')
+pub fn weatheringMask(w &WeatheringParams, signal f32, u f32, v f32) f32 {
+  if w.amount <= 0. { return 0.; }
+  mut s = signal;
+  if w.breakupStrength != 0. { s = s + w.breakupStrength * w.breakup.at(u, v); }
+  w.amount * smoothstep01(w.threshold - w.softness, w.threshold + w.softness, s);
+}
+
+// The surface of texel ('x', 'y') of a tile 'size' square, from its height
+// (0 to 1), convexity and occlusion: the undamaged surface, then edge wear
+// (driven by convexity), then grime (driven by cavity, 1 - occlusion, plus
+// concavity) over it
+pub fn surfaceTexel(s &SurfaceParams, wear &WeatheringParams, grime &WeatheringParams,
+    height f32, convexity f32, occlusion f32, x i32, y i32, size i32) SurfaceTexel {
+  imm u = texelCentre(x, size);
+  imm v = texelCentre(y, size);
+  mut n f32 = 0.;
+  if s.colorVariation != 0. or s.roughnessVariation != 0. { n = s.variation.at(u, v); }
+  imm bright = 1. + s.colorVariation * n;
+  mut base = mixColor(s.lowColor, s.highColor, height);
+  base = new Color(base.red * bright, base.green * bright, base.blue * bright, 1.);
+  mut rough = s.lowRoughness + (s.highRoughness - s.lowRoughness) * height + s.roughnessVariation * n;
+  mut metal = s.metallic;
+
+  imm wm = weatheringMask(wear, convexity, u, v);
+  base = mixColor(base, wear.color, wm);
+  rough = rough + (wear.roughness - rough) * wm;
+  metal = metal + (wear.metallic - metal) * wm;
+
+  mut concave = 0. - convexity;
+  if concave < 0. { concave = 0.; }
+  imm gm = weatheringMask(grime, (1. - occlusion) + concave, u, v);
+  base = mixColor(base, grime.color, gm);
+  rough = rough + (grime.roughness - rough) * gm;
+  metal = metal + (grime.metallic - metal) * gm;
+
+  new SurfaceTexel(clampColor(base), clamp01(rough), clamp01(metal), clamp01(occlusion), wm, gm);
+}
+
+// ---- Small helpers ----
+
+pub fn clamp01(v f32) f32 { if v < 0. { 0.; } elif v > 1. { 1.; } else { v; }; }
+
+// Hermite's smooth step from 0 at 'a' to 1 at 'b'
+pub fn smoothstep01(a f32, b f32, v f32) f32 {
+  if b <= a { return if v < a { 0.; } else { 1.; }; }
+  imm t = clamp01((v - a) / (b - a));
+  t * t * (3. - 2. * t);
+}
+
+fn mixColor(a Color, b Color, t f32) Color {
+  new Color(a.red + (b.red - a.red) * t, a.green + (b.green - a.green) * t, a.blue + (b.blue - a.blue) * t, 1.);
+}
+
+fn clampColor(c Color) Color { new Color(clamp01(c.red), clamp01(c.green), clamp01(c.blue), 1.); }

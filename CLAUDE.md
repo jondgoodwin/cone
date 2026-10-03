@@ -188,6 +188,18 @@ Visual Studio projects stay at the root.
   their grid of buckets, in Lists it owns, lent as an `sdf.Capsules`
   view); its example `vines.cone` grows the night swamp's knotted roots,
   fuses them as capsules, meshes and draws them;
+  `pbrmaterial` is what goes into a physically based material (render
+  evaluates the lighting; this says what the surface is), over `geomath`,
+  `collections` and `noise`, a tool package (it makes images): periodic
+  fractal noise that tiles (`FractalLayer`: fBm, ridged, billowed, warped,
+  over `noise`'s `gradient2Periodic`), `ScalarMap` and `TexelMap` (render's
+  `Image` layout), pure per-texel functions (height; from the height map
+  the tangent-space normal, convexity and horizon-search occlusion; the
+  surface with edge wear and grime masks) and `bakeTextureSet`, which runs
+  them over a tile on the CPU into base colour (sRGB), ORM (glTF's packing)
+  and normal maps plus the masks, its maps pinned by `mapHash` in its test;
+  its example `spheres.cone` bakes three materials and draws them on spheres
+  through render;
   `testing` is the checks a package's tests call (`expectInt`, `require…`,
   `done`), ordinary library code the compiler knows nothing of;
   `textdiff` is the line diff of two lists of lines or two texts: the edit
@@ -385,8 +397,10 @@ Visual Studio projects stay at the root.
   and Blinn-Phong, a base color times a texture) and flat lines, both in
   Slang (`src/lit.slang`, `src/lines.slang`), the physically based material
   (`PbrMaterial`, `src/pbr.slang` over the `brdf` module: GGX, a clear coat,
-  everywhere or in wet patches, and a Belcour-Barla thin film whose
-  thickness is `noise`'s warped fBm), an analytic dusk `Sky`
+  everywhere or in wet patches, a Belcour-Barla thin film whose
+  thickness is `noise`'s warped fBm, and glTF's metallic-roughness, normal
+  and occlusion maps, linear textures from `addLinearTexture`, the normal
+  map's tangents from screen-space derivatives), an analytic dusk `Sky`
   (`src/sky.slang`, with a horizon line and cloud streaks where asked)
   drawn behind the scene and made
   by full-screen passes into image-based lighting (`Environment`,
