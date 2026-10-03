@@ -1,0 +1,286 @@
+// The increment's proof, checked: a TCP echo server and a client on two OS
+// threads, each driving a Loop of its own, exchange 100,000 messages over
+// 127.0.0.1, while the client's same poll also reads a 32 MiB file four
+// 1 MiB reads at a time. (examples/echo.cone is the same work, timed: it
+// prints kernel latency against delivery latency.)
+//
+// Checked: every message comes back byte for byte; every operation of both
+// loops answers exactly once (delivered = submitted, nothing in flight,
+// every answer Done); the file's bytes are the ones written; and every
+// buffer, lent across three threads from one pool, is back in the pool at
+// the end, the OS holding none of its blocks once it has gone.
+//
+// The server is bound to 127.0.0.1 only, so the firewall is never asked.
+
+mod echo;
+
+import testing use *;
+import thread;
+import sync use *;
+import collections use List;
+import time use Instant, Duration;
+import iobuf use *;
+import iocore use *;
+import diag;
+import fs;
+
+const messages = 100000u64;
+const msgSize = 64usize;
+const fileSize = 33554432u64;     // 32 MiB
+const chunk = 1048576u64;         // read 1 MiB at a time
+const depth = 4u64;               // reads in flight at once
+
+// What each side tells main
+struct Report {
+  pub count u64;            // messages echoed or checked
+  pub wrong u64;            // messages or chunks with the wrong bytes
+  pub fileBytes u64;        // file bytes read
+  pub notDone u64;          // answers that were not Done
+  pub counters diag.Counters;
+}
+
+struct ServerArgs {
+  pub pool Pool;
+  pub portTx Sender[u16];
+}
+
+// Echo whatever comes, until the stream ends
+fn serve(a ServerArgs) Report {
+  mut lp = Loop.mustMake();
+  imm listener = lp.mustListen(SocketAddr.localhost(0u16));
+  mut port = 0u16;
+  match lp.localAddr(listener) {
+    case imm r Ok {port = r.value.port();}
+    case imm e Error {}
+  }
+  a.portTx.send(port);
+  lp.submit(Op.Accept[listener], Target.Here[0u64]);
+  mut out = List[Completion].empty();
+  mut conn = Handle.none();
+  mut rep = new Report(0u64, 0u64, 0u64, 0u64, diag.Counters.zero());
+  mut open = true;
+  while open {
+    lp.poll(forever(), &mut out);
+    mut k = 0usize;
+    while k < out.len() {
+      imm c = &mut out[k];
+      if not c.isDone() {rep.notDone = rep.notDone + 1u64;}
+      if c.token == 0u64 {
+        conn = c.handle;
+        lp.submit(Op.Recv[conn, a.pool.mustTake(4096usize)], Target.Here[1u64]);
+      } elif c.token == 1u64 {
+        if c.count() == 0usize {
+          open = false;
+        } else {
+          mut b = IoBuf.empty();
+          b <=> c.buf;
+          lp.submit(Op.Send[conn, b], Target.Here[2u64]);
+        }
+      } else {
+        rep.count = rep.count + u64.from(c.n);
+        mut b = IoBuf.empty();
+        b <=> c.buf;
+        b.clear();
+        lp.submit(Op.Recv[conn, b], Target.Here[1u64]);
+      }
+      k = k + 1usize;
+    }
+    out.clear();
+  }
+  rep.counters = lp.counters();
+  rep;
+}
+
+struct ClientArgs {
+  pub pool Pool;
+  pub port u16;
+}
+
+// Message i's byte j
+fn msgByte(i u64, j usize) u8 {u8.from((i * 31u64 + u64.from(j)) % 256u64);}
+
+// The file's byte at offset at
+fn fileByte(at u64) u8 {u8.from((at / 7u64 + at) % 253u64);}
+
+fn fillMsg(b &mut IoBuf, i u64) {
+  imm room = b.whole();
+  mut j = 0usize;
+  while j < msgSize {
+    room[j] = msgByte(i, j);
+    j = j + 1usize;
+  }
+  b.setLen(msgSize);
+}
+
+fn checkChunk(b &IoBuf, at u64) Bool {
+  imm v = b.view();
+  mut j = 0usize;
+  while j < v.len {
+    if v[j] != fileByte(at + u64.from(j)) {return false;}
+    j = j + 1usize;
+  }
+  true;
+}
+
+// Send each message, wait for its echo whole, check it; meanwhile read the
+// file through the same loop
+fn client(a ClientArgs) Report {
+  mut lp = Loop.mustMake();
+  mut rep = new Report(0u64, 0u64, 0u64, 0u64, diag.Counters.zero());
+  mut out = List[Completion].empty();
+  mut fh = Handle.none();
+  match lp.openFile("echo.tmp", Access.Read[]) {
+    case imm r Ok {fh = r.value;}
+    case imm e Error {}
+  }
+  // Read tokens: 100 + the chunk's number
+  mut nextRead = 0u64;
+  while nextRead < depth {
+    lp.submit(Op.ReadAt[fh, nextRead * chunk, a.pool.mustTake(usize.from(chunk))], Target.Here[100u64 + nextRead]);
+    nextRead = nextRead + 1u64;
+  }
+  lp.submit(Op.Connect[SocketAddr.localhost(a.port)], Target.Here[0u64]);
+  mut conn = Handle.none();
+  mut sent = 0u64;
+  mut readsOut = depth;
+  while rep.count < messages or readsOut > 0u64 {
+    lp.poll(forever(), &mut out);
+    mut k = 0usize;
+    while k < out.len() {
+      imm c = &mut out[k];
+      if not c.isDone() {rep.notDone = rep.notDone + 1u64;}
+      if c.token >= 100u64 {
+        // A file chunk
+        readsOut = readsOut - 1u64;
+        imm at = (c.token - 100u64) * chunk;
+        if not checkChunk(&c.buf, at) {rep.wrong = rep.wrong + 1u64;}
+        rep.fileBytes = rep.fileBytes + u64.from(c.count());
+        if nextRead * chunk < fileSize {
+          mut b = IoBuf.empty();
+          b <=> c.buf;
+          b.clear();
+          lp.submit(Op.ReadAt[fh, nextRead * chunk, b], Target.Here[100u64 + nextRead]);
+          nextRead = nextRead + 1u64;
+          readsOut = readsOut + 1u64;
+        }
+      } elif c.token == 0u64 {
+        // Connected: the first message
+        conn = c.handle;
+        mut b = a.pool.mustTake(msgSize);
+        fillMsg(&mut b, 0u64);
+        lp.submit(Op.Send[conn, b], Target.Here[1u64]);
+        sent = 1u64;
+      } elif c.token == 1u64 {
+        // Sent: its buffer receives the echo
+        mut b = IoBuf.empty();
+        b <=> c.buf;
+        b.clear();
+        lp.submit(Op.Recv[conn, b], Target.Here[2u64]);
+      } else {
+        // Some of the echo: more to come, or the whole message
+        mut b = IoBuf.empty();
+        b <=> c.buf;
+        if c.count() == 0usize {
+          rep.wrong = rep.wrong + 1u64;
+          rep.count = messages;
+        } elif b.len() < msgSize {
+          lp.submit(Op.Recv[conn, b], Target.Here[2u64]);
+        } else {
+          imm v = b.view();
+          mut j = 0usize;
+          mut ok = v.len == msgSize;
+          while ok and j < msgSize {
+            if v[j] != msgByte(rep.count, j) {ok = false;}
+            j = j + 1usize;
+          }
+          if not ok {rep.wrong = rep.wrong + 1u64;}
+          rep.count = rep.count + 1u64;
+          if sent < messages {
+            fillMsg(&mut b, sent);
+            lp.submit(Op.Send[conn, b], Target.Here[1u64]);
+            sent = sent + 1u64;
+          }
+        }
+      }
+      k = k + 1usize;
+    }
+    out.clear();
+  }
+  lp.close(conn);
+  rep.counters = lp.counters();
+  rep;
+}
+
+// Write the file the client reads, through a loop of main's own
+fn writeFile(pool &Pool) Bool {
+  mut lp = Loop.mustMake();
+  mut fh = Handle.none();
+  match lp.openFile("echo.tmp", Access.Create[]) {
+    case imm r Ok {fh = r.value;}
+    case imm e Error {return false;}
+  }
+  mut out = List[Completion].empty();
+  mut at = 0u64;
+  mut pending = 0u64;
+  mut good = true;
+  while at < fileSize or pending > 0u64 {
+    while pending < 8u64 and at < fileSize {
+      mut b = pool.mustTake(usize.from(chunk));
+      imm room = b.whole();
+      mut j = 0usize;
+      while j < room.len {
+        room[j] = fileByte(at + u64.from(j));
+        j = j + 1usize;
+      }
+      b.setLen(b.capacity());
+      lp.submit(Op.WriteAt[fh, at, b], Target.Here[at]);
+      at = at + chunk;
+      pending = pending + 1u64;
+    }
+    lp.poll(forever(), &mut out);
+    mut k = 0usize;
+    while k < out.len() {
+      if out[k].count() != usize.from(chunk) {good = false;}
+      pending = pending - 1u64;
+      k = k + 1usize;
+    }
+    out.clear();
+  }
+  good;
+}
+
+fn main() i32 {
+  {
+    imm pool = Pool.make();
+    require(writeFile(&pool), "the file written");
+    mut portTx Sender[u16];
+    mut portRx Receiver[u16];
+    portTx, portRx = Channel[u16].make();
+    imm server = thread.start(new ServerArgs(pool, portTx), &serve);
+    mut port = 0u16;
+    match portRx.recv() {
+      case imm p Some {port = p.value;}
+      case is None[u16] {}
+    }
+    require(port != 0u16, "the server is listening");
+    imm cl = thread.start(new ClientArgs(pool, port), &client);
+    imm c = cl.join();
+    imm s = server.join();
+
+    expectUInt(c.count, messages, "100,000 messages came back");
+    expectUInt(c.wrong, 0u64, "each byte for byte, and every file chunk too");
+    expectUInt(s.count, messages * u64.from(msgSize), "the server echoed every byte");
+    expectUInt(c.fileBytes, fileSize, "the whole file read through the same poll");
+    expectUInt(c.notDone + s.notDone, 0u64, "every answer Done");
+    expectUInt(c.counters.delivered, c.counters.submitted, "the client's loop: every operation answered once");
+    expectUInt(s.counters.delivered, s.counters.submitted, "the server's loop: every operation answered once");
+    expectUInt(c.counters.inFlight + s.counters.inFlight, 0u64, "nothing in flight on either");
+    expect(c.counters.submitted >= 2u64 * messages + fileSize / chunk, "a send and a receive per message, a read per chunk");
+    imm st = pool.stats();
+    expectUInt(st.lent, 0u64, "every buffer back in the pool");
+    expectUInt(st.refused, 0u64, "no take refused");
+  }
+  expectUInt(osBlocks(), 0u64, "and every block back to the OS");
+  fs.removeFile("echo.tmp");
+  done();
+}

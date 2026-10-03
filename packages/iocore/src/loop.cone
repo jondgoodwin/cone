@@ -1,0 +1,939 @@
+// The Loop: its in-flight table, its handle table, its timers and its wait.
+//
+// How it is built. Every operation and timer is a record in the in-flight
+// table, which owns it, and so its buffer, its target and its addresses,
+// until its answer is delivered (I2, I18). A record begins with the
+// OVERLAPPED the kernel holds, so the address a completion hands back is
+// the record's. Records live in blocks of 64 that never move or shrink while
+// the loop lives (the kernel holds their addresses), reused through a free
+// list; an OpId is a record's index and generation, and the generation moves
+// on when the record is freed, so an old id finds nothing. A record is in
+// one of three states: free; in flight (the kernel or the wheel holds it);
+// decided (its outcome is known, and its answer waits in 'decided' to be
+// delivered at the end of this pass of poll). Every answer is built and
+// delivered in one place, 'deliver', which frees the record: a record is
+// delivered once, which is the exactly-once invariant (I1) by construction.
+//
+// Its Move fields (the buffer, the shared bytes, the target) are written
+// into a record's raw memory once, as empty values, when its block is made,
+// and from then on only swapped in and out, so the memory always holds
+// valid values; they are finalized when the loop frees the block.
+//
+// Timers are a timewheel.Wheel, its token a record's index and generation:
+// a timer record (after) fires Done; an operation's deadline (submitBy)
+// asks its cancel, and marks its answer TimedOut. The wait: GetQueuedCompl-
+// etionStatusEx, for at most a batch of 128, its timeout the nearer of
+// 'until' and the wheel's next expiry. The high-resolution waitable timer is
+// armed for that instant and associated with the port through a wait
+// completion packet, which the kernel queues on the port when the timer is
+// signalled; a packet is good for one signal, so it is associated again
+// when its packet has been taken. The port's own timeout is kept as a
+// backstop (a millisecond past the instant) in case the packet could not be
+// made: then a wait may end up to a timer tick late.
+
+// Where a record is
+const stFree = 0u32;
+const stFlight = 1u32;
+const stDecided = 2u32;
+
+// What a cancel of an operation in flight should answer
+const askedNone = 0u32;
+const askedCancel = 1u32;
+const askedDeadline = 2u32;
+
+// An operation or a timer, and everything it owns until its answer is
+// delivered. 'ov' must stay first: its address is the record's
+struct Rec {
+  ov Overlapped;
+  wsa WsaBuf;
+  flags u32;
+  index u32;
+  gen u32;
+  state u32;
+  kind u32;
+  asked u32;              // askedCancel, askedDeadline: a cancel has been asked, and why
+  nextFree u32;
+  handle usize;           // the OS handle the operation is on, for CancelIoEx
+  newSock usize;          // Accept's or Connect's new socket, until registered
+  newHandle Handle;       // ...and its handle once registered
+  family u16;             // Accept's listener's family
+  token u64;
+  timer TimerId;          // its deadline's timer, or a timer record's own
+  submitted Instant;
+  dequeued Instant;
+  status u32;             // decided: its outcome
+  n usize;
+  code u32;
+  buf IoBuf;
+  bytes Option[Bytes];
+  target Target;
+  addr Array[u8, 96];     // AcceptEx's two addresses; Connect's address
+}
+
+fn blankRec(index u32, next u32) Rec {
+  new Rec(
+    ov: new Overlapped(0usize, 0usize, 0u32, 0u32, 0usize),
+    wsa: new WsaBuf(0u32, null),
+    flags: 0u32, index: index, gen: 1u32, state: stFree, kind: 0u32, asked: askedNone,
+    nextFree: next, handle: 0usize, newSock: invalidHandle, newHandle: Handle.none(),
+    family: 0u16, token: 0u64, timer: TimerId.none(),
+    submitted: new Instant(), dequeued: new Instant(),
+    status: 0u32, n: 0usize, code: 0u32,
+    buf: IoBuf.empty(), bytes: None[Bytes][], target: Target.Here[0u64],
+    addr: new Array[u8, 96] <- fill 0u8);
+}
+
+const recsPerBlock = 64u32;
+
+// What a handle is
+const hFree = 0u32;
+const hSocket = 1u32;
+const hListener = 2u32;
+const hFile = 3u32;
+
+// An entry of the handle table
+struct HEntry {
+  pub raw usize;
+  pub gen u32;
+  pub kind u32;
+  pub family u16;
+  pub nextFree u32;
+}
+
+// The most completions one wait takes from the kernel
+const batch = 128u32;
+
+// ---------------------------------------------------------------------------
+// Loop
+// ---------------------------------------------------------------------------
+
+// The completion loop (see the package's header, THE LOOP). Driven by one
+// thread
+pub struct Loop {
+  loopId u64;
+  port Arc[imm, Port];
+  portHandle usize;
+  blocks List[*Rec];
+  recCount u32;
+  freeRec u32;
+  kernelHeld u32;         // records the kernel holds: it has not completed them
+  decided List[u32];
+  handles List[HEntry];
+  freeHandle u32;
+  wheel Wheel;
+  expiries List[Expiry];
+  entries *OverlappedEntry;
+  timer usize;            // the high-resolution waitable timer
+  packet usize;           // its wait completion packet, or 0 when none could be made
+  associated Bool;        // the packet is associated, and not yet taken from the port
+  armedFor Instant;       // the instant the timer is set for
+  woken Bool;
+  stats diag.Counters;
+  sub diag.Subscriber;
+  subscribed Bool;
+
+  // A new loop for the calling thread, or the reason there is none
+  pub fn make() Result[Loop, IoError] {
+    mut port = 0usize;
+    mut code = 0u32;
+    code, port = openPort();
+    if code != 0u32 {return Error[Loop, IoError][new IoError(code)];}
+    Ok[Loop, IoError][Loop.assemble(port)];
+  }
+
+  // A new loop; a panic, at the caller's line, if there can be none. (It
+  // does not unwrap make's Result: Cone moves no value out of a matched
+  // variant's field, and a Loop has no empty value to swap in)
+  pub fn mustMake(file &[]u8 = srcFile(), line u32 = srcLine()) Loop {
+    mut port = 0usize;
+    mut code = 0u32;
+    code, port = openPort();
+    if code != 0u32 {panic("iocore: Loop.make failed: no completion port", file, line);}
+    Loop.assemble(port);
+  }
+
+  // The loop around a new port
+  fn assemble(port usize) Loop {
+    // The high-resolution timer (Windows 10 1803 on); an ordinary one, as
+    // fine as the system's tick, before it
+    mut timer = CreateWaitableTimerExW(null, null, timerHighResolution, timerAllAccess);
+    if timer == 0usize {
+      timer = CreateWaitableTimerExW(null, null, 0u32, timerAllAccess);
+    }
+    mut packet = 0usize;
+    if NtCreateWaitCompletionPacket(&mut packet, genericAll, null) != 0i32 {
+      packet = 0usize;
+    }
+    imm entries = libc.malloc(usize.from(batch) * mem.sizeof[OverlappedEntry]()) as *OverlappedEntry;
+    imm shared = new Arc[imm, Port](new Port(port, Atomic[Bool].of(false)));
+    new Loop(
+      loopId: diag.nextLoopId(), port: shared, portHandle: port,
+      blocks: List[*Rec].empty(), recCount: 0u32, freeRec: noEntry, kernelHeld: 0u32,
+      decided: List[u32].empty(), handles: List[HEntry].empty(), freeHandle: noEntry,
+      wheel: Wheel.make(Instant.now()), expiries: List[Expiry].empty(),
+      entries: entries, timer: timer, packet: packet, associated: false,
+      armedFor: new Instant(), woken: false,
+      stats: diag.Counters.zero(), sub: &diag.noSubscriber, subscribed: false);
+  }
+
+  // Its id, unique in the process, as its diagnostics records name it
+  pub fn id(self &) u64 {loopId;}
+
+  // Operations and timers submitted and not yet answered
+  pub fn inFlight(self &) u64 {stats.inFlight;}
+
+  // Its counters, as they are now
+  pub fn counters(self &) diag.Counters {stats;}
+
+  // Hand every answer delivered here to s, as a diag.OpRecord
+  pub fn subscribe(self &mut, s diag.Subscriber) {
+    sub = s;
+    subscribed = true;
+  }
+
+  // A Waker for this loop: Sendable; copied to share
+  pub fn waker(self &) Waker {new Waker(port);}
+
+  // -------------------------------------------------------------------------
+  // Handles
+  // -------------------------------------------------------------------------
+
+  // A TCP socket listening at addr, for Accept; addr's port 0 has the OS
+  // choose one, which localAddr tells
+  pub fn listen(self &mut, addr SocketAddr, backlog i32 = 128i32) Result[Handle, IoError] {
+    imm s = tcpSocket(addr.family());
+    if s == invalidHandle {return Error[Handle, IoError][new IoError(wsaError())];}
+    mut a = addr;
+    // Winsock's listen, named through the module: Loop's own 'listen' is
+    // the bare name here
+    if bind(s, &mut a as *u8, a.size) != 0i32 or iocore.listen(s, backlog) != 0i32 {
+      imm code = wsaError();
+      closesocket(s);
+      return Error[Handle, IoError][new IoError(code)];
+    }
+    if CreateIoCompletionPort(s, portHandle, keyIo, 0u32) == 0usize {
+      imm code = GetLastError();
+      closesocket(s);
+      return Error[Handle, IoError][new IoError(code)];
+    }
+    Ok[Handle, IoError][self.register(s, hListener, addr.family())];
+  }
+
+  // A listening socket; a panic, at the caller's line, if there can be none
+  pub fn mustListen(self &mut, addr SocketAddr, file &[]u8 = srcFile(), line u32 = srcLine()) Handle {
+    match self.listen(addr) {
+      case imm r Ok {r.value;}
+      case imm e Error {panic("iocore: listen failed", file, line);}
+    }
+  }
+
+  // The address a socket is bound to
+  pub fn localAddr(self &, h Handle) Result[SocketAddr, IoError] {
+    imm i = self.handleIndex(h);
+    if i == noEntry {return Error[SocketAddr, IoError][new IoError(errorInvalidHandle)];}
+    imm e = handles[usize.from(i)];
+    mut a = new SocketAddr(new Array[u8, 28] <- fill 0u8, 28i32);
+    mut len = 28i32;
+    if getsockname(e.raw, &mut a as *u8, &mut len) != 0i32 {
+      return Error[SocketAddr, IoError][new IoError(wsaError())];
+    }
+    a.size = len;
+    Ok[SocketAddr, IoError][a];
+  }
+
+  // A file, for ReadAt and WriteAt
+  pub fn openFile(self &mut, path &[]u8, access Access) Result[Handle, IoError] {
+    imm w = widen(path);
+    if w as usize == 0usize {return Error[Handle, IoError][new IoError(errorNoUnicodeTranslation)];}
+    mut want = genericRead;
+    mut how = openExisting;
+    match access {
+      case is Access.Read {}
+      case is Access.Create {want = genericRead | genericWrite; how = createAlways;}
+      case is Access.Update {want = genericRead | genericWrite; how = openAlways;}
+    }
+    imm h = CreateFileW(w, want, shareAll, null, how, flagOverlapped, 0usize);
+    libc.free(w as *u8);
+    if h == invalidHandle {return Error[Handle, IoError][new IoError(GetLastError())];}
+    if CreateIoCompletionPort(h, portHandle, keyIo, 0u32) == 0usize {
+      imm code = GetLastError();
+      CloseHandle(h);
+      return Error[Handle, IoError][new IoError(code)];
+    }
+    Ok[Handle, IoError][self.register(h, hFile, 0u16)];
+  }
+
+  // Whether h names something this loop holds
+  pub fn isOpen(self &, h Handle) Bool {self.handleIndex(h) != noEntry;}
+
+  // Close what h names: every operation in flight on it is cancelled (each
+  // still answers), and h names nothing from now on. False if it named
+  // nothing already
+  pub fn close(self &mut, h Handle) Bool {
+    imm i = self.handleIndex(h);
+    if i == noEntry {return false;}
+    imm e = &mut handles[usize.from(i)];
+    CancelIoEx(e.raw, null);
+    if e.kind == hFile {CloseHandle(e.raw);} else {closesocket(e.raw);}
+    e.kind = hFree;
+    e.raw = 0usize;
+    e.gen = if e.gen == 0xFFFFFFFFu32 {1u32;} else {e.gen + 1u32;};
+    e.nextFree = freeHandle;
+    freeHandle = i;
+    true;
+  }
+
+  fn register(self &mut, raw usize, kind u32, family u16) Handle {
+    if freeHandle == noEntry {
+      handles.push(new HEntry(0usize, 1u32, hFree, 0u16, noEntry));
+      freeHandle = u32.from(handles.len() - 1usize);
+    }
+    imm i = freeHandle;
+    imm e = &mut handles[usize.from(i)];
+    freeHandle = e.nextFree;
+    e.raw = raw;
+    e.kind = kind;
+    e.family = family;
+    e.nextFree = noEntry;
+    new Handle(i, e.gen);
+  }
+
+  // h's entry, or noEntry if h names nothing
+  fn handleIndex(self &, h Handle) u32 {
+    if h.index == noEntry or usize.from(h.index) >= handles.len() {return noEntry;}
+    imm e = handles[usize.from(h.index)];
+    if e.gen != h.gen or e.kind == hFree {return noEntry;}
+    h.index;
+  }
+
+  // The OS handle h names, if it is of kind (or a socket of either kind,
+  // for kind hSocket where 'either'); invalidHandle if not
+  fn rawOf(self &, h Handle, kind u32) usize {
+    imm i = self.handleIndex(h);
+    if i == noEntry {return invalidHandle;}
+    imm e = handles[usize.from(i)];
+    if e.kind != kind {return invalidHandle;}
+    e.raw;
+  }
+
+  // -------------------------------------------------------------------------
+  // The in-flight table
+  // -------------------------------------------------------------------------
+
+  fn recAt(self &, i u32) *Rec {
+    *blocks[usize.from(i / recsPerBlock)] + usize.from(i % recsPerBlock);
+  }
+
+  // A free record, in flight, its submission stamped
+  fn allocRec(self &mut) u32 {
+    if freeRec == noEntry {
+      imm block = libc.malloc(usize.from(recsPerBlock) * mem.sizeof[Rec]()) as *Rec;
+      if block as usize == 0usize {panic("iocore: out of memory for the in-flight table");}
+      imm base = recCount;
+      mut j = 0u32;
+      while j < recsPerBlock {
+        imm next = if j + 1u32 < recsPerBlock {base + j + 1u32;} else {noEntry;};
+        mem.writeRaw[Rec](block + usize.from(j), blankRec(base + j, next));
+        j = j + 1u32;
+      }
+      blocks.push(block);
+      recCount = recCount + recsPerBlock;
+      freeRec = base;
+    }
+    imm i = freeRec;
+    imm r = self.recAt(i) as &mut Rec;
+    freeRec = r.nextFree;
+    r.state = stFlight;
+    r.asked = askedNone;
+    r.submitted = Instant.now();
+    r.dequeued = r.submitted;
+    r.newSock = invalidHandle;
+    r.newHandle = Handle.none();
+    r.timer = TimerId.none();
+    stats.submit();
+    i;
+  }
+
+  // The wheel's token for a record: its generation above its index
+  fn tokenOf(self &, i u32) u64 {
+    imm r = self.recAt(i) as &Rec;
+    (u64.from(r.gen) << 32u64) | u64.from(i);
+  }
+
+  // The outcome of record i is known: it waits for delivery at the end of
+  // this pass of poll (or the next one)
+  fn decide(self &mut, i u32, status u32, n usize, code u32) {
+    imm r = self.recAt(i) as &mut Rec;
+    r.state = stDecided;
+    r.status = status;
+    r.n = n;
+    r.code = code;
+    if not r.timer.isNone() {
+      wheel.cancel(r.timer);
+      r.timer = TimerId.none();
+    }
+    decided.push(i);
+  }
+
+  // Build record i's answer, free the record, and send the answer where its
+  // target says: appended to out (Here: how many, 1) or posted (Post: 0)
+  fn deliver(self &mut, i u32, out &mut List[Completion], at Instant) usize {
+    imm r = self.recAt(i) as &mut Rec;
+    mut b = IoBuf.empty();
+    b <=> r.buf;
+    mut t Target = Target.Here[0u64];
+    t <=> r.target;
+    r.bytes = None[Bytes][];
+    imm c = new Completion(loopId, new OpId(i, r.gen), r.token, r.kind, r.status, r.n, r.code,
+      b, r.newHandle, r.submitted, r.dequeued, at);
+    stats.count(r.status);
+    // Free it: its id names nothing from now on
+    r.state = stFree;
+    r.gen = if r.gen == 0xFFFFFFFFu32 {1u32;} else {r.gen + 1u32;};
+    r.nextFree = freeRec;
+    freeRec = i;
+    match t {
+      case imm p Post {
+        if p.waker.post(c) {
+          stats.postsSent = stats.postsSent + 1u64;
+        } else {
+          stats.postsDropped = stats.postsDropped + 1u64;
+        }
+        0usize;
+      }
+      else {
+        if subscribed {
+          imm rec = c.record();
+          (sub)(&rec);
+        }
+        out.push(c);
+        1usize;
+      }
+    }
+  }
+
+  // Deliver every decided answer: how many went to out
+  fn flush(self &mut, out &mut List[Completion]) usize {
+    if decided.len() == 0usize {return 0usize;}
+    imm at = Instant.now();
+    mut n = 0usize;
+    mut k = 0usize;
+    while k < decided.len() {
+      imm i = *decided[k];
+      n = n + self.deliver(i, out, at);
+      k = k + 1usize;
+    }
+    decided.clear();
+    n;
+  }
+
+  // -------------------------------------------------------------------------
+  // Submitting
+  // -------------------------------------------------------------------------
+
+  // Start an operation; its answer goes where 'to' says (see the package's
+  // header, OPERATIONS and TARGETS). Its id, for cancel
+  pub fn submit(self &mut, op Op, to Target) OpId {
+    self.start(op, to, false, new Instant());
+  }
+
+  // Start an operation that answers TimedOut, its buffer back, if it has not
+  // finished by deadline (see the package's header, CANCEL)
+  pub fn submitBy(self &mut, op Op, to Target, deadline Instant) OpId {
+    self.start(op, to, true, deadline);
+  }
+
+  // A timer: it answers Done (n 0) at 'at', to its target, unless cancelled
+  pub fn after(self &mut, at Instant, to Target) OpId {
+    imm i = self.allocRec();
+    imm r = self.recAt(i) as &mut Rec;
+    r.kind = diag.kindTimer;
+    r.token = to.token;
+    mut t = to;
+    r.target <=> t;
+    r.timer = wheel.insert(at, self.tokenOf(i));
+    new OpId(i, r.gen);
+  }
+
+  fn start(self &mut, op Op, to Target, timed Bool, deadline Instant) OpId {
+    imm i = self.allocRec();
+    imm p = self.recAt(i);
+    imm r = p as &mut Rec;
+    r.token = to.token;
+    mut t = to;
+    r.target <=> t;
+    r.ov.internal = 0usize;
+    r.ov.internalHigh = 0usize;
+    r.ov.offset = 0u32;
+    r.ov.offsetHigh = 0u32;
+    r.ov.hEvent = 0usize;
+    mut code = 0u32;
+    match op {
+      case imm o Connect {
+        r.kind = diag.kindConnect;
+        code = self.startConnect(p, o.addr);
+      }
+      case imm o Accept {
+        r.kind = diag.kindAccept;
+        code = self.startAccept(p, o.listener);
+      }
+      case mut o Recv {
+        r.kind = diag.kindRecv;
+        r.buf <=> o.buf;
+        code = self.startRecv(p, o.sock, false);
+      }
+      case imm o RecvReady {
+        r.kind = diag.kindRecvReady;
+        code = self.startRecv(p, o.sock, true);
+      }
+      case mut o Send {
+        r.kind = diag.kindSend;
+        r.buf <=> o.buf;
+        code = self.startSend(p, o.sock, r.buf.base(), r.buf.len());
+      }
+      case imm o SendBytes {
+        r.kind = diag.kindSend;
+        imm v = o.bytes.view();
+        r.bytes = Some[Bytes][o.bytes];
+        code = self.startSend(p, o.sock, v, v.len);
+      }
+      case mut o ReadAt {
+        r.kind = diag.kindReadAt;
+        r.buf <=> o.buf;
+        code = self.startFile(p, o.file, o.at, false);
+      }
+      case mut o WriteAt {
+        r.kind = diag.kindWriteAt;
+        r.buf <=> o.buf;
+        code = self.startFile(p, o.file, o.at, true);
+      }
+    }
+    imm gen = r.gen;
+    if code == errorHandleEof {
+      self.decide(i, diag.outcomeDone, 0usize, 0u32);
+    } elif code != 0u32 {
+      self.decide(i, diag.outcomeFailed, 0usize, code);
+    } else {
+      kernelHeld = kernelHeld + 1u32;
+      if timed {
+        r.timer = wheel.insert(deadline, self.tokenOf(i));
+      }
+    }
+    new OpId(i, gen);
+  }
+
+  // Each starts its kind of operation in record p: 0, the kernel holds it
+  // now (its completion will come to the port); or the error that stopped it
+  // before the kernel took it
+
+  fn startConnect(self &mut, p *Rec, addr SocketAddr) u32 {
+    imm r = p as &mut Rec;
+    if connectExAddr == 0usize {return errorInvalidParameter;}
+    imm s = tcpSocket(addr.family());
+    if s == invalidHandle {return wsaError();}
+    mut here = addr.wildcard();
+    if bind(s, &mut here as *u8, here.size) != 0i32 {
+      imm code = wsaError();
+      closesocket(s);
+      return code;
+    }
+    if CreateIoCompletionPort(s, portHandle, keyIo, 0u32) == 0usize {
+      imm code = GetLastError();
+      closesocket(s);
+      return code;
+    }
+    r.newSock = s;
+    r.handle = s;
+    r.family = addr.family();
+    mut a = addr;
+    libc.memcpy(&mut r.addr as *u8, &mut a as *u8, 28usize);
+    imm connectEx = connectExAddr as *u8 as ConnectExFn;
+    if connectEx(s, &mut r.addr as *u8, a.size, null, 0u32, null, p as *u8) == 0i32 {
+      imm code = wsaError();
+      if code != errorIoPending {
+        closesocket(s);
+        r.newSock = invalidHandle;
+        return code;
+      }
+    }
+    0u32;
+  }
+
+  fn startAccept(self &mut, p *Rec, listener Handle) u32 {
+    imm r = p as &mut Rec;
+    if acceptExAddr == 0usize {return errorInvalidParameter;}
+    imm li = self.handleIndex(listener);
+    if li == noEntry {return errorInvalidHandle;}
+    imm e = handles[usize.from(li)];
+    if e.kind != hListener {return errorInvalidHandle;}
+    imm s = tcpSocket(e.family);
+    if s == invalidHandle {return wsaError();}
+    r.newSock = s;
+    r.handle = e.raw;
+    r.family = e.family;
+    imm acceptEx = acceptExAddr as *u8 as AcceptExFn;
+    if acceptEx(e.raw, s, &mut r.addr as *u8, 0u32, acceptAddrLen, acceptAddrLen, null, p as *u8) == 0i32 {
+      imm code = wsaError();
+      if code != errorIoPending {
+        closesocket(s);
+        r.newSock = invalidHandle;
+        return code;
+      }
+    }
+    0u32;
+  }
+
+  fn startRecv(self &mut, p *Rec, sock Handle, ready Bool) u32 {
+    imm r = p as &mut Rec;
+    imm raw = self.rawOf(sock, hSocket);
+    if raw == invalidHandle {return errorInvalidHandle;}
+    r.handle = raw;
+    if ready {
+      r.wsa.len = 0u32;
+      r.wsa.buf = null;
+    } else {
+      imm room = r.buf.room();
+      if room == 0usize {return errorInsufficientBuffer;}
+      r.wsa.len = if room > 0xFFFFFFFFusize {0xFFFFFFFFu32;} else {u32.from(room);};
+      r.wsa.buf = r.buf.base() + r.buf.len();
+    }
+    r.flags = 0u32;
+    if WSARecv(raw, &mut r.wsa as *WsaBuf, 1u32, null, &mut r.flags, p as *u8, null) != 0i32 {
+      imm code = wsaError();
+      if code != errorIoPending {return code;}
+    }
+    0u32;
+  }
+
+  fn startSend(self &mut, p *Rec, sock Handle, data *u8, len usize) u32 {
+    imm r = p as &mut Rec;
+    imm raw = self.rawOf(sock, hSocket);
+    if raw == invalidHandle {return errorInvalidHandle;}
+    if len > 0xFFFFFFFFusize {return errorInvalidParameter;}
+    r.handle = raw;
+    r.wsa.len = u32.from(len);
+    r.wsa.buf = data;
+    if WSASend(raw, &mut r.wsa as *WsaBuf, 1u32, null, 0u32, p as *u8, null) != 0i32 {
+      imm code = wsaError();
+      if code != errorIoPending {return code;}
+    }
+    0u32;
+  }
+
+  fn startFile(self &mut, p *Rec, file Handle, at u64, write Bool) u32 {
+    imm r = p as &mut Rec;
+    imm raw = self.rawOf(file, hFile);
+    if raw == invalidHandle {return errorInvalidHandle;}
+    r.handle = raw;
+    r.ov.offset = u32.from(at & 0xFFFFFFFFu64);
+    r.ov.offsetHigh = u32.from(at >> 32u64);
+    mut ok = 0i32;
+    if write {
+      imm len = r.buf.len();
+      if len > 0xFFFFFFFFusize {return errorInvalidParameter;}
+      ok = WriteFile(raw, r.buf.base(), u32.from(len), null, p as *u8);
+    } else {
+      imm room = r.buf.room();
+      if room == 0usize {return errorInsufficientBuffer;}
+      imm want = if room > 0xFFFFFFFFusize {0xFFFFFFFFu32;} else {u32.from(room);};
+      ok = ReadFile(raw, r.buf.base() + r.buf.len(), want, null, p as *u8);
+    }
+    if ok == 0i32 {
+      imm code = GetLastError();
+      if code != errorIoPending {return code;}
+    }
+    0u32;
+  }
+
+  // -------------------------------------------------------------------------
+  // Cancel
+  // -------------------------------------------------------------------------
+
+  // Ask an operation or a timer to end (see the package's header, CANCEL):
+  // true while its answer is still to come, false once it is decided or for
+  // an id that names nothing
+  pub fn cancel(self &mut, id OpId) Bool {
+    if id.isNone() or id.index >= recCount {return false;}
+    imm p = self.recAt(id.index);
+    imm r = p as &mut Rec;
+    if r.gen != id.gen or r.state != stFlight {return false;}
+    if r.kind == diag.kindTimer {
+      stats.cancelsAsked = stats.cancelsAsked + 1u64;
+      self.decide(id.index, diag.outcomeCancelled, 0usize, 0u32);
+      return true;
+    }
+    if r.asked == askedNone {
+      stats.cancelsAsked = stats.cancelsAsked + 1u64;
+      r.asked = askedCancel;
+      CancelIoEx(r.handle, p as *u8);
+    }
+    true;
+  }
+
+  // -------------------------------------------------------------------------
+  // Completing
+  // -------------------------------------------------------------------------
+
+  // The kernel has completed record p, moving 'bytes'
+  fn complete(self &mut, p *Rec, bytes u32, at Instant) {
+    imm r = p as &mut Rec;
+    kernelHeld = kernelHeld - 1u32;
+    r.dequeued = at;
+    imm status = r.ov.internal & 0xFFFFFFFFusize;
+    imm n = usize.from(bytes);
+    if status == statusSuccess {
+      if r.kind == diag.kindRecv or r.kind == diag.kindReadAt {
+        r.buf.setLen(r.buf.len() + n);
+      }
+      if r.kind == diag.kindAccept or r.kind == diag.kindConnect {
+        imm code = self.adopt(p);
+        if code != 0u32 {
+          self.decide(r.index, diag.outcomeFailed, 0usize, code);
+          return;
+        }
+      }
+      self.decide(r.index, diag.outcomeDone, n, 0u32);
+      return;
+    }
+    if r.newSock != invalidHandle {
+      closesocket(r.newSock);
+      r.newSock = invalidHandle;
+    }
+    if status == statusCancelled {
+      if r.asked == askedDeadline {
+        self.decide(r.index, diag.outcomeTimedOut, 0usize, 0u32);
+      } else {
+        self.decide(r.index, diag.outcomeCancelled, 0usize, 0u32);
+      }
+    } elif status == statusEndOfFile {
+      self.decide(r.index, diag.outcomeDone, 0usize, 0u32);
+    } else {
+      self.decide(r.index, diag.outcomeFailed, 0usize, RtlNtStatusToDosError(u32.from(status)));
+    }
+  }
+
+  // An accepted or connected socket is finished and registered: 0, or the
+  // error that stopped it (the socket is then closed)
+  fn adopt(self &mut, p *Rec) u32 {
+    imm r = p as &mut Rec;
+    imm s = r.newSock;
+    r.newSock = invalidHandle;
+    mut rc = 0i32;
+    if r.kind == diag.kindAccept {
+      mut listener = r.handle;
+      rc = setsockopt(s, solSocket, soUpdateAcceptContext, &mut listener as *u8, 8i32);
+      if rc == 0i32 and CreateIoCompletionPort(s, portHandle, keyIo, 0u32) == 0usize {
+        imm code = GetLastError();
+        closesocket(s);
+        return code;
+      }
+    } else {
+      rc = setsockopt(s, solSocket, soUpdateConnectContext, null, 0i32);
+    }
+    if rc != 0i32 {
+      imm code = wsaError();
+      closesocket(s);
+      return code;
+    }
+    noDelay(s);
+    r.newHandle = self.register(s, hSocket, r.family);
+    0u32;
+  }
+
+  // Fire what the wheel says is due by now: a timer answers Done; an
+  // operation's deadline asks its cancel, to answer TimedOut
+  fn fireTimers(self &mut, now Instant) {
+    if wheel.isEmpty() {return;}
+    wheel.expired(now, &mut expiries);
+    mut k = 0usize;
+    while k < expiries.len() {
+      imm token = expiries[k].token;
+      imm i = u32.from(token & 0xFFFFFFFFu64);
+      imm gen = u32.from(token >> 32u64);
+      k = k + 1usize;
+      if i >= recCount {continue;}
+      imm p = self.recAt(i);
+      imm r = p as &mut Rec;
+      if r.gen != gen or r.state != stFlight {continue;}
+      r.timer = TimerId.none();
+      if r.kind == diag.kindTimer {
+        r.dequeued = now;
+        self.decide(i, diag.outcomeDone, 0usize, 0u32);
+      } elif r.asked == askedNone {
+        r.asked = askedDeadline;
+        CancelIoEx(r.handle, p as *u8);
+      }
+    }
+    expiries.clear();
+  }
+
+  // -------------------------------------------------------------------------
+  // Waiting
+  // -------------------------------------------------------------------------
+
+  // Wait for answers, at most until 'until', and append them to out: how
+  // many (see the package's header, POLL)
+  pub fn poll(self &mut, until Instant, out &mut List[Completion]) usize {
+    stats.polls = stats.polls + 1u64;
+    woken = false;
+    imm postedBefore = stats.postsSent + stats.postsDropped;
+    mut n = 0usize;
+    while true {
+      imm now = Instant.now();
+      // How long the kernel may keep us: not at all when answers are ready
+      // or a timer is due
+      mut ms = 0u32;
+      if decided.len() == 0usize and now < until {
+        mut wakeAt = until;
+        match wheel.nextExpiry() {
+          case imm s Some {if s.value < wakeAt {wakeAt = s.value;}}
+          case is None[Instant] {}
+        }
+        if wakeAt > now {ms = self.armFor(wakeAt, now);}
+      }
+      n = n + self.dequeue(ms, out);
+      imm after = Instant.now();
+      self.fireTimers(after);
+      n = n + self.flush(out);
+      if n > 0usize or woken or after >= until {return n;}
+      // Answers posted to other loops are progress too: the driver may be
+      // waiting for its operations to be done
+      if stats.postsSent + stats.postsDropped != postedBefore {return n;}
+    }
+    n;
+  }
+
+  // Arm the high-resolution timer for wakeAt (unless it already is) and
+  // answer the port's own timeout, a backstop a millisecond past it; INFINITE
+  // when wakeAt never comes
+  fn armFor(self &mut, wakeAt Instant, now Instant) u32 {
+    if wakeAt >= forever() {return infinite;}
+    imm left = (wakeAt - now).nanos();
+    if packet != 0usize and (not associated or armedFor != wakeAt) {
+      // Relative, in 100 ns units: negative
+      mut due = 0i64 - (left + 99i64) / 100i64;
+      SetWaitableTimer(timer, &due, 0i32, null, null, 0i32);
+      armedFor = wakeAt;
+      if not associated {
+        mut already = 0u8;
+        if NtAssociateWaitCompletionPacket(packet, portHandle, timer, keyTimer as *u8, null,
+            0i32, 0usize, &mut already as *u8) == 0i32 {
+          associated = true;
+        }
+      }
+    }
+    imm ms = (left + 999999i64) / 1000000i64 + 1i64;
+    if ms >= i64.from(infinite) {infinite - 1u32;} else {u32.from(ms);};
+  }
+
+  // One wait in the kernel, for at most ms, and what it brought processed:
+  // how many answers posted by other loops went to out
+  fn dequeue(self &mut, ms u32, out &mut List[Completion]) usize {
+    mut got = 0u32;
+    imm ok = GetQueuedCompletionStatusEx(portHandle, entries, batch, &mut got, ms, 0i32);
+    if ms != 0u32 {stats.waits = stats.waits + 1u64;}
+    if ok == 0i32 or got == 0u32 {return 0usize;}
+    imm at = Instant.now();
+    stats.dequeued = stats.dequeued + u64.from(got);
+    if u64.from(got) > stats.largestBatch {stats.largestBatch = u64.from(got);}
+    mut n = 0usize;
+    mut k = 0usize;
+    while k < usize.from(got) {
+      imm e = entries + k;
+      imm key = (*e).key;
+      if key == keyIo {
+        self.complete((*e).ov as *Rec, (*e).bytes, at);
+      } elif key == keyTimer {
+        associated = false;
+        stats.timerExpiries = stats.timerExpiries + 1u64;
+      } elif key == keyWake {
+        woken = true;
+        stats.wakes = stats.wakes + 1u64;
+      } elif key == keyPost {
+        imm block = (*e).ov as *Completion;
+        mut c = mem.readRaw[Completion](block);
+        libc.free(block as *u8);
+        c.delivered = at;
+        stats.postsReceived = stats.postsReceived + 1u64;
+        if subscribed {
+          imm rec = c.record();
+          (sub)(&rec);
+        }
+        out.push(c);
+        n = n + 1usize;
+      }
+      k = k + 1usize;
+    }
+    n;
+  }
+
+  // -------------------------------------------------------------------------
+  // Its death: cancel and drain (I18)
+  // -------------------------------------------------------------------------
+
+  fn final(self &uni) {
+    port.closed.store(true);
+    // Every handle's operations cancelled, all before any is closed (a
+    // socket closed first would end its peer's receive as the end of the
+    // stream, not as the cancel it is), then every handle closed
+    mut h = 0usize;
+    while h < handles.len() {
+      if handles[h].kind != hFree {CancelIoEx(handles[h].raw, null);}
+      h = h + 1usize;
+    }
+    h = 0usize;
+    while h < handles.len() {
+      imm e = &mut handles[h];
+      if e.kind != hFree {
+        if e.kind == hFile {CloseHandle(e.raw);} else {closesocket(e.raw);}
+        e.kind = hFree;
+      }
+      h = h + 1usize;
+    }
+    // Connections still being made hold sockets of their own; timers answer
+    // Cancelled
+    mut i = 0u32;
+    while i < recCount {
+      imm p = self.recAt(i);
+      imm r = p as &mut Rec;
+      if r.state == stFlight {
+        if r.kind == diag.kindTimer {
+          self.decide(i, diag.outcomeCancelled, 0usize, 0u32);
+        } elif r.kind == diag.kindConnect and r.newSock != invalidHandle {
+          CancelIoEx(r.newSock, null);
+        } else {
+          CancelIoEx(r.handle, p as *u8);
+        }
+      }
+      i = i + 1u32;
+    }
+    // Wait until the kernel has given back every record, and deliver what
+    // was owed to other loops; what was owed here dies, buffers going home
+    mut scratch = List[Completion].empty();
+    self.flush(&mut scratch);
+    scratch.clear();
+    while kernelHeld > 0u32 {
+      self.dequeue(1000u32, &mut scratch);
+      self.flush(&mut scratch);
+      scratch.clear();
+    }
+    if packet != 0usize {
+      NtCancelWaitCompletionPacket(packet, 1u8);
+      CloseHandle(packet);
+    }
+    if timer != 0usize {CloseHandle(timer);}
+    // The table's blocks, every record's empty values with them
+    mut b = 0usize;
+    while b < blocks.len() {
+      imm block = *blocks[b];
+      mut j = 0u32;
+      while j < recsPerBlock {
+        mem.finalize[Rec](block + usize.from(j));
+        j = j + 1u32;
+      }
+      libc.free(block as *u8);
+      b = b + 1usize;
+    }
+    libc.free(entries as *u8);
+  }
+}

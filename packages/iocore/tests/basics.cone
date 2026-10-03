@@ -1,0 +1,230 @@
+// One loop, one thread: timers, a file written and read back, and a TCP
+// connection to itself. Every operation answers exactly once, its buffer
+// comes back, and when everything has died the pool has nothing lent and
+// the OS holds no block of it.
+//
+// 1. Timers: three armed out of order arrive in deadline order, each Done;
+//    a fourth cancelled answers Cancelled, once; cancelling it again, or an
+//    id that names nothing, does nothing and says so.
+// 2. A file: three 64 KiB buffers written at offsets 0, 64 Ki and 128 Ki,
+//    each a pattern of its own, read back into fresh buffers and compared
+//    byte for byte; a read past the end is Done(0).
+// 3. TCP: a listener on 127.0.0.1 (port 0: the OS chooses), an Accept and a
+//    Connect on the same loop, "hello" sent one way and "world" the other,
+//    a zero-byte RecvReady that completes when bytes arrive, then the
+//    client closed: the server's receive is Done(0), the end of the stream.
+// 4. Submitting on a handle that names nothing fails at once, as an answer.
+
+mod basics;
+
+import testing use *;
+import collections use List;
+import time use Instant, Duration;
+import iobuf use *;
+import iocore use *;
+import diag;
+
+// Poll until out holds at least n answers, or two seconds pass
+fn waitFor(lp &mut Loop, out &mut List[Completion], n usize) {
+  imm limit = Instant.now() + Duration.fromSeconds(2i64);
+  while out.len() < n and Instant.now() < limit {
+    lp.poll(limit, out);
+  }
+}
+
+fn pattern(b &mut IoBuf, seed u8) {
+  imm room = b.whole();
+  mut i = 0usize;
+  while i < room.len {
+    room[i] = u8.from(i % 251usize) ^ seed;
+    i = i + 1usize;
+  }
+  b.setLen(room.len);
+}
+
+fn matches(b &IoBuf, seed u8) Bool {
+  imm v = b.view();
+  mut i = 0usize;
+  while i < v.len {
+    if v[i] != u8.from(i % 251usize) ^ seed {return false;}
+    i = i + 1usize;
+  }
+  true;
+}
+
+fn main() i32 {
+  {
+    imm pool = Pool.make();
+    mut lp = Loop.mustMake();
+    mut out = List[Completion].empty();
+
+    // 1. Timers
+    imm t0 = Instant.now();
+    lp.after(t0 + Duration.fromMillis(6i64), Target.Here[3u64]);
+    lp.after(t0 + Duration.fromMillis(2i64), Target.Here[1u64]);
+    lp.after(t0 + Duration.fromMillis(4i64), Target.Here[2u64]);
+    imm doomed = lp.after(t0 + Duration.fromMillis(3i64), Target.Here[9u64]);
+    expect(lp.cancel(doomed), "a pending timer's cancel is taken");
+    expect(not lp.cancel(doomed), "asked twice: its answer, Cancelled, is decided already");
+    waitFor(&mut lp, &mut out, 4usize);
+    requireUInt(u64.from(out.len()), 4u64, "four timer answers");
+    expectUInt(out[0usize].token, 9u64, "the cancelled one answers first, at the next poll");
+    expectUInt(u64.from(out[0usize].status), u64.from(diag.outcomeCancelled), "...Cancelled");
+    expectUInt(out[1usize].token, 1u64, "then 2 ms");
+    expectUInt(out[2usize].token, 2u64, "then 4 ms");
+    expectUInt(out[3usize].token, 3u64, "then 6 ms");
+    expect(out[3usize].isDone(), "a timer that fires is Done");
+    expect(out[1usize].dequeued >= t0 + Duration.fromMillis(2i64), "never early");
+    expect(not lp.cancel(doomed), "an answered timer's cancel finds nothing");
+    expect(not lp.cancel(OpId.none()), "nor does OpId.none()");
+    out.clear();
+
+    // 2. A file
+    mut fh = Handle.none();
+    match lp.openFile("basics.tmp", Access.Create[]) {
+      case imm r Ok {fh = r.value;}
+      case imm e Error {}
+    }
+    require(lp.isOpen(fh), "the file opened");
+    mut s = 0u64;
+    while s < 3u64 {
+      mut b = pool.mustTake(65536usize);
+      pattern(&mut b, u8.from(s + 1u64));
+      lp.submit(Op.WriteAt[fh, s * 65536u64, b], Target.Here[10u64 + s]);
+      s = s + 1u64;
+    }
+    waitFor(&mut lp, &mut out, 3usize);
+    requireUInt(u64.from(out.len()), 3u64, "three writes answered");
+    mut k = 0usize;
+    while k < 3usize {
+      expectUInt(u64.from(out[k].count()), 65536u64, "each wrote 64 KiB");
+      expectUInt(u64.from(out[k].buf.len()), 65536u64, "and its buffer came back full");
+      k = k + 1usize;
+    }
+    out.clear();
+    s = 0u64;
+    while s < 3u64 {
+      lp.submit(Op.ReadAt[fh, s * 65536u64, pool.mustTake(65536usize)], Target.Here[20u64 + s]);
+      s = s + 1u64;
+    }
+    lp.submit(Op.ReadAt[fh, 3u64 * 65536u64, pool.mustTake(4096usize)], Target.Here[29u64]);
+    waitFor(&mut lp, &mut out, 4usize);
+    requireUInt(u64.from(out.len()), 4u64, "four reads answered");
+    k = 0usize;
+    while k < 4usize {
+      imm c = out[k];
+      if c.token == 29u64 {
+        expect(c.isDone() and c.count() == 0usize, "a read past the end is Done(0)");
+      } else {
+        expectUInt(u64.from(c.count()), 65536u64, "each read 64 KiB");
+        expect(matches(&c.buf, u8.from(c.token - 20u64 + 1u64)), "its bytes are the ones written there");
+      }
+      k = k + 1usize;
+    }
+    out.clear();
+    expect(lp.close(fh), "the file closes");
+    expect(not lp.close(fh), "once");
+    expect(not lp.isOpen(fh), "its handle names nothing now");
+
+    // 3. TCP to itself
+    imm listener = lp.mustListen(SocketAddr.localhost(0u16));
+    mut port = 0u16;
+    match lp.localAddr(listener) {
+      case imm a Ok {port = a.value.port();}
+      case imm e Error {}
+    }
+    require(port != 0u16, "the OS chose a port");
+    lp.submit(Op.Accept[listener], Target.Here[30u64]);
+    lp.submit(Op.Connect[SocketAddr.localhost(port)], Target.Here[31u64]);
+    waitFor(&mut lp, &mut out, 2usize);
+    requireUInt(u64.from(out.len()), 2u64, "accept and connect answered");
+    mut server = Handle.none();
+    mut client = Handle.none();
+    k = 0usize;
+    while k < 2usize {
+      imm c = out[k];
+      expect(c.isDone(), "each Done");
+      if c.token == 30u64 {server = c.handle;} else {client = c.handle;}
+      k = k + 1usize;
+    }
+    out.clear();
+    require(lp.isOpen(server) and lp.isOpen(client), "both ends are handles");
+
+    mut hello = pool.mustTake(5usize);
+    hello.append("hello");
+    lp.submit(Op.Send[client, hello], Target.Here[40u64]);
+    lp.submit(Op.Recv[server, pool.mustTake(100usize)], Target.Here[41u64]);
+    waitFor(&mut lp, &mut out, 2usize);
+    k = 0usize;
+    while k < out.len() {
+      imm c = out[k];
+      if c.token == 41u64 {expectStr(c.buf.view(), "hello", "the server received hello");}
+      else {expectUInt(u64.from(c.count()), 5u64, "the client sent 5 bytes");}
+      k = k + 1usize;
+    }
+    out.clear();
+
+    // A zero-byte receive: it holds no buffer, and answers when bytes come
+    lp.submit(Op.RecvReady[client], Target.Here[50u64]);
+    lp.poll(Instant.now() + Duration.fromMillis(20i64), &mut out);
+    expectUInt(u64.from(out.len()), 0u64, "nothing has come: RecvReady waits");
+    mut world = pool.mustTake(5usize);
+    world.append("world");
+    lp.submit(Op.SendBytes[server, world.freeze()], Target.Here[51u64]);
+    waitFor(&mut lp, &mut out, 2usize);
+    k = 0usize;
+    while k < out.len() {
+      imm c = out[k];
+      if c.token == 50u64 {
+        expect(c.isDone() and c.count() == 0usize, "RecvReady is Done(0) once bytes are there");
+        expectUInt(u64.from(c.buf.capacity()), 0u64, "and held no buffer");
+      } else {
+        expectUInt(u64.from(c.count()), 5u64, "shared bytes sent");
+      }
+      k = k + 1usize;
+    }
+    out.clear();
+    lp.submit(Op.Recv[client, pool.mustTake(100usize)], Target.Here[52u64]);
+    waitFor(&mut lp, &mut out, 1usize);
+    expectStr(out[0usize].buf.view(), "world", "the client received world");
+    out.clear();
+
+    // The client closes: the server's receive sees the end of the stream
+    lp.close(client);
+    lp.submit(Op.Recv[server, pool.mustTake(100usize)], Target.Here[60u64]);
+    waitFor(&mut lp, &mut out, 1usize);
+    expect(out[0usize].isDone() and out[0usize].count() == 0usize, "the end of the stream is Done(0)");
+    out.clear();
+
+    // 4. A handle that names nothing
+    lp.submit(Op.Recv[client, pool.mustTake(100usize)], Target.Here[70u64]);
+    waitFor(&mut lp, &mut out, 1usize);
+    expectUInt(u64.from(out[0usize].status), u64.from(diag.outcomeFailed), "a closed handle's receive fails");
+    expectUInt(u64.from(out[0usize].code), u64.from(errorInvalidHandle), "...ERROR_INVALID_HANDLE");
+    expectUInt(u64.from(out[0usize].buf.capacity()), 4096u64, "and its buffer still comes back");
+    out.clear();
+
+    // 5. Addresses, and IPv6's loopback
+    expectStr(SocketAddr.v4(10u8, 0u8, 0u8, 7u8, 8080u16).text().view(), "10.0.0.7:8080", "an IPv4 address as text");
+    expectStr(SocketAddr.v6Localhost(443u16).text().view(), "[0:0:0:0:0:0:0:1]:443", "IPv6's loopback as text");
+    imm l6 = lp.mustListen(SocketAddr.v6Localhost(0u16));
+    mut port6 = 0u16;
+    match lp.localAddr(l6) {
+      case imm a Ok {port6 = a.value.port(); expect(a.value.isV6(), "an IPv6 listener");}
+      case imm e Error {}
+    }
+    lp.submit(Op.Accept[l6], Target.Here[80u64]);
+    lp.submit(Op.Connect[SocketAddr.v6Localhost(port6)], Target.Here[81u64]);
+    waitFor(&mut lp, &mut out, 2usize);
+    expect(out.len() == 2usize and out[0usize].isDone() and out[1usize].isDone(), "accepted and connected over ::1");
+    out.clear();
+
+    imm c = lp.counters();
+    expectUInt(c.delivered, c.submitted, "every operation answered");
+    expectUInt(c.inFlight, 0u64, "nothing in flight");
+    expectUInt(c.delivered, 22u64, "twenty-two answers in all");
+    expectUInt(pool.stats().lent, 0u64, "every buffer back in the pool");
+  }
+  expectUInt(osBlocks(), 0u64, "and every block back to the OS");
+  done();
+}

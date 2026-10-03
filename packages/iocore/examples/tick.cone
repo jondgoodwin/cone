@@ -1,0 +1,107 @@
+// A 1 ms tick measured for jitter, not assumed: run it with
+//
+//   congo run --release packages/iocore/examples/tick.cone
+//
+// 1. The loop's 1 ms tick: 2,000 timers, each armed when the one before is
+//    delivered, for start + k ms (each due within a tick, so precise): how
+//    late each is dequeued, at p50, p99 and the maximum.
+// 2. Timeouts through the wheel: 2,000 armed at once, 2 to 2,001 ms off:
+//    how late each fires (the wheel's own tick adds up to a millisecond).
+// 3. For comparison, what the loop does without its high-resolution timer:
+//    the completion port's own 1 ms timeout (GetQueuedCompletionStatusEx on
+//    an empty port), 200 times, at the system's default timer resolution.
+// 4. The cost of a poll that waits for nothing, poll(Instant.now()).
+
+mod tick;
+
+import stdio use *;
+import collections use List;
+import time use Instant, Duration;
+import iocore use *;
+import diag use Histogram;
+
+extern {
+  fn @c(system) CreateIoCompletionPort(h usize, port usize, key usize, threads u32) usize;
+  fn @c(system) GetQueuedCompletionStatusEx(port usize, entries *u8, count u32,
+      removed &mut u32, ms u32, alertable i32) i32;
+  fn @c(system) CloseHandle(h usize) i32;
+}
+
+fn main() i32 {
+  mut lp = Loop.mustMake();
+  mut out = List[Completion].empty();
+
+  // 1. The tick
+  imm start = Instant.now();
+  mut late = Histogram.make();
+  mut k = 1i64;
+  lp.after(start + Duration.fromMillis(1i64), Target.Here[1u64]);
+  while k <= 2000i64 {
+    lp.poll(forever(), &mut out);
+    mut j = 0usize;
+    while j < out.len() {
+      imm c = out[j];
+      late.record((c.dequeued - (start + Duration.fromMillis(i64.from(c.token)))).nanos());
+      k = k + 1i64;
+      if k <= 2000i64 {lp.after(start + Duration.fromMillis(k), Target.Here[u64.from(k)]);}
+      j = j + 1usize;
+    }
+    out.clear();
+  }
+  printStr("1. a 1 ms tick, 2,000 times, through the loop's high-resolution timer\n");
+  late.printLine("   lateness");
+
+  // 2. Timeouts through the wheel
+  imm t0 = Instant.now();
+  mut i = 0i64;
+  while i < 2000i64 {
+    imm ms = 2i64 + (i * 37i64) % 2000i64;
+    lp.after(t0 + Duration.fromMillis(ms), Target.Here[u64.from(ms)]);
+    i = i + 1i64;
+  }
+  mut wl = Histogram.make();
+  mut got = 0u64;
+  while got < 2000u64 {
+    lp.poll(forever(), &mut out);
+    mut j = 0usize;
+    while j < out.len() {
+      imm c = out[j];
+      wl.record((c.dequeued - (t0 + Duration.fromMillis(i64.from(c.token)))).nanos());
+      got = got + 1u64;
+      j = j + 1usize;
+    }
+    out.clear();
+  }
+  printStr("2. 2,000 timeouts, 2 ms to 2 s off, through the wheel\n");
+  wl.printLine("   lateness");
+
+  // 3. The port's own timeout
+  imm port = CreateIoCompletionPort(0xFFFFFFFFFFFFFFFFusize, 0usize, 0usize, 1u32);
+  mut entries = new Array[u8, 256] <- fill 0u8;
+  mut pl = Histogram.make();
+  mut n = 0u32;
+  mut w = 0u32;
+  while w < 200u32 {
+    imm s = Instant.now();
+    GetQueuedCompletionStatusEx(port, &mut entries as *u8, 4u32, &mut n, 1u32, 0i32);
+    pl.record((s.elapsed() - Duration.fromMillis(1i64)).nanos());
+    w = w + 1u32;
+  }
+  CloseHandle(port);
+  printStr("3. the completion port's own 1 ms timeout, 200 times, without it\n");
+  pl.printLine("   lateness");
+
+  // 4. A poll that waits for nothing
+  imm p0 = Instant.now();
+  mut q = 0u32;
+  while q < 100000u32 {
+    lp.poll(Instant.now(), &mut out);
+    q = q + 1u32;
+  }
+  printStr("4. poll(Instant.now()) with nothing ready: ");
+  printUInt(u64.from(p0.elapsed().nanos()) / 100000u64);
+  printStr(" ns a call\n");
+  imm c = lp.counters();
+  printStr(if c.delivered == c.submitted {"   every timer answered once\n";} else {"   TIMERS MISSING\n";});
+  0i32;
+}

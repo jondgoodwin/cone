@@ -1,0 +1,51 @@
+// What an operation takes is an owner of its bytes, never a borrow, against
+// the iocore package: an Op's buffer field is an IoBuf, which a borrowed
+// slice, a string literal and a '&mut IoBuf' are not, and its shared bytes
+// field is Bytes, frozen and read-only. So a borrow cannot be submitted to
+// the kernel (I2, I3): it is refused where the operation is built, as any
+// struct or variant literal's field of the wrong type is (that diagnostic's
+// code is ErrorBadArray, which names arrays; its message names neither
+// type). What a
+// completion carries crosses to another thread, Sendable, and a borrow of
+// one does not; a Waker crosses, as Target.Post needs. The lines without
+// annotations compile.
+
+mod concurrency_iocore_submit;
+
+import thread;
+import sync use *;
+import iobuf use *;
+import iocore use *;
+
+fn take(c Completion) u64 {0u64;}
+fn peek(c &mut Completion) u64 {0u64;}
+fn nudge(w Waker) Bool {w.wake();}
+
+fn submitting(lp &mut Loop, pool &Pool, sock Handle, file Handle) {
+  mut buf = pool.mustTake(4096usize);
+  imm text &[]u8 = "hello";
+  lp.submit(Op.Send[sock, text], Target.Here[1u64]);          //~ ErrorBadArray "does not match expected field's type"
+  lp.submit(Op.Send[sock, "hello"], Target.Here[2u64]);       //~ ErrorBadArray "does not match expected field's type"
+  lp.submit(Op.Recv[sock, &mut buf], Target.Here[3u64]);      //~ ErrorBadArray "does not match expected field's type"
+  lp.submit(Op.ReadAt[file, 0u64, buf.spare()], Target.Here[4u64]);   //~ ErrorBadArray "does not match expected field's type"
+  lp.submit(Op.SendBytes[sock, buf.view()], Target.Here[5u64]);       //~ ErrorBadArray "does not match expected field's type"
+  lp.submit(Op.Recv[sock, buf], Target.Here[6u64]);
+  mut out = pool.mustTake(10usize);
+  out.append("bytes");
+  lp.submit(Op.SendBytes[sock, out.freeze()], Target.Here[7u64]);
+}
+
+fn crossing(lp &mut Loop, c Completion) {
+  mut mc = c;
+  imm bad = thread.start(&mut mc, &peek);   //~ ErrorNotSendable "start requires A is Sendable, and &mut Completion is not Sendable"
+  imm ok = thread.start(mc, &take);
+  imm w = thread.start(lp.waker(), &nudge);
+  mut tx Sender[&mut Completion];   //~ ErrorNotSendable "Sender requires T is Sendable, and &mut Completion is not Sendable"
+  mut tc Sender[Completion];
+}
+
+fn main() {
+  mut lp = Loop.mustMake();
+  imm pool = Pool.make();
+  submitting(&mut lp, &pool, Handle.none(), Handle.none());
+}

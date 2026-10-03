@@ -1,0 +1,190 @@
+// Cancel, deadlines and closing: each operation still answers exactly once,
+// its answer says how it ended, and its buffer comes back.
+//
+// 1. A receive on a silent socket, cancelled: Cancelled, the buffer back.
+//    Cancel is idempotent: true while the answer is still to come, however
+//    often asked, and false once it has been delivered.
+// 2. A receive with a deadline 30 ms off, on a silent socket: TimedOut, the
+//    buffer back, never before the deadline. One whose bytes come in time
+//    is Done, and its deadline never fires afterwards.
+// 3. A receive on a socket that is then closed: Cancelled; the handle names
+//    nothing afterwards.
+// 4. Cancel against completion, 2,000 times: a receive waits for one byte,
+//    and is cancelled either just before the byte is sent or just after.
+//    Either answer is right, Done (the byte) or Cancelled; exactly one
+//    comes, and when it is Cancelled the byte is still there for the next
+//    receive. On loopback the order decides it (a send lands in the waiting
+//    receive before WSASend returns), so both answers happen, a thousand
+//    each; the race across threads, a million times, is the next
+//    increment's.
+// 5. An Accept cancelled, and a Connect to a port nobody listens on:
+//    Cancelled, and Failed with ERROR_CONNECTION_REFUSED.
+
+mod cancel;
+
+import testing use *;
+import collections use List;
+import time use Instant, Duration;
+import iobuf use *;
+import iocore use *;
+import diag;
+
+fn waitFor(lp &mut Loop, out &mut List[Completion], n usize) {
+  imm limit = Instant.now() + Duration.fromSeconds(5i64);
+  while out.len() < n and Instant.now() < limit {
+    lp.poll(limit, out);
+  }
+}
+
+fn main() i32 {
+  {
+    imm pool = Pool.make();
+    mut lp = Loop.mustMake();
+    mut out = List[Completion].empty();
+
+    // A connected pair on this loop
+    imm listener = lp.mustListen(SocketAddr.localhost(0u16));
+    mut port = 0u16;
+    match lp.localAddr(listener) {
+      case imm a Ok {port = a.value.port();}
+      case imm e Error {}
+    }
+    lp.submit(Op.Accept[listener], Target.Here[1u64]);
+    lp.submit(Op.Connect[SocketAddr.localhost(port)], Target.Here[2u64]);
+    waitFor(&mut lp, &mut out, 2usize);
+    mut a = Handle.none();
+    mut b = Handle.none();
+    mut k = 0usize;
+    while k < out.len() {
+      if out[k].token == 1u64 {a = out[k].handle;} else {b = out[k].handle;}
+      k = k + 1usize;
+    }
+    out.clear();
+    require(lp.isOpen(a) and lp.isOpen(b), "a connected pair");
+
+    // 1. Cancelled
+    imm r1 = lp.submit(Op.Recv[a, pool.mustTake(100usize)], Target.Here[10u64]);
+    lp.poll(Instant.now() + Duration.fromMillis(10i64), &mut out);
+    expectUInt(u64.from(out.len()), 0u64, "a silent socket: nothing yet");
+    expect(lp.cancel(r1), "cancel taken");
+    expect(lp.cancel(r1), "asked again: still to answer, so true, and nothing more done");
+    waitFor(&mut lp, &mut out, 1usize);
+    requireUInt(u64.from(out.len()), 1u64, "one answer");
+    expectUInt(u64.from(out[0usize].status), u64.from(diag.outcomeCancelled), "Cancelled");
+    expectUInt(u64.from(out[0usize].buf.capacity()), 4096u64, "its buffer back");
+    expect(out[0usize].id == r1, "the answer names the operation");
+    expect(not lp.cancel(r1), "answered: cancel finds nothing");
+    out.clear();
+
+    // 2. A deadline
+    imm t0 = Instant.now();
+    lp.submitBy(Op.Recv[a, pool.mustTake(100usize)], Target.Here[20u64], t0 + Duration.fromMillis(30i64));
+    waitFor(&mut lp, &mut out, 1usize);
+    requireUInt(u64.from(out.len()), 1u64, "one answer");
+    expectUInt(u64.from(out[0usize].status), u64.from(diag.outcomeTimedOut), "TimedOut");
+    expectUInt(u64.from(out[0usize].buf.capacity()), 4096u64, "its buffer back");
+    expect(out[0usize].dequeued >= t0 + Duration.fromMillis(30i64), "not before its deadline");
+    out.clear();
+    // In time: Done, and the deadline dies with it
+    lp.submitBy(Op.Recv[a, pool.mustTake(100usize)], Target.Here[21u64], Instant.now() + Duration.fromMillis(30i64));
+    mut one = pool.mustTake(1usize);
+    one.append("x");
+    lp.submit(Op.Send[b, one], Target.Here[22u64]);
+    waitFor(&mut lp, &mut out, 2usize);
+    k = 0usize;
+    while k < out.len() {
+      if out[k].token == 21u64 {expect(out[k].isDone() and out[k].count() == 1usize, "in time: Done, one byte");}
+      k = k + 1usize;
+    }
+    out.clear();
+    lp.poll(Instant.now() + Duration.fromMillis(50i64), &mut out);
+    expectUInt(u64.from(out.len()), 0u64, "and nothing fires at the old deadline");
+
+    // 4. The race
+    mut done = 0u64;
+    mut doneBytes = 0u64;
+    mut cancelled = 0u64;
+    mut drained = 0u64;
+    mut answers = 0u64;
+    mut round = 0u32;
+    while round < 2000u32 {
+      imm r = lp.submit(Op.Recv[a, pool.mustTake(100usize)], Target.Here[40u64]);
+      mut x = pool.mustTake(1usize);
+      x.append("y");
+      if round % 2u32 == 0u32 {
+        lp.cancel(r);
+        lp.submit(Op.Send[b, x], Target.Here[41u64]);
+      } else {
+        lp.submit(Op.Send[b, x], Target.Here[41u64]);
+        lp.cancel(r);
+      }
+      waitFor(&mut lp, &mut out, 2usize);
+      mut wasCancelled = false;
+      k = 0usize;
+      while k < out.len() {
+        if out[k].token == 40u64 {
+          answers = answers + 1u64;
+          if out[k].isDone() {
+            done = done + 1u64;
+            doneBytes = doneBytes + u64.from(out[k].count());
+          } elif out[k].status == diag.outcomeCancelled {
+            cancelled = cancelled + 1u64;
+            wasCancelled = true;
+          }
+        }
+        k = k + 1usize;
+      }
+      out.clear();
+      // A cancelled receive took nothing: the byte waits, so take it, and
+      // the next round starts clean
+      if wasCancelled {
+        lp.submit(Op.Recv[a, pool.mustTake(100usize)], Target.Here[42u64]);
+        waitFor(&mut lp, &mut out, 1usize);
+        drained = drained + u64.from(out[0usize].count());
+        out.clear();
+      }
+      round = round + 1u32;
+    }
+    expectUInt(answers, 2000u64, "2,000 raced receives, one answer each");
+    expect(done > 0u64 and cancelled > 0u64, "both ways happened");
+    expectUInt(done + cancelled, 2000u64, "each Done or Cancelled");
+    expectUInt(doneBytes, done, "each Done took its byte");
+    expectUInt(drained, cancelled, "each Cancelled took nothing: its byte was still there");
+
+    // 3. Closed while receiving
+    lp.submit(Op.Recv[a, pool.mustTake(100usize)], Target.Here[30u64]);
+    lp.close(a);
+    waitFor(&mut lp, &mut out, 1usize);
+    requireUInt(u64.from(out.len()), 1u64, "one answer");
+    expectUInt(u64.from(out[0usize].status), u64.from(diag.outcomeCancelled), "closing cancels it");
+    expectUInt(u64.from(out[0usize].buf.capacity()), 4096u64, "its buffer back");
+    expect(not lp.isOpen(a), "the handle names nothing now");
+    out.clear();
+
+    // 5. Accept cancelled; a connection refused
+    imm acc = lp.submit(Op.Accept[listener], Target.Here[50u64]);
+    lp.cancel(acc);
+    waitFor(&mut lp, &mut out, 1usize);
+    expectUInt(u64.from(out[0usize].status), u64.from(diag.outcomeCancelled), "an Accept cancelled");
+    out.clear();
+    imm spare = lp.mustListen(SocketAddr.localhost(0u16));
+    mut deadPort = 0u16;
+    match lp.localAddr(spare) {
+      case imm sa Ok {deadPort = sa.value.port();}
+      case imm e Error {}
+    }
+    lp.close(spare);
+    lp.submit(Op.Connect[SocketAddr.localhost(deadPort)], Target.Here[51u64]);
+    waitFor(&mut lp, &mut out, 1usize);
+    expectUInt(u64.from(out[0usize].status), u64.from(diag.outcomeFailed), "a Connect nobody answers fails");
+    expectUInt(u64.from(out[0usize].code), u64.from(errorConnectionRefused), "...ERROR_CONNECTION_REFUSED");
+    out.clear();
+
+    imm c = lp.counters();
+    expectUInt(c.delivered, c.submitted, "every operation answered once");
+    expectUInt(c.inFlight, 0u64, "nothing in flight");
+    expectUInt(pool.stats().lent, 0u64, "every buffer back in the pool");
+  }
+  expectUInt(osBlocks(), 0u64, "and every block back to the OS");
+  done();
+}

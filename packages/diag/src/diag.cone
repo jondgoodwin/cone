@@ -1,0 +1,388 @@
+// The diag package: the async I/O runtime's diagnostics records, from its
+// first increment. When a frame stutters or a read arrives late, the
+// question is where the time went: waiting in our queue, in the kernel, or
+// between the kernel finishing and the owner being handed the answer. So
+// every operation has an identity and timestamps, every loop keeps live
+// counters, and a subscriber decides what to keep. With no subscriber the
+// cost is one branch; nothing prints unless a program asks for it.
+//
+//   mod watch;
+//   import diag;
+//   import iocore use *;
+//
+//   fn main() {
+//     mut lp = ...an iocore Loop...;
+//     lp.subscribe(&diag.textSubscriber);     // one line per operation
+//     ...
+//     imm c = lp.counters();                  // a diag.Counters
+//     mut h = diag.Histogram.make();
+//     h.record(latencyNanos);
+//     h.percentile(0.99d)  h.max()  h.count()
+//   }
+//
+//   OpRecord              one operation, as delivered            (RECORDS)
+//   Counters              a loop's live counts                   (COUNTERS)
+//   Histogram             latencies, p50 / p99 and the maximum    (HISTOGRAMS)
+//   Subscriber            what a loop hands each record to       (SUBSCRIBERS)
+//   textSubscriber        prints one line per record to stdout
+//   nextLoopId()          a new loop's id, unique in the process (IDS)
+//   kindName(k), outcomeName(o), printNanos(ns)
+//
+// IDS. A loop has an id from 'nextLoopId', unique in the process, and each
+// operation an id unique in its loop (iocore's OpId, an entry of its
+// in-flight table and that entry's generation, as one u64). The pair names
+// one operation in the whole process, so records from several loops can be
+// merged into one story.
+//
+// RECORDS. An OpRecord is plain data: the loop's id and the operation's, its
+// kind (KIND...), how it ended (OUTCOME...), the Windows error number when it
+// failed, the bytes it moved, its token, and three instants of the time
+// package's steady clock:
+//
+// - 'submitted': when the loop was given it;
+// - 'dequeued': when the loop took its completion from the kernel's queue
+//   (or, for a timer, when the loop saw it was due). IOCP does not say when
+//   the kernel finished an operation; the dequeue is the earliest moment the
+//   loop can know, and so the upper bound of the kernel's finish. When the
+//   loop was waiting in the kernel it is within a few microseconds of it;
+//   when the loop was busy, the completion waited in the port's queue first;
+// - 'delivered': when its answer was handed to its owner: returned from
+//   'poll' on the loop's own thread, or taken from the port of the loop it
+//   was posted to.
+//
+// So dequeued - submitted is the KERNEL LATENCY (for a receive, mostly the
+// wait for the peer), and delivered - dequeued is the DELIVERY LATENCY, the
+// runtime's own cost: for an answer posted to another loop, the hop between
+// threads. A record is made when the answer is delivered, so it is complete.
+//
+// COUNTERS. A loop's Counters are exact and cost a few additions an
+// operation: operations submitted and delivered, by outcome; in flight now
+// and at most; passes of the loop ('polls'), those that waited in the
+// kernel, and the completions taken per wait (largest batch); the
+// high-resolution timer's expiries; wakes; answers posted to other loops,
+// received from them, and dropped because their loop had gone; cancels
+// asked for. delivered + inFlight = submitted at every moment, which is the
+// exactly-once check (iocore's invariant I1).
+//
+// HISTOGRAMS. A Histogram counts values (nanoseconds, by its use here) in
+// log-linear buckets: every power of two split in 16, so a percentile is
+// reported within 1/16 (6.25%) above the true value, and the minimum, the
+// maximum and the mean are exact. It holds 1,024 counts and allocates
+// nothing. The 3-D budget is judged on the maximum, so it is always kept.
+//
+// SUBSCRIBERS. A Subscriber is a function a loop calls with each record as
+// it is delivered, on the loop's own thread: '&fn(r &OpRecord)'. A loop has
+// none until one is given, and then the cost of a record is the call.
+// 'textSubscriber' prints one line per record; a program that wants to keep
+// records writes its own (a closure cannot capture yet, so it keeps them in
+// a global of its module). It must not block: it runs on the I/O path.
+//
+// Not here yet (the design's section 7): the flight-recorder ring, the
+// cross-thread subscriber (a bounded channel with trySend and a drop
+// counter), trace context, per-class histograms in the loop itself, qlog,
+// OpenTelemetry, and compiling it all out.
+
+mod diag;
+
+import stdio;
+import time use Instant, Duration;
+
+// ---------------------------------------------------------------------------
+// Ids
+// ---------------------------------------------------------------------------
+
+imm loopSeq Atomic[u64];
+
+fn @initpure init() {
+  loopSeq = Atomic[u64].of(0u64);
+}
+
+// A new loop's id: 1, 2, 3... unique in the process
+pub fn nextLoopId() u64 {loopSeq.add(1u64) + 1u64;}
+
+// ---------------------------------------------------------------------------
+// Kinds and outcomes
+// ---------------------------------------------------------------------------
+
+// What an operation was
+pub const kindConnect = 0u32;
+pub const kindAccept = 1u32;
+pub const kindRecv = 2u32;
+pub const kindRecvReady = 3u32;
+pub const kindSend = 4u32;
+pub const kindReadAt = 5u32;
+pub const kindWriteAt = 6u32;
+pub const kindTimer = 7u32;
+
+pub fn kindName(k u32) &[]u8 {
+  if k == kindConnect {"connect";}
+  elif k == kindAccept {"accept";}
+  elif k == kindRecv {"recv";}
+  elif k == kindRecvReady {"recvReady";}
+  elif k == kindSend {"send";}
+  elif k == kindReadAt {"readAt";}
+  elif k == kindWriteAt {"writeAt";}
+  elif k == kindTimer {"timer";}
+  else {"?";}
+}
+
+// How it ended: its one terminal reply
+pub const outcomeDone = 0u32;
+pub const outcomeFailed = 1u32;
+pub const outcomeCancelled = 2u32;
+pub const outcomeTimedOut = 3u32;
+
+pub fn outcomeName(o u32) &[]u8 {
+  if o == outcomeDone {"done";}
+  elif o == outcomeFailed {"failed";}
+  elif o == outcomeCancelled {"cancelled";}
+  else {"timedOut";}
+}
+
+// ---------------------------------------------------------------------------
+// Records
+// ---------------------------------------------------------------------------
+
+// One operation, as it was delivered (see the package's header, RECORDS)
+pub struct OpRecord {
+  pub loop u64;           // the loop's id
+  pub op u64;             // the operation's id in its loop
+  pub kind u32;           // kindRecv, ...
+  pub outcome u32;        // outcomeDone, ...
+  pub code u32;           // Windows' error number when it failed, else 0
+  pub bytes u64;          // bytes it moved
+  pub token u64;          // the token its owner gave it
+  pub submitted Instant;
+  pub dequeued Instant;
+  pub delivered Instant;
+
+  // Its time in the kernel, as far as the loop can tell: dequeued - submitted
+  pub fn kernelLatency(self &) Duration {dequeued - submitted;}
+  // The runtime's own cost: delivered - dequeued
+  pub fn deliveryLatency(self &) Duration {delivered - dequeued;}
+}
+
+// ---------------------------------------------------------------------------
+// Counters
+// ---------------------------------------------------------------------------
+
+// A loop's live counts (see the package's header, COUNTERS)
+pub struct Counters {
+  pub submitted u64;        // operations and timers submitted
+  pub delivered u64;        // terminal replies delivered, of every outcome
+  pub done u64;
+  pub failed u64;
+  pub cancelled u64;
+  pub timedOut u64;
+  pub inFlight u64;         // submitted and not yet delivered
+  pub maxInFlight u64;
+  pub polls u64;            // calls of poll
+  pub waits u64;            // times poll waited in the kernel
+  pub dequeued u64;         // completions taken from the kernel's queue
+  pub largestBatch u64;     // the most taken by one wait
+  pub timerExpiries u64;    // the high-resolution timer's packets
+  pub wakes u64;            // wakes received from wakers
+  pub postsSent u64;        // answers posted to another loop
+  pub postsReceived u64;    // answers posted here by another loop
+  pub postsDropped u64;     // answers whose loop had gone: their buffers went home
+  pub cancelsAsked u64;     // cancel calls that found an operation to cancel
+
+  pub fn zero() Counters {
+    new Counters(0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64,
+      0u64, 0u64, 0u64, 0u64, 0u64, 0u64);
+  }
+
+  // A reply delivered, with its outcome
+  pub fn count(self &mut, outcome u32) {
+    delivered = delivered + 1u64;
+    inFlight = inFlight - 1u64;
+    if outcome == outcomeDone {done = done + 1u64;}
+    elif outcome == outcomeFailed {failed = failed + 1u64;}
+    elif outcome == outcomeCancelled {cancelled = cancelled + 1u64;}
+    else {timedOut = timedOut + 1u64;}
+  }
+
+  // An operation submitted
+  pub fn submit(self &mut) {
+    submitted = submitted + 1u64;
+    inFlight = inFlight + 1u64;
+    if inFlight > maxInFlight {maxInFlight = inFlight;}
+  }
+
+  // Print them, one per line, each after 'prefix'
+  pub fn print(self &, prefix &[]u8) {
+    line(prefix, "submitted", submitted);
+    line(prefix, "delivered", delivered);
+    line(prefix, "  done", done);
+    line(prefix, "  failed", failed);
+    line(prefix, "  cancelled", cancelled);
+    line(prefix, "  timedOut", timedOut);
+    line(prefix, "inFlight", inFlight);
+    line(prefix, "maxInFlight", maxInFlight);
+    line(prefix, "polls", polls);
+    line(prefix, "waits", waits);
+    line(prefix, "dequeued", dequeued);
+    line(prefix, "largestBatch", largestBatch);
+    line(prefix, "timerExpiries", timerExpiries);
+    line(prefix, "wakes", wakes);
+    line(prefix, "postsSent", postsSent);
+    line(prefix, "postsReceived", postsReceived);
+    line(prefix, "postsDropped", postsDropped);
+    line(prefix, "cancelsAsked", cancelsAsked);
+  }
+}
+
+fn line(prefix &[]u8, name &[]u8, v u64) {
+  stdio.printStr(prefix);
+  stdio.printStr(name);
+  stdio.printStr(" ");
+  stdio.printUInt(v);
+  stdio.printStr("\n");
+}
+
+// ---------------------------------------------------------------------------
+// Histograms
+// ---------------------------------------------------------------------------
+
+const buckets = 1024usize;
+
+// The bucket v goes in: below 16 itself; above, 16 per power of two
+fn bucketOf(v u64) usize {
+  if v < 16u64 {return usize.from(v);}
+  // The index of v's highest set bit (Cone has no count-leading-zeros)
+  mut e = 4u64;
+  while e < 63u64 and (v >> (e + 1u64)) != 0u64 {e = e + 1u64;}
+  imm m = (v >> (e - 4u64)) & 15u64;
+  usize.from((e - 3u64) * 16u64 + m);
+}
+
+// The largest value bucket b holds
+fn bucketTop(b usize) u64 {
+  if b < 16usize {return u64.from(b);}
+  imm e = u64.from(b / 16usize) + 3u64;
+  imm m = u64.from(b % 16usize);
+  ((16u64 + m + 1u64) << (e - 4u64)) - 1u64;
+}
+
+// Counts of values in log-linear buckets (see the package's header,
+// HISTOGRAMS)
+pub struct Histogram {
+  counts Array[u64, 1024];
+  n u64;
+  sum u64;
+  lo u64;
+  hi u64;
+
+  pub fn make() Histogram {
+    new Histogram(new Array[u64, 1024] <- fill 0u64, 0u64, 0u64, 0xFFFFFFFFFFFFFFFFu64, 0u64);
+  }
+
+  // Count v; a negative value counts as 0
+  pub fn record(self &mut, v i64) {
+    imm u = if v < 0i64 {0u64;} else {u64.from(v);};
+    imm b = bucketOf(u);
+    counts[b] = counts[b] + 1u64;
+    n = n + 1u64;
+    sum = sum + u;
+    if u < lo {lo = u;}
+    if u > hi {hi = u;}
+  }
+
+  pub fn count(self &) u64 {n;}
+  pub fn max(self &) u64 {hi;}
+  pub fn min(self &) u64 {if n == 0u64 {0u64;} else {lo;};}
+  pub fn mean(self &) u64 {if n == 0u64 {0u64;} else {sum / n;};}
+
+  // The value at or below which a fraction p of the values lie (p = 0.5d is
+  // the median): the top of its bucket, never above the maximum; 0 when
+  // nothing is counted
+  pub fn percentile(self &, p f64) u64 {
+    if n == 0u64 {return 0u64;}
+    mut rank = u64.from(p * f64.from(n));
+    if f64.from(rank) < p * f64.from(n) {rank = rank + 1u64;}
+    if rank == 0u64 {rank = 1u64;}
+    mut seen = 0u64;
+    mut b = 0usize;
+    while b < buckets {
+      seen = seen + counts[b];
+      if seen >= rank {
+        imm top = bucketTop(b);
+        return if top < hi {top;} else {hi;};
+      }
+      b = b + 1usize;
+    }
+    hi;
+  }
+
+  // Add another histogram's counts to this one's
+  pub fn merge(self &mut, o &Histogram) {
+    mut b = 0usize;
+    while b < buckets {
+      counts[b] = counts[b] + o.counts[b];
+      b = b + 1usize;
+    }
+    n = n + o.n;
+    sum = sum + o.sum;
+    if o.lo < lo {lo = o.lo;}
+    if o.hi > hi {hi = o.hi;}
+  }
+
+  // Print 'name: p50 X  p99 Y  max Z  (n)', each in microseconds
+  pub fn printLine(self &, name &[]u8) {
+    stdio.printStr(name);
+    stdio.printStr(": p50 ");
+    printNanos(self.percentile(0.5d));
+    stdio.printStr("  p99 ");
+    printNanos(self.percentile(0.99d));
+    stdio.printStr("  max ");
+    printNanos(hi);
+    stdio.printStr("  (");
+    stdio.printUInt(n);
+    stdio.printStr(")\n");
+  }
+}
+
+// Print a count of nanoseconds as microseconds to a tenth: '12.3 us'
+pub fn printNanos(ns u64) {
+  stdio.printUInt(ns / 1000u64);
+  stdio.printStr(".");
+  stdio.printUInt((ns % 1000u64) / 100u64);
+  stdio.printStr(" us");
+}
+
+// ---------------------------------------------------------------------------
+// Subscribers
+// ---------------------------------------------------------------------------
+
+// What a loop hands each record to, on its own thread (see the package's
+// header, SUBSCRIBERS)
+pub alias Subscriber = &fn(r &OpRecord);
+
+// One line per record: 'op 1.7 recv done 64 B  kernel 12.3 us  delivery 0.4 us'
+pub fn textSubscriber(r &OpRecord) {
+  stdio.printStr("op ");
+  stdio.printUInt(r.loop);
+  stdio.printStr(".");
+  stdio.printUInt(r.op);
+  stdio.printStr(" ");
+  stdio.printStr(kindName(r.kind));
+  stdio.printStr(" ");
+  stdio.printStr(outcomeName(r.outcome));
+  if r.outcome == outcomeFailed {
+    stdio.printStr(" (error ");
+    stdio.printUInt(u64.from(r.code));
+    stdio.printStr(")");
+  }
+  stdio.printStr(" ");
+  stdio.printUInt(r.bytes);
+  stdio.printStr(" B  kernel ");
+  imm k = r.kernelLatency().nanos();
+  printNanos(if k < 0i64 {0u64;} else {u64.from(k);});
+  stdio.printStr("  delivery ");
+  imm d = r.deliveryLatency().nanos();
+  printNanos(if d < 0i64 {0u64;} else {u64.from(d);});
+  stdio.printStr("\n");
+}
+
+// A subscriber that keeps nothing: what a loop starts with
+pub fn noSubscriber(r &OpRecord) {}
