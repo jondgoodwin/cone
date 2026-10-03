@@ -232,6 +232,9 @@ void genlGpuFailCheck(GenState *gen, INode *site, int kind, LLVMValueRef value);
 // it on a GPU target, given its arguments
 int genlIsConePanic(FnDclNode *fndcl);
 LLVMValueRef genlGpuPanic(GenState *gen, LLVMValueRef *args);
+// A call to a C library math function on a GPU target, as its LLVM intrinsic
+// (GLSL.std.450's instruction), or NULL when the function is no such one
+LLVMValueRef genlGpuMath(GenState *gen, FnDclNode *fndcl, LLVMValueRef *args, unsigned nargs);
 
 // genllvm.c: the type a pointer is known to point to (an alloca's, a global's,
 // an address computation's, a parameter's as its uses agree), or NULL

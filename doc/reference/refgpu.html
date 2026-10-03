@@ -20,9 +20,9 @@
 		<span class="pre">conec</span> directly), <span class="pre">gpuwork</span> binding the
 		error buffer itself, deciding which packages may run on a GPU,
 		refusing the features a GPU lacks where they are written, textures, atomics in buffers,
-		workgroup memory and <span class="pre">f16</span>. The math functions Cone takes from
-		the C library (<span class="pre">floorf</span> and its kind) are not yet a GPU's built-ins,
-		so a kernel calling one is not yet a module Vulkan accepts.</i></p>
+		workgroup memory and <span class="pre">f16</span>. Floating-point operations are not
+		yet marked to keep the driver from fusing a multiply and an add, so a kernel's float
+		arithmetic is not yet bit for bit the CPU's (<a href="#math">below</a>).</i></p>
 
 	<p>A GPU runs one function, a kernel, thousands of times at once, each run an
 		<i>invocation</i> working on its own part of the data. Cone writes a kernel as an
@@ -130,6 +130,56 @@ fn @compute(64) bake(inv Invocation, parts &amp;[]Part, out &amp;[]mut f32) {
 		however many functions it was handed through and however it was cut. A slice that came
 		from anything else, a pointer to a single value say, is refused where it is
 		indexed.</p>
+
+	<h3 id="math">Math on the GPU</h3>
+	<p>No GPU has the C library. A call to one of its math functions, the
+		<span class="pre">libc</span> package's or any <span class="pre">@c</span> function of
+		the same C name, is on a GPU the GPU's own instruction (GLSL.std.450's, in SPIR-V), as
+		are <span class="pre">f32</span>'s and <span class="pre">f64</span>'s
+		<span class="pre">sqrt</span>, <span class="pre">sin</span> and
+		<span class="pre">cos</span> methods. On the CPU nothing changes: the C library is
+		called.</p>
+	<table>
+	<tr><th>C function (and its <span class="pre">f</span> form)</th><th>On the GPU</th>
+		<th>Vulkan's precision</th><th>Measured against the CPU</th></tr>
+	<tr><td><span class="pre">fabs</span>, <span class="pre">floor</span>,
+		<span class="pre">ceil</span></td><td>FAbs, Floor, Ceil</td><td>exact</td>
+		<td>bit for bit</td></tr>
+	<tr><td><span class="pre">fmod</span></td><td>OpFRem (the sign of x, as C's)</td>
+		<td>from x - y trunc(x / y)</td><td>bit for bit where the driver fuses it, which it
+		may not</td></tr>
+	<tr><td><span class="pre">sqrt</span></td><td>Sqrt</td><td>from 1 / InverseSqrt</td>
+		<td>within 1 ulp</td></tr>
+	<tr><td><span class="pre">asin</span>, <span class="pre">acos</span>,
+		<span class="pre">atan</span>, <span class="pre">atan2</span></td>
+		<td>Asin, Acos, Atan, Atan2</td><td>atan and atan2 4096 ulp; asin and acos from
+		atan2</td>
+		<td>within 2 ulp</td></tr>
+	<tr><td><span class="pre">exp</span>, <span class="pre">log</span>,
+		<span class="pre">pow</span></td><td>Exp, Log, Pow</td>
+		<td>3 + 2|x| ulp; 3 ulp outside [0.5, 2], absolute 2<sup>-21</sup> inside; from
+		exp2(y log2 x)</td><td>exp within 8 ulp over [-10, 10]; log within 87 ulp (near 1,
+		where it is near 0, 1e-6 absolute); pow within 27 ulp</td></tr>
+	<tr><td><span class="pre">sin</span>, <span class="pre">cos</span>,
+		<span class="pre">tan</span></td><td>Sin, Cos, Tan</td><td>absolute 2<sup>-11</sup>
+		in [-pi, pi]; tan from sin / cos</td><td>absolute 4e-7 in [-pi, pi], 1e-5 in
+		[-100, 100]; tan 4e-5 in [-1.5, 1.5]</td></tr>
+	</table>
+	<p>What was measured was an RTX 4060 against the Windows C runtime, 65,536 arguments a
+		function. Where a precision is an approximation, two GPUs differ from each other as well
+		as from the CPU, and nothing computed from such a function is the same everywhere. The
+		<span class="pre">f64</span> forms of the exact functions and of
+		<span class="pre">sqrt</span> and <span class="pre">fmod</span> are the GPU's at 64
+		bits, which needs a device with 64-bit floats (WebGPU has none); Vulkan has no 64-bit
+		<span class="pre">sin</span>, <span class="pre">cos</span>,
+		<span class="pre">tan</span>, inverse trigonometry, <span class="pre">exp</span>,
+		<span class="pre">log</span> or <span class="pre">pow</span>, and refuses a module
+		that asks for one.</p>
+	<p>A GPU's driver may also fuse a multiply and an add into one rounding, which the CPU
+		does not. Until conec marks a kernel's float operations against it (SPIR-V's
+		NoContraction), even adds, multiplies and <span class="pre">floor</span> may differ
+		from the CPU in the last bits: <span class="pre">noise</span>'s fBm, measured, matches
+		the CPU at about a fifth of its points, and at every point once they are marked.</p>
 
 	<p style="text-align: right; margin-top: 2em;">
 		<a href="refmodule.html"><img alt="_" src="next.png" /></a>

@@ -573,6 +573,13 @@ LLVMValueRef genlFnCallInternal(GenState *gen, int dispatch, INode *objfn, uint3
         fndcl = (FnDclNode *)fnuse->dclnode;
     }
 
+    // No GPU has the C library: its math is the GPU's own (genlgpu.c)
+    if (gen->opt->gpu) {
+        LLVMValueRef mathret = genlGpuMath(gen, fndcl, fnargs, fnargcnt);
+        if (mathret)
+            return mathret;
+    }
+
     if (fndcl->flags & FlagInline) {
         // For inline functions, first generate call args as local "parameter" variables
         if (fnargcnt > 0) {
