@@ -35,8 +35,11 @@ GenericInfo *genericGetInfo(INode *node);
 // walk runs on that gives out, with no diagnostic at all.
 //
 // Enter reports and returns 0 when the limit is reached; the caller substitutes
-// an error node for what it could not expand. Every successful Enter is paired
-// with an Exit once the expansion has been analyzed.
+// an error node for what it could not expand. From then until the outermost
+// expansion has unwound, Enter returns 0 without a report: what the levels
+// above try next is not started, so an expansion that branches still ends.
+// Every successful Enter is paired with an Exit once the expansion has been
+// analyzed.
 int genericInstantiateEnter(INode *errnode);
 void genericInstantiateExit();
 

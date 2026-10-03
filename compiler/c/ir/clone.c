@@ -134,10 +134,16 @@ INode *cloneNode(CloneState *cstate, INode *nodep) {
     case ArrayRefTag:
     case VirtRefTag:
         node = cloneRefNode(cstate, (RefNode *)nodep); break;
+    // A number type is one declaration for the whole program (stdNbrInit), and
+    // being that node is what makes it the same type (itypeIsSame). It stands
+    // in a tree itself only where the compiler built the type -- a string
+    // literal's 'Array[u8, n]' -- and a copy would be another type: an instance
+    // whose argument held it would never be found in its generic's memo again.
+    // Shared, it is not marked as instantiated either.
     case UintNbrTag:
     case IntNbrTag:
     case FloatNbrTag:
-        node = cloneNbrNode(cstate, (NbrNode *)nodep);  break; // Don't clone for now
+        return nodep;
 
     case MacroDclTag:
         node = cloneMacroDclNode(cstate, (MacroDclNode *)nodep); break;
