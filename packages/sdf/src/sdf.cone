@@ -1,38 +1,21 @@
 // The sdf package: signed distance fields, shapes as functions from a point
 // to its distance from the surface (negative inside). A program reaches it
-// with 'import sdf', and gets:
+// with 'import sdf', and gets everything in sdfcore, re-exported (so
+// 'import sdf use *' and 'sdf.sphere' reach it as they always have), and
+// this package's own CPU side:
 //
-// - Primitives (primitive.cone): 'sphere', 'box', 'roundBox', 'capsule',
-//   'torus', 'cylinder', 'cone', 'roundCone', 'taperedCapsule' (the round
-//   cone between any two points: a bone, a branch, a spike), 'triangle' (a
-//   flat sheet, thickened into a membrane or a panel), 'membrane' (the
-//   sheet stretched between two spars, bowed and scalloped), 'plane',
-//   'ellipsoid'.
-// - Operators on distances (operator.cone): 'union', 'subtract',
-//   'intersect', their smooth forms 'smoothUnion', 'smoothSubtract',
-//   'smoothIntersect' (Quilez's quadratic smooth minimum) and
-//   'smoothUnionBlend' (with the material blend factor); 'onion', 'round',
-//   'exclusive'.
-// - Operators on the point (domain.cone): 'translate', 'rotate',
-//   'scalePoint' with 'scaleDistance', 'Placement' (all three);
-//   'mirrorX', 'mirrorY', 'mirrorZ', 'mirror'; 'repeat', 'repeatLimited';
-//   'elongate'.
-// - hg_sdf's fillets (fillet.cone, MIT): 'unionRound', 'intersectRound',
-//   'subtractRound', 'unionChamfer', 'unionColumns', 'unionStairs',
-//   'intersectStairs', 'subtractStairs', 'pipe', 'groove', 'tongue',
-//   'engrave'.
-// - Repetition along a curve (curve.cone): the Curve trait, 'Arc' (a
-//   circular arc, with 'project' and 'cells') and 'PathCurve' (a
-//   sculpt.Path), the Repeated trait, and 'repeatAlong' and
-//   'repeatAlongArc', a shape repeated in the curve's rotation-minimizing
-//   frames, the exact union of every copy; 'curveCells' and
-//   'repeatAlongCells', the same over any curve's cells found once.
+// - From sdfcore, the GPU-safe half: the primitives, the operators on
+//   distances and on the point, hg_sdf's fillets, the Curve and Repeated
+//   traits with 'repeatAlong', 'Arc' and 'repeatAlongArc', the Shape trait
+//   with 'gradient' and 'normal', and detail from noise. sdfcore's root,
+//   sdfcore.cone, lists them.
+// - Curves that hold lists (pathcurve.cone): 'PathCurve' (a sculpt.Path),
+//   and 'CurveCells', 'curveCells' and 'repeatAlongCells', the same union
+//   over any curve's cells found once.
 // - The horn (horn.cone): 'Horn', a ribbed, tapering, curling horn, the
-//   union of its cells along an Arc.
-// - The Shape trait (shape.cone), 'FnShape' (a function as a Shape), and
-//   'gradient' and 'normal' by finite differences.
-// - Detail from noise (detail.cone): 'displace' (not a distance) and
-//   'fbmDetail' (Quilez's fBm of spheres, a bound).
+//   union of its cells along an Arc. (Its code is GPU-safe; it stays here
+//   while whether it belongs in the library at all is open.)
+// - 'FnShape' (fnshape.cone), a function reference as a Shape.
 // - Meshing (mesher.cone): 'surfaceNet', a shape made into a manifold
 //   'SurfaceNet' of quads on the CPU (surface nets, one vertex per piece of
 //   surface in a cell, gradient normals, blocks far from the surface
@@ -53,6 +36,10 @@
 // which it gives; the tests sample the gradient's length (at most 1 for
 // either) for those that claim one.
 //
+// CPU ONLY. What is here allocates or holds lists (the mesher, PathCurve,
+// CurveCells), or holds a function reference (FnShape): GPU code imports
+// sdfcore instead. The horn is the exception, kept here though it is not.
+//
 // THE REPRESENTATION IS NOT DECIDED. Shapes are composed as functions here,
 // on the CPU and, the same functions in the same order, in sdf.slang. Every
 // function is one node of an operator graph (a primitive with its sizes, an
@@ -60,25 +47,20 @@
 // tree that can be sent and evaluated can be built over these later, if
 // that is what crosses the network.
 //
-// sdf.slang holds the same functions for shaders, under the same names
-// (all but PathCurve; the constructors are functions there, 'makeArc',
-// 'makeArcCells', 'makeHorn'; the traits are interfaces and the generic
-// functions Slang generics over them). The two are kept in step by hand;
-// tests/parity.cone checks them against each other on a GPU. Those without
-// square roots, division or trigonometry agree bit for bit, the rest to
-// within 1.5e-5; the README has what was measured.
+// sdf.slang holds the same functions for shaders, sdfcore's and the horn's,
+// under the same names (all but PathCurve; the constructors are functions
+// there, 'makeArc', 'makeArcCells', 'makeHorn'; the traits are interfaces
+// and the generic functions Slang generics over them). The two are kept in
+// step by hand; tests/parity.cone checks them against each other on a GPU.
+// Those without square roots, division or trigonometry agree bit for bit,
+// the rest to within 1.5e-5; the README has what was measured.
 //
 // Its files are one module, and only this one, the root, imports:
 //
-//   scalar.cone     helpers, Blend, CurveFrame
-//   primitive.cone  the primitives
-//   operator.cone   union, subtraction, intersection, smooth and hard; onion, round
-//   domain.cone     translation, rotation, scale, mirrors, repetition, elongation
-//   fillet.cone     hg_sdf's fillets (MIT)
-//   curve.cone      Curve, Arc, PathCurve, CurveCells, Repeated, repeatAlong
+//   scalar.cone     private helpers, a copy of those sdfcore keeps private
+//   pathcurve.cone  PathCurve, CurveCells, curveCells, repeatAlongCells
 //   horn.cone       Horn
-//   shape.cone      Shape, FnShape, gradient, normal
-//   detail.cone     displace, latticeSpheres, fbmDetail
+//   fnshape.cone    FnShape
 //   mesher.cone     SurfaceNet, surfaceNet, netLevels, meshHash
 //
 // Meshing lives here, not in mesh: it needs a Shape, and mesh must not
@@ -93,3 +75,4 @@ import collections use *;
 import sculpt;
 import noise;
 import mesh;
+import sdfcore pub use *;

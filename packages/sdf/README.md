@@ -4,6 +4,18 @@ Signed distance fields: shapes as functions from a point to its distance
 from the surface, negative inside. Cone source in `src/*.cone`; the same
 functions, in the same order of operations, for shaders in `src/sdf.slang`.
 
+The package is in two. **`sdfcore`** (`packages/sdfcore`) is the GPU-safe
+half: the primitives, the operators, the domain operators, the fillets,
+repetition along a curve and the `Arc`, the `Shape` trait with the gradient
+and normal, and noise detail, all plain arithmetic with no allocation, lists,
+function references or recursion, so that it can be marked for the GPU and
+remain the same source on the CPU. **`sdf`** is the CPU side: `PathCurve`
+and `CurveCells` (lists), `FnShape` (a function reference), the mesher, and
+the horn (GPU-safe, but kept here while whether it belongs in the library is
+open). `sdf` re-exports all of `sdfcore` (`import sdfcore pub use *`), so
+`import sdf use *` and `sdf.sphere` reach everything as before; code for the
+GPU imports `sdfcore` alone. Everything below is about both.
+
 ```cone
 import sdf use *;
 
@@ -49,21 +61,21 @@ Numbers are `f32`, points `geomath`'s `Vec3` (`float3` in Slang), rotations
 unit `Quat`s (`float4` x, y, z, w). "Exact" is the Euclidean distance; a
 "bound" never exceeds it. Every function says which in its comment.
 
-**Primitives** (`primitive.cone`), at the origin, round ones about y:
+**Primitives** (sdfcore, at the origin, round ones about y:
 `sphere(p, radius)`, `box(p, extent)`, `roundBox(p, extent, radius)`,
 `capsule(p, a, b, radius)`, `torus(p, major, minor)`,
 `cylinder(p, halfHeight, radius)`, `cone(p, halfHeight, bottom, top)`,
 `roundCone(p, bottom, top, height)`, `plane(p, n, offset)`: exact.
 `ellipsoid(p, radii)`: Quilez's approximation, not a bound (below).
 
-**Operators on distances** (`operator.cone`): `union`, `subtract`,
+**Operators on distances** (sdfcore: `union`, `subtract`,
 `intersect`; `smoothUnion(a, b, k)`, `smoothSubtract`, `smoothIntersect`,
 Quilez's quadratic smooth minimum normalized so that `k` is the most the
 blend swells; `smoothUnionBlend(a, b, k) Blend` with the blend factor
 (0 all a's material, 1 all b's); `onion(d, thickness)`, `round(d, radius)`,
 `exclusive(a, b)`.
 
-**Operators on the point** (`domain.cone`): `translate(p, offset)`,
+**Operators on the point** (sdfcore: `translate(p, offset)`,
 `rotate(p, q)` (the point for a shape turned by q), `scalePoint(p, s)` with
 `scaleDistance(d, s)` (both are needed, or the field is s-Lipschitz),
 `Placement` (position, rotation, uniform scale: `toLocal(p)`,
@@ -71,12 +83,12 @@ blend swells; `smoothUnionBlend(a, b, k) Blend` with the blend factor
 `repeat(p, period)`, `repeatLimited(p, period, limit)` (exact for shapes
 symmetric in their cells), `elongate(p, extent)`.
 
-**Fillets** (`fillet.cone`, from hg_sdf, MIT): `unionRound`,
+**Fillets** (sdfcore: `unionRound`,
 `intersectRound`, `subtractRound`, `unionChamfer`,
 `unionColumns(a, b, r, n)`, `unionStairs(a, b, r, n)`, `intersectStairs`,
 `subtractStairs`, `pipe`, `groove`, `tongue`, `engrave`.
 
-**Repetition along a curve** (`curve.cone`):
+**Repetition along a curve** (sdfcore
 
 | Name | What it is |
 |---|---|
@@ -106,12 +118,12 @@ the groove's steepest slope, so it stays a bound (a conservative one: the
 fine flutes' ratio measures 0.75, so a tracer steps short there). Each
 evaluation of a fluted horn takes an atan2 and a sin per cell.
 
-**Gradient** (`shape.cone`): the `Shape` trait (`distance(p)`), `FnShape`
+**Gradient** (sdfcore
 (a `&fn(p Vec3) f32` as a Shape), `gradient(shape, p, h)` (central
 differences, six evaluations), `normal(shape, p, h)` (Quilez's tetrahedron,
 four).
 
-**Noise detail** (`detail.cone`, over `noise`):
+**Noise detail** (sdfcore:
 `displace(d, p, seed, octaves, frequency, amplitude)` adds fBm and is not a
 distance; `fbmDetail(d, p, seed, octaves, size)` is Quilez's fBm of
 spheres, clipped to a band at the surface and smooth-unioned on, which stays

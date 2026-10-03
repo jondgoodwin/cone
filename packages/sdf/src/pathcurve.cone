@@ -1,0 +1,166 @@
+// ======== Curves that hold lists: PathCurve, and any curve's cells ========
+//
+// The CPU side of repetition along a curve (sdfcore's curve.cone has the
+// Curve and Repeated traits, 'repeatAlong', 'Arc' and 'repeatAlongArc').
+// These hold lists, so they are CPU only, with no Slang twin: 'CurveCells'
+// keeps each cell's frame, found once, and 'PathCurve' is a sculpt.Path with
+// sculpt's rotation-minimizing frames. Over the same frames
+// 'repeatAlongCells' is 'repeatAlong' bit for bit.
+
+// Whether a copy whose ball of radius 'b' is 'dd' away (squared) from p
+// can be nearer than 'd' (sdfcore's, which is private there)
+fn mayBeNearer(dd f32, b f32, d f32) Bool {
+  imm lim = d + b;
+  lim > 0. and dd < lim * lim;
+}
+
+// ---- Any curve cut into cells, its frames found once ----
+
+// A curve cut into 'count' cells, each cell's frame found once and kept,
+// so a repetition along it asks the curve nothing per evaluation: for a
+// PathCurve, whose frames are found by search and blended, many times
+// faster than 'repeatAlong'. CPU only (it holds a list)
+pub struct CurveCells {
+  pub count i32;
+  pub frames List[CurveFrame];
+}
+
+// The cells of 'curve', 'count' of them: copy k's frame at (k + 1/2)
+// length / count, as 'repeatAlong' finds it
+pub fn curveCells[C Curve](curve &C, count i32) CurveCells {
+  imm n = if count < 1 { 1; } else { count; };
+  imm len = curve.length();
+  mut frames = List[CurveFrame].withCapacity(usize.from(n));
+  mut k = 0;
+  while k < n {
+    frames.push(curve.frameAt((f32.from(k) + 0.5) / f32.from(n) * len));
+    k = k + 1;
+  }
+  new CurveCells(n, frames);
+}
+
+// 'repeatAlong' over cells already found: the same copies in the same
+// frames, so the same result, bit for bit
+pub fn repeatAlongCells[S Repeated](cells &CurveCells, shape &S, p Vec3) f32 {
+  imm n = cells.count;
+  mut best f32 = 3.4028235e38;
+  mut bestK = 0;
+  mut k = 0;
+  while k < n {
+    imm o = cells.frames[usize.from(k)].origin - p;
+    imm dd = dot3(o, o);
+    if dd < best {
+      best = dd;
+      bestK = k;
+    }
+    k = k + 1;
+  }
+  imm bu = (f32.from(bestK) + 0.5) / f32.from(n);
+  mut d = shape.repeatedDistance(cells.frames[usize.from(bestK)].toLocal(p), bestK, bu);
+  k = 0;
+  while k < n {
+    if k != bestK {
+      imm u = (f32.from(k) + 0.5) / f32.from(n);
+      imm frame = *cells.frames[usize.from(k)];
+      imm o = frame.origin - p;
+      if mayBeNearer(dot3(o, o), shape.bound(k, u), d) {
+        d = minf(d, shape.repeatedDistance(frame.toLocal(p), k, u));
+      }
+    }
+    k = k + 1;
+  }
+  d;
+}
+
+// ---- PathCurve ----
+
+// A sculpt.Path as a curve: its points joined by straight pieces, its
+// frames sculpt's rotation-minimizing ones, blended along each piece as
+// sculpt's sweep blends them. The path is taken as open. The nearest point
+// is found by trying every piece, a frame by bisecting the pieces' lengths:
+// fine for tens of points, on the CPU. A repetition along it is fastest
+// over its cells found once ('curveCells', 'repeatAlongCells').
+pub struct PathCurve is Curve {
+  pub frames List[CurveFrame];
+  pub distances List[f32];
+  pub total f32;
+
+  pub fn fromPath(path &sculpt.Path) PathCurve {
+    imm fs = path.frames();
+    imm ds = path.distances();
+    mut frames = List[CurveFrame].withCapacity(fs.len());
+    mut i = 0usize;
+    while i < fs.len() {
+      imm f = *fs[i];
+      frames.push(new CurveFrame(f.origin, f.normal, f.binormal, f.tangent));
+      i = i + 1usize;
+    }
+    mut distances = List[f32].withCapacity(ds.len());
+    i = 0usize;
+    while i < ds.len() {
+      distances.push(*ds[i]);
+      i = i + 1usize;
+    }
+    imm total = if ds.len() > 0usize { *ds[ds.len() - 1usize]; } else { 0.; };
+    new PathCurve(frames, distances, total);
+  }
+
+  pub fn length(self &) f32 { total; }
+
+  pub fn nearest(self &, p Vec3) f32 {
+    imm n = frames.len();
+    if n < 2usize { return 0.; }
+    mut best f32 = 3.4028235e38;
+    mut bestS f32 = 0.;
+    mut i = 0usize;
+    while i + 1usize < n {
+      imm a = frames[i].origin;
+      imm b = frames[i + 1usize].origin;
+      imm ab = b - a;
+      imm abab = dot3(ab, ab);
+      imm t = if abab > 0. { clampf(dot3(p - a, ab) / abab, 0., 1.); } else { 0.; };
+      imm q = a + ab * t;
+      imm dd = dot3(p - q, p - q);
+      if dd < best {
+        best = dd;
+        bestS = *distances[i] + (*distances[i + 1usize] - *distances[i]) * t;
+      }
+      i = i + 1usize;
+    }
+    bestS;
+  }
+
+  // The frame at arc length s, blended between the frames at the ends of
+  // the piece holding it (sculpt's frameAtDistance); beyond the ends, the
+  // end frames carried along their tangents
+  pub fn frameAt(self &, s f32) CurveFrame {
+    imm n = frames.len();
+    imm first = *frames[0usize];
+    if n == 1usize or total <= 0. {
+      return new CurveFrame(first.origin + first.tangent * s, first.normal, first.binormal, first.tangent);
+    }
+    if s <= 0. {
+      return new CurveFrame(first.origin + first.tangent * s, first.normal, first.binormal, first.tangent);
+    }
+    imm lastF = *frames[n - 1usize];
+    if s >= total {
+      return new CurveFrame(lastF.origin + lastF.tangent * (s - total), lastF.normal, lastF.binormal, lastF.tangent);
+    }
+    // The first piece ending beyond s (the last if none), by bisection: the
+    // distances never fall
+    mut i = 0usize;
+    mut hi = n - 2usize;
+    while i < hi {
+      imm mid = (i + hi) / 2usize;
+      if *distances[mid + 1usize] <= s { i = mid + 1usize; } else { hi = mid; }
+    }
+    imm a = *frames[i];
+    imm b = *frames[i + 1usize];
+    imm seg = *distances[i + 1usize] - *distances[i];
+    imm f = if seg > 0. { (s - *distances[i]) / seg; } else { 0.; };
+    imm t = a.tangent.lerp(b.tangent, f).normalize();
+    imm nl = a.normal.lerp(b.normal, f);
+    imm nr = (nl - t * dot3(t, nl)).normalize();
+    new CurveFrame(a.origin.lerp(b.origin, f), nr, t.cross(nr), t);
+  }
+}

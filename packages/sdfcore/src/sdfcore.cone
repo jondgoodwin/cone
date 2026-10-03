@@ -1,0 +1,84 @@
+// The sdfcore package: the GPU-safe half of signed distance fields, shapes
+// as functions from a point to its distance from the surface (negative
+// inside), pure arithmetic on f32s and geomath's Vec3s. The sdf package is
+// its CPU side (the horn, curves that hold lists, a function as a shape, the
+// mesher), and re-exports every public name here, so a program that writes
+// 'import sdf use *' sees both; code meant for the GPU imports this package
+// alone. A program reaches it with 'import sdfcore', and gets:
+//
+// - Primitives (primitive.cone): 'sphere', 'box', 'roundBox', 'capsule',
+//   'torus', 'cylinder', 'cone', 'roundCone', 'taperedCapsule' (the round
+//   cone between any two points: a bone, a branch, a spike), 'triangle' (a
+//   flat sheet, thickened into a membrane or a panel), 'membrane' (the
+//   sheet stretched between two spars, bowed and scalloped), 'plane',
+//   'ellipsoid'.
+// - Operators on distances (operator.cone): 'union', 'subtract',
+//   'intersect', their smooth forms 'smoothUnion', 'smoothSubtract',
+//   'smoothIntersect' (Quilez's quadratic smooth minimum) and
+//   'smoothUnionBlend' (with the material blend factor); 'onion', 'round',
+//   'exclusive'.
+// - Operators on the point (domain.cone): 'translate', 'rotate',
+//   'scalePoint' with 'scaleDistance', 'Placement' (all three);
+//   'mirrorX', 'mirrorY', 'mirrorZ', 'mirror'; 'repeat', 'repeatLimited';
+//   'elongate'.
+// - hg_sdf's fillets (fillet.cone, MIT): 'unionRound', 'intersectRound',
+//   'subtractRound', 'unionChamfer', 'unionColumns', 'unionStairs',
+//   'intersectStairs', 'subtractStairs', 'pipe', 'groove', 'tongue',
+//   'engrave'.
+// - Repetition along a curve (curve.cone): the Curve and Repeated traits,
+//   'repeatAlong' (a shape repeated in the curve's rotation-minimizing
+//   frames, the exact union of every copy), 'Arc' (a circular arc, with
+//   'project' and 'cells'), and 'repeatAlongArc' with 'arcCellFrame', the
+//   same union on an arc, its cells stepped round with no trigonometry.
+// - The Shape trait (shape.cone), and 'gradient' and 'normal' by finite
+//   differences, generic over any Shape.
+// - Detail from noise (detail.cone): 'displace' (not a distance) and
+//   'fbmDetail' (Quilez's fBm of spheres, a bound), with 'latticeSpheres'.
+//
+// Numbers are f32, points geomath's Vec3. A shape is written as code:
+//
+//   fn scene(p Vec3) f32 {
+//     imm body = sphere(p, 1.);
+//     imm hole = cylinder(rotate(p, turn), 2., 0.4);
+//     smoothSubtract(body, hole, 0.1);
+//   }
+//
+// EXACT AND BOUNDED. A distance is exact when it is the Euclidean distance
+// to the surface, a bound when it never exceeds it (a sphere tracer stays
+// safe, and a mesher finds the same surface). Each function's comment says
+// which it gives; sdf's tests sample the gradient's length (at most 1 for
+// either) for those that claim one.
+//
+// GPU-SAFE. Nothing here allocates, holds a list or an owning reference,
+// makes a function or virtual reference, recurses, chooses a reference at
+// run time, or uses a number wider or narrower than 32 bits; the generic
+// functions (over Shape, Curve, Repeated) are copied for each shape, so no
+// trait is ever reached through a virtual reference. So the package can be
+// marked for the GPU once congo reads that marking, and the same source
+// stays the CPU's. What still stands in the way of running it there: absf
+// and floorf call the C library (scalar.cone), as does
+// geomath's atan2, which 'Arc.project' calls; and geomath and noise, which
+// it imports, are not themselves split or marked. 'Arc.make', 'frameAt'
+// and 'cells' take sin and cos, and 'project' atan2, whose GPU results
+// differ from the CPU's in the last bits (sdf's README, "CPU and GPU
+// agree").
+//
+// sdf.slang, in the sdf package, holds these same functions for shaders
+// (and sdf's horn), kept in step by hand and checked by sdf's parity test.
+//
+// Its files are one module, and only this one, the root, imports:
+//
+//   scalar.cone     helpers, Blend, CurveFrame
+//   primitive.cone  the primitives
+//   operator.cone   union, subtraction, intersection, smooth and hard; onion, round
+//   domain.cone     translation, rotation, scale, mirrors, repetition, elongation
+//   fillet.cone     hg_sdf's fillets (MIT)
+//   curve.cone      Curve, Repeated, repeatAlong, Arc, ArcCells, repeatAlongArc
+//   shape.cone      Shape, gradient, normal
+//   detail.cone     displace, latticeSpheres, fbmDetail
+
+mod sdfcore;
+
+import libc;
+import geomath use *;
+import noise;

@@ -1,0 +1,53 @@
+// ======== Scalar helpers, and the two small types the others share ========
+//
+// Every helper is written as sdf.slang writes it, so a GPU compiled without
+// contraction rounds as the CPU does. 'absf' clears the sign bit (as a GPU's
+// abs does, -0 to +0), which 'if a < 0 { -a }' would not.
+//
+// 'absf' and 'floorf' call the C library's fabsf and floorf, the only calls
+// into libc this package makes itself ('Arc.project' takes geomath's atan2,
+// which is the C library's too): on the GPU they need the compiler to give
+// f32 a built-in abs, floor and atan2 (as it gives sqrt, sin and cos),
+// which it does not yet. They are private (sdf keeps its own copy of those it uses), so a
+// program importing the package with 'use *' gets none of these names.
+
+fn minf(a f32, b f32) f32 { if a < b { a; } else { b; }; }
+fn maxf(a f32, b f32) f32 { if a > b { a; } else { b; }; }
+fn absf(a f32) f32 { libc.fabsf(a); }
+fn clampf(v f32, lo f32, hi f32) f32 { minf(maxf(v, lo), hi); }
+fn floorf(a f32) f32 { libc.floorf(a); }
+fn sqrtf(a f32) f32 { a.sqrt(); }
+
+// x - y floor(x / y), GLSL's mod, which hg_sdf's operators use
+fn modf(x f32, y f32) f32 { x - y * floorf(x / y); }
+
+// The length of (x, y) and of (x, y, z), summed in this order
+fn len2(x f32, y f32) f32 { sqrtf(x * x + y * y); }
+fn len3(v Vec3) f32 { sqrtf(v.x * v.x + v.y * v.y + v.z * v.z); }
+fn dot3(a Vec3, b Vec3) f32 { a.x * b.x + a.y * b.y + a.z * b.z; }
+fn cross3(a Vec3, b Vec3) Vec3 { new Vec3(a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x); }
+
+// A distance and a blend factor: what 'smoothUnionBlend' returns. 'blend'
+// is how much of the second shape's material to use, from 0 (all the
+// first's) to 1 (all the second's); 0.5 where the two are equally near.
+pub struct Blend {
+  pub distance f32;
+  pub blend f32;
+}
+
+// A frame along a curve: its point, the unit tangent, and the unit normal
+// and binormal across it, (normal, binormal, tangent) right-handed, as
+// sculpt's Frame. A point's local coordinates in it are x along the normal,
+// y along the binormal and z along the tangent.
+pub struct CurveFrame {
+  pub origin Vec3;
+  pub normal Vec3;
+  pub binormal Vec3;
+  pub tangent Vec3;
+
+  // 'p' in the frame's coordinates
+  pub fn toLocal(self, p Vec3) Vec3 {
+    imm d = p - origin;
+    new Vec3(dot3(d, normal), dot3(d, binormal), dot3(d, tangent));
+  }
+}
