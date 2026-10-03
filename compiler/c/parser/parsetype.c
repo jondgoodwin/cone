@@ -181,6 +181,8 @@ INode *parseTypeName(ParseState *parse) {
         FnCallNode *fncall = newFnCallNode(node, 8);
         fncall->flags |= FlagIndex;
         lexNextToken();
+        int svinlist = parse->inlist;
+        parse->inlist = 1;
         if (!lexIsToken(RBracketToken)) {
             nodesAdd(&fncall->args, parseTypeReq(parse, "'['"));
             while (lexIsToken(CommaToken)) {
@@ -188,6 +190,7 @@ INode *parseTypeName(ParseState *parse) {
                 nodesAdd(&fncall->args, parseTypeReq(parse, "','"));
             }
         }
+        parse->inlist = svinlist;
         parseCloseTok(RBracketToken);
         node = (INode *)fncall;
     }
@@ -1203,6 +1206,11 @@ static void parseParmInferSelf(ParseState *parse, VarDclNode *parm, INode *at) {
 // is read that way here, and so is a name followed by '.' or by type arguments
 // ('geomath.Vec3', 'List[i32]'). A lone name ('&fn(Vec3) f32') reads as a name
 // until parseFnSigSettle knows whether a body follows.
+//
+// Several return types are separated by commas, 'fn ceil(x i32) i32, i32',
+// only where the signature is not inside a list (ParseState.inlist). Inside
+// one, a parameter list above all, the comma after a return type continues the
+// list: '(f &fn(u32) u32, x u32)' is two parameters.
 INode *parseFnSig(ParseState *parse, int reftype) {
     FnSigNode *fnsig;
     uint16_t parmnbr = 0;
@@ -1221,10 +1229,14 @@ INode *parseFnSig(ParseState *parse, int reftype) {
     parse->lifesig = fnsig;
     StructNode *svlifestruct = parse->lifestruct;
     parse->lifestruct = NULL;
+    // Whether this signature is itself inside a list, which decides below
+    // whether a comma after its return type is its own
+    int svinlist = parse->inlist;
 
     // Process parameter declarations
     if (lexIsToken(LParenToken)) {
         lexNextToken();
+        parse->inlist = 1;
         while (lexIsToken(PermToken) || lexIsToken(IdentToken) || (reftype && parseIsTypeStart())) {
             VarDclNode *parm;
             if (reftype && !lexIsToken(PermToken) && (!lexIsToken(IdentToken) || lexIdentOpensType())) {
@@ -1250,6 +1262,7 @@ INode *parseFnSig(ParseState *parse, int reftype) {
                 break;
             lexNextToken();
         }
+        parse->inlist = svinlist;
         parseCloseTok(RParenToken);
     }
     else
@@ -1260,8 +1273,11 @@ INode *parseFnSig(ParseState *parse, int reftype) {
     // declared, so nothing read here may claim it as its own.
     parse->inrettype = 1;
     if ((fnsig->rettype = parseType(parse)) != unknownType) {
-        // Handle multiple return types
-        if (lexIsToken(CommaToken)) {
+        // Handle multiple return types: 'fn ceil(x i32) i32, i32'. Inside a
+        // list -- a parameter list, a tuple, arguments -- the comma continues
+        // the list instead, so a signature there returning several values
+        // parenthesises them: 'apply(f &fn(u32) (u32, u32), x u32)'.
+        if (!parse->inlist && lexIsToken(CommaToken)) {
             TupleNode *rettype = newTupleNode(4);
             nodesAdd(&rettype->elems, fnsig->rettype);
             while (lexIsToken(CommaToken)) {

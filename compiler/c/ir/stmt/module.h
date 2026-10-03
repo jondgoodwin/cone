@@ -43,6 +43,7 @@ typedef struct ModuleNode {
     struct ModuleNode *generic; // An instance of a generic module: the generic it was cloned from; else NULL
     Nodes *instdeps;         // An instance: the modules it follows in the init order besides its generic (pgmInstanceOrder); else NULL
     DclSpans *spans;         // Where each of its statements sits in its files, in the order parsed (dclspan.h); NULL for none
+    uint16_t holdsexpanded;  // Whether it declares a body an importer expands (export.c): 0 not yet asked, 1 no, 2 yes
 } ModuleNode;
 
 ModuleNode *newModuleNode();

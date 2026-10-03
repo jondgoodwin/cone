@@ -435,9 +435,12 @@ enum ErrorCode {
     ErrorLifetimeArgs = 1234,   // A use naming lifetimes its type does not declare, or not as many as it declares
     ErrorLifetimeOr = 1235,     // A lifetime comparison under 'or' or 'not' in a 'where' clause: lifetimes are never instanced, so only 'and' joins one
 
+    // A type's members (ir/stmt/fielddcl.c)
+    ErrorPubFieldPrivType = 1236, // A 'pub' field whose type names a type private to its module: code outside the module would reach into a type it cannot name
+
     // Literals and implicit coercion
-    ErrorNullNotPtr = 1236,     // A 'null' wanted as something other than a raw pointer, or where nothing says which raw pointer type it is
-    ErrorBoolNotNbr = 1237,     // A Bool where a number is wanted: a Bool converts to a number only explicitly, 'T.from(b)'
+    ErrorNullNotPtr = 1237,     // A 'null' wanted as something other than a raw pointer, or where nothing says which raw pointer type it is
+    ErrorBoolNotNbr = 1238,     // A Bool where a number is wanted: a Bool converts to a number only explicitly, 'T.from(b)'
 
     // Warnings
     WarnCode = 3000,

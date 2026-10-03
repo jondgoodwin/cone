@@ -38,6 +38,7 @@ ModuleNode *newModuleNode() {
     mod->generic = NULL;
     mod->instdeps = NULL;
     mod->spans = NULL;
+    mod->holdsexpanded = 0;
     return mod;
 }
 

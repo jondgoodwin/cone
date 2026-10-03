@@ -59,7 +59,8 @@ int genericInferStructParms(TypeCheckState *pstate, Nodes *genparms, StructNode 
         FnCallNode *srcgencall, FnCallNode *inferredgencall) {
 
     // Reorder the literal's arguments to match the type's field order
-    if (typeLitStructReorder(srcgencall, genstruct, (INode*)genstruct == pstate->typenode) == 0)
+    if (typeLitStructReorder(srcgencall, genstruct,
+            (INode*)genstruct == pstate->typenode || structSeesPrivate(pstate, (INode*)genstruct)) == 0)
         return 0;
 
     // Iterate through arguments and expected parms

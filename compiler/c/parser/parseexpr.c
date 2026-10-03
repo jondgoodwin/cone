@@ -40,6 +40,8 @@ static INode *parseContentsAfter(ParseState *parse, INode *node);
 INode *parseArrayLit(ParseState *parse) {
     ArrayNode *array = newArrayNode();
     lexNextToken();
+    int svinlist = parse->inlist;
+    parse->inlist = 1;
 
     // Gather comma-separated expressions that are likely elements or element type
     while (1) {
@@ -62,6 +64,7 @@ INode *parseArrayLit(ParseState *parse) {
         };
         array->elems = elems;
     }
+    parse->inlist = svinlist;
     parseCloseTok(RBracketToken);
 
     return (INode *)array;
@@ -186,7 +189,10 @@ INode *parseTerm(ParseState *parse) {
         {
             INode *node;
             lexNextToken();
+            int svinlist = parse->inlist;
+            parse->inlist = 1;
             node = entryparen ? parseEntries(parse) : parseAnyExpr(parse);
+            parse->inlist = svinlist;
             parseCloseTok(RParenToken);
             return node;
         }
@@ -230,6 +236,8 @@ Nodes *parseArgs(ParseState *parse) {
     int closetok = lex->toktype == LBracketToken ? RBracketToken : RParenToken;
     lexNextToken();
     Nodes *args = newNodes(8);
+    int svinlist = parse->inlist;
+    parse->inlist = 1;
     if (!lexIsToken(closetok)) {
         nodesAdd(&args, parseArg(parse));
         while (lexIsToken(CommaToken)) {
@@ -237,6 +245,7 @@ Nodes *parseArgs(ParseState *parse) {
             nodesAdd(&args, parseArg(parse));
         }
     }
+    parse->inlist = svinlist;
     parseCloseTok(closetok);
     return args;
 }
@@ -311,7 +320,10 @@ static int parseLifeNamed(ParseState *parse, Name *name, INode *at) {
 // not be named (parseLifeNamed), or on a type not named alone, it is refused.
 static Nodes *parseIndexArgsIn(ParseState *parse, FnCallNode *fncall);
 static Nodes *parseIndexArgs(ParseState *parse, FnCallNode *fncall) {
+    int svinlist = parse->inlist;
+    parse->inlist = 1;
     Nodes *args = parseIndexArgsIn(parse, fncall);
+    parse->inlist = svinlist;
     uint32_t nlifes = 0;
     INode **nodesp;
     uint32_t cnt;

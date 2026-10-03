@@ -1,0 +1,47 @@
+// A type's private members are private to its module, and a module is every
+// file of its folder: code in one file reaches the private fields, methods and
+// init of a type another file declares, through any value, both ways. This is
+// the folder's designated file; ledger.cone, beside it with no 'mod' line, is
+// more of the same module. A sister or a submodule is another module, and is
+// refused (module_privacy_typecheck).
+//
+// Every value is printed and worked out beside its line, so a member read from
+// the wrong value shows as a wrong number.
+
+mod module_privacy;
+
+import stdio use *;
+
+fn show(label &[]u8, n i32) {
+  printStr(label);
+  printStr(" = ");
+  printInt(i64.from(n));
+  printStr("\n");
+}
+
+// Reached from ledger.cone
+struct Vault {
+  pub id i32;
+  secret i32;
+  fn peek(self &) i32 { secret * 3; }
+}
+
+struct Sealed {
+  pub n i32;
+  fn init(self &new, a i32, b i32) { *self = new Sealed(n: a * b); }
+}
+
+fn main() {
+  imm v = forge();                            // Vault(1, 4), built in ledger.cone
+  show("other-file-builds-private", v.secret);  // 4
+  show("other-file-reads-private", audit(&v));  // 4 + 4 * 3 = 16
+  imm c = new Clerk(10);
+  show("other-file-type-reaches-private", c.tally(&v));  // 4 * 10 + 12 = 52
+  show("other-file-calls-private-init", seal().n);  // 2 * 5 = 10
+
+  // And this file reaching ledger.cone's type
+  mut l = new Ledger(7);
+  show("this-file-reads-private", l.total);     // 7
+  l.bump();
+  show("this-file-calls-private", l.total);     // 8
+}
