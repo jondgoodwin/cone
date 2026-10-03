@@ -12,6 +12,7 @@ struct Package {
   pub lone Bool;
   pub libraries List[String];  // [link] libraries
   pub linkPaths List[String];  // [link] paths, absolute
+  pub runtime List[String];    // [link] runtime: DLLs, bare names
 
   pub fn label(self &) String {
     if version.isEmpty() { return name.copy(); }
@@ -28,7 +29,7 @@ struct Package {
 
 fn emptyPackage() Package {
   new Package(String.empty(), String.empty(), String.empty(), String.empty(), String.empty(),
-    false, List[String].empty(), List[String].empty());
+    false, List[String].empty(), List[String].empty(), List[String].empty());
 }
 
 fn copyStrings(from &List[String]) List[String] {
@@ -113,20 +114,22 @@ fn manifestError(file &[]u8, m String) Result[Package, String] {
 }
 
 // [link]: the C libraries a program using this package must be linked with,
-// and folders to search for them, relative to the package folder. Into pkg;
+// folders to search for them, relative to the package folder, and the DLLs
+// the program needs beside it to run, which Congo copies there. Into pkg;
 // "" or what is wrong.
 fn readLink(file &[]u8, table &toml.Table, pkg &mut Package) String {
   imm keys = table.keys();
   mut i = 0usize;
   while i < keys.len() {
     imm key = keys[i].view();
-    if key != "libraries" and key != "paths" {
-      return cat(file, ": '", key, "' is not a [link] key; the keys are libraries and paths");
+    if key != "libraries" and key != "paths" and key != "runtime" {
+      return cat(file, ": '", key, "' is not a [link] key; the keys are libraries, paths and runtime");
     }
     i = i + 1usize;
   }
   mut libraries = List[String].empty();
   mut paths = List[String].empty();
+  mut runtime = List[String].empty();
   if table.has("libraries") {
     match table.getStrings("libraries") {
       case mut l Some { libraries <=> l.value; }
@@ -139,11 +142,25 @@ fn readLink(file &[]u8, table &toml.Table, pkg &mut Package) String {
       case is None { return cat(file, ": [link] paths must be a list of strings"); }
     }
   }
+  if table.has("runtime") {
+    match table.getStrings("runtime") {
+      case mut l Some { runtime <=> l.value; }
+      case is None { return cat(file, ": [link] runtime must be a list of strings"); }
+    }
+  }
   i = 0usize;
   while i < libraries.len() {
     imm lib = libraries[i].view();
     if not isLibraryName(lib) {
       return cat(file, ": [link] library \"", lib, "\" must be the library's bare name, such as \"SDL3\": no folder, prefix or suffix, which Congo adds for the linker (and paths says where to look)");
+    }
+    i = i + 1usize;
+  }
+  i = 0usize;
+  while i < runtime.len() {
+    imm dll = runtime[i].view();
+    if not isLibraryName(dll) {
+      return cat(file, ": [link] runtime \"", dll, "\" must be the DLL's bare name, such as \"SDL3\" for SDL3.dll: no folder or suffix, which Congo adds");
     }
     i = i + 1usize;
   }
@@ -160,6 +177,7 @@ fn readLink(file &[]u8, table &toml.Table, pkg &mut Package) String {
     i = i + 1usize;
   }
   pkg.libraries = libraries;
+  pkg.runtime = runtime;
   String.empty();
 }
 
@@ -238,7 +256,7 @@ fn readManifest(file &[]u8) Result[Package, String] {
     if not wrong.isEmpty() { return Error[Package, String][wrong]; }
   }
   elif doc.root.has("link") {
-    return manifestError(file, String.from("[link] must be a table, with libraries and paths"));
+    return manifestError(file, String.from("[link] must be a table, with libraries, paths and runtime"));
   }
   imm folder = parentOf(file);
   pkg.root = resolved(folder.view());

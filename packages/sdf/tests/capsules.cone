@@ -1,0 +1,161 @@
+// Capsules: a view of many tapered capsules, smooth-unioned. The capsules
+// are kept here in Lists, as an owner keeps them, with no grid (a grid's
+// builder and its checks are morphogen's CapsuleSet's, in its tests).
+// Only a failure prints.
+//
+// - One capsule: 'taperedCapsule' to 1e-6 wherever that is under the cap
+//   (reach - 12 x blend), the cap beyond it.
+// - Chains: two capsules end to end in one chain have no bulge at the
+//   joint; as two chains, the joint swells by k.
+// - Skipping is exact: 'distance' (no grid: every capsule asked, those
+//   whose bounding balls are too far skipped) gives the bits of the field
+//   written out plainly (the hard union m of every capsule; the smooth
+//   union from m + 4k of every chain nearer than m + 8k, each chain the
+//   hard union of its capsules; held to the cap), for 400 random capsules
+//   in chains of three, at 2048 hashed points; and it lies between m - 4k
+//   and m wherever it is under the cap.
+
+mod capsules;
+
+import testing use *;
+import geomath use *;
+import collections use *;
+import noise;
+import sdf use *;
+
+fn v(x f32, y f32, z f32) Vec3 { new Vec3(x, y, z); }
+fn absf(a f32) f32 { if a < 0. { 0. - a; } else { a; }; }
+fn minf(a f32, b f32) f32 { if a < b { a; } else { b; }; }
+
+fn hashed(i i32, salt u32, lo Vec3, hi Vec3) Vec3 {
+  imm h = noise.hash2(i, 0, salt);
+  imm s = hi - lo;
+  v(lo.x + s.x * noise.toUnit(h.x), lo.y + s.y * noise.toUnit(h.y), lo.z + s.z * noise.toUnit(h.z));
+}
+
+// Capsules kept as an owner keeps them, with no grid
+struct Owner {
+  pub a List[Vec3];
+  pub b List[Vec3];
+  pub ra List[f32];
+  pub rb List[f32];
+  pub chain List[u32];
+  pub centre List[Vec3];
+  pub radius List[f32];
+  pub none List[u32];
+  pub blend f32;
+  pub reach f32;
+
+  pub fn make(blend f32, reach f32) Owner {
+    new Owner(List[Vec3].empty(), List[Vec3].empty(), List[f32].empty(), List[f32].empty(), List[u32].empty(),
+      List[Vec3].empty(), List[f32].empty(), List[u32].empty(), blend, reach);
+  }
+
+  // A capsule in chain 'chain'
+  pub fn push(self &mut, from Vec3, to Vec3, fromRadius f32, toRadius f32, chain u32) {
+    self.a.push(from);
+    self.b.push(to);
+    self.ra.push(fromRadius);
+    self.rb.push(toRadius);
+    self.chain.push(chain);
+    self.centre.push(capsuleCentre(from, to));
+    self.radius.push(capsuleBallRadius(from, to, fromRadius, toRadius));
+  }
+
+  pub fn view(self &) Capsules {
+    new Capsules(a.view(), b.view(), ra.view(), rb.view(), chain.view(), centre.view(), radius.view(),
+      none.view(), none.view(), CapsuleGrid.none(), blend, reach);
+  }
+}
+
+// The hard union of every capsule
+fn hard(c &Capsules, p Vec3) f32 {
+  mut m f32 = 3.4028235e38;
+  mut k = 0usize;
+  while k < c.count() {
+    m = minf(m, taperedCapsule(p, c.a[k], c.b[k], c.ra[k], c.rb[k]));
+    k = k + 1usize;
+  }
+  m;
+}
+
+// The field written out plainly, every capsule asked: each chain's hard
+// union, smooth-unioned from m + 4k if nearer than m + 8k
+fn plain(c &Capsules, p Vec3) f32 {
+  imm m = hard(c, p);
+  mut d = m + 4. * c.blend;
+  mut k = 0usize;
+  while k < c.count() {
+    mut e = taperedCapsule(p, c.a[k], c.b[k], c.ra[k], c.rb[k]);
+    while k + 1usize < c.count() and c.chain[k + 1usize] == c.chain[k] {
+      k = k + 1usize;
+      e = minf(e, taperedCapsule(p, c.a[k], c.b[k], c.ra[k], c.rb[k]));
+    }
+    if e < m + 8. * c.blend { d = smoothUnion(d, e, c.blend); }
+    k = k + 1usize;
+  }
+  minf(d, c.cap());
+}
+
+fn one() {
+  imm a = v(0., 0., 0.);
+  imm b = v(1., 0.2, 0.);
+  mut o = Owner.make(0.01, 0.3);
+  o.push(a, b, 0.1, 0.04, 0u32);
+  imm c = o.view();
+  mut exact = true;
+  mut i = 0;
+  while i < 512 {
+    imm p = hashed(i, 5u32, v(-0.6, -0.6, -0.6), v(1.6, 0.8, 0.6));
+    imm want = minf(taperedCapsule(p, a, b, 0.1, 0.04), c.cap());
+    if absf(c.distance(p) - want) > 0.000001 { exact = false; }
+    i = i + 1;
+  }
+  expect(exact, "one capsule: taperedCapsule, capped");
+}
+
+fn chains() {
+  mut o = Owner.make(0.01, 1.);
+  o.push(v(0., 0., 0.), v(1., 0., 0.), 0.1, 0.1, 0u32);
+  o.push(v(1., 0., 0.), v(2., 0., 0.), 0.1, 0.1, 0u32);
+  expectFloat(f64.from(o.view().distance(v(1., 0.5, 0.))), 0.4d, 1e-6d, "a chain: no bulge at the joint");
+  mut s = Owner.make(0.01, 1.);
+  s.push(v(0., 0., 0.), v(1., 0., 0.), 0.1, 0.1, 0u32);
+  s.push(v(1., 0., 0.), v(2., 0., 0.), 0.1, 0.1, 1u32);
+  expectFloat(f64.from(s.view().distance(v(1., 0.5, 0.))), 0.39d, 1e-6d, "two chains: the joint swells by k");
+}
+
+fn skipping() {
+  mut o = Owner.make(0.02, 0.4);
+  mut i = 0;
+  while i < 400 {
+    imm a = hashed(i, 1u32, v(-1., -1., -1.), v(1., 1., 1.));
+    imm d = hashed(i, 2u32, v(-0.3, -0.3, -0.3), v(0.3, 0.3, 0.3));
+    imm r = hashed(i, 3u32, v(0.01, 0.01, 0.), v(0.05, 0.05, 0.));
+    o.push(a, a + d, r.x, r.y, u32.from(i / 3));
+    i = i + 1;
+  }
+  imm c = o.view();
+  mut same = true;
+  mut between = true;
+  i = 0;
+  while i < 2048 {
+    imm p = hashed(i, 9u32, v(-1.2, -1.2, -1.2), v(1.2, 1.2, 1.2));
+    imm got = c.distance(p);
+    if got != plain(&c, p) { same = false; }
+    if got < c.cap() {
+      imm m = hard(&c, p);
+      if got > m or got < m - 4. * c.blend { between = false; }
+    }
+    i = i + 1;
+  }
+  expect(same, "skipping far capsules leaves the bits");
+  expect(between, "between m - 4k and m");
+}
+
+fn main() i32 {
+  one();
+  chains();
+  skipping();
+  done();
+}

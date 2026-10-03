@@ -1,0 +1,68 @@
+// An overload name called before its candidates are declared, each returning
+// an instance of a generic type.
+//
+// A call through an overload name analyzes every candidate before selecting
+// one, as a call through a function's own name analyzes that function. A
+// candidate declared later in the module is otherwise still unchecked when
+// the call is: its parameters compare, but its return type is still the
+// generic type written, 'Box[i64]', not the instance it names, so the call's
+// value fitted neither a struct literal's field (1046) nor a return (1013).
+// Callers here are a method of a struct, a module function, and the
+// candidates themselves, calling each other through the name.
+
+mod core_overload_later;
+
+import stdio use *;
+
+struct Box[T] {
+  val T;
+}
+
+struct Small {n i64;}
+struct Large {n i64;}
+
+struct Holder {
+  box Box[i64];
+
+  // A struct literal's field, and a return, from a method
+  fn ofSmall(s Small) Holder {new Holder(boxed(s));}
+  fn largeBox(l Large) Box[f64] {boxed(l);}
+}
+
+// From a module function declared ahead of the candidates
+fn firstOf(s Small) i64 {
+  imm b Box[i64] = boxed(s);
+  b.val;
+}
+
+// Each candidate calls the other through the overload name
+fn boxSmall overload boxed(s Small) Box[i64] {
+  if s.n > 100 {
+    imm other Box[f64] = boxed(new Large(s.n));
+    return new Box[i64](i64.from(other.val));
+  }
+  new Box[i64](s.n * 2);
+}
+
+fn boxLarge overload boxed(l Large) Box[f64] {
+  if l.n < 0 {
+    imm other Box[i64] = boxed(new Small(-l.n));
+    return new Box[f64](f64.from(other.val));
+  }
+  new Box[f64](f64.from(l.n) + 0.5);
+}
+
+fn main() {
+  imm h = Holder.ofSmall(new Small(21));
+  printStr("method-literal = ");
+  printInt(h.box.val);
+  printStr("\nmethod-return = ");
+  printFloat(Holder.largeBox(new Large(3)).val);
+  printStr("\nmodule-fn = ");
+  printInt(firstOf(new Small(5)));
+  printStr("\nsmall-through-large = ");
+  printInt(boxed(new Small(200)).val);
+  printStr("\nlarge-through-small = ");
+  printFloat(boxed(new Large(-4)).val);
+  printStr("\n");
+}

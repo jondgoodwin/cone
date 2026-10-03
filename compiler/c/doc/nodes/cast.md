@@ -155,6 +155,19 @@ to a struct, which is not checked here at all, because `castBitsize` knows
 nothing of field layout, padding or alignment. That check is deferred to
 generation, where the data layout exists.
 
+**`usize` and `isize` are pointer-sized**, and a pointer's width is the
+target's, so no reinterpretation joins either of them to a fixed-width number
+(`i64`, `u32`, `f64`, ...) in either direction, even where the widths agree:
+`ErrorPtrSizedAs`, whose message names the conversion, `usize.from(x)` or
+`u64.from(x)`. That test comes before the size test, so what compiles for x64
+compiles for wasm32. The size test then decides the rest the same on every
+target, through the sentinel width `castBitsize` gives `usize`, `isize`, a
+pointer and a reference (twice it for a slice): `usize` and `isize` reinterpret
+as each other, keeping the bits (`-1isize as usize` is all ones), and as a raw
+pointer or a reference and back; a slice reinterprets as neither
+(`ErrorInvType`). Generation picks `ptrtoint`, `inttoptr` or a bitcast by the
+LLVM kinds, so it needs nothing of its own for them.
+
 **Convert** is a bound pattern's conversion (`FlagMatchBind`), the only one
 type check sees: an injected conversion is built already typed. It permits,
 and nothing else:
@@ -285,8 +298,8 @@ slice's or a virtual reference's first word, never the two-word value), and tagg
 ## Hazards
 
 - **`as` and `from` are not interchangeable.** `as` reinterprets and demands
-  equal size; a type's `from` converts the value. A reader who assumes C's
-  single cast will reach for the wrong one.
+  equal size on every target; a type's `from` converts the value. A reader who
+  assumes C's single cast will reach for the wrong one, `x as usize` above all.
 - **`FlagConvert` can be cleared during type check**, so the flag on a node
   after checking does not tell you what the author wrote.
 - **A pattern's root may be unbound until its `is` test is checked.** Anything

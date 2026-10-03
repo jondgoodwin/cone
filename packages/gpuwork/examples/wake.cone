@@ -1,0 +1,168 @@
+// How long a loop asleep in iocore's poll takes to learn that the GPU has
+// finished a job (Target.Loop), against a thread waiting on the job's frame
+// itself (Target.Here and 'waitFor'). Each round submits one small job (a
+// scramble of 64 words, read back) and times it from submit until the
+// waiting thread holds the answer; the rounds alternate between the two, a
+// frame ended after each. The GPU's own time is in both, so their
+// difference is the cost of the watcher thread, the post to the loop's port
+// and the loop's wake.
+//
+//   congo test wake --release, then run build\release\examples\wake\wake.exe
+//   (GPU_POWER_PREFERENCE=low-power for the integrated GPU)
+
+mod wake;
+
+import stdio use *;
+import libc;
+import collections use List;
+import time use Instant, Duration;
+import gpu use *;
+import gpuwork use *;
+import iocore;
+import diag use Histogram;
+
+const ROUNDS = 2000usize;
+
+fn preference() u32 {
+  imm env = libc.getenv(&"GPU_POWER_PREFERENCE" as *u8);
+  if (env as usize) != 0usize and libc.strcmp(env, &"low-power" as *u8) == 0i32 { return POWER_PREFERENCE_LOW_POWER; }
+  POWER_PREFERENCE_HIGH_PERFORMANCE;
+}
+
+fn scrambleJob(device &mut Device, kernel &Kernel, words &[]u32) Job {
+  mut job = Job.make(device);
+  imm input = job.give(upload(device, words));
+  imm output = job.give(zeroed(device, words.len));
+  job.dispatch(device, kernel, &[input, output], 1u32);
+  job.readback(device, output);
+  job;
+}
+
+fn main() i32 {
+  mut instance = Instance.create("gpuwork wake");
+  mut none = Surface.none();
+  mut adapter = instance.requestAdapter(&none, preference());
+  mut device = adapter.requestDevice();
+  if !device.isValid() {
+    printStr("no device\n");
+    return 1i32;
+  }
+  mut kernel = Kernel.make(&device, &SCRAMBLE_SPIRV, "scrambleMain", &[READ, READ_WRITE]);
+  mut words = List[u32].empty();
+  mut i = 0u32;
+  while i < 64u32 {
+    words.push(i * 2654435761u32);
+    i = i + 1u32;
+  }
+  mut lp = iocore.Loop.mustMake();
+  mut io = List[iocore.Completion].empty();
+  mut got = List[Completion].empty();
+  mut viaLoop = Histogram.make();
+  mut viaWait = Histogram.make();
+  mut wrong = 0u64;
+  {
+    mut works = Works.make();
+    mut r = 0usize;
+    while r < ROUNDS {
+      {
+        imm job = scrambleJob(&mut device, &kernel, words.view());
+        imm to = onLoop(&mut lp, iocore.Target.Here[1u64], 1u64);
+        imm t0 = Instant.now();
+        works.submit(&mut device, job, to);
+        while io.len() == 0usize { lp.poll(iocore.forever(), &mut io); }
+        imm t1 = Instant.now();
+        if r >= 50usize { viaLoop.record((t1 - t0).nanos()); }
+        if works.poll(&device, &mut got) != 1usize or !got[0usize].ok { wrong = wrong + 1u64; }
+        io.clear();
+        got.clear();
+        device.endFrame();
+      }
+      {
+        imm job = scrambleJob(&mut device, &kernel, words.view());
+        imm t0 = Instant.now();
+        imm ticket = works.submit(&mut device, job, Target.Here[2u64]);
+        works.waitFor(&mut device, ticket, &mut got);
+        imm t1 = Instant.now();
+        if r >= 50usize { viaWait.record((t1 - t0).nanos()); }
+        if got.len() != 1usize or !got[0usize].ok { wrong = wrong + 1u64; }
+        got.clear();
+      }
+      r = r + 1usize;
+    }
+  }
+  printStr(adapter.name.view());
+  printStr("\n");
+  viaLoop.printLine("submit to a loop woken in poll (Target.Loop)");
+  viaWait.printLine("submit to waitFor returning (Target.Here)   ");
+  printStr("rounds that went wrong: ");
+  printUInt(wrong);
+  printStr("\n");
+  0i32;
+}
+
+// spirv-begin ../tests/scramble.spv SCRAMBLE_SPIRV
+// Written by tools/shaders/shaders.py from scramble.slang (sha256 f417e9db249767784a627ff65e956378fe572ae652bd78b85494be07ce2d5746): do not edit.
+imm SCRAMBLE_SPIRV Array[u32, 365] = [
+  0x07230203u32, 0x00010500u32, 0x00280000u32, 0x00000053u32, 0x00000000u32, 0x00020011u32,
+  0x00000001u32, 0x000b000au32, 0x5f565053u32, 0x5f52484bu32, 0x726f7473u32, 0x5f656761u32,
+  0x66667562u32, 0x735f7265u32, 0x61726f74u32, 0x635f6567u32, 0x7373616cu32, 0x00000000u32,
+  0x0003000eu32, 0x00000000u32, 0x00000001u32, 0x000a000fu32, 0x00000005u32, 0x00000002u32,
+  0x61726373u32, 0x656c626du32, 0x6e69614du32, 0x00000000u32, 0x0000000cu32, 0x00000022u32,
+  0x00000014u32, 0x00060010u32, 0x00000002u32, 0x00000011u32, 0x00000040u32, 0x00000001u32,
+  0x00000001u32, 0x00030003u32, 0x0000000bu32, 0x00000001u32, 0x00070005u32, 0x00000009u32,
+  0x75727453u32, 0x72757463u32, 0x75426465u32, 0x72656666u32, 0x00000000u32, 0x00060006u32,
+  0x00000009u32, 0x00000000u32, 0x656d5f5fu32, 0x7265626du32, 0x00000030u32, 0x00040005u32,
+  0x0000000cu32, 0x64726f77u32, 0x00000073u32, 0x00070005u32, 0x00000020u32, 0x74535752u32,
+  0x74637572u32, 0x64657275u32, 0x66667542u32, 0x00007265u32, 0x00060006u32, 0x00000020u32,
+  0x00000000u32, 0x656d5f5fu32, 0x7265626du32, 0x00000030u32, 0x00050005u32, 0x00000022u32,
+  0x61726373u32, 0x656c626du32, 0x00000064u32, 0x00060005u32, 0x00000002u32, 0x61726373u32,
+  0x656c626du32, 0x6e69614du32, 0x00000000u32, 0x00040047u32, 0x0000000au32, 0x00000006u32,
+  0x00000004u32, 0x00030047u32, 0x00000009u32, 0x00000002u32, 0x00050048u32, 0x00000009u32,
+  0x00000000u32, 0x00000023u32, 0x00000000u32, 0x00040047u32, 0x0000000cu32, 0x00000021u32,
+  0x00000000u32, 0x00040047u32, 0x0000000cu32, 0x00000022u32, 0x00000000u32, 0x00030047u32,
+  0x0000000cu32, 0x00000018u32, 0x00040047u32, 0x00000014u32, 0x0000000bu32, 0x0000001cu32,
+  0x00040047u32, 0x0000001eu32, 0x00000006u32, 0x00000004u32, 0x00030047u32, 0x00000020u32,
+  0x00000002u32, 0x00050048u32, 0x00000020u32, 0x00000000u32, 0x00000023u32, 0x00000000u32,
+  0x00040047u32, 0x00000022u32, 0x00000021u32, 0x00000001u32, 0x00040047u32, 0x00000022u32,
+  0x00000022u32, 0x00000000u32, 0x00020013u32, 0x00000001u32, 0x00030021u32, 0x00000003u32,
+  0x00000001u32, 0x00040015u32, 0x00000007u32, 0x00000020u32, 0x00000000u32, 0x0003001du32,
+  0x0000000au32, 0x00000007u32, 0x0003001eu32, 0x00000009u32, 0x0000000au32, 0x00040020u32,
+  0x0000000bu32, 0x0000000cu32, 0x00000009u32, 0x0004002bu32, 0x00000007u32, 0x0000000du32,
+  0x00000004u32, 0x00040017u32, 0x00000011u32, 0x00000007u32, 0x00000003u32, 0x00040020u32,
+  0x00000013u32, 0x00000001u32, 0x00000011u32, 0x00020014u32, 0x00000016u32, 0x00040015u32,
+  0x0000001cu32, 0x00000020u32, 0x00000001u32, 0x0004002bu32, 0x0000001cu32, 0x0000001du32,
+  0x00000000u32, 0x00040020u32, 0x0000001eu32, 0x0000000cu32, 0x00000007u32, 0x0003001eu32,
+  0x00000020u32, 0x0000000au32, 0x00040020u32, 0x00000021u32, 0x0000000cu32, 0x00000020u32,
+  0x0004002bu32, 0x00000007u32, 0x00000030u32, 0x2c9277b5u32, 0x0004002bu32, 0x00000007u32,
+  0x00000032u32, 0xac564b05u32, 0x0004002bu32, 0x00000007u32, 0x00000034u32, 0x0000001cu32,
+  0x0004002bu32, 0x00000007u32, 0x00000039u32, 0x108ef2d9u32, 0x0004002bu32, 0x00000007u32,
+  0x0000003bu32, 0x00000016u32, 0x0004003bu32, 0x0000000bu32, 0x0000000cu32, 0x0000000cu32,
+  0x0004003bu32, 0x00000013u32, 0x00000014u32, 0x00000001u32, 0x0004003bu32, 0x00000021u32,
+  0x00000022u32, 0x0000000cu32, 0x0004002bu32, 0x00000007u32, 0x00000042u32, 0x00000000u32,
+  0x00050036u32, 0x00000001u32, 0x00000002u32, 0x00000000u32, 0x00000003u32, 0x000200f8u32,
+  0x00000004u32, 0x000300f7u32, 0x00000040u32, 0x00000000u32, 0x000300fbu32, 0x00000042u32,
+  0x00000041u32, 0x000200f8u32, 0x00000041u32, 0x00050044u32, 0x00000007u32, 0x00000008u32,
+  0x0000000cu32, 0x00000000u32, 0x0004003du32, 0x00000011u32, 0x00000012u32, 0x00000014u32,
+  0x00050051u32, 0x00000007u32, 0x00000015u32, 0x00000012u32, 0x00000000u32, 0x000500aeu32,
+  0x00000016u32, 0x00000017u32, 0x00000015u32, 0x00000008u32, 0x000300f7u32, 0x00000006u32,
+  0x00000000u32, 0x000400fau32, 0x00000017u32, 0x00000005u32, 0x00000006u32, 0x000200f8u32,
+  0x00000005u32, 0x000200f9u32, 0x00000040u32, 0x000200f8u32, 0x00000006u32, 0x0004003du32,
+  0x00000011u32, 0x0000001au32, 0x00000014u32, 0x00050051u32, 0x00000007u32, 0x0000001bu32,
+  0x0000001au32, 0x00000000u32, 0x00060041u32, 0x0000001eu32, 0x0000001fu32, 0x00000022u32,
+  0x0000001du32, 0x0000001bu32, 0x0004003du32, 0x00000011u32, 0x00000023u32, 0x00000014u32,
+  0x00050051u32, 0x00000007u32, 0x00000024u32, 0x00000023u32, 0x00000000u32, 0x00060041u32,
+  0x0000001eu32, 0x00000025u32, 0x0000000cu32, 0x0000001du32, 0x00000024u32, 0x0004003du32,
+  0x00000007u32, 0x00000026u32, 0x00000025u32, 0x0004003du32, 0x00000011u32, 0x00000027u32,
+  0x00000014u32, 0x00050051u32, 0x00000007u32, 0x00000028u32, 0x00000027u32, 0x00000000u32,
+  0x000500c6u32, 0x00000007u32, 0x00000029u32, 0x00000026u32, 0x00000028u32, 0x00050084u32,
+  0x00000007u32, 0x0000004au32, 0x00000029u32, 0x00000030u32, 0x00050080u32, 0x00000007u32,
+  0x0000004bu32, 0x0000004au32, 0x00000032u32, 0x000500c2u32, 0x00000007u32, 0x0000004cu32,
+  0x0000004bu32, 0x00000034u32, 0x00050080u32, 0x00000007u32, 0x0000004du32, 0x0000004cu32,
+  0x0000000du32, 0x000500c2u32, 0x00000007u32, 0x0000004eu32, 0x0000004bu32, 0x0000004du32,
+  0x000500c6u32, 0x00000007u32, 0x0000004fu32, 0x0000004eu32, 0x0000004bu32, 0x00050084u32,
+  0x00000007u32, 0x00000050u32, 0x0000004fu32, 0x00000039u32, 0x000500c2u32, 0x00000007u32,
+  0x00000051u32, 0x00000050u32, 0x0000003bu32, 0x000500c6u32, 0x00000007u32, 0x00000052u32,
+  0x00000051u32, 0x00000050u32, 0x0003003eu32, 0x0000001fu32, 0x00000052u32, 0x000200f9u32,
+  0x00000040u32, 0x000200f8u32, 0x00000040u32, 0x000100fdu32, 0x00010038u32
+];
+// spirv-end

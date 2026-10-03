@@ -169,7 +169,7 @@ fn lonePackage(given &[]u8) Result[Package, String] {
   }
   imm folder = parentOf(file.view());
   Ok[Package, String][new Package(name, String.empty(), String.from("executable"), folder, file.copy(), true,
-    List[String].empty(), List[String].empty())];
+    List[String].empty(), List[String].empty(), List[String].empty())];
 }
 
 // Write the package's build description into out and compile the package
@@ -395,6 +395,110 @@ fn moveAsideIfRunning(exe &[]u8) {
   }
 }
 
+// -------- runtime libraries: the DLLs a program needs beside it --------
+//
+// A package's [link] runtime list names the DLLs a program using it loads at
+// run time (SDL3, OpenSSL's libssl-3 and libcrypto-3). Every executable
+// Congo links gets the DLLs of every package of its build beside it, copied
+// into its folder: so a program inherits them from whatever it imports, at
+// any depth, and names nothing itself.
+
+// The fetched-dependencies folder: CONE_DEPS, else deps/ in the repository,
+// which tools/deps/fetch.py fills
+fn depsFolder(repo &[]u8) String {
+  imm named = envOr("CONE_DEPS", "");
+  if not named.isEmpty() {
+    imm p = winPath(named.view());
+    return resolved(p.view());
+  }
+  joined(repo, "deps");
+}
+
+// The folders an environment variable lists, ';'-separated, onto out
+fn envFolders(name &[]u8, out &mut List[String]) {
+  imm listed = envOr(name, "");
+  imm entries = splitText(listed.view(), ';');
+  mut i = 0usize;
+  while i < entries.len() {
+    if not entries[i].isEmpty() { out.push(entries[i].copy()); }
+    i = i + 1usize;
+  }
+}
+
+// Where a runtime DLL is looked for, in order: the build's [link] paths, in
+// the order the linker is given them; each folder in the fetched-
+// dependencies folder, by name; the folders LIB lists, where an import
+// library's own DLL usually sits beside it (SDL3's development kit); then
+// the folders PATH lists. The first copy found is the one copied.
+fn runtimeFolders(repo &[]u8, paths &List[String]) List[String] {
+  mut folders = copyStrings(paths);
+  imm deps = depsFolder(repo);
+  if fs.isDir(deps.view()) {
+    mut entries = List[fs.DirEntry].empty();
+    match fs.readDir(deps.view()) {
+      case mut ok Ok { entries <=> ok.value; }
+      case is Error {}
+    }
+    mut i = 0usize;
+    while i < entries.len() {
+      if fs.isDir(entries[i].path.view()) { folders.push(entries[i].path.copy()); }
+      i = i + 1usize;
+    }
+  }
+  envFolders("LIB", &mut folders);
+  envFolders("PATH", &mut folders);
+  folders;
+}
+
+// The DLL a [link] runtime list names, where runtimeFolders finds it first;
+// one that is nowhere is an error naming it and the package that asked
+fn findRuntime(repo &[]u8, name &[]u8, pkgName &[]u8, folders &List[String], paths &List[String]) Result[String, String] {
+  imm file = cat(name, ".dll");
+  mut i = 0usize;
+  while i < folders.len() {
+    imm candidate = joined(folders[i].view(), file.view());
+    if fs.isFile(candidate.view()) { return Ok[String, String][candidate]; }
+    i = i + 1usize;
+  }
+  mut listed = String.from("none");
+  if paths.len() > 0usize { listed = String.join(paths.view(), ", "); }
+  imm deps = depsFolder(repo);
+  mut m = cat(pkgName, "'s [link] runtime names ", name, ", but ", file.view(), " is in none of the folders Congo looks in: [link] paths (");
+  m <- listed.view(), "), then each folder in ", deps.view(), " (python tools/deps/fetch.py fills it), then the folders LIB lists, then the folders PATH lists";
+  Error[String, String][m];
+}
+
+// Copy a runtime DLL into a program's folder, unless the copy there is the
+// same already, byte for byte; whether it copied
+fn copyRuntime(source &[]u8, folder &[]u8, name &[]u8) Result[Bool, String] {
+  imm file = cat(name, ".dll");
+  imm target = joined(folder, file.view());
+  mut data = String.empty();
+  match fs.readFile(source) {
+    case mut ok Ok { data <=> ok.value; }
+    case imm e Error {
+      imm why = e.value.message();
+      return Error[Bool, String][cat("cannot copy ", source, " to ", target.view(), ": ", why.view())];
+    }
+  }
+  if fs.isFile(target.view()) {
+    mut there = String.empty();
+    match fs.readFile(target.view()) {
+      case mut ok Ok { there <=> ok.value; }
+      case is Error {}
+    }
+    if there.len() == data.len() and there.equals(data.view()) { return Ok[Bool, String][false]; }
+  }
+  match fs.writeFile(target.view(), data.view()) {
+    case is Ok {}
+    case imm e Error {
+      imm why = e.value.message();
+      return Error[Bool, String][cat("cannot copy ", source, " to ", target.view(), ": ", why.view())];
+    }
+  }
+  Ok[Bool, String][true];
+}
+
 // Link the objects into exe: the program's object first, then the packages
 // it imports, last built first; and the C libraries every one of them names,
 // in the same order, each once. A C package's own object is linked like any
@@ -445,6 +549,32 @@ fn link(s &mut Session, plan &Plan, objs &List[String], exe &[]u8, announce Bool
     j = 0usize;
     while j < pkg.linkPaths.len() {
       if not holdsPath(&paths, pkg.linkPaths[j].view()) { paths.push(pkg.linkPaths[j].copy()); }
+      j = j + 1usize;
+    }
+    i = i + 1usize;
+  }
+  // The runtime DLLs every one of them names, each once, found before the
+  // link: a missing one stops the build with no program linked, an earlier
+  // build's removed, as a failed link leaves none
+  mut runtimeNames = List[String].empty();
+  mut runtimeFiles = List[String].empty();
+  imm folders = runtimeFolders(s.repo.view(), &paths);
+  i = 0usize;
+  while i < units.len() {
+    imm pkg = reg.packages[plan.units[*units[i]].pkg];
+    mut j = 0usize;
+    while j < pkg.runtime.len() {
+      imm name = pkg.runtime[j].view();
+      if not holdsName(&runtimeNames, name) {
+        match findRuntime(s.repo.view(), name, pkg.name.view(), &folders, &paths) {
+          case imm ok Ok { runtimeFiles.push(ok.value.copy()); }
+          case imm e Error {
+            fs.removeFile(exe);
+            return Error[void, String][e.value.copy()];
+          }
+        }
+        runtimeNames.push(String.from(name));
+      }
       j = j + 1usize;
     }
     i = i + 1usize;
@@ -522,6 +652,20 @@ fn link(s &mut Session, plan &Plan, objs &List[String], exe &[]u8, announce Bool
         "): the linker looks for each in the folders [link] paths names, then in the folders the LIB environment variable lists";
     }
     return Error[void, String][m];
+  }
+  imm exeFolder = parentOf(exe);
+  i = 0usize;
+  while i < runtimeNames.len() {
+    match copyRuntime(runtimeFiles[i].view(), exeFolder.view(), runtimeNames[i].view()) {
+      case imm ok Ok {
+        if ok.value and announce {
+          imm place = shown(runtimeFiles[i].view());
+          say("Copying", place.view());
+        }
+      }
+      case imm e Error { return Error[void, String][e.value.copy()]; }
+    }
+    i = i + 1usize;
   }
   succeeded();
 }

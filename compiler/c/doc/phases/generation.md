@@ -320,12 +320,24 @@ comment is that all allocas belong in the entry block so `PromoteMemoryToRegiste
 and SRoA can undo it.
 
 `genpgm` then optionally verifies, dumps `.preir`, runs LLVM's new pass manager
-through `LLVMRunPasses` — `function(mem2reg,reassociate,gvn,simplifycfg)`, and
-in a release build `cgscc(inline)` after it, with no target machine, so the
-inliner's costs are the target-independent ones — dumps `.ir`, and emits.
-**There is no `--release` flag** — release is the default and `--debug` turns it
-off, dropping inlining and the code generator's optimization and enabling
-DWARF.
+through `LLVMRunPasses`, dumps `.ir`, and emits. **A release build runs LLVM's
+standard pipeline, `default<O2>`**, handed the target machine, so that the
+inliner's, the vectorizers' and the unroller's costs are the target's: the
+`--cpu` and `--features` the machine was made with, `generic` by default (on
+x86-64, SSE2 and no more). That is the pipeline clang's `-O2` runs: SROA,
+instcombine, inlining, LICM, unrolling, dead global elimination (so an
+internal definition nothing reaches is gone from `.ir`), and the loop and SLP
+vectorizers. Measured against `default<O3>` (3 Oct 2026, LLVM 23), O3 ran no
+faster on any benchmark but one matrix product (9%), compiled 5 to 11% slower
+and made larger code. **No float is ever reordered**: generation marks no
+operation fast-math or contractable, so a vectorizer widens only what keeps
+each lane's operations in their written order (a loop scaling a slice, a
+matrix's columns), never a sum over a loop, and no multiply and add are fused,
+whatever the CPU. A `--debug` build runs only
+`function(mem2reg,reassociate,gvn,simplifycfg)`, with no target machine, and
+turns off the code generator's optimization and enables DWARF. A GPU target's
+pipeline is its own, at every level (section 7). **There is no `--release`
+flag** — release is the default and `--debug` turns it off.
 
 ## 3. Type lowering
 
@@ -578,8 +590,8 @@ struct or an enum calls its drop, which is the whole death, its owners' release
 included. A tuple finalizes each element that needs it, in order, each reached
 by its address (`StructGEP2`). A fixed-size array finalizes each element in
 element order, first element first, as a struct's fields die in field order,
-in a loop (`genlEachElem`), since the optimizer pipeline runs no loop pass that
-would undo an unrolling. A type for which `itypeNeedsFinal` is false generates
+in a loop (`genlEachElem`): the release pipeline unrolls a loop where that
+pays, while no pass rolls code written out back up into a loop. A type for which `itypeNeedsFinal` is false generates
 nothing. The drop call recasts the value's pointer to the drop's parameter
 type (`genlCallDrop`), since a variant laid out as a nullable pointer is reached
 through a pointer to its enum.
@@ -648,8 +660,9 @@ an array element finalizes none of the array, since which elements are left is
 not tracked: the ones that did not move leak rather than one being finalized
 twice. A slice's elements are not walked, for the same reason.
 `genlRegionAlias` calls `aliasRef` once per owner a `RefCountNode` adds — written
-out in line up to `RegionAliasUnroll` (16), a loop beyond, since the optimizer
-pipeline runs no loop pass and folds only calls written out. Core's methods are
+out in line up to `RegionAliasUnroll` (16), a loop beyond, since calls written
+out fold together in either pipeline, while a loop of them folds only where the
+release pipeline chooses to unroll it. Core's methods are
 `inline`, so each call is the method's body pasted at the site
 (`genlFnCallInternal`); after optimization `Rc`'s and `So`'s events are the
 instructions the compiler used to emit itself.
@@ -1200,7 +1213,7 @@ variables.
 | `conec.c` | `main` | calls `genSetup` **before** parsing, for target pointer size |
 | `genllvm/genllvm.c` | `genSetup`, `genClose` | target machine, data layout, context, `%void` |
 | | `genlLLVMOptions` | the LLVM options `CONE_LLVM_OPTIONS` names, and a GPU target's own two, parsed before the context exists |
-| | `genpgm` | generate, verify, dump, optimize (a GPU target's pipeline inlines, breaks up aggregates and infers address spaces at every level), emit; nothing past generation once it reported an error |
+| | `genpgm` | generate, verify, dump, optimize (release: LLVM's `default<O2>` for the target machine; a GPU target's pipeline inlines, breaks up aggregates and infers address spaces at every level), emit; nothing past generation once it reported an error |
 | | `genlGpuCalls`, `genlCallWalk`, `genlRecursion` | on a GPU target, every defined function marked `alwaysinline`, and a cycle of calls refused (section 7) |
 | | `genlProgram` | create the module with the target's triple and data layout, the two-pass symbols-then-implementations walk, then the stitched pair |
 | | `genlStitchFn`, `genlStitch` | the program's stitched init and final: declared on the first call to `initAll()` or `finalAll()`, built last, every module's `init` in the module order and every finalizer in the reverse |

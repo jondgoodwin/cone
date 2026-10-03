@@ -1,0 +1,192 @@
+// ======== Capsules: many tapered capsules, smooth-unioned, found by a grid ========
+//
+// The skeleton shape: a set of tapered capsules (each the hull of a ball of
+// radius ra at a and one of radius rb at b, 'taperedCapsule'), joined by
+// smooth unions with fillets reaching 'blend' (k), so where segments meet
+// they fuse. A tree, a root system, veins, lightning, a lattice of struts,
+// a chain of bones: anything drawn as segments with radii. Thousands of
+// segments are cheap, because a point asks only those near it.
+//
+// A VIEW. The capsules and the grid's buckets are kept by their owner (a
+// List on the CPU, a buffer on a GPU), which also builds the grid;
+// 'Capsules' is a view of them, made where the distance is evaluated, as
+// 'CurveCells' is of a curve's cells. morphogen's CapsuleSet is such an
+// owner. What the owner builds the grid by is here, 'capsuleBox',
+// 'capsuleBucket' and 'CapsuleGrid.over', so the view finds a point's
+// bucket exactly as the owner filled it.
+//
+// CHAINS. Capsules of one chain (the same number in 'chain', consecutive)
+// are hard-unioned: segments meeting end to end along a strand, their
+// radii matching, join with no bulge (the smooth union of two capsules
+// meeting at a joint would swell it by k). Chains are what is
+// smooth-unioned.
+//
+// THE FIELD. At a point, let m be the nearest capsule's distance (the
+// hard union of everything). The distance is the smooth union, in the
+// order the chains were added, of every chain nearer than m + 8k, starting
+// not from infinity but from m + 4k, and then held to at most 'cap'
+// (reach - 12k). Starting from m + 4k means a chain at m + 8k or farther
+// could not change the union anyway (the quadratic smooth minimum blends
+// only within 4k), so which chains take part never makes the field jump:
+// it is continuous and 1-Lipschitz (each smooth union's two weights sum to
+// 1), hence a bound everywhere, and it lies between m - 4k and m wherever
+// it is under the cap. Where chains meet (a fork, a crossing) it swells
+// past their hard union, a fillet: by up to k where two meet, more where
+// many do, never 4k; elsewhere it is their union.
+//
+// THE GRID. Cubic buckets 'cell' a side over the capsules' box grown by
+// 'reach': a bucket lists, in the order added, every capsule whose box
+// grown by 'reach' meets it, and a point asks only its bucket's. That
+// gives the same bits as asking every capsule ('distanceAll'): where m is
+// under reach - 8k, every capsule that can count is within 'reach', so in
+// the bucket (and a chain's nearest capsule decides its distance);
+// elsewhere both are held to the cap (the field is at least m - 4k).
+// Outside the grid's box the distance is the cap plus the distance to the
+// box, still a bound. So a mesher or tracer is safe everywhere, and skips
+// empty space in strides of the cap; 'reach' must exceed 12k, and the cap
+// should exceed a mesher's block (its half diagonal) for empty space to be
+// skipped. With no grid (no buckets), 'distance' asks every capsule.
+//
+// A capsule is asked only when its bounding ball ('capsuleCentre',
+// 'capsuleBallRadius', kept by the owner) is near enough to matter (the
+// same bits as asking it). The Slang has no twin yet.
+
+// The grid's shape: its corner, its buckets' size, and how many along each
+// axis; bucket (x, y, z) is number x + nx (y + ny z). No buckets (nx 0)
+// means no grid
+pub struct CapsuleGrid {
+  pub origin Vec3;
+  pub cell f32;
+  pub nx u32;
+  pub ny u32;
+  pub nz u32;
+
+  // No grid: every capsule is asked
+  pub fn none() CapsuleGrid { new CapsuleGrid(new Vec3(0., 0., 0.), 0., 0u32, 0u32, 0u32); }
+
+  // Buckets 'cell' a side over 'box' (the capsules' box grown by 'reach')
+  pub fn over(box Aabb3, cell f32) CapsuleGrid {
+    imm size = box.max - box.min;
+    new CapsuleGrid(box.min, cell, u32.from(libc.ceilf(size.x / cell)) + 1u32,
+      u32.from(libc.ceilf(size.y / cell)) + 1u32, u32.from(libc.ceilf(size.z / cell)) + 1u32);
+  }
+
+  // How many buckets
+  pub fn buckets(self &) usize { usize.from(nx) * usize.from(ny) * usize.from(nz); }
+
+  // Bucket (x, y, z)'s number
+  pub fn index(self &, x u32, y u32, z u32) usize {
+    usize.from(x) + usize.from(nx) * (usize.from(y) + usize.from(ny) * usize.from(z));
+  }
+}
+
+// A view of tapered capsules and their grid, kept by their owner: capsule
+// i from a[i] (radius ra[i]) to b[i] (radius rb[i]), in chain chain[i]
+// (consecutive capsules of one chain are hard-unioned), its bounding ball
+// about centre[i] of radius radius[i]; bucket k's capsules are
+// items[start[k]] to items[start[k + 1]] (start holds buckets + 1 entries;
+// both empty with no grid)
+pub struct Capsules['a] {
+  pub a &[]'a Vec3;
+  pub b &[]'a Vec3;
+  pub ra &[]'a f32;
+  pub rb &[]'a f32;
+  pub chain &[]'a u32;
+  pub centre &[]'a Vec3;
+  pub radius &[]'a f32;
+  pub start &[]'a u32;
+  pub items &[]'a u32;
+  pub grid CapsuleGrid;
+  pub blend f32;            // k, how far the fillets reach
+  pub reach f32;            // the buckets' margin
+
+  pub fn count(self &) usize { a.len(); }
+
+  // The box holding every capsule (empty if there are none)
+  pub fn bounds(self &) Aabb3 {
+    mut box = Aabb3.empty();
+    mut i = 0usize;
+    while i < a.len() {
+      box = box.union(capsuleBox(a[i], b[i], maxf(ra[i], rb[i])));
+      i = i + 1usize;
+    }
+    box;
+  }
+
+  // The cap: the most the distance is inside the grid
+  pub fn cap(self &) f32 { reach - 12. * blend; }
+
+  // The field over every capsule: what the grid stands in for
+  pub fn distanceAll(self &, p Vec3) f32 { self.over(p, 0usize, a.len(), true); }
+
+  // The field (above) over capsules 'from' to 'to': the capsules
+  // themselves when 'all', otherwise the bucket items there
+  fn over(self &, p Vec3, from usize, to usize, all Bool) f32 {
+    // The hard union, m; a capsule whose ball is no nearer is not asked
+    mut m f32 = 3.4028235e38;
+    mut k = from;
+    while k < to {
+      imm i = if all { k; } else { usize.from(items[k]); };
+      if len3(p - centre[i]) - radius[i] < m {
+        m = minf(m, taperedCapsule(p, a[i], b[i], ra[i], rb[i]));
+      }
+      k = k + 1usize;
+    }
+    // The smooth union from m + 4k of the chains nearer than m + 8k, each
+    // chain the hard union of its capsules (a run of them, in order)
+    imm limit = m + 8. * blend;
+    mut d = m + 4. * blend;
+    mut run f32 = 3.4028235e38;
+    mut runChain = 0u32;
+    k = from;
+    while k < to {
+      imm i = if all { k; } else { usize.from(items[k]); };
+      if k == from or chain[i] != runChain {
+        if run < limit { d = smoothUnion(d, run, blend); }
+        run = 3.4028235e38;
+        runChain = chain[i];
+      }
+      if len3(p - centre[i]) - radius[i] < limit {
+        run = minf(run, taperedCapsule(p, a[i], b[i], ra[i], rb[i]));
+      }
+      k = k + 1usize;
+    }
+    if run < limit { d = smoothUnion(d, run, blend); }
+    minf(d, self.cap());
+  }
+
+  // The distance (see above)
+  pub fn distance(self &, p Vec3) f32 {
+    if grid.nx == 0u32 { return self.distanceAll(p); }
+    imm q = p - grid.origin;
+    imm cell = grid.cell;
+    imm size = new Vec3(cell * f32.from(grid.nx), cell * f32.from(grid.ny), cell * f32.from(grid.nz));
+    // Outside the grid: every capsule more than 'reach' beyond its box
+    imm ox = maxf(maxf(0. - q.x, q.x - size.x), 0.);
+    imm oy = maxf(maxf(0. - q.y, q.y - size.y), 0.);
+    imm oz = maxf(maxf(0. - q.z, q.z - size.z), 0.);
+    if ox > 0. or oy > 0. or oz > 0. { return len3(new Vec3(ox, oy, oz)) + self.cap(); }
+    imm at = grid.index(capsuleBucket(q.x, cell, grid.nx), capsuleBucket(q.y, cell, grid.ny),
+      capsuleBucket(q.z, cell, grid.nz));
+    self.over(p, usize.from(start[at]), usize.from(start[at + 1usize]), false);
+  }
+}
+
+// The box holding a capsule from a to b whose larger radius is r
+pub fn capsuleBox(a Vec3, b Vec3, r f32) Aabb3 {
+  imm m = new Vec3(r, r, r);
+  new Aabb3(a.min(b) - m, a.max(b) + m);
+}
+
+// A capsule's bounding ball: its centre, and its radius
+pub fn capsuleCentre(a Vec3, b Vec3) Vec3 { (a + b) * 0.5; }
+pub fn capsuleBallRadius(a Vec3, b Vec3, ra f32, rb f32) f32 { len3(b - a) * 0.5 + maxf(ra, rb); }
+
+// The bucket a coordinate (from the grid's corner) falls in, of n buckets
+// 'cell' a side, held to the grid
+pub fn capsuleBucket(x f32, cell f32, n u32) u32 {
+  imm k = floorf(x / cell);
+  if k < 0. { return 0u32; }
+  if k >= f32.from(n - 1u32) { return n - 1u32; }
+  u32.from(k);
+}

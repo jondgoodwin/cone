@@ -89,19 +89,41 @@ Visual Studio projects stay at the root.
   storage textures written, read and written, sampled by a render pass and
   written again); its
   shaders are Slang, compiled ahead of time to SPIR-V that is committed and
-  embedded in the Cone source by `tools/shaders/`; `geomath` is 2-D and 3-D math (vectors,
+  embedded in the Cone source by `tools/shaders/`; `gpu` also has frame
+  fences (`frameDone`, `waitFrame`), one-submission `Fence`s another thread
+  may wait on (`createFence`, `submitSignalling`, `signal`), and a frame of
+  16 command buffers, past which an encoder is refused and records nothing
+  (`CommandEncoder.isValid`, tested by `framecap`);
+  `gpuwork` hands wide work to the GPU over `gpu` and `iocore`: a `Kernel`
+  from SPIR-V (bindings by position, at most 8, workgroup size read from the
+  SPIR-V), a `Job` that buffers are moved into (`give`), dispatches chained
+  on the GPU and an explicit `readback`, and a `Works` delivering one
+  `Completion` per job with its buffers back, to its own `poll`/`waitFor`
+  (`Target.Here`) or into an `iocore` Loop (`Target.Loop`, `onLoop`: a
+  watcher thread waits on the job's own fence and wakes the loop); every
+  kernel a CPU twin (`runTwin`) and `checkParity` comparing the two bit for
+  bit; its test kernels are Slang fixtures until Cone has compute entry
+  points (`fn @compute(64) name(inv Invocation, parts &[]Part, out &[]mut
+  f32)`);
+  `geomath` is 2-D and 3-D math, pure maths: values and operations with
+  results of a known size, no collections (vectors,
   quaternions, matrices, transforms, boxes, rays, planes, frusta and their
-  tests, Bezier curves, polygons, colors), begun as a port from the Pegasus3D
+  tests, Bezier curves, polylines, polygons' area, winding and
+  point-in-polygon, colors), begun as a port from the Pegasus3D
   browser, all its trigonometry through its own `sin`, `cos`, `tan`, `asin`,
   `acos` and `atan2` (`sin` and `cos` the compiler's built-in f32 methods,
   the other four `libc`'s);
-  `mesh` is surfaces over `geomath`: `Mesh` (indexed triangles, 32-bit
+  `mesh` is surfaces over `geomath` and `noise`: `Mesh` (indexed triangles, 32-bit
   indices, vertex data as separate lists, material groups), `PolyMesh` (the
   editable half-edge mesh of n-gons, pmp-library conventions, attribute
   channels, `validate`, `triangulate` into a `Mesh`), the sphere, plane,
-  cube and cube-cage generators, and `.obj` export; `sculpt` is procedural
-  modelling over `mesh`: 2-D profiles (polygons, rounded rectangles, hulls,
-  sampled Beziers), 3-D paths with rotation-minimizing frames, `extrude`,
+  cube and cube-cage generators, `triangulatePolygon` (ear clipping),
+  `.obj` export, and `meshHash` (a mesh's bits hashed by `noise`'s PCG, the
+  same on every run and build); `sculpt` is procedural
+  modelling over `mesh` (and `sdf`, whose frames it makes): 2-D profiles
+  (polygons, rounded rectangles, hulls by `convexHull`, Beziers sampled by
+  `sampleCurve`), 3-D paths with rotation-minimizing frames
+  (`Path.curveFrames` gives them as `sdf.CurveFrame`s), `extrude`,
   `lathe` and `sweep` (twist and taper; `sweepScaled`, the scale any
   function of arc length) into a `PolyMesh` of quads with
   corner uvs, the deformers `bend`, `twist`, `taper` and `curveDeform`,
@@ -117,8 +139,8 @@ Visual Studio projects stay at the root.
   lattice hashes, exact hash to float), value and gradient noise with
   analytic derivatives (and periodic forms), cellular noise (F1, F2, cell
   id), fBm, ridged and billowed sums, domain warp, a heavy-tailed draw
-  (`heavySigned`) and a multiplicative cascade (`cascade2`), both CPU only
-  for now, and Phacelle stripes
+  (`heavySigned`) and a multiplicative cascade (`cascade2`), neither yet in
+  `noise.slang` (the whole package is GPU-safe Cone), and Phacelle stripes
   (`phacelle.cone` and `phacelle.slang`, under the MPL 2.0); the same
   functions for shaders in `src/noise.slang`, bit for bit the same on the
   GPU but for square roots and Phacelle, which its `parity` test checks on
@@ -126,28 +148,46 @@ Visual Studio projects stay at the root.
   texture, every voxel compared); its example `volume.cone` bakes that
   volume by compute and draws a slice and a sphere textured through it;
   its README holds the determinism rules;
-  `sdf` is signed distance fields over `geomath`, `noise`, `sculpt` and
-  `mesh`, shapes as functions of a point: primitives, hard and smooth operators
+  `sdf` is signed distance fields over `geomath` and `noise` only, field
+  maths (nothing allocated, so all of it GPU-safe), shapes as functions of a
+  point: primitives, hard and smooth operators
   (Quilez's), domain operators (translation, rotation, scale, mirrors,
   repetition, elongation), hg_sdf's fillets, repetition along a curve (an
-  `Arc`, or a `sculpt.Path` as a `PathCurve`) in its rotation-minimizing
-  frames as the exact union of every copy, `Horn` (the ribbed, tapering,
-  curling horn, and `fluted`, twisted flutes along it), the gradient and
+  `Arc`, or a `PathCurve`, a view of frames: sculpt's `Path.curveFrames`)
+  in its rotation-minimizing frames as the exact union of every copy, cells
+  found once (`curveCells` into a caller's slice, `curveCellFrame`, and
+  `CurveCells`, a view of them), `Horn` (the ribbed, tapering,
+  curling horn, and `fluted`, twisted flutes along it), `Capsules` (a view
+  of thousands of tapered capsules in chains and the grid of buckets that
+  finds them, smooth-unioned so forks fuse; built and owned by
+  `morphogen`'s `CapsuleSet`; CPU only), the gradient and
   normal, and noise detail; the same
   functions for shaders in `src/sdf.slang`, which its `parity` test checks
-  on a real GPU; and meshing on the CPU (`mesher.cone`): `surfaceNet`,
-  surface nets with a vertex per piece of surface in a cell (a manifold,
-  closed mesh), gradient normals and blocks far from the surface skipped,
-  into a `mesh.Mesh` or `PolyMesh`, `netLevels` (levels of detail) and
-  `meshHash` (a mesh's bits hashed, the same on every run and build); its
+  on a real GPU; its
   README holds what is exact, what is a bound, and what was measured; its
-  examples: `hornmarch.cone` sphere-traces the horn in render's chitin
+  examples (meshing through `sdfmesh`): `hornmarch.cone` sphere-traces the horn in render's chitin
   under the dusk, `hornmesh.cone` meshes it at four levels into
   render's `LodChain` and draws the mesh the same way, and `horn.cone` is
   the chitin horn's demo (the fluted horn turning under a blue-hour sky on
   wet ground beside a Blinn-Phong twin, its mesh hashes pinned, its
   distances compared with the GPU's by `hornparity.slang`, and `--dump`,
   the video's frames);
+  `sdfmesh` is a signed distance field made into a mesh, over `sdf` and
+  `mesh`: `surfaceNet`, surface nets on the CPU with a vertex per piece of
+  surface in a cell (a manifold, closed mesh), gradient normals and blocks
+  far from the surface skipped, into a `mesh.Mesh` or `PolyMesh`, and
+  `netLevels` (levels of detail); a GPU mesher is to join it; its README
+  holds what was measured;
+  `morphogen` is form that arises from growth rules, as graphs of points,
+  over `geomath`, `collections`, `noise` and `sdf`: `BranchGraph` (a forest
+  of nodes, parents numbered first), space colonization (`colonize` with
+  its `Growth` dials, Runions et al.'s, plus tropism, inertia and seeded
+  jitter; `scatter`, attractors in a box), `pipeRadii` (the pipe model),
+  `smoothBranches`, `pruneTwigs` and `strands` (the graph cut into paths for
+  tubes or chains), and `CapsuleSet` (tapered capsules in chains, with
+  their grid of buckets, in Lists it owns, lent as an `sdf.Capsules`
+  view); its example `vines.cone` grows the night swamp's knotted roots,
+  fuses them as capsules, meshes and draws them;
   `testing` is the checks a package's tests call (`expectInt`, `require…`,
   `done`), ordinary library code the compiler knows nothing of;
   `textdiff` is the line diff of two lists of lines or two texts: the edit
@@ -438,6 +478,11 @@ Visual Studio projects stay at the root.
   `src/congo.cone`), which `congo.py build` there builds first and which then
   builds itself, and which does everything `congo.py` does, `congo test` too;
   `CONGO_EXE` points `test_congo.py` at its build (README, "Congo in Cone").
+- `tools/deps/`: `fetch.py` fetches the prebuilt C libraries packages bind,
+  pinned by SHA-256 and, for a signed DLL, checked for its signer (OpenSSL
+  3.5.9 from CPython's `cpython-bin-deps`), into `deps/<name>/` at the root,
+  which git ignores and where Congo looks for a `[link] runtime` DLL; the
+  binaries are never committed. Its header is the guide.
 - `tools/shaders/`: `shaders.py` compiles each package's Slang shaders
   (`.slang`) ahead of time to SPIR-V (`.spv`, committed beside them) with the
   Vulkan SDK's `slangc`, and embeds the words in the Cone file that draws
@@ -598,8 +643,9 @@ python ../tools/congo/congo.py test
 everything over it (`window`, `gpu`, `render`, `input`, `controls`, `noise`'s `parity` and `bake` and
 `vulkan`'s `runtime` test), links `SDL3.lib` and runs with `SDL3.dll`: put
 the `lib\x64` folder of SDL3's development kit (`SDL3-devel-3.x-VC.zip`;
-here `C:\libs\SDL3-3.4.16\lib\x64`) on both `LIB` and `PATH` before
-`congo test` or `congo run`.
+here `C:\libs\SDL3-3.4.16\lib\x64`) on `LIB` before `congo test` or
+`congo run`, and Congo copies `SDL3.dll` from there beside each program
+(`sdl`'s `[link] runtime`; the README's "Runtime libraries").
 
 It compiles every scenario under `test/cases/`, asserts what each one's category
 and inline `//~` annotations claim, links and runs the `run` scenarios, and

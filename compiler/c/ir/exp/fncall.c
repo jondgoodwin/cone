@@ -893,12 +893,18 @@ INode *fnCallFieldAccess(INode *obj, FieldDclNode *fld, INode *lexnode) {
 // still waiting, and its unchecked signature accepted nothing. A bare call has
 // always had this through its name use; 'self.name()' now has it too.
 //
+// An overload name's candidates are free functions of a module as often as
+// members of a type, and one declared later in its module is as unchecked: its
+// parameters may still be compared, but a return type such as 'List[Vec2]' is
+// still the generic call it was written as.
+//
 // The walk state is the candidate's own type's (Rule 8): the caller may be a
 // method of some other type, and fnDclTypeCheck compares a method's self with
-// the type it is checked under. A candidate already analyzed, or under way and
-// so with its signature checked, is left alone, and so is a method of a number
-// type: corenumber builds those typed, with intrinsic bodies, and nothing ever
-// type checks them.
+// the type it is checked under. A module's function is checked with no type
+// around it, as the module's own walk checks it. A candidate already analyzed,
+// or under way and so with its signature checked, is left alone, and so is a
+// method of a number type: corenumber builds those typed, with intrinsic
+// bodies, and nothing ever type checks them.
 void fnCallDemandCandidates(INode *binding) {
     INode **candp;
     uint32_t cnt;
@@ -916,10 +922,11 @@ void fnCallDemandCandidates(INode *binding) {
     while (cnt--) {
         INode *cand = *candp++;
         INode *owner = inodeGetOwner(cand);
-        if ((cand->flags & (TypeChecked | TypeChecking)) || owner == NULL || owner->tag != StructTag)
+        if ((cand->flags & (TypeChecked | TypeChecking)) || owner == NULL
+            || (owner->tag != StructTag && owner->tag != ModuleTag))
             continue;
         TypeCheckState tstate;
-        tstate.typenode = owner;
+        tstate.typenode = owner->tag == StructTag ? owner : NULL;
         tstate.fn = NULL;
         tstate.scope = 0;
         tstate.extend = NULL;
@@ -1644,7 +1651,9 @@ void fnCallLowerOverloadFn(FnCallNode *node) {
         return;
     }
 
-    // Test every candidate the overload name declares, without altering the call
+    // Test every candidate the overload name declares, without altering the call,
+    // each analyzed first (Rule 1), as a function named alone is by its name use
+    fnCallDemandCandidates((INode*)overloadnode);
     enum OverloadMatch status;
     FnDclNode *selected = iNsTypeFindMethod((INode*)overloadnode, NULL, node->args, &status);
     if (selected == NULL) {

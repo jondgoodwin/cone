@@ -254,7 +254,7 @@ void castNameRes(NameResState *pstate, CastNode *node) {
 // Give a rough idea of comparable type size for use with type checking reinterpretation casts
 uint32_t castBitsize(INode *type) {
     if (type->tag == UintNbrTag || type->tag == IntNbrTag || type->tag == FloatNbrTag) {
-        if (type == (INode*)usizeType)
+        if (type == (INode*)usizeType || type == (INode*)isizeType)
             return ptrsize;
         return ((NbrNode *)type)->bits;
     }
@@ -267,6 +267,11 @@ uint32_t castBitsize(INode *type) {
     default:
         return 0;
     }
+}
+
+// Is this type usize or isize, an integer as wide as a pointer?
+static int castPtrSizedNbr(INode *type) {
+    return type == (INode*)usizeType || type == (INode*)isizeType;
 }
 
 // Is this place reached as 'uni': a variable of this function held by value
@@ -375,7 +380,14 @@ void castTypeCheck(TypeCheckState *pstate, CastNode *node) {
 
     // Handle reinterpret casts, which must be same size
     if (!(node->flags & FlagConvert)) {
-        if (totype->tag != StructTag) {
+        // usize and isize are as wide as a pointer, which a fixed-width number
+        // is only on some targets, so no reinterpretation joins the two: what
+        // compiles on x64 must compile on wasm32
+        if (isNbr(fromtype) && isNbr(totype)
+            && castPtrSizedNbr(fromtype) != castPtrSizedNbr(totype))
+            errorMsgNode(node->exp, ErrorPtrSizedAs,
+                "usize and isize are pointer-sized, so 'as' may not reinterpret one as a fixed-width number, or a fixed-width number as one; convert with usize.from(x) or u64.from(x)");
+        else if (totype->tag != StructTag) {
             uint32_t tosize = castBitsize(totype);
             if (tosize == 0 || tosize != castBitsize(fromtype))
                 errorMsgNode(node->exp, ErrorInvType, "May only reinterpret value to the same sized primitive type");

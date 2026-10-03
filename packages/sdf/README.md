@@ -35,13 +35,13 @@ same framing; `examples/horn.cone` is the chitin horn's demo: the fluted
 horn, meshed, turning under a blue-hour sky on wet ground beside the same
 horn in Blinn-Phong, its mesh hashes pinned, its distance and normal
 compared with the GPU's (`hornparity.slang`), and a mode that dumps the
-video's frames.
+video's frames. The meshing is the `sdfmesh` package's (its README).
 
-```cone
-imm net = surfaceNet(&horn, horn.bounds(), 0.01, 1u32, true);   // cells of 0.01, relaxed once, sparse
-imm m = net.toMesh();                                             // a mesh.Mesh, gradient normals
-imm h = meshHash(&m);                                             // the same on every run and build
-```
+`sdf` is field maths: values and operations on them, each result of a size
+known in advance, nothing allocated, so all of it can run on a GPU. It
+imports only `geomath`, `noise` and `libc`. Frames along a curve are kept
+by their owner (a `List` on the CPU) and viewed by `PathCurve` and
+`CurveCells`; so are many capsules and their grid, viewed by `Capsules`.
 
 ## API
 
@@ -85,7 +85,11 @@ symmetric in their cells), `elongate(p, extent)`.
 | `repeatAlong(curve, shape, p, count)` | the exact union of `count` copies at even steps of arc length |
 | `Arc.make(length, curl)` | a circular arc from the origin up +y, turning towards +x through `curl` radians; rotation-minimizing frames (binormal +z); `project(p)` (arc length and distance, no trigonometry inside the arc), `point(s)`, `cells(count) ArcCells` |
 | `repeatAlongArc(arc, cells, shape, p)` | the same union on an arc, its cells' frames stepped round by rotation, no trigonometry |
-| `PathCurve.fromPath(&path)` | a `sculpt.Path` with sculpt's rotation-minimizing frames (CPU only) |
+| `PathCurve.make(frames, distances)` | a view of a path's frames (`&[]CurveFrame`) and their arc lengths (`&[]f32`), kept by their owner; for a `sculpt.Path`, `path.curveFrames()` and `path.distances()` (sculpt's rotation-minimizing frames) |
+| `curveCellFrame(curve, k, count) CurveFrame` | cell k's frame of `count`, as `repeatAlong` finds it: what an owner keeps, one per cell |
+| `curveCells(curve, out)` | every cell's frame written into `out` (`&[]mut CurveFrame`), as many cells as it holds |
+| `CurveCells` | a view of cells' frames (`frames &[]CurveFrame`), made where the distance is found: `new CurveCells(list.view())` |
+| `repeatAlongCells(cells, shape, p)` | `repeatAlong` over cells already found: the same bits, no frame found per evaluation |
 
 A copy's size and twist are the shape's own functions of `u` (and of its
 index, for hashed variation).
@@ -94,7 +98,8 @@ index, for hashed variation).
 ribs, ribDepth)`, Latham's horn and Raup's unwound shell: an Arc cut into
 one cell per rib, each cell a round cone along its chord (radius falling
 linearly by `taper` of the base) smooth-unioned with a torus rib as thick as
-`ribDepth` of the radius. `distance(p)`, `radiusAt(u)`.
+`ribDepth` of the radius. `distance(p)`, `radiusAt(u)`, `bounds() Aabb3`
+(a box holding every cell's ball, for a mesher).
 `horn.fluted(count, depth, twist)` grooves `count` flutes along the tube
 between the ribs, each `depth` of the radius deep, turning `twist` radians
 about the tube from base to tip: the groove is `depth` times the distance
@@ -106,8 +111,31 @@ the groove's steepest slope, so it stays a bound (a conservative one: the
 fine flutes' ratio measures 0.75, so a tracer steps short there). Each
 evaluation of a fluted horn takes an atan2 and a sin per cell.
 
-**Gradient** (`shape.cone`): the `Shape` trait (`distance(p)`), `FnShape`
-(a `&fn(p Vec3) f32` as a Shape), `gradient(shape, p, h)` (central
+**Many capsules** (`capsules.cone`): `Capsules` is a view of tapered
+capsules and the grid of buckets that finds them, kept and built by their
+owner (morphogen's `CapsuleSet`: `make(blend, reach)`, `add`, `extend`,
+`build(cell)`, `view()`). Its slices: capsule i from `a[i]` (radius
+`ra[i]`) to `b[i]` (radius `rb[i]`) in chain `chain[i]`, its bounding ball
+`centre[i]`, `radius[i]` (`capsuleCentre`, `capsuleBallRadius`); bucket
+k's capsules `items[start[k]]` to `items[start[k + 1]]`, the grid's shape a
+`CapsuleGrid` (`none()`, or `over(box, cell)`, buckets placed by
+`capsuleBox` and `capsuleBucket`); `blend` and `reach`. `distance(p)`;
+`distanceAll(p)` asks every capsule, `bounds()`, `cap()` (reach - 12
+blend). A chain is the hard union of its capsules, so a strand of segments
+end to end has no bulge at its joints; chains are smooth-unioned, so forks
+and crossings fuse. At a point with hard union m, the field is the smooth
+union, in the order added, of the chains nearer than m + 8 blend, started
+from m + 4 blend, held to the cap: a chain at the limit could not change
+the union, so the field never jumps as chains come and go, and is
+1-Lipschitz, a bound everywhere, between m - 4 blend and m under the cap. A
+bucket lists the capsules within `reach` of it; that gives every capsule's
+bits wherever m is under reach - 8 blend, and both are held to the cap
+elsewhere. Outside the grid's box: the cap plus the distance to the box.
+With no grid every capsule is asked. A skeleton of thousands of segments:
+a tree, roots, veins, struts. No Slang twin yet.
+
+**Gradient** (`shape.cone`): the `Shape` trait (`distance(p)`),
+`gradient(shape, p, h)` (central
 differences, six evaluations), `normal(shape, p, h)` (Quilez's tetrahedron,
 four).
 
@@ -157,75 +185,23 @@ Two findings shaped the code:
   that is not built. The horn's tube is itself cells, round cones along
   chords (a tube whose radius depends on the nearest point's arc length is
   not Lipschitz near the centre of curvature either).
+- **Many capsules: which ones count must not move the field.** A first
+  `Capsules` smooth-unioned its bucket's capsules from infinity and held the
+  result to `reach`: a capsule just beyond `reach` of a bucket still blended
+  into an intermediate value, so the field differed from every capsule's by
+  up to 4.8e-6 and jumped at buckets' edges (ratio 1.089 over 8192 pairs
+  1/256 apart). Starting the union from m + 4 blend and taking only chains
+  nearer than m + 8 blend makes the set's edge invisible: the grid gives
+  every capsule's bits at 8192 points, ratio 0.9998 (morphogen's
+  `tests/capsules.cone`, which builds the grid; `tests/capsules.cone`
+  here checks the view with none). A second finding: the
+  smooth union of two capsules meeting end to end swells the joint by the
+  blend, which beads a strand of short segments like a caterpillar; hence
+  chains, hard-unioned within.
 - **hg_sdf's Columns switches to the plain union outside its band**, which
   cuts the field where a column crosses the band's edge (measured ratio
   6.7). `unionColumns` clips the columns to the band instead: the same
   surface, a continuous field.
-
-## Meshing: surface nets
-
-`mesher.cone` makes a shape into triangles on the CPU, on one thread.
-
-| Name | What it is |
-|---|---|
-| `surfaceNet(shape, box, cellSize, relax, sparse) SurfaceNet` | the shape sampled over `box` (grown by a cell each way) in cubic cells; one vertex per piece of surface in each cell it crosses, the average of the piece's edge crossings, moved `relax` times along the gradient by the distance (kept in its cell); normals the unit gradient (central differences, a tenth of a cell); a quad across each grid edge the surface crosses |
-| `SurfaceNet` | `positions`, `normals`, `quads` (4 indices each, counterclockwise from outside), `cellSize`, `cellsX`/`Y`/`Z`, `evaluations` (distances asked in all), `sampled` (of them at the grid), `blocks`, `blocksSkipped`; `toMesh()` (each quad cut along its shorter diagonal), `toPolyMesh(problems)` |
-| `netLevels(shape, box, finest, count, relax) List[SurfaceNet]` | levels of detail, level 0 in cells `finest`, each next twice as coarse, each meshed from the field |
-| `Horn.bounds() Aabb3` | a box holding the horn (every cell's ball), for the mesher |
-| `meshHash(&mesh.Mesh) u32` | the counts, positions' and normals' f32 bits and indices folded by `noise.pcg`, in order |
-
-What holds, and why:
-
-- **A manifold, closed mesh for a closed shape.** Naive surface nets gives
-  a cell one vertex even where the surface passes through it twice (two
-  parts closer than a cell), pinching the mesh: an edge four quads share.
-  Here a cell has a vertex per piece of surface, the pieces marching cubes
-  would draw in it (Nielson's dual marching cubes), with each face's
-  ambiguous case (inside corners diagonally opposite) always separating
-  them, so neighbouring cells agree. `tests/meshing.cone` builds the two
-  ambiguous cases by hand (16 vertices, two separate closed nets, where
-  naive nets gives 14 and a pinch) and checks the horn closed, `validate`
-  clean and of Euler characteristic 2 in cells from 0.02 to 0.16, relaxed
-  or not.
-- **Sparse, and exact.** Blocks of 4 cells a side whose centre is farther
-  from the surface than half their diagonal (with 1% to spare) are not
-  sampled: for a 1-Lipschitz field nothing in them is on the surface, and
-  every sample in them has the centre's sign. Every edge the surface
-  crosses has both ends evaluated, so the mesh is bit for bit the dense
-  one; the test checks it by hash, for a sphere and the horn.
-- **Deterministic.** Fixed orders throughout; the same mesh, bit for bit,
-  on every run and in debug and release builds (the test pins the horn's
-  hashes, and passes in both). The hash does not depend on the GPU: step 5
-  of the chitin horn compares the meshes the two machines' CPUs make.
-- **Rounded edges.** Surface nets averages crossings, so sharp edges and
-  corners are rounded off; dual contouring (Ju et al. 2002; Boris the
-  Brave's tutorial) keeps them, and is not built.
-- **A tube thinner than a cell** is followed only roughly: at the horn's
-  tip (radius under a cell) one to three quads can fold to face against
-  the gradient (measured at cells of 0.02 to 0.08). Everywhere else every
-  quad faces the way its vertices' normals do.
-
-Measured on the horn (`hornmesh`, release build, one thread):
-
-| Level | Cells | Vertices | Triangles | Samples evaluated | Time |
-|---|---|---|---|---|---|
-| 0 | 0.01 | 75,902 | 151,800 | 460,061 of 7,052,080 (6.5%) | 1.0–1.4 s |
-| 1 | 0.02 | 18,822 | 37,640 | 109,527 of 941,460 (12%) | 0.2 s |
-| 2 | 0.04 | 4,648 | 9,292 | 27,141 of 132,057 (21%) | 45–52 ms |
-| 3 | 0.08 | 1,122 | 2,240 | 7,038 of 19,950 (35%) | 10–12 ms |
-
-Level 3's cells are wider than the ribs are thick, so its ribs alias into
-lumps; it is drawn only when the horn is under 120 pixels across. Drawn at
-1920 x 1080 (validation on), level 0 takes 0.7–0.9 ms a frame on the RTX
-4060 (one run of four, 2.1) and 15.3–15.7 ms on the UHD 770, against
-hornmarch's 19.7 and 57.6; the mesh has no shadows or ambient occlusion,
-which hornmarch traces. Framed alike, the two examples' frames at frame 90
-differ by more than 16/255 in 0.14% of pixels.
-
-Sources: Gibson, "Constrained elastic surface nets", 1998, and Lysenko's
-"Smooth voxel terrain, part 2" (0fps.net, 2012), for surface nets;
-Nielson, "Dual marching cubes", IEEE Visualization 2004, for one vertex per
-piece (from memory, not checked against the paper).
 
 ## CPU and GPU agree
 

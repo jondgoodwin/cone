@@ -22,22 +22,31 @@
 //   'intersectStairs', 'subtractStairs', 'pipe', 'groove', 'tongue',
 //   'engrave'.
 // - Repetition along a curve (curve.cone): the Curve trait, 'Arc' (a
-//   circular arc, with 'project' and 'cells') and 'PathCurve' (a
-//   sculpt.Path), the Repeated trait, and 'repeatAlong' and
-//   'repeatAlongArc', a shape repeated in the curve's rotation-minimizing
-//   frames, the exact union of every copy; 'curveCells' and
-//   'repeatAlongCells', the same over any curve's cells found once.
+//   circular arc, with 'project' and 'cells') and 'PathCurve' (a view of a
+//   path's frames and arc lengths), the Repeated trait, and 'repeatAlong'
+//   and 'repeatAlongArc', a shape repeated in the curve's
+//   rotation-minimizing frames, the exact union of every copy;
+//   'curveCellFrame' and 'curveCells' (a curve's cells' frames, for their
+//   owner to keep), 'CurveCells' (a view of them) and 'repeatAlongCells',
+//   the same union over cells found once.
 // - The horn (horn.cone): 'Horn', a ribbed, tapering, curling horn, the
 //   union of its cells along an Arc.
-// - The Shape trait (shape.cone), 'FnShape' (a function as a Shape), and
-//   'gradient' and 'normal' by finite differences.
+// - Many capsules (capsules.cone): 'Capsules', a view of a set of tapered
+//   capsules smooth-unioned so they fuse where they meet, each point
+//   asking only those near it through a grid of buckets: a tree, roots,
+//   veins, a lattice, a skeleton of thousands of segments; 'capsuleBox'
+//   and 'capsuleBucket', what the grid's builder (the capsules' owner,
+//   such as morphogen's CapsuleSet) places them by.
+// - The Shape trait (shape.cone), and 'gradient' and 'normal' by finite
+//   differences.
 // - Detail from noise (detail.cone): 'displace' (not a distance) and
 //   'fbmDetail' (Quilez's fBm of spheres, a bound).
-// - Meshing (mesher.cone): 'surfaceNet', a shape made into a manifold
-//   'SurfaceNet' of quads on the CPU (surface nets, one vertex per piece of
-//   surface in a cell, gradient normals, blocks far from the surface
-//   skipped), its 'toMesh' (a mesh.Mesh) and 'toPolyMesh'; 'netLevels', a
-//   chain of levels of detail; 'meshHash', a hash of a mesh's bits.
+//
+// It is field maths: values and operations on them, each result of a size
+// known in advance, nothing allocated, so every function can run on a GPU
+// (sdf.slang is the hand-kept twin until Cone compiles it there). What
+// holds frames along a curve is its owner's (a List on the CPU); sdf takes
+// a view of them. A shape made into a mesh is the sdfmesh package's.
 //
 // Numbers are f32, points geomath's Vec3. A shape is written as code:
 //
@@ -61,7 +70,8 @@
 // that is what crosses the network.
 //
 // sdf.slang holds the same functions for shaders, under the same names
-// (all but PathCurve; the constructors are functions there, 'makeArc',
+// (all but PathCurve, CurveCells, Capsules and their functions, not yet written
+// there; the constructors are functions there, 'makeArc',
 // 'makeArcCells', 'makeHorn'; the traits are interfaces and the generic
 // functions Slang generics over them). The two are kept in step by hand;
 // tests/parity.cone checks them against each other on a GPU. Those without
@@ -75,21 +85,15 @@
 //   operator.cone   union, subtraction, intersection, smooth and hard; onion, round
 //   domain.cone     translation, rotation, scale, mirrors, repetition, elongation
 //   fillet.cone     hg_sdf's fillets (MIT)
-//   curve.cone      Curve, Arc, PathCurve, CurveCells, Repeated, repeatAlong
+//   curve.cone      Curve, Arc, PathCurve, CurveCells, curveCells, Repeated,
+//                   repeatAlong, repeatAlongArc, repeatAlongCells
 //   horn.cone       Horn
-//   shape.cone      Shape, FnShape, gradient, normal
+//   capsules.cone   Capsules, capsuleBox, capsuleBucket
+//   shape.cone      Shape, gradient, normal
 //   detail.cone     displace, latticeSpheres, fbmDetail
-//   mesher.cone     SurfaceNet, surfaceNet, netLevels, meshHash
-//
-// Meshing lives here, not in mesh: it needs a Shape, and mesh must not
-// depend on sdf (sdf already depends on mesh, through sculpt). What it
-// makes is mesh's Mesh and PolyMesh.
 
 mod sdf;
 
 import libc;
 import geomath use *;
-import collections use *;
-import sculpt;
 import noise;
-import mesh;

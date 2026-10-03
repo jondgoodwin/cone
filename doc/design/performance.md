@@ -28,8 +28,8 @@ architectural.** **This forbids** treating "optimize later" as the answer to a
 design question about layout, allocation or copying.
 
 **Memory technique is where the orders of magnitude are — not code generation.**
-▸ **So the compiler's own optimization is table stakes, and the pass list stays
-short deliberately.** **This forbids** buying performance by out-optimizing LLVM
+▸ **So the compiler's own optimization is table stakes: LLVM's standard
+pipeline, and no pass list of the compiler's own.** **This forbids** buying performance by out-optimizing LLVM
 rather than by handing it better-shaped IR.
 
 **No construct's cost is invisible at the point you write it.** Every row of the
