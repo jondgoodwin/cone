@@ -367,6 +367,22 @@ vtable. A **private** generic method and a generic **static** function are
 neither slots nor requirements and cost the trait nothing.
 `trait_typecheck_vref` pins all three, and
 `doc/reference/refvirtref.html`, "Type Restrictions", is the rule.
+
+⚠ **The vtable holds a trait's public members only, so a private one is never
+dispatched.** `structMakeVtable` gives a slot, and a `vtblidx`, to each public
+method with a receiver and each public field that is not the tag; a private
+member is neither a slot nor a requirement an implementer meets, and its
+`vtblidx` is never written. Module-wide privacy still lets the trait's own module
+name it through a virtual reference, or call an enum's through a plain reference
+(dispatched by the tag), so the use is refused where it is written
+(`fnCallPrivateVtable`, `ErrorPrivateVtable`; [fncall](fncall.md)) and never
+reaches generation. Making the virtual reference is not refused: one that reaches
+only public members is sound. A private method is still reached through `self`
+in a default's copies, where `self` is the implementer, and on the concrete type.
+An implementer's member fills a slot whatever its own visibility: matching
+(`structMapVtableImpl`) compares names and signatures only.
+`trait_typecheck_vref_private` pins the refusals and `trait_vref_private` what
+runs.
 | `namespace` | every named member: fields, methods, macros, overload sets, `Self`, **an enum's variants** — each a `StructNode`, bound at parse, and never a member of the enum's values: a lookup through a value passes one over (`fnCallLowerMethod`) — and what a fold admits — a **copy** of a folded field (a `FieldDclNode` with a `hop`) and an **alias** (`AliasDclNode`) for a folded method, overload set or macro method, for every member of an `extends` base but its fields, `final` and `clone` (those two are copied into `nodelist`, as a trait's defaults are), and for every member a sibling `use` admits. The copies and aliases live here only; `fields` and `nodelist` never hold one |
 | `dropfn` | NULL until type check settles the layout, and set as part of it, before any method is checked — an enum's once its variants are laid out, and only where one of them has something to do as it dies (type check, step 8a) |
 | `dclinfo` | owner and the facts its symbols are spelled from — [Names and Namespaces](../../../../doc/design/names-and-namespaces.md), "Symbols". The owner is a module, or the enum for a variant declared inside one — for an extension's copy of a base variant, the extension, so the copy's methods are spelled after it. Read for one thing besides naming: rejecting a variant declared outside its enum's module, through `dclInfoGetModule` |
