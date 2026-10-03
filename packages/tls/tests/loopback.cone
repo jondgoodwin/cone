@@ -1,0 +1,387 @@
+// HTTPS over 127.0.0.1, offline: a Cone TLS server (tests/certs) and Cone
+// TLS clients on one Loop and one httpconn Driver, the TLS sessions slotted
+// into the driver's Layer seam. Checked: the handshake through the driver,
+// requests, bodies (one of 1 MiB), keep-alive (50 requests on one
+// connection: one connect, one accept), close_notify (sent by both, the
+// server reading the client's), resumption on a second connection, and the
+// refusals as the driver reports them: a wrong host, an expired
+// certificate, an untrusted root, a pin that does not match, and the OS's
+// verifier (offline) run on the blocking pool against the test root, which
+// the machine does not trust. Every buffer goes back to the pool.
+
+mod loopback;
+
+import stdio use *;
+import testing use *;
+import fs;
+import collections use List, String;
+import time use Instant, Duration;
+import iobuf use *;
+import iocore use Loop, SocketAddr, forever;
+import http use *;
+import httpconn use *;
+import tls;
+
+const tokGood = 100u64;
+const tokExpired = 101u64;
+const tokUntrusted = 102u64;
+const tokConn = 1u64;
+const tokReq = 2u64;
+
+fn certs(name &[]u8) String {
+  mut p = String.from("../../../../tests/certs/");
+  p.append(name);
+  p;
+}
+
+fn readText(name &[]u8) String {
+  mut out = String.empty();
+  match fs.readFile(certs(name).view()) {
+    case mut r Ok {out <=> r.value;}
+    case imm e Error {}
+  }
+  out;
+}
+
+fn helloBody() &[]u8 {"hello over TLS";}
+
+// The listeners' layers: a TLS server session each, from one context
+struct TlsMaker {
+  server tls.Server;
+  pool Pool;
+
+  pub fn make(self &mut) So[Layer] {new So[tls.Stream](server.stream(pool));}
+}
+
+fn server(cert &[]u8, key &[]u8) tls.Server {
+  match tls.Server.make(tls.ServerConfig.make(certs(cert).view(), certs(key).view())) {
+    case imm r Ok {
+      imm s = r.value;
+      return s;
+    }
+    case imm e Error {printStr(e.value.message().view());}
+  }
+  panic("no server");
+}
+
+fn client(v tls.Verifier) tls.Client {
+  mut cfg = tls.ClientConfig.make();
+  cfg.verify = v;
+  cfg.offline = true;
+  match tls.Client.make(cfg) {
+    case imm r Ok {
+      imm c = r.value;
+      return c;
+    }
+    case imm e Error {printStr(e.value.message().view());}
+  }
+  panic("no client");
+}
+
+// What the server side has seen
+struct Srv {
+  pub pool Pool;
+  pub req ReqId;
+  pub target String;
+  pub body String;
+  pub pieces u32;
+  pub accepted u64;
+  pub requests u64;
+  pub dones u64;
+  pub closed u64;
+  pub clean u64;
+}
+
+// What the client side has seen, for the request under way
+struct Cli {
+  pub status u16;
+  pub body String;
+  pub finals u64;
+  pub last EventKind;
+  pub failure String;
+  pub stage Stage;
+  pub code u32;
+  pub connected u64;
+  pub closed u64;
+  pub clean u64;
+  pub closeFailure String;
+}
+
+// The server's answer to a request read whole
+fn answer(drv &mut Driver, sv &mut Srv) {
+  imm req = sv.req;
+  if sv.target.view() == "/hello" {
+    drv.respond(req, ResponseHead.make(200u16), BodyLength.sized(u64.from(helloBody().len)));
+    mut b = sv.pool.mustTake(64usize);
+    b.append(helloBody());
+    drv.sendData(req, b);
+    drv.finish(req);
+  } elif sv.target.view() == "/big" {
+    drv.respond(req, ResponseHead.make(200u16), BodyLength.sized(1048576u64));
+    sv.pieces = 0u32;
+    sendBig(drv, sv);
+  } else {
+    drv.respond(req, ResponseHead.make(200u16), BodyLength.sized(u64.from(sv.body.len())));
+    mut b = sv.pool.mustTake(sv.body.len() + 1usize);
+    b.append(sv.body.view());
+    drv.sendData(req, b);
+    drv.finish(req);
+  }
+}
+
+// 1 MiB, each byte its offset modulo 251, in 16 pieces, as fast as the
+// connection takes them: a piece refused waits for Writable
+fn sendBig(drv &mut Driver, sv &mut Srv) {
+  while sv.pieces < 16u32 {
+    mut b = sv.pool.mustTake(65536usize);
+    mut j = 0u32;
+    imm s = b.spare();
+    while j < 65536u32 {
+      s[usize.from(j)] = u8.from((sv.pieces * 65536u32 + j) % 251u32);
+      j = j + 1u32;
+    }
+    b.setLen(65536usize);
+    match drv.sendData(sv.req, b) {
+      case is None[IoBuf] {sv.pieces = sv.pieces + 1u32;}
+      else {return;}
+    }
+  }
+  drv.finish(sv.req);
+  sv.pieces = 99u32;
+}
+
+// One poll of the driver, every event handled
+fn step(drv &mut Driver, lp &mut Loop, sv &mut Srv, cl &mut Cli, events &mut List[Event]) {
+  drv.poll(lp, Instant.now() + Duration.fromMillis(20i64), events);
+  mut k = 0usize;
+  while k < events.len() {
+    imm e = &mut events[k];
+    k = k + 1usize;
+    if e.token >= tokGood {
+      if e.kind == EventKind.Accepted[] {sv.accepted = sv.accepted + 1u64;}
+      elif e.kind == EventKind.Request[] {
+        sv.requests = sv.requests + 1u64;
+        sv.req = e.req;
+        sv.target = String.from(e.request.target.view());
+        sv.body = String.empty();
+      } elif e.kind == EventKind.Data[] {
+        sv.body.append(e.buf.view());
+        drv.release(e.req, e.buf.len());
+      } elif e.kind == EventKind.End[] {
+        answer(drv, sv);
+      } elif e.kind == EventKind.Writable[] {
+        if sv.pieces < 16u32 {sendBig(drv, sv);}
+      } elif e.kind == EventKind.Done[] {
+        sv.dones = sv.dones + 1u64;
+      } elif e.kind == EventKind.Closed[] {
+        sv.closed = sv.closed + 1u64;
+        if e.clean {sv.clean = sv.clean + 1u64;}
+      }
+    } elif e.token == tokConn {
+      if e.kind == EventKind.Connected[] {cl.connected = cl.connected + 1u64;}
+      elif e.kind == EventKind.Closed[] {
+        cl.closed = cl.closed + 1u64;
+        if e.clean {
+          cl.clean = cl.clean + 1u64;
+        } else {
+          cl.closeFailure = e.failure.message();
+        }
+      }
+    } elif e.token == tokReq {
+      if e.kind == EventKind.Response[] {
+        cl.status = e.response.status;
+      } elif e.kind == EventKind.Data[] {
+        cl.body.append(e.buf.view());
+        drv.release(e.req, e.buf.len());
+      } elif e.isTerminal() {
+        cl.finals = cl.finals + 1u64;
+        cl.last = e.kind;
+        if e.kind == EventKind.Failed[] {
+          cl.failure = e.failure.message();
+          cl.stage = e.failure.stage;
+          cl.code = e.failure.code;
+        }
+      }
+    }
+  }
+  events.clear();
+}
+
+// Ask for a request and drive until its final answer
+fn exchange(drv &mut Driver, lp &mut Loop, sv &mut Srv, cl &mut Cli, events &mut List[Event], conn ConnId,
+    head RequestHead, body &[]u8) {
+  cl.status = 0u16;
+  cl.body = String.empty();
+  cl.failure = String.empty();
+  imm before = cl.finals;
+  if body.len == 0usize {
+    drv.request(lp, conn, head, BodyLength.empty(), Sink.Here[tokReq]);
+  } else {
+    imm req = drv.request(lp, conn, head, BodyLength.sized(u64.from(body.len)), Sink.Here[tokReq]);
+    mut sent = false;
+    imm giveUp = Instant.now() + Duration.fromSeconds(10i64);
+    while not sent and Instant.now() < giveUp {
+      mut b = sv.pool.mustTake(body.len);
+      b.append(body);
+      match drv.sendData(req, b) {
+        case is None[IoBuf] {
+          drv.finish(req);
+          sent = true;
+        }
+        else {step(drv, lp, sv, cl, events);}
+      }
+    }
+  }
+  imm giveUp = Instant.now() + Duration.fromSeconds(10i64);
+  while cl.finals == before and Instant.now() < giveUp {step(drv, lp, sv, cl, events);}
+  requireUInt(cl.finals, before + 1u64, "the request has its final answer in time");
+}
+
+// Drive until the client's connection has closed, and the server's
+fn waitClosed(drv &mut Driver, lp &mut Loop, sv &mut Srv, cl &mut Cli, events &mut List[Event],
+    clientClosed u64, serverClosed u64) {
+  imm giveUp = Instant.now() + Duration.fromSeconds(10i64);
+  while (cl.closed < clientClosed or sv.closed < serverClosed) and Instant.now() < giveUp {
+    step(drv, lp, sv, cl, events);
+  }
+  requireUInt(cl.closed, clientClosed, "the client's connection closed");
+  requireUInt(sv.closed, serverClosed, "the server's closed");
+}
+
+// A connection whose handshake is refused: its request's failure
+fn refused(label &[]u8, drv &mut Driver, lp &mut Loop, sv &mut Srv, cl &mut Cli, events &mut List[Event],
+    stream tls.Stream, port u16, want &[]u8) {
+  imm conn = drv.connectWith(lp, "127.0.0.1", port, new So[tls.Stream](stream), Sink.Here[tokConn]);
+  exchange(drv, lp, sv, cl, events, conn, RequestHead.get("/hello", "localhost"), "");
+  printStr(label);
+  printStr(": ");
+  printStr(eventName(cl.last));
+  printStr(": ");
+  printStr(cl.failure.view());
+  printStr("\n");
+  expect(cl.last == EventKind.Failed[], label);
+  expect(cl.stage == Stage.Tls[], "...at the TLS stage");
+  expect(cl.failure.contains(want), "...saying why");
+}
+
+fn listenOn(drv &mut Driver, lp &mut Loop, srv tls.Server, pool Pool, token u64) u16 {
+  mut port = 0u16;
+  match drv.listenWith(lp, SocketAddr.localhost(0u16), new So[TlsMaker](new TlsMaker(srv, pool)), Sink.Here[token]) {
+    case imm r Ok {
+      match drv.localAddr(lp, r.value) {
+        case imm a Ok {port = a.value.port();}
+        case imm e Error {}
+      }
+    }
+    case imm e Error {}
+  }
+  requireUInt(u64.from(port), u64.from(port), "listening");
+  port;
+}
+
+fn main() i32 {
+  imm pool = Pool.make();
+  mut lp = Loop.mustMake();
+  mut drv = Driver.make(Config.make(), pool);
+  imm good = listenOn(&mut drv, &mut lp, server("server.pem", "server.key"), pool, tokGood);
+  imm expiredPort = listenOn(&mut drv, &mut lp, server("expired.pem", "expired.key"), pool, tokExpired);
+  imm untrustedPort = listenOn(&mut drv, &mut lp, server("untrusted.pem", "untrusted.key"), pool, tokUntrusted);
+  require(good != 0u16 and expiredPort != 0u16 and untrustedPort != 0u16, "three servers listen");
+  mut sv = new Srv(pool: pool, req: ReqId.none(), target: String.empty(), body: String.empty(),
+    pieces: 99u32, accepted: 0u64, requests: 0u64, dones: 0u64, closed: 0u64, clean: 0u64);
+  mut cl = new Cli(status: 0u16, body: String.empty(), finals: 0u64, last: EventKind.Done[],
+    failure: String.empty(), stage: Stage.Closed[], code: 0u32, connected: 0u64, closed: 0u64, clean: 0u64,
+    closeFailure: String.empty());
+  mut events = List[Event].empty();
+  imm roots = client(tls.Verifier.roots(readText("ca.pem").view()));
+  imm before = tls.stats();
+
+  // One connection: a GET, a POST echoed, 1 MiB, then 50 GETs kept alive
+  imm conn = drv.connectWith(&mut lp, "127.0.0.1", good, new So[tls.Stream](roots.stream("localhost", pool)),
+    Sink.Here[tokConn]);
+  exchange(&mut drv, &mut lp, &mut sv, &mut cl, &mut events, conn, RequestHead.get("/hello", "localhost"), "");
+  expect(cl.last == EventKind.Done[], "GET /hello: Done");
+  expectInt(i64.from(cl.status), 200i64, "GET /hello: 200");
+  expectStr(cl.body.view(), helloBody(), "GET /hello: its body");
+  exchange(&mut drv, &mut lp, &mut sv, &mut cl, &mut events, conn, RequestHead.make("POST", "/echo", "localhost"),
+    "a body sent over TLS and echoed back");
+  expectStr(cl.body.view(), "a body sent over TLS and echoed back", "POST /echo: the body echoed");
+  exchange(&mut drv, &mut lp, &mut sv, &mut cl, &mut events, conn, RequestHead.get("/big", "localhost"), "");
+  expectUInt(u64.from(cl.body.len()), 1048576u64, "GET /big: 1 MiB");
+  mut same = true;
+  mut k = 0usize;
+  imm v = cl.body.view();
+  while k < v.len {
+    if v[k] != u8.from(u32.from(k % 251usize)) {same = false;}
+    k = k + 1usize;
+  }
+  expect(same, "GET /big: every byte");
+  k = 0usize;
+  mut oks = 0u64;
+  while k < 50usize {
+    exchange(&mut drv, &mut lp, &mut sv, &mut cl, &mut events, conn, RequestHead.get("/hello", "localhost"), "");
+    if cl.last == EventKind.Done[] and cl.status == 200u16 and cl.body.view() == helloBody() {oks = oks + 1u64;}
+    k = k + 1usize;
+  }
+  expectUInt(oks, 50u64, "50 GETs kept alive, each answered");
+  expectUInt(cl.connected, 1u64, "one connect");
+  expectUInt(sv.accepted, 1u64, "one accept");
+  expectUInt(sv.requests, 53u64, "53 requests on the one connection");
+  drv.close(&mut lp, conn);
+  waitClosed(&mut drv, &mut lp, &mut sv, &mut cl, &mut events, 1u64, 1u64);
+  expectUInt(cl.clean, 1u64, "the client's connection closed cleanly");
+  expectUInt(sv.clean, 1u64, "the server's too");
+  imm closing = tls.stats();
+  expectUInt(closing.closeNotifySent - before.closeNotifySent, 2u64, "close_notify sent by both");
+  expectUInt(closing.closeNotifyReceived - before.closeNotifyReceived, 1u64,
+    "the server read the client's (the client's linger reads and drops the server's)");
+  expectUInt(closing.truncated - before.truncated, 0u64, "no stream ended without one");
+  expectUInt(closing.handshakes - before.handshakes, 2u64, "one handshake on each side");
+
+  // A second connection resumes the first's session
+  imm conn2 = drv.connectWith(&mut lp, "127.0.0.1", good, new So[tls.Stream](roots.stream("localhost", pool)),
+    Sink.Here[tokConn]);
+  exchange(&mut drv, &mut lp, &mut sv, &mut cl, &mut events, conn2, RequestHead.get("/hello", "localhost"), "");
+  expect(cl.last == EventKind.Done[] and cl.status == 200u16, "a second connection's GET");
+  expectUInt(tls.stats().resumed - closing.resumed, 2u64, "...resumed, on both sides");
+  drv.close(&mut lp, conn2);
+  waitClosed(&mut drv, &mut lp, &mut sv, &mut cl, &mut events, 2u64, 2u64);
+
+  // Refused: a wrong host, an expired certificate, an untrusted root
+  refused("wrong host", &mut drv, &mut lp, &mut sv, &mut cl, &mut events, roots.stream("wrong.example", pool),
+    good, "hostname mismatch");
+  refused("expired", &mut drv, &mut lp, &mut sv, &mut cl, &mut events, roots.stream("localhost", pool),
+    expiredPort, "certificate has expired");
+  refused("untrusted root", &mut drv, &mut lp, &mut sv, &mut cl, &mut events, roots.stream("localhost", pool),
+    untrustedPort, "unable to get local issuer certificate");
+  expect(not cl.failure.contains("Windows"), "OpenSSL's reasons, not the OS's");
+
+  // Pinning: the server's key, and another
+  imm pin = readText("server.pin");
+  imm pinned = client(tls.Verifier.pinnedSha256(pin.view()));
+  imm conn3 = drv.connectWith(&mut lp, "127.0.0.1", good, new So[tls.Stream](pinned.stream("localhost", pool)),
+    Sink.Here[tokConn]);
+  exchange(&mut drv, &mut lp, &mut sv, &mut cl, &mut events, conn3, RequestHead.get("/hello", "localhost"), "");
+  expect(cl.last == EventKind.Done[] and cl.status == 200u16, "pinned: the server's key is accepted");
+  drv.close(&mut lp, conn3);
+  refused("pinned, another key", &mut drv, &mut lp, &mut sv, &mut cl, &mut events, pinned.stream("localhost", pool),
+    untrustedPort, "no pinned key matches");
+
+  // The OS's verifier, on the pool: the test root is not the machine's
+  imm platform = client(tls.Verifier.platform());
+  imm pre = tls.stats();
+  refused("the OS's verifier", &mut drv, &mut lp, &mut sv, &mut cl, &mut events, platform.stream("localhost", pool),
+    good, "not trusted");
+  expectUInt(u64.from(cl.code), 0x800B0109u64, "the failure carries Windows' CERT_E_UNTRUSTEDROOT");
+  expectUInt(tls.stats().verifications - pre.verifications, 1u64, "one verification, on the pool");
+
+  // Every connection ends; nothing is left
+  imm giveUp = Instant.now() + Duration.fromSeconds(10i64);
+  while drv.live() > 0u32 and Instant.now() < giveUp {step(&mut drv, &mut lp, &mut sv, &mut cl, &mut events);}
+  expectUInt(u64.from(drv.live()), 0u64, "no connection left");
+  drv.abortAll(&mut lp);
+  imm t = drv.stats();
+  expectUInt(t.done + t.failed, t.requests, "every request has its one final answer");
+  expectUInt(pool.stats().lent, 0u64, "every buffer back in the pool");
+  done();
+}

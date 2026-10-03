@@ -103,6 +103,10 @@ void flowVarRelease(VarDclNode *var, INode *dropat, int whole, int hollow, Nodes
 // scope's release)? 'hollow' gathers a part handed back out of what it owns.
 int flowIsScopeResultOf(INode *retexp, VarDclNode *varnode, Nodes **hollow);
 
+// Does the scope being left (its variables from 'startpos' up) hand one of
+// them back whole as 'retexp', exempt from its release?
+int flowScopeHandsBack(size_t startpos, INode *retexp);
+
 // Start the flow state for a function with this signature
 void flowStateInit(FlowState *fstate, FnSigNode *fnsig);
 

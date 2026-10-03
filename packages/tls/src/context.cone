@@ -1,0 +1,294 @@
+// Contexts: a Client or a Server, an OpenSSL SSL_CTX and what its sessions
+// share. How it is built. The SSL_CTX and what goes with it (the verifier's
+// kind and pins, the ALPN list a server chooses from, the client's cache of
+// sessions to resume) are a CtxState behind an 'Arc[Mutex, ...]': copying a
+// Client or a Server shares it, between threads too, and every Session made
+// from it holds one owner, so a context outlives its sessions (OpenSSL's
+// callbacks read the ALPN list a server's state holds). Each session's
+// SSL object also holds its own reference on the SSL_CTX, OpenSSL's way.
+
+const maxCached = 256usize;      // sessions a client keeps to resume, at most
+
+// A cached session: which server it is for, and OpenSSL's SSL_SESSION
+struct Cached {
+  key String;
+  sess *u8;
+}
+
+// A context's state. It declares Sendable, a promise taken on trust, for
+// OpenSSL's pointers: an SSL_CTX is safe to use from any thread (OpenSSL's
+// own locks), and the cache's sessions are reached only under the Arc's lock
+struct CtxState is Sendable {
+  ctx *u8;
+  server Bool;
+  kind VerifyKind;
+  pins List[u8];
+  resume Bool;
+  lane Lane;
+  offline Bool;
+  alpn *u8;               // a server's: the length (u32), then ALPN's wire format
+  cache List[Cached];
+
+  // A session for 'key' to resume, taken out of the cache (a TLS 1.3 ticket
+  // is used once), or null
+  fn takeCached(self &mut, key &[]u8) *u8 {
+    mut k = 0usize;
+    while k < cache.len() {
+      if cache[k].key.view() == key {
+        imm s = cache[k].sess;
+        imm last = cache.len() - 1usize;
+        if k != last {cache.swap(k, last);}
+        cache.pop();
+        return s;
+      }
+      k = k + 1usize;
+    }
+    null;
+  }
+
+  // Keep a session to resume 'key' with, in place of any before it; the
+  // oldest goes past maxCached
+  fn putCached(self &mut, key &[]u8, sess *u8) {
+    mut k = 0usize;
+    while k < cache.len() {
+      if cache[k].key.view() == key {
+        SSL_SESSION_free(cache[k].sess);
+        (&mut cache[k]).sess = sess;
+        return;
+      }
+      k = k + 1usize;
+    }
+    if cache.len() >= maxCached {
+      SSL_SESSION_free(cache[0usize].sess);
+      mut j = 0usize;
+      while j + 1usize < cache.len() {
+        cache.swap(j, j + 1usize);
+        j = j + 1usize;
+      }
+      cache.pop();
+    }
+    cache.push(new Cached(String.from(key), sess));
+  }
+
+  fn cachedCount(self &) usize {cache.len();}
+
+  fn final(self &uni) {
+    mut k = 0usize;
+    while k < cache.len() {
+      SSL_SESSION_free(cache[k].sess);
+      k = k + 1usize;
+    }
+    if alpn as usize != 0usize {libc.free(alpn);}
+    SSL_CTX_free(ctx);
+  }
+}
+
+alias Shared = Arc[Mutex, CtxState];
+
+// ALPN's wire format: each name after its length in one byte
+fn alpnWire(names &List[String]) List[u8] {
+  mut out = List[u8].empty();
+  mut k = 0usize;
+  while k < names.len() {
+    imm n = names[k].view();
+    if n.len > 0usize and n.len < 256usize {
+      out.push(u8.from(n.len));
+      mut j = 0usize;
+      while j < n.len {
+        out.push(n[j]);
+        j = j + 1usize;
+      }
+    }
+    k = k + 1usize;
+  }
+  out;
+}
+
+// What OpenSSL's error queue says, as one line, the queue emptied; and the
+// first error's code
+fn sslErrors(out &mut String) u32 {
+  mut first = 0u32;
+  mut buf = new Array[u8, 256] <- fill 0u8;
+  while true {
+    imm e = ERR_get_error();
+    if e == 0u32 {break;}
+    if first == 0u32 {
+      first = e;
+      ERR_error_string_n(e, &mut buf as *u8, 256usize);
+      if out.len() > 0usize {out.append(": ");}
+      out.append(cText(&mut buf as *u8));
+    }
+  }
+  first;
+}
+
+// A context's configuration failed: why
+fn configError(what &[]u8) TlsError {
+  mut d = String.from(what);
+  imm code = sslErrors(&mut d);
+  new TlsError(TlsErrorKind.Config[], code, 0u32, d);
+}
+
+// A new SSL_CTX with the versions, options and buffers every one takes
+fn newCtx(method *u8, minV TlsVersion, maxV TlsVersion) *u8 {
+  ERR_clear_error();
+  imm ctx = SSL_CTX_new(method);
+  if ctx as usize == 0usize {return null;}
+  SSL_CTX_ctrl(ctx, ctrlSetMinProtoVersion, versionNumber(minV), null);
+  SSL_CTX_ctrl(ctx, ctrlSetMaxProtoVersion, versionNumber(maxV), null);
+  SSL_CTX_set_options(ctx, opNoRenegotiation);
+  // An idle connection keeps no read or write buffer: 55 KB less a client
+  // and server pair (measured, examples/bench.cone)
+  SSL_CTX_ctrl(ctx, ctrlMode, modeReleaseBuffers, null);
+  ctx;
+}
+
+// ---------------------------------------------------------------------------
+// Client
+// ---------------------------------------------------------------------------
+
+// A client's context: what its sessions share (see the package's header,
+// CONFIGURATION). Copied to share it
+pub struct Client {
+  state Shared;
+
+  // A client context, or why it could not be made (Config: a root bundle
+  // holding no certificate)
+  pub fn make(cfg ClientConfig) Result[Client, TlsError] {
+    imm ctx = newCtx(TLS_client_method(), cfg.minVersion, cfg.maxVersion);
+    if ctx as usize == 0usize {return Error[Client, TlsError][configError("SSL_CTX_new failed")];}
+    // Sessions are cached here, not in OpenSSL's own cache
+    SSL_CTX_ctrl(ctx, ctrlSessCacheMode, sessCacheOff, null);
+    imm wire = alpnWire(&cfg.alpn);
+    if wire.len() > 0usize {
+      imm w = wire.view();
+      SSL_CTX_set_alpn_protos(ctx, &w[0usize] as *u8, u32.from(w.len));
+    }
+    imm kind = cfg.verify.kind;
+    if kind == VerifyKind.Insecure[] {
+      SSL_CTX_set_verify(ctx, verifyNone, null);
+    } elif kind == VerifyKind.Roots[] {
+      SSL_CTX_set_verify(ctx, verifyPeer, null);
+      imm n = loadRoots(ctx, cfg.verify.bundle.view());
+      if n == 0u32 {
+        SSL_CTX_free(ctx);
+        return Error[Client, TlsError][configError("the root bundle holds no certificate")];
+      }
+    } else {
+      // The OS's verifier and pinning: OpenSSL hands the chain to
+      // verifyChain, which stops the handshake until the session's verdict
+      SSL_CTX_set_verify(ctx, verifyPeer, null);
+      SSL_CTX_set_cert_verify_callback(ctx, &verifyChain, null);
+    }
+    mut pins = List[u8].empty();
+    mut k = 0usize;
+    while k < cfg.verify.pins.len() {
+      pins.push(*cfg.verify.pins[k]);
+      k = k + 1usize;
+    }
+    imm st = new Shared(new CtxState(ctx: ctx, server: false, kind: kind, pins: pins,
+      resume: cfg.resume, lane: cfg.verifyLane, offline: cfg.offline, alpn: null,
+      cache: List[Cached].empty()));
+    Ok[Client, TlsError][new Client(st)];
+  }
+
+  // A session with the server named serverName (a DNS name, sent by SNI and
+  // checked against its certificate; or an IP address, checked only)
+  pub fn session(self &, serverName &[]u8) Session {Session.client(state, serverName);}
+
+  // The same, as a Layer for httpconn's driver, its buffers from pool
+  pub fn stream(self &, serverName &[]u8, pool Pool) Stream {
+    Stream.make(Session.client(state, serverName), pool);
+  }
+
+  // Sessions kept to resume
+  pub fn cachedSessions(self &) usize {(&*state).cachedCount();}
+}
+
+// The certificates of a PEM bundle into a context's store: how many
+fn loadRoots(ctx *u8, pem &[]u8) u32 {
+  if pem.len == 0usize {return 0u32;}
+  imm bio = BIO_new_mem_buf(&pem[0usize] as *u8, i32.from(pem.len));
+  imm store = SSL_CTX_get_cert_store(ctx);
+  mut n = 0u32;
+  while true {
+    imm x = PEM_read_bio_X509(bio, null, null, null);
+    if x as usize == 0usize {break;}
+    if X509_STORE_add_cert(store, x) == 1i32 {n = n + 1u32;}
+    X509_free(x);
+  }
+  BIO_free(bio);
+  // The read past the last certificate leaves "no start line" queued
+  ERR_clear_error();
+  n;
+}
+
+// ---------------------------------------------------------------------------
+// Server
+// ---------------------------------------------------------------------------
+
+// A server's context (see the package's header, CONFIGURATION). Copied to
+// share it
+pub struct Server {
+  state Shared;
+
+  // A server context, or why it could not be made (Config: a file that
+  // could not be read, a key that is not the certificate's)
+  pub fn make(cfg ServerConfig) Result[Server, TlsError] {
+    imm ctx = newCtx(TLS_server_method(), cfg.minVersion, cfg.maxVersion);
+    if ctx as usize == 0usize {return Error[Server, TlsError][configError("SSL_CTX_new failed")];}
+    mut cert = cfg.certFile.copy();
+    if SSL_CTX_use_certificate_chain_file(ctx, cert.cstr()) != 1i32 {
+      SSL_CTX_free(ctx);
+      mut what = String.from("the certificate chain could not be loaded from ");
+      what.append(cfg.certFile.view());
+      return Error[Server, TlsError][configError(what.view())];
+    }
+    mut key = cfg.keyFile.copy();
+    if SSL_CTX_use_PrivateKey_file(ctx, key.cstr(), filetypePem) != 1i32 {
+      SSL_CTX_free(ctx);
+      mut what = String.from("the private key could not be loaded from ");
+      what.append(cfg.keyFile.view());
+      return Error[Server, TlsError][configError(what.view())];
+    }
+    if SSL_CTX_check_private_key(ctx) != 1i32 {
+      SSL_CTX_free(ctx);
+      return Error[Server, TlsError][configError("the private key is not the certificate's")];
+    }
+    // The ALPN list the select callback chooses from: its length, then the
+    // wire format, in memory the state frees
+    imm wire = alpnWire(&cfg.alpn);
+    imm block = libc.malloc(4usize + wire.len());
+    *(block as *u32) = u32.from(wire.len());
+    if wire.len() > 0usize {
+      imm w = wire.view();
+      libc.memcpy(block + 4usize, &w[0usize] as *u8, w.len);
+    }
+    SSL_CTX_set_alpn_select_cb(ctx, &alpnSelect, block);
+    imm st = new Shared(new CtxState(ctx: ctx, server: true, kind: VerifyKind.Insecure[],
+      pins: List[u8].empty(), resume: false, lane: defaultVerifyLane(), offline: false, alpn: block,
+      cache: List[Cached].empty()));
+    Ok[Server, TlsError][new Server(st)];
+  }
+
+  // A session with one client
+  pub fn session(self &) Session {Session.server(state);}
+
+  // The same, as a Layer for httpconn's driver, its buffers from pool
+  pub fn stream(self &, pool Pool) Stream {Stream.make(Session.server(state), pool);}
+}
+
+// OpenSSL asks a server which of the protocols a client offers it speaks:
+// its own first choice among them, or a fatal no_application_protocol
+fn @c("coneTlsAlpnSelect") alpnSelect(ssl *u8, out &mut *u8, outLen &mut u8, offered *u8,
+    offeredLen u32, arg *u8) i32 {
+  imm len = *(arg as *u32);
+  mut chosen = null as *u8;
+  mut chosenLen = 0u8;
+  if SSL_select_next_proto(&mut chosen, &mut chosenLen, arg + 4usize, len, offered, offeredLen) != npnNegotiated {
+    return tlsextErrAlertFatal;
+  }
+  *out = chosen;
+  *outLen = chosenLen;
+  tlsextErrOk;
+}

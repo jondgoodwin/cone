@@ -44,7 +44,7 @@
 //   d.connectWith(lp, host, port, layer, sink)
 //   d.listen(lp, addr, sink)  d.listenWith(lp, addr, make, sink)  d.stopListening(lp, l)
 //   d.localAddr(lp, l)  d.close(lp, conn)  d.abort(lp, conn)
-//   d.isOpen(conn)  d.isIdle(conn)  d.peer(conn)
+//   d.isOpen(conn)  d.isIdle(conn)  d.peer(conn)  d.layerInfo(conn)
 //   d.request(lp, conn, head, body, sink)                              (REQUESTS)
 //   d.requestBy(..., deadline)  d.requestIn(..., group, deadline)
 //   d.respond(req, head, body)  d.sendInterim(req, head)  d.sendContinue(req)  (SERVING)
@@ -60,7 +60,7 @@
 //     Writable Done Failed Cancelled TimedOut;  eventName(k)
 //   Failure: f.stage f.code f.error f.unsent f.message()               (FAILURES)
 //   Timing: t.submitted t.started t.firstByte t.ended
-//   Layer, Plain                                                        (LAYERS)
+//   Layer, Plain, plainLayer(), LayerMaker, PlainMaker                 (LAYERS)
 //
 // THE DRIVER. One per Loop, driven by the loop's thread, as the loop is.
 // The program polls the loop as it always does and hands the driver every
@@ -172,11 +172,14 @@
 //
 // FAILURES. A Failed answer, and a Closed that is not clean, carry a
 // Failure: the stage it failed at (Resolve, Connect, Read, Write, Http --
-// the core refused what came, or its deadline passed -- Closed, Limit); the
-// Windows error number when the OS gave one (a peer's reset reads as
-// ERROR_NETNAME_DELETED, 64); an http.HttpError (its kind,
+// the core refused what came, or its deadline passed -- Tls, the
+// connection's layer failed: a handshake refused, a certificate, a record --
+// Closed, Limit); the Windows error number when the OS gave one (a peer's
+// reset reads as ERROR_NETNAME_DELETED, 64; the OS's certificate verifier
+// refusing, CERT_E_UNTRUSTEDROOT and its kin); an http.HttpError (its kind,
 // detail, and 'noResponse', no byte of a response arrived); and 'unsent',
-// no byte of the request reached the socket. A request may be retried on
+// no byte of the request reached the socket (a layer's own bytes, a TLS
+// handshake's, are not the request's). A request may be retried on
 // another connection when unsent, or when idempotent and noResponse: the
 // client layer's decision (invariant I21), which these two say exactly.
 //
@@ -186,9 +189,19 @@
 // bytes to send go in by 'plainIn', the wire's come out by 'wireOut'. Plain
 // passes them through untouched, moving each buffer whole (no copy); a TLS
 // session, sans-IO, is the same shape with a handshake and records inside
-// it, and slots in per connection ('connectWith', 'listenWith') with no
-// change to the driver: a Layer is a trait, a connection holds it behind an
-// owning virtual reference, and a type complies by having its methods.
+// it: the tls package's Stream, which slots in per connection
+// ('connectWith'; 'listenWith' and a LayerMaker, the program's, making one
+// for each connection accepted) with no change to the driver: a Layer is a
+// trait, a connection holds it behind an owning virtual reference, and a
+// type complies by having its methods, so httpconn imports no TLS. A layer
+// may need work done that could block -- a TLS session's certificate check
+// by the OS, which may fetch over the network -- and hands it to the driver
+// ('wantsCall', 'takeCall'), which runs it on iocore's blocking pool, one at
+// a time, and gives the layer its answer ('callDone'); a connection that
+// ends meanwhile cancels it, and its late answer is dropped. A layer that
+// fails ('failed', 'failureCode', 'failureText') closes its connection,
+// every request on it Failed at Stage.Tls; 'layerInfo(conn)' is what the
+// layer says of itself ('describe').
 //
 // DIAGNOSTICS. 'stats()' counts connections made, accepted, refused and
 // closed, requests by their final answer, events delivered, held and
@@ -215,7 +228,7 @@
 //   of it the two ends' receive buffers. The kernel's own socket memory is
 //   not in these.
 //
-// Not here yet: TLS (the Layer seam waits for a binding); happy eyeballs
+// Not here yet: happy eyeballs
 // (addresses are tried one after another, not raced); a request's cancel
 // that drains a short response instead of resetting; HTTP/2 and HTTP/3 cores
 // under the same driver; a Request handle (cancel by a group instead);
@@ -228,7 +241,7 @@ import collections use List, String;
 import time use Instant, Duration;
 import sync use Sender;
 import iobuf use IoBuf, Pool, Chain;
-import iocore use Loop, Op, Target, Completion, Handle, OpId, SocketAddr, CancelGroup, IoError, forever, resolveOp, addressesIn;
+import iocore use Loop, Op, Target, Completion, Outcome, Lane, Handle, OpId, SocketAddr, CancelGroup, IoError, forever, resolveOp, addressesIn;
 import http use *;
 import http1;
 import diag;
@@ -318,6 +331,7 @@ pub enum Stage {
   Read,          // a receive failed: the connection was reset, or broke
   Write,         // a send failed
   Http,          // the core refused what came, or one of its deadlines passed
+  Tls,           // the connection's layer failed: a TLS handshake refused, a record broken
   Closed,        // the connection closed, or was reset, before the request could finish
   Limit;         // a bound refused it
 }
@@ -329,6 +343,7 @@ pub fn stageName(s Stage) &[]u8 {
   elif s == Stage.Read[] {"read";}
   elif s == Stage.Write[] {"write";}
   elif s == Stage.Http[] {"http";}
+  elif s == Stage.Tls[] {"tls";}
   elif s == Stage.Closed[] {"closed";}
   else {"limit";}
 }
@@ -545,8 +560,23 @@ pub trait Layer {
   // No more of the protocol's bytes will be sent: tell the peer (a TLS
   // close_notify; nothing for Plain)
   pub fn closeSend(self &mut);
-  // 0, or the layer's own code for why it failed (a TLS alert)
-  pub fn failure(self &) u32;
+  // Whether it has failed (a TLS handshake refused, a record broken): the
+  // connection then closes, Failed at Stage.Tls
+  pub fn failed(self &) Bool;
+  // Windows' error number when the OS gave the reason, else 0
+  pub fn failureCode(self &) u32;
+  // Why it failed, in words
+  pub fn failureText(self &) String;
+  // Whether it has work that may block, to run on the blocking pool (a TLS
+  // session's certificate check by the OS, which may fetch over the network)
+  pub fn wantsCall(self &) Bool;
+  // That work, as a pool operation (Op.Call), moved out
+  pub fn takeCall(self &mut) Op;
+  // Its answer
+  pub fn callDone(self &mut, c &mut Completion, now Instant);
+  // What it is and negotiated, for diagnostics ('plain'; a TLS session's
+  // version, cipher, ALPN and handshake time)
+  pub fn describe(self &) String;
 }
 
 const noBound = 0xFFFFFFFFFFFFFFFFusize;
@@ -575,7 +605,13 @@ pub struct Plain {
   pub fn isOpen(self &) Bool {true;}
   pub fn peerEnded(self &) Bool {ended and inq.len() == 0usize;}
   pub fn closeSend(self &mut) {}
-  pub fn failure(self &) u32 {0u32;}
+  pub fn failed(self &) Bool {false;}
+  pub fn failureCode(self &) u32 {0u32;}
+  pub fn failureText(self &) String {String.empty();}
+  pub fn wantsCall(self &) Bool {false;}
+  pub fn takeCall(self &mut) Op {Op.Call[Lane.general(), &noCall, 0u64, IoBuf.empty()];}
+  pub fn callDone(self &mut, c &mut Completion, now Instant) {}
+  pub fn describe(self &) String {String.from("plain");}
 
   fn front(q &mut Chain) IoBuf {
     mut b = IoBuf.empty();
@@ -587,5 +623,26 @@ pub struct Plain {
   }
 }
 
+// Plain has no work for the pool
+fn noCall(arg u64, buf &mut IoBuf) Outcome {Outcome.Done[0usize];}
+
 // A Plain layer, as a connection holds one
 pub fn plainLayer() So[Layer] {new So[Plain](Plain.make());}
+
+// What makes each accepted connection's layer: a listener holds one (see
+// LAYERS). A type complies by having the method
+pub trait LayerMaker {
+  pub fn make(self &mut) So[Layer];
+}
+
+// The maker of Plain layers, a plain listener's
+pub struct PlainMaker {
+  pub made u64;      // how many it has made
+
+  pub fn start() PlainMaker {new PlainMaker(0u64);}
+
+  pub fn make(self &mut) So[Layer] {
+    made = made + 1u64;
+    plainLayer();
+  }
+}

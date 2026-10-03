@@ -337,6 +337,29 @@ Visual Studio projects stay at the root.
   `loopback.cone` (over `iocore` on 127.0.0.1: 10,000 kept-alive GETs,
   chunked POSTs echoed, a 256 MiB body streamed with credit, every byte
   checked, latencies printed) and `bench.cone` (both cores in memory);
+  `httpconn` is HTTP/1.1 connections over `iocore`, both roles: a `Driver`
+  per Loop owning every connection's socket, `http1` core and layer
+  (connect through the DNS lane and ConnectEx, listen through AcceptEx,
+  requests with deadlines and cancel groups, exactly one final answer
+  each, events to a `Sink`), and between socket and core a byte-stream
+  `Layer` (a trait, held as `So[Layer]`): `Plain`, or `tls`'s `Stream`
+  (`connectWith`; `listenWith` and a `LayerMaker`), whose blocking work
+  (the OS's certificate check) the driver runs on the blocking pool;
+  `tls` is TLS 1.2 and 1.3 over OpenSSL 3.5 (CPython's signed build, from
+  `tools/deps/fetch.py`; `[link] runtime` copies its DLLs), sans-IO over
+  memory BIOs, client and server: a `Client` or `Server` context, a
+  `Session` (bytes in and out, SNI, ALPN offering `http/1.1`, resumption,
+  close_notify both ways, one `TlsError` with the back end's or the OS's
+  own code), and a `Stream`, the session as `httpconn`'s Layer; the
+  server's certificate is checked by `Verifier.platform()`, Windows' chain
+  engine and SSL policy (crypt32), run on the blocking pool while OpenSSL
+  waits (`SSL_set_retry_verify`), or for development by `roots`,
+  `pinnedSha256` or `insecureDevelopmentOnly`; its tests are offline
+  (sessions in memory, HTTPS over 127.0.0.1 through the driver, cancel and
+  deadlines in the handshake and the verification) with committed test
+  certificates (`tests/certs`, README there), and its examples
+  `get.cone` (HTTPS from a real server, the OS verifying) and
+  `bench.cone` (handshakes, throughput, memory);
   `collections` is a growable `List[T]`, an owned `String` and a string-keyed
   `Dict[K, V]`, each holding its elements in one block from `libc`'s
   allocator and moving them with core's `mem` intrinsics; `arena` is an

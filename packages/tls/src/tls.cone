@@ -1,0 +1,457 @@
+// The tls package: TLS 1.2 and 1.3 for the async I/O runtime, client and
+// server, over OpenSSL 3.5, with a server's certificate checked by the
+// operating system. It is sans-IO: a TLS session never touches a socket.
+// Its owner (a connection, an actor, a test) hands it the bytes that came
+// off the wire and takes back the bytes to send and the plaintext that came
+// out, as httpconn's driver does through a Stream, its Layer.
+//
+//   mod gets;
+//   import iobuf use Pool;
+//   import iocore use Loop, forever;
+//   import http use *;
+//   import httpconn use *;
+//   import tls;
+//
+//   fn main() {
+//     mut lp = Loop.mustMake();
+//     imm pool = Pool.make();
+//     mut drv = Driver.make(Config.make(), pool);
+//     match tls.Client.make(tls.ClientConfig.make()) {     // Windows' verifier, ALPN http/1.1
+//       case imm c Ok {
+//         imm conn = drv.connectWith(&mut lp, "example.com", 443u16,
+//           new So[tls.Stream](c.value.stream("example.com", pool)), Sink.Here[1u64]);
+//         drv.request(&mut lp, conn, RequestHead.get("/", "example.com"), BodyLength.empty(), Sink.Here[2u64]);
+//         ... drv.poll(&mut lp, forever(), &mut events), as for plain HTTP ...
+//       }
+//       case imm e Error {... e.value.message() ...}
+//     }
+//   }
+//
+// A server's listener makes a Stream for each connection it accepts, by a
+// httpconn LayerMaker of the program's:
+//
+//   struct TlsMaker {
+//     server tls.Server;     // tls.Server.make(tls.ServerConfig.make("cert.pem", "key.pem"))
+//     pool Pool;
+//     pub fn make(self &mut) So[Layer] {new So[tls.Stream](server.stream(pool));}
+//   }
+//   drv.listenWith(&mut lp, addr, new So[TlsMaker](new TlsMaker(server, pool)), Sink.Here[100u64]);
+//
+//   ClientConfig.make()  c.verify c.alpn c.minVersion c.maxVersion      (CONFIGURATION)
+//     c.resume c.backend c.verifyLane c.offline
+//   ServerConfig.make(certFile, keyFile)  s.alpn s.minVersion s.maxVersion s.backend
+//   Verifier.platform()  Verifier.roots(pem)  Verifier.pinnedSha256(hex)  (VERIFIERS)
+//     Verifier.insecureDevelopmentOnly()
+//   Client.make(cfg)  c.session(serverName)  c.stream(serverName, pool)  (CONTEXTS)
+//     c.cachedSessions()
+//   Server.make(cfg)  s.session()  s.stream(pool)
+//   s.feed(cipher)  s.feedEnd()  s.pending()  s.transmit(out)          (SESSIONS)
+//   s.write(plain)  s.read(out)  s.canRead()  s.close()
+//   s.pollEvent()  s.isOpen()  s.isFailed()  s.peerEnded()  s.error()  s.info()
+//   s.wantsVerify()  s.verifyOp(pool)  s.verifyDone(c)  s.verifyNow()  (THE OS'S VERIFIER)
+//   verifyWork  defaultVerifyLane()
+//   Stream: the Layer httpconn's driver takes (wireIn wireOut wireRoom    (STREAMS)
+//     plainIn plainOut pending isOpen peerEnded closeSend failed
+//     failureCode failureText wantsCall takeCall callDone describe);
+//     Stream.make(session, pool)  st.session()
+//   TlsError: e.kind e.code e.osError e.detail e.message()             (ERRORS)
+//   TlsErrorKind; errorName(k)
+//   TlsInfo: version versionName cipher alpn resumed verifiedBy          (DIAGNOSTICS)
+//     handshakeTime verifyTime closeNotify truncated; i.text()
+//   stats(): TlsStats; backendVersion(); verifyKindName(k)
+//
+// SESSIONS. A Session is one TLS connection's state, in either role, made
+// from a Client or a Server. Ciphertext that arrived goes in by 'feed' (all
+// of it is taken; OpenSSL buffers a partial record), the end of the
+// transport's stream by 'feedEnd'; 'pending' says how many bytes are ready
+// to go out and 'transmit' copies them out: handshake messages, records,
+// alerts, close_notify. Plaintext goes in by 'write', once the handshake is
+// done ('isOpen'), and comes out by 'read' while 'canRead' says some may be
+// there. 'pollEvent' says, once each, what happened: HandshakeDone,
+// VerifyNeeded, PeerClosed, Failed. 'close' queues close_notify. A
+// connection with no close_notify from its peer before the end of its
+// stream is 'truncated' (its info says so): it still ends, as a TCP FIN
+// does, because many servers close without one; a protocol above that
+// frames its own messages (HTTP/1.1's lengths) is not misled by it.
+//
+// CONFIGURATION. A Client is made from a ClientConfig: who verifies the
+// server's certificate ('verify'), the application protocols offered by
+// ALPN ('alpn': "http/1.1" alone for now; 'info().alpn' says what was
+// chosen), the lowest and highest versions (TLS 1.2 and 1.3), whether
+// sessions are resumed ('resume'), the back end ('backend': Auto, which is
+// OpenSSL, the one built; a second fits behind the same Session), the
+// blocking pool's lane the OS's verifier runs on ('verifyLane'), and
+// 'offline' (the OS's verifier fetches nothing over the network: no
+// intermediates, no revocation data, no root updates). A Server is made from
+// a ServerConfig: its certificate chain and key, from PEM files, and the
+// protocols it accepts by ALPN, in its order of preference; a client offering
+// none of them is refused with no_application_protocol. A Client and a
+// Server are handles: copied to share, between threads too.
+//
+// VERIFIERS. Who decides that a server is who it claims to be:
+// - Verifier.platform(), the default: the operating system. On Windows the
+//   chain the server sent is given to the chain engine
+//   (CertGetCertificateChain, its end certificate's revocation checked when
+//   the data can be had) and judged by the SSL policy for the name asked for
+//   (CertVerifyCertificateChainPolicy, CERT_CHAIN_POLICY_SSL): the same
+//   answer the browser on the machine gives, with the machine's own roots,
+//   policy and enterprise settings. It may fetch over the network, so it
+//   never runs on the loop's thread: OpenSSL stops the handshake
+//   (SSL_set_retry_verify), the session says VerifyNeeded, its owner runs
+//   'verifyOp' on the blocking pool (or 'verifyNow' where blocking is fine),
+//   and the handshake goes on from 'verifyDone'. Revocation that cannot be
+//   checked (no data, offline) does not refuse a server.
+// - Verifier.roots(pem): FOR DEVELOPMENT. OpenSSL checks the chain against
+//   these roots alone, and the name; the machine's roots are not used.
+// - Verifier.pinnedSha256(hex): FOR DEVELOPMENT. The server's certificate is
+//   accepted when the SHA-256 of its public key (SubjectPublicKeyInfo) is one
+//   of these, whatever signed it, whenever it expires and whatever names it
+//   holds (curl's --pinnedpubkey, the same hash).
+// - Verifier.insecureDevelopmentOnly(): FOR DEVELOPMENT ONLY. Nothing is
+//   checked: anyone in the path can read and change the connection. Never
+//   use it against a real server.
+//
+// STREAMS. A Stream is a Session with buffers, in the shape of httpconn's
+// Layer: a connection holds one as an 'So[Layer]', and a type complies by
+// having its methods, so this package does not import httpconn. The
+// protocol's bytes handed to it before the handshake is done wait, and go
+// out after it. The OS's verifier is handed to the driver as a pool
+// operation ('wantsCall', 'takeCall', 'callDone'), so the driver's loop runs
+// it on 'verifyLane' and the handshake resumes on its completion; a request's
+// cancel or deadline during it ends the connection as at any other time, and
+// the verification's late answer is dropped. A Stream that fails reports it
+// once its last bytes (an alert, usually) have gone out.
+//
+// ERRORS. One TlsError for every back end. Its kind: a certificate
+// expired, for another name, untrusted, revoked, or refused for another
+// reason; a version no side shares; no application protocol both offered;
+// an alert from the peer; anything else the peer did against the protocol;
+// a configuration that could not be loaded; the back end's own failure.
+// 'code' keeps the back end's or the OS's own number (the Windows error
+// from its verifier, OpenSSL's verify result, the alert's number, OpenSSL's
+// error code), 'osError' Windows' error number when the OS gave the reason,
+// and 'detail' the words.
+//
+// DIAGNOSTICS. 'stats()' counts, for the process, handshakes done (and of
+// them resumed), sessions failed, verifications run by the OS's verifier,
+// close_notify sent and received, and streams that ended without one.
+// 'info()' gives a session's version, cipher, ALPN, whether it resumed, who
+// verified it, how long its handshake took and the OS's verifier in it;
+// 'text()' says it in a line, which is what a Stream's 'describe' gives
+// httpconn's 'layerInfo'.
+//
+// Windows only: the OS's verifier is crypt32's (SecTrust on macOS and the
+// system bundle on Linux to come), and OpenSSL's DLLs come from
+// tools/deps/fetch.py, copied beside each program by Congo ([link] runtime).
+//
+// MEASURED, release, an i7-13700HX on Windows 11, other work on the machine
+// (examples/bench.cone, ECDSA P-256 certificates, OpenSSL 3.5's default key
+// exchange, the X25519 and ML-KEM-768 hybrid; numbers vary run to run):
+//
+// - A handshake in memory, both sides' CPU together: full, p50 0.9 to 1.0 ms;
+//   resumed (a TLS 1.3 ticket, a fresh key exchange still), 0.5 to 0.55 ms.
+//   With X25519 alone it was 0.75 and 0.35 ms: the hybrid's cost, kept.
+// - Over loopback through httpconn's driver, connect, handshake, one GET of
+//   64 bytes and a reset: plain HTTP p50 0.11 ms; TLS 1.2 to 1.3 ms full,
+//   0.82 to 0.95 ms resumed.
+// - Bulk, one connection, a 256 MiB body: plain 2.5 to 3.2 GB/s; TLS (AES-256-GCM)
+//   1.07 to 1.21 GB/s.
+// - Memory: a client and a server session, open and idle, about 87 KB the
+//   pair (SSL_MODE_RELEASE_BUFFERS saves 55 KB of it; without the hybrid key
+//   exchange it is 64 KB); a kept-alive connection through the driver, both
+//   its ends in one process, 94 to 102 KB, about 6 KB of it the driver's.
+// - Real servers, through examples/get.cone, the OS's verifier deciding, on a
+//   home connection: a first handshake 93 to 155 ms, of which the verifier
+//   (fetching revocation data) 44 to 136 ms; resumed 17 to 41 ms.
+
+mod tls;
+
+import libc;
+import collections use List, String;
+import sync use Arc, Mutex, Once;
+import time use Instant, Duration;
+import iobuf use IoBuf, Pool, Chain;
+import iocore use Op, Completion, Outcome, Lane, LaneConfig, IoError, addLane;
+
+fn @initpure init() {
+  laneOnce = Once.make();
+  nHandshakes = Atomic[u64].of(0u64);
+  nResumed = Atomic[u64].of(0u64);
+  nFailures = Atomic[u64].of(0u64);
+  nVerifications = Atomic[u64].of(0u64);
+  nCloseSent = Atomic[u64].of(0u64);
+  nCloseReceived = Atomic[u64].of(0u64);
+  nTruncated = Atomic[u64].of(0u64);
+}
+
+// ---------------------------------------------------------------------------
+// Configuration
+// ---------------------------------------------------------------------------
+
+// A version of TLS
+pub enum TlsVersion {
+  Tls12, Tls13;
+}
+
+fn versionNumber(v TlsVersion) i32 {
+  if v == TlsVersion.Tls12[] {tls12Version;} else {tls13Version;}
+}
+
+// Which library does the TLS. Auto is OpenSSL, the one built; a second
+// (SChannel, rustls) fits behind the same Session
+pub enum Backend {
+  Auto, OpenSsl;
+}
+
+// Who decides that the server is who it claims to be (see the package's
+// header, VERIFIERS)
+pub enum VerifyKind {
+  Platform, Roots, Pinned, Insecure;
+}
+
+// The name of a verifier's kind
+pub fn verifyKindName(k VerifyKind) &[]u8 {
+  if k == VerifyKind.Platform[] {"platform";}
+  elif k == VerifyKind.Roots[] {"roots";}
+  elif k == VerifyKind.Pinned[] {"pinned";}
+  else {"insecure";}
+}
+
+// A verifier: its kind and what it holds
+pub struct Verifier {
+  pub kind VerifyKind;
+  bundle String;       // Roots: the PEM bundle
+  pins List[u8];       // Pinned: 32 bytes for each key
+
+  // The operating system's: on Windows, its chain engine and SSL policy
+  pub fn platform() Verifier {new Verifier(VerifyKind.Platform[], String.empty(), List[u8].empty());}
+
+  // FOR DEVELOPMENT: these roots alone, in PEM, one or more certificates
+  pub fn roots(pem &[]u8) Verifier {new Verifier(VerifyKind.Roots[], String.from(pem), List[u8].empty());}
+
+  // FOR DEVELOPMENT: a server whose public key's SHA-256 is one of these,
+  // each 64 hex digits, separated by spaces or commas. A malformed one is a
+  // panic at the caller's line
+  pub fn pinnedSha256(hex &[]u8, file &[]u8 = srcFile(), line u32 = srcLine()) Verifier {
+    mut pins = List[u8].empty();
+    mut k = 0usize;
+    while k < hex.len {
+      if hex[k] == ' ' or hex[k] == ',' or hex[k] == '\n' or hex[k] == '\r' or hex[k] == '\t' {
+        k = k + 1usize;
+        continue;
+      }
+      if k + 64usize > hex.len {panic("tls: a pinned SHA-256 is 64 hex digits", file, line);}
+      mut j = 0usize;
+      while j < 32usize {
+        imm hi = hexDigit(hex[k + 2usize * j]);
+        imm lo = hexDigit(hex[k + 2usize * j + 1usize]);
+        if hi > 15u32 or lo > 15u32 {panic("tls: a pinned SHA-256 holds a character that is not a hex digit", file, line);}
+        pins.push(u8.from(hi * 16u32 + lo));
+        j = j + 1usize;
+      }
+      k = k + 64usize;
+    }
+    if pins.len() == 0usize {panic("tls: no pinned SHA-256 given", file, line);}
+    new Verifier(VerifyKind.Pinned[], String.empty(), pins);
+  }
+
+  // FOR DEVELOPMENT ONLY: nothing is checked (see the package's header)
+  pub fn insecureDevelopmentOnly() Verifier {
+    new Verifier(VerifyKind.Insecure[], String.empty(), List[u8].empty());
+  }
+}
+
+fn hexDigit(c u8) u32 {
+  if c >= '0' and c <= '9' {u32.from(c - '0');}
+  elif c >= 'a' and c <= 'f' {u32.from(c - 'a') + 10u32;}
+  elif c >= 'A' and c <= 'F' {u32.from(c - 'A') + 10u32;}
+  else {99u32;}
+}
+
+// How a Client is made (see the package's header, CONFIGURATION)
+pub struct ClientConfig {
+  pub verify Verifier;
+  pub alpn List[String];        // offered, in order
+  pub minVersion TlsVersion;
+  pub maxVersion TlsVersion;
+  pub resume Bool;              // sessions resumed when the server allows
+  pub backend Backend;
+  pub verifyLane Lane;          // where the OS's verifier runs
+  pub offline Bool;             // the OS's verifier fetches nothing
+
+  // The defaults: the OS's verifier, http/1.1, TLS 1.2 to 1.3, resumed
+  pub fn make() ClientConfig {
+    mut alpn = List[String].empty();
+    alpn.push(String.from("http/1.1"));
+    new ClientConfig(verify: Verifier.platform(), alpn: alpn, minVersion: TlsVersion.Tls12[],
+      maxVersion: TlsVersion.Tls13[], resume: true, backend: Backend.Auto[],
+      verifyLane: defaultVerifyLane(), offline: false);
+  }
+}
+
+// How a Server is made (see the package's header, CONFIGURATION)
+pub struct ServerConfig {
+  pub certFile String;          // PEM: its certificate, then the chain it sends
+  pub keyFile String;           // PEM: its private key
+  pub alpn List[String];        // accepted, in its order of preference
+  pub minVersion TlsVersion;
+  pub maxVersion TlsVersion;
+  pub backend Backend;
+
+  pub fn make(certFile &[]u8, keyFile &[]u8) ServerConfig {
+    mut alpn = List[String].empty();
+    alpn.push(String.from("http/1.1"));
+    new ServerConfig(certFile: String.from(certFile), keyFile: String.from(keyFile), alpn: alpn,
+      minVersion: TlsVersion.Tls12[], maxVersion: TlsVersion.Tls13[], backend: Backend.Auto[]);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Errors and information
+// ---------------------------------------------------------------------------
+
+// What went wrong (see the package's header, ERRORS)
+pub enum TlsErrorKind {
+  CertExpired,        // the server's certificate (or one above it) has expired, or is not valid yet
+  CertNameMismatch,   // it is for another name
+  CertUntrusted,      // nothing trusted signed it, or no pinned key matches
+  CertRevoked,        // it was revoked
+  CertOther,          // refused for another reason
+  ProtocolVersion,    // no version both sides allow
+  NoAlpnMatch,        // no application protocol both sides speak
+  Alert,              // the peer sent a fatal alert
+  Protocol,           // the peer broke the protocol, or ended the stream mid-handshake
+  Config,             // a configuration could not be loaded
+  Backend;            // the back end failed
+}
+
+// The name of an error's kind
+pub fn errorName(k TlsErrorKind) &[]u8 {
+  if k == TlsErrorKind.CertExpired[] {"certificate expired";}
+  elif k == TlsErrorKind.CertNameMismatch[] {"certificate name mismatch";}
+  elif k == TlsErrorKind.CertUntrusted[] {"certificate untrusted";}
+  elif k == TlsErrorKind.CertRevoked[] {"certificate revoked";}
+  elif k == TlsErrorKind.CertOther[] {"certificate refused";}
+  elif k == TlsErrorKind.ProtocolVersion[] {"protocol version";}
+  elif k == TlsErrorKind.NoAlpnMatch[] {"no application protocol";}
+  elif k == TlsErrorKind.Alert[] {"alert";}
+  elif k == TlsErrorKind.Protocol[] {"protocol error";}
+  elif k == TlsErrorKind.Config[] {"configuration";}
+  else {"back end";}
+}
+
+// Why a session failed, or a context could not be made
+pub struct TlsError {
+  pub kind TlsErrorKind;
+  pub code u32;         // the back end's or the OS's own number for it
+  pub osError u32;      // Windows' error number when the OS gave the reason, else 0
+  pub detail String;    // what was wrong, one line
+
+  pub fn make(kind TlsErrorKind, code u32, detail &[]u8) TlsError {
+    new TlsError(kind, code, 0u32, String.from(detail));
+  }
+
+  pub fn none() TlsError {TlsError.make(TlsErrorKind.Backend[], 0u32, "");}
+
+  pub fn copy(self &) TlsError {new TlsError(kind, code, osError, detail.copy());}
+
+  // 'certificate untrusted: A certificate chain processed, but terminated
+  // in a root certificate which is not trusted by the trust provider.
+  // (Windows 0x800B0109)'
+  pub fn message(self &) String {
+    mut out = String.from("tls: ");
+    out.append(errorName(kind));
+    out.append(": ");
+    out.append(detail.view());
+    out;
+  }
+}
+
+// What a session negotiated (see the package's header, DIAGNOSTICS)
+pub struct TlsInfo {
+  pub version TlsVersion;
+  pub versionName String;     // 'TLSv1.3'
+  pub cipher String;          // 'TLS_AES_256_GCM_SHA384'
+  pub alpn String;            // the protocol ALPN chose, or empty
+  pub resumed Bool;           // an earlier session was resumed: no full handshake
+  pub verifiedBy VerifyKind;
+  pub handshakeTime Duration; // from its first bytes to its end, the OS's verifier included
+  pub verifyTime Duration;    // the OS's verifier: from handing it out to its answer
+  pub closeNotify Bool;       // the peer's close_notify came
+  pub truncated Bool;         // the stream ended without one
+
+  // 'TLSv1.3 TLS_AES_256_GCM_SHA384, ALPN http/1.1, handshake 41.2 ms
+  // (the OS's verifier 9.8 ms)', and ', resumed' when it was
+  pub fn text(self &) String {
+    mut out = versionName.copy();
+    out.append(" ");
+    out.append(cipher.view());
+    out.append(", ALPN ");
+    out.append(if alpn.len() == 0usize {"none";} else {alpn.view();});
+    out.append(", handshake ");
+    appendMillis(&mut out, handshakeTime);
+    if verifiedBy == VerifyKind.Platform[] and verifyTime > Duration.zero() {
+      out.append(" (the OS's verifier ");
+      appendMillis(&mut out, verifyTime);
+      out.append(")");
+    }
+    if resumed {out.append(", resumed");}
+    out;
+  }
+}
+
+// A duration as milliseconds, to a tenth
+fn appendMillis(out &mut String, d Duration) {
+  imm tenths = d.nanos() / 100000i64;
+  out.appendInt(tenths / 10i64);
+  out.append(".");
+  out.appendInt(tenths % 10i64);
+  out.append(" ms");
+}
+
+// The process's counters (see the package's header, DIAGNOSTICS)
+pub struct TlsStats {
+  pub handshakes u64;
+  pub resumed u64;
+  pub failures u64;
+  pub verifications u64;
+  pub closeNotifySent u64;
+  pub closeNotifyReceived u64;
+  pub truncated u64;
+}
+
+imm nHandshakes Atomic[u64];
+imm nResumed Atomic[u64];
+imm nFailures Atomic[u64];
+imm nVerifications Atomic[u64];
+imm nCloseSent Atomic[u64];
+imm nCloseReceived Atomic[u64];
+imm nTruncated Atomic[u64];
+
+// The counters, as they are now
+pub fn stats() TlsStats {
+  new TlsStats(nHandshakes.load(), nResumed.load(), nFailures.load(), nVerifications.load(),
+    nCloseSent.load(), nCloseReceived.load(), nTruncated.load());
+}
+
+// The back end's own name and version: 'OpenSSL 3.5.9 30 Sep 2026'
+pub fn backendVersion() &[]u8 {cText(OpenSSL_version(0i32));}
+
+// ---------------------------------------------------------------------------
+// The OS verifier's lane
+// ---------------------------------------------------------------------------
+
+imm laneOnce Once;
+mut laneMade Lane = new Lane(0u32);
+
+fn makeLane() {
+  laneMade = addLane(new LaneConfig(name: "tls verify", maxThreads: 4u32, queueBound: 256u32));
+}
+
+// The blocking pool's lane the OS's verifier runs on by default: its own,
+// up to 4 threads, so a verification fetching over the network never holds
+// up a name's lookup or a file
+pub fn defaultVerifyLane() Lane {
+  laneOnce.callOnce(&makeLane);
+  laneMade;
+}

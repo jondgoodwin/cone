@@ -1649,6 +1649,21 @@ int flowIsScopeResultOf(INode *retexp, VarDclNode *varnode, Nodes **hollow) {
     return flowIsScopeResult(retexp, varnode, hollow);
 }
 
+// Does the scope being left (the variables from 'startpos' up) hand one of its
+// own variables back whole as 'retexp'? Such a variable is exempt from the
+// scope's release (flowScopeDealias), so its holder goes to the receiver as it
+// is; any other copy handed out of the scope is a new holder.
+int flowScopeHandsBack(size_t startpos, INode *retexp) {
+    size_t pos = gVarFlowStackPos;
+    while (pos > startpos) {
+        VarFlowInfo *avar = &gVarFlowStackp[--pos];
+        Nodes *hollow = NULL;
+        if (flowIsScopeResult(retexp, avar->node, &hollow))
+            return 1;
+    }
+    return 0;
+}
+
 // Create de-alias list of all own/Rc reference variables (except the retexp name(s))
 // A drop call built here is positioned on the result expression, and on 'lexnode'
 // -- the jump that ends the scope -- where there is no result expression to take
