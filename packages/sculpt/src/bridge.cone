@@ -1,0 +1,525 @@
+// ======== Bridge loops: a band of faces between boundary loops ========
+
+// The vertices of the boundary loop through vertex v, in the order the hole
+// runs (its boundary half-edges' order: the faces on the right, so round a
+// hole seen from the side its faces face, clockwise), from v. Empty when v
+// is on no boundary. At a vertex where two boundary loops meet, the one its
+// own half-edge starts.
+pub fn boundaryLoop(m &PolyMesh, v u32) List[u32] {
+  mut out = List[u32].empty();
+  imm hs = holeHalfedges(m, v);
+  mut i = 0usize;
+  while i < hs.len() {
+    out.push(m.fromVertex(*hs[i]));
+    i = i + 1usize;
+  }
+  out;
+}
+
+// The boundary half-edges round the hole at v, from the one leaving v
+fn holeHalfedges(m &PolyMesh, v u32) List[u32] {
+  mut out = List[u32].empty();
+  if usize.from(v) >= m.positions.len() or !m.isBoundaryVertex(v) { return out; }
+  imm b0 = m.vertexHalfedge(v);
+  mut b = b0;
+  mut going = true;
+  while going {
+    out.push(b);
+    b = m.next(b);
+    going = b != b0 and out.len() <= m.hVertex.len();
+  }
+  out;
+}
+
+// One loop of a bridge: its vertices in the band's order, and for each side
+// j (from vertex j to vertex j + 1) the half-edge of the face already there
+// along it ('faceSide'); 'first' is whether it is the pair's first loop
+fn loopFaceSides(m &PolyMesh, holes &List[u32], first Bool, verts &mut List[u32], sides &mut List[u32]) {
+  imm n = holes.len();
+  mut j = 0usize;
+  while j < n {
+    if first {
+      // The hole's own order: side j is hole half-edge j, the face on its twin
+      verts.push(m.fromVertex(*holes[j]));
+      sides.push(m.twin(*holes[j]));
+    } else {
+      // The hole the other way round from the same vertex: vertex j is hole
+      // vertex -j, and side j runs back along hole half-edge -j - 1, so the
+      // face's half-edge is that one's twin
+      verts.push(m.fromVertex(*holes[(n - j) % n]));
+      sides.push(m.twin(*holes[(2usize * n - j - 1usize) % n]));
+    }
+    j = j + 1usize;
+  }
+}
+
+// The direction the surface runs out of the loop at each of its vertices:
+// from the mean of the vertex's neighbours off the loop to the vertex, unit;
+// (0, 0, 0) where every neighbour is on the loop
+fn outward(m &PolyMesh, verts &List[u32], onLoop &List[Bool]) List[Vec3] {
+  mut out = List[Vec3].withCapacity(verts.len());
+  mut j = 0usize;
+  while j < verts.len() {
+    imm v = *verts[j];
+    imm nb = m.vertexNeighbors(v);
+    mut sum = new Vec3(0., 0., 0.);
+    mut cnt = 0usize;
+    mut k = 0usize;
+    while k < nb.len() {
+      imm w = *nb[k];
+      if !*onLoop[usize.from(w)] {
+        sum = sum + *m.positions[usize.from(w)];
+        cnt = cnt + 1usize;
+      }
+      k = k + 1usize;
+    }
+    if cnt > 0usize {
+      out.push(unit(*m.positions[usize.from(v)] - sum * (1. / f32.from(cnt))));
+    } else {
+      out.push(new Vec3(0., 0., 0.));
+    }
+    j = j + 1usize;
+  }
+  out;
+}
+
+// The point f of the way from a to b (0 < f < 1) on the bridge's curve: the
+// straight line at smoothness 0; otherwise the cubic Hermite curve whose end
+// tangents blend the chord b - a with the surface's own directions, da out of
+// a's loop and db out of b's (arriving along -db), each the chord's length:
+// T = (1 - s)(b - a) + s |b - a| d. A direction of (0, 0, 0) gives the chord.
+fn bridgePoint(a Vec3, b Vec3, da Vec3, db Vec3, s f32, f f32) Vec3 {
+  if s == 0. { return mix3(a, b, f); }
+  imm chord = b - a;
+  imm len = chord.length();
+  imm ta = if da.lengthSquared() > 0. {chord * (1. - s) + da * (s * len);} else {chord;};
+  imm tb = if db.lengthSquared() > 0. {chord * (1. - s) - db * (s * len);} else {chord;};
+  imm f2 = f * f;
+  imm f3 = f2 * f;
+  imm h00 = 2. * f3 - 3. * f2 + 1.;
+  imm h10 = f3 - 2. * f2 + f;
+  imm h01 = 3. * f2 - 2. * f3;
+  imm h11 = f3 - f2;
+  a * h00 + ta * h10 + b * h01 + tb * h11;
+}
+
+// A ring of the band: its vertices, its column fractions (deciding which
+// columns meet; 1 after the last), its corners' u (1 after the last), and
+// for each column the side of the first loop it lies on
+struct BridgeRing {
+  verts List[u32];
+  params List[f32];
+  us List[f32];
+  aSide List[u32];
+}
+
+// Boundary loops joined in pairs by a band of faces (Blender's Bridge Edge
+// Loops with Loop Pairs): 'loops' names each loop by one vertex on it, and
+// loops 0 and 1 are joined, then 2 and 3, and so on (an odd last one is left
+// alone). A pair is skipped when a vertex is on no boundary, or the two are
+// one loop, or a loop was used before. The mesh is otherwise kept as it is:
+// every vertex, face and channel.
+//
+// Correspondence (as 'loft''s): the first loop runs as its hole does (see
+// 'boundaryLoop', from its named vertex), the second the other way round,
+// which is the only way the band can face as the faces beside it do; the
+// second is started at whichever of its vertices makes it match the first
+// most closely about their centres (point with point when they have one
+// count, otherwise sampled evenly by length; the earliest on a tie). Loops of
+// one count are joined vertex to vertex by quads. Loops of different counts
+// meet by fraction of length: going round both together, a step where both
+// loops' next vertices are at one fraction (within LoftSnap) makes a quad,
+// and a step on only one loop a triangle, so every vertex of both is used.
+//
+// 'cuts' rings are put between the loops, evenly in f = c / (cuts + 1), each
+// with a column at every vertex of both loops (the union of their
+// fractions; vertex to vertex when they have one count), joined by quads,
+// with triangles only where a loop's own vertices skip columns. At
+// smoothness 0 the rings lie on the straight lines between the loops'
+// corresponding points; above 0 on Hermite curves leaving each loop along
+// the surface's own direction out of it, as Blender's Blend Surface does
+// (see 'bridgePoint'; 1 is fully along the surface).
+//
+// Numbering: the mesh's vertices and faces keep their numbers; the rings'
+// vertices follow from V, pair by pair, ring by ring, column by column; the
+// band's faces follow from F, pair by pair, band by band from the first
+// loop, each round from column 0.
+//
+// Channels: a ring vertex's vertex values blend its loops' (along each loop
+// by its fraction, then across by f, linearly at every smoothness). A band
+// face takes the face values of the first loop's face along the stretch it
+// covers; its corners at a loop vertex take that loop's face's corner values
+// there, and its other corners the first loop's face's at the column's side's
+// start; but "uv", which on the band is its own strip, as 'extrudeFaces''s
+// walls: u round the loop by length (each corner's own loop's fraction; a
+// ring's columns', blended between the loops), its closing corners 1, and v
+// from 0 at the first loop to 1 at the second by ring. The band's sides along
+// a loop are that loop's edges and keep their values ("crease" too); every
+// other side of the band is new, 0 in every edge channel.
+pub fn bridgeLoops(m &PolyMesh, loops &[]u32, cuts u32, smoothness f32) PolyMesh {
+  imm nv = m.positions.len();
+  imm nf = m.fHalfedge.len();
+  mut pos = List[Vec3].withCapacity(nv);
+  mut vSrc = List[u32].withCapacity(nv);
+  mut v = 0usize;
+  while v < nv {
+    pos.push(*m.positions[v]);
+    vSrc.push(u32.from(v));
+    v = v + 1usize;
+  }
+  // The mesh's faces as they are
+  mut counts = List[u32].empty();
+  mut idx = List[u32].empty();
+  mut cSrc = List[u32].empty();
+  mut eSrc = List[u32].empty();
+  mut fSrc = List[u32].empty();
+  mut f = 0usize;
+  while f < nf {
+    imm hs = m.faceHalfedges(u32.from(f));
+    counts.push(u32.from(hs.len()));
+    mut k = 0usize;
+    while k < hs.len() {
+      idx.push(m.toVertex(*hs[k]));
+      cSrc.push(*hs[k]);
+      eSrc.push(*hs[k] / 2u32);
+      k = k + 1usize;
+    }
+    fSrc.push(u32.from(f));
+    f = f + 1usize;
+  }
+  // The new vertices' blends: four source vertices and weights each
+  mut wSrc = List[u32].empty();
+  mut wVal = List[f32].empty();
+  mut bandUvs = List[Vec2].empty();
+  mut used = List[Bool].withCapacity(nv);
+  v = 0usize;
+  while v < nv {
+    used.push(false);
+    v = v + 1usize;
+  }
+
+  mut p = 0usize;
+  while p + 1usize < loops.len {
+    imm ha = holeHalfedges(m, loops[p]);
+    imm hb = holeHalfedges(m, loops[p + 1usize]);
+    mut ok = ha.len() >= 3usize and hb.len() >= 3usize;
+    mut onA = List[Bool].withCapacity(nv);
+    mut onB = List[Bool].withCapacity(nv);
+    v = 0usize;
+    while v < nv {
+      onA.push(false);
+      onB.push(false);
+      v = v + 1usize;
+    }
+    mut i = 0usize;
+    while ok and i < ha.len() {
+      imm w = usize.from(m.fromVertex(*ha[i]));
+      if *used[w] { ok = false; }
+      onA.set(w, true);
+      i = i + 1usize;
+    }
+    i = 0usize;
+    while ok and i < hb.len() {
+      imm w = usize.from(m.fromVertex(*hb[i]));
+      if *used[w] or *onA[w] { ok = false; }
+      onB.set(w, true);
+      i = i + 1usize;
+    }
+    if ok {
+      i = 0usize;
+      while i < nv {
+        if *onA[i] or *onB[i] { used.set(i, true); }
+        i = i + 1usize;
+      }
+      bridgePair(m, &ha, &hb, &onA, &onB, cuts, smoothness, &mut pos, &mut vSrc, &mut wSrc, &mut wVal,
+        &mut counts, &mut idx, &mut cSrc, &mut eSrc, &mut fSrc, &mut bandUvs);
+    }
+    p = p + 2usize;
+  }
+
+  mut out = assemble(m, &pos, &vSrc, &counts, &idx, &cSrc, &eSrc, &fSrc);
+  blendVertexChannels(m, &mut out, nv, &wSrc, &wVal);
+  // A face refused (none should be) would shift the band's numbers: leave
+  // the corner values as carried
+  if out.fHalfedge.len() != counts.len() { return out; }
+  imm uvCh = out.findVec2Channel(CornerDomain, "uv");
+  if uvCh == NoIndex { return out; }
+  mut c = 0usize;
+  f = nf;
+  while f < counts.len() {
+    imm hs = out.faceHalfedges(u32.from(f));
+    mut k = 0usize;
+    while k < hs.len() {
+      out.setVec2(uvCh, *hs[k], *bandUvs[c]);
+      c = c + 1usize;
+      k = k + 1usize;
+    }
+    f = f + 1usize;
+  }
+  out;
+}
+
+// The new vertices' vertex channels, each a blend of four source vertices'
+// values (see 'bridgeLoops')
+fn blendVertexChannels(m &PolyMesh, out &mut PolyMesh, nv usize, wSrc &List[u32], wVal &List[f32]) {
+  imm extra = out.positions.len() - nv;
+  if 4usize * extra != wSrc.len() { return; }
+  mut c = 0usize;
+  while c < m.floats.len() {
+    if m.floats[c].domain == VertexDomain {
+      mut k = 0usize;
+      while k < extra {
+        mut sum f32 = 0.;
+        mut q = 0usize;
+        while q < 4usize {
+          sum = sum + m.float(u32.from(c), *wSrc[4usize * k + q]) * *wVal[4usize * k + q];
+          q = q + 1usize;
+        }
+        out.setFloat(u32.from(c), u32.from(nv + k), sum);
+        k = k + 1usize;
+      }
+    }
+    c = c + 1usize;
+  }
+  c = 0usize;
+  while c < m.vec2s.len() {
+    if m.vec2s[c].domain == VertexDomain {
+      mut k = 0usize;
+      while k < extra {
+        mut sum = new Vec2(0., 0.);
+        mut q = 0usize;
+        while q < 4usize {
+          sum = sum + m.vec2(u32.from(c), *wSrc[4usize * k + q]) * *wVal[4usize * k + q];
+          q = q + 1usize;
+        }
+        out.setVec2(u32.from(c), u32.from(nv + k), sum);
+        k = k + 1usize;
+      }
+    }
+    c = c + 1usize;
+  }
+  c = 0usize;
+  while c < m.vec3s.len() {
+    if m.vec3s[c].domain == VertexDomain {
+      mut k = 0usize;
+      while k < extra {
+        mut sum = new Vec3(0., 0., 0.);
+        mut q = 0usize;
+        while q < 4usize {
+          sum = sum + m.vec3(u32.from(c), *wSrc[4usize * k + q]) * *wVal[4usize * k + q];
+          q = q + 1usize;
+        }
+        out.setVec3(u32.from(c), u32.from(nv + k), sum);
+        k = k + 1usize;
+      }
+    }
+    c = c + 1usize;
+  }
+}
+
+// The positions of a loop's vertices
+fn loopPositions(m &PolyMesh, verts &List[u32]) List[Vec3] {
+  mut out = List[Vec3].withCapacity(verts.len());
+  mut j = 0usize;
+  while j < verts.len() {
+    out.push(*m.positions[usize.from(*verts[j])]);
+    j = j + 1usize;
+  }
+  out;
+}
+
+// One pair's band: its rings and faces added to the lists 'bridgeLoops'
+// assembles from
+fn bridgePair(m &PolyMesh, ha &List[u32], hb &List[u32], onA &List[Bool], onB &List[Bool], cuts u32,
+    smoothness f32, pos &mut List[Vec3], vSrc &mut List[u32], wSrc &mut List[u32], wVal &mut List[f32],
+    counts &mut List[u32], idx &mut List[u32], cSrc &mut List[u32], eSrc &mut List[u32], fSrc &mut List[u32],
+    bandUvs &mut List[Vec2]) {
+  mut av = List[u32].empty();
+  mut aSides = List[u32].empty();
+  loopFaceSides(m, ha, true, &mut av, &mut aSides);
+  mut bv0 = List[u32].empty();
+  mut bSides0 = List[u32].empty();
+  loopFaceSides(m, hb, false, &mut bv0, &mut bSides0);
+  imm na = av.len();
+  imm nb = bv0.len();
+  imm byIndex = na == nb;
+  imm apos = loopPositions(m, &av);
+  imm s = bestStart(&apos, &loopPositions(m, &bv0), byIndex);
+  imm bv = rotated(&bv0, s);
+  imm bSides = rotated(&bSides0, s);
+  imm bpos = loopPositions(m, &bv);
+  imm frA = loopFractions(&apos, true);
+  imm frB = loopFractions(&bpos, true);
+  imm dA = outward(m, &av, onA);
+  imm dB = outward(m, &bv, onB);
+
+  // The columns of the rings between: vertex to vertex, or the union of
+  // both loops' fractions
+  mut cols = List[f32].empty();
+  if byIndex {
+    mut j = 0usize;
+    while j < na {
+      cols.push(f32.from(j) / f32.from(na));
+      j = j + 1usize;
+    }
+  } else {
+    cols = mergeFractions(&firstOf(&frA, na), &firstOf(&frB, nb));
+  }
+  imm nc = cols.len();
+
+  // The rings: the first loop, the cut rings, the second loop
+  imm nrings = usize.from(cuts) + 2usize;
+  mut rings = List[BridgeRing].withCapacity(nrings);
+  mut paramsA = List[f32].withCapacity(na + 1usize);
+  mut sideA = List[u32].withCapacity(na);
+  mut ja = 0usize;
+  while ja < na {
+    paramsA.push(if byIndex {*cols[ja];} else {*frA[ja];});
+    sideA.push(u32.from(ja));
+    ja = ja + 1usize;
+  }
+  paramsA.push(1.);
+  rings.push(new BridgeRing(copyList(&av), paramsA, copyList(&frA), sideA));
+  mut c = 1usize;
+  while c <= usize.from(cuts) {
+    imm fc = f32.from(c) / f32.from(cuts + 1u32);
+    mut verts = List[u32].withCapacity(nc);
+    mut params = List[f32].withCapacity(nc + 1usize);
+    mut us = List[f32].withCapacity(nc + 1usize);
+    mut aSide = List[u32].withCapacity(nc);
+    mut j = 0usize;
+    while j < nc {
+      imm t = *cols[j];
+      // Each loop's piece holding the column, and how far through it
+      mut ia = j;
+      mut la f32 = 0.;
+      mut ib = j;
+      mut lb f32 = 0.;
+      if !byIndex {
+        ia = pieceAt(&frA, na, t);
+        la = pieceFraction(&frA, ia, t);
+        ib = pieceAt(&frB, nb, t);
+        lb = pieceFraction(&frB, ib, t);
+      }
+      imm ia1 = (ia + 1usize) % na;
+      imm ib1 = (ib + 1usize) % nb;
+      imm pa = if la <= 0. {*apos[ia];} elif la >= 1. {*apos[ia1];} else {mix3(*apos[ia], *apos[ia1], la);};
+      imm pb = if lb <= 0. {*bpos[ib];} elif lb >= 1. {*bpos[ib1];} else {mix3(*bpos[ib], *bpos[ib1], lb);};
+      imm da = unit(mix3(*dA[ia], *dA[ia1], la));
+      imm db = unit(mix3(*dB[ib], *dB[ib1], lb));
+      verts.push(u32.from(pos.len()));
+      pos.push(bridgePoint(pa, pb, da, db, smoothness, fc));
+      vSrc.push(*av[ia]);
+      wSrc.push(*av[ia]);
+      wSrc.push(*av[ia1]);
+      wSrc.push(*bv[ib]);
+      wSrc.push(*bv[ib1]);
+      wVal.push((1. - fc) * (1. - la));
+      wVal.push((1. - fc) * la);
+      wVal.push(fc * (1. - lb));
+      wVal.push(fc * lb);
+      params.push(t);
+      us.push(if byIndex {mixf(*frA[j], *frB[j], fc);} else {t;});
+      aSide.push(u32.from(if la >= 1. {ia1;} else {ia;}));
+      j = j + 1usize;
+    }
+    params.push(1.);
+    us.push(1.);
+    rings.push(new BridgeRing(verts, params, us, aSide));
+    c = c + 1usize;
+  }
+  mut paramsB = List[f32].withCapacity(nb + 1usize);
+  mut sideB = List[u32].withCapacity(nb);
+  mut jb = 0usize;
+  while jb < nb {
+    paramsB.push(if byIndex {*cols[jb];} else {*frB[jb];});
+    sideB.push(0u32);
+    jb = jb + 1usize;
+  }
+  paramsB.push(1.);
+  rings.push(new BridgeRing(copyList(&bv), paramsB, copyList(&frB), sideB));
+
+  // The bands, ring r to ring r + 1, each round from column 0
+  mut r = 0usize;
+  while r + 1usize < nrings {
+    imm v0 = f32.from(r) / f32.from(nrings - 1usize);
+    imm v1 = f32.from(r + 1usize) / f32.from(nrings - 1usize);
+    imm lowerIsA = r == 0usize;
+    imm upperIsB = r + 2usize == nrings;
+    imm nl = rings[r].verts.len();
+    imm nu = rings[r + 1usize].verts.len();
+    mut i = 0usize;
+    mut j = 0usize;
+    while i < nl or j < nu {
+      imm pl = if i < nl {*rings[r].params[i + 1usize];} else {2.;};
+      imm pu = if j < nu {*rings[r + 1usize].params[j + 1usize];} else {2.;};
+      // Which steps: both (a quad), the lower alone or the upper alone (a
+      // triangle)
+      mut stepL = false;
+      mut stepU = false;
+      if i < nl and j < nu and absf(pl - pu) <= LoftSnap {
+        stepL = true;
+        stepU = true;
+      } elif i < nl and (j >= nu or pl < pu) {
+        stepL = true;
+      } else {
+        stepU = true;
+      }
+      // The stretch of the first loop and of the second the face covers
+      imm il = if i < nl {i;} else {nl - 1usize;};
+      imm ju = if j < nu {j;} else {nu - 1usize;};
+      imm aEdge = usize.from(*rings[r].aSide[il]);
+      imm aFace = *aSides[aEdge];
+      imm bFace = if upperIsB {*bSides[ju];} else {NoIndex;};
+      imm lowerV = *rings[r].verts[i % nl];
+      imm lowerV1 = *rings[r].verts[(i + 1usize) % nl];
+      imm upperV = *rings[r + 1usize].verts[j % nu];
+      imm upperV1 = *rings[r + 1usize].verts[(j + 1usize) % nu];
+      imm lowerU = *rings[r].us[i];
+      imm upperU = *rings[r + 1usize].us[j];
+      mut nCorners = 0u32;
+      // Corner: lower i
+      idx.push(lowerV);
+      cSrc.push(if lowerIsA {cornerOnFirst(m, aFace, lowerV);} else {aFace;});
+      eSrc.push(NoIndex);
+      bandUvs.push(new Vec2(lowerU, v0));
+      nCorners = nCorners + 1u32;
+      if stepL {
+        idx.push(lowerV1);
+        cSrc.push(if lowerIsA {cornerOnFirst(m, aFace, lowerV1);} else {aFace;});
+        eSrc.push(if lowerIsA {aFace / 2u32;} else {NoIndex;});
+        bandUvs.push(new Vec2(*rings[r].us[i + 1usize], v0));
+        nCorners = nCorners + 1u32;
+      }
+      if stepU {
+        idx.push(upperV1);
+        cSrc.push(if upperIsB {cornerOnSecond(m, bFace, upperV1);} else {aFace;});
+        eSrc.push(NoIndex);
+        bandUvs.push(new Vec2(*rings[r + 1usize].us[j + 1usize], v1));
+        nCorners = nCorners + 1u32;
+      }
+      idx.push(upperV);
+      cSrc.push(if upperIsB {cornerOnSecond(m, bFace, upperV);} else {aFace;});
+      eSrc.push(if stepU and upperIsB {bFace / 2u32;} else {NoIndex;});
+      bandUvs.push(new Vec2(upperU, v1));
+      nCorners = nCorners + 1u32;
+      counts.push(nCorners);
+      fSrc.push(m.face(aFace));
+      if stepL { i = i + 1usize; }
+      if stepU { j = j + 1usize; }
+    }
+    r = r + 1usize;
+  }
+}
+
+// The corner of the first loop's face along side h (from vertex j + 1 back to
+// j) at vertex x: h itself at its own end, else the corner before it
+fn cornerOnFirst(m &PolyMesh, h u32, x u32) u32 {
+  if m.toVertex(h) == x { h; } else { m.prev(h); };
+}
+
+// The corner of the second loop's face along side h (from vertex j to j + 1)
+// at vertex x, the same way
+fn cornerOnSecond(m &PolyMesh, h u32, x u32) u32 {
+  if m.toVertex(h) == x { h; } else { m.prev(h); };
+}

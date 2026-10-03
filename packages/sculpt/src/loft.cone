@@ -1,0 +1,568 @@
+// ======== Loft: a surface through a sequence of profiles ========
+//
+// A loft places profiles (stations) one after another and joins them with a
+// band of quads, as a NURBS loft or Blender's Bridge Edge Loops over loose
+// loops does; 'bridgeLoops' (bridge.cone) joins existing boundary loops of a
+// mesh by the same correspondence. Correspondence is the work: the profiles
+// may have different point counts and shapes, so each is put on common
+// columns, and a closed one is started where it best follows the one before,
+// so the band does not twist.
+//
+// - Orientation: a closed profile is turned counterclockwise (its points
+//   reversed after its first, so its start stays), so every station faces
+//   the same way and the faces face outward. An open profile is taken as it
+//   runs.
+// - Start: a closed profile after the first is started at whichever of its
+//   points makes it match the station before most closely: both compared
+//   about their own centres (the mean of their points), by the sum of
+//   squared distances, the least sum winning and the earliest point on a
+//   tie. Profiles of one count compare point with point (a cyclic shift, as
+//   Blender's bridge pairs vertices); otherwise each is sampled evenly by
+//   length, 2 x the larger count of samples. The first profile keeps its own
+//   start.
+// - Columns ('count'): 0 with every profile of one count joins point to
+//   point, the profiles' own correspondence (a hull's keel to keel, chine to
+//   chine); 0 with counts that differ puts every ring on the union of all the
+//   profiles' points' fractions of length, so each profile keeps every one of
+//   its points and only gains points on its sides; a positive count samples
+//   every profile at that many points evenly by length (corners may be cut).
+//   A fraction within LoftSnap of a profile's own point is that point, bit
+//   for bit.
+//
+// A profile of one point (an apex: a bow, a tip) is allowed where the counts
+// differ: every column meets at it.
+
+// Fractions of length this close are one: a sample this near a profile's own
+// point is that point
+const LoftSnap = 0.00001;
+
+// a + (b - a) f, which is a itself, bit for bit, when b is a
+fn mixf(a f32, b f32, f f32) f32 {a + (b - a) * f;}
+fn mix3(a Vec3, b Vec3, f f32) Vec3 {a + (b - a) * f;}
+
+// Each point's fraction of the way along (open) or round (closed) the
+// polyline by length, and then 1: m + 1 values, an open polyline's last
+// point 1 as well. A polyline of no length gets evenly spaced fractions.
+fn loopFractions(pts &List[Vec3], closed Bool) List[f32] {
+  imm m = pts.len();
+  mut out = List[f32].withCapacity(m + 1usize);
+  mut total f32 = 0.;
+  mut j = 1usize;
+  while j < m {
+    total = total + pts[j].distance(*pts[j - 1usize]);
+    j = j + 1usize;
+  }
+  if closed and m > 1usize { total = total + pts[0usize].distance(*pts[m - 1usize]); }
+  imm pieces = if closed {m;} elif m > 0usize {m - 1usize;} else {0usize;};
+  mut s f32 = 0.;
+  j = 0usize;
+  while j < m {
+    if j > 0usize { s = s + pts[j].distance(*pts[j - 1usize]); }
+    if total > 0. { out.push(s / total); }
+    elif pieces > 0usize { out.push(f32.from(j) / f32.from(pieces)); }
+    else { out.push(0.); }
+    j = j + 1usize;
+  }
+  out.push(1.);
+  out;
+}
+
+// How many pieces a polyline of m points has
+fn pieceCount(m usize, closed Bool) usize {
+  if m < 2usize {0usize;} elif closed {m;} else {m - 1usize;};
+}
+
+// The piece holding fraction t: the last piece i whose start fr[i] is at or
+// before t (piece 0 for a t before the start)
+fn pieceAt(fr &List[f32], pieces usize, t f32) usize {
+  mut i = 0usize;
+  while i + 1usize < pieces and *fr[i + 1usize] <= t {
+    i = i + 1usize;
+  }
+  i;
+}
+
+// How far through piece i fraction t lies, 0 to 1, snapped to 0 or 1 within
+// LoftSnap of either end
+fn pieceFraction(fr &List[f32], i usize, t f32) f32 {
+  imm a = *fr[i];
+  imm b = *fr[i + 1usize];
+  if t - a <= LoftSnap { 0.; }
+  elif b - t <= LoftSnap { 1.; }
+  elif b > a { (t - a) / (b - a); }
+  else { 0.; };
+}
+
+// The point at fraction t of the polyline whose fractions are fr (see
+// 'loopFractions'): one of its own points when t is within LoftSnap of it
+fn pointAt(pts &List[Vec3], fr &List[f32], closed Bool, t f32) Vec3 {
+  imm m = pts.len();
+  imm pieces = pieceCount(m, closed);
+  if pieces == 0usize { return *pts[0usize]; }
+  imm i = pieceAt(fr, pieces, t);
+  imm l = pieceFraction(fr, i, t);
+  imm a = *pts[i];
+  imm b = *pts[(i + 1usize) % m];
+  if l <= 0. { a; } elif l >= 1. { b; } else { mix3(a, b, l); };
+}
+
+// s samples evenly by length: at k / s round a closed polyline, k / (s - 1)
+// along an open one
+fn evenSamples(pts &List[Vec3], closed Bool, s usize) List[Vec3] {
+  imm fr = loopFractions(pts, closed);
+  mut out = List[Vec3].withCapacity(s);
+  imm div = if closed or s < 2usize {s;} else {s - 1usize;};
+  mut k = 0usize;
+  while k < s {
+    out.push(pointAt(pts, &fr, closed, f32.from(k) / f32.from(div)));
+    k = k + 1usize;
+  }
+  out;
+}
+
+// The points from point s on, round the loop
+fn rotated[T](pts &List[T], s usize) List[T] {
+  imm m = pts.len();
+  mut out = List[T].withCapacity(m);
+  mut j = 0usize;
+  while j < m {
+    out.push(*pts[(s + j) % m]);
+    j = j + 1usize;
+  }
+  out;
+}
+
+// The loop the other way round from the same first point
+fn reversedLoop[T](pts &List[T]) List[T] {
+  imm m = pts.len();
+  mut out = List[T].withCapacity(m);
+  mut j = 0usize;
+  while j < m {
+    out.push(*pts[(m - j) % m]);
+    j = j + 1usize;
+  }
+  out;
+}
+
+// The mean of the points
+fn centre(pts &List[Vec3]) Vec3 {
+  mut sum = new Vec3(0., 0., 0.);
+  mut j = 0usize;
+  while j < pts.len() {
+    sum = sum + *pts[j];
+    j = j + 1usize;
+  }
+  if pts.len() > 0usize { sum * (1. / f32.from(pts.len())); } else { sum; };
+}
+
+// The sum of squared distances between a's points and b's from b's point s
+// on, each about its own centre
+fn matchCost(a &List[Vec3], ca Vec3, b &List[Vec3], cb Vec3, s usize) f32 {
+  imm n = a.len();
+  mut sum f32 = 0.;
+  mut j = 0usize;
+  while j < n {
+    imm d = (*a[j] - ca) - (*b[(s + j) % n] - cb);
+    sum = sum + d.dot(d);
+    j = j + 1usize;
+  }
+  sum;
+}
+
+// The point of closed loop b to start it from so that it best matches closed
+// loop a: see the top of this file. 'byIndex' (a and b of one count) compares
+// point with point; otherwise both are sampled evenly by length.
+fn bestStart(a &List[Vec3], b &List[Vec3], byIndex Bool) usize {
+  imm nb = b.len();
+  if a.len() < 3usize or nb < 3usize { return 0usize; }
+  mut best = 0usize;
+  mut bestCost f32 = 0.;
+  if byIndex and a.len() == nb {
+    imm ca = centre(a);
+    imm cb = centre(b);
+    mut s = 0usize;
+    while s < nb {
+      imm cost = matchCost(a, ca, b, cb, s);
+      if s == 0usize or cost < bestCost {
+        best = s;
+        bestCost = cost;
+      }
+      s = s + 1usize;
+    }
+    return best;
+  }
+  imm samples = 2usize * (if a.len() > nb {a.len();} else {nb;});
+  imm sa = evenSamples(a, true, samples);
+  imm ca = centre(&sa);
+  mut s = 0usize;
+  while s < nb {
+    imm bs = evenSamples(&rotated(b, s), true, samples);
+    imm cost = matchCost(&sa, ca, &bs, centre(&bs), 0usize);
+    if s == 0usize or cost < bestCost {
+      best = s;
+      bestCost = cost;
+    }
+    s = s + 1usize;
+  }
+  best;
+}
+
+// The sorted union of two sorted lists of fractions, a value within LoftSnap
+// of the one kept before it dropped
+fn mergeFractions(a &List[f32], b &List[f32]) List[f32] {
+  mut out = List[f32].withCapacity(a.len() + b.len());
+  mut i = 0usize;
+  mut j = 0usize;
+  while i < a.len() or j < b.len() {
+    mut t f32 = 0.;
+    if j >= b.len() or (i < a.len() and *a[i] <= *b[j]) {
+      t = *a[i];
+      i = i + 1usize;
+    } else {
+      t = *b[j];
+      j = j + 1usize;
+    }
+    if out.len() == 0usize or t - *out[out.len() - 1usize] > LoftSnap { out.push(t); }
+  }
+  out;
+}
+
+// The first n values of a list
+fn firstOf(src &List[f32], n usize) List[f32] {
+  mut out = List[f32].withCapacity(n);
+  mut i = 0usize;
+  while i < n and i < src.len() {
+    out.push(*src[i]);
+    i = i + 1usize;
+  }
+  out;
+}
+
+// The stations' rings on common columns (see the top of this file): each
+// profile's points as Vec3 (z 0), turned and started, then on the columns.
+// Fills 'rings' with the stations' points, n per station, station by
+// station, and 'us' with each station's n column fractions and then 1; gives
+// n. 'closed' is whether the rings close round.
+fn loftRings(profiles &List[Profile], closed Bool, count u32, rings &mut List[Vec3], us &mut List[f32]) usize {
+  imm ns = profiles.len();
+  if ns == 0usize { return 0usize; }
+  // The profiles as Vec3, closed ones counterclockwise, each started after
+  // the one before
+  mut pts = List[List[Vec3]].withCapacity(ns);
+  mut sameCount = true;
+  mut most = 0usize;
+  mut k = 0usize;
+  while k < ns {
+    imm m = profiles[k].points.len();
+    if m != profiles[0usize].points.len() { sameCount = false; }
+    if m > most { most = m; }
+    mut p = List[Vec3].withCapacity(m);
+    mut j = 0usize;
+    while j < m {
+      imm q = *profiles[k].points[j];
+      p.push(new Vec3(q.x, q.y, 0.));
+      j = j + 1usize;
+    }
+    if closed and m >= 3usize and !profiles[k].isCounterClockwise() { p = reversedLoop(&p); }
+    if closed and k > 0usize {
+      imm s = bestStart(pts[k - 1usize], &p, count == 0u32 and sameCount);
+      if s != 0usize { p = rotated(&p, s); }
+    }
+    pts.push(p);
+    k = k + 1usize;
+  }
+  if most == 0usize { return 0usize; }
+
+  // Point to point
+  if count == 0u32 and sameCount {
+    k = 0usize;
+    while k < ns {
+      imm fr = loopFractions(pts[k], closed);
+      mut j = 0usize;
+      while j < most {
+        rings.push(*pts[k][j]);
+        us.push(*fr[j]);
+        j = j + 1usize;
+      }
+      us.push(1.);
+      k = k + 1usize;
+    }
+    return most;
+  }
+
+  // Common columns: the union of the fractions, or evenly spaced
+  mut cols = List[f32].empty();
+  if count == 0u32 {
+    k = 0usize;
+    while k < ns {
+      imm fr = loopFractions(pts[k], closed);
+      imm own = firstOf(&fr, pts[k].len());
+      cols = mergeFractions(&cols, &own);
+      k = k + 1usize;
+    }
+  } else {
+    imm n = usize.from(count);
+    imm div = if closed or n < 2usize {n;} else {n - 1usize;};
+    mut j = 0usize;
+    while j < n {
+      cols.push(f32.from(j) / f32.from(div));
+      j = j + 1usize;
+    }
+  }
+  imm n = cols.len();
+  k = 0usize;
+  while k < ns {
+    imm fr = loopFractions(pts[k], closed);
+    mut j = 0usize;
+    while j < n {
+      rings.push(pointAt(pts[k], &fr, closed, *cols[j]));
+      us.push(*cols[j]);
+      j = j + 1usize;
+    }
+    us.push(1.);
+    k = k + 1usize;
+  }
+  n;
+}
+
+// Interpolation between knots: a + (b - a)(t - ta) / (tb - ta), or b when the
+// knots coincide
+fn knotMix(a Vec3, b Vec3, ta f32, tb f32, t f32) Vec3 {
+  if tb > ta { mix3(a, b, (t - ta) / (tb - ta)); } else { b; };
+}
+
+// The Catmull-Rom spline through p1 and p2 (with p0 before and p3 after) at
+// knots t0 < t1 < t2 < t3, at t in t1..t2: Barry and Goldman's pyramid of
+// linear interpolations, which takes uneven knots
+fn catmullRom(p0 Vec3, p1 Vec3, p2 Vec3, p3 Vec3, t0 f32, t1 f32, t2 f32, t3 f32, t f32) Vec3 {
+  imm a1 = knotMix(p0, p1, t0, t1, t);
+  imm a2 = knotMix(p1, p2, t1, t2, t);
+  imm a3 = knotMix(p2, p3, t2, t3, t);
+  imm b1 = knotMix(a1, a2, t0, t2, t);
+  imm b2 = knotMix(a2, a3, t1, t3, t);
+  knotMix(b1, b2, t1, t2, t);
+}
+
+// Column j's point between station k and the next, f of the way (0 < f < 1),
+// from the stations' points 'sp' (n per station) and their knots: on the
+// straight line, or with 'smooth' on the Catmull-Rom spline through the
+// column's points at the knots. An open run's ends get a phantom point
+// reflected through its end (2 p0 - p1, the knot likewise), which keeps the
+// end straight; a closed one wraps round, its knots one more round.
+fn columnPoint(sp &List[Vec3], knots &List[f32], ns usize, n usize, closed Bool, smooth Bool, k usize, j usize,
+    f f32) Vec3 {
+  imm k1 = (k + 1usize) % ns;
+  imm p1 = *sp[k * n + j];
+  imm p2 = *sp[k1 * n + j];
+  if !smooth or ns < 2usize { return mix3(p1, p2, f); }
+  imm t1 = *knots[k];
+  imm t2 = if k1 == 0usize {*knots[0usize] + 1.;} else {*knots[k1];};
+  mut p0 = p1 * 2. - p2;
+  mut t0 = t1 * 2. - t2;
+  if k > 0usize {
+    p0 = *sp[(k - 1usize) * n + j];
+    t0 = *knots[k - 1usize];
+  } elif closed {
+    p0 = *sp[(ns - 1usize) * n + j];
+    t0 = *knots[ns - 1usize] - 1.;
+  }
+  mut p3 = p2 * 2. - p1;
+  mut t3 = t2 * 2. - t1;
+  if closed {
+    imm k2 = (k + 2usize) % ns;
+    p3 = *sp[k2 * n + j];
+    t3 = *knots[k2];
+    if k + 2usize >= ns { t3 = t3 + 1.; }
+  } elif k + 2usize < ns {
+    p3 = *sp[(k + 2usize) * n + j];
+    t3 = *knots[k + 2usize];
+  }
+  catmullRom(p0, p1, p2, p3, t0, t1, t2, t3, mixf(t1, t2, f));
+}
+
+// The cap uvs of a station's ring (x and y of its points)
+fn ringCapUvs(rings &List[Vec3], k usize, n usize, start Bool) List[Vec2] {
+  mut pts = List[Vec2].withCapacity(n);
+  mut j = 0usize;
+  while j < n {
+    imm p = *rings[k * n + j];
+    pts.push(new Vec2(p.x, p.y));
+    j = j + 1usize;
+  }
+  imm prof = new Profile(pts, true);
+  capUvs(&prof, start);
+}
+
+// A surface through the profiles, profile k placed in frame k (its x on the
+// frame's normal, its y on its binormal, as a sweep places its profile), in
+// order (Blender's Bridge Edge Loops over loose loops, a NURBS loft). The
+// profiles are put on common columns and started so the band does not twist
+// (see the top of this file; 'count' chooses the columns); a closed first
+// profile makes every ring close round. Neighbouring stations are joined by
+// quads, with 'between' more rings between each pair, on the straight lines
+// joining their columns' points or, with 'smooth', on the Catmull-Rom spline
+// through each column's points (its knots the stations' "along"). With
+// 'caps', closed rings' two ends are closed by an n-gon each. Faces face
+// outward when the stations advance along their frames' tangents (normal x
+// binormal), as a sweep's do. If the lists differ in length, the shorter
+// decides; fewer than 2 stations give the one ring with no faces.
+//
+// Numbering: ring by ring from the first station, n vertices a ring (n the
+// columns), ring r's column j vertex r n + j; quads as 'extrude''s, then the
+// caps. A station's "along" is its distance along the polyline of the
+// frames' origins over that polyline's length (equal steps when it has
+// none), a ring between stations its blend; "around" is the column's
+// fraction of length, point to point each ring's own (blended between
+// stations), and "uv" is (around, along) at each corner, the closing
+// corners of a closed ring at u = 1; caps map from the end rings' boxes, as
+// a sweep's.
+pub fn loft(profiles &List[Profile], frames &List[Frame], count u32, between u32, smooth Bool, caps Bool) PolyMesh {
+  imm ns = if profiles.len() < frames.len() {profiles.len();} else {frames.len();};
+  imm closed = ns > 0usize and profiles[0usize].closed;
+  mut rings = List[Vec3].empty();
+  mut us = List[f32].empty();
+  imm n = loftRings(profiles, closed, count, &mut rings, &mut us);
+  // The stations' points in space, and their knots by the frames' origins
+  mut sp = List[Vec3].withCapacity(ns * n);
+  mut k = 0usize;
+  while k < ns {
+    imm fr = *frames[k];
+    mut j = 0usize;
+    while j < n {
+      imm p = *rings[k * n + j];
+      sp.push(fr.place(new Vec2(p.x, p.y)));
+      j = j + 1usize;
+    }
+    k = k + 1usize;
+  }
+  mut knots = List[f32].withCapacity(ns);
+  mut total f32 = 0.;
+  k = 0usize;
+  while k < ns {
+    if k > 0usize { total = total + frames[k].origin.distance(frames[k - 1usize].origin); }
+    knots.push(total);
+    k = k + 1usize;
+  }
+  k = 0usize;
+  while k < ns {
+    if total > 0. { knots.set(k, *knots[k] / total); }
+    elif ns > 1usize { knots.set(k, f32.from(k) / f32.from(ns - 1usize)); }
+    else { knots.set(k, 0.); }
+    k = k + 1usize;
+  }
+  loftMesh(&sp, &rings, &us, &knots, ns, n, closed, false, between, smooth, caps);
+}
+
+// The same surface with the stations placed along a path: station k at
+// fraction stations[k] of the path's length (0 its start, 1 its end), in the
+// path's rotation-minimizing frame there (Path.frames, blended between its
+// points); with fewer fractions than profiles, the stations are spread
+// evenly, k / (count - 1) along an open path and k / count round a closed
+// one. The fractions should rise. The rings between stations are placed in
+// the path's frames at the fractions between, so the surface follows the
+// path; each ring's profile is its stations' blended point by point
+// (linearly, or with 'smooth' by the Catmull-Rom spline through the
+// stations, its knots the stations' fractions). On a closed path the last
+// station is joined to the first round the path's end (the join is not
+// started again, so a closing band can twist where the first and last
+// profiles differ). "along" is the fraction of the path's length from the
+// first station over the stations' span (round a closed path, the fraction
+// from the first station, the closing corners at 1). Otherwise as 'loft'.
+pub fn loftAlong(profiles &List[Profile], path &Path, stations &[]f32, count u32, between u32, smooth Bool,
+    caps Bool) PolyMesh {
+  imm ns = profiles.len();
+  imm closed = ns > 0usize and profiles[0usize].closed;
+  imm ringsClosed = path.closed and ns >= 2usize;
+  mut rings = List[Vec3].empty();
+  mut us = List[f32].empty();
+  imm n = loftRings(profiles, closed, count, &mut rings, &mut us);
+  mut knots = List[f32].withCapacity(ns);
+  mut k = 0usize;
+  while k < ns {
+    if stations.len >= ns { knots.push(clampf(stations[k], 0., 1.)); }
+    elif path.closed { knots.push(f32.from(k) / f32.from(ns)); }
+    elif ns > 1usize { knots.push(f32.from(k) / f32.from(ns - 1usize)); }
+    else { knots.push(0.); }
+    k = k + 1usize;
+  }
+  imm frames = path.frames();
+  imm dist = path.distances();
+  imm total = path.length();
+  imm steps = usize.from(between) + 1usize;
+  imm bands = if ringsClosed {ns;} elif ns > 0usize {ns - 1usize;} else {0usize;};
+  imm nr = if ringsClosed {ns * steps;} else {bands * steps + 1usize;};
+  imm first = if ns > 0usize {*knots[0usize];} else {0.;};
+  imm span = if ns > 1usize {*knots[ns - 1usize] - first;} else {0.;};
+  mut pos = List[Vec3].withCapacity(nr * n);
+  mut ringUs = List[f32].withCapacity(nr * (n + 1usize));
+  mut vs = List[f32].withCapacity(nr + 1usize);
+  mut r = 0usize;
+  while r < nr and n > 0usize and frames.len() > 0usize {
+    imm kk = r / steps;
+    imm i = r % steps;
+    imm f = f32.from(i) / f32.from(steps);
+    imm k1 = (kk + 1usize) % ns;
+    imm ta = *knots[kk];
+    imm tb = if i == 0usize {ta;} elif k1 == 0usize {*knots[0usize] + 1.;} else {*knots[k1];};
+    imm t = if i == 0usize {ta;} else {mixf(ta, tb, f);};
+    imm fr = frameAtDistance(path, &frames, &dist, total, t * total);
+    mut j = 0usize;
+    while j < n {
+      imm p = if i == 0usize {*rings[kk * n + j];}
+        else {columnPoint(&rings, &knots, ns, n, path.closed, smooth, kk, j, f);};
+      pos.push(fr.place(new Vec2(p.x, p.y)));
+      ringUs.push(if i == 0usize {*us[kk * (n + 1usize) + j];}
+        else {mixf(*us[kk * (n + 1usize) + j], *us[k1 * (n + 1usize) + j], f);});
+      j = j + 1usize;
+    }
+    ringUs.push(1.);
+    if ringsClosed { vs.push(t - first); }
+    elif span > 0. { vs.push((t - first) / span); }
+    elif nr > 1usize { vs.push(f32.from(r) / f32.from(nr - 1usize)); }
+    else { vs.push(0.); }
+    r = r + 1usize;
+  }
+  vs.push(1.);
+  if pos.len() == 0usize { return PolyMesh.empty(); }
+  imm capA = ringCapUvs(&rings, 0usize, n, true);
+  imm capB = ringCapUvs(&rings, ns - 1usize, n, false);
+  tube(&pos, n, nr, closed, ringsClosed, caps and ns >= 2usize, false, &ringUs, &vs, &capA, &capB);
+}
+
+// The loft's mesh from the stations' points in space ('sp', n per station),
+// their rings' profile points (for the caps), column fractions and knots:
+// each station's ring, then 'between' rings to the next, on the lines or the
+// spline (see 'columnPoint')
+fn loftMesh(sp &List[Vec3], rings &List[Vec3], us &List[f32], knots &List[f32], ns usize, n usize, closed Bool,
+    ringsClosed Bool, between u32, smooth Bool, caps Bool) PolyMesh {
+  if ns == 0usize or n == 0usize { return PolyMesh.empty(); }
+  imm steps = usize.from(between) + 1usize;
+  imm nr = if ns < 2usize {1usize;} else {(ns - 1usize) * steps + 1usize;};
+  mut pos = List[Vec3].withCapacity(nr * n);
+  mut ringUs = List[f32].withCapacity(nr * (n + 1usize));
+  mut vs = List[f32].withCapacity(nr + 1usize);
+  mut r = 0usize;
+  while r < nr {
+    imm k = r / steps;
+    imm i = r % steps;
+    imm f = f32.from(i) / f32.from(steps);
+    mut j = 0usize;
+    while j < n {
+      if i == 0usize {
+        pos.push(*sp[k * n + j]);
+        ringUs.push(*us[k * (n + 1usize) + j]);
+      } else {
+        pos.push(columnPoint(sp, knots, ns, n, false, smooth, k, j, f));
+        ringUs.push(mixf(*us[k * (n + 1usize) + j], *us[(k + 1usize) * (n + 1usize) + j], f));
+      }
+      j = j + 1usize;
+    }
+    ringUs.push(1.);
+    vs.push(if i == 0usize {*knots[k];} else {mixf(*knots[k], *knots[k + 1usize], f);});
+    r = r + 1usize;
+  }
+  vs.push(1.);
+  imm capA = ringCapUvs(rings, 0usize, n, true);
+  imm capB = ringCapUvs(rings, ns - 1usize, n, false);
+  tube(&pos, n, nr, closed, ringsClosed, caps and ns >= 2usize, false, &ringUs, &vs, &capA, &capB);
+}
