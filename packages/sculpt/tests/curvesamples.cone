@@ -1,0 +1,49 @@
+// sampleCurve, checked with the testing package against values worked out by
+// hand; only a failure prints, so curvesamples.out holds the summary alone.
+// (These checks were geomath's, in its curves test, when sampling was a
+// method of its Bezier curves; their values are unchanged.)
+//
+// A quadratic Bezier at t is (1-t)^2 p0 + 2(1-t)t p1 + t^2 p2.
+//
+// - The quadratic arch (0, 0), (1, 2), (2, 0) sampled into four segments:
+//   t = 0, 1/4, 1/2, 3/4, 1, five points; a quarter of the way it is
+//   2 (3/4)(1/4) (1, 2) + (1/16)(2, 0) = (0.5, 0.75), and the arch is
+//   symmetric about x = 1.
+// - A cubic in space with its control points evenly along a line, which it
+//   then follows at an even speed: sampled, its length is 3 sqrt(3).
+
+mod curvesamples;
+
+import testing use *;
+import collections use List;
+import geomath use *;
+import sculpt use *;
+
+imm close = 0.0001d;
+
+fn pt(got Vec2, x f32, y f32, label &[]u8) {
+  expectFloat(got.x, x, close, label);
+  expectFloat(got.y, y, close, label);
+}
+
+fn sampling() {
+  imm q = new QuadraticBezier2(new Vec2(0., 0.), new Vec2(1., 2.), new Vec2(2., 0.));
+  // Control points a third of the way apart along (1, 1, 1): the curve is
+  // the line, 3t (1, 1, 1), at an even speed
+  imm line = new CubicBezier3(new Vec3(0., 0., 0.), new Vec3(1., 1., 1.), new Vec3(2., 2., 2.), new Vec3(3., 3., 3.));
+
+  // t = 0, 1/4, 1/2, 3/4, 1; the arch is symmetric about x = 1
+  imm samples = sampleCurve(q, 4u32);
+  expectInt(i64.from(samples.len()), 5, "four segments, five points");
+  pt(*samples[1usize], 0.5, 0.75, "the second sample");
+  pt(*samples[3usize], 1.5, 0.75, "the fourth sample");
+  pt(*samples[4usize], 2., 0., "the last sample is the end");
+  // The straight cubic sampled: its length is 3 sqrt(3)
+  imm straight = sampleCurve(line, 3u32);
+  expectFloat(polylineLength(straight.view()), 5.196152, close, "a straight curve's samples, end to end");
+}
+
+fn main() i32 {
+  sampling();
+  done();
+}

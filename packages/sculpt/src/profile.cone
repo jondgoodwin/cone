@@ -1,4 +1,8 @@
 // ======== Profile: a 2-D outline ========
+//
+// Profile, and below it the two functions behind its generators that make a
+// list of points of a length not known in advance: 'sampleCurve' (a Bezier
+// curve as a polyline) and 'convexHull'.
 
 // A 2-D outline to be swept, extruded or revolved: its points in order and
 // whether the last joins back to the first. A closed profile that runs
@@ -81,16 +85,18 @@ pub struct Profile {
     new Profile(pts, true);
   }
 
-  // The convex hull of the points (geomath's 'convexHull'): closed,
+  // The convex hull of the points ('convexHull', below): closed,
   // counterclockwise from the point of least x
   pub fn hull(points &[]Vec2) Profile {new Profile(convexHull(points), true);}
 
   // A cubic Bezier curve as an open polyline of 'segments' pieces, evenly
-  // spaced in the curve's parameter
-  pub fn fromCubic(curve CubicBezier2, segments u32) Profile {new Profile(curve.sample(segments), false);}
+  // spaced in the curve's parameter ('sampleCurve', below, called by its
+  // overload's own name: the overloaded name, called from a method of a
+  // struct in the module that declares the overloads, is refused, 1046)
+  pub fn fromCubic(curve CubicBezier2, segments u32) Profile {new Profile(sampleCubic2(curve, segments), false);}
 
   // A quadratic Bezier curve the same way
-  pub fn fromQuadratic(curve QuadraticBezier2, segments u32) Profile {new Profile(curve.sample(segments), false);}
+  pub fn fromQuadratic(curve QuadraticBezier2, segments u32) Profile {new Profile(sampleQuadratic2(curve, segments), false);}
 
   pub fn pointCount(self &) usize {points.len();}
 
@@ -105,6 +111,128 @@ pub struct Profile {
 
   // Whether it runs counterclockwise (by its signed area, closed or not)
   pub fn isCounterClockwise(self &) Bool {polygonIsCounterClockwise(points.view());}
+}
+
+// -------- Bezier curves sampled --------
+
+// A Bezier curve (geomath's) as a polyline of 'segments' straight pieces,
+// evenly spaced in t: segments + 1 points, the first p0 and the last the
+// curve's end. In the plane or in space, quadratic or cubic
+pub fn sampleQuadratic2 overload sampleCurve(curve QuadraticBezier2, segments u32) List[Vec2] {
+  mut pts = List[Vec2].withCapacity(usize.from(segments) + 1usize);
+  mut i = 0u32;
+  while i <= segments {
+    pts.push(curve.point(f32.from(i) / f32.from(segments)));
+    i = i + 1u32;
+  }
+  pts;
+}
+
+pub fn sampleCubic2 overload sampleCurve(curve CubicBezier2, segments u32) List[Vec2] {
+  mut pts = List[Vec2].withCapacity(usize.from(segments) + 1usize);
+  mut i = 0u32;
+  while i <= segments {
+    pts.push(curve.point(f32.from(i) / f32.from(segments)));
+    i = i + 1u32;
+  }
+  pts;
+}
+
+pub fn sampleQuadratic3 overload sampleCurve(curve QuadraticBezier3, segments u32) List[Vec3] {
+  mut pts = List[Vec3].withCapacity(usize.from(segments) + 1usize);
+  mut i = 0u32;
+  while i <= segments {
+    pts.push(curve.point(f32.from(i) / f32.from(segments)));
+    i = i + 1u32;
+  }
+  pts;
+}
+
+pub fn sampleCubic3 overload sampleCurve(curve CubicBezier3, segments u32) List[Vec3] {
+  mut pts = List[Vec3].withCapacity(usize.from(segments) + 1usize);
+  mut i = 0u32;
+  while i <= segments {
+    pts.push(curve.point(f32.from(i) / f32.from(segments)));
+    i = i + 1u32;
+  }
+  pts;
+}
+
+// -------- Convex hull --------
+
+// Twice the area of the triangle o, a, b, signed: positive when the three run
+// counterclockwise, 0 when they are on one line
+fn hullTurn(o Vec2, a Vec2, b Vec2) f32 {(a - o).cross(b - o);}
+
+// Whether a comes before b: by x, then by y
+fn hullBefore(a Vec2, b Vec2) Bool {a.x < b.x or (a.x == b.x and a.y < b.y);}
+
+// Sort the points by x, then by y (heapsort, in place)
+fn sortPoints(pts &mut List[Vec2]) {
+  imm n = pts.len();
+  if n < 2usize {return;}
+  mut start = n / 2usize;
+  while start > 0usize {
+    start = start - 1usize;
+    siftDown(pts, start, n);
+  }
+  mut end = n - 1usize;
+  while end > 0usize {
+    pts.swap(0usize, end);
+    siftDown(pts, 0usize, end);
+    end = end - 1usize;
+  }
+}
+
+fn siftDown(pts &mut List[Vec2], start usize, end usize) {
+  mut root = start;
+  while 2usize * root + 1usize < end {
+    mut child = 2usize * root + 1usize;
+    if child + 1usize < end and hullBefore(*pts[child], *pts[child + 1usize]) {child = child + 1usize;}
+    if !hullBefore(*pts[root], *pts[child]) {return;}
+    pts.swap(root, child);
+    root = child;
+  }
+}
+
+// The convex hull: the smallest convex polygon holding every point, its
+// corners counterclockwise from the one with the least x (and of those the
+// least y). Points on its edges are not corners. Andrew's monotone chain: the
+// points sorted by x, the lower hull is swept left to right and the upper
+// right to left, each dropping a corner that does not turn left
+pub fn convexHull(points &[]Vec2) List[Vec2] {
+  mut sorted = List[Vec2].withCapacity(points.len);
+  mut i = 0usize;
+  while i < points.len {
+    sorted.push(points[i]);
+    i = i + 1usize;
+  }
+  sortPoints(&mut sorted);
+  imm n = sorted.len();
+  if n < 3usize {return sorted;}
+  mut hull = List[Vec2].withCapacity(2usize * n);
+  i = 0usize;
+  while i < n {
+    imm p = *sorted[i];
+    while hull.len() >= 2usize and hullTurn(*hull[hull.len() - 2usize], *hull[hull.len() - 1usize], p) <= 0. {
+      hull.pop();
+    }
+    hull.push(p);
+    i = i + 1usize;
+  }
+  imm lower = hull.len() + 1usize;
+  i = n - 1usize;
+  while i > 0usize {
+    i = i - 1usize;
+    imm p = *sorted[i];
+    while hull.len() >= lower and hullTurn(*hull[hull.len() - 2usize], *hull[hull.len() - 1usize], p) <= 0. {
+      hull.pop();
+    }
+    hull.push(p);
+  }
+  // The last is the first again
+  hull.pop();
+  hull;
 }
 
 // Each profile point's u, its distance along the profile over the profile's
