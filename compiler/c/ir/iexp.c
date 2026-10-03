@@ -41,6 +41,10 @@ int iexpTypeCheckAny(TypeCheckState *pstate, INode **from) {
 
 // Return whether it is okay for from expression to be coerced to to-type
 TypeCompare iexpMatches(INode **from, INode *totype, SubtypeConstraint constraint) {
+    // A 'null' not yet typed is whichever raw pointer type is wanted, and nothing else
+    if (litIsUntypedNull(*from))
+        return litNullMatches(*from, totype) ? EqMatch : NoMatch;
+
     INode *fromtype = iexpGetTypeDcl(*from);
 
     // Is totype a supertype of (or equivalent to) from's type?
@@ -148,6 +152,11 @@ int iexpCoerce(INode **from, INode *totype) {
         return 0;
     }
     IExpNode *fromnode = (IExpNode *)*from;
+
+    // A 'null' takes the raw pointer type it is wanted as, and is refused
+    // wanted as anything else, or as nothing in particular
+    if (litAdoptNullType(from, totype))
+        return 1;
 
     // No need to do coercion, if no expected type
     if (totype == unknownType || totype == noCareType)

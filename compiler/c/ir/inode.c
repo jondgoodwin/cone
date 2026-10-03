@@ -131,6 +131,8 @@ void inodePrintNode(INode *node) {
         logicPrint((LogicNode *)node); break;
     case NilLitTag:
         nilLitPrint((NilLitNode *)node); break;
+    case NullLitTag:
+        nullLitPrint((NullLitNode *)node); break;
     case ULitTag:
         ulitPrint((ULitNode *)node); break;
     case FLitTag:
@@ -296,6 +298,9 @@ void inodeNameRes(NameResState *pstate, INode **node) {
         namedValNameRes(pstate, (NamedValNode *)*node); break;
     case OfEntryTag: case FillEntryTag: case PairEntryTag:
         entryNameRes(pstate, (EntryNode *)*node); break;
+    // A 'null' names nothing, and its type is not written
+    case NullLitTag:
+        break;
     case NilLitTag:
     case ULitTag:
     case FLitTag:
@@ -488,6 +493,8 @@ void inodeTypeCheck(TypeCheckState *pstate, INode **node, INode *expectType) {
         namedValTypeCheck(pstate, (NamedValNode *)*node, expectType); break;
     case OfEntryTag: case FillEntryTag: case PairEntryTag:
         entryTypeCheck(pstate, (EntryNode *)*node); break;
+    case NullLitTag:
+        nullLitTypeCheck(pstate, (NullLitNode *)*node, expectType); break;
     case NilLitTag:
     case ULitTag:
     case FLitTag:
@@ -724,6 +731,7 @@ static NodeTagFacts nodeTagFacts[NodeTagCount] = {
     [AliasDclTag] = {StmtGroup, 1, 0},
 
     [NilLitTag] = {ExpGroup, 0, 0},
+    [NullLitTag] = {ExpGroup, 0, 0},
     [ULitTag] = {ExpGroup, 0, 0},
     [FLitTag] = {ExpGroup, 0, 0},
     [StringLitTag] = {ExpGroup, 0, 0},

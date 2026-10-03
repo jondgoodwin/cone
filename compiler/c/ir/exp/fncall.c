@@ -1160,6 +1160,32 @@ static int fnCallHasPlace(INode *type) {
     return type->tag == RefTag || type->tag == VirtRefTag || type->tag == ArrayRefTag || type->tag == PtrTag;
 }
 
+// Type a 'null' operand of a comparison by the other operand: 'p == null' and
+// 'null != p' compare with p's raw pointer type, which a pointer's comparison
+// requires of both sides (iNsTypeFindPtrMethod). Compared with anything other
+// than a raw pointer it is refused. A 'null' receiving any other call has no
+// type to take, and is refused too. Answers 0 when the call is now an error.
+static int fnCallTypeNullOperands(FnCallNode *node) {
+    Name *op = fnCallOperatorName(node);
+    int compare = op && (fnCallIsValueCompare(op) || op == sameName || op == notSameName)
+        && node->args && node->args->used == 1;
+    INode **nullp = NULL;
+    if (compare) {
+        INode **argp = &nodesGet(node->args, 0);
+        if (litIsUntypedNull(*argp) && !litIsUntypedNull(node->objfn))
+            litAdoptNullType(nullp = argp, ((IExpNode*)node->objfn)->vtype);
+        else if (litIsUntypedNull(node->objfn) && !litIsUntypedNull(*argp))
+            litAdoptNullType(nullp = &node->objfn, ((IExpNode*)*argp)->vtype);
+    }
+    if (litIsUntypedNull(node->objfn))
+        litAdoptNullType(nullp = &node->objfn, unknownType);
+    if (nullp && inodeIsError(*nullp)) {
+        node->vtype = errorType;
+        return 0;
+    }
+    return 1;
+}
+
 // Refuse a comparison through a reference whose referent offers none
 static void fnCallRefNoCompare(FnCallNode *node, Name *op, char *why) {
     errorMsgNode((INode*)node, ErrorRefNoCompare,
@@ -2214,6 +2240,10 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
         fnCallLowerOverloadFn(node);
         return;
     }
+
+    // A 'null' compared with a pointer, on either side, is that pointer's type
+    if (!fnCallTypeNullOperands(node))
+        return;
 
     // Handle when method operator requires an lval
     // This is true for ++, --, <- and operator-equals (+=)

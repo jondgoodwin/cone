@@ -123,13 +123,14 @@ static int arrayLitTypeCheckExpected(TypeCheckState *pstate, ArrayNode *arrlit, 
 
 // Is an array literal's dimension a constant whose count type check can read? A
 // reinterpretation of a constant is a constant (litIsLiteral), but its count is
-// known only once generated, and the array type needs it now
+// known only once generated, and the array type needs it now. A 'null' is a
+// constant pointer, and no count at all.
 static int arrayLitDimIsConst(INode *dimnode) {
     if (!litIsLiteral(dimnode))
         return 0;
     while (nameUseNames(dimnode, ConstDclTag))
         dimnode = ((ConstDclNode*)((NameUseNode*)dimnode)->dclnode)->value;
-    return dimnode->tag != CastTag;
+    return dimnode->tag != CastTag && dimnode->tag != NullLitTag;
 }
 
 // Type check an array literal. Its dimension is part of its type, so it must

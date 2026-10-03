@@ -435,6 +435,9 @@ enum ErrorCode {
     ErrorLifetimeArgs = 1234,   // A use naming lifetimes its type does not declare, or not as many as it declares
     ErrorLifetimeOr = 1235,     // A lifetime comparison under 'or' or 'not' in a 'where' clause: lifetimes are never instanced, so only 'and' joins one
 
+    // Literals and implicit coercion
+    ErrorNullNotPtr = 1236,     // A 'null' wanted as something other than a raw pointer, or where nothing says which raw pointer type it is
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name

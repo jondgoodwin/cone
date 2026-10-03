@@ -71,7 +71,8 @@ int genericInferStructParms(TypeCheckState *pstate, Nodes *genparms, StructNode 
         INode *parmtype = ((VarDclNode *)(*parmp))->vtype;
         INode *argtype = ((FieldDclNode *)*argsp)->vtype;
         // If type of expected parm is a generic variable, capture type of corresponding argument
-        if (nameUseNames(parmtype, GenVarDclTag)
+        // A 'null' says nothing of which pointer type it is (genericInferFnParms)
+        if (nameUseNames(parmtype, GenVarDclTag) && !litIsUntypedNull(*argsp)
             && genericCaptureType(inferredgencall, genparms, parmtype, argtype) == 0) {
             errorMsgNode(*argsp, ErrorInvType, "Inconsistent type for generic type");
             retcode = 0;
@@ -234,8 +235,11 @@ static int genericInferFnParms(TypeCheckState *pstate, Nodes *genparms, FnSigNod
     for (nodesFor(args, cnt, argsp)) {
         INode *parmtype = ((VarDclNode *)(*parmp))->vtype;
         INode *argtype = ((IExpNode *)*argsp)->vtype;
-        // Capture the type of each generic variable the parameter's type names
-        if (genericInferType(inferredgencall, genparms, parmtype, argtype) == 0) {
+        // Capture the type of each generic variable the parameter's type names.
+        // A 'null' is whichever pointer type is wanted, so says nothing of
+        // which; another argument may, and the call's coercion then types it.
+        if (!litIsUntypedNull(*argsp)
+            && genericInferType(inferredgencall, genparms, parmtype, argtype) == 0) {
             errorMsgNode(*argsp, ErrorInvType, "Inconsistent type for generic function");
             retcode = 0;
         }
