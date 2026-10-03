@@ -32,16 +32,20 @@
 # (concurrency_actor_runtime). The concurrency_actors_* scenarios are the
 # runtime, driven by declared actors: the scheduler's paths, the counting
 # that decides when an actor dies, quiescence; they are here, not in the
-# package's tests/ folder, because they pin what the compiler generates. Only
-# concurrency_actors_state_unsendable writes the generated shape out by hand,
-# since a declared actor's state has a name no source can spell. Each runs
-# threads and prints only what is the same every run; each calls initAll()
-# and finalAll(), which start nothing and stop the workers.
+# package's tests/ folder, because they pin what the compiler generates. Two
+# write the generated shape out by hand: concurrency_actors_state_unsendable,
+# since a declared actor's state has a name no source can spell, and
+# concurrency_actors_declared_last, whose four parts are in the opposite order
+# to the compiler's. Each runs threads and prints only what is the same every
+# run; each calls initAll() and finalAll(), which start nothing and stop the
+# workers.
 #
-# A declaration written above an actor that lays its handle out first meets
-# the order-dependent refusal ErrorNoSize (1069) of a type still being laid
-# out: concurrency_actor_order records it (xfail), and
-# concurrency_actors_stress declares its two actors in the order that works.
+# Declaration order does not matter: a reference never lays out what it points
+# at, so a handle, which reaches its message enum only through its owning
+# reference to the mailbox, may be laid out before the enum. Declarations
+# written above an actor that lay its handle out first are
+# concurrency_actor_order's; concurrency_actors_stress declares the collector,
+# holding nodes, above the nodes, whose message carries a node.
 #
 # Not covered, with reasons:
 #
@@ -125,9 +129,8 @@ tags = ["parse", "typecheck", "flow", "genllvm", "runtime"]
 
 [scenario.concurrency_actor_order]
 category = "run"
-description = "An actor whose message carries its own handle, declared below an actor whose state and message hold that handle: refused as a type still being laid out (1069), which the other order is not"
+description = "Declarations written above an actor that lay its handle out first: an actor whose state and message hold a Spoke above Spoke, whose message carries a Spoke; a struct holding a handle above the actor whose message carries it. Each compiles and runs"
 tags = ["typecheck", "genllvm", "runtime"]
-xfail = true
 
 [scenario.concurrency_actor_parse]
 category = "reject"
@@ -147,6 +150,13 @@ tags = ["parse"]
 [scenario.concurrency_actors_pingpong]
 category = "run"
 description = "Two declared actors ping-pong a million messages, each seeing its own in send order; the workers start with the first actor, and finalAll ends the program at quiescence, both finalized once"
+tags = ["typecheck", "genllvm", "runtime"]
+
+# The same game with the actor's parts in the other order, its message enum
+# last: refused as a cycle until a reference stopped laying out its target
+[scenario.concurrency_actors_declared_last]
+category = "run"
+description = "Two actors written out by hand in the shape the compiler generates, handle declared first and message enum last, ping-pong a thousand messages to the end, both finalized once"
 tags = ["typecheck", "genllvm", "runtime"]
 
 [scenario.concurrency_actors_fanin]

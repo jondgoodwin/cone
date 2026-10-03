@@ -44,7 +44,8 @@ void ptrNameRes(NameResState *pstate, StarNode *node) {
 
 // Type check a pointer type
 void ptrTypeCheck(TypeCheckState *pstate, StarNode *node) {
-    if (itypeTypeCheck(pstate, &node->vtexp) == 0)
+    // A pointer is a pointer whatever it points at (refTargetTypeCheck)
+    if (refTargetTypeCheck(pstate, &node->vtexp, NULL) == 0)
         return;
 }
 

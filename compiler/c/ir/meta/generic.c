@@ -978,6 +978,16 @@ void genericInstantiateExit() {
         instantiateRefused = 0;
 }
 
+uint32_t genericInstantiateDepth() {
+    return instantiateDepth;
+}
+
+void genericInstantiateDepthSet(uint32_t depth) {
+    instantiateDepth = depth;
+    if (depth == 0)
+        instantiateRefused = 0;
+}
+
 // Reserve the instance of a generic type before it is cloned, and map the
 // generic to it for cloneDclFix. Inside its own braces a generic type's bare
 // name means the instance being defined -- 'Box' inside 'struct Box[T]' is
@@ -1064,16 +1074,111 @@ INode *genericInstantiate(TypeCheckState *pstate, FnCallNode *srcgencall, INode 
     return instance;
 }
 
+// What a type's use keeps of the type arguments it was written with
+typedef struct {
+    INode *genuse;
+    Nodes *written;
+} GenericUseArgs;
+
+// Whether a type argument holds a borrow is read from its layout, so a use
+// made as a reference's target, whose arguments' layouts may be waiting, is
+// decided again once they are done
+static void genericInstanceUseSettle(TypeCheckState *pstate, INode *use, void *extra) {
+    GenericUseArgs *args = (GenericUseArgs *)extra;
+    lifeUseInstance((NameUseNode*)use, args->genuse, args->written);
+}
+
 // The use of an instance, standing where 'srcgencall' named it. A type's use
 // keeps the lifetimes the generic's name was given and the type arguments as
 // 'written', for what lifetimes they name (lifeUseInstance).
-static INode *genericInstanceUse(INode *instance, FnCallNode *srcgencall, Nodes *written) {
+static INode *genericInstanceUse(TypeCheckState *pstate, INode *instance, FnCallNode *srcgencall, Nodes *written) {
     INode *use = newNameUseFromDclNode(instance, (INode*)srcgencall);
     // A function's use keeps them too where they carry brands: a call binds
     // the instance's brands, named by place, to those (fnCallFinalizeArgs)
     if (instance->tag == StructTag || (lifeInvariantSeen && instance->tag == FnDclTag))
         lifeUseInstance((NameUseNode*)use, instance->tag == StructTag ? srcgencall->objfn : NULL, written);
+    if (instance->tag == StructTag && written && structTargetDeferring()) {
+        GenericUseArgs *args = memAllocBlk(sizeof(GenericUseArgs));
+        args->genuse = srcgencall->objfn;
+        args->written = written;
+        structDeferCheck(pstate, genericInstanceUseSettle, use, args);
+    }
     return use;
+}
+
+// Does a 'where' list read its arguments' layouts as it is decided? Each clause
+// does but a 'Sendable' one standing alone: whether a type may cross threads is
+// answered provisionally of a type not yet laid out, noted, and judged again
+// once every type is (genericSendableNote), so an actor's handle, whose
+// Mailbox's message type holds the handle back by value, is no cycle.
+static int genericWhereReadsLayout(Nodes *where) {
+    if (where == NULL)
+        return 0;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(where, cnt, nodesp)) {
+        if ((*nodesp)->tag != IsTag || genericNamedTrait(((CastNode*)*nodesp)->typ) != sendableTrait)
+            return 1;
+    }
+    return 0;
+}
+
+// Does a condition decide anything about this generic's instances: a 'where'
+// on the generic, on its enum, or on a member of either or of a variant?
+static int genericMembersConditioned(StructNode *type) {
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodelistFor(&type->nodelist, cnt, nodesp)) {
+        if ((*nodesp)->tag == FnDclTag && ((FnDclNode*)*nodesp)->where != NULL)
+            return 1;
+    }
+    return 0;
+}
+
+static int genericConditioned(INode *generic, GenericInfo *genericinfo) {
+    if (generic->tag == FnDclTag)
+        return genericWhereReadsLayout(((FnDclNode*)generic)->where);
+    if (generic->tag != StructTag)
+        return 0;
+    StructNode *type = (StructNode*)generic;
+    if (genericWhereReadsLayout(genericinfo->where) || genericMembersConditioned(type))
+        return 1;
+    StructNode *owner = (type->flags & HasTagField) ? structGetBaseTrait(type) : NULL;
+    if (owner == NULL)
+        return 0;
+    if ((owner->genericinfo && genericWhereReadsLayout(owner->genericinfo->where))
+        || genericMembersConditioned(owner))
+        return 1;
+    if (owner->derived) {
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodesFor(owner->derived, cnt, nodesp)) {
+            if (genericMembersConditioned((StructNode*)*nodesp))
+                return 1;
+        }
+    }
+    return 0;
+}
+
+// An instance of a generic enum made as a reference's target: laid out with
+// its variants, and its discriminant's width settled, once no layout is in
+// flight -- unless a use holding it by value laid it out first
+typedef struct {
+    Nodes *variants;
+    int firstinstance;
+} GenericEnumWait;
+
+static void genericEnumInstanceLayout(TypeCheckState *pstate, INode *instrait, void *extra) {
+    GenericEnumWait *wait = (GenericEnumWait *)extra;
+    if (instrait->flags & (TypeChecking | TypeChecked))
+        return;
+    structTypeCheckEnumInstance(pstate, (StructNode*)instrait);
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(wait->variants, cnt, nodesp))
+        inodeTypeCheckAny(pstate, nodesp);
+    if (wait->firstinstance)
+        structSetTagWidth((StructNode*)instrait);
 }
 
 // The type argument at 'i' as an instance is made from it: with no lifetime
@@ -1160,7 +1265,7 @@ INode *genericMemoize(TypeCheckState *pstate, FnCallNode *srcgencall, INode *nod
         }
         if (match) {
             // Return a namenode pointing to dcl instance
-            return genericInstanceUse(*nodesp, srcgencall, srcgencall->args);
+            return genericInstanceUse(pstate, *nodesp, srcgencall, srcgencall->args);
         }
     }
 
@@ -1179,6 +1284,18 @@ INode *genericMemoize(TypeCheckState *pstate, FnCallNode *srcgencall, INode *nod
         srcgencall->args = newNodes(written->used);
         for (nodesFor(written, cnt, nodesp))
             nodesAdd(&srcgencall->args, genericInstanceArg(nodetoclone, genericinfo, srcgencall->args->used, *nodesp));
+    }
+
+    // A condition asks what its arguments are -- whether one moves, holds a
+    // borrow, may cross threads, fits a trait -- which is read from their
+    // layouts. Named as a reference's target, an argument's layout may be
+    // waiting (structTargetWait), so where a condition decides anything about
+    // the instance, the arguments are laid out first.
+    if (structTargetDeferring() && genericConditioned(nodetoclone, genericinfo)) {
+        uint32_t target = structTargetSuspend();
+        for (nodesFor(written, cnt, nodesp))
+            structTypeSettle(pstate, *nodesp);
+        structTargetResume(target);
     }
 
     // A constraint the arguments do not meet refuses the instance here, before
@@ -1248,26 +1365,42 @@ INode *genericMemoize(TypeCheckState *pstate, FnCallNode *srcgencall, INode *nod
         Nodes **instraitderived = &((StructNode*)instrait)->derived;
         for (nodesFor(variants, cnt, nodesp))
             nodesAdd(instraitderived, *nodesp);
-        structTypeCheckEnumInstance(pstate, (StructNode*)instrait);
-        INode **instp = &nodesGet(variants, 0);
-        for (nodesFor(basetrait->derived, cnt, nodesp)) {
-            inodeTypeCheckAny(pstate, instp);
-            if (*nodesp == (INode*)nodetoclone)
-                retinstance = *instp;
-            ++instp;
+        // Made as a reference's target while a layout is in flight, the
+        // instance is laid out, with its variants, once none is
+        if (structTargetDeferring()) {
+            GenericEnumWait *wait = memAllocBlk(sizeof(GenericEnumWait));
+            wait->variants = variants;
+            wait->firstinstance = firstinstance;
+            structDeferLayout(pstate, genericEnumInstanceLayout, instrait, wait);
+            INode **instp = &nodesGet(variants, 0);
+            for (nodesFor(basetrait->derived, cnt, nodesp)) {
+                if (*nodesp == (INode*)nodetoclone)
+                    retinstance = *instp;
+                ++instp;
+            }
         }
+        else {
+            structTypeCheckEnumInstance(pstate, (StructNode*)instrait);
+            INode **instp = &nodesGet(variants, 0);
+            for (nodesFor(basetrait->derived, cnt, nodesp)) {
+                inodeTypeCheckAny(pstate, instp);
+                if (*nodesp == (INode*)nodetoclone)
+                    retinstance = *instp;
+                ++instp;
+            }
 
-        // The discriminant's width follows the largest tag value, and the instance's
-        // own type check left it here (structTypeCheckEnumInstance). It is settled
-        // once per generic: the discriminant node is shared by the template and
-        // every instance, and their tag values are the template's, so a later
-        // instance could only report a declared integer type's overflow again.
-        if (firstinstance)
-            structSetTagWidth((StructNode*)instrait);
+            // The discriminant's width follows the largest tag value, and the instance's
+            // own type check left it here (structTypeCheckEnumInstance). It is settled
+            // once per generic: the discriminant node is shared by the template and
+            // every instance, and their tag values are the template's, so a later
+            // instance could only report a declared integer type's overflow again.
+            if (firstinstance)
+                structSetTagWidth((StructNode*)instrait);
+        }
     }
     genericInstantiateExit();
 
-    return genericInstanceUse(retinstance, srcgencall, written);
+    return genericInstanceUse(pstate, retinstance, srcgencall, written);
 }
 
 // Obtain GenericInfo from node, if it exists

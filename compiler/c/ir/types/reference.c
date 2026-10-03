@@ -232,6 +232,40 @@ static void refRefusePlusType(RefNode *node) {
 // '&new' may be written: an init's reference to memory not yet filled
 int refAllowNewPerm = 0;
 
+// Check what a reference, pointer or slice points at. A reference's size is its
+// kind's, never its target's, so while a layout is in flight the target is
+// resolved -- a name to its declaration, a generic's instance made -- and not
+// laid out: what it reaches is laid out once no layout is in flight
+// (structTargetWait). Answers whether the target is a type, as itypeTypeCheck
+// does, and whether its layout may be waiting, in '*waiting'.
+int refTargetTypeCheck(TypeCheckState *pstate, INode **targetp, int *waiting) {
+    int defer = structValueInFlight();
+    if (waiting)
+        *waiting = defer;
+    if (defer)
+        structTargetEnter();
+    int istype = itypeTypeCheck(pstate, targetp);
+    if (defer)
+        structTargetExit();
+    return istype;
+}
+
+// What a key names lives in its arena, past every scope, so it holds no
+// borrow. A generic's instance is judged where it is called (lifeKeyBorrow).
+// Whether a type holds a borrow is read from its layout.
+static void refKeyBorrowCheck(TypeCheckState *pstate, INode *node, void *extra) {
+    RefNode *ref = (RefNode *)node;
+    if (lifeIsInvariant(ref->lifename) && ref->instnode == NULL && itypeCarriesBorrow(ref->vtexp))
+        errorMsgNode((INode*)ref, ErrorKeyBorrow,
+            "A key names a value in its arena, which outlives every scope, so that value may hold no borrow: this one's type does.");
+}
+
+// A virtual reference's trait has its vtable built from its members and its
+// known implementers, each laid out
+static void refVtableBuild(TypeCheckState *pstate, INode *trait, void *extra) {
+    structMakeVtable((StructNode *)trait);
+}
+
 // Type check a reference node
 void refTypeCheck(TypeCheckState *pstate, RefNode *node) {
     int allownew = refAllowNewPerm;
@@ -261,15 +295,17 @@ void refTypeCheck(TypeCheckState *pstate, RefNode *node) {
         node->vtexp = errorType;
         return;
     }
-    if (itypeTypeCheck(pstate, &node->vtexp) == 0)
+    int waiting;
+    if (refTargetTypeCheck(pstate, &node->vtexp, &waiting) == 0)
         return;
     refRefuseRegionRef(node);
     refAdoptInfections(node);
-    // What a key names lives in its arena, past every scope, so it holds no
-    // borrow. A generic's instance is judged where it is called (lifeKeyBorrow).
-    if (lifeIsInvariant(node->lifename) && node->instnode == NULL && itypeCarriesBorrow(node->vtexp))
-        errorMsgNode((INode*)node, ErrorKeyBorrow,
-            "A key names a value in its arena, which outlives every scope, so that value may hold no borrow: this one's type does.");
+    if (lifeIsInvariant(node->lifename) && node->instnode == NULL) {
+        if (waiting)
+            structDeferCheck(pstate, refKeyBorrowCheck, (INode*)node, NULL);
+        else
+            refKeyBorrowCheck(pstate, (INode*)node, NULL);
+    }
     // Where a traced reference may be held, judged once every type is laid out
     regionTracedRefNote(node);
 
@@ -286,7 +322,8 @@ void refvirtTypeCheck(TypeCheckState *pstate, RefNode *node) {
     refRegionCheck(&node->region);
     itypeTypeCheck(pstate, (INode**)&node->perm);
     refLockCheck(node);
-    if (itypeTypeCheck(pstate, &node->vtexp) == 0)
+    int waiting;
+    if (refTargetTypeCheck(pstate, &node->vtexp, &waiting) == 0)
         return;
     refRefuseRegionRef(node);
     refAdoptInfections(node);
@@ -299,7 +336,10 @@ void refvirtTypeCheck(TypeCheckState *pstate, RefNode *node) {
     }
 
     // Build the Vtable info
-    structMakeVtable(trait);
+    if (waiting)
+        structDeferCheck(pstate, refVtableBuild, (INode*)trait, NULL);
+    else
+        structMakeVtable(trait);
 }
 
 // Compare two reference signatures to see if they are equivalent

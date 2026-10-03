@@ -1,0 +1,108 @@
+// What a reference not demanding its target's layout still refuses.
+//
+// A reference's size is its kind's, so laying out a struct that holds one does
+// not lay out what it points at: that waits until no layout is in flight. Two
+// things follow, and this file holds both.
+//
+// A real by-value cycle is still a cycle. Only by-value containment lays a type
+// out, so a type found still being laid out when a field asks its size closes a
+// cycle of types holding each other by value, and the message names it, type by
+// type.
+//
+// Every check that reads a target's layout -- what a key's value may hold, the
+// borrows a struct declaring lifetimes holds, whether a type argument meets a
+// condition or may cross threads, a function reference's parameter sizes, an
+// array's element size, a virtual reference's vtable -- now runs once the
+// target is laid out rather than as the reference is. Each is written here with
+// the reference above its target, the order that used to lay the target out on
+// the spot, and each still fires. Which lock a region fits reads only the
+// reference's own region and permission, and is asked as the reference is.
+//
+// struct_layout_reference_order runs the shapes that are not cycles.
+
+mod struct_typecheck_layout_reference;
+
+import sync use *;
+import arena use *;
+
+// -------- A by-value cycle --------
+
+// Three structs holding each other by value round a ring: each field reports the
+// whole of it
+struct P { pub q Q; }      //~ ErrorNoSize "P contains Q contains R contains P by value: infinite size. Break the cycle by holding one of them through a reference"
+struct Q { pub r R; }      //~ ErrorNoSize "P contains Q contains R contains P by value"
+struct R { pub p P; }      //~ ErrorNoSize "P contains Q contains R contains P by value"
+
+// Through an enum: its variant holds, by value, a struct written below the enum
+// that holds the enum by value
+enum Tree {
+  struct Leaf { pub n i64; }
+  struct Node { pub k Knot; }    //~ ErrorNoSize "Tree contains Node contains Knot contains Tree by value"
+}
+struct Knot { pub t Tree; }    //~ ErrorNoSize "Tree contains Node contains Knot contains Tree by value"
+
+// -------- Checks that read a target, the reference written first --------
+
+// A key names a value in its arena, which may hold no borrow
+struct Keyed['=a] {
+  pub ar DynArena['=a];
+  pub h &'=a mut Lender;            //~ ErrorKeyBorrow
+}
+
+// A struct declaring its lifetimes names every borrow it holds, and one inside
+// what an owning reference points at is held too
+struct View['a] {
+  pub r &'a i64;
+  pub own So[Lender];               //~ ErrorLifetimeUndeclared "'own' holds a borrow of none"
+}
+
+struct Lender { pub b &i64; }
+
+// A condition on a generic named behind a reference asks its argument
+struct Pick[T Copy] { pub v T; }
+struct Picks {
+  pub p &Pick[Mover];               //~ ErrorWhereUnmet "Pick requires T is Copy"
+}
+
+// A channel of a type holding what may not cross threads
+struct Mailroom {
+  pub tx &Sender[Unsendable];       //~ ErrorNotSendable "Unsendable.c is Rc[mut, i64]"
+}
+
+struct Unsendable { pub c Rc[mut, i64]; }
+struct Mover { pub o So[i64]; }
+
+// A function reference's parameter, and an array's element, held by value,
+// asked their size once the trait they name is laid out
+struct Callbacks {
+  pub f &fn(Shape) i64;             //~ ErrorNoSize "is a trait whose implementations may differ in size"
+  pub a &Array[Shape, 2];           //~ ErrorNoSize "An array cannot be made of this element type"
+}
+
+// A virtual reference's vtable, built from a trait written below it
+struct Viewer {
+  pub v &<Picker;
+}
+trait Picker {
+  pub fn pick[T](self &, v T) T;    //~ ErrorGenericVtable "unusable behind a virtual reference"
+}
+
+trait Shape { fn area(self &) i64; }
+
+// An alias first reached behind a reference, and then held by value in the same
+// layout (a struct's fields are checked last first): the array it names still
+// takes whether it moves from its element's layout, before the struct holding
+// it asks
+struct Pairs { pub p Pair; pub r &Pair; }
+alias Pair = Array[Moving, 2];
+struct Moving { pub o So[i64]; }
+fn twice(p Pairs) {
+  imm a = p;
+  imm b = p;                        //~ ErrorMove "moved out"
+}
+
+// Which lock a region fits is the reference's own, asked as it is checked
+struct Locked {
+  pub l Rc[Mutex, Later];           //~ ErrorLockRegion "Mutex is a lock for owners on several threads, and Rc's owners stay on one thread"
+}
+struct Later { pub n i64; }

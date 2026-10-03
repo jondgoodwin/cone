@@ -246,6 +246,15 @@ Because the retag happens here, the three constructor tags have **no arms in
 
 ## Type check
 
+**A reference never demands its target's layout.** Its size is its kind's, so
+while a layout of a type holding values by value is in flight,
+`refTargetTypeCheck` resolves the target — `refTypeCheck`'s, `refvirtTypeCheck`'s,
+`arrayRefTypeCheck`'s, `ptrTypeCheck`'s and a managed reference type's
+(`fnCallLowerManagedRef`) — without laying it out, and what reads its layout (a
+key's borrow, a vtable) waits until no layout is in flight. Its region and
+permission are its kind and are checked with it. [Type
+Check](../phases/type-check.md), "A reference does not demand its target".
+
 **A reference type must name what it refers to.** `refTypeCheck` and
 `arrayRefTypeCheck` each compare `vtexp` against `unknownType` **by pointer** —
 `errorType` shares the tag and means "already reported" — then raise

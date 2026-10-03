@@ -499,8 +499,10 @@ asks which place it names. A key and a borrow are never one type (`refIsSame`,
 has no scope (`iexpIsBorrowType`), holds no loan (`itypeCarriesBorrow`,
 `lifeSetAdd` and `lifeGather` skip it), so the loan walk never sees it. What it
 names lives in its arena past every scope, so it holds no borrow
-(`ErrorKeyBorrow`, at a written type in `refTypeCheck`, at a call's result in
-`lifeKeyBorrow`).
+(`ErrorKeyBorrow`, at a written type in `refTypeCheck` — once what it names is
+laid out, `refKeyBorrowCheck`, since a reference does not lay out its target
+while a layout is in flight ([Type Check](type-check.md), "A reference does not
+demand its target") — and at a call's result in `lifeKeyBorrow`).
 
 **Generics.** An instance is made with ordinary lifetimes erased, but an
 invariant one kept (`lifeErased`), then every brand its arguments carry

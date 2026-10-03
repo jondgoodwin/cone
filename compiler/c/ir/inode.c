@@ -381,6 +381,14 @@ void inodeTypeCheck(TypeCheckState *pstate, INode **node, INode *expectType) {
         // identity, and the reference answers the size on its own behalf.
         if ((*node)->flags & TypeChecking)
             return;
+        // A struct a reference's target reaches while a layout is in flight
+        // waits until none is: a reference never demands what it points at.
+        // See compiler/c/doc/phases/type-check.md, "A reference does not
+        // demand its target".
+        if ((*node)->tag == StructTag && structTargetDeferring()) {
+            structTargetWait(pstate, *node);
+            return;
+        }
         (*node)->flags |= TypeChecking;
     }
     else if (inodeIsDcl(*node)) {
@@ -402,7 +410,7 @@ void inodeTypeCheck(TypeCheckState *pstate, INode **node, INode *expectType) {
     // counts. See compiler/c/doc/phases/type-check.md, "Layout before members".
     int layout = (*node)->tag == StructTag || (*node)->tag == ArrayTag || (*node)->tag == TTupleTag;
     if (layout)
-        structLayoutEnter();
+        structLayoutBegin(*node);
 
     // A resolved name is checked as what its declaration is: a type, a value,
     // or a macro to expand. A member name never arrives here: the call it
@@ -553,7 +561,7 @@ void inodeTypeCheck(TypeCheckState *pstate, INode **node, INode *expectType) {
     }
 
     if (layout)
-        structLayoutExit();
+        structLayoutEnd();
 }
 
 

@@ -353,8 +353,15 @@ void fnDclTypeCheck(TypeCheckState *pstate, FnDclNode *fnnode) {
     // worked only once the whole signature is in place, so such a call reads the
     // return type rather than the generic call it was written as. See
     // compiler/c/doc/phases/type-check.md, "Layout before members".
+    // A signature holds nothing by value, so a reference in it is not checked
+    // as inside whatever layout this function was demanded from: what it points
+    // at is laid out here, before the signature's lifetimes read it.
     structLayoutEnter();
+    uint32_t valuebase = structValueHold();
+    uint32_t target = structTargetSuspend();
     itypeTypeCheck(pstate, &fnnode->vtype);
+    structTargetResume(target);
+    structValueRelease(valuebase);
     int sigfailed = errors != errorsOnEntry;
     structLayoutExit();
 

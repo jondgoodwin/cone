@@ -14,13 +14,17 @@
 
 mod struct_typecheck_nosize;
 
-// -------- still being laid out --------
+// -------- a by-value cycle --------
+
+// Only by-value containment lays a type out -- a reference never demands what
+// it points at -- so a size asked of a type still being laid out closes a cycle
+// of types holding each other by value, and the message names it, type by type.
 
 // A struct's field may not be the struct itself: the value would have to
 // contain a copy of itself. Held through a reference it is legal and is how a
 // linked list is written, which struct-recursive covers.
 struct SelfHolding {
-  inner SelfHolding;  //~ ErrorNoSize:3 "still being laid out"
+  inner SelfHolding;  //~ ErrorNoSize:3 "SelfHolding contains SelfHolding by value: infinite size. Break the cycle by holding it through a reference"
 }
 
 // The same one level down. An array's size is its length times its element's,
@@ -28,10 +32,11 @@ struct SelfHolding {
 // is what reports, because it asks its element that question when the array type
 // is formed, which is earlier and nearer the cause than the field holding it.
 // Nothing asked at all before that, and laying this struct out ran the compiler
-// out of stack.
+// out of stack. An array is part of the type holding it, and the cycle does not
+// name it.
 struct SelfArraying {
   v i64;
-  more Array[SelfArraying, 2];  //~ ErrorNoSize:8 "still being laid out"
+  more Array[SelfArraying, 2];  //~ ErrorNoSize:8 "SelfArraying contains SelfArraying by value"
 }
 
 // An alias is the type it names, so a struct held by value through an alias
@@ -43,21 +48,21 @@ struct SelfArraying {
 alias AliasHeld = AliasHolding;
 
 struct AliasHolding {
-  inner AliasHeld;  //~ ErrorNoSize:3 "still being laid out"
+  inner AliasHeld;  //~ ErrorNoSize:3 "AliasHolding contains AliasHolding by value"
 }
 
 // Two structs that hold each other by value are a cycle through the pair, and
 // laying every type out before checking any member does not change that: a
 // layout still asks each field's type for its size, and one of the two is always
-// asked while it is in flight. Both fields report, and the second names the hop
-// that carries the cycle back ("... Mutual2 has no size because its field m has
-// type Mutual1", an uncounted line).
+// asked while it is in flight. Both fields report the whole cycle, and the
+// second also names the hop that carries it back ("... Mutual2 has no size
+// because its field m has type Mutual1", an uncounted line).
 struct Mutual1 {
-  m Mutual2;  //~ ErrorNoSize:3 "Mutual1 is still being laid out"
+  m Mutual2;  //~ ErrorNoSize:3 "Mutual1 contains Mutual2 contains Mutual1 by value: infinite size. Break the cycle by holding one of them through a reference"
 }
 
 struct Mutual2 {
-  m Mutual1;  //~ ErrorNoSize:3 "Mutual1 is still being laid out"
+  m Mutual1;  //~ ErrorNoSize:3 "Mutual1 contains Mutual2 contains Mutual1 by value"
 }
 
 // -------- declared @opaque --------

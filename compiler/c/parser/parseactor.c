@@ -8,7 +8,6 @@
  * declarations the actors package runs an actor by, generated as Cone source
  * and parsed here, in this order:
  *
- *   enum Counter.Msg is Sendable {struct bump {n u64;}}     one variant per message
  *   struct Counter.State {count u64; fn init...; fn bump...} the body as written
  *   struct Counter {                                         the handle
  *     mailbox Arc[opaq, actors.Mailbox[Counter.Msg]];
@@ -16,6 +15,7 @@
  *       actors.startActor[Counter.State, Counter.Msg](new Counter.State(n), &Counter.dispatch));}
  *     pub fn bump(self &, n u64) {actors.send[Counter.Msg](mailbox, Counter.Msg.bump[n]);}
  *   }
+ *   enum Counter.Msg is Sendable {struct bump {n u64;}}     one variant per message
  *   fn Counter.dispatch(self &mut Counter.State, msg *Counter.Msg) {
  *     if &*msg is &Counter.Msg.bump {imm p = msg as *Counter.Msg.bump; self.bump(actors.take(&(*p).n));}
  *   }
@@ -38,10 +38,10 @@
  * diagnostic against generated text is reported at the actor's name, with the
  * generated line beside it (Lexer.genat).
  *
- * The order is what keeps one actor from meeting the order-dependent refusal of
- * a type still being laid out (ErrorNoSize): the message enum holds handles by
- * value, and a handle reaches the enum again through Mailbox's type argument,
- * so the enum is declared first, before the state and the handle.
+ * The order is a reader's, and nothing depends on it: the message enum holds
+ * handles by value, and a handle reaches the enum again only through its
+ * owning reference to the Mailbox, which lays out nothing of what it points
+ * at, so the handle is laid out whole before the enum is.
  *
  * @file
  *
@@ -515,22 +515,24 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
     INode **nodesp;
     uint32_t cnt;
 
-    // The message enum: a variant per message, its fields the parameters
-    genPuts(&g, "enum ");
-    genSlot(&g, GenMsg);
-    genPuts(&g, " is ");
-    genSlot(&g, GenSendable);
-    genPuts(&g, " {\n");
+    // The message enum: a variant per message, its fields the parameters,
+    // written after the handle (a reference to it lays out nothing of it)
+    GenText ge = {NULL, 0, 0};
+    genPuts(&ge, "enum ");
+    genSlot(&ge, GenMsg);
+    genPuts(&ge, " is ");
+    genSlot(&ge, GenSendable);
+    genPuts(&ge, " {\n");
     if (members.messages->used == 0) {
-        genPuts(&g, "  ");
-        genSlot(&g, GenNone);
-        genPuts(&g, ";\n");
+        genPuts(&ge, "  ");
+        genSlot(&ge, GenNone);
+        genPuts(&ge, ";\n");
     }
     for (nodesFor(members.messages, cnt, nodesp)) {
         FnDclNode *fn = (FnDclNode *)*nodesp;
-        genPuts(&g, "  struct ");
-        genName(&g, fn->namesym);
-        genPuts(&g, " {");
+        genPuts(&ge, "  struct ");
+        genName(&ge, fn->namesym);
+        genPuts(&ge, " {");
         INode **parmp;
         uint32_t parmcnt;
         for (nodesFor(((FnSigNode *)fn->vtype)->parms, parmcnt, parmp)) {
@@ -538,14 +540,14 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
             if (parm->namesym == selfName)
                 continue;
             DclText *text = parseActorText(&texts, (INode *)parm);
-            genName(&g, parm->namesym);
-            genPuts(&g, " ");
-            genPutn(&g, text->type, text->typeend - text->type);
-            genPuts(&g, "; ");
+            genName(&ge, parm->namesym);
+            genPuts(&ge, " ");
+            genPutn(&ge, text->type, text->typeend - text->type);
+            genPuts(&ge, "; ");
         }
-        genPuts(&g, "}\n");
+        genPuts(&ge, "}\n");
     }
-    genPuts(&g, "}\n");
+    genPuts(&ge, "}\n");
 
     // The handle: its one field, an initializer for each of the state's, and
     // a method per message, which sends it
@@ -690,6 +692,8 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
     }
     genPuts(&g, "}\n");
 
+    genPutn(&g, ge.text, ge.len);
+
     // The dispatch function: the message where it lies in its node, each
     // argument moved out of it into the method's call
     genPuts(&g, "fn ");
@@ -743,11 +747,11 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
     lexPush(gen);
     if (runtime == 2)
         parseFnOrVar(parse, 0);
-    StructNode *msg = (StructNode *)parseStruct(parse, TraitType | SameSize | EnumType);
-    modAddNode(mod, names[GenMsg], (INode *)msg);
     modAddNode(mod, names[GenState], (INode *)state);
     StructNode *handle = (StructNode *)parseStruct(parse, pubflag);
     modAddNode(mod, handle->namesym, (INode *)handle);
+    StructNode *msg = (StructNode *)parseStruct(parse, TraitType | SameSize | EnumType);
+    modAddNode(mod, names[GenMsg], (INode *)msg);
     parseFnOrVar(parse, 0);
     if (!lexIsToken(EofToken))
         errorMsgLex(ErrorNoEof, "The declarations generated for actor %s did not parse whole.", &actorname->namestr);

@@ -18,10 +18,9 @@
 // not is counted, and the count printed at the end is 0. At the end,
 // finalAll() waits for quiescence and stops the workers.
 //
-// The actors are declared, Node first. Each holds a handle to the other in its
-// state, and declared the other way round, Collector first, Node's message
-// holding a Node is refused as a type still being laid out (ErrorNoSize): the
-// order-dependent refusal two actors that hold each other still meet.
+// The actors are declared, the collector first, though each holds a handle
+// to the other in its state and Node's message carries a Node: a reference
+// lays out nothing of what it points at, so the order is free.
 
 mod concurrency_actors_stress;
 
@@ -50,6 +49,39 @@ fn @initpure init() {
 
 struct Tally {
   pub n u64;
+}
+
+// ---- Collector: hears each token's end, then unlinks the ring ----
+
+actor Collector {
+  ring List[Node];
+  finished u64;
+
+  fn init(self &new) {
+    *self = new Self(List[Node].empty(), 0u64);
+  }
+
+  pub fn join(self, n Node) {
+    ring.push(n);
+  }
+
+  pub fn done(self) {
+    finished = finished + 1u64;
+    if finished == tokens {
+      mut i = 0usize;
+      while i < ring.len() {
+        ring[i].unlink();
+        i = i + 1usize;
+      }
+      ring.clear();
+    }
+  }
+
+  fn final(self &uni) {
+    results.finals.add(1u64);
+    results.rounds.add(1u32);
+    sync.futexWake(&results.rounds);
+  }
 }
 
 // ---- Node: passes tokens on to the next ----
@@ -93,39 +125,6 @@ actor Node {
       results.mismatches.add(1u64);
     }
     results.finals.add(1u64);
-  }
-}
-
-// ---- Collector: hears each token's end, then unlinks the ring ----
-
-actor Collector {
-  ring List[Node];
-  finished u64;
-
-  fn init(self &new) {
-    *self = new Self(List[Node].empty(), 0u64);
-  }
-
-  pub fn join(self, n Node) {
-    ring.push(n);
-  }
-
-  pub fn done(self) {
-    finished = finished + 1u64;
-    if finished == tokens {
-      mut i = 0usize;
-      while i < ring.len() {
-        ring[i].unlink();
-        i = i + 1usize;
-      }
-      ring.clear();
-    }
-  }
-
-  fn final(self &uni) {
-    results.finals.add(1u64);
-    results.rounds.add(1u32);
-    sync.futexWake(&results.rounds);
   }
 }
 

@@ -585,13 +585,13 @@ parameter's type and default value are written (`parseVarDcl`,
 (`ErrorActorMember`, `ErrorActorReturn`, a borrow or the state itself carried
 in a message `ErrorNotSendable`), a bare `self` becomes `self &mut`, and the
 other three declarations are written as Cone source and parsed from a lexer of
-their own: the message enum (`is Sendable`, a variant per `pub` method, its
-fields the parameters' types as written), the handle under the actor's own
-name (one field owning the mailbox, an initializer per one of the state's or
-the implicit one's fields, a send method per message, all calling the
-`actors` package), and the dispatch function. They join the module in that
-order, the enum first and the state after it, which is what keeps one actor
-from meeting `ErrorNoSize`. The derived names -- `Counter.State`,
+their own: the handle under the actor's own name (one field owning the
+mailbox, an initializer per one of the state's or the implicit one's fields, a
+send method per message, all calling the `actors` package), the message enum
+(`is Sendable`, a variant per `pub` method, its fields the parameters' types
+as written), and the dispatch function. They join the module in that order,
+after the state; nothing depends on it, since the handle reaches the enum only
+through a reference, which lays out nothing of its target. The derived names -- `Counter.State`,
 `Counter.Msg`, `Counter.dispatch`, the handle's field, and the bindings of the
 `actors` and `sync` modules and of `Sendable` the text reaches them through,
 bound once per module -- are `nametblPrivate` names, which no source can
