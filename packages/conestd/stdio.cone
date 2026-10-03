@@ -1,0 +1,133 @@
+// stdio: printing values to standard output and standard error, which the
+// stdio package declares with 'extern'. Each value is written by one of these
+// functions to a C stream: the print functions to stdout, the eprint
+// functions to stderr, the same text either way. Standard output is buffered
+// by the C library; standard error never fully, and on Windows not at all, so
+// each value goes to it in one write, as C's fprintf wrote it.
+
+// A C string, as C's '%s' writes one: its bytes up to the NUL, or '(null)'
+// for a null pointer, as the Windows C runtime writes that
+fn streamCStr(stream *libc.FILE, p *u8) {
+  if p == null {
+    libc.fwrite(&[]"(null)", 6usize, 1usize, stream);
+    return;
+  }
+  imm len = libc.strlen(p);
+  if len > 0usize {
+    libc.fwrite(p, len, 1usize, stream);
+  }
+}
+
+// An integer in decimal, as C's '%lld' and '%llu' write one: a '-' before a
+// negative one, whose magnitude a u64 holds even for the most negative i64
+fn streamInt(stream *libc.FILE, negative Bool, magnitude u64) {
+  mut out = newText(stream);
+  if negative {out.byte('-');}
+  out.decimal(magnitude);
+  out.write();
+}
+
+fn streamSigned(stream *libc.FILE, nbr i64) {
+  if nbr < 0i64 {streamInt(stream, true, 0u64 - u64.from(nbr));}
+  else {streamInt(stream, false, u64.from(nbr));}
+}
+
+// The C library's formatter, taking its values as a 'va_list'. Cone declares
+// no C function taking '...', so it cannot call 'fprintf'; it calls this,
+// which 'fprintf' itself calls, with the list built by hand. On Windows x64 a
+// 'va_list' is a pointer to the values, each in an 8-byte slot, a 'double'
+// as its own 8 bytes: one f64's address is the list holding it
+extern fn vfprintf(stream *libc.FILE, format *u8, args *u8) i32;
+
+// A float as C's '%g' writes it: the C library's own formatting, the one
+// thing here not written in Cone
+fn streamFloat(stream *libc.FILE, nbr f64) {
+  mut slot = nbr;
+  vfprintf(stream, &[]"%g", &mut slot as *u8);
+}
+
+// One code point as its UTF-8 bytes: one to four, by its size. NUL, and a
+// value past U+10FFFF, write nothing, as C wrote them, through '%s'
+fn streamUtf8(stream *libc.FILE, code u64) {
+  mut out = newText(stream);
+  if code == 0u64 {return;}
+  if code < 0x80u64 {
+    out.byte(u8.from(code));
+  }
+  else if code < 0x800u64 {
+    out.byte(0xC0u8 | u8.from(code >> 6u64));
+    out.byte(0x80u8 | u8.from(code & 0x3Fu64));
+  }
+  else if code < 0x10000u64 {
+    out.byte(0xE0u8 | u8.from(code >> 12u64));
+    out.byte(0x80u8 | u8.from((code >> 6u64) & 0x3Fu64));
+    out.byte(0x80u8 | u8.from(code & 0x3Fu64));
+  }
+  else if code < 0x110000u64 {
+    out.byte(0xF0u8 | u8.from(code >> 18u64));
+    out.byte(0x80u8 | u8.from((code >> 12u64) & 0x3Fu64));
+    out.byte(0x80u8 | u8.from((code >> 6u64) & 0x3Fu64));
+    out.byte(0x80u8 | u8.from(code & 0x3Fu64));
+  }
+  out.write();
+}
+
+// Standard output, which the C library buffers
+
+pub fn printStr(str &[]u8) {
+  libc.fwrite(str, str.len, 1usize, libc.stdout());
+}
+
+pub fn printCStr(p *u8) {
+  streamCStr(libc.stdout(), p);
+}
+
+pub fn printInt(nbr i64) {
+  streamSigned(libc.stdout(), nbr);
+}
+
+pub fn printUInt(nbr u64) {
+  streamInt(libc.stdout(), false, nbr);
+}
+
+pub fn printFloat(nbr f64) {
+  streamFloat(libc.stdout(), nbr);
+}
+
+pub fn printChar(code u64) {
+  streamUtf8(libc.stdout(), code);
+}
+
+pub fn printFlush() {
+  libc.fflush(libc.stdout());
+}
+
+// Standard error, which C never fully buffers (the Windows runtime not at all)
+
+pub fn eprintStr(str &[]u8) {
+  libc.fwrite(str, str.len, 1usize, libc.stderr());
+}
+
+pub fn eprintCStr(p *u8) {
+  streamCStr(libc.stderr(), p);
+}
+
+pub fn eprintInt(nbr i64) {
+  streamSigned(libc.stderr(), nbr);
+}
+
+pub fn eprintUInt(nbr u64) {
+  streamInt(libc.stderr(), false, nbr);
+}
+
+pub fn eprintFloat(nbr f64) {
+  streamFloat(libc.stderr(), nbr);
+}
+
+pub fn eprintChar(code u64) {
+  streamUtf8(libc.stderr(), code);
+}
+
+pub fn eprintFlush() {
+  libc.fflush(libc.stderr());
+}

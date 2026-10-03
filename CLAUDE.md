@@ -293,8 +293,12 @@ Visual Studio projects stay at the root.
   `phases/` (one per compiler phase), `nodes/` (what is true of every IR node,
   plus per-node notes), `compiler/` (how `conec` itself is built and stays
   fast), and `diagnostics/` (measuring, error codes, test suite).
-- `packages/conestd/`: the C implementation of the standard-library component:
-  printing, the chain of traced roots, and what a panic does.
+- `packages/conestd/`: the runtime every native program links: printing, the
+  chain of traced roots, and what a panic does. It is Cone, one C-named module
+  (`conestd.cone` and the files beside it) that the build compiles with the
+  `conec` it has just built, and one C file, `mainthread.c`, recording the
+  thread the program started on before `main` runs, which Cone cannot say.
+  Not a Congo package: nothing imports it.
 - `doc/design/`: the language design notes — what Cone is aiming at and how far
   the compiler is, the notes that would survive a rewrite — plus the naming
   rules (`names-and-namespaces.md`). `doc/design/_index.md` is the entry point
@@ -446,7 +450,11 @@ by folder. Update them in the same change as `CMakeLists.txt`.
 `CMakeLists.txt` uses `find_package(LLVM 23.1 REQUIRED CONFIG)` and defines the
 `conec` executable and `conestd` library. Configure and build with the
 repository's existing CMake setup; do not change the LLVM major version
-without updating source compatibility and both build systems.
+without updating source compatibility and both build systems. `conestd`'s
+Cone is compiled by the `conec` the same build makes, so the library follows
+the compiler. It binds the Windows C runtime (its streams through `libc`,
+`GetCurrentThreadId`, and Win64's `va_list`), so it is Windows only for now,
+as `libc`'s bindings are.
 
 ## Validating a change
 

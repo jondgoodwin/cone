@@ -53,6 +53,10 @@ TAGS_TOML = REPO / "test" / "tags.toml"
 ERROR_H = REPO / "compiler" / "c" / "shared" / "error.h"
 # The C sources the build compiles: the compiler, and the conestd runtime.
 C_SOURCE_DIRS = (Path("compiler") / "c", Path("packages") / "conestd")
+# The conestd library's own sources, Cone and C. Its compile also takes in core
+# and libc, which the build tracks; the check here does not, so that changing
+# core does not stop the suite until the library is rebuilt.
+CONESTD_SOURCE_DIRS = (Path("packages") / "conestd",)
 IS_WINDOWS = os.name == "nt"
 # The status a program ends with through the C library's 'abort', as a panic
 # does: the Microsoft C library's fail-fast, 0xC0000409, or death by SIGABRT
@@ -1352,16 +1356,17 @@ def default_conec() -> Path:
     return REPO / "build" / "x64-release" / name
 
 
-def newest_source(root: Path) -> tuple[float, Path | None]:
+def newest_source(root: Path, dirs=(Path("compiler") / "c",),
+                  suffixes=(".c", ".h"), build_file: bool = True) -> tuple[float, Path | None]:
     newest, newest_path = 0.0, None
-    for path in (p for d in C_SOURCE_DIRS for p in (root / d).rglob("*")):
-        if path.suffix in (".c", ".h") and path.is_file():
+    for path in (p for d in dirs for p in (root / d).rglob("*")):
+        if path.suffix in suffixes and path.is_file():
             stamp = path.stat().st_mtime
             if stamp > newest:
                 newest, newest_path = stamp, path
-    build_file = root / "CMakeLists.txt"
-    if build_file.is_file() and build_file.stat().st_mtime > newest:
-        newest, newest_path = build_file.stat().st_mtime, build_file
+    cmake_file = root / "CMakeLists.txt"
+    if build_file and cmake_file.is_file() and cmake_file.stat().st_mtime > newest:
+        newest, newest_path = cmake_file.stat().st_mtime, cmake_file
     return newest, newest_path
 
 
@@ -1390,19 +1395,31 @@ def build_compiler(conec: Path) -> None:
         raise SuiteError("compiler build failed")
 
 
-def check_not_stale(conec: Path, allow_stale: bool) -> None:
+def check_not_stale(conec: Path, conestd: Path, allow_stale: bool) -> None:
     """R1.1. A stale binary fails good sources in ways indistinguishable from a
     language regression, which is why this is a precondition and not a footnote:
     the binary checked in at build/x64-release/ once predated the overload work
     by a week and failed test/test.cone with 17 errors that looked exactly like
-    a broken master."""
+    a broken master.
+
+    Each binary is checked against what it is built from: conec against the
+    compiler's C, and conestd, the runtime the run scenarios link, against its
+    own sources, Cone and C, and against conec, which compiles its Cone."""
     if not conec.exists():
         raise SuiteError(f"no compiler at {conec}; run with --build, or pass --conec")
     newest, path = newest_source(REPO)
-    if conec.stat().st_mtime >= newest:
+    stale = conec if conec.stat().st_mtime < newest else None
+    if stale is None and conestd.exists():
+        newest, path = newest_source(REPO, CONESTD_SOURCE_DIRS, (".c", ".h", ".cone"), False)
+        if conec.stat().st_mtime > newest:
+            newest, path = conec.stat().st_mtime, conec
+        if conestd.stat().st_mtime < newest:
+            stale = conestd
+    if stale is None:
         return
+    shown = path.relative_to(REPO) if path and path.is_relative_to(REPO) else path
     message = (
-        f"{conec} is older than {path.relative_to(REPO) if path else 'a compiler source'}.\n"
+        f"{stale} is older than {shown or 'a compiler source'}.\n"
         f"  A stale binary fails good sources in ways that look like a language\n"
         f"  regression (R1.1). Rebuild, or re-run with --build."
     )
@@ -3471,7 +3488,7 @@ def main(argv: list[str]) -> int:
     try:
         if args.build:
             build_compiler(args.conec)
-        check_not_stale(args.conec, args.allow_stale)
+        check_not_stale(args.conec, args.conestd, args.allow_stale)
     except SuiteError as failure:
         print(f"error: {failure}", file=sys.stderr)
         return 2

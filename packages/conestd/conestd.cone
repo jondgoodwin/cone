@@ -1,0 +1,92 @@
+// conestd: the runtime every native Cone program links beside its own
+// objects, under core and stdio. Its files are one module: the end of every
+// panic (panic.cone), the head of the chain of traced roots and its walk
+// (roots.cone), and printing (stdio.cone). The one thing it needs that Cone
+// cannot say is C, in mainthread.c: recording, before 'main' runs, which
+// thread the program started on.
+//
+// It is a C-named module, so each public function and global is a C symbol
+// of its own name: 'cone_panic', 'cone_gcframes', 'printStr'. Those are the
+// names the compiler emits calls and loads of itself (cone_panicIndex,
+// cone_panicSlice, cone_panicAlloc, cone_gcframes, cone_traceRoots) and the
+// ones core's and stdio's 'extern' declarations bind to, each with the same
+// parameters, so a program's object links against this one exactly as it
+// did against C's. What is private is this object's own. Being C-named, the
+// module gets no prelude, so it imports core and names what it uses of it
+// through it ('core.mem'). Like libc, which it writes through, it binds the
+// Windows C runtime.
+//
+// CMake compiles this folder with the conec it has just built, into one
+// object, and archives that with mainthread.c's as conestd.lib; Congo and the
+// test runner link that library, and nothing imports this module.
+
+mod @c conestd;
+
+import core;
+import libc;
+
+// Text on its way to a C stream: gathered, then written in one piece where it
+// fits, as one call of C's printf writes its text. Standard error is not
+// buffered on Windows, so a line written piece by piece could have another
+// thread's text land inside it. A text that outgrows the buffer is written as
+// it fills, the same bytes in more than one write. With no stream, it holds
+// at most what the buffer does
+struct Text {
+  stream *libc.FILE;
+  len usize;
+  bytes Array[u8, 1024];
+
+  fn byte(self &mut, b u8) {
+    if len == 1024usize {
+      if stream == null {return;}
+      self.write();
+    }
+    bytes[len] = b;
+    len = len + 1usize;
+  }
+
+  // The bytes of s up to its first NUL, as C's '%.*s' writes a counted string
+  fn text(self &mut, s &[]u8) {
+    mut i = 0usize;
+    while i < s.len {
+      if s[i] == 0u8 {return;}
+      self.byte(s[i]);
+      i = i + 1usize;
+    }
+  }
+
+  // n in decimal, as C's '%u', '%lu', '%zu' and '%llu' write it
+  fn decimal(self &mut, n u64) {
+    mut digits = new Array[u8, 20] <- fill 0u8;
+    mut count = 0usize;
+    mut rest = n;
+    mut going = true;
+    while going {
+      digits[count] = u8.from(rest % 10u64) + '0';
+      count = count + 1usize;
+      rest = rest / 10u64;
+      going = rest > 0u64;
+    }
+    while count > 0usize {
+      count = count - 1usize;
+      self.byte(digits[count]);
+    }
+  }
+
+  // What is gathered, as a slice
+  fn view(self &) &[]u8 {
+    &bytes[0usize..len];
+  }
+
+  // Write what is gathered to the stream
+  fn write(self &mut) {
+    if len > 0usize {
+      libc.fwrite(&mut bytes[0usize] as *u8, len, 1usize, stream);
+    }
+    len = 0usize;
+  }
+}
+
+fn newText(stream *libc.FILE) Text {
+  new Text(stream, 0usize, new Array[u8, 1024] <- fill 0u8);
+}
