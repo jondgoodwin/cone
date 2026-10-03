@@ -11,6 +11,7 @@ mod httpdate;
 import testing use *;
 import collections use *;
 import time use Duration, Timestamp;
+import calendar;
 
 // 2026-10-03T14:05:09Z, the now the two-digit years are read against
 const now2026 = 1791036309i64;
@@ -20,7 +21,7 @@ const now1999 = 928195200i64;
 // What reading text against now (in Unix seconds) gives: the Unix seconds
 // as text, or the error's message
 fn readAt(text &[]u8, now i64) String {
-  match Timestamp.parseHttpDateAsOf(text, Timestamp.fromUnixSeconds(now)) {
+  match calendar.parseHttpDateAsOf(text, Timestamp.fromUnixSeconds(now)) {
     case imm ok Ok {
       mut out = String.empty();
       out.appendInt(ok.value.unixSeconds());
@@ -37,7 +38,7 @@ fn reads(text &[]u8, want &[]u8, label &[]u8) {
 }
 
 fn writes(s i64, want &[]u8, label &[]u8) {
-  expectStr(Timestamp.fromUnixSeconds(s).httpDate().view(), want, label);
+  expectStr(calendar.httpDate(Timestamp.fromUnixSeconds(s)).view(), want, label);
 }
 
 fn writing() {
@@ -46,13 +47,13 @@ fn writing() {
   writes(951782400, "Tue, 29 Feb 2000 00:00:00 GMT", "2000's leap day");
   writes(-14182940, "Sun, 20 Jul 1969 20:17:40 GMT", "before 1970");
   writes(1759500309, "Fri, 03 Oct 2025 14:05:09 GMT", "2025");
-  expectStr(Timestamp.fromUnixNanos(-1).httpDate().view(), "Wed, 31 Dec 1969 23:59:59 GMT",
+  expectStr(calendar.httpDate(Timestamp.fromUnixNanos(-1)).view(), "Wed, 31 Dec 1969 23:59:59 GMT",
     "the fraction dropped toward the past");
-  expectStr(Timestamp.fromUnixNanos(784111777999999999).httpDate().view(), "Sun, 06 Nov 1994 08:49:37 GMT",
+  expectStr(calendar.httpDate(Timestamp.fromUnixNanos(784111777999999999)).view(), "Sun, 06 Nov 1994 08:49:37 GMT",
     "a fraction just under a second dropped");
-  expectStr(Timestamp.fromUnixNanos(-9223372036854775807i64 - 1i64).httpDate().view(), "Tue, 21 Sep 1677 00:12:43 GMT",
+  expectStr(calendar.httpDate(Timestamp.fromUnixNanos(-9223372036854775807i64 - 1i64)).view(), "Tue, 21 Sep 1677 00:12:43 GMT",
     "the first Timestamp");
-  expectStr(Timestamp.fromUnixNanos(9223372036854775807).httpDate().view(), "Fri, 11 Apr 2262 23:47:16 GMT",
+  expectStr(calendar.httpDate(Timestamp.fromUnixNanos(9223372036854775807)).view(), "Fri, 11 Apr 2262 23:47:16 GMT",
     "the last");
 }
 
@@ -67,11 +68,11 @@ fn readingForms() {
   reads("Tue, 21 Sep 1677 00:12:44 GMT", "-9223372036", "the first whole second a Timestamp holds");
   reads("Fri, 11 Apr 2262 23:47:16 GMT", "9223372036", "the last");
   // Against the real clock: RFC 850's '94' is 1994 until 2044
-  match Timestamp.parseHttpDate("Sunday, 06-Nov-94 08:49:37 GMT") {
+  match calendar.parseHttpDate("Sunday, 06-Nov-94 08:49:37 GMT") {
     case imm ok Ok { expectInt(ok.value.unixSeconds(), 784111777, "parseHttpDate reads against the clock"); }
     case imm e Error { expectStr(e.value.message().view(), "<read>", "parseHttpDate reads against the clock"); }
   }
-  match Timestamp.parseHttpDate("Sun, 06 Nov 1994 08:49:37 GMT") {
+  match calendar.parseHttpDate("Sun, 06 Nov 1994 08:49:37 GMT") {
     case imm ok Ok { expectInt(ok.value.unixSeconds(), 784111777, "parseHttpDate, IMF-fixdate"); }
     case is Error { expect(false, "parseHttpDate, IMF-fixdate"); }
   }
@@ -105,7 +106,7 @@ fn roundTrips() {
   mut s = -9223372036i64;
   while s <= 9223372036i64 {
     imm t = Timestamp.fromUnixSeconds(s);
-    match Timestamp.parseHttpDateAsOf(t.httpDate().view(), t) {
+    match calendar.parseHttpDateAsOf(calendar.httpDate(t).view(), t) {
       case imm ok Ok { if ok.value != t { bad = bad + 1i64; } }
       case is Error { bad = bad + 1i64; }
     }
