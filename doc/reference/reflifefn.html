@@ -35,9 +35,10 @@
 			lifetimes its type names, the unnamed one where it names none, for both rules.
 			Inside the function, a borrowed reference the caller lent may be returned only
 			as a lifetime it is written with, or one its <span class="pre">where</span> clause
-			orders shorter, and stored only where what a parameter points at holds such a
+			or its types order shorter, and stored only where what a parameter points at holds such a
 			lifetime; no order between two names is inferred but what a
-			<span class="pre">where</span> clause declares.
+			<span class="pre">where</span> clause declares and what a borrow of a value
+			holding lifetimes implies (see <a href="#implied">implied bounds</a>).
 			A <span class="pre">'static</span> parameter takes only a global borrow, and
 			<span class="pre">'static</span> may be written on a parameter's own
 			reference or in the result, not inside a parameter's type.
@@ -394,6 +395,33 @@ fn pick[T](x &amp;'a T, y &amp;'b T) &amp;'b T where 'a &gt;= 'b and T is Copy {
 		<span class="pre">or</span> holds, and the body could rely on none of them. An
 		<span class="pre">or</span> or a <span class="pre">not</span> over a lifetime comparison is
 		refused.</p>
+
+	<h2 id="implied">Implied bounds</h2>
+	<p>A borrow of a value holding lifetimes cannot outlast them: the value lives no
+		longer than what it borrows, and the borrow no longer than the value. So wherever a
+		signature names such a borrow, each lifetime the borrowed value holds is understood to
+		last at least as long as the borrow's own, as if a <span class="pre">where</span>
+		clause said so. <span class="pre">&amp;'a Pair['b]</span> and
+		<span class="pre">&amp;'a &amp;'b R</span> each imply <span class="pre">'b &gt;= 'a</span>,
+		and a method's <span class="pre">self &amp;</span> in a struct declaring
+		<span class="pre">'a</span> implies that <span class="pre">'a</span> outlasts the
+		unannotated borrow of <span class="pre">self</span>. So a method written with no
+		lifetime of its own may return what a field points at, the result taking the shorter
+		lifetime of the receiver's borrow:</p>
+<pre>
+struct H['a] {
+  pub r &amp;'a R;
+  pub fn get(self &amp;) &amp;R { r; }    // Ok: 'a outlasts the borrow of self
+}
+fn inner(x &amp;'a &amp;'b R) &amp;'a R {
+  *x;           // Ok: 'b outlasts 'a
+}
+</pre>
+	<p>An implied bound runs one way only: the borrow of a <span class="pre">Pair['b]</span>,
+		of <span class="pre">'a</span>, may not be returned as <span class="pre">'b</span>.
+		Two lifetimes no borrow relates and no <span class="pre">where</span> clause orders stay
+		unrelated. A caller reads the same order, as it reads a <span class="pre">where</span>
+		clause.</p>
 
 
 			<p style="text-align: right; margin-top: 2em;">

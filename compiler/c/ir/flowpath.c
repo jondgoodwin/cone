@@ -1074,7 +1074,8 @@ static FnSigNode *pwSig = NULL;
 // A value carrying 'stored' goes where a reference holding 'refholds' points,
 // at 'node': what a borrowed parameter points at holds only the lifetimes its
 // type names there, so a borrow the caller lent of another lifetime, not
-// ordered longer by the 'where' clause, may not go in it ('how',
+// ordered longer by the 'where' clause or what the types imply, may not go
+// in it ('how',
 // LoanEscapeStore or LoanEscapeCall); 'beyond' when it may land past where
 // the reference points; 'landing' the slots of the field of a struct
 // declaring lifetimes it lands in, 0 where that is not known. Asked only

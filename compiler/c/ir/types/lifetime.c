@@ -139,11 +139,12 @@ INode *lifeErased(INode *type) {
 
 // Does 'longer' last at least as long as 'shorter' by 'order': the same name,
 // or reached from it through the order's pairs, '>=' being transitive? The
-// unnamed lifetime is ordered against nothing; ''static' outlasts every one.
+// unnamed lifetime (NULL) is one more name, ordered only where a pair says so
+// (an implied bound, lifeImplied); ''static' outlasts every one.
 static int lifeOrdered(LifeOrder *order, Name *longer, Name *shorter) {
     if (longer == shorter || longer == staticLifeName)
         return 1;
-    if (order == NULL || longer == NULL || shorter == NULL || shorter == staticLifeName)
+    if (order == NULL || shorter == staticLifeName)
         return 0;
     // A walk over a handful of pairs: each name reached is visited once
     Name *localseen[16];
@@ -719,7 +720,19 @@ void lifeUseCheck(NameUseNode *use) {
 // Signatures
 // *********************
 
-// Add to 'order' what a struct a type uses orders, in the names the use gives
+// One implied pair, 'longer' >= 'shorter', unless it is one name
+static void lifeImpliedAdd(LifeOrder **order, Name *longer, Name *shorter, INode *at) {
+    if (longer == shorter)
+        return;
+    if (*order == NULL)
+        *order = newLifeOrder();
+    lifeOrderAdd(*order, longer, shorter, at);
+}
+
+// Add to 'order' what a type implies of the lifetimes it names: what a struct
+// it uses orders, in the names the use gives, and, for a borrow of a value
+// holding lifetimes, that each of them outlasts the borrow (Rust's implied
+// bounds)
 static void lifeImplied(INode *type, LifeOrder **order) {
     if (type == NULL)
         return;
@@ -739,11 +752,8 @@ static void lifeImplied(INode *type, LifeOrder **order) {
                     continue;
                 Name *l = lifeSlotName(type, longer);
                 Name *s = lifeSlotName(type, shorter);
-                if (l && s && l != s) {
-                    if (*order == NULL)
-                        *order = newLifeOrder();
-                    lifeOrderAdd(*order, l, s, type);
-                }
+                if (l && s)
+                    lifeImpliedAdd(order, l, s, type);
             }
         }
         if (use->lifeuse && use->lifeuse->typeargs) {
@@ -757,8 +767,25 @@ static void lifeImplied(INode *type, LifeOrder **order) {
     case RefTag:
     case ArrayRefTag:
     case VirtRefTag:
-        lifeImplied(((RefNode *)type)->vtexp, order);
+    {
+        // A borrow of a value holding lifetimes cannot outlast them: the value
+        // lives no longer than any of its borrows, and the borrow no longer
+        // than the value. So each lifetime the pointee holds lasts at least as
+        // long as the borrow's own. That ''static' outlasts it says nothing.
+        RefNode *ref = (RefNode *)type;
+        if (itypeGetTypeDcl(ref->region) == borrowRef && !lifeIsFnBorrow(ref)
+            && ref->lifename != staticLifeName) {
+            LifeSet held;
+            lifeSetInit(&held);
+            lifeGather(ref->vtexp, 0, &held);
+            if (held.unnamed)
+                lifeImpliedAdd(order, NULL, ref->lifename, type);
+            for (uint32_t i = 0; i < held.cnt; ++i)
+                lifeImpliedAdd(order, held.names[i], ref->lifename, type);
+        }
+        lifeImplied(ref->vtexp, order);
         return;
+    }
     case PtrTag:
         lifeImplied(((StarNode *)type)->vtexp, order);
         return;
@@ -804,8 +831,9 @@ void lifeSigCheck(FnSigNode *sig) {
             }
         }
     }
-    // A struct's order holds of each use of it: a value of 'Pair['x, 'y]' can
-    // exist only where ''x' lasts at least as long as ''y' does
+    // What its types imply holds wherever it is called: a value of
+    // 'Pair['x, 'y]' can exist only where ''x' lasts at least as long as ''y'
+    // does, and a borrow '&'a Pair['b]' only where ''b' outlasts ''a'
     LifeOrder *implied = NULL;
     for (nodesFor(sig->parms, cnt, nodesp))
         lifeImplied(((IExpNode *)*nodesp)->vtype, &implied);

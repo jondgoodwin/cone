@@ -720,17 +720,17 @@ void loanApart(INode *node, uint32_t loan, VarDclNode *through, int how) {
     switch (how) {
     case LoanEscapeReturn:
         errorMsgNode(node, ErrorEscape,
-            "Returned value carries the borrow the caller lent through %s, whose lifetime the result's type does not name, nor one its 'where' clause orders shorter. Lifetimes named apart are unrelated: only a borrow of a lifetime the result names, or a global one, may be returned.",
+            "Returned value carries the borrow the caller lent through %s, whose lifetime the result's type does not name, nor one ordered shorter by its 'where' clause or by what its types imply. Lifetimes named apart are unrelated: only a borrow of a lifetime the result names, or a global one, may be returned.",
             lent);
         break;
     case LoanEscapeStore:
         errorMsgNode(node, ErrorEscape,
-            "Stored where '%s' points, the value carries the borrow the caller lent through %s, whose lifetime is not one held there, nor ordered longer than one by a 'where' clause. Lifetimes named apart are unrelated.",
+            "Stored where '%s' points, the value carries the borrow the caller lent through %s, whose lifetime is not one held there, nor ordered longer than one by a 'where' clause or by what the signature's types imply. Lifetimes named apart are unrelated.",
             &through->namesym->namestr, lent);
         break;
     default:
         errorMsgNode(node, ErrorCallEscape,
-            "Call could store the borrow the caller lent through %s where '%s' points, which holds no borrow of its lifetime, nor of one a 'where' clause orders shorter. Lifetimes named apart are unrelated.",
+            "Call could store the borrow the caller lent through %s where '%s' points, which holds no borrow of its lifetime, nor of one ordered shorter by a 'where' clause or by what the signature's types imply. Lifetimes named apart are unrelated.",
             lent, &through->namesym->namestr);
         break;
     }

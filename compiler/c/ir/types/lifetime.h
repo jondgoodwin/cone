@@ -26,8 +26,12 @@
  * callee's own, while its body is checked, or the one a call is made through.
  * Two names are unordered unless the signature's 'where' clause orders them
  * ('where 'a >= 'b': ''a' lasts at least as long as ''b'), or the 'where' clause
- * of a struct a parameter or the result uses does; '>=' is transitive, and
- * nothing else is inferred. RefNode.lifename holds a reference's name (NULL for
+ * of a struct a parameter or the result uses does, or a type in it implies it:
+ * a borrow of a value holding lifetimes ('&'a Pair['b]', '&'a &'b T', 'self &'
+ * of a struct declaring ''b') cannot outlast them, so each lasts at least as
+ * long as the borrow's own (Rust's implied bounds), the unnamed lifetime a
+ * name like any other there. '>=' is transitive, and nothing else is
+ * inferred. RefNode.lifename holds a reference's name (NULL for
  * the unnamed lifetime); RefNode.scope stays the band (0 global, 1 the caller's,
  * 2+ a block of the function), which the names divide no further.
  *
@@ -203,7 +207,8 @@ void lifeUseInstance(struct NameUseNode *instuse, INode *genuse, Nodes *typeargs
 // Check a signature's lifetimes once its types are: mark it as naming
 // lifetimes where one of its types does ('Self' of a struct declaring them
 // too), refuse a 'where' clause naming a lifetime none of its types does, and
-// add to its order what the structs its parameters and result use order
+// add to its order what its parameters' and result's types imply: what the
+// structs they use order, and that what a borrow points at outlasts it
 void lifeSigCheck(struct FnSigNode *sig);
 
 // Do two signatures promise the same about lifetimes? Each part of each

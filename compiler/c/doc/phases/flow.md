@@ -837,8 +837,13 @@ read the parts the same way, so what a callee is held to is exactly what its
 callers assume. Two names flow only where they are one, or the signature's
 `where` clause orders them (`'a >= 'b`, `'a == 'b`, transitively;
 `FnSigNode.lifeorder`), or a struct a parameter or the result uses orders
-them in its own (`lifeSigCheck`): a lookup in a small order, no solver, and
-nothing else inferred.
+them in its own, or a type in the signature implies it: a borrow of a value
+holding lifetimes cannot outlast them, so `&'a Pair['b]` and `&'a &'b T`
+order `'b >= 'a`, and `self &` in a struct declaring `'a` orders `'a` over
+the unnamed lifetime, which is a name like any other there (Rust's implied
+bounds; `lifeSigCheck`, `lifeImplied`). A lookup in a small order, no solver,
+and nothing else inferred. Both sides read one order, so a bound the callee
+relies on is one its callers carry loans by.
 
 A container may declare that its element borrows need no loan on it, with a
 marker trait [Jon 26 Sep; names provisional] its `StructNode.lends` records:
