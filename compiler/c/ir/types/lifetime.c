@@ -107,6 +107,7 @@ INode *lifeErased(INode *type) {
             erased->count = lifeuse->count;
             erased->typeargs = NULL;
             erased->at = lifeuse->at;
+            erased->held = NULL;
             copy->lifeuse = erased;
         }
         return (INode *)copy;
@@ -117,11 +118,12 @@ INode *lifeErased(INode *type) {
     {
         RefNode *ref = (RefNode *)type;
         INode *vtexp = lifeErased(ref->vtexp);
-        if (lifeErasedName(ref->lifename) == ref->lifename && vtexp == ref->vtexp)
+        if (lifeErasedName(ref->lifename) == ref->lifename && vtexp == ref->vtexp && ref->bound == NULL)
             return type;
         RefNode *copy = memAllocBlk(sizeof(RefNode));
         memcpy(copy, ref, sizeof(RefNode));
         copy->lifename = lifeErasedName(ref->lifename);
+        copy->bound = NULL;
         copy->vtexp = vtexp;
         return (INode *)copy;
     }
@@ -164,11 +166,12 @@ INode *lifeErased(INode *type) {
 // Does 'longer' last at least as long as 'shorter' by 'order': the same name,
 // or reached from it through the order's pairs, '>=' being transitive? The
 // unnamed lifetime (NULL) is one more name, ordered only where a pair says so
-// (an implied bound, lifeImplied); ''static' outlasts every one.
+// (an implied bound, lifeImplied); ''static' outlasts every one, and is
+// outlasted only where a type parameter's bound says so (lifeBoundName).
 static int lifeOrdered(LifeOrder *order, Name *longer, Name *shorter) {
     if (longer == shorter || longer == staticLifeName)
         return 1;
-    if (order == NULL || shorter == staticLifeName)
+    if (order == NULL)
         return 0;
     // A walk over a handful of pairs: each name reached is visited once
     Name *localseen[16];
@@ -296,12 +299,18 @@ static void lifeGatherUse(NameUseNode *use, int anon, LifeSet *set) {
     INode *dcl = itypeGetTypeDcl((INode *)use);
     if (dcl == NULL)
         return;
+    LifeUse *lifeuse = use->lifeuse;
+    // A bounded type argument, renamed: every borrow it holds is of one name
+    if (lifeuse && lifeuse->held) {
+        if (itypeCarriesBorrow(dcl))
+            lifeSetAdd(set, anon ? NULL : lifeuse->held);
+        return;
+    }
     if (dcl->tag != StructTag) {
         if (dcl != (INode *)use)
             lifeGather(dcl, anon, set);
         return;
     }
-    LifeUse *lifeuse = use->lifeuse;
     StructNode *strnode = (StructNode *)dcl;
     if (strnode->lifeparms) {
         if (itypeCarriesBorrow(dcl)) {
@@ -344,6 +353,10 @@ static void lifeGather(INode *type, int anon, LifeSet *set) {
                 return;
             lifeSetAdd(set, anon ? NULL : ref->lifename);
         }
+        // What a bounded virtual reference points at holds borrows lasting
+        // its bound: they may be of that lifetime
+        if (ref->bound)
+            lifeSetAdd(set, anon ? NULL : ref->bound);
         lifeGather(ref->vtexp, anon, set);
         return;
     }
@@ -734,6 +747,7 @@ void lifeUseInstance(NameUseNode *instuse, INode *genuse, Nodes *typeargs) {
     lifeuse->count = genlife ? genlife->count : 0;
     lifeuse->at = genlife ? genlife->at : NULL;
     lifeuse->typeargs = keep ? typeargs : NULL;
+    lifeuse->held = NULL;
     instuse->lifeuse = lifeuse;
 }
 
@@ -838,6 +852,10 @@ static void lifeImplied(INode *type, LifeOrder **order) {
                 lifeImpliedAdd(order, NULL, ref->lifename, type);
             for (uint32_t i = 0; i < held.cnt; ++i)
                 lifeImpliedAdd(order, held.names[i], ref->lifename, type);
+            // So does a virtual reference's bound, which what it points at
+            // holds: '&<'r Trait + 'a' exists only where ''a' outlasts ''r'
+            if (ref->bound && ref->bound != staticLifeName)
+                lifeImpliedAdd(order, ref->bound, ref->lifename, type);
         }
         lifeImplied(ref->vtexp, order);
         return;
@@ -878,17 +896,36 @@ void lifeSigCheck(FnSigNode *sig) {
     lifeGather(sig->rettype, 0, &named);
     if (named.cnt > 0)
         sig->lifenamed = 1;
-    // A 'where' clause orders the signature's own lifetimes
+    // A parameter that is a virtual reference bounded by ''static' takes only
+    // a value holding global borrows, which a call checks (pwStaticArgs)
+    for (nodesFor(sig->parms, cnt, nodesp)) {
+        if (lifeVirtBound(((IExpNode *)*nodesp)->vtype) == staticLifeName)
+            sig->lifestatic = 1;
+    }
+    // A 'where' clause orders the signature's own lifetimes. A type
+    // parameter's bound, ''+T' >= ''a', names T's borrows, which its argument
+    // may not hold, and a lifetime of the signature's or ''static'.
     LifeOrder *written = sig->lifeorder;
     if (written) {
         for (uint32_t i = 0; i < written->count; ++i) {
+            Name *tparm = lifeBoundParm(written->pairs[2 * i]);
             for (int side = 0; side < 2; ++side) {
                 Name *name = written->pairs[2 * i + side];
-                if (!lifeSetHas(&named, name) && !lifeSigNamesBrand(sig, name))
-                    errorMsgNode(written->at[i], ErrorLifetimeUndeclared,
-                        "'%s' is named by none of the function's parameters or its result, so its 'where' clause cannot order it.",
-                        &name->namestr);
+                if (tparm && (side == 0 || name == staticLifeName))
+                    continue;
+                if (!lifeSetHas(&named, name) && !lifeSigNamesBrand(sig, name)) {
+                    if (tparm)
+                        errorMsgNode(written->at[i], ErrorLifetimeUndeclared,
+                            "'%s' is named by none of the function's parameters or its result, so a bound on %s cannot be of it.",
+                            &name->namestr, &tparm->namestr);
+                    else
+                        errorMsgNode(written->at[i], ErrorLifetimeUndeclared,
+                            "'%s' is named by none of the function's parameters or its result, so its 'where' clause cannot order it.",
+                            &name->namestr);
+                }
             }
+            if (tparm && written->pairs[2 * i + 1] == staticLifeName)
+                sig->lifestatic = 1;
         }
     }
     // What its types imply holds wherever it is called: a value of
@@ -976,6 +1013,229 @@ int lifeIsStatic(INode *type) {
     INode *typedcl = itypeGetTypeDcl(type);
     return (typedcl->tag == RefTag || typedcl->tag == ArrayRefTag || typedcl->tag == VirtRefTag)
         && ((RefNode *)typedcl)->lifename == staticLifeName;
+}
+
+// *********************
+// Lifetime bounds
+// *********************
+
+Name *lifeBoundName(Name *tparm) {
+    char buf[260];
+    int len = snprintf(buf, sizeof(buf), "'+%s", &tparm->namestr);
+    return nametblFind(buf, (size_t)len);
+}
+
+Name *lifeBoundParm(Name *name) {
+    if (name == NULL || name->namesz < 3 || (&name->namestr)[0] != '\'' || (&name->namestr)[1] != '+')
+        return NULL;
+    return nametblFind(&name->namestr + 2, name->namesz - 2);
+}
+
+static Name *lifeRenamedName(Name *name, Name *to) {
+    return lifeIsInvariant(name) ? name : to;
+}
+
+INode *lifeRenamed(INode *type, Name *to) {
+    if (type == NULL)
+        return type;
+    switch (type->tag) {
+    case NameUseTag:
+    {
+        if (!isTypeNode(type))
+            return type;
+        INode *dcl = itypeGetTypeDcl(type);
+        if (dcl == NULL || !itypeCarriesBorrow(dcl))
+            return lifeErased(type);
+        NameUseNode *use = (NameUseNode *)type;
+        LifeUse *old = use->lifeuse;
+        LifeUse *renamed = memAllocBlk(sizeof(LifeUse));
+        renamed->names = NULL;
+        renamed->count = 0;
+        renamed->typeargs = NULL;
+        renamed->at = old ? old->at : NULL;
+        renamed->held = to;
+        // A struct's own lifetimes, each the bound's but for an invariant one,
+        // which stays the brand it is
+        StructNode *strnode = dcl->tag == StructTag ? (StructNode *)dcl : NULL;
+        if (strnode && strnode->lifeparms && strnode->lifeparms->count) {
+            LifeParms *parms = strnode->lifeparms;
+            renamed->count = parms->count;
+            renamed->names = memAllocBlk(parms->count * sizeof(Name *));
+            for (uint32_t k = 0; k < parms->count; ++k) {
+                Name *cur = old && old->names && k < old->count ? old->names[k] : NULL;
+                renamed->names[k] = lifeIsInvariant(parms->names[k]) ? cur : to;
+            }
+        }
+        if (old && old->typeargs) {
+            INode **nodesp;
+            uint32_t cnt;
+            renamed->typeargs = newNodes(old->typeargs->used);
+            for (nodesFor(old->typeargs, cnt, nodesp))
+                nodesAdd(&renamed->typeargs, isTypeNode(*nodesp) ? lifeRenamed(*nodesp, to) : *nodesp);
+        }
+        NameUseNode *copy = memAllocBlk(sizeof(NameUseNode));
+        memcpy(copy, type, sizeof(NameUseNode));
+        copy->lifeuse = renamed;
+        return (INode *)copy;
+    }
+    case RefTag:
+    case ArrayRefTag:
+    case VirtRefTag:
+    {
+        RefNode *ref = (RefNode *)type;
+        INode *vtexp = ref->vtexp && isTypeNode(ref->vtexp) ? lifeRenamed(ref->vtexp, to) : ref->vtexp;
+        RefNode *copy = memAllocBlk(sizeof(RefNode));
+        memcpy(copy, ref, sizeof(RefNode));
+        // A function's borrow is global whatever is written on it
+        if (itypeGetTypeDcl(ref->region) == borrowRef && !lifeIsFnBorrow(ref))
+            copy->lifename = lifeRenamedName(ref->lifename, to);
+        if (ref->bound)
+            copy->bound = to;
+        copy->vtexp = vtexp;
+        // An argument inferred from a borrow carries the caller's band, which
+        // is no lifetime of the instance's: as a written type argument has
+        // none, it has none; the name says what it outlasts
+        copy->scope = 0;
+        return (INode *)copy;
+    }
+    case PtrTag:
+    {
+        StarNode *ptr = (StarNode *)type;
+        INode *vtexp = lifeRenamed(ptr->vtexp, to);
+        if (vtexp == ptr->vtexp)
+            return type;
+        StarNode *copy = memAllocBlk(sizeof(StarNode));
+        memcpy(copy, ptr, sizeof(StarNode));
+        copy->vtexp = vtexp;
+        return (INode *)copy;
+    }
+    case TTupleTag:
+    {
+        TupleNode *tuple = (TupleNode *)type;
+        TupleNode *copy = memAllocBlk(sizeof(TupleNode));
+        memcpy(copy, tuple, sizeof(TupleNode));
+        copy->elems = newNodes(tuple->elems->used);
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodesFor(tuple->elems, cnt, nodesp))
+            nodesAdd(&copy->elems, lifeRenamed(*nodesp, to));
+        return (INode *)copy;
+    }
+    default:
+        return lifeErased(type);
+    }
+}
+
+int lifeParmBounded(INode *generic, Name *tparm) {
+    if (generic == NULL || generic->tag != FnDclTag)
+        return 0;
+    FnSigNode *sig = (FnSigNode *)((FnDclNode *)generic)->vtype;
+    if (sig == NULL || sig->tag != FnSigTag || sig->lifeorder == NULL)
+        return 0;
+    Name *bound = lifeBoundName(tparm);
+    for (uint32_t i = 0; i < sig->lifeorder->count; ++i) {
+        if (sig->lifeorder->pairs[2 * i] == bound)
+            return 1;
+    }
+    return 0;
+}
+
+// Is 'tparm' one of a generic declaration's own type parameters?
+static int lifeIsTypeParm(GenericInfo *info, Name *tparm) {
+    if (info == NULL || info->parms == NULL)
+        return 0;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(info->parms, cnt, nodesp)) {
+        if (((GenVarDclNode *)*nodesp)->namesym == tparm)
+            return 1;
+    }
+    return 0;
+}
+
+void lifeBoundsNameRes(FnDclNode *fndcl, INode *owner) {
+    FnSigNode *sig = (FnSigNode *)fndcl->vtype;
+    if (sig == NULL || sig->tag != FnSigTag || sig->lifeorder == NULL)
+        return;
+    LifeOrder *order = sig->lifeorder;
+    uint32_t keep = 0;
+    for (uint32_t i = 0; i < order->count; ++i) {
+        Name *tparm = lifeBoundParm(order->pairs[2 * i]);
+        if (tparm && !lifeIsTypeParm(fndcl->genericinfo, tparm)) {
+            // A generic type's parameter is the type's instance's, whose
+            // methods are made from arguments erased, not renamed
+            if (owner && owner->tag == StructTag && lifeIsTypeParm(((StructNode *)owner)->genericinfo, tparm))
+                errorMsgNode(order->at[i], ErrorLifetimeBound,
+                    "%s is a type parameter of the generic type, and a lifetime bound on one is not built: a generic function's own type parameter takes one.",
+                    &tparm->namestr);
+            else
+                errorMsgNode(order->at[i], ErrorWhereSubject,
+                    "%s is not a type parameter of this function, so it takes no lifetime bound.",
+                    &tparm->namestr);
+            continue;
+        }
+        order->pairs[2 * keep] = order->pairs[2 * i];
+        order->pairs[2 * keep + 1] = order->pairs[2 * i + 1];
+        order->at[keep++] = order->at[i];
+    }
+    order->count = keep;
+}
+
+int lifePartStatic(FnSigNode *sig, INode *parm, uint32_t part) {
+    if (sig == NULL || !sig->lifestatic)
+        return 0;
+    LifeSet set;
+    lifeSetInit(&set);
+    lifePartGather(parm, part, 0, &set);
+    if (set.unnamed || set.cnt == 0)
+        return 0;
+    for (uint32_t i = 0; i < set.cnt; ++i) {
+        if (!lifeOrdered(sig->lifeorder, set.names[i], staticLifeName))
+            return 0;
+    }
+    return 1;
+}
+
+Name *lifeStaticBoundOf(FnSigNode *sig, INode *parm) {
+    if (sig == NULL || !sig->lifestatic)
+        return NULL;
+    LifeSet set;
+    lifeSetInit(&set);
+    lifeGather(parm, 0, &set);
+    for (uint32_t i = 0; i < set.cnt; ++i) {
+        Name *tparm = lifeBoundParm(set.names[i]);
+        if (tparm && lifeOrdered(sig->lifeorder, set.names[i], staticLifeName))
+            return tparm;
+    }
+    return NULL;
+}
+
+Name *lifeVirtBound(INode *type) {
+    if (type == NULL || !isTypeNode(type))
+        return NULL;
+    INode *dcl = itypeGetTypeDcl(type);
+    return dcl && dcl->tag == VirtRefTag ? ((RefNode *)dcl)->bound : NULL;
+}
+
+int lifeVirtOutlives(FnSigNode *sig, INode *vreftype, Name *bound) {
+    INode *dcl = itypeGetTypeDcl(vreftype);
+    if (dcl == NULL || dcl->tag != VirtRefTag)
+        return 1;
+    RefNode *ref = (RefNode *)dcl;
+    return lifeOutlives(sig, ref->bound ? ref->bound : ref->lifename, bound, 0);
+}
+
+int lifePartOutlives(FnSigNode *sig, INode *parm, uint32_t part, Name *bound) {
+    LifeSet set;
+    lifeSetInit(&set);
+    lifePartGather(parm, part, 0, &set);
+    if (set.unnamed && !lifeOutlives(sig, NULL, bound, 0))
+        return 0;
+    for (uint32_t i = 0; i < set.cnt; ++i) {
+        if (!lifeOutlives(sig, set.names[i], bound, 0))
+            return 0;
+    }
+    return 1;
 }
 
 // *********************
@@ -1909,6 +2169,7 @@ static INode *lifeBrandSubstStruct(StructNode *strnode, NameUseNode *use, LifeBi
     lifeuse->count = (uint16_t)count;
     lifeuse->typeargs = newargs ? newargs : written;
     lifeuse->at = use && use->lifeuse ? use->lifeuse->at : NULL;
+    lifeuse->held = use && use->lifeuse ? use->lifeuse->held : NULL;
     copy->lifeuse = lifeuse;
     return (INode *)copy;
 }

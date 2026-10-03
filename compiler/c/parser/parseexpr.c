@@ -347,6 +347,7 @@ static Nodes *parseIndexArgs(ParseState *parse, FnCallNode *fncall) {
     lifeuse->count = 0;
     lifeuse->typeargs = NULL;
     lifeuse->at = NULL;
+    lifeuse->held = NULL;
     int allowed = 1;
     for (nodesFor(args, cnt, nodesp)) {
         if (!parseIsLifeArg(*nodesp)) {
@@ -586,6 +587,21 @@ INode *parseAmper(ParseState *parse) {
     // element -- '&[]' dispatch on a type that declares it -- is now borrow.c's
     // business, where the receiver's type is known.
     anode->vtexp = parsePrefix(parse);
+
+    // A bound, '&<Trait + 'a': what the value a virtual reference points at
+    // holds lives at least as long as ''a' (lifetime.h, "Lifetime bounds").
+    // It is named where a lifetime may be.
+    if (parse->intype && lexIsToken(PlusToken) && lexPeekIsLifetime()) {
+        lexNextToken();
+        Name *bound = lex->val.ident;
+        if (anode->tag != VirtRefTag)
+            errorMsgLex(ErrorLifetimeBound, "A lifetime bound is said of a type whose insides are unknown: a virtual reference's, '&<Trait + 'a', or a type parameter's, '[T + 'a]'. A plain reference or slice names its own lifetime, '&'a T'.");
+        else if (lifeIsInvariant(bound))
+            errorMsgLex(ErrorLifetimeInvariant, "A bound says what the borrows inside a type outlive, and an invariant lifetime has no order to say it with.");
+        else if (parseLifeNamed(parse, bound, NULL))
+            anode->bound = bound;
+        lexNextToken();
+    }
     return (INode *)anode;
 }
 

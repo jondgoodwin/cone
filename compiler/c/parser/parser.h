@@ -118,11 +118,13 @@ INode *parseFn(ParseState *parse, uint16_t mayflags);
 // Parse a macro declaration
 MacroDclNode *parseMacro(ParseState *parse);
 // Parse a list of generic variables and add to the genericnode; a struct's
-// lifetimes among them go to '*lifes' (NULL refuses them)
-Nodes *parseGenericParms(ParseState *parse, int annotate, LifeParms **lifes);
+// lifetimes among them go to '*lifes' (NULL refuses them), and a type
+// parameter's lifetime bounds, '[T + 'a]', to '*bounds' (NULL refuses them)
+Nodes *parseGenericParms(ParseState *parse, int annotate, LifeParms **lifes, LifeOrder **bounds);
 // Parse a 'where' clause, with the lexer on 'where', into '*wherep', and its
-// lifetime comparisons into '*orderp' (NULL refuses them)
-void parseWhere(ParseState *parse, Nodes **wherep, LifeOrder **orderp);
+// lifetime comparisons into '*orderp' (NULL refuses them), with its type
+// parameters' lifetime bounds, 'T + 'a', where 'bounds' allows them
+void parseWhere(ParseState *parse, Nodes **wherep, LifeOrder **orderp, int bounds);
 INode *parseIf(ParseState *parse);
 INode *parseMatch(ParseState *parse);
 INode *parseWhile(ParseState *parse, Name *lifesym, int stmtflag);

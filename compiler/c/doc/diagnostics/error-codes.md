@@ -316,6 +316,19 @@ with one, `==` with an ordinary one, one on a slice or virtual reference, one
 in an ordinary one's place or left unnamed in a signature, one a body names
 that its signature does not -- is `ErrorLifetimeInvariant`.
 
+A lifetime bound has one code, `ErrorLifetimeBound`, for a bound broken where
+it is checked by name and for one where none is built: an argument for a type
+parameter bounded by `'static`, or for a parameter `&<Trait + 'static`,
+carrying a borrow that is not global; a value returned or stored through a
+parameter as a virtual reference bounded by `'a` holding a borrow not known to
+last `'a`; a bound on a generic type's parameter, or on a reference that is
+not virtual. A bound of a callee's own lifetime is not checked by name at a
+call: the call carries the argument wherever the bound's lifetime flows, and
+a borrow that is too short is the loan walk's `ErrorFrozen`, `ErrorEscape` or
+`ErrorCallEscape`, as for any carried loan. A bound on a name that is no type
+parameter of the function is `ErrorWhereSubject`, and of a lifetime its
+signature does not name `ErrorLifetimeUndeclared`.
+
 ## The one code with no scenario
 
 `ErrorUnreachable` is reported by `errorUnreachable` and by nothing else. It

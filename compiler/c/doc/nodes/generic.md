@@ -105,6 +105,22 @@ types. The use `genericMemoize` returns keeps the arguments as written, and
 the lifetimes the generic's own name was given, for what they name
 (`genericInstanceUse`, `NameUseNode.lifeuse`).
 
+**A bounded parameter's argument is renamed, not erased.** A generic
+function's type parameter may carry a lifetime bound, `[T + 'a]` or `where
+T + 'a`, which the parser puts in its signature's order as the pair `'+T >=
+'a` (`'+T`, `lifeBoundName`, a name no source can write). Its argument is made
+the instance's with every lifetime it names, and every borrow it holds
+unnamed, renamed `'+T` (`genericInstanceArg`, `lifeRenamed`; a struct with no
+lifetimes of its own records it as `LifeUse.held`), and its band dropped, as
+a written type argument has none, so the instance's body may store or return
+a `T` as `'a` and a call carries an argument for `T` wherever `'a` flows
+([Flow](../phases/flow.md), "Named lifetimes"). The renaming is the
+parameter's, so it multiplies no instance. `lifeBoundsNameRes` refuses a
+bound on anything but the function's own type parameter: a generic type's
+parameter takes none yet, since its instance's members are made from
+arguments erased (`ErrorLifetimeBound`), and the parser refuses one in a
+generic type's brackets or `where` clause.
+
 **An invariant lifetime is the exception.** A key stays a key in the
 instance: `lifeErased` keeps an invariant name, and `lifeCanonBrands` then
 renames every brand the arguments carry by its place, `'=1`, `'=2`, so that
@@ -158,7 +174,10 @@ defaults.** An empty list is `ErrorNoGenParms`. `annotate` says whether the
 declaration takes annotations: a generic function or type does, and the name
 after the parameter's goes into `annot` (Shape, above); a parameter ends at its
 `,` or the `]`, so `[T A B]` is the unclosed-list `ErrorBadTok` rather than a
-second parameter.
+second parameter. A lifetime after a `+`, `[T + 'a]` or `[T A + 'a]`, is a
+lifetime bound, not an annotation (`parseBoundAdd`): a function's go to the
+`bounds` order `parseFn` adds to its signature's, and a generic type's are
+refused, `ErrorLifetimeBound`.
 
 **A macro and a generic module take none.** There the comma is required, and a
 second name straight after the first is refused with `ErrorGenParmConstr`,
@@ -174,8 +193,14 @@ after a function's signature (and `inline`), and after a type's name, type
 parameters and `is`/`extends` clauses. It is an expression over clauses, as an
 expression is over values: `or` of `and`s of terms (`parseWhereOr`,
 `parseWhereAnd`), so `and` binds tighter, and a term (`parseWhereTerm`) is `(`
-a whole condition `)` or `Ident is Name (+ Name)*`, each name read by
-`parseTypeName`. The condition's top-level `and`s are split into the list's
+a whole condition `)`, `Ident is Name (+ Name)*`, each name read by
+`parseTypeName`, a lifetime comparison, or a lifetime bound, `Ident + 'a`, or a
+lifetime after a `+` in an `is` clause, `T is Name + 'a` (`T is 'a` is
+`ErrorWhereForm`: `T` is no lifetime). A comparison and a bound go to the
+declaration's order and stand in the condition as a marker
+(`parseLifeClause`), so an `or` over one is found and refused,
+`ErrorLifetimeOr`, as is a `not` before a comparison; a `not` before a bound's
+subject is the `not` that is refused everywhere. The condition's top-level `and`s are split into the list's
 elements (`parseWhereAdd`), appended to the function's `where` or the type's
 `GenericInfo.where`. Every other shape is `ErrorWhereForm`, the clause adds
 nothing, and the rest of it is skipped to the block: a subject that is not a

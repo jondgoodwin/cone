@@ -18,6 +18,7 @@ FnSigNode *newFnSigNode() {
     sig->lifenamed = 0;
     sig->lifeorder = NULL;
     sig->lifechecked = 0;
+    sig->lifestatic = 0;
     return sig;
 }
 
@@ -101,6 +102,17 @@ void fnSigTypeCheck(TypeCheckState *pstate, FnSigNode *sig) {
     }
     itypeTypeCheck(pstate, &sig->rettype);
     lifeSigCheck(sig);
+    // A parameter's own reference a type parameter's ''static' bound makes
+    // global holds a global borrow, as one written ''static' does: the caller
+    // band varDclTypeCheck gave its own copy of the type is undone
+    if (sig->lifestatic) {
+        for (nodesFor(sig->parms, cnt, nodesp)) {
+            INode *parmtype = ((VarDclNode*)*nodesp)->vtype;
+            if (parmtype->tag == RefTag && ((RefNode*)parmtype)->scope == 1
+                && lifeIsOwnBorrow(parmtype) && lifePartStatic(sig, parmtype, LifePartOwn))
+                ((RefNode*)parmtype)->scope = 0;
+        }
+    }
 }
 
 // Compare two function signatures to see if they are equivalent

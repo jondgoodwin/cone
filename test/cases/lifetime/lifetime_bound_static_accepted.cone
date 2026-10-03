@@ -1,0 +1,64 @@
+// A type parameter bounded by ''static': inside, a T is stored in a global,
+// bare and inside an 'Option', and returned as ''static'. Each call hands
+// it only global borrows -- a global's, written, or carried by value inside
+// an 'Option' -- or a type holding no borrow.
+//
+// Verdict: accept; prints 4 5 6 7 and 8.
+// Basis: language rule (3 Oct 2026): 'T + 'static' says T holds no
+// non-static borrow, the form a thread or an actor would ask of what it is
+// handed; a borrow of a global lasts every lifetime (refmodule.html names
+// the global lifetime ''static'); a type holding no borrow meets any bound.
+// Master 2cb190a1: refused at parse.
+
+mod lifetime_bound_static_accepted;
+
+import stdio use *;
+
+mut D i64 = 4;
+mut E i64 = 5;
+mut F i64 = 6;
+mut G &i64;
+mut GO Option[&i64];
+
+fn @initpure init() {
+  G = &D;
+  GO = None[&i64][];
+}
+
+fn stash[T + 'static](x T) {
+  G = x;
+}
+
+fn stashOpt[T + 'static](x T) {
+  GO = x;
+}
+
+fn keep[T + 'static](x T) &'static i64 {
+  x;
+}
+
+fn same[T + 'static](x T) T {
+  x;
+}
+
+fn main() {
+  initAll();
+  stash(&D);
+  printInt(*G);
+  printStr(" ");
+  stashOpt(Some[&i64][&E]);
+  match GO {
+    case imm e Some {
+      printInt(*e.value);
+      printStr(" ");
+    }
+    else {}
+  }
+  printInt(*keep(&F));
+  printStr(" ");
+  printInt(same(7i64));
+  printStr(" ");
+  imm r = keep[&i64](&D);
+  printInt(*r + 4);
+  printStr("\n");
+}

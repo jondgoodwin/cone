@@ -1095,6 +1095,37 @@ static int pwPlaceOutlives(Place *pl) {
 // The signature of the function being walked
 static FnSigNode *pwSig = NULL;
 
+// The value 'val', carrying 'holds', is returned, or stored through '*p',
+// where the function's own names type the place, as 'type': where that is a
+// virtual reference bounded by ''a' ('&<Trait + 'a'), what it points at must
+// hold only borrows lasting ''a' (lifetime.h, "Lifetime bounds"). A value
+// made a virtual reference here, from a reference to a concrete type, holds
+// that in its far loans: no borrow of this function's own storage, and of
+// what the caller lent only a part the order says outlasts ''a'. One that is
+// a virtual reference already is vouched for by its type, which a parameter's
+// says in this function's names: its bound, or with none its own lifetime
+// (Rust's default for '&'r dyn Trait'), must outlast ''a'. One read out of a
+// struct's field has its type in the struct's names, and was checked where
+// it was stored there.
+static void pwBoundHolds(INode *val, INode *type, PathSet *holds) {
+    Name *bound = lifeVirtBound(type);
+    if (bound == NULL || !pathLoans || val == NULL || !isExpNode(val))
+        return;
+    if (val->tag == CastTag && iexpGetTypeDcl(((CastNode *)val)->exp)->tag != VirtRefTag) {
+        uint32_t loan = loanNotBoundIn(pwSig, holds, bound);
+        if (loan)
+            loanNotBound(val, loan, bound);
+        return;
+    }
+    while (val->tag == CastTag)
+        val = ((CastNode *)val)->exp;
+    VarDclNode *var = pwNamedVar(val);
+    if (var && var->scope == 1 && !lifeVirtOutlives(pwSig, var->vtype, bound))
+        errorMsgNode(val, ErrorLifetimeBound,
+            "A virtual reference bounded by '%s' points at a value whose borrows all last '%s', but '%s' promises only that what it points at lasts its own bound, or, with none, its own lifetime, which is not ordered at least as long by a 'where' clause or by what the signature's types imply.",
+            &bound->namestr, &bound->namestr, &var->namesym->namestr);
+}
+
 // A value carrying 'stored' goes where a reference holding 'refholds' points,
 // at 'node': what a borrowed parameter points at holds only the lifetimes its
 // type names there, so a borrow the caller lent of another lifetime, not
@@ -1121,7 +1152,7 @@ static void pwStoreApart(INode *node, PathSet *refholds, int beyond, uint32_t la
 // borrowed parameter points at, or what it holds, read through '*x' or
 // carried inside a value); and where it is reached through a reference, no
 // borrow of a lifetime that place does not hold
-static void pwStoreEscapes(INode *lval, Place *pl, PathSet *holds) {
+static void pwStoreEscapes(INode *lval, Place *pl, PathSet *holds, INode *rval) {
     if (!pathLoans)
         return;
     uint32_t local = loanLocalIn(holds);
@@ -1131,9 +1162,12 @@ static void pwStoreEscapes(INode *lval, Place *pl, PathSet *holds) {
         loanEscape(lval, local, LoanEscapeStore);
     else if ((root->scope == 0 || (root->flags & FlagStatic)) && (caller = loanNotGlobalIn(holds)))
         loanEscape(lval, caller, LoanEscapeStore);
-    else if (pl->deref)
+    else if (pl->deref) {
         pwStoreApart(lval, pathVars[pl->var].holds, pl->far,
             pl->slotted && !pl->far ? pl->slots : 0, holds, LoanEscapeStore);
+        if (lval->tag == DerefTag)
+            pwBoundHolds(rval, ((IExpNode *)lval)->vtype, holds);
+    }
 }
 
 // What a value carrying 'holds' adds to the root of the place 'pl' it is
@@ -1418,17 +1452,49 @@ static void pwCallMoves(FnCallNode *call, FnSigNode *sig, Place *recvpl) {
 
 // An argument for a parameter whose reference is written ''static' may carry
 // no loan but of a global: fnCallStaticArgs checks a borrow's lifetime, and
-// this what a variable holds now
+// this what a variable holds now. So may what an argument lends through a
+// part a type parameter's ''static' bound makes global (lifePartStatic): a
+// reference's own part is its near loans, what it holds its far ones, and
+// what a value passed by value holds all of them.
 static void pwStaticArgs(FnCallNode *call, FnSigNode *sig, PathSet **argsets) {
     if (call->args == NULL)
         return;
     uint32_t nargs = call->args->used < sig->parms->used ? call->args->used : sig->parms->used;
     for (uint32_t i = 0; i < nargs; ++i) {
-        if (!lifeIsStatic(((IExpNode *)nodesGet(sig->parms, i))->vtype))
+        INode *parmtype = ((IExpNode *)nodesGet(sig->parms, i))->vtype;
+        if (lifeIsStatic(parmtype)) {
+            uint32_t loan = loanNotGlobalIn(argsets[i]);
+            if (loan)
+                loanNotGlobal(nodesGet(call->args, i), loan, NULL);
             continue;
-        uint32_t loan = loanNotGlobalIn(argsets[i]);
+        }
+        if (!sig->lifestatic)
+            continue;
+        // A virtual reference bounded by ''static', '&<Trait + 'static': what
+        // the value handed for it points at holds only global borrows. A bound
+        // of another lifetime is the callee's name, which this function's
+        // order knows nothing of: what it lets flow, the call carries.
+        if (lifeVirtBound(parmtype) == staticLifeName) {
+            uint32_t loan = loanNotBoundIn(pwSig, argsets[i], staticLifeName);
+            if (loan)
+                loanNotBound(nodesGet(call->args, i), loan, staticLifeName);
+            continue;
+        }
+        int isref = lifeIsOwnBorrow(parmtype);
+        int own = isref && lifePartStatic(sig, parmtype, LifePartOwn);
+        int held = 0;
+        INode *heldtype = lifeHeld(parmtype);
+        if (heldtype) {
+            StructNode *slotted = lifeSlotted(heldtype);
+            uint32_t nparts = slotted ? slotted->lifeparms->count : 1;
+            for (uint32_t k = 0; k < nparts; ++k)
+                held |= lifePartStatic(sig, parmtype, slotted ? LifePartSlot + k : LifePartHeld);
+        }
+        if (!own && !held)
+            continue;
+        uint32_t loan = loanNotGlobalInAs(argsets[i], isref ? own : held, held);
         if (loan)
-            loanNotGlobal(nodesGet(call->args, i), loan);
+            loanNotGlobal(nodesGet(call->args, i), loan, lifeStaticBoundOf(sig, parmtype));
     }
 }
 
@@ -1486,8 +1552,12 @@ static PathSet *pwCall(FnCallNode *call) {
             result = pathSetUnion(result, pwArgCarries(sig, argi, rettype, carried));
         argsets[argi++] = carried;
     }
-    if (sig && pathLoans)
-        pwStaticArgs(call, sig, argsets);
+    if (pathLoans) {
+        // A signature naming no lifetime may still bound one by ''static'
+        FnSigNode *callsig = sig ? sig : (FnSigNode *)iexpGetDerefTypeDcl(call->objfn);
+        if (callsig->tag == FnSigTag && (sig || callsig->lifestatic))
+            pwStaticArgs(call, callsig, argsets);
+    }
     // The receiver's borrow activated: against what the other arguments carry,
     // and then as the access it is, against every loan still held
     if (twophase)
@@ -1537,7 +1607,7 @@ static void pwStore(INode **lvalp, PathSet *holds, INode **rvalp) {
         // was not live before, so what its old value was pending on is dropped.
         uint32_t index = pathVar(var);
         Place pl = { index, 0, 0 };
-        pwStoreEscapes(*lvalp, &pl, holds);
+        pwStoreEscapes(*lvalp, &pl, holds, rvalp ? *rvalp : NULL);
         pwAccess(&pl, itypeNeedsFinal(var->vtype) ? AccessReplace : AccessWrite, *lvalp);
         if (pathVars[index].holder) {
             pwHolderDies(index);
@@ -1558,7 +1628,7 @@ static void pwStore(INode **lvalp, PathSet *holds, INode **rvalp) {
     // Part of a local's own value: its old value is released if the local holds one
     if (pathDrops && !pl.deref && pathVars[pl.var].tracked && flowLvalRootVar(*lvalp) == pathVars[pl.var].var)
         dropPartStore(pl.var, *lvalp);
-    pwStoreEscapes(*lvalp, &pl, holds);
+    pwStoreEscapes(*lvalp, &pl, holds, rvalp ? *rvalp : NULL);
     pwStoreInto(pl.var, pwPlaceLevel(&pl), pwPlaceLevel(&pl), pwStoreTagged(&pl, holds));
 }
 
@@ -1623,7 +1693,7 @@ static void pwSwap(SwapNode *node) {
     for (int i = 0; i < 2; ++i) {
         if (!found[i])
             continue;
-        pwStoreEscapes(*sides[i], &places[i], holds[1 - i]);
+        pwStoreEscapes(*sides[i], &places[i], holds[1 - i], NULL);
         if (!whole[i]) {
             int level = pwPlaceLevel(&places[i]);
             pwStoreInto(places[i].var, level, level, pwStoreTagged(&places[i], holds[1 - i]));
@@ -1794,6 +1864,8 @@ static PathSet *pwStmts(BlockNode *blk, int move) {
                     loanEscape(ret->exp, local, LoanEscapeReturn);
                 else if (pwSig->lifenamed && (apart = loanCallerApart(pwSig, carried, pwSig->rettype)))
                     loanApart(ret->exp, apart, NULL, LoanEscapeReturn);
+                else
+                    pwBoundHolds(ret->exp, pwSig->rettype, carried);
             }
             pwExit(*nodesp, 0);
             pwScopeEnd(0);
@@ -2104,13 +2176,16 @@ static PathSet *pwValue(INode **nodep, int move) {
 // points at, near; and what that holds, far, or what a parameter passed by
 // value holds, both near and far, since it stands for what the value's own
 // borrows point at and for anything further on -- whole, or, for a struct
-// declaring lifetimes, one per slot, tagged with it
+// declaring lifetimes, one per slot, tagged with it. A part a type
+// parameter's ''static' bound makes global (lifePartStatic) is no loan, as a
+// ''static' parameter's is not.
 static PathSet *pwCallerLoans(uint32_t var) {
     INode *parmtype = pathVars[var].var->vtype;
     PathSet *holds = NULL;
     int byvalue = 1;
     if (lifeIsOwnBorrow(parmtype)) {
-        holds = pathSetAdd(holds, loanCaller(var, LifePartOwn));
+        if (!lifePartStatic(pwSig, parmtype, LifePartOwn))
+            holds = pathSetAdd(holds, loanCaller(var, LifePartOwn));
         byvalue = 0;
     }
     INode *held = lifeHeld(parmtype);
@@ -2119,6 +2194,8 @@ static PathSet *pwCallerLoans(uint32_t var) {
     StructNode *slotted = lifeSlotted(held);
     uint32_t nparts = slotted ? slotted->lifeparms->count : 1;
     for (uint32_t k = 0; k < nparts; ++k) {
+        if (lifePartStatic(pwSig, parmtype, slotted ? LifePartSlot + k : LifePartHeld))
+            continue;
         uint32_t entry = slotted ? loanCaller(var, LifePartSlot + k) | ((k + 1) << LoanTagShift)
             : loanCaller(var, LifePartHeld);
         holds = pathSetAdd(holds, entry | LoanFar);

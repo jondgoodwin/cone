@@ -52,6 +52,7 @@
 #define lifetime_h
 
 struct FnSigNode;
+struct FnDclNode;
 struct StructNode;
 struct FieldDclNode;
 struct NameUseNode;
@@ -89,6 +90,7 @@ typedef struct LifeUse {
     Name **names;       // positional names for the struct's declared lifetimes, or NULL
     Nodes *typeargs;    // a generic instance's type arguments, or NULL
     INode *at;          // where the names are written
+    Name *held;         // a bounded type argument's: the one lifetime every borrow it holds is of (lifeRenamed), or NULL
     uint16_t count;
 } LifeUse;
 
@@ -233,6 +235,72 @@ int lifeSigMeets(struct FnSigNode *impl, struct FnSigNode *req);
 // 'G' (where v0 puts a signature's lifetimes), a digit per promise, '_'. Two
 // signatures that agree spell alike.
 char *lifeSigSpell(char *bufp, struct FnSigNode *sig);
+
+// *********************
+// Lifetime bounds
+// *********************
+//
+// A bound, '+ 'a', is said of a type whose insides are unknown: any borrow
+// inside lives at least as long as ''a' (Rust's 'T: 'a' and 'dyn Trait + 'a').
+//
+// On a generic function's type parameter, '[T + 'a]', '[T Trait + 'a]' or
+// 'where T + 'a', it is a pair in the signature's order, ''+T' >= ''a', where
+// ''+T' (lifeBoundName, never written) names every borrow T's argument holds:
+// an instance is made from its arguments with a bounded parameter's renamed
+// to that one name (lifeRenamed) rather than erased, so its body may store a
+// T where a ''a' borrow is held, or return one as ''a', and a call carries an
+// argument's loans wherever ''a' flows, as for any order. ''+T' >= ''static'
+// makes what a parameter lends through it global (lifePartStatic): the
+// parameter holds no caller loan there, and a call is handed only a global
+// borrow for it. An instance is still one per type argument, never per
+// lifetime: the renaming is the parameter's, not the use's.
+//
+// On a virtual reference, '&<Trait + 'a' (RefNode.bound), it says what the
+// referenced value's borrows outlive: the type holds ''a' as well as its own
+// lifetime, so what it is read back out of carries what ''a' does, and a
+// value coerced to it must hold no borrow not known to last ''a' (by band,
+// by the order), which the loan walk checks where it is stored or returned.
+
+// The name a bounded type parameter's borrows take in an instance: ''+T'
+Name *lifeBoundName(Name *tparm);
+
+// Is this such a name? The type parameter it is for, or NULL
+Name *lifeBoundParm(Name *name);
+
+// A copy of a type with every lifetime it names but an invariant one renamed
+// 'to', and every borrow it holds unnamed held as 'to': a bounded parameter's
+// argument, as its instance is made from it
+INode *lifeRenamed(INode *type, Name *to);
+
+// Does the generic function 'generic' bound its type parameter 'tparm'?
+int lifeParmBounded(INode *generic, Name *tparm);
+
+// Check, at name resolution, that every bound a function's order holds is on
+// one of its own type parameters; a bound on anything else is refused and
+// dropped from the order
+void lifeBoundsNameRes(struct FnDclNode *fndcl, INode *owner);
+
+// Is the part 'part' of what a caller lends through a parameter of the type
+// 'parm' global by the signature 'sig''s order: every lifetime it holds
+// bounded by ''static'?
+int lifePartStatic(struct FnSigNode *sig, INode *parm, uint32_t part);
+
+// The type parameter whose ''static' bound makes some part of a parameter of
+// this type global, or NULL
+Name *lifeStaticBoundOf(struct FnSigNode *sig, INode *parm);
+
+// Is this a virtual reference type with a bound? The bound, or NULL
+Name *lifeVirtBound(INode *type);
+
+// Does what a virtual reference of this type points at hold only borrows
+// lasting 'bound', by the signature's order: is its own bound, or, with none,
+// its own lifetime, at least as long?
+int lifeVirtOutlives(struct FnSigNode *sig, INode *vreftype, Name *bound);
+
+// May a borrow the caller lent through the part 'part' of a parameter of the
+// type 'parm' be held where only borrows lasting at least 'bound' are, by the
+// signature's order?
+int lifePartOutlives(struct FnSigNode *sig, INode *parm, uint32_t part, Name *bound);
 
 // *********************
 // Invariant lifetimes: brands

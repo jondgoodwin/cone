@@ -8,8 +8,9 @@
 # rule can be refined case by case: many
 # simple cases on the bands (global, the caller's, the function's own), a few
 # on borrows made inside relating to those from outside, and most on when a
-# borrowed source is free again. The first three prefixes follow that, and
-# the fourth is lifetimes that are no scope at all:
+# borrowed source is free again. The first three prefixes follow that, the
+# fourth is lifetimes that are no scope at all, and the fifth is bounds on
+# types whose insides are unknown:
 #
 #   lifetime_band_  global vs the caller band vs the function: parameters
 #                   (borrowed, by value, 'self' by value, owners by value),
@@ -34,6 +35,11 @@
 #                   only by their own arena ('ar[key]'), never reached through
 #                   alone, kept to their loop pass, equated by 'where', and
 #                   carried through structs, returns and generics.
+#   lifetime_bound_ lifetime bounds ('+ 'a', 3 Oct 2026): on a generic
+#                   function's type parameter, '[T + 'a]', 'where T + 'a',
+#                   relied on inside and met by each instantiation's argument;
+#                   'T + 'static'; and on a borrowed virtual reference,
+#                   '&<Trait + 'a'.
 #
 # Every file's header gives the verdict a correct compiler reaches, its basis
 # (a language rule, stated, with the date it was settled; a manual page;
@@ -63,6 +69,7 @@
 #      promising more than their trait, stores through '&mut' into a local
 #      following flow
 #   9  invariant lifetimes and the dynamic arena (lifetime_inv_)
+#  10  lifetime bounds (lifetime_bound_)
 #
 # A dangling case's header says how master's wrong answer was shown to be
 # dangerous: a stale stack slot read back through clobber(), or a finalizer
@@ -71,8 +78,8 @@
 # refusal turned off.
 #
 # Left out deliberately, because the rule depends on something not yet
-# decided: '+ 'a' bounds on a type parameter or a virtual reference, owner
-# fields reached through a shared 'mut' path, and whether 'new H(...)'
+# decided: a bound on a generic type's parameter or an owning virtual
+# reference, owner fields reached through a shared 'mut' path, and whether 'new H(...)'
 # extends a temporary the way Rust's struct literal does.
 
 support = []
@@ -1380,4 +1387,66 @@ tags = ["typecheck"]
 [scenario.lifetime_inv_result_two_brands]
 category = "reject"
 description = "A result naming one minted brand built of two arenas' values is refused"
+tags = ["typecheck"]
+
+# -------- lifetime bounds: '+ 'a' on a type parameter and a virtual reference --------
+
+[scenario.lifetime_bound_generic_relied_on]
+category = "run"
+description = "A generic function's type parameter bounded by ''a', in each spelling, stored and returned as ''a', instantiated with long enough borrows and a borrow-free type"
+tags = ["flow", "runtime"]
+
+[scenario.lifetime_bound_generic_unbounded_refused]
+category = "reject"
+description = "The same generic bodies without the bound may not store or return a T as ''a'"
+tags = ["flow"]
+
+[scenario.lifetime_bound_generic_too_short]
+category = "reject"
+description = "A bounded generic handed a borrow too short for where it is stored or returned is refused where it is used"
+tags = ["flow"]
+
+[scenario.lifetime_bound_generic_caller_unordered]
+category = "reject"
+description = "A caller's borrow of a lifetime its order does not say lasts the bound's is refused at the call and the return"
+tags = ["flow"]
+
+[scenario.lifetime_bound_static_accepted]
+category = "run"
+description = "A type parameter bounded by ''static' stored in a global and returned as ''static', handed global borrows and a borrow-free type"
+tags = ["flow", "runtime"]
+
+[scenario.lifetime_bound_static_local_borrow]
+category = "reject"
+description = "A type parameter bounded by ''static' refuses a local's borrow written as its argument"
+tags = ["typecheck"]
+
+[scenario.lifetime_bound_static_local_in_value]
+category = "reject"
+description = "A type parameter bounded by ''static' refuses a local's borrow carried inside a value or by a variable"
+tags = ["flow"]
+
+[scenario.lifetime_bound_virt_accepted]
+category = "run"
+description = "A virtual reference bounded by ''a' holding a struct with a borrow, stored, returned and read back out where its lifetime lasts ''a'"
+tags = ["flow", "runtime"]
+
+[scenario.lifetime_bound_virt_refused]
+category = "reject"
+description = "A value coerced to, or stored as, a virtual reference bounded by a lifetime its borrows are not known to last is refused"
+tags = ["flow"]
+
+[scenario.lifetime_bound_parse_refused]
+category = "reject"
+description = "A bound under 'or', 'T is 'a', an invariant bound, a bound on a plain reference or a generic type's parameter is refused at parse"
+tags = ["parse"]
+
+[scenario.lifetime_bound_nameres_refused]
+category = "reject"
+description = "A bound on a name that is no type parameter of the function, or on its generic type's parameter, is refused"
+tags = ["nameres"]
+
+[scenario.lifetime_bound_undeclared]
+category = "reject"
+description = "A bound of a lifetime the signature does not name is refused"
 tags = ["typecheck"]

@@ -443,6 +443,34 @@ uint32_t loanNotGlobalIn(PathSet *set) {
     return 0;
 }
 
+uint32_t loanNotBoundIn(FnSigNode *sig, PathSet *set, Name *bound) {
+    if (set == NULL || set == &pathSetAll)
+        return 0;
+    for (uint32_t i = 0; i < set->cnt; ++i) {
+        if (!(set->ids[i] & LoanFar))
+            continue;
+        uint32_t id = loanOf(set->ids[i]);
+        if (loanIsLocal(id))
+            return id;
+        if (loans[id].kind == LoanCaller && !lifePartOutlives(sig, loanParm(id)->vtype, loans[id].part, bound))
+            return id;
+    }
+    return 0;
+}
+
+uint32_t loanNotGlobalInAs(PathSet *set, int near, int far) {
+    if (set == NULL || set == &pathSetAll)
+        return near || far ? loanNotGlobalIn(set) : 0;
+    for (uint32_t i = 0; i < set->cnt; ++i) {
+        if ((set->ids[i] & LoanFar) ? !far : !near)
+            continue;
+        uint32_t id = loanOf(set->ids[i]);
+        if (loans[id].kind == LoanCaller || loanIsLocal(id))
+            return id;
+    }
+    return 0;
+}
+
 void loanHeldBy(uint32_t var, PathSet *holds) {
     if (holds == &pathSetAll) {
         for (uint32_t i = 0; i < nsaturated; ++i) {
@@ -722,21 +750,46 @@ void loanApart(INode *node, uint32_t loan, VarDclNode *through, int how) {
     }
 }
 
-void loanNotGlobal(INode *node, uint32_t loan) {
+void loanNotGlobal(INode *node, uint32_t loan, Name *tparm) {
     if (mapGet(node, 0, 1))
         return;
     mapPut(node, 0, 1, 1);
     char srcname[128];
     char where[160];
+    char why[200];
     loanSourceName(&loans[loan].place, srcname, sizeof(srcname));
-    if (loans[loan].kind == LoanCaller)
-        errorMsgNode(node, ErrorCallEscape,
-            "This parameter's lifetime is ''static', so what is handed to it must be global, but it carries the borrow the caller lent through '%s'.",
-            &loanParm(loan)->namesym->namestr);
+    if (tparm)
+        snprintf(why, sizeof(why), "The type parameter %s is bounded by ''static' ('%s + 'static'), so what is handed in for it must hold only global borrows, but it carries",
+            &tparm->namestr, &tparm->namestr);
     else
-        errorMsgNode(node, ErrorCallEscape,
-            "This parameter's lifetime is ''static', so what is handed to it must be global, but it carries a borrow of '%s' (made %s).",
-            srcname, loanWhere(&loans[loan], where, sizeof(where)));
+        snprintf(why, sizeof(why), "This parameter's lifetime is ''static', so what is handed to it must be global, but it carries");
+    if (loans[loan].kind == LoanCaller)
+        errorMsgNode(node, tparm ? ErrorLifetimeBound : ErrorCallEscape,
+            "%s the borrow the caller lent through '%s'.",
+            why, &loanParm(loan)->namesym->namestr);
+    else
+        errorMsgNode(node, tparm ? ErrorLifetimeBound : ErrorCallEscape,
+            "%s a borrow of '%s' (made %s).",
+            why, srcname, loanWhere(&loans[loan], where, sizeof(where)));
+}
+
+void loanNotBound(INode *node, uint32_t loan, Name *bound) {
+    if (mapGet(node, 0, 1))
+        return;
+    mapPut(node, 0, 1, 1);
+    char srcname[128];
+    char where[160];
+    if (loans[loan].kind == LoanCaller) {
+        char lent[160];
+        errorMsgNode(node, ErrorLifetimeBound,
+            "A virtual reference bounded by '%s' points at a value whose borrows all last '%s', but this one holds the borrow the caller lent through %s, whose lifetime is not ordered at least as long by a 'where' clause or by what the signature's types imply.",
+            &bound->namestr, &bound->namestr, loanLentThrough(loan, lent, sizeof(lent)));
+        return;
+    }
+    loanSourceName(&loans[loan].place, srcname, sizeof(srcname));
+    errorMsgNode(node, ErrorLifetimeBound,
+        "A virtual reference bounded by '%s' points at a value whose borrows all last '%s', but this one holds a borrow of '%s' (made %s), which belongs to this function.",
+        &bound->namestr, &bound->namestr, srcname, loanWhere(&loans[loan], where, sizeof(where)));
 }
 
 // A use of a holder is a node naming it, or, where its value dies with a
