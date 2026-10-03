@@ -28,7 +28,9 @@
 //
 // Borrowed references, for now: a collection lends out borrows only for brief
 // reading. 'list[i]' and 'dict[key]' give a '&' to one element, and 'view()'
-// a slice of the whole, to read at once and let go of. Nothing here stores a
+// a slice of the whole, to read at once and let go of; '&mut list[i]' and
+// 'viewMut()' lend the same for changing in place, and while one is used the
+// collection may not be touched any other way. Nothing here stores a
 // borrow, and nothing a collection returns should be kept across a change to
 // it: a push can move the whole block. The compiler catches that for a
 // collection held in a local -- while 'imm e = list[0usize]' is still used,
@@ -181,6 +183,12 @@ pub struct List[T] is ShapeChanging, Sendable {
   // A slice of every value it holds, for reading them now
   pub fn view(self &) &[]T { mem.sliceFromParts(ptr, used); }
 
+  // A mutable slice of every value it holds, for changing them in place:
+  // what a function that fills a slice writes into. The list stays borrowed
+  // mutably while the slice is used, so nothing else may read or change it
+  // until the slice's last use
+  pub fn viewMut(self &mut) &[]mut T { mem.sliceFromPartsMut(ptr, used); }
+
   // Put its values in order: 'order(a, b)' is negative when a goes before b,
   // positive when after, and 0 when either may go first, as 'compare' and
   // 'bytesCompare' answer. The sort is stable: values that order calls equal
@@ -292,6 +300,9 @@ pub struct String is ShapeChanging {
 
   // Its bytes, for reading them now
   pub fn view(self &) &[]u8 { bytes.view(); }
+
+  // Its bytes, for changing them in place (nothing checks they stay UTF-8)
+  pub fn viewMut(self &mut) &[]mut u8 { bytes.viewMut(); }
 
   // The byte at index
   pub fn `[]`(self &, index usize) u8 { *bytes[index]; }
