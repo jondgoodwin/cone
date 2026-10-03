@@ -312,6 +312,52 @@ contains = [
   "@pair = internal thread_local global %Pair { i64 3, i64 4 }, comdat",
 ]
 
+# '<<' and '>>' past the width [Jon 3 Oct 2026]: 0, or the sign for a signed
+# '>>', the same in every build. Every amount comes from C compiled apart
+# (opaque.c), which the optimizer cannot see into, so the release run shifts
+# as it runs rather than folding; the two runs share one .out because a shift
+# past the width once printed one value in a debug build and another in a
+# release one.
+[scenario.core_shift_defined]
+category = "run"
+description = "'<<' and '>>' on every integer type by 0, 1, width - 1, width, width + 1, 255, 1000 and all ones (negative for a signed type), the assignment forms, a masked amount and a constant amount past the width: 0, or the sign for a signed '>>', in a release and a debug build alike"
+tags = ["typecheck", "genllvm", "runtime"]
+link = ["opaque.c"]
+
+[[scenario.core_shift_defined.run]]
+name = "release"
+options = []
+
+[[scenario.core_shift_defined.run]]
+name = "debug"
+options = ["--debug"]
+
+# Optimized, the amounts are still unknown: each shift's compare with the
+# width survives, so the release run tests the run-time path
+[[scenario.core_shift_defined.check]]
+name = "the-amount-is-compared-as-the-program-runs"
+target = "llvmir"
+contains = ["icmp ult i8", "icmp ult i16", "icmp ult i32", "icmp ult i64", "call i64 @opaque("]
+
+# Where the amount is known to be below the width, the defined shift costs
+# nothing: a masked amount's compare is gone once optimized, and a constant
+# amount gets none from generation; one past the width is the answer itself
+[scenario.core_genllvm_shift]
+category = "compile"
+description = "A shift by an amount masked below the width keeps no compare once optimized, one by a constant amount is written with none, and one by a constant past the width is 0, or the sign for a signed '>>'"
+tags = ["genllvm"]
+
+[[scenario.core_genllvm_shift.check]]
+name = "a-masked-amount-needs-no-compare"
+target = "llvmir"
+contains = ["and i64 %1, 63", "lshr i64 %0, %2", "shl i32 %0, %2", "ashr i16 %0, %2"]
+excludes = ["icmp", "select"]
+
+[[scenario.core_genllvm_shift.check]]
+name = "a-constant-amount-is-written-without-one"
+target = "preir"
+contains = ["shl i64 %x1, 3", "ashr i8 %x1, 7", "ret i64 0", "ashr i32 %x1, 31"]
+
 # -------- warnings --------
 
 [scenario.core_warn_loops]

@@ -471,7 +471,9 @@ leaves an out-of-range literal) so nothing folded from it reports again:
   an unsigned literal;
 - `ErrorConstDivZero`: a division or remainder by zero, integer or float;
 - `ErrorConstShift`: a shift by the width or more, or by a negative amount of a
-  signed type, which LLVM makes poison.
+  signed type. The one refusal here of something the run time gives a value: a
+  run-time shift that far is 0, or the sign for `>>` on a signed type
+  ([Generation](../phases/generation.md), `genlShift`).
 
 **A constant defined in terms of itself.** A use of a named constant is checked
 (`litConstUnsettled`): a chain of constants reaching one still under type check

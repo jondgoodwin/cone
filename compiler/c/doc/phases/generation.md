@@ -897,6 +897,18 @@ Concrete hazards, each of which has been gotten wrong here before:
   into the LLVM-type switch. An atomic one is taken before either, in
   `genlFnCall`, by `genlAtomicIntrinsic`, since its orderings are the call's
   arguments rather than its instance's.
+- **A shift is a compare and a select, never a bare LLVM shift.** Cone's `<<`
+  and `>>` are defined for every amount: the width or more gives 0, or the sign
+  for `>>` on a signed integer, the amount read unsigned so a negative one is
+  past the width too (`doc/reference/refexpr.html`, "Shift operators"). LLVM's
+  `shl`, `lshr` and `ashr` by the width or more are poison, so `genlShift`
+  compares a run-time amount with the width and uses the shift's result only
+  below it (a signed `>>` instead clamps its amount to width - 1), and writes no
+  compare for a constant amount. The optimizer removes the compare where it can
+  prove the amount below the width (`n & 63`, `core_genllvm_shift`). An LLVM
+  shift written for a Cone shift anywhere else brings the poison back; the
+  masked shifts, whose amount is masked first, are the one other place one is
+  written (`genlBitIntrinsic`).
 - **`genlRecast` picks by generated LLVM kinds, not Cone tags** — deliberately,
   because a reference is not always a plain pointer once fat pointers are in
   play.
@@ -1177,6 +1189,8 @@ variables.
 | | `genlAddrType` | the Cone type of what `genlAddr`'s address points at |
 | | `genlFnCallInternal` | indirect calls, virtual dispatch, generator-level inlining, the intrinsic switch |
 | | `genlDeclaredIntrinsic` | the LLVM implementation of each intrinsic declared in core, by kind and Cone type |
+| | `genlBitIntrinsic` | an integer's bit intrinsics and the integer methods built from them: counts, rotates, masked shifts |
+| | `genlShift` | `<<` and `>>` on an integer, defined past the width: a compare and a select, none for a constant amount |
 | | `genlAtomicIntrinsic` | an atomic intrinsic, reached from `genlFnCall` with the call's constant orderings |
 | | `genlConvert`, `genlRecast`, `genlIsType` | the three cast forms |
 | | `genlArrayIndex`, `genlBoundsCheck` | multi-dimensional GEP and its checks |

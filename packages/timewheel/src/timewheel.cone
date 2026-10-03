@@ -156,8 +156,8 @@
 // place in it. What one call of expired fires is gathered in a block the
 // wheel keeps, put in deadline order (one pass when it already is, which is
 // usual; insertion sort of runs of 16, then merging, when not), and copied
-// to out. The lowest set bit of a word is found by de Bruijn multiplication
-// and a 64-entry table, since Cone has no count-trailing-zeros. The Wheel is
+// to out. A word's lowest and highest set bits are found by its
+// trailingZeros and leadingZeros, an instruction each. The Wheel is
 // Sendable on trust, as a List is: it holds raw pointers only to blocks it
 // owns, so it may be made on one thread and handed to the loop's.
 
@@ -206,29 +206,19 @@ pub fn tick() Duration { Duration.fromNanos(tickNanos); }
 // Bits
 // ---------------------------------------------------------------------------
 
-// The table for the de Bruijn sequence 0x03f79d71b4ca8b09: the index of a
-// word's lowest set bit, from the top six bits of that bit times the sequence
-imm deBruijn Array[u8, 64] = [
-  0u8, 1u8, 56u8, 2u8, 57u8, 49u8, 28u8, 3u8, 61u8, 58u8, 42u8, 50u8, 38u8, 29u8, 17u8, 4u8,
-  62u8, 47u8, 59u8, 36u8, 45u8, 43u8, 51u8, 22u8, 53u8, 39u8, 33u8, 30u8, 24u8, 18u8, 12u8, 5u8,
-  63u8, 55u8, 48u8, 27u8, 60u8, 41u8, 37u8, 16u8, 46u8, 35u8, 44u8, 21u8, 52u8, 32u8, 23u8, 11u8,
-  54u8, 26u8, 40u8, 15u8, 34u8, 20u8, 31u8, 10u8, 25u8, 14u8, 19u8, 9u8, 13u8, 8u8, 7u8, 6u8];
-
 // The index of x's lowest set bit; x is not 0
 fn lowestBit(x u64) u64 {
-  imm low = x & (0u64 - x);
-  u64.from(deBruijn[usize.from((low * 0x03f79d71b4ca8b09u64) >> 58u64)]);
+  u64.from(x.trailingZeros());
 }
 
 // The level a timer firing at tick 'when' goes in, when the wheel has
 // reached tick 'elapsed': the level of the highest 6-bit digit in which the
-// two differ, and the top level for anything a whole span or more away
+// two differ, and the top level for anything a whole span or more away.
+// masked is never 0, so its highest set bit is 63 less its leading zeros
 fn levelFor(elapsed u64, when u64) u64 {
   mut masked = (elapsed ^ when) | slotMask;
   if masked >= span { masked = span - 1u64; }
-  mut lvl = 0u64;
-  while (masked >> (slotBits * (lvl + 1u64))) != 0u64 { lvl = lvl + 1u64; }
-  lvl;
+  u64.from(63u32 - masked.leadingZeros()) / slotBits;
 }
 
 // ---------------------------------------------------------------------------
@@ -666,8 +656,9 @@ pub struct Wheel is Sendable {
     imm slotRange = 1u64 << shift;
     imm levelRange = slotRange << slotBits;
     imm levelStart = elapsed & ~(levelRange - 1u64);
-    // The slots after now's, in this turn of the level
-    imm ahead = if nowSlot == slotMask {0u64;} else {bits >> (nowSlot + 1u64);};
+    // The slots after now's, in this turn of the level: none after the last
+    // slot, where the shift is by 64
+    imm ahead = bits >> (nowSlot + 1u64);
     if ahead != 0u64 {
       return levelStart + (nowSlot + 1u64 + lowestBit(ahead)) * slotRange;
     }

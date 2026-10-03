@@ -120,7 +120,19 @@ enum IntrinsicFn {
     IsMacOSIntrinsic,       // isMacOS() Bool
     IsWasmIntrinsic,        // isWasm() Bool
     IsDefinedIntrinsic,     // isDefined(name &[]u8) Bool
-    DefinedIntIntrinsic     // definedInt(name &[]u8) i64
+    DefinedIntIntrinsic,    // definedInt(name &[]u8) i64
+    // An integer's bits. Each is also a method of every integer type
+    // (corenumber.c), its node carrying that type as its typearg, which is how
+    // 'x.leadingZeros()' reaches the same registry entry 'mem.leadingZeros(x)'
+    // does. A count of the bits of 0 is defined: the width
+    CountOnesIntrinsic,     // countOnes[T](x T) u32
+    LeadingZerosIntrinsic,  // leadingZeros[T](x T) u32
+    TrailingZerosIntrinsic, // trailingZeros[T](x T) u32
+    // The amount taken modulo the width
+    RotateLeftIntrinsic,    // rotateLeft[T](x T, n u32) T
+    RotateRightIntrinsic,   // rotateRight[T](x T, n u32) T
+    ShlMaskedIntrinsic,     // shlMasked[T](x T, n u32) T
+    ShrMaskedIntrinsic      // shrMasked[T](x T, n u32) T: arithmetic for a signed T
 };
 
 // A MemOrder, core's enum of the orderings an atomic operation promises, in the
