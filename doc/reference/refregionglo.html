@@ -13,10 +13,15 @@
 
     <div class="text">
 
-	<p style="margin-left: 40px;"><i>Note: Only the single-owner (So) and reference-counting (Rc) strategies
-		exist, in the core package, with Rc's multi-threaded variant, Arc, in the <span class="pre">sync</span> package (below), and reference counting with weak references as the
+	<p style="margin-left: 40px;"><i>Note: The single-owner (So) and reference-counting (Rc) strategies
+		are in the core package, with Rc's multi-threaded variant, Arc, in the <span class="pre">sync</span> package (below), and reference counting with weak references as the
 		<span class="pre">rcweak</span> package's <span class="pre">Rcw</span>, whose weak reference is made with
-		<span class="pre">Weak[T].of(owner)</span>, not <span class="pre">.weak</span>; tracing GC is not built. An arena is built only as a value of
+		<span class="pre">Weak[T].of(owner)</span>, not <span class="pre">.weak</span>. Tracing GC is the
+		<span class="pre">collector</span> package's <span class="pre">Gc</span>
+		(<span class="pre">import collector;</span> then <span class="pre">new Gc[mut, T](...)</span>): an
+		incremental collector, run a step at a time inside allocation, whole on
+		<span class="pre">Gc.collect()</span>, or generationally, and single threaded
+		(see <a href="refalloccust.html">custom allocators</a>). An arena is built only as a value of
 		the <span class="pre">arena</span> package: <span class="pre">mut a = Arena.empty()</span>, allocated into with
 		<span class="pre">a.alloc(value)</span>, which returns a borrowed
 		<span class="pre">&amp;mut</span> reference, not with <span class="pre">new</span>. When the
@@ -43,12 +48,13 @@
 		<span class="pre">Some</span> borrow of the value, or <span class="pre">None</span> once
 		<span class="pre">p.remove(r)</span> has finalized it, even after another value takes its slot;
 		<span class="pre">p[r]</span> and <span class="pre">&amp;mut p[r]</span> borrow it, ending the program if
-		it has been removed. A borrow from <span class="pre">p[r]</span> or <span class="pre">&amp;mut p[r]</span>
+		it has been removed. A borrow from <span class="pre">p[r]</span> or <span class="pre">&amp;mut p[r]</span>,
+		or the Option <span class="pre">p.get(r)</span> or <span class="pre">p.getMut(r)</span> returns,
 		held in a local keeps a local pool from being changed (a <span class="pre">remove</span>, or an
-		<span class="pre">add</span>, which may move every value), moved or ended while it is used. The
-		borrow in <span class="pre">get</span>'s Option is not yet checked against the pool at all, nor is a
-		borrow of a pool reached through a shared path (a <span class="pre">&amp;mut Pool</span> parameter),
-		and a <span class="pre">Ref</span> is not yet paired with its own pool: used with another
+		<span class="pre">add</span>, which may move every value), moved or ended while it is used, and
+		none may be returned or stored where it would outlive the pool. A
+		borrow of a pool reached through a shared path (a <span class="pre">&amp;mut Pool</span> parameter)
+		is not yet checked, and a <span class="pre">Ref</span> is not yet paired with its own pool: used with another
 		pool of the same type, it is checked there and cannot reach outside that pool's memory.
 		A region is written as a struct
 		declaring <span class="pre">is RegionRef</span>, not with a <span class="pre">region</span> declaration:
@@ -62,8 +68,8 @@
 		a value, the value is finalized first: its <span class="pre">final</span>, then its fields, then
 		<span class="pre">free</span>. A region ref declaring neither <span class="pre">aliasRef</span> nor
 		<span class="pre">Move</span> shares its references freely, and with no <span class="pre">dealiasRef</span>
-		either, an owner going away does nothing and the compiler never frees the value: the shape a tracing
-		GC or an arena region ref will have, whose collection is not built. How a value is allocated in a dynamic region such as a pool is an open design question: <span class="pre">&amp;eventPool mut ...</span> below shows the idea, not a spelling the compiler reads. An enum's variant is constructed with its values in square brackets, as written here: that is the current spelling, and how a variant is constructed is an open design question (<a href="refenum.html#init">Enums</a>).</i></p>
+		either, an owner going away does nothing and the compiler never frees the value: the shape of
+		<span class="pre">Gc</span>, whose collector frees a value once nothing reaches it. How a value is allocated in a dynamic region such as a pool is an open design question: <span class="pre">&amp;eventPool mut ...</span> below shows the idea, not a spelling the compiler reads. An enum's variant is constructed with its values in square brackets, as written here: that is the current spelling, and how a variant is constructed is an open design question (<a href="refenum.html#init">Enums</a>).</i></p>
 	
 	<p>To allocate a new value, we ask a region to get it done:</p>
 <pre>
