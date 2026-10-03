@@ -1647,17 +1647,21 @@ class Debuggee:
     exception's own code, which is the exit status Windows would have given
     it: 0xC0000409 for a panic. Everything else is passed on as no debugger
     would have seen it: first-chance exceptions to the program's handlers,
-    the loader's breakpoint aside. And the program gets the heap it would
-    have had: started under a debugger, Windows gives a process its checking
-    debug heap unless _NO_DEBUG_HEAP is set, which turned a scenario that
-    passes into one ended by STATUS_HEAP_CORRUPTION (region_success).
+    the loader's breakpoint aside.
+
+    Started under a debugger, a process gets Windows' checking debug heap,
+    which stops it with STATUS_HEAP_CORRUPTION (0xC0000374) at a block
+    written past its end, freed twice or used once freed, where the normal
+    heap carries on: a miscompiled count or release is caught where it
+    happens. The runner keeps it, removing _NO_DEBUG_HEAP should the
+    environment set it; it costs the suite one or two seconds in twelve.
 
     The thread that started the process is the one that must wait for its
     debug events, which 'pump' does; until it does, the program is stopped.
     """
 
     DEBUG_ONLY_THIS_PROCESS = 0x2
-    ENVIRONMENT = {"_NO_DEBUG_HEAP": "1"}
+    WITHOUT = ("_NO_DEBUG_HEAP",)
     EXCEPTION_DEBUG_EVENT, CREATE_PROCESS_DEBUG_EVENT = 1, 3
     EXIT_PROCESS_DEBUG_EVENT, LOAD_DLL_DEBUG_EVENT = 5, 6
     DBG_CONTINUE, DBG_EXCEPTION_NOT_HANDLED = 0x00010002, 0x80010001
@@ -1752,7 +1756,8 @@ def execute(cmd: list[str], cwd: Path, out_dir: Path, stem: str,
     killed = None
     debuggee = debuggee and IS_WINDOWS
     if debuggee:
-        env = dict(os.environ if env is None else env, **Debuggee.ENVIRONMENT)
+        env = {k: v for k, v in (os.environ if env is None else env).items()
+               if k.upper() not in Debuggee.WITHOUT}
     with out_path.open("wb") as out, err_path.open("wb") as err:
         process = subprocess.Popen(
             cmd, cwd=str(cwd), stdin=subprocess.DEVNULL,
