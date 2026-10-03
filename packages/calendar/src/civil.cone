@@ -1,0 +1,361 @@
+// ======== The civil calendar: Date, TimeOfDay, DateTime and Weekday ========
+//
+// Pure arithmetic, no OS: the proleptic Gregorian calendar (its leap-year
+// rule run back before 1582 and on past 9999), years counted astronomically
+// (year 0 is 1 BC, -1 is 2 BC), every day 86400 seconds. A Date converts to
+// and from a count of days since 1970-01-01, the day Unix time starts on,
+// by Howard Hinnant's algorithms 'days_from_civil' and 'civil_from_days'
+// ("chrono-Compatible Low-Level Date Algorithms",
+// https://howardhinnant.github.io/date_algorithms.html), which shift the year
+// to start in March, so the leap day falls last, and count in 400-year eras
+// of 146097 days, so they are exact for every year, before 1970 too, with
+// no table and no loop.
+
+const nsPerDay = 86400000000000i64;
+const daysPerEra = 146097i64;
+// 1970-01-01 counted from 0000-03-01, the start of Hinnant's era 0
+const epochShift = 719468i64;
+
+// Division and remainder rounded toward negative infinity, as the calendar
+// needs them: day -1 is in the week, the era and the day before 0's
+fn floorDiv(a i64, b i64) i64 {
+  imm q = a / b;
+  if a % b != 0i64 and (a < 0i64) != (b < 0i64) {q - 1i64;} else {q;};
+}
+
+fn floorMod(a i64, b i64) i64 { a - floorDiv(a, b) * b; }
+
+// Whether year is a leap year of the Gregorian calendar: divisible by 4,
+// and not by 100 unless by 400 (2000 is, 1900 and 2100 are not)
+pub fn isLeapYear(year i64) Bool {
+  year % 4i64 == 0i64 and (year % 100i64 != 0i64 or year % 400i64 == 0i64);
+}
+
+// How many days month (1 to 12) of year has; 0 for a month not 1 to 12
+pub fn daysInMonth(year i64, month i64) i64 {
+  if month == 2i64 {
+    if isLeapYear(year) {29i64;} else {28i64;};
+  }
+  elif month == 4i64 or month == 6i64 or month == 9i64 or month == 11i64 {30i64;}
+  elif month >= 1i64 and month <= 12i64 {31i64;}
+  else {0i64;};
+}
+
+// Hinnant's days_from_civil: the days from 1970-01-01 to the date, negative
+// before it
+fn daysFromCivil(year i64, month i64, day i64) i64 {
+  imm y = if month <= 2i64 {year - 1i64;} else {year;};
+  imm era = floorDiv(y, 400i64);
+  imm yoe = y - era * 400i64;                                      // [0, 399]
+  imm mp = if month > 2i64 {month - 3i64;} else {month + 9i64;};    // March is 0
+  imm doy = (153i64 * mp + 2i64) / 5i64 + day - 1i64;               // [0, 365]
+  imm doe = yoe * 365i64 + yoe / 4i64 - yoe / 100i64 + doy;         // [0, 146096]
+  era * daysPerEra + doe - epochShift;
+}
+
+// Hinnant's civil_from_days: the date days after 1970-01-01. A year past
+// i32's range wraps, as the time package's overflow does
+fn civilFromDays(days i64) Date {
+  imm z = days + epochShift;
+  imm era = floorDiv(z, daysPerEra);
+  imm doe = z - era * daysPerEra;                                   // [0, 146096]
+  imm yoe = (doe - doe / 1460i64 + doe / 36524i64 - doe / 146096i64) / 365i64;  // [0, 399]
+  imm doy = doe - (365i64 * yoe + yoe / 4i64 - yoe / 100i64);       // [0, 365]
+  imm mp = (5i64 * doy + 2i64) / 153i64;                            // [0, 11]
+  imm day = doy - (153i64 * mp + 2i64) / 5i64 + 1i64;               // [1, 31]
+  imm month = if mp < 10i64 {mp + 3i64;} else {mp - 9i64;};          // [1, 12]
+  imm year = yoe + era * 400i64 + (if month <= 2i64 {1i64;} else {0i64;});
+  new Date(i32.from(year), i8.from(month), i8.from(day));
+}
+
+// The day of the week, Monday first, of a day counted from 1970-01-01, a
+// Thursday: 0 is Monday, 6 Sunday
+fn weekdayIndex(days i64) i64 { floorMod(days + 3i64, 7i64); }
+
+// ---------------------------------------------------------------------------
+// Weekday
+// ---------------------------------------------------------------------------
+
+// A day of the week. ISO 8601's week starts on Monday
+pub enum Weekday {
+  Monday, Tuesday, Wednesday, Thursday, Friday, Saturday, Sunday;
+}
+
+fn weekdayFromIndex(i i64) Weekday {
+  if i == 0i64 {Weekday.Monday[];}
+  elif i == 1i64 {Weekday.Tuesday[];}
+  elif i == 2i64 {Weekday.Wednesday[];}
+  elif i == 3i64 {Weekday.Thursday[];}
+  elif i == 4i64 {Weekday.Friday[];}
+  elif i == 5i64 {Weekday.Saturday[];}
+  else {Weekday.Sunday[];};
+}
+
+// A day's English name, Monday first; its first three letters are its
+// abbreviation
+fn dayName(i i64) &[]u8 {
+  if i == 0i64 {"Monday";}
+  elif i == 1i64 {"Tuesday";}
+  elif i == 2i64 {"Wednesday";}
+  elif i == 3i64 {"Thursday";}
+  elif i == 4i64 {"Friday";}
+  elif i == 5i64 {"Saturday";}
+  else {"Sunday";};
+}
+
+// ---------------------------------------------------------------------------
+// Date
+// ---------------------------------------------------------------------------
+
+// A day of the proleptic Gregorian calendar: a year, a month (1 to 12) and a
+// day of the month. Only a date that exists is ever made
+pub struct Date {
+  y i32 = 1970i32;
+  m i8 = 1i8;
+  d i8 = 1i8;
+
+  // The date, or None when there is no such date: a month not 1 to 12, a day
+  // not in the month (30 February, 29 February of a common year), a year
+  // outside i32's range
+  pub fn fromYmd(year i64, month i64, day i64) Option[Date] {
+    if year < -2147483648i64 or year > 2147483647i64 or month < 1i64 or month > 12i64
+      or day < 1i64 or day > calendar.daysInMonth(year, month) {
+      return None[Date][];
+    }
+    Some[Date][new Date(i32.from(year), i8.from(month), i8.from(day))];
+  }
+
+  // The date n days after 1970-01-01 (before it when n is negative)
+  pub fn fromUnixDays(n i64) Date { civilFromDays(n); }
+
+  pub fn year(self) i32 {y;}
+  pub fn month(self) i8 {m;}
+  pub fn day(self) i8 {d;}
+
+  // The days from 1970-01-01 to this date, negative before it
+  pub fn unixDays(self) i64 { daysFromCivil(i64.from(y), i64.from(m), i64.from(d)); }
+
+  pub fn weekday(self) Weekday { weekdayFromIndex(weekdayIndex(self.unixDays())); }
+  // ISO 8601's number for the day of the week: 1 is Monday, 7 Sunday
+  pub fn isoWeekday(self) i8 { i8.from(weekdayIndex(self.unixDays()) + 1i64); }
+  // The day of the year, 1 to 365, or 366 in a leap year
+  pub fn dayOfYear(self) i16 {
+    i16.from(self.unixDays() - daysFromCivil(i64.from(y), 1i64, 1i64) + 1i64);
+  }
+  pub fn isLeapYear(self) Bool { calendar.isLeapYear(i64.from(y)); }
+  pub fn daysInMonth(self) i8 { i8.from(calendar.daysInMonth(i64.from(y), i64.from(m))); }
+  pub fn daysInYear(self) i16 { if calendar.isLeapYear(i64.from(y)) {366i16;} else {365i16;}; }
+
+  // The date n days later, or earlier when n is negative
+  pub fn addDays(self, n i64) Date { civilFromDays(self.unixDays() + n); }
+  // The date n days earlier
+  pub fn subDays(self, n i64) Date { civilFromDays(self.unixDays() - n); }
+  // The days from o to this date: negative when o is later
+  pub fn daysSince(self, o Date) i64 { self.unixDays() - o.unixDays(); }
+
+  pub fn eq overload `==`(self, o Date) Bool {y == o.y and m == o.m and d == o.d;}
+  pub fn lt overload `<`(self, o Date) Bool {dateCompare(self, o) < 0i32;}
+  pub fn le overload `<=`(self, o Date) Bool {dateCompare(self, o) <= 0i32;}
+  pub fn gt overload `>`(self, o Date) Bool {dateCompare(self, o) > 0i32;}
+  pub fn ge overload `>=`(self, o Date) Bool {dateCompare(self, o) >= 0i32;}
+
+  // RFC 3339's full-date, '2026-10-03'; a year outside 0000 to 9999 in ISO
+  // 8601's expanded form, '+012026-10-03', '-000044-03-15'
+  pub fn rfc3339(self) String {
+    mut out = String.withCapacity(16usize);
+    appendDate(&mut out, self);
+    out;
+  }
+
+  // A full-date, '2026-10-03', and nothing else: the Date, or why not
+  pub fn parseRfc3339(text &[]u8) Result[Date, TimeError] {
+    mut s = newScan();
+    imm date = scanDate(text, &mut s);
+    scanEnd(text, &mut s, "the date");
+    if s.failed { return Error[Date, TimeError][scanError(&mut s)]; }
+    Ok[Date, TimeError][date];
+  }
+}
+
+// Earlier is less: -1, 0 or 1
+fn dateCompare(a Date, b Date) i32 {
+  if a.y != b.y { return if a.y < b.y {-1i32;} else {1i32;}; }
+  if a.m != b.m { return if a.m < b.m {-1i32;} else {1i32;}; }
+  if a.d != b.d { return if a.d < b.d {-1i32;} else {1i32;}; }
+  0i32;
+}
+
+// ---------------------------------------------------------------------------
+// TimeOfDay
+// ---------------------------------------------------------------------------
+
+// A time on a day's clock: an hour (0 to 23), a minute and a second (0 to 59)
+// and a nanosecond (0 to 999999999). No leap second: a minute has 60 seconds,
+// as a Timestamp's has
+pub struct TimeOfDay {
+  h i8 = 0i8;
+  mi i8 = 0i8;
+  s i8 = 0i8;
+  ns i32 = 0i32;
+
+  // The time, or None when a part is out of its range
+  pub fn fromHms(hour i64, minute i64, second i64, nanos i64 = 0i64) Option[TimeOfDay] {
+    if hour < 0i64 or hour > 23i64 or minute < 0i64 or minute > 59i64 or second < 0i64 or second > 59i64
+      or nanos < 0i64 or nanos > 999999999i64 {
+      return None[TimeOfDay][];
+    }
+    Some[TimeOfDay][new TimeOfDay(i8.from(hour), i8.from(minute), i8.from(second), i32.from(nanos))];
+  }
+
+  pub fn hour(self) i8 {h;}
+  pub fn minute(self) i8 {mi;}
+  pub fn second(self) i8 {s;}
+  pub fn nanosecond(self) i32 {ns;}
+
+  // The time since midnight
+  pub fn sinceMidnight(self) Duration { Duration.fromNanos(todNanos(self)); }
+
+  pub fn eq overload `==`(self, o TimeOfDay) Bool {todNanos(self) == todNanos(o);}
+  pub fn lt overload `<`(self, o TimeOfDay) Bool {todNanos(self) < todNanos(o);}
+  pub fn le overload `<=`(self, o TimeOfDay) Bool {todNanos(self) <= todNanos(o);}
+  pub fn gt overload `>`(self, o TimeOfDay) Bool {todNanos(self) > todNanos(o);}
+  pub fn ge overload `>=`(self, o TimeOfDay) Bool {todNanos(self) >= todNanos(o);}
+
+  // RFC 3339's partial-time, '14:05:09', with a fraction of a second only
+  // when there is one, in as few digits as hold it exactly: '14:05:09.5',
+  // '14:05:09.000000001'
+  pub fn rfc3339(self) String {
+    mut out = String.withCapacity(20usize);
+    appendTime(&mut out, self);
+    out;
+  }
+
+  // A partial-time, '14:05:09' or '14:05:09.25', and nothing else
+  pub fn parseRfc3339(text &[]u8) Result[TimeOfDay, TimeError] {
+    mut s = newScan();
+    imm tod = scanTime(text, &mut s, true);
+    scanEnd(text, &mut s, "the time");
+    if s.failed { return Error[TimeOfDay, TimeError][scanError(&mut s)]; }
+    Ok[TimeOfDay, TimeError][tod];
+  }
+}
+
+// Nanoseconds since midnight
+fn todNanos(t TimeOfDay) i64 {
+  ((i64.from(t.h) * 60i64 + i64.from(t.mi)) * 60i64 + i64.from(t.s)) * nsPerSecond + i64.from(t.ns);
+}
+
+// The time n nanoseconds after midnight, n in [0, nsPerDay)
+fn todFromNanos(n i64) TimeOfDay {
+  imm secs = n / nsPerSecond;
+  new TimeOfDay(i8.from(secs / 3600i64), i8.from(secs / 60i64 % 60i64), i8.from(secs % 60i64),
+    i32.from(n % nsPerSecond));
+}
+
+// ---------------------------------------------------------------------------
+// DateTime
+// ---------------------------------------------------------------------------
+
+// A Date and a TimeOfDay together, in UTC: the calendar's reading of a
+// Timestamp, over any year a Date holds
+pub struct DateTime {
+  ymd Date = new Date();
+  hms TimeOfDay = new TimeOfDay();
+
+  pub fn fromParts(date Date, tod TimeOfDay) DateTime { new DateTime(date, tod); }
+
+  // The date and time, or None when either does not exist
+  pub fn fromYmdHms(year i64, month i64, day i64, hour i64, minute i64, second i64, nanos i64 = 0i64) Option[DateTime] {
+    if year < -2147483648i64 or year > 2147483647i64 or month < 1i64 or month > 12i64
+      or day < 1i64 or day > daysInMonth(year, month)
+      or hour < 0i64 or hour > 23i64 or minute < 0i64 or minute > 59i64 or second < 0i64 or second > 59i64
+      or nanos < 0i64 or nanos > 999999999i64 {
+      return None[DateTime][];
+    }
+    Some[DateTime][new DateTime(new Date(i32.from(year), i8.from(month), i8.from(day)),
+      new TimeOfDay(i8.from(hour), i8.from(minute), i8.from(second), i32.from(nanos)))];
+  }
+
+  // The calendar's reading of a Timestamp. Every Timestamp has one
+  pub fn fromTimestamp(t Timestamp) DateTime {
+    imm days = floorDiv(t.unixNanos(), nsPerDay);
+    new DateTime(civilFromDays(days), todFromNanos(t.unixNanos() - days * nsPerDay));
+  }
+
+  // The Timestamp of this moment, or None when it is outside a Timestamp's
+  // range
+  pub fn toTimestamp(self) Option[Timestamp] { timestampOf(self); }
+
+  pub fn date(self) Date {ymd;}
+  pub fn time(self) TimeOfDay {hms;}
+
+  // A Duration later or earlier, carried across days, months and years
+  pub fn later overload `+`(self, d Duration) DateTime { dateTimeAdd(self, d.nanos()); }
+  pub fn earlier overload `-`(self, d Duration) DateTime { dateTimeAdd(self, 0i64 - d.nanos()); }
+  // The Duration from o to this one, which wraps past 292 years, as a
+  // Duration's arithmetic does
+  pub fn since overload `-`(self, o DateTime) Duration {
+    Duration.fromNanos((ymd.unixDays() - o.ymd.unixDays()) * nsPerDay + todNanos(hms) - todNanos(o.hms));
+  }
+
+  pub fn eq overload `==`(self, o DateTime) Bool {ymd == o.ymd and hms == o.hms;}
+  pub fn lt overload `<`(self, o DateTime) Bool {dateTimeCompare(self, o) < 0i32;}
+  pub fn le overload `<=`(self, o DateTime) Bool {dateTimeCompare(self, o) <= 0i32;}
+  pub fn gt overload `>`(self, o DateTime) Bool {dateTimeCompare(self, o) > 0i32;}
+  pub fn ge overload `>=`(self, o DateTime) Bool {dateTimeCompare(self, o) >= 0i32;}
+
+  // RFC 3339 in UTC, '2026-10-03T14:05:09Z', the fraction as TimeOfDay's;
+  // a year outside 0000 to 9999 in ISO 8601's expanded form
+  pub fn rfc3339(self) String {
+    mut out = String.withCapacity(32usize);
+    appendDate(&mut out, ymd);
+    out.appendByte('T');
+    appendTime(&mut out, hms);
+    out.appendByte('Z');
+    out;
+  }
+
+  // An RFC 3339 date-time, its offset 'Z' or '+hh:mm' or '-hh:mm', as UTC
+  pub fn parseRfc3339(text &[]u8) Result[DateTime, TimeError] {
+    mut s = newScan();
+    imm dt = scanDateTime(text, &mut s);
+    if s.failed { return Error[DateTime, TimeError][scanError(&mut s)]; }
+    Ok[DateTime, TimeError][dt];
+  }
+}
+
+fn dateTimeCompare(a DateTime, b DateTime) i32 {
+  imm c = dateCompare(a.ymd, b.ymd);
+  if c != 0i32 { return c; }
+  imm an = todNanos(a.hms);
+  imm bn = todNanos(b.hms);
+  if an < bn {-1i32;} elif an > bn {1i32;} else {0i32;};
+}
+
+// dt moved on by n nanoseconds, n split into whole days and the rest first so
+// that no sum can overflow
+fn dateTimeAdd(dt DateTime, n i64) DateTime {
+  imm days = floorDiv(n, nsPerDay);
+  imm tod = todNanos(dt.hms) + (n - days * nsPerDay);              // [0, 2 days)
+  imm carry = tod / nsPerDay;
+  new DateTime(civilFromDays(dt.ymd.unixDays() + days + carry), todFromNanos(tod - carry * nsPerDay));
+}
+
+// The Timestamp for dt, or None when it is outside a Timestamp's range, an
+// i64 of nanoseconds: 1677-09-21T00:12:43.145224192Z to
+// 2262-04-11T23:47:16.854775807Z
+fn timestampOf(dt DateTime) Option[Timestamp] {
+  imm days = dt.ymd.unixDays();
+  imm tod = todNanos(dt.hms);
+  if days < -106752i64 or days > 106751i64
+    or (days == -106752i64 and tod < 763145224192i64)
+    or (days == 106751i64 and tod > 85636854775807i64) {
+    return None[Timestamp][];
+  }
+  // Below the epoch, a day earlier and a day's nanoseconds more, so that
+  // the first day's product stays in range
+  if days < 0i64 {
+    return Some[Timestamp][Timestamp.fromUnixNanos((days + 1i64) * nsPerDay + (tod - nsPerDay))];
+  }
+  Some[Timestamp][Timestamp.fromUnixNanos(days * nsPerDay + tod)];
+}

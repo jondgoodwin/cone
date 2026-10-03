@@ -1,0 +1,581 @@
+// ======== Formats: RFC 3339 and HTTP's dates, written and read ========
+//
+// Each reader is strict: it takes the whole text and the format exactly, and
+// refuses anything else with the byte it stopped at and why, never reading a
+// malformed text as some other moment.
+
+// ---------------------------------------------------------------------------
+// Failure
+// ---------------------------------------------------------------------------
+
+// Why a text could not be read as a date or a time: the byte it went wrong
+// at, counted from 0, and what was wrong
+pub struct TimeError {
+  pub at usize;
+  pub reason String;
+
+  // One line for a person: 'at byte 5: the month is 13, outside 01 to 12'
+  pub fn message(self &) String {
+    mut out = String.from("at byte ");
+    out.appendUInt(u64.from(at));
+    out.append(": ");
+    out.append(reason.view());
+    out;
+  }
+}
+
+// Where reading has got to, and the first failure, if there has been one.
+// Its fields are public only so that the functions below can reach them
+struct Scan {
+  pub pos usize;
+  pub failed Bool;
+  pub at usize;
+  pub reason String;
+}
+
+fn newScan() Scan { new Scan(0usize, false, 0usize, String.empty()); }
+
+// The first failure is the one kept
+fn failAt(s &mut Scan, at usize, reason &[]u8) {
+  if s.failed { return; }
+  s.failed = true;
+  s.at = at;
+  s.reason = String.from(reason);
+}
+
+fn fail(s &mut Scan, reason &[]u8) { failAt(s, s.pos, reason); }
+
+fn scanError(s &mut Scan) TimeError {
+  mut reason = String.empty();
+  reason <=> s.reason;
+  new TimeError(s.at, reason);
+}
+
+fn isDigit(c u8) Bool { c >= '0' and c <= '9'; }
+fn isLetter(c u8) Bool { (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z'); }
+
+// Exactly n digits, their value; on anything else, a failure, 'expected two
+// digits for the month'
+fn digits(text &[]u8, s &mut Scan, n usize, what &[]u8) i64 {
+  if s.failed { return 0i64; }
+  mut v = 0i64;
+  mut i = 0usize;
+  while i < n {
+    if s.pos + i >= text.len or not isDigit(text[s.pos + i]) {
+      mut m = String.from("expected ");
+      m.append(countWord(n));
+      m.append(if n == 1usize {" digit for ";} else {" digits for ";});
+      m.append(what);
+      failAt(s, s.pos + i, m.view());
+      return 0i64;
+    }
+    v = v * 10i64 + i64.from(text[s.pos + i] - '0');
+    i = i + 1usize;
+  }
+  s.pos = s.pos + n;
+  v;
+}
+
+fn countWord(n usize) &[]u8 {
+  if n == 1usize {"a";} elif n == 2usize {"two";} elif n == 4usize {"four";} else {"several";};
+}
+
+// The byte c, or a failure saying what was expected
+fn oneByte(text &[]u8, s &mut Scan, c u8, what &[]u8) {
+  if s.failed { return; }
+  if s.pos < text.len and text[s.pos] == c {
+    s.pos = s.pos + 1usize;
+    return;
+  }
+  fail(s, what);
+}
+
+// The end of the text, or a failure: 'unexpected text after the date'
+fn scanEnd(text &[]u8, s &mut Scan, what &[]u8) {
+  if s.failed or s.pos >= text.len { return; }
+  mut m = String.from("unexpected text after ");
+  m.append(what);
+  fail(s, m.view());
+}
+
+// 'the month is 13, outside 01 to 12'
+fn outOfRange(s &mut Scan, at usize, part &[]u8, value i64, range &[]u8) {
+  mut m = String.from("the ");
+  m.append(part);
+  m.append(" is ");
+  appendPadded(&mut m, value, 2usize);
+  m.append(", outside ");
+  m.append(range);
+  failAt(s, at, m.view());
+}
+
+// ---------------------------------------------------------------------------
+// Writing
+// ---------------------------------------------------------------------------
+
+// v, not negative, in at least width digits, zeros in front
+fn appendPadded(out &mut String, v i64, width usize) {
+  mut n = 1usize;
+  mut rest = v / 10i64;
+  while rest > 0i64 {
+    n = n + 1usize;
+    rest = rest / 10i64;
+  }
+  while n < width {
+    out.appendByte('0');
+    n = n + 1usize;
+  }
+  out.appendInt(v);
+}
+
+// The year in four digits, or outside 0000 to 9999 in ISO 8601's expanded
+// form: a sign and at least six digits
+fn appendYear(out &mut String, year i64) {
+  if year >= 0i64 and year <= 9999i64 {
+    appendPadded(out, year, 4usize);
+  }
+  elif year < 0i64 {
+    out.appendByte('-');
+    appendPadded(out, 0i64 - year, 6usize);
+  }
+  else {
+    out.appendByte('+');
+    appendPadded(out, year, 6usize);
+  }
+}
+
+fn appendDate(out &mut String, d Date) {
+  appendYear(out, i64.from(d.year()));
+  out.appendByte('-');
+  appendPadded(out, i64.from(d.month()), 2usize);
+  out.appendByte('-');
+  appendPadded(out, i64.from(d.day()), 2usize);
+}
+
+// hh:mm:ss, without a fraction
+fn appendHms(out &mut String, t TimeOfDay) {
+  appendPadded(out, i64.from(t.hour()), 2usize);
+  out.appendByte(':');
+  appendPadded(out, i64.from(t.minute()), 2usize);
+  out.appendByte(':');
+  appendPadded(out, i64.from(t.second()), 2usize);
+}
+
+// hh:mm:ss and, when there is one, the fraction, its trailing zeros dropped
+fn appendTime(out &mut String, t TimeOfDay) {
+  appendHms(out, t);
+  mut frac = i64.from(t.nanosecond());
+  if frac == 0i64 { return; }
+  mut width = 9usize;
+  while frac % 10i64 == 0i64 {
+    frac = frac / 10i64;
+    width = width - 1usize;
+  }
+  out.appendByte('.');
+  appendPadded(out, frac, width);
+}
+
+// ---------------------------------------------------------------------------
+// Reading RFC 3339
+// ---------------------------------------------------------------------------
+
+// A year: four digits, or ISO 8601's expanded form, a sign and six to ten
+// digits within i32's range
+fn scanYear(text &[]u8, s &mut Scan) i64 {
+  if s.failed { return 0i64; }
+  if s.pos >= text.len or (text[s.pos] != '+' and text[s.pos] != '-') {
+    return digits(text, s, 4usize, "the year");
+  }
+  imm at = s.pos;
+  imm negative = text[s.pos] == '-';
+  s.pos = s.pos + 1usize;
+  imm start = s.pos;
+  mut v = 0i64;
+  while s.pos < text.len and isDigit(text[s.pos]) and s.pos - start < 11usize {
+    v = v * 10i64 + i64.from(text[s.pos] - '0');
+    s.pos = s.pos + 1usize;
+  }
+  imm n = s.pos - start;
+  if n < 6usize {
+    failAt(s, at, "a year with a sign (ISO 8601's expanded form) has at least six digits");
+    return 0i64;
+  }
+  if n > 10usize or (negative and v > 2147483648i64) or (not negative and v > 2147483647i64) {
+    failAt(s, at, "the year is outside the range of a Date, -2147483648 to +2147483647");
+    return 0i64;
+  }
+  if negative and v == 0i64 {
+    failAt(s, at, "the year -000000 is not allowed: year zero is 0000");
+    return 0i64;
+  }
+  if negative {0i64 - v;} else {v;};
+}
+
+// A full-date, yyyy-mm-dd
+fn scanDate(text &[]u8, s &mut Scan) Date {
+  if s.pos >= text.len and not s.failed {
+    fail(s, "the text is empty");
+  }
+  imm year = scanYear(text, s);
+  oneByte(text, s, '-', "expected '-' after the year");
+  imm monthAt = s.pos;
+  imm month = digits(text, s, 2usize, "the month");
+  oneByte(text, s, '-', "expected '-' after the month");
+  imm dayAt = s.pos;
+  imm day = digits(text, s, 2usize, "the day");
+  if s.failed { return new Date(); }
+  if month < 1i64 or month > 12i64 {
+    outOfRange(s, monthAt, "month", month, "01 to 12");
+    return new Date();
+  }
+  imm last = daysInMonth(year, month);
+  if day < 1i64 or day > last {
+    mut m = String.from("the day is ");
+    appendPadded(&mut m, day, 2usize);
+    m.append(", and ");
+    appendYear(&mut m, year);
+    m.append("-");
+    appendPadded(&mut m, month, 2usize);
+    m.append(" has ");
+    m.appendInt(last);
+    m.append(" days");
+    failAt(s, dayAt, m.view());
+    return new Date();
+  }
+  new Date(i32.from(year), i8.from(month), i8.from(day));
+}
+
+// hh:mm:ss and, when fraction allows it, '.' and one to nine digits
+fn scanTime(text &[]u8, s &mut Scan, fraction Bool) TimeOfDay {
+  imm hourAt = s.pos;
+  imm hour = digits(text, s, 2usize, "the hour");
+  oneByte(text, s, ':', "expected ':' after the hour");
+  imm minuteAt = s.pos;
+  imm minute = digits(text, s, 2usize, "the minute");
+  oneByte(text, s, ':', "expected ':' after the minute");
+  imm secondAt = s.pos;
+  imm second = digits(text, s, 2usize, "the second");
+  mut nanos = 0i64;
+  if fraction and not s.failed and s.pos < text.len and text[s.pos] == '.' {
+    s.pos = s.pos + 1usize;
+    imm start = s.pos;
+    while s.pos < text.len and isDigit(text[s.pos]) {
+      if s.pos - start == 9usize {
+        fail(s, "more than nine digits of a fraction of a second: a nanosecond is the finest");
+        return new TimeOfDay();
+      }
+      nanos = nanos * 10i64 + i64.from(text[s.pos] - '0');
+      s.pos = s.pos + 1usize;
+    }
+    if s.pos == start {
+      fail(s, "expected a digit after '.'");
+      return new TimeOfDay();
+    }
+    mut n = s.pos - start;
+    while n < 9usize {
+      nanos = nanos * 10i64;
+      n = n + 1usize;
+    }
+  }
+  if s.failed { return new TimeOfDay(); }
+  if hour > 23i64 {
+    outOfRange(s, hourAt, "hour", hour, "00 to 23");
+  }
+  elif minute > 59i64 {
+    outOfRange(s, minuteAt, "minute", minute, "00 to 59");
+  }
+  elif second == 60i64 {
+    failAt(s, secondAt, "the second is 60, a leap second, which this package does not count (a Timestamp ignores leap seconds)");
+  }
+  elif second > 59i64 {
+    outOfRange(s, secondAt, "second", second, "00 to 59");
+  }
+  if s.failed { return new TimeOfDay(); }
+  new TimeOfDay(i8.from(hour), i8.from(minute), i8.from(second), i32.from(nanos));
+}
+
+// The offset from UTC that ends a date-time, in minutes: 'Z' (or 'z') is 0,
+// '+hh:mm' east of UTC, '-hh:mm' west
+fn scanOffset(text &[]u8, s &mut Scan) i64 {
+  if s.failed { return 0i64; }
+  if s.pos >= text.len {
+    fail(s, "the date-time has no offset: RFC 3339 ends it with 'Z' or '+hh:mm' or '-hh:mm'");
+    return 0i64;
+  }
+  imm c = text[s.pos];
+  if c == 'Z' or c == 'z' {
+    s.pos = s.pos + 1usize;
+    return 0i64;
+  }
+  if c != '+' and c != '-' {
+    fail(s, "expected the offset: 'Z' or '+hh:mm' or '-hh:mm'");
+    return 0i64;
+  }
+  s.pos = s.pos + 1usize;
+  imm hourAt = s.pos;
+  imm hours = digits(text, s, 2usize, "the offset's hours");
+  oneByte(text, s, ':', "expected ':' between the offset's hours and minutes");
+  imm minuteAt = s.pos;
+  imm minutes = digits(text, s, 2usize, "the offset's minutes");
+  if s.failed { return 0i64; }
+  if hours > 23i64 {
+    outOfRange(s, hourAt, "offset's hour", hours, "00 to 23");
+    return 0i64;
+  }
+  if minutes > 59i64 {
+    outOfRange(s, minuteAt, "offset's minute", minutes, "00 to 59");
+    return 0i64;
+  }
+  imm total = hours * 60i64 + minutes;
+  if c == '-' {0i64 - total;} else {total;};
+}
+
+// A whole RFC 3339 date-time, converted to UTC by its offset
+fn scanDateTime(text &[]u8, s &mut Scan) DateTime {
+  imm date = scanDate(text, s);
+  if not s.failed {
+    if s.pos < text.len and (text[s.pos] == 'T' or text[s.pos] == 't') {
+      s.pos = s.pos + 1usize;
+    }
+    elif s.pos < text.len and text[s.pos] == ' ' {
+      fail(s, "a space between the date and the time: RFC 3339 writes 'T'");
+    }
+    elif s.pos >= text.len {
+      fail(s, "a date without a time: expected 'T' and the time");
+    }
+    else {
+      fail(s, "expected 'T' between the date and the time");
+    }
+  }
+  imm tod = scanTime(text, s, true);
+  imm offset = scanOffset(text, s);
+  scanEnd(text, s, "the date-time");
+  if s.failed { return new DateTime(); }
+  // Local time is UTC plus the offset, so UTC is local time less it
+  DateTime.fromParts(date, tod) - Duration.fromMinutes(offset);
+}
+
+// The Timestamp of dt, or, for one outside a Timestamp's range, a failure
+// at 'at'
+fn timestampOrFail(dt DateTime, s &mut Scan, at usize) Timestamp {
+  if s.failed { return new Timestamp(); }
+  match timestampOf(dt) {
+    case imm t Some { t.value; }
+    case is None {
+      failAt(s, at, "the moment is outside a Timestamp's range, 1677-09-21T00:12:43.145224192Z to 2262-04-11T23:47:16.854775807Z");
+      new Timestamp();
+    }
+  }
+}
+
+fn parseTimestamp(text &[]u8) Result[Timestamp, TimeError] {
+  mut s = newScan();
+  imm dt = scanDateTime(text, &mut s);
+  imm t = timestampOrFail(dt, &mut s, 0usize);
+  if s.failed { return Error[Timestamp, TimeError][scanError(&mut s)]; }
+  Ok[Timestamp, TimeError][t];
+}
+
+// ---------------------------------------------------------------------------
+// HTTP dates (RFC 9110, section 5.6.7)
+// ---------------------------------------------------------------------------
+
+const monthAbbrs = "JanFebMarAprMayJunJulAugSepOctNovDec";
+
+fn monthAbbr(month i64) &[]u8 {
+  imm at = usize.from(month - 1i64) * 3usize;
+  &monthAbbrs[at..at + 3usize];
+}
+
+// IMF-fixdate: 'Sun, 06 Nov 1994 08:49:37 GMT'. The fraction of a second is
+// dropped, toward the past
+fn httpDateOf(t Timestamp) String {
+  imm dt = DateTime.fromTimestamp(t);
+  imm d = dt.date();
+  mut out = String.withCapacity(29usize);
+  out.append(&dayName(weekdayIndex(d.unixDays()))[0usize..3usize]);
+  out.append(", ");
+  appendPadded(&mut out, i64.from(d.day()), 2usize);
+  out.appendByte(' ');
+  out.append(monthAbbr(i64.from(d.month())));
+  out.appendByte(' ');
+  appendPadded(&mut out, i64.from(d.year()), 4usize);
+  out.appendByte(' ');
+  appendHms(&mut out, dt.time());
+  out.append(" GMT");
+  out;
+}
+
+// A month's three letters, exactly as HTTP writes them ('Nov'): 1 to 12
+fn scanMonth(text &[]u8, s &mut Scan) i64 {
+  if s.failed { return 0i64; }
+  if s.pos + 3usize <= text.len {
+    imm name = &text[s.pos..s.pos + 3usize];
+    mut i = 0usize;
+    while i < 12usize {
+      if &monthAbbrs[i * 3usize..i * 3usize + 3usize] == name {
+        s.pos = s.pos + 3usize;
+        return i64.from(i) + 1i64;
+      }
+      i = i + 1usize;
+    }
+  }
+  fail(s, "expected a month: Jan, Feb, Mar, Apr, May, Jun, Jul, Aug, Sep, Oct, Nov or Dec");
+  0i64;
+}
+
+// The word, exactly
+fn literal(text &[]u8, s &mut Scan, want &[]u8, what &[]u8) {
+  if s.failed { return; }
+  if s.pos + want.len <= text.len and &text[s.pos..s.pos + want.len] == want {
+    s.pos = s.pos + want.len;
+    return;
+  }
+  fail(s, what);
+}
+
+// Earlier is less, comparing a year, a month, a day and a time of day
+fn civilCompare(y i64, mo i64, d i64, tod i64, y2 i64, mo2 i64, d2 i64, tod2 i64) i32 {
+  if y != y2 { return if y < y2 {-1i32;} else {1i32;}; }
+  if mo != mo2 { return if mo < mo2 {-1i32;} else {1i32;}; }
+  if d != d2 { return if d < d2 {-1i32;} else {1i32;}; }
+  if tod < tod2 {-1i32;} elif tod > tod2 {1i32;} else {0i32;};
+}
+
+// Any of HTTP's three date forms, as RFC 9110 says a recipient must accept
+// them: IMF-fixdate ('Sun, 06 Nov 1994 08:49:37 GMT'), RFC 850's ('Sunday,
+// 06-Nov-94 08:49:37 GMT') and asctime's ('Sun Nov  6 08:49:37 1994'). Every
+// name is case-sensitive, as HTTP-date is. RFC 850's two-digit year is read
+// as RFC 9110 says, against now: a moment that would be more than 50 years
+// after now is in the most recent year before it with the same two digits,
+// so the year is the latest one ending in them that is not more than 50
+// years after now.
+fn parseHttp(text &[]u8, now Timestamp) Result[Timestamp, TimeError] {
+  mut s = newScan();
+  if text.len == 0usize { fail(&mut s, "the text is empty"); }
+  // The day's name, its letters up to ',' or ' '
+  imm nameAt = s.pos;
+  while s.pos < text.len and isLetter(text[s.pos]) { s.pos = s.pos + 1usize; }
+  imm name = &text[nameAt..s.pos];
+  // Which form: 0 IMF-fixdate, 1 RFC 850, 2 asctime
+  mut form = 0i32;
+  mut weekday = -1i64;
+  if not s.failed {
+    imm comma = s.pos < text.len and text[s.pos] == ',';
+    mut i = 0i64;
+    while i < 7i64 {
+      imm full = dayName(i);
+      if name.len == 3usize and name == &full[0usize..3usize] { weekday = i; }
+      if name.len > 3usize and name == full { weekday = i; }
+      i = i + 1i64;
+    }
+    if weekday < 0i64 {
+      failAt(&mut s, nameAt, "expected a day's name: Mon, Tue, Wed, Thu, Fri, Sat or Sun (or Monday to Sunday in RFC 850's form)");
+    }
+    elif name.len == 3usize and comma { form = 0i32; }
+    elif name.len > 3usize and comma { form = 1i32; }
+    elif name.len == 3usize and s.pos < text.len and text[s.pos] == ' ' { form = 2i32; }
+    else {
+      fail(&mut s, "expected ',' after the day's name");
+    }
+  }
+  mut year = 0i64;
+  mut month = 0i64;
+  mut day = 0i64;
+  mut dayAt = 0usize;
+  mut tod = new TimeOfDay();
+  if form == 0i32 {
+    literal(text, &mut s, ", ", "expected ', ' after the day's name");
+    dayAt = s.pos;
+    day = digits(text, &mut s, 2usize, "the day");
+    oneByte(text, &mut s, ' ', "expected ' ' after the day");
+    month = scanMonth(text, &mut s);
+    oneByte(text, &mut s, ' ', "expected ' ' after the month");
+    year = digits(text, &mut s, 4usize, "the year");
+    oneByte(text, &mut s, ' ', "expected ' ' after the year");
+    tod = scanTime(text, &mut s, false);
+    literal(text, &mut s, " GMT", "expected ' GMT' after the time");
+  }
+  elif form == 1i32 {
+    literal(text, &mut s, ", ", "expected ', ' after the day's name");
+    dayAt = s.pos;
+    day = digits(text, &mut s, 2usize, "the day");
+    oneByte(text, &mut s, '-', "expected '-' after the day");
+    month = scanMonth(text, &mut s);
+    oneByte(text, &mut s, '-', "expected '-' after the month");
+    imm yy = digits(text, &mut s, 2usize, "the year");
+    oneByte(text, &mut s, ' ', "expected ' ' after the year");
+    tod = scanTime(text, &mut s, false);
+    literal(text, &mut s, " GMT", "expected ' GMT' after the time");
+    if not s.failed {
+      // The latest year ending in yy whose moment is not more than 50 years
+      // after now: now's century, or the one after or before it
+      imm n = DateTime.fromTimestamp(now);
+      imm nd = n.date();
+      imm limitYear = i64.from(nd.year()) + 50i64;
+      imm limitMonth = i64.from(nd.month());
+      imm limitDay = i64.from(nd.day());
+      imm limitTod = todNanos(n.time());
+      year = floorDiv(i64.from(nd.year()), 100i64) * 100i64 + yy;
+      if civilCompare(year + 100i64, month, day, todNanos(tod), limitYear, limitMonth, limitDay, limitTod) <= 0i32 {
+        year = year + 100i64;
+      }
+      elif civilCompare(year, month, day, todNanos(tod), limitYear, limitMonth, limitDay, limitTod) > 0i32 {
+        year = year - 100i64;
+      }
+    }
+  }
+  else {
+    oneByte(text, &mut s, ' ', "expected ' ' after the day's name");
+    month = scanMonth(text, &mut s);
+    oneByte(text, &mut s, ' ', "expected ' ' after the month");
+    dayAt = s.pos;
+    if not s.failed and s.pos < text.len and text[s.pos] == ' ' {
+      s.pos = s.pos + 1usize;
+      dayAt = s.pos;
+      day = digits(text, &mut s, 1usize, "the day after a space");
+    }
+    else {
+      day = digits(text, &mut s, 2usize, "the day, or a space and one digit");
+    }
+    oneByte(text, &mut s, ' ', "expected ' ' after the day");
+    tod = scanTime(text, &mut s, false);
+    oneByte(text, &mut s, ' ', "expected ' ' after the time");
+    year = digits(text, &mut s, 4usize, "the year");
+  }
+  scanEnd(text, &mut s, "the date");
+  // The day must be in the month, and the day's name the date's
+  mut dt = new DateTime();
+  if not s.failed {
+    match Date.fromYmd(year, month, day) {
+      case imm d Some {
+        dt = DateTime.fromParts(d.value, tod);
+        imm actual = weekdayIndex(d.value.unixDays());
+        if actual != weekday {
+          mut m = String.empty();
+          appendDate(&mut m, d.value);
+          m.append(" is a ");
+          m.append(dayName(actual));
+          m.append(", not a ");
+          m.append(dayName(weekday));
+          failAt(&mut s, nameAt, m.view());
+        }
+      }
+      case is None {
+        mut m = String.from("the day is ");
+        appendPadded(&mut m, day, 2usize);
+        m.append(", and ");
+        m.append(monthAbbr(month));
+        m.append(" ");
+        appendPadded(&mut m, year, 4usize);
+        m.append(" has ");
+        m.appendInt(daysInMonth(year, month));
+        m.append(" days");
+        failAt(&mut s, dayAt, m.view());
+      }
+    }
+  }
+  imm t = timestampOrFail(dt, &mut s, 0usize);
+  if s.failed { return Error[Timestamp, TimeError][scanError(&mut s)]; }
+  Ok[Timestamp, TimeError][t];
+}
