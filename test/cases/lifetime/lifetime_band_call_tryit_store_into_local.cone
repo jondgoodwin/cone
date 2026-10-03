@@ -1,0 +1,56 @@
+// The manual's 'tryit': 'refstore(&mut a, &b)', unannotated, inside 'b''s
+// block. The callee may store 'b''s borrow in 'a', a local, so 'a' may hold
+// it after the call -- legal, as a store written out there would be, since
+// a variable's lifetime follows what it holds. 'a' is used within 'b''s
+// block, and not after. 'tryset', the manual's setter, the same way.
+//
+// Verdict: accept; prints 10 and 10.
+// Basis: reflifefn.html, "Mutable borrowed reference parameters": the call
+// is legal, and only a use of 'a' after 'b''s scope ends is refused; Rust
+// accepts the same program (NLL: 'a' is not live after 'b' ends).
+// Master 19cc839b: refused, ErrorCallEscape at each call ("Call could store
+// a borrowed reference where it would outlive the value it points to").
+
+mod lifetime_band_call_tryit_store_into_local;
+
+import stdio use *;
+
+fn refstore(refmut &mut &i32, refval &i32) {
+  *refmut = refval;
+}
+
+struct Holder {
+  pub r &i32;
+  pub fn set(self &mut, r &i32) { self.r = r; }
+}
+
+fn tryit() i32 {
+  imm i = 5;
+  mut a = &i;
+  mut seen = 0;
+  {
+    imm b = 10;
+    refstore(&mut a, &b);
+    seen = *a;
+  }
+  seen;
+}
+
+fn tryset() i32 {
+  imm i = 5;
+  mut h = new Holder(&i);
+  mut seen = 0;
+  {
+    imm b = 10;
+    h.set(&b);
+    seen = *h.r;
+  }
+  seen;
+}
+
+fn main() {
+  printInt(i64.from(tryit()));
+  printStr(" ");
+  printInt(i64.from(tryset()));
+  printStr("\n");
+}

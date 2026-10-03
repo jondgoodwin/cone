@@ -1296,10 +1296,12 @@ static INode *pwLendSite(INode *arg) {
 // A call handed a writable borrow of a place that can hold a borrow --
 // 'l.push(x)', 'stash(&mut outer, v)', 'fill(r, v)' for 'r &mut Option[&T]'
 // -- may store there anything its other arguments carry: every borrow in an
-// unannotated signature shares one lifetime (reflifefn.html), as
-// fnCallFlowStoredBorrow reads it, and with lifetimes named, what may be held
-// where that parameter points (pwArgCarries), with no slot's tag, since which
-// field it lands in is not known. And it may store
+// unannotated signature shares one lifetime (reflifefn.html), and with
+// lifetimes named, what may be held where that parameter points
+// (pwArgCarries), with no slot's tag, since which field it lands in is not
+// known. Into a place of the function's own, that is no error: the place now
+// holds those loans, and is refused where it is used after one's source ends,
+// as a store there written out is. And it may store
 // through every writable borrow it reaches from there, at any depth
 // (itypeWritableBorrowDepth): through the '&mut &R' that '&mut p' points at
 // ('**x = v'), through a struct's '&mut' field ('*h.r = v'), or through one a

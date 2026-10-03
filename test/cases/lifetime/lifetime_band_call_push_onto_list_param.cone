@@ -1,12 +1,16 @@
-// A callee pushing a borrow onto a '&mut List[&R]': the list may hold the
-// borrow after the call, so the borrow must live as long as the list.
+// A callee pushing a borrow onto a '&mut List[&R]': the list, a local, may
+// hold the borrow after the call, and is used after its source ends.
 //
-// Verdict: refuse, ErrorCallEscape at the call.
+// Verdict: refuse, ErrorFrozen at the source 's', which goes out of scope
+// while 'l' still holds a borrow of it.
 // Basis: reflifefn.html, "Mutable borrowed reference parameters", widened to
 // a '&mut' to a collection of borrows -- a reading of that rule: a store
 // through a '&mut' may put the borrow anywhere its target can hold one.
 // Master d331baab: accepted, and it reads freed memory -- main, run, prints
 // "final" and then "read = 1865774899744". Stage 2 fixed it.
+// Since stage 8 a store a call may make through a '&mut' into a local follows
+// flow, as one written out does: the call is legal, and the local used after
+// the borrow's source ends is refused at that end.
 
 mod lifetime_band_call_push_onto_list_param;
 
@@ -25,8 +29,8 @@ fn stash(l &mut List[&R], r &R) { l.push(r); }
 fn main() {
   mut l = List[&R].empty();
   {
-    imm s = new So[R](42);
-    stash(&mut l, &*s);      //~ ErrorCallEscape
+    imm s = new So[R](42);   //~ ErrorFrozen "goes out of scope while"
+    stash(&mut l, &*s);
   }
   printStr("read = ");
   printInt((*l[0usize]).n);

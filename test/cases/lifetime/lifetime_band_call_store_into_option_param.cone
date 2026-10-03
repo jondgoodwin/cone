@@ -1,13 +1,17 @@
 // A callee given a '&mut Option[&R]' and a shorter borrow may store the
-// borrow in the option, so the borrow must live as long as the option's
-// place.
+// borrow in the option, a local, which is used after the borrow's source
+// ends.
 //
-// Verdict: refuse, ErrorCallEscape at the call.
+// Verdict: refuse, ErrorFrozen at the source 's', which goes out of scope
+// while 'o' still holds a borrow of it.
 // Basis: reflifefn.html, "Mutable borrowed reference parameters": a call
 // handed a writable borrow of a place that can hold a borrow may store any
 // other borrow it was handed there.
 // Master a3a2f44d: accepted, and it reads freed memory -- main, run, prints
 // "final" and then "2627634912624". Stage 2 fixed it.
+// Since stage 8 a store a call may make through a '&mut' into a local follows
+// flow, as one written out does: the call is legal, and the local used after
+// the borrow's source ends is refused at that end.
 
 mod lifetime_band_call_store_into_option_param;
 
@@ -26,8 +30,8 @@ fn main() {
   imm outer = new R(1);
   mut o Option[&R] = Some[&R][&outer];
   {
-    imm s = new So[R](42);
-    st(&mut o, &*s);         //~ ErrorCallEscape
+    imm s = new So[R](42);   //~ ErrorFrozen "goes out of scope while"
+    st(&mut o, &*s);
   }
   match o {
     case imm v Some { printInt(v.value.n); }

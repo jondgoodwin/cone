@@ -786,10 +786,10 @@ loan, for a far place — so that after `imm r = &mut o; *r = Some[&R][&x]` a us
 of `o` uses `x`'s loan (`pwStoreLands`). A call handed a
 writable borrow of a place that can hold a borrow (`l.push(&x)`, `stash(&mut
 o, &x)`, `fill(r, v)` for `r &mut Option[&T]`) may store there anything its
-other arguments carry, under the same one-lifetime rule as its result below,
-which `fnCallFlowStoredBorrow` reads for lifetimes; so that place takes them,
-as a store through the reference would (`pwCallStores`, the target found from
-the argument by `pwStoreTarget`), each loan near and with no slot's tag, since
+other arguments carry, under the same one-lifetime rule as its result below;
+so that place takes them, as a store through the reference would
+(`pwCallStores`, the target found from the argument by `pwStoreTarget`), each
+loan both near and far and with no slot's tag, since
 the callee may store what it reads through an argument, into any field. And it may store through every writable
 borrow it reaches from there (`itypeWritableBorrowDepth`): through the `&mut
 &R` that `&mut p` points at (`put(&mut p, &x)` for `x &mut &mut &R` doing
@@ -1009,10 +1009,11 @@ caller's borrows of its own type is taken to point at the caller's place.
 The scope numbers still decide a bare borrowed reference returned or stored
 away, and the walk runs only on a function where they found nothing; a store
 into a variable's own storage they no longer compare (`assignIsLocalPlace`),
-since a variable's lifetime follows what it holds. A call storing through a
-`&mut` argument into a local is still refused at the call when a bare borrow
-beside it is shorter (`fnCallFlowStoredBorrow`); a value carrying one, into a
-local, the walk follows.
+since a variable's lifetime follows what it holds. Nor do they a call that
+may store through a writable argument: into a place of the function's own the
+walk follows it (`refstore(&mut a, &b)` is legal, and `a` used after `b`'s end
+is refused there), and into one that may outlive the function it refuses it at
+the call (`pwCallStores`).
 
 **What is not held.** The temporary an operator changing its operand in place
 borrows it through (`x += 1` is `{imm tmp = &mut x; *tmp = *tmp + 1}`, and
@@ -1167,7 +1168,7 @@ Everything else about permissions is type check's: `permMatches` in
 | `ErrorMove` | `dropRefuse`, from the path walk | a tracked variable moved, read or borrowed where some path reaching it moved or hollowed it, or (not for a borrow) never gave it a value |
 | `ErrorEscape` | `returnFlowEscape` | returned borrow outlives the local it points at |
 | `ErrorEscape` | `loanEscape`, from the loan walk's `return` and `pwStoreEscapes` | a value returned, or stored where it may outlive the function, carries a loan of the function's own storage; or one stored into a global carries a caller loan |
-| `ErrorCallEscape` | `fnCallFlowStoredBorrow` | a `&mut` or `&uni` argument, a receiver included, points at a place that can hold a borrow and outlives another borrow passed to the same call |
+| `ErrorCallEscape` | `pwCallStores` (the loan walk) | a `&mut` or `&uni` argument, a receiver included, or a writable borrow one reaches, points at a place that may outlive the function and can hold a borrow, and another argument carries a borrow of the function's own storage, or one the caller lent of a lifetime not held there |
 | `ErrorCallEscape` | `loanEscape`, from `pwCallStores` | another argument carries a loan of the function's own storage, and a `&mut X` argument, or a writable borrow reached from one or held by a struct argument, reaches a place that may outlive the function |
 | `ErrorEscape` | `loanApart`, from the loan walk's `return` and `pwStoreEscapes` | a value returned, or stored where a parameter points, carries a caller loan of a lifetime flowing to none the result, or what that parameter points at (the field, for a struct declaring lifetimes), holds (named lifetimes) |
 | `ErrorCallEscape` | `loanApart`, from `pwCallStores`; `loanNotGlobal`, from `pwStaticArgs`; `fnCallStaticArgs` | a call may store a caller loan where a parameter points at nothing of a lifetime it flows to; an argument for a `'static` parameter carries, or is, a borrow that is not global |
@@ -1315,7 +1316,6 @@ allocation. A variable with `VarDropFlag` needs each marked move of it
 | `ir/exp/nameuse.c` | `nameuseFlow`, `nameuseFlowBorrowed` | the only place the flags are *diagnosed* on, a hollowed variable as a moved one; both `ErrorMove` messages, and for a borrowed variable only the moved-out one |
 | `ir/exp/borrow.c` | `borrowFlow`, `borrowFlowPlace` | the borrowed place must not be moved out: the variable at its root goes to `nameuseFlowBorrowed`, which refuses it moved out or hollowed but not uninitialized; a reference it is reached through is loaded as a value and not read through, an index is read; a temporary at its root wrapped; no aliasing tracked |
 | `ir/stmt/return.c` | `returnFlowEscape` | `ErrorEscape` for a returned borrow of a local |
-| `ir/exp/fncall.c` | `fnCallFlowStoredBorrow` | `ErrorCallEscape` for a `&mut` or `&uni` argument to a place that can hold a borrow (`itypeCarriesBorrow`), a receiver included, the callee could store a narrower borrow through |
 | `ir/exp/arraylit.c` | `arrayLitFlow` | each element of the list form a holder; the fill form's one constant read |
 | `ir/types/reference.c` | `refAdoptInfections` | where a reference type acquires `MoveType` |
 | `ir/types/region.c` | `regionIsCounted`, `regionIsOwning`, `regionMethod` | which region methods a region declares, which is what flow asks of it |
