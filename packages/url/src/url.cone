@@ -1,0 +1,688 @@
+// The url package: URLs as data, per RFC 3986 -- read from text, resolved
+// against a base, and written back. A Url is its parts: a scheme, an
+// authority (user information, a host, a port), a path, a query and a
+// fragment, each kept as the text it is on the wire (percent-encoded), with
+// the few normalizations every reader agrees on. It knows nothing of HTTP:
+// httpclient takes a Url's origin, authority and target from it, and a
+// Location header's reference is resolved against the URL it answered.
+//
+//   mod show;
+//   import url use *;
+//
+//   fn main() {
+//     match Url.parse("HTTPS://Example.com:443/a/./b/../c?x=1#top") {
+//       case mut r Ok {
+//         r.value.text()          // 'https://example.com/a/c?x=1#top'
+//         r.value.origin()        // 'https://example.com:443'
+//         r.value.authority()     // 'example.com'   (as Host is written)
+//         r.value.target()        // '/a/c?x=1'      (as a request's target)
+//         match r.value.resolve("../d?y") { case mut t Ok { ... 'https://example.com/d?y' } ... }
+//       }
+//       case imm e Error {... e.value.message() ...}   // 'url: a port is 0 to 65535 (at 22)'
+//     }
+//   }
+//
+//   Url.parse(text)  u.resolve(ref)  resolveRef(base, ref)               (READING)
+//   u.text()  u.origin()  u.authority()  u.target()  u.copy()            (WRITING)
+//   u.scheme  u.userinfo  u.host  u.hostKind  u.port  u.hasPort u.path   (PARTS)
+//     u.query  u.hasQuery  u.fragment  u.hasFragment  u.hasAuthority
+//   u.effectivePort()  u.isHttp()  u.isSecure()  u.sameOrigin(o)  defaultPort(scheme)
+//   HostKind: Empty, Name, Ipv4, Ipv6
+//   UrlError: e.at e.why e.message()                                     (ERRORS)
+//   encodeComponent(s)  decode(s)  removeDotSegments(path)               (HELPERS)
+//
+// READING. 'Url.parse' takes an absolute URL: a scheme, then what follows
+// it as RFC 3986's generic syntax splits it (its appendix B). Spaces and C0
+// control characters at either end are dropped (as a browser does with
+// what is pasted); one inside is refused, as is anything RFC 3986's grammar
+// cannot hold together: a scheme that is not a letter followed by letters,
+// digits, '+', '-' and '.'; a port that is not decimal, or past 65535; a
+// host holding a character no host may. What is merely untidy is made tidy
+// the way browsers make it: the scheme and a host name are lower-cased;
+// in the path, query and fragment, a space, '"', '<', '>', '\', '^', '`',
+// '{', '|', '}' and every byte from 0x80 up are percent-encoded (a '%'
+// already there is kept as it is, well-formed or not, as browsers keep it);
+// the path's '.' and '..' segments are removed (RFC 3986, 5.2.4); and an
+// http or https URL with an empty path has the path '/'. An http or https
+// URL must have a host. 'u.resolve(ref)' is RFC 3986's reference
+// resolution (5.2): ref may be absolute, network-path ('//host/p'),
+// absolute-path ('/p'), relative-path ('p', '../p'), a query alone ('?q'),
+// a fragment alone ('#f') or empty, and is read with the same rules.
+//
+// HOSTS. A host is a registered name ('example.com', lower-cased), an IPv4
+// address written as one ('127.0.0.1': to RFC 3986 a name too, and kept as
+// written), or an IPv6 address in brackets ('[::1]': kept without its
+// brackets in 'host', lower-cased, and checked as RFC 4291 writes one, an
+// IPv4 tail included). Not read yet, and refused by name: a name holding
+// bytes past ASCII (an internationalized name, which IDNA's Punycode would
+// turn into 'xn--' labels), a percent-encoded name, an IPv6 zone ('%25eth0')
+// and RFC 3986's IPvFuture ('[v1.x]').
+//
+// WRITING. 'text()' writes the URL back: scheme, '//', the authority, the
+// path, '?' and the query, '#' and the fragment, each only if it is there,
+// and the port only when it is not the scheme's default (80 for http, 443
+// for https). 'origin()' is scheme, host and port, the port always written
+// (the default when none was): the key a client pools connections under,
+// and the boundary credentials do not cross. 'authority()' is what HTTP
+// writes as Host: the host (in brackets when IPv6) and its port unless the
+// default. 'target()' is the request target: the path (at least '/') and
+// the query; never the fragment, which stays with the client.
+//
+// HELPERS. 'encodeComponent(s)' percent-encodes every byte that is not
+// unreserved (a letter, a digit, '-', '.', '_', '~'): for a value put into a
+// query or a path segment. 'decode(s)' undoes percent-encoding, None when a
+// '%' is not followed by two hex digits.
+//
+// Not here yet: WHATWG's URL standard where it parts from RFC 3986 (a '\'
+// read as '/' in http URLs, hosts written in decimal or hex as IPv4, its
+// own percent-encode sets per scheme); internationalized names (IDNA);
+// a query's name=value pairs as data (application/x-www-form-urlencoded).
+
+mod url;
+
+import collections use List, String;
+
+// ---------------------------------------------------------------------------
+// Characters
+// ---------------------------------------------------------------------------
+
+fn isAlpha(c u8) Bool {(c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z');}
+fn isDigit(c u8) Bool {c >= '0' and c <= '9';}
+fn isHex(c u8) Bool {isDigit(c) or (c >= 'a' and c <= 'f') or (c >= 'A' and c <= 'F');}
+fn lower(c u8) u8 {if c >= 'A' and c <= 'Z' {c + 32u8;} else {c;};}
+
+fn hexValue(c u8) u8 {
+  if isDigit(c) {c - '0';}
+  elif c >= 'a' and c <= 'f' {c - 'a' + 10u8;}
+  else {c - 'A' + 10u8;}
+}
+
+fn hexDigit(n u8) u8 {if n < 10u8 {'0' + n;} else {'A' + n - 10u8;};}
+
+// RFC 3986's unreserved characters: a letter, a digit, '-', '.', '_', '~'
+pub fn isUnreserved(c u8) Bool {isAlpha(c) or isDigit(c) or c == '-' or c == '.' or c == '_' or c == '~';}
+
+// RFC 3986's sub-delims: ! $ & ' ( ) * + , ; =
+pub fn isSubDelim(c u8) Bool {
+  c == '!' or c == '$' or c == '&' or c == '\'' or c == '(' or c == ')' or c == '*' or c == '+' or
+    c == ',' or c == ';' or c == '=';
+}
+
+// A C0 control character or DEL
+fn isControl(c u8) Bool {c < 0x20u8 or c == 0x7Fu8;}
+
+// A byte a path, query or fragment has percent-encoded when it is read
+fn needsEncoding(c u8) Bool {
+  c == ' ' or c == '"' or c == '<' or c == '>' or c == '\\' or c == '^' or c == '`' or c == '{' or
+    c == '|' or c == '}' or c >= 0x80u8;
+}
+
+fn appendEncoded(out &mut String, c u8) {
+  out.appendByte('%');
+  out.appendByte(hexDigit(c >> 4u8));
+  out.appendByte(hexDigit(c & 15u8));
+}
+
+// s with every byte that is not unreserved percent-encoded: a value for a
+// query or a path segment
+pub fn encodeComponent(s &[]u8) String {
+  mut out = String.withCapacity(s.len);
+  mut i = 0usize;
+  while i < s.len {
+    if isUnreserved(s[i]) {out.appendByte(s[i]);} else {appendEncoded(&mut out, s[i]);}
+    i = i + 1usize;
+  }
+  out;
+}
+
+// s with its percent-encoding undone; None when a '%' is not followed by
+// two hex digits
+pub fn decode(s &[]u8) Option[String] {
+  mut out = String.withCapacity(s.len);
+  mut i = 0usize;
+  while i < s.len {
+    if s[i] == '%' {
+      if i + 2usize >= s.len or not isHex(s[i + 1usize]) or not isHex(s[i + 2usize]) {return None[String][];}
+      out.appendByte(hexValue(s[i + 1usize]) * 16u8 + hexValue(s[i + 2usize]));
+      i = i + 3usize;
+    } else {
+      out.appendByte(s[i]);
+      i = i + 1usize;
+    }
+  }
+  Some[String][out];
+}
+
+// ---------------------------------------------------------------------------
+// Errors
+// ---------------------------------------------------------------------------
+
+// Why a URL could not be read: where, and what was wrong
+pub struct UrlError {
+  pub at usize;           // the byte offset in the text, after the ends were trimmed
+  pub why String;
+
+  pub fn make(at usize, why &[]u8) UrlError {new UrlError(at, String.from(why));}
+  pub fn none() UrlError {new UrlError(0usize, String.empty());}
+  pub fn isNone(self &) Bool {why.len() == 0usize;}
+
+  // 'url: a port is 0 to 65535 (at 22)'
+  pub fn message(self &) String {
+    mut out = String.from("url: ");
+    out.append(why.view());
+    out.append(" (at ");
+    out.appendUInt(u64.from(at));
+    out.append(")");
+    out;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The URL
+// ---------------------------------------------------------------------------
+
+// What a host is (see the package's header, HOSTS)
+pub enum HostKind {
+  Empty, Name, Ipv4, Ipv6;
+}
+
+// The default port of a scheme: 80 for http, 443 for https, 0 for any other
+pub fn defaultPort(scheme &[]u8) u16 {
+  if scheme == "http" {80u16;} elif scheme == "https" {443u16;} else {0u16;}
+}
+
+// A URL, or during resolution a reference, as its parts (see the package's
+// header)
+pub struct Url {
+  pub scheme String;        // lower case; empty in a reference that has none
+  pub hasAuthority Bool;    // '//' was there
+  pub userinfo String;      // before '@', as written (httpclient sends none of it)
+  pub host String;          // lower case; an IPv6 address without its brackets
+  pub hostKind HostKind;
+  pub port u16;
+  pub hasPort Bool;         // a port was written
+  pub path String;
+  pub query String;
+  pub hasQuery Bool;        // '?' was there (the query may be empty)
+  pub fragment String;
+  pub hasFragment Bool;
+
+  // No parts: a reference that is empty
+  pub fn empty() Url {
+    new Url(scheme: String.empty(), hasAuthority: false, userinfo: String.empty(), host: String.empty(),
+      hostKind: HostKind.Empty[], port: 0u16, hasPort: false, path: String.empty(), query: String.empty(),
+      hasQuery: false, fragment: String.empty(), hasFragment: false);
+  }
+
+  // An absolute URL read from text (see the package's header, READING)
+  pub fn parse(text &[]u8) Result[Url, UrlError] {
+    mut u = Url.empty();
+    imm t = trimEnds(text);
+    imm e = parseInto(t, &mut u);
+    if not e.isNone() {return Error[Url, UrlError][e];}
+    if u.scheme.len() == 0usize {return Error[Url, UrlError][UrlError.make(0usize, "a URL starts with its scheme, as 'https:'")];}
+    imm f = finish(&mut u);
+    if not f.isNone() {return Error[Url, UrlError][f];}
+    Ok[Url, UrlError][u];
+  }
+
+  // The reference ref resolved against this URL (RFC 3986, 5.2)
+  pub fn resolve(self &, ref &[]u8) Result[Url, UrlError] {resolveRef(self, ref);}
+
+  // Another Url with the same parts
+  pub fn copy(self &) Url {
+    new Url(scheme: scheme.copy(), hasAuthority: hasAuthority, userinfo: userinfo.copy(), host: host.copy(),
+      hostKind: hostKind, port: port, hasPort: hasPort, path: path.copy(), query: query.copy(),
+      hasQuery: hasQuery, fragment: fragment.copy(), hasFragment: hasFragment);
+  }
+
+  // Whether the scheme is http or https
+  pub fn isHttp(self &) Bool {scheme.view() == "http" or scheme.view() == "https";}
+
+  // Whether the scheme is https
+  pub fn isSecure(self &) Bool {scheme.view() == "https";}
+
+  // The port written, or the scheme's default
+  pub fn effectivePort(self &) u16 {if hasPort {port;} else {defaultPort(scheme.view());};}
+
+  // The host as written in an authority: in brackets when IPv6
+  fn appendHost(self &, out &mut String) {
+    if hostKind == HostKind.Ipv6[] {
+      out.append("[");
+      out.append(host.view());
+      out.append("]");
+    } else {
+      out.append(host.view());
+    }
+  }
+
+  // Host and port as HTTP writes them in Host: the port only when it is not
+  // the scheme's default
+  pub fn authority(self &) String {
+    mut out = String.empty();
+    self.appendHost(&mut out);
+    if hasPort and port != defaultPort(scheme.view()) {
+      out.append(":");
+      out.appendUInt(u64.from(port));
+    }
+    out;
+  }
+
+  // 'https://example.com:443': scheme, host and port, the port always
+  // written
+  pub fn origin(self &) String {
+    mut out = scheme.copy();
+    out.append("://");
+    self.appendHost(&mut out);
+    out.append(":");
+    out.appendUInt(u64.from(self.effectivePort()));
+    out;
+  }
+
+  // Whether o has the same scheme, host and port
+  pub fn sameOrigin(self &, o &Url) Bool {
+    scheme.view() == o.scheme.view() and host.view() == o.host.view() and
+      self.effectivePort() == o.effectivePort();
+  }
+
+  // The request target: the path (at least '/') and the query
+  pub fn target(self &) String {
+    mut out = if path.len() == 0usize {String.from("/");} else {path.copy();};
+    if hasQuery {
+      out.append("?");
+      out.append(query.view());
+    }
+    out;
+  }
+
+  // The URL as text (see the package's header, WRITING)
+  pub fn text(self &) String {
+    mut out = String.empty();
+    if scheme.len() > 0usize {
+      out.append(scheme.view());
+      out.append(":");
+    }
+    if hasAuthority {
+      out.append("//");
+      if userinfo.len() > 0usize {
+        out.append(userinfo.view());
+        out.append("@");
+      }
+      out.append(self.authority().view());
+    }
+    out.append(path.view());
+    if hasQuery {
+      out.append("?");
+      out.append(query.view());
+    }
+    if hasFragment {
+      out.append("#");
+      out.append(fragment.view());
+    }
+    out;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Reading
+// ---------------------------------------------------------------------------
+
+// text without the spaces and C0 controls at either end
+fn trimEnds(text &[]u8) &[]u8 {
+  mut a = 0usize;
+  mut b = text.len;
+  while a < b and text[a] <= 0x20u8 {a = a + 1usize;}
+  while b > a and text[b - 1usize] <= 0x20u8 {b = b - 1usize;}
+  &text[a .. b];
+}
+
+// Whether s is a scheme: a letter, then letters, digits, '+', '-', '.'
+fn isScheme(s &[]u8) Bool {
+  if s.len == 0usize or not isAlpha(s[0usize]) {return false;}
+  mut i = 1usize;
+  while i < s.len {
+    imm c = s[i];
+    if not (isAlpha(c) or isDigit(c) or c == '+' or c == '-' or c == '.') {return false;}
+    i = i + 1usize;
+  }
+  true;
+}
+
+// A path, query or fragment's text, made tidy (see READING): its error, or
+// none
+fn tidy(s &[]u8, base usize, out &mut String) UrlError {
+  mut i = 0usize;
+  while i < s.len {
+    imm c = s[i];
+    if isControl(c) {return UrlError.make(base + i, "a URL holds a control character");}
+    if needsEncoding(c) {appendEncoded(out, c);} else {out.appendByte(c);}
+    i = i + 1usize;
+  }
+  UrlError.none();
+}
+
+// A reference's parts, read from t into u by RFC 3986's appendix B: its
+// error, or none. Nothing is required: Url.parse and resolution check what
+// they need
+fn parseInto(t &[]u8, u &mut Url) UrlError {
+  // The scheme: before a ':' that comes before any '/', '?' or '#'
+  mut i = 0usize;
+  while i < t.len and t[i] != ':' and t[i] != '/' and t[i] != '?' and t[i] != '#' {i = i + 1usize;}
+  mut pos = 0usize;
+  if i < t.len and t[i] == ':' {
+    imm s = &t[0usize .. i];
+    if not isScheme(s) {return UrlError.make(0usize, "a scheme is a letter, then letters, digits, '+', '-' and '.'");}
+    mut k = 0usize;
+    while k < s.len {
+      u.scheme.appendByte(lower(s[k]));
+      k = k + 1usize;
+    }
+    pos = i + 1usize;
+  }
+  // The authority: after '//', up to '/', '?' or '#'
+  if pos + 1usize < t.len and t[pos] == '/' and t[pos + 1usize] == '/' {
+    u.hasAuthority = true;
+    imm start = pos + 2usize;
+    mut end = start;
+    while end < t.len and t[end] != '/' and t[end] != '?' and t[end] != '#' {end = end + 1usize;}
+    imm e = parseAuthority(&t[start .. end], start, u);
+    if not e.isNone() {return e;}
+    pos = end;
+  }
+  // The path, up to '?' or '#'
+  mut end = pos;
+  while end < t.len and t[end] != '?' and t[end] != '#' {end = end + 1usize;}
+  imm pe = tidy(&t[pos .. end], pos, &mut u.path);
+  if not pe.isNone() {return pe;}
+  pos = end;
+  // The query, up to '#'
+  if pos < t.len and t[pos] == '?' {
+    u.hasQuery = true;
+    end = pos + 1usize;
+    while end < t.len and t[end] != '#' {end = end + 1usize;}
+    imm qe = tidy(&t[pos + 1usize .. end], pos + 1usize, &mut u.query);
+    if not qe.isNone() {return qe;}
+    pos = end;
+  }
+  // The fragment: the rest
+  if pos < t.len and t[pos] == '#' {
+    u.hasFragment = true;
+    imm fe = tidy(&t[pos + 1usize ..], pos + 1usize, &mut u.fragment);
+    if not fe.isNone() {return fe;}
+  }
+  UrlError.none();
+}
+
+// '[userinfo@]host[:port]', a at offset base of the text
+fn parseAuthority(a &[]u8, base usize, u &mut Url) UrlError {
+  // The user information: before the last '@'
+  mut at = a.len;
+  mut k = 0usize;
+  while k < a.len {
+    if a[k] == '@' {at = k;}
+    k = k + 1usize;
+  }
+  mut hostStart = 0usize;
+  if at < a.len {
+    imm ui = &a[0usize .. at];
+    k = 0usize;
+    while k < ui.len {
+      if isControl(ui[k]) {return UrlError.make(base + k, "a URL holds a control character");}
+      k = k + 1usize;
+    }
+    u.userinfo = String.from(ui);
+    hostStart = at + 1usize;
+  }
+  imm hp = &a[hostStart ..];
+  imm hb = base + hostStart;
+  // The host: an IPv6 address in brackets, or up to the port's ':'
+  mut hostEnd = 0usize;
+  if hp.len > 0usize and hp[0usize] == '[' {
+    mut close = 1usize;
+    while close < hp.len and hp[close] != ']' {close = close + 1usize;}
+    if close == hp.len {return UrlError.make(hb, "an IPv6 address in a URL ends with ']'");}
+    imm v6 = &hp[1usize .. close];
+    if v6.len > 0usize and (v6[0usize] == 'v' or v6[0usize] == 'V') {
+      return UrlError.make(hb + 1usize, "an IPvFuture address ('[v1.x]') is not read yet");
+    }
+    k = 0usize;
+    while k < v6.len {
+      if v6[k] == '%' {return UrlError.make(hb + 1usize + k, "an IPv6 zone ('%25eth0') is not read yet");}
+      k = k + 1usize;
+    }
+    if not isIpv6(v6) {return UrlError.make(hb + 1usize, "an IPv6 address is eight groups of up to four hex digits, '::' standing for the zeros left out");}
+    k = 0usize;
+    while k < v6.len {
+      u.host.appendByte(lower(v6[k]));
+      k = k + 1usize;
+    }
+    u.hostKind = HostKind.Ipv6[];
+    hostEnd = close + 1usize;
+    if hostEnd < hp.len and hp[hostEnd] != ':' {return UrlError.make(hb + hostEnd, "an IPv6 address in brackets is followed by ':' and its port, or nothing");}
+  } else {
+    while hostEnd < hp.len and hp[hostEnd] != ':' {hostEnd = hostEnd + 1usize;}
+    imm h = &hp[0usize .. hostEnd];
+    k = 0usize;
+    while k < h.len {
+      imm c = h[k];
+      if c >= 0x80u8 {return UrlError.make(hb + k, "an internationalized host name is not read yet (IDNA)");}
+      if c == '%' {return UrlError.make(hb + k, "a percent-encoded host name is not read yet");}
+      if not (isUnreserved(c) or isSubDelim(c)) {return UrlError.make(hb + k, "a host name holds a character no host may");}
+      u.host.appendByte(lower(c));
+      k = k + 1usize;
+    }
+    u.hostKind = if h.len == 0usize {HostKind.Empty[];} elif isIpv4(h) {HostKind.Ipv4[];} else {HostKind.Name[];};
+  }
+  // The port: decimal, at most 65535; empty is no port
+  if hostEnd < hp.len {
+    imm p = &hp[hostEnd + 1usize ..];
+    mut v = 0u32;
+    k = 0usize;
+    while k < p.len {
+      if not isDigit(p[k]) {return UrlError.make(hb + hostEnd + 1usize + k, "a port is written in decimal digits");}
+      v = v * 10u32 + u32.from(p[k] - '0');
+      if v > 65535u32 {return UrlError.make(hb + hostEnd + 1usize, "a port is 0 to 65535");}
+      k = k + 1usize;
+    }
+    if p.len > 0usize {
+      u.port = u16.from(v);
+      u.hasPort = true;
+    }
+  }
+  UrlError.none();
+}
+
+// Whether s is an IPv4 address in dotted decimal: four numbers, 0 to 255
+fn isIpv4(s &[]u8) Bool {
+  mut parts = 0u32;
+  mut digits = 0u32;
+  mut v = 0u32;
+  mut i = 0usize;
+  while i <= s.len {
+    if i == s.len or s[i] == '.' {
+      if digits == 0u32 or v > 255u32 {return false;}
+      parts = parts + 1u32;
+      digits = 0u32;
+      v = 0u32;
+    } elif isDigit(s[i]) {
+      digits = digits + 1u32;
+      if digits > 3u32 {return false;}
+      v = v * 10u32 + u32.from(s[i] - '0');
+    } else {
+      return false;
+    }
+    i = i + 1usize;
+  }
+  parts == 4u32;
+}
+
+// Whether s is an IPv6 address as RFC 4291 writes one (section 2.2)
+fn isIpv6(s &[]u8) Bool {
+  mut groups = 0u32;
+  mut elided = false;
+  mut i = 0usize;
+  if s.len >= 2usize and s[0usize] == ':' and s[1usize] == ':' {
+    elided = true;
+    i = 2usize;
+    if i == s.len {return true;}
+  } elif s.len > 0usize and s[0usize] == ':' {
+    return false;
+  }
+  while true {
+    imm start = i;
+    while i < s.len and isHex(s[i]) {i = i + 1usize;}
+    if i < s.len and s[i] == '.' {
+      // An IPv4 tail: the last 32 bits
+      if not isIpv4(&s[start ..]) {return false;}
+      groups = groups + 2u32;
+      break;
+    }
+    imm digits = i - start;
+    if digits == 0usize or digits > 4usize {return false;}
+    groups = groups + 1u32;
+    if i == s.len {break;}
+    if s[i] != ':' {return false;}
+    i = i + 1usize;
+    if i < s.len and s[i] == ':' {
+      if elided {return false;}
+      elided = true;
+      i = i + 1usize;
+      if i == s.len {break;}
+    } elif i == s.len {
+      return false;
+    }
+  }
+  if elided {groups <= 7u32;} else {groups == 8u32;}
+}
+
+// The checks and tidying an absolute URL takes once read: its error, or
+// none
+fn finish(u &mut Url) UrlError {
+  if u.isHttp() {
+    if not u.hasAuthority or u.host.len() == 0usize {return UrlError.make(0usize, "an http or https URL has a host");}
+  }
+  if u.path.len() > 0usize {u.path = removeDotSegments(u.path.view());}
+  if u.isHttp() and u.path.len() == 0usize {u.path = String.from("/");}
+  UrlError.none();
+}
+
+// ---------------------------------------------------------------------------
+// Resolution (RFC 3986, section 5.2)
+// ---------------------------------------------------------------------------
+
+// path without its '.' and '..' segments (RFC 3986, 5.2.4)
+pub fn removeDotSegments(path &[]u8) String {
+  mut out = String.withCapacity(path.len);
+  mut i = 0usize;
+  imm n = path.len;
+  while i < n {
+    imm rest = &path[i ..];
+    if rest.len >= 3usize and &rest[0usize .. 3usize] == "../" {
+      i = i + 3usize;                                     // A
+    } elif rest.len >= 2usize and &rest[0usize .. 2usize] == "./" {
+      i = i + 2usize;                                     // A
+    } elif rest.len >= 3usize and &rest[0usize .. 3usize] == "/./" {
+      i = i + 2usize;                                     // B: '/./' becomes '/'
+    } elif rest == "/." {
+      out.append("/");                                    // B: '/.' becomes '/'
+      i = n;
+    } elif rest.len >= 4usize and &rest[0usize .. 4usize] == "/../" {
+      out = dropLastSegment(&out);                        // C
+      i = i + 3usize;
+    } elif rest == "/.." {
+      out = dropLastSegment(&out);                        // C
+      out.append("/");
+      i = n;
+    } elif rest == "." or rest == ".." {
+      i = n;                                              // D
+    } else {
+      // E: the first segment, with its '/', moves to the output
+      mut j = i + 1usize;
+      while j < n and path[j] != '/' {j = j + 1usize;}
+      out.append(&path[i .. j]);
+      i = j;
+    }
+  }
+  out;
+}
+
+// s without its last segment and the '/' before it
+fn dropLastSegment(s &String) String {
+  imm v = s.view();
+  mut k = v.len;
+  while k > 0usize {
+    k = k - 1usize;
+    if v[k] == '/' {return String.from(&v[0usize .. k]);}
+  }
+  String.empty();
+}
+
+// base's path merged with a relative path (RFC 3986, 5.2.3)
+fn merge(base &Url, rel &[]u8) String {
+  if base.hasAuthority and base.path.len() == 0usize {
+    mut out = String.from("/");
+    out.append(rel);
+    return out;
+  }
+  imm v = base.path.view();
+  mut k = v.len;
+  while k > 0usize and v[k - 1usize] != '/' {k = k - 1usize;}
+  mut out = String.from(&v[0usize .. k]);
+  out.append(rel);
+  out;
+}
+
+// The reference ref resolved against base, an absolute URL (RFC 3986,
+// 5.2.2), and checked as Url.parse checks one
+pub fn resolveRef(base &Url, ref &[]u8) Result[Url, UrlError] {
+  mut r = Url.empty();
+  imm e = parseInto(trimEnds(ref), &mut r);
+  if not e.isNone() {return Error[Url, UrlError][e];}
+  mut t = Url.empty();
+  if r.scheme.len() > 0usize {
+    t <=> r;
+  } else {
+    if r.hasAuthority {
+      t.hasAuthority = true;
+      t.userinfo <=> r.userinfo;
+      t.host <=> r.host;
+      t.hostKind = r.hostKind;
+      t.port = r.port;
+      t.hasPort = r.hasPort;
+      t.path <=> r.path;
+      t.query <=> r.query;
+      t.hasQuery = r.hasQuery;
+    } else {
+      if r.path.len() == 0usize {
+        t.path = base.path.copy();
+        if r.hasQuery {
+          t.query <=> r.query;
+          t.hasQuery = true;
+        } else {
+          t.query = base.query.copy();
+          t.hasQuery = base.hasQuery;
+        }
+      } else {
+        if r.path.view()[0usize] == '/' {
+          t.path <=> r.path;
+        } else {
+          t.path = merge(base, r.path.view());
+        }
+        t.query <=> r.query;
+        t.hasQuery = r.hasQuery;
+      }
+      t.hasAuthority = base.hasAuthority;
+      t.userinfo = base.userinfo.copy();
+      t.host = base.host.copy();
+      t.hostKind = base.hostKind;
+      t.port = base.port;
+      t.hasPort = base.hasPort;
+    }
+    t.scheme = base.scheme.copy();
+    t.fragment <=> r.fragment;
+    t.hasFragment = r.hasFragment;
+  }
+  imm f = finish(&mut t);
+  if not f.isNone() {return Error[Url, UrlError][f];}
+  Ok[Url, UrlError][t];
+}

@@ -1,0 +1,98 @@
+// Resolving references: RFC 3986's own examples (section 5.4, against its
+// base 'http://a/b/c/d;p?q'), every one, plus the shapes a Location header
+// takes. Where this package's tidying parts from the RFC's strict text it
+// is said: an http URL with an empty path is given '/', so the RFC's
+// 'http://g' is 'http://g/'; and 'http:g', which the RFC's strict parser
+// resolves to 'http:g', has no host, so it is refused as an http URL.
+
+mod resolve;
+
+import testing use *;
+import collections use String;
+import url use *;
+
+fn check(base &Url, ref &[]u8, want &[]u8) {
+  match base.resolve(ref) {
+    case imm r Ok {expectStr(r.value.text().view(), want, ref);}
+    case imm e Error {expectStr(e.value.message().view(), want, ref);}
+  }
+}
+
+fn main() i32 {
+  mut base = Url.empty();
+  match Url.parse("http://a/b/c/d;p?q") {
+    case mut r Ok {base <=> r.value;}
+    case imm e Error {require(false, "the RFC's base");}
+  }
+  expectStr(base.text().view(), "http://a/b/c/d;p?q", "the base");
+
+  // 5.4.1, normal examples
+  check(&base, "g:h", "g:h");
+  check(&base, "g", "http://a/b/c/g");
+  check(&base, "./g", "http://a/b/c/g");
+  check(&base, "g/", "http://a/b/c/g/");
+  check(&base, "/g", "http://a/g");
+  check(&base, "//g", "http://g/");
+  check(&base, "?y", "http://a/b/c/d;p?y");
+  check(&base, "g?y", "http://a/b/c/g?y");
+  check(&base, "#s", "http://a/b/c/d;p?q#s");
+  check(&base, "g#s", "http://a/b/c/g#s");
+  check(&base, "g?y#s", "http://a/b/c/g?y#s");
+  check(&base, ";x", "http://a/b/c/;x");
+  check(&base, "g;x", "http://a/b/c/g;x");
+  check(&base, "g;x?y#s", "http://a/b/c/g;x?y#s");
+  check(&base, "", "http://a/b/c/d;p?q");
+  check(&base, ".", "http://a/b/c/");
+  check(&base, "./", "http://a/b/c/");
+  check(&base, "..", "http://a/b/");
+  check(&base, "../", "http://a/b/");
+  check(&base, "../g", "http://a/b/g");
+  check(&base, "../..", "http://a/");
+  check(&base, "../../", "http://a/");
+  check(&base, "../../g", "http://a/g");
+
+  // 5.4.2, abnormal examples
+  check(&base, "../../../g", "http://a/g");
+  check(&base, "../../../../g", "http://a/g");
+  check(&base, "/./g", "http://a/g");
+  check(&base, "/../g", "http://a/g");
+  check(&base, "g.", "http://a/b/c/g.");
+  check(&base, ".g", "http://a/b/c/.g");
+  check(&base, "g..", "http://a/b/c/g..");
+  check(&base, "..g", "http://a/b/c/..g");
+  check(&base, "./../g", "http://a/b/g");
+  check(&base, "./g/.", "http://a/b/c/g/");
+  check(&base, "g/./h", "http://a/b/c/g/h");
+  check(&base, "g/../h", "http://a/b/c/h");
+  check(&base, "g;x=1/./y", "http://a/b/c/g;x=1/y");
+  check(&base, "g;x=1/../y", "http://a/b/c/y");
+  check(&base, "g?y/./x", "http://a/b/c/g?y/./x");
+  check(&base, "g?y/../x", "http://a/b/c/g?y/../x");
+  check(&base, "g#s/./x", "http://a/b/c/g#s/./x");
+  check(&base, "g#s/../x", "http://a/b/c/g#s/../x");
+  check(&base, "http:g", "url: an http or https URL has a host (at 0)");
+
+  // What Location headers say
+  mut site = Url.empty();
+  match Url.parse("https://example.com:8443/dir/page?x=1") {
+    case mut r Ok {site <=> r.value;}
+    case imm e Error {require(false, "a site");}
+  }
+  check(&site, "/login", "https://example.com:8443/login");
+  check(&site, "other", "https://example.com:8443/dir/other");
+  check(&site, "https://example.com/", "https://example.com/");
+  check(&site, "http://example.com/", "http://example.com/");
+  check(&site, "//cdn.example.net/a.bin", "https://cdn.example.net/a.bin");
+  check(&site, "  /spaced  ", "https://example.com:8443/spaced");
+  check(&site, "/a b", "https://example.com:8443/a%20b");
+  check(&site, "http://[::1]:99999/", "url: a port is 0 to 65535 (at 13)");
+  match site.resolve("//cdn.example.net:8443/a") {
+    case imm r Ok {expect(not r.value.sameOrigin(&site), "another host: another origin");}
+    case imm e Error {expect(false, "another host");}
+  }
+  match site.resolve("/b") {
+    case imm r Ok {expect(r.value.sameOrigin(&site), "a path: the same origin");}
+    case imm e Error {expect(false, "a path");}
+  }
+  done();
+}
