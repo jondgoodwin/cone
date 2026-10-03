@@ -454,6 +454,18 @@ Nodes *varDclExtendEnd(TypeCheckState *pstate, VarDclExtend *ext) {
     return ext->hoisted;
 }
 
+// A variable holds its type by value: rule 4's report site
+static void varDclSizeCheck(TypeCheckState *pstate, INode *node, void *extra) {
+    VarDclNode *name = (VarDclNode *)node;
+    INode *nosizeroot;
+    char *nosize = itypeNoSizeCause(name->vtype, &nosizeroot);
+    if (nosize) {
+        errorMsgNode((INode*)name, ErrorNoSize, "Variable %s cannot be held by value: %s %s.",
+            &name->namesym->namestr, itypeName(nosizeroot), nosize);
+        itypeNoSizeExplain(name->vtype);
+    }
+}
+
 // Type check variable against its initial value
 void varDclTypeCheck(TypeCheckState *pstate, VarDclNode *name) {
     itypeTypeCheck(pstate, (INode**)&name->perm);
@@ -534,14 +546,13 @@ void varDclTypeCheck(TypeCheckState *pstate, VarDclNode *name) {
         regionTracedGlobalNote(name);
 
     // A variable holds its type by value, so that type has to be able to say how
-    // large it is
-    INode *nosizeroot;
-    char *nosize = itypeNoSizeCause(name->vtype, &nosizeroot);
-    if (nosize) {
-        errorMsgNode((INode*)name, ErrorNoSize, "Variable %s cannot be held by value: %s %s.",
-            &name->namesym->namestr, itypeName(nosizeroot), nosize);
-        itypeNoSizeExplain(name->vtype);
-    }
+    // large it is. A parameter of a function reference's signature, checked as
+    // a reference's target while a layout is in flight, asks once that type is
+    // laid out: a reference does not demand what it points at.
+    if (structTargetDeferring())
+        structDeferCheck(pstate, varDclSizeCheck, (INode*)name, NULL);
+    else
+        varDclSizeCheck(pstate, (INode*)name, NULL);
 }
 
 // Perform data flow analysis

@@ -203,8 +203,10 @@ written in. So demanding a type lays it out and nothing more; its members wait.
 
 - `structLayoutEnter` and `structLayoutExit` count the layouts in flight. They
   are called by `inodeTypeCheck` around the check of every type that holds
-  values by value — a struct, an array, a tuple. A reference answers its own
-  size and a function signature has none, so neither counts there; a
+  values by value — a struct, an array, a tuple — through `structLayoutBegin`
+  and `structLayoutEnd`, which also keep those types on a stack, outermost
+  first: what a by-value cycle is named from (section 6). A reference answers
+  its own size and a function signature has none, so neither counts there; a
   function declaration's signature is held as one by `fnDclTypeCheck`, for
   another reason (below).
 - `structTypeCheck` lays the type out, sets `TypeChecked`, settles its drop
@@ -216,10 +218,12 @@ written in. So demanding a type lays it out and nothing more; its members wait.
   be a cycle only by the order of the walk, so the enum goes in the **variants
   queue** instead.
 - When the count returns to zero, `structLayoutExit` works the queues: every
-  waiting enum's remaining variants first, counted as in flight so that nothing
-  is checked until all are laid out, then each waiting type's members
-  (`structCheckMembers`: every member in its `nodelist`, then its overload sets,
-  then its traits' requirements), first laid out first, under a walk state of the
+  layout a reference's target left waiting and every waiting enum's remaining
+  variants first, counted as in flight so that nothing is checked until all are
+  laid out, then the checks that read those layouts (next section), then each
+  waiting type's members (`structCheckMembers`: the borrows a struct declaring
+  lifetimes holds, every member in its `nodelist`, then its overload sets, then
+  its traits' requirements), first laid out first, under a walk state of the
   type's own.
 
 **Checking a member may begin new layouts**, from a signature or a body, and
@@ -255,12 +259,93 @@ or moved out through a borrowed reference twice, clean. Laying out every
 variant with its enum closes both (`move_flow_infection`).
 
 **What it does not change.** A real by-value cycle is still refused, by the same
-size question (section 6): one of its types is always asked while in flight. And
-a reference still type checks its target, which lays it out (`refTypeCheck`) — so a variant's field `&W`, where `W`
-holds the enum by value, lays `W` out while the variant is in flight, and `W`'s
-field is refused as though it closed a cycle. Written with `W` above the enum it
-compiles. That is the one source-order dependence measured to remain; see
-section 13.
+size question (section 6): one of its types is always asked while in flight.
+
+### A reference does not demand its target
+
+**Only by-value containment lays a type out.** A struct's field, an array's
+element, a tuple's element and a variant's payload hold a value of their type,
+so each asks that type its size, which is read from its layout. A reference of
+any kind — `&T`, `*T`, `&[]T`, `&<Trait`, an owning one (`So[T]`, `Rc[perm, T]`,
+`Arc[perm, T]`, a traced region's, with or without a lock permission), a
+function reference — is one or two pointers whatever it points at, and an
+`Option` of one is still one pointer, its null the `None`. So laying a
+reference out never lays out what it points at.
+
+**A reference's target is resolved, not laid out.** While a layout of a type
+holding values by value is in flight (`structValueInFlight`),
+`refTargetTypeCheck` checks the target with target mode set
+(`structTargetEnter`): a name is bound to its declaration, a generic's instance
+is made and memoized, an array's or a signature's parts are checked as types —
+but a struct reached there that has not begun is not laid out. It waits
+(`structTargetWait`, from `inodeTypeCheck`), and so does an instance of a
+generic enum made there, with its variants (`genericEnumInstanceLayout`).
+Outside any layout — a function's body — a target is laid out at once, as
+before: nothing in flight can meet it there.
+
+**Every check that reads a target's layout waits too**, and runs once no
+layout is in flight (`structWorkQueues`), after the waiting layouts and before
+any type's members (`structDeferCheck`):
+
+| Check | Reads | Now |
+| --- | --- | --- |
+| what a key may hold (`ErrorKeyBorrow`) | whether the target holds a borrow | `refKeyBorrowCheck`, waiting |
+| a virtual reference's vtable (`ErrorGenericVtable`) | the trait's members and implementers | `structMakeVtable`, waiting |
+| an array target's element (`ErrorNoSize`) and move flag | the element's layout | `arrayTypeFinish`, waiting (`structArrayWait`) |
+| a function reference's parameters (`ErrorNoSize`) | each parameter type's layout | `varDclSizeCheck`, waiting |
+| a function reference's lifetimes (`lifeSigCheck`) | whether each type holds a borrow | `fnSigLifeCheck`, waiting |
+| whether an instance keeps its written type arguments | whether an argument holds a borrow (`lifeUseInstance`) | decided again (`genericInstanceUseSettle`) |
+| the borrows a struct declaring lifetimes holds (`ErrorLifetimeUndeclared`) | whether a field's target holds one | `lifeStructCheck`, with every struct's members (step 9) |
+
+Two kinds of check do not wait. **A condition on a generic** — a `where` on it,
+on its enum or on a member — decides whether the instance exists, so where one
+is written, `genericMemoize` lays the arguments out first (`structTypeSettle`),
+target mode suspended (`genericConditioned`). A `Sendable` clause standing
+alone is the exception: whether a type may cross threads is answered
+provisionally of one not yet laid out, noted, and judged again once every type
+is (`genericSendableNote`), so it lays nothing out. That is what lets an
+actor's handle, `Arc[opaq, actors.Mailbox[M]]` with `Mailbox[M Sendable]`, come
+before the message enum holding the handle by value
+(`concurrency_actors_declared_last`). **The reference's own
+region and permission** — a region ref, a permission, which lock fits which
+region (`refRegionCheck`, `refLockCheck`) — are its kind, not its target, and
+are checked with it as before. Whether a type may cross threads was already
+asked of the whole type where something crosses (`itypeThreadBound`), and a
+traced reference's place once every type is laid out (`regionTracedCheckAll`).
+
+**A by-value use settles what a reference left waiting.** A field
+(`fieldDclTypeCheck`) and a use of a type alias (`nameUseTypeCheckType`) call
+`structTypeSettle` on their type, which lays out a waiting struct and finishes
+a waiting array at once: the holder reads its move flag in its own layout. A
+plain name or an instance demands its declaration anyway; an alias, whose
+declaration was checked once, as a target, is what needs it — `struct Pairs {
+pub p Pair; pub r &Pair; }` with `alias Pair = Array[Moving, 2]` written below
+checks `r` first, fields being walked last first, and without the settle `Pairs`
+was copyable (`struct_typecheck_layout_reference`).
+
+**A layout left waiting keeps its expansion depth.** A generic instance made as
+a target is laid out later, outside the instantiation that made it, so the job
+carries `genericInstantiateDepth` and restores it while it runs: an expansion
+through references, `next *Box[Box[T]]`, is still refused at `ErrorInstDepth`.
+
+**A function's signature is not inside a layout.** `fnDclTypeCheck` holds its
+signature as a layout for the members queue's sake (above), but it holds nothing
+by value, so it sets the stack's base aside (`structValueHold`) and suspends
+target mode: a reference in a signature lays its target out before the
+signature's lifetimes read it, as it always did.
+
+**What it fixed.** Measured on `877be3a1`, each refused as `ErrorNoSize` "still
+being laid out" in one declaration order and compiled in the other: `B_state`
+holding `Option[A]` written above `A_state` holding `Option[A]` and `B`, each
+held through `So[...]` (two actors holding each other's handles) — `Option[A]`
+lays out `Some[A]`, which holds A, whose owning reference laid `A_state` out,
+which found `Option[A]`'s `Some` in flight; a variant's `&W` or `So[W]` with `W`,
+holding the enum, written below it; three such states in a ring; and an
+actor's message enum, holding the handle by value, written after the handle or
+its state (`concurrency_actors_declared_last`). Refused in
+both orders: a function reference taking by value a struct that holds the
+reference's holder, a reference to an array of one, and a raw pointer to a
+generic instance holding the pointer's holder (`struct_layout_reference_order`).
 
 ## 5. Re-entry
 
@@ -294,13 +379,14 @@ it is. `itypeNoSizeCause` answers, and there are five ways the answer is no:
 | a trait that is not `SameSize` | `structTypeCheck` | use a virtual reference, `&<Trait>` |
 | a function signature | `fnSigTypeCheck` | use a reference to a function |
 | a struct with an unsized field | `structTypeCheck`, infectiously | fix that field — the cause is further down |
-| still being laid out | rule 4 | break the cycle with a reference |
+| a by-value cycle: still being laid out | rule 4 | break the cycle with a reference |
 
 All five are one `ErrorCode`, `ErrorNoSize`. Five codes would be
 indistinguishable to everything except the message, and the message is what the
 author needs, so the cause lives in the text.
 
-**A reference answers its own size and never consults its target.** A pointer is
+**A reference answers its own size and never consults its target**, nor lays it
+out (section 4, "A reference does not demand its target"). A pointer is
 a pointer whatever it points at. That single rule settles every recursion case
 without the field having to know which case it is in:
 
@@ -314,6 +400,24 @@ struct A { b B }  struct B { a A }    // error — A asks B, which asks A mid-la
 There is deliberately no recursion check. An unfinished struct has no size, a
 finished one does, and the diagnostic belongs to the field that needed one, which
 is also the better error: it names what to change.
+
+**A type found in flight closes a by-value cycle, and the message names it.**
+Only by-value containment lays a type out, so a size asked of a type still being
+laid out — or of an enum with a variant in flight — is asked from inside a chain
+of types each holding the next by value. `itypeNoSizeCause` hands the type, the
+variant in flight for an enum, and the types its field walk passed through to
+`structLayoutCycle`, which reads the rest off the stack of layouts in flight:
+
+```
+Error 1069: Field p cannot be held by value: P contains Q contains R contains P by value: infinite size. Break the cycle by holding one of them through a reference.
+```
+
+An array or a tuple on the stack is part of the type holding it and is not
+named. Were the type not on the stack, which no measured case reaches, the
+message would be the old one, "is still being laid out, so it would have to
+contain itself". ⚠ A function's signature demanded from inside a layout asks
+its parameters' sizes there, and one in flight would be named as a by-value
+cycle through the layouts outside it; no such case is in the corpus.
 
 "Unfinished" is read only of a type whose size depends on what it holds. A
 reference, pointer or array reference can itself be in flight — `alias QRef =
@@ -498,8 +602,11 @@ Steps marked **→** are where a demand can leave and re-enter.
 Steps 9 and 10 run from the members queue (`structCheckMembers`), once no
 layout is in flight:
 
-9. **→** Analyze every member — methods, static functions, statics — then each
-   overload set the type declares.
+9. Hold a struct declaring lifetimes to naming every borrow it holds
+   (`lifeStructCheck`): here rather than in the layout, since a field's
+   reference does not lay out what it points at, and whether that holds a
+   borrow is read from its layout. **→** Analyze every member — methods, static
+   functions, statics — then each overload set the type declares.
 10. **→** Verify each mixed-in trait's method requirements against the signatures
    now known: a name the type declares itself must have the one candidate of the
    trait's signature, and a requirement with no body is unmet in a struct — an
@@ -673,12 +780,12 @@ Kept so that reopening one is a decision rather than a rediscovery.
 - **The suite cannot assert an absent check.** Where a rule is unenforced the
   corpus records it by establishing the opposite, so a scenario that starts
   failing may be one a change correctly invalidated.
-- **A reference inside a variant's layout can still refuse a non-cycle.** A
-  reference type checks its target, so a variant's `&W`, where `W` holds the enum
-  by value and is written below the enum, lays `W` out while the variant is in
-  flight, and `W`'s field is `ErrorNoSize` "a variant still being laid out".
-  Written above the enum, `W` is laid out first and it compiles. Closing it needs
-  a reference that does not demand its target's layout; measured, not built.
+- **Anything new that reads a reference's target as the reference is checked
+  must wait.** A reference never demands its target's layout (section 4, "A
+  reference does not demand its target"), so while a layout is in flight the
+  target may not be laid out yet: a check reading its fields, its flags, whether
+  it holds a borrow or its vtable goes through `structDeferCheck`, as each of
+  section 4's table does, or reads a half-made answer that nothing reports.
 - **One declaration's error can silence another's body.** `fnDclTypeCheck` skips a
   body when the error count moved during its signature's check, and demand can
   run other declarations inside that check — a signature naming an enum lays the
@@ -715,6 +822,11 @@ Kept so that reopening one is a decision rather than a rediscovery.
 | `ir/types/struct.c` | `structTypeCheck` | the layout, steps 1 to 8a of section 10.1; sets `TypeChecked` at the layout point; `structSetDropFn` is step 8 |
 | | `structCheckMembers` | steps 9 and 10, run from the members queue; `structCheckTraitReqs` is step 10 |
 | | `structLayoutEnter`, `structLayoutExit` | the count of layouts in flight, and the queues worked when it returns to zero — section 4, "Layout before members" |
+| | `structLayoutBegin`, `structLayoutEnd`, `structLayoutCycle` | a by-value layout in flight, kept on the stack a by-value cycle is named from — section 6 |
+| | `structValueInFlight`, `structValueHold` | whether a by-value layout is in flight, and a function's signature setting those outside it aside |
+| | `structTargetEnter`, `structTargetWait`, `structDeferLayout`, `structDeferCheck` | target mode, and the layouts and checks a reference's target left waiting — section 4, "A reference does not demand its target" |
+| | `structTypeSettle`, `structArrayWait` | a by-value use settling what a target left waiting; an array target's element size waiting |
+| `ir/types/reference.c` | `refTargetTypeCheck` | a reference's, pointer's or slice's target resolved, laid out only where no layout is in flight; `refKeyBorrowCheck` and the vtable wait with it |
 | `ir/stmt/fndcl.c` | `fnDclTypeCheck` | the nine steps of section 10.3, including both error-delta gates |
 | `ir/stmt/intrinsic.c` | `intrinsicDclTypeCheck` | step 4 of section 10.3: a declared intrinsic's type argument must have a size |
 | `ir/stmt/vardcl.c` | `varDclTypeCheck` | section 10.4 |
