@@ -378,7 +378,9 @@ Fields and constants have no flow participation at all.
   `structTypeCheck`, after any trait spliced in for a generic instance. Only
   the last is trustworthy.
 - **`vtblidx` is uninitialized** unless `structMakeVtable` assigned it, which it
-  does not for private or enum-typed fields.
+  does not for private or enum-typed fields. A private field read through a
+  virtual reference is refused before generation (`fnCallPrivateVtable`), which
+  is what keeps generation from reading the hole.
 - **No duplicate check on parameter names.** `fn f(a i32, a i32)` compiles.
 - **`scope` is stamped by two different phases**, and the type check's
   `scope <= 1` literal rule silently reclassifies anything whose stamping was

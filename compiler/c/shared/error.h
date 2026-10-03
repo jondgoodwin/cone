@@ -196,6 +196,7 @@ enum ErrorCode {
 
     // Virtual dispatch
     ErrorGenericVtable = 1087,  // A trait requiring a generic method, which has no one signature a vtable slot could hold
+    ErrorPrivateVtable = 1258,  // A trait's private method or field reached through a virtual reference: the vtable holds public members only
 
     // The closed family: 'enum'
     ErrorEnumAbstract = 1088,   // 'enum trait': an enum's variant set is its identity, so no abstraction corresponds to one

@@ -1,0 +1,80 @@
+// A trait's private members have no slot in its vtable, which holds public
+// members only (doc/reference/refvirtref.html, "Type Restrictions"), so a
+// virtual dispatch cannot reach one. Inside the trait's own module, privacy is
+// module-wide and lets the name through, so the refusal is at the use, naming
+// the member and the trait, with 'pub' the remedy. The call reached generation
+// and the compiler crashed reading the slot index of a method that was never
+// given one; a field read through the same missing slot compiled and the
+// program crashed.
+//
+// Making the virtual reference is not refused: a private member is not a
+// requirement an implementer meets, and a virtual reference that reaches only
+// public members is sound. From another module the private member is not
+// visible at all, and that is the one thing said: layers.cone beside this file
+// declares that trait. trait_vref_private runs what still works.
+
+mod trait_typecheck_vref_private;
+
+trait Layer {
+  pub fn depth(self &) u32;
+  fn pending(self &) u32;
+  count u32;
+}
+
+struct Plain {
+  pub count u32;
+  fn depth(self &) u32 {count;}
+  fn pending(self &) u32 {count + 1u32;}
+}
+
+// Through a borrowed virtual reference: the public method dispatches, the
+// private method and the private field are refused
+fn look(l &<Layer) u32 {
+  imm d = l.depth();
+  imm p = l.pending();   //~ ErrorPrivateVtable:12 "`pending` is private, so Layer's vtable has no slot for it and it cannot be reached through a virtual reference. Declare it 'pub' in Layer."
+  l.count;               //~ ErrorPrivateVtable:4 "`count` is private, so Layer's vtable"
+}
+
+// An enum's method is dispatched on the variant through the same vtable,
+// through a plain reference as through a virtual one. 'total' reaches the
+// private 'weight' through 'self', in each variant's own copy, with no dispatch.
+enum Signal {
+  pub fn total(self &) i32 {self.weight() + 1;}
+  fn weight(self &) i32;
+
+  struct Low {
+    pub n i32;
+    fn weight(self &) i32 {n;}
+  }
+  struct High {
+    pub n i32;
+    fn weight(self &) i32 {n * 100;}
+  }
+}
+use Signal;
+
+fn weigh(s &Signal) i32 {
+  imm t = s.total();
+  s.weight();            //~ ErrorPrivateVtable:4 "a call dispatched on the variant goes through that vtable. Declare it 'pub' in Signal."
+}
+
+fn weighVirtual(s &<Signal) i32 {
+  s.weight();            //~ ErrorPrivateVtable:4 "`weight` is private, so Signal's vtable"
+}
+
+// From outside the trait's module the method is not visible, and only that is
+// said
+fn foreign(c &<layers.Cover) u32 {
+  imm d = c.depth();
+  c.pending();           //~ ErrorNotPublic:4 "May not access the private method/field `pending`"
+}
+
+fn main() {
+  imm plain = new Plain(3u32);
+  imm view &<Layer = &plain;
+  imm d = view.depth();
+
+  // Through an owning virtual reference, which lends itself to the call
+  mut owner So[Layer] = new So[Plain](4u32);
+  imm o = owner.pending();   //~ ErrorPrivateVtable:16 "`pending` is private"
+}
