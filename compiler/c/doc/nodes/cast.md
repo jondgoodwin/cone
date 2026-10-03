@@ -278,7 +278,8 @@ pointer→int is `ptrtoint`, int→pointer is `inttoptr`, everything else is
 `bitcast`.
 
 `genlIsType` has three paths: virtual reference (compare vtable pointers),
-nullable-pointer enum (compare against null), and tagged (read the
+nullable-pointer enum (compare the pointer against a null of its own type: a
+slice's or a virtual reference's first word, never the two-word value), and tagged (read the
 `IsTagField` and compare against `tagnbr`).
 
 ## Hazards

@@ -1634,7 +1634,8 @@ Three shapes, the first two chosen in `genlSetupTaggedTrait`:
 
 - **Nullable pointer** — a `SameSize` enum with exactly two variants, one of
   one field and one of two whose second is pointer-like. **No struct is emitted
-  at all**; the value *is* the pointer and null is the empty variant. Each enum
+  at all**; the value *is* the pointer and null is the empty variant (for a
+  slice or a virtual reference, the null pointer word of the pair). Each enum
   decides it for its own set, so an `Option`-shaped base keeps it whatever extends
   it: the extension's copies are other declarations, and with a third variant the
   extension is tagged.
