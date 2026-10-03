@@ -1,0 +1,89 @@
+// Struct values, arrays held in structs and early returns on a SPIR-V target,
+// the shapes of geomath's vectors, frusta and rays, each of which crashed
+// LLVM's SPIR-V backend or made a module its validator refused: a struct
+// chosen by an 'if' between a new one and a parameter; one made in a loop and
+// used after it; a struct's array field indexed in a loop; a struct's first
+// field read through a reference to the struct; a field of a field read
+// through a reference after two early returns; and an Option returned early
+// from three places.
+
+mod module_target_spirv_values;
+
+struct V4 {
+  pub x f32; pub y f32; pub z f32; pub w f32;
+
+  fn scale(self, s f32) V4 {new V4(x * s, y * s, z * s, w * s);}
+  fn length(self) f32 {(x * x + y * y + z * z + w * w).sqrt();}
+}
+
+struct Plane {
+  pub nx f32; pub ny f32; pub nz f32; pub d f32;
+
+  fn distance(self, x f32, y f32, z f32) f32 {nx * x + ny * y + nz * z + d;}
+}
+
+struct Box {
+  pub planes Array[Plane, 6];
+}
+
+struct Dial {
+  pub mean f32;
+  pub spread f32;
+}
+
+pub fn normalize(v V4) V4 {
+  imm len = v.length();
+  if len > 0. {v.scale(1. / len);} else {v;};
+}
+
+pub fn lastScaled(v V4, n f32) f32 {
+  mut k f32 = 0.;
+  mut s = v;
+  while k < n {
+    s = v.scale(k);
+    if s.x > 100. {break;}
+    k = k + 1.;
+  }
+  s.y;
+}
+
+pub fn inside(b Box, x f32, y f32, z f32) Bool {
+  mut i = 0usize;
+  while i < 6usize {
+    if b.planes[i].distance(x, y, z) < 0. {return false;}
+    i = i + 1usize;
+  }
+  true;
+}
+
+pub fn dialAt(d &Dial, t f32) f32 {
+  d.mean + d.spread * t;
+}
+
+struct Grid {
+  pub size f32;
+  pub nx i32;
+
+  fn width(self &, k i32) i32 {
+    if k > 0 {nx * k;} else {nx;};
+  }
+}
+
+struct Field {
+  pub blend f32;
+  pub grid Grid;
+}
+
+pub fn gridWidth(f &Field, a f32, b f32, k i32) i32 {
+  if a < 0. {return 0;}
+  if b < 0. {return 1;}
+  f.grid.width(k);
+}
+
+pub fn firstHit(a f32, b f32, c f32) Option[f32] {
+  if c <= 0. {return Some[f32][0.];}
+  if b > 0. {return None[f32][];}
+  imm disc = b * b - a * c;
+  if disc < 0. {return None[f32][];}
+  Some[f32][(-b - disc.sqrt()) / a];
+}

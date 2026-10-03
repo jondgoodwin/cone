@@ -18,6 +18,7 @@
 #include <llvm-c/Analysis.h>
 #include <llvm-c/BitWriter.h>
 #include <llvm-c/Comdat.h>
+#include <llvm-c/ErrorHandling.h>
 #include <llvm-c/Support.h>
 #include <llvm-c/Transforms/PassBuilder.h>
 
@@ -1180,10 +1181,18 @@ LLVMTargetMachineRef genlCreateMachine(ConeOptions *opt) {
 void genlOut(char *objpath, char *asmpath, LLVMModuleRef mod, LLVMTargetMachineRef machine) {
     char *err;
 
-    // Generate assembly file if requested
-    if (asmpath && LLVMTargetMachineEmitToFile(machine, mod, asmpath, LLVMAssemblyFile, &err) != 0) {
-        errorMsg(ErrorGenErr, "Could not emit asm file: %s", err);
-        LLVMDisposeMessage(err);
+    // Generate assembly file if requested. LLVM's SPIR-V backend rewrites the
+    // module it emits (its intrinsics, its own types), and crashes emitting
+    // that again, so on a GPU target the assembly is emitted from a copy.
+    if (asmpath) {
+        int gpu = strncmp(LLVMGetTarget(mod), "spirv", 5) == 0;
+        LLVMModuleRef asmmod = gpu ? LLVMCloneModule(mod) : mod;
+        if (LLVMTargetMachineEmitToFile(machine, asmmod, asmpath, LLVMAssemblyFile, &err) != 0) {
+            errorMsg(ErrorGenErr, "Could not emit asm file: %s", err);
+            LLVMDisposeMessage(err);
+        }
+        if (gpu)
+            LLVMDisposeModule(asmmod);
     }
 
     // Generate .o or .obj file
@@ -1305,6 +1314,583 @@ static void genlGpuCalls(GenState *gen) {
     }
 }
 
+// LLVM 23's SPIR-V backend mishandles a struct or array held as one value (a
+// first-class aggregate) wherever more than one instruction carries it: a phi
+// of one crashes its pointer-cast legalisation when an incoming value is a
+// parameter; its structurizer breaks dominance when an incoming value is a
+// constant, or when the value is made in a loop and used after it; and it
+// breaks a function returning a struct taken whole out of another. So on a
+// GPU target, after optimization, every aggregate is carried as its scalar
+// leaves: a phi or select of one becomes one per leaf, inserting and
+// extracting parts only renames leaves, and a use that takes the value whole
+// (a return, a store, a call) gets it rebuilt from its leaves just before it.
+// What makes an aggregate (a parameter, a load, a call) has its leaves
+// extracted just after it. One of more leaves than this is left whole.
+#define GenlAggMaxLeaves 256
+
+typedef struct {
+    LLVMValueRef key;       // an aggregate value
+    LLVMValueRef *leaves;   // its scalar leaves, in field order
+} GenlAggSlot;
+
+// Each aggregate's leaves, in an open-addressed table by its LLVM value
+typedef struct {
+    GenlAggSlot *slots;
+    uint32_t mask;
+    uint32_t used;
+} GenlAggMap;
+
+static int genlIsAggType(LLVMTypeRef type) {
+    LLVMTypeKind kind = LLVMGetTypeKind(type);
+    return kind == LLVMStructTypeKind || kind == LLVMArrayTypeKind;
+}
+
+// The number of scalar leaves of a type, nested aggregates flattened
+static uint32_t genlAggLeafCount(LLVMTypeRef type) {
+    switch (LLVMGetTypeKind(type)) {
+    case LLVMStructTypeKind: {
+        uint32_t n = 0;
+        unsigned cnt = LLVMCountStructElementTypes(type);
+        for (unsigned i = 0; i < cnt && n <= GenlAggMaxLeaves; ++i)
+            n += genlAggLeafCount(LLVMStructGetTypeAtIndex(type, i));
+        return n;
+    }
+    case LLVMArrayTypeKind: {
+        uint64_t len = LLVMGetArrayLength2(type);
+        uint32_t each = len ? genlAggLeafCount(LLVMGetElementType(type)) : 0;
+        if (each == 0)
+            return 0;
+        return len > GenlAggMaxLeaves || len * each > GenlAggMaxLeaves ? GenlAggMaxLeaves + 1 : (uint32_t)(len * each);
+    }
+    default:
+        return 1;
+    }
+}
+
+static uint32_t genlAggElemCount(LLVMTypeRef type) {
+    return LLVMGetTypeKind(type) == LLVMStructTypeKind
+        ? LLVMCountStructElementTypes(type) : (uint32_t)LLVMGetArrayLength2(type);
+}
+
+static LLVMTypeRef genlAggElemType(LLVMTypeRef type, uint32_t i) {
+    return LLVMGetTypeKind(type) == LLVMStructTypeKind
+        ? LLVMStructGetTypeAtIndex(type, i) : LLVMGetElementType(type);
+}
+
+// The leaves of a value, extracted at the builder's position, or of a
+// constant, folded
+static void genlAggSplit(GenState *gen, LLVMValueRef val, LLVMValueRef **leaves) {
+    LLVMTypeRef type = LLVMTypeOf(val);
+    if (!genlIsAggType(type)) {
+        *(*leaves)++ = val;
+        return;
+    }
+    // A part with no leaves, an empty struct or a zero-length array, is
+    // neither taken out nor put back: the backend cannot select a value of
+    // no size
+    uint32_t cnt = genlAggElemCount(type);
+    for (uint32_t i = 0; i < cnt; ++i) {
+        if (genlAggLeafCount(genlAggElemType(type, i)) == 0)
+            continue;
+        LLVMValueRef elem = LLVMIsAConstant(val)
+            ? LLVMGetAggregateElement(val, i)
+            : LLVMBuildExtractValue(gen->builder, val, i, "");
+        genlAggSplit(gen, elem, leaves);
+    }
+}
+
+// An aggregate of a type built from its leaves at the builder's position
+static LLVMValueRef genlAggBuild(GenState *gen, LLVMTypeRef type, LLVMValueRef **leaves) {
+    if (!genlIsAggType(type))
+        return *(*leaves)++;
+    LLVMValueRef agg = LLVMGetPoison(type);
+    uint32_t cnt = genlAggElemCount(type);
+    for (uint32_t i = 0; i < cnt; ++i) {
+        if (genlAggLeafCount(genlAggElemType(type, i)) > 0)
+            agg = LLVMBuildInsertValue(gen->builder, agg, genlAggBuild(gen, genlAggElemType(type, i), leaves), i, "");
+    }
+    return agg;
+}
+
+// Whether a value is an aggregate this carries as leaves
+static int genlAggCarried(LLVMValueRef val) {
+    LLVMTypeRef type = LLVMTypeOf(val);
+    return genlIsAggType(type) && genlAggLeafCount(type) <= GenlAggMaxLeaves;
+}
+
+static GenlAggSlot *genlAggSlot(GenlAggMap *map, LLVMValueRef key) {
+    uint32_t i = (uint32_t)(((uintptr_t)key >> 4) * 2654435761u) & map->mask;
+    while (map->slots[i].key && map->slots[i].key != key)
+        i = (i + 1) & map->mask;
+    return &map->slots[i];
+}
+
+// Room for a value's leaves, which it is then filled in
+static LLVMValueRef *genlAggPut(GenlAggMap *map, LLVMValueRef key) {
+    if ((map->used + 1) * 2 > map->mask + 1) {
+        GenlAggSlot *old = map->slots;
+        uint32_t oldcap = map->mask + 1;
+        map->mask = oldcap * 2 - 1;
+        map->slots = (GenlAggSlot *)calloc(oldcap * 2, sizeof(GenlAggSlot));
+        for (uint32_t i = 0; i < oldcap; ++i) {
+            if (old[i].key)
+                *genlAggSlot(map, old[i].key) = old[i];
+        }
+        free(old);
+    }
+    uint32_t nleaves = genlAggLeafCount(LLVMTypeOf(key));
+    GenlAggSlot *slot = genlAggSlot(map, key);
+    slot->key = key;
+    slot->leaves = (LLVMValueRef *)malloc((nleaves ? nleaves : 1) * sizeof(LLVMValueRef));
+    ++map->used;
+    return slot->leaves;
+}
+
+// The first leaf of the part of an aggregate type an index path names, and
+// that part's type
+static uint32_t genlAggPathLeaf(LLVMTypeRef type, const unsigned *idx, unsigned nidx, LLVMTypeRef *part) {
+    uint32_t first = 0;
+    for (unsigned d = 0; d < nidx; ++d) {
+        for (unsigned i = 0; i < idx[d]; ++i)
+            first += genlAggLeafCount(genlAggElemType(type, i));
+        type = genlAggElemType(type, idx[d]);
+    }
+    *part = type;
+    return first;
+}
+
+static LLVMValueRef *genlAggLeaves(GenState *gen, GenlAggMap *map, LLVMValueRef fn, LLVMValueRef val);
+
+// A scalar as a leaf: a scalar taken out of a carried aggregate is that
+// aggregate's leaf
+static LLVMValueRef genlAggScalar(GenState *gen, GenlAggMap *map, LLVMValueRef fn, LLVMValueRef val) {
+    if (!LLVMIsAExtractValueInst(val) || !genlAggCarried(LLVMGetOperand(val, 0)))
+        return val;
+    LLVMValueRef agg = LLVMGetOperand(val, 0);
+    LLVMTypeRef part;
+    uint32_t first = genlAggPathLeaf(LLVMTypeOf(agg), LLVMGetIndices(val), LLVMGetNumIndices(val), &part);
+    return genlAggLeaves(gen, map, fn, agg)[first];
+}
+
+// The leaves of a carried aggregate, found once
+static LLVMValueRef *genlAggLeaves(GenState *gen, GenlAggMap *map, LLVMValueRef fn, LLVMValueRef val) {
+    GenlAggSlot *slot = genlAggSlot(map, val);
+    if (slot->key)
+        return slot->leaves;
+    LLVMTypeRef type = LLVMTypeOf(val);
+    uint32_t nleaves = genlAggLeafCount(type);
+    LLVMValueRef *leaves;
+
+    // Putting a part in renames the part's leaves
+    if (LLVMIsAInsertValueInst(val)) {
+        LLVMValueRef *from = genlAggLeaves(gen, map, fn, LLVMGetOperand(val, 0));
+        LLVMTypeRef part;
+        uint32_t first = genlAggPathLeaf(type, LLVMGetIndices(val), LLVMGetNumIndices(val), &part);
+        LLVMValueRef elem = LLVMGetOperand(val, 1);
+        LLVMValueRef scalar = NULL;
+        LLVMValueRef *partleaves = genlIsAggType(part)
+            ? genlAggLeaves(gen, map, fn, elem)
+            : (scalar = genlAggScalar(gen, map, fn, elem), &scalar);
+        leaves = genlAggPut(map, val);
+        memcpy(leaves, from, nleaves * sizeof(LLVMValueRef));
+        memcpy(leaves + first, partleaves, genlAggLeafCount(part) * sizeof(LLVMValueRef));
+        return leaves;
+    }
+
+    // Taking a part out of a carried aggregate is a range of its leaves
+    if (LLVMIsAExtractValueInst(val) && genlAggCarried(LLVMGetOperand(val, 0))) {
+        LLVMValueRef agg = LLVMGetOperand(val, 0);
+        LLVMValueRef *from = genlAggLeaves(gen, map, fn, agg);
+        LLVMTypeRef part;
+        uint32_t first = genlAggPathLeaf(LLVMTypeOf(agg), LLVMGetIndices(val), LLVMGetNumIndices(val), &part);
+        leaves = genlAggPut(map, val);
+        memcpy(leaves, from + first, nleaves * sizeof(LLVMValueRef));
+        return leaves;
+    }
+
+    // A select of aggregates is a select per leaf
+    if (LLVMIsASelectInst(val)) {
+        LLVMValueRef *iftrue = genlAggLeaves(gen, map, fn, LLVMGetOperand(val, 1));
+        LLVMValueRef *iffalse = genlAggLeaves(gen, map, fn, LLVMGetOperand(val, 2));
+        leaves = genlAggPut(map, val);
+        LLVMPositionBuilderBefore(gen->builder, val);
+        for (uint32_t i = 0; i < nleaves; ++i)
+            leaves[i] = LLVMBuildSelect(gen->builder, LLVMGetOperand(val, 0), iftrue[i], iffalse[i], "");
+        return leaves;
+    }
+
+    // A constant's are folded; what else makes an aggregate (a parameter, a
+    // load, a call) has its leaves extracted just after it
+    leaves = genlAggPut(map, val);
+    if (LLVMIsAArgument(val)) {
+        // After the entry block's allocas, which stay first
+        LLVMBasicBlockRef entry = LLVMGetEntryBasicBlock(fn);
+        LLVMValueRef first = LLVMGetFirstInstruction(entry);
+        while (LLVMIsAAllocaInst(first))
+            first = LLVMGetNextInstruction(first);
+        LLVMPositionBuilder(gen->builder, entry, first);
+    }
+    else if (!LLVMIsAConstant(val))
+        LLVMPositionBuilder(gen->builder, LLVMGetInstructionParent(val), LLVMGetNextInstruction(val));
+    LLVMValueRef *next = leaves;
+    genlAggSplit(gen, val, &next);
+    return leaves;
+}
+
+static int genlAggRenames(LLVMValueRef inst) {
+    return (LLVMIsAInsertValueInst(inst) || LLVMIsAExtractValueInst(inst)
+        || LLVMIsAPHINode(inst) || LLVMIsASelectInst(inst)) && genlAggCarried(inst);
+}
+
+static void genlGpuAggregatesFn(GenState *gen, GenlAggMap *map, LLVMValueRef fn) {
+    // The carried aggregates: parameters and instructions
+    uint32_t navail = 64, nvals = 0;
+    LLVMValueRef *vals = (LLVMValueRef *)malloc(navail * sizeof(LLVMValueRef));
+    unsigned nparams = LLVMCountParams(fn);
+    for (unsigned i = 0; i < nparams; ++i) {
+        if (nvals == navail)
+            vals = (LLVMValueRef *)realloc(vals, (navail *= 2) * sizeof(LLVMValueRef));
+        if (genlAggCarried(LLVMGetParam(fn, i)))
+            vals[nvals++] = LLVMGetParam(fn, i);
+    }
+    for (LLVMBasicBlockRef blk = LLVMGetFirstBasicBlock(fn); blk; blk = LLVMGetNextBasicBlock(blk)) {
+        for (LLVMValueRef inst = LLVMGetFirstInstruction(blk); inst; inst = LLVMGetNextInstruction(inst)) {
+            if (nvals == navail)
+                vals = (LLVMValueRef *)realloc(vals, (navail *= 2) * sizeof(LLVMValueRef));
+            if (genlAggCarried(inst))
+                vals[nvals++] = inst;
+        }
+    }
+    if (nvals == 0) {
+        free(vals);
+        return;
+    }
+
+    // Each aggregate phi becomes a phi per leaf, all made before any is
+    // filled, since a loop's phis take each other
+    for (uint32_t v = 0; v < nvals; ++v) {
+        LLVMValueRef phi = vals[v];
+        if (!LLVMIsAPHINode(phi))
+            continue;
+        uint32_t nleaves = genlAggLeafCount(LLVMTypeOf(phi));
+        LLVMValueRef *typed = (LLVMValueRef *)malloc((nleaves ? nleaves : 1) * sizeof(LLVMValueRef));
+        LLVMValueRef *next = typed;
+        genlAggSplit(gen, LLVMGetPoison(LLVMTypeOf(phi)), &next);
+        LLVMValueRef *leaves = genlAggPut(map, phi);
+        LLVMPositionBuilderBefore(gen->builder, phi);
+        for (uint32_t i = 0; i < nleaves; ++i)
+            leaves[i] = LLVMBuildPhi(gen->builder, LLVMTypeOf(typed[i]), "");
+        free(typed);
+    }
+    for (uint32_t v = 0; v < nvals; ++v) {
+        LLVMValueRef phi = vals[v];
+        if (!LLVMIsAPHINode(phi))
+            continue;
+        uint32_t nleaves = genlAggLeafCount(LLVMTypeOf(phi));
+        LLVMValueRef *leaves = genlAggLeaves(gen, map, fn, phi);
+        unsigned nin = LLVMCountIncoming(phi);
+        for (unsigned in = 0; in < nin; ++in) {
+            LLVMBasicBlockRef inblk = LLVMGetIncomingBlock(phi, in);
+            LLVMValueRef *src = genlAggLeaves(gen, map, fn, LLVMGetIncomingValue(phi, in));
+            for (uint32_t i = 0; i < nleaves; ++i)
+                LLVMAddIncoming(leaves[i], &src[i], &inblk, 1);
+        }
+    }
+
+    // Every use of a carried aggregate: a part taken out is its leaf, what
+    // renames leaves needs nothing, and anything else gets it rebuilt
+    uint32_t ndead = 0, deadavail = 64;
+    LLVMValueRef *dead = (LLVMValueRef *)malloc(deadavail * sizeof(LLVMValueRef));
+    for (uint32_t v = 0; v < nvals; ++v) {
+        LLVMValueRef val = vals[v];
+        uint32_t nusers = 0;
+        for (LLVMUseRef use = LLVMGetFirstUse(val); use; use = LLVMGetNextUse(use))
+            ++nusers;
+        LLVMValueRef *users = (LLVMValueRef *)malloc((nusers ? nusers : 1) * sizeof(LLVMValueRef));
+        nusers = 0;
+        for (LLVMUseRef use = LLVMGetFirstUse(val); use; use = LLVMGetNextUse(use))
+            users[nusers++] = LLVMGetUser(use);
+        for (uint32_t u = 0; u < nusers; ++u) {
+            LLVMValueRef user = users[u];
+            if (!LLVMIsAInstruction(user) || genlAggRenames(user))
+                continue;
+            if (LLVMIsAExtractValueInst(user) && !genlIsAggType(LLVMTypeOf(user))) {
+                LLVMValueRef leaf = genlAggScalar(gen, map, fn, user);
+                if (leaf == user)       // one extracted here, as a leaf
+                    continue;
+                LLVMReplaceAllUsesWith(user, leaf);
+                if (ndead == deadavail)
+                    dead = (LLVMValueRef *)realloc(dead, (deadavail *= 2) * sizeof(LLVMValueRef));
+                dead[ndead++] = user;
+                continue;
+            }
+            if (LLVMIsAPHINode(user))   // an aggregate phi too large to carry
+                continue;
+            LLVMValueRef *next = genlAggLeaves(gen, map, fn, val);
+            LLVMPositionBuilderBefore(gen->builder, user);
+            LLVMValueRef whole = genlAggBuild(gen, LLVMTypeOf(val), &next);
+            int nops = LLVMGetNumOperands(user);
+            for (int op = 0; op < nops; ++op) {
+                if (LLVMGetOperand(user, op) == val)
+                    LLVMSetOperand(user, op, whole);
+            }
+        }
+        free(users);
+    }
+
+    // What carried the aggregates whole is now unused: the scalars taken out,
+    // then the renamings, latest first, once the phis among them, which may
+    // take each other, take nothing
+    for (uint32_t d = 0; d < ndead; ++d)
+        LLVMInstructionEraseFromParent(dead[d]);
+    for (uint32_t v = 0; v < nvals; ++v) {
+        LLVMValueRef phi = vals[v];
+        if (!LLVMIsAPHINode(phi))
+            continue;
+        unsigned nin = LLVMCountIncoming(phi);
+        for (unsigned in = 0; in < nin; ++in)
+            LLVMSetOperand(phi, in, LLVMGetPoison(LLVMTypeOf(phi)));
+    }
+    int erased;
+    do {
+        erased = 0;
+        for (uint32_t v = nvals; v-- > 0;) {
+            LLVMValueRef val = vals[v];
+            if (val && !LLVMIsAArgument(val) && genlAggRenames(val) && !LLVMGetFirstUse(val)) {
+                LLVMInstructionEraseFromParent(val);
+                vals[v] = NULL;
+                erased = 1;
+            }
+        }
+    } while (erased);
+    free(dead);
+    free(vals);
+}
+
+// How many first fields down from 'outer' 'inner' is (0 when they are the
+// same type), or -1 when it is not there: a pointer to the one is a pointer
+// to the other, but not to SPIR-V
+static int genlFirstFieldDepth(LLVMTypeRef outer, LLVMTypeRef inner) {
+    int depth = 0;
+    while (outer != inner) {
+        LLVMTypeKind kind = LLVMGetTypeKind(outer);
+        if (kind == LLVMStructTypeKind && LLVMCountStructElementTypes(outer) > 0)
+            outer = LLVMStructGetTypeAtIndex(outer, 0);
+        else if (kind == LLVMArrayTypeKind)
+            outer = LLVMGetElementType(outer);
+        else
+            return -1;
+        ++depth;
+    }
+    return depth;
+}
+
+// The type an address computation reaches
+static LLVMTypeRef genlGepResultType(LLVMValueRef gep) {
+    LLVMTypeRef type = LLVMGetGEPSourceElementType(gep);
+    int nops = LLVMGetNumOperands(gep);
+    for (int op = 2; op < nops; ++op) {
+        if (LLVMGetTypeKind(type) == LLVMStructTypeKind)
+            type = LLVMStructGetTypeAtIndex(type, (unsigned)LLVMConstIntGetZExtValue(LLVMGetOperand(gep, op)));
+        else
+            type = LLVMGetElementType(type);
+    }
+    return type;
+}
+
+// The type a pointer parameter points to, as its uses agree on it: the one
+// every type it is used as is a first field of, or NULL
+static LLVMTypeRef genlParamPointee(LLVMValueRef param) {
+    LLVMTypeRef pointee = NULL;
+    for (LLVMUseRef use = LLVMGetFirstUse(param); use; use = LLVMGetNextUse(use)) {
+        LLVMValueRef user = LLVMGetUser(use);
+        LLVMTypeRef type;
+        if (LLVMIsAGetElementPtrInst(user) && LLVMGetOperand(user, 0) == param)
+            type = LLVMGetGEPSourceElementType(user);
+        else if (LLVMIsALoadInst(user))
+            type = LLVMTypeOf(user);
+        else if (LLVMIsAStoreInst(user) && LLVMGetOperand(user, 1) == param)
+            type = LLVMTypeOf(LLVMGetOperand(user, 0));
+        else
+            continue;
+        if (pointee == NULL || genlFirstFieldDepth(type, pointee) >= 0)
+            pointee = type;
+        else if (genlFirstFieldDepth(pointee, type) < 0)
+            return NULL;
+    }
+    return pointee;
+}
+
+// The type a pointer is known to point to, or NULL
+static LLVMTypeRef genlGpuPointee(LLVMValueRef ptr) {
+    if (LLVMIsAAllocaInst(ptr))
+        return LLVMGetAllocatedType(ptr);
+    if (LLVMIsAGetElementPtrInst(ptr))
+        return genlGepResultType(ptr);
+    if (LLVMIsAGlobalVariable(ptr))
+        return LLVMGlobalGetValueType(ptr);
+    if (LLVMIsAArgument(ptr))
+        return genlParamPointee(ptr);
+    return NULL;
+}
+
+// LLVM 23's SPIR-V backend types a pointer by the address computations made
+// from it, and with opaque pointers LLVM drops one whose indices are all
+// zero (instsimplify, GVN and the inliner each fold it): a struct's first
+// field is then read through the struct's own pointer, and an array field
+// indexed from it, so the backend indexes the struct itself (by a run-time
+// index, or past a scalar) and the module is refused. So on a GPU target,
+// after optimization, a load, store or address computation using a pointer
+// as a type it holds as a first field gets the zero indices put back.
+static void genlGpuRetypeFn(GenState *gen, LLVMValueRef fn) {
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(gen->context);
+    LLVMValueRef zero = LLVMConstInt(i32, 0, 0);
+    for (LLVMBasicBlockRef blk = LLVMGetFirstBasicBlock(fn); blk; blk = LLVMGetNextBasicBlock(blk)) {
+        LLVMValueRef inst = LLVMGetFirstInstruction(blk);
+        while (inst) {
+            LLVMValueRef next = LLVMGetNextInstruction(inst);
+            int ptrop;
+            LLVMTypeRef used;
+            if (LLVMIsALoadInst(inst)) {
+                ptrop = 0;
+                used = LLVMTypeOf(inst);
+            }
+            else if (LLVMIsAStoreInst(inst)) {
+                ptrop = 1;
+                used = LLVMTypeOf(LLVMGetOperand(inst, 0));
+            }
+            else if (LLVMIsAGetElementPtrInst(inst)) {
+                ptrop = 0;
+                used = LLVMGetGEPSourceElementType(inst);
+            }
+            else {
+                inst = next;
+                continue;
+            }
+            LLVMValueRef ptr = LLVMGetOperand(inst, ptrop);
+            LLVMTypeRef pointee = genlGpuPointee(ptr);
+            int depth = pointee ? genlFirstFieldDepth(pointee, used) : -1;
+            if (depth <= 0) {
+                inst = next;
+                continue;
+            }
+            LLVMValueRef idx[64];
+            if (depth > 60) {
+                inst = next;
+                continue;
+            }
+            LLVMPositionBuilderBefore(gen->builder, inst);
+            if (LLVMIsAGetElementPtrInst(inst)) {
+                // An address computation starting at its pointer, not from
+                // it, is rebuilt from the type its pointer is known to point to
+                int nops = LLVMGetNumOperands(inst);
+                LLVMValueRef first = LLVMGetOperand(inst, 1);
+                if (!LLVMIsAConstantInt(first) || LLVMConstIntGetZExtValue(first) != 0 || depth + nops > 60) {
+                    inst = next;
+                    continue;
+                }
+                int n = 0;
+                idx[n++] = first;
+                for (int d = 0; d < depth; ++d)
+                    idx[n++] = zero;
+                for (int op = 2; op < nops; ++op)
+                    idx[n++] = LLVMGetOperand(inst, op);
+                LLVMValueRef gep = LLVMIsInBounds(inst)
+                    ? LLVMBuildInBoundsGEP2(gen->builder, pointee, ptr, idx, n, "")
+                    : LLVMBuildGEP2(gen->builder, pointee, ptr, idx, n, "");
+                LLVMReplaceAllUsesWith(inst, gep);
+                LLVMInstructionEraseFromParent(inst);
+            }
+            else {
+                idx[0] = zero;
+                for (int d = 0; d < depth; ++d)
+                    idx[d + 1] = zero;
+                LLVMSetOperand(inst, ptrop, LLVMBuildInBoundsGEP2(gen->builder, pointee, ptr, idx, depth + 1, ""));
+            }
+            inst = next;
+        }
+    }
+}
+
+// LLVM 23's SPIR-V backend crashes in its pointer-cast legalisation on an
+// address computed from one made in another block, from a parameter, once
+// the function has returned early twice. So on a GPU target an address
+// computed from another starting at it (its first index zero) is computed
+// in one step from where that one starts, as instcombine would have it; and
+// one computed by stepping from another made in another block computes that
+// other again just before it.
+static void genlGpuGepChainsFn(GenState *gen, LLVMValueRef fn) {
+    for (LLVMBasicBlockRef blk = LLVMGetFirstBasicBlock(fn); blk; blk = LLVMGetNextBasicBlock(blk)) {
+        LLVMValueRef inst = LLVMGetFirstInstruction(blk);
+        while (inst) {
+            LLVMValueRef next = LLVMGetNextInstruction(inst);
+            LLVMValueRef base = LLVMIsAGetElementPtrInst(inst) ? LLVMGetOperand(inst, 0) : NULL;
+            if (!base || !LLVMIsAGetElementPtrInst(base)) {
+                inst = next;
+                continue;
+            }
+            LLVMValueRef first = LLVMGetOperand(inst, 1);
+            int nbase = LLVMGetNumOperands(base);
+            int nops = LLVMGetNumOperands(inst);
+            if (LLVMIsAConstantInt(first) && LLVMConstIntGetZExtValue(first) == 0
+                && LLVMGetGEPSourceElementType(inst) == genlGepResultType(base) && nbase + nops <= 64) {
+                LLVMValueRef idx[64];
+                int n = 0;
+                for (int op = 1; op < nbase; ++op)
+                    idx[n++] = LLVMGetOperand(base, op);
+                for (int op = 2; op < nops; ++op)
+                    idx[n++] = LLVMGetOperand(inst, op);
+                LLVMPositionBuilderBefore(gen->builder, inst);
+                LLVMTypeRef type = LLVMGetGEPSourceElementType(base);
+                LLVMValueRef ptr = LLVMGetOperand(base, 0);
+                LLVMValueRef gep = LLVMIsInBounds(inst) && LLVMIsInBounds(base)
+                    ? LLVMBuildInBoundsGEP2(gen->builder, type, ptr, idx, n, "")
+                    : LLVMBuildGEP2(gen->builder, type, ptr, idx, n, "");
+                LLVMReplaceAllUsesWith(inst, gep);
+                LLVMInstructionEraseFromParent(inst);
+                if (!LLVMGetFirstUse(base))
+                    LLVMInstructionEraseFromParent(base);
+                // The merged address may itself start from another
+                inst = gep;
+                continue;
+            }
+            // Stepping from an address made elsewhere: make it again here
+            LLVMValueRef user = inst;
+            while (LLVMIsAGetElementPtrInst(base) && LLVMGetInstructionParent(base) != blk) {
+                LLVMValueRef copy = LLVMInstructionClone(base);
+                LLVMPositionBuilderBefore(gen->builder, user);
+                LLVMInsertIntoBuilder(gen->builder, copy);
+                LLVMSetOperand(user, 0, copy);
+                if (!LLVMGetFirstUse(base))
+                    LLVMInstructionEraseFromParent(base);
+                user = copy;
+                base = LLVMGetOperand(copy, 0);
+            }
+            inst = next;
+        }
+    }
+}
+
+static void genlGpuAggregates(GenState *gen) {
+    GenlAggMap map;
+    map.mask = 255;
+    map.used = 0;
+    map.slots = (GenlAggSlot *)calloc(map.mask + 1, sizeof(GenlAggSlot));
+    LLVMSetCurrentDebugLocation2(gen->builder, NULL);
+    for (LLVMValueRef fn = LLVMGetFirstFunction(gen->module); fn; fn = LLVMGetNextFunction(fn)) {
+        if (LLVMIsDeclaration(fn))
+            continue;
+        genlGpuAggregatesFn(gen, &map, fn);
+        genlGpuRetypeFn(gen, fn);
+        genlGpuGepChainsFn(gen, fn);
+        for (uint32_t i = 0; i <= map.mask; ++i)
+            free(map.slots[i].leaves);
+        memset(map.slots, 0, (map.mask + 1) * sizeof(GenlAggSlot));
+        map.used = 0;
+    }
+    free(map.slots);
+}
+
 // Generate IR nodes into LLVM IR using LLVM
 void genpgm(GenState *gen, ProgramNode *pgm) {
     char *err;
@@ -1357,15 +1943,21 @@ void genpgm(GenState *gen, ProgramNode *pgm) {
     // call (genlGpuCalls), break each struct and array into separate values
     // (so a struct holding a reference dissolves into locals), and infer each
     // pointer's address space from its origin, given the target machine
-    // (genlLLVMOptions names the flat space); then fold what that leaves. A
-    // release build adds the usual optimizations. Instcombine is not asked to
-    // prove it reached a fixpoint, which LLVM's own pipelines do not ask
-    // either, and which a 3x3 matrix's product does not reach in one round.
+    // (genlLLVMOptions names the flat space); then fold what that leaves,
+    // with instsimplify and not instcombine, which rewrites a field's address
+    // as a byte offset from its struct's, an address LLVM 23's SPIR-V backend
+    // crashes on; and last, make the control flow structured, each branch
+    // merging before the next is taken (structurizecfg), since that backend's
+    // own structurizer leaves a chain of early returns, or a loop's body
+    // returning early, as a module the validator refuses. A release build adds
+    // the usual optimizations. Then what is left of a struct or array value
+    // is carried as its scalar leaves, and every field's address is computed
+    // from its struct's type (genlGpuAggregates).
     timerBegin(OptTimer);
     const char *pipeline = gen->opt->gpu
         ? (gen->opt->release
-            ? "always-inline,function(sroa,infer-address-spaces,instcombine<no-verify-fixpoint>,reassociate,gvn,simplifycfg)"
-            : "always-inline,function(sroa,infer-address-spaces,instcombine<no-verify-fixpoint>,simplifycfg)")
+            ? "always-inline,function(sroa,infer-address-spaces,instsimplify,reassociate,gvn,simplifycfg,structurizecfg)"
+            : "always-inline,function(sroa,infer-address-spaces,instsimplify,simplifycfg,structurizecfg)")
         : gen->opt->release
         ? "default<O2>"
         : "function(mem2reg,reassociate,gvn,simplifycfg)";
@@ -1378,6 +1970,8 @@ void genpgm(GenState *gen, ProgramNode *pgm) {
         errorMsg(ErrorGenErr, "Could not optimize: %s", msg);
         LLVMDisposeErrorMessage(msg);
     }
+    if (gen->opt->gpu && !passerr)
+        genlGpuAggregates(gen);
 
     // Serialize the LLVM IR, if requested
     if (gen->opt->print_llvmir && LLVMPrintModuleToFile(gen->module, fileMakePath(gen->opt->output, gen->opt->srcname, "ir"), &err) != 0) {
@@ -1430,7 +2024,13 @@ static int genlComdatSupport(char *triple) {
 // into the header, after the OpLoopMerge it has already placed there, which
 // must come just before the branch (a loop whose body and exit both scale a
 // struct's field, once the struct is broken into values, is refused by the
-// validator in a release build).
+// validator in a release build). Two of LLVM's code generation passes for a
+// CPU are off too, since each rewrites addresses into what that backend
+// crashes on under SPIR-V's logical addressing: loop strength reduction
+// walks an array in a loop by a pointer stepped a byte count at a time; and
+// after CodeGenPrepare, a field's address computed from a parameter in one
+// block and used in another crashes its pointer-cast legalisation, and a loop
+// whose body exits early from within a branch crashes its region splitting.
 static void genlLLVMOptions(int gpu) {
     char *env = getenv("CONE_LLVM_OPTIONS");
     const char *argv[64];
@@ -1439,6 +2039,8 @@ static void genlLLVMOptions(int gpu) {
     if (gpu) {
         argv[argc++] = "-assume-default-is-flat-addrspace";
         argv[argc++] = "-disable-machine-cse";
+        argv[argc++] = "-disable-lsr";
+        argv[argc++] = "-disable-cgp";
     }
     if (env != NULL && *env != '\0') {
         char *opts = memAllocStr(env, strlen(env));
@@ -1459,6 +2061,9 @@ void genSetup(GenState *gen, ConeOptions *opt) {
     // one). Type check's flow reads this before anything is generated.
     opt->gpu = opt->triple != NULL && strncmp(opt->triple, "spirv", 5) == 0;
     genlLLVMOptions(opt->gpu);
+    // A crash inside LLVM then names the pass and the function it was in, as
+    // llc's does, rather than ending conec without a word
+    LLVMEnablePrettyStackTrace();
 
     LLVMTargetMachineRef machine = genlCreateMachine(opt);
     if (!machine)
