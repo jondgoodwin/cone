@@ -2002,7 +2002,7 @@ DEMANGLE_EXAMPLES = [
     ("_CINvC4gsub4pickxxE", "gsub.pick[i64,i64]"),
     ("_CNvINt6HolderxE5tally", "Holder[i64].tally"),
     ("_CNvNt5Gauge7reading", "Gauge.reading"),
-    ("_CNvNt6Bundle4drop", "Bundle.drop"),
+    ("_CNvNt6Bundleu11_drop_9b166b", "Bundle.`-drop`"),
     ("_CNvNt3Vecopl", "Vec.+"),
     ("_CNvNt4Listorx", "List.&[]"),
     ("_CYNt5GaugeNt5Meter", "Gauge as Meter (vtable)"),

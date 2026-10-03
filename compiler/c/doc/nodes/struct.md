@@ -863,9 +863,11 @@ members", is the mechanism.
    anything to do as it dies (`itypeNeedsFinal`: a value with a drop, a tuple or
    an array holding one, an owning reference whose release does something —
    into a region with `dealiasRef` or one that is `Move`, `regionReleaseActs`; a
-   traced region's reference has nothing to do), synthesize a `drop` method, owned
-   by the type so its symbol is spelled as any method's — `Bundle.drop`,
-   `_CNvNt6Bundle4drop` — that is the value's whole death in the ruled order
+   traced region's reference has nothing to do), synthesize a drop method, owned
+   by the type so its symbol is spelled as any method's — ``Bundle.`-drop` ``,
+   `_CNvNt6Bundleu11_drop_9b166b`, named `-drop` (`typeDropName`) because `drop`
+   is an ordinary method name a type may declare itself, and the two would
+   otherwise share a symbol — that is the value's whole death in the ruled order
    [Jon 26 Sep]: its `final`, then each field that needs finalizing, in field
    order, then each owning reference a field holds, released in field order. A
    variant that keeps its enum's `final` beside its own (name resolution, step
@@ -913,7 +915,8 @@ members", is the mechanism.
    finalizes or a field holds an owner), and
    each instance of a generic enum is asked on its own — `Option[i32]` has none,
    `Option[Fin]` one, `Option[&Fin]` none and stays a bare pointer. It is a
-   function of the enum, `drop`, owned by it so its symbol is `E.drop`, public
+   function of the enum, `-drop` as a struct's is, owned by it so its symbol is
+   ``E.`-drop` ``, public
    as a struct's is, and **not a method**: an enum's methods are its variants'
    (requirements on them, defaults cloned into them, generated for none as the
    enum's), so without `FlagMethFld` it is neither cloned nor required, and is

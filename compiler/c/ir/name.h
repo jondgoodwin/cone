@@ -32,7 +32,11 @@ extern Name *staticLifeName;  // "'static", the global lifetime (lifetime.h)
 extern Name *unknownBrandName; // "'=?", an invariant lifetime nothing is known of: the same as none
 extern Name *selfTypeName; // "Self"
 extern Name *thisName;  // "this"
-extern Name *dropName;  // "drop"
+extern Name *dropName;  // "drop": the finalizer the compiler gives a module
+// "-drop": the drop the compiler gives a type (structSetDropFn,
+// structSetEnumDropFn). 'drop' is an ordinary method name, so the generated one
+// takes a name no plainly written method has, and the two never share a symbol.
+extern Name *typeDropName;
 extern Name *cloneName; // "clone" method
 extern Name *finalName; // "final": a type's finalizer method, and a module's own finalizer
 // "-final": an enum's 'final' as cloned into a variant that declares its own,

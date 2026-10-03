@@ -173,6 +173,7 @@ void nametblInit() {
     thisName = nametblFind("this", 4);
     cloneName = nametblFind("clone", 5);
     dropName = nametblFind("drop", 4);
+    typeDropName = nametblFind("-drop", 5);
     finalName = nametblFind("final", 5);
     enumFinalName = nametblFind("-final", 6);
     initName = nametblFind("init", 4);

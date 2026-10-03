@@ -1,0 +1,185 @@
+// 'drop' is an ordinary method name. A type's finalizer is the method named
+// 'final' (refinitdrop.html, "The method's name must be final"), and nothing in
+// the reference reserves 'drop' on a type: only a module the compiler gives a
+// finalizer may not declare a function named 'drop' (refmodule.html). So a type
+// may declare a method named 'drop', called like any other, and it is never
+// what finalizes the value.
+//
+// The compiler gives a type whose fields have anything to do as they die a
+// drop function of its own: the value's whole death, run where the value dies.
+// It was named 'drop', so a type that both needed one and declared a method
+// named 'drop' had two declarations spelled one symbol, and the compile was
+// abandoned as a compiler defect (Error 1075). The generated one is now named
+// '-drop', as the compiler's other hidden declarations are ('-final', '-temp'),
+// and the two are distinct.
+//
+// Each shape below declares a 'drop' that prints when it is called, on a type
+// whose generated drop has something visible to do: finalize a field whose
+// type prints from its 'final', or release an owner holding one. So each
+// prints its own 'drop' line where it is called and the field's 'final' line
+// where the value dies, and never the reverse: the method is not the
+// finalizer, and the finalizer is not the method.
+
+mod struct_drop_method;
+
+import stdio use *;
+
+fn say(s &[]u8) {
+  printStr(s);
+  printStr("\n");
+}
+
+struct Res {
+  pub id i32;
+  fn final(self &uni) {
+    printStr("  Res.final ");
+    printInt(id);
+    printStr("\n");
+  }
+}
+
+// A field that finalizes, and an owner: the generated drop finalizes the one
+// and releases the other, and 'drop' is the type's own method beside it
+struct Held {
+  r Res;
+  o So[Res];
+  pub fn drop(self &mut) {
+    say("  Held.drop");
+  }
+}
+
+// Its own 'final' too: the generated drop runs it, then the field's
+struct Final {
+  r Res;
+  fn final(self &uni) {
+    say("  Final.final");
+  }
+  pub fn drop(self &mut) {
+    say("  Final.drop");
+  }
+}
+
+// The very signature the generated drop has, a '&uni' receiver and no return
+// value. A '&uni' receiver cannot be borrowed from a variable, so it is never
+// called here: what is checked is that declaring it beside the generated drop
+// compiles, and that the value still dies through the generated one.
+struct SameSig {
+  o So[Res];
+  pub fn drop(self &uni) {
+    say("  SameSig.drop");
+  }
+}
+
+// A generic type's instance, whose generated drop is the instance's
+struct Box[T] {
+  o So[T];
+  pub fn drop(self &mut) {
+    say("  Box.drop");
+  }
+}
+
+// Nothing to finalize, so nothing is generated: 'drop' is the only one
+struct Plain {
+  x i32;
+  pub fn drop(self &mut) i32 {
+    say("  Plain.drop");
+    x;
+  }
+}
+
+// An enum is finalized through its own generated drop, which dispatches to its
+// variant's. A variant declares 'drop'; the enum gives every variant a default
+// 'drop'; and the enum has a static function named 'drop' of its own, beside
+// the generated drop that is also the enum's.
+enum Ev {
+  fn drop() {
+    say("  Ev.drop (static)");
+  }
+  struct Own {
+    o So[Res];
+    pub fn drop(self &mut) {
+      say("  Ev.Own.drop");
+    }
+  }
+  struct Bare {}
+}
+
+enum Dv {
+  pub fn drop(self &mut) {
+    say("  Dv.drop (default)");
+  }
+  struct Own {
+    o So[Res];
+  }
+  struct Bare {}
+}
+
+fn held() {
+  say("held:");
+  mut h = new Held(new Res(1), new So[Res](new Res(2)));
+  h.drop();
+  say("  end");
+}
+
+fn withFinal() {
+  say("withFinal:");
+  mut f = new Final(new Res(3));
+  f.drop();
+  say("  end");
+}
+
+fn sameSig() {
+  say("sameSig:");
+  imm s = new SameSig(new So[Res](new Res(4)));
+  say("  end");
+}
+
+fn generic() {
+  say("generic:");
+  mut b = new Box[Res](new So[Res](new Res(5)));
+  b.drop();
+  say("  end");
+}
+
+fn plain() {
+  say("plain:");
+  mut p = new Plain(8);
+  imm got = p.drop();
+  printStr("  returned ");
+  printInt(got);
+  printStr("\n");
+  say("  end");
+}
+
+fn variant() {
+  say("variant:");
+  mut e Ev = Ev.Own[new So[Res](new Res(6))];
+  match e {
+    case mut a Own { a.drop(); }
+    else { say("  else"); }
+  }
+  Ev.drop();
+  say("  end");
+}
+
+fn enumDefault() {
+  say("enumDefault:");
+  // Typed as the enum, so it dies through the enum's generated drop
+  imm whole Dv = Dv.Own[new So[Res](new Res(10))];
+  // Typed as the variant, so it dies through the variant's
+  mut d = Dv.Own[new So[Res](new Res(9))];
+  d.drop();
+  mut b = Dv.Bare[];
+  b.drop();
+  say("  end");
+}
+
+fn main() {
+  held();
+  withFinal();
+  sameSig();
+  generic();
+  plain();
+  variant();
+  enumDefault();
+}

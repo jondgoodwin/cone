@@ -25,6 +25,7 @@ Name *selfTypeName;
 Name *thisName;
 Name *cloneName;
 Name *dropName;
+Name *typeDropName;
 Name *finalName;
 Name *enumFinalName;
 Name *initName;
