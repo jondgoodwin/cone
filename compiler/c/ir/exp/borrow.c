@@ -10,7 +10,20 @@
 #include <assert.h>
 
 // Create a borrowed ref node
+// The type an injected borrow of 'node' points at, given as 'type', often a
+// declaration: where the value's own type is a use of it naming invariant
+// lifetimes, the use, so that the borrow keeps the brands the value carries
+static INode *borrowPointee(INode *node, INode *type) {
+    if (!lifeInvariantSeen || type == unknownType || !isExpNode(node))
+        return type;
+    INode *use = ((IExpNode*)node)->vtype;
+    if (use != type && use != NULL && itypeGetTypeDcl(use) == itypeGetTypeDcl(type) && lifeTypeHasBrands(use))
+        return use;
+    return type;
+}
+
 INode *newBorrowMutRef(INode *node, INode* type, INode *perm) {
+    type = borrowPointee(node, type);
     RefNode *reftype = type != unknownType ? newRefNodeFull(RefTag, node, borrowRef, perm, type) : (RefNode*)unknownType;
     RefNode *borrownode = newRefNodeFull(BorrowTag, node, borrowRef, perm, node);
     borrownode->vtype = (INode*)reftype;
@@ -75,7 +88,7 @@ void borrowMutRef(INode **nodep, INode* type, INode *perm) {
     // nothing else would set it, and newRefNode's default means global.
     RefNode *reftype = (RefNode*)unknownType;
     if (type != unknownType) {
-        reftype = newRefNodeFull(RefTag, node, borrowRef, perm, type);
+        reftype = newRefNodeFull(RefTag, node, borrowRef, perm, borrowPointee(node, type));
         reftype->scope = scope;
     }
     RefNode *borrownode = newRefNodeFull(BorrowTag, node, borrowRef, perm, node);

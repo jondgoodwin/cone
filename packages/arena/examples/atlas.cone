@@ -1,0 +1,95 @@
+// Two dynamic arenas side by side: towns in one, the roads between them in
+// the other. A road holds the keys of the two towns it joins, which are keys
+// of the towns' arena, so it is a 'Road['=t]', kept in the roads' arena: a
+// value in one arena may hold another's keys. Each key opens only its own
+// arena, and the compiler holds every step to that: 'towns[k]' for a town's
+// key, 'roads[k]' for a road's. A road's key handed to the towns' arena is
+// refused at compile time (the compiler's suite pins that:
+// test/cases/lifetime/lifetime_inv_cross_arena.cone).
+//
+// 'Atlas.empty()' mints both brands: ''=t' and ''=r' are named by no
+// parameter, so each call makes an atlas whose arenas are its own.
+//
+// Run it with
+//   congo run packages/arena/examples/atlas.cone
+
+mod atlas;
+
+import stdio use *;
+import arena use *;
+import collections use *;
+
+struct Town {
+  pub name String;
+  pub people i64;
+}
+
+// A road between two towns, by their keys
+struct Road['=t] {
+  pub from &'=t Town;
+  pub to &'=t Town;
+  pub km i64;
+}
+
+// The two arenas, and the keys of every road
+struct Atlas['=t, '=r] {
+  pub towns DynArena['=t];
+  pub roads DynArena['=r];
+  pub all List[&'=r mut Road['=t]];
+
+  // An atlas holding nothing: two arenas, each of a brand of its own
+  pub fn empty() Atlas['=t, '=r] {
+    new Atlas(DynArena.empty(), DynArena.empty(), List[&'=r mut Road['=t]].empty());
+  }
+
+  // A town of this atlas, and its key
+  pub fn town(self &mut, name &[]u8, people i64) &'=t mut Town {
+    towns.alloc(new Town(String.from(name), people));
+  }
+
+  // A road between two towns of this atlas
+  pub fn join(self &mut, from &'=t Town, to &'=t Town, km i64) {
+    all.push(roads.alloc(new Road(from, to, km)));
+  }
+
+  // Each road, its towns read through the towns' arena
+  pub fn show(self &) {
+    mut i = 0usize;
+    while i < all.len() {
+      imm road = roads[*all[i]];
+      printStr(towns[road.from].name.view());
+      printStr(" - ");
+      printStr(towns[road.to].name.view());
+      printStr(": ");
+      printInt(road.km);
+      printStr(" km\n");
+      i = i + 1usize;
+    }
+  }
+
+  // How many people live within a road of a town, its own included
+  pub fn reach(self &, town &'=t Town) i64 {
+    mut sum = towns[town].people;
+    mut i = 0usize;
+    while i < all.len() {
+      imm road = roads[*all[i]];
+      if road.from === town { sum = sum + towns[road.to].people; }
+      if road.to === town { sum = sum + towns[road.from].people; }
+      i = i + 1usize;
+    }
+    sum;
+  }
+}
+
+fn main() {
+  mut atlas = Atlas.empty();
+  imm ash = atlas.town("Ashby", 1200);
+  imm bel = atlas.town("Belford", 800);
+  imm cor = atlas.town("Corran", 450);
+  atlas.join(ash, bel, 12);
+  atlas.join(bel, cor, 7);
+  atlas.show();
+  printStr("Within a road of Belford: ");
+  printInt(atlas.reach(bel));
+  printStr("\n");
+}

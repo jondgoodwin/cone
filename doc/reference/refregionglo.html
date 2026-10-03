@@ -27,8 +27,14 @@
 		local, bare or inside a value the local holds, is still used; the arena declares
 		<span class="pre">NoLoanMut</span>, so an allocation loans nothing else of it and any number
 		may be live at once (see <a href="refborref.html#returned">borrowed references</a>). A value
-		holding one that is returned or stored through a parameter is not yet caught; the pairing of references with their arena by invariant
-		lifetimes is not built. A block it cannot allocate is a
+		holding one is checked as the bare borrow is. A dynamic arena, whose values outlive the
+		function that made it, is the package's <span class="pre">DynArena</span>:
+		<span class="pre">mut a = DynArena.empty()</span> mints a brand of its own, an invariant lifetime,
+		and <span class="pre">a.alloc(value)</span> returns a <i>key</i> of that lifetime,
+		<span class="pre">&amp;'=a mut T</span>, which reaches nothing on its own and goes anywhere: only
+		<span class="pre">a[key]</span>, through the arena of the same brand, reads it, and in set position
+		(<span class="pre">a[key] = v</span>, a field or a method through it) writes it
+		(see <a href="reflifefn.html#invariant">invariant lifetimes</a>). A block it cannot allocate is a
 		<a href="refexcept.html#panic">panic</a>.
 		A pool is built likewise only as a value of the <span class="pre">pool</span> package, and only its
 		generational kind, not the <span class="pre">RcPool</span> and <span class="pre">SoPool</span> below: <span class="pre">mut p = Pool[T].empty()</span>;
@@ -258,10 +264,33 @@ childnode.parent = parentnoderef.weak;
 		<li>Memory use grows without bounds, due to individual objects never being freed.</li>
 		<li>Awful determinism for finalizers, as objects are only finalized when the program ends.</li>
 	</ul>
-	<p>An arena region is a surprisingly good fit for a 
+	<p>An arena region is a surprisingly good fit for a
 		limited-lifetime program that allocates a lot of small objects but
-		wants optimal performance. 
+		wants optimal performance.
 		This applies well to many command-line tools, including compilers.</p>
+	<p>An arena that is itself a value may live as long as a local variable does, a scratch
+		arena whose references are ordinary borrows, or travel: a <i>dynamic arena</i> may be
+		returned, stored and passed, its values with it. A reference into a dynamic arena cannot be a borrow,
+		which ends with a scope, so it is a <i>key</i>: a reference carrying the arena's
+		<a href="reflifefn.html#invariant">invariant lifetime</a>, which reaches nothing on its own.
+		The arena is the lock: <span class="pre">arena[key]</span> reaches what a key names, and only
+		where the two carry the same invariant lifetime, which the compiler checks at no cost at run
+		time. Each arena made has a lifetime of its own, so one arena's key never opens another's:</p>
+<pre>
+struct Node['=a] { pub val i64; pub next Option[&amp;'=a mut Node['=a]]; }
+struct Chain['=a] { pub ar DynArena['=a]; pub first Option[&amp;'=a mut Node['=a]]; }
+
+fn build(n i64) Chain['=a] {
+  mut ar = DynArena.empty();            // a brand of its own
+  mut head Option[&amp;'=a mut Node['=a]] = None[&amp;'=a mut Node['=a]][];
+  mut i = 0i64;
+  while i &lt; n {
+    head = Some[ar.alloc(new Node(i, head))];
+    i = i + 1;
+  }
+  new Chain(ar, head);                  // the arena leaves with its keys
+}
+</pre>
 
 	<h2>Pool</h3>
 	<p>The mechanism for pools derives from this constraint:

@@ -229,6 +229,10 @@ void blockTypeCheck(TypeCheckState *pstate, BlockNode *blk, INode *expectType) {
     // This includes block stack, used for gathering all breaks that might belong to some block
     ++pstate->scope;
 
+    // A brand minted in a loop's body is its pass's (lifetime.h)
+    if (blk->flags & FlagLoop)
+        lifeBrandLoopEnter((INode*)blk);
+
     // An 'each' loop block ends with the synthesized step that advances the loop
     // variable, so a 'continue' the reader wrote last sits one place further back.
     uint32_t lastpos = (blk->flags & FlagLoopStep) ? 2 : 1;
@@ -306,6 +310,9 @@ void blockTypeCheck(TypeCheckState *pstate, BlockNode *blk, INode *expectType) {
             inodeTypeCheck(pstate, laststmtp, noCareType); // we don't care about the type
     }
 
+    if (blk->flags & FlagLoop)
+        lifeBrandLoopExit();
+
     // Do inference on all registered breaks to ensure they all return the expected type
     // Note: Iterate differently because list may grow while iterating
     if (blk->breaks && blk != (BlockNode*)pstate->fn->value) {
@@ -315,6 +322,8 @@ void blockTypeCheck(TypeCheckState *pstate, BlockNode *blk, INode *expectType) {
             INode **breakexp = &((BreakRetNode *)*nodesp)->exp;
             match = iexpMultiCoerceInfer(pstate, expectType, &inferredType, breakexp, match);
         }
+        // What a break carries out of a loop's pass carries no brand that pass minted
+        lifeBrandBreaks((INode*)blk, blk->breaks);
     }
 
     // The scope this block opened is closed on every path out of here, not only

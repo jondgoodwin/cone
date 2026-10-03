@@ -1,0 +1,74 @@
+// A key never becomes a borrow: neither by being stored where a borrow is
+// wanted, nor passed for one, nor cast to one. Through a raw pointer it may,
+// as anything may, and nothing checks what is done with it. Nor does a key
+// change its brand by a match pattern naming another.
+//
+// Verdict: refuse, ErrorInvType at the store and the call (a key is not a
+// borrow's type), ErrorBrand at the cast and at the pattern.
+// Basis: the key alone gives no access (invariant lifetimes, settled
+// 3 Oct 2026); a borrow made of one would give it, outside its arena.
+// Master 1117c92a: no DynArena, and ''=a' refused at lex. This compiler with
+// the cast's brand check turned off accepts 'cast', and main, run, prints
+// "final" as leak's arena dies and then a value read from its freed block.
+
+mod lifetime_inv_brand_lost;
+
+import stdio use *;
+import arena use *;
+
+struct R {
+  pub n i64;
+  fn final(self &uni) {
+    printStr("final\n");
+  }
+}
+
+fn leak() &'=a R {
+  mut a = DynArena.empty();
+  a.alloc(new R(42));
+}
+
+fn read(r &R) i64 { r.n; }
+
+fn clobber(n i64) i64 {
+  mut a Array[i64, 16] = [n, n, n, n, n, n, n, n, n, n, n, n, n, n, n, n];
+  a[3] + a[9];
+}
+
+fn stored() i64 {
+  imm k = leak();
+  imm r &R = k;                     //~ ErrorInvType
+  r.n;
+}
+
+fn passed() i64 {
+  read(leak());                     //~ ErrorInvType
+}
+
+fn cast() {
+  imm k = leak();
+  imm r = k as &R;                  //~ ErrorBrand
+  clobber(21);
+  printStr("read = ");
+  printInt(r.n);
+  printStr("\n");
+}
+
+fn rebranded(a &DynArena['=a], b &DynArena['=b], o Option[&'=a R]) i64 {
+  match o {
+    case imm s Some[&'=b R] {       //~ ErrorBrand
+      b[s.value].n;
+    }
+    else { 0; }
+  }
+}
+
+fn raw() i64 {
+  imm k = leak();
+  imm p = k as *R;
+  0;
+}
+
+fn main() {
+  cast();
+}

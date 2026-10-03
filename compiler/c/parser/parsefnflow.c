@@ -690,6 +690,18 @@ static INode *parseWhereLife(ParseState *parse, LifeOrder **orderp) {
     }
     Name *shorter = lex->val.ident;
     lexNextToken();
+    // An invariant lifetime is equal only to itself: it has no order with any
+    // other, and is equated only with another invariant one
+    if (lifeIsInvariant(longer) || lifeIsInvariant(shorter)) {
+        if (!equal) {
+            errorMsgNode(at, ErrorLifetimeInvariant, "An invariant lifetime has no order: only ''=a == '=b' compares one, declaring the two one brand.");
+            return parseLifeClause;
+        }
+        if (!lifeIsInvariant(longer) || !lifeIsInvariant(shorter)) {
+            errorMsgNode(at, ErrorLifetimeInvariant, "An invariant lifetime is equated only with another invariant one: ''=a == '=b'.");
+            return parseLifeClause;
+        }
+    }
     if (orderp == NULL) {
         errorMsgNode(at, ErrorLifetimeUndeclared, "This declares no lifetimes for a 'where' clause to order.");
         return NULL;

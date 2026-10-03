@@ -52,9 +52,10 @@
 			<span class="pre">'static</span> may be written on a parameter's own
 			reference or in the result, not inside a parameter's type.
 			A value holding borrowed references has the lifetime of the shortest of them, as
-			<span class="pre">makewrap</span> below shows. Not yet implemented: a
-			<span class="pre">+ 'a</span> bound on a type parameter or a virtual reference,
-			and invariant lifetimes.</i></p>
+			<span class="pre">makewrap</span> below shows. Invariant lifetimes
+			(<span class="pre">'=a</span>) are implemented, on the <span class="pre">arena</span> package's
+			<span class="pre">DynArena</span> and its keys. Not yet implemented: a
+			<span class="pre">+ 'a</span> bound on a type parameter or a virtual reference.</i></p>
 	
 	<p>To ensure borrowed references are always safe to use, they carry 
 		a lifetime constraint that restricts them from living beyond the scope
@@ -471,6 +472,74 @@ fn inner(x &amp;'a &amp;'b R) &amp;'a R {
 		Two lifetimes no borrow relates and no <span class="pre">where</span> clause orders stay
 		unrelated. A caller reads the same order, as it reads a <span class="pre">where</span>
 		clause.</p>
+
+	<h2 id="invariant">Invariant lifetimes</h2>
+	<p>Every lifetime so far is a scope: a borrow of it may go anywhere inside that scope and
+		nowhere beyond it, and two of them are ordered by which lasts longer. An
+		<i>invariant lifetime</i>, written with an equals sign, <span class="pre">'=a</span>, is no
+		scope. It is equal only to itself, has no order with any other lifetime, and a value
+		carrying one may go anywhere: be returned, stored, passed. What it protects is not
+		<i>when</i> a reference is used but <i>with what</i>: a reference of an invariant lifetime
+		is a <i>key</i>, which reaches nothing on its own, and the only way in is through the
+		value of the same invariant lifetime that made it, its <i>lock</i>. A
+		<a href="refregionglo.html">dynamic arena</a> is the lock, and the references it hands out
+		are its keys:</p>
+<pre>
+struct Pair['=a] { pub left &amp;'=a R; pub right &amp;'=a R; }
+
+fn sum(ar &amp;DynArena['=a], p &amp;Pair['=a]) i64 {
+  ar[p.left].n + ar[p.right].n;   // Ok: the arena and the keys are one brand
+}
+
+fn main() {
+  mut a = DynArena.empty();
+  mut b = DynArena.empty();
+  imm p = new Pair(a.alloc(new R(1)), a.alloc(new R(2)));
+  sum(&amp;a, &amp;p);                   // Ok: 3
+  sum(&amp;b, &amp;p);                   // Error: p's keys are a's, not b's
+  p.left.n;                       // Error: a key reaches nothing on its own
+}
+</pre>
+	<p><span class="pre">ar[key]</span> reads what the key names; in set position
+		(<span class="pre">ar[key] = v</span>, <span class="pre">ar[key].f = v</span>,
+		<span class="pre">ar[key].f += 1</span>, a method taking <span class="pre">self &amp;mut</span>)
+		it writes it. Dereferencing a key, reading its field or calling its method directly is
+		refused: the key alone gives no access. The compiler checks every use as an identity
+		between the arena's lifetime and the key's, so at run time
+		<span class="pre">ar[key]</span> is the key's own pointer and nothing more.</p>
+	<p><b>Brands.</b> Inside a function, each invariant lifetime is a <i>brand</i>, compared
+		only by identity. A name its signature writes is one brand, for the whole body. A function
+		whose result names an invariant lifetime that none of its parameters does creates a fresh
+		one at each call site: <span class="pre">DynArena.empty()</span> is such a function, so two
+		arenas are always two brands, and a key of one used with the other is refused at compile
+		time. Inside such a function, the name is the brand of whatever it returns, given by the
+		first value the body binds to it; a body handing back two arenas of different brands as
+		that one name is refused. A call binds each name in the callee's signature to the brand
+		its arguments carry, and the result carries the brands so bound: a key
+		<span class="pre">ar.alloc(v)</span> returns carries <span class="pre">ar</span>'s.
+		Recursion is fine: each activation's brands are its own.</p>
+	<p><b>Loops.</b> An arena made inside a loop lasts only for that loop pass, so its brand is
+		the pass's: a key from one pass may not be kept for a later one, nor carried out of the loop
+		by a <span class="pre">break</span>. A fixed number of arenas, each with its own name, made
+		before the loop, may be used in every pass.</p>
+	<p><b>Where clauses.</b> <span class="pre">where '=a == '=b</span> declares two invariant
+		names one brand, so a key of one opens an arena of the other, and a caller must give both
+		the same. <span class="pre">'=a &gt;= '=b</span>, or <span class="pre">'=a == 'b</span> with an
+		ordinary lifetime, is refused.</p>
+	<p><b>Types.</b> A struct declares an invariant lifetime in its brackets, as it does any
+		other, <span class="pre">struct Graph['=a] { ... }</span>, so a value holding keys carries
+		the brand, and a use names it, <span class="pre">Graph['=a]</span>, in its place: an ordinary
+		lifetime is not given where an invariant one is declared, and a signature always names a
+		struct's invariant lifetimes. A body may name its signature's invariant lifetimes in a
+		type, <span class="pre">List[&amp;'=a Node['=a]].empty()</span>, and no others. A generic
+		holds keys like any value; a key stays a key inside it. A key is a plain reference,
+		<span class="pre">&amp;'=a T</span>: a slice or a virtual reference takes no invariant
+		lifetime. What a key names lives as long as its arena, past every scope, so it holds no
+		borrow.</p>
+	<p>Invariant lifetimes are what make a dynamic arena safe without a check at run time: an
+		ordinary borrow would bind the arena's values to one scope, and a counted or generational
+		reference would pay for a check at every use. The cost is that a key is only ever useful
+		beside its own arena, which a function's signature says by naming one brand for both.</p>
 
 
 			<p style="text-align: right; margin-top: 2em;">

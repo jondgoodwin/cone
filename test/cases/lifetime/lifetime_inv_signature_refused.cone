@@ -1,0 +1,36 @@
+// A struct declaring an invariant lifetime is named with one wherever a
+// signature uses it, and with an invariant one in that place; a body names
+// only the invariant lifetimes its signature does. A function taken as a
+// reference promises its brands as the reference's type does: which places
+// carry one brand is part of the type.
+//
+// Verdict: refuse, ErrorLifetimeInvariant at each, and ErrorInvType at the
+// function reference whose type names two brands where the function names one.
+// Basis: Stage 7's rules for declaring and naming lifetimes on types apply to
+// invariant ones (invariant lifetimes, settled 3 Oct 2026): a use names each
+// declared lifetime in order, and an invariant lifetime's place takes an
+// invariant one. Unnamed, a struct's brand would be one nothing knows, so
+// no key could open it.
+// Master 1117c92a: no DynArena, and ''=a' refused at lex.
+
+mod lifetime_inv_signature_refused;
+
+import arena use *;
+
+struct R { pub n i64; }
+
+fn bare(ar &DynArena) { }                 //~ ErrorLifetimeInvariant
+fn ordinary(ar &DynArena['b]) { }         //~ ErrorLifetimeInvariant
+                                          //~^ ErrorLifetimeInvariant follow-on
+
+fn unnamed(ar &DynArena['=a]) {
+  imm k &'=q R = 0usize as *R as &'=q R;  //~ ErrorLifetimeInvariant
+                                          //~^ ErrorLifetimeInvariant
+}
+
+fn same(ar &DynArena['=a], k &'=a R) i64 { ar[k].n; }
+
+fn main() {
+  imm apart &fn(ar &DynArena['=a], k &'=b R) i64 = &same;   //~ ErrorInvType
+  imm alike &fn(ar &DynArena['=a], k &'=a R) i64 = &same;
+}

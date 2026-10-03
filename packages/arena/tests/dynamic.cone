@@ -1,0 +1,203 @@
+// A dynamic arena, DynArena: values reached by keys of its invariant
+// lifetime, which only that arena unlocks. Each function below is one rule at
+// work; each expected value is worked out by hand from the rules:
+// - each call of DynArena.empty() mints a brand of its own, so two arenas are
+//   used side by side, each with its own keys;
+// - 'ar[key]' reads what a key names; in set position ('ar[key] = v',
+//   'ar[key].f = v', 'ar[key].f += 1', a 'self &mut' method) it writes it;
+// - a key goes anywhere: passed, stored in a struct, kept in a list, returned
+//   with its arena or on its own;
+// - an arena made in a loop's pass is that pass's, and one per pass works;
+// - an arena dies as a scratch does: its values newest first, then its blocks.
+//
+// What must NOT compile -- another arena's key, a key reached through without
+// its arena, a key kept past its loop pass, a key to a value holding a borrow
+// -- cannot be a test here, since each test is a program that runs. The
+// compiler's suite pins those refusals: test/cases/lifetime/lifetime_inv_*.cone.
+
+mod dynamic;
+
+import testing use *;
+import arena use *;
+import collections use *;
+
+mut log = 0i64;
+fn note(d i64) { log = log * 10i64 + d; }
+
+struct Fin {
+  pub n i64;
+  fn final(self &uni) { note(n); }
+}
+
+struct Pt {
+  pub x i64;
+  pub y i64;
+  pub fn sum(self &) i64 { x + y; }
+  pub fn bump(self &mut) { x = x + 1; }
+}
+
+// A value holding keys, of its own arena
+struct Node['=a] {
+  pub val i64;
+  pub next Option[&'=a mut Node['=a]];
+}
+
+// An arena and keys into it, travelling together
+struct Chain['=a] {
+  pub ar DynArena['=a];
+  pub first Option[&'=a mut Node['=a]];
+}
+
+// Two arenas side by side: each key unlocks its own
+fn sideBySide() {
+  mut a = DynArena.empty();
+  mut b = DynArena.empty();
+  imm ka = a.alloc(new Pt(1, 2));
+  imm kb = b.alloc(new Pt(10, 20));
+  expectInt(a[ka].x, 1, "a's key reads a's value");
+  expectInt(b[kb].y, 20, "b's key reads b's value");
+}
+
+// Reads and writes through the arena
+fn getAndSet() {
+  mut a = DynArena.empty();
+  imm k = a.alloc(new Pt(3, 4));
+  imm n = a.alloc(7i64);
+  a[n] = 42;
+  expectInt(*a[n], 42, "ar[key] = v stores the value");
+  a[k].x = 5;
+  expectInt(a[k].x, 5, "ar[key].f = v stores a field");
+  a[k].y += 10;
+  expectInt(a[k].y, 14, "ar[key].f += v changes a field in place");
+  a[k].bump();
+  expectInt(a[k].sum(), 20, "a 'self &mut' method changes it, a 'self &' one reads it");
+}
+
+// A function lent an arena and a key of it
+fn readX(ar &DynArena['=a], k &'=a Pt) i64 { ar[k].x; }
+
+// One handed an arena's key of a brand its 'where' clause equates with the
+// arena's
+fn readY(ar &DynArena['=a], k &'=b Pt) i64 where '=a == '=b { ar[k].y; }
+
+fn passed() {
+  mut a = DynArena.empty();
+  imm k = a.alloc(new Pt(6, 7));
+  expectInt(readX(&a, k), 6, "a key passed with its arena");
+  expectInt(readY(&a, k), 7, "a key of a brand equated with the arena's");
+  imm copy = k;
+  expect(copy === k, "a copied key names the same value");
+}
+
+// Build a list of n nodes in an arena of its own, and hand back the arena with
+// the keys: n-1 first, down to 0
+fn build(n i64) Chain['=a] {
+  mut ar = DynArena.empty();
+  mut head Option[&'=a mut Node['=a]] = None[&'=a mut Node['=a]][];
+  mut i = 0i64;
+  while i < n {
+    head = Some[ar.alloc(new Node(i, head))];
+    i = i + 1;
+  }
+  new Chain(ar, head);
+}
+
+// Walk a chain by its keys, each read through its arena
+fn total(c &Chain['=a]) i64 {
+  mut sum = 0i64;
+  mut at = c.first;
+  while {
+    match at {
+      case imm s Some[&'=a mut Node['=a]] {
+        sum = sum + c.ar[s.value].val;
+        at = c.ar[s.value].next;
+      }
+      else { break; }
+    }
+  }
+  sum;
+}
+
+fn returned() {
+  imm c = build(5);
+  expectInt(total(&c), 10, "a chain built in a function, walked by keys after its return");
+  imm d = build(3);
+  expectInt(total(&d), 3, "a second chain, its own arena");
+}
+
+// Keys kept in a list, in a function naming the brand
+fn gather(ar &mut DynArena['=a], n i64) List[&'=a mut Pt] {
+  mut keys = List[&'=a mut Pt].empty();
+  mut i = 0i64;
+  while i < n {
+    keys.push(ar.alloc(new Pt(i, i * 2)));
+    i = i + 1;
+  }
+  keys;
+}
+
+fn listed() {
+  mut a = DynArena.empty();
+  imm keys = gather(&mut a, 4);
+  mut sum = 0i64;
+  mut i = 0usize;
+  while i < keys.len() {
+    sum = sum + a[*keys[i]].y;
+    i = i + 1usize;
+  }
+  expectInt(sum, 12, "keys kept in a list, read through their arena");
+}
+
+// Each activation's arena is its own
+fn depth(n i64) i64 {
+  mut ar = DynArena.empty();
+  imm k = ar.alloc(new Pt(n, 0));
+  if n == 0 { return ar[k].x; }
+  depth(n - 1) + ar[k].x;
+}
+
+// An arena per loop pass, used within the pass
+fn perPass() i64 {
+  mut sum = 0i64;
+  mut i = 0i64;
+  while i < 3 {
+    mut ar = DynArena.empty();
+    imm k = ar.alloc(new Pt(i, 1));
+    sum = sum + ar[k].sum();
+    i = i + 1;
+  }
+  sum;
+}
+
+// An arena dies as a scratch does: newest first, then its blocks
+fn dies() {
+  mut a = DynArena.empty();
+  a.alloc(new Fin(1));
+  imm k = a.alloc(new Fin(2));
+  a.alloc(new Fin(3));
+  expectUInt(u64.from(a.finalizers()), 3, "each value that needs it gets a header");
+  expectInt(a[k].n, 2, "and is read through its key");
+}
+
+// Moved, the arena keeps its values and its keys still unlock it
+fn moved() i64 {
+  mut a = DynArena.empty();
+  imm k = a.alloc(new Pt(8, 9));
+  imm b = a;
+  b[k].y;
+}
+
+fn main() {
+  sideBySide();
+  getAndSet();
+  passed();
+  returned();
+  listed();
+  expectInt(depth(4), 10, "each activation's arena and keys are its own");
+  expectInt(perPass(), 6, "an arena per loop pass");
+  log = 0;
+  dies();
+  expectInt(log, 321, "newest first");
+  expectInt(moved(), 9, "an arena moved keeps its brand");
+  done();
+}
