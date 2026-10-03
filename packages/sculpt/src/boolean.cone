@@ -1,0 +1,3887 @@
+// ======== Booleans: union, difference and intersection of solids ========
+//
+// Blender's Boolean modifier and Mesh Boolean node, decided exactly, in the
+// manner of the Manifold library (Lalish): both meshes closed and manifold,
+// the result closed and manifold. The method:
+//
+// 1. Each face is cut into triangles (earclip.cone), every corner, side and
+//    face remembered.
+// 2. The second mesh is perturbed symbolically (exact.cone): moved by an
+//    infinitesimal amount along each vertex's outward direction (inward
+//    for an intersection) and a tiny shared translation, so the two meshes
+//    are in general position: no vertex on a face, no edge meeting an edge,
+//    no faces in one plane. Coplanar faces then overlap (a union of two
+//    boxes standing face to face is one solid) and a cutter flush with a
+//    face cuts through it (a difference leaves no skin).
+// 3. Every edge of one mesh is tested against the triangles of the other
+//    near it (bvh.cone), exactly: where it crosses one, a new vertex is made
+//    at the crossing, its coordinates the exact rational point rounded once
+//    to f32. The crossings along one edge are ordered exactly.
+// 4. Every vertex is classified inside or outside the other mesh: one
+//    vertex of each connected piece by the crossings of a segment from it to
+//    a point outside everything, the rest by walking the edges and counting
+//    the crossings on each.
+// 5. Each triangle that is crossed is cut along the curve where the other
+//    surface meets it. The pieces' outlines follow from the crossings
+//    alone, with no geometry: where an edge of the triangle crosses the
+//    other surface the outline turns onto the curve, and which way it turns
+//    follows from which way the edge crossed. A piece is kept when it lies
+//    on the side the operation keeps: a union keeps each mesh outside the
+//    other, an intersection inside, a difference the first outside the
+//    second and the second inside the first, turned over.
+// 6. Where a piece of the curve lies wholly inside a triangle (a cutter's
+//    outline in the middle of a face), the loops' nesting and the piece's
+//    triangles come from exact tests on the rounded points, so no triangle
+//    of such a piece is turned over when the points are well apart.
+// 7. Where faces lay in one plane, the perturbation leaves structures of no
+//    area once the infinitesimal goes: walls of no height, frames of no
+//    width. Every vertex rounding to one point is merged into the lowest;
+//    then, judged on each vertex's exact point, a face all on one line is
+//    zipped shut into the face across its long side (an edge swap, as
+//    Manifold swaps its degenerate triangles), a spike (a corner whose
+//    outline goes straight back) is folded shut, and a slit (two sides of a
+//    face overlapping, running opposite ways) splits the face in two, the
+//    faces across meeting; round after round until nothing changes.
+// 8. Pieces of one face are joined again into polygons across the cuts made
+//    inside it, and new vertices left on two edges in one line are dropped.
+// 9. If that does not give a closed manifold mesh (two solids touching along
+//    an edge or at a point, which no manifold can be), the vertices are
+//    merged only where joined by an edge, or not at all, cleaned or not; a
+//    build with nothing merged and nothing cleaned is closed and manifold by
+//    construction. A result left with edges or faces of no size, or faces
+//    turned over by rounding, says so in a line.
+//
+// Every decision is an exact sign, so the result is the same on every
+// machine; only the new vertices' positions are rounded, once.
+
+pub const BooleanUnion = 0u32;
+pub const BooleanDifference = 1u32;
+pub const BooleanIntersection = 2u32;
+
+// The union of two closed meshes: everything inside either
+pub fn booleanUnion(a &PolyMesh, b &PolyMesh, problems &mut List[String]) PolyMesh {
+  booleanWith(a, b, BooleanUnion, 0., problems);
+}
+
+// The difference: what is inside a and not inside b
+pub fn booleanDifference(a &PolyMesh, b &PolyMesh, problems &mut List[String]) PolyMesh {
+  booleanWith(a, b, BooleanDifference, 0., problems);
+}
+
+// The intersection: what is inside both
+pub fn booleanIntersection(a &PolyMesh, b &PolyMesh, problems &mut List[String]) PolyMesh {
+  booleanWith(a, b, BooleanIntersection, 0., problems);
+}
+
+// The boolean 'op' (BooleanUnion, BooleanDifference, BooleanIntersection)
+// of a and b
+pub fn boolean(a &PolyMesh, b &PolyMesh, op u32, problems &mut List[String]) PolyMesh {
+  booleanWith(a, b, op, 0., problems);
+}
+
+// The boolean 'op' of a and b, the edges along the curve where their
+// surfaces meet given an edge "crease" of at least 'crease' (a channel made
+// if neither mesh has one), so that a subdivided result keeps that edge.
+//
+// Both meshes must be closed (every edge between two faces), manifold and
+// facing outward (positive volume), with every face cut into triangles that
+// have area (no edge of no length); a mesh that is not is refused: a line
+// saying why goes to 'problems', and the result is empty. Neither may
+// intersect itself, which is not checked; one that does may be refused, or
+// give a wrong result.
+//
+// The result is closed and manifold. Its vertices: the first mesh's kept,
+// in order, then the second's, then the new ones on the curve, each edge's in
+// order along it (the first mesh's edges first); merged vertices are each
+// kept as the lowest. Its faces: the first mesh's, then the second's, in
+// order; a face not crossed and kept is kept whole, with its corners from the
+// same first corner; a crossed face is replaced by its pieces, the pieces of
+// its triangles joined again into polygons where they meet along a cut made
+// inside it (a piece with a hole is at least two polygons). The second mesh's
+// faces of a difference are turned over, each from its first corner. The
+// same meshes give the same bits; listing either's faces in another order or
+// numbering its vertices otherwise gives the same faces, as cycles of
+// positions (where vertices at one point merge, whose vertex values are kept
+// follows the numbering).
+//
+// Channels are those of 'join' (the two meshes' channels matched by name and
+// domain, a mesh lacking one given its fill; a name clash refused and
+// reported, the result still made). A kept vertex keeps its values; a new
+// vertex takes those of the edge it lies on, blended by where it lies. A
+// piece keeps its face's face values; a corner of a piece at a vertex of its
+// face keeps its corner values, and one at a new vertex blends the corner
+// values of its triangle's corners by its barycentric coordinates. An edge
+// along an edge of a mesh keeps that edge's values; every other edge (along
+// the curve, or inside a cut face) takes each edge channel's fill, the
+// curve's "crease" raised to 'crease'.
+pub fn booleanWith(a &PolyMesh, b &PolyMesh, op u32, crease f32, problems &mut List[String]) PolyMesh {
+  mut empty = PolyMesh.empty();
+  if !solidChecked(a, "the first mesh", problems) or !solidChecked(b, "the second mesh", problems) {
+    return empty;
+  }
+  imm keepInA = op == BooleanIntersection;
+  imm keepInB = op != BooleanUnion;
+  imm reverseB = op == BooleanDifference;
+  imm towards = if op == BooleanIntersection {-1.d;} else {1.d;};
+
+  mut ok = true;
+  mut ta = triMeshOf(a, "the first mesh", 0i32, 0.d, problems, &mut ok);
+  mut tb = triMeshOf(b, "the second mesh", 1i32, towards, problems, &mut ok);
+  if !ok { return empty; }
+  if !facesOutward(&ta, "the first mesh", problems) or !facesOutward(&tb, "the second mesh", problems) {
+    return empty;
+  }
+
+  // The channels: the join of the two
+  mut parts = List[PolyMesh].empty();
+  parts.push(copyPolyMesh(a));
+  parts.push(copyPolyMesh(b));
+  imm joined = join(&parts, problems);
+
+  // Where each mesh's edges cross the other's triangles
+  imm bvhA = Bvh.build(&ta.tlo, &ta.thi);
+  imm bvhB = Bvh.build(&tb.tlo, &tb.thi);
+  mut fault = List[String].empty();
+  mut recA = crossings(&ta, &tb, &bvhB, &mut fault);
+  mut recB = crossings(&tb, &ta, &bvhA, &mut fault);
+  recA.indexTriangles(tb.triCount());
+  recB.indexTriangles(ta.triCount());
+
+  // Inside or outside the other
+  imm farX = farBeyond(&ta, &tb);
+  imm wa = windings(&ta, &tb, &bvhB, &recA, farX, &mut fault);
+  imm wb = windings(&tb, &ta, &bvhA, &recB, farX, &mut fault);
+  if fault.len() > 0usize {
+    problems.push(String.from(fault[0usize].view()));
+    return empty;
+  }
+
+  // The result's vertices: the kept ones of each mesh, then the crossings
+  mut verts = OutVerts.empty();
+  imm outA = verts.addKept(&ta, &wa, keepInA, 0u32);
+  imm outB = verts.addKept(&tb, &wb, keepInB, u32.from(ta.vertexCount()));
+  imm baseA = verts.addCrossings(&ta, &recA, 0u32);
+  imm baseB = verts.addCrossings(&tb, &recB, u32.from(ta.vertexCount()));
+
+  // The pieces, as loops
+  mut loops = Loops.empty();
+  mut sc = Scratch.make(verts.pos.len(), ta.triCount(), tb.triCount());
+  imm offA = new JOffsets(0u32, 0u32, 0u32, 0u32);
+  imm offB = new JOffsets(u32.from(a.vertexCount()), u32.from(a.halfedgeCount()), u32.from(a.edgeCount()),
+    u32.from(a.faceCount()));
+  imm sideA = new Side(keepInA, false);
+  imm sideB = new Side(keepInB, reverseB);
+  piecesOf(&ta, &tb, &recA, &recB, &wa, keepInA, &outA, baseA, baseB, offA, sideA, &verts, &mut loops, &mut sc, &mut fault);
+  piecesOf(&tb, &ta, &recB, &recA, &wb, keepInB, &outB, baseB, baseA, offB, sideB, &verts, &mut loops, &mut sc, &mut fault);
+  if fault.len() > 0usize {
+    problems.push(String.from(fault[0usize].view()));
+    return empty;
+  }
+
+  // Six tries: every vertex rounding to one point merged, only those joined
+  // by a side, or none; each cleaned of structures of no area, then each as it
+  // is (a build with nothing merged and nothing cleaned is closed and manifold
+  // by construction). The first with nothing folded, nothing of no size and
+  // nothing forced is taken, else the best of them, in that order.
+  mut built = false;
+  mut out = PolyMesh.empty();
+  mut outRough = 0u32;
+  mut outFolded = 0u64;
+  mut outFlat = 0u64;
+  mut why = List[String].empty();
+  imm everywhere = samePointVertices(&verts);
+  mut attemptNo = 0u32;
+  while attemptNo < 6u32 and !(built and outRough == 0u32 and outFolded == 0u64 and outFlat == 0u64) {
+    imm mode = attemptNo % 3u32;
+    imm cleaning = attemptNo < 3u32;
+    imm rep = if mode == 0u32 {copyList(&everywhere);} elif mode == 1u32 {mergedVertices(&loops, &verts);}
+      else {identityMap(verts.pos.len());};
+    if mode != 1u32 or anyMerge(&rep) {
+      mut faces = OutFaces.empty();
+      mut rough = 0u32;
+      if facesOf(&loops, &rep, &verts, &mut faces, &mut rough, &mut why) {
+        mut ready = OutFaces.empty();
+        if cleaning {
+          imm kept = dropPillows(&faces);
+          imm clean1 = cleanDegenerate(&kept, &verts);
+          imm whole = mergeFacePieces(&clean1);
+          imm clean2 = cleanDegenerate(&whole, &verts);
+          ready = dropStraightVertices(&clean2, &verts, baseA);
+        } else {
+          ready = mergeFacePieces(&faces);
+        }
+        mut attempt = PolyMesh.empty();
+        if buildResult(&joined, &verts, &ready, crease, &mut attempt) {
+          imm folds = foldedCount(&attempt, &ready.face, &joined, offB.f, reverseB);
+          imm flat = degenerateCount(&attempt);
+          if !built or folds < outFolded or (folds == outFolded and flat < outFlat)
+              or (folds == outFolded and flat == outFlat and rough < outRough) {
+            out = attempt;
+            outRough = rough;
+            outFolded = folds;
+            outFlat = flat;
+            built = true;
+          }
+        }
+      }
+    }
+    attemptNo = attemptNo + 1u32;
+  }
+  if built and outFolded > 0u64 {
+    mut s = String.from("");
+    s.appendUInt(outFolded);
+    s.append(" faces came out turned over by rounding to f32, where the surfaces nearly coincide");
+    problems.push(s);
+  }
+  if built and outFlat > 0u64 {
+    mut s = String.from("the result has ");
+    s.appendUInt(outFlat);
+    s.append(" edges or faces of no size, or faces folded back on themselves, where it touches itself at a point or along a line or where the surfaces nearly coincide");
+    problems.push(s);
+  }
+  if !built {
+    if why.len() > 0usize {
+      problems.push(String.from(why[0usize].view()));
+    } else {
+      problems.push(String.from("the result could not be made manifold; one of the meshes may intersect itself"));
+    }
+    return empty;
+  }
+  out;
+}
+
+// How many faces of the result face against the face they were cut from (a
+// face of the second mesh from 'secondFace' on, turned over when 'reverse'),
+// by their Newell normals in f64: a measure for the report, not a decision
+fn foldedCount(m &PolyMesh, source &List[u32], j &PolyMesh, secondFace u32, reverse Bool) u64 {
+  mut n = 0u64;
+  mut f = 0usize;
+  while f < m.faceCount() {
+    imm src = *source[f];
+    imm pa = m.facePositions(u32.from(f));
+    imm pb = j.facePositions(src);
+    imm a = newellOf(&pa);
+    imm b = newellOf(&pb);
+    mut d = a.dot(b);
+    if reverse and src >= secondFace { d = -d; }
+    if d < 0.d { n = n + 1u64; }
+    f = f + 1usize;
+  }
+  n;
+}
+
+fn newellOf(pts &List[Vec3]) DVec3 {
+  mut nx = 0.d;
+  mut ny = 0.d;
+  mut nz = 0.d;
+  mut i = 0usize;
+  while i < pts.len() {
+    imm p = DVec3.from(*pts[i]);
+    imm q = DVec3.from(*pts[(i + 1usize) % pts.len()]);
+    nx = nx + (p.y - q.y) * (p.z + q.z);
+    ny = ny + (p.z - q.z) * (p.x + q.x);
+    nz = nz + (p.x - q.x) * (p.y + q.y);
+    i = i + 1usize;
+  }
+  new DVec3(nx, ny, nz);
+}
+
+// How many edges of m have both ends at one point, and faces all of whose
+// corners lie on one line, exactly
+fn degenerateCount(m &PolyMesh) u64 {
+  mut n = 0u64;
+  mut e = 0usize;
+  while e < m.edgeCount() {
+    imm a = *m.positions[usize.from(m.fromVertex(u32.from(2usize * e)))];
+    imm b = *m.positions[usize.from(m.toVertex(u32.from(2usize * e)))];
+    if samePoint(a, b) { n = n + 1u64; }
+    e = e + 1usize;
+  }
+  mut f = 0usize;
+  while f < m.faceCount() {
+    imm pts = m.facePositions(u32.from(f));
+    if !suspectPoints(&pts, 0.000000000001d) {
+      f = f + 1usize;
+      continue;
+    }
+    imm p = DVec3.from(*pts[0usize]);
+    mut q = p;
+    mut found = false;
+    mut flat = true;
+    mut k = 1usize;
+    while k < pts.len() and flat {
+      imm r = DVec3.from(*pts[k]);
+      if !found {
+        if r.x != p.x or r.y != p.y or r.z != p.z { q = r; found = true; }
+      } elif !collinear3(p, q, r) {
+        flat = false;
+      }
+      k = k + 1usize;
+    }
+    if flat or foldsBack(&pts) or pinched(&pts) { n = n + 1u64; }
+    f = f + 1usize;
+  }
+  n;
+}
+
+// Whether a polygon passes one point twice (two of its corners at one place)
+fn pinched(pts &List[Vec3]) Bool {
+  mut i = 0usize;
+  while i < pts.len() {
+    mut j = i + 1usize;
+    while j < pts.len() {
+      if samePoint(*pts[i], *pts[j]) { return true; }
+      j = j + 1usize;
+    }
+    i = i + 1usize;
+  }
+  false;
+}
+
+// Whether two sides of a polygon lie on one line and overlap for some
+// length (a spike or a slit), exactly at the rounded points
+fn foldsBack(pts &List[Vec3]) Bool {
+  imm k = pts.len();
+  mut i = 0usize;
+  while i < k {
+    imm a = DVec3.from(*pts[i]);
+    imm b = DVec3.from(*pts[(i + 1usize) % k]);
+    mut j = i + 1usize;
+    while j < k {
+      imm c = DVec3.from(*pts[j]);
+      imm d = DVec3.from(*pts[(j + 1usize) % k]);
+      if !(a.x == b.x and a.y == b.y and a.z == b.z) and collinear3(a, b, c) and collinear3(a, b, d) {
+        // Along the line's longest axis, the two intervals' overlap
+        imm ax = absd(b.x - a.x);
+        imm ay = absd(b.y - a.y);
+        imm az = absd(b.z - a.z);
+        imm pa = if ax >= ay and ax >= az {a.x;} elif ay >= az {a.y;} else {a.z;};
+        imm pb = if ax >= ay and ax >= az {b.x;} elif ay >= az {b.y;} else {b.z;};
+        imm pc = if ax >= ay and ax >= az {c.x;} elif ay >= az {c.y;} else {c.z;};
+        imm pd = if ax >= ay and ax >= az {d.x;} elif ay >= az {d.y;} else {d.z;};
+        imm lo1 = if pa < pb {pa;} else {pb;};
+        imm hi1 = if pa < pb {pb;} else {pa;};
+        imm lo2 = if pc < pd {pc;} else {pd;};
+        imm hi2 = if pc < pd {pd;} else {pc;};
+        imm lo = if lo1 > lo2 {lo1;} else {lo2;};
+        imm hi = if hi1 < hi2 {hi1;} else {hi2;};
+        if hi > lo { return true; }
+      }
+      j = j + 1usize;
+    }
+    i = i + 1usize;
+  }
+  false;
+}
+
+// -------- checking the inputs --------
+
+// Whether m is valid and closed; if not, a line saying why
+fn solidChecked(m &PolyMesh, name &[]u8, problems &mut List[String]) Bool {
+  imm v = m.validate();
+  if v.len() > 0usize {
+    mut s = String.from(name);
+    s.append(" is not valid: ");
+    s.append(v[0usize].view());
+    problems.push(s);
+    return false;
+  }
+  mut open = 0u64;
+  mut h = 0usize;
+  while h < m.hFace.len() {
+    if *m.hFace[h] == NoIndex { open = open + 1u64; }
+    h = h + 1usize;
+  }
+  if open > 0u64 {
+    mut s = String.from(name);
+    s.append(" is not closed: ");
+    s.appendUInt(open);
+    s.append(" edges have a face on one side only");
+    problems.push(s);
+    return false;
+  }
+  true;
+}
+
+// Whether a mesh faces outward: its volume is positive (or it has no faces)
+fn facesOutward(t &TriMesh, name &[]u8, problems &mut List[String]) Bool {
+  if t.triCount() == 0usize { return true; }
+  mut vol = 0.d;
+  mut i = 0usize;
+  while i < t.triCount() {
+    imm p = *t.pos[usize.from(*t.tv[3usize * i])];
+    imm q = *t.pos[usize.from(*t.tv[3usize * i + 1usize])];
+    imm r = *t.pos[usize.from(*t.tv[3usize * i + 2usize])];
+    vol = vol + p.x * (q.y * r.z - q.z * r.y) + p.y * (q.z * r.x - q.x * r.z) + p.z * (q.x * r.y - q.y * r.x);
+    i = i + 1usize;
+  }
+  if vol > 0.d { return true; }
+  mut s = String.from(name);
+  s.append(" faces inward (its volume is not positive)");
+  problems.push(s);
+  false;
+}
+
+// -------- the triangles --------
+
+// A closed mesh cut into triangles, with the edges of the triangles (the
+// mesh's own, then the cuts made inside its faces) and each vertex's
+// perturbation
+struct TriMesh {
+  pub pos List[DVec3];       // per vertex
+  pub posf List[Vec3];
+  pub u List[DVec3];         // per vertex: its perturbation direction
+  pub moved i32;             // 1 when the mesh takes the shared translation
+  pub tv List[u32];          // per triangle corner (3 a triangle): its vertex
+  pub tc List[u32];          // per triangle corner: the mesh's corner (half-edge)
+  pub tf List[u32];          // per triangle: its face
+  pub te List[u32];          // per triangle side k (corner k to k + 1): its edge
+  pub tdir List[Bool];       // per triangle side: runs along its edge's way
+  pub faceTri List[u32];     // per face, and one more: its first triangle
+  pub ev0 List[u32];         // per edge: where it starts
+  pub ev1 List[u32];         // per edge: where it ends
+  pub et0 List[u32];         // per edge: the triangle whose side runs ev0 to ev1
+  pub et1 List[u32];         // per edge: the triangle whose side runs ev1 to ev0
+  pub eSrc List[u32];        // per edge: the mesh's edge, NoIndex for a cut inside a face
+  pub vStart List[u32];      // per vertex, and one more: its first edge in 'vEdges'
+  pub vEdges List[u32];
+  pub tlo List[Vec3];        // per triangle: its box
+  pub thi List[Vec3];
+  pub fcStart List[u32];     // per face, and one more: its first corner in fcH
+  pub fcH List[u32];         // the faces' corners (half-edges), each face's from its first
+  pub fcV List[u32];         // and each one's vertex
+
+  fn vertexCount(self &) usize {pos.len();}
+  fn triCount(self &) usize {tf.len();}
+  fn edgeCount(self &) usize {ev0.len();}
+
+  // Vertex v as a perturbed point
+  fn point(self &, v u32) PPoint {
+    new PPoint(*pos[usize.from(v)], *u[usize.from(v)], moved);
+  }
+}
+
+// m cut into triangles (see TriMesh); 'moved' and 'towards' (1 outward, -1
+// inward, 0 for none) set its perturbation. A face that cannot be cut into
+// triangles that each have area is reported, and 'ok' cleared.
+fn triMeshOf(m &PolyMesh, name &[]u8, moved i32, towards f64, problems &mut List[String], ok &mut Bool) TriMesh {
+  imm nv = m.vertexCount();
+  imm ne = m.edgeCount();
+  imm nf = m.faceCount();
+  mut t = new TriMesh(List[DVec3].withCapacity(nv), List[Vec3].withCapacity(nv), List[DVec3].withCapacity(nv), moved,
+    List[u32].empty(), List[u32].empty(), List[u32].empty(), List[u32].empty(), List[Bool].empty(),
+    List[u32].withCapacity(nf + 1usize), List[u32].withCapacity(ne), List[u32].withCapacity(ne),
+    List[u32].withCapacity(ne), List[u32].withCapacity(ne), List[u32].withCapacity(ne),
+    List[u32].empty(), List[u32].empty(), List[Vec3].empty(), List[Vec3].empty(), List[u32].withCapacity(nf + 1usize),
+    List[u32].empty(), List[u32].empty());
+  mut v = 0usize;
+  while v < nv {
+    imm p = *m.positions[v];
+    t.posf.push(p);
+    t.pos.push(DVec3.from(p));
+    v = v + 1usize;
+  }
+  mut e = 0usize;
+  while e < ne {
+    t.ev0.push(m.fromVertex(u32.from(2usize * e)));
+    t.ev1.push(m.toVertex(u32.from(2usize * e)));
+    t.et0.push(NoIndex);
+    t.et1.push(NoIndex);
+    t.eSrc.push(u32.from(e));
+    e = e + 1usize;
+  }
+
+  mut slots = List[u32].empty();
+  mut xs = List[f64].empty();
+  mut ys = List[f64].empty();
+  mut nodes = List[u32].empty();
+  mut dA = List[u32].empty();      // the face's cuts: their slots, and edge
+  mut dB = List[u32].empty();
+  mut dE = List[u32].empty();
+  mut f = 0usize;
+  while f < nf {
+    t.faceTri.push(u32.from(t.tf.len()));
+    imm hs = m.faceHalfedges(u32.from(f));
+    imm n = hs.len();
+    t.fcStart.push(u32.from(t.fcH.len()));
+    mut hi = 0usize;
+    while hi < n {
+      t.fcH.push(*hs[hi]);
+      t.fcV.push(m.toVertex(*hs[hi]));
+      hi = hi + 1usize;
+    }
+    slots.clear();
+    if n == 3usize {
+      slots.push(0u32);
+      slots.push(1u32);
+      slots.push(2u32);
+    } else {
+      // Into the plane the face leans along least, counterclockwise
+      mut nrm = new DVec3(0.d, 0.d, 0.d);
+      mut i = 0usize;
+      while i < n {
+        imm p = *t.pos[usize.from(m.toVertex(*hs[i]))];
+        imm q = *t.pos[usize.from(m.toVertex(*hs[(i + 1usize) % n]))];
+        nrm = new DVec3(nrm.x + (p.y - q.y) * (p.z + q.z), nrm.y + (p.z - q.z) * (p.x + q.x),
+          nrm.z + (p.x - q.x) * (p.y + q.y));
+        i = i + 1usize;
+      }
+      mut axis = 2u32;
+      mut flip = false;
+      dropAxis(nrm, &mut axis, &mut flip);
+      xs.clear();
+      ys.clear();
+      nodes.clear();
+      // Corners at one point (a face pinched there) are one node, as a
+      // keyhole's bridge ends are, so neither blocks an ear at the other
+      i = 0usize;
+      while i < n {
+        imm vv = m.toVertex(*hs[i]);
+        imm p = *t.pos[usize.from(vv)];
+        xs.push(planeX(p, axis, flip));
+        ys.push(planeY(p, axis, flip));
+        mut node = vv;
+        mut j = 0usize;
+        while j < i {
+          imm q = *t.pos[usize.from(m.toVertex(*hs[j]))];
+          if q.x == p.x and q.y == p.y and q.z == p.z and *nodes[j] < node { node = *nodes[j]; }
+          j = j + 1usize;
+        }
+        nodes.push(node);
+        i = i + 1usize;
+      }
+      earClip(&xs, &ys, &nodes, &mut slots);
+    }
+    dA.clear();
+    dB.clear();
+    dE.clear();
+    mut k = 0usize;
+    while k + 2usize < slots.len() {
+      imm tri = u32.from(t.tf.len());
+      mut c = 0usize;
+      while c < 3usize {
+        imm sa = *slots[k + c];
+        imm sb = *slots[k + (c + 1usize) % 3usize];
+        imm va = m.toVertex(*hs[usize.from(sa)]);
+        imm vb = m.toVertex(*hs[usize.from(sb)]);
+        t.tv.push(va);
+        t.tc.push(*hs[usize.from(sa)]);
+        mut edge = NoIndex;
+        mut dir = true;
+        if usize.from(sb) == (usize.from(sa) + 1usize) % n {
+          edge = *hs[usize.from(sb)] / 2u32;
+          dir = *t.ev0[usize.from(edge)] == va;
+        } else {
+          mut d = 0usize;
+          while d < dA.len() and edge == NoIndex {
+            if (*dA[d] == sa and *dB[d] == sb) or (*dA[d] == sb and *dB[d] == sa) { edge = *dE[d]; }
+            d = d + 1usize;
+          }
+          if edge == NoIndex {
+            edge = u32.from(t.ev0.len());
+            t.ev0.push(va);
+            t.ev1.push(vb);
+            t.et0.push(NoIndex);
+            t.et1.push(NoIndex);
+            t.eSrc.push(NoIndex);
+            dA.push(sa);
+            dB.push(sb);
+            dE.push(edge);
+          }
+          dir = *t.ev0[usize.from(edge)] == va;
+        }
+        if dir { t.et0.set(usize.from(edge), tri); } else { t.et1.set(usize.from(edge), tri); }
+        t.te.push(edge);
+        t.tdir.push(dir);
+        c = c + 1usize;
+      }
+      t.tf.push(u32.from(f));
+      imm p0 = *t.pos[usize.from(*t.tv[3usize * usize.from(tri)])];
+      imm p1 = *t.pos[usize.from(*t.tv[3usize * usize.from(tri) + 1usize])];
+      imm p2 = *t.pos[usize.from(*t.tv[3usize * usize.from(tri) + 2usize])];
+      if collinear3(p0, p1, p2) and *ok {
+        mut s = String.from(name);
+        s.append("'s face ");
+        s.appendUInt(u64.from(f));
+        if hasZeroEdge(m, &hs) {
+          s.append(" has an edge of no length (two corners at one point, as a boolean leaves where a solid touches itself)");
+        } else {
+          s.append(" cannot be cut into triangles that all have area (it has no area, or corners in a line)");
+        }
+        problems.push(s);
+        *ok = false;
+      }
+      k = k + 3usize;
+    }
+    f = f + 1usize;
+  }
+  t.faceTri.push(u32.from(t.tf.len()));
+  t.fcStart.push(u32.from(t.fcH.len()));
+
+  // Each triangle's box
+  mut i = 0usize;
+  while i < t.tf.len() {
+    imm a = *t.posf[usize.from(*t.tv[3usize * i])];
+    imm b = *t.posf[usize.from(*t.tv[3usize * i + 1usize])];
+    imm c = *t.posf[usize.from(*t.tv[3usize * i + 2usize])];
+    t.tlo.push(minVec(minVec(a, b), c));
+    t.thi.push(maxVec(maxVec(a, b), c));
+    i = i + 1usize;
+  }
+
+  // Each vertex's edges
+  mut cnt = List[u32].withCapacity(nv + 1usize);
+  v = 0usize;
+  while v <= nv { cnt.push(0u32); v = v + 1usize; }
+  e = 0usize;
+  while e < t.ev0.len() {
+    imm a = usize.from(*t.ev0[e]);
+    imm b = usize.from(*t.ev1[e]);
+    cnt.set(a + 1usize, *cnt[a + 1usize] + 1u32);
+    cnt.set(b + 1usize, *cnt[b + 1usize] + 1u32);
+    e = e + 1usize;
+  }
+  v = 0usize;
+  while v < nv { cnt.set(v + 1usize, *cnt[v + 1usize] + *cnt[v]); v = v + 1usize; }
+  mut fillAt = copyList(&cnt);
+  mut all = List[u32].withCapacity(2usize * t.ev0.len());
+  e = 0usize;
+  while e < 2usize * t.ev0.len() { all.push(0u32); e = e + 1usize; }
+  e = 0usize;
+  while e < t.ev0.len() {
+    imm a = usize.from(*t.ev0[e]);
+    imm b = usize.from(*t.ev1[e]);
+    all.set(usize.from(*fillAt[a]), u32.from(e));
+    fillAt.set(a, *fillAt[a] + 1u32);
+    all.set(usize.from(*fillAt[b]), u32.from(e));
+    fillAt.set(b, *fillAt[b] + 1u32);
+    e = e + 1usize;
+  }
+  t.vStart = cnt;
+  t.vEdges = all;
+
+  // The perturbation: towards times the sum of the vertex's triangles'
+  // normals, summed exactly so it does not depend on their order
+  mut sx = List[List[f64]].withCapacity(nv);
+  mut sy = List[List[f64]].withCapacity(nv);
+  mut sz = List[List[f64]].withCapacity(nv);
+  v = 0usize;
+  while v < nv {
+    sx.push(List[f64].empty());
+    sy.push(List[f64].empty());
+    sz.push(List[f64].empty());
+    v = v + 1usize;
+  }
+  if towards != 0.d {
+    i = 0usize;
+    while i < t.tf.len() {
+      imm a = *t.pos[usize.from(*t.tv[3usize * i])];
+      imm b = *t.pos[usize.from(*t.tv[3usize * i + 1usize])];
+      imm c = *t.pos[usize.from(*t.tv[3usize * i + 2usize])];
+      imm ab = b - a;
+      imm ac = c - a;
+      imm nx = ab.y * ac.z - ab.z * ac.y;
+      imm ny = ab.z * ac.x - ab.x * ac.z;
+      imm nz = ab.x * ac.y - ab.y * ac.x;
+      mut k = 0usize;
+      while k < 3usize {
+        imm w = usize.from(*t.tv[3usize * i + k]);
+        imm ex = expOf(nx);
+        imm ey = expOf(ny);
+        imm ez = expOf(nz);
+        sx.set(w, expAdd(sx[w], &ex));
+        sy.set(w, expAdd(sy[w], &ey));
+        sz.set(w, expAdd(sz[w], &ez));
+        k = k + 1usize;
+      }
+      i = i + 1usize;
+    }
+  }
+  v = 0usize;
+  while v < nv {
+    imm x = f64.from(f32.from(expEstimate(sx[v]))) * towards;
+    imm y = f64.from(f32.from(expEstimate(sy[v]))) * towards;
+    imm z = f64.from(f32.from(expEstimate(sz[v]))) * towards;
+    t.u.push(new DVec3(x, y, z));
+    v = v + 1usize;
+  }
+  t;
+}
+
+// Whether a face has two neighbouring corners at one point
+fn hasZeroEdge(m &PolyMesh, hs &List[u32]) Bool {
+  imm n = hs.len();
+  mut i = 0usize;
+  while i < n {
+    imm a = *m.positions[usize.from(m.toVertex(*hs[i]))];
+    imm b = *m.positions[usize.from(m.toVertex(*hs[(i + 1usize) % n]))];
+    if samePoint(a, b) { return true; }
+    i = i + 1usize;
+  }
+  false;
+}
+
+// An x beyond every vertex of both meshes
+fn farBeyond(a &TriMesh, b &TriMesh) f32 {
+  mut mx = 0.;
+  mut v = 0usize;
+  while v < a.posf.len() {
+    if a.posf[v].x > mx { mx = a.posf[v].x; }
+    v = v + 1usize;
+  }
+  v = 0usize;
+  while v < b.posf.len() {
+    if b.posf[v].x > mx { mx = b.posf[v].x; }
+    v = v + 1usize;
+  }
+  mx + mx + 1.;
+}
+
+// -------- crossings --------
+
+// The crossings of one mesh's edges with the other's triangles, each edge's
+// in order along it: a crossing's edge and triangle, the sign of the
+// triangle's orientation at the edge's start (1: the start is in front of
+// it, so the edge goes in), the exact orientations that place its point, its
+// point rounded, and how far along the edge it is
+struct Records {
+  pub edge List[u32];
+  pub tri List[u32];
+  pub sign List[i32];
+  pub pa List[List[f64]];
+  pub pb List[List[f64]];
+  pub pos List[Vec3];
+  pub t List[f64];
+  pub edgeStart List[u32];   // per edge, and one more: its first crossing
+  pub triStart List[u32];    // per triangle of the other mesh, and one more: its first in 'triRecs'
+  pub triRecs List[u32];
+
+  fn count(self &) usize {edge.len();}
+
+  // Each triangle's crossings, in order
+  fn indexTriangles(self &mut, nt usize) {
+    mut cnt = List[u32].withCapacity(nt + 1usize);
+    mut i = 0usize;
+    while i <= nt { cnt.push(0u32); i = i + 1usize; }
+    i = 0usize;
+    while i < edge.len() {
+      imm s = usize.from(*tri[i]);
+      cnt.set(s + 1usize, *cnt[s + 1usize] + 1u32);
+      i = i + 1usize;
+    }
+    i = 0usize;
+    while i < nt { cnt.set(i + 1usize, *cnt[i + 1usize] + *cnt[i]); i = i + 1usize; }
+    mut at = copyList(&cnt);
+    mut recs = List[u32].withCapacity(edge.len());
+    i = 0usize;
+    while i < edge.len() { recs.push(0u32); i = i + 1usize; }
+    i = 0usize;
+    while i < edge.len() {
+      imm s = usize.from(*tri[i]);
+      recs.set(usize.from(*at[s]), u32.from(i));
+      at.set(s, *at[s] + 1u32);
+      i = i + 1usize;
+    }
+    triStart = cnt;
+    triRecs = recs;
+  }
+}
+
+// Whether the segment p q crosses the triangle (a, b, c), perturbed; 'sp'
+// gets the orientation's sign at p. A tie that the perturbation cannot break
+// (a triangle with no area) is reported in 'fault'.
+fn segmentCrosses(p &PPoint, q &PPoint, a &PPoint, b &PPoint, c &PPoint, sp &mut i32, fault &mut List[String]) Bool {
+  imm s0 = porientSign(a, b, c, p);
+  imm s1 = porientSign(a, b, c, q);
+  *sp = s0;
+  if s0 == 0i32 or s1 == 0i32 {
+    tieFault(fault);
+    return false;
+  }
+  if s0 == s1 { return false; }
+  imm e0 = porientSign(p, q, a, b);
+  imm e1 = porientSign(p, q, b, c);
+  if e0 == 0i32 or e1 == 0i32 {
+    tieFault(fault);
+    return false;
+  }
+  if e0 != e1 { return false; }
+  imm e2 = porientSign(p, q, c, a);
+  if e2 == 0i32 {
+    tieFault(fault);
+    return false;
+  }
+  e2 == e0;
+}
+
+fn tieFault(fault &mut List[String]) {
+  if fault.len() == 0usize {
+    fault.push(String.from("an exact tie could not be broken; a face of one of the meshes may have no area"));
+  }
+}
+
+// The triangle s of mesh o, as perturbed points
+fn triPoint(o &TriMesh, s u32, k usize) PPoint {o.point(*o.tv[3usize * usize.from(s) + k]);}
+
+// The crossings of m's edges with o's triangles
+fn crossings(m &TriMesh, o &TriMesh, bvh &Bvh, fault &mut List[String]) Records {
+  mut r = new Records(List[u32].empty(), List[u32].empty(), List[i32].empty(), List[List[f64]].empty(),
+    List[List[f64]].empty(), List[Vec3].empty(), List[f64].empty(), List[u32].withCapacity(m.edgeCount() + 1usize),
+    List[u32].empty(), List[u32].empty());
+  mut cands = List[u32].empty();
+  mut stack = List[u32].empty();
+  mut hTri = List[u32].empty();
+  mut hSign = List[i32].empty();
+  mut hP = List[List[f64]].empty();
+  mut hQ = List[List[f64]].empty();
+  mut order = List[u32].empty();
+  mut e = 0usize;
+  while e < m.edgeCount() {
+    r.edgeStart.push(u32.from(r.edge.len()));
+    imm v0 = *m.ev0[e];
+    imm v1 = *m.ev1[e];
+    imm p = m.point(v0);
+    imm q = m.point(v1);
+    imm fp = *m.posf[usize.from(v0)];
+    imm fq = *m.posf[usize.from(v1)];
+    bvh.query(minVec(fp, fq), maxVec(fp, fq), &mut cands, &mut stack);
+    hTri.clear();
+    hSign.clear();
+    hP.clear();
+    hQ.clear();
+    mut i = 0usize;
+    while i < cands.len() {
+      imm s = *cands[i];
+      imm a = triPoint(o, s, 0usize);
+      imm b = triPoint(o, s, 1usize);
+      imm c = triPoint(o, s, 2usize);
+      mut sp = 0i32;
+      if segmentCrosses(&p, &q, &a, &b, &c, &mut sp, fault) {
+        hTri.push(s);
+        hSign.push(sp);
+        hP.push(orient3dExact(a.p, b.p, c.p, p.p));
+        hQ.push(orient3dExact(a.p, b.p, c.p, q.p));
+      }
+      i = i + 1usize;
+    }
+    // In order along the edge: insertion, by the exact comparison
+    order.clear();
+    i = 0usize;
+    while i < hTri.len() {
+      mut j = order.len();
+      order.push(u32.from(i));
+      while j > 0usize and crossesBefore(m, o, e, &hTri, &hSign, &hP, &hQ, u32.from(i), *order[j - 1usize], fault) {
+        order.set(j, *order[j - 1usize]);
+        order.set(j - 1usize, u32.from(i));
+        j = j - 1usize;
+      }
+      i = i + 1usize;
+    }
+    i = 0usize;
+    while i < order.len() {
+      imm h = usize.from(*order[i]);
+      imm s = *hTri[h];
+      r.edge.push(u32.from(e));
+      r.tri.push(s);
+      r.sign.push(*hSign[h]);
+      // The point: from the unperturbed orientations, or, where the edge
+      // lies in the triangle's plane, from the first perturbation terms
+      if expSign(hP[h]) == 0i32 and expSign(hQ[h]) == 0i32 {
+        imm a = triPoint(o, s, 0usize);
+        imm b = triPoint(o, s, 1usize);
+        imm c = triPoint(o, s, 2usize);
+        imm cp = porientCoeffs(&a, &b, &c, &p);
+        imm cq = porientCoeffs(&a, &b, &c, &q);
+        mut k = 0usize;
+        mut found = false;
+        while k < cp.len() and !found {
+          if expSign(cp[k]) != 0i32 or expSign(cq[k]) != 0i32 {
+            r.pa.push(copyList(cp[k]));
+            r.pb.push(copyList(cq[k]));
+            found = true;
+          }
+          k = k + 1usize;
+        }
+        if !found {
+          tieFault(fault);
+          r.pa.push(List[f64].empty());
+          r.pb.push(expOf(1.d));
+        }
+      } else {
+        r.pa.push(copyList(hP[h]));
+        r.pb.push(copyList(hQ[h]));
+      }
+      imm last = r.pa.len() - 1usize;
+      r.pos.push(crossingPoint(p.p, q.p, r.pa[last], r.pb[last]));
+      r.t.push(crossingParam(r.pa[last], r.pb[last]));
+      i = i + 1usize;
+    }
+    e = e + 1usize;
+  }
+  r.edgeStart.push(u32.from(r.edge.len()));
+  r;
+}
+
+// Whether crossing i comes before crossing j along edge e (from its start):
+// with o_k the orientation of crossing k's triangle at the edge's ends p
+// and q, crossing k is at o_kp / (o_kp - o_kq), and i is first when s_i s_j
+// (o_jp o_iq - o_ip o_jq) < 0, s_k the sign of o_kp
+fn crossesBefore(m &TriMesh, o &TriMesh, e usize, hTri &List[u32], hSign &List[i32], hP &List[List[f64]],
+    hQ &List[List[f64]], i u32, j u32, fault &mut List[String]) Bool {
+  imm iu = usize.from(i);
+  imm ju = usize.from(j);
+  imm l = expMul(hP[ju], hQ[iu]);
+  imm r = expMul(hP[iu], hQ[ju]);
+  imm x = expSub(&l, &r);
+  mut sx = expSign(&x);
+  if sx == 0i32 {
+    // Tied unperturbed: the whole perturbed product
+    imm p = m.point(*m.ev0[e]);
+    imm q = m.point(*m.ev1[e]);
+    imm ia = triPoint(o, *hTri[iu], 0usize);
+    imm ib = triPoint(o, *hTri[iu], 1usize);
+    imm ic = triPoint(o, *hTri[iu], 2usize);
+    imm ja = triPoint(o, *hTri[ju], 0usize);
+    imm jb = triPoint(o, *hTri[ju], 1usize);
+    imm jc = triPoint(o, *hTri[ju], 2usize);
+    imm oip = porientCoeffs(&ia, &ib, &ic, &p);
+    imm oiq = porientCoeffs(&ia, &ib, &ic, &q);
+    imm ojp = porientCoeffs(&ja, &jb, &jc, &p);
+    imm ojq = porientCoeffs(&ja, &jb, &jc, &q);
+    sx = pproductSign(&ojp, &oiq, &oip, &ojq);
+    if sx == 0i32 {
+      if fault.len() == 0usize {
+        fault.push(String.from("two crossings of one edge coincide; one of the meshes may intersect itself"));
+      }
+      return false;
+    }
+  }
+  *hSign[iu] * *hSign[ju] * sx < 0i32;
+}
+
+// -------- inside and outside --------
+
+// Each vertex of m's winding number about o: the number of times o's surface
+// wraps it (1 inside, 0 outside). One vertex of each connected piece is
+// found by the crossings of a segment from it along x to 'farX', the rest by
+// walking the edges, each crossing going in adding 1 and each going out
+// taking 1 away. A disagreement, or a number other than 0 or 1, is
+// reported in 'fault'.
+fn windings(m &TriMesh, o &TriMesh, bvh &Bvh, rec &Records, farX f32, fault &mut List[String]) List[i32] {
+  imm nv = m.vertexCount();
+  imm unset = -2147483647i32;
+  mut w = List[i32].withCapacity(nv);
+  mut v = 0usize;
+  while v < nv { w.push(unset); v = v + 1usize; }
+  mut queue = List[u32].empty();
+  mut cands = List[u32].empty();
+  mut stack = List[u32].empty();
+  v = 0usize;
+  while v < nv {
+    if *w[v] == unset {
+      if *m.vStart[v] == *m.vStart[v + 1usize] {
+        w.set(v, 0i32);
+      } else {
+        w.set(v, castWinding(m, u32.from(v), o, bvh, farX, &mut cands, &mut stack, fault));
+        queue.clear();
+        queue.push(u32.from(v));
+        mut qi = 0usize;
+        while qi < queue.len() {
+          imm x = usize.from(*queue[qi]);
+          qi = qi + 1usize;
+          mut k = usize.from(*m.vStart[x]);
+          while k < usize.from(*m.vStart[x + 1usize]) {
+            imm e = usize.from(*m.vEdges[k]);
+            mut delta = 0i32;
+            mut r = usize.from(*rec.edgeStart[e]);
+            while r < usize.from(*rec.edgeStart[e + 1usize]) {
+              delta = delta + *rec.sign[r];
+              r = r + 1usize;
+            }
+            mut y = 0usize;
+            mut wy = 0i32;
+            if usize.from(*m.ev0[e]) == x {
+              y = usize.from(*m.ev1[e]);
+              wy = *w[x] + delta;
+            } else {
+              y = usize.from(*m.ev0[e]);
+              wy = *w[x] - delta;
+            }
+            if *w[y] == unset {
+              w.set(y, wy);
+              queue.push(u32.from(y));
+            } elif *w[y] != wy and fault.len() == 0usize {
+              fault.push(String.from("inside and outside disagree along the edges; one of the meshes may intersect itself"));
+            }
+            k = k + 1usize;
+          }
+        }
+      }
+    }
+    v = v + 1usize;
+  }
+  v = 0usize;
+  while v < nv {
+    if (*w[v] < 0i32 or *w[v] > 1i32) and fault.len() == 0usize {
+      fault.push(String.from("a point lies inside a mesh twice, or inside out; a mesh may overlap itself or nest wrongly"));
+    }
+    v = v + 1usize;
+  }
+  w;
+}
+
+// The winding number of m's vertex v about o, by the segment from it to
+// (farX, y, z): crossing o's surface from behind adds 1, from in front takes
+// 1 away. A vertex of the perturbed mesh takes its perturbation with it, the
+// far point too, so the segment moves rigidly with it.
+fn castWinding(m &TriMesh, v u32, o &TriMesh, bvh &Bvh, farX f32, cands &mut List[u32], stack &mut List[u32],
+    fault &mut List[String]) i32 {
+  imm p = m.point(v);
+  imm fp = *m.posf[usize.from(v)];
+  imm farf = new Vec3(farX, fp.y, fp.z);
+  imm q = new PPoint(DVec3.from(farf), p.u, p.moved);
+  bvh.query(fp, farf, cands, stack);
+  mut w = 0i32;
+  mut i = 0usize;
+  while i < cands.len() {
+    imm s = *cands[i];
+    imm a = triPoint(o, s, 0usize);
+    imm b = triPoint(o, s, 1usize);
+    imm c = triPoint(o, s, 2usize);
+    mut sp = 0i32;
+    if segmentCrosses(&p, &q, &a, &b, &c, &mut sp, fault) {
+      if sp < 0i32 { w = w + 1i32; } else { w = w - 1i32; }
+    }
+    i = i + 1usize;
+  }
+  w;
+}
+
+// -------- the result's vertices --------
+
+// The result's vertices before merging, each with where its values come
+// from: a joined vertex 'va', or a blend of 'va' and 'vb' by 't'
+struct OutVerts {
+  pub pos List[Vec3];
+  pub va List[u32];
+  pub vb List[u32];
+  pub vt List[f32];
+  // Each vertex's exact point, before rounding, as (hx, hy, hz) / hw with hw > 0
+  pub hx List[List[f64]];
+  pub hy List[List[f64]];
+  pub hz List[List[f64]];
+  pub hw List[List[f64]];
+
+  fn empty() OutVerts {
+    new OutVerts(List[Vec3].empty(), List[u32].empty(), List[u32].empty(), List[f32].empty(), List[List[f64]].empty(),
+      List[List[f64]].empty(), List[List[f64]].empty(), List[List[f64]].empty());
+  }
+
+  // m's kept vertices, in order: each one's result number, NoIndex for one
+  // not kept; 'jv' is m's first vertex in the join
+  fn addKept(self &mut, m &TriMesh, w &List[i32], keepIn Bool, jv u32) List[u32] {
+    mut out = List[u32].withCapacity(m.vertexCount());
+    mut v = 0usize;
+    while v < m.vertexCount() {
+      if (*w[v] > 0i32) == keepIn and *m.vStart[v] != *m.vStart[v + 1usize] {
+        out.push(u32.from(pos.len()));
+        imm p = *m.pos[v];
+        pos.push(*m.posf[v]);
+        va.push(jv + u32.from(v));
+        vb.push(NoIndex);
+        vt.push(0.);
+        hx.push(expOf(p.x));
+        hy.push(expOf(p.y));
+        hz.push(expOf(p.z));
+        hw.push(expOf(1.d));
+      } else {
+        out.push(NoIndex);
+      }
+      v = v + 1usize;
+    }
+    out;
+  }
+
+  // A vertex for each crossing of m's edges, in order; the first's number
+  fn addCrossings(self &mut, m &TriMesh, rec &Records, jv u32) u32 {
+    imm base = u32.from(pos.len());
+    mut r = 0usize;
+    while r < rec.count() {
+      imm e = usize.from(*rec.edge[r]);
+      pos.push(*rec.pos[r]);
+      va.push(jv + *m.ev0[e]);
+      vb.push(jv + *m.ev1[e]);
+      vt.push(f32.from(*rec.t[r]));
+      // (q a - p b) / (a - b), the sign made positive below
+      imm p = *m.pos[usize.from(*m.ev0[e])];
+      imm q = *m.pos[usize.from(*m.ev1[e])];
+      imm a = rec.pa[r];
+      imm b = rec.pb[r];
+      mut w = expSub(a, b);
+      imm ax = expScale(a, q.x);
+      imm bx = expScale(b, p.x);
+      imm ay = expScale(a, q.y);
+      imm bY = expScale(b, p.y);
+      imm az = expScale(a, q.z);
+      imm bz = expScale(b, p.z);
+      mut x = expSub(&ax, &bx);
+      mut y = expSub(&ay, &bY);
+      mut z = expSub(&az, &bz);
+      if expSign(&w) < 0i32 {
+        w = expNeg(&w);
+        x = expNeg(&x);
+        y = expNeg(&y);
+        z = expNeg(&z);
+      }
+      hx.push(x);
+      hy.push(y);
+      hz.push(z);
+      hw.push(w);
+      r = r + 1usize;
+    }
+    base;
+  }
+}
+
+// Where a mesh's elements are in the join: its first vertex, half-edge,
+// edge and face
+struct JOffsets {
+  pub v u32;
+  pub h u32;
+  pub e u32;
+  pub f u32;
+}
+
+// Which side of the other mesh a mesh keeps, and whether its pieces turn
+// over
+struct Side {
+  pub keepIn Bool;
+  pub reverse Bool;
+}
+
+// -------- the pieces --------
+
+// The result's faces as loops, before merging: each loop's corners, each
+// corner its vertex, where its corner values come from (up to three joined
+// corners and their weights), the joined edge its incoming side runs along
+// (NoIndex for a new side) and whether that side is on the curve. Loops are
+// grouped: a face kept whole, a triangle kept whole, or a crossed
+// triangle's pieces; a group knows whether it turns over, and for a crossed
+// triangle its points for the geometry of loops inside it.
+struct Loops {
+  pub start List[u32];       // per loop, and one more: its first corner
+  pub inner List[Bool];      // per loop: touches no side of its triangle
+  pub node List[u32];        // per corner
+  pub side List[u32];
+  pub curve List[Bool];
+  pub h0 List[u32];
+  pub h1 List[u32];
+  pub h2 List[u32];
+  pub w0 List[f32];
+  pub w1 List[f32];
+  pub w2 List[f32];
+  pub gStart List[u32];      // per group, and one more: its first loop
+  pub gFace List[u32];       // per group: the joined face
+  pub gReverse List[Bool];
+  pub gNormal List[DVec3];   // per group: its triangle's normal (a whole face's is 0)
+
+  fn empty() Loops {
+    mut l = new Loops(List[u32].empty(), List[Bool].empty(), List[u32].empty(), List[u32].empty(), List[Bool].empty(),
+      List[u32].empty(), List[u32].empty(), List[u32].empty(), List[f32].empty(), List[f32].empty(), List[f32].empty(),
+      List[u32].empty(), List[u32].empty(), List[Bool].empty(), List[DVec3].empty());
+    l.start.push(0u32);
+    l.gStart.push(0u32);
+    l;
+  }
+
+  fn loopCount(self &) usize {inner.len();}
+  fn groupCount(self &) usize {gFace.len();}
+
+  fn corner(self &mut, node u32, side u32, curve Bool, h0 u32, h1 u32, h2 u32, w0 f32, w1 f32, w2 f32) {
+    self.node.push(node);
+    self.side.push(side);
+    self.curve.push(curve);
+    self.h0.push(h0);
+    self.h1.push(h1);
+    self.h2.push(h2);
+    self.w0.push(w0);
+    self.w1.push(w1);
+    self.w2.push(w2);
+  }
+
+  fn endLoop(self &mut, isInner Bool) {
+    start.push(u32.from(node.len()));
+    inner.push(isInner);
+  }
+
+  fn endGroup(self &mut, face u32, reverse Bool, normal DVec3) {
+    gStart.push(u32.from(inner.len()));
+    gFace.push(face);
+    gReverse.push(reverse);
+    gNormal.push(normal);
+  }
+}
+
+// Working lists reused from triangle to triangle: per result vertex, its
+// node in the triangle being cut; per triangle of either mesh, its pairing
+// of the curve's ends
+struct Scratch {
+  pub nodeOf List[u32];
+  pub nodeStamp List[u32];
+  pub segOf List[u32];
+  pub segStamp List[u32];
+  pub stamp u32;
+  // The triangle's nodes: result vertex, corner values, outgoing edge, incoming count
+  pub nVert List[u32];
+  pub nH0 List[u32];
+  pub nH1 List[u32];
+  pub nH2 List[u32];
+  pub nW0 List[f32];
+  pub nW1 List[f32];
+  pub nW2 List[f32];
+  pub nOut List[u32];
+  pub nIn List[u32];
+  // Its directed edges: from, to (nodes), joined edge, on the curve, a side's piece, used
+  pub eFrom List[u32];
+  pub eTo List[u32];
+  pub eSide List[u32];
+  pub eCurve List[Bool];
+  pub eOnSide List[Bool];
+  pub eUsed List[Bool];
+  // The curve's ends: other triangle, node, starts the curve here
+  pub kTri List[u32];
+  pub kNode List[u32];
+  pub kStart List[Bool];
+  pub kPair List[u32];
+  pub segs List[u32];
+
+  fn make(nverts usize, nta usize, ntb usize) Scratch {
+    imm nt = if nta > ntb {nta;} else {ntb;};
+    mut s = new Scratch(List[u32].withCapacity(nverts), List[u32].withCapacity(nverts), List[u32].withCapacity(nt),
+      List[u32].withCapacity(nt), 0u32,
+      List[u32].empty(), List[u32].empty(), List[u32].empty(), List[u32].empty(), List[f32].empty(), List[f32].empty(),
+      List[f32].empty(), List[u32].empty(), List[u32].empty(),
+      List[u32].empty(), List[u32].empty(), List[u32].empty(), List[Bool].empty(), List[Bool].empty(), List[Bool].empty(),
+      List[u32].empty(), List[u32].empty(), List[Bool].empty(), List[u32].empty(), List[u32].empty());
+    mut i = 0usize;
+    while i < nverts {
+      s.nodeOf.push(0u32);
+      s.nodeStamp.push(0u32);
+      i = i + 1usize;
+    }
+    i = 0usize;
+    while i < nt {
+      s.segOf.push(0u32);
+      s.segStamp.push(0u32);
+      i = i + 1usize;
+    }
+    s;
+  }
+
+  fn begin(self &mut) {
+    stamp = stamp + 1u32;
+    nVert.clear();
+    nH0.clear();
+    nH1.clear();
+    nH2.clear();
+    nW0.clear();
+    nW1.clear();
+    nW2.clear();
+    nOut.clear();
+    nIn.clear();
+    eFrom.clear();
+    eTo.clear();
+    eSide.clear();
+    eCurve.clear();
+    eOnSide.clear();
+    eUsed.clear();
+    kTri.clear();
+    kNode.clear();
+    kStart.clear();
+    kPair.clear();
+    segs.clear();
+  }
+
+  // The node of result vertex 'vert', made with the given corner values when new
+  fn nodeFor(self &mut, vert u32, h0 u32, h1 u32, h2 u32, w0 f32, w1 f32, w2 f32) u32 {
+    imm vu = usize.from(vert);
+    if *nodeStamp[vu] == stamp { return *nodeOf[vu]; }
+    imm id = u32.from(nVert.len());
+    nodeStamp.set(vu, stamp);
+    nodeOf.set(vu, id);
+    nVert.push(vert);
+    nH0.push(h0);
+    nH1.push(h1);
+    nH2.push(h2);
+    nW0.push(w0);
+    nW1.push(w1);
+    nW2.push(w2);
+    nOut.push(NoIndex);
+    nIn.push(0u32);
+    id;
+  }
+
+  fn edgeAdd(self &mut, from u32, to u32, side u32, curve Bool, onSide Bool) {
+    eFrom.push(from);
+    eTo.push(to);
+    eSide.push(side);
+    eCurve.push(curve);
+    eOnSide.push(onSide);
+    eUsed.push(false);
+  }
+}
+
+// m's faces as loops (see Loops): o is the other mesh, recM the crossings of
+// m's edges and recO those of o's edges (with m's triangles), w m's
+// windings, outM m's result vertices, baseM and baseO the result numbers of
+// the first crossing of each
+fn piecesOf(m &TriMesh, o &TriMesh, recM &Records, recO &Records, w &List[i32], keepIn Bool, outM &List[u32],
+    baseM u32, baseO u32, off JOffsets, side Side, verts &OutVerts, loops &mut Loops, sc &mut Scratch,
+    fault &mut List[String]) {
+  imm zero = new DVec3(0.d, 0.d, 0.d);
+  mut f = 0usize;
+  while f + 1usize < m.faceTri.len() {
+    imm t0 = usize.from(*m.faceTri[f]);
+    imm t1 = usize.from(*m.faceTri[f + 1usize]);
+    // Whether every triangle is uncrossed and kept
+    mut whole = true;
+    mut t = t0;
+    while t < t1 {
+      if crossed(m, recM, recO, t) or !keptVertex(w, *m.tv[3usize * t], keepIn) { whole = false; }
+      t = t + 1usize;
+    }
+    if whole and t1 > t0 {
+      // The face as it was: its corners from its first
+      mut c = usize.from(*m.fcStart[f]);
+      while c < usize.from(*m.fcStart[f + 1usize]) {
+        imm hh = *m.fcH[c];
+        loops.corner(*outM[usize.from(*m.fcV[c])], off.e + hh / 2u32, false, off.h + hh, NoIndex, NoIndex, 1., 0., 0.);
+        c = c + 1usize;
+      }
+      loops.endLoop(false);
+      loops.endGroup(off.f + u32.from(f), side.reverse, zero);
+    } else {
+      t = t0;
+      while t < t1 {
+        if !crossed(m, recM, recO, t) {
+          imm k0 = keptVertex(w, *m.tv[3usize * t], keepIn);
+          imm k1 = keptVertex(w, *m.tv[3usize * t + 1usize], keepIn);
+          imm k2 = keptVertex(w, *m.tv[3usize * t + 2usize], keepIn);
+          if k0 != k1 or k1 != k2 {
+            if fault.len() == 0usize {
+              fault.push(String.from("a triangle's corners disagree on inside and outside with nothing crossing it; a mesh may intersect itself"));
+            }
+          } elif k0 {
+            mut k = 0usize;
+            while k < 3usize {
+              imm sideE = *m.te[3usize * t + (k + 2usize) % 3usize];
+              loops.corner(*outM[usize.from(*m.tv[3usize * t + k])], joinedEdge(m, sideE, off), false,
+                off.h + *m.tc[3usize * t + k], NoIndex, NoIndex, 1., 0., 0.);
+              k = k + 1usize;
+            }
+            loops.endLoop(false);
+            loops.endGroup(off.f + u32.from(f), side.reverse, triNormal(m, t));
+          }
+        } else {
+          cutTriangle(m, o, recM, recO, w, keepIn, outM, baseM, baseO, off, u32.from(t), verts, loops, sc, fault);
+          loops.endGroup(off.f + u32.from(f), side.reverse, triNormal(m, t));
+        }
+        t = t + 1usize;
+      }
+    }
+    f = f + 1usize;
+  }
+}
+
+// The joined edge of m's triangle edge e, NoIndex for a cut inside a face
+fn joinedEdge(m &TriMesh, e u32, off JOffsets) u32 {
+  imm s = *m.eSrc[usize.from(e)];
+  if s == NoIndex {NoIndex;} else {off.e + s;};
+}
+
+// Whether a vertex is on the side kept
+fn keptVertex(w &List[i32], v u32, keepIn Bool) Bool {(*w[usize.from(v)] > 0i32) == keepIn;}
+
+// Whether triangle t of m is crossed: a crossing on a side, or an edge of
+// the other mesh through it
+fn crossed(m &TriMesh, recM &Records, recO &Records, t usize) Bool {
+  mut k = 0usize;
+  while k < 3usize {
+    imm e = usize.from(*m.te[3usize * t + k]);
+    if *recM.edgeStart[e] != *recM.edgeStart[e + 1usize] { return true; }
+    k = k + 1usize;
+  }
+  *recO.triStart[t] != *recO.triStart[t + 1usize];
+}
+
+// Triangle t's normal, (b - a) x (c - a), in f64
+fn triNormal(m &TriMesh, t usize) DVec3 {
+  imm a = *m.pos[usize.from(*m.tv[3usize * t])];
+  imm b = *m.pos[usize.from(*m.tv[3usize * t + 1usize])];
+  imm c = *m.pos[usize.from(*m.tv[3usize * t + 2usize])];
+  imm ab = b - a;
+  imm ac = c - a;
+  new DVec3(ab.y * ac.z - ab.z * ac.y, ab.z * ac.x - ab.x * ac.z, ab.x * ac.y - ab.y * ac.x);
+}
+
+// Triangle t's pieces, as loops: the kept parts of its sides, the curve's
+// pieces across it, joined end to end. Each side runs from corner k to
+// k + 1 through its crossings, in or out by turns from its first corner's
+// side; each piece of the curve is where the triangle meets one triangle of
+// the other mesh, between two of its points: a crossing on one of this
+// triangle's sides, or an edge of the other mesh through it. Which way the
+// piece runs comes from those crossings: kept outside, an end on this
+// triangle's side starts the piece when that side goes into the other mesh
+// there, and an end on the other triangle's side starts it when that side
+// comes out through this triangle from behind; kept inside, the other way.
+fn cutTriangle(m &TriMesh, o &TriMesh, recM &Records, recO &Records, w &List[i32], keepIn Bool, outM &List[u32],
+    baseM u32, baseO u32, off JOffsets, t u32, verts &OutVerts, loops &mut Loops, sc &mut Scratch,
+    fault &mut List[String]) {
+  sc.begin();
+  imm tu = usize.from(t);
+  // The corners' nodes, made only when kept
+  mut k = 0usize;
+  while k < 3usize {
+    imm c0 = 3usize * tu + k;
+    imm c1 = 3usize * tu + (k + 1usize) % 3usize;
+    imm e = *m.te[c0];
+    imm eu = usize.from(e);
+    imm dir = *m.tdir[c0];
+    imm sideJ = joinedEdge(m, e, off);
+    imm hA = off.h + *m.tc[c0];
+    imm hB = off.h + *m.tc[c1];
+    imm r0 = usize.from(*recM.edgeStart[eu]);
+    imm r1 = usize.from(*recM.edgeStart[eu + 1usize]);
+    imm nr = r1 - r0;
+    mut kept = keptVertex(w, *m.tv[c0], keepIn);
+    mut prev = NoIndex;
+    if kept { prev = sc.nodeFor(*outM[usize.from(*m.tv[c0])], hA, NoIndex, NoIndex, 1., 0., 0.); }
+    mut i = 0usize;
+    while i < nr {
+      imm r = if dir {r0 + i;} else {r1 - 1usize - i;};
+      imm tr = f32.from(*recM.t[r]);
+      imm wa = if dir {1. - tr;} else {tr;};
+      imm node = sc.nodeFor(baseM + u32.from(r), hA, hB, NoIndex, wa, 1. - wa, 0.);
+      if kept { sc.edgeAdd(prev, node, sideJ, false, true); }
+      kept = !kept;
+      prev = node;
+      i = i + 1usize;
+    }
+    if kept != keptVertex(w, *m.tv[c1], keepIn) {
+      if fault.len() == 0usize {
+        fault.push(String.from("a side's crossings disagree with its corners; one of the meshes may intersect itself"));
+      }
+      return;
+    }
+    if kept {
+      imm last = sc.nodeFor(*outM[usize.from(*m.tv[c1])], hB, NoIndex, NoIndex, 1., 0., 0.);
+      sc.edgeAdd(prev, last, sideJ, false, true);
+    }
+    k = k + 1usize;
+  }
+
+  // The curve's ends: crossings on this triangle's sides...
+  k = 0usize;
+  while k < 3usize {
+    imm c0 = 3usize * tu + k;
+    imm c1 = 3usize * tu + (k + 1usize) % 3usize;
+    imm e = usize.from(*m.te[c0]);
+    imm dir = *m.tdir[c0];
+    imm hA = off.h + *m.tc[c0];
+    imm hB = off.h + *m.tc[c1];
+    mut r = usize.from(*recM.edgeStart[e]);
+    while r < usize.from(*recM.edgeStart[e + 1usize]) {
+      imm tr = f32.from(*recM.t[r]);
+      imm wa = if dir {1. - tr;} else {tr;};
+      imm node = sc.nodeFor(baseM + u32.from(r), hA, hB, NoIndex, wa, 1. - wa, 0.);
+      imm goesIn = if dir {*recM.sign[r] > 0i32;} else {*recM.sign[r] < 0i32;};
+      curveEnd(sc, *recM.tri[r], node, goesIn != keepIn, fault);
+      r = r + 1usize;
+    }
+    k = k + 1usize;
+  }
+  // ...and the other mesh's edges through it
+  imm n = triNormal(m, tu);
+  mut axis = 2u32;
+  mut flip = false;
+  dropAxis(n, &mut axis, &mut flip);
+  imm pa = *m.pos[usize.from(*m.tv[3usize * tu])];
+  imm pb = *m.pos[usize.from(*m.tv[3usize * tu + 1usize])];
+  imm pc = *m.pos[usize.from(*m.tv[3usize * tu + 2usize])];
+  mut q = usize.from(*recO.triStart[tu]);
+  while q < usize.from(*recO.triStart[tu + 1usize]) {
+    imm r = usize.from(*recO.triRecs[q]);
+    imm p = DVec3.from(*recO.pos[r]);
+    mut l0 = 0.;
+    mut l1 = 0.;
+    mut l2 = 0.;
+    planeBarycentric(p, pa, pb, pc, axis, flip, &mut l0, &mut l1, &mut l2);
+    imm node = sc.nodeFor(baseO + u32.from(r), off.h + *m.tc[3usize * tu], off.h + *m.tc[3usize * tu + 1usize],
+      off.h + *m.tc[3usize * tu + 2usize], l0, l1, l2);
+    imm f = usize.from(*recO.edge[r]);
+    imm sg = *recO.sign[r];
+    curveEnd(sc, *o.et0[f], node, (sg < 0i32) != keepIn, fault);
+    curveEnd(sc, *o.et1[f], node, (sg > 0i32) != keepIn, fault);
+    q = q + 1usize;
+  }
+  if fault.len() > 0usize { return; }
+  // Each piece of the curve, from its start to its end
+  mut s = 0usize;
+  while s < sc.segs.len() {
+    imm k1 = usize.from(*sc.segs[s]);
+    imm k2 = *sc.kPair[k1];
+    if k2 == NoIndex or *sc.kStart[k1] == *sc.kStart[usize.from(k2)] {
+      if fault.len() == 0usize {
+        fault.push(String.from("the curve where the surfaces meet does not close; one of the meshes may intersect itself"));
+      }
+      return;
+    }
+    if *sc.kStart[k1] {
+      sc.edgeAdd(*sc.kNode[k1], *sc.kNode[usize.from(k2)], NoIndex, true, false);
+    } else {
+      sc.edgeAdd(*sc.kNode[usize.from(k2)], *sc.kNode[k1], NoIndex, true, false);
+    }
+    s = s + 1usize;
+  }
+
+  // Each node: one edge out and one in
+  mut i = 0usize;
+  while i < sc.eFrom.len() {
+    imm a = usize.from(*sc.eFrom[i]);
+    imm b = usize.from(*sc.eTo[i]);
+    if *sc.nOut[a] != NoIndex {
+      if fault.len() == 0usize {
+        fault.push(String.from("a cut triangle's outline branches; one of the meshes may intersect itself"));
+      }
+      return;
+    }
+    sc.nOut.set(a, u32.from(i));
+    sc.nIn.set(b, *sc.nIn[b] + 1u32);
+    i = i + 1usize;
+  }
+  i = 0usize;
+  while i < sc.nVert.len() {
+    imm hasOut = *sc.nOut[i] != NoIndex;
+    if (hasOut and *sc.nIn[i] != 1u32) or (!hasOut and *sc.nIn[i] != 0u32) {
+      if fault.len() == 0usize {
+        fault.push(String.from("a cut triangle's outline does not close; one of the meshes may intersect itself"));
+      }
+      return;
+    }
+    i = i + 1usize;
+  }
+  // The loops, each from its first edge in order
+  i = 0usize;
+  while i < sc.eFrom.len() {
+    if !*sc.eUsed[i] {
+      mut onSide = false;
+      mut e = i;
+      mut going = true;
+      while going {
+        sc.eUsed.set(e, true);
+        if *sc.eOnSide[e] { onSide = true; }
+        imm to = usize.from(*sc.eTo[e]);
+        loops.corner(*sc.nVert[to], *sc.eSide[e], *sc.eCurve[e], *sc.nH0[to], *sc.nH1[to], *sc.nH2[to], *sc.nW0[to],
+          *sc.nW1[to], *sc.nW2[to]);
+        e = usize.from(*sc.nOut[to]);
+        going = e != i;
+      }
+      loops.endLoop(!onSide);
+    }
+    i = i + 1usize;
+  }
+}
+
+// One end of the piece of the curve across triangle s of the other mesh
+fn curveEnd(sc &mut Scratch, s u32, node u32, start Bool, fault &mut List[String]) {
+  imm su = usize.from(s);
+  imm id = u32.from(sc.kTri.len());
+  sc.kTri.push(s);
+  sc.kNode.push(node);
+  sc.kStart.push(start);
+  sc.kPair.push(NoIndex);
+  if *sc.segStamp[su] != sc.stamp {
+    sc.segStamp.set(su, sc.stamp);
+    sc.segOf.set(su, id);
+    sc.segs.push(id);
+  } else {
+    imm first = usize.from(*sc.segOf[su]);
+    if *sc.kPair[first] != NoIndex {
+      if fault.len() == 0usize {
+        fault.push(String.from("a triangle meets another in more than one piece; one of the meshes may intersect itself"));
+      }
+      return;
+    }
+    sc.kPair.set(first, id);
+    sc.kPair.set(usize.from(id), u32.from(first));
+  }
+}
+
+// The barycentric coordinates of p in the triangle (a, b, c), in its plane
+fn planeBarycentric(p DVec3, a DVec3, b DVec3, c DVec3, axis u32, flip Bool, l0 &mut f32, l1 &mut f32, l2 &mut f32) {
+  imm ax = planeX(a, axis, flip);
+  imm ay = planeY(a, axis, flip);
+  imm bx = planeX(b, axis, flip) - ax;
+  imm bY = planeY(b, axis, flip) - ay;
+  imm cx = planeX(c, axis, flip) - ax;
+  imm cy = planeY(c, axis, flip) - ay;
+  imm px = planeX(p, axis, flip) - ax;
+  imm py = planeY(p, axis, flip) - ay;
+  imm den = bx * cy - cx * bY;
+  if den == 0.d {
+    *l0 = 1.;
+    *l1 = 0.;
+    *l2 = 0.;
+    return;
+  }
+  imm u = (px * cy - cx * py) / den;
+  imm v = (bx * py - px * bY) / den;
+  *l1 = f32.from(u);
+  *l2 = f32.from(v);
+  *l0 = f32.from(1.d - u - v);
+}
+
+// -------- merging --------
+
+// Each result vertex's representative: vertices joined by a loop's side and
+// rounded to the same point are merged, each cluster into its lowest
+// number (union-find under the lower root, so the order sides are met in
+// does not matter)
+fn mergedVertices(loops &Loops, verts &OutVerts) List[u32] {
+  mut rep = identityMap(verts.pos.len());
+  mut l = 0usize;
+  while l < loops.loopCount() {
+    imm s = usize.from(*loops.start[l]);
+    imm e = usize.from(*loops.start[l + 1usize]);
+    mut c = s;
+    while c < e {
+      imm a = *loops.node[c];
+      imm b = *loops.node[if c + 1usize < e {c + 1usize;} else {s;}];
+      if a != b and samePoint(*verts.pos[usize.from(a)], *verts.pos[usize.from(b)]) {
+        imm ra = findRoot(&mut rep, a);
+        imm rb = findRoot(&mut rep, b);
+        if ra < rb { rep.set(usize.from(rb), ra); } elif rb < ra { rep.set(usize.from(ra), rb); }
+      }
+      c = c + 1usize;
+    }
+    l = l + 1usize;
+  }
+  mut v = 0usize;
+  while v < rep.len() {
+    imm r = findRoot(&mut rep, u32.from(v));
+    rep.set(v, r);
+    v = v + 1usize;
+  }
+  rep;
+}
+
+fn findRoot(rep &mut List[u32], v u32) u32 {
+  mut r = v;
+  while *rep[usize.from(r)] != r { r = *rep[usize.from(r)]; }
+  r;
+}
+
+fn samePoint(a Vec3, b Vec3) Bool {a.x == b.x and a.y == b.y and a.z == b.z;}
+
+fn identityMap(n usize) List[u32] {
+  mut out = List[u32].withCapacity(n);
+  mut i = 0usize;
+  while i < n { out.push(u32.from(i)); i = i + 1usize; }
+  out;
+}
+
+fn anyMerge(rep &List[u32]) Bool {
+  mut i = 0usize;
+  while i < rep.len() {
+    if usize.from(*rep[i]) != i { return true; }
+    i = i + 1usize;
+  }
+  false;
+}
+
+// -------- the result's faces --------
+
+// The result's faces, flat: per face its corner count and joined face; per
+// corner its vertex (before compaction), corner values' sources, incoming
+// side
+struct OutFaces {
+  pub counts List[u32];
+  pub face List[u32];
+  pub node List[u32];
+  pub side List[u32];
+  pub curve List[Bool];
+  pub h0 List[u32];
+  pub h1 List[u32];
+  pub h2 List[u32];
+  pub w0 List[f32];
+  pub w1 List[f32];
+  pub w2 List[f32];
+
+  fn empty() OutFaces {
+    new OutFaces(List[u32].empty(), List[u32].empty(), List[u32].empty(), List[u32].empty(), List[Bool].empty(),
+      List[u32].empty(), List[u32].empty(), List[u32].empty(), List[f32].empty(), List[f32].empty(), List[f32].empty());
+  }
+
+  // Corner c of the loops as the next corner of a face, its incoming side
+  // that of loop corner 'sideFrom' (NoIndex for a new side)
+  fn addCorner(self &mut, loops &Loops, c usize, node u32, sideFrom u32) {
+    self.node.push(node);
+    if sideFrom == NoIndex {
+      self.side.push(NoIndex);
+      self.curve.push(false);
+    } else {
+      self.side.push(*loops.side[usize.from(sideFrom)]);
+      self.curve.push(*loops.curve[usize.from(sideFrom)]);
+    }
+    self.h0.push(*loops.h0[c]);
+    self.h1.push(*loops.h1[c]);
+    self.h2.push(*loops.h2[c]);
+    self.w0.push(*loops.w0[c]);
+    self.w1.push(*loops.w1[c]);
+    self.w2.push(*loops.w2[c]);
+  }
+}
+
+// A loop's corners with runs at one representative made one corner: for
+// each corner kept, its loop corner (whose corner values it takes: the
+// run's corner of lowest vertex) and the loop corner whose incoming side it
+// takes (the run's first)
+fn contracted(loops &Loops, l usize, rep &List[u32], keep &mut List[u32], sideOf &mut List[u32]) {
+  keep.clear();
+  sideOf.clear();
+  imm s = usize.from(*loops.start[l]);
+  imm e = usize.from(*loops.start[l + 1usize]);
+  imm n = e - s;
+  if n == 0usize { return; }
+  // Start at a corner whose representative differs from the one before
+  mut i0 = n;
+  mut i = 0usize;
+  while i < n and i0 == n {
+    imm here = *rep[usize.from(*loops.node[s + i])];
+    imm before = *rep[usize.from(*loops.node[s + (i + n - 1usize) % n])];
+    if here != before { i0 = i; }
+    i = i + 1usize;
+  }
+  if i0 == n { return; }
+  mut k = 0usize;
+  while k < n {
+    imm c = s + (i0 + k) % n;
+    imm r = *rep[usize.from(*loops.node[c])];
+    imm last = keep.len();
+    if last == 0usize or *rep[usize.from(*loops.node[usize.from(*keep[last - 1usize])])] != r {
+      keep.push(u32.from(c));
+      sideOf.push(u32.from(c));
+    } elif *loops.node[c] < *loops.node[usize.from(*keep[last - 1usize])] {
+      keep.set(last - 1usize, u32.from(c));
+    }
+    k = k + 1usize;
+  }
+}
+
+// The result's faces from the loops, vertices merged by 'rep'. A loop left
+// with fewer than 3 corners goes; one that comes back to a vertex fails (the
+// answer false, and a line in 'why'). A crossed triangle whose loops lie
+// inside it is resolved by its points: a loop inside running counterclockwise
+// is a piece of its own, one running clockwise a hole in the piece that
+// holds it, and a piece with holes is cut into triangles.
+fn facesOf(loops &Loops, rep &List[u32], verts &OutVerts, faces &mut OutFaces, rough &mut u32, why &mut List[String]) Bool {
+  mut keep = List[u32].empty();
+  mut sideOf = List[u32].empty();
+  mut g = 0usize;
+  while g < loops.groupCount() {
+    imm l0 = usize.from(*loops.gStart[g]);
+    imm l1 = usize.from(*loops.gStart[g + 1usize]);
+    mut anyInner = false;
+    mut l = l0;
+    while l < l1 {
+      if *loops.inner[l] { anyInner = true; }
+      l = l + 1usize;
+    }
+    if !anyInner {
+      l = l0;
+      while l < l1 {
+        contracted(loops, l, rep, &mut keep, &mut sideOf);
+        if keep.len() >= 3usize {
+          if repeats(loops, rep, &keep) {
+            emitSplit(loops, rep, &keep, &sideOf, *loops.gFace[g], *loops.gReverse[g], faces);
+          } else {
+            emitLoop(loops, rep, &keep, &sideOf, *loops.gFace[g], *loops.gReverse[g], faces);
+          }
+        }
+        l = l + 1usize;
+      }
+    } elif !innerLoops(loops, g, rep, verts, faces, rough, why) {
+      return false;
+    }
+    g = g + 1usize;
+  }
+  true;
+}
+
+// Whether a contracted loop passes one vertex twice
+fn repeats(loops &Loops, rep &List[u32], keep &List[u32]) Bool {
+  mut i = 0usize;
+  while i < keep.len() {
+    imm a = *rep[usize.from(*loops.node[usize.from(*keep[i])])];
+    mut j = i + 1usize;
+    while j < keep.len() {
+      if *rep[usize.from(*loops.node[usize.from(*keep[j])])] == a { return true; }
+      j = j + 1usize;
+    }
+    i = i + 1usize;
+  }
+  false;
+}
+
+// One face from a contracted loop; turned over, it keeps its first corner,
+// the others in reverse, each corner's incoming side the one it had as the
+// outgoing side
+fn emitLoop(loops &Loops, rep &List[u32], keep &List[u32], sideOf &List[u32], face u32, reverse Bool,
+    faces &mut OutFaces) {
+  imm n = keep.len();
+  faces.counts.push(u32.from(n));
+  faces.face.push(face);
+  mut i = 0usize;
+  while i < n {
+    imm k = if reverse {(n - i) % n;} else {i;};
+    imm c = usize.from(*keep[k]);
+    imm node = *rep[usize.from(*loops.node[c])];
+    // Turned over, corner k's incoming side is the old outgoing one: that of corner k + 1
+    imm sideFrom = if reverse {*sideOf[(k + 1usize) % n];} else {*sideOf[k];};
+    faces.addCorner(loops, c, node, sideFrom);
+    i = i + 1usize;
+  }
+}
+
+// A contracted loop that passes a vertex twice, emitted as the simple loops
+// it is made of (each part between two visits a loop of its own); a part of
+// fewer than 3 corners, a sliver folded on itself, goes
+fn emitSplit(loops &Loops, rep &List[u32], keep &List[u32], sideOf &List[u32], face u32, reverse Bool,
+    faces &mut OutFaces) {
+  imm n = keep.len();
+  mut stack = List[usize].empty();
+  mut sub = List[u32].empty();
+  mut subSide = List[u32].empty();
+  mut k = 0usize;
+  while k < n {
+    imm v = *rep[usize.from(*loops.node[usize.from(*keep[k])])];
+    mut p = stack.len();
+    mut i = 0usize;
+    while i < stack.len() {
+      if *rep[usize.from(*loops.node[usize.from(*keep[*stack[i]])])] == v { p = i; }
+      i = i + 1usize;
+    }
+    if p < stack.len() {
+      sub.clear();
+      subSide.clear();
+      i = p + 1usize;
+      while i < stack.len() {
+        sub.push(*keep[*stack[i]]);
+        subSide.push(*sideOf[*stack[i]]);
+        i = i + 1usize;
+      }
+      sub.push(*keep[k]);
+      subSide.push(*sideOf[k]);
+      if sub.len() >= 3usize { emitLoop(loops, rep, &sub, &subSide, face, reverse, faces); }
+      while stack.len() > p + 1usize { stack.pop(); }
+    } else {
+      stack.push(k);
+    }
+    k = k + 1usize;
+  }
+  if stack.len() >= 3usize {
+    sub.clear();
+    subSide.clear();
+    mut i = 0usize;
+    while i < stack.len() {
+      sub.push(*keep[*stack[i]]);
+      subSide.push(*sideOf[*stack[i]]);
+      i = i + 1usize;
+    }
+    emitLoop(loops, rep, &sub, &subSide, face, reverse, faces);
+  }
+}
+
+// Each result vertex's representative when every vertex rounding to one
+// point is merged into the lowest of them
+fn samePointVertices(verts &OutVerts) List[u32] {
+  imm n = verts.pos.len();
+  mut rep = identityMap(n);
+  if n == 0usize { return rep; }
+  mut slots = 1usize;
+  while slots < 2usize * n { slots = slots * 2usize; }
+  imm mask = u32.from(slots - 1usize);
+  mut head = List[u32].withCapacity(slots);
+  mut i = 0usize;
+  while i < slots { head.push(NoIndex); i = i + 1usize; }
+  mut next = List[u32].withCapacity(n);
+  mut v = 0usize;
+  while v < n {
+    imm p = *verts.pos[v];
+    imm s = usize.from(pointHash(p) & mask);
+    mut o = *head[s];
+    mut found = NoIndex;
+    while o != NoIndex and found == NoIndex {
+      if samePoint(*verts.pos[usize.from(o)], p) { found = o; }
+      o = *next[usize.from(o)];
+    }
+    if found != NoIndex {
+      rep.set(v, *rep[usize.from(found)]);
+      next.push(NoIndex);
+    } else {
+      next.push(*head[s]);
+      head.set(s, u32.from(v));
+    }
+    v = v + 1usize;
+  }
+  rep;
+}
+
+// A hash of a point's coordinates (0 and -0 alike)
+fn pointHash(p Vec3) u32 {
+  imm x = if p.x == 0. {0u32;} else {p.x as u32;};
+  imm y = if p.y == 0. {0u32;} else {p.y as u32;};
+  imm z = if p.z == 0. {0u32;} else {p.z as u32;};
+  (x * 73856093u32) ^ (y * 19349663u32) ^ (z * 83492791u32) ^ (x >> 16u32) ^ (y >> 13u32) ^ (z >> 7u32);
+}
+
+// The faces without any pair that are the same loop of vertices run both
+// ways (a sliver of no volume, both its faces removed)
+fn dropPillows(faces &OutFaces) OutFaces {
+  imm nf = faces.counts.len();
+  mut first = List[u32].withCapacity(nf);
+  mut at = 0u32;
+  mut f = 0usize;
+  while f < nf {
+    first.push(at);
+    at = at + *faces.counts[f];
+    f = f + 1usize;
+  }
+  mut gone = List[Bool].withCapacity(nf);
+  f = 0usize;
+  while f < nf { gone.push(false); f = f + 1usize; }
+  // Faces chained by their lowest vertex
+  mut lowHead = List[u32].empty();
+  mut lowKey = List[u32].empty();
+  mut chain = List[u32].withCapacity(nf);
+  mut any = false;
+  f = 0usize;
+  while f < nf {
+    imm s = usize.from(*first[f]);
+    imm n = usize.from(*faces.counts[f]);
+    mut low = *faces.node[s];
+    mut i = 1usize;
+    while i < n {
+      if *faces.node[s + i] < low { low = *faces.node[s + i]; }
+      i = i + 1usize;
+    }
+    lowKey.push(low);
+    chain.push(NoIndex);
+    f = f + 1usize;
+  }
+  // Pair each face with an earlier one of the same lowest vertex run the other way
+  mut byLow = List[u32].empty();
+  imm nv = faces.node.len();
+  mut maxV = 0u32;
+  mut c = 0usize;
+  while c < nv {
+    if *faces.node[c] > maxV { maxV = *faces.node[c]; }
+    c = c + 1usize;
+  }
+  mut i = 0usize;
+  while i <= usize.from(maxV) and nf > 0usize { byLow.push(NoIndex); i = i + 1usize; }
+  f = 0usize;
+  while f < nf {
+    imm low = usize.from(*lowKey[f]);
+    mut g = *byLow[low];
+    mut paired = false;
+    while g != NoIndex and !paired {
+      if !*gone[usize.from(g)] and reverseCycle(faces, &first, f, usize.from(g)) {
+        gone.set(f, true);
+        gone.set(usize.from(g), true);
+        paired = true;
+        any = true;
+      }
+      g = *chain[usize.from(g)];
+    }
+    if !paired {
+      chain.set(f, *byLow[low]);
+      byLow.set(low, u32.from(f));
+    }
+    f = f + 1usize;
+  }
+  mut out = OutFaces.empty();
+  f = 0usize;
+  while f < nf {
+    if !*gone[f] {
+      imm s = usize.from(*first[f]);
+      imm n = usize.from(*faces.counts[f]);
+      out.counts.push(u32.from(n));
+      out.face.push(*faces.face[f]);
+      c = s;
+      while c < s + n {
+        out.node.push(*faces.node[c]);
+        out.side.push(*faces.side[c]);
+        out.curve.push(*faces.curve[c]);
+        out.h0.push(*faces.h0[c]);
+        out.h1.push(*faces.h1[c]);
+        out.h2.push(*faces.h2[c]);
+        out.w0.push(*faces.w0[c]);
+        out.w1.push(*faces.w1[c]);
+        out.w2.push(*faces.w2[c]);
+        c = c + 1usize;
+      }
+    }
+    f = f + 1usize;
+  }
+  out;
+}
+
+// The faces with each flat face zipped shut: a face whose corners all lie on
+// one line (exactly, at their rounded points) and which runs straight from
+// one end of that line to the other and back along a single side goes, its
+// other corners put into the face across that side, in order, so the faces
+// beside it meet each other (an edge swap on a triangle mesh). A flat face
+// folded any other way is left. Repeated until nothing changes, a few
+// rounds at most.
+fn zipFlatFaces(faces &OutFaces, verts &OutVerts) OutFaces {
+  mut cur = copyFaces(faces);
+  mut round = 0u32;
+  while round < 8u32 {
+    imm nf = cur.counts.len();
+    mut first = List[u32].withCapacity(nf + 1usize);
+    mut at = 0u32;
+    mut f = 0usize;
+    while f < nf {
+      first.push(at);
+      at = at + *cur.counts[f];
+      f = f + 1usize;
+    }
+    first.push(at);
+    // Each directed side: the corner it ends at, found through a hash of its ends
+    imm nc = cur.node.len();
+    mut slots = 1usize;
+    while slots < 2usize * nc + 2usize { slots = slots * 2usize; }
+    imm mask = u32.from(slots - 1usize);
+    mut head = List[u32].withCapacity(slots);
+    mut i = 0usize;
+    while i < slots { head.push(NoIndex); i = i + 1usize; }
+    mut chain = List[u32].withCapacity(nc);
+    mut faceOf = List[u32].withCapacity(nc);
+    f = 0usize;
+    while f < nf {
+      imm s = usize.from(*first[f]);
+      imm n = usize.from(*cur.counts[f]);
+      mut k = 0usize;
+      while k < n {
+        imm c = s + k;
+        imm p = s + (k + n - 1usize) % n;
+        imm hh = usize.from(sideHash(*cur.node[p], *cur.node[c]) & mask);
+        chain.push(*head[hh]);
+        head.set(hh, u32.from(c));
+        faceOf.push(u32.from(f));
+        k = k + 1usize;
+      }
+      f = f + 1usize;
+    }
+    // Faces going, and corners to put in before given corners
+    mut gone = List[Bool].withCapacity(nf);
+    mut touched = List[Bool].withCapacity(nf);
+    f = 0usize;
+    while f < nf {
+      gone.push(false);
+      touched.push(false);
+      f = f + 1usize;
+    }
+    mut insBefore = List[u32].empty();   // the corner they go before
+    mut insFrom = List[u32].empty();     // the flat face's corner put in
+    mut insT = List[f32].empty();        // where it lies from the side's start
+    mut changed = false;
+    f = 0usize;
+    while f < nf {
+      imm s = usize.from(*first[f]);
+      imm n = usize.from(*cur.counts[f]);
+      if !*touched[f] and suspect(&cur, verts, s, n) and isFlat(&cur, verts, s, n) {
+        // The ends of the line, and the side joining them
+        mut lo = 0usize;
+        mut hi = 0usize;
+        mut k = 1usize;
+        while k < n {
+          if exactLexLess(verts, nodeAt(&cur, s + k), nodeAt(&cur, s + lo)) { lo = k; }
+          if exactLexLess(verts, nodeAt(&cur, s + hi), nodeAt(&cur, s + k)) { hi = k; }
+          k = k + 1usize;
+        }
+        // The long side a -> b, then the chain from b back round to a
+        mut a = n;
+        mut b = n;
+        if (lo + 1usize) % n == hi { a = lo; b = hi; }
+        elif (hi + 1usize) % n == lo { a = hi; b = lo; }
+        if a < n and n >= 3usize {
+          // The chain must run monotonically from b to a
+          imm towardsA = exactLexLess(verts, nodeAt(&cur, s + a), nodeAt(&cur, s + b));
+          mut mono = true;
+          k = 0usize;
+          while k < n - 1usize {
+            imm c1 = s + (b + k) % n;
+            imm c2 = s + (b + k + 1usize) % n;
+            imm step = exactLexLess(verts, nodeAt(&cur, c2), nodeAt(&cur, c1));
+            if step != towardsA { mono = false; }
+            k = k + 1usize;
+          }
+          // The face across the long side: it runs b -> a, ending at its corner at a
+          imm ca = s + a;
+          imm cb = s + b;
+          imm na = *cur.node[ca];
+          imm nb = *cur.node[cb];
+          mut g = NoIndex;
+          mut ga = NoIndex;
+          mut o = *head[usize.from(sideHash(nb, na) & mask)];
+          while o != NoIndex and g == NoIndex {
+            imm og = usize.from(*faceOf[usize.from(o)]);
+            imm os = usize.from(*first[og]);
+            imm on = usize.from(*cur.counts[og]);
+            imm oc = usize.from(o);
+            imm op = os + (oc - os + on - 1usize) % on;
+            if *cur.node[oc] == na and *cur.node[op] == nb and og != f { g = u32.from(og); ga = o; }
+            o = *chain[oc];
+          }
+          if mono and g != NoIndex and !*touched[usize.from(g)] and !*gone[usize.from(g)] {
+            gone.set(f, true);
+            touched.set(f, true);
+            touched.set(usize.from(g), true);
+            changed = true;
+            imm pa = DVec3.from(posOf(&cur, verts, ca));
+            imm pb = DVec3.from(posOf(&cur, verts, cb));
+            imm ab = pa - pb;
+            imm len2 = ab.dot(ab);
+            k = 1usize;
+            while k + 1usize < n {
+              imm c = s + (b + k) % n;
+              imm pc = DVec3.from(posOf(&cur, verts, c));
+              imm tt = if len2 > 0.d {(pc - pb).dot(ab) / len2;} else {0.d;};
+              insBefore.push(ga);
+              insFrom.push(u32.from(c));
+              insT.push(f32.from(tt));
+              k = k + 1usize;
+            }
+          }
+        }
+      }
+      f = f + 1usize;
+    }
+    if !changed { return cur; }
+    // Rebuild: the faces kept, each corner preceded by what goes before it
+    mut next = OutFaces.empty();
+    f = 0usize;
+    while f < nf {
+      if !*gone[f] {
+        imm s = usize.from(*first[f]);
+        imm n = usize.from(*cur.counts[f]);
+        mut count = 0u32;
+        mut k = 0usize;
+        while k < n {
+          imm c = s + k;
+          imm p = s + (k + n - 1usize) % n;
+          mut q = 0usize;
+          while q < insBefore.len() {
+            if usize.from(*insBefore[q]) == c {
+              // A corner on side p -> c, blending their corner values
+              copyCornerBlend(&cur, p, c, *insT[q], *cur.node[usize.from(*insFrom[q])], &mut next);
+              count = count + 1u32;
+            }
+            q = q + 1usize;
+          }
+          copyCorner(&cur, c, &mut next);
+          count = count + 1u32;
+          k = k + 1usize;
+        }
+        next.counts.push(count);
+        next.face.push(*cur.face[f]);
+      }
+      f = f + 1usize;
+    }
+    cur = next;
+    round = round + 1u32;
+  }
+  cur;
+}
+
+// The faces with pieces of one face of a mesh joined again: two pieces of
+// the same face that share a side made inside the face (a cut of its
+// triangles, not the curve) and no other vertex become one polygon, the
+// first piece's corners from the side's far end round to its near end, then
+// the second's. Faces in order, each joined with at most one other a round,
+// until nothing changes.
+fn mergeFacePieces(faces &OutFaces) OutFaces {
+  mut cur = copyFaces(faces);
+  mut round = 0u32;
+  while round < 64u32 {
+    imm nf = cur.counts.len();
+    mut first = List[u32].withCapacity(nf + 1usize);
+    mut at = 0u32;
+    mut f = 0usize;
+    while f < nf {
+      first.push(at);
+      at = at + *cur.counts[f];
+      f = f + 1usize;
+    }
+    first.push(at);
+    imm nc = cur.node.len();
+    mut slots = 1usize;
+    while slots < 2usize * nc + 2usize { slots = slots * 2usize; }
+    imm mask = u32.from(slots - 1usize);
+    mut head = List[u32].withCapacity(slots);
+    mut i = 0usize;
+    while i < slots { head.push(NoIndex); i = i + 1usize; }
+    mut chain = List[u32].withCapacity(nc);
+    mut faceOf = List[u32].withCapacity(nc);
+    f = 0usize;
+    while f < nf {
+      imm s = usize.from(*first[f]);
+      imm n = usize.from(*cur.counts[f]);
+      mut k = 0usize;
+      while k < n {
+        imm c = s + k;
+        imm p = s + (k + n - 1usize) % n;
+        imm hh = usize.from(sideHash(*cur.node[p], *cur.node[c]) & mask);
+        chain.push(*head[hh]);
+        head.set(hh, u32.from(c));
+        faceOf.push(u32.from(f));
+        k = k + 1usize;
+      }
+      f = f + 1usize;
+    }
+    // Each face's partner this round, and the corners of the side they share
+    mut partner = List[u32].withCapacity(nf);
+    mut joinAt = List[u32].withCapacity(nf);   // the face's corner at the shared side's far end
+    mut otherAt = List[u32].withCapacity(nf);  // the partner's corner at that side's near end
+    f = 0usize;
+    while f < nf {
+      partner.push(NoIndex);
+      joinAt.push(NoIndex);
+      otherAt.push(NoIndex);
+      f = f + 1usize;
+    }
+    mut changed = false;
+    f = 0usize;
+    while f < nf {
+      if *partner[f] == NoIndex {
+        imm s = usize.from(*first[f]);
+        imm n = usize.from(*cur.counts[f]);
+        mut k = 0usize;
+        while k < n and *partner[f] == NoIndex {
+          imm c = s + k;
+          imm p = s + (k + n - 1usize) % n;
+          if *cur.side[c] == NoIndex and !*cur.curve[c] {
+            // The face across p -> c runs c -> p, ending at its corner at p
+            imm np = *cur.node[p];
+            imm ncn = *cur.node[c];
+            mut o = *head[usize.from(sideHash(ncn, np) & mask)];
+            while o != NoIndex and *partner[f] == NoIndex {
+              imm og = usize.from(*faceOf[usize.from(o)]);
+              imm os = usize.from(*first[og]);
+              imm on = usize.from(*cur.counts[og]);
+              imm oc = usize.from(o);
+              imm op = os + (oc - os + on - 1usize) % on;
+              if *cur.node[oc] == np and *cur.node[op] == ncn and og != f and *partner[og] == NoIndex
+                  and *cur.face[og] == *cur.face[f] and onlyShared(&cur, s, n, os, on, np, ncn) {
+                partner.set(f, u32.from(og));
+                partner.set(og, u32.from(f));
+                joinAt.set(f, u32.from(c));
+                otherAt.set(og, u32.from(oc));
+                changed = true;
+              }
+              o = *chain[oc];
+            }
+          }
+          k = k + 1usize;
+        }
+      }
+      f = f + 1usize;
+    }
+    if !changed { return cur; }
+    mut next = OutFaces.empty();
+    f = 0usize;
+    while f < nf {
+      imm g = *partner[f];
+      if g == NoIndex {
+        imm s = usize.from(*first[f]);
+        imm n = usize.from(*cur.counts[f]);
+        mut k = 0usize;
+        while k < n {
+          copyCorner(&cur, s + k, &mut next);
+          k = k + 1usize;
+        }
+        next.counts.push(u32.from(n));
+        next.face.push(*cur.face[f]);
+      } elif *joinAt[f] != NoIndex {
+        // This face from the shared side's far end c round to its near end p,
+        // then the partner after p round to before c
+        imm s = usize.from(*first[f]);
+        imm n = usize.from(*cur.counts[f]);
+        imm c = usize.from(*joinAt[f]);
+        imm gu = usize.from(g);
+        imm gs = usize.from(*first[gu]);
+        imm gn = usize.from(*cur.counts[gu]);
+        imm gp = usize.from(*otherAt[gu]);        // the partner's corner at p
+        mut k = 0usize;
+        while k < n {
+          imm cc = s + (c - s + k) % n;
+          if k == 0usize {
+            // Corner c: its incoming side is now the partner's into c
+            imm gc = gs + (gp - gs + gn - 1usize) % gn;
+            copyCorner(&cur, cc, &mut next);
+            next.side.set(next.side.len() - 1usize, *cur.side[gc]);
+            next.curve.set(next.curve.len() - 1usize, *cur.curve[gc]);
+          } else {
+            copyCorner(&cur, cc, &mut next);
+          }
+          k = k + 1usize;
+        }
+        k = 1usize;
+        while k + 1usize < gn {
+          copyCorner(&cur, gs + (gp - gs + k) % gn, &mut next);
+          k = k + 1usize;
+        }
+        next.counts.push(u32.from(n + gn - 2usize));
+        next.face.push(*cur.face[f]);
+      }
+      f = f + 1usize;
+    }
+    cur = next;
+    round = round + 1u32;
+  }
+  cur;
+}
+
+// The faces without the new vertices (numbered from 'firstNew') left on just
+// two edges in one straight line, both edges with the same values, as the
+// zipping leaves where a flat face's corners went into a straight side: the
+// two edges become one. A face keeps at least 3 corners.
+fn dropStraightVertices(faces &OutFaces, verts &OutVerts, firstNew u32) OutFaces {
+  imm nf = faces.counts.len();
+  imm nv = verts.pos.len();
+  mut uses = List[u32].withCapacity(nv);
+  mut v = 0usize;
+  while v < nv { uses.push(0u32); v = v + 1usize; }
+  mut c = 0usize;
+  while c < faces.node.len() {
+    imm x = usize.from(*faces.node[c]);
+    uses.set(x, *uses[x] + 1u32);
+    c = c + 1usize;
+  }
+  // A candidate: on two corners, between its neighbours on a line, both sides alike
+  mut first = List[u32].withCapacity(nf);
+  mut at = 0u32;
+  mut f = 0usize;
+  while f < nf {
+    first.push(at);
+    at = at + *faces.counts[f];
+    f = f + 1usize;
+  }
+  mut drop = List[Bool].withCapacity(nv);
+  v = 0usize;
+  while v < nv { drop.push(false); v = v + 1usize; }
+  mut blocked = List[Bool].withCapacity(nv);
+  v = 0usize;
+  while v < nv { blocked.push(false); v = v + 1usize; }
+  f = 0usize;
+  while f < nf {
+    imm s = usize.from(*first[f]);
+    imm n = usize.from(*faces.counts[f]);
+    mut k = 0usize;
+    while k < n {
+      imm cc = s + k;
+      imm x = *faces.node[cc];
+      if x >= firstNew and *uses[usize.from(x)] == 2u32 {
+        imm cp = s + (k + n - 1usize) % n;
+        imm cn = s + (k + 1usize) % n;
+        imm na = *faces.node[cp];
+        imm nb = *faces.node[cn];
+        imm straight = !exactSame(verts, na, x) and !exactSame(verts, x, nb) and exactCollinear(verts, na, x, nb)
+          and exactLexLess(verts, na, x) == exactLexLess(verts, x, nb);
+        imm alike = *faces.side[cc] == *faces.side[cn] and *faces.curve[cc] == *faces.curve[cn];
+        if !straight or !alike or n <= 3usize {
+          blocked.set(usize.from(x), true);
+        } else {
+          drop.set(usize.from(x), true);
+        }
+      }
+      k = k + 1usize;
+    }
+    f = f + 1usize;
+  }
+  // A vertex goes only if no face it is on falls below 3 corners
+  mut changed = true;
+  while changed {
+    changed = false;
+    f = 0usize;
+    while f < nf {
+      imm s = usize.from(*first[f]);
+      imm n = usize.from(*faces.counts[f]);
+      mut going = 0usize;
+      mut k = 0usize;
+      while k < n {
+        imm x = usize.from(*faces.node[s + k]);
+        if *drop[x] and !*blocked[x] { going = going + 1usize; }
+        k = k + 1usize;
+      }
+      if going > 0usize and n - going < 3usize {
+        k = 0usize;
+        while k < n {
+          imm x = usize.from(*faces.node[s + k]);
+          if *drop[x] and !*blocked[x] {
+            blocked.set(x, true);
+            changed = true;
+          }
+          k = k + 1usize;
+        }
+      }
+      f = f + 1usize;
+    }
+  }
+  mut out = OutFaces.empty();
+  f = 0usize;
+  while f < nf {
+    imm s = usize.from(*first[f]);
+    imm n = usize.from(*faces.counts[f]);
+    mut count = 0u32;
+    mut k = 0usize;
+    while k < n {
+      imm x = usize.from(*faces.node[s + k]);
+      if !(*drop[x] and !*blocked[x]) {
+        copyCorner(faces, s + k, &mut out);
+        count = count + 1u32;
+      }
+      k = k + 1usize;
+    }
+    out.counts.push(count);
+    out.face.push(*faces.face[f]);
+    f = f + 1usize;
+  }
+  out;
+}
+
+// Whether faces at s (n corners) and at os (on corners) share no vertex but
+// a and b
+fn onlyShared(faces &OutFaces, s usize, n usize, os usize, on usize, a u32, b u32) Bool {
+  mut i = 0usize;
+  while i < n {
+    imm v = *faces.node[s + i];
+    if v != a and v != b {
+      mut j = 0usize;
+      while j < on {
+        if *faces.node[os + j] == v { return false; }
+        j = j + 1usize;
+      }
+    }
+    i = i + 1usize;
+  }
+  true;
+}
+
+// The faces with every spike folded shut: a corner c whose outline comes in
+// from p and goes back out to n along the same line (exactly, at the exact
+// points), so its two sides overlap. The longer side is split at the nearer
+// end's point in the face across it, and c leaves this face, which then runs
+// p -> n; the faces across the two sides then meet along their overlap.
+// Repeated, each face changed at most once a round, until none is left.
+fn unspike(faces &OutFaces, verts &OutVerts) OutFaces {
+  mut cur = copyFaces(faces);
+  mut round = 0u32;
+  while round < 32u32 {
+    imm nf = cur.counts.len();
+    mut first = List[u32].withCapacity(nf + 1usize);
+    mut at = 0u32;
+    mut f = 0usize;
+    while f < nf {
+      first.push(at);
+      at = at + *cur.counts[f];
+      f = f + 1usize;
+    }
+    first.push(at);
+    imm nc = cur.node.len();
+    mut slots = 1usize;
+    while slots < 2usize * nc + 2usize { slots = slots * 2usize; }
+    imm mask = u32.from(slots - 1usize);
+    mut head = List[u32].withCapacity(slots);
+    mut i = 0usize;
+    while i < slots { head.push(NoIndex); i = i + 1usize; }
+    mut chain = List[u32].withCapacity(nc);
+    mut faceOf = List[u32].withCapacity(nc);
+    f = 0usize;
+    while f < nf {
+      imm s = usize.from(*first[f]);
+      imm n = usize.from(*cur.counts[f]);
+      mut k = 0usize;
+      while k < n {
+        imm c = s + k;
+        imm p = s + (k + n - 1usize) % n;
+        imm hh = usize.from(sideHash(*cur.node[p], *cur.node[c]) & mask);
+        chain.push(*head[hh]);
+        head.set(hh, u32.from(c));
+        faceOf.push(u32.from(f));
+        k = k + 1usize;
+      }
+      f = f + 1usize;
+    }
+    mut touched = List[Bool].withCapacity(nf);
+    f = 0usize;
+    while f < nf { touched.push(false); f = f + 1usize; }
+    mut dropCorner = List[Bool].withCapacity(nc);   // a spike's tip leaving its face
+    mut sideFrom = List[u32].withCapacity(nc);      // a corner's incoming side now taken from this corner
+    i = 0usize;
+    while i < nc {
+      dropCorner.push(false);
+      sideFrom.push(NoIndex);
+      i = i + 1usize;
+    }
+    mut insBefore = List[u32].empty();
+    mut insNode = List[u32].empty();
+    mut insT = List[f32].empty();
+    mut changed = false;
+    f = 0usize;
+    while f < nf {
+      imm s = usize.from(*first[f]);
+      imm n = usize.from(*cur.counts[f]);
+      mut k = 0usize;
+      imm maybe = n > 3usize and suspect(&cur, verts, s, n);
+      while k < n and maybe and !*touched[f] {
+        imm cc = s + k;
+        imm cp = s + (k + n - 1usize) % n;
+        imm cn = s + (k + 1usize) % n;
+        imm vc = *cur.node[cc];
+        imm vp = *cur.node[cp];
+        imm vn = *cur.node[cn];
+        if vp != vc and vn != vc and isSpike(verts, vp, vc, vn) {
+          // The side into c from p, and out of c to n; the nearer end of the two
+          imm pNearer = nearerOnLine(verts, vc, vp, vn);
+          // The longer side is split in the face across it: across p -> c when n
+          // is nearer (it runs c -> p), across c -> n when p is (it runs n -> c)
+          imm fromV = if pNearer {vn;} else {vc;};
+          imm toV = if pNearer {vc;} else {vp;};
+          imm putV = if pNearer {vp;} else {vn;};
+          mut g = NoIndex;
+          mut gc = NoIndex;
+          if vp != vn {
+            mut o = *head[usize.from(sideHash(fromV, toV) & mask)];
+            while o != NoIndex and g == NoIndex {
+              imm og = usize.from(*faceOf[usize.from(o)]);
+              imm os = usize.from(*first[og]);
+              imm on = usize.from(*cur.counts[og]);
+              imm oc = usize.from(o);
+              imm op = os + (oc - os + on - 1usize) % on;
+              if *cur.node[oc] == toV and *cur.node[op] == fromV and og != f { g = u32.from(og); gc = o; }
+              o = *chain[oc];
+            }
+          }
+          if vp == vn or (g != NoIndex and !*touched[usize.from(g)]) {
+            touched.set(f, true);
+            changed = true;
+            dropCorner.set(cc, true);
+            // p -> c -> p: both go, the faces across meeting directly
+            if vp == vn { dropCorner.set(cn, true); }
+            // This face's new side p -> n keeps the overlapped side's values
+            if !pNearer { sideFrom.set(cn, u32.from(cc)); }
+            if g != NoIndex {
+              touched.set(usize.from(g), true);
+              imm gu = usize.from(g);
+              imm gs = usize.from(*first[gu]);
+              imm gn = usize.from(*cur.counts[gu]);
+              imm gcu = usize.from(gc);
+              imm gp = gs + (gcu - gs + gn - 1usize) % gn;
+              imm pa = DVec3.from(*verts.pos[usize.from(*cur.node[gp])]);
+              imm pb = DVec3.from(*verts.pos[usize.from(*cur.node[gcu])]);
+              imm px = DVec3.from(*verts.pos[usize.from(putV)]);
+              imm ab = pb - pa;
+              imm len2 = ab.dot(ab);
+              imm tt = if len2 > 0.d {(px - pa).dot(ab) / len2;} else {0.d;};
+              insBefore.push(gc);
+              insNode.push(putV);
+              insT.push(f32.from(tt));
+            }
+          }
+        }
+        k = k + 1usize;
+      }
+      f = f + 1usize;
+    }
+    if !changed { return cur; }
+    mut next = OutFaces.empty();
+    f = 0usize;
+    while f < nf {
+      imm s = usize.from(*first[f]);
+      imm n = usize.from(*cur.counts[f]);
+      mut count = 0u32;
+      mut k = 0usize;
+      while k < n {
+        imm c = s + k;
+        imm p = s + (k + n - 1usize) % n;
+        mut q = 0usize;
+        while q < insBefore.len() {
+          if usize.from(*insBefore[q]) == c {
+            copyCornerBlend(&cur, p, c, *insT[q], *insNode[q], &mut next);
+            count = count + 1u32;
+          }
+          q = q + 1usize;
+        }
+        if !*dropCorner[c] {
+          copyCorner(&cur, c, &mut next);
+          if *sideFrom[c] != NoIndex {
+            imm sf = usize.from(*sideFrom[c]);
+            next.side.set(next.side.len() - 1usize, *cur.side[sf]);
+            next.curve.set(next.curve.len() - 1usize, *cur.curve[sf]);
+          }
+          count = count + 1u32;
+        }
+        k = k + 1usize;
+      }
+      if count >= 3u32 {
+        next.counts.push(count);
+        next.face.push(*cur.face[f]);
+      } else {
+        // A face reduced below a triangle: drop its corners again
+        mut drop = usize.from(count);
+        while drop > 0usize {
+          next.node.pop();
+          next.side.pop();
+          next.curve.pop();
+          next.h0.pop();
+          next.h1.pop();
+          next.h2.pop();
+          next.w0.pop();
+          next.w1.pop();
+          next.w2.pop();
+          drop = drop - 1usize;
+        }
+      }
+      f = f + 1usize;
+    }
+    cur = next;
+    round = round + 1u32;
+  }
+  cur;
+}
+
+// The faces with every structure of no area removed, as the perturbation
+// leaves them where faces lay in one plane once their ends are merged: flat
+// faces zipped, spikes and slits folded shut, round after round until a
+// round changes nothing
+fn cleanDegenerate(faces &OutFaces, verts &OutVerts) OutFaces {
+  mut cur = copyFaces(faces);
+  if !anySuspect(&cur, verts) { return cur; }
+  mut round = 0u32;
+  while round < 16u32 {
+    imm before = signature(&cur);
+    imm a = zipFlatFaces(&cur, verts);
+    imm b = unspike(&a, verts);
+    imm c = unslit(&b, verts);
+    imm after = signature(&c);
+    cur = c;
+    if before == after { return cur; }
+    round = round + 1u32;
+  }
+  cur;
+}
+
+// Whether any face might hold a structure of no area (see suspect)
+fn anySuspect(faces &OutFaces, verts &OutVerts) Bool {
+  mut s = 0usize;
+  mut f = 0usize;
+  while f < faces.counts.len() {
+    imm n = usize.from(*faces.counts[f]);
+    if suspect(faces, verts, s, n) { return true; }
+    s = s + n;
+    f = f + 1usize;
+  }
+  false;
+}
+
+// Whether the face whose corners start at s (n of them) might be flat, have
+// a spike or a slit, or pass one point twice, judged in f64 on the rounded
+// points with room for their rounding: each exact point is within 2^-24 of
+// its largest coordinate of its rounded one, so a face this lets go has no
+// such structure exactly, and the exact tests are spent only on the rest
+fn suspect(faces &OutFaces, verts &OutVerts, s usize, n usize) Bool {
+  mut pts = List[Vec3].withCapacity(n);
+  mut k = 0usize;
+  while k < n {
+    pts.push(*verts.pos[usize.from(*faces.node[s + k])]);
+    k = k + 1usize;
+  }
+  suspectPoints(&pts, 0.00000023841857910156d);
+}
+
+// The same on a polygon's points, the room 'rel' times its largest coordinate
+// (2^-22 for exact points rounded to f32; for rounded points judged exactly,
+// a little more than f64's own error)
+fn suspectPoints(pts &List[Vec3], rel f64) Bool {
+  imm n = pts.len();
+  mut big = 0.d;
+  mut k = 0usize;
+  while k < n {
+    imm p = *pts[k];
+    big = maxd(big, maxd(absd(f64.from(p.x)), maxd(absd(f64.from(p.y)), absd(f64.from(p.z)))));
+    k = k + 1usize;
+  }
+  imm delta = big * rel + 0.000000000000000000000000000001d;
+  k = 0usize;
+  while k < n {
+    imm a = DVec3.from(*pts[(k + n - 1usize) % n]);
+    imm b = DVec3.from(*pts[k]);
+    imm c = DVec3.from(*pts[(k + 1usize) % n]);
+    imm u = b - a;
+    imm v = c - b;
+    imm cx = u.y * v.z - u.z * v.y;
+    imm cy = u.z * v.x - u.x * v.z;
+    imm cz = u.x * v.y - u.y * v.x;
+    imm lu = u.length();
+    imm lv = v.length();
+    // A corner turning by nearly nothing or nearly straight back: a flat face's or a spike's
+    if (cx * cx + cy * cy + cz * cz).sqrt() <= (lu + lv) * 4.d * delta + 8.d * delta * delta { return true; }
+    k = k + 1usize;
+  }
+  // Two sides nearly on one line, or two corners nearly at one point: a slit or a pinch
+  if n > 3usize {
+    mut i = 0usize;
+    while i < n {
+      imm a = DVec3.from(*pts[i]);
+      imm b = DVec3.from(*pts[(i + 1usize) % n]);
+      imm ab = b - a;
+      imm lab = ab.length();
+      mut j = i + 2usize;
+      while j < n + i - 1usize {
+        imm c = DVec3.from(*pts[j % n]);
+        imm ac = c - a;
+        // c's distance from the line a b, times |ab|, and from a itself
+        imm x = new DVec3(ab.y * ac.z - ab.z * ac.y, ab.z * ac.x - ab.x * ac.z, ab.x * ac.y - ab.y * ac.x);
+        if x.length() <= (lab + ac.length()) * 4.d * delta + 8.d * delta * delta { return true; }
+        j = j + 1usize;
+      }
+      i = i + 1usize;
+    }
+  }
+  false;
+}
+
+fn maxd(a f64, b f64) f64 {if a > b {a;} else {b;};}
+
+// The faces' and corners' counts, to tell whether a pass changed anything
+fn signature(faces &OutFaces) u64 {u64.from(faces.counts.len()) * 1000003u64 + u64.from(faces.node.len());}
+
+// The faces with every slit folded shut: two sides of one face, a -> b and
+// c -> d, not neighbours, on one line, running opposite ways and overlapping
+// (a strip of the face of no width). The face, a -> b ... c -> d ..., becomes
+// two, a -> d ... and b ... c; the face across a -> b gets c and d where they
+// lie inside it, the face across c -> d gets a and b, so the two meet along
+// the overlap. A part left with fewer than 3 corners goes. Each face changed
+// at most once a round.
+fn unslit(faces &OutFaces, verts &OutVerts) OutFaces {
+  mut cur = copyFaces(faces);
+  mut round = 0u32;
+  while round < 32u32 {
+    imm nf = cur.counts.len();
+    mut first = List[u32].withCapacity(nf + 1usize);
+    mut at = 0u32;
+    mut f = 0usize;
+    while f < nf {
+      first.push(at);
+      at = at + *cur.counts[f];
+      f = f + 1usize;
+    }
+    first.push(at);
+    imm nc = cur.node.len();
+    mut slots = 1usize;
+    while slots < 2usize * nc + 2usize { slots = slots * 2usize; }
+    imm mask = u32.from(slots - 1usize);
+    mut head = List[u32].withCapacity(slots);
+    mut i = 0usize;
+    while i < slots { head.push(NoIndex); i = i + 1usize; }
+    mut chain = List[u32].withCapacity(nc);
+    mut faceOf = List[u32].withCapacity(nc);
+    f = 0usize;
+    while f < nf {
+      imm s = usize.from(*first[f]);
+      imm n = usize.from(*cur.counts[f]);
+      mut k = 0usize;
+      while k < n {
+        imm c = s + k;
+        imm p = s + (k + n - 1usize) % n;
+        imm hh = usize.from(sideHash(*cur.node[p], *cur.node[c]) & mask);
+        chain.push(*head[hh]);
+        head.set(hh, u32.from(c));
+        faceOf.push(u32.from(f));
+        k = k + 1usize;
+      }
+      f = f + 1usize;
+    }
+    mut touched = List[Bool].withCapacity(nf);
+    f = 0usize;
+    while f < nf { touched.push(false); f = f + 1usize; }
+    // Per face split: the corners ending its two sides (at b and at d), or NoIndex
+    mut splitB = List[u32].withCapacity(nf);
+    mut splitD = List[u32].withCapacity(nf);
+    f = 0usize;
+    while f < nf {
+      splitB.push(NoIndex);
+      splitD.push(NoIndex);
+      f = f + 1usize;
+    }
+    mut insBefore = List[u32].empty();
+    mut insNode = List[u32].empty();
+    mut insT = List[f32].empty();
+    mut changed = false;
+    f = 0usize;
+    while f < nf {
+      imm s = usize.from(*first[f]);
+      imm n = usize.from(*cur.counts[f]);
+      mut i1 = 0usize;
+      imm maybe = n > 3usize and suspect(&cur, verts, s, n);
+      while i1 < n and maybe and !*touched[f] {
+        imm cb = s + i1;                          // side a -> b ends at b
+        imm ca = s + (i1 + n - 1usize) % n;
+        mut i2 = i1 + 2usize;
+        while i2 < n + i1 - 1usize and !*touched[f] {
+          imm cd = s + i2 % n;                    // side c -> d ends at d
+          imm ccc = s + (i2 + n - 1usize) % n;
+          imm va = *cur.node[ca];
+          imm vb = *cur.node[cb];
+          imm vc = *cur.node[ccc];
+          imm vd = *cur.node[cd];
+          if va != vc and va != vd and vb != vc and vb != vd and slitPair(verts, va, vb, vc, vd) {
+            // The faces across a -> b (it runs b -> a) and across c -> d (d -> c)
+            imm g1 = sideFace(&cur, &first, &head, &chain, &faceOf, mask, vb, va);
+            imm g2 = sideFace(&cur, &first, &head, &chain, &faceOf, mask, vd, vc);
+            if g1 != NoIndex and g2 != NoIndex and usize.from(*faceOf[usize.from(g1)]) != f
+                and usize.from(*faceOf[usize.from(g2)]) != f and !*touched[usize.from(*faceOf[usize.from(g1)])]
+                and !*touched[usize.from(*faceOf[usize.from(g2)])] {
+              touched.set(f, true);
+              touched.set(usize.from(*faceOf[usize.from(g1)]), true);
+              touched.set(usize.from(*faceOf[usize.from(g2)]), true);
+              changed = true;
+              splitB.set(f, u32.from(cb));
+              splitD.set(f, u32.from(cd));
+              // Into b -> a, from b: c and d where they lie strictly inside a b
+              insertInside(&cur, &first, &faceOf, verts, g1, vb, va, vc, vd, &mut insBefore, &mut insNode, &mut insT);
+              // Into d -> c, from d: a and b where they lie strictly inside c d
+              insertInside(&cur, &first, &faceOf, verts, g2, vd, vc, va, vb, &mut insBefore, &mut insNode, &mut insT);
+            }
+          }
+          i2 = i2 + 1usize;
+        }
+        i1 = i1 + 1usize;
+      }
+      f = f + 1usize;
+    }
+    if !changed { return cur; }
+    mut next = OutFaces.empty();
+    f = 0usize;
+    while f < nf {
+      imm s = usize.from(*first[f]);
+      imm n = usize.from(*cur.counts[f]);
+      if *splitB[f] == NoIndex {
+        mut count = 0u32;
+        mut k = 0usize;
+        while k < n {
+          imm c = s + k;
+          imm p = s + (k + n - 1usize) % n;
+          mut q = 0usize;
+          while q < insBefore.len() {
+            if usize.from(*insBefore[q]) == c {
+              copyCornerBlend(&cur, p, c, *insT[q], *insNode[q], &mut next);
+              count = count + 1u32;
+            }
+            q = q + 1usize;
+          }
+          copyCorner(&cur, c, &mut next);
+          count = count + 1u32;
+          k = k + 1usize;
+        }
+        next.counts.push(count);
+        next.face.push(*cur.face[f]);
+      } else {
+        // a -> b P c -> d Q: the parts (a, d, Q) and (b, P, c)
+        imm cb = usize.from(*splitB[f]);
+        imm cd = usize.from(*splitD[f]);
+        imm ca = s + (cb - s + n - 1usize) % n;
+        imm ccc = s + (cd - s + n - 1usize) % n;
+        imm va = *cur.node[ca];
+        imm vb = *cur.node[cb];
+        imm vc = *cur.node[ccc];
+        imm vd = *cur.node[cd];
+        // Which side each new side lies along: a -> d along a -> b when d is
+        // inside a b, else along c -> d; c -> b along a -> b when c is inside it
+        imm dInside = strictlyInside(verts, va, vb, vd);
+        imm cInside = strictlyInside(verts, va, vb, vc);
+        // Part one: a, d, Q (from d's next round to a)
+        mut part = List[u32].empty();
+        part.push(u32.from(ca));
+        mut k = cd;
+        mut going = true;
+        while going {
+          part.push(u32.from(k));
+          k = s + (k - s + 1usize) % n;
+          going = k != ca;
+        }
+        emitPart(&cur, &part, cd, if dInside {cb;} else {cd;}, *cur.face[f], &mut next);
+        // Part two: b, P, c
+        part.clear();
+        k = cb;
+        going = true;
+        while going {
+          part.push(u32.from(k));
+          going = k != ccc;
+          k = s + (k - s + 1usize) % n;
+        }
+        emitPart(&cur, &part, cb, if cInside {cb;} else {cd;}, *cur.face[f], &mut next);
+      }
+      f = f + 1usize;
+    }
+    cur = next;
+    round = round + 1u32;
+  }
+  cur;
+}
+
+// The corner ending the side from vertex u to vertex v, NoIndex when none does
+fn sideFace(faces &OutFaces, first &List[u32], head &List[u32], chain &List[u32], faceOf &List[u32], mask u32,
+    u u32, v u32) u32 {
+  mut o = *head[usize.from(sideHash(u, v) & mask)];
+  while o != NoIndex {
+    imm og = usize.from(*faceOf[usize.from(o)]);
+    imm os = usize.from(*first[og]);
+    imm on = usize.from(*faces.counts[og]);
+    imm oc = usize.from(o);
+    imm op = os + (oc - os + on - 1usize) % on;
+    if *faces.node[oc] == v and *faces.node[op] == u { return o; }
+    o = *chain[oc];
+  }
+  NoIndex;
+}
+
+// Corners at x then y put in before corner 'at' (which ends the side from u
+// to v), each where it lies strictly between u and v; x is the nearer u
+fn insertInside(faces &OutFaces, first &List[u32], faceOf &List[u32], verts &OutVerts, at u32, u u32, v u32, x u32,
+    y u32, insBefore &mut List[u32], insNode &mut List[u32], insT &mut List[f32]) {
+  imm pu = DVec3.from(*verts.pos[usize.from(u)]);
+  imm pv = DVec3.from(*verts.pos[usize.from(v)]);
+  imm uv = pv - pu;
+  imm len2 = uv.dot(uv);
+  if strictlyInside(verts, u, v, x) {
+    imm px = DVec3.from(*verts.pos[usize.from(x)]);
+    insBefore.push(at);
+    insNode.push(x);
+    insT.push(f32.from(if len2 > 0.d {(px - pu).dot(uv) / len2;} else {0.d;}));
+  }
+  if strictlyInside(verts, u, v, y) {
+    imm py = DVec3.from(*verts.pos[usize.from(y)]);
+    insBefore.push(at);
+    insNode.push(y);
+    insT.push(f32.from(if len2 > 0.d {(py - pu).dot(uv) / len2;} else {0.d;}));
+  }
+}
+
+// Whether exact point x lies strictly between u and v (on their line)
+fn strictlyInside(verts &OutVerts, u u32, v u32, x u32) Bool {
+  if exactSame(verts, x, u) or exactSame(verts, x, v) { return false; }
+  if !exactCollinear(verts, u, v, x) { return false; }
+  exactLexLess(verts, u, x) == exactLexLess(verts, x, v);
+}
+
+// Whether sides a -> b and c -> d lie on one line, run opposite ways and
+// overlap for some length
+fn slitPair(verts &OutVerts, a u32, b u32, c u32, d u32) Bool {
+  if !exactCollinear(verts, a, b, c) or !exactCollinear(verts, a, b, d) { return false; }
+  imm up = exactLexLess(verts, a, b);
+  if exactLexLess(verts, c, d) == up { return false; }
+  // Along a -> b, c d runs from c (later) to d (earlier): the overlap is from
+  // the later of a and d to the earlier of b and c
+  imm p = if before(verts, a, d, up) {d;} else {a;};
+  imm q = if before(verts, b, c, up) {b;} else {c;};
+  if exactSame(verts, a, d) or exactSame(verts, b, c) { return false; }
+  before(verts, p, q, up);
+}
+
+// Whether u comes before v along a line running up (lexicographically) or down
+fn before(verts &OutVerts, u u32, v u32, up Bool) Bool {
+  if up { exactLexLess(verts, u, v); } else { exactLexLess(verts, v, u); };
+}
+
+// One part of a split face: its corners (each the face's corner of that
+// number), corner 'joinAt' taking the incoming side of corner 'sideFrom'
+fn emitPart(src &OutFaces, part &List[u32], joinAt usize, sideFrom usize, face u32, dst &mut OutFaces) {
+  if part.len() < 3usize { return; }
+  mut i = 0usize;
+  while i < part.len() {
+    imm c = usize.from(*part[i]);
+    copyCorner(src, c, dst);
+    if c == joinAt {
+      dst.side.set(dst.side.len() - 1usize, *src.side[sideFrom]);
+      dst.curve.set(dst.curve.len() - 1usize, *src.curve[sideFrom]);
+    }
+    i = i + 1usize;
+  }
+  dst.counts.push(u32.from(part.len()));
+  dst.face.push(face);
+}
+
+// Whether the outline p -> c -> n turns straight back at c: the three on one
+// line, and c beyond both p and n (or p and n the same point)
+fn isSpike(verts &OutVerts, p u32, c u32, n u32) Bool {
+  if exactSame(verts, p, c) or exactSame(verts, c, n) { return false; }
+  if p != n and exactSame(verts, p, n) { return false; }
+  if p != n and !exactCollinear(verts, p, c, n) { return false; }
+  // c beyond both: both lie on the same side of c along the line
+  exactLexLess(verts, p, c) == exactLexLess(verts, n, c);
+}
+
+// Whether p is nearer c than n is, on the line through them (both on one side of c)
+fn nearerOnLine(verts &OutVerts, c u32, p u32, n u32) Bool {
+  // On c's side, the nearer is the one between c and the other
+  if exactLexLess(verts, p, c) { exactLexLess(verts, n, p); } else { exactLexLess(verts, p, n); };
+}
+
+fn sideHash(a u32, b u32) u32 {(a * 73856093u32) ^ (b * 19349663u32) ^ (b >> 11u32);}
+
+fn posOf(faces &OutFaces, verts &OutVerts, c usize) Vec3 {*verts.pos[usize.from(*faces.node[c])];}
+
+// -------- exact points --------
+//
+// The cleaning passes judge flatness on each vertex's exact point, before
+// rounding, so a face flat in fact is recognised though rounding moved a
+// corner off its line, and one not flat is never taken for flat.
+
+// The sign of coordinate k of exact point u minus that of v (hw > 0)
+fn exactCompare(verts &OutVerts, u u32, v u32, k u32) i32 {
+  imm uu = usize.from(u);
+  imm vu = usize.from(v);
+  imm xu = if k == 0u32 {verts.hx[uu];} elif k == 1u32 {verts.hy[uu];} else {verts.hz[uu];};
+  imm xv = if k == 0u32 {verts.hx[vu];} elif k == 1u32 {verts.hy[vu];} else {verts.hz[vu];};
+  imm l = expMul(xu, verts.hw[vu]);
+  imm r = expMul(xv, verts.hw[uu]);
+  imm d = expSub(&l, &r);
+  expSign(&d);
+}
+
+// Whether exact point u comes before v in x, then y, then z
+fn exactLexLess(verts &OutVerts, u u32, v u32) Bool {
+  mut k = 0u32;
+  while k < 3u32 {
+    imm s = exactCompare(verts, u, v, k);
+    if s != 0i32 { return s < 0i32; }
+    k = k + 1u32;
+  }
+  false;
+}
+
+fn exactSame(verts &OutVerts, u u32, v u32) Bool {
+  exactCompare(verts, u, v, 0u32) == 0i32 and exactCompare(verts, u, v, 1u32) == 0i32
+    and exactCompare(verts, u, v, 2u32) == 0i32;
+}
+
+// Whether exact points u, v, w lie on one line: with d2 = X_v W_u - X_u W_v
+// and d3 = X_w W_u - X_u W_w (the differences scaled), d2 x d3 = 0
+fn exactCollinear(verts &OutVerts, u u32, v u32, w u32) Bool {
+  imm uu = usize.from(u);
+  imm vu = usize.from(v);
+  imm wu = usize.from(w);
+  imm d2x = scaledDiff(verts.hx[vu], verts.hw[uu], verts.hx[uu], verts.hw[vu]);
+  imm d2y = scaledDiff(verts.hy[vu], verts.hw[uu], verts.hy[uu], verts.hw[vu]);
+  imm d2z = scaledDiff(verts.hz[vu], verts.hw[uu], verts.hz[uu], verts.hw[vu]);
+  imm d3x = scaledDiff(verts.hx[wu], verts.hw[uu], verts.hx[uu], verts.hw[wu]);
+  imm d3y = scaledDiff(verts.hy[wu], verts.hw[uu], verts.hy[uu], verts.hw[wu]);
+  imm d3z = scaledDiff(verts.hz[wu], verts.hw[uu], verts.hz[uu], verts.hw[wu]);
+  mut cx = List[f64].empty();
+  mut cy = List[f64].empty();
+  mut cz = List[f64].empty();
+  expCross(&d2x, &d2y, &d2z, &d3x, &d3y, &d3z, &mut cx, &mut cy, &mut cz);
+  expSign(&cx) == 0i32 and expSign(&cy) == 0i32 and expSign(&cz) == 0i32;
+}
+
+// a b - c d
+fn scaledDiff(a &List[f64], b &List[f64], c &List[f64], d &List[f64]) List[f64] {
+  imm l = expMul(a, b);
+  imm r = expMul(c, d);
+  expSub(&l, &r);
+}
+
+fn nodeAt(faces &OutFaces, c usize) u32 {*faces.node[c];}
+
+// Whether a face's corners all lie on one line, exactly
+fn isFlat(faces &OutFaces, verts &OutVerts, s usize, n usize) Bool {
+  imm p = nodeAt(faces, s);
+  mut q = p;
+  mut found = false;
+  mut k = 1usize;
+  while k < n {
+    imm r = nodeAt(faces, s + k);
+    if !found {
+      if !exactSame(verts, p, r) {
+        q = r;
+        found = true;
+      }
+    } elif !exactCollinear(verts, p, q, r) {
+      return false;
+    }
+    k = k + 1usize;
+  }
+  true;
+}
+
+fn copyFaces(faces &OutFaces) OutFaces {
+  new OutFaces(copyList(&faces.counts), copyList(&faces.face), copyList(&faces.node), copyList(&faces.side),
+    copyList(&faces.curve), copyList(&faces.h0), copyList(&faces.h1), copyList(&faces.h2), copyList(&faces.w0),
+    copyList(&faces.w1), copyList(&faces.w2));
+}
+
+fn copyCorner(src &OutFaces, c usize, dst &mut OutFaces) {
+  dst.node.push(*src.node[c]);
+  dst.side.push(*src.side[c]);
+  dst.curve.push(*src.curve[c]);
+  dst.h0.push(*src.h0[c]);
+  dst.h1.push(*src.h1[c]);
+  dst.h2.push(*src.h2[c]);
+  dst.w0.push(*src.w0[c]);
+  dst.w1.push(*src.w1[c]);
+  dst.w2.push(*src.w2[c]);
+}
+
+// A new corner at 'node', on the side from corner p to corner c (its
+// incoming side c's), its corner values p's and c's blended by t; when the
+// two name more than three corners between them, the nearer one's
+fn copyCornerBlend(src &OutFaces, p usize, c usize, t f32, node u32, dst &mut OutFaces) {
+  dst.node.push(node);
+  dst.side.push(*src.side[c]);
+  dst.curve.push(*src.curve[c]);
+  mut hs = List[u32].empty();
+  mut ws = List[f32].empty();
+  addWeighted(&mut hs, &mut ws, *src.h0[p], *src.w0[p] * (1. - t));
+  addWeighted(&mut hs, &mut ws, *src.h1[p], *src.w1[p] * (1. - t));
+  addWeighted(&mut hs, &mut ws, *src.h2[p], *src.w2[p] * (1. - t));
+  addWeighted(&mut hs, &mut ws, *src.h0[c], *src.w0[c] * t);
+  addWeighted(&mut hs, &mut ws, *src.h1[c], *src.w1[c] * t);
+  addWeighted(&mut hs, &mut ws, *src.h2[c], *src.w2[c] * t);
+  if hs.len() > 3usize {
+    imm nearer = if t < 0.5 {p;} else {c;};
+    dst.h0.push(*src.h0[nearer]);
+    dst.h1.push(*src.h1[nearer]);
+    dst.h2.push(*src.h2[nearer]);
+    dst.w0.push(*src.w0[nearer]);
+    dst.w1.push(*src.w1[nearer]);
+    dst.w2.push(*src.w2[nearer]);
+    return;
+  }
+  while hs.len() < 3usize {
+    hs.push(NoIndex);
+    ws.push(0.);
+  }
+  dst.h0.push(*hs[0usize]);
+  dst.h1.push(*hs[1usize]);
+  dst.h2.push(*hs[2usize]);
+  dst.w0.push(*ws[0usize]);
+  dst.w1.push(*ws[1usize]);
+  dst.w2.push(*ws[2usize]);
+}
+
+fn addWeighted(hs &mut List[u32], ws &mut List[f32], h u32, w f32) {
+  if h == NoIndex { return; }
+  mut i = 0usize;
+  while i < hs.len() {
+    if *hs[i] == h {
+      ws.set(i, *ws[i] + w);
+      return;
+    }
+    i = i + 1usize;
+  }
+  hs.push(h);
+  ws.push(w);
+}
+
+// Whether faces f and g have the same vertices, each the other's run backward
+fn reverseCycle(faces &OutFaces, first &List[u32], f usize, g usize) Bool {
+  imm n = usize.from(*faces.counts[f]);
+  if usize.from(*faces.counts[g]) != n { return false; }
+  imm fs = usize.from(*first[f]);
+  imm gs = usize.from(*first[g]);
+  mut o = 0usize;
+  while o < n {
+    if *faces.node[gs + o] == *faces.node[fs] {
+      mut k = 0usize;
+      while k < n {
+        if *faces.node[gs + (o + n - k) % n] != *faces.node[fs + k] { return false; }
+        k = k + 1usize;
+      }
+      return true;
+    }
+    o = o + 1usize;
+  }
+  false;
+}
+
+// A crossed triangle with loops inside it: see facesOf
+fn innerLoops(loops &Loops, g usize, rep &List[u32], verts &OutVerts, faces &mut OutFaces, rough &mut u32,
+    why &mut List[String]) Bool {
+  imm l0 = usize.from(*loops.gStart[g]);
+  imm l1 = usize.from(*loops.gStart[g + 1usize]);
+  mut axis = 2u32;
+  mut flip = false;
+  dropAxis(*loops.gNormal[g], &mut axis, &mut flip);
+  // Every loop contracted: its corners in 'cc' from cStart, its points
+  mut cc = List[u32].empty();      // loop corner kept
+  mut cs = List[u32].empty();      // loop corner whose incoming side it takes
+  mut cStart = List[u32].empty();
+  mut xs = List[f64].empty();
+  mut ys = List[f64].empty();
+  mut isOuter = List[Bool].empty();
+  mut lid = List[u32].empty();     // the loop each contracted loop came from
+  mut keep = List[u32].empty();
+  mut sideOf = List[u32].empty();
+  mut l = l0;
+  while l < l1 {
+    contracted(loops, l, rep, &mut keep, &mut sideOf);
+    if keep.len() >= 3usize {
+      if repeats(loops, rep, &keep) {
+        why.push(String.from("merging made a face pass a vertex twice"));
+        return false;
+      }
+      cStart.push(u32.from(cc.len()));
+      mut i = 0usize;
+      while i < keep.len() {
+        imm c = usize.from(*keep[i]);
+        cc.push(*keep[i]);
+        cs.push(*sideOf[i]);
+        imm p = DVec3.from(*verts.pos[usize.from(*rep[usize.from(*loops.node[c])])]);
+        xs.push(planeX(p, axis, flip));
+        ys.push(planeY(p, axis, flip));
+        i = i + 1usize;
+      }
+      lid.push(u32.from(l));
+      if *loops.inner[l] {
+        imm sa = areaSign(&xs, &ys, usize.from(*cStart[cStart.len() - 1usize]), cc.len());
+        // A loop with no area after rounding is taken as a piece of its own:
+        // a flat face, zipped away later or counted as of no size
+        isOuter.push(sa >= 0i32);
+      } else {
+        isOuter.push(true);
+      }
+    }
+    l = l + 1usize;
+  }
+  cStart.push(u32.from(cc.len()));
+  imm nl = lid.len();
+
+  // Each hole's owner: the innermost outer loop holding it
+  mut owner = List[u32].withCapacity(nl);
+  mut a = 0usize;
+  while a < nl {
+    owner.push(NoIndex);
+    if !*isOuter[a] {
+      mut best = NoIndex;
+      mut b = 0usize;
+      while b < nl {
+        if *isOuter[b] and loopInside(&xs, &ys, &cStart, a, b) == 1i32 {
+          if best == NoIndex or loopInside(&xs, &ys, &cStart, b, usize.from(best)) == 1i32 { best = u32.from(b); }
+        }
+        b = b + 1usize;
+      }
+      if best == NoIndex {
+        // Rounding put it outside every piece: given to the first
+        mut b = 0usize;
+        while b < nl and best == NoIndex {
+          if *isOuter[b] { best = u32.from(b); }
+          b = b + 1usize;
+        }
+        if best == NoIndex {
+          why.push(String.from("a hole in a cut face lies in no piece; one of the meshes may intersect itself"));
+          return false;
+        }
+        *rough = *rough + 1u32;
+      }
+      owner.set(a, best);
+    }
+    a = a + 1usize;
+  }
+
+  // Each outer loop: a face, or with holes, triangles
+  imm face = *loops.gFace[g];
+  imm reverse = *loops.gReverse[g];
+  a = 0usize;
+  while a < nl {
+    if *isOuter[a] {
+      mut holes = List[u32].empty();
+      mut b = 0usize;
+      while b < nl {
+        if *owner[b] == u32.from(a) { holes.push(u32.from(b)); }
+        b = b + 1usize;
+      }
+      if holes.len() == 0usize {
+        keep.clear();
+        sideOf.clear();
+        mut i = usize.from(*cStart[a]);
+        while i < usize.from(*cStart[a + 1usize]) {
+          keep.push(*cc[i]);
+          sideOf.push(*cs[i]);
+          i = i + 1usize;
+        }
+        emitLoop(loops, rep, &keep, &sideOf, face, reverse, faces);
+      } elif !holeyPiece(loops, rep, &cc, &cs, &cStart, &xs, &ys, a, &holes, face, reverse, faces, rough, why) {
+        return false;
+      }
+    }
+    a = a + 1usize;
+  }
+  true;
+}
+
+// The sign of the area of contracted loop corners s to e - 1, exactly
+fn areaSign(xs &List[f64], ys &List[f64], s usize, e usize) i32 {
+  mut acc = List[f64].empty();
+  mut i = s;
+  while i < e {
+    imm j = if i + 1usize < e {i + 1usize;} else {s;};
+    imm l = expProduct(*xs[i], *ys[j]);
+    imm r = expProduct(*xs[j], *ys[i]);
+    imm d = expSub(&l, &r);
+    acc = expAdd(&acc, &d);
+    i = i + 1usize;
+  }
+  expSign(&acc);
+}
+
+// Whether contracted loop a lies inside loop b: 1 inside, -1 outside, 0 when
+// every point of a is on b's outline
+fn loopInside(xs &List[f64], ys &List[f64], cStart &List[u32], a usize, b usize) i32 {
+  mut cyc = List[u32].empty();
+  mut i = usize.from(*cStart[b]);
+  while i < usize.from(*cStart[b + 1usize]) {
+    cyc.push(u32.from(i));
+    i = i + 1usize;
+  }
+  i = usize.from(*cStart[a]);
+  while i < usize.from(*cStart[a + 1usize]) {
+    imm s = pointInPolygon(*xs[i], *ys[i], xs, ys, &cyc);
+    if s != 0i32 { return s; }
+    i = i + 1usize;
+  }
+  0i32;
+}
+
+// An outer loop with holes, cut into triangles: each hole bridged to the
+// outline from its point furthest along x (Eberly's keyhole), by the nearest
+// point of the outline it can see, then the keyhole polygon clipped
+fn holeyPiece(loops &Loops, rep &List[u32], cc &List[u32], cs &List[u32], cStart &List[u32], xs &List[f64], ys &List[f64],
+    outer usize, holes &List[u32], face u32, reverse Bool, faces &mut OutFaces, rough &mut u32, why &mut List[String]) Bool {
+  // The keyhole polygon: per slot its contracted corner, and the loop corner
+  // whose side enters it (NoIndex for a bridge)
+  mut slot = List[u32].empty();
+  mut slotSide = List[u32].empty();
+  mut i = usize.from(*cStart[outer]);
+  while i < usize.from(*cStart[outer + 1usize]) {
+    slot.push(u32.from(i));
+    slotSide.push(*cs[i]);
+    i = i + 1usize;
+  }
+  // Holes by their furthest x, greatest first
+  mut order = List[u32].empty();
+  mut hx = List[f64].empty();
+  mut hy = List[f64].empty();
+  mut hm = List[u32].empty();
+  mut k = 0usize;
+  while k < holes.len() {
+    imm h = usize.from(*holes[k]);
+    mut best = usize.from(*cStart[h]);
+    i = best;
+    while i < usize.from(*cStart[h + 1usize]) {
+      if *xs[i] > *xs[best] or (*xs[i] == *xs[best] and *ys[i] > *ys[best]) { best = i; }
+      i = i + 1usize;
+    }
+    hx.push(*xs[best]);
+    hy.push(*ys[best]);
+    hm.push(u32.from(best));
+    mut j = order.len();
+    order.push(u32.from(k));
+    while j > 0usize and (*hx[usize.from(*order[j - 1usize])] < *hx[k]
+        or (*hx[usize.from(*order[j - 1usize])] == *hx[k] and *hy[usize.from(*order[j - 1usize])] < *hy[k])) {
+      order.set(j, *order[j - 1usize]);
+      order.set(j - 1usize, u32.from(k));
+      j = j - 1usize;
+    }
+    k = k + 1usize;
+  }
+  mut merged = List[Bool].withCapacity(holes.len());
+  k = 0usize;
+  while k < holes.len() { merged.push(false); k = k + 1usize; }
+  k = 0usize;
+  while k < order.len() {
+    imm hk = usize.from(*order[k]);
+    imm h = usize.from(*holes[hk]);
+    imm mi = usize.from(*hm[hk]);
+    imm hs = usize.from(*cStart[h]);
+    imm he = usize.from(*cStart[h + 1usize]);
+    imm hn = he - hs;
+    imm mx = *xs[mi];
+    imm my = *ys[mi];
+    imm mprev = hs + (mi - hs + hn - 1usize) % hn;
+    imm mnext = hs + (mi - hs + 1usize) % hn;
+    // Candidates: the polygon's slots, nearest first
+    imm n = slot.len();
+    mut tried = List[Bool].withCapacity(n);
+    i = 0usize;
+    while i < n { tried.push(false); i = i + 1usize; }
+    mut chosen = n;
+    mut nearest = n;
+    mut round = 0usize;
+    while round < n and chosen == n {
+      mut best = n;
+      mut bestD = 0.d;
+      i = 0usize;
+      while i < n {
+        if !*tried[i] {
+          imm v = usize.from(*slot[i]);
+          imm dx = *xs[v] - mx;
+          imm dy = *ys[v] - my;
+          imm d = dx * dx + dy * dy;
+          if best == n or d < bestD { best = i; bestD = d; }
+        }
+        i = i + 1usize;
+      }
+      tried.set(best, true);
+      if nearest == n { nearest = best; }
+      if bridgeClear(loops, rep, cc, cStart, xs, ys, &slot, best, mi, mprev, mnext, holes, &merged) { chosen = best; }
+      round = round + 1usize;
+    }
+    if chosen == n {
+      // None clear after rounding: the nearest, and the triangles may fold
+      if nearest == n {
+        why.push(String.from("a hole in a cut face could not be bridged to its outline"));
+        return false;
+      }
+      chosen = nearest;
+      *rough = *rough + 1u32;
+    }
+    // Splice: ..., V, M, the hole after M round to M again, V again, ...
+    mut ns = List[u32].withCapacity(n + hn + 2usize);
+    mut nside = List[u32].withCapacity(n + hn + 2usize);
+    i = 0usize;
+    while i <= chosen {
+      ns.push(*slot[i]);
+      nside.push(*slotSide[i]);
+      i = i + 1usize;
+    }
+    ns.push(u32.from(mi));
+    nside.push(NoIndex);
+    mut j = 1usize;
+    while j <= hn {
+      imm c = hs + (mi - hs + j) % hn;
+      ns.push(u32.from(c));
+      nside.push(*cs[c]);
+      j = j + 1usize;
+    }
+    ns.push(*slot[chosen]);
+    nside.push(NoIndex);
+    i = chosen + 1usize;
+    while i < n {
+      ns.push(*slot[i]);
+      nside.push(*slotSide[i]);
+      i = i + 1usize;
+    }
+    slot = ns;
+    slotSide = nside;
+    merged.set(hk, true);
+    k = k + 1usize;
+  }
+
+  // Clip the keyhole
+  mut px = List[f64].withCapacity(slot.len());
+  mut py = List[f64].withCapacity(slot.len());
+  mut pnode = List[u32].withCapacity(slot.len());
+  i = 0usize;
+  while i < slot.len() {
+    imm c = usize.from(*slot[i]);
+    px.push(*xs[c]);
+    py.push(*ys[c]);
+    pnode.push(*rep[usize.from(*loops.node[usize.from(*cc[c])])]);
+    i = i + 1usize;
+  }
+  mut tris = List[u32].empty();
+  // A keyhole that no longer clips cleanly after rounding is still cut into
+  // its n - 2 triangles, some of them maybe folded
+  if !earClip(&px, &py, &pnode, &mut tris) { *rough = *rough + 1u32; }
+  imm n = slot.len();
+  i = 0usize;
+  while i + 2usize < tris.len() {
+    faces.counts.push(3u32);
+    faces.face.push(face);
+    mut q = 0usize;
+    while q < 3usize {
+      // Turned over: corners 0, 2, 1, each incoming side the old outgoing one
+      imm qq = if reverse {(3usize - q) % 3usize;} else {q;};
+      imm s = usize.from(*tris[i + qq]);
+      imm prevS = usize.from(*tris[i + (qq + 2usize) % 3usize]);
+      imm nextS = usize.from(*tris[i + (qq + 1usize) % 3usize]);
+      imm c = usize.from(*cc[usize.from(*slot[s])]);
+      mut sideFrom = NoIndex;
+      if reverse {
+        if (s + 1usize) % n == nextS { sideFrom = *slotSide[nextS]; }
+      } else {
+        if (prevS + 1usize) % n == s { sideFrom = *slotSide[s]; }
+      }
+      faces.addCorner(loops, c, *pnode[s], sideFrom);
+      q = q + 1usize;
+    }
+    i = i + 3usize;
+  }
+  true;
+}
+
+// Whether the bridge from hole point mi to polygon slot 'at' is clear: it
+// crosses no side of the polygon or of any hole still to bridge (touching
+// only at its own ends), and leaves each end into the piece
+fn bridgeClear(loops &Loops, rep &List[u32], cc &List[u32], cStart &List[u32], xs &List[f64], ys &List[f64],
+    slot &List[u32], at usize, mi usize, mprev usize, mnext usize, holes &List[u32], merged &List[Bool]) Bool {
+  imm n = slot.len();
+  imm v = usize.from(*slot[at]);
+  imm vx = *xs[v];
+  imm vy = *ys[v];
+  imm mx = *xs[mi];
+  imm my = *ys[mi];
+  imm vnode = *rep[usize.from(*loops.node[usize.from(*cc[v])])];
+  imm mnode = *rep[usize.from(*loops.node[usize.from(*cc[mi])])];
+  if vnode == mnode { return false; }
+  // Into the piece at V: between its sides there
+  imm pv = usize.from(*slot[(at + n - 1usize) % n]);
+  imm nv = usize.from(*slot[(at + 1usize) % n]);
+  if !inCone(*xs[pv], *ys[pv], vx, vy, *xs[nv], *ys[nv], mx, my) { return false; }
+  // and at M
+  if !inCone(*xs[mprev], *ys[mprev], mx, my, *xs[mnext], *ys[mnext], vx, vy) { return false; }
+  // No side of the polygon in the way
+  mut i = 0usize;
+  while i < n {
+    imm a = usize.from(*slot[i]);
+    imm b = usize.from(*slot[(i + 1usize) % n]);
+    imm an = *rep[usize.from(*loops.node[usize.from(*cc[a])])];
+    imm bn = *rep[usize.from(*loops.node[usize.from(*cc[b])])];
+    if an != vnode and bn != vnode and an != mnode and bn != mnode {
+      if segmentsMeet(mx, my, vx, vy, *xs[a], *ys[a], *xs[b], *ys[b]) { return false; }
+    }
+    i = i + 1usize;
+  }
+  // Nor of a hole still to bridge, this one included
+  mut k = 0usize;
+  while k < holes.len() {
+    if !*merged[k] {
+      imm h = usize.from(*holes[k]);
+      imm hs = usize.from(*cStart[h]);
+      imm he = usize.from(*cStart[h + 1usize]);
+      i = hs;
+      while i < he {
+        imm a = i;
+        imm b = if i + 1usize < he {i + 1usize;} else {hs;};
+        imm an = *rep[usize.from(*loops.node[usize.from(*cc[a])])];
+        imm bn = *rep[usize.from(*loops.node[usize.from(*cc[b])])];
+        if an != vnode and bn != vnode and an != mnode and bn != mnode {
+          if segmentsMeet(mx, my, vx, vy, *xs[a], *ys[a], *xs[b], *ys[b]) { return false; }
+        }
+        i = i + 1usize;
+      }
+    }
+    k = k + 1usize;
+  }
+  true;
+}
+
+// Whether the direction from v to (tx, ty) lies inside the corner at v
+// between its sides from p and to n (the piece on their left), strictly
+fn inCone(px f64, py f64, vx f64, vy f64, nx f64, ny f64, tx f64, ty f64) Bool {
+  imm convex = orient2dSign(px, py, vx, vy, nx, ny) > 0i32;
+  imm l1 = orient2dSign(px, py, vx, vy, tx, ty) > 0i32;
+  imm l2 = orient2dSign(vx, vy, nx, ny, tx, ty) > 0i32;
+  if convex {l1 and l2;} else {l1 or l2;};
+}
+
+// -------- the result --------
+
+// The result mesh from its faces, every channel carried from the join (see
+// booleanWith); false when the faces do not make a closed, valid mesh
+fn buildResult(j &PolyMesh, verts &OutVerts, faces &OutFaces, crease f32, out &mut PolyMesh) Bool {
+  // Only the vertices on faces, in order
+  imm nv = verts.pos.len();
+  mut newId = List[u32].withCapacity(nv);
+  mut v = 0usize;
+  while v < nv { newId.push(NoIndex); v = v + 1usize; }
+  mut c = 0usize;
+  while c < faces.node.len() {
+    newId.set(usize.from(*faces.node[c]), 0u32);
+    c = c + 1usize;
+  }
+  mut pos = List[Vec3].empty();
+  mut src = List[u32].empty();
+  v = 0usize;
+  while v < nv {
+    if *newId[v] != NoIndex {
+      newId.set(v, u32.from(pos.len()));
+      pos.push(*verts.pos[v]);
+      src.push(u32.from(v));
+    }
+    v = v + 1usize;
+  }
+  mut idx = List[u32].withCapacity(faces.node.len());
+  c = 0usize;
+  while c < faces.node.len() {
+    idx.push(*newId[usize.from(*faces.node[c])]);
+    c = c + 1usize;
+  }
+  mut problems = List[String].empty();
+  mut m = PolyMesh.fromPolygons(pos.view(), faces.counts.view(), idx.view(), &mut problems);
+  if problems.len() > 0usize or m.faceCount() != faces.counts.len() { return false; }
+  mut h = 0usize;
+  while h < m.hFace.len() {
+    if *m.hFace[h] == NoIndex { return false; }
+    h = h + 1usize;
+  }
+  imm bad = m.validate();
+  if bad.len() > 0usize { return false; }
+
+  // Each face's first corner in the flat lists
+  mut first = List[u32].withCapacity(faces.counts.len());
+  mut at = 0u32;
+  mut f = 0usize;
+  while f < faces.counts.len() {
+    first.push(at);
+    at = at + *faces.counts[f];
+    f = f + 1usize;
+  }
+  // Each result edge: the joined edge its first side names, and whether it is on the curve
+  imm ne = m.edgeCount();
+  mut eSrc = List[u32].withCapacity(ne);
+  mut eCurve = List[Bool].withCapacity(ne);
+  mut e = 0usize;
+  while e < ne {
+    eSrc.push(NoIndex);
+    eCurve.push(false);
+    e = e + 1usize;
+  }
+  // and every joined edge each one gathers, for the crease's greatest
+  mut eMore = List[u32].empty();
+  mut eMoreOf = List[u32].empty();
+  f = 0usize;
+  while f < m.faceCount() {
+    imm hs = m.faceHalfedges(u32.from(f));
+    mut k = 0usize;
+    while k < hs.len() {
+      imm ci = usize.from(*first[f]) + k;
+      imm ee = usize.from(*hs[k] / 2u32);
+      imm s = *faces.side[ci];
+      if s != NoIndex {
+        if *eSrc[ee] == NoIndex { eSrc.set(ee, s); }
+        eMore.push(s);
+        eMoreOf.push(u32.from(ee));
+      }
+      if *faces.curve[ci] { eCurve.set(ee, true); }
+      k = k + 1usize;
+    }
+    f = f + 1usize;
+  }
+
+  mut ch = 0usize;
+  while ch < j.floats.len() {
+    imm domain = j.floats[ch].domain;
+    imm fill = j.floats[ch].fill;
+    imm isCrease = domain == EdgeDomain and j.floats[ch].name.equals("crease");
+    mut vals = List[f32].empty();
+    if domain == VertexDomain {
+      v = 0usize;
+      while v < pos.len() {
+        imm o = usize.from(*src[v]);
+        imm a = *verts.va[o];
+        imm b = *verts.vb[o];
+        if b == NoIndex { vals.push(j.float(u32.from(ch), a)); }
+        else {
+          imm t = *verts.vt[o];
+          vals.push(j.float(u32.from(ch), a) * (1. - t) + j.float(u32.from(ch), b) * t);
+        }
+        v = v + 1usize;
+      }
+    } elif domain == FaceDomain {
+      f = 0usize;
+      while f < m.faceCount() {
+        vals.push(j.float(u32.from(ch), *faces.face[f]));
+        f = f + 1usize;
+      }
+    } elif domain == CornerDomain {
+      h = 0usize;
+      while h < m.hFace.len() { vals.push(fill); h = h + 1usize; }
+      f = 0usize;
+      while f < m.faceCount() {
+        imm hs = m.faceHalfedges(u32.from(f));
+        mut k = 0usize;
+        while k < hs.len() {
+          imm ci = usize.from(*first[f]) + k;
+          vals.set(usize.from(*hs[k]), blendFloat(j, ch, faces, ci));
+          k = k + 1usize;
+        }
+        f = f + 1usize;
+      }
+    } else {
+      e = 0usize;
+      while e < ne {
+        imm s = *eSrc[e];
+        vals.push(if s == NoIndex {fill;} else {j.float(u32.from(ch), s);});
+        e = e + 1usize;
+      }
+      if isCrease {
+        mut i = 0usize;
+        while i < eMore.len() {
+          imm ee = usize.from(*eMoreOf[i]);
+          imm val = j.float(u32.from(ch), *eMore[i]);
+          if val > *vals[ee] { vals.set(ee, val); }
+          i = i + 1usize;
+        }
+        e = 0usize;
+        while e < ne {
+          if *eCurve[e] and crease > *vals[e] { vals.set(e, crease); }
+          e = e + 1usize;
+        }
+      }
+    }
+    m.floats.push(new Channel[f32](String.from(j.floats[ch].name.view()), domain, vals, fill));
+    ch = ch + 1usize;
+  }
+  ch = 0usize;
+  while ch < j.vec2s.len() {
+    imm domain = j.vec2s[ch].domain;
+    imm fill = j.vec2s[ch].fill;
+    mut vals = List[Vec2].empty();
+    if domain == VertexDomain {
+      v = 0usize;
+      while v < pos.len() {
+        imm o = usize.from(*src[v]);
+        imm a = *verts.va[o];
+        imm b = *verts.vb[o];
+        if b == NoIndex { vals.push(j.vec2(u32.from(ch), a)); }
+        else {
+          imm t = *verts.vt[o];
+          vals.push(j.vec2(u32.from(ch), a) * (1. - t) + j.vec2(u32.from(ch), b) * t);
+        }
+        v = v + 1usize;
+      }
+    } elif domain == FaceDomain {
+      f = 0usize;
+      while f < m.faceCount() {
+        vals.push(j.vec2(u32.from(ch), *faces.face[f]));
+        f = f + 1usize;
+      }
+    } elif domain == CornerDomain {
+      h = 0usize;
+      while h < m.hFace.len() { vals.push(fill); h = h + 1usize; }
+      f = 0usize;
+      while f < m.faceCount() {
+        imm hs = m.faceHalfedges(u32.from(f));
+        mut k = 0usize;
+        while k < hs.len() {
+          imm ci = usize.from(*first[f]) + k;
+          vals.set(usize.from(*hs[k]), blendVec2(j, ch, faces, ci));
+          k = k + 1usize;
+        }
+        f = f + 1usize;
+      }
+    } else {
+      e = 0usize;
+      while e < ne {
+        imm s = *eSrc[e];
+        vals.push(if s == NoIndex {fill;} else {j.vec2(u32.from(ch), s);});
+        e = e + 1usize;
+      }
+    }
+    m.vec2s.push(new Channel[Vec2](String.from(j.vec2s[ch].name.view()), domain, vals, fill));
+    ch = ch + 1usize;
+  }
+  ch = 0usize;
+  while ch < j.vec3s.len() {
+    imm domain = j.vec3s[ch].domain;
+    imm fill = j.vec3s[ch].fill;
+    mut vals = List[Vec3].empty();
+    if domain == VertexDomain {
+      v = 0usize;
+      while v < pos.len() {
+        imm o = usize.from(*src[v]);
+        imm a = *verts.va[o];
+        imm b = *verts.vb[o];
+        if b == NoIndex { vals.push(j.vec3(u32.from(ch), a)); }
+        else {
+          imm t = *verts.vt[o];
+          vals.push(j.vec3(u32.from(ch), a) * (1. - t) + j.vec3(u32.from(ch), b) * t);
+        }
+        v = v + 1usize;
+      }
+    } elif domain == FaceDomain {
+      f = 0usize;
+      while f < m.faceCount() {
+        vals.push(j.vec3(u32.from(ch), *faces.face[f]));
+        f = f + 1usize;
+      }
+    } elif domain == CornerDomain {
+      h = 0usize;
+      while h < m.hFace.len() { vals.push(fill); h = h + 1usize; }
+      f = 0usize;
+      while f < m.faceCount() {
+        imm hs = m.faceHalfedges(u32.from(f));
+        mut k = 0usize;
+        while k < hs.len() {
+          imm ci = usize.from(*first[f]) + k;
+          vals.set(usize.from(*hs[k]), blendVec3(j, ch, faces, ci));
+          k = k + 1usize;
+        }
+        f = f + 1usize;
+      }
+    } else {
+      e = 0usize;
+      while e < ne {
+        imm s = *eSrc[e];
+        vals.push(if s == NoIndex {fill;} else {j.vec3(u32.from(ch), s);});
+        e = e + 1usize;
+      }
+    }
+    m.vec3s.push(new Channel[Vec3](String.from(j.vec3s[ch].name.view()), domain, vals, fill));
+    ch = ch + 1usize;
+  }
+
+  // The curve's crease, made when asked for and missing
+  if crease > 0. and j.findFloatChannel(EdgeDomain, "crease") == NoIndex {
+    mut vals = List[f32].withCapacity(ne);
+    e = 0usize;
+    while e < ne {
+      vals.push(if *eCurve[e] {crease;} else {0.;});
+      e = e + 1usize;
+    }
+    m.floats.push(new Channel[f32](String.from("crease"), EdgeDomain, vals, 0.));
+  }
+  *out = m;
+  true;
+}
+
+// A corner's value: its sources blended by their weights (one source copied)
+fn blendFloat(j &PolyMesh, ch usize, faces &OutFaces, ci usize) f32 {
+  imm c = u32.from(ch);
+  imm a = j.float(c, *faces.h0[ci]);
+  if *faces.h1[ci] == NoIndex { return a; }
+  mut v = a * *faces.w0[ci] + j.float(c, *faces.h1[ci]) * *faces.w1[ci];
+  if *faces.h2[ci] != NoIndex { v = v + j.float(c, *faces.h2[ci]) * *faces.w2[ci]; }
+  v;
+}
+fn blendVec2(j &PolyMesh, ch usize, faces &OutFaces, ci usize) Vec2 {
+  imm c = u32.from(ch);
+  imm a = j.vec2(c, *faces.h0[ci]);
+  if *faces.h1[ci] == NoIndex { return a; }
+  mut v = a * *faces.w0[ci] + j.vec2(c, *faces.h1[ci]) * *faces.w1[ci];
+  if *faces.h2[ci] != NoIndex { v = v + j.vec2(c, *faces.h2[ci]) * *faces.w2[ci]; }
+  v;
+}
+fn blendVec3(j &PolyMesh, ch usize, faces &OutFaces, ci usize) Vec3 {
+  imm c = u32.from(ch);
+  imm a = j.vec3(c, *faces.h0[ci]);
+  if *faces.h1[ci] == NoIndex { return a; }
+  mut v = a * *faces.w0[ci] + j.vec3(c, *faces.h1[ci]) * *faces.w1[ci];
+  if *faces.h2[ci] != NoIndex { v = v + j.vec3(c, *faces.h2[ci]) * *faces.w2[ci]; }
+  v;
+}
