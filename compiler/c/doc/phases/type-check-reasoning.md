@@ -29,9 +29,12 @@ rather than describe.**
    is what makes unranked overload filtering possible at all.
 3. **Coercion does not report a type mismatch.** `iexpCoerce` returns 0 and the
    caller writes the diagnostic, which is why the same mismatch reads
-   differently at an argument, an assignment and a return. It does report two
-   other things itself: an operand that is not an expression node at all, and
-   whatever `fnCallLowerMethod` reports on the `ConvByMeth` path.
+   differently at an argument, an assignment and a return. It does report four
+   other things itself: an operand that is not an expression node at all,
+   whatever `fnCallLowerMethod` reports on the `ConvByMeth` path, a `null`
+   wanted as anything but a raw pointer (`litAdoptNullType`), and a `Bool`
+   wanted as a number (`ErrorBoolNotNbr`). For the last two it answers 1, so
+   the caller says nothing more.
 4. **Overload selection filters, it does not rank.** Exactly one viable
    candidate is a match; two are an ambiguity. There is no best-match score and
    no preference order to memorize.
@@ -126,11 +129,22 @@ monomorphization branch.
 ## 5. Coercion
 
 `iexpMatches` layers expression-level fallbacks on top of pure type subtyping,
-**in this order**, stopping at the first that answers:
+**in this order**, stopping at the first that answers. Ahead of them all, a
+`null` not yet typed answers alone: `EqMatch` for any raw pointer type, `NoMatch`
+for anything else.
 
 1. `itypeMatches(totype, fromtype, Coercion)` — the type-only question,
    dispatched by the *target* type's tag to `nbrMatches`, `structMatches`,
-   `refMatches`, `arrayMatches`, `fnSigMatches` and the rest.
+   `refMatches`, `arrayMatches`, `fnSigMatches` and the rest. `nbrMatches`
+   widens within one kind of number, and leaves `Bool` out on both sides: a
+   1-bit unsigned to the compiler, it is no number to the language, so it
+   neither widens to an unsigned type nor meets one in a branch
+   (`nbrFindSuper`). `iexpCoerce` reports a `Bool` wanted as a number itself,
+   `ErrorBoolNotNbr` naming `T.from(b)`, and injects the conversion so nothing
+   that uses the value reports again; an operator or an index that selected no
+   method, given a `Bool` where a candidate declares a number, says the same in
+   place of its no-candidate message (`fnCallBoolOperandWantsNumber`, asking
+   `iNsTypeNumberParm`).
 2. **Target is `Bool`**: look for an `isTrue` method on the source type.
    This branch returns in both arms, so a `Bool` target never reaches the two
    fallbacks below.

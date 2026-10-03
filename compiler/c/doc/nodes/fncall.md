@@ -482,12 +482,15 @@ Three adjustments, two of them asymmetric on purpose:
   do because it dereferences only the receiver — `fnCallLowerRefCompare` does
   it before `fnCallLowerMethod` is reached.
 
-When nothing is selected, `fnCallNoCandidate` reports it. One case has a
-message of its own (`fnCallRefIndexWantsMut`, still `ErrorNoCandidate`): an
-indexed borrow `&x[i]` reaches `` `&[]` `` with the read-only receiver `&x`,
-and where a `&mut` receiver would have been accepted the message says the
-method takes `self &mut` and names `x[i]` and `&mut x[i]`. The probe changes
-nothing; the refusal is the same.
+When nothing is selected, `fnCallNoCandidate` reports it. Two cases have a
+message of their own. An indexed borrow `&x[i]` reaches `` `&[]` `` with the
+read-only receiver `&x`, and where a `&mut` receiver would have been accepted
+the message says the method takes `self &mut` and names `x[i]` and
+`&mut x[i]` (`fnCallRefIndexWantsMut`, still `ErrorNoCandidate`). An operator
+or an index given a `Bool` where a candidate declares a number, `n + b` or
+`list[b]`, is `ErrorBoolNotNbr` naming that number's `from`
+(`fnCallBoolOperandWantsNumber`): a `Bool` coerces to no number. Neither probe
+changes anything; the refusal is the same.
 
 ### The list after `<-`
 

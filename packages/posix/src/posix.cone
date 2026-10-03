@@ -130,8 +130,8 @@ const invalidUtf8Fails = 8u32;      // MB_ERR_INVALID_CHARS
 // A C string's UTF-8 as UTF-16 ending in a 0, in a block from malloc the
 // caller frees; null when it is not UTF-8
 fn utf16FromUtf8(s *u8) *u16 {
-  imm n = MultiByteToWideChar(utf8Page, invalidUtf8Fails, s, -1i32, 0usize as *u16, 0i32);
-  if n == 0i32 {return 0usize as *u16;};
+  imm n = MultiByteToWideChar(utf8Page, invalidUtf8Fails, s, -1i32, null, 0i32);
+  if n == 0i32 {return null;};
   imm p = libc.malloc(usize.from(n) * 2usize) as *u16;
   MultiByteToWideChar(utf8Page, invalidUtf8Fails, s, -1i32, p, n);
   p;
@@ -143,31 +143,31 @@ mut envAnswerSize = 0usize;
 
 fn getenvUtf8(name *u8) *u8 {
   imm wname = utf16FromUtf8(name);
-  if wname == 0usize as *u16 {return 0usize as *u8;};
+  if wname == null {return null;};
   imm wvalue = _wgetenv(wname);
   libc.free(wname as *u8);
-  if wvalue == 0usize as *u16 {return 0usize as *u8;};
+  if wvalue == null {return null;};
   // A lone surrogate, which is no character, becomes U+FFFD
-  imm size = WideCharToMultiByte(utf8Page, 0u32, wvalue, -1i32, 0usize as *u8, 0i32, 0usize as *u8, 0usize as *i32);
-  if size <= 0i32 {return 0usize as *u8;};
+  imm size = WideCharToMultiByte(utf8Page, 0u32, wvalue, -1i32, null, 0i32, null, null);
+  if size <= 0i32 {return null;};
   if usize.from(size) > envAnswerSize {
     envAnswer = libc.realloc(envAnswer as *u8, usize.from(size)) as usize;
     envAnswerSize = usize.from(size);
   };
-  WideCharToMultiByte(utf8Page, 0u32, wvalue, -1i32, envAnswer as *u8, size, 0usize as *u8, 0usize as *i32);
+  WideCharToMultiByte(utf8Page, 0u32, wvalue, -1i32, envAnswer as *u8, size, null, null);
   envAnswer as *u8;
 }
 
 fn setenvUtf8(name *u8, value *u8, overwrite i32) i32 {
   imm wname = utf16FromUtf8(name);
-  if wname == 0usize as *u16 {return EINVAL;};
+  if wname == null {return EINVAL;};
   imm wvalue = utf16FromUtf8(value);
-  if wvalue == 0usize as *u16 {
+  if wvalue == null {
     libc.free(wname as *u8);
     return EINVAL;
   };
   mut result = 0i32;
-  if overwrite != 0i32 or _wgetenv(wname) == 0usize as *u16 {
+  if overwrite != 0i32 or _wgetenv(wname) == null {
     result = _wputenv_s(wname, wvalue);
   };
   libc.free(wname as *u8);
@@ -318,10 +318,10 @@ pub struct DIR {
 // On Windows it lists the pattern 'name/*'.
 pub fn opendir(name *u8) *DIR {
   mut st = emptyStat();
-  if stat(name, &mut st) != 0i32 {return 0usize as *DIR;};
+  if stat(name, &mut st) != 0i32 {return null;};
   if (st.st_mode & S_IFMT) != S_IFDIR {
     *libc.errno() = ENOTDIR;
-    return 0usize as *DIR;
+    return null;
   };
   // The pattern: the name, a '/' unless it ends in a separator already (or
   // is a drive, 'C:'), and '*'
@@ -337,7 +337,7 @@ pub fn opendir(name *u8) *DIR {
   pattern[at] = '*';
   pattern[at + 1usize] = 0u8;
 
-  imm zero = 0usize as *DIR;
+  imm zero *DIR = null;
   imm dir = libc.malloc((zero + 1) as usize) as *DIR;
   imm d = dir as &mut DIR;
   *d = new DIR(-1isize, false, emptyFindData(), new dirent(0u64, DT_UNKNOWN, new Array[u8, 260] <- fill 0u8));
@@ -354,12 +354,12 @@ pub fn opendir(name *u8) *DIR {
 // directory's own, overwritten by the next call and freed by 'closedir'.
 pub fn readdir(dir *DIR) *dirent {
   imm d = dir as &mut DIR;
-  if d.handle == -1isize {return 0usize as *dirent;};
+  if d.handle == -1isize {return null;};
   if not d.pending {
     imm saved = *libc.errno();
     if _findnext64(d.handle, &mut d.data) != 0i32 {
       if *libc.errno() == ENOENT {*libc.errno() = saved;};
-      return 0usize as *dirent;
+      return null;
     };
   };
   d.pending = false;

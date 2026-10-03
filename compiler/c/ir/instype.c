@@ -117,6 +117,23 @@ static uint32_t iNsTypeCandidates(INode **bindingp, INode ***candidatesp) {
     return 0;
 }
 
+// The number type, other than Bool, that some method candidate declares for the
+// parameter after 'self' numbered 'argi', or NULL when none does. It names what
+// a Bool argument there was wanted as, once no candidate accepted the call.
+INode *iNsTypeNumberParm(INode *binding, uint32_t argi) {
+    INode **candidatep;
+    uint32_t cnt = iNsTypeCandidates(&binding, &candidatep);
+    while (cnt--) {
+        Nodes *parms = ((FnSigNode *)((FnDclNode *)*candidatep++)->vtype)->parms;
+        if (argi + 1 >= parms->used)
+            continue;
+        INode *parmtype = iexpGetTypeDcl(nodesGet(parms, argi + 1));
+        if (isNbr(parmtype) && parmtype != (INode*)boolType)
+            return parmtype;
+    }
+    return NULL;
+}
+
 // Find the one method candidate that accepts the call's receiver and arguments.
 // Every candidate is tested, using a viability test that never alters the call.
 // No candidate wins for being an exact rather than a coercible match, for needing

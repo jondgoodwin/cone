@@ -180,6 +180,7 @@ enum TokenTypes {
     TrynewToken,   // 'trynew': an allocation that may fail, 'trynew Rc[mut, Node](1)', giving an Option
     VoidToken,     // 'void'
     nilToken,      // 'nil'
+    nullToken,     // 'null'
     trueToken,     // 'true'
     falseToken,    // 'false'
     UndefToken,    // 'undef'

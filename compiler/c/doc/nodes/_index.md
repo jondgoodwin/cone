@@ -199,6 +199,12 @@ Conflating `errorType` with `unknownType` buys either spurious cascades or
 masked real failures, which is why they are separate objects sharing a tag
 rather than one object.
 
+A fourth `AbsenceNode` of the same tag, `nullLitType`, is no sentinel of the
+type check at large: it is the type of a `null` literal not yet given the raw
+pointer type it is wanted as, and nothing else ever carries it
+([literals](literals.md), "A `null` takes the raw pointer type it is wanted
+as").
+
 `errorType` is installed by an error path that has reported a diagnostic and has
 no honest type to give the node. `itypeMatches` returns `EqMatch` when either
 side is `errorType`, and `iexpMultiInfer` skips a branch carrying it, so

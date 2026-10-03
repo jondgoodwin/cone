@@ -364,6 +364,12 @@ void castTypeCheck(TypeCheckState *pstate, CastNode *node) {
         return;
 
     node->vtype = node->typ;
+    // 'null as *T' is the null of the pointer type named; 'as' anything else
+    // asks a pointer to be what it is not
+    if (litAdoptNullType(&node->exp, node->typ) && inodeIsError(node->exp)) {
+        node->vtype = errorType;
+        return;
+    }
     INode *fromtype = iexpGetTypeDcl(node->exp);
     INode *totype = itypeGetTypeDcl(node->vtype);
 

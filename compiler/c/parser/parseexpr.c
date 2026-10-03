@@ -141,6 +141,12 @@ INode *parseTerm(ParseState *parse) {
         lexNextToken();
         return (INode *)node;
     }
+    case nullToken:
+    {
+        NullLitNode *node = newNullLitNode();
+        lexNextToken();
+        return (INode *)node;
+    }
     case trueToken:
     {
         ULitNode *node = newULitNode(1, (INode*)boolType);
