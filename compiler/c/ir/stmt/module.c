@@ -1206,8 +1206,9 @@ void modTypeCheck(TypeCheckState *pstate, ModuleNode *mod) {
 // A global the module declares without an initial value, which its 'init' must
 // assign. An 'extern' global is defined elsewhere, initial value and all
 static int modGlobalUninit(INode *node) {
+    // A '@workgroup' global has no value until a workgroup's invocations write one
     return node->tag == VarDclTag && ((VarDclNode*)node)->value == NULL
-        && !(((VarDclNode*)node)->dclinfo.facts & DclExternal);
+        && !(((VarDclNode*)node)->dclinfo.facts & (DclExternal | DclWorkgroup));
 }
 
 ModuleNode *modInitOf(FnDclNode *fnnode) {
@@ -1298,9 +1299,10 @@ static FnDclNode *modLifecycleFn(ModuleNode *mod, Name *name) {
 
 // Whether the module's finalizer finalizes this global: its type has anything
 // to do as it dies (itypeNeedsFinal), and it is not C's storage. A thread-local
-// needing it is refused (modGiveDrop)
+// needing it is refused (modGiveDrop), and a '@workgroup' global may hold only
+// numbers (varDclWorkgroupCheck)
 int modGlobalFinalized(VarDclNode *var) {
-    return !(var->dclinfo.facts & (DclCName | DclThreadLocal)) && itypeNeedsFinal(var->vtype);
+    return !(var->dclinfo.facts & (DclCName | DclThreadLocal | DclWorkgroup)) && itypeNeedsFinal(var->vtype);
 }
 
 // Give the module a 'drop' where any global it declares needs finalizing

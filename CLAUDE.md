@@ -49,7 +49,9 @@ Visual Studio projects stay at the root.
   and `definedInt("NAME")`, for `conec -D`, are a provisional mechanism
   whose final design is open; and `Invocation`, which invocation of a
   compute dispatch is running, what a compute entry point,
-  `fn @compute(64) name(...)`, may take); `stdio` prints;
+  `fn @compute(64) name(...)`, may take, with `workgroupBarrier` and
+  `storageBarrier`, a compute workgroup's barriers, intrinsics outside `mem`);
+  `stdio` prints;
   `libc` and `posix` are C packages of raw bindings to the C library and the
   POSIX functions beyond it (Windows first), and `core` imports `libc` for its
   allocator; `sdl` is a C package of raw bindings to SDL3 (a window for

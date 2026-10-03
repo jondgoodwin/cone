@@ -67,12 +67,17 @@ enum DclFacts {
                               // own copy of, every copy starting from the initial value.
                               // Written by the parser, kept by joining; generation marks
                               // the global thread_local, and never constant
-    DclActorGen   = 0x0800    // A type or function an 'actor' generated (parseactor.c).
+    DclActorGen   = 0x0800,   // A type or function an 'actor' generated (parseactor.c).
                               // An include file holds the actor whole, so an importer
                               // generates them all again, and its instances of the
                               // runtime's generics reach their functions: a library
                               // compile exports every one, whatever its visibility, and
                               // every function of such a type (dclIsExported)
+    DclWorkgroup  = 0x1000    // Global only: '@workgroup', on a GPU one copy for each
+                              // workgroup, which its invocations share, undefined as it
+                              // starts. Written by the parser, kept by joining; on a GPU
+                              // target generation puts it in the Workgroup storage
+                              // class, and on the CPU it is an ordinary global
 };
 
 #define dclInfoInit(dclinfo) ((dclinfo)->owner = NULL, (dclinfo)->facts = 0, (dclinfo)->cname = NULL)

@@ -1,0 +1,39 @@
+// On a GPU an atomic operation acts on memory invocations share: a buffer the
+// kernel binds, or a '@workgroup' global. A local Atomic is each invocation's
+// own, and so is a module's other global (SPIR-V's Private storage class);
+// Vulkan allows neither an atomic operation, and each is refused in the
+// kernel once everything is inlined into it: where the program called mem's
+// intrinsic, or, for an Atomic's method, which is core's code, at the kernel,
+// once.
+
+mod module_gpu_atomic_place;
+
+mut mine Atomic[u32];
+
+fn @initpure init() {
+  mine = Atomic[u32].of(0u32);
+}
+
+fn @compute(64) ownCount(inv Invocation, out &[]mut u32) {  //~ ErrorGpuAtomicPlace
+  imm own = Atomic[u32].of(inv.localIndex);
+  own.add(1u32);
+  imm i = usize.from(inv.globalId[0]);
+  if i < out.len {
+    out[i] = own.load();
+  }
+}
+
+fn @compute(64) globalCount(inv Invocation, out &[]mut u32) {  //~ ErrorGpuAtomicPlace
+  imm i = usize.from(inv.globalId[0]);
+  if i < out.len {
+    out[i] = mine.add(1u32);
+  }
+}
+
+fn @compute(64) rawCount(inv Invocation, out &[]mut u32) {
+  mut n = inv.localIndex;
+  imm i = usize.from(inv.globalId[0]);
+  if i < out.len {
+    out[i] = mem.atomicAdd[u32](&mut n as *u32, 1u32, MemOrder.Relaxed[]);  //~ ErrorGpuAtomicPlace
+  }
+}

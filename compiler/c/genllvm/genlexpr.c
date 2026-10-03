@@ -442,6 +442,14 @@ static LLVMValueRef genlDeclaredIntrinsic(GenState *gen, FnDclNode *fndcl, LLVMV
     case ShrMaskedIntrinsic:
         return genlBitIntrinsic(gen, intrinsic->intrinsicFn, type, fnargs);
 
+    // A GPU workgroup's barriers (genlgpusync.c). The CPU runs a kernel one
+    // invocation at a time, so there is nothing to wait for
+    case WorkgroupBarrierIntrinsic:
+    case StorageBarrierIntrinsic:
+        if (gen->opt->gpu)
+            genlGpuBarrier(gen, intrinsic->intrinsicFn == StorageBarrierIntrinsic);
+        return NULL;
+
     default:
         errorExit(ExitGen, "Internal error: no generation for declared intrinsic %d", (int)intrinsic->intrinsicFn);
         return NULL;
@@ -487,11 +495,13 @@ static LLVMValueRef genlAtomicIntrinsic(GenState *gen, FnDclNode *fndcl, FnCallN
         result = LLVMBuildLoad2(gen->builder, memtype, ptr, "atomicload");
         LLVMSetOrdering(result, order);
         LLVMSetAlignment(result, align);
+        genlGpuAtomicSite(gen, result, (INode *)call);
         break;
     case AtomicStoreIntrinsic: {
         LLVMValueRef store = LLVMBuildStore(gen->builder, value, ptr);
         LLVMSetOrdering(store, order);
         LLVMSetAlignment(store, align);
+        genlGpuAtomicSite(gen, store, (INode *)call);
         return NULL;
     }
     case AtomicCompareSwapIntrinsic: {
@@ -499,6 +509,7 @@ static LLVMValueRef genlAtomicIntrinsic(GenState *gen, FnDclNode *fndcl, FnCallN
         LLVMValueRef cmpxchg = LLVMBuildAtomicCmpXchg(gen->builder, ptr, value, desired,
             order, genlAtomicOrdering(orders[1]), 0);
         LLVMSetAlignment(cmpxchg, align);
+        genlGpuAtomicSite(gen, cmpxchg, (INode *)call);
         LLVMValueRef seen = LLVMBuildExtractValue(gen->builder, cmpxchg, 0, "atomicseen");
         if (isbool)
             seen = LLVMBuildTrunc(gen->builder, seen, valtype, "");
@@ -516,12 +527,19 @@ static LLVMValueRef genlAtomicIntrinsic(GenState *gen, FnDclNode *fndcl, FnCallN
         case AtomicAndIntrinsic:  op = LLVMAtomicRMWBinOpAnd; break;
         case AtomicOrIntrinsic:   op = LLVMAtomicRMWBinOpOr; break;
         case AtomicXorIntrinsic:  op = LLVMAtomicRMWBinOpXor; break;
+        case AtomicMinIntrinsic:
+            op = itypeGetTypeDcl(intrinsic->typearg)->tag == IntNbrTag ? LLVMAtomicRMWBinOpMin : LLVMAtomicRMWBinOpUMin;
+            break;
+        case AtomicMaxIntrinsic:
+            op = itypeGetTypeDcl(intrinsic->typearg)->tag == IntNbrTag ? LLVMAtomicRMWBinOpMax : LLVMAtomicRMWBinOpUMax;
+            break;
         default:
             errorUnreachable((INode *)call, "an atomic intrinsic with no generation");
             return NULL;
         }
         result = LLVMBuildAtomicRMW(gen->builder, op, ptr, value, order, 0);
         LLVMSetAlignment(result, align);
+        genlGpuAtomicSite(gen, result, (INode *)call);
         break;
     }
     }

@@ -102,6 +102,8 @@ enum IntrinsicFn {
     AtomicAndIntrinsic,     // atomicAnd[T](p *T, value T, order MemOrder) T
     AtomicOrIntrinsic,      // atomicOr[T](p *T, value T, order MemOrder) T
     AtomicXorIntrinsic,     // atomicXor[T](p *T, value T, order MemOrder) T
+    AtomicMinIntrinsic,     // atomicMin[T](p *T, value T, order MemOrder) T: signed for a signed T
+    AtomicMaxIntrinsic,     // atomicMax[T](p *T, value T, order MemOrder) T: signed for a signed T
     AtomicCompareSwapIntrinsic, // atomicCompareSwap[T](p *T, expected T, desired T, success MemOrder, failure MemOrder) T, Bool
     // Where the call is written: its source file's name, and its line. Written
     // as a parameter's default value, where each call taking the default is
@@ -132,7 +134,13 @@ enum IntrinsicFn {
     RotateLeftIntrinsic,    // rotateLeft[T](x T, n u32) T
     RotateRightIntrinsic,   // rotateRight[T](x T, n u32) T
     ShlMaskedIntrinsic,     // shlMasked[T](x T, n u32) T
-    ShrMaskedIntrinsic      // shrMasked[T](x T, n u32) T: arithmetic for a signed T
+    ShrMaskedIntrinsic,     // shrMasked[T](x T, n u32) T: arithmetic for a signed T
+    // A GPU workgroup's barriers: every invocation of the workgroup waits there,
+    // and what each wrote before it to the workgroup's memory, or to the storage
+    // buffers, every other reads after it. The CPU runs a kernel one invocation
+    // at a time, so there each is nothing (genllvm/genlgpusync.c)
+    WorkgroupBarrierIntrinsic,  // workgroupBarrier()
+    StorageBarrierIntrinsic     // storageBarrier()
 };
 
 // A MemOrder, core's enum of the orderings an atomic operation promises, in the

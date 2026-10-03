@@ -382,9 +382,13 @@ void genlGloVar(GenState *gen, VarDclNode *varnode) {
         genlComdat(gen, global);
 
     if (!varnode->value) {
-        // If no value on non-extern, initialize with the zero initializer
+        // If no value on non-extern, initialize with the zero initializer. A
+        // GPU's workgroup memory has none: each workgroup's copy starts
+        // undefined, an OpVariable with no initializer (one would need
+        // Vulkan's shaderZeroInitializeWorkgroupMemory)
         if (!(varnode->dclinfo.facts & DclExternal))
-            LLVMSetInitializer(global, LLVMConstNull(genlType(gen,varnode->vtype)));
+            LLVMSetInitializer(global, gen->opt->gpu && (varnode->dclinfo.facts & DclWorkgroup)
+                ? LLVMGetUndef(genlType(gen, varnode->vtype)) : LLVMConstNull(genlType(gen,varnode->vtype)));
         return;
     }
 
@@ -684,6 +688,11 @@ void genlGloVarName(GenState *gen, VarDclNode *glovar) {
         // its uses take the flat address (genlFlatAddr)
         glovar->llvmvar = gen->opt->gpu ? global : LLVMConstBitCast(global, LLVMPointerType(vartype, 0));
     }
+    // On a GPU target a '@workgroup' global is in the Workgroup storage class
+    // (genlgpusync.c); everywhere else it is an ordinary global
+    else if (gen->opt->gpu && (glovar->dclinfo.facts & DclWorkgroup))
+        global = glovar->llvmvar = LLVMAddGlobalInAddressSpace(gen->module, vartype,
+            nameSymbol(symbol, (INode*)glovar), genlGpuGlobalSpace(glovar));
     else
         global = glovar->llvmvar = LLVMAddGlobal(gen->module, vartype, nameSymbol(symbol, (INode*)glovar));
 
@@ -1743,6 +1752,13 @@ LLVMTypeRef genlGpuPointee(LLVMValueRef ptr) {
         return LLVMGlobalGetValueType(ptr);
     if (LLVMIsAArgument(ptr))
         return genlParamPointee(ptr);
+    // A storage buffer's element (genlgpu.c), its run-time array's element type
+    LLVMValueRef callee = LLVMIsACallInst(ptr) ? LLVMGetCalledValue(ptr) : NULL;
+    if (callee && LLVMIsAFunction(callee)
+        && LLVMGetIntrinsicID(callee) == LLVMLookupIntrinsicID("llvm.spv.resource.getpointer", 28)) {
+        LLVMTypeRef contents = LLVMGetTargetExtTypeTypeParam(LLVMTypeOf(LLVMGetOperand(ptr, 0)), 0);
+        return LLVMGetTypeKind(contents) == LLVMArrayTypeKind ? LLVMGetElementType(contents) : NULL;
+    }
     return NULL;
 }
 
@@ -1774,6 +1790,11 @@ static void genlGpuRetypeFn(GenState *gen, LLVMValueRef fn) {
             else if (LLVMIsAGetElementPtrInst(inst)) {
                 ptrop = 0;
                 used = LLVMGetGEPSourceElementType(inst);
+            }
+            else if (LLVMIsAAtomicRMWInst(inst) || LLVMIsAAtomicCmpXchgInst(inst)) {
+                // An Atomic[T]'s value is its first field
+                ptrop = 0;
+                used = LLVMTypeOf(LLVMGetOperand(inst, 1));
             }
             else {
                 inst = next;
@@ -2031,8 +2052,26 @@ void genpgm(GenState *gen, ProgramNode *pgm) {
         LLVMDisposeModule(gen->module);
         return;
     }
-    if (gen->opt->gpu && !passerr)
+    if (gen->opt->gpu && !passerr) {
         genlGpuAggregates(gen);
+        // Each atomic's scope and ordering, from the memory it acts on; one in
+        // a kernel on memory no other invocation reaches is refused, and
+        // nothing is emitted
+        int atomicsok = 1;
+        for (LLVMValueRef fn = LLVMGetFirstFunction(gen->module); fn; fn = LLVMGetNextFunction(fn)) {
+            if (LLVMIsDeclaration(fn))
+                continue;
+            FnDclNode *kernel = NULL;
+            for (uint32_t e = 0; e < gen->entrycnt; ++e)
+                if (gen->entries[e].kernel == fn)
+                    kernel = gen->entries[e].fndcl;
+            atomicsok = genlGpuAtomics(gen, fn, kernel) && atomicsok;
+        }
+        if (!atomicsok) {
+            LLVMDisposeModule(gen->module);
+            return;
+        }
+    }
 
     // Serialize the LLVM IR, if requested
     if (gen->opt->print_llvmir && LLVMPrintModuleToFile(gen->module, fileMakePath(gen->opt->output, gen->opt->srcname, "ir"), &err) != 0) {

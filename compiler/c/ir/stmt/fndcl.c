@@ -359,8 +359,12 @@ static int fnDclComputeTagged(INode *dcl) {
 }
 
 // Why 'type', reached through 'path' from the parameter, may not be in a
-// buffer, or NULL when it may: 'path' names the field or element at fault
-static const char *fnDclComputeData(INode *type, char *path, size_t size) {
+// buffer, or NULL when it may: 'path' names the field or element at fault. An
+// Atomic[u32] or Atomic[i32] is its number, so a buffer of them is a buffer of
+// numbers each changed only by atomic operations; WebGPU's atomic<u32> is the
+// same four bytes. A '@workgroup' global is held to the same rule
+// (varDclTypeCheck).
+const char *fnDclComputeData(INode *type, char *path, size_t size) {
     INode *dcl = itypeGetTypeDcl(type);
     switch (dcl->tag) {
     case IntNbrTag:

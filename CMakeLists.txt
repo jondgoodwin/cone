@@ -145,6 +145,7 @@ add_executable(conec
 	compiler/c/genllvm/genltype.c
 	compiler/c/genllvm/genlcabi.c
 	compiler/c/genllvm/genlgpu.c
+	compiler/c/genllvm/genlgpusync.c
 )
 
 target_link_libraries(conec ${llvm_libs})

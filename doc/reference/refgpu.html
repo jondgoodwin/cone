@@ -15,12 +15,15 @@
 
 	<p style="margin-left: 40px;"><i>Note: Compute entry points are implemented for SPIR-V's
 		Vulkan form (<span class="pre">conec --triple=spirv1.6-unknown-vulkan1.3</span>), with
-		their buffers, their Invocation and their error buffer as described below. Not yet:
+		their buffers, their Invocation, their error buffer, atomics on buffer elements,
+		workgroup memory and barriers as described below. Not yet:
 		Congo building a package's kernels (each module is compiled with
 		<span class="pre">conec</span> directly), <span class="pre">gpuwork</span> binding the
 		error buffer itself, deciding which packages may run on a GPU,
-		refusing the features a GPU lacks where they are written, textures, atomics in buffers,
-		workgroup memory and <span class="pre">f16</span>. The math functions Cone takes from
+		refusing the features a GPU lacks where they are written, textures, a checked form of
+		workgroup memory, a CPU twin that runs a workgroup's invocations together (so that one
+		reading another's writes across a barrier gets the GPU's answer), and
+		<span class="pre">f16</span>. The math functions Cone takes from
 		the C library (<span class="pre">floorf</span> and its kind) are not yet a GPU's built-ins,
 		so a kernel calling one is not yet a module Vulkan accepts.</i></p>
 
@@ -83,8 +86,9 @@ fn @compute(64) bake(inv Invocation, parts &amp;[]Part, out &amp;[]mut f32) {
 
 	<p>What a buffer holds is shared byte for byte between the CPU and the GPU, so it may
 		hold only what the two lay out alike: 32-bit numbers (<span class="pre">i32</span>,
-		<span class="pre">u32</span>, <span class="pre">f32</span>), and structs and fixed arrays
-		of them, nested as deep as wanted. A <span class="pre">Bool</span>, a number of 8, 16 or
+		<span class="pre">u32</span>, <span class="pre">f32</span>), their atomics
+		(<span class="pre">Atomic[u32]</span> and <span class="pre">Atomic[i32]</span>, below), and
+		structs and fixed arrays of them, nested as deep as wanted. A <span class="pre">Bool</span>, a number of 8, 16 or
 		64 bits, <span class="pre">usize</span> or <span class="pre">isize</span> (as wide as each
 		target's addresses), a reference, slice or pointer, an enum or an
 		<span class="pre">Option</span> is refused, with the field that holds it. A struct of
@@ -130,6 +134,105 @@ fn @compute(64) bake(inv Invocation, parts &amp;[]Part, out &amp;[]mut f32) {
 		however many functions it was handed through and however it was cut. A slice that came
 		from anything else, a pointer to a single value say, is refused where it is
 		indexed.</p>
+
+	<h2 id="atomics">Atomics</h2>
+
+<pre><code>fn @compute(64) compact(inv Invocation, input &amp;[]u32, count &amp;[]mut Atomic[u32], out &amp;[]mut u32) {
+  imm i = usize.from(inv.globalId[0]);
+  if i &lt; input.len and input[i] % 3u32 == 0u32 {
+    imm slot = count[0usize].addOrdered(1u32, MemOrder.Relaxed[]);
+    out[usize.from(slot)] = input[i];
+  }
+}</code></pre>
+
+	<p>A buffer of <span class="pre">Atomic[u32]</span> or <span class="pre">Atomic[i32]</span>
+		holds numbers that invocations change together, each change indivisible: a counter
+		several invocations add to, or one that hands each kept element its slot, as above. It
+		is core's <a href="refconc.html">Atomic</a>, the same type and the same methods as on the
+		CPU: four bytes, its number and nothing more, as WebGPU's
+		<span class="pre">atomic&lt;u32&gt;</span> is, so the CPU reads the buffer as numbers. An
+		atomic may also be a field of a buffer's struct, or an element of a
+		<a href="#workgroup">workgroup global</a>. An Atomic of anything else (a
+		<span class="pre">u64</span>, a <span class="pre">Bool</span>, a pointer) is refused in a
+		buffer, as its number would be.</p>
+
+	<p>Every method an integer Atomic has works on a GPU: <span class="pre">load</span>,
+		<span class="pre">store</span>, <span class="pre">swap</span>, <span class="pre">add</span>,
+		<span class="pre">sub</span>, <span class="pre">min</span>, <span class="pre">max</span>
+		(signed for an <span class="pre">i32</span>, unsigned for a <span class="pre">u32</span>),
+		<span class="pre">bitAnd</span>, <span class="pre">bitOr</span>,
+		<span class="pre">bitXor</span> and <span class="pre">compareSwap</span>, each with its
+		<span class="pre">Ordered</span> form. Each acts at the scope of the memory it changes:
+		a buffer's is the device, every invocation of the dispatch; a workgroup global's is its
+		workgroup. Vulkan has no sequentially consistent ordering, so on a GPU
+		<span class="pre">SeqCst</span>, what the everyday forms promise, is acquire-release;
+		<span class="pre">Relaxed</span>, <span class="pre">Acquire</span>,
+		<span class="pre">Release</span> and <span class="pre">AcqRel</span> are as written. A
+		counter needs no ordering beyond its own change, so <span class="pre">Relaxed</span> is
+		the right one for claiming a slot.</p>
+
+	<p>An atomic acts on memory invocations share. One on a local
+		<span class="pre">Atomic</span>, or on a module's global that is not
+		<span class="pre">@workgroup</span>, each invocation's own, is refused in the
+		kernel.</p>
+
+	<h2 id="workgroup">Workgroup memory</h2>
+
+<pre><code>mut @workgroup scan Array[u32, 256];
+
+fn @compute(256) prefix(inv Invocation, input &amp;[]u32, out &amp;[]mut u32) {
+  imm g = usize.from(inv.globalId[0]);
+  imm l = usize.from(inv.localIndex);
+  scan[l] = if g &lt; input.len {input[g];} else {0u32;};
+  workgroupBarrier();
+  mut step = 1usize;
+  while step &lt; 256usize {
+    imm add = if l &gt;= step {scan[l - step];} else {0u32;};
+    workgroupBarrier();
+    scan[l] = scan[l] + add;
+    workgroupBarrier();
+    step = step * 2usize;
+  }
+  if g &lt; out.len { out[g] = scan[l]; }
+}</code></pre>
+
+	<p>A module's global written with <span class="pre">@workgroup</span> after its permission
+		is workgroup memory: on a GPU, one copy for each workgroup, which its invocations share,
+		and which is far faster than a buffer. It is written as
+		<a href="refmodule.html#threadlocal"><span class="pre">@threadlocal</span></a> is: a
+		module's global, <span class="pre">mut</span>, of a fixed size, holding what a buffer may
+		hold (32-bit numbers, their atomics, and structs and fixed arrays of them) and nothing
+		that needs finalizing. It has no initial value: a workgroup's copy starts undefined, so
+		the invocations write what they will read, then wait at a
+		<a href="#barriers">barrier</a> before reading what the others wrote. An initial value is
+		refused, zero among them.</p>
+
+	<p>Invocations reading and writing one global is a trusted exception to Cone's rule
+		against threads sharing what they change, as a <span class="pre">&amp;[]mut</span>
+		buffer is: that one invocation does not read a place another is writing, without a
+		barrier between, is the program's to arrange. <i>(A checked form, each invocation owning
+		its own place and reading the others' only after a barrier, is to come.)</i></p>
+
+	<p>On the CPU a workgroup global is an ordinary global, one copy, and the loop that runs
+		a kernel runs one invocation at a time, workgroup by workgroup. A kernel whose
+		invocations read, after a barrier, only what the invocations before them in that order
+		wrote (the last invocation of a workgroup gathering what the others counted, say) gives
+		the same answer on both. One whose invocations read what invocations after them write,
+		as the prefix sum above does, needs its workgroup's invocations run together, which the
+		CPU's loop does not yet do.</p>
+
+	<h2 id="barriers">Barriers</h2>
+
+<pre><code>pub fn @intrinsic workgroupBarrier()
+pub fn @intrinsic storageBarrier()</code></pre>
+
+	<p>Core's two barriers: every invocation of the workgroup waits at one until all have
+		reached it, and what each wrote before it every other reads after it. After
+		<span class="pre">workgroupBarrier</span>, that is what was written to workgroup memory;
+		after <span class="pre">storageBarrier</span>, what was written to the buffers the kernel
+		binds, as the other invocations of the same workgroup see it. Every invocation of a
+		workgroup must reach the same barrier, so one is never written where some invocations
+		of a workgroup go and others do not. On the CPU each is nothing.</p>
 
 	<p style="text-align: right; margin-top: 2em;">
 		<a href="refmodule.html"><img alt="_" src="next.png" /></a>

@@ -104,7 +104,7 @@ pub fn @intrinsic readRaw[T](p *T) T {*p;}
 
 	<h2>The intrinsics</h2>
 
-	<p>Each but <span class="pre">srcFile</span>, <span class="pre">srcLine</span>, <span class="pre">isDebugBuild</span> and the provisional constants of the build is declared in core's <span class="pre">mem</span> and called as
+	<p>Each but <span class="pre">srcFile</span>, <span class="pre">srcLine</span>, <span class="pre">isDebugBuild</span>, the provisional constants of the build and a GPU workgroup's <a href="#barriers">barriers</a> is declared in core's <span class="pre">mem</span> and called as
 		<span class="pre">mem.<i>name</i>[T](...)</span> (<span class="pre">traceRoots</span>,
 		which takes no type, as <span class="pre">mem.traceRoots(...)</span>). Where an argument is a pointer to
 		<span class="pre">T</span> or a <span class="pre">T</span>, the type argument may be left
@@ -462,7 +462,8 @@ imm level = definedInt("LEVEL");
 		<li>a raw pointer, to anything.</li>
 	</ul>
 	<p>Each operation takes the part of that set it has a meaning for:
-		<span class="pre">atomicAdd</span> and <span class="pre">atomicSub</span> an
+		<span class="pre">atomicAdd</span>, <span class="pre">atomicSub</span>,
+		<span class="pre">atomicMin</span> and <span class="pre">atomicMax</span> an
 		integer; <span class="pre">atomicAnd</span>, <span class="pre">atomicOr</span> and
 		<span class="pre">atomicXor</span> an integer or a <span class="pre">Bool</span>;
 		the load, the store, the swap and the compare-swap all three. Anything else is an
@@ -574,6 +575,20 @@ fn @intrinsic atomicXor[T](p *T, value T, order MemOrder) T
 		<span class="pre">&amp;</span>, <span class="pre">|</span>,
 		<span class="pre">^</span>), then a store.</p>
 
+	<h3>atomicMin and atomicMax</h3>
+<pre>
+fn @intrinsic atomicMin[T](p *T, value T, order MemOrder) T
+fn @intrinsic atomicMax[T](p *T, value T, order MemOrder) T
+</pre>
+	<p>Each keeps at <span class="pre">p</span> the lesser, or the greater, of the
+		<span class="pre">T</span> there and <span class="pre">value</span>, and answers the
+		value from before, as one indivisible step. They compare as
+		<span class="pre">T</span> does: signed for a signed integer, unsigned for an unsigned
+		one, so a <span class="pre">u8</span> holding 200 is greater than 3, and an
+		<span class="pre">i8</span> holding -56, the same bits, less. Fallback: a load, a
+		comparison, and a store when <span class="pre">value</span> is the lesser (the
+		greater).</p>
+
 	<h3>atomicCompareSwap</h3>
 <pre>
 fn @intrinsic atomicCompareSwap[T](p *T, expected T, desired T,
@@ -610,10 +625,30 @@ seen, stored = mem.atomicCompareSwap[i32](p, 0i32, 1i32,
 		<span class="pre">atomicrmw</span> (<span class="pre">xchg</span>,
 		<span class="pre">add</span>, <span class="pre">sub</span>,
 		<span class="pre">and</span>, <span class="pre">or</span>,
-		<span class="pre">xor</span>), or a strong <span class="pre">cmpxchg</span>
-		carrying both orderings. <span class="pre">Relaxed</span> is LLVM's
-		<span class="pre">monotonic</span>. A <span class="pre">Bool</span> is operated on
-		as an <span class="pre">i8</span>.</p>
+		<span class="pre">xor</span>, and <span class="pre">min</span> and
+		<span class="pre">max</span> or <span class="pre">umin</span> and
+		<span class="pre">umax</span> as <span class="pre">T</span> is signed or not), or a
+		strong <span class="pre">cmpxchg</span> carrying both orderings.
+		<span class="pre">Relaxed</span> is LLVM's <span class="pre">monotonic</span>. A
+		<span class="pre">Bool</span> is operated on as an <span class="pre">i8</span>. On a
+		GPU each acts at the scope of the memory it changes, and
+		<span class="pre">SeqCst</span>, which Vulkan does not have, is acquire-release
+		(<a href="refgpu.html#atomics">GPU Compute</a>).</p>
+
+	<h2 id="barriers">A GPU workgroup's barriers</h2>
+<pre>
+pub fn @intrinsic workgroupBarrier() {}
+pub fn @intrinsic storageBarrier() {}
+</pre>
+	<p>Every invocation of a compute workgroup waits at a barrier until all have reached it,
+		and what each wrote before it, to workgroup memory or to the kernel's buffers, every
+		other reads after it (<a href="refgpu.html#barriers">GPU Compute</a>). They are core's,
+		outside <span class="pre">mem</span>, as <span class="pre">isDebugBuild</span> is. On a GPU
+		each is SPIR-V's <span class="pre">OpControlBarrier</span> at the workgroup's scope,
+		acquire-release over workgroup memory (<span class="pre">workgroupBarrier</span>) or, at
+		the device's scope, over the buffers (<span class="pre">storageBarrier</span>). The CPU
+		runs a kernel one invocation at a time, so there is nothing to wait for: the fallback
+		body, empty, is what every CPU build is.</p>
 
 	<h2 id="bits">An integer's bits</h2>
 
