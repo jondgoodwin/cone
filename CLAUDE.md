@@ -132,8 +132,10 @@ Visual Studio projects stay at the root.
   chain, and `fractalRefine`, a 2-D outline split fractally inside nested
   quadrilaterals (so an edge's pieces never cross), every random number a
   hash of (seed, edge, level, index), with `fractalRefineWithin` for one
-  window's points, the same bits; its example `coast.cone` is the island
-  coastline experiments;
+  window's points, the same bits, and `voxelRemesh` (a closed mesh rebuilt
+  as even quads at a voxel size: inside by exact ray parity, distances in a
+  band, meshed by `sdfmesh`'s surface nets, channels from the nearest
+  point); its example `coast.cone` is the island coastline experiments;
   `noise` is coherent noise over `geomath`, a pure function of a seed and a
   point: the PCG integer hashes (`pcg`, `pcg2d`, `pcg3d`, `pcg4d`, seeded
   lattice hashes, exact hash to float), value and gradient noise with
