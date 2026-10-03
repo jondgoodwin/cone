@@ -2101,9 +2101,11 @@ static void fnCallLowerManagedRef(TypeCheckState *pstate, FnCallNode **nodep) {
     // The value type is checked first, since whether it is an open trait decides
     // the reference's shape, and a generic trait's instance exists only once
     // checked. A type under check that refers to itself, 'next Rc[Node]', finds
-    // Node in progress, as a reference always has.
+    // Node in progress, as a reference always has. It is the reference's
+    // target, so it is not laid out while a layout is in flight
+    // (refTargetTypeCheck).
     uint16_t tag = RefTag;
-    if (itypeTypeCheck(pstate, &vtype)) {
+    if (refTargetTypeCheck(pstate, &vtype, NULL)) {
         INode *vdcl = itypeGetTypeDcl(vtype);
         if (vdcl->tag == StructTag && (vdcl->flags & TraitType) && !(vdcl->flags & HasTagField))
             tag = VirtRefTag;

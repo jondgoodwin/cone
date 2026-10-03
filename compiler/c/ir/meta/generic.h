@@ -43,6 +43,12 @@ GenericInfo *genericGetInfo(INode *node);
 int genericInstantiateEnter(INode *errnode);
 void genericInstantiateExit();
 
+// The expansion depth, kept with a layout a reference's target left waiting and
+// restored while it is laid out: an instance laid out later is still that deep,
+// so an expansion through references ('next &Box[Box[T]]') is bounded too
+uint32_t genericInstantiateDepth();
+void genericInstantiateDepthSet(uint32_t depth);
+
 // Perform generic substitution, if this is a correctly set up generic "fncall"
 // Return 1 if done/error needed. Return 0 if not generic or it leaves behind a lit/fncall that needs processing.
 int genericSubstitute(TypeCheckState *pstate, FnCallNode **nodep);

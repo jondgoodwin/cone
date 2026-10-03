@@ -1228,21 +1228,26 @@ static INode *itypeNoSizeField(INode *dcltype, uint32_t depth);
 // In flight, not merely unfinished. A variant not yet begun is not on the demand
 // stack, so it cannot close a cycle with the asker, and if it does hold the enum,
 // its own field asks again once it is in flight, and is refused.
-static int itypeVariantPending(INode *dcltype) {
+static INode *itypeVariantPending(INode *dcltype) {
     // TraitType and a derived list are both required: a *variant* carries the
     // closed flags too, inherited from its enum, and has no derived list at all.
     if (dcltype->tag != StructTag || !(dcltype->flags & TraitType)
         || !(dcltype->flags & (HasTagField | SameSize))
         || ((StructNode*)dcltype)->derived == NULL)
-        return 0;
+        return NULL;
     INode **nodesp;
     uint32_t cnt;
     for (nodesFor(((StructNode*)dcltype)->derived, cnt, nodesp)) {
         if (((*nodesp)->flags & TypeChecking) && !((*nodesp)->flags & TypeChecked))
-            return 1;
+            return *nodesp;
     }
-    return 0;
+    return NULL;
 }
+
+// The two causes that mean a by-value cycle, which the message names
+// (structLayoutCycle) where the layouts in flight show it
+static char itypeInFlightCause[] = "is still being laid out, so it would have to contain itself. Break the cycle by holding it through a reference";
+static char itypeVariantPendingCause[] = "is an enum with a variant still being laid out, so it would have to contain itself. Break the cycle by holding it through a reference";
 
 // A type's name, for a diagnostic. See itype.h.
 char *itypeName(INode *type) {
@@ -1283,7 +1288,7 @@ static char *itypeNoSizeOwnCause(INode *dcltype, uint32_t depth) {
     // of settling, so there is no size to give yet -- and no cycle check is
     // needed to say so, since a finished type would not be in this state.
     if ((dcltype->flags & TypeChecking) && !(dcltype->flags & TypeChecked))
-        return "is still being laid out, so it would have to contain itself. Break the cycle by holding it through a reference";
+        return itypeInFlightCause;
 
     // A type whose implementations differ in size has no one size: a trait,
     // whose implementers are open-ended, or an enum that declined the padding.
@@ -1298,7 +1303,7 @@ static char *itypeNoSizeOwnCause(INode *dcltype, uint32_t depth) {
 
     // An enum is laid out only once every variant is, whatever its own mark says
     if (itypeVariantPending(dcltype))
-        return "is an enum with a variant still being laid out, so it would have to contain itself. Break the cycle by holding it through a reference";
+        return itypeVariantPendingCause;
 
     if (!(dcltype->flags & OpaqueType))
         return NULL;
@@ -1343,17 +1348,28 @@ static INode *itypeNoSizeField(INode *dcltype, uint32_t depth) {
 // Why this type cannot report a size. See itype.h.
 char *itypeNoSizeCause(INode *type, INode **rootp) {
     INode *dcltype = itypeGetTypeDcl(type);
+    // The types passed through to the cause, for a cycle's message
+    INode *passed[NoSizeChainMax];
     uint32_t hops = 0;
     while (++hops <= NoSizeChainMax) {
         char *own = itypeNoSizeOwnCause(dcltype, 0);
         if (own) {
             if (rootp)
                 *rootp = dcltype;
-            return own;
+            // Only by-value containment lays a type out, so a size asked of
+            // one still in flight closes a by-value cycle, named type by type
+            // from the layouts in flight: "A contains B contains A by value"
+            char *cycle = NULL;
+            if (own == itypeInFlightCause)
+                cycle = structLayoutCycle(dcltype, dcltype, passed, hops - 1);
+            else if (own == itypeVariantPendingCause)
+                cycle = structLayoutCycle(dcltype, itypeVariantPending(dcltype), passed, hops - 1);
+            return cycle ? cycle : own;
         }
         INode *fld = itypeNoSizeField(dcltype, 0);
         if (fld == NULL)
             return NULL;
+        passed[hops - 1] = dcltype;
         dcltype = itypeGetTypeDcl(((IExpNode*)fld)->vtype);
     }
     if (rootp)

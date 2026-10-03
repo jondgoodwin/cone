@@ -218,7 +218,11 @@ void fieldDclTypeCheck(TypeCheckState *pstate, FieldDclNode *name) {
     // A field holds its type by value, so that type has to be able to say how
     // large it is. This is where a recursive struct is caught -- and where one
     // that recurses through a reference is not, since the reference answers for
-    // itself without asking what it points at.
+    // itself without asking what it points at. What a reference's target left
+    // waiting in it -- an array's element size, an instance's layout, reached
+    // first through a reference in this same layout -- is settled first, since
+    // holding it by value is what demands it.
+    structTypeSettle(pstate, name->vtype);
     INode *nosizeroot;
     char *nosize = itypeNoSizeCause(name->vtype, &nosizeroot);
     if (nosize) {

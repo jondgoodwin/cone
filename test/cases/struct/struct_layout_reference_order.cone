@@ -1,0 +1,255 @@
+// A reference never demands its target's layout; only by-value containment
+// does. A reference is one or two pointers whatever it points at, so laying out
+// a struct that holds one does not lay out what it points at: that waits until
+// no layout is in flight. The first shapes here were refused in one declaration
+// order and compiled in the other (ErrorNoSize, "still being laid out"),
+// because the reference laid its target out in the middle of an enum's layout,
+// and the target reached that enum back by value; the last three were refused
+// in both. Every one is written here in both orders, and run, since whether each
+// layout came out whole is what the values read back through it show.
+
+mod struct_layout_reference_order;
+
+import stdio use *;
+
+fn show(label &[]u8, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+// -------- Two actors holding each other's handles --------
+
+// B's state written first. 'Option[A1]' lays out 'Some[A1]', which holds A1 by
+// value; A1 holds 'So[A1_state]', and A1_state holds 'Option[A1]' again. When
+// the owning reference laid A1_state out on the spot, A1_state found
+// 'Option[A1]' with its 'Some' still in flight.
+struct B1_state { pub first Option[A1]; pub n i64; }
+struct B1 { pub st So[B1_state]; }
+struct A1_state { pub next Option[A1]; pub b B1; pub n i64; }
+struct A1 { pub st So[A1_state]; }
+
+// The same four, A's written first, which always compiled
+struct A2_state { pub next Option[A2]; pub b B2; pub n i64; }
+struct A2 { pub st So[A2_state]; }
+struct B2_state { pub first Option[A2]; pub n i64; }
+struct B2 { pub st So[B2_state]; }
+
+fn a1(n i64, next Option[A1]) A1 {
+  new A1(new So[A1_state](next, new B1(new So[B1_state](None[A1][], n * 10)), n));
+}
+
+// The values along a chain of A1's, each with its B's
+fn sumA1(a &imm A1) i64 {
+  imm here = a.st.n + a.st.b.st.n;
+  match &imm a.st.next {
+    case imm s &imm Some[A1] {here + sumA1(&imm s.value);}
+    else {here;}
+  }
+}
+
+fn a2(n i64, next Option[A2]) A2 {
+  new A2(new So[A2_state](next, new B2(new So[B2_state](None[A2][], n * 10)), n));
+}
+
+fn sumA2(a &imm A2) i64 {
+  imm here = a.st.n + a.st.b.st.n;
+  match &imm a.st.next {
+    case imm s &imm Some[A2] {here + sumA2(&imm s.value);}
+    else {here;}
+  }
+}
+
+// -------- A variant pointing at a struct that holds its enum --------
+
+// The struct written below the enum. The variant's '&W1' laid W1 out while the
+// variant was in flight, and W1's field holding the enum was refused as a
+// variant still being laid out.
+enum E1 {
+  struct Leaf1 { pub n i64; }
+  struct Ref1 { pub w &imm W1; }
+  struct Own1 { pub w So[W1]; }
+}
+struct W1 { pub e E1; pub k i64; }
+
+// Written above the enum, which always compiled
+struct W2 { pub e E2; pub k i64; }
+enum E2 {
+  struct Leaf2 { pub n i64; }
+  struct Ref2 { pub w &imm W2; }
+  struct Own2 { pub w So[W2]; }
+}
+
+fn sumE1(e &imm E1) i64 {
+  match e {
+    case imm l &imm Leaf1 {l.n;}
+    case imm r &imm Ref1 {r.w.k + sumE1(&imm r.w.e);}
+    case imm o &imm Own1 {o.w.k + sumE1(&imm o.w.e);}
+  }
+}
+
+fn sumE2(e &imm E2) i64 {
+  match e {
+    case imm l &imm Leaf2 {l.n;}
+    case imm r &imm Ref2 {r.w.k + sumE2(&imm r.w.e);}
+    case imm o &imm Own2 {o.w.k + sumE2(&imm o.w.e);}
+  }
+}
+
+// -------- Three structs owning each other in a ring --------
+
+// Each holds the next by value only inside an 'Option' of an owning reference,
+// so the ring has a size everywhere, and each state holds the next actor's
+// handle as in the first shape, three deep: X's state holds 'Option[X]' and Y,
+// Y's holds 'Option[Z]', Z's holds 'Option[X]'.
+struct X_state { pub again Option[X]; pub y Y; pub n i64; }
+struct X { pub st So[X_state]; }
+struct Y_state { pub z Option[Z]; pub n i64; }
+struct Y { pub st So[Y_state]; }
+struct Z_state { pub x Option[X]; pub n i64; }
+struct Z { pub st So[Z_state]; }
+
+// The same ring with Y's state written first, and Z's before X's: refused,
+// with X found in flight inside 'Some[X]', until the owning references stopped
+// laying their targets out
+struct Yb_state { pub z Option[Zb]; pub n i64; }
+struct Yb { pub st So[Yb_state]; }
+struct Zb_state { pub x Option[Xb]; pub n i64; }
+struct Zb { pub st So[Zb_state]; }
+struct Xb_state { pub again Option[Xb]; pub y Yb; pub n i64; }
+struct Xb { pub st So[Xb_state]; }
+
+fn ringSumB(x &imm Xb) i64 {
+  mut total = x.st.n + x.st.y.st.n;
+  match &imm x.st.y.st.z {
+    case imm s &imm Some[Zb] {
+      total = total + s.value.st.n;
+      match &imm s.value.st.x {
+        case imm t &imm Some[Xb] {total = total + ringSumB(&imm t.value);}
+        else {}
+      }
+    }
+    else {}
+  }
+  total;
+}
+
+// -------- A function reference, and a reference to an array --------
+
+// These two, and the raw pointer below them, were refused in both orders: the
+// reference laid its target out, and that target held the reference's holder
+// by value, so whichever was laid out first was found in flight by the other.
+//
+// A function reference taking by value a struct that holds the reference's own
+// holder: the parameter's size is asked once Arg1 is laid out, not as Cb1 is
+struct Cb1 { pub f &fn(Arg1) i64; pub n i64; }
+struct Arg1 { pub c Cb1; pub v i64; }
+
+struct Arg2 { pub c Cb2; pub v i64; }
+struct Cb2 { pub f &fn(Arg2) i64; pub n i64; }
+
+fn useArg1(a Arg1) i64 { a.v + a.c.n; }
+fn useArg2(a Arg2) i64 { a.v + a.c.n; }
+
+// A reference to an array of a struct reaching the holder back by value
+// through an Option: the array's element size waits for Cell1's layout
+struct Grid1 { pub cells &imm Array[Cell1, 2]; }
+struct Cell1 { pub g Option[Grid1]; pub n i64; }
+
+struct Cell2 { pub g Option[Grid2]; pub n i64; }
+struct Grid2 { pub cells &imm Array[Cell2, 2]; }
+
+fn cellSum1(c &imm Cell1) i64 {
+  match &imm c.g {
+    case imm s &imm Some[Grid1] {c.n + cellSum1(&imm s.value.cells[0]) + cellSum1(&imm s.value.cells[1]);}
+    else {c.n;}
+  }
+}
+
+fn cellSum2(c &imm Cell2) i64 {
+  match &imm c.g {
+    case imm s &imm Some[Grid2] {c.n + cellSum2(&imm s.value.cells[0]) + cellSum2(&imm s.value.cells[1]);}
+    else {c.n;}
+  }
+}
+
+// A raw pointer to an instance of a generic that holds its argument by value,
+// the argument being the pointer's holder: refused in both orders as the
+// pointer laid 'Keeper1[Killer1]' out, which holds Killer1, in flight. Pool's
+// tests hold a '*u8' and cast back for this reason.
+struct Killer1 { pub n i64; pub home *Keeper1[Killer1]; }
+struct Keeper1[T] { pub v T; pub n i64; }
+
+struct Keeper2[T] { pub v T; pub n i64; }
+struct Killer2 { pub n i64; pub home *Keeper2[Killer2]; }
+
+fn ringSum(x &imm X) i64 {
+  mut total = x.st.n + x.st.y.st.n;
+  match &imm x.st.y.st.z {
+    case imm s &imm Some[Z] {
+      total = total + s.value.st.n;
+      match &imm s.value.st.x {
+        case imm t &imm Some[X] {total = total + ringSum(&imm t.value);}
+        else {}
+      }
+    }
+    else {}
+  }
+  total;
+}
+
+fn main() {
+  show("sizeof Option[A1]", i64.from(mem.sizeof[Option[A1]]()));
+  show("sizeof Option[A2]", i64.from(mem.sizeof[Option[A2]]()));
+  show("sizeof A1_state", i64.from(mem.sizeof[A1_state]()));
+  show("sizeof A2_state", i64.from(mem.sizeof[A2_state]()));
+  imm c1 = a1(1, Some[a1(2, Some[a1(3, None[A1][])])]);
+  show("chain A1, B's state first", sumA1(&imm c1));
+  imm c2 = a2(1, Some[a2(2, Some[a2(3, None[A2][])])]);
+  show("chain A2, A's state first", sumA2(&imm c2));
+
+  show("sizeof E1", i64.from(mem.sizeof[E1]()));
+  show("sizeof E2", i64.from(mem.sizeof[E2]()));
+  imm w1 = new W1(E1.Leaf1[4], 100);
+  imm r1 E1 = E1.Ref1[&imm w1];
+  show("E1 through a borrow, W1 below", sumE1(&imm r1));
+  imm o1 E1 = E1.Own1[new So[W1](E1.Leaf1[5], 200)];
+  show("E1 through an owner, W1 below", sumE1(&imm o1));
+  imm w2 = new W2(E2.Leaf2[6], 300);
+  imm r2 E2 = E2.Ref2[&imm w2];
+  show("E2 through a borrow, W2 above", sumE2(&imm r2));
+  imm o2 E2 = E2.Own2[new So[W2](E2.Leaf2[7], 400)];
+  show("E2 through an owner, W2 above", sumE2(&imm o2));
+
+  // X 1 -> Y 2 -> Z 3 -> X 10 -> Y 20, which ends the ring
+  imm inner = new X(new So[X_state](None[X][], new Y(new So[Y_state](None[Z][], 20)), 10));
+  imm z = new Z(new So[Z_state](Some[inner], 3));
+  imm y = new Y(new So[Y_state](Some[z], 2));
+  imm x = new X(new So[X_state](None[X][], y, 1));
+  show("ring X Y Z", ringSum(&imm x));
+  imm innerb = new Xb(new So[Xb_state](None[Xb][], new Yb(new So[Yb_state](None[Zb][], 200)), 100));
+  imm zb = new Zb(new So[Zb_state](Some[innerb], 30));
+  imm yb = new Yb(new So[Yb_state](Some[zb], 20));
+  imm xb = new Xb(new So[Xb_state](None[Xb][], yb, 10));
+  show("ring Y Z X, Y's state first", ringSumB(&imm xb));
+
+  imm arg1 = new Arg1(new Cb1(&useArg1, 5), 7);
+  imm f1 = arg1.c.f;
+  show("function reference, Arg1 below", f1(arg1));
+  imm arg2 = new Arg2(new Cb2(&useArg2, 50), 70);
+  imm f2 = arg2.c.f;
+  show("function reference, Arg2 above", f2(arg2));
+
+  imm cells1 = [new Cell1(None[Grid1][], 1), new Cell1(None[Grid1][], 2)];
+  imm top1 = new Cell1(Some[new Grid1(&imm cells1)], 4);
+  show("array behind a reference, Cell1 below", cellSum1(&imm top1));
+  imm cells2 = [new Cell2(None[Grid2][], 10), new Cell2(None[Grid2][], 20)];
+  imm top2 = new Cell2(Some[new Grid2(&imm cells2)], 40);
+  show("array behind a reference, Cell2 above", cellSum2(&imm top2));
+
+  show("sizeof Killer1", i64.from(mem.sizeof[Killer1]()));
+  show("sizeof Keeper1[Killer1]", i64.from(mem.sizeof[Keeper1[Killer1]]()));
+  show("sizeof Killer2", i64.from(mem.sizeof[Killer2]()));
+  show("sizeof Keeper2[Killer2]", i64.from(mem.sizeof[Keeper2[Killer2]]()));
+}

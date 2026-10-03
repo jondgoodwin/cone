@@ -1,0 +1,137 @@
+// concurrency_actors_pingpong's two players, with the actor's four parts
+// written in the opposite order: the handle first, then the state and its
+// dispatch, and the message enum last.
+//
+// The message enum holds a handle by value (Meet holds a Player), and the
+// handle reaches the enum again through its owning reference to the actor's
+// Mailbox, 'Arc[opaq, actors.Mailbox[Player_msg]]'. A reference never lays out
+// what it points at, so the handle has its size whatever the enum's state, and
+// the enum may come after it. Declared after the handle or the state, the enum
+// was refused (ErrorNoSize, "Player is still being laid out"), so every other
+// concurrency_actors_* scenario declares its message enums first. Whether the
+// Mailbox's message type may cross threads is asked while the handle is laid
+// out, before the enum is, and answered once it is (genericSendableNote).
+//
+// Run, with fewer balls than pingpong: what is pinned is that every layout came
+// out whole, which the game playing to its end shows.
+
+mod concurrency_actors_declared_last;
+
+import stdio use *;
+import sync use Arc;
+import actors;
+
+const balls = 1000u64;
+
+// What the players' finalizers leave for main to print
+struct Results {
+  pub seen Atomic[u64];
+  pub disorder Atomic[u64];
+  pub finals Atomic[u64];
+}
+
+imm results Results;
+
+fn @initpure init() {
+  results = new Results(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+}
+
+// The handle, its send functions, and start
+struct Player {
+  mb Arc[opaq, actors.Mailbox[Player_msg]];
+
+  pub fn start(first u64) Player {
+    new Player(actors.startActor[Player_state, Player_msg](
+      Player_state.made(actors.sendable(first)),
+      &Player_dispatch));
+  }
+
+  pub fn meet(self &, p Player) {
+    actors.send[Player_msg](mb, Player_msg.Meet[p]);
+  }
+  pub fn ball(self &, n u64) {
+    actors.send[Player_msg](mb, Player_msg.Ball[n]);
+  }
+  pub fn leave(self &) {
+    actors.send[Player_msg](mb, Player_msg.Leave[]);
+  }
+}
+
+// The state
+struct Player_state {
+  peer Option[Player];
+  seen u64;
+  expect u64;
+  disorder u64;
+
+  pub fn made(first u64) Player_state {
+    new Player_state(None[Player][], 0u64, first, 0u64);
+  }
+
+  fn meet(self &mut, p Player) {
+    peer = Some[Player][p];
+  }
+
+  fn ball(self &mut, n u64) {
+    if n != expect {
+      disorder = disorder + 1u64;
+    }
+    expect = n + 2u64;
+    seen = seen + 1u64;
+    match peer {
+      case imm p Some {
+        if n + 1u64 < balls {
+          p.value.ball(n + 1u64);
+        } else {
+          p.value.leave();
+        }
+      }
+      case is None[Player] {}
+    }
+    if n + 1u64 == balls {
+      peer = None[Player][];
+    }
+  }
+
+  fn leave(self &mut) {
+    peer = None[Player][];
+  }
+
+  fn final(self &uni) {
+    results.seen.add(seen);
+    results.disorder.add(disorder);
+    results.finals.add(1u64);
+  }
+}
+
+// Dispatch
+fn Player_dispatch(self &mut Player_state, msg Player_msg) {
+  match msg {
+    case imm m Player_msg.Meet {self.meet(m.p);}
+    case imm m Player_msg.Ball {self.ball(m.n);}
+    case is Player_msg.Leave {self.leave();}
+  }
+}
+
+// The messages, last
+enum Player_msg {
+  struct Meet {pub p Player;}
+  struct Ball {pub n u64;}
+  struct Leave {}
+}
+
+fn main() {
+  initAll();
+  {
+    imm ping = Player.start(0u64);
+    imm pong = Player.start(1u64);
+    ping.meet(pong);
+    pong.meet(ping);
+    ping.ball(0u64);
+  }
+  finalAll();
+  printStr("balls seen "); printUInt(results.seen.load()); printStr("\n");
+  printStr("out of order "); printUInt(results.disorder.load()); printStr("\n");
+  printStr("players finalized "); printUInt(results.finals.load()); printStr("\n");
+  printStr("messages handled "); printUInt(actors.stats().messages); printStr("\n");
+}

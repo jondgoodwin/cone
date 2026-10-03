@@ -433,6 +433,11 @@ void nameUseTypeCheckType(TypeCheckState *pstate, NameUseNode **namep) {
         if (dcl)
             inodeTypeCheckAny(pstate, &dcl);
     }
+    // An 'alias' statement checked first as a reference's target, while a
+    // layout was in flight, left what it stands for waiting (structTargetWait):
+    // a use outside one settles it, as naming the type itself would
+    else if (name->dclnode->tag == AliasDclTag)
+        structTypeSettle(pstate, (INode*)name);
     // The lifetimes a use names are the struct's to declare
     if (name->lifeuse)
         lifeUseCheck(name);

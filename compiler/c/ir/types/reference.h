@@ -92,6 +92,11 @@ void refRegionCheck(INode **regionp);
 // lock permission, and its region one the lock fits (ir/types/permission.c)
 void refLockCheck(RefNode *node);
 
+// Check what a reference, pointer or slice points at: resolved, and laid out
+// only where no layout is in flight, since a reference's size is its kind's.
+// '*waiting' says whether its layout may be waiting (structTargetWait).
+int refTargetTypeCheck(TypeCheckState *pstate, INode **targetp, int *waiting);
+
 // Type check a reference node
 void refTypeCheck(TypeCheckState *pstate, RefNode *name);
 

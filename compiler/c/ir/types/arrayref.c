@@ -58,7 +58,7 @@ void arrayRefTypeCheck(TypeCheckState *pstate, RefNode *node) {
         return;
     }
     if (node->vtexp) {
-        itypeTypeCheck(pstate, &node->vtexp);
+        refTargetTypeCheck(pstate, &node->vtexp, NULL);
         // A slice spelled out in source must acquire the same move semantics as
         // the identical type a borrow builds, which goes through
         // newRefNodeFull. refAdoptInfections reads vtexp, so it stays guarded.

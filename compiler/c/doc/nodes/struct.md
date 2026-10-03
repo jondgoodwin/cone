@@ -928,7 +928,11 @@ members", is the mechanism.
 
 Steps 9 to 11 are `structCheckMembers`, run from the members queue:
 
-9. Type check every member in `nodelist` — methods, static functions, statics —
+9. Hold a struct declaring lifetimes to naming every borrow it holds
+   (`lifeStructCheck`, `ErrorLifetimeUndeclared`), once every layout is done: a
+   field's reference does not lay out what it points at ([Type
+   Check](../phases/type-check.md), "A reference does not demand its target").
+   Then type check every member in `nodelist` — methods, static functions, statics —
    under a walk state of this type's own, then each overload set it declares.
    An atomic value its layout refused has no member checked ("AtomicValue",
    below).
