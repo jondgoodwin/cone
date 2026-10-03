@@ -355,6 +355,31 @@ class Scenarios(unittest.TestCase):
         self.congo("clean", "lone.cone", cwd=self.root)
         self.assertEqual(list((self.root / "home" / "lone").iterdir()), [])
 
+    # TEMPORARY, a provisional mechanism whose final design is open; congo.py's
+    # alone for now, so Congo in Cone does not run it
+    @unittest.skipIf(CONGO_EXE, "-D is congo.py's alone for now")
+    def test_define_reaches_the_compile(self):
+        write(self.root / "flags.cone", """
+            mod flags;
+
+            import stdio use *;
+
+            fn main() i32 {
+              if isDefined("FAST") {print <- "fast ";} else {print <- "slow ";}
+              print <- definedInt("LEVEL");
+              print <- "\\n";
+              0i32;
+            }
+            """)
+        run = self.congo("run", "-D", "FAST", "-DLEVEL=7", "flags.cone", cwd=self.root)
+        self.assertEqual(self.program_output(run), "fast 7\n")
+        run = self.congo("run", "flags.cone", cwd=self.root)
+        self.assertEqual(self.program_output(run), "slow 0\n")
+        # conec refuses a bad one, and Congo says which compile failed
+        failed = self.congo("run", "--define=LEVEL=high", "flags.cone", cwd=self.root, ok=False)
+        self.assertNotEqual(failed.returncode, 0)
+        self.assertIn("-D LEVEL takes an integer", failed.stdout + failed.stderr)
+
     def test_a_lone_file_under_a_non_ascii_folder(self):
         # A path beyond ASCII, in the folder and the file's name, reaches conec
         # whole: the source is read, and the build description, the object and

@@ -15,7 +15,9 @@
 
 	<p style="margin-left: 40px;"><i>Note: Everything on this page is implemented,
 		except that no call is yet required to be inside <a href="reftrust.html">trust</a>,
-		because trust itself is not implemented. An enum's variant is constructed with its values in square brackets, as written here: that is the current spelling, and how a variant is constructed is an open design question (<a href="refenum.html#init">Enums</a>).</i></p>
+		because trust itself is not implemented. The constants of the build beside
+		isDebugBuild, the target's OS and conec's <span class="pre">-D</span>, are
+		<a href="#buildconst">a provisional mechanism; its final design is open</a>. An enum's variant is constructed with its values in square brackets, as written here: that is the current spelling, and how a variant is constructed is an open design question (<a href="refenum.html#init">Enums</a>).</i></p>
 
 	<p>Library code sometimes needs something only the compiler can do: say how large
 		a type is, run a value's finalizer where it sits, or make a slice from a pointer
@@ -41,7 +43,8 @@ pub fn @intrinsic sizeof[T]() usize;
 		is an error.</p>
 
 	<p>Core declares every intrinsic below inside <span class="pre">mem</span>, but for
-		<a href="#srcloc">srcFile and srcLine</a> and <a href="#debugbuild">isDebugBuild</a>, and
+		<a href="#srcloc">srcFile and srcLine</a>, <a href="#debugbuild">isDebugBuild</a> and
+		the provisional <a href="#buildconst">constants of the build</a>, and
 		every module, core being its prelude, reaches them through that one name:</p>
 <pre>
 imm p = malloc(mem.sizeof[Point]() * 4usize) as *Point;
@@ -100,7 +103,7 @@ pub fn @intrinsic readRaw[T](p *T) T {*p;}
 
 	<h2>The intrinsics</h2>
 
-	<p>Each but <span class="pre">srcFile</span>, <span class="pre">srcLine</span> and <span class="pre">isDebugBuild</span> is declared in core's <span class="pre">mem</span> and called as
+	<p>Each but <span class="pre">srcFile</span>, <span class="pre">srcLine</span>, <span class="pre">isDebugBuild</span> and the provisional constants of the build is declared in core's <span class="pre">mem</span> and called as
 		<span class="pre">mem.<i>name</i>[T](...)</span> (<span class="pre">traceRoots</span>,
 		which takes no type, as <span class="pre">mem.traceRoots(...)</span>). Where an argument is a pointer to
 		<span class="pre">T</span> or a <span class="pre">T</span>, the type argument may be left
@@ -376,17 +379,65 @@ pub fn @intrinsic isDebugBuild() Bool
 		<span class="pre">build: debug</span> in a build description, which is what Congo
 		writes unless it is given <span class="pre">--release</span>. A constant, true or
 		false for the whole compile. The side of an <span class="pre">if</span> on it that
-		the build does not take is folded away by the optimizer, so it costs nothing and
-		none of it reaches the object:</p>
+		the build does not take is never generated, in a debug build as in a release one,
+		so it costs nothing and none of it reaches the object:</p>
 <pre>
 if isDebugBuild() {checkEveryInvariant(&amp;table);}
 </pre>
 	<p>Like <span class="pre">srcFile</span>, it is declared at core's top level and called
 		bare. Both sides are type checked in every build. No fallback: the build is known
-		only to the compiler. It is the first, narrow case of a wider question Jon has
-		queued (27 Sep 2026): whether <span class="pre">conec</span> should accept
-		compile-time constants on its command line, as C's <span class="pre">-D</span> and
-		<span class="pre">#if</span> do.</p>
+		only to the compiler. The constants below are built the same way.</p>
+
+	<h3 id="buildconst">Constants of the build: a provisional mechanism; its final design is open</h3>
+
+	<p><i>Temporary. These let a package write code for one platform, or for a build
+		the command line names, until the language has its own design for compile-time
+		configuration. Their names, their forms and the flag may all change.</i></p>
+<pre>
+pub fn @intrinsic isWindows() Bool
+pub fn @intrinsic isLinux() Bool
+pub fn @intrinsic isMacOS() Bool
+pub fn @intrinsic isWasm() Bool
+pub fn @intrinsic isDefined(name &amp;[]u8) Bool
+pub fn @intrinsic definedInt(name &amp;[]u8) i64
+</pre>
+	<p>Each is a constant of the compile, as <span class="pre">isDebugBuild</span> is,
+		declared at core's top level and called bare. The first four say which OS the
+		compile targets, read from its target triple with no flag: the host's, or the one
+		<span class="pre">--triple</span> or <span class="pre">--wasm</span> names.
+		<span class="pre">isWindows</span> holds for a triple naming
+		<span class="pre">windows</span> (<span class="pre">x86_64-pc-windows-msvc</span>),
+		<span class="pre">isLinux</span> for one naming <span class="pre">linux</span>,
+		<span class="pre">isMacOS</span> for one naming <span class="pre">darwin</span> or
+		<span class="pre">macos</span>, and <span class="pre">isWasm</span> for a WebAssembly
+		one; at most one holds, and none for a SPIR-V triple.</p>
+	<p><span class="pre">isDefined</span> and <span class="pre">definedInt</span> read
+		constants named on <span class="pre">conec</span>'s command line:
+		<span class="pre">-D NAME</span> defines <span class="pre">NAME</span> as 1, and
+		<span class="pre">-D NAME=123</span> as that integer (decimal or
+		<span class="pre">0x</span> hex, negative too), C's convention. A name given twice
+		takes the last. <span class="pre">isDefined</span> answers whether the name was
+		defined, and <span class="pre">definedInt</span> its integer, 0 for a name never
+		defined. The name is written as a string literal, since it is looked up as the
+		program compiles; anything else is an error. Congo passes
+		<span class="pre">-D</span> to every compile of a build:
+		<span class="pre">congo run -D FAST -D LEVEL=2</span>.</p>
+<pre>
+if isWindows() {SwitchToThread();} else {sched_yield();}
+if isDefined("TRACE") {traceEveryMessage(&amp;queue);}
+imm level = definedInt("LEVEL");
+</pre>
+	<p>An <span class="pre">if</span> whose condition is one of these, or
+		<span class="pre">!</span>, <span class="pre">and</span> or <span class="pre">or</span>
+		of them, has only the side the build takes generated. A call on the other side, to
+		a function only another platform's libraries define, is never generated, so the
+		program links without it. Both sides are still name resolved and type checked on
+		every platform, so a name used only on one side must still be declared on every
+		platform: an <span class="pre">extern</span> declaration of a function the target
+		does not have is allowed, and costs nothing while nothing generated calls it. A
+		comparison of one, <span class="pre">definedInt("LEVEL") &gt; 2</span>, is not
+		itself such a condition: both its sides are generated, though an optimized build
+		may fold it.</p>
 
 	<h2>Atomic operations</h2>
 

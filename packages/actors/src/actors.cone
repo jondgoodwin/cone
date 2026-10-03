@@ -342,8 +342,9 @@
 //   checks before queueing the sender again, with a list of muted actors
 //   per receiver to queue when it catches up.
 //
-// Windows only, for now: the package's own call to the OS is a yield; the
-// rest is the thread package's and sync's, whose posix sides are to come.
+// The package's own call to the OS is a yield, chosen by the target's OS; the
+// rest is the thread package's and sync's, Windows only for now, whose posix
+// sides are to come.
 
 mod actors;
 
@@ -352,12 +353,21 @@ import sync use Arc;
 import thread;
 
 // ---------------------------------------------------------------------------
-// Windows: a yield, for the idle spin, and the one call the package makes to
-// the OS directly. Everything else is the thread package's and sync's.
+// A yield, for the idle spin, and the one call the package makes to the OS
+// directly: kernel32's on Windows, POSIX's elsewhere. isWindows() is a
+// constant of the compile (TEMPORARY, a provisional mechanism; its final
+// design is open), so only the target's call is generated, and the other's
+// symbol is never referenced. Everything else is the thread package's and
+// sync's.
 // ---------------------------------------------------------------------------
 
 extern {
   fn @c(system) SwitchToThread() i32;
+}
+extern fn sched_yield() i32;
+
+fn yieldProcessor() {
+  if isWindows() {SwitchToThread();} else {sched_yield();}
 }
 
 // A panic, reported at the line calling 'die'
@@ -962,7 +972,7 @@ fn idle(w *Worker) Bool {
     if anyWork(s) {
       return true;
     }
-    SwitchToThread();
+    yieldProcessor();
     spins = spins + 1u32;
   }
   imm epochp = &(*s).epoch as *u32;
