@@ -893,6 +893,18 @@ int flowIsLvalRead(INode *node) {
     }
 }
 
+// Does a place still hold this expression's value once it is read: an lvalue
+// (flowIsLvalRead), or an assignment, whose target keeps the value it stored
+// ('a = b = make()' leaves the value in 'b' as well as in 'a')? The '_'
+// placeholder keeps nothing.
+int flowIsKeptRead(INode *node) {
+    if (node->tag == AssignTag) {
+        INode *lval = ((AssignNode *)node)->lval;
+        return !(isNameUseNode(lval) && isExpNode(lval) && ((NameUseNode *)lval)->namesym == anonName);
+    }
+    return flowIsLvalRead(node);
+}
+
 void flowHandleMoveOrCopy(INode **nodep) {
     // A tuple literal has no storage of its own: each element's value is moved
     // or copied into it on its own, as a struct literal's fields are, so a
@@ -909,12 +921,12 @@ void flowHandleMoveOrCopy(INode **nodep) {
         flowHandleMove(*nodep);
     }
     else {
-        // A reference count is how many holders exist. Only an lvalue still
-        // holds its reference afterwards, so only an lvalue adds a holder. A
-        // temporary -- an allocation, a call's result, a literal -- hands over
-        // the reference it was born holding, and counting that again would
-        // count one holder twice.
-        if (flowIsLvalRead(*nodep))
+        // A reference count is how many holders exist. Only a place that
+        // still holds its reference afterwards adds a holder. A temporary --
+        // an allocation, a call's result, a literal, a block's or an 'if''s
+        // value -- hands over the reference it was born holding, and counting
+        // that again would count one holder twice.
+        if (flowIsKeptRead(*nodep))
             flowInjectRefCount(nodep);
     }
 }
