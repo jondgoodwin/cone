@@ -162,6 +162,9 @@ int fnIsTraitMethod(INode *dclnode) {
 // - a module's 'init', its 'final' or the 'drop' it is given (DclLifecycle),
 //   public or not, since the program's stitched init and final call them; or
 // - a public function or global of a module; or
+// - a type or function an 'actor' generated, or a function of such a type
+//   (DclActorGen): the include file holds the actor whole, and an importer's
+//   instances of the actors package's generics call them; or
 // - a function of a type an importer can reach -- a public type, one an
 //   expanded body names, or one the include file declares (DclIncluded) --
 //   when the function is public, or the type, or any part of the module that
@@ -183,9 +186,12 @@ int dclIsExported(ModuleNode *libroot, INode *dclnode) {
     if (mod != libroot)
         return 0;
     DclInfo *dclinfo = inodeGetDclInfo(dclnode);
-    if (dclinfo->facts & (DclExpandReached | DclLifecycle))
+    if (dclinfo->facts & (DclExpandReached | DclLifecycle | DclActorGen))
         return 1;
     INode *owner = dclinfo->owner;
+    DclInfo *ownerinfo = owner && owner->tag != ModuleTag ? inodeGetDclInfo(owner) : NULL;
+    if (ownerinfo && (ownerinfo->facts & DclActorGen))
+        return 1;
     if (owner == NULL || owner->tag == ModuleTag)
         return !(dclinfo->facts & DclPrivate);
     // A type the include file declares (DclIncluded) is one an importer holds

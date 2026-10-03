@@ -330,6 +330,19 @@ a borrow that is too short is the loan walk's `ErrorFrozen`, `ErrorEscape` or
 parameter of the function is `ErrorWhereSubject`, and of a lifetime its
 signature does not name `ErrorLifetimeUndeclared`.
 
+An actor's declaration has three codes of its own and borrows two. A message
+declaring a return type is `ErrorActorReturn`, since the remedy is a message
+sent back; everything else its body may not hold, or a form of it not built
+(a `pub` field, a static, a `pub` function without `self`, a generic message,
+a macro, `extern`, a `self` of another kind, a generic actor, one naming an
+abstraction), is `ErrorActorMember`; and a module declaring one without
+importing the `actors` package is `ErrorActorRuntime`. A message's or an
+initializer's parameter that cannot cross threads is `ErrorNotSendable`, the
+thread check's code, whatever finds it -- the parser, for a borrow or the
+state itself, or `actorCheckAll` after type check -- and the state's field or
+non-`pub` method reached through the handle is `ErrorNotPublic`, as any
+private member is.
+
 ## The one code with no scenario
 
 `ErrorUnreachable` is reported by `errorUnreachable` and by nothing else. It

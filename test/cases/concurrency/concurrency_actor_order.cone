@@ -1,0 +1,76 @@
+// Declaration order does not matter to actors. A handle's one field is an Arc
+// of the actors package's Mailbox, whose type argument is the actor's message
+// enum, and a message carrying a handle of its own kind holds that handle by
+// value. Each declaration written ABOVE the actor here lays out the actor's
+// handle before anything of the actor itself: Hub, whose state and message
+// hold a Spoke, above Spoke, whose message carries a Spoke; and Pair, a plain
+// struct holding a handle, above Shelf, whose message carries a Pair. A
+// reference never lays out what it points at, so laying the handle out lays
+// out nothing of the message enum, and each compiles and runs as it would
+// declared the other way round. Main prints what the actors recorded, once
+// finalAll() has waited for them.
+
+mod concurrency_actor_order;
+
+import stdio use *;
+import actors;
+
+struct Results {
+  pub joined Atomic[u64];
+  pub linked Atomic[u64];
+  pub took Atomic[u64];
+}
+
+imm results Results;
+
+fn @initpure init() {
+  results = new Results(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+}
+
+actor Hub {
+  spoke Option[Spoke];
+
+  fn init(self &new) {*self = new Self(None[Spoke][]);}
+
+  pub fn join(self, s Spoke, other Spoke) {
+    s.link(other);
+    spoke = Some[Spoke][s];
+    results.joined.add(1u64);
+  }
+}
+
+actor Spoke {
+  next Option[Spoke];
+
+  fn init(self &new) {*self = new Self(None[Spoke][]);}
+
+  pub fn link(self, n Spoke) {
+    next = Some[Spoke][n];
+    results.linked.add(1u64);
+  }
+}
+
+struct Pair {
+  pub shelf Shelf;
+  pub n u64;
+}
+
+actor Shelf {
+  pub fn take(self, p Pair) {
+    results.took.add(p.n);
+  }
+}
+
+fn main() {
+  initAll();
+  {
+    imm h = new Hub();
+    h.join(new Spoke(), new Spoke());
+    imm s = new Shelf();
+    s.take(new Pair(s, 7u64));
+  }
+  finalAll();
+  printStr("joined "); printUInt(results.joined.load()); printStr("\n");
+  printStr("linked "); printUInt(results.linked.load()); printStr("\n");
+  printStr("took "); printUInt(results.took.load()); printStr("\n");
+}

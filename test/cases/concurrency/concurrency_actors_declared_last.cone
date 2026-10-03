@@ -1,16 +1,15 @@
-// concurrency_actors_pingpong's two players, with the actor's four parts
-// written in the opposite order: the handle first, then the state and its
-// dispatch, and the message enum last.
+// concurrency_actors_pingpong's two players, written out by hand in the shape
+// an 'actor' declaration generates (compiler/c/parser/parseactor.c), with the
+// four parts in the opposite order to the compiler's: the handle first, then
+// the state and its dispatch, and the message enum last.
 //
-// The message enum holds a handle by value (Meet holds a Player), and the
+// The message enum holds a handle by value (meet holds a Player), and the
 // handle reaches the enum again through its owning reference to the actor's
 // Mailbox, 'Arc[opaq, actors.Mailbox[Player_msg]]'. A reference never lays out
 // what it points at, so the handle has its size whatever the enum's state, and
-// the enum may come after it. Declared after the handle or the state, the enum
-// was refused (ErrorNoSize, "Player is still being laid out"), so every other
-// concurrency_actors_* scenario declares its message enums first. Whether the
-// Mailbox's message type may cross threads is asked while the handle is laid
-// out, before the enum is, and answered once it is (genericSendableNote).
+// the enum may come after it, or after the state. Whether the Mailbox's
+// message type may cross threads is asked while the handle is laid out, before
+// the enum is, and answered once it is (genericSendableNote).
 //
 // Run, with fewer balls than pingpong: what is pinned is that every layout came
 // out whole, which the game playing to its end shows.
@@ -36,24 +35,23 @@ fn @initpure init() {
   results = new Results(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64));
 }
 
-// The handle, its send functions, and start
+// The handle: its initializer, which starts the actor, and its send functions
 struct Player {
   mb Arc[opaq, actors.Mailbox[Player_msg]];
 
-  pub fn start(first u64) Player {
-    new Player(actors.startActor[Player_state, Player_msg](
-      Player_state.made(actors.sendable(first)),
-      &Player_dispatch));
+  fn init(self &new, first u64) {
+    *self = new Player(mb: actors.startActor[Player_state, Player_msg](
+      new Player_state(first), &Player_dispatch));
   }
 
   pub fn meet(self &, p Player) {
-    actors.send[Player_msg](mb, Player_msg.Meet[p]);
+    actors.send[Player_msg](mb, Player_msg.meet[p]);
   }
   pub fn ball(self &, n u64) {
-    actors.send[Player_msg](mb, Player_msg.Ball[n]);
+    actors.send[Player_msg](mb, Player_msg.ball[n]);
   }
   pub fn leave(self &) {
-    actors.send[Player_msg](mb, Player_msg.Leave[]);
+    actors.send[Player_msg](mb, Player_msg.leave[]);
   }
 }
 
@@ -64,8 +62,8 @@ struct Player_state {
   expect u64;
   disorder u64;
 
-  pub fn made(first u64) Player_state {
-    new Player_state(None[Player][], 0u64, first, 0u64);
+  fn init(self &new, first u64) {
+    *self = new Player_state(peer: None[Player][], seen: 0u64, expect: first, disorder: 0u64);
   }
 
   fn meet(self &mut, p Player) {
@@ -104,27 +102,33 @@ struct Player_state {
   }
 }
 
-// Dispatch
-fn Player_dispatch(self &mut Player_state, msg Player_msg) {
-  match msg {
-    case imm m Player_msg.Meet {self.meet(m.p);}
-    case imm m Player_msg.Ball {self.ball(m.n);}
-    case is Player_msg.Leave {self.leave();}
+// Dispatch: handed each message where it lies, it moves each argument out
+fn Player_dispatch(self &mut Player_state, msg *Player_msg) {
+  if &*msg is &Player_msg.meet {
+    imm m = msg as *Player_msg.meet;
+    self.meet(mem.readRaw[Player](&(*m).p as *Player));
+  }
+  elif &*msg is &Player_msg.ball {
+    imm m = msg as *Player_msg.ball;
+    self.ball(mem.readRaw[u64](&(*m).n as *u64));
+  }
+  elif &*msg is &Player_msg.leave {
+    self.leave();
   }
 }
 
 // The messages, last
-enum Player_msg {
-  struct Meet {pub p Player;}
-  struct Ball {pub n u64;}
-  struct Leave {}
+enum Player_msg is Sendable {
+  struct meet {p Player;}
+  struct ball {n u64;}
+  struct leave {}
 }
 
 fn main() {
   initAll();
   {
-    imm ping = Player.start(0u64);
-    imm pong = Player.start(1u64);
+    imm ping = new Player(0u64);
+    imm pong = new Player(1u64);
     ping.meet(pong);
     pong.meet(ping);
     ping.ball(0u64);

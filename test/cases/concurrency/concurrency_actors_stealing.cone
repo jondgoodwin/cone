@@ -13,13 +13,12 @@
 // much varies from run to run. (What a full run queue does is
 // concurrency_actors_overflow's, on one worker, where nothing is stolen.)
 //
-// The actors are written by hand in the shape the compiler is to generate
-// (concurrency_actors_pingpong.cone describes it).
+// The actors are declared. A target has no 'init': 'new Target()' is its
+// state's implicit initializer, its one field taking its default.
 
 mod concurrency_actors_stealing;
 
 import stdio use *;
-import sync use Arc;
 import collections use List;
 import thread;
 import actors;
@@ -40,27 +39,12 @@ fn @initpure init() {
   results = new Results(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64));
 }
 
-// ---- the messages, declared first (the actors package header says why) ----
-
-enum Target_msg {
-  struct Work {pub n u64;}
-}
-
-enum Spreader_msg {
-  struct Add {pub t Target;}
-  struct Go {pub n u64;}
-}
-
 // ---- Target: does some work when asked ----
 
-struct Target_state {
-  runs u64;
+actor Target {
+  runs u64 = 0u64;
 
-  pub fn made() Target_state {
-    new Target_state(0u64);
-  }
-
-  fn work(self &mut, n u64) {
+  pub fn work(self, n u64) {
     mut x = 1u64;
     mut i = 0u64;
     while i < n {
@@ -74,64 +58,26 @@ struct Target_state {
   }
 }
 
-fn Target_dispatch(self &mut Target_state, msg Target_msg) {
-  match msg {
-    case imm m Target_msg.Work {self.work(m.n);}
-  }
-}
-
-struct Target {
-  mb Arc[opaq, actors.Mailbox[Target_msg]];
-
-  pub fn start() Target {
-    new Target(actors.startActor[Target_state, Target_msg](Target_state.made(), &Target_dispatch));
-  }
-  pub fn work(self &, n u64) {
-    actors.send[Target_msg](mb, Target_msg.Work[n]);
-  }
-}
-
 // ---- Spreader: sends every target it holds one message ----
 
-struct Spreader_state {
+actor Spreader {
   held List[Target];
 
-  pub fn made() Spreader_state {
-    new Spreader_state(List[Target].empty());
+  fn init(self &new) {
+    *self = new Self(List[Target].empty());
   }
 
-  fn add(self &mut, t Target) {
+  pub fn add(self, t Target) {
     held.push(t);
   }
 
-  fn go(self &mut, n u64) {
+  pub fn go(self, n u64) {
     results.spreaderOn.bitOr(1u64 << u64.from(actors.workerIndex()));
     mut i = 0usize;
     while i < held.len() {
       held[i].work(n);
       i = i + 1usize;
     }
-  }
-}
-
-fn Spreader_dispatch(self &mut Spreader_state, msg Spreader_msg) {
-  match msg {
-    case imm m Spreader_msg.Add {self.add(m.t);}
-    case imm m Spreader_msg.Go {self.go(m.n);}
-  }
-}
-
-struct Spreader {
-  mb Arc[opaq, actors.Mailbox[Spreader_msg]];
-
-  pub fn start() Spreader {
-    new Spreader(actors.startActor[Spreader_state, Spreader_msg](Spreader_state.made(), &Spreader_dispatch));
-  }
-  pub fn add(self &, t Target) {
-    actors.send[Spreader_msg](mb, Spreader_msg.Add[t]);
-  }
-  pub fn go(self &, n u64) {
-    actors.send[Spreader_msg](mb, Spreader_msg.Go[n]);
   }
 }
 
@@ -150,10 +96,10 @@ fn main() {
   initAll();
   actors.configure(new actors.Options(workers: 4u32));
   {
-    imm s = Spreader.start();
+    imm s = new Spreader();
     mut i = 0u64;
     while i < targets {
-      s.add(Target.start());
+      s.add(new Target());
       i = i + 1u64;
     }
     s.go(spin);

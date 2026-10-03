@@ -107,6 +107,7 @@ add_executable(conec
 	compiler/c/ir/exp/typelit.c
 	compiler/c/ir/exp/vtuple.c
 
+	compiler/c/ir/types/actor.c
 	compiler/c/ir/types/array.c
 	compiler/c/ir/types/arrayref.c
 	compiler/c/ir/types/enum.c
@@ -129,6 +130,7 @@ add_executable(conec
 	compiler/c/corelib/corenumber.c
 
 	compiler/c/parser/lexer.c
+	compiler/c/parser/parseactor.c
 	compiler/c/parser/parsemod.c
 	compiler/c/parser/parsebuild.c
 	compiler/c/parser/parsefnflow.c

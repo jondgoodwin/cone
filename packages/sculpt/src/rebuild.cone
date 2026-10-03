@@ -29,31 +29,9 @@ fn assemble(m &PolyMesh, pos &List[Vec3], vSrc &List[u32], counts &List[u32], id
   mut problems = List[String].empty();
   mut out = PolyMesh.fromPolygons(pos.view(), counts.view(), idx.view(), &mut problems);
 
-  // Which given face each made face is, and where its corners begin in idx:
-  // faces are made in the order given, a refused one left out
-  imm nf = out.fHalfedge.len();
-  mut given = List[u32].withCapacity(nf);
-  mut first = List[u32].withCapacity(nf);
-  mut f = 0usize;
-  mut g = 0usize;
-  mut start = 0usize;
-  while f < nf and g < counts.len() {
-    imm n = usize.from(*counts[g]);
-    imm vs = out.faceVertices(u32.from(f));
-    mut same = vs.len() == n;
-    mut i = 0usize;
-    while same and i < n {
-      if *vs[i] != *idx[start + i] { same = false; }
-      i = i + 1usize;
-    }
-    if same {
-      given.push(u32.from(g));
-      first.push(u32.from(start));
-      f = f + 1usize;
-    }
-    start = start + n;
-    g = g + 1usize;
-  }
+  mut given = List[u32].empty();
+  mut first = List[u32].empty();
+  madeFaces(&out, counts, idx, &mut given, &mut first);
 
   mut c = 0usize;
   while c < m.floats.len() {
@@ -81,6 +59,33 @@ fn assemble(m &PolyMesh, pos &List[Vec3], vSrc &List[u32], counts &List[u32], id
     c = c + 1usize;
   }
   out;
+}
+
+// Which given face each face of 'out' is, into 'given', and where its
+// corners begin in idx, into 'first': fromPolygons makes the faces in the
+// order given, a refused one left out
+fn madeFaces(out &PolyMesh, counts &List[u32], idx &List[u32], given &mut List[u32], first &mut List[u32]) {
+  imm nf = out.fHalfedge.len();
+  mut f = 0usize;
+  mut g = 0usize;
+  mut start = 0usize;
+  while f < nf and g < counts.len() {
+    imm n = usize.from(*counts[g]);
+    imm vs = out.faceVertices(u32.from(f));
+    mut same = vs.len() == n;
+    mut i = 0usize;
+    while same and i < n {
+      if *vs[i] != *idx[start + i] { same = false; }
+      i = i + 1usize;
+    }
+    if same {
+      given.push(u32.from(g));
+      first.push(u32.from(start));
+      f = f + 1usize;
+    }
+    start = start + n;
+    g = g + 1usize;
+  }
 }
 
 // One channel's values (as Vec3) for the elements of 'out', from the source

@@ -18,13 +18,11 @@
 // Main waits for the deaths of 3 and 4 by watching the finalizers' count;
 // the runtime is not asked. finalAll() stops it at the end.
 //
-// The actors are written by hand in the shape the compiler is to generate
-// (concurrency_actors_pingpong.cone describes it).
+// The actors are declared, and 4 makes 500 of them with 'new' in a loop.
 
 mod concurrency_actors_lifetime;
 
 import stdio use *;
-import sync use Arc;
 import collections use List;
 import thread;
 import actors;
@@ -49,29 +47,18 @@ fn waitFinals(n u64) {
   }
 }
 
-// ---- the messages, declared first (the actors package header says why) ----
-
-enum Worked_msg {
-  struct Work {pub n u64;}
-}
-
-enum Holder_msg {
-  struct Keep {pub w Worked;}
-  struct LetGo {}
-}
-
 // ---- Worked: handles messages that each do a little work ----
 
-struct Worked_state {
+actor Worked {
   handled u64;
   checkEarly Bool;
   spin u64;
 
-  pub fn made(checkEarly Bool) Worked_state {
-    new Worked_state(0u64, checkEarly, 0u64);
+  fn init(self &new, checkEarly Bool) {
+    *self = new Self(0u64, checkEarly, 0u64);
   }
 
-  fn work(self &mut, n u64) {
+  pub fn work(self, n u64) {
     mut i = 0u64;
     while i < n {
       spin = spin * 31u64 + i;
@@ -89,60 +76,22 @@ struct Worked_state {
   }
 }
 
-fn Worked_dispatch(self &mut Worked_state, msg Worked_msg) {
-  match msg {
-    case imm m Worked_msg.Work {self.work(m.n);}
-  }
-}
-
-struct Worked {
-  mb Arc[opaq, actors.Mailbox[Worked_msg]];
-
-  pub fn start(checkEarly Bool) Worked {
-    new Worked(actors.startActor[Worked_state, Worked_msg](Worked_state.made(actors.sendable(checkEarly)), &Worked_dispatch));
-  }
-  pub fn work(self &, n u64) {
-    actors.send[Worked_msg](mb, Worked_msg.Work[n]);
-  }
-}
-
 // ---- Holder: keeps handles to Worked actors until told to let go ----
 
-struct Holder_state {
+actor Holder {
   held List[Worked];
 
-  pub fn made() Holder_state {
-    new Holder_state(List[Worked].empty());
+  fn init(self &new) {
+    *self = new Self(List[Worked].empty());
   }
 
-  fn keep(self &mut, w Worked) {
+  pub fn keep(self, w Worked) {
     held.push(w);
   }
 
-  fn letGo(self &mut) {
+  pub fn letGo(self) {
     results.released.store(1u64);
     held.clear();
-  }
-}
-
-fn Holder_dispatch(self &mut Holder_state, msg Holder_msg) {
-  match msg {
-    case imm m Holder_msg.Keep {self.keep(m.w);}
-    case is Holder_msg.LetGo {self.letGo();}
-  }
-}
-
-struct Holder {
-  mb Arc[opaq, actors.Mailbox[Holder_msg]];
-
-  pub fn start() Holder {
-    new Holder(actors.startActor[Holder_state, Holder_msg](Holder_state.made(), &Holder_dispatch));
-  }
-  pub fn keep(self &, w Worked) {
-    actors.send[Holder_msg](mb, Holder_msg.Keep[w]);
-  }
-  pub fn letGo(self &) {
-    actors.send[Holder_msg](mb, Holder_msg.LetGo[]);
   }
 }
 
@@ -157,13 +106,13 @@ fn main() {
 
   // 1. Never sent anything
   {
-    imm a = Worked.start(false);
+    imm a = new Worked(false);
   }
   printStr("1. idle, last handle gone: finalized "); printUInt(results.finals.load()); printStr("\n");
 
   // 2. Copies
   {
-    imm b = Worked.start(false);
+    imm b = new Worked(false);
     {
       imm b2 = b;
       imm seen = keepFor(b2);
@@ -175,7 +124,7 @@ fn main() {
 
   // 3. Dropped with work queued
   {
-    imm c = Worked.start(false);
+    imm c = new Worked(false);
     mut i = 0u64;
     while i < 2000u64 {
       c.work(2000u64);
@@ -188,10 +137,10 @@ fn main() {
 
   // 4. Many, held by another actor
   {
-    imm h = Holder.start();
+    imm h = new Holder();
     mut i = 0u64;
     while i < 500u64 {
-      imm w = Worked.start(true);
+      imm w = new Worked(true);
       mut k = 0u64;
       while k < 20u64 {
         w.work(100u64);

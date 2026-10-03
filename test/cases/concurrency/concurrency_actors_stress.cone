@@ -18,13 +18,14 @@
 // not is counted, and the count printed at the end is 0. At the end,
 // finalAll() waits for quiescence and stops the workers.
 //
-// The actors are written by hand in the shape the compiler is to generate
-// (concurrency_actors_pingpong.cone describes it).
+// The actors are declared, the collector first, though each holds a handle
+// to the other in its state and Node's message carries a Node: a reference
+// lays out nothing of what it points at, so the order is free.
 
 mod concurrency_actors_stress;
 
 import stdio use *;
-import sync use Arc;
+import sync;
 import collections use List;
 import actors;
 
@@ -50,35 +51,21 @@ struct Tally {
   pub n u64;
 }
 
-// ---- the messages, declared first, Node's before Collector's, which holds
-// a Node (the actors package header says why) ----
-
-enum Node_msg {
-  struct Link {pub n Node;}
-  struct Token {pub left u64;}
-  struct Unlink {}
-}
-
-enum Collector_msg {
-  struct Join {pub n Node;}
-  struct Done {}
-}
-
 // ---- Collector: hears each token's end, then unlinks the ring ----
 
-struct Collector_state {
+actor Collector {
   ring List[Node];
   finished u64;
 
-  pub fn made() Collector_state {
-    new Collector_state(List[Node].empty(), 0u64);
+  fn init(self &new) {
+    *self = new Self(List[Node].empty(), 0u64);
   }
 
-  fn join(self &mut, n Node) {
+  pub fn join(self, n Node) {
     ring.push(n);
   }
 
-  fn done(self &mut) {
+  pub fn done(self) {
     finished = finished + 1u64;
     if finished == tokens {
       mut i = 0usize;
@@ -97,46 +84,25 @@ struct Collector_state {
   }
 }
 
-fn Collector_dispatch(self &mut Collector_state, msg Collector_msg) {
-  match msg {
-    case imm m Collector_msg.Join {self.join(m.n);}
-    case is Collector_msg.Done {self.done();}
-  }
-}
-
-struct Collector {
-  mb Arc[opaq, actors.Mailbox[Collector_msg]];
-
-  pub fn start() Collector {
-    new Collector(actors.startActor[Collector_state, Collector_msg](Collector_state.made(), &Collector_dispatch));
-  }
-  pub fn join(self &, n Node) {
-    actors.send[Collector_msg](mb, Collector_msg.Join[n]);
-  }
-  pub fn done(self &) {
-    actors.send[Collector_msg](mb, Collector_msg.Done[]);
-  }
-}
-
 // ---- Node: passes tokens on to the next ----
 
-struct Node_state {
+actor Node {
   next Option[Node];
   collector Collector;
   passes u64;
   tally Rc[mut, Tally];
   tallyToo Rc[mut, Tally];
 
-  pub fn made(collector Collector) Node_state {
+  fn init(self &new, collector Collector) {
     imm t = new Rc[mut, Tally](0u64);
-    new Node_state(None[Node][], collector, 0u64, t, t);
+    *self = new Self(None[Node][], collector, 0u64, t, t);
   }
 
-  fn link(self &mut, n Node) {
+  pub fn link(self, n Node) {
     next = Some[Node][n];
   }
 
-  fn token(self &mut, left u64) {
+  pub fn token(self, left u64) {
     passes = passes + 1u64;
     tally.n = tally.n + 1u64;
     if left == 0u64 {
@@ -149,7 +115,7 @@ struct Node_state {
     }
   }
 
-  fn unlink(self &mut) {
+  pub fn unlink(self) {
     next = None[Node][];
   }
 
@@ -162,42 +128,17 @@ struct Node_state {
   }
 }
 
-fn Node_dispatch(self &mut Node_state, msg Node_msg) {
-  match msg {
-    case imm m Node_msg.Link {self.link(m.n);}
-    case imm m Node_msg.Token {self.token(m.left);}
-    case is Node_msg.Unlink {self.unlink();}
-  }
-}
-
-struct Node {
-  mb Arc[opaq, actors.Mailbox[Node_msg]];
-
-  pub fn start(collector Collector) Node {
-    new Node(actors.startActor[Node_state, Node_msg](Node_state.made(actors.sendable(collector)), &Node_dispatch));
-  }
-  pub fn link(self &, n Node) {
-    actors.send[Node_msg](mb, Node_msg.Link[n]);
-  }
-  pub fn token(self &, left u64) {
-    actors.send[Node_msg](mb, Node_msg.Token[left]);
-  }
-  pub fn unlink(self &) {
-    actors.send[Node_msg](mb, Node_msg.Unlink[]);
-  }
-}
-
 // One round: whether everything came out exact
 fn round(r u32) Bool {
   results.passes.store(0u64);
   results.mismatches.store(0u64);
   results.finals.store(0u64);
   {
-    imm c = Collector.start();
+    imm c = new Collector();
     mut nodes = List[Node].empty();
     mut i = 0u64;
     while i < ringSize {
-      nodes.push(Node.start(c));
+      nodes.push(new Node(c));
       i = i + 1u64;
     }
     mut k = 0usize;

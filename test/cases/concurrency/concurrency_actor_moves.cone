@@ -1,0 +1,117 @@
+// What a message may carry, beyond numbers and handles, and what becomes of
+// it. Each argument is moved out of the message into the method's call, once,
+// so a value that may only move arrives whole and a counted one is counted
+// once.
+//
+// - An 'Arc[Mutex, T]', the lock permission: three Adder actors are each sent
+//   the one shared tally with an amount, and add it under the lock, as main
+//   does too; the tally is finalized once, after its last owner -- the copy
+//   an adder keeps in its state -- has gone. Adder k adds k a hundred times,
+//   for k from 1 to 3, and main adds 1000, so the total is
+//   100 * (1 + 2 + 3) + 1000 = 1600.
+// - A 'So' owner, which moves: main moves five parcels into a Keeper actor,
+//   which keeps them in its state, a list; each parcel is finalized once,
+//   when the keeper dies and its state with it, and none before.
+//
+// Main prints after finalAll(), which waits for quiescence, so every count
+// is final.
+
+mod concurrency_actor_moves;
+
+import stdio use *;
+import sync use Arc, Mutex;
+import collections use List;
+import actors;
+
+struct Results {
+  pub tallyFinals Atomic[u64];
+  pub tallySeen Atomic[u64];
+  pub parcelFinals Atomic[u64];
+  pub parcelSum Atomic[u64];
+  pub keeperHeld Atomic[u64];
+}
+
+imm results Results;
+
+fn @initpure init() {
+  results = new Results(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+}
+
+struct Tally {
+  pub n u64;
+  fn final(self &uni) {
+    results.tallySeen.store(n);
+    results.tallyFinals.add(1u64);
+  }
+}
+
+struct Parcel {
+  pub weight u64;
+  fn final(self &uni) {
+    results.parcelSum.add(weight);
+    results.parcelFinals.add(1u64);
+  }
+}
+
+actor Adder {
+  kept Option[Arc[Mutex, Tally]];
+
+  fn init(self &new) {
+    *self = new Self(None[Arc[Mutex, Tally]][]);
+  }
+
+  pub fn add(self, t Arc[Mutex, Tally], k u64, times u64) {
+    mut i = 0u64;
+    while i < times {
+      (&mut *t).n += k;
+      i = i + 1u64;
+    }
+    kept = Some[Arc[Mutex, Tally]][t];
+  }
+}
+
+actor Keeper {
+  parcels List[So[Parcel]];
+
+  fn init(self &new) {
+    *self = new Self(List[So[Parcel]].empty());
+  }
+
+  pub fn keep(self, p So[Parcel]) {
+    parcels.push(p);
+  }
+
+  fn final(self &uni) {
+    results.keeperHeld.store(u64.from(parcels.len()));
+  }
+}
+
+fn main() {
+  initAll();
+  actors.configure(new actors.Options(workers: 4u32));
+  {
+    imm tally = new Arc[Mutex, Tally](0u64);
+    mut k = 1u64;
+    while k <= 3u64 {
+      imm a = new Adder();
+      a.add(tally, k, 100u64);
+      k = k + 1u64;
+    }
+    (&mut *tally).n += 1000u64;
+
+    imm keeper = new Keeper();
+    mut w = 1u64;
+    while w <= 5u64 {
+      keeper.keep(new So[Parcel](w * 10u64));
+      w = w + 1u64;
+    }
+    printStr("parcels finalized while the keeper lives "); printUInt(results.parcelFinals.load()); printStr("\n");
+  }
+  finalAll();
+  printStr("tally "); printUInt(results.tallySeen.load()); printStr("\n");
+  printStr("tally finalized "); printUInt(results.tallyFinals.load()); printStr("\n");
+  printStr("parcels the keeper held "); printUInt(results.keeperHeld.load()); printStr("\n");
+  printStr("parcels finalized "); printUInt(results.parcelFinals.load()); printStr("\n");
+  printStr("parcel weights "); printUInt(results.parcelSum.load()); printStr("\n");
+}

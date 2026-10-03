@@ -72,6 +72,7 @@ typedef struct DclSpans DclSpans;        // dclspan.h
 #include "types/region.h"
 #include "types/array.h"
 #include "types/void.h"
+#include "types/actor.h"
 
 #include "exp/block.h"
 #include "stmt/module.h"

@@ -11,16 +11,13 @@
 // taken every message in its mailbox. Nobody tells the runtime anything:
 // finalAll() runs the actors module's finalizer, which waits for quiescence.
 //
-// The actors are written by hand in the shape the compiler is to generate
-// (concurrency_actors_pingpong.cone describes it): a message enum named
-// <Actor>_msg, declared first; a state struct; a dispatch function; and a
-// handle holding the 'Arc[opaq, T]' owner of the actor's actors.Mailbox, with a
-// send function per method.
+// Both actors are declared. The consumer has an 'init'; the producer has
+// none, so 'new Producer(id, to)' is its state's implicit initializer, its
+// fields in order, 'next' taking its default.
 
 mod concurrency_actors_fanin;
 
 import stdio use *;
-import sync use Arc;
 import actors;
 
 const producers = 4u64;
@@ -47,30 +44,20 @@ fn @initpure init() {
     Atomic[u64].of(0u64), Atomic[u64].of(0u64));
 }
 
-// ---- the messages, declared first (the actors package header says why) ----
-
-enum Consumer_msg {
-  struct Take {pub from u64; pub k u64;}
-}
-
-enum Producer_msg {
-  struct Burst {pub n u64;}
-}
-
 // ---- the consumer ----
 
-struct Consumer_state {
+actor Consumer {
   last Array[u64, 4];               // the last number taken from each producer
   count Array[u64, 4];
   taken u64;
   disorder u64;
   sum u64;
 
-  pub fn made() Consumer_state {
-    new Consumer_state([0u64, 0u64, 0u64, 0u64], [0u64, 0u64, 0u64, 0u64], 0u64, 0u64, 0u64);
+  fn init(self &new) {
+    *self = new Self([0u64, 0u64, 0u64, 0u64], [0u64, 0u64, 0u64, 0u64], 0u64, 0u64, 0u64);
   }
 
-  fn take(self &mut, from u64, k u64) {
+  pub fn take(self, from u64, k u64) {
     if k != last[from] + 1u64 {
       disorder = disorder + 1u64;
     }
@@ -92,35 +79,14 @@ struct Consumer_state {
   }
 }
 
-fn Consumer_dispatch(self &mut Consumer_state, msg Consumer_msg) {
-  match msg {
-    case imm m Consumer_msg.Take {self.take(m.from, m.k);}
-  }
-}
-
-struct Consumer {
-  mb Arc[opaq, actors.Mailbox[Consumer_msg]];
-
-  pub fn start() Consumer {
-    new Consumer(actors.startActor[Consumer_state, Consumer_msg](Consumer_state.made(), &Consumer_dispatch));
-  }
-  pub fn take(self &, from u64, k u64) {
-    actors.send[Consumer_msg](mb, Consumer_msg.Take[from, k]);
-  }
-}
-
 // ---- the producers ----
 
-struct Producer_state {
+actor Producer {
   id u64;
-  next u64;                    // the next number to send
   to Consumer;
+  next u64 = 1u64;             // the next number to send
 
-  pub fn made(id u64, to Consumer) Producer_state {
-    new Producer_state(id, 1u64, to);
-  }
-
-  fn burst(self &mut, n u64) {
+  pub fn burst(self, n u64) {
     mut i = 0u64;
     while i < n {
       to.take(id, next);
@@ -134,33 +100,15 @@ struct Producer_state {
   }
 }
 
-fn Producer_dispatch(self &mut Producer_state, msg Producer_msg) {
-  match msg {
-    case imm m Producer_msg.Burst {self.burst(m.n);}
-  }
-}
-
-struct Producer {
-  mb Arc[opaq, actors.Mailbox[Producer_msg]];
-
-  pub fn start(id u64, to Consumer) Producer {
-    new Producer(actors.startActor[Producer_state, Producer_msg](
-      Producer_state.made(actors.sendable(id), actors.sendable(to)), &Producer_dispatch));
-  }
-  pub fn burst(self &, n u64) {
-    actors.send[Producer_msg](mb, Producer_msg.Burst[n]);
-  }
-}
-
 fn main() {
   initAll();
   actors.configure(new actors.Options(workers: 4u32));
   {
-    imm c = Consumer.start();
-    imm p0 = Producer.start(0u64, c);
-    imm p1 = Producer.start(1u64, c);
-    imm p2 = Producer.start(2u64, c);
-    imm p3 = Producer.start(3u64, c);
+    imm c = new Consumer();
+    imm p0 = new Producer(0u64, c);
+    imm p1 = new Producer(1u64, c);
+    imm p2 = new Producer(2u64, c);
+    imm p3 = new Producer(3u64, c);
     mut b = 0u64;
     while b < bursts {
       p0.burst(perBurst);
