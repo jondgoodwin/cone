@@ -438,19 +438,24 @@ narrowed) deactivates it as before, and no drop flag follows it.
 - A tuple literal holds its elements' values, each moved or copied into it on
   its own, as a struct literal's fields are: `(r, 5)` over a counted variable
   `r` adds one.
+- An assignment's value is what it stored, and its target keeps it:
+  `a = b = new Rc[mut, Pt](2)` adds one for `a`, `b` holding the first.
 
 `flowHandleMoveOrCopy` is the whole decision:
 
 ```c
 if (*nodep is a tuple literal)   each element, as below;
 else if (iexpIsMove(*nodep))     flowHandleMove(*nodep);      // deactivate source
-else if (flowIsLvalRead(*nodep)) flowInjectRefCount(nodep);   // +1
+else if (flowIsKeptRead(*nodep)) flowInjectRefCount(nodep);   // +1
 ```
 
-`flowIsLvalRead` asks "does this expression still hold its value after it is
-read?" — true for a name use, deref, index and field access, and for a recast
-of any of them; false for a temporary. Counting a temporary would add a holder that never existed, and the
-allocation would never reach zero.
+`flowIsKeptRead` asks "does a place still hold this expression's value once it
+is read?" — `flowIsLvalRead`'s question, true for a name use, deref, index and
+field access, and for a recast of any of them, and true besides for an
+assignment, but for one to `_`; false for a temporary. Counting a temporary
+would add a holder that never existed, and the allocation would never reach
+zero; not counting a kept value leaves two holders on one count, and the
+second release frees it again.
 
 It is called from exactly seven places — `varDclFlow` (the initializer),
 `assignSingleFlow` (the rval), `assignMultRetFlow` (the one rval a
@@ -1422,7 +1427,7 @@ allocation. A variable with `VarDropFlag` needs each marked move of it
 | | `flowHandleMove` | deactivate the source — each move-typed element's, for a tuple literal; for a block or an `if`, what any value it hands back moves out of, marking each move (`FlagMoveOut`, `FlagHollowOut`) and gating the drops where not every value does; hollow a local sole owner moved out through; refuse a move out of a field (`flowRefuseMoveField`) or a global, or out through a borrowed or a shared owning reference |
 | | `flowOwningLocal`, `flowNewHollow` | the local owning reference a move reaches through; the `HollowNode` releasing a hollowed variable as it stands |
 | | `flowResultMove` | the same refusals for a returned value, deactivating nothing |
-| | `flowIsLvalRead` | the temporary-vs-lvalue test that makes counting correct |
+| | `flowIsLvalRead`, `flowIsKeptRead` | the temporary-vs-lvalue test that makes counting correct; the second adds an assignment, whose target keeps its value |
 | | `flowTempRead`, `flowIsTemp`, `flowCastHandsOn` | wrap a temporary whose death does something in a `TempNode`, where it is read or thrown away ("Temporaries") |
 | | `flowTempHollow` | a move out through a temporary sole owner, noted in its `moved` |
 | | `flowTempEscape`, `flowTempCarries`, `flowTempCallStores` | keep each temporary a borrow or a pointer going out of its statement may point into |
