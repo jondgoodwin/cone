@@ -24,9 +24,9 @@
 // - its scope is the memory's: a buffer's is the device, a workgroup's the
 //   workgroup. One LLVM leaves at the system scope would be SPIR-V's
 //   CrossDevice, which Vulkan refuses;
-// - its ordering is one Vulkan has: sequential consistency, which Vulkan's
-//   memory model does not, is acquire-release, as Vulkan's GLSL and HLSL
-//   compilers make it. Relaxed stays relaxed: LLVM 23's SPIR-V backend writes
+// - its ordering is one Vulkan has: sequential consistency, whose semantics
+//   Vulkan's validator refuses, is acquire-release (a load's acquire, a
+//   store's release). Relaxed stays relaxed: LLVM 23's SPIR-V backend writes
 //   the memory's storage-class bit into a relaxed operation's semantics,
 //   which Vulkan refuses (a storage class with no ordering to apply it), so
 //   once the module is emitted that operand is made None (genlGpuSyncPatch);

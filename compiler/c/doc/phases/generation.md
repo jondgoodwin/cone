@@ -1389,7 +1389,7 @@ origin's space:
   buffer's count has its scope already;
 - **sequential consistency is acquire-release** (a load's acquire, a
   store's release): Vulkan's validator refuses SequentiallyConsistent
-  semantics outright, as Vulkan's GLSL and HLSL compilers make it;
+  semantics outright (`VUID-StandaloneSpirv-MemorySemantics-10866`);
 - **an atomic at a constant place** (a scalar `@workgroup` Atomic, a
   workgroup array's element at a constant index) is reached by an address
   computation that is an instruction (`genlGpuAtomicConstPtr`): LLVM folds a
