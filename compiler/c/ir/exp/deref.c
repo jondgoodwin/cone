@@ -8,10 +8,18 @@
 #include "../ir.h"
 
 // Inject automatic deref node, if node's type is a ref or ptr. Return 1 if dereffed.
+// A key reaches nothing on its own: only its arena's '[]' reaches what it
+// names, 'arena[key]', with the arena of the same invariant lifetime
+static void derefRefuseKey(INode *at, INode *type) {
+    if (lifeIsKey(type))
+        lifeKeyAccessError(at, type);
+}
+
 int derefInject(INode **node) {
     INode *nodetype = iexpGetTypeDcl(*node);
     if (nodetype->tag != RefTag && nodetype->tag != PtrTag)
         return 0;
+    derefRefuseKey(*node, nodetype);
     StarNode *deref = newStarNode(DerefTag);
     inodeLexCopy((INode*)deref, *node);
     deref->vtexp = *node;
@@ -35,6 +43,7 @@ void derefTypeCheck(TypeCheckState *pstate, StarNode *node) {
         return;
 
     INode *ptype = iexpGetTypeDcl(node->vtexp);
+    derefRefuseKey((INode*)node, ptype);
     if (ptype->tag == RefTag)
         node->vtype = ((RefNode*)ptype)->vtexp;
     else if (ptype->tag == PtrTag)

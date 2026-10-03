@@ -1,0 +1,46 @@
+// 'arena[key]' in the get position reads what a key names; in the set
+// position it writes it: a store to the whole value or to a field, an
+// operator changing it in place, and a method taking 'self &mut' through it.
+//
+// Verdict: accept; prints 1 5 42 15 7 18.
+// Basis: the only way in is 'arena[key]', in the get position (read) or the
+// set position ('arena[key] = 4', or a field or method through it)
+// (invariant lifetimes, settled 3 Oct 2026). The set position asks the type's
+// '&[]' for the element's mutable borrow, as Rust's IndexMut is chosen for a
+// place written to.
+// Master 1117c92a: no DynArena, and ''=a' refused at lex.
+
+mod lifetime_inv_index;
+
+import stdio use *;
+import arena use *;
+
+struct R {
+  pub n i64;
+  pub m i64;
+  pub fn sum(self &) i64 { n + m; }
+  pub fn bump(self &mut) { n = n + 1; }
+}
+
+fn main() {
+  mut a = DynArena.empty();
+  imm k = a.alloc(new R(1, 2));
+  imm v = a.alloc(0i64);
+  printInt(a[k].n);
+  printStr(" ");
+  a[k].n = 5;
+  printInt(a[k].n);
+  printStr(" ");
+  a[v] = 42;
+  printInt(*a[v]);
+  printStr(" ");
+  a[k].m += 10;
+  printInt(a[k].m - 2 + 5);
+  printStr(" ");
+  a[k].bump();
+  printInt(a[k].n + 1);
+  printStr(" ");
+  (&mut a[k]).bump();
+  printInt(a[k].sum() - 1);
+  printStr("\n");
+}

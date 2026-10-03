@@ -96,13 +96,25 @@ a generic that recurses at the *same* arguments terminate — the inner call
 memo-hits the half-built instance.
 
 **A lifetime is never instanced.** A memo hit compares arguments by
-`itypeIsSame`, which ignores a reference's lifetime, so `Option[&'a R]` and
+`itypeIsSame`, which ignores a reference's lifetime but for whether it is a
+key (an invariant one, below), so `Option[&'a R]` and
 `Option[&R]` are one instance; and the instance is cloned from its arguments
 with every lifetime erased (`lifeErased`, a function type's promises excepted,
 being part of that type), so no use's names leak into the instance's own
 types. The use `genericMemoize` returns keeps the arguments as written, and
 the lifetimes the generic's own name was given, for what they name
 (`genericInstanceUse`, `NameUseNode.lifeuse`).
+
+**An invariant lifetime is the exception.** A key stays a key in the
+instance: `lifeErased` keeps an invariant name, and `lifeCanonBrands` then
+renames every brand the arguments carry by its place, `'=1`, `'=2`, so that
+`List[&'=a Node['=a]]` and `List[&'=b Node['=c]]` are one instance,
+`List[&'=1 Node['=2]]`, which assumes no two places one brand; the memo
+compares those names (`lifeBrandsEqual`) as well as the types. A function's
+instance use keeps its arguments as written too, where they carry brands,
+for a call to bind the places to ([Type Check
+Reasoning](../phases/type-check-reasoning.md), "Invariant lifetimes:
+brands").
 
 **`GenVarDclNode`** is `{ IExpNodeHdr; Name *namesym; Nodes *annot; }`. Its
 `vtype` is set NULL and never assigned; `gVarDclTypeCheck` is empty. `namesym`

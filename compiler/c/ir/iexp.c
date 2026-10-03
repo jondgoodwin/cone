@@ -77,10 +77,11 @@ TypeCompare iexpMatches(INode **from, INode *totype, SubtypeConstraint constrain
     return NoMatch;
 }
 
-// Is this the type of a borrowed reference, whose scope is a lifetime?
+// Is this the type of a borrowed reference, whose scope is a lifetime? A key's
+// invariant lifetime is no scope: it goes anywhere.
 int iexpIsBorrowType(INode *type) {
     return (type->tag == RefTag || type->tag == ArrayRefTag || type->tag == VirtRefTag)
-        && ((RefNode*)type)->region == borrowRef;
+        && ((RefNode*)type)->region == borrowRef && !lifeIsInvariant(((RefNode*)type)->lifename);
 }
 
 // A copy of the borrowed-reference type 'typedcl' carrying the lifetime 'scope'.
@@ -143,9 +144,25 @@ INode *iexpCoerceType(INode *from, INode *totypedcl) {
     return iexpScopedBorrowType(totypedcl, from, scope);
 }
 
+static int iexpCoerceShape(INode **from, INode *totype);
+
 // Coerce from-node's type to 'to' expected type, if needed
-// Return 1 if type "matches", 0 otherwise
+// Return 1 if type "matches", 0 otherwise. A value meeting a type also meets
+// its invariant lifetimes, which must be the same brands (lifeBrandsCoerce):
+// so a key never reaches where another arena's is wanted, nor loses its brand.
 int iexpCoerce(INode **from, INode *totype) {
+    INode *fromtype = isExpNode(*from) ? ((IExpNode *)*from)->vtype : NULL;
+    INode *at = *from;
+    if (!iexpCoerceShape(from, totype))
+        return 0;
+    // A brand mismatch is reported there; the shape matching keeps the errors
+    // from multiplying
+    if (lifeInvariantSeen && fromtype)
+        lifeBrandsCoerce(fromtype, totype, at);
+    return 1;
+}
+
+static int iexpCoerceShape(INode **from, INode *totype) {
     // From should be a typed expression node
     if (!isExpNode(*from)) {
         errorMsgNode(*from, ErrorInvType, "An expression value is expected here.");
@@ -296,13 +313,19 @@ int iexpMultiInfer(INode *expectType, INode **maybeType, INode **from) {
     // when we need a specific type, but don't care which one,
     // we need to find the type in common between this and previous branches
     if (expectType == unknownType) {
+        // A type carrying brands is kept as the use that names them: the
+        // declaration names none, and the branches must agree on them
+        INode *fromUse = ((IExpNode *)*from)->vtype;
         if ((*maybeType) == unknownType) {
-            *maybeType = fromType;  // First branch
+            *maybeType = lifeTypeHasBrands(fromUse) ? fromUse : fromType;  // First branch
             return EqMatch;
         }
         else {
-            if (itypeIsSame(*maybeType, fromType))
+            if (itypeIsSame(*maybeType, fromType)) {
+                if (lifeInvariantSeen && !lifeBrandsCoerce(fromUse, *maybeType, *from))
+                    return NoMatch;
                 return EqMatch;
+            }
             // Try to find some supertype exists between the two types
             INode *superType = itypeFindSuper(*maybeType, fromType);
             if (superType) {
@@ -547,7 +570,13 @@ INode *iexpGetStoreLvalInfo(INode *lval, INode **lvalperm, uint16_t *scope) {
 
 // Are types the same (no coercion)
 int iexpSameType(INode *to, INode **from) {
-    return itypeIsSame(iexpGetTypeDcl(to), iexpGetTypeDcl(*from));
+    if (!itypeIsSame(iexpGetTypeDcl(to), iexpGetTypeDcl(*from)))
+        return 0;
+    // The same type carries the same brands: a swap of two arenas would hand
+    // each one's keys the other
+    if (lifeInvariantSeen && isExpNode(to) && isExpNode(*from))
+        lifeBrandsCoerce(((IExpNode*)*from)->vtype, ((IExpNode*)to)->vtype, *from);
+    return 1;
 }
 
 // Return true if value uses move semantics

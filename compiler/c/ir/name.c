@@ -20,6 +20,7 @@ Name *tempName;
 Name *tempLocalName;
 Name *selfName;
 Name *staticLifeName;
+Name *unknownBrandName;
 Name *selfTypeName;
 Name *thisName;
 Name *cloneName;

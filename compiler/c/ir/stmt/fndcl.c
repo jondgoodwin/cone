@@ -417,7 +417,10 @@ void fnDclTypeCheck(TypeCheckState *pstate, FnDclNode *fnnode) {
     pstate->fn = fnnode;
     pstate->scope = 1;
     pstate->extend = NULL;
+    LifeBrandSave svBrands;
+    lifeBrandFnBegin((FnSigNode *)fnnode->vtype, &svBrands);
     inodeTypeCheck(pstate, &fnnode->value, noCareType);
+    lifeBrandFnEnd(&svBrands);
     pstate->scope = svScope;
     pstate->fn = svFn;
     pstate->extend = svExtend;

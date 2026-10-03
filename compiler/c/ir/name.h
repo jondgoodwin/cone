@@ -29,6 +29,7 @@ extern Name *tempName;    // "-_"
 extern Name *tempLocalName;
 extern Name *selfName;  // "self"
 extern Name *staticLifeName;  // "'static", the global lifetime (lifetime.h)
+extern Name *unknownBrandName; // "'=?", an invariant lifetime nothing is known of: the same as none
 extern Name *selfTypeName; // "Self"
 extern Name *thisName;  // "this"
 extern Name *dropName;  // "drop"

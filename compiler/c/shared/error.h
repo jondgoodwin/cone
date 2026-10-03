@@ -445,11 +445,18 @@ enum ErrorCode {
     // Constants of the build (TEMPORARY, a provisional mechanism whose final design is open)
     ErrorDefineName = 1239,     // isDefined or definedInt given a '-D' name that is not a string literal
 
+    // Invariant lifetimes (ir/types/lifetime.h)
+    ErrorBrand = 1240,          // A value of one invariant lifetime where another is wanted: another arena's key, an arena and a key of different brands, or a brand lost or gained
+    ErrorBrandLoop = 1241,      // A value whose invariant lifetime a loop's pass minted, kept where a later pass or the code after the loop could use it
+    ErrorKeyAccess = 1242,      // A key, a reference of an invariant lifetime, dereferenced or reached through: only its arena's '[]' reaches what it names
+    ErrorLifetimeInvariant = 1243, // An invariant lifetime ordered by '>=', equated with an ordinary one, named where an ordinary one is declared, on a slice or virtual reference, or not one the function names
+    ErrorKeyBorrow = 1244,      // A key to a value that holds a borrow: a value in a dynamic arena outlives every scope
+
     // Lock permissions: a struct declaring 'LockPermission' in a managed reference's permission slot (ir/types/permission.c, ir/exp/borrow.c)
-    ErrorNotLockPerm = 1240,    // A struct in a managed reference's permission slot that does not declare 'is LockPermission'
-    ErrorLockPermShape = 1241,  // A lock permission whose methods are not the shape the compiler calls: no 'acquireMut' and 'releaseMut', a read pair half declared, a method taking more than 'self' or returning a value
-    ErrorLockRegion = 1242,     // A lock permission on a region it does not fit: one owner ('So'), a region not counting owners, a cross-thread lock on a single-thread region or the reverse, or a virtual reference (a traced region is ErrorTracedPerm)
-    ErrorLockAccess = 1243,     // A lock-managed reference read, written or lent without the borrow that takes its lock: '&mut *p', '&*p'
+    ErrorNotLockPerm = 1245,    // A struct in a managed reference's permission slot that does not declare 'is LockPermission'
+    ErrorLockPermShape = 1246,  // A lock permission whose methods are not the shape the compiler calls: no 'acquireMut' and 'releaseMut', a read pair half declared, a method taking more than 'self' or returning a value
+    ErrorLockRegion = 1247,     // A lock permission on a region it does not fit: one owner ('So'), a region not counting owners, a cross-thread lock on a single-thread region or the reverse, or a virtual reference (a traced region is ErrorTracedPerm)
+    ErrorLockAccess = 1248,     // A lock-managed reference read, written or lent without the borrow that takes its lock: '&mut *p', '&*p'
 
     // Warnings
     WarnCode = 3000,

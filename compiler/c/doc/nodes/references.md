@@ -28,7 +28,7 @@ measured against emitted IR.*
 | `vtype` | unused on a type node; the **constructed reference type** on an expression node |
 | `typeinfo` | interned `RefTypeInfo` — the LLVM handles. **Interned by what the reference refers to**, so reference types that agree at run time share one record and generation memoizes the LLVM type on it |
 | `scope` | lifetime: 0 global, 1 the caller band (what a borrowed parameter points at), 2+ a block of the function, 2 its top block (where its parameters' own storage lives too) |
-| `lifename` | the lifetime a function's signature or a struct's field writes on this borrowed reference type (`&'a T`), interned (`staticLifeName` for `'static`); NULL for the unnamed one, and on every type outside those, a generic's instance's own types among them (`lifeErased`) |
+| `lifename` | the lifetime a function's signature or a struct's field writes on this borrowed reference type (`&'a T`), interned (`staticLifeName` for `'static`); NULL for the unnamed one, and on every type outside those, a generic's instance's own types among them (`lifeErased`). An invariant one (`'=a`, a key: `lifeIsInvariant`) is kept everywhere it is written, a body's types too, and on a call's result as the brand the call gave it |
 
 ⚠ **A cloned reference re-interns, in `cloneRefNode`.** Cloning is how a trait's
 method becomes an implementer's and a generic's becomes an instance's, and both
@@ -52,6 +52,15 @@ signatures, so a copy of a callee's type that reaches a caller (a call's
 result) carries a name nothing reads there. A struct's lifetimes, named on a
 use of it (`Cursor['a]`), are no reference's: they are the use's
 `NameUseNode.lifeuse`, read by the same functions.
+
+**An invariant `lifename` is a third thing: a brand.** A reference of one,
+`&'=a T`, is a key: its `scope` is 0 and means nothing, it is no borrow to
+`itypeCarriesBorrow` or `iexpIsBorrowType`, it is never the same type as a
+borrow (`refIsSame`, `refMatches`), and nothing reaches through it but its
+arena's `[]`. Its name *is* compared across signatures, by binding: a call
+replaces the callee's names in its result with the brands its arguments gave
+them ([Type Check Reasoning](../phases/type-check-reasoning.md), "Invariant
+lifetimes: brands").
 
 ### The seven tags
 
@@ -116,7 +125,11 @@ The differences are worth knowing:
   where it sets `lifenamed` on that signature, or `ParseState.lifestruct` (a
   struct's field's type), where it is noted for the struct to declare
   (`lifeStructDeclare`). Anywhere else the lifetime is `ErrorLifetimePlace`,
-  and read past (`parseLifeNamed`).
+  and read past (`parseLifeNamed`) -- but for an invariant one, which a body
+  may name too (a cast making a key, a variable's type, a generic's type
+  argument), type check holding it to the signature's (`lifeBrandKnown`).
+  An invariant lifetime on `&[]` or `&<` is `ErrorLifetimeInvariant`: a key is
+  a plain reference.
 - `&` has two escapes `+` does not: a `fn` operand, where the presence of a body
   decides closure-versus-signature; and a `,` or `)` operand, where `vtexp` is
   left `unknownType` for later `Self` inference in a parameter position.

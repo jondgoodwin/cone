@@ -1,0 +1,64 @@
+// An arena made inside a loop lasts only for that loop pass: its brand is
+// the pass's. A key of it kept in a variable from outside the loop, for a
+// later pass to use, is refused; so is one carried out by a 'break'.
+//
+// Verdict: refuse, ErrorBrandLoop at the store and at the break; ErrorBrand
+// where the kept key meets this pass's arena.
+// Basis: a brand minted in a loop is scoped to the pass, so a key from one
+// pass may not be used with, or escape to, a later pass or after the loop
+// (invariant lifetimes, settled 3 Oct 2026). Each pass's call mints the same
+// brand as the compiler sees it, so the pass is what tells two arenas apart.
+// Master 1117c92a: no DynArena, and ''=a' refused at lex. This compiler with
+// the brand check turned off accepts 'kept', and main, run, prints "final"
+// as the first pass's arena dies and then, in the second pass, a value read
+// from its freed block.
+
+mod lifetime_inv_loop_pass;
+
+import stdio use *;
+import arena use *;
+
+struct R {
+  pub n i64;
+  fn final(self &uni) {
+    printStr("final\n");
+  }
+}
+
+fn clobber(n i64) i64 {
+  mut a Array[i64, 16] = [n, n, n, n, n, n, n, n, n, n, n, n, n, n, n, n];
+  a[3] + a[9];
+}
+
+fn kept() {
+  mut first = DynArena.empty();
+  mut keep = first.alloc(new R(0));
+  mut i = 0;
+  while i < 2 {
+    mut a = DynArena.empty();
+    imm k = a.alloc(new R(42));
+    if i > 0 {
+      clobber(21);
+      printStr("read = ");
+      printInt(a[keep].n);          //~ ErrorBrand
+      printStr("\n");
+    }
+    keep = k;                       //~ ErrorBrandLoop
+    i = i + 1;
+  }
+}
+
+fn broken() i64 {
+  imm k = while {
+    mut a = DynArena.empty();
+    if true {
+      break a.alloc(new R(7));      //~ ErrorBrandLoop
+    }
+  };
+  0;
+}
+
+fn main() {
+  kept();
+  broken();
+}

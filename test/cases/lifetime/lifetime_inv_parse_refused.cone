@@ -1,0 +1,25 @@
+// An invariant lifetime has no order, so '>=' with one is refused, and it is
+// equated only with another invariant one. A key is a plain reference: a
+// slice or a virtual reference does not take an invariant lifetime.
+//
+// Verdict: refuse, ErrorLifetimeInvariant at each.
+// Basis: an invariant lifetime is equal only to itself, with no order with
+// any other lifetime ('>=' with one is refused; only '==' applies)
+// (invariant lifetimes, settled 3 Oct 2026). A slice or virtual reference
+// would be reached by indexing or dispatch, which no arena's '[]' does.
+// Master 1117c92a: ''=a' refused at lex.
+
+mod lifetime_inv_parse_refused;
+
+import arena use *;
+
+struct R { pub n i64; }
+trait Show { fn show(self &) i64; }
+
+fn ordered(ar &DynArena['=a], k &'=b R) i64 where '=a >= '=b { 0; }   //~ ErrorLifetimeInvariant
+fn mixed(ar &DynArena['=a], k &'b R) i64 where '=a == 'b { 0; }       //~ ErrorLifetimeInvariant
+fn slice(k &[]'=a R) { }                                               //~ ErrorLifetimeInvariant
+fn virt(k &<'=a Show) { }                                              //~ ErrorLifetimeInvariant
+
+fn main() {
+}

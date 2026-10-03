@@ -1,0 +1,85 @@
+// A linked list built in a dynamic arena by one function and walked by
+// another, after the first has returned. 'build' makes the arena, allocates
+// each node in it and hands the arena back with the key of the first node;
+// nothing is copied or counted, and nothing is freed one by one: when 'main'
+// is done with a chain, its arena dies, its nodes with it.
+//
+// A node holds the key of the next one, not a borrow: a key reaches nothing
+// on its own, so every step of the walk goes through the arena, 'c.ar[key]',
+// and the compiler checks, at no cost at run time, that the arena and the key
+// carry the same invariant lifetime. 'build' is called twice: each call's
+// arena has a brand of its own, so a key of one chain never unlocks the
+// other's arena -- try 'one.ar[...]' with a key of 'two' in 'main', and the
+// compile refuses it.
+//
+// Run it with
+//   congo run packages/arena/examples/chain.cone
+
+mod chain;
+
+import stdio use *;
+import arena use *;
+
+// A node: a value, and the key of the next node in the same arena
+struct Node['=a] {
+  pub val i64;
+  pub next Option[&'=a mut Node['=a]];
+}
+
+// An arena and the key of its first node, travelling together
+struct Chain['=a] {
+  pub ar DynArena['=a];
+  pub first Option[&'=a mut Node['=a]];
+
+  // The values from the first node on, each read through the arena
+  pub fn show(self &) {
+    mut at = first;
+    while {
+      match at {
+        case imm s Some[&'=a mut Node['=a]] {
+          printInt(ar[s.value].val);
+          printStr(" ");
+          at = ar[s.value].next;
+        }
+        else { break; }
+      }
+    }
+    printStr("\n");
+  }
+}
+
+// A chain of the squares from n*n down to 1: its arena is minted here, and
+// leaves with the keys into it
+fn squares(n i64) Chain['=a] {
+  mut ar = DynArena.empty();
+  mut head Option[&'=a mut Node['=a]] = None[&'=a mut Node['=a]][];
+  mut i = 1i64;
+  while i <= n {
+    head = Some[ar.alloc(new Node(i * i, head))];
+    i = i + 1;
+  }
+  new Chain(ar, head);
+}
+
+// Every value of a chain doubled in place: a write through the arena
+fn double(c &mut Chain['=a]) {
+  mut at = c.first;
+  while {
+    match at {
+      case imm s Some[&'=a mut Node['=a]] {
+        c.ar[s.value].val *= 2;
+        at = c.ar[s.value].next;
+      }
+      else { break; }
+    }
+  }
+}
+
+fn main() {
+  mut one = squares(5);
+  imm two = squares(3);
+  one.show();
+  two.show();
+  double(&mut one);
+  one.show();
+}

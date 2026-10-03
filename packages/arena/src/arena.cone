@@ -48,20 +48,43 @@
 // 'a <=> other' and 'a = Arena.empty()' are refused
 // (test/cases/region/region_flow_arena_freeze.cone).
 //
-// THE HOLES. The design's answer to a reference outliving its arena is
-// invariant lifetimes pairing the arena with the references allocated from it
-// (key and lock: a reference usable only through its own arena), and that is
-// not built. A scratch needs no such pairing, only the borrow rules, but some
-// of those are not built either, so a reference can still outlive its arena:
-// - A borrow held inside another value, rather than being the value, carries
-//   no lifetime: returning 'new Holder(a.alloc(v))', a 'new Rc[Holder](...)' or an
-//   'Option' holding one, and reading one back out of a list ('*seen[0usize]',
-//   returned) compile and dangle. Held in a local, such a value keeps the arena
-//   alive as a bare allocation does, so 'outer = new Holder(a.alloc(v))' with
-//   'outer' used after the arena ends is refused; pushing one onto an outer
-//   'List', or a call storing one in a field of an outer value
-//   ('stash(&mut outer, a.alloc(v))'), is refused at the call.
-// Keep every reference into an arena within the arena's own life.
+// A borrow into a scratch held inside another value is checked as the bare
+// borrow is: returning 'new Holder(a.alloc(v))', an 'Option' holding one, or
+// one read back out of a list ('*seen[0usize]') is refused, and so is keeping
+// such a value past the scratch and using it.
+//
+// A DYNAMIC ARENA, 'DynArena', is one whose values outlive the function that
+// made it: it may be returned, stored and passed, and its values go with it.
+// A reference into it cannot be a borrow, which ends with a scope, so it is a
+// KEY: a reference of the arena's invariant lifetime, ''=a', which reaches
+// nothing on its own. The arena is the lock: 'ar[key]' reaches what the key
+// names, and only where the arena and the key carry the same invariant
+// lifetime, which the compiler checks as an identity, at no cost at run time
+// ('ar[key]' is the key's pointer). Each call of 'DynArena.empty()' mints a
+// fresh one, so a key of one arena never unlocks another:
+//
+//   struct Node['=a] { pub val i32; pub next Option[&'=a mut Node['=a]]; }
+//   struct Chain['=a] { pub ar DynArena['=a]; pub first Option[&'=a mut Node['=a]]; }
+//
+//   fn build(n i32) Chain['=a] {
+//     mut ar = DynArena.empty();          // a brand of its own
+//     mut head Option[&'=a mut Node['=a]] = None[&'=a mut Node['=a]][];
+//     ...head = Some[ar.alloc(new Node(i, head))];...   // keys, not borrows
+//     new Chain(ar, head);                // the arena leaves with its keys
+//   }
+//
+//   fn sum(c &Chain['=a]) i32 { ... c.ar[key].val ... c.ar[key].next ... }
+//
+// 'ar[key]' reads (a '&T' of the value, '[]'), and in set position --
+// 'ar[key] = v', 'ar[key].f = v', 'ar[key].f += 1', a method taking 'self &mut'
+// -- writes, through '&[]', the value's '&mut'. A key is copied freely, and a
+// value it names may hold keys, of its own arena or another. What a key names
+// lives as long as its arena, past every scope, so it holds no borrow: a key
+// to a value that does is refused (ErrorKeyBorrow). examples/chain.cone
+// builds and walks a linked list this way, and tests/dynamic.cone runs every
+// rule; the compiler's suite pins each refusal
+// (test/cases/lifetime/lifetime_inv_*.cone): another arena's key, a key used
+// without its arena, a key kept past the loop pass whose arena made it.
 //
 // Memory. A block is allocated with the C library's 'malloc'. If that fails,
 // or the room asked for cannot be counted in a usize, the arena panics. There
@@ -228,6 +251,47 @@ pub struct Arena is NoLoanMut {
       libc.free(blk as *u8);
     }
   }
+}
+
+// A dynamic arena (the top of this file): an Arena whose values are reached by
+// keys of its invariant lifetime ''=a', which only it unlocks. It holds the
+// Arena that does the work, so it is allocated, finalized and freed exactly
+// as a scratch is: its values die newest first when it does, then its blocks.
+pub struct DynArena['=a] is NoLoanMut {
+  ar Arena;
+
+  // An arena holding nothing, of a brand of its own: ''=a' is named by no
+  // parameter, so each call mints a fresh one for its caller
+  pub fn empty() DynArena['=a] {
+    new DynArena(Arena.empty());
+  }
+
+  // The same, its first block allocated now with room for 'bytes' of values
+  pub fn withRoom(bytes usize) DynArena['=a] {
+    new DynArena(Arena.withRoom(bytes));
+  }
+
+  // Move value into the arena, and a key to it there: good for as long as
+  // the arena lives, wherever it goes, and only through this arena
+  pub fn alloc[T](self &mut, value T) &'=a mut T {
+    (ar.alloc(value) as *T) as &'=a mut T;
+  }
+
+  // 'ar[key]': the value a key of this arena names, read
+  pub fn `[]`[T](self &, key &'=a T) &T {
+    (key as *T) as &T;
+  }
+
+  // 'ar[key] = v', '&mut ar[key]', and a method taking 'self &mut' through it:
+  // the value a key of this arena names, to change
+  pub fn `&[]`[T](self &mut, key &'=a T) &mut T {
+    (key as *T) as &mut T;
+  }
+
+  // How many values have been given a finalizer header, and how many blocks
+  // it holds: for tests and for tuning
+  pub fn finalizers(self &) usize { ar.finalizers(); }
+  pub fn blockCount(self &) usize { ar.blockCount(); }
 }
 
 // The room a new block gets: a block's worth, or 'need' if that is more
