@@ -1,0 +1,349 @@
+// A loopback load test of the driver, timed. Run it with
+//
+//   congo run --release packages/httpconn/examples/load.cone
+//
+// 1. Many concurrent kept-alive connections, each making GETs one after
+//    another (no pipelining, as HTTP/1.1 clients do), each answered with a
+//    64-byte body: the requests a second, and each request's latency from
+//    being asked for to its Done, p50, p99 and the maximum. Run twice: the
+//    server and the clients on one thread, one Loop and one Driver; then
+//    the server on a thread of its own, its own Loop and Driver.
+// 2. Memory per idle connection: a few thousand kept-alive connections
+//    left idle, and what the process's private bytes and the pool's buffers
+//    grew by, per connection (both its ends: a client's and a server's, in
+//    this one process); once as the driver is by default, each idle
+//    connection waiting with a zero-byte receive, and once with
+//    idleRecvReady off, each holding a receive buffer instead.
+//
+// Every connection is on 127.0.0.1 (never 0.0.0.0, so the firewall is never
+// asked). Connections are opened a batch at a time, within the listener's
+// backlog.
+
+mod load;
+
+import stdio use *;
+import thread;
+import sync use *;
+import collections use List, String;
+import time use Instant, Duration;
+import iobuf use *;
+import iocore use Loop, SocketAddr, forever;
+import diag use Histogram;
+import http use *;
+import httpconn use *;
+
+extern {
+  fn @c(system) GetCurrentProcess() usize;
+  fn @c(system) K32GetProcessMemoryInfo(process usize, counters *u8, cb u32) i32;
+}
+
+const tokServer = 0x10000000u64;      // the server's sink
+const tokConn = 0x20000000u64;        // a client connection's: + its number
+const tokReq = 0x30000000u64;         // a request's: + its connection's number
+
+// PROCESS_MEMORY_COUNTERS_EX's PrivateUsage: the bytes the process has
+// committed for itself
+fn privateBytes() u64 {
+  mut c = new Array[usize, 10] <- fill 0usize;
+  imm p = &mut c as *u8;
+  *(p as *u32) = 80u32;
+  K32GetProcessMemoryInfo(GetCurrentProcess(), p, 80u32);
+  u64.from(c[9usize]);
+}
+
+// Answer a server's request: 200 and 64 bytes
+fn answer(drv &mut Driver, e &mut Event, pool &Pool) {
+  drv.respond(e.req, ResponseHead.make(200u16), BodyLength.sized(64u64));
+  mut b = pool.mustTake(64usize);
+  b.setLen(64usize);
+  drv.sendData(e.req, b);
+  drv.finish(e.req);
+}
+
+// The listening driver's port
+fn listenOn(drv &mut Driver, lp &mut Loop) u16 {
+  mut port = 0u16;
+  match drv.listen(lp, SocketAddr.localhost(0u16), Sink.Here[tokServer]) {
+    case imm r Ok {
+      match drv.localAddr(lp, r.value) {
+        case imm a Ok {port = a.value.port();}
+        case imm e Error {}
+      }
+    }
+    case imm e Error {}
+  }
+  port;
+}
+
+// ---------------------------------------------------------------------------
+// The clients: open conns connections, a batch at a time; make perConn GETs
+// on each, one after another; time each
+// ---------------------------------------------------------------------------
+
+struct Run {
+  pub conns u64;
+  pub perConn u64;
+  pub lat Histogram;
+  pub done u64;
+  pub bad u64;
+  pub took Duration;
+}
+
+fn clients(drv &mut Driver, lp &mut Loop, pool &Pool, port u16, conns u64, perConn u64, serveHere Bool) Run {
+  mut run = new Run(conns, perConn, Histogram.make(), 0u64, 0u64, Duration.zero());
+  mut cs = List[ConnId].empty();
+  mut made = List[u64].empty();
+  mut busy = List[Bool].empty();
+  mut connected = 0u64;
+  mut events = List[Event].empty();
+  imm batch = 64u64;
+  mut t0 = Instant.now();
+  mut started = false;
+  mut finished = 0u64;
+  while finished < conns {
+    // More connections, a batch at a time
+    if u64.from(cs.len()) < conns and u64.from(cs.len()) < connected + batch {
+      imm k = u64.from(cs.len());
+      cs.push(drv.connect(lp, "127.0.0.1", port, Sink.Here[tokConn + k]));
+      made.push(0u64);
+      busy.push(false);
+      continue;
+    }
+    if not started and connected == conns {
+      started = true;
+      t0 = Instant.now();
+    }
+    // Each free connection's next request, once all are connected
+    if started {
+      mut k = 0usize;
+      while k < cs.len() {
+        if not *busy[k] and *made[k] < perConn {
+          drv.request(lp, *cs[k], RequestHead.get("/x", "127.0.0.1"), BodyLength.empty(),
+            Sink.Here[tokReq + u64.from(k)]);
+          busy.set(k, true);
+          made.set(k, *made[k] + 1u64);
+        }
+        k = k + 1usize;
+      }
+    }
+    drv.poll(lp, forever(), &mut events);
+    mut j = 0usize;
+    while j < events.len() {
+      imm e = &mut events[j];
+      j = j + 1usize;
+      if e.token == tokServer {
+        if serveHere and e.kind == EventKind.Request[] {answer(drv, e, pool);}
+      } elif e.token >= tokReq {
+        imm k = usize.from(e.token - tokReq);
+        if e.kind == EventKind.Data[] {
+          drv.release(e.req, e.buf.len());
+        } elif e.kind == EventKind.Done[] {
+          run.lat.record((e.timing.ended - e.timing.submitted).nanos());
+          run.done = run.done + 1u64;
+          busy.set(k, false);
+          if *made[k] == perConn {finished = finished + 1u64;}
+        } elif e.isTerminal() {
+          run.bad = run.bad + 1u64;
+          busy.set(k, false);
+          if *made[k] == perConn {finished = finished + 1u64;}
+        }
+      } elif e.token >= tokConn {
+        if e.kind == EventKind.Connected[] {connected = connected + 1u64;}
+        elif e.kind == EventKind.Closed[] and not started {
+          run.bad = run.bad + 1u64;
+          connected = connected + 1u64;
+        }
+      }
+    }
+    events.clear();
+  }
+  run.took = Instant.now() - t0;
+  // Close them all, and let the closes finish
+  mut k = 0usize;
+  while k < cs.len() {
+    drv.close(lp, *cs[k]);
+    k = k + 1usize;
+  }
+  imm until = Instant.now() + Duration.fromSeconds(5i64);
+  while drv.live() > 0u32 and Instant.now() < until {
+    drv.poll(lp, until, &mut events);
+    events.clear();
+  }
+  run;
+}
+
+fn report(label &[]u8, r &Run) {
+  printStr(label);
+  printStr(": ");
+  printUInt(r.conns);
+  printStr(" connections x ");
+  printUInt(r.perConn);
+  printStr(" GETs: ");
+  printUInt(r.done);
+  printStr(" done in ");
+  printUInt(u64.from(r.took.millis()));
+  printStr(" ms, ");
+  if r.took.nanos() > 0i64 {printUInt(u64.from(i64.from(r.done) * 1000000000i64 / r.took.nanos()));}
+  printStr(" requests/s");
+  if r.bad > 0u64 {
+    printStr(", ");
+    printUInt(r.bad);
+    printStr(" NOT DONE");
+  }
+  printStr("\n  ");
+  r.lat.printLine("latency, asked to Done");
+}
+
+// ---------------------------------------------------------------------------
+// A server on a thread of its own
+// ---------------------------------------------------------------------------
+
+struct ServerArgs {
+  pub portTx Sender[u16];
+  pub stop Arc[imm, Atomic[Bool]];
+}
+
+fn serve(a ServerArgs) u64 {
+  imm pool = Pool.make();
+  mut lp = Loop.mustMake();
+  mut drv = Driver.make(Config.make(), pool);
+  a.portTx.send(listenOn(&mut drv, &mut lp));
+  mut events = List[Event].empty();
+  mut served = 0u64;
+  while not a.stop.load() {
+    drv.poll(&mut lp, Instant.now() + Duration.fromMillis(50i64), &mut events);
+    mut j = 0usize;
+    while j < events.len() {
+      imm e = &mut events[j];
+      if e.kind == EventKind.Request[] {
+        answer(&mut drv, e, &pool);
+        served = served + 1u64;
+      }
+      j = j + 1usize;
+    }
+    events.clear();
+  }
+  drv.abortAll(&mut lp);
+  served;
+}
+
+// ---------------------------------------------------------------------------
+// Memory per idle connection
+// ---------------------------------------------------------------------------
+
+fn idleMemory(n u64, readyIdle Bool) {
+  imm pool = Pool.make(268435456usize, 268435456usize);
+  mut lp = Loop.mustMake();
+  mut cfg = Config.make();
+  cfg.idleRecvReady = readyIdle;
+  cfg.acceptDepth = 64u32;
+  mut drv = Driver.make(cfg, pool);
+  imm port = listenOn(&mut drv, &mut lp);
+  // Warm: the tables and the pool's first blocks
+  {
+    mut w = clients(&mut drv, &mut lp, &pool, port, 64u64, 1u64, true);
+  }
+  pool.trim();
+  imm before = privateBytes();
+  imm heldBefore = pool.stats().heldBytes - pool.stats().idleBytes;
+  // n connections, one GET each, then left idle
+  mut cs = List[ConnId].empty();
+  mut connected = 0u64;
+  mut dones = 0u64;
+  mut failed = 0u64;
+  mut events = List[Event].empty();
+  while dones + failed < n {
+    if u64.from(cs.len()) < n and u64.from(cs.len()) < connected + 64u64 {
+      imm k = u64.from(cs.len());
+      imm c = drv.connect(&mut lp, "127.0.0.1", port, Sink.Here[tokConn + k]);
+      drv.request(&mut lp, c, RequestHead.get("/x", "127.0.0.1"), BodyLength.empty(), Sink.Here[tokReq + k]);
+      cs.push(c);
+      continue;
+    }
+    drv.poll(&mut lp, forever(), &mut events);
+    mut j = 0usize;
+    while j < events.len() {
+      imm e = &mut events[j];
+      j = j + 1usize;
+      if e.token == tokServer and e.kind == EventKind.Request[] {answer(&mut drv, e, &pool);}
+      elif e.kind == EventKind.Data[] {drv.release(e.req, e.buf.len());}
+      elif e.kind == EventKind.Connected[] {connected = connected + 1u64;}
+      elif e.token >= tokReq and e.kind == EventKind.Done[] {dones = dones + 1u64;}
+      elif e.token >= tokReq and e.isTerminal() {failed = failed + 1u64;}
+    }
+    events.clear();
+  }
+  // Settle: every connection idle at both ends
+  imm settle = Instant.now() + Duration.fromMillis(200i64);
+  while Instant.now() < settle {
+    drv.poll(&mut lp, settle, &mut events);
+    events.clear();
+  }
+  pool.trim();
+  imm after = privateBytes();
+  imm heldAfter = pool.stats().heldBytes - pool.stats().idleBytes;
+  printStr("idle connections, ");
+  printStr(if readyIdle {"waiting by zero-byte receives (the default)";} else {"each holding a receive buffer";});
+  printStr(": ");
+  printUInt(n);
+  printStr(" open (");
+  printUInt(u64.from(drv.live()));
+  printStr(" driver connections, both ends; ");
+  printUInt(failed);
+  printStr(" requests not Done)\n  private bytes +");
+  printUInt((after - before) / 1024u64);
+  printStr(" KiB: ");
+  printUInt((after - before) / n);
+  printStr(" bytes a connection (both ends); pool buffers lent +");
+  printUInt(u64.from(heldAfter - heldBefore) / 1024u64);
+  printStr(" KiB: ");
+  printUInt(u64.from(heldAfter - heldBefore) / n);
+  printStr(" bytes a connection\n");
+  drv.abortAll(&mut lp);
+  drv.pump(&mut lp, &mut events);
+}
+
+fn main() {
+  // 1a. One thread: server and clients on one Loop and one Driver
+  {
+    imm pool = Pool.make();
+    mut lp = Loop.mustMake();
+    mut cfg = Config.make();
+    cfg.acceptDepth = 64u32;
+    mut drv = Driver.make(cfg, pool);
+    imm port = listenOn(&mut drv, &mut lp);
+    imm r1 = clients(&mut drv, &mut lp, &pool, port, 1u64, 10000u64, true);
+    report("one thread", &r1);
+    imm r2 = clients(&mut drv, &mut lp, &pool, port, 256u64, 200u64, true);
+    report("one thread", &r2);
+    imm r3 = clients(&mut drv, &mut lp, &pool, port, 1000u64, 50u64, true);
+    report("one thread", &r3);
+  }
+  // 1b. Two threads: the server's own
+  {
+    mut portTx Sender[u16];
+    mut portRx Receiver[u16];
+    portTx, portRx = Channel[u16].make();
+    imm stop = new Arc[imm, Atomic[Bool]](Atomic[Bool].of(false));
+    imm server = thread.start(new ServerArgs(portTx, stop), &serve);
+    mut port = 0u16;
+    match portRx.recv() {
+      case imm p Some {port = p.value;}
+      case is None[u16] {}
+    }
+    imm pool = Pool.make();
+    mut lp = Loop.mustMake();
+    mut drv = Driver.make(Config.make(), pool);
+    imm r1 = clients(&mut drv, &mut lp, &pool, port, 1u64, 10000u64, false);
+    report("two threads", &r1);
+    imm r2 = clients(&mut drv, &mut lp, &pool, port, 256u64, 200u64, false);
+    report("two threads", &r2);
+    imm r3 = clients(&mut drv, &mut lp, &pool, port, 1000u64, 50u64, false);
+    report("two threads", &r3);
+    stop.store(true);
+    server.join();
+  }
+  // 2. Memory per idle connection
+  idleMemory(2000u64, true);
+  idleMemory(2000u64, false);
+}

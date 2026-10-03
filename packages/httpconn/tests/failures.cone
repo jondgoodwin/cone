@@ -1,0 +1,528 @@
+// Peer resets, half-closes and bounds, pinned. One Loop; a Driver serving
+// and fetching over 127.0.0.1, sometimes a second Driver beside it on the
+// same loop, and sometimes a raw socket of the program's own (iocore
+// operations with its own tokens), so that each completion goes to whoever
+// owns it.
+//
+// Resets:
+// 1. The server resets the connection after reading a request: the
+//    client's request is Failed at the Read stage, noResponse (nothing of
+//    a response came) and not unsent; the connection Closed, not clean.
+// 2. The server resets it after the response's head and 1,000 bytes of its
+//    body have been read: Failed at Read, not noResponse.
+// 3. The client resets its connection while uploading a body (abort): its
+//    request Cancelled; the server's side Failed at Read.
+// Half-closes:
+// 4. A raw client sends a request and shuts its sending side (FIN): the
+//    server reads the request, answers it whole, and closes cleanly; the
+//    raw client reads the whole response, then the end of the stream.
+// 5. A raw server answers with a body delimited by the close and shuts its
+//    sending side: the client reads the body to the end, Done, and its
+//    connection closes cleanly.
+// Bounds:
+// 6. maxWaiting 1: on a connection still connecting, a first request
+//    waits, and a second is refused at once (Failed at Limit, unsent).
+// 7. A driver of maxConnections 1: a second connect is Closed at once (at
+//    Limit), and its request Failed, unsent.
+// 8. A server driver of maxConnections 2: of three connections, two are
+//    accepted and answered; the third is never accepted, and its request
+//    times out.
+
+mod failures;
+
+import testing use *;
+import collections use List, String;
+import time use Instant, Duration;
+import iobuf use *;
+import iocore use Loop, Op, Target, Completion, Handle, SocketAddr, forever;
+import http use *;
+import httpconn use *;
+
+const tokServer = 1000u64;
+const tokServer2 = 2000u64;
+const slots = 16usize;
+
+struct Slot {
+  pub status u16;
+  pub bytes u64;
+  pub finals u32;
+  pub after u32;
+  pub kind EventKind;
+  pub stage Stage;
+  pub noResponse Bool;
+  pub unsent Bool;
+  pub closes u32;
+  pub clean Bool;
+}
+
+fn blankSlot() Slot {
+  new Slot(0u16, 0u64, 0u32, 0u32, EventKind.Writable[], Stage.Closed[], false, false, 0u32, false);
+}
+
+struct State {
+  pub req List[Slot];
+  pub conn List[Slot];
+  pub srvFinals List[EventKind];
+  pub srvStages List[Stage];
+  pub srvCloses u32;
+  pub srvClean u32;
+  pub srvData u64;
+  pub lastSrvConn ConnId;     // the server connection of the latest request
+  pub raw List[Raw];          // the program's own completions
+}
+
+// One of the program's own completions: what it said, its buffer's bytes
+struct Raw {
+  pub token u64;
+  pub done Bool;
+  pub n usize;
+  pub handle Handle;
+  pub bytes String;
+}
+
+// The server's answers, by target
+fn serve(drv &mut Driver, lp &mut Loop, st &mut State, e &mut Event, pool &Pool) {
+  imm t = e.request.target.view();
+  st.lastSrvConn = e.req.connId();
+  if t == "/resetnow" {
+    drv.abort(lp, e.req.connId());
+    return;
+  }
+  if t == "/resetmid" {
+    drv.respond(e.req, ResponseHead.make(200u16), BodyLength.sized(10000u64));
+    mut b = pool.mustTake(1000usize);
+    b.setLen(1000usize);
+    drv.sendData(e.req, b);
+    return;
+  }
+  if t == "/upload" {return;}
+  drv.respond(e.req, ResponseHead.make(200u16), BodyLength.sized(2u64));
+  mut b = pool.mustTake(16usize);
+  b.append("ok");
+  drv.sendData(e.req, b);
+  drv.finish(e.req);
+}
+
+fn note(drv &mut Driver, lp &mut Loop, st &mut State, pool &Pool, events &mut List[Event]) {
+  mut k = 0usize;
+  while k < events.len() {
+    imm e = &mut events[k];
+    k = k + 1usize;
+    if e.token == tokServer {
+      if e.kind == EventKind.Request[] {serve(drv, lp, st, e, pool);}
+      elif e.kind == EventKind.Data[] {
+        st.srvData = st.srvData + u64.from(e.buf.len());
+        drv.release(e.req, e.buf.len());
+      } elif e.isTerminal() {
+        st.srvFinals.push(e.kind);
+        st.srvStages.push(e.failure.stage);
+      } elif e.kind == EventKind.Closed[] {
+        st.srvCloses = st.srvCloses + 1u32;
+        if e.clean {st.srvClean = st.srvClean + 1u32;}
+      }
+    } elif e.token == tokServer2 {
+      // The second driver's server, plain answers
+      if e.kind == EventKind.Request[] {serve(drv, lp, st, e, pool);}
+    } elif e.token >= 100u64 and e.token < 200u64 {
+      imm s = &mut st.conn[usize.from(e.token - 100u64)];
+      if e.kind == EventKind.Closed[] {
+        s.closes = s.closes + 1u32;
+        s.clean = e.clean;
+        s.stage = e.failure.stage;
+      }
+    } elif e.token < 100u64 {
+      imm s = &mut st.req[usize.from(e.token)];
+      if s.finals > 0u32 {s.after = s.after + 1u32;}
+      if e.kind == EventKind.Response[] {s.status = e.response.status;}
+      elif e.kind == EventKind.Data[] {
+        s.bytes = s.bytes + u64.from(e.buf.len());
+        drv.release(e.req, e.buf.len());
+      } elif e.isTerminal() {
+        s.finals = s.finals + 1u32;
+        s.kind = e.kind;
+        s.stage = e.failure.stage;
+        s.noResponse = e.failure.error.noResponse;
+        s.unsent = e.failure.unsent;
+      }
+    }
+  }
+  events.clear();
+}
+
+// One turn of the loop for the driver (and the program's raw operations):
+// wait at most ms
+fn turn(drv &mut Driver, lp &mut Loop, st &mut State, pool &Pool, ms i64) {
+  mut events = List[Event].empty();
+  drv.pump(lp, &mut events);
+  mut until = Instant.now() + Duration.fromMillis(ms);
+  if drv.wakeAt() < until {until = drv.wakeAt();}
+  if events.len() > 0usize {until = new Instant();}
+  mut comps = List[Completion].empty();
+  lp.poll(until, &mut comps);
+  mut k = 0usize;
+  while k < comps.len() {
+    imm c = &mut comps[k];
+    if not drv.complete(lp, c) {
+      st.raw.push(new Raw(c.token, c.isDone(), c.n, c.handle, String.from(c.buf.view())));
+    }
+    k = k + 1usize;
+  }
+  drv.pump(lp, &mut events);
+  note(drv, lp, st, pool, &mut events);
+}
+
+// Turns until request tok has its final answer, or ms pass
+fn until(drv &mut Driver, lp &mut Loop, st &mut State, pool &Pool, tok u64, ms i64) {
+  imm end = Instant.now() + Duration.fromMillis(ms);
+  while Instant.now() < end {
+    if tok != 0u64 and st.req[usize.from(tok)].finals > 0u32 {return;}
+    turn(drv, lp, st, pool, 5i64);
+  }
+}
+
+fn get(drv &mut Driver, lp &mut Loop, conn ConnId, target &[]u8, tok u64) ReqId {
+  drv.request(lp, conn, RequestHead.get(target, "127.0.0.1"), BodyLength.empty(), Sink.Here[tok]);
+}
+
+// The raw completion with token tok, taken out of st.raw: its count and
+// its buffer's bytes appended to dest; -1 when none has come
+fn takeRaw(st &mut State, tok u64, dest &mut String) i64 {
+  mut k = 0usize;
+  while k < st.raw.len() {
+    imm c = &mut st.raw[k];
+    if c.token == tok {
+      imm n = if c.done {i64.from(c.n);} else {0i64 - 2i64;};
+      dest.append(c.bytes.view());
+      imm last = st.raw.len() - 1usize;
+      st.raw.swap(k, last);
+      st.raw.pop();
+      return n;
+    }
+    k = k + 1usize;
+  }
+  0i64 - 1i64;
+}
+
+fn rawHandle(st &mut State, tok u64) Handle {
+  mut k = 0usize;
+  while k < st.raw.len() {
+    imm c = &mut st.raw[k];
+    if c.token == tok {
+      imm h = c.handle;
+      imm last = st.raw.len() - 1usize;
+      st.raw.swap(k, last);
+      st.raw.pop();
+      return h;
+    }
+    k = k + 1usize;
+  }
+  Handle.none();
+}
+
+fn main() i32 {
+  imm pool = Pool.make();
+  mut lp = Loop.mustMake();
+  mut cfg = Config.make();
+  cfg.maxWaiting = 1u32;
+  mut drv = Driver.make(cfg, pool);
+  mut st = new State(List[Slot].empty(), List[Slot].empty(), List[EventKind].empty(), List[Stage].empty(),
+    0u32, 0u32, 0u64, ConnId.none(), List[Raw].empty());
+  mut i = 0usize;
+  while i < slots {
+    st.req.push(blankSlot());
+    st.conn.push(blankSlot());
+    i = i + 1usize;
+  }
+  mut listener = ListenerId.none();
+  match drv.listen(&mut lp, SocketAddr.localhost(0u16), Sink.Here[tokServer]) {
+    case imm r Ok {listener = r.value;}
+    case imm e Error {}
+  }
+  mut port = 0u16;
+  match drv.localAddr(&lp, listener) {
+    case imm a Ok {port = a.value.port();}
+    case imm e Error {}
+  }
+  require(port != 0u16, "the server listens");
+
+  // 1. Reset after the request was read
+  {
+    imm c = drv.connect(&mut lp, "127.0.0.1", port, Sink.Here[100u64]);
+    get(&mut drv, &mut lp, c, "/resetnow", 1u64);
+    until(&mut drv, &mut lp, &mut st, &pool, 1u64, 3000i64);
+    until(&mut drv, &mut lp, &mut st, &pool, 0u64, 50i64);
+    imm s = st.req[1usize];
+    expect(s.kind == EventKind.Failed[], "1: Failed");
+    expect(s.stage == Stage.Read[], "1: ...at Read");
+    expect(s.noResponse, "1: ...no byte of a response");
+    expect(not s.unsent, "1: ...the request was sent");
+    expect(st.conn[0usize].closes == 1u32 and not st.conn[0usize].clean, "1: the connection: Closed, not clean");
+    expect(st.conn[0usize].stage == Stage.Read[], "1: ...at Read");
+  }
+
+  // 2. Reset after the head and 1,000 bytes of the body were read
+  {
+    imm c = drv.connect(&mut lp, "127.0.0.1", port, Sink.Here[101u64]);
+    get(&mut drv, &mut lp, c, "/resetmid", 2u64);
+    imm end = Instant.now() + Duration.fromSeconds(3i64);
+    while st.req[2usize].bytes < 1000u64 and Instant.now() < end {
+      turn(&mut drv, &mut lp, &mut st, &pool, 5i64);
+    }
+    expectUInt(st.req[2usize].bytes, 1000u64, "2: 1,000 body bytes read");
+    drv.abort(&mut lp, st.lastSrvConn);
+    until(&mut drv, &mut lp, &mut st, &pool, 2u64, 3000i64);
+    imm s = st.req[2usize];
+    expectUInt(u64.from(s.status), 200u64, "2: the head came");
+    expect(s.kind == EventKind.Failed[], "2: Failed");
+    expect(s.stage == Stage.Read[], "2: ...at Read");
+    expect(not s.noResponse, "2: ...not noResponse: the response had begun");
+  }
+
+  // 3. The client resets while uploading
+  {
+    imm c = drv.connect(&mut lp, "127.0.0.1", port, Sink.Here[102u64]);
+    imm r = drv.request(&mut lp, c, RequestHead.make("POST", "/upload", "127.0.0.1"),
+      BodyLength.sized(1048576u64), Sink.Here[3u64]);
+    imm srvBefore = st.srvFinals.len();
+    imm dataBefore = st.srvData;
+    // The body's first 64 KiB, once the request is under way
+    imm end = Instant.now() + Duration.fromSeconds(3i64);
+    mut sent = false;
+    while st.srvData - dataBefore < 65536u64 and Instant.now() < end {
+      if not sent {
+        mut b = pool.mustTake(65536usize);
+        b.setLen(65536usize);
+        match drv.sendData(r, b) {
+          case is None[IoBuf] {sent = true;}
+          else {}
+        }
+      }
+      turn(&mut drv, &mut lp, &mut st, &pool, 5i64);
+    }
+    expectUInt(st.srvData - dataBefore, 65536u64, "3: the server read the first 64 KiB");
+    drv.abort(&mut lp, c);
+    until(&mut drv, &mut lp, &mut st, &pool, 0u64, 200i64);
+    expect(st.req[3usize].kind == EventKind.Cancelled[], "3: the client's request: Cancelled");
+    expectUInt(u64.from(st.srvFinals.len() - srvBefore), 1u64, "3: the server's: one final answer");
+    expect(*st.srvFinals[srvBefore] == EventKind.Failed[] and *st.srvStages[srvBefore] == Stage.Read[],
+      "3: ...Failed at Read");
+  }
+
+  // 4. A raw client half-closes after its request
+  {
+    imm cleanBefore = st.srvClean;
+    lp.submit(Op.Connect[SocketAddr.localhost(port)], Target.Here[1u64]);
+    mut h = Handle.none();
+    imm end = Instant.now() + Duration.fromSeconds(3i64);
+    while h.isNone() and Instant.now() < end {
+      turn(&mut drv, &mut lp, &mut st, &pool, 5i64);
+      h = rawHandle(&mut st, 1u64);
+    }
+    require(not h.isNone(), "4: the raw client connected");
+    mut b = pool.mustTake(256usize);
+    b.append("GET /ok HTTP/1.1\r\nHost: h\r\n\r\n");
+    lp.submit(Op.Send[h, b], Target.Here[2u64]);
+    mut got = String.empty();
+    mut sentDone = false;
+    mut ended = false;
+    mut recvOut = false;
+    while not ended and Instant.now() < end {
+      turn(&mut drv, &mut lp, &mut st, &pool, 5i64);
+      mut scratch = String.empty();
+      if not sentDone and takeRaw(&mut st, 2u64, &mut scratch) > 0i64 {
+        sentDone = true;
+        expectUInt(u64.from(lp.shutdown(h)), 0u64, "4: the raw client shuts its sending side");
+      }
+      if sentDone and not recvOut {
+        lp.submit(Op.Recv[h, pool.mustTake(4096usize)], Target.Here[3u64]);
+        recvOut = true;
+      }
+      imm n = takeRaw(&mut st, 3u64, &mut got);
+      if n >= 0i64 {recvOut = false;}
+      if n == 0i64 {ended = true;}
+    }
+    expectStr(got.view(), "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok", "4: the whole response came");
+    expect(ended, "4: ...then the end of the stream");
+    until(&mut drv, &mut lp, &mut st, &pool, 0u64, 50i64);
+    expectUInt(u64.from(st.srvClean - cleanBefore), 1u64, "4: the server's connection closed cleanly");
+    lp.close(h);
+  }
+
+  // 5. A raw server answers with a body delimited by the close, and
+  // half-closes
+  {
+    imm l = lp.mustListen(SocketAddr.localhost(0u16));
+    mut rport = 0u16;
+    match lp.localAddr(l) {
+      case imm a Ok {rport = a.value.port();}
+      case imm e Error {}
+    }
+    lp.submit(Op.Accept[l], Target.Here[4u64]);
+    imm c = drv.connect(&mut lp, "127.0.0.1", rport, Sink.Here[103u64]);
+    get(&mut drv, &mut lp, c, "/raw", 5u64);
+    mut h = Handle.none();
+    imm end = Instant.now() + Duration.fromSeconds(3i64);
+    while h.isNone() and Instant.now() < end {
+      turn(&mut drv, &mut lp, &mut st, &pool, 5i64);
+      h = rawHandle(&mut st, 4u64);
+    }
+    require(not h.isNone(), "5: the raw server accepted");
+    // Read the request's head, then answer and shut the sending side
+    mut req = String.empty();
+    mut recvOut = false;
+    while not req.contains("\r\n\r\n") and Instant.now() < end {
+      if not recvOut {
+        lp.submit(Op.Recv[h, pool.mustTake(4096usize)], Target.Here[6u64]);
+        recvOut = true;
+      }
+      turn(&mut drv, &mut lp, &mut st, &pool, 5i64);
+      if takeRaw(&mut st, 6u64, &mut req) >= 0i64 {recvOut = false;}
+    }
+    expect(req.startsWith("GET /raw HTTP/1.1\r\nHost: 127.0.0.1\r\n"), "5: the request came");
+    mut b = pool.mustTake(256usize);
+    b.append("HTTP/1.1 200 OK\r\nX-Kind: until-close\r\n\r\nall of this, until the close");
+    lp.submit(Op.Send[h, b], Target.Here[7u64]);
+    mut shut = false;
+    while st.req[5usize].finals == 0u32 and Instant.now() < end {
+      turn(&mut drv, &mut lp, &mut st, &pool, 5i64);
+      mut scratch = String.empty();
+      if not shut and takeRaw(&mut st, 7u64, &mut scratch) > 0i64 {
+        lp.shutdown(h);
+        shut = true;
+      }
+    }
+    until(&mut drv, &mut lp, &mut st, &pool, 0u64, 50i64);
+    imm s = st.req[5usize];
+    expect(s.kind == EventKind.Done[], "5: Done");
+    expectUInt(s.bytes, 28u64, "5: ...the whole body, to the close");
+    expect(st.conn[3usize].closes == 1u32 and st.conn[3usize].clean, "5: the connection closed cleanly");
+    lp.close(h);
+    lp.close(l);
+    // The raw receive outstanding, if any, ends with the socket
+    until(&mut drv, &mut lp, &mut st, &pool, 0u64, 20i64);
+    st.raw.clear();
+  }
+
+  // 6. maxWaiting 1, on a connection still connecting
+  {
+    imm c = drv.connect(&mut lp, "127.0.0.1", port, Sink.Here[104u64]);
+    get(&mut drv, &mut lp, c, "/ok", 6u64);
+    get(&mut drv, &mut lp, c, "/ok", 7u64);
+    until(&mut drv, &mut lp, &mut st, &pool, 6u64, 3000i64);
+    expect(st.req[6usize].kind == EventKind.Done[], "6: the first: Done");
+    expect(st.req[7usize].kind == EventKind.Failed[], "6: the second: Failed");
+    expect(st.req[7usize].stage == Stage.Limit[], "6: ...at Limit");
+    expect(st.req[7usize].unsent, "6: ...unsent");
+    drv.close(&mut lp, c);
+  }
+
+  // 7. A driver of maxConnections 1
+  {
+    mut c7 = Config.make();
+    c7.maxConnections = 1u32;
+    mut d7 = Driver.make(c7, pool);
+    imm a = d7.connect(&mut lp, "127.0.0.1", port, Sink.Here[105u64]);
+    imm b = d7.connect(&mut lp, "127.0.0.1", port, Sink.Here[106u64]);
+    d7.request(&mut lp, b, RequestHead.get("/ok", "127.0.0.1"), BodyLength.empty(), Sink.Here[8u64]);
+    mut events = List[Event].empty();
+    d7.pump(&mut lp, &mut events);
+    note(&mut drv, &mut lp, &mut st, &pool, &mut events);
+    expect(st.conn[6usize].closes == 1u32 and st.conn[6usize].stage == Stage.Limit[], "7: the second: Closed at Limit");
+    expect(st.req[8usize].kind == EventKind.Failed[] and st.req[8usize].unsent, "7: ...its request Failed, unsent");
+    expect(d7.isOpen(a) or d7.live() == 1u32, "7: the first goes on");
+    d7.abortAll(&mut lp);
+    d7.pump(&mut lp, &mut events);
+    events.clear();
+  }
+
+  // 8. A server driver of maxConnections 2: the third connection is never
+  // accepted
+  {
+    mut c8 = Config.make();
+    c8.maxConnections = 2u32;
+    c8.acceptDepth = 1u32;
+    mut d8 = Driver.make(c8, pool);
+    mut l8 = ListenerId.none();
+    match d8.listen(&mut lp, SocketAddr.localhost(0u16), Sink.Here[tokServer2]) {
+      case imm r Ok {l8 = r.value;}
+      case imm e Error {}
+    }
+    mut p8 = 0u16;
+    match d8.localAddr(&lp, l8) {
+      case imm a Ok {p8 = a.value.port();}
+      case imm e Error {}
+    }
+    imm deadline = Instant.now() + Duration.fromMillis(300i64);
+    mut cs = List[ConnId].empty();
+    mut k = 0u64;
+    while k < 3u64 {
+      imm c = drv.connect(&mut lp, "127.0.0.1", p8, Sink.Here[107u64 + k]);
+      drv.requestBy(&mut lp, c, RequestHead.get("/ok", "127.0.0.1"), BodyLength.empty(), Sink.Here[9u64 + k], deadline);
+      cs.push(c);
+      k = k + 1u64;
+    }
+    // Both drivers on the one loop
+    mut events = List[Event].empty();
+    mut comps = List[Completion].empty();
+    while Instant.now() < deadline + Duration.fromMillis(100i64) {
+      d8.pump(&mut lp, &mut events);
+      drv.pump(&mut lp, &mut events);
+      mut w = Instant.now() + Duration.fromMillis(5i64);
+      if events.len() > 0usize {w = new Instant();}
+      lp.poll(w, &mut comps);
+      mut q = 0usize;
+      while q < comps.len() {
+        imm cp = &mut comps[q];
+        if not drv.complete(&mut lp, cp) {d8.complete(&mut lp, cp);}
+        q = q + 1usize;
+      }
+      comps.clear();
+      d8.pump(&mut lp, &mut events);
+      drv.pump(&mut lp, &mut events);
+      // The second server's requests are answered by d8
+      q = 0usize;
+      while q < events.len() {
+        imm e = &mut events[q];
+        if e.token == tokServer2 and e.kind == EventKind.Request[] {
+          d8.respond(e.req, ResponseHead.make(200u16), BodyLength.sized(2u64));
+          mut b = pool.mustTake(16usize);
+          b.append("ok");
+          d8.sendData(e.req, b);
+          d8.finish(e.req);
+        }
+        q = q + 1usize;
+      }
+      note(&mut drv, &mut lp, &mut st, &pool, &mut events);
+    }
+    mut dones = 0u32;
+    mut timeouts = 0u32;
+    k = 9u64;
+    while k < 12u64 {
+      if st.req[usize.from(k)].kind == EventKind.Done[] {dones = dones + 1u32;}
+      if st.req[usize.from(k)].kind == EventKind.TimedOut[] {timeouts = timeouts + 1u32;}
+      k = k + 1u64;
+    }
+    expectUInt(u64.from(dones), 2u64, "8: two connections accepted and answered");
+    expectUInt(u64.from(timeouts), 1u64, "8: the third never accepted: its request timed out");
+    expectUInt(d8.stats().accepted, 2u64, "8: the server accepted two");
+    d8.abortAll(&mut lp);
+    drv.abortAll(&mut lp);
+    d8.pump(&mut lp, &mut events);
+    events.clear();
+  }
+
+  until(&mut drv, &mut lp, &mut st, &pool, 0u64, 50i64);
+  mut k = 1usize;
+  mut finals = 0u64;
+  mut after = 0u64;
+  while k < 12usize {
+    finals = finals + u64.from(st.req[k].finals);
+    after = after + u64.from(st.req[k].after);
+    k = k + 1usize;
+  }
+  expectUInt(finals, 10u64, "ten requests (none in case 4), ten final answers");
+  expectUInt(after, 0u64, "nothing after any");
+  st.raw.clear();
+  expectUInt(pool.stats().lent, 0u64, "every buffer back in the pool");
+  done();
+}

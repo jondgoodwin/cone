@@ -1,0 +1,258 @@
+// Exactly one final answer, raced. 64 kept-alive connections on one Loop
+// each make 60 GETs in turn, over a server on the same Loop that answers
+// some at once and some after a few hundred microseconds. Every request
+// races its own end against a deadline 0.2 to 2.2 ms off,
+// and, for a third of them, against a CancelGroup that another thread
+// cancels at a moment of its own choosing; a tenth are also cancelled by
+// the program while waiting or under way. Whatever wins, each request must
+// get exactly one final answer and nothing after it, each connection
+// exactly one Closed (those reset by a cancel are replaced, and keep
+// going), and every buffer must be back in the pool at the end. Which
+// outcome each request gets is left to the race, and not printed.
+
+mod race;
+
+import testing use *;
+import thread;
+import sync use *;
+import collections use List, String;
+import time use Instant, Duration;
+import iobuf use *;
+import iocore use Loop, SocketAddr, CancelGroup, forever;
+import http use *;
+import httpconn use *;
+
+const conns = 64u64;
+const perConn = 60u64;
+const tokServer = 0x10000000u64;
+const tokConn = 0x20000000u64;
+const tokReq = 0x30000000u64;       // + the request's number
+
+// A small, fixed sequence of pseudo-random numbers (xorshift)
+fn nextRand(s &mut u64) u64 {
+  mut x = *s;
+  x = x ^ (x << 13u64);
+  x = x ^ (x >> 7u64);
+  x = x ^ (x << 17u64);
+  *s = x;
+  x;
+}
+
+// Groups for the other thread to cancel: it cancels each a little after
+// it is handed over
+fn canceller(rx Receiver[CancelGroup]) u64 {
+  mut r = rx;
+  mut n = 0u64;
+  mut seed = 99u64;
+  while true {
+    mut got = false;
+    match r.recv() {
+      case imm g Some {
+        got = true;
+        thread.sleep(Duration.fromMicros(i64.from(nextRand(&mut seed) % 400u64)));
+        if g.value.cancel() {n = n + 1u64;}
+      }
+      case is None[CancelGroup] {}
+    }
+    if not got {break;}
+  }
+  n;
+}
+
+fn main() i32 {
+  imm pool = Pool.make();
+  mut lp = Loop.mustMake();
+  mut cfg = Config.make();
+  cfg.acceptDepth = 16u32;
+  mut drv = Driver.make(cfg, pool);
+  mut port = 0u16;
+  match drv.listen(&mut lp, SocketAddr.localhost(0u16), Sink.Here[tokServer]) {
+    case imm r Ok {
+      match drv.localAddr(&lp, r.value) {
+        case imm a Ok {port = a.value.port();}
+        case imm e Error {}
+      }
+    }
+    case imm e Error {}
+  }
+  require(port != 0u16, "the server listens");
+  mut gTx Sender[CancelGroup];
+  mut gRx Receiver[CancelGroup];
+  gTx, gRx = Channel[CancelGroup].make();
+  imm other = thread.start(gRx, &canceller);
+
+  imm total = conns * perConn;
+  mut finals = List[u32].empty();      // each request's final answers
+  mut after = 0u64;                    // events after a final answer
+  mut q = 0u64;
+  while q < total {
+    finals.push(0u32);
+    q = q + 1u64;
+  }
+  mut cs = List[ConnId].empty();
+  mut made = List[u64].empty();
+  mut busy = List[ReqId].empty();
+  mut closes = List[u32].empty();      // Closed per connection made, by its number
+  mut k = 0u64;
+  while k < conns {
+    cs.push(drv.connect(&mut lp, "127.0.0.1", port, Sink.Here[tokConn + u64.from(closes.len())]));
+    closes.push(0u32);
+    made.push(0u64);
+    busy.push(ReqId.none());
+    k = k + 1u64;
+  }
+  // The server's delayed answers
+  mut pend = List[ReqId].empty();
+  mut pendAt = List[Instant].empty();
+  mut seed = 12345u64;
+  mut asked = 0u64;
+  mut answered = 0u64;
+  mut events = List[Event].empty();
+  imm giveUp = Instant.now() + Duration.fromSeconds(40i64);
+  while answered < total and Instant.now() < giveUp {
+    // Each free connection's next request
+    k = 0u64;
+    while k < conns {
+      imm i = usize.from(k);
+      if busy[i].isNone() and *made[i] < perConn and drv.isIdle(*cs[i]) {
+        imm n = k * perConn + *made[i];
+        imm r = nextRand(&mut seed);
+        imm dl = Instant.now() + Duration.fromMicros(i64.from(200u64 + r % 2000u64));
+        mut id = ReqId.none();
+        if r % 3u64 == 0u64 {
+          imm g = CancelGroup.make();
+          id = drv.requestIn(&mut lp, *cs[i], RequestHead.get("/x", "127.0.0.1"), BodyLength.empty(),
+            Sink.Here[tokReq + n], g, dl);
+          gTx.send(g);
+        } else {
+          id = drv.requestBy(&mut lp, *cs[i], RequestHead.get("/x", "127.0.0.1"), BodyLength.empty(),
+            Sink.Here[tokReq + n], dl);
+        }
+        busy.set(i, id);
+        made.set(i, *made[i] + 1u64);
+        asked = asked + 1u64;
+        if r % 10u64 == 1u64 {drv.cancel(&mut lp, id);}
+      }
+      k = k + 1u64;
+    }
+    // The server's answers that are due
+    mut j = 0usize;
+    while j < pend.len() {
+      if *pendAt[j] <= Instant.now() {
+        imm req = *pend[j];
+        if drv.respond(req, ResponseHead.make(200u16), BodyLength.sized(8u64)) {
+          mut b = pool.mustTake(8usize);
+          b.setLen(8usize);
+          drv.sendData(req, b);
+          drv.finish(req);
+        }
+        imm last = pend.len() - 1usize;
+        pend.swap(j, last);
+        pendAt.swap(j, last);
+        pend.pop();
+        pendAt.pop();
+      } else {
+        j = j + 1usize;
+      }
+    }
+    imm wake = if pend.len() > 0usize {Instant.now() + Duration.fromMicros(100i64);} else {giveUp;};
+    drv.poll(&mut lp, wake, &mut events);
+    mut e2 = 0usize;
+    while e2 < events.len() {
+      imm e = &mut events[e2];
+      e2 = e2 + 1usize;
+      if e.token == tokServer {
+        if e.kind == EventKind.Request[] {
+          imm r = nextRand(&mut seed);
+          if r % 2u64 == 0u64 {
+            drv.respond(e.req, ResponseHead.make(200u16), BodyLength.sized(8u64));
+            mut b = pool.mustTake(8usize);
+            b.setLen(8usize);
+            drv.sendData(e.req, b);
+            drv.finish(e.req);
+          } else {
+            pend.push(e.req);
+            pendAt.push(Instant.now() + Duration.fromMicros(i64.from(r % 600u64)));
+          }
+        }
+      } elif e.token >= tokReq {
+        imm n = usize.from(e.token - tokReq);
+        if *finals[n] > 0u32 {after = after + 1u64;}
+        if e.kind == EventKind.Data[] {drv.release(e.req, e.buf.len());}
+        if e.isTerminal() {
+          finals.set(n, *finals[n] + 1u32);
+          answered = answered + 1u64;
+          imm c = usize.from(e.token - tokReq) / usize.from(perConn);
+          if *busy[c] == e.req {busy.set(c, ReqId.none());}
+        }
+      } elif e.token >= tokConn {
+        if e.kind == EventKind.Closed[] {
+          imm m = usize.from(e.token - tokConn);
+          closes.set(m, *closes[m] + 1u32);
+          // A connection reset by a cancel or a deadline: a new one takes
+          // its place
+          k = 0u64;
+          while k < conns {
+            imm i = usize.from(k);
+            if *cs[i] == e.conn {
+              cs.set(i, drv.connect(&mut lp, "127.0.0.1", port, Sink.Here[tokConn + u64.from(closes.len())]));
+              closes.push(0u32);
+            }
+            k = k + 1u64;
+          }
+        }
+      }
+    }
+    events.clear();
+  }
+  // The end: every connection closed, the canceller done
+  k = 0u64;
+  while k < conns {
+    drv.close(&mut lp, *cs[usize.from(k)]);
+    k = k + 1u64;
+  }
+  imm until = Instant.now() + Duration.fromSeconds(5i64);
+  while drv.live() > 0u32 and Instant.now() < until {
+    drv.poll(&mut lp, until, &mut events);
+    mut e2 = 0usize;
+    while e2 < events.len() {
+      imm e = &mut events[e2];
+      if e.token >= tokConn and e.token < tokReq and e.kind == EventKind.Closed[] {
+        imm m = usize.from(e.token - tokConn);
+        closes.set(m, *closes[m] + 1u32);
+      } elif e.token >= tokReq {
+        after = after + 1u64;
+      }
+      e2 = e2 + 1usize;
+    }
+    events.clear();
+  }
+  // gTx's death closes the channel: the canceller ends
+  {
+    mut done1 = gTx;
+  }
+  other.join();
+  expectUInt(asked, total, "every request asked for");
+  expectUInt(answered, total, "...and answered");
+  mut once = 0u64;
+  q = 0u64;
+  while q < total {
+    if *finals[usize.from(q)] == 1u32 {once = once + 1u64;}
+    q = q + 1u64;
+  }
+  expectUInt(once, total, "every request: exactly one final answer");
+  expectUInt(after, 0u64, "nothing after any");
+  mut closedOnce = 0u64;
+  q = 0u64;
+  while q < u64.from(closes.len()) {
+    if *closes[usize.from(q)] == 1u32 {closedOnce = closedOnce + 1u64;}
+    q = q + 1u64;
+  }
+  expectUInt(closedOnce, u64.from(closes.len()), "every client connection: exactly one Closed");
+  expectUInt(u64.from(drv.live()), 0u64, "no connection left");
+  imm s = drv.stats();
+  expectUInt(s.done + s.failed + s.cancelled + s.timedOut, s.requests, "the driver's counts: every request, client's and server's, answered once");
+  drv.abortAll(&mut lp);
+  expectUInt(pool.stats().lent, 0u64, "every buffer back in the pool");
+  done();
+}

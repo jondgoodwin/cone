@@ -1,0 +1,314 @@
+// Across threads: a server on one thread, with its own Loop and Driver; a
+// client on the main thread, with its own, fetching from it over three
+// kept-alive connections, 40 requests on each, every body checked; and one
+// more request whose events go by a channel (Sink.Chan) to a third thread,
+// which reads a 1 MiB body through a channel of room for one event while
+// sleeping now and then, so the channel fills: its events are held, its
+// connection stops reading, and every byte still arrives once, in order,
+// with exactly one final answer after them.
+
+mod threads;
+
+import testing use *;
+import thread;
+import sync use *;
+import collections use List, String;
+import time use Instant, Duration;
+import iobuf use *;
+import iocore use Loop, SocketAddr, forever;
+import http use *;
+import httpconn use *;
+
+const conns = 3u64;
+const perConn = 40u64;
+const bigSize = 1048576u64;
+
+// The byte at offset k of the body of /n/<i>
+fn bodyByte(i u64, k u64) u8 {u8.from((i * 7u64 + k * 13u64) % 251u64);}
+fn bodyLen(i u64) u64 {if i == 0u64 {bigSize;} else {1u64 + (i * 37u64) % 3000u64;};}
+
+// The number at the end of a target, '/n/<i>'
+fn targetNumber(t &[]u8) u64 {
+  mut i = 0u64;
+  mut k = 3usize;
+  while k < t.len {
+    i = i * 10u64 + u64.from(t[k] - '0');
+    k = k + 1usize;
+  }
+  i;
+}
+
+// ---------------------------------------------------------------------------
+// The server's thread
+// ---------------------------------------------------------------------------
+
+struct ServerArgs {
+  pub portTx Sender[u16];
+  pub closes u64;           // stop once this many connections have closed
+}
+
+struct ServerReport {
+  pub requests u64;
+  pub done u64;
+  pub notDone u64;
+  pub closed u64;
+}
+
+fn serve(a ServerArgs) ServerReport {
+  imm pool = Pool.make();
+  mut lp = Loop.mustMake();
+  mut drv = Driver.make(Config.make(), pool);
+  mut listener = ListenerId.none();
+  match drv.listen(&mut lp, SocketAddr.localhost(0u16), Sink.Here[1u64]) {
+    case imm r Ok {listener = r.value;}
+    case imm e Error {}
+  }
+  mut port = 0u16;
+  match drv.localAddr(&lp, listener) {
+    case imm r Ok {port = r.value.port();}
+    case imm e Error {}
+  }
+  a.portTx.send(port);
+  mut rep = new ServerReport(0u64, 0u64, 0u64, 0u64);
+  mut events = List[Event].empty();
+  // Bodies being sent: a request and how far it has got
+  mut sending = List[ReqId].empty();
+  mut sentTo = List[u64].empty();
+  mut which = List[u64].empty();
+  while rep.closed < a.closes {
+    drv.poll(&mut lp, forever(), &mut events);
+    mut k = 0usize;
+    while k < events.len() {
+      imm e = &mut events[k];
+      k = k + 1usize;
+      if e.kind == EventKind.Request[] {
+        rep.requests = rep.requests + 1u64;
+        imm i = targetNumber(e.request.target.view());
+        drv.respond(e.req, ResponseHead.make(200u16), BodyLength.sized(bodyLen(i)));
+        sending.push(e.req);
+        sentTo.push(0u64);
+        which.push(i);
+      } elif e.kind == EventKind.Done[] {
+        rep.done = rep.done + 1u64;
+      } elif e.isTerminal() {
+        rep.notDone = rep.notDone + 1u64;
+      } elif e.kind == EventKind.Closed[] {
+        rep.closed = rep.closed + 1u64;
+      }
+    }
+    events.clear();
+    // Bodies out, as the connections take them
+    mut j = 0usize;
+    while j < sending.len() {
+      imm req = *sending[j];
+      imm i = *which[j];
+      imm len = bodyLen(i);
+      mut off = *sentTo[j];
+      mut refused = false;
+      while off < len and not refused {
+        imm n = if len - off < 16384u64 {len - off;} else {16384u64;};
+        mut b = pool.mustTake(usize.from(n));
+        imm room = b.whole();
+        mut q = 0u64;
+        while q < n {
+          room[usize.from(q)] = bodyByte(i, off + q);
+          q = q + 1u64;
+        }
+        b.setLen(usize.from(n));
+        match drv.sendData(req, b) {
+          case is None[IoBuf] {off = off + n;}
+          else {refused = true;}
+        }
+      }
+      if off == len {
+        drv.finish(req);
+        imm last = sending.len() - 1usize;
+        sending.swap(j, last);
+        sentTo.swap(j, last);
+        which.swap(j, last);
+        sending.pop();
+        sentTo.pop();
+        which.pop();
+      } else {
+        sentTo.set(j, off);
+        j = j + 1usize;
+      }
+    }
+  }
+  rep;
+}
+
+// ---------------------------------------------------------------------------
+// The channel's thread
+// ---------------------------------------------------------------------------
+
+struct ChanReport {
+  pub bytes u64;
+  pub wrong u64;
+  pub responses u64;
+  pub ends u64;
+  pub finals u64;
+  pub done u64;
+  pub afterFinal u64;
+}
+
+fn consume(rx Receiver[Event]) ChanReport {
+  mut r = rx;
+  mut rep = new ChanReport(0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64);
+  mut seen = 0u64;
+  while true {
+    mut got = false;
+    match r.recv() {
+      case mut s Some {
+        got = true;
+        imm e = &mut s.value;
+        if rep.finals > 0u64 {rep.afterFinal = rep.afterFinal + 1u64;}
+        if e.kind == EventKind.Response[] {rep.responses = rep.responses + 1u64;}
+        elif e.kind == EventKind.Data[] {
+          imm v = e.buf.view();
+          mut k = 0usize;
+          while k < v.len {
+            if v[k] != bodyByte(0u64, rep.bytes + u64.from(k)) {rep.wrong = rep.wrong + 1u64;}
+            k = k + 1usize;
+          }
+          rep.bytes = rep.bytes + u64.from(v.len);
+          seen = seen + 1u64;
+          // Slow, now and then: the channel fills behind it
+          if seen % 4u64 == 0u64 {thread.sleep(Duration.fromMillis(2i64));}
+        } elif e.kind == EventKind.End[] {rep.ends = rep.ends + 1u64;}
+        elif e.isTerminal() {
+          rep.finals = rep.finals + 1u64;
+          if e.kind == EventKind.Done[] {rep.done = rep.done + 1u64;}
+          return rep;
+        }
+      }
+      case is None[Event] {}
+    }
+    if not got {break;}
+  }
+  rep;
+}
+
+// ---------------------------------------------------------------------------
+// The client: the main thread
+// ---------------------------------------------------------------------------
+
+fn main() i32 {
+  mut portTx Sender[u16];
+  mut portRx Receiver[u16];
+  portTx, portRx = Channel[u16].make();
+  imm server = thread.start(new ServerArgs(portTx, conns + 1u64), &serve);
+  mut port = 0u16;
+  match portRx.recv() {
+    case imm p Some {port = p.value;}
+    case is None[u16] {}
+  }
+  require(port != 0u16, "the server's port");
+
+  // The channel's reader
+  mut evTx Sender[Event];
+  mut evRx Receiver[Event];
+  evTx, evRx = Channel[Event].bounded(1u64);
+  imm reader = thread.start(evRx, &consume);
+
+  imm pool = Pool.make();
+  mut lp = Loop.mustMake();
+  mut drv = Driver.make(Config.make(), pool);
+  mut cs = List[ConnId].empty();
+  mut next = List[u64].empty();       // each connection's requests made
+  mut have = List[u64].empty();       // body bytes of its request in flight
+  mut k = 0u64;
+  while k < conns {
+    cs.push(drv.connect(&mut lp, "127.0.0.1", port, Sink.Here[k]));
+    next.push(0u64);
+    have.push(0u64);
+    k = k + 1u64;
+  }
+  // The big one, on a fourth connection, to the channel
+  imm bigConn = drv.connect(&mut lp, "127.0.0.1", port, Sink.Here[99u64]);
+  drv.request(&mut lp, bigConn, RequestHead.get("/n/0", "127.0.0.1"), BodyLength.empty(), Sink.Chan[500u64, evTx]);
+
+  mut wrong = 0u64;
+  mut dones = 0u64;
+  mut notDone = 0u64;
+  mut closed = 0u64;
+  mut events = List[Event].empty();
+  imm giveUp = Instant.now() + Duration.fromSeconds(30i64);
+  mut bigDone = false;
+  while (closed < conns + 1u64 or drv.held() > 0usize) and Instant.now() < giveUp {
+    // Each free connection's next request
+    k = 0u64;
+    while k < conns {
+      imm c = *cs[usize.from(k)];
+      imm made = *next[usize.from(k)];
+      if drv.isIdle(c) and made < perConn {
+        imm i = 1u64 + k * perConn + made;
+        mut t = String.from("/n/");
+        t.appendUInt(i);
+        drv.request(&mut lp, c, RequestHead.get(t.view(), "127.0.0.1"), BodyLength.empty(), Sink.Here[1000u64 + i]);
+        next.set(usize.from(k), made + 1u64);
+        have.set(usize.from(k), 0u64);
+      } elif made == perConn and drv.isIdle(c) {
+        drv.close(&mut lp, c);
+        next.set(usize.from(k), made + 1u64);
+      }
+      k = k + 1u64;
+    }
+    if not bigDone and drv.isIdle(bigConn) {
+      drv.close(&mut lp, bigConn);
+      bigDone = true;
+    }
+    drv.poll(&mut lp, forever(), &mut events);
+    mut j = 0usize;
+    while j < events.len() {
+      imm e = &mut events[j];
+      j = j + 1usize;
+      if e.kind == EventKind.Closed[] {
+        closed = closed + 1u64;
+        if not e.clean {wrong = wrong + 1u64;}
+      } elif e.token >= 1000u64 {
+        imm i = e.token - 1000u64;
+        imm c = (i - 1u64) / perConn;
+        if e.kind == EventKind.Data[] {
+          imm v = e.buf.view();
+          imm off = *have[usize.from(c)];
+          mut q = 0usize;
+          while q < v.len {
+            if v[q] != bodyByte(i, off + u64.from(q)) {wrong = wrong + 1u64;}
+            q = q + 1usize;
+          }
+          have.set(usize.from(c), off + u64.from(v.len));
+          drv.release(e.req, v.len);
+        } elif e.kind == EventKind.Done[] {
+          dones = dones + 1u64;
+          if *have[usize.from(c)] != bodyLen(i) {wrong = wrong + 1u64;}
+        } elif e.isTerminal() {
+          notDone = notDone + 1u64;
+        }
+      }
+    }
+    events.clear();
+  }
+  imm big = reader.join();
+  imm rep = server.join();
+  expectUInt(closed, conns + 1u64, "every connection closed, each once");
+  expectUInt(wrong, 0u64, "every body byte right, every close clean");
+  expectUInt(dones, conns * perConn, "every request Done");
+  expectUInt(notDone, 0u64, "none ended otherwise");
+  expectUInt(rep.requests, conns * perConn + 1u64, "the server read them all");
+  expectUInt(rep.done, conns * perConn + 1u64, "...and answered each, Done");
+  expectUInt(rep.notDone, 0u64, "...none otherwise");
+  expectUInt(rep.closed, conns + 1u64, "...and saw every connection close");
+  expectUInt(big.responses, 1u64, "the channel: one Response");
+  expectUInt(big.bytes, bigSize, "...every byte of the body");
+  expectUInt(big.wrong, 0u64, "...in order");
+  expectUInt(big.ends, 1u64, "...one End");
+  expectUInt(big.finals, 1u64, "...one final answer");
+  expectUInt(big.done, 1u64, "...Done");
+  expectUInt(big.afterFinal, 0u64, "...and nothing after it");
+  imm s = drv.stats();
+  expect(s.held > 0u64, "the channel filled: events were held");
+  expectUInt(s.dropped, 0u64, "none dropped");
+  expectUInt(u64.from(drv.live()), 0u64, "no connection left");
+  done();
+}
