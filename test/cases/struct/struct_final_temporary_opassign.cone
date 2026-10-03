@@ -1,0 +1,42 @@
+// A temporary an operator changing its operand in place reaches through lives
+// until the change is made. 'x += 1' is rewritten to a block, '{imm tmp = &mut
+// x; *tmp = *tmp + 1}', which was one statement as written, so a temporary its
+// operand is rooted in -- the sole owner '(*mk(5)).n' reads through, the list
+// 'mkList().v' names a field of -- dies at the block's end, after the store,
+// not at the end of the block's first statement, where the store would write
+// into a value already finalized and freed. Each finalizer prints the value it
+// finds, so the changed one, 6, says the change came first; and '<-' appends
+// to its operand through the same kind of block.
+//
+// Worked out by hand: 'final 6', then 'after +=', then 'final 3' (a list of
+// one element, 7, two more appended), then 'after <-'.
+
+mod struct_final_temporary_opassign;
+
+import stdio use *;
+import collections use *;
+
+struct Num {
+  pub n i64;
+  fn final(self &uni) {printStr("final "); printInt(n); printStr("\n");}
+}
+
+fn mk(n i64) So[Num] {new So[Num](n);}
+
+struct Bag {
+  pub v List[i64];
+  fn final(self &uni) {printStr("final "); printInt(i64.from(v.len())); printStr("\n");}
+}
+
+fn mkBag() So[Bag] {
+  mut l = List[i64].empty();
+  l.push(7);
+  new So[Bag](l);
+}
+
+fn main() {
+  (*mk(5)).n += 1;
+  printStr("after +=\n");
+  (*mkBag()).v <- 8, 9;
+  printStr("after <-\n");
+}

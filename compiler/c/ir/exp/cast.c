@@ -380,8 +380,19 @@ void castTypeCheck(TypeCheckState *pstate, CastNode *node) {
             if (tosize == 0 || tosize != castBitsize(fromtype))
                 errorMsgNode(node->exp, ErrorInvType, "May only reinterpret value to the same sized primitive type");
         }
+        // A key's brand is neither lost nor gained by a cast, but through a
+        // raw pointer, which nothing checks: so a region makes its keys, '(p as
+        // *T) as &'=a mut T', from the memory it hands out
+        if (lifeInvariantSeen && lifeBrandKnown(node->typ, node->typ)
+            && totype->tag != PtrTag && fromtype->tag != PtrTag)
+            lifeBrandsCoerce(((IExpNode*)node->exp)->vtype, node->typ, node->exp);
         return;
     }
+
+    // A pattern's type names the brands the matched value carries, and no others:
+    // 'case imm s Some[&'=a T]' rebrands nothing
+    if (lifeInvariantSeen && lifeBrandKnown(node->typ, node->typ))
+        lifeBrandsCoerce(((IExpNode*)node->exp)->vtype, node->typ, node->typ);
 
     // A conversion checked here is a bound pattern's: no operator builds one,
     // and one a coercion injects is built already typed. A reference narrowed

@@ -413,6 +413,14 @@ diagnostic at all: measured, the generic form reaches depth ~702 and the macro
 form ~2282 before it does, while the deepest legitimate expansion in the test
 corpus is 1.
 
+Depth alone bounds the stack, not the work. An expansion that expands itself
+twice a level, at two different arguments, is a tree of 2^256 instances, and
+each level the refusal returns through would start its next expansion down to
+the limit again. So once `genericInstantiateEnter` has refused, it refuses
+everything until the outermost expansion has unwound, reporting only what
+reaches the limit itself: the compile ends with the limit reported on each line
+of the innermost instance.
+
 ## 9. The walk context
 
 **Each walk carries its own state**, `NameResState` and `TypeCheckState`. They
@@ -593,7 +601,10 @@ which the rules of section 2 together forbid.
 5. If there is no body, or it is a trait's default method, stop.
 6. Check that a method's `self` parameter matches its enclosing type.
 7. Turn an implicit final-expression return into an explicit one.
-8. **→** Analyze the body, with `fn` and `scope` saved and reset.
+8. **→** Analyze the body, with `fn`, `scope` and `extend` saved and reset:
+   a function demanded from inside another's local declaration would
+   otherwise make a temporary its own borrow reaches a hidden local of the
+   other function's block (`varDclExtendTemp`).
 9. Run flow analysis on the body — escape, permission, lifetime, move — and skip
    it if this function raised anything.
 

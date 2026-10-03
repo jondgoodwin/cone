@@ -149,6 +149,7 @@ void nametblInit() {
     tempLocalName = nametblFind("-temp", 5);
     selfName = nametblFind("self", 4);
     staticLifeName = nametblFind("'static", 7);
+    unknownBrandName = nametblFind("'=?", 3);
     selfTypeName = nametblFind("Self", 4);
     thisName = nametblFind("this", 4);
     cloneName = nametblFind("clone", 5);
@@ -226,6 +227,11 @@ void nametblInit() {
     integerTraitName = nametblFind("Integer", 7);
     pointerTraitName = nametblFind("Pointer", 7);
     sendableTraitName = nametblFind("Sendable", 8);
+    lockPermTraitName = nametblFind("LockPermission", 14);
+    acquireMutMethodName = nametblFind("acquireMut", 10);
+    releaseMutMethodName = nametblFind("releaseMut", 10);
+    acquireReadMethodName = nametblFind("acquireRead", 11);
+    releaseReadMethodName = nametblFind("releaseRead", 11);
 }
 
 

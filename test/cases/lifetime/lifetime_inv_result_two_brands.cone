@@ -1,0 +1,53 @@
+// A function whose result names one invariant lifetime its parameters do
+// not gives every part of that result one brand: an arena and a key of
+// another arena, returned as one brand, would hand the caller a key its
+// arena opens though it came from elsewhere.
+//
+// Verdict: refuse, ErrorBrand at the key put beside the arena, where the
+// returned value is built: one struct's ''=a' is given two brands.
+// Basis: a function whose return type carries an invariant lifetime that
+// appears in none of its inputs creates a fresh one at each call site
+// (invariant lifetimes, settled 3 Oct 2026): one brand, so its body gives
+// that name one brand, the first it binds, for the whole function.
+// Master 1117c92a: no DynArena, and ''=a' refused at lex. This compiler with
+// the brand check turned off accepts it, and main, run, prints "final" as
+// the other arena dies at mixed's return, and then a value read from its
+// freed block through the returned arena.
+
+mod lifetime_inv_result_two_brands;
+
+import stdio use *;
+import arena use *;
+
+struct R {
+  pub n i64;
+  fn final(self &uni) {
+    printStr("final\n");
+  }
+}
+
+struct Pair['=a] {
+  pub ar DynArena['=a];
+  pub k &'=a mut R;
+}
+
+fn mixed() Pair['=a] {
+  mut ar = DynArena.empty();
+  ar.alloc(new R(1));
+  mut other = DynArena.empty();
+  imm k = other.alloc(new R(42));
+  new Pair(ar, k);                  //~ ErrorBrand
+}
+
+fn clobber(n i64) i64 {
+  mut a Array[i64, 16] = [n, n, n, n, n, n, n, n, n, n, n, n, n, n, n, n];
+  a[3] + a[9];
+}
+
+fn main() {
+  imm p = mixed();
+  clobber(21);
+  printStr("read = ");
+  printInt(p.ar[p.k].n);
+  printStr("\n");
+}

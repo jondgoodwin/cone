@@ -384,8 +384,9 @@ function may return `&[2, 3, 5]`. Before it asks, the borrow folds the array
 literal's elements (`litFoldConst`, below), so an element computed from
 constants alone, `&[R | G, B]`, is a constant too, in a function body as
 anywhere else. An array literal with any other computed element is
-still a temporary: refused (`ErrorBadLval`), but where a local's initializer
-extends it ([vardcl](vardcl.md), "Temporaries an initializer extends"). The literal was typed from its elements
+still a temporary, borrowed as one is: to its statement's end, or, where a
+local's initializer extends it, to its block's ([vardcl](vardcl.md),
+"Temporaries an initializer extends"). The literal was typed from its elements
 alone, the borrow expecting nothing of it, so `&[1, 2, 3]` wanted as a `&[]u32`
 would be an `&Array[i32, 3]`: `iexpCoerce`'s `NoMatch` arm hands such a borrow to
 `borrowConstLitCoerce`, which coerces the elements to the wanted element type by

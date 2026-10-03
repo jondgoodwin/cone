@@ -12,7 +12,7 @@ reference type", below), and an allocation, `new Rc[mut, Node](1)`, is a
 construction until type check makes it an `AllocateTag` node
 ("Allocation"). Type check builds the *result* type, records a
 lifetime, and interns. Flow moves or copies an allocation's value and enforces the
-lifetime at three consumers. Generation lowers a plain reference to a bare
+lifetime at two consumers, and the loan walk the rest. Generation lowers a plain reference to a bare
 pointer and two others to fat pointers.
 
 *Provenance: read from source; the LLVM shapes and the allocation header were
@@ -28,7 +28,7 @@ measured against emitted IR.*
 | `vtype` | unused on a type node; the **constructed reference type** on an expression node |
 | `typeinfo` | interned `RefTypeInfo` — the LLVM handles. **Interned by what the reference refers to**, so reference types that agree at run time share one record and generation memoizes the LLVM type on it |
 | `scope` | lifetime: 0 global, 1 the caller band (what a borrowed parameter points at), 2+ a block of the function, 2 its top block (where its parameters' own storage lives too) |
-| `lifename` | the lifetime a function's signature or a struct's field writes on this borrowed reference type (`&'a T`), interned (`staticLifeName` for `'static`); NULL for the unnamed one, and on every type outside those, a generic's instance's own types among them (`lifeErased`) |
+| `lifename` | the lifetime a function's signature or a struct's field writes on this borrowed reference type (`&'a T`), interned (`staticLifeName` for `'static`); NULL for the unnamed one, and on every type outside those, a generic's instance's own types among them (`lifeErased`). An invariant one (`'=a`, a key: `lifeIsInvariant`) is kept everywhere it is written, a body's types too, and on a call's result as the brand the call gave it |
 
 ⚠ **A cloned reference re-interns, in `cloneRefNode`.** Cloning is how a trait's
 method becomes an implementer's and a generic's becomes an instance's, and both
@@ -52,6 +52,15 @@ signatures, so a copy of a callee's type that reaches a caller (a call's
 result) carries a name nothing reads there. A struct's lifetimes, named on a
 use of it (`Cursor['a]`), are no reference's: they are the use's
 `NameUseNode.lifeuse`, read by the same functions.
+
+**An invariant `lifename` is a third thing: a brand.** A reference of one,
+`&'=a T`, is a key: its `scope` is 0 and means nothing, it is no borrow to
+`itypeCarriesBorrow` or `iexpIsBorrowType`, it is never the same type as a
+borrow (`refIsSame`, `refMatches`), and nothing reaches through it but its
+arena's `[]`. Its name *is* compared across signatures, by binding: a call
+replaces the callee's names in its result with the brands its arguments gave
+them ([Type Check Reasoning](../phases/type-check-reasoning.md), "Invariant
+lifetimes: brands").
 
 ### The seven tags
 
@@ -116,7 +125,11 @@ The differences are worth knowing:
   where it sets `lifenamed` on that signature, or `ParseState.lifestruct` (a
   struct's field's type), where it is noted for the struct to declare
   (`lifeStructDeclare`). Anywhere else the lifetime is `ErrorLifetimePlace`,
-  and read past (`parseLifeNamed`).
+  and read past (`parseLifeNamed`) -- but for an invariant one, which a body
+  may name too (a cast making a key, a variable's type, a generic's type
+  argument), type check holding it to the signature's (`lifeBrandKnown`).
+  An invariant lifetime on `&[]` or `&<` is `ErrorLifetimeInvariant`: a key is
+  a plain reference.
 - `&` has two escapes `+` does not: a `fn` operand, where the presence of a body
   decides closure-versus-signature; and a `,` or `)` operand, where `vtexp` is
   left `unknownType` for later `Self` inference in a parameter position.
@@ -182,8 +195,8 @@ check lowers it into a `RefNode`. Everything from type check on sees only the
   is one); a permission given to a head that is no region is
   `ErrorPermNotRegion` (`fnCallRefusePermArg`), which also keeps a generic
   from taking a permission as a type argument. In the permission slot a struct
-  stands as the unbuilt dynamic permissions do (`refThreadBinds`), which the
-  traced region's rule on a permission taking room judges.
+  stands as a lock permission, `Arc[Mutex, T]`, which `refTypeCheck` judges
+  (`refLockCheck`, below, "Lock permissions").
 - **Before type check, elsewhere.** Three readers meet the unlowered form and
   see through it as they do through a `RefNode`, to the last argument: generic
   inference (`genericInferType`, which also captures a region type parameter
@@ -364,7 +377,11 @@ everything. `new`, the permission of an init's `self` and of nothing else
 does, to `uni` too, so a method called on a filled `self` borrows it; nothing
 coerces to it. Its flags are `uni`'s: that nothing reads through it before it
 is filled, and that it does not escape, is flow's to check
-([Flow](../phases/flow.md), "An init's self").
+([Flow](../phases/flow.md), "An init's self"). A lock permission coerces to
+nothing but itself, `opaq` included: its allocation holds the lock where a
+static permission's holds nothing, so a coercion would misplace the header. A
+guard's permission coerces as `uni` (the mutable lock held) or `imm` (a read
+lock held) does, and nothing coerces to one (below, "Lock permissions").
 
 **`refMatches` keys value-type variance on the target's permission flags** —
 this is the part most worth internalizing:
@@ -427,12 +444,12 @@ says; what it points at is asked separately by the walk (`itypeThreadBound`, in
 | The reference | Answer |
 | --- | --- |
 | to a function (`&fn`) | crosses, whatever it points at: code every thread shares |
-| a borrow, any permission | `RefBindsBorrow`: its lifetime is checked in one thread alone |
+| a borrow, any permission, or a guard (a lock held, below) | `RefBindsBorrow`: its lifetime is checked in one thread alone |
 | into a region declaring `Traced` | `RefBindsTraced`: the collector is single threaded |
 | an owner that cannot be aliased: `uni`, or any owner of a `Move` region (`So`) | crosses if what it points at does: it moves, taking its value |
-| any other owner whose permission is not `RaceSafe` (`mut`, `ro`, `mut1`, a struct in the permission slot) | `RefBindsPerm` |
+| any other owner whose permission is not `RaceSafe` (`mut`, `ro`, `mut1`, a lock permission not declaring `ThreadSafe`) | `RefBindsPerm` |
 | any other owner whose region does not declare `ThreadSafe` (`Rc`) | `RefBindsShared` |
-| otherwise (`Arc[imm, T]`, `Arc[opaq, T]`) | crosses if what it points at does |
+| otherwise (`Arc[imm, T]`, `Arc[opaq, T]`, `Arc[Mutex, T]`) | crosses if what it points at does |
 
 The walk adds a raw pointer (always bound: nothing checks its target), a
 reference to an open trait (its implementers are not all known), and a struct
@@ -440,6 +457,77 @@ declaring `Sendable` (taken at its word, but bound where one of its type
 arguments is). `genericTypeIs` grants `Sendable` to what the walk finds unbound;
 an unmet `T is Sendable` is `ErrorNotSendable`, whose message names the culprit
 and its path (`itypeThreadBoundWhy`). See [Generics](generic.md), Constraints.
+
+## Lock permissions
+
+A struct declaring the built-in trait `LockPermission` may stand in a managed
+reference's permission slot: `Arc[Mutex, T]`, `Rc[Rwcell, T]`
+(`ir/types/permission.c`). The compiler knows no lock by name, as it knows no
+region: it calls the methods the struct declares, held to their shapes at the
+declaration (`lockPermCheck`, `ErrorLockPermShape`): `acquireMut` and
+`releaseMut`, required; `acquireRead` and `releaseRead`, both or neither; each
+taking only `self`, a borrowed reference to the lock, and returning nothing,
+but that an acquiring one may take `(file &[]u8, line u32)` after it and is
+then handed the borrow's place in the source; and `init`, run by an
+allocation on the lock in place (`permInitTypeCheck`). The lock is in the
+header, `{region, lock, value}`.
+
+**Where the reference type is checked** (`refLockCheck`, from `refTypeCheck`
+and `refvirtTypeCheck`): a struct that does not declare the trait is
+`ErrorNotLockPerm`; the region must count its owners (`aliasRef` and
+`dealiasRef`), not be `Move`, and declare `ThreadSafe` exactly where the lock
+does (a lock for threads, `Mutex`, on `Arc`; one for one thread, `Rwcell`, on
+`Rc`); a virtual reference takes none; each is `ErrorLockRegion`. A traced
+region's refusal is its own rule's (`regionTracedJudgeRef`, `ErrorTracedPerm`).
+
+**The reference reaches nothing.** `permGetFlags` answers a lock permission
+with `MayAlias | MayAliasWrite`, and `RaceSafe` where the lock declares
+`ThreadSafe`: the reference copies and counts, and an `Arc[Mutex, T]` crosses
+threads where `T` does, but every read, write, method receiver, lend to a
+borrowed parameter and operator in place through it is refused, each where the
+permission was asked before (`flowLoadThroughRef`, `assignlvalrtype`,
+`swapFlow`, `borrowMutRef`, `fnCallLowerMethod`, `fnCallFinalizeArgs`), with
+`ErrorLockAccess` in place of the static permissions' messages.
+
+**A borrow through it reads through a guard** (`borrowLockPlace`, from
+`borrowTypeCheck` before anything else looks at the place). The place's
+nearest dereference of a lock-managed reference (`&mut *p`, `&mut p.x`,
+`&mut p[i]`, the inner link of an index chain) has its reference wrapped in a
+conversion flagged `FlagLockAcquire`, to the **guard type**: the same region
+and value type, its permission a `PermNode` of the lock's (`permHeld`,
+`PermNode.lock` and `held`, one node per lock and kind) holding the mutable
+lock (`LockHeldMut`, `uni`'s flags) for a borrow whose permission may write,
+or the read lock (`LockHeldRead`, `imm`'s flags less `MayAlias`) otherwise,
+the mutable one where the lock has no read pair. A guard type is the same
+machine type as the lock-managed one: `itypeIsRunSame` and `itypeHash` read a
+guard's permission as its lock, so both share one interned `typeinfo`, and
+`genlType` lays a guard's permission out as its lock. It may not be aliased,
+so it moves; it binds to its thread (`refThreadBinds`).
+
+The guard is an ordinary temporary owner: flow copies the reference into it,
+counted (`flowLoadValue`'s `CastTag` arm, `flowHandleMoveOrCopy`), or moves a
+temporary reference in, so the value outlives the guard whatever becomes of
+the reference; and the borrow is a borrow of the guard. So where the lock is
+given back is where the guard dies, by the existing rules for a temporary:
+- **in a local's initializer**, an extending position, `varDclExtendTemp`
+  makes the guard a hidden local of the block, released at the block's end on
+  every path (the dealias lists, drop flags);
+- **anywhere else** it is a statement's temporary (`flowTempRead`, at the
+  dereference `borrowFlowPlace` walks), finalized at the statement's end, and
+  the borrow, as any borrow of a temporary, is typed with the block's
+  lifetime (`borrowTempScope`). The
+  lifetime checks refuse it returned or stored outward, and the loan walk,
+  whose stand-in for the temporary ends with the statement (`pwTempsEnd`),
+  refuses a holder of it used after (`ErrorFrozen`).
+An operator's rewrite (`x += 1`, `v <- (a, b)`) is a block whose temporaries
+live to its end (`FlagKeepTemps`), so `(&mut *p).n += 1` holds the lock
+through the write.
+
+**Generation** takes the lock as the conversion is generated
+(`genlLockAcquire`: the header from the value pointer, `genlRegionHeader`;
+the lock its `PermField`; the acquiring method called on it) and gives it back
+first thing in an owner's release when the owner is a guard
+(`genlRegionDealiasPart`), before the `dealiasRef` that may free the header.
 
 ## Flow
 
@@ -463,14 +551,13 @@ do read through — type check injects a dereference on both operands
 ([fncall](fncall.md), "A comparison on a reference") — so on an `opaq`
 reference they are `ErrorNoRead`.
 
-**The `scope` a borrow recorded is enforced at three consumers, none of them
+**The `scope` a borrow recorded is enforced at two consumers, neither of them
 the borrow site**: `assignBorrowLifetimeCheck` when a borrow is stored into a
 longer-lived lval — by `assignlvalrtype` for an assignment, and by `swapFlow`
-once in each direction for a swap, which stores both ways — `returnFlowEscape` when one is returned, and
-`fnCallFlowStoredBorrow` when one is passed to a call beside a `&mut` or
-`&uni` argument (a method's receiver included) that points at a longer-lived
-place able to hold a borrow — `&T` itself, a struct with a borrow field, an
-`Option` or `List` of borrows, a slice of them (`itypeCarriesBorrow`). Each reads `RefTag`, `ArrayRefTag`
+once in each direction for a swap, which stores both ways — and
+`returnFlowEscape` when one is returned. A borrow passed to a call beside a
+`&mut` or `&uni` argument that points at a place able to hold one is the loan
+walk's ([Flow](../phases/flow.md), "Stores through a reference"). Each reads `RefTag`, `ArrayRefTag`
 and `VirtRefTag` alike: a virtual reference is a borrowed reference carrying a
 vtable, and a slice borrows as a single reference does. `returnFlowEscape`
 looks into a returned `if`, `match` (an `if` once desugared) or block and checks
@@ -553,7 +640,9 @@ in a field or captured.
 `genlRefTypeSetup` returns immediately for a borrow — a borrowed reference has
 no allocation header. Otherwise it builds `%refstruct = { region, perm, value }`,
 once, when an allocation or a region header first asks for it.
-Measured: `{ %rc, %void, i32 }` where `%rc = { i64 }` and `%void = {}`.
+Measured: `{ %rc, %void, i32 }` where `%rc = { i64 }` and `%void = {}`; for
+`Arc[Mutex, Point]`, `{ %Arc, %Mutex, %Point }`, the value 12 bytes in (a
+`Mutex` is one `u32`), which a guard's type shares.
 
 **`genlallocref` returns the pointer to `ValueField`**, so an owning reference
 points into the *middle* of its allocation. It runs every allocation in one
@@ -589,6 +678,11 @@ and a local returned converted is exempt from its scope's release.
 
 ## Hazards
 
+- **A permission is not always a `PermNode`.** A lock permission is a struct,
+  and a guard's is a `PermNode` whose `lock` makes it take the lock's room in
+  the header. `permGetFlags`, `permMatches` and `permIsSame` answer for all
+  three; code reading `PermNode.permflags` directly, or treating every
+  `PermTag` as zero-sized, misreads them.
 - **Sendable is also safe to read from several threads.** An `Arc[imm, T]` owner
   crosses when its pointee does, so a type granted or declaring `Sendable` must
   also bear being read through `&` from several threads at once. Nothing Cone
@@ -606,7 +700,7 @@ and a local returned converted is exempt from its scope's release.
 - **Coming from Rust:** `&mut T` is invariant and `&ro T` covariant; `uni` is
   not `&mut` but the *unique* permission, which is what makes owning references
   move; lifetimes are a block-nesting integer that is not part of type identity
-  and is checked at three sites, a name on a signature's reference being no
+  and is checked at two sites, the loan walk following the rest, a name on a signature's reference being no
   generic parameter but a label the loan walk compares by identity; and there
   is no borrow checker.
 

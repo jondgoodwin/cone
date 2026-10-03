@@ -94,18 +94,20 @@ void refAdoptInfections(RefNode *refnode) {
 // - Any other owner may be shared: its permission must be RaceSafe ('imm',
 //   'opaq'), and its region must declare ThreadSafe, so that its aliasRef and
 //   dealiasRef may run on several threads at once ('Arc' does; 'Rc' does not).
-// A permission that is not a built-in one (a struct in the permission slot,
-// the unbuilt lock permissions) is not taken as RaceSafe.
+// A lock permission is RaceSafe where it declares ThreadSafe (permGetFlags),
+// so 'Arc[Mutex, T]' crosses where T does. A guard, the owner a borrow through
+// one reads through (permHeld), is the borrow's and never crosses. Any other
+// struct in the permission slot (refused, refLockCheck) is not RaceSafe.
 RefBinds refThreadBinds(RefNode *ref) {
     if (ref->vtexp && isTypeNode(ref->vtexp) && itypeGetTypeDcl(ref->vtexp)->tag == FnSigTag)
         return RefCrossesAll;
     INode *region = ref->region && isTypeNode(ref->region) ? itypeGetTypeDcl(ref->region) : ref->region;
-    if (region == borrowRef)
+    if (region == borrowRef || permHeldKind(ref->perm))
         return RefBindsBorrow;
     if (regionIsTraced(ref->region))
         return RefBindsTraced;
     INode *perm = ref->perm && isTypeNode(ref->perm) ? itypeGetTypeDcl(ref->perm) : NULL;
-    int permflags = perm && perm->tag == PermTag ? ((PermNode*)perm)->permflags : 0;
+    int permflags = perm && (perm->tag == PermTag || permIsLock(perm)) ? permGetFlags(perm) : 0;
     if (perm && perm->tag == PermTag && (!(permflags & MayAlias) || regionIsMove(ref->region)))
         return RefCrosses;
     if (!(permflags & RaceSafe))
@@ -238,6 +240,7 @@ void refTypeCheck(TypeCheckState *pstate, RefNode *node) {
     itypeTypeCheck(pstate, &node->region);
     refRegionCheck(&node->region);
     itypeTypeCheck(pstate, (INode**)&node->perm);
+    refLockCheck(node);
     // A type checked once is not checked again, so this is said once
     if (itypeGetTypeDcl(node->perm) == (INode*)newPerm && (!allownew || node->region != borrowRef)) {
         errorMsgNode((INode*)node, ErrorPermNew,
@@ -259,6 +262,11 @@ void refTypeCheck(TypeCheckState *pstate, RefNode *node) {
         return;
     refRefuseRegionRef(node);
     refAdoptInfections(node);
+    // What a key names lives in its arena, past every scope, so it holds no
+    // borrow. A generic's instance is judged where it is called (lifeKeyBorrow).
+    if (lifeIsInvariant(node->lifename) && node->instnode == NULL && itypeCarriesBorrow(node->vtexp))
+        errorMsgNode((INode*)node, ErrorKeyBorrow,
+            "A key names a value in its arena, which outlives every scope, so that value may hold no borrow: this one's type does.");
     // Where a traced reference may be held, judged once every type is laid out
     regionTracedRefNote(node);
 
@@ -274,6 +282,7 @@ void refvirtTypeCheck(TypeCheckState *pstate, RefNode *node) {
     itypeTypeCheck(pstate, &node->region);
     refRegionCheck(&node->region);
     itypeTypeCheck(pstate, (INode**)&node->perm);
+    refLockCheck(node);
     if (itypeTypeCheck(pstate, &node->vtexp) == 0)
         return;
     refRefuseRegionRef(node);
@@ -292,7 +301,11 @@ void refvirtTypeCheck(TypeCheckState *pstate, RefNode *node) {
 
 // Compare two reference signatures to see if they are equivalent
 int refIsSame(RefNode *node1, RefNode *node2) {
-    return itypeIsSame(node1->vtexp,node2->vtexp) 
+    // A key and a borrow are not one type: only a key's arena reaches what it
+    // names. Which brand a key carries is compared where a value meets a type
+    // (lifeBrandsCoerce), not here: a generic's instance serves every brand.
+    return lifeIsInvariant(node1->lifename) == lifeIsInvariant(node2->lifename)
+        && itypeIsSame(node1->vtexp,node2->vtexp)
         && permIsSame(node1->perm, node2->perm)
         && itypeIsSame(node1->region, node2->region);
 }
@@ -339,6 +352,10 @@ int refHeldMoveSeenAsCopy(INode *to, INode *from) {
 
 // Will from-reference coerce to a to-reference (we know they are not the same)
 TypeCompare refMatches(RefNode *to, RefNode *from, SubtypeConstraint constraint) {
+
+    // A key is never a borrow, nor a borrow a key (refIsSame)
+    if (lifeIsInvariant(to->lifename) != lifeIsInvariant(from->lifename))
+        return NoMatch;
 
     // Start with matching the references' regions
     TypeCompare result = regionMatches(to->region, from->region, constraint);
@@ -395,6 +412,10 @@ TypeCompare refvirtMatchesRef(RefNode *to, RefNode *from, SubtypeConstraint cons
     // Given this performs a runtime conversion to a completely different type, 
     // it does not make sense for monomorphization
     if (constraint == Monomorph)
+        return NoMatch;
+
+    // A key reaches nothing on its own, so it is never dispatched through
+    if (lifeIsInvariant(from->lifename))
         return NoMatch;
 
     // Start with matching the references' regions

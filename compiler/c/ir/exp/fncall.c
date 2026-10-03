@@ -451,13 +451,29 @@ void fnCallArrIndex(FnCallNode *node) {
 
 // Is this the type of a borrowed reference, whose scope is a lifetime?
 static int fnCallIsBorrowType(INode *type) {
-    return (type->tag == RefTag || type->tag == ArrayRefTag || type->tag == VirtRefTag)
-        && ((RefNode*)type)->region == borrowRef;
+    return iexpIsBorrowType(type);
+}
+
+FnCallNode *fnCallSetIndex = NULL;
+
+FnCallNode *fnCallSetIndexRoot(INode *lval) {
+    while (lval->tag == FnCallTag) {
+        FnCallNode *call = (FnCallNode*)lval;
+        if ((call->flags & FlagIndex) && call->methfld == NULL)
+            return (call->flags & (FlagBorrow | FlagRange)) ? NULL : call;
+        // Only a field read, 'x.f', leads on to the place's root
+        if (call->methfld == NULL || !isNameUseNode(call->methfld) || call->args != NULL
+            || (call->flags & (FlagOperator | FlagIndex)))
+            return NULL;
+        lval = call->objfn;
+    }
+    return NULL;
 }
 
 // The narrowest lifetime among the borrowed-reference arguments whose borrows
-// a value of the type 'wanted' may hold -- the result, or what a writable
-// argument points at -- as the highest scope number: 0 when there is none.
+// a value of the type 'wanted', the result, may hold, as the highest scope
+// number: 0 when there is none. What a call may store through a writable
+// argument is the loan walk's (pwCallStores).
 // Every borrowed reference in a signature written without a lifetime shares
 // one, and every one written with a name shares it with the others written
 // with that name, and with those its 'where' clause orders shorter, and with
@@ -578,6 +594,8 @@ static void fnCallLendVirtOwner(INode **selfp, INode *parmtype) {
 // - a de-reffed ref/ptr to a function
 // From the function's signature, we want to pick up the return type
 // and ensure that all arguments are specified and coerced to the right types
+static INode *fnCallBrandPathTake(FnCallNode *call);
+
 void fnCallFinalizeArgs(FnCallNode *node) {
     FnSigNode *fnsig = (FnSigNode*)iexpGetDerefTypeDcl(node->objfn);
     assert(fnsig->tag == FnSigTag);
@@ -605,7 +623,20 @@ void fnCallFinalizeArgs(FnCallNode *node) {
         return;
     }
 
-    // Coerce provided arguments to expected types
+    // Coerce provided arguments to expected types. Where the signature names
+    // an invariant lifetime, the arguments bind each to the brand they carry,
+    // one brand per name: an arena and a key of another arena's are refused
+    // here (lifeBrandsCoerce).
+    LifeBind *brands = lifeSigHasBrands(fnsig) ? lifeBindBegin(fnsig) : NULL;
+    INode *brandpath = lifeInvariantSeen ? fnCallBrandPathTake(node) : NULL;
+    if (brands && brandpath)
+        lifeBindUse(brands, itypeGetTypeDcl(brandpath), brandpath, (INode*)node);
+    // A generic function's instance names its arguments' brands by place: the
+    // type arguments it was called with give them, 'mem.readRaw[T](p)'
+    if (brands && isNameUseNode(node->objfn) && ((NameUseNode*)node->objfn)->lifeuse
+        && ((NameUseNode*)node->objfn)->lifeuse->typeargs && ((NameUseNode*)node->objfn)->dclnode)
+        lifeBindArgs(brands, itypeInstanceTypeArgs(((NameUseNode*)node->objfn)->dclnode),
+            ((NameUseNode*)node->objfn)->lifeuse->typeargs, (INode*)node);
     INode **argsp;
     uint32_t cnt;
     INode **parmp = &nodesGet(fnsig->parms, 0);
@@ -615,9 +646,21 @@ void fnCallFinalizeArgs(FnCallNode *node) {
         // Make sure the type matches (and coerce as needed)
         // (but not for vref as self)
         if (!iexpCoerce(argsp, ((IExpNode*)*parmp)->vtype)
-            && !(cnt == node->args->used && (node->flags & FlagVDisp)))
-            errorMsgNode(*argsp, ErrorInvType, "Expression's type does not match declared parameter");
+            && !(cnt == node->args->used && (node->flags & FlagVDisp))) {
+            // A lock-managed reference lends nothing but through a borrow
+            INode *argtype = iexpGetTypeDcl(*argsp);
+            INode *parmtype = iexpGetTypeDcl(*parmp);
+            if (argtype->tag == RefTag && permIsLock(((RefNode*)argtype)->perm)
+                && parmtype->tag == RefTag && ((RefNode*)parmtype)->region == borrowRef)
+                permLockRefused(*argsp, ((RefNode*)argtype)->perm, "lend the value");
+            else
+                errorMsgNode(*argsp, ErrorInvType, "Expression's type does not match declared parameter");
+        }
         parmp++;
+    }
+    if (brands) {
+        lifeBindEnd(brands);
+        lifeBindClose(brands, (INode*)node);
     }
 
     // If we have too few arguments, use default values, if provided
@@ -658,12 +701,19 @@ void fnCallFinalizeArgs(FnCallNode *node) {
         fnCallStaticArgs(node, fnsig);
     uint16_t narrowest = fnCallNarrowestBorrowScope(node, fnsig, fnsig->rettype);
     INode *rettype = itypeGetTypeDcl(fnsig->rettype);
-    if (narrowest == 0)
-        return;
-    if (fnCallIsBorrowType(rettype))
-        node->vtype = fnCallScopedBorrow(node, rettype, narrowest);
-    else if (rettype->tag == TTupleTag)
-        fnCallScopeRetTuple(node, (TupleNode*)rettype, narrowest);
+    if (narrowest != 0) {
+        if (fnCallIsBorrowType(rettype))
+            node->vtype = fnCallScopedBorrow(node, rettype, narrowest);
+        else if (rettype->tag == TTupleTag)
+            fnCallScopeRetTuple(node, (TupleNode*)rettype, narrowest);
+    }
+
+    // The result's invariant lifetimes are the brands the arguments bound, and
+    // one no parameter names is minted here, fresh for this call site
+    if (brands) {
+        node->vtype = lifeBrandSubst(node->vtype, brands, (INode*)node);
+        lifeKeyBorrow(node->vtype, (INode*)node);
+    }
 }
 
 // objfn is a function or a pointer to one. Make sure it is called correctly.
@@ -818,7 +868,7 @@ INode *fnCallFieldAccess(INode *obj, FieldDclNode *fld, INode *lexnode) {
     derefInject(&obj);  // reach through a reference or pointer, as any field access does
     FnCallNode *access = newFnCallLower(lexnode, obj, 0);
     access->methfld = newNameUseFromDclNode((INode*)fld, lexnode);
-    access->vtype = fld->vtype;
+    access->vtype = lifeBrandField(((IExpNode*)obj)->vtype, fld->vtype, lexnode);
     access->tag = FldAccessTag;
     return (INode*)access;
 }
@@ -879,10 +929,11 @@ void fnCallDemandCandidates(INode *binding) {
 // method borrows for reading even from a mutable variable, then 'mut'. The
 // borrow is made by borrowMutRef, so its permission and lifetime are the ones a
 // hand-written '&mut v' gets: a 'self &mut' method on an immutable variable is
-// ErrorBadPerm. A temporary has no place to borrow, so a call whose only
-// candidates want a borrowed self is ErrorBadLval, once, as '&' of it is.
+// ErrorBadPerm. A temporary is borrowed where it is, as '&' of it is, and
+// lives to the end of its statement (borrowTempRef).
 // Returns the selected method, with the borrow now the receiver, or NULL.
-static FnDclNode *fnCallBorrowReceiver(FnCallNode *callnode, INode *foundnode, enum OverloadMatch *status) {
+static FnDclNode *fnCallBorrowReceiver(TypeCheckState *pstate, FnCallNode *callnode, INode *foundnode,
+        enum OverloadMatch *status) {
     INode *obj = callnode->objfn;
     INode *objtype = iexpGetTypeDcl(obj);
     if (fnCallIsRefReceiver(objtype) || objtype->tag == PtrTag || !isMethodType(objtype))
@@ -906,15 +957,61 @@ static FnDclNode *fnCallBorrowReceiver(FnCallNode *callnode, INode *foundnode, e
         }
         if (iexpIsLval(obj))
             borrowMutRef(&callnode->objfn, objtype, perm);
-        else {
-            errorMsgNode(obj, ErrorBadLval,
-                "May not borrow a temporary value. `%s` takes a borrowed self, which needs a place in memory to point at.",
-                &((NameUseNode*)callnode->methfld)->namesym->namestr);
-            callnode->objfn = probe;
-        }
+        else
+            borrowTempRef(&callnode->objfn, objtype, perm, borrowTempScope(pstate));
         return selected;
     }
     return NULL;
+}
+
+// The receiver of 'x[i].m()' is the element 'x[i]' lent by the type's '[]',
+// a read-only borrow. Where no 'm' takes that, and the type declares '&[]'
+// and 'x' may be borrowed mutably, the index is lowered again as '&mut x[i]'
+// is, from its receiver and arguments as they were checked, and becomes the
+// receiver: the element's mutable borrow, as an assignment's index is in set
+// position (assignTypeCheck). Answers whether it did.
+static int fnCallIndexAsMut(TypeCheckState *pstate, FnCallNode *callnode) {
+    FnCallNode *index = (FnCallNode*)callnode->objfn;
+    if (index->tag != FnCallTag || !(index->flags & FlagIndex) || (index->flags & (FlagBorrow | FlagRange))
+        || index->args == NULL || index->args->used == 0 || !isNameUseNode(index->objfn))
+        return 0;
+    INode *recv = nodesGet(index->args, 0);
+    if (recv->tag == BorrowTag)
+        recv = ((RefNode*)recv)->vtexp;
+    INode *recvtype = iexpGetTypeDcl(recv);
+    INode *held = recvtype->tag == RefTag ? itypeGetTypeDcl(((RefNode*)recvtype)->vtexp) : recvtype;
+    if (held->tag != StructTag)
+        return 0;
+    INode *refindex = aliasDclResolve(iNsTypeFindFnField((INsTypeNode*)held, refIndexName));
+    if (refindex == NULL || (refindex->tag != FnDclTag && refindex->tag != FnOverloadDclTag))
+        return 0;
+    // Only where a mutable borrow of the receiver would be allowed
+    if (recvtype->tag == RefTag) {
+        if (!(permGetFlags(((RefNode*)recvtype)->perm) & MayWrite))
+            return 0;
+    }
+    else {
+        INode *lvalperm = (INode*)immPerm;
+        uint16_t scope;
+        if (!iexpIsLval(recv) || iexpGetLvalInfo(recv, &lvalperm, &scope) == NULL
+            || !(permGetFlags(lvalperm) & MayWrite))
+            return 0;
+    }
+    FnCallNode *mutindex = newFnCallLower((INode*)index, recv, index->args->used);
+    mutindex->flags |= FlagIndex | FlagBorrow;
+    mutindex->methfld = (INode*)newMemberUseNode(refIndexName);
+    inodeLexCopy(mutindex->methfld, (INode*)index);
+    INode **argsp;
+    uint32_t cnt;
+    uint32_t at = 0;
+    for (nodesFor(index->args, cnt, argsp)) {
+        if (at++ > 0)
+            nodesAdd(&mutindex->args, *argsp);
+    }
+    if (fnCallLowerMethod(pstate, mutindex) != 1)
+        return 0;
+    callnode->objfn = (INode*)mutindex;
+    return 1;
 }
 
 // Returns 1 when lowered, 0 when the receiver's type supports no methods at all
@@ -981,7 +1078,10 @@ int fnCallLowerMethod(TypeCheckState *pstate, FnCallNode *callnode) {
             callnode->objfn = fnCallFieldAccess(callnode->objfn, fld->hop, (INode*)callnode);
         derefInject(&callnode->objfn);  // automatically deref any reference/ptr, if needed
         methfld->dclnode = foundnode;
-        callnode->vtype = methfld->vtype = ((IExpNode*)foundnode)->vtype;
+        // A field's invariant lifetimes are the struct's own: read from a
+        // value, they are the brands its type's use gives them
+        callnode->vtype = methfld->vtype = lifeBrandField(((IExpNode*)callnode->objfn)->vtype,
+            ((IExpNode*)foundnode)->vtype, (INode*)callnode);
         callnode->tag = FldAccessTag;
         return 1;
     }
@@ -1044,10 +1144,25 @@ int fnCallLowerMethod(TypeCheckState *pstate, FnCallNode *callnode) {
     // A receiver held as a value reaches a method declaring 'self &' or
     // 'self &mut' by being borrowed (fnCallBorrowReceiver)
     if (selected == NULL && status == OverloadNone)
-        selected = fnCallBorrowReceiver(callnode, foundnode, &status);
+        selected = fnCallBorrowReceiver(pstate, callnode, foundnode, &status);
+
+    // 'x[i].m()' where no 'm' takes the element's read-only borrow: the index
+    // is in set position, so a type declaring '&[]' lends its mutable borrow
+    if (selected == NULL && status == OverloadNone && fnCallIndexAsMut(pstate, callnode)) {
+        selected = iNsTypeFindMethod(foundnode, &callnode->objfn, callnode->args, &status);
+        if (selected == NULL && status == OverloadNone)
+            selected = fnCallBorrowReceiver(pstate, callnode, foundnode, &status);
+    }
 
     if (selected == NULL) {
-        if (!fnCallRefIndexWantsMut(callnode, foundnode, methsym, status)
+        // A lock-managed reference reaches its value through a borrow only,
+        // which a method's receiver is not made of
+        INode *objtype = iexpGetTypeDcl(obj);
+        if (objtype->tag == RefTag && permIsLock(((RefNode*)objtype)->perm)) {
+            permLockRefused(obj, ((RefNode*)objtype)->perm, "call a method on the value");
+            callnode->vtype = errorType;
+        }
+        else if (!fnCallRefIndexWantsMut(callnode, foundnode, methsym, status)
             && !fnCallBoolOperandWantsNumber(callnode, foundnode, status))
             fnCallNoCandidate((INode*)callnode, status, methsym, "method");
         return -1;
@@ -1576,6 +1691,7 @@ void fnCallOpAssgn(TypeCheckState *pstate, FnCallNode **nodep) {
     BlockNode *blk = newBlockNode();
     inodeLexCopy((INode*)blk, (INode*)callnode);
     blk->vtype = callnode->vtype;
+    blk->flags |= FlagKeepTemps;
     nodesAdd(&blk->stmts, (INode*)tmpvar);
     nodesAdd(&blk->stmts, (INode*)tmpassgn);
     *((INode**)nodep) = (INode*)blk;
@@ -1666,9 +1782,47 @@ static int fnCallModuleInstancePath(TypeCheckState *pstate, FnCallNode **nodep) 
 // function is reached this way; any other member is left as it was, and
 // diagnosed below as a path this does not collapse. Returns 1 when the node was
 // replaced outright (and checked), so the caller stops.
+// A call of a generic instance's function through a use of it naming brands,
+// 'List[&'=a T].empty()': the instance's brands, named by place, are bound to them at the call
+// (fnCallFinalizeArgs), not minted. Pairs of call and use, few at a time.
+static INode **fnCallBrandPaths = NULL;
+static uint32_t fnCallBrandPathCnt = 0;
+static uint32_t fnCallBrandPathCap = 0;
+
+static void fnCallBrandPathAdd(FnCallNode *call, INode *use) {
+    if (!lifeTypeHasBrands(use))
+        return;
+    if (fnCallBrandPathCnt == fnCallBrandPathCap) {
+        uint32_t cap = fnCallBrandPathCap ? fnCallBrandPathCap << 1 : 16;
+        INode **grown = memAllocBlk(2 * cap * sizeof(INode*));
+        if (fnCallBrandPathCnt)
+            memcpy(grown, fnCallBrandPaths, 2 * fnCallBrandPathCnt * sizeof(INode*));
+        fnCallBrandPaths = grown;
+        fnCallBrandPathCap = cap;
+    }
+    fnCallBrandPaths[2 * fnCallBrandPathCnt] = (INode*)call;
+    fnCallBrandPaths[2 * fnCallBrandPathCnt++ + 1] = use;
+}
+
+// The use a call was made through, taken off the list, or NULL
+static INode *fnCallBrandPathTake(FnCallNode *call) {
+    for (uint32_t i = fnCallBrandPathCnt; i-- > 0;) {
+        if (fnCallBrandPaths[2 * i] == (INode*)call) {
+            INode *use = fnCallBrandPaths[2 * i + 1];
+            fnCallBrandPaths[2 * i] = fnCallBrandPaths[2 * (fnCallBrandPathCnt - 1)];
+            fnCallBrandPaths[2 * i + 1] = fnCallBrandPaths[2 * (fnCallBrandPathCnt - 1) + 1];
+            --fnCallBrandPathCnt;
+            return use;
+        }
+    }
+    return NULL;
+}
+
 static int fnCallTypeInstancePath(TypeCheckState *pstate, FnCallNode **nodep) {
     FnCallNode *node = *nodep;
     StructNode *inst = (StructNode*)nameUseGetDcl((NameUseNode*)node->objfn);
+    if (lifeInvariantSeen)
+        fnCallBrandPathAdd(node, node->objfn);
     NameUseNode *member = (NameUseNode*)node->methfld;
     INode *found = namespaceFind(&inst->namespace, member->namesym);
     if (found == NULL || (found->tag != FnDclTag && found->tag != FnOverloadDclTag))
@@ -1988,6 +2142,15 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
             node->objfn = access->objfn;
             node->methfld = access->methfld;
         }
+    }
+
+    // 'x[i] += 1', 'x[i].f++': an operator changing its operand in place
+    // writes to it, so an index at the root of it is in set position, as an
+    // assignment's is (assignTypeCheck)
+    if ((node->flags & FlagLvalOp) && node->objfn) {
+        FnCallNode *setindex = fnCallSetIndexRoot(node->objfn);
+        if (setindex)
+            fnCallSetIndex = setindex;
     }
 
     // 'h.pick[i32](6)': a generic method given its type arguments
@@ -2334,6 +2497,18 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
     if (fnCallLowerRefIntField(node, objtype))
         return;
 
+    // 'x[i] = v', the index in set position (assignTypeCheck): a type that
+    // declares '&[]' sets through the element's mutable borrow, as '&mut x[i]'
+    // would reach it, and the assignment stores through it
+    if (node == fnCallSetIndex && (node->flags & FlagIndex) && !(node->flags & (FlagBorrow | FlagRange))
+        && node->methfld == NULL) {
+        INode *held = objtype->tag == RefTag ? itypeGetTypeDcl(((RefNode *)objtype)->vtexp) : objtype;
+        INode *refindex = held->tag == StructTag
+            ? aliasDclResolve(iNsTypeFindFnField((INsTypeNode*)held, refIndexName)) : NULL;
+        if (refindex && (refindex->tag == FnDclTag || refindex->tag == FnOverloadDclTag))
+            node->flags |= FlagBorrow;
+    }
+
     // Dispatch for correct handling based on the type of the object
     switch (objtype->tag) {
     // Pure function call
@@ -2388,6 +2563,14 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
     // Regular reference
     case RefTag: {
         INode *objdereftype = itypeGetTypeDcl(((RefNode *)objtype)->vtexp);
+
+        // A key reaches nothing on its own: no method, field, index or value
+        // comparison through it. Only '===' asks of it, which place it names.
+        if (lifeIsKey(objtype) && opname != sameName && opname != notSameName) {
+            lifeKeyAccessError((INode*)node, objtype);
+            node->vtype = errorType;
+            break;
+        }
 
         // Handle calling a function-by-ref (only callable using parens)
         if (objdereftype->tag == FnSigTag && !node->methfld) {
@@ -2482,42 +2665,6 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
     }
 }
 
-// A writable borrow of a place that can hold a borrowed reference -- '&mut &T',
-// or a '&mut' or '&uni' to a struct with a borrow field, an Option or List of
-// borrows, a slice of them, or a method's 'self &mut' receiver of any of these
-// -- is somewhere the callee may store any other borrowed reference it was
-// handed, and without annotations it is free to: every borrowed reference in
-// the signature shares one lifetime (doc/reference/reflifefn.html, "Mutable
-// borrowed reference parameters"). So what that argument points at may not
-// outlive the narrowest borrow passed alongside it -- the same comparison
-// assignlvalrtype makes for the store the callee might write. A place no
-// longer-lived than every borrow beside it may take any of them. With
-// lifetimes named, only a borrow whose lifetime flows to one of those what the
-// writable one points at holds may be stored there (fnCallNarrowestBorrowScope).
-static void fnCallFlowStoredBorrow(FnCallNode *node) {
-    FnSigNode *fnsig = (FnSigNode*)iexpGetDerefTypeDcl(node->objfn);
-    if (fnsig->tag != FnSigTag || !fnsig->lifenamed)
-        fnsig = NULL;
-    INode **argsp;
-    uint32_t cnt;
-    uint32_t i = 0;
-    for (nodesFor(node->args, cnt, argsp)) {
-        INode *argtype = iexpGetTypeDcl(*argsp);
-        uint32_t at = i++;
-        if (!fnCallIsBorrowType(argtype)
-            || !(permGetFlags(((RefNode*)argtype)->perm) & MayWrite)
-            || !itypeCarriesBorrow(((RefNode*)argtype)->vtexp))
-            continue;
-        INode *pointee = fnsig && at < fnsig->parms->used
-            ? lifePointee(((IExpNode*)nodesGet(fnsig->parms, at))->vtype) : NULL;
-        if (((RefNode*)argtype)->scope < fnCallNarrowestBorrowScope(node, fnsig, pointee)) {
-            errorMsgNode((INode*)node, ErrorCallEscape,
-                "Call could store a borrowed reference where it would outlive the value it points to");
-            return;
-        }
-    }
-}
-
 // Do data flow analysis for fncall node (only real function calls)
 void fnCallFlow(FlowState *fstate, FnCallNode **nodep) {
     // Handle function call aliasing
@@ -2538,7 +2685,6 @@ void fnCallFlow(FlowState *fstate, FnCallNode **nodep) {
     }
     flowGateOperandsEnd(fstate, inflight);
     flowGateCall(fstate, node->args);
-    fnCallFlowStoredBorrow(node);
 }
 
 // Perform data flow analysis on array index node

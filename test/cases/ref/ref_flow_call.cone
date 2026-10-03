@@ -110,22 +110,28 @@ fn returnsParameterThroughCall(p &i32) &i32 {
 }
 
 // A '&mut &T' argument is a place the callee may store any other borrow it was
-// handed, and without annotations nothing says it will not. So what it points
-// at may not outlive the narrowest borrow passed alongside it: the store the
-// callee might write, checked at the call (doc/reference/reflifefn.html, "Mutable
-// borrowed reference parameters").
-fn storesThroughMutableParameter() {
+// handed, and without annotations nothing says it will not. Where it points at
+// a local of this function, that is no error at the call: the local may now
+// hold the borrow, and is held to it as a store written out would hold it --
+// refused where it is used after the borrow's source ends, at that end
+// (doc/reference/reflifefn.html, "Mutable borrowed reference parameters").
+// Where it points at what a parameter points at, which outlives the
+// function, a borrow of this function's own may not be handed beside it: the
+// call is refused.
+fn storesThroughMutableParameter(p &mut &i32) i32 {
   imm i = 5;
   mut a = &i;
   {
-    imm b = 10;
+    imm b = 10;                     //~ ErrorFrozen "goes out of scope while 'a' still holds"
     mut c = &b;
-    refstore(&mut a, &b);           //~ ErrorCallEscape:13 "Call could store a borrowed reference"
+    refstore(&mut a, &b);
 
     // Storing a longer-lived borrow, or storing into a place as short-lived as
-    // the borrow, is what assignlvalrtype would let the callee write
+    // the borrow, is always allowed
     refstore(&mut a, &i);
     refstore(&mut c, &i);
     refstore(&mut c, &b);
+    refstore(p, &b);                //~ ErrorCallEscape:13 "Call could store a borrowed reference"
   }
+  *a;
 }

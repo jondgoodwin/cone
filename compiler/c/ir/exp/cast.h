@@ -27,6 +27,11 @@ struct NameUseNode;
 // matched value's enum narrows to it, and anything else is compared with '=='
 // (castMatchValueTypeCheck, which clears the flag).
 #define FlagMatchValue 0x0002  // Is: a value alone as a pattern, not yet decided between 'is' and '=='
+// A borrow through a lock-managed reference, '&mut *p', reads through the
+// guard this conversion makes of 'p' (borrowLockPlace): a new owner of the
+// value, holding the lock its type's permission names (permHeld), taken as it
+// is made and given back at its death. Always with FlagConvert.
+#define FlagLockAcquire 0x0004  // Cast: takes a lock-managed reference's lock, making its guard
 
 // Create node for recasting to a new type without conversion
 CastNode *newRecastNode(INode *exp, INode *type);

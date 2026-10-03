@@ -8,14 +8,17 @@
 # rule can be refined case by case: many
 # simple cases on the bands (global, the caller's, the function's own), a few
 # on borrows made inside relating to those from outside, and most on when a
-# borrowed source is free again. The three prefixes follow that:
+# borrowed source is free again. The first three prefixes follow that, and
+# the fourth is lifetimes that are no scope at all:
 #
 #   lifetime_band_  global vs the caller band vs the function: parameters
 #                   (borrowed, by value, 'self' by value, owners by value),
 #                   returns, stores into globals and through '&mut'/'&uni'
 #                   parameters, unannotated and named lifetimes, lifetimes on
 #                   structs (lifetime_band_struct_), where clauses ordering
-#                   them (lifetime_band_where_), calls.
+#                   them (lifetime_band_where_), the order a borrow of a
+#                   value holding lifetimes implies (lifetime_band_implied_),
+#                   calls.
 #   lifetime_mix_   borrows made inside meeting those from outside: a
 #                   variable's lifetime following what it holds (the flow
 #                   rule, 2 Oct 2026), temporaries outliving their statement
@@ -26,6 +29,11 @@
 #                   disjoint fields, reassignment, borrows held in values,
 #                   NLL's four problem cases and Polonius's exemplars
 #                   translated to Cone.
+#   lifetime_inv_   invariant lifetimes ('=a, 3 Oct 2026) on the dynamic
+#                   arena, DynArena: brands minted per call site, keys opened
+#                   only by their own arena ('ar[key]'), never reached through
+#                   alone, kept to their loop pass, equated by 'where', and
+#                   carried through structs, returns and generics.
 #
 # Every file's header gives the verdict a correct compiler reaches, its basis
 # (a language rule, stated, with the date it was settled; a manual page;
@@ -50,6 +58,11 @@
 #   5  temporaries outliving their statement, Rust's rule
 #   6  named lifetimes on signatures
 #   7  lifetimes on structs, and where clauses ordering lifetimes
+#   8  relaxations toward Rust's verdicts: implied bounds, temporaries in
+#      arms and arguments, lifetimes per reference layer, implementations
+#      promising more than their trait, stores through '&mut' into a local
+#      following flow
+#   9  invariant lifetimes and the dynamic arena (lifetime_inv_)
 #
 # A dangling case's header says how master's wrong answer was shown to be
 # dangerous: a stale stack slot read back through clobber(), or a finalizer
@@ -58,9 +71,9 @@
 # refusal turned off.
 #
 # Left out deliberately, because the rule depends on something not yet
-# decided: invariant lifetimes ('=a), '+ 'a' bounds on a type parameter or a
-# virtual reference, owner fields reached through a shared 'mut' path, and
-# whether 'new H(...)' extends a temporary the way Rust's struct literal does.
+# decided: '+ 'a' bounds on a type parameter or a virtual reference, owner
+# fields reached through a shared 'mut' path, and whether 'new H(...)'
+# extends a temporary the way Rust's struct literal does.
 
 support = []
 
@@ -398,32 +411,42 @@ tags = ["flow", "runtime"]
 
 [scenario.lifetime_band_call_store_into_struct_field]
 category = "reject"
-description = "A callee given '&mut H' and a shorter borrow could store it in the struct: refused at the call"
+description = "A callee given '&mut H' and a shorter borrow may store it in the struct: the local used after the borrow's source ends is refused there"
 tags = ["flow"]
 
 [scenario.lifetime_band_call_setter_method]
 category = "reject"
-description = "A 'self &mut' setter handed a shorter borrow than its receiver: refused at the call"
+description = "A 'self &mut' setter handed a shorter borrow than its receiver: the receiver used after the borrow's source ends is refused there"
 tags = ["flow"]
 
 [scenario.lifetime_band_call_push_onto_list_param]
 category = "reject"
-description = "A callee given '&mut List[&R]' and a shorter borrow could push it: refused at the call"
+description = "A callee given '&mut List[&R]' and a shorter borrow may push it: the list used after the borrow's source ends is refused there"
 tags = ["flow"]
 
 [scenario.lifetime_band_call_store_into_option_param]
 category = "reject"
-description = "A callee given '&mut Option[&R]' and a shorter borrow could store it: refused at the call"
+description = "A callee given '&mut Option[&R]' and a shorter borrow may store it: the option used after the borrow's source ends is refused there"
 tags = ["flow"]
 
 [scenario.lifetime_band_call_store_into_slice_param]
 category = "reject"
-description = "A callee given a mutable slice of borrows and a shorter borrow could store it: refused at the call"
+description = "A callee given a mutable slice of borrows and a shorter borrow may store it: the array used after the borrow's source ends is refused there"
+tags = ["flow"]
+
+[scenario.lifetime_band_call_tryit_store_into_local]
+category = "run"
+description = "The manual's 'tryit': a store a call may make through '&mut' into a local is legal at the call"
+tags = ["flow", "runtime"]
+
+[scenario.lifetime_band_call_tryit_used_after]
+category = "reject"
+description = "The manual's 'tryit' with the local used after the stored borrow's source ends: refused at that end"
 tags = ["flow"]
 
 [scenario.lifetime_band_call_copy_between_holders]
 category = "reject"
-description = "A callee given '&mut' to two borrow-holding structs, one shorter-lived, could copy a borrow across: refused at the call"
+description = "A callee given '&mut' to two borrow-holding structs, one shorter-lived, may copy a borrow across: the outer one used after the source ends is refused there"
 tags = ["flow"]
 
 [scenario.lifetime_band_call_store_two_levels]
@@ -475,6 +498,31 @@ tags = ["parse", "typecheck", "flow"]
 category = "run"
 description = "The manual's 'tryit' with 'refval' named apart: the call is allowed"
 tags = ["parse", "typecheck", "flow", "runtime"]
+
+[scenario.lifetime_band_implied_struct_method_unannotated]
+category = "run"
+description = "A borrow of 'H['a]' implies 'a outlasts it: an unannotated 'get(self &) &R' returns its ''a' field"
+tags = ["typecheck", "flow", "runtime"]
+
+[scenario.lifetime_band_implied_read_through_outer]
+category = "run"
+description = "Implied bounds: what '&'a &'b R', '&'a Pair['b]' and '&'a mut &'b mut R' point at may be returned as ''a', and across parameters"
+tags = ["typecheck", "flow", "runtime"]
+
+[scenario.lifetime_band_implied_wrong_way]
+category = "reject"
+description = "An implied bound runs one way: the borrow of a 'Pair['b]' is not ''b', and unrelated names stay unrelated"
+tags = ["flow"]
+
+[scenario.lifetime_band_layer_read_through_local_ref]
+category = "run"
+description = "Each reference layer's lifetime governs what is read through it: 'first(z)' for a local 'z = &mut pp' carries what 'pp' holds, not 'pp'"
+tags = ["flow", "runtime"]
+
+[scenario.lifetime_band_layer_uni_reborrow_refused]
+category = "reject"
+description = "A borrow through a 'uni' inner reference reborrows it: it lasts no longer than the outer borrow"
+tags = ["flow"]
 
 [scenario.lifetime_band_named_return_other_name]
 category = "reject"
@@ -662,6 +710,36 @@ tags = ["flow"]
 category = "run"
 description = "A borrow of a temporary used within its statement; the temporary ends after the use"
 tags = ["flow", "runtime"]
+
+[scenario.lifetime_mix_temp_extended_in_arms]
+category = "run"
+description = "Rust 2024's extension through an 'if' arm's, a block's and a 'match' arm's value: only the arm run makes and finalizes its temporary"
+tags = ["typecheck", "flow", "runtime"]
+
+[scenario.lifetime_mix_temp_extended_arm_order]
+category = "run"
+description = "Temporaries extended in arms and blocks run where written, in a literal's order, and are finalized newest first"
+tags = ["typecheck", "flow", "runtime"]
+
+[scenario.lifetime_mix_temp_extended_arm_used_after_block]
+category = "reject"
+description = "An arm's extended temporary lasts to its block's end: a borrow of it used after that is refused"
+tags = ["flow"]
+
+[scenario.lifetime_mix_temp_arm_statement_not_extended]
+category = "reject"
+description = "Only an arm's final expression extends: a call's argument in a statement of the arm ends with it"
+tags = ["flow"]
+
+[scenario.lifetime_mix_temp_borrowed_argument]
+category = "run"
+description = "A borrowed temporary anywhere else -- an argument, a computed value, a literal, a temporary receiver -- lives to its statement's end"
+tags = ["typecheck", "flow", "runtime"]
+
+[scenario.lifetime_mix_temp_borrowed_argument_kept]
+category = "reject"
+description = "A borrowed temporary handed through a call and kept past its statement, or returned, is refused"
+tags = ["flow"]
 
 [scenario.lifetime_mix_temp_borrow_extended]
 category = "run"
@@ -1112,6 +1190,16 @@ category = "run"
 description = "A struct declaring lifetimes implements a trait naming none, and is called through a virtual reference"
 tags = ["typecheck", "flow", "runtime"]
 
+[scenario.lifetime_band_struct_impl_promises_more]
+category = "run"
+description = "An implementation may promise more than its trait: a ''static' or narrower result, a parameter of any lifetime for a ''static' one"
+tags = ["typecheck", "flow", "runtime"]
+
+[scenario.lifetime_band_struct_impl_static_parm_refused]
+category = "reject"
+description = "An implementation may not require a ''static' argument where its trait takes any"
+tags = ["typecheck"]
+
 [scenario.lifetime_band_struct_trait_promise_differs]
 category = "reject"
 description = "A struct's method promising another lifetime than its trait's requirement does not meet it"
@@ -1180,4 +1268,116 @@ tags = ["parse"]
 [scenario.lifetime_band_where_unknown_name]
 category = "reject"
 description = "A function's where clause naming a lifetime none of its types names is refused"
+tags = ["typecheck"]
+
+# -------- invariant lifetimes: the dynamic arena, brands, lock and key --------
+
+[scenario.lifetime_inv_mint_two_sites]
+category = "run"
+description = "Two calls of DynArena.empty() mint two brands; each arena opens its own keys"
+tags = ["typecheck", "runtime"]
+
+[scenario.lifetime_inv_cross_arena]
+category = "reject"
+description = "One arena's key handed to another arena's '[]' is refused"
+tags = ["typecheck"]
+
+[scenario.lifetime_inv_key_no_access]
+category = "reject"
+description = "A key is neither dereferenced nor reached through for a field or a method"
+tags = ["typecheck"]
+
+[scenario.lifetime_inv_loop_pass]
+category = "reject"
+description = "A key of an arena made in a loop pass is kept for no later pass and carried out by no break"
+tags = ["typecheck"]
+
+[scenario.lifetime_inv_loop_pass_own]
+category = "run"
+description = "An arena per loop pass used within it, and named arenas made before the loop, are accepted"
+tags = ["typecheck", "runtime"]
+
+[scenario.lifetime_inv_index]
+category = "run"
+description = "'ar[key]' reads, and in set position writes: a value, a field, '+=', a 'self &mut' method"
+tags = ["typecheck", "runtime"]
+
+[scenario.lifetime_inv_index_plain_pointer]
+category = "run"
+description = "'ar[key]' is the key's pointer: no check at run time, and nothing left of '[]' once inlined"
+tags = ["genllvm", "runtime"]
+
+[[scenario.lifetime_inv_index_plain_pointer.check]]
+name     = "index-answers-the-key"
+target   = "preir"
+contains = ["define internal ptr @_CINvNtC5arena8DynArenaoixxE(ptr %0, ptr %1) comdat {", "ret ptr %key1"]
+
+[[scenario.lifetime_inv_index_plain_pointer.check]]
+name     = "inlined-to-a-load"
+target   = "llvmir"
+excludes = ["call ptr @_CINvNtC5arena8DynArenaoixxE", "call ptr @_CINvNtC5arena8DynArenaorxxE"]
+
+[scenario.lifetime_inv_returned_with_arena]
+category = "run"
+description = "A struct holding a dynamic arena and keys into it is built, returned and walked"
+tags = ["typecheck", "runtime"]
+
+[scenario.lifetime_inv_recursion]
+category = "run"
+description = "Each activation mints its own brand; a key passed down with its arena opens it at every depth"
+tags = ["typecheck", "runtime"]
+
+[scenario.lifetime_inv_where_equal]
+category = "run"
+description = "'where '=a == '=b' lets a key of one open an arena of the other"
+tags = ["parse", "typecheck", "runtime"]
+
+[scenario.lifetime_inv_where_call_mismatch]
+category = "reject"
+description = "A call given two brands for an '==' pair, and a callee using unrelated brands together, are refused"
+tags = ["typecheck"]
+
+[scenario.lifetime_inv_parse_refused]
+category = "reject"
+description = "'>=' with an invariant lifetime, '==' with an ordinary one, and one on a slice or virtual reference are refused"
+tags = ["parse"]
+
+[scenario.lifetime_inv_signature_refused]
+category = "reject"
+description = "A struct's invariant lifetime left unnamed or named ordinary in a signature, and a body naming one its signature does not, are refused"
+tags = ["typecheck"]
+
+[scenario.lifetime_inv_arena_replaced]
+category = "reject"
+description = "An arena variable assigned, swapped or stored another arena is refused"
+tags = ["typecheck"]
+
+[scenario.lifetime_inv_branch_merge]
+category = "reject"
+description = "An 'if' joining keys of two arenas is refused"
+tags = ["typecheck"]
+
+[scenario.lifetime_inv_key_holds_borrow]
+category = "reject"
+description = "A key to a value holding a borrow is refused, in a type and at an allocation"
+tags = ["typecheck"]
+
+[scenario.lifetime_inv_brand_lost]
+category = "reject"
+description = "A key stored or passed as a borrow, or cast to one, is refused; cast to a raw pointer it is not"
+tags = ["typecheck"]
+
+[scenario.lifetime_inv_keys_in_list]
+category = "run"
+description = "Keys kept in a List built in a function naming the brand, read back through the arena"
+tags = ["typecheck", "runtime"]
+
+[scenario.lifetime_inv_keys_in_list_cross]
+category = "reject"
+description = "Another arena's key pushed onto a list of one arena's keys is refused"
+tags = ["typecheck"]
+
+[scenario.lifetime_inv_result_two_brands]
+category = "reject"
+description = "A result naming one minted brand built of two arenas' values is refused"
 tags = ["typecheck"]

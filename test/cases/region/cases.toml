@@ -35,10 +35,23 @@
 # - region_typecheck_traced_place asks where a traced reference may be held, and
 #   what a traced region may allocate: judged after type check, so apart.
 # - region_typecheck_threadsafe asks who may declare 'ThreadSafe': a region ref
-#   alone. What it changes, which references may cross threads, is the
+#   or a lock permission. What it changes, which references may cross threads, is the
 #   concurrency group's (concurrency_typecheck_sendable).
 # - region_typecheck_coerce asks which coercions between regions are allowed,
 #   which is a rule about reference types rather than about allocating.
+#
+# Lock permissions (doc/reference/refpermlock.html), a struct declaring
+# 'LockPermission' in a managed reference's permission slot, are the
+# region_lockperm_* scenarios: sync's Mutex (region_lockperm_mutex) and Rwlock
+# (region_lockperm_rwlock) from several threads, core's Rwcell on one, where
+# each lock is given back on every way out (region_lockperm_rwcell) and a
+# conflicting borrow panics (region_lockperm_rwcell_panic), and what type check
+# (region_lockperm_typecheck) and flow (region_lockperm_flow) refuse. A lock's
+# 'init' is region_typecheck_init's, a lock declaring 'ThreadSafe'
+# region_typecheck_threadsafe's, and a traced region refusing one
+# region_typecheck_traced_place's. Not covered: a deadlock, which Cone does
+# not prevent and a run would only show by hanging; and the lock left held by
+# a panic, since a panic ends the process.
 #
 # region_flow is a single function, because data-flow analysis runs only on a
 # function that type checked (ir/stmt/fndcl.c). That gate is now per function, so
@@ -51,16 +64,6 @@
 #   appears nowhere in the compiler, in any spelling or case. There is no syntax
 #   for the '.weak' the manual describes and no runtime notion of a non-owning
 #   count. doc/reference/refweakref.html opens by saying none of it is implemented.
-# - Lock permissions. There are none, which doc/reference/refpermlock.html also says
-#   outright. The six permissions in corelib.c are all static, and the flag that
-#   would distinguish a locked one -- IsLockless in ir/types/permission.h -- is
-#   set on every one of them and read nowhere. What does exist is the shape a
-#   lock permission would need: a struct is accepted in the permission slot,
-#   permInitTypeCheck validates its 'init' method, and genlalloc.c calls that
-#   method when allocating. region_typecheck_init asserts the validation, which
-#   is all of it that can be provoked. A struct permission otherwise has
-#   undefined static meaning, because permGetFlags reads a PermTag node's flag
-#   word out of whatever it is handed.
 # - An owning array reference. There is none: an owned runtime-sized array is
 #   a List, shared as 'Rc[List[T]]', and '+[]' is refused where it is parsed
 #   (region_parse_owned_arrayref). What a borrowed slice is and does belongs to
@@ -853,7 +856,7 @@ diagnostics = 10
 
 [scenario.region_typecheck_threadsafe]
 category = "reject"
-description = "Only a region ref may declare 'ThreadSafe': a plain struct, a trait, an enum and a variant declaring it are refused; a counted region ref and one with no alias declaring it are accepted"
+description = "Only a region ref or a lock permission may declare 'ThreadSafe': a plain struct, a trait, an enum and a variant declaring it are refused; a counted region ref, one with no alias and a lock permission declaring it are accepted"
 tags = ["typecheck"]
 diagnostics = 4
 
@@ -865,9 +868,9 @@ diagnostics = 9
 
 [scenario.region_typecheck_traced_place]
 category = "reject"
-description = "Where a traced reference may not be held: behind an untraced region's owning reference (a field, a struct pointing back at itself, a generic's instance, a parameter, an allocation), in a global, placed raw by mem.writeRaw or mem.moveRaw (directly, and through List, Arena and Pool, reported at the program's instantiation); and what a traced region may not allocate: a value holding a borrow, a virtual reference, a permission taking room"
+description = "Where a traced reference may not be held: behind an untraced region's owning reference (a field, a struct pointing back at itself, a generic's instance, a parameter, an allocation), in a global, placed raw by mem.writeRaw or mem.moveRaw (directly, and through List, Arena and Pool, reported at the program's instantiation); and what a traced region may not allocate: a value holding a borrow, a virtual reference, a lock permission"
 tags = ["typecheck"]
-diagnostics = 15
+diagnostics = 16
 
 [scenario.region_typecheck_coerce]
 category = "reject"
@@ -935,3 +938,36 @@ category = "reject"
 description = "A local pool removed from, added to or moved while an 'Option' borrow from 'get' or 'getMut', or its 'match' binding, is still to be used"
 tags = ["flow"]
 diagnostics = 3
+
+# -------- lock permissions --------
+
+[scenario.region_lockperm_mutex]
+category = "run"
+description = "The reference manual's example, Arc[Mutex, Point] borrowed mutably and read back; a counter in an Arc[Mutex, T] added to from two threads, through a borrow within each statement and one a local holds to its pass's end, giving the exact total; a field borrowed through the lock; the value finalized once, after the last owner, the guards counted and let go"
+tags = ["typecheck", "flow", "genllvm", "runtime"]
+
+[scenario.region_lockperm_rwlock]
+category = "run"
+description = "Arc[Rwlock, T]: two reader threads hold read-only borrows at once, sharing the read lock; a writer's mutable borrow waits until both have given theirs back, and finds nobody inside"
+tags = ["typecheck", "flow", "genllvm", "runtime"]
+
+[scenario.region_lockperm_rwcell]
+category = "run"
+description = "Rc[Rwcell, T] on one thread: read-only borrows sharing the lock; a borrow's lock given back at its statement's end (an argument, a field written, an operator in place, a field borrowed), at its block's end by every way out (the end, a return, a break, a continue, each pass of a loop), and in a function checked from inside a declaration's initializer at its own statement's end; the value finalized once"
+tags = ["typecheck", "flow", "genllvm", "runtime"]
+
+[scenario.region_lockperm_rwcell_panic]
+category = "run"
+description = "A borrow through Rc[Rwcell, T] that may write, while a read-only one is held, panics naming its own line; nothing after it runs, no finalizer either"
+tags = ["genllvm", "runtime"]
+program_exit = "abort"
+
+[scenario.region_lockperm_typecheck]
+category = "reject"
+description = "A lock permission's methods and their shapes; a struct in the permission slot that is none; the regions a lock fits (Mutex on Rc, Rwcell on Arc, either on So, a region counting no owners, a virtual reference refused); a method, a lend and an operator in place through a lock-managed reference refused; Arc[Mutex, T] crossing threads only where T may"
+tags = ["typecheck"]
+
+[scenario.region_lockperm_flow]
+category = "reject"
+description = "Reading, writing and swapping through a lock-managed reference refused; a borrow through one returned, or kept in a variable past its guard's statement or past the reference's block, refused; held by a local's initializer to the block's end, accepted"
+tags = ["flow"]

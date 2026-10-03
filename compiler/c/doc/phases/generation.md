@@ -418,7 +418,10 @@ Three shapes, the first two chosen in `genlSetupTaggedTrait`:
 - **Nullable pointer.** Exactly two variants under `SameSize`, one with one
   field and one with two whose second is a pointer-like: **no struct is emitted
   at all**, and the value *is* the pointer. A null pointer is the empty variant.
-  Each enum decides this for its own set: an extension's variants are copies, so an
+  A slice or a virtual reference is two words, and the value is that pair: its
+  first word, the pointer, null is the empty variant, so the literal writes that
+  word and the variant test (`genlIsType`) and the drop read it, the second word
+  left alone. Each enum decides this for its own set: an extension's variants are copies, so an
   `Option`-shaped base keeps the layout whatever extends it, and the extension, with
   a third variant for which there is no pointer to be, is tagged. The same holds per
   instance: `Option[&i32]` is a bare pointer beside a tagged instance of an enum
@@ -533,6 +536,13 @@ What follows from that:
   wider header or a permission with state moves the value and the header with
   it. The optimizer folds the byte step and the region's field GEP into one
   constant offset: for `Rc` the same address the count has always had.
+- **A lock permission's lock is the header's `PermField`.** A borrow through
+  `Arc[Mutex, T]` calls the lock's acquiring method on it as its guard is made
+  (`genlLockAcquire`), and the guard's release calls the giving-back one first
+  (`genlRegionDealiasPart`), both reaching it from the value pointer as a region
+  method reaches the header ([references](../nodes/references.md), "Lock
+  permissions"). A guard's type lays its permission out as the lock
+  (`genlType`'s `PermTag` arm), so its header is the lock-managed one's.
 - **An owning virtual reference is the fat `{ptr, ptr}` value, and its concrete
   type is read from the vtable's last slot.** `genlRefPtr`, at the entry of
   `genlRegionDealias` and `genlRegionAlias`, takes word 0, the object, so every
@@ -942,6 +952,17 @@ block. An arm whose last statement is a return, break or continue contributes no
 fallthrough and no phi edge. `while` is not a generation concept: it arrives as
 a loop block containing `if not cond { break }`.
 
+**An arm whose condition is a constant of the build is decided at
+generation.** `genlIf` asks `intrinsicBuildConst` of each condition:
+`isDebugBuild()`, the provisional target-OS and `-D` constants beside it
+(TEMPORARY; its final design is open), or `!`, `and`, `or` of them. A false
+arm generates nothing, not even its test; a true one generates its body as the
+`else` would and ends the chain, the arms after it generating nothing. A call
+on an untaken side therefore never reaches the object, in either build, and an
+`extern` only that side names is declared and never referenced. Everything
+before generation still sees both sides ([intrinsic](../nodes/intrinsic.md),
+"Constants of the build drop the untaken side at generation").
+
 Short-circuit `and`/`or` are two blocks and a 2-way `i1` phi. `not` is
 `xor i1 %x, true`.
 
@@ -992,14 +1013,15 @@ each in a `TempNode` ([Flow](flow.md), "Temporaries"). Generating one
 (`genlTerm`, or `genlAddr` where its field or element is wanted) generates its
 value, stores it into an alloca of its own (`genlTempKeep`) and pushes that slot
 on `GenState.temps`, a stack in evaluation order; a `kept` one is generated as
-its value alone. The end of each part that makes temporaries finalizes those
+its value alone, or, where its address is wanted, stored in its slot and never
+finalized. The end of each part that makes temporaries finalizes those
 it pushed, newest first, and pops them (`genlTempsEnd`), each as a local dies
 (`genlFinalizeAt`), or hollow where flow noted a value moved out through it
 (`genlTempRelease`, `genlMovedPath` walking to the node instead of a variable):
 
 | Part | Where it ends |
 | --- | --- |
-| a statement | `genlBlock`, after the statement; for a `blockret`, and an inlined body's one `return`, after its value and before the block's `dealias` |
+| a statement | `genlBlock`, after the statement; for a `blockret`, and an inlined body's one `return`, after its value and before the block's `dealias`. In a block flagged `FlagKeepTemps`, an operator's rewrite ([Flow](flow.md), "Temporaries"), after its last statement only |
 | an `if` or `elif` condition, and so a `while`'s | `genlIf`, once the condition is computed, before the branch |
 | the right operand of `and` or `or` | `genlLogic`, before the branch to the phi |
 | an array's repeated value generated in a loop | `genlArrayRun`, each time round, after the element's store |

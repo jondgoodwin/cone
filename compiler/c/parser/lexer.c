@@ -374,6 +374,21 @@ void lexScanChar(char *srcp) {
     char *srcbeg = srcp;
     lex->tokp = srcp++;
 
+    // An invariant lifetime, ''=a': the quote, '=', a name. ''='' stays the
+    // character literal it always was, since a letter follows no '=' there.
+    if (*srcp == '=' && isalpha(srcp[1])) {
+        char *namep = srcp + 1;
+        while (isalnum(*namep))
+            ++namep;
+        if (*namep != '\'' && !(*namep & 0x80)) {
+            lex->val.ident = nametblFind(srcbeg, namep - srcbeg);
+            lex->toktype = LifetimeToken;
+            lex->srcp = namep;
+            lifeInvariantSeen = 1;
+            return;
+        }
+    }
+
     // Assume we have a lifetime variable if it starts with a letter, not followed by close single quote
     if (isalpha(*srcp) && *(srcp+1)!='\'') {
         while (isalnum(*srcp))
@@ -1445,6 +1460,8 @@ int lexNextOpensValue() {
 // lexNextIsWord is, so nothing is lexed twice.
 int lexPeekIsLifetime() {
     char *srcp = lexSkipTrivia(lex->srcp);
+    if (srcp[0] == '\'' && srcp[1] == '=' && isalpha(srcp[2]))
+        return 1;
     return srcp[0] == '\'' && isalpha(srcp[1]) && srcp[2] != '\'';
 }
 

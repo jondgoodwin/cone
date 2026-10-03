@@ -215,6 +215,13 @@ void typeLitStructCheck(TypeCheckState *pstate, FnCallNode *arrlit, StructNode *
     if (typeLitStructReorder(arrlit, strnode, private) == 0)
         return;
 
+    // A struct naming invariant lifetimes binds each to the brand its fields'
+    // values carry, one per name, and its value carries those brands; one no
+    // field's value gives is minted here, as a call minting one would
+    LifeBind *brands = lifeTypeHasBrands((INode*)strnode) ? lifeBindBegin(NULL) : NULL;
+    if (brands)
+        lifeBindUse(brands, (INode*)strnode, arrlit->vtype, (INode*)arrlit);
+
     uint32_t cnt;
     INode **nodesp;
     uint32_t argi = 0;
@@ -236,6 +243,12 @@ void typeLitStructCheck(TypeCheckState *pstate, FnCallNode *arrlit, StructNode *
         if (named)
             named->vtype = ((IExpNode*)named->val)->vtype;
         ++argi;
+    }
+    if (brands) {
+        lifeBindEnd(brands);
+        INode *branded = lifeBrandSubst((INode*)strnode, brands, (INode*)arrlit);
+        if (branded != (INode*)strnode)
+            arrlit->vtype = branded;
     }
 }
 

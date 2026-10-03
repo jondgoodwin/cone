@@ -197,8 +197,8 @@ int fnSigVrefEqual(FnSigNode *node1, FnSigNode *node2, INode *selftype) {
         nodes2p++;
     }
     // A call through the requirement is checked against its lifetimes, so the
-    // implementation must promise the same
-    return lifeSigsAgree(node1, node2);
+    // implementation must promise at least as much (lifeSigMeets)
+    return lifeSigMeets(node1, node2);
 }
 
 // Do two signatures declare the same parameter types (ignoring return type)?

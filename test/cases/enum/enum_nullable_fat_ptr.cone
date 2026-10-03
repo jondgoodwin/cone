@@ -1,0 +1,195 @@
+// The nullable-pointer layout when the reference is two words: a slice, a
+// pointer and a length, or a virtual reference, a pointer and a vtable. The
+// enum's value is then the fat reference itself, and the empty variant is the
+// one whose first word, the pointer, is null; the second word is never read
+// for it.
+//
+// The test for which variant a value holds compares that first word against a
+// null of the pointer's own type; against a null of the whole two-word type,
+// which is what it once built, LLVM's verifier refuses the module, so none of
+// these compiled under '--verify'. What is claimed here is that every such enum compiles, and that the right variant is
+// read back from each side, through every form of match: by value with 'is',
+// through a dereference, and through a reference.
+//
+// A variant whose field is a struct holding a slice is not this layout -- the
+// field is not itself a reference, so the enum is tagged -- and is here beside
+// it, so the two layouts are seen to read the same values.
+
+mod enum_nullable_fat_ptr;
+
+import stdio use *;
+
+fn show(label &[]u8, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+fn text(label &[]u8, s &[]u8) {
+  printStr(label);
+  printStr(" [");
+  printStr(s);
+  printStr("]\n");
+}
+
+fn showB(label &[]u8, b Bool) {
+  show(label, if b {1;} else {0;});
+}
+
+// -------- a slice of bytes --------
+
+enum Tok {
+  struct Word {
+    pub text &[]u8;
+  }
+  End;
+}
+
+// Through a dereference of a reference to the enum
+fn textOf(t &Tok) &[]u8 {
+  match *t {
+    case imm w Tok.Word { w.text; }
+    case is Tok.End { "end"; }
+  }
+}
+
+// Through the reference itself, binding a reference to the variant
+fn lenOf(t &imm Tok) i64 {
+  match t {
+    case imm w &Tok.Word { i64.from(w.text.len); }
+    case is &Tok.End { -1; }
+  }
+}
+
+fn wordOf(text &[]u8) Tok { Tok.Word[text]; }
+
+// -------- a slice of another element type --------
+
+enum Nums {
+  struct Have {
+    pub xs &[]i64;
+  }
+  Empty;
+}
+
+fn sumOf(n &imm Nums) i64 {
+  match n {
+    case imm h &Nums.Have {
+      mut t = 0i64;
+      mut i = 0usize;
+      while i < h.xs.len {
+        t = t + h.xs[i];
+        i = i + 1usize;
+      }
+      t;
+    }
+    else { -1; }
+  }
+}
+
+// -------- a virtual reference --------
+
+trait Shape {
+  pub fn area(self &) i64;
+}
+
+struct Square is Shape {
+  pub side i64;
+  fn area(self &) i64 {self.side * self.side;}
+}
+
+enum Held {
+  struct Has {
+    pub s &<Shape;
+  }
+  Nothing;
+}
+
+fn areaOf(h &imm Held) i64 {
+  match *h {
+    case imm x Held.Has { x.s.area(); }
+    case is Held.Nothing { -1; }
+  }
+}
+
+// -------- the generic Option of a slice --------
+
+fn optText(o &imm Option[&[]u8]) &[]u8 {
+  match o {
+    case imm s &Some[&[]u8] { s.value; }
+    else { "none"; }
+  }
+}
+
+// -------- a struct holding a slice, nested in the variant: tagged --------
+
+struct Pair {
+  pub text &[]u8;
+  pub n i64;
+}
+
+enum Line {
+  struct Words {
+    pub p Pair;
+  }
+  Blank;
+}
+
+fn lineOf(l &imm Line) i64 {
+  match *l {
+    case imm w Line.Words { printStr("line-words ["); printStr(w.p.text); printStr("]\n"); w.p.n; }
+    case is Line.Blank { -1; }
+  }
+}
+
+fn main() {
+  // A slice of bytes, each variant, each form of match
+  imm tok = wordOf("seven");
+  imm end Tok = Tok.End[];
+  text("tok-deref-word", textOf(&tok));
+  text("tok-deref-end", textOf(&end));
+  show("tok-ref-word", lenOf(&imm tok));
+  show("tok-ref-end", lenOf(&imm end));
+  showB("tok-value-is-word", tok is Tok.Word);
+  showB("tok-value-is-end", tok is Tok.End);
+  showB("end-value-is-word", end is Tok.Word);
+  showB("end-value-is-end", end is Tok.End);
+
+  // An empty slice still has a pointer, so it is the word variant, not the
+  // empty one: the length is not what the test reads
+  imm s &[]u8 = &"Abcd";
+  imm blank = wordOf(&s[4..]);
+  show("empty-slice-word", lenOf(&imm blank));
+  showB("empty-slice-is-end", blank is Tok.End);
+
+  // A slice of i64
+  mut arr = [1i64, 2i64, 3i64, 4i64, 5i64];
+  imm have Nums = Nums.Have[&arr[1..4]];
+  imm none Nums = Nums.Empty[];
+  show("nums-have", sumOf(&imm have));
+  show("nums-empty", sumOf(&imm none));
+
+  // A virtual reference
+  imm sq = new Square(6);
+  imm has Held = Held.Has[&sq];
+  imm nothing Held = Held.Nothing[];
+  show("vref-has", areaOf(&imm has));
+  show("vref-nothing", areaOf(&imm nothing));
+  showB("vref-value-is-nothing", nothing is Held.Nothing);
+
+  // Option of a slice. The string goes through a typed local first: 'Some'
+  // given the literal itself expands without end, a defect of generic
+  // inference and not of this layout
+  imm eight &[]u8 = "eight";
+  imm some Option[&[]u8] = Some[eight];
+  imm absent Option[&[]u8] = None[&[]u8][];
+  text("option-some", optText(&imm some));
+  text("option-none", optText(&imm absent));
+
+  // A struct holding a slice, nested in the variant
+  imm words Line = Line.Words[new Pair("nine", 9)];
+  imm empty Line = Line.Blank[];
+  show("line-words-n", lineOf(&imm words));
+  show("line-blank", lineOf(&imm empty));
+}

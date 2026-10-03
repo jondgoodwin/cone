@@ -206,8 +206,9 @@ typedef struct {
 
 // A temporary: the value of an expression nothing takes -- not bound to a
 // variable, stored, passed by value, handed back or moved -- whose death does
-// something (itypeNeedsFinal). Injected by flow analysis round the expression,
-// at the place its value is read or thrown away (flowTempRead); generation
+// something (itypeNeedsFinal), or which a borrow points at, whatever its type.
+// Injected by flow analysis round the expression, at the place its value is
+// read or thrown away (flowTempRead), or borrowed (flowTempBorrowed); generation
 // keeps the value in a slot of its own and finalizes it, newest first, at the
 // end of the statement that made it, or of the 'if' or 'while' condition, or
 // of the right operand of 'and' or 'or', that made it.
@@ -230,6 +231,11 @@ typedef struct {
 // Wrap the expression at 'nodep', whose value is read or thrown away here, in
 // a TempNode when it is a temporary whose death does something
 void flowTempRead(INode **nodep);
+// Wrap the expression at 'nodep', a value a borrow points at ('&make()',
+// '&make().x'), in a TempNode whatever its type: the borrow needs it kept in a
+// slot, and the loan walk a root to end with its statement. One whose death
+// does nothing is 'kept', as nothing finalizes it.
+void flowTempBorrowed(INode **nodep);
 // How many temporaries flow has made: a statement that made none needs no walk
 extern uint32_t flowTempCount;
 // The walk over a statement that made temporaries, once flow has walked it:

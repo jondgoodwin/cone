@@ -14,7 +14,12 @@
 # (intrinsic_srcloc), the third since core's 'assertDebug' macro calls it, and
 # a program may. isDebugBuild's two builds are run by the exception group
 # (exception_assertdebug_release and exception_assertdebug_debug), with the IR
-# check that a release build folds a branch on it away.
+# check that a release build generates nothing of a branch on it it does not
+# take. The TEMPORARY constants of the build beside it (a provisional
+# mechanism; its final design is open) are called bare too: isWindows,
+# isLinux, isMacOS and isWasm (intrinsic_buildconst_os on this Windows build,
+# intrinsic_buildconst_triple on other triples), and isDefined and definedInt,
+# which read conec's '-D' (intrinsic_define).
 #
 # '@intrinsic' is allowed only in the core package, so the scenarios about the
 # declaration itself -- intrinsic_parse_form and intrinsic_nameres_registry --
@@ -96,6 +101,84 @@ options = []
 [[scenario.intrinsic_atomic.run]]
 name = "fallback"
 options = ["--intrinsic-fallback"]
+
+# Constants of the build (TEMPORARY, a provisional mechanism; its final design
+# is open). Each side of an 'if' on one that the build does not take calls a
+# function declared 'extern' and defined nowhere: the program links only because
+# generation never emits those calls, in a debug build too, where no optimizer
+# would remove them. The preir checks say the same of what generation wrote.
+# This build is Windows, so isWindows holds; the .out says so
+[scenario.intrinsic_buildconst_os]
+category = "run"
+description = "isWindows holds on this Windows build and isLinux, isMacOS and isWasm do not; only the side of an 'if' on them the build takes is generated (a chain, '!', 'and', 'or', a true constant ending a chain, an 'if' giving a value, a constant after a test known only at run time), so calls to functions defined nowhere on the other sides link"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[[scenario.intrinsic_buildconst_os.run]]
+name = "release"
+options = []
+
+[[scenario.intrinsic_buildconst_os.run]]
+name = "debug"
+options = ["--debug"]
+
+[[scenario.intrinsic_buildconst_os.check]]
+name = "the-untaken-sides-are-not-generated"
+target = "preir"
+contains = ["icmp sgt i32"]
+excludes = [
+  "call %void @notWindowsDefinedNowhere(",
+  "call i32 @linuxDefinedNowhere(",
+  "call %void @macDefinedNowhere(",
+  "call %void @wasmDefinedNowhere(",
+]
+
+# One source, a run per triple: '-D' tells each what OS to expect, so one pair
+# of checks holds for every run
+[scenario.intrinsic_buildconst_triple]
+category = "compile"
+description = "isWindows, isLinux, isMacOS and isWasm read the target triple: x86_64-pc-windows-msvc is Windows, x86_64-unknown-linux-gnu Linux, x86_64-apple-macosx14.0 macOS and --wasm WebAssembly, each the only one that holds"
+tags = ["genllvm"]
+
+[[scenario.intrinsic_buildconst_triple.run]]
+name = "windows"
+options = ["--triple=x86_64-pc-windows-msvc", "-D", "EXPECT_WINDOWS"]
+
+[[scenario.intrinsic_buildconst_triple.run]]
+name = "linux"
+options = ["--triple=x86_64-unknown-linux-gnu", "-D", "EXPECT_LINUX"]
+
+[[scenario.intrinsic_buildconst_triple.run]]
+name = "macos"
+options = ["--triple=x86_64-apple-macosx14.0", "-D", "EXPECT_MACOS"]
+
+[[scenario.intrinsic_buildconst_triple.run]]
+name = "wasm"
+options = ["--wasm", "-D", "EXPECT_WASM"]
+
+[[scenario.intrinsic_buildconst_triple.check]]
+name = "the-expected-os-alone-holds"
+target = "preir"
+contains = ["call %void @matched("]
+excludes = ["call %void @mismatched("]
+
+# Every spelling of the option, in a release and a debug build alike
+[scenario.intrinsic_define]
+category = "run"
+description = "'-D NAME' defines 1 and '-D NAME=v' the integer v (decimal, negative, 0x hex, 0), the last of a name given twice; isDefined and definedInt answer them, false and 0 for a name never defined; the untaken side of an 'if' on isDefined is not generated"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[[scenario.intrinsic_define.run]]
+name = "release"
+options = ["-D", "FAST", "-DLEVEL=42", "--define=NEG=-7", "-D", "HEX=0x10", "-D", "ZERO=0", "-D", "TWICE=1", "-DTWICE=2"]
+
+[[scenario.intrinsic_define.run]]
+name = "debug"
+options = ["--debug", "-D", "FAST", "-DLEVEL=42", "--define=NEG=-7", "-D", "HEX=0x10", "-D", "ZERO=0", "-D", "TWICE=1", "-DTWICE=2"]
+
+[[scenario.intrinsic_define.check]]
+name = "the-undefined-side-is-not-generated"
+target = "preir"
+excludes = ["call %void @slowDefinedNowhere("]
 
 # -------- generation --------
 
@@ -219,3 +302,9 @@ options = []
 [[scenario.intrinsic_typecheck_atomic.run]]
 name = "fallback"
 options = ["--intrinsic-fallback"]
+
+# TEMPORARY, a provisional mechanism whose final design is open
+[scenario.intrinsic_typecheck_define]
+category = "reject"
+description = "isDefined and definedInt given a name that is not a string literal: a parameter, a local, a call's result"
+tags = ["typecheck"]

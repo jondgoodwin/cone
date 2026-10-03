@@ -1,0 +1,135 @@
+// A lock permission for one thread: core's Rwcell in an Rc, 'Rc[Rwcell, T]'.
+// Its lock counts the borrows holding it: any number of read-only ones, or one
+// that may write. A borrow that conflicts with one still held panics rather
+// than waiting (region_lockperm_rwcell_panic), so every borrow below
+// would end the run if any earlier one had not given its lock back. That makes
+// this the scenario for where the lock is given back, on every way out of
+// the place a borrow lives:
+//
+// - a borrow made within a statement (an argument, a field written through
+//   it, an operator changing a field in place, the receiver of a method on a
+//   field, which may store a pointer into the value) at the statement's end;
+// - one a local's initializer makes, at the end of that local's block: the
+//   block's end, a 'return' from inside it, a 'break' or a 'continue' out of
+//   a loop's body, each pass of the loop;
+// - two read-only borrows held at once share the lock.
+//
+// Each borrow's guard is an owner of the value too, counted and let go: the
+// value's 'final' runs once, when main's owner goes, and not before.
+//
+// Worked out by hand, from x 1 and y 2:
+//   shared reads: 1 + 2 = 3, twice: 6
+//   first(true) returns x, 1, untouched; first(false) adds 1: 2
+//   the loop adds 1 to y on passes 0, 2 and 3, skipping pass 1 by 'continue',
+//   and breaks after pass 3 (i 3): y 2 + 3 = 5
+//   set(&mut *p) makes x 40; '(&mut *p).y += 1' makes y 6
+//   '&mut p.x' adds 2: x 42
+//   applied: sumOf reads 42 + 6 = 48, its borrow given back at its own end,
+//   so the 'last' borrow after it finds the lock free
+//   last: x 42 y 6 sum 48
+//   a bag of 3 pushed, then 4: 2 long, then 'final' as main ends
+
+mod region_lockperm_rwcell;
+
+import stdio use *;
+import collections use *;
+
+struct Bag {
+  pub list List[i32];
+}
+
+struct Point {
+  pub x i32;
+  pub y i32;
+  fn sum(self &) i32 {x + y;}
+  fn final(self &uni) {printStr("final\n");}
+}
+alias Cell = Rc[Rwcell, Point];
+
+fn readBoth(p Cell) i32 {
+  imm a = &*p;
+  imm b = &*p;                 // a second read-only borrow shares the lock
+  a.sum() + b.sum();
+}
+
+fn first(p Cell, stop Bool) i32 {
+  imm r = &mut *p;
+  if stop {
+    return r.x;                // given back on the way out
+  }
+  r.x = r.x + 1;
+  r.x;
+}
+
+fn set(p &mut Point, x i32) {
+  p.x = x;
+}
+
+fn add(n &mut i32, amount i32) {
+  *n = *n + amount;
+}
+
+fn main() {
+  imm p = new Cell(1, 2);
+  printStr("shared reads ");
+  printInt(i64.from(readBoth(p)));
+  printStr("\nfirst ");
+  printInt(i64.from(first(p, true)));
+  printStr(" then ");
+  printInt(i64.from(first(p, false)));
+  printStr("\n");
+
+  mut i = 0;
+  while true {
+    imm w = &mut *p;           // a pass's own borrow
+    if i == 1 {
+      i += 1;
+      continue;                // given back before the next pass
+    }
+    w.y += 1;
+    if i == 3 {
+      break;                   // given back on the way out
+    }
+    i += 1;
+  }
+  printStr("loop y ");
+  printInt(i64.from((&*p).y));
+  printStr("\n");
+
+  set(&mut *p, 40);            // given back at the statement's end
+  (&mut *p).y += 1;            // and here, after the field is written
+  add(&mut p.x, 2);            // a field borrowed through the lock
+  // 'sumOf' is checked when this initializer names it, its own borrow ending
+  // with its own statement, not extended into this block
+  imm total = apply(p, &sumOf);
+  printStr("applied ");
+  printInt(i64.from(total));
+  printStr("\n");
+  {
+    imm last = &*p;
+    printStr("last x ");
+    printInt(i64.from(last.x));
+    printStr(" y ");
+    printInt(i64.from(last.y));
+    printStr(" sum ");
+    printInt(i64.from(last.sum()));
+    printStr("\n");
+  }
+  // A method on a field of the value, its receiver borrowed through the lock:
+  // the List may keep a pointer into what it is handed, and the lock is given
+  // back at the statement's end all the same
+  imm bag = new Rc[Rwcell, Bag](List[i32].empty());
+  (&mut *bag).list.push(3);
+  (&mut *bag).list.push(4);
+  printStr("bag ");
+  printInt(i64.from((&*bag).list.len()));
+  printStr(" long\nend of main\n");
+}
+
+fn apply(p Cell, f &fn(c Cell) i32) i32 {
+  f(p);
+}
+
+fn sumOf(p Cell) i32 {
+  (&*p).sum();
+}

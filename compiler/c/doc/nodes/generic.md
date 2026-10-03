@@ -96,13 +96,25 @@ a generic that recurses at the *same* arguments terminate — the inner call
 memo-hits the half-built instance.
 
 **A lifetime is never instanced.** A memo hit compares arguments by
-`itypeIsSame`, which ignores a reference's lifetime, so `Option[&'a R]` and
+`itypeIsSame`, which ignores a reference's lifetime but for whether it is a
+key (an invariant one, below), so `Option[&'a R]` and
 `Option[&R]` are one instance; and the instance is cloned from its arguments
 with every lifetime erased (`lifeErased`, a function type's promises excepted,
 being part of that type), so no use's names leak into the instance's own
 types. The use `genericMemoize` returns keeps the arguments as written, and
 the lifetimes the generic's own name was given, for what they name
 (`genericInstanceUse`, `NameUseNode.lifeuse`).
+
+**An invariant lifetime is the exception.** A key stays a key in the
+instance: `lifeErased` keeps an invariant name, and `lifeCanonBrands` then
+renames every brand the arguments carry by its place, `'=1`, `'=2`, so that
+`List[&'=a Node['=a]]` and `List[&'=b Node['=c]]` are one instance,
+`List[&'=1 Node['=2]]`, which assumes no two places one brand; the memo
+compares those names (`lifeBrandsEqual`) as well as the types. A function's
+instance use keeps its arguments as written too, where they carry brands,
+for a call to bind the places to ([Type Check
+Reasoning](../phases/type-check-reasoning.md), "Invariant lifetimes:
+brands").
 
 **`GenVarDclNode`** is `{ IExpNodeHdr; Name *namesym; Nodes *annot; }`. Its
 `vtype` is set NULL and never assigned; `gVarDclTypeCheck` is empty. `namesym`
@@ -254,7 +266,12 @@ re-decision flips only an operand that was not a type and now is.
 parameter's `Name` directly to the **argument node**. `cloneNode`, meeting a
 use bound to a generic parameter itself, then reads `namesym->node` and clones
 it. So substitution is by *name*, through a global, at clone time — and the
-argument is **deep-copied at every use site**. The use must be bound to the
+argument is **deep-copied at every use site**, but for a number type standing in
+it as its declaration, not a name — what a string literal's `Array[u8, n]` holds,
+since type check built it. A number type is one declaration for the whole
+program, and `itypeIsSame` compares it by identity, so a copy would be another
+type: the copy of `Option[Array[u8, 5]]` naming its own enum would miss the memo
+and instantiate it again, without end. The use must be bound to the
 parameter, not to a type alias of it: `alias Item = T` in a generic module,
 used as `Item`, is a use of the alias, whose own copy substitutes `T`, and
 the name `Item` is hooked to nothing.
@@ -515,6 +532,10 @@ are requirements at its instance.
 because every expansion is a fresh node — nothing ever returns to the same node.
 `genericInstantiateEnter` counts and refuses past `TypeCheckLoopMax` (256) with
 `ErrorInstDepth`. Past that it is the C stack that gives out, with no diagnostic.
+Once it has refused, it refuses every expansion until the outermost one has
+unwound, without reporting again: each level the refusal returns through would
+otherwise start its next expansion down to the limit again, and one that
+expands twice a level would report the limit an exponential number of times.
 
 **Macros differ from generics in three ways**: arguments are never checked for
 being types, never type checked before substitution, and never memoized. That is

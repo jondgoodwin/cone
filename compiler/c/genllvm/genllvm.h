@@ -194,6 +194,10 @@ LLVMValueRef genlSrcFileSlice(GenState *gen, char *text, size_t len);
 void genlRefTypeSetup(GenState *gen, RefNode *reftype);
 // Generate code that creates an allocated ref by allocating and initializing
 LLVMValueRef genlallocref(GenState *gen, RefNode *allocatenode);
+// Take the lock a guard's type names (FlagLockAcquire), in the header of the
+// value 'ref' points at; answer 'ref', the guard. 'site' is the borrow, whose
+// file and line a lock's acquiring method may ask for
+LLVMValueRef genlLockAcquire(GenState *gen, LLVMValueRef ref, RefNode *guardtype, INode *site);
 // Progressively dealias or drop all declared variables in nodes list
 void genlDealiasNodes(GenState *gen, Nodes *nodes);
 void genlDealiasNode(GenState *gen, INode *node);

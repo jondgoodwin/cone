@@ -26,8 +26,12 @@
  * callee's own, while its body is checked, or the one a call is made through.
  * Two names are unordered unless the signature's 'where' clause orders them
  * ('where 'a >= 'b': ''a' lasts at least as long as ''b'), or the 'where' clause
- * of a struct a parameter or the result uses does; '>=' is transitive, and
- * nothing else is inferred. RefNode.lifename holds a reference's name (NULL for
+ * of a struct a parameter or the result uses does, or a type in it implies it:
+ * a borrow of a value holding lifetimes ('&'a Pair['b]', '&'a &'b T', 'self &'
+ * of a struct declaring ''b') cannot outlast them, so each lasts at least as
+ * long as the borrow's own (Rust's implied bounds), the unnamed lifetime a
+ * name like any other there. '>=' is transitive, and nothing else is
+ * inferred. RefNode.lifename holds a reference's name (NULL for
  * the unnamed lifetime); RefNode.scope stays the band (0 global, 1 the caller's,
  * 2+ a block of the function), which the names divide no further.
  *
@@ -203,7 +207,8 @@ void lifeUseInstance(struct NameUseNode *instuse, INode *genuse, Nodes *typeargs
 // Check a signature's lifetimes once its types are: mark it as naming
 // lifetimes where one of its types does ('Self' of a struct declaring them
 // too), refuse a 'where' clause naming a lifetime none of its types does, and
-// add to its order what the structs its parameters and result use order
+// add to its order what its parameters' and result's types imply: what the
+// structs they use order, and that what a borrow points at outlasts it
 void lifeSigCheck(struct FnSigNode *sig);
 
 // Do two signatures promise the same about lifetimes? Each part of each
@@ -215,10 +220,137 @@ void lifeSigCheck(struct FnSigNode *sig);
 // lifetimes), each parameter is compared whole.
 int lifeSigsAgree(struct FnSigNode *a, struct FnSigNode *b);
 
+// Does the implementation 'impl' promise at least what the requirement 'req'
+// does, so that a call checked against 'req' is safe with 'impl'? Each part
+// may flow to the result, or be stored through a writable parameter, only
+// where it may in 'req'; a parameter is ''static' only where 'req''s is; a
+// struct's slots are named apart wherever they are in 'req'. As
+// lifeSigsAgree, a parameter lending different parts in each is compared whole.
+int lifeSigMeets(struct FnSigNode *impl, struct FnSigNode *req);
+
 // Spell what a signature promises about lifetimes into a type's symbol name
 // (nameType), where it differs from what the signature promises unannotated:
 // 'G' (where v0 puts a signature's lifetimes), a digit per promise, '_'. Two
 // signatures that agree spell alike.
 char *lifeSigSpell(char *bufp, struct FnSigNode *sig);
+
+// *********************
+// Invariant lifetimes: brands
+// *********************
+//
+// An invariant lifetime, ''=a', is equal only to itself. It has no order with
+// any other lifetime and bounds nothing by scope: a value of one goes
+// anywhere. A reference of one is a KEY ('&'=a T'), which reaches nothing on
+// its own; only an arena of the same lifetime (the lock) reaches through it,
+// 'arena[key]'. Inside a function each invariant lifetime is a BRAND: a name
+// its signature (or 'Self') writes, or one MINTED by a call whose result
+// names an invariant lifetime none of its parameters does, a fresh name per
+// call site ('''=a#3''). A brand is compared by identity, nothing else (a
+// 'where' clause may equate two of the signature's): never ordered, never
+// solved for. Brands live in types, so every place a value meets a type --
+// an argument, a store, a return, a branch joining others -- compares them
+// (lifeBrandsCoerce): a call binds its callee's names to the brands its
+// arguments carry and substitutes them in its result (lifeBrandSubst), and
+// everything else wants the same brands it is given. A brand minted inside
+// a loop names that pass's arena: no value of an outer variable's type can
+// hold it, and a 'break' may not carry it out (lifeBrandBreaks).
+//
+// For the loan walk and the scope numbers a key is no borrow: it holds no
+// lifetime that ends (lifeSetAdd skips it, itypeCarriesBorrow answers no).
+// compiler/c/doc/phases/type-check-reasoning.md, "Invariant lifetimes:
+// brands", is the note.
+
+// Set once the lexer has read an invariant lifetime: until then no type
+// holds one and no check need look
+extern int lifeInvariantSeen;
+
+// Is this the name of an invariant lifetime?
+int lifeIsInvariant(Name *name);
+
+// Is this type a key: a borrowed reference of an invariant lifetime?
+int lifeIsKey(INode *type);
+
+// Refuse, at 'at', reaching through a key of this type: only its arena may
+void lifeKeyAccessError(INode *at, INode *keytype);
+
+// One call's or construction's binding of the invariant names its callee's
+// (or struct's) types write to the brands the caller's values carry
+typedef struct LifeBind LifeBind;
+
+// Begin binding the invariant names of 'sig' (a callee's signature) or, with
+// 'sig' NULL, of a struct's own or an instance's types, at a call or a
+// construction; every value coerced until lifeBindEnd binds them. Answers the
+// binding, already in force.
+LifeBind *lifeBindBegin(struct FnSigNode *sig);
+
+// End it: the coercions after it compare brands as the function's own again
+void lifeBindEnd(LifeBind *bind);
+
+// Bind a struct's own invariant names (or an instance's ''=1'...) to the brands
+// a use of it writes, 'None[&'=a T]', before its construction's fields do
+void lifeBindUse(LifeBind *bind, INode *strnode, INode *use, INode *at);
+
+// Bind a generic function instance's brands, named by place in 'instargs',
+// to those its type arguments as written carry
+void lifeBindArgs(LifeBind *bind, Nodes *instargs, Nodes *written, INode *at);
+
+// Hold the callee's 'where '=a == '=b' to the brands bound: each pair one brand
+void lifeBindClose(LifeBind *bind, INode *at);
+
+// A copy of 'type' with each invariant name the binding knows replaced by the
+// brand bound to it; a name it does not know is minted fresh at 'mintat', or,
+// with 'mintat' NULL, becomes the unknown brand. 'type' itself where nothing
+// changes.
+INode *lifeBrandSubst(INode *type, LifeBind *bind, INode *mintat);
+
+// Does a value of 'fromtype' carry the brands 'totype' wants? Under a
+// binding, a name of the callee's is bound at its first meeting and compared
+// after; otherwise a name of the current function's parameters is compared
+// by identity, and one only its result (or a body's type) writes is bound
+// once for the whole function. A brand lost or gained is a mismatch.
+// Reports, at 'at', and answers 0 on a mismatch.
+int lifeBrandsCoerce(INode *fromtype, INode *totype, INode *at);
+
+// The type of a field 'fldtype' read from a value of 'objtype': the struct's
+// own invariant names replaced by the brands the use names
+INode *lifeBrandField(INode *objtype, INode *fldtype, INode *at);
+
+// The current function's brand state, saved while another is checked
+typedef struct LifeBrandSave {
+    void *fn;
+    LifeBind *bind;
+    void *loop;
+} LifeBrandSave;
+void lifeBrandFnBegin(struct FnSigNode *sig, LifeBrandSave *save);
+void lifeBrandFnEnd(LifeBrandSave *save);
+
+// A loop's body is being checked: a brand minted in it is its pass's
+void lifeBrandLoopEnter(INode *loop);
+void lifeBrandLoopExit();
+
+// Refuse a 'break' out of 'blk' whose value carries a brand a loop inside
+// 'blk' minted: that pass's arena is gone once the pass is
+void lifeBrandBreaks(INode *blk, Nodes *breaks);
+
+// A generic's type arguments, erased (lifeErased), name their brands by
+// their order, ''=1', ''=2': one instance serves every use whose brands fall
+// alike, and its calls bind those names afresh (lifeBindBegin)
+void lifeCanonBrands(Nodes *args);
+
+// Do two types carry the very same brands, name for name?
+int lifeBrandsEqual(INode *a, INode *b);
+
+// Is every invariant lifetime a body's type writes one the function's
+// signature names? Reports at 'at' those it does not, and answers 0.
+int lifeBrandKnown(INode *type, INode *at);
+
+// Refuse, at 'at', a type giving a key to a value that holds a borrow: what
+// a key names lives in its arena, which outlives every scope. Answers 1 where
+// it refused.
+int lifeKeyBorrow(INode *type, INode *at);
+
+// Does a signature name an invariant lifetime anywhere in its types? Does a type?
+int lifeSigHasBrands(struct FnSigNode *sig);
+int lifeTypeHasBrands(INode *type);
 
 #endif

@@ -7,13 +7,6 @@
 
 #include "../ir.h"
 
-// Clone number node
-INode *cloneNbrNode(CloneState *cstate, NbrNode *node) {
-    NbrNode *newnode = memAllocBlk(sizeof(NbrNode));
-    memcpy(newnode, node, sizeof(NbrNode));
-    return (INode *)newnode;
-}
-
 // Serialize a number type as its name. Every number type is declared with one
 // (stdNbrInit), so this covers usize and isize, which a list of the fixed-width
 // types left printing as nothing.

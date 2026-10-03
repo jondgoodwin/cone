@@ -1,14 +1,19 @@
 // A callee given a '&mut' to a struct with a borrow field and another borrow,
-// all unannotated, may store the borrow in the field. So at the call the
-// borrow must live as long as the struct's place; here it does not.
+// all unannotated, may store the borrow in the field. So after the call the
+// struct, a local, may hold the borrow, and here it is used after the
+// borrow's source ends.
 //
-// Verdict: refuse, ErrorCallEscape at the call.
+// Verdict: refuse, ErrorFrozen at the source 's', which goes out of scope
+// while 'h' still holds a borrow of it.
 // Basis: reflifefn.html, "Mutable borrowed reference parameters" (the
 // 'tryit'/'refstore' rule), which speaks of '&mut &T'; widening it to any
 // '&mut' whose target holds a borrow is a reading of that rule (a store
 // through a reference may put the borrow anywhere its target can hold one).
 // Master d331baab: accepted, and it reads freed memory -- main, run, prints
 // "final" and then "read = 1992325939056". Stage 2 fixed it.
+// Since stage 8 a store a call may make through a '&mut' into a local follows
+// flow, as one written out does: the call is legal, and the local used after
+// the borrow's source ends is refused at that end.
 
 mod lifetime_band_call_store_into_struct_field;
 
@@ -29,8 +34,8 @@ fn main() {
   imm outer = new R(1);
   mut h = new H(&outer);
   {
-    imm s = new So[R](42);
-    st(&mut h, &*s);         //~ ErrorCallEscape
+    imm s = new So[R](42);   //~ ErrorFrozen "goes out of scope while"
+    st(&mut h, &*s);
   }
   printStr("read = ");
   printInt(h.r.n);

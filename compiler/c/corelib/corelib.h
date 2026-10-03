@@ -85,6 +85,9 @@ extern StructNode *atomicValueTrait;
 extern StructNode *integerTrait;
 extern StructNode *pointerTrait;
 extern StructNode *sendableTrait;
+// 'LockPermission', which a struct declares to stand in a managed reference's
+// permission slot: 'Arc[Mutex, T]' (ir/types/permission.c)
+extern StructNode *lockPermTrait;
 
 // Is this declaration one of the built-in traits?
 int corelibIsBuiltinTrait(INode *node);

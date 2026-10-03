@@ -22,9 +22,11 @@
 		<span class="pre">AtomicValue</span> marker it declares; and the
 		<span class="pre">sync</span> package: <a href="#futex">the futex</a>;
 		and <a href="#locks">the locks</a> built on it, <span class="pre">Mutex</span>,
-		<span class="pre">RwLock</span>, <span class="pre">Condvar</span> and
-		<span class="pre">Once</span>, which are unchecked: what a lock protects is the program's
-		to keep, until <a href="refpermlock.html">lock permissions</a> are implemented; and
+		<span class="pre">Rwlock</span>, <span class="pre">Condvar</span> and
+		<span class="pre">Once</span>, which are unchecked when held as values (what a lock
+		protects is the program's to keep), while <span class="pre">Mutex</span> and
+		<span class="pre">Rwlock</span> are also <a href="refpermlock.html">lock permissions</a>,
+		which are checked: <span class="pre">Arc[Mutex, T]</span>; and
 		the <a href="refconccomm.html#channel">channel</a> of many senders and one
 		receiver, <span class="pre">Channel[T]</span>, unbounded or bounded, or of one sender and
 		one receiver, on the next page. So is the runtime
@@ -350,10 +352,10 @@ while word.load() == 0u32 {
 }
 </pre>
 
-	<h2 id="locks">Locks: Mutex, RwLock, Condvar and Once</h2>
+	<h2 id="locks">Locks: Mutex, Rwlock, Condvar and Once</h2>
 	<p>The <span class="pre">sync</span> package's locks are built on the futex alone, not on the
 		operating system's own locks, as Rust's standard library has built its own since 2022. Each
-		is one <span class="pre">Atomic[u32]</span> (an <span class="pre">RwLock</span>, two), holds
+		is one <span class="pre">Atomic[u32]</span> (an <span class="pre">Rwlock</span>, two), holds
 		no operating-system handle, needs no finalizer, and may be moved while nobody holds it or
 		waits on it. Each is made by <span class="pre">make()</span>, and each operation takes it
 		by any reference, <span class="pre">imm</span> included, since a lock is shared by every
@@ -376,7 +378,7 @@ fn add(n u64) {             // called from any number of threads
 		a short spin); <span class="pre">m.unlock()</span> gives it up, waking a waiting thread;
 		<span class="pre">m.tryLock()</span> takes it only if nobody holds it, and says whether it
 		did.</li>
-	<li><b><span class="pre">RwLock</span></b>: any number of readers at once, or one writer
+	<li><b><span class="pre">Rwlock</span></b>: any number of readers at once, or one writer
 		alone: <span class="pre">readLock()</span>, <span class="pre">readUnlock()</span>,
 		<span class="pre">tryReadLock()</span>, <span class="pre">writeLock()</span>,
 		<span class="pre">writeUnlock()</span> and <span class="pre">tryWriteLock()</span>. While a
@@ -399,18 +401,22 @@ fn add(n u64) {             // called from any number of threads
 		nothing. <span class="pre">o.isCompleted()</span> says whether the function has run. A
 		closure cannot capture yet, which is why the function is given at most one value.</li>
 	</ul>
-	<p><b>These locks are unchecked.</b> A lock is a plain lock with explicit
+	<p><b>These locks, held as values, are unchecked.</b> A lock is a plain lock with explicit
 		<span class="pre">lock()</span> and <span class="pre">unlock()</span>; it guards nothing
 		the compiler can see, and <b>protecting the data is the program's job</b>. Nothing stops a
 		thread reaching the data without the lock, keeping a reference to it past the unlock,
 		forgetting to unlock, or unlocking a lock another thread holds. A lock is not reentrant: a
 		thread that locks a <span class="pre">Mutex</span> it holds sleeps forever. Unlocking a lock
 		that nothing holds is caught, and ends the program with a message. A thread that ends while
-		holding a lock leaves it locked; there is no poisoning, since nothing unwinds. The
-		<a href="refpermlock.html">lock permissions</a>, where a lock sits in the permission slot of
-		a reference (<span class="pre">Arc[mutex, T]</span>), borrowing through it takes the lock and
-		the borrow's end releases it, are not implemented; when they are, they are to sit on these
-		types.</p>
+		holding a lock leaves it locked; there is no poisoning, since nothing unwinds.</p>
+	<p><b>The checked way is a lock permission.</b> <span class="pre">Mutex</span> and
+		<span class="pre">Rwlock</span> are also <a href="refpermlock.html">lock permissions</a>:
+		written in the permission slot of an <span class="pre">Arc</span>,
+		<span class="pre">Arc[Mutex, T]</span>, the lock sits in each allocation's header, the
+		reference reaches its value only by a borrow through it, the borrow takes the lock, and the
+		borrow's end gives it back. A <span class="pre">Condvar</span> waits on a
+		<span class="pre">Mutex</span> held as a value only: a lock permission's lock is in a header
+		no program names, so no wait is offered while a borrow holds one.</p>
 
 
 	<p style="text-align: right; margin-top: 2em;">

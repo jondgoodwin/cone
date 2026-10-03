@@ -296,6 +296,14 @@ static int parseLifeNamed(ParseState *parse, Name *name, INode *at) {
         }
         return 1;
     }
+    // An invariant lifetime may be named in a type inside a body too -- a
+    // cast making a key from a pointer, a variable's type, a generic's type
+    // argument ('None[&'=a Node['=a]]', which the parser cannot yet tell from
+    // a value) -- since what it stands for is checked as an identity wherever
+    // a value meets a type (lifeBrandsCoerce): it must be one the function's
+    // signature names (lifeBrandKnown)
+    if (lifeIsInvariant(name))
+        return 1;
     char *msg = parse->intype
         ? "A lifetime is named in the types of a function's signature and of a struct's fields, not in a variable's type."
         : "A lifetime is named on a borrowed reference type ('&'a T') or on a type's use ('Cursor['a]'), not on a borrow or a value.";
@@ -503,7 +511,11 @@ INode *parseAmper(ParseState *parse) {
     // function's signature or a struct's field, where it is checked
     // (lifetime.h).
     if (lexIsToken(LifetimeToken)) {
-        if (parseLifeNamed(parse, lex->val.ident, NULL))
+        // A key is a plain reference: a slice or a virtual reference reaches
+        // what it points at by indexing or dispatch, which no arena's '[]' does
+        if (lifeIsInvariant(lex->val.ident) && anode->tag != RefTag)
+            errorMsgLex(ErrorLifetimeInvariant, "An invariant lifetime is on a plain reference, '&'=a T': a slice or a virtual reference does not take one.");
+        else if (parseLifeNamed(parse, lex->val.ident, NULL))
             anode->lifename = lex->val.ident;
         lexNextToken();
     }

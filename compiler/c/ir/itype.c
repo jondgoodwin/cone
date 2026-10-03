@@ -113,9 +113,12 @@ int itypeCarriesBorrow(INode *type) {
     case ArrayRefTag:
     case VirtRefTag:
         // A borrowed reference to a function is global: a function is never
-        // a local, so its borrow can neither dangle nor hold anything frozen
+        // a local, so its borrow can neither dangle nor hold anything frozen.
+        // A key is no borrow: its invariant lifetime ends nowhere, and what it
+        // names lives in its arena.
         if (itypeGetTypeDcl(((RefNode *)type)->region) == borrowRef)
-            return !(type->tag == RefTag && isTypeNode(((RefNode *)type)->vtexp)
+            return !lifeIsInvariant(((RefNode *)type)->lifename)
+                && !(type->tag == RefTag && isTypeNode(((RefNode *)type)->vtexp)
                 && itypeGetTypeDcl(((RefNode *)type)->vtexp)->tag == FnSigTag);
         return itypeCarriesBorrow(((RefNode *)type)->vtexp);
     case PtrTag:
@@ -1011,6 +1014,9 @@ size_t itypeHash(INode *node) {
     case ArrayRefTag:
         return arrayRefHash((RefNode*)type);
     case PermTag:
+        // A guard's permission is laid out as its lock is (itypeIsRunSame)
+        if (((PermNode*)type)->lock)
+            return ((size_t)((PermNode*)type)->lock) >> 3;
         return ((size_t)immPerm) >> 3;  // Hash for all static permissions is the same
     default:
         // Turn type's pointer into the hash, removing expected 0's in bottom bits
@@ -1025,6 +1031,12 @@ int itypeIsRunSame(INode *node1, INode *node2) {
 
     node1 = itypeGetTypeDcl(node1);
     node2 = itypeGetTypeDcl(node2);
+    // A guard's permission takes the room its lock does in the allocation's
+    // header, and the reference is the same pointer as the lock-managed one
+    if (node1->tag == PermTag && ((PermNode*)node1)->lock)
+        node1 = (INode*)((PermNode*)node1)->lock;
+    if (node2->tag == PermTag && ((PermNode*)node2)->lock)
+        node2 = (INode*)((PermNode*)node2)->lock;
 
     // If they are the same type name, types match
     if (node1 == node2)

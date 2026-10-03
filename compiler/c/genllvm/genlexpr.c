@@ -86,15 +86,30 @@ LLVMValueRef genlIf(GenState *gen, IfNode *ifnode) {
     endif = genlInsertBlock(gen, "endif");
     for (nodesFor(ifnode->condblk, cnt, nodesp)) {
 
+        // A condition that is a constant of the build (intrinsicBuildConst):
+        // a false one's block is not generated at all, and a true one's is
+        // generated as the 'else' it is, the branches after it not at all.
+        // So nothing only the untaken side names -- an extern only another
+        // platform defines -- reaches the object, in a debug build too.
+        // TEMPORARY for the OS and '-D' constants: a provisional mechanism
+        // whose final design is open
+        int64_t buildconst;
+        int isconst = *nodesp != elseCond && intrinsicBuildConst(*nodesp, &buildconst);
+        if (isconst && !buildconst) {
+            cnt--; nodesp++; i++;
+            continue;
+        }
+        int lastgen = (isconst && buildconst) || i + 1 >= count;
+
         // Set up block for next condition (or endif if this is last condition)
-        if (i + 1 < count)
+        if (!lastgen)
             nextif = LLVMInsertBasicBlockInContext(gen->context, endif, "ifnext");
         else
             nextif = endif;
 
         // Set up this condition's statement block and then conditionally jump to it or next condition
         LLVMBasicBlockRef ablk;
-        if (*nodesp != elseCond) {
+        if (*nodesp != elseCond && !isconst) {
             ablk = LLVMInsertBasicBlockInContext(gen->context, nextif, "ifblk");
             // A temporary the condition made dies once it is decided
             uint32_t tempmark = gen->tempcnt;
@@ -118,6 +133,14 @@ LLVMValueRef genlIf(GenState *gen, IfNode *ifnode) {
 
         LLVMPositionBuilderAtEnd(gen->builder, nextif);
         cnt--; nodesp++; i++;
+        if (lastgen)
+            break;
+    }
+    // Every condition was a false constant of the build, the last of them too,
+    // so what generated last falls through to the end
+    if (LLVMGetInsertBlock(gen->builder) != endif) {
+        LLVMBuildBr(gen->builder, endif);
+        LLVMPositionBuilderAtEnd(gen->builder, endif);
     }
 
     // Merge point at end of if. Create merged phi value if needed.
@@ -253,10 +276,8 @@ static LLVMValueRef genlDeclaredIntrinsic(GenState *gen, FnDclNode *fndcl, LLVMV
         return genlAlignof(gen, type);
     case NeedsFinalIntrinsic:
         return LLVMConstInt(genlType(gen, (INode*)boolType), itypeNeedsFinal(type), 0);
-    // A constant from the build, not the type: a branch on it is folded away
-    // (simplifycfg), and its dead side is never generated into the object
-    case IsDebugBuildIntrinsic:
-        return LLVMConstInt(genlType(gen, (INode*)boolType), !gen->opt->release, 0);
+    // A constant of the build (isDebugBuild and the TEMPORARY rest) is answered
+    // before its arguments are generated, by genlFnCall
     // The address of T's record, a constant this object builds once
     case TypeRecordIntrinsic:
         return genlTypeRecord(gen, type, ((FnSigNode *)fndcl->vtype)->rettype);
@@ -819,6 +840,13 @@ LLVMValueRef genlFnCall(GenState *gen, FnCallNode *fncall) {
         break;
     }
 
+    // A constant of the build: isDebugBuild, and the TEMPORARY OS and '-D'
+    // ones (a provisional mechanism; its final design is open). A '-D' name,
+    // a string literal, is never generated
+    int64_t buildconst;
+    if (intrinsicBuildConst((INode*)fncall, &buildconst))
+        return LLVMConstInt(genlType(gen, fncall->vtype), (uint64_t)buildconst, 1);
+
     // Get count and Valuerefs for all the arguments to pass to the function
     uint32_t fnargcnt = fncall->args->used;
     LLVMValueRef *fnargs = (LLVMValueRef*)memAllocBlk(fnargcnt * sizeof(LLVMValueRef*));
@@ -1374,8 +1402,14 @@ LLVMValueRef genlIsType(GenState *gen, CastNode *isnode) {
         // its tag field through the same kind of reference for the same reason.
         if (istype->tag == RefTag)
             val = LLVMBuildLoad2(gen->builder, genlPointeeType(gen, exptype), val, "nullable");
-        if (LLVMGetTypeKind(ptrtype) != LLVMPointerTypeKind)
-            val = LLVMBuildExtractValue(gen->builder, val, 0, "ptr"); // VirtRef & ArrayRef
+        // A virtual reference or a slice is two words, and the empty variant is
+        // the one whose first word, the pointer, is null -- as the variant
+        // literal builds it -- so that word is what is compared, against a null
+        // of its own type
+        if (LLVMGetTypeKind(ptrtype) != LLVMPointerTypeKind) {
+            val = LLVMBuildExtractValue(gen->builder, val, 0, "ptr");
+            ptrtype = LLVMStructGetTypeAtIndex(ptrtype, 0);
+        }
         LLVMValueRef nullptr = LLVMConstPointerNull(ptrtype);
         LLVMIntPredicate cmpop = structtype->fields.used == 1 ? LLVMIntEQ : LLVMIntNE;
         return LLVMBuildICmp(gen->builder, cmpop, val, nullptr, "isnull");
@@ -2325,6 +2359,8 @@ static LLVMValueRef genlTerm(GenState *gen, INode *termnode) {
     case CastTag:
     {
         CastNode *node = (CastNode*)termnode;
+        if (node->flags & FlagLockAcquire)
+            return genlLockAcquire(gen, genlExpr(gen, node->exp), (RefNode *)itypeGetTypeDcl(node->vtype), termnode);
         if (node->flags & FlagConvert)
             return genlConvert(gen, node->exp, node->vtype);
         return genlRecast(gen, node->exp, node->vtype);

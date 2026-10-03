@@ -14,12 +14,9 @@
 // region methods, region_typecheck_region, because the permission half is
 // reached by a different call.
 //
-// The permission cases are the only part of this group that touches a lock
-// permission. There are no lock permission types: the six permissions are
-// declared in corelib.c and none of them is a struct. What the compiler does
-// have is the machinery a lock permission would need -- a struct is accepted in
-// the permission slot, its 'init' is validated here, and genllvm/genlalloc.c
-// calls it -- so these two diagnostics are what can honestly be asserted.
+// The permission cases are this group's only lock permissions: a struct
+// declaring 'LockPermission', whose 'init' an allocation runs on the lock in
+// its header. Everything else about them is the region_lockperm_* scenarios'.
 
 mod region_typecheck_init;
 
@@ -34,14 +31,18 @@ struct RegionReturn is RegionRef {
   fn init() RegionReturn inline { new RegionReturn(1usize); }              //~ ErrorInitDcl "An init fills its value in place"
 }
 
-struct permParms {
+struct permParms is LockPermission {
   held usize;
   fn init(self &new, x Bool) inline { *self = new permParms(0usize); }     //~ ErrorInvType "Permission init method may not have parameters but self"
+  fn acquireMut(self &uni permParms) { }
+  fn releaseMut(self &uni permParms) { }
 }
 
-struct permReturn {
+struct permReturn is LockPermission {
   held usize;
   fn init(self &new) usize inline { *self = new permReturn(0usize); 0usize; }  //~ ErrorInitDcl "An init returns nothing"
+  fn acquireMut(self &uni permReturn) { }
+  fn releaseMut(self &uni permReturn) { }
 }
 
 fn f() {

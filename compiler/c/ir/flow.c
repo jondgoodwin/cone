@@ -970,9 +970,7 @@ static int flowIsTemp(INode *node) {
     return vtype != NULL && vtype != unknownType && itypeNeedsFinal(vtype);
 }
 
-void flowTempRead(INode **nodep) {
-    if (!flowIsTemp(*nodep))
-        return;
+static void flowTempWrap(INode **nodep) {
     TempNode *temp;
     newNode(temp, TempNode, TempTag);
     inodeLexCopy((INode *)temp, *nodep);
@@ -983,6 +981,25 @@ void flowTempRead(INode **nodep) {
     temp->kept = 0;
     *nodep = (INode *)temp;
     ++flowTempCount;
+}
+
+void flowTempRead(INode **nodep) {
+    if (flowIsTemp(*nodep))
+        flowTempWrap(nodep);
+}
+
+void flowTempBorrowed(INode **nodep) {
+    INode *node = *nodep;
+    if (flowIsTemp(node)) {
+        flowTempWrap(nodep);
+        return;
+    }
+    // A constant literal is kept in a constant global
+    if (!isExpNode(node) || flowIsLvalRead(node) || node->tag == TempTag || borrowIsConstLit(node)
+        || (node->tag == FnCallTag && fnCallIsNever(node)))
+        return;
+    flowTempWrap(nodep);
+    ((TempNode *)*nodep)->kept = 1;
 }
 
 // Does this cast's value hold what its operand held, so that the operand is
@@ -1094,6 +1111,10 @@ static int flowTempCallStores(FnCallNode *call) {
 // values that can hold a borrow or a pointer, and a temporary it reaches
 // through a value holding a pointer is kept -- never finalized, which leaks
 // it, as every temporary once was, rather than leave the pointer dangling.
+// Not a lock's guard (FlagLockAcquire): kept, it would hold its lock forever,
+// and every later borrow through the reference would wait for it. A guard
+// gives its lock and its owner back at its statement's end whatever pointer
+// into the value is made, which is unchecked, as a raw pointer is anywhere.
 void flowTempEscape(INode *node, int out) {
     if (isNameUseNode(node))
         return;
@@ -1103,7 +1124,8 @@ void flowTempEscape(INode *node, int out) {
     case TempTag:
     {
         TempNode *temp = (TempNode *)node;
-        if (out == TempOutPtr)
+        if (out == TempOutPtr
+            && !(temp->exp->tag == CastTag && (temp->exp->flags & FlagLockAcquire)))
             temp->kept = 1;
         flowTempEscape(temp->exp, out);
         return;
@@ -1210,8 +1232,12 @@ void flowLoadThroughRef(FlowState *fstate, INode **refp) {
     flowTempRead(refp);
     RefNode *reftype = (RefNode *)iexpGetTypeDcl(*refp);
     if ((reftype->tag == RefTag || reftype->tag == ArrayRefTag || reftype->tag == VirtRefTag)
-        && !(permGetFlags(reftype->perm) & MayRead))
-        errorMsgNode(*refp, ErrorNoRead, "This reference's permission does not allow reading the value it points to");
+        && !(permGetFlags(reftype->perm) & MayRead)) {
+        if (permIsLock(reftype->perm))
+            permLockRefused(*refp, reftype->perm, "read");
+        else
+            errorMsgNode(*refp, ErrorNoRead, "This reference's permission does not allow reading the value it points to");
+    }
 }
 
 // An initializer's 'self &new' is the one path to memory that holds no value
@@ -1316,6 +1342,13 @@ void flowLoadValue(FlowState *fstate, INode **nodep) {
         break;
     case CastTag: case IsTag:
         flowLoadValue(fstate, &((CastNode *)*nodep)->exp);
+        // A lock's guard is a new owner of the value its operand points at:
+        // the operand is copied in, counted, or a temporary moved in
+        // (borrowLockPlace), and the guard is the temporary
+        if ((*nodep)->tag == CastTag && ((*nodep)->flags & FlagLockAcquire)) {
+            flowHandleMoveOrCopy(&((CastNode *)*nodep)->exp);
+            break;
+        }
         // An operand the cast does not hand on -- an owner lent as a borrowed
         // reference, a value tested or converted -- is a temporary
         if ((*nodep)->tag == IsTag || !flowCastHandsOn(*nodep))

@@ -179,8 +179,18 @@ static void assignInitRecurse(TypeCheckState *pstate, INode *lval, INode *rval) 
 
 // Type checking for assignment node
 void assignTypeCheck(TypeCheckState *pstate, AssignNode *node) {
-    if (iexpTypeCheckAny(pstate, &node->lval) == 0)
+    // 'x[i] = v' and 'x[i].f = v': on a type declaring '&[]', the index is the
+    // element's mutable borrow (fnCallTypeCheck), stored through, as Rust's
+    // IndexMut is
+    FnCallNode *setindex = fnCallSetIndexRoot(node->lval);
+    FnCallNode *svsetindex = fnCallSetIndex;
+    fnCallSetIndex = setindex;
+    int typed = iexpTypeCheckAny(pstate, &node->lval);
+    fnCallSetIndex = svsetindex;
+    if (typed == 0)
         return;
+    if (setindex && node->lval == (INode*)setindex && (setindex->flags & FlagBorrow))
+        derefInject(&node->lval);
 
     // Handle tuple decomposition for parallel assignment
     INode *lval = node->lval;
@@ -232,7 +242,10 @@ int assignlvalrtype(INode *lval, INode *rtype, HollowNode **hollowrel) {
     INode *lvalvar = iexpGetStoreLvalInfo(lval, &lvalperm, &lvalscope);
     if (!(MayWrite & permGetFlags(lvalperm)) &&
         (!lvalIsName || ((VarDclNode*)lvalvar)->flowtempflags & VarInitialized)) {
-        errorMsgNode(lval, ErrorNoMut, "You do not have permission to modify lval");
+        if (permIsLock(lvalperm))
+            permLockRefused(lval, lvalperm, "write");
+        else
+            errorMsgNode(lval, ErrorNoMut, "You do not have permission to modify lval");
         return 0;
     }
 

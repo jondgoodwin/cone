@@ -321,11 +321,12 @@ int regionIsThreadSafe(INode *region) {
     return strnode != NULL && structDeclaresTrait(strnode, threadSafeTrait) && regionStructIsRegionRef(strnode);
 }
 
-// 'ThreadSafe' says something only of a region ref
+// 'ThreadSafe' says something only of a region ref, or of a lock permission
+// (whose caller does not ask this)
 void regionThreadSafeUseCheck(StructNode *node) {
     if (structDeclaresTrait(node, threadSafeTrait) && !regionIsRegionRef((INode*)node))
         errorMsgNode((INode*)node, ErrorThreadSafeUse,
-            "Only a region ref may declare ThreadSafe, a struct declaring 'is RegionRef, ThreadSafe': it says several threads may hold owners of one of the region's values at once, and %s is no region ref.",
+            "Only a region ref or a lock permission may declare ThreadSafe, a struct declaring 'is RegionRef, ThreadSafe' or 'is LockPermission, ThreadSafe': it says several threads may hold owners of one of the region's values at once, or take the lock, and %s is neither.",
             &node->namesym->namestr);
 }
 
@@ -471,10 +472,12 @@ static void regionTracedJudgeRef(RefNode *node, INode *where) {
             regname, regname);
         return;
     }
+    // A struct in the permission slot that is no lock permission was refused
+    // where the type was checked (refLockCheck)
     INode *perm = itypeGetTypeDcl(node->perm);
-    if (perm->tag != PermTag && !itypeIsZeroSize(perm)) {
+    if (permIsLock(perm)) {
         errorMsgNode(where, ErrorTracedPerm,
-            "%s is traced, and its collector finds each value right after the region's header, so the reference's permission may take no room: %s does.",
+            "%s is traced, and a lock permission, %s, is not built on a traced region: its collector finds each value right after the region's header, where the lock would be, and counts no owners for a borrow's guard.",
             regname, itypeName(perm));
         return;
     }

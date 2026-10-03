@@ -1,0 +1,77 @@
+// A borrow of a temporary as an 'if' arm's value, as a block's final
+// expression, and as a 'match' arm's value, in a variable's initializer:
+// each is an extending position, as the initializer itself is, so the
+// temporary lasts to the end of the block declaring the variable. Only the
+// arm that runs makes its temporary, and only that one is finalized, at the
+// block's end, after the variable's last use; an arm that returns makes none.
+//
+// Verdict: accept; prints each "mk" as its arm runs, the value read through
+// the variable, then the one "final" at the end of the function.
+// Basis: temporaries follow Rust: Rust 2024 extends a temporary in the final
+// expression of a block, of an 'if' or 'else' block and of a 'match' arm
+// when the whole is in an extending position (The Rust Reference,
+// "Destructors", extending based on expressions); by reading, not run.
+// Master 19cc839b: refused, ErrorBadLval at each borrowed temporary ("May
+// not borrow a temporary value").
+
+mod lifetime_mix_temp_extended_in_arms;
+
+import stdio use *;
+
+struct R {
+  pub n i64;
+  fn final(self &uni) {
+    printStr("final ");
+    printInt(n);
+    printStr("\n");
+  }
+}
+
+fn mk(n i64) R {
+  printStr("mk ");
+  printInt(n);
+  printStr("\n");
+  new R(n);
+}
+
+fn show(label &[]u8, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+fn pick(c Bool) {
+  imm r = if c { &mk(1); } else { &mk(2); };
+  show("if", r.n);
+}
+
+fn inBlock() {
+  imm r = { imm k = 3; &mk(k); };
+  show("block", r.n);
+}
+
+fn byMatch(n i64) {
+  imm r = match n {
+    case 1 { &mk(10); }
+    case 2 { &mk(20); }
+    else { &mk(30); }
+  };
+  show("match", r.n);
+}
+
+fn orReturn(c Bool) {
+  imm r = if c { &mk(4); } else { return; };
+  show("or-return", r.n);
+}
+
+fn main() {
+  pick(true);
+  pick(false);
+  inBlock();
+  byMatch(2);
+  byMatch(7);
+  orReturn(true);
+  orReturn(false);
+  printStr("end\n");
+}
