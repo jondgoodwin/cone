@@ -1,0 +1,263 @@
+// Timeouts on virtual time: no clock is read and nothing sleeps; the test
+// says what time it is. Each deadline the core runs is an absolute Instant
+// that pollTimeout gives and handleTimeout acts on: the idle timeout (a new
+// connection, and a kept-alive one between exchanges), the head timeout (a
+// client's from its request handed over whole, a server's from a request's
+// first byte, which then answers 408), the body timeout (from the last
+// arrival, and not while the consumer holds the credit), and the wait for
+// 100 Continue, ended by the timeout, by the 100, or by a final response
+// that means the body is never sent. Times are in milliseconds from an
+// arbitrary start.
+
+mod timeouts;
+
+import testing use *;
+import collections use String;
+import time use Instant, Duration;
+import iobuf use *;
+import http use *;
+import http1 use *;
+
+fn ms(n i64) Instant {Instant.fromNanos(1000000000000i64 + n * 1000000i64);}
+
+// The deadline as milliseconds from the start, or -1 for None
+fn deadline(c &Connection) i64 {
+  match c.pollTimeout() {
+    case imm d Some {(d.value - ms(0i64)).millis();}
+    case is None[Instant] {-1i64;}
+  }
+}
+
+fn feed(c &mut Connection, pool &Pool, text &[]u8, at Instant) {
+  mut b = pool.mustTake(text.len);
+  b.append(text);
+  c.handleInput(b, at);
+}
+
+fn drain(c &mut Connection, at Instant) String {
+  mut s = String.empty();
+  while true {
+    imm b = c.pollTransmit(at);
+    if b.len() == 0usize {break;}
+    s.append(b.view());
+  }
+  s;
+}
+
+// The events until the connection stops; Data released as they come unless
+// hold is set
+fn events(c &mut Connection, hold Bool) String {
+  mut log = String.empty();
+  while true {
+    match c.pollEvent() {
+      case is Request {log.append("request ");}
+      case is Response {log.append("response ");}
+      case is Interim {log.append("interim ");}
+      case mut d Data {
+        log.append("data ");
+        if not hold {c.release(d.buf.len());}
+      }
+      case is End {log.append("end ");}
+      case mut f Failed {
+        log.append("failed ");
+        log.append(f.error.message().view());
+        if f.error.noResponse {log.append(" (no response)");}
+        log.append(" ");
+      }
+      case is Closed {
+        log.append("closed");
+        return log;
+      }
+      case is NeedData {
+        log.append("need");
+        return log;
+      }
+      case is Paused {
+        log.append("paused");
+        return log;
+      }
+    }
+  }
+  log;
+}
+
+fn config() Config {
+  mut cfg = Config.make();
+  cfg.headTimeout = Duration.fromSeconds(5);
+  cfg.bodyTimeout = Duration.fromSeconds(7);
+  cfg.idleTimeout = Duration.fromSeconds(11);
+  cfg.expectTimeout = Duration.fromSeconds(1);
+  cfg;
+}
+
+fn idle(pool &Pool) {
+  mut c = Connection.client(config(), *pool, ms(0i64));
+  expectInt(deadline(&c), 11000i64, "a new connection's idle timeout");
+  c.handleTimeout(ms(10999i64));
+  expectStr(events(&mut c, false).view(), "paused", "not yet");
+  c.handleTimeout(ms(11000i64));
+  expectStr(events(&mut c, false).view(), "closed", "then closed, cleanly");
+  expectInt(deadline(&c), -1i64, "and no deadline after");
+}
+
+fn clientHead(pool &Pool) {
+  {
+    mut c = Connection.client(config(), *pool, ms(0i64));
+    c.sendRequest(RequestHead.get("/", "h"), BodyLength.empty());
+    expectInt(deadline(&c), -1i64, "no deadline while the request is not yet handed over");
+    drain(&mut c, ms(100i64));
+    expectInt(deadline(&c), 5100i64, "the head timeout runs from the request handed over");
+    c.handleTimeout(ms(5099i64));
+    expectStr(events(&mut c, false).view(), "need", "not yet");
+    c.handleTimeout(ms(5100i64));
+    expectStr(events(&mut c, false).view(), "failed timed out: no whole head within headTimeout (no response) closed",
+      "no head in time, and no byte of one");
+  }
+  {
+    mut c = Connection.client(config(), *pool, ms(0i64));
+    c.sendRequest(RequestHead.get("/", "h"), BodyLength.empty());
+    drain(&mut c, ms(0i64));
+    feed(&mut c, pool, "HTTP/1.1 200 OK\r\n", ms(4000i64));
+    expectStr(events(&mut c, false).view(), "need", "part of a head");
+    expectInt(deadline(&c), 5000i64, "the head timeout is not moved by arrivals");
+    c.handleTimeout(ms(5000i64));
+    expectStr(events(&mut c, false).view(), "failed timed out: no whole head within headTimeout closed",
+      "part of a head, not all of it in time");
+  }
+}
+
+fn body(pool &Pool) {
+  {
+    mut c = Connection.client(config(), *pool, ms(0i64));
+    c.sendRequest(RequestHead.get("/", "h"), BodyLength.empty());
+    drain(&mut c, ms(0i64));
+    feed(&mut c, pool, "HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nabc", ms(1000i64));
+    expectStr(events(&mut c, false).view(), "response data need", "part of the body");
+    expectInt(deadline(&c), 8000i64, "the body timeout runs from the last arrival");
+    feed(&mut c, pool, "def", ms(6000i64));
+    expectStr(events(&mut c, false).view(), "data need", "more of it");
+    expectInt(deadline(&c), 13000i64, "moved by each arrival");
+    c.handleTimeout(ms(13000i64));
+    expectStr(events(&mut c, false).view(), "failed timed out: the body stalled for bodyTimeout closed", "then stalled");
+  }
+  {
+    // The consumer holds the credit: the body timeout waits for it
+    mut cfg = config();
+    cfg.bodyWindow = 4usize;
+    mut c = Connection.client(cfg, *pool, ms(0i64));
+    c.sendRequest(RequestHead.get("/", "h"), BodyLength.empty());
+    drain(&mut c, ms(0i64));
+    feed(&mut c, pool, "HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\n", ms(0i64));
+    feed(&mut c, pool, "abcde", ms(1000i64));
+    feed(&mut c, pool, "fg", ms(1000i64));
+    expectStr(events(&mut c, true).view(), "response data paused",
+      "five bytes out, unreleased, the window of 4 full: two more wait");
+    expectInt(deadline(&c), -1i64, "no body timeout while the consumer holds the credit");
+    c.handleTimeout(ms(60000i64));
+    expectStr(events(&mut c, true).view(), "paused", "a minute later, still waiting on the consumer, not failed");
+    c.release(5usize);
+    expectInt(deadline(&c), 67000i64, "released: the body timeout runs again from then");
+    expectStr(events(&mut c, false).view(), "data need", "the two that waited");
+    feed(&mut c, pool, "hij", ms(61000i64));
+    expectStr(events(&mut c, false).view(), "data end paused", "and the body completes");
+  }
+}
+
+fn keptAlive(pool &Pool) {
+  mut c = Connection.client(config(), *pool, ms(0i64));
+  c.sendRequest(RequestHead.get("/", "h"), BodyLength.empty());
+  drain(&mut c, ms(0i64));
+  feed(&mut c, pool, "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok", ms(2000i64));
+  expectStr(events(&mut c, false).view(), "response data end paused", "an exchange");
+  expectInt(deadline(&c), 13000i64, "then the idle timeout, from the exchange's end");
+  c.handleTimeout(ms(13000i64));
+  expectStr(events(&mut c, false).view(), "closed", "idle too long: closed");
+}
+
+fn server(pool &Pool) {
+  {
+    mut c = Connection.server(config(), *pool, ms(0i64));
+    expectInt(deadline(&c), 11000i64, "a server's new connection: the idle timeout");
+    feed(&mut c, pool, "GET / HTTP/1.1\r\n", ms(3000i64));
+    expectStr(events(&mut c, false).view(), "need", "a request's first line");
+    expectInt(deadline(&c), 8000i64, "the head timeout from the first byte");
+    c.handleTimeout(ms(8000i64));
+    expectStr(events(&mut c, false).view(), "failed timed out: no whole head within headTimeout closed", "too slow");
+    expectStr(drain(&mut c, ms(8000i64)).view(), "HTTP/1.1 408 Request Timeout\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
+      "answered 408");
+  }
+  {
+    mut c = Connection.server(config(), *pool, ms(0i64));
+    c.handleTimeout(ms(11000i64));
+    expectStr(events(&mut c, false).view(), "closed", "nothing came: closed");
+    expectStr(drain(&mut c, ms(11000i64)).view(), "", "and nothing sent");
+  }
+}
+
+fn expect100(pool &Pool) {
+  {
+    mut c = Connection.client(config(), *pool, ms(0i64));
+    mut h = RequestHead.make("PUT", "/f", "h");
+    h.headers.add("Expect", "100-continue");
+    c.sendRequest(h, BodyLength.sized(3u64));
+    mut b = pool.mustTake(3usize);
+    b.append("abc");
+    c.sendData(b);
+    c.finish();
+    expectStr(drain(&mut c, ms(0i64)).view(), "PUT /f HTTP/1.1\r\nHost: h\r\nExpect: 100-continue\r\nContent-Length: 3\r\n\r\n",
+      "the head goes, the body is held");
+    expectInt(deadline(&c), 1000i64, "until the expect timeout");
+    c.handleTimeout(ms(1000i64));
+    expectStr(drain(&mut c, ms(1000i64)).view(), "abc", "no 100 in time: the body goes anyway");
+    expectInt(deadline(&c), 6000i64, "then the head timeout runs");
+  }
+  {
+    mut c = Connection.client(config(), *pool, ms(0i64));
+    mut h = RequestHead.make("PUT", "/f", "h");
+    h.headers.add("Expect", "100-continue");
+    c.sendRequest(h, BodyLength.unsized());
+    mut b = pool.mustTake(3usize);
+    b.append("abc");
+    c.sendData(b);
+    drain(&mut c, ms(0i64));
+    feed(&mut c, pool, "HTTP/1.1 100 Continue\r\n\r\n", ms(200i64));
+    expectStr(events(&mut c, false).view(), "interim need", "100 Continue");
+    expectInt(deadline(&c), -1i64, "the expect timeout gone; the head timeout waits for the whole request");
+    c.finish();
+    expectStr(drain(&mut c, ms(200i64)).view(), "3\r\nabc\r\n0\r\n\r\n", "the body follows at once");
+    expectInt(deadline(&c), 5200i64, "and then the head timeout runs");
+  }
+  {
+    mut c = Connection.client(config(), *pool, ms(0i64));
+    mut h = RequestHead.make("PUT", "/f", "h");
+    h.headers.add("Expect", "100-continue");
+    c.sendRequest(h, BodyLength.sized(3u64));
+    drain(&mut c, ms(0i64));
+    feed(&mut c, pool, "HTTP/1.1 413 Content Too Large\r\nContent-Length: 0\r\n\r\n", ms(300i64));
+    expectStr(events(&mut c, false).view(), "response end closed",
+      "a final answer first: the body is never sent, and the connection closes");
+    mut b = pool.mustTake(3usize);
+    b.append("abc");
+    mut refused = false;
+    match c.sendData(b) {
+      case is Some {refused = true;}
+      case is None[IoBuf] {}
+    }
+    expect(not refused, "data after that is dropped, not refused");
+    expectStr(drain(&mut c, ms(300i64)).view(), "", "and nothing more is sent");
+  }
+}
+
+fn main() i32 {
+  {
+    imm pool = Pool.make();
+    idle(&pool);
+    clientHead(&pool);
+    body(&pool);
+    keptAlive(&pool);
+    server(&pool);
+    expect100(&pool);
+    expectUInt(pool.stats().lent, 0u64, "every buffer back in the pool");
+  }
+  done();
+}

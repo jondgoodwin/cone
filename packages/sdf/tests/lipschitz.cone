@@ -20,7 +20,9 @@
 // 0.55 to 0.75 (their bound is conservative), also sampled near the
 // surface, within the horn's bounds, 1/256 apart; fBm detail
 // 0.9994; the ellipsoid 1.204; fillets at 45 degrees up to 1.30, on the
-// sphere and box up to 1.36; noise displacement 2.27.
+// sphere and box up to 1.36; noise displacement 2.27. The membrane (a
+// Gauss-Newton search, not a closed form) on a twisted, scalloped panel
+// 1.034, held to 1.04.
 
 mod lipschitz;
 
@@ -121,6 +123,7 @@ fn fCone(p Vec3) f32 { cone(p, 1., 0.75, 0.25); }
 fn fRoundCone(p Vec3) f32 { roundCone(p, 0.5, 0.25, 1.5); }
 fn fTaperedCapsule(p Vec3) f32 { taperedCapsule(p, new Vec3(-0.5, 0., 0.25), new Vec3(0.75, 1.5, -0.25), 0.5, 0.125); }
 fn fTriangle(p Vec3) f32 { triangle(p, new Vec3(-1., 0., 0.), new Vec3(1., 0.25, 0.5), new Vec3(0., 1.5, -0.25)) - 0.0625; }
+fn fMembrane(p Vec3) f32 { membrane(p, new Vec3(-1., 0., 0.), new Vec3(1., 0.25, 0.5), new Vec3(-0.5, 1.5, -0.25), new Vec3(1.25, 1.75, 0.75), 0.3) - 0.0625; }
 fn fEllipsoid(p Vec3) f32 { ellipsoid(p, new Vec3(1., 0.5, 0.75)); }
 fn fUnion(p Vec3) f32 { union(a(p), b(p)); }
 fn fSubtract(p Vec3) f32 { subtract(a(p), b(p)); }
@@ -159,6 +162,13 @@ fn fStairsShapes(p Vec3) f32 { unionStairs(a(p), b(p), 0.5, 4.); }
 fn fDisplaced(p Vec3) f32 { displace(a(p), p, 7u32, 4, 4., 0.1); }
 fn fDetail(p Vec3) f32 { fbmDetail(sphere(p - new Vec3(0., 1.5, 0.), 1.), p, 7u32, 5, 0.5); }
 
+// A plain function of a point as a Shape (CPU only: a GPU refuses a &fn)
+struct FnShape is Shape {
+  pub f &fn(p Vec3) f32;
+
+  pub fn distance(self &, p Vec3) f32 { f(p); }
+}
+
 fn ratio(f &fn(p Vec3) f32) f64 {
   imm s = new FnShape(f);
   largestRatio(&s);
@@ -175,6 +185,7 @@ fn main() i32 {
   check(ratio(&fRoundCone), 1d, "round cone");
   check(ratio(&fTaperedCapsule), 1d, "tapered capsule");
   check(ratio(&fTriangle), 1d, "triangle, thickened");
+  check(ratio(&fMembrane), 1.04d, "membrane, twisted and scalloped, thickened (Gauss-Newton, measured 1.034)");
   check(ratio(&fEllipsoid), 1.25d, "ellipsoid (Quilez's approximation, not a bound)");
   check(ratio(&fUnion), 1d, "union");
   check(ratio(&fSubtract), 1d, "subtract");

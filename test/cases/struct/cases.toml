@@ -151,6 +151,11 @@ name = "static-is-not-a-field"
 target = "preir"
 contains = ["%Tally = type { i32 }"]
 
+[scenario.struct_index_set_position]
+category = "run"
+description = "An index written to -- stored to whole or by field, changed in place, or a 'self &mut' method's receiver -- goes through the type's '&[]'"
+tags = ["typecheck", "runtime"]
+
 [scenario.struct_autoborrow]
 category = "run"
 description = "A method declaring 'self &' or 'self &mut' called on a value, which is borrowed: a local, a field path, a field through a reference, an index operator, a folded method, a generic type's methods, and a by-value candidate preferred"
@@ -243,14 +248,16 @@ excludes = [" hidden "]
 
 # A finalizer generates a function of its own. A struct whose field needs
 # dropping gets a second, generated one named for the type, which calls the
-# type's own finalizer and then the field's.
+# type's own finalizer and then the field's. It is named '-drop', which no
+# plainly written method has, since 'drop' is an ordinary method name
+# (struct_drop_method).
 [[scenario.struct_methods.check]]
 name = "finalizer-generates-a-drop-function"
 target = "symbols"
 contains = [
   "define internal Resource.final comdat nodeduplicate",
   "define internal Bundle.final comdat nodeduplicate",
-  "define internal Bundle.drop comdat nodeduplicate",
+  "define internal Bundle.`-drop` comdat nodeduplicate",
 ]
 
 [scenario.struct_operators]
@@ -299,6 +306,17 @@ contains = [
 category = "compile"
 description = "An opaque struct, whose values cannot be created and are only reached by reference"
 tags = ["parse", "nameres", "typecheck", "genllvm"]
+
+# A reference never demands its target's layout. Each shape here compiled in
+# one declaration order and was refused as a cycle in the other, so each is
+# written in both, and run: the sizes, and the values read back through every
+# layout, are what a short or missing layout would get wrong. A real by-value
+# cycle, and the checks that read a target's layout still firing when the
+# reference is written first, are struct_typecheck_layout_reference.
+[scenario.struct_layout_reference_order]
+category = "run"
+description = "Laying out a reference does not lay out its target: two actors' handles held through owning references and Option, a variant's '&W' and 'So[W]' with W holding the enum, a ring of three owners, a function reference taking its holder's holder by value, a reference to an array of its holder's holder, and a raw pointer to a generic instance holding the pointer's holder, each in both declaration orders"
+tags = ["typecheck", "genllvm", "runtime"]
 
 [scenario.struct_fold]
 category = "run"
@@ -370,10 +388,32 @@ category = "run"
 description = "A temporary is finalized at the end of the statement that made it, newest first, or of the 'if' or 'while' condition or the right operand of 'and' or 'or' that made it: thrown away, a field read, read through, lent to a call, tested; a sole owner freed, hollow where its value moved out, a counted owner's count back to zero; nothing bound, passed by value or returned; and one a local's initializer borrows kept to the block's end"
 tags = ["flow", "genllvm", "runtime"]
 
+[scenario.struct_final_temporary_opassign]
+category = "run"
+description = "A temporary an operator changing its operand in place reaches through, '(*mk()).n += 1' or '(*mkBag()).v <- 8, 9', is finalized after the change, at the end of the operator's rewrite, not before the store"
+tags = ["flow", "genllvm", "runtime"]
+
 [scenario.struct_final_reassign]
 category = "run"
 description = "A value stored over is finalized as it is replaced -- a struct, a field, an element, a tuple, an enum, a parameter, in a loop, in a parallel assignment, through a reference -- on the paths where its holder holds it, and nothing is finalized where the holder, or the variable a field is part of, holds nothing"
 tags = ["flow", "genllvm", "runtime"]
+
+# 'drop' is an ordinary method name: a type the compiler gives a drop may
+# declare a method named 'drop' too, and the two are distinct declarations
+# with distinct symbols. Before, both were named 'drop' and the compile was
+# abandoned as a compiler defect.
+[scenario.struct_drop_method]
+category = "run"
+description = "A method named 'drop', declared beside the drop the compiler generates, is an ordinary method and not the finalizer: on a struct with a finalizing field and an owner, beside its own 'final', with the generated drop's own signature, on a generic's instance, on a type with nothing generated, on an enum's variant, as an enum's default, and as an enum's static function"
+tags = ["typecheck", "genllvm", "runtime"]
+
+[[scenario.struct_drop_method.check]]
+name = "a-drop-method-beside-the-generated-drop"
+target = "symbols"
+contains = [
+  "define internal Held.drop comdat nodeduplicate",
+  "define internal Held.`-drop` comdat nodeduplicate",
+]
 
 [scenario.struct_extends]
 category = "run"
@@ -485,7 +525,7 @@ contains = ["define internal LoggedHandle.final comdat nodeduplicate"]
 
 [scenario.struct_privacy]
 category = "run"
-description = "A type's own methods and static functions reaching a private method or field through any value of the type -- a local, a parameter, a borrow written out, a by-value call, a field written -- and a generic instance through another value of itself"
+description = "The code of a type's module reaching a private method or field through any value of the type -- a local, a parameter, a borrow written out, a by-value call, a field written -- from the type's own methods and static functions, a generic instance through another value of itself, another type's method, a function of the module, an anonymous function, a construction by position and by name, a private init and a field's default"
 tags = ["typecheck", "runtime"]
 
 # Construction, 'new T(...)', and the inits it runs: the implicit field-wise
@@ -557,6 +597,15 @@ description = "What a type body's 'use' may name as a sibling, and what it may a
 tags = ["nameres"]
 diagnostics = 17
 
+# A pub field of a pub type is reached from outside the module, so a private
+# type it names is refused, however the field's type names it. A private
+# type's pub field, a parameter's and a public generic's instance are not.
+[scenario.struct_nameres_pubfield]
+category = "reject"
+description = "A pub field of a pub type, a struct or an enum or its variant, whose type names a type private to the module: alone, borrowed, as a pointer, an array's element, a generic type, a type argument, or through an alias"
+tags = ["nameres"]
+diagnostics = 9
+
 # -------- type check stage --------
 
 [scenario.struct_typecheck_fold]
@@ -597,20 +646,30 @@ description = "Declarations naming a type that cannot say how large it is, two s
 tags = ["typecheck"]
 diagnostics = 12
 
+# Its own file, beside struct_typecheck_nosize, because its subject is the
+# order a reference's target is laid out in rather than the causes of a missing
+# size: a real by-value cycle named type by type, and each check that reads a
+# reference's target still firing with the reference written above it.
+[scenario.struct_typecheck_layout_reference]
+category = "reject"
+description = "A by-value cycle through three structs and through an enum's variant, named type by type; and, with the reference written above its target, a key's borrow, an undeclared lifetime behind an owner, a condition and a Sendable refusal behind a reference, a function reference's and an array's unsized trait, a generic method in a vtable, an aliased array of a moving type copied, and a lock that does not fit its region"
+tags = ["typecheck", "flow"]
+diagnostics = 14
+
 [scenario.struct_typecheck_construct]
 category = "reject"
 description = "Struct constructors that do not agree with the type's fields"
 tags = ["typecheck"]
-diagnostics = 6
+diagnostics = 4
 
 [scenario.struct_typecheck_new]
 category = "reject"
-description = "Constructions refused: the bracket form, a type called, 'new' on what is not a struct, arguments no init or several declared inits take, a private init, an init called by name, an init filling self by position with itself, a declared init in a global, a finished value of the struct; and inits declared in a shape a construction cannot run, and '&new' anywhere but an init's self"
+description = "Constructions refused: the bracket form, a type called, 'new' on what is not a struct, arguments no init or several declared inits take, an init called by name, an init filling self by position with itself, a declared init in a global, a finished value of the struct; and inits declared in a shape a construction cannot run, and '&new' anywhere but an init's self"
 tags = ["typecheck"]
-diagnostics = 21
+diagnostics = 20
 
 [scenario.struct_typecheck_methods]
 category = "reject"
-description = "Method, field and operator accesses a struct's type cannot answer, including a private 'isTrue' a coercion to Bool injects a call to, and a borrowed-self method on a temporary or, for '&mut', an immutable variable"
+description = "Method, field and operator accesses a struct's type cannot answer, including a private 'isTrue' a coercion to Bool injects a call to, and a '&mut'-self method on an immutable variable; a private member reached from elsewhere in its module is not refused"
 tags = ["typecheck"]
-diagnostics = 30
+diagnostics = 21

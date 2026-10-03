@@ -1,0 +1,134 @@
+// 'null', the null raw pointer, in every position that says which raw pointer
+// type it is: an initializer or a global, static, constant or field default of
+// a declared pointer type, an assignment to a pointer, an argument to a pointer
+// parameter (a parameter's default too), a return of a pointer type, an 'if'
+// whose value is wanted as a pointer, a field of a construction, either side of
+// a comparison with a pointer, and 'null as *T'. Each null is then compared
+// with a real pointer, and tested as a truth value, which is false only for it.
+//
+// What 'null' is refused as -- an inferred initializer, a reference, a number,
+// an Option -- is safety_typecheck_null's.
+
+mod safety_null;
+
+import stdio use *;
+
+fn show(label &[]u8, b Bool) {
+  printStr(label);
+  printStr(" = ");
+  printInt(if b {1;} else {0;});
+  printStr("\n");
+}
+
+struct Node {
+  pub value i32;
+  pub next *Node = null;
+}
+
+mut cell i32 = 7;
+
+// A global, a constant and a static of a pointer type may start out null
+mut globalPtr *i32 = null;
+const NoCell *i32 = null;
+
+fn isNull(p *i32) Bool {
+  p == null;
+}
+
+fn defaulted(p *i32 = null) Bool {
+  p == null;
+}
+
+fn returned() *i32 {
+  return null;
+}
+
+fn lastValue() *i32 {
+  null;
+}
+
+fn chosen(real Bool) *i32 {
+  if real {&cell;} else {null;}
+}
+
+fn either[T](a T, b T, first Bool) T {
+  if first {a;} else {b;}
+}
+
+fn counter() *i32 {
+  static mut kept *i32 = null;
+  imm was = kept;
+  kept = &cell;
+  was;
+}
+
+fn main() i32 {
+  // Initialized, compared, and tested as a truth value
+  imm p *i32 = null;
+  show("init-is-null", p == null);
+  show("init-not-null", p != null);
+  show("null-on-left", null == p);
+  show("null-is-false", if p {true;} else {false;});
+  show("null-address-zero", (p as usize) == 0usize);
+
+  // Assigned, after holding a real pointer
+  mut q *i32 = &cell;
+  show("real-not-null", q != null);
+  show("real-is-true", if q {true;} else {false;});
+  q = null;
+  show("assigned-is-null", q == null);
+  show("null-differs-from-real", q != &cell as *i32);
+
+  // An argument, a default, a return and a function's last value
+  show("argument", isNull(null));
+  show("argument-real", isNull(&cell));
+  show("parameter-default", defaulted());
+  show("return", returned() == null);
+  show("last-value", lastValue() == null);
+  show("if-branch-null", chosen(false) == null);
+  show("if-branch-real", chosen(true) != null);
+
+  // A global, a constant and a static
+  show("global", globalPtr == null);
+  globalPtr = &cell;
+  show("global-assigned", globalPtr != null);
+  show("constant", NoCell == null);
+  show("static-first", counter() == null);
+  show("static-second", counter() != null);
+
+  // A field's default, and a field given null in a construction
+  imm tail = new Node(value: 2);
+  show("field-default", tail.next == null);
+  imm given = new Node(value: 1, next: null);
+  show("field-given", given.next == null);
+  mut head = new Node(value: 0);
+  head.next = &tail as *Node;
+  show("field-real", head.next != null);
+  head.next = null;
+  show("field-assigned", head.next == null);
+
+  // 'as' names the pointer type
+  imm named = null as *u8;
+  show("as-pointer", named == null);
+
+  // An array literal's elements and its fill, and a tuple's element, of
+  // declared pointer types
+  imm pair Array[*i32, 2] = [&cell as *i32, null];
+  show("array-element", pair[1] == null and pair[0] != null);
+  imm filled = new Array[*i32, 3] <- fill null;
+  show("array-fill", filled[2] == null);
+  imm tup (*i32, i32) = (null, 5);
+  show("tuple-element", tup.0 == null);
+
+  // A generic's argument: the type parameter is inferred from the other
+  // argument, or named, and the null takes the pointer type it gives
+  show("generic-inferred", either(&cell as *i32, null, false) == null);
+  show("generic-named", either[*i32](null, &cell, true) == null);
+
+  // A pointer to a pointer, null at either level
+  imm pp **i32 = null;
+  show("pointer-to-pointer", pp == null);
+  imm ppq **i32 = &q as **i32;
+  show("pointer-to-null", *ppq == null);
+  0i32;
+}

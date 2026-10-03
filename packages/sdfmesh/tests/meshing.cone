@@ -1,0 +1,265 @@
+// The sdfmesh package's mesher, surface nets, checked against counts worked out
+// by hand and against the properties a mesh of a closed shape must have;
+// only a failure prints, so meshing.out holds the summary alone (and, for
+// the pinned meshes, their counts and hashes).
+//
+// - A lone inside sample: a ball of radius 0.3 about a grid point, in cells
+//   of 1 (the grid starts a cell below the box's corner, (-2, -2, -2), so
+//   its samples are the whole numbers). Only that sample is inside, so the
+//   8 cells round it are crossed, each once, with 3 crossings: 8 vertices;
+//   its 6 edges each give a quad: 6 quads, 12 edges, 8 - 12 + 6 = 2, a
+//   closed net like a cube's. With the sample at the origin (distance
+//   -0.3; 0.7 at its neighbours) each of a cell's three crossings is 0.3
+//   from the origin along one of the cell's edges from it, so (not relaxed)
+//   the vertex is their average, 0.1 from the origin along each axis into
+//   the cell: vertex 0, in the cell [-1, 0]^3 (the first, in z, y, x
+//   order), is (-0.1, -0.1, -0.1); vertex 7, in [0, 1]^3, (0.1, 0.1, 0.1).
+// - Two such balls whose samples are diagonal on a face, (0, 0, 0) and (1,
+//   1, 0): the two cells between them ([0, 1] x [0, 1] x [-1, 0] and x [0,
+//   1]) are crossed twice, round each inside corner. Naive surface nets
+//   gives each one vertex and pinches the two nets together there (14
+//   vertices, an edge four quads share); one vertex per piece gives two
+//   separate closed nets: 16 vertices, 24 edges, 12 quads, 16 - 24 + 12 =
+//   4 (two spheres), and 'validate' clean.
+// - Two diagonal across the cell, (0, 0, 0) and (1, 1, 1): the one cell
+//   they share is crossed twice, the same 16, 24, 12.
+// - The unit sphere in cells of 0.125, relaxed once: closed (Euler 2),
+//   'validate' clean, every quad facing the way the gradient normals do
+//   (outward), every vertex within 0.0005 of the surface and every normal
+//   within 0.0001 of the radial direction. Unrelaxed, every vertex is inside
+//   its cell, so within a cell's diagonal of the surface.
+// - Sparse and dense sampling give the same mesh, bit for bit (the same
+//   hash), for the sphere and the horn, and sparse asks fewer distances.
+// - The horn of the examples (3.4 long, 22 ribs), its box from
+//   'Horn.bounds' (the box's corners and faces outside it): closed,
+//   'validate' clean and Euler 2 in cells of 0.02, 0.03, 0.05, 0.08 and
+//   0.16, relaxed or not. Every quad faces outward but at the tip, where
+//   the tube is thinner than a cell and a quad or three can fold over
+//   (checked: only where the radius is under a cell, at most 4). In cells
+//   of 0.04 its counts and hash are pinned.
+// - Levels of detail: three levels from 0.05, each with fewer vertices than
+//   the last; their counts and hashes pinned.
+// - The same mesh twice in one run hashes the same. The hashes are pinned in
+//   meshing.out, which the release build must match too.
+
+mod meshing;
+
+import testing use *;
+import stdio use *;
+import libc;
+import geomath use *;
+import collections use *;
+import mesh;
+import sdf use *;
+import sdfmesh use *;
+
+fn near(got f32, want f64, within f64, label &[]u8) { expectFloat(f64.from(got), want, within, label); }
+
+// Balls of radius r about some points
+struct Ball {
+  pub centre Vec3;
+  pub r f32;
+  pub fn distance(self &, p Vec3) f32 { sphere(p - centre, r); }
+}
+
+struct TwoBalls {
+  pub a Vec3;
+  pub b Vec3;
+  pub r f32;
+  pub fn distance(self &, p Vec3) f32 { union(sphere(p - a, r), sphere(p - b, r)); }
+}
+
+// A net's quads as a half-edge mesh: none refused, 'validate' clean, V - E
+// + F as given; and the middles of the quads facing against their
+// vertices' normals, which should be none (the caller checks)
+fn closedManifold(net &SurfaceNet, euler i64, label &[]u8) List[Vec3] {
+  mut problems = List[String].empty();
+  imm pm = net.toPolyMesh(&mut problems);
+  if !expectInt(i64.from(problems.len()), 0, label) { printStr(problems[0usize].view()); print <- "\n"; }
+  imm invalid = pm.validate();
+  if !expectInt(i64.from(invalid.len()), 0, label) { printStr(invalid[0usize].view()); print <- "\n"; }
+  expectInt(i64.from(pm.faceCount()), i64.from(net.quadCount()), label);
+  expectInt(i64.from(pm.vertexCount()) - i64.from(pm.edgeCount()) + i64.from(pm.faceCount()), euler, label);
+  mut backwards = List[Vec3].empty();
+  mut f = 0u32;
+  while f < u32.from(pm.faceCount()) {
+    imm vs = pm.faceVertices(f);
+    mut n = new Vec3(0., 0., 0.);
+    mut k = 0usize;
+    while k < vs.len() {
+      n = n + *net.normals[usize.from(*vs[k])];
+      k = k + 1usize;
+    }
+    if pm.faceNormal(f).dot(n) <= 0. { backwards.push(pm.faceCentroid(f)); }
+    f = f + 1u32;
+  }
+  backwards;
+}
+
+// No quad faces backwards
+fn allOutward(net &SurfaceNet, euler i64, label &[]u8) {
+  imm backwards = closedManifold(net, euler, label);
+  expectInt(i64.from(backwards.len()), 0, label);
+}
+
+// A quad of the horn faces backwards only where the horn is thinner than a
+// cell, at its tip: surface nets cannot follow a tube narrower than its
+// samples, and there the average of the crossings can fold a quad over.
+// Measured: 1 to 3 quads, within 3 cells of the tip, at cells of 0.02 to
+// 0.08, relaxed or not
+fn outwardButTheTip(net &SurfaceNet, horn &Horn, label &[]u8) {
+  imm backwards = closedManifold(net, 2, label);
+  mut i = 0usize;
+  while i < backwards.len() {
+    imm c = *backwards[i];
+    imm u = horn.arc.nearest(c) / horn.length;
+    if !expect(horn.radiusAt(u) < net.cellSize, label) {
+      print <- "  a quad faces backwards at ("; print <- c.x; print <- ", "; print <- c.y; print <- ", "; print <- c.z;
+      print <- "), where the horn's radius is "; print <- horn.radiusAt(u); print <- "\n";
+    }
+    i = i + 1usize;
+  }
+  expect(backwards.len() <= 4usize, label);
+}
+
+fn loneSample() {
+  imm ball = new Ball(new Vec3(0., 0., 0.), 0.3);
+  imm box = new Aabb3(new Vec3(-1., -1., -1.), new Vec3(1., 1., 1.));
+  imm net = surfaceNet(&ball, box, 1., 0u32, false);
+  expectInt(i64.from(net.vertexCount()), 8, "lone sample: vertices");
+  expectInt(i64.from(net.quadCount()), 6, "lone sample: quads");
+  allOutward(&net, 2, "lone sample: closed");
+  imm v = *net.positions[0usize];
+  near(v.x, -0.1d, 0.000001d, "lone sample: vertex 0 x");
+  near(v.y, -0.1d, 0.000001d, "lone sample: vertex 0 y");
+  near(v.z, -0.1d, 0.000001d, "lone sample: vertex 0 z");
+  imm last = *net.positions[7usize];
+  near(last.x, 0.1d, 0.000001d, "lone sample: vertex 7 x");
+  near(last.z, 0.1d, 0.000001d, "lone sample: vertex 7 z");
+}
+
+fn diagonals() {
+  imm box = new Aabb3(new Vec3(-1., -1., -1.), new Vec3(2., 2., 2.));
+  imm onFace = new TwoBalls(new Vec3(0., 0., 0.), new Vec3(1., 1., 0.), 0.3);
+  imm a = surfaceNet(&onFace, box, 1., 0u32, false);
+  expectInt(i64.from(a.vertexCount()), 16, "diagonal on a face: vertices, one per piece");
+  expectInt(i64.from(a.quadCount()), 12, "diagonal on a face: quads");
+  allOutward(&a, 4, "diagonal on a face: two closed nets");
+  imm inCell = new TwoBalls(new Vec3(0., 0., 0.), new Vec3(1., 1., 1.), 0.3);
+  imm b = surfaceNet(&inCell, box, 1., 0u32, false);
+  expectInt(i64.from(b.vertexCount()), 16, "diagonal across a cell: vertices, one per piece");
+  expectInt(i64.from(b.quadCount()), 12, "diagonal across a cell: quads");
+  allOutward(&b, 4, "diagonal across a cell: two closed nets");
+}
+
+fn spheres() {
+  imm ball = new Ball(new Vec3(0., 0., 0.), 1.);
+  imm box = new Aabb3(new Vec3(-1., -1., -1.), new Vec3(1., 1., 1.));
+  imm net = surfaceNet(&ball, box, 0.125, 1u32, true);
+  allOutward(&net, 2, "sphere: closed");
+  mut worstD f32 = 0.;
+  mut worstN f32 = 0.;
+  mut v = 0usize;
+  while v < net.vertexCount() {
+    imm p = *net.positions[v];
+    imm r = p.length();
+    imm d = absf32(r - 1.);
+    if d > worstD { worstD = d; }
+    imm radial = p * (1. / r);
+    imm dn = (*net.normals[v] - radial).length();
+    if dn > worstN { worstN = dn; }
+    v = v + 1usize;
+  }
+  expect(worstD < 0.0005, "sphere: relaxed vertices on the surface");
+  expect(worstN < 0.0001, "sphere: normals radial");
+
+  imm plain = surfaceNet(&ball, box, 0.125, 0u32, true);
+  allOutward(&plain, 2, "sphere unrelaxed: closed");
+  mut worst f32 = 0.;
+  v = 0usize;
+  while v < plain.vertexCount() {
+    imm d = absf32((*plain.positions[v]).length() - 1.);
+    if d > worst { worst = d; }
+    v = v + 1usize;
+  }
+  expect(worst < 0.125 * 1.7320508, "sphere unrelaxed: within a cell's diagonal");
+
+  // Sparse against dense
+  imm dense = surfaceNet(&ball, box, 0.125, 1u32, false);
+  expectUInt(u64.from(netHash(&net)), u64.from(netHash(&dense)), "sphere: sparse is dense, bit for bit");
+  expect(net.sampled < dense.sampled, "sphere: sparse asks fewer distances");
+  expectUInt(dense.sampled, u64.from(dense.cellsX + 1u32) * u64.from(dense.cellsY + 1u32) * u64.from(dense.cellsZ + 1u32),
+    "sphere: dense asks every sample");
+  expect(net.blocksSkipped > 0u32, "sphere: some blocks skipped");
+}
+
+// A net's triangle mesh's hash (the mesh held in a local, since a
+// temporary cannot be borrowed)
+fn netHash(net &SurfaceNet) u32 {
+  imm m = net.toMesh();
+  mesh.meshHash(&m);
+}
+
+fn absf32(a f32) f32 { if a < 0. { 0. - a; } else { a; }; }
+
+fn horns() {
+  imm horn = Horn.make(3.4, 0.34, 0.97, 1.7, 22, 0.12);
+  imm box = horn.bounds();
+  // The box holds the horn: its corners and faces' middles are outside
+  expect(horn.distance(box.min) > 0., "horn: bounds' corner outside");
+  expect(horn.distance(box.max) > 0., "horn: bounds' far corner outside");
+  imm c = box.center();
+  expect(horn.distance(new Vec3(box.min.x, c.y, c.z)) > 0., "horn: bounds' -x face outside");
+  expect(horn.distance(new Vec3(box.max.x, c.y, c.z)) > 0., "horn: bounds' +x face outside");
+  expect(horn.distance(new Vec3(c.x, box.max.y, c.z)) > 0., "horn: bounds' +y face outside");
+  expect(horn.distance(new Vec3(c.x, c.y, box.max.z)) > 0., "horn: bounds' +z face outside");
+
+  // Closed and manifold at every size of cell, relaxed or not
+  imm sizes Array[f32, 5] = [0.02, 0.03, 0.05, 0.08, 0.16];
+  mut si = 0usize;
+  while si < 5usize {
+    mut relax = 0u32;
+    while relax < 2u32 {
+      imm atSize = surfaceNet(&horn, box, sizes[si], relax, true);
+      outwardButTheTip(&atSize, &horn, "horn: closed at each size");
+      relax = relax + 1u32;
+    }
+    si = si + 1usize;
+  }
+
+  imm net = surfaceNet(&horn, box, 0.04, 1u32, true);
+  outwardButTheTip(&net, &horn, "horn: closed");
+  imm m = net.toMesh();
+  imm h = mesh.meshHash(&m);
+  expectUInt(u64.from(h), u64.from(netHash(&net)), "horn: the same mesh hashes the same");
+  imm again = surfaceNet(&horn, box, 0.04, 1u32, true);
+  expectUInt(u64.from(netHash(&again)), u64.from(h), "horn: meshed again, the same bits");
+  print <- "horn at 0.04: "; print <- m.vertexCount(); print <- " vertices, "; print <- m.triangleCount();
+  print <- " triangles, hash "; print <- u64.from(h); print <- "\n";
+
+  // Sparse against dense, coarser
+  imm sparse = surfaceNet(&horn, box, 0.08, 1u32, true);
+  imm dense = surfaceNet(&horn, box, 0.08, 1u32, false);
+  expectUInt(u64.from(netHash(&sparse)), u64.from(netHash(&dense)), "horn: sparse is dense, bit for bit");
+  expect(sparse.sampled < dense.sampled, "horn: sparse asks fewer distances");
+
+  // Levels of detail
+  imm levels = netLevels(&horn, box, 0.05, 3u32, 1u32);
+  expectInt(i64.from(levels.len()), 3, "horn levels: three");
+  near(levels[2usize].cellSize, 0.2d, 0.000001d, "horn levels: cells doubling");
+  mut i = 0usize;
+  while i < levels.len() {
+    print <- "horn level "; print <- i; print <- ": "; print <- levels[i].vertexCount(); print <- " vertices, ";
+    print <- levels[i].quadCount() * 2usize; print <- " triangles, hash "; print <- u64.from(netHash(levels[i])); print <- "\n";
+    if i > 0usize { expect(levels[i].vertexCount() < levels[i - 1usize].vertexCount(), "horn levels: coarser, fewer"); }
+    i = i + 1usize;
+  }
+}
+
+fn main() i32 {
+  loneSample();
+  diagonals();
+  spheres();
+  horns();
+  done();
+}

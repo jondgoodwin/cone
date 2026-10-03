@@ -53,6 +53,11 @@ INode *arrayTypeUnshaped(CloneState *cstate, INode *type);
 // Type check an array type
 void arrayTypeCheck(TypeCheckState *pstate, ArrayNode *name);
 
+// What an array type reads from its element's layout: its size, and whether
+// it moves. Part of its check, unless the array is a reference's target while
+// a layout is in flight, when it waits for the element (structArrayWait).
+void arrayTypeFinish(ArrayNode *node);
+
 int arrayEqual(ArrayNode *node1, ArrayNode *node2);
 
 // Is from-type a subtype of to-struct (we know they are not the same)

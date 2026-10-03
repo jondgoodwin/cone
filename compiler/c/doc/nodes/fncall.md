@@ -236,7 +236,9 @@ reject an overload name everywhere else. Bail if `objfn` is already marked
   not called, its value is constructed with `new`.
 - **A bare method or field name** (`FlagMethFld`, not `FlagQualified`) →
   rewrite to `self.method`, synthesizing a resolved `self` from parameter 0.
-- **An overload set** → `fnCallLowerOverloadFn` picks the concrete candidate.
+- **An overload set** → `fnCallLowerOverloadFn` type checks every candidate not
+  yet analyzed (`fnCallDemandCandidates`, as a member name's are below), then
+  picks the concrete candidate.
 - **`FlagLvalOp`** → borrow the receiver as `&mut`, or hand an operator-assign
   on a method type to `fnCallOpAssgn`. A receiver that is already a reference
   (`fnCallIsRefReceiver`) is passed as it is, exactly as the reference arm of
@@ -291,11 +293,11 @@ by value, an array and a function go on to the table's own rows.
 | Receiver type | Goes to |
 | --- | --- |
 | `FnSigTag` | `fnCallFnSigTypeCheck` — a plain call |
-| struct, number | fill in `()`/`[]`/`&[]` as `methfld` if absent, then `fnCallLowerMethod` |
+| struct, number | fill in `()`/`[]`/`&[]` as `methfld` if absent, then `fnCallLowerMethod`; an index in set position on a type declaring `&[]` (`fnCallSetIndex`) takes `&[]` |
 | `TTupleTag` | `fnCallLowerIntField` — element by literal index, its type read from the resolved tuple, since the receiver's `vtype` may be an alias naming it |
 | `ArrayTag` | `fnCallArrIndex` under `FlagIndex`; a comparison with a slice to `fnCallArrayAsSlice` |
 | `ArrayRefTag` | index; `==`, `!=` or an ordering to `fnCallLowerSliceCompare`; else `fnCallLowerPtrMethod` against `arrayRefType` |
-| `RefTag` | function-by-ref, array index, a comparison to `fnCallLowerRefCompare`, or `fnCallLowerPtrMethod`, then `fnCallLowerTraitMethod` and failing that `fnCallLowerMethod` |
+| `RefTag` | a key (`lifeIsKey`) refused for anything but `===` and `!==` (`ErrorKeyAccess`); else function-by-ref, array index, a comparison to `fnCallLowerRefCompare`, or `fnCallLowerPtrMethod`, then `fnCallLowerTraitMethod` and failing that `fnCallLowerMethod` |
 | `VirtRefTag` | fill in `()` as `methfld` if absent and not indexing, so `f(u)` calls the trait's `()` as ``f.`()`(u)`` does; `==`, `!=` or an ordering is `ErrorRefNoCompare`; else `fnCallLowerPtrMethod`, else set `FlagVDisp` and `fnCallLowerMethod`, whose selection (`fnSigViableCall`) takes only a method whose `self` permission the receiver's grants, and where `fnCallFinalizeArgs` lends an owning receiver as a borrowed virtual reference (`fnCallLendVirtOwner`) |
 | `PtrTag` | the pointer's own operators first, then the value's fields and named methods |
 
@@ -451,11 +453,12 @@ A private member (one not declared `pub`) is granted to a receiver that is the e
 method's own `self`, and to an access that a macro method's body wrote on *its*
 `self` — the clone carries `FlagSelfRecv`, stamped by `cloneFnCallNode` at
 expansion, since by then the receiver is the use site's expression. Any other
-receiver is granted it when the function being checked is the receiver's type's
-own — its owner (`inodeGetOwner` of `pstate->fn`) is that type, so a generic's
-instance sees values of that instance only — or is inside the enum boundary
-(`structSeesPrivate`, `structEnumSeesPrivate`). Every other receiver gets
-`ErrorNotPublic`.
+receiver is granted it when the function being checked is written in the module
+that declares the receiver's type — `dclInfoGetModule` of `pstate->fn` and of the
+type agree — or in an extension of the receiver's enum (`structSeesPrivate`,
+`structEnumSeesPrivate`). Every other receiver gets `ErrorNotPublic`. An `isTrue`
+a coercion injects is lowered with no state (`iexpCoerce` passes none), so only
+`self` reaches a private one.
 
 Three adjustments, two of them asymmetric on purpose:
 
@@ -470,8 +473,9 @@ Three adjustments, two of them asymmetric on purpose:
   `&mut v`'s — `ErrorBadPerm` for `&mut` of an immutable variable, and the
   borrow's scope carried into a returned borrow. It runs only after both
   selections above found nothing, so a by-value candidate is always preferred.
-  A temporary is `ErrorBadLval`, once, where a borrowed candidate would have
-  been selected. **A pointer is never borrowed from** — a pointer receiver,
+  A temporary is borrowed where it is (`borrowTempRef`), with the block's
+  lifetime (`borrowTempScope`), and lives to its statement's end, as `&` of it
+  does: `mk().get()`. **A pointer is never borrowed from** — a pointer receiver,
   and a dereference of one written out, are left as the deref retry left them.
   An ambiguity among the probed candidates is reported as one.
 - **An operator on a pointer does not reach through.** `p + 2` offsets the
@@ -481,12 +485,28 @@ Three adjustments, two of them asymmetric on purpose:
   do because it dereferences only the receiver — `fnCallLowerRefCompare` does
   it before `fnCallLowerMethod` is reached.
 
-When nothing is selected, `fnCallNoCandidate` reports it. One case has a
-message of its own (`fnCallRefIndexWantsMut`, still `ErrorNoCandidate`): an
-indexed borrow `&x[i]` reaches `` `&[]` `` with the read-only receiver `&x`,
-and where a `&mut` receiver would have been accepted the message says the
-method takes `self &mut` and names `x[i]` and `&mut x[i]`. The probe changes
-nothing; the refusal is the same.
+**An index in set position.** `x[i] = v`, `x[i].f = v` and an operator
+changing `x[i]` or a field of it in place write to the element, so where
+`x`'s type declares `&[]` the index is lowered as `&mut x[i]` is: the
+assignment, or the `FlagLvalOp` call, marks the index at the root of the
+place (`fnCallSetIndexRoot`, through field reads only) in `fnCallSetIndex`,
+`fnCallTypeCheck` sets `FlagBorrow` on that node and names `&[]`, and an
+assignment to the index itself stores through the reference it returns
+(`derefInject`). A method called on `x[i]` that no candidate takes with the
+read-only element is retried with the element `&[]` lends, the index lowered
+again from its checked receiver and arguments, where the receiver may be
+borrowed mutably (`fnCallIndexAsMut`). Rust chooses `IndexMut` the same way;
+a dynamic arena's `ar[key] = v` is the case it was built for.
+
+When nothing is selected, `fnCallNoCandidate` reports it. Two cases have a
+message of their own. An indexed borrow `&x[i]` reaches `` `&[]` `` with the
+read-only receiver `&x`, and where a `&mut` receiver would have been accepted
+the message says the method takes `self &mut` and names `x[i]` and
+`&mut x[i]` (`fnCallRefIndexWantsMut`, still `ErrorNoCandidate`). An operator
+or an index given a `Bool` where a candidate declares a number, `n + b` or
+`list[b]`, is `ErrorBoolNotNbr` naming that number's `from`
+(`fnCallBoolOperandWantsNumber`): a `Bool` coerces to no number. Neither probe
+changes anything; the refusal is the same.
 
 ### The list after `<-`
 
@@ -636,6 +656,17 @@ carries ([intrinsic](intrinsic.md)).
 `FldAccessTag` splits on `FlagBorrow`: with it, `StructGEP` the receiver's
 address; without it, load the **whole aggregate** and `extractvalue`. Getting
 the flag wrong is not a type error.
+
+`ArrIndexTag` splits the same way: without `FlagBorrow`, load the element
+from its address; with it, the address is the value. **A borrowed index's
+receiver is a reference, but the borrow node only at the root of the chain.**
+`borrowReassocIndex` turns `&m[1][0]` into `((&m)[1])[0]`, each link
+`FlagBorrow`: the inner link's receiver is the borrow `&m`, which generation
+steps around to index `m`'s own place, while the outer link's receiver is the
+inner link, a reference value holding the row's address, which `genlAddr`
+and `genlSubslice` index through as through any reference to an array or
+slice. The same holds where the receiver is a reference some call returned,
+`&mut list[i][j]` for a list of arrays.
 
 **A range index** (`FlagRange`, set by the parser's `parseIndexArgs`) is a slice
 of part of an array or a slice, and exists only borrowed: `fnCallTypeCheck`

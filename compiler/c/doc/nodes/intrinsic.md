@@ -7,7 +7,7 @@ they differ in who declares them and in how their meaning is decided.
 | --- | --- | --- |
 | Declared by | `corenumber.c`, `corelib.c`, `struct.c` (an enum's `==`) | `packages/core/src/core.cone`, as functions of the opaque struct `mem` |
 | Named | as a method or operator of a type | through `mem`: `mem.sizeof[T]()` |
-| Kinds | `NegIntrinsic` … `FinalAllIntrinsic` | `SizeofIntrinsic` … `AtomicCompareSwapIntrinsic` (`FirstDeclaredIntrinsic` onward) |
+| Kinds | `NegIntrinsic` … `FinalAllIntrinsic` | `SizeofIntrinsic` … `ShrMaskedIntrinsic` (`FirstDeclaredIntrinsic` onward) |
 | Meaning decided | at generation, by the LLVM type kind of argument 0 | by the registry, in Cone terms; the Cone type rides on the node (`typearg`) |
 | Reference page | none: the number and pointer methods | `doc/reference/refintrinsic.html` |
 
@@ -18,6 +18,19 @@ in core, entered in the registry, and given an arm in `genlDeclaredIntrinsic`**
 atomic operations' orderings do, in `genlAtomicIntrinsic`, which `genlFnCall`
 reaches with the call's own arguments.
 
+**An integer's bit intrinsics are also its methods.** `countOnes`,
+`leadingZeros`, `trailingZeros`, `rotateLeft`, `rotateRight`, `shlMasked` and
+`shrMasked` are declared in core's `mem` like the rest, and `corenumber.c`
+(`nbrBitMethods`) also gives every integer type a method of each name whose
+`IntrinsicNode` is the same declared kind, its `typearg` the type itself: the
+instance the generic declaration would have for that type. So `x.leadingZeros()`
+and `mem.leadingZeros(x)` are one registry entry and one arm of
+`genlDeclaredIntrinsic`, and the meaning is still decided by the Cone type,
+never by an LLVM type kind. The methods are built in C only because Cone source
+cannot yet add a method to a number type; they keep the lowering under
+`--intrinsic-fallback`, which is what lets `intrinsic_bits` check each fallback
+body against it in one run.
+
 *Provenance: read from source and measured, September 2026.*
 
 ## Principles — [derived]
@@ -25,12 +38,12 @@ reaches with the call's own arguments.
 **The registry is the definition of record, and it speaks Cone.** Each entry in
 `intrinsicRegistry` (`ir/stmt/intrinsic.c`) is a name, its signature as shapes
 over the one type parameter `T` (or over none: `traceRoots`, `srcFile`,
-`srcLine` and `isDebugBuild` are the entries without it, and their instances carry no `typearg`), whether a call can break memory safety (and so
+`srcLine`, `isDebugBuild` and the provisional constants of the build beside it are the entries without it, and their instances carry no `typearg`), whether a call can break memory safety (and so
 belongs in `trust`), whether a Cone fallback body may be written, the phase that
 answers it, whether this back end lowers it itself, and the class of types `T`
 may be where that is narrower than every type with a size (`IntrinsicClass`: the
 atomic operations take an integer of 8 to 64 bits, `Bool` or a raw pointer, or
-part of that). No LLVM name appears in
+part of that, and an integer's bit operations an integer). No LLVM name appears in
 it. ▸ **Forbids** passing an LLVM intrinsic name through (`@intrinsic("llvm.…")`)
 and deciding a new intrinsic's meaning from an LLVM type: the LLVM instructions
 in `genlDeclaredIntrinsic` are one implementation of the entry, which a native
@@ -98,8 +111,9 @@ type while each call gives its own orderings.
    (`cloneIntrinsicNode`), and the use of `T` is substituted like any other, so
    each instance carries the Cone type it is for.
 4. **Type check** (`fnDclTypeCheck`). First, for an entry with a type class,
-   lowered or not, `intrinsicClassCheck` reads `T` as the pointee of the
-   instance's first parameter, `*T`, and refuses one outside the class with
+   lowered or not, `intrinsicClassCheck` reads `T` from the instance's first
+   parameter, the pointee of a `*T` (the atomic operations) or a `T` itself (an
+   integer's bit operations), and refuses one outside the class with
    `ErrorIntrinsicType`, before a fallback body is checked. It is reported at
    the outermost place that instantiated it, where the program chose the type,
    and once there: a generic type whose methods call `atomicAdd[T]` for a `T`
@@ -153,7 +167,23 @@ type while each call gives its own orderings.
 | `atomicSwap[T]`, `atomicAdd[T]` … `atomicXor[T]` | operation | an `atomicrmw` (`xchg`, `add`, `sub`, `and`, `or`, `xor`), answering the value before |
 | `atomicCompareSwap[T]` | operation | a strong `cmpxchg` with both orderings, its `{T, i1}` rebuilt as the result tuple |
 | `srcFile`, `srcLine` | expansion | constants of where the call is, the source file's name without its folders (a private constant, one per file per module) and the line, `genlFnCall`. Declared at core's top level rather than in `mem`. Each may be a parameter's default value, the one default that is not a literal (`varDclTypeCheck`); `fnCallFinalizeArgs` appends a copy placed at the call taking the default (`intrinsicSrcCallAt`), so each call answers its own place. Written in a macro's body, each answers where the macro is used: `macroExpand` sets `CloneState.srcsite` to the outermost use (`macroSrcSite`), and `cloneFnCallNode` places a call to either there, while an argument keeps its own place ([generic](generic.md), "Macros") |
-| `isDebugBuild` | constant | an `i1`, true where `opt->release` is 0 (`conec --debug`, or `build: debug` in a build description), `genlDeclaredIntrinsic`. A constant of the build, not of a type: the side of an `if` on it that the build does not take is removed by `simplifycfg`, which both builds' pipelines run. Declared at core's top level; core's `assertDebug` and `assertDebugMsg` macros branch on it |
+| `isDebugBuild` | constant | an `i1`, true where `opt->release` is 0 (`conec --debug`, or `build: debug` in a build description), answered in `genlFnCall` by `intrinsicBuildConst` before any argument is generated. A constant of the build, not of a type: `genlIf` generates only the side of an `if` on it that the build takes (below). Declared at core's top level; core's `assertDebug` and `assertDebugMsg` macros branch on it |
+| `isWindows`, `isLinux`, `isMacOS`, `isWasm` | constant | TEMPORARY, a provisional mechanism whose final design is open. An `i1` read from `opt->triple` (filled in with the host's by `genlCreateMachine` before parse): `windows` or `win32`, `linux`, `darwin` or `macos` in it, or a `wasm` architecture. Answered and branched on as `isDebugBuild` is |
+| `isDefined(name)`, `definedInt(name)` | constant | TEMPORARY, as above. Whether `-D` defined `name`, an `i1`, and its integer, an `i64`, 0 when it was not (`opt->defines`, parsed by `coneOptDefine`). `name` must be a string literal under its borrow and coercion (`intrinsicCallCheck`, `ErrorDefineName`); the literal is read, never generated |
+| `countOnes[T]`, `leadingZeros[T]`, `trailingZeros[T]` | operation | `llvm.ctpop`, and `llvm.ctlz` and `llvm.cttz` told 0 is not poison (`is_zero_poison` false), so 0 counts as the width; the count resized to an `i32`, `genlBitIntrinsic`. `T` an integer of 8 to 64 bits (`ClassInt`) |
+| `rotateLeft[T]`, `rotateRight[T]` | operation | `llvm.fshl` and `llvm.fshr` with `x` as both halves, the `u32` amount resized to `T`; the funnel shifts take it modulo the width themselves |
+| `shlMasked[T]`, `shrMasked[T]` | operation | the amount resized to `T` and anded with width - 1 (the width a power of two, so that is modulo the width), then `shl`, or `ashr` for a signed `T` and `lshr` for an unsigned one |
+
+**Constants of the build drop the untaken side at generation.**
+`intrinsicBuildConst` answers whether a node is one of the constants above, or
+`!`, `and` or `or` of them, and its value. `genlIf` asks it of each condition:
+a false one's block is not generated at all, and a true one's is generated as
+an `else` would be, with nothing after it. So no call on the untaken side, and
+no reference to its symbol, reaches the object, in a debug build as in a
+release one: a call to an `extern` only another platform defines links. Name
+resolution, type check and flow analysis still see both sides, so every name on
+either side must resolve on every target; generic instances and functions
+reached only from the untaken side are still generated.
 
 Each atomic instruction is aligned as `T` is (`LLVMABIAlignmentOfType`), and
 its ordering is LLVM's name for the `MemOrder` (`genlAtomicOrdering`: `Relaxed`
@@ -225,6 +255,7 @@ package, and `sliceEqDclNameRes` holds the declaration to that one signature
 | registry and checks | `ir/stmt/intrinsic.c`: `intrinsicRegistry`, `intrinsicDclNameRes`, `intrinsicDclTypeCheck`, `intrinsicClassCheck`, `intrinsicCallCheck`; `sliceEqDclNameRes`, `sliceEqFn` for `mem.sliceEq` |
 | hooks | `fndcl.c` `fnDclNameRes`, `fnDclTypeCheck`, `fnDclIsExpanded`; `fncall.c` `fnCallFinalizeArgs` |
 | forced fallback | `--intrinsic-fallback` → `intrinsicForceFallback` (`conec.c`) |
-| generation | `genlexpr.c` `genlDeclaredIntrinsic`, `genlAtomicIntrinsic` (from `genlFnCall`); `genlalloc.c` `genlFinalizeAt`, `genlTypeRecord`, `genlTraceAt`; `genltype.c` `genlAlignof` |
+| generation | `genlexpr.c` `genlDeclaredIntrinsic`, `genlBitIntrinsic`, `genlAtomicIntrinsic` (from `genlFnCall`); `genlalloc.c` `genlFinalizeAt`, `genlTypeRecord`, `genlTraceAt`; `genltype.c` `genlAlignof` |
+| an integer's bit methods | `corenumber.c` `nbrBitMethods` |
 | declarations | `packages/core/src/core.cone`, `struct @opaque mem` and `enum MemOrder` |
 | tests | `test/cases/intrinsic/` |

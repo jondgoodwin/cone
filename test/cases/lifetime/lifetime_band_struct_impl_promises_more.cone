@@ -1,0 +1,62 @@
+// An implementation may promise more than the requirement it meets: a call
+// through the trait is checked against the trait's signature, and holds its
+// result to everything that signature lets it carry, so an implementation
+// carrying less is safe. 'top' returns a global borrow, ''static', where the
+// trait's result may hold the receiver; 'pick' returns where its cursor's
+// slice points, ''a', not its ''b' argument, which the trait's result may
+// hold too; 'note' takes any borrow where the trait asks for a ''static' one.
+// Called through a virtual reference, each result is kept while the trait's
+// signature says its arguments must be.
+//
+// Verdict: accept; prints 3 7 7 5.
+// Basis: Rust accepts an impl whose method signature is more general than the
+// trait's (a ''static' result for an elided one; a parameter of any lifetime
+// for a ''static' one), checking that the impl's signature is a subtype of the
+// trait's (compare_impl_method); by reading, not run.
+// Master 19cc839b: refused, ErrorInvType at the struct, each method's
+// signature differing from the trait's in its lifetimes.
+
+mod lifetime_band_struct_impl_promises_more;
+
+import stdio use *;
+
+struct R { pub n i64; }
+
+mut THREE R = new R(3);
+mut NOTED i64 = 0;
+
+trait Source {
+  pub fn top(self &) &R;
+  pub fn pick(self &, b &R) &R;
+  pub fn note(self &, x &'static R);
+}
+
+struct Cursor['a] is Source {
+  pub items &[]'a R;
+  pub fn top(self &) &'static R { &THREE; }
+  pub fn pick(self &, b &'b R) &'a R { &items[0usize]; }
+  pub fn note(self &, x &R) { NOTED = x.n; }
+}
+
+fn through(s &<Source, b &R) i64 {
+  imm t = s.top();
+  imm p = s.pick(b);
+  s.note(&THREE);
+  t.n * 1000 + p.n;
+}
+
+fn main() {
+  imm a Array[R, 2] = [new R(7), new R(9)];
+  imm c = new Cursor(&[]a);
+  imm five = new R(5);
+  imm got = through(&c, &five);
+  printInt(got / 1000);
+  printStr(" ");
+  printInt(got % 1000);
+  printStr(" ");
+  printInt(c.pick(&five).n);
+  printStr(" ");
+  c.note(&five);
+  printInt(NOTED);
+  printStr("\n");
+}

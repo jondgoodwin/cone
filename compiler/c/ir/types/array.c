@@ -259,6 +259,18 @@ void arrayTypeCheck(TypeCheckState *pstate, ArrayNode *node) {
         errorMsgNode((INode*)node, ErrorBadArray, "Element type must be a known type");
         return;
     }
+    // A reference's target does not wait on its layout, and neither does an
+    // array that is one: its element's size and flags are read once the
+    // element is laid out, or when a by-value use needs them first
+    if (structTargetDeferring()) {
+        structArrayWait(pstate, (INode*)node);
+        return;
+    }
+    arrayTypeFinish(node);
+}
+
+void arrayTypeFinish(ArrayNode *node) {
+    INode **elemtypep = &nodesGet(node->elems, 0);
     // An array of a type that cannot say how large it is has no size either, so
     // it is not a type at all -- not even behind a reference, which is the one
     // place an opaque type is otherwise usable. This is the only site that

@@ -53,10 +53,11 @@ tags = ["parse", "nameres", "typecheck", "genllvm", "runtime"]
 # Pins today's spelling of an 'extern' declaration, so the symbol-generation
 # refactor can show nothing moved: the C name exactly as written, no prefix, a
 # 'declare' that leads no COMDAT. Both forms of the declaration -- in a block
-# and on its own -- come out the same.
+# and on its own -- come out the same. Read before the optimizer, which folds
+# 'abs' and 'labs' of constants, then deletes the declarations nothing calls.
 [[scenario.module_success.check]]
 name = "extern-declares-the-bare-c-name"
-target = "llvmir"
+target = "preir"
 contains = ["declare i32 @abs(i32)", "declare i64 @labs(i64)"]
 excludes = ["$abs", "$labs", "@abs(i32) comdat", "@labs(i64) comdat"]
 
@@ -297,6 +298,33 @@ description = "What a path may not reach through a one-file module: its private 
 tags = ["nameres"]
 diagnostics = 2
 
+# -------- a type's private members --------
+#
+# A type's private members are private to the module that declares it, the
+# boundary its private names have. Every file of the module's folder is the
+# module, so module_privacy runs code in each file reaching the other's types'
+# privates. module_privacy_typecheck is the refusal to every other module of a
+# tree -- the parent, a sister, a one-file submodule -- and
+# module_privacy_package_typecheck to a program compiled against a package's
+# include file. Both are folders because the module tree is the subject.
+
+[scenario.module_privacy]
+category = "run"
+description = "Code in each file of a module reaching the private fields, methods and init of a type another file of the module declares"
+tags = ["typecheck", "runtime"]
+
+[scenario.module_privacy_typecheck]
+category = "reject"
+description = "A submodule's types' private fields, methods, construction values and init refused to its parent, a sister and a one-file submodule; an enum's extension in another module still reaching its base's"
+tags = ["typecheck"]
+diagnostics = 12
+
+[scenario.module_privacy_package_typecheck]
+category = "reject"
+description = "A program compiled against a package's include file refused the private method and field of the package's public type, which the include file declares for the package's inline body"
+tags = ["typecheck"]
+diagnostics = 2
+
 # -------- import within the tree --------
 #
 # A module reaches a sister by importing her NAME, resolved against the registry
@@ -486,6 +514,18 @@ name = "geomath-calls-libc"
 target = "symbols"
 contains = ["declare tanf", "declare fabs"]
 excludes = ["fabsf"]
+
+# -------- what the runtime prints --------
+#
+# stdio's printing is conestd's, the runtime every run scenario links, written
+# in Cone (packages/conestd/stdio.cone). Its expected .out and .err are what
+# the C library it replaced printed, so a change to how any value is spelled
+# shows here.
+
+[scenario.module_stdio_values]
+category = "run"
+description = "Every kind of value stdio prints, at the edges of its spelling, the same on standard output and standard error: integers at their extremes, floats as '%g' with the infinities and NaNs, code points of one to four UTF-8 bytes and the two that print nothing, a C string and a null one, the streams' operators"
+tags = ["runtime"]
 
 # -------- import of a parent's name --------
 #
@@ -963,12 +1003,13 @@ description = "A 'main' returning nothing exits 0, from the end of its block, af
 tags = ["genllvm", "runtime"]
 
 # Generated returning i32 0 for the C runtime, rather than an undefined value
-# of Cone's empty 'void' type. Only main is pinned: an imported function nothing
-# calls stays in the module, returning %void as it declares.
+# of Cone's empty 'void' type. Only main is pinned: every other function
+# returning nothing returns %void as it declares. The optimizer adds attributes
+# of its own before the return type, so the line is matched from it.
 [[scenario.module_main_void.check]]
 name = "a-void-main-returns-i32-zero"
 target = "llvmir"
-contains = ["define i32 @main()", "ret i32 0"]
+contains = ["i32 @main()", "ret i32 0"]
 excludes = ["define %void @main"]
 
 [scenario.module_main_status]
@@ -1354,10 +1395,11 @@ tags = ["parse", "genllvm"]
 
 # '@c(system)' gives the C name and the x86 stdcall convention; on an 'extern'
 # declaration the DLL import storage class comes with it. The declaration takes
-# no prefix and no COMDAT.
+# no prefix and no COMDAT. Read before the optimizer, which deletes a
+# declaration nothing calls.
 [[scenario.module_extern_system.check]]
 name = "extern-system-declares-a-dllimport-stdcall-symbol"
-target = "llvmir"
+target = "preir"
 contains = ["declare dllimport x86_stdcallcc i32 @GetTickCount()"]
 excludes = ["$GetTickCount", "@GetTickCount() comdat"]
 
@@ -1406,10 +1448,12 @@ excludes = [
 ]
 
 # The struct's LLVM type is named after the type alone: an LLVM type name is
-# not an object-file symbol, so it takes no module path.
+# not an object-file symbol, so it takes no module path. Read before the
+# optimizer, which deletes 'uses', since nothing calls it, and with it every
+# declaration and the type.
 [[scenario.module_symbols.check]]
 name = "imported-struct-type-carries-no-module-path"
-target = "llvmir"
+target = "preir"
 contains = ["%Gadget = type"]
 excludes = ["%modulesyms_Gadget", '%"modulesyms.Gadget"']
 
@@ -1609,6 +1653,81 @@ contains = [
 name = "a-plain-cone-function-is-unmarked"
 target = "preir"
 contains = ["define internal i1 @plain(i1 %0, i8 %1)", "call i1 @plain(i1 "]
+
+# Both of SPIR-V's forms: the OpenCL kernel form (physical addressing) and the
+# Vulkan shader form (logical addressing). That the module is emitted at all,
+# as '.spv', is the object check every compile scenario makes.
+[scenario.module_target_spirv]
+category = "compile"
+description = "A module of plain i32 and f32 functions compiles for a SPIR-V target, in its OpenCL and its Vulkan form"
+tags = ["genllvm"]
+
+[[scenario.module_target_spirv.run]]
+name = "opencl"
+options = ["--triple=spirv64-unknown-unknown"]
+
+[[scenario.module_target_spirv.run]]
+name = "vulkan"
+options = ["--triple=spirv1.6-unknown-vulkan1.3"]
+
+[[scenario.module_target_spirv.check]]
+name = "the-module-carries-the-spirv-triple"
+target = "preir"
+contains = [
+  "target triple = \"spirv",
+  "define internal i32 @sumSquares(i32 %0, i32 %1)",
+  "call i32 @square(i32 ",
+  "define internal float @scaleAdd(float %0, float %1, float %2)",
+]
+
+# A reference's memory kind on a GPU target, settled from its origin. Before
+# it, a global's address handed to a function failed '--verify', and a struct
+# holding a reference crashed the Vulkan form's backend; in a debug build a
+# call handed a field of a local was a module the validator refused. A library
+# compile keeps the public functions, which nothing here calls: every other
+# one is inlined into them and gone. What the validator, spirv-val, makes of
+# the module is measured by hand; the suite needs no Vulkan SDK.
+[scenario.module_target_spirv_kinds]
+category = "compile"
+description = "On a SPIR-V target every call is inlined and each reference takes the address space of what it borrows, a local or a global, at every optimization level"
+tags = ["flow", "genllvm"]
+
+[[scenario.module_target_spirv_kinds.run]]
+name = "vulkan"
+options = ["--triple=spirv1.6-unknown-vulkan1.3", "--library", "--verify"]
+
+[[scenario.module_target_spirv_kinds.run]]
+name = "vulkan-debug"
+options = ["--triple=spirv1.6-unknown-vulkan1.3", "--library", "--verify", "--debug"]
+
+[[scenario.module_target_spirv_kinds.run]]
+name = "opencl"
+options = ["--triple=spirv64-unknown-unknown", "--library", "--verify"]
+
+[[scenario.module_target_spirv_kinds.run]]
+name = "opencl-debug"
+options = ["--triple=spirv64-unknown-unknown", "--library", "--verify", "--debug"]
+
+[[scenario.module_target_spirv_kinds.check]]
+name = "a-global-is-borrowed-through-the-flat-address-space"
+target = "preir"
+contains = [
+  "addrspacecast (ptr addrspace(",
+  "alwaysinline",
+]
+
+[[scenario.module_target_spirv_kinds.check]]
+name = "inlined-each-use-is-in-its-origins-address-space"
+target = "llvmir"
+contains = [
+  "define float @fromGlobal(float %0)",
+  "load float, ptr addrspace(",
+  "store float %2, ptr addrspace(",
+  "define float @spans(float %0)",
+  "define float @pairs(float %0)",
+  "define float @methods(float %0, i32 %1)",
+]
+excludes = ["addrspacecast", " call ", "define internal", "@bump", "@apply"]
 
 [scenario.module_c_threadlocal]
 category = "compile"
@@ -2017,7 +2136,7 @@ excludes = ["define internal", "global internal", "define addOne", "define inner
 [[scenario.module_build_lib.check]]
 name = "exports-survive-optimisation"
 target = "llvmir"
-contains = ["define i64 @_CNvC1q6viaDep(", "@_CNvC1q7counter = global i64 0"]
+contains = ["define i64 @_CNvC1q6viaDep(", "@_CNvC1q7counter = local_unnamed_addr global i64 0"]
 
 # The same symbols, mangled: what an importer of q declares.
 [[scenario.module_build_lib.check]]
@@ -2103,21 +2222,23 @@ contains = [
   "define ex.usesGeneric comdat",
   "define ex.Plain.shown comdat",
   "define ex.inner.innerPub comdat",
+  "define ex.inner.Quiet.shown comdat",
 ]
 
 # A type's function is exported when an importer can reach the type -- it is
 # public, or an expanded body names it, as viaReached names the private Reached
-# -- and the function is public, or the type holds an expanded body, which can
-# reach a private one through its receiver: WithInline.get reaches secret.
+# -- and the function is public, or the type or its module holds an expanded
+# body, which can reach a private one through a receiver: WithInline.get
+# reaches secret, and any of ex's expanded bodies could reach Plain.hidden.
 [[scenario.module_build_export.check]]
 name = "a-reachable-types-functions-are-exported"
 target = "symbols"
-contains = ["define ex.Reached.get comdat", "define ex.WithInline.secret comdat"]
+contains = ["define ex.Reached.get comdat", "define ex.WithInline.secret comdat", "define ex.Plain.hidden comdat"]
 
 # Internal: a private definition no expanded body names, whether the library
-# calls it or not, the child module's too; a private method of a type holding
-# no expanded body; and every function of a private type nothing expanded
-# names, public or not.
+# calls it or not, the child module's too; a private method of a type whose
+# module holds no expanded body; and every function of a private type nothing
+# expanded names, public or not.
 [[scenario.module_build_export.check]]
 name = "other-private-definitions-stay-internal"
 target = "symbols"
@@ -2125,7 +2246,7 @@ contains = [
   "define internal ex.privCalled comdat",
   "define internal ex.privUnreached comdat",
   "global internal ex.privGlobalUnreached comdat",
-  "define internal ex.Plain.hidden comdat",
+  "define internal ex.inner.Quiet.hidden comdat",
   "define internal ex.Hidden.get comdat",
   "define internal ex.inner.innerPriv comdat",
 ]
@@ -2396,23 +2517,38 @@ contains = [
   "define coll.map.base comdat nodeduplicate",
 ]
 
-# A private type a public one holds in a public field. The program calls the
-# private type's public method through that field, in its own code and in an
-# inline body it expands, so the type's include-file declaration carries the
-# method and the package's object exports it (DclIncluded), as it would a
-# public type's.
+# A public type may not hold a private type in a public field: code outside
+# the module would hold values of a type it cannot name and reach into them.
+# The package's own compile refuses it, before any include file is written.
 [scenario.module_include_field_reach]
+category = "reject"
+description = "A package's public type holding its private type in a public field, refused when the package is compiled"
+tags = ["nameres"]
+diagnostics = 1
+
+# A type's private members are its module's, so a package's inline body may
+# reach a public type's private field and private method, and a private type's
+# methods through that field. The program expands the body in its own object,
+# so the include file declares each method it calls, the private ones too, and
+# the package's object exports them: neither type holds an expanded body, but
+# the module does (modHoldsExpanded). The private type is in the include file
+# because the public one holds it (DclIncluded).
+[scenario.module_include_private_reach]
 category = "run"
-description = "A private type's public method reached only through a field of a public type: declared in the include file, exported by the package, and called by the program"
+description = "A package's inline body reaching its types' private field and private methods, expanded in a program: declared in the include file, exported by the package, and run"
 tags = ["genllvm", "runtime"]
 link = ["h/h.conebuild"]
 include = ["include/h.cone"]
 
-[[scenario.module_include_field_reach.check]]
-name = "h-exports-the-private-type's-method"
+[[scenario.module_include_private_reach.check]]
+name = "h-exports-the-private-methods-its-inline-body-calls"
 target = "symbols"
 object = "h"
-contains = ["define h.Inner.get comdat nodeduplicate"]
+contains = [
+  "define h.Inner.get comdat nodeduplicate",
+  "define h.Inner.twice comdat nodeduplicate",
+  "define h.Outer.tag comdat nodeduplicate",
+]
 
 # A location in code the program compiles from a package's include file names
 # the package's source file and line, not the include file's: the include file

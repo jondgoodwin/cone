@@ -1,0 +1,44 @@
+// What type check refuses of an actor, at the line the author wrote.
+//
+// - Its state is private to it: a field reached through the handle, and a
+//   method that is not 'pub', which is no message, are ErrorNotPublic. The
+//   handle carries the messages and nothing else.
+// - Every argument a message carries, and every argument its 'init' makes the
+//   state from, crosses to the thread the actor runs on, so must be Sendable,
+//   as a channel's element or a thread's start value must: refused at the
+//   parameter, saying what binds it to its thread. What may not leave its
+//   thread may still be the state's own (concurrency_actors_rcstate), and a
+//   handle crosses (the lines without annotations).
+
+mod concurrency_actor_typecheck;
+
+import actors;
+
+struct Log {pub n u64;}
+
+actor Keeper {
+  count u64;
+  log Rc[mut, Log];
+
+  fn init(self &new, from Rc[mut, Log]) {   //~ ErrorNotSendable "Actor Keeper's initializer takes from, a Rc[mut, Log], which is not Sendable"
+    *self = new Self(count: 0u64, log: from);
+  }
+
+  pub fn note(self, n u64) {count = count + n;}
+  pub fn share(self, l Rc[mut, Log]) {log = l;}   //~ ErrorNotSendable "Actor Keeper's message share takes l, a Rc[mut, Log], which is not Sendable: it is an owner whose permission, mut, is not race-safe"
+  pub fn raw(self, p *u64) {}                     //~ ErrorNotSendable "message raw takes p, a *u64, which is not Sendable: it is a raw pointer"
+  pub fn tell(self, other Keeper) {other.note(count);}
+  fn helper(self) {}
+}
+
+fn main() {
+  initAll();
+  {
+    imm k = new Keeper(new Rc[mut, Log](0u64));
+    k.note(1u64);
+    k.tell(k);
+    imm c = k.count;   //~ ErrorNotPublic "`count` is part of actor Keeper's private state"
+    k.helper();        //~ ErrorNotPublic "`helper` is private to actor Keeper: only its 'pub' methods are messages"
+  }
+  finalAll();
+}

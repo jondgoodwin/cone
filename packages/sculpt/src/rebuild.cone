@@ -29,11 +29,43 @@ fn assemble(m &PolyMesh, pos &List[Vec3], vSrc &List[u32], counts &List[u32], id
   mut problems = List[String].empty();
   mut out = PolyMesh.fromPolygons(pos.view(), counts.view(), idx.view(), &mut problems);
 
-  // Which given face each made face is, and where its corners begin in idx:
-  // faces are made in the order given, a refused one left out
+  mut given = List[u32].empty();
+  mut first = List[u32].empty();
+  madeFaces(&out, counts, idx, &mut given, &mut first);
+
+  mut c = 0usize;
+  while c < m.floats.len() {
+    imm domain = m.floats[c].domain;
+    imm isCrease = domain == EdgeDomain and m.floats[c].name.equals("crease");
+    imm vals = floatChannelVec3s(m, c);
+    imm res = carryChannel(&out, domain, &vals, isCrease, vSrc, cSrc, eSrc, fSrc, &given, &first);
+    out.floats.push(new Channel[f32](String.from(m.floats[c].name.view()), domain, vec3ToFloats(&res), m.floats[c].fill));
+    c = c + 1usize;
+  }
+  c = 0usize;
+  while c < m.vec2s.len() {
+    imm domain = m.vec2s[c].domain;
+    imm vals = vec2ChannelVec3s(m, c);
+    imm res = carryChannel(&out, domain, &vals, false, vSrc, cSrc, eSrc, fSrc, &given, &first);
+    out.vec2s.push(new Channel[Vec2](String.from(m.vec2s[c].name.view()), domain, vec3ToVec2s(&res), m.vec2s[c].fill));
+    c = c + 1usize;
+  }
+  c = 0usize;
+  while c < m.vec3s.len() {
+    imm domain = m.vec3s[c].domain;
+    imm vals = vec3ChannelVec3s(m, c);
+    imm res = carryChannel(&out, domain, &vals, false, vSrc, cSrc, eSrc, fSrc, &given, &first);
+    out.vec3s.push(new Channel[Vec3](String.from(m.vec3s[c].name.view()), domain, res, m.vec3s[c].fill));
+    c = c + 1usize;
+  }
+  out;
+}
+
+// Which given face each face of 'out' is, into 'given', and where its
+// corners begin in idx, into 'first': fromPolygons makes the faces in the
+// order given, a refused one left out
+fn madeFaces(out &PolyMesh, counts &List[u32], idx &List[u32], given &mut List[u32], first &mut List[u32]) {
   imm nf = out.fHalfedge.len();
-  mut given = List[u32].withCapacity(nf);
-  mut first = List[u32].withCapacity(nf);
   mut f = 0usize;
   mut g = 0usize;
   mut start = 0usize;
@@ -54,33 +86,6 @@ fn assemble(m &PolyMesh, pos &List[Vec3], vSrc &List[u32], counts &List[u32], id
     start = start + n;
     g = g + 1usize;
   }
-
-  mut c = 0usize;
-  while c < m.floats.len() {
-    imm domain = m.floats[c].domain;
-    imm isCrease = domain == EdgeDomain and m.floats[c].name.equals("crease");
-    imm vals = floatChannelVec3s(m, c);
-    imm res = carryChannel(&out, domain, &vals, isCrease, vSrc, cSrc, eSrc, fSrc, &given, &first);
-    out.floats.push(new Channel[f32](String.from(m.floats[c].name.view()), domain, vec3ToFloats(&res)));
-    c = c + 1usize;
-  }
-  c = 0usize;
-  while c < m.vec2s.len() {
-    imm domain = m.vec2s[c].domain;
-    imm vals = vec2ChannelVec3s(m, c);
-    imm res = carryChannel(&out, domain, &vals, false, vSrc, cSrc, eSrc, fSrc, &given, &first);
-    out.vec2s.push(new Channel[Vec2](String.from(m.vec2s[c].name.view()), domain, vec3ToVec2s(&res)));
-    c = c + 1usize;
-  }
-  c = 0usize;
-  while c < m.vec3s.len() {
-    imm domain = m.vec3s[c].domain;
-    imm vals = vec3ChannelVec3s(m, c);
-    imm res = carryChannel(&out, domain, &vals, false, vSrc, cSrc, eSrc, fSrc, &given, &first);
-    out.vec3s.push(new Channel[Vec3](String.from(m.vec3s[c].name.view()), domain, res));
-    c = c + 1usize;
-  }
-  out;
 }
 
 // One channel's values (as Vec3) for the elements of 'out', from the source

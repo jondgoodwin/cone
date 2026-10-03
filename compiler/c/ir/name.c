@@ -20,10 +20,12 @@ Name *tempName;
 Name *tempLocalName;
 Name *selfName;
 Name *staticLifeName;
+Name *unknownBrandName;
 Name *selfTypeName;
 Name *thisName;
 Name *cloneName;
 Name *dropName;
+Name *typeDropName;
 Name *finalName;
 Name *enumFinalName;
 Name *initName;
@@ -90,6 +92,11 @@ Name *atomicValueTraitName;
 Name *integerTraitName;
 Name *pointerTraitName;
 Name *sendableTraitName;
+Name *lockPermTraitName;
+Name *acquireMutMethodName;
+Name *releaseMutMethodName;
+Name *acquireReadMethodName;
+Name *releaseReadMethodName;
 
 // ---- Identifiers -----------------------------------------------------------
 //

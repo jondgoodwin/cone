@@ -212,6 +212,8 @@ void fnDclNameRes(NameResState *nstate, FnDclNode *fndclnode) {
             fndclnode->namesym ? &fndclnode->namesym->namestr : "This function");
         fndclnode->where = NULL;
     }
+    // A lifetime bound, '[T + 'a]', is on one of its own type parameters
+    lifeBoundsNameRes(fndclnode, owner);
     // A parameter's default value is expanded where the function is called
     // (fnSigNameRes)
     INode *svsigfn = nstate->sigfn;
@@ -351,8 +353,15 @@ void fnDclTypeCheck(TypeCheckState *pstate, FnDclNode *fnnode) {
     // worked only once the whole signature is in place, so such a call reads the
     // return type rather than the generic call it was written as. See
     // compiler/c/doc/phases/type-check.md, "Layout before members".
+    // A signature holds nothing by value, so a reference in it is not checked
+    // as inside whatever layout this function was demanded from: what it points
+    // at is laid out here, before the signature's lifetimes read it.
     structLayoutEnter();
+    uint32_t valuebase = structValueHold();
+    uint32_t target = structTargetSuspend();
     itypeTypeCheck(pstate, &fnnode->vtype);
+    structTargetResume(target);
+    structValueRelease(valuebase);
     int sigfailed = errors != errorsOnEntry;
     structLayoutExit();
 
@@ -405,16 +414,25 @@ void fnDclTypeCheck(TypeCheckState *pstate, FnDclNode *fnnode) {
     //
     // Rule 8: this declaration may have been reached by demand, from the middle
     // of some other function's body, so the walk context describes somewhere
-    // else. Saving and resetting both is what makes analyzing a declaration
-    // independent of where it was analyzed from. Scope 1 is the signature's,
-    // matching what fnDclNameRes sets, so the body's own block is scope 2.
+    // else. Saving and resetting all three is what makes analyzing a
+    // declaration independent of where it was analyzed from. Scope 1 is the
+    // signature's, matching what fnDclNameRes sets, so the body's own block is
+    // scope 2. The declaration whose initializer may extend a temporary is the
+    // other function's: left open, a borrow of a temporary here would make it a
+    // hidden local of that function's block (vardcl.c, varDclExtendTemp).
     FnDclNode *svFn = pstate->fn;
     uint16_t svScope = pstate->scope;
+    VarDclExtend *svExtend = pstate->extend;
     pstate->fn = fnnode;
     pstate->scope = 1;
+    pstate->extend = NULL;
+    LifeBrandSave svBrands;
+    lifeBrandFnBegin((FnSigNode *)fnnode->vtype, &svBrands);
     inodeTypeCheck(pstate, &fnnode->value, noCareType);
+    lifeBrandFnEnd(&svBrands);
     pstate->scope = svScope;
     pstate->fn = svFn;
+    pstate->extend = svExtend;
 
     // An inline body is generated in each caller as a block whose value is the
     // call's, its returns breaking out of it with that value. Every path ends in
@@ -449,9 +467,11 @@ void fnDclTypeCheck(TypeCheckState *pstate, FnDclNode *fnnode) {
     // A function the gate marked holds a borrow in a way only a walk following
     // each path can check, or has a variable whose state may differ by path,
     // whose drops only such a walk can decide: it is walked again, once
-    // blockFlow found no error, for either or both in one walk
-    if ((fstate.gate || fstate.dropgate) && errors == errorsOnEntry)
-        flowPathWalk(fnnode, fstate.gate != 0, fstate.dropgate);
+    // blockFlow found no error, for either or both in one walk. On a GPU
+    // target every function is walked for loans, whose checks there
+    // (flowloan.h, "GPU targets") no trigger of the gate stands for
+    if ((fstate.gate || fstate.dropgate || flowGpu) && errors == errorsOnEntry)
+        flowPathWalk(fnnode, fstate.gate != 0 || flowGpu, fstate.dropgate);
     if (timerFine)
         timerBegin(svTimer);
     flowGateCount(&fstate);

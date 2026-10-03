@@ -1,0 +1,69 @@
+// Lifetimes beside type parameters, and on an enum. 'Cursor['a, T]' declares
+// a lifetime and a type parameter in one bracket list: it is instanced per
+// type argument, never per lifetime, and its 'next' returns where its slice
+// points. 'Tok['a]' declares a lifetime its variants' fields name, and
+// 'valOf' returns, as the lifetime its parameter names, what a variant holds,
+// or a global.
+//
+// Verdict: accept; prints 7 and 9.
+// Basis: a struct or an enum declares its lifetimes in its bracket list, apart
+// from its type parameters; a lifetime is never instanced; a use names a
+// struct's lifetimes positionally.
+// Master b07a3adc: refused at parse (ErrorBadTok: a lifetime in a struct's
+// brackets).
+
+mod lifetime_band_struct_generic_and_enum;
+
+import stdio use *;
+
+struct R { pub n i64; }
+
+struct Cursor['a, T] {
+  pub items &[]'a T;
+  pub at usize;
+  pub fn next(self &mut) Option[&'a T] {
+    if at < items.len() {
+      imm r = &items[at];
+      at = at + 1usize;
+      return Some[&T][r];
+    }
+    None[&T][];
+  }
+}
+
+fn firstOf(items &[]R) Option[&R] {
+  mut c = new Cursor[R](items, 0usize);
+  c.next();
+}
+
+enum Tok['a] {
+  struct Num {
+    pub val &'a R;
+  }
+  End;
+}
+
+mut none R = new R(0);
+
+fn valOf(t &Tok['t]) &'t R {
+  match *t {
+    case imm w Tok.Num { w.val; }
+    case is Tok.End { &none; }
+  }
+}
+
+fn numOf(r &R) Tok {
+  Tok.Num[r];
+}
+
+fn main() {
+  imm a Array[R, 2] = [new R(7), new R(9)];
+  match firstOf(&[]a) {
+    case imm v Some { printInt(v.value.n); }
+    case None { printStr("none"); }
+  }
+  printStr(" ");
+  imm tok = numOf(&a[1usize]);
+  printInt(valOf(&tok).n);
+  printStr("\n");
+}

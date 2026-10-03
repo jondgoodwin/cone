@@ -6,7 +6,9 @@ a struct of another size, which only the data layout measures
 ([cast](../nodes/cast.md)); and an untyped integer literal too large for the
 `i32` default that nothing replaced, which only generation reaches after
 everything that could have typed it has run ([literals](../nodes/literals.md),
-`ErrorLitRange`). Every assumption in section 5 is a hard prerequisite,
+`ErrorLitRange`); and on a GPU target, a global holding a reference and a
+function calling itself, which only the module's globals and its calls show
+(section 7). Every assumption in section 5 is a hard prerequisite,
 and what guards them is uneven — the sites that meant *unreachable* report and
 exit, while the ordinary value asserts beside them are compiled out of the
 release build. Section 5 says which is which.
@@ -226,8 +228,10 @@ answering both is what keeps the object and the include file from disagreeing:
   (`DclIncluded`, which the include-file generator writes before any code is
   generated: an importer holds values of such a type through a field or a
   signature, whether or not it can name it) — where the function is public, or the type holds an
-  expanded body (`typeHoldsExpanded`), which can reach a private method
-  through a receiver that name resolution never binds, or the function is the
+  expanded body (`typeHoldsExpanded`) or its module holds one anywhere
+  (`modHoldsExpanded`), which can reach a private method through a receiver
+  that name resolution never binds, a type's private members being its
+  module's, or the function is the
   type's `final` or `clone` (`fnIsTypeLifecycle`), which an importer's object
   calls wherever it drops or copies a value of the type, naming neither
   (`module_init_link` drops a package's type whose `final` is private), or,
@@ -316,12 +320,24 @@ comment is that all allocas belong in the entry block so `PromoteMemoryToRegiste
 and SRoA can undo it.
 
 `genpgm` then optionally verifies, dumps `.preir`, runs LLVM's new pass manager
-through `LLVMRunPasses` — `function(mem2reg,reassociate,gvn,simplifycfg)`, and
-in a release build `cgscc(inline)` after it, with no target machine, so the
-inliner's costs are the target-independent ones — dumps `.ir`, and emits.
-**There is no `--release` flag** — release is the default and `--debug` turns it
-off, dropping inlining and the code generator's optimization and enabling
-DWARF.
+through `LLVMRunPasses`, dumps `.ir`, and emits. **A release build runs LLVM's
+standard pipeline, `default<O2>`**, handed the target machine, so that the
+inliner's, the vectorizers' and the unroller's costs are the target's: the
+`--cpu` and `--features` the machine was made with, `generic` by default (on
+x86-64, SSE2 and no more). That is the pipeline clang's `-O2` runs: SROA,
+instcombine, inlining, LICM, unrolling, dead global elimination (so an
+internal definition nothing reaches is gone from `.ir`), and the loop and SLP
+vectorizers. Measured against `default<O3>` (3 Oct 2026, LLVM 23), O3 ran no
+faster on any benchmark but one matrix product (9%), compiled 5 to 11% slower
+and made larger code. **No float is ever reordered**: generation marks no
+operation fast-math or contractable, so a vectorizer widens only what keeps
+each lane's operations in their written order (a loop scaling a slice, a
+matrix's columns), never a sum over a loop, and no multiply and add are fused,
+whatever the CPU. A `--debug` build runs only
+`function(mem2reg,reassociate,gvn,simplifycfg)`, with no target machine, and
+turns off the code generator's optimization and enables DWARF. A GPU target's
+pipeline is its own, at every level (section 7). **There is no `--release`
+flag** — release is the default and `--debug` turns it off.
 
 ## 3. Type lowering
 
@@ -391,7 +407,7 @@ is, so a struct holding one needs nothing more.
 Only a Cone **struct** is lowered (`StructTag` whose LLVM type is a struct). A
 slice, a virtual reference, a tuple or an array has no C counterpart and keeps
 Cone's convention — a slice's pointer and length arrive as two arguments, which
-is how conestd's `printStr(char *, size_t)` takes them. A struct the
+is how a C function's `(char *, size_t)` takes them. A struct the
 nullable-pointer optimization made a bare pointer is a pointer.
 
 The lowering is applied at the four places a function's values cross:
@@ -416,7 +432,10 @@ Three shapes, the first two chosen in `genlSetupTaggedTrait`:
 - **Nullable pointer.** Exactly two variants under `SameSize`, one with one
   field and one with two whose second is a pointer-like: **no struct is emitted
   at all**, and the value *is* the pointer. A null pointer is the empty variant.
-  Each enum decides this for its own set: an extension's variants are copies, so an
+  A slice or a virtual reference is two words, and the value is that pair: its
+  first word, the pointer, null is the empty variant, so the literal writes that
+  word and the variant test (`genlIsType`) and the drop read it, the second word
+  left alone. Each enum decides this for its own set: an extension's variants are copies, so an
   `Option`-shaped base keeps the layout whatever extends it, and the extension, with
   a third variant for which there is no pointer to be, is tagged. The same holds per
   instance: `Option[&i32]` is a bare pointer beside a tagged instance of an enum
@@ -531,6 +550,13 @@ What follows from that:
   wider header or a permission with state moves the value and the header with
   it. The optimizer folds the byte step and the region's field GEP into one
   constant offset: for `Rc` the same address the count has always had.
+- **A lock permission's lock is the header's `PermField`.** A borrow through
+  `Arc[Mutex, T]` calls the lock's acquiring method on it as its guard is made
+  (`genlLockAcquire`), and the guard's release calls the giving-back one first
+  (`genlRegionDealiasPart`), both reaching it from the value pointer as a region
+  method reaches the header ([references](../nodes/references.md), "Lock
+  permissions"). A guard's type lays its permission out as the lock
+  (`genlType`'s `PermTag` arm), so its header is the lock-managed one's.
 - **An owning virtual reference is the fat `{ptr, ptr}` value, and its concrete
   type is read from the vtable's last slot.** `genlRefPtr`, at the entry of
   `genlRegionDealias` and `genlRegionAlias`, takes word 0, the object, so every
@@ -564,8 +590,8 @@ struct or an enum calls its drop, which is the whole death, its owners' release
 included. A tuple finalizes each element that needs it, in order, each reached
 by its address (`StructGEP2`). A fixed-size array finalizes each element in
 element order, first element first, as a struct's fields die in field order,
-in a loop (`genlEachElem`), since the optimizer pipeline runs no loop pass that
-would undo an unrolling. A type for which `itypeNeedsFinal` is false generates
+in a loop (`genlEachElem`): the release pipeline unrolls a loop where that
+pays, while no pass rolls code written out back up into a loop. A type for which `itypeNeedsFinal` is false generates
 nothing. The drop call recasts the value's pointer to the drop's parameter
 type (`genlCallDrop`), since a variant laid out as a nullable pointer is reached
 through a pointer to its enum.
@@ -634,8 +660,9 @@ an array element finalizes none of the array, since which elements are left is
 not tracked: the ones that did not move leak rather than one being finalized
 twice. A slice's elements are not walked, for the same reason.
 `genlRegionAlias` calls `aliasRef` once per owner a `RefCountNode` adds — written
-out in line up to `RegionAliasUnroll` (16), a loop beyond, since the optimizer
-pipeline runs no loop pass and folds only calls written out. Core's methods are
+out in line up to `RegionAliasUnroll` (16), a loop beyond, since calls written
+out fold together in either pipeline, while a loop of them folds only where the
+release pipeline chooses to unroll it. Core's methods are
 `inline`, so each call is the method's body pasted at the site
 (`genlFnCallInternal`); after optimization `Rc`'s and `So`'s events are the
 instructions the compiler used to emit itself.
@@ -722,7 +749,7 @@ no allocator.
 **Every function holding a traced reference on its stack links a frame of them
 into one chain** while it runs, so a collector can find every live one:
 `mem.traceRoots(mode)` is a call to conestd's `cone_traceRoots`
-(`packages/conestd/roots.c`), which walks the chain from its head,
+(`packages/conestd/roots.cone`), which walks the chain from its head,
 `cone_gcframes`, and calls each root's record's trace. A **root** is a stack
 slot whose type holds a traced reference (`itypeHoldsTraced`), noted as it is
 made (`genlRootNote`, on `gen->roots`):
@@ -885,6 +912,18 @@ Concrete hazards, each of which has been gotten wrong here before:
   into the LLVM-type switch. An atomic one is taken before either, in
   `genlFnCall`, by `genlAtomicIntrinsic`, since its orderings are the call's
   arguments rather than its instance's.
+- **A shift is a compare and a select, never a bare LLVM shift.** Cone's `<<`
+  and `>>` are defined for every amount: the width or more gives 0, or the sign
+  for `>>` on a signed integer, the amount read unsigned so a negative one is
+  past the width too (`doc/reference/refexpr.html`, "Shift operators"). LLVM's
+  `shl`, `lshr` and `ashr` by the width or more are poison, so `genlShift`
+  compares a run-time amount with the width and uses the shift's result only
+  below it (a signed `>>` instead clamps its amount to width - 1), and writes no
+  compare for a constant amount. The optimizer removes the compare where it can
+  prove the amount below the width (`n & 63`, `core_genllvm_shift`). An LLVM
+  shift written for a Cone shift anywhere else brings the poison back; the
+  masked shifts, whose amount is masked first, are the one other place one is
+  written (`genlBitIntrinsic`).
 - **`genlRecast` picks by generated LLVM kinds, not Cone tags** — deliberately,
   because a reference is not always a plain pointer once fat pointers are in
   play.
@@ -940,6 +979,17 @@ block. An arm whose last statement is a return, break or continue contributes no
 fallthrough and no phi edge. `while` is not a generation concept: it arrives as
 a loop block containing `if not cond { break }`.
 
+**An arm whose condition is a constant of the build is decided at
+generation.** `genlIf` asks `intrinsicBuildConst` of each condition:
+`isDebugBuild()`, the provisional target-OS and `-D` constants beside it
+(TEMPORARY; its final design is open), or `!`, `and`, `or` of them. A false
+arm generates nothing, not even its test; a true one generates its body as the
+`else` would and ends the chain, the arms after it generating nothing. A call
+on an untaken side therefore never reaches the object, in either build, and an
+`extern` only that side names is declared and never referenced. Everything
+before generation still sees both sides ([intrinsic](../nodes/intrinsic.md),
+"Constants of the build drop the untaken side at generation").
+
 Short-circuit `and`/`or` are two blocks and a 2-way `i1` phi. `not` is
 `xor i1 %x, true`.
 
@@ -956,7 +1006,7 @@ type, which type check stored as the body block's `vtype`. This is how the regio
 checks the compiler inserts — an index against its count, a slice's range
 against its count, a region's `alloc` answering null — each branch to a block
 of their own that calls conestd's entry for the failure (`cone_panicIndex`,
-`cone_panicSlice`, `cone_panicAlloc`, in `packages/conestd/panic.c`), handing
+`cone_panicSlice`, `cone_panicAlloc`, in `packages/conestd/panic.cone`), handing
 it the values compared (each a usize), the source file's name and the line,
 and ends in `unreachable`. The entries are declared `noreturn`, `cold` and
 `nounwind`, so the check costs the hot path a compare and a branch LLVM
@@ -990,14 +1040,15 @@ each in a `TempNode` ([Flow](flow.md), "Temporaries"). Generating one
 (`genlTerm`, or `genlAddr` where its field or element is wanted) generates its
 value, stores it into an alloca of its own (`genlTempKeep`) and pushes that slot
 on `GenState.temps`, a stack in evaluation order; a `kept` one is generated as
-its value alone. The end of each part that makes temporaries finalizes those
+its value alone, or, where its address is wanted, stored in its slot and never
+finalized. The end of each part that makes temporaries finalizes those
 it pushed, newest first, and pops them (`genlTempsEnd`), each as a local dies
 (`genlFinalizeAt`), or hollow where flow noted a value moved out through it
 (`genlTempRelease`, `genlMovedPath` walking to the node instead of a variable):
 
 | Part | Where it ends |
 | --- | --- |
-| a statement | `genlBlock`, after the statement; for a `blockret`, and an inlined body's one `return`, after its value and before the block's `dealias` |
+| a statement | `genlBlock`, after the statement; for a `blockret`, and an inlined body's one `return`, after its value and before the block's `dealias`. In a block flagged `FlagKeepTemps`, an operator's rewrite ([Flow](flow.md), "Temporaries"), after its last statement only |
 | an `if` or `elif` condition, and so a `while`'s | `genlIf`, once the condition is computed, before the branch |
 | the right operand of `and` or `or` | `genlLogic`, before the branch to the phi |
 | an array's repeated value generated in a loop | `genlArrayRun`, each time round, after the element's store |
@@ -1020,7 +1071,7 @@ jump leaves: a release (`dealiasRef`'s test) splits the block.
 
 `--llvmir` writes **two** files: `.preir` before the pass manager and `.ir`
 after. `--ir` is not an LLVM option at all — it dumps the Cone IR/AST.
-`--asm` adds a `.wat` or `.asm`. `--verify` runs `LLVMVerifyModule` and is off
+`--asm` adds a `.wat`, `.spvasm` or `.asm`. `--verify` runs `LLVMVerifyModule` and is off
 by default. `--debug` emits DWARF and drops optimization — it is the only
 switch here, with release as the default. Debug info covers only files,
 subprograms and each instruction's line and column, and the file name is hardcoded. A subprogram is attached only to a
@@ -1056,6 +1107,77 @@ link: the scenario instantiates a generic function and a generic type in the
 package and in the program, at a type argument both use and at one only the
 program uses, and tests in the package a virtual reference the program built.
 
+**A SPIR-V triple emits a SPIR-V module, `.spv`, and only scalar code
+survives it.** `--triple=spirv64-unknown-unknown` is SPIR-V's OpenCL form
+(physical addressing, the `Kernel` capability) and
+`--triple=spirv1.6-unknown-vulkan1.3` its Vulkan form (logical addressing,
+`Shader`). `genlCreateMachine` initializes every target the LLVM build holds;
+`genSetup` marks a triple starting `spirv` a GPU target (`ConeOptions.gpu`),
+which flow reads too (`flowGpu`). Functions over numbers and structs, with
+calls, branches, loops, references to locals, to parts of them and to module
+globals, structs holding references, and string literals, come out at every
+optimization level as a module SPIR-V's validator accepts in its universal
+environment.
+
+**A GPU types each pointer by the memory it points into**, its kind: SPIR-V's
+storage class, LLVM's address space. Every Cone reference is address space 0,
+while the data layouts put a global in another (`G1`, `CrossWorkgroup`, in the
+OpenCL form; `G10`, `Private`, in the Vulkan one). The kind is not written in
+Cone, nor carried in a reference's type; it comes from the origin, the way
+HLSL's compilers settle it:
+
+- **At the origin**, a global's address, a string literal's or a constant
+  array's, is cast to address space 0 where it is taken (`genlFlatAddr`), so
+  the IR is well typed whatever it is handed to.
+- **Every call is inlined.** `genlGpuCalls` marks every function this object
+  defines `alwaysinline`, and the GPU pipeline runs the always-inliner at every
+  optimization level, `--debug` too; an internal function is then gone. Once
+  inlined, each borrow has one origin, and one function used with a local and
+  a global is in effect a copy per kind, with no instancing in Cone.
+- **Structs and arrays break into separate values** (`sroa`), so a struct
+  holding a reference dissolves into locals: logical addressing keeps no
+  pointer in memory.
+- **LLVM's address-space inference** (`infer-address-spaces`) then gives each
+  use its origin's space back. It rewrites only casts into the target's flat
+  space, which for the OpenCL form is 4, `Generic`; `genlLLVMOptions` names 0
+  the flat space for both forms (`-assume-default-is-flat-addrspace`).
+
+What inference cannot settle LLVM does not report: a choice of pointer becomes
+an invalid `select` or a `Generic` pointer, and only the validator sees it. So
+what would leave a pointer unsettled is refused before generation, in Cone's
+terms: a reference chosen at run time (`ErrorGpuRefChoice`) and an array
+holding references indexed at run time (`ErrorGpuRefIndexed`) by the loan walk
+([Flow Analysis](flow.md), "GPU targets"); a global holding a reference
+(`ErrorGpuRefGlobal`, `genlGloVar`) and a function calling itself, which no
+inliner removes (`ErrorGpuRecursion`, `genlGpuCalls`), here.
+
+`genlLLVMOptions` also turns machine CSE off on a GPU target: LLVM 23's SPIR-V
+backend lets it hoist a computation a loop header's two successors share into
+the header, after the `OpLoopMerge` already placed there, which must come just
+before the branch, so the release build of such a loop was a module the
+validator refused.
+
+What does not work yet:
+
+- A failed check calls conestd, which no GPU has; only `--wasm` traps instead.
+  So indexing an array or a slice, and allocating, make a module the Vulkan
+  validator refuses: the call passes the source file's name, a `Private`
+  global, where conestd's signature has a `Function` pointer. An imported
+  package's functions, `stdio`'s say, are left as imports, and are not
+  inlined.
+- The Vulkan form crashes LLVM's backend in its own passes on what GPU code
+  will not hold: a whole package such as `geomath` compiled for it stops in
+  `SPIRV split region exit blocks` on a function building a `List`; and
+  the OpenCL form refuses a runtime array (`LLVM ERROR`). A second emission
+  of the same module can crash it, so `--asm` crashes `conec` on a module
+  with a struct holding a reference, in either form.
+- Nothing marks an entry point or its execution model, places a pointer in a
+  buffer's storage class, or reads a built-in such as the global invocation
+  id. Without an entry point the module is a library, carrying the `Linkage`
+  capability, which Vulkan's environment refuses; and without one, a compile
+  that is no library keeps no function, since every one is internal and
+  inlined into nothing.
+
 Also absent: closures with an environment — an anonymous `fn` is lifted to
 module scope and a `&fn` value is a bare function pointer with no capture
 struct. No exception handling or unwinding. No debug info for types or
@@ -1090,8 +1212,9 @@ variables.
 | --- | --- | --- |
 | `conec.c` | `main` | calls `genSetup` **before** parsing, for target pointer size |
 | `genllvm/genllvm.c` | `genSetup`, `genClose` | target machine, data layout, context, `%void` |
-| | `genlLLVMOptions` | the LLVM options `CONE_LLVM_OPTIONS` names, parsed before the context exists |
-| | `genpgm` | generate, verify, dump, optimize, emit; nothing past generation once it reported an error |
+| | `genlLLVMOptions` | the LLVM options `CONE_LLVM_OPTIONS` names, and a GPU target's own two, parsed before the context exists |
+| | `genpgm` | generate, verify, dump, optimize (release: LLVM's `default<O2>` for the target machine; a GPU target's pipeline inlines, breaks up aggregates and infers address spaces at every level), emit; nothing past generation once it reported an error |
+| | `genlGpuCalls`, `genlCallWalk`, `genlRecursion` | on a GPU target, every defined function marked `alwaysinline`, and a cycle of calls refused (section 7) |
 | | `genlProgram` | create the module with the target's triple and data layout, the two-pass symbols-then-implementations walk, then the stitched pair |
 | | `genlStitchFn`, `genlStitch` | the program's stitched init and final: declared on the first call to `initAll()` or `finalAll()`, built last, every module's `init` in the module order and every finalizer in the reverse |
 | | `genlGlobalSyms`, `genlGlobalImpl` | declare a node's symbol; emit its body |
@@ -1120,11 +1243,14 @@ variables.
 | `genllvm/genlstmt.c` | `genlBlock` | block creation, phi state, terminator suppression; each statement's temporaries finalized at its end |
 | | `genlBreak`, `genlReturn` | phi edges, temporaries and dealias; inlined-return-as-break |
 | `genllvm/genlexpr.c` | `genlExpr`, `genlAddr`, `genlStore` | the value / address / store trio — section 4 |
+| | `genlFlatAddr`, `genlVarSym` | a global's address as a reference holds it: cast to the flat address space on a GPU target (section 7) |
 | | `genlTerm`, `genlIsBirth`, `genlAddrThroughRef`, `genlExprForLocal` | an expression's value, and whether it is a birth to root (section 3, "Roots") |
 | | `genlStoreBarrier` | after a store through a reference or pointer, the barrier on what was stored (section 3, "The write barrier") |
 | | `genlAddrType` | the Cone type of what `genlAddr`'s address points at |
 | | `genlFnCallInternal` | indirect calls, virtual dispatch, generator-level inlining, the intrinsic switch |
 | | `genlDeclaredIntrinsic` | the LLVM implementation of each intrinsic declared in core, by kind and Cone type |
+| | `genlBitIntrinsic` | an integer's bit intrinsics and the integer methods built from them: counts, rotates, masked shifts |
+| | `genlShift` | `<<` and `>>` on an integer, defined past the width: a compare and a select, none for a constant amount |
 | | `genlAtomicIntrinsic` | an atomic intrinsic, reached from `genlFnCall` with the call's constant orderings |
 | | `genlConvert`, `genlRecast`, `genlIsType` | the three cast forms |
 | | `genlArrayIndex`, `genlBoundsCheck` | multi-dimensional GEP and its checks |
@@ -1143,7 +1269,7 @@ variables.
 | | `genlTypeRecord`, `genlTypeRecordOf`, `genlTypeRecFn`, `genlTypeRecNothing` | a type's record, once per object: its size, alignment, finalizer function, trace function and flags; what an `alloc` that asks is handed, `mem.typeRecord`, and a root map's entries |
 | | `genlTraceAt`, `genlTraceWalk`, `genlTraceRef`, `genlTraceVariants` | a value's traced references, each handed to its region's `mark`: a record's trace, and `mem.trace` |
 | | `genlBarrierAt`, `genlHoldsBarriered` | the write barrier: the same walk over a value just stored, each reference into a region with a `writeBarrier` handed to it |
-| `packages/conestd/roots.c` | `cone_gcframes`, `cone_traceRoots` | the head of the chain of frames, and its walk, which `mem.traceRoots` calls |
+| `packages/conestd/roots.cone` | `cone_gcframes`, `cone_traceRoots` | the head of the chain of frames, and its walk, which `mem.traceRoots` calls |
 | `ir/types/reference.h` | `enum ManagedRefFields` | `RegionField`, `PermField`, `ValueField` |
 | `ir/name.c` | `nameSymbol`, `nameType`, `nameVtable`, `nameVtableImpl`, `nameVtableList` | spelling a symbol from a node's owner chain and facts, and a type argument within it — the rules are in [Names and Namespaces](../../../../doc/design/names-and-namespaces.md), "Symbols" |
 | `ir/dclinfo.c` | `dclInfoJoin` | writes the declaration facts where a declaration joins its namespace |

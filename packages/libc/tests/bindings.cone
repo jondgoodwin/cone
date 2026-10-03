@@ -12,6 +12,8 @@
 //   good read and set after reading a stream opened for writing; remove
 //   deletes it, so a second fopen for reading fails;
 // - time counts seconds since 1970, and stores them where it is asked to;
+//   timespec_get answers TIME_UTC with the same seconds and nanoseconds
+//   below a second;
 // - getenv answers null for a variable no one sets; system returns the
 //   command's exit status;
 // - strlen, strcmp, memcpy and memset, and a string literal passed as a C
@@ -37,7 +39,7 @@ fn show(label &[]u8, n i64) {
   printStr("\n");
 }
 
-fn isNull(p *u8) i64 {if p == 0usize as *u8 {1i64;} else {0i64;};}
+fn isNull(p *u8) i64 {if p == null {1i64;} else {0i64;};}
 
 fn memory() {
   // calloc: eight zeroed bytes
@@ -123,7 +125,16 @@ fn clock() {
   imm now = time(&mut stored as *i64);
   show("time-after-2026", if now >= 1767225600i64 {1i64;} else {0i64;});
   show("time-stored", if stored == now {1i64;} else {0i64;});
-  show("time-null", if time(0usize as *i64) >= now {1i64;} else {0i64;});
+  show("time-null", if time(null) >= now {1i64;} else {0i64;});
+  // timespec_get: TIME_UTC answered, its seconds time()'s, its nanoseconds
+  // below a second
+  mut ts = new Timespec(0i64, 0i32);
+  imm before = time(null);
+  imm base = timespec_get(&mut ts as *Timespec, TIME_UTC);
+  imm after = time(null);
+  show("timespec_get-base", i64.from(base));
+  show("timespec_get-seconds", if ts.tv_sec >= before and ts.tv_sec <= after {1i64;} else {0i64;});
+  show("timespec_get-nanoseconds", if ts.tv_nsec >= 0i32 and ts.tv_nsec < 1000000000i32 {1i64;} else {0i64;});
 }
 
 fn process() {

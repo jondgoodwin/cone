@@ -4,15 +4,26 @@
 //
 // - Profile, a 2-D outline: a polyline, open or closed, with its generators:
 //   a regular polygon, a circle, a rectangle, a rounded rectangle, the convex
-//   hull of points, and a polyline sampled from a 2-D Bezier curve.
+//   hull of points, and a polyline sampled from a 2-D Bezier curve; and the
+//   functions behind the last two, 'convexHull' and 'sampleCurve' (any of
+//   geomath's Bezier curves, 2-D or 3-D, as a List of points).
 // - Path, a 3-D polyline sampled from Bezier curves or given as points, and
 //   the frames along it: rotation-minimizing frames, by the double-reflection
-//   method.
+//   method; 'curveFrames', the same as sdf's CurveFrames, which with
+//   'distances' are what an sdf.PathCurve views.
 // - Profile to solid: 'extrude' (along a direction), 'lathe' (revolved about
 //   an axis) and 'sweep' (along a path, with twist and taper; 'sweepScaled'
 //   with the scale any function of arc length), each making a
 //   mesh.PolyMesh of quads, with a corner "uv" channel and the vertex
 //   channels "along" and "around" (see below).
+// - Lofts and bridges: 'loft' (a surface through profiles placed in given
+//   frames) and 'loftAlong' (placed along a path, following it), the
+//   profiles of any counts and shapes put on common columns and started so
+//   the band does not twist, joined linearly or by a Catmull-Rom spline, with
+//   rings between and optional caps, writing "uv", "along" and "around" as
+//   the other generators do; 'bridgeLoops' (a band of faces joining boundary
+//   loops of a mesh in pairs, as Blender's Bridge Edge Loops, with cuts and a
+//   smoothness that leaves each loop along its surface) and 'boundaryLoop'.
 // - Deformers, which move a PolyMesh's vertices and leave its topology and
 //   channels as they were: 'bend', 'twist' and 'taper' (Barr's global
 //   deformations, as Blender's Simple Deform modifier offers them),
@@ -36,6 +47,22 @@
 //   cluster kept as its lowest-numbered vertex, as Blender's Merge by
 //   Distance and Weld modifier), each carrying every channel, a merged
 //   edge's "crease" the greatest of its edges'.
+// - Join: 'join' (separately made meshes as one PolyMesh, part after part,
+//   nothing welded, as Blender's Join; 'joinPlaced' places each part first),
+//   carrying the union of the parts' channels, matched by name and domain,
+//   each part that lacked one filled with the channel's own fill value; the
+//   same name with another type or another domain is refused and reported,
+//   not converted.
+// - Booleans: 'booleanUnion', 'booleanDifference' and 'booleanIntersection'
+//   (and 'boolean' and 'booleanWith', which also creases the curve where the
+//   surfaces meet) of two closed, manifold meshes, as Blender's Boolean
+//   modifier, decided exactly in the manner of the Manifold library: every
+//   side, crossing and order an exact sign, ties broken by a symbolic
+//   perturbation (coplanar faces of a union overlap, a flush cutter cuts
+//   through), the result closed and manifold and the same bits on every
+//   machine, only the new vertices rounded, once; channels as 'join' carries
+//   them, a new vertex's blended along its edge and a new corner's across its
+//   triangle. 'orient2dSign' and 'orient3dSign' are the exact predicates.
 // - Face operators on a selection (a list of face numbers): 'extrudeFaces'
 //   (each connected region moved along its mean normal, walls of quads on
 //   its rim, as Blender's Extrude Region; 'extrudeFacesAlong' by a given
@@ -57,12 +84,36 @@
 //   pass-band), a crease or the boundary smoothed only along itself and a
 //   corner held, as subdivision holds them; 'smoothWith' and
 //   'smoothTaubinWith' pin the boundary or weigh each vertex by a channel.
+// - Fewer faces: 'decimate' and 'decimateWith' (edges collapsed, the
+//   cheapest first by quadric error metrics, to a ratio or a count of
+//   triangles or an error limit, each collapse refused if it would turn a
+//   triangle over or break the manifold; boundaries, creases and uv seams
+//   kept by penalty planes and seam rules; optional symmetry about an axis
+//   plane and a weight channel, as Blender's Decimate modifier in Collapse
+//   mode), and 'dissolvePlanar' (neighbouring faces within an angle merged
+//   into n-gons and straight runs of vertices dropped, as its Planar mode
+//   and Limited Dissolve).
 // - Subdivision: 'subdivide', Catmull-Clark, with boundary rules, semi-sharp
-//   creases from a "crease" channel, face-varying uvs that keep their seams,
+//   creases from an edge "crease" and a vertex "crease_vert" channel (as
+//   Blender names them), face-varying uvs that keep their seams,
 //   and every other channel carried; 'subdivisionLevels', a cage's levels 0
 //   to n, a level-of-detail chain. OpenSubdiv keeps subdivision apart from
 //   the mesh it refines, and so does this package: a PolyMesh in, a new one
 //   out.
+// - Fractal refinement of a 2-D outline: 'fractalRefine', each edge split
+//   level by level, its split point displaced inside a shrinking
+//   quadrilateral (midpoint displacement in Red Blob's noisy-edge form, so
+//   the pieces of an edge never cross), every random number a hash of (seed,
+//   edge, level, index); the dials in 'Fractal' (roughness, amplitude, a
+//   heavy tail, a cascade, a heterogeneity field); 'fractalRefineWithin',
+//   only the points whose pieces reach a window, the same bits, for detail
+//   made on demand.
+// - Ribs as a vertex channel, for displaceAlongNormal, read from "along" and
+//   "around": 'ribField', a phase field (a warp, an envelope that fades ribs
+//   in patches, each rib its own height or absent, pairs of phase vortices
+//   that fork a rib), every term off at its default; and 'marginRing', a ring
+//   of cells at the growing rim running an oscillating reaction-diffusion,
+//   one pulse a rib (Meinhardt's shells).
 //
 // Its conventions are geomath's and mesh's, which are the industry's:
 // right-handed space, y up, f32, angles in radians, a positive angle turning
@@ -82,9 +133,9 @@
 // 'triangulate' splits a vertex whose corners' uvs differ, so a texture wraps
 // once without smearing back across the last face.
 //
-// Generator parameters: extrude, sweep, sweepScaled and lathe also record
-// each vertex's place in the generator as two f32 vertex channels, as
-// Blender's Spline Parameter kept by Capture Attribute: "along", how far the
+// Generator parameters: extrude, sweep, sweepScaled, lathe and the lofts
+// also record each vertex's place in the generator as two f32 vertex
+// channels, as Blender's Spline Parameter kept by Capture Attribute: "along", how far the
 // profile had travelled (an extrusion's or a sweep's fraction of length, a
 // lathe's fraction of its angle), and "around", the fraction of the
 // profile's length, each 0 to 1. Every later operator carries them as it
@@ -103,7 +154,11 @@
 // - lattice: Sederberg and Parry, "Free-form deformation of solid geometric
 //   models", SIGGRAPH 1986; the B-spline basis by Cox-de Boor (Piegl and
 //   Tiller, The NURBS Book, A2.2);
-// - convex hull: geomath's, Andrew's monotone chain;
+// - convex hull: Andrew's monotone chain;
+// - the loft's spline: Catmull and Rom 1974 at uneven knots, evaluated by
+//   Barry and Goldman's pyramid ("A recursive evaluation algorithm for a
+//   class of Catmull-Rom splines", SIGGRAPH 1988); a bridge's curve is the
+//   cubic Hermite;
 // - subdivision: Catmull and Clark 1978; DeRose, Kass and Truong 1998;
 //   OpenSubdiv's documented rules (see subdivide.cone);
 // - smoothing: Taubin, "A signal processing approach to fair surface
@@ -111,19 +166,45 @@
 // - weld's spatial hash: Teschner et al., "Optimized spatial hashing for
 //   collision detection of deformable objects", 2003, its cells as wide as
 //   the distance, the clusters by union-find, so the result does not depend
-//   on the order pairs are found in.
+//   on the order pairs are found in;
+// - decimation: Garland and Heckbert, "Surface simplification using quadric
+//   error metrics", SIGGRAPH 1997, with its boundary penalty planes; the
+//   manifold test is the link condition (Dey, Edelsbrunner, Guha and
+//   Nekhayev, "Topology preserving edge contraction", 1999);
+// - booleans: the Manifold library's design (Lalish; symbolic perturbation,
+//   manifold output from manifold input), its code not used; exact
+//   arithmetic and the orientation predicates by Shewchuk, "Adaptive
+//   precision floating-point arithmetic and fast robust geometric
+//   predicates", 1997; the perturbation in the manner of Edelsbrunner and
+//   Mucke's simulation of simplicity (1990); holes bridged as in Eberly's
+//   "Triangulation by ear clipping".
 //
 // Its files are one module, and only this one, the root, imports:
 //
 //   helpers.cone    small vector and list helpers the others use
-//   profile.cone    Profile, and its uvs
-//   path.cone       Frame and Path, and rotation-minimizing frames
+//   profile.cone    Profile, and its uvs; sampleCurve and convexHull
+//   path.cone       Frame and Path, rotation-minimizing frames, and the
+//                   frames as sdf's CurveFrames
 //   solid.cone      extrude, sweep and lathe, and their "along" and "around"
+//   loft.cone       loft, loftAlong, and the correspondence they and bridges
+//                   share (orientation, start, common columns, the spline)
+//   bridge.cone     bridgeLoops, boundaryLoop
 //   deform.cone     bend, twist, taper, curveDeform and displaceAlongNormal
 //   lattice.cone    Lattice, latticeDeform, latticeWeights and the three bases
 //   copies.cone     mirror, mirrorWith, arrayLinear, arrayRadial, arrayAlongPath
 //   weld.cone       weld, and the spatial hash that finds its clusters
+//   join.cone       join, joinPlaced, and the union of the parts' channels
 //   rebuild.cone    a mesh rebuilt from another's elements, every channel carried
+//   boolean.cone    booleanUnion, booleanDifference, booleanIntersection,
+//                   boolean, booleanWith: the crossings, inside and outside,
+//                   the pieces, merging and cleaning, the result's channels
+//   exact.cone      expansions, exact orientations, the symbolic perturbation,
+//                   rounding a rational once to f32
+//   earclip.cone    exact ear clipping, point in polygon, segments meeting
+//   bvh.cone        a tree of boxes over triangles, for the crossings
+//   decimate.cone   decimate, decimateWith, decimateTarget, triangleCount;
+//                   the quadrics, the collapse rules and the heap
+//   dissolve.cone   dissolvePlanar
 //   regions.cone    selected faces as regions, their rims and sectors, the
 //                   move-and-wall rebuild extrude and inset share, and the
 //                   rim's uv strip
@@ -134,6 +215,9 @@
 //                   taubinMu, and the rule each vertex smooths by
 //   subdivide.cone  subdivide, subdivideWith, subdivisionLevels, and the rules
 //   refine.cone     one level of subdivision's refinement
+//   fractal.cone    Fractal, fractalRefine, fractalRefineWithin
+//   ribs.cone       RibField, ribField and its terms; MarginRing, marginRing,
+//                   marginPeriod
 
 mod sculpt;
 
@@ -141,3 +225,5 @@ import libc;
 import geomath use *;
 import collections use *;
 import mesh use *;
+import noise;
+import sdf;

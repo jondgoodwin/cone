@@ -1,0 +1,128 @@
+// References on a SPIR-V target: a GPU types each pointer by the memory it
+// points into, a local's or a global's, which LLVM infers from where the
+// reference came from once every call is inlined. One function is used with
+// a local, a global and a part of a local; a struct holding a reference is
+// filled once from a local and once from a global; and the shapes the GPU
+// rules accept (a reference reassigned before it is used again, one made
+// afresh on each pass of a loop, a choice of index or of value, two
+// references in one struct, a call handing back one of two arguments) compile.
+// Indexing is left out: its bounds check calls the runtime, which no GPU has.
+
+mod module_target_spirv_kinds;
+
+mut total f32 = 1.0;
+
+struct Span['a] {
+  pub at &'a mut f32;
+  pub scale f32;
+}
+
+struct Pair['a, 'b] {
+  pub p &'a mut f32;
+  pub q &'b mut f32;
+}
+
+struct V3 {
+  pub x f32; pub y f32; pub z f32;
+  fn scaleBy(self &mut, k f32) {
+    self.x = self.x * k;
+    self.y = self.y * k;
+    self.z = self.z * k;
+  }
+}
+
+fn bump(p &mut f32, k f32) {
+  *p = *p + k;
+}
+
+fn twice(p &mut f32, k f32) {
+  bump(p, k);
+  bump(p, k);
+}
+
+fn apply(s &Span, k f32) {
+  *s.at = *s.at * s.scale + k;
+}
+
+fn swapPair(pr &Pair) {
+  imm t = *pr.p;
+  *pr.p = *pr.q;
+  *pr.q = t;
+}
+
+fn first(a &f32, b &f32) &f32 {
+  a;
+}
+
+pub fn fromLocal(x f32) f32 {
+  mut a = x;
+  twice(&mut a, 1.0);
+  a;
+}
+
+pub fn fromGlobal(x f32) f32 {
+  twice(&mut total, x);
+  total;
+}
+
+pub fn fromField(x f32) f32 {
+  mut v = new V3(x, x, x);
+  bump(&mut v.y, 2.0);
+  v.y;
+}
+
+pub fn spans(x f32) f32 {
+  mut a = x;
+  imm s1 = new Span(&mut a, 2.0);
+  apply(&s1, 1.0);
+  imm s2 = new Span(&mut total, 3.0);
+  apply(&s2, 1.0);
+  a + total;
+}
+
+pub fn pairs(x f32) f32 {
+  mut a = x;
+  imm pr = new Pair(&mut a, &mut total);
+  swapPair(&pr);
+  a + total;
+}
+
+pub fn firsts(x f32) f32 {
+  imm a = x;
+  *first(&a, &total) + *first(&total, &a);
+}
+
+pub fn chooseValue(c Bool, x f32) f32 {
+  imm a = x;
+  if c {a;} else {total;};
+}
+
+pub fn reassigned(x f32) f32 {
+  mut a = x;
+  mut r = &mut a;
+  *r = 1.0;
+  r = &mut total;
+  *r = 2.0;
+  a + total;
+}
+
+pub fn freshEachPass(x f32, n u32) f32 {
+  mut acc = x;
+  mut i = 0u32;
+  while i < n {
+    imm r = &mut acc;
+    *r = *r + 1.0;
+    i = i + 1;
+  }
+  acc;
+}
+
+pub fn methods(x f32, n u32) f32 {
+  mut v = new V3(x, 1.0, 2.0);
+  mut i = 0u32;
+  while i < n {
+    v.scaleBy(0.5);
+    i = i + 1;
+  }
+  v.x + v.y + v.z;
+}

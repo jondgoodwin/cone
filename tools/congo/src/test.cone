@@ -15,7 +15,7 @@
 // value (build.cone), which is what a test reports.
 
 // How long a test program may run before it fails: 60 seconds
-const testTimeoutMs = 60000u64;
+const testTimeoutSeconds = 60i64;
 
 // What 'congo test' counts, for a package and for them all
 struct Tally {
@@ -274,7 +274,7 @@ fn runTest(s &mut Session, file &[]u8, bless Bool) Verdict {
   mut code = 0u32;
   mut stdout = String.empty();
   mut stderr = String.empty();
-  match process.run(args.view(), new process.Options(dir: dest.view(), timeoutMs: testTimeoutMs)) {
+  match process.run(args.view(), new process.Options(dir: dest.view(), timeout: time.Duration.fromSeconds(testTimeoutSeconds))) {
     case imm ok Ok {
       if ok.value.timedOut { return new Verdict(false, String.from("timed out after 60 seconds")); }
       code = ok.value.exitCode;
@@ -389,7 +389,8 @@ fn report(line &[]u8, detail &[]u8) {
 }
 
 // Build the package, then run each test and build each example
-fn testPackage(repo &[]u8, pkg Package, mode &[]u8, filter &[]u8, hasFilter Bool, bless Bool) Tally {
+fn testPackage(repo &[]u8, pkg Package, mode &[]u8, filter &[]u8, hasFilter Bool, bless Bool,
+    defines &List[String]) Tally {
   mut tally = emptyTally();
   imm label = pkg.label();
   imm testing = cat(label.view(), " (", pkg.root.view(), ")");
@@ -399,7 +400,7 @@ fn testPackage(repo &[]u8, pkg Package, mode &[]u8, filter &[]u8, hasFilter Bool
   // else a registry holds of that name
   imm folders = registryFolders(repo);
   imm out = buildFolder(&pkg, mode);
-  mut s = newSession(repo, readRegistry(folders), out.view(), mode);
+  mut s = newSession(repo, readRegistry(folders), out.view(), mode, defines);
   imm name = pkg.name.copy();
   imm isLibrary = pkg.output.equals("library");
   imm testsFolder = joined(pkg.root.view(), "tests");
@@ -507,7 +508,7 @@ fn packageManifests(folder &[]u8) List[String] {
 
 // Test the current package; or, in a folder of packages that is not a
 // package itself (a registry folder such as packages/), each package in it
-fn cmdTest(filter &[]u8, hasFilter Bool, release Bool, bless Bool) i32 {
+fn cmdTest(filter &[]u8, hasFilter Bool, release Bool, bless Bool, defines &List[String]) i32 {
   mut mode &[]u8 = "debug";
   if release { mode = "release"; }
   imm repo = findRepo();
@@ -529,7 +530,7 @@ fn cmdTest(filter &[]u8, hasFilter Bool, release Bool, bless Bool) i32 {
       case mut ok Ok { pkg <=> ok.value; }
       case imm e Error { fail(e.value.copy()); }
     }
-    imm tally = testPackage(repo.view(), pkg, mode, filter, hasFilter, bless);
+    imm tally = testPackage(repo.view(), pkg, mode, filter, hasFilter, bless, defines);
     total.add(&tally);
     i = i + 1usize;
   }

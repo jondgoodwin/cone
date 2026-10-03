@@ -1,0 +1,573 @@
+// The acceptance test of the cancellation contract: exactly one answer for
+// every operation, every time, over a million operations each racing its
+// completion, its cancel and its deadline across threads.
+//
+// Each round submits 50 operations and gives each a moment in a 100 us
+// window just ahead; its three racers are aimed at that moment, each within
+// 8 us either side of it:
+//
+// - its completion, from another thread: a peer thread sends its socket
+//   one byte (a receive), or a lane's thread finishes the job (a job);
+// - its cancel, from another thread, for half of them: a canceller thread
+//   holding the operation's Request cancels it; and in a quarter of the
+//   rounds the canceller also cancels the round's whole group, at a moment
+//   anywhere in the window;
+// - its deadline, for three quarters of them.
+//
+// Half the rounds the loop is drained without waiting (poll(now), as a
+// frame loop drains it), so a deadline is seen the moment it passes; half
+// it waits in the kernel. Every round ends with every thread done with it,
+// so the next starts clean.
+//
+// 10,000 rounds of receives on 50 TCP connections (500,000 operations),
+// then 10,000 rounds of jobs on a four-thread lane (500,000 more). Every
+// answer is checked against the round's tally: one per operation, never a
+// second, never one from an earlier round. Each receive's byte is accounted
+// for one by one: a receive answered Done took its byte (exactly 1), and
+// one answered Cancelled or TimedOut took nothing (the byte is still in its
+// socket afterwards, read before the next round). The jobs run with no
+// grace, so a job running at its deadline is answered TimedOut at once,
+// without its buffer, which comes home when the job returns: at the end
+// every buffer is home. Each outcome happens (Done, Cancelled, TimedOut),
+// and none fails.
+
+mod race;
+
+import testing use *;
+import stdio;
+import thread;
+import sync use Sender, Receiver, Channel;
+import collections use List;
+import time use Instant, Duration;
+import iobuf use *;
+import iocore use *;
+import diag;
+
+const conns = 50u64;            // operations a round
+const rounds = 10000u64;        // rounds of each kind
+const windowNs = 100000u64;     // the window the moments fall in
+const jitterNs = 8000u64;       // each racer within this of its moment
+const leadNs = 150000i64;       // how far ahead the window starts: room to submit
+const sendEarlyNs = 10000i64;   // a byte's send starts this much before its moment
+
+// xorshift64*: a cheap generator, one per thread
+struct Rng {
+  s u64;
+  pub fn make(seed u64) Rng {new Rng(seed | 1u64);}
+  pub fn next(self &mut) u64 {
+    s = s ^ (s >> 12u64);
+    s = s ^ (s << 25u64);
+    s = s ^ (s >> 27u64);
+    s * 2685821657736338717u64;
+  }
+  pub fn below(self &mut, n u64) u64 {self.next() % n;}
+  // A moment within jitterNs of at
+  pub fn near(self &mut, at Instant) Instant {
+    at + Duration.fromNanos(i64.from(self.below(2u64 * jitterNs)) - i64.from(jitterNs));
+  }
+}
+
+fn spinUntil(t Instant) {
+  while Instant.now() < t {}
+}
+
+// ---------------------------------------------------------------------------
+// The canceller thread: each round, cancels in time order, then 'done'
+// ---------------------------------------------------------------------------
+
+enum Order {
+  pub struct CancelOne {pub at Instant; pub req Request;}
+  pub struct CancelAll {pub at Instant; pub group CancelGroup;}
+  pub struct EndRound {}
+}
+
+struct Canceller {
+  pub orders Receiver[Order];
+  pub done Sender[u64];
+}
+
+fn canceller(arg Canceller) u64 {
+  mut c = arg;
+  mut n = 0u64;
+  mut more = true;
+  while more {
+    match c.orders.recv() {
+      case mut s Some {
+        match &mut s.value {
+          case mut o &mut CancelOne {
+            spinUntil(o.at);
+            o.req.cancel();
+            n = n + 1u64;
+          }
+          case imm o &mut CancelAll {
+            spinUntil(o.at);
+            o.group.cancel();
+          }
+          else {c.done.send(0u64);}
+        }
+      }
+      case is None[Order] {more = false;}
+    }
+  }
+  n;
+}
+
+// ---------------------------------------------------------------------------
+// The peer thread: the other ends of the connections
+// ---------------------------------------------------------------------------
+
+// One round for the peer: when each socket's byte goes, in time order
+struct Plan {
+  pub at Array[i64, 50];        // instants, as nanoseconds
+  pub sock Array[u32, 50];      // which socket each is for
+}
+
+struct Peer {
+  pub port u16;
+  pub plans Receiver[Plan];
+  pub done Sender[u64];
+  pub pool Pool;
+}
+
+fn peer(p Peer) u64 {
+  mut q = p;
+  mut lp = Loop.mustMake();
+  mut out = List[Completion].empty();
+  mut socks = List[Handle].empty();
+  mut i = 0u64;
+  while i < conns {
+    lp.submit(Op.Connect[SocketAddr.localhost(q.port)], Target.Here[i]);
+    i = i + 1u64;
+  }
+  while out.len() < usize.from(conns) {lp.poll(forever(), &mut out);}
+  mut k = 0usize;
+  while k < out.len() {
+    socks.push(out[k].handle);
+    k = k + 1usize;
+  }
+  out.clear();
+  // Each connection's number down it first, so main knows which is which
+  k = 0usize;
+  while k < socks.len() {
+    mut b = q.pool.mustTake(1usize);
+    mut one = new Array[u8, 1] <- fill u8.from(k);
+    b.append(&one[0usize .. 1usize]);
+    lp.submit(Op.Send[*socks[k], b], Target.Here[0u64]);
+    k = k + 1usize;
+  }
+  while lp.inFlight() > 0u64 {lp.poll(forever(), &mut out);}
+  out.clear();
+  mut sent = 0u64;
+  mut more = true;
+  while more {
+    match q.plans.recv() {
+      case imm s Some {
+        mut j = 0usize;
+        while j < usize.from(conns) {
+          spinUntil(Instant.fromNanos(s.value.at[j]));
+          mut b = q.pool.mustTake(1usize);
+          b.append("x");
+          lp.submit(Op.Send[*socks[usize.from(s.value.sock[j])], b], Target.Here[0u64]);
+          lp.poll(Instant.now(), &mut out);
+          j = j + 1usize;
+        }
+        while lp.inFlight() > 0u64 {lp.poll(forever(), &mut out);}
+        k = 0usize;
+        while k < out.len() {
+          if out[k].isDone() {sent = sent + 1u64;}
+          k = k + 1usize;
+        }
+        out.clear();
+        q.done.send(0u64);
+      }
+      case is None[Plan] {more = false;}
+    }
+  }
+  sent;
+}
+
+// ---------------------------------------------------------------------------
+// The tally
+// ---------------------------------------------------------------------------
+
+struct Tally {
+  pub done u64;
+  pub cancelled u64;
+  pub timedOut u64;
+  pub failed u64;
+  pub twice u64;            // an answer for an operation already answered
+  pub stale u64;            // an answer from an earlier round
+  pub missing u64;          // operations never answered
+  pub wrongBytes u64;       // a Done receive that did not take exactly its one byte
+  pub promptless u64;       // TimedOut without its buffer
+
+  pub fn zero() Tally {new Tally(0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64);}
+}
+
+// Take one round's answers from out: tokens are round * conns + i; the
+// outcome of each operation goes in ended[i]
+fn count(t &mut Tally, out &List[Completion], round u64, ended &mut Array[u32, 50], got &mut u64,
+    receives Bool) {
+  mut k = 0usize;
+  while k < out.len() {
+    imm c = out[k];
+    imm r = c.token / conns;
+    imm i = usize.from(c.token % conns);
+    if r != round {
+      t.stale = t.stale + 1u64;
+    } elif ended[i] != 9u32 {
+      t.twice = t.twice + 1u64;
+    } else {
+      ended[i] = c.status;
+      *got = *got + 1u64;
+      if c.status == diag.outcomeDone {
+        t.done = t.done + 1u64;
+        if receives and c.n != 1usize {t.wrongBytes = t.wrongBytes + 1u64;}
+      } elif c.status == diag.outcomeCancelled {
+        t.cancelled = t.cancelled + 1u64;
+      } elif c.status == diag.outcomeTimedOut {
+        t.timedOut = t.timedOut + 1u64;
+        if c.buf.capacity() == 0usize {t.promptless = t.promptless + 1u64;}
+      } else {
+        t.failed = t.failed + 1u64;
+      }
+    }
+    k = k + 1usize;
+  }
+}
+
+// Poll until n answers of this round are in: draining without waiting, or
+// waiting in the kernel
+fn collect(lp &mut Loop, out &mut List[Completion], t &mut Tally, round u64, ended &mut Array[u32, 50],
+    receives Bool, drain Bool) {
+  mut got = 0u64;
+  imm limit = Instant.now() + Duration.fromSeconds(10i64);
+  while got < conns and Instant.now() < limit {
+    if drain {lp.poll(Instant.now(), out);} else {lp.poll(limit, out);}
+    count(t, out, round, ended, &mut got, receives);
+    out.clear();
+  }
+  t.missing = t.missing + (conns - got);
+}
+
+// With '-D RACE_REPORT' (congo test race -D RACE_REPORT), how the races
+// ended and how long they took; otherwise nothing, so the test's output
+// stays its checks alone
+fn report(name &[]u8, t &Tally, c &diag.Counters, took Duration) {
+  if not isDefined("RACE_REPORT") {return;}
+  stdio.printStr(name);
+  stdio.printStr(": done ");
+  stdio.printUInt(t.done);
+  stdio.printStr(", cancelled ");
+  stdio.printUInt(t.cancelled);
+  stdio.printStr(", timedOut ");
+  stdio.printUInt(t.timedOut);
+  stdio.printStr(" (without the buffer ");
+  stdio.printUInt(t.promptless);
+  stdio.printStr("); loop so far: answered at submit ");
+  stdio.printUInt(c.atSubmit);
+  stdio.printStr(", group cancels ");
+  stdio.printUInt(c.groupCancels);
+  stdio.printStr(", Request cancels ");
+  stdio.printUInt(c.remoteCancels);
+  stdio.printStr("; ");
+  stdio.printUInt(u64.from(took.millis()));
+  stdio.printStr(" ms\n");
+}
+
+// Work for the job race: run until the instant arg (nanoseconds)
+fn spinWork(arg u64, buf &mut IoBuf) Outcome {
+  spinUntil(Instant.fromNanos(i64.from(arg)));
+  Outcome.Done[0usize];
+}
+
+// One round's plan, made by main: each operation's moment (in time order,
+// so operation i's comes before i + 1's), and its racers
+struct Moments {
+  pub at Array[i64, 50];          // the completion
+  pub cancelAt Array[i64, 50];    // the Request's cancel, or 0 for none
+  pub deadline Array[i64, 50];    // the deadline, or forever's
+}
+
+// 'early' is how much sooner than its moment the completion's racer starts:
+// a byte sent takes some microseconds to reach its receive, where a cancel
+// or a deadline acts in the loop itself
+fn plan(rng &mut Rng, t0 Instant, early i64) Moments {
+  mut m = new Moments(new Array[i64, 50] <- fill 0i64, new Array[i64, 50] <- fill 0i64,
+    new Array[i64, 50] <- fill 0i64);
+  mut i = 0u64;
+  while i < conns {
+    imm moment = t0 + Duration.fromNanos(i64.from((i * windowNs) / conns + rng.below(windowNs / conns)));
+    imm k = usize.from(i);
+    m.at[k] = rng.near(moment).nanos() - early;
+    m.cancelAt[k] = if rng.below(2u64) == 0u64 {rng.near(moment).nanos();} else {0i64;};
+    m.deadline[k] = if rng.below(4u64) == 0u64 {forever().nanos();} else {rng.near(moment).nanos();};
+    i = i + 1u64;
+  }
+  m;
+}
+
+// Hand the round's cancels to the canceller, in time order, and its end
+fn orderCancels(lp &Loop, ctx &Sender[Order], m &Moments, reqs &mut List[Request], g CancelGroup,
+    groupAt Instant, cancelGroup Bool) {
+  // The requests were made in operation order, for those with a cancel;
+  // their moments are nearly in order already: an insertion sort
+  mut order = List[usize].empty();
+  mut i = 0usize;
+  while i < usize.from(conns) {
+    if m.cancelAt[i] != 0i64 {order.push(i);}
+    i = i + 1usize;
+  }
+  mut a = 1usize;
+  while a < order.len() {
+    mut b = a;
+    while b > 0usize and m.cancelAt[*order[b - 1usize]] > m.cancelAt[*order[b]] {
+      order.swap(b - 1usize, b);
+      b = b - 1usize;
+    }
+    a = a + 1usize;
+  }
+  // reqs[j] is the j-th operation with a cancel: find each one's place
+  mut rank = new Array[usize, 50] <- fill 0usize;
+  mut j = 0usize;
+  i = 0usize;
+  while i < usize.from(conns) {
+    if m.cancelAt[i] != 0i64 {
+      rank[i] = j;
+      j = j + 1usize;
+    }
+    i = i + 1usize;
+  }
+  mut sentGroup = not cancelGroup;
+  mut k = 0usize;
+  while k < order.len() {
+    imm op = *order[k];
+    if not sentGroup and groupAt.nanos() <= m.cancelAt[op] {
+      ctx.send(Order.CancelAll[groupAt, g]);
+      sentGroup = true;
+    }
+    // Out of the list by a swap with a Request naming nothing, which cancels
+    // nothing when it dies
+    mut q = lp.request(OpId.none());
+    q <=> *(&mut reqs[rank[op]]);
+    ctx.send(Order.CancelOne[Instant.fromNanos(m.cancelAt[op]), q]);
+    k = k + 1usize;
+  }
+  if not sentGroup {ctx.send(Order.CancelAll[groupAt, g]);}
+  ctx.send(Order.EndRound[]);
+}
+
+fn main() i32 {
+  {
+    imm pool = Pool.make();
+    mut lp = Loop.mustMake();
+    mut out = List[Completion].empty();
+    mut ctx Sender[Order];
+    mut crx Receiver[Order];
+    ctx, crx = Channel[Order].make();
+    mut cdone Sender[u64];
+    mut cdoneRx Receiver[u64];
+    cdone, cdoneRx = Channel[u64].make();
+    imm cthread = thread.start(new Canceller(crx, cdone), &canceller);
+    mut rng = Rng.make(0x2545F4914F6CDD1Du64);
+
+    // -----------------------------------------------------------------------
+    // Receives against sends, cancels and deadlines
+    // -----------------------------------------------------------------------
+    {
+      // A grace far longer than any socket cancel takes: every TimedOut
+      // comes with its buffer, and the kernel's own answer, so each byte
+      // can be accounted for
+      lp.setGrace(Duration.fromSeconds(1i64));
+      imm listener = lp.mustListen(SocketAddr.localhost(0u16));
+      mut port = 0u16;
+      match lp.localAddr(listener) {
+        case imm a Ok {port = a.value.port();}
+        case imm e Error {}
+      }
+      mut ptx Sender[Plan];
+      mut prx Receiver[Plan];
+      ptx, prx = Channel[Plan].make();
+      mut pdone Sender[u64];
+      mut pdoneRx Receiver[u64];
+      pdone, pdoneRx = Channel[u64].make();
+      imm pthread = thread.start(new Peer(port, prx, pdone, pool), &peer);
+      mut accepted = List[Handle].empty();
+      mut i = 0u64;
+      while i < conns {
+        lp.submit(Op.Accept[listener], Target.Here[i]);
+        i = i + 1u64;
+      }
+      while out.len() < usize.from(conns) {lp.poll(forever(), &mut out);}
+      mut k = 0usize;
+      while k < out.len() {
+        accepted.push(out[k].handle);
+        k = k + 1usize;
+      }
+      out.clear();
+      // socks[n] is the connection the peer numbered n
+      mut socks = new Array[Handle, 50] <- fill Handle.none();
+      k = 0usize;
+      while k < accepted.len() {
+        lp.submit(Op.Recv[*accepted[k], pool.mustTake(1usize)], Target.Here[u64.from(k)]);
+        k = k + 1usize;
+      }
+      while out.len() < usize.from(conns) {lp.poll(forever(), &mut out);}
+      k = 0usize;
+      while k < out.len() {
+        socks[usize.from(out[k].buf.view()[0usize])] = *accepted[usize.from(out[k].token)];
+        k = k + 1usize;
+      }
+      out.clear();
+
+      mut t = Tally.zero();
+      mut leftOver = 0u64;
+      mut leftWrong = 0u64;
+      imm began = Instant.now();
+      mut round = 0u64;
+      while round < rounds {
+        imm t0 = Instant.now() + Duration.fromNanos(leadNs);
+        imm m = plan(&mut rng, t0, sendEarlyNs);
+        imm g = CancelGroup.make();
+        mut reqs = List[Request].empty();
+        mut j = 0u64;
+        while j < conns {
+          imm n = usize.from(j);
+          imm id = lp.submitIn(Op.Recv[socks[n], pool.mustTake(64usize)],
+            Target.Here[round * conns + j], g, Instant.fromNanos(m.deadline[n]));
+          if m.cancelAt[n] != 0i64 {reqs.push(lp.request(id));}
+          j = j + 1u64;
+        }
+        // The peer sends in time order; operation n's socket is socks[n]
+        mut pl = new Plan(new Array[i64, 50] <- fill 0i64, new Array[u32, 50] <- fill 0u32);
+        mut order = List[usize].empty();
+        j = 0u64;
+        while j < conns {
+          order.push(usize.from(j));
+          j = j + 1u64;
+        }
+        mut a = 1usize;
+        while a < order.len() {
+          mut b = a;
+          while b > 0usize and m.at[*order[b - 1usize]] > m.at[*order[b]] {
+            order.swap(b - 1usize, b);
+            b = b - 1usize;
+          }
+          a = a + 1usize;
+        }
+        a = 0usize;
+        while a < order.len() {
+          pl.at[a] = m.at[*order[a]];
+          pl.sock[a] = u32.from(*order[a]);
+          a = a + 1usize;
+        }
+        ptx.send(pl);
+        imm cancelGroup = rng.below(4u64) == 0u64;
+        orderCancels(&lp, &ctx, &m, &mut reqs, g, t0 + Duration.fromNanos(i64.from(rng.below(windowNs))), cancelGroup);
+        mut ended = new Array[u32, 50] <- fill 9u32;
+        collect(&mut lp, &mut out, &mut t, round, &mut ended, true, round % 2u64 == 0u64);
+        pdoneRx.recv();
+        cdoneRx.recv();
+        // Each receive that took nothing left its byte: read it now
+        mut left = 0u64;
+        j = 0u64;
+        while j < conns {
+          imm n = usize.from(j);
+          if ended[n] != diag.outcomeDone {
+            lp.submit(Op.Recv[socks[n], pool.mustTake(64usize)], Target.Here[0u64]);
+            left = left + 1u64;
+          }
+          j = j + 1u64;
+        }
+        while out.len() < usize.from(left) {lp.poll(forever(), &mut out);}
+        k = 0usize;
+        while k < out.len() {
+          if out[k].isDone() and out[k].count() == 1usize {leftOver = leftOver + 1u64;}
+          else {leftWrong = leftWrong + 1u64;}
+          k = k + 1usize;
+        }
+        out.clear();
+        round = round + 1u64;
+      }
+      imm took = began.elapsed();
+      {
+        imm stop = ptx;
+      }
+      imm sent = pthread.join();
+      imm c = lp.counters();
+      report("receives", &t, &c, took);
+      expectUInt(t.done + t.cancelled + t.timedOut + t.failed, rounds * conns,
+        "500,000 receives raced: every one answered");
+      expectUInt(t.twice, 0u64, "none answered twice");
+      expectUInt(t.stale, 0u64, "none answered after its round");
+      expectUInt(t.missing, 0u64, "none left unanswered");
+      expectUInt(t.failed, 0u64, "none failed");
+      expect(t.done > 0u64 and t.cancelled > 0u64 and t.timedOut > 0u64, "each way of ending happened");
+      expectUInt(sent, rounds * conns, "the peer sent a byte down each connection, each round");
+      expectUInt(t.wrongBytes, 0u64, "each Done took its one byte");
+      expectUInt(leftWrong, 0u64, "each Cancelled or TimedOut took nothing: its byte was still there");
+      expectUInt(t.done + leftOver, sent, "every byte accounted for");
+      expectUInt(t.promptless, 0u64, "every TimedOut with its buffer");
+    }
+
+    // -----------------------------------------------------------------------
+    // Jobs against cancels and deadlines
+    // -----------------------------------------------------------------------
+    {
+      lp.setGrace(Duration.zero());
+      imm lane = addLane(new LaneConfig(name: "race", maxThreads: 4u32));
+      mut t = Tally.zero();
+      imm began = Instant.now();
+      mut round = 0u64;
+      while round < rounds {
+        imm t0 = Instant.now() + Duration.fromNanos(leadNs);
+        imm m = plan(&mut rng, t0, 0i64);
+        imm g = CancelGroup.make();
+        mut reqs = List[Request].empty();
+        mut j = 0u64;
+        while j < conns {
+          imm n = usize.from(j);
+          imm id = lp.submitIn(Op.Call[lane, &spinWork, u64.from(m.at[n]), pool.mustTake(64usize)],
+            Target.Here[round * conns + j], g, Instant.fromNanos(m.deadline[n]));
+          if m.cancelAt[n] != 0i64 {reqs.push(lp.request(id));}
+          j = j + 1u64;
+        }
+        imm cancelGroup = rng.below(4u64) == 0u64;
+        orderCancels(&lp, &ctx, &m, &mut reqs, g, t0 + Duration.fromNanos(i64.from(rng.below(windowNs))), cancelGroup);
+        mut ended = new Array[u32, 50] <- fill 9u32;
+        collect(&mut lp, &mut out, &mut t, round, &mut ended, false, round % 2u64 == 0u64);
+        cdoneRx.recv();
+        round = round + 1u64;
+      }
+      imm took = began.elapsed();
+      // The jobs answered without their buffers still return them
+      imm limit = Instant.now() + Duration.fromSeconds(10i64);
+      while lp.counters().lateReturns < lp.counters().promptTimeouts and Instant.now() < limit {
+        lp.poll(Instant.now() + Duration.fromMillis(1i64), &mut out);
+      }
+      imm c = lp.counters();
+      report("jobs", &t, &c, took);
+      expectUInt(u64.from(out.len()), 0u64, "nothing answered after the rounds");
+      expectUInt(t.done + t.cancelled + t.timedOut + t.failed, rounds * conns,
+        "500,000 jobs raced: every one answered");
+      expectUInt(t.twice, 0u64, "none answered twice");
+      expectUInt(t.stale, 0u64, "none answered after its round");
+      expectUInt(t.missing, 0u64, "none left unanswered");
+      expectUInt(t.failed, 0u64, "none failed");
+      expect(t.done > 0u64 and t.cancelled > 0u64 and t.timedOut > 0u64, "each way of ending happened");
+      expect(t.promptless > 0u64, "some answered TimedOut while their job still ran");
+      expectUInt(lp.counters().lateReturns, lp.counters().promptTimeouts,
+        "each of those jobs' buffers came back after");
+    }
+    {
+      imm stop = ctx;
+    }
+    expect(cthread.join() > 0u64, "the canceller cancelled");
+    imm cs = lp.counters();
+    expectUInt(cs.delivered, cs.submitted, "every operation answered once");
+    expectUInt(cs.inFlight, 0u64, "nothing in flight");
+    expectUInt(pool.stats().lent, 0u64, "every buffer back in the pool");
+  }
+  expectUInt(osBlocks(), 0u64, "and every block back to the OS");
+  done();
+}

@@ -6,6 +6,7 @@
 */
 
 #include "../ir.h"
+#include "../../coneopts.h"
 
 #include <string.h>
 
@@ -54,7 +55,8 @@ typedef enum {
     ShapeU32,           // u32
     ShapeOrder,         // MemOrder: core's enum of atomic orderings, a constant at each call
     ShapeTBool,         // T, Bool: a tuple of the two
-    ShapeSliceU8        // &[]u8: a borrowed slice of bytes, read only
+    ShapeSliceU8,       // &[]u8: a borrowed slice of bytes, read only
+    ShapeI64            // i64
 } IntrinsicShape;
 
 // The types T may be, where an entry does not take every type with a size. A
@@ -149,6 +151,37 @@ static IntrinsicSpec intrinsicRegistry[] = {
     // Whether the compile is a debug build: a constant each compile
     {"isDebugBuild", IsDebugBuildIntrinsic, "isDebugBuild() Bool",
         0, 0, {0}, ShapeBool, 0, 0, PhaseConstant, 1},
+    // TEMPORARY, a provisional mechanism whose final design is open: the
+    // target's OS, from its triple, and what '-D' defined, constants each
+    // compile as isDebugBuild is (intrinsicBuildConst)
+    {"isWindows", IsWindowsIntrinsic, "isWindows() Bool",
+        0, 0, {0}, ShapeBool, 0, 0, PhaseConstant, 1},
+    {"isLinux", IsLinuxIntrinsic, "isLinux() Bool",
+        0, 0, {0}, ShapeBool, 0, 0, PhaseConstant, 1},
+    {"isMacOS", IsMacOSIntrinsic, "isMacOS() Bool",
+        0, 0, {0}, ShapeBool, 0, 0, PhaseConstant, 1},
+    {"isWasm", IsWasmIntrinsic, "isWasm() Bool",
+        0, 0, {0}, ShapeBool, 0, 0, PhaseConstant, 1},
+    {"isDefined", IsDefinedIntrinsic, "isDefined(name &[]u8) Bool",
+        0, 1, {ShapeSliceU8}, ShapeBool, 0, 0, PhaseConstant, 1},
+    {"definedInt", DefinedIntIntrinsic, "definedInt(name &[]u8) i64",
+        0, 1, {ShapeSliceU8}, ShapeI64, 0, 0, PhaseConstant, 1},
+    // An integer's bits, each also a method of every integer type. A count is
+    // defined for 0, as the width; an amount is taken modulo the width
+    {"countOnes", CountOnesIntrinsic, "countOnes[T](x T) u32",
+        1, 1, {ShapeT}, ShapeU32, 0, 1, PhaseOperation, 1, ClassInt},
+    {"leadingZeros", LeadingZerosIntrinsic, "leadingZeros[T](x T) u32",
+        1, 1, {ShapeT}, ShapeU32, 0, 1, PhaseOperation, 1, ClassInt},
+    {"trailingZeros", TrailingZerosIntrinsic, "trailingZeros[T](x T) u32",
+        1, 1, {ShapeT}, ShapeU32, 0, 1, PhaseOperation, 1, ClassInt},
+    {"rotateLeft", RotateLeftIntrinsic, "rotateLeft[T](x T, n u32) T",
+        1, 2, {ShapeT, ShapeU32}, ShapeT, 0, 1, PhaseOperation, 1, ClassInt},
+    {"rotateRight", RotateRightIntrinsic, "rotateRight[T](x T, n u32) T",
+        1, 2, {ShapeT, ShapeU32}, ShapeT, 0, 1, PhaseOperation, 1, ClassInt},
+    {"shlMasked", ShlMaskedIntrinsic, "shlMasked[T](x T, n u32) T",
+        1, 2, {ShapeT, ShapeU32}, ShapeT, 0, 1, PhaseOperation, 1, ClassInt},
+    {"shrMasked", ShrMaskedIntrinsic, "shrMasked[T](x T, n u32) T",
+        1, 2, {ShapeT, ShapeU32}, ShapeT, 0, 1, PhaseOperation, 1, ClassInt},
 };
 
 #define IntrinsicCount (sizeof(intrinsicRegistry) / sizeof(IntrinsicSpec))
@@ -243,6 +276,7 @@ static int intrinsicShapeIs(INode *type, IntrinsicShape shape, INode *tparm) {
     case ShapeVoid:  return dcl->tag == VoidTag;
     case ShapeUsize: return dcl == (INode *)usizeType;
     case ShapeU32:   return dcl == (INode *)u32Type;
+    case ShapeI64:   return dcl == (INode *)i64Type;
     case ShapeBool:  return dcl == (INode *)boolType;
     default:         return 0;
     }
@@ -494,15 +528,22 @@ int intrinsicClassCheck(FnDclNode *fndcl) {
     IntrinsicSpec *spec = fndcl->namesym ? intrinsicFind(fndcl->namesym) : NULL;
     if (spec == NULL || spec->tclass == ClassSized)
         return 1;
-    // A template still holds '*T' as a dereference, and a declaration the
-    // registry refused may say anything: neither has an instance's type to judge
+    // T is read from the first parameter, a '*T' or a 'T'. A template still
+    // holds '*T' as a dereference and 'T' as its parameter, and a declaration
+    // the registry refused may say anything: none has an instance's type to judge
     FnSigNode *sig = (FnSigNode *)fndcl->vtype;
-    if (sig == NULL || sig->tag != FnSigTag || sig->parms->used != spec->nparms || spec->parms[0] != ShapePtrT)
+    if (sig == NULL || sig->tag != FnSigTag || sig->parms->used != spec->nparms
+        || (spec->parms[0] != ShapePtrT && spec->parms[0] != ShapeT))
         return 1;
-    INode *ptr = itypeGetTypeDcl(((VarDclNode *)nodesGet(sig->parms, 0))->vtype);
-    if (ptr->tag != PtrTag)
+    INode *type = ((VarDclNode *)nodesGet(sig->parms, 0))->vtype;
+    if (spec->parms[0] == ShapePtrT) {
+        INode *ptr = itypeGetTypeDcl(type);
+        if (ptr->tag != PtrTag)
+            return 1;
+        type = ((StarNode *)ptr)->vtexp;
+    }
+    else if (itypeGetTypeDcl(type)->tag == GenVarDclTag)
         return 1;
-    INode *type = ((StarNode *)ptr)->vtexp;
     if (intrinsicClassOf(type) & spec->tclass)
         return 1;
     // Reported where the program's own source chose the type: an instance
@@ -573,11 +614,24 @@ static int memOrderLoadRank(MemOrderKind order) {
     }
 }
 
+static SLitNode *intrinsicDefineName(INode *arg);
+
 void intrinsicCallCheck(FnCallNode *call, FnDclNode *fndcl) {
     IntrinsicSpec *spec = fndcl->namesym ? intrinsicFind(fndcl->namesym) : NULL;
     if (spec == NULL || call->args == NULL || call->args->used != spec->nparms)
         return;
     char *name = &fndcl->namesym->namestr;
+    // TEMPORARY, a provisional mechanism whose final design is open: the name
+    // a '-D' gave is looked up as the program is compiled, so it is written
+    // as a string literal
+    if (spec->intrinsicFn == IsDefinedIntrinsic || spec->intrinsicFn == DefinedIntIntrinsic) {
+        INode *arg = nodesGet(call->args, 0);
+        if (intrinsicDefineName(arg) == NULL)
+            errorMsgNode(arg, ErrorDefineName,
+                "%s is given the name of a '-D' constant as a string literal, \"NAME\": the compiler looks it up as it compiles.",
+                name);
+        return;
+    }
     MemOrderKind orders[2];
     int norders = 0;
     for (uint32_t i = 0; i < spec->nparms; ++i) {
@@ -659,6 +713,110 @@ INode *intrinsicSrcCallAt(INode *call, INode *site) {
     memcpy(copy, call, sizeof(FnCallNode));
     inodeLexCopy((INode *)copy, site);
     return (INode *)copy;
+}
+
+// ---- Constants of the build -------------------------------------------------
+//
+// TEMPORARY, a provisional mechanism whose final design is open. Each is a
+// constant of one compile: whether it is a debug build, the target's OS as its
+// triple names it (no flag), and what '-D' defined on conec's command line.
+// Both sides of an 'if' on them are name resolved, type checked and flow
+// analysed; generation generates only the side the build takes (genlIf).
+
+static ConeOptions *intrinsicBuildOpt = NULL;
+
+void intrinsicBuildSetup(ConeOptions *opt) {
+    intrinsicBuildOpt = opt;
+}
+
+// The string literal a '-D' name is written as, under the borrow and the
+// coercion that make it a '&[]u8', or NULL
+static SLitNode *intrinsicDefineName(INode *arg) {
+    while (arg) {
+        if (arg->tag == BorrowTag || arg->tag == ArrayBorrowTag)
+            arg = ((RefNode *)arg)->vtexp;
+        else if (arg->tag == CastTag)
+            arg = ((CastNode *)arg)->exp;
+        else
+            break;
+    }
+    return arg && arg->tag == StringLitTag ? (SLitNode *)arg : NULL;
+}
+
+// The '-D' that defined a name, or NULL
+static ConeDefine *intrinsicDefineFind(SLitNode *name) {
+    for (int i = 0; i < intrinsicBuildOpt->ndefines; ++i) {
+        ConeDefine *def = &intrinsicBuildOpt->defines[i];
+        if (strlen(def->name) == name->strlen && memcmp(def->name, name->strlit, name->strlen) == 0)
+            return def;
+    }
+    return NULL;
+}
+
+// Whether the target triple names the OS: its third part (x86_64-pc-windows-msvc,
+// x86_64-unknown-linux-gnu, aarch64-apple-darwin, wasm32-unknown-unknown)
+static int intrinsicTripleHas(char *word) {
+    char *triple = intrinsicBuildOpt->triple;
+    return triple != NULL && strstr(triple, word) != NULL;
+}
+
+int intrinsicBuildConst(INode *node, int64_t *value) {
+    if (node == NULL || intrinsicBuildOpt == NULL)
+        return 0;
+    if (node->tag == NotLogicTag) {
+        if (!intrinsicBuildConst(((LogicNode *)node)->lexp, value))
+            return 0;
+        *value = !*value;
+        return 1;
+    }
+    if (node->tag == AndLogicTag || node->tag == OrLogicTag) {
+        int64_t left, right;
+        if (!intrinsicBuildConst(((LogicNode *)node)->lexp, &left)
+            || !intrinsicBuildConst(((LogicNode *)node)->rexp, &right))
+            return 0;
+        *value = node->tag == AndLogicTag ? (left && right) : (left || right);
+        return 1;
+    }
+    if (node->tag != FnCallTag)
+        return 0;
+    FnCallNode *call = (FnCallNode *)node;
+    INode *callee = call->objfn;
+    if (callee && isNameUseNode(callee))
+        callee = ((NameUseNode *)callee)->dclnode;
+    if (callee == NULL || callee->tag != FnDclTag || !intrinsicIsDeclared((FnDclNode *)callee))
+        return 0;
+    switch (((IntrinsicNode *)((FnDclNode *)callee)->value)->intrinsicFn) {
+    case IsDebugBuildIntrinsic:
+        *value = !intrinsicBuildOpt->release;
+        return 1;
+    case IsWindowsIntrinsic:
+        *value = intrinsicTripleHas("windows") || intrinsicTripleHas("win32");
+        return 1;
+    case IsLinuxIntrinsic:
+        *value = intrinsicTripleHas("linux");
+        return 1;
+    case IsMacOSIntrinsic:
+        *value = intrinsicTripleHas("darwin") || intrinsicTripleHas("macos");
+        return 1;
+    case IsWasmIntrinsic:
+        *value = strncmp(intrinsicBuildOpt->triple ? intrinsicBuildOpt->triple : "", "wasm", 4) == 0;
+        return 1;
+    case IsDefinedIntrinsic:
+    case DefinedIntIntrinsic: {
+        SLitNode *name = call->args && call->args->used == 1 ? intrinsicDefineName(nodesGet(call->args, 0)) : NULL;
+        if (name == NULL)
+            return 0;
+        ConeDefine *def = intrinsicDefineFind(name);
+        // Undefined is 0, C's convention for '#if'
+        if (((IntrinsicNode *)((FnDclNode *)callee)->value)->intrinsicFn == IsDefinedIntrinsic)
+            *value = def != NULL;
+        else
+            *value = def ? def->value : 0;
+        return 1;
+    }
+    default:
+        return 0;
+    }
 }
 
 void intrinsicCallOrders(FnCallNode *call, FnDclNode *fndcl, MemOrderKind *orders) {

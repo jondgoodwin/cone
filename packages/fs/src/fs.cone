@@ -70,8 +70,8 @@
 // 'opendir', 'readdir' and 'lstat' are written over the runtime's
 // '_findfirst64'. The 'path' rules it relies on are Windows' too (drive
 // letters, shares, '\'). Where Windows behaves differently from POSIX it is
-// said beside the function: 'rename' does not replace, and 'modified' is in
-// whole seconds.
+// said beside the function: 'rename' does not replace, and 'modified' (a
+// time.Timestamp) is in whole seconds.
 
 mod fs;
 
@@ -79,6 +79,7 @@ import libc;
 import posix;
 import collections use String, List;
 import path use join, normalize, parent;
+import time;
 
 // -------- failure --------
 
@@ -108,7 +109,7 @@ pub struct FsError {
     }
     out.append(": ");
     imm text = libc.strerror(code);
-    if text == 0usize as *u8 {
+    if text == null {
       out.append("error ");
       out.appendInt(i64.from(code));
     }
@@ -158,8 +159,8 @@ mut utf8Checked = false;
 fn useUtf8() {
   if utf8Checked { return; }
   utf8Checked = true;
-  imm now = libc.setlocale(libc.LC_CTYPE, 0usize as *u8);
-  if now != 0usize as *u8 and libc.strcmp(now, &[]"C") == 0i32 {
+  imm now = libc.setlocale(libc.LC_CTYPE, null);
+  if now != null and libc.strcmp(now, &[]"C") == 0i32 {
     libc.setlocale(libc.LC_CTYPE, &[]".UTF-8");
   }
 }
@@ -170,9 +171,9 @@ fn useUtf8() {
 pub struct FileInfo {
   // Its size in bytes; 0 for a folder
   pub size i64;
-  // When it was last written, in whole seconds since 1970 (UTC), as
-  // libc.time() counts
-  pub modified i64;
+  // When it was last written, a Timestamp of the time package (UTC), in
+  // whole seconds: the C runtime's stat counts no finer
+  pub modified time.Timestamp;
   pub isDir Bool;
   // A regular file: not a folder, a device or anything else
   pub isFile Bool;
@@ -190,7 +191,8 @@ pub fn stat(path &[]u8) Result[FileInfo, FsError] {
   mut st = emptyStat();
   if posix.stat(c.cstr(), &mut st) != 0i32 { return fail[FileInfo]("stat", path, lastErrno()); }
   imm kind = st.st_mode & posix.S_IFMT;
-  Ok[FileInfo, FsError][new FileInfo(st.st_size, st.st_mtime, kind == posix.S_IFDIR, kind == posix.S_IFREG)];
+  Ok[FileInfo, FsError][new FileInfo(st.st_size, time.Timestamp.fromUnixSeconds(st.st_mtime),
+    kind == posix.S_IFDIR, kind == posix.S_IFREG)];
 }
 
 // The file-type bits of what a path names, or 0 when it cannot be seen
@@ -228,7 +230,7 @@ pub fn readFile(path &[]u8) Result[String, FsError] {
   useUtf8();
   mut c = String.from(path);
   imm f = libc.fopen(c.cstr(), &[]"rb");
-  if f == 0usize as *libc.FILE { return fail[String]("readFile", path, openErrno(path)); }
+  if f == null { return fail[String]("readFile", path, openErrno(path)); }
   mut out = String.empty();
   mut buf = new Array[u8, 65536] <- fill 0u8;
   imm bp *u8 = &[]buf;
@@ -251,7 +253,7 @@ fn writeWith(op &[]u8, path &[]u8, data &[]u8, mode *u8) Result[void, FsError] {
   useUtf8();
   mut c = String.from(path);
   imm f = libc.fopen(c.cstr(), mode);
-  if f == 0usize as *libc.FILE { return fail[void](op, path, openErrno(path)); }
+  if f == null { return fail[void](op, path, openErrno(path)); }
   imm wrote = if data.len > 0usize {libc.fwrite(data, 1usize, data.len, f);} else {0usize;};
   imm code = lastErrno();
   imm closed = libc.fclose(f);
@@ -365,11 +367,11 @@ pub fn readDir(path &[]u8) Result[List[DirEntry], FsError] {
   useUtf8();
   mut c = String.from(path);
   imm dir = posix.opendir(c.cstr());
-  if dir == 0usize as *posix.DIR { return fail[List[DirEntry]]("readDir", path, lastErrno()); }
+  if dir == null { return fail[List[DirEntry]]("readDir", path, lastErrno()); }
   mut out = List[DirEntry].empty();
   *libc.errno() = 0i32;
   mut e = posix.readdir(dir);
-  while e != 0usize as *posix.dirent {
+  while e != null {
     imm entry = e as &posix.dirent;
     imm np *u8 = &[]entry.d_name;
     imm name = mem.sliceFromParts(np, libc.strlen(np));
@@ -508,8 +510,8 @@ fn removeLink(path &[]u8) Result[void, FsError] {
 pub fn currentDir() Result[String, FsError] {
   useUtf8();
   // A null buffer of size 0: the runtime allocates one as long as it needs
-  imm got = posix.getcwd(0usize as *u8, 0usize);
-  if got == 0usize as *u8 { return fail[String]("currentDir", "", lastErrno()); }
+  imm got = posix.getcwd(null, 0usize);
+  if got == null { return fail[String]("currentDir", "", lastErrno()); }
   imm here = normalize(mem.sliceFromParts(got, libc.strlen(got)));
   libc.free(got);
   Ok[String, FsError][here];
@@ -534,8 +536,8 @@ pub fn absolute(path &[]u8) Result[String, FsError] {
   if path.len == 0usize { return currentDir(); }
   useUtf8();
   mut c = String.from(path);
-  imm got = posix.realpath(c.cstr(), 0usize as *u8);
-  if got == 0usize as *u8 { return fail[String]("absolute", path, lastErrno()); }
+  imm got = posix.realpath(c.cstr(), null);
+  if got == null { return fail[String]("absolute", path, lastErrno()); }
   imm full = normalize(mem.sliceFromParts(got, libc.strlen(got)));
   libc.free(got);
   Ok[String, FsError][full];

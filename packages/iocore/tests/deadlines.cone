@@ -1,0 +1,150 @@
+// Deadlines, and the prompt TimedOut: a deadline asks the operation's
+// cancel, and the kernel (or the pool) has the loop's grace to give the
+// buffer back; past it, the answer is TimedOut without the buffer, which
+// goes home to its pool when the kernel lets it go.
+//
+// 1. A receive with a 50 ms deadline on a silent socket: TimedOut, with its
+//    buffer (the kernel answers the cancel at once), not before the
+//    deadline and not long after.
+// 2. The same with no grace: TimedOut at the deadline itself, without the
+//    buffer; the kernel's answer to the cancel comes after, and its buffer
+//    goes home (a late return), the record free again.
+// 3. A job running past its deadline, which nothing can interrupt: TimedOut
+//    after the grace, without its buffer; when the job returns, its buffer
+//    goes home.
+// 4. A job still queued at its deadline: taken out of the queue, answered
+//    TimedOut with its buffer, never run.
+
+mod deadlines;
+
+import testing use *;
+import thread;
+import collections use List;
+import time use Instant, Duration;
+import iobuf use *;
+import iocore use *;
+import diag;
+
+fn waitFor(lp &mut Loop, out &mut List[Completion], n usize) {
+  imm limit = Instant.now() + Duration.fromSeconds(5i64);
+  while out.len() < n and Instant.now() < limit {
+    lp.poll(limit, out);
+  }
+}
+
+fn slowWork(arg u64, buf &mut IoBuf) Outcome {
+  thread.sleep(Duration.fromMillis(i64.from(arg)));
+  Outcome.Done[0usize];
+}
+
+fn pair(lp &mut Loop) Handle, Handle {
+  imm listener = lp.mustListen(SocketAddr.localhost(0u16));
+  mut port = 0u16;
+  match lp.localAddr(listener) {
+    case imm a Ok {port = a.value.port();}
+    case imm e Error {}
+  }
+  lp.submit(Op.Accept[listener], Target.Here[9001u64]);
+  lp.submit(Op.Connect[SocketAddr.localhost(port)], Target.Here[9002u64]);
+  mut out = List[Completion].empty();
+  waitFor(lp, &mut out, 2usize);
+  mut a = Handle.none();
+  mut b = Handle.none();
+  mut k = 0usize;
+  while k < out.len() {
+    if out[k].token == 9001u64 {a = out[k].handle;} else {b = out[k].handle;}
+    k = k + 1usize;
+  }
+  lp.close(listener);
+  a, b;
+}
+
+fn main() i32 {
+  {
+    imm pool = Pool.make();
+    mut lp = Loop.mustMake();
+    mut out = List[Completion].empty();
+    mut a = Handle.none();
+    mut b = Handle.none();
+    a, b = pair(&mut lp);
+    imm one = addLane(new LaneConfig(name: "one", maxThreads: 1u32));
+
+    // 1. With its buffer
+    {
+      imm t0 = Instant.now();
+      lp.submitBy(Op.Recv[a, pool.mustTake(100usize)], Target.Here[1u64], t0 + Duration.fromMillis(50i64));
+      waitFor(&mut lp, &mut out, 1usize);
+      requireUInt(u64.from(out.len()), 1u64, "one answer");
+      expectUInt(u64.from(out[0usize].status), u64.from(diag.outcomeTimedOut), "TimedOut");
+      expectUInt(u64.from(out[0usize].buf.capacity()), 4096u64, "with its buffer");
+      expect(out[0usize].dequeued >= t0 + Duration.fromMillis(50i64), "not before the deadline");
+      expect(out[0usize].delivered < t0 + Duration.fromMillis(150i64), "nor long after");
+      expectUInt(lp.counters().promptTimeouts, 0u64, "not a prompt one");
+      out.clear();
+    }
+
+    // 2. No grace
+    {
+      lp.setGrace(Duration.zero());
+      imm t0 = Instant.now();
+      imm id = lp.submitBy(Op.Recv[a, pool.mustTake(100usize)], Target.Here[2u64], t0 + Duration.fromMillis(20i64));
+      waitFor(&mut lp, &mut out, 1usize);
+      requireUInt(u64.from(out.len()), 1u64, "one answer");
+      expectUInt(u64.from(out[0usize].status), u64.from(diag.outcomeTimedOut), "TimedOut");
+      expectUInt(u64.from(out[0usize].buf.capacity()), 0u64, "without its buffer: the kernel had not given it back");
+      expectUInt(lp.counters().promptTimeouts, 1u64, "a prompt TimedOut");
+      expect(not lp.cancel(id), "answered: its id names nothing");
+      expectUInt(lp.inFlight(), 0u64, "nothing in flight: it was answered");
+      out.clear();
+      lp.poll(Instant.now() + Duration.fromMillis(30i64), &mut out);
+      expectUInt(u64.from(out.len()), 0u64, "and never answered again");
+      expectUInt(lp.counters().lateReturns, 1u64, "the kernel gave the buffer back after");
+      expectUInt(pool.stats().lent, 0u64, "home to its pool");
+      lp.setGrace(Duration.fromMillis(1i64));
+    }
+
+    // 3. A job running past its deadline
+    {
+      imm t0 = Instant.now();
+      lp.submitBy(Op.Call[one, &slowWork, 150u64, pool.mustTake(100usize)], Target.Here[3u64],
+        t0 + Duration.fromMillis(20i64));
+      waitFor(&mut lp, &mut out, 1usize);
+      requireUInt(u64.from(out.len()), 1u64, "one answer");
+      expectUInt(u64.from(out[0usize].status), u64.from(diag.outcomeTimedOut), "TimedOut");
+      expectUInt(u64.from(out[0usize].buf.capacity()), 0u64, "without its buffer: the job still has it");
+      expect(t0.elapsed() < Duration.fromMillis(100i64), "on time, long before the job returns");
+      expectUInt(pool.stats().lent, 1u64, "its buffer still lent, to the job");
+      out.clear();
+      lp.poll(Instant.now() + Duration.fromMillis(250i64), &mut out);
+      expectUInt(u64.from(out.len()), 0u64, "the job returned, and nothing more was answered");
+      expectUInt(lp.counters().lateReturns, 2u64, "its buffer given back");
+      expectUInt(pool.stats().lent, 0u64, "home to its pool");
+    }
+
+    // 4. A job still queued at its deadline
+    {
+      lp.submit(Op.Call[one, &slowWork, 100u64, pool.mustTake(100usize)], Target.Here[4u64]);
+      lp.submitBy(Op.Call[one, &slowWork, 0u64, pool.mustTake(100usize)], Target.Here[5u64],
+        Instant.now() + Duration.fromMillis(20i64));
+      waitFor(&mut lp, &mut out, 1usize);
+      requireUInt(u64.from(out.len()), 1u64, "the queued one answered first");
+      expectUInt(out[0usize].token, 5u64, "the queued one");
+      expectUInt(u64.from(out[0usize].status), u64.from(diag.outcomeTimedOut), "TimedOut");
+      expectUInt(u64.from(out[0usize].buf.capacity()), 4096u64, "with its buffer: it never ran");
+      out.clear();
+      waitFor(&mut lp, &mut out, 1usize);
+      expect(out[0usize].isDone(), "the running one Done");
+      out.clear();
+      imm st = one.stats();
+      expectUInt(st.ran, 2u64, "the lane ran two jobs in all");
+      expectUInt(st.cancelled, 1u64, "and took one out of its queue");
+    }
+
+    imm cs = lp.counters();
+    expectUInt(cs.delivered, cs.submitted, "every operation answered once");
+    expectUInt(cs.inFlight, 0u64, "nothing in flight");
+    expectUInt(pool.stats().lent, 0u64, "every buffer back in the pool");
+  }
+  expectUInt(osBlocks(), 0u64, "and every block back to the OS");
+  done();
+}

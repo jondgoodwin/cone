@@ -1,0 +1,99 @@
+// The wheel's basics on a synthetic clock: a timeout fires at the tick at or
+// after its deadline, never before; nextExpiry says when; cancel is
+// idempotent and says whether it did anything, before or after firing; an id
+// names only the timer it was made for, though its entry is reused.
+
+mod basics;
+
+import testing use *;
+import time use Duration, Instant, Clock;
+import collections use List;
+import timewheel use *;
+
+const ms = 1000000i64;
+
+// An instant's nanoseconds, or -1 for None
+fn ns(o Option[Instant]) i64 {
+  mut r = -1i64;
+  match o {
+    case imm s Some { r = s.value.nanos(); }
+    case is None[Instant] {}
+  }
+  r;
+}
+
+fn main() i32 {
+  mut clock = Clock.synth();
+  mut w = Wheel.make(clock.now());
+  mut out = new List[Expiry];
+  expectInt(ns(w.nextExpiry()), -1, "an empty wheel needs no wake");
+  expect(w.isEmpty(), "and is empty");
+
+  imm a = w.insert(clock.now() + Duration.fromMillis(5), 1u64);
+  expect(w.isPending(a), "armed is pending");
+  expect(!w.isPrecise(a), "5 ms off is a timeout in the wheel");
+  expectInt(ns(w.nextExpiry()), 5i64 * ms, "the wheel wakes at its tick");
+  imm b = w.insert(clock.now() + Duration.fromMicros(2500), 2u64);
+  expectInt(ns(w.nextExpiry()), 3i64 * ms, "2.5 ms fires at the 3 ms tick");
+  expectInt(ns(w.nextTimeout()), 3i64 * ms, "which is the wheel's");
+  expectInt(ns(w.nextPrecise()), -1, "nothing precise");
+  expectUInt(u64.from(w.len()), 2u64, "two pending");
+
+  clock.advance(Duration.fromMicros(2999));
+  expectUInt(u64.from(w.expired(clock.now(), &mut out)), 0u64, "nothing before its tick");
+  clock.advance(Duration.fromNanos(1000));
+  expectUInt(u64.from(w.expired(clock.now(), &mut out)), 1u64, "at the tick it fires");
+  expectUInt(out[0usize].token, 2u64, "the 2.5 ms timer");
+  expect(out[0usize].id == b, "with its id");
+  expectInt(out[0usize].deadline.nanos(), 2500000, "and the deadline it was armed for");
+  expect(!w.isPending(b), "a fired timer is not pending");
+  expect(!w.cancel(b), "cancelling a fired timer does nothing, and says so");
+
+  expect(w.cancel(a), "cancelling a pending timer");
+  expect(!w.cancel(a), "cancelling it again does nothing");
+  expect(!w.isPending(a), "cancelled is not pending");
+  expectInt(ns(w.nextExpiry()), -1, "nothing left to wake for");
+  clock.advance(Duration.fromSeconds(1));
+  expectUInt(u64.from(w.expired(clock.now(), &mut out)), 0u64, "a cancelled timer never fires");
+  expectUInt(u64.from(out.len()), 1u64, "out only ever had the one");
+
+  // An entry is reused, but an old id does not name its new timer
+  imm c = w.insert(clock.now() + Duration.fromMillis(10), 3u64);
+  expect(w.cancel(c), "c cancelled");
+  imm d = w.insert(clock.now() + Duration.fromMillis(10), 4u64);
+  expect(c != d, "a new timer, a new id");
+  expect(!w.cancel(c), "the old id cancels nothing");
+  expect(w.isPending(d), "and d is untouched");
+  expect(!w.cancel(TimerId.none()), "none cancels nothing");
+  expect(TimerId.none().isNone(), "none is none");
+  expect(!d.isNone(), "an armed id is not");
+
+  // A deadline already past is due at once, from the precise set
+  imm e = w.insert(clock.now() - Duration.fromMillis(3), 5u64);
+  expect(w.isPrecise(e), "a past deadline is precise");
+  expectInt(ns(w.nextExpiry()), clock.now().nanos() - 3i64 * ms, "and wakes at once");
+  out.clear();
+  expectUInt(u64.from(w.expired(clock.now(), &mut out)), 1u64, "it fires on the next call");
+  expectUInt(out[0usize].token, 5u64, "e");
+
+  clock.advance(Duration.fromMillis(10));
+  out.clear();
+  expectUInt(u64.from(w.expired(clock.now(), &mut out)), 1u64, "d fires");
+  expectUInt(out[0usize].token, 4u64, "d");
+
+  imm s = w.stats();
+  expectUInt(s.armed, 5u64, "five armed");
+  expectUInt(s.cancelled, 2u64, "two cancelled");
+  expectUInt(s.fired, 3u64, "three fired");
+  expectUInt(s.pending, 0u64, "none pending");
+  expectUInt(s.wakes, 3u64, "three calls delivered something");
+  expectInt(w.now().nanos(), clock.now().nanos(), "the wheel's now is the last given");
+
+  // Time does not go back: an earlier instant is taken as the latest
+  imm f = w.insert(clock.now() + Duration.fromMillis(2), 6u64);
+  out.clear();
+  expectUInt(u64.from(w.expired(Instant.fromNanos(0i64), &mut out)), 0u64, "an instant in the past moves nothing");
+  expectInt(w.now().nanos(), clock.now().nanos(), "now unchanged");
+  expect(w.isPending(f), "f still waits");
+  done();
+}

@@ -158,7 +158,7 @@ enum ErrorCode {
     ErrorTracedBorrow = 1173,   // A traced region's reference to a value that holds a borrowed reference, which its trace cannot see and no lifetime covers
     ErrorTracedRaw = 1174,      // mem.writeRaw or mem.moveRaw of a type holding a traced reference: placing one in raw memory no collector traces (an arena's, a pool's, a collection's)
     ErrorTracedRefKind = 1175,  // An owning virtual reference into a traced region, whose trace could not find its header
-    ErrorTracedPerm = 1176,     // A traced region's reference whose permission takes room, putting the value somewhere other than where the collector finds it
+    ErrorTracedPerm = 1176,     // A traced region's reference whose permission is a lock permission, which a traced region does not take: its lock would sit where the collector finds the value, and no owner is counted for a borrow's guard
 
     // Intrinsics: '@intrinsic' declarations, checked against the compiler's registry (ir/stmt/intrinsic.c)
     ErrorIntrinsicPlace = 1160, // '@intrinsic' on a function not of the core package -- of its root, a submodule, or a plain struct one declares: another package's, a method taking 'self', a generic type's or a trait's
@@ -430,7 +430,51 @@ enum ErrorCode {
     ErrorConstShift = 1231,     // A shift of a constant by its type's width or more, or by a negative amount
 
     // Named lifetimes (ir/types/lifetime.h)
-    ErrorLifetimePlace = 1232,  // A lifetime named where none is checked: outside a function's signature, inside a type's arguments, on a borrow, or ''static' inside a parameter's reference
+    ErrorLifetimePlace = 1232,  // A lifetime named where none is checked: outside a function's signature or a struct's fields, on a borrow, in a function's brackets, or ''static' inside a parameter's reference
+    ErrorLifetimeUndeclared = 1233, // A lifetime a struct's fields or a 'where' clause name that is not declared: a struct's second undeclared name, a borrow of none in a struct declaring lifetimes, a name no type of the signature holds
+    ErrorLifetimeArgs = 1234,   // A use naming lifetimes its type does not declare, or not as many as it declares
+    ErrorLifetimeOr = 1235,     // A lifetime comparison under 'or' or 'not' in a 'where' clause: lifetimes are never instanced, so only 'and' joins one
+
+    // A type's members (ir/stmt/fielddcl.c)
+    ErrorPubFieldPrivType = 1236, // A 'pub' field whose type names a type private to its module: code outside the module would reach into a type it cannot name
+
+    // Literals and implicit coercion
+    ErrorNullNotPtr = 1237,     // A 'null' wanted as something other than a raw pointer, or where nothing says which raw pointer type it is
+    ErrorBoolNotNbr = 1238,     // A Bool where a number is wanted: a Bool converts to a number only explicitly, 'T.from(b)'
+    ErrorPtrSizedAs = 1257,     // 'as' between usize or isize and a fixed-width number: a pointer's width differs by target, so it converts, 'T.from(x)'
+
+    // Constants of the build (TEMPORARY, a provisional mechanism whose final design is open)
+    ErrorDefineName = 1239,     // isDefined or definedInt given a '-D' name that is not a string literal
+
+    // Invariant lifetimes (ir/types/lifetime.h)
+    ErrorBrand = 1240,          // A value of one invariant lifetime where another is wanted: another arena's key, an arena and a key of different brands, or a brand lost or gained
+    ErrorBrandLoop = 1241,      // A value whose invariant lifetime a loop's pass minted, kept where a later pass or the code after the loop could use it
+    ErrorKeyAccess = 1242,      // A key, a reference of an invariant lifetime, dereferenced or reached through: only its arena's '[]' reaches what it names
+    ErrorLifetimeInvariant = 1243, // An invariant lifetime ordered by '>=', equated with an ordinary one, named where an ordinary one is declared, on a slice or virtual reference, or not one the function names
+    ErrorKeyBorrow = 1244,      // A key to a value that holds a borrow: a value in a dynamic arena outlives every scope
+
+    // Lock permissions: a struct declaring 'LockPermission' in a managed reference's permission slot (ir/types/permission.c, ir/exp/borrow.c)
+    ErrorNotLockPerm = 1245,    // A struct in a managed reference's permission slot that does not declare 'is LockPermission'
+    ErrorLockPermShape = 1246,  // A lock permission whose methods are not the shape the compiler calls: no 'acquireMut' and 'releaseMut', a read pair half declared, a method taking more than 'self' or returning a value
+    ErrorLockRegion = 1247,     // A lock permission on a region it does not fit: one owner ('So'), a region not counting owners, a cross-thread lock on a single-thread region or the reverse, or a virtual reference (a traced region is ErrorTracedPerm)
+    ErrorLockAccess = 1248,     // A lock-managed reference read, written or lent without the borrow that takes its lock: '&mut *p', '&*p'
+
+    // Lifetime bounds: '[T + 'a]', 'where T + 'a', '&<Trait + 'a' (ir/types/lifetime.h)
+    ErrorLifetimeBound = 1249,  // A lifetime bound not met or not built: a borrow that is not global given for a ''static' bound, a value holding a borrow not known to last ''a' coerced to '&<Trait + 'a', a value holding a borrow that is not global made an owning virtual reference ('So[Trait]', bounded by ''static'), a bound on a generic type's parameter
+
+    // Actors: 'actor Name { ... }' (parser/parseactor.c, ir/types/actor.h). A
+    // message's argument that is not Sendable is ErrorNotSendable; the state
+    // reached through a handle is ErrorNotPublic
+    ErrorActorReturn = 1250,    // An actor's message method declaring a return type: a send returns at once, and nothing comes back
+    ErrorActorMember = 1251,    // What an actor's body may not hold, or a form of it not built: a 'pub' field, a static, a 'pub' function without 'self', a generic message, a macro, a 'use', an 'extern' or a 'self' of another kind; a generic actor, its 'is', 'extends' or an attribute
+    ErrorActorRuntime = 1252,   // An actor declared in a module that does not import the actors package it runs on
+
+    // GPU targets: what a SPIR-V module cannot hold, refused where it is
+    // written (ir/flowloan.c, "GPU targets"; genllvm/genllvm.c, genlGpuCalls)
+    ErrorGpuRefChoice = 1253,   // A reference, or a value holding one, chosen at run time: an 'if' or 'match' whose arms point at different places, or a holder used after paths that gave it different ones
+    ErrorGpuRefIndexed = 1254,  // An array or slice whose elements hold references, indexed by a value known only at run time
+    ErrorGpuRefGlobal = 1255,   // A module global or static whose type holds a reference
+    ErrorGpuRecursion = 1256,   // A function that calls itself, directly or through others
 
     // Warnings
     WarnCode = 3000,

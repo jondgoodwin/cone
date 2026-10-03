@@ -1,0 +1,49 @@
+// A method of a struct declaring ''a' returns a borrow of the struct's own
+// field as ''a', the lifetime of where its 'items' point. Its caller keeps a
+// ''a' result only as long as what the cursor holds in ''a' -- the array --
+// and not the cursor, so it would read the cursor after it is gone.
+//
+// Verdict: refuse, ErrorEscape at '&held'.
+// Basis: a struct's declared lifetime acts as a caller lifetime in its
+// methods; a borrow of the struct itself through 'self' is of 'self''s own
+// lifetime, which nothing orders against ''a'.
+// Master b07a3adc: refused at parse (ErrorBadTok: a lifetime in a struct's
+// brackets). This compiler with the return's refusal turned off accepts it, and
+// main, run, prints "final" (the cursor's finalizer, which sets 'held' to -1
+// as it dies) and then "read = -1": 'got' still points into the freed cursor.
+
+mod lifetime_band_struct_method_points_into_self_dangles;
+
+import stdio use *;
+
+struct R { pub n i64; }
+
+struct Cursor['a] {
+  pub held R;
+  pub items &[]'a R;
+  pub fn bad(self &mut) &'a R {
+    &held;                   //~ ErrorEscape
+  }
+  fn final(self &uni) {
+    held.n = -1;
+    printStr("final\n");
+  }
+}
+
+fn clobber(n i64) i64 {
+  mut a Array[i64, 16] = [n, n, n, n, n, n, n, n, n, n, n, n, n, n, n, n];
+  a[3] + a[9];
+}
+
+fn main() {
+  imm a Array[R, 1] = [new R(1)];
+  mut got = &a[0usize];
+  {
+    mut c = new So[Cursor](new R(42), &[]a);
+    got = c.bad();
+  }
+  clobber(21);
+  printStr("read = ");
+  printInt(got.n);
+  printStr("\n");
+}

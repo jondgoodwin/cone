@@ -125,11 +125,117 @@ static int pathSetEqual(PathSet *a, PathSet *b) {
     return pathSetWithin(a, b) && pathSetWithin(b, a);
 }
 
-// A loan set with every loan made far ('far'), or near: the far ones sort
-// after the near, each run in order, so the two runs are merged
+// Does a loan set hold an entry with a slot's tag (flowloan.h)? Entries sort
+// by their bits: untagged near ones below LoanIdMask, tagged near ones up to
+// LoanFar, and the far ones after, untagged first.
+static int pathSetTagged(PathSet *set) {
+    if (set == NULL || set == &pathSetAll || set->cnt == 0)
+        return 0;
+    if (set->ids[set->cnt - 1] > (LoanFar | LoanIdMask))
+        return 1;
+    uint32_t lo = 0;
+    uint32_t hi = set->cnt;
+    while (lo < hi) {
+        uint32_t mid = (lo + hi) >> 1;
+        if (set->ids[mid] <= LoanIdMask)
+            lo = mid + 1;
+        else
+            hi = mid;
+    }
+    return lo < set->cnt && set->ids[lo] < LoanFar;
+}
+
+int pathSetHasLoan(PathSet *set, uint32_t loan) {
+    if (set == NULL)
+        return 0;
+    if (set == &pathSetAll)
+        return 1;
+    if (pathSetHas(set, loan) || pathSetHas(set, loan | LoanFar))
+        return 1;
+    if (!pathSetTagged(set))
+        return 0;
+    for (uint32_t i = 0; i < set->cnt; ++i) {
+        if (loanOf(set->ids[i]) == loan)
+            return 1;
+    }
+    return 0;
+}
+
+// What a remade loan set does with each entry: the entry it becomes, or
+// PathDrop to leave it out
+#define PathDrop UINT32_MAX
+enum PathRemake {
+    RemakeNear,         // made near
+    RemakeFar,          // made far
+    RemakeUntagged,     // its tag dropped
+    RemakeTagged,       // tagged 'tag'
+    RemakeSlots,        // kept only with no tag or a tag among 'mask''s slots
+    RemakePointees,     // what a reference's argument points at holds: a far loan, with no tag or
+                        // a tag among 'mask''s slots, made near; a near one, the place the
+                        // reference points at itself, left out
+};
+
+static uint32_t pathRemakeEntry(uint32_t e, int how, uint32_t tag, uint32_t mask) {
+    switch (how) {
+    case RemakeNear:
+        return e & ~LoanFar;
+    case RemakeFar:
+        return e | LoanFar;
+    case RemakeUntagged:
+        return e & ~LoanTagMask;
+    case RemakeTagged:
+        return (e & ~LoanTagMask) | (tag << LoanTagShift);
+    case RemakeSlots:
+        return loanTag(e) == 0 || (mask & (1u << (loanTag(e) - 1))) ? e : PathDrop;
+    default:    // RemakePointees
+        if (!(e & LoanFar) || (loanTag(e) && !(mask & (1u << (loanTag(e) - 1)))))
+            return PathDrop;
+        return e & ~(LoanFar | LoanTagMask);
+    }
+}
+
+// A loan set with each entry remade 'how' (PathRemake); the set itself where
+// nothing changes. The entries are few, so they are put back in order by
+// insertion.
+static PathSet *pathSetRemake(PathSet *set, int how, uint32_t tag, uint32_t mask) {
+    if (set == NULL || set == &pathSetAll)
+        return set;
+    uint32_t i;
+    for (i = 0; i < set->cnt; ++i) {
+        if (pathRemakeEntry(set->ids[i], how, tag, mask) != set->ids[i])
+            break;
+    }
+    if (i == set->cnt)
+        return set;
+    PathSet *made = pathSetNew(set->cnt);
+    uint32_t n = 0;
+    for (i = 0; i < set->cnt; ++i) {
+        uint32_t e = pathRemakeEntry(set->ids[i], how, tag, mask);
+        if (e == PathDrop)
+            continue;
+        uint32_t k = n;
+        while (k > 0 && made->ids[k - 1] > e)
+            --k;
+        if (k > 0 && made->ids[k - 1] == e)
+            continue;
+        memmove(&made->ids[k + 1], &made->ids[k], (n - k) * sizeof(uint32_t));
+        made->ids[k] = e;
+        ++n;
+    }
+    if (n == 0)
+        return NULL;
+    made->cnt = n;
+    return made;
+}
+
+// A loan set with every loan made far ('far'), or near. With no tag among
+// them, the far ones sort after the near, each run in order, so the two runs
+// are merged; a tagged set is remade.
 static PathSet *pathSetLoansAs(PathSet *set, int far) {
     if (set == NULL || set == &pathSetAll)
         return set;
+    if (pathSetTagged(set))
+        return pathSetRemake(set, far ? RemakeFar : RemakeNear, 0, 0);
     uint32_t nnear = 0;
     while (nnear < set->cnt && !(set->ids[nnear] & LoanFar))
         ++nnear;
@@ -152,6 +258,51 @@ static PathSet *pathSetLoansAs(PathSet *set, int far) {
     }
     as->cnt = n;
     return as;
+}
+
+// A loan set with no tag: what a value carries once it leaves the struct the
+// tags are of
+static PathSet *pathSetUntagged(PathSet *set) {
+    return pathSetTagged(set) ? pathSetRemake(set, RemakeUntagged, 0, 0) : set;
+}
+
+// A loan set with every loan both near and far: what a value carries where
+// which of its loans its borrows point at, and which are held further on, is
+// not known (a call's result, what a call may store)
+static PathSet *pathSetUnsure(PathSet *set) {
+    if (set == NULL || set == &pathSetAll)
+        return set;
+    PathSet *near = pathSetLoansAs(set, 0);
+    return pathSetUnion(near, pathSetLoansAs(near, 1));
+}
+
+// What a value read through a reference holding 'set' carries, or a borrow of
+// something further on through a reference that may alias does: no loan only
+// near, which is of the place the reference points at itself and so holds
+// the value rather than being held by it; and each far one, as a loan the
+// value may point at or hold further on. The far ones sort after the near,
+// each run in order, so the result is the far run stripped, then the far run.
+static PathSet *pathSetThrough(PathSet *set) {
+    if (set == NULL || set == &pathSetAll)
+        return set;
+    uint32_t k = 0;
+    while (k < set->cnt && !(set->ids[k] & LoanFar))
+        ++k;
+    uint32_t nfar = set->cnt - k;
+    if (nfar == 0)
+        return NULL;
+    PathSet *made = pathSetNew(2 * nfar);
+    for (uint32_t i = 0; i < nfar; ++i) {
+        made->ids[i] = set->ids[k + i] & ~LoanFar;
+        made->ids[nfar + i] = set->ids[k + i];
+    }
+    return made;
+}
+
+// A loan set with only the loans held in 'slots' of the struct its tags are
+// of, and those with no tag
+static PathSet *pathSetSlots(PathSet *set, uint32_t slots) {
+    return slots == LifeAllSlots || !pathSetTagged(set) ? set : pathSetRemake(set, RemakeSlots, 0, slots);
 }
 
 // *********************
@@ -213,6 +364,9 @@ static uint32_t stamp = 0;
 static int dead = 0;            // the current path has jumped away: nothing after it runs
 static int pathLoans = 1;       // borrow freezing is walking
 static int pathDrops = 0;       // drop flags are walking
+static int pathGpuChoices = 0;  // a reference chosen at run time is refused: a GPU target's loan walk
+static PathSet *pwRetFirst = NULL;  // on a GPU target, what the first 'return' walked carries
+static int pwRetSeen = 0;
 
 // -V 2 tallies
 static uint32_t statFns = 0;
@@ -368,10 +522,14 @@ static int pathJoin(PathDelta *deltas, int withcurrent) {
                 pv->jholds = NULL;
                 pv->jpending = NULL;
                 pv->jstate = 0;
+                pv->jfirst = entry->holds;
+                pv->japart = 0;
                 if (ntouched == touchedcap)
                     touched = (uint32_t *)pathGrow(touched, &touchedcap, sizeof(uint32_t));
                 touched[ntouched++] = entry->var;
             }
+            else if (pathGpuChoices && pv->holder && !pv->japart)
+                pv->japart = (uint8_t)loanNearApart(pv->jfirst, entry->holds, &pv->jla, &pv->jlb);
             ++pv->jcnt;
             pv->jholds = pathSetUnion(pv->jholds, entry->holds);
             pv->jpending = pathSetUnion(pv->jpending, entry->pending);
@@ -388,7 +546,14 @@ static int pathJoin(PathDelta *deltas, int withcurrent) {
             holds = pathSetUnion(holds, pv->holds);
             pending = pathSetUnion(pending, pv->pending);
             state |= pv->state;
+            if (pathGpuChoices && pv->holder && !pv->japart)
+                pv->japart = (uint8_t)loanNearApart(pv->jfirst, pv->holds, &pv->jla, &pv->jlb);
         }
+        // On a GPU target, a holder the paths gave different places is a
+        // reference chosen at run time, refused if it is used again
+        // (flowloan.h, "GPU targets")
+        if (pv->japart)
+            pending = pathSetAdd(pending, loanChosenPending(touched[i], pv->jla, pv->jlb));
         if (!pathSetEqual(holds, pv->holds) || !pathSetEqual(pending, pv->pending)) {
             pathSetFacts(touched[i], holds, pending);
             changed = 1;
@@ -414,6 +579,7 @@ static PathSet *pwValue(INode **nodep, int move);
 static PathSet *pwBlock(BlockNode *blk, int fnblock, int move);
 static PathSet *pwLend(INode *site, Place *pl, INode *perm, int access, uint32_t *loan);
 static void pwHolderDies(uint32_t var);
+static PathSet *pwPlaceSlots(Place *pl, PathSet *holds);
 
 // An access to a place, asked of borrow freezing only when some loan is rooted
 // at the place's variable: what kind of access it is is not worked out otherwise
@@ -429,15 +595,17 @@ static VarDclNode *pwNamedVar(INode *node) {
 }
 
 // The loans a value read from this place carries, if its type carries any:
-// everything its root variable holds (holders are whole variables). Read from
-// the variable's own storage, they are near or far as they are there; read
-// from where it points, which of them that value's borrows point at is not
-// known, so every one is near.
+// everything its root variable holds (holders are whole variables), but for
+// a field of a struct declaring lifetimes, what its slots hold (pwPlaceSlots).
+// Read from the variable's own storage, they are near or far as they are
+// there; read from where it points, which of them that value's borrows point
+// at is not known, so every one is near -- but for a caller loan of the place
+// a parameter's own reference points at, which nothing read there points at.
 static PathSet *pwPlaceHolds(Place *pl, INode *node) {
     PathVar *pv = &pathVars[pl->var];
     if (!pv->holder || !pwCarries(((IExpNode *)node)->vtype))
         return NULL;
-    return pl->deref ? pathSetLoansAs(pv->holds, 0) : pv->holds;
+    return pwPlaceSlots(pl, pl->deref ? pathSetThrough(pv->holds) : pv->holds);
 }
 
 // A temporary as the root of a place ('*make()', 'make().x', an owner made
@@ -499,6 +667,41 @@ static void pwStep(Place *pl, uintptr_t step) {
 
 static int pwPlace(INode **nodep, Place *pl, PathSet **base);
 
+// A field step taken first from the root, where the root's loans are tagged
+// by the slots of the struct the field is of -- the variable's own type, or
+// what the variable, a borrowed reference, points at (flowloan.h): the place
+// reaches only what that field's slots hold. A folded field's copy is reached
+// through another, whose slots it does not say.
+static void pwSlotStep(Place *pl, NameUseNode *fielduse) {
+    if (pl->nsteps != 0 || pl->far || pl->slotted)
+        return;
+    // Asked of nearly every field step, so the common answer, a struct
+    // declaring no lifetimes, is found looking through one name use; a type
+    // reached otherwise is left unfiltered, which only carries more
+    INode *tagtype = pl->deref ? pl->referent : pathVars[pl->var].var->vtype;
+    if (tagtype == NULL)
+        return;
+    INode *dcl = tagtype->tag == NameUseTag ? ((NameUseNode *)tagtype)->dclnode : tagtype;
+    if (dcl == NULL || dcl->tag != StructTag || ((StructNode *)dcl)->lifeparms == NULL)
+        return;
+    FieldDclNode *field = (FieldDclNode *)fielduse->dclnode;
+    if (field == NULL || field->tag != FieldDclTag || field->hop)
+        return;
+    pl->slotted = (StructNode *)dcl;
+    pl->slots = lifeFieldSlots(pl->slotted, field);
+}
+
+// What a value read from a place, or a borrow of it, carries of the loans its
+// root holds ('holds', as the walk reads them there): where the place is a
+// field of a struct declaring lifetimes, only the loans its slots hold, and
+// those with no tag; and, unless it is the root's own value or the whole of
+// what the root points at, of the type the tags are of, no tag
+static PathSet *pwPlaceSlots(Place *pl, PathSet *holds) {
+    if (pl->slotted)
+        holds = pathSetSlots(holds, lifeSlotsReach(pl->slotted, pl->slots));
+    return pl->nsteps > 0 || pl->far ? pathSetUntagged(holds) : holds;
+}
+
 // Set by pwPlace when the place's own variable was a marked move's: its use
 // was the move, checked there
 static int pwMoved = 0;
@@ -511,6 +714,16 @@ static void pwDropUse(Place *pl, INode *node, int borrow) {
     VarDclNode *var = pathVars[pl->var].var;
     VarDclNode *owner = flowDropOwner(var);
     dropUse(owner == var ? pl->var : pathVar(owner), pl->use ? pl->use : node, borrow);
+}
+
+// Is an index known as the program is compiled: a literal, or a named
+// constant, through the casts type check wraps it in?
+static int pwIsLitIndex(INode *arg) {
+    while (arg->tag == CastTag)
+        arg = ((CastNode *)arg)->exp;
+    if (isNameUseNode(arg) && ((NameUseNode *)arg)->dclnode && ((NameUseNode *)arg)->dclnode->tag == ConstDclTag)
+        return 1;
+    return arg->tag == ULitTag;
 }
 
 // May other references reach what this reference points at? Every permission
@@ -546,6 +759,10 @@ static int pwThrough(INode **refp, Place *pl, PathSet **base) {
         pl->owned = 0;
         pl->far = refpl.deref;
         pl->referent = refpl.nsteps == 0 && !refpl.deref ? ((RefNode *)reftype)->vtexp : NULL;
+        // A reference read from a field of a struct declaring lifetimes
+        // reaches only what that field's slots hold
+        pl->slotted = refpl.slotted;
+        pl->slots = refpl.slots;
         return 1;
     }
     *pl = refpl;
@@ -591,6 +808,8 @@ static int pwPlace(INode **nodep, Place *pl, PathSet **base) {
         pl->far = 0;
         pl->use = node;
         pl->referent = NULL;
+        pl->slotted = NULL;
+        pl->slots = 0;
         return 1;
     }
     switch (node->tag) {
@@ -604,6 +823,8 @@ static int pwPlace(INode **nodep, Place *pl, PathSet **base) {
         pl->far = 0;
         pl->use = node;
         pl->referent = NULL;
+        pl->slotted = NULL;
+        pl->slots = 0;
         return 1;
     case CastTag:
         if (node->flags & FlagConvert)
@@ -620,8 +841,10 @@ static int pwPlace(INode **nodep, Place *pl, PathSet **base) {
         INode *methfld = fld->methfld;
         if (methfld->tag == ULitTag)
             pwStep(pl, ((uintptr_t)((ULitNode *)methfld)->uintlit << 2) | 2);
-        else
+        else {
+            pwSlotStep(pl, (NameUseNode *)methfld);
             pwStep(pl, (uintptr_t)((NameUseNode *)methfld)->namesym);
+        }
         return 1;
     }
     case ArrIndexTag:
@@ -631,10 +854,23 @@ static int pwPlace(INode **nodep, Place *pl, PathSet **base) {
         uint16_t objtag = iexpGetTypeDcl(index->objfn)->tag;
         int found = objtag == RefTag || objtag == ArrayRefTag || objtag == PtrTag
             ? pwThrough(&index->objfn, pl, base) : pwPlace(&index->objfn, pl, base);
+        // On a GPU target, elements holding references are picked only by a
+        // literal index, so that the array breaks into separate values
+        // (flowloan.h, "GPU targets"). What is indexed through a reference or
+        // a slice holds such elements where what it points at does.
+        INode *indexed = iexpGetTypeDcl(index->objfn);
+        if (objtag == RefTag || objtag == ArrayRefTag)
+            indexed = ((RefNode *)indexed)->vtexp;
+        else if (objtag == PtrTag)
+            indexed = ((StarNode *)indexed)->vtexp;
+        int holdsrefs = pathGpuChoices && pwCarries(indexed);
         INode **argsp;
         uint32_t cnt;
-        for (nodesFor(index->args, cnt, argsp))
+        for (nodesFor(index->args, cnt, argsp)) {
             pwValue(argsp, 0);
+            if (holdsrefs && !pwIsLitIndex(*argsp))
+                loanIndexedRefs(node);
+        }
         if (found)
             pwStep(pl, PlaceStepElem);
         return found;
@@ -722,13 +958,20 @@ static PathSet *pwLend(INode *site, Place *pl, INode *perm, int access, uint32_t
     // holds is held there, so a borrow of the root's own storage ('&mut q',
     // '&mut h.f') reaches it a borrow further on: far. A reborrow through it
     // ('&mut *r', '&mut r.f') points where it does, so each loan stays as it
-    // was, or, through a reference read through another, is near.
+    // was. Through a reference read through another ('&**pp'), it points
+    // further on: where that reference may alias, a copy of it would point
+    // there too, so the place the outer one points at is no longer needed
+    // (pathSetThrough); where it is 'uni', the borrow is a reborrow of it,
+    // which lasts no longer than the outer borrow, as Rust's reborrow through
+    // a '&'a mut &'b mut' lasts 'a, so every loan stays, near and far. A field
+    // of a struct declaring lifetimes reaches only what its slots hold
+    // (pwPlaceSlots).
     PathSet *held = pathVars[pl->var].holds;
     if (!pl->deref)
         held = pathSetLoansAs(held, 1);
     else if (pl->far)
-        held = pathSetLoansAs(held, 0);
-    return pathSetAdd(held, id);
+        held = pl->shared ? pathSetThrough(held) : pathSetUnsure(held);
+    return pathSetAdd(pwPlaceSlots(pl, held), id);
 }
 
 // An owning reference coerced to a borrowed one ('imm b &i32 = u', 'u' a
@@ -847,6 +1090,10 @@ static void pwStoreLands(PathSet *refholds, int beyond, PathSet *holds, uint32_t
         if (root == except || !rv->holder)
             continue;
         PathSet *put = loanThrough(loan) ? pathSetLoansAs(holds, 1) : holds;
+        // A tag is of the struct the reference points at, which is the
+        // root's own only where the loan borrows the whole of it
+        if (!loanWhole(loan))
+            put = pathSetUntagged(put);
         pathSetFacts(root, pathSetUnion(rv->holds, put), rv->pending);
     }
 }
@@ -885,18 +1132,54 @@ static int pwPlaceOutlives(Place *pl) {
 // The signature of the function being walked
 static FnSigNode *pwSig = NULL;
 
+// The value 'val', carrying 'holds', is returned, or stored through '*p',
+// where the function's own names type the place, as 'type': where that is a
+// virtual reference bounded by ''a' ('&<Trait + 'a'), what it points at must
+// hold only borrows lasting ''a' (lifetime.h, "Lifetime bounds"). A value
+// made a virtual reference here, from a reference to a concrete type, holds
+// that in its far loans: no borrow of this function's own storage, and of
+// what the caller lent only a part the order says outlasts ''a'. One that is
+// a virtual reference already is vouched for by its type, which a parameter's
+// says in this function's names: its bound, or with none its own lifetime
+// (Rust's default for '&'r dyn Trait'), must outlast ''a'. One read out of a
+// struct's field has its type in the struct's names, and was checked where
+// it was stored there.
+static void pwBoundHolds(INode *val, INode *type, PathSet *holds) {
+    if (!lifeVirtBoundSeen)
+        return;
+    Name *bound = lifeVirtBound(type);
+    if (bound == NULL || !pathLoans || val == NULL || !isExpNode(val))
+        return;
+    if (val->tag == CastTag && iexpGetTypeDcl(((CastNode *)val)->exp)->tag != VirtRefTag) {
+        uint32_t loan = loanNotBoundIn(pwSig, holds, bound);
+        if (loan)
+            loanNotBound(val, loan, bound);
+        return;
+    }
+    while (val->tag == CastTag)
+        val = ((CastNode *)val)->exp;
+    VarDclNode *var = pwNamedVar(val);
+    if (var && var->scope == 1 && !lifeVirtOutlives(pwSig, var->vtype, bound))
+        errorMsgNode(val, ErrorLifetimeBound,
+            "A virtual reference bounded by '%s' points at a value whose borrows all last '%s', but '%s' promises only that what it points at lasts its own bound, or, with none, its own lifetime, which is not ordered at least as long by a 'where' clause or by what the signature's types imply.",
+            &bound->namestr, &bound->namestr, &var->namesym->namestr);
+}
+
 // A value carrying 'stored' goes where a reference holding 'refholds' points,
 // at 'node': what a borrowed parameter points at holds only the lifetimes its
-// type names there, so a borrow the caller lent through a parameter of
-// another lifetime may not go in it ('how', LoanEscapeStore or
-// LoanEscapeCall); 'beyond' when it may land past where the reference points.
-// Asked only where the function names lifetimes: unnamed, every borrow in its
-// signature shares one.
-static void pwStoreApart(INode *node, PathSet *refholds, int beyond, PathSet *stored, int how) {
+// type names there, so a borrow the caller lent of another lifetime, not
+// ordered longer by the 'where' clause or what the types imply, may not go
+// in it ('how',
+// LoanEscapeStore or LoanEscapeCall); 'beyond' when it may land past where
+// the reference points; 'landing' the slots of the field of a struct
+// declaring lifetimes it lands in, 0 where that is not known. Asked only
+// where the function names lifetimes: unnamed, every borrow in its signature
+// shares one.
+static void pwStoreApart(INode *node, PathSet *refholds, int beyond, uint32_t landing, PathSet *stored, int how) {
     if (!pwSig->lifenamed)
         return;
     VarDclNode *through;
-    uint32_t apart = loanStoredApart(stored, refholds, beyond, &through);
+    uint32_t apart = loanStoredApart(pwSig, stored, refholds, beyond, landing, &through);
     if (apart)
         loanApart(node, apart, through, how);
 }
@@ -908,7 +1191,7 @@ static void pwStoreApart(INode *node, PathSet *refholds, int beyond, PathSet *st
 // borrowed parameter points at, or what it holds, read through '*x' or
 // carried inside a value); and where it is reached through a reference, no
 // borrow of a lifetime that place does not hold
-static void pwStoreEscapes(INode *lval, Place *pl, PathSet *holds) {
+static void pwStoreEscapes(INode *lval, Place *pl, PathSet *holds, INode *rval) {
     if (!pathLoans)
         return;
     uint32_t local = loanLocalIn(holds);
@@ -918,8 +1201,31 @@ static void pwStoreEscapes(INode *lval, Place *pl, PathSet *holds) {
         loanEscape(lval, local, LoanEscapeStore);
     else if ((root->scope == 0 || (root->flags & FlagStatic)) && (caller = loanNotGlobalIn(holds)))
         loanEscape(lval, caller, LoanEscapeStore);
-    else if (pl->deref)
-        pwStoreApart(lval, pathVars[pl->var].holds, pl->far, holds, LoanEscapeStore);
+    else if (pl->deref) {
+        pwStoreApart(lval, pathVars[pl->var].holds, pl->far,
+            pl->slotted && !pl->far ? pl->slots : 0, holds, LoanEscapeStore);
+        if (lval->tag == DerefTag)
+            pwBoundHolds(rval, ((IExpNode *)lval)->vtype, holds);
+    }
+}
+
+// What a value carrying 'holds' adds to the root of the place 'pl' it is
+// stored into: the slot's tag of the field it lands in, of a struct declaring
+// lifetimes, where it holds one slot; else no tag, but where the store
+// replaces the whole of what the root is or points at, whose type the
+// value's tags are of
+static PathSet *pwStoreTagged(Place *pl, PathSet *holds) {
+    if (pl->slotted) {
+        uint32_t slots = pl->slots;
+        uint32_t tag = 0;
+        if (slots && !(slots & (slots - 1))) {
+            while (!(slots & (1u << tag)))
+                ++tag;
+            ++tag;
+        }
+        return tag ? pathSetRemake(holds, RemakeTagged, tag, 0) : pathSetUntagged(holds);
+    }
+    return pl->nsteps > 0 || pl->far ? pathSetUntagged(holds) : holds;
 }
 
 // The signature of the function a call calls, where it names lifetimes, which
@@ -930,11 +1236,56 @@ static FnSigNode *pwNamedSig(FnCallNode *call) {
     return sig->tag == FnSigTag && sig->lifenamed ? sig : NULL;
 }
 
-// May a value of the type 'wanted' carry what the argument at 'i' carries:
-// does its parameter share a lifetime with it? With no names, all share one.
-static int pwParmShares(FnSigNode *sig, uint32_t i, INode *wanted) {
-    return sig == NULL || i >= sig->parms->used
-        || lifeShared(((IExpNode *)nodesGet(sig->parms, i))->vtype, wanted);
+// What a value of the type 'wanted' -- a call's result, or what a writable
+// argument points at -- may carry of 'carried', what the argument at 'i'
+// carries (lifeCarry): all of it, where its parameter's own lifetime flows to
+// one 'wanted' holds, as in a signature naming none; only what the argument's
+// reference points at holds, where only that does -- its far loans, not a
+// near one, which is exactly where the argument points (the borrow it is
+// written as, a caller loan of what a parameter points at, a local a
+// variable it is held in borrows): each reference layer's lifetime governs
+// only what is read through it; and of a struct declaring lifetimes, only
+// what the slots whose lifetimes flow there hold, and what has no tag.
+static PathSet *pwArgCarries(FnSigNode *sig, uint32_t i, INode *wanted, PathSet *carried) {
+    if (carried == NULL || sig == NULL || i >= sig->parms->used)
+        return carried;
+    INode *parmtype = ((IExpNode *)nodesGet(sig->parms, i))->vtype;
+    uint32_t slots;
+    switch (lifeCarry(sig, parmtype, wanted, &slots)) {
+    case LifeCarryWhole:
+        return carried;
+    case LifeCarryHeld:
+        if (carried == &pathSetAll)
+            return carried;
+        if (lifeIsOwnBorrow(parmtype))
+            return pathSetRemake(carried, RemakePointees, 0, slots);
+        return pathSetUntagged(pathSetSlots(carried, slots));
+    default:
+        return NULL;
+    }
+}
+
+// Clear the tags of what a holder holds, and of what each holder its
+// reference points at whole holds: a call may move a borrow between the slots
+// of the struct it points at, where its signature does not name them apart
+// (lifeSlotsApart), so no slot's loans are known apart there any more
+static void pwUntagHolder(uint32_t var) {
+    PathVar *pv = &pathVars[var];
+    if (!pv->holder)
+        return;
+    PathSet *held = pv->holds;
+    if (pathSetTagged(held))
+        pathSetFacts(var, pathSetUntagged(held), pv->pending);
+    if (held == NULL || held == &pathSetAll)
+        return;
+    for (uint32_t i = 0; i < held->cnt; ++i) {
+        if (held->ids[i] & LoanFar)
+            continue;
+        uint32_t loan = loanOf(held->ids[i]);
+        PathVar *rv = &pathVars[loanRoot(loan)];
+        if (rv->holder && loanWhole(loan) && pathSetTagged(rv->holds))
+            pathSetFacts(loanRoot(loan), pathSetUntagged(rv->holds), rv->pending);
+    }
 }
 
 // Where a store through the argument 'ref' lands, keyed as pwPlace keys it,
@@ -1018,9 +1369,12 @@ static INode *pwLendSite(INode *arg) {
 // A call handed a writable borrow of a place that can hold a borrow --
 // 'l.push(x)', 'stash(&mut outer, v)', 'fill(r, v)' for 'r &mut Option[&T]'
 // -- may store there anything its other arguments carry: every borrow in an
-// unannotated signature shares one lifetime (reflifefn.html), as
-// fnCallFlowStoredBorrow reads it, and with lifetimes named, anything whose
-// parameter shares one with what that parameter points at. And it may store
+// unannotated signature shares one lifetime (reflifefn.html), and with
+// lifetimes named, what may be held where that parameter points
+// (pwArgCarries), with no slot's tag, since which field it lands in is not
+// known. Into a place of the function's own, that is no error: the place now
+// holds those loans, and is refused where it is used after one's source ends,
+// as a store there written out is. And it may store
 // through every writable borrow it reaches from there, at any depth
 // (itypeWritableBorrowDepth): through the '&mut &R' that '&mut p' points at
 // ('**x = v'), through a struct's '&mut' field ('*h.r = v'), or through one a
@@ -1049,7 +1403,7 @@ static void pwCallStores(FnCallNode *call, PathSet **argsets, Place *recvpl) {
             ? lifePointee(((IExpNode *)nodesGet(sig->parms, at))->vtype) : NULL;
         PathSet *others = NULL;
         for (uint32_t i = 0; i < nargs; ++i) {
-            if (i == at || argsets[i] == NULL || !pwParmShares(sig, i, pointee))
+            if (i == at || argsets[i] == NULL)
                 continue;
             // A borrow written as the argument is stored itself only where
             // the place's type can hold a borrow of what it borrows: the
@@ -1061,13 +1415,14 @@ static void pwCallStores(FnCallNode *call, PathSet **argsets, Place *recvpl) {
             if (own && pathSetHas(carried, own) && !itypeHoldsBorrowOf(storedin,
                     itypeGetTypeDcl(((RefNode *)iexpGetTypeDcl(site))->vtexp)))
                 carried = pathSetWithout(carried, own);
-            others = pathSetUnion(others, carried);
+            others = pathSetUnion(others, pwArgCarries(sig, i, pointee, carried));
         }
         if (others == NULL)
             continue;
         // The callee may store what it reads through an argument, so which
-        // of the loans its borrows point at is not known: every one is near
-        others = pathSetLoansAs(others, 0);
+        // of the loans its borrows point at is not known: every one is both
+        // near and far
+        others = pathSetUntagged(pathSetUnsure(others));
         uint32_t local = loanLocalIn(others);
         Place target;
         int found = 1;
@@ -1082,7 +1437,7 @@ static void pwCallStores(FnCallNode *call, PathSet **argsets, Place *recvpl) {
             if (local && loanMayPointOut(argsets[at], isref && !beyond ? storedin : NULL, beyond))
                 loanEscape((INode *)call, local, LoanEscapeCall);
             else
-                pwStoreApart((INode *)call, argsets[at], beyond, others, LoanEscapeCall);
+                pwStoreApart((INode *)call, argsets[at], beyond, 0, others, LoanEscapeCall);
             pwStoreLands(argsets[at], beyond, others, 0);
             continue;
         }
@@ -1102,24 +1457,83 @@ static void pwCallStores(FnCallNode *call, PathSet **argsets, Place *recvpl) {
         if (local && pwPlaceOutlives(&reach))
             loanEscape((INode *)call, local, LoanEscapeCall);
         else if (reach.deref)
-            pwStoreApart((INode *)call, pathVars[target.var].holds, reach.far, others, LoanEscapeCall);
+            pwStoreApart((INode *)call, pathVars[target.var].holds, reach.far, 0, others, LoanEscapeCall);
         pwStoreInto(target.var, from, to > 2 ? 2 : to, others);
+    }
+}
+
+// A call handed a writable borrow of a struct declaring lifetimes may move a
+// borrow from one of its slots to another where its signature lets it: where
+// the slots are not named apart there (lifeSlotsApart), the loans the struct's
+// holder holds are no longer known by slot
+static void pwCallMoves(FnCallNode *call, FnSigNode *sig, Place *recvpl) {
+    if (call->args == NULL)
+        return;
+    uint32_t nargs = call->args->used;
+    for (uint32_t at = 0; at < nargs; ++at) {
+        INode *arg = nodesGet(call->args, at);
+        INode *argtype = iexpGetTypeDcl(arg);
+        if (!pwIsBorrowed(argtype) || !(permGetFlags(((RefNode *)argtype)->perm) & MayWrite)
+            || lifeSlotted(((RefNode *)argtype)->vtexp) == NULL)
+            continue;
+        INode *pointee = sig && at < sig->parms->used
+            ? lifePointee(((IExpNode *)nodesGet(sig->parms, at))->vtype) : ((RefNode *)argtype)->vtexp;
+        if (lifeSlotsApart(sig, pointee))
+            continue;
+        Place target;
+        if (at == 0 && recvpl)
+            target = *recvpl;
+        else if (!pwStoreTarget(arg, &target))
+            continue;
+        pwUntagHolder(target.var);
     }
 }
 
 // An argument for a parameter whose reference is written ''static' may carry
 // no loan but of a global: fnCallStaticArgs checks a borrow's lifetime, and
-// this what a variable holds now
+// this what a variable holds now. So may what an argument lends through a
+// part a type parameter's ''static' bound makes global (lifePartStatic): a
+// reference's own part is its near loans, what it holds its far ones, and
+// what a value passed by value holds all of them.
 static void pwStaticArgs(FnCallNode *call, FnSigNode *sig, PathSet **argsets) {
     if (call->args == NULL)
         return;
     uint32_t nargs = call->args->used < sig->parms->used ? call->args->used : sig->parms->used;
     for (uint32_t i = 0; i < nargs; ++i) {
-        if (!lifeIsStatic(((IExpNode *)nodesGet(sig->parms, i))->vtype))
+        INode *parmtype = ((IExpNode *)nodesGet(sig->parms, i))->vtype;
+        if (lifeIsStatic(parmtype)) {
+            uint32_t loan = loanNotGlobalIn(argsets[i]);
+            if (loan)
+                loanNotGlobal(nodesGet(call->args, i), loan, NULL);
             continue;
-        uint32_t loan = loanNotGlobalIn(argsets[i]);
+        }
+        if (!sig->lifestatic)
+            continue;
+        // A virtual reference bounded by ''static', '&<Trait + 'static': what
+        // the value handed for it points at holds only global borrows. A bound
+        // of another lifetime is the callee's name, which this function's
+        // order knows nothing of: what it lets flow, the call carries.
+        if (lifeVirtBound(parmtype) == staticLifeName) {
+            uint32_t loan = loanNotBoundIn(pwSig, argsets[i], staticLifeName);
+            if (loan)
+                loanNotBound(nodesGet(call->args, i), loan, staticLifeName);
+            continue;
+        }
+        int isref = lifeIsOwnBorrow(parmtype);
+        int own = isref && lifePartStatic(sig, parmtype, LifePartOwn);
+        int held = 0;
+        INode *heldtype = lifeHeld(parmtype);
+        if (heldtype) {
+            StructNode *slotted = lifeSlotted(heldtype);
+            uint32_t nparts = slotted ? slotted->lifeparms->count : 1;
+            for (uint32_t k = 0; k < nparts; ++k)
+                held |= lifePartStatic(sig, parmtype, slotted ? LifePartSlot + k : LifePartHeld);
+        }
+        if (!own && !held)
+            continue;
+        uint32_t loan = loanNotGlobalInAs(argsets[i], isref ? own : held, held);
         if (loan)
-            loanNotGlobal(nodesGet(call->args, i), loan);
+            loanNotGlobal(nodesGet(call->args, i), loan, lifeStaticBoundOf(sig, parmtype));
     }
 }
 
@@ -1129,12 +1543,15 @@ static void pwStaticArgs(FnCallNode *call, FnSigNode *sig, PathSet **argsets) {
 // Cone's rule for an unannotated signature is that every borrow in it shares
 // one lifetime (reflifefn.html) -- so a borrow a method returns keeps its
 // receiver loaned while it is used. Where the signature names lifetimes, it
-// carries the loans only of the arguments whose parameters share a lifetime
-// with the result, and an argument for a ''static' parameter may carry no
-// loan but of a global. A container declaring a no-loan kind ('NoLoanMut', an
-// arena; 'NoLoanRead', for a read-only borrow) lends with no loan on it: its
-// receiver's place gets only a pin, which forbids moving, replacing or ending
-// it.
+// carries of each argument what the result may hold (pwArgCarries): all of
+// it, where its parameter's own lifetime flows to one the result holds; only
+// what its reference points at holds, by slot, where only that does
+// ('c.next()' for 'next(self &mut) Option[&'a R]' in 'Cursor['a]' carries
+// what 'c' holds, not 'c'); or nothing. An argument for a ''static' parameter
+// may carry no loan but of a global. A container declaring a no-loan kind
+// ('NoLoanMut', an arena; 'NoLoanRead', for a read-only borrow) lends with no
+// loan on it: its receiver's place gets only a pin, which forbids moving,
+// replacing or ending it.
 static PathSet *pwCall(FnCallNode *call) {
     INode *objfn = call->objfn;
     if (pwNamedVar(objfn) || objfn->tag == DerefTag || objfn->tag == FldAccessTag)
@@ -1142,6 +1559,7 @@ static PathSet *pwCall(FnCallNode *call) {
     FnDclNode *meth = pwMethod(call);
     FnSigNode *sig = pwNamedSig(call);
     int carries = pwCarries(call->vtype);
+    INode *rettype = sig ? sig->rettype : NULL;
     uint32_t mark = loanFlightMark();
     PathSet *result = NULL;
     PathSet *recvholds = NULL;
@@ -1152,8 +1570,8 @@ static PathSet *pwCall(FnCallNode *call) {
     // What each argument carries, for a call that may store some of them
     // through another (pwCallStores)
     PathSet *localsets[8];
-    PathSet **argsets = call->args == NULL || call->args->used <= 8 ? localsets
-        : (PathSet **)memAllocBlk(call->args->used * sizeof(PathSet *));
+    uint32_t nargs = call->args == NULL ? 0 : call->args->used;
+    PathSet **argsets = nargs <= 8 ? localsets : (PathSet **)memAllocBlk(nargs * sizeof(PathSet *));
     INode **argsp;
     uint32_t cnt;
     uint32_t argi = 0;
@@ -1169,12 +1587,16 @@ static PathSet *pwCall(FnCallNode *call) {
         }
         carried = pwValue(argsp, 1);
         loanFlightPush(carried, 0);
-        if (carries && pwParmShares(sig, argi, sig ? sig->rettype : NULL))
-            result = pathSetUnion(result, carried);
+        if (carries)
+            result = pathSetUnion(result, pwArgCarries(sig, argi, rettype, carried));
         argsets[argi++] = carried;
     }
-    if (sig && pathLoans)
-        pwStaticArgs(call, sig, argsets);
+    if (pathLoans && (sig || lifeStaticBoundSeen)) {
+        // A signature naming no lifetime may still bound one by ''static'
+        FnSigNode *callsig = sig ? sig : (FnSigNode *)iexpGetDerefTypeDcl(call->objfn);
+        if (callsig->tag == FnSigTag && (sig || callsig->lifestatic))
+            pwStaticArgs(call, callsig, argsets);
+    }
     // The receiver's borrow activated: against what the other arguments carry,
     // and then as the access it is, against every loan still held
     if (twophase)
@@ -1182,10 +1604,13 @@ static PathSet *pwCall(FnCallNode *call) {
     loanFlightPop(mark);
     if (twophase)
         pwAccess(&recvpl, recvaccess, nodesGet(call->args, 0));
-    if (pathLoans)
+    if (pathLoans) {
         pwCallStores(call, argsets, recvloan ? &recvpl : NULL);
+        pwCallMoves(call, sig, recvloan ? &recvpl : NULL);
+    }
     if (!carries)
         return NULL;
+    uint32_t recvown = recvloan;
     if (recvloan) {
         INode *recvtype = iexpGetTypeDcl(nodesGet(call->args, 0));
         INode *container = recvtype->tag == RefTag ? itypeGetTypeDcl(((RefNode *)recvtype)->vtexp) : NULL;
@@ -1202,11 +1627,12 @@ static PathSet *pwCall(FnCallNode *call) {
         else
             loanReturnedBy(recvloan, ((NameUseNode *)call->objfn)->namesym);
     }
+    if (meth)
+        result = pathSetUnion(result, pwArgCarries(sig, 0, rettype, recvholds));
     // What the result's borrows point at may be anything its arguments reach
-    // ('h.r' returned from '&h'): every loan is near
-    if (pwParmShares(sig, 0, sig ? sig->rettype : NULL))
-        result = pathSetUnion(result, recvholds);
-    return pathSetLoansAs(result, 0);
+    // ('h.r' returned from '&h'): every loan both near and far, and of no
+    // struct's slot
+    return pathSetUntagged(pathSetUnsure(result));
 }
 
 // Store a value carrying 'holds' into an lval. 'rvalp' is the value's slot,
@@ -1220,7 +1646,7 @@ static void pwStore(INode **lvalp, PathSet *holds, INode **rvalp) {
         // was not live before, so what its old value was pending on is dropped.
         uint32_t index = pathVar(var);
         Place pl = { index, 0, 0 };
-        pwStoreEscapes(*lvalp, &pl, holds);
+        pwStoreEscapes(*lvalp, &pl, holds, rvalp ? *rvalp : NULL);
         pwAccess(&pl, itypeNeedsFinal(var->vtype) ? AccessReplace : AccessWrite, *lvalp);
         if (pathVars[index].holder) {
             pwHolderDies(index);
@@ -1241,8 +1667,8 @@ static void pwStore(INode **lvalp, PathSet *holds, INode **rvalp) {
     // Part of a local's own value: its old value is released if the local holds one
     if (pathDrops && !pl.deref && pathVars[pl.var].tracked && flowLvalRootVar(*lvalp) == pathVars[pl.var].var)
         dropPartStore(pl.var, *lvalp);
-    pwStoreEscapes(*lvalp, &pl, holds);
-    pwStoreInto(pl.var, pwPlaceLevel(&pl), pwPlaceLevel(&pl), holds);
+    pwStoreEscapes(*lvalp, &pl, holds, rvalp ? *rvalp : NULL);
+    pwStoreInto(pl.var, pwPlaceLevel(&pl), pwPlaceLevel(&pl), pwStoreTagged(&pl, holds));
 }
 
 static PathSet *pwAssign(AssignNode *node) {
@@ -1285,6 +1711,8 @@ static void pwSwap(SwapNode *node) {
             pl->far = 0;
             pl->use = *sides[i];
             pl->referent = NULL;
+            pl->slotted = NULL;
+            pl->slots = 0;
             holds[i] = pathVars[whole[i]].holds;
             pwAccess(pl, itypeNeedsFinal(var->vtype) ? AccessReplace : AccessWrite, *sides[i]);
             pwDropUse(pl, *sides[i], 0);
@@ -1304,10 +1732,10 @@ static void pwSwap(SwapNode *node) {
     for (int i = 0; i < 2; ++i) {
         if (!found[i])
             continue;
-        pwStoreEscapes(*sides[i], &places[i], holds[1 - i]);
+        pwStoreEscapes(*sides[i], &places[i], holds[1 - i], NULL);
         if (!whole[i]) {
             int level = pwPlaceLevel(&places[i]);
-            pwStoreInto(places[i].var, level, level, holds[1 - i]);
+            pwStoreInto(places[i].var, level, level, pwStoreTagged(&places[i], holds[1 - i]));
         }
     }
     // Two holders exchange what they hold, and what each is pending on goes
@@ -1432,12 +1860,16 @@ static PathSet *pwStmts(BlockNode *blk, int move) {
     PathSet *value = NULL;
     INode **nodesp;
     uint32_t cnt;
+    // An operator's rewrite keeps every statement's temporaries to its end, as
+    // generation does (FlagKeepTemps)
+    int keeptemps = blk->flags & FlagKeepTemps;
+    uint32_t blocktempmark = ntemps;
     for (nodesFor(blk->stmts, cnt, nodesp)) {
         if (dead)
             break;
         // The temporaries a statement makes die at its end, a value it hands
         // on still carrying what it borrowed of them
-        uint32_t tempmark = ntemps;
+        uint32_t tempmark = keeptemps ? blocktempmark : ntemps;
         switch ((*nodesp)->tag) {
         case VarDclTag:
             pwVarDcl((VarDclNode *)*nodesp);
@@ -1469,8 +1901,21 @@ static PathSet *pwStmts(BlockNode *blk, int move) {
                 uint32_t apart;
                 if (local)
                     loanEscape(ret->exp, local, LoanEscapeReturn);
-                else if (pwSig->lifenamed && (apart = loanCallerApart(carried, pwSig->rettype)))
+                else if (pwSig->lifenamed && (apart = loanCallerApart(pwSig, carried, pwSig->rettype)))
                     loanApart(ret->exp, apart, NULL, LoanEscapeReturn);
+                else
+                    pwBoundHolds(ret->exp, pwSig->rettype, carried);
+                // On a GPU target, each return hands back one place
+                // (flowloan.h, "GPU targets")
+                uint32_t la, lb;
+                if (pathGpuChoices && pwCarries(pwSig->rettype)) {
+                    if (!pwRetSeen) {
+                        pwRetFirst = carried;
+                        pwRetSeen = 1;
+                    }
+                    else if (loanNearApart(pwRetFirst, carried, &la, &lb))
+                        loanChosen(ret->exp, la, lb);
+                }
             }
             pwExit(*nodesp, 0);
             pwScopeEnd(0);
@@ -1499,7 +1944,7 @@ static PathSet *pwStmts(BlockNode *blk, int move) {
         }
         if (dead)
             ntemps = tempmark;
-        else
+        else if (!keeptemps || cnt == 1)
             pwTempsEnd(tempmark, NULL);
     }
     return value;
@@ -1517,6 +1962,22 @@ static PathFrame *pwFramePush(BlockNode *blk) {
     return frame;
 }
 
+// On a GPU target, the value of 'node' -- an 'if', or a block left by 'break'
+// -- must point at one place on every path it arrives by (flowloan.h, "GPU
+// targets")
+static void pwGpuOneValue(INode *node, PathDelta *paths) {
+    if (!pathGpuChoices || paths == NULL || !pwCarries(((IExpNode *)node)->vtype))
+        return;
+    // The paths are pushed, last first: the message names them as written
+    uint32_t la, lb;
+    for (PathDelta *path = paths->next; path; path = path->next) {
+        if (loanNearApart(paths->value, path->value, &la, &lb)) {
+            loanChosen(node, lb, la);
+            return;
+        }
+    }
+}
+
 // The join of the paths that left a block by 'break', or fell out of its end
 static PathSet *pwBlockExits(PathFrame *frame, PathSet *value, int fallthrough) {
     if (frame->exits == NULL)
@@ -1524,6 +1985,7 @@ static PathSet *pwBlockExits(PathFrame *frame, PathSet *value, int fallthrough) 
     PathDelta *paths = frame->exits;
     if (fallthrough)
         paths = pathDeltaPush(paths, pathDelta(frame->mark, value));
+    pwGpuOneValue((INode *)frame->blk, paths);
     pathRollback(frame->mark);
     value = NULL;
     for (PathDelta *path = paths; path; path = path->next)
@@ -1605,6 +2067,7 @@ static PathSet *pwLoop(BlockNode *blk) {
     PathFrame *frame = &frames[f];
     PathSet *value = NULL;
     if (frame->exits) {
+        pwGpuOneValue((INode *)blk, frame->exits);
         for (PathDelta *path = frame->exits; path; path = path->next)
             value = pathSetUnion(value, path->value);
         pathJoin(frame->exits, 0);
@@ -1649,7 +2112,9 @@ static PathSet *pwIf(IfNode *ifnode, int move) {
         dead = 0;
         pathRollback(condmark);
     }
-    if (!haselse)
+    if (haselse)
+        pwGpuOneValue((INode *)ifnode, paths);
+    else
         paths = pathDeltaPush(paths, pathDelta(mark, NULL));
     pathRollback(mark);
     if (paths == NULL)
@@ -1681,20 +2146,30 @@ static PathSet *pwValue(INode **nodep, int move) {
     case ArrayBorrowTag:
         return pwBorrow(node, 0);
     case AllocateTag:
-        return pwValue(&((RefNode *)node)->vtexp, 1);
+        return pathSetUntagged(pwValue(&((RefNode *)node)->vtexp, 1));
     case VTupleTag:
     case TypeLitTag:
     {
-        // Each element's loans are in flight until the value is built
+        // Each element's loans are in flight until the value is built. In a
+        // struct declaring lifetimes, each field's are held in its slot,
+        // where it holds one (flowloan.h); elsewhere a value's tags are not
+        // of the type it is part of.
         PathSet *holds = NULL;
         INode **nodesp;
         uint32_t cnt;
         uint32_t mark = loanFlightMark();
         Nodes *elems = node->tag == VTupleTag ? ((TupleNode *)node)->elems : ((FnCallNode *)node)->args;
+        StructNode *slotted = node->tag == TypeLitTag ? lifeSlotted(((IExpNode *)node)->vtype) : NULL;
+        uint32_t fieldi = 0;
         for (nodesFor(elems, cnt, nodesp)) {
             INode **valp = (*nodesp)->tag == NamedValTag ? &((NamedValNode *)*nodesp)->val : nodesp;
             PathSet *carried = pwValue(valp, node->tag == TypeLitTag || move);
             loanFlightPush(carried, 0);
+            uint32_t tag = 0;
+            if (slotted && fieldi < slotted->fields.used)
+                tag = lifeFieldTag(slotted, (FieldDclNode *)nodelistGet(&slotted->fields, fieldi));
+            ++fieldi;
+            carried = tag ? pathSetRemake(carried, RemakeTagged, tag, 0) : pathSetUntagged(carried);
             holds = pathSetUnion(holds, carried);
         }
         loanFlightPop(mark);
@@ -1709,7 +2184,7 @@ static PathSet *pwValue(INode **nodep, int move) {
         for (nodesFor(((ArrayNode *)node)->elems, cnt, nodesp)) {
             PathSet *carried = pwValue(nodesp, 1);
             loanFlightPush(carried, 0);
-            holds = pathSetUnion(holds, carried);
+            holds = pathSetUnion(holds, pathSetUntagged(carried));
         }
         loanFlightPop(mark);
         return holds;
@@ -1720,9 +2195,19 @@ static PathSet *pwValue(INode **nodep, int move) {
             return pwOwnedLent((CastNode *)node);
         // A conversion moves nothing but an owner it carries; whatever borrow
         // its value holds came from its operand ('case imm e Some' converts
-        // the matched 'Option[&T]' to its 'Some[&T]')
+        // the matched 'Option[&T]' to its 'Some[&T]'), of no struct's slot
         PathSet *holds = pwValue(&((CastNode *)node)->exp, flowCastCarries(node) ? move : 0);
-        return pwCarries(((IExpNode *)node)->vtype) ? holds : NULL;
+        // One into an owning virtual reference ('So[Trait]' from a 'So[H]')
+        // keeps its operand's value under a type that names no lifetime, so
+        // nothing after follows what it holds: it may hold only global
+        // borrows, Rust's 'Box<dyn Trait>' being 'dyn Trait + 'static'
+        // (lifetime.h, "Lifetime bounds")
+        if (pathLoans && (node->flags & FlagConvert) && flowCastCarries(node)) {
+            uint32_t loan = loanNotStaticIn(pwSig, holds);
+            if (loan)
+                loanNotBoxable(node, loan);
+        }
+        return pwCarries(((IExpNode *)node)->vtype) ? pathSetUntagged(holds) : NULL;
     }
     case IsTag:
         pwValue(&((CastNode *)node)->exp, 0);
@@ -1753,6 +2238,7 @@ static PathSet *pwValue(INode **nodep, int move) {
         return pwValue(&((TempNode *)node)->exp, move);
     case SizeofTag:
     case NilLitTag:
+    case NullLitTag:
     case ULitTag:
     case FLitTag:
     case StringLitTag:
@@ -1763,6 +2249,40 @@ static PathSet *pwValue(INode **nodep, int move) {
         errorUnreachable(node, "a value node the loan walk has no case for");
         return NULL;
     }
+}
+
+// What a parameter holds as the walk begins: a caller loan for each part of
+// what it lends (LifePart, lifetime.h) -- what its own borrowed reference
+// points at, near; and what that holds, far, or what a parameter passed by
+// value holds, both near and far, since it stands for what the value's own
+// borrows point at and for anything further on -- whole, or, for a struct
+// declaring lifetimes, one per slot, tagged with it. A part a type
+// parameter's ''static' bound makes global (lifePartStatic) is no loan, as a
+// ''static' parameter's is not.
+static PathSet *pwCallerLoans(uint32_t var) {
+    INode *parmtype = pathVars[var].var->vtype;
+    PathSet *holds = NULL;
+    int byvalue = 1;
+    if (lifeIsOwnBorrow(parmtype)) {
+        if (!lifePartStatic(pwSig, parmtype, LifePartOwn))
+            holds = pathSetAdd(holds, loanCaller(var, LifePartOwn));
+        byvalue = 0;
+    }
+    INode *held = lifeHeld(parmtype);
+    if (held == NULL)
+        return holds;
+    StructNode *slotted = lifeSlotted(held);
+    uint32_t nparts = slotted ? slotted->lifeparms->count : 1;
+    for (uint32_t k = 0; k < nparts; ++k) {
+        if (lifePartStatic(pwSig, parmtype, slotted ? LifePartSlot + k : LifePartHeld))
+            continue;
+        uint32_t entry = slotted ? loanCaller(var, LifePartSlot + k) | ((k + 1) << LoanTagShift)
+            : loanCaller(var, LifePartHeld);
+        holds = pathSetAdd(holds, entry | LoanFar);
+        if (byvalue)
+            holds = pathSetAdd(holds, entry);
+    }
+    return holds;
 }
 
 void flowPathWalk(FnDclNode *fndcl, int loans, int drops) {
@@ -1779,6 +2299,9 @@ void flowPathWalk(FnDclNode *fndcl, int loans, int drops) {
         ++statLoanFns;
     pathLoans = loans;
     pathDrops = drops;
+    pathGpuChoices = flowGpu && loans;
+    pwRetFirst = NULL;
+    pwRetSeen = 0;
     loanWalkBegin();
     if (drops)
         dropWalkBegin();
@@ -1794,8 +2317,8 @@ void flowPathWalk(FnDclNode *fndcl, int loans, int drops) {
 
     // The parameters are variables of the function's block; what a caller lent
     // through one is the caller's to freeze, and outlives the call: each holds
-    // its caller loan. One whose lifetime is ''static' holds a global borrow,
-    // which is no loan.
+    // its caller loans (pwCallerLoans). One whose lifetime is ''static' holds a
+    // global borrow, which is no loan.
     INode **nodesp;
     uint32_t cnt;
     pwSig = (FnSigNode *)fndcl->vtype;
@@ -1803,7 +2326,7 @@ void flowPathWalk(FnDclNode *fndcl, int loans, int drops) {
     for (nodesFor(pwParms, cnt, nodesp)) {
         uint32_t index = pathVar((VarDclNode *)*nodesp);
         if (loans && pathVars[index].holder && !lifeIsStatic(((VarDclNode *)*nodesp)->vtype))
-            pathSetFacts(index, pathSetAdd(NULL, loanCaller(index)), NULL);
+            pathSetFacts(index, pwCallerLoans(index), NULL);
     }
     pwBlock((BlockNode *)fndcl->value, 1, 1);
     if (drops)

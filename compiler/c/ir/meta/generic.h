@@ -35,10 +35,19 @@ GenericInfo *genericGetInfo(INode *node);
 // walk runs on that gives out, with no diagnostic at all.
 //
 // Enter reports and returns 0 when the limit is reached; the caller substitutes
-// an error node for what it could not expand. Every successful Enter is paired
-// with an Exit once the expansion has been analyzed.
+// an error node for what it could not expand. From then until the outermost
+// expansion has unwound, Enter returns 0 without a report: what the levels
+// above try next is not started, so an expansion that branches still ends.
+// Every successful Enter is paired with an Exit once the expansion has been
+// analyzed.
 int genericInstantiateEnter(INode *errnode);
 void genericInstantiateExit();
+
+// The expansion depth, kept with a layout a reference's target left waiting and
+// restored while it is laid out: an instance laid out later is still that deep,
+// so an expansion through references ('next &Box[Box[T]]') is bounded too
+uint32_t genericInstantiateDepth();
+void genericInstantiateDepthSet(uint32_t depth);
 
 // Perform generic substitution, if this is a correctly set up generic "fncall"
 // Return 1 if done/error needed. Return 0 if not generic or it leaves behind a lit/fncall that needs processing.
@@ -81,6 +90,12 @@ int genericTypeIs(INode *type, StructNode *trait);
 // argument reaches was not yet laid out, and refuse one that is not after all.
 // Called once, when type check has finished.
 void genericSendableCheckAll();
+
+// Why a type is not Sendable, as the thread check's diagnostics say it: where
+// the culprit sits in it, into 'what', and what kind of thing it is, into
+// 'reason', each 512 bytes. Returns whether the cause is a borrow or a
+// permission, which a diagnostic says is not a local's own 'mut'
+int genericNotSendableWhy(INode *arg, char *what, char *reason);
 
 // When the method or function 'name' is absent from the generic type instance
 // 'typedcl' because its 'where' clause is not met there, report so at

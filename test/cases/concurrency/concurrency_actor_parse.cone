@@ -1,0 +1,48 @@
+// What an actor's declaration may not say, refused where it is written, at
+// parse: a parse diagnostic stops the compile before name resolution, which is
+// why these are a file of their own.
+//
+// - A message returns nothing (ErrorActorReturn): a send queues it and returns
+//   at once, before the method runs. Replies are messages sent back.
+// - A message carrying a borrow is refused as not Sendable whatever it
+//   borrows (ErrorNotSendable): no borrow leaves its thread.
+// - The rest is ErrorActorMember: a field is private state, never 'pub'; no
+//   static, which every actor of the kind would share across threads; a
+//   'pub' function without 'self' would run on no actor; a message is not
+//   generic yet; a message's 'self' is the state lent for the message, so
+//   'self &uni' is the finalizer's alone; 'extern' and a macro have no place;
+//   and a generic actor, or one naming an abstraction, is not built.
+// A private method may return a value: it is called on the actor, from its
+// own methods (fine).
+
+mod concurrency_actor_parse;
+
+import actors;
+
+actor Bad {
+  pub count u64;                          //~ ErrorActorMember "a field of an actor is never 'pub'"
+  static mut shared u64 = 0u64;           //~ ErrorActorMember "An actor has no 'static'"
+
+  pub fn total(self) u64 {count;}         //~ ErrorActorReturn "Actor Bad's message total returns nothing"
+  pub fn peek(self, r &u64) {}            //~ ErrorNotSendable "Actor Bad's message peek takes r, a borrowed reference"
+  pub fn pick[T](self, x T) {}            //~ ErrorActorMember "Actor Bad's message pick is generic"
+  pub fn make() u64 {0u64;}               //~ ErrorActorMember "make has no 'self', so it would not run on actor Bad"
+  pub fn whole(self &uni) {}              //~ ErrorActorMember "whole's 'self' is actor Bad's state"
+  extern fn elsewhere(self);              //~ ErrorActorMember "'extern' declares one defined elsewhere"
+  macro twice[x] {x + x;}                 //~ ErrorActorMember "does not declare a macro yet"
+  fn fine(self) u64 {count;}
+}
+
+actor Many[T] {                           //~ ErrorActorMember "Actor Many takes type parameters"
+  pub fn take(self, x u64) {}
+}
+
+trait Shape {
+  fn area(self &) u64;
+}
+
+actor Square is Shape {                   //~ ErrorActorMember "Actor Square names an abstraction or a base"
+  pub fn grow(self) {}
+}
+
+fn main() {}

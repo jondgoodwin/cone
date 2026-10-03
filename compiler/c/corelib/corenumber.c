@@ -281,6 +281,43 @@ INsTypeNode *newArrayRefTypeMethods() {
     return reftypenode;
 }
 
+// An integer type's bit methods, 'x.leadingZeros()' and the rest: core's bit
+// intrinsics (mem.countOnes ...), each the instance the generic declaration's
+// would be for this type, its node carrying the type as its typearg, so that
+// generation answers both from the registry's one entry. Made once every
+// number type exists, since a count is a u32.
+static void nbrBitMethods(NbrNode *nbrtype) {
+    static struct { char *name; int16_t kind; int amount; } bitmeths[] = {
+        {"countOnes", CountOnesIntrinsic, 0},
+        {"leadingZeros", LeadingZerosIntrinsic, 0},
+        {"trailingZeros", TrailingZerosIntrinsic, 0},
+        {"rotateLeft", RotateLeftIntrinsic, 1},
+        {"rotateRight", RotateRightIntrinsic, 1},
+        {"shlMasked", ShlMaskedIntrinsic, 1},
+        {"shrMasked", ShrMaskedIntrinsic, 1},
+    };
+    NameUseNode *selftype = newNameUseNode(nbrtype->namesym);
+    selftype->dclnode = (INode*)nbrtype;
+    Name *self = nametblFind("self", 4);
+
+    FnSigNode *countsig = newFnSigNode();
+    countsig->rettype = (INode*)u32Type;
+    nodesAdd(&countsig->parms, (INode *)newVarDclFull(self, VarDclTag, (INode*)selftype, newPermUseNode(immPerm), NULL));
+
+    FnSigNode *amountsig = newFnSigNode();
+    amountsig->rettype = (INode*)selftype;
+    nodesAdd(&amountsig->parms, (INode *)newVarDclFull(self, VarDclTag, (INode*)selftype, newPermUseNode(immPerm), NULL));
+    nodesAdd(&amountsig->parms, (INode *)newVarDclFull(nametblFind("n", 1), VarDclTag, (INode*)u32Type, newPermUseNode(immPerm), NULL));
+
+    for (size_t i = 0; i < sizeof(bitmeths) / sizeof(bitmeths[0]); ++i) {
+        IntrinsicNode *node = newIntrinsicNode(bitmeths[i].kind);
+        node->typearg = (INode*)selftype;
+        Name *name = nametblFind(bitmeths[i].name, strlen(bitmeths[i].name));
+        iNsTypeAddFn((INsTypeNode*)nbrtype, newFnDclNode(name, FlagMethFld | FlagPub,
+            (INode *)(bitmeths[i].amount ? amountsig : countsig), (INode *)node));
+    }
+}
+
 // Declare built-in number types and their names
 void stdNbrInit(int ptrsize) {
     boolType = newNbrTypeNode("Bool", UintNbrTag, 1);
@@ -296,6 +333,11 @@ void stdNbrInit(int ptrsize) {
     isizeType = newNbrTypeNode("isize", IntNbrTag, ptrsize);
     f32Type = newNbrTypeNode("f32", FloatNbrTag, 32);
     f64Type = newNbrTypeNode("f64", FloatNbrTag, 64);
+
+    NbrNode *integers[] = {u8Type, u16Type, u32Type, u64Type, usizeType,
+        i8Type, i16Type, i32Type, i64Type, isizeType};
+    for (size_t i = 0; i < sizeof(integers) / sizeof(integers[0]); ++i)
+        nbrBitMethods(integers[i]);
 
     ptrType = newPtrTypeMethods();
     refType = newRefTypeMethods();

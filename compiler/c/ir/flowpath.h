@@ -37,6 +37,8 @@ extern PathSet pathSetAll;
 PathSet *pathSetAdd(PathSet *set, uint32_t id);
 PathSet *pathSetUnion(PathSet *a, PathSet *b);
 int pathSetHas(PathSet *set, uint32_t id);
+// Does a loan set hold the loan 'loan', near or far, with any tag (flowloan.h)?
+int pathSetHasLoan(PathSet *set, uint32_t loan);
 
 // A place: somewhere a value lives. A root variable, or what the root variable
 // (a borrowed reference) points at, and a path of steps from it. Two places
@@ -64,6 +66,9 @@ typedef struct {
     INode *use;         // the name use of the root variable, where a use of it is reported
     INode *referent;    // deref: the type the root variable, read itself as the reference, points
                         // at; NULL when the reference was read from a part of it
+    StructNode *slotted; // A struct declaring lifetimes whose field the path's first step is, where
+                        // the root variable's loans are tagged by its slots (flowloan.h); else NULL
+    uint32_t slots;     // then, the slots of that field (lifeFieldSlots)
 } Place;
 // A step is a field's name (a Name pointer, so even), a tuple element's index
 // ((n << 2) | 2), an element of an array (any index: all overlap), or a
@@ -105,7 +110,11 @@ typedef struct {
     uint32_t jcnt;
     PathSet *jholds;
     PathSet *jpending;
-    uint8_t holder;     // its type carries a borrow, so it may hold a loan
+    PathSet *jfirst;    // scratch: a join on a GPU target, what the first path gives it
+    uint32_t jla;       // scratch: a join on a GPU target, a loan of each of two paths that differ
+    uint32_t jlb;
+    uint8_t japart;     // scratch: a join on a GPU target, two paths gave it different places
+    uint8_t holder;    // its type carries a borrow, so it may hold a loan
     uint8_t temp;       // a temporary's stand-in (TempNode.walkvar), ending with its statement
     uint8_t state;     // drop-flag client: what it may hold here (DropState bits)
     uint8_t jstate;     // scratch: a join

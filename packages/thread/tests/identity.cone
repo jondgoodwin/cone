@@ -13,19 +13,10 @@ mod identity;
 
 import testing use *;
 import thread;
+import time use Duration, Instant;
 
 extern {
-  fn @c(system) QueryPerformanceCounter(count *i64) i32;
-  fn @c(system) QueryPerformanceFrequency(freq *i64) i32;
   fn @c(system) GetCurrentThreadId() u32;
-}
-
-fn nowNs() i64 {
-  mut count = 0i64;
-  mut freq = 0i64;
-  QueryPerformanceCounter(&mut count as *i64);
-  QueryPerformanceFrequency(&mut freq as *i64);
-  i64.from(f64.from(count) * 1000000000.0d / f64.from(freq));
 }
 
 // What a thread sees of itself
@@ -79,21 +70,22 @@ fn main() i32 {
   expect(thread.parallelism() > 0u32, "parallelism is at least 1");
 
   // Sleep: never short, and far finer than a 15.6 ms clock tick
-  mut quickest = 1000000000i64;
+  mut quickest = Duration.fromSeconds(1);
   mut n = 0;
   while n < 5 {
-    imm before = nowNs();
-    thread.sleep(1000000u64);
-    imm took = nowNs() - before;
+    imm before = Instant.now();
+    thread.sleep(Duration.fromMillis(1));
+    imm took = before.elapsed();
     if took < quickest { quickest = took; }
     n = n + 1;
   }
-  expect(quickest >= 1000000i64, "a 1 ms sleep takes at least 1 ms");
-  expect(quickest < 8000000i64, "the quickest 1 ms sleep takes under 8 ms");
+  expect(quickest >= Duration.fromMillis(1), "a 1 ms sleep takes at least 1 ms");
+  expect(quickest < Duration.fromMillis(8), "the quickest 1 ms sleep takes under 8 ms");
 
-  imm before0 = nowNs();
-  thread.sleep(0u64);
+  imm before0 = Instant.now();
+  thread.sleep(Duration.zero());
+  thread.sleep(Duration.fromMillis(-5));
   thread.yieldNow();
-  expect(nowNs() - before0 < 1000000000i64, "sleep(0) and yieldNow return");
+  expect(before0.elapsed() < Duration.fromSeconds(1), "a sleep of zero, or less, and yieldNow return");
   done();
 }

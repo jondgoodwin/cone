@@ -40,14 +40,29 @@ typedef struct BuildDesc {
     int library;            // 'output: library': the root is named, and prefixes every symbol
 } BuildDesc;
 
+// Where a field's or a parameter's type and default value are written, which
+// an 'actor' copies into the declarations it generates (parseactor.c)
+typedef struct DclText {
+    INode *dcl;             // The field or parameter
+    char *type, *typeend;   // Its type as written; NULL where none is
+    char *value, *valueend; // Its default value, after the '='; NULL where none is
+} DclText;
+
+typedef struct DclTexts {
+    DclText *items;
+    uint32_t count, avail;
+} DclTexts;
+
 typedef struct ParseState {
     ProgramNode *pgm;       // Program node
     ModuleNode *mod;        // Current module
     INsTypeNode *typenode;  // Current type
     int inrettype;          // Non-zero while parseFnSig reads a return type, where a '{' opens the declared function's body
+    int inlist;             // Non-zero inside a parenthesised or bracketed list, where a comma continues the list, so a
+                            // function signature read there ends its return type before it (parseFnSig)
     int intype;             // Non-zero while parseType reads a type, where '&new' is a permission, not a borrow of a construction
-    FnSigNode *lifesig;     // The signature whose types are being read, where a borrowed reference may name its lifetime ('&'a T');
-                            // NULL elsewhere, and inside a type's arguments
+    FnSigNode *lifesig;     // The signature whose types are being read, where a type may name lifetimes ('&'a T', 'Cursor['a]'); NULL elsewhere
+    StructNode *lifestruct; // The struct (or enum) whose field's type is being read, which may name its lifetimes; NULL elsewhere
     int entryparen;         // Non-zero while an entry after '<-' is begun: a '(' first is a parenthesized list of entries (parseEntry)
     ModuleNode *core;       // The core package, once loaded: every module loaded after it imports it
     BuildModule *build;     // The build description's entry for the current module; NULL where it is not described
@@ -63,7 +78,20 @@ typedef struct ParseState {
     char *bodyendp;         // Just past that body or value
     char *nameendp;         // A variable: just past its name
     int typed;              // A variable: its type is written
+    char *typep;            // A variable: where its type is written, and just past it; NULL where none is
+    char *typeendp;
+
+    // While an actor's body is read, where each field's and parameter's type
+    // and default value are written (parseFieldDclBody, parseFnSig); else NULL
+    DclTexts *dcltexts;
 } ParseState;
+
+// Record where a field's or a parameter's type and value are written, when an
+// actor's body is being read
+void parseDclText(ParseState *parse, INode *dcl, char *type, char *typeend, char *value, char *valueend);
+
+// actor: 'actor Name { ... }', with the lexer on 'actor' (parseactor.c)
+void parseActor(ParseState *parse, uint16_t pubflag);
 
 // When parsing a variable definition, what syntax is allowed?
 enum ParseFlags {
@@ -110,15 +138,23 @@ void parseBadStatic(uint16_t staticflag);
 int parseCAttr(DclInfo *dclinfo, int onmod);
 // Report 'extern' on an inline or generic fn, whose body its user must have
 void parseExternFnCheck(FnDclNode *fn);
+// A module's 'fn' or global, added to the module
+INode *parseFnOrVar(ParseState *parse, uint16_t flags);
+// Skip a declaration's '{ ... }' whole, or resync at the next ';'
+void parseSkipDclBody();
 
 // parsefnflow.c
 INode *parseFn(ParseState *parse, uint16_t mayflags);
 // Parse a macro declaration
 MacroDclNode *parseMacro(ParseState *parse);
-// Parse a list of generic variables and add to the genericnode
-Nodes *parseGenericParms(ParseState *parse, int annotate);
-// Parse a 'where' clause, with the lexer on 'where', into '*wherep'
-void parseWhere(ParseState *parse, Nodes **wherep);
+// Parse a list of generic variables and add to the genericnode; a struct's
+// lifetimes among them go to '*lifes' (NULL refuses them), and a type
+// parameter's lifetime bounds, '[T + 'a]', to '*bounds' (NULL refuses them)
+Nodes *parseGenericParms(ParseState *parse, int annotate, LifeParms **lifes, LifeOrder **bounds);
+// Parse a 'where' clause, with the lexer on 'where', into '*wherep', and its
+// lifetime comparisons into '*orderp' (NULL refuses them), with its type
+// parameters' lifetime bounds, 'T + 'a', where 'bounds' allows them
+void parseWhere(ParseState *parse, Nodes **wherep, LifeOrder **orderp, int bounds);
 INode *parseIf(ParseState *parse);
 INode *parseMatch(ParseState *parse);
 INode *parseWhile(ParseState *parse, Name *lifesym, int stmtflag);

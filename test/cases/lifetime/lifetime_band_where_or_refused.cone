@@ -1,0 +1,30 @@
+// A lifetime comparison joins a where clause by 'and' only: one under 'or',
+// directly or inside a group an 'or' joins, or under 'not', is refused, and
+// so is a comparison of another form than '>=' or '=='. A type clause keeps
+// its 'or' (generic_typecheck_where_or).
+//
+// Verdict: refuse, ErrorLifetimeOr at each 'or' and 'not' over a lifetime
+// comparison, ErrorWhereForm at the '>'.
+// Basis: a lifetime is never instanced, so no instance settles which
+// alternative of an 'or' holds, and the body could rely on none of them.
+// Master b07a3adc: refused at parse (ErrorWhereForm: a 'where' clause is a
+// type parameter's name, 'is', and a trait).
+
+mod lifetime_band_where_or_refused;
+
+struct R { pub n i64; }
+
+fn orLife[T](x &'a T, y &'b T) &'b T where 'a >= 'b or T is Copy {    //~ ErrorLifetimeOr "by 'and' only"
+  y;
+}
+
+fn notLife(x &'a R, y &'b R) &'b R where not 'a >= 'b {            //~ ErrorLifetimeOr "never under 'not'"
+  y;
+}
+
+fn groupedOr[T](x &'a T, y &'b T) &'b T where T is Copy or ('a >= 'b and T is Copy) {   //~ ErrorLifetimeOr "by 'and' only"
+  y;
+}
+
+fn badForm(x &'a R, y &'b R) where 'a > 'b {                       //~ ErrorWhereForm "compares two lifetimes"
+}

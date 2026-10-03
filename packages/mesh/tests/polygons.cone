@@ -1,0 +1,99 @@
+// triangulatePolygon, checked with the testing package against values worked
+// out by hand; only a failure prints, so polygons.out holds the summary alone.
+// (These checks were geomath's, in its plane test, before triangulation moved
+// here; their values are unchanged.)
+//
+// Triangulation by ear clipping of a square both ways round, an L, an
+// arrowhead and a square with a fifth corner on an edge, each giving n - 2
+// triangles, all counterclockwise, whose areas sum to the polygon's, and none
+// covering the polygon's notch; two points make no triangle.
+
+mod polygons;
+
+import testing use *;
+import collections use List;
+import geomath use *;
+import mesh use *;
+
+imm close = 0.0001d;
+
+// Twice the signed area of the triangle the indices at 'at' name
+fn triArea(pts &[]Vec2, tris &List[u32], at usize) f32 {
+  imm a = pts[usize.from(*tris[at])];
+  imm b = pts[usize.from(*tris[at + 1usize])];
+  imm c = pts[usize.from(*tris[at + 2usize])];
+  (b - a).cross(c - a) * 0.5;
+}
+
+// Whether p lies strictly inside any of the triangles
+fn anyCovers(pts &[]Vec2, tris &List[u32], p Vec2) Bool {
+  mut i = 0usize;
+  while i < tris.len() {
+    imm a = pts[usize.from(*tris[i])];
+    imm b = pts[usize.from(*tris[i + 1usize])];
+    imm c = pts[usize.from(*tris[i + 2usize])];
+    if (b - a).cross(p - a) > 0. and (c - b).cross(p - b) > 0. and (a - c).cross(p - c) > 0. {return true;}
+    i = i + 3usize;
+  }
+  false;
+}
+
+// n - 2 triangles, each counterclockwise, their areas summing to 'area'
+fn checkTriangles(pts &[]Vec2, tris &List[u32], area f32, label &[]u8) {
+  expectInt(i64.from(tris.len()), i64.from(3usize * (pts.len - 2usize)), label);
+  mut sum f32 = 0.;
+  mut allCcw = true;
+  mut i = 0usize;
+  while i < tris.len() {
+    imm t = triArea(pts, tris, i);
+    if t <= 0. {allCcw = false;}
+    sum = sum + t;
+    i = i + 3usize;
+  }
+  expect(allCcw, label);
+  expectFloat(sum, area, close, label);
+}
+
+fn triangulations() {
+  imm square Array[Vec2, 4] = [new Vec2(0., 0.), new Vec2(2., 0.), new Vec2(2., 2.), new Vec2(0., 2.)];
+  imm cw Array[Vec2, 4] = [new Vec2(0., 0.), new Vec2(0., 2.), new Vec2(2., 2.), new Vec2(2., 0.)];
+  // An L: the square 4 by 4 less the 3 by 3 above and right of (1, 1): 16 - 9
+  imm ell Array[Vec2, 6] = [new Vec2(0., 0.), new Vec2(4., 0.), new Vec2(4., 1.), new Vec2(1., 1.), new Vec2(1., 4.), new Vec2(0., 4.)];
+
+  // The square's first ear is corner 0, between 3 and 1; then 3, 1, 2 remain
+  imm sq = triangulatePolygon(&square);
+  checkTriangles(&square, &sq, 4., "square triangulated");
+  expectInt(i64.from(*sq[0usize]), 3, "square's first triangle, a");
+  expectInt(i64.from(*sq[1usize]), 0, "square's first triangle, b");
+  expectInt(i64.from(*sq[2usize]), 1, "square's first triangle, c");
+  expectInt(i64.from(*sq[3usize]), 3, "square's second triangle, a");
+  expectInt(i64.from(*sq[4usize]), 1, "square's second triangle, b");
+  expectInt(i64.from(*sq[5usize]), 2, "square's second triangle, c");
+  imm sqcw = triangulatePolygon(&cw);
+  checkTriangles(&cw, &sqcw, 4., "clockwise square triangulated counterclockwise");
+  imm lt = triangulatePolygon(&ell);
+  checkTriangles(&ell, &lt, 7., "L triangulated");
+  expect(!anyCovers(&ell, &lt, new Vec2(2., 2.)), "no triangle of the L covers its notch");
+  // An arrowhead, its back notched in to (1, 2): (4*4 - 1*4) / 2 = 6
+  imm arrow Array[Vec2, 4] = [new Vec2(0., 0.), new Vec2(4., 2.), new Vec2(0., 4.), new Vec2(1., 2.)];
+  imm at = triangulatePolygon(&arrow);
+  checkTriangles(&arrow, &at, 6., "arrowhead triangulated");
+  expect(!anyCovers(&arrow, &at, new Vec2(0.5, 2.)), "no triangle of the arrowhead covers its notch");
+  // Its one inner diagonal runs from (4, 2) to the notch (1, 2), along y = 2,
+  // so a point below that line is inside a triangle, not on an edge
+  expect(anyCovers(&arrow, &at, new Vec2(2., 1.5)), "the arrowhead's middle is covered");
+  // A square with a fifth corner halfway along its bottom edge, where it
+  // does not turn: that corner is never an ear, but its neighbours are
+  imm five Array[Vec2, 5] = [new Vec2(0., 0.), new Vec2(1., 0.), new Vec2(2., 0.), new Vec2(2., 2.), new Vec2(0., 2.)];
+  imm ft = triangulatePolygon(&five);
+  checkTriangles(&five, &ft, 4., "square with a corner on an edge triangulated");
+  imm line Array[Vec2, 2] = [new Vec2(0., 0.), new Vec2(1., 0.)];
+  // (A local: a method on a returned List is refused, 1016)
+  imm lineTris = triangulatePolygon(&line);
+  expectInt(i64.from(lineTris.len()), 0, "two points make no triangle");
+}
+
+fn main() i32 {
+  triangulations();
+  done();
+}

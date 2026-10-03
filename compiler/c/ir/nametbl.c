@@ -134,6 +134,25 @@ Name *nametblFind(char *strp, size_t strl) {
     return *slotp;
 }
 
+/** A name that is not in the table, so that no source can spell it: the same
+ * string written anywhere, back-ticked or not, is another Name. It reads as
+ * its string in a diagnostic, and binds and hooks as any name does, since
+ * bindings are by the Name, never by its string. The declarations an 'actor'
+ * generates are named so (parseactor.c). */
+Name *nametblPrivate(char *strp, size_t strl) {
+    size_t hash;
+    if (strl > 255)
+        strl = 255;
+    nameHashFn(hash, strp, strl);
+    Name *newname = memAllocBlk(sizeof(Name) + strl);
+    memcpy(&newname->namestr, strp, strl);
+    (&newname->namestr)[strl] = '\0';
+    newname->hash = hash;
+    newname->namesz = (unsigned char)strl;
+    newname->node = NULL;
+    return newname;
+}
+
 // Return size of unused space for name table
 size_t nametblUnused() {
     return (gNameTblAvail-gNameTblUsed)*sizeof(Name*);
@@ -149,10 +168,12 @@ void nametblInit() {
     tempLocalName = nametblFind("-temp", 5);
     selfName = nametblFind("self", 4);
     staticLifeName = nametblFind("'static", 7);
+    unknownBrandName = nametblFind("'=?", 3);
     selfTypeName = nametblFind("Self", 4);
     thisName = nametblFind("this", 4);
     cloneName = nametblFind("clone", 5);
     dropName = nametblFind("drop", 4);
+    typeDropName = nametblFind("-drop", 5);
     finalName = nametblFind("final", 5);
     enumFinalName = nametblFind("-final", 6);
     initName = nametblFind("init", 4);
@@ -226,6 +247,11 @@ void nametblInit() {
     integerTraitName = nametblFind("Integer", 7);
     pointerTraitName = nametblFind("Pointer", 7);
     sendableTraitName = nametblFind("Sendable", 8);
+    lockPermTraitName = nametblFind("LockPermission", 14);
+    acquireMutMethodName = nametblFind("acquireMut", 10);
+    releaseMutMethodName = nametblFind("releaseMut", 10);
+    acquireReadMethodName = nametblFind("acquireRead", 11);
+    releaseReadMethodName = nametblFind("releaseRead", 11);
 }
 
 

@@ -1,0 +1,27 @@
+// A driver that hands a connection more than its read credit has a bug:
+// the core says so with a panic at the driver's line, rather than holding
+// bytes past its bound (I9). Up to the credit is taken.
+
+mod overfeed;
+
+import stdio use *;
+import time use Instant;
+import iobuf use *;
+import http1 use *;
+
+fn main() {
+  imm pool = Pool.make();
+  mut cfg = Config.make();
+  cfg.maxBuffered = 16384usize;
+  mut s = Connection.server(cfg, pool, Instant.fromNanos(0i64));
+  mut a = pool.mustTake(16384usize);
+  a.setLen(16000usize);
+  s.handleInput(a, Instant.fromNanos(0i64));
+  printStr("16000 bytes taken, credit left: ");
+  printUInt(u64.from(s.readCredit()));
+  printStr("\n");
+  mut b = pool.mustTake(4096usize);
+  b.setLen(385usize);
+  s.handleInput(b, Instant.fromNanos(0i64));
+  printStr("not reached\n");
+}

@@ -109,8 +109,30 @@ enum IntrinsicFn {
     SrcFileIntrinsic,       // srcFile() &[]u8
     SrcLineIntrinsic,       // srcLine() u32
     // Whether this is a debug build ('conec --debug', or 'build: debug' in a
-    // build description): a constant, so a branch on it folds away
-    IsDebugBuildIntrinsic   // isDebugBuild() Bool
+    // build description): a constant, so only the side of an 'if' on it that
+    // the build takes is generated (genlIf)
+    IsDebugBuildIntrinsic,  // isDebugBuild() Bool
+    // TEMPORARY, a provisional mechanism whose final design is open: constants
+    // of the build like isDebugBuild, the target's OS from its triple, and
+    // what '-D' defined (intrinsicBuildConst)
+    IsWindowsIntrinsic,     // isWindows() Bool
+    IsLinuxIntrinsic,       // isLinux() Bool
+    IsMacOSIntrinsic,       // isMacOS() Bool
+    IsWasmIntrinsic,        // isWasm() Bool
+    IsDefinedIntrinsic,     // isDefined(name &[]u8) Bool
+    DefinedIntIntrinsic,    // definedInt(name &[]u8) i64
+    // An integer's bits. Each is also a method of every integer type
+    // (corenumber.c), its node carrying that type as its typearg, which is how
+    // 'x.leadingZeros()' reaches the same registry entry 'mem.leadingZeros(x)'
+    // does. A count of the bits of 0 is defined: the width
+    CountOnesIntrinsic,     // countOnes[T](x T) u32
+    LeadingZerosIntrinsic,  // leadingZeros[T](x T) u32
+    TrailingZerosIntrinsic, // trailingZeros[T](x T) u32
+    // The amount taken modulo the width
+    RotateLeftIntrinsic,    // rotateLeft[T](x T, n u32) T
+    RotateRightIntrinsic,   // rotateRight[T](x T, n u32) T
+    ShlMaskedIntrinsic,     // shlMasked[T](x T, n u32) T
+    ShrMaskedIntrinsic      // shrMasked[T](x T, n u32) T: arithmetic for a signed T
 };
 
 // A MemOrder, core's enum of the orderings an atomic operation promises, in the
@@ -212,5 +234,19 @@ int intrinsicSrcKind(INode *node);
 // A copy of a call to 'srcFile()' or 'srcLine()' placed at 'site': a
 // parameter's default value, taken by the call 'site', answers where that call is
 INode *intrinsicSrcCallAt(INode *call, INode *site);
+
+// TEMPORARY, a provisional mechanism whose final design is open. The options
+// the build constants are read from: the build, the target triple and each
+// '-D'. Set once by main; the triple is read only once generation's setup has
+// filled in the host's
+struct ConeOptions;
+void intrinsicBuildSetup(struct ConeOptions *opt);
+
+// Whether a node is a constant of the build, and its value: a call to
+// isDebugBuild, isWindows, isLinux, isMacOS, isWasm, isDefined or definedInt
+// (whose argument type check held to a string literal), or '!', 'and' or 'or'
+// of such constants. Generation reads it to generate only the side of an 'if'
+// the build takes (genlIf), and as the value of each call (genlFnCall)
+int intrinsicBuildConst(INode *node, int64_t *value);
 
 #endif

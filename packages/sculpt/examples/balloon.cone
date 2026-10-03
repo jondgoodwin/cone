@@ -1,0 +1,588 @@
+// balloon: hot air balloons, after Jon's photograph of two (one in
+// chevrons, one in a stepped diagonal checker), composed from the sculpt
+// package's mesh operators and drawn offscreen by render under a blue sky
+// with streaks of cloud. Nothing here is in a library: this file is the
+// whole description of the balloons.
+//
+//   congo run --release packages/sculpt/examples/balloon.cone
+//   congo run --release packages/sculpt/examples/balloon.cone -- --shots DIR/balloon --obj DIR/balloon
+//
+// ONE BALLOON, part by part (y is up, the mouth at y = 0, the equator's
+// radius about 1; drawn scaled to metres):
+// - the envelope: one cubic Bezier from the mouth to the crown, lathed into
+//   GORES x 4 columns (the lathe's "along" channel is the angle's fraction);
+//   each gore bulges between its load tapes: a channel filled from "along"
+//   (sin of the place across the gore) times the radius there, and
+//   displaceAlongNormal by it; the tapes are creased edges (semi-sharp), so
+//   subdivision keeps a valley at each; subdivided twice (the levels of
+//   detail). Its colours are an image made here, read through the lathe's
+//   uv: u around (so a gore is a column of the image), v up the profile;
+// - the skirt (scoop) below the mouth: a short open profile lathed and
+//   solidified;
+// - the burner frame: a square ring (a hexagon swept round a closed square
+//   path), four uprights (one swept, copied by arrayRadial), the burner (a
+//   lathed can);
+// - the suspension cables, from each load tape's foot at the skirt to the
+//   nearest corner of the frame: one quarter's cables swept along lines,
+//   the other three quarters by arrayRadial;
+// - the basket: an open profile (floor, wall, rim, inner wall) lathed in 4
+//   steps, so square, hollow and rimmed at once; a woven image made here,
+//   each cell's shade jittered by a seeded hash;
+// - two passengers' heads (spheres).
+//
+// A FAMILY. A Look is everything that differs between balloons: the number
+// of gores, the pattern (chevrons, stepped diagonals, gore stripes), six
+// paint colours, how fat the envelope is, the skirt's colour. The two in the
+// photograph are written out; the others come from a seed (noise.hash1), so
+// an individual costs its seed, its size and where it floats.
+//
+// '--shots PREFIX' (default 'balloon') writes PREFIX-pair.bmp (framed as the
+// photograph), PREFIX-close.bmp and PREFIX-family.bmp at 1920 x 1080; '--obj
+// PREFIX' writes the first balloon's envelope at levels 0 to 2 and its
+// skirt, rig and basket as .obj. It prints each mesh's counts and meshHash
+// (the same every run: everything is made on the CPU), and exits 0 only if
+// the hashes are the pinned ones, every shot was written, no Vulkan call
+// failed and the validation layer said nothing.
+//
+// It needs a GPU driver with Vulkan 1.3 and SDL3.dll on PATH (and SDL3.lib
+// on LIB to link); no window and no display.
+
+mod balloon;
+
+import stdio use *;
+import libc;
+import sdl;
+import collections use *;
+import geomath use *;
+import mesh;
+import noise;
+import sculpt use *;
+import gpu use *;
+import render use *;
+
+// ---- The numbers ----
+
+const SEED = 1783u32;               // the Montgolfiers' year
+const BULGE f32 = 0.045;            // a gore's bulge, per unit of radius
+const TAPE f32 = 2.;                // the load tapes' crease (sharp for two levels)
+const LEVELS = 2u32;
+// Paint, sRGB: navy, blue, teal, yellow, red, purple, white, orange, green
+imm PAINT Array[f32, 27] = [0.13, 0.15, 0.40, 0.16, 0.34, 0.78, 0.02, 0.60, 0.58, 0.98, 0.86, 0.06,
+  0.90, 0.10, 0.08, 0.50, 0.24, 0.74, 0.95, 0.95, 0.92, 0.98, 0.50, 0.06, 0.20, 0.62, 0.20];
+// Each mesh's meshHash: the envelope's levels, the skirt, the rig, the cables, the basket
+imm PINNED Array[u32, 6] = [0x7edd6b2du32, 0xd33e9cfbu32, 0x1b592a19u32, 0xf52cf280u32, 0x6ce3bffeu32, 0xcec90de7u32];
+imm PARTS Array[&[]u8, 6] = ["envelope-l0", "envelope-l1", "envelope-l2", "skirt", "rig", "basket"];
+const WIDTH = 1920u32;
+const HEIGHT = 1080u32;
+
+fn v(x f32, y f32, z f32) Vec3 { new Vec3(x, y, z); }
+fn p2(x f32, y f32) Vec2 { new Vec2(x, y); }
+fn fract(x f32) f32 { x - libc.floorf(x); }
+fn tri(x f32) f32 { libc.fabsf(2. * fract(x) - 1.); }
+fn up() Vec3 { v(0., 1., 0.); }
+
+// ---- What differs between balloons ----
+
+struct Look {
+  pub gores u32;            // a multiple of 4: the cables gather at the frame's four corners
+  pub pattern u32;          // 0 chevrons, 1 stepped diagonals, 2 gore stripes with a band
+  pub paint Array[u32, 6];  // indices into PAINT
+  pub fat f32;              // the envelope's width, 1 as photographed
+  pub skirt u32;            // the skirt's paint
+
+  // A balloon from a seed: its gores, pattern, paints and width
+  pub fn seeded(seed u32) Look {
+    imm h = noise.hash2(1, 0, seed);
+    mut paint Array[u32, 6] = [0u32, 0u32, 0u32, 0u32, 0u32, 0u32];
+    mut i = 0usize;
+    mut last = 99u32;
+    while i < 6usize {
+      mut c = noise.hash1(i32.from(i), seed) % 9u32;
+      if c == last { c = (c + 4u32) % 9u32; }
+      paint[i] = c;
+      last = c;
+      i = i + 1usize;
+    }
+    new Look(16u32 + 4u32 * (h.x % 4u32), h.y % 3u32, paint, 0.92 + 0.16 * noise.toUnit(h.z), paint[0usize]);
+  }
+}
+
+// The two in the photograph
+fn chevrons() Look { new Look(24u32, 0u32, [3u32, 2u32, 1u32, 0u32, 2u32, 3u32], 1.04, 4u32); }
+fn diagonals() Look { new Look(24u32, 1u32, [4u32, 3u32, 2u32, 1u32, 5u32, 4u32], 1., 4u32); }
+
+// ---- The envelope ----
+
+// A gore's panel colour at (u, v) of the lathe's uv: u around, v up from the mouth
+fn paintAt(look &Look, u f32, vv f32) u32 {
+  imm gores = f32.from(look.gores);
+  imm g = u32.from(libc.floorf(u * gores));
+  if look.pattern == 0u32 {
+    // Chevrons: plain gores at the foot and the crown, between them bands
+    // dipping to a V across every four gores
+    if vv < 0.3 { return look.paint[usize.from(g % 3u32)]; }
+    if vv > 0.84 { return look.paint[usize.from((g + 1u32) % 3u32)]; }
+    imm b = u32.from(libc.floorf((vv - 0.3) * 8. + 1.4 * tri(u * gores / 4. + 0.5)));
+    imm cycle Array[usize, 4] = [3usize, 4usize, 3usize, 5usize];
+    return look.paint[cycle[usize.from(b % 4u32)]];
+  }
+  if look.pattern == 1u32 {
+    // Stepped diagonals: a cell a gore wide and a row high, the colour
+    // stepping one row a gore
+    imm r = u32.from(libc.floorf(vv * 13.));
+    return look.paint[usize.from((r + g) % 5u32)];
+  }
+  // Gore stripes, a band round the equator
+  if vv > 0.55 and vv < 0.64 { return look.paint[5usize]; }
+  look.paint[usize.from(g % 3u32)];
+}
+
+// The envelope's paint as an image: 'texels' a gore across and 32 times
+// that up, each texel the mean of 2 x 2 samples (so the chevrons' edges are
+// smooth), the load tapes a darker strip a sixteenth of a gore wide
+fn envelopeImage(look &Look, texels i32) Image {
+  imm w = i32.from(look.gores) * texels;
+  imm h = 32 * texels;
+  mut img = new Image(w, h, 3, List[u8].withCapacity(usize.from(w * h * 3)));
+  mut y = 0;
+  while y < h {
+    mut x = 0;
+    while x < w {
+      imm shade = if x % texels < (texels + 15) / 16 { 0.75; } else { 1.; };
+      mut sum Array[f32, 3] = [0., 0., 0.];
+      mut s = 0;
+      while s < 4 {
+        imm u = (f32.from(x) + 0.25 + 0.5 * f32.from(s % 2)) / f32.from(w);
+        imm c = usize.from(paintAt(look, u, (f32.from(y) + 0.25 + 0.5 * f32.from(s / 2)) / f32.from(h))) * 3usize;
+        sum[0usize] = sum[0usize] + PAINT[c];
+        sum[1usize] = sum[1usize] + PAINT[c + 1usize];
+        sum[2usize] = sum[2usize] + PAINT[c + 2usize];
+        s = s + 1;
+      }
+      mut k = 0usize;
+      while k < 3usize {
+        img.pixels.push(u8.from(sum[k] * 0.25 * shade * 255. + 0.5));
+        k = k + 1usize;
+      }
+      x = x + 1;
+    }
+    y = y + 1;
+  }
+  img;
+}
+
+// The envelope's cage: the profile lathed, each gore puffed out between its
+// tapes, the tapes creased
+fn envelopeCage(look &Look) mesh.PolyMesh {
+  imm f = look.fat;
+  imm curve = new CubicBezier2(p2(0.24, 0.), p2(0.95 * f, 0.62), p2(1.5 * f, 2.3), p2(0., 2.2));
+  imm profile = Profile.fromCubic(curve, 24u32);
+  mut env = lathe(&profile, up(), 2. * pi, look.gores * 4u32);
+  imm gores = f32.from(look.gores);
+  imm along = env.findFloatChannel(mesh.VertexDomain, "along");
+  imm bulge = env.addFloatChannel(mesh.VertexDomain, "bulge", 0.);
+  mut i = 0u32;
+  while i < u32.from(env.vertexCount()) {
+    imm p = *env.positions[usize.from(i)];
+    imm r = (p.x * p.x + p.z * p.z).sqrt();
+    env.setFloat(bulge, i, sin(pi * fract(env.float(along, i) * gores)) * r);
+    i = i + 1u32;
+  }
+  // The tapes: edges up a gore's edge, off the axis
+  imm crease = env.addFloatChannel(mesh.EdgeDomain, "crease", 0.);
+  mut e = 0u32;
+  while e < u32.from(env.edgeCount()) {
+    imm a = env.fromVertex(2u32 * e);
+    imm b = env.toVertex(2u32 * e);
+    imm pa = *env.positions[usize.from(a)];
+    imm pb = *env.positions[usize.from(b)];
+    imm la = env.float(along, a);
+    imm onTape = fract(la * gores + 0.001) < 0.002;
+    if onTape and la == env.float(along, b) and pa.x * pa.x + pa.z * pa.z > 0.0001 and pb.x * pb.x + pb.z * pb.z > 0.0001 {
+      env.setFloat(crease, e, TAPE);
+    }
+    e = e + 1u32;
+  }
+  displaceAlongNormal(&env, "bulge", BULGE);
+}
+
+// The skirt below the mouth, a little narrower at its foot
+fn skirt(look &Look) mesh.PolyMesh {
+  imm pts Array[Vec2, 3] = [p2(0.2, -0.15), p2(0.225, -0.07), p2(0.24, 0.)];
+  imm profile = Profile.fromPoints(&pts, false);
+  imm s = lathe(&profile, up(), 2. * pi, look.gores * 2u32);
+  solidify(&s, 0.006, 0., false, true);
+}
+
+// ---- The rig: burner frame, burner, cables ----
+
+const RING f32 = 0.07;              // the frame's corners from the axis
+const RING_Y f32 = -0.40;
+const TOP_Y f32 = -0.46;            // the basket's rim
+const BASKET f32 = 0.13;            // the basket's corners from the axis
+
+// The frame and the burner: steel
+fn frame() mesh.Mesh {
+  imm corners Array[Vec3, 4] = [v(RING, RING_Y, 0.), v(0., RING_Y, 0. - RING), v(0. - RING, RING_Y, 0.), v(0., RING_Y, RING)];
+  imm square = Path.fromPoints(&corners, true);
+  imm tube = Profile.polygon(6u32, 0.006);
+  imm ring = sweep(&tube, &square, 0., 1., 1., false);
+  imm postLine = Path.line(v(BASKET - 0.008, TOP_Y, 0.), v(RING, RING_Y, 0.), 1u32);
+  imm post = sweep(&tube, &postLine, 0., 1., 1., false);
+  imm posts = arrayRadial(&post, 4u32, up(), 2. * pi, v(0., 0., 0.), -1.);
+  imm can Array[Vec2, 5] = [p2(0., RING_Y - 0.01), p2(0.035, RING_Y - 0.01), p2(0.035, RING_Y + 0.05),
+    p2(0.024, RING_Y + 0.07), p2(0., RING_Y + 0.07)];
+  imm canProfile = Profile.fromPoints(&can, false);
+  imm burner = lathe(&canProfile, up(), 2. * pi, 16u32);
+  mut m = ring.triangulate(true);
+  imm postsMesh = posts.triangulate(true);
+  m.append(&postsMesh);
+  imm burnerMesh = burner.triangulate(true);
+  m.append(&burnerMesh);
+  m;
+}
+
+// The cables: from the foot of each load tape to the frame's nearest corner
+fn cables(look &Look) mesh.Mesh {
+  imm g = i32.from(look.gores);
+  imm wire = Profile.polygon(3u32, 0.0016);
+  mut quarter = mesh.Mesh.empty();
+  mut k = 0 - g / 8 + 1;
+  while k <= g / 8 {
+    imm a = 2. * pi * f32.from(k) / f32.from(g);
+    // The lathe turns from +x towards -z
+    imm foot = v(0.2 * cos(a), -0.15, 0. - 0.2 * sin(a));
+    imm line = Path.line(foot, v(RING, RING_Y, 0.), 1u32);
+    imm cable = sweep(&wire, &line, 0., 1., 1., false);
+    imm cableMesh = cable.triangulate(true);
+    quarter.append(&cableMesh);
+    k = k + 1;
+  }
+  // arrayRadial wants a PolyMesh: the quarter's triangles as one
+  mut problems = List[String].empty();
+  mut counts = List[u32].empty();
+  mut t = 0usize;
+  while t < quarter.triangleCount() { counts.push(3u32); t = t + 1usize; }
+  imm q = mesh.PolyMesh.fromPolygons(quarter.positions.view(), counts.view(), quarter.indices.view(), &mut problems);
+  imm all = arrayRadial(&q, 4u32, up(), 2. * pi, v(0., 0., 0.), -1.);
+  all.triangulate(true);
+}
+
+// ---- The basket ----
+
+// Floor, outer wall, rim, inner wall, inner floor: lathed in 4 steps
+fn basketProfile() Profile {
+  imm pts Array[Vec2, 6] = [p2(0., TOP_Y - 0.16), p2(BASKET, TOP_Y - 0.16), p2(BASKET, TOP_Y), p2(BASKET - 0.014, TOP_Y),
+    p2(BASKET - 0.014, TOP_Y - 0.14), p2(0., TOP_Y - 0.14)];
+  Profile.fromPoints(&pts, false);
+}
+
+fn basket() mesh.PolyMesh {
+  imm profile = basketProfile();
+  lathe(&profile, up(), 2. * pi, 4u32);
+}
+
+// Wicker: strands over and under in cells about 1/16 of a wall across, each
+// cell's shade jittered; the rim in leather
+fn wickerImage() Image {
+  imm w = 512;
+  imm h = 256;
+  imm profile = basketProfile();
+  imm length = profile.length();
+  imm across = 64.;
+  imm down = libc.floorf(length / (4. * BASKET * 1.4142136 / across));
+  imm rimFrom = (BASKET + 0.16) / length;
+  imm rimTo = (BASKET + 0.174) / length;
+  mut img = new Image(w, h, 3, List[u8].withCapacity(usize.from(w * h * 3)));
+  mut y = 0;
+  while y < h {
+    imm vv = (f32.from(y) + 0.5) / f32.from(h);
+    mut x = 0;
+    while x < w {
+      imm cx = (f32.from(x) + 0.5) / f32.from(w) * across;
+      imm cy = vv * down;
+      imm i = i32.from(libc.floorf(cx));
+      imm j = i32.from(libc.floorf(cy));
+      imm strand = if (i + j) % 2 == 0 { sin(pi * fract(cy)); } else { sin(pi * fract(cx)); };
+      mut shade = (0.45 + 0.55 * strand) * (1. + 0.12 * noise.toSigned(noise.hash2(i, j, SEED).x));
+      mut c Array[f32, 3] = [0.80, 0.52, 0.26];
+      if vv > rimFrom - 0.01 and vv < rimTo + 0.01 { c = [0.30, 0.16, 0.08]; shade = 1.; }
+      mut k = 0usize;
+      while k < 3usize {
+        imm b = c[k] * shade;
+        img.pixels.push(if b >= 1. { 255u8; } else { u8.from(b * 255. + 0.5); });
+        k = k + 1usize;
+      }
+      x = x + 1;
+    }
+    y = y + 1;
+  }
+  img;
+}
+
+// ---- Arguments ----
+
+fn cstrEquals(a *u8, b &[]u8) Bool {
+  mut i = 0usize;
+  while i < b.len {
+    if *(a + i) != b[i] { return false; }
+    i = i + 1usize;
+  }
+  *(a + b.len) == 0u8;
+}
+
+fn appendCstr(s &mut String, c *u8) {
+  mut i = 0usize;
+  while *(c + i) != 0u8 {
+    s.appendByte(*(c + i));
+    i = i + 1usize;
+  }
+}
+
+fn named(prefix &String, suffix &[]u8) String {
+  mut s = prefix.copy();
+  s <- suffix;
+  s;
+}
+
+// One mesh's counts and hash against the pinned one; written as .obj if asked
+fn report(m &mesh.Mesh, part usize, objPrefix &String) Bool {
+  imm h = mesh.meshHash(m);
+  printStr(PARTS[part]); print <- ": "; print <- m.vertexCount(); print <- " vertices, ";
+  print <- m.triangleCount(); print <- " triangles; hash ";
+  mut hex = String.empty();
+  hex.appendHex(u64.from(h), 8usize);
+  printStr(hex.view());
+  mut ok = h == PINNED[part];
+  if ok { print <- " (as pinned)\n"; } else { print <- " (NOT as pinned)\n"; }
+  if objPrefix.len() > 0usize {
+    mut name = objPrefix.copy();
+    name <- "-";
+    name <- PARTS[part];
+    name <- ".obj";
+    if !mesh.writeObj(m, name.view()) { print <- "Could NOT write "; printStr(name.view()); print <- "\n"; ok = false; }
+  }
+  ok;
+}
+
+// ---- The demo ----
+
+// One balloon on the GPU: its envelope (finest level) and paint
+struct Drawn {
+  pub envelope MeshHandle;
+  pub skirt MeshHandle;
+  pub cables MeshHandle;
+  pub paint MaterialHandle;
+  pub skirtPaint MaterialHandle;
+}
+
+fn upload(renderer &mut Renderer, device &mut Device, look &Look, levels u32) Drawn {
+  imm cage = envelopeCage(look);
+  imm fine = subdivide(&cage, levels);
+  imm env = fine.triangulate(true);
+  imm sk = skirt(look);
+  imm s = sk.triangulate(true);
+  imm c = cables(look);
+  mut fabric = PbrMaterial.standard(new Color(1., 1., 1., 1.), 0., 0.62);
+  imm image = envelopeImage(look, if levels == LEVELS { 32; } else { 8; });
+  fabric.texture = renderer.addTexture(device, &image);
+  imm sc = usize.from(look.skirt) * 3usize;
+  imm skirtFabric = PbrMaterial.standard(new Color(PAINT[sc] * PAINT[sc] * 0.5, PAINT[sc + 1usize] * PAINT[sc + 1usize] * 0.5,
+    PAINT[sc + 2usize] * PAINT[sc + 2usize] * 0.5, 1.), 0., 0.8);
+  new Drawn(renderer.addMesh(device, &env), renderer.addMesh(device, &s), renderer.addMesh(device, &c),
+    renderer.addPbrMaterial(device, &fabric), renderer.addPbrMaterial(device, &skirtFabric));
+}
+
+// What every balloon draws alike
+struct Shared {
+  pub frame MeshHandle;
+  pub basket MeshHandle;
+  pub head MeshHandle;
+  pub rope MaterialHandle;
+  pub steel MaterialHandle;
+  pub wicker MaterialHandle;
+  pub cloth MaterialHandle;
+}
+
+fn addBalloon(list &mut DrawList, d &Drawn, s &Shared, at Mat4, size f32) {
+  list.add(d.envelope, d.paint, at);
+  list.add(d.skirt, d.skirtPaint, at);
+  list.add(d.cables, s.rope, at);
+  list.add(s.frame, s.steel, at);
+  list.add(s.basket, s.wicker, at);
+  imm heads Array[f32, 4] = [0.04, 0.02, -0.035, -0.03];
+  mut k = 0usize;
+  while k < 2usize {
+    imm hp = at * v(heads[k * 2usize], TOP_Y + 0.035, heads[k * 2usize + 1usize]);
+    list.add(s.head, s.cloth, Mat4.fromTrs(hp, Quat.identity(), v(0.022 * size, 0.022 * size, 0.022 * size)));
+    k = k + 1usize;
+  }
+}
+
+fn main(argc i32, argv **u8) i32 {
+  mut shots = String.empty();
+  shots <- "balloon";
+  mut objPrefix = String.empty();
+  mut a = 1;
+  while a + 1 < argc {
+    imm arg = *(argv + usize.from(a));
+    if cstrEquals(arg, "--shots") { shots = String.empty(); appendCstr(&mut shots, *(argv + usize.from(a + 1))); }
+    elif cstrEquals(arg, "--obj") { appendCstr(&mut objPrefix, *(argv + usize.from(a + 1))); }
+    else { print <- "Unknown argument; use --shots PREFIX and --obj PREFIX\n"; return 2; }
+    a = a + 2;
+  }
+
+  // The first balloon's meshes, hashed
+  mut ok = true;
+  imm hero = chevrons();
+  imm started = sdl.GetPerformanceCounter();
+  imm heroCage = envelopeCage(&hero);
+  imm levels = subdivisionLevels(&heroCage, LEVELS);
+  mut l = 0usize;
+  while l <= usize.from(LEVELS) {
+    imm level = levels[l].triangulate(true);
+    ok = report(&level, l, &objPrefix) and ok;
+    l = l + 1usize;
+  }
+  imm heroSkirt = skirt(&hero);
+  imm skirtMesh = heroSkirt.triangulate(true);
+  ok = report(&skirtMesh, 3usize, &objPrefix) and ok;
+  mut rig = frame();
+  imm heroCables = cables(&hero);
+  rig.append(&heroCables);
+  ok = report(&rig, 4usize, &objPrefix) and ok;
+  imm basketPoly = basket();
+  imm basketMesh = basketPoly.triangulate(true);
+  ok = report(&basketMesh, 5usize, &objPrefix) and ok;
+  imm paintStarted = sdl.GetPerformanceCounter();
+  imm heroPaint = envelopeImage(&hero, 32);
+  imm wickerPicture = wickerImage();
+  imm done = sdl.GetPerformanceCounter();
+  imm hz = f64.from(sdl.GetPerformanceFrequency());
+  print <- "The first balloon's meshes made and hashed in "; print <- f64.from(paintStarted - started) / hz;
+  print <- " s; its paint ("; print <- heroPaint.width; print <- " x "; print <- heroPaint.height;
+  print <- ") and the wicker in "; print <- f64.from(done - paintStarted) / hz; print <- " s\n";
+
+  // The GPU, no window
+  mut instance = Instance.create("balloon");
+  mut none = Surface.none();
+  mut adapter = instance.requestAdapter(&none, POWER_PREFERENCE_HIGH_PERFORMANCE);
+  if !instance.isValid() or !adapter.isValid() {
+    print <- "No GPU can draw\n";
+    return 1;
+  }
+  print <- "Adapter: "; printStr(adapter.name.view());
+  if instance.validation { print <- "; validation on\n"; } else { print <- "; validation off\n"; }
+  mut device = adapter.requestDevice();
+  mut renderer = Renderer.create(&mut device, TEXTURE_FORMAT_RGBA16_FLOAT, TEXTURE_FORMAT_DEPTH32_FLOAT);
+
+  // A summer morning: a deep blue zenith, a pale horizon, wisps of cirrus,
+  // the sun high behind the camera
+  mut sky = Sky.dusk(radians(40.), radians(330.));
+  sky.sunColor = new Color(40., 38., 34., 1.);
+  sky.zenith = new Color(0.02, 0.10, 0.50, 1.);
+  sky.horizon = new Color(0.14, 0.30, 0.68, 1.);
+  sky.horizonSharpness = 3.;
+  sky.glow = new Color(0.25, 0.25, 0.22, 1.);
+  sky.glowSharpness = 8.;
+  sky.ground = new Color(0.12, 0.13, 0.10, 1.);
+  sky.groundFade = 4.;
+  sky.cloud = new Color(1.6, 1.7, 1.9, 1.);
+  sky.cloudCover = 0.5;
+  sky.cloudScale = 0.8;
+  sky.cloudStretch = 6.;
+  sky.cloudHeading = 0.9;
+  sky.cloudSeed = 5u32;
+  renderer.setSky(&mut device, &sky);
+  imm light = sky.sunLight(new Color(3.2, 3.0, 2.7, 1.), new Color(0.2, 0.22, 0.3, 1.));
+
+  // Shared by every balloon: the frame, the basket, the passengers
+  imm steel = PbrMaterial.standard(new Color(0.55, 0.55, 0.57, 1.), 0.9, 0.35);
+  imm steelM = renderer.addPbrMaterial(&mut device, &steel);
+  imm rope = PbrMaterial.standard(new Color(0.04, 0.04, 0.04, 1.), 0.2, 0.6);
+  imm ropeM = renderer.addPbrMaterial(&mut device, &rope);
+  mut wicker = PbrMaterial.standard(new Color(1., 1., 1., 1.), 0., 0.85);
+  wicker.texture = renderer.addTexture(&mut device, &wickerPicture);
+  imm wickerM = renderer.addPbrMaterial(&mut device, &wicker);
+  imm cloth = PbrMaterial.standard(new Color(0.5, 0.5, 0.52, 1.), 0., 0.8);
+  imm clothM = renderer.addPbrMaterial(&mut device, &cloth);
+  imm frameTris = frame();
+  imm frameMesh = renderer.addMesh(&mut device, &frameTris);
+  imm basketH = renderer.addMesh(&mut device, &basketMesh);
+  imm headMesh = mesh.Mesh.sphere(1., 10);
+  imm head = renderer.addMesh(&mut device, &headMesh);
+
+  // The balloons: the photograph's two, then a family from seeds, each
+  // where it floats (x, y, z in metres) and its size (metres per unit)
+  mut looks = List[Look].empty();
+  looks.push(hero);
+  looks.push(diagonals());
+  mut places = List[Vec4].empty();
+  places.push(new Vec4(-6., 0., 0., 9.));
+  places.push(new Vec4(14., 8., -12., 9.4));
+  imm family Array[f32, 24] = [-48., 20., -90., 8.5, 40., -12., -70., 9.5, -12., 38., -150., 10., 85., 26., -160., 9.,
+    -110., -6., -120., 8.8, 20., 60., -260., 9.6];
+  mut i = 0usize;
+  while i < 6usize {
+    looks.push(Look.seeded(SEED + u32.from(i)));
+    places.push(new Vec4(family[i * 4usize], family[i * 4usize + 1usize], family[i * 4usize + 2usize], family[i * 4usize + 3usize]));
+    i = i + 1usize;
+  }
+  imm shared = new Shared(frameMesh, basketH, head, ropeM, steelM, wickerM, clothM);
+  mut list = DrawList.empty();      // everyone
+  mut pair = DrawList.empty();      // the photograph's two
+  i = 0usize;
+  while i < looks.len() {
+    imm d = upload(&mut renderer, &mut device, looks[i], if i < 2usize { LEVELS; } else { 1u32; });
+    imm pl = *places[i];
+    imm spin = Quat.angleAxis(0.7 * f32.from(i), up());
+    imm at = Mat4.fromTrs(v(pl.x, pl.y, pl.z), spin, v(pl.w, pl.w, pl.w));
+    addBalloon(&mut list, &d, &shared, at, pl.w);
+    if i < 2usize { addBalloon(&mut pair, &d, &shared, at, pl.w); }
+    i = i + 1usize;
+  }
+
+  // The shots: the photograph's pair from below, the first balloon close,
+  // the family
+  imm targetDesc = new TextureDescriptor(WIDTH, HEIGHT, TEXTURE_FORMAT_RGBA8_UNORM_SRGB,
+    TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
+  mut target = device.createTexture(&targetDesc);
+  imm depthDesc = new TextureDescriptor(WIDTH, HEIGHT, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT);
+  mut depth = device.createTexture(&depthDesc);
+  mut post = Post.create(&mut device, TEXTURE_FORMAT_RGBA8_UNORM_SRGB, WIDTH, HEIGHT);
+  mut readback = device.createBuffer(u64.from(WIDTH) * u64.from(HEIGHT) * 4u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  if !renderer.isValid() or !post.isValid() or !target.isValid() {
+    print <- "The renderer could not be made\n";
+    return 1;
+  }
+  mut camera = Camera.make();
+  camera.fov = radians(40.);
+  camera.near = 0.5;
+  camera.far = 2000.;
+  imm names Array[&[]u8, 3] = ["-pair.bmp", "-close.bmp", "-family.bmp"];
+  imm eyes Array[Vec3, 3] = [v(3., -18., 44.), v(-16., -6., 13.), v(10., -8., 90.)];
+  imm targets Array[Vec3, 3] = [v(4., 10., 0.), v(-6., -0.5, 0.), v(0., 10., -80.)];
+  mut s = 0usize;
+  while s < 3usize {
+    camera.lookAt(eyes[s], targets[s], up());
+    mut encoder = device.createCommandEncoder();
+    if s == 0usize { renderer.render(&mut device, &mut encoder, &post.hdr, &depth, &camera, &light, &pair); }
+    else { renderer.render(&mut device, &mut encoder, &post.hdr, &depth, &camera, &light, &list); }
+    post.apply(&mut encoder, &target);
+    encoder.copyTextureToBuffer(&target, &readback);
+    device.queue.submit(encoder.finish());
+    device.endFrame();
+    device.waitIdle();
+    imm shot = Image.fromTexels(readback.mappedRange(), i32.from(WIDTH), i32.from(HEIGHT), false);
+    imm name = named(&shots, names[s]);
+    if shot.save(name.view()) { print <- "Shot: "; printStr(name.view()); print <- "\n"; }
+    else { print <- "Could NOT write "; printStr(name.view()); print <- "\n"; ok = false; }
+    s = s + 1usize;
+  }
+
+  print <- "Vulkan failures: "; print <- u64.from(failures());
+  print <- "; validation messages: "; print <- u64.from(validationMessages()); print <- "\n";
+  if !ok or failures() != 0u32 or validationMessages() != 0u32 { print <- "FAILED\n"; return 1; }
+  print <- "OK\n";
+  0;
+}

@@ -1,0 +1,95 @@
+// A virtual reference bounded by ''a', '&<Show + 'a', holding a struct that
+// holds a borrow: stored through a parameter where the struct's lifetime is
+// ordered to last ''a', returned where it is ''a', held in a struct's field
+// and read back out of it, and, bounded by ''static', handed a struct that
+// holds a global's borrow; and a virtual reference bounded by ''b', ordered
+// to last ''a', stored where one bounded by ''a' is held.
+//
+// Verdict: accept; prints 2 3 4 1 5.
+// Basis: language rule (3 Oct 2026): '&<Trait + 'a' says the value it
+// points at holds only borrows lasting at least ''a' (Rust's
+// 'dyn Trait + 'a'); a value coerced to it must, which a 'where' clause, the
+// same name, or a global's band shows; a virtual reference already bounded
+// vouches for its own bound (refvirtref.html; reflifefn.html, "Lifetime
+// bounds").
+// Master 2cb190a1: refused at parse (a '+' and a lifetime after a virtual
+// reference's trait).
+
+mod lifetime_bound_virt_accepted;
+
+import stdio use *;
+
+trait Show {
+  pub fn show(self &) i64;
+}
+
+struct R {
+  pub n i64;
+}
+
+struct H['b] {
+  pub r &'b R;
+  fn show(self &) i64 {
+    r.n;
+  }
+}
+
+struct Shelf['r, 'a] {
+  pub item &<'r Show + 'a;
+}
+
+mut D R;
+
+fn @initpure init() {
+  D = new R(1);
+}
+
+fn keep(slot &mut &<'r Show + 'a, h &'r H['b]) where 'b >= 'a {
+  *slot = h;
+}
+
+fn view(h &'r H['b]) &<'r Show + 'b {
+  h;
+}
+
+fn take(s &Shelf['r, 'a]) &<'r Show + 'a {
+  s.item;
+}
+
+fn look(v &<Show + 'static) i64 {
+  v.show();
+}
+
+// A virtual reference whose own bound is ordered to last the place's
+fn pass(slot &mut &<'r Show + 'a, v &<'r Show + 'b) where 'b >= 'a {
+  *slot = v;
+}
+
+fn main() {
+  initAll();
+  imm x0 = new R(0);
+  imm h0 = new H(&x0);
+  imm x2 = new R(2);
+  imm h2 = new H(&x2);
+  mut slot &<Show = &h0;
+  keep(&mut slot, &h2);
+  printInt(slot.show());
+  printStr(" ");
+  imm x3 = new R(3);
+  imm h3 = new H(&x3);
+  printInt(view(&h3).show());
+  printStr(" ");
+  imm x4 = new R(4);
+  imm h4 = new H(&x4);
+  imm shelf = new Shelf(&h4);
+  printInt(take(&shelf).show());
+  printStr(" ");
+  imm hg = new H(&D);
+  printInt(look(&hg));
+  printStr(" ");
+  imm x5 = new R(5);
+  imm h5 = new H(&x5);
+  pass(&mut slot, &h5);
+  printInt(slot.show());
+  printStr("\n");
+}

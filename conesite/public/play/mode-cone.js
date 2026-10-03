@@ -44,7 +44,7 @@ var ConeHighlightRules = function() {
             regex: /\b(?:self|this)\b/
         }, {
             token: "constant.language.cone",
-            regex: /\b(?:true|false|nil|void|undef)\b/
+            regex: /\b(?:true|false|nil|null|void|undef)\b/
         }, {
             token: "constant.numeric.cone",
             regex: /\b(?:0b[0-1_]*|0x[0-9a-fA-F_]*|[0-9][0-9_]*(?:\.[0-9][0-9_]*)?(?:(?:e|E)(?:\+|-)?[0-9_]+)?)\b/

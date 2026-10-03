@@ -30,6 +30,7 @@ typedef struct {
     RefTypeInfo *typeinfo; // normalized ref info
     uint16_t scope;   // Lifetime: its band, 0 global, 1 the caller's, 2+ a block
     Name *lifename;   // The lifetime a signature names on it, or NULL (lifetime.h)
+    Name *bound;      // A virtual reference's bound, '&<Trait + 'a': what the referenced value's borrows outlive, or NULL (lifetime.h)
     // Written '+R-perm T' (parsePlus). As an allocation that spelling is
     // refused (allocateTypeCheck, ErrorPlusAlloc); as a single or virtual
     // reference type it is refused (refTypeCheck), except at a match pattern's
@@ -86,6 +87,15 @@ void refNameRes(NameResState *pstate, RefNode *node);
 // Refuse an owning reference's region that is not a struct declaring 'is RegionRef'.
 // A slot naming something other than a type is given the error type.
 void refRegionCheck(INode **regionp);
+
+// Judge a managed reference type whose permission is a struct: it must be a
+// lock permission, and its region one the lock fits (ir/types/permission.c)
+void refLockCheck(RefNode *node);
+
+// Check what a reference, pointer or slice points at: resolved, and laid out
+// only where no layout is in flight, since a reference's size is its kind's.
+// '*waiting' says whether its layout may be waiting (structTargetWait).
+int refTargetTypeCheck(TypeCheckState *pstate, INode **targetp, int *waiting);
 
 // Type check a reference node
 void refTypeCheck(TypeCheckState *pstate, RefNode *name);

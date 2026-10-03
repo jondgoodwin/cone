@@ -14,6 +14,7 @@
 INode *unknownType;
 INode *noCareType;
 INode *errorType;
+INode *nullLitType;
 INode *elseCond;
 INode *borrowRef;
 INode *neverType;
@@ -95,6 +96,7 @@ StructNode *atomicValueTrait;
 StructNode *integerTrait;
 StructNode *pointerTrait;
 StructNode *sendableTrait;
+StructNode *lockPermTrait;
 
 // A trait the compiler declares, with no members, bound as a name every module
 // reaches unless it declares the name itself
@@ -111,7 +113,8 @@ int corelibIsBuiltinTrait(INode *node) {
         || node == (INode*)shapeChangingTrait
         || node == (INode*)noLoanMutTrait || node == (INode*)noLoanReadTrait
         || node == (INode*)atomicValueTrait || node == (INode*)integerTrait
-        || node == (INode*)pointerTrait || node == (INode*)sendableTrait;
+        || node == (INode*)pointerTrait || node == (INode*)sendableTrait
+        || node == (INode*)lockPermTrait;
 }
 
 // Set up the standard library, whose names are always shared by all modules
@@ -128,6 +131,11 @@ void stdlibInit(int ptrsize) {
     // of a cascade descending from the first.
     errorType = (INode*)newAbsenceNode();
     errorType->tag = UnknownTag;
+    // A 'null' is any raw pointer type until the type it is wanted as says
+    // which (litAdoptNullType). Distinct by identity, so that one left without
+    // a pointer type is noticed rather than read as not inferred yet.
+    nullLitType = (INode*)newAbsenceNode();
+    nullLitType->tag = UnknownTag;
     elseCond = (INode*)newAbsenceNode();
     borrowRef = (INode*)newAbsenceNode();
     borrowRef->tag = BorrowRegTag;
@@ -243,4 +251,15 @@ void stdlibInit(int ptrsize) {
     // instance of a generic type declaring it is Sendable only where its
     // type arguments are.
     sendableTrait = newBuiltinTrait(sendableTraitName);
+    // 'LockPermission': a struct declaring it may stand in a managed
+    // reference's permission slot, 'Arc[Mutex, T]', as a lock permission. Its
+    // value is the lock, kept in the allocation's header between the region's
+    // part and the value; the reference gives no access to the value, and a
+    // borrow through it takes the lock (the struct's 'acquireMut', or for a
+    // read-only borrow its 'acquireRead' where it declares one) and the
+    // borrow's end gives it back ('releaseMut', 'releaseRead'). Held to that
+    // shape by lockPermCheck; where it may go, by refLockCheck. Declaring
+    // 'ThreadSafe' beside it says the lock is for owners on several threads,
+    // and fits only a region declaring it too.
+    lockPermTrait = newBuiltinTrait(lockPermTraitName);
 }

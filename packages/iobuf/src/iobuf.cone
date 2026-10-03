@@ -1,0 +1,867 @@
+// The iobuf package: owned buffers for I/O. The kernel reads into a buffer
+// and writes from it after the call that started the operation has returned,
+// until the operation completes, and cancelling does not end that. So a
+// buffer is LENT to an operation by MOVING it: an IoBuf is a move type with
+// one owner, the operation takes it by value, and the completion hands it
+// back. Nothing else holds it meanwhile, and a borrow of one cannot be
+// submitted, since a '&mut IoBuf' is not an IoBuf and cannot cross to the
+// thread completions arrive on (test/cases/concurrency/
+// concurrency_iobuf_loan.cone pins both refusals). Data used to fan one send
+// out to many sockets is frozen first, into Bytes that any number of owners
+// hold at once and nobody writes. A stream's bytes are parsed through a Chain
+// of the buffers they arrived in. It is the first package of the async I/O
+// runtime; the completion loop that lends these buffers to the OS comes next.
+//
+//   mod echo;
+//   import iobuf use *;
+//
+//   fn main() {
+//     imm pool = Pool.make();                 // bounded: 64 MiB, 8 MiB kept idle
+//     mut buf = pool.mustTake(1500usize);     // empty, room for 4096 bytes
+//     imm n = readInto(buf.spare());          // the OS fills the room...
+//     buf.setLen(n);                          // ...and says how much
+//     use(buf.view());
+//   }                                         // buf dies: its block goes back to the pool
+//
+//   Pool.make(maxBytes, keepBytes)  a pool; both bounds have defaults (POOLS)
+//   pool.take(size)       Some IoBuf of at least size bytes, empty; None when
+//                         the bound refuses it
+//   pool.mustTake(size)   the IoBuf, or a panic at the caller's line
+//   pool.stats()          its counters, a Stats
+//   pool.trim()           give every idle block back to the OS
+//   classSize(c), page, largestClass, classCount        (SIZE CLASSES)
+//   osBlocks(), osBytes() what every pool holds from the OS now
+//
+//   IoBuf.empty()         a buffer with no block, capacity 0      (BUFFERS)
+//   b.len()  b.capacity()  b.room()  b.isEmpty()
+//   b.view()              the bytes it holds, '&[]u8'
+//   b.spare()             the room after them, '&[]mut u8', to fill
+//   b.whole()             the whole block, '&[]mut u8'
+//   b.setLen(n)           say how many bytes it holds (a panic past capacity)
+//   b.append(bytes)       copy in as many as fit: how many
+//   b.clear()             hold none
+//   b.base()              the block's address, for the OS
+//   b.freeze()            the buffer moved into shared, read-only Bytes
+//
+//   s.len()  s.view()  s.slice(start, end)              (SHARED BYTES)
+//
+//   Chain.make(limit)     an empty chain holding at most limit bytes (CHAINS)
+//   c.push(buf)           None once its bytes are in; Some[buf] back,
+//                         refused, past the limit
+//   c.len()  c.isEmpty()  c.segments()  c.bound()  c.firstLen()
+//   c.find(pat, from)     the offset of pat, across segment boundaries
+//   c.findByte(b, from)   the offset of byte b
+//   c.matchesAt(i, pat)   whether pat is there at offset i
+//   c.byteAt(i)  c.peek(i)                  one byte (a panic, or None, past the end)
+//   c.contiguous(from, n) Some slice when the n bytes lie in one segment
+//   c.copyOut(from, dest) copy bytes out: how many
+//   c.advance(n)          consume n bytes: segments wholly consumed go home
+//   c.take(dest)          copyOut from 0 and advance
+//   c.popFront()          the first segment moved out whole
+//
+// BUFFERS. An IoBuf is a block of memory from a pool, 4 KiB-aligned and a
+// whole number of 4 KiB pages long, so a later unbuffered file read (whose
+// buffer, offset and length must be multiples of the sector size) needs a
+// flag and not a different buffer; and how many of its bytes are filled, its
+// length, from 0 to its capacity. It holds no reference into anything else
+// (its pool is reached through an 'Arc'), so it is Sendable: it may be handed
+// to a thread or sent over a channel, and it may die on any thread. Its
+// death gives its block back to its pool, from whichever thread it dies on:
+// that is how a completion arriving on an I/O thread, or an operation the
+// in-flight table drops after a prompt TimedOut, returns the buffer it
+// carried. A buffer's methods take it by any reference, as a List's do; one
+// moved into an operation is out of reach until the completion gives it back.
+//
+// Bytes past the length are whatever the block last held: a block is reused
+// as it comes back, and nothing clears it. The first time the OS gives a
+// block, it is zeroed.
+//
+// IoBuf.empty() is a buffer with no block, from no pool, which does nothing
+// when it dies. It exists because Cone moves a value out of a matched
+// Option's field only by swapping another in: 'b <=> s.value'. That is how a
+// buffer comes out of 'take' or 'popFront' or a refused 'push':
+//
+//   mut b = IoBuf.empty();
+//   match pool.take(65536usize) {
+//     case mut s Some {b <=> s.value;}
+//     case is None[IoBuf] {...}               // the pool is full: wait, or fail
+//   }
+//
+// SIZE CLASSES. A take is served from the smallest class that holds it:
+// 4 KiB, 16 KiB, 64 KiB, 256 KiB or 1 MiB, each four times the one before,
+// so a buffer is never more than four times the size asked for (a request
+// just over a class's size wastes most of the next); its capacity is the
+// class's size. 4 KiB is a page, the smallest unit unbuffered I/O moves and
+// enough for most small messages; 16 KiB holds a whole TLS record (2^14
+// bytes of plaintext) and an HTTP/1.1 request head under the usual limits;
+// 64 KiB is a socket read's usual size and the file reads the 3-D streamer
+// makes; 256 KiB and 1 MiB are large sequential file reads, where the cost of
+// each operation matters more than the memory. A take larger than 1 MiB is
+// 'oversize': a block of its own, rounded up to whole pages, counted against
+// the bound, never kept idle, and given back to the OS when it dies.
+//
+// POOLS. A Pool keeps the blocks of buffers that have died, idle, one list
+// per class, and lends them again before asking the OS for more. It has two
+// bounds, each a number of bytes:
+//
+// - 'maxBytes' (64 MiB by default) bounds what it holds from the OS, lent
+//   and idle together. A take that would pass it first gives idle blocks of
+//   other classes back to the OS, largest first, to make room; if that is not
+//   enough it is REFUSED: 'take' answers None and 'mustTake' panics, and the
+//   refusal is counted. A full pool is never silent growth: the caller sees
+//   it, and waits (for buffers to come home) or fails.
+// - 'keepBytes' (8 MiB by default) bounds the idle blocks it keeps: a block
+//   coming home past it goes back to the OS at once.
+//
+// 'pool.stats()' copies its counters out: the two bounds; the bytes held
+// from the OS and the bytes of them idle; buffers lent now, ever taken, and
+// served by an idle block; blocks got from the OS and given back; and takes
+// refused. They are exact, kept under the pool's lock. 'osBlocks()' and
+// 'osBytes()' count what every pool in the program holds from the OS, for a
+// leak check: 0 once every pool and buffer has gone.
+//
+// A Pool is a handle: copying it makes another handle to the same pool, and
+// it is Sendable, so threads share one pool by each holding a copy. The pool
+// itself lives as long as any handle or any buffer it lent: a buffer may
+// outlive every handle, and the pool's last idle blocks go back to the OS
+// when the last of them dies.
+//
+// SHARED BYTES. 'buf.freeze()' moves a filled buffer into Bytes: its bytes,
+// read-only, shared by any number of owners on any number of threads, as one
+// send fanned out to many sockets needs (the kernel only reads a send's
+// bytes). Copying Bytes makes another owner, not another copy of the bytes;
+// 'slice' is another owner of part of them. Bytes is an 'Arc[imm, IoBuf]'
+// with a range, so the block goes back to its pool once, after its last
+// owner dies, wherever that is. Nothing can reach the buffer to write to it.
+//
+// CHAINS. A Chain is a stream's bytes as they arrived, one pooled buffer per
+// read, on the model of .NET's System.IO.Pipelines: the reader pushes each
+// filled buffer as its read completes, and a parser looks at all the
+// unconsumed bytes as one sequence -- finds a delimiter across segment
+// boundaries, peeks, copies bytes out -- and then says how many it has
+// consumed with 'advance'. Unconsumed bytes stay for the next look; each
+// segment wholly consumed dies at once, its block back to its pool. An HTTP/1.1
+// parser finds "\r\n\r\n", copies the head out (or reads it in place with
+// 'contiguous' when it lies in one segment), advances past it, then takes
+// the body's bytes, or moves whole segments on with 'popFront'.
+//
+// A chain is bounded too: 'make' says how many unconsumed bytes it may hold,
+// and a push past that is refused, its buffer handed back whole, so a peer
+// that never finishes a request head cannot grow it without limit -- the
+// caller answers it (HTTP's 431) or stops reading. It owns its segments and
+// is Sendable; its death gives back every segment it still holds.
+//
+// Not here yet: registration of the pool's blocks with IoRing or io_uring
+// (the plan keeps it inside the pool, unseen); a per-thread cache in front
+// of the pool's lock; a chain's writer side lending the room left in its
+// last segment to the next read.
+//
+// What is Windows-only: the blocks come from VirtualAlloc and go back with
+// VirtualFree (kernel32, on every link line), its only calls to the OS; a
+// POSIX side (mmap, or posix_memalign) is to come beside them. Everything
+// else is plain Cone over core's 'mem' and the sync package's Arc and Mutex.
+//
+// How it is built. The pool's state is an 'Arc[Mutex, PoolState]', the sync
+// package's lock permission: every reach into it is a borrow that takes the
+// lock, so a take on one thread and a death on another never meet inside
+// it, and each buffer holds one owner of it, which is what keeps it alive
+// past its handles. An idle block's first two words link it to the next and
+// record its size. Calls to the OS are made outside the lock: a take counts
+// the block it will get under the lock, then asks the OS; a death decides
+// under the lock whether its block is kept, then frees it. Blocks come from
+// VirtualAlloc rather than the C runtime's _aligned_malloc because they are
+// page-aligned with nothing around them (an aligned 4 KiB block from the C
+// heap occupies about 8 KiB of it), because 'trim' and 'keepBytes' then
+// really give memory back to the OS, and because registering a buffer with
+// the kernel pins whole pages; the OS's slowness for each block (measured:
+// about 2.5 us for VirtualAlloc, a touch and VirtualFree, against 33 ns for
+// the C heap's 4 KiB) is paid only when the pool grows. VirtualAlloc reserves
+// address space 64 KiB at a time, so a 4 KiB block takes 64 KiB of address
+// space, though only 4 KiB of memory; carving the small classes from 64 KiB
+// slabs is left until address space matters. A chain's segments are a ring
+// of IoBufs in one block from the C allocator, moved with core's 'mem'
+// intrinsics, as a List's elements are.
+
+mod iobuf;
+
+import libc;
+import sync use Arc, Mutex;
+
+// ---------------------------------------------------------------------------
+// Windows: the blocks come from the OS, VirtualAlloc and VirtualFree
+// ---------------------------------------------------------------------------
+
+extern {
+  fn @c(system) VirtualAlloc(addr *u8, size usize, kind u32, protect u32) *u8;
+  fn @c(system) VirtualFree(addr *u8, size usize, kind u32) i32;
+}
+
+const memCommit = 0x1000u32;
+const memReserve = 0x2000u32;
+const memRelease = 0x8000u32;
+const pageReadWrite = 0x04u32;
+
+// Blocks and bytes held from the OS by every pool of the program, for leak
+// checks
+imm liveBlocks Atomic[u64];
+imm liveBytes Atomic[u64];
+
+fn @initpure init() {
+  liveBlocks = Atomic[u64].of(0u64);
+  liveBytes = Atomic[u64].of(0u64);
+}
+
+pub fn osBlocks() u64 {liveBlocks.load();}
+pub fn osBytes() u64 {liveBytes.load();}
+
+fn osAlloc(size usize) *u8 {
+  imm b = VirtualAlloc(null, size, memCommit | memReserve, pageReadWrite);
+  if b as usize != 0usize {
+    liveBlocks.addOrdered(1u64, MemOrder.Relaxed[]);
+    liveBytes.addOrdered(u64.from(size), MemOrder.Relaxed[]);
+  }
+  b;
+}
+
+fn osFree(block *u8, size usize) {
+  VirtualFree(block, 0usize, memRelease);
+  liveBlocks.subOrdered(1u64, MemOrder.Relaxed[]);
+  liveBytes.subOrdered(u64.from(size), MemOrder.Relaxed[]);
+}
+
+// ---------------------------------------------------------------------------
+// Size classes
+// ---------------------------------------------------------------------------
+
+// A block's alignment, and the unit every capacity is a multiple of
+pub const page = 4096usize;
+
+// The size classes, 4 KiB to 1 MiB, each four times the last; a larger
+// request is 'oversize', allocated for itself and freed when it returns
+pub const classCount = 5u32;
+const oversize = 5u32;
+
+pub fn classSize(c u32) usize {
+  if c == 0u32 {4096usize;}
+  elif c == 1u32 {16384usize;}
+  elif c == 2u32 {65536usize;}
+  elif c == 3u32 {262144usize;}
+  else {1048576usize;}
+}
+
+// The largest size a class holds
+pub const largestClass = 1048576usize;
+
+// The class a request of size bytes is served from, or oversize
+fn classFor(size usize) u32 {
+  mut c = 0u32;
+  while c < classCount {
+    if size <= classSize(c) {return c;}
+    c = c + 1u32;
+  }
+  oversize;
+}
+
+// size rounded up to whole pages
+fn pageCeil(size usize) usize {
+  (size + page - 1usize) & (0usize - page);
+}
+
+// ---------------------------------------------------------------------------
+// The pool's state, shared by its handles and its buffers
+// ---------------------------------------------------------------------------
+
+// Defaults for a pool's two bounds
+pub const defaultMaxBytes = 67108864usize;     // 64 MiB held from the OS at most
+pub const defaultKeepBytes = 8388608usize;     // 8 MiB of idle blocks kept
+
+// A pool's counters, as 'stats' copies them out
+pub struct Stats {
+  pub maxBytes usize;     // the bound on bytes held from the OS
+  pub keepBytes usize;    // the bound on idle bytes kept
+  pub heldBytes usize;    // bytes held from the OS: lent out and idle
+  pub idleBytes usize;    // bytes of idle blocks kept for reuse
+  pub lent u64;           // buffers lent out now
+  pub takes u64;          // takes asked for, those refused among them
+  pub reuses u64;         // takes served by an idle block
+  pub osAllocs u64;       // blocks got from the OS
+  pub osFrees u64;        // blocks given back to the OS
+  pub refused u64;        // takes refused: the bound was reached, or the OS said no
+}
+
+// What a pool's handles and buffers share, reached only through its lock. It
+// declares Sendable, a promise taken on trust, for the idle blocks' raw
+// pointers: the blocks are its own, and nothing else reaches them.
+struct PoolState is Sendable {
+  free Array[*u8, 5];     // each class's idle blocks, linked
+  idle Array[u32, 5];     // how many idle blocks each class has
+  maxBytes usize;
+  keepBytes usize;
+  heldBytes usize;
+  idleBytes usize;
+  lent u64;
+  takes u64;
+  reuses u64;
+  osAllocs u64;
+  osFrees u64;
+  refused u64;
+
+  // An idle block of class c, or null
+  fn pop(self &mut, c u32) *u8 {
+    imm i = usize.from(c);
+    imm b = free[i];
+    if b as usize != 0usize {
+      free[i] = linkNext(b);
+      idle[i] = idle[i] - 1u32;
+      idleBytes = idleBytes - classSize(c);
+    }
+    b;
+  }
+
+  // Keep block b of class c idle
+  fn push(self &mut, c u32, b *u8) {
+    imm i = usize.from(c);
+    link(b, free[i], classSize(c));
+    free[i] = b;
+    idle[i] = idle[i] + 1u32;
+    idleBytes = idleBytes + classSize(c);
+  }
+
+  // Lend a block of class c (or of size bytes, oversize): an idle one, or
+  // null with room for a new one counted, or null with nothing counted and
+  // 'room' false when the bound refuses it. Idle blocks of other classes are
+  // handed to 'trim' to free, to make room
+  fn lend(self &mut, c u32, size usize, trim &mut *u8) *u8, Bool {
+    takes = takes + 1u64;
+    if c != oversize {
+      imm b = self.pop(c);
+      if b as usize != 0usize {
+        reuses = reuses + 1u64;
+        lent = lent + 1u64;
+        return b, true;
+      }
+    }
+    // Make room by giving up idle blocks of other classes, largest first
+    mut k = classCount;
+    while heldBytes + size > maxBytes and k > 0u32 {
+      k = k - 1u32;
+      while heldBytes + size > maxBytes {
+        imm b = self.pop(k);
+        if b as usize == 0usize {break;}
+        heldBytes = heldBytes - classSize(k);
+        osFrees = osFrees + 1u64;
+        link(b, *trim, classSize(k));
+        *trim = b;
+      }
+    }
+    if heldBytes + size > maxBytes {
+      refused = refused + 1u64;
+      return null, false;
+    }
+    heldBytes = heldBytes + size;
+    osAllocs = osAllocs + 1u64;
+    lent = lent + 1u64;
+    null, true;
+  }
+
+  // The OS could not give the block lend counted
+  fn unlend(self &mut, size usize) {
+    heldBytes = heldBytes - size;
+    osAllocs = osAllocs - 1u64;
+    lent = lent - 1u64;
+    refused = refused + 1u64;
+  }
+
+  // Block b of class c (size bytes) comes back: kept idle, answering false,
+  // or, past the bound on idle bytes or oversize, answering true for the
+  // caller to free
+  fn giveBack(self &mut, c u32, b *u8, size usize) Bool {
+    lent = lent - 1u64;
+    if c != oversize and idleBytes + size <= keepBytes {
+      self.push(c, b);
+      return false;
+    }
+    heldBytes = heldBytes - size;
+    osFrees = osFrees + 1u64;
+    true;
+  }
+
+  // Hand every idle block to 'out' to free
+  fn drain(self &mut, out &mut *u8) {
+    mut c = 0u32;
+    while c < classCount {
+      while true {
+        imm b = self.pop(c);
+        if b as usize == 0usize {break;}
+        heldBytes = heldBytes - classSize(c);
+        osFrees = osFrees + 1u64;
+        link(b, *out, classSize(c));
+        *out = b;
+      }
+      c = c + 1u32;
+    }
+  }
+
+  fn stats(self &) Stats {
+    new Stats(maxBytes, keepBytes, heldBytes, idleBytes, lent, takes, reuses,
+      osAllocs, osFrees, refused);
+  }
+
+  // The last owner has gone, so no buffer is lent: free the idle blocks
+  fn final(self &uni) {
+    mut c = 0u32;
+    while c < classCount {
+      freeList(free[usize.from(c)]);
+      c = c + 1u32;
+    }
+  }
+}
+
+// An idle block's first word links it to the next, and its second holds its
+// size
+fn link(b *u8, next *u8, size usize) {
+  *(b as **u8) = next;
+  *((b as *usize) + 1usize) = size;
+}
+fn linkNext(b *u8) *u8 {*(b as **u8);}
+fn linkSize(b *u8) usize {*((b as *usize) + 1usize);}
+
+// Free a list of linked blocks
+fn freeList(head *u8) {
+  mut b = head;
+  while b as usize != 0usize {
+    imm next = linkNext(b);
+    osFree(b, linkSize(b));
+    b = next;
+  }
+}
+
+alias Shared = Arc[Mutex, PoolState];
+
+// ---------------------------------------------------------------------------
+// Pool
+// ---------------------------------------------------------------------------
+
+// A handle to a pool of blocks: copied to share the pool, between threads
+// too (see the package's header, POOLS)
+pub struct Pool {
+  state Shared;
+
+  // A new pool holding at most maxBytes from the OS, keeping at most
+  // keepBytes of them idle
+  pub fn make(maxBytes usize = defaultMaxBytes, keepBytes usize = defaultKeepBytes) Pool {
+    imm s = new Shared(new PoolState(
+      free: new Array[*u8, 5] <- fill null,
+      idle: new Array[u32, 5] <- fill 0u32,
+      maxBytes: maxBytes, keepBytes: keepBytes, heldBytes: 0usize, idleBytes: 0usize,
+      lent: 0u64, takes: 0u64, reuses: 0u64, osAllocs: 0u64, osFrees: 0u64, refused: 0u64));
+    new Pool(s);
+  }
+
+  // A buffer of at least size bytes, empty, or None when the bound refuses it
+  pub fn take(self &, size usize) Option[IoBuf] {
+    imm c = classFor(size);
+    imm cap = if c == oversize {pageCeil(size);} else {classSize(c);};
+    mut trim = null as *u8;
+    mut b = null as *u8;
+    mut room = false;
+    b, room = (&mut *state).lend(c, cap, &mut trim);
+    freeList(trim);
+    if !room {
+      return None[IoBuf][];
+    }
+    if b as usize == 0usize {
+      b = osAlloc(cap);
+      if b as usize == 0usize {
+        (&mut *state).unlend(cap);
+        return None[IoBuf][];
+      }
+    }
+    Some[IoBuf][new IoBuf(b, 0usize, cap, c, Some[Shared][state])];
+  }
+
+  // A buffer of at least size bytes, empty; a panic, reported at the
+  // caller's line, when the bound refuses it
+  pub fn mustTake(self &, size usize, file &[]u8 = srcFile(), line u32 = srcLine()) IoBuf {
+    mut b = IoBuf.empty();
+    match self.take(size) {
+      case mut s Some {b <=> s.value;}
+      case is None[IoBuf] {panic("iobuf: Pool.mustTake refused: the pool's bound is reached", file, line);}
+    }
+    b;
+  }
+
+  // Give every idle block back to the OS
+  pub fn trim(self &) {
+    mut out = null as *u8;
+    (&mut *state).drain(&mut out);
+    freeList(out);
+  }
+
+  // Its counters, as they are now
+  pub fn stats(self &) Stats {
+    (&*state).stats();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// IoBuf
+// ---------------------------------------------------------------------------
+
+// A block from a pool and how many of its bytes are filled: one owner,
+// moved, never copied; its death gives the block back to its pool. It
+// declares Sendable, a promise taken on trust, for its block's raw pointer:
+// the block is its alone while it lives (see the package's header, BUFFERS)
+pub struct IoBuf is Move, Sendable {
+  data *u8;
+  used usize;
+  cap usize;
+  cls u32;
+  pool Option[Shared];
+
+  // A buffer with no block: capacity 0, from no pool
+  pub fn empty() IoBuf {new IoBuf(null, 0usize, 0usize, 0u32, None[Shared][]);}
+
+  pub fn len(self &) usize {used;}
+  pub fn capacity(self &) usize {cap;}
+  pub fn room(self &) usize {cap - used;}
+  pub fn isEmpty(self &) Bool {used == 0usize;}
+
+  // The bytes it holds
+  pub fn view(self &) &[]u8 {mem.sliceFromParts(data, used);}
+  // The room after them, to fill
+  pub fn spare(self &mut) &[]mut u8 {mem.sliceFromPartsMut(data + used, cap - used);}
+  // The whole block
+  pub fn whole(self &mut) &[]mut u8 {mem.sliceFromPartsMut(data, cap);}
+  // Its address, for the OS
+  pub fn base(self &) *u8 {data;}
+
+  // Say it holds n bytes: a panic, at the caller's line, past its capacity
+  pub fn setLen(self &mut, n usize, file &[]u8 = srcFile(), line u32 = srcLine()) {
+    if n > cap {panic("iobuf: setLen past the buffer's capacity", file, line);}
+    used = n;
+  }
+  // Hold no bytes
+  pub fn clear(self &mut) {used = 0usize;}
+
+    // Move it into Bytes, shared and read-only
+  pub fn freeze(self) Bytes {freezeBuf(self);}
+
+  // Copy in as many of bytes as fit: how many
+  pub fn append(self &mut, bytes &[]u8) usize {
+    imm n = if bytes.len < cap - used {bytes.len;} else {cap - used;};
+    if n > 0usize {libc.memcpy(data + used, &bytes[0usize] as *u8, n);}
+    used = used + n;
+    n;
+  }
+
+  fn final(self &uni) {
+    match pool {
+      case imm p Some {
+        if (&mut *p.value).giveBack(cls, data, cap) {
+          osFree(data, cap);
+        }
+      }
+      case is None[Shared] {}
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Bytes
+// ---------------------------------------------------------------------------
+
+// Read-only bytes shared by any number of owners on any threads: a frozen
+// IoBuf and a range of it. Sendable, as an 'Arc[imm, T]' of a Sendable T is
+// (see the package's header, SHARED BYTES)
+pub struct Bytes {
+  buf Arc[imm, IoBuf];
+  from usize;
+  n usize;
+
+  pub fn len(self &) usize {n;}
+  pub fn view(self &) &[]u8 {mem.sliceFromParts(buf.data + from, n);}
+  // Another owner of bytes start to end of these: a panic, at the caller's
+  // line, out of range
+  pub fn slice(self &, start usize, end usize, file &[]u8 = srcFile(), line u32 = srcLine()) Bytes {
+    if start > end or end > n {panic("iobuf: Bytes.slice out of range", file, line);}
+    new Bytes(buf, from + start, end - start);
+  }
+}
+
+fn freezeBuf(b IoBuf) Bytes {
+  imm n = b.len();
+  new Bytes(new Arc[imm, IoBuf](b), 0usize, n);
+}
+
+// ---------------------------------------------------------------------------
+// Chain
+// ---------------------------------------------------------------------------
+
+// A stream's unconsumed bytes, in the buffers they arrived in. It declares
+// Sendable, a promise taken on trust, for its ring's raw pointer: it owns
+// the ring and the buffers in it (see the package's header, CHAINS)
+pub struct Chain is Move, Sendable {
+  ring *IoBuf;     // the segments, a ring of 'slots' (a power of two)
+  slots usize;
+  head usize;      // the ring index of the first segment
+  count usize;     // segments held
+  skip usize;      // bytes of the first segment already consumed
+  total usize;     // bytes not yet consumed
+  limit usize;     // the most unconsumed bytes it holds
+
+  // An empty chain holding at most limit unconsumed bytes
+  pub fn make(limit usize) Chain {
+    new Chain(null, 0usize, 0usize, 0usize, 0usize, 0usize, limit);
+  }
+
+  pub fn len(self &) usize {total;}
+  pub fn isEmpty(self &) Bool {total == 0usize;}
+  pub fn segments(self &) usize {count;}
+  pub fn bound(self &) usize {limit;}
+
+  // How many unconsumed bytes the first segment holds: what 'popFront'
+  // would hand over; 0 when the chain is empty
+  pub fn firstLen(self &) usize {
+    if count == 0usize {return 0usize;}
+    (self.at(0usize) as &IoBuf).used - skip;
+  }
+
+  // The k-th segment
+  fn at(self &, k usize) *IoBuf {ring + ((head + k) & (slots - 1usize));}
+
+  // The unconsumed bytes of the k-th segment
+  fn seg(self &, k usize) &[]u8 {
+    imm b = self.at(k) as &IoBuf;
+    imm off = if k == 0usize {skip;} else {0usize;};
+    mem.sliceFromParts(b.data + off, b.used - off);
+  }
+
+  // Add a filled buffer's bytes after those held: None once it is in (an
+  // empty one is dropped, back to its pool), or Some[buf] back, refused,
+  // when its bytes would take the chain past its bound
+  pub fn push(self &mut, buf IoBuf) Option[IoBuf] {
+    imm n = buf.len();
+    if total + n > limit {
+      return Some[IoBuf][buf];
+    }
+    if n == 0usize {
+      return None[IoBuf][];
+    }
+    if count == slots {
+      self.grow();
+    }
+    mem.writeRaw[IoBuf](self.at(count), buf);
+    count = count + 1usize;
+    total = total + n;
+    None[IoBuf][];
+  }
+
+  // Twice the slots, the segments moved to the front in order
+  fn grow(self &mut) {
+    imm want = if slots == 0usize {4usize;} else {slots * 2usize;};
+    imm fresh = libc.malloc(want * mem.sizeof[IoBuf]()) as *IoBuf;
+    if fresh as usize == 0usize {panic("iobuf: out of memory for a chain's ring");}
+    mut k = 0usize;
+    while k < count {
+      mem.writeRaw[IoBuf](fresh + k, mem.readRaw[IoBuf](self.at(k)));
+      k = k + 1usize;
+    }
+    libc.free(ring as *u8);
+    ring = fresh;
+    slots = want;
+    head = 0usize;
+  }
+
+  // The byte at offset i of the unconsumed bytes; a panic past the end
+  pub fn byteAt(self &, i usize, file &[]u8 = srcFile(), line u32 = srcLine()) u8 {
+    if i >= total {panic("iobuf: Chain.byteAt past the end", file, line);}
+    mut at = i;
+    mut k = 0usize;
+    while true {
+      imm s = self.seg(k);
+      if at < s.len {return s[at];}
+      at = at - s.len;
+      k = k + 1usize;
+    }
+    0u8;
+  }
+
+  // The byte at offset i, or None past the end
+  pub fn peek(self &, i usize) Option[u8] {
+    if i >= total {return None[u8][];}
+    Some[u8][self.byteAt(i)];
+  }
+
+  // Whether pat is there at segment k, offset j onward
+  fn matchFrom(self &, k0 usize, j0 usize, pat &[]u8) Bool {
+    mut k = k0;
+    mut j = j0;
+    mut p = 0usize;
+    while p < pat.len {
+      if k >= count {return false;}
+      imm s = self.seg(k);
+      while j < s.len and p < pat.len {
+        if s[j] != pat[p] {return false;}
+        j = j + 1usize;
+        p = p + 1usize;
+      }
+      k = k + 1usize;
+      j = 0usize;
+    }
+    true;
+  }
+
+  // Whether the unconsumed bytes from offset i begin with pat
+  pub fn matchesAt(self &, i usize, pat &[]u8) Bool {
+    if i + pat.len > total {return false;}
+    mut at = i;
+    mut k = 0usize;
+    while k < count {
+      imm s = self.seg(k);
+      if at < s.len {return self.matchFrom(k, at, pat);}
+      at = at - s.len;
+      k = k + 1usize;
+    }
+    pat.len == 0usize;
+  }
+
+  // The offset of the first pat at or after offset 'from', across segment
+  // boundaries, or None
+  pub fn find(self &, pat &[]u8, from usize = 0usize) Option[usize] {
+    if from + pat.len > total {return None[usize][];}
+    if pat.len == 0usize {return Some[usize][from];}
+    imm first = pat[0usize];
+    imm last = total - pat.len;    // the last offset pat may start at
+    mut base = 0usize;             // the offset segment k starts at
+    mut k = 0usize;
+    while k < count {
+      imm s = self.seg(k);
+      mut j = if from > base {from - base;} else {0usize;};
+      while j < s.len {
+        if base + j > last {return None[usize][];}
+        if s[j] == first and self.matchFrom(k, j, pat) {
+          return Some[usize][base + j];
+        }
+        j = j + 1usize;
+      }
+      base = base + s.len;
+      k = k + 1usize;
+    }
+    None[usize][];
+  }
+
+  // The offset of the first byte b at or after offset 'from', or None
+  pub fn findByte(self &, b u8, from usize = 0usize) Option[usize] {
+    mut base = 0usize;
+    mut k = 0usize;
+    while k < count {
+      imm s = self.seg(k);
+      mut j = if from > base {from - base;} else {0usize;};
+      while j < s.len {
+        if s[j] == b {return Some[usize][base + j];}
+        j = j + 1usize;
+      }
+      base = base + s.len;
+      k = k + 1usize;
+    }
+    None[usize][];
+  }
+
+  // Copy unconsumed bytes from offset 'from' into dest, as many as fit and
+  // are there: how many
+  pub fn copyOut(self &, from usize, dest &[]mut u8) usize {
+    mut at = from;
+    mut done = 0usize;
+    mut k = 0usize;
+    while k < count and done < dest.len {
+      imm s = self.seg(k);
+      if at >= s.len {
+        at = at - s.len;
+      } else {
+        imm here = s.len - at;
+        imm want = dest.len - done;
+        imm n = if here < want {here;} else {want;};
+        libc.memcpy(&mut dest[done] as *u8, &s[at] as *u8, n);
+        done = done + n;
+        at = 0usize;
+      }
+      k = k + 1usize;
+    }
+    done;
+  }
+
+  // The n unconsumed bytes from offset 'from' as one slice, when they lie in
+  // one segment; None when they cross a boundary (copy them out instead) or
+  // run past the end
+  pub fn contiguous(self &, from usize, n usize) Option[&[]u8] {
+    if from + n > total {return None[&[]u8][];}
+    mut at = from;
+    mut k = 0usize;
+    while k < count {
+      imm s = self.seg(k);
+      if at < s.len or (n == 0usize and at == s.len) {
+        if at + n > s.len {return None[&[]u8][];}
+        return Some[&[]u8][&s[at .. at + n]];
+      }
+      at = at - s.len;
+      k = k + 1usize;
+    }
+    None[&[]u8][];
+  }
+
+  // Consume the first n bytes: every segment wholly consumed dies, its block
+  // back to its pool. A panic if fewer than n are held
+  pub fn advance(self &mut, n usize, file &[]u8 = srcFile(), line u32 = srcLine()) {
+    if n > total {panic("iobuf: Chain.advance past the end", file, line);}
+    total = total - n;
+    mut left = skip + n;
+    while count > 0usize {
+      imm used = (self.at(0usize) as &IoBuf).used;
+      if left < used {
+        break;
+      }
+      // Wholly consumed: it dies here
+      mem.finalize[IoBuf](self.at(0usize));
+      left = left - used;
+      head = (head + 1usize) & (slots - 1usize);
+      count = count - 1usize;
+    }
+    skip = left;
+  }
+
+  // Copy the first dest.len unconsumed bytes, or as many as there are, into
+  // dest, and consume them: how many
+  pub fn take(self &mut, dest &[]mut u8) usize {
+    imm n = self.copyOut(0usize, dest);
+    self.advance(n);
+    n;
+  }
+
+  // Move the first segment out whole, its unconsumed bytes moved to its
+  // start, or None when the chain is empty
+  pub fn popFront(self &mut) Option[IoBuf] {
+    if count == 0usize {return None[IoBuf][];}
+    mut b = mem.readRaw[IoBuf](self.at(0usize));
+    head = (head + 1usize) & (slots - 1usize);
+    count = count - 1usize;
+    if skip > 0usize {
+      imm n = b.used - skip;
+      mem.moveRaw[u8](b.data, b.data + skip, n);
+      b.used = n;
+      skip = 0usize;
+    }
+    total = total - b.used;
+    Some[IoBuf][b];
+  }
+
+  // Its death: every segment it still holds, back to its pool
+  fn final(self &uni) {
+    while count > 0usize {
+      mem.finalize[IoBuf](self.at(0usize));
+      head = (head + 1usize) & (slots - 1usize);
+      count = count - 1usize;
+    }
+    libc.free(ring as *u8);
+  }
+}

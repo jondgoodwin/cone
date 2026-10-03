@@ -1,0 +1,205 @@
+// Oneshot[T]: one value, from one thread to one, once.
+//
+// 1. On one thread: a value sent is received; a second send hands its value
+//    back; after the take, recv says nothing more will come. tryRecv before
+//    the send finds nothing, and isReady says so too.
+// 2. The sender going without sending: recv answers None at once, and
+//    isClosed says nothing will come.
+// 3. The receiver gone: send hands the value back, and the sender's
+//    isClosed says so.
+// 4. A value sent and never taken is finalized exactly once, whichever end
+//    goes last; one taken is finalized by its taker, once.
+// 5. Across threads, the receiver asleep: 20 values, each sent 2 ms after
+//    its receiver began to wait, each received; a lost wake-up would hang
+//    the test.
+// 6. recvTimeout with nothing sent: None, after at least the time asked.
+// 7. 100,000 one-shots across two threads, each racing its receiver's
+//    sleep: every value received exactly once, and nothing leaked.
+
+mod oneshot;
+
+import testing use *;
+import thread;
+import sync use *;
+import time use Instant, Duration;
+
+imm finals Atomic[u64];
+
+fn @initpure init() {
+  finals = Atomic[u64].of(0u64);
+}
+
+// A value whose death is counted
+struct Tracked is Move {
+  pub v u64;
+
+  fn final(self &uni) {
+    finals.add(1u64);
+  }
+}
+
+fn got(o Option[u64]) u64 {
+  match o {
+    case imm s Some {s.value;}
+    case is None[u64] {0u64;}
+  }
+}
+
+fn isNone(o Option[u64]) Bool {
+  match o {
+    case is None[u64] {true;}
+    else {false;}
+  }
+}
+
+fn sendLater(tx OneshotSender[u64]) Bool {
+  mut t = tx;
+  thread.sleep(Duration.fromMillis(2i64));
+  isNone(t.send(77u64));
+}
+
+// Each of n one-shots' senders arrives on the channel; send its index on it
+fn sender(rx Receiver[OneshotSender[u64]]) u64 {
+  mut r = rx;
+  mut n = 0u64;
+  mut more = true;
+  while more {
+    match r.recv() {
+      case mut s Some {
+        s.value.send(n);
+        n = n + 1u64;
+      }
+      case is None[OneshotSender[u64]] {more = false;}
+    }
+  }
+  n;
+}
+
+fn main() i32 {
+  // 1. One thread
+  {
+    mut tx OneshotSender[u64];
+    mut rx OneshotReceiver[u64];
+    tx, rx = Oneshot[u64].make();
+    expect(isNone(rx.tryRecv()), "nothing before the send");
+    expect(not rx.isReady(), "and not ready");
+    expect(isNone(tx.send(5u64)), "sent");
+    expect(rx.isReady(), "ready now");
+    expectUInt(got(tx.send(6u64)), 6u64, "a second send hands its value back");
+    expect(tx.isClosed(), "the sender knows it has sent");
+    expectUInt(got(rx.recv()), 5u64, "received");
+    expect(isNone(rx.recv()), "nothing more after the take");
+    expect(rx.isClosed(), "closed after the take");
+  }
+
+  // 2. The sender gone without sending
+  {
+    mut rx OneshotReceiver[u64];
+    {
+      mut tx OneshotSender[u64];
+      tx, rx = Oneshot[u64].make();
+    }
+    expect(isNone(rx.recv()), "the sender went: None, at once");
+    expect(rx.isClosed(), "and closed");
+  }
+
+  // 3. The receiver gone
+  {
+    mut tx OneshotSender[u64];
+    {
+      mut rx OneshotReceiver[u64];
+      tx, rx = Oneshot[u64].make();
+    }
+    expect(tx.isClosed(), "the receiver went: closed");
+    expectUInt(got(tx.send(9u64)), 9u64, "the value handed back");
+  }
+
+  // 4. Finalized exactly once
+  {
+    {
+      mut tx OneshotSender[Tracked];
+      mut rx OneshotReceiver[Tracked];
+      tx, rx = Oneshot[Tracked].make();
+      tx.send(new Tracked(1u64));
+    }
+    expectUInt(finals.load(), 1u64, "sent, never taken, both ends gone: finalized once");
+    {
+      mut rx OneshotReceiver[Tracked];
+      {
+        mut tx OneshotSender[Tracked];
+        tx, rx = Oneshot[Tracked].make();
+        tx.send(new Tracked(2u64));
+      }
+      expectUInt(finals.load(), 1u64, "the sender gone first: the value waits");
+    }
+    expectUInt(finals.load(), 2u64, "then the receiver: finalized once");
+    {
+      mut tx OneshotSender[Tracked];
+      mut rx OneshotReceiver[Tracked];
+      tx, rx = Oneshot[Tracked].make();
+      tx.send(new Tracked(3u64));
+      match rx.recv() {
+        case imm s Some {expectUInt(s.value.v, 3u64, "the tracked value received");}
+        case is None[Tracked] {expect(false, "the tracked value received");}
+      }
+      expectUInt(finals.load(), 3u64, "taken: finalized by its taker");
+    }
+    expectUInt(finals.load(), 3u64, "and not again when the ends go");
+  }
+
+  // 5. The receiver asleep when the value comes
+  {
+    mut k = 0u32;
+    mut ok = 0u32;
+    while k < 20u32 {
+      mut tx OneshotSender[u64];
+      mut rx OneshotReceiver[u64];
+      tx, rx = Oneshot[u64].make();
+      imm t = thread.start(tx, &sendLater);
+      if got(rx.recv()) == 77u64 {ok = ok + 1u32;}
+      expect(t.join(), "the send was taken");
+      k = k + 1u32;
+    }
+    expectUInt(u64.from(ok), 20u64, "20 values, each sent to a sleeping receiver, each received");
+  }
+
+  // 6. recvTimeout
+  {
+    mut tx OneshotSender[u64];
+    mut rx OneshotReceiver[u64];
+    tx, rx = Oneshot[u64].make();
+    imm t0 = Instant.now();
+    expect(isNone(rx.recvTimeout(Duration.fromMillis(20i64))), "nothing in 20 ms: None");
+    expect(t0.elapsed() >= Duration.fromMillis(19i64), "after the time asked");
+    tx.send(4u64);
+    expectUInt(got(rx.recvTimeout(Duration.fromMillis(20i64))), 4u64, "then the value");
+  }
+
+  // 7. 100,000 across two threads
+  {
+    mut ctx Sender[OneshotSender[u64]];
+    mut crx Receiver[OneshotSender[u64]];
+    ctx, crx = Channel[OneshotSender[u64]].make();
+    imm t = thread.start(crx, &sender);
+    mut sum = 0u64;
+    mut wrong = 0u64;
+    mut i = 0u64;
+    while i < 100000u64 {
+      mut tx OneshotSender[u64];
+      mut rx OneshotReceiver[u64];
+      tx, rx = Oneshot[u64].make();
+      ctx.send(tx);
+      imm v = got(rx.recv());
+      if v != i {wrong = wrong + 1u64;}
+      sum = sum + v;
+      i = i + 1u64;
+    }
+    {
+      imm gone = ctx;
+    }
+    expectUInt(t.join(), 100000u64, "the sender thread sent 100,000");
+    expectUInt(wrong, 0u64, "each received its own value");
+    expectUInt(sum, 4999950000u64, "every value exactly once");
+  }
+  done();
+}

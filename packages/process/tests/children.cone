@@ -32,6 +32,7 @@ import path;
 import fs;
 import env;
 import process;
+import time use Duration, Instant;
 
 extern {
   fn @c(system) ExitProcess(code u32);
@@ -40,7 +41,6 @@ extern {
   fn @c(system) OpenProcess(access u32, inherit i32, pid u32) usize;
   fn @c(system) WaitForSingleObject(h usize, ms u32) u32;
   fn @c(system) CloseHandle(h usize) i32;
-  fn @c(system) GetTickCount64() u64;
   fn @c(system) GetEnvironmentVariableW(name *u16, buf *u16, size u32) u32;
 }
 
@@ -241,7 +241,7 @@ fn child(a &List[String], argc i32, argv **u8) i32 {
 // that it is that and nothing shorter
 fn makeRoot(name &[]u8) String {
   imm temp = libc.getenv(&[]"TEMP");
-  require(temp != 0usize as *u8, "TEMP is set");
+  require(temp != null, "TEMP is set");
   mut root = String.empty();
   match fs.absolute(mem.sliceFromParts(temp, libc.strlen(temp))) {
     case imm t Ok { root = path.join(t.value.view(), name); }
@@ -344,7 +344,7 @@ fn bigStreams(exe &[]u8) {
   imm size = 1048576usize;
   mut c = childCommand(exe, "streams");
   c.push(String.from("1048576"));
-  imm o = ran(process.run(c.view(), new process.Options(timeoutMs: 30000u64)), "streams");
+  imm o = ran(process.run(c.view(), new process.Options(timeout: Duration.fromSeconds(30))), "streams");
   expectBool(o.timedOut, false, "a megabyte each: in time");
   expectUInt(u64.from(o.stdout.len()), u64.from(size), "a megabyte to stdout");
   expectUInt(u64.from(o.stderr.len()), u64.from(size), "a megabyte to stderr");
@@ -361,19 +361,19 @@ fn bigStreams(exe &[]u8) {
 fn timesOut(exe &[]u8) {
   mut c = childCommand(exe, "sleep");
   c.push(String.from("10000"));
-  imm began = GetTickCount64();
-  imm o = ran(process.run(c.view(), new process.Options(timeoutMs: 300u64)), "sleep");
-  imm took = GetTickCount64() - began;
+  imm began = Instant.now();
+  imm o = ran(process.run(c.view(), new process.Options(timeout: Duration.fromMillis(300))), "sleep");
+  imm took = began.elapsed();
   expectBool(o.timedOut, true, "a sleeping child stopped by its time limit");
   expectUInt(u64.from(o.exitCode), 1u64, "a stopped child's exit code");
   expectStr(o.stdout.view(), "", "a stopped child never woke");
-  expectBool(took >= 300u64 and took < 5000u64, true, "stopped after 300 ms, not 10 s");
+  expectBool(took >= Duration.fromMillis(300) and took < Duration.fromSeconds(5), true, "stopped after 300 ms, not 10 s");
   expectBool(o.success(), false, "a stopped child is no success");
 
   // Given long enough, the same child finishes
   mut d = childCommand(exe, "sleep");
   d.push(String.from("50"));
-  imm p = ran(process.run(d.view(), new process.Options(timeoutMs: 20000u64)), "short sleep");
+  imm p = ran(process.run(d.view(), new process.Options(timeout: Duration.fromSeconds(20))), "short sleep");
   expectBool(p.timedOut, false, "a short sleep in time");
   expectStr(p.stdout.view(), "woke\r\n", "a short sleep woke");
 }
@@ -385,11 +385,11 @@ fn treeStopped(exe &[]u8, root &[]u8) {
   mut c = childCommand(exe, "tree");
   c.push(idFile.copy());
   c.push(String.from("20000"));
-  imm began = GetTickCount64();
-  imm o = ran(process.run(c.view(), new process.Options(timeoutMs: 1500u64)), "tree");
-  imm took = GetTickCount64() - began;
+  imm began = Instant.now();
+  imm o = ran(process.run(c.view(), new process.Options(timeout: Duration.fromMillis(1500))), "tree");
+  imm took = began.elapsed();
   expectBool(o.timedOut, true, "a child waiting on a grandchild stopped");
-  expectBool(took < 8000u64, true, "stopped well before the grandchild would wake");
+  expectBool(took < Duration.fromSeconds(8), true, "stopped well before the grandchild would wake");
   expectStr(o.stdout.view(), "", "the child never saw its grandchild end");
   mut id = 0u64;
   match fs.readFile(idFile.view()) {

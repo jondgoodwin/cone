@@ -1,0 +1,50 @@
+// A struct holding two unrelated lifetimes: a method returns what it holds in
+// ''ar' as ''src'. Its caller keeps a ''src' result as long as what the
+// struct holds in ''src', and not what it holds in ''ar', so the result would
+// outlive the 'R' the ''ar' field points at.
+//
+// Verdict: refuse, ErrorEscape at the returned field.
+// Basis: two unrelated lifetimes in one struct are allowed, and a borrow of
+// one is not a borrow of the other: nothing orders ''ar' against ''src'.
+// Master b07a3adc: refused at parse (ErrorBadTok: a lifetime in a struct's
+// brackets). This compiler with the return's refusal turned off accepts it, and
+// main, run, prints "final" (for the arena's 'R') and then a value read from
+// the freed 'R'.
+
+mod lifetime_band_struct_slot_other_lifetime_dangles;
+
+import stdio use *;
+
+struct R {
+  pub n i64;
+  fn final(self &uni) {
+    printStr("final\n");
+  }
+}
+
+struct Parser['src, 'ar] {
+  pub text &'src R;
+  pub ar &'ar R;
+  pub fn leak(self &) &'src R {
+    ar;                      //~ ErrorEscape
+  }
+}
+
+fn clobber(n i64) i64 {
+  mut a Array[i64, 16] = [n, n, n, n, n, n, n, n, n, n, n, n, n, n, n, n];
+  a[3] + a[9];
+}
+
+fn main() {
+  imm text = new R(1);
+  mut w = &text;
+  {
+    imm arena = new So[R](42);
+    imm p = new Parser(&text, &*arena);
+    w = p.leak();
+  }
+  clobber(21);
+  printStr("read = ");
+  printInt(w.n);
+  printStr("\n");
+}

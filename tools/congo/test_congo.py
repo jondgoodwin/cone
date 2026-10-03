@@ -355,6 +355,29 @@ class Scenarios(unittest.TestCase):
         self.congo("clean", "lone.cone", cwd=self.root)
         self.assertEqual(list((self.root / "home" / "lone").iterdir()), [])
 
+    # TEMPORARY, a provisional mechanism whose final design is open
+    def test_define_reaches_the_compile(self):
+        write(self.root / "flags.cone", """
+            mod flags;
+
+            import stdio use *;
+
+            fn main() i32 {
+              if isDefined("FAST") {print <- "fast ";} else {print <- "slow ";}
+              print <- definedInt("LEVEL");
+              print <- "\\n";
+              0i32;
+            }
+            """)
+        run = self.congo("run", "-D", "FAST", "-DLEVEL=7", "flags.cone", cwd=self.root)
+        self.assertEqual(self.program_output(run), "fast 7\n")
+        run = self.congo("run", "flags.cone", cwd=self.root)
+        self.assertEqual(self.program_output(run), "slow 0\n")
+        # conec refuses a bad one, and Congo says which compile failed
+        failed = self.congo("run", "--define=LEVEL=high", "flags.cone", cwd=self.root, ok=False)
+        self.assertNotEqual(failed.returncode, 0)
+        self.assertIn("-D LEVEL takes an integer", failed.stdout + failed.stderr)
+
     def test_a_lone_file_under_a_non_ascii_folder(self):
         # A path beyond ASCII, in the folder and the file's name, reaches conec
         # whole: the source is read, and the build description, the object and
@@ -947,13 +970,14 @@ class Scenarios(unittest.TestCase):
     def test_the_geomath_example(self):
         # packages/geomath/examples/tour.cone, run where it stands as a lone
         # file: geomath from the registry, compiled alone as a library over
-        # libc and collections, and the example linked against its object. Its
-        # build is in the home, so nothing is written into the repository
+        # libc (it needs no collections), and the example linked against its
+        # object. Its build is in the home, so nothing is written into the
+        # repository
         example = congo.REPO_PACKAGES / "geomath" / "examples" / "tour.cone"
         run = self.congo("run", str(example), cwd=self.root)
         compiled = [line.split()[1] for line in run.stdout.splitlines()
                     if line.strip().startswith("Compiling")]
-        self.assertEqual(compiled, ["libc", "core", "stdio", "collections", "geomath", "tour"])
+        self.assertEqual(compiled, ["libc", "core", "stdio", "geomath", "tour"])
         self.assertEqual(self.program_output(run), textwrap.dedent("""\
             perspective, 60 degrees, 16:9:
                  0.9743   0.0000   0.0000   0.0000
@@ -987,8 +1011,6 @@ class Scenarios(unittest.TestCase):
             the ray from the eye meets the box after 4.3081, at (0.0000, 0.4000, 1.0000)
             the arch's middle: (1.0000, 1.5000)
             which way it runs there: (3.0000, 0.0000)
-            the hull of seven points has 5 corners, area 5.0000
-            cut into 3 triangles
 
             orange: 1.0000 0.5000 0.0000 alpha 1.0000
             screen: 1280 by 720
@@ -1216,6 +1238,74 @@ class Testing(unittest.TestCase):
         self.assertRegex(desc, r'import counter: ".*/build/debug/counter\.cone"')
         self.assertTrue((build / "tests" / "doubles" / f"doubles{congo.EXE_EXT}").is_file())
         self.assertFalse((build / "examples" / "broken" / f"broken{congo.EXE_EXT}").exists())
+
+    def test_a_package_exports_an_actor(self):
+        # A library declaring a public actor and a private one: its include file
+        # holds each actor whole, the importer generates their declarations
+        # again, and its instances of the actors package's generics reach the
+        # functions the library's object exports for them. The two actors'
+        # lines are ordered by their messages, not by luck: Hidden is handed
+        # the Pinger and pings it after printing, so the Pinger's last message,
+        # and so its final, comes after Hidden's line
+        pkg = self.root / "pinger"
+        write(pkg / "congo.toml",
+              '[package]\nname = "pinger"\nversion = "0.1.0"\noutput = "library"\n')
+        write(pkg / "src" / "pinger.cone", """
+            mod pinger;
+
+            import stdio use *;
+            import actors;
+
+            pub actor Pinger {
+              count u64;
+
+              pub fn init(self &new, start u64) {
+                *self = new Self(count: start);
+              }
+
+              pub fn ping(self, n u64) {
+                count = count + n;
+              }
+
+              fn final(self &uni) {
+                printStr("pinger "); printUInt(count); printStr("\\n");
+              }
+            }
+
+            actor Hidden {
+              pub fn hello(self, n u64, p Pinger) {
+                printStr("hidden "); printUInt(n); printStr("\\n");
+                p.ping(n);
+              }
+            }
+
+            pub fn useHidden(p Pinger) {
+              imm h = new Hidden();
+              h.hello(3u64, p);
+            }
+            """)
+        write(pkg / "tests" / "useit.cone", """
+            mod useit;
+
+            import pinger;
+            import actors;
+
+            fn main() {
+              initAll();
+              {
+                imm p = new pinger.Pinger(5u64);
+                p.ping(10u64);
+                pinger.useHidden(p);
+              }
+              finalAll();
+            }
+            """)
+        write(pkg / "tests" / "useit.out", "hidden 3\npinger 18\n")
+        run = self.congo("test", cwd=pkg)
+        self.assertIn("test useit ... ok", run.stdout)
+        include = (pkg / "build" / "debug" / "pinger.cone").read_text()
+        self.assertIn("pub actor Pinger {", include)
+        self.assertIn("actor Hidden {", include)
 
     def test_a_non_ascii_diff_to_a_pipe(self):
         # Congo's stdout here is a pipe, which Python would write in the

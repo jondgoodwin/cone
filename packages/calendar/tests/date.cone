@@ -1,0 +1,209 @@
+// Date: made only when it exists; leap years by the Gregorian rule, centuries
+// included; the day count since 1970 (Hinnant's algorithms) against values
+// computed independently (Python's datetime), before 1970, in 1600, 1900,
+// 2000, 2400, year 1, year 0 and before it, and round trips over five
+// million years of days; day of the week, day of the year, adding and
+// subtracting days across months, years and leap days, the days between two
+// dates, and comparison.
+
+mod date;
+
+import testing use *;
+import calendar use Date, Weekday;
+
+// The date, which the test knows exists
+fn ymd(y i64, m i64, d i64) Date {
+  match Date.fromYmd(y, m, d) {
+    case imm s Some { s.value; }
+    case is None {
+      require(false, "the test's date exists");
+      new Date();
+    }
+  }
+}
+
+fn exists(y i64, m i64, d i64) Bool {
+  match Date.fromYmd(y, m, d) {
+    case is Some { true; }
+    case is None { false; }
+  }
+}
+
+fn construction() {
+  imm d = ymd(2026, 10, 3);
+  expectInt(d.year(), 2026, "year");
+  expectInt(d.month(), 10, "month");
+  expectInt(d.day(), 3, "day");
+  expect(new Date() == ymd(1970, 1, 1), "new Date() is 1970-01-01");
+  expect(exists(2024, 2, 29), "29 February of a leap year");
+  expect(not exists(2026, 2, 29), "no 29 February in a common year");
+  expect(not exists(1900, 2, 29), "nor in 1900, divisible by 100");
+  expect(exists(2000, 2, 29), "but in 2000, divisible by 400");
+  expect(not exists(2026, 2, 30), "no 30 February");
+  expect(not exists(2026, 4, 31), "no 31 April");
+  expect(exists(2026, 12, 31), "31 December");
+  expect(not exists(2026, 13, 1), "no month 13");
+  expect(not exists(2026, 0, 1), "no month 0");
+  expect(not exists(2026, 1, 0), "no day 0");
+  expect(not exists(2026, 1, 32), "no 32 January");
+  expect(not exists(2026, -1, 1), "no month -1");
+  expect(not exists(2026, 257, 1), "no month 257 (which an i8 would wrap to 1)");
+  expect(not exists(2147483648, 1, 1), "no year past i32");
+  expect(exists(2147483647, 12, 31), "the last year i32 holds");
+  expect(exists(-2147483648, 1, 1), "and the first");
+  expect(exists(0, 2, 29), "year 0 (1 BC) is a leap year");
+  expect(exists(1, 1, 1), "year 1");
+}
+
+fn leapYears() {
+  expect(calendar.isLeapYear(2024), "2024 is leap");
+  expect(not calendar.isLeapYear(2026), "2026 is not");
+  expect(calendar.isLeapYear(1600), "1600 is (400)");
+  expect(not calendar.isLeapYear(1700), "1700 is not (100)");
+  expect(not calendar.isLeapYear(1900), "1900 is not");
+  expect(calendar.isLeapYear(2000), "2000 is");
+  expect(not calendar.isLeapYear(2100), "2100 is not");
+  expect(calendar.isLeapYear(2400), "2400 is");
+  expect(calendar.isLeapYear(0), "year 0 is");
+  expect(calendar.isLeapYear(-4), "year -4 is");
+  expect(not calendar.isLeapYear(-100), "year -100 is not");
+  expect(calendar.isLeapYear(-400), "year -400 is");
+  expect(not calendar.isLeapYear(-1), "year -1 is not");
+  expect(ymd(2000, 6, 1).isLeapYear(), "a date's year");
+  expectInt(ymd(2000, 6, 1).daysInYear(), 366, "366 days in 2000");
+  expectInt(ymd(1900, 6, 1).daysInYear(), 365, "365 in 1900");
+}
+
+fn monthLengths() {
+  expectInt(calendar.daysInMonth(2026, 1), 31, "January");
+  expectInt(calendar.daysInMonth(2026, 2), 28, "February 2026");
+  expectInt(calendar.daysInMonth(2024, 2), 29, "February 2024");
+  expectInt(calendar.daysInMonth(1900, 2), 28, "February 1900");
+  expectInt(calendar.daysInMonth(2000, 2), 29, "February 2000");
+  expectInt(calendar.daysInMonth(2026, 4), 30, "April");
+  expectInt(calendar.daysInMonth(2026, 6), 30, "June");
+  expectInt(calendar.daysInMonth(2026, 9), 30, "September");
+  expectInt(calendar.daysInMonth(2026, 11), 30, "November");
+  expectInt(calendar.daysInMonth(2026, 7), 31, "July");
+  expectInt(calendar.daysInMonth(2026, 8), 31, "August");
+  expectInt(calendar.daysInMonth(2026, 12), 31, "December");
+  expectInt(calendar.daysInMonth(2026, 13), 0, "no month 13");
+  expectInt(calendar.daysInMonth(2026, 0), 0, "no month 0");
+  expectInt(ymd(2024, 2, 10).daysInMonth(), 29, "a date's month");
+}
+
+// Each against Python's datetime: (date - date(1970, 1, 1)).days, isoweekday()
+// and the day of the year
+fn check(y i64, m i64, d i64, days i64, iso i64, yday i64, label &[]u8) {
+  imm date = ymd(y, m, d);
+  expectInt(date.unixDays(), days, label);
+  expect(Date.fromUnixDays(days) == date, label);
+  expectInt(date.isoWeekday(), iso, label);
+  expectInt(date.dayOfYear(), yday, label);
+}
+
+fn knownDays() {
+  check(1970, 1, 1, 0, 4, 1, "1970-01-01, a Thursday");
+  check(1969, 12, 31, -1, 3, 365, "1969-12-31");
+  check(2000, 1, 1, 10957, 6, 1, "2000-01-01");
+  check(1900, 1, 1, -25567, 1, 1, "1900-01-01");
+  check(1600, 1, 1, -135140, 6, 1, "1600-01-01");
+  check(1600, 2, 29, -135081, 2, 60, "1600-02-29");
+  check(2400, 1, 1, 157054, 6, 1, "2400-01-01");
+  check(2400, 2, 29, 157113, 2, 60, "2400-02-29");
+  check(1, 1, 1, -719162, 1, 1, "0001-01-01, a Monday");
+  check(2026, 10, 3, 20729, 6, 276, "2026-10-03");
+  check(9999, 12, 31, 2932896, 5, 365, "9999-12-31");
+  check(1582, 10, 15, -141427, 5, 288, "1582-10-15, the Gregorian calendar's first day");
+  check(1582, 10, 4, -141438, 1, 277, "1582-10-04, proleptic: the days between are counted");
+  check(2100, 3, 1, 47541, 1, 60, "2100-03-01, after a February of 28");
+  // Before year 1, by the same rule run back: year 0 has 366 days
+  expectInt(ymd(0, 1, 1).unixDays(), -719528, "0000-01-01");
+  expectInt(ymd(0, 12, 31).unixDays(), -719163, "0000-12-31, the day before 0001-01-01");
+  expectInt(ymd(-1, 1, 1).unixDays(), -719893, "-0001-01-01");
+  expect(Date.fromUnixDays(-719893) == ymd(-1, 1, 1), "and back");
+  expectInt(ymd(0, 12, 31).dayOfYear(), 366, "year 0's last day is its 366th");
+  expectInt(ymd(2024, 12, 31).dayOfYear(), 366, "2024's last day is its 366th");
+  expect(ymd(2026, 10, 3).weekday() == Weekday.Saturday[], "2026-10-03 is a Saturday");
+  expect(ymd(1970, 1, 1).weekday() == Weekday.Thursday[], "1970-01-01 is a Thursday");
+  expect(ymd(1969, 12, 29).weekday() == Weekday.Monday[], "1969-12-29 is a Monday");
+  expect(ymd(1969, 12, 28).weekday() == Weekday.Sunday[], "1969-12-28 is a Sunday");
+}
+
+// Every day from 10 million days before 1970 to 10 million after, at a
+// stride, round trips, and each day the stride covers lands where the
+// one-by-one walk says
+fn roundTrips() {
+  mut bad = 0i64;
+  mut n = -10000000i64;
+  while n <= 10000000i64 {
+    if Date.fromUnixDays(n).unixDays() != n { bad = bad + 1i64; }
+    n = n + 997i64;
+  }
+  expectInt(bad, 0, "fromUnixDays and unixDays round trip over 55,000 years");
+  // Walk day by day across 1599 to 2401, checking each step is the next
+  // calendar day
+  mut d = ymd(1599, 1, 1);
+  mut walked = 0i64;
+  bad = 0i64;
+  while d < ymd(2401, 1, 1) {
+    imm next = d.addDays(1);
+    imm ok = if i64.from(d.day()) < i64.from(d.daysInMonth()) {
+      next.year() == d.year() and next.month() == d.month() and i64.from(next.day()) == i64.from(d.day()) + 1i64;
+    } elif d.month() < 12i8 {
+      next.year() == d.year() and i64.from(next.month()) == i64.from(d.month()) + 1i64 and next.day() == 1i8;
+    } else {
+      i64.from(next.year()) == i64.from(d.year()) + 1i64 and next.month() == 1i8 and next.day() == 1i8;
+    };
+    if not ok { bad = bad + 1i64; }
+    if next.unixDays() != d.unixDays() + 1i64 { bad = bad + 1i64; }
+    if next.isoWeekday() != (if d.isoWeekday() == 7i8 {1i8;} else {d.isoWeekday() + 1i8;}) { bad = bad + 1i64; }
+    d = next;
+    walked = walked + 1i64;
+  }
+  expectInt(bad, 0, "each day of 1599 to 2400 is followed by the next");
+  expectInt(walked, 292925, "and there are 802 years of them (Python's count)");
+}
+
+fn arithmetic() {
+  imm d = ymd(2026, 10, 3);
+  expect(d.addDays(29) == ymd(2026, 11, 1), "into the next month");
+  expect(d.addDays(90) == ymd(2027, 1, 1), "into the next year");
+  expect(d.addDays(-276) == ymd(2025, 12, 31), "a negative count goes back");
+  expect(d.subDays(276) == ymd(2025, 12, 31), "subDays");
+  expect(ymd(2024, 2, 28).addDays(1) == ymd(2024, 2, 29), "onto a leap day");
+  expect(ymd(2024, 2, 29).addDays(1) == ymd(2024, 3, 1), "off it");
+  expect(ymd(2023, 2, 28).addDays(1) == ymd(2023, 3, 1), "no leap day in 2023");
+  expect(ymd(1970, 1, 1).subDays(1) == ymd(1969, 12, 31), "back across 1970");
+  expect(ymd(1, 1, 1).subDays(1) == ymd(0, 12, 31), "back across year 1");
+  expect(ymd(2000, 1, 1).addDays(146097) == ymd(2400, 1, 1), "400 years is 146097 days");
+  expectInt(ymd(2026, 10, 3).daysSince(ymd(1970, 1, 1)), 20729, "daysSince");
+  expectInt(ymd(1970, 1, 1).daysSince(ymd(2026, 10, 3)), -20729, "daysSince a later date is negative");
+  expectInt(ymd(2001, 1, 1).daysSince(ymd(2000, 1, 1)), 366, "2000 has 366 days");
+  expectInt(ymd(1901, 1, 1).daysSince(ymd(1900, 1, 1)), 365, "1900 has 365");
+}
+
+fn comparison() {
+  imm a = ymd(2026, 10, 3);
+  imm b = ymd(2026, 10, 4);
+  imm c = ymd(2026, 11, 1);
+  imm e = ymd(2027, 1, 1);
+  imm old = ymd(-5, 6, 1);
+  expect(a < b and b < c and c < e, "earlier is less, by day, month and year");
+  expect(old < a, "a year before 0 is less");
+  expect(e > a and e >= a and a <= a and a >= a, "> >= <= on equal");
+  expect(a == ymd(2026, 10, 3) and a != b, "== and !=");
+  expect(not (b < a) and not (a > b), "not the other way");
+  expect(ymd(2026, 12, 1) > ymd(2026, 2, 28), "month before day");
+}
+
+fn main() i32 {
+  construction();
+  leapYears();
+  monthLengths();
+  knownDays();
+  roundTrips();
+  arithmetic();
+  comparison();
+  done();
+}

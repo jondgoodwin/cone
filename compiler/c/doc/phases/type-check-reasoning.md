@@ -29,9 +29,12 @@ rather than describe.**
    is what makes unranked overload filtering possible at all.
 3. **Coercion does not report a type mismatch.** `iexpCoerce` returns 0 and the
    caller writes the diagnostic, which is why the same mismatch reads
-   differently at an argument, an assignment and a return. It does report two
-   other things itself: an operand that is not an expression node at all, and
-   whatever `fnCallLowerMethod` reports on the `ConvByMeth` path.
+   differently at an argument, an assignment and a return. It does report four
+   other things itself: an operand that is not an expression node at all,
+   whatever `fnCallLowerMethod` reports on the `ConvByMeth` path, a `null`
+   wanted as anything but a raw pointer (`litAdoptNullType`), and a `Bool`
+   wanted as a number (`ErrorBoolNotNbr`). For the last two it answers 1, so
+   the caller says nothing more.
 4. **Overload selection filters, it does not rank.** Exactly one viable
    candidate is a match; two are an ambiguity. There is no best-match score and
    no preference order to memorize.
@@ -126,11 +129,22 @@ monomorphization branch.
 ## 5. Coercion
 
 `iexpMatches` layers expression-level fallbacks on top of pure type subtyping,
-**in this order**, stopping at the first that answers:
+**in this order**, stopping at the first that answers. Ahead of them all, a
+`null` not yet typed answers alone: `EqMatch` for any raw pointer type, `NoMatch`
+for anything else.
 
 1. `itypeMatches(totype, fromtype, Coercion)` — the type-only question,
    dispatched by the *target* type's tag to `nbrMatches`, `structMatches`,
-   `refMatches`, `arrayMatches`, `fnSigMatches` and the rest.
+   `refMatches`, `arrayMatches`, `fnSigMatches` and the rest. `nbrMatches`
+   widens within one kind of number, and leaves `Bool` out on both sides: a
+   1-bit unsigned to the compiler, it is no number to the language, so it
+   neither widens to an unsigned type nor meets one in a branch
+   (`nbrFindSuper`). `iexpCoerce` reports a `Bool` wanted as a number itself,
+   `ErrorBoolNotNbr` naming `T.from(b)`, and injects the conversion so nothing
+   that uses the value reports again; an operator or an index that selected no
+   method, given a `Bool` where a candidate declares a number, says the same in
+   place of its no-candidate message (`fnCallBoolOperandWantsNumber`, asking
+   `iNsTypeNumberParm`).
 2. **Target is `Bool`**: look for an `isTrue` method on the source type.
    This branch returns in both arms, so a `Bool` target never reaches the two
    fallbacks below.
@@ -191,10 +205,31 @@ covariant**, and the overall verdict is the most expensive of all the parts.
 Lifetimes named on the two signatures match only by agreeing
 (`lifeSigsAgree`): a call through `to` is checked against what `to` promises,
 so `from` must promise exactly that. The same agreement is part of
-`fnSigEqual` and `fnSigVrefEqual`, so a module's or a struct's method meets a
-trait's requirement only promising what the requirement does, and two
-signatures that promise differently are two types (spelled apart by
-`lifeSigSpell`).
+`fnSigEqual`, so two signatures that promise differently are two types
+(spelled apart by `lifeSigSpell`). A module's or a struct's method meets a
+trait's requirement (`fnSigVrefEqual`) where it promises at least what the
+requirement does (`lifeSigMeets`), digit by digit of the same promises: its
+result, and what it may store through a writable parameter, holds no part
+the requirement's may not; a parameter is `'static` only where the
+requirement's is; a struct's slots are named apart wherever the requirement's
+are. So a method may return `'static`, or a longer lifetime, where the trait's
+result may hold its receiver, and take any borrow where the trait asks for a
+`'static` one, as Rust's more general impl may. What a signature promises is read part by part of each
+parameter -- its own reference's lifetime, and what that holds, by slot for a
+struct declaring lifetimes -- with its `where` clause's order and its
+structs' (`lifeSigCheck`, run as the signature is type checked, which also
+marks a signature naming a lifetime only through a struct's `Self`). Two
+signatures whose parameters lend different parts -- a trait's `Self`, and the
+`Self` of a struct declaring lifetimes that implements it -- agree where each
+parameter's lending flows alike as a whole: a call through the trait carries
+the receiver whole wherever the implementation carries any part of it, the
+cautious side. A
+lifetime is never instanced: a generic is instanced at its type arguments
+with every lifetime erased from them (`lifeErased`), a function type's
+promises excepted, and every band an argument inferred from a borrow carries
+(`RefNode.scope`), and the instance's use keeps the arguments as written for
+the lifetimes they name (`NameUseNode.lifeuse`). An invariant lifetime is the
+exception, kept and named by its place ("Invariant lifetimes: brands").
 
 ## 6. Unifying branches
 
@@ -322,7 +357,9 @@ Two syntaxes and a pattern's binding, all `CastNode`:
 | `case imm c &Circle` | `newConvCastNode` (`FlagConvert`, `FlagMatchBind`) | the matched value, narrowed, for the bound variable |
 
 **Reinterpret requires identical bit size** (`castBitsize`), except to a struct,
-which is unchecked. **Convert**, a bound pattern's, permits reference to
+which is unchecked, and never joins pointer-sized `usize` or `isize` to a
+fixed-width number, whose widths agree on some targets only
+(`ErrorPtrSizedAs`, [cast](../nodes/cast.md)). **Convert**, a bound pattern's, permits reference to
 reference, virtual reference to reference, and `SameSize` struct to struct. A
 ref-to-ref conversion drops `FlagConvert` on the spot — it is a bitcast after
 all. Everything else is `ErrorInvType`, usually after the pattern's `is` test
@@ -401,7 +438,95 @@ must agree. A return's value tuple was already coerced element by element, by
 The assignment's own type is the rval's type, so an assignment is usable as an
 expression.
 
-## 11. Hazards
+## 11. Invariant lifetimes: brands
+
+An invariant lifetime, `'=a`, is checked here and nowhere else, as an
+identity of names. Inside a function each one is a **brand**: a name the
+signature writes (a parameter's, or `Self`'s), a name only the result writes
+(which a call of the function mints, so the body binds it once, below), a name
+minted at a call site or construction in the body (`lifeBrandMint`, spelled
+`'=a#n`, which no source can write), or, in a generic's instance, a name by
+place (`'=1`, `'=2`). `lifeBrandsOf` reads a type's brands in a fixed order:
+a reference's own, then what it points at; a struct's declared invariant
+lifetimes as the use names them (`lifeSlotName`; `Self` names its own, a use
+naming none a `NULL` place), then its kept type arguments, or an instance's own.
+A raw pointer carries none: it is what a region makes its keys from.
+
+**Comparison.** Every value meeting a type meets its brands:
+`iexpCoerce` ends in `lifeBrandsCoerce`, as do `iexpMultiInfer` (branches
+joining), `iexpSameType` (a swap), a reinterpret cast neither of whose
+sides is a raw pointer, and a pattern's conversion (`case imm s Some[&'=a T]`
+names the matched value's brands, no others). Outside a binding, a parameter's name is compared by
+identity (or a `where '=a == '=b` pair), and a name only the result writes is
+bound to the first brand it meets, for the whole function (`lifeBrandAgree`):
+one brand per result name, so a body returning two different mints as one is
+refused, even on different paths. A brand lost or gained (the two lists of
+different lengths, or a `NULL` place against a brand) is a mismatch. Two
+signatures agree on brands where the same places carry one brand, and the
+same places one only the result names (`lifeSigBrandsAgree`, part of
+`lifeSigsAgree`), so a function is taken as a reference only where the
+reference's type promises what it does.
+
+**Binding.** `fnCallFinalizeArgs` begins a binding of the callee's names
+(`lifeBindBegin`) while it coerces the arguments: each name is bound at its
+first meeting and compared after, so an arena and another arena's key are
+refused at the key (`ErrorBrand`). A static function reached through a use
+naming brands (`List[&'=a T].empty()`) is bound to them first
+(`fnCallBrandPathAdd`, `lifeBindUse`), and so is a generic function's instance
+to the type arguments it was called with (`lifeBindArgs`, from the instance
+use's `lifeuse`). The callee's `where '=a == '=b` pairs are then held to one
+brand (`lifeBindClose`), and the result type is the declared one with each
+name replaced by its brand (`lifeBrandSubst`): a name no argument bound is
+minted there, fresh for the call site. `typeLitStructCheck` binds a struct's
+own names the same way from its fields' values, and from the use where it
+names them (`None[&'=a T][]`), minting a name no field gives (`DynArena`'s
+phantom `'=a`). A field read substitutes the struct's names by the brands its
+receiver's type gives (`lifeBrandField`). The injected borrows of a receiver
+keep the value's type use, not its declaration, so they keep its brands
+(`borrowPointee`).
+
+**Loops.** A loop block's check opens a frame (`lifeBrandLoopEnter`), and a
+mint remembers the innermost one open. A brand minted in a pass meeting a
+brand from outside it, in a store or a binding outside a call, is
+`ErrorBrandLoop`, and so is a `break` carrying one out of its loop
+(`lifeBrandBreaks`, once the loop's frame is closed). A variable declared
+outside the loop has a type that cannot name the pass's brand, so this is the
+identity check telling the author why.
+
+**Keys.** A reference of an invariant lifetime is a **key** (`lifeIsKey`). It
+reaches nothing: `derefInject` and `derefTypeCheck` refuse it, and so does a
+method, field or index on it in `fnCallTypeCheck` (`ErrorKeyAccess`); `===`
+asks which place it names. A key and a borrow are never one type (`refIsSame`,
+`refMatches`), and a key is never dispatched through. A key is no borrow: it
+has no scope (`iexpIsBorrowType`), holds no loan (`itypeCarriesBorrow`,
+`lifeSetAdd` and `lifeGather` skip it), so the loan walk never sees it. What it
+names lives in its arena past every scope, so it holds no borrow
+(`ErrorKeyBorrow`, at a written type in `refTypeCheck` — once what it names is
+laid out, `refKeyBorrowCheck`, since a reference does not lay out its target
+while a layout is in flight ([Type Check](type-check.md), "A reference does not
+demand its target") — and at a call's result in `lifeKeyBorrow`).
+
+**Generics.** An instance is made with ordinary lifetimes erased, but an
+invariant one kept (`lifeErased`), then every brand its arguments carry
+renamed by its place (`lifeCanonBrands`): `List[&'=a Node['=a]]` is
+`List[&'=1 Node['=2]]`, one instance per shape, assuming no two places alike,
+and the memo compares those names too (`lifeBrandsEqual`). A call through it
+binds each place afresh. A generic's type arguments carrying brands are kept
+on the instance's use (`lifeUseInstance`), a function's as well as a type's.
+
+**Set position.** `x[i] = v`, `x[i].f = v`, an operator changing it in place,
+and a `self &mut` method whose receiver is `x[i]` ask the type's `&[]` for
+the element's mutable borrow, as Rust's `IndexMut` is chosen for a place
+written to: `assignTypeCheck` and an `FlagLvalOp` call mark the index at the
+place's root (`fnCallSetIndexRoot`, `fnCallSetIndex`), which `fnCallTypeCheck`
+lowers with `FlagBorrow`, and `fnCallIndexAsMut` lowers a receiver again
+where no method takes the read-only element. This is what makes
+`arena[key] = v` a write through the arena.
+
+Nothing here is a solver: every check is two names compared, after at most
+one binding of each.
+
+## 12. Hazards
 
 - **`iexpCoerce` returns 0 silently on a type mismatch**, but not on its other
   two failures. A caller that forgets to report a mismatch gets a wrong program
@@ -415,8 +540,16 @@ expression.
   the re-coercion pass in section 6.
 - **A node injected during type check takes the lexer's position**, which is end
   of file by then. Call `inodeLexCopy` or the diagnostic points at nothing.
+- **A type taken through `itypeGetTypeDcl` has lost its brands.** The
+  declaration names the struct's own invariant lifetimes, not the brands a
+  use gives them, so a type built from it for a value (an injected borrow, a
+  branch's type in common) must be built from the value's `vtype` instead,
+  or the value's brands silently become the struct's names.
+- **A value reaching a type other than through `iexpCoerce`** meets no brand
+  check. Each such path (a swap, a branch, a cast, a pattern) calls
+  `lifeBrandsCoerce` itself.
 
-## 12. What lives elsewhere
+## 13. What lives elsewhere
 
 | Question | Note |
 | --- | --- |

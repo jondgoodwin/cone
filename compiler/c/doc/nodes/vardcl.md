@@ -204,8 +204,8 @@ parameter names**.
    (`mut g (i64, i64) = 1, 2`), a borrow of a string literal (so a slice of one) or
    of an array literal of constants (`imm g = &[1, 2, 3]`) or of a named
    constant holding either (`imm g = &K`), a reinterpretation
-   of a constant to a number or pointer (`imm g *u8 = 0usize as *u8`,
-   [literals](literals.md)), and
+   of a constant to a number or pointer (`imm g *u8 = 4096usize as *u8`,
+   [literals](literals.md)), `null`, and
    a use resolved to a `ConstDclTag`, which is what makes `imm g i32 = K` legal.
    A static's value is its storage's initializer, written once before anything
    runs, which is why it is held to a global's rule wherever it is declared. The
@@ -255,13 +255,16 @@ A temporary dies at the end of its statement ([Flow](../phases/flow.md),
 *extending positions* of a local's initializer are the initializer itself and,
 recursively, the operand of a borrow or a recast in one, and each element of a
 tuple, array or variant literal (`Some[..]`, a `TypeLitTag` with `FlagIndex`)
-in one. What a borrow there reaches is extended: the temporary at the root of
+in one, and the final expression of a block in one (`{ ..; &mk() }`), and so
+of each arm of an `if` or a `match` in one, as Rust 2024 extends them. What a
+borrow there reaches is extended: the temporary at the root of
 its place (`borrowTempRoot`: the value a field or an element is part of, or the
 owning reference a dereference reads through — `&mk()`, `&mk().n`,
 `&*mkso()`, never a place reached through a borrowed reference or a pointer);
 so is the owner a recast lends there as a borrow (`imm r &R = mkso()`, read as
-Rust's `&*`). A call's arguments, a method's receiver, an `if`'s or a block's
-value and a construction's arguments (`new H(..)`) are not extending.
+Rust's `&*`). A call's arguments, a method's receiver, a block's statements
+before its final expression and a construction's arguments (`new H(..)`) are
+not extending.
 
 An extended temporary becomes a **hidden local** of the block: a `VarDclNode`
 named `tempLocalName` (`-temp`, which no source can spell), `uni` since only
@@ -270,6 +273,21 @@ declared local, marked `TypeChecked` (its value is), and declared just before
 the statement (`blockHoist`, [Block](block.md)); a name use of it takes the
 expression's place. From there it is an ordinary local: released at the
 block's end, drop-flagged, a loan root, its borrow scoped to the block.
+
+**One a block's final expression extends is given its value in place.** An
+arm runs on some paths only, and a block's final expression after the block's
+own statements, which may declare what it reads, so its hidden local is
+declared before the statement holding nothing (`value` NULL), and an
+assignment of the temporary's expression to it is inserted into that block just
+before its final expression (`varDclExtendEmit`, `VarDclExtend.inblock` and
+`tail`): `imm r = if c { &mk(1) } else { &mk(2) }` declares two, and each arm
+assigns its own. A path that gives one no value leaves its drop flag clear, so
+only the arm that ran finalizes its temporary at the block's end
+([Flow](../phases/flow.md), "Drop flags"). What runs before an extended
+temporary inside that final expression becomes a hidden local of that block,
+ahead of the assignment; the block's code itself stays where it is, so an
+element of a literal it is part of is moved ahead of the statement only when a
+later element's temporary is (`VarDclExtend.ran`, counted per block).
 
 The mechanics are in two halves, because a borrow is type checked before
 anything shows whether it is extending. `blockStmtTypeCheck` opens a
@@ -282,9 +300,9 @@ its extending positions in the order they run, keeping each hidden local a
 borrow there reaches (with what its own value extends, first) and making one
 for an owner a recast lends (retyping the recast to the block's lifetime).
 `varDclExtendEnd` settles the rest: a hidden local no extending borrow reached
-is a borrow of a temporary, refused (`ErrorBadLval`, at the borrow's operand,
-as before), unless the operand was a place all the same (`id(&*mkso())`),
-whose temporary goes back where it was.
+goes back where it was, a temporary of the statement (`id(&mk())`,
+`id(&*mkso())`), which a borrow points at until the statement's end, as one
+outside any initializer is ([Flow](../phases/flow.md), "Temporaries").
 
 **Order is kept.** A hidden local runs at its declaration, before the
 statement. So an element of a literal that runs before an extended temporary

@@ -59,6 +59,9 @@ Lexer *lexNew(char *src, char *url) {
     newlex->prevend = src;
     newlex->prevlinep = src;
     newlex->prevlinenbr = 1;
+    newlex->genat = NULL;
+    newlex->gennames = NULL;
+    newlex->ngennames = 0;
     return newlex;
 }
 
@@ -158,6 +161,8 @@ void keywordInit() {
 
     keyAdd("void", VoidToken);
     keyAdd("nil", nilToken);
+    // The null raw pointer, typed by the pointer type it is wanted as
+    keyAdd("null", nullToken);
     keyAdd("true", trueToken);
     keyAdd("false", falseToken);
     keyAdd("undef", UndefToken);
@@ -371,6 +376,21 @@ char *lexScanEscape(char *srcp, uint64_t *charval) {
 void lexScanChar(char *srcp) {
     char *srcbeg = srcp;
     lex->tokp = srcp++;
+
+    // An invariant lifetime, ''=a': the quote, '=', a name. ''='' stays the
+    // character literal it always was, since a letter follows no '=' there.
+    if (*srcp == '=' && isalpha(srcp[1])) {
+        char *namep = srcp + 1;
+        while (isalnum(*namep))
+            ++namep;
+        if (*namep != '\'' && !(*namep & 0x80)) {
+            lex->val.ident = nametblFind(srcbeg, namep - srcbeg);
+            lex->toktype = LifetimeToken;
+            lex->srcp = namep;
+            lifeInvariantSeen = 1;
+            return;
+        }
+    }
 
     // Assume we have a lifetime variable if it starts with a letter, not followed by close single quote
     if (isalpha(*srcp) && *(srcp+1)!='\'') {
@@ -924,6 +944,20 @@ void lexScanTickedIdent(char *srcp) {
         return;
     }
 
+    // In a source the compiler generated, '`#n`' is the nth name it was given,
+    // one no source can spell (Lexer.gennames)
+    if (lex->gennames && srcbeg[1] == '#') {
+        uint32_t n = 0;
+        for (char *p = srcbeg + 2; p < srcp; ++p)
+            n = n * 10 + (uint32_t)(*p - '0');
+        if (n < lex->ngennames) {
+            lex->val.ident = lex->gennames[n];
+            lex->toktype = IdentToken;
+            lex->srcp = srcp + 1;
+            return;
+        }
+    }
+
     // Find identifier token in name table and preserve info about it
     lex->val.ident = nametblFind(srcbeg+1, srcp - srcbeg - 1);
     lex->toktype = IdentToken;
@@ -1441,6 +1475,13 @@ int lexNextOpensValue() {
 // resolution refuses as a type) by the ';' those brackets hold at their own
 // level. Read off the text as
 // lexNextIsWord is, so nothing is lexed twice.
+int lexPeekIsLifetime() {
+    char *srcp = lexSkipTrivia(lex->srcp);
+    if (srcp[0] == '\'' && srcp[1] == '=' && isalpha(srcp[2]))
+        return 1;
+    return srcp[0] == '\'' && isalpha(srcp[1]) && srcp[2] != '\'';
+}
+
 int lexIdentOpensType() {
     char *srcp = lexSkipTrivia(lex->srcp);
     if (*srcp == '.')

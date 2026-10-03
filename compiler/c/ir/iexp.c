@@ -41,6 +41,10 @@ int iexpTypeCheckAny(TypeCheckState *pstate, INode **from) {
 
 // Return whether it is okay for from expression to be coerced to to-type
 TypeCompare iexpMatches(INode **from, INode *totype, SubtypeConstraint constraint) {
+    // A 'null' not yet typed is whichever raw pointer type is wanted, and nothing else
+    if (litIsUntypedNull(*from))
+        return litNullMatches(*from, totype) ? EqMatch : NoMatch;
+
     INode *fromtype = iexpGetTypeDcl(*from);
 
     // Is totype a supertype of (or equivalent to) from's type?
@@ -73,10 +77,11 @@ TypeCompare iexpMatches(INode **from, INode *totype, SubtypeConstraint constrain
     return NoMatch;
 }
 
-// Is this the type of a borrowed reference, whose scope is a lifetime?
+// Is this the type of a borrowed reference, whose scope is a lifetime? A key's
+// invariant lifetime is no scope: it goes anywhere.
 int iexpIsBorrowType(INode *type) {
     return (type->tag == RefTag || type->tag == ArrayRefTag || type->tag == VirtRefTag)
-        && ((RefNode*)type)->region == borrowRef;
+        && ((RefNode*)type)->region == borrowRef && !lifeIsInvariant(((RefNode*)type)->lifename);
 }
 
 // A copy of the borrowed-reference type 'typedcl' carrying the lifetime 'scope'.
@@ -88,6 +93,7 @@ INode *iexpScopedBorrowType(INode *typedcl, INode *lexnode, uint16_t scope) {
     RefNode *scoped = newRefNodeFull(typedcl->tag, lexnode, borrowRef, ref->perm, ref->vtexp);
     scoped->scope = scope;
     scoped->lifename = ref->lifename;
+    scoped->bound = ref->bound;
     return (INode*)scoped;
 }
 
@@ -139,15 +145,36 @@ INode *iexpCoerceType(INode *from, INode *totypedcl) {
     return iexpScopedBorrowType(totypedcl, from, scope);
 }
 
+static int iexpCoerceShape(INode **from, INode *totype);
+
 // Coerce from-node's type to 'to' expected type, if needed
-// Return 1 if type "matches", 0 otherwise
+// Return 1 if type "matches", 0 otherwise. A value meeting a type also meets
+// its invariant lifetimes, which must be the same brands (lifeBrandsCoerce):
+// so a key never reaches where another arena's is wanted, nor loses its brand.
 int iexpCoerce(INode **from, INode *totype) {
+    INode *fromtype = isExpNode(*from) ? ((IExpNode *)*from)->vtype : NULL;
+    INode *at = *from;
+    if (!iexpCoerceShape(from, totype))
+        return 0;
+    // A brand mismatch is reported there; the shape matching keeps the errors
+    // from multiplying
+    if (lifeInvariantSeen && fromtype)
+        lifeBrandsCoerce(fromtype, totype, at);
+    return 1;
+}
+
+static int iexpCoerceShape(INode **from, INode *totype) {
     // From should be a typed expression node
     if (!isExpNode(*from)) {
         errorMsgNode(*from, ErrorInvType, "An expression value is expected here.");
         return 0;
     }
     IExpNode *fromnode = (IExpNode *)*from;
+
+    // A 'null' takes the raw pointer type it is wanted as, and is refused
+    // wanted as anything else, or as nothing in particular
+    if (litAdoptNullType(from, totype))
+        return 1;
 
     // No need to do coercion, if no expected type
     if (totype == unknownType || totype == noCareType)
@@ -178,6 +205,18 @@ int iexpCoerce(INode **from, INode *totype) {
         // So may a borrowed constant one, and the borrow then match as it is
         if (borrowConstLitCoerce(*from, totypedcl))
             return iexpMatches(from, totypedcl, Coercion) != NoMatch && iexpCoerce(from, totype);
+        // A Bool wanted as a number is refused here, naming the conversion that
+        // would say what it means. The conversion is then built anyway, so what
+        // uses the value sees the type it wanted and says nothing more.
+        if (iexpGetTypeDcl(*from) == (INode*)boolType && isNbr(totypedcl)) {
+            errorMsgNode(*from, ErrorBoolNotNbr,
+                "A Bool is not a number, and %s is wanted here. Convert it explicitly, '%s.from(b)', which gives 0 or 1.",
+                itypeName(totypedcl), itypeName(totypedcl));
+            INode *conv = (INode*)newConvCastNode(*from, totypedcl);
+            inodeLexCopy(conv, *from);
+            *from = conv;
+            return 1;
+        }
         return 0;
     case EqMatch:
         // A '&uni' wanted as a shareable borrowed reference is lent, not moved
@@ -275,13 +314,19 @@ int iexpMultiInfer(INode *expectType, INode **maybeType, INode **from) {
     // when we need a specific type, but don't care which one,
     // we need to find the type in common between this and previous branches
     if (expectType == unknownType) {
+        // A type carrying brands is kept as the use that names them: the
+        // declaration names none, and the branches must agree on them
+        INode *fromUse = ((IExpNode *)*from)->vtype;
         if ((*maybeType) == unknownType) {
-            *maybeType = fromType;  // First branch
+            *maybeType = lifeTypeHasBrands(fromUse) ? fromUse : fromType;  // First branch
             return EqMatch;
         }
         else {
-            if (itypeIsSame(*maybeType, fromType))
+            if (itypeIsSame(*maybeType, fromType)) {
+                if (lifeInvariantSeen && !lifeBrandsCoerce(fromUse, *maybeType, *from))
+                    return NoMatch;
                 return EqMatch;
+            }
             // Try to find some supertype exists between the two types
             INode *superType = itypeFindSuper(*maybeType, fromType);
             if (superType) {
@@ -526,7 +571,13 @@ INode *iexpGetStoreLvalInfo(INode *lval, INode **lvalperm, uint16_t *scope) {
 
 // Are types the same (no coercion)
 int iexpSameType(INode *to, INode **from) {
-    return itypeIsSame(iexpGetTypeDcl(to), iexpGetTypeDcl(*from));
+    if (!itypeIsSame(iexpGetTypeDcl(to), iexpGetTypeDcl(*from)))
+        return 0;
+    // The same type carries the same brands: a swap of two arenas would hand
+    // each one's keys the other
+    if (lifeInvariantSeen && isExpNode(to) && isExpNode(*from))
+        lifeBrandsCoerce(((IExpNode*)*from)->vtype, ((IExpNode*)to)->vtype, *from);
+    return 1;
 }
 
 // Return true if value uses move semantics

@@ -27,15 +27,19 @@
 		an <span class="pre">Rc</span> owner's count is not atomic, and it must stay on one
 		thread. What is sent is checked: <span class="pre">thread.start</span> and the
 		channel types take only a <span class="pre">Sendable</span> type, as
-		<a href="#race">Race condition safety</a> describes. And the runtime
-		<a href="#actors">actors</a> run on, as the <span class="pre">actors</span> library
-		package, on Windows only: mailboxes, a work-stealing scheduler, quiescence, and handles
-		counted through <span class="pre">Arc</span>, running actors written by hand in the
-		shape the <span class="pre">actor</span> declaration is to generate, starting with the
-		first actor and stopped by <span class="pre">finalAll()</span>, which a program calls
-		itself until the entry that will call it exists. The
-		<span class="pre">actor</span> declaration itself, <span class="pre">qfn</span>,
-		the other concurrent data structures, and lock permissions are not implemented. An enum's variant is constructed with its values in square brackets, as written here: that is the current spelling, and how a variant is constructed is an open design question (<a href="refenum.html#init">Enums</a>).</i></p>
+		<a href="#race">Race condition safety</a> describes. And <a href="#actors">actors</a>:
+		the <span class="pre">actor</span> declaration, made with <span class="pre">new</span>,
+		each <span class="pre">pub</span> method a message its handle sends, and the
+		<span class="pre">actors</span> library package it runs on, on Windows only: mailboxes, a
+		work-stealing scheduler, quiescence, and handles counted through
+		<span class="pre">Arc</span>, starting with the first actor and stopped by
+		<span class="pre">finalAll()</span>, which a program calls itself until the entry that
+		will call it exists. A message returns nothing: replies (a value sent back, awaited) are
+		not implemented, nor is <span class="pre">actor trait</span>, nor a generic actor.
+		<span class="pre">qfn</span> and the other concurrent data structures are not
+		implemented; the
+		<a href="refpermlock.html">lock permissions</a> <span class="pre">Mutex</span> and
+		<span class="pre">Rwlock</span> are, on <span class="pre">Arc</span>. An enum's variant is constructed with its values in square brackets, as written here: that is the current spelling, and how a variant is constructed is an open design question (<a href="refenum.html#init">Enums</a>).</i></p>
 
 	<p>It can be a huge performance benefit that threads share memory and other resources,
 		particularly when the threads need to exchange or share large, complex data structures.
@@ -67,7 +71,10 @@
 	<li>a borrowed reference, of any permission, <span class="pre">&amp;imm</span> included: a
 		borrow's lifetime is checked in one thread alone, until scoped threads join inside it;</li>
 	<li>an owner that may be copied whose permission is not race-safe:
-		<span class="pre">Rc[mut, T]</span>, <span class="pre">Arc[mut, T]</span> (until lock permissions);</li>
+		<span class="pre">Rc[mut, T]</span>, <span class="pre">Arc[mut, T]</span>, and a lock permission for
+		one thread, <span class="pre">Rc[Rwcell, T]</span>; a lock permission for threads crosses,
+		<span class="pre">Arc[Mutex, T]</span> and <span class="pre">Arc[Rwlock, T]</span>, where
+		<span class="pre">T</span> may (<a href="refpermlock.html">Lock Permissions</a>);</li>
 	<li>an owner that may be copied in a region that does not declare
 		<span class="pre">ThreadSafe</span>, whatever its permission: <span class="pre">Rc[imm, T]</span>,
 		whose count is not atomic. <span class="pre">Arc[imm, T]</span> and
@@ -99,10 +106,9 @@ thread.start(job, &amp;work);
 		value's own methods that change it through <span class="pre">&amp;</span> (sendable here also
 		means safe to read from several threads at once behind <span class="pre">Arc[imm, T]</span>,
 		which a type declaring <span class="pre">Sendable</span> promises too). Actor messages are
-		checked as a channel's values are: the <span class="pre">actors</span> package's
-		<span class="pre">send</span> and <span class="pre">startActor</span> ask
-		<span class="pre">Sendable</span> of an actor's message enum, and so of every method's
-		parameters; an actor's state is not asked, since it never crosses as a value
+		checked as a channel's values are: every parameter of an actor's message, and of its
+		initializer, must be <span class="pre">Sendable</span>, and one that is not is refused
+		where it is declared; an actor's state is not asked, since it never crosses as a value
 		(<a href="#actors">Actors</a>).</p>
 
 	<h2>Message-based Communications</h2>
@@ -164,10 +170,11 @@ solo &lt;- job;
 		(the <a href="refmethop.html#append">append operator</a>), and drops what each send answers.
 		<span class="pre">tx.trySend(v)</span> never waits,
 		handing the value back from a full channel too; <span class="pre">tx.sendTimeout(v,
-		ns)</span> waits at most <span class="pre">ns</span> nanoseconds for room.</li>
+		d)</span> waits at most <span class="pre">d</span>, a <span class="pre">Duration</span> of
+		the <span class="pre">time</span> package, for room.</li>
 	<li><span class="pre">rx.recv()</span> waits for the next value, oldest first;
-		<span class="pre">rx.tryRecv()</span> never waits; <span class="pre">rx.recvTimeout(ns)</span>
-		waits at most <span class="pre">ns</span> nanoseconds. Each answers an
+		<span class="pre">rx.tryRecv()</span> never waits; <span class="pre">rx.recvTimeout(d)</span>
+		waits at most <span class="pre">d</span>, a <span class="pre">Duration</span>. Each answers an
 		<span class="pre">Option</span>.</li>
 	<li>Nothing panics, and no one has to close the channel by hand. The last sender's death
 		closes it: the receiver takes what is left, and then <span class="pre">recv</span> answers
@@ -193,107 +200,115 @@ solo &lt;- job;
 		of one of the actor's methods, queued in its mailbox and run later, one at a time, on
 		whichever of a pool of worker threads takes the actor up. A method runs to completion, on
 		that worker's own stack, with the actor's state <span class="pre">mut</span>; nothing is
-		suspended or resumed, and no other method of the same actor runs until it returns. The
-		<span class="pre">actors</span> package is the runtime: the mailbox, the work-stealing
-		scheduler, the counting that decides when an actor dies, and the quiescence a program ends
-		at. It starts and stops by itself: the first actor started starts the workers, and the
-		module's <a href="refmodule.html#dyninit">finalizer</a> waits until all is quiet and
-		stops them. Its source, <span class="pre">packages/actors/src/actors.cone</span>,
-		documents the same rules at greater length, and how each works.</p>
+		suspended or resumed, and no other method of the same actor runs until it returns. An
+		actor is declared with <span class="pre">actor</span>, and it runs on the
+		<span class="pre">actors</span> package, which a module declaring one imports: the
+		mailbox, the work-stealing scheduler, the counting that decides when an actor dies, and the
+		quiescence a program ends at. The package starts and stops by itself: the first actor made
+		starts the workers, and the module's <a href="refmodule.html#dyninit">finalizer</a> waits
+		until all is quiet and stops them.</p>
 <pre>
 import actors;
+
+actor Counter {
+  count u64;                       // its state: private to it
+
+  fn init(self &amp;new, start u64) {   // run on fresh state by 'new Counter(start)'
+    *self = new Self(count: start);
+  }
+
+  pub fn add(self, n u64) {        // a message
+    count = count + n;
+  }
+
+  pub fn report(self &amp;, to Printer) {   // a message carrying another actor's handle
+    to.show(count);
+  }
+
+  fn final(self &amp;uni) {}           // when it dies
+}
 
 fn main() {
   initAll();
   {
-    imm c = Counter.start(0u64);   // the first actor starts the workers
+    imm c = new Counter(0u64);     // the first actor starts the workers
     c.add(5u64);                   // a message: queued, and run later
     c.add(7u64);                   // run after the first
   }
   finalAll();                      // waits until all is quiet, stops the workers
 }
 </pre>
-	<p><b>The shape of an actor.</b> The <span class="pre">actor</span> declaration is to generate
-		four things; until it does, they are written by hand, and the runtime is driven by them.
-		For an actor <span class="pre">Counter</span> with a field <span class="pre">count</span>
-		and a method <span class="pre">add</span>:</p>
-<pre>
-// (b) The messages: one variant per method, its fields the method's parameters
-enum Counter_msg {
-  struct Add {pub n u64;}
-}
-
-// (a) The state: the fields and the methods, unchanged
-struct Counter_state {
-  count u64;
-  pub fn made(count u64) Counter_state {new Counter_state(count);}
-  fn add(self &amp;mut, n u64) {count = count + n;}
-}
-
-// (c) The handle: an Arc[opaq, T] owner of the actor's Mailbox, a send function per method, and start
-struct Counter {
-  mb Arc[opaq, actors.Mailbox[Counter_msg]];
-  pub fn start(count u64) Counter {
-    new Counter(actors.startActor[Counter_state, Counter_msg](
-      Counter_state.made(actors.sendable(count)), &amp;Counter_dispatch));
-  }
-  pub fn add(self &amp;, n u64) {
-    actors.send[Counter_msg](mb, Counter_msg.Add[n]);
-  }
-}
-
-// (d) Dispatch: one match on the message, each arm calling its method
-fn Counter_dispatch(self &amp;mut Counter_state, msg Counter_msg) {
-  match msg {
-    case imm m Counter_msg.Add {self.add(m.n);}
-  }
-}
-</pre>
-	<p>The message enum is named for the actor with <span class="pre">_msg</span>, the state
-		with <span class="pre">_state</span>, the dispatch function with
-		<span class="pre">_dispatch</span>. Creation is <span class="pre">start</span>, as a
-		thread's is, since <span class="pre">spawn</span> is reserved. The message enum is declared
-		first, before the state, the handle, and any other actor's message enum holding this
-		actor's handle: declared after them, it is refused, today, as a type that would contain
-		itself (a cycle through an owning reference is judged by the order the compiler meets its
-		types).</p>
-	<p><b>The handle and the state.</b> A handle is a struct over one
-		<span class="pre">Arc[opaq, T]</span> owner of the actor's
-		<span class="pre">actors.Mailbox[M]</span>, the runtime's part of the actor, so the
-		<span class="pre">Arc</span> region counts an actor's handles: copying a handle (passing it,
-		storing it, putting it in a message) makes another owner, and each going drops one. What a
-		Mailbox holds is the runtime's alone, in a field private to it, of a type private to the
-		package; a handle's only use is to send, and <span class="pre">send</span> takes only the
-		Mailbox's own message type. The state is not in the handle's type. It is made from its
-		<span class="pre">start</span> arguments, which must be <span class="pre">Sendable</span>,
-		and from then on reached only by the runtime: by the worker running the actor, and by its
-		finalizer. So the state declares nothing about <span class="pre">Sendable</span>, and may
-		hold what may not cross threads (<span class="pre">Rc</span>, a
-		<span class="pre">mut</span> owner); it is itself refused wherever it would cross as a
-		value, over a channel or to a thread. The handle is <span class="pre">Sendable</span>
-		because <span class="pre">Mailbox</span> declares it, once, in the runtime, as a
-		channel's ends do: the runtime orders every hand-off of an actor itself. The Mailbox and
-		the state are one allocation, the Mailbox first, so a send touches one block.</p>
+	<p><b>The declaration.</b> An actor's body is written as a struct's: fields, an
+		<span class="pre">init</span>, methods, a <span class="pre">final</span>. Its fields are
+		its state, private to it: a field is never <span class="pre">pub</span>, and nothing
+		outside the actor reaches one. A method's <span class="pre">self</span> is the state, lent
+		for the message it handles: written bare, it is <span class="pre">self &amp;mut</span>,
+		which the method has alone while it runs; <span class="pre">self &amp;</span> only reads
+		it. Each <span class="pre">pub</span> method is a <i>message</i>; a method that is not
+		<span class="pre">pub</span>, and a function without <span class="pre">self</span>, are
+		the actor's own, called from its methods as any struct's are. A message returns nothing
+		(a send returns at once, before the method runs), is not generic, and every parameter it
+		takes is <span class="pre">Sendable</span>, since the message carries its arguments to the
+		thread the actor runs on; a borrow is refused whatever it borrows. An actor declares no
+		static, macro, <span class="pre">extern</span> method or <span class="pre">use</span>, no
+		type parameters, and names no abstraction: <span class="pre">actor trait</span>, its
+		abstraction, is not built yet.</p>
+	<p><b>Making one.</b> <span class="pre">new Counter(args)</span> makes an actor: it runs the
+		actor's <span class="pre">init</span> on fresh state, made on the calling thread, hands the
+		state to the runtime, and answers the actor's <i>handle</i>. The initializer's parameters
+		must be <span class="pre">Sendable</span> too, since the state made from them runs on
+		other threads. An actor may declare several initializers, as a struct may, each joining
+		the overload name <span class="pre">init</span>. One that declares none is made by its
+		state's implicit initializer: <span class="pre">new Counter(5u64)</span> takes the fields
+		whose types are written, in order, a field with a default taking it where the argument is
+		left out. That initializer is the module's own, as a struct's implicit one is where its
+		fields are private, except for a <span class="pre">pub</span> actor with no fields at all.
+		There is no other way to make an actor, and no creation function:
+		<span class="pre">spawn</span> stays reserved.</p>
+	<p><b>The handle.</b> The actor's name names its handle, a value holding one counted owner
+		of the actor's mailbox, the runtime's part of it: copying a handle (passing it, storing it,
+		putting it in a message) makes another owner, and each going drops one. A handle carries
+		the actor's messages and nothing else: calling a <span class="pre">pub</span> method on
+		it, <span class="pre">c.add(5u64)</span>, sends that message, and reaching a field of the
+		state or a method that is not <span class="pre">pub</span> through it is refused as
+		private. A handle is <span class="pre">Sendable</span> whatever the state holds: it may
+		be sent to a thread, over a channel, in another actor's message, or kept in another
+		actor's state. So the state may hold what may not cross threads
+		(<span class="pre">Rc</span>, a <span class="pre">mut</span> owner, borrows inside a
+		method), and never crosses as a value: only the runtime reaches it.</p>
+	<p><b>What the declaration stands for.</b> The compiler turns an actor into four ordinary
+		declarations the <span class="pre">actors</span> package runs: the state, a struct of the
+		body as written, named <span class="pre">Counter.State</span>; the messages, an enum with
+		one variant per message, named for the method, its fields the method's parameters, named
+		<span class="pre">Counter.Msg</span>; the handle, <span class="pre">Counter</span>, whose
+		one field is an <span class="pre">Arc[opaq, actors.Mailbox[Counter.Msg]]</span>, an
+		initializer for each of the state's, which calls
+		<span class="pre">actors.startActor</span>, and a method per message, which calls
+		<span class="pre">actors.send</span>; and the dispatch function,
+		<span class="pre">Counter.dispatch</span>, which the runtime hands each message where it
+		lies, and which moves each argument out of it into the method's call. Those names are
+		what a diagnostic about them says; no source can write them, so nothing but the actor
+		reaches its state, its messages or its mailbox. The mailbox and the state are one
+		allocation, so a send touches one block. Actors and the declarations that use them may
+		be written in any order: a message enum holds handles by value, and a handle reaches the
+		enum only through its owning reference to the mailbox, and a
+		<a href="refrefs.html">reference</a> never needs what it points at to be laid out
+		first.</p>
 	<p><b>An actor's life.</b> While an actor is queued to run, or running, the scheduler holds
 		one owner more, taken by the send that found it idle and dropped when its mailbox is found
 		empty. So an actor dies exactly once, when its last handle has gone <i>and</i> its mailbox
 		is empty: a handle dropped with messages still queued leaves the actor alive until they are
-		handled. At its death the Mailbox's finalizer finalizes the state (its
-		<span class="pre">final</span>, then its fields, handles to other actors among them),
-		through a function made for the state's type when the actor started, since
-		<span class="pre">Arc</span> sees only the Mailbox; then the block is freed. This runs on
-		whichever thread let go last. Actors that hold handles to each other in a cycle never die
-		by counting, as a cycle of <span class="pre">Arc</span> owners never does, until one of
-		them lets go.</p>
+		handled. At its death its state is finalized (its <span class="pre">final</span>, then its
+		fields, handles to other actors among them), on whichever thread let go last, then the
+		block is freed. Actors that hold handles to each other in a cycle never die by counting, as
+		a cycle of <span class="pre">Arc</span> owners never does, until one of them lets go.</p>
 	<p><b>Messages.</b> A send is one-way: it queues the message and returns, and a method
 		returns nothing to its sender; an answer is a message sent back to a handle passed along.
 		Each sender's messages to one actor are handled in the order sent, and a message is never
-		overtaken by one it caused. What a message carries must be
-		<span class="pre">Sendable</span>, which <span class="pre">actors.Mailbox</span>,
-		<span class="pre">actors.send</span> and <span class="pre">actors.startActor</span> ask of
-		the message enum, so of every method's parameters, and
-		<span class="pre">actors.sendable</span> asks of each argument
-		<span class="pre">start</span> hands to the state.</p>
+		overtaken by one it caused. Each argument arrives moved into the method's call, once: a
+		value that may only move (a <span class="pre">uni</span> or <span class="pre">So</span>
+		owner) arrives whole, and a counted one (a handle, an <span class="pre">Arc</span>, a
+		lock-managed <span class="pre">Arc[Mutex, T]</span>) is counted once.</p>
 	<p><b>Inside an actor</b> a method may use what a single thread may: borrows, and
 		<span class="pre">So</span> and <span class="pre">Rc</span> owners, whose count need not be
 		atomic, since one worker at a time runs an actor and every hand-off of an actor between

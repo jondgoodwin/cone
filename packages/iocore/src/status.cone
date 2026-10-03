@@ -1,0 +1,106 @@
+// Status arrays: answers left in numbered slots for a thread to look at
+// when it chooses, as DirectStorage's status arrays are -- a frame loop
+// checks its slots once a frame and never waits (see the package's header,
+// TARGETS).
+//
+// How it is built. One block of slots, each a state word and room for a
+// Completion, shared through an Arc by every copy of the array and by every
+// operation answering into it. A slot is empty; armed (an operation will
+// answer into it: the loop claimed it at submit, by a compare-and-swap from
+// empty); or ready (the loop wrote the answer, then stored ready with
+// release, which the taker's acquiring load pairs with). 'take' moves the
+// answer out and stores empty with release, so the next claim, an acquire,
+// comes after the answer is out. Only the loop writes an armed slot and only
+// the taker reads a ready one, so the slot's answer is never touched by two
+// threads at once. Answers never taken die with the array.
+
+const slotEmpty = 0u32;
+const slotArmed = 1u32;
+const slotReady = 2u32;
+
+struct StatusSlot {
+  state u32;
+  c Completion;
+}
+
+// The block, shared. It declares Sendable, a promise taken on trust: each
+// slot's answer is reached by one thread at a time, as above
+struct StatusBlock is Sendable {
+  slots *StatusSlot;
+  count u32;
+
+  fn slot(self &, i u32) *StatusSlot {slots + usize.from(i);}
+  fn word(self &, i u32) *u32 {&(*(slots + usize.from(i))).state as *u32;}
+
+  // Answers never taken die here, their buffers going home
+  fn final(self &uni) {
+    mut i = 0u32;
+    while i < count {
+      if mem.atomicLoad[u32](self.word(i), MemOrder.Acquire[]) == slotReady {
+        mem.finalize[Completion](&(*self.slot(i)).c as *Completion);
+      }
+      i = i + 1u32;
+    }
+    libc.free(slots as *u8);
+  }
+}
+
+// Numbered slots that answers are left in (see the package's header,
+// TARGETS). Copying it makes another handle on the same slots: Sendable
+pub struct StatusArray {
+  b Arc[imm, StatusBlock];
+
+  // An array of n slots, every one empty
+  pub fn make(n u32) StatusArray {
+    imm size = usize.from(n) * mem.sizeof[StatusSlot]();
+    imm p = libc.malloc(if size == 0usize {1usize;} else {size;}) as *StatusSlot;
+    if p as usize == 0usize {panic("iocore: out of memory for a status array");}
+    mut i = 0u32;
+    while i < n {
+      (*(p + usize.from(i))).state = slotEmpty;
+      i = i + 1u32;
+    }
+    new StatusArray(new Arc[imm, StatusBlock](new StatusBlock(p, n)));
+  }
+
+  // How many slots it has
+  pub fn len(self &) u32 {b.count;}
+
+  // Whether slot i holds an answer to take
+  pub fn isReady(self &, i u32) Bool {
+    i < b.count and mem.atomicLoad[u32](b.word(i), MemOrder.Acquire[]) == slotReady;
+  }
+
+  // Whether slot i is free for an operation to answer into: no operation
+  // is armed on it, and no answer waits in it
+  pub fn isFree(self &, i u32) Bool {
+    i < b.count and mem.atomicLoad[u32](b.word(i), MemOrder.Acquire[]) == slotEmpty;
+  }
+
+  // Move slot i's answer to the end of out, emptying the slot: true; false,
+  // and nothing moved, when it holds none
+  pub fn take(self &, i u32, out &mut List[Completion]) Bool {
+    if not self.isReady(i) {return false;}
+    imm c = mem.readRaw[Completion](&(*b.slot(i)).c as *Completion);
+    mem.atomicStore[u32](b.word(i), slotEmpty, MemOrder.Release[]);
+    out.push(c);
+    true;
+  }
+
+  // Claim slot i for an operation's answer: false when it is out of range,
+  // armed already, or holding an answer not yet taken
+  fn arm(self &, i u32) Bool {
+    if i >= b.count {return false;}
+    mut seen = 0u32;
+    mut done = false;
+    seen, done = mem.atomicCompareSwap[u32](b.word(i), slotEmpty, slotArmed,
+      MemOrder.Acquire[], MemOrder.Acquire[]);
+    done;
+  }
+
+  // Leave c in armed slot i
+  fn put(self &, i u32, c Completion) {
+    mem.writeRaw[Completion](&(*b.slot(i)).c as *Completion, c);
+    mem.atomicStore[u32](b.word(i), slotReady, MemOrder.Release[]);
+  }
+}

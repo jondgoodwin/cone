@@ -35,6 +35,7 @@ keeps state. The Slang module has the same names and fields.
 | `hash3(x, y, z, seed) UVec4` | a 3-D lattice point: `pcg4d(x, y, z, seed)` |
 | `toUnit(h u32) f32` | a word to [0, 1): its top 24 bits times 2^-24, exact |
 | `toSigned(h u32) f32` | a word to [-1, 1): its top 24 bits times 2^-23, minus 1, exact |
+| `heavySigned(u, coin u32, ratio f32, cap i32) f32` | a heavy-tailed draw: `toSigned(u)` times `ratio` once per low set bit of `coin` (up to the first clear one, at most `cap`); a power-law tail of index log 2 / log ratio; multiplications only. Not yet in Slang |
 
 **Lattice noise** (`lattice.cone`), each returning `Noise2 {value, d}` or
 `Noise3 {value, d}`, `d` the analytic derivative with respect to the point
@@ -75,6 +76,13 @@ range.
 **Domain warp**: `warp2(p, seed, octaves, strength) f32` and `warp3`,
 Quilez's two-level warp f(p + s r), r = f(p + s q + c), q = f(p + c'), f an
 fBm (lacunarity 2, gain 0.5). The offsets c are exact in binary. Value only.
+
+**Multiplicative cascade**: `cascade2(p, seed, octaves, lacunarity, gain,
+intermittency) f32`, fBm whose octave i is weighted `gain^i` times
+W_0 ... W_i, each W_j = 1 + intermittency times a gradient noise at octave
+j's frequency seeded by `hash1(j, pcg(seed))`: mean 1, but detail clusters
+where coarse weights were large. Intermittency 0 is `fbm2`'s value, bit for
+bit; keep it at most 1. Value only, and not yet in Slang.
 
 **Phacelle noise** (`phacelle.cone`, MPL 2.0):
 `phacelle2(p, dir, freq, offset, normalization, seed) Phacelle`, with

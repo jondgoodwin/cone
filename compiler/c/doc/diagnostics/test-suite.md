@@ -444,6 +444,11 @@ Some facts belong to the file rather than a line:
   A program that panics ends through the C library's `abort`, whose status
   differs by platform, so it writes `program_exit = "abort"`; its report on
   stderr is pinned in its `.err` file.
+- **What differs from run to run on stderr**, `stderr_mask`, a list of
+  regular expressions for a `run` scenario: each match in the program's stderr
+  is written `<masked>` before it is compared with the `.err` file, which
+  writes `<masked>` in its place (a thread's identity in a panic's report,
+  `exception_thread`).
 
 ### Two choices, for lowering and codegen defects
 
@@ -475,13 +480,19 @@ A bug fix lands with a scenario that fails without the fix.
 #### `llvmir`
 
 Matches against the **post-optimization** dump, `<name>.ir` — the IR that
-reaches the object file. Use it for what must survive the optimizer: a vtable
-slot that holds a bitcast rather than `null`, a `%"Meter:Vtable" = type`, the
-`$main = comdat` line. **A program's definitions are all internal, so only what
-`main` reaches survives**: the optimizer deletes an internal definition nothing
-references and folds the rest into `main`, which leaves a `compile` scenario's
-dump empty of functions and a `run` scenario's holding little but `main`, its
-globals and its constants. A check on anything else belongs on `preir`.
+reaches the object file. Use it for what must survive the optimizer, or what
+it must make of the code: the `$main = comdat` line, a library's export, a
+compare the optimizer removes. **A program's definitions are all internal, so
+only what `main` reaches survives**: a release build runs LLVM's standard
+pipeline, which deletes an internal definition or declaration nothing
+references, folds the rest into `main`, and calls a method straight where it
+sees the vtable a virtual reference was made from, deleting the vtable. That
+leaves a `compile` scenario's dump empty of functions and a `run` scenario's
+holding little but `main`, its globals and its constants; a check on anything
+else belongs on `preir`, or on a scenario compiled with `--library`, whose
+public functions are exported (`core_genllvm_shift`). The optimizer also adds
+attributes of its own to a definition's line (`noundef`, `local_unnamed_addr`),
+so a check matches from the part generation decides.
 **Never write an encoded symbol's bytes into it** — `@_CNvNt2Pt3get` is a
 `symbols` assertion, below, and the reader of a check is owed `Pt.get`. Bare
 names (`@main`, a root `fn`, a C name) are their own spelling and may appear
@@ -577,6 +588,11 @@ tags        = ["typecheck", "genllvm", "runtime"]
 diagnostics = 0              # total count; required for 'recover'
 exit        = 0              # only where it is not the category's default
 xfail       = false          # omit unless true
+
+[scenario.exception_thread]
+category     = "run"
+program_exit = "abort"       # the program's own status; "abort" for a panic
+stderr_mask  = ['(?<=panic in thread )\d+']  # each match compared as '<masked>'
 
 [scenario.module_build_link]
 category    = "run"

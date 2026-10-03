@@ -54,10 +54,23 @@ static LLVMValueRef genlFnSym(GenState *gen, FnDclNode *fndcl) {
         return LLVMConstBitCast(fndcl->llvmvar, LLVMPointerType(genlType(gen, fndcl->vtype), 0));
     return fndcl->llvmvar;
 }
+// The address of a global, as a Cone reference holds it. On a GPU target a
+// global lives in an address space of its own (the target's datalayout puts
+// it there: Private in SPIR-V's Vulkan form, CrossWorkgroup in its OpenCL
+// form), and every Cone reference is in address space 0, the flat one. So a
+// global's address is cast to the flat space where it is taken, and once
+// every function is inlined, LLVM's address-space inference gives each use
+// the space of its origin back (genpgm). Elsewhere every global is in 0.
+static LLVMValueRef genlFlatAddr(GenState *gen, LLVMValueRef global) {
+    if (gen->opt->gpu && LLVMGetPointerAddressSpace(LLVMTypeOf(global)) != 0)
+        return LLVMConstAddrSpaceCast(global, LLVMPointerTypeInContext(gen->context, 0));
+    return global;
+}
+
 static LLVMValueRef genlVarSym(GenState *gen, VarDclNode *var) {
     if (var->llvmvar == NULL && var->scope == 0)
         genlGloVarName(gen, var);
-    return var->llvmvar;
+    return var->llvmvar ? genlFlatAddr(gen, var->llvmvar) : NULL;
 }
 
 // Generate an if statement
@@ -86,15 +99,30 @@ LLVMValueRef genlIf(GenState *gen, IfNode *ifnode) {
     endif = genlInsertBlock(gen, "endif");
     for (nodesFor(ifnode->condblk, cnt, nodesp)) {
 
+        // A condition that is a constant of the build (intrinsicBuildConst):
+        // a false one's block is not generated at all, and a true one's is
+        // generated as the 'else' it is, the branches after it not at all.
+        // So nothing only the untaken side names -- an extern only another
+        // platform defines -- reaches the object, in a debug build too.
+        // TEMPORARY for the OS and '-D' constants: a provisional mechanism
+        // whose final design is open
+        int64_t buildconst;
+        int isconst = *nodesp != elseCond && intrinsicBuildConst(*nodesp, &buildconst);
+        if (isconst && !buildconst) {
+            cnt--; nodesp++; i++;
+            continue;
+        }
+        int lastgen = (isconst && buildconst) || i + 1 >= count;
+
         // Set up block for next condition (or endif if this is last condition)
-        if (i + 1 < count)
+        if (!lastgen)
             nextif = LLVMInsertBasicBlockInContext(gen->context, endif, "ifnext");
         else
             nextif = endif;
 
         // Set up this condition's statement block and then conditionally jump to it or next condition
         LLVMBasicBlockRef ablk;
-        if (*nodesp != elseCond) {
+        if (*nodesp != elseCond && !isconst) {
             ablk = LLVMInsertBasicBlockInContext(gen->context, nextif, "ifblk");
             // A temporary the condition made dies once it is decided
             uint32_t tempmark = gen->tempcnt;
@@ -118,6 +146,14 @@ LLVMValueRef genlIf(GenState *gen, IfNode *ifnode) {
 
         LLVMPositionBuilderAtEnd(gen->builder, nextif);
         cnt--; nodesp++; i++;
+        if (lastgen)
+            break;
+    }
+    // Every condition was a false constant of the build, the last of them too,
+    // so what generated last falls through to the end
+    if (LLVMGetInsertBlock(gen->builder) != endif) {
+        LLVMBuildBr(gen->builder, endif);
+        LLVMPositionBuilderAtEnd(gen->builder, endif);
     }
 
     // Merge point at end of if. Create merged phi value if needed.
@@ -237,6 +273,95 @@ static LLVMValueRef genlVtableForTag(GenState *gen, Vtable *vtable, StructNode *
     return chosen;
 }
 
+// Call one of LLVM's intrinsic functions overloaded on one integer type, by
+// its name: 'llvm.ctpop' on an i16 is llvm.ctpop.i16
+static LLVMValueRef genlCallLlvmIntrinsic(GenState *gen, char *name, LLVMTypeRef type, LLVMValueRef *args, unsigned nargs) {
+    unsigned id = LLVMLookupIntrinsicID(name, strlen(name));
+    LLVMValueRef fn = LLVMGetIntrinsicDeclaration(gen->module, id, &type, 1);
+    return LLVMBuildCall2(gen->builder, LLVMIntrinsicGetType(gen->context, id, &type, 1), fn, args, nargs, "");
+}
+
+// An integer value of one width as another, its low bits kept or zeros added
+static LLVMValueRef genlIntResize(GenState *gen, LLVMValueRef val, LLVMTypeRef to) {
+    unsigned from = LLVMGetIntTypeWidth(LLVMTypeOf(val));
+    unsigned width = LLVMGetIntTypeWidth(to);
+    if (from < width)
+        return LLVMBuildZExt(gen->builder, val, to, "");
+    if (from > width)
+        return LLVMBuildTrunc(gen->builder, val, to, "");
+    return val;
+}
+
+// '<<' and '>>' on an integer, defined for every amount [Jon 3 Oct 2026]: the
+// bits shifted past either end are gone, so an amount of the width or more
+// leaves 0, or for '>>' on a signed integer the sign in every bit. The amount
+// is of the integer's own type and is compared unsigned, so a negative amount
+// of a signed type is past the width too. LLVM's shift by the width or more is
+// poison, so the amount is compared first and the shift's result used only
+// below the width; a constant amount needs no compare, and the optimizer drops
+// the one it can prove, as for 'n & 63'. A constant shift is folded and
+// refused past the width before this (litFoldConst, ErrorConstShift).
+static LLVMValueRef genlShift(GenState *gen, int16_t op, LLVMValueRef x, LLVMValueRef n) {
+    LLVMTypeRef type = LLVMTypeOf(x);
+    unsigned width = LLVMGetIntTypeWidth(type);
+    if (LLVMIsAConstantInt(n)) {
+        if (LLVMConstIntGetZExtValue(n) < width) {
+            if (op == ShlIntrinsic)
+                return LLVMBuildShl(gen->builder, x, n, "");
+            return op == SShrIntrinsic ? LLVMBuildAShr(gen->builder, x, n, "") : LLVMBuildLShr(gen->builder, x, n, "");
+        }
+        return op == SShrIntrinsic ? LLVMBuildAShr(gen->builder, x, LLVMConstInt(type, width - 1, 0), "")
+            : LLVMConstNull(type);
+    }
+    LLVMValueRef inrange = LLVMBuildICmp(gen->builder, LLVMIntULT, n, LLVMConstInt(type, width, 0), "shiftinrange");
+    // A signed right shift past the width is one by width - 1: the sign in every bit
+    if (op == SShrIntrinsic) {
+        LLVMValueRef amount = LLVMBuildSelect(gen->builder, inrange, n, LLVMConstInt(type, width - 1, 0), "");
+        return LLVMBuildAShr(gen->builder, x, amount, "");
+    }
+    LLVMValueRef shifted = op == ShlIntrinsic ? LLVMBuildShl(gen->builder, x, n, "") : LLVMBuildLShr(gen->builder, x, n, "");
+    return LLVMBuildSelect(gen->builder, inrange, shifted, LLVMConstNull(type), "");
+}
+
+// Expand a call to one of an integer's bit intrinsics, mem.countOnes and the
+// rest, or the integer method that is its instance. A count of 0's bits is the
+// width, so ctlz and cttz are told 0 is not poison; an amount is a u32, taken
+// modulo the width: fshl and fshr do that themselves, and for a masked shift
+// the width is a power of two, so keeping the amount's low bits does.
+static LLVMValueRef genlBitIntrinsic(GenState *gen, int16_t kind, INode *type, LLVMValueRef *fnargs) {
+    LLVMTypeRef inttype = genlType(gen, type);
+    unsigned width = LLVMGetIntTypeWidth(inttype);
+    LLVMTypeRef u32 = LLVMInt32TypeInContext(gen->context);
+    LLVMValueRef args[3];
+    args[0] = fnargs[0];
+    switch (kind) {
+    case CountOnesIntrinsic:
+        return genlIntResize(gen, genlCallLlvmIntrinsic(gen, "llvm.ctpop", inttype, args, 1), u32);
+    case LeadingZerosIntrinsic:
+    case TrailingZerosIntrinsic:
+        args[1] = LLVMConstInt(LLVMInt1TypeInContext(gen->context), 0, 0);
+        return genlIntResize(gen, genlCallLlvmIntrinsic(gen,
+            kind == LeadingZerosIntrinsic ? "llvm.ctlz" : "llvm.cttz", inttype, args, 2), u32);
+    case RotateLeftIntrinsic:
+    case RotateRightIntrinsic:
+        args[1] = fnargs[0];
+        args[2] = genlIntResize(gen, fnargs[1], inttype);
+        return genlCallLlvmIntrinsic(gen, kind == RotateLeftIntrinsic ? "llvm.fshl" : "llvm.fshr", inttype, args, 3);
+    case ShlMaskedIntrinsic:
+    case ShrMaskedIntrinsic: {
+        LLVMValueRef amount = LLVMBuildAnd(gen->builder, genlIntResize(gen, fnargs[1], inttype),
+            LLVMConstInt(inttype, width - 1, 0), "");
+        if (kind == ShlMaskedIntrinsic)
+            return LLVMBuildShl(gen->builder, fnargs[0], amount, "");
+        return itypeGetTypeDcl(type)->tag == IntNbrTag ? LLVMBuildAShr(gen->builder, fnargs[0], amount, "")
+            : LLVMBuildLShr(gen->builder, fnargs[0], amount, "");
+    }
+    default:
+        errorExit(ExitGen, "Internal error: no generation for bit intrinsic %d", (int)kind);
+        return NULL;
+    }
+}
+
 // Expand a call to an intrinsic declared in core with '@intrinsic'. What each
 // one means is the registry's (ir/stmt/intrinsic.c) and the reference manual's
 // (refintrinsic.html); this is LLVM's implementation of it. The type it acts on
@@ -253,10 +378,8 @@ static LLVMValueRef genlDeclaredIntrinsic(GenState *gen, FnDclNode *fndcl, LLVMV
         return genlAlignof(gen, type);
     case NeedsFinalIntrinsic:
         return LLVMConstInt(genlType(gen, (INode*)boolType), itypeNeedsFinal(type), 0);
-    // A constant from the build, not the type: a branch on it is folded away
-    // (simplifycfg), and its dead side is never generated into the object
-    case IsDebugBuildIntrinsic:
-        return LLVMConstInt(genlType(gen, (INode*)boolType), !gen->opt->release, 0);
+    // A constant of the build (isDebugBuild and the TEMPORARY rest) is answered
+    // before its arguments are generated, by genlFnCall
     // The address of T's record, a constant this object builds once
     case TypeRecordIntrinsic:
         return genlTypeRecord(gen, type, ((FnSigNode *)fndcl->vtype)->rettype);
@@ -308,6 +431,16 @@ static LLVMValueRef genlDeclaredIntrinsic(GenState *gen, FnDclNode *fndcl, LLVMV
         LLVMBuildMemMove(gen->builder, fnargs[0], align, fnargs[1], align, bytes);
         return NULL;
     }
+
+    // An integer's bits
+    case CountOnesIntrinsic:
+    case LeadingZerosIntrinsic:
+    case TrailingZerosIntrinsic:
+    case RotateLeftIntrinsic:
+    case RotateRightIntrinsic:
+    case ShlMaskedIntrinsic:
+    case ShrMaskedIntrinsic:
+        return genlBitIntrinsic(gen, intrinsic->intrinsicFn, type, fnargs);
 
     default:
         errorExit(ExitGen, "Internal error: no generation for declared intrinsic %d", (int)intrinsic->intrinsicFn);
@@ -727,9 +860,11 @@ LLVMValueRef genlFnCallInternal(GenState *gen, int dispatch, INode *objfn, uint3
             case AndIntrinsic: fncallret = LLVMBuildAnd(gen->builder, fnargs[0], fnargs[1], ""); break;
             case OrIntrinsic: fncallret = LLVMBuildOr(gen->builder, fnargs[0], fnargs[1], ""); break;
             case XorIntrinsic: fncallret = LLVMBuildXor(gen->builder, fnargs[0], fnargs[1], ""); break;
-            case ShlIntrinsic: fncallret = LLVMBuildShl(gen->builder, fnargs[0], fnargs[1], ""); break;
-            case ShrIntrinsic: fncallret = LLVMBuildLShr(gen->builder, fnargs[0], fnargs[1], ""); break;
-            case SShrIntrinsic: fncallret = LLVMBuildAShr(gen->builder, fnargs[0], fnargs[1], ""); break;
+            case ShlIntrinsic:
+            case ShrIntrinsic:
+            case SShrIntrinsic:
+                fncallret = genlShift(gen, ((IntrinsicNode *)fndcl->value)->intrinsicFn, fnargs[0], fnargs[1]);
+                break;
             }
         }
         break;
@@ -818,6 +953,13 @@ LLVMValueRef genlFnCall(GenState *gen, FnCallNode *fncall) {
     default:
         break;
     }
+
+    // A constant of the build: isDebugBuild, and the TEMPORARY OS and '-D'
+    // ones (a provisional mechanism; its final design is open). A '-D' name,
+    // a string literal, is never generated
+    int64_t buildconst;
+    if (intrinsicBuildConst((INode*)fncall, &buildconst))
+        return LLVMConstInt(genlType(gen, fncall->vtype), (uint64_t)buildconst, 1);
 
     // Get count and Valuerefs for all the arguments to pass to the function
     uint32_t fnargcnt = fncall->args->used;
@@ -1374,8 +1516,14 @@ LLVMValueRef genlIsType(GenState *gen, CastNode *isnode) {
         // its tag field through the same kind of reference for the same reason.
         if (istype->tag == RefTag)
             val = LLVMBuildLoad2(gen->builder, genlPointeeType(gen, exptype), val, "nullable");
-        if (LLVMGetTypeKind(ptrtype) != LLVMPointerTypeKind)
-            val = LLVMBuildExtractValue(gen->builder, val, 0, "ptr"); // VirtRef & ArrayRef
+        // A virtual reference or a slice is two words, and the empty variant is
+        // the one whose first word, the pointer, is null -- as the variant
+        // literal builds it -- so that word is what is compared, against a null
+        // of its own type
+        if (LLVMGetTypeKind(ptrtype) != LLVMPointerTypeKind) {
+            val = LLVMBuildExtractValue(gen->builder, val, 0, "ptr");
+            ptrtype = LLVMStructGetTypeAtIndex(ptrtype, 0);
+        }
         LLVMValueRef nullptr = LLVMConstPointerNull(ptrtype);
         LLVMIntPredicate cmpop = structtype->fields.used == 1 ? LLVMIntEQ : LLVMIntNE;
         return LLVMBuildICmp(gen->builder, cmpop, val, nullptr, "isnull");
@@ -1427,7 +1575,8 @@ char *genlSrcFileName(INode *node, size_t *len) {
 // The address of a constant copy of a source file's name: a private constant
 // global, made once per name in a module. The names already made are few (one
 // per file whose code this object holds), so a short list remembers them;
-// one found nowhere in it is made again, which costs bytes, not correctness
+// one found nowhere in it is made again, which costs bytes, not correctness.
+// Its address is the flat one, as every global's is (genlFlatAddr).
 #define GenlSrcFileMax 32
 static struct {
     LLVMModuleRef module;
@@ -1436,7 +1585,12 @@ static struct {
 } genlSrcFiles[GenlSrcFileMax];
 static int genlSrcFileCnt = 0;
 
+static LLVMValueRef genlSrcFileGlobal(GenState *gen, char *text, size_t len);
 static LLVMValueRef genlSrcFileText(GenState *gen, char *text, size_t len) {
+    return genlFlatAddr(gen, genlSrcFileGlobal(gen, text, len));
+}
+
+static LLVMValueRef genlSrcFileGlobal(GenState *gen, char *text, size_t len) {
     for (int i = 0; i < genlSrcFileCnt; ++i) {
         if (genlSrcFiles[i].module == gen->module && genlSrcFiles[i].text == text)
             return genlSrcFiles[i].global;
@@ -1461,18 +1615,18 @@ LLVMValueRef genlSrcFileSlice(GenState *gen, char *text, size_t len) {
     return LLVMConstStructInContext(gen->context, parts, 2, 0);
 }
 
-// The C runtime's entry for each failure the compiler checks for
-// (packages/conestd/panic.c), and how many values it reports before the
+// The runtime's entry for each failure the compiler checks for
+// (packages/conestd/panic.cone), and how many values it reports before the
 // location
 static char *genlPanicEntry[] = {"cone_panicIndex", "cone_panicSlice", "cone_panicAlloc"};
 static unsigned genlPanicValCnt[] = {2, 3, 1};
 
 // End the program where a check the compiler inserted has failed: a call to
-// the C runtime's entry for the failure, handed the values it reports (each a
+// the runtime's entry for the failure, handed the values it reports (each a
 // usize) and the source location of 'site', then 'unreachable'. The entry is
 // declared 'noreturn' and 'cold', so the check costs the hot path a compare
 // and a branch LLVM expects never to take, and the call is placed out of line.
-// WebAssembly has no C runtime linked in, and traps.
+// WebAssembly links no conestd, and traps.
 void genlPanic(GenState *gen, INode *site, GenlPanicKind kind, LLVMValueRef *vals) {
     if (gen->opt->wasm) {
         LLVMValueRef trap = LLVMGetNamedFunction(gen->module, "llvm.trap");
@@ -1529,20 +1683,31 @@ void genlBoundsCheck(GenState *gen, INode *site, LLVMValueRef index, LLVMValueRe
 // a and the count b - a ('a...b' counts b too), once a <= b <= the count it is
 // taken from is checked at run time, as an index is. The receiver is what the
 // borrow was of: an array (reached directly or through a reference, whose
-// dereference genlAddr reads through), or a slice's dereference.
+// dereference genlAddr reads through), or a slice's dereference. In a nested
+// chain, '&v[i][a..b]' or '&v[a..b][c..d]', it is the inner link instead, a
+// reference to an array or a slice.
 static LLVMValueRef genlSubslice(GenState *gen, FnCallNode *fncall) {
     INode *obj = fncall->objfn;
     INode *objtype = iexpGetTypeDcl(obj);
     LLVMValueRef base, count;
     LLVMTypeRef elemtype;   // What 'base' points at
-    if (objtype->tag == ArrayTag) {
-        ULitNode *dimen = (ULitNode*)nodesGet(((ArrayNode*)objtype)->dimens, 0);
+    INode *arraydcl = objtype->tag == RefTag ? itypeGetTypeDcl(((RefNode*)objtype)->vtexp) : objtype;
+    if (arraydcl->tag == ArrayTag) {
+        ULitNode *dimen = (ULitNode*)nodesGet(((ArrayNode*)arraydcl)->dimens, 0);
         assert(dimen->tag == ULitTag);
         count = LLVMConstInt(genlUsize(gen), dimen->uintlit, 0);
         LLVMValueRef zeros[2] = {LLVMConstInt(genlUsize(gen), 0, 0), LLVMConstInt(genlUsize(gen), 0, 0)};
-        LLVMTypeRef arraytype = genlType(gen, genlAddrType(obj));
-        base = LLVMBuildGEP2(gen->builder, arraytype, genlAddr(gen, obj), zeros, 2, "");
+        // An array is memory, whose address is taken; a reference holds it
+        LLVMTypeRef arraytype = genlType(gen, objtype->tag == RefTag ? arraydcl : genlAddrType(obj));
+        LLVMValueRef arrayp = objtype->tag == RefTag ? genlExpr(gen, obj) : genlAddr(gen, obj);
+        base = LLVMBuildGEP2(gen->builder, arraytype, arrayp, zeros, 2, "");
         elemtype = LLVMGetElementType(arraytype);   // an array's element, not a pointer's
+    }
+    else if (objtype->tag == ArrayRefTag) {
+        LLVMValueRef arrref = genlExpr(gen, obj);
+        count = LLVMBuildExtractValue(gen->builder, arrref, 1, "count");
+        base = LLVMBuildExtractValue(gen->builder, arrref, 0, "sliceptr");
+        elemtype = genlPointeeType(gen, objtype);
     }
     else {
         // fnCallArrIndex accepts a range only on an array or a slice, and a
@@ -1725,6 +1890,8 @@ LLVMValueRef genlAddr(GenState *gen, INode *lval) {
         // the literal's type [strlen] u8 does not count it. The global is one
         // byte longer than that type, and its address is recast to a pointer
         // to the type, so every use sees the text's length and nothing more.
+        // (Under opaque pointers the recast folds away; on a GPU target the
+        // address is the flat one, genlFlatAddr.)
         SLitNode *strnode = (SLitNode *)lval;
         LLVMValueRef strconst = LLVMConstStringInContext2(gen->context, strnode->strlit, strnode->strlen, 0);
         LLVMValueRef sglobal = LLVMAddGlobal(gen->module, LLVMTypeOf(strconst), "string");
@@ -1732,6 +1899,8 @@ LLVMValueRef genlAddr(GenState *gen, INode *lval) {
         LLVMSetGlobalConstant(sglobal, 1);
         genlComdat(gen, sglobal);
         LLVMSetInitializer(sglobal, strconst);
+        if (gen->opt->gpu)
+            return genlFlatAddr(gen, sglobal);
         return LLVMConstBitCast(sglobal, LLVMPointerType(genlType(gen, strnode->vtype), 0));
     }
     case ArrayLitTag:
@@ -1749,7 +1918,7 @@ LLVMValueRef genlAddr(GenState *gen, INode *lval) {
             LLVMSetGlobalConstant(aglobal, 1);
             genlComdat(gen, aglobal);
             LLVMSetInitializer(aglobal, arrval);
-            return aglobal;
+            return genlFlatAddr(gen, aglobal);
         }
         LLVMValueRef temparray = genlAlloca(gen, LLVMTypeOf(arrval), "temparray");
         LLVMBuildStore(gen->builder, arrval, temparray);
@@ -1989,6 +2158,8 @@ static LLVMValueRef genlTerm(GenState *gen, INode *termnode) {
     switch (termnode->tag) {
     case NilLitTag:
         return LLVMGetUndef(gen->emptyStructType);
+    case NullLitTag:
+        return LLVMConstPointerNull(genlType(gen, ((NullLitNode*)termnode)->vtype));
     case ULitTag:
     {
         // A literal holds its value in 64 bits, a negative one sign-extended
@@ -2194,10 +2365,14 @@ static LLVMValueRef genlTerm(GenState *gen, INode *termnode) {
         if (!(termnode->flags & FlagBorrow))
             return LLVMBuildLoad2(gen->builder, genlType(gen, genlAddrType(termnode)), genlAddr(gen, termnode), "");
 
-        // If borrowing, alter fncall to shortcut around the borrow node
+        // If borrowing, the receiver is a reference. At the root of the chain
+        // it is the borrow borrowReassocIndex made, '&v' in '&v[i]': shortcut
+        // around it to index the place it borrows. Further out it is the
+        // inner link, '&v[i]' in '&v[i][j]', whose value is the address of
+        // the array it reached, indexed through as any reference is.
         FnCallNode *fncall = (FnCallNode *)termnode;
-        assert(fncall->objfn->tag == BorrowTag);
-        fncall->objfn = ((RefNode *)fncall->objfn)->vtexp;
+        if (fncall->objfn->tag == BorrowTag)
+            fncall->objfn = ((RefNode *)fncall->objfn)->vtexp;
         if (termnode->flags & FlagRange)
             return genlSubslice(gen, fncall);
         return genlAddr(gen, termnode);
@@ -2323,6 +2498,8 @@ static LLVMValueRef genlTerm(GenState *gen, INode *termnode) {
     case CastTag:
     {
         CastNode *node = (CastNode*)termnode;
+        if (node->flags & FlagLockAcquire)
+            return genlLockAcquire(gen, genlExpr(gen, node->exp), (RefNode *)itypeGetTypeDcl(node->vtype), termnode);
         if (node->flags & FlagConvert)
             return genlConvert(gen, node->exp, node->vtype);
         return genlRecast(gen, node->exp, node->vtype);

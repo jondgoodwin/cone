@@ -1,0 +1,49 @@
+// Keys kept in a generic container: a List of an arena's keys, built in a
+// function that names the brand, read back through the arena. One instance
+// of List serves every brand: its brands are named by their place.
+//
+// Verdict: accept; prints 12 and 6.
+// Basis: a value carrying an invariant lifetime may be stored anywhere; a
+// generic is instanced with its arguments' lifetimes erased, but a key stays
+// a key and each brand is bound afresh at each call through the instance
+// (invariant lifetimes, settled 3 Oct 2026).
+// Master 1117c92a: no DynArena, and ''=a' refused at lex.
+
+mod lifetime_inv_keys_in_list;
+
+import stdio use *;
+import arena use *;
+import collections use *;
+
+struct R { pub n i64; pub m i64; }
+
+fn gather(ar &mut DynArena['=a], n i64) List[&'=a mut R] {
+  mut keys = List[&'=a mut R].empty();
+  mut i = 0i64;
+  while i < n {
+    keys.push(ar.alloc(new R(i, i * 2)));
+    i = i + 1;
+  }
+  keys;
+}
+
+fn total(ar &DynArena['=a], keys &List[&'=a mut R]) i64 {
+  mut sum = 0i64;
+  mut i = 0usize;
+  while i < keys.len() {
+    sum = sum + ar[*keys[i]].m;
+    i = i + 1usize;
+  }
+  sum;
+}
+
+fn main() {
+  mut a = DynArena.empty();
+  mut b = DynArena.empty();
+  imm ka = gather(&mut a, 4);
+  imm kb = gather(&mut b, 3);
+  printInt(total(&a, &ka));
+  printStr(" ");
+  printInt(total(&b, &kb));
+  printStr("\n");
+}

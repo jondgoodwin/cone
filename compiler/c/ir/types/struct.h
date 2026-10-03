@@ -45,6 +45,7 @@ typedef struct StructNode {
     NodeList fields;        // Ordered list of all fields
     Vtable *vtable;         // Pointer to vtable info (may be NULL)
     GenericInfo *genericinfo;     // Link to generic parms, etc (or NULL if not generic)
+    LifeParms *lifeparms;   // The lifetimes it declares, apart from its type parameters (lifetime.h), or NULL
     int64_t tagnbr;         // If a tagged struct, the number in the tag field, read as 'tagstate' says
     DclSpans *spans;        // Where each member of its braces sits in its file, in the order parsed (dclspan.h); NULL for none
     uint8_t carriesborrow;  // itypeCarriesBorrow's remembered answer (CarriesBorrow*), once the type is checked
@@ -188,13 +189,13 @@ INode *structEnumBaseInstanceMember(INode *where, INode *dcl);
 int structEnumDemandSet(NameResState *pstate, StructNode *node);
 
 // May the function being checked reach a private member of 'type' through any
-// value, because both are written inside one enum's braces, or the function in
-// an extension of that enum? 'self' is granted apart from this, for every type.
+// value because it is written in an extension of the enum 'type' belongs to?
+// 'self' is granted apart from this, for every type.
 int structEnumSeesPrivate(TypeCheckState *pstate, INode *type);
 
-// May the function being checked reach a private member of 'type' through any
-// value: because the function is the type's own, or by the enum's boundary
-// (structEnumSeesPrivate)?
+// May the code being checked reach a private member of 'type' through any
+// value: because it is written in the module that declares the type, or in an
+// extension of its enum (structEnumSeesPrivate)?
 int structSeesPrivate(TypeCheckState *pstate, INode *type);
 
 // Get bottom-most base trait for some trait/struct, or NULL if there is not one
@@ -204,11 +205,62 @@ StructNode *structGetBaseTrait(StructNode *node);
 // is in flight.
 void structTypeCheck(TypeCheckState *pstate, StructNode *name);
 
+// An array type checked as a reference's target waits for its element's
+// layout before it asks the element's size and takes its move and thread
+// flags (arrayTypeCheck); a by-value use settles it at once (structTypeSettle)
+void structArrayWait(TypeCheckState *pstate, INode *array);
+
 // A layout of a type holding values by value begins, or ends. When the last one
 // in flight ends, every variant still waiting is laid out and every waiting
 // type's members are checked.
 void structLayoutEnter(void);
 void structLayoutExit(void);
+
+// The layout of a struct, an array or a tuple begins or ends: counted as above,
+// and kept on the stack a by-value cycle is named from (structLayoutCycle)
+void structLayoutBegin(INode *type);
+void structLayoutEnd(void);
+
+// Is a layout of a type holding values by value in flight, one this check is
+// inside of? A function's signature is held as a layout in flight for the
+// members queue's sake (fnDclTypeCheck) but holds nothing by value, so it sets
+// the stack's base aside while it is checked (structValueHold, structValueRelease).
+int structValueInFlight(void);
+uint32_t structValueHold(void);
+void structValueRelease(uint32_t base);
+
+// A by-value cycle through 'root', which a size question found still being laid
+// out ('entry' is root itself, or, for an enum, its variant in flight), asked
+// through the types 'hops' (the field's type down to root, root excluded). The
+// cycle as the message names it, "contains B contains A by value", or NULL where
+// root is not on the stack.
+char *structLayoutCycle(INode *root, INode *entry, INode **hops, uint32_t nhops);
+
+// A reference's target is checked. While a layout is in flight a reference does
+// not demand its target's layout: what it points at is resolved -- a name to its
+// declaration, a generic's instance made -- and each struct reached is laid out
+// once no layout is in flight, as is every check that reads one. See
+// compiler/c/doc/phases/type-check.md, "A reference does not demand its target".
+void structTargetEnter(void);
+void structTargetExit(void);
+int structTargetDeferring(void);
+uint32_t structTargetSuspend(void);
+void structTargetResume(uint32_t depth);
+
+// Work deferred until every layout in flight is done: 'fn' is called with a
+// copy of the walk state, 'node' and 'extra'. A layout is laid out ahead of every
+// check (structDeferLayout); a check runs once no layout is waiting either
+// (structDeferCheck), and before any type's members.
+typedef void (*StructDeferFn)(TypeCheckState *pstate, INode *node, void *extra);
+void structDeferLayout(TypeCheckState *pstate, StructDeferFn fn, INode *node, void *extra);
+void structDeferCheck(TypeCheckState *pstate, StructDeferFn fn, INode *node, void *extra);
+
+// A struct reached as a reference's target, not yet begun: laid out later
+void structTargetWait(TypeCheckState *pstate, INode *node);
+
+// A use is about to read this type's layout: lay out now whatever a reference
+// left waiting in it, and finish an array whose element's size was waiting
+void structTypeSettle(TypeCheckState *pstate, INode *type);
 
 // Settle an enum's discriminant width from its variants' tag values, refusing a
 // value too large for the integer type it declared

@@ -4,6 +4,7 @@
 //   mod build;
 //   import collections use *;
 //   import process;
+//   import time use Duration;
 //
 //   fn main() i32 {
 //     mut args = List[String].empty();
@@ -11,7 +12,7 @@
 //     args.push(String.from("-o"));
 //     args.push(String.from("build/debug"));
 //     args.push(String.from("app.conebuild"));
-//     match process.run(args.view(), new process.Options(timeoutMs: 60000u64)) {
+//     match process.run(args.view(), new process.Options(timeout: Duration.fromSeconds(60))) {
 //       case imm ok Ok {
 //         imm o = &ok.value;
 //         if o.timedOut { ... }                  // stopped after 60 s
@@ -29,7 +30,7 @@
 //
 //   process.run(args, opts)       run args[0] with the rest as its arguments
 //   process.runLine(line, opts)   run a command line written out by hand
-//   process.Options               dir, timeoutMs, inherit; each has a default
+//   process.Options               dir, timeout, inherit; each has a default
 //   process.Output                exitCode, timedOut, stdout, stderr, success()
 //   process.ProcessError          op, program, dir, code, message(), notFound()
 //   process.commandLine(args)     the line 'run' hands Windows for args
@@ -60,8 +61,10 @@
 // could not be started: none of that name, a folder that is not there, an
 // argument Windows cannot be given.
 //
-// **The time limit.** With 'timeoutMs' above 0, the child is stopped when
-// that many milliseconds have passed since it started, and so is every
+// **The time limit.** With 'timeout', a Duration of the time package, above
+// zero, the child is stopped when that long has passed since it started
+// (measured on the time package's steady clock, and waited for in whole
+// milliseconds, rounded up), and so is every
 // program it has started and not yet seen end: it runs in a Windows job
 // object of its own, and the whole job is ended. The Output then says
 // 'timedOut', its exit code is 1, and what it wrote until then is kept. With
@@ -129,6 +132,7 @@ mod process;
 import libc;
 import collections use String, List;
 import path use normalize;
+import time;
 
 // ---------------------------------------------------------------------------
 // Windows: kernel32, and shell32's command-line parser. Everything the
@@ -211,7 +215,6 @@ extern {
   fn @c(system) GetConsoleWindow() usize;
   fn @c(system) GetCurrentProcessId() u32;
   fn @c(system) GetCurrentThreadId() u32;
-  fn @c(system) GetTickCount64() u64;
   fn @c(system) MultiByteToWideChar(page u32, flags u32, from *u8, fromLen i32, to *u16, toLen i32) i32;
   fn @c(system) WideCharToMultiByte(page u32, flags u32, from *u16, fromLen i32, to *u8, toLen i32,
       fallback *u8, usedFallback *i32) i32;
@@ -307,9 +310,9 @@ fn failure(op &[]u8, program &[]u8, dir &[]u8, code u32) ProcessError {
 fn systemText(code u32) String {
   mut buf = new Array[u16, 512] <- fill 0u16;
   imm bp *u16 = &[]buf;
-  mut n = FormatMessageW(formatFromSystem, 0usize as *u8, code, english, bp, 512u32, 0usize as *u8);
+  mut n = FormatMessageW(formatFromSystem, null, code, english, bp, 512u32, null);
   if n == 0u32 {
-    n = FormatMessageW(formatFromSystem, 0usize as *u8, code, 0u32, bp, 512u32, 0usize as *u8);
+    n = FormatMessageW(formatFromSystem, null, code, 0u32, bp, 512u32, null);
   }
   mut out = String.empty();
   if n == 0u32 {
@@ -339,10 +342,10 @@ fn widen(s &[]u8) *u16 {
     *p = 0u16;
     return p;
   }
-  if s.len > 0x3FFFFFFFusize { return 0usize as *u16; }
+  if s.len > 0x3FFFFFFFusize { return null; }
   imm len = i32.from(s.len);
-  imm n = MultiByteToWideChar(utf8Page, invalidUtf8Fails, s, len, 0usize as *u16, 0i32);
-  if n == 0i32 { return 0usize as *u16; }
+  imm n = MultiByteToWideChar(utf8Page, invalidUtf8Fails, s, len, null, 0i32);
+  if n == 0i32 { return null; }
   imm count = usize.from(n);
   imm p = libc.malloc((count + 1usize) * 2usize) as *u16;
   MultiByteToWideChar(utf8Page, invalidUtf8Fails, s, len, p, n);
@@ -355,10 +358,10 @@ fn widen(s &[]u8) *u16 {
 fn narrow(p *u16, n i32) String {
   mut out = String.empty();
   if n == 0i32 { return out; }
-  imm size = WideCharToMultiByte(utf8Page, 0u32, p, n, 0usize as *u8, 0i32, 0usize as *u8, 0usize as *i32);
+  imm size = WideCharToMultiByte(utf8Page, 0u32, p, n, null, 0i32, null, null);
   if size <= 0i32 { return out; }
   imm buf = libc.malloc(usize.from(size));
-  WideCharToMultiByte(utf8Page, 0u32, p, n, buf, size, 0usize as *u8, 0usize as *i32);
+  WideCharToMultiByte(utf8Page, 0u32, p, n, buf, size, null, null);
   // Counted up to the 0, the 0 is among the bytes
   imm len = if n < 0i32 {usize.from(size) - 1usize;} else {usize.from(size);};
   out.append(mem.sliceFromParts(buf, len));
@@ -469,9 +472,9 @@ pub fn commandLine(args &[]String) String {
 pub struct Options {
   // The folder it starts in; "" for this program's current folder
   pub dir &[]u8 = "";
-  // Stop it, and every program it started, after this many milliseconds;
-  // 0 waits as long as it runs
-  pub timeoutMs u64 = 0u64;
+  // Stop it, and every program it started, once this has passed; zero (or
+  // less) waits as long as it runs
+  pub timeout time.Duration = new time.Duration();
   // Share this program's standard input, output and error rather than
   // reading from NUL and capturing what it writes
   pub inherit Bool = false;
@@ -535,7 +538,7 @@ struct Stream {
 }
 
 fn noStream() Stream {
-  new Stream(0usize, new Overlapped(0usize, 0usize, 0u32, 0u32, 0usize), 0usize as *u8, String.empty(), false);
+  new Stream(0usize, new Overlapped(0usize, 0usize, 0u32, 0u32, 0usize), null, String.empty(), false);
 }
 
 // Each pipe a name of its own: this process, this thread, and a count
@@ -556,12 +559,12 @@ fn makePipe(s &mut Stream) usize {
     name.appendUInt(u64.from(pipeSerial));
     imm wname = widen(name.view());
     imm ours = CreateNamedPipeW(wname, pipeAccessInbound | flagOverlapped | flagFirstInstance,
-      pipeRejectRemote, 1u32, pipeSize, pipeSize, 0u32, 0usize as *u8);
+      pipeRejectRemote, 1u32, pipeSize, pipeSize, 0u32, null);
     if ours != invalidHandle {
-      imm sa = new SecurityAttributes(24u32, 0usize as *u8, 1i32);
+      imm sa = new SecurityAttributes(24u32, null, 1i32);
       imm theirs = CreateFileW(wname, genericWrite, 0u32, &sa, openExisting, 0u32, 0usize);
       libc.free(wname as *u8);
-      imm event = CreateEventW(0usize as *u8, 1i32, 0i32, 0usize as *u16);
+      imm event = CreateEventW(null, 1i32, 0i32, null);
       if theirs == invalidHandle or event == 0usize {
         closeIf(theirs);
         closeIf(event);
@@ -581,7 +584,7 @@ fn makePipe(s &mut Stream) usize {
 
 // The NUL device, inheritable, to read from or write to
 fn openNul(access u32) usize {
-  imm sa = new SecurityAttributes(24u32, 0usize as *u8, 1i32);
+  imm sa = new SecurityAttributes(24u32, null, 1i32);
   imm wname = widen("NUL");
   imm h = CreateFileW(wname, access, shareReadWrite, &sa, openExisting, 0u32, 0usize);
   libc.free(wname as *u8);
@@ -611,7 +614,7 @@ fn closeIf(h usize) {
 fn readNext(s &mut Stream) {
   s.ov.internal = 0usize;
   s.ov.internalHigh = 0usize;
-  if ReadFile(s.pipe, s.buf, pipeSize, 0usize as *u32, &mut s.ov) == 0i32 {
+  if ReadFile(s.pipe, s.buf, pipeSize, null, &mut s.ov) == 0i32 {
     if GetLastError() != errorIoPending { s.active = false; }
   }
 }
@@ -645,13 +648,14 @@ fn closeStream(s &mut Stream) {
   if s.buf as usize != 0usize { libc.free(s.buf); }
 }
 
-// Milliseconds left until deadline, for a wait; INFINITE when there is none
-fn remaining(deadline u64) u32 {
-  if deadline == 0u64 { return infinite; }
-  imm now = GetTickCount64();
-  if now >= deadline { return 0u32; }
-  imm left = deadline - now;
-  if left >= u64.from(infinite) {infinite - 1u32;} else {u32.from(left);};
+// Milliseconds left until deadline, rounded up, for a wait; INFINITE when
+// there is none
+fn remaining(timed Bool, deadline time.Instant) u32 {
+  if not timed { return infinite; }
+  imm left = (deadline - time.Instant.now()).nanos();
+  if left <= 0i64 { return 0u32; }
+  imm ms = (left + 999999i64) / 1000000i64;
+  if ms >= i64.from(infinite) {infinite - 1u32;} else {u32.from(ms);};
 }
 
 // Stop the child, and with it every program it started, where they are in
@@ -669,7 +673,7 @@ fn start(op &[]u8, program &[]u8, line &[]u8, opts Options) Result[Output, Proce
   if wline as usize == 0usize {
     return Error[Output, ProcessError][failure(op, program, opts.dir, errorNoUnicodeTranslation)];
   }
-  mut wdir = 0usize as *u16;
+  mut wdir *u16 = null;
   if opts.dir.len > 0usize {
     if hasByte(opts.dir, 0u8) {
       libc.free(wline as *u8);
@@ -707,7 +711,7 @@ fn start(op &[]u8, program &[]u8, line &[]u8, opts Options) Result[Output, Proce
   handles[2usize] = childErr;
   imm hp *usize = &[]handles;
   mut listSize = 0usize;
-  InitializeProcThreadAttributeList(0usize as *u8, 1u32, 0u32, &mut listSize);
+  InitializeProcThreadAttributeList(null, 1u32, 0u32, &mut listSize);
   imm list = libc.malloc(listSize);
   mut failed = true;
   mut code = 0u32;
@@ -718,7 +722,7 @@ fn start(op &[]u8, program &[]u8, line &[]u8, opts Options) Result[Output, Proce
     code = GetLastError();
   }
   elif UpdateProcThreadAttribute(list, 0u32, attributeHandleList, hp as *u8, 24usize,
-      0usize as *u8, 0usize as *usize) == 0i32 {
+      null, null) == 0i32 {
     code = GetLastError();
     DeleteProcThreadAttributeList(list);
   }
@@ -727,18 +731,18 @@ fn start(op &[]u8, program &[]u8, line &[]u8, opts Options) Result[Output, Proce
   }
 
   mut pi = new ProcessInformation(0usize, 0usize, 0u32, 0u32);
-  imm timed = opts.timeoutMs > 0u64;
+  imm timed = opts.timeout > time.Duration.zero();
   if not failed {
-    mut si = new StartupInfoEx(112u32, 0usize as *u16, 0usize as *u16, 0usize as *u16,
-      0u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32, useStdHandles, 0u16, 0u16, 0usize as *u8,
+    mut si = new StartupInfoEx(112u32, null, null, null,
+      0u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32, useStdHandles, 0u16, 0u16, null,
       childIn, childOut, childErr, list);
     mut flags = extendedStartupInfo;
     if timed { flags = flags | createSuspended; }
     // A console program started from a program with no console would open a
     // window of its own
     if GetConsoleWindow() == 0usize { flags = flags | createNoWindow; }
-    if CreateProcessW(0usize as *u16, wline, 0usize as *u8, 0usize as *u8, 1i32, flags,
-        0usize as *u8, wdir, &mut si, &mut pi) == 0i32 {
+    if CreateProcessW(null, wline, null, null, 1i32, flags,
+        null, wdir, &mut si, &mut pi) == 0i32 {
       failed = true;
       code = GetLastError();
     }
@@ -762,14 +766,14 @@ fn start(op &[]u8, program &[]u8, line &[]u8, opts Options) Result[Output, Proce
   // With a time limit, the child goes in a job of its own before it runs,
   // so that the programs it starts are in it too and stop with it
   mut job = 0usize;
-  mut deadline = 0u64;
+  mut deadline = time.Instant.fromNanos(0i64);
   if timed {
-    job = CreateJobObjectW(0usize as *u8, 0usize as *u16);
+    job = CreateJobObjectW(null, null);
     if job != 0usize and AssignProcessToJobObject(job, pi.hProcess) == 0i32 {
       CloseHandle(job);
       job = 0usize;
     }
-    deadline = GetTickCount64() + opts.timeoutMs;
+    deadline = time.Instant.now() + opts.timeout;
     ResumeThread(pi.hThread);
   }
 
@@ -790,7 +794,7 @@ fn start(op &[]u8, program &[]u8, line &[]u8, opts Options) Result[Output, Proce
       events[usize.from(n)] = se.ov.hEvent;
       n = n + 1u32;
     }
-    imm r = WaitForMultipleObjects(n, ep, 0i32, remaining(deadline));
+    imm r = WaitForMultipleObjects(n, ep, 0i32, remaining(timed, deadline));
     if r == waitTimeout {
       timedOut = true;
       stop(job, pi.hProcess);
@@ -810,7 +814,7 @@ fn start(op &[]u8, program &[]u8, line &[]u8, opts Options) Result[Output, Proce
     }
   }
 
-  if not timedOut and WaitForSingleObject(pi.hProcess, remaining(deadline)) == waitTimeout {
+  if not timedOut and WaitForSingleObject(pi.hProcess, remaining(timed, deadline)) == waitTimeout {
     timedOut = true;
     stop(job, pi.hProcess);
   }

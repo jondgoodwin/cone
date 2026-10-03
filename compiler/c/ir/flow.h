@@ -30,6 +30,7 @@ enum FlowGate {
     FlowGateStore  = 0x4,   // a call with a '&mut X' argument, X carrying a borrow, or a struct holding
                             // such a writable borrow, beside another argument carrying one
     FlowGateInCall = 0x8,   // a variable named while an operand's borrow of it waits for its call or literal
+    FlowGateBoxed  = 0x10,  // a value whose type carries a borrow converted to an owning virtual reference
 };
 
 // How many operands' borrows the gate remembers waiting at once; past that,
@@ -113,12 +114,19 @@ void flowStateInit(FlowState *fstate, FnSigNode *fnsig);
 // found settles the gate
 extern int flowGateCountAll;
 
+// Set for a GPU target (a SPIR-V triple), which can type no pointer chosen
+// at run time or kept in memory: every function is walked for loans, and the
+// walk refuses those shapes (flowloan.h, "GPU targets")
+extern int flowGpu;
+
 // A value a return, break or block end hands out has this type
 void flowGateResultAsk(FlowState *fstate, INode *type);
 // A call of two or more arguments has one that is a borrowed reference
 void flowGateCallAsk(FlowState *fstate, Nodes *args);
 // An operand just walked may be a borrow
 void flowGateOperandAsk(FlowState *fstate, INode *operand);
+// A conversion may make an owning virtual reference of a value holding a borrow
+void flowGateBoxedAsk(FlowState *fstate, INode *cast);
 #define flowGateOperandsEnd(fstate, mark) ((fstate)->inflightcnt = (mark))
 
 // A variable is named while an operand's borrow waits: gate trigger when it is
@@ -206,8 +214,9 @@ typedef struct {
 
 // A temporary: the value of an expression nothing takes -- not bound to a
 // variable, stored, passed by value, handed back or moved -- whose death does
-// something (itypeNeedsFinal). Injected by flow analysis round the expression,
-// at the place its value is read or thrown away (flowTempRead); generation
+// something (itypeNeedsFinal), or which a borrow points at, whatever its type.
+// Injected by flow analysis round the expression, at the place its value is
+// read or thrown away (flowTempRead), or borrowed (flowTempBorrowed); generation
 // keeps the value in a slot of its own and finalizes it, newest first, at the
 // end of the statement that made it, or of the 'if' or 'while' condition, or
 // of the right operand of 'and' or 'or', that made it.
@@ -230,6 +239,11 @@ typedef struct {
 // Wrap the expression at 'nodep', whose value is read or thrown away here, in
 // a TempNode when it is a temporary whose death does something
 void flowTempRead(INode **nodep);
+// Wrap the expression at 'nodep', a value a borrow points at ('&make()',
+// '&make().x'), in a TempNode whatever its type: the borrow needs it kept in a
+// slot, and the loan walk a root to end with its statement. One whose death
+// does nothing is 'kept', as nothing finalizes it.
+void flowTempBorrowed(INode **nodep);
 // How many temporaries flow has made: a statement that made none needs no walk
 extern uint32_t flowTempCount;
 // The walk over a statement that made temporaries, once flow has walked it:

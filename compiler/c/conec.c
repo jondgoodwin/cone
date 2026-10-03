@@ -84,6 +84,9 @@ void doAnalysis(ConeOptions *opt, ProgramNode **pgm) {
     // What crosses threads, where a struct it reaches was not laid out when
     // the instance asking was made (ir/meta/generic.c)
     genericSendableCheckAll();
+    // What a message or an actor's initializer carries to the actor's thread
+    // (ir/types/actor.c)
+    actorCheckAll();
 
     if (opt->check_tree)
         inodeCheckTree((INode*)*pgm);
@@ -164,6 +167,7 @@ int main(int argc, char **argv) {
     coneopt.srcpath = argv[1];
     coneopt.srcname = fileName(coneopt.srcpath);
     intrinsicForceFallback = coneopt.intrinsic_fallback;
+    intrinsicBuildSetup(&coneopt);
     timerFine = coneopt.verbosity > 0;
     flowGateCountAll = coneopt.verbosity > 1;
 
@@ -182,6 +186,7 @@ int main(int argc, char **argv) {
     // We set up generation early because we need target info, e.g.: pointer size
     timerBegin(SetupTimer);
     genSetup(&gen, &coneopt);
+    flowGpu = coneopt.gpu;
 
     // Parse source file, do semantic analysis, and generate code
     timerBegin(ParseTimer);

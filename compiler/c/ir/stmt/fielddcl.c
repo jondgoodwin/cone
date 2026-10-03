@@ -21,6 +21,8 @@ FieldDclNode *newFieldDclNode(Name *namesym, INode *perm) {
     fldnode->fold = NULL;
     fldnode->hop = NULL;
     fldnode->index = 0;
+    fldnode->lifeslots = 0;
+    fldnode->lifeknown = 0;
     return fldnode;
 }
 
@@ -98,10 +100,82 @@ void fieldDclPrint(FieldDclNode *name) {
         inodeFprint(" (folded through %s)", &name->hop->namesym->namestr);
 }
 
+// The type declared at module level that holds 'type': itself, or, for a
+// variant written inside an enum's braces, the enum, whose visibility it has.
+// NULL where no module owns it.
+static StructNode *fieldDclModuleType(StructNode *type) {
+    while (type->dclinfo.owner && type->dclinfo.owner->tag == StructTag)
+        type = (StructNode*)type->dclinfo.owner;
+    return type->dclinfo.owner && type->dclinfo.owner->tag == ModuleTag ? type : NULL;
+}
+
+// The first type private to its module that a field's type names, reached
+// through references, pointers, arrays, tuples, type arguments and aliases, or
+// NULL. A type parameter names no type yet: its instances are checked where
+// they are named.
+static StructNode *fieldDclPrivateType(INode *type) {
+    if (type == NULL)
+        return NULL;
+    if (isNameUseNode(type))
+        type = nameUseGetDcl((NameUseNode*)type);
+    if (type == NULL)
+        return NULL;
+    switch (type->tag) {
+    case RefTag:
+    case ArrayRefTag:
+    case VirtRefTag:
+        return fieldDclPrivateType(((RefNode*)type)->vtexp);
+    case PtrTag:
+        return fieldDclPrivateType(((StarNode*)type)->vtexp);
+    case ArrayTag:
+        return fieldDclPrivateType(arrayElemType(type));
+    case TTupleTag:
+    case FnCallTag: {
+        if (type->tag == FnCallTag) {
+            StructNode *found = fieldDclPrivateType(((FnCallNode*)type)->objfn);
+            if (found || ((FnCallNode*)type)->args == NULL)
+                return found;
+        }
+        Nodes *elems = type->tag == TTupleTag ? ((TupleNode*)type)->elems : ((FnCallNode*)type)->args;
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodesFor(elems, cnt, nodesp)) {
+            StructNode *found = fieldDclPrivateType(*nodesp);
+            if (found)
+                return found;
+        }
+        return NULL;
+    }
+    case AliasDclTag:
+        return (type->flags & FlagTypeAlias) ? fieldDclPrivateType(((AliasDclNode*)type)->target) : NULL;
+    case StructTag: {
+        StructNode *top = fieldDclModuleType((StructNode*)type);
+        return top && (top->dclinfo.facts & DclPrivate) ? top : NULL;
+    }
+    default:
+        return NULL;
+    }
+}
+
 // Enable name resolution of field declarations
 void fieldDclNameRes(NameResState *pstate, FieldDclNode *name) {
     inodeNameRes(pstate, (INode**)&name->perm);
     inodeNameRes(pstate, &name->vtype);
+
+    // A pub field of a pub type is reached from outside the module, so its type
+    // must be one the outside can name. Privacy is the module's, members and
+    // names alike: a private type's values never leave the module through a
+    // field. A private type's pub field is not reached from outside through a
+    // name, and is left alone.
+    StructNode *holder = pstate->typenode && pstate->typenode->tag == StructTag
+        ? fieldDclModuleType((StructNode*)pstate->typenode) : NULL;
+    if ((name->flags & FlagPub) && holder && !(holder->dclinfo.facts & DclPrivate)) {
+        StructNode *privtype = fieldDclPrivateType(name->vtype);
+        if (privtype)
+            errorMsgNode((INode*)name, ErrorPubFieldPrivType,
+                "The field %s is pub, but its type %s is private to its module, so code outside the module would reach into a type it cannot name. Make the field private (its module still sees it), or declare %s pub.",
+                &name->namesym->namestr, &privtype->namesym->namestr, &privtype->namesym->namestr);
+    }
 
     if (name->value)
         inodeNameRes(pstate, &name->value);
@@ -144,7 +218,11 @@ void fieldDclTypeCheck(TypeCheckState *pstate, FieldDclNode *name) {
     // A field holds its type by value, so that type has to be able to say how
     // large it is. This is where a recursive struct is caught -- and where one
     // that recurses through a reference is not, since the reference answers for
-    // itself without asking what it points at.
+    // itself without asking what it points at. What a reference's target left
+    // waiting in it -- an array's element size, an instance's layout, reached
+    // first through a reference in this same layout -- is settled first, since
+    // holding it by value is what demands it.
+    structTypeSettle(pstate, name->vtype);
     INode *nosizeroot;
     char *nosize = itypeNoSizeCause(name->vtype, &nosizeroot);
     if (nosize) {

@@ -1,15 +1,19 @@
 // Two '&mut' borrows of structs holding borrows, the second of a struct in an
 // inner block: the callee may copy the inner struct's borrow into the outer
-// one, and the inner struct may hold a borrow as short-lived as itself. A
-// writable borrow of a borrow-holding place counts as a borrow passed beside
-// the other, at its place's lifetime.
+// one, so the outer struct, a local, may hold a borrow of the inner block's
+// owner after the call, and is used after that owner ends.
 //
-// Verdict: refuse, ErrorCallEscape at the call.
+// Verdict: refuse, ErrorFrozen at the owner 's', which goes out of scope
+// while 'h' still holds a borrow of it.
 // Basis: reflifefn.html, "Mutable borrowed reference parameters": a call
 // handed a writable borrow of a place that can hold a borrow may store there
-// any borrow it can reach through its other arguments.
+// any borrow it can reach through its other arguments, and a local holding
+// one is held to its source as a store written out is.
 // Master a3a2f44d: accepted, and it reads freed memory -- main, run, prints
 // "final" and then "1502315601264". Stage 2 fixed it.
+// Since stage 8 a store a call may make through a '&mut' into a local follows
+// flow, as one written out does: the call is legal, and the local used after
+// the borrow's source ends is refused at that end.
 
 mod lifetime_band_call_copy_between_holders;
 
@@ -30,9 +34,9 @@ fn main() {
   imm outer = new R(1);
   mut h = new H(&outer);
   {
-    imm s = new So[R](42);
+    imm s = new So[R](42);   //~ ErrorFrozen "goes out of scope while"
     mut inner = new H(&*s);
-    cp(&mut h, &mut inner);  //~ ErrorCallEscape
+    cp(&mut h, &mut inner);
   }
   printInt(h.r.n);
   printStr("\n");

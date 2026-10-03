@@ -12,8 +12,7 @@
 // The C runtime's allocator is libc's, whose package declares it once for the
 // whole program. core imports libc, which, being a C-named module, gets no
 // prelude of its own, so the import makes no loop; Congo builds libc before
-// core. A panic's work is the C runtime's too, conestd's, which every program
-// links.
+// core. A panic's work is conestd's, the runtime every program links.
 
 mod core;
 
@@ -42,8 +41,8 @@ pub use Result;
 
 // A panic ends the program where something that must not happen has: an index
 // out of bounds, memory exhausted, an invariant broken. It is a bug report, not
-// error handling, which is Option's and Result's. The C runtime does the work
-// (packages/conestd/panic.c): stdout is flushed, one line goes to stderr,
+// error handling, which is Option's and Result's. The runtime does the work
+// (packages/conestd/panic.cone): stdout is flushed, one line goes to stderr,
 // 'panic at <file>:<line>: <message>', the hook runs if one is set, and the
 // program aborts. Nothing unwinds, and no finalizer runs. Each function here
 // returns 'Never': a call to it does not return, so it may end any block,
@@ -73,8 +72,22 @@ pub extern {
 
 // Whether this compile is a debug build: 'conec --debug', or 'build: debug' in
 // the build description Congo writes. A constant, so the side of an 'if' on it
-// that this build does not take is folded away and never reaches the object
+// that this build does not take is never generated and never reaches the object
 pub fn @intrinsic isDebugBuild() Bool;
+
+// TEMPORARY, a provisional mechanism whose final design is open. Constants of
+// the compile as isDebugBuild is, so the side of an 'if' on them that this
+// build does not take is never generated (both sides are still type checked).
+// The OS the compile targets, from its target triple: no flag
+pub fn @intrinsic isWindows() Bool;
+pub fn @intrinsic isLinux() Bool;
+pub fn @intrinsic isMacOS() Bool;
+pub fn @intrinsic isWasm() Bool;
+// Whether conec's command line defined name, '-D name' or '-D name=123', and
+// the integer it was given: 1 for '-D name', 0 when it was not defined. The
+// name is a string literal
+pub fn @intrinsic isDefined(name &[]u8) Bool;
+pub fn @intrinsic definedInt(name &[]u8) i64;
 
 // Panic unless cond holds. Checked in every build, release included
 pub fn assert(cond Bool, msg &[]u8 = "assertion failed", file &[]u8 = srcFile(),
@@ -137,6 +150,43 @@ pub struct Rc is RegionRef {
   fn aliasRef(self &uni Rc) inline {cnt = cnt + 1usize;}
   fn dealiasRef(self &uni Rc) Bool inline {cnt = cnt - 1usize; cnt == 0usize;}
   fn free(self &uni Rc) inline {libc.free(self as *u8);}
+}
+
+// 'Rwcell', the lock permission for owners on one thread: 'Rc[Rwcell, T]'.
+// A lock permission is a struct declaring the built-in trait
+// 'LockPermission', written in a managed reference's permission slot; its
+// value, the lock, is kept in each allocation's header after the region's
+// part, and the reference reaches its value only by a borrow through it,
+// '&mut *r' or '&*r', which takes the lock for as long as the borrow lasts.
+// The compiler calls 'init' on the lock as the allocation is made,
+// 'acquireMut' as a borrow that may write begins and 'releaseMut' as it
+// ends, and 'acquireRead' and 'releaseRead' for a read-only one; an
+// acquiring method taking a file and a line is handed the borrow's. Rwcell's
+// lock is a count of the borrows holding it: several read-only ones, or one
+// that may write, as the sync package's Rwlock allows across threads. On one
+// thread a borrow that conflicts with one still held could never be given
+// it, since the holder is the thread itself, so it panics instead of waiting.
+// It does not declare 'ThreadSafe', so it fits only a region whose owners
+// stay on one thread.
+pub struct Rwcell is LockPermission {
+  // 0 free, n > 0 held by n read-only borrows, -1 by one that may write
+  borrows isize;
+  fn init(self &new) inline {*self = new Rwcell(0isize);}
+  // The acquiring methods are handed where the borrow is, which the panic names
+  fn acquireMut(self &uni Rwcell, file &[]u8, line u32) inline {
+    if borrows != 0isize {
+      panic("Rwcell: a borrow that may write, while another borrow holds the lock", file, line);
+    }
+    borrows = -1isize;
+  }
+  fn releaseMut(self &uni Rwcell) inline {borrows = 0isize;}
+  fn acquireRead(self &uni Rwcell, file &[]u8, line u32) inline {
+    if borrows < 0isize {
+      panic("Rwcell: a read-only borrow, while a borrow that may write holds the lock", file, line);
+    }
+    borrows = borrows + 1isize;
+  }
+  fn releaseRead(self &uni Rwcell) inline {borrows = borrows - 1isize;}
 }
 
 // A type's record: what only the compiler knows about a value's type, for a
@@ -286,6 +336,59 @@ pub struct @opaque mem {
       return old, true;
     }
     old, false;
+  }
+
+  // An integer's bits, T an integer type of 8 to 64 bits; each is also a
+  // method of every integer type, 'x.leadingZeros()'. A count of the bits of 0
+  // is the width. The amount of a rotate or a masked shift is taken modulo the
+  // width, and shrMasked is arithmetic for a signed T, logical for an unsigned
+  // one, where '<<' and '>>' give 0, or the sign, past the width. The fallback
+  // bodies go a bit at a time
+  pub fn @intrinsic countOnes[T](x T) u32 {
+    mut v = x;
+    mut n = 0u32;
+    while v != T.from(0) {
+      v = v & (v - T.from(1));
+      n = n + 1u32;
+    }
+    n;
+  }
+  pub fn @intrinsic leadingZeros[T](x T) u32 {
+    imm width = u32.from(mem.sizeof[T]()) * 8u32;
+    mut n = 0u32;
+    while n < width {
+      if ((x >> T.from(width - 1u32 - n)) & T.from(1)) != T.from(0) {break;}
+      n = n + 1u32;
+    }
+    n;
+  }
+  pub fn @intrinsic trailingZeros[T](x T) u32 {
+    imm width = u32.from(mem.sizeof[T]()) * 8u32;
+    mut n = 0u32;
+    while n < width {
+      if ((x >> T.from(n)) & T.from(1)) != T.from(0) {break;}
+      n = n + 1u32;
+    }
+    n;
+  }
+  // The bits rotated in are shifted logically, a signed T's sign copies masked off
+  pub fn @intrinsic rotateLeft[T](x T, n u32) T {
+    imm width = u32.from(mem.sizeof[T]()) * 8u32;
+    imm k = n % width;
+    if k == 0u32 {return x;}
+    (x << T.from(k)) | ((x >> T.from(width - k)) & ~(~T.from(0) << T.from(k)));
+  }
+  pub fn @intrinsic rotateRight[T](x T, n u32) T {
+    imm width = u32.from(mem.sizeof[T]()) * 8u32;
+    imm k = n % width;
+    if k == 0u32 {return x;}
+    ((x >> T.from(k)) & ~(~T.from(0) << T.from(width - k))) | (x << T.from(width - k));
+  }
+  pub fn @intrinsic shlMasked[T](x T, n u32) T {
+    x << T.from(n % (u32.from(mem.sizeof[T]()) * 8u32));
+  }
+  pub fn @intrinsic shrMasked[T](x T, n u32) T {
+    x >> T.from(n % (u32.from(mem.sizeof[T]()) * 8u32));
   }
 }
 

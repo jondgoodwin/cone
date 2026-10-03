@@ -16,7 +16,8 @@
 	<p style="margin-left: 40px;"><i>Note: These are largely implemented.
 			A lifetime is enforced when a borrowed reference is stored, including into a
 			variable of a wider scope, when it is returned or returned through a call, and
-			when it is handed to a call that could store it somewhere longer-lived
+			when it is handed to a call that could store it somewhere that outlives the
+			function, or into a local used after the borrow's source ends
 			(see <a href="reflifefn.html">lifetime annotations</a>).
 			A variable's lifetime is that of what it holds now: a borrow assigned to it, or
 			held inside a value it holds (a struct's field, an <span class="pre">Option</span>,
@@ -31,10 +32,10 @@
 			<span class="pre">list[0usize]</span>, an allocation from an arena, the
 			<span class="pre">Option</span> a pool's <span class="pre">get</span> returns),
 			and between the arguments of one call.
-			A temporary a variable's initializer borrows lives to the end of the block, and a
-			borrow of any other temporary is refused where it is used after its statement; an
-			<span class="pre">if</span>'s or <span class="pre">match</span>'s arms, or a block's
-			value, extend no temporary yet, though Rust extends through them.
+			A temporary a variable's initializer borrows lives to the end of the block, through
+			an <span class="pre">if</span>'s or <span class="pre">match</span>'s arms and a
+			block's value too, and a borrow of any other temporary is refused where it is used
+			after its statement.
 			An element borrowed from a resizable collection reached through a shared path is not
 			yet refused, and a change through another reference to that collection leaves the
 			element dangling. Each of these compiles today, <span class="pre">p</span> a value
@@ -199,9 +200,9 @@ imm ref4 = &amp;mut list[key];  // passes &amp;mut list as self to list's `&amp;
 		For such a type, <span class="pre">list[key]</span> is the read-only way to reach an element.</p>
 	<p>A method name after the dot operator is <i>not</i> such a case.
 		The ampersand applies to the whole term, so the method is called first
-		and the ampersand is then applied to what it returned &mdash; a temporary
-		value with no place to point at, which is rejected, except where it is a variable's
-		initializer (see <a href="#temporary">Borrowing a temporary</a> below).
+		and the ampersand is then applied to what it returned &mdash; a temporary,
+		which lives to the end of its statement, or longer where a variable's initializer
+		borrows it (see <a href="#temporary">Borrowing a temporary</a> below).
 		To call a method on a borrowed reference, borrow it explicitly:
 		<span class="pre">(&amp;pointer).someref(key)</span>.</p>
 	</li>
@@ -251,7 +252,8 @@ imm ref = &amp;mut a;   // Creates a mutable borrowed reference to a's value
 		This means it can last for as long as it wants.</li>
 	<li>A borrowed reference passed in as a parameter comes from the caller: it outlives the function,
 		so it may be returned, but it may not be stored in a global variable, which may outlive the caller.
-		Where the signature names lifetimes, it may be returned only as a lifetime its parameter is written with
+		Where the signature names lifetimes, it may be returned only as a lifetime it is written with,
+		or one the signature's <span class="pre">where</span> clause or types order shorter
 		(see <a href="reflifefn.html">lifetime annotations</a>).</li>
 	<li>A reference borrowed from a local variable has its lifetime constrained
 		to the block where the borrow took place. The compiler prohibits it from surviving beyond the end of the block.
@@ -306,12 +308,20 @@ imm r = &amp;make();          // the temporary lives to the end of the block
 imm n = &amp;make().count;    // so does this one, of which n borrows a field
 imm o &amp;R = makeOwner();   // and an owner lent as a borrow
 imm t = (&amp;make(), 1);     // and one borrowed in a tuple, array or variant literal
+imm u = if c { &amp;make(); } else { &amp;other(); };  // and one an arm's value borrows
 </pre>
-	<p>Nothing else extends a temporary: one passed to a function, a method's receiver, a value
-		an <span class="pre">if</span> or a block gives. A variable holding a borrow of such a
+	<p>An <span class="pre">if</span>'s or a <span class="pre">match</span>'s arm, and a block,
+		whose value is in such a place extends what its value borrows the same way: only the arm
+		that runs makes its temporary, which then lives to the end of the variable's block.
+		Nothing else extends a temporary: one passed to a function, a method's receiver, one in a
+		statement of an arm before its value. Any other temporary may be borrowed too, and
+		lives to the end of its statement: passed to a function
+		(<span class="pre">show(&amp;make())</span>), or a method's receiver taken by
+		reference (<span class="pre">make().count()</span>). A variable holding a borrow of such a
 		temporary may not be used after its statement, nor may the borrow be returned or stored
-		away. An explicit borrow of a temporary anywhere but such an initializer is refused.</p>
+		away.</p>
 <pre>
+show(&amp;make());              // the temporary lives to the end of this statement
 imm p = pick(makeOwner());   // fine while p is not used again;
 p.count;                     // but refused here: the owner died with the statement above
 </pre>
@@ -415,7 +425,11 @@ fn freeze(n i32) i32 {
 		lifetime (see <a href="reflifefn.html">lifetimes</a>), so the returned borrow keeps each
 		borrowed argument frozen, as if it were that borrow itself, until its last use.
 		For a method, that is its receiver. Where the signature names lifetimes, it keeps
-		frozen only the arguments for parameters sharing a lifetime with the result. An element taken from a local list borrows the
+		frozen only the arguments whose lifetimes the result may hold, and of an argument whose own
+		borrow's lifetime it may not hold, only what that argument holds in the lifetimes it may: a
+		<span class="pre">Cursor['a]</span>'s <span class="pre">next</span> returning
+		<span class="pre">Option[&amp;'a R]</span> keeps frozen what the cursor holds, not the cursor
+		(see <a href="reflifefn.html">lifetime annotations</a>). An element taken from a local list borrows the
 		list read-only, so the list may be read while the element is used, but not pushed onto,
 		since a push may move every element:</p>
 <pre>

@@ -16,6 +16,9 @@ FnSigNode *newFnSigNode() {
     sig->parms = newNodes(8);
     sig->rettype = unknownType;
     sig->lifenamed = 0;
+    sig->lifeorder = NULL;
+    sig->lifechecked = 0;
+    sig->lifestatic = 0;
     return sig;
 }
 
@@ -80,6 +83,25 @@ void fnSigNameRes(NameResState *pstate, FnSigNode *sig) {
     pstate->scope = svscope;
 }
 
+// The lifetimes a signature's types name and imply (lifeSigCheck)
+static void fnSigLifeCheck(TypeCheckState *pstate, INode *node, void *extra) {
+    FnSigNode *sig = (FnSigNode *)node;
+    INode **nodesp;
+    uint32_t cnt;
+    lifeSigCheck(sig);
+    // A parameter's own reference a type parameter's ''static' bound makes
+    // global holds a global borrow, as one written ''static' does: the caller
+    // band varDclTypeCheck gave its own copy of the type is undone
+    if (sig->lifestatic) {
+        for (nodesFor(sig->parms, cnt, nodesp)) {
+            INode *parmtype = ((VarDclNode*)*nodesp)->vtype;
+            if (parmtype->tag == RefTag && ((RefNode*)parmtype)->scope == 1
+                && lifeIsOwnBorrow(parmtype) && lifePartStatic(sig, parmtype, LifePartOwn))
+                ((RefNode*)parmtype)->scope = 0;
+        }
+    }
+}
+
 // Type check the function signature
 void fnSigTypeCheck(TypeCheckState *pstate, FnSigNode *sig) {
     INode **nodesp;
@@ -98,6 +120,13 @@ void fnSigTypeCheck(TypeCheckState *pstate, FnSigNode *sig) {
                 "''static' is named on a parameter's own reference ('p &'static T') or in the result, not inside a parameter's type: what a caller passes there is not checked to be global.");
     }
     itypeTypeCheck(pstate, &sig->rettype);
+    // A function reference's signature, checked as a reference's target while a
+    // layout is in flight, has its lifetimes read once its types are laid out:
+    // what a type's values hold is read from its layout
+    if (structTargetDeferring())
+        structDeferCheck(pstate, fnSigLifeCheck, (INode*)sig, NULL);
+    else
+        fnSigLifeCheck(pstate, (INode*)sig, NULL);
 }
 
 // Compare two function signatures to see if they are equivalent
@@ -194,8 +223,8 @@ int fnSigVrefEqual(FnSigNode *node1, FnSigNode *node2, INode *selftype) {
         nodes2p++;
     }
     // A call through the requirement is checked against its lifetimes, so the
-    // implementation must promise the same
-    return lifeSigsAgree(node1, node2);
+    // implementation must promise at least as much (lifeSigMeets)
+    return lifeSigMeets(node1, node2);
 }
 
 // Do two signatures declare the same parameter types (ignoring return type)?

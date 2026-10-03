@@ -102,4 +102,13 @@ static inline void flowGateOperand(FlowState *fstate, INode *operand) {
         flowGateOperandAsk(fstate, operand);
 }
 
+// Gate trigger: a conversion, which may make an owning virtual reference of
+// a value holding a borrow ('So[Trait]' from a 'So[H]'): a number's
+// conversion is dismissed by its operand's type
+static inline void flowGateBoxed(FlowState *fstate, INode *cast) {
+    if ((cast->flags & FlagConvert) && flowGateOpen(fstate, FlowGateBoxed)
+        && !flowGateCarriesNone(((IExpNode *)((CastNode *)cast)->exp)->vtype))
+        flowGateBoxedAsk(fstate, cast);
+}
+
 #endif

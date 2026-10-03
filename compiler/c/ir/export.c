@@ -28,9 +28,10 @@ int dclIsInstance(INode *dclnode) {
 
 // Whether a type's own braces hold a body an importer expands: an inline or
 // generic method, a macro method, or -- in a trait or a generic type -- every
-// method (fnDclIsExpanded). A private method is reached only from its own
-// type's methods, and through a receiver, which name resolution cannot see
-// (it binds the member at type check), so such a type exports all of them.
+// method (fnDclIsExpanded). A private method is reached through a receiver,
+// which name resolution cannot see (it binds the member at type check), so
+// such a type exports all of them, as does a type whose module holds an
+// expanded body elsewhere (modHoldsExpanded).
 int typeHoldsExpanded(INode *type) {
     if (type->tag != StructTag)
         return 0;
@@ -48,13 +49,52 @@ int typeHoldsExpanded(INode *type) {
     return 0;
 }
 
+// Whether a module declares a body an importer expands anywhere in it: a
+// function fnDclIsExpanded says is expanded, at module level or in a type, or a
+// type typeHoldsExpanded says holds one, a variant inside an enum's braces
+// included. A type's private members are its module's, so such a body can call
+// a private method of any type of the module through a value, which name
+// resolution cannot see. Asked once a module, and kept.
+static int typeTreeHoldsExpanded(INode *type) {
+    if (typeHoldsExpanded(type))
+        return 1;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodelistFor(&((StructNode*)type)->nodelist, cnt, nodesp)) {
+        if ((*nodesp)->tag == StructTag && typeTreeHoldsExpanded(*nodesp))
+            return 1;
+    }
+    return 0;
+}
+
+static int modHoldsExpanded(ModuleNode *mod) {
+    if (mod == NULL)
+        return 0;
+    if (mod->holdsexpanded == 0) {
+        mod->holdsexpanded = 1;
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodesFor(mod->nodes, cnt, nodesp)) {
+            INode *node = *nodesp;
+            if ((node->tag == FnDclTag && fnDclIsExpanded((FnDclNode*)node, NULL))
+                || (node->tag == StructTag && typeTreeHoldsExpanded(node))) {
+                mod->holdsexpanded = 2;
+                break;
+            }
+        }
+    }
+    return mod->holdsexpanded == 2;
+}
+
 // Whether a function is a type's 'final' or 'clone' -- by its own name or by the
 // overload name it answers to -- or one of the methods the compiler calls on a
 // region ref: 'alloc', 'init', 'aliasRef', 'dealiasRef', 'free', and a traced
 // region's 'mark' and 'writeBarrier'. A value of the type calls the first two
 // wherever it is dropped or copied, and a reference into the region calls the
 // others wherever it is allocated, copied, dropped, traced or stored, which
-// names none of them
+// names none of them; and those it calls on a lock permission, 'init' where an
+// allocation holds the lock and 'acquireMut', 'releaseMut', 'acquireRead' and
+// 'releaseRead' wherever a borrow through a reference holding it begins and ends
 int fnIsTypeLifecycle(INode *dclnode) {
     if (dclnode->tag != FnDclTag)
         return 0;
@@ -66,6 +106,10 @@ int fnIsTypeLifecycle(INode *dclnode) {
         || fn->overloadsym == finalName || fn->overloadsym == cloneName)
         return 1;
     Name *name = fn->namesym;
+    if (structDeclaresTrait((StructNode*)owner, lockPermTrait)
+        && (name == initMethodName || name == acquireMutMethodName || name == releaseMutMethodName
+            || name == acquireReadMethodName || name == releaseReadMethodName))
+        return 1;
     return regionIsRegionRef(owner)
         && (name == allocMethodName || name == initMethodName || name == aliasRefMethodName
             || name == dealiasRefMethodName || name == freeMethodName || name == markMethodName
@@ -118,10 +162,14 @@ int fnIsTraitMethod(INode *dclnode) {
 // - a module's 'init', its 'final' or the 'drop' it is given (DclLifecycle),
 //   public or not, since the program's stitched init and final call them; or
 // - a public function or global of a module; or
+// - a type or function an 'actor' generated, or a function of such a type
+//   (DclActorGen): the include file holds the actor whole, and an importer's
+//   instances of the actors package's generics call them; or
 // - a function of a type an importer can reach -- a public type, one an
 //   expanded body names, or one the include file declares (DclIncluded) --
-//   when the function is public, or the type holds an
-//   expanded body that can reach its private ones through a receiver, or the
+//   when the function is public, or the type, or any part of the module that
+//   declares it, holds an expanded body that can reach its private ones
+//   through a receiver (typeHoldsExpanded, modHoldsExpanded), or the
 //   function is the type's 'final' or 'clone', which an importer's object
 //   calls wherever it drops or copies a value of the type, or it meets a
 //   trait's requirement, which a vtable an importer builds calls.
@@ -138,9 +186,12 @@ int dclIsExported(ModuleNode *libroot, INode *dclnode) {
     if (mod != libroot)
         return 0;
     DclInfo *dclinfo = inodeGetDclInfo(dclnode);
-    if (dclinfo->facts & (DclExpandReached | DclLifecycle))
+    if (dclinfo->facts & (DclExpandReached | DclLifecycle | DclActorGen))
         return 1;
     INode *owner = dclinfo->owner;
+    DclInfo *ownerinfo = owner && owner->tag != ModuleTag ? inodeGetDclInfo(owner) : NULL;
+    if (ownerinfo && (ownerinfo->facts & DclActorGen))
+        return 1;
     if (owner == NULL || owner->tag == ModuleTag)
         return !(dclinfo->facts & DclPrivate);
     // A type the include file declares (DclIncluded) is one an importer holds
@@ -152,7 +203,8 @@ int dclIsExported(ModuleNode *libroot, INode *dclnode) {
         || ((typeinfo->facts & DclPrivate) && !(typeinfo->facts & (DclExpandReached | DclIncluded))))
         return 0;
     return !(dclinfo->facts & DclPrivate) || typeHoldsExpanded(owner)
-        || fnIsTypeLifecycle(dclnode) || fnIsTraitMethod(dclnode);
+        || fnIsTypeLifecycle(dclnode) || fnIsTraitMethod(dclnode)
+        || modHoldsExpanded(dclInfoGetModule(owner));
 }
 
 // ---- What expanded bodies reach ---------------------------------------------

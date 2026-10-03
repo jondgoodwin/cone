@@ -7,13 +7,6 @@
 
 #include "../ir.h"
 
-// Clone number node
-INode *cloneNbrNode(CloneState *cstate, NbrNode *node) {
-    NbrNode *newnode = memAllocBlk(sizeof(NbrNode));
-    memcpy(newnode, node, sizeof(NbrNode));
-    return (INode *)newnode;
-}
-
 // Serialize a number type as its name. Every number type is declared with one
 // (stdNbrInit), so this covers usize and isize, which a list of the fixed-width
 // types left printing as nothing.
@@ -31,6 +24,9 @@ INode *nbrFindSuper(INode *type1, INode *type2) {
     NbrNode *typ1 = (NbrNode *)itypeGetTypeDcl(type1);
     NbrNode *typ2 = (NbrNode *)itypeGetTypeDcl(type2);
 
+    // A Bool and a number have none: neither coerces to the other's type
+    if (typ1 == boolType || typ2 == boolType)
+        return NULL;
     return typ1->bits >= typ2->bits ? type1 : type2;
 }
 
@@ -40,8 +36,10 @@ TypeCompare nbrMatches(INode *totype, INode *fromtype, SubtypeConstraint constra
     if (constraint != Monomorph && constraint != Coercion)
         return NoMatch;
 
-    // Bool is handled as a special case (also see iexpMatches)
-    if (totype == (INode*)boolType)
+    // Bool is handled as a special case (also see iexpMatches). A number reaches
+    // Bool through isTrue; a Bool reaches no number implicitly, though it is a
+    // 1-bit unsigned: true is not a count, and 'T.from(b)' says it is 0 or 1.
+    if (totype == (INode*)boolType || fromtype == (INode*)boolType)
         return NoMatch;
 
     if (totype->tag != fromtype->tag)

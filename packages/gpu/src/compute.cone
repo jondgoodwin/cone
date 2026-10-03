@@ -66,10 +66,10 @@ fn afterCompute(cmd vulkan.CommandBuffer, dstStage u64) {
 }
 
 struct ComputePassBackend {
-  pub cmd vulkan.CommandBuffer;
-  pub open Bool;
-  pub layout vulkan.PipelineLayout;    // the bound pipeline's
-  pub dispatched Bool;                 // a dispatch since the last barrier
+  cmd vulkan.CommandBuffer;
+  open Bool;
+  layout vulkan.PipelineLayout;    // the bound pipeline's
+  dispatched Bool;                 // a dispatch since the last barrier
 }
 
 // Dispatching compute shaders, begun by 'encoder.beginComputePass' and ended
@@ -77,28 +77,31 @@ struct ComputePassBackend {
 // sees what the dispatches before it wrote, and what the pass wrote is seen
 // by every command after it: the barriers are the layer's.
 pub struct ComputePassEncoder {
-  pub backend ComputePassBackend;
+  backend ComputePassBackend;
 
   // Dispatch 'pipeline' from here on
   pub fn setPipeline(self &mut, pipeline &ComputePipeline) {
+    if isNull(backend.cmd) { return; }
     vulkan.cmdBindPipeline(backend.cmd, vulkan.PIPELINE_BIND_POINT_COMPUTE, pipeline.backend.pipeline);
     backend.layout = pipeline.backend.layout;
   }
 
   // Bind 'group' as the pipeline's bind group 'index'
   pub fn setBindGroup(self &mut, index u32, group &BindGroup) {
+    if isNull(backend.cmd) { return; }
     if backend.layout.h == 0u64 {
       fail("setBindGroup before setPipeline");
       return;
     }
     mut set = group.backend.set;
     vulkan.cmdBindDescriptorSets(backend.cmd, vulkan.PIPELINE_BIND_POINT_COMPUTE, backend.layout, index, 1u32,
-      &mut set as *vulkan.DescriptorSet, 0u32, 0usize as *u32);
+      &mut set as *vulkan.DescriptorSet, 0u32, null);
   }
 
   // Set 'size' bytes of the immediates, from 'offset' (both multiples of
   // 4), to the bytes at 'data', for the dispatches after
   pub fn setImmediates(self &mut, offset u32, data *u8, size u32) {
+    if isNull(backend.cmd) { return; }
     if backend.layout.h == 0u64 {
       fail("setImmediates before setPipeline");
       return;
@@ -109,6 +112,7 @@ pub struct ComputePassEncoder {
   // Run the pipeline's shader in 'x' by 'y' by 'z' workgroups, each at most
   // MAX_COMPUTE_WORKGROUPS_PER_DIMENSION
   pub fn dispatchWorkgroups(self &mut, x u32, y u32 = 1u32, z u32 = 1u32) {
+    if isNull(backend.cmd) { return; }
     if x > MAX_COMPUTE_WORKGROUPS_PER_DIMENSION or y > MAX_COMPUTE_WORKGROUPS_PER_DIMENSION
         or z > MAX_COMPUTE_WORKGROUPS_PER_DIMENSION {
       fail("dispatchWorkgroups: more than 65535 workgroups one way (WebGPU's limit)");
@@ -123,6 +127,7 @@ pub struct ComputePassEncoder {
   // written by an earlier pass or dispatch. The counts are not checked
   // against the limit.
   pub fn dispatchWorkgroupsIndirect(self &mut, buffer &Buffer, offset u64) {
+    if isNull(backend.cmd) { return; }
     if (buffer.usage & BUFFER_USAGE_INDIRECT) == 0u32 or (offset & 3u64) != 0u64 or offset + 12u64 > buffer.size {
       fail("dispatchWorkgroupsIndirect: the buffer has no BUFFER_USAGE_INDIRECT, or the offset is not a multiple of 4 or leaves no room");
       return;
@@ -152,8 +157,8 @@ fn beforeDispatch(backend &mut ComputePassBackend) {
 // ---- Query sets ----
 
 struct QuerySetBackend {
-  pub device vulkan.Device;
-  pub pool vulkan.QueryPool;
+  device vulkan.Device;
+  pool vulkan.QueryPool;
 }
 
 // Queries the GPU answers (WebGPU's GPUQuerySet): timestamps, each written by
@@ -161,7 +166,7 @@ struct QuerySetBackend {
 // 'encoder.resolveQuerySet' as a u64 count of ticks, 'device.timestampPeriod'
 // nanoseconds each
 pub struct QuerySet {
-  pub backend QuerySetBackend;
+  backend QuerySetBackend;
   pub type u32;                    // QUERY_TYPE_...
   pub count u32;
 

@@ -1,0 +1,297 @@
+// Cancel groups: one value handed to many operations, whose one cancel asks
+// them all to end -- each still answering exactly once, with its buffer.
+//
+// 1. A group holding two receives on silent sockets, a timer, a job running
+//    on a one-thread lane and a job queued behind it: one cancel answers the
+//    receives, the timer and the queued job Cancelled at once (the job never
+//    runs, its buffer back); the running job, which cannot be stopped,
+//    answers Done when it returns. A second cancel says false.
+// 2. Cancelled is a state: an operation submitted in a cancelled group is
+//    answered Cancelled at once, its buffer back, and never started.
+// 3. Children: a parent's cancel reaches its child's operations; a child's
+//    own cancel does not reach its parent's.
+// 4. Deadlines, absolute and inherited as the tighter: a group's deadline
+//    times out an operation that has none of its own; a child's tighter
+//    deadline wins, and so does an operation's own tighter one; a deadline
+//    already past answers TimedOut at once, never started.
+// 5. A shield: under a cancelled parent, an operation in the shield runs to
+//    Done; the shield's own deadline still holds.
+// 6. A group cancelled from another thread wakes this loop, idle in
+//    poll(forever()), and answers its receive Cancelled.
+// 7. One group, operations on two loops on two threads: one cancel answers
+//    both.
+
+mod groups;
+
+import testing use *;
+import thread;
+import sync use Sender, Receiver, Channel;
+import collections use List;
+import time use Instant, Duration;
+import iobuf use *;
+import iocore use *;
+import diag;
+
+fn waitFor(lp &mut Loop, out &mut List[Completion], n usize) {
+  imm limit = Instant.now() + Duration.fromSeconds(5i64);
+  while out.len() < n and Instant.now() < limit {
+    lp.poll(limit, out);
+  }
+}
+
+// The answer with this token, or the index past the end
+fn find(out &List[Completion], token u64) usize {
+  mut k = 0usize;
+  while k < out.len() {
+    if out[k].token == token {return k;}
+    k = k + 1usize;
+  }
+  out.len();
+}
+
+// Work that sleeps arg milliseconds
+fn slowWork(arg u64, buf &mut IoBuf) Outcome {
+  thread.sleep(Duration.fromMillis(i64.from(arg)));
+  buf.append("slept");
+  Outcome.Done[5usize];
+}
+
+// A connected pair of sockets on lp
+fn pair(lp &mut Loop) Handle, Handle {
+  imm listener = lp.mustListen(SocketAddr.localhost(0u16));
+  mut port = 0u16;
+  match lp.localAddr(listener) {
+    case imm a Ok {port = a.value.port();}
+    case imm e Error {}
+  }
+  lp.submit(Op.Accept[listener], Target.Here[9001u64]);
+  lp.submit(Op.Connect[SocketAddr.localhost(port)], Target.Here[9002u64]);
+  mut out = List[Completion].empty();
+  waitFor(lp, &mut out, 2usize);
+  mut a = Handle.none();
+  mut b = Handle.none();
+  mut k = 0usize;
+  while k < out.len() {
+    if out[k].token == 9001u64 {a = out[k].handle;} else {b = out[k].handle;}
+    k = k + 1usize;
+  }
+  lp.close(listener);
+  a, b;
+}
+
+fn canceller(g CancelGroup) Bool {
+  thread.sleep(Duration.fromMillis(20i64));
+  g.cancel();
+}
+
+// A service thread's loop: a receive in the group, answered to main's loop
+struct Remote {
+  pub g CancelGroup;
+  pub to Waker;
+  pub pool Pool;
+  pub ready Sender[u64];
+}
+
+fn remote(r Remote) u64 {
+  mut lp = Loop.mustMake();
+  mut a = Handle.none();
+  mut b = Handle.none();
+  a, b = pair(&mut lp);
+  lp.submitIn(Op.Recv[a, r.pool.mustTake(100usize)], Target.Post[71u64, r.to], r.g, forever());
+  r.ready.send(1u64);
+  mut out = List[Completion].empty();
+  while lp.inFlight() > 0u64 {
+    lp.poll(forever(), &mut out);
+    out.clear();
+  }
+  lp.counters().groupCancels;
+}
+
+fn main() i32 {
+  {
+    imm pool = Pool.make();
+    mut lp = Loop.mustMake();
+    mut out = List[Completion].empty();
+    mut a = Handle.none();
+    mut b = Handle.none();
+    a, b = pair(&mut lp);
+    mut c = Handle.none();
+    mut d = Handle.none();
+    c, d = pair(&mut lp);
+    imm one = addLane(new LaneConfig(name: "one", maxThreads: 1u32));
+
+    // 1. One cancel, five operations
+    {
+      imm g = CancelGroup.make();
+      lp.submitIn(Op.Recv[a, pool.mustTake(100usize)], Target.Here[1u64], g, forever());
+      lp.submitIn(Op.Recv[c, pool.mustTake(100usize)], Target.Here[2u64], g, forever());
+      lp.afterIn(Instant.now() + Duration.fromSeconds(10i64), Target.Here[3u64], g);
+      lp.submitIn(Op.Call[one, &slowWork, 100u64, pool.mustTake(100usize)], Target.Here[4u64], g, forever());
+      lp.submitIn(Op.Call[one, &slowWork, 1u64, pool.mustTake(100usize)], Target.Here[5u64], g, forever());
+      lp.poll(Instant.now() + Duration.fromMillis(20i64), &mut out);
+      expectUInt(u64.from(out.len()), 0u64, "all five in flight");
+      expect(not g.isCancelled(), "the group live");
+      expect(g.cancel(), "cancelled");
+      expect(g.isCancelled(), "and cancelled is a state");
+      expect(not g.cancel(), "a second cancel: false");
+      waitFor(&mut lp, &mut out, 4usize);
+      requireUInt(u64.from(out.len()), 4u64, "four answered at once");
+      mut k = 0usize;
+      while k < out.len() {
+        expectUInt(u64.from(out[k].status), u64.from(diag.outcomeCancelled), "each Cancelled");
+        if out[k].token != 3u64 {
+          expectUInt(u64.from(out[k].buf.capacity()), 4096u64, "with its buffer");
+        }
+        k = k + 1usize;
+      }
+      expect(find(&out, 4u64) == out.len(), "not the running job");
+      out.clear();
+      waitFor(&mut lp, &mut out, 1usize);
+      requireUInt(u64.from(out.len()), 1u64, "the running job answers when it returns");
+      expectUInt(out[0usize].token, 4u64, "the running job");
+      expect(out[0usize].isDone(), "Done: it ran to its end");
+      expectStr(out[0usize].buf.view(), "slept", "its buffer, written by the work");
+      out.clear();
+      imm st = one.stats();
+      expectUInt(st.ran, 1u64, "one job ran on the lane");
+      expectUInt(st.cancelled, 1u64, "one taken out of its queue, never run");
+      expectUInt(lp.counters().groupCancels, 5u64, "five cancels asked through the group, the running job's among them");
+    }
+
+    // 2. Cancelled is a state
+    {
+      imm g = CancelGroup.make();
+      g.cancel();
+      imm before = lp.counters().atSubmit;
+      lp.submitIn(Op.Recv[a, pool.mustTake(100usize)], Target.Here[10u64], g, forever());
+      lp.poll(Instant.now(), &mut out);
+      requireUInt(u64.from(out.len()), 1u64, "answered at once");
+      expectUInt(u64.from(out[0usize].status), u64.from(diag.outcomeCancelled), "Cancelled");
+      expectUInt(u64.from(out[0usize].buf.capacity()), 4096u64, "its buffer back");
+      expectUInt(lp.counters().atSubmit - before, 1u64, "never started");
+      out.clear();
+    }
+
+    // 3. Children
+    {
+      imm parent = CancelGroup.make();
+      imm child = parent.child();
+      lp.submitIn(Op.Recv[a, pool.mustTake(100usize)], Target.Here[20u64], child, forever());
+      parent.cancel();
+      expect(child.isCancelled(), "the child is cancelled with its parent");
+      waitFor(&mut lp, &mut out, 1usize);
+      expectUInt(u64.from(out[0usize].status), u64.from(diag.outcomeCancelled), "the parent's cancel reaches the child's operation");
+      out.clear();
+
+      imm p2 = CancelGroup.make();
+      imm c2 = p2.child();
+      lp.submitIn(Op.Recv[a, pool.mustTake(100usize)], Target.Here[21u64], p2, forever());
+      c2.cancel();
+      expect(not p2.isCancelled(), "a child's cancel does not reach its parent");
+      lp.poll(Instant.now() + Duration.fromMillis(20i64), &mut out);
+      expectUInt(u64.from(out.len()), 0u64, "the parent's operation goes on");
+      p2.cancel();
+      waitFor(&mut lp, &mut out, 1usize);
+      expectUInt(out[0usize].token, 21u64, "until the parent's own cancel");
+      out.clear();
+    }
+
+    // 4. Deadlines
+    {
+      imm t0 = Instant.now();
+      imm g = CancelGroup.until(t0 + Duration.fromMillis(40i64));
+      expect(g.deadline() == t0 + Duration.fromMillis(40i64), "the group's deadline");
+      lp.submitIn(Op.Recv[a, pool.mustTake(100usize)], Target.Here[30u64], g, forever());
+      waitFor(&mut lp, &mut out, 1usize);
+      expectUInt(u64.from(out[0usize].status), u64.from(diag.outcomeTimedOut), "the group's deadline: TimedOut");
+      expect(out[0usize].dequeued >= t0 + Duration.fromMillis(40i64), "not before it");
+      expectUInt(u64.from(out[0usize].buf.capacity()), 4096u64, "its buffer back");
+      out.clear();
+
+      imm t1 = Instant.now();
+      imm loose = CancelGroup.until(t1 + Duration.fromSeconds(10i64));
+      imm tight = loose.childUntil(t1 + Duration.fromMillis(30i64));
+      expect(tight.deadline() == t1 + Duration.fromMillis(30i64), "a child's tighter deadline");
+      expect(loose.childUntil(t1 + Duration.fromSeconds(20i64)).deadline() == loose.deadline(),
+        "a child's looser deadline gives way to its parent's");
+      lp.submitIn(Op.Recv[a, pool.mustTake(100usize)], Target.Here[31u64], tight, forever());
+      lp.submitIn(Op.Recv[c, pool.mustTake(100usize)], Target.Here[32u64], loose, t1 + Duration.fromMillis(30i64));
+      waitFor(&mut lp, &mut out, 2usize);
+      requireUInt(u64.from(out.len()), 2u64, "both answered");
+      expect(out[0usize].status == diag.outcomeTimedOut and out[1usize].status == diag.outcomeTimedOut,
+        "the child's deadline, and the operation's own, each the tighter");
+      expect(Instant.now() < t1 + Duration.fromSeconds(5i64), "long before the parent's");
+      out.clear();
+
+      imm before = lp.counters().atSubmit;
+      imm past = CancelGroup.until(Instant.now());
+      lp.submitIn(Op.Recv[a, pool.mustTake(100usize)], Target.Here[33u64], past, forever());
+      lp.submitBy(Op.Recv[a, pool.mustTake(100usize)], Target.Here[34u64], Instant.now());
+      lp.poll(Instant.now(), &mut out);
+      requireUInt(u64.from(out.len()), 2u64, "a deadline already past: answered at once");
+      expect(out[0usize].status == diag.outcomeTimedOut and out[1usize].status == diag.outcomeTimedOut, "TimedOut");
+      expectUInt(lp.counters().atSubmit - before, 2u64, "never started");
+      out.clear();
+    }
+
+    // 5. A shield
+    {
+      imm g = CancelGroup.make();
+      g.cancel();
+      imm s = g.shield(Instant.now() + Duration.fromSeconds(5i64));
+      expect(not s.isCancelled() and s.isShield(), "a shield under a cancelled group is live");
+      lp.submitIn(Op.Recv[a, pool.mustTake(100usize)], Target.Here[40u64], s, forever());
+      mut x = pool.mustTake(1usize);
+      x.append("z");
+      lp.submitIn(Op.Send[b, x], Target.Here[41u64], s, forever());
+      waitFor(&mut lp, &mut out, 2usize);
+      requireUInt(u64.from(out.len()), 2u64, "cleanup ran");
+      expect(out[0usize].isDone() and out[1usize].isDone(), "both Done under the shield");
+      out.clear();
+      imm s2 = g.shield(Instant.now() + Duration.fromMillis(20i64));
+      lp.submitIn(Op.Recv[a, pool.mustTake(100usize)], Target.Here[42u64], s2, forever());
+      waitFor(&mut lp, &mut out, 1usize);
+      expectUInt(u64.from(out[0usize].status), u64.from(diag.outcomeTimedOut), "the shield's own deadline holds");
+      out.clear();
+    }
+
+    // 6. Cancelled from another thread
+    {
+      imm g = CancelGroup.make();
+      lp.submitIn(Op.Recv[a, pool.mustTake(100usize)], Target.Here[50u64], g, forever());
+      imm t = thread.start(g, &canceller);
+      imm t0 = Instant.now();
+      lp.poll(forever(), &mut out);
+      expect(t.join(), "the other thread's cancel was the first");
+      requireUInt(u64.from(out.len()), 1u64, "the idle loop woke with the answer");
+      expectUInt(u64.from(out[0usize].status), u64.from(diag.outcomeCancelled), "Cancelled");
+      expect(t0.elapsed() < Duration.fromSeconds(2i64), "promptly");
+      out.clear();
+    }
+
+    // 7. Two loops
+    {
+      imm g = CancelGroup.make();
+      lp.submitIn(Op.Recv[a, pool.mustTake(100usize)], Target.Here[70u64], g, forever());
+      mut tx Sender[u64];
+      mut rx Receiver[u64];
+      tx, rx = Channel[u64].make();
+      imm t = thread.start(new Remote(g, lp.waker(), pool, tx), &remote);
+      rx.recv();                // its receive is in flight
+      g.cancel();
+      waitFor(&mut lp, &mut out, 2usize);
+      expectUInt(t.join(), 1u64, "the other loop cancelled its operation through the group");
+      requireUInt(u64.from(out.len()), 2u64, "both answered here");
+      expect(out[0usize].status == diag.outcomeCancelled and out[1usize].status == diag.outcomeCancelled,
+        "each Cancelled");
+      out.clear();
+    }
+
+    imm cs = lp.counters();
+    expectUInt(cs.delivered, cs.submitted, "every operation answered once");
+    expectUInt(cs.inFlight, 0u64, "nothing in flight");
+    expectUInt(pool.stats().lent, 0u64, "every buffer back in the pool");
+  }
+  expectUInt(osBlocks(), 0u64, "and every block back to the OS");
+  done();
+}

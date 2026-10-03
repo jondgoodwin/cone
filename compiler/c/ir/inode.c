@@ -131,6 +131,8 @@ void inodePrintNode(INode *node) {
         logicPrint((LogicNode *)node); break;
     case NilLitTag:
         nilLitPrint((NilLitNode *)node); break;
+    case NullLitTag:
+        nullLitPrint((NullLitNode *)node); break;
     case ULitTag:
         ulitPrint((ULitNode *)node); break;
     case FLitTag:
@@ -296,6 +298,9 @@ void inodeNameRes(NameResState *pstate, INode **node) {
         namedValNameRes(pstate, (NamedValNode *)*node); break;
     case OfEntryTag: case FillEntryTag: case PairEntryTag:
         entryNameRes(pstate, (EntryNode *)*node); break;
+    // A 'null' names nothing, and its type is not written
+    case NullLitTag:
+        break;
     case NilLitTag:
     case ULitTag:
     case FLitTag:
@@ -376,6 +381,14 @@ void inodeTypeCheck(TypeCheckState *pstate, INode **node, INode *expectType) {
         // identity, and the reference answers the size on its own behalf.
         if ((*node)->flags & TypeChecking)
             return;
+        // A struct a reference's target reaches while a layout is in flight
+        // waits until none is: a reference never demands what it points at.
+        // See compiler/c/doc/phases/type-check.md, "A reference does not
+        // demand its target".
+        if ((*node)->tag == StructTag && structTargetDeferring()) {
+            structTargetWait(pstate, *node);
+            return;
+        }
         (*node)->flags |= TypeChecking;
     }
     else if (inodeIsDcl(*node)) {
@@ -397,7 +410,7 @@ void inodeTypeCheck(TypeCheckState *pstate, INode **node, INode *expectType) {
     // counts. See compiler/c/doc/phases/type-check.md, "Layout before members".
     int layout = (*node)->tag == StructTag || (*node)->tag == ArrayTag || (*node)->tag == TTupleTag;
     if (layout)
-        structLayoutEnter();
+        structLayoutBegin(*node);
 
     // A resolved name is checked as what its declaration is: a type, a value,
     // or a macro to expand. A member name never arrives here: the call it
@@ -488,6 +501,8 @@ void inodeTypeCheck(TypeCheckState *pstate, INode **node, INode *expectType) {
         namedValTypeCheck(pstate, (NamedValNode *)*node, expectType); break;
     case OfEntryTag: case FillEntryTag: case PairEntryTag:
         entryTypeCheck(pstate, (EntryNode *)*node); break;
+    case NullLitTag:
+        nullLitTypeCheck(pstate, (NullLitNode *)*node, expectType); break;
     case NilLitTag:
     case ULitTag:
     case FLitTag:
@@ -546,7 +561,7 @@ void inodeTypeCheck(TypeCheckState *pstate, INode **node, INode *expectType) {
     }
 
     if (layout)
-        structLayoutExit();
+        structLayoutEnd();
 }
 
 
@@ -724,6 +739,7 @@ static NodeTagFacts nodeTagFacts[NodeTagCount] = {
     [AliasDclTag] = {StmtGroup, 1, 0},
 
     [NilLitTag] = {ExpGroup, 0, 0},
+    [NullLitTag] = {ExpGroup, 0, 0},
     [ULitTag] = {ExpGroup, 0, 0},
     [FLitTag] = {ExpGroup, 0, 0},
     [StringLitTag] = {ExpGroup, 0, 0},

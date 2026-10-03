@@ -1,0 +1,297 @@
+// Windows: everything iocore asks of the OS, in one place. kernel32's
+// completion port, overlapped file I/O and waitable timer; ntdll's wait
+// completion packet, which turns the timer's expiry into a completion on
+// the port, and its translation of an NTSTATUS into a Windows error number;
+// and Winsock (ws2_32), whose AcceptEx and ConnectEx are not exported but
+// handed out at run time by WSAIoctl and called through function pointers.
+
+// OVERLAPPED: what the kernel holds of an operation until it completes. Its
+// first word is the NTSTATUS the operation ended with, its second the bytes
+// it moved; Offset and OffsetHigh are a file operation's position
+struct Overlapped {
+  pub internal usize;
+  pub internalHigh usize;
+  pub offset u32;
+  pub offsetHigh u32;
+  pub hEvent usize;
+}
+
+// OVERLAPPED_ENTRY: one completion, as GetQueuedCompletionStatusEx takes it
+struct OverlappedEntry {
+  pub key usize;
+  pub ov *u8;
+  pub internal usize;
+  pub bytes u32;
+}
+
+// WSABUF
+struct WsaBuf {
+  pub len u32;
+  pub buf *u8;
+}
+
+// GUID
+struct Guid {
+  pub a u32;
+  pub b u16;
+  pub c u16;
+  pub d Array[u8, 8];
+}
+
+extern {
+  // kernel32: the port, files, the timer
+  fn @c(system) CreateIoCompletionPort(h usize, port usize, key usize, threads u32) usize;
+  fn @c(system) GetQueuedCompletionStatusEx(port usize, entries *OverlappedEntry, count u32,
+      removed &mut u32, ms u32, alertable i32) i32;
+  fn @c(system) PostQueuedCompletionStatus(port usize, bytes u32, key usize, ov *u8) i32;
+  fn @c(system) CloseHandle(h usize) i32;
+  fn @c(system) GetLastError() u32;
+  fn @c(system) CancelIoEx(h usize, ov *u8) i32;
+  fn @c(system) CreateFileW(name *u16, access u32, share u32, sa *u8, disposition u32,
+      flags u32, template usize) usize;
+  fn @c(system) ReadFile(h usize, buf *u8, n u32, done *u32, ov *u8) i32;
+  fn @c(system) WriteFile(h usize, buf *u8, n u32, done *u32, ov *u8) i32;
+  fn @c(system) CreateWaitableTimerExW(attrs *u8, name *u16, flags u32, access u32) usize;
+  fn @c(system) SetWaitableTimer(h usize, due &i64, period i32, apc *u8, arg *u8, resume i32) i32;
+  fn @c(system) CancelWaitableTimer(h usize) i32;
+  fn @c(system) MultiByteToWideChar(page u32, flags u32, from *u8, fromLen i32, to *u16, toLen i32) i32;
+  fn @c(system) WideCharToMultiByte(page u32, flags u32, from *u16, fromLen i32, to *u8, toLen i32,
+      fallback *u8, usedFallback *i32) i32;
+  fn @c(system) FormatMessageW(flags u32, source *u8, id u32, language u32, buf *u16, size u32,
+      args *u8) u32;
+  fn @c(system) GetFileAttributesExW(name *u16, level i32, info *u8) i32;
+
+  // ntdll: the wait completion packet (Windows 8 and later), and NTSTATUS
+  fn @c(system) NtCreateWaitCompletionPacket(out &mut usize, access u32, attrs *u8) i32;
+  fn @c(system) NtAssociateWaitCompletionPacket(packet usize, port usize, target usize,
+      keyContext *u8, apcContext *u8, status i32, info usize, already *u8) i32;
+  fn @c(system) NtCancelWaitCompletionPacket(packet usize, removeSignaled u8) i32;
+  fn @c(system) RtlNtStatusToDosError(status u32) u32;
+
+  // ws2_32
+  fn @c(system) WSAStartup(version u16, data *u8) i32;
+  fn @c(system) WSASocketW(af i32, kind i32, proto i32, info *u8, g u32, flags u32) usize;
+  fn @c(system) WSAGetLastError() i32;
+  fn @c(system) WSAIoctl(s usize, code u32, inBuf *u8, inLen u32, outBuf *u8, outLen u32,
+      returned &mut u32, ov *u8, completion *u8) i32;
+  fn @c(system) WSARecv(s usize, bufs *WsaBuf, count u32, received *u32, flags &mut u32,
+      ov *u8, completion *u8) i32;
+  fn @c(system) WSASend(s usize, bufs *WsaBuf, count u32, sent *u32, flags u32,
+      ov *u8, completion *u8) i32;
+  fn @c(system) closesocket(s usize) i32;
+  fn @c(system) bind(s usize, addr *u8, len i32) i32;
+  fn @c(system) listen(s usize, backlog i32) i32;
+  fn @c(system) getsockname(s usize, addr *u8, len &mut i32) i32;
+  fn @c(system) setsockopt(s usize, level i32, name i32, val *u8, len i32) i32;
+  fn @c(system) GetAddrInfoW(node *u16, service *u16, hints *AddrInfo, result &mut *AddrInfo) i32;
+  fn @c(system) FreeAddrInfoW(info *AddrInfo);
+}
+
+// ADDRINFOW: one address GetAddrInfoW found, linked to the next
+struct AddrInfo {
+  pub flags i32;
+  pub family i32;
+  pub socktype i32;
+  pub protocol i32;
+  pub addrlen usize;
+  pub canonname *u16;
+  pub addr *u8;
+  pub next *AddrInfo;
+}
+
+// AcceptEx and ConnectEx, as WSAIoctl hands them out
+alias AcceptExFn = &fn(listener usize, accepted usize, out *u8, recvLen u32, localLen u32,
+    remoteLen u32, got *u32, ov *u8) i32;
+alias ConnectExFn = &fn(s usize, addr *u8, len i32, sendBuf *u8, sendLen u32, sent *u32,
+    ov *u8) i32;
+
+// What a completion's key says it is
+const keyIo = 1usize;          // an operation's completion: its OVERLAPPED is its record
+const keyTimer = 2usize;       // the high-resolution timer expired
+const keyWake = 3usize;        // a waker's wake
+const keyPost = 4usize;        // an answer posted by another loop: its block
+const keyCancel = 5usize;      // a Request's cancel: the operation's id, as the pointer
+const keyGroup = 6usize;       // a cancel group this loop has operations in was cancelled
+const keyJob = 7usize;         // a blocking-pool job has run: its JobBox
+
+const invalidHandle = 0xFFFFFFFFFFFFFFFFusize;     // INVALID_HANDLE_VALUE, INVALID_SOCKET
+const infinite = 0xFFFFFFFFu32;                     // INFINITE
+
+// NTSTATUS values an operation ends with
+const statusSuccess = 0usize;
+const statusCancelled = 0xC0000120usize;            // STATUS_CANCELLED
+const statusEndOfFile = 0xC0000011usize;            // STATUS_END_OF_FILE
+
+// Windows' error numbers iocore gives or reads
+pub const errorFileNotFound = 2u32;                 // ERROR_FILE_NOT_FOUND
+pub const errorHandleEof = 38u32;                   // ERROR_HANDLE_EOF
+pub const errorBusy = 170u32;                       // ERROR_BUSY: a lane's queue is full
+pub const errorInvalidParameter = 87u32;            // ERROR_INVALID_PARAMETER
+pub const errorInsufficientBuffer = 122u32;         // ERROR_INSUFFICIENT_BUFFER
+pub const errorInvalidHandle = 6u32;                // ERROR_INVALID_HANDLE
+pub const errorOperationAborted = 995u32;           // ERROR_OPERATION_ABORTED
+pub const errorIoPending = 997u32;                  // ERROR_IO_PENDING
+pub const errorNotFound = 1168u32;                  // ERROR_NOT_FOUND
+pub const errorConnectionRefused = 1225u32;         // ERROR_CONNECTION_REFUSED
+pub const errorNoUnicodeTranslation = 1113u32;      // ERROR_NO_UNICODE_TRANSLATION
+
+// Files
+const genericRead = 0x80000000u32;
+const genericWrite = 0x40000000u32;
+const shareAll = 7u32;                              // FILE_SHARE_READ | WRITE | DELETE
+const createAlways = 2u32;
+const openExisting = 3u32;
+const openAlways = 4u32;
+const flagOverlapped = 0x40000000u32;               // FILE_FLAG_OVERLAPPED
+
+// The timer
+const timerHighResolution = 2u32;                   // CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
+const timerAllAccess = 0x1F0003u32;                 // TIMER_ALL_ACCESS
+const genericAll = 0x10000000u32;                   // GENERIC_ALL
+
+// Sockets
+const afInet = 2i32;
+const afInet6 = 23i32;
+const sockStream = 1i32;
+const ipprotoTcp = 6i32;
+const wsaFlagOverlapped = 0x01u32;
+const wsaFlagNoHandleInherit = 0x80u32;
+const solSocket = 0xFFFFi32;
+const soUpdateAcceptContext = 0x700Bi32;
+const soUpdateConnectContext = 0x7010i32;
+const tcpNoDelay = 1i32;
+const sioGetExtensionFunctionPointer = 0xC8000006u32;
+
+// AcceptEx's room for each address: the largest sockaddr (sockaddr_in6, 28
+// bytes) and 16, as its documentation asks
+const acceptAddrLen = 44u32;
+
+// UTF-8 and UTF-16
+const utf8Page = 65001u32;                          // CP_UTF8
+const invalidUtf8Fails = 8u32;                      // MB_ERR_INVALID_CHARS
+const formatFromSystem = 0x1200u32;                 // FORMAT_MESSAGE_FROM_SYSTEM | IGNORE_INSERTS
+const english = 0x409u32;
+
+// ---------------------------------------------------------------------------
+// Winsock's start, once per process, and its two extension functions
+// ---------------------------------------------------------------------------
+
+imm startOnce Once;
+mut acceptExAddr usize = 0usize;
+mut connectExAddr usize = 0usize;
+mut startError u32 = 0u32;
+
+// WSAStartup, then AcceptEx's and ConnectEx's addresses, asked of a socket
+// made for the purpose
+fn startWinsock() {
+  imm data = libc.malloc(512usize);
+  imm r = WSAStartup(0x0202u16, data);
+  libc.free(data);
+  if r != 0i32 {
+    startError = u32.from(r);
+    return;
+  }
+  imm s = WSASocketW(afInet, sockStream, ipprotoTcp, null, 0u32, wsaFlagOverlapped | wsaFlagNoHandleInherit);
+  if s == invalidHandle {
+    startError = u32.from(WSAGetLastError());
+    return;
+  }
+  // WSAID_ACCEPTEX and WSAID_CONNECTEX
+  mut accept = new Guid(0xb5367df1u32, 0xcbacu16, 0x11cfu16, new Array[u8, 8] <- fill 0u8);
+  accept.d[0usize] = 0x95u8; accept.d[1usize] = 0xcau8; accept.d[2usize] = 0x00u8; accept.d[3usize] = 0x80u8;
+  accept.d[4usize] = 0x5fu8; accept.d[5usize] = 0x48u8; accept.d[6usize] = 0xa1u8; accept.d[7usize] = 0x92u8;
+  mut connect = new Guid(0x25a207b9u32, 0xddf3u16, 0x4660u16, new Array[u8, 8] <- fill 0u8);
+  connect.d[0usize] = 0x8eu8; connect.d[1usize] = 0xe9u8; connect.d[2usize] = 0x76u8; connect.d[3usize] = 0xe5u8;
+  connect.d[4usize] = 0x8cu8; connect.d[5usize] = 0x74u8; connect.d[6usize] = 0x06u8; connect.d[7usize] = 0x3eu8;
+  mut got = 0u32;
+  mut fa = 0usize;
+  mut fc = 0usize;
+  imm ra = WSAIoctl(s, sioGetExtensionFunctionPointer, &mut accept as *u8, 16u32,
+    &mut fa as *u8, 8u32, &mut got, null, null);
+  imm rc = WSAIoctl(s, sioGetExtensionFunctionPointer, &mut connect as *u8, 16u32,
+    &mut fc as *u8, 8u32, &mut got, null, null);
+  if ra != 0i32 or rc != 0i32 {
+    startError = u32.from(WSAGetLastError());
+  }
+  acceptExAddr = fa;
+  connectExAddr = fc;
+  closesocket(s);
+}
+
+// Winsock started: 0, or the error that stopped it
+fn winsock() u32 {
+  startOnce.callOnce(&startWinsock);
+  startError;
+}
+
+// Winsock started and a completion port made: 0 and the port, or the error
+// that stopped them and 0
+fn openPort() u32, usize {
+  imm ws = winsock();
+  if ws != 0u32 {return ws, 0usize;}
+  imm port = CreateIoCompletionPort(invalidHandle, 0usize, 0usize, 1u32);
+  if port == 0usize {return GetLastError(), 0usize;}
+  0u32, port;
+}
+
+// A new TCP socket for the family, overlapped and not inherited by
+// children; invalidHandle on failure
+fn tcpSocket(family u16) usize {
+  WSASocketW(i32.from(family), sockStream, ipprotoTcp, null, 0u32, wsaFlagOverlapped | wsaFlagNoHandleInherit);
+}
+
+// Nagle's algorithm off: a small send goes at once
+fn noDelay(s usize) {
+  mut one = 1i32;
+  setsockopt(s, ipprotoTcp, tcpNoDelay, &mut one as *u8, 4i32);
+}
+
+// The last Winsock error, as a Windows error number
+fn wsaError() u32 {u32.from(WSAGetLastError());}
+
+// ---------------------------------------------------------------------------
+// Text
+// ---------------------------------------------------------------------------
+
+// s as UTF-16 ending in a 0, in a block from libc's malloc the caller frees;
+// a null pointer when s is not UTF-8
+fn widen(s &[]u8) *u16 {
+  if s.len == 0usize or s.len > 0x3FFFFFFFusize {return null;}
+  imm len = i32.from(s.len);
+  imm n = MultiByteToWideChar(utf8Page, invalidUtf8Fails, s, len, null, 0i32);
+  if n == 0i32 {return null;}
+  imm count = usize.from(n);
+  imm p = libc.malloc((count + 1usize) * 2usize) as *u16;
+  MultiByteToWideChar(utf8Page, invalidUtf8Fails, s, len, p, n);
+  *(p + count) = 0u16;
+  p;
+}
+
+// Windows' text for an error number, in English where the system has it,
+// with no line end or full stop; 'Windows error N' where it has none
+fn systemText(code u32) String {
+  mut buf = new Array[u16, 512] <- fill 0u16;
+  imm bp *u16 = &[]buf;
+  mut n = FormatMessageW(formatFromSystem, null, code, english, bp, 512u32, null);
+  if n == 0u32 {
+    n = FormatMessageW(formatFromSystem, null, code, 0u32, bp, 512u32, null);
+  }
+  mut out = String.empty();
+  if n == 0u32 {
+    out.append("Windows error ");
+    out.appendUInt(u64.from(code));
+    return out;
+  }
+  imm size = WideCharToMultiByte(utf8Page, 0u32, bp, i32.from(n), null, 0i32, null, null);
+  if size > 0i32 {
+    imm text = libc.malloc(usize.from(size));
+    WideCharToMultiByte(utf8Page, 0u32, bp, i32.from(n), text, size, null, null);
+    out.append(mem.sliceFromParts(text, usize.from(size)));
+    libc.free(text);
+  }
+  imm trimmed = out.trim();
+  if trimmed.endsWith(".") {
+    return trimmed.sub(0usize, trimmed.len() - 1usize);
+  }
+  trimmed;
+}

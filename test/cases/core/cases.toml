@@ -70,16 +70,23 @@ contains = [
 excludes = [" hidden ", "define internal main "]
 
 # 'main' is the one definition the optimizer cannot delete or fold away, so it
-# is where the COMDAT line itself is pinned as LLVM prints it. The 'define'
-# line stops before its '{' because the debug run puts a '!dbg' there, and both
-# runs read this check.
+# is where the COMDAT line itself is pinned as LLVM prints it, and where it
+# survives into the object. Its 'define' line is generation's, read before the
+# optimizer, which adds attributes of its own to it in the release run; it
+# stops before its '{' because the debug run puts a '!dbg' there, and both
+# runs read these checks.
 [[scenario.core_success.check]]
 name = "main-leads-its-own-comdat"
 target = "llvmir"
 contains = [
   "$main = comdat nodeduplicate",
-  "define i32 @main() comdat",
+  "i32 @main()",
 ]
+
+[[scenario.core_success.check]]
+name = "main-is-defined-in-its-comdat"
+target = "preir"
+contains = ["define i32 @main() comdat"]
 
 # A method of a number type lowers to what the type's declaration holds -- an
 # intrinsic -- and never to a symbol of its own. 'sqrt' is the one that leaves
@@ -211,6 +218,11 @@ contains = [
 ]
 excludes = [" hidden ", "comdat any"]
 
+[scenario.core_overload_later]
+category = "run"
+description = "An overload name called before its candidates, each returning a generic instance, from a method, a function and each other"
+tags = ["typecheck", "genllvm", "runtime"]
+
 [scenario.core_shadowing]
 category = "run"
 description = "Which of two declarations under one spelling a bare name binds to, by scope"
@@ -311,6 +323,58 @@ contains = [
   "@slot = internal thread_local global i64 0, comdat",
   "@pair = internal thread_local global %Pair { i64 3, i64 4 }, comdat",
 ]
+
+# '<<' and '>>' past the width [Jon 3 Oct 2026]: 0, or the sign for a signed
+# '>>', the same in every build. Every amount comes from C compiled apart
+# (opaque.c), which the optimizer cannot see into, so the release run shifts
+# as it runs rather than folding; the two runs share one .out because a shift
+# past the width once printed one value in a debug build and another in a
+# release one.
+[scenario.core_shift_defined]
+category = "run"
+description = "'<<' and '>>' on every integer type by 0, 1, width - 1, width, width + 1, 255, 1000 and all ones (negative for a signed type), the assignment forms, a masked amount and a constant amount past the width: 0, or the sign for a signed '>>', in a release and a debug build alike"
+tags = ["typecheck", "genllvm", "runtime"]
+link = ["opaque.c"]
+
+[[scenario.core_shift_defined.run]]
+name = "release"
+options = []
+
+[[scenario.core_shift_defined.run]]
+name = "debug"
+options = ["--debug"]
+
+# Optimized, the amounts are still unknown: each shift's compare with the
+# width survives, so the release run tests the run-time path
+[[scenario.core_shift_defined.check]]
+name = "the-amount-is-compared-as-the-program-runs"
+target = "llvmir"
+contains = ["icmp ult i8", "icmp ult i16", "icmp ult i32", "icmp ult i64", "call i64 @opaque("]
+
+# Where the amount is known to be below the width, the defined shift costs
+# nothing: a masked amount's compare is gone once optimized, and a constant
+# amount gets none from generation; one past the width is the answer itself
+[scenario.core_genllvm_shift]
+category = "compile"
+description = "A shift by an amount masked below the width keeps no compare once optimized, one by a constant amount is written with none, and one by a constant past the width is 0, or the sign for a signed '>>'"
+tags = ["genllvm"]
+
+# Compiled as a library, so that its public functions are exported: in a
+# program they are internal, and the optimizer deletes what main never calls
+[[scenario.core_genllvm_shift.run]]
+name = "library"
+options = ["--library"]
+
+[[scenario.core_genllvm_shift.check]]
+name = "a-masked-amount-needs-no-compare"
+target = "llvmir"
+contains = ["and i64 %1, 63", "lshr i64 %0, %2", "shl i32 %0, %2", "ashr i16 %0, %2"]
+excludes = ["icmp", "select"]
+
+[[scenario.core_genllvm_shift.check]]
+name = "a-constant-amount-is-written-without-one"
+target = "preir"
+contains = ["shl i64 %x1, 3", "ashr i8 %x1, 7", "ret i64 0", "ashr i32 %x1, 31"]
 
 # -------- warnings --------
 
@@ -481,4 +545,18 @@ diagnostics = 8
 category = "reject"
 description = "A declaration's own type check, not the global error count, decides what is analyzed after it"
 tags = ["typecheck", "flow"]
-diagnostics = 5
+diagnostics = 4
+
+# -------- GPU targets --------
+
+# Generation reports it, once the module's calls are known: every function on
+# a GPU target is inlined, which a cycle of calls would never end
+[scenario.core_gpu_recursion]
+category = "reject"
+description = "On a GPU target, a function calling itself directly, and two calling each other, each refused once at the function the cycle returns to"
+tags = ["genllvm"]
+diagnostics = 2
+
+[[scenario.core_gpu_recursion.run]]
+name = "vulkan"
+options = ["--triple=spirv1.6-unknown-vulkan1.3"]

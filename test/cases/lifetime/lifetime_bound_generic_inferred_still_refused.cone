@@ -1,0 +1,95 @@
+// Generic functions whose unbounded type parameter is inferred from a
+// borrow, doing what the instance's body may not: a T given a local's
+// borrow and stored where the caller's reference points, or returned; a T
+// stored in a global; and, in a caller, a local's borrow handed through
+// 'viaLocal' into an outer variable read after the local is gone.
+//
+// Verdict: refuse, ErrorEscape at the store through 'dst', at the return
+// and at the store into the global, each as instantiated; and ErrorFrozen
+// at 'r2' in 'outlive'.
+// Basis: language rule (3 Oct 2026): an inferred type argument carries no
+// band of its call, and the instance's body holds what a parameter of type
+// T lends as the caller's (reflifefn.html, "Lifetime bounds"): a local's
+// borrow may not leave the function, a caller's may not reach a global, and
+// a call carries an argument's borrows wherever its signature's one unnamed
+// lifetime flows (the flow rule, 2 Oct 2026).
+// Master ff2c3626: correct. ('viaLocal' was not refused here, as it is in
+// lifetime_bound_generic_inferred_no_band, because the global's written
+// 'Option[&R]' made that instance first, with no band.)
+
+mod lifetime_bound_generic_inferred_still_refused;
+
+import stdio use *;
+
+struct R {
+  pub n i64;
+}
+
+mut G Option[&R];
+
+fn @initpure init() {
+  G = None[&R][];
+}
+
+fn viaLocal[T](dst &mut &R, x T) {
+  imm tmp T = x;
+  mut o Option[T] = Some[T][tmp];
+  match o {
+    case imm e Some {
+      *dst = e.value;
+    }
+    else {}
+  }
+}
+
+fn putLocal[T](dst &mut T, x T) {
+  imm l = new R(6);
+  mut t T = x;
+  t = &l;
+  *dst = t;                  //~ ErrorEscape "a borrow of 'l'"
+}
+
+fn retLocal[T](x T) T {
+  imm l = new R(5);
+  mut t T = x;
+  t = &l;
+  t;                         //~ ErrorEscape "a borrow of 'l'"
+}
+
+fn stashAny[T](x T) {
+  imm tmp T = x;
+  G = Some[&R][tmp];         //~ ErrorEscape "the caller lent through 'x'"
+}
+
+fn ownLocal() {
+  imm r1 = new R(1);
+  mut d = &r1;
+  {
+    imm r2 = new R(2);
+    putLocal(&mut d, &r2);
+    printInt(retLocal(&r2).n);
+  }
+}
+
+fn global() {
+  imm r1 = new R(1);
+  stashAny(&r1);
+}
+
+fn outlive() {
+  imm r1 = new R(1);
+  mut d = &r1;
+  {
+    imm r2 = new R(2);       //~ ErrorFrozen "goes out of scope while 'd'"
+    viaLocal(&mut d, &r2);
+  }
+  printInt(d.n);
+}
+
+fn main() {
+  initAll();
+  ownLocal();
+  global();
+  outlive();
+  printStr("\n");
+}

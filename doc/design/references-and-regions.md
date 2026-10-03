@@ -298,10 +298,23 @@ not concrete.
 
 **That table is the implementation's vocabulary, and it is not the author's.**
 The design writing names `uni`, `imm`, `mut`, `mutex`, `mutex1`, `atomic`,
-`const` and `opaq` — where `const` is what the code calls `ro`, and the whole
-runtime *lock* permission family (`mutex`, `mutex1`, `atomic`) is unimplemented.
-Do not assume `mut1` in the code is the writing's `mutex1`: it carries
-`IsLockless`, so it is probably not. **Say which vocabulary you are using.**
+`const` and `opaq` — where `const` is what the code calls `ro`, and the
+`atomic` permission is unimplemented. Do not assume `mut1` in the code is the
+writing's `mutex1`: it carries `IsLockless`, so it is probably not. **Say which
+vocabulary you are using.**
+
+**The lock permissions are types, not entries in that table.** A lock
+permission is a library struct declaring the built-in trait `LockPermission`,
+named as a type is, its first letter alone capitalized: `Mutex` and `Rwlock`
+(the sync package's, on `Arc`) and `Rwcell` (core's, on `Rc`), written where a
+static permission would be, `Arc[Mutex, T]`. Its value is the lock, in each
+allocation's header between the region's part and the value. The reference
+copies, counts and (for a lock for threads) crosses threads, but reaches
+nothing; a borrow through it takes the lock, waiting for a lock for threads,
+panicking for `Rwcell`, and the borrow's end gives it back, which is the end of
+its statement or of the block whose local's initializer made it. What is built
+and what is not is `doc/reference/refpermlock.html`; how,
+[references](../../compiler/c/doc/nodes/references.md), "Lock permissions".
 
 The permissions are meant to be the *race-safe strategies* — the programmer
 picks a reference's constraint by annotating it. `uni` is described as "the
@@ -315,7 +328,9 @@ swap and a field write; `MayRead` gates a read through a reference — a
 dereference, an index, or a field of a virtual reference — and feeds the
 variance rule below; `MayAlias` decides move-ness; `RaceSafe` decides, with the
 region's `ThreadSafe`, whether an owner that may be aliased crosses threads (the
-thread check, `Sendable`). `MayAliasWrite`, `MayIntRefSum` and `IsLockless` are
+thread check, `Sendable`); a lock permission answers with `MayAlias` and,
+where it is for threads, `RaceSafe`, and nothing else, which is what keeps its
+reference from its value. `MayAliasWrite`, `MayIntRefSum` and `IsLockless` are
 populated and read nowhere. That is not a judgement on the design — it is that
 the rest of the concurrency half is unbuilt, and those are the bits it would
 consult. One consequence is worth stating outright: **`imm` and `ro` differ
@@ -370,7 +385,13 @@ it. How long a borrow *freezes* its source is a different question, and is not
 in the type at all: flow's loan walk records which loans each local may hold,
 per path, and a borrow's source stays frozen until the last use of whatever
 holds its loan ([Flow Analysis](../../compiler/c/doc/phases/flow.md), "The loan
-walk").
+walk"). Named lifetimes — on a signature's references (`&'a T`), declared by a
+struct and named on its uses (`struct Cursor['a]`, `Cursor['a]`), ordered by a
+`where` clause (`'a >= 'b`) — divide the caller band by identity within one
+signature, never by a number: the loan walk keeps a caller loan per part of
+what a parameter lends, a struct's lifetimes one by one, and compares the
+parts' names (Flow Analysis, "Named lifetimes", "Slots"). A name, like the
+scope, is no part of type identity, and is never instanced.
 
 **That integer is a placeholder for a much larger design.** The intent is an
 encoding of source variable, *invariance group*, and relative scope, forming a
@@ -423,7 +444,7 @@ gap:
 | move-ness infection | `refAdoptInfections` | type check |
 | may not write through this reference | `assignlvalrtype`, `swapFlow` | **flow** |
 | a moved-out value may not be used | `nameuseFlow` | **flow** |
-| a borrow may not outlive what it points at | `assignlvalrtype` and `swapFlow` (one check, `assignBorrowLifetimeCheck`), `returnFlowEscape`, `fnCallFlowStoredBorrow` | **flow**, at three sites only |
+| a borrow may not outlive what it points at | `assignlvalrtype` and `swapFlow` (one check, `assignBorrowLifetimeCheck`), `returnFlowEscape`; the loan walk for what a call may store (`pwCallStores`) and for a variable that follows what it holds | **flow** |
 | a call's returned borrow lives as long as the narrowest borrow it was handed | `fnCallFinalizeArgs`, on a reference node of the call's own — or on the borrowed elements of a tuple of its own, where the call returns several values | type check |
 | freezing a borrow's source, and so aliasing of borrows: a borrow held in a local freezes its source until the borrow's last use | the loan walk, `loanAccess` and `loanUse` (`ErrorFrozen`) | **flow**, for a borrow held in a local, bare or inside a struct, `Option`, array or list the local holds, one a call returned included (it borrows every argument; a `NoLoanMut` container only its life), and between a call's arguments (`loanFlightAccess`, a receiver two-phase) |
 

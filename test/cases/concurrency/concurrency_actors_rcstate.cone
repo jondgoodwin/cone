@@ -1,8 +1,7 @@
 // An actor whose state holds what may not cross threads, and whose handle
-// crosses anyway. Keeper_state holds an 'Rc[mut, T]' log it has two owners of,
-// and a 'So' owner of a note count, and its method changes both through
-// borrows; it declares nothing about Sendable, and is not Sendable
-// (concurrency_actors_state_unsendable). Its handle, Keeper, owns the
+// crosses anyway. Keeper's state holds an 'Rc[mut, T]' log it has two owners
+// of, and a 'So' owner of a note count, and its method changes both through
+// borrows; it declares nothing about Sendable. Its handle, Keeper, owns the
 // actor's Mailbox and nothing of the state, so it crosses:
 //
 // - main sends it, in a message, to an Auditor actor, which keeps it in its
@@ -15,13 +14,13 @@
 // auditor lets go of it. finalAll() waits for quiescence and stops the
 // workers.
 //
-// The actors are written by hand in the shape the compiler is to generate
-// (concurrency_actors_pingpong.cone describes it).
+// The actors are declared. (concurrency_actors_state_unsendable writes such
+// an actor's state out by hand, to show that the state itself is refused
+// wherever it would cross.)
 
 mod concurrency_actors_rcstate;
 
 import stdio use *;
-import sync use Arc;
 import collections use List;
 import thread;
 import actors;
@@ -47,31 +46,19 @@ struct Count {
   pub n u64;
 }
 
-// ---- the messages, declared first (the actors package header says why) ----
-
-enum Keeper_msg {
-  struct Note {pub n u64;}
-}
-
-enum Auditor_msg {
-  struct Watch {pub k Keeper;}
-  struct Drive {pub times u64;}
-  struct Forget {}
-}
-
 // ---- Keeper: its state holds Rc and So owners ----
 
-struct Keeper_state {
+actor Keeper {
   log Rc[mut, Log];
   logToo Rc[mut, Log];
   count So[Count];
 
-  pub fn made() Keeper_state {
+  fn init(self &new) {
     imm l = new Rc[mut, Log](0u64);
-    new Keeper_state(l, l, new So[Count](0u64));
+    *self = new Self(l, l, new So[Count](0u64));
   }
 
-  fn note(self &mut, n u64) {
+  pub fn note(self, n u64) {
     imm c = &mut count.n;
     *c = *c + 1u64;
     add(&mut logToo.sum, n);
@@ -92,37 +79,20 @@ fn add(s &mut u64, n u64) {
   *s = *s + n;
 }
 
-fn Keeper_dispatch(self &mut Keeper_state, msg Keeper_msg) {
-  match msg {
-    case imm m Keeper_msg.Note {self.note(m.n);}
-  }
-}
-
-struct Keeper {
-  mb Arc[opaq, actors.Mailbox[Keeper_msg]];
-
-  pub fn start() Keeper {
-    new Keeper(actors.startActor[Keeper_state, Keeper_msg](Keeper_state.made(), &Keeper_dispatch));
-  }
-  pub fn note(self &, n u64) {
-    actors.send[Keeper_msg](mb, Keeper_msg.Note[n]);
-  }
-}
-
 // ---- Auditor: keeps keepers' handles in its state and uses them ----
 
-struct Auditor_state {
+actor Auditor {
   watched List[Keeper];
 
-  pub fn made() Auditor_state {
-    new Auditor_state(List[Keeper].empty());
+  fn init(self &new) {
+    *self = new Self(List[Keeper].empty());
   }
 
-  fn watch(self &mut, k Keeper) {
+  pub fn watch(self, k Keeper) {
     watched.push(k);
   }
 
-  fn drive(self &mut, times u64) {
+  pub fn drive(self, times u64) {
     mut i = 0usize;
     while i < watched.len() {
       mut t = 1u64;
@@ -134,33 +104,8 @@ struct Auditor_state {
     }
   }
 
-  fn forget(self &mut) {
+  pub fn forget(self) {
     watched.clear();
-  }
-}
-
-fn Auditor_dispatch(self &mut Auditor_state, msg Auditor_msg) {
-  match msg {
-    case imm m Auditor_msg.Watch {self.watch(m.k);}
-    case imm m Auditor_msg.Drive {self.drive(m.times);}
-    case is Auditor_msg.Forget {self.forget();}
-  }
-}
-
-struct Auditor {
-  mb Arc[opaq, actors.Mailbox[Auditor_msg]];
-
-  pub fn start() Auditor {
-    new Auditor(actors.startActor[Auditor_state, Auditor_msg](Auditor_state.made(), &Auditor_dispatch));
-  }
-  pub fn watch(self &, k Keeper) {
-    actors.send[Auditor_msg](mb, Auditor_msg.Watch[k]);
-  }
-  pub fn drive(self &, times u64) {
-    actors.send[Auditor_msg](mb, Auditor_msg.Drive[times]);
-  }
-  pub fn forget(self &) {
-    actors.send[Auditor_msg](mb, Auditor_msg.Forget[]);
   }
 }
 
@@ -178,8 +123,8 @@ fn main() {
   initAll();
   actors.configure(new actors.Options(workers: 4u32));
   {
-    imm k = Keeper.start();
-    imm a = Auditor.start();
+    imm k = new Keeper();
+    imm a = new Auditor();
     a.watch(k);
     a.drive(100u64);
     a.forget();

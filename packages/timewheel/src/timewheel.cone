@@ -1,0 +1,799 @@
+// The timewheel package: the timers of the async I/O runtime. An I/O loop
+// runs a great many timers and almost none of them fire: every connection
+// has an idle timeout, every request a deadline, and nearly all are
+// cancelled because what they guard happened in time. So arming and
+// cancelling one costs O(1), and firing may be up to a tick (a millisecond)
+// late. The few deadlines that must be on time (frame pacing, a fixed step)
+// are kept apart, in a small precise set the loop drives by the OS's
+// high-resolution timer. A program makes one call, "wake me at this time",
+// and the wheel decides which kind it is: anything due within a tick goes
+// precise by itself. It is pure data: no threads, no waits, no OS. The
+// completion loop (iocore, next) owns one per loop, waits in the OS until
+// nextExpiry, and turns what expired hands it into completions.
+//
+//   mod loop;
+//   import time use Duration, Instant, Clock;
+//   import collections use List;
+//   import timewheel use *;
+//
+//   fn main() {
+//     mut clock = Clock.synth();              // or Clock.real()
+//     mut w = Wheel.make(clock.now());
+//     imm id = w.insert(clock.now() + Duration.fromSeconds(30), 7u64);
+//     ... the operation finished in time ...
+//     w.cancel(id);                           // true: it will never fire
+//     mut out = new List[Expiry];
+//     // the loop: wait until w.nextExpiry(), then
+//     w.expired(clock.now(), &mut out);       // what fired, each once, in order
+//   }
+//
+//   Wheel.make(now)            an empty wheel, its time starting at now
+//   w.insert(at, token)        arm a timer for the Instant 'at', in lane 0:
+//                              a TimerId
+//   w.insertIn(lane, at, token)   the same in a lane, with its slop
+//   w.insertPrecise(at, token) arm one that fires on time, however far off
+//   w.cancel(id)               true if it was pending and now never fires;
+//                              false, doing nothing, if it fired or was
+//                              cancelled already
+//   w.isPending(id)  w.isPrecise(id)
+//   w.nextExpiry()             Some Instant the loop must next wake at, the
+//                              earlier of the two below; None, nothing armed
+//   w.nextPrecise()            Some earliest precise deadline: arm the
+//                              high-resolution timer for it
+//   w.nextTimeout()            Some next tick the wheel needs
+//   w.expired(now, out)        move time on to now and append every timer due
+//                              to out, an Expiry each: how many
+//   w.setSlop(lane, d)  w.slopOf(lane)            (LANES AND SLOP)
+//   w.now()  w.len()  w.isEmpty()  w.stats()
+//   tick(), tickNanos, levels, slotsPerLevel, lanes
+//
+//   TimerId.none()  id.isNone()  ==  !=
+//   Expiry: e.id, e.token, e.deadline (the Instant it was armed for)
+//
+// TWO KINDS OF TIMER. A timeout is a timer in the wheel: it fires at the
+// first tick at or after its deadline, so up to a tick late and never
+// early. A precise timer is in the precise set: it fires when expired is
+// given an instant at or after its deadline, to the nanosecond the loop
+// wakes. insert puts a deadline less than a tick after the wheel's now in
+// the precise set by itself, so one call serves both: what is far off can
+// be late by a tick, what is near cannot. insertPrecise keeps a far
+// deadline precise too, for a timer whose whole point is being on time.
+//
+// TIME. Every time here is a time.Instant, a monotonic count of
+// nanoseconds; deadlines are absolute, never durations (a caller with "5
+// seconds" adds it to now). The wheel's ticks are its start, the instant
+// make was given, plus whole milliseconds. The wheel's now is the latest
+// instant expired was given (or its start), and insert judges "within a
+// tick" against it, so the loop calls expired on every pass, as it would
+// anyway. Time does not go back: an instant before now is taken as now. A
+// deadline already past is precise, and due at the next call. Drive it by
+// time.Clock: the real clock, or a synthetic one for tests, which is how
+// every test here runs, to the nanosecond.
+//
+// THE WHEEL. Tokio's shape (Varghese and Lauck's hierarchical wheel): six
+// levels of 64 slots, a millisecond the bottom level's slot and each level's
+// slot 64 of the one below, so the levels span 64 ms, 4.1 s, 4.4 min, 4.7 h,
+// 12.4 days and 795 days. A timer goes in the level of the highest 6-bit
+// digit in which its tick differs from the wheel's, in the slot that digit
+// names; each level keeps a 64-bit word of which slots hold anything, so the
+// next occupied slot is a shift and a lowest-set-bit. When the wheel reaches
+// a slot above the bottom level, its timers move down (cascade), each at
+// most five times in its life; at the bottom they fire. They cascade rather
+// than expire in place (Linux's way, which lets a timer hours off fire
+// minutes late), so a timer fires within a tick of its deadline at any
+// range. A timer further off than 795 days waits in the top level's slot
+// for its digit, in a turn that is never after it, and is placed again from
+// there. Arming, cancelling and moving a timer down are O(1); a wake costs a
+// look at six words, and then the timers it fires or moves.
+//
+// THE PRECISE SET is a binary heap, by deadline: O(log n) to arm and to
+// cancel. It is meant to be small: frame pacing, a fixed step, and what
+// comes due within a tick.
+//
+// COST, measured by examples/bench.cone (release, an i7-13700HX), per timer:
+// arming about 31 ns; cancelling about 6 ns in the order armed and 34 ns
+// scrambled; firing, each timer 1 to 30 s off and the loop waking every
+// millisecond, about 200 ns with a million pending and 75 ns with 100,000
+// (the difference is cache misses: a timer's entry is touched at each level
+// it passes through, and a million entries are 56 MB); the design's mix,
+// 100,000 armed and 99% cancelled, about 45 ns each, all told; a wake with
+// nothing due about 18 ns; a precise timer armed and cancelled with 1,000 in
+// the set, about 25 ns.
+//
+// WAKING. nextExpiry is what the loop's wait is bounded by: the precise
+// set's earliest deadline, or the next tick the wheel needs, whichever is
+// sooner. The wheel's answer is never later than the timer it is for, but
+// may be earlier: the start of a high-level slot, where its timers move down
+// and none fires (a timer an hour off costs the loop a few such wakes in its
+// life). nextPrecise is what the loop arms the high-resolution waitable
+// timer for, since the OS's ordinary wait is only as fine as its tick (up
+// to 15.6 ms on Windows); nextTimeout is the wheel's alone.
+//
+// FIRING. expired(now, out) delivers every timer due by now exactly once:
+// the precise set's whose deadline is at or before now, and the wheel's
+// whose tick (after its lane's slop) is. Those one call delivers come in
+// deadline order, ties in the order they were armed; across calls, a
+// precise timer may come before a timeout with an earlier deadline whose
+// tick had not come. A delivered timer is gone: its id is no longer pending,
+// and cancelling it does nothing and says so. Nothing is ever delivered
+// twice, and nothing cancelled is ever delivered.
+//
+// LANES AND SLOP. A timer goes in one of 8 lanes (insert uses lane 0). A
+// lane's slop is how much later than its tick its timers may fire, in whole
+// ticks: each is rounded up to the next multiple of the slop on the wheel's
+// grid, so timers within one slop of one another fire in one wake (Pony's
+// slop, and Linux's timer slack). A background lane's idle timeouts can take
+// a generous slop; a lane serving frames none. Every lane starts with none,
+// and a slop under two ticks is none. Changing a lane's slop moves no timer
+// already armed. Slop never makes a timer precise or early, and the precise
+// set has none.
+//
+// IDS. A TimerId names an entry and which of its occupants it was armed as
+// (a generation), so an id of a timer that fired or was cancelled never
+// names the timer armed in its entry later: cancelling it finds nothing. A
+// generation is 32 bits; one entry would have to be reused 2^32 times
+// while an old id was kept for that to go wrong. TimerId.none() names
+// nothing. A token is plain data, a u64 the wheel hands back and never
+// reads: the loop decides what it means (an operation to cancel, a
+// message to send); the wheel knows nothing of actors or operations.
+//
+// Not here yet: repeating timers, with a policy for ticks missed while the
+// loop was busy (a later PR); the high-resolution timer itself and its
+// association with the completion port (iocore's); a timeout on an
+// operation (iocore's: a timer whose token, when it fires, asks for that
+// operation's cancel).
+//
+// What is Windows-only: nothing. It calls no OS; its blocks come from the C
+// allocator.
+//
+// How it is built. Every timer is an entry in one block of entries, reused
+// through a free list and grown by doubling; a TimerId is an entry's index
+// and generation. A slot's timers are a doubly linked list through their
+// entries, by index, so a cancel unlinks one in O(1) and clears its slot's
+// bit if the slot empties. A slot reached is detached whole, and each of
+// its timers fires or is placed again relative to the slot's tick. The
+// precise set's heap is a block of entry indexes, each entry knowing its
+// place in it. What one call of expired fires is gathered in a block the
+// wheel keeps, put in deadline order (one pass when it already is, which is
+// usual; insertion sort of runs of 16, then merging, when not), and copied
+// to out. A word's lowest and highest set bits are found by its
+// trailingZeros and leadingZeros, an instruction each. The Wheel is
+// Sendable on trust, as a List is: it holds raw pointers only to blocks it
+// owns, so it may be made on one thread and handed to the loop's.
+
+mod timewheel;
+
+import libc;
+import time use Duration, Instant;
+import collections use List;
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+// The wheel's tick, in nanoseconds: one millisecond
+pub const tickNanos = 1000000i64;
+
+// Levels of the wheel, and slots in each
+pub const levels = 6u32;
+pub const slotsPerLevel = 64u32;
+
+// Lanes: each has its own slop
+pub const lanes = 8u32;
+
+const slotBits = 6u64;
+const slotMask = 63u64;
+
+// Ticks the wheel spans: 64^6, about 2.2 years of milliseconds. A timer
+// further off is held at the top level and placed again as time comes round
+const span = 68719476736u64;
+
+// No entry: the end of a list, an empty slot, the end of the free list
+const noEntry = 4294967295u32;
+
+// No tick: a level with nothing in it
+const noTick = 18446744073709551615u64;
+
+// Where an entry is
+const stFree = 0u32;
+const stWheel = 1u32;
+const stPrecise = 2u32;
+
+// The wheel's tick as a Duration
+pub fn tick() Duration { Duration.fromNanos(tickNanos); }
+
+// ---------------------------------------------------------------------------
+// Bits
+// ---------------------------------------------------------------------------
+
+// The index of x's lowest set bit; x is not 0
+fn lowestBit(x u64) u64 {
+  u64.from(x.trailingZeros());
+}
+
+// The level a timer firing at tick 'when' goes in, when the wheel has
+// reached tick 'elapsed': the level of the highest 6-bit digit in which the
+// two differ, and the top level for anything a whole span or more away.
+// masked is never 0, so its highest set bit is 63 less its leading zeros
+fn levelFor(elapsed u64, when u64) u64 {
+  mut masked = (elapsed ^ when) | slotMask;
+  if masked >= span { masked = span - 1u64; }
+  u64.from(63u32 - masked.leadingZeros()) / slotBits;
+}
+
+// ---------------------------------------------------------------------------
+// TimerId, Expiry, Stats
+// ---------------------------------------------------------------------------
+
+// A timer, as the one occupant of an entry it was when it was armed
+pub struct TimerId {
+  index u32;
+  gen u32;
+
+  // A timer id naming no timer: cancelling it does nothing
+  pub fn none() TimerId { new TimerId(noEntry, 0u32); }
+  pub fn isNone(self) Bool { gen == 0u32; }
+
+  pub fn `==`(self, o TimerId) Bool { index == o.index and gen == o.gen; }
+  pub fn `!=`(self, o TimerId) Bool { index != o.index or gen != o.gen; }
+}
+
+// A timer that has fired: which, its token, and the deadline it was armed for
+pub struct Expiry {
+  pub id TimerId;
+  pub token u64;
+  pub deadline Instant;
+  seq u64;
+}
+
+// Whether a goes strictly before b: deadline order, ties in the order armed
+// (no two timers have the same seq, so this is a total order)
+fn goesBefore(a *Expiry, b *Expiry) Bool {
+  imm x = a as &Expiry;
+  imm y = b as &Expiry;
+  imm xn = x.deadline.nanos();
+  imm yn = y.deadline.nanos();
+  xn < yn or (xn == yn and x.seq < y.seq);
+}
+
+// Sort the n expiries at p into deadline order, through spare, a block as
+// big. Already in order (the usual case: one timer, or a tick's few armed in
+// order) costs one pass; a few are sorted by insertion; more by merging runs
+// of 16, each sorted by insertion, back and forth between the blocks
+fn sortExpiries(p *Expiry, spare *Expiry, n usize) {
+  mut i = 1usize;
+  while i < n and !goesBefore(p + i, p + (i - 1usize)) { i = i + 1usize; }
+  if i >= n { return; }
+  // Insertion sort of each run of 16
+  mut lo = 0usize;
+  while lo < n {
+    imm hi = if lo + 16usize < n {lo + 16usize;} else {n;};
+    mut j = lo + 1usize;
+    while j < hi {
+      imm held = *(p + j);
+      mut k = j;
+      while k > lo and goesBefore(&held as *Expiry, p + (k - 1usize)) {
+        *(p + k) = *(p + (k - 1usize));
+        k = k - 1usize;
+      }
+      *(p + k) = held;
+      j = j + 1usize;
+    }
+    lo = hi;
+  }
+  // Merge runs of width, doubling, between the two blocks
+  mut from = p;
+  mut to = spare;
+  mut width = 16usize;
+  while width < n {
+    lo = 0usize;
+    while lo < n {
+      imm mid = if lo + width < n {lo + width;} else {n;};
+      imm hi = if mid + width < n {mid + width;} else {n;};
+      mut a = lo;
+      mut b = mid;
+      mut k = lo;
+      while a < mid and b < hi {
+        if goesBefore(from + b, from + a) { *(to + k) = *(from + b); b = b + 1usize; }
+        else { *(to + k) = *(from + a); a = a + 1usize; }
+        k = k + 1usize;
+      }
+      while a < mid { *(to + k) = *(from + a); a = a + 1usize; k = k + 1usize; }
+      while b < hi { *(to + k) = *(from + b); b = b + 1usize; k = k + 1usize; }
+      lo = hi;
+    }
+    imm was = from;
+    from = to;
+    to = was;
+    width = width * 2usize;
+  }
+  if from != p {
+    mut c = 0usize;
+    while c < n { *(p + c) = *(from + c); c = c + 1usize; }
+  }
+}
+
+// A wheel's counters
+pub struct Stats {
+  pub pending u64;         // timers armed and not yet fired or cancelled
+  pub pendingPrecise u64;  // of them, in the precise set
+  pub armed u64;           // timers ever armed
+  pub armedPrecise u64;    // of them, put in the precise set
+  pub cancelled u64;       // cancelled before firing
+  pub fired u64;           // delivered by expired
+  pub cascaded u64;        // times a timer moved down a level
+  pub wakes u64;           // calls of expired that delivered at least one
+}
+
+// ---------------------------------------------------------------------------
+// Entries
+// ---------------------------------------------------------------------------
+
+// One timer's record. 'next' and 'prev' link it into its slot's list while
+// it is in the wheel; 'next' links the free list while it is free. 'pos' is
+// its slot (level * 64 + slot) in the wheel, or its index in the precise
+// set's heap. 'gen' counts the occupants the entry has had.
+struct Entry {
+  pub at i64;      // the deadline, the Instant's nanoseconds
+  pub fire u64;    // the tick it fires at, in the wheel
+  pub token u64;
+  pub seq u64;     // the order armed, for ties
+  pub next u32;
+  pub prev u32;
+  pub gen u32;
+  pub state u32;
+  pub pos u32;
+}
+
+// ---------------------------------------------------------------------------
+// Wheel
+// ---------------------------------------------------------------------------
+
+pub struct Wheel is Sendable {
+  origin i64;                  // nanoseconds of tick 0
+  nowNs i64;                   // the latest instant expired was given
+  elapsed u64;                 // the tick the wheel has reached
+
+  ents *Entry;                 // the entries' block
+  cap u32;
+  high u32;                    // entries ever used
+  free u32;                    // the first free entry, or noEntry
+  live u32;
+
+  heads Array[u32, 384];       // each slot's list, by level * 64 + slot
+  occ Array[u64, 6];           // each level's occupied slots, a bit each
+
+  heap *u32;                   // the precise set: entries, a binary heap
+  heapLen u32;
+  heapCap u32;
+
+  slop Array[u64, 8];          // each lane's coalescing, in ticks
+  seq u64;
+
+  batch *Expiry;               // what one call of expired delivers, sorted
+  spare *Expiry;               // as big: the sort's other block
+  batchLen u32;
+  batchCap u32;
+
+  armed u64;
+  armedPrecise u64;
+  cancelled u64;
+  fired u64;
+  cascaded u64;
+  wakes u64;
+
+  // An empty wheel whose time starts at now
+  pub fn make(now Instant) Wheel {
+    new Wheel(now.nanos(), now.nanos(), 0u64,
+      null, 0u32, 0u32, noEntry, 0u32,
+      new Array[u32, 384] <- fill noEntry,
+      new Array[u64, 6] <- fill 0u64,
+      null, 0u32, 0u32,
+      new Array[u64, 8] <- fill 0u64,
+      0u64,
+      null, null, 0u32, 0u32,
+      0u64, 0u64, 0u64, 0u64, 0u64, 0u64);
+  }
+
+  // The latest instant expired was given, or the one it was made at
+  pub fn now(self &) Instant { Instant.fromNanos(nowNs); }
+
+  // How many timers are pending
+  pub fn len(self &) usize { usize.from(live); }
+  pub fn isEmpty(self &) Bool { live == 0u32; }
+
+  pub fn stats(self &) Stats {
+    new Stats(u64.from(live), u64.from(heapLen), armed, armedPrecise, cancelled,
+      fired, cascaded, wakes);
+  }
+
+  // A lane's slop: a timer in it may fire this much late, so that timers
+  // close together fire in one wake. Whole ticks; less than two is none
+  pub fn setSlop(self &mut, lane u32, d Duration) {
+    assert(lane < lanes, "a lane is below timewheel.lanes");
+    imm t = d.nanos() / tickNanos;
+    slop[usize.from(lane)] = if t < 0i64 {0u64;} else {u64.from(t);};
+  }
+  pub fn slopOf(self &, lane u32) Duration {
+    assert(lane < lanes, "a lane is below timewheel.lanes");
+    Duration.fromNanos(i64.from(slop[usize.from(lane)]) * tickNanos);
+  }
+
+  // ----- Arming and cancelling -----
+
+  // Arm a timer for 'at', in lane 0. It is a timeout in the wheel, firing up
+  // to a tick late, unless 'at' is less than a tick after now, when it goes
+  // in the precise set and fires on time
+  pub fn insert(self &mut, at Instant, token u64) TimerId {
+    self.insertIn(0u32, at, token);
+  }
+
+  // Arm a timer for 'at' in a lane, which may make it fire later by up to
+  // the lane's slop
+  pub fn insertIn(self &mut, lane u32, at Instant, token u64) TimerId {
+    assert(lane < lanes, "a lane is below timewheel.lanes");
+    imm ns = at.nanos();
+    if ns - nowNs < tickNanos { return self.insertPrecise(at, token); }
+    // The tick at or after 'at', then the lane's grid at or after that
+    imm t = ns - origin;
+    mut fire = u64.from((t + tickNanos - 1i64) / tickNanos);
+    imm g = slop[usize.from(lane)];
+    if g > 1u64 { fire = ((fire + g - 1u64) / g) * g; }
+    imm i = self.alloc(ns, token);
+    ((ents + usize.from(i)) as &mut Entry).fire = fire;
+    self.place(i);
+    armed = armed + 1u64;
+    self.idOf(i);
+  }
+
+  // Arm a timer that fires on time, however far off: it goes in the precise
+  // set, which the loop drives by the high-resolution timer
+  pub fn insertPrecise(self &mut, at Instant, token u64) TimerId {
+    imm i = self.alloc(at.nanos(), token);
+    self.heapPush(i);
+    armed = armed + 1u64;
+    armedPrecise = armedPrecise + 1u64;
+    self.idOf(i);
+  }
+
+  // Cancel a timer: true if it was pending and now never fires; false, and
+  // nothing done, if it has fired or been cancelled already
+  pub fn cancel(self &mut, id TimerId) Bool {
+    if !self.isPending(id) { return false; }
+    imm i = id.index;
+    imm p = (ents + usize.from(i)) as &mut Entry;
+    if p.state == stWheel { self.unlink(i); } else { self.heapRemove(p.pos); }
+    self.release(i);
+    cancelled = cancelled + 1u64;
+    true;
+  }
+
+  // Whether a timer is armed and has neither fired nor been cancelled
+  pub fn isPending(self &, id TimerId) Bool {
+    if id.index >= high { return false; }
+    imm p = (ents + usize.from(id.index)) as &Entry;
+    p.gen == id.gen and p.state != stFree;
+  }
+
+  // Whether a pending timer is in the precise set
+  pub fn isPrecise(self &, id TimerId) Bool {
+    self.isPending(id) and ((ents + usize.from(id.index)) as &Entry).state == stPrecise;
+  }
+
+  // ----- When to wake -----
+
+  // When the loop must next call expired: the earlier of the next precise
+  // deadline and the next tick the wheel needs, or None with nothing armed.
+  // The wheel's is never later than the timer it is for; it may be earlier,
+  // a tick where a far timer moves down a level and nothing fires
+  pub fn nextExpiry(self &) Option[Instant] {
+    imm d = self.wheelNext();
+    if heapLen == 0u32 {
+      if d == noTick { return None[Instant][]; }
+      return Some[Instant][self.tickInstant(d)];
+    }
+    imm p = ((ents + usize.from(*(heap))) as &Entry).at;
+    if d != noTick and self.tickInstant(d).nanos() < p {
+      return Some[Instant][self.tickInstant(d)];
+    }
+    Some[Instant][Instant.fromNanos(p)];
+  }
+
+  // The earliest deadline in the precise set, which the loop arms the
+  // high-resolution timer for; None when the set is empty
+  pub fn nextPrecise(self &) Option[Instant] {
+    if heapLen == 0u32 { return None[Instant][]; }
+    Some[Instant][Instant.fromNanos(((ents + usize.from(*(heap))) as &Entry).at)];
+  }
+
+  // The next tick the wheel needs, None when it holds nothing
+  pub fn nextTimeout(self &) Option[Instant] {
+    imm d = self.wheelNext();
+    if d == noTick { return None[Instant][]; }
+    Some[Instant][self.tickInstant(d)];
+  }
+
+  // ----- Firing -----
+
+  // Move time on to now, and append to out every timer due by then, each
+  // exactly once, in deadline order (ties in the order armed): precise
+  // timers whose deadline is at or before now, and timeouts whose tick (and
+  // lane's grid) is. Answers how many. An instant earlier than one already
+  // given is taken as that one: time does not go back
+  pub fn expired(self &mut, now Instant, out &mut List[Expiry]) usize {
+    if now.nanos() > nowNs { nowNs = now.nanos(); }
+    imm nowTick = u64.from((nowNs - origin) / tickNanos);
+    // The precise set: everything at or before now
+    while heapLen > 0u32 {
+      imm top = *(heap);
+      imm p = (ents + usize.from(top)) as &Entry;
+      if p.at > nowNs { break; }
+      self.heapRemove(0u32);
+      self.deliver(top);
+    }
+    // The wheel: each slot due, in order, until the next is after now
+    while live > heapLen {
+      mut lvl = 0u64;
+      mut best = noTick;
+      mut bestLvl = 0u64;
+      while lvl < u64.from(levels) {
+        imm d = self.levelNext(lvl);
+        if d < best { best = d; bestLvl = lvl; }
+        lvl = lvl + 1u64;
+      }
+      if best > nowTick { break; }
+      self.process(bestLvl, best);
+    }
+    if nowTick > elapsed { elapsed = nowTick; }
+    imm n = usize.from(batchLen);
+    if n == 0usize { return 0usize; }
+    sortExpiries(batch, spare, n);
+    out.reserve(n);
+    mut k = 0usize;
+    while k < n {
+      out.push(*(batch + k));
+      k = k + 1usize;
+    }
+    batchLen = 0u32;
+    fired = fired + u64.from(n);
+    wakes = wakes + 1u64;
+    n;
+  }
+
+  // ----- Inside -----
+
+  fn idOf(self &, i u32) TimerId {
+    new TimerId(i, ((ents + usize.from(i)) as &Entry).gen);
+  }
+
+  fn tickInstant(self &, t u64) Instant {
+    Instant.fromNanos(origin + i64.from(t) * tickNanos);
+  }
+
+  // A fresh entry, out of the free list or the block's end
+  fn alloc(self &mut, at i64, token u64) u32 {
+    mut i = free;
+    if i != noEntry {
+      free = ((ents + usize.from(i)) as &Entry).next;
+    }
+    else {
+      if high == cap { self.grow(); }
+      i = high;
+      high = high + 1u32;
+      mem.writeRaw(ents + usize.from(i), new Entry(0i64, 0u64, 0u64, 0u64, noEntry, noEntry, 1u32, stFree, 0u32));
+    }
+    imm p = (ents + usize.from(i)) as &mut Entry;
+    p.at = at;
+    p.token = token;
+    p.seq = seq;
+    p.next = noEntry;
+    p.prev = noEntry;
+    seq = seq + 1u64;
+    live = live + 1u32;
+    i;
+  }
+
+  // An entry back on the free list, its generation moved on so that no id
+  // of the timer it held names it again
+  fn release(self &mut, i u32) {
+    imm p = (ents + usize.from(i)) as &mut Entry;
+    p.gen = if p.gen == 4294967295u32 {1u32;} else {p.gen + 1u32;};
+    p.state = stFree;
+    p.next = free;
+    free = i;
+    live = live - 1u32;
+  }
+
+  fn grow(self &mut) {
+    imm want = if cap == 0u32 {64u32;} else {cap * 2u32;};
+    imm fresh = libc.realloc(ents as *u8, usize.from(want) * mem.sizeof[Entry]());
+    if fresh as usize == 0usize { panic("timewheel: out of memory"); }
+    ents = fresh as *Entry;
+    cap = want;
+  }
+
+  // Put entry i, whose fire tick is after elapsed, in its slot
+  fn place(self &mut, i u32) {
+    imm p = (ents + usize.from(i)) as &mut Entry;
+    imm lvl = levelFor(elapsed, p.fire);
+    imm slot = (p.fire >> (slotBits * lvl)) & slotMask;
+    imm k = usize.from(lvl * 64u64 + slot);
+    imm h = heads[k];
+    p.state = stWheel;
+    p.pos = u32.from(k);
+    p.prev = noEntry;
+    p.next = h;
+    if h != noEntry { ((ents + usize.from(h)) as &mut Entry).prev = i; }
+    heads[k] = i;
+    occ[usize.from(lvl)] = occ[usize.from(lvl)] | (1u64 << slot);
+  }
+
+  // Take entry i out of its slot's list
+  fn unlink(self &mut, i u32) {
+    imm p = (ents + usize.from(i)) as &Entry;
+    imm k = usize.from(p.pos);
+    if p.prev != noEntry {
+      ((ents + usize.from(p.prev)) as &mut Entry).next = p.next;
+    }
+    else {
+      heads[k] = p.next;
+      if p.next == noEntry {
+        imm lvl = k / 64usize;
+        occ[lvl] = occ[lvl] & ~(1u64 << u64.from(k % 64usize));
+      }
+    }
+    if p.next != noEntry {
+      ((ents + usize.from(p.next)) as &mut Entry).prev = p.prev;
+    }
+  }
+
+  // The tick of a level's next occupied slot, or noTick if it is empty
+  fn levelNext(self &, lvl u64) u64 {
+    imm bits = occ[usize.from(lvl)];
+    if bits == 0u64 { return noTick; }
+    imm shift = slotBits * lvl;
+    imm nowSlot = (elapsed >> shift) & slotMask;
+    imm slotRange = 1u64 << shift;
+    imm levelRange = slotRange << slotBits;
+    imm levelStart = elapsed & ~(levelRange - 1u64);
+    // The slots after now's, in this turn of the level: none after the last
+    // slot, where the shift is by 64
+    imm ahead = bits >> (nowSlot + 1u64);
+    if ahead != 0u64 {
+      return levelStart + (nowSlot + 1u64 + lowestBit(ahead)) * slotRange;
+    }
+    // Else the first in its next turn, now's own slot included. Only the
+    // top level gets here: a timer a span or more off, held at the top
+    // level in its slot's next turn (which is never after it)
+    levelStart + levelRange + lowestBit(bits) * slotRange;
+  }
+
+  // The next tick the wheel needs, or noTick
+  fn wheelNext(self &) u64 {
+    mut best = noTick;
+    mut lvl = 0u64;
+    while lvl < u64.from(levels) {
+      imm d = self.levelNext(lvl);
+      if d < best { best = d; }
+      lvl = lvl + 1u64;
+    }
+    best;
+  }
+
+  // The wheel reaches tick d, a slot's start at level lvl: each of the
+  // slot's timers due by d fires, and the rest move down a level
+  fn process(self &mut, lvl u64, d u64) {
+    imm slot = (d >> (slotBits * lvl)) & slotMask;
+    imm k = usize.from(lvl * 64u64 + slot);
+    mut i = heads[k];
+    heads[k] = noEntry;
+    occ[usize.from(lvl)] = occ[usize.from(lvl)] & ~(1u64 << slot);
+    elapsed = d;
+    while i != noEntry {
+      imm p = (ents + usize.from(i)) as &Entry;
+      imm nx = p.next;
+      if p.fire <= d {
+        self.deliver(i);
+      }
+      else {
+        self.place(i);
+        cascaded = cascaded + 1u64;
+      }
+      i = nx;
+    }
+  }
+
+  // Entry i fires: into the batch, and back to the free list
+  fn deliver(self &mut, i u32) {
+    imm p = (ents + usize.from(i)) as &Entry;
+    if batchLen == batchCap {
+      imm want = if batchCap == 0u32 {64u32;} else {batchCap * 2u32;};
+      imm size = usize.from(want) * mem.sizeof[Expiry]();
+      imm b = libc.realloc(batch as *u8, size);
+      imm s = libc.realloc(spare as *u8, size);
+      if b as usize == 0usize or s as usize == 0usize { panic("timewheel: out of memory"); }
+      batch = b as *Expiry;
+      spare = s as *Expiry;
+      batchCap = want;
+    }
+    *(batch + usize.from(batchLen)) = new Expiry(new TimerId(i, p.gen), p.token, Instant.fromNanos(p.at), p.seq);
+    batchLen = batchLen + 1u32;
+    self.release(i);
+  }
+
+  // ----- The precise set: a binary heap of entries, by deadline then seq -----
+
+  fn before(self &, a u32, b u32) Bool {
+    imm pa = (ents + usize.from(a)) as &Entry;
+    imm pb = (ents + usize.from(b)) as &Entry;
+    pa.at < pb.at or (pa.at == pb.at and pa.seq < pb.seq);
+  }
+
+  fn heapSet(self &mut, pos u32, i u32) {
+    *(heap + usize.from(pos)) = i;
+    imm p = (ents + usize.from(i)) as &mut Entry;
+    p.pos = pos;
+  }
+
+  fn heapPush(self &mut, i u32) {
+    if heapLen == heapCap {
+      imm want = if heapCap == 0u32 {16u32;} else {heapCap * 2u32;};
+      imm fresh = libc.realloc(heap as *u8, usize.from(want) * 4usize);
+      if fresh as usize == 0usize { panic("timewheel: out of memory"); }
+      heap = fresh as *u32;
+      heapCap = want;
+    }
+    ((ents + usize.from(i)) as &mut Entry).state = stPrecise;
+    heapLen = heapLen + 1u32;
+    self.heapSet(heapLen - 1u32, i);
+    self.siftUp(heapLen - 1u32);
+  }
+
+  // Take the entry at pos out of the heap
+  fn heapRemove(self &mut, pos u32) {
+    heapLen = heapLen - 1u32;
+    if pos == heapLen { return; }
+    imm last = *(heap + usize.from(heapLen));
+    self.heapSet(pos, last);
+    self.siftDown(pos);
+    self.siftUp(pos);
+  }
+
+  fn siftUp(self &mut, from u32) {
+    mut pos = from;
+    imm i = *(heap + usize.from(pos));
+    while pos > 0u32 {
+      imm parent = (pos - 1u32) / 2u32;
+      imm pi = *(heap + usize.from(parent));
+      if !self.before(i, pi) { break; }
+      self.heapSet(pos, pi);
+      pos = parent;
+    }
+    self.heapSet(pos, i);
+  }
+
+  fn siftDown(self &mut, from u32) {
+    mut pos = from;
+    imm i = *(heap + usize.from(pos));
+    while true {
+      imm l = pos * 2u32 + 1u32;
+      if l >= heapLen { break; }
+      mut c = l;
+      imm r = l + 1u32;
+      if r < heapLen and self.before(*(heap + usize.from(r)), *(heap + usize.from(l))) { c = r; }
+      imm ci = *(heap + usize.from(c));
+      if !self.before(ci, i) { break; }
+      self.heapSet(pos, ci);
+      pos = c;
+    }
+    self.heapSet(pos, i);
+  }
+
+  // Its death: the blocks go; pending timers simply never fire
+  fn final(self &uni) {
+    libc.free(ents as *u8);
+    libc.free(heap as *u8);
+    libc.free(batch as *u8);
+    libc.free(spare as *u8);
+  }
+}

@@ -1,0 +1,96 @@
+// A lock permission with a read lock: the sync package's Rwlock in an Arc,
+// 'Arc[Rwlock, T]'. A read-only borrow through it, '&*s', takes a read lock,
+// which other readers share; one that may write, '&mut *s', takes the write
+// lock, which nobody else holds at once.
+//
+// Two reader threads each borrow the settings read-only and, holding the
+// borrow, count themselves inside and wait for main's word. Main waits until
+// both are inside at once, which only a shared read lock allows: had the read
+// borrows excluded each other, the second could never get in, and the run
+// would time out. Then main starts a writer, which borrows mutably. Main
+// sleeps 20 ms and checks that the writer has not got in: it waits while any
+// reader holds the lock, however long that is, so it is still outside
+// whatever the timing. Main gives the word; each reader reads the scale, 10,
+// leaves, and its borrow's end gives its read lock back; the writer gets in,
+// finds nobody inside, and sets the scale to 20, which main reads last.
+//
+// Worked out by hand: inside together 2; the writer waited; the readers saw
+// 10 and 10; the writer saw 0 readers inside; the scale is then 20.
+
+mod region_lockperm_rwlock;
+
+import stdio use *;
+import thread;
+import time;
+import sync use Arc, Rwlock;
+
+struct Settings {
+  pub scale u64;
+}
+alias Shared = Arc[Rwlock, Settings];
+
+// How many readers hold their borrow, main's word to the readers, and
+// whether the writer has its borrow
+imm inside Atomic[u32];
+imm release Atomic[Bool];
+imm writerIn Atomic[Bool];
+
+fn @initpure init() {
+  inside = Atomic[u32].of(0u32);
+  release = Atomic[Bool].of(false);
+  writerIn = Atomic[Bool].of(false);
+}
+
+fn reader(s Shared) u64 {
+  imm r = &*s;                 // a read lock, shared
+  inside.add(1u32);
+  while !release.load() {
+    thread.yieldNow();
+  }
+  imm seen = r.scale;
+  inside.sub(1u32);
+  seen;
+}                              // the borrow ends: the read lock is given back
+
+fn writer(s Shared) u32 {
+  imm w = &mut *s;             // the write lock, once every reader is out
+  writerIn.store(true);
+  imm readers = inside.load();
+  w.scale = 20u64;
+  readers;
+}
+
+fn main() {
+  initAll();
+  imm s = new Shared(10u64);
+  imm a = thread.start(s, &reader);
+  imm b = thread.start(s, &reader);
+  while inside.load() < 2u32 {
+    thread.yieldNow();
+  }
+  printStr("readers inside together ");
+  printInt(i64.from(inside.load()));
+  printStr("\n");
+
+  imm w = thread.start(s, &writer);
+  thread.sleep(time.Duration.fromMillis(20));
+  if writerIn.load() {
+    printStr("the writer got in beside the readers\n");
+  }
+  else {
+    printStr("the writer waited\n");
+  }
+  release.store(true);
+  imm seenA = a.join();
+  imm seenB = b.join();
+  imm readers = w.join();
+  printStr("readers saw ");
+  printInt(i64.from(seenA));
+  printStr(" ");
+  printInt(i64.from(seenB));
+  printStr("\nwriter saw ");
+  printInt(i64.from(readers));
+  printStr(" readers inside\nscale ");
+  printInt(i64.from((&*s).scale));
+  printStr("\n");
+}

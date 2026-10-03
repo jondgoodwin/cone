@@ -16,29 +16,11 @@ struct Counter {
   pub fn doubled(self) i32 {n + n;}
 }
 
-// A borrow needs a place in memory to point at. A computed value has none.
-// Where a variable's initializer borrows one ('imm r = &(a + 1);'), the
-// temporary becomes a hidden local lasting to the end of the block, as Rust
-// extends it (lifetime_mix_temp_borrow_extended); so each borrow here is a
-// statement of its own, which extends nothing.
-fn borrowComputed() {
-  mut a = 3;
-  &(a + 1);              //~ ErrorBadLval:7 "May not borrow a temporary value"
-}
-
-// Nor does a literal, which the compiler is free to keep in the instruction
-fn borrowLiteral() {
-  &5;                    //~ ErrorBadLval:4 "May not borrow a temporary value"
-}
-
-// A borrow applies to the whole suffixed term, so '&c.doubled()' borrows what
-// the method returned rather than the receiver it was called on. That is a
-// temporary, and '(&c).doubled()' is how a method is called on a borrowed
-// receiver.
-fn borrowMethodResult() {
-  mut c = new Counter(3);
-  &c.doubled();          //~ ErrorBadLval:5 "May not borrow a temporary value"
-}
+// A borrow of a computed value, a literal, a method's result ('&c.doubled()'
+// borrows what the method returned, not 'c') or a construction borrows a
+// temporary, kept to the end of its statement, or of its block where a
+// variable's initializer extends it, as Rust keeps one: none is refused here
+// (lifetime_mix_temp_borrowed_argument, lifetime_mix_temp_borrow_extended).
 
 // '&g[i]' hands the type's own '&[]' the read-only borrow '&g' as its receiver.
 // A '&[]' declaring 'self &mut' refuses it, as a read-only reference is refused
@@ -61,12 +43,6 @@ fn borrowIndexReadOnlyValue() {
 fn borrowIndexReadOnlyParam(g &Grid, i usize) {
   imm r = &g[i];         //~ ErrorNoCandidate:13 "hands `&[]` a read-only receiver"
   imm v = g[i];
-}
-
-// A constructed literal is a temporary too, so a reference type's own literal
-// syntax is not a way to allocate one
-fn borrowConstructed() {
-  &new Counter(4);       //~ ErrorBadLval:4 "May not borrow a temporary value"
 }
 
 // Dereference needs a reference or a pointer. A number is neither.

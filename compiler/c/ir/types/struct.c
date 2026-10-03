@@ -29,6 +29,7 @@ StructNode *newStructNode(Name *namesym) {
     snode->lifecycle = NULL;
     snode->vtable = NULL;
     snode->genericinfo = NULL;
+    snode->lifeparms = NULL;
     snode->tagnbr = 0;
     snode->tagstate = TagNonNeg;
     snode->spans = NULL;
@@ -1790,19 +1791,17 @@ static StructNode *structPrivacyEnum(INode *type) {
     return structEnclosingEnum(node);
 }
 
-// The enum is the privacy boundary for its variants: code written anywhere
-// inside its braces -- its own methods and static functions, and every
-// variant's methods -- sees the private members of the enum and of every
-// variant, through any value, not only through 'self'. An extension sees what
-// its base's code sees, the base's own variants included, and so on down a
-// chain; its copies are its own variants. Nothing else widens: a sibling
-// extension's are its own, and a base does not see what an extension adds.
+// An enum's extension is inside its base's boundary, wherever it is declared:
+// code written inside the extension's braces sees the private members of the
+// base and of the base's own variants, through any value, and so on down a
+// chain; its copies are its own variants. A sibling extension's are its own,
+// and a base does not see what an extension adds, unless the module rule
+// (structSeesPrivate) grants it.
 //
 // The code is the function being checked, and its owner is the type it is
 // written in: a method cloned into a variant or a copy is owned by the clone's
-// type, and an instance's by the instance. A function owned by a module -- a
-// free function, an anonymous one, or the instance of a generic function
-// instantiated from inside the enum -- is outside every enum's braces.
+// type, and an instance's by the instance. A function owned by a module is
+// inside no enum's braces.
 int structEnumSeesPrivate(TypeCheckState *pstate, INode *type) {
     if (pstate == NULL || pstate->fn == NULL)
         return 0;
@@ -1818,18 +1817,24 @@ int structEnumSeesPrivate(TypeCheckState *pstate, INode *type) {
     return 0;
 }
 
-// A member not 'pub' is private to its type, not to a value of it
-// (refstruct.html): the type's own methods and static functions reach it
-// through any value of the type -- a local, a parameter, a borrow written out
-// -- as they do through 'self'. The code is the function being checked and its
-// owner the type it is written in, found as structEnumSeesPrivate finds it: an
-// instance of a generic type owns its clones, so it sees the privates of that
-// instance's values and not another instance's. A function the module owns,
-// or another type's, sees none, save by the enum's boundary.
+// A member not 'pub' is private to the module that declares its type, the
+// boundary a private name of the module has (refmodule.html): every function,
+// method and type of that module reaches it through any value of the type --
+// a local, a parameter, a field, a borrow -- in any of the module's files. A
+// sister or a submodule is another module and sees none. The code is the
+// function being checked, or, where there is none (a field's default), the type
+// being checked; its module is the nearest one its owners reach, so an
+// anonymous function or a closure sees what the module it is written in sees.
+// An enum's extension declared in another module also sees its base's
+// (structEnumSeesPrivate).
 int structSeesPrivate(TypeCheckState *pstate, INode *type) {
-    if (pstate == NULL || pstate->fn == NULL || type == NULL)
+    if (pstate == NULL || type == NULL)
         return 0;
-    if (inodeGetOwner((INode*)pstate->fn) == type)
+    INode *site = pstate->fn ? (INode*)pstate->fn : pstate->typenode;
+    if (site == NULL)
+        return 0;
+    ModuleNode *typemod = dclInfoGetModule(type);
+    if (typemod != NULL && typemod == dclInfoGetModule(site))
         return 1;
     return structEnumSeesPrivate(pstate, type);
 }
@@ -2498,7 +2503,8 @@ void structSetDropFn(StructNode *node) {
     BlockNode *block = newBlockNode();
     // Pub, because the value may be dropped wherever it travels: the
     // symbol is reached from any module that holds one of these.
-    FnDclNode *newdropfn = newFnDclNode(dropName, FlagMethFld | FlagPub, (INode*)fnsig, (INode*)block);
+    // Named '-drop', not 'drop', since 'drop' is a method any type may declare
+    FnDclNode *newdropfn = newFnDclNode(typeDropName, FlagMethFld | FlagPub, (INode*)fnsig, (INode*)block);
     inodeLexCopy((INode*)newdropfn, (INode*)node);
     // Built lowered, so it carries the mark a check would have left, and
     // the walk over this type's members (structCheckMembers) passes it by
@@ -2555,7 +2561,7 @@ void structSetEnumDropFn(StructNode *node) {
     FnSigNode *fnsig = newFnSigNode();
     nodesAdd(&fnsig->parms, selfDcl);
     fnsig->rettype = (INode*)newVoidNode();
-    FnDclNode *dropfn = newFnDclNode(dropName, FlagPub, (INode*)fnsig, (INode*)newBlockNode());
+    FnDclNode *dropfn = newFnDclNode(typeDropName, FlagPub, (INode*)fnsig, (INode*)newBlockNode());
     inodeLexCopy((INode*)dropfn, (INode*)node);
     dropfn->flags |= TypeChecked;
     nodelistAdd(&node->nodelist, (INode*)dropfn);
@@ -2567,7 +2573,7 @@ void structSetEnumDropFn(StructNode *node) {
 // a struct's (structSetDropFn) -- whose body generation builds from the layout,
 // rather than a type's own 'final' standing as its drop?
 int structIsGeneratedDropFn(INode *fn) {
-    if (fn->tag != FnDclTag || ((FnDclNode*)fn)->namesym != dropName)
+    if (fn->tag != FnDclTag || ((FnDclNode*)fn)->namesym != typeDropName)
         return 0;
     INode *owner = ((FnDclNode*)fn)->dclinfo.owner;
     return owner && owner->tag == StructTag && ((StructNode*)owner)->dropfn == fn;
@@ -2714,6 +2720,256 @@ static void structWait(Nodes **queue, StructNode *node) {
     nodesAdd(queue, (INode*)node);
 }
 
+// The layouts of types holding values by value now in flight, outermost first:
+// what a by-value cycle is named from. 'structValueBase' sets aside those a
+// function's signature was demanded inside, which it does not hold by value.
+static Nodes *structLayoutStack = NULL;
+static uint32_t structValueBase = 0;
+
+void structLayoutBegin(INode *type) {
+    if (structLayoutStack == NULL)
+        structLayoutStack = newNodes(16);
+    nodesAdd(&structLayoutStack, type);
+    structLayoutEnter();
+}
+
+void structLayoutEnd(void) {
+    --structLayoutStack->used;
+    structLayoutExit();
+}
+
+int structValueInFlight(void) {
+    return structLayoutStack != NULL && structLayoutStack->used > structValueBase;
+}
+
+uint32_t structValueHold(void) {
+    uint32_t base = structValueBase;
+    structValueBase = structLayoutStack ? structLayoutStack->used : 0;
+    return base;
+}
+
+void structValueRelease(uint32_t base) {
+    structValueBase = base;
+}
+
+// Append ' contains <name>' for a type the cycle passes through, counting it. An
+// array or a tuple is part of the type holding it, and is not named on its own.
+static void structCycleCat(char *buf, size_t size, INode *type, uint32_t *named) {
+    INode *dcl = itypeGetTypeDcl(type);
+    if (dcl->tag != StructTag)
+        return;
+    size_t used = strlen(buf);
+    snprintf(buf + used, size - used, "%scontains %s", used ? " " : "", itypeName(dcl));
+    ++*named;
+}
+
+char *structLayoutCycle(INode *root, INode *entry, INode **hops, uint32_t nhops) {
+    static char buf[512];
+    if (structLayoutStack == NULL)
+        return NULL;
+    // Searched from the innermost: a type is on the stack once
+    int32_t pos;
+    for (pos = (int32_t)structLayoutStack->used - 1; pos >= 0; --pos) {
+        if (nodesGet(structLayoutStack, pos) == entry)
+            break;
+    }
+    if (pos < 0)
+        return NULL;
+    buf[0] = '\0';
+    uint32_t named = 0;
+    if (entry != root)
+        structCycleCat(buf, sizeof(buf), entry, &named);
+    for (uint32_t i = (uint32_t)pos + 1; i < structLayoutStack->used; ++i)
+        structCycleCat(buf, sizeof(buf), nodesGet(structLayoutStack, i), &named);
+    for (uint32_t i = 0; i < nhops; ++i)
+        structCycleCat(buf, sizeof(buf), hops[i], &named);
+    structCycleCat(buf, sizeof(buf), root, &named);
+    size_t used = strlen(buf);
+    snprintf(buf + used, sizeof(buf) - used,
+        " by value: infinite size. Break the cycle by holding %s through a reference",
+        named > 1 ? "one of them" : "it");
+    return buf;
+}
+
+// -------- A reference does not demand its target --------
+//
+// A reference is one or two pointers whatever it points at, so its size never
+// needs its target's layout, and laying a reference out does not lay out its
+// target. Demanding it there made a non-cycle look like one, depending on the
+// order the declarations are written in: a struct below the enum whose variant
+// holds '&W', W holding the enum by value, was refused as a variant still being
+// laid out, and above the enum it compiled. So while a layout is in flight,
+// whatever a reference's target reaches that a layout settles -- a struct, an
+// instance of a generic, an array's element size, a signature's lifetimes, what
+// a key may hold -- waits until no layout is: the layouts first, then the checks
+// that read them, then, as before, every type's members. Only by-value containment
+// demands a layout: a field, an array's element, a tuple's element, a variant's
+// payload. See compiler/c/doc/phases/type-check.md, "A reference does not demand
+// its target".
+static uint32_t structTargetDepth = 0;
+
+void structTargetEnter(void) {
+    ++structTargetDepth;
+}
+
+void structTargetExit(void) {
+    --structTargetDepth;
+}
+
+int structTargetDeferring(void) {
+    return structTargetDepth > 0;
+}
+
+uint32_t structTargetSuspend(void) {
+    uint32_t depth = structTargetDepth;
+    structTargetDepth = 0;
+    return depth;
+}
+
+void structTargetResume(uint32_t depth) {
+    structTargetDepth = depth;
+}
+
+typedef struct {
+    StructDeferFn fn;
+    INode *node;
+    void *extra;
+    TypeCheckState state;
+    uint32_t instdepth;     // How deep in generic expansion it was left waiting
+} StructDeferred;
+
+typedef struct {
+    StructDeferred *jobs;
+    uint32_t used;
+    uint32_t avail;
+    uint32_t next;
+} StructDeferQueue;
+
+// Layouts a reference's target left waiting, and the checks that read them
+static StructDeferQueue structLayoutsWaiting = {NULL, 0, 0, 0};
+static StructDeferQueue structChecksWaiting = {NULL, 0, 0, 0};
+
+static void structDeferAdd(StructDeferQueue *queue, TypeCheckState *pstate, StructDeferFn fn, INode *node, void *extra) {
+    if (queue->used == queue->avail) {
+        uint32_t avail = queue->avail ? queue->avail * 2 : 16;
+        StructDeferred *jobs = (StructDeferred *)memAllocBlk(avail * sizeof(StructDeferred));
+        if (queue->used)
+            memcpy(jobs, queue->jobs, queue->used * sizeof(StructDeferred));
+        queue->jobs = jobs;
+        queue->avail = avail;
+    }
+    StructDeferred *job = &queue->jobs[queue->used++];
+    job->fn = fn;
+    job->node = node;
+    job->extra = extra;
+    job->instdepth = genericInstantiateDepth();
+    if (pstate)
+        job->state = *pstate;
+    else {
+        job->state.typenode = NULL;
+        job->state.fn = NULL;
+        job->state.scope = 0;
+        job->state.extend = NULL;
+    }
+}
+
+void structDeferLayout(TypeCheckState *pstate, StructDeferFn fn, INode *node, void *extra) {
+    structDeferAdd(&structLayoutsWaiting, pstate, fn, node, extra);
+}
+
+void structDeferCheck(TypeCheckState *pstate, StructDeferFn fn, INode *node, void *extra) {
+    structDeferAdd(&structChecksWaiting, pstate, fn, node, extra);
+}
+
+// Run the next job, if there is one. It is copied out first: running it may add
+// to the queue, which may move it.
+static int structDeferRunNext(StructDeferQueue *queue) {
+    if (queue->next >= queue->used)
+        return 0;
+    StructDeferred job = queue->jobs[queue->next++];
+    if (job.fn) {
+        // An instance laid out later is as deep in expansion as where it was
+        // made, so an expansion through references is bounded as one through
+        // values is (genericInstantiateEnter)
+        uint32_t instdepth = genericInstantiateDepth();
+        genericInstantiateDepthSet(job.instdepth);
+        job.fn(&job.state, job.node, job.extra);
+        genericInstantiateDepthSet(instdepth);
+    }
+    return 1;
+}
+
+static void structDeferReset(StructDeferQueue *queue) {
+    queue->used = 0;
+    queue->next = 0;
+}
+
+// A struct a reference's target reached, laid out now unless something has
+// laid it out since
+static void structTargetLayout(TypeCheckState *pstate, INode *node, void *extra) {
+    inodeTypeCheckAny(pstate, &node);
+}
+
+void structTargetWait(TypeCheckState *pstate, INode *node) {
+    structDeferLayout(pstate, structTargetLayout, node, NULL);
+}
+
+// Arrays checked as a reference's target, whose element's size and flags wait
+// for its layout: each is finished once, by its check or by a by-value use
+static Nodes *structArraysWaiting = NULL;
+
+static int structArrayTake(INode *array) {
+    if (structArraysWaiting == NULL)
+        return 0;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(structArraysWaiting, cnt, nodesp)) {
+        if (*nodesp == array) {
+            *nodesp = NULL;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void structArrayFinish(TypeCheckState *pstate, INode *array, void *extra) {
+    if (structArrayTake(array))
+        arrayTypeFinish((ArrayNode *)array);
+}
+
+void structArrayWait(TypeCheckState *pstate, INode *array) {
+    if (structArraysWaiting == NULL)
+        structArraysWaiting = newNodes(8);
+    nodesAdd(&structArraysWaiting, array);
+    structDeferCheck(pstate, structArrayFinish, array, NULL);
+}
+
+void structTypeSettle(TypeCheckState *pstate, INode *type) {
+    if (structTargetDeferring() || type == NULL || !isTypeNode(type))
+        return;
+    INode *dcl = itypeGetTypeDcl(type);
+    switch (dcl->tag) {
+    case StructTag:
+        if (!(dcl->flags & (TypeChecking | TypeChecked)))
+            inodeTypeCheckAny(pstate, &dcl);
+        break;
+    case ArrayTag:
+        structTypeSettle(pstate, arrayElemType(dcl));
+        if (structArrayTake(dcl))
+            arrayTypeFinish((ArrayNode *)dcl);
+        break;
+    case TTupleTag: {
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodesFor(((TupleNode *)dcl)->elems, cnt, nodesp))
+            structTypeSettle(pstate, *nodesp);
+        break;
+    }
+    default:
+        break;
+    }
+}
+
 // Is this a closed set -- an enum, or an instance of one -- whose variants its
 // size and its move and thread properties come from?
 static int structIsClosedSet(StructNode *node) {
@@ -2850,6 +3106,11 @@ static void structCheckMembers(StructNode *node) {
     tstate.scope = 0;
     tstate.extend = NULL;
 
+    // Every borrow a struct declaring lifetimes holds is of one of them. Asked
+    // once every layout is done: a field's reference does not lay out what it
+    // points at, and whether that holds a borrow is read from its layout.
+    lifeStructCheck(node);
+
     // A generated drop fn carries its mark already, and is passed by. An atomic
     // value refused for what it holds has its methods passed by too: each
     // would refuse the same type again, in words about its body rather than
@@ -2878,12 +3139,18 @@ static void structCheckMembers(StructNode *node) {
     // 'RegionRef' requires nothing an ordinary requirement can state: each region
     // method is optional, with a fixed shape where declared. 'Traced' says
     // something only of a region ref, which regionRefCheck holds to its 'mark',
-    // and so does 'ThreadSafe'.
+    // and so does 'ThreadSafe', but for a lock permission, where it says the
+    // lock is for owners on several threads. 'LockPermission' holds the struct
+    // to the methods a borrow calls (lockPermCheck).
+    int lockperm = structDeclaresTrait(node, lockPermTrait);
+    if (lockperm)
+        lockPermCheck(node);
     if (regionIsRegionRef((INode*)node))
         regionRefCheck(node);
     else {
         regionTracedUseCheck(node);
-        regionThreadSafeUseCheck(node);
+        if (!lockperm)
+            regionThreadSafeUseCheck(node);
     }
 
     structCheckCopy(node);
@@ -2898,6 +3165,20 @@ static void structCheckMembers(StructNode *node) {
 // already waiting behind the ones being checked.
 static void structWorkQueues(void) {
     for (;;) {
+        // A layout or a check a reference's target left waiting is worked as a
+        // layout in flight too, so that no member is checked until all are done,
+        // and outside any reference's target
+        if (structLayoutsWaiting.next < structLayoutsWaiting.used
+            || (!(structVariantsWaiting && structVariantsNext < structVariantsWaiting->used)
+                && structChecksWaiting.next < structChecksWaiting.used)) {
+            uint32_t target = structTargetSuspend();
+            ++structLayoutDepth;
+            if (!structDeferRunNext(&structLayoutsWaiting))
+                structDeferRunNext(&structChecksWaiting);
+            --structLayoutDepth;
+            structTargetResume(target);
+            continue;
+        }
         if (structVariantsWaiting && structVariantsNext < structVariantsWaiting->used) {
             StructNode *node = (StructNode*)nodesGet(structVariantsWaiting, structVariantsNext++);
             TypeCheckState tstate;
@@ -2919,6 +3200,10 @@ static void structWorkQueues(void) {
         }
         break;
     }
+    structDeferReset(&structLayoutsWaiting);
+    structDeferReset(&structChecksWaiting);
+    if (structArraysWaiting)
+        structArraysWaiting->used = 0;
     if (structVariantsWaiting)
         structVariantsWaiting->used = 0;
     structVariantsNext = 0;

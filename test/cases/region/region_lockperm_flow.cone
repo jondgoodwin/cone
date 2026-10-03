@@ -1,0 +1,70 @@
+// What flow refuses of lock permissions: a lock-managed reference read or
+// written through without the borrow that takes its lock, and a borrow kept
+// past the guard that holds the lock.
+//
+// The reference's permission grants neither read nor write: a field read
+// through it, a field written, the whole value read, and one side of a swap
+// are each refused (ErrorLockAccess). Type check refuses a method, a lend and
+// an operator in place (region_lockperm_typecheck).
+//
+// A borrow through the reference reads through its guard, a temporary that
+// holds the lock and gives it back as it dies: at its statement's end, or at
+// the end of the block where a local's initializer made the borrow. So the
+// borrow lives no longer than the guard, and the lifetime checks and the loan
+// walk refuse what would keep it longer: a borrow returned (ErrorEscape,
+// as any borrow of a function's own temporary or local), and one stored in a
+// variable that outlives its statement's guard and used after it (ErrorFrozen),
+// whether the guard ended with its statement or the reference it locked went
+// with its block. The same borrow held to the end of the block, by a local's
+// initializer, is accepted.
+
+mod region_lockperm_flow;
+
+import sync use Arc, Mutex;
+
+struct Point {
+  pub x i32;
+  pub y i32;
+}
+
+fn readField(p Arc[Mutex, Point]) i32 {
+  p.x;                                   //~ ErrorLockAccess "May not read through a reference whose permission is the lock Mutex"
+}
+
+fn writeField(p Arc[Mutex, Point]) {
+  p.y = 4;                               //~ ErrorLockAccess "May not write through"
+}
+
+fn readWhole(p Arc[Mutex, Point]) {
+  imm v = *p;                            //~ ErrorLockAccess "May not read through"
+}
+
+fn swapped(p Arc[Mutex, Point], mut q Point) {
+  p.x <=> q.x;                           //~ ErrorLockAccess "May not write through"
+}
+
+fn returned(p Arc[Mutex, Point]) &mut Point {
+  &mut *p;                               //~ ErrorEscape
+}
+
+fn keptPastStatement(p Arc[Mutex, Point], q Arc[Mutex, Point]) {
+  mut keep = &mut *p;
+  keep = &mut *q;                        //~ ErrorFrozen "The temporary made here ends with its statement while 'keep' still holds a borrow of it"
+  keep.x = 5;
+}
+
+fn keptPastBlock(p Arc[Mutex, Point]) {
+  mut keep = &mut *p;
+  {
+    imm inner = new Arc[Mutex, Point](1, 1);
+    keep = &mut *inner;                  //~ ErrorFrozen "The temporary made here ends with its statement"
+  }
+  keep.x = 5;
+}
+
+// Accepted: held by a local's initializer to the block's end
+fn heldToBlockEnd(p Arc[Mutex, Point]) i32 {
+  imm r = &mut *p;
+  r.x = r.x + r.y;
+  r.x;
+}

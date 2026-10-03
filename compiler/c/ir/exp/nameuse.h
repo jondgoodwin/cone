@@ -23,6 +23,7 @@ typedef struct NameUseNode {
     IExpNodeHdr;
     Name *namesym;          // Pointer to the global name table entry
     INode *dclnode;         // Node that declares this name (NULL until names are resolved)
+    LifeUse *lifeuse;       // The lifetimes a type's use names ('Cursor['a]', lifetime.h), or NULL
 } NameUseNode;
 
 NameUseNode *newNameUseNode(Name *name);

@@ -234,9 +234,10 @@ loop from the header scan, and the compiler again for a direct run
 | module, a fold not re-exported | not reachable from outside, and not folded on | `importFoldItem`, `fnCallNameResPath` |
 | module tree | a sister is reached by name, never by a path that walked to her file | `parseImport` |
 | modules and packages | no loop of dependencies — imports, `extends`, containment | `pgmModuleOrder`; Congo's `build_order` and `check_module_loops` |
-| type, member not `pub` | not reachable except from the type's own code, through any value of the type (a generic's instance, through a value of that instance) — or, for an enum and its variants, from code inside the enum's braces or an extension's | `fnCallLowerMethod`, `structSeesPrivate` |
-| type, field not `pub` | not settable from outside by the implicit init (`new Point(...)`) or a variant's literal — an enum's braces, and an extension's, being inside | `typeLitStructReorder`, `structEnumSeesPrivate` |
-| type, `init` not `pub` | no construction by it from outside the type's own code | `typeLitNewCheck`, `structSeesPrivate` |
+| type, member not `pub` | not reachable from outside the module that declares the type, through any value — but from an enum's extension, wherever declared | `fnCallLowerMethod`, `structSeesPrivate` |
+| type, field not `pub` | not settable from outside the type's module by the implicit init (`new Point(...)`) or a variant's literal | `typeLitStructReorder`, `structSeesPrivate` |
+| type, `init` not `pub` | no construction by it from outside the type's module | `typeLitNewCheck`, `structSeesPrivate` |
+| `pub` type, `pub` field | names no type private to the module | `fieldDclNameRes` (`ErrorPubFieldPrivType`) |
 | any namespace | no duplicate name, whatever the kind | `namespaceAdd`, `modAddNamedNode` |
 
 Visibility is checked against **the spelling the caller used**, which is why a
@@ -301,8 +302,8 @@ discipline — unstructured concurrency being "similar to GOTO." What exists
 below it is library code, the `thread` package: OS threads started on a
 function and one moved value, joined through an owning handle, and the futex
 the blocking layers are to be built on; and the `actors` package, a runtime of
-mailboxes and a work-stealing scheduler, which runs actors written by hand in
-the shape an `actor` declaration is to generate. It is ground a thread layer
+mailboxes and a work-stealing scheduler, which runs the actors an `actor`
+declaration declares, their messages one-way. It is ground a thread layer
 would be built on, not that layer.
 
 ## Hazards

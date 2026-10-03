@@ -1,0 +1,397 @@
+// ---- Works: jobs in flight, and their completions delivered ----
+
+// A submitted job, plain data: the number its Completion carries
+pub struct Ticket {
+  pub id u64;
+
+  pub fn none() Ticket { new Ticket(0u64); }
+  pub fn isNone(self) Bool { id == 0u64; }
+  pub fn `==`(self, o Ticket) Bool { id == o.id; }
+  pub fn `!=`(self, o Ticket) Bool { id != o.id; }
+}
+
+// Where a job's one Completion goes, and the token it carries back, which
+// gpuwork hands back and never reads. Here: to the Works' own 'poll' (and
+// 'wait'), found when the job's frame is done. Loop: an iocore operation
+// ('lp.external', or 'onLoop'), whose Completer the Works' watcher ends
+// when the GPU has finished the job, so that its answer is delivered into
+// that iocore Loop, to the operation's own target, waking a poll that
+// sleeps; the Completion, the buffers in it, comes from 'poll' as a Here
+// job's does (see the package's header, DELIVERY INTO AN IOCORE LOOP). An
+// actor is a later target; adding one changes only this.
+pub enum Target {
+  pub token u64;
+  pub struct Here {}
+  pub struct Loop {pub completer iocore.Completer;}
+}
+
+// A Target delivering into iocore Loop 'lp': an external operation there
+// whose answer goes to 'to', 'token' the gpuwork Completion's
+pub fn onLoop(lp &mut iocore.Loop, to iocore.Target, token u64 = 0u64) Target {
+  Target.Loop[token, lp.external(to, IoBuf.empty())];
+}
+
+// The same, the operation in cancel group 'group' and answered TimedOut at
+// 'deadline' (iocore.forever() for the group's alone)
+pub fn onLoopIn(lp &mut iocore.Loop, to iocore.Target, group iocore.CancelGroup, deadline Instant,
+    token u64 = 0u64) Target {
+  Target.Loop[token, lp.externalIn(to, IoBuf.empty(), group, deadline)];
+}
+
+// The Windows error number of a Loop job's iocore answer, Failed, for a job
+// something was refused in (or submitted in a later frame), which did not
+// run: ERROR_INVALID_PARAMETER
+pub const ERROR_JOB_REFUSED = 87u32;
+
+// ...and for a job whose fence the watcher could not wait for (the device
+// lost): ERROR_GEN_FAILURE
+pub const ERROR_JOB_LOST = 31u32;
+
+// A job's one answer: its ticket and token; whether it ran ('ok': false for
+// a job something was refused in, which did not run); its buffers back, in
+// the slots they had in the job; the frame it ran in; and when it was
+// submitted and when its completion was seen
+pub struct Completion {
+  pub ticket Ticket;
+  pub token u64;
+  pub ok Bool;
+  pub buffers List[Buffer];
+  pub frame u64;
+  pub submitted Instant;
+  pub completed Instant;
+
+  // How many buffers it holds
+  pub fn count(self &) u32 { u32.from(buffers.len()); }
+
+  // Take the buffer in slot 'slot' out of it (Buffer.none() is left there,
+  // and given for a slot it does not have)
+  pub fn take(self &mut, slot u32) Buffer {
+    mut b = Buffer.none();
+    imm s = usize.from(slot);
+    if s < buffers.len() {
+      imm r = &mut buffers[s];
+      b <=> *r;
+    }
+    b;
+  }
+
+  // The words of the buffer in slot 'slot', one the job read back
+  // ('job.readback'); none for a slot it does not have, or a buffer that
+  // was not read back
+  pub fn words(self &, slot u32) List[u32] {
+    if usize.from(slot) >= buffers.len() { return List[u32].empty(); }
+    wordsOf(buffers[usize.from(slot)]);
+  }
+}
+
+// A job in flight: what its Completion will be made of
+struct InFlight {
+  ticket Ticket;
+  token u64;
+  frame u64;
+  ok Bool;
+  submitted Instant;
+  buffers List[Buffer];
+  groups List[BindGroup];
+  live Bool;
+  watched Bool;      // a Loop job: done once the watcher has seen its fence
+  seq u64;           // ...the watcher's count of jobs then
+}
+
+// ---- The watcher: the thread that waits on Loop jobs' fences ----
+
+// What the watcher counts, shared with its Works
+struct WatchState {
+  watched Atomic[u64];   // Loop jobs whose fences it has seen signalled, in submission order
+  tick Atomic[u32];      // moved on with each, the futex word 'waitFor' sleeps on
+  stopped Atomic[u32];   // 1 once it has ended, every fence given it waited for
+}
+
+// A Loop job handed to the watcher: its own fence, its target (holding the
+// Completer), its ticket, and whether it was submitted to run; or, 'stop',
+// the Works' end
+struct Watch {
+  fence Option[Fence];
+  to Target;
+  ticket u64;
+  ran Bool;
+  stop Bool;
+}
+
+struct WatchArgs {
+  rx Receiver[Watch];
+  state Arc[imm, WatchState];
+}
+
+// The watcher's thread: each Loop job, in the order submitted, waited for
+// on its own fence, counted done, and its iocore operation ended; until the
+// Works ends. Answers how many it saw.
+fn watch(args WatchArgs) u32 {
+  mut a = args;
+  mut seen = 0u32;
+  mut more = true;
+  while more {
+    match a.rx.recv() {
+      case mut m Some {
+        if m.value.stop {
+          more = false;
+        } else {
+          settle(&mut m.value, a.state);
+          seen = seen + 1u32;
+        }
+      }
+      case is None[Watch] { more = false; }
+    }
+  }
+  a.state.stopped.store(1u32);
+  sync.futexWakeAll(&a.state.stopped);
+  seen;
+}
+
+// Wait for one Loop job's fence, count it done (before its answer, so that
+// a loop woken by the answer finds its Completion in 'poll'), and end its
+// operation: Done with the ticket; Cancelled if its cancel was asked, since
+// a job on the GPU cannot be stopped, only answered when it has finished;
+// Failed for a job that did not run or whose fence could not be waited for
+fn settle(w &mut Watch, state Arc[imm, WatchState]) {
+  mut fence Option[Fence] = None[Fence][];
+  fence <=> w.fence;
+  mut to Target = Target.Here[0u64];
+  to <=> w.to;
+  mut signalled = false;
+  match &fence {
+    case imm f &Some[Fence] { signalled = f.value.waitSignalled(0xFFFFFFFFFFFFFFFFu64); }
+    else {}
+  }
+  state.watched.add(1u64);
+  state.tick.add(1u32);
+  sync.futexWakeAll(&state.tick);
+  match &mut to {
+    case mut l &mut Loop {
+      if !w.ran {
+        l.completer.fail(ERROR_JOB_REFUSED);
+      } elif !signalled {
+        l.completer.fail(ERROR_JOB_LOST);
+      } elif l.completer.isCancelRequested() {
+        l.completer.cancelled();
+      } else {
+        l.completer.done(usize.from(w.ticket));
+      }
+    }
+    else {}
+  }
+}
+
+// Jobs in flight on one device, and their completions: one Works for each
+// thread that submits (as a CommandEncoder is one thread's). Each job
+// submitted gets exactly one Completion, through 'poll' or 'wait'. A Works
+// with Loop jobs has a watcher thread, started with the first; its end
+// waits for the watcher to have seen every fence and ended every operation,
+// and must come before its Device's, as its buffers' ends must.
+pub struct Works {
+  jobs List[InFlight];
+  retired List[List[BindGroup]];   // of jobs complete, ended once nothing is in flight
+  lastId u64;
+  tx Sender[Watch];                // to the watcher
+  rx Receiver[Watch];              // the watcher's, until it is started
+  state Arc[imm, WatchState];
+  watcher Option[thread.Thread[u32]];
+  started Bool;
+  watcherId u32;                   // its OS thread id, 0 until it is started
+  sent u64;                        // Loop jobs handed to the watcher
+
+  pub fn make() Works {
+    mut tx Sender[Watch];
+    mut rx Receiver[Watch];
+    tx, rx = Channel[Watch].make();
+    new Works(List[InFlight].empty(), List[List[BindGroup]].empty(), 0u64, tx, rx,
+      new Arc[imm, WatchState](new WatchState(Atomic[u64].of(0u64), Atomic[u32].of(0u32), Atomic[u32].of(0u32))),
+      None[thread.Thread[u32]][], false, 0u32, 0u64);
+  }
+
+  // How many jobs are submitted whose Completion is still to come
+  pub fn inFlight(self &) usize { jobs.len(); }
+
+  // The watcher's OS thread id, 0 while it is not started: diagnostics
+  pub fn watcherThread(self &) u32 { watcherId; }
+
+  // Submit 'job': its commands go to the device's queue, and its buffers
+  // with it, until its Completion hands them back to the target 'to'. A job
+  // something was refused in (or recorded in an earlier frame) is not run:
+  // it completes not ok, its buffers back, when the frame it was recorded
+  // in is done, as a job that ran would (uploads into its buffers made in
+  // that frame are still the frame's, and a buffer dropped before they are
+  // made would leave them copying into nothing). A Loop job's commands
+  // signal a fence of their own, which the watcher waits for: it is complete
+  // when the GPU has finished it, with no wait for its frame to end; one
+  // whose iocore operation was answered already (its group cancelled, its
+  // deadline past) is not run either.
+  pub fn submit(self &mut, device &mut Device, job Job, to Target) Ticket {
+    mut j = job;
+    lastId = lastId + 1u64;
+    imm ticket = new Ticket(lastId);
+    mut ok = !j.failed;
+    if ok and j.frame != device.frameNumber {
+      fail("submit: the job was recorded in an earlier frame");
+      ok = false;
+    }
+    imm token = to.token;
+    mut isLoop = false;
+    mut answered = false;
+    match &to {
+      case imm l &Loop {
+        isLoop = true;
+        answered = !l.completer.isLive();
+      }
+      else {}
+    }
+    mut seq = 0u64;
+    if isLoop {
+      if answered { ok = false; }
+      mut fence = device.createFence();
+      if ok { ok = device.queue.submitSignalling(j.encoder.finish(), &mut fence); }
+      // Not run: the fence still waits for its frame's uploads so far
+      if !ok { device.queue.signal(&mut fence); }
+      seq = sent;
+      sent = sent + 1u64;
+      self.startWatcher();
+      tx.send(new Watch(Some[Fence][fence], to, ticket.id, ok, false));
+    } elif ok {
+      ok = device.queue.submit(j.encoder.finish());
+    }
+    mut buffers = List[Buffer].empty();
+    buffers <=> j.buffers;
+    mut groups = List[BindGroup].empty();
+    groups <=> j.groups;
+    jobs.push(new InFlight(ticket, token, j.frame, ok, Instant.now(), buffers, groups, true, isLoop, seq));
+    ticket;
+  }
+
+  // Start the watcher, if it is not
+  fn startWatcher(self &mut) {
+    if started { return; }
+    started = true;
+    mut spareTx Sender[Watch];
+    mut spareRx Receiver[Watch];
+    spareTx, spareRx = Channel[Watch].make();
+    spareRx <=> rx;
+    imm t = thread.startWith[WatchArgs, u32](new thread.Options(name: "gpuwork watcher"),
+      new WatchArgs(spareRx, state), &watch);
+    watcherId = t.id();
+    watcher = Some[thread.Thread[u32]][t];
+  }
+
+  // Whether the GPU has finished job 'e'
+  fn isDone(self &, device &Device, k usize) Bool {
+    if jobs[k].watched { jobs[k].seq < state.watched.load(); } else { device.frameDone(jobs[k].frame); }
+  }
+
+  // Wait until the watcher has seen the Loop job numbered 'seq'
+  fn waitWatched(self &, seq u64) {
+    while true {
+      imm t = state.tick.load();
+      if seq < state.watched.load() { return; }
+      sync.futexWait(&state.tick, t);
+    }
+  }
+
+  // End the device's frame if a job in flight that waits for its frame (a
+  // Here job) was recorded in it, so that the GPU finishes it: for a
+  // program with no swapchain, whose frames nothing else ends. (A program
+  // that presents leaves this to 'present'; a Loop job needs no frame end.)
+  pub fn flush(self &mut, device &mut Device) {
+    mut k = 0usize;
+    while k < jobs.len() {
+      if !jobs[k].watched and jobs[k].frame == device.frameNumber {
+        device.endFrame();
+        return;
+      }
+      k = k + 1usize;
+    }
+  }
+
+  // Append to 'out' the Completion of every job the GPU has finished, in
+  // the order submitted, and answer how many. Never waits: for a frame loop,
+  // once a frame (and when a Loop job's iocore answer wakes it).
+  pub fn poll(self &mut, device &Device, out &mut List[Completion]) usize {
+    imm now = Instant.now();
+    mut n = 0usize;
+    mut k = 0usize;
+    while k < jobs.len() {
+      if self.isDone(device, k) {
+        imm e = &mut jobs[k];
+        mut buffers = List[Buffer].empty();
+        buffers <=> e.buffers;
+        mut groups = List[BindGroup].empty();
+        groups <=> e.groups;
+        retired.push(groups);
+        out.push(new Completion(e.ticket, e.token, e.ok, buffers, e.frame, e.submitted, now));
+        e.live = false;
+        n = n + 1usize;
+      }
+      k = k + 1usize;
+    }
+    if n > 0usize { self.compact(); }
+    // A bind group's end waits for the device to be idle: only when no job
+    // of ours is in flight
+    if jobs.len() == 0usize { retired.clear(); }
+    n;
+  }
+
+  // Wait until the GPU has finished the job 'ticket' (ending its frame if it
+  // was recorded in the current one and waits for it), then poll: append to
+  // 'out' every Completion ready, its own among them, and answer how many.
+  // For tools and tests; a frame loop polls.
+  pub fn waitFor(self &mut, device &mut Device, ticket Ticket, out &mut List[Completion]) usize {
+    mut k = 0usize;
+    while k < jobs.len() {
+      if jobs[k].ticket == ticket {
+        if jobs[k].watched {
+          self.waitWatched(jobs[k].seq);
+        } else {
+          imm frame = jobs[k].frame;
+          if frame == device.frameNumber { device.endFrame(); }
+          device.waitFrame(frame);
+        }
+      }
+      k = k + 1usize;
+    }
+    self.poll(device, out);
+  }
+
+  // Wait until every job in flight is finished, and poll
+  pub fn waitAll(self &mut, device &mut Device, out &mut List[Completion]) usize {
+    self.flush(device);
+    mut k = 0usize;
+    while k < jobs.len() {
+      if jobs[k].watched { self.waitWatched(jobs[k].seq); } else { device.waitFrame(jobs[k].frame); }
+      k = k + 1usize;
+    }
+    self.poll(device, out);
+  }
+
+  // Drop the jobs delivered, keeping the order of the rest
+  fn compact(self &mut) {
+    mut to = 0usize;
+    mut k = 0usize;
+    while k < jobs.len() {
+      if jobs[k].live {
+        if to != k { jobs.swap(to, k); }
+        to = to + 1usize;
+      }
+      k = k + 1usize;
+    }
+    while jobs.len() > to { jobs.pop(); }
+  }
+
+  // Its end: the watcher, if started, is told to stop once it has seen
+  // every fence given it (each will be signalled: every one was submitted)
+  // and ended every operation, and is waited for; its thread is joined as
+  // its handle dies. A Loop job's Completion still in flight dies here, its
+  // buffers with it.
+  fn final(self &uni) {
+    if !started { return; }
+    tx.send(new Watch(None[Fence][], Target.Here[0u64], 0u64, false, true));
+    while state.stopped.load() == 0u32 { sync.futexWait(&state.stopped, 0u32); }
+  }
+}

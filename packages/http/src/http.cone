@@ -1,0 +1,297 @@
+// The http package: HTTP's messages as data, the same for every version of
+// the protocol. A request is a method, a target, an authority and header
+// fields; a response is a status and header fields; and each may have a
+// body, whose length is known, unknown, or nothing. What travels on the wire
+// is each version's own business -- HTTP/1.1's lines of text (the http1
+// package), HTTP/2's and HTTP/3's binary frames (packages to come) -- and
+// none of it is here, so the three cores take and give these same types and
+// a client above them never asks which version carried a message.
+//
+//   mod fetch;
+//   import http use *;
+//
+//   fn main() {
+//     mut req = RequestHead.make("GET", "/tiles/7/12.bin", "example.com");
+//     req.headers.add("Accept", "application/octet-stream");
+//     req.headers.add("Range", "bytes=0-65535");
+//     ...                                       // handed to a core to send
+//     match resp.headers.get("content-type") {  // names compare ignoring case
+//       case imm v Some { ... v.value ... }     // the first field's value
+//       case is None[&[]u8] { ... }
+//     }
+//     if http.isSuccess(resp.status) { ... }
+//   }
+//
+//   Method  methodOf(token)  methodToken(m)  isSafe(m)  isIdempotent(m)  (METHODS)
+//   Version: Http10, Http11, Http2, Http3
+//   reasonPhrase(code)  isInformational(code) ... isServerError(code)    (STATUS)
+//   responseHasBody(method, code)
+//   Headers  h.add(name, value)  h.set  h.remove  h.get  h.count  h.has  (FIELDS)
+//     h.hasToken(name, token)  h.joined(name)  h.len()  h.nameAt(i)  h.valueAt(i)
+//     h.copy()  h.clear()
+//   isToken(s)  checkFieldName(s)  checkFieldValue(s)  trimOws(s)
+//   RequestHead.make(method, target, authority)  RequestHead.empty()     (HEADS)
+//     r.method  r.methodName()  r.target  r.authority  r.scheme  r.version  r.headers
+//   ResponseHead.make(status)  ResponseHead.empty()
+//     r.status  r.version  r.headers
+//   BodyLength.empty()  .sized(n)  .unsized()  b.kind  b.length          (BODIES)
+//   HttpError: e.kind  e.status  e.noResponse  e.detail  e.message()     (ERRORS)
+//
+// METHODS. A method is a token, compared case-sensitively ('get' is not
+// GET). The nine RFC 9110 and RFC 5789 define are variants of Method; any
+// other token is Method.Other, and a request head keeps its spelling.
+// 'isSafe' (GET, HEAD, OPTIONS, TRACE) and 'isIdempotent' (those, PUT and
+// DELETE) are RFC 9110's section 9.2: a request may be retried
+// automatically only when its method is idempotent (the client layer's rule,
+// not a core's).
+//
+// STATUS. A status is its three-digit code, a u16. 'reasonPhrase' is the
+// RFC's phrase for the codes it registers (RFC 9110, and 103, 428, 429, 431
+// and 511 from the RFCs that added them), "" for any other. A version that
+// writes a phrase (HTTP/1.1) writes this one; a phrase received is dropped,
+// since RFC 9110 says a client should ignore it and HTTP/2 and HTTP/3 have
+// none. 'responseHasBody' is the rule every version shares: a response to
+// HEAD, and a 1xx, 204 or 304, has no body, whatever its fields say.
+//
+// FIELDS. Headers is a message's header (or trailer) fields in the order
+// they came or were added, a name repeated as often as it was: RFC 9110
+// lets a recipient join a repeated field's values with commas, but not
+// Set-Cookie's, so nothing is joined unless 'joined' is asked. Names are
+// compared ignoring ASCII case and kept as written; HTTP/2 and HTTP/3 write
+// them in lower case themselves. 'add' checks a field against RFC 9110's
+// section 5: the name a token, the value visible characters (and bytes 0x80
+// and above, obs-text) with spaces and tabs only inside it, never CR, LF or
+// NUL; a value's spaces and tabs at either end are dropped first, as they
+// are no part of it. A field that fails is not added, and 'add' says false:
+// so a Headers holds only fields any version may send. 'checkFieldName' and
+// 'checkFieldValue' say why one fails ("" when it does not), for a parser's
+// error. 'hasToken' asks whether a comma-separated list field (Connection,
+// Transfer-Encoding, Expect) has a member, ignoring case.
+//
+// HEADS. A RequestHead is the request's method, its target (the path and
+// query, '/a/b?c'), its authority ('example.com:8080': HTTP/1.1 writes it as
+// Host, HTTP/2 and HTTP/3 as ':authority'), its scheme ('http' or 'https',
+// which only HTTP/2 and HTTP/3 send) and its version (the one it travelled
+// by: a core sets it), with the header fields beside them. Host is never
+// one of its fields: a core moves it into the authority as it reads it. A
+// ResponseHead is a status and fields. Framing fields (Content-Length,
+// Transfer-Encoding) are a core's to read and write, not the program's: a
+// body's length is said with a BodyLength.
+//
+// BODIES. What a core knows of a body when its head arrives, or is told of
+// one it is to send: there is none (Empty); exactly n bytes (Sized); or
+// bytes until the stream ends (Unsized: HTTP/1.1's chunked coding or a
+// connection's close, HTTP/2's and HTTP/3's end of stream).
+//
+// ERRORS. Why an exchange or a connection failed: the kind, a closed set
+// every version can say -- Malformed (the peer broke the protocol), TooLarge
+// (a configured bound was passed), Unsupported (something this
+// implementation does not do), Closed (the connection ended mid-message),
+// TimedOut (a deadline passed); the status a server would answer it with
+// (400, 408, 431, 501, 505; 0 for none); 'noResponse', whether no byte of
+// the response had arrived, which, with an idempotent method, is when a
+// client may retry on a fresh connection (the client layer's decision); and
+// one line saying what was wrong.
+//
+// Not here yet: URLs and their parsing; typed accessors for particular
+// fields (content types, ranges, caching); cookies; a body's content
+// codings; and the request and response with their bodies, which are the
+// client layer's (httpclient).
+
+mod http;
+
+import collections use List, String;
+
+// ---------------------------------------------------------------------------
+// Methods
+// ---------------------------------------------------------------------------
+
+// A request method: one of the nine registered ones, or another token
+pub enum Method {
+  Get, Head, Post, Put, Delete, Connect, Options, Trace, Patch, Other;
+}
+
+// The Method a token names, case-sensitively; Method.Other for any other
+pub fn methodOf(token &[]u8) Method {
+  if token == "GET" {Method.Get[];}
+  elif token == "HEAD" {Method.Head[];}
+  elif token == "POST" {Method.Post[];}
+  elif token == "PUT" {Method.Put[];}
+  elif token == "DELETE" {Method.Delete[];}
+  elif token == "CONNECT" {Method.Connect[];}
+  elif token == "OPTIONS" {Method.Options[];}
+  elif token == "TRACE" {Method.Trace[];}
+  elif token == "PATCH" {Method.Patch[];}
+  else {Method.Other[];}
+}
+
+// A registered method's token; "" for Method.Other, whose spelling a
+// RequestHead keeps
+pub fn methodToken(m Method) &[]u8 {
+  if m == Method.Get[] {"GET";}
+  elif m == Method.Head[] {"HEAD";}
+  elif m == Method.Post[] {"POST";}
+  elif m == Method.Put[] {"PUT";}
+  elif m == Method.Delete[] {"DELETE";}
+  elif m == Method.Connect[] {"CONNECT";}
+  elif m == Method.Options[] {"OPTIONS";}
+  elif m == Method.Trace[] {"TRACE";}
+  elif m == Method.Patch[] {"PATCH";}
+  else {"";}
+}
+
+// Whether the method asks only to read (RFC 9110, 9.2.1)
+pub fn isSafe(m Method) Bool {
+  m == Method.Get[] or m == Method.Head[] or m == Method.Options[] or m == Method.Trace[];
+}
+
+// Whether sending the request twice does what sending it once does (RFC
+// 9110, 9.2.2): the condition for retrying it automatically
+pub fn isIdempotent(m Method) Bool {
+  isSafe(m) or m == Method.Put[] or m == Method.Delete[];
+}
+
+// ---------------------------------------------------------------------------
+// Versions
+// ---------------------------------------------------------------------------
+
+// The version a message travelled by
+pub enum Version {
+  Http10, Http11, Http2, Http3;
+}
+
+// ---------------------------------------------------------------------------
+// Status codes
+// ---------------------------------------------------------------------------
+
+pub fn isInformational(code u16) Bool {code >= 100u16 and code < 200u16;}
+pub fn isSuccess(code u16) Bool {code >= 200u16 and code < 300u16;}
+pub fn isRedirect(code u16) Bool {code >= 300u16 and code < 400u16;}
+pub fn isClientError(code u16) Bool {code >= 400u16 and code < 500u16;}
+pub fn isServerError(code u16) Bool {code >= 500u16 and code < 600u16;}
+
+// Whether a response with this status, to a request with this method, has
+// a body at all: not to HEAD, and not a 1xx, 204 or 304 (RFC 9110, 6.4.1)
+pub fn responseHasBody(method Method, code u16) Bool {
+  if method == Method.Head[] {return false;}
+  not (isInformational(code) or code == 204u16 or code == 304u16);
+}
+
+// The registered reason phrase for a status code, or ""
+pub fn reasonPhrase(code u16) &[]u8 {
+  match code {
+    case 100u16 {"Continue";}
+    case 101u16 {"Switching Protocols";}
+    case 103u16 {"Early Hints";}
+    case 200u16 {"OK";}
+    case 201u16 {"Created";}
+    case 202u16 {"Accepted";}
+    case 203u16 {"Non-Authoritative Information";}
+    case 204u16 {"No Content";}
+    case 205u16 {"Reset Content";}
+    case 206u16 {"Partial Content";}
+    case 300u16 {"Multiple Choices";}
+    case 301u16 {"Moved Permanently";}
+    case 302u16 {"Found";}
+    case 303u16 {"See Other";}
+    case 304u16 {"Not Modified";}
+    case 305u16 {"Use Proxy";}
+    case 307u16 {"Temporary Redirect";}
+    case 308u16 {"Permanent Redirect";}
+    case 400u16 {"Bad Request";}
+    case 401u16 {"Unauthorized";}
+    case 402u16 {"Payment Required";}
+    case 403u16 {"Forbidden";}
+    case 404u16 {"Not Found";}
+    case 405u16 {"Method Not Allowed";}
+    case 406u16 {"Not Acceptable";}
+    case 407u16 {"Proxy Authentication Required";}
+    case 408u16 {"Request Timeout";}
+    case 409u16 {"Conflict";}
+    case 410u16 {"Gone";}
+    case 411u16 {"Length Required";}
+    case 412u16 {"Precondition Failed";}
+    case 413u16 {"Content Too Large";}
+    case 414u16 {"URI Too Long";}
+    case 415u16 {"Unsupported Media Type";}
+    case 416u16 {"Range Not Satisfiable";}
+    case 417u16 {"Expectation Failed";}
+    case 421u16 {"Misdirected Request";}
+    case 422u16 {"Unprocessable Content";}
+    case 426u16 {"Upgrade Required";}
+    case 428u16 {"Precondition Required";}
+    case 429u16 {"Too Many Requests";}
+    case 431u16 {"Request Header Fields Too Large";}
+    case 500u16 {"Internal Server Error";}
+    case 501u16 {"Not Implemented";}
+    case 502u16 {"Bad Gateway";}
+    case 503u16 {"Service Unavailable";}
+    case 504u16 {"Gateway Timeout";}
+    case 505u16 {"HTTP Version Not Supported";}
+    case 511u16 {"Network Authentication Required";}
+    else {"";}
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Bodies
+// ---------------------------------------------------------------------------
+
+// What is known of a body's length (see the package's header, BODIES)
+pub enum BodyKind {
+  Empty, Sized, Unsized;
+}
+
+pub struct BodyLength {
+  pub kind BodyKind;
+  pub length u64;          // Sized's byte count; 0 otherwise
+
+  pub fn empty() BodyLength {new BodyLength(BodyKind.Empty[], 0u64);}
+  pub fn sized(n u64) BodyLength {new BodyLength(BodyKind.Sized[], n);}
+  pub fn unsized() BodyLength {new BodyLength(BodyKind.Unsized[], 0u64);}
+
+  pub fn isEmpty(self &) Bool {kind == BodyKind.Empty[];}
+  pub fn isSized(self &) Bool {kind == BodyKind.Sized[];}
+  pub fn isUnsized(self &) Bool {kind == BodyKind.Unsized[];}
+}
+
+// ---------------------------------------------------------------------------
+// Errors
+// ---------------------------------------------------------------------------
+
+// What kind of failure (see the package's header, ERRORS)
+pub enum ErrorKind {
+  Malformed, TooLarge, Unsupported, Closed, TimedOut;
+}
+
+// The name of an error's kind, in lower case
+pub fn kindName(k ErrorKind) &[]u8 {
+  if k == ErrorKind.Malformed[] {"malformed";}
+  elif k == ErrorKind.TooLarge[] {"too large";}
+  elif k == ErrorKind.Unsupported[] {"unsupported";}
+  elif k == ErrorKind.Closed[] {"closed";}
+  else {"timed out";}
+}
+
+// Why an exchange or a connection failed
+pub struct HttpError {
+  pub kind ErrorKind;
+  pub status u16;          // what a server answers it with, or 0
+  pub noResponse Bool;     // no byte of a response had arrived
+  pub detail String;       // what was wrong, one line
+
+  pub fn make(kind ErrorKind, status u16, detail &[]u8) HttpError {
+    new HttpError(kind, status, false, String.from(detail));
+  }
+
+  // Nothing yet: an error to swap another out with
+  pub fn empty() HttpError {new HttpError(ErrorKind.Malformed[], 0u16, false, String.empty());}
+
+  // 'malformed: a header field's name has a space before its colon'
+  pub fn message(self &) String {
+    mut out = String.from(kindName(kind));
+    out.append(": ");
+    out.append(detail.view());
+    out;
+  }
+}

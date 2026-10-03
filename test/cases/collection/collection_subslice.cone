@@ -8,7 +8,11 @@
 // through a mutable subslice seen in the array it was taken from, a slice
 // taken of a slice (its offsets are relative to it), and an empty slice at the
 // end. A subslice has the lifetime of what it was borrowed from, so a function
-// may return one of its parameter.
+// may return one of its parameter. In a nested borrow, '&m[1][0..2]' or
+// '&m[0..2][1]', the outer range or index reaches through the inner one, a
+// reference to a row or a slice of rows; conec crashed on it until generation
+// indexed through that reference rather than taking it for the borrow at the
+// chain's root.
 //
 // What a range past the end does -- a panic, as an index past the end does --
 // cannot be run: collection_bounds_subslice asserts the check in the IR.
@@ -78,7 +82,32 @@ fn arrays() {
   show("run-time-bounds", sum(&arr[lo...hi]));
 }
 
+// An element of a row in a slice of rows, borrowed, plus the row's other two
+fn rowElem(rows &[]Array[i64, 3]) i64 {
+  imm e = &rows[1][2];
+  *e + rows[1][0] + rows[1][1];
+}
+
+// A range in a nested borrow: the inner link is a reference to a row, or a
+// slice of rows, which the outer index or range reaches through
+fn nested() {
+  mut m Array[Array[i64, 3], 2] = [[1i64, 2i64, 3i64], [4i64, 5i64, 6i64]];
+  // Row 1's [0..2]: 4 + 5
+  show("range-of-a-row", sum(&m[1][0..2]));
+  // Row 1's [1..] is [5, 6], and its [1] row 1's last
+  imm w = &mut m[1][1..];
+  w[1] = 60i64;
+  show("written-through-a-row", m[1][2]);
+  // Rows [0..2], then row 1: 4 + 5 + 60
+  show("row-of-a-range", sum(&m[0..2][1]));
+  // Rows [1..], then its row 0, row 1 of m, and that row's [1..]: 5 + 60
+  show("range-of-a-row-of-a-range", sum(&m[1..][0][1..]));
+  // 60 + 4 + 5
+  show("element-of-a-row-of-a-slice", rowElem(&[]m));
+}
+
 fn main() {
   forms();
   arrays();
+  nested();
 }

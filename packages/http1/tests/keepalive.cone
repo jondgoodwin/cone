@@ -1,0 +1,325 @@
+// A client core and a server core wired to each other in memory, on virtual
+// time: what one transmits the other is handed. One connection carries 200
+// exchanges in turn (GETs of sized bodies, chunked POSTs echoed back
+// chunked, HEADs, 204s), every body checked byte for byte, both ends
+// counting every exchange and neither closing. Then the ways a connection
+// ends: the client's 'Connection: close'; the server finishing while idle;
+// a response before the request's body was sent (both ends close after
+// it); and the client aborting. And the bound on sending: sendData hands a
+// buffer back once the queue is past its watermark.
+
+mod keepalive;
+
+import testing use *;
+import collections use String;
+import time use Instant, Duration;
+import iobuf use *;
+import http use *;
+import http1 use *;
+
+fn at() Instant {Instant.fromNanos(1000000000i64);}
+
+// Everything each side has to send, handed to the other, until neither has
+// more
+fn pump(c &mut Connection, s &mut Connection) {
+  mut moved = true;
+  while moved {
+    moved = false;
+    while true {
+      imm b = c.pollTransmit(at());
+      if b.len() == 0usize {break;}
+      s.handleInput(b, at());
+      moved = true;
+    }
+    while true {
+      imm b = s.pollTransmit(at());
+      if b.len() == 0usize {break;}
+      c.handleInput(b, at());
+      moved = true;
+    }
+  }
+}
+
+// The byte at offset i of body n
+fn bodyByte(n u64, i u64) u8 {u8.from((n * 7u64 + i * 13u64) % 251u64);}
+
+fn fill(pool &Pool, n u64, len usize) IoBuf {
+  mut b = pool.mustTake(len);
+  imm room = b.whole();
+  mut i = 0usize;
+  while i < len {
+    room[i] = bodyByte(n, u64.from(i));
+    i = i + 1usize;
+  }
+  b.setLen(len);
+  b;
+}
+
+// What the server is answering
+struct Serving {
+  pub target String;
+  pub head Bool;
+  pub body String;
+  pub requests u64;
+}
+
+// The server's side of the exchange: read the request, answer it by its
+// target: '/get/N' a sized body of N mod 300 bytes, '/echo' the body back
+// chunked, '/204' no content, HEAD the length alone, '/early' a 413 at once
+fn serve(s &mut Connection, pool &Pool, sv &mut Serving) {
+  while true {
+    match s.pollEvent() {
+      case mut e Request {
+        sv.target = String.from(e.head.target.view());
+        sv.head = e.head.method == Method.Head[];
+        sv.body.clear();
+        sv.requests = sv.requests + 1u64;
+        if sv.target.equals("/early") {
+          s.sendResponse(ResponseHead.make(413u16), BodyLength.empty());
+        }
+      }
+      case mut d Data {
+        sv.body.append(d.buf.view());
+        s.release(d.buf.len());
+      }
+      case is End {
+        imm t = sv.target.view();
+        if sv.head {
+          s.sendResponse(ResponseHead.make(200u16), BodyLength.sized(1234u64));
+        } elif t == "/204" {
+          s.sendResponse(ResponseHead.make(204u16), BodyLength.empty());
+        } elif t == "/echo" {
+          s.sendResponse(ResponseHead.make(200u16), BodyLength.unsized());
+          mut b = pool.mustTake(sv.body.len() + 1usize);
+          b.append(sv.body.view());
+          s.sendData(b);
+          s.finish();
+        } elif sv.target.startsWith("/get/") {
+          mut n = 0u64;
+          mut i = 5usize;
+          while i < t.len {
+            n = n * 10u64 + u64.from(t[i] - '0');
+            i = i + 1usize;
+          }
+          imm len = usize.from(n % 300u64);
+          s.sendResponse(ResponseHead.make(200u16), BodyLength.sized(u64.from(len)));
+          if len > 0usize {s.sendData(fill(pool, n, len));}
+          s.finish();
+        }
+      }
+      case is Closed {return;}
+      case is NeedData {return;}
+      case is Paused {return;}
+      case is Failed {return;}
+      case is Response {return;}
+      case is Interim {return;}
+    }
+  }
+}
+
+// The client's side: the response's status and body, until it ends
+struct Got {
+  pub status u16;
+  pub body String;
+  pub ended Bool;
+  pub closed Bool;
+  pub failed Bool;
+}
+
+fn got() Got {new Got(0u16, String.empty(), false, false, false);}
+
+fn read(c &mut Connection, g &mut Got) {
+  while true {
+    match c.pollEvent() {
+      case mut e Response {g.status = e.head.status;}
+      case mut d Data {
+        g.body.append(d.buf.view());
+        c.release(d.buf.len());
+      }
+      case is End {g.ended = true;}
+      case is Closed {
+        g.closed = true;
+        return;
+      }
+      case is Failed {g.failed = true;}
+      case is NeedData {return;}
+      case is Paused {return;}
+      case is Request {return;}
+      case is Interim {}
+    }
+  }
+}
+
+// One exchange: the request sent, both sides driven until the response is
+// whole
+fn exchange(c &mut Connection, s &mut Connection, pool &Pool, sv &mut Serving, head RequestHead,
+    body &[]u8, chunked Bool, g &mut Got) {
+  if chunked {
+    c.sendRequest(head, BodyLength.unsized());
+    // in pieces of up to 100 bytes, each a chunk
+    mut i = 0usize;
+    while i < body.len {
+      imm e = if i + 100usize < body.len {i + 100usize;} else {body.len;};
+      mut b = pool.mustTake(e - i);
+      b.append(&body[i .. e]);
+      c.sendData(b);
+      i = e;
+    }
+    c.finish();
+  } else {
+    c.sendRequest(head, BodyLength.empty());
+  }
+  mut rounds = 0u32;
+  while not g.ended and not g.closed and rounds < 10u32 {
+    pump(c, s);
+    serve(s, pool, sv);
+    pump(c, s);
+    read(c, g);
+    rounds = rounds + 1u32;
+  }
+}
+
+fn reuse(pool &Pool) {
+  mut c = Connection.client(Config.make(), *pool, at());
+  mut s = Connection.server(Config.make(), *pool, at());
+  mut sv = new Serving(String.empty(), false, String.empty(), 0u64);
+  mut wrong = 0u64;
+  mut n = 0u64;
+  while n < 200u64 {
+    mut g = got();
+    imm kind = n % 4u64;
+    if kind == 0u64 or kind == 1u64 {
+      mut t = String.from("/get/");
+      t.appendUInt(n * 37u64);
+      exchange(&mut c, &mut s, pool, &mut sv, RequestHead.get(t.view(), "h"), "", false, &mut g);
+      imm want = usize.from((n * 37u64) % 300u64);
+      imm v = g.body.view();
+      mut ok = g.status == 200u16 and v.len == want;
+      mut i = 0usize;
+      while ok and i < v.len {
+        if v[i] != bodyByte(n * 37u64, u64.from(i)) {ok = false;}
+        i = i + 1usize;
+      }
+      if not ok {wrong = wrong + 1u64;}
+    } elif kind == 2u64 {
+      mut text = String.empty();
+      mut i = 0u64;
+      while i < n * 3u64 + 1u64 {
+        text.appendByte(u8.from(97u64 + (i + n) % 26u64));
+        i = i + 1u64;
+      }
+      exchange(&mut c, &mut s, pool, &mut sv, RequestHead.make("POST", "/echo", "h"), text.view(), true, &mut g);
+      if g.status != 200u16 or not g.body.equals(text.view()) {wrong = wrong + 1u64;}
+    } else {
+      if n % 8u64 == 3u64 {
+        exchange(&mut c, &mut s, pool, &mut sv, RequestHead.make("HEAD", "/h", "h"), "", false, &mut g);
+      } else {
+        exchange(&mut c, &mut s, pool, &mut sv, RequestHead.get("/204", "h"), "", false, &mut g);
+      }
+      if g.body.len() != 0usize or not g.ended {wrong = wrong + 1u64;}
+    }
+    if not g.ended or g.closed or g.failed {wrong = wrong + 1u64;}
+    n = n + 1u64;
+  }
+  expectUInt(wrong, 0u64, "200 exchanges on one connection, every body right");
+  expectUInt(c.exchangeCount(), 200u64, "the client counted 200");
+  expectUInt(s.exchangeCount(), 200u64, "so did the server");
+  expectUInt(sv.requests, 200u64, "200 requests read");
+  expect(c.canSendRequest() and not s.isClosed(), "and the connection is still open");
+  expect(c.bytesSent() == s.bytesReceived() and s.bytesSent() == c.bytesReceived(), "every byte sent was received");
+}
+
+fn closing(pool &Pool) {
+  {
+    mut c = Connection.client(Config.make(), *pool, at());
+    mut s = Connection.server(Config.make(), *pool, at());
+    mut sv = new Serving(String.empty(), false, String.empty(), 0u64);
+    mut g = got();
+    mut h = RequestHead.get("/get/5", "h");
+    h.headers.add("Connection", "close");
+    exchange(&mut c, &mut s, pool, &mut sv, h, "", false, &mut g);
+    pump(&mut c, &mut s);
+    read(&mut c, &mut g);
+    expect(g.ended and g.body.len() == 5usize, "the response to 'Connection: close'");
+    expect(c.isClosed() and c.shouldClose(), "the client closes after it");
+    expect(s.isClosed() and s.shouldClose(), "so does the server");
+  }
+  {
+    mut c = Connection.client(Config.make(), *pool, at());
+    mut s = Connection.server(Config.make(), *pool, at());
+    mut sv = new Serving(String.empty(), false, String.empty(), 0u64);
+    mut g = got();
+    exchange(&mut c, &mut s, pool, &mut sv, RequestHead.get("/get/9", "h"), "", false, &mut g);
+    expect(c.canSendRequest(), "kept alive");
+    c.handleInput(IoBuf.empty(), at());    // the server closed its end
+    mut g2 = got();
+    read(&mut c, &mut g2);
+    expect(g2.closed and not g2.failed, "the server finished while idle: closed, cleanly");
+    expect(not c.canSendRequest(), "and no request may follow");
+  }
+  {
+    // A request whose body the server answers before reading: both close
+    mut c = Connection.client(Config.make(), *pool, at());
+    mut s = Connection.server(Config.make(), *pool, at());
+    mut sv = new Serving(String.empty(), false, String.empty(), 0u64);
+    mut g = got();
+    c.sendRequest(RequestHead.make("POST", "/early", "h"), BodyLength.sized(100000u64));
+    pump(&mut c, &mut s);
+    serve(&mut s, pool, &mut sv);
+    expect(s.isClosed(), "the server answered before the body: it will close");
+    pump(&mut c, &mut s);
+    read(&mut c, &mut g);
+    expect(g.status == 413u16 and g.ended, "the client reads the early answer");
+    expect(c.isClosed(), "and closes: its body is abandoned");
+    mut refused = false;
+    match c.sendData(fill(pool, 0u64, 100usize)) {
+      case is Some {refused = true;}
+      case is None[IoBuf] {}
+    }
+    expect(not refused and c.queued() == 0usize, "what it still sends is dropped");
+  }
+  {
+    mut c = Connection.client(Config.make(), *pool, at());
+    c.sendRequest(RequestHead.get("/", "h"), BodyLength.empty());
+    c.abort();
+    mut g = got();
+    read(&mut c, &mut g);
+    expect(g.closed and c.shouldClose() and c.queued() == 0usize, "an abort ends it at once, its output dropped");
+  }
+}
+
+fn watermark(pool &Pool) {
+  mut cfg = Config.make();
+  cfg.writeWatermark = 10000usize;
+  mut c = Connection.client(cfg, *pool, at());
+  c.sendRequest(RequestHead.make("POST", "/up", "h"), BodyLength.unsized());
+  mut accepted = 0u64;
+  mut back = 0u64;
+  mut k = 0u64;
+  while k < 5u64 {
+    match c.sendData(fill(pool, k, 3000usize)) {
+      case is Some {back = back + 1u64;}
+      case is None[IoBuf] {accepted = accepted + 1u64;}
+    }
+    k = k + 1u64;
+  }
+  expectUInt(accepted, 3u64, "three 3000-byte chunks fit under a 10000-byte watermark with the head");
+  expectUInt(back, 2u64, "the rest are handed back");
+  expect(c.writeRoom() < 3000usize, "writeRoom says so");
+  while true {
+    imm b = c.pollTransmit(at());
+    if b.len() == 0usize {break;}
+  }
+  expectUInt(u64.from(c.writeRoom()), 10000u64, "sent: room again");
+}
+
+fn main() i32 {
+  {
+    imm pool = Pool.make();
+    reuse(&pool);
+    closing(&pool);
+    watermark(&pool);
+    expectUInt(pool.stats().lent, 0u64, "every buffer back in the pool");
+  }
+  done();
+}

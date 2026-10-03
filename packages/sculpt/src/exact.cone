@@ -1,0 +1,660 @@
+// ======== Exact arithmetic: expansions, predicates, perturbation ========
+//
+// The booleans decide every question of side, crossing and order exactly,
+// so that the same meshes give the same result on every machine: a float
+// test near zero answers differently on different hardware and compilers,
+// and a wrong answer there breaks the mesh, not just a position.
+//
+// Arithmetic is Shewchuk's ("Adaptive precision floating-point arithmetic
+// and fast robust geometric predicates", 1997): a number is an expansion, a
+// list of f64 components, smallest first, that do not overlap and sum
+// exactly to it; sums and products of expansions are exact. Zero is the
+// empty list. Every step is an f64 addition, subtraction or multiplication
+// rounded to nearest; conec emits no fused multiply-add and LLVM does not
+// contract, which the two-product trick needs (see the noise package's
+// README, "Determinism").
+//
+// A predicate first evaluates in f64 with Shewchuk's error bound, and
+// answers when the bound says the sign is certain; otherwise it computes the
+// exact value with expansions. Either way the answer is the exact sign, so
+// it never depends on which path was taken.
+//
+// Positions are f32 (mesh's), widened to f64 exactly.
+
+const Splitter = 134217729.d;                    // 2^27 + 1, for splitting an f64 in two halves
+const EpsD = 0.00000000000000011102230246251565d; // 2^-53, half an f64 ulp at 1
+const O3dErrBoundA = 0.0000000000000007771561172376096d;   // (7 + 56 eps) eps
+const CcwErrBoundA = 0.00000000000000033306690738754716d;  // (3 + 16 eps) eps
+
+// -------- error-free transformations --------
+
+// The rounding error of x = a + b (x the rounded sum)
+fn twoSumTail(a f64, b f64, x f64) f64 {
+  imm bv = x - a;
+  imm av = x - bv;
+  imm br = b - bv;
+  imm ar = a - av;
+  ar + br;
+}
+
+// The rounding error of x = a - b
+fn twoDiffTail(a f64, b f64, x f64) f64 {
+  imm bv = a - x;
+  imm av = x + bv;
+  imm br = bv - b;
+  imm ar = a - av;
+  ar + br;
+}
+
+// The high half of a, by Dekker's split (its low half is a minus it)
+fn splitHigh(a f64) f64 {
+  imm c = Splitter * a;
+  imm abig = c - a;
+  c - abig;
+}
+
+// The rounding error of x = a * b
+fn twoProductTail(a f64, b f64, x f64) f64 {
+  imm ahi = splitHigh(a);
+  imm alo = a - ahi;
+  imm bhi = splitHigh(b);
+  imm blo = b - bhi;
+  imm err1 = x - ahi * bhi;
+  imm err2 = err1 - alo * bhi;
+  imm err3 = err2 - ahi * blo;
+  alo * blo - err3;
+}
+
+// -------- expansions --------
+
+// The expansion of one f64
+fn expOf(a f64) List[f64] {
+  mut out = List[f64].empty();
+  if a != 0.d { out.push(a); }
+  out;
+}
+
+// a - b exactly
+fn expDiff(a f64, b f64) List[f64] {
+  mut out = List[f64].empty();
+  imm x = a - b;
+  imm y = twoDiffTail(a, b, x);
+  if y != 0.d { out.push(y); }
+  if x != 0.d { out.push(x); }
+  out;
+}
+
+// a * b exactly
+fn expProduct(a f64, b f64) List[f64] {
+  mut out = List[f64].empty();
+  imm x = a * b;
+  imm y = twoProductTail(a, b, x);
+  if y != 0.d { out.push(y); }
+  if x != 0.d { out.push(x); }
+  out;
+}
+
+// e + f exactly: Shewchuk's fast expansion sum, zeros dropped
+fn expAdd(e &List[f64], f &List[f64]) List[f64] {
+  imm elen = e.len();
+  imm flen = f.len();
+  mut h = List[f64].withCapacity(elen + flen);
+  if elen == 0usize {
+    mut i = 0usize;
+    while i < flen { h.push(*f[i]); i = i + 1usize; }
+    return h;
+  }
+  if flen == 0usize {
+    mut i = 0usize;
+    while i < elen { h.push(*e[i]); i = i + 1usize; }
+    return h;
+  }
+  mut ei = 0usize;
+  mut fi = 0usize;
+  mut enow = *e[0usize];
+  mut fnow = *f[0usize];
+  mut q = 0.d;
+  if (fnow > enow) == (fnow > -enow) {
+    q = enow;
+    ei = ei + 1usize;
+    if ei < elen { enow = *e[ei]; }
+  } else {
+    q = fnow;
+    fi = fi + 1usize;
+    if fi < flen { fnow = *f[fi]; }
+  }
+  if ei < elen and fi < flen {
+    mut qn = 0.d;
+    mut hh = 0.d;
+    if (fnow > enow) == (fnow > -enow) {
+      qn = enow + q;
+      hh = q - (qn - enow);
+      ei = ei + 1usize;
+      if ei < elen { enow = *e[ei]; }
+    } else {
+      qn = fnow + q;
+      hh = q - (qn - fnow);
+      fi = fi + 1usize;
+      if fi < flen { fnow = *f[fi]; }
+    }
+    q = qn;
+    if hh != 0.d { h.push(hh); }
+    while ei < elen and fi < flen {
+      if (fnow > enow) == (fnow > -enow) {
+        qn = q + enow;
+        hh = twoSumTail(q, enow, qn);
+        ei = ei + 1usize;
+        if ei < elen { enow = *e[ei]; }
+      } else {
+        qn = q + fnow;
+        hh = twoSumTail(q, fnow, qn);
+        fi = fi + 1usize;
+        if fi < flen { fnow = *f[fi]; }
+      }
+      q = qn;
+      if hh != 0.d { h.push(hh); }
+    }
+  }
+  while ei < elen {
+    imm qn = q + enow;
+    imm hh = twoSumTail(q, enow, qn);
+    ei = ei + 1usize;
+    if ei < elen { enow = *e[ei]; }
+    q = qn;
+    if hh != 0.d { h.push(hh); }
+  }
+  while fi < flen {
+    imm qn = q + fnow;
+    imm hh = twoSumTail(q, fnow, qn);
+    fi = fi + 1usize;
+    if fi < flen { fnow = *f[fi]; }
+    q = qn;
+    if hh != 0.d { h.push(hh); }
+  }
+  if q != 0.d { h.push(q); }
+  h;
+}
+
+// -e
+fn expNeg(e &List[f64]) List[f64] {
+  mut out = List[f64].withCapacity(e.len());
+  mut i = 0usize;
+  while i < e.len() { out.push(-*e[i]); i = i + 1usize; }
+  out;
+}
+
+// e - f exactly
+fn expSub(e &List[f64], f &List[f64]) List[f64] {
+  imm nf = expNeg(f);
+  expAdd(e, &nf);
+}
+
+// e * b exactly: Shewchuk's scale expansion, zeros dropped
+fn expScale(e &List[f64], b f64) List[f64] {
+  imm elen = e.len();
+  mut h = List[f64].withCapacity(2usize * elen);
+  if elen == 0usize or b == 0.d { return h; }
+  mut q = *e[0usize] * b;
+  mut hh = twoProductTail(*e[0usize], b, q);
+  if hh != 0.d { h.push(hh); }
+  mut i = 1usize;
+  while i < elen {
+    imm en = *e[i];
+    imm p1 = en * b;
+    imm p0 = twoProductTail(en, b, p1);
+    imm sum = q + p0;
+    hh = twoSumTail(q, p0, sum);
+    if hh != 0.d { h.push(hh); }
+    q = p1 + sum;
+    hh = sum - (q - p1);
+    if hh != 0.d { h.push(hh); }
+    i = i + 1usize;
+  }
+  if q != 0.d { h.push(q); }
+  h;
+}
+
+// e * f exactly
+fn expMul(e &List[f64], f &List[f64]) List[f64] {
+  mut acc = List[f64].empty();
+  if e.len() == 0usize or f.len() == 0usize { return acc; }
+  if e.len() < f.len() { return expMul(f, e); }
+  mut i = 0usize;
+  while i < f.len() {
+    imm part = expScale(e, *f[i]);
+    acc = expAdd(&acc, &part);
+    i = i + 1usize;
+  }
+  acc;
+}
+
+// The sign of an expansion: its largest component's
+fn expSign(e &List[f64]) i32 {
+  imm n = e.len();
+  if n == 0usize { return 0i32; }
+  imm top = *e[n - 1usize];
+  if top > 0.d { 1i32; } elif top < 0.d { -1i32; } else { 0i32; };
+}
+
+// An expansion's value to about f64 precision
+fn expEstimate(e &List[f64]) f64 {
+  mut s = 0.d;
+  mut i = 0usize;
+  while i < e.len() { s = s + *e[i]; i = i + 1usize; }
+  s;
+}
+
+// The determinant of the columns (a0, a1, a2), (b0, b1, b2), (c0, c1, c2):
+// a . (b x c)
+fn expDet3(a0 &List[f64], a1 &List[f64], a2 &List[f64], b0 &List[f64], b1 &List[f64], b2 &List[f64],
+    c0 &List[f64], c1 &List[f64], c2 &List[f64]) List[f64] {
+  imm m1 = expMul(b1, c2);
+  imm m2 = expMul(b2, c1);
+  imm x = expSub(&m1, &m2);
+  imm m3 = expMul(b2, c0);
+  imm m4 = expMul(b0, c2);
+  imm y = expSub(&m3, &m4);
+  imm m5 = expMul(b0, c1);
+  imm m6 = expMul(b1, c0);
+  imm z = expSub(&m5, &m6);
+  imm t1 = expMul(a0, &x);
+  imm t2 = expMul(a1, &y);
+  imm t3 = expMul(a2, &z);
+  imm s = expAdd(&t1, &t2);
+  expAdd(&s, &t3);
+}
+
+// The cross product of (a0, a1, a2) and (b0, b1, b2), into x, y, z
+fn expCross(a0 &List[f64], a1 &List[f64], a2 &List[f64], b0 &List[f64], b1 &List[f64], b2 &List[f64],
+    x &mut List[f64], y &mut List[f64], z &mut List[f64]) {
+  imm m1 = expMul(a1, b2);
+  imm m2 = expMul(a2, b1);
+  *x = expSub(&m1, &m2);
+  imm m3 = expMul(a2, b0);
+  imm m4 = expMul(a0, b2);
+  *y = expSub(&m3, &m4);
+  imm m5 = expMul(a0, b1);
+  imm m6 = expMul(a1, b0);
+  *z = expSub(&m5, &m6);
+}
+
+// -------- orientation --------
+
+// The orientation of d against the triangle (a, b, c): (b - a) x (c - a) .
+// (d - a), positive when d is on the side the triangle faces (its corners
+// counterclockwise seen from there), negative behind it, 0 in its plane;
+// its sign exactly. Shewchuk's orient3d with the opposite sign.
+pub fn orient3dSign(a DVec3, b DVec3, c DVec3, d DVec3) i32 {
+  imm adx = b.x - a.x;
+  imm ady = b.y - a.y;
+  imm adz = b.z - a.z;
+  imm bdx = c.x - a.x;
+  imm bdy = c.y - a.y;
+  imm bdz = c.z - a.z;
+  imm cdx = d.x - a.x;
+  imm cdy = d.y - a.y;
+  imm cdz = d.z - a.z;
+  imm bdxcdy = bdx * cdy;
+  imm cdxbdy = cdx * bdy;
+  imm cdxady = cdx * ady;
+  imm adxcdy = adx * cdy;
+  imm adxbdy = adx * bdy;
+  imm bdxady = bdx * ady;
+  imm det = adz * (bdxcdy - cdxbdy) + bdz * (cdxady - adxcdy) + cdz * (adxbdy - bdxady);
+  imm perm = (absd(bdxcdy) + absd(cdxbdy)) * absd(adz) + (absd(cdxady) + absd(adxcdy)) * absd(bdz)
+    + (absd(adxbdy) + absd(bdxady)) * absd(cdz);
+  imm bound = O3dErrBoundA * perm;
+  if det > bound { return 1i32; }
+  if -det > bound { return -1i32; }
+  imm e = orient3dExact(a, b, c, d);
+  expSign(&e);
+}
+
+// The same orientation as an exact expansion
+fn orient3dExact(a DVec3, b DVec3, c DVec3, d DVec3) List[f64] {
+  imm ax = expDiff(b.x, a.x);
+  imm ay = expDiff(b.y, a.y);
+  imm az = expDiff(b.z, a.z);
+  imm bx = expDiff(c.x, a.x);
+  imm bY = expDiff(c.y, a.y);
+  imm bz = expDiff(c.z, a.z);
+  imm cx = expDiff(d.x, a.x);
+  imm cy = expDiff(d.y, a.y);
+  imm cz = expDiff(d.z, a.z);
+  expDet3(&ax, &ay, &az, &bx, &bY, &bz, &cx, &cy, &cz);
+}
+
+// The orientation of c against the line from a to b in the plane: (b - a) x
+// (c - a), positive when a, b, c run counterclockwise; its sign exactly
+pub fn orient2dSign(ax f64, ay f64, bx f64, bY f64, cx f64, cy f64) i32 {
+  imm detleft = (ax - cx) * (bY - cy);
+  imm detright = (ay - cy) * (bx - cx);
+  imm det = detleft - detright;
+  mut detsum = 0.d;
+  if detleft > 0.d {
+    if detright <= 0.d { return signd(det); }
+    detsum = detleft + detright;
+  } elif detleft < 0.d {
+    if detright >= 0.d { return signd(det); }
+    detsum = -detleft - detright;
+  } else {
+    return signd(det);
+  }
+  imm bound = CcwErrBoundA * detsum;
+  if det >= bound or -det >= bound { return signd(det); }
+  imm acx = expDiff(ax, cx);
+  imm bcy = expDiff(bY, cy);
+  imm acy = expDiff(ay, cy);
+  imm bcx = expDiff(bx, cx);
+  imm l = expMul(&acx, &bcy);
+  imm r = expMul(&acy, &bcx);
+  imm e = expSub(&l, &r);
+  expSign(&e);
+}
+
+fn signd(a f64) i32 {if a > 0.d {1i32;} elif a < 0.d {-1i32;} else {0i32;};}
+
+// -------- symbolic perturbation --------
+//
+// The second mesh of a boolean is moved by an infinitesimal amount, so that
+// no vertex lies exactly on a face of the other, no edge exactly meets an
+// edge, and no face lies exactly in another's plane: the whole result is
+// then decided as if the meshes were in general position, and every
+// decision is consistent with every other, because they are all the signs
+// of one real (if infinitesimally moved) configuration.
+//
+// A point is p + eps u + T: u a direction of its own (the mesh's vertex's
+// outward direction, or its reverse) and T = (eta, eta^2, eta^3) a
+// translation shared by every moved point, with eps and eta positive and
+// infinitesimal, eta smaller than any power of eps. An unmoved point has u =
+// 0 and no T. An orientation of four such points is then a polynomial
+//
+//   C0 + C1 eps + C2 eps^2 + C3 eps^3 + eta Gx(eps) + eta^2 Gy(eps) + eta^3 Gz(eps)
+//
+// (each G of degree 2), and its sign is the sign of its first coefficient
+// that is not 0, in that order: C0 is the unmoved orientation, so the
+// perturbation only ever decides an exact tie. The translation T alone is
+// enough for any orientation whose four points do not all lie in a plane
+// for every translation: a vertex against a face that is a real triangle,
+// and two edges that cross a plane in turn (two parallel edges never come to
+// be tested, since an edge crossing a plane is not parallel to it). The
+// directions u choose which way a tie goes: outward makes coplanar faces of
+// a union overlap and a cutter flush with a face cut through it.
+
+// A point under perturbation: its place, its own direction u, and whether
+// it takes the shared translation T (1) or not (0)
+struct PPoint {
+  pub p DVec3;
+  pub u DVec3;
+  pub moved i32;
+}
+
+// The sign of the orientation of p3 against (p0, p1, p2), perturbed
+fn porientSign(p0 &PPoint, p1 &PPoint, p2 &PPoint, p3 &PPoint) i32 {
+  imm s = orient3dSign(p0.p, p1.p, p2.p, p3.p);
+  if s != 0i32 { return s; }
+  imm cs = porientCoeffs(p0, p1, p2, p3);
+  coeffSign(&cs);
+}
+
+// The sign of the first coefficient that is not 0 (0 if none is)
+fn coeffSign(cs &List[List[f64]]) i32 {
+  mut i = 0usize;
+  while i < cs.len() {
+    imm s = expSign(cs[i]);
+    if s != 0i32 { return s; }
+    i = i + 1usize;
+  }
+  0i32;
+}
+
+// The orientation's 13 coefficients, in the order they decide the sign:
+// C0, C1, C2, C3, Gx0, Gx1, Gx2, Gy0, Gy1, Gy2, Gz0, Gz1, Gz2 (Gk the
+// eps^k coefficient of G)
+fn porientCoeffs(p0 &PPoint, p1 &PPoint, p2 &PPoint, p3 &PPoint) List[List[f64]] {
+  // Columns: d_i the places from p0, e_i the directions, t_i the translation
+  imm d1x = expDiff(p1.p.x, p0.p.x);
+  imm d1y = expDiff(p1.p.y, p0.p.y);
+  imm d1z = expDiff(p1.p.z, p0.p.z);
+  imm d2x = expDiff(p2.p.x, p0.p.x);
+  imm d2y = expDiff(p2.p.y, p0.p.y);
+  imm d2z = expDiff(p2.p.z, p0.p.z);
+  imm d3x = expDiff(p3.p.x, p0.p.x);
+  imm d3y = expDiff(p3.p.y, p0.p.y);
+  imm d3z = expDiff(p3.p.z, p0.p.z);
+  imm e1x = expDiff(p1.u.x, p0.u.x);
+  imm e1y = expDiff(p1.u.y, p0.u.y);
+  imm e1z = expDiff(p1.u.z, p0.u.z);
+  imm e2x = expDiff(p2.u.x, p0.u.x);
+  imm e2y = expDiff(p2.u.y, p0.u.y);
+  imm e2z = expDiff(p2.u.z, p0.u.z);
+  imm e3x = expDiff(p3.u.x, p0.u.x);
+  imm e3y = expDiff(p3.u.y, p0.u.y);
+  imm e3z = expDiff(p3.u.z, p0.u.z);
+  imm t1 = p1.moved - p0.moved;
+  imm t2 = p2.moved - p0.moved;
+  imm t3 = p3.moved - p0.moved;
+
+  mut out = List[List[f64]].withCapacity(13usize);
+  out.push(expDet3(&d1x, &d1y, &d1z, &d2x, &d2y, &d2z, &d3x, &d3y, &d3z));
+  imm c1a = expDet3(&e1x, &e1y, &e1z, &d2x, &d2y, &d2z, &d3x, &d3y, &d3z);
+  imm c1b = expDet3(&d1x, &d1y, &d1z, &e2x, &e2y, &e2z, &d3x, &d3y, &d3z);
+  imm c1c = expDet3(&d1x, &d1y, &d1z, &d2x, &d2y, &d2z, &e3x, &e3y, &e3z);
+  imm c1ab = expAdd(&c1a, &c1b);
+  out.push(expAdd(&c1ab, &c1c));
+  imm c2a = expDet3(&d1x, &d1y, &d1z, &e2x, &e2y, &e2z, &e3x, &e3y, &e3z);
+  imm c2b = expDet3(&e1x, &e1y, &e1z, &d2x, &d2y, &d2z, &e3x, &e3y, &e3z);
+  imm c2c = expDet3(&e1x, &e1y, &e1z, &e2x, &e2y, &e2z, &d3x, &d3y, &d3z);
+  imm c2ab = expAdd(&c2a, &c2b);
+  out.push(expAdd(&c2ab, &c2c));
+  out.push(expDet3(&e1x, &e1y, &e1z, &e2x, &e2y, &e2z, &e3x, &e3y, &e3z));
+
+  // G = t1 (c2 x c3) + t2 (c3 x c1) + t3 (c1 x c2), c_i = d_i + eps e_i
+  mut g0x = List[f64].empty();
+  mut g0y = List[f64].empty();
+  mut g0z = List[f64].empty();
+  mut g1x = List[f64].empty();
+  mut g1y = List[f64].empty();
+  mut g1z = List[f64].empty();
+  mut g2x = List[f64].empty();
+  mut g2y = List[f64].empty();
+  mut g2z = List[f64].empty();
+  if t1 != 0i32 {
+    addCrossTerms(t1, &d2x, &d2y, &d2z, &e2x, &e2y, &e2z, &d3x, &d3y, &d3z, &e3x, &e3y, &e3z,
+      &mut g0x, &mut g0y, &mut g0z, &mut g1x, &mut g1y, &mut g1z, &mut g2x, &mut g2y, &mut g2z);
+  }
+  if t2 != 0i32 {
+    addCrossTerms(t2, &d3x, &d3y, &d3z, &e3x, &e3y, &e3z, &d1x, &d1y, &d1z, &e1x, &e1y, &e1z,
+      &mut g0x, &mut g0y, &mut g0z, &mut g1x, &mut g1y, &mut g1z, &mut g2x, &mut g2y, &mut g2z);
+  }
+  if t3 != 0i32 {
+    addCrossTerms(t3, &d1x, &d1y, &d1z, &e1x, &e1y, &e1z, &d2x, &d2y, &d2z, &e2x, &e2y, &e2z,
+      &mut g0x, &mut g0y, &mut g0z, &mut g1x, &mut g1y, &mut g1z, &mut g2x, &mut g2y, &mut g2z);
+  }
+  out.push(g0x);
+  out.push(g1x);
+  out.push(g2x);
+  out.push(g0y);
+  out.push(g1y);
+  out.push(g2y);
+  out.push(g0z);
+  out.push(g1z);
+  out.push(g2z);
+  out;
+}
+
+// G += t ((a + eps a') x (b + eps b')): a x b to G0, a' x b + a x b' to G1,
+// a' x b' to G2
+fn addCrossTerms(t i32, ax &List[f64], ay &List[f64], az &List[f64], apx &List[f64], apy &List[f64], apz &List[f64],
+    bx &List[f64], bY &List[f64], bz &List[f64], bpx &List[f64], bpy &List[f64], bpz &List[f64],
+    g0x &mut List[f64], g0y &mut List[f64], g0z &mut List[f64], g1x &mut List[f64], g1y &mut List[f64], g1z &mut List[f64],
+    g2x &mut List[f64], g2y &mut List[f64], g2z &mut List[f64]) {
+  mut x = List[f64].empty();
+  mut y = List[f64].empty();
+  mut z = List[f64].empty();
+  expCross(ax, ay, az, bx, bY, bz, &mut x, &mut y, &mut z);
+  addSigned(g0x, &x, t);
+  addSigned(g0y, &y, t);
+  addSigned(g0z, &z, t);
+  expCross(apx, apy, apz, bx, bY, bz, &mut x, &mut y, &mut z);
+  addSigned(g1x, &x, t);
+  addSigned(g1y, &y, t);
+  addSigned(g1z, &z, t);
+  expCross(ax, ay, az, bpx, bpy, bpz, &mut x, &mut y, &mut z);
+  addSigned(g1x, &x, t);
+  addSigned(g1y, &y, t);
+  addSigned(g1z, &z, t);
+  expCross(apx, apy, apz, bpx, bpy, bpz, &mut x, &mut y, &mut z);
+  addSigned(g2x, &x, t);
+  addSigned(g2y, &y, t);
+  addSigned(g2z, &z, t);
+}
+
+// acc += t v, t one of -1, 1
+fn addSigned(acc &mut List[f64], v &List[f64], t i32) {
+  if t > 0i32 {
+    *acc = expAdd(acc, v);
+  } else {
+    *acc = expSub(acc, v);
+  }
+}
+
+// The coefficients of a product of two perturbed values, a polynomial in eps
+// and eta: a's and b's coefficients are in the order porientCoeffs gives
+// (eta power j, eps power k), and the product's are in the same order of
+// (j, k), j up to 6 and k up to 6, each the sum of the products whose powers
+// add to it. Only the sign matters, and that comes from the first
+// coefficient not 0 in (j, k) order.
+fn pproductSign(a &List[List[f64]], b &List[List[f64]], c &List[List[f64]], d &List[List[f64]]) i32 {
+  // The sign of a b - c d
+  mut j = 0usize;
+  while j <= 6usize {
+    mut k = 0usize;
+    while k <= 6usize {
+      mut acc = List[f64].empty();
+      mut ja = 0usize;
+      while ja <= j and ja <= 3usize {
+        imm jb = j - ja;
+        if jb <= 3usize {
+          mut ka = 0usize;
+          while ka <= k {
+            imm kb = k - ka;
+            imm ia = coeffIndex(ja, ka);
+            imm ib = coeffIndex(jb, kb);
+            if ia != NoIndex and ib != NoIndex {
+              imm ab = expMul(a[usize.from(ia)], b[usize.from(ib)]);
+              imm cd = expMul(c[usize.from(ia)], d[usize.from(ib)]);
+              imm diff = expSub(&ab, &cd);
+              acc = expAdd(&acc, &diff);
+            }
+            ka = ka + 1usize;
+          }
+        }
+        ja = ja + 1usize;
+      }
+      imm s = expSign(&acc);
+      if s != 0i32 { return s; }
+      k = k + 1usize;
+    }
+    j = j + 1usize;
+  }
+  0i32;
+}
+
+// Where the coefficient of eta^j eps^k sits in porientCoeffs' list, or
+// NoIndex when there is none
+fn coeffIndex(j usize, k usize) u32 {
+  if j == 0usize {
+    if k <= 3usize { return u32.from(k); }
+    return NoIndex;
+  }
+  if k <= 2usize { return u32.from(4usize + 3usize * (j - 1usize) + k); }
+  NoIndex;
+}
+
+// -------- rounding --------
+
+// The f32 next above x
+fn f32Up(x f32) f32 {
+  if x == 0. { return 1u32 as f32; }
+  imm b = x as u32;
+  if x > 0. { (b + 1u32) as f32; } else { (b - 1u32) as f32; };
+}
+
+// The f32 next below x
+fn f32Down(x f32) f32 {
+  if x == 0. { return 2147483649u32 as f32; }
+  imm b = x as u32;
+  if x > 0. { (b - 1u32) as f32; } else { (b + 1u32) as f32; };
+}
+
+// The f32 nearest n / w (n and w expansions, w not 0), ties to even: the
+// exact quotient rounded once, so the same rational always gives the same
+// f32, however it was written
+fn roundQuotient(n &List[f64], w &List[f64]) f32 {
+  if n.len() == 0usize { return 0.; }
+  mut num = List[f64].empty();
+  mut den = List[f64].empty();
+  if expSign(w) < 0i32 {
+    num = expNeg(n);
+    den = expNeg(w);
+  } else {
+    num = copyList(n);
+    den = copyList(w);
+  }
+  mut c = f32.from(expEstimate(&num) / expEstimate(&den));
+  mut steps = 0u32;
+  while steps < 64u32 {
+    imm lo = f32Down(c);
+    imm hi = f32Up(c);
+    imm mlo = (f64.from(lo) + f64.from(c)) * 0.5d;
+    imm mhi = (f64.from(c) + f64.from(hi)) * 0.5d;
+    // n / w against each midpoint: the sign of n - m w
+    imm slo = midSign(&num, &den, mlo);
+    if slo < 0i32 {
+      c = lo;
+    } else {
+      imm shi = midSign(&num, &den, mhi);
+      if shi > 0i32 {
+        c = hi;
+      } else {
+        if slo == 0i32 and ((c as u32) & 1u32) != 0u32 { return lo; }
+        if shi == 0i32 and ((c as u32) & 1u32) != 0u32 { return hi; }
+        return c;
+      }
+    }
+    steps = steps + 1u32;
+  }
+  c;
+}
+
+// The sign of n - m w
+fn midSign(n &List[f64], w &List[f64], m f64) i32 {
+  imm mw = expScale(w, -m);
+  imm d = expAdd(n, &mw);
+  expSign(&d);
+}
+
+// The point on the segment p to q where an orientation that is a at p and b
+// at q (a and b not both 0, opposite signs or one of them 0) is 0:
+// (q a - p b) / (a - b), each coordinate rounded once to the nearest f32
+fn crossingPoint(p DVec3, q DVec3, a &List[f64], b &List[f64]) Vec3 {
+  imm w = expSub(a, b);
+  new Vec3(crossingCoord(p.x, q.x, a, b, &w), crossingCoord(p.y, q.y, a, b, &w), crossingCoord(p.z, q.z, a, b, &w));
+}
+
+fn crossingCoord(p f64, q f64, a &List[f64], b &List[f64], w &List[f64]) f32 {
+  if p == q { return f32.from(p); }
+  imm qa = expScale(a, q);
+  imm pb = expScale(b, p);
+  imm n = expSub(&qa, &pb);
+  roundQuotient(&n, w);
+}
+
+// How far along from p to q that point is, to f64 precision: a / (a - b)
+fn crossingParam(a &List[f64], b &List[f64]) f64 {
+  imm w = expSub(a, b);
+  imm ew = expEstimate(&w);
+  if ew == 0.d { return 0.d; }
+  expEstimate(a) / ew;
+}

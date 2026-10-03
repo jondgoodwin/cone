@@ -1,11 +1,13 @@
 // The sync package: what threads share safely, where it needs the OS. It
 // holds 'Arc', the region whose owners of one value several threads may
 // hold; the futex, the one way a thread sleeps until another wakes it; the
-// locks built on the futex: Mutex, RwLock, Condvar and Once; and the
+// locks built on the futex: Mutex, Rwlock, Condvar and Once, the first two
+// also lock permissions, 'Arc[Mutex, T]'; and the
 // channel, a pipe of values from any number of threads to one, unbounded or
 // bounded, or from one thread to one. Windows only for now: the futex's
-// three functions, a yield, a clock and a flush of every processor's stores
-// are the package's only calls to the OS.
+// three functions, a yield and a flush of every processor's stores are the
+// package's only calls to the OS. Every timeout is a Duration of the time
+// package, whose steady clock (time.Instant) the channels measure by.
 //
 // The atomic value they are built on, Atomic[T], an integer, a Bool or a raw
 // pointer changed only indivisibly, is core's, in every module without an
@@ -13,34 +15,37 @@
 // 'core::sync::atomic'). core.cone's ATOMIC VALUES section is its guide.
 //
 //   Arc            Rc whose count is atomic: 'new Arc[imm, T](...)'  (SHARED OWNERS)
-//   futexWait, futexWake, futexWakeAll                           (THE FUTEX)
+//   futexWait, futexWaitTimeout, futexWake, futexWakeAll         (THE FUTEX)
 //   Mutex          one thread at a time                          (THE LOCKS)
-//   RwLock         many readers, or one writer
+//   Rwlock         many readers, or one writer
+//   Arc[Mutex, T], Arc[Rwlock, T]  a borrow takes the lock      (LOCK PERMISSIONS)
 //   Condvar        sleep until another thread says something changed
 //   Once           a function run exactly once, however many threads ask
 //   Channel[T]     values sent by many threads, or one, taken by one
 //                                                                (CHANNELS)
+//   Oneshot[T]     one value, sent once, from one thread to one (ONE-SHOTS)
 //
 // THE FUTEX. The foundation every lock here is built on, and what the thread
 // package's parking is built on: a 32-bit atomic word that threads sleep on
 // while it holds a value, and are woken from.
 //
-// - 'sync.futexWait(&word, expected, timeoutNs)': if the word still holds
-//   'expected' -- checked by the OS atomically with going to sleep, so a
-//   change and wake made between the caller's own check and this call is not
-//   missed -- sleep until woken or until the timeout. It returns false only
-//   when the timeout passed; true when it was woken, when the word already
+// - 'sync.futexWait(&word, expected)': if the word still holds 'expected'
+//   -- checked by the OS atomically with going to sleep, so a change and
+//   wake made between the caller's own check and this call is not missed --
+//   sleep until woken. It returns when it was woken, when the word already
 //   differed, or spuriously, which the OS permits. So a caller loops:
 //
 //     while word.load() == 0u32 {
 //       sync.futexWait(&word, 0u32);
 //     }
 //
-// - 'timeoutNs' is nanoseconds, 'sync.forever' by default. It is rounded up
-//   to whole milliseconds, and its resolution is the system's timer tick, up
-//   to 15.6 ms: a 30 ms timeout may take 45. A timeout of 2^32 - 1 ms (49.7
-//   days) or more is that long, not forever. 0 checks the word and returns
-//   false at once if it still holds 'expected'.
+// - 'sync.futexWaitTimeout(&word, expected, d)': the same, sleeping at most
+//   d, a Duration of the time package. It returns false only when the
+//   timeout passed; true otherwise. The timeout is rounded up to whole
+//   milliseconds, and its resolution is the system's timer tick, up to
+//   15.6 ms: a 30 ms timeout may take 45. A timeout of 2^32 - 1 ms (49.7
+//   days) or more is that long, not forever. Zero, or a negative duration,
+//   checks the word and returns false at once if it still holds 'expected'.
 // - 'sync.futexWake(&word)' wakes one thread waiting on the word, and
 //   'futexWakeAll(&word)' every one. A wake is not remembered: with no thread
 //   waiting it does nothing, so store the new value first, then wake.
@@ -49,9 +54,9 @@
 //   wake it: the caller keeps that true. It is 32 bits because Linux's futex
 //   is. Waiting and waking reach only the threads of this process.
 //
-// THE LOCKS: Mutex, RwLock, Condvar and Once. Each is built on the futex
+// THE LOCKS: Mutex, Rwlock, Condvar and Once. Each is built on the futex
 // alone, not on the OS's own locks, as Rust's standard library has built its
-// own since 2022: each is one Atomic[u32] (RwLock, two), holds no OS handle,
+// own since 2022: each is one Atomic[u32] (Rwlock, two), holds no OS handle,
 // needs no finalizer, and may be moved while nobody holds or waits on it.
 // Their state machines are Rust's, cited at each below. Each is made unlocked
 // by 'make()', and every operation takes it by any reference, even 'imm', as
@@ -66,15 +71,40 @@
 //     lock.unlock();
 //   }
 //
-// THESE LOCKS ARE UNCHECKED. A lock here is a plain lock, with explicit
-// 'lock()' and 'unlock()', guarding nothing the compiler can see: WHAT IT
-// PROTECTS IS THE PROGRAM'S TO KEEP. Nothing stops a thread reaching the
-// data without taking the lock, or keeping a reference to it past the unlock,
-// or forgetting to unlock, or unlocking a lock another thread holds. The
-// compiler's lock permissions -- a lock in the permission slot, 'Arc[mutex,
-// T]', where borrowing through it takes the lock and the borrow's end releases
-// it (the reference manual's lock-permission page) -- are to come, and will
-// sit on these types. Until then:
+// LOCK PERMISSIONS. Mutex and Rwlock are lock permissions too: written in
+// the permission slot of an 'Arc', the lock lives in each allocation's header
+// beside the count, and the compiler takes it and gives it back, so nothing
+// reaches the value unlocked:
+//
+//   alias Counter = Arc[Mutex, Count];
+//   imm c = new Counter(0u64);   // allocated with its Mutex, unlocked
+//   {
+//     imm n = &mut *c;           // takes the lock, waiting while another holds it
+//     n.total += 1u64;
+//   }                            // n's block ends: the lock is given back
+//   (&mut *c).total += 1u64;     // taken and given back within the statement
+//
+// The 'Arc' itself gives no access to its value: no field is read or written,
+// and no method called, except through a borrow. A borrow that may write
+// ('&mut') takes the lock alone; a read-only one ('&') takes a Mutex's one
+// lock, or a read lock of an Rwlock, which other readers share. The lock is
+// given back where the borrow's guard dies: at the end of the statement, or
+// of the block whose local's initializer borrowed it, on every way out of
+// that block. Copies of the 'Arc' cross threads as 'Arc[imm, T]' does, where
+// T may. Nothing prevents a deadlock: a thread borrowing through a Mutex it
+// already holds through another borrow sleeps forever. Core's
+// 'Rc[Rwcell, T]' is the same within one thread, where a conflicting borrow
+// panics instead of waiting. The reference manual's lock-permission page is
+// the guide. A Condvar waits on a plain Mutex only: a lock permission's lock
+// is in the header, which no program names, so no wait is offered while one
+// is held.
+//
+// PLAIN LOCKS ARE UNCHECKED. A Mutex or Rwlock held as a value is a plain
+// lock, with explicit 'lock()' and 'unlock()', guarding nothing the compiler
+// can see: WHAT IT PROTECTS IS THE PROGRAM'S TO KEEP. Nothing stops a thread
+// reaching the data without taking the lock, or keeping a reference to it
+// past the unlock, or forgetting to unlock, or unlocking a lock another thread
+// holds. So:
 //
 // - Every 'lock' is paired with one 'unlock' on the same thread, and the data
 //   is reached only between them.
@@ -96,14 +126,14 @@
 //   m.unlock()          give it up, waking a thread waiting for it
 //   m.tryLock()         take it if nobody holds it: whether it was taken
 //
-// RwLock: any number of readers at once, or one writer alone. A reader and a
+// Rwlock: any number of readers at once, or one writer alone. A reader and a
 // writer are only what the program calls them: a read lock is shared, and
 // the program keeps to reading while it holds one. A waiting writer is
 // preferred: while one waits, new readers wait too, so a stream of readers
 // cannot starve it. At most 2^30 - 2 readers may hold it at once; one more
 // ends the program.
 //
-//   RwLock.make()       an unlocked RwLock
+//   Rwlock.make()       an unlocked Rwlock
 //   l.readLock()  l.readUnlock()  l.tryReadLock()
 //   l.writeLock()  l.writeUnlock()  l.tryWriteLock()
 //
@@ -122,9 +152,9 @@
 //   Condvar.make()               a Condvar
 //   c.condWait(&m)               unlock m, sleep until notified, lock m
 //                                again. m must be locked by this thread.
-//   c.condWaitTimeout(&m, ns)    the same, sleeping at most ns nanoseconds
-//                                (as futexWait rounds them): false only if
-//                                the timeout passed
+//   c.condWaitTimeout(&m, d)     the same, sleeping at most d, a Duration
+//                                (as futexWaitTimeout rounds it): false
+//                                only if the timeout passed
 //   c.notifyOne()                wake one waiting thread
 //   c.notifyAll()                wake every waiting thread
 //
@@ -200,16 +230,19 @@
 //                            'tx <- (a, b)' sends each in turn
 //   tx.trySend(v)            send, but never waiting: Some[v] back when a
 //                            bounded channel is full, too
-//   tx.sendTimeout(v, ns)    send, waiting at most ns nanoseconds for room
+//   tx.sendTimeout(v, d)     send, waiting at most d, a Duration, for room
 //                            (the futex's resolution: it may run over by a
 //                            tick): Some[v] back when none came
 //   tx.clone()               another Sender on the same channel (not a
 //                            SoloSender: it has none)
+//   tx.isClosed()            whether the channel is closed, so that a
+//                            trySend handed back on an open channel found
+//                            it full
 //   rx.recv()              the next value, waiting while there is none;
 //                            None once the channel is closed and every value
 //                            sent has been taken
 //   rx.tryRecv()             the next value if one is there; never waits
-//   rx.recvTimeout(ns)       recv, waiting at most ns nanoseconds (the
+//   rx.recvTimeout(d)        recv, waiting at most d, a Duration (the
 //                            futex's resolution: it may run over by a tick)
 //   rx.close()               refuse every later send, handing its value
 //                            back; what was sent before still comes out
@@ -250,6 +283,37 @@
 //   needs the iteration protocol. 'select' over several channels is left out
 //   for now.
 //
+// ONE-SHOTS. A one-shot channel carries one value, once, from one thread to
+// one: the reply to a request, a synchronous call's answer (the iocore
+// package's Target.Once delivers an operation's answer on one).
+//
+//   mut tx OneshotSender[u64];
+//   mut rx OneshotReceiver[u64];
+//   tx, rx = Oneshot[u64].make();
+//   thread.start(tx, &answer);          // the sender moves to the answering thread
+//   match rx.recv() { ... }             // waits for the one value
+//
+//   Oneshot[T].make()        the two ends, a tuple as Channel's are
+//   tx.send(v)               put v in: None once it is there; Some[v] back
+//                            when a value was sent already or the receiver
+//                            has gone. Never waits. It takes tx as '&mut',
+//                            so a sender held in a field sends in place
+//   tx.isClosed()            whether a send would hand its value back
+//   rx.recv()                the value, waiting while there is none; None
+//                            when the sender went without sending, or the
+//                            value was taken already
+//   rx.recvTimeout(d)        the same, waiting at most d (a tick over, as
+//                            the futex's waits may be)
+//   rx.tryRecv()             the value if it is there; never waits
+//   rx.isReady()  rx.isClosed()
+//
+// Both ends are move types, Sendable, with no clone. A sender that dies
+// without sending closes it: its receiver, waiting or not, gets None. A
+// value sent and never taken is finalized exactly once, by whichever end
+// goes last. One allocation, a state word: a send is one swap, a receive
+// that finds the value one load, and the futex only when the receiver
+// really sleeps.
+//
 // How it is built is at the channel's own section, below. Unbounded: linked
 // blocks of 32 slots. Bounded: a ring of n cells. Both: one compare-and-swap
 // for a send, no read-modify-write for the receiver, and the futex only when
@@ -261,6 +325,7 @@
 mod sync;
 
 import libc;
+import time;
 
 // A lock misused, a channel's memory exhausted: a panic, reported at the line calling 'die'. Each message ends in
 // a line end, which the panic's own line leaves off
@@ -332,11 +397,12 @@ pub struct Arc is RegionRef, ThreadSafe {
 // ---------------------------------------------------------------------------
 // Windows: WaitOnAddress and its two wakes, the api set
 // api-ms-win-core-synch-l1-2-0, linked through Synchronization.lib, which
-// this package's congo.toml names; and, for the channels, kernel32's yield,
-// its high resolution clock and FlushProcessWriteBuffers (the single-sender
-// kind's asymmetric fence), on every link line already. They are the
-// package's only calls to the OS; a posix side (Linux's futex, sched_yield,
-// clock_gettime, membarrier) is to come beside them.
+// this package's congo.toml names; and, for the channels, kernel32's yield
+// and FlushProcessWriteBuffers (the single-sender kind's asymmetric fence),
+// on every link line already. They are the package's only calls to the OS
+// (the clock the channels measure their timeouts by is the time package's);
+// a posix side (Linux's futex, sched_yield, membarrier) is to come beside
+// them.
 // ---------------------------------------------------------------------------
 
 extern {
@@ -345,8 +411,6 @@ extern {
   fn @c(system) WakeByAddressAll(address *u32);
   fn @c(system) GetLastError() u32;
   fn @c(system) SwitchToThread() i32;
-  fn @c(system) QueryPerformanceCounter(count *i64) i32;
-  fn @c(system) QueryPerformanceFrequency(freq *i64) i32;
   fn @c(system) FlushProcessWriteBuffers();
 }
 
@@ -357,8 +421,15 @@ const errorTimeout = 1460u32;                  // ERROR_TIMEOUT
 // The futex
 // ---------------------------------------------------------------------------
 
-// A timeout that never passes
-pub const forever = 0xFFFFFFFFFFFFFFFFu64;
+// Inside, a timeout is nanoseconds, a u64, and this one never passes: no
+// Duration is this long, since a Duration's nanoseconds are an i64
+const forever = 0xFFFFFFFFFFFFFFFFu64;
+
+// A Duration as the nanoseconds inside: zero or less is 0
+fn durationNs(d time.Duration) u64 {
+  imm ns = d.nanos();
+  if ns <= 0i64 {0u64;} else {u64.from(ns);};
+}
 
 // Nanoseconds as whole milliseconds, rounded up, and short of INFINITE
 fn msCeil(ns u64) u32 {
@@ -366,10 +437,16 @@ fn msCeil(ns u64) u32 {
   if ms >= u64.from(infinite) {infinite - 1u32;} else {u32.from(ms);};
 }
 
-// Sleep while the word holds expected, until woken or timeoutNs passes:
-// false only if the timeout passed
-pub fn futexWait(word &opaq Atomic[u32], expected u32, timeoutNs u64 = forever) Bool {
-  rawWait(word as *u32, expected, timeoutNs);
+// Sleep while the word holds expected, until woken. It may return
+// spuriously: a caller loops
+pub fn futexWait(word &opaq Atomic[u32], expected u32) Bool {
+  rawWait(word as *u32, expected, forever);
+}
+
+// Sleep while the word holds expected, until woken or d passes: false only
+// if the timeout passed
+pub fn futexWaitTimeout(word &opaq Atomic[u32], expected u32, d time.Duration) Bool {
+  rawWait(word as *u32, expected, durationNs(d));
 }
 
 // Wake one thread waiting on the word
@@ -436,12 +513,21 @@ const mutexUnlocked = 0u32;
 const mutexLocked = 1u32;
 const mutexContended = 2u32;
 
-// One thread at a time: a plain, unchecked lock (see the package's header)
-pub struct Mutex is Move {
+// One thread at a time: a plain, unchecked lock held as a value, or a lock
+// permission, 'Arc[Mutex, T]', which the compiler takes and gives back (see
+// the package's header)
+pub struct Mutex is Move, LockPermission, ThreadSafe {
   state Atomic[u32];
 
   // An unlocked Mutex
-  pub fn make() Mutex {new Mutex(Atomic[u32].of(mutexUnlocked));}
+  pub fn make() Mutex {new Mutex(state: Atomic[u32].of(mutexUnlocked));}
+
+  // As a lock permission: unlocked in a new allocation's header, and taken by
+  // every borrow through the reference, read-only or not, since a Mutex has
+  // one lock. Called by the compiler alone
+  fn init(self &new) inline {*self = new Mutex(state: Atomic[u32].of(mutexUnlocked));}
+  fn acquireMut(self &opaq) inline {self.lock();}
+  fn releaseMut(self &opaq) inline {self.unlock();}
 
   // The state word, as core's mem operations reach it
   fn word(self &opaq) *u32 {&(*(self as *Mutex)).state as *u32;}
@@ -518,7 +604,7 @@ pub struct Mutex is Move {
 }
 
 // ---------------------------------------------------------------------------
-// RwLock: Rust's futex read-write lock (library/std/src/sys/sync/rwlock/
+// Rwlock: Rust's futex read-write lock (library/std/src/sys/sync/rwlock/
 // futex.rs), without its 'downgrade', which this has not taken.
 // ---------------------------------------------------------------------------
 
@@ -544,18 +630,31 @@ fn rwIsReadLockable(s u32) Bool {
   (s & rwMask) < rwMaxReaders and !rwHasReadersWaiting(s) and !rwHasWritersWaiting(s);
 }
 
-// Many readers at once, or one writer alone: a plain, unchecked lock (see the
-// package's header). Two words: the state, which readers sleep on, and a
-// counter bumped for each wake of a writer, which writers sleep on.
-pub struct RwLock is Move {
+// Many readers at once, or one writer alone: a plain, unchecked lock held as
+// a value, or a lock permission, 'Arc[Rwlock, T]', which the compiler takes
+// and gives back (see the package's header). Two words: the state, which
+// readers sleep on, and a counter bumped for each wake of a writer, which
+// writers sleep on.
+pub struct Rwlock is Move, LockPermission, ThreadSafe {
   state Atomic[u32];
   writerNotify Atomic[u32];
 
-  // An unlocked RwLock
-  pub fn make() RwLock {new RwLock(Atomic[u32].of(0u32), Atomic[u32].of(0u32));}
+  // An unlocked Rwlock
+  pub fn make() Rwlock {new Rwlock(state: Atomic[u32].of(0u32), writerNotify: Atomic[u32].of(0u32));}
 
-  fn word(self &opaq) *u32 {&(*(self as *RwLock)).state as *u32;}
-  fn notifyWord(self &opaq) *u32 {&(*(self as *RwLock)).writerNotify as *u32;}
+  // As a lock permission: unlocked in a new allocation's header; a borrow
+  // that may write takes the write lock, a read-only one a read lock. Called
+  // by the compiler alone
+  fn init(self &new) inline {
+    *self = new Rwlock(state: Atomic[u32].of(0u32), writerNotify: Atomic[u32].of(0u32));
+  }
+  fn acquireMut(self &opaq) inline {self.writeLock();}
+  fn releaseMut(self &opaq) inline {self.writeUnlock();}
+  fn acquireRead(self &opaq) inline {self.readLock();}
+  fn releaseRead(self &opaq) inline {self.readUnlock();}
+
+  fn word(self &opaq) *u32 {&(*(self as *Rwlock)).state as *u32;}
+  fn notifyWord(self &opaq) *u32 {&(*(self as *Rwlock)).writerNotify as *u32;}
 
   // Take a read lock if a reader may now: whether it was taken
   pub fn tryReadLock(self &opaq) Bool {
@@ -598,7 +697,7 @@ pub struct RwLock is Move {
         continue;
       }
       if (s & rwMask) == rwMaxReaders {
-        die("sync: RwLock.readLock with too many readers holding it\n");
+        die("sync: Rwlock.readLock with too many readers holding it\n");
       }
       // Say that a reader sleeps before sleeping
       if !rwHasReadersWaiting(s) {
@@ -616,7 +715,7 @@ pub struct RwLock is Move {
   pub fn readUnlock(self &opaq) {
     imm was = mem.atomicSub[u32](self.word(), rwReadLocked, MemOrder.Release[]);
     if rwIsUnlocked(was) or rwIsWriteLocked(was) {
-      die("sync: RwLock.readUnlock of a RwLock no reader holds\n");
+      die("sync: Rwlock.readUnlock of a Rwlock no reader holds\n");
     }
     imm s = was - rwReadLocked;
     if rwIsUnlocked(s) and rwHasWritersWaiting(s) {
@@ -687,7 +786,7 @@ pub struct RwLock is Move {
   pub fn writeUnlock(self &opaq) {
     imm was = mem.atomicSub[u32](self.word(), rwWriteLocked, MemOrder.Release[]);
     if !rwIsWriteLocked(was) {
-      die("sync: RwLock.writeUnlock of a RwLock no writer holds\n");
+      die("sync: Rwlock.writeUnlock of a Rwlock no writer holds\n");
     }
     imm s = was - rwWriteLocked;
     if rwHasWritersWaiting(s) or rwHasReadersWaiting(s) {
@@ -799,12 +898,16 @@ pub struct Condvar is Move {
   // Unlock the Mutex, which this thread holds, sleep until notified, and lock
   // it again. It may return spuriously, so the caller loops.
   pub fn condWait(self &opaq, mutex &opaq Mutex) {
-    self.condWaitTimeout(mutex, forever);
+    self.waitFor(mutex, forever);
   }
 
-  // The same, sleeping at most timeoutNs: false only if the timeout passed.
-  // The Mutex is locked again either way.
-  pub fn condWaitTimeout(self &opaq, mutex &opaq Mutex, timeoutNs u64) Bool {
+  // The same, sleeping at most d: false only if the timeout passed. The
+  // Mutex is locked again either way.
+  pub fn condWaitTimeout(self &opaq, mutex &opaq Mutex, d time.Duration) Bool {
+    self.waitFor(mutex, durationNs(d));
+  }
+
+  fn waitFor(self &opaq, mutex &opaq Mutex, timeoutNs u64) Bool {
     imm p = self.word();
     imm seen = loadRelaxed(p);
     mutex.unlock();
@@ -1080,16 +1183,10 @@ fn chanRelease[T](c *Chan[T]) {
   }
 }
 
-// The clock recvTimeout measures by: nanoseconds from some fixed moment
+// The clock the timeouts measure by: the time package's steady clock, in
+// nanoseconds from its fixed origin, which are never negative
 fn nowNs() u64 {
-  mut count = 0i64;
-  mut freq = 0i64;
-  QueryPerformanceCounter(&mut count as *i64);
-  QueryPerformanceFrequency(&mut freq as *i64);
-  imm c = u64.from(count);
-  imm f = u64.from(freq);
-  // Split, so that count * 10^9 cannot overflow
-  (c / f) * 1000000000u64 + (c % f) * 1000000000u64 / f;
+  u64.from(time.Instant.now().nanos());
 }
 
 // ---------------------------------------------------------------------------
@@ -1433,8 +1530,8 @@ pub struct Channel[T Sendable] {
       die("sync: out of memory for a channel\n");
     }
     imm b = blockNew[T]();
-    chanInit[T](c, b, 0usize as *Cell[T], 0u64);
-    Sender[T].made(c), Receiver[T].made(c, b, 0usize as *Cell[T], 0u64, false);
+    chanInit[T](c, b, null, 0u64);
+    Sender[T].made(c), Receiver[T].made(c, b, null, 0u64, false);
   }
 
   // A new bounded channel holding at most n values -- n rounded up to a
@@ -1448,8 +1545,8 @@ pub struct Channel[T Sendable] {
       die("sync: out of memory for a channel\n");
     }
     imm ring = ((c as *u8) + head) as *Cell[T];
-    chanInit[T](c, 0usize as *Block[T], ring, cap - 1u64);
-    Sender[T].made(c), Receiver[T].made(c, 0usize as *Block[T], ring, cap - 1u64, false);
+    chanInit[T](c, null, ring, cap - 1u64);
+    Sender[T].made(c), Receiver[T].made(c, null, ring, cap - 1u64, false);
   }
 
   // A new single-sender channel holding at most n values, rounded as
@@ -1466,9 +1563,9 @@ pub struct Channel[T Sendable] {
     // is written from the senders' index alone. Kept as the receiver's
     // 'ring', whose type is the bounded kind's; only its address is used.
     imm ring = (c as *u8) + head;
-    chanInit[T](c, 0usize as *Block[T], ring as *Cell[T], cap - 1u64);
+    chanInit[T](c, null, ring as *Cell[T], cap - 1u64);
     SoloSender[T].made(c, ring as *T, cap - 1u64),
-      Receiver[T].made(c, 0usize as *Block[T], ring as *Cell[T], cap - 1u64, true);
+      Receiver[T].made(c, null, ring as *Cell[T], cap - 1u64, true);
   }
 }
 
@@ -1528,13 +1625,13 @@ pub struct Sender[T Sendable] is Sendable {
     ringSend[T](chan, v, false, 0u64);
   }
 
-  // send, waiting at most ns nanoseconds for room: Some[v] back when there
-  // was none in that time, or the channel is closed
-  pub fn sendTimeout(self &, v T, ns u64) Option[T] {
+  // send, waiting at most d for room: Some[v] back when there was none in
+  // that time, or the channel is closed
+  pub fn sendTimeout(self &, v T, d time.Duration) Option[T] {
     if (*chan).ring as usize == 0usize {
       return self.listSend(v);
     }
-    ringSend[T](chan, v, true, ns);
+    ringSend[T](chan, v, true, durationNs(d));
   }
 
   // An unbounded channel's send
@@ -1549,7 +1646,7 @@ pub struct Sender[T Sendable] is Sendable {
     mut block = mem.atomicLoad[*Block[T]](blockp, MemOrder.Acquire[]);
     // The next block, made before the claim of a block's last slot so the
     // other senders wait on the installer as briefly as can be
-    mut spare = 0usize as *Block[T];
+    mut spare *Block[T] = null;
     mut offset = 0u64;
     mut claimed = false;
     mut step = 0u32;
@@ -1620,6 +1717,14 @@ pub struct Sender[T Sendable] is Sendable {
     new Sender[T](chan);
   }
 
+  // Whether the channel is closed, by the receiver's close or its going:
+  // every send from now on hands its value back. So a trySend handed its
+  // value back on a channel that is not closed found it full. Acquire, as
+  // the receiver's isClosed.
+  pub fn isClosed(self &) Bool {
+    (mem.atomicLoad[u64](&(*chan).tail as *u64, MemOrder.Acquire[]) & chanClosed) != 0u64;
+  }
+
   // The last sender to go closes the channel, and wakes the receiver, which
   // takes what is left and then sees it closed
   fn final(self &uni) {
@@ -1665,10 +1770,10 @@ pub struct SoloSender[T Sendable] is Sendable {
     self.put(v, false, 0u64);
   }
 
-  // send, waiting at most ns nanoseconds for room: Some[v] back when there
-  // was none in that time, or the channel is closed
-  pub fn sendTimeout(self &mut, v T, ns u64) Option[T] {
-    self.put(v, true, ns);
+  // send, waiting at most d for room: Some[v] back when there was none in
+  // that time, or the channel is closed
+  pub fn sendTimeout(self &mut, v T, d time.Duration) Option[T] {
+    self.put(v, true, durationNs(d));
   }
 
   // 'tx <- v' is send: what it answers is send's
@@ -1856,10 +1961,11 @@ pub struct Receiver[T Sendable] is Sendable {
     None[T][];
   }
 
-  // The next value, waiting at most ns nanoseconds for one; None when none
-  // came in that time, or the channel is closed and empty. The sleep is the
-  // futex's, so it may run over by up to the system's timer tick.
-  pub fn recvTimeout(self &mut, ns u64) Option[T] {
+  // The next value, waiting at most d for one; None when none came in that
+  // time, or the channel is closed and empty. The sleep is the futex's, so
+  // it may run over by up to the system's timer tick.
+  pub fn recvTimeout(self &mut, d time.Duration) Option[T] {
+    imm ns = durationNs(d);
     if ring as usize != 0usize {
       if solo {
         return self.soloRecv(ns);
@@ -2151,5 +2257,179 @@ pub struct Receiver[T Sendable] is Sendable {
     }
     libc.free(block as *u8);
     chanRelease[T](c);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Oneshot: one value, from one thread to one, once. One allocation holds a
+// state word, a count of the two ends still alive, the receiver's 'gone'
+// flag and the value's slot. The sender writes the value into the slot and
+// then swaps the state to full, a release the receiver's acquiring load of
+// full pairs with; the receiver, finding nothing, swaps the state from empty
+// to waiting before it sleeps on the word, so the sender's swap sees that it
+// must wake it -- one compare-and-swap on each side, and the futex only when
+// the receiver really sleeps. Whichever end goes last frees the allocation,
+// and finalizes the value if it is still there: so a value sent just as the
+// receiver went is finalized exactly once, by whichever end is last, without
+// either end waiting for the other.
+// ---------------------------------------------------------------------------
+
+const oneEmpty = 0u32;                 // nothing sent yet
+const oneWaiting = 1u32;               // nothing yet, and the receiver sleeps, or is about to
+const oneFull = 2u32;                  // the value is in the slot
+const oneTaken = 3u32;                 // the receiver has taken it
+const oneClosed = 4u32;                // the sender went without sending
+
+struct OneSlot[T] {
+  pub state u32;
+  pub sides u32;                       // 2, less 1 as each end goes
+  pub gone u32;                        // 1 once the receiver has gone
+  pub value T;
+}
+
+// The last end to go frees the slot, finalizing a value never taken. AcqRel:
+// the other end's doings, the value written among them, come before it
+fn oneRelease[T](s *OneSlot[T]) {
+  if mem.atomicSub[u32](&(*s).sides as *u32, 1u32, MemOrder.AcqRel[]) == 1u32 {
+    if mem.atomicLoad[u32](&(*s).state as *u32, MemOrder.Acquire[]) == oneFull {
+      mem.finalize[T](&(*s).value as *T);
+    }
+    libc.free(s as *u8);
+  }
+}
+
+// The constructor: 'Oneshot[T].make()', which answers the two ends
+pub struct Oneshot[T Sendable] {
+  // A new one-shot channel: its sending end and its receiving end
+  pub fn make() OneshotSender[T], OneshotReceiver[T] {
+    imm s = libc.malloc(mem.sizeof[OneSlot[T]]()) as *OneSlot[T];
+    if s as usize == 0usize {
+      die("sync: out of memory for a one-shot channel\n");
+    }
+    (*s).state = oneEmpty;
+    (*s).sides = 2u32;
+    (*s).gone = 0u32;
+    new OneshotSender[T](s, false), new OneshotReceiver[T](s);
+  }
+}
+
+// The sending end of a one-shot channel: one value, once
+pub struct OneshotSender[T Sendable] is Sendable {
+  slot *OneSlot[T];
+  sent Bool;
+
+  // Send v: None once it is there for the receiver; Some[v], handed back,
+  // when a value was sent already or the receiver has gone. Never waits.
+  pub fn send(self &mut, v T) Option[T] {
+    if sent or mem.atomicLoad[u32](&(*slot).gone as *u32, MemOrder.Acquire[]) != 0u32 {
+      return Some[T][v];
+    }
+    sent = true;
+    mem.writeRaw[T](&(*slot).value as *T, v);
+    imm st = &(*slot).state as *u32;
+    if mem.atomicSwap[u32](st, oneFull, MemOrder.AcqRel[]) == oneWaiting {
+      rawWake(st);
+    }
+    None[T][];
+  }
+
+  // Whether a send would hand its value back: one was sent, or the
+  // receiver has gone
+  pub fn isClosed(self &) Bool {
+    sent or mem.atomicLoad[u32](&(*slot).gone as *u32, MemOrder.Acquire[]) != 0u32;
+  }
+
+  // A sender going without sending closes the channel: the receiver, asleep
+  // or not, finds nothing will come
+  fn final(self &uni) {
+    if not sent {
+      imm st = &(*slot).state as *u32;
+      if mem.atomicSwap[u32](st, oneClosed, MemOrder.Release[]) == oneWaiting {
+        rawWake(st);
+      }
+    }
+    oneRelease[T](slot);
+  }
+}
+
+// The receiving end of a one-shot channel
+pub struct OneshotReceiver[T Sendable] is Sendable {
+  slot *OneSlot[T];
+
+  // The value, waiting while there is none; None when the sender went
+  // without sending, or the value was taken already
+  pub fn recv(self &mut) Option[T] {
+    self.recvFor(forever);
+  }
+
+  // recv, waiting at most d (the futex's resolution: it may run over by a
+  // tick); None, too, when nothing came in that time
+  pub fn recvTimeout(self &mut, d time.Duration) Option[T] {
+    self.recvFor(durationNs(d));
+  }
+
+  // The value if it is there now, never waiting
+  pub fn tryRecv(self &mut) Option[T] {
+    if mem.atomicLoad[u32](&(*slot).state as *u32, MemOrder.Acquire[]) == oneFull {
+      return Some[T][self.take()];
+    }
+    None[T][];
+  }
+
+  // Whether the value is there, to be taken
+  pub fn isReady(self &) Bool {
+    mem.atomicLoad[u32](&(*slot).state as *u32, MemOrder.Acquire[]) == oneFull;
+  }
+
+  // Whether nothing more will come: the sender went without sending, or the
+  // value was taken
+  pub fn isClosed(self &) Bool {
+    imm s = mem.atomicLoad[u32](&(*slot).state as *u32, MemOrder.Acquire[]);
+    s == oneClosed or s == oneTaken;
+  }
+
+  fn take(self &mut) T {
+    imm v = mem.readRaw[T](&(*slot).value as *T);
+    mem.atomicStore[u32](&(*slot).state as *u32, oneTaken, MemOrder.Relaxed[]);
+    v;
+  }
+
+  fn recvFor(self &mut, timeoutNs u64) Option[T] {
+    imm st = &(*slot).state as *u32;
+    imm start = if timeoutNs == forever {0u64;} else {nowNs();};
+    while true {
+      imm s = mem.atomicLoad[u32](st, MemOrder.Acquire[]);
+      if s == oneFull {
+        return Some[T][self.take()];
+      }
+      if s == oneClosed or s == oneTaken {
+        return None[T][];
+      }
+      if s == oneEmpty {
+        mut seen = 0u32;
+        mut done = false;
+        seen, done = mem.atomicCompareSwap[u32](st, oneEmpty, oneWaiting, MemOrder.Acquire[], MemOrder.Acquire[]);
+        if not done {
+          continue;
+        }
+      }
+      if timeoutNs == forever {
+        rawWait(st, oneWaiting, forever);
+      } else {
+        imm waited = nowNs() - start;
+        if waited >= timeoutNs {
+          return None[T][];
+        }
+        rawWait(st, oneWaiting, timeoutNs - waited);
+      }
+    }
+    None[T][];
+  }
+
+  // The receiver's going: a later send hands its value back, and a value
+  // sent and never taken is finalized by whichever end goes last
+  fn final(self &uni) {
+    mem.atomicStore[u32](&(*slot).gone as *u32, 1u32, MemOrder.Release[]);
+    oneRelease[T](slot);
   }
 }

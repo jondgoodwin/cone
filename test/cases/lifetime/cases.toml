@@ -8,12 +8,18 @@
 # rule can be refined case by case: many
 # simple cases on the bands (global, the caller's, the function's own), a few
 # on borrows made inside relating to those from outside, and most on when a
-# borrowed source is free again. The three prefixes follow that:
+# borrowed source is free again. The first three prefixes follow that, the
+# fourth is lifetimes that are no scope at all, and the fifth is bounds on
+# types whose insides are unknown:
 #
 #   lifetime_band_  global vs the caller band vs the function: parameters
 #                   (borrowed, by value, 'self' by value, owners by value),
 #                   returns, stores into globals and through '&mut'/'&uni'
-#                   parameters, unannotated and named lifetimes, calls.
+#                   parameters, unannotated and named lifetimes, lifetimes on
+#                   structs (lifetime_band_struct_), where clauses ordering
+#                   them (lifetime_band_where_), the order a borrow of a
+#                   value holding lifetimes implies (lifetime_band_implied_),
+#                   calls.
 #   lifetime_mix_   borrows made inside meeting those from outside: a
 #                   variable's lifetime following what it holds (the flow
 #                   rule, 2 Oct 2026), temporaries outliving their statement
@@ -24,6 +30,18 @@
 #                   disjoint fields, reassignment, borrows held in values,
 #                   NLL's four problem cases and Polonius's exemplars
 #                   translated to Cone.
+#   lifetime_inv_   invariant lifetimes ('=a, 3 Oct 2026) on the dynamic
+#                   arena, DynArena: brands minted per call site, keys opened
+#                   only by their own arena ('ar[key]'), never reached through
+#                   alone, kept to their loop pass, equated by 'where', and
+#                   carried through structs, returns and generics.
+#   lifetime_bound_ lifetime bounds ('+ 'a', 3 Oct 2026): on a generic
+#                   function's type parameter, '[T + 'a]', 'where T + 'a',
+#                   relied on inside and met by each instantiation's argument;
+#                   'T + 'static'; on a borrowed virtual reference,
+#                   '&<Trait + 'a'; the ''static' an owning virtual
+#                   reference, 'So[Trait]', implies; and an unbounded type
+#                   parameter's inferred argument, which carries no band.
 #
 # Every file's header gives the verdict a correct compiler reaches, its basis
 # (a language rule, stated, with the date it was settled; a manual page;
@@ -47,17 +65,24 @@
 #      a variable that follows what it holds
 #   5  temporaries outliving their statement, Rust's rule
 #   6  named lifetimes on signatures
+#   7  lifetimes on structs, and where clauses ordering lifetimes
+#   8  relaxations toward Rust's verdicts: implied bounds, temporaries in
+#      arms and arguments, lifetimes per reference layer, implementations
+#      promising more than their trait, stores through '&mut' into a local
+#      following flow
+#   9  invariant lifetimes and the dynamic arena (lifetime_inv_)
+#  10  lifetime bounds (lifetime_bound_)
 #
 # A dangling case's header says how master's wrong answer was shown to be
 # dangerous: a stale stack slot read back through clobber(), or a finalizer
-# printing "final" before the read.
+# printing "final" before the read. Where master refuses the spelling at
+# parse, the case was run against the compiler that refuses it with that
+# refusal turned off.
 #
 # Left out deliberately, because the rule depends on something not yet
-# decided: lifetime where clauses (no spelling yet),
-# lifetimes on struct types and two borrowed fields of different named
-# lifetimes, invariant lifetimes ('=a), owner fields reached through a shared
-# 'mut' path, and whether 'new H(...)' extends a temporary the
-# way Rust's struct literal does.
+# decided: a bound on a generic type's parameter or an owning virtual
+# reference, owner fields reached through a shared 'mut' path, and whether 'new H(...)'
+# extends a temporary the way Rust's struct literal does.
 
 support = []
 
@@ -132,6 +157,11 @@ tags = ["flow"]
 category = "reject"
 description = "Unannotated: the Option a '&mut self' method of a local returns shares that borrow's lifetime, and may not be returned"
 tags = ["flow"]
+
+[scenario.lifetime_band_struct_method_returns_where_field_points]
+category = "run"
+description = "Annotated 'Cursor['a]': 'next' returns where 'items' points, so 'c.next()' of a local cursor may be returned"
+tags = ["parse", "typecheck", "flow", "runtime"]
 
 [scenario.lifetime_band_return_byvalue_param]
 category = "reject"
@@ -390,32 +420,42 @@ tags = ["flow", "runtime"]
 
 [scenario.lifetime_band_call_store_into_struct_field]
 category = "reject"
-description = "A callee given '&mut H' and a shorter borrow could store it in the struct: refused at the call"
+description = "A callee given '&mut H' and a shorter borrow may store it in the struct: the local used after the borrow's source ends is refused there"
 tags = ["flow"]
 
 [scenario.lifetime_band_call_setter_method]
 category = "reject"
-description = "A 'self &mut' setter handed a shorter borrow than its receiver: refused at the call"
+description = "A 'self &mut' setter handed a shorter borrow than its receiver: the receiver used after the borrow's source ends is refused there"
 tags = ["flow"]
 
 [scenario.lifetime_band_call_push_onto_list_param]
 category = "reject"
-description = "A callee given '&mut List[&R]' and a shorter borrow could push it: refused at the call"
+description = "A callee given '&mut List[&R]' and a shorter borrow may push it: the list used after the borrow's source ends is refused there"
 tags = ["flow"]
 
 [scenario.lifetime_band_call_store_into_option_param]
 category = "reject"
-description = "A callee given '&mut Option[&R]' and a shorter borrow could store it: refused at the call"
+description = "A callee given '&mut Option[&R]' and a shorter borrow may store it: the option used after the borrow's source ends is refused there"
 tags = ["flow"]
 
 [scenario.lifetime_band_call_store_into_slice_param]
 category = "reject"
-description = "A callee given a mutable slice of borrows and a shorter borrow could store it: refused at the call"
+description = "A callee given a mutable slice of borrows and a shorter borrow may store it: the array used after the borrow's source ends is refused there"
+tags = ["flow"]
+
+[scenario.lifetime_band_call_tryit_store_into_local]
+category = "run"
+description = "The manual's 'tryit': a store a call may make through '&mut' into a local is legal at the call"
+tags = ["flow", "runtime"]
+
+[scenario.lifetime_band_call_tryit_used_after]
+category = "reject"
+description = "The manual's 'tryit' with the local used after the stored borrow's source ends: refused at that end"
 tags = ["flow"]
 
 [scenario.lifetime_band_call_copy_between_holders]
 category = "reject"
-description = "A callee given '&mut' to two borrow-holding structs, one shorter-lived, could copy a borrow across: refused at the call"
+description = "A callee given '&mut' to two borrow-holding structs, one shorter-lived, may copy a borrow across: the outer one used after the source ends is refused there"
 tags = ["flow"]
 
 [scenario.lifetime_band_call_store_two_levels]
@@ -467,6 +507,31 @@ tags = ["parse", "typecheck", "flow"]
 category = "run"
 description = "The manual's 'tryit' with 'refval' named apart: the call is allowed"
 tags = ["parse", "typecheck", "flow", "runtime"]
+
+[scenario.lifetime_band_implied_struct_method_unannotated]
+category = "run"
+description = "A borrow of 'H['a]' implies 'a outlasts it: an unannotated 'get(self &) &R' returns its ''a' field"
+tags = ["typecheck", "flow", "runtime"]
+
+[scenario.lifetime_band_implied_read_through_outer]
+category = "run"
+description = "Implied bounds: what '&'a &'b R', '&'a Pair['b]' and '&'a mut &'b mut R' point at may be returned as ''a', and across parameters"
+tags = ["typecheck", "flow", "runtime"]
+
+[scenario.lifetime_band_implied_wrong_way]
+category = "reject"
+description = "An implied bound runs one way: the borrow of a 'Pair['b]' is not ''b', and unrelated names stay unrelated"
+tags = ["flow"]
+
+[scenario.lifetime_band_layer_read_through_local_ref]
+category = "run"
+description = "Each reference layer's lifetime governs what is read through it: 'first(z)' for a local 'z = &mut pp' carries what 'pp' holds, not 'pp'"
+tags = ["flow", "runtime"]
+
+[scenario.lifetime_band_layer_uni_reborrow_refused]
+category = "reject"
+description = "A borrow through a 'uni' inner reference reborrows it: it lasts no longer than the outer borrow"
+tags = ["flow"]
 
 [scenario.lifetime_band_named_return_other_name]
 category = "reject"
@@ -520,7 +585,7 @@ tags = ["parse", "runtime"]
 
 [scenario.lifetime_band_named_place_refused]
 category = "reject"
-description = "A lifetime named on a field, a variable, a type's argument or a borrow is refused"
+description = "A lifetime named in a variable's type, on a borrow, in a construction's type arguments or in a function's brackets is refused"
 tags = ["parse"]
 
 [scenario.lifetime_band_named_static_inside_parm]
@@ -655,6 +720,36 @@ category = "run"
 description = "A borrow of a temporary used within its statement; the temporary ends after the use"
 tags = ["flow", "runtime"]
 
+[scenario.lifetime_mix_temp_extended_in_arms]
+category = "run"
+description = "Rust 2024's extension through an 'if' arm's, a block's and a 'match' arm's value: only the arm run makes and finalizes its temporary"
+tags = ["typecheck", "flow", "runtime"]
+
+[scenario.lifetime_mix_temp_extended_arm_order]
+category = "run"
+description = "Temporaries extended in arms and blocks run where written, in a literal's order, and are finalized newest first"
+tags = ["typecheck", "flow", "runtime"]
+
+[scenario.lifetime_mix_temp_extended_arm_used_after_block]
+category = "reject"
+description = "An arm's extended temporary lasts to its block's end: a borrow of it used after that is refused"
+tags = ["flow"]
+
+[scenario.lifetime_mix_temp_arm_statement_not_extended]
+category = "reject"
+description = "Only an arm's final expression extends: a call's argument in a statement of the arm ends with it"
+tags = ["flow"]
+
+[scenario.lifetime_mix_temp_borrowed_argument]
+category = "run"
+description = "A borrowed temporary anywhere else -- an argument, a computed value, a literal, a temporary receiver -- lives to its statement's end"
+tags = ["typecheck", "flow", "runtime"]
+
+[scenario.lifetime_mix_temp_borrowed_argument_kept]
+category = "reject"
+description = "A borrowed temporary handed through a call and kept past its statement, or returned, is refused"
+tags = ["flow"]
+
 [scenario.lifetime_mix_temp_borrow_extended]
 category = "run"
 description = "Rust's extension: 'imm r = &mk();' keeps the temporary to the block's end"
@@ -729,6 +824,11 @@ tags = ["flow", "runtime"]
 category = "reject"
 description = "An unannotated getter's result is tied to the borrow of its struct, a local, and may not be returned"
 tags = ["flow"]
+
+[scenario.lifetime_mix_struct_getter_annotated_result_returned]
+category = "run"
+description = "A getter of 'H['a]' returning '&'a R' is where the field points: its result on a local may be returned"
+tags = ["parse", "typecheck", "flow", "runtime"]
 
 [scenario.lifetime_mix_block_value_kept_past_local]
 category = "reject"
@@ -1066,3 +1166,309 @@ tags = ["flow", "runtime"]
 category = "reject"
 description = "A borrow swapped into a struct's field keeps its source frozen while the struct is used"
 tags = ["flow"]
+
+# Stage 7: lifetimes on structs, and where clauses ordering lifetimes
+
+[scenario.lifetime_band_struct_parser_two_lifetimes]
+category = "run"
+description = "'Parser['src, 'ar]': its word carries the text, not the arena, with text old and arena young and the reverse"
+tags = ["parse", "typecheck", "flow", "runtime"]
+
+[scenario.lifetime_band_struct_parser_one_lifetime]
+category = "reject"
+description = "The parser with one name for both fields: its word carries the local arena, and may not be returned"
+tags = ["flow"]
+
+[scenario.lifetime_band_struct_one_name_inferred]
+category = "run"
+description = "A struct whose fields name one lifetime, its brackets none, declares that one"
+tags = ["parse", "typecheck", "flow", "runtime"]
+
+[scenario.lifetime_band_struct_undeclared_name]
+category = "reject"
+description = "A struct's second undeclared lifetime, a name its brackets lack, and a where clause ordering what it does not declare are refused"
+tags = ["parse"]
+
+[scenario.lifetime_band_struct_generic_and_enum]
+category = "run"
+description = "'Cursor['a, T]': a lifetime beside a type parameter; 'Tok['a]': an enum's lifetime its variants name"
+tags = ["parse", "typecheck", "flow", "runtime"]
+
+[scenario.lifetime_band_struct_meets_trait]
+category = "run"
+description = "A struct declaring lifetimes implements a trait naming none, and is called through a virtual reference"
+tags = ["typecheck", "flow", "runtime"]
+
+[scenario.lifetime_band_struct_impl_promises_more]
+category = "run"
+description = "An implementation may promise more than its trait: a ''static' or narrower result, a parameter of any lifetime for a ''static' one"
+tags = ["typecheck", "flow", "runtime"]
+
+[scenario.lifetime_band_struct_impl_static_parm_refused]
+category = "reject"
+description = "An implementation may not require a ''static' argument where its trait takes any"
+tags = ["typecheck"]
+
+[scenario.lifetime_band_struct_trait_promise_differs]
+category = "reject"
+description = "A struct's method promising another lifetime than its trait's requirement does not meet it"
+tags = ["typecheck"]
+
+[scenario.lifetime_band_struct_use_named_param]
+category = "reject"
+description = "A by-value 'Cursor['a]' parameter: what it holds may be returned as ''a', an unnamed fallback may not"
+tags = ["flow"]
+
+[scenario.lifetime_band_struct_use_names]
+category = "reject"
+description = "An unnamed borrow in a struct declaring lifetimes, and a use naming the wrong number of lifetimes, are refused"
+tags = ["typecheck"]
+
+[scenario.lifetime_band_struct_method_points_into_self_dangles]
+category = "reject"
+description = "A method returning a borrow of its struct as the struct's lifetime is refused"
+tags = ["flow"]
+
+[scenario.lifetime_band_struct_slot_other_lifetime_dangles]
+category = "reject"
+description = "A method returning what one of its struct's lifetimes holds as another, unordered, is refused"
+tags = ["flow"]
+
+[scenario.lifetime_band_struct_where_order]
+category = "reject"
+description = "'Pair['a, 'b] where 'a >= 'b': a method may move ''a' into ''b', not ''b' into ''a'"
+tags = ["parse", "flow"]
+
+[scenario.lifetime_band_struct_call_merges_slots]
+category = "reject"
+description = "A call naming a struct's lifetimes as one may move borrows between its fields: what it holds is no longer known by field"
+tags = ["flow"]
+
+[scenario.lifetime_band_where_store_longer]
+category = "run"
+description = "With ''a >= 'b', a ''a' borrow is stored where ''b' is held and returned as ''b'"
+tags = ["parse", "typecheck", "flow", "runtime"]
+
+[scenario.lifetime_band_where_store_shorter_dangles]
+category = "reject"
+description = "With ''a >= 'b', a ''b' borrow stored where ''a' is held is refused"
+tags = ["flow"]
+
+[scenario.lifetime_band_where_equal_both_ways]
+category = "run"
+description = "''a == 'b' lets a borrow of either be stored where the other's is held"
+tags = ["parse", "flow", "runtime"]
+
+[scenario.lifetime_band_where_transitive]
+category = "reject"
+description = "'>=' is transitive: ''a >= 'b and 'b >= 'c' returns ''a' as ''c', not ''c' as ''a'"
+tags = ["flow"]
+
+[scenario.lifetime_band_where_generic_mixed]
+category = "run"
+description = "A lifetime comparison and a type clause joined by 'and' on a generic function and on a generic type's method"
+tags = ["parse", "typecheck", "flow", "runtime"]
+
+[scenario.lifetime_band_where_or_refused]
+category = "reject"
+description = "A lifetime comparison under 'or' or 'not', or of another form, is refused"
+tags = ["parse"]
+
+[scenario.lifetime_band_where_unknown_name]
+category = "reject"
+description = "A function's where clause naming a lifetime none of its types names is refused"
+tags = ["typecheck"]
+
+# -------- invariant lifetimes: the dynamic arena, brands, lock and key --------
+
+[scenario.lifetime_inv_mint_two_sites]
+category = "run"
+description = "Two calls of DynArena.empty() mint two brands; each arena opens its own keys"
+tags = ["typecheck", "runtime"]
+
+[scenario.lifetime_inv_cross_arena]
+category = "reject"
+description = "One arena's key handed to another arena's '[]' is refused"
+tags = ["typecheck"]
+
+[scenario.lifetime_inv_key_no_access]
+category = "reject"
+description = "A key is neither dereferenced nor reached through for a field or a method"
+tags = ["typecheck"]
+
+[scenario.lifetime_inv_loop_pass]
+category = "reject"
+description = "A key of an arena made in a loop pass is kept for no later pass and carried out by no break"
+tags = ["typecheck"]
+
+[scenario.lifetime_inv_loop_pass_own]
+category = "run"
+description = "An arena per loop pass used within it, and named arenas made before the loop, are accepted"
+tags = ["typecheck", "runtime"]
+
+[scenario.lifetime_inv_index]
+category = "run"
+description = "'ar[key]' reads, and in set position writes: a value, a field, '+=', a 'self &mut' method"
+tags = ["typecheck", "runtime"]
+
+[scenario.lifetime_inv_index_plain_pointer]
+category = "run"
+description = "'ar[key]' is the key's pointer: no check at run time, and nothing left of '[]' once inlined"
+tags = ["genllvm", "runtime"]
+
+[[scenario.lifetime_inv_index_plain_pointer.check]]
+name     = "index-answers-the-key"
+target   = "preir"
+contains = ["define internal ptr @_CINvNtC5arena8DynArenaoixxE(ptr %0, ptr %1) comdat {", "ret ptr %key1"]
+
+[[scenario.lifetime_inv_index_plain_pointer.check]]
+name     = "inlined-to-a-load"
+target   = "llvmir"
+excludes = ["call ptr @_CINvNtC5arena8DynArenaoixxE", "call ptr @_CINvNtC5arena8DynArenaorxxE"]
+
+[scenario.lifetime_inv_returned_with_arena]
+category = "run"
+description = "A struct holding a dynamic arena and keys into it is built, returned and walked"
+tags = ["typecheck", "runtime"]
+
+[scenario.lifetime_inv_recursion]
+category = "run"
+description = "Each activation mints its own brand; a key passed down with its arena opens it at every depth"
+tags = ["typecheck", "runtime"]
+
+[scenario.lifetime_inv_where_equal]
+category = "run"
+description = "'where '=a == '=b' lets a key of one open an arena of the other"
+tags = ["parse", "typecheck", "runtime"]
+
+[scenario.lifetime_inv_where_call_mismatch]
+category = "reject"
+description = "A call given two brands for an '==' pair, and a callee using unrelated brands together, are refused"
+tags = ["typecheck"]
+
+[scenario.lifetime_inv_parse_refused]
+category = "reject"
+description = "'>=' with an invariant lifetime, '==' with an ordinary one, and one on a slice or virtual reference are refused"
+tags = ["parse"]
+
+[scenario.lifetime_inv_signature_refused]
+category = "reject"
+description = "A struct's invariant lifetime left unnamed or named ordinary in a signature, and a body naming one its signature does not, are refused"
+tags = ["typecheck"]
+
+[scenario.lifetime_inv_arena_replaced]
+category = "reject"
+description = "An arena variable assigned, swapped or stored another arena is refused"
+tags = ["typecheck"]
+
+[scenario.lifetime_inv_branch_merge]
+category = "reject"
+description = "An 'if' joining keys of two arenas is refused"
+tags = ["typecheck"]
+
+[scenario.lifetime_inv_key_holds_borrow]
+category = "reject"
+description = "A key to a value holding a borrow is refused, in a type and at an allocation"
+tags = ["typecheck"]
+
+[scenario.lifetime_inv_brand_lost]
+category = "reject"
+description = "A key stored or passed as a borrow, or cast to one, is refused; cast to a raw pointer it is not"
+tags = ["typecheck"]
+
+[scenario.lifetime_inv_keys_in_list]
+category = "run"
+description = "Keys kept in a List built in a function naming the brand, read back through the arena"
+tags = ["typecheck", "runtime"]
+
+[scenario.lifetime_inv_keys_in_list_cross]
+category = "reject"
+description = "Another arena's key pushed onto a list of one arena's keys is refused"
+tags = ["typecheck"]
+
+[scenario.lifetime_inv_result_two_brands]
+category = "reject"
+description = "A result naming one minted brand built of two arenas' values is refused"
+tags = ["typecheck"]
+
+# -------- lifetime bounds: '+ 'a' on a type parameter and a virtual reference --------
+
+[scenario.lifetime_bound_generic_relied_on]
+category = "run"
+description = "A generic function's type parameter bounded by ''a', in each spelling, stored and returned as ''a', instantiated with long enough borrows and a borrow-free type"
+tags = ["flow", "runtime"]
+
+[scenario.lifetime_bound_generic_unbounded_refused]
+category = "reject"
+description = "The same generic bodies without the bound may not store or return a T as ''a'"
+tags = ["flow"]
+
+[scenario.lifetime_bound_generic_too_short]
+category = "reject"
+description = "A bounded generic handed a borrow too short for where it is stored or returned is refused where it is used"
+tags = ["flow"]
+
+[scenario.lifetime_bound_generic_caller_unordered]
+category = "reject"
+description = "A caller's borrow of a lifetime its order does not say lasts the bound's is refused at the call and the return"
+tags = ["flow"]
+
+[scenario.lifetime_bound_static_accepted]
+category = "run"
+description = "A type parameter bounded by ''static' stored in a global and returned as ''static', handed global borrows and a borrow-free type"
+tags = ["flow", "runtime"]
+
+[scenario.lifetime_bound_static_local_borrow]
+category = "reject"
+description = "A type parameter bounded by ''static' refuses a local's borrow written as its argument"
+tags = ["typecheck"]
+
+[scenario.lifetime_bound_static_local_in_value]
+category = "reject"
+description = "A type parameter bounded by ''static' refuses a local's borrow carried inside a value or by a variable"
+tags = ["flow"]
+
+[scenario.lifetime_bound_virt_accepted]
+category = "run"
+description = "A virtual reference bounded by ''a' holding a struct with a borrow, stored, returned and read back out where its lifetime lasts ''a'"
+tags = ["flow", "runtime"]
+
+[scenario.lifetime_bound_virt_refused]
+category = "reject"
+description = "A value coerced to, or stored as, a virtual reference bounded by a lifetime its borrows are not known to last is refused"
+tags = ["flow"]
+
+[scenario.lifetime_bound_owning_virt_refused]
+category = "reject"
+description = "A value holding a borrow that is not global made an owning virtual reference ('So[Trait]', 'Rc[Trait]'), which is bounded by ''static', is refused"
+tags = ["flow"]
+
+[scenario.lifetime_bound_owning_virt_accepted]
+category = "run"
+description = "Values holding no borrow, or only global ones, made owning virtual references, directly, through a ''static' parameter and through a ''static'-bounded type parameter"
+tags = ["flow", "runtime"]
+
+[scenario.lifetime_bound_generic_inferred_no_band]
+category = "run"
+description = "An unbounded type parameter inferred from a borrow carries no band of its call into the instance: a T kept in a local and an 'Option' is stored through the caller's '&mut &R'"
+tags = ["flow", "runtime"]
+
+[scenario.lifetime_bound_generic_inferred_still_refused]
+category = "reject"
+description = "An unbounded type parameter inferred from a borrow: a local's borrow stored through it or returned as it, a caller's stored in a global, and a call carrying a local's borrow into an outer variable, still refused"
+tags = ["flow"]
+
+[scenario.lifetime_bound_parse_refused]
+category = "reject"
+description = "A bound under 'or', 'T is 'a', an invariant bound, a bound on a plain reference or a generic type's parameter is refused at parse"
+tags = ["parse"]
+
+[scenario.lifetime_bound_nameres_refused]
+category = "reject"
+description = "A bound on a name that is no type parameter of the function, or on its generic type's parameter, is refused"
+tags = ["nameres"]
+
+[scenario.lifetime_bound_undeclared]
+category = "reject"
+description = "A bound of a lifetime the signature does not name is refused"
+tags = ["typecheck"]

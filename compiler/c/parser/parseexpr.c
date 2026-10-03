@@ -40,6 +40,8 @@ static INode *parseContentsAfter(ParseState *parse, INode *node);
 INode *parseArrayLit(ParseState *parse) {
     ArrayNode *array = newArrayNode();
     lexNextToken();
+    int svinlist = parse->inlist;
+    parse->inlist = 1;
 
     // Gather comma-separated expressions that are likely elements or element type
     while (1) {
@@ -62,6 +64,7 @@ INode *parseArrayLit(ParseState *parse) {
         };
         array->elems = elems;
     }
+    parse->inlist = svinlist;
     parseCloseTok(RBracketToken);
 
     return (INode *)array;
@@ -138,6 +141,12 @@ INode *parseTerm(ParseState *parse) {
         lexNextToken();
         return (INode *)node;
     }
+    case nullToken:
+    {
+        NullLitNode *node = newNullLitNode();
+        lexNextToken();
+        return (INode *)node;
+    }
     case trueToken:
     {
         ULitNode *node = newULitNode(1, (INode*)boolType);
@@ -180,7 +189,10 @@ INode *parseTerm(ParseState *parse) {
         {
             INode *node;
             lexNextToken();
+            int svinlist = parse->inlist;
+            parse->inlist = 1;
             node = entryparen ? parseEntries(parse) : parseAnyExpr(parse);
+            parse->inlist = svinlist;
             parseCloseTok(RParenToken);
             return node;
         }
@@ -224,6 +236,8 @@ Nodes *parseArgs(ParseState *parse) {
     int closetok = lex->toktype == LBracketToken ? RBracketToken : RParenToken;
     lexNextToken();
     Nodes *args = newNodes(8);
+    int svinlist = parse->inlist;
+    parse->inlist = 1;
     if (!lexIsToken(closetok)) {
         nodesAdd(&args, parseArg(parse));
         while (lexIsToken(CommaToken)) {
@@ -231,6 +245,7 @@ Nodes *parseArgs(ParseState *parse) {
             nodesAdd(&args, parseArg(parse));
         }
     }
+    parse->inlist = svinlist;
     parseCloseTok(closetok);
     return args;
 }
@@ -245,7 +260,58 @@ static INode *parseIndexArg(ParseState *parse) {
         lexNextToken();
         return perm;
     }
+    // A lifetime: 'Cursor['a]'. Held as a name use of its name, which begins
+    // with the quote no other name can, until parseIndexArgs takes it out.
+    if (lexIsToken(LifetimeToken)) {
+        INode *life = (INode*)newNameUseNode(lex->val.ident);
+        lexNextToken();
+        return life;
+    }
     return parseArg(parse);
+}
+
+// Is this an argument parseIndexArg read as a lifetime?
+static int parseIsLifeArg(INode *arg) {
+    return arg->tag == NameUseTag && ((NameUseNode*)arg)->namesym->namestr == '\'';
+}
+
+// A lifetime is named only in a type of a function's signature, or of a
+// struct's field, where it is checked (lifetime.h): answer whether it may be
+// here, refusing it if not. A field's names are noted for its struct to
+// declare or check (lifeStructDeclare). 'at' is where the name is written,
+// or NULL while the lexer is on it.
+static int parseLifeNamed(ParseState *parse, Name *name, INode *at) {
+    if (parse->intype && parse->lifesig) {
+        parse->lifesig->lifenamed = 1;
+        return 1;
+    }
+    if (parse->intype && parse->lifestruct) {
+        if (name != staticLifeName) {
+            if (parse->lifestruct->lifeparms == NULL)
+                parse->lifestruct->lifeparms = newLifeParms();
+            LifeParms *parms = parse->lifestruct->lifeparms;
+            if (parms->usedat == NULL)
+                parms->usedat = newNodes(4);
+            nodesAdd(&parms->usedat, at ? at : (INode*)newNameUseNode(name));
+        }
+        return 1;
+    }
+    // An invariant lifetime may be named in a type inside a body too -- a
+    // cast making a key from a pointer, a variable's type, a generic's type
+    // argument ('None[&'=a Node['=a]]', which the parser cannot yet tell from
+    // a value) -- since what it stands for is checked as an identity wherever
+    // a value meets a type (lifeBrandsCoerce): it must be one the function's
+    // signature names (lifeBrandKnown)
+    if (lifeIsInvariant(name))
+        return 1;
+    char *msg = parse->intype
+        ? "A lifetime is named in the types of a function's signature and of a struct's fields, not in a variable's type."
+        : "A lifetime is named on a borrowed reference type ('&'a T') or on a type's use ('Cursor['a]'), not on a borrow or a value.";
+    if (at)
+        errorMsgNode(at, ErrorLifetimePlace, "%s", msg);
+    else
+        errorMsgLex(ErrorLifetimePlace, "%s", msg);
+    return 0;
 }
 
 // Parse the arguments of an index, 'x[...]': a list of expressions, or one range
@@ -254,14 +320,54 @@ static INode *parseIndexArg(ParseState *parse) {
 // missing start is 0, and a missing end, 'a..', is the array's end. A range is
 // held on the index as FlagRange, its arguments the start and, unless it runs
 // to the end, the end; FlagRangeIncl says the end was written with '...'.
+//
+// The lifetimes a type's use names, 'Cursor['a]', 'Parser['s, 'r]', or
+// 'Cursor['a, T]' beside its type arguments, are taken out of the arguments
+// into the name's LifeUse (lifetime.h), in the order written: a lifetime is
+// never instanced, so it is no argument of the instance. Where a lifetime may
+// not be named (parseLifeNamed), or on a type not named alone, it is refused.
 static Nodes *parseIndexArgsIn(ParseState *parse, FnCallNode *fncall);
 static Nodes *parseIndexArgs(ParseState *parse, FnCallNode *fncall) {
-    // A type's arguments are no signature's own: no lifetime is named there
-    FnSigNode *svlifesig = parse->lifesig;
-    parse->lifesig = NULL;
+    int svinlist = parse->inlist;
+    parse->inlist = 1;
     Nodes *args = parseIndexArgsIn(parse, fncall);
-    parse->lifesig = svlifesig;
-    return args;
+    parse->inlist = svinlist;
+    uint32_t nlifes = 0;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(args, cnt, nodesp)) {
+        if (parseIsLifeArg(*nodesp))
+            ++nlifes;
+    }
+    if (nlifes == 0)
+        return args;
+    Nodes *types = newNodes(args->used - nlifes + 1);
+    LifeUse *lifeuse = memAllocBlk(sizeof(LifeUse));
+    lifeuse->names = memAllocBlk(nlifes * sizeof(Name *));
+    lifeuse->count = 0;
+    lifeuse->typeargs = NULL;
+    lifeuse->at = NULL;
+    lifeuse->held = NULL;
+    int allowed = 1;
+    for (nodesFor(args, cnt, nodesp)) {
+        if (!parseIsLifeArg(*nodesp)) {
+            nodesAdd(&types, *nodesp);
+            continue;
+        }
+        Name *name = ((NameUseNode*)*nodesp)->namesym;
+        if (lifeuse->at == NULL)
+            lifeuse->at = *nodesp;
+        if (allowed && !parseLifeNamed(parse, name, *nodesp))
+            allowed = 0;
+        lifeuse->names[lifeuse->count++] = name;
+    }
+    if (allowed) {
+        if (fncall->objfn && fncall->objfn->tag == NameUseTag)
+            ((NameUseNode*)fncall->objfn)->lifeuse = lifeuse;
+        else
+            errorMsgNode(lifeuse->at, ErrorLifetimeArgs, "Lifetimes are named on a struct's use by its name: 'Cursor['a]'.");
+    }
+    return types;
 }
 
 static Nodes *parseIndexArgsIn(ParseState *parse, FnCallNode *fncall) {
@@ -347,6 +453,10 @@ INode *parseSuffix(ParseState *parse, INode *node, uint16_t flags) {
             FnCallNode *fncall = newFnCallNode(node, 0);
             fncall->flags |= flags | FlagIndex;
             fncall->args = parseIndexArgs(parse, fncall);
+            // A struct's use naming only its lifetimes, 'Cursor['a]', is the
+            // name itself, which holds them
+            if (fncall->args->used == 0 && node->tag == NameUseTag && ((NameUseNode*)node)->lifeuse)
+                continue;
             node = (INode*)fncall;
         }
 
@@ -399,19 +509,15 @@ INode *parseAmper(ParseState *parse) {
 
     // Lifetime (optional), before the permission, as the grammar and Rust
     // place it: '&'a mut T'. It is named only on a borrowed reference type in a
-    // function's signature, outside a type's arguments, where it is checked
+    // function's signature or a struct's field, where it is checked
     // (lifetime.h).
     if (lexIsToken(LifetimeToken)) {
-        if (parse->intype && parse->lifesig) {
+        // A key is a plain reference: a slice or a virtual reference reaches
+        // what it points at by indexing or dispatch, which no arena's '[]' does
+        if (lifeIsInvariant(lex->val.ident) && anode->tag != RefTag)
+            errorMsgLex(ErrorLifetimeInvariant, "An invariant lifetime is on a plain reference, '&'=a T': a slice or a virtual reference does not take one.");
+        else if (parseLifeNamed(parse, lex->val.ident, NULL))
             anode->lifename = lex->val.ident;
-            parse->lifesig->lifenamed = 1;
-        }
-        else if (parse->intype)
-            errorMsgLex(ErrorLifetimePlace,
-                "A lifetime is named only on a borrowed reference in a function's signature, not inside a type's arguments, nor in a field's or a variable's type: lifetimes on types holding borrows are not built yet.");
-        else
-            errorMsgLex(ErrorLifetimePlace,
-                "A lifetime is named on a borrowed reference type ('&'a T'), not on a borrow.");
         lexNextToken();
     }
 
@@ -481,6 +587,25 @@ INode *parseAmper(ParseState *parse) {
     // element -- '&[]' dispatch on a type that declares it -- is now borrow.c's
     // business, where the receiver's type is known.
     anode->vtexp = parsePrefix(parse);
+
+    // A bound, '&<Trait + 'a': what the value a virtual reference points at
+    // holds lives at least as long as ''a' (lifetime.h, "Lifetime bounds").
+    // It is named where a lifetime may be.
+    if (parse->intype && lexIsToken(PlusToken) && lexPeekIsLifetime()) {
+        lexNextToken();
+        Name *bound = lex->val.ident;
+        if (anode->tag != VirtRefTag)
+            errorMsgLex(ErrorLifetimeBound, "A lifetime bound is said of a type whose insides are unknown: a virtual reference's, '&<Trait + 'a', or a type parameter's, '[T + 'a]'. A plain reference or slice names its own lifetime, '&'a T'.");
+        else if (lifeIsInvariant(bound))
+            errorMsgLex(ErrorLifetimeInvariant, "A bound says what the borrows inside a type outlive, and an invariant lifetime has no order to say it with.");
+        else if (parseLifeNamed(parse, bound, NULL)) {
+            anode->bound = bound;
+            lifeVirtBoundSeen = 1;
+            if (bound == staticLifeName)
+                lifeStaticBoundSeen = 1;
+        }
+        lexNextToken();
+    }
     return (INode *)anode;
 }
 

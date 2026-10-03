@@ -65,9 +65,10 @@
 		   reaches unless it declares the name itself */
 	optiontype ::= '?' type
 	ptrtype ::= '*' type
-	lifetype ::= lifetime_token type
-	reftype ::= ('&' | '&<' | '&[]') lifetime_token? perm_type? type
-		/* a borrowed reference names no region: '&mut Point', a virtual one '&<Shape', a slice '&[]u8' */
+	reftype ::= ('&' | '&<' | '&[]') lifetime_token? perm_type? type ('+' lifetime_token)?
+		/* a borrowed reference names no region: '&mut Point', a virtual one '&<Shape', a slice '&[]u8';
+		   its lifetime is written only in a type of a function's signature or of a struct's field.
+		   The '+' lifetime, a bound, only on a virtual reference: what it points at holds borrows lasting that long */
 	ownreftype ::= region_type ('[' type (',' type)* ']')? '[' (perm_ident ',')? type ']'
 		/* the region a struct declaring 'is RegionRef', its own type arguments first when it is
 		   generic; no permission written is 'uni'; virtual when the type is an open trait */
@@ -75,21 +76,37 @@
 		/* a static permission, or the name of a lock permission */
 	region_type ::= ident_token
 	fntype ::= 'fn' (ident_token genparms?)? '(' fnparm (',' fnparm)* ')' (type (',' type)*)? 'inline'? whereclause?
+		/* a comma after a return type adds another only outside every list: a function's own return types,
+		   a field's type, a variable's type. Inside a parenthesised or bracketed list (a parameter list,
+		   a function type's own parameter list, arguments, a tuple, type arguments) the comma continues
+		   the list, so a signature there has one return type, and several values are a tuple:
+		   '(f &amp;fn(u32) (u32, u32), x u32)' */
 	fnparm ::= perm_ident? ident_token type? ('=' (literal | ident))?
 	structtype ::= 'struct' 'trait'? ident_token? genparms? baseclause* whereclause? ('{' structstmt (',' structstmt)* '}')?
 	genparms ::= '[' genparm (',' genparm)* ']'
-	genparm ::= ident_token (genqualname ('+' genqualname)*)?
+	genparm ::= ident_token (genqualname ('+' genbound)* | ('+' lifetime_token)+)? | lifetime_token
 		/* what follows the name names traits, all required, which constrain the parameter as a whereclause does
 		   ('or' is not taken here); a type or a kind there, a value or kind parameter, is not built.
-		   A macro's or a generic module's parameter takes none */
+		   A lifetime after a '+' is a bound, on a generic function's type parameter only: what a value of it
+		   holds lasts that long.
+		   A macro's or a generic module's parameter takes none. A lifetime only in a struct's or an enum's
+		   brackets: it declares one of its lifetimes, which is never instanced */
+	genbound ::= genqualname | lifetime_token
 	whereclause ::= 'where' whereor
 	whereor ::= whereand ('or' whereand)*
+		/* no alternative of an 'or' holds a lifetime comparison or bound */
 	whereand ::= whereterm ('and' whereterm)*   /* 'and' binds tighter than 'or', as in an expression */
-	whereterm ::= '(' whereor ')' | whereitem
-	whereitem ::= ident_token 'is' genqualname ('+' genqualname)*
+	whereterm ::= '(' whereor ')' | whereitem | wherebound | wherelife
+	whereitem ::= ident_token 'is' genqualname ('+' genbound)*
 		/* each name a trait, or a type, met by that type alone ('T is Bool');
 		   the subject is a type parameter of the generic, or of the generic type the function is a method of;
-		   on a generic's own parameters a requirement, on a method over its type's a condition for the method existing */
+		   on a generic's own parameters a requirement, on a method over its type's a condition for the method existing.
+		   A lifetime after a '+' is a bound, as in wherebound */
+	wherebound ::= ident_token ('+' lifetime_token)+
+		/* 'T + 'a': a bound on a generic function's own type parameter; 'T is 'a' is not the spelling */
+	wherelife ::= lifetime_token ('>=' | '==') lifetime_token
+		/* ''a >= 'b': ''a' lasts at least as long as ''b'; '==' both ways. On any function, of lifetimes its
+		   signature names, and on a struct, of lifetimes it declares */
 	baseclause ::= isaclause | extendsclause   /* either order, each at most once; 'extends' not on a trait */
 	isaclause ::= 'is' genqualname (',' genqualname)*
 		/* every name is an open trait: an enum anywhere in the list is refused.
@@ -104,8 +121,12 @@
 	folditems ::= ident_token ('as' ident_token)? (',' ident_token ('as' ident_token)?)*
 		| 'but' ident_token (',' ident_token)*   /* omitted admits every member of the sibling named */
 	traittype ::= 'trait' ident_token? isaclause? ('{' structstmt* '}')?   /* a synonym for 'struct trait' */
-	unbuiltkind ::= 'actor' 'trait'? ident_token? ('{' structstmt* '}')?   /* accepted, not implemented */
-	enumtype ::= 'enum' '@unsized'? ident_token nbrtype? (('extends' genqualname) | isaclause)? '{' enumstmt* '}'
+	actortype ::= 'actor' ident_token '{' structstmt* '}'
+		/* its fields are its private state, never 'pub'; each 'pub' method is a message, which returns
+		   nothing and whose parameters are Sendable; 'init' and 'final' as a struct's; no static, macro,
+		   'extern' or 'use'. 'new Name(args)' runs its 'init' and answers its handle. Needs 'import actors' */
+	unbuiltkind ::= 'actor' 'trait' ident_token? ('{' structstmt* '}')?   /* accepted, not implemented */
+	enumtype ::= 'enum' '@unsized'? ident_token genparms? nbrtype? (('extends' genqualname) | isaclause)? whereclause? '{' enumstmt* '}'
 		/* 'extends' names another enum, a generic one with its type arguments, whose variants
 		   this one holds copies of; such an enum declares only variants in its body, writes
 		   no integer type of its own, and names no isaclause: its base's comes with the copies.
@@ -160,11 +181,16 @@
 		   type, or an alias of one, allocates: 'new Rc[mut, Node](1)', or, given one finished value of the
 		   value type, moves it in: 'new Rc[i32](5)'. 'trynew' takes only a managed reference
 		   type, and gives an Option of it, None when memory runs out */
-	genqualname ::= ident_token ('.' ident_token)* ('[' type (',' type)* ']')?
+	genqualname ::= ident_token ('.' ident_token)* ('[' typearg (',' typearg)* ']')?
+	typearg ::= type | lifetime_token
+		/* a lifetime only in a type of a function's signature or of a struct's field: a struct's lifetimes,
+		   named positionally ('Cursor['a]', 'Parser['s, 'r]', 'Cursor['a, T]') or not at all; never in a
+		   construction's type, a variable's or a function's brackets */
 	pseudo ::= 'self' | 'this'
 	
 /* Literals and other tokens */
-	literal ::= float_token | integer_token | text_token | symbol_token | 'true' | 'false' | array_lit
+	literal ::= float_token | integer_token | text_token | symbol_token | 'true' | 'false' | 'null' | array_lit
+		/* 'null' is the null raw pointer, of the pointer type it is wanted as */
 	array_lit ::= '[' contents_exp (',' contents_exp)* ']'
 		/* '[n; x]', the fill literal, is retired: 'new Array[T, n] <- fill x' */
 	float_token ::= (('0'-'9') ('0'-'9')*) '.' ('0'-'9')* (('e'|'E') ('-'|'+')? ('0'-'9')+)?

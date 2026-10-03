@@ -51,6 +51,14 @@ typedef struct Lexer {
     char *prevend;
     char *prevlinep;
     uint32_t prevlinenbr;
+
+    // A source the compiler wrote itself: the declarations an 'actor'
+    // generates (parseactor.c). In it alone, '`#n`' names gennames[n], a name
+    // no source can spell (nametblPrivate). A diagnostic against it is
+    // reported where 'genat' is, the declaration it was generated from
+    INode *genat;
+    Name **gennames;
+    uint32_t ngennames;
 } Lexer;
 
 // Lexer flags
@@ -180,6 +188,7 @@ enum TokenTypes {
     TrynewToken,   // 'trynew': an allocation that may fail, 'trynew Rc[mut, Node](1)', giving an Option
     VoidToken,     // 'void'
     nilToken,      // 'nil'
+    nullToken,     // 'null'
     trueToken,     // 'true'
     falseToken,    // 'false'
     UndefToken,    // 'undef'
@@ -212,6 +221,8 @@ int lexNextIsWord(char *word);
 // In a function-reference type's parameter list, does the name the lexer is on
 // begin a type ('geomath.Vec3', 'List[i32]') rather than name a parameter?
 int lexIdentOpensType();
+// Is the token after the current one a lifetime ('a)? The lexer is left where it was.
+int lexPeekIsLifetime();
 // With the lexer on a name, does a value follow it rather than an operator or
 // other continuation of an expression the name begins? ('fill' after '<-')
 int lexNextOpensValue();

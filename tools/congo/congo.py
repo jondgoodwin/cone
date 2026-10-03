@@ -10,6 +10,9 @@
                                       its tests/ and build each in examples/
     congo clean [file.cone]           delete what a build wrote
 
+build, run and test also take -D NAME or -D NAME=123 (TEMPORARY, a provisional
+mechanism whose final design is open), passed to every conec compile.
+
 CONGO DISCOVERS, THE COMPILER IS TOLD [Jon 23 Sep 2026]. Congo walks each
 package's folders and reads each source file's header -- its leading comments,
 its 'mod' line and its 'import' lines, and nothing after them; a module's
@@ -64,6 +67,11 @@ OBJ_EXT = ".obj" if IS_WINDOWS else ".o"
 EXE_EXT = ".exe" if IS_WINDOWS else ""
 PRELUDE = "core"
 
+# TEMPORARY, a provisional mechanism whose final design is open: each '-D NAME'
+# or '-D NAME=123' given to build, run or test, passed to every conec compile of
+# the build, the packages it imports included (conec's isDefined, definedInt)
+DEFINES: list[str] = []
+
 NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
 VERSION_RE = re.compile(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\Z")
 OUTPUTS = ("executable", "library")
@@ -80,7 +88,7 @@ KEYWORDS = frozenset((
     "include import extern pub static macro fn overload const alias typedef struct mod"
     " actor trait extends mixin use but enum return with if elif else case match"
     " while each in by break continue not or and as is into inline where new trynew void nil"
-    " true false undef").split())
+    " null true false undef").split())
 RESERVED = frozenset((
     "async baseurl context local selfmethod using wait yield throw catch spawn"
     ).split())
@@ -1127,7 +1135,8 @@ def compile_unit(conec: Path, unit: Unit, out: Path, mode: str, top: bool,
     include_for(unit.pkg, out).unlink(missing_ok=True)
     if announce:
         say("Compiling", f"{unit.pkg.label()} ({unit.pkg.root})")
-    result = subprocess.run([str(conec), "-o", str(out), str(desc)], env=env,
+    defines = [arg for define in DEFINES for arg in ("-D", define)]
+    result = subprocess.run([str(conec), *defines, "-o", str(out), str(desc)], env=env,
                             capture_output=True)
     said = utf8_text(result.stdout) + utf8_text(result.stderr)
     chatter = [line for line in said.splitlines()
@@ -1623,6 +1632,14 @@ def cmd_test(args: argparse.Namespace) -> int:
     return 0
 
 
+def add_define_argument(parser: argparse.ArgumentParser) -> None:
+    """TEMPORARY, a provisional mechanism whose final design is open: '-D',
+    handed to conec as it is given, which checks it."""
+    parser.add_argument("-D", "--define", action="append", default=[], metavar="NAME[=INT]",
+                        help="define NAME (1) or NAME=INT for isDefined and definedInt in every"
+                             " compile of the build (provisional)")
+
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="congo", description="The Cone build tool.")
     sub = parser.add_subparsers(dest="command", required=True, metavar="command")
@@ -1636,6 +1653,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
                              ("run", cmd_run, "build this package or a lone file, and run it")):
         p = sub.add_parser(name, help=text)
         p.add_argument("--release", action="store_true", help="an optimised build")
+        add_define_argument(p)
         if name == "run":
             p.add_argument("file", nargs="?", help="a lone .cone file, run with no manifest")
             p.epilog = "Arguments after '--' are passed to the program."
@@ -1645,6 +1663,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     test.add_argument("name", nargs="?",
                       help="only the tests and examples whose file name contains this")
     test.add_argument("--release", action="store_true", help="an optimised build")
+    add_define_argument(test)
     test.add_argument("--bless", action="store_true",
                       help="write the expected output of a test that has none, from a"
                            " run; check it by hand against the source")
@@ -1680,6 +1699,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     utf8_streams()
     args = parse_args(sys.argv[1:] if argv is None else argv)
+    DEFINES[:] = getattr(args, "define", [])
     try:
         return args.func(args)
     except CongoError as exc:

@@ -1,0 +1,52 @@
+// The same bodies as lifetime_bound_generic_relied_on's 'put' and 'pick'
+// without the bound: a T is stored where ''a' borrows are held, and returned
+// as ''a', though nothing says what a T holds lasts ''a'. Its borrows are of
+// a lifetime of their own, which no order relates to ''a'.
+//
+// Verdict: refuse, ErrorEscape at the store and at the return.
+// Basis: language rule (3 Oct 2026): a body relies on what T holds lasting
+// ''a' only where a bound says so; two lifetimes no order relates are
+// unrelated (reflifefn.html, "Where clauses ordering lifetimes").
+// Master 2cb190a1: correct. This compiler with the refusal turned off accepts
+// it, and main, run, prints "final" as s dies and then the value read
+// through d, which 'putAny' left pointing into s's freed block: the call
+// carried nothing of its argument into d, since its signature promised
+// nothing of T's borrows went there.
+
+mod lifetime_bound_generic_unbounded_refused;
+
+import stdio use *;
+
+struct R {
+  pub n i64;
+  fn final(self &uni) {
+    printStr("final\n");
+  }
+}
+
+fn putAny[T](d &mut &'a R, x T) {
+  *d = x;                    //~ ErrorEscape "Stored where 'd' points"
+}
+
+fn pickAny[T](x T, y &'a R) &'a R {
+  x;                         //~ ErrorEscape "Returned value carries"
+}
+
+fn clobber(n i64) i64 {
+  mut a Array[i64, 16] = [n, n, n, n, n, n, n, n, n, n, n, n, n, n, n, n];
+  a[3] + a[9];
+}
+
+fn main() {
+  imm g = new R(1);
+  mut d = &g;
+  {
+    imm s = new So[R](42);
+    putAny(&mut d, &*s);
+  }
+  clobber(21);
+  printStr("read = ");
+  printInt(d.n);
+  printStr("\n");
+  printInt(pickAny(&g, &g).n);
+}

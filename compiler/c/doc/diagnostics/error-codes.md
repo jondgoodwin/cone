@@ -283,13 +283,78 @@ constants comes back to itself is `ErrorCircular`, the code every definition
 in terms of itself wears.
 
 A lifetime named where nothing checks it is `ErrorLifetimePlace`, wherever it
-is written — a field's type, a variable's, a type's arguments, a borrow, or
-`'static` inside a parameter's type — because the remedy is one: name it on a
-signature's own reference, or not at all. A named lifetime that is checked and
-broken is not this code: returned or stored where its lifetime does not reach
-is `ErrorEscape`, and a call that could store it so, or a borrow not global
-handed to a `'static` parameter, is `ErrorCallEscape`, as for any borrow that
-would outlive what it borrows.
+is written — a variable's type, a borrow, a construction's type arguments, a
+function's brackets, or `'static` inside a parameter's type or declared by a
+struct — because the remedy is one: name it in a signature's or a struct
+field's type, or not at all. A lifetime named where it is checked but not
+declared there is `ErrorLifetimeUndeclared`: a struct's field naming one its
+brackets lack (a struct naming only one may leave it undeclared), a borrow of
+none in a struct that declares lifetimes, or a `where` clause ordering one its
+declaration does not have; the remedy is to declare it, or to fix the
+spelling. A use naming a struct's lifetimes otherwise than it declares them —
+too many, too few, or any for a type declaring none — is `ErrorLifetimeArgs`,
+the use's own mistake. A lifetime comparison under `or` or `not` in a `where`
+clause is `ErrorLifetimeOr`, apart from `ErrorWhereForm`: the form is one the
+clause reads, and refused for what it would mean. A named lifetime that is
+checked and broken is none of these: returned or stored where its lifetime
+does not reach, nor one ordered shorter, is `ErrorEscape`, and a call that
+could store it so, or a borrow not global handed to a `'static` parameter, is
+`ErrorCallEscape`, as for any borrow that would outlive what it borrows.
+
+An invariant lifetime has codes of its own, one per remedy. A value of one
+brand where another is wanted -- another arena's key at an arena's `[]`, an
+arena or key stored over one of another brand, two brands joined by a branch
+or given one name of a callee's or a struct's, a brand lost or gained -- is
+`ErrorBrand`: the remedy is to use the value with its own arena. The one
+case of it whose remedy differs is `ErrorBrandLoop`, a brand a loop's pass
+minted kept for a later pass or carried out of the loop: the arena belongs
+inside the pass, or outside the loop. A key reached through on its own
+(dereferenced, a field, a method) is `ErrorKeyAccess`: go through its arena.
+A key to a value holding a borrow is `ErrorKeyBorrow`: what an arena holds
+outlives every scope. A spelling an invariant lifetime does not take -- `>=`
+with one, `==` with an ordinary one, one on a slice or virtual reference, one
+in an ordinary one's place or left unnamed in a signature, one a body names
+that its signature does not -- is `ErrorLifetimeInvariant`.
+
+A lifetime bound has one code, `ErrorLifetimeBound`, for a bound broken where
+it is checked by name and for one where none is built: an argument for a type
+parameter bounded by `'static`, or for a parameter `&<Trait + 'static`,
+carrying a borrow that is not global; a value returned or stored through a
+parameter as a virtual reference bounded by `'a` holding a borrow not known to
+last `'a`; a value holding a borrow that is not global made an owning
+virtual reference (`So[Trait]`), whose bound, unwritten, is `'static`; a
+bound on a generic type's parameter, or on a reference that is not virtual.
+A bound of a callee's own lifetime is not checked by name at a call: the call carries the argument wherever the bound's lifetime flows, and
+a borrow that is too short is the loan walk's `ErrorFrozen`, `ErrorEscape` or
+`ErrorCallEscape`, as for any carried loan. A bound on a name that is no type
+parameter of the function is `ErrorWhereSubject`, and of a lifetime its
+signature does not name `ErrorLifetimeUndeclared`.
+
+An actor's declaration has three codes of its own and borrows two. A message
+declaring a return type is `ErrorActorReturn`, since the remedy is a message
+sent back; everything else its body may not hold, or a form of it not built
+(a `pub` field, a static, a `pub` function without `self`, a generic message,
+a macro, `extern`, a `self` of another kind, a generic actor, one naming an
+abstraction), is `ErrorActorMember`; and a module declaring one without
+importing the `actors` package is `ErrorActorRuntime`. A message's or an
+initializer's parameter that cannot cross threads is `ErrorNotSendable`, the
+thread check's code, whatever finds it -- the parser, for a borrow or the
+state itself, or `actorCheckAll` after type check -- and the state's field or
+non-`pub` method reached through the handle is `ErrorNotPublic`, as any
+private member is.
+
+A GPU target takes four codes, one per remedy, all for what SPIR-V's logical
+addressing cannot type. A reference, or a value holding one, chosen at run
+time -- by an `if`, by a function's returns, or by a variable used after paths
+that gave it different places -- is `ErrorGpuRefChoice`, whatever memory its
+choices are in: the remedy is to choose the index or the value. An array or
+slice whose elements hold references, indexed by a value known only at run
+time, is `ErrorGpuRefIndexed`: the remedy is an array of the values. A global
+holding a reference is `ErrorGpuRefGlobal`, and a function calling itself,
+directly or through others, `ErrorGpuRecursion`. The first two are the loan
+walk's ([Flow Analysis](../phases/flow.md), "GPU targets"); the last two
+generation's (`genlGloVar`, `genlGpuCalls`), reported only for a program
+nothing earlier refused.
 
 ## The one code with no scenario
 

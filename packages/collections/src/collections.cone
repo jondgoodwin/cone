@@ -28,7 +28,9 @@
 //
 // Borrowed references, for now: a collection lends out borrows only for brief
 // reading. 'list[i]' and 'dict[key]' give a '&' to one element, and 'view()'
-// a slice of the whole, to read at once and let go of. Nothing here stores a
+// a slice of the whole, to read at once and let go of; '&mut list[i]' and
+// 'viewMut()' lend the same for changing in place, and while one is used the
+// collection may not be touched any other way. Nothing here stores a
 // borrow, and nothing a collection returns should be kept across a change to
 // it: a push can move the whole block. The compiler catches that for a
 // collection held in a local -- while 'imm e = list[0usize]' is still used,
@@ -83,12 +85,12 @@ pub struct List[T] is ShapeChanging, Sendable {
   cap usize;
 
   // An empty list, 'new List[i32]': no block until the first value arrives
-  pub fn initEmpty overload init(self &new) { *self = new List(0usize as *T, 0usize, 0usize); }
+  pub fn initEmpty overload init(self &new) { *self = new List(null, 0usize, 0usize); }
 
   // An empty list whose block has room for exactly n values, 'new List[i32](100)',
   // which is what its contents' 'fill' fills: 'new List[i32](100) <- fill 0'
   pub fn initCapacity overload init(self &new, n usize) {
-    *self = new List(0usize as *T, 0usize, 0usize);
+    *self = new List(null, 0usize, 0usize);
     if n > 0usize {
       self.ptr = libc.realloc(self.ptr as *u8, n * mem.sizeof[T]()) as *T;
       self.cap = n;
@@ -96,11 +98,11 @@ pub struct List[T] is ShapeChanging, Sendable {
   }
 
   // An empty list: no block until the first value arrives
-  pub fn empty() List { new List(0usize as *T, 0usize, 0usize); }
+  pub fn empty() List { new List(null, 0usize, 0usize); }
 
   // An empty list whose block already has room for n values
   pub fn withCapacity(n usize) List {
-    mut l = new List(0usize as *T, 0usize, 0usize);
+    mut l = new List(null, 0usize, 0usize);
     l.reserve(n);
     l;
   }
@@ -180,6 +182,12 @@ pub struct List[T] is ShapeChanging, Sendable {
 
   // A slice of every value it holds, for reading them now
   pub fn view(self &) &[]T { mem.sliceFromParts(ptr, used); }
+
+  // A mutable slice of every value it holds, for changing them in place:
+  // what a function that fills a slice writes into. The list stays borrowed
+  // mutably while the slice is used, so nothing else may read or change it
+  // until the slice's last use
+  pub fn viewMut(self &mut) &[]mut T { mem.sliceFromPartsMut(ptr, used); }
 
   // Put its values in order: 'order(a, b)' is negative when a goes before b,
   // positive when after, and 0 when either may go first, as 'compare' and
@@ -266,7 +274,7 @@ pub struct String is ShapeChanging {
   // a C function answers, or one of main's 'argv'. A null pointer is a
   // program error, a panic at the line of the caller.
   pub fn fromCStr(p *u8, file &[]u8 = srcFile(), line u32 = srcLine()) String {
-    if p == 0usize as *u8 { panic("collections: a null pointer is not a C string", file, line); }
+    if p == null { panic("collections: a null pointer is not a C string", file, line); }
     String.from(mem.sliceFromParts(p, libc.strlen(p)));
   }
 
@@ -292,6 +300,9 @@ pub struct String is ShapeChanging {
 
   // Its bytes, for reading them now
   pub fn view(self &) &[]u8 { bytes.view(); }
+
+  // Its bytes, for changing them in place (nothing checks they stay UTF-8)
+  pub fn viewMut(self &mut) &[]mut u8 { bytes.viewMut(); }
 
   // The byte at index
   pub fn `[]`(self &, index usize) u8 { *bytes[index]; }
@@ -576,9 +587,9 @@ pub struct Dict[K, V] is ShapeChanging, Sendable {
   cap usize;
 
   // An empty dictionary, 'new Dict[String, i64]': no block until the first entry arrives
-  pub fn initEmpty overload init(self &new) { *self = new Dict(0usize as *Slot[K, V], 0usize, 0usize, 0usize); }
+  pub fn initEmpty overload init(self &new) { *self = new Dict(null, 0usize, 0usize, 0usize); }
 
-  pub fn empty() Dict { new Dict(0usize as *Slot[K, V], 0usize, 0usize, 0usize); }
+  pub fn empty() Dict { new Dict(null, 0usize, 0usize, 0usize); }
 
   // How many entries it holds, and how many slots its block has
   pub fn len(self &) usize { used; }

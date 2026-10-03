@@ -18,11 +18,15 @@ claim that these rule rather than describe.**
    type-starting token to `parsePrefix` — the *value* expression parser. No
    separate type grammar, no backtracking. ▸ **Forbids** a syntax that can only
    be disambiguated by knowing whether a type or a value is expected, and
-   **settles** that a new type form costs an arm in the value parser. The one
-   bit of position the parser carries is `ParseState.inrettype`, set while
+   **settles** that a new type form costs an arm in the value parser. Two bits
+   of position decide where a signature ends. `ParseState.inrettype`, set while
    `parseFnSig` reads a return type: a `{` there opens the body of the function
    being declared, so `&fn` is read as a signature alone and leaves the block to
-   its owner.
+   its owner. And `ParseState.inlist`, set inside a parenthesised or bracketed
+   list (parameters, arguments, a tuple, type arguments, an array literal) and
+   cleared inside a block: a comma after a signature's return type there
+   continues the list, so `(f &fn(u32) u32, x u32)` is two parameters, while
+   outside every list it adds a return type (`fn ceil(x i32) i32, i32`).
 2. **The lexer is line-blind.** It counts lines for diagnostics and nothing
    else: a block is delimited by braces and a statement ends at `;`, so
    indentation, line ends and columns carry no meaning to the grammar. ▸
@@ -323,9 +327,9 @@ folder's files, or one file, belong to, [module](../nodes/module.md), "The `mod`
 declaration" — and so does `mod trait`, the module's abstraction, which the arm
 tells apart by the word after `mod` and hands to `parseModTrait`
 ([module](../nodes/module.md), "Module traits").
-`actor`
-does not, and its arm reports `ErrorUnbuiltKind` where the declaration is written
-and names the abstraction's spelling, `actor trait`. An in-file
+`actor` builds one too, the declarations an actor stands for (section 6),
+and its arm tells `actor trait`, the actor's abstraction, apart by the word
+after `actor` and reports it `ErrorUnbuiltKind` where it is written. An in-file
 `mod name { ... }` block is refused in source under that code too, though it is
 no unbuilt shape: it does not exist there, since a nested module is a file of
 its own or a subfolder. A generated include file alone writes one, for each of
@@ -573,6 +577,33 @@ a literal is constant-folded in place, and an integer literal records it
 (`FlagLitNeg`), because its range check needs the digits written
 ([literals](../nodes/literals.md)).
 
+**It generates an actor's declarations** (`parseactor.c`). No node stands for an
+actor. `actor Counter { ... }` is read by `parseStruct` as a struct's body, the
+actor's *state*, while `ParseState.dcltexts` records where each field's and
+parameter's type and default value are written (`parseVarDcl`,
+`parseFieldDclBody`, `parseFnSig`); the members are checked
+(`ErrorActorMember`, `ErrorActorReturn`, a borrow or the state itself carried
+in a message `ErrorNotSendable`), a bare `self` becomes `self &mut`, and the
+other three declarations are written as Cone source and parsed from a lexer of
+their own: the handle under the actor's own name (one field owning the
+mailbox, an initializer per one of the state's or the implicit one's fields, a
+send method per message, all calling the `actors` package), the message enum
+(`is Sendable`, a variant per `pub` method, its fields the parameters' types
+as written), and the dispatch function. They join the module in that order,
+after the state; nothing depends on it, since the handle reaches the enum only
+through a reference, which lays out nothing of its target. The derived names -- `Counter.State`,
+`Counter.Msg`, `Counter.dispatch`, the handle's field, and the bindings of the
+`actors` and `sync` modules and of `Sendable` the text reaches them through,
+bound once per module -- are `nametblPrivate` names, which no source can
+spell; the generated text writes them `` `#n` ``, which only a lexer given
+`Lexer.gennames` reads. A diagnostic against the generated text is reported at
+the actor's name with the generated line beside it (`Lexer.genat`). The module
+must import `actors` (`ErrorActorRuntime`). Each generated declaration is
+marked `DclActorGen`, which a library compile exports whatever its
+visibility: the include file keeps the actor whole, so an importer generates
+them again. What crosses to the actor is checked after type check
+(`actorCheckAll`, `ir/types/actor.c`).
+
 **It binds module-level names.** `modAddNode`, `modAddNamedNode` and `modAddFn`
 run *during* parsing, so by the time a module's parse finishes its namespace is
 populated, `ErrorDupName` and `ErrorOverloadClash` have already been reported,
@@ -674,7 +705,7 @@ never be analyzed.
 | --- | --- |
 | a spelling the lexer refuses | a reserved word, `?.`, or a `@` or `#` word that names nothing is reported in the lexer and handed on as what it stands for or not at all (section 2), so the parser never sees it |
 | `parseSkipToNextStmt` | the main resync; consumes through the next `;`, or stops short of a `}` or EOF for the enclosing block to handle |
-| an unbuilt form's body | `parseSkipDclBody` skips a following `{ … }` whole, counting depth, so nothing inside is read as a global statement and reported again, and resyncs at the next `;` where there is no block. `actor` and the refused in-file `mod name { … }` block use it, and so does a member a module trait refuses (`parseModTraitSkipMember`), so each is reported once, where it is written |
+| an unbuilt form's body | `parseSkipDclBody` skips a following `{ … }` whole, counting depth, so nothing inside is read as a global statement and reported again, and resyncs at the next `;` where there is no block. `actor trait` and the refused in-file `mod name { … }` block use it, and so does a member a module trait refuses (`parseModTraitSkipMember`), so each is reported once, where it is written |
 | the retired `include` | `parseRetiredInclude` reports `ErrorInclude` at the word, then reads what the statement took — names or quoted paths, comma-separated — and its `;`, so a statement naming one file, a path or a list is one diagnostic and a `pub` before it adds none. A missing `;` ends the statement at its last name rather than swallowing the next declaration; only where no name follows does it resync with `parseSkipToNextStmt` |
 | the retired `typedef` | `parseRetiredTypedef` reports `ErrorTypedef` at the word, then reads the statement it was — a name, an `=` if one was written, and a type, however many lines it runs over — and its `;`, so each is one diagnostic and a `pub` before it adds none; without the `;` it resyncs with `parseSkipToNextStmt` |
 | the retired `into` | `parseRetiredInto` reports `ErrorInto` at the word, then reads the type after it if one begins there, and `parseCast` goes on with the operand it had, so each use is one diagnostic and what follows parses as written |
@@ -726,7 +757,7 @@ numbers.
 | `parser/parsemod.c` | `parseInit`, `parsePgm`, `parseLoadCore` | **entry point** — `parseInit` sets up the name table and the lexer, ahead of generation's setup since a build description is read with them; `parsePgm` the type tables, program, main module (a source file's, or the one a build description names), the `core` package from the search path, main file |
 | `parser/parsebuild.c` | `parseIsBuildDesc`, `parseBuildDesc`, `parseBuildFindImport`, `parseBuildImportModule` | the build description: told apart by its `.conebuild` extension, read by the lexer into a tree of `BuildModule`s — settings, the package lines, each module's files, child modules and import lines, each malformed line `ErrorBuildDesc` — the import line a described module writes for a name, and the entry for an include file an import line loads, whose imports are the package lines |
 | `parser/parsemod.c` | `parseBuildModuleTree`, `parseBuildSubmoduleDraw`, `parseBuildFiles`, `parseLoadBuildImport` | a described build's module tree: each module named and filled as the description says, nothing swept, and the file an import line names loaded as a declared module under the import's name. `ParseState.build` is the current module's entry, which `parseModuleDcl` checks the `mod` line against (`ErrorBuildModName`) and `parseImport` answers names from (`ErrorBuildImport`) |
-| | `parseGlobalStmts` | the global statement dispatch loop; `trait` by itself enters `parseStruct` with `TraitType` already set, `mod trait` enters `parseModTrait`, and `actor` is the unbuilt kind refused here. It is told whether it is reading the start of a module's first file or of another of its files, which is what decides where a `mod` declaration may stand, which ones a build description checks, and which file must open with one (`ErrorNoModDcl`). It also refuses an `import` after the first file's first other declaration, and any `import` in another of the module's files (`ErrorImportLate`): the header is the `mod` line, then the imports, and only the first file has one [Jon 23 Sep] |
+| | `parseGlobalStmts` | the global statement dispatch loop; `trait` by itself enters `parseStruct` with `TraitType` already set, `mod trait` enters `parseModTrait`, and `actor` enters `parseActor`. It is told whether it is reading the start of a module's first file or of another of its files, which is what decides where a `mod` declaration may stand, which ones a build description checks, and which file must open with one (`ErrorNoModDcl`). It also refuses an `import` after the first file's first other declaration, and any `import` in another of the module's files (`ErrorImportLate`): the header is the `mod` line, then the imports, and only the first file has one [Jon 23 Sep] |
 | | `parseModuleDcl` | `mod name;`, the declaration a module's designated file or one file makes: the placement rule, the check against the folder's name, the one-file submodule's file's or the build description's, the rename a lone file still gets, the module's own name bound into its namespace, what `pub` does for a submodule and why it is refused on any other module, the `@c` after `mod` that makes the module C-named (its `DclCName`, `DclSystemCC` and prefix, given only where the declaration is accepted), the `extends` and the `is` it records for name resolution to resolve, in the order `extends`, `is`, `use` (`ErrorModIs`, `ErrorBadFold` otherwise), and the refusal of the in-file block, which does not exist |
 | | `parseModTrait` | `mod trait Name { ... }`, a module trait: a function or a global per member, a requirement without a body or initialiser and a default with one; anything else, a generic fn and an overload name `ErrorModTraitBody`, skipped whole (`parseModTraitSkipMember`); no body makes a marker |
 | | `parseCAttr` | `@c`, `@c("str")`, `@c(system)`, `@c("str", system)` after `mod` or `fn`, written onto a `DclInfo`: the string is a module's prefix or a function's whole symbol. A malformed one is `ErrorCAttr` and dropped whole |
@@ -739,6 +770,7 @@ numbers.
 | `shared/fileio.c` | `fileFindSrc`, `fileFindLocal`, `fileFindPackage`, `fileFolderScan`, `fileDesignatedFile` | locate a source file without reading it — beside a file, on the package search path (saying when it found a package's source root), or the one then the other; list a folder's `.cone` files and subfolders, sorted; probe a folder for the designated file that makes it a module folder |
 | | `parseImport`, `parseRetiredInclude` | the one source-composition form, and the retired one reported |
 | | `parseRetiredTypedef` | the retired `typedef` reported, pointed at `alias` |
+| `parser/parseactor.c` | `parseActor`, `parseActorMembers`, `parseActorRuntime`, `parseDclText` | an actor: its body read as the state, its members checked, the `actors` package found and bound once per module, and the message enum, the handle and the dispatch function written and parsed (section 6); `actor trait` refused |
 | `parser/parsehelper.c` | `parseBlockStart`, `parseBlockEnd` | `{` and `}`, with recovery |
 | | `parseEndOfStatement`, `parseSkipToNextStmt`, `parseCloseTok` | the required `;`, and the two resyncs |
 | `parser/parseexpr.c` | `parseAnyExpr`, `parseSimpleExpr` | the two expression entry points |
@@ -755,7 +787,7 @@ numbers.
 | | `parseAddVariant`, `parseVariantTagPin` | joining a variant to its enum: the closed flags, the synthesized base link, the tag value written (an integer literal, which may be negative, kept whole in 64 bits; whether it fits the enum's type is type check's question) or assigned in sequence, and its name, bound in the enum's namespace while the node joins the module's list. A variant of an enum that *extends* another stays unassigned unless a value was written, because that enum's numbering continues from its base's last and the base is not resolved yet |
 | | `parseEnumExtensionMember` | what an enum extending another may not declare — a member of any kind, since a field or method every variant carries would have to reach its copies of the base's variants too, and a requirement declared there would need every copy to implement it; such a member belongs on the base, and comes along with the copies. Nor a discriminant: none is synthesized for such an enum either, its base's arriving with the fields name resolution splices in |
 | | `parseIsTagType`, `parseTagType` | `tag` recognized where a field's type is written and nowhere else, so it is not a reserved word |
-| | `parseFnSig`, `parseFnSigSettle` | parameters, `Self` inference, single or tuple return type. A `&fn` signature's parameter may be its type alone (an `anonName` parameter), and its lone names and `Self` inference wait for `parseFnSigSettle`, called once `parseAmper` or `parseFn` knows whether a body follows (section 4) |
+| | `parseFnSig`, `parseFnSigSettle` | parameters, `Self` inference, single or tuple return type; several return types separated by commas only outside every list (`ParseState.inlist`, section 1), a signature inside one returning several values parenthesising them. A `&fn` signature's parameter may be its type alone (an `anonName` parameter), and its lone names and `Self` inference wait for `parseFnSigSettle`, called once `parseAmper` or `parseFn` knows whether a body follows (section 4) |
 | | `parseVarDcl`, `parseThreadLocalAttr`, `parseFieldDclBody`, `parseConstDcl`, `parsePerm` | the declaration forms; a field's or a global's trailing `use` clause goes to `parseFoldClause`, and one on a local, a parameter or a static is `ErrorBadFold`. `@threadlocal` after the permission is `DclThreadLocal` on a module's global, the one caller passing `ParseMayThreadLocal` (`parseFnOrVar`, which also refuses one with no initial value unless `extern`, `ErrorThreadLocalInit`); `imm` with it is `ErrorThreadLocalImm`; on a local, a static, a parameter, a field, a module trait's global, after `fn` or a type's keyword, or before a global's permission it is `ErrorThreadLocalPlace`, reported and dropped. A field's node is built while the lexer is still on its name, both so a diagnostic points there and so an enum's body can decide between a field and a bare-name variant afterwards |
 | | `parseFoldClause` | `use *` with an optional `but` list, or a list of names each with an optional `as`; builds the clause on the field and an alias per listed name, bound by name resolution |
 | | `parseUseSibling`, `parseModUse`, `parseUseAdmits` | a `use` standing as a statement: in a type body it folds a sibling in, and at module scope (`parseGlobalStmts`) it folds an enum's variants or a submodule's names in, held on a `ModUseNode` — which of the two is known only once the source resolves. Both name their source and then share what follows it — every member by default, `*` refused as saying nothing more, a list with `as`, a block, or `but` |

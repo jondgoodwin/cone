@@ -824,7 +824,7 @@ takes its C name rather than `stdio`'s Cone one, and supplied by `conestd`.
 `libc` and `posix` are C packages ("How a C library becomes a Cone package",
 below): raw bindings to the ISO C library and to the POSIX functions beyond
 it, Windows first, `posix` built on `libc`, and supplied by the C runtime every
-link names. `geomath` is a Cone package over `libc` and `collections`: 2-D and
+link names. `geomath` is a Cone package over `libc`: 2-D and
 3-D math as value types (`module_package_geomath`), with its example programs in its own `examples/`
 folder and its tests in its own `tests/`, neither of which any compile of the
 package sweeps; `congo test` builds both (`tools/congo/README.md`, "Testing a
@@ -1340,9 +1340,15 @@ the registry as a folder's would.
 **A type the include file declares is marked `DclIncluded`**, and the export
 rule treats it as it treats a type an expanded body names: its public methods,
 `final`, `clone` and trait methods are exported (`dclIsExported`). An importer
-holds values of every such type, through a field or a signature, whether or
-not it can name the type, and calls its public methods through them
-(`module_include_field_reach`: a private type held in a public field).
+holds values of every such type, through a signature or a public type's private
+field, whether or not it can name the type, and the package's expanded bodies
+call its methods through them (`module_include_private_reach`: a private type
+held in a public type's private field, reached by the package's inline body). A
+type's private members are its module's, so a private method of any type the
+module declares is exported too when the module holds an expanded body anywhere
+(`modHoldsExpanded`): such a body may call it through a value, which name
+resolution never binds. A public type may not hold a private one in a public
+field at all (`ErrorPubFieldPrivType`, `module_include_field_reach`).
 
 **The file is checked before it is written.** It is parsed as the package's
 module beside the program (`parseIncludeCheck`), its blocks' modules beside it
@@ -1372,7 +1378,7 @@ include file.
 
 `module_build_link`, `module_init_link`, `module_generic_link`,
 `module_include_roundtrip`, `module_include_nested` and
-`module_include_field_reach` compile programs against the include files their
+`module_include_private_reach` compile programs against the include files their
 packages generate, each pinned as a golden file the program's description names
 (the runner's `include` key), and link and run them. `module_include_nested` is
 a collections package — `vec`, `map` holding `slot`, a one-file `kinds`, a
@@ -2562,7 +2568,11 @@ struct at the front of the `{region, permission, value}` layout: `init` the
 header `genlallocref` reaches from the new block, the others the header found
 from the value pointer by the value's offset in that layout
 (`genlRegionHeader`), so no region's or permission's size is assumed. A lock
-permission's `init`, the same shape, fills its own part of the block next.
+permission's `init`, the same shape, fills its own part of the block next,
+and its other methods, called as a borrow through the reference begins and
+ends, are [references](references.md)' "Lock permissions". A lock fits only a
+region counting its owners (`aliasRef` and `dealiasRef`), not `Move`, and
+declaring `ThreadSafe` exactly where the lock does (`refLockCheck`).
 
 **A region asks for the value's type record by the shape of its `alloc`.** An
 `alloc` taking `ty *TypeRecord` after the size is handed, at each allocation,
@@ -2628,8 +2638,8 @@ references out of arenas, pools and collections, reported at the program's own
 instantiation where it was reached through a generic's body; and, of what a
 traced region allocates, a value holding a borrow (`ErrorTracedBorrow`), an
 owning virtual reference (`ErrorTracedRefKind`), and a
-permission taking room, which would move the value off the place right after
-the header (`ErrorTracedPerm`). A traced object may hold `Rc` and `So`
+lock permission, whose lock would move the value off the place right after
+the header and whose guards no count would cover (`ErrorTracedPerm`). A traced object may hold `Rc` and `So`
 owners, which its finalizer releases, and a borrow or a raw pointer to a value
 holding traced references goes anywhere a borrow or a pointer may. Whether a
 type holds a traced reference is final only once every type it holds inline is
@@ -2867,12 +2877,16 @@ a reference names is a type, and that is what is built.
   before any code. A compile that generates no include file marks nothing, and
   `--emit-include` without `output: library` exports nothing whatever it marks.
 - **A method an expanded body reaches only through a receiver is exported where
-  its type holds an expanded body, the body names the type, or the include file
-  declares the type** (`typeHoldsExpanded`, `DclExpandReached`, `DclIncluded`).
-  Before `DclIncluded`, a private type held in a public type's field had its
-  public methods left internal and out of the include file, and a program
-  calling one through the field failed to type check (measured,
-  `module_include_field_reach`).
+  its type or its module holds an expanded body, the body names the type, or the
+  include file declares the type** (`typeHoldsExpanded`, `modHoldsExpanded`,
+  `DclExpandReached`, `DclIncluded`). The module's test is conservative: a
+  generic body is type checked only in the instances an importer makes, so the
+  library compile cannot see which private methods it calls, and every private
+  method of a reachable type is exported once the module holds any expanded
+  body (`module_build_export`: `Plain.hidden` exported, `inner.Quiet.hidden`
+  internal). Without it a program expanding such a body failed to type check
+  against an include file that left the method out
+  (`module_include_private_reach`).
 - **The self-check of a compile with no build description looks for its imports
   beside the root's first file**, and names its lexer
   `<folder>/<package>.include.cone`, a file that does not exist, so what it

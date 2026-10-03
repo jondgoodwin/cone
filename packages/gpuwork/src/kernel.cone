@@ -1,0 +1,120 @@
+// ---- Kernels: a compute program uploaded once, and what it binds ----
+
+// How a kernel uses a binding: a read-only slice ('&[]T') or a by-value
+// struct, both read-only storage buffers; or a slice it writes ('&[]mut T'),
+// a read-write storage buffer
+pub const READ = 1u32;
+pub const READ_WRITE = 2u32;
+
+// At most this many bindings a kernel (WebGPU's storage buffers a stage)
+pub const MAX_KERNEL_BINDINGS = 8u32;
+
+// What a kernel's twin is until it is given one
+fn noTwin(inv Invocation, buffers &[]Words) {}
+
+// A compute kernel: its SPIR-V made into a pipeline once, with the layout of
+// its bindings (binding i is parameter i, group 0, each a storage buffer),
+// its workgroup's size (read from the SPIR-V), and its CPU twin if it has one
+pub struct Kernel {
+  shader ShaderModule;
+  groupLayout BindGroupLayout;
+  layout PipelineLayout;
+  pipeline ComputePipeline;
+  access Array[u32, 8];
+  pub bindings u32;                // how many
+  pub workgroup Array[u32, 3];     // invocations a workgroup, each way
+  twin &fn(Invocation, &[]Words);
+  pub hasTwin Bool;
+
+  // Kernel 'entryPoint' of 'spirv', its bindings used as 'access' says
+  // (READ or READ_WRITE each, at most MAX_KERNEL_BINDINGS). Check 'isValid'.
+  pub fn make(device &Device, spirv &[]u32, entryPoint &[]u8, access &[]u32) Kernel {
+    mut acc = new Array[u32, 8] <- fill 0u32;
+    mut ok = true;
+    if access.len > usize.from(MAX_KERNEL_BINDINGS) {
+      fail("Kernel.make: more than 8 bindings (WebGPU's storage buffers a stage)");
+      ok = false;
+    }
+    mut entries = List[BindGroupLayoutEntry].empty();
+    mut i = 0usize;
+    while ok and i < access.len {
+      imm a = access[i];
+      if a != READ and a != READ_WRITE {
+        fail("Kernel.make: a binding's access is neither READ nor READ_WRITE");
+        ok = false;
+      } else {
+        acc[i] = a;
+        entries.push(new BindGroupLayoutEntry(binding: u32.from(i), visibility: SHADER_STAGE_COMPUTE,
+          bufferType: if a == READ { BUFFER_BINDING_TYPE_READ_ONLY_STORAGE; } else { BUFFER_BINDING_TYPE_STORAGE; }));
+      }
+      i = i + 1usize;
+    }
+    imm size = workgroupOf(spirv, entryPoint);
+    if size[0usize] == 0u32 {
+      fail("Kernel.make: the SPIR-V has no compute entry point of that name, with a fixed workgroup size");
+      ok = false;
+    }
+    // Refused: an empty module, which makes an invalid pipeline
+    mut shader = device.createShaderModule(if ok { spirv; } else { &spirv[0usize..0usize]; });
+    mut groupLayout = device.createBindGroupLayout(entries.view());
+    imm groupLayouts = [&groupLayout];
+    mut layout = device.createPipelineLayout(&groupLayouts, 0u32);
+    imm desc = new ComputePipelineDescriptor(layout: &layout, module: &shader, entryPoint: entryPoint);
+    mut pipeline = device.createComputePipeline(&desc);
+    new Kernel(shader, groupLayout, layout, pipeline, acc, u32.from(access.len), size, &noTwin, false);
+  }
+
+  pub fn isValid(self &) Bool { pipeline.isValid(); }
+
+  // Give it its CPU twin: a function called once for each invocation of a
+  // dispatch, with the dispatch's buffers as words, in the same order as the
+  // kernel's bindings
+  pub fn setTwin(self &mut, f &fn(Invocation, &[]Words)) {
+    twin = f;
+    hasTwin = true;
+  }
+
+  // How binding 'i' is used: READ or READ_WRITE
+  pub fn accessOf(self &, i u32) u32 { if i < bindings { access[usize.from(i)]; } else { 0u32; }; }
+}
+
+// The workgroup size of compute entry point 'name' in 'spirv' (OpEntryPoint
+// GLCompute, then its OpExecutionMode LocalSize), or zeros if there is none
+fn workgroupOf(spirv &[]u32, name &[]u8) Array[u32, 3] {
+  mut size = new Array[u32, 3] <- fill 0u32;
+  mut id = 0xFFFFFFFFu32;
+  mut i = 5usize;                  // past the header
+  while i < spirv.len {
+    imm word = spirv[i];
+    imm count = usize.from(word >> 16u32);
+    if count == 0usize or i + count > spirv.len { return size; }
+    imm op = word & 0xFFFFu32;
+    // OpEntryPoint (15) GLCompute (5) %id "name" ...
+    if op == 15u32 and count >= 4usize and spirv[i + 1usize] == 5u32 and nameIs(spirv, i + 3usize, i + count, name) {
+      id = spirv[i + 2usize];
+    }
+    // OpExecutionMode (16) %id LocalSize (17) x y z
+    if op == 16u32 and count >= 6usize and spirv[i + 1usize] == id and spirv[i + 2usize] == 17u32 {
+      size[0usize] = spirv[i + 3usize];
+      size[1usize] = spirv[i + 4usize];
+      size[2usize] = spirv[i + 5usize];
+    }
+    i = i + count;
+  }
+  size;
+}
+
+// Whether the literal string in words 'from' to 'end' of 'spirv' (its bytes
+// packed four a word, the first in the low byte, ending in a zero) is 'name'
+fn nameIs(spirv &[]u32, from usize, end usize, name &[]u8) Bool {
+  mut k = 0usize;
+  while true {
+    imm w = from + k / 4usize;
+    if w >= end { return false; }
+    imm b = u8.from((spirv[w] >> (u32.from(k % 4usize) * 8u32)) & 0xFFu32);
+    if k == name.len { return b == 0u8; }
+    if b != name[k] { return false; }
+    k = k + 1usize;
+  }
+  false;
+}

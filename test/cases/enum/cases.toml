@@ -170,6 +170,23 @@ target = "preir"
 contains = ["%some = alloca ptr, align 8", "%opt = alloca ptr, align 8"]
 excludes = ["%Maybe", "%Just", "%Nothing", "%Some", "%Option"]
 
+# The same layout when the reference is two words. Its null test compared the
+# pointer word against a null of the whole fat type, which the verifier
+# refused, so this scenario did not compile under '--verify'.
+[scenario.enum_nullable_fat_ptr]
+category = "run"
+description = "The untagged nullable-pointer layout when the reference is a slice or a virtual reference: a slice of bytes, of i64, a virtual reference and Option of a slice, each variant read back by every form of match, an empty slice read as the word variant, and a struct holding a slice in a variant, tagged, beside them"
+tags = ["genllvm", "runtime"]
+
+# Runtime cannot see the layout, so it is asserted: each enum is the fat
+# reference alone, no enum or variant struct emitted, and the variant is told
+# by its pointer word against a null of the pointer's own type
+[[scenario.enum_nullable_fat_ptr.check]]
+name = "fat-nullable-ptr-has-no-tag-and-tests-the-pointer-word"
+target = "preir"
+contains = ["%tok = alloca { ptr, i64 }", "%some = alloca { ptr, i64 }", "%has = alloca %\"Shape:Vtable.0\"", "icmp ne ptr %ptr, null"]
+excludes = ["%Tok =", "%Word =", "%Nums =", "%Have =", "%Held =", "%Has ="]
+
 # The same-size layout of an enum instance whose variant holds a struct that
 # reaches the enum back through an owning reference, which generation laid out
 # as its tag alone while it generated reference targets inside the struct
@@ -194,11 +211,11 @@ tags = ["typecheck", "flow", "genllvm", "runtime"]
 name = "a-drop-only-where-a-variant-finalizes"
 target = "preir"
 contains = [
-  "@_CNvINt3GenNt3FinE4drop(",
-  "@_CNvINtC4core6OptionNt3FinE4drop(",
-  "@_CNvINtC4core6OptionINtC4core6OptionNt3FinEE4drop(",
+  "@_CNvINt3GenNt3FinEu11_drop_9b166b(",
+  "@_CNvINtC4core6OptionNt3FinEu11_drop_9b166b(",
+  "@_CNvINtC4core6OptionINtC4core6OptionNt3FinEEu11_drop_9b166b(",
 ]
-excludes = ["3GenlE4drop", "6OptionR0"]
+excludes = ["3GenlEu11_drop", "6OptionR0"]
 
 [scenario.enum_extends]
 category = "run"
@@ -264,13 +281,15 @@ contains = [
   "store %Gold { i16 260 }",
 ]
 
-# The enum is the privacy boundary for its variants, so what is claimed is about
-# code in one place reaching members declared in another: an enum's static
-# function and cloned method reaching a variant's, one variant's method reaching
-# its sibling's, an extension's code reaching its copies' and its base's
-# variants', and a generic enum's instance doing each for its own variants.
-# Reading, writing, calling and building are each done, since each is checked in
-# its own place. enum_typecheck_privacy holds what stays refused.
+# An enum's members, and its variants', are private to its module, so what is
+# claimed is about code in one place reaching members declared in another: an
+# enum's static function and cloned method reaching a variant's, one variant's
+# method reaching its sibling's, an extension's code reaching its copies' and
+# its base's variants', and a generic enum's instance doing each for its own
+# variants. Reading, writing, calling and building are each done, since each is
+# checked in its own place. enum_typecheck_privacy holds code of the module
+# outside the braces, and module_privacy_typecheck what a module outside is
+# refused.
 [scenario.enum_privacy]
 category = "run"
 description = "Code inside an enum's braces -- a static function, a cloned enum method, a variant's method, an extension's variant and a copy's cloned method, an extension's own method and static function, and a generic enum's -- reading, writing, calling and building the private members of the enum and its variants"
@@ -402,12 +421,12 @@ description = "A base enum and an extension of it substituting for each other, a
 tags = ["typecheck"]
 diagnostics = 24
 
-# The other side of enum_privacy: what the enum's boundary leaves outside. The
+# Beside enum_privacy: an enum's members are private to its module, not to its
+# braces, so code of the module outside the braces reaches them too. The
 # generic function is the case that tells the boundary is drawn by the code's
-# owner and not by where analysis happens to be: it is instantiated only from
-# inside the enum, and is still refused.
+# owner and not by where analysis happens to be: it is the module's, and so
+# accepted. A module outside is refused (module_privacy_typecheck).
 [scenario.enum_typecheck_privacy]
-category = "reject"
-description = "Private members of an enum and its variants reached from outside its braces -- a module's function, a generic one instantiated from inside, a sibling extension, the base reaching into an extension"
+category = "compile"
+description = "Private members of an enum and its variants reached from outside its braces but inside its module -- a module's function, a generic one instantiated from inside, a sibling extension, the base reaching into an extension -- none refused"
 tags = ["typecheck"]
-diagnostics = 9

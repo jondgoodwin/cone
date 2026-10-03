@@ -44,6 +44,14 @@ void fnCallNameRes(NameResState *pstate, FnCallNode **nodep);
 // Type check on fncall
 void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **node);
 
+// The index an assignment stores into, 'x[i] = v', while its lval is checked:
+// on a type declaring '&[]', it is lowered as '&mut x[i]' would be
+extern FnCallNode *fnCallSetIndex;
+
+// The index at the root of a place written to, 'x[i]' of 'x[i] = v' or of
+// 'x[i].f.g += 1', reached through field reads only; or NULL
+FnCallNode *fnCallSetIndexRoot(INode *lval);
+
 // Does this type-checked expression call a function declared to return 'Never'?
 int fnCallIsNever(INode *node);
 

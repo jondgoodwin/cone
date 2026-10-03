@@ -1,0 +1,166 @@
+// Buffers cross threads and come home from any of them, as completions will
+// arrive on an I/O thread. An IoBuf, a Pool, a Chain and Bytes are each
+// Sendable, so each is handed to 'thread.start' or sent over a channel here,
+// and every block goes back to its pool from whichever thread drops it.
+//
+// 1. One buffer moved into a thread, filled there, and handed back as the
+//    thread's result: the caller no longer has it while the thread does.
+// 2. A chain moved into a thread, which parses it and drops it there: its
+//    segments go back to the pool from that thread.
+// 3. The race: four producer threads, sharing one pool through copies of its
+//    handle, each take 25,000 buffers and send them over one channel to a
+//    consumer thread, which drops them, so takes and returns run at once on
+//    five threads. The pool is bounded to 64 blocks: a producer that finds it
+//    full is refused (a visible pause, counted) and tries again. The counters
+//    come out exact: 100,000 lent and given back, nothing lent at the end,
+//    never more than 64 blocks held from the OS.
+//
+// 'testing' counts its checks in globals, so every check is made on the main
+// thread, from what the threads return. When everything has died, nothing is
+// held from the OS.
+
+mod threads;
+
+import testing use *;
+import thread;
+import sync use *;
+import iobuf use *;
+
+const perProducer = 25000u64;
+
+fn fill(b IoBuf) IoBuf {
+  mut m = b;
+  m.append("filled on another thread");
+  m;
+}
+
+fn parse(c Chain) u64 {
+  mut k = c;
+  imm at = k.find("\r\n");
+  k.advance(k.len());
+  match at {
+    case imm s Some {u64.from(s.value);}
+    case is None[usize] {999u64;}
+  }
+}   // the chain dies here, on this thread
+
+struct Work {
+  pub pool Pool;
+  pub tx Sender[IoBuf];
+  pub id u64;
+}
+
+// Take perProducer buffers, retrying while the bound refuses: how many
+// refusals it met
+fn produce(w Work) u64 {
+  mut waits = 0u64;
+  mut k = 0u64;
+  while k < perProducer {
+    match w.pool.take(4096usize) {
+      case mut s Some {
+        mut b = IoBuf.empty();
+        b <=> s.value;
+        b.append("x");
+        w.tx.send(b);
+        k = k + 1u64;
+      }
+      case is None[IoBuf] {
+        waits = waits + 1u64;
+        thread.yieldNow();
+      }
+    }
+  }
+  waits;
+}
+
+// Drop every buffer that arrives: how many, and the most the pool had
+// lent at any moment it looked
+struct Seen {
+  pub count u64;
+  pub maxHeld u64;
+}
+
+fn consume(arg Consumer) Seen {
+  mut a = arg;
+  mut seen = new Seen(0u64, 0u64);
+  mut more = true;
+  while more {
+    match a.rx.recv() {
+      case imm s Some {
+        seen.count = seen.count + 1u64;
+        if seen.count % 1000u64 == 0u64 {
+          imm held = u64.from(a.pool.stats().heldBytes) / 4096u64;
+          if held > seen.maxHeld {seen.maxHeld = held;}
+        }
+      }
+      case is None[IoBuf] {more = false;}
+    }
+  }
+  seen;
+}   // each buffer died at the end of its match, on this thread
+
+struct Consumer {
+  pub pool Pool;
+  pub rx Receiver[IoBuf];
+}
+
+fn main() i32 {
+  initAll();
+  {
+    imm pool = Pool.make();
+
+    // 1. Moved in, filled, handed back
+    imm b = pool.mustTake(100usize);
+    imm t = thread.start(b, &fill);
+    imm back = t.join();
+    expectStr(back.view(), "filled on another thread", "the buffer came back filled");
+    expectUInt(pool.stats().lent, 1u64, "one lent: the one handed back");
+
+    // 2. A chain parsed and dropped on another thread
+    mut c = Chain.make(4096usize);
+    mut p = pool.mustTake(10usize);
+    p.append("GET /\r");
+    c.push(p);
+    mut q = pool.mustTake(10usize);
+    q.append("\nrest");
+    c.push(q);
+    expectUInt(pool.stats().lent, 3u64, "three lent");
+    imm pt = thread.start(c, &parse);
+    expectUInt(pt.join(), 5u64, "the line end found across the boundary on the other thread");
+    expectUInt(pool.stats().lent, 1u64, "the chain's segments came back from that thread");
+  }
+  expectUInt(osBlocks(), 0u64, "the first pool's blocks all freed");
+
+  // 3. The race
+  {
+    imm pool = Pool.make(64usize * 4096usize, 64usize * 4096usize);
+    mut tx Sender[IoBuf];
+    mut rx Receiver[IoBuf];
+    tx, rx = Channel[IoBuf].make();
+    imm consumer = thread.start(new Consumer(pool, rx), &consume);
+    mut p0 thread.Thread[u64];
+    mut p1 thread.Thread[u64];
+    mut p2 thread.Thread[u64];
+    mut p3 thread.Thread[u64];
+    {
+      p0 = thread.start(new Work(pool, tx.clone(), 0u64), &produce);
+      p1 = thread.start(new Work(pool, tx.clone(), 1u64), &produce);
+      p2 = thread.start(new Work(pool, tx.clone(), 2u64), &produce);
+      p3 = thread.start(new Work(pool, tx, 3u64), &produce);
+    }
+    imm waits = p0.join() + p1.join() + p2.join() + p3.join();
+    imm seen = consumer.join();
+    expectUInt(seen.count, 4u64 * perProducer, "the consumer dropped every buffer");
+    expect(seen.maxHeld <= 64u64, "never more than 64 blocks held");
+    imm s = pool.stats();
+    expectUInt(s.takes - s.refused, 4u64 * perProducer, "100,000 lent");
+    expectUInt(s.refused, waits, "every refusal counted, and seen by its producer");
+    expectUInt(s.lent, 0u64, "nothing lent at the end");
+    expect(s.heldBytes <= 64usize * 4096usize, "held within the bound");
+    expectUInt(u64.from(s.heldBytes), u64.from(s.idleBytes), "everything held is idle");
+    expectUInt(s.osAllocs - s.osFrees, u64.from(s.heldBytes) / 4096u64, "the OS counts agree with the bytes");
+    expectUInt(osBlocks(), s.osAllocs - s.osFrees, "and with the blocks the OS holds");
+  }
+  expectUInt(osBlocks(), 0u64, "every block freed once the pool and its buffers are gone");
+  done();
+}

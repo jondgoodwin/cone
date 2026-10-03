@@ -38,8 +38,8 @@
 #   struct's.
 # - trait_parse_kind_modifier is at that same stage and separate from it because
 #   the subject is the kind keyword rather than the base clause: the 'trait'
-#   modifier written twice, and the two kinds the grammar admits and the compiler
-#   does not build.
+#   modifier written twice, and 'actor trait', the kind's abstraction the grammar
+#   admits and the compiler does not build.
 # - trait_typecheck_vref and trait_typecheck_dispatch answer different
 #   questions -- what a virtual reference may be built from, versus what may be
 #   done through one that is well formed. Together they would be twenty-two
@@ -102,6 +102,18 @@ category = "run"
 description = "Trait requirements satisfied structurally and with 'is', and dispatched through a virtual reference"
 tags = ["parse", "nameres", "typecheck", "flow", "genllvm", "runtime"]
 
+# Two runs. Optimized, every call through a virtual reference here is to a
+# vtable the optimizer can see the reference made from, so it calls the method
+# directly and no vtable is read as the program runs; the debug run dispatches
+# through each vtable's slots, and both print the same.
+[[scenario.trait_success.run]]
+name = "release"
+options = []
+
+[[scenario.trait_success.run]]
+name = "debug"
+options = ["--debug"]
+
 # Every implementer of a trait supplies a vtable, read as the type 'as' the
 # trait, and both candidates of each overload set are generated -- the one the
 # vtable selected and the one it must not. Which of them a slot holds is what
@@ -124,10 +136,12 @@ contains = [
 # was wired from a symbol at all. LLVM's pointers carry no type, so the slot is
 # a bare 'ptr' to its method and the method's receiver type is not in the
 # vtable: what is asserted is that a Shape vtable's slot names a symbol and
-# none is null, and the check above names the three vtables it covers.
+# none is null, and the check above names the three vtables it covers. Read
+# before optimization: the optimizer sees which vtable each virtual reference
+# was made from, calls the method directly, and deletes the vtables.
 [[scenario.trait_success.check]]
 name = "vtable-slot-holds-a-method-of-the-implementer"
-target = "llvmir"
+target = "preir"
 contains = ['internal constant %"Shape:Vtable" { ptr @']
 excludes = ['constant %"Shape:Vtable" { ptr null']
 
@@ -182,10 +196,11 @@ excludes = ['constant %"Scaler:Vtable" { ptr null', 'constant %"Blender:Vtable" 
 # After the methods and the offsets, every vtable ends in a pointer to the
 # implementer's type record, which an owning virtual reference's death reads
 # its finalizer and alignment from (trait_vref_final): last, so no slot's
-# index moves, and filled for every implementer, a marker trait's too.
+# index moves, and filled for every implementer, a marker trait's too. Read
+# before optimization, for the reason above.
 [[scenario.trait_success.check]]
 name = "vtable-layout-carries-methods-then-field-offsets-then-the-record"
-target = "llvmir"
+target = "preir"
 contains = [
   '%"Meter:Vtable" = type { ptr, ptr, i32, ptr }',
   '%"Shape:Vtable.0" = type { ptr, ptr }',
@@ -534,7 +549,7 @@ diagnostics = 3
 category = "reject"
 description = "'trait' written twice, and the kind whose abstraction the grammar admits and the compiler does not build"
 tags = ["parse"]
-diagnostics = 4
+diagnostics = 3
 
 # -------- name resolution stage --------
 

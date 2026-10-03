@@ -7,11 +7,19 @@
 // a chain of bones: anything drawn as segments with radii. Thousands of
 // segments are cheap, because a point asks only those near it.
 //
-// CHAINS. Capsules added one after another with 'extend' are a chain, and
-// a chain's distance is the hard union of its capsules: segments meeting
-// end to end along a strand, their radii matching, join with no bulge
-// (the smooth union of two capsules meeting at a joint would swell it by
-// k). Chains are what is smooth-unioned. 'add' starts a chain of one.
+// A VIEW. The capsules and the grid's buckets are kept by their owner (a
+// List on the CPU, a buffer on a GPU), which also builds the grid;
+// 'Capsules' is a view of them, made where the distance is evaluated, as
+// 'CurveCells' is of a curve's cells. morphogen's CapsuleSet is such an
+// owner. What the owner builds the grid by is here, 'capsuleBox',
+// 'capsuleBucket' and 'CapsuleGrid.over', so the view finds a point's
+// bucket exactly as the owner filled it.
+//
+// CHAINS. Capsules of one chain (the same number in 'chain', consecutive)
+// are hard-unioned: segments meeting end to end along a strand, their
+// radii matching, join with no bulge (the smooth union of two capsules
+// meeting at a joint would swell it by k). Chains are what is
+// smooth-unioned.
 //
 // THE FIELD. At a point, let m be the nearest capsule's distance (the
 // hard union of everything). The distance is the smooth union, in the
@@ -26,175 +34,83 @@
 // past their hard union, a fillet: by up to k where two meet, more where
 // many do, never 4k; elsewhere it is their union.
 //
-// THE GRID. 'build' sorts the capsules into cubic buckets 'cell' a side:
-// a bucket lists, in the order added, every capsule whose box grown by
-// 'reach' meets it, and a point asks only its bucket's. That gives the
-// same bits as asking every capsule ('distanceAll'): where m is under
-// reach - 8k, every capsule that can count is within 'reach', so in the
-// bucket (and a chain's nearest capsule decides its distance); elsewhere
-// both are held to the cap (the field is at least m - 4k). Outside the grid's box the distance is the cap plus the
-// distance to the box, still a bound. So a mesher or tracer is safe
-// everywhere, and skips empty space in strides of the cap; 'reach' must
-// exceed 12k, and the cap should exceed a mesher's block (its half
-// diagonal) for empty space to be skipped. Before 'build', or for a set
-// built empty, 'distance' asks every capsule.
+// THE GRID. Cubic buckets 'cell' a side over the capsules' box grown by
+// 'reach': a bucket lists, in the order added, every capsule whose box
+// grown by 'reach' meets it, and a point asks only its bucket's. That
+// gives the same bits as asking every capsule ('distanceAll'): where m is
+// under reach - 8k, every capsule that can count is within 'reach', so in
+// the bucket (and a chain's nearest capsule decides its distance);
+// elsewhere both are held to the cap (the field is at least m - 4k).
+// Outside the grid's box the distance is the cap plus the distance to the
+// box, still a bound. So a mesher or tracer is safe everywhere, and skips
+// empty space in strides of the cap; 'reach' must exceed 12k, and the cap
+// should exceed a mesher's block (its half diagonal) for empty space to be
+// skipped. With no grid (no buckets), 'distance' asks every capsule.
 //
-// A capsule is asked only when its bounding ball is near enough to matter
-// (the same bits as asking it). CPU only (the lists), as 'curveCells' is;
-// the Slang has no twin.
+// A capsule is asked only when its bounding ball ('capsuleCentre',
+// 'capsuleBallRadius', kept by the owner) is near enough to matter (the
+// same bits as asking it). The Slang has no twin yet.
 
-pub struct Capsules {
-  pub a List[Vec3];
-  pub b List[Vec3];
-  pub ra List[f32];
-  pub rb List[f32];
-  pub chain List[u32];   // capsules of one chain are hard-unioned ('extend')
-  pub blend f32;
-  pub reach f32;
-  // Each capsule's bounding ball, for skipping it
-  centre List[Vec3];
-  radius List[f32];
-  // The grid: its corner, bucket size and counts, and each bucket's
-  // capsules, bucket k's from items[start[k]] to items[start[k + 1]]
-  origin Vec3;
-  cell f32;
-  nx u32;
-  ny u32;
-  nz u32;
-  start List[u32];
-  items List[u32];
+// The grid's shape: its corner, its buckets' size, and how many along each
+// axis; bucket (x, y, z) is number x + nx (y + ny z). No buckets (nx 0)
+// means no grid
+pub struct CapsuleGrid {
+  pub origin Vec3;
+  pub cell f32;
+  pub nx u32;
+  pub ny u32;
+  pub nz u32;
 
-  // An empty set, its fillets reaching 'blend', its buckets' margin 'reach'
-  pub fn make(blend f32, reach f32) Capsules {
-    new Capsules(List[Vec3].empty(), List[Vec3].empty(), List[f32].empty(), List[f32].empty(), List[u32].empty(), blend, reach,
-      List[Vec3].empty(), List[f32].empty(), new Vec3(0., 0., 0.), 0., 0u32, 0u32, 0u32,
-      List[u32].empty(), List[u32].empty());
+  // No grid: every capsule is asked
+  pub fn none() CapsuleGrid { new CapsuleGrid(new Vec3(0., 0., 0.), 0., 0u32, 0u32, 0u32); }
+
+  // Buckets 'cell' a side over 'box' (the capsules' box grown by 'reach')
+  pub fn over(box Aabb3, cell f32) CapsuleGrid {
+    imm size = box.max - box.min;
+    new CapsuleGrid(box.min, cell, u32.from(libc.ceilf(size.x / cell)) + 1u32,
+      u32.from(libc.ceilf(size.y / cell)) + 1u32, u32.from(libc.ceilf(size.z / cell)) + 1u32);
   }
+
+  // How many buckets
+  pub fn buckets(self &) usize { usize.from(nx) * usize.from(ny) * usize.from(nz); }
+
+  // Bucket (x, y, z)'s number
+  pub fn index(self &, x u32, y u32, z u32) usize {
+    usize.from(x) + usize.from(nx) * (usize.from(y) + usize.from(ny) * usize.from(z));
+  }
+}
+
+// A view of tapered capsules and their grid, kept by their owner: capsule
+// i from a[i] (radius ra[i]) to b[i] (radius rb[i]), in chain chain[i]
+// (consecutive capsules of one chain are hard-unioned), its bounding ball
+// about centre[i] of radius radius[i]; bucket k's capsules are
+// items[start[k]] to items[start[k + 1]] (start holds buckets + 1 entries;
+// both empty with no grid)
+pub struct Capsules['a] {
+  pub a &[]'a Vec3;
+  pub b &[]'a Vec3;
+  pub ra &[]'a f32;
+  pub rb &[]'a f32;
+  pub chain &[]'a u32;
+  pub centre &[]'a Vec3;
+  pub radius &[]'a f32;
+  pub start &[]'a u32;
+  pub items &[]'a u32;
+  pub grid CapsuleGrid;
+  pub blend f32;            // k, how far the fillets reach
+  pub reach f32;            // the buckets' margin
 
   pub fn count(self &) usize { a.len(); }
-
-  // A tapered capsule from 'from' (radius 'fromRadius') to 'to' (radius
-  // 'toRadius'), a chain of its own. Added after 'build', it is asked only
-  // once built again
-  pub fn add(self &mut, from Vec3, to Vec3, fromRadius f32, toRadius f32) {
-    imm n = self.chain.len();
-    self.push(from, to, fromRadius, toRadius, if n == 0usize { 0u32; } else { *self.chain[n - 1usize] + 1u32; });
-  }
-
-  // A tapered capsule added to the last one's chain: hard-unioned with it,
-  // so a strand of segments meeting end to end has no bulge at its joints
-  // (the first capsule starts a chain)
-  pub fn extend(self &mut, from Vec3, to Vec3, fromRadius f32, toRadius f32) {
-    imm n = self.chain.len();
-    self.push(from, to, fromRadius, toRadius, if n == 0usize { 0u32; } else { *self.chain[n - 1usize]; });
-  }
-
-  fn push(self &mut, from Vec3, to Vec3, fromRadius f32, toRadius f32, chain u32) {
-    self.chain.push(chain);
-    self.a.push(from);
-    self.b.push(to);
-    self.ra.push(fromRadius);
-    self.rb.push(toRadius);
-    self.centre.push((from + to) * 0.5);
-    self.radius.push(len3(to - from) * 0.5 + maxf(fromRadius, toRadius));
-  }
 
   // The box holding every capsule (empty if there are none)
   pub fn bounds(self &) Aabb3 {
     mut box = Aabb3.empty();
     mut i = 0usize;
     while i < a.len() {
-      box = box.union(capsuleBox(*a[i], *b[i], maxf(*ra[i], *rb[i])));
+      box = box.union(capsuleBox(a[i], b[i], maxf(ra[i], rb[i])));
       i = i + 1usize;
     }
     box;
-  }
-
-  // The grid built over the capsules, in buckets 'cell' a side
-  pub fn build(self &mut, cell f32) {
-    imm n = self.a.len();
-    self.cell = cell;
-    self.nx = 0u32;
-    self.ny = 0u32;
-    self.nz = 0u32;
-    self.start = List[u32].empty();
-    self.items = List[u32].empty();
-    if n == 0usize { return; }
-    imm box = self.bounds().expand(self.reach);
-    self.origin = box.min;
-    imm size = box.max - box.min;
-    imm nx = u32.from(libc.ceilf(size.x / cell)) + 1u32;
-    imm ny = u32.from(libc.ceilf(size.y / cell)) + 1u32;
-    imm nz = u32.from(libc.ceilf(size.z / cell)) + 1u32;
-    imm buckets = usize.from(nx) * usize.from(ny) * usize.from(nz);
-    // Count each bucket's capsules, then place them, in the order added
-    mut counts = List[u32].withCapacity(buckets + 1usize);
-    mut k = 0usize;
-    while k <= buckets {
-      counts.push(0u32);
-      k = k + 1usize;
-    }
-    mut pass = 0;
-    mut items = List[u32].empty();
-    while pass < 2 {
-      mut i = 0usize;
-      while i < n {
-        imm reachBox = capsuleBox(*self.a[i], *self.b[i], maxf(*self.ra[i], *self.rb[i])).expand(self.reach);
-        imm x0 = bucketOf(reachBox.min.x - self.origin.x, cell, nx);
-        imm x1 = bucketOf(reachBox.max.x - self.origin.x, cell, nx);
-        imm y0 = bucketOf(reachBox.min.y - self.origin.y, cell, ny);
-        imm y1 = bucketOf(reachBox.max.y - self.origin.y, cell, ny);
-        imm z0 = bucketOf(reachBox.min.z - self.origin.z, cell, nz);
-        imm z1 = bucketOf(reachBox.max.z - self.origin.z, cell, nz);
-        mut z = z0;
-        while z <= z1 {
-          mut y = y0;
-          while y <= y1 {
-            mut x = x0;
-            while x <= x1 {
-              imm at = usize.from(x) + usize.from(nx) * (usize.from(y) + usize.from(ny) * usize.from(z));
-              if pass == 0 {
-                counts.set(at + 1usize, *counts[at + 1usize] + 1u32);
-              } else {
-                items.set(usize.from(*counts[at]), u32.from(i));
-                counts.set(at, *counts[at] + 1u32);
-              }
-              x = x + 1u32;
-            }
-            y = y + 1u32;
-          }
-          z = z + 1u32;
-        }
-        i = i + 1usize;
-      }
-      if pass == 0 {
-        // Counts to starts: bucket k's capsules begin at counts[k]
-        k = 1usize;
-        while k <= buckets {
-          counts.set(k, *counts[k] + *counts[k - 1usize]);
-          k = k + 1usize;
-        }
-        mut starts = List[u32].withCapacity(buckets + 1usize);
-        k = 0usize;
-        while k <= buckets {
-          starts.push(*counts[k]);
-          k = k + 1usize;
-        }
-        self.start = starts;
-        imm total = usize.from(*counts[buckets]);
-        items = List[u32].withCapacity(total);
-        k = 0usize;
-        while k < total {
-          items.push(0u32);
-          k = k + 1usize;
-        }
-      }
-      pass = pass + 1;
-    }
-    self.items = items;
-    self.nx = nx;
-    self.ny = ny;
-    self.nz = nz;
   }
 
   // The cap: the most the distance is inside the grid
@@ -210,9 +126,9 @@ pub struct Capsules {
     mut m f32 = 3.4028235e38;
     mut k = from;
     while k < to {
-      imm i = if all { k; } else { usize.from(*items[k]); };
-      if len3(p - *centre[i]) - *radius[i] < m {
-        m = minf(m, taperedCapsule(p, *a[i], *b[i], *ra[i], *rb[i]));
+      imm i = if all { k; } else { usize.from(items[k]); };
+      if len3(p - centre[i]) - radius[i] < m {
+        m = minf(m, taperedCapsule(p, a[i], b[i], ra[i], rb[i]));
       }
       k = k + 1usize;
     }
@@ -224,14 +140,14 @@ pub struct Capsules {
     mut runChain = 0u32;
     k = from;
     while k < to {
-      imm i = if all { k; } else { usize.from(*items[k]); };
-      if k == from or *chain[i] != runChain {
+      imm i = if all { k; } else { usize.from(items[k]); };
+      if k == from or chain[i] != runChain {
         if run < limit { d = smoothUnion(d, run, blend); }
         run = 3.4028235e38;
-        runChain = *chain[i];
+        runChain = chain[i];
       }
-      if len3(p - *centre[i]) - *radius[i] < limit {
-        run = minf(run, taperedCapsule(p, *a[i], *b[i], *ra[i], *rb[i]));
+      if len3(p - centre[i]) - radius[i] < limit {
+        run = minf(run, taperedCapsule(p, a[i], b[i], ra[i], rb[i]));
       }
       k = k + 1usize;
     }
@@ -241,28 +157,34 @@ pub struct Capsules {
 
   // The distance (see above)
   pub fn distance(self &, p Vec3) f32 {
-    if nx == 0u32 { return self.distanceAll(p); }
-    imm q = p - origin;
-    imm size = new Vec3(cell * f32.from(nx), cell * f32.from(ny), cell * f32.from(nz));
+    if grid.nx == 0u32 { return self.distanceAll(p); }
+    imm q = p - grid.origin;
+    imm cell = grid.cell;
+    imm size = new Vec3(cell * f32.from(grid.nx), cell * f32.from(grid.ny), cell * f32.from(grid.nz));
     // Outside the grid: every capsule more than 'reach' beyond its box
     imm ox = maxf(maxf(0. - q.x, q.x - size.x), 0.);
     imm oy = maxf(maxf(0. - q.y, q.y - size.y), 0.);
     imm oz = maxf(maxf(0. - q.z, q.z - size.z), 0.);
     if ox > 0. or oy > 0. or oz > 0. { return len3(new Vec3(ox, oy, oz)) + self.cap(); }
-    imm at = usize.from(bucketOf(q.x, cell, nx)) + usize.from(nx) * (usize.from(bucketOf(q.y, cell, ny))
-      + usize.from(ny) * usize.from(bucketOf(q.z, cell, nz)));
-    self.over(p, usize.from(*start[at]), usize.from(*start[at + 1usize]), false);
+    imm at = grid.index(capsuleBucket(q.x, cell, grid.nx), capsuleBucket(q.y, cell, grid.ny),
+      capsuleBucket(q.z, cell, grid.nz));
+    self.over(p, usize.from(start[at]), usize.from(start[at + 1usize]), false);
   }
 }
 
 // The box holding a capsule from a to b whose larger radius is r
-fn capsuleBox(a Vec3, b Vec3, r f32) Aabb3 {
+pub fn capsuleBox(a Vec3, b Vec3, r f32) Aabb3 {
   imm m = new Vec3(r, r, r);
   new Aabb3(a.min(b) - m, a.max(b) + m);
 }
 
-// The bucket a coordinate (from the grid's corner) falls in, held to the grid
-fn bucketOf(x f32, cell f32, n u32) u32 {
+// A capsule's bounding ball: its centre, and its radius
+pub fn capsuleCentre(a Vec3, b Vec3) Vec3 { (a + b) * 0.5; }
+pub fn capsuleBallRadius(a Vec3, b Vec3, ra f32, rb f32) f32 { len3(b - a) * 0.5 + maxf(ra, rb); }
+
+// The bucket a coordinate (from the grid's corner) falls in, of n buckets
+// 'cell' a side, held to the grid
+pub fn capsuleBucket(x f32, cell f32, n u32) u32 {
   imm k = floorf(x / cell);
   if k < 0. { return 0u32; }
   if k >= f32.from(n - 1u32) { return n - 1u32; }

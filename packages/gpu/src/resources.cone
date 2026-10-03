@@ -80,15 +80,15 @@ fn descriptorType(kind u32, bufferType u32) u32 {
 // ---- Buffers ----
 
 struct BufferBackend {
-  pub device vulkan.Device;
-  pub buffer vulkan.Buffer;
-  pub memory vulkan.DeviceMemory;
-  pub mapped *u8;
+  device vulkan.Device;
+  buffer vulkan.Buffer;
+  memory vulkan.DeviceMemory;
+  mapped *u8;
 }
 
 // A buffer of bytes the GPU reads or writes
 pub struct Buffer {
-  pub backend BufferBackend;
+  backend BufferBackend;
   pub size u64;
   pub usage u32;
 
@@ -111,6 +111,46 @@ pub struct Buffer {
       vulkan.destroyBuffer(backend.device, backend.buffer, nullp());
     }
     if backend.memory.h != 0u64 { vulkan.freeMemory(backend.device, backend.memory, nullp()); }
+  }
+}
+
+// ---- Fences ----
+
+// A fence of one submission's ('device.createFence', then
+// 'queue.submitSignalling' or 'queue.signal'), signalled once the GPU has
+// finished it and everything submitted before it. Unlike a frame's fence it
+// is never reset or reused, so a thread other than the device's may wait on
+// it ('waitSignalled'): Vulkan's fence wait asks no synchronization of its fences.
+// It declares Sendable, a promise taken on trust, for the device's handle
+// it holds. Its end waits for it, if it was submitted, and destroys it; it
+// must come before its Device's.
+pub struct Fence is Move, Sendable {
+  device vulkan.Device;
+  fence vulkan.Fence;
+  submitted Bool;
+
+  pub fn isValid(self &) Bool { fence.h != 0u64; }
+
+  // Whether it was submitted ('submitSignalling', 'signal'), and so will
+  // be signalled
+  pub fn isSubmitted(self &) Bool { submitted; }
+
+  // Wait at most 'nanos' nanoseconds (0: not at all) for it to be
+  // signalled: whether it is. False at once for one never submitted, which
+  // nothing will signal.
+  pub fn waitSignalled(self &, nanos u64) Bool {
+    if !submitted { return false; }
+    mut f = fence;
+    vulkan.waitForFences(device, 1u32, &mut f as *vulkan.Fence, vulkan.TRUE, nanos) == vulkan.SUCCESS;
+  }
+
+  fn final(self &uni) {
+    if fence.h == 0u64 { return; }
+    if submitted {
+      mut f = fence;
+      vulkan.waitForFences(device, 1u32, &mut f as *vulkan.Fence, vulkan.TRUE, NO_TIMEOUT);
+    }
+    vulkan.destroyFence(device, fence, nullp());
   }
 }
 
@@ -144,36 +184,36 @@ pub struct TextureViewDescriptor {
 }
 
 struct TextureBackend {
-  pub image vulkan.Image;
-  pub view vulkan.ImageView;       // the view: of the whole texture, in a Texture
-  pub kind u32;                    // KIND_...: the layout it rests in
-  pub owned Bool;                  // made by the device, and ended with the Texture
-  pub device vulkan.Device;
-  pub memory vulkan.DeviceMemory;
-  pub baseMip u32 = 0u32;          // what the view sees: levels and layers
-  pub mipCount u32 = 1u32;
-  pub baseLayer u32 = 0u32;
-  pub layerCount u32 = 1u32;
-  pub views *ViewCache = 0usize as *ViewCache;  // a device-made texture's; null otherwise
+  image vulkan.Image;
+  view vulkan.ImageView;       // the view: of the whole texture, in a Texture
+  kind u32;                    // KIND_...: the layout it rests in
+  owned Bool;                  // made by the device, and ended with the Texture
+  device vulkan.Device;
+  memory vulkan.DeviceMemory;
+  baseMip u32 = 0u32;          // what the view sees: levels and layers
+  mipCount u32 = 1u32;
+  baseLayer u32 = 0u32;
+  layerCount u32 = 1u32;
+  views *ViewCache = null;  // a device-made texture's; null otherwise
 }
 
 // The views 'createViewWith' has made of a texture, each kept until the
 // texture ends: WebGPU's views are the texture's, not destroyed on their own
 struct ViewCache {
-  pub count u32;
-  pub capacity u32;
-  pub entries *ViewEntry;
+  count u32;
+  capacity u32;
+  entries *ViewEntry;
 }
 
 struct ViewEntry {
-  pub key u64;                     // the descriptor, packed
-  pub view vulkan.ImageView;
+  key u64;                     // the descriptor, packed
+  view vulkan.ImageView;
 }
 
 // A texture: one the device made ('createTexture'), or a swapchain's, which
 // the swapchain owns (and its depth texture)
 pub struct Texture {
-  pub backend TextureBackend;
+  backend TextureBackend;
   pub width u32;
   pub height u32;
   pub format u32;                  // TEXTURE_FORMAT_...
@@ -310,12 +350,19 @@ fn endViews(device vulkan.Device, cache *ViewCache) {
 // A view of a texture, which a render pass draws into, or a bind group
 // hands shaders to sample
 pub struct TextureView {
-  pub backend TextureBackend;
+  backend TextureBackend;
   pub width u32;
   pub height u32;
   pub format u32;
 
   pub fn isValid(self &) Bool { backend.view.h != 0u64; }
+
+  // Whether this view and 'other' are one view of a texture: what
+  // 'createViewWith' answers when asked twice for the same levels and
+  // layers. An invalid view is the same as none.
+  pub fn sameView(self &, other &TextureView) Bool {
+    backend.view.h != 0u64 and backend.view.h == other.backend.view.h;
+  }
 }
 
 // What 'getCurrentTexture' answers: a texture to draw into this frame, if

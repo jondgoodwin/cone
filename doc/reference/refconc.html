@@ -22,17 +22,21 @@
 		<span class="pre">AtomicValue</span> marker it declares; and the
 		<span class="pre">sync</span> package: <a href="#futex">the futex</a>;
 		and <a href="#locks">the locks</a> built on it, <span class="pre">Mutex</span>,
-		<span class="pre">RwLock</span>, <span class="pre">Condvar</span> and
-		<span class="pre">Once</span>, which are unchecked: what a lock protects is the program's
-		to keep, until <a href="refpermlock.html">lock permissions</a> are implemented; and
+		<span class="pre">Rwlock</span>, <span class="pre">Condvar</span> and
+		<span class="pre">Once</span>, which are unchecked when held as values (what a lock
+		protects is the program's to keep), while <span class="pre">Mutex</span> and
+		<span class="pre">Rwlock</span> are also <a href="refpermlock.html">lock permissions</a>,
+		which are checked: <span class="pre">Arc[Mutex, T]</span>; and
 		the <a href="refconccomm.html#channel">channel</a> of many senders and one
 		receiver, <span class="pre">Channel[T]</span>, unbounded or bounded, or of one sender and
 		one receiver, on the next page. So is the runtime
 		<a href="refconccomm.html#actors">actors</a> run on, the <span class="pre">actors</span>
 		package, also on the next page: actors multiplexed on a pool of worker threads by a
 		work-stealing scheduler, each message handled to completion on a worker's own stack,
-		not a green thread paused and resumed; the <span class="pre">actor</span> declaration is
-		not implemented, and its actors are written by hand. The
+		not a green thread paused and resumed; and the <span class="pre">actor</span> declaration
+		that runs on it, made with <span class="pre">new</span>, its <span class="pre">pub</span>
+		methods messages that return nothing (replies and <span class="pre">actor trait</span>
+		are not implemented). The
 		<span class="pre">atomic</span> permission is not implemented. What is handed to a thread,
 		returned from one, sent over a channel or sent to an actor must be
 		<span class="pre">Sendable</span>
@@ -106,9 +110,6 @@ fn main() {
 		A number literal given as the value keeps its own type, <span class="pre">i32</span> unless
 		suffixed, and must agree with <span class="pre">f</span>'s parameter:
 		<span class="pre">100i64</span> for a function taking an <span class="pre">i64</span>.</li>
-	<li><b>The function comes after the value</b>, because a function-reference parameter with a
-		return type can only be a function's last parameter today (a comma after it is read as the
-		start of a second return type).</li>
 	<li><b>What is handed to a thread is not checked yet.</b> Safe to hand over is a value the
 		thread will own outright (a number, a struct of them, a <span class="pre">So</span> owner,
 		a <span class="pre">uni</span> reference) or an <span class="pre">imm</span> or
@@ -170,11 +171,14 @@ fn main() {
 		for one, and keeps it, since nothing runs when such a thread ends.</li>
 	<li><span class="pre">thread.parallelism()</span> is how many logical processors the machine
 		has, at least 1. It does not count what an affinity mask takes away.</li>
-	<li><span class="pre">thread.sleep(ns)</span> sleeps at least <span class="pre">ns</span>
-		nanoseconds on Windows' high-resolution timer, so a 1 ms sleep takes 1 to 2 ms rather than
+	<li><span class="pre">thread.sleep(d)</span> sleeps at least <span class="pre">d</span>,
+		a <span class="pre">Duration</span> of the <span class="pre">time</span> package
+		(<span class="pre">thread.sleep(time.Duration.fromMillis(5))</span>),
+		on Windows' high-resolution timer, so a 1 ms sleep takes 1 to 2 ms rather than
 		the 15.6 ms of the system's timer tick. Where that timer is missing (before Windows 10 version
-		1803) it falls back to whole milliseconds, rounded up. <span class="pre">sleep(0)</span> gives
-		up the rest of the time slice to another ready thread of the same priority.</li>
+		1803) it falls back to whole milliseconds, rounded up. A sleep of zero, or of a negative
+		duration, gives up the rest of the time slice to another ready thread of the same
+		priority.</li>
 	<li><span class="pre">thread.yieldNow()</span> lets another thread ready to run on the same
 		processor have it, and returns at once if there is none.</li>
 	</ul>
@@ -269,7 +273,7 @@ struct Node {
   pub val u64;
 }
 
-imm head Atomic[*Node];         // set by init: Atomic[*Node].of(0usize as *Node)
+imm head Atomic[*Node];         // set by init: Atomic[*Node].of(null)
 
 fn push(node *Node) {           // called from any number of threads at once
   mut seen = head.load();
@@ -332,15 +336,17 @@ fn push(node *Node) {           // called from any number of threads at once
 		<span class="pre">Atomic[u32]</span>, taken by any reference, as that type's own operations
 		are.</p>
 	<ul>
-	<li><span class="pre">sync.futexWait(&amp;word, expected, timeoutNs)</span>: if the word still
+	<li><span class="pre">sync.futexWait(&amp;word, expected)</span>: if the word still
 		holds <span class="pre">expected</span>, checked atomically with going to sleep, sleep until
-		woken or until the timeout passes. It returns false only when the timeout passed, and true
-		when woken, when the word already differed, or spuriously, which the operating system
-		permits. So a waiter loops, re-reading the word.</li>
-	<li><span class="pre">timeoutNs</span> is nanoseconds, <span class="pre">sync.forever</span>
-		by default, rounded up to whole milliseconds; its resolution is the system's timer tick, up to
-		15.6 ms. A timeout of 2<sup>32</sup> - 1 ms or more is that long, not forever. A timeout of 0
-		returns false at once if the word still holds <span class="pre">expected</span>.</li>
+		woken. It returns when woken, when the word already differed, or spuriously, which the
+		operating system permits. So a waiter loops, re-reading the word.</li>
+	<li><span class="pre">sync.futexWaitTimeout(&amp;word, expected, d)</span> is the same,
+		sleeping at most <span class="pre">d</span>, a <span class="pre">Duration</span> of the
+		<span class="pre">time</span> package. It returns false only when the timeout passed. The
+		timeout is rounded up to whole milliseconds; its resolution is the system's timer tick, up to
+		15.6 ms. A timeout of 2<sup>32</sup> - 1 ms or more is that long, not forever. A timeout of
+		zero, or a negative one, returns false at once if the word still holds
+		<span class="pre">expected</span>.</li>
 	<li><span class="pre">sync.futexWake(&amp;word)</span> wakes one waiting thread, and
 		<span class="pre">sync.futexWakeAll(&amp;word)</span> every one. A wake with no thread waiting
 		does nothing and is not remembered, so a thread stores the new value first and wakes after.</li>
@@ -353,10 +359,10 @@ while word.load() == 0u32 {
 }
 </pre>
 
-	<h2 id="locks">Locks: Mutex, RwLock, Condvar and Once</h2>
+	<h2 id="locks">Locks: Mutex, Rwlock, Condvar and Once</h2>
 	<p>The <span class="pre">sync</span> package's locks are built on the futex alone, not on the
 		operating system's own locks, as Rust's standard library has built its own since 2022. Each
-		is one <span class="pre">Atomic[u32]</span> (an <span class="pre">RwLock</span>, two), holds
+		is one <span class="pre">Atomic[u32]</span> (an <span class="pre">Rwlock</span>, two), holds
 		no operating-system handle, needs no finalizer, and may be moved while nobody holds it or
 		waits on it. Each is made by <span class="pre">make()</span>, and each operation takes it
 		by any reference, <span class="pre">imm</span> included, since a lock is shared by every
@@ -379,7 +385,7 @@ fn add(n u64) {             // called from any number of threads
 		a short spin); <span class="pre">m.unlock()</span> gives it up, waking a waiting thread;
 		<span class="pre">m.tryLock()</span> takes it only if nobody holds it, and says whether it
 		did.</li>
-	<li><b><span class="pre">RwLock</span></b>: any number of readers at once, or one writer
+	<li><b><span class="pre">Rwlock</span></b>: any number of readers at once, or one writer
 		alone: <span class="pre">readLock()</span>, <span class="pre">readUnlock()</span>,
 		<span class="pre">tryReadLock()</span>, <span class="pre">writeLock()</span>,
 		<span class="pre">writeUnlock()</span> and <span class="pre">tryWriteLock()</span>. While a
@@ -387,8 +393,9 @@ fn add(n u64) {             // called from any number of threads
 	<li><b><span class="pre">Condvar</span></b>: a thread sleeps, holding no lock, until another
 		says that what it waits for may have changed. <span class="pre">c.condWait(&amp;m)</span>
 		unlocks the <span class="pre">Mutex</span> the thread holds, sleeps until notified, and
-		locks it again; <span class="pre">c.condWaitTimeout(&amp;m, ns)</span> sleeps at most
-		<span class="pre">ns</span> nanoseconds, and returns false only if that passed;
+		locks it again; <span class="pre">c.condWaitTimeout(&amp;m, d)</span> sleeps at most
+		<span class="pre">d</span>, a <span class="pre">time.Duration</span>, and returns false only if
+		that passed;
 		<span class="pre">c.notifyOne()</span> and <span class="pre">c.notifyAll()</span> wake one
 		waiting thread or all of them. A wait may return spuriously, so a waiter loops, rechecking
 		what it waits for under the <span class="pre">Mutex</span>. (<span class="pre">wait</span>
@@ -402,18 +409,22 @@ fn add(n u64) {             // called from any number of threads
 		nothing. <span class="pre">o.isCompleted()</span> says whether the function has run. A
 		closure cannot capture yet, which is why the function is given at most one value.</li>
 	</ul>
-	<p><b>These locks are unchecked.</b> A lock is a plain lock with explicit
+	<p><b>These locks, held as values, are unchecked.</b> A lock is a plain lock with explicit
 		<span class="pre">lock()</span> and <span class="pre">unlock()</span>; it guards nothing
 		the compiler can see, and <b>protecting the data is the program's job</b>. Nothing stops a
 		thread reaching the data without the lock, keeping a reference to it past the unlock,
 		forgetting to unlock, or unlocking a lock another thread holds. A lock is not reentrant: a
 		thread that locks a <span class="pre">Mutex</span> it holds sleeps forever. Unlocking a lock
 		that nothing holds is caught, and ends the program with a message. A thread that ends while
-		holding a lock leaves it locked; there is no poisoning, since nothing unwinds. The
-		<a href="refpermlock.html">lock permissions</a>, where a lock sits in the permission slot of
-		a reference (<span class="pre">Arc[mutex, T]</span>), borrowing through it takes the lock and
-		the borrow's end releases it, are not implemented; when they are, they are to sit on these
-		types.</p>
+		holding a lock leaves it locked; there is no poisoning, since nothing unwinds.</p>
+	<p><b>The checked way is a lock permission.</b> <span class="pre">Mutex</span> and
+		<span class="pre">Rwlock</span> are also <a href="refpermlock.html">lock permissions</a>:
+		written in the permission slot of an <span class="pre">Arc</span>,
+		<span class="pre">Arc[Mutex, T]</span>, the lock sits in each allocation's header, the
+		reference reaches its value only by a borrow through it, the borrow takes the lock, and the
+		borrow's end gives it back. A <span class="pre">Condvar</span> waits on a
+		<span class="pre">Mutex</span> held as a value only: a lock permission's lock is in a header
+		no program names, so no wait is offered while a borrow holds one.</p>
 
 
 	<p style="text-align: right; margin-top: 2em;">

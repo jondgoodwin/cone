@@ -12,6 +12,7 @@
 extern INode *unknownType;   // Unknown/unspecified type
 extern INode *noCareType;    // When the receiver does not care what type is returned
 extern INode *errorType;     // The type of a node already reported as bad
+extern INode *nullLitType;   // The type of a 'null' not yet given its pointer type
 extern INode *elseCond;   // node representing the 'else' condition for an 'if' node
 extern INode *borrowRef;  // When a reference's region is unspecified, as it is borrowed
 
@@ -84,6 +85,9 @@ extern StructNode *atomicValueTrait;
 extern StructNode *integerTrait;
 extern StructNode *pointerTrait;
 extern StructNode *sendableTrait;
+// 'LockPermission', which a struct declares to stand in a managed reference's
+// permission slot: 'Arc[Mutex, T]' (ir/types/permission.c)
+extern StructNode *lockPermTrait;
 
 // Is this declaration one of the built-in traits?
 int corelibIsBuiltinTrait(INode *node);

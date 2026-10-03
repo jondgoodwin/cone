@@ -135,5 +135,33 @@ fn main() i32 {
   expectUInt(u64.from(rows[1usize].len()), 1, "an inner list pushed to in place");
   expectInt(*rows[1usize][0usize], 42, "its value");
 
+  // Values changed in place through 'viewMut': a function fills the slice,
+  // and the list holds what it wrote. [5,6,7] doubled is [10,12,14]; a push
+  // after the slice's last use is allowed
+  mut filled = List[i64].empty();
+  filled.push(5);
+  filled.push(6);
+  filled.push(7);
+  doubleAll(filled.viewMut());
+  expectInt(*filled[0usize], 10, "doubled through viewMut, first");
+  expectInt(*filled[2usize], 14, "doubled through viewMut, last");
+  imm w = filled.viewMut();
+  w[1usize] = 99;
+  expectUInt(u64.from(w.len), 3, "viewMut length");
+  filled.push(8);
+  expectInt(*filled[1usize], 99, "written through viewMut");
+  expectUInt(u64.from(filled.len()), 4, "pushed after viewMut's last use");
+
+  // A String's bytes changed in place: "core" becomes "Core"
+  mut word = String.from("core");
+  imm bytes = word.viewMut();
+  bytes[0usize] = 'C';
+  expectStr(word.view(), "Core", "a string's byte through viewMut");
+
   done();
+}
+
+fn doubleAll(s &[]mut i64) {
+  mut i = 0usize;
+  while i < s.len { s[i] = s[i] * 2; i = i + 1usize; }
 }

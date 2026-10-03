@@ -30,10 +30,24 @@ void loanWalkBegin();
 // caller's borrow, points at 'q' (near) and reaches the caller's place only
 // through it (far). A store through the reference lands in the near places
 // only. An entry is a loan's id, with LoanFar set for a far one. Where the
-// walk cannot tell (a value read through a reference, or a call's result),
-// every loan is near, which only refuses more.
+// walk cannot tell (a call's result, what a call may store), a loan is both,
+// an entry of each kind, which only refuses more; so a loan only near is
+// exactly where the value points, held by it nowhere further on, and what is
+// read through the value never carries it (pathSetThrough).
+//
+// An entry may also carry a slot's tag: held by a struct declaring lifetimes
+// (lifetime.h), it says in which of them the loan is held -- the struct the
+// holder's own type is, or, for a borrowed reference, the one it points at.
+// A read of a field carries only the loans of the slots it holds, and those
+// with no tag, which may be anywhere. A tag is set only where it is known
+// exactly (a struct literal's field, a store into a field, a parameter's
+// caller loans), and dropped wherever a value leaves the struct.
 #define LoanFar 0x80000000u
-#define loanOf(entry) ((entry) & ~LoanFar)
+#define LoanTagShift 24
+#define LoanTagMask (0x1Fu << LoanTagShift)
+#define LoanIdMask 0x00FFFFFFu
+#define loanOf(entry) ((entry) & LoanIdMask)
+#define loanTag(entry) (((entry) & LoanTagMask) >> LoanTagShift)
 
 // The access a borrow with the permission 'perm' makes of what it borrows
 int loanBorrowAccess(INode *perm);
@@ -42,10 +56,12 @@ int loanBorrowAccess(INode *perm);
 // 'perm'. A site walked again (a loop body) makes the same loan.
 uint32_t loanMake(INode *site, Place *pl, INode *perm);
 
-// The caller loan of the parameter 'var': a stand-in for whatever the caller
+// A caller loan of the parameter 'var': a stand-in for whatever the caller
 // lent through it, which no access here conflicts with and which outlives the
-// call. A parameter whose type carries a borrow holds it from the start.
-uint32_t loanCaller(uint32_t var);
+// call, one per part of what it lends (LifePart, lifetime.h): what its own
+// reference points at, and what that holds, whole or by slot. A parameter
+// whose type carries a borrow holds them from the start.
+uint32_t loanCaller(uint32_t var, uint32_t part);
 
 // The variable at the root of the place a loan borrows
 uint32_t loanRoot(uint32_t loan);
@@ -53,6 +69,10 @@ uint32_t loanRoot(uint32_t loan);
 // Does a loan borrow what its root variable points at -- a reborrow through
 // a reference, or what a caller lent -- rather than the variable's own storage?
 int loanThrough(uint32_t loan);
+
+// Does a loan borrow the whole of its root, or of what its root points at,
+// not a part of it?
+int loanWhole(uint32_t loan);
 
 // Is a loan rooted in this function's own storage -- a local, or a by-value
 // parameter, or what an owner held in one owns -- so that it ends with the
@@ -84,24 +104,41 @@ enum LoanEscape {
 };
 void loanEscape(INode *node, uint32_t loan, int how);
 
-// Named lifetimes (lifetime.h). A caller loan stands for the lifetimes its
-// parameter's type holds: a value may carry it where its type shares one of
-// them (lifeShared). The function's own signature is the one compared with.
+// Named lifetimes (lifetime.h). A caller loan stands for the lifetimes of the
+// part of its parameter it lends: a value may carry it where its type holds
+// one they flow to by the signature's order (lifePartFlows). 'sig' is the
+// function's own signature.
 //
-// A caller loan in 'set' whose parameter shares no lifetime with a value of
-// the type 'wanted' -- one returned, say -- or 0
-uint32_t loanCallerApart(PathSet *set, INode *wanted);
+// A caller loan in 'set' whose part flows to no lifetime a value of the type
+// 'wanted' holds -- one returned, say -- or 0
+uint32_t loanCallerApart(FnSigNode *sig, PathSet *set, INode *wanted);
 
 // A caller loan among 'stored' that may not be stored where a reference
 // holding 'refholds' points (its near loans, or every one with 'beyond'):
 // what a borrowed parameter points at holds only the lifetimes its type gives
-// it there. Returns 0, or the loan, with the parameter whose place it may not
-// go in as 'through'.
-uint32_t loanStoredApart(PathSet *stored, PathSet *refholds, int beyond, VarDclNode **through);
+// it there -- in the field the store lands in, where 'landing' names its
+// slots, of a struct declaring lifetimes. Returns 0, or the loan, with the
+// parameter whose place it may not go in as 'through'.
+uint32_t loanStoredApart(FnSigNode *sig, PathSet *stored, PathSet *refholds, int beyond, uint32_t landing,
+    VarDclNode **through);
 
 // A loan in 'set' that is not global -- a caller loan, or one of this
 // function's own storage -- or 0
 uint32_t loanNotGlobalIn(PathSet *set);
+
+// The same, among only its near loans ('near'), its far ones ('far'), or both
+uint32_t loanNotGlobalInAs(PathSet *set, int near, int far);
+
+// A far loan in 'set' -- held inside what a value points at -- not known to
+// last 'bound' in the signature 'sig': one of this function's own storage,
+// or a caller loan of a part whose lifetime its order does not say outlasts
+// 'bound'; or 0
+uint32_t loanNotBoundIn(FnSigNode *sig, PathSet *set, Name *bound);
+
+// A loan in 'set', near or far, not known to be global in the signature
+// 'sig': one of this function's own storage, or a caller loan of a part
+// whose lifetime its order does not say outlasts ''static'; or 0
+uint32_t loanNotStaticIn(FnSigNode *sig, PathSet *set);
 
 // Report a caller loan whose lifetime may not go where it is carried at
 // 'node': returned (LoanEscapeReturn), stored where 'through' points
@@ -109,8 +146,18 @@ uint32_t loanNotGlobalIn(PathSet *set);
 // (LoanEscapeCall)
 void loanApart(INode *node, uint32_t loan, VarDclNode *through, int how);
 
-// Report a loan that is not global handed to a ''static' parameter at 'node'
-void loanNotGlobal(INode *node, uint32_t loan);
+// Report a loan that is not global handed to a ''static' parameter at 'node',
+// or, where 'tparm' names one, for a part the type parameter's ''static'
+// bound makes global
+void loanNotGlobal(INode *node, uint32_t loan, Name *tparm);
+
+// Report, at 'node', a loan held inside a value stored or returned where a
+// virtual reference's bound says what it points at holds lasts 'bound'
+void loanNotBound(INode *node, uint32_t loan, Name *bound);
+
+// Report, at 'node', a loan held inside a value converted to an owning
+// virtual reference, which holds only global borrows
+void loanNotBoxable(INode *node, uint32_t loan);
 
 // The loan the borrow at 'site' made, or 0
 uint32_t loanAt(INode *site);
@@ -143,5 +190,34 @@ void loanFlightAccess(Place *pl, int access, INode *node);
 // A two-phase receiver's loan activated at its call: reported at 'node' if its
 // access conflicts with what another operand pushed since 'mark' carries
 void loanFlightActivate(uint32_t mark, uint32_t receiver, int access, INode *node);
+
+// GPU targets (flowGpu). A GPU's pointers are typed by the memory they point
+// into, and SPIR-V's logical addressing, and WGSL, cannot choose one at run
+// time (no select or phi of pointers), nor keep one in memory. Once every
+// function is inlined, each borrow has one origin and its memory kind follows
+// from it, so the walk refuses whatever would give a value more than one: a
+// reference, or a value holding one, chosen at run time, of any kind. A choice
+// is where paths meet and a value's near loans differ between them: an 'if'
+// whose arms point at different places, reported at once; or a holder given
+// different ones on paths that join, reported at its next use, as a pending
+// conflict is, so a holder reassigned before it is used again is not one.
+//
+// Do the near loans of 'a' and 'b' differ? If so, 'la' is one of 'a''s that
+// 'b' lacks, or any of 'a''s, and 'lb' the same of 'b' (0 where a set has none)
+int loanNearApart(PathSet *a, PathSet *b, uint32_t *la, uint32_t *lb);
+
+// Report, at 'node', a value of an 'if', a 'match' or a block chosen at run
+// time between where 'la' and 'lb' point
+void loanChosen(INode *node, uint32_t la, uint32_t lb);
+
+// A pending conflict for the holder 'holder', given where 'la' and 'lb' point
+// on paths that joined: fired, as an ErrorGpuRefChoice, at its next use
+uint32_t loanChosenPending(uint32_t holder, uint32_t la, uint32_t lb);
+
+// Report, at 'node', an array or slice whose elements hold references indexed
+// by a value known only at run time: logical addressing keeps no pointer in
+// memory, so such an array must break into separate values, which only a
+// literal index allows
+void loanIndexedRefs(INode *node);
 
 #endif

@@ -1,0 +1,67 @@
+// The annotated form of lifetime_band_return_option_from_method_on_local:
+// 'Cursor' declares ''a', its 'items' slice is ''a', and 'next' returns an
+// 'Option[&'a R]'. The result points where 'items' points, not into the
+// cursor, so 'c.next()' carries what 'c' holds -- the caller's slice -- and
+// not 'c', a local: it may be returned.
+//
+// 'pick' names the cursor's lifetime on its parameter, positionally, and its
+// result is kept after its fallback's source has ended.
+//
+// Verdict: accept; prints 7 and 9.
+// Basis: a struct's declared lifetime acts as a caller lifetime in its
+// methods: inside them ''a' is the lifetime of where the fields written with
+// it point, and a result named ''a' is held to it alone; at a call, a result
+// whose lifetime is one the receiver's struct holds, not the receiver's own
+// borrow, carries what the receiver holds in that lifetime, not the receiver.
+// Master b07a3adc: refused at parse (ErrorBadTok: a lifetime in a struct's
+// brackets).
+
+mod lifetime_band_struct_method_returns_where_field_points;
+
+import stdio use *;
+
+struct R { pub n i64; }
+
+struct Cursor['a] {
+  pub items &[]'a R;
+  pub at usize;
+  pub fn next(self &mut) Option[&'a R] {
+    if at < items.len() {
+      imm r = &items[at];
+      at = at + 1usize;
+      return Some[&R][r];
+    }
+    None[&R][];
+  }
+}
+
+fn firstOf(items &[]R) Option[&R] {
+  mut c = new Cursor(items, 0usize);
+  c.next();
+}
+
+// A use naming the cursor's lifetime: the result is of what the cursor
+// holds, not of the fallback, whose source may end first
+fn pick(c Cursor['a], fallback &R) Option[&'a R] {
+  mut cur = c;
+  cur.next();
+}
+
+fn main() {
+  imm a Array[R, 2] = [new R(7), new R(9)];
+  match firstOf(&[]a) {
+    case imm v Some { printInt(v.value.n); }
+    case None { printStr("none"); }
+  }
+  printStr(" ");
+  mut o Option[&R] = None[&R][];
+  {
+    imm fb = new R(5);
+    o = pick(new Cursor(&[]a, 1usize), &fb);
+  }
+  match o {
+    case imm v Some { printInt(v.value.n); }
+    case None { printStr("none"); }
+  }
+  printStr("\n");
+}

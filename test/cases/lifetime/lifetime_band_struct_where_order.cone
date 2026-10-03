@@ -1,0 +1,56 @@
+// A struct's where clause orders the lifetimes it declares: with
+// 'Pair['a, 'b] where 'a >= 'b', a method may move the ''a' field's borrow
+// into the ''b' field, and not the reverse. The caller, which reads the ''b'
+// field as holding what the ''a' one held too, keeps 'long' as long as 'p.y'
+// is used; moving 'short' into 'x' would leave a read of 'p.x', which the
+// caller ties to 'long' alone, pointing at the freed 'short'.
+//
+// Verdict: refuse, ErrorEscape at 'x = y'; 'down' is accepted.
+// Basis: a struct's where clause orders its lifetimes in its methods and in
+// every use of it; ''a >= 'b' lets a ''a' borrow go where a ''b' one may.
+// Master b07a3adc: refused at parse (ErrorBadTok: a lifetime in a struct's
+// brackets). This compiler with the store's refusal turned off accepts it, and
+// main, run, prints "final" (for 'short') and then a value read from the
+// freed 'R'.
+
+mod lifetime_band_struct_where_order;
+
+import stdio use *;
+
+struct R {
+  pub n i64;
+  fn final(self &uni) {
+    printStr("final\n");
+  }
+}
+
+struct Pair['a, 'b] where 'a >= 'b {
+  pub x &'a R;
+  pub y &'b R;
+  pub fn down(self &mut) {
+    y = x;
+  }
+  pub fn up(self &mut) {
+    x = y;                   //~ ErrorEscape
+  }
+}
+
+fn clobber(n i64) i64 {
+  mut a Array[i64, 16] = [n, n, n, n, n, n, n, n, n, n, n, n, n, n, n, n];
+  a[3] + a[9];
+}
+
+fn main() {
+  imm long = new R(1);
+  mut got = &long;
+  {
+    imm short = new So[R](42);
+    mut p = new Pair(&long, &*short);
+    p.up();
+    got = p.x;
+  }
+  clobber(21);
+  printStr("read = ");
+  printInt(got.n);
+  printStr("\n");
+}

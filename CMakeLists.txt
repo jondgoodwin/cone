@@ -107,6 +107,7 @@ add_executable(conec
 	compiler/c/ir/exp/typelit.c
 	compiler/c/ir/exp/vtuple.c
 
+	compiler/c/ir/types/actor.c
 	compiler/c/ir/types/array.c
 	compiler/c/ir/types/arrayref.c
 	compiler/c/ir/types/enum.c
@@ -129,6 +130,7 @@ add_executable(conec
 	compiler/c/corelib/corenumber.c
 
 	compiler/c/parser/lexer.c
+	compiler/c/parser/parseactor.c
 	compiler/c/parser/parsemod.c
 	compiler/c/parser/parsebuild.c
 	compiler/c/parser/parsefnflow.c
@@ -146,6 +148,10 @@ add_executable(conec
 
 target_link_libraries(conec ${llvm_libs})
 
+# The test runner counts this file as a compiler source (R1.1), so a change to
+# it relinks conec, even one that only changes conestd
+set_property(TARGET conec APPEND PROPERTY LINK_DEPENDS ${CMAKE_SOURCE_DIR}/CMakeLists.txt)
+
 # On Windows the manifest makes UTF-8 the process's code page, so that
 # conec's arguments, environment and file names arrive, and are opened, in
 # the UTF-8 it holds paths in (compiler/c/doc/compiler/architecture.md,
@@ -160,8 +166,30 @@ endif()
 # build/<config>/, is this same one); this is used only when both are absent.
 target_compile_definitions(conec PRIVATE CONE_PACKAGES_DIR="${CMAKE_SOURCE_DIR}/packages/")
 
-add_library(conestd
-	packages/conestd/panic.c
-	packages/conestd/roots.c
-	packages/conestd/stdio.c
+# conestd, the runtime every program links. Its Cone files are one module,
+# which the conec built above compiles into one object; mainthread.c is the
+# piece Cone cannot say (it records the starting thread before 'main'). Both
+# go into the one library. The object also holds what it uses of core and
+# libc, so it is rebuilt when they change.
+set(CONESTD_CONE
+	${CMAKE_SOURCE_DIR}/packages/conestd/conestd.cone
+	${CMAKE_SOURCE_DIR}/packages/conestd/panic.cone
+	${CMAKE_SOURCE_DIR}/packages/conestd/roots.cone
+	${CMAKE_SOURCE_DIR}/packages/conestd/stdio.cone
+)
+set(CONESTD_OBJDIR ${CMAKE_BINARY_DIR}/conestd-cone)
+set(CONESTD_OBJ ${CONESTD_OBJDIR}/conestd${CMAKE_C_OUTPUT_EXTENSION})
+add_custom_command(
+	OUTPUT ${CONESTD_OBJ}
+	COMMAND ${CMAKE_COMMAND} -E make_directory ${CONESTD_OBJDIR}
+	COMMAND $<TARGET_FILE:conec> --output=${CONESTD_OBJDIR} ${CMAKE_SOURCE_DIR}/packages/conestd/conestd.cone
+	DEPENDS conec ${CONESTD_CONE}
+		${CMAKE_SOURCE_DIR}/packages/core/src/core.cone
+		${CMAKE_SOURCE_DIR}/packages/libc/src/libc.cone
+	COMMENT "Compiling conestd's Cone source"
+	VERBATIM
+)
+add_library(conestd STATIC
+	packages/conestd/mainthread.c
+	${CONESTD_OBJ}
 )

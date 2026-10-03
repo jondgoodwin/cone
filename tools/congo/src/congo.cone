@@ -10,6 +10,9 @@
 //                                       its tests/ and build each in examples/
 //     congo clean [file.cone]           delete what a build wrote
 //
+// build, run and test also take -D NAME or -D NAME=123 (TEMPORARY, a provisional
+// mechanism whose final design is open), passed to every conec compile.
+//
 // tools/congo/congo.py is how this program is first built (README.md,
 // "Congo in Cone").
 //
@@ -45,6 +48,7 @@ import fs;
 import path;
 import env;
 import process;
+import time;
 import toml;
 import textdiff;
 
@@ -84,9 +88,9 @@ fn usageError(msg String) i32 {
 fn commandUsage(command &[]u8) String {
   mut usage = cat("usage: congo ", command, " [-h]");
   if command == "new" { usage <- " [--lib] name [path]"; }
-  elif command == "build" { usage <- " [--release]"; }
-  elif command == "run" { usage <- " [--release] [file]"; }
-  elif command == "test" { usage <- " [--release] [--bless] [name]"; }
+  elif command == "build" { usage <- " [--release] [-D NAME[=INT]]"; }
+  elif command == "run" { usage <- " [--release] [-D NAME[=INT]] [file]"; }
+  elif command == "test" { usage <- " [--release] [-D NAME[=INT]] [--bless] [name]"; }
   else { usage <- " [file]"; }
   usage;
 }
@@ -133,6 +137,17 @@ fn topHelp() i32 {
   0i32;
 }
 
+// The options build, run and test share, laid out as argparse lays them out
+// beside the long '-D, --define NAME[=INT]'
+fn releaseAndDefineHelp() {
+  printStr("  -h, --help            show this help message and exit\n");
+  printStr("  --release             an optimised build\n");
+  // TEMPORARY, a provisional mechanism whose final design is open
+  printStr("  -D, --define NAME[=INT]\n");
+  printStr("                        define NAME (1) or NAME=INT for isDefined and\n");
+  printStr("                        definedInt in every compile of the build (provisional)\n");
+}
+
 fn commandHelp(command &[]u8) i32 {
   imm usage = commandUsage(command);
   printStr(usage.view());
@@ -144,18 +159,20 @@ fn commandHelp(command &[]u8) i32 {
     printStr("  --lib       a library package, whose include file its build generates\n");
   }
   elif command == "build" {
-    printStr("options:\n  -h, --help  show this help message and exit\n  --release   an optimised build\n");
+    printStr("options:\n");
+    releaseAndDefineHelp();
   }
   elif command == "run" {
-    printStr("positional arguments:\n  file        a lone .cone file, run with no manifest\n\noptions:\n");
-    printStr("  -h, --help  show this help message and exit\n  --release   an optimised build\n\n");
-    printStr("Arguments after '--' are passed to the program.\n");
+    printStr("positional arguments:\n  file                  a lone .cone file, run with no manifest\n\noptions:\n");
+    releaseAndDefineHelp();
+    printStr("\nArguments after '--' are passed to the program.\n");
   }
   elif command == "test" {
-    printStr("positional arguments:\n  name        only the tests and examples whose file name contains this\n\noptions:\n");
-    printStr("  -h, --help  show this help message and exit\n  --release   an optimised build\n");
-    printStr("  --bless     write the expected output of a test that has none, from a run;\n");
-    printStr("              check it by hand against the source\n");
+    printStr("positional arguments:\n  name                  only the tests and examples whose file name contains\n");
+    printStr("                        this\n\noptions:\n");
+    releaseAndDefineHelp();
+    printStr("  --bless               write the expected output of a test that has none,\n");
+    printStr("                        from a run; check it by hand against the source\n");
   }
   else {
     printStr("positional arguments:\n  file        a lone .cone file whose build to delete\n\noptions:\n");
@@ -191,12 +208,14 @@ fn main() i32 {
     return usageError(cat("argument command: invalid choice: '", command,
       "' (choose from new, build, run, test, clean)"));
   }
-  // new name [path] [--lib]; build [--release]; run [--release] [file];
-  // test [name] [--release] [--bless]; clean [file]. Each option is a
-  // flag, read where it stands, as is '-h'
+  // new name [path] [--lib]; build [--release] [-D NAME[=INT]]; run
+  // [--release] [-D NAME[=INT]] [file]; test [name] [--release]
+  // [-D NAME[=INT]] [--bless]; clean [file]. Each option but -D is a flag,
+  // read where it stands, as is '-h'
   mut release = false;
   mut lib = false;
   mut bless = false;
+  mut defines = List[String].empty();
   mut positionals = List[String].empty();
   mut most = 1usize;
   if command == "new" { most = 2usize; }
@@ -207,6 +226,30 @@ fn main() i32 {
     imm arg = argv[i].view();
     if isHelp(arg) { return commandHelp(command); }
     imm eq = findByte(arg, '=', 0usize);
+    // TEMPORARY, a provisional mechanism whose final design is open: '-D',
+    // repeatable, handed to conec as it is given, which checks it. Its value
+    // follows it ('-D NAME', '--define NAME', abbreviated as far as
+    // '--d') or is attached ('-DNAME', '-D=NAME', '--define=NAME')
+    if hasRelease and (arg == "-D" or isOption(arg, "--define")) {
+      if i + 1usize >= argv.len() or looksLikeOption(argv[i + 1usize].view()) {
+        return commandError(command, String.from("argument -D/--define: expected one argument"));
+      }
+      defines.push(argv[i + 1usize].copy());
+      i = i + 2usize;
+      continue;
+    }
+    if hasRelease and arg.len > 2usize and arg[0usize] == '-' and arg[1usize] == 'D' {
+      mut from = 2usize;
+      if arg[2usize] == '=' { from = 3usize; }
+      defines.push(String.from(&arg[from..]));
+      i = i + 1usize;
+      continue;
+    }
+    if hasRelease and eq < arg.len and isOption(&arg[..eq], "--define") {
+      defines.push(String.from(&arg[eq + 1usize..]));
+      i = i + 1usize;
+      continue;
+    }
     mut explicit &[]u8 = "";
     if arg.len >= 2usize and arg[0usize] == '-' and eq < arg.len {
       // '--flag=value': a flag takes no value
@@ -237,14 +280,14 @@ fn main() i32 {
     if positionals.len() > 1usize { return cmdNew(positionals[0usize].view(), positionals[1usize].view(), lib); }
     return cmdNew(positionals[0usize].view(), "", lib);
   }
-  if command == "build" { return cmdBuild(release); }
+  if command == "build" { return cmdBuild(release, &defines); }
   if command == "test" {
-    if positionals.len() > 0usize { return cmdTest(positionals[0usize].view(), true, release, bless); }
-    return cmdTest("", false, release, bless);
+    if positionals.len() > 0usize { return cmdTest(positionals[0usize].view(), true, release, bless, &defines); }
+    return cmdTest("", false, release, bless, &defines);
   }
   imm hasFile = positionals.len() > 0usize;
   mut file = String.empty();
   if hasFile { file = positionals[0usize].copy(); }
-  if command == "run" { cmdRun(file.view(), hasFile, release, &programArgs); }
+  if command == "run" { cmdRun(file.view(), hasFile, release, &defines, &programArgs); }
   else { cmdClean(file.view(), hasFile); }
 }

@@ -19,7 +19,14 @@ congo test vec             only the tests and examples with 'vec' in their name
 congo test --bless         write a new test's expected output from a run
 congo clean                delete the package's build/ folder
 congo clean hello.cone     delete a lone file's build
+congo run -D FAST -D N=2   a constant for isDefined and definedInt (provisional)
 ```
+
+`-D NAME` and `-D NAME=123`, given to `build`, `run` or `test`, are passed to
+every `conec` compile of the build, the packages it imports included, where
+core's `isDefined` and `definedInt` read them. They are a provisional
+mechanism whose final design is open (`doc/reference/refintrinsic.html`,
+"Constants of the build").
 
 Run it as `tools/congo/congo` (a shell script) or `tools\congo\congo.bat`, or
 as `python tools/congo/congo.py`. Put `tools/congo/` on `PATH` to type `congo`.
@@ -493,7 +500,7 @@ Everything is rebuilt every time.
   `build/x64-release/conec.exe` (Congo warns when it is older than the
   compiler's sources — a stale compiler fails good code); else `conec` on
   `PATH`.
-- **`conestd`**, the C runtime library: the one `CONESTD` names, else the one
+- **`conestd`**, the runtime library: the one `CONESTD` names, else the one
   built beside `conec` (`conestd.lib`, or `libconestd.a`).
 - **A linker.** On Windows, Microsoft's `link.exe`: Congo uses the one on `PATH`
   when it is Microsoft's and links for x64, as `conec`'s objects are (an x64
@@ -577,9 +584,9 @@ build folder while it runs from it; `congo.py clean` can. Windows only, as its
 `process` package and its linking are for now.
 
 **It does everything `congo.py` does:** `congo new` (the manifest and the
-template, byte for byte), `congo build` (debug and `--release`, a program
-linked or a library's object, the build folder, the descriptions), `congo run`
-of the current package or a lone file, `congo test` (above, "Testing a
+template, byte for byte), `congo build` (debug and `--release`, `-D`, a
+program linked or a library's object, the build folder, the descriptions),
+`congo run` of the current package or a lone file, `congo test` (above, "Testing a
 package": the package built, each test built, run within its time and
 compared with its `.out`, `.exit` and `.err`, `--bless`, the name filter, the
 examples built, a folder of packages), and `congo clean` of either, matching

@@ -11,17 +11,24 @@
 //
 //   import actors;
 //
+//   actor Counter {
+//     count u64;
+//     fn init(self &new, start u64) {*self = new Self(count: start);}
+//     pub fn add(self, n u64) {count = count + n;}
+//   }
+//
 //   fn main() {
 //     initAll();
 //     {
-//       imm c = Counter.start(0u64);     // the first actor starts the workers
+//       imm c = new Counter(0u64);       // the first actor starts the workers
 //       c.add(5u64);                     // a message: queued, run later
 //       c.add(7u64);                     // run after the first
 //     }
 //     finalAll();                        // waits until all is quiet
 //   }
 //
-// What it has:
+// An actor is declared with 'actor' (the reference manual, "Actors"), and a
+// module declaring one imports this package. What it has:
 //
 //   actors.configure(opts)          before the first actor: how many workers,
 //                                   and the batch limit (actors.Options)
@@ -35,92 +42,65 @@
 //   actors.send[M](mb, msg)         queue msg in the actor's mailbox
 //   actors.sendable(v)              v, if it may cross threads (the check)
 //
-// The last four are what an actor's own code calls, and that code has one
-// shape, which the compiler is to generate from an 'actor' declaration. Until
-// it does, the shape is written by hand, as the test suite's
-// concurrency_actors_* scenarios write it. The package is 'actors' because
-// 'actor' (the declaration's keyword) is reserved, as are 'spawn', 'async',
-// 'wait' and 'yield'; and it is a package of its own, not a module of sync,
-// because it starts threads, and the thread package imports sync, so sync
-// cannot import thread. It is all Cone, over the thread package's threads
-// and sync's futex, Mutex, Once and 'Arc': nothing it does needed C.
+// The last four are what an actor's own code calls, and the compiler
+// generates that code from the 'actor' declaration
+// (compiler/c/parser/parseactor.c). The package is 'actors' because 'actor'
+// (the declaration's keyword) is reserved, as are 'spawn', 'async', 'wait'
+// and 'yield'; and it is a package of its own, not a module of sync, because
+// it starts threads, and the thread package imports sync, so sync cannot
+// import thread. It is all Cone, over the thread package's threads and sync's
+// futex, Mutex, Once and 'Arc': nothing it does needed C.
 //
-// THE SHAPE OF AN ACTOR. For
+// THE SHAPE OF AN ACTOR. For the Counter above the compiler generates four
+// declarations, named as no source can spell, so that nothing but the actor
+// reaches them:
 //
-//   actor Counter {
-//     count u64;
-//     fn add(self &mut, n u64) {count = count + n;}
-//     fn report(self &mut, to Printer) {to.show(count);}
-//   }
+//   (a) The state, 'Counter.State': a struct of the actor's fields and its
+//       methods, as written, a bare 'self' taken as 'self &mut'. It declares
+//       nothing about Sendable: it never crosses threads as a value, since
+//       only the runtime reaches it (INSIDE AN ACTOR, below).
+//   (b) The message enum, 'Counter.Msg', declaring Sendable on the strength
+//       of the compiler's check of every message's parameters: one variant
+//       per 'pub' method, named for it, whose fields are its parameters.
 //
-// four things are written:
+//         enum Counter.Msg is Sendable {struct add {n u64;}}
 //
-//   (a) The state: a struct of the actor's fields and its methods,
-//       unchanged, taking the state 'mut'. It declares nothing about
-//       Sendable: it never crosses threads as a value, since only the
-//       runtime reaches it (INSIDE AN ACTOR, below). Its constructor,
-//       'made', is the one place its fields are set.
-//
-//         struct Counter_state {
-//           count u64;
-//           pub fn made(count u64) Counter_state {new Counter_state(count);}
-//           fn add(self &mut, n u64) {count = count + n;}
-//           fn report(self &mut, to Printer) {to.show(count);}
-//         }
-//
-//   (b) The message enum, named for the actor with '_msg': one variant per
-//       method, named for it, whose fields are the method's parameters.
-//
-//         enum Counter_msg {
-//           struct Add {pub n u64;}
-//           struct Report {pub to Printer;}
-//         }
-//
-//   (c) The handle, named for the actor: one field, the 'Arc[opaq, T]' owner
-//       of the actor's Mailbox that startActor answers; one send function
-//       per method, of the method's name and parameters, taking the handle by
-//       any reference, which builds the variant and sends it; and 'start',
-//       which makes the state from its arguments, each passed through
-//       actors.sendable, and starts the actor.
+//   (c) The handle, 'Counter': one field, the 'Arc[opaq, T]' owner of the
+//       actor's Mailbox that startActor answers; an initializer for each of
+//       the state's, which makes the state and starts the actor; and a send
+//       function per message, which builds the variant and sends it.
 //
 //         struct Counter {
-//           mb Arc[opaq, actors.Mailbox[Counter_msg]];
-//           pub fn start(count u64) Counter {
-//             new Counter(actors.startActor[Counter_state, Counter_msg](
-//               Counter_state.made(actors.sendable(count)), &Counter_dispatch));
+//           mailbox Arc[opaq, actors.Mailbox[Counter.Msg]];
+//           fn init(self &new, start u64) {
+//             *self = new Self(mailbox: actors.startActor[Counter.State, Counter.Msg](
+//               new Counter.State(start), &Counter.dispatch));
 //           }
 //           pub fn add(self &, n u64) {
-//             actors.send[Counter_msg](mb, Counter_msg.Add[n]);
-//           }
-//           pub fn report(self &, to Printer) {
-//             actors.send[Counter_msg](mb, Counter_msg.Report[to]);
+//             actors.send[Counter.Msg](mailbox, Counter.Msg.add[n]);
 //           }
 //         }
 //
-//   (d) The dispatch function, named for the actor with '_dispatch': one
-//       'match' on the message, each arm calling its method.
+//   (d) The dispatch function, 'Counter.dispatch', handed each message where
+//       it lies in its node: it tests which variant the message is, moves
+//       each argument out of it, and calls the method. The node is then freed
+//       with nothing in it finalized, so each argument is moved exactly once.
 //
-//         fn Counter_dispatch(self &mut Counter_state, msg Counter_msg) {
-//           match msg {
-//             case imm m Counter_msg.Add {self.add(m.n);}
-//             case imm m Counter_msg.Report {self.report(m.to);}
+//         fn Counter.dispatch(self &mut Counter.State, msg *Counter.Msg) {
+//           if &*msg is &Counter.Msg.add {
+//             imm p = msg as *Counter.Msg.add;
+//             self.add(take(&(*p).n));     // take: mem.readRaw of the field
 //           }
 //         }
 //
-// Creation is named 'start', as the thread package's is, since 'spawn' is
-// reserved; the declaration may spell it 'spawn' once the keyword is its.
-// Written by hand, the shape has three awkward corners the compiler will
-// take over: a state's fields are private, so the state's own 'made' sets
-// them; a handle's field is named 'mb', since 'actor' is reserved; and the
-// order of declarations matters today. A message enum holds handles by value
-// (Player_msg's Meet holds a Player), and a handle reaches the enum again
-// through its Mailbox's type argument, so declared after the handle, or
-// after a state holding one, the enum is refused as a type that would
-// contain itself (error 1069, which depends on the order in which the
-// compiler meets the types of a cycle through an owning reference). Each
-// actor's message enum is therefore declared first, before any state or
-// handle, and before any other actor's message enum that holds its handle,
-// as every concurrency_actors_* scenario does.
+// The order of the four does not matter, and the compiler writes the state,
+// the handle, the message enum and the dispatch function in that order. A
+// message enum holds handles by value (a Player's 'meet' holds a Player), and
+// a handle reaches the enum again only through its owning reference to the
+// Mailbox, which does not lay out what it points at, so the enum may come
+// before or after the handle and the state, and so may any declaration that
+// lays the handle out (the test suite's concurrency_actor_order and
+// concurrency_actors_declared_last).
 //
 // THE HANDLE is an actor's name to the rest of the program: a struct over
 // one 'Arc[opaq, T]' owner of the actor's Mailbox, the runtime's part of it, so
@@ -168,12 +148,12 @@
 // messages to one actor are handled in the order sent, and a message is
 // never overtaken by one it caused: the mailbox is one FIFO queue in the
 // order the sends took their places, and a send has taken its place before
-// it returns. What a message carries must be Sendable, which 'send',
-// 'startActor' and Mailbox ask of the message enum, so of every method's
-// parameters: numbers, 'uni' and 'So' owners (which move), 'Arc[imm, T]'
-// owners, handles; never a borrow, a 'mut' owner, an 'Rc' owner or a 'Gc'
-// reference. The arguments 'start' passes to 'made' are asked the same by
-// actors.sendable.
+// it returns. What a message carries must be Sendable, which the compiler
+// asks of every message's parameters, and of every initializer's, where they
+// are declared, and 'send', 'startActor' and Mailbox ask of the message enum:
+// numbers, 'uni' and 'So' owners (which move), 'Arc[imm, T]' and lock-managed
+// 'Arc' owners, handles; never a borrow, a 'mut' owner, an 'Rc' owner or a
+// 'Gc' reference. actors.sendable is the same check, for code written by hand.
 //
 // INSIDE AN ACTOR. A method has its state 'mut' and runs alone: no other
 // method of the same actor runs until it returns. It may use anything a
@@ -198,7 +178,7 @@
 //   Release decrement and Acquire load. Each chain is release to acquire, so
 //   what one method did happens before the next method runs, wherever.
 // - 'Gc' is NOT supported inside an actor. The collector package's
-//   collector is single-threaded, its root chain one C global, and an actor
+//   collector is single-threaded, its root chain one global, and an actor
 //   runs on every worker in turn: a traced reference made, held, reached or
 //   dropped by an actor corrupts it. Nothing refuses one yet (the thread
 //   check refuses 'Gc' in a message); a concurrent collector is a later
@@ -342,8 +322,9 @@
 //   checks before queueing the sender again, with a list of muted actors
 //   per receiver to queue when it catches up.
 //
-// Windows only, for now: the package's own call to the OS is a yield; the
-// rest is the thread package's and sync's, whose posix sides are to come.
+// The package's own call to the OS is a yield, chosen by the target's OS; the
+// rest is the thread package's and sync's, Windows only for now, whose posix
+// sides are to come.
 
 mod actors;
 
@@ -352,12 +333,21 @@ import sync use Arc;
 import thread;
 
 // ---------------------------------------------------------------------------
-// Windows: a yield, for the idle spin, and the one call the package makes to
-// the OS directly. Everything else is the thread package's and sync's.
+// A yield, for the idle spin, and the one call the package makes to the OS
+// directly: kernel32's on Windows, POSIX's elsewhere. isWindows() is a
+// constant of the compile (TEMPORARY, a provisional mechanism; its final
+// design is open), so only the target's call is generated, and the other's
+// symbol is never referenced. Everything else is the thread package's and
+// sync's.
 // ---------------------------------------------------------------------------
 
 extern {
   fn @c(system) SwitchToThread() i32;
+}
+extern fn sched_yield() i32;
+
+fn yieldProcessor() {
+  if isWindows() {SwitchToThread();} else {sched_yield();}
 }
 
 // A panic, reported at the line calling 'die'
@@ -384,8 +374,8 @@ struct Node[M] {
 const idleBit = 1usize;
 const pointerBits = 0xFFFFFFFFFFFFFFFEusize;
 
-fn nullLink() *Link {0usize as *Link;}
-fn nullHeader() *Header {0usize as *Header;}
+fn nullLink() *Link {null;}
+fn nullHeader() *Header {null;}
 
 // Put node n at the end of h's mailbox: whether the mailbox was idle, which
 // makes this sender the one to schedule the actor
@@ -504,8 +494,10 @@ fn finalizeState[S, M Sendable](h *Header) {
 // this is the first actor. The state is moved into an 'Arc' allocation after
 // the Mailbox, and its mailbox made: one stub node, idle. Nothing else can
 // reach the actor until this returns, so the header is written plainly;
-// whatever hands the handle on orders it.
-pub fn startActor[S, M Sendable](state S, dispatch &fn(s &mut S, m M)) Arc[opaq, Mailbox[M]] {
+// whatever hands the handle on orders it. The dispatch function is handed
+// each message where it lies in its node, and takes it: it moves every field
+// out, and the node is then freed with nothing in it finalized.
+pub fn startActor[S, M Sendable](state S, dispatch &fn(s &mut S, m *M)) Arc[opaq, Mailbox[M]] {
   ensureRunning();
   imm stub = libc.malloc(mem.sizeof[Link]()) as *Link;
   if stub as usize == 0usize {
@@ -518,7 +510,7 @@ pub fn startActor[S, M Sendable](state S, dispatch &fn(s &mut S, m M)) Arc[opaq,
   imm b = new Arc[opaq, Block[S, M]](Mailbox[M].made(h), state);
   // The owner of the block, remade as the owner of its first part: the same
   // address and the same count, moved, not copied
-  mut slot = 0usize as *u8;
+  mut slot *u8 = null;
   mem.writeRaw[Arc[opaq, Block[S, M]]](&mut slot as *(Arc[opaq, Block[S, M]]), b);
   mem.readRaw[Arc[opaq, Mailbox[M]]](&mut slot as *(Arc[opaq, Mailbox[M]]));
 }
@@ -546,12 +538,14 @@ pub fn send[M Sendable](mb &opaq Mailbox[M], msg M) {
 // unchanged, if its type may cross threads; refused where it is written if not
 pub fn sendable[T Sendable](v T) T {v;}
 
-// Run up to limit of the actor's messages, each moved out of its node and
-// handed to the dispatch function: how many ran. Only the worker that took
-// the actor from a queue calls this.
+// Run up to limit of the actor's messages, each handed to the dispatch
+// function where it lies in its node, which takes it: how many ran. The node
+// is the mailbox's stub from then on, freed by the next pop or the actor's
+// death, its message never finalized. Only the worker that took the actor
+// from a queue calls this.
 fn runBatch[S, M Sendable](h *Header, limit u32) u32 {
   mut slot = (*h).dispatch;
-  imm f = mem.readRaw[&fn(s &mut S, m M)](&mut slot as *(&fn(s &mut S, m M)));
+  imm f = mem.readRaw[&fn(s &mut S, m *M)](&mut slot as *(&fn(s &mut S, m *M)));
   imm st = stateOf[S, M](h);
   mut n = 0u32;
   while n < limit {
@@ -559,8 +553,7 @@ fn runBatch[S, M Sendable](h *Header, limit u32) u32 {
     if node as usize == 0usize {
       return n;
     }
-    imm m = mem.readRaw[M](&(*(node as *Node[M])).msg as *M);
-    f(&mut *st, m);
+    f(&mut *st, &(*(node as *Node[M])).msg as *M);
     n = n + 1u32;
   }
   n;
@@ -962,7 +955,7 @@ fn idle(w *Worker) Bool {
     if anyWork(s) {
       return true;
     }
-    SwitchToThread();
+    yieldProcessor();
     spins = spins + 1u32;
   }
   imm epochp = &(*s).epoch as *u32;

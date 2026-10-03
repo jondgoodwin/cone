@@ -1,0 +1,93 @@
+// The boundary between the wheel and the precise set: a deadline less than a
+// tick after now goes precise by itself and fires exactly on time; one a tick
+// or more off is a timeout in the wheel and fires at its tick; one marked
+// precise stays precise however far off. And the answers the loop reads to
+// set its wait: nextPrecise (arm the high-resolution timer for it),
+// nextTimeout (the wheel's) and nextExpiry (the earlier of the two).
+
+mod boundary;
+
+import testing use *;
+import time use Duration, Instant, Clock;
+import collections use List;
+import timewheel use *;
+
+// An instant's nanoseconds, or -1 for None
+fn ns(o Option[Instant]) i64 {
+  mut r = -1i64;
+  match o {
+    case imm s Some { r = s.value.nanos(); }
+    case is None[Instant] {}
+  }
+  r;
+}
+
+fn main() i32 {
+  mut clock = Clock.synth();
+  // Start off the tick grid, as a real clock is
+  clock.advance(Duration.fromMicros(10300));
+  mut w = Wheel.make(clock.now());
+  mut out = new List[Expiry];
+  imm t0 = clock.now().nanos();
+  expectInt(tick().nanos(), 1000000, "the tick is a millisecond");
+
+  imm under = w.insert(clock.now() + tick() - Duration.fromNanos(1i64), 1u64);
+  imm at = w.insert(clock.now() + tick(), 2u64);
+  imm soon = w.insert(clock.now() + Duration.fromMicros(300), 3u64);
+  imm far = w.insertPrecise(clock.now() + Duration.fromSeconds(2), 4u64);
+  imm off = w.insert(clock.now() + Duration.fromMicros(1500), 6u64);
+  expect(w.isPrecise(under), "a tick less a nanosecond away is precise");
+  expect(!w.isPrecise(at), "a whole tick away is a timeout");
+  expect(!w.isPrecise(off), "and 1.5 ticks");
+  expect(w.isPrecise(soon), "300 us away is precise");
+  expect(w.isPrecise(far), "marked precise stays precise, 2 s away");
+  imm s = w.stats();
+  expectUInt(s.pendingPrecise, 3u64, "three in the precise set");
+  expectUInt(s.armedPrecise, 3u64, "three ever");
+
+  // The loop's answers: the precise set's earliest, the wheel's tick. The
+  // wheel's ticks are its start plus whole milliseconds, so 'at', exactly a
+  // tick away, is on the grid
+  expectInt(ns(w.nextPrecise()), t0 + 300000i64, "arm the high-resolution timer for 300 us");
+  expectInt(ns(w.nextTimeout()), t0 + 1000000i64, "the wheel's next tick");
+  expectInt(ns(w.nextExpiry()), t0 + 300000i64, "the earlier is the precise one");
+
+  // Precise timers fire exactly at their deadlines, not a nanosecond early
+  clock.advance(Duration.fromMicros(300) - Duration.fromNanos(1i64));
+  expectUInt(u64.from(w.expired(clock.now(), &mut out)), 0u64, "a nanosecond early: nothing");
+  clock.advance(Duration.fromNanos(1i64));
+  expectUInt(u64.from(w.expired(clock.now(), &mut out)), 1u64, "on the nanosecond: soon");
+  expectUInt(out[0usize].token, 3u64, "soon");
+  expectInt(ns(w.nextPrecise()), t0 + 999999i64, "next, the one under a tick");
+  clock.advance(Duration.fromNanos(699999i64));
+  expectUInt(u64.from(w.expired(clock.now(), &mut out)), 1u64, "under fires on time");
+  expectUInt(out[1usize].token, 1u64, "under");
+  expectInt(clock.now().nanos(), t0 + 999999i64, "at exactly its deadline");
+
+  // A timeout fires at its tick: on the grid, on time
+  expectInt(ns(w.nextExpiry()), t0 + 1000000i64, "now the wheel's tick is the earlier");
+  clock.advance(Duration.fromNanos(1i64));
+  expectUInt(u64.from(w.expired(clock.now(), &mut out)), 1u64, "at its tick");
+  expectUInt(out[2usize].token, 2u64, "at");
+  expectInt(clock.now().nanos() - out[2usize].deadline.nanos(), 0i64, "on the grid, not late");
+  // Off the grid, at the next tick, up to a tick late
+  expectInt(ns(w.nextExpiry()), t0 + 2000000i64, "1.5 ms fires at the 2 ms tick");
+  clock.advance(Duration.fromNanos(999999i64));
+  expectUInt(u64.from(w.expired(clock.now(), &mut out)), 0u64, "not before its tick");
+  clock.advance(Duration.fromNanos(1i64));
+  expectUInt(u64.from(w.expired(clock.now(), &mut out)), 1u64, "at its tick");
+  expectUInt(out[3usize].token, 6u64, "off");
+  expectInt(clock.now().nanos() - out[3usize].deadline.nanos(), 500000i64, "0.5 ms late, under a tick");
+
+  // The far precise timer: the only thing left, so the next wake, exactly
+  expectInt(ns(w.nextTimeout()), -1i64, "the wheel is empty");
+  expectInt(ns(w.nextExpiry()), t0 + 2000000000i64, "the precise deadline");
+  // A timeout armed while time has moved is judged against the new now
+  imm late = w.insert(clock.now() + Duration.fromMicros(999), 5u64);
+  expect(w.isPrecise(late), "under a tick from the wheel's now is precise");
+  expect(w.cancel(far), "a precise timer cancels");
+  expect(!w.cancel(far), "once");
+  expect(w.cancel(late), "and the other");
+  expectInt(ns(w.nextExpiry()), -1i64, "nothing left");
+  done();
+}

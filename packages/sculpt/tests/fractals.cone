@@ -1,0 +1,203 @@
+// The sculpt package's fractal refinement of a 2-D outline, checked against
+// values worked out by hand. Only a failure prints.
+//
+// The base is the unit square (0,0) (1,0) (1,1) (0,1), closed. Edge 0 runs
+// (0,0) to (1,0): its middle is (0.5, 0), perp of (1, 0) is (0, 1), so with
+// width 0.4 its corners are P = (0.5, 0.4) and Q = (0.5, -0.4).
+// - 0 levels: the base itself, 4 points.
+// - Amplitude 0: every split point is the middle of Q P. For a base edge that
+//   is the edge's middle. A half's corners are its far corners shrunk towards
+//   its own end by s, so its split sits at s / 2 of the parent from that end.
+//   With h 1 (s = 1/2), 2 levels give the square's sides in quarters, 16
+//   points, point i of edge 0 at (i/4, 0); with h 0.5 (s = 1 / sqrt 2), edge
+//   0's points 1 and 3 are at x = 0.5 / sqrt 2 = 0.353553 and 0.646447.
+// - 1 level, amplitude 0.6, seed 5: edge 0's split is Q + (P - Q) t with t =
+//   0.5 + 0.5 x 0.6 x toSigned(pcg4d(0, 0, 0, 5).x), held to [0.05, 0.95]:
+//   x = 0.5 and y = -0.4 + 0.8 t.
+// - Every point below edge 0 stays in its first quadrilateral, so in the box
+//   0 <= x <= 1, -0.4 <= y <= 0.4: checked at 10 levels with a heavy tail.
+// - The pieces never cross: no two non-neighbouring pieces of 9 levels
+//   (2048 pieces) cross, with amplitude 0.9, h 0.3 and a heavy tail (ratio 2,
+//   cap 6), the roughest settings.
+// - A coarse refinement's points are the fine one's at the same places:
+//   3 levels against 8, point i against point 32 i, bit for bit.
+// - The window: fractalRefineWithin keeps every point of fractalRefine
+//   inside the window (none missing), each with the same bits at its index,
+//   and makes fewer points than the whole.
+// - Another seed, another outline; the same seed, the same bits.
+// - fractal() holds h to at least 1/64: its shrink is 2^-(1/64) for h 0.
+
+mod fractals;
+
+import testing use *;
+import libc;
+import collections use *;
+import geomath use *;
+import noise;
+import sculpt use *;
+
+imm near = 0.000001d;
+
+fn square() Profile {
+  imm pts = new List[Vec2](4) <- new Vec2(0., 0.), new Vec2(1., 0.), new Vec2(1., 1.), new Vec2(0., 1.);
+  new Profile(pts, true);
+}
+
+fn sameBits(a Vec2, b Vec2) Bool { (a.x as u32) == (b.x as u32) and (a.y as u32) == (b.y as u32); }
+
+fn orient(a Vec2, b Vec2, c Vec2) f32 { (b - a).cross(c - a); }
+
+fn crossings(p &[]Vec2) i32 {
+  imm n = p.len;
+  mut count = 0;
+  mut i = 0usize;
+  while i < n {
+    imm a = p[i];
+    imm b = p[(i + 1usize) % n];
+    mut j = i + 2usize;
+    while j < n {
+      if !(i == 0usize and j == n - 1usize) {
+        imm c = p[j];
+        imm d = p[(j + 1usize) % n];
+        imm o1 = orient(a, b, c);
+        imm o2 = orient(a, b, d);
+        imm o3 = orient(c, d, a);
+        imm o4 = orient(c, d, b);
+        if ((o1 > 0. and o2 < 0.) or (o1 < 0. and o2 > 0.)) and ((o3 > 0. and o4 < 0.) or (o3 < 0. and o4 > 0.)) {
+          count = count + 1;
+        }
+      }
+      j = j + 1usize;
+    }
+    i = i + 1usize;
+  }
+  count;
+}
+
+fn shapes() {
+  imm base = square();
+  imm f0 = fractal(5u32, 0, 0.5, 0.6);
+  imm r0 = fractalRefine(&base, &f0);
+  requireInt(i64.from(r0.pointCount()), 4, "0 levels: 4 points");
+  expect(r0.closed, "0 levels: closed");
+  expect(sameBits(*r0.points[1usize], new Vec2(1., 0.)), "0 levels: the base's corner 1");
+
+  imm flat = fractal(5u32, 2, 1., 0.);
+  imm rf = fractalRefine(&base, &flat);
+  requireInt(i64.from(rf.pointCount()), 16, "amplitude 0, 2 levels: 16 points");
+  mut i = 0usize;
+  while i < 4usize {
+    expectFloat(f64.from(rf.points[i].x), f64.from(i) * 0.25d, near, "amplitude 0: edge 0 in quarters, x");
+    expectFloat(f64.from(rf.points[i].y), 0d, near, "amplitude 0: edge 0 in quarters, y");
+    i = i + 1usize;
+  }
+  expectFloat(f64.from(rf.points[6usize].x), 1d, near, "amplitude 0: point 6 is (1, 0.5)");
+  expectFloat(f64.from(rf.points[6usize].y), 0.5d, near, "amplitude 0: point 6 is (1, 0.5)");
+  imm lean = fractal(5u32, 2, 0.5, 0.);
+  imm rl = fractalRefine(&base, &lean);
+  expectFloat(f64.from(rl.points[1usize].x), 0.353553d, near, "h 0.5, amplitude 0: point 1 at x = 0.5 / sqrt 2");
+  expectFloat(f64.from(rl.points[3usize].x), 0.646447d, near, "h 0.5, amplitude 0: point 3 at x = 1 - 0.5 / sqrt 2");
+
+  imm one = fractal(5u32, 1, 0.5, 0.6);
+  imm r1 = fractalRefine(&base, &one);
+  requireInt(i64.from(r1.pointCount()), 8, "1 level: 8 points");
+  imm h = noise.pcg4d(new noise.UVec4(0u32, 0u32, 0u32, 5u32));
+  mut t = 0.5 + 0.5 * (0.6 * noise.toSigned(h.x));
+  if t < 0.05 { t = 0.05; }
+  if t > 0.95 { t = 0.95; }
+  expectFloat(f64.from(r1.points[1usize].x), 0.5d, near, "1 level: edge 0's split x = 0.5");
+  expectFloat(f64.from(r1.points[1usize].y), f64.from(-0.4 + 0.8 * t), near, "1 level: edge 0's split y = -0.4 + 0.8 t");
+  expect(sameBits(*r1.points[2usize], new Vec2(1., 0.)), "1 level: the base's corners kept");
+}
+
+fn bounds() {
+  imm base = square();
+  mut f = fractal(11u32, 10, 0.3, 0.9);
+  f.tail = 2.;
+  f.tailCap = 6;
+  imm r = fractalRefine(&base, &f);
+  mut outside = 0;
+  mut i = 0usize;
+  while i < 1024usize {
+    imm p = *r.points[i];
+    if p.x < 0. or p.x > 1. or p.y < -0.4 or p.y > 0.4 { outside = outside + 1; }
+    i = i + 1usize;
+  }
+  expectInt(i64.from(outside), 0, "edge 0's 1024 points all inside its first quadrilateral's box");
+
+  mut g = fractal(11u32, 9, 0.3, 0.9);
+  g.tail = 2.;
+  g.tailCap = 6;
+  imm rough = fractalRefine(&base, &g);
+  expectInt(i64.from(crossings(rough.points.view())), 0, "no two pieces of 2048 cross");
+}
+
+fn consistency() {
+  imm base = square();
+  mut fine = fractal(3u32, 8, 0.5, 0.6);
+  fine.intermittency = 0.8;
+  fine.heteroStrength = 1.;
+  fine.heteroScale = 2.;
+  mut coarseF = fractal(3u32, 3, 0.5, 0.6);
+  coarseF.intermittency = 0.8;
+  coarseF.heteroStrength = 1.;
+  coarseF.heteroScale = 2.;
+  imm whole = fractalRefine(&base, &fine);
+  imm coarse = fractalRefine(&base, &coarseF);
+  requireInt(i64.from(whole.pointCount()), 1024, "8 levels: 1024 points");
+  requireInt(i64.from(coarse.pointCount()), 32, "3 levels: 32 points");
+  mut kept = 0;
+  mut i = 0usize;
+  while i < 32usize {
+    if sameBits(*coarse.points[i], *whole.points[i * 32usize]) { kept = kept + 1; }
+    i = i + 1usize;
+  }
+  expectInt(i64.from(kept), 32, "3 levels' points are 8 levels' every 32nd, bit for bit");
+
+  imm window = new Aabb2(new Vec2(0.3, -0.1), new Vec2(0.45, 0.05));
+  imm part = fractalRefineWithin(&base, &fine, window);
+  expect(part.len() < whole.points.len(), "the window makes fewer points than the whole");
+  mut same = 0;
+  i = 0usize;
+  while i < part.len() {
+    if sameBits(part[i].point, *whole.points[usize.from(part[i].index)]) { same = same + 1; }
+    i = i + 1usize;
+  }
+  expectInt(i64.from(same), i64.from(part.len()), "each windowed point has the whole's bits at its index");
+  mut inside = 0;
+  mut missing = 0;
+  mut k = 0usize;
+  i = 0usize;
+  while i < whole.points.len() {
+    if window.contains(*whole.points[i]) {
+      inside = inside + 1;
+      while k < part.len() and part[k].index < u64.from(i) { k = k + 1usize; }
+      if !(k < part.len() and part[k].index == u64.from(i)) { missing = missing + 1; }
+    }
+    i = i + 1usize;
+  }
+  expect(inside > 0, "some of the whole's points fall in the window");
+  expectInt(i64.from(missing), 0, "none of them is missing from the window's points");
+
+  imm again = fractalRefine(&base, &fine);
+  mut equal = 0;
+  i = 0usize;
+  while i < whole.points.len() {
+    if sameBits(*again.points[i], *whole.points[i]) { equal = equal + 1; }
+    i = i + 1usize;
+  }
+  expectInt(i64.from(equal), 1024, "the same seed, the same bits");
+  imm other = fractal(4u32, 8, 0.5, 0.6);
+  imm r4 = fractalRefine(&base, &other);
+  expect(!sameBits(*r4.points[1usize], *whole.points[1usize]), "another seed, another outline");
+
+  imm h0 = fractal(1u32, 1, 0., 0.5);
+  expectFloat(f64.from(h0.shrink), f64.from(libc.powf(2., -0.015625)), 0d, "h held to 1/64");
+}
+
+fn main() i32 {
+  shapes();
+  bounds();
+  consistency();
+  done();
+}

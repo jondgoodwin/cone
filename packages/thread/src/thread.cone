@@ -26,7 +26,7 @@
 //   thread.current()                   the running thread, as a ThreadRef
 //   r.id()  r.name()  r.unpark()  r.copy()
 //   thread.parallelism()               how many threads can run at once
-//   thread.sleep(ns)                   sleep, to within about a millisecond
+//   thread.sleep(d)                    sleep for a time.Duration, to within about a millisecond
 //   thread.yieldNow()                  let another thread run
 //   thread.park()                      sleep until this thread is unparked
 //
@@ -47,10 +47,8 @@
 // - The type arguments A and R are inferred from the argument and from f's
 //   signature. A number literal keeps its own type, i32 unless suffixed, and
 //   must agree with f's parameter: 'thread.start(100i64, &triangle)'.
-// - The function comes last, after the argument. A parameter typed as a
-//   function reference with a return type ('&fn(a A) R') swallows a comma
-//   after it as the start of a second return type, so it can only be the last
-//   parameter. And 'spawn', the name this was designed with, is reserved.
+// - The function comes last, after the argument. 'spawn', the name this was
+//   designed with, is reserved.
 // - A and R must be Sendable, which the compiler checks where 'start' is
 //   called: what may cross to another thread is a value the thread owns
 //   outright (a number, a struct of them, a 'So' owner, a 'uni' owner of
@@ -129,11 +127,13 @@
 // It is not the number this process may use, which an affinity mask or a job
 // object can make smaller.
 //
-// 'thread.sleep(ns)' sleeps at least ns nanoseconds, on Windows' high
+// 'thread.sleep(d)' sleeps at least d, a Duration of the time package
+// ('thread.sleep(time.Duration.fromMillis(5))'), on Windows' high
 // resolution waitable timer: a 1 ms sleep takes 1 to 2 ms, where a plain
 // Win32 'Sleep' can take up to the 15.6 ms of the system's timer tick. Where
 // that timer is not available (before Windows 10 version 1803), it falls
-// back to 'Sleep', rounded up to whole milliseconds. 'sleep(0)' gives up the
+// back to 'Sleep', rounded up to whole milliseconds. A sleep of zero (or of
+// a negative duration) gives up the
 // rest of the thread's time slice to another thread of the same priority
 // that is ready to run. 'yieldNow()' gives it to any thread ready to run on
 // the same processor. Each returns at once if there is none.
@@ -150,14 +150,15 @@
 // thread's identity.
 //
 // THE FUTEX, AND THE LOCKS, are the sync package's: 'sync.futexWait(&word,
-// expected, timeoutNs)', 'sync.futexWake(&word)' and 'sync.futexWakeAll(&word)'
-// on an Atomic[u32] word, and Mutex, RwLock, Condvar and Once over them. The
+// expected)', 'sync.futexWaitTimeout(&word, expected, d)',
+// 'sync.futexWake(&word)' and 'sync.futexWakeAll(&word)'
+// on an Atomic[u32] word, and Mutex, Rwlock, Condvar and Once over them. The
 // futex was this package's first, on a raw '*u32'; it moved to sync when the
 // word became an Atomic[u32], since sync's locks need it and this package
 // needs sync, and packages may not import each other in a loop.
 //
 // NOT ON A STARTED THREAD, YET: 'Gc'. The collector package's collector is
-// single threaded: its root chain is one C global and its heap is not
+// single threaded: its root chain is one global and its heap is not
 // synchronized. A traced ('Gc') reference made, held, reached or dropped on
 // a thread this package started corrupts it. The thread check refuses one
 // handed to 'start' or returned from a thread, but nothing stops a started
@@ -172,6 +173,7 @@ mod thread;
 
 import libc;
 import sync;
+import time;
 
 // ---------------------------------------------------------------------------
 // Windows: the C runtime's thread start, and kernel32. A thread is started by
@@ -349,7 +351,7 @@ fn leave() {
 fn launch(entry Entry, pkt *u8, info *Info, stackSize usize) usize {
   imm stack = if stackSize > 0xFFFFFFFFusize {0xFFFFFFFFu32;} else {u32.from(stackSize);};
   mut id = 0u32;
-  imm handle = _beginthreadex(0usize as *u8, stack, entry, pkt, stackIsReservation, &mut id as *u32);
+  imm handle = _beginthreadex(null, stack, entry, pkt, stackIsReservation, &mut id as *u32);
   (*info).id.storeOrdered(id, MemOrder.Relaxed[]);
   handle;
 }
@@ -493,17 +495,19 @@ pub fn yieldNow() {
   SwitchToThread();
 }
 
-// Sleep at least ns nanoseconds, on the high resolution timer where there is one
-pub fn sleep(ns u64) {
-  if ns == 0u64 {
+// Sleep at least d, on the high resolution timer where there is one; zero or
+// less gives up the rest of the time slice
+pub fn sleep(d time.Duration) {
+  if d.nanos() <= 0i64 {
     Sleep(0u32);
     return;
   }
-  imm timer = CreateWaitableTimerExW(0usize as *u8, 0usize as *u16, timerHighResolution, timerAllAccess);
+  imm ns = u64.from(d.nanos());
+  imm timer = CreateWaitableTimerExW(null, null, timerHighResolution, timerAllAccess);
   if timer != 0usize {
     // Relative (negative), in 100 ns units, rounded up
     mut due = 0i64 - i64.from((ns + 99u64) / 100u64);
-    if SetWaitableTimer(timer, &mut due as *i64, 0i32, 0usize as *u8, 0usize as *u8, 0i32) != 0i32 {
+    if SetWaitableTimer(timer, &mut due as *i64, 0i32, null, null, 0i32) != 0i32 {
       WaitForSingleObject(timer, infinite);
       CloseHandle(timer);
       return;
