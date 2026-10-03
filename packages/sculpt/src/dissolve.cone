@@ -1,0 +1,467 @@
+// ======== Planar dissolve: neighbouring faces merged where nearly flat ========
+//
+// 'dissolvePlanar' (Blender's Decimate modifier in Planar mode, and its
+// Limited Dissolve) merges neighbouring faces whose normals differ by no
+// more than an angle into one n-gon, and drops the vertices left in a
+// straight line between two edges:
+//
+// - Regions: faces are taken in order; each face not yet in a region starts
+//   one (its seed) and the region grows across edges, breadth first, to
+//   every face whose normal is within the angle of the seed's (so a gently
+//   curving surface is not merged all the way round: no face of a region
+//   leans more than the angle from its seed). A region does not grow across
+//   an edge whose "crease" is above 0 (Blender's Sharp delimit) or across a
+//   seam, where a corner channel's values differ across the edge (its UV
+//   delimit), so a uv island keeps its outline.
+// - A region of several faces becomes one face when its outline is one loop
+//   that passes no vertex twice; otherwise (a region round a hole, or
+//   touching itself at a vertex) its faces are kept as they were. The new
+//   face runs round the outline as the faces did, from the outline's
+//   lowest-numbered half-edge; vertices inside it go.
+// - Straight runs: a vertex left on exactly two edges (inside a merged
+//   face's side, or on the mesh's boundary) is dropped when the turn from
+//   one edge to the other is within the angle and both edges have the same
+//   "crease", unless a face would be left with fewer than 3 corners.
+//   Vertices are taken in order, each against its neighbours as they are
+//   then, so a curve of small turns is not straightened all the way.
+//
+// Channels (as 'assemble' carries them): a vertex kept keeps its values; a
+// face takes its seed's (the region's lowest-numbered face's) face values;
+// a corner the values of the corner it came from (the region's corners at
+// one vertex are alike, since no seam runs inside a region); a side its
+// edge's values, and a side made from a straight run the values of its last
+// edge (the one coming into the corner after the run).
+//
+// Numbering: the vertices left keep their order; faces are made in the order
+// of their seeds.
+
+// m with neighbouring faces whose normals differ by at most 'angle'
+// (radians) merged, and vertices in straight runs dropped
+pub fn dissolvePlanar(m &PolyMesh, angle f32) PolyMesh {
+  imm nf = m.fHalfedge.len();
+  imm nv = m.positions.len();
+  imm cosLimit = cos(angle);
+  imm ecrease = m.findFloatChannel(EdgeDomain, "crease");
+  mut normals = List[Vec3].withCapacity(nf);
+  mut f = 0usize;
+  while f < nf {
+    normals.push(m.faceNormal(u32.from(f)));
+    f = f + 1usize;
+  }
+
+  // Regions, grown breadth first from each seed in face order
+  mut region = List[u32].withCapacity(nf);
+  f = 0usize;
+  while f < nf {
+    region.push(NoIndex);
+    f = f + 1usize;
+  }
+  mut queue = List[u32].empty();
+  mut seeds = List[u32].empty();
+  f = 0usize;
+  while f < nf {
+    if *region[f] == NoIndex {
+      imm r = u32.from(seeds.len());
+      seeds.push(u32.from(f));
+      imm sn = *normals[f];
+      region.set(f, r);
+      queue.clear();
+      queue.push(u32.from(f));
+      mut qi = 0usize;
+      while qi < queue.len() {
+        imm g = *queue[qi];
+        imm hs = m.faceHalfedges(g);
+        mut k = 0usize;
+        while k < hs.len() {
+          imm h = *hs[k];
+          imm o = m.face(m.twin(h));
+          imm e = h / 2u32;
+          if o != NoIndex and *region[usize.from(o)] == NoIndex and (*normals[usize.from(o)]).dot(sn) >= cosLimit
+              and !(ecrease != NoIndex and m.float(ecrease, e) > 0.) and !seamEdge(m, e) {
+            region.set(usize.from(o), r);
+            queue.push(o);
+          }
+          k = k + 1usize;
+        }
+        qi = qi + 1usize;
+      }
+    }
+    f = f + 1usize;
+  }
+
+  // Each region's faces: one merged loop, or its faces as they were. A face
+  // is its corners (half-edges, each the corner at its end), flat.
+  imm nr = seeds.len();
+  mut members = List[u32].empty();     // faces by region
+  mut start = List[u32].withCapacity(nr + 1usize);
+  mut count = List[u32].withCapacity(nr);
+  mut r = 0usize;
+  while r < nr {
+    count.push(0u32);
+    r = r + 1usize;
+  }
+  f = 0usize;
+  while f < nf {
+    imm rf = usize.from(*region[f]);
+    count.set(rf, *count[rf] + 1u32);
+    f = f + 1usize;
+  }
+  r = 0usize;
+  mut acc = 0u32;
+  while r < nr {
+    start.push(acc);
+    acc = acc + *count[r];
+    r = r + 1usize;
+  }
+  start.push(acc);
+  mut fill = copyList[u32](&start);
+  f = 0usize;
+  while f < nf {
+    members.push(0u32);
+    f = f + 1usize;
+  }
+  f = 0usize;
+  while f < nf {
+    imm rf = usize.from(*region[f]);
+    members.set(usize.from(*fill[rf]), u32.from(f));
+    fill.set(rf, *fill[rf] + 1u32);
+    f = f + 1usize;
+  }
+
+  mut fCount = List[u32].empty();      // per output face: corners
+  mut fCorners = List[u32].empty();    // the corners (half-edges), flat
+  mut fSeed = List[u32].empty();       // per output face: its source face
+  mut onLoop = List[u32].withCapacity(nv);  // a mark per vertex, for a loop's repeats
+  mut v = 0usize;
+  while v < nv {
+    onLoop.push(NoIndex);
+    v = v + 1usize;
+  }
+  mut loopHs = List[u32].empty();
+  r = 0usize;
+  while r < nr {
+    imm s0 = usize.from(*start[r]);
+    imm s1 = usize.from(*start[r + 1usize]);
+    mut merged = false;
+    if s1 - s0 > 1usize {
+      // The outline: the region's half-edges whose twin is not in it
+      mut first = NoIndex;
+      mut outline = 0usize;
+      mut i = s0;
+      while i < s1 {
+        imm hs = m.faceHalfedges(*members[i]);
+        mut k = 0usize;
+        while k < hs.len() {
+          imm h = *hs[k];
+          imm o = m.face(m.twin(h));
+          if o == NoIndex or usize.from(*region[usize.from(o)]) != r {
+            outline = outline + 1usize;
+            if h < first { first = h; }
+          }
+          k = k + 1usize;
+        }
+        i = i + 1usize;
+      }
+      // Walk it from 'first': one loop through every outline half-edge, no
+      // vertex twice
+      loopHs.clear();
+      mut ok = true;
+      mut h = first;
+      mut going = true;
+      while going and ok {
+        loopHs.push(h);
+        imm vx = m.toVertex(h);
+        if *onLoop[usize.from(vx)] == u32.from(r) { ok = false; }
+        onLoop.set(usize.from(vx), u32.from(r));
+        // The next outline half-edge leaving vx, turning through the region
+        mut g = m.next(h);
+        mut steps = 0usize;
+        while ok and !isOutline(m, g, &region, r) {
+          g = m.next(m.twin(g));
+          steps = steps + 1usize;
+          if steps > m.hVertex.len() { ok = false; }
+        }
+        h = g;
+        going = h != first;
+        if loopHs.len() > outline { ok = false; }
+      }
+      if ok and loopHs.len() == outline and loopHs.len() >= 3usize {
+        fCount.push(u32.from(loopHs.len()));
+        mut k = 0usize;
+        while k < loopHs.len() {
+          fCorners.push(*loopHs[k]);
+          k = k + 1usize;
+        }
+        fSeed.push(*seeds[r]);
+        merged = true;
+      }
+    }
+    if !merged {
+      mut i = s0;
+      while i < s1 {
+        imm hs = m.faceHalfedges(*members[i]);
+        fCount.push(u32.from(hs.len()));
+        mut k = 0usize;
+        while k < hs.len() {
+          fCorners.push(*hs[k]);
+          k = k + 1usize;
+        }
+        fSeed.push(*members[i]);
+        i = i + 1usize;
+      }
+    }
+    r = r + 1usize;
+  }
+  // Faces in the order of their seeds (the region's faces in face order)
+  imm nOut = fCount.len();
+  mut fStart = List[u32].withCapacity(nOut);
+  acc = 0u32;
+  mut o = 0usize;
+  while o < nOut {
+    fStart.push(acc);
+    acc = acc + *fCount[o];
+    o = o + 1usize;
+  }
+  imm order = orderBySeed(&fSeed);
+
+  // Straight runs: each vertex's two neighbours, when it has exactly two,
+  // and how many output faces hold it
+  mut nbA = List[u32].withCapacity(nv);
+  mut nbB = List[u32].withCapacity(nv);
+  mut many = List[Bool].withCapacity(nv);
+  v = 0usize;
+  while v < nv {
+    nbA.push(NoIndex);
+    nbB.push(NoIndex);
+    many.push(false);
+    v = v + 1usize;
+  }
+  o = 0usize;
+  while o < nOut {
+    imm s = usize.from(*fStart[o]);
+    imm n = usize.from(*fCount[o]);
+    mut k = 0usize;
+    while k < n {
+      imm vx = usize.from(m.toVertex(*fCorners[s + k]));
+      imm before = m.toVertex(*fCorners[s + (k + n - 1usize) % n]);
+      imm after = m.toVertex(*fCorners[s + (k + 1usize) % n]);
+      noteNeighbour(&mut nbA, &mut nbB, &mut many, vx, before);
+      noteNeighbour(&mut nbA, &mut nbB, &mut many, vx, after);
+      k = k + 1usize;
+    }
+    o = o + 1usize;
+  }
+  // Corners left per output face, and each vertex's output faces, flat
+  // (vfList[vfStart[v]] up to vfList[vfStart[v + 1]]), for the
+  // three-corner rule
+  mut left = copyList[u32](&fCount);
+  mut vfStart = List[u32].withCapacity(nv + 1usize);
+  mut per = List[u32].withCapacity(nv);
+  mut dropped = List[Bool].withCapacity(nv);
+  v = 0usize;
+  while v < nv {
+    per.push(0u32);
+    dropped.push(false);
+    v = v + 1usize;
+  }
+  mut c0 = 0usize;
+  while c0 < fCorners.len() {
+    imm vx = usize.from(m.toVertex(*fCorners[c0]));
+    per.set(vx, *per[vx] + 1u32);
+    c0 = c0 + 1usize;
+  }
+  acc = 0u32;
+  v = 0usize;
+  while v < nv {
+    vfStart.push(acc);
+    acc = acc + *per[v];
+    v = v + 1usize;
+  }
+  vfStart.push(acc);
+  mut vfFill = copyList[u32](&vfStart);
+  mut vfList = List[u32].withCapacity(fCorners.len());
+  c0 = 0usize;
+  while c0 < fCorners.len() {
+    vfList.push(0u32);
+    c0 = c0 + 1usize;
+  }
+  o = 0usize;
+  while o < nOut {
+    imm s = usize.from(*fStart[o]);
+    imm n = usize.from(*fCount[o]);
+    mut k = 0usize;
+    while k < n {
+      imm vx = usize.from(m.toVertex(*fCorners[s + k]));
+      vfList.set(usize.from(*vfFill[vx]), u32.from(o));
+      vfFill.set(vx, *vfFill[vx] + 1u32);
+      k = k + 1usize;
+    }
+    o = o + 1usize;
+  }
+  // The crease rule compares each vertex's own two edges (to its first
+  // neighbours), so a run's edges are alike all along it
+  imm origA = copyList[u32](&nbA);
+  imm origB = copyList[u32](&nbB);
+  v = 0usize;
+  while v < nv {
+    imm a = *nbA[v];
+    imm b = *nbB[v];
+    if !*many[v] and a != NoIndex and b != NoIndex {
+      imm p = *m.positions[v];
+      imm da = unit(p - *m.positions[usize.from(a)]);
+      imm db = unit(*m.positions[usize.from(b)] - p);
+      mut fits = da.dot(db) >= cosLimit and sameCrease(m, ecrease, u32.from(v), *origA[v], *origB[v]);
+      imm f0 = usize.from(*vfStart[v]);
+      imm f1 = usize.from(*vfStart[v + 1usize]);
+      mut k = f0;
+      while fits and k < f1 {
+        if *left[usize.from(*vfList[k])] <= 3u32 { fits = false; }
+        k = k + 1usize;
+      }
+      if fits {
+        dropped.set(v, true);
+        k = f0;
+        while k < f1 {
+          imm fo = usize.from(*vfList[k]);
+          left.set(fo, *left[fo] - 1u32);
+          k = k + 1usize;
+        }
+        // The neighbours now see each other
+        replaceNeighbour(&mut nbA, &mut nbB, a, u32.from(v), b);
+        replaceNeighbour(&mut nbA, &mut nbB, b, u32.from(v), a);
+      }
+    }
+    v = v + 1usize;
+  }
+
+  // Vertices kept: those on an output face and not dropped, and those on
+  // no face to begin with
+  mut used = List[Bool].withCapacity(nv);
+  v = 0usize;
+  while v < nv {
+    used.push(m.isIsolated(u32.from(v)));
+    v = v + 1usize;
+  }
+  mut c = 0usize;
+  while c < fCorners.len() {
+    imm vx = usize.from(m.toVertex(*fCorners[c]));
+    if !*dropped[vx] { used.set(vx, true); }
+    c = c + 1usize;
+  }
+  mut newIdx = List[u32].withCapacity(nv);
+  mut pos = List[Vec3].empty();
+  mut vSrc = List[u32].empty();
+  v = 0usize;
+  while v < nv {
+    if *used[v] {
+      newIdx.push(u32.from(pos.len()));
+      pos.push(*m.positions[v]);
+      vSrc.push(u32.from(v));
+    } else {
+      newIdx.push(NoIndex);
+    }
+    v = v + 1usize;
+  }
+
+  mut counts = List[u32].empty();
+  mut idx = List[u32].empty();
+  mut cSrc = List[u32].empty();
+  mut eSrc = List[u32].empty();
+  mut fSrc = List[u32].empty();
+  mut i = 0usize;
+  while i < order.len() {
+    imm ou = usize.from(*order[i]);
+    imm s = usize.from(*fStart[ou]);
+    imm n = usize.from(*fCount[ou]);
+    mut kept = 0u32;
+    mut k = 0usize;
+    while k < n {
+      imm h = *fCorners[s + k];
+      imm vx = usize.from(m.toVertex(h));
+      if !*dropped[vx] {
+        idx.push(*newIdx[vx]);
+        cSrc.push(h);
+        eSrc.push(h / 2u32);
+        kept = kept + 1u32;
+      }
+      k = k + 1usize;
+    }
+    counts.push(kept);
+    fSrc.push(*fSeed[ou]);
+    i = i + 1usize;
+  }
+  assemble(m, &pos, &vSrc, &counts, &idx, &cSrc, &eSrc, &fSrc);
+}
+
+// Whether half-edge g is on region r's outline: its face in r, its twin's not
+fn isOutline(m &PolyMesh, g u32, region &List[u32], r usize) Bool {
+  imm fg = m.face(g);
+  if fg == NoIndex or usize.from(*region[usize.from(fg)]) != r { return false; }
+  imm o = m.face(m.twin(g));
+  o == NoIndex or usize.from(*region[usize.from(o)]) != r;
+}
+
+// Output faces' numbers ordered by their seeds (a seed is a face number, each
+// used once)
+fn orderBySeed(seed &List[u32]) List[u32] {
+  mut maxSeed = 0usize;
+  mut i = 0usize;
+  while i < seed.len() {
+    if usize.from(*seed[i]) + 1usize > maxSeed { maxSeed = usize.from(*seed[i]) + 1usize; }
+    i = i + 1usize;
+  }
+  mut at = List[u32].withCapacity(maxSeed);
+  i = 0usize;
+  while i < maxSeed {
+    at.push(NoIndex);
+    i = i + 1usize;
+  }
+  i = 0usize;
+  while i < seed.len() {
+    at.set(usize.from(*seed[i]), u32.from(i));
+    i = i + 1usize;
+  }
+  mut out = List[u32].withCapacity(seed.len());
+  i = 0usize;
+  while i < maxSeed {
+    if *at[i] != NoIndex { out.push(*at[i]); }
+    i = i + 1usize;
+  }
+  out;
+}
+
+// Note w as a neighbour of v: the first two kept, a third marks v as on
+// more than two edges
+fn noteNeighbour(nbA &mut List[u32], nbB &mut List[u32], many &mut List[Bool], v usize, w u32) {
+  if *nbA[v] == w or *nbB[v] == w { return; }
+  if *nbA[v] == NoIndex { nbA.set(v, w); }
+  elif *nbB[v] == NoIndex { nbB.set(v, w); }
+  else { many.set(v, true); }
+}
+
+// v's neighbour 'was' is now 'now'
+fn replaceNeighbour(nbA &mut List[u32], nbB &mut List[u32], v u32, was u32, now u32) {
+  imm vu = usize.from(v);
+  if *nbA[vu] == was { nbA.set(vu, now); }
+  elif *nbB[vu] == was { nbB.set(vu, now); }
+}
+
+// Whether the edges v-a and v-b have the same "crease" (true without one)
+fn sameCrease(m &PolyMesh, ch u32, v u32, a u32, b u32) Bool {
+  if ch == NoIndex { return true; }
+  imm ea = edgeBetween(m, v, a);
+  imm eb = edgeBetween(m, v, b);
+  if ea == NoIndex or eb == NoIndex { return true; }
+  m.float(ch, ea) == m.float(ch, eb);
+}
+
+// The edge from v to w, or NoIndex
+fn edgeBetween(m &PolyMesh, v u32, w u32) u32 {
+  imm hs = m.vertexOutgoing(v);
+  mut k = 0usize;
+  while k < hs.len() {
+    if m.toVertex(*hs[k]) == w { return *hs[k] / 2u32; }
+    k = k + 1usize;
+  }
+  NoIndex;
+}
