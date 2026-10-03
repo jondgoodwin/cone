@@ -1,0 +1,483 @@
+// The iocore package: the completion loop of the async I/O runtime. A
+// program hands a Loop a job -- receive into this buffer, send these bytes,
+// accept a connection, read a file at this offset, wake me at this time --
+// and later gets exactly one answer for it, carrying the buffer back. The
+// one place anything waits is 'poll', which waits in the kernel until an
+// answer arrives, a timer is due, another thread wakes it, or the time it
+// was given comes. Windows only for now: the loop is an I/O completion port.
+//
+//   mod echo;
+//   import collections use List;
+//   import time use Instant, Duration;
+//   import iobuf use *;
+//   import iocore use *;
+//
+//   fn main() {
+//     mut lp = Loop.mustMake();
+//     imm pool = Pool.make();
+//     imm listener = lp.mustListen(SocketAddr.localhost(0u16));
+//     lp.submit(Op.Accept[listener], Target.Here[1u64]);
+//     mut out = List[Completion].empty();
+//     while true {
+//       lp.poll(forever(), &mut out);             // waits here, and only here
+//       mut k = 0usize;
+//       while k < out.len() {
+//         imm c = &mut out[k];
+//         if c.token == 1u64 and c.isDone() {     // a connection: read from it
+//           lp.submit(Op.Recv[c.handle, pool.mustTake(4096usize)], Target.Here[2u64]);
+//         }
+//         elif c.token == 2u64 and c.count() > 0usize {
+//           mut b = IoBuf.empty();
+//           b <=> c.buf;                          // the buffer, back from the kernel
+//           lp.submit(Op.Send[c.handle, b], Target.Here[3u64]);   // echo it
+//         }
+//         k = k + 1usize;
+//       }
+//       out.clear();                              // what is left dies: buffers go home
+//     }
+//   }
+//
+//   Loop.make()  Loop.mustMake()        a loop, for the thread that drives it  (THE LOOP)
+//   lp.submit(op, to)                   start an operation: its OpId
+//   lp.submitBy(op, to, deadline)       ...that answers TimedOut at deadline
+//   lp.after(at, to)                    a timer: answers Done at 'at'
+//   lp.cancel(id)                       ask an operation to end           (CANCEL)
+//   lp.poll(until, out)                 wait for answers, append them to out (POLL)
+//   lp.waker()                          a Waker another thread wakes poll with
+//   lp.listen(addr) lp.mustListen(addr) a listening TCP socket     (HANDLES)
+//   lp.openFile(path, access)           a file for ReadAt and WriteAt
+//   lp.close(h)  lp.localAddr(h)  lp.isOpen(h)
+//   lp.counters()  lp.subscribe(s)  lp.id()  lp.inFlight()      (DIAGNOSTICS)
+//   forever()                           an 'until' that never comes
+//
+//   Op.Connect[addr]  Op.Accept[listener]                   (OPERATIONS)
+//   Op.Recv[sock, buf]  Op.RecvReady[sock]  Op.Send[sock, buf]  Op.SendBytes[sock, bytes]
+//   Op.ReadAt[file, at, buf]  Op.WriteAt[file, at, buf]
+//   Target.Here[token]  Target.Post[token, waker]           (TARGETS)
+//   Completion: c.id c.token c.kind c.status c.n c.code c.buf c.handle, the stamps,
+//     c.outcome() c.isDone() c.count() c.record()            (ANSWERS)
+//   Outcome.Done[n]  Outcome.Failed[code]  Outcome.Cancelled[]  Outcome.TimedOut[]
+//   SocketAddr.v4(a, b, c, d, port)  .localhost(port)  .v6(bytes, port)  .v6Localhost(port)
+//   IoError: e.code, e.message()
+//
+// THE LOOP. A Loop is driven by one thread: that thread submits to it and
+// polls it. It is a resource: when it dies it cancels every operation still
+// in flight, closes every handle it holds, and waits for the kernel to give
+// each buffer back before it frees anything (I18). Answers it owed to its own
+// thread are dropped then, their buffers going home to their pools; answers
+// owed to another loop are still posted there. Loops on other threads are
+// other Loops: one per driving thread.
+//
+// OPERATIONS. Each data-carrying operation takes an OWNER of its bytes, never
+// a borrow: an IoBuf moved in, which the kernel writes into (Recv, ReadAt, at
+// the end of what it holds, into its room) or reads from (Send, WriteAt, all
+// it holds), and which the answer hands back; or Bytes, shared and read-only,
+// for a send fanned out to many sockets. The caller no longer holds the
+// buffer while the kernel does, so nothing can touch it, and a borrowed
+// slice cannot be submitted at all: an Op's fields are IoBuf and Bytes, and a
+// '&[]u8' or '&mut IoBuf' is neither (test/cases/concurrency/
+// concurrency_iocore_submit.cone pins the refusals).
+//
+// - Connect[addr]: a new TCP socket connected to addr; its Handle comes back
+//   in the answer ('c.handle'). Accept[listener]: the next connection on a
+//   listening socket, likewise. Every socket iocore makes has Nagle's
+//   algorithm off (TCP_NODELAY), as Go's do: a small send goes at once.
+// - Recv[sock, buf]: up to buf's room; Done(n), the n bytes added to its
+//   length; Done(0) is the end of the stream. A buffer with no room is
+//   refused (Failed, ERROR_INSUFFICIENT_BUFFER), since a zero-byte receive
+//   means something else:
+// - RecvReady[sock]: a zero-byte receive, holding no buffer at all: Done(0)
+//   once data has arrived (or the stream has ended), for an idle connection,
+//   so that thousands of them pin no memory. Then a Recv takes what came.
+// - Send[sock, buf], SendBytes[sock, bytes]: all of it; Done(n), n the bytes
+//   sent.
+// - ReadAt[file, at, buf], WriteAt[file, at, buf]: at the byte offset 'at',
+//   with no cursor shared between operations; reading past the end is
+//   Done(0).
+//
+// TARGETS. Where an operation's one answer goes. Target.Here[token]: to this
+// loop's own 'poll'. Target.Post[token, waker]: to ANOTHER loop, the one the
+// waker wakes, posted into its port, so that a thread idle in its own poll
+// wakes the instant the answer exists -- how a frame loop learns of a read a
+// service thread finished. The token is plain data the loop hands back and
+// never reads (I11): the driver decides what it means. More targets (a
+// channel, a one-shot, a status slot) are the next increment's.
+//
+// ANSWERS. Every operation gets exactly one terminal answer, a Completion
+// (I1): its OpId, its token, its kind (diag's kind numbers), its outcome --
+// Done with a count, Failed with Windows' error number, Cancelled, or
+// TimedOut -- the buffer back ('c.buf', IoBuf.empty() when it had none), the
+// handle Connect or Accept made, and three instants: submitted, dequeued
+// (when the loop took it from the kernel's queue: IOCP does not say when the
+// kernel finished, so this is the earliest the loop can know) and delivered
+// (when poll handed it over, or the loop it was posted to took it). The
+// outcome is in plain fields ('c.status', a diag outcome number, 'c.n',
+// 'c.code'), and 'c.outcome()' gives it as the Outcome enum, to match on. A
+// buffer comes out of a Completion by a swap, 'b <=> c.buf', since Cone does
+// not yet move a value out of a field; one left in dies with it, home to its
+// pool. A Completion is Sendable: it may go to another thread.
+//
+// CANCEL. 'lp.cancel(id)' asks an operation to end. It is a request: the
+// operation still answers exactly once, and its answer says how it ended --
+// Cancelled if the cancel caught it, or Done (or Failed) if it had finished
+// first; the buffer comes back either way. It is idempotent: true while the
+// operation's answer is still to come (asking twice does nothing more), false
+// once its answer is decided or for an id that names nothing. A timer
+// cancelled answers Cancelled, decided there and then (so a second cancel
+// of it says false). Closing a handle cancels everything in flight
+// on it. 'submitBy' gives an operation a deadline: at it the loop asks the
+// cancel itself, and the answer is TimedOut, with the buffer (the kernel's
+// cancel is prompt for sockets and local files). Cancel groups, deadlines
+// inherited, and a prompt TimedOut that leaves a stuck buffer to the
+// in-flight table are the next increment's.
+//
+// POLL. 'lp.poll(until, out)' is the only place the loop waits. It appends
+// to out every answer ready for this loop, at most a batch of 128 completions
+// taken from the kernel per wait (a budget, I16), and returns how many it
+// appended. It waits in the kernel while nothing is ready, at most until
+// 'until', an Instant: 'poll(forever(), out)' waits as long as it takes,
+// 'poll(Instant.now(), out)' never waits (a frame's drain). It returns early,
+// with nothing, when a waker wakes it, or when it has posted answers to
+// another loop and appended none (so a service thread whose answers all go
+// elsewhere still sees its work being done). Timers and deadlines are a
+// timewheel.Wheel inside the loop (a millisecond wheel, and a precise set for
+// what must be on time); the loop's wait ends at the nearer of 'until' and
+// the wheel's next expiry. Windows' own wait is only as fine as its timer
+// tick, 15.6 ms by default, so the loop arms a high-resolution waitable timer
+// for that instant and has the kernel deliver its expiry to the port as a
+// completion (a wait completion packet, NtAssociateWaitCompletionPacket):
+// the wait ends on time without raising the whole system's timer resolution.
+//
+// WAKERS. 'lp.waker()' is a Waker: Sendable, copied to share, and 'wake()'
+// from any thread ends the loop's current or next poll. It is also how
+// Target.Post reaches its loop. A waker keeps its loop's port open (not the
+// loop): one woken or posted to after its loop has died says so (false), and
+// a posted answer's buffer goes home.
+//
+// HANDLES. A Handle names a socket or a file the loop holds: an entry of the
+// loop's handle table and the entry's generation, plain data, copied freely.
+// A handle closed (by 'close', or the loop's death) is never reached through
+// again: an operation submitted on it fails (Failed, ERROR_INVALID_HANDLE)
+// even when Windows has given its number to something new. The loop owns
+// what its handles name, and closes them all when it dies.
+//
+// DIAGNOSTICS. 'lp.counters()' copies the loop's counts out, a
+// diag.Counters; submitted = delivered + in flight at every moment. With
+// 'lp.subscribe(&diag.textSubscriber)' every answer delivered prints a line,
+// its kernel and delivery latencies among it; with none, nothing prints.
+//
+// MEASURED, release, an i7-13700HX on Windows 11 (examples/echo.cone and
+// examples/tick.cone; numbers vary run to run):
+//
+// - 100,000 echoes of 64 bytes between two threads' loops over 127.0.0.1,
+//   with a 64 MiB file read through the client's same poll: about 1.4 s, a
+//   round trip p50 15 us, p99 28 us. A receive's kernel latency (mostly the
+//   peer) p50 9 us; its delivery latency, the loop's own cost from taking
+//   the completion to handing it over, p50 0.1 us, p99 0.2 us.
+// - Receiving by RecvReady then Recv, as an idle connection would, costs
+//   about 4 us more a round trip (p50 19 us against 15 us).
+// - An answer posted to another loop idle in poll(forever()): the hop
+//   between threads p50 5 us, p99 45 us.
+// - A 1 ms tick through the loop: p50 0.33 to 0.36 ms late, p99 0.8 to
+//   1.0 ms, max usually 1.2 to 1.7 ms (one run in ten saw an outlier of up
+//   to 11 ms, with other work on the machine); a timeout through the wheel
+//   adds up to the wheel's own tick (p50 0.6 to 1.3 ms late); the port's own
+//   1 ms timeout, without the high-resolution timer, is 15 ms late at p50.
+//   The counter waitTimeouts says how often a wait ended on the port's
+//   coarse backstop rather than the timer's packet: 0 to 4 in 4,000. A poll
+//   with nothing ready costs about 0.3 us.
+//
+// Not here yet: the blocking pool and its lanes, cancel groups, inherited
+// deadlines and the prompt TimedOut, the Chan, Once and Status targets (all
+// the next increment); several receives outstanding per socket, UDP and its
+// batching, skipping the port on synchronous success, unbuffered file I/O,
+// IoRing and socket notifications (Windows 11 accelerators, detected at run
+// time behind this interface), and Linux and the browser.
+//
+// What is Windows-only: everything beneath the interface (windows.cone),
+// which is kernel32's completion port, overlapped files and waitable timer,
+// ntdll's wait completion packet, and Winsock, AcceptEx and ConnectEx reached
+// through WSAIoctl and called through function pointers, all from Cone with
+// no C between.
+
+mod iocore;
+
+import libc;
+import sync use Arc, Once;
+import collections use List, String;
+import time use Instant, Duration;
+import iobuf use IoBuf, Bytes;
+import timewheel use Wheel, TimerId, Expiry;
+import diag;
+
+fn @initpure init() {
+  startOnce = Once.make();
+}
+
+// An instant that never comes, for 'poll(forever(), out)'
+pub fn forever() Instant {Instant.fromNanos(0x7FFFFFFFFFFFFFFFi64);}
+
+// ---------------------------------------------------------------------------
+// Ids and handles
+// ---------------------------------------------------------------------------
+
+const noEntry = 4294967295u32;
+
+// An operation: an entry of its loop's in-flight table, and which of the
+// entry's occupants it was (a generation), so an id kept after its answer
+// names nothing
+pub struct OpId {
+  index u32;
+  gen u32;
+
+  pub fn none() OpId {new OpId(noEntry, 0u32);}
+  pub fn isNone(self) Bool {gen == 0u32;}
+  // As one number, for diagnostics: the generation above the entry
+  pub fn number(self) u64 {(u64.from(gen) << 32u64) | u64.from(index);}
+  pub fn `==`(self, o OpId) Bool {index == o.index and gen == o.gen;}
+  pub fn `!=`(self, o OpId) Bool {index != o.index or gen != o.gen;}
+}
+
+// A socket or a file a loop holds (see the package's header, HANDLES)
+pub struct Handle {
+  index u32;
+  gen u32;
+
+  pub fn none() Handle {new Handle(noEntry, 0u32);}
+  pub fn isNone(self) Bool {gen == 0u32;}
+  pub fn `==`(self, o Handle) Bool {index == o.index and gen == o.gen;}
+  pub fn `!=`(self, o Handle) Bool {index != o.index or gen != o.gen;}
+}
+
+// Why something could not be done: Windows' error number
+pub struct IoError {
+  pub code u32;
+
+  // Windows' text for it, in English where the system has it
+  pub fn message(self &) String {systemText(code);}
+}
+
+// How a file is opened
+pub enum Access {
+  Read,       // an existing file, to read
+  Create,     // a new file, or an existing one emptied, to read and write
+  Update;     // an existing file, or a new one, its bytes kept, to read and write
+}
+
+// ---------------------------------------------------------------------------
+// Addresses
+// ---------------------------------------------------------------------------
+
+// An IPv4 or IPv6 address and a port, as Winsock's sockaddr holds them
+pub struct SocketAddr {
+  raw Array[u8, 28];
+  size i32;
+
+  // a.b.c.d:port
+  pub fn v4(a u8, b u8, c u8, d u8, port u16) SocketAddr {
+    mut s = new SocketAddr(new Array[u8, 28] <- fill 0u8, 16i32);
+    s.raw[0usize] = 2u8;
+    s.setPort(port);
+    s.raw[4usize] = a;
+    s.raw[5usize] = b;
+    s.raw[6usize] = c;
+    s.raw[7usize] = d;
+    s;
+  }
+
+  // 127.0.0.1:port, this machine only: a server bound here takes no
+  // connection from outside it, and asks the firewall nothing
+  pub fn localhost(port u16) SocketAddr {SocketAddr.v4(127u8, 0u8, 0u8, 1u8, port);}
+
+  // [addr]:port, addr its 16 bytes
+  pub fn v6(addr &[]u8, port u16) SocketAddr {
+    mut s = new SocketAddr(new Array[u8, 28] <- fill 0u8, 28i32);
+    s.raw[0usize] = 23u8;
+    s.setPort(port);
+    mut i = 0usize;
+    while i < 16usize and i < addr.len {
+      s.raw[8usize + i] = addr[i];
+      i = i + 1usize;
+    }
+    s;
+  }
+
+  // [::1]:port
+  pub fn v6Localhost(port u16) SocketAddr {
+    mut s = new SocketAddr(new Array[u8, 28] <- fill 0u8, 28i32);
+    s.raw[0usize] = 23u8;
+    s.setPort(port);
+    s.raw[23usize] = 1u8;
+    s;
+  }
+
+  pub fn port(self &) u16 {(u16.from(raw[2usize]) << 8u16) | u16.from(raw[3usize]);}
+  pub fn isV6(self &) Bool {raw[0usize] == 23u8;}
+  pub fn family(self &) u16 {u16.from(raw[0usize]);}
+
+  fn setPort(self &mut, port u16) {
+    raw[2usize] = u8.from(port >> 8u16);
+    raw[3usize] = u8.from(port & 255u16);
+  }
+
+  // The same family's every address, port 0: what a connecting socket binds to
+  fn wildcard(self &) SocketAddr {
+    mut s = new SocketAddr(new Array[u8, 28] <- fill 0u8, size);
+    s.raw[0usize] = raw[0usize];
+    s;
+  }
+
+  // As text: '127.0.0.1:8080', '[0:0:0:0:0:0:0:1]:8080'
+  pub fn text(self &) String {
+    mut out = String.empty();
+    if self.isV6() {
+      out.append("[");
+      mut g = 0usize;
+      while g < 8usize {
+        if g > 0usize {out.append(":");}
+        imm v = (u64.from(raw[8usize + g * 2usize]) << 8u64) | u64.from(raw[9usize + g * 2usize]);
+        out.appendHex(v, 1usize);
+        g = g + 1usize;
+      }
+      out.append("]");
+    } else {
+      mut i = 4usize;
+      while i < 8usize {
+        if i > 4usize {out.append(".");}
+        out.appendUInt(u64.from(raw[i]));
+        i = i + 1usize;
+      }
+    }
+    out.append(":");
+    out.appendUInt(u64.from(self.port()));
+    out;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Operations, targets, answers
+// ---------------------------------------------------------------------------
+
+// A job for the kernel (see the package's header, OPERATIONS). Every variant
+// that carries bytes takes an owner of them, never a borrow (I2, I3)
+pub enum Op {
+  pub struct Connect {pub addr SocketAddr;}
+  pub struct Accept {pub listener Handle;}
+  pub struct Recv {pub sock Handle; pub buf IoBuf;}
+  pub struct RecvReady {pub sock Handle;}
+  pub struct Send {pub sock Handle; pub buf IoBuf;}
+  pub struct SendBytes {pub sock Handle; pub bytes Bytes;}
+  pub struct ReadAt {pub file Handle; pub at u64; pub buf IoBuf;}
+  pub struct WriteAt {pub file Handle; pub at u64; pub buf IoBuf;}
+}
+
+// Where an operation's answer goes, and the token it carries back (see the
+// package's header, TARGETS)
+pub enum Target {
+  pub token u64;
+  pub struct Here {}
+  pub struct Post {pub waker Waker;}
+}
+
+// How an operation ended: its one terminal reply (I1)
+pub enum Outcome {
+  pub struct Done {pub n usize;}
+  pub struct Failed {pub code u32;}
+  pub struct Cancelled {}
+  pub struct TimedOut {}
+}
+
+// An operation's one answer (see the package's header, ANSWERS)
+pub struct Completion {
+  pub loop u64;           // the id of the loop it was submitted to
+  pub id OpId;
+  pub token u64;
+  pub kind u32;           // diag.kindRecv, ...
+  pub status u32;         // diag.outcomeDone, ...
+  pub n usize;            // Done's count of bytes
+  pub code u32;           // Failed's error number
+  pub buf IoBuf;          // the loan back, or IoBuf.empty()
+  pub handle Handle;      // the socket Connect or Accept made, or Handle.none()
+  pub submitted Instant;
+  pub dequeued Instant;
+  pub delivered Instant;
+
+  pub fn isDone(self &) Bool {status == diag.outcomeDone;}
+  // Done's count, or 0
+  pub fn count(self &) usize {if status == diag.outcomeDone {n;} else {0usize;};}
+
+  pub fn outcome(self &) Outcome {
+    if status == diag.outcomeDone {Outcome.Done[n];}
+    elif status == diag.outcomeFailed {Outcome.Failed[code];}
+    elif status == diag.outcomeCancelled {Outcome.Cancelled[];}
+    else {Outcome.TimedOut[];}
+  }
+
+  // Its diagnostics record
+  pub fn record(self &) diag.OpRecord {
+    new diag.OpRecord(loop, id.number(), kind, status, code, u64.from(n), token,
+      submitted, dequeued, delivered);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The port, shared by a loop and its wakers
+// ---------------------------------------------------------------------------
+
+// The completion port, shared through an Arc by its loop and every waker of
+// it, so a waker never posts to a closed handle's number. It declares
+// Sendable, a promise taken on trust: the port's handle is safe to use from
+// any thread, which is what a port is for
+struct Port is Sendable {
+  handle usize;
+  closed Atomic[Bool];    // its loop has gone: nobody will take what is posted
+
+  // The last owner has gone: answers posted since the loop died are
+  // dropped (their buffers go home), and the port closed
+  fn final(self &uni) {
+    imm entries = libc.malloc(64usize * mem.sizeof[OverlappedEntry]()) as *OverlappedEntry;
+    while true {
+      mut got = 0u32;
+      if GetQueuedCompletionStatusEx(handle, entries, 64u32, &mut got, 0u32, 0i32) == 0i32 or got == 0u32 {
+        break;
+      }
+      mut k = 0usize;
+      while k < usize.from(got) {
+        imm e = entries + k;
+        if (*e).key == keyPost {
+          mem.finalize[Completion]((*e).ov as *Completion);
+          libc.free((*e).ov);
+        }
+        k = k + 1usize;
+      }
+    }
+    libc.free(entries as *u8);
+    CloseHandle(handle);
+  }
+}
+
+// What wakes a loop's poll from any thread, and what Target.Post delivers
+// through (see the package's header, WAKERS). Copying it makes another
+pub struct Waker {
+  port Arc[imm, Port];
+
+  // End the loop's current or next poll: false if the loop has gone
+  pub fn wake(self &) Bool {
+    if port.closed.load() {return false;}
+    PostQueuedCompletionStatus(port.handle, 0u32, keyWake, null) != 0i32;
+  }
+
+  // Post an answer to the loop: false, and the answer dropped (its buffer
+  // home), if the loop has gone
+  fn post(self &, c Completion) Bool {
+    if port.closed.load() {return false;}
+    imm block = libc.malloc(mem.sizeof[Completion]()) as *Completion;
+    mem.writeRaw[Completion](block, c);
+    if PostQueuedCompletionStatus(port.handle, 0u32, keyPost, block as *u8) == 0i32 {
+      mem.finalize[Completion](block);
+      libc.free(block as *u8);
+      return false;
+    }
+    true;
+  }
+}

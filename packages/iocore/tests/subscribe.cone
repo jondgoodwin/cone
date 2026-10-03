@@ -1,0 +1,75 @@
+// Diagnostics records: a loop with no subscriber prints nothing (this
+// test's output is its checks' summary alone); one with a subscriber hands
+// it a record for every answer it delivers, carrying the loop's id, the
+// operation's id, kind, outcome, bytes and token, and three instants in
+// order. A subscriber keeps what it wants in a global of its own module,
+// since a closure cannot capture yet.
+
+mod subscribe;
+
+import testing use *;
+import collections use List;
+import time use Instant, Duration;
+import iobuf use *;
+import iocore use *;
+import diag;
+
+mut records = 0u64;
+mut timers = 0u64;
+mut cancelled = 0u64;
+mut bytes = 0u64;
+mut ordered = true;
+mut lastLoop = 0u64;
+
+fn keep(r &diag.OpRecord) {
+  records = records + 1u64;
+  if r.kind == diag.kindTimer {timers = timers + 1u64;}
+  if r.outcome == diag.outcomeCancelled {cancelled = cancelled + 1u64;}
+  bytes = bytes + r.bytes;
+  if r.submitted > r.dequeued or r.dequeued > r.delivered {ordered = false;}
+  lastLoop = r.loop;
+}
+
+fn waitFor(lp &mut Loop, out &mut List[Completion], n usize) {
+  imm limit = Instant.now() + Duration.fromSeconds(5i64);
+  while out.len() < n and Instant.now() < limit {
+    lp.poll(limit, out);
+  }
+}
+
+fn main() i32 {
+  {
+    imm pool = Pool.make();
+    mut lp = Loop.mustMake();
+    mut out = List[Completion].empty();
+
+    // No subscriber: nothing printed, nothing kept
+    lp.after(Instant.now(), Target.Here[1u64]);
+    waitFor(&mut lp, &mut out, 1usize);
+    out.clear();
+    expectUInt(records, 0u64, "no subscriber, no records");
+
+    lp.subscribe(&keep);
+    lp.after(Instant.now() + Duration.fromMillis(1i64), Target.Here[2u64]);
+    imm doomed = lp.after(Instant.now() + Duration.fromSeconds(5i64), Target.Here[3u64]);
+    lp.cancel(doomed);
+    mut fh = Handle.none();
+    match lp.openFile("subscribe.tmp", Access.Create[]) {
+      case imm r Ok {fh = r.value;}
+      case imm e Error {}
+    }
+    mut b = pool.mustTake(100usize);
+    b.append("twelve bytes");
+    lp.submit(Op.WriteAt[fh, 0u64, b], Target.Here[4u64]);
+    waitFor(&mut lp, &mut out, 3usize);
+    out.clear();
+    expectUInt(records, 3u64, "a record for each answer");
+    expectUInt(timers, 2u64, "two of them timers");
+    expectUInt(cancelled, 1u64, "one cancelled");
+    expectUInt(bytes, 12u64, "the write's twelve bytes");
+    expect(ordered, "submitted <= dequeued <= delivered");
+    expectUInt(lastLoop, lp.id(), "each names its loop");
+    expectUInt(lp.counters().delivered, 4u64, "four delivered in all, the first unrecorded");
+  }
+  done();
+}
