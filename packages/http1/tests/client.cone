@@ -1,0 +1,262 @@
+// The client's side, sans-IO: the exact bytes of requests (a GET, a sized
+// POST, a chunked one with trailers, the Content-Length an empty POST
+// gets), and responses read in every framing: Content-Length, chunked with
+// extensions and trailers, until the close, and the bodiless ones (to HEAD,
+// 204, 304), with interim 1xx responses before a final one. Each response is
+// written out as the events it gave, a line each, its body's bytes joined.
+
+mod client;
+
+import testing use *;
+import collections use String;
+import time use Instant, Duration;
+import iobuf use *;
+import http use *;
+import http1 use *;
+
+// ---- the harness: feed bytes in, take bytes out, write events down ----
+
+fn feed(c &mut Connection, pool &Pool, text &[]u8, at Instant) {
+  mut i = 0usize;
+  while i < text.len {
+    mut b = pool.mustTake(4096usize);
+    imm n = b.append(&text[i .. text.len]);
+    c.handleInput(b, at);
+    i = i + n;
+  }
+}
+
+fn drain(c &mut Connection, at Instant) String {
+  mut s = String.empty();
+  while true {
+    imm b = c.pollTransmit(at);
+    if b.len() == 0usize {break;}
+    s.append(b.view());
+  }
+  s;
+}
+
+fn putFields(out &mut String, h &Headers) {
+  mut i = 0usize;
+  while i < h.len() {
+    out.append(" [");
+    out.append(h.nameAt(i));
+    out.append(": ");
+    out.append(h.valueAt(i));
+    out.append("]");
+    i = i + 1usize;
+  }
+}
+
+fn putBody(out &mut String, b &BodyLength) {
+  if b.isEmpty() {out.append(" empty");}
+  elif b.isSized() {
+    out.append(" sized ");
+    out.appendUInt(b.length);
+  } else {out.append(" unsized");}
+}
+
+// The events so far, as text, and the body's bytes since the last End
+struct Rec {
+  pub log String;
+  pub body String;
+}
+
+fn rec() Rec {new Rec(String.empty(), String.empty());}
+
+// Take events until the connection stops for input, the program, or good
+fn drive(c &mut Connection, r &mut Rec) {
+  while true {
+    match c.pollEvent() {
+      case mut e Request {
+        r.log.append("request ");
+        r.log.append(e.head.methodName());
+        r.log.append(" ");
+        r.log.append(e.head.target.view());
+        r.log.append(" host=");
+        r.log.append(e.head.authority.view());
+        putBody(&mut r.log, &e.body);
+        putFields(&mut r.log, &e.head.headers);
+        r.log.append("\n");
+      }
+      case mut e Response {
+        r.log.append("response ");
+        r.log.appendUInt(u64.from(e.head.status));
+        if e.head.version == Version.Http10[] {r.log.append(" 1.0");}
+        putBody(&mut r.log, &e.body);
+        putFields(&mut r.log, &e.head.headers);
+        r.log.append("\n");
+      }
+      case mut e Interim {
+        r.log.append("interim ");
+        r.log.appendUInt(u64.from(e.head.status));
+        putFields(&mut r.log, &e.head.headers);
+        r.log.append("\n");
+      }
+      case mut d Data {
+        r.body.append(d.buf.view());
+        c.release(d.buf.len());
+      }
+      case mut e End {
+        if r.body.len() > 0usize {
+          r.log.append("body ");
+          r.log.append(r.body.view());
+          r.log.append("\n");
+          r.body.clear();
+        }
+        r.log.append("end");
+        putFields(&mut r.log, &e.trailers);
+        r.log.append("\n");
+      }
+      case mut f Failed {
+        r.log.append("failed ");
+        r.log.append(f.error.message().view());
+        r.log.append("\n");
+      }
+      case is Closed {
+        r.log.append("closed\n");
+        return;
+      }
+      case is NeedData {return;}
+      case is Paused {return;}
+    }
+  }
+}
+
+// The events of a client that sent a request with this method and read
+// this response, then the end of the stream when close is set
+fn reads(pool &Pool, method &[]u8, response &[]u8, close Bool) String {
+  imm t = Instant.fromNanos(1000000000i64);
+  mut c = Connection.client(Config.make(), *pool, t);
+  c.sendRequest(RequestHead.make(method, "/x", "h"), BodyLength.empty());
+  drain(&mut c, t);
+  feed(&mut c, pool, response, t);
+  if close {c.handleInput(IoBuf.empty(), t);}
+  mut r = rec();
+  drive(&mut c, &mut r);
+  if c.canSendRequest() {r.log.append("reusable\n");}
+  mut out = String.empty();
+  out <=> r.log;
+  out;
+}
+
+fn check(pool &Pool, method &[]u8, response &[]u8, close Bool, want &[]u8, label &[]u8) {
+  imm got = reads(pool, method, response, close);
+  expectStr(got.view(), want, label);
+}
+
+// ---- requests written ----
+
+fn requests(pool &Pool) {
+  imm t = Instant.fromNanos(1000000000i64);
+  {
+    mut c = Connection.client(Config.make(), *pool, t);
+    mut h = RequestHead.get("/tiles/7/12.bin?v=2", "example.com:8080");
+    h.headers.add("Accept", "*/*");
+    h.headers.add("X-Two", "a");
+    h.headers.add("x-two", "b");
+    c.sendRequest(h, BodyLength.empty());
+    expectStr(drain(&mut c, t).view(),
+      "GET /tiles/7/12.bin?v=2 HTTP/1.1\r\nHost: example.com:8080\r\nAccept: */*\r\nX-Two: a\r\nx-two: b\r\n\r\n",
+      "a GET: Host from the authority, fields in order, repeats kept");
+    expect(not c.canSendRequest(), "one request at a time");
+  }
+  {
+    mut c = Connection.client(Config.make(), *pool, t);
+    c.sendRequest(RequestHead.make("POST", "/p", "h"), BodyLength.sized(11u64));
+    mut b = pool.mustTake(64usize);
+    b.append("hello world");
+    c.sendData(b);
+    c.finish();
+    expectStr(drain(&mut c, t).view(), "POST /p HTTP/1.1\r\nHost: h\r\nContent-Length: 11\r\n\r\nhello world",
+      "a sized POST: Content-Length, the body beside the head");
+  }
+  {
+    mut c = Connection.client(Config.make(), *pool, t);
+    c.sendRequest(RequestHead.make("POST", "/p", "h"), BodyLength.empty());
+    expectStr(drain(&mut c, t).view(), "POST /p HTTP/1.1\r\nHost: h\r\nContent-Length: 0\r\n\r\n",
+      "an empty POST says Content-Length: 0");
+  }
+  {
+    mut c = Connection.client(Config.make(), *pool, t);
+    c.sendRequest(RequestHead.make("PUT", "/p", "h"), BodyLength.unsized());
+    mut b = pool.mustTake(64usize);
+    b.append("hello");
+    c.sendData(b);
+    mut b2 = pool.mustTake(5000usize);
+    imm room = b2.whole();
+    mut i = 0usize;
+    while i < 3000usize {
+      room[i] = 'z';
+      i = i + 1usize;
+    }
+    b2.setLen(3000usize);
+    c.sendData(b2);
+    mut tr = Headers.empty();
+    tr.add("X-Sum", "3005");
+    c.finishWith(tr);
+    imm s = drain(&mut c, t);
+    expect(s.startsWith("PUT /p HTTP/1.1\r\nHost: h\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\nbb8\r\nzzz"),
+      "a chunked PUT: each buffer a chunk, its size in hex");
+    expect(s.endsWith("zzz\r\n0\r\nX-Sum: 3005\r\n\r\n"), "the last chunk, the trailer, the blank line");
+    expectUInt(u64.from(s.len()), 3091u64, "every byte");
+  }
+  {
+    mut c = Connection.client(Config.make(), *pool, t);
+    c.sendRequest(RequestHead.make("BREW", "/pot", "h"), BodyLength.empty());
+    expectStr(drain(&mut c, t).view(), "BREW /pot HTTP/1.1\r\nHost: h\r\n\r\n", "an extension method, as spelled");
+  }
+}
+
+// ---- responses read ----
+
+fn responses(pool &Pool) {
+  check(pool, "GET", "HTTP/1.1 200 OK\r\nContent-Length: 5\r\nContent-Type: text/plain\r\n\r\nhello", false,
+    "response 200 sized 5 [Content-Length: 5] [Content-Type: text/plain]\nbody hello\nend\nreusable\n",
+    "Content-Length");
+  check(pool, "GET", "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n6;name=val ; x\r\n world\r\n0\r\nX-Sum: 11\r\nX-More: y\r\n\r\n", false,
+    "response 200 unsized [Transfer-Encoding: chunked]\nbody hello world\nend [X-Sum: 11] [X-More: y]\nreusable\n",
+    "chunked, with extensions and trailers");
+  check(pool, "GET", "HTTP/1.1 200 OK\r\nTransfer-Encoding: Chunked\r\n\r\nA\r\n0123456789\r\n000\r\n\r\n", false,
+    "response 200 unsized [Transfer-Encoding: Chunked]\nbody 0123456789\nend\nreusable\n",
+    "chunked's name in any case; sizes in upper-case hex, with leading zeros");
+  check(pool, "GET", "HTTP/1.1 200 OK\r\nServer: s\r\n\r\nuntil the close", true,
+    "response 200 unsized [Server: s]\nbody until the close\nend\nclosed\n",
+    "neither: read until the connection closes, then closed");
+  check(pool, "HEAD", "HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n", false,
+    "response 200 empty [Content-Length: 100]\nend\nreusable\n",
+    "a response to HEAD has no body, whatever its length says");
+  check(pool, "GET", "HTTP/1.1 204 No Content\r\n\r\n", false,
+    "response 204 empty\nend\nreusable\n", "204 has no body");
+  check(pool, "GET", "HTTP/1.1 304 Not Modified\r\nContent-Length: 50\r\nETag: \"x\"\r\n\r\n", false,
+    "response 304 empty [Content-Length: 50] [ETag: \"x\"]\nend\nreusable\n", "304 has no body");
+  check(pool, "GET", "HTTP/1.1 103 Early Hints\r\nLink: </a.css>\r\n\r\nHTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok", false,
+    "interim 103 [Link: </a.css>]\ninterim 100\nresponse 200 sized 2 [Content-Length: 2]\nbody ok\nend\nreusable\n",
+    "interim responses before the final one");
+  check(pool, "GET", "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n", false,
+    "response 200 empty [Content-Length: 0]\nend\nreusable\n", "Content-Length: 0");
+  check(pool, "GET", "HTTP/1.1 200 OK\r\nContent-Length: 3, 3\r\nContent-Length: 3\r\n\r\nabc", false,
+    "response 200 sized 3 [Content-Length: 3, 3] [Content-Length: 3]\nbody abc\nend\nreusable\n",
+    "a Content-Length repeated, the same each time, is read");
+  check(pool, "GET", "HTTP/1.1 200\r\nContent-Length: 1\r\n\r\nx", false,
+    "response 200 sized 1 [Content-Length: 1]\nbody x\nend\nreusable\n", "no reason phrase, no space after the code");
+  check(pool, "GET", "HTTP/1.1 404 Not Found\r\nContent-Length: 1\r\nConnection: close\r\n\r\nx", false,
+    "response 404 sized 1 [Content-Length: 1] [Connection: close]\nbody x\nend\nclosed\n",
+    "Connection: close ends the connection after the response");
+  check(pool, "GET", "HTTP/1.0 200 OK\r\nContent-Length: 1\r\n\r\nx", false,
+    "response 200 1.0 sized 1 [Content-Length: 1]\nbody x\nend\nclosed\n",
+    "an HTTP/1.0 response is never kept alive");
+  check(pool, "GET", "HTTP/1.1 200 OK\r\nX-Sp:   a  b \t\r\nX-Empty:\r\n\r\n", true,
+    "response 200 unsized [X-Sp: a  b] [X-Empty: ]\nend\nclosed\n",
+    "a value's spaces at its ends are not part of it; an empty value is a value");
+}
+
+fn main() i32 {
+  {
+    imm pool = Pool.make();
+    requests(&pool);
+    responses(&pool);
+    expectUInt(pool.stats().lent, 0u64, "every buffer back in the pool");
+  }
+  done();
+}

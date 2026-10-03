@@ -1,0 +1,175 @@
+// Parsing across segment boundaries: each sample exchange is read whole,
+// then one byte at a time (a segment a byte, the input Chain at its most
+// fragmented), then cut in two at every byte boundary, and every way must
+// give the same events and the same body bytes. The samples: a response with
+// an interim 103 and a chunked body with extensions and a trailer; a sized
+// response whose body holds a blank line; a response read until the close;
+// a chunked request after an empty line; and a sized request.
+
+mod splits;
+
+import testing use *;
+import collections use String;
+import time use Instant, Duration;
+import iobuf use *;
+import http use *;
+import http1 use *;
+
+fn putFields(out &mut String, h &Headers) {
+  mut i = 0usize;
+  while i < h.len() {
+    out.append(" [");
+    out.append(h.nameAt(i));
+    out.append(": ");
+    out.append(h.valueAt(i));
+    out.append("]");
+    i = i + 1usize;
+  }
+}
+
+// The events, a line each; the body's bytes joined, since how they are cut
+// into Data events depends on how they arrived
+struct Rec {
+  pub log String;
+  pub body String;
+  pub datas u64;
+}
+
+fn drive(c &mut Connection, r &mut Rec) {
+  while true {
+    match c.pollEvent() {
+      case mut e Request {
+        r.log.append("request ");
+        r.log.append(e.head.methodName());
+        r.log.append(" ");
+        r.log.append(e.head.target.view());
+        putFields(&mut r.log, &e.head.headers);
+        r.log.append("\n");
+      }
+      case mut e Response {
+        r.log.append("response ");
+        r.log.appendUInt(u64.from(e.head.status));
+        putFields(&mut r.log, &e.head.headers);
+        r.log.append("\n");
+      }
+      case mut e Interim {
+        r.log.append("interim ");
+        r.log.appendUInt(u64.from(e.head.status));
+        putFields(&mut r.log, &e.head.headers);
+        r.log.append("\n");
+      }
+      case mut d Data {
+        r.body.append(d.buf.view());
+        r.datas = r.datas + 1u64;
+        c.release(d.buf.len());
+      }
+      case mut e End {
+        r.log.append("body ");
+        r.log.append(r.body.view());
+        r.log.append("\nend");
+        putFields(&mut r.log, &e.trailers);
+        r.log.append("\n");
+        r.body.clear();
+      }
+      case mut f Failed {
+        r.log.append("failed ");
+        r.log.append(f.error.message().view());
+        r.log.append("\n");
+      }
+      case is Closed {
+        r.log.append("closed\n");
+        return;
+      }
+      case is NeedData {return;}
+      case is Paused {return;}
+    }
+  }
+}
+
+// One piece of text fed in, then the events it gave
+fn piece(c &mut Connection, pool &Pool, text &[]u8, r &mut Rec, at Instant) {
+  if text.len == 0usize {return;}
+  mut b = pool.mustTake(text.len);
+  b.append(text);
+  c.handleInput(b, at);
+  drive(c, r);
+}
+
+// The events of a connection fed text: its first k bytes in pieces of
+// 'step', then the rest whole, then (when close) the end of the stream
+fn play(pool &Pool, client Bool, text &[]u8, k usize, step usize, close Bool, datas &mut u64) String {
+  imm t = Instant.fromNanos(1000000000i64);
+  mut c = if client {Connection.client(Config.make(), *pool, t);} else {Connection.server(Config.make(), *pool, t);};
+  if client {
+    c.sendRequest(RequestHead.get("/", "h"), BodyLength.empty());
+    imm sent = c.pollTransmit(t);
+  }
+  mut r = new Rec(String.empty(), String.empty(), 0u64);
+  mut i = 0usize;
+  while i < k {
+    imm e = if i + step < k {i + step;} else {k;};
+    piece(&mut c, pool, &text[i .. e], &mut r, t);
+    i = e;
+  }
+  piece(&mut c, pool, &text[k .. text.len], &mut r, t);
+  if close {
+    c.handleInput(IoBuf.empty(), t);
+    drive(&mut c, &mut r);
+  }
+  *datas = r.datas;
+  mut out = String.empty();
+  out <=> r.log;
+  out;
+}
+
+// Whole, a byte at a time, and cut at every boundary: the same events each
+// way, and as written
+fn sample(pool &Pool, client Bool, text &[]u8, close Bool, want &[]u8, label &[]u8) {
+  mut datas = 0u64;
+  imm whole = play(pool, client, text, 0usize, 1usize, close, &mut datas);
+  expectStr(whole.view(), want, label);
+  imm bytes = play(pool, client, text, text.len, 1usize, close, &mut datas);
+  expectStr(bytes.view(), want, "...fed a byte at a time");
+  expect(datas >= 2u64, "...its body in many Data events");
+  mut wrong = 0u64;
+  mut k = 1usize;
+  while k < text.len {
+    imm cut = play(pool, client, text, k, text.len, close, &mut datas);
+    if not cut.equals(want) {wrong = wrong + 1u64;}
+    k = k + 1usize;
+  }
+  expectUInt(wrong, 0u64, "...cut in two at every byte boundary");
+}
+
+fn main() i32 {
+  {
+    imm pool = Pool.make();
+    sample(&pool, true,
+      "HTTP/1.1 103 Early Hints\r\nLink: </s.css>\r\n\r\nHTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nX-A: 1\r\n\r\n4;a=b\r\nWiki\r\n5\r\npedia\r\nE\r\n in\r\n\r\nchunks.\r\n0\r\nX-Checksum: 99\r\n\r\n",
+      false,
+      "interim 103 [Link: </s.css>]\nresponse 200 [Transfer-Encoding: chunked] [X-A: 1]\nbody Wikipedia in\r\n\r\nchunks.\nend [X-Checksum: 99]\n",
+      "a chunked response after an interim one");
+    sample(&pool, true,
+      "HTTP/1.1 200 OK\r\nContent-Length: 20\r\n\r\nline\r\n\r\nHTTP/1.1 200",
+      false,
+      "response 200 [Content-Length: 20]\nbody line\r\n\r\nHTTP/1.1 200\nend\n",
+      "a sized body that looks like a head");
+    sample(&pool, true,
+      "HTTP/1.1 200 OK\r\nServer: x\r\n\r\nall of this, until the close",
+      true,
+      "response 200 [Server: x]\nbody all of this, until the close\nend\nclosed\n",
+      "a body read until the close");
+    sample(&pool, false,
+      "\r\nPOST /form HTTP/1.1\r\nHost: h\r\nTransfer-Encoding: chunked\r\n\r\n6\r\na=1&b=\r\n3\r\n2&c\r\n0\r\nX-T: done\r\n\r\n",
+      false,
+      "request POST /form [Transfer-Encoding: chunked]\nbody a=1&b=2&c\nend [X-T: done]\n",
+      "a chunked request after an empty line");
+    sample(&pool, false,
+      "PUT /f HTTP/1.1\r\nHost: h\r\nContent-Length: 10\r\n\r\n0123456789",
+      false,
+      "request PUT /f [Content-Length: 10]\nbody 0123456789\nend\n",
+      "a sized request");
+    expectUInt(pool.stats().lent, 0u64, "every buffer back in the pool");
+  }
+  done();
+}

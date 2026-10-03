@@ -1,0 +1,175 @@
+// What the http1 core itself costs, with no sockets: a client core and a
+// server core wired to each other in memory, each handed what the other
+// transmits. Run it with
+//
+//   congo run --release packages/http1/examples/bench.cone
+//
+// 1. 100,000 exchanges on one kept-alive connection: a GET with two fields,
+//    answered 200 with a Date and a Content-Type and a 100-byte body; both
+//    cores' work per exchange (serialising, parsing, framing, events) and
+//    the drivers' copying of the bytes between them.
+// 2. A 256 MiB response body: sized, in 64 KiB buffers, the server's
+//    buffers handed to the client as they are; and chunked, the same
+//    buffers each a chunk. Each Data event's bytes are released at once
+//    and not read, so this is the core's framing alone.
+//
+// The Date is written once, not per response, so the times are the core's
+// and not the calendar's.
+
+mod bench;
+
+import stdio use *;
+import collections use String;
+import time use Instant, Duration, Timestamp;
+import iobuf use *;
+import http use *;
+import http1 use *;
+import calendar;
+
+fn at() Instant {Instant.fromNanos(1000000000i64);}
+
+// Everything each side has to send, handed to the other
+fn pump(c &mut Connection, s &mut Connection) {
+  mut moved = true;
+  while moved {
+    moved = false;
+    while s.readCredit() > 0usize {
+      mut b = c.pollTransmit(at());
+      if b.len() == 0usize {break;}
+      s.handleInput(b, at());
+      moved = true;
+    }
+    while c.readCredit() > 0usize {
+      mut b = s.pollTransmit(at());
+      if b.len() == 0usize {break;}
+      c.handleInput(b, at());
+      moved = true;
+    }
+  }
+}
+
+fn smallExchanges(pool &Pool, n u64, date &[]u8) Duration {
+  mut c = Connection.client(Config.make(), *pool, at());
+  mut s = Connection.server(Config.make(), *pool, at());
+  mut body = pool.mustTake(100usize);
+  body.setLen(100usize);
+  imm shared = body.freeze();
+  imm t0 = Instant.now();
+  mut i = 0u64;
+  mut bytes = 0u64;
+  while i < n {
+    mut h = RequestHead.get("/tiles/7/12.bin", "example.com");
+    h.headers.add("Accept", "*/*");
+    h.headers.add("User-Agent", "cone");
+    c.sendRequest(h, BodyLength.empty());
+    pump(&mut c, &mut s);
+    mut answered = false;
+    while not answered {
+      match s.pollEvent() {
+        case is End {
+          mut r = ResponseHead.make(200u16);
+          r.headers.add("Date", date);
+          r.headers.add("Content-Type", "application/octet-stream");
+          s.sendResponse(r, BodyLength.sized(100u64));
+          mut b = pool.mustTake(100usize);
+          b.append(shared.view());
+          s.sendData(b);
+          s.finish();
+          answered = true;
+        }
+        case is Request {}
+        else {answered = true;}
+      }
+    }
+    pump(&mut c, &mut s);
+    mut whole = false;
+    while not whole {
+      match c.pollEvent() {
+        case mut d Data {
+          bytes = bytes + u64.from(d.buf.len());
+          c.release(d.buf.len());
+        }
+        case is End {whole = true;}
+        case is Response {}
+        else {whole = true;}
+      }
+    }
+    i = i + 1u64;
+  }
+  imm took = Instant.now() - t0;
+  if bytes != n * 100u64 or c.exchangeCount() != n {printStr("WRONG: small exchanges\n");}
+  took;
+}
+
+fn largeBody(pool &Pool, size u64, chunked Bool) Duration {
+  mut c = Connection.client(Config.make(), *pool, at());
+  mut s = Connection.server(Config.make(), *pool, at());
+  imm t0 = Instant.now();
+  c.sendRequest(RequestHead.get("/large", "h"), BodyLength.empty());
+  pump(&mut c, &mut s);
+  mut started = false;
+  while not started {
+    match s.pollEvent() {
+      case is End {started = true;}
+      case is Request {}
+      else {started = true;}
+    }
+  }
+  s.sendResponse(ResponseHead.make(200u16), if chunked {BodyLength.unsized();} else {BodyLength.sized(size);});
+  mut sent = 0u64;
+  mut got = 0u64;
+  mut ended = false;
+  while not ended {
+    while sent < size and s.writeRoom() >= 65536usize {
+      mut b = pool.mustTake(65536usize);
+      b.setLen(65536usize);
+      s.sendData(b);
+      sent = sent + 65536u64;
+    }
+    if sent == size {s.finish();}
+    pump(&mut c, &mut s);
+    mut more = true;
+    while more {
+      match c.pollEvent() {
+        case mut d Data {
+          got = got + u64.from(d.buf.len());
+          c.release(d.buf.len());
+        }
+        case is End {
+          ended = true;
+          more = false;
+        }
+        case is Response {}
+        else {more = false;}
+      }
+    }
+  }
+  imm took = Instant.now() - t0;
+  if got != size {printStr("WRONG: large body\n");}
+  took;
+}
+
+fn main() {
+  imm pool = Pool.make();
+  imm date = calendar.httpDate(Timestamp.now());
+  imm n = 100000u64;
+  imm small = smallExchanges(&pool, n, date.view());
+  printStr("100,000 exchanges, both cores in memory: ");
+  printUInt(u64.from(small.nanos()) / n);
+  printStr(" ns each (");
+  printUInt(u64.from(small.millis()));
+  printStr(" ms)\n");
+  imm size = 268435456u64;
+  imm sized = largeBody(&pool, size, false);
+  printStr("256 MiB sized body: ");
+  printUInt(u64.from(sized.millis()));
+  printStr(" ms, ");
+  printUInt(u64.from(i64.from(size) * 1000i64 / sized.nanos()));
+  printStr(" MB/s\n");
+  imm chunked = largeBody(&pool, size, true);
+  printStr("256 MiB chunked body: ");
+  printUInt(u64.from(chunked.millis()));
+  printStr(" ms, ");
+  printUInt(u64.from(i64.from(size) * 1000i64 / chunked.nanos()));
+  printStr(" MB/s\n");
+}

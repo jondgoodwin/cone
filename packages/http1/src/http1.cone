@@ -1,0 +1,1322 @@
+// The http1 package: HTTP/1.1's connection core, sans-IO. A Connection is
+// the protocol state of one TCP connection, as plain data: the driver that
+// owns the socket hands it the bytes that arrived and the time, and asks it
+// what to send, what happened, and when to wake it. It does no I/O, reads no
+// clock and starts no threads (invariant I13), so the same core runs under
+// a completion loop on an OS thread, inside an actor, or in a test feeding
+// it one byte at a time on a synthetic clock. It plays either role: the
+// CLIENT, which sends requests and reads responses (the 3-D web's need), or
+// the SERVER, which reads requests and sends responses (here to test the
+// client against; servers proper are later).
+//
+//   mod get;
+//   import http use *;
+//   import http1 use *;
+//   import iobuf use *;
+//   import time use Instant;
+//
+//   mut conn = Connection.client(Config.make(), pool, Instant.now());
+//   conn.sendRequest(RequestHead.get("/a.bin", "example.com"), BodyLength.empty());
+//   while true {                                     // the driver's loop:
+//     send(conn.pollTransmit(now));                  // bytes to send, until empty
+//     if conn.readCredit() >= 65536usize { recv(...) }  // read only with credit
+//     conn.handleInput(arrived, now);                // bytes that came (empty: the end)
+//     match conn.pollEvent() {                       // what that means
+//       case mut r Response { ... r.head.status ... r.body ... }
+//       case mut d Data { ... d.buf ...; conn.release(n); }   // credit back
+//       case is End { ... }                          // the response is whole
+//       case mut f Failed { ... f.error.message() ... }
+//       case is NeedData { ... }                     // read more
+//       ...
+//     }
+//     wake at conn.pollTimeout(), then conn.handleTimeout(now);
+//   }
+//
+//   Connection.client(config, pool, now)  Connection.server(config, pool, now)
+//   c.handleInput(buf, now)      bytes that arrived; an empty buffer is the  (THE FOUR CALLS)
+//                                end of the peer's stream
+//   c.pollTransmit(now)          the next bytes to send: an IoBuf, empty when none
+//   c.pollTimeout()              Some Instant the driver must wake at, or None
+//   c.handleTimeout(now)         the driver woke: deadlines due are acted on
+//   c.pollEvent()                the next Event
+//   c.readCredit()  c.release(n)                                      (CREDIT)
+//   c.sendRequest(head, body)    client: a request, its body to follow     (SENDING)
+//   c.sendResponse(head, body)   server: the response to the request read
+//   c.sendInterim(head) c.sendContinue()  server: a 1xx
+//   c.sendData(buf)              body bytes: None when queued, Some[buf] back
+//                                when the queue is past its watermark
+//   c.finish()  c.finishWith(trailers)    the body is whole
+//   c.canSendRequest()  c.queued()  c.writeRoom()
+//   c.isClosed()  c.shouldClose()  c.abort()                         (CLOSING)
+//   c.exchangeCount()  c.bytesReceived()  c.bytesSent()
+//   Config.make(): the bounds and timeouts, each a field to change   (CONFIG)
+//   Event: NeedData Paused Request Response Interim Data End Failed Closed (EVENTS)
+//
+// THE FOUR CALLS. Every protocol core of this runtime has the same outside
+// (quinn's, quiche's, ngtcp2's shape), so the HTTP/2 and HTTP/3 cores to
+// come drop in under the same driver: 'handleInput(bytes, now)' feeds what
+// arrived; 'pollTransmit(now)' gives what to send next; 'pollTimeout()'
+// gives the one deadline to wake at, and 'handleTimeout(now)' says it came;
+// 'pollEvent()' gives what happened. Bytes come in as IoBufs, moved in: the
+// buffer a receive completed with, kept in an iobuf Chain, parsed across its
+// segments where they lie. Bytes go out as IoBufs too, moved to the driver
+// to send. The core knows the time only from the calls that bring it.
+//
+// EVENTS. 'pollEvent' gives one Event each call, until it says to stop:
+// NeedData (nothing more until bytes arrive) or Paused (nothing more until
+// the program acts: releases credit, sends a request, answers the request).
+// A client's response comes as Response (its head and what is known of its
+// body), any number of Data (each an owned IoBuf of the body's bytes, in
+// order), then End (with the trailer fields, empty for most); a 1xx comes
+// first as Interim. A server's request comes the same way, as Request, Data
+// and End. A message with no body gives End straight after its head.
+// Failed (an http.HttpError) ends the connection: the next and every later
+// event is Closed. Closed alone is a clean end: the peer finished between
+// exchanges, the idle timeout passed, or the exchange said
+// 'Connection: close'.
+//
+// CREDIT (invariant I9: bounded memory). The core holds at most
+// 'maxBuffered' bytes it has not parsed or handed on; 'readCredit()' is how
+// many more it will take now, and a driver reads only into a buffer no
+// larger than that (more is a program error, a panic). Body bytes handed
+// out in Data events are on loan to the consumer until it says it is done
+// with them, 'release(n)': once 'bodyWindow' bytes are out unreleased, the
+// core gives Paused instead of more Data, its Chain fills, its credit falls
+// to 0, the driver stops reading, and TCP's own flow control holds the peer.
+// A body is never gathered whole: a 4 GiB response streams through a few
+// hundred KiB. While it waits on the consumer this way, the body timeout
+// does not run. Sending is bounded too: 'sendData' refuses a buffer, handing
+// it back, once 'writeWatermark' bytes wait to be sent ('writeRoom()').
+//
+// FRAMING (RFC 9112, section 6). A body is read by Content-Length, by the
+// chunked coding (with its trailer fields), or, for a response with
+// neither, until the connection closes; a request with neither has none. A
+// response to HEAD, and a 1xx, 204 or 304, has no body whatever it says. A
+// body sent is framed by its BodyLength: Sized writes Content-Length,
+// Unsized the chunked coding (or, answering an HTTP/1.0 request, the close
+// of the connection), Empty nothing (or 'Content-Length: 0' where the
+// method or status expects a body). Framing fields are the core's: a head
+// handed to it with Content-Length or Transfer-Encoding is a program error.
+// A request's Host is written from, and read into, the head's authority.
+//
+// REFUSED (RFC 9112, sections 2.2, 3, 5, 6.3 and 11.2: a message that two
+// readers could frame differently is how requests are smuggled, so every
+// such shape is refused, in both roles, with the reason): Transfer-Encoding
+// beside Content-Length; Transfer-Encoding in an HTTP/1.0 message, chunked
+// not last or given twice, or any coding but chunked; Content-Lengths that
+// differ, or are not decimal; a field line folded onto the next (obs-fold),
+// a space before a field's colon, a name that is not a token, a value with
+// a control character, NUL, CR or LF; a bare CR, or an LF without its CR,
+// anywhere in a head or a chunk's line; a request line with more or fewer
+// than two single spaces; no Host, or two, in an HTTP/1.1 request; a chunk's
+// data not followed by CRLF; and a 101 or a CONNECT (not supported). A
+// server's failure sends the matching status first, with 'Connection:
+// close' (400, 408, 414, 431, 501, 503 or 505), when 'autoErrorResponse' is
+// set and no response has begun.
+//
+// BOUNDS AND TIMEOUTS (CONFIG, each a field of Config, each passed a
+// visible Failed, never silent growth): 'maxHeadBytes' (16 KiB) a head or
+// trailer section; 'maxLineBytes' (8 KiB) one line of it; 'maxHeaders' (100)
+// its fields; 'maxChunkLineBytes' (1 KiB) a chunk's size line;
+// 'maxChunkDigits' (16) its hexadecimal digits; 'maxBuffered' (256 KiB) the
+// input held; 'bodyWindow' (256 KiB) body bytes out unreleased;
+// 'writeWatermark' (256 KiB) bytes queued to send. Timeouts are Durations,
+// each turned into an absolute Instant when it starts: 'headTimeout' (30 s)
+// from the moment a head is awaited (a client: its request handed over
+// whole; a server: the request's first byte) to its last byte;
+// 'bodyTimeout' (30 s) the longest gap between two arrivals of a body;
+// 'idleTimeout' (60 s) a kept-alive connection between exchanges, and a new
+// one before its first; 'expectTimeout' (1 s) how long a request sent with
+// 'Expect: 100-continue' holds its body back. 'pollTimeout' gives the
+// nearest of those running, the only time a driver must wake for.
+//
+// KEEP-ALIVE. A connection is reused for the next exchange when both ends
+// speak HTTP/1.1, neither said 'Connection: close', the response was not
+// framed by the close, and each message was whole when the exchange ended:
+// a response that ends while the client is still sending its body, or a
+// server's response sent before the request's body was read, closes the
+// connection after it. An HTTP/1.0 peer's connection is never kept alive.
+// A CLIENT SENDS ONE REQUEST AT A TIME on a connection (no pipelining:
+// 'sendRequest' while an exchange is in progress is a program error); the
+// client layer opens more connections for more requests at once. A server
+// answers pipelined requests in turn, reading the next once the last
+// response is whole.
+//
+// EXPECT. A request whose head says 'Expect: 100-continue' sends its head,
+// and holds its body until a 100 (Continue) arrives or 'expectTimeout'
+// passes; a final response first means the body is never sent, and the
+// connection closes after that response. A server sees the Expect field in
+// the Request event's head and answers with 'sendContinue()' when it wants
+// the body.
+//
+// MEASURED, release, an i7-13700HX on Windows 11, other builds running
+// beside it (examples/bench.cone and examples/loopback.cone; numbers vary
+// run to run):
+//
+// - Both cores in memory, no sockets: a GET with two fields, answered 200
+//   with two fields and a 100-byte body, about 3.7 us an exchange, client
+//   and server together. A 256 MiB body passes through in 1 ms sized and 2
+//   ms chunked: its 64 KiB buffers are handed on whole, never copied.
+// - Over iocore on 127.0.0.1, one kept-alive connection: 10,000 GETs, the
+//   round trip p50 21.5 to 22.5 us, p99 28 to 39 us (iocore's bare echo of
+//   64 bytes: p50 15 us); 200 chunked POSTs of 1 to 24 KiB streamed back,
+//   p50 78 to 82 us; a 256 MiB body at 200 to 500 MB/s, a quarter to a third
+//   of it the demo's own check of every byte, the client's pool holding at
+//   most 148 KiB while it streamed.
+//
+// Not here yet: CONNECT tunnels and Upgrade (101); request targets in
+// absolute form for proxies (a server reads them, a client never writes
+// them); transfer codings other than chunked; reading a request's body that
+// a server has already answered (the connection closes instead); keeping an
+// HTTP/1.0 peer alive; obs-fold and bare LF read leniently, which RFC 9112
+// allows and this refuses; parsing a head in place when it lies in one
+// segment (it is copied out to be read); and the client layer above (pools,
+// retries, redirects, the scheduler: httpclient).
+
+mod http1;
+
+import collections use List, String;
+import time use Instant, Duration;
+import iobuf use IoBuf, Pool, Chain;
+import http use *;
+
+// ---------------------------------------------------------------------------
+// Configuration
+// ---------------------------------------------------------------------------
+
+// A connection's bounds and timeouts (see the package's header, BOUNDS AND
+// TIMEOUTS)
+pub struct Config {
+  pub maxHeadBytes usize;
+  pub maxLineBytes usize;
+  pub maxHeaders usize;
+  pub maxChunkLineBytes usize;
+  pub maxChunkDigits usize;
+  pub maxBuffered usize;
+  pub bodyWindow usize;
+  pub writeWatermark usize;
+  pub headTimeout Duration;
+  pub bodyTimeout Duration;
+  pub idleTimeout Duration;
+  pub expectTimeout Duration;
+  pub autoErrorResponse Bool;
+
+  // The defaults
+  pub fn make() Config {
+    new Config(maxHeadBytes: 16384usize, maxLineBytes: 8192usize, maxHeaders: 100usize,
+      maxChunkLineBytes: 1024usize, maxChunkDigits: 16usize, maxBuffered: 262144usize,
+      bodyWindow: 262144usize, writeWatermark: 262144usize,
+      headTimeout: Duration.fromSeconds(30), bodyTimeout: Duration.fromSeconds(30),
+      idleTimeout: Duration.fromSeconds(60), expectTimeout: Duration.fromSeconds(1),
+      autoErrorResponse: true);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Events
+// ---------------------------------------------------------------------------
+
+// What happened (see the package's header, EVENTS)
+pub enum Event {
+  pub struct NeedData {}
+  pub struct Paused {}
+  pub struct Request {pub head RequestHead; pub body BodyLength;}
+  pub struct Response {pub head ResponseHead; pub body BodyLength;}
+  pub struct Interim {pub head ResponseHead;}
+  pub struct Data {pub buf IoBuf;}
+  pub struct End {pub trailers Headers;}
+  pub struct Failed {pub error HttpError;}
+  pub struct Closed {}
+}
+
+// ---------------------------------------------------------------------------
+// The connection
+// ---------------------------------------------------------------------------
+
+// Where reading a message has got to
+enum ReadState {
+  Idle,          // between exchanges
+  Head,          // a head awaited
+  Sized,         // a Content-Length body: 'remaining' bytes left
+  ChunkSize,     // a chunk's size line
+  ChunkData,     // a chunk's data: 'remaining' bytes left
+  ChunkEnd,      // the CRLF after a chunk's data
+  Trailers,      // the trailer section after the last chunk
+  UntilClose,    // a body read until the connection closes
+  Done;          // the message is whole; the exchange is not over
+}
+
+// Where sending a message has got to
+enum WriteState {
+  Idle, Sized, Chunked, UntilClose, Done;
+}
+
+const noBound = 0xFFFFFFFFFFFFFFFFusize;  // the output chains are bounded by the watermark instead
+const tailSize = 4096usize;               // the buffer small writes gather in
+const smallCopy = 1024usize;              // body buffers up to this are copied in beside the head
+const maxCopy = 65536usize;               // the most a body buffer copied out of the input holds
+
+// One HTTP/1.1 connection's protocol state (see the package's header)
+pub struct Connection is Move {
+  clientRole Bool;
+  cfg Config;
+  pool Pool;
+  now Instant;              // the time the last call brought
+
+  // Reading
+  input Chain;              // what arrived and is not yet parsed or handed on
+  eof Bool;                 // the peer has finished sending
+  rs ReadState;
+  remaining u64;            // the body's or the chunk's bytes still to come
+  headBuf IoBuf;            // a head being gathered, copied out of the input
+  headScan usize;           // how far it has been checked
+  sawBytes Bool;            // a byte of the head awaited has arrived
+  outstanding usize;        // body bytes handed out, not yet released
+  headInFlight Bool;        // a client's request in flight is a HEAD
+
+  // Writing
+  ws WriteState;
+  wremaining u64;           // a Sized body's bytes still to send
+  out Chain;                // whole buffers ready to send, in order
+  tail IoBuf;               // small writes gathering after them
+  held Chain;               // a body held back for 100 Continue
+  holding Bool;
+  abandoned Bool;           // the rest of the body being sent is dropped
+  requestSeen Bool;         // a server's request awaits its response
+  answeringHead Bool;       // ...and was a HEAD
+  peer10 Bool;              // ...and was HTTP/1.0
+
+  keepAlive Bool;
+
+  // Deadlines, each an Instant and whether it runs
+  headAt Instant;
+  headArmed Bool;
+  bodyAt Instant;
+  bodyArmed Bool;
+  idleAt Instant;
+  idleArmed Bool;
+  expectAt Instant;
+  expectArmed Bool;
+  armHead Bool;             // start the head timeout at the next transmit
+  armExpect Bool;           // start the expect timeout at the next transmit
+
+  // The end
+  closed Bool;
+  failed Bool;
+  failureOut Bool;
+  failure HttpError;
+
+  // Counts
+  exchanges u64;
+  bytesIn u64;
+  bytesOut u64;
+
+  // A client connection, idle until its first request (its idle timeout
+  // running from now)
+  pub fn client(cfg Config, pool Pool, now Instant) Connection {Connection.make(true, cfg, pool, now);}
+
+  // A server connection, awaiting its first request
+  pub fn server(cfg Config, pool Pool, now Instant) Connection {Connection.make(false, cfg, pool, now);}
+
+  fn make(client Bool, cfg Config, pool Pool, now Instant, file &[]u8 = srcFile(), line u32 = srcLine()) Connection {
+    if cfg.maxBuffered < cfg.maxHeadBytes {panic("http1: maxBuffered must hold a whole head (maxHeadBytes)", file, line);}
+    new Connection(clientRole: client, cfg: cfg, pool: pool, now: now,
+      input: Chain.make(cfg.maxBuffered), eof: false, rs: ReadState.Idle[], remaining: 0u64,
+      headBuf: IoBuf.empty(), headScan: 0usize, sawBytes: false, outstanding: 0usize, headInFlight: false,
+      ws: WriteState.Idle[], wremaining: 0u64, out: Chain.make(noBound), tail: IoBuf.empty(),
+      held: Chain.make(noBound), holding: false, abandoned: false, requestSeen: false,
+      answeringHead: false, peer10: false, keepAlive: true,
+      headAt: now, headArmed: false, bodyAt: now, bodyArmed: false,
+      idleAt: now + cfg.idleTimeout, idleArmed: true, expectAt: now, expectArmed: false,
+      armHead: false, armExpect: false,
+      closed: false, failed: false, failureOut: false, failure: HttpError.empty(),
+      exchanges: 0u64, bytesIn: 0u64, bytesOut: 0u64);
+  }
+
+  pub fn isClient(self &) Bool {clientRole;}
+
+  // ------------------------------------------------------------- the four calls
+
+  // Bytes that arrived, at 'at': an empty buffer says the peer has finished
+  // sending. More than readCredit() is a program error
+  pub fn handleInput(self &mut, buf IoBuf, at Instant, file &[]u8 = srcFile(), line u32 = srcLine()) {
+    now = at;
+    imm n = buf.len();
+    if n == 0usize {
+      eof = true;
+      return;
+    }
+    if closed or failed {return;}
+    if input.len() + n > cfg.maxBuffered {panic("http1: handleInput past the read credit", file, line);}
+    input.push(buf);
+    bytesIn = bytesIn + u64.from(n);
+    if rs == ReadState.Idle[] and not clientRole and not headArmed {
+      // A request's first byte: its head timeout starts (pollEvent skips
+      // any empty lines before it, then reads the head)
+      idleArmed = false;
+      headAt = at + cfg.headTimeout;
+      headArmed = true;
+    }
+    if rs == ReadState.Head[] {sawBytes = true;}
+    if self.inBody() {
+      bodyAt = at + cfg.bodyTimeout;
+      bodyArmed = true;
+    }
+  }
+
+  // The next bytes to send, moved out: an empty IoBuf when there are none
+  pub fn pollTransmit(self &mut, at Instant) IoBuf {
+    now = at;
+    if armHead and ws == WriteState.Done[] and not holding {
+      headAt = at + cfg.headTimeout;
+      headArmed = true;
+      armHead = false;
+    }
+    if armExpect and holding {
+      expectAt = at + cfg.expectTimeout;
+      expectArmed = true;
+      armExpect = false;
+    }
+    mut b = IoBuf.empty();
+    if out.len() > 0usize {
+      match out.popFront() {
+        case mut s Some {b <=> s.value;}
+        case is None[IoBuf] {}
+      }
+    } elif tail.len() > 0usize and not holding {
+      b <=> tail;
+    }
+    bytesOut = bytesOut + u64.from(b.len());
+    b;
+  }
+
+  // The one Instant the driver must wake at and call handleTimeout, or None
+  pub fn pollTimeout(self &) Option[Instant] {
+    if closed or failed {return None[Instant][];}
+    mut any = false;
+    mut best = Instant.fromNanos(0x7FFFFFFFFFFFFFFFi64);
+    if headArmed {
+      any = true;
+      if headAt < best {best = headAt;}
+    }
+    if bodyArmed and self.inBody() and not self.blocked() {
+      any = true;
+      if bodyAt < best {best = bodyAt;}
+    }
+    if idleArmed {
+      any = true;
+      if idleAt < best {best = idleAt;}
+    }
+    if expectArmed {
+      any = true;
+      if expectAt < best {best = expectAt;}
+    }
+    if any {Some[Instant][best];} else {None[Instant][];};
+  }
+
+  // The driver woke at 'at': act on every deadline due
+  pub fn handleTimeout(self &mut, at Instant) {
+    now = at;
+    if closed or failed {return;}
+    if expectArmed and at >= expectAt {
+      expectArmed = false;
+      self.releaseHeld();
+    }
+    if headArmed and at >= headAt {
+      headArmed = false;
+      self.fail(ErrorKind.TimedOut[], 408u16, "no whole head within headTimeout");
+      return;
+    }
+    if bodyArmed and self.inBody() and not self.blocked() and at >= bodyAt {
+      bodyArmed = false;
+      self.fail(ErrorKind.TimedOut[], 408u16, "the body stalled for bodyTimeout");
+      return;
+    }
+    if idleArmed and at >= idleAt {
+      idleArmed = false;
+      closed = true;
+    }
+  }
+
+  // The next event (see the package's header, EVENTS)
+  pub fn pollEvent(self &mut) Event {
+    while true {
+      if failed {
+        if not failureOut {return self.failedEvent();}
+        return Event.Closed[];
+      }
+      if closed {return Event.Closed[];}
+      if rs == ReadState.Idle[] {
+        if clientRole {
+          if input.len() > 0usize {
+            self.fail(ErrorKind.Malformed[], 0u16, "bytes arrived with no request outstanding");
+            continue;
+          }
+          if eof {
+            closed = true;
+            continue;
+          }
+          return Event.Paused[];
+        }
+        // A server between requests: RFC 9112 (2.2) lets a server skip
+        // empty lines before a request line
+        while input.len() >= 2usize and input.matchesAt(0usize, "\r\n") {input.advance(2usize);}
+        if input.len() == 1usize and input.byteAt(0usize) == '\r' and not eof {return Event.NeedData[];}
+        if input.len() > 0usize {
+          self.startHead();
+          continue;
+        }
+        if eof {
+          closed = true;
+          continue;
+        }
+        return Event.NeedData[];
+      }
+      if rs == ReadState.Head[] {return self.readHead();}
+      if rs == ReadState.Sized[] {
+        if remaining == 0u64 {return self.endMessage(Headers.empty());}
+        return self.deliver();
+      }
+      if rs == ReadState.ChunkData[] {
+        if remaining == 0u64 {
+          rs = ReadState.ChunkEnd[];
+          continue;
+        }
+        return self.deliver();
+      }
+      if rs == ReadState.ChunkEnd[] {
+        if input.len() < 2usize {
+          if eof {return self.closedMidBody();}
+          return Event.NeedData[];
+        }
+        if not input.matchesAt(0usize, "\r\n") {
+          self.fail(ErrorKind.Malformed[], 400u16, "a chunk's data is not followed by CRLF");
+          continue;
+        }
+        input.advance(2usize);
+        rs = ReadState.ChunkSize[];
+        continue;
+      }
+      if rs == ReadState.ChunkSize[] {
+        if self.chunkSize() {continue;}
+        if failed {continue;}
+        return Event.NeedData[];
+      }
+      if rs == ReadState.Trailers[] {return self.readTrailers();}
+      if rs == ReadState.UntilClose[] {
+        if input.len() == 0usize and eof {return self.endMessage(Headers.empty());}
+        return self.deliver();
+      }
+      if rs == ReadState.Done[] {
+        // The message is whole: the exchange waits on the program
+        return Event.Paused[];
+      }
+    }
+    Event.Paused[];
+  }
+
+  // ------------------------------------------------------------- credit
+
+  // How many more bytes handleInput will take now
+  pub fn readCredit(self &) usize {
+    if closed or failed or eof {return 0usize;}
+    if input.len() >= cfg.maxBuffered {0usize;} else {cfg.maxBuffered - input.len();};
+  }
+
+  // The consumer is done with n bytes of body the Data events handed out
+  pub fn release(self &mut, n usize) {
+    imm wasBlocked = self.blocked();
+    outstanding = if n >= outstanding {0usize;} else {outstanding - n;};
+    if wasBlocked and not self.blocked() and self.inBody() {
+      bodyAt = now + cfg.bodyTimeout;
+      bodyArmed = true;
+    }
+  }
+
+  // Bytes waiting to be sent
+  pub fn queued(self &) usize {out.len() + tail.len() + held.len();}
+
+  // How many more bytes sendData takes before the watermark refuses
+  pub fn writeRoom(self &) usize {
+    imm q = self.queued();
+    if q >= cfg.writeWatermark {0usize;} else {cfg.writeWatermark - q;};
+  }
+
+  // ------------------------------------------------------------- sending
+
+  // Whether a request may be sent now: a client, open, with no exchange in
+  // progress
+  pub fn canSendRequest(self &) Bool {
+    clientRole and not closed and not failed and not eof and ws == WriteState.Idle[] and rs == ReadState.Idle[];
+  }
+
+  // A client's request: its head now, its body (if any) by sendData and
+  // finish. One at a time: anything but canSendRequest() is a program error
+  pub fn sendRequest(self &mut, head RequestHead, body BodyLength, file &[]u8 = srcFile(), line u32 = srcLine()) {
+    if not clientRole {panic("http1: sendRequest on a server's connection", file, line);}
+    if not self.canSendRequest() {panic("http1: sendRequest while an exchange is in progress or the connection is closed (no pipelining)", file, line);}
+    imm name = head.methodName();
+    if not isToken(name) {panic("http1: the request's method is not a token", file, line);}
+    if head.method == Method.Connect[] {panic("http1: CONNECT is not supported", file, line);}
+    if not isTargetText(head.target.view()) {panic("http1: the request's target is empty or holds a space or a control character", file, line);}
+    if not isTargetText(head.authority.view()) {panic("http1: a request needs an authority, written as Host, without spaces", file, line);}
+    if head.headers.has("Host") {panic("http1: Host is written from the head's authority, not its fields", file, line);}
+    if head.headers.has("Content-Length") or head.headers.has("Transfer-Encoding") {
+      panic("http1: framing fields are the core's to write: say the body's length with a BodyLength", file, line);
+    }
+    idleArmed = false;
+    self.put(name);
+    self.put(" ");
+    self.put(head.target.view());
+    self.put(" HTTP/1.1\r\nHost: ");
+    self.put(head.authority.view());
+    self.put("\r\n");
+    self.putFields(&head.headers);
+    if body.isSized() {
+      self.put("Content-Length: ");
+      self.putNum(body.length, 10u64);
+      self.put("\r\n");
+      ws = if body.length == 0u64 {WriteState.Done[];} else {WriteState.Sized[];};
+      wremaining = body.length;
+    } elif body.isUnsized() {
+      self.put("Transfer-Encoding: chunked\r\n");
+      ws = WriteState.Chunked[];
+    } else {
+      if head.method == Method.Post[] or head.method == Method.Put[] or head.method == Method.Patch[] {
+        self.put("Content-Length: 0\r\n");
+      }
+      ws = WriteState.Done[];
+    }
+    self.put("\r\n");
+    keepAlive = not head.headers.hasToken("Connection", "close");
+    headInFlight = head.method == Method.Head[];
+    abandoned = false;
+    rs = ReadState.Head[];
+    sawBytes = false;
+    armHead = true;
+    if ws != WriteState.Done[] and head.headers.hasToken("Expect", "100-continue") {
+      self.flushTail();
+      holding = true;
+      armExpect = true;
+    }
+  }
+
+  // A server's response to the request it has read: its head now, its body
+  // (if any) by sendData and finish. With no request awaiting it, a program
+  // error; after the connection has failed, it does nothing
+  pub fn sendResponse(self &mut, head ResponseHead, body BodyLength, file &[]u8 = srcFile(), line u32 = srcLine()) {
+    if clientRole {panic("http1: sendResponse on a client's connection", file, line);}
+    if closed or failed {return;}
+    if not requestSeen or ws != WriteState.Idle[] {panic("http1: sendResponse with no request awaiting one", file, line);}
+    imm status = head.status;
+    if status < 200u16 or status > 599u16 {panic("http1: sendResponse takes a final status, 200 to 599: a 1xx goes by sendInterim", file, line);}
+    if head.headers.has("Content-Length") or head.headers.has("Transfer-Encoding") {
+      panic("http1: framing fields are the core's to write: say the body's length with a BodyLength", file, line);
+    }
+    requestSeen = false;
+    imm noBody = answeringHead or status == 204u16 or status == 304u16;
+    if head.headers.hasToken("Connection", "close") {keepAlive = false;}
+    if not noBody and body.isUnsized() and peer10 {keepAlive = false;}
+    self.putStatusLine(status);
+    self.putFields(&head.headers);
+    if noBody {
+      if body.isSized() and status != 204u16 {
+        self.put("Content-Length: ");
+        self.putNum(body.length, 10u64);
+        self.put("\r\n");
+      }
+      ws = WriteState.Done[];
+    } elif body.isSized() {
+      self.put("Content-Length: ");
+      self.putNum(body.length, 10u64);
+      self.put("\r\n");
+      ws = if body.length == 0u64 {WriteState.Done[];} else {WriteState.Sized[];};
+      wremaining = body.length;
+    } elif body.isUnsized() {
+      if peer10 {
+        ws = WriteState.UntilClose[];
+      } else {
+        self.put("Transfer-Encoding: chunked\r\n");
+        ws = WriteState.Chunked[];
+      }
+    } else {
+      self.put("Content-Length: 0\r\n");
+      ws = WriteState.Done[];
+    }
+    if not keepAlive and not head.headers.hasToken("Connection", "close") {self.put("Connection: close\r\n");}
+    self.put("\r\n");
+    if ws == WriteState.Done[] {self.endExchange();}
+  }
+
+  // A server's interim response, a 1xx other than 101, before its final one
+  pub fn sendInterim(self &mut, head ResponseHead, file &[]u8 = srcFile(), line u32 = srcLine()) {
+    if clientRole {panic("http1: sendInterim on a client's connection", file, line);}
+    if closed or failed {return;}
+    if not requestSeen or ws != WriteState.Idle[] {panic("http1: sendInterim with no request awaiting a response", file, line);}
+    if head.status < 100u16 or head.status > 199u16 or head.status == 101u16 {panic("http1: sendInterim takes a 1xx other than 101", file, line);}
+    self.putStatusLine(head.status);
+    self.putFields(&head.headers);
+    self.put("\r\n");
+  }
+
+  // '100 Continue': the server wants the request's body
+  pub fn sendContinue(self &mut) {self.sendInterim(ResponseHead.make(100u16));}
+
+  // Body bytes, moved in: None once they are queued (or dropped, after the
+  // connection has closed or the body was abandoned), or Some[buf] back when
+  // the queue is past its watermark. Sending with no body under way, or past
+  // a Content-Length, is a program error
+  pub fn sendData(self &mut, buf IoBuf, file &[]u8 = srcFile(), line u32 = srcLine()) Option[IoBuf] {
+    if closed or failed or abandoned {return None[IoBuf][];}
+    if ws != WriteState.Sized[] and ws != WriteState.Chunked[] and ws != WriteState.UntilClose[] {
+      panic("http1: sendData with no body being sent", file, line);
+    }
+    imm n = buf.len();
+    if n == 0usize {return None[IoBuf][];}
+    if ws == WriteState.Sized[] and u64.from(n) > wremaining {panic("http1: sendData past the body's Content-Length", file, line);}
+    imm q = self.queued();
+    if q > 0usize and q + n > cfg.writeWatermark {return Some[IoBuf][buf];}
+    if ws == WriteState.Chunked[] {
+      self.putNum(u64.from(n), 16u64);
+      self.put("\r\n");
+    }
+    self.putBuf(buf);
+    if ws == WriteState.Chunked[] {self.put("\r\n");}
+    if ws == WriteState.Sized[] {wremaining = wremaining - u64.from(n);}
+    None[IoBuf][];
+  }
+
+  // The body is whole. Nothing more to do (already whole, abandoned, or the
+  // connection closed) does nothing; short of a Content-Length is a program
+  // error
+  pub fn finish(self &mut, file &[]u8 = srcFile(), line u32 = srcLine()) {
+    self.finishWith(Headers.empty(), file, line);
+  }
+
+  // The body is whole, and these trailer fields follow it (a chunked body
+  // only: trailers on any other is a program error)
+  pub fn finishWith(self &mut, trailers Headers, file &[]u8 = srcFile(), line u32 = srcLine()) {
+    if closed or failed or abandoned or ws == WriteState.Done[] or ws == WriteState.Idle[] {return;}
+    if ws == WriteState.Sized[] and wremaining != 0u64 {panic("http1: finish short of the body's Content-Length", file, line);}
+    if ws != WriteState.Chunked[] and not trailers.isEmpty() {panic("http1: trailer fields go only after a chunked body", file, line);}
+    if trailers.has("Content-Length") or trailers.has("Transfer-Encoding") or trailers.has("Host") {
+      panic("http1: a trailer may not be a framing field or Host", file, line);
+    }
+    if ws == WriteState.Chunked[] {
+      self.put("0\r\n");
+      self.putFields(&trailers);
+      self.put("\r\n");
+    }
+    ws = WriteState.Done[];
+    if clientRole {armHead = true;}
+    self.endExchange();
+  }
+
+  // ------------------------------------------------------------- closing
+
+  // Whether the connection has ended, cleanly or not: nothing more will be
+  // read
+  pub fn isClosed(self &) Bool {closed or failed;}
+
+  // Whether the driver should close the socket now: the connection has
+  // ended and everything it had to send has been taken
+  pub fn shouldClose(self &) Bool {(closed or failed) and out.len() == 0usize and tail.len() == 0usize;}
+
+  // End the connection now, dropping whatever was not yet sent: HTTP/1.1's
+  // only way to cancel an exchange
+  pub fn abort(self &mut) {
+    closed = true;
+    self.dropOutput();
+  }
+
+  pub fn exchangeCount(self &) u64 {exchanges;}
+  pub fn bytesReceived(self &) u64 {bytesIn;}
+  pub fn bytesSent(self &) u64 {bytesOut;}
+
+  // ------------------------------------------------------------- reading, inside
+
+  fn inBody(self &) Bool {
+    rs == ReadState.Sized[] or rs == ReadState.ChunkSize[] or rs == ReadState.ChunkData[] or
+      rs == ReadState.ChunkEnd[] or rs == ReadState.Trailers[] or rs == ReadState.UntilClose[];
+  }
+
+  // Waiting on the consumer to release credit
+  fn blocked(self &) Bool {outstanding >= cfg.bodyWindow;}
+
+  // A server's request head begins: its timeout runs, from its first byte
+  fn startHead(self &mut) {
+    rs = ReadState.Head[];
+    idleArmed = false;
+    if not headArmed {
+      headAt = now + cfg.headTimeout;
+      headArmed = true;
+    }
+  }
+
+  // The failure, moved out, once
+  fn failedEvent(self &mut) Event {
+    failureOut = true;
+    mut e = HttpError.empty();
+    e <=> failure;
+    Event.Failed[e];
+  }
+
+  fn fail(self &mut, kind ErrorKind, status u16, why &[]u8) {
+    self.failWith(HttpError.make(kind, status, why));
+  }
+
+  // The connection fails with e. A server that has not begun a response
+  // answers with e's status first, when configured to
+  fn failWith(self &mut, e HttpError) {
+    if failed or closed {return;}
+    failure = e;
+    failure.noResponse = clientRole and not sawBytes and rs == ReadState.Head[];
+    failed = true;
+    headArmed = false;
+    bodyArmed = false;
+    idleArmed = false;
+    expectArmed = false;
+    holding = false;
+    mut h = Chain.make(noBound);
+    h <=> held;
+    if not clientRole and cfg.autoErrorResponse and failure.status != 0u16 and ws == WriteState.Idle[] and
+        failure.kind != ErrorKind.Closed[] {
+      self.putStatusLine(failure.status);
+      self.put("Connection: close\r\nContent-Length: 0\r\n\r\n");
+      ws = WriteState.Done[];
+    }
+  }
+
+  fn closedMidBody(self &mut) Event {
+    self.fail(ErrorKind.Closed[], 0u16, "the connection closed in the middle of a body");
+    self.failedEvent();
+  }
+
+  // Copy what arrived into headBuf and check it, up to the blank line that
+  // ends a head: the head's length then, or 0 (not all here yet, or failed)
+  fn gatherHead(self &mut) usize {
+    if headBuf.capacity() == 0usize {
+      match pool.take(cfg.maxHeadBytes) {
+        case mut s Some {headBuf <=> s.value;}
+        case is None[IoBuf] {}
+      }
+      if headBuf.capacity() == 0usize {
+        self.fail(ErrorKind.TooLarge[], 503u16, "the buffer pool refused a buffer for a head");
+        return 0usize;
+      }
+      headScan = 0usize;
+    }
+    imm have = headBuf.len();
+    if input.len() > have and have < cfg.maxHeadBytes {
+      imm room = headBuf.spare();
+      imm n = input.copyOut(have, room);
+      headBuf.setLen(have + n);
+    }
+    imm v = headBuf.view();
+    imm lim = if v.len < cfg.maxHeadBytes {v.len;} else {cfg.maxHeadBytes;};
+    mut i = headScan;
+    while i < lim {
+      imm c = v[i];
+      if c == '\n' {
+        if i == 0usize or v[i - 1usize] != '\r' {
+          self.fail(ErrorKind.Malformed[], 400u16, "a line ends in an LF without its CR");
+          return 0usize;
+        }
+        if i >= 3usize and v[i - 2usize] == '\n' and v[i - 3usize] == '\r' {
+          headScan = 0usize;
+          return i + 1usize;
+        }
+      } elif i > 0usize and v[i - 1usize] == '\r' {
+        self.fail(ErrorKind.Malformed[], 400u16, "a CR is not followed by its LF");
+        return 0usize;
+      }
+      i = i + 1usize;
+    }
+    headScan = i;
+    if lim >= cfg.maxHeadBytes {
+      self.fail(ErrorKind.TooLarge[], 431u16, "the head is longer than maxHeadBytes");
+    }
+    0usize;
+  }
+
+  // The head gathered is consumed: its bytes leave the input, its buffer
+  // goes home
+  fn consumeHead(self &mut, len usize) {
+    input.advance(len);
+    mut b = IoBuf.empty();
+    b <=> headBuf;
+    headScan = 0usize;
+  }
+
+  fn readHead(self &mut) Event {
+    imm len = self.gatherHead();
+    if failed {return self.failedEvent();}
+    if len == 0usize {
+      if eof {
+        if sawBytes {self.fail(ErrorKind.Closed[], 0u16, "the connection closed in the middle of a head");}
+        else {self.fail(ErrorKind.Closed[], 0u16, "the connection closed before a response");}
+        return self.failedEvent();
+      }
+      return Event.NeedData[];
+    }
+    headArmed = false;
+    if clientRole {self.responseHead(len);} else {self.requestHead(len);};
+  }
+
+  // A server's request head, gathered: parsed, checked, and its body's
+  // framing decided
+  fn requestHead(self &mut, len usize) Event {
+    mut head = RequestHead.empty();
+    mut err = HttpError.empty();
+    mut host = String.empty();
+    mut hosts = 0usize;
+    mut ok = false;
+    {
+      imm h = headBuf.view();
+      imm first = lineEnd(h, 0usize);
+      if first > cfg.maxLineBytes {
+        bad(&mut err, ErrorKind.TooLarge[], 414u16, "the request line is longer than maxLineBytes");
+      } else {
+        ok = parseRequestLine(&h[0usize .. first], &mut head, &mut err) and
+          parseFields(h, first + 2usize, &cfg, true, true, &mut head.headers, &mut host, &mut hosts, &mut err);
+      }
+    }
+    self.consumeHead(len);
+    if ok {
+      imm http10 = head.version == Version.Http10[];
+      if hosts > 1usize {ok = bad(&mut err, ErrorKind.Malformed[], 400u16, "the request has more than one Host");}
+      elif hosts == 0usize and not http10 {ok = bad(&mut err, ErrorKind.Malformed[], 400u16, "an HTTP/1.1 request has no Host");}
+      elif head.method == Method.Connect[] {ok = bad(&mut err, ErrorKind.Unsupported[], 501u16, "CONNECT is not supported");}
+    }
+    mut mode = 0u32;
+    mut n = 0u64;
+    if ok {ok = framingOf(&head.headers, true, head.version == Version.Http10[], &mut mode, &mut n, &mut err);}
+    if not ok {
+      self.failWith(err);
+      return self.failedEvent();
+    }
+    head.authority <=> host;
+    peer10 = head.version == Version.Http10[];
+    keepAlive = not peer10 and not head.headers.hasToken("Connection", "close");
+    answeringHead = head.method == Method.Head[];
+    requestSeen = true;
+    sawBytes = false;
+    imm body = self.startBody(mode, n);
+    Event.Request[head, body];
+  }
+
+  // A client's response head, gathered: an interim one, or the final one
+  // with its body's framing decided
+  fn responseHead(self &mut, len usize) Event {
+    mut head = ResponseHead.empty();
+    mut err = HttpError.empty();
+    mut host = String.empty();
+    mut hosts = 0usize;
+    mut ok = false;
+    {
+      imm h = headBuf.view();
+      imm first = lineEnd(h, 0usize);
+      if first > cfg.maxLineBytes {
+        bad(&mut err, ErrorKind.TooLarge[], 0u16, "the status line is longer than maxLineBytes");
+      } else {
+        ok = parseStatusLine(&h[0usize .. first], &mut head, &mut err) and
+          parseFields(h, first + 2usize, &cfg, false, false, &mut head.headers, &mut host, &mut hosts, &mut err);
+      }
+    }
+    self.consumeHead(len);
+    if ok and head.status == 101u16 {ok = bad(&mut err, ErrorKind.Unsupported[], 0u16, "101 Switching Protocols: upgrades are not supported");}
+    mut mode = 0u32;
+    mut n = 0u64;
+    if ok {ok = framingOf(&head.headers, false, head.version == Version.Http10[], &mut mode, &mut n, &mut err);}
+    if not ok {
+      self.failWith(err);
+      return self.failedEvent();
+    }
+    if isInformational(head.status) {
+      // An interim response: the final one is still to come
+      if head.status == 100u16 and holding {
+        expectArmed = false;
+        self.releaseHeld();
+      }
+      // The head timeout starts again for the final head, once the whole
+      // request has been handed over
+      if ws == WriteState.Done[] and not holding {
+        headAt = now + cfg.headTimeout;
+        headArmed = true;
+      } else {
+        headArmed = false;
+        armHead = true;
+      }
+      return Event.Interim[head];
+    }
+    if holding {
+      // A final answer before the body was sent: it never will be
+      holding = false;
+      expectArmed = false;
+      mut h = Chain.make(noBound);
+      h <=> held;
+      self.dropTail();
+      abandoned = true;
+      keepAlive = false;
+      ws = WriteState.Done[];
+    }
+    if headInFlight or not responseHasBody(Method.Get[], head.status) {
+      mode = frameEmpty;
+      n = 0u64;
+    }
+    if head.version == Version.Http10[] or head.headers.hasToken("Connection", "close") or mode == frameClose {
+      keepAlive = false;
+    }
+    imm body = self.startBody(mode, n);
+    Event.Response[head, body];
+  }
+
+  // Begin reading a body framed so: what is known of it
+  fn startBody(self &mut, mode u32, n u64) BodyLength {
+    bodyAt = now + cfg.bodyTimeout;
+    bodyArmed = true;
+    if mode == frameSized {
+      rs = ReadState.Sized[];
+      remaining = n;
+      return if n == 0u64 {BodyLength.empty();} else {BodyLength.sized(n);};
+    }
+    if mode == frameChunked {
+      rs = ReadState.ChunkSize[];
+      return BodyLength.unsized();
+    }
+    if mode == frameClose {
+      rs = ReadState.UntilClose[];
+      return BodyLength.unsized();
+    }
+    rs = ReadState.Sized[];
+    remaining = 0u64;
+    BodyLength.empty();
+  }
+
+  // The next piece of a body that has arrived, as Data: a whole segment of
+  // the input moved out where it lies wholly within the body, or the bytes
+  // copied into a buffer of their own where it does not
+  fn deliver(self &mut) Event {
+    imm avail = u64.from(input.len());
+    if avail == 0u64 {
+      if eof {return self.closedMidBody();}
+      return Event.NeedData[];
+    }
+    if self.blocked() {return Event.Paused[];}
+    mut n = avail;
+    if rs != ReadState.UntilClose[] and remaining < n {n = remaining;}
+    mut buf = IoBuf.empty();
+    if u64.from(input.firstLen()) <= n {
+      match input.popFront() {
+        case mut s Some {buf <=> s.value;}
+        case is None[IoBuf] {}
+      }
+    } else {
+      imm want = if n > u64.from(maxCopy) {maxCopy;} else {usize.from(n);};
+      match pool.take(want) {
+        case mut s Some {buf <=> s.value;}
+        case is None[IoBuf] {}
+      }
+      if buf.capacity() == 0usize {
+        self.fail(ErrorKind.TooLarge[], 503u16, "the buffer pool refused a buffer for a body");
+        return self.failedEvent();
+      }
+      imm room = buf.spare();
+      imm k = input.copyOut(0usize, &mut room[0usize .. want]);
+      buf.setLen(k);
+      input.advance(k);
+    }
+    imm got = buf.len();
+    outstanding = outstanding + got;
+    if rs != ReadState.UntilClose[] {remaining = remaining - u64.from(got);}
+    Event.Data[buf];
+  }
+
+  // A chunk's size line: true once read (the state moved on), false when it
+  // has not all arrived or the connection failed
+  fn chunkSize(self &mut) Bool {
+    mut at = 0usize;
+    mut found = false;
+    match input.find("\r\n") {
+      case imm p Some {
+        at = p.value;
+        found = true;
+      }
+      case is None[usize] {}
+    }
+    // A bare LF or CR before the line's CRLF (or before what has arrived of
+    // it) is refused at once
+    imm upTo = if found {at;} else {input.len();};
+    match input.findByte('\n') {
+      case imm p Some {
+        if p.value < upTo {
+          self.fail(ErrorKind.Malformed[], 400u16, "a chunk's size line ends in an LF without its CR");
+          return false;
+        }
+      }
+      case is None[usize] {}
+    }
+    match input.findByte('\r') {
+      case imm p Some {
+        if p.value < upTo and p.value + 1usize < input.len() {
+          self.fail(ErrorKind.Malformed[], 400u16, "a CR in a chunk's size line is not followed by its LF");
+          return false;
+        }
+      }
+      case is None[usize] {}
+    }
+    if not found {
+      if input.len() > cfg.maxChunkLineBytes {
+        self.fail(ErrorKind.TooLarge[], 400u16, "a chunk's size line is longer than maxChunkLineBytes");
+        return false;
+      }
+      if eof {self.fail(ErrorKind.Closed[], 0u16, "the connection closed in the middle of a chunked body");}
+      return false;
+    }
+    if at > cfg.maxChunkLineBytes {
+      self.fail(ErrorKind.TooLarge[], 400u16, "a chunk's size line is longer than maxChunkLineBytes");
+      return false;
+    }
+    mut size = 0u64;
+    mut err = HttpError.empty();
+    mut ok = false;
+    mut copied = false;
+    match input.contiguous(0usize, at) {
+      case imm s Some {ok = parseChunkLine(s.value, &cfg, &mut size, &mut err);}
+      case is None[&[]u8] {copied = true;}
+    }
+    if copied {
+      // The line lies across segments: copy it out to read it
+      mut tmp = IoBuf.empty();
+      match pool.take(at + 1usize) {
+        case mut s Some {tmp <=> s.value;}
+        case is None[IoBuf] {}
+      }
+      if tmp.capacity() == 0usize {
+        self.fail(ErrorKind.TooLarge[], 503u16, "the buffer pool refused a buffer for a chunk's size line");
+        return false;
+      }
+      imm room = tmp.spare();
+      imm k = input.copyOut(0usize, &mut room[0usize .. at]);
+      tmp.setLen(k);
+      ok = parseChunkLine(tmp.view(), &cfg, &mut size, &mut err);
+    }
+    if not ok {
+      self.failWith(err);
+      return false;
+    }
+    input.advance(at + 2usize);
+    if size == 0u64 {
+      rs = ReadState.Trailers[];
+    } else {
+      rs = ReadState.ChunkData[];
+      remaining = size;
+    }
+    true;
+  }
+
+  // The trailer section after the last chunk: End once it is whole
+  fn readTrailers(self &mut) Event {
+    if input.len() < 2usize {
+      if eof {return self.closedMidBody();}
+      return Event.NeedData[];
+    }
+    if input.matchesAt(0usize, "\r\n") {
+      input.advance(2usize);
+      return self.endMessage(Headers.empty());
+    }
+    imm len = self.gatherHead();
+    if failed {return self.failedEvent();}
+    if len == 0usize {
+      if eof {return self.closedMidBody();}
+      return Event.NeedData[];
+    }
+    mut trailers = Headers.empty();
+    mut err = HttpError.empty();
+    mut host = String.empty();
+    mut hosts = 0usize;
+    mut ok = false;
+    {
+      imm h = headBuf.view();
+      ok = parseFields(h, 0usize, &cfg, not clientRole, false, &mut trailers, &mut host, &mut hosts, &mut err);
+    }
+    self.consumeHead(len);
+    if not ok {
+      self.failWith(err);
+      return self.failedEvent();
+    }
+    self.endMessage(trailers);
+  }
+
+  // The message read is whole
+  fn endMessage(self &mut, trailers Headers) Event {
+    rs = ReadState.Done[];
+    bodyArmed = false;
+    if clientRole and ws != WriteState.Done[] {
+      // The response ended while the request's body was still being sent
+      abandoned = true;
+      keepAlive = false;
+      ws = WriteState.Done[];
+      holding = false;
+      mut h = Chain.make(noBound);
+      h <=> held;
+    }
+    self.endExchange();
+    Event.End[trailers];
+  }
+
+  // When both messages are whole the exchange is over: the connection is
+  // kept for the next, or it closes
+  fn endExchange(self &mut) {
+    if not clientRole and ws == WriteState.Done[] and rs != ReadState.Done[] {
+      // Answered before the request's body was read: the rest of it cannot
+      // be told from the next request, so the connection closes
+      exchanges = exchanges + 1u64;
+      closed = true;
+      return;
+    }
+    if rs != ReadState.Done[] or ws != WriteState.Done[] {return;}
+    exchanges = exchanges + 1u64;
+    if keepAlive and not eof {
+      rs = ReadState.Idle[];
+      ws = WriteState.Idle[];
+      remaining = 0u64;
+      wremaining = 0u64;
+      sawBytes = false;
+      holding = false;
+      abandoned = false;
+      requestSeen = false;
+      answeringHead = false;
+      headInFlight = false;
+      armHead = false;
+      armExpect = false;
+      headArmed = false;
+      bodyArmed = false;
+      expectArmed = false;
+      idleAt = now + cfg.idleTimeout;
+      idleArmed = true;
+    } else {
+      closed = true;
+    }
+  }
+
+  // ------------------------------------------------------------- writing, inside
+
+  // Append bytes to what is to be sent, gathering small writes in the tail
+  fn put(self &mut, bytes &[]u8) {
+    mut i = 0usize;
+    while i < bytes.len {
+      if tail.room() == 0usize {
+        self.flushTail();
+        match pool.take(tailSize) {
+          case mut s Some {tail <=> s.value;}
+          case is None[IoBuf] {}
+        }
+        if tail.capacity() == 0usize {
+          self.fail(ErrorKind.TooLarge[], 0u16, "the buffer pool refused a buffer for output");
+          return;
+        }
+      }
+      i = i + tail.append(&bytes[i .. bytes.len]);
+    }
+  }
+
+  // A number in decimal (base 10) or hexadecimal (16), lower case
+  fn putNum(self &mut, n u64, base u64) {
+    mut d = new Array[u8, 20] <- fill 0u8;
+    mut k = 20usize;
+    mut v = n;
+    while true {
+      k = k - 1usize;
+      imm r = v % base;
+      d[k] = if r < 10u64 {u8.from(r) + '0';} else {u8.from(r) - 10u8 + 'a';};
+      v = v / base;
+      if v == 0u64 {break;}
+    }
+    self.put(&d[k .. 20usize]);
+  }
+
+  // 'HTTP/1.1 200 OK' and its CRLF
+  fn putStatusLine(self &mut, status u16) {
+    self.put("HTTP/1.1 ");
+    self.putNum(u64.from(status), 10u64);
+    self.put(" ");
+    self.put(reasonPhrase(status));
+    self.put("\r\n");
+  }
+
+  fn putFields(self &mut, h &Headers) {
+    mut i = 0usize;
+    while i < h.len() {
+      self.put(h.nameAt(i));
+      self.put(": ");
+      self.put(h.valueAt(i));
+      self.put("\r\n");
+      i = i + 1usize;
+    }
+  }
+
+  // A body buffer: copied in after what is gathered when small, else queued
+  // whole after it
+  fn putBuf(self &mut, buf IoBuf) {
+    imm n = buf.len();
+    if n <= smallCopy and n <= tail.room() {
+      tail.append(buf.view());
+      return;
+    }
+    self.flushTail();
+    self.pushOut(buf);
+  }
+
+  // The tail, whole, queued
+  fn flushTail(self &mut) {
+    if tail.len() == 0usize {return;}
+    mut t = IoBuf.empty();
+    t <=> tail;
+    self.pushOut(t);
+  }
+
+  fn pushOut(self &mut, b IoBuf) {
+    if holding {held.push(b);} else {out.push(b);}
+  }
+
+  fn dropTail(self &mut) {
+    mut t = IoBuf.empty();
+    t <=> tail;
+  }
+
+  fn dropOutput(self &mut) {
+    mut o = Chain.make(noBound);
+    o <=> out;
+    mut h = Chain.make(noBound);
+    h <=> held;
+    self.dropTail();
+  }
+
+  // 100 Continue came, or the wait for it ended: the held body goes out
+  // after the head, before what has gathered since
+  fn releaseHeld(self &mut) {
+    if not holding {return;}
+    holding = false;
+    while held.len() > 0usize {
+      mut b = IoBuf.empty();
+      match held.popFront() {
+        case mut s Some {b <=> s.value;}
+        case is None[IoBuf] {}
+      }
+      out.push(b);
+    }
+  }
+}
+
+// A request target's or an authority's text: not empty, and only visible
+// ASCII
+fn isTargetText(s &[]u8) Bool {
+  if s.len == 0usize {return false;}
+  mut i = 0usize;
+  while i < s.len {
+    if s[i] <= 0x20u8 or s[i] >= 0x7Fu8 {return false;}
+    i = i + 1usize;
+  }
+  true;
+}

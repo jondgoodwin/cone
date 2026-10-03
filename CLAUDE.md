@@ -188,7 +188,8 @@ Visual Studio projects stay at the root.
   read-only bytes (`Arc[imm, IoBuf]` and a range) for a send fanned out; and
   `Chain`, a stream's bytes in the buffers they arrived in, parsed across
   segment boundaries on System.IO.Pipelines' model and consumed with
-  `advance`, bounded; its blocks come from `VirtualAlloc`, Windows only, and
+  `advance` (`firstLen` and `popFront` hand a segment on whole), bounded;
+  its blocks come from `VirtualAlloc`, Windows only, and
   its example `churn.cone` times a million takes and drops;
   `time` is time values, the one way every package says how long and when:
   `Duration` (signed nanoseconds, an i64), `Instant` (the steady clock, for
@@ -244,6 +245,33 @@ Visual Studio projects stay at the root.
   log-linear `Histogram` (p50, p99, the maximum), and `Subscriber`, a
   function a loop hands each record to, `textSubscriber` printing a line;
   none by default, so nothing prints;
+  `http` is HTTP's messages as data, the same for every version: `Method`
+  (the nine registered, or another token), `Version`, status codes and
+  their reason phrases, `Headers` (names compared ignoring case and kept as
+  written, order and repeats kept, each field checked against RFC 9110's
+  section 5 as it is added), `RequestHead` (method, target, authority,
+  scheme, version, fields; Host is the authority, never a field),
+  `ResponseHead`, `BodyLength` (empty, sized, unsized) and `HttpError`
+  (malformed, too large, unsupported, closed, timed out; a server's status
+  for it; whether any of a response had arrived), with no HTTP/1 text in
+  them, so the HTTP/2 and HTTP/3 cores to come take the same types;
+  `http1` is HTTP/1.1's connection core, sans-IO (no I/O, no clock, no
+  threads), client and server roles, behind the four calls every protocol
+  core of the runtime shares (`handleInput(buf, now)`, `pollTransmit(now)`,
+  `pollTimeout()` and `handleTimeout(now)`, `pollEvent()`): requests and
+  responses written and read strictly per RFC 9112 across an iobuf
+  `Chain`'s segments, Content-Length, chunked with trailers and
+  close-delimited bodies, keep-alive, `Expect: 100-continue`, every
+  request-smuggling shape refused with its reason (a server answering its
+  status first), bounds and timeouts in a `Config` (each passed a visible
+  failure), bodies streamed as `Data` events of owned IoBufs with read
+  credit the consumer releases, and one request at a time on a client
+  connection (no pipelining); its tests run on virtual time (every
+  framing, every split of a byte stream, the refusals, the timeouts,
+  keep-alive) plus one over real sockets, and its examples are
+  `loopback.cone` (over `iocore` on 127.0.0.1: 10,000 kept-alive GETs,
+  chunked POSTs echoed, a 256 MiB body streamed with credit, every byte
+  checked, latencies printed) and `bench.cone` (both cores in memory);
   `collections` is a growable `List[T]`, an owned `String` and a string-keyed
   `Dict[K, V]`, each holding its elements in one block from `libc`'s
   allocator and moving them with core's `mem` intrinsics; `arena` is an
