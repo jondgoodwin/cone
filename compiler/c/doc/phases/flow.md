@@ -343,6 +343,20 @@ values hands back the same way (`blockResultMove`). An expression statement
 never reaches `flowHandleMove`, so a block whose value is thrown away moves
 nothing.
 
+**A copy handed out of a scope is a new holder.** A copy-typed value holding a
+counted reference that a scope hands out — a `return`'s, a block's value that
+is used, a `break`'s — is counted as a copy into a variable is
+(`blockResultCount`, which injects the `RefCountNode`), unless it is a variable
+of that scope handed over whole (`flowScopeHandsBack`, the same
+`flowIsScopeResult` match `flowScopeDealias` exempts by), whose holder goes to
+the receiver as it is. Anything else it can be read from is still held where it
+was after the scope ends: a field or an element of a local, which the scope's
+release then releases with the local; a value read through a borrow (a field of
+a borrowed `self`); a variable of an enclosing scope (`imm y = {r;}`); a
+global. A temporary is not an lvalue and hands over the holder it was born
+with. The copy's receiver counts nothing more: a block, an `if` or a call is
+no lvalue to `flowHandleMoveOrCopy`.
+
 **A move out through a sole owner.** When the inward walk reaches a local
 variable holding an owning reference through that reference — `*b`, `**b`
 (through an owning reference that is `b`'s value), an element `s[0]` of the
@@ -1417,14 +1431,14 @@ allocation. A variable with `VarDropFlag` needs each marked move of it
 | | `flowHeldCounted`, `flowVariantHeldCounted` | does a copy of this struct, enum, tuple or array add a holder to a counted reference its death releases |
 | | `flowMatchBound`, `flowMatchInPlace` | the matched value a match's binding stands for, or NULL; whether the binding is by value, naming the matched value's own storage |
 | | `flowScopePush`, `flowScopePop`, `flowAddVar` | the variable stack |
-| | `flowScopeDealias`, `flowVarRelease` | build a scope's release list; skip an uninitialized, moved-out or handed-back variable; release a hollowed one hollow; one variable's release, whole or hollow, in a `DropFlagNode` where asked |
+| | `flowScopeDealias`, `flowVarRelease`, `flowScopeHandsBack` | build a scope's release list; skip an uninitialized, moved-out or handed-back variable; release a hollowed one hollow; one variable's release, whole or hollow, in a `DropFlagNode` where asked; whether a scope hands one of its variables back whole |
 | | `flowVarSetFlags`, `flowVarLogMark`, `flowVarPathTake`, `flowVarRollback`, `flowVarJoin` | the main walk's variable flags, logged so that an `if`'s arms are walked from one state and joined |
 | | `flowDropTracked`, `flowDropNote`, `flowDropOwner`, `flowLvalRootVar` | the drop gate: a tracked variable changed deeper than its declaration; the variable owning a binding's value; the local a store's target is part of |
 | | `flowStateInit`, `flowGateResultAsk`, `flowGateCallAsk`, `flowGateOperandAsk`, `flowGateIsOwnedLent`, `flowGateBoxedAsk`, `flowGateUse`, `flowGateCount`, `flowGatePrint` | the gate (§3, "The gate"): the questions its triggers ask out of line, the waiting operands' borrows, written or an owner's implicit lend, the `-V 2` tallies |
 | `ir/flowgate.h` | `flowGateHolder`, `flowGateAssigned`, `flowGateResult`, `flowGateCall`, `flowGateOperand` | the gate's triggers as inline tests, dismissing what cannot carry a borrow without a call |
 | `ir/itype.c` | `itypeCarriesBorrow` | may a value of this type hold a borrowed reference; a struct's answer remembered in `StructNode.carriesborrow` |
 | | `itypeDropReadsBorrow`, `itypeHoldsBorrowOf`, `itypeWritableBorrowDepth` | may a value's death read a borrow it holds (the drop check); can a borrow of a given type be stored in a value of this type; how many writable borrows deep a store into one can reach |
-| `ir/exp/block.c` | `blockFlow`, `blockResultMove` | scope push/pop, `blockret` injection, result walk then dealias capture; a `return`'s move source, a returned block's or `if`'s values moved; a loop body one level deeper; whether every path returned (`jumped`) |
+| `ir/exp/block.c` | `blockFlow`, `blockResultMove`, `blockResultCount` | scope push/pop, `blockret` injection, result walk then dealias capture; a `return`'s move source, a returned block's or `if`'s values moved; a counted copy handed out of the scope counted, unless a variable of it handed back whole (`flowScopeHandsBack`); a loop body one level deeper; whether every path returned (`jumped`) |
 | | `blockDiscards`, `blockTempEscape` | a block throwing its final expression's value away; each statement that made a temporary walked by `flowTempEscape` |
 | `ir/exp/if.c` | `ifFlow` | each arm from the state its conditions leave, the arms that did not return joined; later conditions and arms one level deeper |
 | `ir/exp/assign.c` | `assignlvalrtype`, `assignSingleFlow`, `assignBorrowLifetimeCheck`, `assignIsLocalPlace` | `MayWrite`, `VarInitialized`/`VarMoved`/`VarHollow`, `FlagFirstAssign`, the `HollowNode` round a hollowed variable's new value, borrow lifetime of a store into a global or through a reference (one into a variable's own storage is the loan walk's) |
