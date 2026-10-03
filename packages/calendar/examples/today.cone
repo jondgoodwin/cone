@@ -1,0 +1,74 @@
+// A calendar: now as the calendar reads it, in RFC 3339 and as HTTP writes
+// it; the day of the week and of the year; the days to the end of the year;
+// a time given with an offset read into UTC; and a malformed one refused,
+// with the reason.
+//
+//   congo run packages/calendar/examples/today.cone
+
+mod today;
+
+import stdio use *;
+import collections use *;
+import time use Duration, Timestamp;
+import calendar use Date, DateTime, Weekday;
+
+fn main() {
+  imm now = Timestamp.now();
+  imm dt = DateTime.fromTimestamp(now);
+  imm today = dt.date();
+
+  printStr("now (RFC 3339):  ");
+  printStr(calendar.rfc3339(now).view());
+  printStr("\nnow (HTTP):      ");
+  printStr(calendar.httpDate(now).view());
+  printStr("\ntoday:           ");
+  printStr(today.rfc3339().view());
+  printStr(", day ");
+  printInt(i64.from(today.dayOfYear()));
+  printStr(" of ");
+  printInt(i64.from(today.daysInYear()));
+  if today.weekday() == Weekday.Saturday[] or today.weekday() == Weekday.Sunday[] {
+    printStr(", a weekend\n");
+  } else {
+    printStr(", a weekday\n");
+  }
+
+  // The days left in the year, by date arithmetic
+  match Date.fromYmd(i64.from(today.year()) + 1i64, 1, 1) {
+    case imm next Some {
+      printStr("days to ");
+      printStr(next.value.rfc3339().view());
+      printStr(": ");
+      printInt(next.value.daysSince(today));
+      printStr("\n");
+    }
+    case is None { }
+  }
+
+  // A moment written with an offset, read into UTC, and a day and a half on
+  imm text = "2026-10-03T19:35:09.25+05:30";
+  match DateTime.parseRfc3339(text) {
+    case imm ok Ok {
+      printStr(text);
+      printStr(" is ");
+      printStr(ok.value.rfc3339().view());
+      printStr(" UTC; a day and a half later is ");
+      printStr((ok.value + Duration.fromHours(36)).rfc3339().view());
+      printStr("\n");
+    }
+    case imm e Error {
+      printStr(e.value.message().view());
+      printStr("\n");
+    }
+  }
+
+  // Malformed text is refused, with where and why
+  match calendar.parseHttpDate("Mon, 06 Nov 1994 08:49:37 GMT") {
+    case is Ok { printStr("read\n"); }
+    case imm e Error {
+      printStr("Mon, 06 Nov 1994 08:49:37 GMT: ");
+      printStr(e.value.message().view());
+      printStr("\n");
+    }
+  }
+}

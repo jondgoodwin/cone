@@ -1,0 +1,181 @@
+// HTTP dates (RFC 9110, section 5.6.7): IMF-fixdate written, RFC 9110's
+// own example first, against strings computed independently (Python's
+// datetime), the fraction dropped toward the past; all three forms read
+// (IMF-fixdate, RFC 850's and asctime's), RFC 850's two-digit year against
+// a chosen now, on both sides of the 50-year line; Timestamps written and
+// read back across the range; and every malformed text refused, the byte
+// and the reason pinned to the whole message, a wrong day's name included.
+
+mod httpdate;
+
+import testing use *;
+import collections use *;
+import time use Duration, Timestamp;
+import calendar;
+
+// 2026-10-03T14:05:09Z, the now the two-digit years are read against
+const now2026 = 1791036309i64;
+// 1999-06-01T00:00:00Z
+const now1999 = 928195200i64;
+
+// What reading text against now (in Unix seconds) gives: the Unix seconds
+// as text, or the error's message
+fn readAt(text &[]u8, now i64) String {
+  match calendar.parseHttpDateAsOf(text, Timestamp.fromUnixSeconds(now)) {
+    case imm ok Ok {
+      mut out = String.empty();
+      out.appendInt(ok.value.unixSeconds());
+      if ok.value.unixNanos() % 1000000000i64 != 0i64 { out.append(" and a fraction"); }
+      out;
+    }
+    case imm e Error { e.value.message(); }
+  }
+}
+
+fn reads(text &[]u8, want &[]u8, label &[]u8) {
+  imm got = readAt(text, now2026);
+  expectStr(got.view(), want, label);
+}
+
+fn writes(s i64, want &[]u8, label &[]u8) {
+  expectStr(calendar.httpDate(Timestamp.fromUnixSeconds(s)).view(), want, label);
+}
+
+fn writing() {
+  writes(784111777, "Sun, 06 Nov 1994 08:49:37 GMT", "RFC 9110's example");
+  writes(0, "Thu, 01 Jan 1970 00:00:00 GMT", "the epoch");
+  writes(951782400, "Tue, 29 Feb 2000 00:00:00 GMT", "2000's leap day");
+  writes(-14182940, "Sun, 20 Jul 1969 20:17:40 GMT", "before 1970");
+  writes(1759500309, "Fri, 03 Oct 2025 14:05:09 GMT", "2025");
+  expectStr(calendar.httpDate(Timestamp.fromUnixNanos(-1)).view(), "Wed, 31 Dec 1969 23:59:59 GMT",
+    "the fraction dropped toward the past");
+  expectStr(calendar.httpDate(Timestamp.fromUnixNanos(784111777999999999)).view(), "Sun, 06 Nov 1994 08:49:37 GMT",
+    "a fraction just under a second dropped");
+  expectStr(calendar.httpDate(Timestamp.fromUnixNanos(-9223372036854775807i64 - 1i64)).view(), "Tue, 21 Sep 1677 00:12:43 GMT",
+    "the first Timestamp");
+  expectStr(calendar.httpDate(Timestamp.fromUnixNanos(9223372036854775807)).view(), "Fri, 11 Apr 2262 23:47:16 GMT",
+    "the last");
+}
+
+fn readingForms() {
+  reads("Sun, 06 Nov 1994 08:49:37 GMT", "784111777", "IMF-fixdate, RFC 9110's example");
+  reads("Sunday, 06-Nov-94 08:49:37 GMT", "784111777", "RFC 850's form of it");
+  reads("Sun Nov  6 08:49:37 1994", "784111777", "asctime's form of it");
+  reads("Sun Nov 06 08:49:37 1994", "784111777", "asctime's with two digits of day");
+  reads("Thu, 01 Jan 1970 00:00:00 GMT", "0", "the epoch");
+  reads("Tue, 29 Feb 2000 00:00:00 GMT", "951782400", "a leap day");
+  reads("Sun, 20 Jul 1969 20:17:40 GMT", "-14182940", "before 1970");
+  reads("Tue, 21 Sep 1677 00:12:44 GMT", "-9223372036", "the first whole second a Timestamp holds");
+  reads("Fri, 11 Apr 2262 23:47:16 GMT", "9223372036", "the last");
+  // Against the real clock: RFC 850's '94' is 1994 until 2044
+  match calendar.parseHttpDate("Sunday, 06-Nov-94 08:49:37 GMT") {
+    case imm ok Ok { expectInt(ok.value.unixSeconds(), 784111777, "parseHttpDate reads against the clock"); }
+    case imm e Error { expectStr(e.value.message().view(), "<read>", "parseHttpDate reads against the clock"); }
+  }
+  match calendar.parseHttpDate("Sun, 06 Nov 1994 08:49:37 GMT") {
+    case imm ok Ok { expectInt(ok.value.unixSeconds(), 784111777, "parseHttpDate, IMF-fixdate"); }
+    case is Error { expect(false, "parseHttpDate, IMF-fixdate"); }
+  }
+}
+
+// RFC 850's two-digit year: the latest year ending in those digits that is
+// not more than 50 years after now
+fn twoDigitYears() {
+  // now 2026-10-03T14:05:09Z: 50 years on is 2076-10-03T14:05:09Z
+  reads("Thursday, 01-Jan-26 00:00:00 GMT", "1767225600", "'26' is this century's");
+  reads("Wednesday, 01-Jan-70 00:00:00 GMT", "3155760000", "'70' is 2070, under 50 years ahead");
+  reads("Saturday, 03-Oct-76 14:05:09 GMT", "3368959509", "exactly 50 years ahead is 2076");
+  reads("Sunday, 03-Oct-76 14:05:10 GMT", "213199510", "a second more is 1976");
+  reads("Saturday, 01-Jan-77 00:00:00 GMT", "220924800", "'77' is 1977");
+  reads("Saturday, 03-Oct-76 14:05:10 GMT", "at byte 0: 1976-10-03 is a Sunday, not a Saturday",
+    "the day's name checked against the year chosen");
+  // now 1999-06-01T00:00:00Z: 50 years on is 2049-06-01T00:00:00Z
+  expectStr(readAt("Saturday, 01-Jan-00 00:00:00 GMT", now1999).view(), "946684800",
+    "'00' read in 1999 is 2000, the next century's");
+  expectStr(readAt("Tuesday, 01-Jun-49 00:00:00 GMT", now1999).view(), "2506118400",
+    "'49' exactly 50 years ahead is 2049");
+  expectStr(readAt("Wednesday, 01-Jun-49 00:00:01 GMT", now1999).view(), "-649641599",
+    "a second more is 1949");
+  expectStr(readAt("Tuesday, 01-Jun-49 00:00:01 GMT", now1999).view(), "at byte 0: 1949-06-01 is a Wednesday, not a Tuesday",
+    "and its day's name is 1949's");
+}
+
+// Each whole second at a stride across the range, written and read back
+fn roundTrips() {
+  mut bad = 0i64;
+  mut s = -9223372036i64;
+  while s <= 9223372036i64 {
+    imm t = Timestamp.fromUnixSeconds(s);
+    match calendar.parseHttpDateAsOf(calendar.httpDate(t).view(), t) {
+      case imm ok Ok { if ok.value != t { bad = bad + 1i64; } }
+      case is Error { bad = bad + 1i64; }
+    }
+    s = s + 9223372i64 + 7i64;
+  }
+  expectInt(bad, 0, "httpDate read back, every stride");
+}
+
+fn readingBad() {
+  reads("", "at byte 0: the text is empty", "empty");
+  reads("Sun", "at byte 3: expected ',' after the day's name", "a day's name alone");
+  reads("Sun,", "at byte 3: expected ', ' after the day's name", "no space after the comma");
+  reads("Sun,06 Nov 1994 08:49:37 GMT", "at byte 3: expected ', ' after the day's name", "no space");
+  reads("sun, 06 Nov 1994 08:49:37 GMT",
+    "at byte 0: expected a day's name: Mon, Tue, Wed, Thu, Fri, Sat or Sun (or Monday to Sunday in RFC 850's form)",
+    "a day's name in lower case");
+  reads("Funday, 06-Nov-94 08:49:37 GMT",
+    "at byte 0: expected a day's name: Mon, Tue, Wed, Thu, Fri, Sat or Sun (or Monday to Sunday in RFC 850's form)",
+    "no such day");
+  reads("Sun, 06 nov 1994 08:49:37 GMT",
+    "at byte 8: expected a month: Jan, Feb, Mar, Apr, May, Jun, Jul, Aug, Sep, Oct, Nov or Dec", "a month in lower case");
+  reads("Sun, 06 November 1994 08:49:37 GMT", "at byte 11: expected ' ' after the month", "a month's whole name");
+  reads("Sun, 6 Nov 1994 08:49:37 GMT", "at byte 6: expected two digits for the day", "a one-digit day");
+  reads("Sun, 06 Nov 94 08:49:37 GMT", "at byte 14: expected four digits for the year", "a two-digit year");
+  reads("Sun, 06 Nov 1994 8:49:37 GMT", "at byte 18: expected two digits for the hour", "a one-digit hour");
+  reads("Sun, 06 Nov 1994 08:49 GMT", "at byte 22: expected ':' after the minute", "no seconds");
+  reads("Sun, 06 Nov 1994 08:49:37 UTC", "at byte 25: expected ' GMT' after the time", "UTC for GMT");
+  reads("Sun, 06 Nov 1994 08:49:37 gmt", "at byte 25: expected ' GMT' after the time", "gmt in lower case");
+  reads("Sun, 06 Nov 1994 08:49:37", "at byte 25: expected ' GMT' after the time", "no zone");
+  reads("Sun, 06 Nov 1994 08:49:37.5 GMT", "at byte 25: expected ' GMT' after the time", "a fraction");
+  reads("Sun, 06 Nov 1994 08:49:37 GMT ", "at byte 29: unexpected text after the date", "a trailing space");
+  reads("Sun, 06 Nov 1994 08:49:37 +0000", "at byte 25: expected ' GMT' after the time", "a numeric zone");
+  reads("Mon, 06 Nov 1994 08:49:37 GMT", "at byte 0: 1994-11-06 is a Sunday, not a Monday", "the wrong day's name");
+  reads("Sun, 31 Nov 1994 08:49:37 GMT", "at byte 5: the day is 31, and Nov 1994 has 30 days", "31 November");
+  reads("Thu, 29 Feb 1900 00:00:00 GMT", "at byte 5: the day is 29, and Feb 1900 has 28 days", "29 February 1900");
+  reads("Sun, 00 Nov 1994 08:49:37 GMT", "at byte 5: the day is 00, and Nov 1994 has 30 days", "day 0");
+  reads("Sun, 06 Nov 1994 24:00:00 GMT", "at byte 17: the hour is 24, outside 00 to 23", "hour 24");
+  reads("Sun, 06 Nov 1994 08:60:00 GMT", "at byte 20: the minute is 60, outside 00 to 59", "minute 60");
+  reads("Sun, 06 Nov 1994 08:49:60 GMT",
+    "at byte 23: the second is 60, a leap second, which this package does not count (a Timestamp ignores leap seconds)",
+    "a leap second");
+  reads("Sunday, 06 Nov 1994 08:49:37 GMT", "at byte 10: expected '-' after the day", "a long name, IMF's layout");
+  reads("Sun, 06-Nov-94 08:49:37 GMT", "at byte 7: expected ' ' after the day", "a short name, RFC 850's layout");
+  reads("Sunday 06-Nov-94 08:49:37 GMT", "at byte 6: expected ',' after the day's name", "RFC 850's form, no comma");
+  reads("Sunday, 06-Nov-1994 08:49:37 GMT", "at byte 17: expected ' ' after the year", "RFC 850's form, four digits of year");
+  reads("Sunday, 06-Nov-94 08:49:37 UTC", "at byte 26: expected ' GMT' after the time", "RFC 850's form, UTC");
+  reads("Monday, 06-Nov-94 08:49:37 GMT", "at byte 0: 1994-11-06 is a Sunday, not a Monday", "RFC 850's form, the wrong name");
+  reads("Sun Nov 6 08:49:37 1994", "at byte 9: expected two digits for the day, or a space and one digit",
+    "asctime's form, one space before one digit");
+  reads("Sun Nov   6 08:49:37 1994", "at byte 9: expected a digit for the day after a space",
+    "asctime's form, three spaces");
+  reads("Sun Nov  6 08:49:37 94", "at byte 22: expected four digits for the year", "asctime's form, two digits of year");
+  reads("Sun Nov  6 08:49:37 1994 GMT", "at byte 24: unexpected text after the date", "asctime's form with a zone");
+  reads("Mon Nov  6 08:49:37 1994", "at byte 0: 1994-11-06 is a Sunday, not a Monday", "asctime's form, the wrong name");
+  reads("Sun, 06 Nov 1994 08:49:37 GMT\r\n", "at byte 29: unexpected text after the date", "a line's end");
+  // Outside a Timestamp's range
+  reads("Fri, 31 Dec 9999 23:59:59 GMT",
+    "at byte 0: the moment is outside a Timestamp's range, 1677-09-21T00:12:43.145224192Z to 2262-04-11T23:47:16.854775807Z",
+    "9999");
+  reads("Tue, 21 Sep 1677 00:12:43 GMT",
+    "at byte 0: the moment is outside a Timestamp's range, 1677-09-21T00:12:43.145224192Z to 2262-04-11T23:47:16.854775807Z",
+    "the second before the first whole one");
+}
+
+fn main() i32 {
+  writing();
+  readingForms();
+  twoDigitYears();
+  roundTrips();
+  readingBad();
+  done();
+}
