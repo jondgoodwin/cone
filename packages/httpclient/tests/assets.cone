@@ -1,0 +1,704 @@
+// The 3-D web's asset tier, as it will use the client, checked against a
+// mock origin (the loopback server, answering each tile's URL with its
+// name). The design (section 9, A7) asks that the API be checked against
+// the browser's fetch, so nothing native-only leaks into it; the tier below
+// uses only these calls, each of which has fetch's counterpart, and the
+// scheduler above them is the same on both back ends (the browser exposes
+// only 'high', 'low' and 'auto', so the client holds the real order):
+//
+//   httpclient                       fetch()
+//   c.send(lp, request, sink)        fetch(url, {method, headers, body, priority, signal})
+//   r.intent, r.score                priority: 'high' (Urgent, Visible), 'low' (Prefetch,
+//                                      Background); the order itself held above fetch
+//   c.reprioritize(id, i, s)         re-queued before it is handed to fetch
+//   r.group (a CancelGroup)          signal: an AbortController's, one per group
+//   g.cancel(), c.cancel(lp, id)     controller.abort()
+//   r.deadline                       AbortSignal.timeout(ms), AbortSignal.any([...])
+//   Response, Data, End              the Response, its body's ReadableStream chunks, done
+//   c.release(id, n)                 reader.read() again: the stream's back-pressure
+//   Done / Failed / Cancelled /      the promise and the reader: resolved, TypeError,
+//     TimedOut                         AbortError, TimeoutError -- exactly one
+//
+// What it does: a frame wants 160 tiles of four regions, at the four
+// intents, each scored by its screen-space error; the Urgent ones carry
+// the frame's deadline. Before any is sent the camera moves: one region's
+// tiles are stale and cancelled by their group, five Prefetch tiles come
+// into view and are reprioritized, and two of the visible ones are
+// superseded by a finer level (cancelled, the finer asked for). Then the
+// frames run, each draining what arrived within its budget. Checked, with
+// one connection (so the order the origin sees is the client's): every
+// tile in the order the rules give, the stale and superseded never sent;
+// then the same with six connections: every Urgent tile handed a
+// connection before any Background one; and both times, every tile exactly
+// one final answer, nothing after it, every buffer home.
+
+mod assets;
+
+import testing use *;
+import collections use List, String;
+import time use Instant, Duration;
+import iobuf use *;
+import iocore use Loop, SocketAddr, Completion, CancelGroup, forever;
+import http use *;
+import httpconn;
+import httpclient use *;
+
+// ---------------------------------------------------------------------------
+// The loopback server: httpconn's own driver on the client's Loop. What it
+// answers is chosen by the request's path:
+//   /hello             200 "hello" (and any path not below)
+//   /echo              200, the method, a space, and the request's body
+//   /nobody            204
+//   /close             no answer: the connection is reset
+//   /closeonce         the first time, as /close; after, 200 "second"
+//   /redirect/N        302 to /redirect/N-1; /redirect/0 is 200 "landed"
+//   /status/C?L        status C, Location L when L is given, body "moved"
+//   /headers           200 "auth=A;cookie=C;method=M;body=B" ('-' for none)
+//   /big/N             200, N bytes, byte i being i % 251, sent as taken
+//   /stall             200 with 1 MiB to come; 64 KiB of it sent, then nothing
+//   /hang              nothing at all
+//   /order/L           200 L
+// Every request's target is kept in 'order', in the order they came.
+// ---------------------------------------------------------------------------
+
+const tokSrv = 100u64;
+
+struct Srv {
+  pub drv httpconn.Driver;
+  pub pool Pool;
+  pub accepted u64;
+  pub open u64;
+  pub maxOpen u64;
+  pub requests u64;
+  pub closedOnce Bool;
+  pub order List[String];
+  pub reqs List[httpconn.ReqId];
+  pub conns List[httpconn.ConnId];
+  pub methods List[Method];
+  pub targets List[String];
+  pub bodies List[String];
+  pub auths List[String];
+  pub cookies List[String];
+  pub streams List[httpconn.ReqId];
+  pub sent List[u64];
+  pub totals List[u64];
+}
+
+fn server(pool Pool) Srv {
+  new Srv(drv: httpconn.Driver.make(httpconn.Config.make(), pool), pool: pool, accepted: 0u64,
+    open: 0u64, maxOpen: 0u64, requests: 0u64, closedOnce: false, order: List[String].empty(),
+    reqs: List[httpconn.ReqId].empty(), conns: List[httpconn.ConnId].empty(), methods: List[Method].empty(),
+    targets: List[String].empty(), bodies: List[String].empty(), auths: List[String].empty(),
+    cookies: List[String].empty(), streams: List[httpconn.ReqId].empty(), sent: List[u64].empty(),
+    totals: List[u64].empty());
+}
+
+fn listen(sv &mut Srv, lp &mut Loop) u16 {
+  mut port = 0u16;
+  match sv.drv.listen(lp, SocketAddr.localhost(0u16), httpconn.Sink.Here[tokSrv]) {
+    case imm r Ok {
+      match sv.drv.localAddr(lp, r.value) {
+        case imm a Ok {port = a.value.port();}
+        case imm e Error {}
+      }
+    }
+    case imm e Error {}
+  }
+  port;
+}
+
+fn reply(sv &mut Srv, req httpconn.ReqId, head Bool, status u16, location &[]u8, body &[]u8) {
+  mut h = ResponseHead.make(status);
+  if location.len > 0usize {h.headers.add("Location", location);}
+  sv.drv.respond(req, h, BodyLength.sized(u64.from(body.len)));
+  if body.len > 0usize and not head {
+    mut b = sv.pool.mustTake(body.len);
+    b.append(body);
+    sv.drv.sendData(req, b);
+    sv.drv.finish(req);
+  }
+}
+
+fn number(s &[]u8) u64 {
+  match collections.parseUInt(s) {
+    case imm v Some {v.value;}
+    case is None[u64] {0u64;}
+  }
+}
+
+// Stream j's next pieces, as many as the connection takes now
+fn pumpStream(sv &mut Srv, j usize) {
+  imm req = *sv.streams[j];
+  while *sv.sent[j] < *sv.totals[j] {
+    imm at = *sv.sent[j];
+    imm left = *sv.totals[j] - at;
+    imm n = if left < 65536u64 {usize.from(left);} else {65536usize;};
+    mut b = sv.pool.mustTake(n);
+    imm s = b.spare();
+    mut i = 0usize;
+    while i < n {
+      s[i] = u8.from((at + u64.from(i)) % 251u64);
+      i = i + 1usize;
+    }
+    b.setLen(n);
+    match sv.drv.sendData(req, b) {
+      case is None[IoBuf] {sv.sent.set(j, at + u64.from(n));}
+      else {return;}
+    }
+  }
+  sv.drv.finish(req);
+  dropStream(sv, j);
+}
+
+fn dropStream(sv &mut Srv, j usize) {
+  imm last = sv.streams.len() - 1usize;
+  sv.streams.swap(j, last);
+  sv.sent.swap(j, last);
+  sv.totals.swap(j, last);
+  sv.streams.pop();
+  sv.sent.pop();
+  sv.totals.pop();
+}
+
+fn findStream(sv &Srv, req httpconn.ReqId) usize {
+  mut j = 0usize;
+  while j < sv.streams.len() {
+    if *sv.streams[j] == req {return j;}
+    j = j + 1usize;
+  }
+  sv.streams.len();
+}
+
+// The answer to request k, read whole
+fn answer(sv &mut Srv, lp &mut Loop, k usize) {
+  imm req = *sv.reqs[k];
+  imm full = sv.targets[k].copy();
+  imm t = full.view();
+  mut q = 0usize;
+  while q < t.len and t[q] != '?' {q = q + 1usize;}
+  imm path = &t[0usize .. q];
+  imm query = &t[(if q < t.len {q + 1usize;} else {q;}) ..];
+  imm head = *sv.methods[k] == Method.Head[];
+  if path == "/echo" {
+    mut b = String.from(methodToken(*sv.methods[k]));
+    b.append(" ");
+    b.append(sv.bodies[k].view());
+    reply(sv, req, head, 200u16, "", b.view());
+  } elif path == "/nobody" {
+    reply(sv, req, head, 204u16, "", "");
+  } elif path == "/close" {
+    sv.drv.abort(lp, *sv.conns[k]);
+  } elif path == "/closeonce" {
+    if not sv.closedOnce {
+      sv.closedOnce = true;
+      sv.drv.abort(lp, *sv.conns[k]);
+    } else {
+      reply(sv, req, head, 200u16, "", "second");
+    }
+  } elif path.len > 10usize and &path[0usize .. 10usize] == "/redirect/" {
+    imm n = number(&path[10usize ..]);
+    if n == 0u64 {
+      reply(sv, req, head, 200u16, "", "landed");
+    } else {
+      mut loc = String.from("/redirect/");
+      loc.appendUInt(n - 1u64);
+      reply(sv, req, head, 302u16, loc.view(), "moved");
+    }
+  } elif path.len > 8usize and &path[0usize .. 8usize] == "/status/" {
+    reply(sv, req, head, u16.from(number(&path[8usize ..])), query, "moved");
+  } elif path == "/headers" {
+    mut b = String.from("auth=");
+    b.append(sv.auths[k].view());
+    b.append(";cookie=");
+    b.append(sv.cookies[k].view());
+    b.append(";method=");
+    b.append(methodToken(*sv.methods[k]));
+    b.append(";body=");
+    b.append(if sv.bodies[k].len() == 0usize {"-";} else {sv.bodies[k].view();});
+    reply(sv, req, head, 200u16, "", b.view());
+  } elif path.len > 5usize and &path[0usize .. 5usize] == "/big/" {
+    imm n = number(&path[5usize ..]);
+    sv.drv.respond(req, ResponseHead.make(200u16), BodyLength.sized(n));
+    sv.streams.push(req);
+    sv.sent.push(0u64);
+    sv.totals.push(n);
+    pumpStream(sv, sv.streams.len() - 1usize);
+  } elif path == "/stall" {
+    sv.drv.respond(req, ResponseHead.make(200u16), BodyLength.sized(1048576u64));
+    mut b = sv.pool.mustTake(65536usize);
+    b.setLen(65536usize);
+    sv.drv.sendData(req, b);
+  } elif path == "/hang" {
+  } elif path.len > 7usize and &path[0usize .. 7usize] == "/order/" {
+    reply(sv, req, head, 200u16, "", &path[7usize ..]);
+  } else {
+    reply(sv, req, head, 200u16, "", "hello");
+  }
+}
+
+fn findReq(sv &Srv, req httpconn.ReqId) usize {
+  mut k = 0usize;
+  while k < sv.reqs.len() {
+    if *sv.reqs[k] == req {return k;}
+    k = k + 1usize;
+  }
+  sv.reqs.len();
+}
+
+fn forget(sv &mut Srv, k usize) {
+  imm last = sv.reqs.len() - 1usize;
+  sv.reqs.swap(k, last);
+  sv.conns.swap(k, last);
+  sv.methods.swap(k, last);
+  sv.targets.swap(k, last);
+  sv.bodies.swap(k, last);
+  sv.auths.swap(k, last);
+  sv.cookies.swap(k, last);
+  sv.reqs.pop();
+  sv.conns.pop();
+  sv.methods.pop();
+  sv.targets.pop();
+  sv.bodies.pop();
+  sv.auths.pop();
+  sv.cookies.pop();
+}
+
+fn fieldOr(h &Headers, name &[]u8) String {
+  match h.get(name) {
+    case imm v Some {String.from(v.value);}
+    case is None[&[]u8] {String.from("-");}
+  }
+}
+
+fn serve(sv &mut Srv, lp &mut Loop, e &mut httpconn.Event) {
+  imm kind = e.kind;
+  if kind == httpconn.EventKind.Accepted[] {
+    sv.accepted = sv.accepted + 1u64;
+    sv.open = sv.open + 1u64;
+    if sv.open > sv.maxOpen {sv.maxOpen = sv.open;}
+  } elif kind == httpconn.EventKind.Closed[] {
+    sv.open = sv.open - 1u64;
+  } elif kind == httpconn.EventKind.Request[] {
+    sv.requests = sv.requests + 1u64;
+    sv.order.push(e.request.target.copy());
+    sv.reqs.push(e.req);
+    sv.conns.push(e.conn);
+    sv.methods.push(e.request.method);
+    sv.targets.push(e.request.target.copy());
+    sv.bodies.push(String.empty());
+    sv.auths.push(fieldOr(&e.request.headers, "Authorization"));
+    sv.cookies.push(fieldOr(&e.request.headers, "Cookie"));
+  } elif kind == httpconn.EventKind.Data[] {
+    imm k = findReq(sv, e.req);
+    if k < sv.reqs.len() {(&mut sv.bodies[k]).append(e.buf.view());}
+    sv.drv.release(e.req, e.buf.len());
+  } elif kind == httpconn.EventKind.End[] {
+    imm k = findReq(sv, e.req);
+    if k < sv.reqs.len() {answer(sv, lp, k);}
+  } elif kind == httpconn.EventKind.Writable[] {
+    imm j = findStream(sv, e.req);
+    if j < sv.streams.len() {pumpStream(sv, j);}
+  } elif e.isTerminal() {
+    imm k = findReq(sv, e.req);
+    if k < sv.reqs.len() {forget(sv, k);}
+    imm j = findStream(sv, e.req);
+    if j < sv.streams.len() {dropStream(sv, j);}
+  }
+}
+
+// One turn of the loop: the client's completions to it, the server's to
+// its driver; the server's events answered; the client's appended to out
+fn step(cl &mut Client, sv &mut Srv, lp &mut Loop, out &mut List[Event], until Instant) {
+  mut sevs = List[httpconn.Event].empty();
+  cl.pump(lp, out);
+  sv.drv.pump(lp, &mut sevs);
+  mut limit = until;
+  imm a = cl.wakeAt();
+  if a < limit {limit = a;}
+  imm b = sv.drv.wakeAt();
+  if b < limit {limit = b;}
+  if out.len() > 0usize or sevs.len() > 0usize {limit = new Instant();}
+  mut comps = List[Completion].empty();
+  lp.poll(limit, &mut comps);
+  mut k = 0usize;
+  while k < comps.len() {
+    imm c = &mut comps[k];
+    if not cl.complete(lp, c) {sv.drv.complete(lp, c);}
+    k = k + 1usize;
+  }
+  comps.clear();
+  sv.drv.pump(lp, &mut sevs);
+  k = 0usize;
+  while k < sevs.len() {
+    serve(sv, lp, &mut sevs[k]);
+    k = k + 1usize;
+  }
+  cl.pump(lp, out);
+}
+
+// The server's every connection reset, and its buffers home
+fn stopServer(sv &mut Srv, lp &mut Loop) {
+  sv.drv.abortAll(lp);
+  mut sevs = List[httpconn.Event].empty();
+  sv.drv.pump(lp, &mut sevs);
+}
+
+fn url(port u16, path &[]u8) String {
+  mut u = String.from("http://127.0.0.1:");
+  u.appendUInt(u64.from(port));
+  u.append(path);
+  u;
+}
+
+// ---------------------------------------------------------------------------
+// What the client saw
+// ---------------------------------------------------------------------------
+
+struct Seen {
+  pub status u16;
+  pub body String;
+  pub url String;
+  pub kinds String;          // each event's kind's first letter, in order
+  pub finals u64;
+  pub last EventKind;
+  pub failure String;
+  pub stage Stage;
+  pub timing Timing;
+}
+
+fn seen() Seen {
+  new Seen(status: 0u16, body: String.empty(), url: String.empty(), kinds: String.empty(), finals: 0u64,
+    last: EventKind.Done[], failure: String.empty(), stage: Stage.Url[], timing: Timing.zero());
+}
+
+fn note(cl &mut Client, s &mut Seen, e &mut Event) {
+  imm n = eventName(e.kind);
+  s.kinds.appendByte(n[0usize]);
+  if e.kind == EventKind.Response[] {
+    s.status = e.response.status;
+    s.url = e.url.copy();
+  } elif e.kind == EventKind.Data[] {
+    s.body.append(e.buf.view());
+    cl.release(e.id, e.buf.len());
+  } elif e.isTerminal() {
+    s.finals = s.finals + 1u64;
+    s.last = e.kind;
+    s.timing = e.timing;
+    if e.kind == EventKind.Failed[] {
+      s.failure = e.failure.message();
+      s.stage = e.failure.stage;
+    }
+  }
+}
+
+// Drive until fetch id has its final answer, its events noted in s
+fn finishOf(cl &mut Client, sv &mut Srv, lp &mut Loop, id FetchId, s &mut Seen) {
+  mut out = List[Event].empty();
+  imm giveUp = Instant.now() + Duration.fromSeconds(10i64);
+  imm before = s.finals;
+  while s.finals == before and Instant.now() < giveUp {
+    step(cl, sv, lp, &mut out, giveUp);
+    mut k = 0usize;
+    while k < out.len() {
+      imm e = &mut out[k];
+      if e.id == id {note(cl, s, e);}
+      k = k + 1usize;
+    }
+    out.clear();
+  }
+  requireUInt(s.finals, before + 1u64, "the fetch has its final answer in time");
+}
+
+// A request sent and driven to its final answer: what was seen
+fn fetchSeen(cl &mut Client, sv &mut Srv, lp &mut Loop, r Request) Seen {
+  mut s = seen();
+  imm id = cl.send(lp, r, Sink.Here[1u64]);
+  finishOf(cl, sv, lp, id, &mut s);
+  s;
+}
+
+// Drive for a while
+fn idleFor(cl &mut Client, sv &mut Srv, lp &mut Loop, d Duration) {
+  mut out = List[Event].empty();
+  imm until = Instant.now() + d;
+  while Instant.now() < until {
+    step(cl, sv, lp, &mut out, until);
+    mut k = 0usize;
+    while k < out.len() {
+      imm e = &mut out[k];
+      if e.kind == EventKind.Data[] {cl.release(e.id, e.buf.len());}
+      k = k + 1usize;
+    }
+    out.clear();
+  }
+}
+
+const tiles = 160u32;
+const regions = 4u32;
+
+// The tier: what it wants, and what it has heard of each tile
+struct Tier {
+  pub ids List[FetchId];
+  pub intents List[Intent];
+  pub scores List[i64];
+  pub regions List[u32];
+  pub finals List[u32];          // final answers heard
+  pub kinds List[EventKind];     // the last one
+  pub after List[u32];           // events heard after a final answer
+  pub bodies List[String];
+  pub dispatched List[Instant];
+  pub groups List[CancelGroup];  // one per region
+  pub frames u32;
+}
+
+fn tier() Tier {
+  mut gs = List[CancelGroup].empty();
+  mut r = 0u32;
+  while r < regions {
+    gs.push(CancelGroup.make());
+    r = r + 1u32;
+  }
+  new Tier(List[FetchId].empty(), List[Intent].empty(), List[i64].empty(), List[u32].empty(),
+    List[u32].empty(), List[EventKind].empty(), List[u32].empty(), List[String].empty(), List[Instant].empty(),
+    gs, 0u32);
+}
+
+// A tile's intent: ten the frame waits on, then in view, likely soon,
+// speculative
+fn intentOf(t u32) Intent {
+  if t < 10u32 {Intent.Urgent[];}
+  elif t < 60u32 {Intent.Visible[];}
+  elif t < 110u32 {Intent.Prefetch[];}
+  else {Intent.Background[];}
+}
+
+// Its screen-space error: a score, all different
+fn errorOf(t u32) i64 {i64.from((t * 37u32) % 163u32);}
+
+fn tileUrl(port u16, t u32) String {
+  mut p = String.from("/order/t");
+  p.appendUInt(u64.from(t));
+  url(port, p.view());
+}
+
+// Ask for tile t, of region r
+fn want(tr &mut Tier, cl &mut Client, lp &mut Loop, port u16, t u32, intent Intent, score i64, frameEnd Instant) {
+  imm r = t % regions;
+  mut req = Request.get(tileUrl(port, t).view());
+  req.intent = intent;
+  req.score = score;
+  req.group = Some[CancelGroup][*tr.groups[usize.from(r)]];
+  if intent == Intent.Urgent[] {req.deadline = frameEnd;}
+  tr.ids.push(cl.send(lp, req, Sink.Here[u64.from(t)]));
+  tr.intents.push(intent);
+  tr.scores.push(score);
+  tr.regions.push(r);
+  tr.finals.push(0u32);
+  tr.kinds.push(EventKind.Data[]);
+  tr.after.push(0u32);
+  tr.bodies.push(String.empty());
+  tr.dispatched.push(new Instant());
+}
+
+// The frame's arrival phase: what came, within the budget
+fn arrivals(tr &mut Tier, cl &mut Client, sv &mut Srv, lp &mut Loop, budget Duration) {
+  mut out = List[Event].empty();
+  step(cl, sv, lp, &mut out, Instant.now() + budget);
+  mut k = 0usize;
+  while k < out.len() {
+    imm e = &mut out[k];
+    k = k + 1usize;
+    imm t = usize.from(e.token);
+    if *tr.finals[t] > 0u32 {
+      tr.after.set(t, *tr.after[t] + 1u32);
+      continue;
+    }
+    if e.kind == EventKind.Data[] {
+      (&mut tr.bodies[t]).append(e.buf.view());
+      cl.release(e.id, e.buf.len());
+    } elif e.isTerminal() {
+      tr.finals.set(t, *tr.finals[t] + 1u32);
+      tr.kinds.set(t, e.kind);
+      tr.dispatched.set(t, e.timing.dispatched);
+    }
+  }
+  tr.frames = tr.frames + 1u32;
+}
+
+// Whether tile a goes before tile b, by the rules
+fn first(tr &Tier, a usize, b usize) Bool {
+  imm ra = intentRank(*tr.intents[a]);
+  imm rb = intentRank(*tr.intents[b]);
+  if ra != rb {return ra < rb;}
+  if *tr.scores[a] != *tr.scores[b] {return *tr.scores[a] > *tr.scores[b];}
+  a < b;
+}
+
+fn intentRank(i Intent) u32 {
+  if i == Intent.Urgent[] {0u32;} elif i == Intent.Visible[] {1u32;} elif i == Intent.Prefetch[] {2u32;} else {3u32;}
+}
+
+// The tiles the origin should see, in order: those not cancelled, sorted
+fn expected(tr &Tier, skip &List[u32]) String {
+  mut left = List[usize].empty();
+  mut t = 0usize;
+  while t < tr.ids.len() {
+    mut skipped = false;
+    mut j = 0usize;
+    while j < skip.len() {
+      if usize.from(*skip[j]) == t {skipped = true;}
+      j = j + 1usize;
+    }
+    if not skipped {left.push(t);}
+    t = t + 1usize;
+  }
+  mut out = String.empty();
+  while left.len() > 0usize {
+    mut best = 0usize;
+    mut j = 1usize;
+    while j < left.len() {
+      if first(tr, *left[j], *left[best]) {best = j;}
+      j = j + 1usize;
+    }
+    if out.len() > 0usize {out.append(" ");}
+    out.append("t");
+    out.appendUInt(u64.from(*left[best]));
+    imm last = left.len() - 1usize;
+    left.swap(best, last);
+    left.pop();
+  }
+  out;
+}
+
+fn orderSince(sv &Srv, from usize) String {
+  mut out = String.empty();
+  mut k = from;
+  while k < sv.order.len() {
+    imm t = sv.order[k].view();
+    mut s = t.len;
+    while s > 0usize and t[s - 1usize] != '/' {s = s - 1usize;}
+    if out.len() > 0usize {out.append(" ");}
+    out.append(&t[s ..]);
+    k = k + 1usize;
+  }
+  out;
+}
+
+// One run of the tier over a client with 'conns' connections to the
+// origin: what it checked
+fn run(pool Pool, lp &mut Loop, sv &mut Srv, port u16, conns u32, exactOrder Bool) {
+  mut cfg = Config.make();
+  cfg.maxPerOrigin = conns;
+  mut cl = Client.make(cfg, pool);
+  mut tr = tier();
+  imm from = sv.order.len();
+  imm frameEnd = Instant.now() + Duration.fromSeconds(5i64);
+
+  // The frame's wants
+  mut t = 0u32;
+  while t < tiles {
+    want(&mut tr, &mut cl, lp, port, t, intentOf(t), errorOf(t), frameEnd);
+    t = t + 1u32;
+  }
+  // The camera moves before any is sent: region 3 is stale, cancelled by
+  // its group; five Prefetch tiles come into view; tiles 12 and 13 are
+  // superseded by finer levels, asked for as tiles 160 and 161
+  expect(tr.groups[3usize].cancel(), "region 3's group cancelled");
+  mut skip = List[u32].empty();
+  t = 0u32;
+  while t < tiles {
+    if t % regions == 3u32 {skip.push(t);}
+    t = t + 1u32;
+  }
+  mut moved = 0u32;
+  t = 60u32;
+  while moved < 5u32 {
+    if t % regions != 3u32 {
+      cl.reprioritize(*tr.ids[usize.from(t)], Intent.Visible[], 1000i64 + i64.from(t));
+      tr.intents.set(usize.from(t), Intent.Visible[]);
+      tr.scores.set(usize.from(t), 1000i64 + i64.from(t));
+      moved = moved + 1u32;
+    }
+    t = t + 1u32;
+  }
+  expect(cl.cancel(lp, *tr.ids[12usize]), "tile 12 superseded: cancelled");
+  expect(cl.cancel(lp, *tr.ids[13usize]), "tile 13 superseded: cancelled");
+  skip.push(12u32);
+  skip.push(13u32);
+  want(&mut tr, &mut cl, lp, port, tiles, Intent.Visible[], errorOf(12u32) + 1i64, frameEnd);
+  want(&mut tr, &mut cl, lp, port, tiles + 1u32, Intent.Visible[], errorOf(13u32) + 1i64, frameEnd);
+
+  // The frames, each draining what arrived within 2 ms
+  imm giveUp = Instant.now() + Duration.fromSeconds(20i64);
+  while cl.live() > 0u32 and Instant.now() < giveUp {
+    arrivals(&mut tr, &mut cl, sv, lp, Duration.fromMillis(2i64));
+  }
+  arrivals(&mut tr, &mut cl, sv, lp, Duration.fromMillis(2i64));
+
+  // Every tile exactly one final answer, nothing after it
+  mut once = 0u32;
+  mut after = 0u32;
+  mut done = 0u32;
+  mut cancelled = 0u32;
+  mut rightBodies = 0u32;
+  mut k = 0usize;
+  while k < tr.ids.len() {
+    if *tr.finals[k] == 1u32 {once = once + 1u32;}
+    after = after + *tr.after[k];
+    if *tr.kinds[k] == EventKind.Done[] {
+      done = done + 1u32;
+      mut b = String.from("t");
+      b.appendUInt(u64.from(k));
+      if tr.bodies[k].view() == b.view() {rightBodies = rightBodies + 1u32;}
+    }
+    if *tr.kinds[k] == EventKind.Cancelled[] {cancelled = cancelled + 1u32;}
+    k = k + 1usize;
+  }
+  imm n = u32.from(tr.ids.len());
+  expectUInt(u64.from(once), u64.from(n), "every tile: exactly one final answer");
+  expectUInt(u64.from(after), 0u64, "...nothing after it");
+  expectUInt(u64.from(cancelled), u64.from(tiles / regions + 2u32), "the stale region's and the superseded: Cancelled");
+  expectUInt(u64.from(done), u64.from(n - cancelled), "the rest Done");
+  expectUInt(u64.from(rightBodies), u64.from(done), "...each with its own tile");
+  imm seen = orderSince(sv, from);
+  if exactOrder {
+    expectStr(seen.view(), expected(&tr, &skip).view(), "one connection: the origin sees the tiles in the rules' order");
+  } else {
+    // Urgent tiles all handed a connection before any Background one
+    mut lastUrgent = new Instant();
+    mut firstBackground = new Instant();
+    mut haveBg = false;
+    k = 0usize;
+    while k < tr.ids.len() {
+      if *tr.kinds[k] == EventKind.Done[] {
+        imm d = *tr.dispatched[k];
+        if *tr.intents[k] == Intent.Urgent[] and d > lastUrgent {lastUrgent = d;}
+        if *tr.intents[k] == Intent.Background[] and (not haveBg or d < firstBackground) {
+          firstBackground = d;
+          haveBg = true;
+        }
+      }
+      k = k + 1usize;
+    }
+    expect(haveBg and lastUrgent < firstBackground, "six connections: every Urgent tile sent before any Background one");
+    expectUInt(u64.from(sv.order.len() - from), u64.from(done), "...the origin saw only the tiles Done: the cancelled never sent");
+  }
+  imm s = cl.stats();
+  expectUInt(s.fetches, s.done + s.failed + s.cancelled + s.timedOut, "stats: every fetch answered once");
+  expect(s.queuedMax >= tiles - 10u32, "stats: they waited in the client, not on connections");
+  cl.abortAll(lp);
+  idleFor(&mut cl, sv, lp, Duration.fromMillis(50i64));
+}
+
+fn main() i32 {
+  imm pool = Pool.make();
+  mut lp = Loop.mustMake();
+  mut sv = server(pool);
+  imm port = listen(&mut sv, &mut lp);
+  require(port != 0u16, "the mock origin listens");
+  run(pool, &mut lp, &mut sv, port, 1u32, true);
+  run(pool, &mut lp, &mut sv, port, 6u32, false);
+  stopServer(&mut sv, &mut lp);
+  expectUInt(pool.stats().lent, 0u64, "every buffer back in the pool");
+  done();
+}
