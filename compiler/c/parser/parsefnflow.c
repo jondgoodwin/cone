@@ -520,6 +520,10 @@ INode *parseExprBlock(ParseState *parse, int isloop) {
     if (blk->stmts == NULL)
         blk->stmts = newNodes(8);
 
+    // A block's statements stand at the top level, even inside a list: a
+    // comma there belongs to them, not to the list around the block
+    int svinlist = parse->inlist;
+    parse->inlist = 0;
     parseBlockStart();
 
     while (!parseBlockEnd()) {
@@ -622,6 +626,7 @@ INode *parseExprBlock(ParseState *parse, int isloop) {
         }
     }
 
+    parse->inlist = svinlist;
     return (INode*)blk;
 }
 
