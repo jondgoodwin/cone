@@ -1,0 +1,196 @@
+// ======== A bounding volume hierarchy of boxes ========
+//
+// The booleans find which edges of one mesh may meet which triangles of the
+// other through a tree of boxes over the triangles: each node's box holds
+// its items' boxes, an inner node has two children, a leaf up to four
+// items. It is built top down, each node's items split at the median of
+// their boxes' centres along the axis those centres spread most (ties by
+// item number), so the same boxes always give the same tree. A query
+// answers every item whose box meets a given box, edges and corners
+// touching included: boxes are compared exactly, so nothing that touches is
+// missed, and what a query answers does not depend on the tree's shape.
+
+struct Bvh {
+  pub lo List[Vec3];       // per node: its box
+  pub hi List[Vec3];
+  pub first List[u32];     // per node: a leaf's first item in 'items', an inner node's first child
+  pub count List[u32];     // per node: a leaf's item count; 0 for an inner node (its children first, first + 1)
+  pub items List[u32];
+
+  // The tree over items 0 to n - 1, item i's box from ilo[i] to ihi[i]
+  fn build(ilo &List[Vec3], ihi &List[Vec3]) Bvh {
+    imm n = ilo.len();
+    mut t = new Bvh(List[Vec3].empty(), List[Vec3].empty(), List[u32].empty(), List[u32].empty(),
+      List[u32].withCapacity(n));
+    mut i = 0usize;
+    while i < n {
+      t.items.push(u32.from(i));
+      i = i + 1usize;
+    }
+    if n == 0usize { return t; }
+    mut keys = List[f32].withCapacity(n);
+    i = 0usize;
+    while i < n {
+      keys.push(0.);
+      i = i + 1usize;
+    }
+    mut scratch = List[u32].withCapacity(n);
+    i = 0usize;
+    while i < n {
+      scratch.push(0u32);
+      i = i + 1usize;
+    }
+    // Nodes waiting to be made: node number, first item, item count
+    mut todo = List[u32].empty();
+    t.addNode();
+    todo.push(0u32);
+    todo.push(0u32);
+    todo.push(u32.from(n));
+    while todo.len() > 0usize {
+      imm cnt = usize.from(*todo[todo.len() - 1usize]);
+      imm start = usize.from(*todo[todo.len() - 2usize]);
+      imm node = usize.from(*todo[todo.len() - 3usize]);
+      todo.pop();
+      todo.pop();
+      todo.pop();
+      // The node's box, and its centres' box
+      mut lo = *ilo[usize.from(*t.items[start])];
+      mut hi = *ihi[usize.from(*t.items[start])];
+      mut clo = (lo + hi) * 0.5;
+      mut chi = clo;
+      mut k = start;
+      while k < start + cnt {
+        imm it = usize.from(*t.items[k]);
+        imm a = *ilo[it];
+        imm b = *ihi[it];
+        lo = minVec(lo, a);
+        hi = maxVec(hi, b);
+        imm c = (a + b) * 0.5;
+        clo = minVec(clo, c);
+        chi = maxVec(chi, c);
+        k = k + 1usize;
+      }
+      t.lo.set(node, lo);
+      t.hi.set(node, hi);
+      imm ext = chi - clo;
+      if cnt <= 4usize {
+        t.first.set(node, u32.from(start));
+        t.count.set(node, u32.from(cnt));
+      } else {
+        imm axis = if ext.x >= ext.y and ext.x >= ext.z {0u32;} elif ext.y >= ext.z {1u32;} else {2u32;};
+        k = start;
+        while k < start + cnt {
+          imm it = usize.from(*t.items[k]);
+          imm a = *ilo[it];
+          imm b = *ihi[it];
+          imm key = if axis == 0u32 {a.x + b.x;} elif axis == 1u32 {a.y + b.y;} else {a.z + b.z;};
+          keys.set(it, key);
+          k = k + 1usize;
+        }
+        sortItems(&mut t.items, start, start + cnt, &keys, &mut scratch);
+        imm half = cnt / 2usize;
+        imm left = t.addNode();
+        t.addNode();
+        t.first.set(node, left);
+        t.count.set(node, 0u32);
+        todo.push(left);
+        todo.push(u32.from(start));
+        todo.push(u32.from(half));
+        todo.push(left + 1u32);
+        todo.push(u32.from(start + half));
+        todo.push(u32.from(cnt - half));
+      }
+    }
+    t;
+  }
+
+  fn addNode(self &mut) u32 {
+    imm id = u32.from(lo.len());
+    imm z = new Vec3(0., 0., 0.);
+    lo.push(z);
+    hi.push(z);
+    first.push(0u32);
+    count.push(0u32);
+    id;
+  }
+
+  // Every item whose box meets the box from qlo to qhi, into 'out' (cleared
+  // first), in the tree's order
+  fn query(self &, qlo Vec3, qhi Vec3, out &mut List[u32], stack &mut List[u32]) {
+    out.clear();
+    if lo.len() == 0usize { return; }
+    stack.clear();
+    stack.push(0u32);
+    while stack.len() > 0usize {
+      imm node = usize.from(*stack[stack.len() - 1usize]);
+      stack.pop();
+      imm a = *lo[node];
+      imm b = *hi[node];
+      if a.x <= qhi.x and qlo.x <= b.x and a.y <= qhi.y and qlo.y <= b.y and a.z <= qhi.z and qlo.z <= b.z {
+        imm c = usize.from(*count[node]);
+        imm f = *first[node];
+        if c == 0usize {
+          stack.push(f + 1u32);
+          stack.push(f);
+        } else {
+          mut k = 0usize;
+          while k < c {
+            out.push(*items[usize.from(f) + k]);
+            k = k + 1usize;
+          }
+        }
+      }
+    }
+  }
+}
+
+fn minVec(a Vec3, b Vec3) Vec3 {
+  new Vec3(if a.x < b.x {a.x;} else {b.x;}, if a.y < b.y {a.y;} else {b.y;}, if a.z < b.z {a.z;} else {b.z;});
+}
+fn maxVec(a Vec3, b Vec3) Vec3 {
+  new Vec3(if a.x > b.x {a.x;} else {b.x;}, if a.y > b.y {a.y;} else {b.y;}, if a.z > b.z {a.z;} else {b.z;});
+}
+
+// Items from 'start' to 'end' sorted by key, ties by item number: a merge
+// sort, bottom up, through 'scratch'
+fn sortItems(items &mut List[u32], start usize, end usize, keys &List[f32], scratch &mut List[u32]) {
+  imm n = end - start;
+  mut width = 1usize;
+  while width < n {
+    mut lo = start;
+    while lo < end {
+      imm mid = if lo + width < end {lo + width;} else {end;};
+      imm hi = if lo + 2usize * width < end {lo + 2usize * width;} else {end;};
+      mut i = lo;
+      mut j = mid;
+      mut k = lo;
+      while k < hi {
+        mut takeLeft = false;
+        if i < mid and j < hi {
+          imm a = *items[i];
+          imm b = *items[j];
+          imm ka = *keys[usize.from(a)];
+          imm kb = *keys[usize.from(b)];
+          takeLeft = ka < kb or (ka == kb and a <= b);
+        } else {
+          takeLeft = i < mid;
+        }
+        if takeLeft {
+          scratch.set(k, *items[i]);
+          i = i + 1usize;
+        } else {
+          scratch.set(k, *items[j]);
+          j = j + 1usize;
+        }
+        k = k + 1usize;
+      }
+      lo = hi;
+    }
+    mut k = start;
+    while k < end {
+      items.set(k, *scratch[k]);
+      k = k + 1usize;
+    }
+    width = width * 2usize;
+  }
+}
