@@ -191,10 +191,16 @@ covariant**, and the overall verdict is the most expensive of all the parts.
 Lifetimes named on the two signatures match only by agreeing
 (`lifeSigsAgree`): a call through `to` is checked against what `to` promises,
 so `from` must promise exactly that. The same agreement is part of
-`fnSigEqual` and `fnSigVrefEqual`, so a module's or a struct's method meets a
-trait's requirement only promising what the requirement does, and two
-signatures that promise differently are two types (spelled apart by
-`lifeSigSpell`). What a signature promises is read part by part of each
+`fnSigEqual`, so two signatures that promise differently are two types
+(spelled apart by `lifeSigSpell`). A module's or a struct's method meets a
+trait's requirement (`fnSigVrefEqual`) where it promises at least what the
+requirement does (`lifeSigMeets`), digit by digit of the same promises: its
+result, and what it may store through a writable parameter, holds no part
+the requirement's may not; a parameter is `'static` only where the
+requirement's is; a struct's slots are named apart wherever the requirement's
+are. So a method may return `'static`, or a longer lifetime, where the trait's
+result may hold its receiver, and take any borrow where the trait asks for a
+`'static` one, as Rust's more general impl may. What a signature promises is read part by part of each
 parameter -- its own reference's lifetime, and what that holds, by slot for a
 struct declaring lifetimes -- with its `where` clause's order and its
 structs' (`lifeSigCheck`, run as the signature is type checked, which also

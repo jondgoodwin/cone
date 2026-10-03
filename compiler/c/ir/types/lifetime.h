@@ -220,6 +220,14 @@ void lifeSigCheck(struct FnSigNode *sig);
 // lifetimes), each parameter is compared whole.
 int lifeSigsAgree(struct FnSigNode *a, struct FnSigNode *b);
 
+// Does the implementation 'impl' promise at least what the requirement 'req'
+// does, so that a call checked against 'req' is safe with 'impl'? Each part
+// may flow to the result, or be stored through a writable parameter, only
+// where it may in 'req'; a parameter is ''static' only where 'req''s is; a
+// struct's slots are named apart wherever they are in 'req'. As
+// lifeSigsAgree, a parameter lending different parts in each is compared whole.
+int lifeSigMeets(struct FnSigNode *impl, struct FnSigNode *req);
+
 // Spell what a signature promises about lifetimes into a type's symbol name
 // (nameType), where it differs from what the signature promises unannotated:
 // 'G' (where v0 puts a signature's lifetimes), a digit per promise, '_'. Two

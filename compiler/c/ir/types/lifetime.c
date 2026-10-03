@@ -949,19 +949,40 @@ static uint32_t lifeParts(INode *parm, uint32_t *parts) {
     return n;
 }
 
+// What each digit of a signature's promises says, for comparing two
+// signatures one digit at a time (lifeSigMeets)
+enum LifePromiseKind {
+    LifePromiseParm = 'p',      // a parameter's first: flows (1), ''static' (2), stored through (4)
+    LifePromiseFlows = 'f',     // flows (1) or not (0)
+    LifePromiseApart = 'a',     // the slots a writable parameter points at named apart (1) or not
+};
+
+// A signature's promises as they are written: the digits, and, where asked,
+// what each says (LifePromiseKind)
+typedef struct {
+    char *p;
+    char *k;
+} LifePromises;
+
+static void lifePromise(LifePromises *out, int digit, char kind) {
+    *out->p++ = (char)('0' + digit);
+    if (out->k)
+        *out->k++ = kind;
+}
+
 // Append, for a parameter, whether a value of the type 'to' may hold each of
 // its parts: one digit for any, and, where 'detail' asks and it has several,
 // one per part
-static char *lifePromiseParts(char *p, FnSigNode *sig, INode *parm, INode *to, int anon, int extra, int detail) {
+static void lifePromiseParts(LifePromises *out, FnSigNode *sig, INode *parm, INode *to, int anon, int extra,
+        char kind, int detail) {
     uint32_t parts[LifeMaxSlots + 2];
     uint32_t n = lifeParts(parm, parts);
     int any = lifeFlowsAs(sig, parm, to, anon);
-    *p++ = (char)('0' + any + extra);
+    lifePromise(out, any + extra, kind);
     if (detail && n > 1) {
         for (uint32_t i = 0; i < n; ++i)
-            *p++ = (char)('0' + lifePartFlowsAs(sig, parm, parts[i], to, anon));
+            lifePromise(out, lifePartFlowsAs(sig, parm, parts[i], to, anon), LifePromiseFlows);
     }
-    return p;
 }
 
 // What a signature promises about lifetimes, as a string of digits: for each
@@ -973,27 +994,31 @@ static char *lifePromiseParts(char *p, FnSigNode *sig, INode *parm, INode *to, i
 // for the result, and, with 'detail', whether the slots of the struct it
 // points at are named apart. 'anon' reads it as if no lifetime were written.
 // A call is checked against nothing else, so two signatures promising the
-// same agree.
-static char *lifeSigPromises(FnSigNode *sig, int anon, int detail) {
+// same agree. Where 'kinds' is given, it gets what each digit says.
+static char *lifeSigPromises(FnSigNode *sig, int anon, int detail, char **kinds) {
     uint32_t nparms = sig->parms->used;
-    char *promises = memAllocStr(NULL, (nparms + 1) * (nparms + 1) * (LifeMaxSlots + 3) + 1);
-    char *p = promises;
+    size_t size = (nparms + 1) * (nparms + 1) * (LifeMaxSlots + 3) + 1;
+    char *promises = memAllocStr(NULL, size);
+    LifePromises out = { promises, kinds ? (*kinds = memAllocStr(NULL, size)) : NULL };
     for (uint32_t i = 0; i < nparms; ++i) {
         INode *parmtype = ((IExpNode *)nodesGet(sig->parms, i))->vtype;
         int stores = lifeParmStores(parmtype);
-        p = lifePromiseParts(p, sig, parmtype, sig->rettype, anon,
-            (!anon && lifeIsStatic(parmtype) ? 2 : 0) + (stores ? 4 : 0), detail);
+        lifePromiseParts(&out, sig, parmtype, sig->rettype, anon,
+            (!anon && lifeIsStatic(parmtype) ? 2 : 0) + (stores ? 4 : 0), LifePromiseParm, detail);
         if (!stores)
             continue;
         INode *pointee = lifePointee(parmtype);
         for (uint32_t k = 0; k < nparms; ++k) {
             if (k != i)
-                p = lifePromiseParts(p, sig, ((IExpNode *)nodesGet(sig->parms, k))->vtype, pointee, anon, 0, detail);
+                lifePromiseParts(&out, sig, ((IExpNode *)nodesGet(sig->parms, k))->vtype, pointee, anon, 0,
+                    LifePromiseFlows, detail);
         }
         if (detail && lifeSlotted(pointee))
-            *p++ = (char)('0' + (anon ? lifeSlotsApart(NULL, pointee) : lifeSlotsApart(sig, pointee)));
+            lifePromise(&out, anon ? lifeSlotsApart(NULL, pointee) : lifeSlotsApart(sig, pointee), LifePromiseApart);
     }
-    *p = '\0';
+    *out.p = '\0';
+    if (out.k)
+        *out.k = '\0';
     return promises;
 }
 
@@ -1022,14 +1047,54 @@ int lifeSigsAgree(FnSigNode *a, FnSigNode *b) {
     if (a->parms->used != b->parms->used)
         return 0;
     int detail = strcmp(lifeSigShape(a), lifeSigShape(b)) == 0;
-    return strcmp(lifeSigPromises(a, !a->lifenamed, detail), lifeSigPromises(b, !b->lifenamed, detail)) == 0;
+    return strcmp(lifeSigPromises(a, !a->lifenamed, detail, NULL), lifeSigPromises(b, !b->lifenamed, detail, NULL)) == 0;
+}
+
+// A call made through 'req' carries what 'req' says may flow, and is checked
+// against what it requires, so an implementation 'impl' meets it where it
+// promises at least as much, digit by digit: its result, and what it stores
+// through a writable parameter, holds no part 'req''s may not (a result of
+// ''static', or of a longer lifetime than 'req''s); a parameter is ''static'
+// only where 'req''s is, so it takes any argument 'req''s takes (a shorter
+// one than 'req' requires, too); one is stored through where 'req''s is; and
+// the slots of a struct one points at are named apart wherever 'req''s are.
+int lifeSigMeets(FnSigNode *impl, FnSigNode *req) {
+    if (!impl->lifenamed && !req->lifenamed)
+        return 1;
+    if (impl->parms->used != req->parms->used)
+        return 0;
+    int detail = strcmp(lifeSigShape(impl), lifeSigShape(req)) == 0;
+    char *ikinds, *rkinds;
+    char *ip = lifeSigPromises(impl, !impl->lifenamed, detail, &ikinds);
+    char *rp = lifeSigPromises(req, !req->lifenamed, detail, &rkinds);
+    if (strcmp(ikinds, rkinds) != 0)
+        return 0;
+    for (size_t i = 0; ip[i]; ++i) {
+        int d = ip[i] - '0';
+        int r = rp[i] - '0';
+        switch (ikinds[i]) {
+        case LifePromiseParm:
+            if ((d & 4) != (r & 4) || ((d & 2) && !(r & 2)) || ((d & 1) && !(r & 1)))
+                return 0;
+            break;
+        case LifePromiseApart:
+            if (d < r)
+                return 0;
+            break;
+        default:
+            if (d > r)
+                return 0;
+            break;
+        }
+    }
+    return 1;
 }
 
 char *lifeSigSpell(char *bufp, FnSigNode *sig) {
     if (!sig->lifenamed)
         return bufp;
-    char *promises = lifeSigPromises(sig, 0, 1);
-    if (strcmp(promises, lifeSigPromises(sig, 1, 1)) == 0)
+    char *promises = lifeSigPromises(sig, 0, 1, NULL);
+    if (strcmp(promises, lifeSigPromises(sig, 1, 1, NULL)) == 0)
         return bufp;
     *bufp++ = 'G';
     size_t len = strlen(promises);
