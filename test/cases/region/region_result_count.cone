@@ -4,7 +4,8 @@
 // scope's release exempts instead. A field of a local, an element of one, a
 // field read through a borrowed 'self', and a variable of an enclosing scope
 // are each read and still held where they were, so the copy is counted, as
-// a copy into a variable is.
+// a copy into a variable is. So is an assignment's value, which its target
+// keeps, and each element of a tuple literal handed back, on its own.
 //
 // Before, none of those copies was counted: the field of a local was handed
 // back uncounted and the local then released it, so the count reached zero
@@ -55,6 +56,10 @@ fn elementValue() Tally[mut, Fin] { imm a = [new Tally[mut, Fin](3), new Tally[m
 fn localWhole() Tally[mut, Fin] { imm r = new Tally[mut, Fin](5); r; }
 // A parameter handed back whole: the same
 fn paramWhole(r Tally[mut, Fin]) Tally[mut, Fin] { r; }
+// A field of a local as one element of a returned tuple
+fn tupleField() (Tally[mut, Fin], i32) { imm h = new Holder(new Tally[mut, Fin](9)); return h.r, 3; }
+// An assignment's value as the function's value: the field keeps it
+fn assignValue(h &mut Holder) Tally[mut, Fin] { h.r = new Tally[mut, Fin](11); }
 
 fn main() i32 {
   show("field-value"); { imm r = fieldValue(); got(); } end();
@@ -71,6 +76,17 @@ fn main() i32 {
     imm r = new Tally[mut, Fin](8);
     imm y = { r; };
     got();
+  } end();
+  show("tuple-field"); { imm t = tupleField(); got(); } end();
+  show("assign-value"); {
+    mut h = new Holder(new Tally[mut, Fin](10));
+    { imm r = assignValue(&mut h); got(); }
+    printStr("held ");
+  } end();
+  show("block-assign"); {
+    mut b = new Tally[mut, Fin](12);
+    { imm y = { b = new Tally[mut, Fin](13); }; got(); }
+    printStr("held ");
   } end();
   0i32;
 }

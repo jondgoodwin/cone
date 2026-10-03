@@ -897,7 +897,7 @@ int flowIsLvalRead(INode *node) {
 // (flowIsLvalRead), or an assignment, whose target keeps the value it stored
 // ('a = b = make()' leaves the value in 'b' as well as in 'a')? The '_'
 // placeholder keeps nothing.
-static int flowIsKeptRead(INode *node) {
+int flowIsKeptRead(INode *node) {
     if (node->tag == AssignTag) {
         INode *lval = ((AssignNode *)node)->lval;
         return !(isNameUseNode(lval) && isExpNode(lval) && ((NameUseNode *)lval)->namesym == anonName);

@@ -353,7 +353,9 @@ the receiver as it is. Anything else it can be read from is still held where it
 was after the scope ends: a field or an element of a local, which the scope's
 release then releases with the local; a value read through a borrow (a field of
 a borrowed `self`); a variable of an enclosing scope (`imm y = {r;}`); a
-global. A temporary is not an lvalue and hands over the holder it was born
+global; an assignment's target (`{b = make();}`, `flowIsKeptRead`). A tuple
+literal handed back is counted element by element (`return h.r, 3`). A
+temporary is not an lvalue and hands over the holder it was born
 with. The copy's receiver counts nothing more: a block, an `if` or a call is
 no lvalue to `flowHandleMoveOrCopy`.
 
