@@ -143,6 +143,7 @@ add_executable(conec
 	compiler/c/genllvm/genlstmt.c
 	compiler/c/genllvm/genlexpr.c
 	compiler/c/genllvm/genlalloc.c
+	compiler/c/genllvm/genlawait.c
 	compiler/c/genllvm/genltype.c
 	compiler/c/genllvm/genlcabi.c
 	compiler/c/genllvm/genlgpu.c

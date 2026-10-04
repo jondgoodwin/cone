@@ -69,6 +69,7 @@ typedef struct ConeOptions {
     int emit_include;      // Write the package's include file, as a library compile does
     int lint_llvm;        // Run the LLVM linting pass on generated IR
     int intrinsic_fallback; // Use each intrinsic's Cone fallback body wherever it has one
+    int await_direct;    // Test only: split each message's seams, each record handed straight to its second half
     int docs;            // Generate code documentation
     int docs_private;    // Generate code docs for private
     int verbosity;       // 0 - 4 (0 = default)

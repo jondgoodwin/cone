@@ -177,7 +177,7 @@ Put these first, because every one of them is load-bearing.
 | `dropgate` | `fnDclTypeCheck`, which runs the path walk's drop-flag client on a function it marks ("Drop flags", below) |
 | `jumped` | `ifFlow`, from `blockFlow`: every path through the arm just walked returned, so it takes no part in the join |
 | `inflight`, `inflightcnt` | the gate's `flowGateUse`, from `nameuseFlow` and `nameuseFlowBorrowed` |
-| `awaits` | `fnDclTypeCheck`: each `await` the walk met, so the function is walked for loans and drop flags, and each seam the walk accepted is reported not built (§6, "A seam") |
+| `awaits` | `fnDclTypeCheck`: each `await` the walk met, so the function is walked for loans and drop flags, and each seam the walk accepted is split or reported not built (§6, "A seam") |
 
 ### The gate
 
@@ -1252,11 +1252,21 @@ returns to the actor's dispatcher to wait, and what it needs afterwards waits
 in a continuation, a record, until the reply comes. A seam is a return to the
 *dispatcher*, not to the author: the author wrote one method with one scope, so
 what the author can see -- when a value dies and in which order -- is what a
-method without the seam would do. The continuation is not built: every rule
-below is checked, and an `await` they all accept is reported as not built
+method without the seam would do. Type check has placed it already, in a
+method of an actor's state that is neither its `init` nor its `final`
+(`ErrorAwaitPlace`). Every rule below is checked; what then becomes of the
+seams flow accepted is `awaitSplitOrReport`'s, from `fnDclTypeCheck`. A
+message's (a `pub` method's) are **split**: generation makes the method's
+first half and a second half for each seam, from what is noted here
+([Generation](generation.md), "A split method"). Nothing waits for a reply yet,
+so a method is split only under `--await-direct`, which is for tests; without
+it, and for an `await` in a method that is not a message -- whether that one
+cuts its callers is not settled -- each is reported as not built
 (`ErrorUnbuiltAwait`, `awaitReportUnbuilt`), the message saying what its seam
-would carry. Type check has placed it already, in a method of an actor's state
-that is neither its `init` nor its `final` (`ErrorAwaitPlace`).
+would carry. A message's `await` standing where the split is not built yet is
+reported so too, at the `await` (`awaitWalk`): in the index of a place, in a
+place stored into or swapped, whose address would be held across the seam, and
+in an array's contents filled in memory.
 
 A function holding an `await` is walked by the path walk for loans and drop
 flags both, whatever the gates say (`fnDclTypeCheck`, from
@@ -1372,7 +1382,7 @@ Everything else about permissions is type check's: `permMatches` in
 | `ErrorLifetimeBound` | `loanNotGlobal` and `loanNotBound`, from `pwStaticArgs`; `fnCallStaticArgs`; `loanNotBound`, from `pwBoundHolds`; `loanNotBoxable`, from `pwValue` | an argument for a part a type parameter's `'static` bound makes global, or for a parameter `&<Trait + 'static`, carries, or is, a borrow that is not global; a value returned or stored as a virtual reference bounded by `'a` holds a borrow not known to last `'a`; a value made an owning virtual reference holds a borrow not known to be global |
 | `ErrorFrozen` | `loanUse`, for a conflict `loanAccess` recorded; `loanFlightAccess`, `loanFlightActivate` | a source read, changed, moved, borrowed or ended while a borrow of it that forbids that is still to be used; reported at the access, naming the borrow (or the method that returned it) and its next use. Or, at once, an access conflicting with a loan an earlier operand of the same call or literal carries, or a two-phase receiver conflicting at its call with what another argument carries |
 | `ErrorFrozen` | `loanUse`, for a seam's `AccessSeam` conflict; `loanSeamFlight` | a borrow that is not global, held at a seam (`await`) and used after it, reported at the seam where it ended; or one an operand around the seam carries in flight |
-| `ErrorUnbuiltAwait` | `awaitReportUnbuilt`, from `fnDclTypeCheck` | an `await` every seam rule accepted, in a function flow found no error in: not built, the message naming what its seam would end, give back, carry and leave |
+| `ErrorUnbuiltAwait` | `awaitReportUnbuilt` and `awaitReportIn`, from `awaitSplitOrReport` | an `await` every seam rule accepted, in a function flow found no error in, that is not split: not built, the message naming what its seam would end, give back, carry and leave; or, in a message split under `--await-direct`, one standing where the split is not built (an index, a place stored into or swapped, an array's contents filled in memory) |
 
 A value an array's contents or `n of x` repeat is evaluated once per element,
 so the ordinary move rule judges it: the loop `n of x` lowers to is walked as
@@ -1410,7 +1420,11 @@ assignment, or the drop-flag client from every path; for a hollowed one, the
 `HollowNode` wrapped round the stored value is what releases the old
 allocation. A variable with `VarDropFlag` needs each marked move of it
 (`FlagMoveOut`, `FlagHollowOut`) generated as a load of its name, where
-`genlDropFlagUse` updates the flag.
+`genlDropFlagUse` updates the flag. A split method's record is built from each
+`AwaitNode`'s `seamvars` ([Generation](generation.md), "A split method"): a
+variable `SeamOpen` and `SeamLive` or `SeamDies` travels, so a variable used
+after a seam and noted dead there reads garbage in the second half, and a
+droppable noted as holding nothing is never finalized.
 
 ## 9. Hazards
 
@@ -1470,7 +1484,7 @@ allocation. A variable with `VarDropFlag` needs each marked move of it
 
 | File | Function | Purpose |
 | --- | --- | --- |
-| `ir/stmt/fndcl.c` | `fnDclTypeCheck` | the only entry point; the per-function error-delta gate; `FlowTimer` round `blockFlow` and the path walk under `-V 1`; the path walk on a function either gate marked, or holding an `await`, or on every function on a GPU target, `blockFlow` having found no error in it; each accepted seam reported not built; `flowGateCount` after it |
+| `ir/stmt/fndcl.c` | `fnDclTypeCheck` | the only entry point; the per-function error-delta gate; `FlowTimer` round `blockFlow` and the path walk under `-V 1`; the path walk on a function either gate marked, or holding an `await`, or on every function on a GPU target, `blockFlow` having found no error in it; each accepted seam split or reported not built (`awaitSplitOrReport`); `flowGateCount` after it |
 | `ir/flowpath.c` | `flowPathWalk`, `flowPathPrint` | the path walk (§6): its entry, for loans, drops or both, and its `-V 2` tallies |
 | | `pathSetFacts`, `pathSetState`, `pathRollback`, `pathDelta`, `pathJoin` | the state per path: set a fact (loans, or a drop state), recording the old one; undo to a fork; what a path changed; join paths |
 | | `pwValue`, `pwPlace`, `pwThrough`, `pwBorrow`, `pwLend`, `pwOwnedLent`, `pwStore`, `pwSwap`, `pwVarDcl` | the walk's dispatch: what each node accesses, which holders it uses, what loans its value carries |
@@ -1492,7 +1506,7 @@ allocation. A variable with `VarDropFlag` needs each marked move of it
 | | `loanWhole` | a loan of the whole of its root, where a slot's tag stays the root's |
 | | `loanAccess`, `loanUse` | a conflicting access records a pending conflict on each holder of the loan; a use of the holder fires it (`ErrorFrozen`, or `ErrorGpuRefChoice` for a `PendingChosen` one; a `PendingSeamLive` one records the variable live after its seam) |
 | | `loanIsGlobal`, `loanSeamEnds`, `loanSeamPending`, `loanSeamLive`, `loanSeamFlight`, `loanSeamOf` | a seam: whether a loan is global; the loan a holder holds that ends there, the borrow it was given where that can be told; the pending conflict and the live mark; what is in flight across it; what an ended borrow was of, for the message |
-| `ir/exp/await.c` | `awaitReportUnbuilt` | each seam of a function flow accepted, reported not built with what it would end, give back, carry (in the order it would die) and leave |
+| `ir/exp/await.c` | `awaitSplitOrReport`, `awaitReportUnbuilt` | the seams of a function flow accepted: a message's split under `--await-direct` (numbered, each lock's guard marked `VarSeamHeld`, the function recorded for generation, `awaitSplitOf`), unless one stands where the split is not built (`awaitWalk`, `awaitReportIn`); otherwise each reported not built with what it would end, give back, carry (in the order it would die) and leave |
 | | `loanNearApart`, `loanChosen`, `loanChosenPending`, `loanIndexedRefs`, `loanOrigin`, `loanMemory` | GPU targets: whether two paths' values point at different places; a choice reported at once, or pending on a holder; a run-time index of references refused; where each choice points, for the message |
 | `ir/stmt/module.c` | `modInitOf`, `modInitFlowBegin`, `modInitFlowEnd` | round a module's `init` only: its module's globals without a value start the pass uninitialized, as locals, so `init` assigns each once and reads none first; one never assigned is `ErrorGlobalUninit`. [module](../nodes/module.md), "Init and final" |
 | `ir/flow.c` | `flowLoadValue` | the walk's spine — tag dispatch for a value being read |

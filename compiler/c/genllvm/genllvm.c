@@ -121,6 +121,14 @@ void genlFn(GenState *gen, FnDclNode *fnnode) {
     // finalizes only the temporaries it makes itself
     uint32_t svtempbase = gen->tempbase;
     gen->tempbase = gen->tempcnt;
+    // A split method is generated here as its first half, which ends at each
+    // seam (genlawait.c); its second halves after it
+    Nodes *svseams = gen->seams;
+    AwaitNode *svresumeat = gen->resumeat;
+    uint32_t svflightbase = gen->flightbase;
+    gen->seams = awaitSplitOf(fnnode);
+    gen->resumeat = NULL;
+    gen->flightbase = gen->flightcnt;
 
     FnSigNode *fnsig = (FnSigNode*)fnnode->vtype;
     assert(fnnode->value->tag == BlockTag);
@@ -172,6 +180,15 @@ void genlFn(GenState *gen, FnDclNode *fnnode) {
     gen->tempcnt = gen->tempbase;
     gen->tempbase = svtempbase;
     genlRootsRestore(gen, &svroots);
+    int split = gen->seams != NULL;
+    gen->seams = svseams;
+    gen->resumeat = svresumeat;
+    gen->flightcnt = gen->flightbase;
+    gen->flightbase = svflightbase;
+
+    // A split method's second halves, one for each seam
+    if (split)
+        genlSplitHalves(gen, fnnode);
 
     // A compute entry point is a kernel on a GPU target, made beside it
     if (fnDclIsCompute(fnnode))
@@ -2203,6 +2220,16 @@ void genSetup(GenState *gen, ConeOptions *opt) {
     gen->tempcnt = 0;
     gen->tempmax = 0;
     gen->tempbase = 0;
+    gen->seams = NULL;
+    gen->resumeat = NULL;
+    gen->resumeblk = NULL;
+    gen->resumedest = NULL;
+    gen->resumeheld = NULL;
+    gen->resumeheldcnt = 0;
+    gen->flights = NULL;
+    gen->flightcnt = 0;
+    gen->flightmax = 0;
+    gen->flightbase = 0;
 
     gen->comdats = genlComdatSupport(opt->triple);   // genlCreateMachine filled in the default
     gen->cabi = genlCAbiTarget(opt->triple);
