@@ -167,6 +167,7 @@ int main(int argc, char **argv) {
     coneopt.srcpath = argv[1];
     coneopt.srcname = fileName(coneopt.srcpath);
     intrinsicForceFallback = coneopt.intrinsic_fallback;
+    awaitDirect = coneopt.await_direct;
     intrinsicBuildSetup(&coneopt);
     timerFine = coneopt.verbosity > 0;
     flowGateCountAll = coneopt.verbosity > 1;

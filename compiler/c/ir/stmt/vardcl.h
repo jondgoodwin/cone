@@ -40,7 +40,12 @@ enum VarFlowTemp {
     // An initializer's 'self &new' whose value has not been written yet on some
     // path: set as its function's flow begins, cleared by '*self = value'. Like
     // the others it is joined by union, so a store on only some paths leaves it.
-    VarUnfilled = 0x0010
+    VarUnfilled = 0x0010,
+    // A lock's guard in scope at a seam of a split method, which the seam gives
+    // back (genlawait.c): generation follows whether it still holds its lock
+    // with a flag, as a drop flag follows a value, since the code after the
+    // seam ends the guard's scope too
+    VarSeamHeld = 0x0020
 };
 
 VarDclNode *newVarDclNode(Name *namesym, uint16_t tag, INode *perm);

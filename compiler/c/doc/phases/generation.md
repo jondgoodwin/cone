@@ -1074,6 +1074,68 @@ starts its own base and leaves the stack as it found it.
 **A `break`'s phi edge is recorded after its releases**, from the block the
 jump leaves: a release (`dealiasRef`'s test) splits the block.
 
+### A split method
+
+An actor's message holding an `await` is cut at each one, a seam, where it
+returns to the dispatcher to wait ([Flow](flow.md), "A seam", which says what
+each variable in scope does there and which methods are split). A seam is a
+return to the dispatcher, not to the author: what the author can see -- when
+each value dies, and in which order -- is what the method does uncut. So a
+split method (`awaitSplitOf`, `GenState.seams`) is generated whole, more than
+once (`genlawait.c`):
+
+- **Its first half** is the method itself (`genlFn`). Each seam (`genlAwait`)
+  evaluates what is awaited, then in the work item's order: every lock whose
+  borrow ends there is given back (`genlSeamGiveBack`) -- a local guard's
+  (flow marks it `VarSeamHeld`, and generation gives it a flag as a drop flag
+  is given) and a temporary guard's (`GenTemp.held`); the record is built, each
+  value **moved** into it by a load of its slot (`genlSeamRecord`), with no
+  count adjusted; nothing droppable is left, so nothing more is dropped; and
+  the function returns. What follows the seam is generated into a block of its
+  own, `resume`, which no path reaches in this half.
+- **Each seam's second half**, `<method>'<n>` (`genlSplitHalf`), is the method
+  generated again as a function of its own: its entry stores 'self', moves the
+  record's values back into the slots they came from (`genlSeamEntry`), sets
+  the drop flag of each variable in scope at the seam that the record does not
+  carry, and a given-back guard's, to say it holds nothing, and branches to the
+  seam's `resume` block, where the value awaited is its result parameter. The
+  method's body before the seam is generated too, in a block no path reaches
+  but a loop's back edge. Every scope's end after the seam, every `return`, and
+  each statement's temporaries' end are the method's own, so each value dies
+  where, and in the order, it would uncut.
+
+Every half generates every seam, so a seam in a loop, or a later one, ends the
+second half too, building its record again. The record is laid out by the
+first half to generate the seam (`genlSeamLayout`, `AwaitNode.genseam`) and
+checked in every later one: its fields, in the order the values would die,
+are the values **in flight** across it, the newest first; the temporaries
+waiting for their statement's end (`GenTemp`), the newest first, but a lock's
+guard and any that does nothing as it dies; and flow's record of variables
+(`seamvars`: holding its value, and used after the seam or droppable), the
+last declared first, but `self`, which the dispatcher lends each half afresh,
+each bringing its drop flag where it has one. A value in flight is one
+generated before a later operand holding a seam -- `x` in `two(x, await
+give())`, a call's argument or receiver, a literal's field or element -- which
+belongs to no variable: `genlExprsAcross` keeps it in a slot of its own
+(`GenFlight`, rooted as a local is) and reads it back once the last such operand
+is made, so that slot is what the record carries. A struct or tuple literal
+makes all its values before it builds the aggregate, so none of it is in flight
+part built.
+
+A second half's parameters are `self`, the record (one struct, named
+`<method>'<n>.record`, by value), and the value awaited. **An empty record is
+no parameter**, and a void `await` gives no result. Nothing yet sends the
+reply that would call a second half (the envelope, the pending pool and the
+reply dispatch are not built), so a method is split only under
+`--await-direct` (`awaitDirect`), which is for tests: each seam hands its
+record straight to its second half, with the value awaited, before it returns.
+`concurrency_await_split` runs each split message beside its twin with no
+`await` and pins the halves' shapes.
+
+An `await` whose construct holds an address or memory being filled across it
+-- the index of a place, a place stored into or swapped, an array's contents
+filled in memory -- is not split ([Flow](flow.md), "A seam").
+
 ## 7. Output, and what does not work
 
 `--llvmir` writes **two** files: `.preir` before the pass manager and `.ir`
@@ -1512,6 +1574,14 @@ variables.
   manager's inliner deletes only a function whose last call it inlined; the
   linker's `/OPT:REF` drops the rest, each being in a COMDAT of its own.
 - **The block stack is a fixed 256 entries** and overflow is a hard exit.
+- **A value held across the generation of another operand breaks a split
+  method if that operand holds a seam.** A second half enters after the seam,
+  so a value generated before it, in a block no path reaches there, does not
+  dominate its use: `--verify` says so. Every site that evaluates operands in
+  turn and uses the earlier ones afterwards goes through `genlExprsAcross`,
+  which keeps each in flight across a seam ("A split method"); an address held
+  that way cannot be, and its `await` is refused before generation
+  (`awaitWalk`), so a new such site needs one or the other.
 - **A jump out of the middle of a statement finalizes its pending temporaries
   before the locals of the blocks it leaves**, whatever order they were made
   in: `f(mk(1).n, { imm x = mk(2); if c { return; } 3; })` finalizes the first
@@ -1540,7 +1610,7 @@ variables.
 | | `genlStitchFn`, `genlStitch` | the program's stitched init and final: declared on the first call to `initAll()` or `finalAll()`, built last, every module's `init` in the module order and every finalizer in the reverse |
 | | `genlGlobalSyms`, `genlGlobalImpl` | declare a node's symbol; emit its body |
 | | `genlImportedInstances` | emit the bodies of the instances this compile made of a module it does not generate |
-| | `genlFn`, `genlParmVar`, `genlAlloca` | function body, parameter allocas, entry-block alloca placement |
+| | `genlFn`, `genlParmVar`, `genlAlloca` | function body (a split method's first half, then its second halves), parameter allocas, entry-block alloca placement |
 | | `genlRootNote`, `genlRootBirth`, `genlRootFrame`, `genlRootsSave`, `genlRootsRestore` | roots: a slot noted as one, a birth's slot, the frame's map, push and pops; the roots set aside around a nested function |
 | | `genlGloFnName`, `genlGloVarName` | declare a function or global under the symbol `nameSymbol` spells |
 | | `genlIsVoidMain` | whether a function is a `main` returning nothing, generated returning `i32 0` for the exit status |
@@ -1596,7 +1666,11 @@ variables.
 | | `genlOwnerHeader`, `genlVirtHeader`, `genlVirtRecord`, `genlVirtFinalize` | an owning virtual reference's header, from its vtable record's alignment; that record; its value's death through the record's `finalize` |
 | | `genlHollowRelease`, `genlRegionDealiasPart`, `genlHollowDeath`, `genlReleasePart` | a hollowed variable's release: the death of a value moved out, or an element of it, finalizing none of it and freeing the memory |
 | | `genlReleaseOwning`, `genlDealiasNodes` | releasing one owner of an owning reference or of each a tuple value carries, and replaying flow's lists |
-| | `genlTempKeep`, `genlTempsEnd`, `genlTempsJump`, `genlTempRelease` | a temporary kept in its slot; those a part made finalized at its end, or before a jump ("Temporaries") |
+| | `genlTempKeep`, `genlTempsEnd`, `genlTempsJump`, `genlTempRelease` | a temporary kept in its slot; those a part made finalized at its end, or before a jump ("Temporaries"); a lock's guard in a split method only where its flag says it holds its lock ("A split method") |
+| `genllvm/genlawait.c` | `genlAwait`, `genlSeamLayout`, `genlSeamGiveBack`, `genlSeamRecord` | a seam of a split method: what is awaited, the record laid out (once) and its second half declared, the locks given back, the record built, the return; what follows in a `resume` block ("A split method") |
+| | `genlSplitHalves`, `genlSplitHalf`, `genlSeamEntry` | each second half: the method generated again, its entry moving the record's values back and branching to the seam's `resume` block |
+| | `genlExprsAcross`, `genlHasSeam` | operands in order, each made before a later one's seam kept in flight across it (`GenFlight`) |
+| | `genlHeldBegin`, `genlHeldIf` | a temporary lock guard's flag, and code run while it holds its lock |
 | | `genlFinalizeAt`, `genlCallDrop`, `genlEachElem` | a value's death in place, whatever its type: a local's, a field's, a region value's before its `free`, and the `finalize` intrinsic |
 | | `genlTypeDrop`, `genlStructDrop`, `genlEnumDrop` | the body of a drop the compiler gave a type: a struct's `final` calls, its fields' deaths, its owners' release; an enum's tag dispatching to its variant's |
 | | `genlAliasHeld` | a copied struct, enum, tuple or array: `aliasRef` on each counted reference its death releases |

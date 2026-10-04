@@ -58,6 +58,7 @@ enum
     OPT_SIMPLEBUILTIN,
     OPT_LINT_LLVM,
     OPT_INTRINSIC_FALLBACK,
+    OPT_AWAIT_DIRECT,
 
     OPT_BNF,
     OPT_ANTLR,
@@ -105,6 +106,7 @@ static opt_arg_t args[] =
     { "simplebuiltin", '\0', OPT_ARG_NONE, OPT_SIMPLEBUILTIN },
     { "lint-llvm", '\0', OPT_ARG_NONE, OPT_LINT_LLVM },
     { "intrinsic-fallback", '\0', OPT_ARG_NONE, OPT_INTRINSIC_FALLBACK },
+    { "await-direct", '\0', OPT_ARG_NONE, OPT_AWAIT_DIRECT },
 
     OPT_ARGS_FINISH
 };
@@ -187,6 +189,9 @@ static void usage()
         "  --intrinsic-fallback\n"
         "                  Use every intrinsic's Cone fallback body where it\n"
         "                  has one, in place of the compiler's own lowering.\n"
+        "  --await-direct  Test only: split each actor message holding an\n"
+        "                  'await', each seam handing its record straight to\n"
+        "                  its second half, the awaited value as the result.\n"
         ,
         "" // "Runtime options for Cone programs (not for use with Cone compiler):\n"
     );
@@ -414,6 +419,7 @@ int coneOptSet(ConeOptions *opt, int *argc, char **argv) {
         case OPT_EMIT_INCLUDE: opt->emit_include = 1; break;
         case OPT_LINT_LLVM: opt->lint_llvm = 1; break;
         case OPT_INTRINSIC_FALLBACK: opt->intrinsic_fallback = 1; break;
+        case OPT_AWAIT_DIRECT: opt->await_direct = 1; break;
 
         case OPT_VERBOSE:
         {
