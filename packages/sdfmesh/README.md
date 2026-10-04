@@ -29,8 +29,8 @@ imm h = mesh.meshHash(&m);                                        // the same on
 ```
 
 `sdf/examples/hornmesh.cone` meshes the horn at four levels of detail and
-draws it; `sdf/examples/horn.cone` and `sdf/examples/starship.cone` mesh
-and pin their shapes the same way.
+draws it; `sdf/examples/horn.cone` and `packages/starship` mesh and pin
+their shapes the same way.
 
 ## Surface nets
 
@@ -173,7 +173,10 @@ How it is made the same:
   the unrelaxed ones (relax 0). A part that wants them relaxed, or normals
   from its own field, can run a kernel of its own over `positions`,
   `normals` and `vertexCells` (which cell each vertex may move within)
-  with its shape and sdf's `gradient`; nothing here does yet.
+  with its shape and sdf's `gradient`; `packages/starship` does
+  (`gpu/shipfield.cone`: relaxation as `surfaceNet`'s, the field's
+  normals, and each quad cut again at the relaxed positions, since `emit`
+  chose its diagonal at the unrelaxed ones).
 - **No sparse sampling.** Skipping blocks far from the surface is the
   sampler's business, not the mesher's: the mesher reads every sample it
   is given. `surfaceNet`'s sparse path gives its dense mesh anyway.

@@ -1,0 +1,196 @@
+// The ship's description, built on the CPU: the gesture's spine, the core's
+// radii and the keel along it, the ribbing's and blades' cells' frames (from
+// sculpt's path and its rotation-minimizing frames), the head's frame and
+// the lance, written into one shipfield.ShipData, which the CPU's mesher
+// asks its distance and the GPU's kernels read as a buffer. Then what is
+// drawn beside the ship: its lights and the stars.
+
+// ---- The gesture: the line of action, an S ----
+
+// The dorsal line, traced on the reference at twelve points and
+// back-projected through the fitted camera onto the mid-plane: the snout,
+// the head, the neck rising in a C to a crest over the shoulders (y 1.95),
+// the torso falling straight, the tail's trough and the lance lifting
+imm SPX Array[f32, 12] = [-0.73, -0.08, 0.72, 1.6, 2.65, 3.77, 5.28, 7.14, 8.88, 10.6, 11.94, 13.31];
+imm SPY Array[f32, 12] = [-0.26, -0.03, 0.41, 1.16, 1.8, 1.95, 1.53, 0.98, 0.67, 0.66, 0.91, 1.17];
+
+// Control point i; without the gesture, on the straight line from the
+// first to the last
+fn ctrl(i usize, straight Bool) Vec3 {
+  if straight { return v(SPX[i], SPY[0usize] + (SPY[11usize] - SPY[0usize]) * (SPX[i] - SPX[0usize]) / (SPX[11usize] - SPX[0usize]), 0.); }
+  v(SPX[i], SPY[i], 0.);
+}
+
+// Catmull-Rom between b and c
+fn catmull(a Vec3, b Vec3, c Vec3, d Vec3, t f32) Vec3 {
+  imm t2 = t * t;
+  ((b * 2.) + (c - a) * t + (a * 2. - b * 5. + c * 4. - d) * t2 + (b * 3. - a - c * 3. + d) * (t2 * t)) * 0.5;
+}
+
+// The body's spine at t, 0 (the head, control point 1) to 1 (where the
+// lance begins, control point 9)
+fn spineAt(t f32, straight Bool) Vec3 {
+  imm s = t * 8.;
+  mut k = usize.from(i32.from(s));
+  if k > 7usize { k = 7usize; }
+  catmull(ctrl(k, straight), ctrl(k + 1usize, straight), ctrl(k + 2usize, straight), ctrl(k + 3usize, straight), s - f32.from(k));
+}
+
+// The core's radius at t: one body from the head to the lance, swelling a
+// little at the chest and diminishing as it goes
+fn radiusAt(t f32) f32 {
+  imm c = (t - 0.55) / 0.2;
+  0.26 + 0.1 * minf(t / 0.3, 1.) + 0.12 * libc.expf(0. - c * c) - 0.17 * maxf(0., (t - 0.6) / 0.4);
+}
+
+// How far the keel hangs below the spine at t: the underside of the chest,
+// deepest under the wing roots
+fn keelAt(t f32) f32 {
+  imm c = (t - 0.5) / 0.17;
+  0.75 * libc.expf(0. - c * c);
+}
+
+// The head's frame: along the snout, rolled 25 degrees toward the viewer
+fn headFrame(straight Bool) HeadFrame {
+  imm h = ctrl(1usize, straight);
+  imm s = ctrl(0usize, straight);
+  imm x = (s - h).normalize();
+  imm y0 = (v(0., 1., 0.) - x * x.y).normalize();
+  imm y = (y0 * 0.9063 + v(0., 0., 0.4226)).normalize();
+  imm z = x.cross(y);
+  new HeadFrame(h, x, y, z);
+}
+
+// The ship's description: the membranes alone, or everything else, with
+// the parts 'has' drawn
+fn makeShip(membrane Bool, has u32) ShipData {
+  imm straight = (has & GESTURE) == 0u32;
+  mut spinePoints = List[Vec3].empty();
+  mut spine = new Array[Vec3, 41] <- fill v(0., 0., 0.);
+  mut radii = new Array[f32, 41] <- fill 0.;
+  mut keels = new Array[f32, 41] <- fill 0.;
+  mut i = 0;
+  while i <= SEGMENTS {
+    imm t = f32.from(i) / f32.from(SEGMENTS);
+    imm at = usize.from(i);
+    spinePoints.push(spineAt(t, straight));
+    spine[at] = spineAt(t, straight);
+    radii[at] = radiusAt(t);
+    keels[at] = if (has & KEEL) != 0u32 { keelAt(t); } else { 0.; };
+    i = i + 1;
+  }
+  imm path = sculpt.Path.fromPoints(spinePoints.view(), false);
+  imm pathFrames = path.curveFrames();
+  imm pathDistances = path.distances();
+  imm curve = PathCurve.make(pathFrames.view(), pathDistances.view());
+  // Which of the frames' axes is up: the binormal on this path, and its sign
+  imm f0 = curve.frameAt(0.);
+  imm swap = absf(f0.binormal.y) > absf(f0.normal.y);
+  imm upAxis = if swap { f0.binormal.y; } else { f0.normal.y; };
+  imm up = if upAxis < 0. { -1.; } else { 1.; };
+  mut ribR = new Array[f32, 80] <- fill 0.;
+  mut ribK = new Array[f32, 80] <- fill 0.;
+  mut ribFrames = List[CurveFrame].withCapacity(usize.from(RIBS_N));
+  i = 0;
+  while i < RIBS_N {
+    imm t = (f32.from(i) + 0.5) / f32.from(RIBS_N);
+    ribR[usize.from(i)] = radiusAt(t);
+    ribK[usize.from(i)] = if (has & KEEL) != 0u32 { keelAt(t); } else { 0.; };
+    ribFrames.push(f0);         // a place for each cell's frame, written below
+    i = i + 1;
+  }
+  curveCells(&curve, ribFrames.viewMut());
+  mut bladeR = new Array[f32, 70] <- fill 0.;
+  mut bladeFrames = List[CurveFrame].withCapacity(usize.from(BLADES_N));
+  i = 0;
+  while i < BLADES_N {
+    bladeR[usize.from(i)] = radiusAt((f32.from(i) + 0.5) / f32.from(BLADES_N));
+    bladeFrames.push(f0);
+    i = i + 1;
+  }
+  curveCells(&curve, bladeFrames.viewMut());
+  mut ribs = new Array[CurveFrame, 80] <- fill f0;
+  mut bladeCells = new Array[CurveFrame, 70] <- fill f0;
+  mut k = 0usize;
+  while k < ribFrames.len() { ribs[k] = *ribFrames[k]; k = k + 1usize; }
+  k = 0usize;
+  while k < bladeFrames.len() { bladeCells[k] = *bladeFrames[k]; k = k + 1usize; }
+  new ShipData(spine, radii, keels, ribs, ribR, ribK, bladeCells, bladeR, headFrame(straight),
+    ctrl(9usize, straight), ctrl(10usize, straight), ctrl(11usize, straight), up,
+    if swap { 1u32; } else { 0u32; }, has, if membrane { 1u32; } else { 0u32; });
+}
+
+// A box holding the ship, or the membranes
+fn shipBounds(ship &ShipData) Aabb3 {
+  if ship.skinOnly != 0u32 { return new Aabb3(v(2.9, -2.8, -8.3), v(8.6, 1.3, 8.3)); }
+  new Aabb3(v(-1.7, -2.8, -8.3), v(13.9, 3.7, 8.3));
+}
+
+// ---- The lights ----
+
+// A light: where, its radii (a ball, or a flattened one), and how hot
+struct Glow {
+  pub at Vec3;
+  pub size Vec3;
+  pub kind u32;          // 0 a wing light, 1 a port, 2 an eye, 3 the mouth
+}
+
+fn lights(ship &ShipData) List[Glow] {
+  mut l = List[Glow].empty();
+  if ship.on(LIGHTS) {
+    // The row along each wing's main spar: 37, on its top, beside the
+    // boundary line
+    imm up = v(-0.16, 0.94, 0.3);
+    mut k = 0;
+    while k < 37 {
+      imm t = (f32.from(k) + 0.5) / 37.;
+      imm at = if t < 0.5 { v(4.78, -0.17, 1.94).lerp(v(4.6, -0.9, 3.9), t * 2.); }
+        else { v(4.6, -0.9, 3.9).lerp(v(4.35, -1.48, 5.75), (t - 0.5) * 2.); };
+      imm w = at + up * 0.1 + v(0.06, 0., 0.);
+      l.push(new Glow(w, v(0.03, 0.03, 0.03), 0u32));
+      l.push(new Glow(farWing(w), v(0.03, 0.03, 0.03), 0u32));
+      k = k + 1;
+    }
+    // The ports: small, warm and dim, along each flank above the keel
+    mut i = 7usize;
+    while i < 31usize {
+      imm s = ship.spine[i];
+      imm r = ship.radii[i];
+      imm kk = ship.keels[i];
+      imm at = s + v(0.03 * jitter(i32.from(i), 41u32), 0. - r * 0.45 - kk * 0.55, r * 0.85 + kk * 0.2);
+      l.push(new Glow(at, v(0.028, 0.028, 0.028), 1u32));
+      l.push(new Glow(v(at.x, at.y, 0. - at.z), v(0.028, 0.028, 0.028), 1u32));
+      i = i + 3usize;
+    }
+  }
+  imm hf = &ship.head;
+  if ship.on(MAW) {
+    // The eyes, in their sockets
+    imm eye = hf.world(v(0.37, 0.07, 0.17));
+    imm far = hf.world(v(0.37, 0.07, -0.17));
+    l.push(new Glow(eye, v(0.045, 0.045, 0.045), 2u32));
+    l.push(new Glow(far, v(0.045, 0.045, 0.045), 2u32));
+    // The mouth: a hot, flattened core filling the slot, wide across
+    imm at = hf.world(v(0.72, -0.04, 0.));
+    l.push(new Glow(at, v(0.1, 0.04, 0.1), 3u32));
+  }
+  l;
+}
+
+// ---- The stars: short segments far away ----
+
+fn stars(group u32) List[Vec3] {
+  mut s = List[Vec3].empty();
+  mut i = 0;
+  while i < 700 {
+    imm h = noise.hash2(i, i32.from(group), SEED);
+    imm z = noise.toSigned(h.x);
+    imm a = noise.toUnit(h.y) * 6.2831853;
+    imm r = (1. - z * z).sqrt();
+    imm d = v(r * cos(a), z, r * sin(a)) * 300.;
+    s.push(d);
+    s.push(d + v(0.12, 0.12, 0.));
+    i = i + 1;
+  }
+  s;
+}

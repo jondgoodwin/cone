@@ -1,0 +1,140 @@
+// The GPU's mesh against the CPU's: counts, positions, normals, triangles,
+// and each as a half-edge mesh, its validity and Euler characteristic
+
+fn bits(f f32) u32 { f as u32; }
+
+// A mesh's quads again, from its triangle pairs ((a, b, c), (a, c, d) or
+// (a, b, d), (b, c, d): either way the quad a, b, c, d)
+fn quadsOf(m &mesh.Mesh) List[u32] {
+  mut quads = List[u32].withCapacity(m.indices.len() * 2usize / 3usize);
+  mut t = 0usize;
+  while t + 5usize < m.indices.len() {
+    imm a = *m.indices[t];
+    imm b = *m.indices[t + 1usize];
+    imm c = if *m.indices[t + 3usize] == a { *m.indices[t + 2usize]; } else { *m.indices[t + 4usize]; };
+    quads.push(a); quads.push(b); quads.push(c); quads.push(*m.indices[t + 5usize]);
+    t = t + 6usize;
+  }
+  quads;
+}
+
+// The mesh's quads as a PolyMesh: how many quads it refused, how many
+// problems 'validate' found, and V - E + F
+fn polyCheck(m &mesh.Mesh, refused &mut u64, invalid &mut u64) i64 {
+  imm quads = quadsOf(m);
+  mut counts = List[u32].withCapacity(quads.len() / 4usize);
+  mut q = 0usize;
+  while q < quads.len() {
+    counts.push(4u32);
+    q = q + 4usize;
+  }
+  mut problems = List[String].empty();
+  imm pm = mesh.PolyMesh.fromPolygons(m.positions.view(), counts.view(), quads.view(), &mut problems);
+  *refused = u64.from(problems.len());
+  imm bad = pm.validate();
+  *invalid = u64.from(bad.len());
+  i64.from(pm.vertexCount()) - i64.from(pm.edgeCount()) + i64.from(pm.faceCount());
+}
+
+// The comparison of one level, printed; true if the two have the same
+// counts and the same triangles, and every position within 'tolerance'
+fn compareMeshes(label &[]u8, gpu &mesh.Mesh, cpu &mesh.Mesh, cell f32) Bool {
+  printStr(label);
+  print <- ": GPU "; print <- gpu.vertexCount(); print <- " vertices, "; print <- gpu.indices.len() / 3usize;
+  print <- " triangles; CPU "; print <- cpu.vertexCount(); print <- ", "; print <- cpu.indices.len() / 3usize; print <- "\n";
+  mut same = gpu.vertexCount() == cpu.vertexCount() and gpu.indices.len() == cpu.indices.len();
+  if same {
+    mut moved = 0u64;
+    mut most f32 = 0.;
+    mut mostAt = 0usize;
+    mut far = 0u64;         // vertices more than a hundredth of a cell apart
+    mut shifted = 0u64;     // of which are the CPU's vertex one place along
+    mut firstFar = 0usize;
+    mut lastFar = 0usize;
+    mut mostNear f32 = 0.;  // the most the rest are apart
+    mut least f32 = 2.;
+    mut leastAt = 0usize;
+    mut bent = 0u64;        // normals more than 1 degree apart
+    mut leastNear f32 = 2.; // the least cosine among the vertices within a hundredth of a cell
+    mut v = 0usize;
+    while v < gpu.vertexCount() {
+      imm a = *gpu.positions[v];
+      imm b = *cpu.positions[v];
+      if bits(a.x) != bits(b.x) or bits(a.y) != bits(b.y) or bits(a.z) != bits(b.z) { moved = moved + 1u64; }
+      imm d = (a - b).length();
+      if d > most { most = d; mostAt = v; }
+      if d > cell * 0.01 {
+        far = far + 1u64;
+        // The same vertex one place later or earlier: the order shifted
+        // between two cells whose pieces a sample's sign moved
+        if (v > 0usize and (a - *cpu.positions[v - 1usize]).length() <= cell * 0.01)
+            or (v + 1usize < cpu.vertexCount() and (a - *cpu.positions[v + 1usize]).length() <= cell * 0.01) {
+          shifted = shifted + 1u64;
+        }
+        if firstFar == 0usize { firstFar = v; }
+        lastFar = v;
+      } elif d > mostNear { mostNear = d; }
+      imm na = *gpu.normals[v];
+      imm nb = *cpu.normals[v];
+      imm cosine = na.x * nb.x + na.y * nb.y + na.z * nb.z;
+      if cosine < least { least = cosine; leastAt = v; }
+      if cosine < 0.99985 { bent = bent + 1u64; }
+      if d <= cell * 0.01 and cosine < leastNear { leastNear = cosine; }
+      v = v + 1usize;
+    }
+    mut tris = 0u64;
+    mut quadsCut = 0u64;     // quads whose triangles differ
+    mut i = 0usize;
+    while i < gpu.indices.len() {
+      if *gpu.indices[i] != *cpu.indices[i] { tris = tris + 1u64; }
+      if i % 6usize == 5usize {
+        mut j = i - 5usize;
+        mut differs = false;
+        while j <= i { if *gpu.indices[j] != *cpu.indices[j] { differs = true; } j = j + 1usize; }
+        if differs {
+          if quadsCut < 3u64 {
+            print <- "  quad "; print <- i / 6usize; print <- ": GPU";
+            j = i - 5usize;
+            while j <= i { print <- " "; print <- *gpu.indices[j]; j = j + 1usize; }
+            print <- ", CPU";
+            j = i - 5usize;
+            while j <= i { print <- " "; print <- *cpu.indices[j]; j = j + 1usize; }
+            print <- "\n";
+          }
+          quadsCut = quadsCut + 1u64;
+        }
+      }
+      i = i + 1usize;
+    }
+    print <- "  positions: "; print <- moved; print <- " of "; print <- gpu.vertexCount();
+    print <- " not the same bits; at most "; print <- most; print <- " apart (vertex "; print <- mostAt; print <- " at ";
+    imm at = *cpu.positions[mostAt];
+    print <- at.x; print <- ", "; print <- at.y; print <- ", "; print <- at.z;
+    print <- "); "; print <- far; print <- " more than a hundredth of a cell";
+    if far > 0u64 {
+      print <- " (vertices "; print <- firstFar; print <- " to "; print <- lastFar; print <- ", "; print <- shifted;
+      print <- " of them the CPU's vertex one place along); the rest at most "; print <- mostNear; print <- " apart";
+    }
+    print <- "\n";
+    print <- "  normals: least cosine "; print <- least; print <- " (vertex "; print <- leastAt; print <- " at ";
+    imm lat = *cpu.positions[leastAt];
+    print <- lat.x; print <- ", "; print <- lat.y; print <- ", "; print <- lat.z;
+    print <- "); "; print <- bent; print <- " more than a degree apart";
+    if far > 0u64 { print <- "; among the rest, least cosine "; print <- leastNear; }
+    print <- "\n";
+    print <- "  triangles: "; print <- tris; print <- " indices different, in "; print <- quadsCut; print <- " quads\n";
+    same = tris == 0u64;
+  } else {
+    print <- "  different counts\n";
+  }
+  mut gr = 0u64;
+  mut gi = 0u64;
+  mut cr = 0u64;
+  mut ci = 0u64;
+  imm ge = polyCheck(gpu, &mut gr, &mut gi);
+  imm ce = polyCheck(cpu, &mut cr, &mut ci);
+  print <- "  PolyMesh: GPU "; print <- gr; print <- " quads refused, "; print <- gi; print <- " problems, Euler ";
+  print <- ge; print <- "; CPU "; print <- cr; print <- " refused, "; print <- ci; print <- " problems, Euler "; print <- ce;
+  print <- "\n";
+  same and ge == ce and gr == cr and gi == ci;
+}

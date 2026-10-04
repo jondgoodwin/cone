@@ -128,6 +128,14 @@ Visual Studio projects stay at the root.
   program: its `gpu/part.cone` samples an sdf shape on a `SampleGrid`, and
   sdfmesh's `GridMesher` meshes the samples there; `main` compares both
   with the CPU's and times them (nothing runs it automatically);
+  `starship` is Elizabeth's skeletal dragon ship, a program and a part:
+  `src/` builds its description on the CPU (with `sculpt`'s paths) into
+  one buffer-shaped `ShipData`, meshes and draws it; `gpu/shipfield.cone`
+  is its distance field over that description and the kernels that sample
+  it sparsely, relax the mesh `GridMesher` makes and give it the field's
+  normals, so the CPU's `surfaceNet` and the GPU evaluate one declaration;
+  `--gpu`, `--compare` and `--runs` mesh on the GPU, compare and time it;
+  `test_congo.py` checks the GPU's meshes against the CPU's in coarse cells;
   `geomath` is 2-D and 3-D math, pure maths: values and operations with
   results of a known size, no collections (vectors,
   quaternions, matrices, transforms, boxes, rays, planes, frusta and their
