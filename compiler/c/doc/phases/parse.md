@@ -636,8 +636,11 @@ queues it if the init sent it anything. So `selfactor` and `self.m()` are good
 in the init and in what it calls, and the init's messages run after it.
 `` `#mem` `` is core's `mem`, bound privately, so that an initializer's
 parameter named `mem` does not hide it, and `` `#state'` `` the local holding the
-block. An init the state declares is run nowhere else (`ErrorActorStateInit`,
-`typeLitNewChecked`).
+block. The state is constructed nowhere else, by an init or by its fields'
+names, but by the init filling its `self`, `*self = new Self(field: value)`
+(`ErrorActorStateInit`, `typeLitNewChecked`, which `assignTypeCheck` tells of
+the fill through `typeLitSelfFill`); and it is a move type whatever its fields
+(`structTypeCheck`), so its value is never copied out of the actor.
 
 A behaviour may return a value, which a reply carries back to an `await`. Each
 that does has a second variant, its request awaited (`fetch'ask`: its

@@ -1,0 +1,80 @@
+// An actor's state exists only inside its actor. It is constructed in one
+// place: as the actor is made, 'new Keeper(...)', where the handle's
+// initializer makes it in the actor's block and its init, if it declares one,
+// fills it, '*self = new Self(field: value)' (concurrency_actor_init_sends
+// runs that). Every other construction of it is ErrorActorStateInit, by its
+// fields' names or by its init, in a behaviour, a synchronous method, its init
+// beside the fill, or as an allocation's value: such a state would be in no
+// actor, and 'selfactor' made from it, in a helper it called, would be a
+// handle to nothing (an access violation, before this was refused).
+//
+// Nor is it copied out of its actor: the state is a move type whatever its
+// fields are, so 'imm s = *self', and every other way of taking its value
+// through the borrow a method has of it, is ErrorMoveOut.
+
+mod concurrency_actor_state_confined;
+
+import actors;
+
+fn dup[T](x &T) T {
+  *x;                                       //~ ErrorMoveOut "May not move a value out through a borrowed reference"
+}
+
+actor Keeper {
+  count u64;
+
+  fn init(self &new, c u64) {
+    *self = new Self(count: c);             // the fill: the one construction allowed
+    mut s = new Self(count: 5u64);          //~ ErrorActorStateInit "Actor Keeper's state exists only inside its actor"
+  }
+
+  pub async do start(self) {
+    mut s = new Self(count: 5u64);          //~ ErrorActorStateInit "For a value of this shape, declare a plain struct."
+    s.helper();
+  }
+
+  fn fresh(self) {
+    mut s = new Self(5u64);                 //~ ErrorActorStateInit "Constructed here, it would be a state in no actor"
+  }
+
+  fn boxed(self) {
+    imm r = new Rc[mut, Self](count: 3u64); //~ ErrorActorStateInit "Actor Keeper's state exists only inside its actor"
+  }
+
+  fn copied(self) {
+    mut s = *self;                          //~ ErrorMoveOut "May not move a value out through a borrowed reference"
+  }
+
+  fn passed(self) {
+    self.take(*self);                       //~ ErrorMoveOut "May not move a value out through a borrowed reference"
+  }
+  fn take(self, s Self) {}
+
+  fn returned(self) Self {
+    *self;                                  //~ ErrorMoveOut "May not move a value out through a borrowed reference"
+  }
+
+  fn boxedCopy(self) {
+    imm r = new Rc[mut, Self](*self);       //~ ErrorMoveOut "May not move a value out through a borrowed reference"
+  }
+
+  fn generic(self) {
+    mut s = dup(self);
+  }
+
+  fn helper(self) {selfactor.note(1u64);}
+  pub async do note(self, n u64) {count = count + n;}
+
+  fn final(self &uni) {
+    mut s = *self;                          //~ ErrorMoveOut "May not move a value out through a borrowed reference"
+  }
+}
+
+fn main() {
+  initAll();
+  {
+    imm k = new Keeper(0u64);
+    k.start();
+  }
+  finalAll();
+}

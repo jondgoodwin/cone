@@ -302,9 +302,9 @@ void selfActorTypeCheck(TypeCheckState *pstate, INode **nodep) {
 // goes on at once, with no seam; m runs later, when the actor takes the
 // message up. The receiver becomes the actor's handle, made from the state
 // by the function 'selfactor' is (Counter.self'), and the call then selects
-// the handle's method sending m. Only the method's own 'self' is the state of
-// an actor the runtime holds: a state made with 'new Self(...)' in a method
-// is in no actor, so a behaviour reached through it is refused, as it is in
+// the handle's method sending m. Only the method's own 'self' is known to be
+// the state of an actor the runtime holds: a behaviour reached through any
+// other borrow of a state, a parameter's, is refused, as it is in
 // the actor's 'final', where 'selfactor' is. In its 'init' it is a send, as
 // anywhere: the init runs on the state in the actor (parseactor.c), and the
 // message waits until the init has returned.

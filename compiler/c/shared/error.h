@@ -512,7 +512,7 @@ enum ErrorCode {
     // 1280 was ErrorAwaitUnused; an awaited operation's unused result is warned, WarnAwaitUnused
 
     // An actor's 'init' runs on the state in the actor's block (parser/parseactor.c)
-    ErrorActorStateInit = 1290, // An actor's state constructed with an 'init' it declares anywhere but the making of the actor: the init would run on a state in no actor, whose sends reach nothing
+    ErrorActorStateInit = 1290, // An actor's state constructed anywhere but the making of the actor (its handle's initializer, and its init's '*self = new Self(...)'), by its fields' names or an 'init': a state in no actor, whose sends reach nothing
 
     // Futures: a behaviour's value stored and awaited later (actors.Future[T])
     ErrorAwaitNotFuture = 1281, // An 'await' on a value that is no future, behaviour's reply or operation: it waits for no answer
