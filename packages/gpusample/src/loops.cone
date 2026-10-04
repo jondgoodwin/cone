@@ -1,0 +1,61 @@
+// ---- Loops inside a branch, run on the GPU ----
+//
+// Three kernels of one shape: a 'while' loop inside the kernel's bounds
+// branch, carrying an f32 and reading a slice in its body, the sum written
+// after the loop. tests/loops.cone runs each on the GPU and on the CPU and
+// compares the two bit for bit. Each loop runs four times, and every pass
+// adds a different amount, so a loop that ran once, or a write after it
+// that was skipped, shows. conec once miscompiled all three for the GPU:
+// LLVM's structurizer, given a loop entered straight from a conditional
+// branch, made the loop's back edge always exit (the loop ran once, and
+// what followed it was skipped). Every loop is now given a preheader first
+// (compiler/c/genllvm/genllvm.c, the GPU pipeline).
+
+// The index read in the loop's body
+pub fn @compute(64) sumInBranch(inv Invocation, a &[]f32, b &[]f32, out &[]mut f32) {
+  imm i = usize.from(inv.globalId[0usize]);
+  if i < out.len {
+    mut sum = 0.;
+    mut k = 0u32;
+    while k < 4u32 {
+      sum = sum + a[i] * f32.from(k + 1u32);
+      k = k + 1u32;
+    }
+    out[i] = sum;
+  }
+}
+
+// The index read under an 'if' inside the loop
+pub fn @compute(64) sumIfInLoop(inv Invocation, a &[]f32, b &[]f32, out &[]mut f32) {
+  imm i = usize.from(inv.globalId[0usize]);
+  if i < out.len {
+    mut sum = 0.;
+    mut k = 0u32;
+    while k < 4u32 {
+      if (k & 1u32) == 1u32 { sum = sum + a[i] * 0.25; }
+      else { sum = sum + b[i]; }
+      k = k + 1u32;
+    }
+    out[i] = sum;
+  }
+}
+
+// A step with an early return and a branch, called in the loop
+pub fn stepOf(x f32, y f32, k u32) f32 {
+  if y < 0. { return 0.; }
+  if (k & 1u32) == 0u32 { x * 0.5 + y; } else { x - y * f32.from(k); };
+}
+
+// The step called in the loop's body
+pub fn @compute(64) sumCallInLoop(inv Invocation, a &[]f32, b &[]f32, out &[]mut f32) {
+  imm i = usize.from(inv.globalId[0usize]);
+  if i < out.len {
+    mut sum = 0.;
+    mut k = 0u32;
+    while k < 4u32 {
+      sum = sum + stepOf(a[i], b[i], k);
+      k = k + 1u32;
+    }
+    out[i] = sum;
+  }
+}

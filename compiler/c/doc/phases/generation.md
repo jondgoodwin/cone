@@ -1202,7 +1202,16 @@ it. So the GPU pipeline and what follows it keep to those shapes:
   `br i1 undef`, which the validator accepts and the GPU runs as it pleases.
   simplifycfg makes a switch of an if-elif chain on one integer, so
   `lower-switch` makes each switch a tree of comparisons just before it
-  (`module_target_spirv_switch`).
+  (`module_target_spirv_switch`). And `structurizecfg` wants every loop
+  entered through a preheader, as LLVM's own GPU pipelines hand it loops:
+  given one entered straight from a conditional branch (a loop inside an
+  `if`, one of whose exits, a failed check, reaches the kernel's one return
+  another way), it made the loop's back edge `br i1 true` to its exit, so the
+  loop ran once and what followed it was skipped, in a module the validator
+  accepts. simplifycfg folds away the empty block before such a loop, so
+  `loop-simplify` gives each loop its preheader again just before
+  `structurizecfg` (`module_target_spirv_loop_in_branch`, and gpusample's
+  `loops` test on a GPU).
 - **A struct or array is loaded from or stored into a storage buffer a scalar
   at a time** (`genlGpuBufferAccess`, after the pipeline): the backend gives
   the buffer's laid-out struct and a local's two SPIR-V types, and a whole
@@ -1308,7 +1317,7 @@ two halves, before its control flow is structured:
   generation (`ErrorGpuRefChoice`).
 
 The second half (`globaldce`, `infer-address-spaces` again, for what the
-folding made, `instsimplify`, `adce`, `lower-switch`, `structurizecfg`) follows. A library
+folding made, `instsimplify`, `adce`, `lower-switch`, `loop-simplify`, `structurizecfg`) follows. A library
 compiled for a GPU makes no kernel of a function that is no entry point: its
 failure calls stay calls to a function the module imports, and a slice
 indexed in it has nothing to be folded into.

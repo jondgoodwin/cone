@@ -2011,7 +2011,13 @@ void genpgm(GenState *gen, ProgramNode *pgm) {
     // returning early, as a module the validator refuses. structurizecfg
     // takes no switch, and makes each of a switch's branches 'br i1 undef',
     // so a switch is first made a tree of branches (lower-switch): simplifycfg
-    // makes one of an if-elif chain on one integer. A release build adds
+    // makes one of an if-elif chain on one integer. And every loop is first
+    // given a preheader (loop-simplify), as LLVM's own GPU pipelines give
+    // structurizecfg every loop: simplifycfg folds away the empty block
+    // before a loop, and a loop entered straight from a conditional branch
+    // (a loop in an 'if', a failed check leaving it by another way) is
+    // structured with a back edge that always exits, so the loop runs once
+    // and what follows it is skipped. A release build adds
     // the usual optimizations. Then what is left of a struct or array value
     // is carried as its scalar leaves, and every field's address is computed
     // from its struct's type (genlGpuAggregates).
@@ -2039,8 +2045,8 @@ void genpgm(GenState *gen, ProgramNode *pgm) {
         refused = errors != before;
         if (!refused)
             passerr = LLVMRunPasses(gen->module,
-                gen->entrycnt > 0 ? "globaldce,function(infer-address-spaces,instsimplify,adce,lower-switch,structurizecfg)"
-                    : "function(lower-switch,structurizecfg)",
+                gen->entrycnt > 0 ? "globaldce,function(infer-address-spaces,instsimplify,adce,lower-switch,loop-simplify,structurizecfg)"
+                    : "function(lower-switch,loop-simplify,structurizecfg)",
                 gen->machine, passopts);
     }
     LLVMDisposePassBuilderOptions(passopts);

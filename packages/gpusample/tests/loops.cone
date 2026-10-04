@@ -1,0 +1,79 @@
+// gpusample's loop kernels (src/loops.cone) run end to end: each a 'while'
+// loop inside the kernel's bounds branch, carrying an f32 and reading a
+// slice in its body, run on the GPU over 100 invocations (two workgroups,
+// the second only partly in bounds) and on the CPU as its twin, every word
+// written compared bit for bit through gpuwork's checkParity. A loop that
+// ran once on the GPU, or a write after it that was skipped, differs from
+// the CPU in every word.
+//
+// Only a failure prints. It needs a GPU driver with Vulkan 1.3 and
+// SDL3.dll; with the Vulkan SDK, the validation layers are on, and must say
+// nothing.
+
+mod loops;
+
+import testing use *;
+import stdio use *;
+import collections use List;
+import gpu use *;
+import gpuwork use *;
+import gpusample use *;
+
+const COUNT = 100u32;
+
+// Run one kernel on both, over a[i] = 1 + i, b[i] = (i % 5) / 2, and a
+// zeroed output, and expect every word the same
+fn parity(device &mut Device, spirv &List[u32], name &[]u8, f &fn(Invocation, &[]f32, &[]f32, &[]mut f32)) {
+  mut kernel = Kernel.make(device, spirv.view(), name, &[READ, READ, READ_WRITE]);
+  require(kernel.isValid(), name);
+  kernel.setTwin3(f);
+  mut a = List[u32].empty();
+  mut b = List[u32].empty();
+  mut out = List[u32].empty();
+  mut i = 0u32;
+  while i < COUNT {
+    a.push((1. + f32.from(i)) as u32);
+    b.push((f32.from(i % 5u32) * 0.5) as u32);
+    out.push(0u32);
+    i = i + 1u32;
+  }
+  mut buffers = List[List[u32]].empty();
+  buffers.push(a);
+  buffers.push(b);
+  buffers.push(out);
+  imm p = checkParity(device, &kernel, &buffers, (COUNT + 63u32) / 64u32);
+  expectBool(p.ran, true, name);
+  expectUInt(p.compared, u64.from(COUNT), name);
+  if !expect(p.exact(), name) {
+    printStr("  mismatched ");
+    printUInt(p.mismatched);
+    printStr(", first at word ");
+    printUInt(p.firstIndex);
+    printStr(": GPU ");
+    print <- f64.from(p.gpuWord as f32);
+    printStr(", CPU ");
+    print <- f64.from(p.cpuWord as f32);
+    printStr("\n");
+  }
+}
+
+fn main() i32 {
+  mut instance = Instance.create("gpusample loops");
+  require(instance.isValid(), "a Vulkan 1.3 instance");
+  mut none = Surface.none();
+  mut adapter = instance.requestAdapter(&none, POWER_PREFERENCE_HIGH_PERFORMANCE);
+  require(adapter.isValid(), "an adapter");
+  mut device = adapter.requestDevice();
+  require(device.isValid(), "a device");
+  imm spirv = readSpirv("gpusample.spv");
+  require(spirv.len() > 5usize, "gpusample.spv beside the program");
+
+  parity(&mut device, &spirv, "sumInBranch", &sumInBranch);
+  parity(&mut device, &spirv, "sumIfInLoop", &sumIfInLoop);
+  parity(&mut device, &spirv, "sumCallInLoop", &sumCallInLoop);
+
+  expectUInt(u64.from(refusals()), 0u64, "nothing refused");
+  expectUInt(u64.from(failures()), 0u64, "no Vulkan call failed");
+  expectUInt(u64.from(validationMessages()), 0u64, "no validation message");
+  done();
+}
