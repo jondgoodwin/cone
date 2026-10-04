@@ -303,6 +303,10 @@ typedef struct VkMemoryAllocateInfo {
   VkStructureType sType; const void* pNext; VkDeviceSize allocationSize; uint32_t memoryTypeIndex;
 } VkMemoryAllocateInfo;
 
+typedef struct VkMappedMemoryRange {
+  VkStructureType sType; const void* pNext; VkDeviceMemory memory; VkDeviceSize offset; VkDeviceSize size;
+} VkMappedMemoryRange;
+
 typedef struct VkBufferCopy { VkDeviceSize srcOffset; VkDeviceSize dstOffset; VkDeviceSize size; } VkBufferCopy;
 
 typedef struct VkBufferImageCopy {

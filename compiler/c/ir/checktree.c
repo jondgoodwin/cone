@@ -183,6 +183,9 @@ static void checkNode(INode *node) {
         checkNode(((LogicNode*)node)->rexp);
         break;
 
+    case AwaitTag:
+        checkNode(((AwaitNode*)node)->exp); break;
+
     case NamedValTag:
         checkNode(((NamedValNode*)node)->val); break;
 

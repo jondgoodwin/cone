@@ -3,8 +3,10 @@
 // into the driver's Layer seam. Checked: the handshake through the driver,
 // requests, bodies (one of 1 MiB), keep-alive (50 requests on one
 // connection: one connect, one accept), close_notify (sent by both, the
-// server reading the client's), resumption on a second connection, and the
-// refusals as the driver reports them: a wrong host, an expired
+// server reading the client's), resumption on a second connection, two
+// connections opened together while a first is still open each resuming
+// from its tickets, and the refusals as the driver reports them: a wrong
+// host, an expired
 // certificate, an untrusted root, a pin that does not match, and the OS's
 // verifier (offline) run on the blocking pool against the test root, which
 // the machine does not trust. Every buffer goes back to the pool.
@@ -346,6 +348,34 @@ fn main() i32 {
   expectUInt(tls.stats().resumed - closing.resumed, 2u64, "...resumed, on both sides");
   drv.close(&mut lp, conn2);
   waitClosed(&mut drv, &mut lp, &mut sv, &mut cl, &mut events, 2u64, 2u64);
+
+  // Connections at once, the defect #317 had: a first connection open and
+  // kept, its tickets cached as they came; two more, opened together while
+  // it lives, each resume from one
+  imm fresh = client(tls.Verifier.roots(readText("ca.pem").view()));
+  imm atOnce = tls.stats();
+  imm connA = drv.connectWith(&mut lp, "127.0.0.1", good, new So[tls.Stream](fresh.stream("localhost", pool)),
+    Sink.Here[tokConn]);
+  exchange(&mut drv, &mut lp, &mut sv, &mut cl, &mut events, connA, RequestHead.get("/hello", "localhost"), "");
+  expect(cl.last == EventKind.Done[] and cl.status == 200u16, "at once: the first connection's GET");
+  expectUInt(u64.from(fresh.cachedSessions()), 2u64, "at once: the first, open, has given two tickets");
+  imm connB = drv.connectWith(&mut lp, "127.0.0.1", good, new So[tls.Stream](fresh.stream("localhost", pool)),
+    Sink.Here[tokConn]);
+  imm connC = drv.connectWith(&mut lp, "127.0.0.1", good, new So[tls.Stream](fresh.stream("localhost", pool)),
+    Sink.Here[tokConn]);
+  expectUInt(u64.from(fresh.cachedSessions()), 0u64, "at once: the second and third took one each");
+  exchange(&mut drv, &mut lp, &mut sv, &mut cl, &mut events, connB, RequestHead.get("/hello", "localhost"), "");
+  expect(cl.last == EventKind.Done[] and cl.status == 200u16, "at once: the second connection's GET");
+  exchange(&mut drv, &mut lp, &mut sv, &mut cl, &mut events, connC, RequestHead.get("/hello", "localhost"), "");
+  expect(cl.last == EventKind.Done[] and cl.status == 200u16, "at once: the third connection's GET");
+  imm atOnceAfter = tls.stats();
+  expectUInt(atOnceAfter.handshakes - atOnce.handshakes, 6u64, "at once: three handshakes, on each side");
+  expectUInt(atOnceAfter.resumed - atOnce.resumed, 4u64, "at once: the second and third resumed, on each side");
+  expectUInt(u64.from(fresh.cachedSessions()), 2u64, "at once: a new ticket from each resumed connection");
+  drv.close(&mut lp, connA);
+  drv.close(&mut lp, connB);
+  drv.close(&mut lp, connC);
+  waitClosed(&mut drv, &mut lp, &mut sv, &mut cl, &mut events, 5u64, 5u64);
 
   // Refused: a wrong host, an expired certificate, an untrusted root
   refused("wrong host", &mut drv, &mut lp, &mut sv, &mut cl, &mut events, roots.stream("wrong.example", pool),

@@ -162,6 +162,34 @@ void loanNotBoxable(INode *node, uint32_t loan);
 // The loan the borrow at 'site' made, or 0
 uint32_t loanAt(INode *site);
 
+// A seam ('await' in an actor's method; flowpath.c, pwSeam). Every borrow
+// that is not global ends there, as a scope ending ends the borrows of what it
+// declared: a holder still holding one gets a pending conflict, which fires,
+// as the ordinary borrow-no-longer-valid ErrorFrozen pointing at the seam, if
+// the holder is used again. A global borrow is ''static', and passes.
+//
+// Is a loan global: of a global's storage, or a reborrow through a reference
+// whose own loans come along with it -- neither a caller loan nor one of this
+// function's own storage (loanNotGlobalIn's test)?
+int loanIsGlobal(uint32_t loan);
+
+// Does a holder holding 'holds' hold a borrow that is not global? The loan to
+// name in a message, the borrow it was given where that can be told, or 0
+uint32_t loanSeamEnds(PathSet *holds);
+
+// The pending conflict of the seam 'seam' ending 'loan', which 'holder' holds
+uint32_t loanSeamPending(INode *seam, uint32_t loan, uint32_t holder);
+
+// The live mark of 'holder' at the seam 'seam': a pending entry that, fired by
+// the variable's next use, records it as used after the seam (pathSeamLive),
+// and reports nothing. Any variable may carry one, not only a holder.
+uint32_t loanSeamLive(INode *seam, uint32_t var);
+
+// The loans in flight across a seam -- an operand already walked whose call
+// or value is made after it -- are used after it: one that is not global is
+// reported at once, at the seam
+void loanSeamFlight(INode *seam);
+
 // An access to a place: each holder that may hold a loan it conflicts with gets
 // a pending conflict, which fires if the holder is used again
 void loanAccess(Place *pl, int access, INode *node);

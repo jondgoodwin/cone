@@ -109,8 +109,10 @@ pub struct Device {
 
   // A buffer of 'size' bytes, for 'usage' (BUFFER_USAGE_... OR-ed). One the
   // CPU maps (MAP_READ or MAP_WRITE) is in memory the CPU sees, and mapped
-  // for as long as it lives; any other is in the GPU's own memory, written
-  // by 'queue.writeBuffer' (with COPY_DST). Check 'isValid'.
+  // for as long as it lives: one it only reads (MAP_READ alone) in memory
+  // the CPU caches, where the GPU has it, so reading it back is fast; any
+  // other is in the GPU's own memory, written by 'queue.writeBuffer' (with
+  // COPY_DST) or cleared by 'queue.clearBuffer'. Check 'isValid'.
   pub fn createBuffer(self &mut, size u64, usage u32) Buffer {
     mut vkUsage = 0u32;
     if (usage & BUFFER_USAGE_COPY_SRC) != 0u32 { vkUsage = vkUsage | vulkan.BUFFER_USAGE_TRANSFER_SRC_BIT; }
@@ -122,9 +124,9 @@ pub struct Device {
     if (usage & BUFFER_USAGE_UNIFORM) != 0u32 { vkUsage = vkUsage | vulkan.BUFFER_USAGE_UNIFORM_BUFFER_BIT; }
     if (usage & BUFFER_USAGE_STORAGE) != 0u32 { vkUsage = vkUsage | vulkan.BUFFER_USAGE_STORAGE_BUFFER_BIT; }
     if (usage & BUFFER_USAGE_INDIRECT) != 0u32 { vkUsage = vkUsage | vulkan.BUFFER_USAGE_INDIRECT_BUFFER_BIT; }
-    imm mapped = (usage & (BUFFER_USAGE_MAP_READ | BUFFER_USAGE_MAP_WRITE)) != 0u32;
-    mut b = new BufferBackend(backend.device, new vulkan.Buffer(0u64), new vulkan.DeviceMemory(0u64), nullp());
-    if self.isValid() { b = allocateBuffer(backend.device, &queue.backend.memory, size, vkUsage, mapped); }
+    imm mapping = usage & (BUFFER_USAGE_MAP_READ | BUFFER_USAGE_MAP_WRITE);
+    mut b = new BufferBackend(backend.device, new vulkan.Buffer(0u64), new vulkan.DeviceMemory(0u64), nullp(), true);
+    if self.isValid() { b = allocateBuffer(backend.device, &queue.backend.memory, size, vkUsage, mapping); }
     new Buffer(b, size, usage);
   }
 
@@ -673,20 +675,58 @@ fn allocate(device vulkan.Device, props &vulkan.PhysicalDeviceMemoryProperties, 
   memory;
 }
 
+// The memory type for a buffer the CPU maps as 'mapping' says (MAP_READ,
+// MAP_WRITE, both), of those in 'bits'. One it writes is in coherent memory
+// (write-combined, uncached, where the GPU has it: right for writes, which
+// the CPU never reads back); one it writes and reads, coherent and cached
+// if there is such, else as one it writes. One it only reads is in cached
+// memory, which the CPU reads as fast as its own (on the RTX 4060 Laptop,
+// 40 MB copied out in 6 ms from cached memory, 135 ms from uncached, which
+// the CPU reads without caching or prefetching): coherent and cached if
+// there is such, else cached, which its 'mappedRange' then invalidates,
+// else coherent, as one it writes.
+fn mappedMemoryType(props &vulkan.PhysicalDeviceMemoryProperties, bits u32, mapping u32) u32 {
+  imm visible = vulkan.MEMORY_PROPERTY_HOST_VISIBLE_BIT;
+  imm coherent = vulkan.MEMORY_PROPERTY_HOST_COHERENT_BIT;
+  imm cached = vulkan.MEMORY_PROPERTY_HOST_CACHED_BIT;
+  mut t = 0xFFFFFFFFu32;
+  if (mapping & BUFFER_USAGE_MAP_READ) != 0u32 {
+    t = memoryType(props, bits, visible | coherent | cached);
+    if t == 0xFFFFFFFFu32 and (mapping & BUFFER_USAGE_MAP_WRITE) == 0u32 {
+      t = memoryType(props, bits, visible | cached);
+    }
+  }
+  if t == 0xFFFFFFFFu32 { t = memoryType(props, bits, visible | coherent); }
+  t;
+}
+
 // A buffer of 'size' bytes with Vulkan's 'usage', in memory of its own: the
-// CPU's, and mapped, if 'mapped', else the GPU's
+// CPU's, and mapped, if 'mapping' (MAP_READ, MAP_WRITE or both: how the CPU
+// uses it), else the GPU's
 fn allocateBuffer(device vulkan.Device, props &vulkan.PhysicalDeviceMemoryProperties, size u64, usage u32,
-    mapped Bool) BufferBackend {
-  mut result = new BufferBackend(device, new vulkan.Buffer(0u64), new vulkan.DeviceMemory(0u64), nullp());
+    mapping u32) BufferBackend {
+  mut result = new BufferBackend(device, new vulkan.Buffer(0u64), new vulkan.DeviceMemory(0u64), nullp(), true);
+  imm mapped = mapping != 0u32;
   imm bci = new vulkan.BufferCreateInfo(size: size, usage: usage, pQueueFamilyIndices: null);
   mut buffer = new vulkan.Buffer(0u64);
   if !check(vulkan.createBuffer(device, &bci, nullp(), &mut buffer), "vkCreateBuffer") { return result; }
   result.buffer = buffer;
   mut req = zeroed[vulkan.MemoryRequirements]();
   vulkan.getBufferMemoryRequirements(device, buffer, &mut req);
-  mut want = vulkan.MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
-  if mapped { want = vulkan.MEMORY_PROPERTY_HOST_VISIBLE_BIT | vulkan.MEMORY_PROPERTY_HOST_COHERENT_BIT; }
-  imm memory = allocate(device, props, &req, want);
+  mut memory = new vulkan.DeviceMemory(0u64);
+  if mapped {
+    imm typeIndex = mappedMemoryType(props, req.memoryTypeBits, mapping);
+    if typeIndex == 0xFFFFFFFFu32 {
+      fail("no memory type suits the buffer or texture");
+      return result;
+    }
+    result.coherent = (props.memoryTypes[usize.from(typeIndex)].propertyFlags
+      & vulkan.MEMORY_PROPERTY_HOST_COHERENT_BIT) != 0u32;
+    imm mai = new vulkan.MemoryAllocateInfo(allocationSize: req.size, memoryTypeIndex: typeIndex);
+    check(vulkan.allocateMemory(device, &mai, nullp(), &mut memory), "vkAllocateMemory");
+  } else {
+    memory = allocate(device, props, &req, vulkan.MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+  }
   if memory.h == 0u64 { return result; }
   result.memory = memory;
   check(vulkan.bindBufferMemory(device, buffer, memory, 0u64), "vkBindBufferMemory");

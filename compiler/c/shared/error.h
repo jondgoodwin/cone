@@ -494,6 +494,10 @@ enum ErrorCode {
     ErrorWorkgroupData = 1268,  // What a '@workgroup' global holds: anything but 32-bit numbers, their atomics, and structs and fixed arrays of them
     ErrorGpuAtomicPlace = 1269, // In a kernel, an atomic operation on memory invocations do not share: a local, or a global not '@workgroup'
 
+    // 'await' in an actor's method (ir/exp/await.c; its seam, ir/flowpath.c)
+    ErrorAwaitPlace = 1270,     // 'await' outside an actor's method: in a function, a method of another type, or an actor's 'init' or 'final', which no dispatcher runs
+    ErrorUnbuiltAwait = 1271,   // An 'await' every seam rule accepted: its continuation is not built yet, and the message says what the seam would carry
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name

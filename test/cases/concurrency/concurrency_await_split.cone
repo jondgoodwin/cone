@@ -1,0 +1,267 @@
+// A message holding an 'await' is split (actor-continuations, the split and
+// the record): its first half runs to each seam, gives back the locks whose
+// borrows end there, moves every value it still holds into the seam's
+// record, and returns; the seam's second half moves the record's values back
+// where they were and runs the rest of the method, the value awaited arriving
+// as its result. Nothing waits for a reply yet, so this compiles with
+// '--await-direct', for tests: each seam hands its record straight to its
+// second half, with the value it awaited.
+//
+// A seam is a return to the dispatcher, not to the author, so each message
+// here does what its twin with no 'await' does -- the same values, the same
+// prints, each value dying where and in the order the one scope says. Each
+// is run beside its twin ('plain'), and the two traces are the same:
+//
+// - fetch: the record is empty -- 'u' was moved into what is awaited and 'b'
+//   holds nothing yet -- so the second half takes 'self' and the result alone;
+// - ordered: a value in flight, 'k' read before the seam into a call made
+//   after it, travels with four droppables, which die inner block first, then
+//   the last declared first, a print between;
+// - several: two seams, a local declared between them, values in flight;
+// - looped: a seam in a loop, whose second half runs the loop's next pass to
+//   the seam again;
+// - flagged: a droppable moved on one path only travels with its drop flag;
+// - temps: a statement's temporaries wait for its end across the seam, and a
+//   droppable already made for a call after the seam travels in flight;
+// - locked: a lock borrow's guard, a local's and a temporary's, gives the lock
+//   back at the seam, so taking it again after does not wait, and the scope's
+//   end after the seam does not give it back a second time;
+// - early: a 'return' in the second half;
+// - voided: what is awaited is void, and nothing travels: the second half
+//   takes 'self' alone.
+
+mod concurrency_await_split;
+
+import stdio use *;
+import actors;
+import sync use Arc, Mutex;
+
+struct Fin {
+  pub n u64;
+  fn final(self &uni) {printStr("  drop "); printUInt(n); printStr("\n");}
+}
+
+struct Count {pub n u64;}
+
+fn give(n u64) u64 {printStr("  give "); printUInt(n); printStr("\n"); n;}
+fn make(n u64) Fin {printStr("  make "); printUInt(n); printStr("\n"); new Fin(n);}
+fn eat(f Fin, n u64) u64 {printStr("  eat "); printUInt(f.n); printStr(" "); printUInt(n); printStr("\n"); f.n + n;}
+fn size(u Fin) u64 {printStr("  size "); printUInt(u.n); printStr("\n"); u.n + 1u64;}
+fn two(a u64, b u64) u64 {a * 10u64 + b;}
+fn three(a u64, b u64, c u64) u64 {a * 100u64 + b * 10u64 + c;}
+fn note() {printStr("  note\n");}
+fn say(s &[]u8, n u64) {printStr("  "); printStr(s); printStr(" "); printUInt(n); printStr("\n");}
+fn head(s &[]u8) {printStr(s); printStr("\n");}
+fn headc(s &[]u8, c Bool) {
+  printStr(s);
+  if c {printStr(" true\n");} else {printStr(" false\n");}
+}
+
+actor Page {
+  body u64;
+  count Arc[Mutex, Count];
+
+  pub fn fetch(self, u Fin) {
+    head("fetch");
+    imm b = await size(u);
+    body = b;
+    say("fetched", body);
+  }
+  pub fn fetchPlain(self, u Fin) {
+    head("fetch plain");
+    imm b = size(u);
+    body = b;
+    say("fetched", body);
+  }
+
+  pub fn ordered(self, k u64) {
+    head("ordered");
+    imm first = new Fin(1u64);
+    imm mid = new Fin(2u64);
+    imm last = new Fin(3u64);
+    {
+      imm inner = new Fin(4u64);
+      body = two(k, await give(7u64));
+      say("body", body);
+    }
+    say("first", first.n);
+    body = body + last.n;
+  }
+  pub fn orderedPlain(self, k u64) {
+    head("ordered plain");
+    imm first = new Fin(1u64);
+    imm mid = new Fin(2u64);
+    imm last = new Fin(3u64);
+    {
+      imm inner = new Fin(4u64);
+      body = two(k, give(7u64));
+      say("body", body);
+    }
+    say("first", first.n);
+    body = body + last.n;
+  }
+
+  pub fn several(self) {
+    head("several");
+    imm f = new Fin(20u64);
+    body = await give(1u64);
+    imm g = new Fin(21u64);
+    body = three(body, await give(2u64), f.n + g.n);
+    say("several", body);
+  }
+  pub fn severalPlain(self) {
+    head("several plain");
+    imm f = new Fin(20u64);
+    body = give(1u64);
+    imm g = new Fin(21u64);
+    body = three(body, give(2u64), f.n + g.n);
+    say("several", body);
+  }
+
+  pub fn looped(self) {
+    head("looped");
+    mut i = 0u64;
+    imm step = 2u64;
+    imm keep = new Fin(10u64);
+    while i < 6u64 {
+      await give(i);
+      i = i + step;
+    }
+    say("looped", i);
+  }
+  pub fn loopedPlain(self) {
+    head("looped plain");
+    mut i = 0u64;
+    imm step = 2u64;
+    imm keep = new Fin(10u64);
+    while i < 6u64 {
+      give(i);
+      i = i + step;
+    }
+    say("looped", i);
+  }
+
+  pub fn flagged(self, c Bool) {
+    headc("flagged", c);
+    imm f = new Fin(30u64);
+    if c {
+      eat(f, 1u64);
+    }
+    body = await give(3u64);
+    say("flagged", body);
+  }
+  pub fn flaggedPlain(self, c Bool) {
+    headc("flagged plain", c);
+    imm f = new Fin(30u64);
+    if c {
+      eat(f, 1u64);
+    }
+    body = give(3u64);
+    say("flagged", body);
+  }
+
+  pub fn temps(self) {
+    head("temps");
+    body = three(make(50u64).n, await give(5u64), make(51u64).n);
+    say("temps", body);
+    body = eat(make(40u64), await give(4u64));
+    say("temps", body);
+  }
+  pub fn tempsPlain(self) {
+    head("temps plain");
+    body = three(make(50u64).n, give(5u64), make(51u64).n);
+    say("temps", body);
+    body = eat(make(40u64), give(4u64));
+    say("temps", body);
+  }
+
+  pub fn locked(self) {
+    head("locked");
+    (&mut *count).n = 0u64;
+    imm g = &mut *count;
+    g.n = g.n + 1u64;
+    await give(8u64);
+    body = (&*count).n + await give(9u64);
+    imm h = &mut *count;
+    h.n = h.n + 1u64;
+    say("locked", body * 10u64 + h.n);
+  }
+  pub fn lockedPlain(self) {
+    head("locked plain");
+    (&mut *count).n = 0u64;
+    {
+      imm g = &mut *count;
+      g.n = g.n + 1u64;
+      give(8u64);
+    }
+    body = (&*count).n + give(9u64);
+    imm h = &mut *count;
+    h.n = h.n + 1u64;
+    say("locked", body * 10u64 + h.n);
+  }
+
+  pub fn early(self, c Bool) {
+    headc("early", c);
+    imm f = new Fin(70u64);
+    imm n = await give(7u64);
+    if c {
+      say("early", n);
+      return;
+    }
+    imm g = new Fin(71u64);
+    say("late", n);
+  }
+  pub fn earlyPlain(self, c Bool) {
+    headc("early plain", c);
+    imm f = new Fin(70u64);
+    imm n = give(7u64);
+    if c {
+      say("early", n);
+      return;
+    }
+    imm g = new Fin(71u64);
+    say("late", n);
+  }
+
+  pub fn voided(self) {
+    head("voided");
+    await note();
+    say("voided", body);
+  }
+  pub fn voidedPlain(self) {
+    head("voided plain");
+    note();
+    say("voided", body);
+  }
+}
+
+fn main() {
+  initAll();
+  actors.configure(new actors.Options(workers: 1u32));
+  {
+    imm p = new Page(0u64, new Arc[Mutex, Count](0u64));
+    p.fetch(new Fin(5u64));
+    p.fetchPlain(new Fin(5u64));
+    p.ordered(3u64);
+    p.orderedPlain(3u64);
+    p.several();
+    p.severalPlain();
+    p.looped();
+    p.loopedPlain();
+    p.flagged(true);
+    p.flaggedPlain(true);
+    p.flagged(false);
+    p.flaggedPlain(false);
+    p.temps();
+    p.tempsPlain();
+    p.locked();
+    p.lockedPlain();
+    p.early(true);
+    p.earlyPlain(true);
+    p.early(false);
+    p.earlyPlain(false);
+    p.voided();
+    p.voidedPlain();
+  }
+  finalAll();
+}

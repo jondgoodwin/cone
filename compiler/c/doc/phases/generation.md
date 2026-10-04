@@ -169,7 +169,7 @@ every declaration given a global so far, and one of them gives way:
 | both external, both defined here | `ErrorCNameDefTwice` |
 | the newcomer only declares it | it shares the holder's global, and its own is deleted |
 | the newcomer defines it, the holder only declares it | the definition takes over: every use of the declaration and every node pointing at it is moved to the definition's global, the declaration is deleted, and the definition takes the name. So the linkage, calling convention, storage class and debug subprogram are the definition's whichever is generated first, and `genlFn` or `genlGloVar` attaches the body or the value to that one global |
-| the holder is an external symbol the compiler declared itself | an LLVM intrinsic or a conestd entry it calls by name (`llvm.trap` and the `cone_panic…` entries, `genlPanic`): a function declaration shares it, cast to its own type where they differ. Anything else is `ErrorCNameConflict`. The compiler declares no C function of the C library: a region's memory goes back through the region's `free`, which calls `libc`'s. It declares five of conestd's, and only while generating bodies, after every declaration has its global: `cone_gcframes` and `cone_traceRoots` (roots, below), and `cone_panicIndex`, `cone_panicSlice` and `cone_panicAlloc` (a failed check, section 6), each looked up by name first and shared with any declaration already holding it |
+| the holder is an external symbol the compiler declared itself | an LLVM intrinsic or a conestd entry it calls by name (`llvm.trap` and the `cone_panic…` entries, `genlPanic`): a function declaration shares it, cast to its own type where they differ. Anything else is `ErrorCNameConflict`. The compiler declares no C function of the C library: a region's memory goes back through the region's `free`, which calls `libc`'s. It declares seven of conestd's, and only while generating bodies, after every declaration has its global: `cone_gcframes` and `cone_traceRoots` (roots, below), `cone_panicIndex`, `cone_panicSlice` and `cone_panicAlloc` (a failed check, section 6), and the thread-locals `cone_barrierHook` and `cone_barrierCtx` (a barrier on the CPU, section 7), each looked up by name first and shared with any declaration already holding it |
 
 "Defined here" is `genlDefinition`'s answer, not whether a body is written: an
 imported module's `fn @c` body is a declaration in this object. An error leaves
@@ -1135,6 +1135,68 @@ keeps them. **Not on a GPU target**, where `llvm.memcpy` is not legal Vulkan
 SPIR-V and its own pipeline breaks every aggregate into scalars
 (`genlGpuAggregates`, section 7).
 
+### A split method
+
+An actor's message holding an `await` is cut at each one, a seam, where it
+returns to the dispatcher to wait ([Flow](flow.md), "A seam", which says what
+each variable in scope does there and which methods are split). A seam is a
+return to the dispatcher, not to the author: what the author can see -- when
+each value dies, and in which order -- is what the method does uncut. So a
+split method (`awaitSplitOf`, `GenState.seams`) is generated whole, more than
+once (`genlawait.c`):
+
+- **Its first half** is the method itself (`genlFn`). Each seam (`genlAwait`)
+  evaluates what is awaited, then in the work item's order: every lock whose
+  borrow ends there is given back (`genlSeamGiveBack`) -- a local guard's
+  (flow marks it `VarSeamHeld`, and generation gives it a flag as a drop flag
+  is given) and a temporary guard's (`GenTemp.held`); the record is built, each
+  value **moved** into it by a load of its slot (`genlSeamRecord`), with no
+  count adjusted; nothing droppable is left, so nothing more is dropped; and
+  the function returns. What follows the seam is generated into a block of its
+  own, `resume`, which no path reaches in this half.
+- **Each seam's second half**, `<method>'<n>` (`genlSplitHalf`), is the method
+  generated again as a function of its own: its entry stores 'self', moves the
+  record's values back into the slots they came from (`genlSeamEntry`), sets
+  the drop flag of each variable in scope at the seam that the record does not
+  carry, and a given-back guard's, to say it holds nothing, and branches to the
+  seam's `resume` block, where the value awaited is its result parameter. The
+  method's body before the seam is generated too, in a block no path reaches
+  but a loop's back edge. Every scope's end after the seam, every `return`, and
+  each statement's temporaries' end are the method's own, so each value dies
+  where, and in the order, it would uncut.
+
+Every half generates every seam, so a seam in a loop, or a later one, ends the
+second half too, building its record again. The record is laid out by the
+first half to generate the seam (`genlSeamLayout`, `AwaitNode.genseam`) and
+checked in every later one: its fields, in the order the values would die,
+are the values **in flight** across it, the newest first; the temporaries
+waiting for their statement's end (`GenTemp`), the newest first, but a lock's
+guard and any that does nothing as it dies; and flow's record of variables
+(`seamvars`: holding its value, and used after the seam or droppable), the
+last declared first, but `self`, which the dispatcher lends each half afresh,
+each bringing its drop flag where it has one. A value in flight is one
+generated before a later operand holding a seam -- `x` in `two(x, await
+give())`, a call's argument or receiver, a literal's field or element -- which
+belongs to no variable: `genlExprsAcross` keeps it in a slot of its own
+(`GenFlight`, rooted as a local is) and reads it back once the last such operand
+is made, so that slot is what the record carries. A struct or tuple literal
+makes all its values before it builds the aggregate, so none of it is in flight
+part built.
+
+A second half's parameters are `self`, the record (one struct, named
+`<method>'<n>.record`, by value), and the value awaited. **An empty record is
+no parameter**, and a void `await` gives no result. Nothing yet sends the
+reply that would call a second half (the envelope, the pending pool and the
+reply dispatch are not built), so a method is split only under
+`--await-direct` (`awaitDirect`), which is for tests: each seam hands its
+record straight to its second half, with the value awaited, before it returns.
+`concurrency_await_split` runs each split message beside its twin with no
+`await` and pins the halves' shapes.
+
+An `await` whose construct holds an address or memory being filled across it
+-- the index of a place, a place stored into or swapped, an array's contents
+filled in memory -- is not split ([Flow](flow.md), "A seam").
+
 ## 7. Output, and what does not work
 
 `--llvmir` writes **two** files: `.preir` before the pass manager and `.ir`
@@ -1263,7 +1325,16 @@ it. So the GPU pipeline and what follows it keep to those shapes:
   `br i1 undef`, which the validator accepts and the GPU runs as it pleases.
   simplifycfg makes a switch of an if-elif chain on one integer, so
   `lower-switch` makes each switch a tree of comparisons just before it
-  (`module_target_spirv_switch`).
+  (`module_target_spirv_switch`). And `structurizecfg` wants every loop
+  entered through a preheader, as LLVM's own GPU pipelines hand it loops:
+  given one entered straight from a conditional branch (a loop inside an
+  `if`, one of whose exits, a failed check, reaches the kernel's one return
+  another way), it made the loop's back edge `br i1 true` to its exit, so the
+  loop ran once and what followed it was skipped, in a module the validator
+  accepts. simplifycfg folds away the empty block before such a loop, so
+  `loop-simplify` gives each loop its preheader again just before
+  `structurizecfg` (`module_target_spirv_loop_in_branch`, and gpusample's
+  `loops` test on a GPU).
 - **A struct or array is loaded from or stored into a storage buffer a scalar
   at a time** (`genlGpuBufferAccess`, after the pipeline): the backend gives
   the buffer's laid-out struct and a local's two SPIR-V types, and a whole
@@ -1369,7 +1440,7 @@ two halves, before its control flow is structured:
   generation (`ErrorGpuRefChoice`).
 
 The second half (`globaldce`, `infer-address-spaces` again, for what the
-folding made, `instsimplify`, `adce`, `lower-switch`, `structurizecfg`) follows. A library
+folding made, `instsimplify`, `adce`, `lower-switch`, `loop-simplify`, `structurizecfg`) follows. A library
 compiled for a GPU makes no kernel of a function that is no entry point: its
 failure calls stay calls to a function the module imports, and a slice
 indexed in it has nothing to be folded into.
@@ -1514,15 +1585,40 @@ Workgroup execution and memory scope, AcquireRelease | WorkgroupMemory) and
 `llvm.spv.device.memory.barrier.with.group.sync` (Workgroup execution, Device
 memory scope, AcquireRelease | UniformMemory | ImageMemory), the ones Clang's
 HLSL makes; both are `convergent`, which keeps the inliner and the structurizer
-from moving them. On the CPU each is nothing: the loop that runs a kernel runs
-one invocation at a time.
+from moving them.
+
+**Barriers on the CPU.** A kernel's CPU twin may run a workgroup's
+invocations one at a time, where a barrier has nothing to wait for, or on
+threads, where it must wait for the others. So on a native target each barrier
+is a call to the running thread's barrier hook, when it has one
+(`genlCpuBarrier`): it loads conestd's thread-local `cone_barrierHook`, which
+core's `setBarrierHook` sets and `clearBarrierHook` clears
+(`packages/conestd/barrier.cone`), and only where it is not null loads
+`cone_barrierCtx` and calls the hook with it and the kind, `i32 0` for
+`workgroupBarrier` and `i32 1` for `storageBarrier`. The compiler declares the
+two thread-locals itself, by their C names, as it declares `cone_gcframes`.
+With none set a barrier costs the thread-local load (on Windows `_tls_index`,
+the TEB's TLS array, the block, the value) and a not-taken branch; the
+measured cost is in `refgpu.html`, "Barriers". The call is indirect, so no
+alias analysis lets LLVM move an access to a `@workgroup` global, an internal
+global whose address never escapes, across it: GlobalsAA's answer for an
+internal global is only for a direct call. The hook being the thread's own
+lets two twins run workgroups at once, each on its own threads, and a pool's
+thread set it once. WebAssembly links no conestd, so there a barrier stays
+nothing; with `--intrinsic-fallback` it is core's empty fallback body, as on
+every target.
 
 What does not work yet:
 
-- A kernel's CPU twin runs one invocation at a time, so a kernel whose
-  invocations read, after a barrier, what invocations after them write (a
-  workgroup's prefix sum) gives another answer on the CPU; nothing refuses
-  it.
+- A `@workgroup` global has one native copy, which nothing resets or poisons
+  between workgroups, and a twin cannot find a module's workgroup globals. A
+  GPU's workgroup memory starts undefined too, so a kernel that reads one
+  before writing it is wrong on both; finding them (a named section, its
+  bounds, a core function) would serve only a poisoning debug aid, and could
+  not work on WebAssembly, so it is not planned. (`gpuwork`'s twin runs a
+  kernel with barriers, found from `OpControlBarrier` in its entry point's
+  call tree, a workgroup at a time, one thread an invocation, each thread's
+  hook a real barrier, #337; a kernel without one, an invocation at a time.)
 - An imported package's functions are left as imports where a build
   description compiles the package on its own, so a kernel calling one
   carries the `Linkage` capability, which Vulkan's environment refuses; found
@@ -1550,6 +1646,14 @@ variables.
   manager's inliner deletes only a function whose last call it inlined; the
   linker's `/OPT:REF` drops the rest, each being in a COMDAT of its own.
 - **The block stack is a fixed 256 entries** and overflow is a hard exit.
+- **A value held across the generation of another operand breaks a split
+  method if that operand holds a seam.** A second half enters after the seam,
+  so a value generated before it, in a block no path reaches there, does not
+  dominate its use: `--verify` says so. Every site that evaluates operands in
+  turn and uses the earlier ones afterwards goes through `genlExprsAcross`,
+  which keeps each in flight across a seam ("A split method"); an address held
+  that way cannot be, and its `await` is refused before generation
+  (`awaitWalk`), so a new such site needs one or the other.
 - **A jump out of the middle of a statement finalizes its pending temporaries
   before the locals of the blocks it leaves**, whatever order they were made
   in: `f(mk(1).n, { imm x = mk(2); if c { return; } 3; })` finalizes the first
@@ -1577,7 +1681,7 @@ variables.
 | | `genlStitchFn`, `genlStitch` | the program's stitched init and final: declared on the first call to `initAll()` or `finalAll()`, built last, every module's `init` in the module order and every finalizer in the reverse |
 | | `genlGlobalSyms`, `genlGlobalImpl` | declare a node's symbol; emit its body |
 | | `genlImportedInstances` | emit the bodies of the instances this compile made of a module it does not generate |
-| | `genlFn`, `genlParmVar`, `genlAlloca` | function body, parameter allocas, entry-block alloca placement |
+| | `genlFn`, `genlParmVar`, `genlAlloca` | function body (a split method's first half, then its second halves), parameter allocas, entry-block alloca placement |
 | | `genlRootNote`, `genlRootBirth`, `genlRootFrame`, `genlRootsSave`, `genlRootsRestore` | roots: a slot noted as one, a birth's slot, the frame's map, push and pops; the roots set aside around a nested function |
 | | `genlGloFnName`, `genlGloVarName` | declare a function or global under the symbol `nameSymbol` spells |
 | | `genlIsVoidMain` | whether a function is a `main` returning nothing, generated returning `i32 0` for the exit status |
@@ -1606,6 +1710,7 @@ variables.
 | | `genlGpuNoContraction`, `genlGpuNoContractionAsm` | every float operation's result but a remainder's decorated `NoContraction`, in the module and in `--asm`'s text (section 7, "The C library's math") |
 | `genllvm/genlgpusync.c` | `genlGpuAtomics`, `genlGpuAtomicConstPtr`, `genlGpuCompareSwap`, `genlGpuAtomicSite` | on a GPU target, after optimization, each atomic's scope and ordering from its memory, an atomic at a constant place reached by an address-computing instruction, a compareSwap as `llvm.spv.cmpxchg`, one on unshared memory refused in a kernel (`ErrorGpuAtomicPlace`) (section 7, "What invocations share") |
 | | `genlGpuBarrier`, `genlGpuGlobalSpace` | the two barriers as LLVM's SPIR-V intrinsics; a `@workgroup` global's address space |
+| | `genlCpuBarrier` | a barrier on a native target: the thread's barrier hook called when it is set (section 7, "Barriers on the CPU") |
 | | `genlGpuSyncPatch` | the emitted module put right: a relaxed atomic's semantics None, a compare-and-swap's result rid of the insertions the backend writes after it |
 | `genllvm/genlcabi.c` | `genlCAbiTarget`, `genlIsCAbiFn`, `genlCAbiPass` | which C ABI the target follows, which functions cross by it, and how one struct crosses |
 | | `genlCAbiExtend`, `genlCAbiMarkExtends` | the `zeroext` or `signext` a narrow integer crosses with, marked on a declaration or a call |
@@ -1636,7 +1741,11 @@ variables.
 | | `genlOwnerHeader`, `genlVirtHeader`, `genlVirtRecord`, `genlVirtFinalize` | an owning virtual reference's header, from its vtable record's alignment; that record; its value's death through the record's `finalize` |
 | | `genlHollowRelease`, `genlRegionDealiasPart`, `genlHollowDeath`, `genlReleasePart` | a hollowed variable's release: the death of a value moved out, or an element of it, finalizing none of it and freeing the memory |
 | | `genlReleaseOwning`, `genlDealiasNodes` | releasing one owner of an owning reference or of each a tuple value carries, and replaying flow's lists |
-| | `genlTempKeep`, `genlTempsEnd`, `genlTempsJump`, `genlTempRelease` | a temporary kept in its slot; those a part made finalized at its end, or before a jump ("Temporaries") |
+| | `genlTempKeep`, `genlTempsEnd`, `genlTempsJump`, `genlTempRelease` | a temporary kept in its slot; those a part made finalized at its end, or before a jump ("Temporaries"); a lock's guard in a split method only where its flag says it holds its lock ("A split method") |
+| `genllvm/genlawait.c` | `genlAwait`, `genlSeamLayout`, `genlSeamGiveBack`, `genlSeamRecord` | a seam of a split method: what is awaited, the record laid out (once) and its second half declared, the locks given back, the record built, the return; what follows in a `resume` block ("A split method") |
+| | `genlSplitHalves`, `genlSplitHalf`, `genlSeamEntry` | each second half: the method generated again, its entry moving the record's values back and branching to the seam's `resume` block |
+| | `genlExprsAcross`, `genlHasSeam` | operands in order, each made before a later one's seam kept in flight across it (`GenFlight`) |
+| | `genlHeldBegin`, `genlHeldIf` | a temporary lock guard's flag, and code run while it holds its lock |
 | | `genlFinalizeAt`, `genlCallDrop`, `genlEachElem` | a value's death in place, whatever its type: a local's, a field's, a region value's before its `free`, and the `finalize` intrinsic |
 | | `genlTypeDrop`, `genlStructDrop`, `genlEnumDrop` | the body of a drop the compiler gave a type: a struct's `final` calls, its fields' deaths, its owners' release; an enum's tag dispatching to its variant's |
 | | `genlAliasHeld` | a copied struct, enum, tuple or array: `aliasRef` on each counted reference its death releases |
@@ -1644,6 +1753,7 @@ variables.
 | | `genlTraceAt`, `genlTraceWalk`, `genlTraceRef`, `genlTraceVariants` | a value's traced references, each handed to its region's `mark`: a record's trace, and `mem.trace` |
 | | `genlBarrierAt`, `genlHoldsBarriered` | the write barrier: the same walk over a value just stored, each reference into a region with a `writeBarrier` handed to it |
 | `packages/conestd/roots.cone` | `cone_gcframes`, `cone_traceRoots` | the head of the chain of frames, and its walk, which `mem.traceRoots` calls |
+| `packages/conestd/barrier.cone` | `cone_barrierHook`, `cone_barrierCtx`, `cone_setBarrierHook`, `cone_clearBarrierHook` | the thread's barrier hook and its context, which a barrier on the CPU calls, and core's `setBarrierHook` and `clearBarrierHook` |
 | `ir/types/reference.h` | `enum ManagedRefFields` | `RegionField`, `PermField`, `ValueField` |
 | `ir/name.c` | `nameSymbol`, `nameType`, `nameVtable`, `nameVtableImpl`, `nameVtableList` | spelling a symbol from a node's owner chain and facts, and a type argument within it — the rules are in [Names and Namespaces](../../../../doc/design/names-and-namespaces.md), "Symbols" |
 | `ir/dclinfo.c` | `dclInfoJoin` | writes the declaration facts where a declaration joins its namespace |

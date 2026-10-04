@@ -1,0 +1,56 @@
+// Where an 'await' is still not built under '--await-direct', which splits a
+// message holding one (concurrency_await_split): each is ErrorUnbuiltAwait at
+// the 'await'.
+//
+// - an 'await' in a method that is not a message -- a private method of the
+//   actor, which a message calls -- is not split: whether its seam cuts the
+//   message calling it, or is refused, is not settled. It is reported as PR 1
+//   reports every seam, naming what its record would carry;
+// - an 'await' in the index of a place, read or stored into, or in a place a
+//   swap exchanges: the place's address is taken before the 'await' is made,
+//   and used after it;
+// - an 'await' in an array's contents that repeat a value past the copies
+//   written out (ArrayRepeatUnroll, 16), which are filled in memory in a loop,
+//   the value made once for each element. (Sixteen or fewer are each a copy
+//   of the value, listed, and split as any operand is.)
+//
+// The message beside them, whose 'await' stands where the split is built,
+// reports nothing.
+
+mod concurrency_await_unsplit;
+
+import actors;
+
+fn give() u64 {1u64;}
+
+actor Page {
+  body u64;
+  items Array[u64, 4];
+
+  pub fn message(self) {
+    body = await give() + 1u64;
+  }
+
+  fn helper(self, n u64) u64 {
+    imm m = await give();  //~ ErrorUnbuiltAwait "'await' is not built yet, so nothing is generated for it. Its seam would end the borrows held by []; give back []; move into the continuation's record [n]"
+    m + n;
+  }
+
+  pub fn indexed(self) {
+    body = items[await give()];   //~ ErrorUnbuiltAwait "it stands in the index of a place, whose address would be held across the seam"
+  }
+
+  pub fn stored(self) {
+    items[await give()] = 7u64;   //~ ErrorUnbuiltAwait "it stands in the place an assignment stores into, whose address would be held across the seam"
+  }
+
+  pub fn swapped(self) {
+    mut a = 1u64;
+    a <=> items[await give()];    //~ ErrorUnbuiltAwait "it stands in a place a swap exchanges, whose address would be held across the seam"
+  }
+
+  pub fn filled(self) {
+    imm a = new Array[u64, 20] <- fill await give();  //~ ErrorUnbuiltAwait "it stands in an array's contents that repeat a value or fill a size"
+    body = a[0];
+  }
+}

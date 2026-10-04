@@ -1,0 +1,197 @@
+// meshedpart's main: the part sampled on the GPU and meshed there, against
+// the CPU's samples and mesh
+
+fn bits(f f32) u32 { f as u32; }
+
+// Workgroups for n invocations of 64: x, and y rows of x
+fn groupsX(n u32) u32 {
+  imm g = (n + 63u32) / 64u32;
+  if g == 0u32 { 1u32; } elif g <= 65535u32 { g; } else { 32768u32; };
+}
+fn groupsY(n u32) u32 {
+  imm g = (n + 63u32) / 64u32;
+  imm x = groupsX(n);
+  if g <= x { 1u32; } else { (g + x - 1u32) / x; };
+}
+
+// The part sampled on the GPU into a buffer it hands back; with 'words',
+// the samples read back into it too
+fn sampleOnGpu(device &mut Device, kernel &Kernel, grid SampleGrid, read Bool, words &mut List[u32]) Buffer {
+  mut works = Works.make();
+  mut job = Job.make(device);
+  imm gs = job.give(uploadValue(device, &grid));
+  imm out = job.give(zeroed(device, usize.from(grid.sampleCount())));
+  job.dispatch(device, kernel, &[gs, out], groupsX(grid.sampleCount()), groupsY(grid.sampleCount()));
+  imm back = if read { job.readback(device, out); } else { 0u32; };
+  imm ticket = works.submit(device, job, Target.Here[0u64]);
+  mut done = List[Completion].empty();
+  works.waitFor(device, ticket, &mut done);
+  if done.len() != 1usize or !done[0usize].ok { return Buffer.none(); }
+  if read { *words = done[0usize].words(back); }
+  done[0usize].take(out);
+}
+
+// How the GPU's net differs from the CPU's: counts, positions (the most any
+// coordinate differs, and how many vertices differ at all), quads
+fn compare(label &[]u8, gpu &SurfaceNet, cpu &SurfaceNet) Bool {
+  printStr(label);
+  print <- ": "; print <- gpu.vertexCount(); print <- " vertices, "; print <- gpu.quadCount() * 2usize;
+  print <- " triangles (the CPU's: "; print <- cpu.vertexCount(); print <- ", "; print <- cpu.quadCount() * 2usize;
+  print <- ")";
+  if gpu.vertexCount() != cpu.vertexCount() or gpu.quadCount() != cpu.quadCount() {
+    print <- "; different counts\n";
+    return false;
+  }
+  mut moved = 0u64;
+  mut most = 0.;
+  mut v = 0usize;
+  while v < gpu.vertexCount() {
+    imm a = *gpu.positions[v];
+    imm b = *cpu.positions[v];
+    if bits(a.x) != bits(b.x) or bits(a.y) != bits(b.y) or bits(a.z) != bits(b.z) { moved = moved + 1u64; }
+    imm d = (a - b).length();
+    if d > most { most = d; }
+    v = v + 1usize;
+  }
+  mut quads = 0u64;
+  mut q = 0usize;
+  while q < gpu.quads.len() {
+    if *gpu.quads[q] != *cpu.quads[q] { quads = quads + 1u64; }
+    q = q + 1usize;
+  }
+  print <- "; "; print <- moved; print <- " vertices not the same bits (at most "; print <- most;
+  print <- " apart), "; print <- quads; print <- " quad indices different\n";
+  moved == 0u64 and quads == 0u64;
+}
+
+fn micros(t Instant) i64 { (Instant.now() - t).micros(); }
+
+// The least and the median of five times
+fn summary(label &[]u8, times &mut List[i64]) {
+  mut i = 0usize;
+  while i < times.len() {
+    mut j = i + 1usize;
+    while j < times.len() {
+      if *times[j] < *times[i] {
+        imm t = *times[i];
+        times.set(i, *times[j]);
+        times.set(j, t);
+      }
+      j = j + 1usize;
+    }
+    i = i + 1usize;
+  }
+  printStr(label);
+  print <- ": least "; print <- *times[0usize]; print <- " us, median "; print <- *times[times.len() / 2usize];
+  print <- " us\n";
+}
+
+fn run(device &mut Device, mesher &GridMesher, sampler &Kernel, cs f32, time Bool) Bool {
+  imm part = new Part();
+  imm box = partBox();
+  imm grid = SampleGrid.covering(box, cs);
+  imm n = grid.sampleCount();
+  print <- "cells of "; print <- cs; print <- ": "; print <- u64.from(grid.samplesX); print <- " x ";
+  print <- u64.from(grid.samplesY); print <- " x "; print <- u64.from(grid.samplesZ); print <- " = "; print <- u64.from(n);
+  print <- " samples\n";
+
+  // The CPU: its samples and its mesh
+  mut cpuSamples = List[f32].withCapacity(usize.from(n));
+  mut i = 0u32;
+  while i < n {
+    cpuSamples.push(part.distance(grid.pointOf(i)));
+    i = i + 1u32;
+  }
+  imm t0 = Instant.now();
+  imm cpu = surfaceNet(&part, box, cs, 0u32, false);
+  imm cpuTime = micros(t0);
+
+  // The GPU's samples, against the CPU's
+  mut words = List[u32].empty();
+  imm samples = sampleOnGpu(device, sampler, grid, true, &mut words);
+  if !samples.isValid() or words.len() != usize.from(n) {
+    print <- "sampling on the GPU failed\n";
+    return false;
+  }
+  mut same = 0u64;
+  mut flipped = 0u64;
+  i = 0u32;
+  while i < n {
+    imm g = *words[usize.from(i)];
+    imm c = *cpuSamples[usize.from(i)];
+    if g == bits(c) { same = same + 1u64; }
+    if ((g as f32) < 0.) != (c < 0.) { flipped = flipped + 1u64; }
+    i = i + 1u32;
+  }
+  print <- "  samples: "; print <- same; print <- " of "; print <- u64.from(n); print <- " the CPU's bits, ";
+  print <- flipped; print <- " of a different sign\n";
+
+  // Meshed on the GPU, the GPU's samples, and read back
+  mut net = mesher.mesh(device, grid, samples);
+  if !net.ok { print <- "meshing on the GPU failed\n"; return false; }
+  imm gpuNet = net.readBack(device);
+  compare("  GPU samples, GPU mesh", &gpuNet, &cpu);
+
+  // The CPU's samples meshed on the GPU: surfaceNet's mesh, bit for bit
+  mut exact = mesher.meshSamples(device, grid, cpuSamples.view());
+  imm exactNet = exact.readBack(device);
+  imm identical = compare("  CPU samples, GPU mesh", &exactNet, &cpu);
+
+  if time {
+    print <- "  surfaceNet on the CPU (dense, unrelaxed, one thread): "; print <- cpuTime; print <- " us\n";
+    mut sampling = List[i64].empty();
+    mut meshing = List[i64].empty();
+    mut reading = List[i64].empty();
+    mut both = List[i64].empty();
+    mut r = 0u32;
+    while r < 5u32 {
+      mut none = List[u32].empty();
+      imm ts = Instant.now();
+      imm s = sampleOnGpu(device, sampler, grid, false, &mut none);
+      imm sampled = micros(ts);
+      imm tm = Instant.now();
+      mut m = mesher.mesh(device, grid, s);
+      imm meshed = micros(tm);
+      imm tr = Instant.now();
+      imm back = m.readBack(device);
+      imm read = micros(tr);
+      sampling.push(sampled);
+      meshing.push(meshed);
+      reading.push(read);
+      both.push(sampled + meshed);
+      if back.vertexCount() != gpuNet.vertexCount() { print <- "  a timed run made a different mesh\n"; }
+      r = r + 1u32;
+    }
+    summary("  sampling on the GPU (submit to answer)", &mut sampling);
+    summary("  meshing on the GPU (both jobs, with the counts' round trip)", &mut meshing);
+    summary("  sampling and meshing", &mut both);
+    summary("  reading the mesh back", &mut reading);
+  }
+  identical;
+}
+
+fn main() i32 {
+  mut instance = Instance.create("meshedpart");
+  mut none = Surface.none();
+  mut adapter = instance.requestAdapter(&none, POWER_PREFERENCE_HIGH_PERFORMANCE);
+  mut device = adapter.requestDevice();
+  if !device.isValid() { print <- "no GPU device\n"; return 1; }
+  if (libc.getenv(&"GPUWORK_REPORT" as *u8) as usize) != 0usize {
+    printStr("adapter: ");
+    printStr(adapter.name.view());
+    printStr("\n");
+  }
+  imm spirv = readSpirv("meshedpart.spv");
+  mut sampler = Kernel.make(&device, spirv.view(), "sample", &[READ, READ_WRITE]);
+  imm mesher = GridMesher.make(&device);
+  if !sampler.isValid() or !mesher.isValid() { print <- "the kernels were not made\n"; return 1; }
+
+  mut ok = run(&mut device, &mesher, &sampler, 0.05, false);
+  // About 3.6 million samples: about as many distances as the starship's
+  // sparse CPU mesher evaluates at 3 cm cells (its dense grid there is 64
+  // million samples)
+  ok = run(&mut device, &mesher, &sampler, 0.01242, true) and ok;
+  ok = ok and refusals() == 0u32 and kernelFailures() == 0u32 and failures() == 0u32;
+  if ok { print <- "ok\n"; } else { print <- "FAILED\n"; }
+  if ok { 0; } else { 1; };
+}

@@ -92,6 +92,7 @@ add_executable(conec
 	compiler/c/ir/exp/allocate.c
 	compiler/c/ir/exp/arraylit.c
 	compiler/c/ir/exp/assign.c
+	compiler/c/ir/exp/await.c
 	compiler/c/ir/exp/block.c
 	compiler/c/ir/exp/borrow.c
 	compiler/c/ir/exp/cast.c
@@ -142,6 +143,7 @@ add_executable(conec
 	compiler/c/genllvm/genlstmt.c
 	compiler/c/genllvm/genlexpr.c
 	compiler/c/genllvm/genlalloc.c
+	compiler/c/genllvm/genlawait.c
 	compiler/c/genllvm/genltype.c
 	compiler/c/genllvm/genlcabi.c
 	compiler/c/genllvm/genlaggcopy.c
@@ -176,6 +178,7 @@ target_compile_definitions(conec PRIVATE CONE_PACKAGES_DIR="${CMAKE_SOURCE_DIR}/
 # libc, so it is rebuilt when they change.
 set(CONESTD_CONE
 	${CMAKE_SOURCE_DIR}/packages/conestd/conestd.cone
+	${CMAKE_SOURCE_DIR}/packages/conestd/barrier.cone
 	${CMAKE_SOURCE_DIR}/packages/conestd/panic.cone
 	${CMAKE_SOURCE_DIR}/packages/conestd/roots.cone
 	${CMAKE_SOURCE_DIR}/packages/conestd/stdio.cone

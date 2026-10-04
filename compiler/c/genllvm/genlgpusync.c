@@ -43,8 +43,8 @@
 // 'workgroupBarrier()' and 'storageBarrier()' are core's intrinsics: on a GPU
 // each is OpControlBarrier, every invocation of the workgroup waiting there,
 // with the workgroup's memory, or the storage buffers', made visible across
-// it (genlGpuBarrier). The CPU runs a kernel one invocation at a time, so
-// there each is nothing.
+// it (genlGpuBarrier). On the CPU each is a call to the thread's barrier
+// hook, when it has set one (genlCpuBarrier).
 
 // LLVM's address spaces for SPIR-V's Workgroup and StorageBuffer storage classes
 #define GenlWorkgroup 3
@@ -67,6 +67,57 @@ LLVMValueRef genlGpuBarrier(GenState *gen, int storage) {
     unsigned id = LLVMLookupIntrinsicID(name, strlen(name));
     LLVMValueRef fn = LLVMGetIntrinsicDeclaration(gen->module, id, NULL, 0);
     return LLVMBuildCall2(gen->builder, LLVMGlobalGetValueType(fn), fn, NULL, 0, "");
+}
+
+// One of conestd's thread-local pointers, declared here by its C name, or
+// shared with the declaration already holding it
+static LLVMValueRef genlBarrierGlobal(GenState *gen, char *name) {
+    LLVMValueRef global = LLVMGetNamedGlobal(gen->module, name);
+    if (global == NULL) {
+        global = LLVMAddGlobal(gen->module, LLVMPointerTypeInContext(gen->context, 0), name);
+        LLVMSetThreadLocal(global, 1);
+    }
+    return global;
+}
+
+// A barrier on the CPU. A kernel's CPU twin may run a workgroup's invocations
+// on threads, each thread having set its barrier hook (core's setBarrierHook)
+// to a real barrier, or run them one at a time, setting none. So the barrier
+// loads the thread's hook, conestd's 'cone_barrierHook', and calls it only
+// when it is set, handed the thread's 'cone_barrierCtx' and the kind (0
+// workgroupBarrier, 1 storageBarrier):
+//
+//   %barrierfn = load ptr, ptr @cone_barrierHook
+//   br (%barrierfn != null), label %barrierhook, label %barrierdone
+// barrierhook:
+//   call void %barrierfn(ptr (load ptr, ptr @cone_barrierCtx), i32 kind)
+//
+// With none set the barrier costs the thread-local load and the branch. The
+// call is indirect, so LLVM moves no access to memory another thread may
+// write across it, a '@workgroup' global's included, which the hook does not
+// reach but the other invocations' threads do
+void genlCpuBarrier(GenState *gen, int storage) {
+    LLVMTypeRef ptrtype = LLVMPointerTypeInContext(gen->context, 0);
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(gen->context);
+    LLVMValueRef hookvar = genlBarrierGlobal(gen, "cone_barrierHook");
+    LLVMValueRef ctxvar = genlBarrierGlobal(gen, "cone_barrierCtx");
+
+    LLVMBasicBlockRef callblk = genlInsertBlock(gen, "barrierhook");
+    LLVMBasicBlockRef doneblk = genlInsertBlock(gen, "barrierdone");
+    LLVMValueRef hook = LLVMBuildLoad2(gen->builder, ptrtype, hookvar, "barrierfn");
+    LLVMValueRef isset = LLVMBuildIsNotNull(gen->builder, hook, "");
+    LLVMBuildCondBr(gen->builder, isset, callblk, doneblk);
+
+    LLVMPositionBuilderAtEnd(gen->builder, callblk);
+    LLVMTypeRef parmtypes[2] = {ptrtype, i32};
+    LLVMTypeRef fntype = LLVMFunctionType(LLVMVoidTypeInContext(gen->context), parmtypes, 2, 0);
+    LLVMValueRef args[2] = {
+        LLVMBuildLoad2(gen->builder, ptrtype, ctxvar, "barrierctx"),
+        LLVMConstInt(i32, storage ? 1 : 0, 0)
+    };
+    LLVMBuildCall2(gen->builder, fntype, hook, args, 2, "");
+    LLVMBuildBr(gen->builder, doneblk);
+    LLVMPositionBuilderAtEnd(gen->builder, doneblk);
 }
 
 // The address space a global is in on a GPU target: a '@workgroup' global's

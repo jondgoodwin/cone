@@ -29,19 +29,31 @@ pub struct Words {
   pub fn value[T](self) T { mem.readRaw[T](ptr as *T); }
 }
 
+// The most invocations a workgroup whose twin runs them together may have,
+// each on a thread of its own: WebGPU's maxComputeInvocationsPerWorkgroup
+pub const MAX_TOGETHER_INVOCATIONS = 256u32;
+
 // Run 'kernel''s CPU twin over 'buffers' (binding i the words of
 // 'buffers[i]', which it reads and writes in place) as a dispatch of 'x' by
 // 'y' by 'z' workgroups would: once for each invocation, workgroup by
-// workgroup (x fastest), and within one, invocation by invocation (x
-// fastest), one thread, in that fixed order. A direct twin ('setTwin1' to
-// 'setTwin7') is given each slice binding as a slice of as many elements as
-// the buffer holds, as the GPU's kernel sees it, and each struct binding's
-// struct. False, and nothing run, if the kernel has no twin, the buffers are
-// not one for each binding, or a direct twin's struct is larger than its
-// buffer.
+// workgroup (x fastest). A kernel without barriers runs invocation by
+// invocation within a workgroup (x fastest), on this thread, in that fixed
+// order; a kernel with them ('kernel.together') runs each workgroup's
+// invocations together, one thread each, meeting at every barrier (see
+// 'runTogether'). A direct twin ('setTwin1' to 'setTwin7') is given each
+// slice binding as a slice of as many elements as the buffer holds, as the
+// GPU's kernel sees it, and each struct binding's struct. False, and nothing
+// run, if the kernel has no twin, the buffers are not one for each binding,
+// a direct twin's struct is larger than its buffer, or a kernel with
+// barriers has a workgroup of more than MAX_TOGETHER_INVOCATIONS.
 pub fn runTwin(kernel &Kernel, buffers &mut List[List[u32]], x u32, y u32 = 1u32, z u32 = 1u32) Bool {
   if !kernel.hasTwin or buffers.len() != usize.from(kernel.bindings) {
     fail("runTwin: the kernel has no twin, or the buffers are not one for each binding");
+    return false;
+  }
+  imm size = kernel.workgroup[0usize] * kernel.workgroup[1usize] * kernel.workgroup[2usize];
+  if kernel.together and size > MAX_TOGETHER_INVOCATIONS {
+    fail("runTwin: a kernel with barriers has a workgroup of more than 256 invocations, a thread each");
     return false;
   }
   mut words = List[Words].empty();
@@ -60,6 +72,10 @@ pub fn runTwin(kernel &Kernel, buffers &mut List[List[u32]], x u32, y u32 = 1u32
     b = b + 1usize;
   }
   imm view = words.view();
+  if kernel.together {
+    runTogether(kernel, view, x, y, z);
+    return true;
+  }
   imm twin = kernel.twin;
   imm direct = kernel.direct;
   imm call = kernel.call;
@@ -95,6 +111,116 @@ pub fn runTwin(kernel &Kernel, buffers &mut List[List[u32]], x u32, y u32 = 1u32
     gz = gz + 1u32;
   }
   true;
+}
+
+// ---- A workgroup's invocations together, on threads ----
+
+// A dispatch run together: the generation-counting barrier its invocations
+// meet at (the last of 'size' to arrive resets 'arrived' and moves
+// 'generation' on, waking the others, who sleep on it until it has moved),
+// and what each thread needs to run its invocation of every workgroup. It
+// lives on the stack of 'runTogether', which joins every thread before it
+// returns.
+struct Together {
+  arrived Atomic[u32];
+  generation Atomic[u32];
+  size u32;                    // invocations a workgroup: the threads
+  kernel *Kernel;
+  words *Words;                // the bindings,
+  count usize;                 // as many
+  groups Array[u32, 3];        // the dispatch's workgroups, each way
+}
+
+// The barrier: each thread's hook, ctx its Together, whatever the kind (a
+// thread waits for every other at a storageBarrier as at a workgroupBarrier,
+// and the futex's atomics order every write before it, workgroup and storage
+// memory alike, before every read after it)
+fn togetherWait(ctx *u8, kind u32) {
+  imm t = ctx as *Together;
+  imm gen = (*t).generation.load();
+  if (*t).arrived.add(1u32) == (*t).size - 1u32 {
+    (*t).arrived.store(0u32);
+    (*t).generation.store(gen + 1u32);
+    sync.futexWakeAll(&(*t).generation);
+  } else {
+    while (*t).generation.load() == gen {
+      sync.futexWait(&(*t).generation, gen);
+    }
+  }
+}
+
+// What a thread is given: its dispatch, and its invocation's place in each
+// workgroup (its flat local index). Its pointer is to the Together that
+// 'runTogether' keeps alive until every thread is joined.
+struct Lane is Sendable {
+  together *Together;
+  index u32;
+}
+
+// One thread's work: its invocation of each workgroup in turn, x fastest, its
+// barrier hook set to the dispatch's barrier; after each workgroup, a wait
+// at that barrier, so that no thread starts the next workgroup, and writes
+// its '@workgroup' globals, while another still reads this one's
+fn runLane(lane Lane) {
+  imm t = lane.together;
+  imm k = (*t).kernel;
+  imm ctx = t as *u8;
+  setBarrierHook(&togetherWait, ctx);
+  imm view = mem.sliceFromParts[Words]((*t).words, (*t).count);
+  imm twin = (*k).twin;
+  imm direct = (*k).direct;
+  imm call = (*k).call;
+  imm isDirect = (*k).hasDirect;
+  imm wx = (*k).workgroup[0usize];
+  imm wy = (*k).workgroup[1usize];
+  imm wz = (*k).workgroup[2usize];
+  imm x = (*t).groups[0usize];
+  imm y = (*t).groups[1usize];
+  imm z = (*t).groups[2usize];
+  imm l = lane.index;
+  imm lx = l % wx;
+  imm ly = (l / wx) % wy;
+  imm lz = l / (wx * wy);
+  mut gz = 0u32;
+  while gz < z {
+    mut gy = 0u32;
+    while gy < y {
+      mut gx = 0u32;
+      while gx < x {
+        imm inv = new Invocation([gx * wx + lx, gy * wy + ly, gz * wz + lz], [lx, ly, lz], [gx, gy, gz], l,
+          [x, y, z]);
+        if isDirect { call(direct, inv, view); } else { twin(inv, view); }
+        togetherWait(ctx, 0u32);
+        gx = gx + 1u32;
+      }
+      gy = gy + 1u32;
+    }
+    gz = gz + 1u32;
+  }
+  clearBarrierHook();
+}
+
+// Run a kernel with barriers over 'view', in 'x' by 'y' by 'z' workgroups:
+// one thread for each invocation of a workgroup, started here and joined
+// before it returns, each running its invocation of every workgroup, one
+// workgroup after another. So the one native copy of each '@workgroup'
+// global is the workgroup running's own, as on the GPU each workgroup has
+// its own; and nothing resets it between workgroups, as nothing does on the
+// GPU, where workgroup memory starts undefined.
+fn runTogether(kernel &Kernel, view &[]Words, x u32, y u32, z u32) {
+  imm size = kernel.workgroup[0usize] * kernel.workgroup[1usize] * kernel.workgroup[2usize];
+  mut t = new Together(Atomic[u32].of(0u32), Atomic[u32].of(0u32), size, kernel as *Kernel,
+    if view.len > 0usize { &view[0usize] as *Words; } else { null as *Words; }, view.len, [x, y, z]);
+  imm pt = &mut t as *Together;
+  {
+    // A handle dropped joins its thread: every one, at the block's end
+    mut lanes = List[thread.Thread[void]].empty();
+    mut l = 0u32;
+    while l < size {
+      lanes.push(thread.start(new Lane(pt, l), &runLane));
+      l = l + 1u32;
+    }
+  }
 }
 
 // How a kernel's GPU run and its CPU twin compared: every word of every

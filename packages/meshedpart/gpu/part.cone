@@ -1,0 +1,40 @@
+// part: meshedpart's GPU half, a part's shape and the kernel that samples
+// it. Congo compiles it for the CPU, as meshedpart's submodule 'part', which
+// src/ hands to sdfmesh's CPU mesher as a Shape, and for the GPU into
+// meshedpart.spv, whose one kernel is 'sample': one invocation a sample of
+// an sdf.SampleGrid, each writing the shape's distance at the sample's
+// point, which sdfmesh's GridMesher then meshes on the GPU.
+//
+// The shape is sdf's, the same functions on both sides: a ball and a ring
+// about it, smoothly joined, and a rod through both. Its distances take
+// square roots, which a GPU computes within an ulp of the CPU's
+// (doc/reference/refgpu.html, "Math on the GPU"), so the GPU's samples are
+// close to the CPU's, not always the same bits; the program counts them.
+
+mod part;
+
+import geomath use *;
+import sdf use *;
+
+// The part, a Shape: anything with a distance
+pub struct Part {
+  pub fn distance(self &, p Vec3) f32 { partDistance(p); }
+}
+
+pub fn partDistance(p Vec3) f32 {
+  imm body = smoothUnion(sphere(p, 0.55), torus(p, 0.85, 0.16), 0.08);
+  union(body, capsule(p, new Vec3(-1.15, 0., 0.), new Vec3(1.15, 0., 0.), 0.09));
+}
+
+// The box that holds it
+pub fn partBox() Aabb3 { new Aabb3(new Vec3(-1.25, -0.6, -1.05), new Vec3(1.25, 0.6, 1.05)); }
+
+// One sample an invocation, 64 a workgroup, the dispatch flattened as
+// sdfmesh's kernels flatten theirs (rows of x workgroups). Bindings: 0 the
+// grid, 1 the samples it writes, 2 its error buffer
+pub fn @compute(64) sample(inv Invocation, g SampleGrid, out &[]mut f32) {
+  imm i = inv.globalId[0usize] + inv.globalId[1usize] * inv.groupCount[0usize] * 64u32;
+  if i < g.sampleCount() and usize.from(i) < out.len {
+    out[usize.from(i)] = partDistance(g.pointOf(i));
+  }
+}

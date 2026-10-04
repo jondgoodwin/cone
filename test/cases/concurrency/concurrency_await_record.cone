@@ -1,0 +1,86 @@
+// What a seam moves into its continuation's record (actor-continuations, the
+// seam's step 3): every value used after the 'await', plus every droppable
+// still holding its value, used again or not. A dead variable with nothing to
+// do as it dies is left behind. Nothing is built yet, so each 'await' is
+// reported as not built (ErrorUnbuiltAwait), the message naming the record,
+// and these pin its parts one at a time:
+//
+// - travels: a droppable never named after the seam is in the record;
+// - leftBehind: a number not named after the seam is not, beside one that is;
+// - moved: a droppable moved out before the seam holds nothing to carry;
+// - assignedFirst: a number stored over whole after the seam before any use
+//   was dead there; one read on one path only is live (the loan walk's paths
+//   decide, as for a frozen borrow's last use);
+// - inLoop: a number read on a loop's next pass is live at the seam;
+// - initializer: the local whose initializer holds the 'await' holds nothing
+//   yet.
+//
+// The record's order of death is concurrency_await_droporder's. 'self' is not
+// in the record: the dispatcher lends it afresh to what follows the seam.
+
+mod concurrency_await_record;
+
+import actors;
+
+struct Fin {
+  pub n u64;
+  fn final(self &uni) {}
+}
+
+fn give() u64 {5u64;}
+fn keep(f Fin) {}
+
+actor Peer {
+  pub fn ping(self) {}
+}
+
+actor Page {
+  body u64;
+  peer Peer;
+
+  pub fn travels(self) {
+    imm f = new Fin(1u64);
+    await peer.ping();     //~ ErrorUnbuiltAwait "move into the continuation's record [f]"
+  }
+
+  pub fn leftBehind(self) {
+    imm used = 3u64;
+    imm unused = 4u64;
+    await peer.ping();     //~ ErrorUnbuiltAwait "move into the continuation's record [used], finalized as if the method were not cut, in the order []; and leave behind [unused]"
+    body = used;
+  }
+
+  pub fn moved(self) {
+    imm f = new Fin(1u64);
+    keep(f);
+    await peer.ping();     //~ ErrorUnbuiltAwait "move into the continuation's record [], finalized as if the method were not cut, in the order []; and leave behind []"
+  }
+
+  pub fn assignedFirst(self, c Bool) {
+    imm a = 1u64;
+    mut b = 2u64;
+    await peer.ping();     //~ ErrorUnbuiltAwait "move into the continuation's record [c, a], finalized as if the method were not cut, in the order []; and leave behind [b]"
+    if c {
+      body = a;
+    }
+    else {
+      b = 4u64;
+      body = b;
+    }
+  }
+
+  pub fn inLoop(self) {
+    mut i = 0u64;
+    imm step = 2u64;
+    while i < 9u64 {
+      await peer.ping();   //~ ErrorUnbuiltAwait "move into the continuation's record [i, step]"
+      i = i + step;
+    }
+  }
+
+  pub fn initializer(self) {
+    imm n = 2u64;
+    imm m = await give();  //~ ErrorUnbuiltAwait "move into the continuation's record [], finalized as if the method were not cut, in the order []; and leave behind [n]"
+    body = m;
+  }
+}

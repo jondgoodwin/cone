@@ -47,6 +47,23 @@
 # concurrency_actor_order's; concurrency_actors_stress declares the collector,
 # holding nodes, above the nodes, whose message carries a node.
 #
+# 'await' in an actor's method: a seam, where the method returns to the
+# actor's dispatcher to wait. Nothing waits for a reply yet, so without
+# '--await-direct' a seam every rule accepts is reported where it stands
+# (ErrorUnbuiltAwait), its message naming the borrows it ends, the locks it
+# gives back, its continuation's record and that record's order of death, and
+# what it leaves; that message is what concurrency_await_record, _droporder,
+# _static and _lock pin. A borrow named after the seam is the ordinary
+# ErrorFrozen at the seam (concurrency_await_borrow, _lock); where 'await' may
+# stand is concurrency_await_place. With '--await-direct', for tests, a
+# message is split into its halves and each seam hands its record straight to
+# its second half: concurrency_await_split runs each split message beside its
+# twin with no 'await', the two traces the same, and pins the halves' shapes;
+# concurrency_await_unsplit is where the split is not built yet. The chapter
+# is doc/reference/refconccomm.html, "Actors"; flow's note is
+# compiler/c/doc/phases/flow.md, "A seam", and generation's
+# compiler/c/doc/phases/generation.md, "A split method".
+#
 # I/O buffers: concurrency_iobuf_loan pins, against the iobuf package, that the
 # thread check and the type check together keep a borrowed buffer from being
 # lent to an operation or crossing to the thread its completion arrives on;
@@ -56,6 +73,11 @@
 # a request and a completer cross threads while a borrow of a completion or
 # a completer does not. Each package's own behaviour is
 # tested by its tests/ folder.
+#
+# Compute kernels on threads: concurrency_compute_barrier_threads runs a
+# kernel's workgroup on threads that meet at its barriers through each
+# thread's barrier hook, which is what the compiler makes of a barrier on the
+# CPU; the module group's module_compute_barrier_hook pins that generation.
 #
 # Not covered, with reasons:
 #
@@ -118,6 +140,15 @@ contains = ["@held = internal global %Holder { i32 7, %Flag { i32 5 } }"]
 [scenario.concurrency_sendable]
 category = "run"
 description = "The thread check's step-6 program: a uni owner sent over a channel to a consumer thread, an Arc[imm, String] read by a thread and by main, a number in a mut local handed to a thread; and the types granted Sendable without running: numbers, structs, arrays, enums, a struct reaching itself through So, owners that move, Arc[imm, T] and Arc[opaq, T], a function reference, a struct declaring Sendable, List, Dict, String, a channel's ends, a ThreadRef"
+tags = ["typecheck", "genllvm", "runtime"]
+
+# A kernel's barriers on the CPU, with a workgroup's invocations on threads:
+# each thread's barrier hook (core's setBarrierHook) a futex barrier. The
+# barriers' generation is compiler work (module_compute_barrier_hook pins it);
+# this shows the hook carries a real barrier, and that it is each thread's own
+[scenario.concurrency_compute_barrier_threads]
+category = "run"
+description = "A workgroup prefix sum run on the CPU with each workgroup's 4 invocations on 4 threads, each thread's barrier hook a generation-counting futex barrier, gives the GPU's answer; the main thread, which set no hook, runs it one invocation at a time and its barriers do nothing"
 tags = ["typecheck", "genllvm", "runtime"]
 
 # -------- actors --------
@@ -203,6 +234,85 @@ tags = ["typecheck", "genllvm", "runtime"]
 category = "reject"
 description = "An actor's state holding 'Rc[mut, T]' is not Sendable: refused over a Channel and by thread.start, while its handle, an Arc[opaq, Mailbox], crosses both"
 tags = ["typecheck"]
+
+# -------- 'await': a seam --------
+
+[scenario.concurrency_await_place]
+category = "reject"
+description = "'await' outside an actor's method -- in a plain function, a struct's method, an actor's init and its final -- is ErrorAwaitPlace at the 'await'"
+tags = ["parse", "typecheck"]
+
+[scenario.concurrency_await_borrow]
+category = "reject"
+description = "A seam ends every borrow that is not global: one of the state through 'self', of a local, or lent through a parameter, named after the 'await'; one a droppable's finalizer reads; one an argument of a call around the 'await' carries, a receiver among them: each the ordinary ErrorFrozen at the 'await'. Not named after it, the seam is accepted, ending it"
+tags = ["flow"]
+
+[scenario.concurrency_await_static]
+category = "reject"
+description = "A ''static' borrow crosses a seam: a borrow of a global, and a reborrow through a ''static' parameter, used after the 'await', are accepted and travel in the continuation's record (ErrorUnbuiltAwait)"
+tags = ["flow"]
+
+[scenario.concurrency_await_lock]
+category = "reject"
+description = "A lock borrow, through an actor's field or a global, is never ''static': its loan is of the guard, a local, so named after the 'await' it is refused as any ended borrow is; not named, the seam gives the lock back and the guard does not travel"
+tags = ["flow"]
+
+[scenario.concurrency_await_record]
+category = "reject"
+description = "What a seam's continuation record holds: a droppable never named again travels; a dead number does not, a live one does; a droppable moved out before the seam holds nothing; liveness follows the paths, an 'if''s arms and a loop's next pass; a local whose initializer holds the 'await' holds nothing yet"
+tags = ["flow"]
+
+[scenario.concurrency_await_droporder]
+category = "reject"
+description = "A seam keeps drop order: a droppable never named after the 'await' travels with the rest, so the record dies inner block first, then the last declared first, as a method with no seam would"
+tags = ["flow"]
+
+[scenario.concurrency_await_split]
+category = "run"
+description = "Under --await-direct each message holding an 'await' is split, each seam handing its record straight to its second half: every split message prints what its twin with no 'await' prints, its values dying where and in the order the one scope says -- an empty record, a value in flight, droppables in order, two seams, a seam in a loop, a drop flag, temporaries and a moved value across, locks given back, a return after the seam, a void await"
+tags = ["flow", "genllvm", "runtime"]
+
+[[scenario.concurrency_await_split.run]]
+name = "direct"
+options = ["--await-direct"]
+
+[[scenario.concurrency_await_split.run]]
+name = "direct-debug"
+options = ["--await-direct", "--debug"]
+
+[[scenario.concurrency_await_split.check]]
+name = "an-empty-record-is-no-parameter"
+target = "preir"
+contains = [
+  "5fetch'1\"(ptr %0, i64 %1)",
+  "6locked'1\"(ptr %0, i64 %1)",
+  "6voided'1\"(ptr %0)",
+]
+
+[[scenario.concurrency_await_split.check]]
+name = "the-record-holds-what-the-seam-still-holds-in-the-order-it-dies"
+target = "preir"
+contains = [
+  "7ordered'1.record\" = type { i64, %Fin, %Fin, %Fin, %Fin }",
+  "7several'1.record\" = type { %Fin }",
+  "7several'2.record\" = type { i64, %Fin, %Fin }",
+  "6looped'1.record\" = type { %Fin, i64, i64 }",
+  "7flagged'1.record\" = type { %Fin, i8 }",
+  "5temps'1.record\" = type { i64, %Fin }",
+  "5temps'2.record\" = type { %Fin }",
+  "6locked'2.record\" = type { i64 }",
+  "5early'1.record\" = type { %Fin, i1 }",
+  "7ordered'1\"(ptr %0, %\"_CNvNtu16_PageState_oe802g7ordered'1.record\" %1, i64 %2)",
+]
+
+[scenario.concurrency_await_unsplit]
+category = "reject"
+description = "Under --await-direct, an 'await' where the split is not built is ErrorUnbuiltAwait: in a method that is no message, as every seam is without the option; in the index of a place, a place stored into, a place swapped; in an array's contents filled in memory"
+tags = ["flow"]
+
+[[scenario.concurrency_await_unsplit.run]]
+name = "direct"
+options = ["--await-direct"]
 
 [scenario.concurrency_iobuf_loan]
 category = "reject"

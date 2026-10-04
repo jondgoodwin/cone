@@ -57,6 +57,8 @@ pub struct Kernel {
   call &fn(*u8, Invocation, &[]Words);   // and what calls it with the bindings
   hasDirect Bool;
   needs Array[u32, 8];             // the bytes a by-value struct parameter reads
+  pub together Bool;               // it has barriers (OpControlBarrier, read from the
+                                   // SPIR-V): its twin runs a workgroup's invocations together
 
   // Kernel 'entryPoint' of 'spirv', its bindings used as 'access' says
   // (READ or READ_WRITE each, at most MAX_KERNEL_BINDINGS). A kernel compiled
@@ -113,7 +115,7 @@ pub struct Kernel {
     mut pipeline = device.createComputePipeline(&desc);
     new Kernel(shader, groupLayout, layout, pipeline, acc, u32.from(access.len), size, &noTwin, false, isCone,
       String.from(entryPoint), fileIds, fileNames, shapes, strides, null as *u8, &noDirect, false,
-      new Array[u32, 8] <- fill 0u32);
+      new Array[u32, 8] <- fill 0u32, ok and hasBarriers(spirv, entryPoint));
   }
 
   pub fn isValid(self &) Bool { pipeline.isValid(); }
@@ -353,6 +355,38 @@ fn entryIdOf(spirv &[]u32, name &[]u8) u32 {
     i = i + count;
   }
   0xFFFFFFFFu32;
+}
+
+// Whether compute entry point 'name' reaches a barrier: an OpControlBarrier
+// (224) in its function or in any function it calls (OpFunctionCall, 57),
+// however deep. A Cone kernel's 'workgroupBarrier()' and 'storageBarrier()'
+// are each one, as a Slang or HLSL kernel's barriers are.
+fn hasBarriers(spirv &[]u32, name &[]u8) Bool {
+  mut todo = List[u32].empty();
+  mut seen = List[u32].empty();
+  todo.push(entryIdOf(spirv, name));
+  while todo.len() > 0usize {
+    imm f = *todo[todo.len() - 1usize];
+    todo.pop();
+    if indexOf(seen.view(), f) < seen.len() { continue; }
+    seen.push(f);
+    // OpFunction (54) %type %id ..., to its OpFunctionEnd (56)
+    mut inside = false;
+    mut i = 5usize;
+    while i < spirv.len {
+      imm word = spirv[i];
+      imm count = usize.from(word >> 16u32);
+      if count == 0usize or i + count > spirv.len { break; }
+      imm op = word & 0xFFFFu32;
+      if op == 54u32 and count >= 3usize and spirv[i + 2usize] == f { inside = true; }
+      elif inside and op == 56u32 { break; }
+      elif inside and op == 224u32 { return true; }
+      // OpFunctionCall (57) %type %id %function ...
+      elif inside and op == 57u32 and count >= 4usize { todo.push(spirv[i + 3usize]); }
+      i = i + count;
+    }
+  }
+  false;
 }
 
 // The source files a module compiled from Cone names, each in an

@@ -442,12 +442,16 @@ static LLVMValueRef genlDeclaredIntrinsic(GenState *gen, FnDclNode *fndcl, LLVMV
     case ShrMaskedIntrinsic:
         return genlBitIntrinsic(gen, intrinsic->intrinsicFn, type, fnargs);
 
-    // A GPU workgroup's barriers (genlgpusync.c). The CPU runs a kernel one
-    // invocation at a time, so there is nothing to wait for
+    // A GPU workgroup's barriers (genlgpusync.c): on a GPU an instruction, on
+    // the CPU a call to the thread's barrier hook when it has set one.
+    // WebAssembly links no conestd, which holds the hook, and runs a kernel one
+    // invocation at a time: there each is nothing
     case WorkgroupBarrierIntrinsic:
     case StorageBarrierIntrinsic:
         if (gen->opt->gpu)
             genlGpuBarrier(gen, intrinsic->intrinsicFn == StorageBarrierIntrinsic);
+        else if (!gen->opt->wasm)
+            genlCpuBarrier(gen, intrinsic->intrinsicFn == StorageBarrierIntrinsic);
         return NULL;
 
     default:
@@ -914,11 +918,7 @@ LLVMValueRef genlFnCallInternal(GenState *gen, int dispatch, INode *objfn, uint3
 LLVMValueRef *genlNewArgs(GenState *gen, FnCallNode *fncall) {
     uint32_t fnargcnt = fncall->args->used + 1;
     LLVMValueRef *fnargs = (LLVMValueRef*)memAllocBlk(fnargcnt * sizeof(LLVMValueRef*));
-    LLVMValueRef *fnarg = fnargs + 1;
-    INode **nodesp;
-    uint32_t cnt;
-    for (nodesFor(fncall->args, cnt, nodesp))
-        *fnarg++ = genlExpr(gen, *nodesp);
+    genlExprsAcross(gen, fncall->args, fnargs + 1);
     return fnargs;
 }
 
@@ -995,12 +995,7 @@ LLVMValueRef genlFnCall(GenState *gen, FnCallNode *fncall) {
     // Get count and Valuerefs for all the arguments to pass to the function
     uint32_t fnargcnt = fncall->args->used;
     LLVMValueRef *fnargs = (LLVMValueRef*)memAllocBlk(fnargcnt * sizeof(LLVMValueRef*));
-    LLVMValueRef *fnarg = fnargs;
-    INode **nodesp;
-    uint32_t cnt;
-    for (nodesFor(fncall->args, cnt, nodesp)) {
-        *fnarg++ = genlExpr(gen, *nodesp);
-    }
+    genlExprsAcross(gen, fncall->args, fnargs);
 
     // An atomic intrinsic reads its orderings from the call's own arguments
     FnDclNode *atomic = intrinsicAtomicCallee(fncall);
@@ -2287,11 +2282,10 @@ static LLVMValueRef genlTerm(GenState *gen, INode *termnode) {
         // Each listed value once; a fill form's one value, or a constant an
         // array's contents repeat, stands for each element it fills
         LLVMValueRef *listed = (LLVMValueRef *)memAllocBlk(lit->elems->used * sizeof(LLVMValueRef *));
+        genlExprsAcross(gen, lit->elems, listed);
         int allnull = 1;
-        for (uint32_t index = 0; index < lit->elems->used; ++index) {
-            listed[index] = genlExpr(gen, nodesGet(lit->elems, index));
+        for (uint32_t index = 0; index < lit->elems->used; ++index)
             allnull = allnull && LLVMIsConstant(listed[index]) && LLVMIsNull(listed[index]);
-        }
         // Every element null is zeroinitializer, with no value for each element
         if (allnull && lit->elems->used > 0)
             return LLVMConstNull(LLVMArrayType(elemtypellvm, size));
@@ -2327,8 +2321,6 @@ static LLVMValueRef genlTerm(GenState *gen, INode *termnode) {
         FnCallNode *lit = (FnCallNode *)termnode;
         INode *littype = itypeGetTypeDcl(lit->vtype);
         uint32_t size = lit->args->used;
-        INode **nodesp;
-        uint32_t cnt;
         if (littype->tag == StructTag) {
             if (littype->flags & NullablePtr) {
                 // Special optimized logic for creating nullable ref/ptr value
@@ -2346,10 +2338,12 @@ static LLVMValueRef genlTerm(GenState *gen, INode *termnode) {
                     return genlExpr(gen, nodesGet(lit->args, 1));
             }
             else {
+                // Every field's value first, in order, then the struct of them
+                LLVMValueRef *vals = (LLVMValueRef *)memAllocBlk((size ? size : 1) * sizeof(LLVMValueRef));
+                genlExprsAcross(gen, lit->args, vals);
                 LLVMValueRef strval = LLVMGetUndef(genlType(gen, littype));
-                unsigned int pos = 0;
-                for (nodesFor(lit->args, cnt, nodesp))
-                    strval = LLVMBuildInsertValue(gen->builder, strval, genlExpr(gen, *nodesp), pos++, "literal");
+                for (unsigned int pos = 0; pos < size; ++pos)
+                    strval = LLVMBuildInsertValue(gen->builder, strval, vals[pos], pos, "literal");
                 return strval;
             }
         }
@@ -2562,14 +2556,14 @@ static LLVMValueRef genlTerm(GenState *gen, INode *termnode) {
     case VTupleTag:
     {
         // Load only: Creates an ad hoc struct to hold the tuple's values
+        // Every element's value first, in order, then the tuple of them
         TupleNode *tuple = (TupleNode *)termnode;
+        uint32_t size = tuple->elems->used;
+        LLVMValueRef *vals = (LLVMValueRef *)memAllocBlk((size ? size : 1) * sizeof(LLVMValueRef));
+        genlExprsAcross(gen, tuple->elems, vals);
         LLVMValueRef tupleval = LLVMGetUndef(genlType(gen, tuple->vtype));
-        INode **nodesp;
-        uint32_t cnt;
-        unsigned int pos = 0;
-        for (nodesFor(tuple->elems, cnt, nodesp)) {
-            tupleval = LLVMBuildInsertValue(gen->builder, tupleval, genlExpr(gen, *nodesp), pos++, "tuple");
-        }
+        for (unsigned int pos = 0; pos < size; ++pos)
+            tupleval = LLVMBuildInsertValue(gen->builder, tupleval, vals[pos], pos, "tuple");
         return tupleval;
     }
     case SizeofTag:
@@ -2633,6 +2627,8 @@ static LLVMValueRef genlTerm(GenState *gen, INode *termnode) {
         return genlBlock(gen, (BlockNode*)termnode); break;
     case IfTag:
         return genlIf(gen, (IfNode*)termnode); break;
+    case AwaitTag:
+        return genlAwait(gen, (AwaitNode*)termnode);
     default:
         errorUnreachable(termnode, "an expression node code generation has no case for");
         return NULL;

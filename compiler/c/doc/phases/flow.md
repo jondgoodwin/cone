@@ -48,7 +48,8 @@ check. Flow rides on the second. `fnDclTypeCheck` is the only caller of
 `blockFlow` from outside flow's own recursion, at the close of type checking
 each function's body — so it is the single entry point to the whole pass. The
 loan walk (§6) is a second walk of one function's body, right after `blockFlow`
-in the same call, and only of a function the gate marked.
+in the same call, and only of a function the gate marked or one holding an
+`await` (§6, "A seam").
 
 It is scheduled per function rather than globally because flow needs types, and
 Cone infers types bottom-up by demand: there is no point at which "type checking
@@ -176,6 +177,7 @@ Put these first, because every one of them is load-bearing.
 | `dropgate` | `fnDclTypeCheck`, which runs the path walk's drop-flag client on a function it marks ("Drop flags", below) |
 | `jumped` | `ifFlow`, from `blockFlow`: every path through the arm just walked returned, so it takes no part in the join |
 | `inflight`, `inflightcnt` | the gate's `flowGateUse`, from `nameuseFlow` and `nameuseFlowBorrowed` |
+| `awaits` | `fnDclTypeCheck`: each `await` the walk met, so the function is walked for loans and drop flags, and each seam the walk accepted is split or reported not built (§6, "A seam") |
 
 ### The gate
 
@@ -1243,6 +1245,77 @@ with a value — its declaration, a parameter at function or inline-body entry �
 and `0` where it begins without one; `0` at each marked move, `2` at each
 marked hollowing, `1` after each store over it whole.
 
+### A seam
+
+An actor's method may `await`: the method is cut there, a **seam**, where it
+returns to the actor's dispatcher to wait, and what it needs afterwards waits
+in a continuation, a record, until the reply comes. A seam is a return to the
+*dispatcher*, not to the author: the author wrote one method with one scope, so
+what the author can see -- when a value dies and in which order -- is what a
+method without the seam would do. Type check has placed it already, in a
+method of an actor's state that is neither its `init` nor its `final`
+(`ErrorAwaitPlace`). Every rule below is checked; what then becomes of the
+seams flow accepted is `awaitSplitOrReport`'s, from `fnDclTypeCheck`. A
+message's (a `pub` method's) are **split**: generation makes the method's
+first half and a second half for each seam, from what is noted here
+([Generation](generation.md), "A split method"). Nothing waits for a reply yet,
+so a method is split only under `--await-direct`, which is for tests; without
+it, and for an `await` in a method that is not a message -- whether that one
+cuts its callers is not settled -- each is reported as not built
+(`ErrorUnbuiltAwait`, `awaitReportUnbuilt`), the message saying what its seam
+would carry. A message's `await` standing where the split is not built yet is
+reported so too, at the `await` (`awaitWalk`): in the index of a place, in a
+place stored into or swapped, whose address would be held across the seam, and
+in an array's contents filled in memory.
+
+A function holding an `await` is walked by the path walk for loans and drop
+flags both, whatever the gates say (`fnDclTypeCheck`, from
+`FlowState.awaits`, which the main walk fills); the main walk itself walks what
+is awaited, which the `await` takes as a call takes an argument. At the seam
+(`pwSeam`), after what is awaited is walked, in this order:
+
+1. **Every borrow ends.** It is a scope ending, not a prohibition: each holder
+   in scope (`pwSeamVar`) holding a loan that is not global
+   (`loanNotGlobalIn`: a caller loan, or one of the function's own storage)
+   gets a pending conflict of kind `AccessSeam` (`loanSeamPending`), which its
+   next use fires as the ordinary `ErrorFrozen`, at the seam: "the borrow 'r'
+   holds of '*self' (made at ..) ends at this 'await' ..., and 'r' is used
+   again at ..". A holder never used again, or stored over whole first, is no
+   error. Its death is a use where its finalizer may read the borrow
+   (`pwHolderDies`), so a droppable holding one is refused at its scope's end.
+   A loan an operand around the seam carries in flight -- `take(&x, await
+   y)`, or a method's receiver, `self.put(await y)` -- is used after the seam
+   by its call, and is reported at once (`loanSeamFlight`). The actor's
+   `self` is the exception: the dispatcher lends it afresh to what follows the
+   seam, so its own caller loan does not end; what was borrowed through it
+   does, carrying that caller loan.
+2. **Freezes lift.** The ended loans leave every holder's set
+   (`pwGlobalOnly`), so what they froze may be moved from here on.
+3. **What travels**, noted on the `AwaitNode` (`seamvars`, each variable's
+   `SeamFlags`, joined over every walk of a loop): every variable used after
+   the seam before it is stored over whole (`SeamLive`), plus every droppable
+   (`itypeNeedsFinal`, `SeamDies`) still holding its value
+   (`SeamOpen`, from drop flags' state: not moved out, not never given one,
+   not the variable whose initializer holds the seam), used again or not. A
+   dead variable with nothing to do as it dies is left behind. Liveness is
+   found forward as a frozen borrow's last use is: each variable in scope gets
+   a live mark (`loanSeamLive`, kind `PendingSeamLive`), a pending entry its
+   next use fires (`pathSeamLive`) and reports nothing; a store over it whole,
+   or its scope's end, drops it. So any variable, not only a holder, may carry
+   a pending entry, and `pwPlace`, `pwStore`, `pwSwap` and `pwScopeEnd` ask
+   for one on every variable.
+4. **A lock's guard** (the hidden owner a borrow through a lock permission
+   reads through, a `permHeldKind` type, `SeamGuard`) gives its lock back at
+   the seam, with its borrow; it does not travel.
+5. **What the record holds dies as if the method were not cut**: the
+   statement's temporaries, then the locals and the parameters, the last
+   declared first. Nothing droppable is dropped early, so the order is the
+   single-scope reading's.
+
+A `'static` borrow -- one whose every loan is global -- does not end: it is
+already returnable from a function, so it crosses as a value does. A lock
+borrow never is: its loan is of the guard, a local.
+
 ### An init's self
 
 An init's `self &new` (`fnDclIsInit`) is a reference to memory that holds no
@@ -1308,6 +1381,8 @@ Everything else about permissions is type check's: `permMatches` in
 | `ErrorCallEscape` | `loanApart`, from `pwCallStores`; `loanNotGlobal`, from `pwStaticArgs`; `fnCallStaticArgs` | a call may store a caller loan where a parameter points at nothing of a lifetime it flows to; an argument for a `'static` parameter carries, or is, a borrow that is not global |
 | `ErrorLifetimeBound` | `loanNotGlobal` and `loanNotBound`, from `pwStaticArgs`; `fnCallStaticArgs`; `loanNotBound`, from `pwBoundHolds`; `loanNotBoxable`, from `pwValue` | an argument for a part a type parameter's `'static` bound makes global, or for a parameter `&<Trait + 'static`, carries, or is, a borrow that is not global; a value returned or stored as a virtual reference bounded by `'a` holds a borrow not known to last `'a`; a value made an owning virtual reference holds a borrow not known to be global |
 | `ErrorFrozen` | `loanUse`, for a conflict `loanAccess` recorded; `loanFlightAccess`, `loanFlightActivate` | a source read, changed, moved, borrowed or ended while a borrow of it that forbids that is still to be used; reported at the access, naming the borrow (or the method that returned it) and its next use. Or, at once, an access conflicting with a loan an earlier operand of the same call or literal carries, or a two-phase receiver conflicting at its call with what another argument carries |
+| `ErrorFrozen` | `loanUse`, for a seam's `AccessSeam` conflict; `loanSeamFlight` | a borrow that is not global, held at a seam (`await`) and used after it, reported at the seam where it ended; or one an operand around the seam carries in flight |
+| `ErrorUnbuiltAwait` | `awaitReportUnbuilt` and `awaitReportIn`, from `awaitSplitOrReport` | an `await` every seam rule accepted, in a function flow found no error in, that is not split: not built, the message naming what its seam would end, give back, carry and leave; or, in a message split under `--await-direct`, one standing where the split is not built (an index, a place stored into or swapped, an array's contents filled in memory) |
 
 A value an array's contents or `n of x` repeat is evaluated once per element,
 so the ordinary move rule judges it: the loop `n of x` lowers to is walked as
@@ -1345,7 +1420,11 @@ assignment, or the drop-flag client from every path; for a hollowed one, the
 `HollowNode` wrapped round the stored value is what releases the old
 allocation. A variable with `VarDropFlag` needs each marked move of it
 (`FlagMoveOut`, `FlagHollowOut`) generated as a load of its name, where
-`genlDropFlagUse` updates the flag.
+`genlDropFlagUse` updates the flag. A split method's record is built from each
+`AwaitNode`'s `seamvars` ([Generation](generation.md), "A split method"): a
+variable `SeamOpen` and `SeamLive` or `SeamDies` travels, so a variable used
+after a seam and noted dead there reads garbage in the second half, and a
+droppable noted as holding nothing is never finalized.
 
 ## 9. Hazards
 
@@ -1359,6 +1438,11 @@ allocation. A variable with `VarDropFlag` needs each marked move of it
   (`FlagMoveOut`, `FlagHollowOut`), or the path walk and the drop flag do not
   see it. A name use shared by several places in the tree cannot be marked:
   the match's own variable is the one known (flow.c, `flowMoveSource`).
+- **A seam's live mark rides on any variable, not only a holder.** A new place
+  the path walk meets a use of a variable must fire `loanUse` where the
+  variable carries a pending entry, holder or not, and a new place it is
+  stored over whole or ends must drop that entry; otherwise a seam's record
+  (§6, "A seam") misses what is live after it, or keeps what is dead.
 - **A value stored into a field of a variable that holds nothing leaks.**
   `take(e); e.inner = new Inner(2);` and `mut e Holder; e.inner = new Inner(2);`
   finalize nothing of the old field (there is none), and the variable is not
@@ -1400,7 +1484,7 @@ allocation. A variable with `VarDropFlag` needs each marked move of it
 
 | File | Function | Purpose |
 | --- | --- | --- |
-| `ir/stmt/fndcl.c` | `fnDclTypeCheck` | the only entry point; the per-function error-delta gate; `FlowTimer` round `blockFlow` and the path walk under `-V 1`; the path walk on a function either gate marked, or on every function on a GPU target, `blockFlow` having found no error in it; `flowGateCount` after it |
+| `ir/stmt/fndcl.c` | `fnDclTypeCheck` | the only entry point; the per-function error-delta gate; `FlowTimer` round `blockFlow` and the path walk under `-V 1`; the path walk on a function either gate marked, or holding an `await`, or on every function on a GPU target, `blockFlow` having found no error in it; each accepted seam split or reported not built (`awaitSplitOrReport`); `flowGateCount` after it |
 | `ir/flowpath.c` | `flowPathWalk`, `flowPathPrint` | the path walk (§6): its entry, for loans, drops or both, and its `-V 2` tallies |
 | | `pathSetFacts`, `pathSetState`, `pathRollback`, `pathDelta`, `pathJoin` | the state per path: set a fact (loans, or a drop state), recording the old one; undo to a fork; what a path changed; join paths |
 | | `pwValue`, `pwPlace`, `pwThrough`, `pwBorrow`, `pwLend`, `pwOwnedLent`, `pwStore`, `pwSwap`, `pwVarDcl` | the walk's dispatch: what each node accesses, which holders it uses, what loans its value carries |
@@ -1411,6 +1495,7 @@ allocation. A variable with `VarDropFlag` needs each marked move of it
 | | `pwNamedSig`, `pwArgCarries`, `pwCallerLoans`, `pwStoreApart`, `pwStaticArgs`, `pwBoundHolds` | named lifetimes: the callee's signature where it names them; what of each argument a result or a store through a writable one may carry; a parameter's caller loans, part by part; a caller loan stored apart from its lifetime; a `'static` parameter's argument, or one a `'static` bound governs; what a bounded virtual reference holds, returned or stored |
 | | `pwStmts`, `pwBlock`, `pwBlockExits`, `pwLoop`, `pwIf`, `pwJump`, `pwScopeEnd`, `pwScopeEndHanding`, `pwHolderDies`, `pwExit` | forks and joins, loops to a fixed point, jumps, a scope's end as an access (with a block's value in flight), a finalizing holder's death as a use, and an exit's record for the drop-flag client |
 | | `pwDropUse` | a use of a place's root variable, checked by the drop-flag client |
+| | `pwSeam`, `pwSeamVar`, `pwSeamNote`, `pathSeamLive`, `pwGlobalOnly`, `pwIsGuard` | a seam ("A seam"): what is awaited, the loans in flight across it, and each variable in scope -- its borrows ended, its live mark set, what it would do noted on the `AwaitNode` |
 | | `pwGpuOneValue`, `pwIsLitIndex`, `pathGpuChoices`, `pwRetFirst` | GPU targets: an `if`'s or a block's value, and a function's returns, against each other (`pathJoin` compares a holder's paths); a literal index |
 | `ir/flowdrop.c` | `dropMove`, `dropUse`, `dropRefuse` | a marked move's new state; a use some path left without its value, refused once |
 | | `dropStore`, `dropPartStore`, `dropExit` | what each variable a release releases may hold there, gathered over every walk |
@@ -1419,7 +1504,9 @@ allocation. A variable with `VarDropFlag` needs each marked move of it
 | | `loanIsLocal`, `loanLocalIn`, `loanMayPointOut`, `loanMayBePointee`, `loanEscape` | a loan of the function's own storage; whether a reference may point beyond the function; an escape reported (`ErrorEscape`, `ErrorCallEscape`) |
 | | `loanCallerApart`, `loanStoredApart`, `loanNotGlobalIn`, `loanApart`, `loanNotGlobal` | named lifetimes: a caller loan whose part flows to no lifetime where it goes, or a loan that is not global, and their reports |
 | | `loanWhole` | a loan of the whole of its root, where a slot's tag stays the root's |
-| | `loanAccess`, `loanUse` | a conflicting access records a pending conflict on each holder of the loan; a use of the holder fires it (`ErrorFrozen`, or `ErrorGpuRefChoice` for a `PendingChosen` one) |
+| | `loanAccess`, `loanUse` | a conflicting access records a pending conflict on each holder of the loan; a use of the holder fires it (`ErrorFrozen`, or `ErrorGpuRefChoice` for a `PendingChosen` one; a `PendingSeamLive` one records the variable live after its seam) |
+| | `loanIsGlobal`, `loanSeamEnds`, `loanSeamPending`, `loanSeamLive`, `loanSeamFlight`, `loanSeamOf` | a seam: whether a loan is global; the loan a holder holds that ends there, the borrow it was given where that can be told; the pending conflict and the live mark; what is in flight across it; what an ended borrow was of, for the message |
+| `ir/exp/await.c` | `awaitSplitOrReport`, `awaitReportUnbuilt` | the seams of a function flow accepted: a message's split under `--await-direct` (numbered, each lock's guard marked `VarSeamHeld`, the function recorded for generation, `awaitSplitOf`), unless one stands where the split is not built (`awaitWalk`, `awaitReportIn`); otherwise each reported not built with what it would end, give back, carry (in the order it would die) and leave |
 | | `loanNearApart`, `loanChosen`, `loanChosenPending`, `loanIndexedRefs`, `loanOrigin`, `loanMemory` | GPU targets: whether two paths' values point at different places; a choice reported at once, or pending on a holder; a run-time index of references refused; where each choice points, for the message |
 | `ir/stmt/module.c` | `modInitOf`, `modInitFlowBegin`, `modInitFlowEnd` | round a module's `init` only: its module's globals without a value start the pass uninitialized, as locals, so `init` assigns each once and reads none first; one never assigned is `ErrorGlobalUninit`. [module](../nodes/module.md), "Init and final" |
 | `ir/flow.c` | `flowLoadValue` | the walk's spine — tag dispatch for a value being read |
@@ -1475,7 +1562,8 @@ inside a value `test/cases/region/region_flow_pool_freeze.cone` and the
 `test/cases/move/move_drop_flags.cone`, `move_drop_flags_agree.cone`,
 `move_flow_paths.cone`, `test/cases/region/region_drop_flags.cone` and
 `test/cases/struct/struct_final_reassign.cone`, and for temporaries
-`test/cases/struct/struct_final_temporary.cone`.
+`test/cases/struct/struct_final_temporary.cone`, and for a seam the
+`concurrency` group's `concurrency_await_*` scenarios.
 
 ## 11. What lives elsewhere
 

@@ -35,7 +35,46 @@ typedef struct {
 typedef struct {
     LLVMValueRef slot;
     TempNode *temp;
+    LLVMValueRef held;      // A lock's guard in a split method: its flag, whether it holds its lock yet (genlawait.c), else NULL
 } GenTemp;
+
+// A value made before a seam of a split method and used after it, an operand
+// of a call or a literal whose later operand holds the seam (genlawait.c): it
+// waits in a slot of its own, which the seam's record carries
+typedef struct {
+    LLVMValueRef slot;
+    INode *type;            // Its Cone type
+} GenFlight;
+
+// What a seam's record holds, field by field (genlawait.c), in the order the
+// values would die: the values in flight, the newest first; the statement's
+// temporaries, the newest first; the variables, the last declared first, each
+// with its drop flag after it where it has one
+enum GenSeamFieldKind {
+    GenSeamVar,             // a variable's value
+    GenSeamFlag,            // a variable's drop flag
+    GenSeamTemp,            // a temporary's value, from its slot ('at' from the function's first)
+    GenSeamFlight           // a value in flight, from its slot ('at' from the function's first)
+};
+
+typedef struct GenSeamField {
+    uint8_t kind;           // GenSeamFieldKind
+    uint32_t at;
+    VarDclNode *var;        // GenSeamVar, GenSeamFlag
+    TempNode *temp;         // GenSeamTemp
+    INode *type;            // Its Cone type (NULL for a flag)
+} GenSeamField;
+
+// A seam of a split method, as the first half to generate it laid it out: its
+// record and its second half, the same for every half generated after
+typedef struct GenSeam {
+    LLVMValueRef half;      // The second half: the method from just after the seam
+    LLVMTypeRef record;     // The record's struct type, or NULL when it is empty: no record parameter
+    GenSeamField *fields;
+    uint32_t nfields;
+    uint32_t ntemps;        // How many temporaries and values in flight wait at the seam, as every half must find
+    uint32_t nflights;
+} GenSeam;
 
 // The roots of the function being generated: each stack slot holding a value
 // whose type holds a traced reference -- a local's, a parameter's, a birth's --
@@ -78,6 +117,21 @@ typedef struct GenState {
     uint32_t tempcnt;
     uint32_t tempmax;
     uint32_t tempbase;      // How many were waiting as the function being generated began: a 'return' finalizes the rest
+
+    // A split method (genlawait.c): its seams, or NULL for any other function;
+    // the seam whose second half is being generated, NULL for the first half;
+    // where that half resumes, where each field of its record goes there, and
+    // the flags of the locks given back there, once its seam is generated
+    Nodes *seams;
+    AwaitNode *resumeat;
+    LLVMBasicBlockRef resumeblk;
+    LLVMValueRef *resumedest;
+    LLVMValueRef *resumeheld;
+    uint32_t resumeheldcnt;
+    GenFlight *flights;     // The values in flight across a seam, oldest first
+    uint32_t flightcnt;
+    uint32_t flightmax;
+    uint32_t flightbase;    // How many were in flight as the function being generated began
 
     // The type records this object has built (genlTypeRecord): each value type,
     // and its record's constant, in the same order
@@ -243,6 +297,9 @@ INode *genlGpuSiteOf(GenState *gen, LLVMValueRef inst);
 // A workgroup barrier: every invocation of the workgroup waits there, and the
 // workgroup's memory ('storage' 0) or the storage buffers' (1) is made visible
 LLVMValueRef genlGpuBarrier(GenState *gen, int storage);
+// The same barrier on the CPU: a call to the thread's barrier hook, conestd's
+// 'cone_barrierHook', when it is set, handed its context and the kind
+void genlCpuBarrier(GenState *gen, int storage);
 // Mark an atomic instruction with the call to mem's intrinsic it was made for,
 // unless that call is core's own (an Atomic method's), on the Vulkan form
 void genlGpuAtomicSite(GenState *gen, LLVMValueRef inst, INode *call);
@@ -301,6 +358,8 @@ void genlHollowRelease(GenState *gen, HollowNode *hnode);
 // finalized, newest first, and forgotten (the end of their statement); and
 // finalized without being forgotten, before a jump out past them
 LLVMValueRef genlTempKeep(GenState *gen, TempNode *temp, LLVMValueRef val);
+// A temporary's death, where it is generated (a lock's guard only where its flag says it holds its lock)
+void genlTempRelease(GenState *gen, GenTemp *entry);
 void genlTempsEnd(GenState *gen, uint32_t mark);
 void genlTempsJump(GenState *gen, uint32_t mark);
 // A counted reference gains 'amount' owners, through its region's 'aliasRef'
@@ -378,5 +437,22 @@ LLVMTypeRef genlUsize(GenState *gen);
 LLVMTypeRef genlEmptyStruct(GenState* gen);
 // Generate a vtable type
 void genlVtable(GenState *gen, Vtable *vtable);
+
+// genlawait.c: a split method, an actor's message holding an 'await'
+// The seam: what is awaited, the locks given back, the record built, and the
+// return; what follows it generates into a block its second half resumes at
+LLVMValueRef genlAwait(GenState *gen, AwaitNode *node);
+// Each second half of a split method whose first half was just generated
+void genlSplitHalves(GenState *gen, FnDclNode *fnnode);
+// Generate each of 'nodes' into 'vals', in order: in a split method, a value
+// made before a later node's seam is kept in flight across it (GenFlight)
+void genlExprsAcross(GenState *gen, Nodes *nodes, LLVMValueRef *vals);
+// Whether a seam is generated inside 'node', in a split method
+int genlHasSeam(GenState *gen, INode *node);
+// A lock's guard's flag, made as a temporary guard is kept (genlTempKeep)
+// in a split method, and code run only while it holds its lock, ended by
+// genlDropFlagEnd
+LLVMValueRef genlHeldBegin(GenState *gen);
+LLVMBasicBlockRef genlHeldIf(GenState *gen, LLVMValueRef held);
 
 #endif

@@ -1153,13 +1153,26 @@ LLVMValueRef genlTempKeep(GenState *gen, TempNode *temp, LLVMValueRef val) {
         gen->tempmax = newmax;
     }
     gen->temps[gen->tempcnt].slot = slot;
-    gen->temps[gen->tempcnt++].temp = temp;
+    gen->temps[gen->tempcnt].temp = temp;
+    // In a split method a seam may give a lock's guard back before its
+    // statement ends, so whether it still holds its lock there is a flag
+    gen->temps[gen->tempcnt++].held = gen->seams && awaitIsGuardType(temp->vtype) ? genlHeldBegin(gen) : NULL;
     return slot;
 }
 
 // A temporary's death: as a local's at its scope's end (genlFinalizeAt), or,
-// where a value moved out through it, as a hollowed variable's
-static void genlTempRelease(GenState *gen, GenTemp *entry) {
+// where a value moved out through it, as a hollowed variable's. A lock's
+// guard a seam may have given back already dies only where it has not
+void genlTempRelease(GenState *gen, GenTemp *entry) {
+    if (entry->held) {
+        LLVMValueRef held = entry->held;
+        entry->held = NULL;
+        LLVMBasicBlockRef endblk = genlHeldIf(gen, held);
+        genlTempRelease(gen, entry);
+        genlDropFlagEnd(gen, endblk);
+        entry->held = held;
+        return;
+    }
     TempNode *temp = entry->temp;
     if (temp->moved == NULL) {
         genlFinalizeAt(gen, entry->slot, temp->vtype);
@@ -1450,7 +1463,7 @@ void genlReleaseOwning(GenState *gen, LLVMValueRef val, INode *type) {
 // holding what it begins with (DropFlagState). A byte the optimizer keeps in a
 // register wherever it can, and folds away where a path's value is known.
 void genlDropFlagBegin(GenState *gen, VarDclNode *var, int state) {
-    if (!(var->flowtempflags & VarDropFlag))
+    if (!(var->flowtempflags & (VarDropFlag | VarSeamHeld)))
         return;
     LLVMTypeRef i8 = LLVMInt8TypeInContext(gen->context);
     char name[256];
@@ -1461,7 +1474,7 @@ void genlDropFlagBegin(GenState *gen, VarDclNode *var, int state) {
 
 // A flagged variable's value arrives, or leaves, here
 void genlDropFlagSet(GenState *gen, VarDclNode *var, int state) {
-    if (!(var->flowtempflags & VarDropFlag) || var->llvmflag == NULL)
+    if (!(var->flowtempflags & (VarDropFlag | VarSeamHeld)) || var->llvmflag == NULL)
         return;
     LLVMBuildStore(gen->builder, LLVMConstInt(LLVMInt8TypeInContext(gen->context), state, 0), var->llvmflag);
 }
@@ -1494,6 +1507,13 @@ void genlDropFlagEnd(GenState *gen, LLVMBasicBlockRef endblk) {
 void genlDealiasNode(GenState *gen, INode *node) {
     if (node->tag == VarDclTag) {
         VarDclNode *var = (VarDclNode *)node;
+        // A lock's guard a seam may have given back already (VarSeamHeld)
+        if ((var->flowtempflags & VarSeamHeld) && var->llvmflag) {
+            LLVMBasicBlockRef endblk = genlDropFlagIf(gen, var, DropFlagWhole);
+            genlFinalizeAt(gen, var->llvmvar, var->vtype);
+            genlDropFlagEnd(gen, endblk);
+            return;
+        }
         genlFinalizeAt(gen, var->llvmvar, var->vtype);
     }
     else if (node->tag == DropFlagTag) {
