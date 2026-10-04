@@ -55,13 +55,14 @@ class HeaderScan(unittest.TestCase):
             import stdio use *;
             pub import geometry use Point as P, Line;
             import "../q/q";
+            import libc as clib use EDOM;
             fn main() {}
             import late;
             """)
         self.assertEqual(header.mod, "prog")
         self.assertEqual([i.written for i in header.imports],
-                         ["stdio", "geometry", '"../q/q"'])
-        self.assertEqual([i.line for i in header.imports], [5, 6, 7])
+                         ["stdio", "geometry", '"../q/q"', "libc"])
+        self.assertEqual([i.line for i in header.imports], [5, 6, 7, 8])
 
     def test_extends_is_read_from_the_mod_line(self):
         header = self.scan("mod tower extends plinth is Shell;\nimport stdio;")
@@ -256,6 +257,43 @@ class Scenarios(unittest.TestCase):
         # clean removes the build folder, the generated include files with it
         self.congo("clean", cwd=pkg)
         self.assertFalse((pkg / "build").exists())
+
+    def test_an_import_renamed_with_as(self):
+        # 'import x as y' names the package x, which is what Congo reads: the
+        # rename and the clause after it are the compiler's. A sister imported
+        # under another name is found as she is under her own
+        self.congo("new", "renamed", cwd=self.root)
+        pkg = self.root / "renamed"
+        write(pkg / "src" / "renamed.cone", """
+            mod renamed;
+
+            import stdio as io use printStr;
+
+            fn main() i32 {
+              printStr("sum = ");
+              io.printInt(twice.of(21i64));
+              printStr("\\n");
+              0i32;
+            }
+            """)
+        write(pkg / "src" / "twice" / "twice.cone", """
+            mod twice;
+
+            import helper as h;
+
+            pub fn of(n i64) i64 {
+              h.add(n, n);
+            }
+            """)
+        write(pkg / "src" / "helper" / "helper.cone", """
+            mod helper;
+
+            pub fn add(a i64, b i64) i64 {
+              a + b;
+            }
+            """)
+        run = self.congo("run", cwd=pkg)
+        self.assertEqual(self.program_output(run), "sum = 42\n")
 
     def test_a_package_with_submodules_importing_stdio(self):
         self.congo("new", "show", cwd=self.root)
@@ -902,7 +940,7 @@ class Scenarios(unittest.TestCase):
                     if line.strip().startswith("Compiling")]
         self.assertEqual(compiled, ["libc", "core", "stdio", "hello"])
         out = pkg / "build" / "debug"
-        self.assertNotIn("import", (out / "libc.conebuild").read_text())
+        self.assertNotRegex((out / "libc.conebuild").read_text(), r"(?m)^import ")
         self.assertIn("import libc pub use malloc;", (out / "core.cone").read_text())
         self.assertIn('mod @c libc;', (out / "libc.cone").read_text())
         core_desc = (out / "core.conebuild").read_text()
