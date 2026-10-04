@@ -365,9 +365,11 @@ or `async do` outside an actor's body, is `ErrorBehaviourWords`, a parse code
 of its own because the two words are one keyword and neither alone is
 anything; and `self.m()` on one of the actor's behaviours where there is no
 actor to send it to -- the `final`, a state that is not the method's own
-`self` -- is `ErrorBehaviourSend`; and the state constructed with an `init` it
-declares anywhere but the handle's initializer, where the init would run on a
-state in no actor, is `ErrorActorStateInit`. A behaviour's or an
+`self` -- is `ErrorBehaviourSend`; and the state constructed anywhere but where
+the actor is made -- the handle's initializer, and the state's `init` filling
+its `self` -- by its fields' names or by an `init`, which would be a state in no
+actor, is `ErrorActorStateInit`. (Taking the state's value out through a
+method's borrow is `ErrorMoveOut`: the state is always a move type.) A behaviour's or an
 initializer's parameter, or a behaviour's returned type, that cannot cross
 threads is `ErrorNotSendable`, the thread check's code, whatever finds it --
 the parser, for a borrow or the state itself, or `actorCheckAll` after type

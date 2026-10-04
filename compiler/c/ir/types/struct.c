@@ -3576,6 +3576,12 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
     // marked at name resolution. So does an atomic value's.
     if (structDeclaresTrait(node, moveTrait) || structDeclaresTrait(node, atomicValueTrait))
         infectFlag |= MoveType;
+    // An actor's state exists only inside its actor (typeLitNewCheck): it is
+    // never copied out of it, 'imm s = *self', which would be a state in no
+    // actor. A move type, it cannot be moved out through the borrow its
+    // methods have of it either.
+    if (actorIsState((INode*)node))
+        infectFlag |= MoveType;
 
     // Populate infection flags in this struct/trait, and recursively to all
     // inherited traits -- but never into a built-in trait, which describes its

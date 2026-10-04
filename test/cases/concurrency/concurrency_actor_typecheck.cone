@@ -13,11 +13,12 @@
 //   (concurrency_actor_selfsend runs it), the 'init' included, which runs on
 //   the state in the actor (concurrency_actor_init_sends). Where there is no
 //   actor to send to it is ErrorBehaviourSend: in the 'final', as it dies, and
-//   through a state that is not the method's own 'self' -- one made with
-//   'new Self(field: ...)' is in no actor.
-// - So an init the state declares runs only as the actor is made: 'new
-//   Self(...)' running one in a method is ErrorActorStateInit, since its
-//   sends would reach no actor.
+//   through a state that is not the method's own 'self', such as another
+//   borrow of the state a method is handed.
+// - The state is constructed only as the actor is made: 'new Self(...)' in
+//   a method, running an init it declares or by its fields' names, is
+//   ErrorActorStateInit, since a state made there would be in no actor
+//   (concurrency_actor_state_confined has every route).
 
 mod concurrency_actor_typecheck;
 
@@ -40,13 +41,12 @@ actor Keeper {
   pub async do tell(self, other Keeper) {other.note(count);}
   fn helper(self) {}
 
-  fn fresh(self) {
-    mut s = new Self(count: 0u64, log: new Rc[mut, Log](0u64));
+  fn other(self, s &Self) {
     s.note(1u64);                           //~ ErrorBehaviourSend "only this method's own 'self' is the state of an actor the runtime holds"
   }
 
   fn initAgain(self) {
-    mut s = new Self(new Rc[mut, Log](0u64));   //~ ErrorActorStateInit "This runs an init actor Keeper's state declares, on a state that is in no actor"
+    mut s = new Self(new Rc[mut, Log](0u64));   //~ ErrorActorStateInit "Actor Keeper's state exists only inside its actor"
   }
 
   fn final(self &uni) {

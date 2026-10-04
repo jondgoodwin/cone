@@ -29,6 +29,11 @@ void typeLitTypeCheck(TypeCheckState *pstate, FnCallNode *lit);
 // construction.
 void typeLitNewCheck(TypeCheckState *pstate, FnCallNode **nodep);
 
+// The construction an init's '*self = new T(...)' fills its self with, while
+// it is checked (assignTypeCheck): the one place but its handle's initializer
+// an actor's state may be constructed
+extern INode *typeLitSelfFill;
+
 // 'new Rc[mut, Array[i32, 4]] <- fill 0': the allocation whose value is the
 // array literal of its contents, filled in place; NULL when refused
 INode *typeLitNewFilled(TypeCheckState *pstate, FnCallNode **nodep, RefNode *reftype, INode *lit);

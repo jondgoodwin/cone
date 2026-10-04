@@ -177,6 +177,18 @@ static void assignInitRecurse(TypeCheckState *pstate, INode *lval, INode *rval) 
         owner && owner->tag == StructTag ? &((StructNode *)owner)->namesym->namestr : "T");
 }
 
+// Is this lval, type-checked, '*self' in an init: the value the init fills?
+static int assignFillsInitSelf(TypeCheckState *pstate, INode *lval) {
+    FnDclNode *fn = pstate->fn;
+    if (fn == NULL || lval->tag != DerefTag || (fn->namesym != initName && fn->overloadsym != initName))
+        return 0;
+    INode *self = ((StarNode *)lval)->vtexp;
+    while (self->tag == CastTag)
+        self = ((CastNode *)self)->exp;
+    Nodes *parms = ((FnSigNode *)fn->vtype)->parms;
+    return isNameUseNode(self) && parms->used > 0 && ((NameUseNode *)self)->dclnode == nodesGet(parms, 0);
+}
+
 // Type checking for assignment node
 void assignTypeCheck(TypeCheckState *pstate, AssignNode *node) {
     // 'x[i] = v' and 'x[i].f = v': on a type declaring '&[]', the index is the
@@ -206,7 +218,13 @@ void assignTypeCheck(TypeCheckState *pstate, AssignNode *node) {
         else if (node->rval->tag == VTupleTag)
             assignToOneCheck(pstate, node->lval, (TupleNode*)node->rval);
         else {
+            // The construction filling an init's self is the one an actor's
+            // state may be made by outside its handle's initializer
+            INode *svfill = typeLitSelfFill;
+            if (node->rval->tag == FnCallTag && (node->rval->flags & FlagNew) && assignFillsInitSelf(pstate, node->lval))
+                typeLitSelfFill = node->rval;
             assignSingleCheck(pstate, node->lval, &node->rval);
+            typeLitSelfFill = svfill;
             assignInitRecurse(pstate, node->lval, node->rval);
         }
     }

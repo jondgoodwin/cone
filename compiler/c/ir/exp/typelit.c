@@ -12,6 +12,8 @@
 
 #include "../ir.h"
 
+INode *typeLitSelfFill = NULL;
+
 // Is this a number type, the target of a conversion rather than a struct literal?
 static int typeLitIsNbrType(INode *littype) {
     return littype->tag == IntNbrTag || littype->tag == UintNbrTag || littype->tag == FloatNbrTag;
@@ -610,6 +612,22 @@ static void typeLitNewChecked(TypeCheckState *pstate, FnCallNode **nodep, int ar
         return;
     }
 
+    // An actor's state exists only inside its actor: it is constructed only as
+    // the actor is made, by its handle's initializer, which constructs it in the
+    // actor's block (parseactor.c), and by an init the state declares filling
+    // that same state, '*self = new Self(field: value)' (typeLitSelfFill). Made
+    // anywhere else -- 'new Self(...)' in one of its methods, by its fields'
+    // names or by an init -- it would be a state in no actor, from which
+    // 'selfactor' and a send to itself make a handle to nothing
+    ActorInfo *actor = actorOfState((INode*)strnode);
+    int making = actor && pstate->fn && inodeGetOwner((INode*)pstate->fn) == (INode*)actor->handle;
+    if (actor && !making && (INode*)node != typeLitSelfFill) {
+        errorMsgNode((INode*)node, ErrorActorStateInit,
+            "Actor %s's state exists only inside its actor, so it is constructed only as the actor is made ('new %s(...)'), where its init fills it, '*self = new Self(field: value)'. Constructed here, it would be a state in no actor, and a send it made to its actor would reach none. For a value of this shape, declare a plain struct.",
+            &actor->handle->namesym->namestr, &actor->handle->namesym->namestr);
+        return;
+    }
+
     // The inits it declares, whose signatures are wanted before the arguments
     // are matched to them
     INode *inits = typeLitDeclaredInits(strnode);
@@ -716,20 +734,6 @@ static void typeLitNewChecked(TypeCheckState *pstate, FnCallNode **nodep, int ar
         return;
     }
 
-    // An actor's state is made by an init it declares only as the actor is
-    // made: its handle's initializer constructs it in the actor's block, the
-    // actor real already, so that 'selfactor' and the sends the init makes
-    // reach the actor (parseactor.c). Run anywhere else -- 'new Self(...)' in
-    // one of the actor's methods -- the init would be on a state in no actor
-    ActorInfo *actor = actorOfState((INode*)strnode);
-    // (Filling an init's self by the init it is in is ErrorInitRecurse's.)
-    if (actor && selected != pstate->fn
-        && (pstate->fn == NULL || inodeGetOwner((INode*)pstate->fn) != (INode*)actor->handle)) {
-        errorMsgNode((INode*)node, ErrorActorStateInit,
-            "This runs an init actor %s's state declares, on a state that is in no actor: an actor's init runs only as the actor is made ('new %s(...)'), where it may send to the actor itself. Make this state with its fields' names, 'new Self(field: value)', which runs no init.",
-            &actor->handle->namesym->namestr, &actor->handle->namesym->namestr);
-        return;
-    }
     // A declared init, called with the memory to fill. One not declared 'pub'
     // is its module's.
     if (inodeIsPrivate(inits) && !structSeesPrivate(pstate, (INode*)strnode)) {
