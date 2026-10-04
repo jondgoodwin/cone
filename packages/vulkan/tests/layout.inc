@@ -71,6 +71,7 @@
   S(BufferCreateInfo); O(BufferCreateInfo, sType); O(BufferCreateInfo, pNext); O(BufferCreateInfo, flags); O(BufferCreateInfo, size); O(BufferCreateInfo, usage); O(BufferCreateInfo, sharingMode); O(BufferCreateInfo, queueFamilyIndexCount); O(BufferCreateInfo, pQueueFamilyIndices);
   S(MemoryRequirements); O(MemoryRequirements, size); O(MemoryRequirements, alignment); O(MemoryRequirements, memoryTypeBits);
   S(MemoryAllocateInfo); O(MemoryAllocateInfo, sType); O(MemoryAllocateInfo, pNext); O(MemoryAllocateInfo, allocationSize); O(MemoryAllocateInfo, memoryTypeIndex);
+  S(MappedMemoryRange); O(MappedMemoryRange, sType); O(MappedMemoryRange, pNext); O(MappedMemoryRange, memory); O(MappedMemoryRange, offset); O(MappedMemoryRange, size);
   S(BufferCopy); O(BufferCopy, srcOffset); O(BufferCopy, dstOffset); O(BufferCopy, size);
   S(BufferImageCopy); O(BufferImageCopy, bufferOffset); O(BufferImageCopy, bufferRowLength); O(BufferImageCopy, bufferImageHeight); O(BufferImageCopy, imageSubresource); O(BufferImageCopy, imageOffset); O(BufferImageCopy, imageExtent);
   S(ShaderModuleCreateInfo); O(ShaderModuleCreateInfo, sType); O(ShaderModuleCreateInfo, pNext); O(ShaderModuleCreateInfo, flags); O(ShaderModuleCreateInfo, codeSize); O(ShaderModuleCreateInfo, pCode);
