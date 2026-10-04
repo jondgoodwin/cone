@@ -10,15 +10,36 @@
 // parameters of whatever function the check was nested in, and a signature is
 // checked inside none. A use of what such a method returns then crashed flow,
 // which walked a field access type check had left unlowered.
+//
+// The shadowing is the rule, so the refusal names the two ways round it: import
+// the module under another name, or reach it through this module's own name,
+// which no member hides. module_import_as runs each.
 mod struct_typecheck_member_module;
 import libc;
+import stdio as io;
 
 // The method's own signature
 struct OwnSig {
   n i32;
-  fn libc(self &) libc.Timespec {  //~ ErrorUnkName:19 "libc is a method, and there is no self here to reach it through"
+  fn libc(self &) libc.Timespec {  //~ ErrorUnkName:19 "libc is a method, and there is no self here to reach it through. Inside OwnSig its name hides the module this module imports as libc. Import the module under another name, as in 'import libc as libcmod;', or reach it through this module's own name, as in 'struct_typecheck_member_module.libc'."
     new libc.Timespec(1, 2);
   }
+}
+
+// A module imported under another name, and a method with that name: the
+// suggested rename starts from the module's own name
+struct RenamedSig {
+  n i32;
+  fn io(self &, s &io.IOStream) i32 {  //~ ErrorUnkName:20 "Inside RenamedSig its name hides the module this module imports as io. Import the module under another name, as in 'import stdio as iomod;', or reach it through this module's own name, as in 'struct_typecheck_member_module.io'."
+                                       //~^ ErrorNotTyped:19 follow-on
+    n;
+  }
+}
+
+// A field's default value has no self either
+struct FieldDefault {
+  libc i32;
+  n i32 = libc.EDOM;  //~ ErrorUnkName:11 "libc is a field, and there is no self here to reach it through. Inside FieldDefault its name hides the module"
 }
 
 // Another method's signature, in a type that has a method named like the module
@@ -33,7 +54,7 @@ struct OtherSig {
 // A field named like the module, the module in a method's signature
 struct FieldSig {
   libc i32;
-  fn stamp(self &) libc.Timespec {  //~ ErrorUnkName:20 "libc is a field, and there is no self here to reach it through"
+  fn stamp(self &) libc.Timespec {  //~ ErrorUnkName:20 "libc is a field, and there is no self here to reach it through. Inside FieldSig its name hides the module this module imports as libc."
     new libc.Timespec(1, 2);
   }
 }

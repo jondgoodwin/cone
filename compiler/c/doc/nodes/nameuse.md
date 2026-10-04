@@ -100,7 +100,9 @@ pre-resolved desugaring synthesizes take.
 That is the whole of it: `dclnode` is set and nothing else on the node changes.
 A name the hooks do not answer is `ErrorUnkName`, unless it carries
 `FlagPattern`: then it stays unbound and unreported, because it may be a variant
-of the matched value's enum, which type check decides.
+of the matched value's enum, which type check decides. Where an import of this
+module renamed a module of that name with `as` (`importRenaming`), the message
+says which name it is reached by instead.
 
 ## What a use answers
 
@@ -174,7 +176,13 @@ Two entry points, because a type name and a value name want different things.
    here rather than in name resolution, which had no type to work from. It
    synthesizes a resolved `self` from parameter 0 and re-reads the name as a
    member. Outside a method there is no receiver, so it is `ErrorUnkName`: "there
-   is no self here to reach it through." **Bare is the whole of the condition:
+   is no self here to reach it through." `nameUseNoSelf` reports it, here and
+   for a bare method in `fnCallTypeCheck`: where the member's name is also a
+   module the type's module binds — the member hides it — the message names the
+   two fixes, with the case's own names: import the module under another name
+   (offered where an import binds it), or reach it through the module's own name.
+   The type is the method's owner, or for a field, which records none,
+   `pstate->typenode`. **Bare is the whole of the condition:
    `FlagQualified` excludes a field named through its type, `Gadget.w`, which
    asked for that type's field and not for this method's receiver.**
 3. **Demand the declaration.** `inodeTypeCheckAny` on `dclnode` — this is what

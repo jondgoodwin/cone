@@ -221,8 +221,15 @@ void nameUseNameRes(NameResState *pstate, NameUseNode **namep) {
         // which only type check knows: castPatternBind binds it or reports it
         if (name->flags & FlagPattern)
             return;
-        errorMsgNode((INode*)name, ErrorUnkName,
-            "The name %s does not refer to a declared name", &name->namesym->namestr);
+        // An import with 'as' binds its module under the new name only
+        ImportNode *renaming = pstate->mod ? importRenaming(pstate->mod, name->namesym) : NULL;
+        if (renaming)
+            errorMsgNode((INode*)name, ErrorUnkName,
+                "The name %s does not refer to a declared name: this module imports %s as %s, which is the name it is reached by here.",
+                &name->namesym->namestr, &name->namesym->namestr, &renaming->rename->namestr);
+        else
+            errorMsgNode((INode*)name, ErrorUnkName,
+                "The name %s does not refer to a declared name", &name->namesym->namestr);
         return;
     }
 
@@ -265,6 +272,44 @@ int nameUseTemplateMember(NameUseNode *name, INode *dcl) {
             "%s is generic, so %s belongs to each of its instances, named with type arguments as %s[...]; reaching it through an instance is not built.",
             &ownername->namestr, &name->namesym->namestr, &ownername->namestr);
     return 1;
+}
+
+// Report a bare field or method name where there is no self to reach it through.
+//
+// A member's name shadows the module's names inside its type, signatures
+// included, as any inner name shadows an outer one. So where the member is named
+// like a module this module binds -- 'fn mesh(self &) mesh.Mesh' -- the author
+// meant the module, and the diagnostic names the two ways to reach it: bind the
+// import under another name, or walk to it from this module's own name, which
+// no member hides. The first is offered only where an import is what binds the
+// module here; a submodule, or a module a fold brought in, is renamed elsewhere.
+void nameUseNoSelf(TypeCheckState *pstate, NameUseNode *name) {
+    INode *member = name->dclnode;
+    char *kind = member->tag == FieldDclTag ? "field" : "method";
+    // A method knows its type; a field does not, and is met inside the type
+    INode *type = inodeGetOwner(member);
+    if (type == NULL)
+        type = pstate->typenode;
+    ModuleNode *mod = type ? dclInfoGetModule(type) : NULL;
+    INode *binding = mod ? namespaceFind(&mod->namespace, name->namesym) : NULL;
+    INode *bound = aliasDclResolve(binding);
+    if (bound == NULL || bound->tag != ModuleTag || bound == (INode*)mod || type->tag != StructTag) {
+        errorMsgNode((INode*)name, ErrorUnkName,
+            "%s is a %s, and there is no self here to reach it through.",
+            &name->namesym->namestr, kind);
+        return;
+    }
+    char *namestr = &name->namesym->namestr;
+    char *typestr = &((StructNode*)type)->namesym->namestr;
+    char *modstr = &mod->namesym->namestr;
+    if (binding->tag == AliasDclTag && (binding->flags & FlagImportName))
+        errorMsgNode((INode*)name, ErrorUnkName,
+            "%s is a %s, and there is no self here to reach it through. Inside %s its name hides the module this module imports as %s. Import the module under another name, as in 'import %s as %smod;', or reach it through this module's own name, as in '%s.%s'.",
+            namestr, kind, typestr, namestr, &((ModuleNode*)bound)->namesym->namestr, namestr, modstr, namestr);
+    else
+        errorMsgNode((INode*)name, ErrorUnkName,
+            "%s is a %s, and there is no self here to reach it through. Inside %s its name hides the module %s. Reach the module through this module's own name, as in '%s.%s'.",
+            namestr, kind, typestr, namestr, modstr, namestr);
 }
 
 // A generic base's name, bare inside an extension's braces, was bound by name
@@ -340,9 +385,7 @@ void nameUseTypeCheck(TypeCheckState *pstate, NameUseNode **namep) {
         // default value is analyzed with no function around it, so a name that
         // resolved to a sibling field there has nothing to qualify it.
         if (pstate->fn == NULL || !(pstate->fn->flags & FlagMethFld)) {
-            errorMsgNode((INode*)name, ErrorUnkName,
-                "%s is a field, and there is no self here to reach it through.",
-                &name->namesym->namestr);
+            nameUseNoSelf(pstate, name);
             name->vtype = errorType;
             return;
         }

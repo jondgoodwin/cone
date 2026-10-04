@@ -2481,10 +2481,7 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
         // inside its type, so 'mesh.Mesh' in the signature of a method named
         // 'mesh' arrives here.
         if (pstate->fn == NULL || !(pstate->fn->flags & FlagMethFld)) {
-            NameUseNode *member = (NameUseNode*)node->objfn;
-            errorMsgNode(node->objfn, ErrorUnkName,
-                "%s is a %s, and there is no self here to reach it through.",
-                &member->namesym->namestr, member->dclnode->tag == FieldDclTag ? "field" : "method");
+            nameUseNoSelf(pstate, (NameUseNode*)node->objfn);
             node->vtype = errorType;
             return;
         }

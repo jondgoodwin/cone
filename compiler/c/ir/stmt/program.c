@@ -207,7 +207,7 @@ static void pgmDagVisit(DagWalk *walk, ModuleNode *mod) {
             pgmDagFollow(walk, import->module, DagImport, (INode*)import, NULL);
         else if (import->binding)
             pgmDagFollow(walk, (ModuleNode*)mod->dclinfo.owner, DagImportName, (INode*)import,
-                import->binding->namesym);
+                ((NameUseNode*)import->binding->target)->namesym);
     }
     for (nodesFor(walk->pgm->modules, cnt, nodesp)) {
         if ((ModuleNode*)((ModuleNode*)*nodesp)->dclinfo.owner == mod)
