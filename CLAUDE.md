@@ -364,6 +364,9 @@ Visual Studio projects stay at the root.
   `statOp`, `readFileOp`); the thread targets `Target.Chan` (a sync
   channel, held and retried when full), `Target.Once` (a sync one-shot)
   and `Target.Status` (a `StatusArray` slot looked at without waiting);
+  `Target.Hook`, an answer handed to another runtime's code, a `Sink`
+  (its pointer and two plain functions, `deliver` and `drop`), which the
+  loop knows nothing of;
   and external operations, `lp.external`, ended from any thread by a
   `Completer` (a GPU fence's watcher, a callback library) under the same
   contract; its tests include `race.cone`, a million operations each
@@ -493,7 +496,18 @@ Visual Studio projects stay at the root.
   message have gone, and quiescence, which its module's finalizer waits for
   before stopping the workers (`configure`, `stats`), its header the shape of
   what the compiler generates for an actor and its example `pingpong.cone` the
-  timed benchmark; `render` draws lit
+  timed benchmark, and `Awaitable[R]`, an operation a behaviour may `await`,
+  started at the seam with the reply's envelope its answer, an `R`, goes back
+  in, and a pending table that drops (abandons) the records still parked when
+  its actor dies; `aio` is the I/O an actor's behaviour awaits, over `actors`
+  and `iocore`: `aio.listen`, `aio.connect`, a `Socket`'s `accept`, `read`,
+  `write` and `localAddr`, each an `actors.Awaitable` answering a `Result`
+  (a read's success its buffer back, what arrived appended), done by one I/O
+  thread that owns the runtime's `iocore` Loop, takes operations from a
+  queue under a Mutex and answers through `Target.Hook`; a dropped `Socket`
+  closes; its finalizer, which `finalAll()` runs before `actors`', waits for
+  quiet and ends the I/O, every behaviour still paused on it abandoned, its
+  record's values finalized; `render` draws lit
   meshes through `gpu` (nothing of Vulkan's in it): a `Renderer` holding
   GPU meshes made once from a `mesh.Mesh` (a vertex buffer a stream, 32-bit
   indices, a draw a material group), textures and materials in `pool`s,

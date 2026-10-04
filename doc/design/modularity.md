@@ -304,8 +304,9 @@ function and one moved value, joined through an owning handle, and the futex
 the blocking layers are to be built on; and the `actors` package, a runtime of
 mailboxes and a work-stealing scheduler, which runs the actors an `actor`
 declaration declares, their messages one-way unless an actor's behaviour
-awaits one, pausing until the reply. It is ground a thread layer would be
-built on, not that layer.
+awaits one, pausing until the reply; and the `aio` package, the I/O a
+behaviour awaits, done on an I/O thread of its own. It is ground a thread
+layer would be built on, not that layer.
 
 ## Hazards
 

@@ -1,0 +1,544 @@
+// The aio package: I/O an actor awaits. A behaviour of an actor writes
+//
+//   imm r = await conn.read(buf);
+//
+// and pauses there, as it would awaiting another actor's reply; the read is
+// done by the I/O thread's completion loop, and when it has finished, its
+// answer comes back to the actor as a message, and the rest of the behaviour
+// runs with it, perhaps on another worker. Nothing waits on the worker
+// meanwhile: the actor handles its other messages.
+//
+//   mod hello;
+//   import iobuf use IoBuf, Pool;
+//   import iocore use SocketAddr, IoError;
+//   import actors;
+//   import aio use Socket;
+//
+//   // The Socket an answer holds, swapped out of it: Socket.none() if it failed
+//   fn socketOf(r Result[Socket, IoError]) Socket {
+//     mut res = r;
+//     mut s = Socket.none();
+//     match &mut res {
+//       case mut ok &mut Ok {s <=> ok.value;}
+//       else {}
+//     }
+//     s;
+//   }
+//
+//   actor Client {
+//     pool Pool;
+//
+//     pub async do send(self, port u16) {
+//       imm conn = socketOf(await aio.connect(SocketAddr.localhost(port)));
+//       mut buf = pool.mustTake(64usize);
+//       buf.append("hello");
+//       imm sent = await conn.write(buf);          // pauses until all of it is sent
+//       match sent {
+//         case imm n Ok {...n.value bytes were sent...}
+//         case imm e Error {...e.value.code is Windows' error number...}
+//       }
+//     }                                           // conn closes here
+//   }
+//
+// (tests/manual.cone, the reference manual's example, is a server and this
+// client, run.)
+//
+// What there is:
+//
+//   aio.listen(addr)        a TCP socket listening at addr       Result[Socket, IoError]
+//   aio.connect(addr)       a TCP socket connected to addr       Result[Socket, IoError]
+//   s.accept()              the next connection on a listening s  Result[Socket, IoError]
+//   s.read(buf)             what arrives, appended to buf, an IoBuf moved in
+//                                                                Result[IoBuf, IoError]
+//   s.write(buf)            all of buf, an IoBuf moved in         Result[usize, IoError]
+//   s.localAddr()           the address s is bound to            Result[SocketAddr, IoError]
+//   Socket.none()           a Socket naming nothing: to swap one out of a Result
+//   s.isNone()  s.handle()
+//
+// Each of the first six makes an OPERATION, an actors.Awaitable[R], which
+// does nothing until an 'await' in a behaviour starts it; the 'await''s value
+// is its R. Made and never awaited, it is dropped, and nothing is done.
+//
+// WHAT THE SECOND HALF SEES. Each operation declares its own result, a Result:
+// the success, or the operating system's failure, as a synchronous call that
+// can fail answers. 'await' adds nothing to it, and the compiler refuses an
+// 'await' on an operation whose value is not used (it holds the failure). A
+// read's success is the buffer it was given back, the bytes that arrived
+// appended to what it held: its length grows by the count, and does not grow
+// at the clean end of the stream, the peer's close (iocore's Done(0)). The
+// buffer is the read's one output, so it comes back in the answer rather
+// than a count alone; a failed read's buffer goes home to its pool. A write's
+// success is the count written, all of the buffer, which goes home. Accept's,
+// connect's and listen's is the new Socket, which comes out of the Result by
+// a swap ('s <=> ok.value', with 's' a Socket.none()), since Cone does not
+// yet move a value out of a matched variant's field.
+//
+// An operation that did not finish -- cancelled, or past a deadline (iocore's
+// Cancelled and TimedOut) -- has no result to give: the 'await' panics, at
+// the line that made the operation. Nothing here attaches a cancel or a
+// deadline to an awaited operation, so the one way a running program meets
+// that panic is a socket closed while an operation on it is still in flight:
+// a Socket moved out of the behaviour awaiting on it, and dropped.
+//
+// A SOCKET is a handle on one of the I/O thread's sockets, plain data, which
+// moves (it may be sent in a message, to another actor). Dropping it closes
+// the socket: its finalizer queues the close on the I/O thread, behind the
+// operations queued before it, and every operation then in flight on it is
+// cancelled (iocore's 'close'). A Socket waiting in a paused behaviour's
+// record stays open until the behaviour ends, as any value does.
+//
+// THE I/O THREAD. One thread, started by the first operation awaited, owns
+// the actor runtime's iocore Loop and waits in its poll; it is the one thread
+// that touches the Loop, as iocore asks. The actors' workers never wait on
+// I/O (they could not: an actor's behaviour runs to its 'await' and
+// returns). An 'await' on an operation hands it to the I/O thread through a
+// QUEUE: a list of jobs under a Mutex, which the I/O thread takes whole after
+// each poll, and a Waker that ends the poll at once. The I/O thread starts
+// each operation on its Loop with a Target.Hook, iocore's target for another
+// runtime's code: when the operation's one answer comes, the hook turns it
+// into the operation's result and writes it into the reply the 'await' is
+// waiting for, which goes to the actor's mailbox as any reply does -- one
+// push, and, if the actor was idle, its scheduling. Nothing of the actor runs
+// on the I/O thread.
+//
+// AN ACTOR'S LIFE. An operation in flight holds a count of the actor that
+// awaits it, in its reply's envelope, as a request to another actor does: the
+// actor lives until the answer comes, whether or not anything else holds it.
+// A socket whose peer never answers keeps its reader alive for as long.
+//
+// THE PROGRAM'S END. The package's finalizer, which finalAll() runs before
+// the actors package's, waits until no actor is queued or running (an actor
+// paused on I/O is neither), then ends the I/O: the I/O thread stops taking
+// jobs, and its Loop dies, which cancels every operation still in flight and
+// then closes every socket. Their answers are not delivered: each paused
+// behaviour is ABANDONED. Its reply's envelope is dropped, letting go of the
+// actor's count, and an actor with nothing else holding it dies; its pending
+// table then drops the records still parked, so every value a paused
+// behaviour held is finalized, in the order its 'await' would have had them
+// die, and the rest of the behaviour never runs. An operation awaited after
+// that is abandoned the same way at once. Then the actors package's own
+// finalizer waits for quiet again (a finalizer that ran may have sent a
+// message) and stops the workers.
+//
+// Windows only, as iocore is; TCP only, one operation at a time per socket
+// direction, as iocore's sockets are. Not here: a cancel or a deadline on an
+// awaited operation, files, the blocking pool, UDP, and a socket's
+// half-close.
+
+mod aio;
+
+import libc;
+import thread;
+import sync use Mutex;
+import collections use List;
+import iobuf use IoBuf;
+import iocore use Loop, Waker, Op, Target, Sink, Completion, Handle, SocketAddr, IoError, forever;
+import actors;
+import diag;
+
+fn @initpure init() {
+  ioLock = Mutex.make();
+}
+
+// A panic, reported at the line calling 'die'
+fn die(msg &[]u8, file &[]u8 = srcFile(), line u32 = srcLine()) Never {
+  panic(msg, file, line);
+}
+
+// ---------------------------------------------------------------------------
+// The I/O thread and its queue
+// ---------------------------------------------------------------------------
+
+// A job's header, first in its block: the next job queued, and the functions
+// made for the job's type, which take the block
+struct JobHead {
+  pub next *JobHead;
+  pub run &fn(job *u8, lp &mut Loop);
+  pub drop &fn(job *u8);
+}
+
+// A job: its header, then what it is. J has 'run(self &mut, lp &mut Loop)'
+struct Job[J] {
+  pub head JobHead;
+  pub body J;
+}
+
+// The I/O thread, once started: its queue, under ioLock, and its loop's
+// waker, set before 'ready' and never changed. It lives as long as the
+// process, the waker with it: a thread that queued a job just before the end
+// may still be waking the loop after the thread has been joined
+struct IoThread {
+  pub head *JobHead;
+  pub tail *JobHead;
+  pub waker Waker;
+  pub ready Atomic[u32];       // 1 once the thread has put its waker here
+  pub os thread.Thread[u32];
+}
+
+// Guards the queue, 'io' and 'ended'
+imm ioLock Mutex;
+
+// The I/O thread, or 0 before the first operation is awaited
+mut io = 0usize;
+
+// The program is ending: no job is taken from now on (under ioLock)
+mut ended = false;
+
+// The I/O thread's Loop is dying: what it delivers is abandoned. Read and
+// written by the I/O thread alone
+mut abandoning = false;
+
+fn nullJob() *JobHead {null;}
+
+// A job's block, its body moved in
+fn newJob[J](body J) *u8 {
+  imm p = libc.malloc(mem.sizeof[Job[J]]()) as *Job[J];
+  if p as usize == 0usize {
+    die("aio: out of memory for an operation");
+  }
+  (*p).head = new JobHead(nullJob(), &runJob[J], &dropJob[J]);
+  mem.writeRaw[J](&(*p).body as *J, body);
+  p as *u8;
+}
+
+// On the I/O thread: the job's body moved out, its block freed, and run
+fn runJob[J](job *u8, lp &mut Loop) {
+  imm p = job as *Job[J];
+  mut body = mem.readRaw[J](&(*p).body as *J);
+  libc.free(job);
+  body.run(lp);
+}
+
+// A job never run: its body dropped (an operation's reply among it,
+// abandoning what awaits it), its block freed
+fn dropJob[J](job *u8) {
+  imm p = job as *Job[J];
+  imm body = mem.readRaw[J](&(*p).body as *J);
+  libc.free(job);
+}
+
+fn dropHead(h *JobHead) {
+  imm f = (*h).drop;
+  f(h as *u8);
+}
+
+// Queue a job for the I/O thread, starting the thread if this is the first;
+// once the program is ending, the job is dropped instead
+fn enqueue(job *u8) {
+  imm h = job as *JobHead;
+  ioLock.lock();
+  if ended {
+    ioLock.unlock();
+    dropHead(h);
+    return;
+  }
+  if io == 0usize {
+    startIo();
+  }
+  imm t = io as *IoThread;
+  if (*t).tail as usize == 0usize {
+    (*t).head = h;
+  } else {
+    (*(*t).tail).next = h;
+  }
+  (*t).tail = h;
+  ioLock.unlock();
+  (*t).waker.wake();
+}
+
+// What the I/O thread is handed: its IoThread, where it puts its loop's waker
+struct IoArg {
+  pub t usize;
+}
+
+// Start the I/O thread, under ioLock: its Loop is made on it, and its waker
+// is in place before this returns
+fn startIo() {
+  imm t = libc.calloc(1usize, mem.sizeof[IoThread]()) as *IoThread;
+  if t as usize == 0usize {
+    die("aio: out of memory for the I/O thread");
+  }
+  mem.writeRaw[thread.Thread[u32]](&(*t).os as *thread.Thread[u32],
+    thread.startWith(new thread.Options(name: "aio I/O"), new IoArg(t as usize), &ioMain));
+  while (*t).ready.load() == 0u32 {
+    sync.futexWait(&(*t).ready, 0u32);
+  }
+  io = t as usize;
+}
+
+// The I/O thread: it waits in its Loop's poll, and after each, takes the
+// jobs queued and runs them -- each starts an operation on the Loop, whose
+// answer goes to its hook. Once the program is ending it drops what is
+// queued, and its Loop dies: every operation in flight is cancelled and
+// every socket closed, and what the Loop delivers then is abandoned
+fn ioMain(arg IoArg) u32 {
+  {
+    imm me = arg.t as *IoThread;
+    mut lp = Loop.mustMake();
+    mem.writeRaw[Waker](&(*me).waker as *Waker, lp.waker());
+    (*me).ready.store(1u32);
+    sync.futexWake(&(*me).ready);
+    mut out = List[Completion].empty();
+    mut more = true;
+    while more {
+      lp.poll(forever(), &mut out);
+      out.clear();
+      ioLock.lock();
+      imm t = io as *IoThread;
+      mut h = nullJob();
+      if t as usize != 0usize {
+        h = (*t).head;
+        (*t).head = nullJob();
+        (*t).tail = nullJob();
+      }
+      imm stop = ended;
+      ioLock.unlock();
+      while h as usize != 0usize {
+        imm next = (*h).next;
+        if stop {
+          dropHead(h);
+        } else {
+          imm f = (*h).run;
+          f(h as *u8, &mut lp);
+        }
+        h = next;
+      }
+      more = not stop;
+    }
+    abandoning = true;
+  }
+  0u32;
+}
+
+// The package's finalizer, run by finalAll() before the actors package's:
+// once no actor is queued or running, the I/O ends, and every behaviour
+// still paused on it is abandoned (the package's header, THE PROGRAM'S END)
+fn final() {
+  actors.waitQuiet();
+  ioLock.lock();
+  ended = true;
+  imm t = io as *IoThread;
+  ioLock.unlock();
+  if t as usize == 0usize {
+    return;
+  }
+  (*t).waker.wake();
+  imm th = mem.readRaw[thread.Thread[u32]](&(*t).os as *thread.Thread[u32]);
+  th.join();
+}
+
+// ---------------------------------------------------------------------------
+// Operations: what an 'await' starts, and how each answer comes back
+// ---------------------------------------------------------------------------
+
+// The seam starts an operation: the reply its answer goes back in is written
+// into the job, which goes to the I/O thread (actors.Awaitable's 'start')
+fn startJob[J](ctx *u8, rp actors.Reply) {
+  imm p = ctx as *Job[J];
+  (*p).body.reply = rp;
+  enqueue(ctx);
+}
+
+// The operation awaited: its job, made now, started by the 'await'
+fn awaitable[J, R](body J) actors.Awaitable[R] {
+  actors.Awaitable[R].make(newJob[J](body), &startJob[J], &dropJob[J]);
+}
+
+// Where an operation was made, for the panic if it does not finish: a
+// srcFile() slice, which is static, kept as its parts
+struct Site {
+  pub file *u8;
+  pub len usize;
+  pub line u32;
+
+  fn at(file &[]u8, line u32) Site {new Site(&file[0usize] as *u8, file.len, line);}
+}
+
+// An iocore operation, awaited: the Op, the reply its answer goes back in,
+// and the function that makes the answer an R
+struct OpJob[R] {
+  pub op Op;
+  pub reply actors.Reply;
+  pub answer &fn(c &mut Completion) R;
+  pub site Site;
+
+  // Start the operation on the I/O thread's Loop, its answer to a hook that
+  // holds the reply
+  fn run(self &mut, lp &mut Loop) {
+    imm w = libc.malloc(mem.sizeof[Waiting[R]]()) as *Waiting[R];
+    if w as usize == 0usize {
+      die("aio: out of memory for an operation");
+    }
+    mut rp = new actors.Reply();
+    rp <=> reply;
+    mem.writeRaw[Waiting[R]](w, new Waiting[R](rp, answer, site));
+    mut o Op = Op.RecvReady[Handle.none()];
+    o <=> op;
+    lp.submit(o, Target.Hook[0u64, Sink.make(w as *u8, &deliverTo[R], &dropWaiting[R])]);
+  }
+}
+
+// What a hook holds while its operation is in flight
+struct Waiting[R] {
+  pub reply actors.Reply;
+  pub answer &fn(c &mut Completion) R;
+  pub site Site;
+}
+
+// The operation's answer, on the I/O thread: made its R and written into the
+// reply, which goes to the actor awaiting it. One that did not finish panics
+// at the line that made it; once the Loop is dying, the answer is dropped,
+// and what awaits it abandoned (its reply's envelope dropped with the hook)
+fn deliverTo[R](ctx *u8, c Completion) {
+  mut w = mem.readRaw[Waiting[R]](ctx as *Waiting[R]);
+  libc.free(ctx);
+  if abandoning {
+    return;
+  }
+  if c.status == diag.outcomeCancelled {
+    panic("aio: an awaited operation did not finish: it was cancelled, its socket closed while it was in flight",
+      mem.sliceFromParts[u8](w.site.file, w.site.len), w.site.line);
+  }
+  if c.status == diag.outcomeTimedOut {
+    panic("aio: an awaited operation did not finish: its deadline passed",
+      mem.sliceFromParts[u8](w.site.file, w.site.len), w.site.line);
+  }
+  mut done = c;
+  imm f = w.answer;
+  imm v = f(&mut done);
+  mut rp = new actors.Reply();
+  rp <=> w.reply;
+  actors.answerNow[R](rp, v);
+}
+
+// A hook that dies undelivered: what awaits it is abandoned
+fn dropWaiting[R](ctx *u8) {
+  imm w = mem.readRaw[Waiting[R]](ctx as *Waiting[R]);
+  libc.free(ctx);
+}
+
+// Each operation's answer, from its Completion: Done is the success, Failed
+// the system's failure (Cancelled and TimedOut never reach here)
+
+fn readAnswer(c &mut Completion) Result[IoBuf, IoError] {
+  if c.status == diag.outcomeDone {
+    mut b = IoBuf.empty();
+    b <=> c.buf;
+    return Ok[IoBuf, IoError][b];
+  }
+  Error[IoBuf, IoError][new IoError(c.code)];
+}
+
+fn writeAnswer(c &mut Completion) Result[usize, IoError] {
+  if c.status == diag.outcomeDone {
+    return Ok[usize, IoError][c.n];
+  }
+  Error[usize, IoError][new IoError(c.code)];
+}
+
+fn socketAnswer(c &mut Completion) Result[Socket, IoError] {
+  if c.status == diag.outcomeDone {
+    return Ok[Socket, IoError][new Socket(c.handle)];
+  }
+  Error[Socket, IoError][new IoError(c.code)];
+}
+
+fn opAwaitable[R](op Op, answer &fn(c &mut Completion) R, file &[]u8, line u32) actors.Awaitable[R] {
+  awaitable[OpJob[R], R](new OpJob[R](op, new actors.Reply(), answer, Site.at(file, line)));
+}
+
+// A listening socket, made on the I/O thread's Loop, which holds it
+struct ListenJob {
+  pub addr SocketAddr;
+  pub reply actors.Reply;
+
+  fn run(self &mut, lp &mut Loop) {
+    mut rp = new actors.Reply();
+    rp <=> reply;
+    match lp.listen(addr) {
+      case imm ok Ok {actors.answerNow[Result[Socket, IoError]](rp, Ok[Socket, IoError][new Socket(ok.value)]);}
+      case imm e Error {actors.answerNow[Result[Socket, IoError]](rp, Error[Socket, IoError][e.value]);}
+    }
+  }
+}
+
+// A socket's address, read on the I/O thread
+struct LocalAddrJob {
+  pub h Handle;
+  pub reply actors.Reply;
+
+  fn run(self &mut, lp &mut Loop) {
+    mut rp = new actors.Reply();
+    rp <=> reply;
+    actors.answerNow[Result[SocketAddr, IoError]](rp, lp.localAddr(h));
+  }
+}
+
+// A socket closed, its Socket dropped: every operation in flight on it is
+// cancelled. Nothing awaits it
+struct CloseJob {
+  pub h Handle;
+
+  fn run(self &mut, lp &mut Loop) {
+    lp.close(h);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Sockets
+// ---------------------------------------------------------------------------
+
+// A TCP socket the I/O thread holds (the package's header, A SOCKET): it
+// moves, and dropping it closes the socket
+pub struct Socket is Move {
+  h Handle;
+
+  // A Socket naming nothing, which closes nothing: to swap one out of a
+  // Result, or into a field before one is there
+  pub fn none() Socket {new Socket(Handle.none());}
+
+  pub fn isNone(self &) Bool {h.isNone();}
+
+  // The iocore handle it names, on the I/O thread's Loop
+  pub fn handle(self &) Handle {h;}
+
+  // The next connection on this listening socket
+  pub fn accept(self &, file &[]u8 = srcFile(), line u32 = srcLine()) actors.Awaitable[Result[Socket, IoError]] {
+    opAwaitable[Result[Socket, IoError]](Op.Accept[h], &socketAnswer, file, line);
+  }
+
+  // What arrives, appended to buf, which is moved in and comes back in the
+  // answer; at the clean end of the stream, buf comes back as it was. A buf
+  // with no room fails (ERROR_INSUFFICIENT_BUFFER, 122)
+  pub fn read(self &, buf IoBuf, file &[]u8 = srcFile(), line u32 = srcLine()) actors.Awaitable[Result[IoBuf, IoError]] {
+    opAwaitable[Result[IoBuf, IoError]](Op.Recv[h, buf], &readAnswer, file, line);
+  }
+
+  // All of buf, which is moved in and goes home once sent: the count
+  pub fn write(self &, buf IoBuf, file &[]u8 = srcFile(), line u32 = srcLine()) actors.Awaitable[Result[usize, IoError]] {
+    opAwaitable[Result[usize, IoError]](Op.Send[h, buf], &writeAnswer, file, line);
+  }
+
+  // The address the socket is bound to: a listening socket's port, where the
+  // system chose it
+  pub fn localAddr(self &) actors.Awaitable[Result[SocketAddr, IoError]] {
+    awaitable[LocalAddrJob, Result[SocketAddr, IoError]](new LocalAddrJob(h, new actors.Reply()));
+  }
+
+  fn final(self &uni) {
+    if not h.isNone() {
+      enqueue(newJob[CloseJob](new CloseJob(h)));
+    }
+  }
+}
+
+// A TCP socket listening at addr, for accept; port 0 has the system choose
+// one, which localAddr tells
+pub fn listen(addr SocketAddr) actors.Awaitable[Result[Socket, IoError]] {
+  awaitable[ListenJob, Result[Socket, IoError]](new ListenJob(addr, new actors.Reply()));
+}
+
+// A TCP socket connected to addr
+pub fn connect(addr SocketAddr, file &[]u8 = srcFile(), line u32 = srcLine()) actors.Awaitable[Result[Socket, IoError]] {
+  opAwaitable[Result[Socket, IoError]](Op.Connect[addr], &socketAnswer, file, line);
+}

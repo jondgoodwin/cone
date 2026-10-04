@@ -37,6 +37,14 @@
  * returns one. The envelope such a message answers waits in its actor's state
  * while it runs (an Answer slot), and its seams carry it in their records.
  *
+ * A seam awaiting an operation (AwaitNode.awaitable, an actors.Awaitable[R])
+ * makes the same envelope once the operand is made, and hands the operation
+ * to the actors package's startAwait with it; the answer comes back as a
+ * reply does. Every record parked has a drop function
+ * ('<method>'<n>.drop(record), genlSeamDrop), which the pending table calls
+ * to abandon it, its values finalized and its second half never run, if its
+ * actor dies with it parked.
+ *
  * Under '--await-direct', which is for tests, a seam awaiting anything else
  * hands its record straight to its second half, with the value it awaited,
  * and returns what the second half returns. compiler/c/doc/phases/
@@ -331,7 +339,7 @@ static GenSeam *genlSeamLayout(GenState *gen, AwaitNode *node, uint32_t nflights
     // collector's roots are not; flow refused a variable holding a traced
     // reference there (awaitRecordTraced), and here is a value in flight or a
     // temporary holding one
-    for (uint32_t i = 0; node->message && i < cnt; ++i) {
+    for (uint32_t i = 0; (node->message || node->awaitable) && i < cnt; ++i) {
         if ((fields[i].kind == GenSeamFlight || fields[i].kind == GenSeamTemp) && itypeHoldsTraced(fields[i].type))
             errorMsgNode((INode *)node, ErrorUnbuiltAwait,
                 "'await' whose continuation holds a traced reference is not built: a value made before it and used after would wait in the actor's pending table, which the collector does not trace yet.");
@@ -367,9 +375,12 @@ static GenSeam *genlSeamLayout(GenState *gen, AwaitNode *node, uint32_t nflights
 
     // Its resume function, '<method>'<n>.resume(state, [id,] data)': the id
     // only where the record is not empty, which it is the pending table's
-    // key for (the actors package's resume and resumeId)
+    // key for (the actors package's resume and resumeId). And where the record
+    // is parked there, its drop function, '<method>'<n>.drop(record)', which
+    // the table calls if the actor dies with it parked
     seam->resume = NULL;
-    if (node->message) {
+    seam->drop = NULL;
+    if (node->message || node->awaitable) {
         char resumename[2120];
         snprintf(resumename, sizeof(resumename), "%s.resume", symbol);
         LLVMTypeRef ptr = LLVMPointerTypeInContext(gen->context, 0);
@@ -378,6 +389,12 @@ static GenSeam *genlSeamLayout(GenState *gen, AwaitNode *node, uint32_t nflights
             rparms[1] = ptr;
         LLVMTypeRef resumetype = LLVMFunctionType(LLVMVoidTypeInContext(gen->context), rparms, seam->record ? 3 : 2, 0);
         seam->resume = genlSeamFn(gen, resumename, resumetype, node);
+        if (seam->record) {
+            char dropname[2120];
+            snprintf(dropname, sizeof(dropname), "%s.drop", symbol);
+            LLVMTypeRef droptype = LLVMFunctionType(LLVMVoidTypeInContext(gen->context), &ptr, 1, 0);
+            seam->drop = genlSeamFn(gen, dropname, droptype, node);
+        }
     }
     return seam;
 }
@@ -438,6 +455,8 @@ static LLVMValueRef genlSeamRecord(GenState *gen, GenSeam *seam) {
 // replyid' functions). The reply comes only once this method has returned to
 // the dispatcher, which runs its actor's messages one at a time, so the
 // record is in its slot by then
+static LLVMValueRef genlSeamReply(GenState *gen, AwaitNode *await, GenSeam *seam);
+
 LLVMValueRef genlAwaitReply(GenState *gen, AwaitReplyNode *node) {
     AwaitNode *await = node->await;
     if (gen->seams == NULL || await->seamno == 0 || await->seamno == UINT32_MAX || await->message == NULL) {
@@ -447,6 +466,13 @@ LLVMValueRef genlAwaitReply(GenState *gen, AwaitReplyNode *node) {
     GenSeam *seam = await->genseam;
     if (seam == NULL)
         seam = await->genseam = genlSeamLayout(gen, await, gen->awaitflights - gen->flightbase);
+    return genlSeamReply(gen, await, seam);
+}
+
+// The envelope of the reply a seam waits for, its seam laid out: where the
+// record is not empty, a slot in the pending table, whose id, in
+// gen->awaitid, its resume message names
+static LLVMValueRef genlSeamReply(GenState *gen, AwaitNode *await, GenSeam *seam) {
     ActorInfo *info = genlSplitActor(gen->fndcl);
     LLVMValueRef st = genlSplitState(gen);
     LLVMTypeRef usize = genlUsize(gen);
@@ -458,10 +484,11 @@ LLVMValueRef genlAwaitReply(GenState *gen, AwaitReplyNode *node) {
     args[nargs++] = st;
     args[nargs++] = seam->resume;
     if (seam->record) {
-        LLVMValueRef rargs[2];
+        LLVMValueRef rargs[3];
         rargs[0] = genlStateField(gen, info, st, info->pending);
         rargs[1] = LLVMConstInt(usize, LLVMABISizeOfType(gen->datalayout, seam->record), 0);
-        gen->awaitid = genlCallFn(gen, actorRuntime[ActorRtParkReserve], rargs, 2, "id");
+        rargs[2] = seam->drop;
+        gen->awaitid = genlCallFn(gen, actorRuntime[ActorRtParkReserve], rargs, 3, "id");
         args[nargs++] = gen->awaitid;
     }
     args[nargs++] = size;
@@ -492,6 +519,21 @@ LLVMValueRef genlAwait(GenState *gen, AwaitNode *node) {
     }
     int hasresult = genlSeamHasResult(node);
 
+    // An operation is started now, its value made: handed the envelope of the
+    // reply its answer comes back in, which names a slot for the record, as a
+    // message's request does. The Awaitable is moved into a slot of its own
+    // for the actors package's startAwait, and nothing of it is finalized
+    if (node->awaitable) {
+        gen->awaitid = NULL;
+        LLVMValueRef reply = genlSeamReply(gen, node, seam);
+        id = gen->awaitid;
+        gen->awaitid = svid;
+        LLVMValueRef slot = genlAlloca(gen, genlType(gen, node->awaitable), "awaitable");
+        LLVMBuildStore(gen->builder, value, slot);
+        LLVMValueRef sargs[2] = {slot, reply};
+        genlCallFn(gen, actorRuntime[ActorRtStartAwait], sargs, 2, "");
+    }
+
     // 1, 2: every borrow ends, a lock's guard giving its lock back; what the
     // ended borrows froze is free (nothing at run time)
     genlSeamGiveBack(gen, node);
@@ -506,7 +548,7 @@ LLVMValueRef genlAwait(GenState *gen, AwaitNode *node) {
     // half returns is returned
     INode *rettype = ((FnSigNode *)itypeGetTypeDcl(gen->fndcl->vtype))->rettype;
     LLVMValueRef retval = LLVMGetUndef(genlType(gen, rettype));
-    if (node->message) {
+    if (node->message || node->awaitable) {
         if (record) {
             if (id == NULL) {
                 errorUnreachable((INode *)node, "a message seam with a record whose envelope reserved no slot");
@@ -752,6 +794,75 @@ static void genlSeamResume(GenState *gen, FnDclNode *fnnode, AwaitNode *node) {
     genlRootsRestore(gen, &svroots);
 }
 
+// A parked record's drop function, '<method>'<n>.drop(record)', which the
+// pending table calls when its actor dies with the record parked, its reply
+// never to come: the continuation is abandoned. Each value the record holds
+// is finalized, in the record's order, which is the order the values would
+// have died in; a variable carried with its drop flag only where the flag
+// says it holds its whole value. The second half never runs. (A sole owner
+// whose referent was partly moved out, its flag saying hollow, is left: what
+// remains of it is not freed.)
+static void genlSeamDrop(GenState *gen, FnDclNode *fnnode, AwaitNode *node) {
+    GenSeam *seam = node->genseam;
+    LLVMValueRef svfn = gen->fn;
+    LLVMBuilderRef svbuilder = gen->builder;
+    LLVMValueRef svallocaPoint = gen->allocaPoint;
+    FnDclNode *svfndcl = gen->fndcl;
+    uint32_t svtempbase = gen->tempbase;
+    gen->tempbase = gen->tempcnt;
+    GenRoots svroots;
+    genlRootsSave(gen, &svroots);
+
+    gen->fn = seam->drop;
+    gen->fndcl = fnnode;
+    LLVMBasicBlockRef entry = LLVMAppendBasicBlockInContext(gen->context, gen->fn, "entry");
+    gen->builder = LLVMCreateBuilderInContext(gen->context);
+    LLVMPositionBuilderAtEnd(gen->builder, entry);
+    LLVMValueRef allocaPoint = LLVMBuildAlloca(gen->builder, LLVMInt32TypeInContext(gen->context), "alloca_point");
+    gen->allocaPoint = allocaPoint;
+    if (!gen->opt->release)
+        LLVMSetCurrentDebugLocation2(gen->builder,
+            LLVMDIBuilderCreateDebugLocation(gen->context, node->linenbr, 0, LLVMGetSubprogram(gen->fn), NULL));
+
+    LLVMTypeRef i8 = LLVMInt8TypeInContext(gen->context);
+    LLVMValueRef record = LLVMGetParam(gen->fn, 0);
+    for (uint32_t i = 0; i < seam->nfields; ++i) {
+        GenSeamField *field = &seam->fields[i];
+        if (field->kind == GenSeamFlag || field->type == NULL || !itypeNeedsFinal(field->type))
+            continue;
+        LLVMValueRef at = LLVMBuildStructGEP2(gen->builder, seam->record, record, i, "dropping");
+        LLVMBasicBlockRef endblk = NULL;
+        if (field->kind == GenSeamVar && i + 1 < seam->nfields && seam->fields[i + 1].kind == GenSeamFlag
+            && seam->fields[i + 1].var == field->var) {
+            LLVMValueRef flagat = LLVMBuildStructGEP2(gen->builder, seam->record, record, i + 1, "flag");
+            LLVMValueRef held = LLVMBuildLoad2(gen->builder, i8, flagat, "held");
+            LLVMValueRef whole = LLVMBuildICmp(gen->builder, LLVMIntEQ, held, LLVMConstInt(i8, DropFlagWhole, 0), "whole");
+            LLVMBasicBlockRef doblk = LLVMAppendBasicBlockInContext(gen->context, gen->fn, "drop");
+            endblk = LLVMAppendBasicBlockInContext(gen->context, gen->fn, "dropped");
+            LLVMBuildCondBr(gen->builder, whole, doblk, endblk);
+            LLVMPositionBuilderAtEnd(gen->builder, doblk);
+        }
+        genlFinalizeAt(gen, at, field->type);
+        if (endblk) {
+            LLVMBuildBr(gen->builder, endblk);
+            LLVMPositionBuilderAtEnd(gen->builder, endblk);
+        }
+    }
+    LLVMBuildRetVoid(gen->builder);
+
+    genlRootFrame(gen);
+    if (LLVMGetInstructionParent(allocaPoint))
+        LLVMInstructionEraseFromParent(allocaPoint);
+    LLVMDisposeBuilder(gen->builder);
+    gen->builder = svbuilder;
+    gen->fn = svfn;
+    gen->allocaPoint = svallocaPoint;
+    gen->fndcl = svfndcl;
+    gen->tempcnt = gen->tempbase;
+    gen->tempbase = svtempbase;
+    genlRootsRestore(gen, &svroots);
+}
+
 void genlSplitHalves(GenState *gen, FnDclNode *fnnode) {
     Nodes *seams = awaitSplitOf(fnnode);
     INode **nodesp;
@@ -766,5 +877,7 @@ void genlSplitHalves(GenState *gen, FnDclNode *fnnode) {
         genlSplitHalf(gen, fnnode, node);
         if (node->genseam->resume)
             genlSeamResume(gen, fnnode, node);
+        if (node->genseam->drop)
+            genlSeamDrop(gen, fnnode, node);
     }
 }

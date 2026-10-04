@@ -574,6 +574,9 @@ static int parseActorRuntime(ParseState *parse, StructNode *at, Name *actorname,
         INode *fn = namespaceFind(&actorsmod->namespace, nametblFind(actorRuntimeNames[i], strlen(actorRuntimeNames[i])));
         actorRuntime[i] = fn && fn->tag == FnDclTag ? (FnDclNode *)fn : NULL;
     }
+    // What an 'await' on an operation awaits (ir/exp/await.c, awaitOperation)
+    INode *awaitable = namespaceFind(&actorsmod->namespace, nametblFind("Awaitable", 9));
+    actorAwaitable = awaitable && awaitable->tag == StructTag ? (StructNode *)awaitable : NULL;
 
     // The dispatch function moves each argument out of the message where it
     // lies in its node, which is then freed without being finalized: so every

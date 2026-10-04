@@ -509,6 +509,9 @@ enum ErrorCode {
 
     ErrorAwaitLeftCall = 1279,  // A borrow, or a place's base, written to the left of an 'await' in its statement and made by a call: it would be used after the seam, and only a plain path (a local, 'self', a field) is reached again there
 
+    // An 'await' on an operation (actors.Awaitable: an I/O operation)
+    ErrorAwaitUnused = 1280,    // The result an awaited operation answers with, a failure among what it may say, is not used
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name

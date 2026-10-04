@@ -1,0 +1,83 @@
+// An 'await' on an operation that did not finish panics, at the line that
+// made the operation: it has no result to give. Nothing attaches a cancel
+// or a deadline to an awaited operation, so the one way a running program
+// meets this is a socket closed while an operation on it is in flight. Here
+// Closer makes a read of a connection whose peer never sends, sends the
+// socket to itself in a message, and awaits the read; the message then runs
+// and drops the socket, which closes it, and the read in flight ends
+// Cancelled.
+
+mod cancelled;
+
+import stdio use *;
+import sync use Oneshot, OneshotSender, OneshotReceiver;
+import iobuf use Pool;
+import iocore use SocketAddr, IoError;
+import actors;
+import aio use Socket;
+
+fn socketOf(r Result[Socket, IoError]) Socket {
+  mut res = r;
+  mut s = Socket.none();
+  match &mut res {
+    case mut ok &mut Ok {s <=> ok.value;}
+    else {}
+  }
+  s;
+}
+
+actor Closer {
+  pool Pool;
+
+  pub async do run(self, never OneshotSender[u64]) {
+    imm l = await aio.listen(SocketAddr.localhost(0u16));
+    imm ls = socketOf(l);
+    imm a = await ls.localAddr();
+    mut port = 0u16;
+    match a {
+      case imm addr Ok {port = addr.value.port();}
+      else {}
+    }
+    imm c = await aio.connect(SocketAddr.localhost(port));
+    imm conn = socketOf(c);
+    imm reading = conn.read(pool.mustTake(4096usize));
+    selfactor.close(conn);
+    printStr("reading\n");
+    imm r = await reading;
+    printStr("read\n");
+  }
+
+  pub async do close(self, s Socket) {
+    printStr("closing\n");
+  }
+}
+
+// The panic's line on stderr names the thread it is on, the I/O thread's
+// number, which differs run to run; the hook says the rest on stdout
+fn hook(msg &[]u8, file &[]u8, line u32) {
+  printStr("panic at ");
+  printStr(file);
+  printStr(":");
+  printUInt(u64.from(line));
+  printStr(": ");
+  printStr(msg);
+  printStr("\n");
+  printFlush();
+}
+
+// Main waits on a one-shot that run holds and never sends: the panic ends
+// the program first
+fn main() {
+  initAll();
+  setPanicHook(&hook);
+  mut tx OneshotSender[u64];
+  mut rx OneshotReceiver[u64];
+  tx, rx = Oneshot[u64].make();
+  {
+    imm c = new Closer(Pool.make());
+    c.run(tx);
+  }
+  rx.recv();
+  finalAll();
+  printStr("end\n");
+}

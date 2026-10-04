@@ -24,6 +24,7 @@ AwaitNode *newAwaitNode() {
     node->seamno = 0;
     node->genseam = NULL;
     node->message = NULL;
+    node->awaitable = NULL;
     node->walked = 0;
     return node;
 }
@@ -56,6 +57,7 @@ INode *cloneAwaitNode(CloneState *cstate, AwaitNode *node) {
     newnode->seamno = 0;
     newnode->genseam = NULL;
     newnode->message = NULL;
+    newnode->awaitable = NULL;
     newnode->walked = 0;
     return (INode *)newnode;
 }
@@ -114,6 +116,59 @@ static char *awaitNotPlaced(FnDclNode *fn, char *buf, size_t size) {
     return buf;
 }
 
+// A seam that waits for a reply calls the actors package's functions and the
+// ones the awaiting actor's declaration generated for its seams: each is
+// demanded, so that it is checked and generated. False, reported, where the
+// package lacks one
+static int awaitDemandRuntime(TypeCheckState *pstate, AwaitNode *node) {
+    ActorInfo *awaiter = actorOfState(inodeGetOwner((INode *)pstate->fn));
+    if (awaiter == NULL || awaiter->replyfn == NULL || awaiter->replyidfn == NULL) {
+        errorUnreachable((INode *)node, "an 'await' in an actor generated no functions for its seams");
+        return 0;
+    }
+    for (int i = 0; i < ActorRtCount; ++i) {
+        if (actorRuntime[i] == NULL) {
+            errorMsgNode((INode *)node, ErrorActorRuntime,
+                "'await' needs the actors package's %s, which the package this module imports as actors does not have.",
+                actorRuntimeNames[i]);
+            return 0;
+        }
+        fnCallDemandCandidates((INode *)actorRuntime[i]);
+    }
+    fnCallDemandCandidates((INode *)awaiter->replyfn);
+    fnCallDemandCandidates((INode *)awaiter->replyidfn);
+    return 1;
+}
+
+// What is awaited is an operation: a value of an instance of the actors
+// package's Awaitable[R], which an I/O operation of the aio package's is. Its
+// maker starts it at the seam, handed the envelope of the reply its answer, an
+// R, comes back in, as a behaviour's value does; the 'await''s value is that
+// R. What R is, and so what the second half sees, is the operation's to
+// declare: an I/O operation's is a Result, success or the system's failure,
+// as a synchronous call that can fail answers. Nothing is added by 'await'
+// itself. That result must be used: an 'await' on an operation whose value
+// is unwanted -- a statement of its own -- is refused (ErrorAwaitUnused)
+static void awaitOperation(TypeCheckState *pstate, AwaitNode *node, INode *expectType) {
+    INode *result = actorAwaitableResult(((IExpNode *)node->exp)->vtype);
+    if (result == NULL)
+        return;
+    if (node->awaitable == NULL && !awaitDemandRuntime(pstate, node)) {
+        node->vtype = errorType;
+        return;
+    }
+    node->awaitable = itypeGetTypeDcl(((IExpNode *)node->exp)->vtype);
+    node->vtype = result;
+    INode *expected = expectType && expectType != noCareType ? itypeGetTypeDcl(expectType) : NULL;
+    if (expectType == noCareType || (expected && expected->tag == VoidTag)) {
+        char rname[256] = "";
+        itypeSpellCat(rname, sizeof(rname), result, 0);
+        errorMsgNode((INode *)node, ErrorAwaitUnused,
+            "This 'await' waits for an operation, which answers with a %s, and the answer is not used. An operation's answer says whether it worked, a failure among what it may say, as a synchronous call that can fail answers, and it must be looked at: bind it, 'imm r = await ...', and match on it.",
+            rname);
+    }
+}
+
 // What is awaited is a behaviour of an actor -- a call of a handle's method
 // that sends one -- when the behaviour returns a value: it is sent awaited.
 // The call is made the handle's second method for it, which takes the
@@ -147,24 +202,10 @@ static void awaitMessage(TypeCheckState *pstate, AwaitNode *node) {
         node->vtype = errorType;
         return;
     }
-    ActorInfo *awaiter = actorOfState(inodeGetOwner((INode *)pstate->fn));
-    if (awaiter == NULL || awaiter->replyfn == NULL || awaiter->replyidfn == NULL) {
-        errorUnreachable((INode *)node, "an 'await' in an actor generated no functions for its seams");
+    if (!awaitDemandRuntime(pstate, node))
         return;
-    }
-    for (int i = 0; i < ActorRtCount; ++i) {
-        if (actorRuntime[i] == NULL) {
-            errorMsgNode((INode *)node, ErrorActorRuntime,
-                "'await' needs the actors package's %s, which the package this module imports as actors does not have.",
-                actorRuntimeNames[i]);
-            return;
-        }
-        fnCallDemandCandidates((INode *)actorRuntime[i]);
-    }
     fnCallDemandCandidates((INode *)msg->ask);
     fnCallDemandCandidates((INode *)msg->method);
-    fnCallDemandCandidates((INode *)awaiter->replyfn);
-    fnCallDemandCandidates((INode *)awaiter->replyidfn);
 
     FnSigNode *asksig = (FnSigNode *)msg->ask->vtype;
     NameUseNode *askuse = (NameUseNode *)call->objfn;
@@ -193,6 +234,8 @@ void awaitTypeCheck(TypeCheckState *pstate, AwaitNode *node, INode *expectType) 
     }
     node->vtype = ((IExpNode *)node->exp)->vtype;
     awaitMessage(pstate, node);
+    if (node->message == NULL)
+        awaitOperation(pstate, node, expectType);
 }
 
 // 'selfactor' is the actor's own handle: another owner of its mailbox, made
@@ -849,13 +892,13 @@ void awaitSplitOrReport(FnDclNode *fn, Nodes *awaits) {
     }
     INode **nodesp;
     uint32_t cnt;
-    // What is awaited is a behaviour returning a value, whose reply calls the
-    // second half; any other seam is built only under '--await-direct', for
-    // tests
+    // What is awaited is a behaviour returning a value, or an operation, whose
+    // reply calls the second half; any other seam is built only under
+    // '--await-direct', for tests
     Nodes *unbuilt = NULL;
     for (nodesFor(awaits, cnt, nodesp)) {
         AwaitNode *node = (AwaitNode *)*nodesp;
-        if (node->message == NULL && !awaitDirect) {
+        if (node->message == NULL && node->awaitable == NULL && !awaitDirect) {
             if (unbuilt == NULL)
                 unbuilt = newNodes(4);
             nodesAdd(&unbuilt, (INode *)node);
@@ -869,7 +912,7 @@ void awaitSplitOrReport(FnDclNode *fn, Nodes *awaits) {
     awaitWalk(fn->value, 1, &bad);
     for (nodesFor(awaits, cnt, nodesp)) {
         AwaitNode *node = (AwaitNode *)*nodesp;
-        if (node->message && awaitRecordTraced(node))
+        if ((node->message || node->awaitable) && awaitRecordTraced(node))
             ++bad;
     }
     if (bad)

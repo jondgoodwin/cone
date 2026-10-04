@@ -71,8 +71,10 @@ typedef struct GenSeamField {
 // record and its second half, the same for every half generated after
 typedef struct GenSeam {
     LLVMValueRef half;      // The second half: the method from just after the seam
-    LLVMValueRef resume;    // Where it awaits a message, what the reply's dispatch calls: the record
-                            // taken from the pending table, and the half called with it and the value
+    LLVMValueRef resume;    // Where it awaits a reply (a message's, an operation's), what the reply's dispatch
+                            // calls: the record taken from the pending table, and the half called with it and the value
+    LLVMValueRef drop;      // Where it parks a record, the record's drop function, '(record *u8)': its values
+                            // finalized in death order, for the pending table to abandon it with
     LLVMTypeRef record;     // The record's struct type, or NULL when it is empty: no record parameter
     GenSeamField *fields;
     uint32_t nfields;

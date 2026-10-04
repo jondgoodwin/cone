@@ -1,0 +1,159 @@
+// An actor reads from a real socket: a loopback pair, both ends actors, each
+// paused on I/O at an 'await' while the other is too.
+//
+// Server.serve listens on a port the system chooses, asks the socket which,
+// and sends it to Client.dial; then it awaits a connection while Client
+// awaits its connect -- two actors paused on I/O at once. Client writes a
+// greeting and drops its socket, which closes it. Server reads twice: the
+// greeting, then the clean end of the stream, where its buffer comes back as
+// it was. Each answer is the operation's Result, success or the system's
+// failure, and two failures arrive as the Result's error: a read handed a
+// buffer with no room (ERROR_INSUFFICIENT_BUFFER, 122) and a second listen on
+// the port the first holds (WSAEADDRINUSE, 10048).
+//
+// What each 'await' found is kept in Got, checked by main once Server says
+// it is done. Server's seams carry what it holds in their records (the
+// client's handle, the listening socket, the connection); Client's connect
+// carries nothing, an empty record.
+
+mod read;
+
+import testing use *;
+import sync use Oneshot, OneshotSender, OneshotReceiver;
+import iobuf use IoBuf, Pool;
+import iocore use SocketAddr, IoError;
+import actors;
+import aio use Socket;
+
+struct Got {
+  pub port Atomic[u64];
+  pub noRoom Atomic[u64];       // the error code of a read with no room
+  pub inUse Atomic[u64];        // the error code of a second listen on the port
+  pub written Atomic[u64];      // what Client's write answered
+  pub read Atomic[u64];         // the bytes the first read appended
+  pub text Atomic[u64];         // 1 if they were the greeting
+  pub ended Atomic[u64];        // 1 if the second read came back with the buffer as it was
+  pub capacity Atomic[u64];     // the buffer's capacity, as it came back
+}
+
+imm got Got;
+
+fn @initpure init() {
+  got = new Got(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64));
+}
+
+// The Socket a Result holds, swapped out of it; Socket.none() for a failure
+fn socketOf(r Result[Socket, IoError]) Socket {
+  mut res = r;
+  mut s = Socket.none();
+  match &mut res {
+    case mut ok &mut Ok {s <=> ok.value;}
+    else {}
+  }
+  s;
+}
+
+fn same(a &[]u8, b &[]u8) Bool {
+  if a.len != b.len {return false;}
+  mut i = 0usize;
+  while i < a.len {
+    if a[i] != b[i] {return false;}
+    i = i + 1usize;
+  }
+  true;
+}
+
+fn codeOf[T](r Result[T, IoError]) u64 {
+  match r {
+    case imm e Error {u64.from(e.value.code);}
+    else {0u64;}
+  }
+}
+
+actor Client {
+  pool Pool;
+
+  pub async do dial(self, port u16) {
+    imm c = await aio.connect(SocketAddr.localhost(port));
+    imm s = socketOf(c);
+    mut b = pool.mustTake(64usize);
+    b.append("hello, actor");
+    imm w = await s.write(b);
+    match w {
+      case imm n Ok {got.written.store(u64.from(n.value));}
+      case imm e Error {got.written.store(1000000u64 + u64.from(e.value.code));}
+    }
+  }
+}
+
+actor Server {
+  pool Pool;
+
+  pub async do serve(self, client Client, done OneshotSender[u64]) {
+    imm l = await aio.listen(SocketAddr.localhost(0u16));
+    imm ls = socketOf(l);
+    imm a = await ls.localAddr();
+    mut port = 0u16;
+    match a {
+      case imm addr Ok {port = addr.value.port();}
+      else {}
+    }
+    got.port.store(u64.from(port));
+    imm again = await aio.listen(SocketAddr.localhost(port));
+    got.inUse.store(codeOf[Socket](again));
+    client.dial(port);
+    imm ac = await ls.accept();
+    imm conn = socketOf(ac);
+    imm none = await conn.read(IoBuf.empty());
+    got.noRoom.store(codeOf[IoBuf](none));
+    mut r = await conn.read(pool.mustTake(4096usize));
+    match &mut r {
+      case mut ok &mut Ok {
+        mut b = IoBuf.empty();
+        b <=> ok.value;
+        got.read.store(u64.from(b.len()));
+        if same(b.view(), "hello, actor") {got.text.store(1u64);}
+        b.clear();
+        imm rest = await conn.read(b);
+        match rest {
+          case imm end Ok {
+            if end.value.len() == 0usize {got.ended.store(1u64);}
+            got.capacity.store(u64.from(end.value.capacity()));
+          }
+          else {}
+        }
+      }
+      else {}
+    }
+    mut d = done;
+    d.send(1u64);
+  }
+}
+
+fn main() i32 {
+  initAll();
+  mut tx OneshotSender[u64];
+  mut rx OneshotReceiver[u64];
+  tx, rx = Oneshot[u64].make();
+  {
+    imm client = new Client(Pool.make());
+    imm server = new Server(Pool.make());
+    server.serve(client, tx);
+  }
+  match rx.recv() {
+    case is None[u64] {expect(false, "the server said it was done");}
+    else {}
+  }
+  finalAll();
+  expect(got.port.load() != 0u64, "the system chose a port, which localAddr told");
+  expectUInt(got.inUse.load(), 10048u64, "a second listen on the port fails: WSAEADDRINUSE");
+  expectUInt(got.noRoom.load(), 122u64, "a read with no room fails: ERROR_INSUFFICIENT_BUFFER");
+  expectUInt(got.written.load(), 12u64, "the write answered its count");
+  expectUInt(got.read.load(), 12u64, "the read appended what arrived");
+  expectUInt(got.text.load(), 1u64, "and it was the greeting");
+  expectUInt(got.ended.load(), 1u64, "the peer's close: the buffer back as it was");
+  expectUInt(got.capacity.load(), 4096u64, "the same buffer, back");
+  done();
+}

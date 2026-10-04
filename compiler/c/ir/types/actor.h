@@ -62,10 +62,20 @@ enum ActorRuntimeFn {
     ActorRtRecordFree,      // recordFree(block *u8)
     ActorRtAnswerTo,        // answerTo(slot &mut Answer) *u8
     ActorRtAnswered,        // answered(slot &mut Answer)
+    ActorRtStartAwait,      // startAwait(a *u8, rp Reply): an Awaitable started at its seam
     ActorRtCount
 };
 extern FnDclNode *actorRuntime[ActorRtCount];
 extern char *actorRuntimeNames[ActorRtCount];
+
+// The actors package's Awaitable[R], the generic an 'await' on an operation
+// (an I/O operation) awaits an instance of, found where the parser bound the
+// package; NULL until then
+extern StructNode *actorAwaitable;
+
+// The R of an instance of actors.Awaitable[R], what an 'await' on it gives,
+// or NULL where 'type' is no such instance
+INode *actorAwaitableResult(INode *type);
 
 // Refuse each crossing parameter, and each message's returned type, that is
 // not Sendable. Called once, when type check has finished and every type is

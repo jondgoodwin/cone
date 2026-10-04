@@ -1263,8 +1263,9 @@ field of its state, and the reply's dispatch calls the second half.
   began (`GenState.awaitflights`), and its temporaries are all made by then;
   `genlAwait` checks both again at the seam. A record that is not empty is
   given a slot in the table (the actors package's `parkReserve`, with the
-  record's size), which allocates its block: the slot's index is the record's
-  **id**, a plain index with no generation. The actor's generated
+  record's size and its **drop function**, below), which allocates its block:
+  the slot's index is the record's **id**, a plain index with no generation.
+  The actor's generated
   `<Actor>.replyid'` (or `<Actor>.reply'`, where the record is empty) makes the
   envelope, an `actors.Reply`: it takes one count of the awaiting actor, so
   that it cannot die while the reply is owed, and allocates the reply's mailbox
@@ -1297,6 +1298,33 @@ value only then: the dispatcher keeps the call's value through a raw pointer,
 `actors.keep`, so that a parked method's undefined one is never finalized).
 The resume function answers likewise once the second half returns
 (`answerTo`), dropping the value where nothing awaits it.
+
+**An operation's reply.** What a seam awaits may instead be an operation: a
+value of an instance of the actors package's `Awaitable[R]` (type check set
+`AwaitNode.awaitable`; the aio package's I/O operations are such values), whose
+answer is an `R`. It comes back as a behaviour's value does, in a reply, so
+everything above holds but the request. The seam is laid out once the operand
+is made, as a seam with no envelope argument is; its envelope is made there by
+the same functions (`genlSeamReply`); and the Awaitable, moved into a slot of
+its own, is handed with the envelope to the actors package's `startAwait`,
+which calls the start function its maker stored in it. Nothing of the Awaitable
+is finalized: its maker's context is the start function's from then on. The
+maker writes the answer into the envelope as `answerNow` does, from whatever
+thread finishes the operation, and the reply's dispatch calls the resume
+function. The 'await' adds nothing to the `R`.
+
+**An abandoned record.** A record parked in the pending table has a drop
+function, `<method>'<n>.drop(record)` (`genlSeamDrop`), declared where the seam
+is laid out and handed to `parkReserve`: each of the record's values that does
+something as it dies is finalized, in the record's order -- the order the
+values would die in -- a variable carried with its drop flag only where the
+flag says it holds its whole value (a hollow one, part moved out, is left).
+The table calls it when its actor dies with the record still parked
+(`Pending`'s finalizer), which happens only when the envelope the record was
+owed was dropped unanswered: the I/O it awaited was ended at the program's end,
+or the actor that was to answer abandoned its own continuation, which held the
+envelope. The second half never runs. An empty record parks nothing and has no
+drop function.
 
 The pending table is not traced: a record that would hold a traced reference
 is refused before generation ([Flow](flow.md), "A seam").
@@ -1857,7 +1885,8 @@ variables.
 | | `genlTempKeep`, `genlTempsEnd`, `genlTempsJump`, `genlTempRelease` | a temporary kept in its slot; those a part made finalized at its end, or before a jump ("Temporaries"); a lock's guard in a split method only where its flag says it holds its lock ("A split method") |
 | `genllvm/genlawait.c` | `genlAwait`, `genlSeamLayout`, `genlSeamGiveBack`, `genlSeamRecord` | a seam of a split method: what is awaited, the record laid out (once) and its second half and resume function declared, the locks given back, the record built and parked, the return; what follows in a `resume` block ("A split method") |
 | | `genlSplitHalves`, `genlSplitHalf`, `genlSeamEntry` | each second half: the method generated again, its entry moving the record's values back and branching to the seam's `resume` block |
-| | `genlAwaitReply`, `genlSeamResume` | a message seam's envelope, the seam laid out and its record's slot reserved where it is passed; the seam's resume function, which takes the record out of the pending table, calls the second half and answers ("A message's reply") |
+| | `genlAwaitReply`, `genlSeamReply`, `genlSeamResume` | a message seam's envelope, the seam laid out and its record's slot reserved where it is passed (an operation's seam makes its envelope at the seam and starts the operation with it); the seam's resume function, which takes the record out of the pending table, calls the second half and answers ("A message's reply") |
+| | `genlSeamDrop` | a parked record's drop function, which its pending table calls if the actor dies with it parked ("A message's reply", "An abandoned record") |
 | | `genlExprsAcross`, `genlHasSeam` | operands in order (`awaitOrder`'s, where a seam cuts them), each made before a later one's seam kept in flight across it (`GenFlight`), a receiver or a borrow of a plain path made after it |
 | | `genlKeepAcross`, `genlKeptAcross` | one value kept in flight across a seam to come, and read back after it: an assignment's value while its place, holding the seam, is reached |
 | | `genlHeldBegin`, `genlHeldIf` | a temporary lock guard's flag, and code run while it holds its lock |
