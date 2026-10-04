@@ -13,13 +13,17 @@
 //   124, version, null); SSL_CTX_set_mode is SSL_CTX_ctrl(ctx, 33, mode,
 //   null); SSL_CTX_set_session_cache_mode is SSL_CTX_ctrl(ctx, 44, mode,
 //   null); SSL_set_retry_verify is SSL_ctrl(ssl, 136, 0, null) > 0;
-//   sk_X509_num and sk_X509_value are OPENSSL_sk_num and _value.
+//   sk_X509_num and sk_X509_value are OPENSSL_sk_num and _value;
+//   SSL_get_ex_new_index is CRYPTO_get_ex_new_index(0, ...), 0 being
+//   CRYPTO_EX_INDEX_SSL.
 //
 // Each function is C-named ('@c'), so a call is made as C makes it.
 
-// The two functions OpenSSL calls back into this package (verify.cone)
+// The functions OpenSSL calls back into this package (verify.cone,
+// context.cone)
 alias VerifyFn = &fn(store *u8, arg *u8) i32;
 alias AlpnSelectFn = &fn(ssl *u8, out &mut *u8, outLen &mut u8, offered *u8, offeredLen u32, arg *u8) i32;
+alias NewSessionFn = &fn(ssl *u8, sess *u8) i32;
 
 extern {
   fn @c OpenSSL_version(t i32) *u8;
@@ -35,6 +39,7 @@ extern {
   fn @c SSL_CTX_set_cert_verify_callback(ctx *u8, cb VerifyFn, arg *u8);
   fn @c SSL_CTX_set_alpn_select_cb(ctx *u8, cb AlpnSelectFn, arg *u8);
   fn @c SSL_CTX_set_alpn_protos(ctx *u8, protos *u8, len u32) i32;   // 0 is success
+  fn @c SSL_CTX_sess_set_new_cb(ctx *u8, cb NewSessionFn);
   fn @c SSL_CTX_get_cert_store(ctx *u8) *u8;
   fn @c SSL_CTX_use_certificate_chain_file(ctx *u8, file *u8) i32;
   fn @c SSL_CTX_use_PrivateKey_file(ctx *u8, file *u8, kind i32) i32;
@@ -67,10 +72,13 @@ extern {
   fn @c SSL_session_reused(ssl *u8) i32;
   fn @c SSL_SESSION_free(s *u8);
   fn @c SSL_SESSION_is_resumable(s *u8) i32;
+  fn @c SSL_SESSION_up_ref(s *u8) i32;
+  fn @c SSL_SESSION_get_protocol_version(s *u8) i32;
   fn @c SSL_get_peer_cert_chain(ssl *u8) *u8;
   fn @c SSL_set_ex_data(ssl *u8, idx i32, data *u8) i32;
   fn @c SSL_get_ex_data(ssl *u8, idx i32) *u8;
   fn @c SSL_get_ex_data_X509_STORE_CTX_idx() i32;
+  fn @c CRYPTO_get_ex_new_index(classIndex i32, argl i32, argp *u8, newf *u8, dupf *u8, freef *u8) i32;
   fn @c SSL_select_next_proto(out &mut *u8, outLen &mut u8, server *u8, serverLen u32,
       client *u8, clientLen u32) i32;
   fn @c SSL_alert_desc_string_long(v i32) *u8;
@@ -130,6 +138,7 @@ const filetypePem = 1i32;
 const sessCacheOff = 0i32;
 const sessCacheClient = 1i32;
 const sessCacheServer = 2i32;
+const sessCacheNoInternalStore = 0x200i32;
 const modeReleaseBuffers = 0x10i32;
 const opNoRenegotiation = 0x40000000u64;     // SSL_OP_BIT(30)
 const sslSentShutdown = 1i32;

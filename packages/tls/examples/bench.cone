@@ -2,7 +2,7 @@
 // (ECDSA P-256, packages/tls/tests/certs). Run it from the repository's root,
 // in a release build:
 //
-//   congo run --release packages/tls/examples/bench.cone
+//   congo run --release packages/tls/examples/bench.cone [-- concurrent]
 //
 // 1. Handshakes in memory, sans-IO: a client session and a server session
 //    on one thread, their bytes moved by hand; the CPU a handshake costs both
@@ -19,6 +19,11 @@
 //    one GET each, both ends in this process: what the process's private
 //    bytes and the pool's lent buffers grew by, per pair or connection.
 //
+// With 'concurrent' after '--', it times only a second connection opened
+// while the first to the same server is still open, a new client context
+// each time: in memory, and over loopback through the driver (connect,
+// handshake, one GET). It resumes from a ticket the first was sent.
+//
 // The client verifies by the test root (Verifier.roots), so nothing here
 // asks the OS's verifier or the network.
 
@@ -34,6 +39,7 @@ import diag use Histogram;
 import http use *;
 import httpconn use *;
 import tls;
+import process;
 
 extern {
   fn @c(system) GetCurrentProcess() usize;
@@ -178,6 +184,37 @@ fn inMemory(n u32) {
   report("in memory, resumed handshake (both sides)", &resumed);
 }
 
+// A second connection while the first is open: each time a new client
+// context, its first connection's handshake done and the connection kept,
+// then a second to the same server, timed. It resumes from one of the
+// first's tickets, which came after its handshake
+fn concurrentInMemory(n u32) {
+  imm srv = makeServer();
+  mut second = Histogram.make();
+  mut resumed = 0u32;
+  mut k = 0u32;
+  while k < n {
+    imm cl = makeClient(true);
+    mut a = cl.session("localhost");
+    mut sa = srv.session();
+    pump(&mut a, &mut sa);
+    imm t0 = Instant.now();
+    mut b = cl.session("localhost");
+    mut sb = srv.session();
+    pump(&mut b, &mut sb);
+    second.record((Instant.now() - t0).nanos());
+    if b.info().resumed {resumed = resumed + 1u32;}
+    if not a.isOpen() or not b.isOpen() {printStr("a handshake failed\n");}
+    k = k + 1u32;
+  }
+  report("in memory, a second handshake while the first is open (both sides)", &second);
+  printStr("  (");
+  printUInt(u64.from(resumed));
+  printStr(" of ");
+  printUInt(u64.from(n));
+  printStr(" resumed)\n");
+}
+
 // ---------------------------------------------------------------------------
 // The server's side, on the driver
 // ---------------------------------------------------------------------------
@@ -292,6 +329,58 @@ fn cycles(label &[]u8, secure Bool, resume Bool, n u32) {
     printUInt(tls.stats().resumed - r0);
     printStr(" sessions resumed, both sides counted)\n");
   }
+  drv.abortAll(&mut lp);
+}
+
+// A GET on a connection, driven to its final answer
+fn getOn(drv &mut Driver, lp &mut Loop, sv &mut Serving, events &mut List[Event], c ConnId) {
+  drv.request(lp, c, RequestHead.get("/x", "localhost"), BodyLength.empty(), Sink.Here[tokReq]);
+  mut going = true;
+  while going {
+    drv.poll(lp, forever(), events);
+    mut j = 0usize;
+    while j < events.len() {
+      imm e = &mut events[j];
+      j = j + 1usize;
+      if e.token == tokServer {serve(drv, sv, e, 0u64);}
+      elif e.kind == EventKind.Data[] {drv.release(e.req, e.buf.len());}
+      elif e.token == tokReq and e.isTerminal() {going = false;}
+    }
+    events.clear();
+  }
+}
+
+// A second connection while the first is open, over loopback: each time a
+// new client context, its first connection's GET done and the connection
+// kept; then a second connection and its GET, timed from asking for it to
+// the GET's Done; both reset
+fn concurrentCycles(n u32) {
+  imm pool = Pool.make();
+  mut lp = Loop.mustMake();
+  mut drv = Driver.make(Config.make(), pool);
+  imm srv = makeServer();
+  imm port = listenOn(&mut drv, &mut lp, true, &srv, pool);
+  mut sv = new Serving(pool, ReqId.none(), 0u64);
+  mut h = Histogram.make();
+  mut events = List[Event].empty();
+  imm r0 = tls.stats().resumed;
+  mut k = 0u32;
+  while k < n + 1u32 {
+    imm cl = makeClient(true);
+    imm first = connect(&mut drv, &mut lp, true, &cl, pool, port, 0u64);
+    getOn(&mut drv, &mut lp, &mut sv, &mut events, first);
+    imm t0 = Instant.now();
+    imm c = connect(&mut drv, &mut lp, true, &cl, pool, port, 1u64);
+    getOn(&mut drv, &mut lp, &mut sv, &mut events, c);
+    if k > 0u32 {h.record((Instant.now() - t0).nanos());}
+    drv.abort(&mut lp, c);
+    drv.abort(&mut lp, first);
+    k = k + 1u32;
+  }
+  report("connect + GET + reset, TLS, a second connection while the first is open", &h);
+  printStr("  (");
+  printUInt(tls.stats().resumed - r0);
+  printStr(" sessions resumed, both sides counted)\n");
   drv.abortAll(&mut lp);
 }
 
@@ -466,6 +555,12 @@ fn sessionMemory(n u32) {
 fn main() i32 {
   printStr(tls.backendVersion());
   printStr("\n");
+  imm args = process.args();
+  if args.len() > 1usize and args[1usize].view() == "concurrent" {
+    concurrentInMemory(500u32);
+    concurrentCycles(500u32);
+    return 0i32;
+  }
   sessionMemory(1000u32);
   inMemory(500u32);
   cycles("connect + GET + reset, plain", false, false, 500u32);
