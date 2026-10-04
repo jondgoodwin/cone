@@ -24,9 +24,9 @@
 // CPU's: additions, subtractions and multiplications only, each rounded on
 // its own (conec forbids fusing on the GPU), and a GPU's division and
 // square root, which Vulkan lets be 2.5 and 1 ulp off, are replaced by
-// 'divExact' and 'sqrtExact', IEEE's correctly rounded division and square
-// root from integer steps. So the twin and every GPU give the same bits, and
-// the CPU mesher's division, d0 / (d0 - d1), is matched exactly.
+// sdf's 'divExact' and 'sqrtExact', IEEE's correctly rounded division and
+// square root from integer steps. So the twin and every GPU give the same
+// bits, and the CPU mesher's division, d0 / (d0 - d1), is matched exactly.
 //
 // THE PASSES, one invocation each (64 a workgroup):
 //   classify     a cell: its corners' signs (its config) and its vertex count
@@ -56,7 +56,7 @@
 mod gridnet;
 
 import geomath use *;
-import sdf use SampleGrid;
+import sdf use SampleGrid, divExact, sqrtExact;
 
 // A piece number meaning "the surface does not cross this edge", in the
 // packed tables
@@ -74,115 +74,6 @@ pub struct ScanStep {
 pub struct NetTotals {
   pub cells u32;
   pub samples u32;
-}
-
-// ---- Exact arithmetic from integers ----
-
-// a / b, rounded to nearest even as IEEE division rounds it, from integer
-// steps only (long division of the significands), so every GPU and the CPU
-// give the same bits: a GPU's own division may be 2.5 ulp off. Subnormal
-// arguments and results are exact too. NaN, infinity and a zero divisor are
-// left to the machine's own division (the mesher never divides by zero)
-pub fn divExact(a f32, b f32) f32 {
-  imm ua = a as u32;
-  imm ub = b as u32;
-  imm sign = (ua ^ ub) & 0x80000000u32;
-  mut ea = (ua >> 23u32) & 0xffu32;
-  mut eb = (ub >> 23u32) & 0xffu32;
-  mut ma = ua & 0x7fffffu32;
-  mut mb = ub & 0x7fffffu32;
-  if ea == 255u32 or eb == 255u32 or (eb == 0u32 and mb == 0u32) { return a / b; }
-  if ea == 0u32 and ma == 0u32 { return sign as f32; }
-  // Exponents carry 64 over IEEE's bias, so a subnormal's stays positive
-  // when its significand is normalized
-  ea = ea + 64u32;
-  eb = eb + 64u32;
-  if ea == 64u32 {
-    ea = 65u32;
-    while ma < 0x800000u32 { ma = ma << 1u32; ea = ea - 1u32; }
-  } else {
-    ma = ma | 0x800000u32;
-  }
-  if eb == 64u32 {
-    eb = 65u32;
-    while mb < 0x800000u32 { mb = mb << 1u32; eb = eb - 1u32; }
-  } else {
-    mb = mb | 0x800000u32;
-  }
-  // The quotient's biased exponent, plus 512
-  mut e = ea + 127u32 + 512u32 - eb;
-  if ma < mb { ma = ma << 1u32; e = e - 1u32; }
-  // 25 bits of ma / mb, in [1, 2): 24 and the rounding bit
-  mut q = 0u32;
-  mut r = ma;
-  mut i = 0u32;
-  while i < 25u32 {
-    q = q << 1u32;
-    if r >= mb { r = r - mb; q = q | 1u32; }
-    r = r << 1u32;
-    i = i + 1u32;
-  }
-  mut sticky = r != 0u32;
-  if e > 512u32 {
-    mut mant = q >> 1u32;
-    if (q & 1u32) == 1u32 and (sticky or (mant & 1u32) == 1u32) { mant = mant + 1u32; }
-    mut be = e - 512u32;
-    if mant == 0x1000000u32 { mant = 0x800000u32; be = be + 1u32; }
-    if be >= 255u32 { return (sign | 0x7f800000u32) as f32; }
-    return (sign | (be << 23u32) | (mant & 0x7fffffu32)) as f32;
-  }
-  // Subnormal: k more bits shifted out
-  imm k = 513u32 - e;
-  if k > 25u32 { return sign as f32; }
-  mut mant = q >> (k + 1u32);
-  imm round = (q >> k) & 1u32;
-  if (q & ((1u32 << k) - 1u32)) != 0u32 { sticky = true; }
-  if round == 1u32 and (sticky or (mant & 1u32) == 1u32) { mant = mant + 1u32; }
-  (sign | mant) as f32;
-}
-
-// The square root of x, rounded to nearest even as IEEE's is, from integer
-// steps only (the digit-by-digit root of the significand), so every GPU and
-// the CPU give the same bits: a GPU's own may be 1 ulp off. Zero, a negative,
-// infinity and NaN are left to the machine's own
-pub fn sqrtExact(x f32) f32 {
-  imm u = x as u32;
-  mut e = (u >> 23u32) & 0xffu32;
-  mut m = u & 0x7fffffu32;
-  if e == 255u32 or (u & 0x80000000u32) != 0u32 or u == 0u32 { return x.sqrt(); }
-  e = e + 64u32;
-  if e == 64u32 {
-    e = 65u32;
-    while m < 0x800000u32 { m = m << 1u32; e = e - 1u32; }
-  } else {
-    m = m | 0x800000u32;
-  }
-  // x = m 2^(e - 214); make the power even
-  if (e & 1u32) == 1u32 { m = m << 1u32; e = e - 1u32; }
-  // The root of R = m 2^26 (below 2^51, two words), two bits at a time
-  imm hi = m >> 6u32;
-  imm lo = m << 26u32;
-  mut root = 0u32;
-  mut rem = 0u32;
-  mut j = 0u32;
-  while j < 26u32 {
-    imm pos = 50u32 - 2u32 * j;
-    imm pair = if pos >= 32u32 { (hi >> (pos - 32u32)) & 3u32; } else { (lo >> pos) & 3u32; };
-    rem = (rem << 2u32) | pair;
-    imm t = (root << 2u32) | 1u32;
-    if rem >= t { rem = rem - t; root = (root << 1u32) | 1u32; } else { root = root << 1u32; }
-    j = j + 1u32;
-  }
-  // root has 25 or 26 bits: keep 24, round on the rest
-  mut sticky = rem != 0u32;
-  imm s = if root >= 0x2000000u32 { 2u32; } else { 1u32; };
-  mut mant = root >> s;
-  imm round = (root >> (s - 1u32)) & 1u32;
-  if s == 2u32 and (root & 1u32) != 0u32 { sticky = true; }
-  if round == 1u32 and (sticky or (mant & 1u32) == 1u32) { mant = mant + 1u32; }
-  mut be = 30u32 + s + e / 2u32;
-  if mant == 0x1000000u32 { mant = 0x800000u32; be = be + 1u32; }
-  ((be << 23u32) | (mant & 0x7fffffu32)) as f32;
 }
 
 // ---- A cell's corners, edges and pieces ----
@@ -214,39 +105,6 @@ pub fn tableEdge(tables &[]u32, config u32, e u32) u32 {
   };
 }
 
-// Edge e's piece from a config's two packed words, as 'tableEdge'
-fn packedEdge(w0 u32, w1 u32, e u32) u32 {
-  if e < 8u32 { (w0 >> (4u32 * e)) & 15u32; } else { (w1 >> (4u32 * (e - 8u32))) & 15u32; };
-}
-
-// A cell's eight samples, corner c's 'at(c)'
-struct Corners {
-  d0 f32;
-  d1 f32;
-  d2 f32;
-  d3 f32;
-  d4 f32;
-  d5 f32;
-  d6 f32;
-  d7 f32;
-
-  fn at(self &, c u32) f32 {
-    if c == 0u32 { d0; } elif c == 1u32 { d1; } elif c == 2u32 { d2; } elif c == 3u32 { d3; }
-    elif c == 4u32 { d4; } elif c == 5u32 { d5; } elif c == 6u32 { d6; } else { d7; };
-  }
-
-  // Bit c set when corner c is inside (below 0), as 'cellConfig'
-  fn config(self &) u32 {
-    mut config = 0u32;
-    mut c = 0u32;
-    while c < 8u32 {
-      if self.at(c) < 0. { config = config | (1u32 << c); }
-      c = c + 1u32;
-    }
-    config;
-  }
-}
-
 // ---- The grid ----
 
 // The invocation's number, the dispatch flattened: x, then rows of x
@@ -257,14 +115,17 @@ fn flatId(inv Invocation) u32 {
 
 fn sampleAt(g SampleGrid, x u32, y u32, z u32) usize { usize.from(x + g.samplesX * (y + g.samplesY * z)); }
 
+// The sample at corner c of cell (x, y, z)
+fn cornerValue(g SampleGrid, values &[]f32, x u32, y u32, z u32, c u32) f32 {
+  values[sampleAt(g, x + cornerBit(c, 0u32), y + cornerBit(c, 1u32), z + cornerBit(c, 2u32))];
+}
+
 // Cell (x, y, z)'s config: bit c set when its corner c is inside (below 0)
 fn cellConfig(g SampleGrid, values &[]f32, x u32, y u32, z u32) u32 {
   mut config = 0u32;
   mut c = 0u32;
   while c < 8u32 {
-    if values[sampleAt(g, x + cornerBit(c, 0u32), y + cornerBit(c, 1u32), z + cornerBit(c, 2u32))] < 0. {
-      config = config | (1u32 << c);
-    }
+    if cornerValue(g, values, x, y, z, c) < 0. { config = config | (1u32 << c); }
     c = c + 1u32;
   }
   config;
@@ -403,6 +264,21 @@ fn axisDifference(g SampleGrid, values &[]f32, x u32, y u32, z u32, a u32) f32 {
   };
 }
 
+// The gradient at corner c of cell (x, y, z)
+fn cellCornerGradient(g SampleGrid, values &[]f32, x u32, y u32, z u32, c u32) Vec3 {
+  cornerGradient(g, values, x + cornerBit(c, 0u32), y + cornerBit(c, 1u32), z + cornerBit(c, 2u32));
+}
+
+// Corner c's trilinear weight at (u, v, w) = at in the cell: on each axis,
+// the coordinate where the corner's bit is 1 and one minus it where 0, the
+// product taken x, y, z
+fn cornerWeight(at Vec3, c u32) f32 {
+  imm wx = if cornerBit(c, 0u32) == 1u32 { at.x; } else { 1. - at.x; };
+  imm wy = if cornerBit(c, 1u32) == 1u32 { at.y; } else { 1. - at.y; };
+  imm wz = if cornerBit(c, 2u32) == 1u32 { at.z; } else { 1. - at.z; };
+  wx * wy * wz;
+}
+
 // Each crossed cell's vertices, one per piece, where 'starts' (the scanned
 // counts) puts them: at the average of the piece's edge crossings, each
 // found by linear interpolation of the two ends' distances, as surfaceNet
@@ -416,40 +292,22 @@ pub fn @compute(64) place(inv Invocation, g SampleGrid, tables &[]u32, values &[
   imm x = i % nx;
   imm y = (i / nx) % ny;
   imm z = i / (nx * ny);
-  // Everything read from the buffers is read here, before the loops: a
-  // checked index in a loop that carries a float, inside a branch, is
-  // miscompiled for the GPU today (the loop runs once; sdfmesh's README,
-  // "Compiler defects worked round")
-  imm d = new Corners(values[sampleAt(g, x, y, z)], values[sampleAt(g, x + 1u32, y, z)],
-    values[sampleAt(g, x, y + 1u32, z)], values[sampleAt(g, x + 1u32, y + 1u32, z)],
-    values[sampleAt(g, x, y, z + 1u32)], values[sampleAt(g, x + 1u32, y, z + 1u32)],
-    values[sampleAt(g, x, y + 1u32, z + 1u32)], values[sampleAt(g, x + 1u32, y + 1u32, z + 1u32)]);
-  imm config = d.config();
-  imm w0 = tables[usize.from(2u32 * config)];
-  imm w1 = tables[usize.from(2u32 * config + 1u32)];
-  imm n = (w1 >> 16u32) & 15u32;
+  imm config = cellConfig(g, values, x, y, z);
+  imm n = tablePieces(tables, config);
   if n == 0u32 { return; }
   imm first = starts[usize.from(i)];
   imm cs = g.cellSize;
   imm corner = g.point(x, y, z);
-  imm g0 = cornerGradient(g, values, x, y, z);
-  imm g1 = cornerGradient(g, values, x + 1u32, y, z);
-  imm g2 = cornerGradient(g, values, x, y + 1u32, z);
-  imm g3 = cornerGradient(g, values, x + 1u32, y + 1u32, z);
-  imm g4 = cornerGradient(g, values, x, y, z + 1u32);
-  imm g5 = cornerGradient(g, values, x + 1u32, y, z + 1u32);
-  imm g6 = cornerGradient(g, values, x, y + 1u32, z + 1u32);
-  imm g7 = cornerGradient(g, values, x + 1u32, y + 1u32, z + 1u32);
   mut piece = 0u32;
   while piece < n {
     mut sum = new Vec3(0., 0., 0.);
     mut count = 0u32;
     mut e = 0u32;
     while e < 12u32 {
-      if packedEdge(w0, w1, e) == piece {
+      if tableEdge(tables, config, e) == piece {
         imm c0 = edgeStart(e);
-        imm d0 = d.at(c0);
-        imm t = divExact(d0, d0 - d.at(edgeEnd(e)));
+        imm d0 = cornerValue(g, values, x, y, z, c0);
+        imm t = divExact(d0, d0 - cornerValue(g, values, x, y, z, edgeEnd(e)));
         imm a = e / 4u32;
         imm within = new Vec3(if a == 0u32 { t; } else { f32.from(cornerBit(c0, 0u32)); },
           if a == 1u32 { t; } else { f32.from(cornerBit(c0, 1u32)); },
@@ -464,18 +322,14 @@ pub fn @compute(64) place(inv Invocation, g SampleGrid, tables &[]u32, values &[
     positions[v] = new Vec3(corner.x + cs * avg.x, corner.y + cs * avg.y, corner.z + cs * avg.z);
 
     // The corners' gradients blended at (u, v, w) = avg in the cell, corner
-    // by corner in order
-    imm ux = 1. - avg.x;
-    imm uy = 1. - avg.y;
-    imm uz = 1. - avg.z;
-    mut grad = g0 * (ux * uy * uz);
-    grad = grad + g1 * (avg.x * uy * uz);
-    grad = grad + g2 * (ux * avg.y * uz);
-    grad = grad + g3 * (avg.x * avg.y * uz);
-    grad = grad + g4 * (ux * uy * avg.z);
-    grad = grad + g5 * (avg.x * uy * avg.z);
-    grad = grad + g6 * (ux * avg.y * avg.z);
-    grad = grad + g7 * (avg.x * avg.y * avg.z);
+    // by corner in order, starting from corner 0's (not from zero, which
+    // would turn a -0 into +0)
+    mut grad = cellCornerGradient(g, values, x, y, z, 0u32) * cornerWeight(avg, 0u32);
+    mut c = 1u32;
+    while c < 8u32 {
+      grad = grad + cellCornerGradient(g, values, x, y, z, c) * cornerWeight(avg, c);
+      c = c + 1u32;
+    }
     imm len2 = grad.x * grad.x + grad.y * grad.y + grad.z * grad.z;
     normals[v] = if len2 > 0. { grad * divExact(1., sqrtExact(len2)); } else { new Vec3(1., 0., 0.); };
     vertexCells[v] = i;
