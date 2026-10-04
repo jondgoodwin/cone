@@ -16,8 +16,9 @@
 //   and dropped where its local dies;
 // - a future handed to another actor in a message and awaited there;
 // - in a loop, in an expression with a value in flight, of a tuple;
-// - never awaited: dropped before its value arrives, the value is finalized
-//   when the future is freed;
+// - never awaited: declared last in an inner block before an 'await', and
+//   dropped once there (the shape a double drop once freed early), the value
+//   finalized when the future is freed;
 // - every future freed by the end (actors.liveFutures()).
 
 mod concurrency_future;
@@ -52,12 +53,6 @@ actor Asker {
   col Collector;
 
   pub async do double(self, n u64) u64 {n * 2u64;}
-
-  // A future never awaited: it goes as 'lost' does, before its value arrives
-  // or after, and the value is finalized when the future is freed
-  fn lose(self) {
-    imm lost = m.note(9u64);
-  }
 
   pub async do go(self) {
     imm keep = new Note(100u64);
@@ -103,7 +98,12 @@ actor Asker {
     a, b = await t;
     say("a tuple", a * 10u64 + b);
 
-    self.lose();
+    // A future never awaited, declared last in an inner block before an
+    // 'await': it goes once, at the block's end, before its value arrives or
+    // after, and the value is finalized when the future is freed
+    {
+      imm lost = m.note(9u64);
+    }
     say("never awaited, then", await m.count(0u64));
     say("end", keep.n);
   }
