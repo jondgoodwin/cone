@@ -1,0 +1,75 @@
+// On the CPU a kernel's barrier calls the hook this thread has set with
+// core's setBarrierHook, handed the hook's context and the barrier's kind (0
+// workgroupBarrier, 1 storageBarrier), and is nothing when none is set. Here
+// the hook counts the barriers of each kind into the array its context points
+// at. A dispatch of 3 workgroups of 4, run one invocation at a time, gives the
+// same sums each time; with no hook set nothing is counted, with one set each
+// invocation's two barriers are, and once it is cleared nothing is again.
+
+mod module_compute_barrier_hook;
+
+import stdio use *;
+
+mut @workgroup total u32;
+
+fn @compute(4) sums(inv Invocation, input &[]u32, out &[]mut u32) {
+  imm l = inv.localIndex;
+  if l == 0u32 { total = 0u32; }
+  workgroupBarrier();
+  total = total + input[usize.from(inv.globalId[0])];
+  storageBarrier();
+  if l == 3u32 { out[usize.from(inv.groupId[0])] = total; }
+}
+
+// The hook: one count for each kind, in the two u32s ctx points at
+fn count(ctx *u8, kind u32) {
+  imm c = (ctx as *u32) + usize.from(kind);
+  mem.writeRaw[u32](c, mem.readRaw[u32](c) + 1u32);
+}
+
+fn dispatch(input &[]u32, out &[]mut u32) {
+  mut g = 0u32;
+  while g < 3u32 {
+    mut l = 0u32;
+    while l < 4u32 {
+      imm inv = new Invocation([g * 4u32 + l, 0u32, 0u32], [l, 0u32, 0u32], [g, 0u32, 0u32], l, [3u32, 1u32, 1u32]);
+      sums(inv, input, out);
+      l = l + 1u32;
+    }
+    g = g + 1u32;
+  }
+}
+
+fn report(what &[]u8, group &[]u32, counts &[]u32) {
+  printStr(what);
+  printStr(": sums ");
+  printUInt(u64.from(group[0usize]));
+  printStr(" ");
+  printUInt(u64.from(group[1usize]));
+  printStr(" ");
+  printUInt(u64.from(group[2usize]));
+  printStr(", workgroup barriers ");
+  printUInt(u64.from(counts[0usize]));
+  printStr(", storage barriers ");
+  printUInt(u64.from(counts[1usize]));
+  printStr("\n");
+}
+
+fn main() {
+  mut input Array[u32, 12] = [3u32, 4u32, 6u32, 7u32, 9u32, 10u32, 11u32, 12u32, 13u32, 15u32, 16u32, 18u32];
+  mut counts Array[u32, 2] = [0u32, 0u32];
+
+  mut group Array[u32, 3] = [0u32, 0u32, 0u32];
+  dispatch(&input, &mut group);
+  report("no hook", &group, &counts);
+
+  setBarrierHook(&count, &mut counts as *u8);
+  group = [0u32, 0u32, 0u32];
+  dispatch(&input, &mut group);
+  report("hook set", &group, &counts);
+
+  clearBarrierHook();
+  group = [0u32, 0u32, 0u32];
+  dispatch(&input, &mut group);
+  report("cleared", &group, &counts);
+}

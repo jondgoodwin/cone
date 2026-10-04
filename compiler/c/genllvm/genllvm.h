@@ -243,6 +243,9 @@ INode *genlGpuSiteOf(GenState *gen, LLVMValueRef inst);
 // A workgroup barrier: every invocation of the workgroup waits there, and the
 // workgroup's memory ('storage' 0) or the storage buffers' (1) is made visible
 LLVMValueRef genlGpuBarrier(GenState *gen, int storage);
+// The same barrier on the CPU: a call to the thread's barrier hook, conestd's
+// 'cone_barrierHook', when it is set, handed its context and the kind
+void genlCpuBarrier(GenState *gen, int storage);
 // Mark an atomic instruction with the call to mem's intrinsic it was made for,
 // unless that call is core's own (an Atomic method's), on the Vulkan form
 void genlGpuAtomicSite(GenState *gen, LLVMValueRef inst, INode *call);

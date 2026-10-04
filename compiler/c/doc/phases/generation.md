@@ -169,7 +169,7 @@ every declaration given a global so far, and one of them gives way:
 | both external, both defined here | `ErrorCNameDefTwice` |
 | the newcomer only declares it | it shares the holder's global, and its own is deleted |
 | the newcomer defines it, the holder only declares it | the definition takes over: every use of the declaration and every node pointing at it is moved to the definition's global, the declaration is deleted, and the definition takes the name. So the linkage, calling convention, storage class and debug subprogram are the definition's whichever is generated first, and `genlFn` or `genlGloVar` attaches the body or the value to that one global |
-| the holder is an external symbol the compiler declared itself | an LLVM intrinsic or a conestd entry it calls by name (`llvm.trap` and the `cone_panic…` entries, `genlPanic`): a function declaration shares it, cast to its own type where they differ. Anything else is `ErrorCNameConflict`. The compiler declares no C function of the C library: a region's memory goes back through the region's `free`, which calls `libc`'s. It declares five of conestd's, and only while generating bodies, after every declaration has its global: `cone_gcframes` and `cone_traceRoots` (roots, below), and `cone_panicIndex`, `cone_panicSlice` and `cone_panicAlloc` (a failed check, section 6), each looked up by name first and shared with any declaration already holding it |
+| the holder is an external symbol the compiler declared itself | an LLVM intrinsic or a conestd entry it calls by name (`llvm.trap` and the `cone_panic…` entries, `genlPanic`): a function declaration shares it, cast to its own type where they differ. Anything else is `ErrorCNameConflict`. The compiler declares no C function of the C library: a region's memory goes back through the region's `free`, which calls `libc`'s. It declares seven of conestd's, and only while generating bodies, after every declaration has its global: `cone_gcframes` and `cone_traceRoots` (roots, below), `cone_panicIndex`, `cone_panicSlice` and `cone_panicAlloc` (a failed check, section 6), and the thread-locals `cone_barrierHook` and `cone_barrierCtx` (a barrier on the CPU, section 7), each looked up by name first and shared with any declaration already holding it |
 
 "Defined here" is `genlDefinition`'s answer, not whether a body is written: an
 imported module's `fn @c` body is a declaration in this object. An error leaves
@@ -1453,15 +1453,38 @@ Workgroup execution and memory scope, AcquireRelease | WorkgroupMemory) and
 `llvm.spv.device.memory.barrier.with.group.sync` (Workgroup execution, Device
 memory scope, AcquireRelease | UniformMemory | ImageMemory), the ones Clang's
 HLSL makes; both are `convergent`, which keeps the inliner and the structurizer
-from moving them. On the CPU each is nothing: the loop that runs a kernel runs
-one invocation at a time.
+from moving them.
+
+**Barriers on the CPU.** A kernel's CPU twin may run a workgroup's
+invocations one at a time, where a barrier has nothing to wait for, or on
+threads, where it must wait for the others. So on a native target each barrier
+is a call to the running thread's barrier hook, when it has one
+(`genlCpuBarrier`): it loads conestd's thread-local `cone_barrierHook`, which
+core's `setBarrierHook` sets and `clearBarrierHook` clears
+(`packages/conestd/barrier.cone`), and only where it is not null loads
+`cone_barrierCtx` and calls the hook with it and the kind, `i32 0` for
+`workgroupBarrier` and `i32 1` for `storageBarrier`. The compiler declares the
+two thread-locals itself, by their C names, as it declares `cone_gcframes`.
+With none set a barrier costs the thread-local load (on Windows `_tls_index`,
+the TEB's TLS array, the block, the value) and a not-taken branch; the
+measured cost is in `refgpu.html`, "Barriers". The call is indirect, so no
+alias analysis lets LLVM move an access to a `@workgroup` global, an internal
+global whose address never escapes, across it: GlobalsAA's answer for an
+internal global is only for a direct call. The hook being the thread's own
+lets two twins run workgroups at once, each on its own threads, and a pool's
+thread set it once. WebAssembly links no conestd, so there a barrier stays
+nothing; with `--intrinsic-fallback` it is core's empty fallback body, as on
+every target.
 
 What does not work yet:
 
-- A kernel's CPU twin runs one invocation at a time, so a kernel whose
-  invocations read, after a barrier, what invocations after them write (a
-  workgroup's prefix sum) gives another answer on the CPU; nothing refuses
-  it.
+- A kernel's CPU twin in `gpuwork` still runs one invocation at a time, so a
+  kernel whose invocations read, after a barrier, what invocations after them
+  write (a workgroup's prefix sum) gives another answer there; nothing
+  refuses it. The barrier hook is what a twin running a workgroup on threads
+  sets (`concurrency_compute_barrier_threads` runs one by hand).
+- A `@workgroup` global has one native copy, which nothing resets or poisons
+  between workgroups; a twin cannot yet find a module's workgroup globals.
 - An imported package's functions are left as imports where a build
   description compiles the package on its own, so a kernel calling one
   carries the `Linkage` capability, which Vulkan's environment refuses; found
@@ -1546,6 +1569,7 @@ variables.
 | | `genlGpuNoContraction`, `genlGpuNoContractionAsm` | every float operation's result but a remainder's decorated `NoContraction`, in the module and in `--asm`'s text (section 7, "The C library's math") |
 | `genllvm/genlgpusync.c` | `genlGpuAtomics`, `genlGpuAtomicConstPtr`, `genlGpuCompareSwap`, `genlGpuAtomicSite` | on a GPU target, after optimization, each atomic's scope and ordering from its memory, an atomic at a constant place reached by an address-computing instruction, a compareSwap as `llvm.spv.cmpxchg`, one on unshared memory refused in a kernel (`ErrorGpuAtomicPlace`) (section 7, "What invocations share") |
 | | `genlGpuBarrier`, `genlGpuGlobalSpace` | the two barriers as LLVM's SPIR-V intrinsics; a `@workgroup` global's address space |
+| | `genlCpuBarrier` | a barrier on a native target: the thread's barrier hook called when it is set (section 7, "Barriers on the CPU") |
 | | `genlGpuSyncPatch` | the emitted module put right: a relaxed atomic's semantics None, a compare-and-swap's result rid of the insertions the backend writes after it |
 | `genllvm/genlcabi.c` | `genlCAbiTarget`, `genlIsCAbiFn`, `genlCAbiPass` | which C ABI the target follows, which functions cross by it, and how one struct crosses |
 | | `genlCAbiExtend`, `genlCAbiMarkExtends` | the `zeroext` or `signext` a narrow integer crosses with, marked on a declaration or a call |
@@ -1580,6 +1604,7 @@ variables.
 | | `genlTraceAt`, `genlTraceWalk`, `genlTraceRef`, `genlTraceVariants` | a value's traced references, each handed to its region's `mark`: a record's trace, and `mem.trace` |
 | | `genlBarrierAt`, `genlHoldsBarriered` | the write barrier: the same walk over a value just stored, each reference into a region with a `writeBarrier` handed to it |
 | `packages/conestd/roots.cone` | `cone_gcframes`, `cone_traceRoots` | the head of the chain of frames, and its walk, which `mem.traceRoots` calls |
+| `packages/conestd/barrier.cone` | `cone_barrierHook`, `cone_barrierCtx`, `cone_setBarrierHook`, `cone_clearBarrierHook` | the thread's barrier hook and its context, which a barrier on the CPU calls, and core's `setBarrierHook` and `clearBarrierHook` |
 | `ir/types/reference.h` | `enum ManagedRefFields` | `RegionField`, `PermField`, `ValueField` |
 | `ir/name.c` | `nameSymbol`, `nameType`, `nameVtable`, `nameVtableImpl`, `nameVtableList` | spelling a symbol from a node's owner chain and facts, and a type argument within it — the rules are in [Names and Namespaces](../../../../doc/design/names-and-namespaces.md), "Symbols" |
 | `ir/dclinfo.c` | `dclInfoJoin` | writes the declaration facts where a declaration joins its namespace |

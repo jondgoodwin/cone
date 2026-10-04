@@ -50,7 +50,9 @@ Visual Studio projects stay at the root.
   whose final design is open; and `Invocation`, which invocation of a
   compute dispatch is running, what a compute entry point,
   `fn @compute(64) name(...)`, may take, with `workgroupBarrier` and
-  `storageBarrier`, a compute workgroup's barriers, intrinsics outside `mem`);
+  `storageBarrier`, a compute workgroup's barriers, intrinsics outside `mem`,
+  which on the CPU call the thread's barrier hook, `setBarrierHook` and
+  `clearBarrierHook`, whose work is conestd's);
   `stdio` prints;
   `libc` and `posix` are C packages of raw bindings to the C library and the
   POSIX functions beyond it (Windows first), and `core` imports `libc` for its
@@ -557,7 +559,8 @@ Visual Studio projects stay at the root.
   plus per-node notes), `compiler/` (how `conec` itself is built and stays
   fast), and `diagnostics/` (measuring, error codes, test suite).
 - `packages/conestd/`: the runtime every native program links: printing, the
-  chain of traced roots, and what a panic does. It is Cone, one C-named module
+  chain of traced roots, what a panic does, and the thread-local barrier hook
+  a kernel's barriers call on the CPU. It is Cone, one C-named module
   (`conestd.cone` and the files beside it) that the build compiles with the
   `conec` it has just built, and one C file, `mainthread.c`, recording the
   thread the program started on before `main` runs, which Cone cannot say.
