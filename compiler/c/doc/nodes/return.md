@@ -142,7 +142,9 @@ handled inline in `genlBlock`.
   it.
 - **`blockret` is injected by two phases** — `blockTypeCheck` for regular
   blocks, `blockFlow` for loop blocks. Looking in only one is how the loop case
-  gets missed.
+  gets missed. Each block gets one: `blockFlow` keeps one type check made, since
+  a second is a second exit the drop walk releases at ([block](block.md),
+  "Hazards").
 - **`dealias` is NULL when the function failed its flow gate**, and generation
   then silently releases nothing. That is safe only because generation does not
   run when errors were reported.

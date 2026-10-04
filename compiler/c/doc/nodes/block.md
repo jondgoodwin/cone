@@ -8,7 +8,8 @@ binds a lifetime label, enforces jump placement, and repairs `each`'s
 brackets the scope, injects `blockret`, and builds the release list. Generation
 creates basic blocks only when it has to.
 
-*Provenance: read from source; the double `blockret` was measured.*
+*Provenance: read from source; the double `blockret`, and the double drop it
+caused, were measured.*
 
 ## Shape
 
@@ -116,10 +117,11 @@ would have no value.
 adds the signature's parameters to the variable stack.
 
 **`blockret` is injected here too, and this is the second of two sites.** If the
-last node is not a jump, flow wraps it (if it is an expression) or appends
-`blockret nil`. So: a loop block gets its `blockret` **only** from flow, and so
-does a regular block ending in an expression. `blockTypeCheck` handles only the
-third case. Looking in one place misses two.
+last node is neither a jump nor a `blockret`, flow wraps it (if it is an
+expression) or appends `blockret nil`. So: a loop block gets its `blockret`
+**only** from flow, and so does a regular block ending in an expression.
+`blockTypeCheck` handles only the third case, and flow keeps the `blockret` it
+made. Looking in one place misses two.
 
 The final node's value expression is walked, and its `dealias` built after —
 `return` unwinds from position 0, the whole function; `blockret` unwinds this
@@ -167,12 +169,15 @@ statement's entries are then dropped ([Generation](../phases/generation.md),
 
 ## Hazards
 
-- **A regular block can get two `blockret`s.** `blockTypeCheck` appends one for
-  a block not ending in an expression or a jump; that node is then not a jump
-  and not an expression, so `blockFlow`'s default arm appends **another**.
-  Measured: `{}` and `{ mut z = n }` each show two `blockret nil` in an `--ir`
-  dump. Harmless at generation — both emit nothing — but the first one's
-  `dealias` is never populated.
+- **A regular block must not get two `blockret`s.** `blockTypeCheck` appends one
+  for a block not ending in an expression or a jump -- `{}`, `{ imm f = mk(); }`
+  -- so `blockFlow` treats a final `blockret` as present. It once appended a
+  second: the main walk built the first one's `dealias` empty, but the path
+  walk records a release at every exit it meets, and the drop walk
+  (`dropApplyExit`) rebuilt both lists, so in any function it walks -- one with
+  a drop flag, or a behaviour holding an `await` -- a droppable declared last in
+  a block was finalized twice, a counted one freed twice (`move_drop_flags`,
+  `concurrency_await_split`).
 - **A colliding lifetime label is not hooked** after its diagnostic, so an inner
   `break 'x` binds to the outer block.
 - **`breakNameRes` accepts any labelled block; `continueNameRes` requires a
