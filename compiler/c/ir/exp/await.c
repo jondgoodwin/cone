@@ -146,8 +146,9 @@ static int awaitDemandRuntime(TypeCheckState *pstate, AwaitNode *node) {
 // R. What R is, and so what the second half sees, is the operation's to
 // declare: an I/O operation's is a Result, success or the system's failure,
 // as a synchronous call that can fail answers. Nothing is added by 'await'
-// itself. That result must be used: an 'await' on an operation whose value
-// is unwanted -- a statement of its own -- is refused (ErrorAwaitUnused)
+// itself. That result should be used: an 'await' on an operation whose value
+// is unwanted -- a statement of its own -- is warned (WarnAwaitUnused), and
+// compiles, the answer dropped
 static void awaitOperation(TypeCheckState *pstate, AwaitNode *node, INode *expectType) {
     INode *result = actorAwaitableResult(((IExpNode *)node->exp)->vtype);
     if (result == NULL)
@@ -162,8 +163,8 @@ static void awaitOperation(TypeCheckState *pstate, AwaitNode *node, INode *expec
     if (expectType == noCareType || (expected && expected->tag == VoidTag)) {
         char rname[256] = "";
         itypeSpellCat(rname, sizeof(rname), result, 0);
-        errorMsgNode((INode *)node, ErrorAwaitUnused,
-            "This 'await' waits for an operation, which answers with a %s, and the answer is not used. An operation's answer says whether it worked, a failure among what it may say, as a synchronous call that can fail answers, and it must be looked at: bind it, 'imm r = await ...', and match on it.",
+        errorMsgNode((INode *)node, WarnAwaitUnused,
+            "This 'await' waits for an operation, which answers with a %s, and the answer is thrown away. An operation's answer says whether it worked, a failure among what it may say, as a synchronous call that can fail answers, so a failure here goes unread: bind it, 'imm r = await ...', and match on it.",
             rname);
     }
 }
