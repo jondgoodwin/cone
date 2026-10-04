@@ -1,0 +1,68 @@
+// A behaviour parked on a future that is then abandoned is ended quietly, as
+// one parked on the request itself is when that request is abandoned: no
+// panic, its record dropped when its actor dies, each value it held finalized
+// in the order its one scope gives, the rest of it never run. So the
+// program's end, which abandons what is outstanding, ends
+// 'imm f = s.count(); await f' as it ends 'await s.count()'.
+//
+// Stuck's 'count' awaits an operation that drops its envelope unanswered, so
+// it stays parked. Asker's 'collect' awaits the future while Stuck lives, and
+// parks on it (main waits until all is quiet, actors.waitQuiet). Then Stuck's
+// last handle goes, at its block's end: Stuck dies, its record is dropped with
+// the future's producer's reference, and the future is abandoned, which
+// abandons Asker's waiter and lets go of its count of Asker, printing nothing.
+// When Asker's own last handle goes, Asker dies and its record is dropped:
+// 'second', then 'first', before 'ended'. Each actor dies on main's thread,
+// which let go of its last handle, so the order is fixed; it was checked by
+// hand against the source.
+
+mod concurrency_future_abandoned_parked;
+
+import stdio use *;
+import actors;
+
+fn say(s &[]u8, n u64) {printStr(s); printStr(" "); printUInt(n); printStr("\n");}
+
+struct Note {
+  pub n u64;
+  fn final(self &uni) {say("  drop", n);}
+}
+
+fn startNever(ctx *u8, rp actors.Reply) {}
+fn dropNever(ctx *u8) {}
+fn never() actors.Awaitable[u64] {
+  actors.Awaitable[u64].make(1usize as *u8, &startNever, &dropNever);
+}
+
+actor Stuck {
+  pub async do count(self) u64 {
+    imm n = await never();
+    n;
+  }
+}
+
+actor Asker {
+  pub async do collect(self, f actors.Future[u64]) {
+    imm first = new Note(1u64);
+    imm second = new Note(2u64);
+    imm n = await f;
+    say("never printed", n);
+  }
+}
+
+fn main() {
+  initAll();
+  {
+    imm a = new Asker();
+    {
+      imm s = new Stuck();
+      a.collect(s.count());
+      actors.waitQuiet();
+      say("parked", 0u64);
+    }                           // Stuck's last handle goes
+    say("abandoned", 0u64);
+  }                             // Asker's
+  say("ended", 0u64);
+  finalAll();
+  say("futures live", u64.from(actors.liveFutures()));
+}

@@ -1,0 +1,51 @@
+// An 'await' that finds its future abandoned already panics, reported at the
+// 'await', naming the request: a bare 'await' assumes the value arrives.
+// Stuck's 'count' awaits an operation that drops its envelope unanswered, so
+// 'count' stays parked; when Stuck's last handle goes, Stuck dies, its parked
+// record is dropped, and with it the future's producer's reference, which
+// abandons the future. main waits until all is quiet (actors.waitQuiet), so
+// the future is abandoned before it is handed to Asker, whose 'await' finds
+// it so. (A behaviour parked on the future when it is abandoned is ended
+// quietly instead: concurrency_future_abandoned_parked.)
+
+mod concurrency_future_abandoned;
+
+import stdio use *;
+import actors;
+
+fn startNever(ctx *u8, rp actors.Reply) {}
+fn dropNever(ctx *u8) {}
+fn never() actors.Awaitable[u64] {
+  actors.Awaitable[u64].make(1usize as *u8, &startNever, &dropNever);
+}
+
+actor Stuck {
+  pub async do count(self) u64 {
+    imm n = await never();
+    n;
+  }
+}
+
+actor Asker {
+  pub async do collect(self, f actors.Future[u64]) {
+    printStr("awaiting\n");
+    imm n = await f;
+    printStr("never printed\n");
+  }
+}
+
+fn main() {
+  initAll();
+  {
+    imm a = new Asker();
+    imm s = new Stuck();
+    imm f = s.count();
+    gone(s);
+    actors.waitQuiet();
+    a.collect(f);
+  }
+  finalAll();
+}
+
+// Stuck's last handle goes here
+fn gone(s Stuck) {}

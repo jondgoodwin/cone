@@ -485,8 +485,18 @@ void inodeTypeCheck(TypeCheckState *pstate, INode **node, INode *expectType) {
         break;
     case VTupleTag:
         vtupleTypeCheck(pstate, (TupleNode *)*node); break;
+    // A call of a behaviour returning a value, its value used, gives its
+    // future (actorFutureCall); as a statement of its own, it is fire and
+    // forget
     case FnCallTag:
-        fnCallTypeCheck(pstate, (FnCallNode **)node); break;
+    {
+        int awaited = *node == actorAwaitOperand;
+        fnCallTypeCheck(pstate, (FnCallNode **)node);
+        if (!awaited && expectType != noCareType && (*node)->tag == FnCallTag
+            && (expectType == NULL || !isTypeNode(expectType) || itypeGetTypeDcl(expectType)->tag != VoidTag))
+            actorFutureCall(pstate, (FnCallNode *)*node);
+        break;
+    }
     case SizeofTag:
         sizeofTypeCheck(pstate, (SizeofNode *)*node); break;
     case CastTag:

@@ -28,6 +28,8 @@ typedef struct ActorMessage {
     FnDclNode *send;        // The handle's method sending it, no reply wanted
     FnDclNode *ask;         // The handle's method sending it awaited, with a reply's
                             // envelope; NULL where the method returns nothing
+    FnDclNode *future;      // The handle's method sending it for a future, which it
+                            // gives back; NULL where the method returns nothing
 } ActorMessage;
 
 // What the parser generated for one actor
@@ -63,10 +65,32 @@ enum ActorRuntimeFn {
     ActorRtAnswerTo,        // answerTo(slot &mut Answer) *u8
     ActorRtAnswered,        // answered(slot &mut Answer)
     ActorRtStartAwait,      // startAwait(a *u8, rp Reply): an Awaitable started at its seam
+    ActorRtFutureReady,     // futureReady(fut *u8) Bool: a Future has its ending
+    ActorRtFutureRegister,  // futureRegister(fut *u8, rp Reply) Bool: park on it, unless it has
+    ActorRtFutureOpen,      // futureOpen(fut *u8, file &[]u8, line u32) *u8: where its value is
+    ActorRtFutureTaken,     // futureTaken(fut *u8): a move value read out of it
     ActorRtCount
 };
 extern FnDclNode *actorRuntime[ActorRtCount];
 extern char *actorRuntimeNames[ActorRtCount];
+
+// The actors package's Future[T], the consumer's reference to a future: what
+// a call of a behaviour returning a T gives where its value is used, and what
+// an 'await' may wait for. NULL until the parser binds the package
+extern StructNode *actorFuture;
+
+// The T of an instance of actors.Future[T], what an 'await' on it gives, or
+// NULL where 'type' is no such instance
+INode *actorFutureResult(INode *type);
+
+// A call whose value is used, of a handle's method sending a behaviour that
+// returns a value, is made a call of the handle's method that sends it for a
+// future, and its value is the future. Called once the call is checked
+void actorFutureCall(TypeCheckState *pstate, FnCallNode *call);
+
+// The operand an 'await' is checking, whose call (if it is one) is not made
+// a future's: the 'await' takes the reply itself
+extern INode *actorAwaitOperand;
 
 // The actors package's Awaitable[R], the generic an 'await' on an operation
 // (an I/O operation) awaits an instance of, found where the parser bound the

@@ -376,7 +376,7 @@ the parser, for a borrow or the state itself, or `actorCheckAll` after type
 check -- and the state's field or synchronous method reached through the
 handle is `ErrorNotPublic`, as any private member is.
 
-`await` has four error codes and a warning. Where it may not stand -- anywhere
+`await` has five error codes and a warning. Where it may not stand -- anywhere
 but a behaviour -- is `ErrorAwaitPlace`; on a behaviour that returns nothing,
 which sends no reply, it is `ErrorAwaitVoid`, a rule rather than a gap; a
 borrow or a place written to its left in the same statement, which the rest of
@@ -387,15 +387,23 @@ an I/O operation) whose answer nothing uses, a statement of its own, is the
 warning `WarnAwaitUnused` (3005): the answer is a result saying whether the
 operation worked, and the program compiles with it dropped. It was the error
 1280, `ErrorAwaitUnused`, now a hole: a thrown-away result is to be warned on
-any statement, not refused, and this is the `await` part of that; where it
-stands and is not built is `ErrorUnbuiltAwait`, whose
-message says why and, where the seam's rules were checked, what its
-continuation would carry: an `await` on anything but a behaviour or an
-operation, in a construct the split does not reach, or whose record would hold
-a traced reference. `selfactor` outside an actor's methods, or in
-its `final`, is `ErrorSelfActorPlace`; in its `init` before the state is
-filled, it is a use through an unfilled `self`, `ErrorInitSelf`, as
-`self.m()` there is.
+any statement, not refused, and this is the `await` part of that. An `await`
+on anything but a behaviour's reply, a future or an operation, which waits for
+no answer, is `ErrorAwaitNotFuture`, a rule, whose message also says what the
+seam's continuation would carry, which is how the seam's rules are pinned on a
+plain function's call; where it stands and is not built is
+`ErrorUnbuiltAwait`, whose message says why: in a construct the split does not
+reach, or whose record would hold a traced reference. `selfactor` outside an
+actor's methods, or in its `final`, is `ErrorSelfActorPlace`; in its `init`
+before the state is filled, it is a use through an unfilled `self`,
+`ErrorInitSelf`, as `self.m()` there is.
+
+A future (`actors.Future[T]`, what a call of a behaviour returning a T gives
+where its value is kept) has one code of its own: the value of a call of a
+behaviour returning nothing, kept, is `ErrorFutureVoid`, a rule beside
+`ErrorAwaitVoid`: there is no future to keep. A future of a move value awaited
+twice is the ordinary `ErrorMove`, and one crossing to an actor whose value
+cannot is the thread check's `ErrorNotSendable`.
 
 A GPU target takes four codes, one per remedy, all for what SPIR-V's logical
 addressing cannot type. A reference, or a value holding one, chosen at run

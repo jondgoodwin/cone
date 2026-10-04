@@ -134,6 +134,7 @@ typedef struct GenState {
     LLVMValueRef *resumedest;
     LLVMValueRef *resumeheld;
     uint32_t resumeheldcnt;
+    LLVMValueRef resumeslot;    // A future's seam: where the value awaited is, which the half's entry fills
     GenFlight *flights;     // The values in flight across a seam, oldest first
     uint32_t flightcnt;
     uint32_t flightmax;

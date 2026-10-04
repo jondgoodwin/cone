@@ -25,6 +25,7 @@ AwaitNode *newAwaitNode() {
     node->genseam = NULL;
     node->message = NULL;
     node->awaitable = NULL;
+    node->future = NULL;
     node->walked = 0;
     return node;
 }
@@ -58,6 +59,7 @@ INode *cloneAwaitNode(CloneState *cstate, AwaitNode *node) {
     newnode->genseam = NULL;
     newnode->message = NULL;
     newnode->awaitable = NULL;
+    newnode->future = NULL;
     newnode->walked = 0;
     return (INode *)newnode;
 }
@@ -217,6 +219,23 @@ static void awaitMessage(TypeCheckState *pstate, AwaitNode *node) {
     node->vtype = ((FnSigNode *)msg->method->vtype)->rettype;
 }
 
+// What is awaited is a future, a value of an instance of the actors package's
+// Future[T]: what a call of a behaviour returning a T gives where its value is
+// used, stored and perhaps handed on. The seam parks on it unless it has its
+// ending already, and the 'await''s value is the T opened out of it, a panic
+// if it never arrived. Its value may go unused, as a behaviour's reply's may
+static void awaitFuture(TypeCheckState *pstate, AwaitNode *node) {
+    INode *result = actorFutureResult(((IExpNode *)node->exp)->vtype);
+    if (result == NULL)
+        return;
+    if (node->future == NULL && !awaitDemandRuntime(pstate, node)) {
+        node->vtype = errorType;
+        return;
+    }
+    node->future = itypeGetTypeDcl(((IExpNode *)node->exp)->vtype);
+    node->vtype = result;
+}
+
 // Type check await
 void awaitTypeCheck(TypeCheckState *pstate, AwaitNode *node, INode *expectType) {
     char buf[600];
@@ -225,7 +244,12 @@ void awaitTypeCheck(TypeCheckState *pstate, AwaitNode *node, INode *expectType) 
         errorMsgNode((INode *)node, ErrorAwaitPlace,
             "'await' stands only in an actor's behaviour, declared 'async do', where the behaviour is cut and returns to the actor's dispatcher to wait. %s",
             where);
-    if (!iexpTypeCheckAny(pstate, &node->exp))
+    // A behaviour's call awaited is sent awaited, never for a future
+    INode *svoperand = actorAwaitOperand;
+    actorAwaitOperand = node->exp;
+    int typed = iexpTypeCheckAny(pstate, &node->exp);
+    actorAwaitOperand = svoperand;
+    if (!typed)
         return;
     // Refused, it has no value, which is not reported again where it is used
     if (where) {
@@ -236,6 +260,8 @@ void awaitTypeCheck(TypeCheckState *pstate, AwaitNode *node, INode *expectType) 
     awaitMessage(pstate, node);
     if (node->message == NULL)
         awaitOperation(pstate, node, expectType);
+    if (node->message == NULL && node->awaitable == NULL)
+        awaitFuture(pstate, node);
 }
 
 // 'selfactor' is the actor's own handle: another owner of its mailbox, made
@@ -368,14 +394,34 @@ static int seamIsSelf(SeamVar *sv) {
     return (sv->flags & SeamParm) && sv->var->namesym == selfName;
 }
 
-void awaitReportUnbuilt(Nodes *awaits) {
+// Each 'await' reported, with what its seam would have done, which pins the
+// seam's rules where nothing is generated. Where 'notfuture', each is in a
+// behaviour and waits for no answer -- what it awaits is no behaviour's
+// reply, no future and no operation -- and is refused as such; otherwise it
+// stands where the split is not built
+static void awaitReportSeams(Nodes *awaits, int notfuture) {
     INode **nodesp;
     uint32_t cnt;
     for (nodesFor(awaits, cnt, nodesp)) {
         AwaitNode *node = (AwaitNode *)*nodesp;
-        char *unbuilt = "'await' is not built yet, so nothing is generated for it.";
+        char lead[600];
+        int code = ErrorUnbuiltAwait;
+        snprintf(lead, sizeof(lead), "'await' is not built yet, so nothing is generated for it.");
+        if (notfuture) {
+            char tname[256] = "";
+            INode *type = ((IExpNode *)node->exp)->vtype;
+            if (type && itypeGetTypeDcl(type)->tag == VoidTag)
+                snprintf(tname, sizeof(tname), "call that gives nothing");
+            else if (type)
+                itypeSpellCat(tname, sizeof(tname), type, 0);
+            code = ErrorAwaitNotFuture;
+            snprintf(lead, sizeof(lead),
+                "'await' waits for an answer: a behaviour's reply, a future a behaviour's call gave, or an operation. This one awaits a %s, which is none of them, so nothing is generated for it.",
+                tname);
+        }
+        char *unbuilt = lead;
         if (!node->walked) {
-            errorMsgNode((INode *)node, ErrorUnbuiltAwait, "%s No path reaches this seam.", unbuilt);
+            errorMsgNode((INode *)node, code, "%s No path reaches this seam.", unbuilt);
             continue;
         }
         char record[512], finals[512], ended[512], locks[512], behind[512];
@@ -411,10 +457,14 @@ void awaitReportUnbuilt(Nodes *awaits) {
             if (!seamIsSelf(sv) && (sv->flags & SeamOpen) && (sv->flags & SeamDies) && !(sv->flags & SeamGuard))
                 seamListVar(&lfinals, sv, 0);
         }
-        errorMsgNode((INode *)node, ErrorUnbuiltAwait,
+        errorMsgNode((INode *)node, code,
             "%s Its seam would end the borrows held by [%s]; give back [%s]; move into the continuation's record [%s], finalized as if the method were not cut, in the order [%s]; and leave behind [%s].",
             unbuilt, ended, locks, record, finals, behind);
     }
+}
+
+void awaitReportUnbuilt(Nodes *awaits) {
+    awaitReportSeams(awaits, 0);
 }
 
 // *********************
@@ -894,27 +944,27 @@ void awaitSplitOrReport(FnDclNode *fn, Nodes *awaits) {
     }
     INode **nodesp;
     uint32_t cnt;
-    // What is awaited is a behaviour returning a value, or an operation, whose
-    // reply calls the second half; any other seam is built only under
-    // '--await-direct', for tests
+    // What is awaited is a behaviour returning a value, an operation or a
+    // future, whose answer calls the second half; any other 'await' waits for
+    // nothing, and is refused, unless '--await-direct', for tests, builds it
     Nodes *unbuilt = NULL;
     for (nodesFor(awaits, cnt, nodesp)) {
         AwaitNode *node = (AwaitNode *)*nodesp;
-        if (node->message == NULL && node->awaitable == NULL && !awaitDirect) {
+        if (!awaitParks(node) && !awaitDirect) {
             if (unbuilt == NULL)
                 unbuilt = newNodes(4);
             nodesAdd(&unbuilt, (INode *)node);
         }
     }
     if (unbuilt) {
-        awaitReportUnbuilt(unbuilt);
+        awaitReportSeams(unbuilt, 1);
         return;
     }
     uint32_t bad = 0;
     awaitWalk(fn->value, 1, &bad);
     for (nodesFor(awaits, cnt, nodesp)) {
         AwaitNode *node = (AwaitNode *)*nodesp;
-        if ((node->message || node->awaitable) && awaitRecordTraced(node))
+        if (awaitParks(node) && awaitRecordTraced(node))
             ++bad;
     }
     if (bad)

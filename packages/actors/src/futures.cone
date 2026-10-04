@@ -1,0 +1,316 @@
+// Futures: a behaviour's value, stored to be awaited later (the package's
+// header, FUTURES).
+//
+//   imm fut = peer.count();     // the request is sent; a Future[u64] comes back
+//   ...                         // other work
+//   imm n = await fut;          // its value, once it has arrived
+//
+// A FUTURE is one allocation in the futures region, Futures: the region's
+// header, one atomic count, and then the future's payload, FutureCell[T]
+// (its state, its waiters, where its value is, whom it is owed by), and then
+// room for the value, a T. The region does the counting and nothing else; the
+// payload is the protocol, and the region knows nothing of it.
+//
+// Two kinds of reference count toward the one count, and the future lives
+// while either does:
+//
+// - the PRODUCER'S: a Reply whose 'cell' is the future, made when the
+//   request is sent (futureReply) and carried in the message, invisible in
+//   the source, as an awaited request's envelope is. The behaviour answering
+//   writes its value into the future through it, once, and lets it go
+//   (post); one dropped unanswered abandons the future (Reply's final).
+// - the CONSUMER'S: Future[T], the value the call gives back, which may be
+//   stored, handed on, sent to another actor, and awaited. Future[T] moves
+//   when T moves and copies when T copies: taking the value out of a future
+//   is a move when T is a move type, so there is never a second taker. It is
+//   Sendable when T is, its payload declaring Sendable on its word for any T
+//   that is.
+//
+// Its STATE is atomic: Pending, then Arrived when the value is written, then
+// Taken once a move value is taken out; or Abandoned, when the producer's
+// reference went unanswered. (Cancelled and TimedOut are kept for a deadline
+// or a cancel, which nothing makes yet.) The producer writes the value and
+// then stores the state with Release; a reader loads it with Acquire before
+// it reads the value.
+//
+// Its WAITERS are the continuations parked on it: each 'await' on a future
+// still Pending parks its behaviour as an awaited request's does, its record
+// in its actor's pending table, and builds the message that will resume it
+// -- the reply's node, its resume message written -- at once. That node is
+// the waiter: in its data it holds the consumer's reference the 'await' took,
+// a link to the next waiter, and the actor to push it to (Waiter). The future
+// holds the list's head, so registering allocates nothing more, and
+// completing allocates nothing at all: the producer stores the state, closes
+// the list with one swap, and pushes each node to its actor's mailbox. When
+// the node is dispatched, the second half opens the future through the
+// reference in it.
+//
+// ABANDONED, a future ends its waiters' behaviours quietly: each parked one
+// is abandoned as a behaviour paused on the request itself would be when its
+// envelope is dropped unanswered -- its record dropped when its actor dies,
+// its values finalized in the order its scope gives, its second half never
+// run -- so that the program's end, which cancels and abandons what is
+// outstanding, ends 'imm f = s.next(); await f' as it ends 'await s.next()'.
+// An 'await' that finds the future abandoned already panics at its line
+// (futureOpen): a bare 'await' assumes the value arrives.
+//
+// REGISTERING AND SEEING IT ARRIVE are one atomic step: a waiter joins the
+// list with a compare-and-swap of its head, which fails once the producer has
+// closed it, and then it does not park: the behaviour goes on at once, as an
+// 'await' does on a future already arrived, with no seam at all
+// (futureReady, futureRegister).
+//
+// Nobody awaiting a future is no special case: the producer still writes the
+// value, the last reference to go frees the future, and a value never taken
+// is finalized then (FutureCell's final). Every function the compiler's code
+// calls here takes where a Future lies, as '*u8': every Future[T] is laid out
+// alike, one pointer to its payload, and every payload's fields come before
+// its value, so these are compiled here once.
+
+// The futures region: before each future, one atomic count, which both kinds
+// of reference to the future hold. Arc's count, written again: so that the
+// region is the futures' alone, and is allocated only here
+struct Futures is RegionRef, ThreadSafe {
+  cnt usize;
+  fn alloc(size usize) *u8 inline {libc.malloc(size);}
+  fn init(self &new) inline {*self = new Futures(1usize);}
+  fn aliasRef(self &uni Futures) inline {
+    mem.atomicAdd[usize](self as *usize, 1usize, MemOrder.Relaxed[]);
+  }
+  fn dealiasRef(self &uni Futures) Bool inline {
+    imm last = mem.atomicSub[usize](self as *usize, 1usize, MemOrder.Release[]) == 1usize;
+    if last {mem.atomicLoad[usize](self as *usize, MemOrder.Acquire[]);}
+    last;
+  }
+  fn free(self &uni Futures) {
+    mem.atomicSub[usize](&mut futuresLive as *usize, 1usize, MemOrder.Relaxed[]);
+    libc.free(self as *u8);
+  }
+}
+
+// How many futures are allocated and not yet freed: for tests, and for
+// finding leaks
+mut futuresLive = 0usize;
+
+// The number given the next future's request, for 'owes'
+mut futuresMade = 0u64;
+
+pub fn liveFutures() usize {
+  mem.atomicLoad[usize](&mut futuresLive as *usize, MemOrder.Acquire[]);
+}
+
+// A future's state
+const futPending = 0u32;
+const futArrived = 1u32;
+const futTaken = 2u32;
+const futCancelled = 3u32;
+const futTimedOut = 4u32;
+const futAbandoned = 5u32;
+
+// The waiter list's head once its future has its ending: nobody joins it then
+const waitersClosed = 1usize;
+
+// A future's payload: everything but the count. T is in no field: the value
+// is after the payload, at 'value', written by the producer, and finalized
+// with the payload only where it arrived and was never taken. Sendable on
+// its word, where T is (an instance is Sendable only where its type
+// arguments are)
+struct FutureCell[T] is Sendable {
+  pub state u32;            // atomic
+  pub waiters *Waiter;      // atomic: the parked continuations, or waitersClosed
+  pub value *u8;            // where the value is
+  pub owesActor usize;      // the actor that owes it, its address: for diagnostics only
+  pub owesId u64;           // and the request's number
+  pub release &fn(c *u8);   // futureRelease[T]: lets go of one count, without naming T
+
+  fn final(self &uni) {
+    if state == futArrived {
+      mem.finalize[T](value as *T);
+    }
+  }
+}
+
+// A continuation parked on a future: the data of the reply's node an 'await'
+// made, its resume message in the node before it
+struct Waiter {
+  pub fut *u8;              // the consumer's reference the 'await' took
+  pub next *Waiter;
+  pub to *Header;           // the actor that awaits, of which the reply holds a count
+  pub node *Link;
+}
+
+// The consumer's reference to a future whose value is a T: what a call of a
+// behaviour returning a T gives, 'imm fut = peer.count()', for an 'await'
+// to wait for, now or later, here or in another actor. It moves when T
+// moves and copies when T copies; each copy is counted
+pub struct Future[T] is Move if T is Move {
+  cell Futures[opaq, FutureCell[T]];
+}
+
+// Where after its header a future's payload is
+fn cellOffset[T]() usize {
+  roundUp(mem.sizeof[Futures](), mem.alignof[FutureCell[T]]());
+}
+
+// A new future, Pending, owed by the actor whose Mailbox mb is: its one
+// count the consumer's reference this answers
+pub fn futureFor[T, M Sendable](mb &opaq Mailbox[M]) Future[T] {
+  imm off = cellOffset[T]();
+  imm voff = roundUp(mem.sizeof[FutureCell[T]](), mem.alignof[T]());
+  imm block = libc.malloc(off + voff + mem.sizeof[T]());
+  if block as usize == 0usize {
+    die("actors: out of memory for a future");
+  }
+  mem.atomicAdd[usize](&mut futuresLive as *usize, 1usize, MemOrder.Relaxed[]);
+  *(block as *usize) = 1usize;
+  imm c = (block + off) as *FutureCell[T];
+  (*c).state = futPending;
+  (*c).waiters = null;
+  (*c).value = block + off + voff;
+  (*c).owesActor = mb as *Header as usize;
+  (*c).owesId = mem.atomicAdd[u64](&mut futuresMade as *u64, 1u64, MemOrder.Relaxed[]) + 1u64;
+  (*c).release = &futureRelease[T];
+  new Future[T]((block as usize + off) as Futures[opaq, FutureCell[T]]);
+}
+
+// The producer's reference to future f, counted: the envelope its request
+// carries, into which the behaviour answering writes its value
+pub fn futureReply[T](f &Future[T]) Reply {
+  imm c = *(f as *Future[T] as **u8);
+  mem.atomicAdd[usize]((c - cellOffset[T]()) as *usize, 1usize, MemOrder.Relaxed[]);
+  new Reply(cell: c, data: (*(c as *FutureCell[T])).value);
+}
+
+// One count of the future whose payload is at c let go: a reference remade
+// from the address, uncounted, and dropped
+fn futureRelease[T](c *u8) {
+  mut slot = c;
+  imm f = mem.readRaw[Futures[opaq, FutureCell[T]]](&mut slot as *(Futures[opaq, FutureCell[T]]));
+}
+
+// The future whose payload is at c has its ending, s: Arrived, its value
+// written, or Abandoned. The state is stored, the waiter list closed, and
+// the producer's count let go last. Arrived, each waiter is pushed to its
+// actor, to resume. Abandoned, each is abandoned (ABANDONED, above) as an
+// envelope dropped unanswered is (Reply's final): its node freed, the
+// future's reference it held and its actor's count let go, its record left
+// parked for its actor's death to drop
+fn futureEnd(c *u8, s u32) {
+  imm cell = c as *FutureCell[u8];
+  imm release = (*cell).release;
+  mem.atomicStore[u32](&(*cell).state as *u32, s, MemOrder.Release[]);
+  mut w = mem.atomicSwap[*Waiter](&(*cell).waiters as **Waiter, waitersClosed as *Waiter, MemOrder.AcqRel[]);
+  while w as usize != 0usize {
+    imm next = (*w).next;
+    imm to = (*w).to;
+    imm node = (*w).node;
+    if s == futArrived {
+      pushReply(to, node);
+    } else {
+      release(c);
+      libc.free(node as *u8);
+      imm letgo = (*to).release;
+      letgo(to);
+    }
+    w = next;
+  }
+  release(c);
+}
+
+// The payload of the future lying at fut
+fn cellAt(fut *u8) *FutureCell[u8] {
+  *(fut as **FutureCell[u8]);
+}
+
+// Whether the future lying at fut has its ending, so that an 'await' on it
+// need not park: its value arrived, or it never will
+pub fn futureReady(fut *u8) Bool {
+  mem.atomicLoad[u32](&(*cellAt(fut)).state as *u32, MemOrder.Acquire[]) != futPending;
+}
+
+// Park a continuation on the future lying at fut: rp is the envelope its
+// 'await' made, whose data is room for a Waiter. Whether it parked: if the
+// future has its ending by now, it does not, and rp is dropped, its node
+// freed and its count let go, the future left where it lay. If it parked, the
+// future's reference has moved into the waiter, and the node is pushed when
+// the future has its ending
+pub fn futureRegister(fut *u8, rp Reply) Bool {
+  imm c = cellAt(fut);
+  imm w = rp.data as *Waiter;
+  (*w).fut = *(fut as **u8);
+  (*w).to = rp.to;
+  (*w).node = rp.node;
+  imm wp = &(*c).waiters as **Waiter;
+  mut head = mem.atomicLoad[*Waiter](wp, MemOrder.Acquire[]);
+  while head as usize != waitersClosed {
+    (*w).next = head;
+    mut seen = head;
+    mut done = false;
+    seen, done = mem.atomicCompareSwap[*Waiter](wp, head, w, MemOrder.AcqRel[], MemOrder.Acquire[]);
+    if done {
+      mut r = rp;
+      r.to = null;
+      r.node = null;
+      return true;
+    }
+    head = seen;
+  }
+  false;
+}
+
+// Where the value is in the future lying at fut, which has its ending, for
+// the 'await' at file and line to read it out. A panic there if it never
+// arrived
+pub fn futureOpen(fut *u8, file &[]u8, line u32) *u8 {
+  imm c = cellAt(fut);
+  imm s = mem.atomicLoad[u32](&(*c).state as *u32, MemOrder.Acquire[]);
+  if s == futArrived {
+    return (*c).value;
+  }
+  if s == futAbandoned {
+    dieOwed("actors: an awaited future will never arrive: the behaviour owing it (request ", (*c).owesId,
+      ") ended without answering", file, line);
+  }
+  if s == futTaken {
+    dieOwed("actors: an awaited future's value was taken already (request ", (*c).owesId, ")", file, line);
+  }
+  dieOwed("actors: an awaited future has not arrived (request ", (*c).owesId, ")", file, line);
+}
+
+// A move value read out of the future lying at fut: it is Taken, so that it
+// is not finalized again when the future goes
+pub fn futureTaken(fut *u8) {
+  mem.atomicStore[u32](&(*cellAt(fut)).state as *u32, futTaken, MemOrder.Relaxed[]);
+}
+
+// A panic at file and line, its message 'before', the request's number, 'after'
+fn dieOwed(before &[]u8, id u64, after &[]u8, file &[]u8, line u32) Never {
+  imm buf = libc.malloc(before.len + after.len + 24usize);
+  mut n = putText(buf, 0usize, before);
+  mut digits Array[u8, 20] = [0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8,
+    0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8];
+  mut k = 0usize;
+  mut v = id;
+  while true {
+    digits[k] = u8.from(v % 10u64) + 48u8;
+    k = k + 1usize;
+    v = v / 10u64;
+    if v == 0u64 {break;}
+  }
+  while k > 0usize {
+    k = k - 1usize;
+    *(buf + n) = digits[k];
+    n = n + 1usize;
+  }
+  n = putText(buf, n, after);
+  panic(mem.sliceFromParts[u8](buf, n), file, line);
+}
+
+fn putText(buf *u8, at usize, s &[]u8) usize {
+  mut i = 0usize;
+  while i < s.len {
+    *(buf + at + i) = s[i];
+    i = i + 1usize;
+  }
+  at + s.len;
+}

@@ -1,0 +1,61 @@
+// What futures refuse:
+//
+// - a move future awaited twice: Future[Note] moves, as Note does, so the
+//   first 'await' takes it and the second finds it moved (ErrorMove);
+//   Future[u64] copies, and is awaited twice;
+// - an 'await' on a value that is no future, behaviour's reply or operation,
+//   which waits for no answer (ErrorAwaitNotFuture);
+// - the value of a call of a behaviour that returns nothing, kept in a local
+//   or passed on: there is no future (ErrorFutureVoid); called as a
+//   statement of its own, it is fire and forget;
+// - a future crossing to an actor is Sendable only where its value is:
+//   Future[u64] crosses, Future[Rc[imm, u64]] does not (ErrorNotSendable).
+
+mod concurrency_future_refused;
+
+import actors;
+
+struct Note is Move {
+  pub n u64;
+}
+
+fn keep(x u64) {}
+
+actor Maker {
+  pub async do note(self, n u64) Note {new Note(n);}
+  pub async do count(self) u64 {1u64;}
+  pub async do tick(self) {}
+}
+
+actor Holder {
+  pub async do takeOk(self, f actors.Future[u64]) {}
+  pub async do takeRc(self, f actors.Future[Rc[imm, u64]]) {}  //~ ErrorNotSendable "a Future, which is not Sendable"
+}
+
+actor Asker {
+  m Maker;
+
+  pub async do moved(self) {
+    imm f = m.note(1u64);
+    imm a = await f;
+    imm b = await f;            //~ ErrorMove "This variable's value has been moved out"
+  }
+
+  pub async do copied(self) {
+    imm f = m.count();
+    imm a = await f;
+    imm b = await f;
+  }
+
+  pub async do plain(self) {
+    imm x = 5u64;
+    imm y = await x;            //~ ErrorAwaitNotFuture "This one awaits a u64, which is none of them"
+  }
+
+  pub async do voided(self) {
+    m.tick();
+    imm t = m.tick();           //~ ErrorFutureVoid "tick returns nothing, so its call gives no future to keep"
+  }
+}
+
+fn main() {}

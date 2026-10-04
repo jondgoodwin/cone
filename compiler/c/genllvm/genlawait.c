@@ -339,7 +339,7 @@ static GenSeam *genlSeamLayout(GenState *gen, AwaitNode *node, uint32_t nflights
     // collector's roots are not; flow refused a variable holding a traced
     // reference there (awaitRecordTraced), and here is a value in flight or a
     // temporary holding one
-    for (uint32_t i = 0; (node->message || node->awaitable) && i < cnt; ++i) {
+    for (uint32_t i = 0; awaitParks(node) && i < cnt; ++i) {
         if ((fields[i].kind == GenSeamFlight || fields[i].kind == GenSeamTemp) && itypeHoldsTraced(fields[i].type))
             errorMsgNode((INode *)node, ErrorUnbuiltAwait,
                 "'await' whose continuation holds a traced reference is not built: a value made before it and used after would wait in the actor's pending table, which the collector does not trace yet.");
@@ -380,7 +380,7 @@ static GenSeam *genlSeamLayout(GenState *gen, AwaitNode *node, uint32_t nflights
     // the table calls if the actor dies with it parked
     seam->resume = NULL;
     seam->drop = NULL;
-    if (node->message || node->awaitable) {
+    if (awaitParks(node)) {
         char resumename[2120];
         snprintf(resumename, sizeof(resumename), "%s.resume", symbol);
         LLVMTypeRef ptr = LLVMPointerTypeInContext(gen->context, 0);
@@ -476,7 +476,11 @@ static LLVMValueRef genlSeamReply(GenState *gen, AwaitNode *await, GenSeam *seam
     ActorInfo *info = genlSplitActor(gen->fndcl);
     LLVMValueRef st = genlSplitState(gen);
     LLVMTypeRef usize = genlUsize(gen);
-    LLVMTypeRef rtype = genlType(gen, await->vtype);
+    // A future's waiter is the reply's data: the future's reference, the next
+    // waiter, the actor awaiting and the node (the actors package's Waiter)
+    LLVMTypeRef ptr = LLVMPointerTypeInContext(gen->context, 0);
+    LLVMTypeRef waiter[4] = {ptr, ptr, ptr, ptr};
+    LLVMTypeRef rtype = await->future ? LLVMStructTypeInContext(gen->context, waiter, 4, 0) : genlType(gen, await->vtype);
     LLVMValueRef size = LLVMConstInt(usize, LLVMABISizeOfType(gen->datalayout, rtype), 0);
     LLVMValueRef align = LLVMConstInt(usize, LLVMABIAlignmentOfType(gen->datalayout, rtype), 0);
     LLVMValueRef args[5];
@@ -494,6 +498,123 @@ static LLVMValueRef genlSeamReply(GenState *gen, AwaitNode *await, GenSeam *seam
     args[nargs++] = size;
     args[nargs++] = align;
     return genlCallFn(gen, seam->record ? info->replyidfn : info->replyfn, args, nargs, "reply");
+}
+
+// The half being generated is the second half of this seam, which enters at
+// 'resume': where each of the record's values goes, but the Answer slot's,
+// which the entry finds itself, and the flags of the locks given back
+static void genlSeamResumeHere(GenState *gen, GenSeam *seam, LLVMBasicBlockRef resume) {
+    gen->resumeblk = resume;
+    gen->resumedest = (LLVMValueRef *)memAllocBlk((seam->nfields ? seam->nfields : 1) * sizeof(LLVMValueRef));
+    for (uint32_t i = 0; i < seam->nfields; ++i)
+        gen->resumedest[i] = seam->fields[i].kind == GenSeamAnswer ? NULL : genlSeamFieldAt(gen, &seam->fields[i]);
+    gen->resumeheldcnt = 0;
+    gen->resumeheld = (LLVMValueRef *)memAllocBlk((seam->ntemps ? seam->ntemps : 1) * sizeof(LLVMValueRef));
+    for (uint32_t i = gen->tempbase; i < gen->tempcnt; ++i) {
+        if (gen->temps[i].held)
+            gen->resumeheld[gen->resumeheldcnt++] = gen->temps[i].held;
+    }
+}
+
+// The value of the future lying at 'fut', which has its ending, opened out of
+// it by the 'await' that took it: where it lies (a panic there, at the
+// 'await''s line, if it never arrived); read out of the future, a move value
+// taken, so that the future does not finalize it again, a copied one counted
+// again where it holds counted references; and the future's reference, which
+// the 'await' took, let go
+static LLVMValueRef genlFutureOpen(GenState *gen, AwaitNode *node, LLVMValueRef fut) {
+    size_t len;
+    char *file = genlSrcFileName((INode *)node, &len);
+    LLVMValueRef oargs[3] = {fut, genlSrcFileSlice(gen, file, len),
+        LLVMConstInt(LLVMInt32TypeInContext(gen->context), node->linenbr, 0)};
+    LLVMValueRef at = genlCallFn(gen, actorRuntime[ActorRtFutureOpen], oargs, 3, "valueat");
+    LLVMValueRef value = LLVMBuildLoad2(gen->builder, genlType(gen, node->vtype), at, "opened");
+    if (itypeIsMove(node->vtype))
+        genlCallFn(gen, actorRuntime[ActorRtFutureTaken], &fut, 1, "");
+    else
+        genlAliasHeld(gen, at, node->vtype, 1);
+    genlFinalizeAt(gen, fut, node->future);
+    return value;
+}
+
+// A Bool a runtime function answered, as a branch's condition
+static LLVMValueRef genlTruth(GenState *gen, LLVMValueRef b) {
+    return LLVMBuildICmp(gen->builder, LLVMIntNE, b, LLVMConstInt(LLVMTypeOf(b), 0, 0), "");
+}
+
+// A seam awaiting a future, 'value', laid out as 'seam'. Every borrow ends and
+// every lock is given back first, whichever way the behaviour goes on. If the
+// future has its ending already, the behaviour goes on at once: no record, no
+// envelope, no return to the dispatcher, the value opened out of it and the
+// rest of the behaviour run where it stands. Otherwise the envelope is made,
+// as a request's is, and handed to the future with the future's reference,
+// to park on it; seeing it arrive meanwhile is the same case, so that the
+// envelope is dropped, the slot reserved for the record given back, and the
+// behaviour goes on at once again. Parked, the record moves into its slot and
+// the method returns to the dispatcher; the future pushes the envelope's node
+// when it has its ending, and the seam's resume function opens it
+// (genlSeamResume). The value awaited waits in a slot of its own, which the
+// second half's entry fills from its parameter
+static LLVMValueRef genlAwaitFuture(GenState *gen, AwaitNode *node, GenSeam *seam, LLVMValueRef value, LLVMValueRef svid) {
+    // 1, 2: every borrow ends, a lock's guard giving its lock back
+    genlSeamGiveBack(gen, node);
+    LLVMValueRef fut = genlAlloca(gen, genlType(gen, node->future), "future");
+    LLVMBuildStore(gen->builder, value, fut);
+    LLVMValueRef awaited = genlAlloca(gen, genlType(gen, node->vtype), "awaited");
+    LLVMBasicBlockRef arrived = genlInsertBlock(gen, "arrived");
+    LLVMBasicBlockRef pending = genlInsertBlock(gen, "pending");
+    LLVMMoveBasicBlockBefore(pending, arrived);
+    LLVMValueRef ready = genlCallFn(gen, actorRuntime[ActorRtFutureReady], &fut, 1, "ready");
+    LLVMBuildCondBr(gen->builder, genlTruth(gen, ready), arrived, pending);
+
+    // Pending: park on it, unless it arrives meanwhile
+    LLVMPositionBuilderAtEnd(gen->builder, pending);
+    gen->awaitid = NULL;
+    LLVMValueRef reply = genlSeamReply(gen, node, seam);
+    LLVMValueRef id = gen->awaitid;
+    gen->awaitid = svid;
+    LLVMValueRef rargs[2] = {fut, reply};
+    LLVMValueRef parked = genlCallFn(gen, actorRuntime[ActorRtFutureRegister], rargs, 2, "parked");
+    LLVMBasicBlockRef park = genlInsertBlock(gen, "park");
+    LLVMBasicBlockRef notparked = genlInsertBlock(gen, "notparked");
+    LLVMMoveBasicBlockBefore(park, arrived);
+    LLVMMoveBasicBlockBefore(notparked, arrived);
+    LLVMBuildCondBr(gen->builder, genlTruth(gen, parked), park, notparked);
+
+    // It arrived while registering: the slot reserved for the record given
+    // back, its block freed with nothing in it
+    LLVMPositionBuilderAtEnd(gen->builder, notparked);
+    ActorInfo *info = genlSplitActor(gen->fndcl);
+    if (seam->record) {
+        LLVMValueRef uargs[2] = {genlStateField(gen, info, genlSplitState(gen), info->pending), id};
+        LLVMValueRef block = genlCallFn(gen, actorRuntime[ActorRtUnpark], uargs, 2, "block");
+        genlCallFn(gen, actorRuntime[ActorRtRecordFree], &block, 1, "");
+    }
+    LLVMBuildBr(gen->builder, arrived);
+
+    // Parked: 3, the record, every value still held moved into its slot; 5,
+    // the return to the dispatcher, with no value
+    LLVMPositionBuilderAtEnd(gen->builder, park);
+    if (seam->record) {
+        LLVMValueRef record = genlSeamRecord(gen, seam);
+        LLVMValueRef pargs[2] = {genlStateField(gen, info, genlSplitState(gen), info->pending), id};
+        LLVMValueRef block = genlCallFn(gen, actorRuntime[ActorRtParked], pargs, 2, "parked");
+        LLVMBuildStore(gen->builder, record, block);
+    }
+    INode *rettype = ((FnSigNode *)itypeGetTypeDcl(gen->fndcl->vtype))->rettype;
+    genlFnDclReturn(gen, gen->fndcl, LLVMGetUndef(genlType(gen, rettype)));
+
+    // It has its ending: opened here, and the behaviour goes on
+    LLVMPositionBuilderAtEnd(gen->builder, arrived);
+    LLVMBuildStore(gen->builder, genlFutureOpen(gen, node, fut), awaited);
+    LLVMBasicBlockRef resume = genlInsertBlock(gen, "resume");
+    LLVMBuildBr(gen->builder, resume);
+    LLVMPositionBuilderAtEnd(gen->builder, resume);
+    if (gen->resumeat == node) {
+        genlSeamResumeHere(gen, seam, resume);
+        gen->resumeslot = awaited;
+    }
+    return LLVMBuildLoad2(gen->builder, genlType(gen, node->vtype), awaited, "awaited");
 }
 
 LLVMValueRef genlAwait(GenState *gen, AwaitNode *node) {
@@ -518,6 +639,8 @@ LLVMValueRef genlAwait(GenState *gen, AwaitNode *node) {
         return NULL;
     }
     int hasresult = genlSeamHasResult(node);
+    if (node->future)
+        return genlAwaitFuture(gen, node, seam, value, svid);
 
     // An operation is started now, its value made: handed the envelope of the
     // reply its answer comes back in, which names a slot for the record, as a
@@ -579,18 +702,7 @@ LLVMValueRef genlAwait(GenState *gen, AwaitNode *node) {
     LLVMPositionBuilderAtEnd(gen->builder, resume);
     if (gen->resumeat != node)
         return hasresult ? LLVMGetPoison(genlType(gen, node->vtype)) : LLVMGetUndef(gen->emptyStructType);
-    gen->resumeblk = resume;
-    // Where each of the record's values goes, but the Answer slot's, which
-    // the entry finds itself
-    gen->resumedest = (LLVMValueRef *)memAllocBlk((seam->nfields ? seam->nfields : 1) * sizeof(LLVMValueRef));
-    for (uint32_t i = 0; i < seam->nfields; ++i)
-        gen->resumedest[i] = seam->fields[i].kind == GenSeamAnswer ? NULL : genlSeamFieldAt(gen, &seam->fields[i]);
-    gen->resumeheldcnt = 0;
-    gen->resumeheld = (LLVMValueRef *)memAllocBlk((seam->ntemps ? seam->ntemps : 1) * sizeof(LLVMValueRef));
-    for (uint32_t i = gen->tempbase; i < gen->tempcnt; ++i) {
-        if (gen->temps[i].held)
-            gen->resumeheld[gen->resumeheldcnt++] = gen->temps[i].held;
-    }
+    genlSeamResumeHere(gen, seam, resume);
     return hasresult ? LLVMGetParam(gen->fn, seam->record ? 2 : 1) : LLVMGetUndef(gen->emptyStructType);
 }
 
@@ -619,6 +731,9 @@ static void genlSeamEntry(GenState *gen, AwaitNode *node, GenSeam *seam) {
     }
     for (uint32_t i = 0; i < gen->resumeheldcnt; ++i)
         LLVMBuildStore(gen->builder, LLVMConstInt(i8, 0, 0), gen->resumeheld[i]);
+    // A future's value waits in a slot, which the arrived path fills too
+    if (node->future)
+        LLVMBuildStore(gen->builder, LLVMGetParam(gen->fn, seam->record ? 2 : 1), gen->resumeslot);
     LLVMBuildBr(gen->builder, gen->resumeblk);
 }
 
@@ -637,6 +752,8 @@ static void genlSplitHalf(GenState *gen, FnDclNode *fnnode, AwaitNode *node) {
     gen->tempbase = gen->tempcnt;
     Nodes *svseams = gen->seams;
     AwaitNode *svresumeat = gen->resumeat;
+    LLVMValueRef svresumeslot = gen->resumeslot;
+    gen->resumeslot = NULL;
     uint32_t svflightbase = gen->flightbase;
     gen->flightbase = gen->flightcnt;
 
@@ -698,6 +815,7 @@ static void genlSplitHalf(GenState *gen, FnDclNode *fnnode, AwaitNode *node) {
     genlRootsRestore(gen, &svroots);
     gen->seams = svseams;
     gen->resumeat = svresumeat;
+    gen->resumeslot = svresumeslot;
     gen->resumeblk = NULL;
     gen->flightcnt = gen->flightbase;
     gen->flightbase = svflightbase;
@@ -747,7 +865,11 @@ static void genlSeamResume(GenState *gen, FnDclNode *fnnode, AwaitNode *node) {
         args[nargs++] = LLVMBuildLoad2(gen->builder, seam->record, block, "record");
         genlCallFn(gen, actorRuntime[ActorRtRecordFree], &block, 1, "");
     }
-    if (genlSeamHasResult(node))
+    // A future's waiter holds the future's reference, first, which the value
+    // is opened out of
+    if (node->future)
+        args[nargs++] = genlFutureOpen(gen, node, data);
+    else if (genlSeamHasResult(node))
         args[nargs++] = LLVMBuildLoad2(gen->builder, genlType(gen, node->vtype), data, "returned");
     LLVMValueRef ret = LLVMBuildCall2(gen->builder, LLVMGlobalGetValueType(seam->half), seam->half, args, nargs, "");
 

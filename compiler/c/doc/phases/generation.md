@@ -1194,7 +1194,9 @@ once (`genlawait.c`):
   count adjusted; nothing droppable is left, so nothing more is dropped; the
   record is parked ("A message's reply", below); and the function returns,
   with no value. What follows the seam is generated into a block of its own,
-  `resume`, which no path reaches in this half.
+  `resume`, which no path reaches in this half -- but at a seam awaiting a
+  future, where the path finding the future's value there already goes on
+  into it ("A message's reply", "A future").
 - **Each seam's second half**, `<method>'<n>` (`genlSplitHalf`), is the method
   generated again as a function of its own: its entry stores 'self', moves the
   record's values back into the slots they came from (`genlSeamEntry`), sets
@@ -1317,6 +1319,36 @@ maker writes the answer into the envelope as `answerNow` does, from whatever
 thread finishes the operation, and the reply's dispatch calls the resume
 function. The 'await' adds nothing to the `R`.
 
+**A future.** What a seam awaits may instead be a future: a value of an
+instance of the actors package's `Future[T]` (type check set
+`AwaitNode.future`), the consumer's reference to a future that a call of a
+behaviour returning a `T` made where its value is kept (`actorFutureCall`
+made the call the handle's method that makes the future and sends the request
+awaited, its envelope the future's producer's reference). `genlAwaitFuture`
+generates the seam. Every borrow ends and every lock is given back first,
+whichever way the behaviour goes on; the future is moved into a slot of its
+own, and `actors.futureReady` asks whether it has its ending already. If it
+has, the behaviour goes on **where it stands**: no record, no envelope, no
+return to the dispatcher, the code after the seam reached from here. If not,
+the envelope is made as for a message, its data room for a waiter (the
+future's reference, a link, the actor awaiting and the node), and handed to
+`actors.futureRegister` with the future, which parks the envelope's node on
+the future's waiter list with one compare-and-swap, or finds the list closed
+because the future has its ending by now. Parked, the record moves into its
+slot and the method returns, as at any seam; the future pushes the node when
+its value arrives, and the resume function opens it. Abandoned instead, the
+future drops the node, as an envelope dropped unanswered is, so the record
+stays parked until its actor's death drops it ("An abandoned record"). Not parked, the slot
+reserved for the record is given back, its block freed with nothing in it,
+and the behaviour goes on where it stands, as above. **Opening the future**
+(`genlFutureOpen`), on either path, asks `actors.futureOpen` where its value
+is -- a panic, at the `await`'s line, if it never arrived -- reads the value
+out, marks a move value taken (`actors.futureTaken`) so that the future does
+not finalize it again, or counts a copied one again (`genlAliasHeld`), and
+lets go of the future's reference the `await` took. The value waits in a slot
+of its own (`GenState.resumeslot`), which the opened value fills on the
+arrived path and the second half's entry fills from its parameter.
+
 **An abandoned record.** A record parked in the pending table has a drop
 function, `<method>'<n>.drop(record)` (`genlSeamDrop`), declared where the seam
 is laid out and handed to `parkReserve`: each of the record's values that does
@@ -1327,7 +1359,8 @@ The table calls it when its actor dies with the record still parked
 (`Pending`'s finalizer), which happens only when the envelope the record was
 owed was dropped unanswered: the I/O it awaited was ended at the program's end,
 or the actor that was to answer abandoned its own continuation, which held the
-envelope. The second half never runs. An empty record parks nothing and has no
+envelope, or the future the record waits on was abandoned so, dropping the
+envelope parked on it ("A future"). The second half never runs. An empty record parks nothing and has no
 drop function.
 
 The pending table is not traced: a record that would hold a traced reference
@@ -1891,6 +1924,7 @@ variables.
 | | `genlSplitHalves`, `genlSplitHalf`, `genlSeamEntry` | each second half: the method generated again, its entry moving the record's values back and branching to the seam's `resume` block |
 | | `genlAwaitReply`, `genlSeamReply`, `genlSeamResume` | a message seam's envelope, the seam laid out and its record's slot reserved where it is passed (an operation's seam makes its envelope at the seam and starts the operation with it); the seam's resume function, which takes the record out of the pending table, calls the second half and answers ("A message's reply") |
 | | `genlSeamDrop` | a parked record's drop function, which its pending table calls if the actor dies with it parked ("A message's reply", "An abandoned record") |
+| | `genlAwaitFuture`, `genlFutureOpen` | a seam awaiting a future: gone on from where it stands when the future has its ending, else parked on it; the value opened out of the future on either path and in the resume function ("A message's reply", "A future") |
 | | `genlExprsAcross`, `genlHasSeam` | operands in order (`awaitOrder`'s, where a seam cuts them), each made before a later one's seam kept in flight across it (`GenFlight`), a receiver or a borrow of a plain path made after it |
 | | `genlKeepAcross`, `genlKeptAcross` | one value kept in flight across a seam to come, and read back after it: an assignment's value while its place, holding the seam, is reached |
 | | `genlHeldBegin`, `genlHeldIf` | a temporary lock guard's flag, and code run while it holds its lock |

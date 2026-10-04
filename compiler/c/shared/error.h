@@ -514,6 +514,10 @@ enum ErrorCode {
     // An actor's 'init' runs on the state in the actor's block (parser/parseactor.c)
     ErrorActorStateInit = 1290, // An actor's state constructed anywhere but the making of the actor (its handle's initializer, and its init's '*self = new Self(...)'), by its fields' names or an 'init': a state in no actor, whose sends reach nothing
 
+    // Futures: a behaviour's value stored and awaited later (actors.Future[T])
+    ErrorAwaitNotFuture = 1281, // An 'await' on a value that is no future, behaviour's reply or operation: it waits for no answer
+    ErrorFutureVoid = 1282,     // The value of a call of a behaviour returning nothing is used: there is no future to keep
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name

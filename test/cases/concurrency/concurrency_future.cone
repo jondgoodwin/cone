@@ -1,0 +1,120 @@
+// A behaviour's value stored as a future and awaited later. A call of a
+// behaviour returning a T, its value used, sends the request and gives a
+// Future[T] at once; 'await' on the future waits for the value, parking the
+// behaviour unless it has arrived already. Each printed value was checked by
+// hand against the source.
+//
+// - pending: a future of the actor's own behaviour, which cannot have run,
+//   since the actor is busy running this one: the 'await' parks, and the
+//   droppables it holds die where the one scope says;
+// - arrived: a future whose request went before another awaited one, so that
+//   it has arrived when it is awaited: the behaviour goes on at once;
+// - two in flight, awaited in order;
+// - a future of a copy value awaited twice: Future[u64] copies, and each
+//   'await' opens the value;
+// - a future of a move value, Future[Note], awaited once, the value moved out
+//   and dropped where its local dies;
+// - a future handed to another actor in a message and awaited there;
+// - in a loop, in an expression with a value in flight, of a tuple;
+// - never awaited: declared last in an inner block before an 'await', and
+//   dropped once there (the shape a double drop once freed early), the value
+//   finalized when the future is freed;
+// - every future freed by the end (actors.liveFutures()).
+
+mod concurrency_future;
+
+import stdio use *;
+import actors;
+
+fn say(s &[]u8, n u64) {printStr(s); printStr(" "); printUInt(n); printStr("\n");}
+fn two(a u64, b u64) u64 {a * 100u64 + b;}
+
+struct Note is Move {
+  pub n u64;
+  fn final(self &uni) {say("  drop note", n);}
+}
+
+actor Maker {
+  pub async do count(self, n u64) u64 {n * 10u64;}
+  pub async do note(self, n u64) Note {new Note(n);}
+  pub async do both(self, n u64) (u64, u64) {(n, n + 1u64);}
+}
+
+actor Collector {
+  pub async do collect(self, f actors.Future[u64]) u64 {
+    imm v = await f;
+    say("  collected", v);
+    v + 1u64;
+  }
+}
+
+actor Asker {
+  m Maker;
+  col Collector;
+
+  pub async do double(self, n u64) u64 {n * 2u64;}
+
+  pub async do go(self) {
+    imm keep = new Note(100u64);
+    imm f = selfactor.double(21u64);
+    say("pending, stored", 0u64);
+    imm d = await f;
+    say("pending, awaited", d);
+
+    imm early = m.count(5u64);
+    imm later = await m.count(6u64);
+    say("arrived", await early);
+    say("  after", later);
+
+    imm f1 = m.count(1u64);
+    imm f2 = m.count(2u64);
+    say("first", await f1);
+    say("second", await f2);
+
+    imm c = m.count(3u64);
+    imm c1 = await c;
+    imm c2 = await c;
+    say("copied, twice", c1 + c2);
+
+    imm nf = m.note(7u64);
+    imm note = await nf;
+    say("moved", note.n);
+
+    imm h = m.count(8u64);
+    say("handed on", await col.collect(h));
+
+    mut sum = 0u64;
+    mut i = 1u64;
+    while i <= 3u64 {
+      imm e = selfactor.double(i);
+      sum = sum + two(i, await e);
+      i = i + 1u64;
+    }
+    say("in a loop", sum);
+
+    imm t = m.both(4u64);
+    mut a = 0u64;
+    mut b = 0u64;
+    a, b = await t;
+    say("a tuple", a * 10u64 + b);
+
+    // A future never awaited, declared last in an inner block before an
+    // 'await': it goes once, at the block's end, before its value arrives or
+    // after, and the value is finalized when the future is freed
+    {
+      imm lost = m.note(9u64);
+    }
+    say("never awaited, then", await m.count(0u64));
+    say("end", keep.n);
+  }
+}
+
+fn main() {
+  initAll();
+  {
+    imm a = new Asker(new Maker(), new Collector());
+    a.go();
+  }
+  finalAll();
+  say("futures live", u64.from(actors.liveFutures()));
+}

@@ -2232,6 +2232,7 @@ void genSetup(GenState *gen, ConeOptions *opt) {
     gen->resumedest = NULL;
     gen->resumeheld = NULL;
     gen->resumeheldcnt = 0;
+    gen->resumeslot = NULL;
     gen->flights = NULL;
     gen->flightcnt = 0;
     gen->flightmax = 0;
