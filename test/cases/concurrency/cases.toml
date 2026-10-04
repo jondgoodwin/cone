@@ -194,6 +194,11 @@ category = "run"
 description = "'self.m()' on one of the actor's own behaviours is a send: the caller goes on at once and m runs later, from a behaviour and from a synchronous helper (written bare), of a behaviour that is not 'pub' and of one holding an 'await'; 'await self.m()' awaits one of its own"
 tags = ["typecheck", "genllvm", "runtime"]
 
+[scenario.concurrency_actor_init_sends]
+category = "run"
+description = "An actor is real before its 'init' runs: 'self.m()' in the init, 'selfactor' in a helper the init calls, and the init's own handle given to another actor that sends back before the init returns, each message run only after the init, in order; an actor with no init of its own made as before"
+tags = ["typecheck", "flow", "genllvm", "runtime"]
+
 [scenario.concurrency_actor_oneway]
 category = "run"
 description = "One actor sending to another one way: 1000 sources made with 'new' in a loop, each keeping the sink's handle in its state and sending it 3 numbers; the sink, made by its implicit initializer with field defaults, sums them exactly and dies after the last source"
@@ -221,8 +226,13 @@ tags = ["parse"]
 
 [scenario.concurrency_actor_typecheck]
 category = "reject"
-description = "An actor's private state and its synchronous methods reached through its handle; a behaviour's and an initializer's argument that is not Sendable, refused at the parameter; 'self.m()' on a behaviour in the init, in the final, and through a state made with 'new Self', ErrorBehaviourSend"
+description = "An actor's private state and its synchronous methods reached through its handle; a behaviour's and an initializer's argument that is not Sendable, refused at the parameter; 'self.m()' on a behaviour in the final, and through a state made with 'new Self', ErrorBehaviourSend; the state made with an init it declares, in one of its methods, ErrorActorStateInit"
 tags = ["typecheck"]
+
+[scenario.concurrency_actor_init_unfilled]
+category = "reject"
+description = "'selfactor' and 'self.m()' in an actor's init before its state is filled are uses through an unfilled 'self', ErrorInitSelf; after the store, a send"
+tags = ["flow"]
 
 [scenario.concurrency_actor_runtime]
 category = "reject"
@@ -442,7 +452,7 @@ contains = [
 
 [scenario.concurrency_await_message]
 category = "reject"
-description = "An 'await' on a behaviour returning nothing, through another actor's handle or through 'self', is ErrorAwaitVoid; a record holding a traced reference is ErrorUnbuiltAwait; a behaviour returning what is not Sendable is ErrorNotSendable; 'self.m()' on a behaviour holding an 'await' is a send, refused nowhere; 'selfactor' outside an actor's method -- its init, its final, a function, another type's method -- is ErrorSelfActorPlace"
+description = "An 'await' on a behaviour returning nothing, through another actor's handle or through 'self', is ErrorAwaitVoid; a record holding a traced reference is ErrorUnbuiltAwait; a behaviour returning what is not Sendable is ErrorNotSendable; 'self.m()' on a behaviour holding an 'await' is a send, refused nowhere; 'selfactor' in an actor's init is good; outside an actor's method -- its final, a function, another type's method -- it is ErrorSelfActorPlace"
 tags = ["typecheck", "flow"]
 
 [scenario.concurrency_iobuf_loan]
@@ -560,8 +570,8 @@ contains = [
 ]
 
 [scenario.concurrency_await_operation_unused]
-category = "reject"
-description = "What an awaited operation (an actors.Awaitable, an I/O operation) answers with must be used: an 'await' on one that is a statement of its own, in the middle of a behaviour or as the last statement of one returning nothing, is ErrorAwaitUnused; bound to a local and matched it is accepted, and an 'await' on a behaviour's reply whose value is unused is not touched"
+category = "warn"
+description = "What an awaited operation (an actors.Awaitable, an I/O operation) answers with should be used: an 'await' on one that is a statement of its own, in the middle of a behaviour or as the last statement of one returning nothing, is warned, WarnAwaitUnused, and compiles, the answer dropped; bound to a local and matched nothing is said, and an 'await' on a behaviour's reply whose value is unused is not touched"
 tags = ["typecheck"]
 
 # -------- futures: a behaviour's value stored, awaited later --------

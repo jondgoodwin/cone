@@ -1369,7 +1369,9 @@ with one flag and one context:
   that may not run, leaves it set. Fields are not filled one at a time: flow
   tracks the whole value, as it does a variable's.
 - **A use through `self`** -- the deref of `*self` or `self.x`
-  (`derefFlow`, `assignFlowLvalReads`), a method's receiver (`fnCallFlow`) --
+  (`derefFlow`, `assignFlowLvalReads`), a method's receiver (`fnCallFlow`),
+  and an actor's state handed to its `<Actor>.self'`, which `selfactor` and
+  `self.m()` lower to (`actorOfSelfFn`) --
   sets `flowThroughSelf` around the walk of the name, and `nameuseFlow`
   refuses it while `VarUnfilled` is set; `nameuseFlowBorrowed` refuses a
   borrow of a place through it the same way.

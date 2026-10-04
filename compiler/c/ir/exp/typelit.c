@@ -716,6 +716,20 @@ static void typeLitNewChecked(TypeCheckState *pstate, FnCallNode **nodep, int ar
         return;
     }
 
+    // An actor's state is made by an init it declares only as the actor is
+    // made: its handle's initializer constructs it in the actor's block, the
+    // actor real already, so that 'selfactor' and the sends the init makes
+    // reach the actor (parseactor.c). Run anywhere else -- 'new Self(...)' in
+    // one of the actor's methods -- the init would be on a state in no actor
+    ActorInfo *actor = actorOfState((INode*)strnode);
+    // (Filling an init's self by the init it is in is ErrorInitRecurse's.)
+    if (actor && selected != pstate->fn
+        && (pstate->fn == NULL || inodeGetOwner((INode*)pstate->fn) != (INode*)actor->handle)) {
+        errorMsgNode((INode*)node, ErrorActorStateInit,
+            "This runs an init actor %s's state declares, on a state that is in no actor: an actor's init runs only as the actor is made ('new %s(...)'), where it may send to the actor itself. Make this state with its fields' names, 'new Self(field: value)', which runs no init.",
+            &actor->handle->namesym->namestr, &actor->handle->namesym->namestr);
+        return;
+    }
     // A declared init, called with the memory to fill. One not declared 'pub'
     // is its module's.
     if (inodeIsPrivate(inits) && !structSeesPrivate(pstate, (INode*)strnode)) {

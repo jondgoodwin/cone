@@ -1,0 +1,105 @@
+// An actor is real before its 'init' runs: the init runs on the state where
+// it stays, in the actor's block, so 'selfactor' and 'self.m()' are good in
+// the init and in anything it calls. What they send waits in the mailbox and
+// runs once the init has returned, in the order sent.
+//
+// - Starter's init sends to itself directly ('self.note(1)'), then from a
+//   synchronous helper it calls ('self.helper()', which sends 'note(2)'
+//   through 'selfactor'), and then prints "init ends 0": the init finishes
+//   before either note runs. main's own 'note(10)' comes after both.
+// - Asker's init hands its own handle to another actor, an Echo, which sends
+//   'back' to it at once; the init then waits until Echo has sent, so the
+//   reply is in Asker's mailbox before the init returns, and still runs only
+//   after it: "asker init ends 7", then "asker back 7".
+// - Plain declares no init: made by its fields, as before.
+//
+// main waits for each actor's last line before making the next (waitQuiet,
+// and a one-shot channel), so every line's place is fixed.
+//
+// The reference manual shows Starter (doc/reference/refconccomm.html, "Making
+// one"), copied verbatim from between the "manual:" lines.
+
+mod concurrency_actor_init_sends;
+
+import stdio use *;
+import actors;
+import sync;
+
+fn say(s &[]u8, n u64) {printStr(s); printStr(" "); printUInt(n); printStr("\n");}
+
+// manual: init
+actor Starter {
+  count u64;
+
+  fn init(self &new) {
+    *self = new Self(count: 0u64);
+    self.note(1u64);              // a send to itself: queued, run after the init
+    self.helper();                // a helper the init calls may send too
+    say("init ends", count);
+  }
+
+  fn helper(self) {
+    selfactor.note(2u64);
+  }
+
+  pub async do note(self, k u64) {
+    count = count + k;
+    say("note", count);
+  }
+}
+// manual: end
+
+actor Echo {
+  sent sync.OneshotSender[u64];
+  pub async do ping(self, to Asker, k u64) {
+    to.back(k);                        // into Asker's mailbox, its init still running
+    sent.send(k);                      // Asker's init may go on
+  }
+}
+
+actor Asker {
+  done sync.OneshotSender[u64];
+
+  fn init(self &new, echo Echo, sent sync.OneshotReceiver[u64], done sync.OneshotSender[u64]) {
+    *self = new Self(done);
+    echo.ping(selfactor, 7u64);        // its own handle, given away inside the init
+    mut rx = sent;
+    rx.recv();                         // Echo has sent 'back' by now
+    say("asker init ends", 7u64);
+  }
+
+  pub async do back(self, k u64) {
+    say("asker back", k);
+    done.send(k);
+  }
+}
+
+actor Plain {
+  n u64;
+  pub async do show(self) {say("plain", n);}
+}
+
+fn main() {
+  initAll();
+  {
+    imm s = new Starter();
+    s.note(10u64);                     // after the init's two
+  }
+  actors.waitQuiet();
+  {
+    mut stx sync.OneshotSender[u64];
+    mut srx sync.OneshotReceiver[u64];
+    stx, srx = sync.Oneshot[u64].make();
+    mut dtx sync.OneshotSender[u64];
+    mut drx sync.OneshotReceiver[u64];
+    dtx, drx = sync.Oneshot[u64].make();
+    imm e = new Echo(stx);
+    imm a = new Asker(e, srx, dtx);
+    drx.recv();
+  }
+  {
+    imm p = new Plain(3u64);
+    p.show();
+  }
+  finalAll();
+}

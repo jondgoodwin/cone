@@ -77,17 +77,16 @@ void awaitNameRes(NameResState *pstate, AwaitNode *node) {
 }
 
 // Where may 'selfactor' stand, and a behaviour be sent through 'self'? In a
-// method of an actor's state, where the state is in the actor. An actor's
-// 'init' runs on the thread making the actor, before the actor exists, and
-// its 'final' as it dies (refconccomm.html: an actor's body is fields, an
-// init, behaviours, synchronous methods, a final).
+// method of an actor's state, where the state is in the actor: its 'init'
+// too, which runs on the state in the actor's block, the actor real already
+// (parseactor.c), so what it sends waits in the mailbox until the init has
+// returned; but not its 'final', which runs as it dies (refconccomm.html: an
+// actor's body is fields, an init, behaviours, synchronous methods, a final).
 static char *actorMethodNotPlaced(FnDclNode *fn) {
     if (fn == NULL)
         return "outside any function";
     if (!(fn->flags & FlagMethFld) || !actorIsState(inodeGetOwner((INode *)fn)))
         return "in a function that is not a method of an actor";
-    if (fn->namesym == initName || fn->overloadsym == initName)
-        return "in an actor's initializer, which runs on the thread making the actor, before any dispatcher has it";
     if (fn->namesym == finalName)
         return "in an actor's finalizer, which runs as the actor dies";
     return NULL;
@@ -149,8 +148,9 @@ static int awaitDemandRuntime(TypeCheckState *pstate, AwaitNode *node) {
 // R. What R is, and so what the second half sees, is the operation's to
 // declare: an I/O operation's is a Result, success or the system's failure,
 // as a synchronous call that can fail answers. Nothing is added by 'await'
-// itself. That result must be used: an 'await' on an operation whose value
-// is unwanted -- a statement of its own -- is refused (ErrorAwaitUnused)
+// itself. That result should be used: an 'await' on an operation whose value
+// is unwanted -- a statement of its own -- is warned (WarnAwaitUnused), and
+// compiles, the answer dropped
 static void awaitOperation(TypeCheckState *pstate, AwaitNode *node, INode *expectType) {
     INode *result = actorAwaitableResult(((IExpNode *)node->exp)->vtype);
     if (result == NULL)
@@ -165,8 +165,8 @@ static void awaitOperation(TypeCheckState *pstate, AwaitNode *node, INode *expec
     if (expectType == noCareType || (expected && expected->tag == VoidTag)) {
         char rname[256] = "";
         itypeSpellCat(rname, sizeof(rname), result, 0);
-        errorMsgNode((INode *)node, ErrorAwaitUnused,
-            "This 'await' waits for an operation, which answers with a %s, and the answer is not used. An operation's answer says whether it worked, a failure among what it may say, as a synchronous call that can fail answers, and it must be looked at: bind it, 'imm r = await ...', and match on it.",
+        errorMsgNode((INode *)node, WarnAwaitUnused,
+            "This 'await' waits for an operation, which answers with a %s, and the answer is thrown away. An operation's answer says whether it worked, a failure among what it may say, as a synchronous call that can fail answers, so a failure here goes unread: bind it, 'imm r = await ...', and match on it.",
             rname);
     }
 }
@@ -266,8 +266,8 @@ void awaitTypeCheck(TypeCheckState *pstate, AwaitNode *node, INode *expectType) 
 
 // 'selfactor' is the actor's own handle: another owner of its mailbox, made
 // from the state by the function the actor's declaration generated for it.
-// It stands in any method of the actor's but two: its 'init' runs before the
-// actor exists, and its 'final' as it dies, when nothing may own it again
+// It stands in any method of the actor's, its 'init' included, but its
+// 'final', which runs as it dies, when nothing may own it again
 void selfActorTypeCheck(TypeCheckState *pstate, INode **nodep) {
     INode *node = *nodep;
     char *where = actorMethodNotPlaced(pstate->fn);
@@ -305,7 +305,9 @@ void selfActorTypeCheck(TypeCheckState *pstate, INode **nodep) {
 // the handle's method sending m. Only the method's own 'self' is the state of
 // an actor the runtime holds: a state made with 'new Self(...)' in a method
 // is in no actor, so a behaviour reached through it is refused, as it is in
-// the actor's 'init' and 'final', where 'selfactor' is.
+// the actor's 'final', where 'selfactor' is. In its 'init' it is a send, as
+// anywhere: the init runs on the state in the actor (parseactor.c), and the
+// message waits until the init has returned.
 int selfActorSend(TypeCheckState *pstate, FnCallNode *call, INode *objdereftype) {
     ActorInfo *info = actorOfState(objdereftype);
     if (info == NULL || pstate->fn == info->dispatch

@@ -237,7 +237,7 @@ import actors;
 actor Counter {
   count u64;                       // its state: private to it
 
-  fn init(self &amp;new, start u64) {   // run on fresh state by 'new Counter(start)'
+  fn init(self &amp;new, start u64) {   // run by 'new Counter(start)', in the actor
     *self = new Self(count: start);
   }
 
@@ -353,9 +353,49 @@ actor Client {
 		("Awaiting", below). An actor declares no static, macro, <span class="pre">extern</span>
 		method or <span class="pre">use</span>, no type parameters, and names no abstraction:
 		<span class="pre">actor trait</span>, its abstraction, is not built yet.</p>
-	<p><b>Making one.</b> <span class="pre">new Counter(args)</span> makes an actor: it runs the
-		actor's <span class="pre">init</span> on fresh state, made on the calling thread, hands the
-		state to the runtime, and answers the actor's <i>handle</i>. The initializer's parameters
+	<p id="making"><b>Making one.</b> <span class="pre">new Counter(args)</span> makes an actor
+		and answers its <i>handle</i>. The actor is real before its <span class="pre">init</span>
+		runs: the runtime's part of it is made first, and the <span class="pre">init</span> then
+		runs, on the calling thread, on the state where it will stay. So the
+		<span class="pre">init</span>, and any synchronous method it calls, may send to the actor
+		itself, with <span class="pre">self.m()</span> or <span class="pre">selfactor</span>, once
+		<span class="pre">*self = ...</span> has filled the state (before that,
+		<span class="pre">self</span> holds nothing, and every use through it is refused, as in
+		any initializer), and may hand <span class="pre">selfactor</span> to another actor. The
+		actor runs no message until its <span class="pre">init</span> has returned: a message sent
+		meanwhile, by the <span class="pre">init</span> or by another actor already given the
+		handle, waits in the mailbox and runs afterwards, in the order sent. A panic in the
+		<span class="pre">init</span> is a panic, which ends the program.</p>
+<pre>
+actor Starter {
+  count u64;
+
+  fn init(self &amp;new) {
+    *self = new Self(count: 0u64);
+    self.note(1u64);              // a send to itself: queued, run after the init
+    self.helper();                // a helper the init calls may send too
+    say("init ends", count);
+  }
+
+  fn helper(self) {
+    selfactor.note(2u64);
+  }
+
+  pub async do note(self, k u64) {
+    count = count + k;
+    say("note", count);
+  }
+}
+</pre>
+	<p><span class="pre">new Starter()</span> prints <span class="pre">init ends 0</span>, then
+		<span class="pre">note 1</span> and <span class="pre">note 3</span>: both notes wait until
+		the <span class="pre">init</span> has returned. An <span class="pre">init</span> the state
+		declares runs only this way, as the actor is made: <span class="pre">new Self(...)</span>
+		in one of the actor's methods that would run one is refused, since the state it made
+		would be in no actor, and its sends would reach nothing; a state made there with its
+		fields' names, <span class="pre">new Self(count: 0u64)</span>, runs no
+		<span class="pre">init</span>.</p>
+	<p>The initializer's parameters
 		must be <span class="pre">Sendable</span> too, since the state made from them runs on
 		other threads. An actor may declare several initializers, as a struct may, each joining
 		the overload name <span class="pre">init</span>. One that declares none is made by its
@@ -381,8 +421,9 @@ actor Client {
 		one variant per behaviour, named for it, its fields the behaviour's parameters, named
 		<span class="pre">Counter.Msg</span>; the handle, <span class="pre">Counter</span>, whose
 		one field is an <span class="pre">Arc[opaq, actors.Mailbox[Counter.Msg]]</span>, an
-		initializer for each of the state's, which calls
-		<span class="pre">actors.startActor</span>, and a method per behaviour, as public as the
+		initializer for each of the state's, which makes the actor's block with
+		<span class="pre">actors.makeActor</span>, constructs the state in it in place, and
+		starts the actor with <span class="pre">actors.startActor</span>, and a method per behaviour, as public as the
 		behaviour, which calls <span class="pre">actors.send</span>; and the dispatch function,
 		<span class="pre">Counter.dispatch</span>, which the runtime hands each message where it
 		lies, and which moves each argument out of it into the behaviour's call. Those names are
@@ -456,8 +497,8 @@ actor Echo {
 		reached through anything but the method's own <span class="pre">self</span> &mdash; a state
 		made with <span class="pre">new Self(...)</span>, which is in no actor &mdash; is refused,
 		and so is one sent through <span class="pre">self</span> in the actor's
-		<span class="pre">init</span>, which runs before the actor exists, or its
-		<span class="pre">final</span>, as it dies.</p>
+		<span class="pre">final</span>, as it dies. In its <span class="pre">init</span> it is a
+		send like any other, run once the init has returned (<a href="#making">Making one</a>).</p>
 	<p><b>Awaiting.</b> In a behaviour, <span class="pre">await</span> on a behaviour of an
 		actor that returns a value sends it and waits for that value: the behaviour pauses there,
 		the actor handles other messages meanwhile, and the reply resumes it
@@ -616,7 +657,7 @@ loaded 700
 	<p>An <span class="pre">await</span> stands only in a behaviour: not in a plain function or a
 		struct's method, and not in any <span class="pre">fn</span> of an actor's &mdash; its
 		<span class="pre">init</span>, which runs on the thread making the actor, before the actor
-		exists; its <span class="pre">final</span>, as it dies; or a helper, which runs inside the
+		takes any message; its <span class="pre">final</span>, as it dies; or a helper, which runs inside the
 		method that calls it and cannot pause partway through the call. A behaviour may hold any
 		number of them. The behaviour's declaration says it may pause, and that is as far as the
 		marking goes: a caller does not await a behaviour in order to call it, since the code that
@@ -889,9 +930,10 @@ actor Doubler {
 		<span class="pre">await self.double(n)</span> is the same: a behaviour named through
 		<span class="pre">self</span> is sent through the actor's handle
 		(<a href="#self-send">Sending to itself</a>), never run at once.
-		<span class="pre">selfactor</span> may be written in any of the actor's methods,
-		but not in its <span class="pre">init</span>, which runs before the actor exists, nor in its
-		<span class="pre">final</span>, nor anywhere outside the actor.</p>
+		<span class="pre">selfactor</span> may be written in any of the actor's methods, its
+		<span class="pre">init</span> among them once the state is filled
+		(<a href="#making">Making one</a>), but not in its <span class="pre">final</span>, nor
+		anywhere outside the actor.</p>
 
 	<h4>One request, one reply</h4>
 	<p>An <span class="pre">await</span> sends one request and takes exactly one reply. A message

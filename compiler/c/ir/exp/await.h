@@ -21,8 +21,8 @@
  * an operation, a value of the actors package's Awaitable[R] (an I/O
  * operation of the aio package's): the seam starts it, handing it a reply's
  * envelope as a request carries one, and its answer, an R, is the 'await''s
- * value; an 'await' on one whose value is unwanted is refused
- * (ErrorAwaitUnused). Or what is awaited is a future, a value of the actors
+ * value; an 'await' on one whose value is unwanted is warned
+ * (WarnAwaitUnused). Or what is awaited is a future, a value of the actors
  * package's Future[T], which a call of a behaviour returning a T gives where
  * its value is used (actorFutureCall): the seam parks on it unless it has
  * its ending already, when the behaviour goes on at once, and the 'await''s

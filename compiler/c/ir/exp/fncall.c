@@ -2790,9 +2790,12 @@ void fnCallFlow(FlowState *fstate, FnCallNode **nodep) {
     // where it happened, and generation will not run.
     if (node->vtype == errorType)
         return;
-    // A method called on an init's 'self' reaches through it (flowNewSelf)
+    // A method called on an init's 'self' reaches through it (flowNewSelf),
+    // and so does an actor's 'selfactor' made from it (Counter.self', which
+    // reads only where the state is: an actor's init sends through it)
     INode *callee = isNameUseNode(node->objfn) ? ((NameUseNode*)node->objfn)->dclnode : NULL;
-    int method = callee && callee->tag == FnDclTag && (callee->flags & FlagMethFld);
+    int method = callee && callee->tag == FnDclTag
+        && ((callee->flags & FlagMethFld) || actorOfSelfFn((FnDclNode*)callee));
     for (nodesFor(node->args, cnt, argsp)) {
         if (method && cnt == node->args->used && flowNewSelf(*argsp))
             flowNewSelfThrough(fstate, argsp);

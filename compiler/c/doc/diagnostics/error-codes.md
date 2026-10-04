@@ -354,7 +354,7 @@ a borrow that is too short is the loan walk's `ErrorFrozen`, `ErrorEscape` or
 parameter of the function is `ErrorWhereSubject`, and of a lifetime its
 signature does not name `ErrorLifetimeUndeclared`.
 
-An actor's declaration has four codes of its own and borrows two. What its
+An actor's declaration has five codes of its own and borrows two. What its
 body may not hold, or a form of it not built (a `pub` field, a static, a
 `pub` function without `self`, a `pub fn` method other than `init`, a
 behaviour without `self` or named `init` or `final`, a generic behaviour, a
@@ -364,31 +364,37 @@ the `actors` package is `ErrorActorRuntime`; `async` or `do` without the other,
 or `async do` outside an actor's body, is `ErrorBehaviourWords`, a parse code
 of its own because the two words are one keyword and neither alone is
 anything; and `self.m()` on one of the actor's behaviours where there is no
-actor to send it to -- the `init`, the `final`, a state that is not the
-method's own `self` -- is `ErrorBehaviourSend`. A behaviour's or an
+actor to send it to -- the `final`, a state that is not the method's own
+`self` -- is `ErrorBehaviourSend`; and the state constructed with an `init` it
+declares anywhere but the handle's initializer, where the init would run on a
+state in no actor, is `ErrorActorStateInit`. A behaviour's or an
 initializer's parameter, or a behaviour's returned type, that cannot cross
 threads is `ErrorNotSendable`, the thread check's code, whatever finds it --
 the parser, for a borrow or the state itself, or `actorCheckAll` after type
 check -- and the state's field or synchronous method reached through the
 handle is `ErrorNotPublic`, as any private member is.
 
-`await` has six codes. Where it may not stand -- anywhere but a behaviour --
-is `ErrorAwaitPlace`; on a behaviour that returns nothing, which sends no
-reply, it is `ErrorAwaitVoid`, a rule rather than a gap; a borrow or a place
-written to its left in the same statement, which the rest of the statement
-uses after the seam, that a call or a temporary made rather than a plain path
-is `ErrorAwaitLeftCall`, also a rule, its message naming the fix (bind it to a
-local first); an `await` on an operation (an `actors.Awaitable`, an I/O
-operation) whose answer nothing uses, a statement of its own, is
-`ErrorAwaitUnused`, a rule: the answer is a result saying whether the
-operation worked; an `await` on anything but a behaviour's reply, a future or
-an operation, which waits for no answer, is `ErrorAwaitNotFuture`, a rule,
-whose message also says what the seam's continuation would carry, which is
-how the seam's rules are pinned on a plain function's call; where it stands
-and is not built is `ErrorUnbuiltAwait`, whose message says why: in a
-construct the split does not reach, or whose record would hold a traced
-reference. `selfactor` outside an actor's methods, or in its `init` or
-`final`, is `ErrorSelfActorPlace`.
+`await` has five error codes and a warning. Where it may not stand -- anywhere
+but a behaviour -- is `ErrorAwaitPlace`; on a behaviour that returns nothing,
+which sends no reply, it is `ErrorAwaitVoid`, a rule rather than a gap; a
+borrow or a place written to its left in the same statement, which the rest of
+the statement uses after the seam, that a call or a temporary made rather than
+a plain path is `ErrorAwaitLeftCall`, also a rule, its message naming the fix
+(bind it to a local first); an `await` on an operation (an `actors.Awaitable`,
+an I/O operation) whose answer nothing uses, a statement of its own, is the
+warning `WarnAwaitUnused` (3005): the answer is a result saying whether the
+operation worked, and the program compiles with it dropped. It was the error
+1280, `ErrorAwaitUnused`, now a hole: a thrown-away result is to be warned on
+any statement, not refused, and this is the `await` part of that. An `await`
+on anything but a behaviour's reply, a future or an operation, which waits for
+no answer, is `ErrorAwaitNotFuture`, a rule, whose message also says what the
+seam's continuation would carry, which is how the seam's rules are pinned on a
+plain function's call; where it stands and is not built is
+`ErrorUnbuiltAwait`, whose message says why: in a construct the split does not
+reach, or whose record would hold a traced reference. `selfactor` outside an
+actor's methods, or in its `final`, is `ErrorSelfActorPlace`; in its `init`
+before the state is filled, it is a use through an unfilled `self`,
+`ErrorInitSelf`, as `self.m()` there is.
 
 A future (`actors.Future[T]`, what a call of a behaviour returning a T gives
 where its value is kept) has one code of its own: the value of a call of a
