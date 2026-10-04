@@ -2,6 +2,10 @@
 // found_on_search_path, gpu_search_folders, compile_gpu and
 // validate_kernels).
 //
+// A package's gpu/ folder (modules.cone's scanGpuFolder) is marked by being
+// there, and its GPU build is a marked package's with gpu/ in place of the
+// package (gpuClosure, gpuModuleOrder).
+//
 // GPU compatibility is declared per package [Jon 3 Oct 2026]: [package]
 // targets = ["native", "gpu"]. A package so marked whose source holds compute
 // entry points ('fn @compute(64) name(...)') is compiled for the GPU as well,
@@ -29,7 +33,10 @@ fn checkGpuMarks(plan &Plan, reg &Registry, u usize) Result[void, String] {
   mut names = List[String].empty();
   mut chains = List[String].empty();
   mut seen = List[String].empty();
-  visitGpuMarks(plan, reg, u, "", &mut names, &mut chains, &mut seen);
+  // Every package a marked package imports; or, for a package with a gpu/
+  // folder, every one that folder imports
+  imm folder = plan.units[u].hasGpu and not reg.packages[plan.units[u].pkg].gpu;
+  visitGpuMarks(plan, reg, u, folder, "", &mut names, &mut chains, &mut seen);
   if names.len() == 0usize { return succeeded(); }
   mut listed = String.empty();
   mut i = 0usize;
@@ -38,22 +45,25 @@ fn checkGpuMarks(plan &Plan, reg &Registry, u usize) Result[void, String] {
     listed <- "    ", names[i].view(), ": ", chains[i].view();
     i = i + 1usize;
   }
-  imm name = reg.packages[plan.units[u].pkg].name.view();
-  Error[void, String][cat(name, " is compiled for the GPU, and so is every package it imports, each of which must be marked for the GPU with targets = [\"native\", \"gpu\"] in its congo.toml; these are not:\n",
+  mut what = String.from(reg.packages[plan.units[u].pkg].name.view());
+  if folder { what <- "'s gpu/ folder"; }
+  Error[void, String][cat(what.view(), " is compiled for the GPU, and so is every package it imports, each of which must be marked for the GPU with targets = [\"native\", \"gpu\"] in its congo.toml; these are not:\n",
     listed.view())];
 }
 
 // The imports of unit u, and theirs, depth first: each package not marked
-// recorded once, with the chain of imports that first reached it
-fn visitGpuMarks(plan &Plan, reg &Registry, u usize, chain &[]u8, names &mut List[String], chains &mut List[String],
+// recorded once, with the chain of imports that first reached it. 'start'
+// asks only for what u's gpu/ folder imports.
+fn visitGpuMarks(plan &Plan, reg &Registry, u usize, start Bool, chain &[]u8, names &mut List[String], chains &mut List[String],
     seen &mut List[String]) {
   imm here = reg.packages[plan.units[u].pkg].name.copy();
-  imm deps = depsOf(plan.units[u]);
+  mut deps = depsOf(plan.units[u]);
+  if start { deps = copyIndices(&plan.units[u].gpuDeps); }
   mut d = 0usize;
   while d < deps.len() {
     imm dep = reg.packages[*deps[d]];
     imm depName = dep.name.copy();
-    imm first = firstImport(plan.units[u], depName.view());
+    imm first = firstImport(plan.units[u], depName.view(), start);
     imm place = first.location();
     mut step = String.from(chain);
     if chain.len > 0usize { step <- "; "; }
@@ -68,11 +78,21 @@ fn visitGpuMarks(plan &Plan, reg &Registry, u usize, chain &[]u8, names &mut Lis
       seen.push(depName.copy());
       mut du = 0usize;
       if plan.unitNamed(reg, depName.view(), &mut du) {
-        visitGpuMarks(plan, reg, du, step.view(), names, chains, seen);
+        visitGpuMarks(plan, reg, du, false, step.view(), names, chains, seen);
       }
     }
     d = d + 1usize;
   }
+}
+
+fn copyIndices(from &List[usize]) List[usize] {
+  mut out = List[usize].empty();
+  mut i = 0usize;
+  while i < from.len() {
+    out.push(*from[i]);
+    i = i + 1usize;
+  }
+  out;
 }
 
 // The file conec loads for 'import name' on its package search path, the
@@ -96,22 +116,16 @@ fn foundOnSearchPath(name &[]u8, folders &List[String]) String {
   String.empty();
 }
 
-// The folders a GPU build hands conec's --path: the folder each package of
-// the build is in, the package's own first, but the packages folder (core's),
-// which conec searches last anyway. Checked: conec must find each package
-// where Congo found it, which needs each in a folder named for it, and none
-// hidden by another of its name earlier on the path.
-fn gpuSearchFolders(plan &Plan, reg &Registry, u usize, packages &List[usize], core usize) Result[List[String], String] {
+// The folders a GPU build hands conec's --path: 'lead' first (a gpu/
+// folder, whose modules the build imports by name), then the folder each
+// package it compiles is in, but the packages folder (core's), which conec
+// searches last anyway. Checked: conec must find each package where Congo
+// found it, which needs each in a folder named for it, and none hidden by
+// another of its name earlier on the path (a gpu/ module among them).
+fn gpuSearchFolders(plan &Plan, reg &Registry, u usize, all &List[usize], core usize, lead &List[String]) Result[List[String], String] {
   imm packagesFolder = parentOf(reg.packages[plan.units[core].pkg].root.view());
-  mut all = List[usize].empty();
-  all.push(plan.units[u].pkg);
+  mut folders = copyStrings(lead);
   mut i = 0usize;
-  while i < packages.len() {
-    all.push(*packages[i]);
-    i = i + 1usize;
-  }
-  mut folders = List[String].empty();
-  i = 0usize;
   while i < all.len() {
     imm folder = parentOf(reg.packages[*all[i]].root.view());
     if not samePath(folder.view(), packagesFolder.view()) and not holdsPath(&folders, folder.view()) {
@@ -152,34 +166,129 @@ fn gpuSearchFolders(plan &Plan, reg &Registry, u usize, packages &List[usize], c
   Ok[List[String], String][folders];
 }
 
-// Compile a marked package's kernels into <name>.spv in the session's build
-// folder: a direct conec compile, for SPIR-V's Vulkan form, of a module that
-// imports the package, in gpu/<name>/ there, so that the package and
-// everything it imports are found on the package search path and compiled
-// from their source. Answers the module's path.
+// What a gpu/ folder's GPU build compiles from source: the packages the
+// folder imports and everything they import, each after what it imports, the
+// prelude first, after what it imports itself (libc)
+fn gpuClosure(plan &Plan, reg &Registry, u usize, core usize) List[usize] {
+  mut seen = List[usize].empty();
+  closureOf(plan, reg, core, &mut seen);
+  seen.push(plan.units[core].pkg);
+  mut i = 0usize;
+  while i < plan.units[u].gpuDeps.len() {
+    imm dep = *plan.units[u].gpuDeps[i];
+    if not holds(&seen, dep) {
+      mut du = 0usize;
+      if plan.unitNamed(reg, reg.packages[dep].name.view(), &mut du) { closureOf(plan, reg, du, &mut seen); }
+      seen.push(dep);
+    }
+    i = i + 1usize;
+  }
+  seen;
+}
+
+// The modules of gpu/, the root's submodules drawn from it, each after those
+// of them it extends or imports: the order the GPU build imports them in, so
+// that each is compiled into the module, not only declared (an import conec
+// meets first beside its importer's file is declared alone)
+fn gpuModuleOrder(mods &List[Module]) List[usize] {
+  mut order = List[usize].empty();
+  mut done = List[usize].empty();
+  mut i = 0usize;
+  while i < mods[0usize].children.len() {
+    imm c = *mods[0usize].children[i];
+    if mods[c].gpu and not holds(&done, c) { visitGpuModule(mods, c, &mut done, &mut order); }
+    i = i + 1usize;
+  }
+  order;
+}
+
+fn visitGpuModule(mods &List[Module], m usize, done &mut List[usize], order &mut List[usize]) {
+  done.push(m);
+  mut needs = List[String].empty();
+  if mods[m].hasExtends { needs.push(mods[m].extended.name.copy()); }
+  mut i = 0usize;
+  while i < mods[m].imports.len() {
+    if mods[m].imports[i].hasName { needs.push(mods[m].imports[i].name.copy()); }
+    i = i + 1usize;
+  }
+  i = 0usize;
+  while i < needs.len() {
+    mut j = 0usize;
+    while j < mods[0usize].children.len() {
+      imm c = *mods[0usize].children[j];
+      if mods[c].gpu and mods[c].name.equals(needs[i].view()) and not holds(done, c) {
+        visitGpuModule(mods, c, done, order);
+      }
+      j = j + 1usize;
+    }
+    i = i + 1usize;
+  }
+  order.push(m);
+}
+
+// Compile a package's kernels into <name>.spv in the session's build folder:
+// a direct conec compile, for SPIR-V's Vulkan form, in gpu/<name>/ there, of
+// a module written here, so that what it imports is found on the package
+// search path and compiled from its source. For a marked package, the module
+// imports the package; for a package with a gpu/ folder, it imports each
+// module of gpu/ by name, gpu/ leading the search path, and src/ is never
+// compiled for the GPU. Answers the module's path.
 fn compileGpu(s &mut Session, plan &Plan, u usize, core usize) Result[String, String] {
   imm pkg = s.reg.packages[plan.units[u].pkg];
   imm name = pkg.name.copy();
-  imm packages = closure(plan, &s.reg, u);
+  imm module = cat(name.view(), "_gpu");
+  imm hasGpu = plan.units[u].hasGpu;
+  imm gpuFolder = joined(pkg.root.view(), "gpu");
+  mut packages = List[usize].empty();
+  mut lead = List[String].empty();
+  if hasGpu {
+    packages = gpuClosure(plan, &s.reg, u, core);
+    lead.push(gpuFolder.copy());
+  }
+  else {
+    packages.push(plan.units[u].pkg);
+    imm rest = closure(plan, &s.reg, u);
+    mut i = 0usize;
+    while i < rest.len() {
+      packages.push(*rest[i]);
+      i = i + 1usize;
+    }
+  }
   mut folders = List[String].empty();
-  match gpuSearchFolders(plan, &s.reg, u, &packages, core) {
+  match gpuSearchFolders(plan, &s.reg, u, &packages, core, &lead) {
     case mut ok Ok { folders <=> ok.value; }
     case imm e Error { return Error[String, String][e.value.copy()]; }
   }
   imm gpuRoot = joined(s.out.view(), "gpu");
   imm work = joined(gpuRoot.view(), name.view());
   makeFolder(work.view());
-  imm module = cat(name.view(), "_gpu");
   imm sourceName = cat(module.view(), ".cone");
   imm source = joined(work.view(), sourceName.view());
   // Its lines end as Python's write_text ends them on Windows, in '\r\n'
   mut text = String.empty();
-  text <- "// The GPU build of ", name.view(), ", written by Congo for conec; rewritten on every\r\n";
-  text <- "// build. ", name.view(), "'s compute entry points are the kernels of ", name.view(), ".spv.\r\n";
-  text <- "\r\n";
-  text <- "mod ", module.view(), ";\r\n";
-  text <- "\r\n";
-  text <- "import ", name.view(), ";\r\n";
+  if hasGpu {
+    text <- "// The GPU build of ", name.view(), "'s gpu/ folder, written by Congo for conec; rewritten\r\n";
+    text <- "// on every build. Its compute entry points are the kernels of ", name.view(), ".spv. Each\r\n";
+    text <- "// module of gpu/ is imported, after the modules of gpu/ it imports, and found\r\n";
+    text <- "// on the package search path, which gpu/ leads.\r\n";
+    text <- "\r\n";
+    text <- "mod ", module.view(), ";\r\n";
+    imm order = gpuModuleOrder(&plan.units[u].mods);
+    if order.len() > 0usize { text <- "\r\n"; }
+    mut i = 0usize;
+    while i < order.len() {
+      text <- "import ", plan.units[u].mods[*order[i]].name.view(), ";\r\n";
+      i = i + 1usize;
+    }
+  }
+  else {
+    text <- "// The GPU build of ", name.view(), ", written by Congo for conec; rewritten on every\r\n";
+    text <- "// build. ", name.view(), "'s compute entry points are the kernels of ", name.view(), ".spv.\r\n";
+    text <- "\r\n";
+    text <- "mod ", module.view(), ";\r\n";
+    text <- "\r\n";
+    text <- "import ", name.view(), ";\r\n";
+  }
   match fs.writeFile(source.view(), text.view()) {
     case is Ok {}
     case imm e Error { fail(e.value.message()); }
@@ -191,7 +300,8 @@ fn compileGpu(s &mut Session, plan &Plan, u usize, core usize) Result[String, St
   removeIfThere(spv.view());
   removeIfThere(written.view());
   imm label = pkg.label();
-  imm compiling = cat(label.view(), " for the GPU (", pkg.root.view(), ")");
+  imm shownRoot = if hasGpu {gpuFolder.copy();} else {pkg.root.copy();};
+  imm compiling = cat(label.view(), " for the GPU (", shownRoot.view(), ")");
   say("Compiling", compiling.view());
   mut rest = List[String].empty();
   rest.push(cat("--triple=", gpuTriple));

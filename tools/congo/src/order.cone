@@ -9,7 +9,9 @@ struct Unit {
   pub pkg usize;
   pub mods List[Module];
   pub deps List[usize];
-  pub kernels Bool;      // marked for the GPU, and its source holds compute entry points
+  pub kernels Bool;      // what is compiled for the GPU holds compute entry points
+  pub hasGpu Bool;       // it has a gpu/ folder
+  pub gpuDeps List[usize];   // the packages its gpu/ folder imports, first-seen order
 }
 
 fn holds(list &List[usize], v usize) Bool {
@@ -34,10 +36,16 @@ fn resolveImports(reg &Registry, p usize, scanned List[Module]) Result[Unit, Str
   while w < order.len() {
     imm m = *order[w];
     imm imports = importsOf(mods[m]);
+    // A module of gpu/ is compiled for the GPU without src/, so it may not
+    // use src/: not a sister there, and not a name of the root [Jon 3 Oct]
+    imm fromGpu = mods[m].gpu and mods[m].hasParent and not mods[mods[m].parent].gpu;
+    mut sister = 0usize;
+    if fromGpu and mods[m].hasExtends and sisterNamed(&mods, m, mods[m].extended.name.view(), &mut sister) and not mods[sister].gpu {
+      return Error[Unit, String][gpuUsesSrc(pkg, &mods[m].extended, "extends", &mods, true, sister)];
+    }
     mut i = 0usize;
     while i < imports.len() {
       imm imp = imports[i];
-      mut sister = 0usize;
       if not imp.hasName {
         imm place = imp.location();
         return Error[Unit, String][cat(place.view(), ": import ", imp.written.view(),
@@ -45,6 +53,12 @@ fn resolveImports(reg &Registry, p usize, scanned List[Module]) Result[Unit, Str
       }
       elif sisterNamed(&mods, m, imp.name.view(), &mut sister) {
         // a sister, answered inside the package
+        if fromGpu and not mods[sister].gpu {
+          return Error[Unit, String][gpuUsesSrc(pkg, imp, "import", &mods, true, sister)];
+        }
+      }
+      elif fromGpu and not imp.name.equals("core") and not reg.has(imp.name.view()) {
+        return Error[Unit, String][gpuUsesSrc(pkg, imp, "import", &mods, false, 0usize)];
       }
       elif imp.name.equals("core") {
         // The prelude is loaded already; an explicit import of it names the
@@ -81,12 +95,12 @@ fn resolveImports(reg &Registry, p usize, scanned List[Module]) Result[Unit, Str
     case is Ok {}
     case imm e Error { return Error[Unit, String][e.value.copy()]; }
   }
-  // Only a package marked for the GPU has its kernels built, so only its
-  // source is read past the headers
+  // Only what is compiled for the GPU has its kernels built, so only its
+  // source is read past the headers: a marked package's, or its gpu/ folder's
   mut kernels = false;
-  if pkg.gpu {
-    mut m = 0usize;
-    while m < mods.len() and not kernels {
+  mut m = 0usize;
+  while m < mods.len() and not kernels {
+    if pkg.gpu or mods[m].gpu {
       mut f = 0usize;
       while f < mods[m].files.len() and not kernels {
         match holdsKernel(mods[m].files[f].view()) {
@@ -95,10 +109,42 @@ fn resolveImports(reg &Registry, p usize, scanned List[Module]) Result[Unit, Str
         }
         f = f + 1usize;
       }
-      m = m + 1usize;
     }
+    m = m + 1usize;
   }
-  Ok[Unit, String][new Unit(p, mods, deps, kernels)];
+  mut hasGpu = false;
+  mut gpuDeps = List[usize].empty();
+  w = 0usize;
+  while w < order.len() {
+    imm g = *order[w];
+    if mods[g].gpu {
+      hasGpu = true;
+      mut l = 0usize;
+      while l < mods[g].lines.len() {
+        imm dep = mods[g].lines[l].pkg;
+        if not reg.packages[dep].name.equals("core") and not holds(&gpuDeps, dep) { gpuDeps.push(dep); }
+        l = l + 1usize;
+      }
+    }
+    w = w + 1usize;
+  }
+  Ok[Unit, String][new Unit(p, mods, deps, kernels, hasGpu, gpuDeps)];
+}
+
+// The refusal of a gpu/ module's import or extends of src/: a sister there,
+// or a name of the root module, whose designated file is in src/
+fn gpuUsesSrc(pkg &Package, imp &Import, verb &[]u8, mods &List[Module], isSister Bool, sister usize) String {
+  mut what = String.empty();
+  if isSister {
+    imm place = shown(mods[sister].files[0usize].view());
+    what <- mods[sister].name.view(), " is a module of ", pkg.name.view(), "'s src/ (", place.view(), ")";
+  }
+  else {
+    what <- imp.name.view(), " is no package, so it would be a name of ", pkg.name.view(), "'s root module, in src/";
+  }
+  imm place = imp.location();
+  cat(place.view(), ": ", verb, " ", imp.name.view(), ": ", what.view(),
+    ", and gpu/ may not use src/: gpu/ is compiled for the GPU without src/. Move what both need into gpu/, which src/ may use");
 }
 
 fn importsOf(m &Module) List[Import] {
@@ -124,14 +170,15 @@ fn addLine(m &mut Module, name &[]u8, pkg usize) {
   m.lines.push(new Line(String.from(name), pkg));
 }
 
-// The first import of name in the package, in walk order
-fn firstImport(unit &Unit, name &[]u8) Import {
+// The first import of name in the package, in walk order; of its gpu/
+// folder only, where asked
+fn firstImport(unit &Unit, name &[]u8, gpuOnly Bool = false) Import {
   imm order = walkOrder(&unit.mods);
   mut w = 0usize;
   while w < order.len() {
     imm m = *order[w];
     mut i = 0usize;
-    while i < unit.mods[m].imports.len() {
+    while i < unit.mods[m].imports.len() and (unit.mods[m].gpu or not gpuOnly) {
       if unit.mods[m].imports[i].name.equals(name) { return unit.mods[m].imports[i].copy(); }
       i = i + 1usize;
     }
@@ -175,7 +222,7 @@ struct Plan {
       case mut ok Ok { scanned <=> ok.value; }
       case imm e Error { return Error[void, String][e.value.copy()]; }
     }
-    mut unit = new Unit(p, List[Module].empty(), List[usize].empty(), false);
+    mut unit = new Unit(p, List[Module].empty(), List[usize].empty(), false, false, List[usize].empty());
     match resolveImports(reg, p, scanned) {
       case mut ok Ok { unit <=> ok.value; }
       case imm e Error { return Error[void, String][e.value.copy()]; }

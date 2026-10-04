@@ -1,0 +1,48 @@
+// pattern: gpupart's GPU half, a module of its gpu/ folder. Congo compiles
+// it twice: for the CPU, as gpupart's submodule 'pattern', which src/ calls
+// as it calls any submodule (pattern.cell); and for the GPU, without src/,
+// into build/<mode>/gpupart.spv, whose one kernel is 'fill'. Being in gpu/
+// is what marks it: what it imports must be marked for the GPU (noise is,
+// and geomath and libc beneath it), and it may not use src/.
+//
+// Everything here is exact on both sides: noise's PCG hash is integer
+// arithmetic, its toUnit is a 24-bit integer times 2^-24, and 'mixed' is
+// only additions and multiplications, which conec compiles for the GPU
+// unfused (NoContraction), each rounded as the CPU rounds it. So every word
+// 'fill' writes on the GPU is the CPU's, bit for bit.
+
+mod pattern;
+
+import noise use pcg, toUnit;
+
+// What 'fill' is given by value: one small read-only storage buffer
+pub struct Settings {
+  pub seed u32;
+  pub scale f32;
+  pub offset f32;
+}
+
+// One cell of what 'fill' writes: three 32-bit words, laid out alike in
+// Cone and in a storage buffer, so the CPU reads the GPU's words as Cells
+pub struct Cell {
+  pub hash u32;     // noise's PCG hash of the cell's index and the seed
+  pub unit f32;     // that hash's top 24 bits, as a number in [0, 1)
+  pub mixed f32;    // made from 'unit' by additions and multiplications
+}
+
+// Cell i, the same function on the CPU and, inlined into 'fill', on the GPU
+pub fn cell(i u32, s Settings) Cell {
+  imm h = pcg(i ^ s.seed);
+  imm unit = toUnit(h);
+  imm mixed = (unit * s.scale + s.offset) * (unit - 0.5) + f32.from(i % 7u32) * 0.125;
+  new Cell(h, unit, mixed);
+}
+
+// One cell an invocation, 64 a workgroup. Bindings: 0 the Settings, 1 the
+// cells it writes, and 2 its error buffer, which gpuwork binds and reads
+pub fn @compute(64) fill(inv Invocation, s Settings, out &[]mut Cell) {
+  imm i = inv.globalId[0usize];
+  if usize.from(i) < out.len {
+    out[usize.from(i)] = cell(i, s);
+  }
+}
