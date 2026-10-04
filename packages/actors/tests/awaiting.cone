@@ -1,0 +1,84 @@
+// What an 'await' runs on, from the package's side. An actor awaits a
+// message to another, through this package compiled as a library: the
+// pending table, the reply's envelope and its dispatch are the package's,
+// and the functions the compiler's generated code calls are exported. Asker
+// sends 12 requests to itself, which all park before the first reply comes,
+// so its pending table holds 12 records at once and grows past its first 8
+// slots; each sum is checked once finalAll has found everything quiet.
+//
+// Then the pending table alone: ids are slots, a slot freed is the next one
+// taken, and a block keeps what was written into it.
+
+mod awaiting;
+
+import testing use *;
+import actors;
+
+struct Sums {
+  pub got Atomic[u64];
+  pub replies Atomic[u64];
+}
+
+imm sums Sums;
+
+fn @initpure init() {
+  sums = new Sums(Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+}
+
+actor Squarer {
+  pub fn square(self, n u64) u64 {n * n;}
+}
+
+actor Asker {
+  sq Squarer;
+
+  pub fn many(self, n u64) {
+    mut i = 1u64;
+    while i <= n {
+      selfactor.one(i);
+      i = i + 1u64;
+    }
+  }
+
+  pub fn one(self, i u64) {
+    imm base = i * 1000u64;
+    imm s = await sq.square(i);
+    sums.got.add(base + s);
+    sums.replies.add(1u64);
+  }
+}
+
+fn main() i32 {
+  initAll();
+  {
+    imm sq = new Squarer();
+    imm a = new Asker(sq);
+    a.many(12u64);
+  }
+  finalAll();
+  // Sum over 1..12 of i*1000 + i*i: 78000 + 650
+  expectUInt(sums.replies.load(), 12u64, "every request answered once");
+  expectUInt(sums.got.load(), 78650u64, "each record and each reply arrived together");
+
+  mut p = new actors.Pending();
+  mut ids Array[u64, 10] = [0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64];
+  mut i = 0usize;
+  while i < 10usize {
+    ids[i] = actors.parkReserve(&mut p, 8usize);
+    *(actors.parked(&mut p, ids[i]) as *u64) = u64.from(i) * 7u64;
+    i = i + 1usize;
+  }
+  expectUInt(ids[0], 0u64, "the first slot is 0");
+  expectUInt(ids[9], 9u64, "ten slots, grown past eight, in order");
+  imm b3 = actors.unpark(&mut p, ids[3]);
+  expectUInt(*(b3 as *u64), 21u64, "the block keeps what was written");
+  actors.recordFree(b3);
+  imm again = actors.parkReserve(&mut p, 8usize);
+  expectUInt(again, 3u64, "a slot freed is the next taken");
+  i = 0usize;
+  while i < 10usize {
+    actors.recordFree(actors.unpark(&mut p, ids[i]));
+    i = i + 1usize;
+  }
+  done();
+}

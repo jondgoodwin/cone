@@ -1282,6 +1282,9 @@ int fnCallLowerMethod(TypeCheckState *pstate, FnCallNode *callnode) {
     callnode->methfld = NULL;
     callnode->vtype = ((FnSigNode*)selected->vtype)->rettype;
 
+    // A method of an actor holding an 'await' is its dispatcher's to call
+    awaitCallCheck(pstate, (INode*)callnode, selected);
+
     // Handle copying of value arguments and default arguments
     fnCallFinalizeArgs(callnode);
     return 1;

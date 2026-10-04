@@ -562,7 +562,16 @@ the wait gives and `await` binds no looser than `-` does. It builds an
 `AwaitNode` and nothing more; where it may stand is type check's
 (`awaitTypeCheck`, `ErrorAwaitPlace`) and what its seam does is the loan walk's
 ([Flow](flow.md), "A seam"). `await` is a keyword, so no program may name
-anything `await`.
+anything `await`. Inside an actor's body, each function whose own body holds
+one is noted (`DclTexts.awaiting`, in `parseFn`), for the actor's generated
+declarations.
+
+**`selfactor` is a term**, a keyword: in an actor's method, the actor's own
+handle. It builds a `SelfActorNode`, which type check lowers to a call of the
+function the actor's declaration generated for it (`selfActorTypeCheck`,
+`ErrorSelfActorPlace`). An actor's body counts its uses
+(`DclTexts.selfactors`), so an actor that writes none generates no function
+for it.
 
 **It desugars.** `match` becomes a block holding an anonymous capture variable
 plus an `if` chain, each case's patterns becoming its condition: `is T` an `is`
@@ -591,27 +600,51 @@ actor. `actor Counter { ... }` is read by `parseStruct` as a struct's body, the
 actor's *state*, while `ParseState.dcltexts` records where each field's and
 parameter's type and default value are written (`parseVarDcl`,
 `parseFieldDclBody`, `parseFnSig`); the members are checked
-(`ErrorActorMember`, `ErrorActorReturn`, a borrow or the state itself carried
-in a message `ErrorNotSendable`), a bare `self` becomes `self &mut`, and the
-other three declarations are written as Cone source and parsed from a lexer of
-their own: the handle under the actor's own name (one field owning the
-mailbox, an initializer per one of the state's or the implicit one's fields, a
-send method per message, all calling the `actors` package), the message enum
-(`is Sendable`, a variant per `pub` method, its fields the parameters' types
-as written), and the dispatch function. They join the module in that order,
+(`ErrorActorMember`, a borrow or the state itself carried in a message
+`ErrorNotSendable`), a bare `self` becomes `self &mut`, and the other three
+declarations are written as Cone source and parsed from a lexer of their own:
+the handle under the actor's own name (one field owning the mailbox, an
+initializer per one of the state's or the implicit one's fields, a send method
+per message, all calling the `actors` package), the message enum (`is
+Sendable`, a variant per `pub` method, its fields the parameters' types as
+written), and the dispatch function. They join the module in that order,
 after the state; nothing depends on it, since the handle reaches the enum only
-through a reference, which lays out nothing of its target. The derived names -- `Counter.State`,
-`Counter.Msg`, `Counter.dispatch`, the handle's field, and the bindings of the
-`actors` and `sync` modules and of `Sendable` the text reaches them through,
-bound once per module -- are `nametblPrivate` names, which no source can
-spell; the generated text writes them `` `#n` ``, which only a lexer given
-`Lexer.gennames` reads. A diagnostic against the generated text is reported at
-the actor's name with the generated line beside it (`Lexer.genat`). The module
-must import `actors` (`ErrorActorRuntime`). Each generated declaration is
-marked `DclActorGen`, which a library compile exports whatever its
-visibility: the include file keeps the actor whole, so an importer generates
-them again. What crosses to the actor is checked after type check
-(`actorCheckAll`, `ir/types/actor.c`).
+through a reference, which lays out nothing of its target.
+
+A message may return a value, which a reply carries back to an `await`. Each
+that does has a second variant, its request awaited (`fetch'ask`: its
+parameters and the reply's envelope, an `actors.Reply`), a second send method
+on the handle taking the envelope, and a dispatch arm that answers
+(`actors.answerNow`); sent with no `await`, its value is dropped. An actor
+whose body holds an `await` gets two hidden fields in its state, after those
+written and each with a default, so a construction as written leaves them to
+it -- its pending table, and, where a message returning a value holds an
+`await`, the Answer slot that message's envelope waits in while it runs (read
+as a struct's fields, `Counter.hidden'`, and moved into the state) -- two
+resume variants (`resume'`, `resumeid'`: the seam's resume function, the
+record's id where it has a record, and where the value returned is) with
+their dispatch arms, and the two functions that make a request's envelope
+(`Counter.reply'`, `Counter.replyid'`). Such a message returning a value is
+dispatched through the Answer slot (`actors.ask`, `askNone`, `keep`,
+`answerAt`). An actor writing `selfactor` gets `Counter.self'`, which makes the
+handle from the state ([Generation](generation.md), "A message's reply"). What
+the compiler needs of all this later is recorded in the actor's `ActorInfo`
+(`ir/types/actor.h`).
+
+The derived names -- `Counter.State`, `Counter.Msg`, `Counter.dispatch`, the
+handle's field, the hidden fields, variants and functions above, and the
+bindings of the `actors` and `sync` modules and of `Sendable` the text
+reaches them through, bound once per module -- are `nametblPrivate` names,
+which no source can spell; the generated text writes them `` `#n` ``, which
+only a lexer given `Lexer.gennames` reads. A diagnostic against the generated
+text is reported at the actor's name with the generated line beside it
+(`Lexer.genat`). The module must import `actors` (`ErrorActorRuntime`), whose
+functions generation calls for a seam are found as it is bound
+(`actorRuntime`). Each generated declaration is marked `DclActorGen`, which a
+library compile exports whatever its visibility: the include file keeps the
+actor whole, its bodies too, so an importer generates them again, the same.
+What crosses to the actor, and what a message returns, is checked after type
+check (`actorCheckAll`, `ir/types/actor.c`).
 
 **It binds module-level names.** `modAddNode`, `modAddNamedNode` and `modAddFn`
 run *during* parsing, so by the time a module's parse finishes its namespace is
@@ -779,7 +812,7 @@ numbers.
 | `shared/fileio.c` | `fileFindSrc`, `fileFindLocal`, `fileFindPackage`, `fileFolderScan`, `fileDesignatedFile` | locate a source file without reading it — beside a file, on the package search path (saying when it found a package's source root), or the one then the other; list a folder's `.cone` files and subfolders, sorted; probe a folder for the designated file that makes it a module folder |
 | | `parseImport`, `parseRetiredInclude` | the one source-composition form, and the retired one reported |
 | | `parseRetiredTypedef` | the retired `typedef` reported, pointed at `alias` |
-| `parser/parseactor.c` | `parseActor`, `parseActorMembers`, `parseActorRuntime`, `parseDclText` | an actor: its body read as the state, its members checked, the `actors` package found and bound once per module, and the message enum, the handle and the dispatch function written and parsed (section 6); `actor trait` refused |
+| `parser/parseactor.c` | `parseActor`, `parseActorMembers`, `parseActorRuntime`, `parseDclText` | an actor: its body read as the state, its members checked, the `actors` package found and bound once per module, and the message enum, the handle and the dispatch function written and parsed, with what its seams, its messages returning a value and `selfactor` need (section 6), recorded in its `ActorInfo`; `actor trait` refused |
 | `parser/parsehelper.c` | `parseBlockStart`, `parseBlockEnd` | `{` and `}`, with recovery |
 | | `parseEndOfStatement`, `parseSkipToNextStmt`, `parseCloseTok` | the required `;`, and the two resyncs |
 | `parser/parseexpr.c` | `parseAnyExpr`, `parseSimpleExpr` | the two expression entry points |

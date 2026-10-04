@@ -189,6 +189,7 @@ enum TokenTypes {
     NewToken,      // 'new': a construction, 'new Point(1, 2)', and an initializer's permission, '&new'
     TrynewToken,   // 'trynew': an allocation that may fail, 'trynew Rc[mut, Node](1)', giving an Option
     AwaitToken,    // 'await': in an actor's method, wait for what is awaited; the method is cut there, a seam
+    SelfActorToken, // 'selfactor': in an actor's method, the actor's own handle
     VoidToken,     // 'void'
     nilToken,      // 'nil'
     nullToken,     // 'null'

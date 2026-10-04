@@ -131,6 +131,10 @@ void inodePrintNode(INode *node) {
         logicPrint((LogicNode *)node); break;
     case AwaitTag:
         awaitPrint((AwaitNode *)node); break;
+    case AwaitReplyTag:
+        inodeFprint("(reply)"); break;
+    case SelfActorTag:
+        inodeFprint("selfactor"); break;
     case NilLitTag:
         nilLitPrint((NilLitNode *)node); break;
     case NullLitTag:
@@ -298,6 +302,9 @@ void inodeNameRes(NameResState *pstate, INode **node) {
         logicNameRes(pstate, (LogicNode *)*node); break;
     case AwaitTag:
         awaitNameRes(pstate, (AwaitNode *)*node); break;
+    // 'selfactor' names nothing: type check finds the actor it is in
+    case SelfActorTag:
+        break;
     case NamedValTag:
         namedValNameRes(pstate, (NamedValNode *)*node); break;
     case OfEntryTag: case FillEntryTag: case PairEntryTag:
@@ -497,6 +504,10 @@ void inodeTypeCheck(TypeCheckState *pstate, INode **node, INode *expectType) {
         logicTypeCheck(pstate, (LogicNode *)*node); break;
     case AwaitTag:
         awaitTypeCheck(pstate, (AwaitNode *)*node, expectType); break;
+    case AwaitReplyTag:
+        break;
+    case SelfActorTag:
+        selfActorTypeCheck(pstate, node); break;
     case IsTag:
         if ((*node)->flags & FlagMatchValue)
             castMatchValueTypeCheck(pstate, node);
@@ -777,6 +788,8 @@ static NodeTagFacts nodeTagFacts[NodeTagCount] = {
     [FillEntryTag] = {ExpGroup, 0, 0},
     [PairEntryTag] = {ExpGroup, 0, 0},
     [AwaitTag] = {ExpGroup, 0, 0},
+    [AwaitReplyTag] = {ExpGroup, 0, 0},
+    [SelfActorTag] = {ExpGroup, 0, 0},
     [AbsenceTag] = {ExpGroup, 0, 0},
 
     [FnSigTag] = {TypeGroup, 0, 0},

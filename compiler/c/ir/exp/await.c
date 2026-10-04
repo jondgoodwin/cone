@@ -23,7 +23,25 @@ AwaitNode *newAwaitNode() {
     node->seamcap = 0;
     node->seamno = 0;
     node->genseam = NULL;
+    node->message = NULL;
+    node->voidmessage = 0;
     node->walked = 0;
+    return node;
+}
+
+SelfActorNode *newSelfActorNode() {
+    SelfActorNode *node;
+    newNode(node, SelfActorNode, SelfActorTag);
+    node->vtype = unknownType;
+    return node;
+}
+
+static AwaitReplyNode *newAwaitReplyNode(AwaitNode *await, INode *type) {
+    AwaitReplyNode *node;
+    newNode(node, AwaitReplyNode, AwaitReplyTag);
+    inodeLexCopy((INode *)node, (INode *)await);
+    node->vtype = type;
+    node->await = await;
     return node;
 }
 
@@ -38,6 +56,8 @@ INode *cloneAwaitNode(CloneState *cstate, AwaitNode *node) {
     newnode->seamcap = 0;
     newnode->seamno = 0;
     newnode->genseam = NULL;
+    newnode->message = NULL;
+    newnode->voidmessage = 0;
     newnode->walked = 0;
     return (INode *)newnode;
 }
@@ -71,6 +91,66 @@ static char *awaitNotPlaced(FnDclNode *fn) {
     return NULL;
 }
 
+// What is awaited is a message to an actor -- a call of a handle's method
+// that sends one -- when the message returns a value: it is sent awaited.
+// The call is made the handle's second method for it, which takes the
+// reply's envelope as well, and the envelope is the call's last argument;
+// the 'await''s value is what the message returns. Its signature, as the
+// author wrote it, is unchanged: the envelope is in the message, not in any
+// parameter list
+static void awaitMessage(TypeCheckState *pstate, AwaitNode *node) {
+    // Checked again: the call is the awaited one already
+    if (node->message) {
+        node->vtype = ((FnSigNode *)node->message->vtype)->rettype;
+        return;
+    }
+    if (node->exp->tag != FnCallTag)
+        return;
+    FnCallNode *call = (FnCallNode *)node->exp;
+    if (call->objfn == NULL || !isNameUseNode(call->objfn))
+        return;
+    INode *dcl = ((NameUseNode *)call->objfn)->dclnode;
+    if (dcl == NULL || dcl->tag != FnDclTag)
+        return;
+    ActorInfo *callee;
+    ActorMessage *msg = actorMessageOfSend((FnDclNode *)dcl, &callee);
+    if (msg == NULL)
+        return;
+    // Nothing comes back from a message that returns nothing: such an 'await'
+    // is reported unbuilt once the seam's rules are checked
+    if (msg->ask == NULL) {
+        node->voidmessage = 1;
+        return;
+    }
+    ActorInfo *awaiter = actorOfState(inodeGetOwner((INode *)pstate->fn));
+    if (awaiter == NULL || awaiter->replyfn == NULL || awaiter->replyidfn == NULL) {
+        errorUnreachable((INode *)node, "an 'await' in an actor generated no functions for its seams");
+        return;
+    }
+    for (int i = 0; i < ActorRtCount; ++i) {
+        if (actorRuntime[i] == NULL) {
+            errorMsgNode((INode *)node, ErrorActorRuntime,
+                "'await' needs the actors package's %s, which the package this module imports as actors does not have.",
+                actorRuntimeNames[i]);
+            return;
+        }
+        fnCallDemandCandidates((INode *)actorRuntime[i]);
+    }
+    fnCallDemandCandidates((INode *)msg->ask);
+    fnCallDemandCandidates((INode *)msg->method);
+    fnCallDemandCandidates((INode *)awaiter->replyfn);
+    fnCallDemandCandidates((INode *)awaiter->replyidfn);
+
+    FnSigNode *asksig = (FnSigNode *)msg->ask->vtype;
+    NameUseNode *askuse = (NameUseNode *)call->objfn;
+    askuse->dclnode = (INode *)msg->ask;
+    askuse->vtype = (INode *)asksig;
+    INode *envtype = ((VarDclNode *)nodesGet(asksig->parms, asksig->parms->used - 1))->vtype;
+    nodesAdd(&call->args, (INode *)newAwaitReplyNode(node, envtype));
+    node->message = msg->method;
+    node->vtype = ((FnSigNode *)msg->method->vtype)->rettype;
+}
+
 // Type check await
 void awaitTypeCheck(TypeCheckState *pstate, AwaitNode *node, INode *expectType) {
     char *where = awaitNotPlaced(pstate->fn);
@@ -81,6 +161,56 @@ void awaitTypeCheck(TypeCheckState *pstate, AwaitNode *node, INode *expectType) 
     if (!iexpTypeCheckAny(pstate, &node->exp))
         return;
     node->vtype = ((IExpNode *)node->exp)->vtype;
+    if (where == NULL)
+        awaitMessage(pstate, node);
+}
+
+// 'selfactor' is the actor's own handle: another owner of its mailbox, made
+// from the state by the function the actor's declaration generated for it.
+// It stands where 'await' may: an actor's 'init' runs before the actor
+// exists, and its 'final' as it dies, when nothing may own it again
+void selfActorTypeCheck(TypeCheckState *pstate, INode **nodep) {
+    INode *node = *nodep;
+    char *where = awaitNotPlaced(pstate->fn);
+    if (where) {
+        errorMsgNode(node, ErrorSelfActorPlace,
+            "'selfactor', the actor's own handle, stands only in an actor's method; this one is %s.", where);
+        ((IExpNode *)node)->vtype = errorType;
+        return;
+    }
+    ActorInfo *info = actorOfState(inodeGetOwner((INode *)pstate->fn));
+    if (info == NULL || info->selffn == NULL) {
+        errorUnreachable(node, "a 'selfactor' whose actor generated no function for it");
+        ((IExpNode *)node)->vtype = errorType;
+        return;
+    }
+    VarDclNode *self = (VarDclNode *)nodesGet(((FnSigNode *)pstate->fn->vtype)->parms, 0);
+    NameUseNode *selfuse = newNameUseNode(selfName);
+    inodeLexCopy((INode *)selfuse, node);
+    selfuse->dclnode = (INode *)self;
+    NameUseNode *fnuse = newNameUseNode(info->selffn->namesym);
+    inodeLexCopy((INode *)fnuse, node);
+    fnuse->dclnode = (INode *)info->selffn;
+    FnCallNode *call = newFnCallLower(node, (INode *)fnuse, 1);
+    nodesAdd(&call->args, (INode *)selfuse);
+    *nodep = (INode *)call;
+    inodeTypeCheckAny(pstate, nodep);
+}
+
+// A method of an actor holding an 'await' runs only as its dispatcher calls
+// it, so that each seam is a return to the dispatcher. Called from any other
+// method, its seams would cut the caller too, at a call that shows nothing of
+// it. Whether a call may stand for a seam is not settled, so it is not built
+void awaitCallCheck(TypeCheckState *pstate, INode *call, FnDclNode *callee) {
+    // A method that is not a message has its 'await's refused where they stand
+    if (!(callee->flags & FlagMethFld) || !(callee->flags & FlagPub))
+        return;
+    ActorInfo *info = actorOfState(inodeGetOwner((INode *)callee));
+    if (info == NULL || !actorMethodAwaits(info, callee) || pstate->fn == info->dispatch)
+        return;
+    errorMsgNode(call, ErrorUnbuiltAwait,
+        "A call of %s, a method of actor %s holding an 'await', is not built: only the actor's dispatcher calls it, since each of its seams returns to the dispatcher, and a call here would cut this method too, where nothing shows it.",
+        &callee->namesym->namestr, &info->handle->namesym->namestr);
 }
 
 // *********************
@@ -128,9 +258,12 @@ void awaitReportUnbuilt(Nodes *awaits) {
     uint32_t cnt;
     for (nodesFor(awaits, cnt, nodesp)) {
         AwaitNode *node = (AwaitNode *)*nodesp;
+        // A message that returns nothing has no reply to wait for
+        char *unbuilt = node->voidmessage
+            ? "'await' on a message that returns nothing is not built, so nothing is generated for it."
+            : "'await' is not built yet, so nothing is generated for it.";
         if (!node->walked) {
-            errorMsgNode((INode *)node, ErrorUnbuiltAwait,
-                "'await' is not built yet, so nothing is generated for it. No path reaches this seam.");
+            errorMsgNode((INode *)node, ErrorUnbuiltAwait, "%s No path reaches this seam.", unbuilt);
             continue;
         }
         char record[512], finals[512], ended[512], locks[512], behind[512];
@@ -167,8 +300,8 @@ void awaitReportUnbuilt(Nodes *awaits) {
                 seamListVar(&lfinals, sv, 0);
         }
         errorMsgNode((INode *)node, ErrorUnbuiltAwait,
-            "'await' is not built yet, so nothing is generated for it. Its seam would end the borrows held by [%s]; give back [%s]; move into the continuation's record [%s], finalized as if the method were not cut, in the order [%s]; and leave behind [%s].",
-            ended, locks, record, finals, behind);
+            "%s Its seam would end the borrows held by [%s]; give back [%s]; move into the continuation's record [%s], finalized as if the method were not cut, in the order [%s]; and leave behind [%s].",
+            unbuilt, ended, locks, record, finals, behind);
     }
 }
 
@@ -467,20 +600,62 @@ int awaitWithin(INode *node) {
     return awaitWalk(node, 0, &bad);
 }
 
+// A continuation waiting in the pending table is off the stack, where the
+// collector's roots are not: the table is not traced yet, so a record that
+// would hold a traced reference is refused
+static int awaitRecordTraced(AwaitNode *node) {
+    int bad = 0;
+    for (uint32_t i = 0; i < node->nseamvars; ++i) {
+        SeamVar *sv = &node->seamvars[i];
+        if (!(sv->flags & SeamOpen) || !(sv->flags & (SeamLive | SeamDies)) || (sv->flags & SeamGuard))
+            continue;
+        if ((sv->flags & SeamParm) && sv->var->namesym == selfName)
+            continue;
+        if (!itypeHoldsTraced(sv->var->vtype))
+            continue;
+        errorMsgNode((INode *)node, ErrorUnbuiltAwait,
+            "'await' whose continuation holds a traced reference is not built: %s would wait in the actor's pending table, which the collector does not trace yet.",
+            &sv->var->namesym->namestr);
+        bad = 1;
+    }
+    return bad;
+}
+
 void awaitSplitOrReport(FnDclNode *fn, Nodes *awaits) {
-    if (!awaitDirect || !awaitIsMessage(fn)) {
+    if (!awaitIsMessage(fn)) {
         awaitReportUnbuilt(awaits);
+        return;
+    }
+    INode **nodesp;
+    uint32_t cnt;
+    // What is awaited is a message returning a value, whose reply calls the
+    // second half; any other seam is built only under '--await-direct', for
+    // tests, and a message that returns nothing not even then
+    Nodes *unbuilt = NULL;
+    for (nodesFor(awaits, cnt, nodesp)) {
+        AwaitNode *node = (AwaitNode *)*nodesp;
+        if (node->message == NULL && (!awaitDirect || node->voidmessage)) {
+            if (unbuilt == NULL)
+                unbuilt = newNodes(4);
+            nodesAdd(&unbuilt, (INode *)node);
+        }
+    }
+    if (unbuilt) {
+        awaitReportUnbuilt(unbuilt);
         return;
     }
     uint32_t bad = 0;
     awaitWalk(fn->value, 1, &bad);
+    for (nodesFor(awaits, cnt, nodesp)) {
+        AwaitNode *node = (AwaitNode *)*nodesp;
+        if (node->message && awaitRecordTraced(node))
+            ++bad;
+    }
     if (bad)
         return;
     // Each seam numbered in the order written, and each lock's guard a seam
     // gives back followed by a flag (VarSeamHeld): the code after the seam
     // reaches the guard's scope's end too
-    INode **nodesp;
-    uint32_t cnt;
     uint32_t seamno = 0;
     for (nodesFor(awaits, cnt, nodesp)) {
         AwaitNode *node = (AwaitNode *)*nodesp;

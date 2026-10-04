@@ -2383,6 +2383,7 @@ static PathSet *pwValue(INode **nodep, int move) {
         return pwValue(&((TempNode *)node)->exp, move);
     case AwaitTag:
         return pwSeam((AwaitNode *)node, move);
+    case AwaitReplyTag:
     case SizeofTag:
     case NilLitTag:
     case NullLitTag:

@@ -2236,6 +2236,8 @@ void genSetup(GenState *gen, ConeOptions *opt) {
     gen->flightcnt = 0;
     gen->flightmax = 0;
     gen->flightbase = 0;
+    gen->awaitflights = 0;
+    gen->awaitid = NULL;
 
     gen->comdats = genlComdatSupport(opt->triple);   // genlCreateMachine filled in the default
     gen->cabi = genlCAbiTarget(opt->triple);
