@@ -1,0 +1,46 @@
+// A ''static' borrow crosses a seam: it is already returnable from a
+// function, so this is the same rule at a new program point, checked by the
+// loan walk's own test of what is global (a value's lifetime is the shortest
+// root among its loans; a value holds none). Each 'await' here is accepted,
+// and reported as not built (ErrorUnbuiltAwait), the borrow among what its
+// continuation's record would carry, ending nothing:
+//
+// - a borrow of a global, used after the seam;
+// - a reborrow through a ''static' parameter of a method that is no message,
+//   whose caller loans there are none of: the parameter and the reborrow
+//   both travel.
+//
+// A borrow that is not global is refused (concurrency_await_borrow).
+
+mod concurrency_await_static;
+
+import actors;
+
+imm seed u64 = 7u64;
+
+fn give() u64 {5u64;}
+
+actor Peer {
+  pub fn ping(self) {}
+}
+
+actor Page {
+  body u64;
+  peer Peer;
+
+  pub fn ofGlobal(self) {
+    imm r = &seed;
+    await peer.ping();     //~ ErrorUnbuiltAwait "end the borrows held by []; give back []; move into the continuation's record [r]"
+    body = *r;
+  }
+
+  pub fn passes(self) {
+    body = self.keep(&seed);
+  }
+
+  fn keep(self, r &'static u64) u64 {
+    imm q = &*r;
+    await give();          //~ ErrorUnbuiltAwait "end the borrows held by []; give back []; move into the continuation's record [r, q]"
+    *q + *r;
+  }
+}

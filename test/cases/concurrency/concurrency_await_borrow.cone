@@ -1,0 +1,83 @@
+// A seam ends every borrow (actor-continuations, the seam's step 1). It is a
+// scope ending, not a prohibition: a borrow held across an 'await' is refused
+// only where it is named after it, and then by the ordinary diagnostic for a
+// borrow that is no longer valid, ErrorFrozen, pointing at the 'await' as
+// where the borrow ended.
+//
+// - a borrow of the actor's state through 'self', and one of a local, used
+//   after the seam;
+// - what the caller lent through a borrowed parameter of a method that is no
+//   message, used after the seam;
+// - a borrow held by a droppable whose finalizer reads it: its death, after
+//   the seam, uses it;
+// - a borrow an argument of a call around the 'await' carries, which the call
+//   uses after the seam -- a method's receiver among them, 'self' itself
+//   borrowed for the call.
+//
+// The same borrow not named after the seam is no error: the 'await' is
+// accepted, and reported as not built (ErrorUnbuiltAwait), the borrow among
+// those its seam ends. 'self' is lent afresh to what follows the seam, so it
+// is named there freely.
+
+mod concurrency_await_borrow;
+
+import actors;
+
+struct Holds {
+  pub r &u64;
+  fn final(self &uni) {imm seen = *r;}
+}
+
+fn give() u64 {5u64;}
+fn take(r &u64, n u64) u64 {*r + n;}
+
+actor Peer {
+  pub fn ping(self) {}
+}
+
+actor Page {
+  body u64;
+  peer Peer;
+
+  pub fn ofState(self) {
+    imm r = &body;
+    await peer.ping();     //~ ErrorFrozen "The borrow 'r' holds of '*self' (made at 43:13) ends at this 'await'"
+    body = *r;
+  }
+
+  pub fn ofLocal(self) {
+    imm x = 3u64;
+    imm r = &x;
+    await peer.ping();     //~ ErrorFrozen "The borrow 'r' holds of 'x' (made at 50:13) ends at this 'await'"
+    body = *r;
+  }
+
+  fn lent(self, r &u64) u64 {
+    await peer.ping();     //~ ErrorFrozen "The borrow 'r' holds of what the caller lent through 'r'"
+    *r;
+  }
+
+  pub fn finalized(self) {
+    imm x = 3u64;
+    imm h = new Holds(&x);
+    await peer.ping();     //~ ErrorFrozen "and 'h' is used again when 'h''s value is finalized"
+  }
+
+  pub fn inFlight(self) {
+    imm x = 3u64;
+    body = take(&x, await give());   //~ ErrorFrozen "A borrow of 'x' (made at 68:17) ends at this 'await'"
+  }
+
+  pub fn receiver(self) {
+    body = self.twice(await give()); //~ ErrorFrozen "A borrow of what the caller lent through 'self'"
+  }
+
+  fn twice(self, n u64) u64 {n + n;}
+
+  pub fn notNamed(self) {
+    imm r = &body;
+    body = *r + 1u64;
+    await peer.ping();     //~ ErrorUnbuiltAwait "end the borrows held by [r]"
+    body = body + 1u64;
+  }
+}

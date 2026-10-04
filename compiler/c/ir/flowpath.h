@@ -88,6 +88,7 @@ enum PathAccess {
     AccessMove,         // a move-typed value taken to a new holder
     AccessReplace,      // the whole root stored over, its old value released or finalized
     AccessEnd,          // the root leaves its scope
+    AccessSeam,         // a seam ('await'): every borrow that is not global ends there
 };
 
 // What a variable the drop-flag client tracks may hold on the paths reaching a
@@ -121,6 +122,7 @@ typedef struct {
     uint8_t tracked;    // drop-flag client: its state is followed (flowDropTracked)
     uint8_t dies;       // drop-flag client: it has something to do as it dies (itypeNeedsFinal)
     uint8_t flagged;    // drop-flag client: its state differs by path at a release
+    uint8_t initing;    // its initializer is being walked: it holds no value yet
 } PathVar;
 
 // The variables the current walk has met, by index; index 0 is unused
@@ -144,5 +146,10 @@ void flowPathWalk(FnDclNode *fndcl, int loans, int drops);
 
 // Print the walk's tallies for -V 2
 void flowPathPrint();
+
+// A variable in scope at the seam 'seam' is used after it, before it is
+// stored over whole: what it holds there is needed past the seam (flowloan.c,
+// a seam's live mark fired)
+void pathSeamLive(INode *seam, uint32_t var);
 
 #endif

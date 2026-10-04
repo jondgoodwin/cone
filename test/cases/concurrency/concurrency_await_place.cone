@@ -1,0 +1,39 @@
+// Where 'await' may stand: in a method of an actor, where the method is cut
+// and returns to the actor's dispatcher to wait. Anywhere else is
+// ErrorAwaitPlace, at the 'await': a plain function, a method of a struct,
+// and an actor's 'init' and 'final', which an actor's body declares beside
+// its methods and which no dispatcher runs -- 'init' on the thread making the
+// actor, 'final' as it dies. Its operand is checked all the same.
+//
+// An 'await' in an actor's method is accepted, and reported as not built
+// (concurrency_await_*).
+
+mod concurrency_await_place;
+
+import actors;
+
+fn give() u64 {5u64;}
+
+fn plain() u64 {
+  await give();            //~ ErrorAwaitPlace "this one is in a function that is not a method of an actor"
+}
+
+struct Plain {
+  n u64;
+  fn get(self) u64 {
+    await give();          //~ ErrorAwaitPlace "this one is in a function that is not a method of an actor"
+  }
+}
+
+actor Page {
+  body u64;
+
+  fn init(self &new) {
+    await give();          //~ ErrorAwaitPlace "this one is in an actor's initializer"
+    *self = new Self(body: 0u64);
+  }
+
+  fn final(self &uni) {
+    await give();          //~ ErrorAwaitPlace "this one is in an actor's finalizer"
+  }
+}

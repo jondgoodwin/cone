@@ -428,6 +428,7 @@ static uint32_t pathVar(VarDclNode *var) {
     pv->holder = var->scope > 0 && !(var->flags & FlagStatic) && var->namesym != tempName
         && pwCarries(var->vtype);
     pv->temp = 0;
+    pv->initing = 0;
     var->flowindex = index;
     return index;
 }
@@ -790,7 +791,9 @@ static int pwPlace(INode **nodep, Place *pl, PathSet **base) {
     VarDclNode *var = pwNamedVar(node);
     if (var) {
         uint32_t index = pathVar(var);
-        if (pathVars[index].holder)
+        // A holder's pending conflicts fire; any variable's live mark at a
+        // seam does (pwSeam)
+        if (pathVars[index].holder || pathVars[index].pending)
             loanUse(index, node);
         // A value moves out of it, or out through it, here (flowMoveSource
         // marked where): the variable owning the value no longer holds it
@@ -1652,6 +1655,10 @@ static void pwStore(INode **lvalp, PathSet *holds, INode **rvalp) {
             pwHolderDies(index);
             pathSetFacts(index, holds, NULL);
         }
+        // Nor was any other variable stored over whole live before: a seam's
+        // live mark on it is dropped (pwSeam)
+        else if (pathVars[index].pending)
+            pathSetFacts(index, pathVars[index].holds, NULL);
         // What it held is released here, if it held anything; now it holds its value
         if (pathVars[index].tracked) {
             dropStore(index, *lvalp, rvalp);
@@ -1716,6 +1723,11 @@ static void pwSwap(SwapNode *node) {
             holds[i] = pathVars[whole[i]].holds;
             pwAccess(pl, itypeNeedsFinal(var->vtype) ? AccessReplace : AccessWrite, *sides[i]);
             pwDropUse(pl, *sides[i], 0);
+            // A holder's pending conflicts go with its value, below; any
+            // other variable's value is read here, which fires a seam's live
+            // mark on it
+            if (!pathVars[whole[i]].holder && pathVars[whole[i]].pending)
+                loanUse(whole[i], *sides[i]);
             found[i] = 1;
         }
         else if (pwPlace(sides[i], pl, &base)) {
@@ -1770,10 +1782,12 @@ static void pwVarDcl(VarDclNode *var) {
         // An operator changing a value in place through a borrow it keeps in a
         // temporary writes it: 'x += 1' is '{imm tmp = &mut x; *tmp = *tmp + 1}',
         // and 'v <- (a, b)' appends each element through one
+        pathVars[index].initing = 1;
         if (var->namesym == tempName && var->value->tag == BorrowTag)
             holds = pwBorrow(var->value, 1);
         else
             holds = pwValue(&var->value, 1);
+        pathVars[index].initing = 0;
     }
     if (pathVars[index].holder)
         pathSetFacts(index, holds, NULL);
@@ -1800,9 +1814,10 @@ static void pwScopeEnd(uint32_t from) {
             pwHolderDies(index);
             pathSetFacts(index, NULL, NULL);
         }
-        else if (pv->holds) {
+        else if (pv->holds || pv->pending) {
             pathLogVar(index);
             pv->holds = NULL;
+            pv->pending = NULL;
         }
         if (pv->loans) {
             Place pl = { index, 0, 0 };
@@ -2124,6 +2139,136 @@ static PathSet *pwIf(IfNode *ifnode, int move) {
     return value;
 }
 
+// *********************
+// A seam: 'await' in an actor's method, where the method returns to its
+// actor's dispatcher to wait (flow.md, "A seam"). What the seam does, in its
+// order: every borrow ends -- a scope ending, so a holder still holding one is
+// refused only if it is used again, by the ordinary diagnostic at the seam,
+// and a lock's guard gives its lock back with its borrow; the freezes those
+// borrows held lift; what is used after the seam, and every droppable still
+// holding its value, moves into the continuation's record; the rest is left.
+// The record is not built yet: what each variable in scope would do is noted
+// on the 'await' (AwaitNode.seamvars), which awaitReportUnbuilt reports.
+// *********************
+
+// Is this variable one of the function's parameters?
+static int pwIsParm(VarDclNode *var) {
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(pwParms, cnt, nodesp)) {
+        if (*nodesp == (INode *)var)
+            return 1;
+    }
+    return 0;
+}
+
+// Note what a seam found of a variable, joining what an earlier walk of a
+// loop's body found there
+static void pwSeamNote(AwaitNode *node, VarDclNode *var, uint8_t flags) {
+    for (uint32_t i = 0; i < node->nseamvars; ++i) {
+        if (node->seamvars[i].var == var) {
+            node->seamvars[i].flags |= flags;
+            return;
+        }
+    }
+    if (node->nseamvars == node->seamcap)
+        node->seamvars = (SeamVar *)pathGrow(node->seamvars, &node->seamcap, sizeof(SeamVar));
+    node->seamvars[node->nseamvars].var = var;
+    node->seamvars[node->nseamvars].flags = flags;
+    ++node->nseamvars;
+}
+
+void pathSeamLive(INode *seam, uint32_t var) {
+    pwSeamNote((AwaitNode *)seam, pathVars[var].var, SeamLive);
+}
+
+// Is this variable a lock's guard: the owner a borrow through a lock
+// permission reads through, holding its lock (borrowLockPlace)?
+static int pwIsGuard(VarDclNode *var) {
+    INode *type = var->vtype ? itypeGetTypeDcl(var->vtype) : NULL;
+    return type && type->tag == RefTag && permHeldKind(((RefNode *)type)->perm);
+}
+
+// A loan set with only its global loans
+static PathSet *pwGlobalOnly(PathSet *set) {
+    if (set == NULL || set == &pathSetAll)
+        return set;
+    PathSet *kept = set;
+    for (uint32_t i = 0; i < set->cnt; ++i) {
+        if (!loanIsGlobal(loanOf(set->ids[i])))
+            kept = pathSetWithout(kept, set->ids[i]);
+    }
+    return kept;
+}
+
+// One variable in scope at a seam. The actor's 'self' is lent afresh by the
+// dispatcher to what follows the seam, as the call that resumes the method
+// carries it, so its own borrow does not end and it is not in the record;
+// what was borrowed through it does end.
+static void pwSeamVar(AwaitNode *node, uint32_t index, int isparm) {
+    PathVar *pv = &pathVars[index];
+    VarDclNode *var = pv->var;
+    uint8_t flags = (isparm ? SeamParm : 0) | (pv->temp ? SeamTemp : 0);
+    if (isparm && var->namesym == selfName) {
+        pwSeamNote(node, var, flags | SeamOpen);
+        return;
+    }
+    // A variable never given its value, or moved out, on every path here holds
+    // nothing to carry (drop flags' state, followed for a variable that moves
+    // or has something to do as it dies; any other holds its value)
+    // -- and one whose initializer holds the seam holds nothing yet
+    if (!pv->initing && (!pv->tracked || (pv->state & (DropWhole | DropHollow))))
+        flags |= SeamOpen;
+    if (var->vtype && !flowNoDeath(var->vtype) && itypeNeedsFinal(var->vtype))
+        flags |= SeamDies;
+    if (pwIsGuard(var))
+        flags |= SeamGuard;
+    // Every borrow that is not global ends: a pending conflict, fired by the
+    // holder's next use, and the loans gone from what it holds, so what they
+    // froze is free from here on
+    if (pv->holder) {
+        uint32_t ended = loanSeamEnds(pv->holds);
+        if (ended) {
+            flags |= SeamEnds;
+            pathSetFacts(index, pwGlobalOnly(pv->holds),
+                pathSetAdd(pv->pending, loanSeamPending((INode *)node, ended, index)));
+        }
+    }
+    // Whether it is used after the seam: its next use, on any path, fires
+    // this mark; a store over it whole, or its scope's end, drops it
+    if (!pv->temp)
+        pathSetFacts(index, pv->holds, pathSetAdd(pv->pending, loanSeamLive((INode *)node, index)));
+    pwSeamNote(node, var, flags);
+}
+
+static PathSet *pwSeam(AwaitNode *node, int move) {
+    // What is awaited runs before the seam, and the 'await' takes its value
+    PathSet *carried = pwValue(&node->exp, 1);
+    node->walked = 1;
+    // What a call or a value around the seam already carries is used after it
+    uint32_t flight = loanFlightMark();
+    if (move)
+        loanFlightPush(carried, 0);
+    loanSeamFlight((INode *)node);
+    loanFlightPop(flight);
+    // Each variable in scope, in the order declared: the parameters, which a
+    // walk for drop flags has put on the stack of declarations already, the
+    // locals, and the temporaries of the statements being walked
+    if (!pathDrops) {
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodesFor(pwParms, cnt, nodesp))
+            pwSeamVar(node, pathVar((VarDclNode *)*nodesp), 1);
+    }
+    for (uint32_t i = 0; i < ndecls; ++i)
+        pwSeamVar(node, decls[i], pwIsParm(pathVars[decls[i]].var));
+    for (uint32_t i = 0; i < ntemps; ++i)
+        pwSeamVar(node, temps[i], 0);
+    // The value waited for arrives after the seam: a borrow it would carry
+    // ended there
+    return pwGlobalOnly(carried);
+}
+
 // Walk an expression as a value, returning the loans it may carry. 'move'
 // says the value goes to a new holder, which moves it when its type moves.
 static PathSet *pwValue(INode **nodep, int move) {
@@ -2236,6 +2381,8 @@ static PathSet *pwValue(INode **nodep, int move) {
         return ((HollowNode *)node)->exp ? pwValue(&((HollowNode *)node)->exp, move) : NULL;
     case TempTag:
         return pwValue(&((TempNode *)node)->exp, move);
+    case AwaitTag:
+        return pwSeam((AwaitNode *)node, move);
     case SizeofTag:
     case NilLitTag:
     case NullLitTag:

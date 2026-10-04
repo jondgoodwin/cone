@@ -1,0 +1,49 @@
+// A lock borrow never crosses a seam, and no rule of its own says so: the
+// borrow is of the guard the compiler makes where it is borrowed, a new owner
+// of the value and a local, so the borrow is never ''static' and ends at the
+// seam as any borrow of a local does. Named after the 'await', it is the
+// ordinary ErrorFrozen at the 'await' -- whether the lock-managed reference is
+// the actor's field or a global, whose guard is a local all the same. Not
+// named after it, the 'await' is accepted and reported as not built
+// (ErrorUnbuiltAwait): the guard gives its lock back at the seam, with its
+// borrow, and does not travel.
+
+mod concurrency_await_lock;
+
+import actors;
+import sync use Arc, Mutex;
+
+struct Count {pub n u64;}
+
+imm shared Arc[Mutex, Count];
+
+fn @initpure init() {
+  shared = new Arc[Mutex, Count](0u64);
+}
+
+actor Peer {
+  pub fn ping(self) {}
+}
+
+actor Page {
+  count Arc[Mutex, Count];
+  peer Peer;
+
+  pub fn ofField(self) {
+    imm g = &mut *count;
+    await peer.ping();     //~ ErrorFrozen "The borrow 'g' holds through the lock taken at 33:19 (made at 33:13) ends at this 'await'"
+    g.n = 1u64;
+  }
+
+  pub fn ofGlobal(self) {
+    imm g = &mut *shared;
+    await peer.ping();     //~ ErrorFrozen "The borrow 'g' holds through the lock taken at 39:19 (made at 39:13) ends at this 'await'"
+    g.n = 1u64;
+  }
+
+  pub fn givenBack(self) {
+    imm g = &mut *count;
+    g.n = 2u64;
+    await peer.ping();     //~ ErrorUnbuiltAwait "end the borrows held by [g]; give back [the lock taken at 45:19]; move into the continuation's record []"
+  }
+}
