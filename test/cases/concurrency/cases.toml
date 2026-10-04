@@ -48,21 +48,25 @@
 # holding nodes, above the nodes, whose message carries a node.
 #
 # 'await' in an actor's method: a seam, where the method returns to the
-# actor's dispatcher to wait. Nothing waits for a reply yet, so without
-# '--await-direct' a seam every rule accepts is reported where it stands
-# (ErrorUnbuiltAwait), its message naming the borrows it ends, the locks it
-# gives back, its continuation's record and that record's order of death, and
-# what it leaves; that message is what concurrency_await_record, _droporder,
-# _static and _lock pin. A borrow named after the seam is the ordinary
-# ErrorFrozen at the seam (concurrency_await_borrow, _lock); where 'await' may
-# stand is concurrency_await_place. With '--await-direct', for tests, a
-# message is split into its halves and each seam hands its record straight to
-# its second half: concurrency_await_split runs each split message beside its
-# twin with no 'await', the two traces the same, and pins the halves' shapes;
+# actor's dispatcher to wait. An 'await' on a message to an actor that returns
+# a value waits for its reply: concurrency_await_reply runs it end to end and
+# pins the envelope's and the record's shapes, and concurrency_await_message
+# is where it and 'selfactor' are refused. Any other 'await' is reported
+# where it stands (ErrorUnbuiltAwait), its message naming the borrows it
+# ends, the locks it gives back, its continuation's record and that record's
+# order of death, and what it leaves; that message is what
+# concurrency_await_record, _droporder, _static and _lock pin, each awaiting
+# a message that returns nothing. A borrow named after the seam is the
+# ordinary ErrorFrozen at the seam (concurrency_await_borrow, _lock); where
+# 'await' may stand is concurrency_await_place. With '--await-direct', for
+# tests, an 'await' on anything else hands its record straight to its second
+# half: concurrency_await_split runs each split message beside its twin with
+# no 'await', the two traces the same, and pins the halves' shapes;
 # concurrency_await_unsplit is where the split is not built yet. The chapter
 # is doc/reference/refconccomm.html, "Actors"; flow's note is
 # compiler/c/doc/phases/flow.md, "A seam", and generation's
-# compiler/c/doc/phases/generation.md, "A split method".
+# compiler/c/doc/phases/generation.md, "A split method" and "A message's
+# reply".
 #
 # I/O buffers: concurrency_iobuf_loan pins, against the iobuf package, that the
 # thread check and the type check together keep a borrowed buffer from being
@@ -313,6 +317,42 @@ tags = ["flow"]
 [[scenario.concurrency_await_unsplit.run]]
 name = "direct"
 options = ["--await-direct"]
+
+[scenario.concurrency_await_reply]
+category = "run"
+description = "An 'await' on a message to another actor waits for its reply, the envelope in the message: the worked example (Page.load awaits Fetcher.fetch, whose record holds 'conn' and Page's envelope), an empty record with no slot and no id, one returning before its seam, droppables across two seams, an actor awaiting one parked on it, an actor awaiting itself, a seam in a loop; then 20 continuations parked at once in one pending table, and returned values dropped where nothing awaits them"
+tags = ["typecheck", "flow", "genllvm", "runtime"]
+
+[[scenario.concurrency_await_reply.run]]
+name = "release"
+
+[[scenario.concurrency_await_reply.run]]
+name = "debug"
+options = ["--debug"]
+
+[[scenario.concurrency_await_reply.check]]
+name = "an-empty-record-is-no-parameter-no-slot-and-no-id"
+target = "preir"
+contains = [
+  "2go'1\"(ptr %0, i64 %1)",
+  "2go'1.resume\"(ptr %0, ptr %1)",
+  "\"Driver.reply'\"(ptr %self2, ptr @\"_CNvNtu18_DriverState_l7620i2go'1.resume\", i64 8, i64 8)",
+]
+
+[[scenario.concurrency_await_reply.check]]
+name = "a-record-is-parked-by-its-id-the-envelope-travelling-in-it"
+target = "preir"
+contains = [
+  "5fetch'1.record\" = type { %Answer, %Conn }",
+  "4load'1.record\" = type { %Answer }",
+  "3two'2.record\" = type { %Answer, %Buf, %Conn }",
+  "5fetch'1.resume\"(ptr %0, i64 %1, ptr %2)",
+]
+
+[scenario.concurrency_await_message]
+category = "reject"
+description = "An 'await' on a message returning nothing, a call of a message holding an 'await' from another method, and a record holding a traced reference are ErrorUnbuiltAwait; a message returning what is not Sendable is ErrorNotSendable; 'selfactor' outside an actor's method -- its init, its final, a function, another type's method -- is ErrorSelfActorPlace"
+tags = ["typecheck", "flow"]
 
 [scenario.concurrency_iobuf_loan]
 category = "reject"

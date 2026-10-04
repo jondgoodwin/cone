@@ -2,8 +2,6 @@
 // parse: a parse diagnostic stops the compile before name resolution, which is
 // why these are a file of their own.
 //
-// - A message returns nothing (ErrorActorReturn): a send queues it and returns
-//   at once, before the method runs. Replies are messages sent back.
 // - A message carrying a borrow is refused as not Sendable whatever it
 //   borrows (ErrorNotSendable): no borrow leaves its thread.
 // - The rest is ErrorActorMember: a field is private state, never 'pub'; no
@@ -12,8 +10,9 @@
 //   generic yet; a message's 'self' is the state lent for the message, so
 //   'self &uni' is the finalizer's alone; 'extern' and a macro have no place;
 //   and a generic actor, or one naming an abstraction, is not built.
-// A private method may return a value: it is called on the actor, from its
-// own methods (fine).
+// A message may return a value, which a reply carries back to an 'await'
+// (concurrency_await_reply), and so may a private method, called on the actor
+// from its own methods (fine).
 
 mod concurrency_actor_parse;
 
@@ -23,7 +22,7 @@ actor Bad {
   pub count u64;                          //~ ErrorActorMember "a field of an actor is never 'pub'"
   static mut shared u64 = 0u64;           //~ ErrorActorMember "An actor has no 'static'"
 
-  pub fn total(self) u64 {count;}         //~ ErrorActorReturn "Actor Bad's message total returns nothing"
+  pub fn total(self) u64 {count;}
   pub fn peek(self, r &u64) {}            //~ ErrorNotSendable "Actor Bad's message peek takes r, a borrowed reference"
   pub fn pick[T](self, x T) {}            //~ ErrorActorMember "Actor Bad's message pick is generic"
   pub fn make() u64 {0u64;}               //~ ErrorActorMember "make has no 'self', so it would not run on actor Bad"

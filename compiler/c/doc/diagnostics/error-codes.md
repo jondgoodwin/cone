@@ -343,18 +343,26 @@ a borrow that is too short is the loan walk's `ErrorFrozen`, `ErrorEscape` or
 parameter of the function is `ErrorWhereSubject`, and of a lifetime its
 signature does not name `ErrorLifetimeUndeclared`.
 
-An actor's declaration has three codes of its own and borrows two. A message
-declaring a return type is `ErrorActorReturn`, since the remedy is a message
-sent back; everything else its body may not hold, or a form of it not built
-(a `pub` field, a static, a `pub` function without `self`, a generic message,
-a macro, `extern`, a `self` of another kind, a generic actor, one naming an
-abstraction), is `ErrorActorMember`; and a module declaring one without
-importing the `actors` package is `ErrorActorRuntime`. A message's or an
-initializer's parameter that cannot cross threads is `ErrorNotSendable`, the
-thread check's code, whatever finds it -- the parser, for a borrow or the
+An actor's declaration has two codes of its own and borrows two. What its
+body may not hold, or a form of it not built (a `pub` field, a static, a
+`pub` function without `self`, a generic message, a macro, `extern`, a `self`
+of another kind, a generic actor, one naming an abstraction), is
+`ErrorActorMember`; and a module declaring one without importing the `actors`
+package is `ErrorActorRuntime`. A message's or an initializer's parameter, or
+a message's returned type, that cannot cross threads is `ErrorNotSendable`,
+the thread check's code, whatever finds it -- the parser, for a borrow or the
 state itself, or `actorCheckAll` after type check -- and the state's field or
 non-`pub` method reached through the handle is `ErrorNotPublic`, as any
 private member is.
+
+`await` has two codes. Where it may not stand is `ErrorAwaitPlace`; where it
+stands and is not built is `ErrorUnbuiltAwait`, whose message says why and,
+where the seam's rules were checked, what its continuation would carry: an
+`await` on anything but a message returning a value, in a method that is not
+a message, in a construct the split does not reach, or whose record would hold
+a traced reference; and a call of a message holding an `await` from anywhere
+but its actor's dispatcher, which would hide a seam. `selfactor` where `await`
+may not stand is `ErrorSelfActorPlace`.
 
 A GPU target takes four codes, one per remedy, all for what SPIR-V's logical
 addressing cannot type. A reference, or a value holding one, chosen at run

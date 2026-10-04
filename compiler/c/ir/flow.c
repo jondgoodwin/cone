@@ -1414,6 +1414,8 @@ void flowLoadValue(FlowState *fstate, INode **nodep) {
     case NullLitTag:
         litAdoptNullType(nodep, unknownType);
         break;
+    // A request's envelope, made where it is passed, from nothing a variable holds
+    case AwaitReplyTag:
     case SizeofTag:
     case NilLitTag:
     case ULitTag:

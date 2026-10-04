@@ -466,7 +466,7 @@ enum ErrorCode {
     // Actors: 'actor Name { ... }' (parser/parseactor.c, ir/types/actor.h). A
     // message's argument that is not Sendable is ErrorNotSendable; the state
     // reached through a handle is ErrorNotPublic
-    ErrorActorReturn = 1250,    // An actor's message method declaring a return type: a send returns at once, and nothing comes back
+    // 1250 was ErrorActorReturn; a message may return a value, which a reply carries back to an 'await'
     ErrorActorMember = 1251,    // What an actor's body may not hold, or a form of it not built: a 'pub' field, a static, a 'pub' function without 'self', a generic message, a macro, a 'use', an 'extern' or a 'self' of another kind; a generic actor, its 'is', 'extends' or an attribute
     ErrorActorRuntime = 1252,   // An actor declared in a module that does not import the actors package it runs on
 
@@ -496,7 +496,8 @@ enum ErrorCode {
 
     // 'await' in an actor's method (ir/exp/await.c; its seam, ir/flowpath.c)
     ErrorAwaitPlace = 1270,     // 'await' outside an actor's method: in a function, a method of another type, or an actor's 'init' or 'final', which no dispatcher runs
-    ErrorUnbuiltAwait = 1271,   // An 'await' every seam rule accepted: its continuation is not built yet, and the message says what the seam would carry
+    ErrorUnbuiltAwait = 1271,   // An 'await' every seam rule accepted, where its continuation is not built: one not on a message, one on a message returning nothing, one whose record holds a traced reference; or a call of a method holding one, not from its dispatcher
+    ErrorSelfActorPlace = 1272, // 'selfactor' outside an actor's method: in a function, a method of another type, or an actor's 'init' or 'final'
 
     // Warnings
     WarnCode = 3000,

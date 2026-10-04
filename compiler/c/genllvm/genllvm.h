@@ -54,7 +54,9 @@ enum GenSeamFieldKind {
     GenSeamVar,             // a variable's value
     GenSeamFlag,            // a variable's drop flag
     GenSeamTemp,            // a temporary's value, from its slot ('at' from the function's first)
-    GenSeamFlight           // a value in flight, from its slot ('at' from the function's first)
+    GenSeamFlight,          // a value in flight, from its slot ('at' from the function's first)
+    GenSeamAnswer           // the request's envelope a message returning a value answers, from the state's
+                            // Answer slot, first in the record
 };
 
 typedef struct GenSeamField {
@@ -69,6 +71,8 @@ typedef struct GenSeamField {
 // record and its second half, the same for every half generated after
 typedef struct GenSeam {
     LLVMValueRef half;      // The second half: the method from just after the seam
+    LLVMValueRef resume;    // Where it awaits a message, what the reply's dispatch calls: the record
+                            // taken from the pending table, and the half called with it and the value
     LLVMTypeRef record;     // The record's struct type, or NULL when it is empty: no record parameter
     GenSeamField *fields;
     uint32_t nfields;
@@ -132,6 +136,11 @@ typedef struct GenState {
     uint32_t flightcnt;
     uint32_t flightmax;
     uint32_t flightbase;    // How many were in flight as the function being generated began
+    // While what a message 'await' awaits is generated: how many values were
+    // in flight as it began, which its seam's record carries, and the id its
+    // envelope reserved in the pending table (NULL where the record is empty)
+    uint32_t awaitflights;
+    LLVMValueRef awaitid;
 
     // The type records this object has built (genlTypeRecord): each value type,
     // and its record's constant, in the same order
@@ -436,6 +445,9 @@ void genlVtable(GenState *gen, Vtable *vtable);
 // The seam: what is awaited, the locks given back, the record built, and the
 // return; what follows it generates into a block its second half resumes at
 LLVMValueRef genlAwait(GenState *gen, AwaitNode *node);
+// The envelope of the request a message 'await' sends: the seam laid out, its
+// record given an id in the pending table, and the reply's node made
+LLVMValueRef genlAwaitReply(GenState *gen, AwaitReplyNode *node);
 // Each second half of a split method whose first half was just generated
 void genlSplitHalves(GenState *gen, FnDclNode *fnnode);
 // Generate each of 'nodes' into 'vals', in order: in a split method, a value

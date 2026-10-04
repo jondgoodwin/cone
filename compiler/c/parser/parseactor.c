@@ -24,6 +24,21 @@
  * own, named as no source can spell), which moves a field out of a message:
  * 'fn actors.take[T](p &T) T {mem.readRaw[T](p as *T);}'.
  *
+ * What an 'await' and a message's reply need (compiler/c/doc/phases/parse.md,
+ * section 6, and generation.md, "A message's reply"):
+ *
+ * - a message that returns a value, 'pub fn get(self, k u64) u64', has a
+ *   second variant, its request awaited, 'struct get'ask {k u64; reply'
+ *   actors.Reply;}', the handle a second method sending it, and the dispatch
+ *   an arm that answers it;
+ * - an actor whose body holds an 'await' (DclTexts.awaiting) has hidden
+ *   fields in its state, its pending table and, where a message returning a
+ *   value awaits, its Answer slot; two resume variants and their arms; and
+ *   'Counter.reply'' and 'Counter.replyid'', which make a request's
+ *   envelope;
+ * - an actor writing 'selfactor' has 'Counter.self'', its handle from its
+ *   state.
+ *
  * The derived names -- 'Counter.State', 'Counter.Msg', 'Counter.dispatch',
  * the handle's one field, and the bindings of the actors and sync packages the
  * generated text reaches them through -- are names no source can spell
@@ -59,8 +74,10 @@
 #include <stdio.h>
 #include <string.h>
 
-// What the generated text spells '`#n`'. The first six are the same in every
-// actor of every module; the last three are each actor's own
+// What the generated text spells '`#n`'. The names up to GenState are the same
+// in every actor of every module; the rest are each actor's own, and after
+// them, from GenSlots on, the name of each of its messages that returns a
+// value, sent awaited ('fetch'ask')
 enum GenSlot {
     GenActors,      // The actors package, as this module imports it
     GenSync,        // The sync package, whose Arc counts a handle's owners
@@ -68,9 +85,18 @@ enum GenSlot {
     GenTake,        // The module's helper that moves a message's field out of its node
     GenMailbox,     // The handle's one field
     GenNone,        // The one variant of the message enum of an actor with no messages
+    GenPending,     // The state's hidden pending table, where the actor awaits
+    GenAnswer,      // The state's hidden Answer slot, where a message returning a value awaits
+    GenEnvelope,    // A request variant's envelope, its reply
+    GenResume,      // The resume variant whose second half takes no record
+    GenResumeId,    // The resume variant whose second half takes a record, by its id
     GenState,       // 'Counter.State'
     GenMsg,         // 'Counter.Msg'
     GenDispatch,    // 'Counter.dispatch'
+    GenHidden,      // The struct the state's hidden fields are read from
+    GenReply,       // 'Counter.reply'': a request's envelope, its resume message naming no record
+    GenReplyId,     // 'Counter.replyid'': the same, naming the record's id
+    GenSelf,        // 'Counter.self'': 'selfactor', the handle from the state
     GenSlots
 };
 
@@ -155,7 +181,7 @@ static void genName(GenText *g, Name *name) {
 }
 
 // A name no source can spell
-static void genSlot(GenText *g, enum GenSlot slot) {
+static void genSlot(GenText *g, uint32_t slot) {
     char buf[16];
     snprintf(buf, sizeof(buf), "`#%d`", (int)slot);
     genPuts(g, buf);
@@ -194,6 +220,23 @@ static int parseActorIsBorrow(INode *type) {
 
 static int parseActorIsInit(FnDclNode *fn) {
     return fn->namesym == initName || fn->overloadsym == initName;
+}
+
+// Does this message return a value, as written?
+static int parseActorReturns(FnDclNode *fn) {
+    INode *rettype = ((FnSigNode *)fn->vtype)->rettype;
+    return rettype != NULL && rettype->tag != VoidTag;
+}
+
+// Does this method's body hold an 'await' (parseFn noted it)?
+static int parseActorAwaits(DclTexts *texts, FnDclNode *fn) {
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(texts->awaiting, cnt, nodesp)) {
+        if (*nodesp == (INode *)fn)
+            return 1;
+    }
+    return 0;
 }
 
 // Check a method's 'self': the state, lent to the method for the message it
@@ -333,15 +376,10 @@ static void parseActorMembers(DclTexts *texts, StructNode *state, Name *actornam
         if (!(fn->flags & FlagPub))
             continue;
 
-        // A message
+        // A message. What it returns goes back in a reply to an 'await' that
+        // sent it, and is dropped where it was sent with none
         int ok = 1;
         FnSigNode *sig = (FnSigNode *)fn->vtype;
-        if (sig->rettype->tag != VoidTag) {
-            errorMsgNode(sig->rettype, ErrorActorReturn,
-                "Actor %s's message %s returns nothing: a send queues the message and returns at once, before the method runs. To answer, send a message back, to a handle passed along.",
-                &actorname->namestr, &fn->namesym->namestr);
-            ok = 0;
-        }
         if (fn->genericinfo) {
             errorMsgNode(node, ErrorActorMember,
                 "Actor %s's message %s is generic, which a message cannot be yet: each message is one variant of the actor's message type.",
@@ -425,6 +463,11 @@ static int parseActorRuntime(ParseState *parse, StructNode *at, Name *actorname,
         genShared[GenTake] = nametblPrivate("actors.take", 11);
         genShared[GenMailbox] = nametblPrivate("mailbox", 7);
         genShared[GenNone] = nametblPrivate("none", 4);
+        genShared[GenPending] = nametblPrivate("pending'", 8);
+        genShared[GenAnswer] = nametblPrivate("answer'", 7);
+        genShared[GenEnvelope] = nametblPrivate("reply'", 6);
+        genShared[GenResume] = nametblPrivate("resume'", 7);
+        genShared[GenResumeId] = nametblPrivate("resumeid'", 9);
     }
     if (namespaceFind(&mod->namespace, genShared[GenActors]))
         return 1;
@@ -446,6 +489,12 @@ static int parseActorRuntime(ParseState *parse, StructNode *at, Name *actorname,
     parseActorBind(mod, genShared[GenActors], (INode *)actorsmod, FlagImportName);
     parseActorBind(mod, genShared[GenSync], (INode *)syncmod, FlagImportName);
     parseActorBind(mod, genShared[GenSendable], (INode *)sendableTrait, 0);
+
+    // What generation calls for a split method's seams, which no source names
+    for (int i = 0; i < ActorRtCount; ++i) {
+        INode *fn = namespaceFind(&actorsmod->namespace, nametblFind(actorRuntimeNames[i], strlen(actorRuntimeNames[i])));
+        actorRuntime[i] = fn && fn->tag == FnDclTag ? (FnDclNode *)fn : NULL;
+    }
 
     // The dispatch function moves each argument out of the message where it
     // lies in its node, which is then freed without being finalized: so every
@@ -476,7 +525,8 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
 
     // The body, read as a struct's, is the state. Where each field's and
     // parameter's type and default are written is kept, to be written again
-    DclTexts texts = {NULL, 0, 0};
+    DclTexts texts = {NULL, 0, 0, 0, NULL, 0};
+    texts.awaiting = newNodes(4);
     DclTexts *svtexts = parse->dcltexts;
     parse->dcltexts = &texts;
     StructNode *state = (StructNode *)parseStruct(parse, 0);
@@ -499,8 +549,29 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
     if (runtime == 0)
         return;
 
-    // The names this actor's declarations are known by
-    Name *names[GenSlots];
+    INode **nodesp;
+    uint32_t cnt;
+
+    // What the actor's seams need generated. A message holding an 'await' is
+    // split (ir/exp/await.c): its actor gets a pending table, a resume variant
+    // and arm for each shape of continuation, and the functions that make a
+    // request's envelope; one that returns a value as well answers through
+    // the state's Answer slot, which its seams carry
+    int awaits = texts.awaiting->used > 0;
+    int answers = 0;
+    uint32_t nasks = 0;
+    for (nodesFor(members.messages, cnt, nodesp)) {
+        FnDclNode *fn = (FnDclNode *)*nodesp;
+        if (parseActorReturns(fn)) {
+            ++nasks;
+            answers |= parseActorAwaits(&texts, fn);
+        }
+    }
+
+    // The names this actor's declarations are known by: the shared ones, its
+    // own, and each request variant's (from GenSlots on, in message order)
+    uint32_t nnames = GenSlots + nasks;
+    Name **names = (Name **)memAllocBlk(nnames * sizeof(Name *));
     for (int i = 0; i < GenState; ++i)
         names[i] = genShared[i];
     char buf[300];
@@ -510,13 +581,55 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
     names[GenMsg] = nametblPrivate(buf, strlen(buf));
     snprintf(buf, sizeof(buf), "%s.dispatch", &actorname->namestr);
     names[GenDispatch] = nametblPrivate(buf, strlen(buf));
+    snprintf(buf, sizeof(buf), "%s.hidden'", &actorname->namestr);
+    names[GenHidden] = nametblPrivate(buf, strlen(buf));
+    snprintf(buf, sizeof(buf), "%s.reply'", &actorname->namestr);
+    names[GenReply] = nametblPrivate(buf, strlen(buf));
+    snprintf(buf, sizeof(buf), "%s.replyid'", &actorname->namestr);
+    names[GenReplyId] = nametblPrivate(buf, strlen(buf));
+    snprintf(buf, sizeof(buf), "%s.self'", &actorname->namestr);
+    names[GenSelf] = nametblPrivate(buf, strlen(buf));
+    uint32_t ask = GenSlots;
+    for (nodesFor(members.messages, cnt, nodesp)) {
+        FnDclNode *fn = (FnDclNode *)*nodesp;
+        if (parseActorReturns(fn)) {
+            snprintf(buf, sizeof(buf), "%s'ask", &fn->namesym->namestr);
+            names[ask++] = nametblPrivate(buf, strlen(buf));
+        }
+    }
     state->namesym = names[GenState];
 
-    INode **nodesp;
-    uint32_t cnt;
+    // The state's hidden fields, read as a struct's of their own and moved
+    // into the state, after the fields written: each has a default, so a
+    // construction of the state as written leaves them to it
+    if (awaits) {
+        genPuts(&g, "struct ");
+        genSlot(&g, GenHidden);
+        genPuts(&g, " {\n  ");
+        genSlot(&g, GenPending);
+        genPuts(&g, " ");
+        genSlot(&g, GenActors);
+        genPuts(&g, ".Pending = new ");
+        genSlot(&g, GenActors);
+        genPuts(&g, ".Pending();\n");
+        if (answers) {
+            genPuts(&g, "  ");
+            genSlot(&g, GenAnswer);
+            genPuts(&g, " ");
+            genSlot(&g, GenActors);
+            genPuts(&g, ".Answer = new ");
+            genSlot(&g, GenActors);
+            genPuts(&g, ".Answer();\n");
+        }
+        genPuts(&g, "}\n");
+    }
 
     // The message enum: a variant per message, its fields the parameters,
-    // written after the handle (a reference to it lays out nothing of it)
+    // written after the handle (a reference to it lays out nothing of it).
+    // A message that returns a value has a second, its request awaited, which
+    // carries the reply's envelope too. An actor that awaits has the two
+    // variants of a reply: which second half, the record's id where it has a
+    // record, and where the returned value is, in the reply's node
     GenText ge = {NULL, 0, 0};
     genPuts(&ge, "enum ");
     genSlot(&ge, GenMsg);
@@ -528,24 +641,44 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
         genSlot(&ge, GenNone);
         genPuts(&ge, ";\n");
     }
+    ask = GenSlots;
     for (nodesFor(members.messages, cnt, nodesp)) {
         FnDclNode *fn = (FnDclNode *)*nodesp;
-        genPuts(&ge, "  struct ");
-        genName(&ge, fn->namesym);
-        genPuts(&ge, " {");
-        INode **parmp;
-        uint32_t parmcnt;
-        for (nodesFor(((FnSigNode *)fn->vtype)->parms, parmcnt, parmp)) {
-            VarDclNode *parm = (VarDclNode *)*parmp;
-            if (parm->namesym == selfName)
-                continue;
-            DclText *text = parseActorText(&texts, (INode *)parm);
-            genName(&ge, parm->namesym);
-            genPuts(&ge, " ");
-            genPutn(&ge, text->type, text->typeend - text->type);
-            genPuts(&ge, "; ");
+        int returns = parseActorReturns(fn);
+        for (int asked = 0; asked <= returns; ++asked) {
+            genPuts(&ge, "  struct ");
+            if (asked)
+                genSlot(&ge, ask++);
+            else
+                genName(&ge, fn->namesym);
+            genPuts(&ge, " {");
+            INode **parmp;
+            uint32_t parmcnt;
+            for (nodesFor(((FnSigNode *)fn->vtype)->parms, parmcnt, parmp)) {
+                VarDclNode *parm = (VarDclNode *)*parmp;
+                if (parm->namesym == selfName)
+                    continue;
+                DclText *text = parseActorText(&texts, (INode *)parm);
+                genName(&ge, parm->namesym);
+                genPuts(&ge, " ");
+                genPutn(&ge, text->type, text->typeend - text->type);
+                genPuts(&ge, "; ");
+            }
+            if (asked) {
+                genSlot(&ge, GenEnvelope);
+                genPuts(&ge, " ");
+                genSlot(&ge, GenActors);
+                genPuts(&ge, ".Reply; ");
+            }
+            genPuts(&ge, "}\n");
         }
-        genPuts(&ge, "}\n");
+    }
+    if (awaits) {
+        genPuts(&ge, "  struct ");
+        genSlot(&ge, GenResume);
+        genPuts(&ge, " {run *u8; data *u8;}\n  struct ");
+        genSlot(&ge, GenResumeId);
+        genPuts(&ge, " {run *u8; id u64; data *u8;}\n");
     }
     genPuts(&ge, "}\n");
 
@@ -649,46 +782,82 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
         genSlot(&g, GenDispatch);
         genPuts(&g, "));}\n");
     }
+    // A message that returns a value is sent awaited by a second method, which
+    // an 'await' calls in place of the first (awaitTypeCheck): it takes the
+    // reply's envelope too, which goes in the message, beside the arguments
+    ask = GenSlots;
     for (nodesFor(members.messages, cnt, nodesp)) {
         FnDclNode *fn = (FnDclNode *)*nodesp;
-        genPuts(&g, "  pub fn ");
-        genName(&g, fn->namesym);
-        if (fn->overloadsym) {
-            genPuts(&g, " overload ");
-            genName(&g, fn->overloadsym);
-        }
-        genPuts(&g, "(self &");
-        INode **parmp;
-        uint32_t parmcnt;
-        for (nodesFor(((FnSigNode *)fn->vtype)->parms, parmcnt, parmp)) {
-            VarDclNode *parm = (VarDclNode *)*parmp;
-            if (parm->namesym == selfName)
-                continue;
-            genPuts(&g, ", ");
-            genParm(&g, parseActorText(&texts, (INode *)parm), parm->namesym);
-        }
-        genPuts(&g, ") {");
-        genSlot(&g, GenActors);
-        genPuts(&g, ".send[");
-        genSlot(&g, GenMsg);
-        genPuts(&g, "](");
-        genSlot(&g, GenMailbox);
-        genPuts(&g, ", ");
-        genSlot(&g, GenMsg);
-        genPuts(&g, ".");
-        genName(&g, fn->namesym);
-        genPuts(&g, "[");
-        int first = 1;
-        for (nodesFor(((FnSigNode *)fn->vtype)->parms, parmcnt, parmp)) {
-            VarDclNode *parm = (VarDclNode *)*parmp;
-            if (parm->namesym == selfName)
-                continue;
-            if (!first)
+        int returns = parseActorReturns(fn);
+        for (int asked = 0; asked <= returns; ++asked) {
+            uint32_t variant = asked ? ask++ : 0;
+            genPuts(&g, "  pub fn ");
+            if (asked)
+                genSlot(&g, variant);
+            else {
+                genName(&g, fn->namesym);
+                if (fn->overloadsym) {
+                    genPuts(&g, " overload ");
+                    genName(&g, fn->overloadsym);
+                }
+            }
+            genPuts(&g, "(self &");
+            INode **parmp;
+            uint32_t parmcnt;
+            for (nodesFor(((FnSigNode *)fn->vtype)->parms, parmcnt, parmp)) {
+                VarDclNode *parm = (VarDclNode *)*parmp;
+                if (parm->namesym == selfName)
+                    continue;
                 genPuts(&g, ", ");
-            first = 0;
-            genName(&g, parm->namesym);
+                // The awaited one is called with every argument the first
+                // was, defaults appended already, so it takes none
+                DclText *text = parseActorText(&texts, (INode *)parm);
+                if (asked) {
+                    genName(&g, parm->namesym);
+                    genPuts(&g, " ");
+                    genPutn(&g, text->type, text->typeend - text->type);
+                }
+                else
+                    genParm(&g, text, parm->namesym);
+            }
+            if (asked) {
+                genPuts(&g, ", ");
+                genSlot(&g, GenEnvelope);
+                genPuts(&g, " ");
+                genSlot(&g, GenActors);
+                genPuts(&g, ".Reply");
+            }
+            genPuts(&g, ") {");
+            genSlot(&g, GenActors);
+            genPuts(&g, ".send[");
+            genSlot(&g, GenMsg);
+            genPuts(&g, "](");
+            genSlot(&g, GenMailbox);
+            genPuts(&g, ", ");
+            genSlot(&g, GenMsg);
+            genPuts(&g, ".");
+            if (asked)
+                genSlot(&g, variant);
+            else
+                genName(&g, fn->namesym);
+            genPuts(&g, "[");
+            int first = 1;
+            for (nodesFor(((FnSigNode *)fn->vtype)->parms, parmcnt, parmp)) {
+                VarDclNode *parm = (VarDclNode *)*parmp;
+                if (parm->namesym == selfName)
+                    continue;
+                if (!first)
+                    genPuts(&g, ", ");
+                first = 0;
+                genName(&g, parm->namesym);
+            }
+            if (asked) {
+                if (!first)
+                    genPuts(&g, ", ");
+                genSlot(&g, GenEnvelope);
+            }
+            genPuts(&g, "]);}\n");
         }
-        genPuts(&g, "]);}\n");
     }
     genPuts(&g, "}\n");
 
@@ -703,56 +872,204 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
     genPuts(&g, ", msg *");
     genSlot(&g, GenMsg);
     genPuts(&g, ") {\n");
+    //
+    // A message that returns a value: sent with no 'await', its value is
+    // dropped; awaited, it goes back in the reply. One that holds an 'await'
+    // too may be parked by a seam and return no value: its request's envelope
+    // waits in the state's Answer slot, which its seams carry, and the value
+    // is taken only where the slot says the message returned one (answerAt)
     int firstarm = 1;
+    ask = GenSlots;
     for (nodesFor(members.messages, cnt, nodesp)) {
         FnDclNode *fn = (FnDclNode *)*nodesp;
+        int returns = parseActorReturns(fn);
+        int slotted = returns && parseActorAwaits(&texts, fn);
+        for (int asked = 0; asked <= returns; ++asked) {
+            uint32_t variant = asked ? ask++ : 0;
+            genPuts(&g, firstarm ? "  if &*msg is &" : "  elif &*msg is &");
+            firstarm = 0;
+            genSlot(&g, GenMsg);
+            genPuts(&g, ".");
+            if (asked)
+                genSlot(&g, variant);
+            else
+                genName(&g, fn->namesym);
+            genPuts(&g, " {imm p = msg as *");
+            genSlot(&g, GenMsg);
+            genPuts(&g, ".");
+            if (asked)
+                genSlot(&g, variant);
+            else
+                genName(&g, fn->namesym);
+            genPuts(&g, "; ");
+            if (slotted) {
+                genSlot(&g, GenActors);
+                if (asked) {
+                    genPuts(&g, ".ask(&mut self.");
+                    genSlot(&g, GenAnswer);
+                    genPuts(&g, ", ");
+                    genSlot(&g, GenTake);
+                    genPuts(&g, "(&(*p).");
+                    genSlot(&g, GenEnvelope);
+                    genPuts(&g, ")); imm r = ");
+                }
+                else {
+                    genPuts(&g, ".askNone(&mut self.");
+                    genSlot(&g, GenAnswer);
+                    genPuts(&g, "); imm r = ");
+                }
+                genSlot(&g, GenActors);
+                genPuts(&g, ".keep(&");
+            }
+            else if (asked) {
+                genSlot(&g, GenActors);
+                genPuts(&g, ".answerNow(");
+                genSlot(&g, GenTake);
+                genPuts(&g, "(&(*p).");
+                genSlot(&g, GenEnvelope);
+                genPuts(&g, "), ");
+            }
+            genPuts(&g, "self.");
+            genName(&g, fn->namesym);
+            genPuts(&g, "(");
+            int first = 1;
+            INode **parmp;
+            uint32_t parmcnt;
+            for (nodesFor(((FnSigNode *)fn->vtype)->parms, parmcnt, parmp)) {
+                VarDclNode *parm = (VarDclNode *)*parmp;
+                if (parm->namesym == selfName)
+                    continue;
+                if (!first)
+                    genPuts(&g, ", ");
+                first = 0;
+                genSlot(&g, GenTake);
+                genPuts(&g, "(&(*p).");
+                genName(&g, parm->namesym);
+                genPuts(&g, ")");
+            }
+            if (slotted) {
+                genPuts(&g, ")); ");
+                genSlot(&g, GenActors);
+                genPuts(&g, ".answerAt(&mut self.");
+                genSlot(&g, GenAnswer);
+                genPuts(&g, ", r);}\n");
+            }
+            else
+                genPuts(&g, asked ? "));}\n" : ");}\n");
+        }
+    }
+    // A reply to one of the actor's own requests: its resume function, the
+    // seam's, takes it (the actors package's resume and resumeId)
+    for (uint32_t withid = 0; awaits && withid <= 1; ++withid) {
         genPuts(&g, firstarm ? "  if &*msg is &" : "  elif &*msg is &");
         firstarm = 0;
         genSlot(&g, GenMsg);
         genPuts(&g, ".");
-        genName(&g, fn->namesym);
+        genSlot(&g, withid ? GenResumeId : GenResume);
         genPuts(&g, " {imm p = msg as *");
         genSlot(&g, GenMsg);
         genPuts(&g, ".");
-        genName(&g, fn->namesym);
-        genPuts(&g, "; self.");
-        genName(&g, fn->namesym);
-        genPuts(&g, "(");
-        int first = 1;
-        INode **parmp;
-        uint32_t parmcnt;
-        for (nodesFor(((FnSigNode *)fn->vtype)->parms, parmcnt, parmp)) {
-            VarDclNode *parm = (VarDclNode *)*parmp;
-            if (parm->namesym == selfName)
-                continue;
-            if (!first)
-                genPuts(&g, ", ");
-            first = 0;
+        genSlot(&g, withid ? GenResumeId : GenResume);
+        genPuts(&g, "; ");
+        genSlot(&g, GenActors);
+        genPuts(&g, withid ? ".resumeId(self, " : ".resume(self, ");
+        genSlot(&g, GenTake);
+        genPuts(&g, "(&(*p).run), ");
+        if (withid) {
             genSlot(&g, GenTake);
-            genPuts(&g, "(&(*p).");
-            genName(&g, parm->namesym);
-            genPuts(&g, ")");
+            genPuts(&g, "(&(*p).id), ");
         }
-        genPuts(&g, ");}\n");
+        genSlot(&g, GenTake);
+        genPuts(&g, "(&(*p).data));}\n");
     }
     genPuts(&g, "}\n");
+
+    // A request's envelope, made by this actor as it awaits, its resume
+    // message written: 'run' is the seam's resume function, 'id' its record's
+    // place in the pending table, and the returned value 'size' bytes aligned
+    // to 'align' (genlawait.c, genlAwaitReply)
+    for (uint32_t withid = 0; awaits && withid <= 1; ++withid) {
+        genPuts(&g, "fn ");
+        genSlot(&g, withid ? GenReplyId : GenReply);
+        genPuts(&g, "(st &");
+        genSlot(&g, GenState);
+        genPuts(&g, withid ? ", run *u8, id u64, size usize, align usize) " : ", run *u8, size usize, align usize) ");
+        genSlot(&g, GenActors);
+        genPuts(&g, ".Reply {\n  imm r = ");
+        genSlot(&g, GenActors);
+        genPuts(&g, ".replyNode[");
+        genSlot(&g, GenState);
+        genPuts(&g, ", ");
+        genSlot(&g, GenMsg);
+        genPuts(&g, "](st, size, align);\n  ");
+        genSlot(&g, GenActors);
+        genPuts(&g, ".replyPut[");
+        genSlot(&g, GenMsg);
+        genPuts(&g, "](&r, ");
+        genSlot(&g, GenMsg);
+        genPuts(&g, ".");
+        genSlot(&g, withid ? GenResumeId : GenResume);
+        genPuts(&g, withid ? "[run, id, " : "[run, ");
+        genSlot(&g, GenActors);
+        genPuts(&g, ".replyData(&r)]);\n  r;\n}\n");
+    }
+
+    // 'selfactor': the actor's own handle, another owner of its mailbox
+    int selfs = texts.selfactors > 0;
+    if (selfs) {
+        genPuts(&g, "fn ");
+        genSlot(&g, GenSelf);
+        genPuts(&g, "(st &");
+        genSlot(&g, GenState);
+        genPuts(&g, ") ");
+        genName(&g, actorname);
+        genPuts(&g, " {new ");
+        genName(&g, actorname);
+        genPuts(&g, "(");
+        genSlot(&g, GenMailbox);
+        genPuts(&g, ": ");
+        genSlot(&g, GenActors);
+        genPuts(&g, ".selfOf[");
+        genSlot(&g, GenState);
+        genPuts(&g, ", ");
+        genSlot(&g, GenMsg);
+        genPuts(&g, "](st));}\n");
+    }
 
     // Parse it, as the actor's own source, its diagnostics reported at its name
     Lexer *gen = lexNew(g.text, lex->url);
     gen->genat = (INode *)state;
-    gen->gennames = (Name **)memAllocBlk(sizeof(names));
-    memcpy(gen->gennames, names, sizeof(names));
-    gen->ngennames = GenSlots;
+    gen->gennames = names;
+    gen->ngennames = nnames;
     uint32_t firstnode = mod->nodes->used;
     lexPush(gen);
     if (runtime == 2)
         parseFnOrVar(parse, 0);
+    ActorInfo *info = (ActorInfo *)memAllocBlk(sizeof(ActorInfo));
+    memset(info, 0, sizeof(ActorInfo));
+    if (awaits) {
+        StructNode *hidden = (StructNode *)parseStruct(parse, 0);
+        for (nodelistFor(&hidden->fields, cnt, nodesp)) {
+            FieldDclNode *field = (FieldDclNode *)*nodesp;
+            structAddField(state, field);
+            if (field->namesym == names[GenPending])
+                info->pending = field;
+            else if (field->namesym == names[GenAnswer])
+                info->answer = field;
+        }
+    }
     modAddNode(mod, names[GenState], (INode *)state);
     StructNode *handle = (StructNode *)parseStruct(parse, pubflag);
     modAddNode(mod, handle->namesym, (INode *)handle);
     StructNode *msg = (StructNode *)parseStruct(parse, TraitType | SameSize | EnumType);
     modAddNode(mod, names[GenMsg], (INode *)msg);
-    parseFnOrVar(parse, 0);
+    info->dispatch = (FnDclNode *)parseFnOrVar(parse, 0);
+    if (awaits) {
+        info->replyfn = (FnDclNode *)parseFnOrVar(parse, 0);
+        info->replyidfn = (FnDclNode *)parseFnOrVar(parse, 0);
+    }
+    if (selfs)
+        info->selffn = (FnDclNode *)parseFnOrVar(parse, 0);
     if (!lexIsToken(EofToken))
         errorMsgLex(ErrorNoEof, "The declarations generated for actor %s did not parse whole.", &actorname->namestr);
     lexPop();
@@ -766,5 +1083,34 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
             dclinfo->facts |= DclActorGen;
     }
 
-    actorRegister(handle, state, members.crossing);
+    // Each message, and the handle's methods that send it
+    info->handle = handle;
+    info->state = state;
+    info->crossing = members.crossing;
+    info->awaiting = texts.awaiting;
+    info->nmsgs = members.messages->used;
+    info->msgs = (ActorMessage *)memAllocBlk((info->nmsgs ? info->nmsgs : 1) * sizeof(ActorMessage));
+    ask = GenSlots;
+    uint32_t m = 0;
+    for (nodesFor(members.messages, cnt, nodesp)) {
+        FnDclNode *fn = (FnDclNode *)*nodesp;
+        ActorMessage *am = &info->msgs[m++];
+        am->method = fn;
+        am->send = NULL;
+        am->ask = NULL;
+        Name *askname = parseActorReturns(fn) ? names[ask++] : NULL;
+        INode **hp;
+        uint32_t hcnt;
+        for (nodelistFor(&handle->nodelist, hcnt, hp)) {
+            if ((*hp)->tag != FnDclTag)
+                continue;
+            FnDclNode *hfn = (FnDclNode *)*hp;
+            if (hfn->namesym == fn->namesym && am->send == NULL && (hfn->flags & FlagMethFld)
+                && hfn->overloadsym == fn->overloadsym)
+                am->send = hfn;
+            else if (askname && hfn->namesym == askname)
+                am->ask = hfn;
+        }
+    }
+    actorRegister(info);
 }

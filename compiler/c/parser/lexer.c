@@ -163,6 +163,9 @@ void keywordInit() {
     // In an actor's method, wait for what is awaited: the method is cut there,
     // a seam where it returns to the actor's dispatcher
     keyAdd("await", AwaitToken);
+    // In an actor's method, the actor's own handle: 'self' is its state,
+    // which never leaves it
+    keyAdd("selfactor", SelfActorToken);
 
     keyAdd("void", VoidToken);
     keyAdd("nil", nilToken);

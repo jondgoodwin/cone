@@ -7,12 +7,24 @@
  * pwSeam), noting on it what each variable in scope does there. A message's
  * seams every rule accepts are split (awaitSplitOrReport): generation makes
  * the method's first half and a second half for each seam, which takes the
- * seam's record (genllvm/genlawait.c). Nothing yet waits for a reply, so the
- * split is generated only under '--await-direct', which hands each record
- * straight to its second half; otherwise, and in a method that is not a
- * message, an 'await' is reported unbuilt (ErrorUnbuiltAwait), naming what
- * its continuation would carry. compiler/c/doc/phases/flow.md, "A seam", and
- * compiler/c/doc/phases/generation.md, "A split method", are the notes.
+ * seam's record (genllvm/genlawait.c).
+ *
+ * What is awaited is a message to an actor -- one of its handle's methods
+ * sending a message that returns a value. Type check sends it awaited
+ * instead: the handle's second method for it, which carries a reply's
+ * envelope (AwaitReplyNode) in the message. The seam parks its record in
+ * the actor's pending table, and the reply's dispatch calls the second half
+ * with it and the value returned. Any other 'await' is reported unbuilt
+ * (ErrorUnbuiltAwait), naming what its continuation would carry, unless
+ * '--await-direct', for tests, hands its record straight to its second half.
+ * In a method that is not a message, every 'await' is reported unbuilt.
+ * compiler/c/doc/phases/flow.md, "A seam", and
+ * compiler/c/doc/phases/generation.md, "A split method" and "A message's
+ * reply", are the notes.
+ *
+ * 'selfactor', in an actor's method, is the actor's own handle: type check
+ * lowers it to a call of the function the actor's declaration generated for
+ * it (SelfActorNode).
  *
  * @file
  *
@@ -50,16 +62,31 @@ typedef struct AwaitNode {
     uint32_t seamcap;
     uint32_t seamno;    // A split method's seams are numbered from 1 in the order written, which names each second half
     struct GenSeam *genseam;    // Generation: its record and its second half (genlawait.c), made by the first half to reach it
+    FnDclNode *message; // What is awaited is this message of an actor, sent awaited; NULL for anything else
+    uint8_t voidmessage;    // What is awaited is a message that returns nothing, which is not built
     uint8_t walked;     // The loan walk reached it on some path
 } AwaitNode;
 
-// Test only ('--await-direct'): a split message's seam hands its record
-// straight to its second half, with the value it awaited as the result,
-// rather than waiting for a reply, which nothing builds yet. Without it no
-// method is split, and every 'await' is reported unbuilt
+// The envelope of the request a message 'await' sends: the last argument of
+// the handle's method that sends it awaited. Generation makes it where the
+// seam's record is laid out and given its id (genlAwaitReply)
+typedef struct AwaitReplyNode {
+    IExpNodeHdr;
+    AwaitNode *await;   // The seam whose reply it is
+} AwaitReplyNode;
+
+// 'selfactor', before type check lowers it
+typedef struct SelfActorNode {
+    IExpNodeHdr;
+} SelfActorNode;
+
+// Test only ('--await-direct'): a split message's seam that awaits anything
+// but a message hands its record straight to its second half, with the value
+// it awaited as the result. Without it such a seam is reported unbuilt
 extern int awaitDirect;
 
 AwaitNode *newAwaitNode();
+SelfActorNode *newSelfActorNode();
 
 // Clone await
 INode *cloneAwaitNode(CloneState *cstate, AwaitNode *node);
@@ -69,13 +96,25 @@ void awaitPrint(AwaitNode *node);
 // Name resolution of await
 void awaitNameRes(NameResState *pstate, AwaitNode *node);
 
-// Type check await: it stands in an actor's method, and its value is what it awaits
+// Type check await: it stands in an actor's method, and its value is what it
+// awaits. A message it awaits is sent awaited, and the 'await''s value is
+// what the message returns
 void awaitTypeCheck(TypeCheckState *pstate, AwaitNode *node, INode *expectType);
 
+// Type check 'selfactor': it stands in an actor's method, and becomes the
+// call that makes the actor's handle from its state
+void selfActorTypeCheck(TypeCheckState *pstate, INode **nodep);
+
+// A call of 'callee', a method selected for it: refused where the callee is a
+// method of an actor holding an 'await' and the caller is not its dispatcher,
+// since the callee's seams would cut the caller, where nothing shows it
+void awaitCallCheck(TypeCheckState *pstate, INode *call, FnDclNode *callee);
+
 // Each seam of a function every rule accepted: split, where the function is a
-// message of an actor and '--await-direct' is given and no seam stands where
-// splitting is not built; otherwise each is reported not built yet
-// (ErrorUnbuiltAwait), the message saying what its continuation would carry
+// message of an actor, each of its seams awaits a message (or '--await-direct'
+// is given), and no seam stands where splitting is not built; otherwise each
+// is reported not built yet (ErrorUnbuiltAwait), the message saying what its
+// continuation would carry
 void awaitSplitOrReport(FnDclNode *fn, Nodes *awaits);
 
 // The seams of a split function, in the order written, or NULL where it is not split

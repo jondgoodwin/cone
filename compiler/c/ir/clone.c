@@ -82,6 +82,10 @@ INode *cloneNode(CloneState *cstate, INode *nodep) {
         node = cloneLogicNode(cstate, (LogicNode *)nodep); break;
     case AwaitTag:
         node = cloneAwaitNode(cstate, (AwaitNode *)nodep); break;
+    case SelfActorTag:
+        node = (INode *)newSelfActorNode();
+        inodeLexCopy(node, nodep);
+        break;
     case NamedValTag:
         node = cloneNamedValNode(cstate, (NamedValNode *)nodep); break;
     case OfEntryTag: case FillEntryTag: case PairEntryTag:
