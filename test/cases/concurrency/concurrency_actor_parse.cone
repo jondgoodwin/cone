@@ -2,17 +2,24 @@
 // parse: a parse diagnostic stops the compile before name resolution, which is
 // why these are a file of their own.
 //
-// - A message carrying a borrow is refused as not Sendable whatever it
+// - A behaviour carrying a borrow is refused as not Sendable whatever it
 //   borrows (ErrorNotSendable): no borrow leaves its thread.
 // - The rest is ErrorActorMember: a field is private state, never 'pub'; no
 //   static, which every actor of the kind would share across threads; a
-//   'pub' function without 'self' would run on no actor; a message is not
-//   generic yet; a message's 'self' is the state lent for the message, so
+//   'pub' function without 'self' would run on no actor; a behaviour is not
+//   generic yet; a behaviour's 'self' is the state lent for the message, so
 //   'self &uni' is the finalizer's alone; 'extern' and a macro have no place;
 //   and a generic actor, or one naming an abstraction, is not built.
-// A message may return a value, which a reply carries back to an 'await'
-// (concurrency_await_reply), and so may a private method, called on the actor
-// from its own methods (fine).
+// - Behaviours and synchronous methods: a behaviour ('async do') runs on the
+//   state, so it has 'self'; 'init' and 'final' are synchronous, declared
+//   'fn'; and a 'fn' with 'self' runs inside the actor alone, so it is never
+//   'pub' -- which is also what an actor written before 'async do' gets for
+//   each of its messages, with the spelling to use.
+// A behaviour may return a value, which a reply carries back to an 'await'
+// (concurrency_await_reply), and so may a synchronous method, called from the
+// actor's own methods (fine). A behaviour that is not 'pub' is still a
+// message, sent from its own module (concurrency_actor_selfsend,
+// concurrency_actor_private).
 
 mod concurrency_actor_parse;
 
@@ -22,18 +29,26 @@ actor Bad {
   pub count u64;                          //~ ErrorActorMember "a field of an actor is never 'pub'"
   static mut shared u64 = 0u64;           //~ ErrorActorMember "An actor has no 'static'"
 
-  pub fn total(self) u64 {count;}
-  pub fn peek(self, r &u64) {}            //~ ErrorNotSendable "Actor Bad's message peek takes r, a borrowed reference"
-  pub fn pick[T](self, x T) {}            //~ ErrorActorMember "Actor Bad's message pick is generic"
+  pub async do total(self) u64 {count;}
+  async do quiet(self, n u64) {}
+  pub async do peek(self, r &u64) {}      //~ ErrorNotSendable "Actor Bad's behaviour peek takes r, a borrowed reference"
+  pub async do pick[T](self, x T) {}      //~ ErrorActorMember "Actor Bad's behaviour pick is generic"
   pub fn make() u64 {0u64;}               //~ ErrorActorMember "make has no 'self', so it would not run on actor Bad"
-  pub fn whole(self &uni) {}              //~ ErrorActorMember "whole's 'self' is actor Bad's state"
+  pub async do whole(self &uni) {}        //~ ErrorActorMember "whole's 'self' is actor Bad's state"
   extern fn elsewhere(self);              //~ ErrorActorMember "'extern' declares one defined elsewhere"
   macro twice[x] {x + x;}                 //~ ErrorActorMember "does not declare a macro yet"
   fn fine(self) u64 {count;}
+  async do loose(n u64) {}                //~ ErrorActorMember "loose is declared 'async do', a behaviour of actor Bad's, and has no 'self'"
+  pub fn sent(self, n u64) {}             //~ ErrorActorMember "sent is a 'fn' of actor Bad's: synchronous, run inside the actor by the method that calls it, so nothing outside the actor reaches it, and it is never 'pub'. A message the actor's handle sends is a behaviour, declared 'async do': 'pub async do sent(...)'"
+}
+
+actor Lifecycle {
+  async do init(self &new) {}             //~ ErrorActorMember "An actor's initializer is synchronous, declared 'fn': it runs on the thread making the actor"
+  async do final(self &uni) {}            //~ ErrorActorMember "An actor's 'final' is synchronous, declared 'fn': it runs as the actor dies"
 }
 
 actor Many[T] {                           //~ ErrorActorMember "Actor Many takes type parameters"
-  pub fn take(self, x u64) {}
+  pub async do take(self, x u64) {}
 }
 
 trait Shape {
@@ -41,7 +56,7 @@ trait Shape {
 }
 
 actor Square is Shape {                   //~ ErrorActorMember "Actor Square names an abstraction or a base"
-  pub fn grow(self) {}
+  pub async do grow(self) {}
 }
 
 fn main() {}

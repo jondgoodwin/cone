@@ -1301,7 +1301,7 @@ class Testing(unittest.TestCase):
                 *self = new Self(count: start);
               }
 
-              pub fn ping(self, n u64) {
+              pub async do ping(self, n u64) {
                 count = count + n;
               }
 
@@ -1311,7 +1311,7 @@ class Testing(unittest.TestCase):
             }
 
             actor Hidden {
-              pub fn hello(self, n u64, p Pinger) {
+              pub async do hello(self, n u64, p Pinger) {
                 printStr("hidden "); printUInt(n); printStr("\\n");
                 p.ping(n);
               }

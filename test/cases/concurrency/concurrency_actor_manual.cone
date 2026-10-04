@@ -1,0 +1,52 @@
+// The reference manual's first actor (doc/reference/refconccomm.html,
+// "Actors"), compiled and run, copied there verbatim from between the
+// "manual:" lines: an initializer, two behaviours, a synchronous helper and a
+// finalizer. Printer, which the page leaves to the reader, is below them. It
+// prints nothing: main sends two adds, and the program ends once both have
+// run and the actor has died.
+
+mod concurrency_actor_manual;
+
+// manual: counter
+import actors;
+
+actor Counter {
+  count u64;                       // its state: private to it
+
+  fn init(self &new, start u64) {   // run on fresh state by 'new Counter(start)'
+    *self = new Self(count: start);
+  }
+
+  pub async do add(self, n u64) {  // a behaviour: sent as a message
+    count = count + n;
+  }
+
+  pub async do report(self &, to Printer) {   // one carrying another actor's handle
+    to.show(self.doubled());
+  }
+
+  fn doubled(self &) u64 {         // synchronous: called, inside the actor
+    count * 2u64;
+  }
+
+  fn final(self &uni) {}           // when it dies
+}
+
+fn main() {
+  initAll();
+  {
+    imm c = new Counter(0u64);     // the first actor starts the workers
+    c.add(5u64);                   // a message: queued, and run later
+    c.add(7u64);                   // run after the first
+  }
+  finalAll();                      // waits until all is quiet, stops the workers
+}
+// manual: end
+
+actor Printer {
+  last u64;
+
+  pub async do show(self, n u64) {
+    last = n;
+  }
+}

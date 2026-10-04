@@ -615,6 +615,14 @@ INode *parseExprBlock(ParseState *parse, int isloop) {
             nodesAdd(&blk->stmts, parseExprBlock(parse, 0));
             break;
 
+        // 'async do' declares an actor's behaviour, in an actor's body: here
+        // it is reported, with either word alone, and the declaration passed
+        // over whole
+        case AsyncToken:
+        case DoToken:
+            parseBehaviourWords("a function's body");
+            break;
+
         // A local variable declaration, if it begins with a permission
         case PermToken:
             nodesAdd(&blk->stmts, (INode*)parseVarDcl(parse, immPerm, ParseMaySig|ParseMayImpl));

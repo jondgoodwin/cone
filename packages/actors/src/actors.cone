@@ -1,9 +1,10 @@
 // The actors package: the runtime Cone's actors run on. An actor is state
 // that lives on, reached by nothing but messages: each message is a call of
-// one of its methods, queued in its mailbox and run later, one at a time, on
-// whichever worker thread takes the actor up. A method runs to completion on
-// that worker's own stack, or to an 'await', where the compiler cut it in two
-// (AWAITING, below): nothing is suspended on a stack. The package has
+// one of its behaviours (its methods declared 'async do'), queued in its
+// mailbox and run later, one at a time, on whichever worker thread takes the
+// actor up. A behaviour runs to completion on that worker's own stack, or to
+// an 'await', where the compiler cut it in two (AWAITING, below): nothing is
+// suspended on a stack. The package has
 // the mailbox, the work-stealing scheduler that runs mailboxes on a pool of
 // OS threads, the counting that decides when an actor dies, and the
 // quiescence the program ends at. It starts and stops by itself: the workers
@@ -15,7 +16,7 @@
 //   actor Counter {
 //     count u64;
 //     fn init(self &new, start u64) {*self = new Self(count: start);}
-//     pub fn add(self, n u64) {count = count + n;}
+//     pub async do add(self, n u64) {count = count + n;}
 //   }
 //
 //   fn main() {
@@ -46,8 +47,8 @@
 // The last four are what an actor's own code calls, and the compiler
 // generates that code from the 'actor' declaration
 // (compiler/c/parser/parseactor.c). The package is 'actors' because 'actor'
-// (the declaration's keyword) is reserved, as are 'spawn', 'async', 'wait'
-// and 'yield'; and it is a package of its own, not a module of sync, because
+// (the declaration's keyword) is a keyword, as are 'async' and 'do', and
+// 'spawn', 'wait' and 'yield' are reserved; and it is a package of its own, not a module of sync, because
 // it starts threads, and the thread package imports sync, so sync cannot
 // import thread. It is all Cone, over the thread package's threads and sync's
 // futex, Mutex, Once and 'Arc': nothing it does needed C.
@@ -57,23 +58,25 @@
 // reaches them:
 //
 //   (a) The state, 'Counter.State': a struct of the actor's fields and its
-//       methods, as written, a bare 'self' taken as 'self &mut'. It declares
-//       nothing about Sendable: it never crosses threads as a value, since
-//       only the runtime reaches it (INSIDE AN ACTOR, below).
+//       methods, behaviours and synchronous ones alike, as written, a bare
+//       'self' taken as 'self &mut'. It declares nothing about Sendable: it
+//       never crosses threads as a value, since only the runtime reaches it
+//       (INSIDE AN ACTOR, below).
 //   (b) The message enum, 'Counter.Msg', declaring Sendable on the strength
-//       of the compiler's check of every message's parameters: one variant
-//       per 'pub' method, named for it, whose fields are its parameters.
+//       of the compiler's check of every behaviour's parameters: one variant
+//       per behaviour, named for it, whose fields are its parameters.
 //
 //         enum Counter.Msg is Sendable {struct add {n u64;}}
 //
-//       A message that returns a value has a second variant, sent awaited,
+//       A behaviour that returns a value has a second variant, sent awaited,
 //       carrying a Reply too; an actor that awaits has two resume variants
 //       (AWAITING, below).
 //
 //   (c) The handle, 'Counter': one field, the 'Arc[opaq, T]' owner of the
 //       actor's Mailbox that startActor answers; an initializer for each of
 //       the state's, which makes the state and starts the actor; and a send
-//       function per message, which builds the variant and sends it.
+//       function per behaviour, as public as it, which builds the variant and
+//       sends it.
 //
 //         struct Counter {
 //           mailbox Arc[opaq, actors.Mailbox[Counter.Msg]];
@@ -88,7 +91,7 @@
 //
 //   (d) The dispatch function, 'Counter.dispatch', handed each message where
 //       it lies in its node: it tests which variant the message is, moves
-//       each argument out of it, and calls the method. The node is then freed
+//       each argument out of it, and calls the behaviour. The node is then freed
 //       with nothing in it finalized, so each argument is moved exactly once.
 //
 //         fn Counter.dispatch(self &mut Counter.State, msg *Counter.Msg) {
@@ -148,7 +151,7 @@
 // is never finalized.
 //
 // MESSAGES. A send is one-way: it queues the message and returns; nothing
-// waits for the method to run, and what a method returns is dropped, unless
+// waits for the behaviour to run, and what it returns is dropped, unless
 // the message was awaited (AWAITING, below). Each sender's
 // messages to one actor are handled in the order sent, and a message is
 // never overtaken by one it caused: the mailbox is one FIFO queue in the
@@ -198,9 +201,9 @@
 //   method that never returns keeps its actor, and one worker, forever.
 //   Actors wait by being sent a message, or by 'await'.
 //
-// AWAITING. In an actor's message, 'imm b = await fetcher.fetch(u)' sends
+// AWAITING. In an actor's behaviour, 'imm b = await fetcher.fetch(u)' sends
 // fetch to the actor 'fetcher' awaited, and waits for what it returns. The
-// compiler cuts the method there (compiler/c/genllvm/genlawait.c): its first
+// compiler cuts the behaviour there (compiler/c/genllvm/genlawait.c): its first
 // half returns to the dispatcher at the 'await', and what it still needs --
 // its record -- waits in its actor's PENDING TABLE, a hidden field of the
 // state, keyed by a plain id; its second half runs the rest when the reply
@@ -220,7 +223,7 @@
 // - The awaiting actor's dispatch calls the resume function (resume,
 //   resumeId), which takes the record out of the table (unpark) and calls the
 //   second half with it and the value.
-// - A message that returns a value and itself awaits keeps the envelope it
+// - A behaviour that returns a value and itself awaits keeps the envelope it
 //   answers in its state's Answer slot while it runs (ask, askNone); each
 //   seam carries it in the record, so whichever half returns the value
 //   answers (answerTo).

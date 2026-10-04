@@ -29,26 +29,28 @@
 		channel types take only a <span class="pre">Sendable</span> type, as
 		<a href="#race">Race condition safety</a> describes. And <a href="#actors">actors</a>:
 		the <span class="pre">actor</span> declaration, made with <span class="pre">new</span>,
-		each <span class="pre">pub</span> method a message its handle sends, and the
-		<span class="pre">actors</span> library package it runs on, on Windows only: mailboxes, a
-		work-stealing scheduler, quiescence, and handles counted through
+		each of its <i>behaviours</i>, declared <span class="pre">async do</span>, a message its
+		handle sends, and each of its methods declared <span class="pre">fn</span> synchronous; and
+		the <span class="pre">actors</span> library package it runs on, on Windows only: mailboxes,
+		a work-stealing scheduler, quiescence, and handles counted through
 		<span class="pre">Arc</span>, starting with the first actor and stopped by
 		<span class="pre">finalAll()</span>, which a program calls itself until the entry that
-		will call it exists. A message may return a value, and
-		<span class="pre">await</span> on a message to an actor waits for it: the method is cut
-		there, what it still needs waits in its actor until the reply comes, and the rest of the
-		method runs then (<a href="#await">Awaiting a reply</a>); an actor names its own handle
-		<span class="pre">selfactor</span>. The compiler checks an <span class="pre">await</span>
-		&mdash; where it may stand, and that no borrow but a <span class="pre">'static</span> one is
-		used after it, every other ending there &mdash; and builds it only on a message that returns
-		a value, in a message of the actor's own: an <span class="pre">await</span> on anything
-		else (an I/O completion among them), on a message returning nothing, in a method that is not
-		a message, inside a place, or one whose continuation would hold a traced reference, is
-		reported where it is written, and so is a call of a message holding one from another of the
-		actor's methods; nor is there a time limit on an <span class="pre">await</span>, or a way to
-		cancel one (<a href="#await-unbuilt">Not built yet</a>). The
+		will call it exists. A behaviour may return a value, and
+		<span class="pre">await</span> on a behaviour of an actor waits for it: the behaviour
+		awaiting is cut there, what it still needs waits in its actor until the reply comes, and
+		the rest of it runs then (<a href="#await">Awaiting a reply</a>); an actor names its own
+		handle <span class="pre">selfactor</span>, and <span class="pre">self.m()</span>, where
+		<span class="pre">m</span> is one of its own behaviours, sends it. The compiler checks an
+		<span class="pre">await</span> &mdash; that it stands in a behaviour, that what it awaits
+		returns a value, and that no borrow but a <span class="pre">'static</span> one is used
+		after it, every other ending there &mdash; and builds it only on a behaviour that returns
+		a value: an <span class="pre">await</span> on anything else (an I/O completion among
+		them), inside a place, or one whose continuation would hold a traced reference, is
+		reported where it is written; nor is there a time limit on an
+		<span class="pre">await</span>, or a way to cancel one
+		(<a href="#await-unbuilt">Not built yet</a>). The
 		compiler's <span class="pre">--await-direct</span> option, which is for testing the cut,
-		runs the rest of the method at once after an <span class="pre">await</span> on anything
+		runs the rest of the behaviour at once after an <span class="pre">await</span> on anything
 		else, with the value awaited. Not implemented: <span class="pre">actor trait</span>, a
 		generic actor.
 		<span class="pre">qfn</span> and the other concurrent data structures are not
@@ -121,7 +123,7 @@ thread.start(job, &amp;work);
 		value's own methods that change it through <span class="pre">&amp;</span> (sendable here also
 		means safe to read from several threads at once behind <span class="pre">Arc[imm, T]</span>,
 		which a type declaring <span class="pre">Sendable</span> promises too). Actor messages are
-		checked as a channel's values are: every parameter of an actor's message, and of its
+		checked as a channel's values are: every parameter of an actor's behaviour, and of its
 		initializer, must be <span class="pre">Sendable</span>, and one that is not is refused
 		where it is declared; an actor's state is not asked, since it never crosses as a value
 		(<a href="#actors">Actors</a>).</p>
@@ -212,10 +214,11 @@ solo &lt;- job;
 
 	<h3 id="actors">Actors</h3>
 	<p>An actor is state that lives on, reached by nothing but messages. Each message is a call
-		of one of the actor's methods, queued in its mailbox and run later, one at a time, on
-		whichever of a pool of worker threads takes the actor up. A method runs to completion, on
-		that worker's own stack, with the actor's state <span class="pre">mut</span>, or to an
-		<span class="pre">await</span>, where it is cut ("Awaiting", below); no other method of
+		of one of the actor's <i>behaviours</i>, its methods declared
+		<span class="pre">async do</span>, queued in its mailbox and run later, one at a time, on
+		whichever of a pool of worker threads takes the actor up. A behaviour runs to completion,
+		on that worker's own stack, with the actor's state <span class="pre">mut</span>, or to an
+		<span class="pre">await</span>, where it is cut ("Awaiting", below); no other behaviour of
 		the same actor runs until it returns there. An
 		actor is declared with <span class="pre">actor</span>, and it runs on the
 		<span class="pre">actors</span> package, which a module declaring one imports: the
@@ -233,12 +236,16 @@ actor Counter {
     *self = new Self(count: start);
   }
 
-  pub fn add(self, n u64) {        // a message
+  pub async do add(self, n u64) {  // a behaviour: sent as a message
     count = count + n;
   }
 
-  pub fn report(self &amp;, to Printer) {   // a message carrying another actor's handle
-    to.show(count);
+  pub async do report(self &amp;, to Printer) {   // one carrying another actor's handle
+    to.show(self.doubled());
+  }
+
+  fn doubled(self &amp;) u64 {         // synchronous: called, inside the actor
+    count * 2u64;
   }
 
   fn final(self &amp;uni) {}           // when it dies
@@ -254,23 +261,93 @@ fn main() {
   finalAll();                      // waits until all is quiet, stops the workers
 }
 </pre>
+	<p><b>Behaviours.</b> A method declared <span class="pre">async do</span> is a
+		<i>behaviour</i>: it runs asynchronously, when the actor is scheduled, and an
+		<span class="pre">await</span> on one waits for its reply. <span class="pre">async do</span>
+		is one keyword of two words, and neither means anything alone: written without the other,
+		either is refused. <span class="pre">async</span> says when the behaviour runs, and pairs
+		with <span class="pre">await</span>, as in C# and JavaScript, where a call of an
+		asynchronous function need not be awaited; <span class="pre">do</span> is the
+		declaration's verb, as <span class="pre">fn</span> is a function's. Unlike an
+		asynchronous function there, a behaviour never starts on the sender's thread: a send only
+		queues the message, so no thread but the actor's touches its state.</p>
+	<p><b>Synchronous methods.</b> A method declared <span class="pre">fn</span> is
+		synchronous: the actor's <span class="pre">init</span> and <span class="pre">final</span>,
+		and any helper, which sees the actor's fields directly and runs inside the method that
+		calls it, as a struct's method does (<span class="pre">doubled</span> above). It is the
+		actor's alone: never <span class="pre">pub</span>, and not carried by the handle. It holds
+		no <span class="pre">await</span>: an <span class="pre">await</span> belongs at the top of
+		a behaviour, and the synchronous work between awaits is pushed down, onto a helper or onto
+		a type the actor owns (<a href="#await-sync">Await in a behaviour</a>).</p>
+	<p id="shapes"><b>Four shapes.</b> Whether a behaviour declares a return type, and whether
+		it holds an <span class="pre">await</span>, are independent, and each decides one thing:
+		the return type, whether a reply is sent; the <span class="pre">await</span>, whether the
+		behaviour is cut and waits. So a behaviour has one of four shapes, each known from its
+		declaration alone:</p>
+	<ul>
+	<li><b>Fire and forget</b>: no return type, no <span class="pre">await</span>. It runs once
+		and ends; nothing is sent back, and nothing waits. The cheapest shape.</li>
+	<li><b>A cheap query</b>: a return type, no <span class="pre">await</span>. It runs once and
+		replies with its value as it ends, to a caller that awaited it.</li>
+	<li><b>Awaits, owes nobody</b>: an <span class="pre">await</span>, no return type. It waits
+		for other actors' answers, and answers no one.</li>
+	<li><b>The full handshake</b>: both. It waits for answers, then replies with its own
+		value.</li>
+	</ul>
+<pre>
+actor Store {
+  total u64;
+
+  pub async do add(self, k u64) {           // fire and forget
+    total = self.plus(k);
+  }
+
+  pub async do count(self) u64 {total;}     // a cheap query
+
+  fn plus(self &amp;, k u64) u64 {total + k;}   // synchronous: an ordinary call
+}
+
+actor Client {
+  store Store;
+
+  pub async do run(self) {                  // awaits, owes nobody
+    store.add(5u64);
+    store.add(7u64);
+    imm c = await store.count();
+    say("count", c);
+    imm r = await self.report();
+    say("report", r);
+  }
+
+  pub async do report(self) u64 {           // the full handshake
+    imm c = await store.count();
+    c * 10u64;
+  }
+}
+</pre>
+	<p>(<span class="pre">say</span> prints a word and a number on a line.) Sent
+		<span class="pre">client.run()</span>, with a Store whose total starts at 0, this prints
+		<span class="pre">count 12</span>, then <span class="pre">report 120</span>: both adds
+		reach the Store before the count does, since one sender's messages are handled in the
+		order sent.</p>
 	<p><b>The declaration.</b> An actor's body is written as a struct's: fields, an
-		<span class="pre">init</span>, methods, a <span class="pre">final</span>. Its fields are
-		its state, private to it: a field is never <span class="pre">pub</span>, and nothing
-		outside the actor reaches one. A method's <span class="pre">self</span> is the state, lent
-		for the message it handles: written bare, it is <span class="pre">self &amp;mut</span>,
-		which the method has alone while it runs; <span class="pre">self &amp;</span> only reads
-		it. Each <span class="pre">pub</span> method is a <i>message</i>; a method that is not
-		<span class="pre">pub</span>, and a function without <span class="pre">self</span>, are
-		the actor's own, called from its methods as any struct's are. A message is not generic,
-		and every parameter it takes is <span class="pre">Sendable</span>, since the message
-		carries its arguments to the thread the actor runs on; a borrow is refused whatever it
-		borrows. A message may return a value, which must be <span class="pre">Sendable</span>
-		too: a send returns at once, before the method runs, and the value is dropped, unless the
-		message was awaited ("Awaiting", below). An actor declares no
-		static, macro, <span class="pre">extern</span> method or <span class="pre">use</span>, no
-		type parameters, and names no abstraction: <span class="pre">actor trait</span>, its
-		abstraction, is not built yet.</p>
+		<span class="pre">init</span>, behaviours, synchronous methods, a
+		<span class="pre">final</span>. Its fields are its state, private to it: a field is never
+		<span class="pre">pub</span>, and nothing outside the actor reaches one. A method's
+		<span class="pre">self</span> is the state, lent to a behaviour for the message it
+		handles, and to a synchronous method by its caller: written bare, it is
+		<span class="pre">self &amp;mut</span>, which the method has alone while it runs;
+		<span class="pre">self &amp;</span> only reads it. A behaviour that is not
+		<span class="pre">pub</span> is a message all the same, which only its own module sends;
+		a function without <span class="pre">self</span> is the actor's own, called from its
+		methods as a struct's is. A behaviour is not generic, and every parameter it takes is
+		<span class="pre">Sendable</span>, since the message carries its arguments to the thread
+		the actor runs on; a borrow is refused whatever it borrows. A behaviour may return a
+		value, which must be <span class="pre">Sendable</span> too: a send returns at once, before
+		the behaviour runs, and the value is dropped, unless the behaviour was awaited
+		("Awaiting", below). An actor declares no static, macro, <span class="pre">extern</span>
+		method or <span class="pre">use</span>, no type parameters, and names no abstraction:
+		<span class="pre">actor trait</span>, its abstraction, is not built yet.</p>
 	<p><b>Making one.</b> <span class="pre">new Counter(args)</span> makes an actor: it runs the
 		actor's <span class="pre">init</span> on fresh state, made on the calling thread, hands the
 		state to the runtime, and answers the actor's <i>handle</i>. The initializer's parameters
@@ -286,10 +363,9 @@ fn main() {
 	<p><b>The handle.</b> The actor's name names its handle, a value holding one counted owner
 		of the actor's mailbox, the runtime's part of it: copying a handle (passing it, storing it,
 		putting it in a message) makes another owner, and each going drops one. A handle carries
-		the actor's messages and nothing else: calling a <span class="pre">pub</span> method on
-		it, <span class="pre">c.add(5u64)</span>, sends that message, and reaching a field of the
-		state or a method that is not <span class="pre">pub</span> through it is refused as
-		private. A handle is <span class="pre">Sendable</span> whatever the state holds: it may
+		the actor's behaviours and nothing else: calling one on it,
+		<span class="pre">c.add(5u64)</span>, sends that message, and reaching a field of the
+		state or a synchronous method through it is refused as private. A handle is <span class="pre">Sendable</span> whatever the state holds: it may
 		be sent to a thread, over a channel, in another actor's message, or kept in another
 		actor's state. So the state may hold what may not cross threads
 		(<span class="pre">Rc</span>, a <span class="pre">mut</span> owner, borrows inside a
@@ -297,14 +373,14 @@ fn main() {
 	<p><b>What the declaration stands for.</b> The compiler turns an actor into four ordinary
 		declarations the <span class="pre">actors</span> package runs: the state, a struct of the
 		body as written, named <span class="pre">Counter.State</span>; the messages, an enum with
-		one variant per message, named for the method, its fields the method's parameters, named
+		one variant per behaviour, named for it, its fields the behaviour's parameters, named
 		<span class="pre">Counter.Msg</span>; the handle, <span class="pre">Counter</span>, whose
 		one field is an <span class="pre">Arc[opaq, actors.Mailbox[Counter.Msg]]</span>, an
 		initializer for each of the state's, which calls
-		<span class="pre">actors.startActor</span>, and a method per message, which calls
-		<span class="pre">actors.send</span>; and the dispatch function,
+		<span class="pre">actors.startActor</span>, and a method per behaviour, as public as the
+		behaviour, which calls <span class="pre">actors.send</span>; and the dispatch function,
 		<span class="pre">Counter.dispatch</span>, which the runtime hands each message where it
-		lies, and which moves each argument out of it into the method's call. Those names are
+		lies, and which moves each argument out of it into the behaviour's call. Those names are
 		what a diagnostic about them says; no source can write them, so nothing but the actor
 		reaches its state, its messages or its mailbox. The mailbox and the state are one
 		allocation, so a send touches one block. Actors and the declarations that use them may
@@ -324,13 +400,62 @@ fn main() {
 		back only to an <span class="pre">await</span> (<a href="#await">Awaiting a reply</a>), or
 		as a message sent back to a handle passed along.
 		Each sender's messages to one actor are handled in the order sent, and a message is never
-		overtaken by one it caused. Each argument arrives moved into the method's call, once: a
+		overtaken by one it caused. Each argument arrives moved into the behaviour's call, once: a
 		value that may only move (a <span class="pre">uni</span> or <span class="pre">So</span>
 		owner) arrives whole, and a counted one (a handle, an <span class="pre">Arc</span>, a
 		lock-managed <span class="pre">Arc[Mutex, T]</span>) is counted once.</p>
-	<p><b>Awaiting.</b> In a message, <span class="pre">await</span> on a message to an actor
-		that returns a value sends it and waits for that value: the method pauses there, the actor
-		handles other messages meanwhile, and the reply resumes the method
+	<p id="self-send"><b>Sending to itself.</b> In the actor's own methods,
+		<span class="pre">self.m(args)</span>, where <span class="pre">m</span> is one of its
+		behaviours, sends <span class="pre">m</span> to the actor itself, as
+		<span class="pre">selfactor.m(args)</span> does: the message joins the end of the actor's
+		own mailbox, the method goes on at once, and <span class="pre">m</span> runs later. A
+		behaviour is never called, not even by its own actor: it runs only when its dispatcher
+		takes up a message for it. A synchronous method is called, as a struct's is.</p>
+<pre>
+actor Echo {
+  pub async do start(self) {
+    say("start", 1u64);
+    self.later(1u64);             // a send to itself: start goes on at once
+    self.relay();                 // a synchronous helper, an ordinary call
+    say("start ends", 1u64);
+  }
+
+  async do later(self, k u64) {
+    say("later", k);
+    if k == 2u64 {
+      self.finish();
+    }
+  }
+
+  fn relay(self) {
+    later(2u64);                  // 'self.later(2)': a send, from a helper too
+  }
+
+  async do finish(self) {
+    imm d = await self.double(21u64);
+    say("finish", d);
+    self.show(d / 2u64 - 11u64);
+  }
+
+  async do double(self, k u64) u64 {k * 2u64;}
+
+  async do show(self, k u64) {
+    say("show", k);
+  }
+}
+</pre>
+	<p>Sent <span class="pre">echo.start()</span>, this prints <span class="pre">start 1</span>
+		and <span class="pre">start ends 1</span> before either <span class="pre">later</span>
+		runs, then <span class="pre">later 1</span>, <span class="pre">later 2</span>,
+		<span class="pre">finish 42</span> and <span class="pre">show 10</span>. A behaviour
+		reached through anything but the method's own <span class="pre">self</span> &mdash; a state
+		made with <span class="pre">new Self(...)</span>, which is in no actor &mdash; is refused,
+		and so is one sent through <span class="pre">self</span> in the actor's
+		<span class="pre">init</span>, which runs before the actor exists, or its
+		<span class="pre">final</span>, as it dies.</p>
+	<p><b>Awaiting.</b> In a behaviour, <span class="pre">await</span> on a behaviour of an
+		actor that returns a value sends it and waits for that value: the behaviour pauses there,
+		the actor handles other messages meanwhile, and the reply resumes it
 		(<a href="#await">Awaiting a reply</a>, below). In a method,
 		<span class="pre">selfactor</span> is the actor's own handle, another owner of it, which
 		may be sent anywhere a handle may; <span class="pre">self</span> is its state, which never
@@ -415,9 +540,9 @@ actor.increment();
 		to the actor to which a message back can be sent.</p>
 	
 	<h3 id="await">Awaiting a reply</h3>
-	<p>A message is one-way: the sender goes on at once, and whatever the method returns is
-		dropped. Inside an actor's own method, <span class="pre">await</span> sends a message and
-		waits for what it returns:</p>
+	<p>A message is one-way: the sender goes on at once, and whatever the behaviour returns is
+		dropped. Inside an actor's own behaviour, <span class="pre">await</span> sends a message
+		and waits for what the behaviour it sends returns:</p>
 <pre>
 struct Conn {
   pub url u64;
@@ -429,7 +554,7 @@ struct Buffer {
 }
 
 actor Net {
-  pub fn read(self, url u64) Buffer {
+  pub async do read(self, url u64) Buffer {
     say("  read", url);
     new Buffer(url * 100u64);
   }
@@ -438,7 +563,7 @@ actor Net {
 actor Fetcher {
   net Net;
 
-  pub fn fetch(self, url u64) Buffer {
+  pub async do fetch(self, url u64) Buffer {
     imm conn = new Conn(url);             // opened
     imm buf = await net.read(conn.url);   // conn waits, with the method
     say("  fetched", buf.size);
@@ -450,7 +575,7 @@ actor Page {
   fetcher Fetcher;
   body u64;
 
-  pub fn load(self, u u64) {
+  pub async do load(self, u u64) {
     say("load", u);
     imm b = await fetcher.fetch(u);       // pauses here
     body = b.size;                        // and resumes when the reply comes
@@ -478,38 +603,64 @@ loaded 700
 		<span class="pre">fetch</span> ends, after the reply came, just as it would if
 		<span class="pre">read</span> had been an ordinary call.</p>
 
-	<h4>Every method of an actor is asynchronous</h4>
-	<p>Nothing marks a method that awaits. There is no <span class="pre">async</span> keyword
-		(the word is reserved, and unused): a message that awaits is declared, sent and awaited
-		exactly as one that does not, its signature is as written, and no sender can tell the
-		difference. This departs from C#, Rust and JavaScript, where a function that awaits must be
-		marked <span class="pre">async</span> and its callers must await it in turn, all the way up
-		the stack. In Cone, the code that runs an actor's method is the actor's dispatcher, at the
-		top of its worker's stack, and every message already runs later than it was sent; so an
-		<span class="pre">await</span> pauses only the message it is written in, and goes no
-		further.</p>
-	<p>An <span class="pre">await</span> may stand only in an actor's method: not in a plain
-		function or a struct's method, and not in an actor's <span class="pre">init</span> or
-		<span class="pre">final</span>, which no dispatcher runs (the first runs on the thread making
-		the actor, the second as it dies). Today it is built in a message, a
-		<span class="pre">pub</span> method ("Not built yet", below). A method may hold any number
-		of them.</p>
+	<h4 id="await-sync">Await in a behaviour</h4>
+	<p>An <span class="pre">await</span> stands only in a behaviour: not in a plain function or a
+		struct's method, and not in any <span class="pre">fn</span> of an actor's &mdash; its
+		<span class="pre">init</span>, which runs on the thread making the actor, before the actor
+		exists; its <span class="pre">final</span>, as it dies; or a helper, which runs inside the
+		method that calls it and cannot pause partway through the call. A behaviour may hold any
+		number of them. The behaviour's declaration says it may pause, and that is as far as the
+		marking goes: a caller does not await a behaviour in order to call it, since the code that
+		runs it is the actor's dispatcher, at the top of its worker's stack, and every message
+		already runs later than it was sent. So an <span class="pre">await</span> pauses only the
+		behaviour it is written in, and goes no further, where in C#, Rust and JavaScript a
+		caller that waits for an asynchronous function's result must be asynchronous itself, and
+		its callers in turn, all the way up the stack.</p>
+	<p>The awaits are at the top of an actor's work, in its behaviours, and the synchronous work
+		between them is pushed down, onto a helper or a type the actor owns:</p>
+<pre>
+actor Reporter {
+  clock Clock;
+  last u64;
+
+  pub async do report(self) {
+    imm t = await clock.now();    // the 'await', at the top of the behaviour
+    last = self.format(t);        // the synchronous work, pushed down
+  }
+
+  fn format(self &amp;, t u64) u64 {
+    t * 1000u64 + last;
+  }
+
+  fn stamp(self) {
+    last = await clock.now();     // refused: stamp is a 'fn', synchronous
+  }
+}
+</pre>
+<pre>
+'await' stands only in an actor's behaviour, declared 'async do', where the behaviour is
+cut and returns to the actor's dispatcher to wait. This one is in stamp, a 'fn' of actor
+Reporter's: synchronous, run inside the method that calls it, which cannot pause partway
+through a call. An 'await' belongs at the top of a behaviour: await there, and push the
+synchronous work down, onto a helper like this one or a type the actor owns, to run
+between the awaits.
+</pre>
 
 	<h4>What an await does</h4>
 	<ol>
-	<li><b>It asks.</b> What follows <span class="pre">await</span> is a message to an actor that
-		returns a value. It is sent, as any message is, and the request carries where the reply
-		goes.</li>
-	<li><b>The method pauses.</b> It returns to its actor's dispatcher. What the rest of the
-		method needs waits in the actor (below), not on a stack, so the worker goes on to other
+	<li><b>It asks.</b> What follows <span class="pre">await</span> is a behaviour of an actor
+		that returns a value. It is sent, as any message is, and the request carries where the
+		reply goes.</li>
+	<li><b>The behaviour pauses.</b> It returns to its actor's dispatcher. What the rest of the
+		behaviour needs waits in the actor (below), not on a stack, so the worker goes on to other
 		work.</li>
 	<li><b>Other messages run.</b> The actor handles the rest of its mailbox meanwhile, one message
 		at a time, as always, messages it sends itself among them. So its state may have changed
-		by the time the method resumes: what the method read from its fields before the
+		by the time the behaviour resumes: what it read from its fields before the
 		<span class="pre">await</span>, it reads again after.</li>
-	<li><b>The reply resumes it.</b> When the method asked returns, its value comes back to the
+	<li><b>The reply resumes it.</b> When the behaviour asked returns, its value comes back to the
 		actor that awaited, as a message in its mailbox. When that message's turn comes, the rest
-		of the method runs, with the value as the <span class="pre">await</span>'s, perhaps on
+		of the behaviour runs, with the value as the <span class="pre">await</span>'s, perhaps on
 		another worker thread.</li>
 	</ol>
 
@@ -524,13 +675,13 @@ struct Note {
 }
 
 actor Clock {
-  pub fn now(self) u64 {42u64;}
+  pub async do now(self) u64 {42u64;}
 }
 
 actor Logger {
   clock Clock;
 
-  pub fn log(self) u64 {
+  pub async do log(self) u64 {
     imm first = new Note(1u64);
     imm second = new Note(2u64);
     imm t = await clock.now();
@@ -570,7 +721,7 @@ imm limit u64 = 100u64;
 actor Gauge {
   clock Clock;
 
-  pub fn check(self) u64 {
+  pub async do check(self) u64 {
     imm max = &amp;limit;                     // a borrow of a global: 'static
     imm t = await clock.now();
     *max - t;                             // still valid after the 'await'
@@ -589,7 +740,7 @@ actor Tally {
   count Arc[Mutex, Count];
   clock Clock;
 
-  pub fn bump(self) u64 {
+  pub async do bump(self) u64 {
     imm c = &amp;mut *count;                  // takes the lock
     c.n += 1u64;
     imm t = await clock.now();            // gives it back
@@ -615,13 +766,13 @@ actor Meter {
   clock Clock;
   reading u64;
 
-  pub fn stale(self) {
+  pub async do stale(self) {
     imm r = &amp;reading;
     imm t = await clock.now();  // refused: r's borrow ends here, and r is used below
     reading = *r + t;
   }
 
-  pub fn fresh(self) {
+  pub async do fresh(self) {
     imm t = await clock.now();
     imm r = &amp;reading;           // borrowed after the 'await'
     reading = *r + t;
@@ -635,20 +786,21 @@ returns to its actor's dispatcher to wait, and 'r' is used again at ..
 		is only made after it: a method's receiver, or an argument written to its left. The
 		<span class="pre">await</span> is then written as a statement of its own, first. In the
 		same actor, where <span class="pre">add</span> is a function taking a
-		<span class="pre">&amp;u64</span> and a number:</p>
+		<span class="pre">&amp;u64</span> and a number, and <span class="pre">store</span> a
+		synchronous method:</p>
 <pre>
-  pub fn store(self, n u64) {reading = n;}
+  fn store(self, n u64) {reading = n;}
 
-  pub fn receiver(self) {
+  pub async do receiver(self) {
     self.store(await clock.now());       // refused: 'self' was lent for the call before the 'await'
   }
 
-  pub fn argument(self) {
+  pub async do argument(self) {
     imm x = 3u64;
     reading = add(&amp;x, await clock.now()); // refused: &amp;x was made before the 'await'
   }
 
-  pub fn hoisted(self) {
+  pub async do hoisted(self) {
     imm t = await clock.now();
     self.store(t);
   }
@@ -661,12 +813,12 @@ returns to its actor's dispatcher to wait, and 'r' is used again at ..
 		method while it runs; it never leaves the actor. <span class="pre">selfactor</span> is its
 		<i>handle</i>: another owner of the actor, a value that may go anywhere a handle may &mdash;
 		into a message, into another actor's state, or to an <span class="pre">await</span> on one
-		of its own messages:</p>
+		of its own behaviours:</p>
 <pre>
 actor Doubler {
-  pub fn double(self, n u64) u64 {n * 2u64;}
+  pub async do double(self, n u64) u64 {n * 2u64;}
 
-  pub fn twice(self, n u64) u64 {
+  pub async do twice(self, n u64) u64 {
     imm once = await selfactor.double(n);  // a message to itself
     imm again = await selfactor.double(once);
     again;
@@ -675,10 +827,11 @@ actor Doubler {
 </pre>
 	<p><span class="pre">await doubler.twice(5u64)</span> is <span class="pre">20</span>. Each
 		<span class="pre">double</span> is queued in Doubler's own mailbox, and runs because
-		<span class="pre">twice</span> has paused and the actor is free. A method calling
-		<span class="pre">self.double(n)</span> directly would not send anything: it would run
-		<span class="pre">double</span> at once, as any struct's method does, and its value would be
-		the call's. <span class="pre">selfactor</span> may be written in any of the actor's methods,
+		<span class="pre">twice</span> has paused and the actor is free.
+		<span class="pre">await self.double(n)</span> is the same: a behaviour named through
+		<span class="pre">self</span> is sent through the actor's handle
+		(<a href="#self-send">Sending to itself</a>), never run at once.
+		<span class="pre">selfactor</span> may be written in any of the actor's methods,
 		but not in its <span class="pre">init</span>, which runs before the actor exists, nor in its
 		<span class="pre">final</span>, nor anywhere outside the actor.</p>
 
@@ -690,7 +843,7 @@ actor Cache {
   net Net;
   hot u64;
 
-  pub fn get(self, url u64) u64 {
+  pub async do get(self, url u64) u64 {
     if url == hot {
       return 1u64;                        // answered here, at once
     }
@@ -700,9 +853,42 @@ actor Cache {
 }
 </pre>
 	<p>A reply always has an actor to go to: the request holds a counted handle of the actor that
-		awaited, so that actor cannot die while its reply is owed. A message that returns a value
+		awaited, so that actor cannot die while its reply is owed. A behaviour that returns a value
 		may also be sent with no <span class="pre">await</span>, and its value is then
 		dropped.</p>
+
+	<h4 id="await-nothing">A behaviour that returns nothing</h4>
+	<p>Whether a reply is sent is the behaviour's declaration to say, never its caller's: one
+		with no return type sends none, so there is nothing to await, and an
+		<span class="pre">await</span> on it is refused. A caller that needs to know a behaviour
+		has finished needs to know whether it worked, too: the behaviour declares a return type,
+		a status, and the caller awaits that.</p>
+<pre>
+actor Log {
+  pub async do flush(self) {}             // owes its caller nothing
+  pub async do commit(self) Bool {true;}  // answers with a status
+}
+
+actor Writer {
+  log Log;
+  saved Bool;
+
+  pub async do save(self) {
+    await log.flush();            // refused: flush sends no reply
+    saved = await log.commit();   // waits until commit has run, and learns whether it worked
+  }
+}
+</pre>
+<pre>
+'await' waits for a behaviour's reply, and flush returns nothing, so it sends none: a
+behaviour with no return type owes its caller nothing. If the caller needs to know flush
+finished, declare a return type -- a status saying whether it worked -- and await that.
+</pre>
+	<p>An acknowledgement is not flow control. A sender that awaits each reply before sending
+		again has one message outstanding at a time, so the two run in lockstep, a round trip
+		each. To keep a fast sender from running far ahead of a slow receiver while both stay
+		busy, send through a bounded <a href="#channel">channel</a>: its capacity is how far
+		ahead the sender may get, and a send blocks only when it is full.</p>
 
 	<h4>An await in a loop</h4>
 	<p>An <span class="pre">await</span> may stand in a loop, and a loop's variables cross it as any
@@ -711,7 +897,7 @@ actor Cache {
 actor Sizes {
   net Net;
 
-  pub fn total(self, n u64) u64 {
+  pub async do total(self, n u64) u64 {
     mut sum = 0u64;
     each i in 0u64 &lt; n {
       imm b = await net.read(i);          // one request at a time
@@ -732,59 +918,37 @@ actor Sizes {
 	<h4 id="await-unbuilt">Not built yet</h4>
 	<p>Each of these is reported where it is written, as not built:</p>
 	<ul>
-	<li><b>Awaiting anything but a message.</b> An <span class="pre">await</span> on an I/O
+	<li><b>Awaiting anything but a behaviour.</b> An <span class="pre">await</span> on an I/O
 		operation's completion, or on a function's call, is not built.</li>
-	<li><b>An <span class="pre">await</span> in a method that is not a message</b>, such as a
-		private method of the actor that a message calls.</li>
-	<li><b>A direct call of a message holding an <span class="pre">await</span></b> from another
-		of the actor's methods, <span class="pre">self.load(u)</span>: such a message is called
-		only by its actor's dispatcher.</li>
-	<li><b>An <span class="pre">await</span> on a message that returns nothing.</b></li>
 	<li><b>An <span class="pre">await</span> inside a place</b>: in the index of a place
 		(<span class="pre">items[await f()]</span>), in a place assigned to, or in a place a swap
 		exchanges; and in an array's contents that repeat a value more than 16 times
 		(<span class="pre">&lt;- fill await f()</span>). An <span class="pre">await</span> in the
 		value assigned, <span class="pre">body = await f()</span>, is built.</li>
 	<li><b>A traced reference waiting for a reply.</b> An <span class="pre">await</span> at which
-		the method holds a <span class="pre">Gc</span> reference it would keep is refused: the
-		collector does not see a paused method's values. (<span class="pre">Gc</span> is not
+		the behaviour holds a <span class="pre">Gc</span> reference it would keep is refused: the
+		collector does not see a paused behaviour's values. (<span class="pre">Gc</span> is not
 		supported inside an actor at all yet, "Inside an actor", above.)</li>
-	<li><b>Timeouts and cancellation.</b> A paused method waits until its reply comes. There is no
-		time limit on the wait, and no way to cancel a paused method.</li>
+	<li><b>Timeouts and cancellation.</b> A paused behaviour waits until its reply comes. There
+		is no time limit on the wait, and no way to cancel a paused behaviour.</li>
 	</ul>
-	<p>Most of them, where <span class="pre">compute</span> is a plain function and
+	<p>Three of them, where <span class="pre">compute</span> is a plain function and
 		<span class="pre">Cell</span> a struct:</p>
 <pre>
 actor Waiter {
   clock Clock;
   last u64;
 
-  pub fn onFunction(self) {
+  pub async do onFunction(self) {
     last = await compute();       // not built: compute is a function
   }
 
-  pub fn onNothing(self) {
-    await clock.tick();           // not built: tick returns nothing
-  }
-
-  fn helper(self) u64 {
-    await clock.now();            // not built: helper is not a message
-  }
-
-  pub fn caller(self) {
-    last = await clock.now();
-  }
-
-  pub fn callsCaller(self) {
-    self.caller();                // not built: caller holds an 'await'
-  }
-
-  pub fn indexed(self) {
+  pub async do indexed(self) {
     imm items = [1u64, 2u64, 3u64];
     last = items[await clock.now()];  // not built: in a place's index
   }
 
-  pub fn traced(self) {
+  pub async do traced(self) {
     imm g = new Gc[mut, Cell](1u64);
     imm t = await clock.now();    // not built: g would wait for the reply
     last = t + g.n;

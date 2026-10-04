@@ -24,7 +24,6 @@ AwaitNode *newAwaitNode() {
     node->seamno = 0;
     node->genseam = NULL;
     node->message = NULL;
-    node->voidmessage = 0;
     node->walked = 0;
     return node;
 }
@@ -57,7 +56,6 @@ INode *cloneAwaitNode(CloneState *cstate, AwaitNode *node) {
     newnode->seamno = 0;
     newnode->genseam = NULL;
     newnode->message = NULL;
-    newnode->voidmessage = 0;
     newnode->walked = 0;
     return (INode *)newnode;
 }
@@ -74,12 +72,12 @@ void awaitNameRes(NameResState *pstate, AwaitNode *node) {
     inodeNameRes(pstate, &node->exp);
 }
 
-// Where may 'await' stand? In a method of an actor's state: a seam is a return
-// to the actor's dispatcher, which runs only its methods. An actor's 'init'
-// runs on the thread making the actor, before any dispatcher has it, and its
-// 'final' as it dies; neither is a method the dispatcher runs
-// (refconccomm.html: an actor's body is fields, an init, methods, a final).
-static char *awaitNotPlaced(FnDclNode *fn) {
+// Where may 'selfactor' stand, and a behaviour be sent through 'self'? In a
+// method of an actor's state, where the state is in the actor. An actor's
+// 'init' runs on the thread making the actor, before the actor exists, and
+// its 'final' as it dies (refconccomm.html: an actor's body is fields, an
+// init, behaviours, synchronous methods, a final).
+static char *actorMethodNotPlaced(FnDclNode *fn) {
     if (fn == NULL)
         return "outside any function";
     if (!(fn->flags & FlagMethFld) || !actorIsState(inodeGetOwner((INode *)fn)))
@@ -91,13 +89,39 @@ static char *awaitNotPlaced(FnDclNode *fn) {
     return NULL;
 }
 
-// What is awaited is a message to an actor -- a call of a handle's method
-// that sends one -- when the message returns a value: it is sent awaited.
+// Where may 'await' stand? In a behaviour, a method declared 'async do': a
+// seam is a return to the actor's dispatcher, which runs a behaviour as a
+// message. Every 'fn' of an actor -- its 'init', its 'final', a helper -- is
+// synchronous, run inside whatever called it, which a seam cannot cut. NULL
+// where it may, and otherwise why not, written into 'buf'
+static char *awaitNotPlaced(FnDclNode *fn, char *buf, size_t size) {
+    if (fn == NULL)
+        return "This one is outside any function.";
+    if (actorOfBehaviour(fn))
+        return NULL;
+    ActorInfo *info = (fn->flags & FlagMethFld) ? actorOfState(inodeGetOwner((INode *)fn)) : NULL;
+    if (info == NULL)
+        return "This one is in a function that is not an actor's behaviour.";
+    Name *actorname = info->handle->namesym;
+    if (fn->namesym == initName || fn->overloadsym == initName)
+        snprintf(buf, size, "This one is in actor %s's initializer, which runs on the thread making the actor, before any dispatcher has it.",
+            &actorname->namestr);
+    else if (fn->namesym == finalName)
+        snprintf(buf, size, "This one is in actor %s's finalizer, which runs as the actor dies.", &actorname->namestr);
+    else
+        snprintf(buf, size, "This one is in %s, a 'fn' of actor %s's: synchronous, run inside the method that calls it, which cannot pause partway through a call. An 'await' belongs at the top of a behaviour: await there, and push the synchronous work down, onto a helper like this one or a type the actor owns, to run between the awaits.",
+            &fn->namesym->namestr, &actorname->namestr);
+    return buf;
+}
+
+// What is awaited is a behaviour of an actor -- a call of a handle's method
+// that sends one -- when the behaviour returns a value: it is sent awaited.
 // The call is made the handle's second method for it, which takes the
 // reply's envelope as well, and the envelope is the call's last argument;
-// the 'await''s value is what the message returns. Its signature, as the
+// the 'await''s value is what the behaviour returns. Its signature, as the
 // author wrote it, is unchanged: the envelope is in the message, not in any
-// parameter list
+// parameter list. A behaviour that returns nothing sends no reply: whether
+// one is sent is the behaviour's signature to say, never the caller's
 static void awaitMessage(TypeCheckState *pstate, AwaitNode *node) {
     // Checked again: the call is the awaited one already
     if (node->message) {
@@ -116,10 +140,11 @@ static void awaitMessage(TypeCheckState *pstate, AwaitNode *node) {
     ActorMessage *msg = actorMessageOfSend((FnDclNode *)dcl, &callee);
     if (msg == NULL)
         return;
-    // Nothing comes back from a message that returns nothing: such an 'await'
-    // is reported unbuilt once the seam's rules are checked
     if (msg->ask == NULL) {
-        node->voidmessage = 1;
+        errorMsgNode((INode *)node, ErrorAwaitVoid,
+            "'await' waits for a behaviour's reply, and %s returns nothing, so it sends none: a behaviour with no return type owes its caller nothing. If the caller needs to know %s finished, declare a return type -- a status saying whether it worked -- and await that.",
+            &msg->method->namesym->namestr, &msg->method->namesym->namestr);
+        node->vtype = errorType;
         return;
     }
     ActorInfo *awaiter = actorOfState(inodeGetOwner((INode *)pstate->fn));
@@ -153,25 +178,30 @@ static void awaitMessage(TypeCheckState *pstate, AwaitNode *node) {
 
 // Type check await
 void awaitTypeCheck(TypeCheckState *pstate, AwaitNode *node, INode *expectType) {
-    char *where = awaitNotPlaced(pstate->fn);
+    char buf[600];
+    char *where = awaitNotPlaced(pstate->fn, buf, sizeof(buf));
     if (where)
         errorMsgNode((INode *)node, ErrorAwaitPlace,
-            "'await' stands only in an actor's method, where the method is cut and returns to the actor's dispatcher to wait; this one is %s.",
+            "'await' stands only in an actor's behaviour, declared 'async do', where the behaviour is cut and returns to the actor's dispatcher to wait. %s",
             where);
     if (!iexpTypeCheckAny(pstate, &node->exp))
         return;
+    // Refused, it has no value, which is not reported again where it is used
+    if (where) {
+        node->vtype = errorType;
+        return;
+    }
     node->vtype = ((IExpNode *)node->exp)->vtype;
-    if (where == NULL)
-        awaitMessage(pstate, node);
+    awaitMessage(pstate, node);
 }
 
 // 'selfactor' is the actor's own handle: another owner of its mailbox, made
 // from the state by the function the actor's declaration generated for it.
-// It stands where 'await' may: an actor's 'init' runs before the actor
-// exists, and its 'final' as it dies, when nothing may own it again
+// It stands in any method of the actor's but two: its 'init' runs before the
+// actor exists, and its 'final' as it dies, when nothing may own it again
 void selfActorTypeCheck(TypeCheckState *pstate, INode **nodep) {
     INode *node = *nodep;
-    char *where = awaitNotPlaced(pstate->fn);
+    char *where = actorMethodNotPlaced(pstate->fn);
     if (where) {
         errorMsgNode(node, ErrorSelfActorPlace,
             "'selfactor', the actor's own handle, stands only in an actor's method; this one is %s.", where);
@@ -197,20 +227,60 @@ void selfActorTypeCheck(TypeCheckState *pstate, INode **nodep) {
     inodeTypeCheckAny(pstate, nodep);
 }
 
-// A method of an actor holding an 'await' runs only as its dispatcher calls
-// it, so that each seam is a return to the dispatcher. Called from any other
-// method, its seams would cut the caller too, at a call that shows nothing of
-// it. Whether a call may stand for a seam is not settled, so it is not built
-void awaitCallCheck(TypeCheckState *pstate, INode *call, FnDclNode *callee) {
-    // A method that is not a message has its 'await's refused where they stand
-    if (!(callee->flags & FlagMethFld) || !(callee->flags & FlagPub))
-        return;
-    ActorInfo *info = actorOfState(inodeGetOwner((INode *)callee));
-    if (info == NULL || !actorMethodAwaits(info, callee) || pstate->fn == info->dispatch)
-        return;
-    errorMsgNode(call, ErrorUnbuiltAwait,
-        "A call of %s, a method of actor %s holding an 'await', is not built: only the actor's dispatcher calls it, since each of its seams returns to the dispatcher, and a call here would cut this method too, where nothing shows it.",
-        &callee->namesym->namestr, &info->handle->namesym->namestr);
+// A behaviour runs only as its dispatcher calls it, for a message: so
+// 'self.m()', m one of the actor's behaviours, written in any of its other
+// methods, is a send to the actor itself, as 'selfactor.m()' is. The caller
+// goes on at once, with no seam; m runs later, when the actor takes the
+// message up. The receiver becomes the actor's handle, made from the state
+// by the function 'selfactor' is (Counter.self'), and the call then selects
+// the handle's method sending m. Only the method's own 'self' is the state of
+// an actor the runtime holds: a state made with 'new Self(...)' in a method
+// is in no actor, so a behaviour reached through it is refused, as it is in
+// the actor's 'init' and 'final', where 'selfactor' is.
+int selfActorSend(TypeCheckState *pstate, FnCallNode *call, INode *objdereftype) {
+    ActorInfo *info = actorOfState(objdereftype);
+    if (info == NULL || pstate->fn == info->dispatch
+        || call->methfld == NULL || !isNameUseNode(call->methfld))
+        return 0;
+    Name *methsym = ((NameUseNode *)call->methfld)->namesym;
+    if (actorMessageNamed(info, methsym) == NULL)
+        return 0;
+    Name *actorname = info->handle->namesym;
+    char *where = actorMethodNotPlaced(pstate->fn);
+    if (where == NULL && actorOfState(inodeGetOwner((INode *)pstate->fn)) != info)
+        where = "in a method of another actor";
+    if (where) {
+        errorMsgNode((INode *)call, ErrorBehaviourSend,
+            "%s is a behaviour of actor %s's, so calling it sends it to the actor, as a message; this call is %s, where there is no actor to send it to.",
+            &methsym->namestr, &actorname->namestr, where);
+        call->vtype = errorType;
+        return -1;
+    }
+    VarDclNode *self = (VarDclNode *)nodesGet(((FnSigNode *)pstate->fn->vtype)->parms, 0);
+    INode *obj = call->objfn;
+    if (!isNameUseNode(obj) || ((NameUseNode *)obj)->dclnode != (INode *)self) {
+        errorMsgNode((INode *)call, ErrorBehaviourSend,
+            "%s is a behaviour of actor %s's, so calling it sends it to the actor whose state it is reached through, and only this method's own 'self' is the state of an actor the runtime holds. Send it through 'self', 'selfactor' or another of the actor's handles.",
+            &methsym->namestr, &actorname->namestr);
+        call->vtype = errorType;
+        return -1;
+    }
+    if (info->selffn == NULL) {
+        errorUnreachable((INode *)call, "a behaviour whose actor generated no function for its handle");
+        call->vtype = errorType;
+        return -1;
+    }
+    NameUseNode *selfuse = newNameUseNode(selfName);
+    inodeLexCopy((INode *)selfuse, obj);
+    selfuse->dclnode = (INode *)self;
+    NameUseNode *fnuse = newNameUseNode(info->selffn->namesym);
+    inodeLexCopy((INode *)fnuse, obj);
+    fnuse->dclnode = (INode *)info->selffn;
+    FnCallNode *handle = newFnCallLower(obj, (INode *)fnuse, 1);
+    nodesAdd(&handle->args, (INode *)selfuse);
+    call->objfn = (INode *)handle;
+    inodeTypeCheckAny(pstate, &call->objfn);
+    return 1;
 }
 
 // *********************
@@ -258,10 +328,7 @@ void awaitReportUnbuilt(Nodes *awaits) {
     uint32_t cnt;
     for (nodesFor(awaits, cnt, nodesp)) {
         AwaitNode *node = (AwaitNode *)*nodesp;
-        // A message that returns nothing has no reply to wait for
-        char *unbuilt = node->voidmessage
-            ? "'await' on a message that returns nothing is not built, so nothing is generated for it."
-            : "'await' is not built yet, so nothing is generated for it.";
+        char *unbuilt = "'await' is not built yet, so nothing is generated for it.";
         if (!node->walked) {
             errorMsgNode((INode *)node, ErrorUnbuiltAwait, "%s No path reaches this seam.", unbuilt);
             continue;
@@ -346,12 +413,11 @@ static void awaitSplitAdd(FnDclNode *fn, Nodes *awaits) {
     splitawaits[splitcnt++] = awaits;
 }
 
-// A message: a 'pub' method of an actor's state, which its dispatcher runs for
-// a message sent to it. Whether an 'await' in any other method of the actor
-// cuts its callers, or is refused, is not settled, so only a message is split
+// A behaviour: a method of an actor's state declared 'async do', which its
+// dispatcher runs for a message sent to it. An 'await' anywhere else was
+// refused where it stands (awaitTypeCheck), so only a behaviour is split
 static int awaitIsMessage(FnDclNode *fn) {
-    return (fn->flags & FlagMethFld) && (fn->flags & FlagPub)
-        && actorIsState(inodeGetOwner((INode *)fn));
+    return actorOfBehaviour(fn) != NULL;
 }
 
 static int awaitWalk(INode *node, int check, uint32_t *bad);
@@ -628,13 +694,13 @@ void awaitSplitOrReport(FnDclNode *fn, Nodes *awaits) {
     }
     INode **nodesp;
     uint32_t cnt;
-    // What is awaited is a message returning a value, whose reply calls the
+    // What is awaited is a behaviour returning a value, whose reply calls the
     // second half; any other seam is built only under '--await-direct', for
-    // tests, and a message that returns nothing not even then
+    // tests
     Nodes *unbuilt = NULL;
     for (nodesFor(awaits, cnt, nodesp)) {
         AwaitNode *node = (AwaitNode *)*nodesp;
-        if (node->message == NULL && (!awaitDirect || node->voidmessage)) {
+        if (node->message == NULL && !awaitDirect) {
             if (unbuilt == NULL)
                 unbuilt = newNodes(4);
             nodesAdd(&unbuilt, (INode *)node);

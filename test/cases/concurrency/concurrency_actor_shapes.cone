@@ -1,0 +1,66 @@
+// A behaviour's two independent bits: whether it declares a return type
+// decides whether a reply is sent, and whether it holds an 'await' decides
+// whether it is cut at a seam. The four shapes, each built and run:
+//
+// - fire and forget: Store.add returns nothing and awaits nothing. It runs
+//   once and ends, and its synchronous helper, Store.plus, is an ordinary
+//   call that sees the state's fields;
+// - a cheap query: Store.count returns a value and awaits nothing, and
+//   replies at the end of its one run;
+// - awaits, owes nobody: Client.run awaits replies and returns nothing;
+// - the full handshake: Client.report awaits and returns a value, awaited in
+//   turn by run, through 'self'.
+//
+// Each sender's messages to one actor are handled in the order sent, so both
+// adds are done before the count: count 12, report 120, every run.
+//
+// The reference manual shows the two actors (doc/reference/refconccomm.html,
+// "Four shapes"), copied verbatim from between the "manual:" lines.
+
+mod concurrency_actor_shapes;
+
+import stdio use *;
+import actors;
+
+fn say(s &[]u8, n u64) {printStr(s); printStr(" "); printUInt(n); printStr("\n");}
+
+// manual: shapes
+actor Store {
+  total u64;
+
+  pub async do add(self, k u64) {           // fire and forget
+    total = self.plus(k);
+  }
+
+  pub async do count(self) u64 {total;}     // a cheap query
+
+  fn plus(self &, k u64) u64 {total + k;}   // synchronous: an ordinary call
+}
+
+actor Client {
+  store Store;
+
+  pub async do run(self) {                  // awaits, owes nobody
+    store.add(5u64);
+    store.add(7u64);
+    imm c = await store.count();
+    say("count", c);
+    imm r = await self.report();
+    say("report", r);
+  }
+
+  pub async do report(self) u64 {           // the full handshake
+    imm c = await store.count();
+    c * 10u64;
+  }
+}
+// manual: end
+
+fn main() {
+  initAll();
+  {
+    imm c = new Client(new Store(0u64));
+    c.run();
+  }
+  finalAll();
+}

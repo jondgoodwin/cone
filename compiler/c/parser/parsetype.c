@@ -970,8 +970,24 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
                         "A generic type's methods are instantiated with it where it is used, so they are defined in no one place for 'extern' to name.");
                 externflag = FlagExtern;
             }
-            if (lexIsToken(FnToken)) {
+            // 'async do': an actor's behaviour, read as a method and noted as
+            // one (parseactor.c). Anywhere else, and either word alone, it is
+            // reported and the declaration passed over
+            int behaviour = 0;
+            if (lexIsToken(AsyncToken) || lexIsToken(DoToken)) {
+                char where[300];
+                if (parse->dcltexts == NULL)
+                    snprintf(where, sizeof(where), "the body of %s %s",
+                        isenum ? "enum" : (strnode->flags & TraitType) ? "trait" : "struct",
+                        &strnode->namesym->namestr);
+                behaviour = parseBehaviourWords(parse->dcltexts ? NULL : where);
+                if (!behaviour)
+                    continue;
+            }
+            if (lexIsToken(FnToken) || behaviour) {
                 FnDclNode *fn = (FnDclNode*)parseFn(parse, externflag ? ParseMayName | ParseMaySig : methflags);
+                if (behaviour)
+                    nodesAdd(&parse->dcltexts->behaviours, (INode*)fn);
                 fn->flags |= externflag;
                 parseExternFnCheck(fn);
                 // A function whose name was missing is reported and not added:
