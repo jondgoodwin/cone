@@ -490,11 +490,12 @@ run from:
 
 ```
 imm spirv = readSpirv("gpusample.spv");
-mut kernel = Kernel.make(&device, spirv.view(), "shade", &[READ, READ, READ_WRITE, READ_WRITE]);
+mut kernel = Kernel.make(&device, spirv.view(), "shade", &[READ, READ, READ_WRITE]);
 ```
 
 A kernel binds its buffers in the order of its parameters, and its error
-buffer after them (the *GPU Compute* page). `packages/gpusample` is the
+buffer after them (the *GPU Compute* page), which gpuwork gives each dispatch
+and reads itself. `packages/gpusample` is the
 sample: a kernel over `geomath`, and a test, `tests/dispatch.cone`, that loads
 it, runs it on the GPU and as its twin on the CPU, and compares the two.
 

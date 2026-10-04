@@ -3,10 +3,14 @@
 // One of a dispatch's buffers as its twin sees it: 32-bit words, read as
 // u32s, i32s or f32s (their bits), or as one struct, as the GPU's kernel
 // binds the same buffer. Plain data, copied freely: a view of words the twin
-// runner owns, valid for the run, the CPU's counterpart of a binding.
+// runner owns, valid for the run, the CPU's counterpart of a binding. Its
+// first two fields are laid out as a slice is (a pointer, then a count of
+// elements), which a direct twin's slice parameter is read from.
 pub struct Words {
   ptr *u32;
-  pub len usize;
+  elems usize;                 // a slice binding's elements (its words for a struct)
+  pub len usize;               // its words
+  slice Bool;                  // bound as a slice, as the kernel's SPIR-V says
 
   pub fn u32s(self) &[]u32 { mem.sliceFromParts[u32](ptr, len); }
   pub fn u32sMut(self) &[]mut u32 { mem.sliceFromPartsMut[u32](ptr, len); }
@@ -23,8 +27,12 @@ pub struct Words {
 // 'buffers[i]', which it reads and writes in place) as a dispatch of 'x' by
 // 'y' by 'z' workgroups would: once for each invocation, workgroup by
 // workgroup (x fastest), and within one, invocation by invocation (x
-// fastest), one thread, in that fixed order. False, and nothing run, if the
-// kernel has no twin or the buffers are not one for each binding.
+// fastest), one thread, in that fixed order. A direct twin ('setTwin1' to
+// 'setTwin7') is given each slice binding as a slice of as many elements as
+// the buffer holds, as the GPU's kernel sees it, and each struct binding's
+// struct. False, and nothing run, if the kernel has no twin, the buffers are
+// not one for each binding, or a direct twin's struct is larger than its
+// buffer.
 pub fn runTwin(kernel &Kernel, buffers &mut List[List[u32]], x u32, y u32 = 1u32, z u32 = 1u32) Bool {
   if !kernel.hasTwin or buffers.len() != usize.from(kernel.bindings) {
     fail("runTwin: the kernel has no twin, or the buffers are not one for each binding");
@@ -36,11 +44,20 @@ pub fn runTwin(kernel &Kernel, buffers &mut List[List[u32]], x u32, y u32 = 1u32
     imm inner = &mut buffers[b];
     imm v = inner.viewMut();
     imm p = if v.len > 0usize { &mut v[0usize] as *u32; } else { null as *u32; };
-    words.push(new Words(p, v.len));
+    imm slice = kernel.hasDirect and kernel.shapes[b] == SHAPE_SLICE;
+    imm elems = if slice { v.len * 4usize / usize.from(kernel.strides[b]); } else { v.len; };
+    if kernel.hasDirect and !slice and v.len * 4usize < usize.from(kernel.needs[b]) {
+      fail("runTwin: a buffer is smaller than the struct its direct twin reads from it");
+      return false;
+    }
+    words.push(new Words(p, elems, v.len, slice));
     b = b + 1usize;
   }
   imm view = words.view();
   imm twin = kernel.twin;
+  imm direct = kernel.direct;
+  imm call = kernel.call;
+  imm isDirect = kernel.hasDirect;
   imm wx = kernel.workgroup[0usize];
   imm wy = kernel.workgroup[1usize];
   imm wz = kernel.workgroup[2usize];
@@ -58,7 +75,7 @@ pub fn runTwin(kernel &Kernel, buffers &mut List[List[u32]], x u32, y u32 = 1u32
             while lx < wx {
               imm inv = new Invocation([gx * wx + lx, gy * wy + ly, gz * wz + lz], [lx, ly, lz], [gx, gy, gz],
                 lx + wx * (ly + wy * lz), [x, y, z]);
-              twin(inv, view);
+              if isDirect { call(direct, inv, view); } else { twin(inv, view); }
               lx = lx + 1u32;
             }
             ly = ly + 1u32;

@@ -6,13 +6,13 @@
 // its buffers back. It is built on the gpu package (devices, buffers,
 // compute pipelines, dispatch) and nothing of Vulkan's appears in it.
 //
-//   mut kernel = Kernel.make(&device, &BAKE_SPIRV, "bakeMain", &[READ, READ_WRITE]);
-//   kernel.setTwin(&bakeTwin);                     // its CPU version
+//   mut kernel = Kernel.make(&device, &BAKE_SPIRV, "bake", &[READ, READ_WRITE]);
+//   kernel.setTwin2(&bake);                        // its CPU version: the same Cone function
 //   mut works = Works.make();
 //   mut job = Job.make(&mut device);
-//   imm params = job.give(uploadValue(&mut device, &bake));   // buffers moved in
+//   imm params = job.give(uploadValue(&mut device, &settings));   // buffers moved in
 //   imm out = job.give(zeroed(&mut device, 4096usize));
-//   job.dispatch(&device, &kernel, &[params, out], 16u32);
+//   job.dispatch(&mut device, &kernel, &[params, out], 16u32);
 //   imm back = job.readback(&mut device, out);     // explicit: the CPU reads it
 //   imm ticket = works.submit(&mut device, job, Target.Here[7u64]);
 //   ...
@@ -24,10 +24,11 @@
 //   //   works.poll(&device, &mut done);             // its Completion, the buffers back
 //   imm words = done[0usize].words(back);          // the GPU's results
 //   mut kept = done[0usize].take(out);             // still on the GPU: the next job's input
+//   // a Cone kernel's failure: done[0usize].ok false, done[0usize].failures[0usize]
 //
 //   Kernel.make(device, spirv, entryPoint, access)   a kernel, made once  (KERNELS)
-//   readSpirv(file)  kernel.setTwin(f)  kernel.isValid()  .bindings .workgroup .hasTwin
-//   READ  READ_WRITE  MAX_KERNEL_BINDINGS
+//   readSpirv(file)  kernel.isValid()  .bindings .workgroup .hasTwin .isCone .name
+//   kernel.fileName(id)  READ  READ_WRITE  MAX_KERNEL_BINDINGS  MAX_CONE_KERNEL_BINDINGS
 //   upload(device, words)  uploadValue(device, &value)  zeroed(device, n)  (BUFFERS)
 //   wordsOf(buffer)
 //   Job.make(device)  job.give(buffer)  job.dispatch(device, kernel, slots, x, y, z)  (JOBS)
@@ -37,9 +38,14 @@
 //   works.inFlight()
 //   Target.Loop[token, completer]  onLoop(lp, to, token)          (DELIVERY INTO AN IOCORE LOOP)
 //   onLoopIn(lp, to, group, deadline, token)  ERROR_JOB_REFUSED  ERROR_JOB_LOST
+//   ERROR_KERNEL_FAILED
 //   Target.Here[token]  Ticket  Completion: c.ticket c.token c.ok c.buffers c.frame
-//     c.submitted c.completed, c.take(slot) c.words(slot) c.count()       (ANSWERS)
-//   Invocation  Words  runTwin(kernel, buffers, x, y, z)                  (THE TWIN)
+//     c.submitted c.completed c.failures, c.take(slot) c.words(slot) c.count()  (ANSWERS)
+//   KernelFailure: .kernel .dispatch .count .kind .fileId .file .line         (FAILURES ON THE GPU)
+//     .invocation .index, f.kindName() f.message()  kernelFailures()
+//   FAILED_INDEX  FAILED_RANGE  FAILED_PANIC  FAILED_ALLOCATION  ERROR_BUFFER_WORDS
+//   kernel.setTwin1(&f) ... kernel.setTwin7(&f)  kernel.setTwin(f)        (THE TWIN)
+//   Invocation  Words  runTwin(kernel, buffers, x, y, z)
 //   checkParity(device, kernel, buffers, x, y, z): Parity
 //   refusals()
 //
@@ -50,12 +56,19 @@
 // read-only storage buffer: there are no push constants, which WebGPU lacks)
 // or READ_WRITE (a slice it writes, '&[]mut T'); at most 8. A buffer holds
 // 32-bit numbers (u32, i32, f32) and structs and fixed arrays of them. Its
-// workgroup's size is read from the SPIR-V. These are the rules of the
-// compute entry points the Cone compiler will have
-// ('fn @compute(64) bake(inv Invocation, parts &[]Part, out &[]mut f32)');
-// until it has them, kernels come as SPIR-V from elsewhere (the tests'
-// fixtures are Slang, compiled by tools/shaders/; gpuwork itself depends on
-// no shading language). A Cone package's kernels are built by Congo into
+// workgroup's size is read from the SPIR-V. These are the rules of the Cone
+// compiler's compute entry points
+// ('fn @compute(64) bake(inv Invocation, parts &[]Part, out &[]mut f32)',
+// compiled with 'conec --triple=spirv1.6-unknown-vulkan1.3'; the Invocation
+// is not a binding, and may stand anywhere among the parameters), and a
+// kernel from elsewhere that keeps them is loaded the same way (the tests
+// have Slang fixtures, compiled by tools/shaders/, beside Cone kernels;
+// gpuwork itself depends on no shading language). A kernel compiled from
+// Cone is known by its module's "cone.file <id> <name>" strings (an
+// OpSourceExtension for each source file, which conec always writes): it
+// has an error buffer, bound after its buffers (FAILURES ON THE GPU), so it
+// binds at most 7 buffers (MAX_CONE_KERNEL_BINDINGS), and 'Kernel.make'
+// refuses one of 8. A Cone package's kernels are built by Congo into
 // <package>.spv, which it copies beside every program that imports the
 // package; 'readSpirv("<package>.spv")' reads it from the program's own
 // folder (tools/congo/README.md, "Kernels for the GPU").
@@ -83,8 +96,9 @@
 // was recorded in.
 //
 // TARGETS AND ANSWERS. Every job submitted gets exactly one Completion: its
-// ticket, its token, whether it ran ('ok'), its buffers back, and when it was
-// submitted and when its completion was seen. Where it goes is its Target,
+// ticket, its token, whether it ran and no Cone kernel in it failed ('ok'),
+// its buffers back, when it was submitted and when its completion was seen,
+// and its kernels' failures on the GPU. Where it goes is its Target,
 // as in iocore: 'Target.Here[token]' delivers it to this Works' own 'poll'
 // (or 'waitFor', 'waitAll'). 'poll' never waits: a frame loop calls it once a
 // frame and takes what has finished. 'waitFor' blocks until one job is done,
@@ -105,8 +119,9 @@
 // target (Here, Post, Chan, Once or Status), waking a loop asleep in poll:
 // a frame loop sleeps in iocore's poll and learns of the GPU's work as of
 // any I/O. The answer is Done with the job's ticket number ('c.n'); Failed
-// with ERROR_JOB_REFUSED for a job that did not run, or ERROR_JOB_LOST for
-// one whose fence could not be waited for; and Cancelled for a job whose
+// with ERROR_JOB_REFUSED for a job that did not run, ERROR_JOB_LOST for
+// one whose fence could not be waited for, or ERROR_KERNEL_FAILED for one in
+// which a Cone kernel failed on the GPU; and Cancelled for a job whose
 // cancel was asked (lp.cancel, a Request, its group) while it ran. A job on
 // the GPU cannot be stopped, so a cancel never makes the answer come early:
 // it comes when the GPU has finished, saying the cancel was asked. A job
@@ -139,10 +154,47 @@
 // measures an external operation ended on another thread, to a loop asleep
 // in poll, at 5 us p50).
 //
+// FAILURES ON THE GPU. A GPU has no program to end: in a Cone kernel, a
+// failed index or range check, a panic, an assert, an unreachable or a todo
+// records what failed in the kernel's error buffer and stops that
+// invocation, the others going on. gpuwork gives each dispatch of a Cone
+// kernel an error buffer of its own (8 words, zeroed before the dispatch,
+// bound after the kernel's buffers), copies it after the dispatch into a
+// buffer the CPU maps, and reads it when the job is complete. If word 0, the
+// count of failed invocations, is not 0, the dispatch failed: its failure is
+// a KernelFailure in the job's Completion ('c.failures', one for each
+// failing dispatch, in the order dispatched), the Completion is not ok, and
+// the failure is printed to stderr and counted ('kernelFailures()'):
+//
+//   gpuwork: kernel 'oob' (dispatch 0) failed: index out of bounds at
+//     kernels.cone:104, invocation (37, 0, 0), index 165; 1 invocation failed
+//
+// naming the kernel, the dispatch's place in its job, what failed (its
+// 'kind', word 1), the source file (word 2, a file id, named by the
+// module's "cone.file" strings) and line (word 3), the first failed
+// invocation's globalId (words 4 to 6), the index out of bounds or the
+// range's end (word 7), and how many invocations failed. A Loop job in
+// which a kernel failed answers its iocore operation Failed, with
+// ERROR_KERNEL_FAILED. A failure on the GPU is reported, not raised: the
+// program goes on, its job's buffers back, and decides what the failure
+// means (a CPU panic is one thing it may do).
+//
 // THE TWIN. Every kernel can have a CPU version, its twin: a function called
-// once for each Invocation of a dispatch, with the dispatch's buffers as
-// Words (32-bit words, read as u32s, i32s, f32s or one struct). A twin is
-// written as an adapter from Words to the kernel's own parameters, so the
+// once for each Invocation of a dispatch, with the dispatch's buffers. A Cone
+// kernel's own function is its twin, compiled for the CPU, where a compute
+// entry point is an ordinary function: 'kernel.setTwin3(&bake)' for
+// 'fn @compute(64) bake(inv Invocation, s Settings, parts &[]Part,
+// out &[]mut f32)', one of 'setTwin1' to 'setTwin7' for each count of
+// buffers, the Invocation first. Each slice parameter is given its buffer as
+// a slice of as many elements as the buffer holds (its element's size read
+// from the SPIR-V's ArrayStride), as on the GPU, and each struct parameter
+// its buffer's first bytes (a buffer too small for it refuses the run); a
+// parameter that is a struct where the SPIR-V binds a slice is refused (only
+// sizes can be compared, so a slice where it binds a 16-byte struct is not).
+// A kernel from
+// elsewhere has a twin written as an adapter, 'setTwin(f)', given the
+// buffers as Words (32-bit words, read as u32s, i32s, f32s or one struct)
+// and calling a Cone function written as the kernel is. Either way the
 // kernel's body is one Cone function both sides call: a loop over
 // invocations is how the CPU runs a kernel. 'runTwin' runs it over buffers
 // of words, invocation by invocation in a fixed order, one thread.
@@ -155,7 +207,8 @@
 // local index (x fastest) and the group count.
 //
 // REFUSALS. A request gpuwork cannot honour (a kernel with more than 8
-// bindings, a dispatch whose slots do not match its kernel's bindings or
+// bindings, or a Cone kernel with more than 7, a direct twin that does not
+// fit its kernel, a dispatch whose slots do not match its kernel's bindings or
 // name a buffer twice, which WebGPU refuses, a readback of a buffer that
 // cannot be copied) is printed to stderr ("gpuwork: ...") and counted
 // ('refusals()'); a job something was refused in is not run, and completes
@@ -167,13 +220,19 @@
 // an actor; a Here job that completes without its frame ending (a Loop job
 // does); reusing bind groups across
 // jobs; GPU memory as a region; textures; and whether a read-only input is
-// moved into a job or shared immutably (today every buffer is moved).
+// moved into a job or shared immutably (today every buffer is moved); a
+// direct twin whose Invocation is not its first parameter; building a
+// package's Cone kernels (the tests' kernels.cone is compiled by
+// tests/kernels.py until congo builds a GPU package's kernels).
 //
 // Its files are one module, and only this one, the root, imports:
 //
-//   gpuwork.cone  refusals
-//   kernel.cone   Kernel, and its workgroup read from the SPIR-V; readSpirv
-//   job.cone      buffers made and read back, and Job
+//   gpuwork.cone  refusals, kernelFailures
+//   kernel.cone   Kernel, its direct twin, and what is read from the SPIR-V:
+//                 its workgroup, its bindings' shapes, its Cone source files;
+//                 readSpirv
+//   job.cone      buffers made and read back, Job, and a Cone kernel's error
+//                 buffer and KernelFailure
 //   works.cone    Ticket, Target, Completion and Works
 //   twin.cone     Words, runTwin, checkParity and Parity
 
@@ -201,9 +260,26 @@ mut refusalCount = 0u32;
 // gpu's 'failures()' counts the layer beneath
 pub fn refusals() u32 { refusalCount; }
 
+mut kernelFailureCount = 0u32;
+
+// How many Cone kernels' dispatches have failed on the GPU (each also
+// printed to stderr, and in its job's Completion as a KernelFailure)
+pub fn kernelFailures() u32 { kernelFailureCount; }
+
 // Report a refusal, and count it
 fn fail(msg &[]u8) {
   refusalCount = refusalCount + 1u32;
+  say(msg);
+}
+
+// Report a kernel's failure on the GPU, and count it
+fn failKernel(msg &[]u8) {
+  kernelFailureCount = kernelFailureCount + 1u32;
+  say(msg);
+}
+
+// Print a line to stderr, "gpuwork: " first
+fn say(msg &[]u8) {
   mut m = String.from("gpuwork: ");
   m <- msg;
   m.appendByte('\n');

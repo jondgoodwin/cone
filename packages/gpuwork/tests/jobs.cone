@@ -65,7 +65,7 @@ struct Bake {
   size u32;
 }
 
-// The bake, as a Cone compute entry point will declare it
+// The bake, as a Cone compute entry point declares it
 fn bake(inv Invocation, b Bake, out &[]mut f32, hashes &[]mut u32) {
   imm x = inv.globalId[0usize];
   imm y = inv.globalId[1usize];
@@ -176,8 +176,8 @@ fn main() i32 {
   imm hashes = job.give(zeroed(&mut device, VOXELS));
   imm scrambled = job.give(zeroed(&mut device, WORDS));
   expectUInt(u64.from(baked), 1u64, "slots numbered in the order given");
-  expect(job.dispatch(&device, &bakeKernel, &[params, baked, hashes], 4u32, 4u32, 4u32), "the bake dispatched");
-  expect(job.dispatch(&device, &scrambleKernel, &[baked, scrambled], 256u32), "the scramble dispatched after it");
+  expect(job.dispatch(&mut device, &bakeKernel, &[params, baked, hashes], 4u32, 4u32, 4u32), "the bake dispatched");
+  expect(job.dispatch(&mut device, &scrambleKernel, &[baked, scrambled], 256u32), "the scramble dispatched after it");
   imm back = job.readback(&mut device, scrambled);
   expectUInt(u64.from(back), 4u64, "the readback's buffer, a fifth slot");
   imm first = works.submit(&mut device, job, Target.Here[11u64]);
@@ -213,7 +213,7 @@ fn main() i32 {
   mut second = Job.make(&mut device);
   imm input = second.give(onGpu);
   imm output = second.give(zeroed(&mut device, WORDS));
-  second.dispatch(&device, &scrambleKernel, &[input, output], 256u32);
+  second.dispatch(&mut device, &scrambleKernel, &[input, output], 256u32);
   imm back2 = second.readback(&mut device, output);
   imm ticket2 = works.submit(&mut device, second, Target.Here[22u64]);
   expectUInt(u64.from(works.waitFor(&mut device, ticket2, &mut got)), 1u64, "the second job, waited for");
@@ -227,7 +227,7 @@ fn main() i32 {
   // ---- 3. A refused job ----
   mut refused = Job.make(&mut device);
   imm only = refused.give(zeroed(&mut device, 4usize));
-  expectBool(refused.dispatch(&device, &bakeKernel, &[only], 1u32), false, "one slot for three bindings refused");
+  expectBool(refused.dispatch(&mut device, &bakeKernel, &[only], 1u32), false, "one slot for three bindings refused");
   expectUInt(u64.from(refusals()), 1u64, "one refusal");
   imm ticket3 = works.submit(&mut device, refused, Target.Here[33u64]);
   expectUInt(u64.from(works.poll(&device, &mut got)), 0u64, "a refused job waits for its frame, as any job");
@@ -253,13 +253,13 @@ fn main() i32 {
   mut a = Job.make(&mut device);
   imm aIn = a.give(upload(&mut device, small.view()));
   imm aOut = a.give(zeroed(&mut device, 64usize));
-  a.dispatch(&device, &scrambleKernel, &[aIn, aOut], 1u32);
+  a.dispatch(&mut device, &scrambleKernel, &[aIn, aOut], 1u32);
   imm aBack = a.readback(&mut device, aOut);
   works.submit(&mut device, a, Target.Here[41u64]);
   mut b = Job.make(&mut device);
   imm bIn = b.give(upload(&mut device, small.view()));
   imm bOut = b.give(zeroed(&mut device, 64usize));
-  b.dispatch(&device, &scrambleKernel, &[bIn, bOut], 1u32);
+  b.dispatch(&mut device, &scrambleKernel, &[bIn, bOut], 1u32);
   b.readback(&mut device, bOut);
   works.submit(&mut device, b, Target.Here[42u64]);
   expectUInt(u64.from(works.waitAll(&mut device, &mut got)), 2u64, "both jobs, waited for together");
