@@ -2629,6 +2629,8 @@ static LLVMValueRef genlTerm(GenState *gen, INode *termnode) {
         return genlIf(gen, (IfNode*)termnode); break;
     case AwaitTag:
         return genlAwait(gen, (AwaitNode*)termnode);
+    case AwaitReplyTag:
+        return genlAwaitReply(gen, (AwaitReplyNode*)termnode);
     default:
         errorUnreachable(termnode, "an expression node code generation has no case for");
         return NULL;

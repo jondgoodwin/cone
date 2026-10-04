@@ -34,16 +34,21 @@
 		work-stealing scheduler, quiescence, and handles counted through
 		<span class="pre">Arc</span>, starting with the first actor and stopped by
 		<span class="pre">finalAll()</span>, which a program calls itself until the entry that
-		will call it exists. A message returns nothing: replies (a value sent back, awaited) are
-		not implemented, nor is <span class="pre">actor trait</span>, nor a generic actor.
-		<span class="pre">await</span> is a keyword, and the compiler checks one in an actor's
-		method &mdash; where it may stand, and that no borrow but a <span class="pre">'static</span>
-		one is used after it, every other ending there &mdash; but does not build the wait: nothing yet
-		sends the reply that would resume the method, so one it accepts is reported where it is
-		written. A message holding one can already be cut into the halves its continuation runs as,
-		under the compiler's <span class="pre">--await-direct</span> option, which is for testing
-		that cut: each <span class="pre">await</span> there runs the rest of the method at once,
-		with the value awaited.
+		will call it exists. A message may return a value, and
+		<span class="pre">await</span> on a message to an actor waits for it: the method is cut
+		there, what it still needs waits in its actor until the reply comes, and the rest of the
+		method runs then (<a href="#actors">Actors</a>, "Awaiting"); an actor names its own handle
+		<span class="pre">selfactor</span>. The compiler checks an <span class="pre">await</span>
+		&mdash; where it may stand, and that no borrow but a <span class="pre">'static</span> one is
+		used after it, every other ending there &mdash; and builds it only on a message that returns
+		a value, in a message of the actor's own: an <span class="pre">await</span> on anything
+		else (an I/O completion among them), on a message returning nothing, in a method that is not
+		a message, or one whose continuation would hold a traced reference, is reported where it is
+		written, and so is a call of a message holding one from another of the actor's methods. The
+		compiler's <span class="pre">--await-direct</span> option, which is for testing the cut,
+		runs the rest of the method at once after an <span class="pre">await</span> on anything
+		else, with the value awaited. Not implemented: <span class="pre">actor trait</span>, a
+		generic actor.
 		<span class="pre">qfn</span> and the other concurrent data structures are not
 		implemented; the
 		<a href="refpermlock.html">lock permissions</a> <span class="pre">Mutex</span> and
@@ -207,8 +212,9 @@ solo &lt;- job;
 	<p>An actor is state that lives on, reached by nothing but messages. Each message is a call
 		of one of the actor's methods, queued in its mailbox and run later, one at a time, on
 		whichever of a pool of worker threads takes the actor up. A method runs to completion, on
-		that worker's own stack, with the actor's state <span class="pre">mut</span>; nothing is
-		suspended or resumed, and no other method of the same actor runs until it returns. An
+		that worker's own stack, with the actor's state <span class="pre">mut</span>, or to an
+		<span class="pre">await</span>, where it is cut ("Awaiting", below); no other method of
+		the same actor runs until it returns there. An
 		actor is declared with <span class="pre">actor</span>, and it runs on the
 		<span class="pre">actors</span> package, which a module declaring one imports: the
 		mailbox, the work-stealing scheduler, the counting that decides when an actor dies, and the
@@ -254,10 +260,12 @@ fn main() {
 		which the method has alone while it runs; <span class="pre">self &amp;</span> only reads
 		it. Each <span class="pre">pub</span> method is a <i>message</i>; a method that is not
 		<span class="pre">pub</span>, and a function without <span class="pre">self</span>, are
-		the actor's own, called from its methods as any struct's are. A message returns nothing
-		(a send returns at once, before the method runs), is not generic, and every parameter it
-		takes is <span class="pre">Sendable</span>, since the message carries its arguments to the
-		thread the actor runs on; a borrow is refused whatever it borrows. An actor declares no
+		the actor's own, called from its methods as any struct's are. A message is not generic,
+		and every parameter it takes is <span class="pre">Sendable</span>, since the message
+		carries its arguments to the thread the actor runs on; a borrow is refused whatever it
+		borrows. A message may return a value, which must be <span class="pre">Sendable</span>
+		too: a send returns at once, before the method runs, and the value is dropped, unless the
+		message was awaited ("Awaiting", below). An actor declares no
 		static, macro, <span class="pre">extern</span> method or <span class="pre">use</span>, no
 		type parameters, and names no abstraction: <span class="pre">actor trait</span>, its
 		abstraction, is not built yet.</p>
@@ -310,13 +318,42 @@ fn main() {
 		fields, handles to other actors among them), on whichever thread let go last, then the
 		block is freed. Actors that hold handles to each other in a cycle never die by counting, as
 		a cycle of <span class="pre">Arc</span> owners never does, until one of them lets go.</p>
-	<p><b>Messages.</b> A send is one-way: it queues the message and returns, and a method
-		returns nothing to its sender; an answer is a message sent back to a handle passed along.
+	<p><b>Messages.</b> A send is one-way: it queues the message and returns. An answer comes
+		back only to an <span class="pre">await</span>, or as a message sent back to a handle
+		passed along.
 		Each sender's messages to one actor are handled in the order sent, and a message is never
 		overtaken by one it caused. Each argument arrives moved into the method's call, once: a
 		value that may only move (a <span class="pre">uni</span> or <span class="pre">So</span>
 		owner) arrives whole, and a counted one (a handle, an <span class="pre">Arc</span>, a
 		lock-managed <span class="pre">Arc[Mutex, T]</span>) is counted once.</p>
+	<p><b>Awaiting.</b> In a message, <span class="pre">await</span> on a message to an actor
+		that returns a value sends it and waits for that value, which is the
+		<span class="pre">await</span>'s:</p>
+<pre>
+actor Page {
+  body Buffer;
+  fetcher Fetcher;
+  pub fn load(self, u Url) {
+    imm b = await fetcher.fetch(u);    // the method is cut here
+    body = b;                          // and runs on when the reply comes
+  }
+}
+</pre>
+	<p>The method is cut at the <span class="pre">await</span>: it returns to its actor's
+		dispatcher there, so the actor handles other messages meanwhile, and what the rest of the
+		method needs waits in the actor until the reply comes, when the rest runs. Every borrow
+		ends at the cut, but a <span class="pre">'static</span> one; a lock taken through a borrow
+		is given back there. Every value still held waits, moved, and dies where it would have if
+		the method were not cut. The reply goes back to the actor that awaited, whose handle the
+		request carries, counted, so it cannot die meanwhile; the message's signature is as
+		written. A message that returns a value may itself <span class="pre">await</span>, and it
+		answers when it returns. In a method, <span class="pre">selfactor</span> is the actor's own
+		handle, another owner of it, which may be sent anywhere a handle may;
+		<span class="pre">self</span> is its state, which never leaves it. Not built yet: an
+		<span class="pre">await</span> on anything but such a message, on a message returning
+		nothing, or in a method that is not a message; and a call of a message holding an
+		<span class="pre">await</span> from another of the actor's methods, which would cut that
+		method too, where nothing shows it.</p>
 	<p><b>Inside an actor</b> a method may use what a single thread may: borrows, and
 		<span class="pre">So</span> and <span class="pre">Rc</span> owners, whose count need not be
 		atomic, since one worker at a time runs an actor and every hand-off of an actor between

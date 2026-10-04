@@ -2,7 +2,8 @@
 // that lives on, reached by nothing but messages: each message is a call of
 // one of its methods, queued in its mailbox and run later, one at a time, on
 // whichever worker thread takes the actor up. A method runs to completion on
-// that worker's own stack; nothing is suspended or resumed. The package has
+// that worker's own stack, or to an 'await', where the compiler cut it in two
+// (AWAITING, below): nothing is suspended on a stack. The package has
 // the mailbox, the work-stealing scheduler that runs mailboxes on a pool of
 // OS threads, the counting that decides when an actor dies, and the
 // quiescence the program ends at. It starts and stops by itself: the workers
@@ -64,6 +65,10 @@
 //       per 'pub' method, named for it, whose fields are its parameters.
 //
 //         enum Counter.Msg is Sendable {struct add {n u64;}}
+//
+//       A message that returns a value has a second variant, sent awaited,
+//       carrying a Reply too; an actor that awaits has two resume variants
+//       (AWAITING, below).
 //
 //   (c) The handle, 'Counter': one field, the 'Arc[opaq, T]' owner of the
 //       actor's Mailbox that startActor answers; an initializer for each of
@@ -143,8 +148,8 @@
 // is never finalized.
 //
 // MESSAGES. A send is one-way: it queues the message and returns; nothing
-// waits for the method to run, and a method returns nothing to its sender
-// (an answer is a message sent back, to a handle passed along). Each sender's
+// waits for the method to run, and what a method returns is dropped, unless
+// the message was awaited (AWAITING, below). Each sender's
 // messages to one actor are handled in the order sent, and a message is
 // never overtaken by one it caused: the mailbox is one FIFO queue in the
 // order the sends took their places, and a send has taken its place before
@@ -182,7 +187,8 @@
 //   runs on every worker in turn: a traced reference made, held, reached or
 //   dropped by an actor corrupts it. Nothing refuses one yet (the thread
 //   check refuses 'Gc' in a message); a concurrent collector is a later
-//   design.
+//   design. Nor is the pending table a root set, so the compiler refuses an
+//   'await' whose continuation would hold a traced reference.
 // - A thread-local global ('mut @threadlocal x T') seen from an actor's
 //   method is the current WORKER's copy, not the actor's: its next message
 //   may run on another worker, with another copy. An actor keeps its own
@@ -190,7 +196,39 @@
 // - A method that blocks (a lock held long, a sleep, a channel's recv) holds
 //   its worker for as long, and the others take up its queue by stealing; a
 //   method that never returns keeps its actor, and one worker, forever.
-//   Actors wait by being sent a message.
+//   Actors wait by being sent a message, or by 'await'.
+//
+// AWAITING. In an actor's message, 'imm b = await fetcher.fetch(u)' sends
+// fetch to the actor 'fetcher' awaited, and waits for what it returns. The
+// compiler cuts the method there (compiler/c/genllvm/genlawait.c): its first
+// half returns to the dispatcher at the 'await', and what it still needs --
+// its record -- waits in its actor's PENDING TABLE, a hidden field of the
+// state, keyed by a plain id; its second half runs the rest when the reply
+// comes. The generated code calls what follows 'releaseHold', below:
+//
+// - The request carries an envelope, a Reply, in the message, beside the
+//   arguments; the method's signature is as written. The awaiting actor
+//   makes it (replyNode, replyPut): one count of the awaiting actor, so it
+//   cannot die while the reply is owed, and the reply's mailbox node,
+//   allocated now with room after its message for the value returned. The
+//   node's message is the awaiting actor's own resume variant, naming the
+//   seam's resume function (which second half) and, where the record is not
+//   empty, its id (parkReserve) -- an empty record has no slot and no id.
+// - The actor answering writes the value into the node and pushes it
+//   (answerNow, answerAt, answered: post), knowing nothing of the awaiting
+//   actor's type; the count becomes the scheduler's owner, or is let go.
+// - The awaiting actor's dispatch calls the resume function (resume,
+//   resumeId), which takes the record out of the table (unpark) and calls the
+//   second half with it and the value.
+// - A message that returns a value and itself awaits keeps the envelope it
+//   answers in its state's Answer slot while it runs (ask, askNone); each
+//   seam carries it in the record, so whichever half returns the value
+//   answers (answerTo).
+//
+// One request has one reply, exactly once: a slot is freed only by its
+// reply. A continuation waiting holds its actor alive through the envelope's
+// count, and its request is a message in another actor's mailbox or that
+// actor's own continuation, so quiescence is never found with one parked.
 //
 // THE RUNTIME starts and stops by itself. Its workers start with the first
 // actor, on whichever thread starts it (sync's Once makes two first starts
@@ -579,6 +617,288 @@ fn holdArc[M Sendable](h *Header) {
 fn releaseHold[M Sendable](h *Header) {
   mut slot = h;
   imm o = mem.readRaw[Arc[opaq, Mailbox[M]]](&mut slot as *(Arc[opaq, Mailbox[M]]));
+}
+
+// ---------------------------------------------------------------------------
+// Awaiting: a request's reply, and the continuations an actor parks. The
+// compiler generates every call of these, from an actor's 'await's and its
+// messages that return a value; nothing else has a use for them. AWAITING,
+// above, is how they fit together.
+// ---------------------------------------------------------------------------
+
+// The envelope of a request that is awaited: where its one reply goes. It is
+// in the message, never in the method's parameters. 'to' is the actor that
+// awaits, of which the envelope holds one count, so that it cannot die while
+// the reply is owed; 'node' is the reply's mailbox node, made by the actor
+// that awaits, its resume message written already (which second half, and
+// the record's id), with room after it for the returned value, at 'data'.
+// So the actor answering knows nothing of the other's type: it writes the
+// value at 'data' and pushes 'node'. A Reply with no 'to' wants no answer.
+// Sendable on trust, as Mailbox is: the runtime orders every hand-off of it.
+pub struct Reply is Sendable {
+  to *Header = null;
+  node *Link = null;
+  data *u8 = null;
+
+  // A reply never sent: its node is freed (its resume message holds nothing
+  // to finalize) and its count let go
+  fn final(self &uni) {
+    if to as usize != 0usize {
+      libc.free(node as *u8);
+      imm release = (*to).release;
+      release(to);
+    }
+  }
+}
+
+// The round-up of n to a multiple of a, a power of two
+fn roundUp(n usize, a usize) usize {
+  (n + a - 1usize) & ~(a - 1usize);
+}
+
+// The Header of the actor whose state is at st: where stateOf finds st,
+// taken back
+fn headerOf[S, M Sendable](st &S) *Header {
+  imm base = 4096usize as *Header;
+  imm off = (stateOf[S, M](base) as usize) - 4096usize;
+  ((st as *S as usize) - off) as *Header;
+}
+
+// The handle of the actor whose state is at st, its 'selfactor': another
+// owner of its Mailbox, counted, as copying a handle is
+pub fn selfOf[S, M Sendable](st &S) Arc[opaq, Mailbox[M]] {
+  mut slot = headerOf[S, M](st);
+  imm o = mem.readRaw[Arc[opaq, Mailbox[M]]](&mut slot as *(Arc[opaq, Mailbox[M]]));
+  imm held = o;
+  mut gone = slot;
+  mem.writeRaw[Arc[opaq, Mailbox[M]]](&mut gone as *(Arc[opaq, Mailbox[M]]), o);
+  held;
+}
+
+// A request's envelope, made by the actor whose state is at st as it awaits:
+// a count of it taken, and the reply's node allocated with room for 'size'
+// bytes aligned to 'align' after the message. The actor's own generated code
+// then writes its resume message into the node (replyPut)
+pub fn replyNode[S, M Sendable](st &S, size usize, align usize) Reply {
+  imm h = headerOf[S, M](st);
+  mut a = 8usize;
+  if align > 8usize {a = align;}
+  imm off = roundUp(mem.sizeof[Node[M]](), a);
+  imm n = libc.malloc(off + size) as *u8;
+  if n as usize == 0usize {
+    die("actors: out of memory for a reply");
+  }
+  holdArc[M](h);
+  new Reply(h, n as *Link, n + off);
+}
+
+// Where the reply's value goes
+pub fn replyData(r &Reply) *u8 {r.data;}
+
+// Write the reply's resume message into its node
+pub fn replyPut[M Sendable](r &Reply, msg M) {
+  mem.writeRaw[M](&(*(r.node as *Node[M])).msg as *M, msg);
+}
+
+// Send the reply, its value written: push its node to the actor that awaits.
+// The count the envelope held becomes the scheduler's owner when the push
+// finds the actor idle, as a send's own would; otherwise it is let go
+fn post(r &mut Reply) {
+  imm h = r.to;
+  if h as usize == 0usize {
+    return;
+  }
+  if running == 0usize {
+    die("actors: a reply sent after the runtime stopped");
+  }
+  imm n = r.node;
+  r.to = null;
+  r.node = null;
+  if mailPush(h, n) {
+    schedule(h);
+  } else {
+    imm release = (*h).release;
+    release(h);
+  }
+}
+
+// A message that returns a value, and holds no 'await', answering its
+// request: the value goes back in the reply
+pub fn answerNow[R](rp Reply, v R) {
+  mut r = rp;
+  if r.to as usize == 0usize {
+    return;
+  }
+  mem.writeRaw[R](r.data as *R, v);
+  post(&mut r);
+}
+
+// While a message that returns a value and holds an 'await' runs, the
+// envelope it answers waits in its actor's state, in an Answer: each seam
+// takes it into its record, and each second half puts it back, so that it
+// travels with the continuation; 'held' says it is there. Whichever half
+// returns the value answers it (answerAt, and the compiler's resume
+// functions).
+pub struct Answer {
+  reply Reply = new Reply();
+  held u8 = 0u8;
+}
+
+// The dispatcher's hand-off, before such a message runs: the request's
+// envelope into the slot; or, for a send with no 'await', no envelope, so
+// that the value is dropped as the message returns it
+pub fn ask(slot &mut Answer, rp Reply) {
+  slot.reply = rp;
+  slot.held = 1u8;
+}
+pub fn askNone(slot &mut Answer) {
+  slot.reply = new Reply();
+  slot.held = 1u8;
+}
+
+// The address a method's value is kept at, so that the dispatcher takes it
+// only when the method returned one: a temporary that a raw pointer
+// outlives is never finalized where it stands
+pub fn keep[R](r &R) *R {r as *R;}
+
+// Where a message's returned value goes, now that it has returned: 0 where
+// a seam took the envelope (the method is parked, and returned no value); 1
+// where nobody waits for the value, which is dropped; else where the reply
+// holds it
+pub fn answerTo(slot &mut Answer) *u8 {
+  if slot.held == 0u8 {
+    return null;
+  }
+  if slot.reply.to as usize == 0usize {
+    return 1usize as *u8;
+  }
+  slot.reply.data;
+}
+
+// The value is where answerTo said: the reply is sent, and the slot emptied
+pub fn answered(slot &mut Answer) {
+  slot.held = 0u8;
+  post(&mut slot.reply);
+}
+
+// The dispatcher, after a message that returns a value and holds an 'await'
+// returned: its value is at r, unless a seam parked the message
+pub fn answerAt[R](slot &mut Answer, r *R) {
+  imm d = answerTo(slot);
+  if d as usize == 0usize {
+    return;
+  }
+  imm v = mem.readRaw[R](r);
+  if d as usize == 1usize {
+    answered(slot);
+    return;
+  }
+  mem.writeRaw[R](d as *R, v);
+  answered(slot);
+}
+
+// A reply arrived: call its resume function -- the one the compiler made for
+// the seam, which calls its second half -- with the actor's state, the
+// record's id where the record is not empty, and where the returned value
+// is, in the node
+pub fn resume[S](st &mut S, run *u8, data *u8) {
+  mut f = run;
+  imm fp = mem.readRaw[&fn(s &mut S, data *u8)](&mut f as *(&fn(s &mut S, data *u8)));
+  fp(st, data);
+}
+pub fn resumeId[S](st &mut S, run *u8, id u64, data *u8) {
+  mut f = run;
+  imm fp = mem.readRaw[&fn(s &mut S, id u64, data *u8)](&mut f as *(&fn(s &mut S, id u64, data *u8)));
+  fp(st, id, data);
+}
+
+// An actor's pending table: its parked continuations' records, each in a
+// block of its own, keyed by a plain id, the slot's index. A slot holds a
+// record's block, or, free, the next free slot's index + 1, times 2, plus 1.
+// Only the actor's own methods touch it, one at a time.
+pub struct Pending {
+  slots *usize = null;
+  cap usize = 0usize;
+  free usize = 0usize;     // The first free slot's index + 1, or 0
+  count usize = 0usize;    // How many records are parked
+
+  // Every record parked is owed a reply, whose envelope counts this actor, so
+  // an actor dies with none parked
+  fn final(self &uni) {
+    if count != 0usize {
+      die("actors: an actor died with continuations parked");
+    }
+    if slots as usize != 0usize {
+      libc.free(slots as *u8);
+    }
+  }
+}
+
+// A slot for a record of 'size' bytes, its block allocated: the id, which the
+// request's resume message carries. A PLAIN ID, with no generation: a slot is
+// freed only by the one reply its record is owed, which comes exactly once,
+// and that reply's envelope holds this actor's count, so no reply can be
+// stale, doubled, or sent to an actor that has died. A generation becomes
+// necessary exactly when a timeout can free a slot while its reply is still
+// in flight, and nothing has a timeout path yet.
+pub fn parkReserve(p &mut Pending, size usize) u64 {
+  if p.free == 0usize {
+    mut newcap = 8usize;
+    if p.cap != 0usize {newcap = p.cap * 2usize;}
+    imm grown = libc.malloc(mem.sizeof[usize]() * newcap) as *usize;
+    if grown as usize == 0usize {
+      die("actors: out of memory for the pending table");
+    }
+    mut i = 0usize;
+    while i < p.cap {
+      *(grown + i) = *(p.slots + i);
+      i = i + 1usize;
+    }
+    while i < newcap {
+      mut next = 0usize;
+      if i + 1usize < newcap {next = i + 2usize;}
+      *(grown + i) = next * 2usize + 1usize;
+      i = i + 1usize;
+    }
+    if p.slots as usize != 0usize {
+      libc.free(p.slots as *u8);
+    }
+    p.free = p.cap + 1usize;
+    p.slots = grown;
+    p.cap = newcap;
+  }
+  imm id = p.free - 1usize;
+  imm slot = p.slots + id;
+  p.free = *slot / 2usize;
+  mut bytes = size;
+  if bytes == 0usize {bytes = 1usize;}
+  imm block = libc.malloc(bytes);
+  if block as usize == 0usize {
+    die("actors: out of memory for a continuation");
+  }
+  *slot = block as usize;
+  p.count = p.count + 1usize;
+  u64.from(id);
+}
+
+// The block of the record parked at id, to write the record into
+pub fn parked(p &mut Pending, id u64) *u8 {
+  *(p.slots + usize.from(id)) as *u8;
+}
+
+// The reply for id arrived: its record's block, the slot freed
+pub fn unpark(p &mut Pending, id u64) *u8 {
+  imm slot = p.slots + usize.from(id);
+  imm block = *slot as *u8;
+  *slot = p.free * 2usize + 1usize;
+  p.free = usize.from(id) + 1usize;
+  p.count = p.count - 1usize;
+  block;
+}
+
+// A record's block, once its values are moved out
+pub fn recordFree(block *u8) {
+  libc.free(block);
 }
 
 // ---------------------------------------------------------------------------

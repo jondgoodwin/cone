@@ -1182,14 +1182,15 @@ split method (`awaitSplitOf`, `GenState.seams`) is generated whole, more than
 once (`genlawait.c`):
 
 - **Its first half** is the method itself (`genlFn`). Each seam (`genlAwait`)
-  evaluates what is awaited, then in the work item's order: every lock whose
+  evaluates what is awaited, then in the seam's order: every lock whose
   borrow ends there is given back (`genlSeamGiveBack`) -- a local guard's
   (flow marks it `VarSeamHeld`, and generation gives it a flag as a drop flag
   is given) and a temporary guard's (`GenTemp.held`); the record is built, each
   value **moved** into it by a load of its slot (`genlSeamRecord`), with no
-  count adjusted; nothing droppable is left, so nothing more is dropped; and
-  the function returns. What follows the seam is generated into a block of its
-  own, `resume`, which no path reaches in this half.
+  count adjusted; nothing droppable is left, so nothing more is dropped; the
+  record is parked ("A message's reply", below); and the function returns,
+  with no value. What follows the seam is generated into a block of its own,
+  `resume`, which no path reaches in this half.
 - **Each seam's second half**, `<method>'<n>` (`genlSplitHalf`), is the method
   generated again as a function of its own: its entry stores 'self', moves the
   record's values back into the slots they came from (`genlSeamEntry`), sets
@@ -1221,17 +1222,70 @@ part built.
 
 A second half's parameters are `self`, the record (one struct, named
 `<method>'<n>.record`, by value), and the value awaited. **An empty record is
-no parameter**, and a void `await` gives no result. Nothing yet sends the
-reply that would call a second half (the envelope, the pending pool and the
-reply dispatch are not built), so a method is split only under
-`--await-direct` (`awaitDirect`), which is for tests: each seam hands its
-record straight to its second half, with the value awaited, before it returns.
-`concurrency_await_split` runs each split message beside its twin with no
-`await` and pins the halves' shapes.
+no parameter**, and a void `await` gives no result. A second half returns
+what the method returns. A seam awaiting a message waits for its reply (next).
+Under `--await-direct` (`awaitDirect`), which is for tests, a seam awaiting
+anything else hands its record straight to its second half, with the value
+awaited, and returns what the second half returns. `concurrency_await_split`
+runs each split message beside its twin with no `await` and pins the halves'
+shapes.
 
 An `await` whose construct holds an address or memory being filled across it
 -- the index of a place, a place stored into or swapped, an array's contents
 filled in memory -- is not split ([Flow](flow.md), "A seam").
+
+### A message's reply
+
+What a seam awaits is a message to an actor, sent awaited: type check made
+the call the handle's second method for it, whose last argument is the
+request's envelope (`AwaitReplyNode`). The envelope is in the message, never
+in the method's parameters; what the author wrote is unchanged. The seam's
+record waits in the awaiting actor's **pending table**, `Pending`, a hidden
+field of its state, and the reply's dispatch calls the second half.
+
+- **The envelope** (`genlAwaitReply`) is generated where it is passed, before
+  the seam, since the request carries the record's id. So the seam is laid out
+  there: what is in flight across it is what was in flight as its `await`
+  began (`GenState.awaitflights`), and its temporaries are all made by then;
+  `genlAwait` checks both again at the seam. A record that is not empty is
+  given a slot in the table (the actors package's `parkReserve`, with the
+  record's size), which allocates its block: the slot's index is the record's
+  **id**, a plain index with no generation. The actor's generated
+  `<Actor>.replyid'` (or `<Actor>.reply'`, where the record is empty) makes the
+  envelope, an `actors.Reply`: it takes one count of the awaiting actor, so
+  that it cannot die while the reply is owed, and allocates the reply's mailbox
+  node, with room after the message for the value returned, aligned to it; the
+  node's message is already the actor's own resume variant, naming the seam's
+  **resume function** (the tag) and the id, with where the value will be.
+- **The seam** moves its record into the slot's block (`parked`) and returns.
+  The reply cannot be dispatched before then: it comes to this actor's
+  mailbox, which runs one message at a time.
+- **The answer.** The actor answering writes its value where the envelope says
+  and pushes the node (`actors.answerNow`, `answerAt`, `answered`), knowing
+  nothing of the awaiting actor's type. The count the envelope held becomes
+  the scheduler's owner when the push finds the actor idle, as a send's would.
+- **The resume function**, `<method>'<n>.resume(state, [id,] data)`
+  (`genlSeamResume`), is what the reply's dispatch arm calls
+  (`actors.resume`, `resumeId`): it takes the record out of the table at id,
+  frees its block, and calls the second half with the record and the value,
+  both moved. **An empty record has no slot, no id and no lookup**: its resume
+  variant and resume function take none.
+
+A message that returns a value and holds an `await` answers its own request
+whichever half returns its value. The request's envelope waits, while the
+message runs, in the state's hidden `Answer` slot, which the dispatcher fills
+(`actors.ask`, or `askNone` for a send with no `await`, whose value is then
+dropped). Each seam of such a method takes it into its record first
+(`GenSeamAnswer`), leaving the slot empty, and the second half's entry puts it
+back. So the dispatcher answers only when the slot still holds it, the first
+half having returned a value rather than parking (`answerAt`, which reads the
+value only then: the dispatcher keeps the call's value through a raw pointer,
+`actors.keep`, so that a parked method's undefined one is never finalized).
+The resume function answers likewise once the second half returns
+(`answerTo`), dropping the value where nothing awaits it.
+
+The pending table is not traced: a record that would hold a traced reference
+is refused before generation ([Flow](flow.md), "A seam").
 
 ## 7. Output, and what does not work
 
@@ -1690,6 +1744,12 @@ variables.
   which keeps each in flight across a seam ("A split method"); an address held
   that way cannot be, and its `await` is refused before generation
   (`awaitWalk`), so a new such site needs one or the other.
+- **A message seam is laid out before it is reached**, by its envelope, the
+  last argument of the call it awaits ("A message's reply"). Anything that
+  makes a temporary, or puts a value in flight, between that argument and the
+  seam -- a call awaited whose result were itself a temporary, say -- makes
+  the record laid out differ from the one the seam builds, which `genlAwait`
+  refuses as unreachable rather than build a wrong record.
 - **A jump out of the middle of a statement finalizes its pending temporaries
   before the locals of the blocks it leaves**, whatever order they were made
   in: `f(mk(1).n, { imm x = mk(2); if c { return; } 3; })` finalizes the first
@@ -1779,8 +1839,9 @@ variables.
 | | `genlHollowRelease`, `genlRegionDealiasPart`, `genlHollowDeath`, `genlReleasePart` | a hollowed variable's release: the death of a value moved out, or an element of it, finalizing none of it and freeing the memory |
 | | `genlReleaseOwning`, `genlDealiasNodes` | releasing one owner of an owning reference or of each a tuple value carries, and replaying flow's lists |
 | | `genlTempKeep`, `genlTempsEnd`, `genlTempsJump`, `genlTempRelease` | a temporary kept in its slot; those a part made finalized at its end, or before a jump ("Temporaries"); a lock's guard in a split method only where its flag says it holds its lock ("A split method") |
-| `genllvm/genlawait.c` | `genlAwait`, `genlSeamLayout`, `genlSeamGiveBack`, `genlSeamRecord` | a seam of a split method: what is awaited, the record laid out (once) and its second half declared, the locks given back, the record built, the return; what follows in a `resume` block ("A split method") |
+| `genllvm/genlawait.c` | `genlAwait`, `genlSeamLayout`, `genlSeamGiveBack`, `genlSeamRecord` | a seam of a split method: what is awaited, the record laid out (once) and its second half and resume function declared, the locks given back, the record built and parked, the return; what follows in a `resume` block ("A split method") |
 | | `genlSplitHalves`, `genlSplitHalf`, `genlSeamEntry` | each second half: the method generated again, its entry moving the record's values back and branching to the seam's `resume` block |
+| | `genlAwaitReply`, `genlSeamResume` | a message seam's envelope, the seam laid out and its record's slot reserved where it is passed; the seam's resume function, which takes the record out of the pending table, calls the second half and answers ("A message's reply") |
 | | `genlExprsAcross`, `genlHasSeam` | operands in order, each made before a later one's seam kept in flight across it (`GenFlight`) |
 | | `genlHeldBegin`, `genlHeldIf` | a temporary lock guard's flag, and code run while it holds its lock |
 | | `genlFinalizeAt`, `genlCallDrop`, `genlEachElem` | a value's death in place, whatever its type: a local's, a field's, a region value's before its `free`, and the `finalize` intrinsic |

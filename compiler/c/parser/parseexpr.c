@@ -147,6 +147,15 @@ INode *parseTerm(ParseState *parse) {
         lexNextToken();
         return (INode *)node;
     }
+    // 'selfactor': in an actor's method, the actor's own handle
+    case SelfActorToken:
+    {
+        SelfActorNode *node = newSelfActorNode();
+        if (parse->dcltexts)
+            ++parse->dcltexts->selfactors;
+        lexNextToken();
+        return (INode *)node;
+    }
     case trueToken:
     {
         ULitNode *node = newULitNode(1, (INode*)boolType);
@@ -774,6 +783,8 @@ INode *parsePrefix(ParseState *parse) {
     case AwaitToken:
     {
         AwaitNode *node = newAwaitNode();
+        if (parse->dcltexts)
+            ++parse->dcltexts->awaits;
         lexNextToken();
         node->exp = parsePrefix(parse);
         return (INode *)node;

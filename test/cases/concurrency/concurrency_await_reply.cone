@@ -1,0 +1,200 @@
+// An 'await' on a message to another actor waits for its reply (actor
+// continuations, the envelope, the pending table and the reply's dispatch).
+// The message's signature is as written: the reply's envelope -- a counted
+// handle of the actor awaiting, which second half, and the record's id -- is
+// in the message. The seam parks its record in the awaiting actor's pending
+// table, returns to the dispatcher, and the reply's dispatch calls the second
+// half with the record and the value returned.
+//
+// Driver.go runs one chain, each step awaited, so its trace is the same on
+// every run:
+//
+// - load: the worked example. Page.load awaits Fetcher.fetch, whose own seam
+//   awaits Net.read with 'conn' and Page's envelope in its record; 'u' was
+//   moved into the message and 'b' holds nothing yet, but Page.load returns a
+//   value, so its record holds the envelope Driver's 'await' sent. Driver's
+//   'imm a = await page.load(7)' parks an empty record: no slot, no id.
+// - fetch(0) returns before its seam, so the dispatcher answers at once.
+// - two: a droppable ('keep') travels across both seams, 'a' across the
+//   second; they die after the second half's print, the last declared first.
+// - relay: Page awaits the Driver that is itself parked awaiting Page, the
+//   handle 'selfactor' made, moved into the message.
+// - self: Driver awaits its own message, queued behind nothing.
+// - a seam in a loop, with 'total' in flight and 'i' in the record.
+//
+// Then, sent with no 'await', so with no reply and run beside one another,
+// what is counted rather than printed: Page.burst queues 20 'held' messages to
+// itself, which all park before the first reply comes (its mailbox is one
+// queue, and they were queued first), so its pending table grows past its
+// first 8 slots; and 5 'tick's sent with no 'await' whose values are dropped.
+// Main prints the counts once finalAll has found the runtime quiet. Each
+// actor's pending table is empty when it dies (the actors package dies
+// otherwise), and Page's death is counted.
+
+mod concurrency_await_reply;
+
+import stdio use *;
+import actors;
+
+struct Tally {
+  pub resumed Atomic[u64];
+  pub sum Atomic[u64];
+  pub quiet Atomic[u64];
+  pub ticks Atomic[u64];
+  pub pages Atomic[u64];
+}
+
+imm tally Tally;
+
+fn @initpure init() {
+  tally = new Tally(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+}
+
+fn say(s &[]u8, n u64) {printStr(s); printStr(" "); printUInt(n); printStr("\n");}
+
+struct Buf {
+  pub n u64;
+  fn final(self &uni) {say("  drop buf", n);}
+}
+
+struct Conn {
+  pub id u64;
+  fn final(self &uni) {say("  close conn", id);}
+}
+
+// What the burst counts, printing nothing
+struct Quiet {
+  pub n u64;
+  fn final(self &uni) {tally.quiet.add(1u64);}
+}
+struct Tick {
+  pub n u64;
+  fn final(self &uni) {tally.ticks.add(1u64);}
+}
+
+actor Net {
+  pub fn read(self, id u64) Buf {
+    say("  read", id);
+    new Buf(id * 10u64);
+  }
+  pub fn size(self, id u64) u64 {id + 1u64;}
+  pub fn count(self, id u64) Tick {new Tick(id + 1000u64);}
+}
+
+actor Fetcher {
+  net Net;
+
+  pub fn fetch(self, url u64) Buf {
+    if url == 0u64 {
+      say("  fetch at once", url);
+      return new Buf(0u64);
+    }
+    imm conn = new Conn(url);
+    say("  fetch", url);
+    imm buf = await net.read(conn.id);
+    say("  fetched", buf.n);
+    buf;
+  }
+
+  pub fn tick(self, id u64) Tick {
+    imm q = new Quiet(id);
+    imm t = await net.count(id);
+    t;
+  }
+}
+
+actor Page {
+  fetcher Fetcher;
+  body u64;
+
+  pub fn load(self, u u64) u64 {
+    say("load", u);
+    imm b = await fetcher.fetch(u);
+    body = b.n;
+    say("  loaded", body);
+    body;
+  }
+
+  pub fn two(self, u u64) u64 {
+    imm keep = new Conn(99u64);
+    imm a = await fetcher.fetch(u);
+    imm b = await fetcher.fetch(u + 1u64);
+    say("  two", a.n + b.n + keep.id);
+    a.n + b.n;
+  }
+
+  pub fn relay(self, d Driver, n u64) u64 {
+    imm x = await d.double(n);
+    say("  relayed", x);
+    x + 1u64;
+  }
+
+  pub fn burst(self, n u64) {
+    mut i = 0u64;
+    while i < n {
+      selfactor.held(i);
+      i = i + 1u64;
+    }
+  }
+
+  pub fn held(self, i u64) {
+    imm q = new Quiet(i);
+    imm t = await fetcher.tick(i);
+    tally.sum.add(t.n + q.n);
+    tally.resumed.add(1u64);
+  }
+
+  fn final(self &uni) {tally.pages.add(1u64);}
+}
+
+actor Driver {
+  page Page;
+  fetcher Fetcher;
+  net Net;
+
+  pub fn go(self) {
+    imm a = await page.load(7u64);
+    say("loaded", a);
+    imm z = await fetcher.fetch(0u64);
+    say("at once", z.n);
+    imm t = await page.two(1u64);
+    say("two", t);
+    imm r = await page.relay(selfactor, 4u64);
+    say("relay", r);
+    imm s = await selfactor.double(21u64);
+    say("self", s);
+    mut total = 0u64;
+    mut i = 0u64;
+    while i < 3u64 {
+      total = total + await net.size(i);
+      i = i + 1u64;
+    }
+    say("total", total);
+    page.burst(20u64);
+    mut j = 0u64;
+    while j < 5u64 {
+      fetcher.tick(100u64 + j);
+      j = j + 1u64;
+    }
+  }
+
+  pub fn double(self, n u64) u64 {n * 2u64;}
+}
+
+fn main() {
+  initAll();
+  {
+    imm net = new Net();
+    imm fetcher = new Fetcher(net);
+    imm page = new Page(fetcher, 0u64);
+    imm d = new Driver(page, fetcher, net);
+    d.go();
+  }
+  finalAll();
+  say("resumed", tally.resumed.load());
+  say("sum", tally.sum.load());
+  say("quiet", tally.quiet.load());
+  say("ticks", tally.ticks.load());
+  say("pages", tally.pages.load());
+}

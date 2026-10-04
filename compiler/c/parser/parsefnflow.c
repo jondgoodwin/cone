@@ -1252,8 +1252,14 @@ INode *parseFn(ParseState *parse, uint16_t mayflags) {
         if (!(mayflags&ParseMayImpl))
             errorMsgNode((INode*)fnnode, ErrorBadImpl, "Function/method implementation is not allowed here.");
         bodyp = lex->tokp;
+        uint32_t awaits = parse->dcltexts ? parse->dcltexts->awaits : 0;
         fnnode->value = parseExprBlock(parse, 0);
         bodyendp = lex->prevend;
+        // In an actor's body, a method holding an 'await' is noted: its
+        // dispatch and its actor's state are generated for its seams
+        // (parseactor.c)
+        if (parse->dcltexts && parse->dcltexts->awaits != awaits)
+            nodesAdd(&parse->dcltexts->awaiting, (INode*)fnnode);
     }
     else {
         if (!(mayflags&ParseMaySig))

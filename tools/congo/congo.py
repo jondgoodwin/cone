@@ -113,7 +113,7 @@ GPU_FOLDER = "gpu"
 KEYWORDS = frozenset((
     "include import extern pub static macro fn overload const alias typedef struct mod"
     " actor trait extends mixin use but enum return with if elif else case match"
-    " while each in by break continue not or and as is into inline where new trynew await void nil"
+    " while each in by break continue not or and as is into inline where new trynew await selfactor void nil"
     " null true false undef").split())
 RESERVED = frozenset((
     "async baseurl context local selfmethod using wait yield throw catch spawn"
@@ -1920,6 +1920,7 @@ TEST_TIMEOUT = 60     # seconds a test program may run before it fails
 class Tally:
     passed: int = 0
     failed: int = 0
+    skipped: int = 0      # debug-only tests, not built or run in a release test
     built: int = 0
     unbuilt: int = 0
     broken: int = 0       # packages that did not build, so nothing of theirs ran
@@ -1928,6 +1929,7 @@ class Tally:
     def add(self, other: "Tally") -> None:
         self.passed += other.passed
         self.failed += other.failed
+        self.skipped += other.skipped
         self.built += other.built
         self.unbuilt += other.unbuilt
         self.broken += other.broken
@@ -1939,9 +1941,14 @@ class Tally:
     def summary(self) -> str:
         def count(n: int, word: str) -> str:
             return f"{n} {word}{'' if n == 1 else 's'}"
-        text = (f"{count(self.passed + self.failed, 'test')}: {self.passed} passed,"
-                f" {self.failed} failed; {count(self.built + self.unbuilt, 'example')}:"
-                f" {self.built} built, {self.unbuilt} failed to build")
+        text = (f"{count(self.passed + self.failed + self.skipped, 'test')}:"
+                f" {self.passed} passed, {self.failed} failed")
+        # Said only where a test was skipped, so a report without one reads
+        # as it always has
+        if self.skipped:
+            text += f", {self.skipped} skipped (debug only)"
+        text += (f"; {count(self.built + self.unbuilt, 'example')}:"
+                 f" {self.built} built, {self.unbuilt} failed to build")
         if self.broken:
             text += f"; {count(self.broken, 'package')} did not build"
         return text
@@ -1969,6 +1976,13 @@ def expected_exit(program: Path) -> int:
     except ValueError:
         raise CongoError(f"{shown(path)} must hold one integer, the exit status the"
                          f" test ends with; it holds {text!r}") from None
+
+
+def debug_only(program: Path) -> bool:
+    """tests/<name>.debug, whatever it holds, marks a test debug-only: a test of
+    a check made in a debug build alone (assertDebug, assertDebugMsg), which
+    has nothing to say in a release build. A release test skips it."""
+    return program.with_suffix(".debug").is_file()
 
 
 def indent(text: str, pad: str = "        ") -> str:
@@ -2238,6 +2252,11 @@ def test_package(pkg: Package, mode: str, name_filter: str | None, bless: bool) 
     elif not tests and name_filter is None:
         say("Tests", f"none: {pkg.name}'s {TESTS} folder holds no .cone program")
     for file in tests:
+        # Not built or run, so nothing is blessed for it either
+        if mode == "release" and debug_only(file):
+            print(f"        test {file.stem} ... skipped (debug only)", flush=True)
+            tally.skipped += 1
+            continue
         try:
             passed, detail = run_test(session, file, bless)
         except CongoError as exc:
@@ -2286,8 +2305,8 @@ def cmd_test(args: argparse.Namespace) -> int:
     total = Tally()
     for manifest in manifests:
         total.add(test_package(read_manifest(manifest), mode, args.name, args.bless))
-    if args.name is not None and not (total.passed + total.failed + total.built
-                                      + total.unbuilt + total.broken):
+    if args.name is not None and not (total.passed + total.failed + total.skipped
+                                      + total.built + total.unbuilt + total.broken):
         raise CongoError(f"no test or example has '{args.name}' in its name")
     if len(manifests) > 1:
         say("Result", f"{len(manifests)} packages: {total.summary()}")
