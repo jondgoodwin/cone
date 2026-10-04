@@ -169,6 +169,71 @@ LLVMValueRef genlGpuPanic(GenState *gen, LLVMValueRef *args) {
     return genlGpuCall(gen, genlGpuFailFn(gen), fargs, 4);
 }
 
+// ---- The C library's math ---------------------------------------------------
+
+// No GPU has the C library. A call to one of its math functions, by its C
+// symbol (libc's bindings, or any '@c' declaration of the same symbol), is on
+// a GPU target the LLVM intrinsic of the same meaning, which LLVM's SPIR-V
+// backend selects as the GLSL.std.450 extended instruction ('fmod' is LLVM's
+// 'frem', SPIR-V's OpFRem, which also takes its sign from x). The table
+// holds each function C names in its double form and its float form, 'f'
+// after it.
+typedef struct GenlGpuMathFn {
+    const char *cname;      // the double form's C name
+    const char *intrinsic;  // LLVM's intrinsic, overloaded on the float type; NULL for 'frem'
+    unsigned nargs;
+} GenlGpuMathFn;
+
+static const GenlGpuMathFn genlGpuMathFns[] = {
+    {"sqrt", "llvm.sqrt", 1},
+    {"sin", "llvm.sin", 1},
+    {"cos", "llvm.cos", 1},
+    {"tan", "llvm.tan", 1},
+    {"asin", "llvm.asin", 1},
+    {"acos", "llvm.acos", 1},
+    {"atan", "llvm.atan", 1},
+    {"atan2", "llvm.atan2", 2},
+    {"exp", "llvm.exp", 1},
+    {"log", "llvm.log", 1},
+    {"pow", "llvm.pow", 2},
+    {"fabs", "llvm.fabs", 1},
+    {"floor", "llvm.floor", 1},
+    {"ceil", "llvm.ceil", 1},
+    {"fmod", NULL, 2},
+};
+
+// On a GPU target, a call to a C library math function as its intrinsic,
+// given its arguments, or NULL when the function is no such one. 'fabsf',
+// which libc writes inline as 'fabs' widened and narrowed (the UCRT has no
+// symbol for it), is caught here before its body is expanded, so the module
+// asks for no 64-bit float.
+LLVMValueRef genlGpuMath(GenState *gen, FnDclNode *fndcl, LLVMValueRef *args, unsigned nargs) {
+    if (!(fndcl->dclinfo.facts & DclCName) || nargs == 0 || nargs > 2)
+        return NULL;
+    char symbol[2048];
+    nameSymbol(symbol, (INode*)fndcl);
+    size_t len = strlen(symbol);
+    LLVMTypeRef ftype = LLVMTypeOf(args[0]);
+    LLVMTypeKind want = LLVMDoubleTypeKind;
+    if (len > 1 && symbol[len - 1] == 'f') {
+        want = LLVMFloatTypeKind;
+        --len;
+    }
+    for (size_t i = 0; i < sizeof(genlGpuMathFns) / sizeof(genlGpuMathFns[0]); ++i) {
+        const GenlGpuMathFn *mathfn = &genlGpuMathFns[i];
+        if (strlen(mathfn->cname) != len || strncmp(mathfn->cname, symbol, len) != 0 || mathfn->nargs != nargs)
+            continue;
+        for (unsigned a = 0; a < nargs; ++a) {
+            if (LLVMGetTypeKind(LLVMTypeOf(args[a])) != want)
+                return NULL;
+        }
+        if (mathfn->intrinsic == NULL)
+            return LLVMBuildFRem(gen->builder, args[0], args[1], "");
+        return genlGpuCall(gen, genlGpuIntrinsic(gen, mathfn->intrinsic, &ftype, 1), args, nargs);
+    }
+    return NULL;
+}
+
 // ---- The kernel -------------------------------------------------------------
 
 // The name a binding is given in the module (an OpName): LLVM's SPIR-V
@@ -575,7 +640,7 @@ static LLVMValueRef genlGpuAddIndex(GenState *gen, LLVMValueRef a, LLVMValueRef 
 
 // The source node an address computation was made for, recorded as it was
 // generated (genlGpuSite), or NULL
-static INode *genlGpuSiteOf(GenState *gen, LLVMValueRef inst) {
+INode *genlGpuSiteOf(GenState *gen, LLVMValueRef inst) {
     unsigned kind = LLVMGetMDKindIDInContext(gen->context, "cone.site", 9);
     LLVMValueRef md = LLVMGetMetadata(inst, kind);
     if (md == NULL || gen->gpusites == NULL)
@@ -940,15 +1005,176 @@ static size_t genlGpuPatch(GenState *gen, uint32_t **wordsp, size_t nwords) {
     return o;
 }
 
+// ---- No contraction ---------------------------------------------------------
+
+// A SPIR-V instruction, by opcode and by the name its assembly gives it
+typedef struct {
+    uint32_t op;
+    const char *name;
+} GenlSpvOp;
+
+// The float arithmetic decorated NoContraction: every arithmetic instruction
+// on floats SPIR-V has, but OpFRem and OpFMod. A driver may fuse a multiply
+// and an add into one rounding (a multiply-add), and reassociate, unless the
+// result says it may not; the CPU does neither, so without the decoration
+// even adds and multiplies differ from the CPU in the last bits. A remainder
+// is left free: the CPU's is exact, as C's fmod always is, and the RTX
+// 4060's matches it bit for bit only when the driver may fuse inside it.
+static const GenlSpvOp genlSpvNoContract[] = {
+    {127, "OpFNegate"}, {129, "OpFAdd"}, {131, "OpFSub"}, {133, "OpFMul"}, {136, "OpFDiv"},
+    {142, "OpVectorTimesScalar"}, {143, "OpMatrixTimesScalar"}, {144, "OpVectorTimesMatrix"},
+    {145, "OpMatrixTimesVector"}, {146, "OpMatrixTimesMatrix"}, {147, "OpOuterProduct"}, {148, "OpDot"}
+};
+
+// What a module holds before its types: capabilities, extensions, imports,
+// the memory model, entry points and their modes, debug names and strings,
+// and last the annotations, after which the new decorations go
+static const GenlSpvOp genlSpvPreamble[] = {
+    {17, "OpCapability"}, {10, "OpExtension"}, {11, "OpExtInstImport"}, {14, "OpMemoryModel"},
+    {15, "OpEntryPoint"}, {16, "OpExecutionMode"}, {331, "OpExecutionModeId"},
+    {7, "OpString"}, {4, "OpSourceExtension"}, {3, "OpSource"}, {2, "OpSourceContinued"},
+    {5, "OpName"}, {6, "OpMemberName"}, {330, "OpModuleProcessed"},
+    {71, "OpDecorate"}, {72, "OpMemberDecorate"}, {73, "OpDecorationGroup"}, {74, "OpGroupDecorate"},
+    {75, "OpGroupMemberDecorate"}, {332, "OpDecorateId"}, {5632, "OpDecorateString"},
+    {5633, "OpMemberDecorateString"}
+};
+
+#define SpvDecorationNoContraction 42
+#define genlSpvCnt(a) (sizeof(a) / sizeof((a)[0]))
+
+static int genlSpvOpIn(const GenlSpvOp *ops, size_t n, uint32_t op) {
+    for (size_t i = 0; i < n; ++i)
+        if (ops[i].op == op)
+            return 1;
+    return 0;
+}
+
+static int genlSpvNameIn(const GenlSpvOp *ops, size_t n, const char *name, size_t len) {
+    for (size_t i = 0; i < n; ++i)
+        if (strlen(ops[i].name) == len && strncmp(ops[i].name, name, len) == 0)
+            return 1;
+    return 0;
+}
+
+// Decorate the result of every float arithmetic instruction NoContraction
+// (genlSpvNoContract), so that no driver fuses or reassociates it, as
+// slangc's '-fp-mode precise' does. LLVM 23's SPIR-V backend has no route
+// from IR to the decoration, so it is added to the module it emitted, each
+// 'OpDecorate <id> NoContraction' after the module's last annotation.
+// 'words' is reallocated; answers its new count.
+static size_t genlGpuNoContraction(uint32_t **wordsp, size_t nwords) {
+    uint32_t *words = *wordsp;
+    size_t at = 0, nops = 0;
+    for (size_t i = 5; i < nwords;) {
+        uint32_t count = words[i] >> 16, op = words[i] & 0xFFFF;
+        if (count == 0 || i + count > nwords)
+            break;
+        if (at == 0 && !genlSpvOpIn(genlSpvPreamble, genlSpvCnt(genlSpvPreamble), op))
+            at = i;
+        if (count >= 3 && genlSpvOpIn(genlSpvNoContract, genlSpvCnt(genlSpvNoContract), op))
+            ++nops;
+        i += count;
+    }
+    if (nops == 0 || at == 0)
+        return nwords;
+
+    uint32_t *out = (uint32_t *)malloc((nwords + 3 * nops) * sizeof(uint32_t));
+    memcpy(out, words, at * sizeof(uint32_t));
+    size_t o = at;
+    for (size_t i = 5; i < nwords;) {
+        uint32_t count = words[i] >> 16, op = words[i] & 0xFFFF;
+        if (count == 0 || i + count > nwords)
+            break;
+        if (count >= 3 && genlSpvOpIn(genlSpvNoContract, genlSpvCnt(genlSpvNoContract), op)) {
+            out[o++] = (3u << 16) | SpvOpDecorate;
+            out[o++] = words[i + 2];
+            out[o++] = SpvDecorationNoContraction;
+        }
+        i += count;
+    }
+    memcpy(&out[o], &words[at], (nwords - at) * sizeof(uint32_t));
+    o += nwords - at;
+    free(words);
+    *wordsp = out;
+    return o;
+}
+
+// The same decorations in the module's assembly, LLVM's text of it, an
+// instruction a line ('%12 = OpFAdd %7 %10 %11'), so that '--asm' shows what
+// the module holds. Answers the new text, which the caller frees, or NULL
+// when there is nothing to decorate.
+static char *genlGpuNoContractionAsm(const char *text, size_t len) {
+    size_t at = len, dlen = 0, davail = 256;
+    char *decs = (char *)malloc(davail);
+    for (size_t i = 0; i < len;) {
+        size_t end = i;
+        while (end < len && text[end] != '\n')
+            ++end;
+        const char *p = &text[i], *lineend = &text[end];
+        while (p < lineend && (*p == ' ' || *p == '\t'))
+            ++p;
+        const char *id = NULL;
+        size_t idlen = 0;
+        if (p < lineend && *p == '%') {
+            id = p;
+            while (p < lineend && *p != ' ')
+                ++p;
+            idlen = p - id;
+            while (p < lineend && (*p == ' ' || *p == '='))
+                ++p;
+        }
+        const char *name = p;
+        while (p < lineend && *p != ' ' && *p != '\r')
+            ++p;
+        size_t namelen = p - name;
+        if (namelen > 0 && *name != ';') {
+            if (at == len && !genlSpvNameIn(genlSpvPreamble, genlSpvCnt(genlSpvPreamble), name, namelen))
+                at = i;
+            if (id && genlSpvNameIn(genlSpvNoContract, genlSpvCnt(genlSpvNoContract), name, namelen)) {
+                while (dlen + idlen + 32 > davail)
+                    decs = (char *)realloc(decs, davail *= 2);
+                dlen += sprintf(&decs[dlen], "\tOpDecorate %.*s NoContraction\n", (int)idlen, id);
+            }
+        }
+        i = end < len ? end + 1 : end;
+    }
+    char *out = NULL;
+    if (dlen > 0 && at < len) {
+        out = (char *)malloc(len + dlen + 1);
+        memcpy(out, text, at);
+        memcpy(&out[at], decs, dlen);
+        memcpy(&out[at + dlen], &text[at], len - at);
+        out[len + dlen] = '\0';
+    }
+    free(decs);
+    return out;
+}
+
 // Emit a module for SPIR-V's Vulkan form: assembly, if asked, from a copy
-// (genlOut says why), and the module itself through genlGpuPatch
+// (genlOut says why), and the module itself through genlGpuPatch; both
+// decorated against contraction (genlGpuNoContraction)
 void genlGpuOut(GenState *gen, char *objpath, char *asmpath) {
     char *err;
     if (asmpath) {
         LLVMModuleRef asmmod = LLVMCloneModule(gen->module);
-        if (LLVMTargetMachineEmitToFile(gen->machine, asmmod, asmpath, LLVMAssemblyFile, &err) != 0) {
+        LLVMMemoryBufferRef asmbuf;
+        if (LLVMTargetMachineEmitToMemoryBuffer(gen->machine, asmmod, LLVMAssemblyFile, &err, &asmbuf) != 0) {
             errorMsg(ErrorGenErr, "Could not emit asm file: %s", err);
             LLVMDisposeMessage(err);
+        }
+        else {
+            const char *text = LLVMGetBufferStart(asmbuf);
+            size_t len = LLVMGetBufferSize(asmbuf);
+            char *decorated = genlGpuNoContractionAsm(text, len);
+            const char *outtext = decorated ? decorated : text;
+            size_t outlen = decorated ? strlen(decorated) : len;
+            FILE *file = fopen(asmpath, "wb");
+            if (file == NULL || fwrite(outtext, 1, outlen, file) != outlen)
+                errorMsg(ErrorGenErr, "Could not write asm file: %s", asmpath);
+            if (file)
+                fclose(file);
+            free(decorated);
+            LLVMDisposeMemoryBuffer(asmbuf);
         }
         LLVMDisposeModule(asmmod);
     }
@@ -963,7 +1189,9 @@ void genlGpuOut(GenState *gen, char *objpath, char *asmpath) {
     uint32_t *words = (uint32_t *)malloc((nwords ? nwords : 1) * sizeof(uint32_t));
     memcpy(words, LLVMGetBufferStart(buf), nwords * 4);
     LLVMDisposeMemoryBuffer(buf);
+    nwords = genlGpuSyncPatch(&words, nwords);
     nwords = genlGpuPatch(gen, &words, nwords);
+    nwords = genlGpuNoContraction(&words, nwords);
     FILE *file = fopen(objpath, "wb");
     if (file == NULL || fwrite(words, 4, nwords, file) != nwords)
         errorMsg(ErrorGenErr, "Could not write obj file: %s", objpath);

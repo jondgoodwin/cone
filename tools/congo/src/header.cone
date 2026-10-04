@@ -338,3 +338,25 @@ fn scanHeader(file &[]u8) Result[Header, String] {
   }
   Ok[Header, String][header];
 }
+
+// Whether a source file declares a compute entry point, 'fn @compute' (congo.py's
+// holds_kernel): read to its end with the header scan's tokens, so that one
+// written in a comment or a string does not count
+fn holdsKernel(file &[]u8) Result[Bool, String] {
+  mut text = String.empty();
+  match fs.readFile(file) {
+    case mut ok Ok { text <=> ok.value; }
+    case imm e Error {
+      imm m = e.value.message();
+      return Error[Bool, String][cat("cannot read ", file, ": ", m.view())];
+    }
+  }
+  mut toks = new Toks(withoutBom(text), 0usize, 1u32, List[Tok].empty(), 0usize);
+  while toks.kindAt(0usize) != tokEof {
+    if toks.isName("fn", 0usize) and toks.isTok(1usize, tokPunct, "@") and toks.isName("compute", 2usize) {
+      return Ok[Bool, String][true];
+    }
+    toks.next();
+  }
+  Ok[Bool, String][false];
+}

@@ -232,6 +232,31 @@ void genlGpuFailCheck(GenState *gen, INode *site, int kind, LLVMValueRef value);
 // it on a GPU target, given its arguments
 int genlIsConePanic(FnDclNode *fndcl);
 LLVMValueRef genlGpuPanic(GenState *gen, LLVMValueRef *args);
+// A call to a C library math function on a GPU target, as its LLVM intrinsic
+// (GLSL.std.450's instruction), or NULL when the function is no such one
+LLVMValueRef genlGpuMath(GenState *gen, FnDclNode *fndcl, LLVMValueRef *args, unsigned nargs);
+
+// The node an instruction was made for, as genlGpuSite marked it, or NULL
+INode *genlGpuSiteOf(GenState *gen, LLVMValueRef inst);
+
+// genlgpusync.c: what a GPU's invocations share
+// A workgroup barrier: every invocation of the workgroup waits there, and the
+// workgroup's memory ('storage' 0) or the storage buffers' (1) is made visible
+LLVMValueRef genlGpuBarrier(GenState *gen, int storage);
+// Mark an atomic instruction with the call to mem's intrinsic it was made for,
+// unless that call is core's own (an Atomic method's), on the Vulkan form
+void genlGpuAtomicSite(GenState *gen, LLVMValueRef inst, INode *call);
+// The address space a global takes on a GPU target, 0 for the data layout's
+unsigned genlGpuGlobalSpace(VarDclNode *glovar);
+// Settle a function's atomic instructions on a GPU target, once the pipeline
+// has given each pointer its space: scope and ordering; in a kernel ('kernel'
+// its entry point, else NULL), one on memory no other invocation reaches is
+// refused. Answers 0 once it has refused one
+int genlGpuAtomics(GenState *gen, LLVMValueRef fn, FnDclNode *kernel);
+// What LLVM's SPIR-V backend says wrongly about atomics, put right in the
+// emitted module (a relaxed operation's semantics, a compare-and-swap's
+// result); 'words' is reallocated, and its new count answered
+size_t genlGpuSyncPatch(uint32_t **wordsp, size_t nwords);
 
 // genllvm.c: the type a pointer is known to point to (an alloca's, a global's,
 // an address computation's, a parameter's as its uses agree), or NULL

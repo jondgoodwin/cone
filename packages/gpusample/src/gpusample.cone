@@ -1,0 +1,46 @@
+// gpusample: a package of Cone kernels, the sample of a package marked for
+// the GPU (targets = ["native", "gpu"] in its congo.toml). Congo compiles it
+// twice: for the CPU, where 'shade' is an ordinary function, the kernel's
+// twin, which a program calls once for each invocation; and for the GPU,
+// into build/<mode>/gpusample.spv, a SPIR-V module whose kernel 'shade' is
+// the compute entry point below, compiled with geomath and libc, which it
+// imports, from their source. Every package it imports must be marked for
+// the GPU too, or Congo refuses the build. A program that imports gpusample
+// gets gpusample.spv beside it, and loads it through gpuwork:
+//
+//   imm spirv = readSpirv("gpusample.spv");
+//   mut kernel = Kernel.make(&device, spirv.view(), "shade", &[READ, READ, READ_WRITE]);
+//
+// Its bindings: 0 the Light, 1 the normals, 2 what it writes, and 3 the
+// kernel's error buffer, eight words, zero before the dispatch
+// (doc/reference/refgpu.html), which gpuwork gives each dispatch and reads
+// itself. tests/dispatch.cone runs it on the GPU and
+// on the CPU and compares the two.
+
+mod gpusample;
+
+import geomath use *;
+
+// What 'shade' is given by value: where the light is, and how strong
+pub struct Light {
+  pub turn Quat;      // turns each normal before it is lit (a unit quaternion)
+  pub dir Vec3;       // toward the light (a unit vector)
+  pub gain f32;
+  pub ambient f32;
+}
+
+// One point's brightness: its normal turned, made a unit vector, and lit by
+// Lambert's law, plus the ambient light
+pub fn lambert(normal Vec3, light Light) f32 {
+  imm n = (light.turn * normal).normalize();
+  imm facing = n.dot(light.dir);
+  light.ambient + light.gain * (if facing > 0. {facing;} else {0.;});
+}
+
+// Each normal's brightness, one invocation each, 64 a workgroup
+pub fn @compute(64) shade(inv Invocation, light Light, normals &[]Vec3, out &[]mut f32) {
+  imm i = usize.from(inv.globalId[0usize]);
+  if i < out.len and i < normals.len {
+    out[i] = lambert(normals[i], light);
+  }
+}

@@ -863,7 +863,8 @@ import, and its `mod` line may restate the package's name but not change it
 (`module_package_files`). These are the files Congo's scan of the package lists.
 `core`, loaded by `parseLoadCore`, is swept the same way. This lookup is the compiler's side of the
 **package folder**, and it lives only as long as the search path does; a Congo
-build names every file itself ("A described build", below).
+build names every file itself ("A described build", below), but for a
+package's kernels (below).
 
 **The packages folder is found by default.** It ends the **package search
 path**, `package_search_paths` in `coneopts.c`, which `lexInit` hands to
@@ -944,6 +945,16 @@ importer. The root generates too, and a submodule generates exactly when its
 parent does (`parseSubmoduleDraw` copies the parent's flag), so the one kind of
 module denied it is an import reached relative to its importer, together with
 every submodule of it (`module_import_submodule`).
+
+**Congo's GPU build relies on it.** On a GPU target every function is inlined
+into the kernel that calls it, so a kernel's compile needs the bodies of what
+it calls, which an include file does not carry. Congo compiles a package's
+kernels as a direct compile, for SPIR-V's Vulkan form, of a one-line module
+importing the package, with `--path` naming the folders its packages are in:
+the package and every package it imports are found on the search path and
+compiled into the kernel's module from source (`tools/congo/README.md`,
+"Kernels for the GPU"). A described build that could name a package's source
+in place of its include file would retire that.
 
 That asymmetry is the whole of the separate-compilation gap, and both sides of
 it are visible in emitted IR:
@@ -1224,9 +1235,9 @@ statement by statement, whether the text goes in whole, goes in cut to an
   file cannot disagree [Q5]): `extern` is written in before the keyword, and the
   body from its `{`, or the value from its `=`, is left out. A global's fold
   clause stays [Q4], and a module-level `static` becomes `extern`. A global's
-  `@threadlocal`, between its permission and its name, stays with nothing done
-  for it, so the importer declares the global thread-local as its definition
-  is.
+  `@threadlocal` or `@workgroup`, between its permission and its name, stays
+  with nothing done for it, so the importer declares the global as its
+  definition is.
 - **Out**, anything else, with the comments directly above it, no blank line
   between. A private declaration nothing an importer expands names is not
   exported, and so not declared.
@@ -1895,7 +1906,8 @@ not built.
 `init`** (refmodule.html). The check is `init`'s own data flow pass
 (`fnDclTypeCheck` asks `modInitOf`): `modInitFlowBegin` clears `VarInitialized`
 on each global the module declares without a value — an `extern` one excepted,
-its value being another object's — so inside `init` such a global is exactly an
+its value being another object's, and a `@workgroup` one, whose value each
+workgroup's invocations write (`modGlobalUninit`) — so inside `init` such a global is exactly an
 uninitialized local. Its first assignment is allowed, an `imm` one's included,
 and carries `FlagFirstAssign`, so nothing is released from the zeroed storage; a
 second assignment of an `imm` one is `ErrorNoMut`; and a read before any
@@ -1929,7 +1941,9 @@ global's storage). Its finalizer (`finalfn`) is that `drop`, else its own
 `final`. A C-named global is C's storage and is not finalized. Nor is a
 thread-local, whose copies are each thread's and which the module's `drop`,
 running on one thread, could not all reach: one whose type needs finalizing is
-`ErrorThreadLocalFinal`, asked in the same walk. A global is finalized whether
+`ErrorThreadLocalFinal`, asked in the same walk. Nor is a `@workgroup` global,
+a copy for each workgroup on a GPU, whose type may need nothing finalized
+(`ErrorWorkgroupData`, asked by type check). A global is finalized whether
 it was given a literal or assigned by `init`, since either way it holds a value
 by then. A module that needs a `drop` and declares one
 of its own is `ErrorModLifecycle`: both would be one symbol.

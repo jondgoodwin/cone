@@ -1,0 +1,49 @@
+// The C library's math on SPIR-V's Vulkan form: no GPU has the C library, so
+// each of its math functions, by its C symbol, is the LLVM intrinsic of the
+// same meaning, which LLVM's SPIR-V back end selects as GLSL.std.450's
+// extended instruction; 'fmod' is 'frem', SPIR-V's OpFRem. No call to the C
+// library is left, so the module imports nothing and validates for Vulkan.
+// The float forms, the double forms Vulkan takes at 64 bits, and libc's
+// 'fabsf', which libc writes inline as 'fabs' widened and narrowed, made the
+// float intrinsic itself.
+
+mod module_target_spirv_math;
+
+import libc;
+
+// sin, cos, tan, asin, acos, atan, atan2
+fn @compute(64) trig(inv Invocation, xs &[]f32, out &[]mut f32) {
+  imm i = usize.from(inv.globalId[0]);
+  if i < out.len and i < xs.len {
+    imm x = xs[i];
+    out[i] = libc.sinf(x) + libc.cosf(x) + libc.tanf(x) + libc.asinf(x * 0.5) + libc.acosf(x * 0.5)
+      + libc.atanf(x) + libc.atan2f(x, 2.);
+  }
+}
+
+// exp, log, pow, sqrt
+fn @compute(64) powers(inv Invocation, xs &[]f32, out &[]mut f32) {
+  imm i = usize.from(inv.globalId[0]);
+  if i < out.len and i < xs.len {
+    imm x = xs[i];
+    out[i] = libc.expf(x) + libc.logf(x) + libc.powf(x, 1.5) + libc.sqrtf(x);
+  }
+}
+
+// fabs, floor, ceil, fmod
+fn @compute(64) rounding(inv Invocation, xs &[]f32, out &[]mut f32) {
+  imm i = usize.from(inv.globalId[0]);
+  if i < out.len and i < xs.len {
+    imm x = xs[i];
+    out[i] = libc.fabsf(x) + libc.floorf(x) + libc.ceilf(x) + libc.fmodf(x, 3.);
+  }
+}
+
+// The double forms GLSL.std.450 takes at 64 bits: sqrt, floor, ceil, and fmod
+fn @compute(64) wide(inv Invocation, xs &[]f32, out &[]mut f32) {
+  imm i = usize.from(inv.globalId[0]);
+  if i < out.len and i < xs.len {
+    imm x = f64.from(xs[i]);
+    out[i] = f32.from(libc.sqrt(x) + libc.floor(x) + libc.ceil(x) + libc.fmod(x, 3.));
+  }
+}

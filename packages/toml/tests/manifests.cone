@@ -8,7 +8,8 @@
 //
 // What Congo asks of a manifest (tools/congo/congo.py, 'read_manifest'):
 // only the tables [package] and [link]; [package] holding only name,
-// version and output, each a string; [link] holding only libraries, paths
+// version and output, each a string, and targets, a list naming "native"
+// and perhaps "gpu"; [link] holding only libraries, paths
 // and runtime, each a list of strings. Every repository manifest keeps to that,
 // and here each must also be named for its folder and build a library or an
 // executable. A manifest that does not is printed with what is wrong.
@@ -94,10 +95,25 @@ fn checkManifest(file &[]u8, folder &[]u8) String {
   imm keys = pkg.keys();
   i = 0usize;
   while i < keys.len() {
-    if not (oneOf(keys[i].view(), "name", "version") or keys[i].equals("output")) {
+    if not (oneOf(keys[i].view(), "name", "version") or oneOf(keys[i].view(), "output", "targets")) {
       return String.from("a [package] key that is not Congo's");
     }
     i = i + 1usize;
+  }
+  if pkg.has("targets") {
+    match pkg.getStrings("targets") {
+      case imm t Some {
+        mut native = false;
+        mut j = 0usize;
+        while j < t.value.len() {
+          if t.value[j].equals("native") { native = true; }
+          elif not t.value[j].equals("gpu") { return String.from("a target that is not Congo's"); }
+          j = j + 1usize;
+        }
+        if not native { return String.from("targets without native"); }
+      }
+      case is None { return String.from("targets that are not a list of strings"); }
+    }
   }
   imm name = str(pkg, "name");
   if not name.equals(folder) { return String.from("its name is not its folder's"); }
@@ -209,6 +225,8 @@ fn repository() {
   isList(process["link"], "libraries", "shell32", "process links shell32");
   imm sync = readPackage(packages.view(), "sync");
   isList(sync["link"], "libraries", "synchronization", "sync links synchronization");
+  imm geomath = readPackage(packages.view(), "geomath");
+  isList(geomath["package"], "targets", "native|gpu", "geomath is marked for the GPU");
   imm own = readPackage(packages.view(), "toml");
   isStr(own["package"], "version", "0.1.0", "this package's version");
   expect(not own.has("link"), "this package links nothing");

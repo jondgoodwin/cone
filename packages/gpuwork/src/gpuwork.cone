@@ -27,8 +27,8 @@
 //   // a Cone kernel's failure: done[0usize].ok false, done[0usize].failures[0usize]
 //
 //   Kernel.make(device, spirv, entryPoint, access)   a kernel, made once  (KERNELS)
-//   kernel.isValid()  .bindings .workgroup .hasTwin .isCone .name  kernel.fileName(id)
-//   READ  READ_WRITE  MAX_KERNEL_BINDINGS  MAX_CONE_KERNEL_BINDINGS
+//   readSpirv(file)  kernel.isValid()  .bindings .workgroup .hasTwin .isCone .name
+//   kernel.fileName(id)  READ  READ_WRITE  MAX_KERNEL_BINDINGS  MAX_CONE_KERNEL_BINDINGS
 //   upload(device, words)  uploadValue(device, &value)  zeroed(device, n)  (BUFFERS)
 //   wordsOf(buffer)
 //   Job.make(device)  job.give(buffer)  job.dispatch(device, kernel, slots, x, y, z)  (JOBS)
@@ -68,7 +68,10 @@
 // OpSourceExtension for each source file, which conec always writes): it
 // has an error buffer, bound after its buffers (FAILURES ON THE GPU), so it
 // binds at most 7 buffers (MAX_CONE_KERNEL_BINDINGS), and 'Kernel.make'
-// refuses one of 8.
+// refuses one of 8. A Cone package's kernels are built by Congo into
+// <package>.spv, which it copies beside every program that imports the
+// package; 'readSpirv("<package>.spv")' reads it from the program's own
+// folder (tools/congo/README.md, "Kernels for the GPU").
 //
 // JOBS AND OWNERSHIP. A job owns the buffers given to it ('give' moves one
 // in and answers its slot). Its dispatches bind them by slot, each seeing
@@ -226,7 +229,8 @@
 //
 //   gpuwork.cone  refusals, kernelFailures
 //   kernel.cone   Kernel, its direct twin, and what is read from the SPIR-V:
-//                 its workgroup, its bindings' shapes, its Cone source files
+//                 its workgroup, its bindings' shapes, its Cone source files;
+//                 readSpirv
 //   job.cone      buffers made and read back, Job, and a Cone kernel's error
 //                 buffer and KernelFailure
 //   works.cone    Ticket, Target, Completion and Works
@@ -242,6 +246,9 @@ import sync use Arc, Sender, Receiver, Channel;
 import iobuf use IoBuf;
 import iocore;
 import gpu use *;
+import fs;
+import path;
+import process;
 
 // ---------------------------------------------------------------------------
 // Failures

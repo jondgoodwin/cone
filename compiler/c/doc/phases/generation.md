@@ -1178,8 +1178,10 @@ it. So the GPU pipeline and what follows it keep to those shapes:
   GVN and the inliner each fold it), so a struct's first field is read
   through the struct's own pointer and its array field indexed from it, and
   the backend indexes the struct itself; `genlGpuRetypeFn` puts the zero
-  indices back, from the type an alloca, a global, an address computation or
-  a parameter's uses say the pointer points to. GVN does the opposite too:
+  indices back, from the type an alloca, a global, an address computation, a
+  storage buffer's element or a parameter's uses say the pointer points to,
+  for a load, a store, an address computation or an atomic operation (an
+  `Atomic[u32]`'s number is its first field). GVN does the opposite too:
   an array field's address and its first element's are one number, so it
   takes the one for the other, and the array is then indexed from its first
   element's address; `genlGpuRetypeFn` drops the trailing zero indices that
@@ -1196,6 +1198,11 @@ it. So the GPU pipeline and what follows it keep to those shapes:
   branch, as a module the validator refuses, and with CodeGenPrepare on, the
   latter crashed it. A function it structures has one return, so a kernel's
   returns, one for each failed check, are made one (`genlGpuOneReturn`).
+  `structurizecfg` takes no switch: it leaves each of a switch's branches a
+  `br i1 undef`, which the validator accepts and the GPU runs as it pleases.
+  simplifycfg makes a switch of an if-elif chain on one integer, so
+  `lower-switch` makes each switch a tree of comparisons just before it
+  (`module_target_spirv_switch`).
 - **A struct or array is loaded from or stored into a storage buffer a scalar
   at a time** (`genlGpuBufferAccess`, after the pipeline): the backend gives
   the buffer's laid-out struct and a local's two SPIR-V types, and a whole
@@ -1263,7 +1270,7 @@ a function (`OpFunctionCall`, five words) becomes `OpArrayLength` of the
 handle it was handed (the variable's copy), member 0 (five words), and the
 declarations, their names and linkage decorations go, with the `Linkage`
 capability when nothing else is imported. `--asm` writes LLVM's assembly,
-which shows the calls.
+which shows the calls (and the decorations against contraction, below).
 
 **A failed check records itself and leaves the kernel.** On a GPU target
 `genlPanic` calls `cone.gpu.fail(kind, file, line, value)`, declared and never
@@ -1301,7 +1308,7 @@ two halves, before its control flow is structured:
   generation (`ErrorGpuRefChoice`).
 
 The second half (`globaldce`, `infer-address-spaces` again, for what the
-folding made, `instsimplify`, `adce`, `structurizecfg`) follows. A library
+folding made, `instsimplify`, `adce`, `lower-switch`, `structurizecfg`) follows. A library
 compiled for a GPU makes no kernel of a function that is no entry point: its
 failure calls stay calls to a function the module imports, and a slice
 indexed in it has nothing to be folded into.
@@ -1310,15 +1317,156 @@ An entry point compiled for the OpenCL form is refused
 (`ErrorComputeTarget`), and two of one name in a compile
 (`ErrorComputeAttr`), since a dispatch finds a kernel by its name.
 
+### The C library's math
+
+**No GPU has the C library, so its math is the GPU's own** (`genlGpuMath`,
+called by `genlFnCallInternal` before a call or an inline body is
+generated). A call to a function whose C symbol is one of the C library's
+math functions, `libc`'s bindings or any `@c` declaration of the same
+symbol, its arguments of the type the name says (`float` with an `f` after
+it, else `double`), is on a GPU target the LLVM intrinsic of the same
+meaning, which LLVM 23's SPIR-V backend selects as GLSL.std.450's extended
+instruction: `sqrt`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`,
+`exp`, `log`, `pow`, `fabs`, `floor` and `ceil`, each `llvm.<name>`; `fmod`
+is `frem`, SPIR-V's OpFRem, whose sign is x's, as C's is. `fabsf`, which
+`libc` writes inline as `fabs` widened and narrowed (the UCRT has no symbol
+for it), is caught before its body is expanded, so the module asks for no
+64-bit float. The OpenCL form selects OpenCL.std's instructions for the same
+intrinsics. The CPU is untouched, and the C library is called there. Core's
+`sqrt`, `sin` and `cos` methods are `llvm.sqrt`, `llvm.sin` and `llvm.cos` on
+every target.
+
+`module_target_spirv_math` pins the intrinsics and the instructions (its
+`asm` check reads `--asm`'s `.spvasm`). The double forms of `sqrt`, `fabs`,
+`floor`, `ceil` and `fmod` are valid at 64 bits, with the `Float64`
+capability; GLSL.std.450 has no 64-bit trigonometry, `exp`, `log` or `pow`,
+and the validator refuses a module that calls one. `copysign` and `ldexp`,
+which `libc` does not bind, have intrinsics LLVM 23's backend cannot select.
+
+What each computes, against the CPU's C library, was measured on an RTX 4060
+over 65,536 arguments a function: `fabs`, `floor` and `ceil` bit for bit;
+`fmod` bit for bit as the driver compiles it; `sqrt` within 1 ulp; `asin`,
+`acos`, `atan` and `atan2` within 2; `exp` within 8 over [-10, 10]; `pow`
+within 27; `log` within 87 ulp near 1, where it is near 0; `sin` and `cos`
+within 4e-7 absolute in [-pi, pi], 1e-5 in [-100, 100]; `tan` within 4e-5 in
+[-1.5, 1.5]. Vulkan's own bounds are in the [reference](../../../../doc/reference/refgpu.html).
+
+**Every float operation but the remainder is decorated `NoContraction`**
+(`genlGpuNoContraction`), as slangc's `-fp-mode precise` does, so no driver
+fuses a multiply and an add into one rounding or reassociates, and each is
+rounded on its own as the CPU rounds it. Undecorated, the RTX 4060's driver
+fuses: noise's `fbm3`, all adds, multiplies and `floor`, matched the CPU at
+52,304 of the bake's 262,144 voxels (within 1.2e-6); decorated, at all of
+them, value and derivatives. LLVM 23's backend emits no such decoration from
+IR (neither `!spirv.Decorations` metadata on an instruction nor
+`llvm.spv.assign.decoration` on a value reaches the module), so it is added
+to the emitted module after `genlGpuPatch`: an `OpDecorate <id>
+NoContraction` for the result of each `OpFNegate`, `OpFAdd`, `OpFSub`,
+`OpFMul`, `OpFDiv`, `OpVectorTimesScalar`, the matrix products,
+`OpOuterProduct` and `OpDot` (every arithmetic instruction on floats SPIR-V
+has), after the module's last annotation. `OpFRem` and `OpFMod` are left
+free: the CPU's `fmod` is exact, and the RTX 4060's remainder matched it bit
+for bit undecorated and at 62% of arguments decorated (within 3.8e-6), the
+driver's own expansion of it needing the fused multiply-add. `--asm`'s text
+gets the same decorations (`genlGpuNoContractionAsm`), so the `asm` check
+target sees them (`module_target_spirv_nocontract`, and
+`module_target_spirv_nocontract_frem` for the remainder). It is always on,
+with no switch to turn it off; the bake's dispatch took about 9% longer
+(100 to 109 microseconds for 64^3 voxels on the RTX 4060). `NoContraction`
+needs the `Shader` capability, so the OpenCL form cannot carry it; that form
+has no kernels (an entry point there is refused), and its own equivalent,
+the `ContractionOff` execution mode, would go on a kernel's entry point.
+
+The CPU never fuses: generation marks no float operation `contract` or fast
+and emits no `llvm.fmuladd`, and LLVM's target machine fuses only those
+(`FPOpFusion::Standard`, the default the C API leaves), so `--cpu=native`
+on a CPU with FMA instructions emits `vmulss` and `vaddss`, no `vfmadd`, as
+`generic` does.
+
+### What invocations share
+
+**Invocations share a storage buffer and a `@workgroup` global**
+(`genlgpusync.c`; [reference](../../../../doc/reference/refgpu.html#atomics)).
+A buffer of `Atomic[u32]` or `Atomic[i32]` is a run-time array of core's
+`Atomic` struct, one `i32` wide, and an atomic method is core's: a call to
+mem's intrinsic on `self as *T`, the same `atomicrmw`, atomic `load` or
+`store` or `cmpxchg` as on the CPU (`genlAtomicIntrinsic`, which on the Vulkan
+form marks it with its call, `genlGpuAtomicSite`, unless the call is core's
+own). A `@workgroup` global (`DclWorkgroup`) is made in address space 3,
+SPIR-V's Workgroup storage class (`genlGloVarName`, `genlGpuGlobalSpace`), its
+initializer `undef`, an `OpVariable` with none: a workgroup's copy starts
+undefined, and a zero initializer would need Vulkan's
+`shaderZeroInitializeWorkgroupMemory`. Its address is cast to the flat space
+where it is taken, as any global's, and inference gives each use space 3 back:
+a borrow of it has the Workgroup kind by its origin. On the CPU it is an
+ordinary global, zero.
+
+**Each atomic is settled after the pipeline** (`genlGpuAtomics`, once
+`genlGpuAggregates` has run, over every function), when each pointer has its
+origin's space:
+
+- **its scope is its memory's**: `syncscope("device")` in a storage buffer
+  (11), `syncscope("workgroup")` in workgroup memory (3). One left at LLVM's
+  system scope would be SPIR-V's CrossDevice, which Vulkan refuses; the error
+  buffer's count has its scope already;
+- **sequential consistency is acquire-release** (a load's acquire, a
+  store's release): Vulkan's validator refuses SequentiallyConsistent
+  semantics outright (`VUID-StandaloneSpirv-MemorySemantics-10866`);
+- **an atomic at a constant place** (a scalar `@workgroup` Atomic, a
+  workgroup array's element at a constant index) is reached by an address
+  computation that is an instruction (`genlGpuAtomicConstPtr`): LLVM folds a
+  constant address of offset zero into the global itself, and the backend's
+  pointer-cast legalisation crashed on an atomic through a pointer to the
+  global's struct or array. The computation is built with a frozen first
+  index, which nothing folds, and the constant put back; the first index steps
+  the pointer and indexes no type, so the instruction's result type is known;
+- **a compare-and-swap is `llvm.spv.cmpxchg`** (`genlGpuCompareSwap`): LLVM
+  23's SPIR-V backend crashed on `cmpxchg` in every form measured, in its
+  pointer-cast legalisation. The intrinsic, which the backend's own
+  instruction emission makes of a `cmpxchg`, takes the pointer, the value
+  expected, the value to store, the scope and the two semantics, written here
+  (the failure's acquire, or none for relaxed), and answers the value seen;
+  whether it stored is that value compared with the one expected;
+- **in a kernel, one on memory no other invocation reaches** (a local
+  `Atomic`, a global not `@workgroup`, the Private space 10) is refused,
+  `ErrorGpuAtomicPlace`, at mem's call where the program wrote one, else once
+  at the kernel; Vulkan allows atomics only on shared memory. Outside a
+  kernel (a library's function taking a reference) the memory is not known,
+  and its scope is the device's.
+
+**Two things LLVM 23's SPIR-V backend writes wrongly are put right in the
+emitted module** (`genlGpuSyncPatch`, before `genlGpuPatch`). A relaxed
+atomic's semantics carry the storage class's bit (UniformMemory or
+WorkgroupMemory) with no ordering, which Vulkan refuses
+(`VUID-StandaloneSpirv-MemorySemantics-10871`); each such operand is made a
+constant 0, None, added after the 32-bit integer type if the module has none.
+And after `OpAtomicCompareExchange` the backend inserts the result and its
+comparison into a value of the scalar type the intrinsic is declared with,
+which no module may hold: the first insertion goes, and the second becomes an
+`OpCopyObject` of the result, which is what every use of it wants. `--asm`
+writes LLVM's assembly, before either.
+
+**`workgroupBarrier()` and `storageBarrier()`** are core's intrinsics,
+expanded by `genlGpuBarrier` on a GPU target into
+`llvm.spv.group.memory.barrier.with.group.sync` (`OpControlBarrier`,
+Workgroup execution and memory scope, AcquireRelease | WorkgroupMemory) and
+`llvm.spv.device.memory.barrier.with.group.sync` (Workgroup execution, Device
+memory scope, AcquireRelease | UniformMemory | ImageMemory), the ones Clang's
+HLSL makes; both are `convergent`, which keeps the inliner and the structurizer
+from moving them. On the CPU each is nothing: the loop that runs a kernel runs
+one invocation at a time.
+
 What does not work yet:
 
-- The math functions Cone takes from the C library (`floorf`, `ceilf` and
-  their kind, which noise's lattice and sdf's grid call) are left as imports,
-  so a kernel calling one carries the `Linkage` capability, which Vulkan's
-  environment refuses. An imported package's functions are left as imports
-  where a build description compiles the package on its own; found on the
-  package search path, as a direct `conec` compile finds geomath, it is
-  compiled into the kernel's object.
+- A kernel's CPU twin runs one invocation at a time, so a kernel whose
+  invocations read, after a barrier, what invocations after them write (a
+  workgroup's prefix sum) gives another answer on the CPU; nothing refuses
+  it.
+- An imported package's functions are left as imports where a build
+  description compiles the package on its own, so a kernel calling one
+  carries the `Linkage` capability, which Vulkan's environment refuses; found
+  on the package search path, as a direct `conec` compile finds geomath, the
+  package is compiled into the kernel's object.
 - A library's function taking a slice, compiled for a GPU on its own, has its
   slice's elements reached by arithmetic, which the validator refuses: only
   in a kernel is there an origin to fold them into.
@@ -1363,7 +1511,7 @@ variables.
 | | `genpgm` | generate, verify, dump, optimize (release: LLVM's `default<O2>` for the target machine; a GPU target's pipeline inlines, breaks up aggregates and infers address spaces, then the kernels are settled, then the control flow is structured, at every level), emit; nothing past generation once it reported an error, nor once a kernel's slice was refused |
 | | `genlGpuCalls`, `genlCallWalk`, `genlRecursion` | on a GPU target, every defined function but a kernel marked `alwaysinline`, and a cycle of calls refused (section 7) |
 | | `genlGpuAggregates`, `genlGpuAggregatesFn`, `genlAggLeaves` | on a GPU target, after optimization, each struct or array value carried as its scalar leaves (section 7) |
-| | `genlGpuRetypeFn`, `genlGpuPointee` | on a GPU target, after optimization, a first field's address computed from its struct's type again, and an array's from its first element's (section 7) |
+| | `genlGpuRetypeFn`, `genlGpuPointee` | on a GPU target, after optimization, a first field's address computed from its struct's type again (for a load, a store, an address computation or an atomic), and an array's from its first element's (section 7) |
 | | `genlGpuGepChainsFn` | on a GPU target, after optimization, an address computed from another in one step, or beside it (section 7) |
 | | `genlProgram` | create the module with the target's triple and data layout, the two-pass symbols-then-implementations walk, then the stitched pair |
 | | `genlStitchFn`, `genlStitch` | the program's stitched init and final: declared on the first call to `initAll()` or `finalAll()`, built last, every module's `init` in the module order and every finalizer in the reverse |
@@ -1390,10 +1538,15 @@ variables.
 | | `genlVtableThunk` | the function filling a slot a folded method satisfies: shift the receiver along the recorded field path, tail-call the method |
 | `genllvm/genlgpu.c` | `genlComputeEntry`, `genlGpuInvocation`, `genlGpuHandle`, `genlGpuArrayLength` | a compute entry point's kernel: its parameters from the bindings and the built-ins, each buffer's count by a call `genlGpuPatch` rewrites (section 7, "Compute entry points") |
 | | `genlGpuFailCheck`, `genlGpuPanic`, `genlIsConePanic` | on a GPU target, a failed check and core's `panic` as a call to `cone.gpu.fail` |
+| | `genlGpuMath` | on a GPU target, a call to the C library's math by its C symbol as the LLVM intrinsic, GLSL.std.450's instruction (section 7, "The C library's math") |
 | | `genlGpuEntries`, `genlGpuRecord`, `genlGpuFileId`, `genlGpuOneReturn` | each kernel settled once everything is inlined: a failure recorded in its error buffer and the kernel left, its returns made one |
 | | `genlGpuSlices`, `genlGpuFold`, `genlGpuPartOf`, `genlGpuSite` | each step by pointer arithmetic folded into an access chain of a buffer or fixed array, or refused (`ErrorGpuSliceOrigin`) where the node it was made for is |
 | | `genlGpuBufferAccess` | a struct or array loaded from or stored into a storage buffer a scalar at a time |
 | | `genlGpuOut`, `genlGpuPatch` | the Vulkan form's module emitted to memory, `OpArrayLength` and the source files' list written into it |
+| | `genlGpuNoContraction`, `genlGpuNoContractionAsm` | every float operation's result but a remainder's decorated `NoContraction`, in the module and in `--asm`'s text (section 7, "The C library's math") |
+| `genllvm/genlgpusync.c` | `genlGpuAtomics`, `genlGpuAtomicConstPtr`, `genlGpuCompareSwap`, `genlGpuAtomicSite` | on a GPU target, after optimization, each atomic's scope and ordering from its memory, an atomic at a constant place reached by an address-computing instruction, a compareSwap as `llvm.spv.cmpxchg`, one on unshared memory refused in a kernel (`ErrorGpuAtomicPlace`) (section 7, "What invocations share") |
+| | `genlGpuBarrier`, `genlGpuGlobalSpace` | the two barriers as LLVM's SPIR-V intrinsics; a `@workgroup` global's address space |
+| | `genlGpuSyncPatch` | the emitted module put right: a relaxed atomic's semantics None, a compare-and-swap's result rid of the insertions the backend writes after it |
 | `genllvm/genlcabi.c` | `genlCAbiTarget`, `genlIsCAbiFn`, `genlCAbiPass` | which C ABI the target follows, which functions cross by it, and how one struct crosses |
 | | `genlCAbiExtend`, `genlCAbiMarkExtends` | the `zeroext` or `signext` a narrow integer crosses with, marked on a declaration or a call |
 | | `genlFnDclType`, `genlCAbiDeclare`, `genlFnDclCall`, `genlFnDclParm`, `genlFnDclReturn` | a declared function's LLVM type, its `sret` and widening marks, a direct call to it, its prologue's parameters and its returns — lowered for a C-named one |

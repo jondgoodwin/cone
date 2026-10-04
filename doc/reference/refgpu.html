@@ -15,14 +15,16 @@
 
 	<p style="margin-left: 40px;"><i>Note: Compute entry points are implemented for SPIR-V's
 		Vulkan form (<span class="pre">conec --triple=spirv1.6-unknown-vulkan1.3</span>), with
-		their buffers, their Invocation and their error buffer as described below. Not yet:
-		Congo building a package's kernels (each module is compiled with
-		<span class="pre">conec</span> directly), <span class="pre">gpuwork</span> binding the
-		error buffer itself, deciding which packages may run on a GPU,
-		refusing the features a GPU lacks where they are written, textures, atomics in buffers,
-		workgroup memory and <span class="pre">f16</span>. The math functions Cone takes from
-		the C library (<span class="pre">floorf</span> and its kind) are not yet a GPU's built-ins,
-		so a kernel calling one is not yet a module Vulkan accepts.</i></p>
+		their buffers, their Invocation, their error buffer, atomics on buffer elements,
+		workgroup memory and barriers as described below, and Congo builds a package's
+		kernels (below, "A package's kernels"). Not yet:
+		<span class="pre">gpuwork</span> binding the error buffer itself,
+		refusing the features a GPU lacks where they are written, textures, a checked form of
+		workgroup memory, a CPU twin that runs a workgroup's invocations together (so that one
+		reading another's writes across a barrier gets the GPU's answer), and
+		<span class="pre">f16</span>. Floating-point operations are not
+		yet marked to keep the driver from fusing a multiply and an add, so a kernel's float
+		arithmetic is not yet bit for bit the CPU's (<a href="#math">below</a>).</i></p>
 
 	<p>A GPU runs one function, a kernel, thousands of times at once, each run an
 		<i>invocation</i> working on its own part of the data. Cone writes a kernel as an
@@ -83,8 +85,9 @@ fn @compute(64) bake(inv Invocation, parts &amp;[]Part, out &amp;[]mut f32) {
 
 	<p>What a buffer holds is shared byte for byte between the CPU and the GPU, so it may
 		hold only what the two lay out alike: 32-bit numbers (<span class="pre">i32</span>,
-		<span class="pre">u32</span>, <span class="pre">f32</span>), and structs and fixed arrays
-		of them, nested as deep as wanted. A <span class="pre">Bool</span>, a number of 8, 16 or
+		<span class="pre">u32</span>, <span class="pre">f32</span>), their atomics
+		(<span class="pre">Atomic[u32]</span> and <span class="pre">Atomic[i32]</span>, below), and
+		structs and fixed arrays of them, nested as deep as wanted. A <span class="pre">Bool</span>, a number of 8, 16 or
 		64 bits, <span class="pre">usize</span> or <span class="pre">isize</span> (as wide as each
 		target's addresses), a reference, slice or pointer, an enum or an
 		<span class="pre">Option</span> is refused, with the field that holds it. A struct of
@@ -130,6 +133,185 @@ fn @compute(64) bake(inv Invocation, parts &amp;[]Part, out &amp;[]mut f32) {
 		however many functions it was handed through and however it was cut. A slice that came
 		from anything else, a pointer to a single value say, is refused where it is
 		indexed.</p>
+
+	<h3 id="math">Math on the GPU</h3>
+	<p>No GPU has the C library. A call to one of its math functions, the
+		<span class="pre">libc</span> package's or any <span class="pre">@c</span> function of
+		the same C name, is on a GPU the GPU's own instruction (GLSL.std.450's, in SPIR-V), as
+		are <span class="pre">f32</span>'s and <span class="pre">f64</span>'s
+		<span class="pre">sqrt</span>, <span class="pre">sin</span> and
+		<span class="pre">cos</span> methods. On the CPU nothing changes: the C library is
+		called.</p>
+	<table>
+	<tr><th>C function (and its <span class="pre">f</span> form)</th><th>On the GPU</th>
+		<th>Vulkan's precision</th><th>Measured against the CPU</th></tr>
+	<tr><td><span class="pre">fabs</span>, <span class="pre">floor</span>,
+		<span class="pre">ceil</span></td><td>FAbs, Floor, Ceil</td><td>exact</td>
+		<td>bit for bit</td></tr>
+	<tr><td><span class="pre">fmod</span></td><td>OpFRem (the sign of x, as C's)</td>
+		<td>from x - y trunc(x / y)</td><td>bit for bit where the driver fuses it, which it
+		may not</td></tr>
+	<tr><td><span class="pre">sqrt</span></td><td>Sqrt</td><td>from 1 / InverseSqrt</td>
+		<td>within 1 ulp</td></tr>
+	<tr><td><span class="pre">asin</span>, <span class="pre">acos</span>,
+		<span class="pre">atan</span>, <span class="pre">atan2</span></td>
+		<td>Asin, Acos, Atan, Atan2</td><td>atan and atan2 4096 ulp; asin and acos from
+		atan2</td>
+		<td>within 2 ulp</td></tr>
+	<tr><td><span class="pre">exp</span>, <span class="pre">log</span>,
+		<span class="pre">pow</span></td><td>Exp, Log, Pow</td>
+		<td>3 + 2|x| ulp; 3 ulp outside [0.5, 2], absolute 2<sup>-21</sup> inside; from
+		exp2(y log2 x)</td><td>exp within 8 ulp over [-10, 10]; log within 87 ulp (near 1,
+		where it is near 0, 1e-6 absolute); pow within 27 ulp</td></tr>
+	<tr><td><span class="pre">sin</span>, <span class="pre">cos</span>,
+		<span class="pre">tan</span></td><td>Sin, Cos, Tan</td><td>absolute 2<sup>-11</sup>
+		in [-pi, pi]; tan from sin / cos</td><td>absolute 4e-7 in [-pi, pi], 1e-5 in
+		[-100, 100]; tan 4e-5 in [-1.5, 1.5]</td></tr>
+	</table>
+	<p>What was measured was an RTX 4060 against the Windows C runtime, 65,536 arguments a
+		function. Where a precision is an approximation, two GPUs differ from each other as well
+		as from the CPU, and nothing computed from such a function is the same everywhere. The
+		<span class="pre">f64</span> forms of the exact functions and of
+		<span class="pre">sqrt</span> and <span class="pre">fmod</span> are the GPU's at 64
+		bits, which needs a device with 64-bit floats (WebGPU has none); Vulkan has no 64-bit
+		<span class="pre">sin</span>, <span class="pre">cos</span>,
+		<span class="pre">tan</span>, inverse trigonometry, <span class="pre">exp</span>,
+		<span class="pre">log</span> or <span class="pre">pow</span>, and refuses a module
+		that asks for one.</p>
+	<p>A GPU's driver may also fuse a multiply and an add into one rounding, or reorder a
+		sum, which the CPU does not. conec forbids both in everything it compiles for the
+		GPU: each float addition, subtraction, multiplication, division and negation is
+		rounded on its own, in the order written, as the CPU rounds it (SPIR-V's
+		NoContraction, on every such result). Vulkan rounds an addition, a subtraction and a
+		multiplication correctly, so arithmetic built only from those,
+		<span class="pre">floor</span>, <span class="pre">ceil</span>,
+		<span class="pre">fabs</span> and comparisons gives the same bits on every GPU as on
+		the CPU, a subnormal result aside, which Vulkan lets a GPU flush to zero.
+		<span class="pre">noise</span>'s fBm, measured, matches the CPU at every one of its
+		bake's 262,144 points, value and derivatives, as do its value and gradient noise,
+		its other fractal sums and its warps. What takes a square root, a division (Vulkan's
+		bound 2.5 ulp, measured within 2) or another function of the table above is close,
+		not identical. A remainder, <span class="pre">fmod</span>, is left free to fuse,
+		since that is how the RTX 4060 computes C's exact remainder: forbidden, it matched at
+		62% of arguments. The CPU never fuses, on any CPU conec targets, one with fused
+		multiply-add instructions too (<span class="pre">--cpu=native</span>).</p>
+
+	<h2 id="packages">A package's kernels</h2>
+	<p>Whether a package may run on a GPU is said by the package: its manifest marks it,
+		<span class="pre">targets = ["native", "gpu"]</span> in Congo's
+		<span class="pre">congo.toml</span> (a spelling that may yet change). Congo compiles a
+		marked library whose source holds compute entry points for the GPU as well as for the
+		CPU, into one SPIR-V module, <span class="pre">&lt;package&gt;.spv</span>, holding each
+		of its kernels, and copies it beside every program that imports the package, where
+		<span class="pre">gpuwork</span>'s <span class="pre">readSpirv</span> reads it. Every
+		package a kernel's package imports, at any depth, must be marked too, or Congo refuses
+		the build before compiling anything, naming the imports that reached the unmarked one.</p>
+	<p>On a GPU every function a kernel calls is inlined into it, so no function is marked
+		for the GPU on its own and none carries its body in an include file: the marked packages
+		a kernel imports are compiled into its module from their source. Only what a kernel
+		reaches becomes part of it. Which of a marked package's features a GPU lacks is the
+		compiler's to say, where they are used.
+		(<span class="pre">tools/congo/README.md</span>, "Kernels for the GPU", is how Congo
+		does it.)</p>
+
+	<h2 id="atomics">Atomics</h2>
+
+<pre><code>fn @compute(64) compact(inv Invocation, input &amp;[]u32, count &amp;[]mut Atomic[u32], out &amp;[]mut u32) {
+  imm i = usize.from(inv.globalId[0]);
+  if i &lt; input.len and input[i] % 3u32 == 0u32 {
+    imm slot = count[0usize].addOrdered(1u32, MemOrder.Relaxed[]);
+    out[usize.from(slot)] = input[i];
+  }
+}</code></pre>
+
+	<p>A buffer of <span class="pre">Atomic[u32]</span> or <span class="pre">Atomic[i32]</span>
+		holds numbers that invocations change together, each change indivisible: a counter
+		several invocations add to, or one that hands each kept element its slot, as above. It
+		is core's <a href="refconc.html">Atomic</a>, the same type and the same methods as on the
+		CPU: four bytes, its number and nothing more, as WebGPU's
+		<span class="pre">atomic&lt;u32&gt;</span> is, so the CPU reads the buffer as numbers. An
+		atomic may also be a field of a buffer's struct, or an element of a
+		<a href="#workgroup">workgroup global</a>. An Atomic of anything else (a
+		<span class="pre">u64</span>, a <span class="pre">Bool</span>, a pointer) is refused in a
+		buffer, as its number would be.</p>
+
+	<p>Every method an integer Atomic has works on a GPU: <span class="pre">load</span>,
+		<span class="pre">store</span>, <span class="pre">swap</span>, <span class="pre">add</span>,
+		<span class="pre">sub</span>, <span class="pre">min</span>, <span class="pre">max</span>
+		(signed for an <span class="pre">i32</span>, unsigned for a <span class="pre">u32</span>),
+		<span class="pre">bitAnd</span>, <span class="pre">bitOr</span>,
+		<span class="pre">bitXor</span> and <span class="pre">compareSwap</span>, each with its
+		<span class="pre">Ordered</span> form. Each acts at the scope of the memory it changes:
+		a buffer's is the device, every invocation of the dispatch; a workgroup global's is its
+		workgroup. Vulkan has no sequentially consistent ordering, so on a GPU
+		<span class="pre">SeqCst</span>, what the everyday forms promise, is acquire-release;
+		<span class="pre">Relaxed</span>, <span class="pre">Acquire</span>,
+		<span class="pre">Release</span> and <span class="pre">AcqRel</span> are as written. A
+		counter needs no ordering beyond its own change, so <span class="pre">Relaxed</span> is
+		the right one for claiming a slot.</p>
+
+	<p>An atomic acts on memory invocations share. One on a local
+		<span class="pre">Atomic</span>, or on a module's global that is not
+		<span class="pre">@workgroup</span>, each invocation's own, is refused in the
+		kernel.</p>
+
+	<h2 id="workgroup">Workgroup memory</h2>
+
+<pre><code>mut @workgroup scan Array[u32, 256];
+
+fn @compute(256) prefix(inv Invocation, input &amp;[]u32, out &amp;[]mut u32) {
+  imm g = usize.from(inv.globalId[0]);
+  imm l = usize.from(inv.localIndex);
+  scan[l] = if g &lt; input.len {input[g];} else {0u32;};
+  workgroupBarrier();
+  mut step = 1usize;
+  while step &lt; 256usize {
+    imm add = if l &gt;= step {scan[l - step];} else {0u32;};
+    workgroupBarrier();
+    scan[l] = scan[l] + add;
+    workgroupBarrier();
+    step = step * 2usize;
+  }
+  if g &lt; out.len { out[g] = scan[l]; }
+}</code></pre>
+
+	<p>A module's global written with <span class="pre">@workgroup</span> after its permission
+		is workgroup memory: on a GPU, one copy for each workgroup, which its invocations share,
+		and which is far faster than a buffer. It is written as
+		<a href="refmodule.html#threadlocal"><span class="pre">@threadlocal</span></a> is: a
+		module's global, <span class="pre">mut</span>, of a fixed size, holding what a buffer may
+		hold (32-bit numbers, their atomics, and structs and fixed arrays of them) and nothing
+		that needs finalizing. It has no initial value: a workgroup's copy starts undefined, so
+		the invocations write what they will read, then wait at a
+		<a href="#barriers">barrier</a> before reading what the others wrote. An initial value is
+		refused, zero among them.</p>
+
+	<p>Invocations reading and writing one global is a trusted exception to Cone's rule
+		against threads sharing what they change, as a <span class="pre">&amp;[]mut</span>
+		buffer is: that one invocation does not read a place another is writing, without a
+		barrier between, is the program's to arrange. <i>(A checked form, each invocation owning
+		its own place and reading the others' only after a barrier, is to come.)</i></p>
+
+	<p>On the CPU a workgroup global is an ordinary global, one copy, and the loop that runs
+		a kernel runs one invocation at a time, workgroup by workgroup. A kernel whose
+		invocations read, after a barrier, only what the invocations before them in that order
+		wrote (the last invocation of a workgroup gathering what the others counted, say) gives
+		the same answer on both. One whose invocations read what invocations after them write,
+		as the prefix sum above does, needs its workgroup's invocations run together, which the
+		CPU's loop does not yet do.</p>
+
+	<h2 id="barriers">Barriers</h2>
+
+<pre><code>pub fn @intrinsic workgroupBarrier()
+pub fn @intrinsic storageBarrier()</code></pre>
+
+	<p>Core's two barriers: every invocation of the workgroup waits at one until all have
+		reached it, and what each wrote before it every other reads after it. After
+		<span class="pre">workgroupBarrier</span>, that is what was written to workgroup memory;
+		after <span class="pre">storageBarrier</span>, what was written to the buffers the kernel
+		binds, as the other invocations of the same workgroup see it. Every invocation of a
+		workgroup must reach the same barrier, so one is never written where some invocations
+		of a workgroup go and others do not. On the CPU each is nothing.</p>
 
 	<p style="text-align: right; margin-top: 2em;">
 		<a href="refmodule.html"><img alt="_" src="next.png" /></a>

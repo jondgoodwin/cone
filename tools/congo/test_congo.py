@@ -1620,5 +1620,251 @@ class RuntimeLibraries(unittest.TestCase):
         self.assertNotIn("Copying", run.stdout)
 
 
+def entry_points(spv: Path) -> list[str]:
+    """The names of a SPIR-V module's GLCompute entry points: each OpEntryPoint
+    (opcode 15) whose execution model is GLCompute (5), its name the literal
+    string after the entry's id, four bytes a word, ending in a zero."""
+    data = spv.read_bytes()
+    words = [int.from_bytes(data[i:i + 4], "little") for i in range(0, len(data), 4)]
+    assert words[0] == 0x07230203, "SPIR-V's magic number"
+    names, at = [], 5
+    while at < len(words):
+        count, op = words[at] >> 16, words[at] & 0xFFFF
+        if op == 15 and words[at + 1] == 5:
+            raw = b"".join(w.to_bytes(4, "little") for w in words[at + 3:at + count])
+            names.append(raw.split(b"\0")[0].decode())
+        at += max(count, 1)
+    return names
+
+
+class GpuKernels(unittest.TestCase):
+    """[package] targets = ["native", "gpu"]: a marked package's kernels
+    compiled for the GPU into <name>.spv, with what it imports from their
+    source, and copied beside every program that imports it; an import not
+    marked refused, naming the chain that pulled it in [Jon 3 Oct 2026]."""
+
+    setUp = Scenarios.setUp
+    tearDown = Scenarios.tearDown
+    congo = Scenarios.congo
+    program_output = Scenarios.program_output
+    registry = Scenarios.registry
+
+    KERN = """
+        mod kern;
+
+        import geomath use *;
+
+        pub fn half(x f32) f32 {
+          x * 0.5;
+        }
+
+        // A kernel: one invocation for each point
+        pub fn @compute(64) scale(inv Invocation, points &[]Vec3, out &[]mut f32) {
+          imm i = usize.from(inv.globalId[0usize]);
+          if i < out.len and i < points.len {
+            out[i] = half(points[i].length());
+          }
+        }
+        """
+
+    PROGRAM = """
+        mod {name};
+
+        import stdio;
+        import fs;
+        import kern;
+
+        fn main() i32 {{
+          if kern.half(8.) == 4. {{
+            stdio.print <- "half of 8 is 4\\n";
+          }}
+          if fs.isFile("kern.spv") {{
+            stdio.print <- "kern.spv is here\\n";
+          }}
+          0i32;
+        }}
+        """
+
+    def package(self, folder: Path, name: str, source: str, gpu: bool = True,
+                output: str = "library") -> Path:
+        targets = 'targets = ["native", "gpu"]\n' if gpu else ""
+        write(folder / "congo.toml", f'[package]\nname = "{name}"\nversion = "0.1.0"\n'
+                                     f'output = "{output}"\n{targets}')
+        write(folder / "src" / f"{name}.cone", source)
+        return folder
+
+    def test_targets_are_checked(self):
+        pkg = self.package(self.root / "lib1", "lib1", "mod lib1;\n", gpu=False)
+        head = '[package]\nname = "lib1"\nversion = "0.1.0"\noutput = "library"\n'
+        for targets, said in (
+                ('"gpu"', '[package] targets must be a list of targets, such as'
+                          ' ["native", "gpu"]'),
+                ('["native", "cuda"]', '[package] targets names "cuda", which is not a target;'
+                                       ' the targets are "native" and "gpu"'),
+                ('["gpu"]', '[package] targets must name "native": a package built for the'
+                            ' GPU alone is not built yet'),
+                ('[]', '[package] targets must name "native"')):
+            write(pkg / "congo.toml", head + f"targets = {targets}\n")
+            run = self.congo("build", cwd=pkg, ok=False)
+            self.assertIn(said, run.stderr, targets)
+        write(pkg / "congo.toml", head + 'colour = "red"\n')
+        self.assertIn("'colour' is not a [package] key; the keys are name, version, output and"
+                      " targets", self.congo("build", cwd=pkg, ok=False).stderr)
+        # A program has no kernels to build: they go in a library it imports
+        write(pkg / "congo.toml", '[package]\nname = "lib1"\nversion = "0.1.0"\n'
+                                  'output = "executable"\ntargets = ["native", "gpu"]\n')
+        self.assertIn('[package] targets names "gpu", and an executable is not built for the'
+                      ' GPU: put its kernels in a library package it imports',
+                      self.congo("build", cwd=pkg, ok=False).stderr)
+        # ["native"] is what a manifest without the key says: no GPU build
+        write(pkg / "congo.toml", head + 'targets = ["native"]\n')
+        run = self.congo("build", cwd=pkg)
+        self.assertNotIn("for the GPU", run.stdout)
+
+    def test_kernels_are_built_and_copied_beside_each_program(self):
+        pkgs = self.root / "pkgs"
+        self.registry(pkgs)
+        kern = self.package(pkgs / "kern", "kern", self.KERN)
+        run = self.congo("build", cwd=kern)
+        self.assertIn(f"Compiling kern v0.1.0 for the GPU ({kern})", run.stdout)
+        out = kern / "build" / "debug"
+        self.assertIn(f"Finished debug library object {Path('build/debug/kern.obj')} and"
+                      f" kernels {Path('build/debug/kern.spv')}", run.stdout)
+        # One module, its kernel named as its function is; geomath, marked
+        # but with no kernels of its own, has none built
+        self.assertEqual(entry_points(out / "kern.spv"), ["scale"])
+        self.assertFalse((out / "geomath.spv").exists())
+        self.assertNotIn("geomath v0.1.0 for the GPU", run.stdout)
+        # Compiled from a module that imports the package, so that conec finds
+        # it and geomath on its search path and compiles both from source
+        module = (out / "gpu" / "kern" / "kern_gpu.cone").read_text()
+        self.assertIn("mod kern_gpu;\n\nimport kern;\n", module)
+        # The release build's, in its own folder
+        self.congo("build", "--release", cwd=kern)
+        self.assertEqual(entry_points(kern / "build" / "release" / "kern.spv"), ["scale"])
+
+        # A program that imports kern gets kern.spv beside it, where it runs:
+        # a lone file's, a package's, and each test's and example's
+        write(self.root / "app.cone", self.PROGRAM.format(name="app"))
+        run = self.congo("run", "app.cone", cwd=self.root)
+        self.assertIn("Compiling kern v0.1.0 for the GPU", run.stdout)
+        self.assertEqual(self.program_output(run), "half of 8 is 4\n")
+        lone = next((self.root / "home" / "lone").glob("app-*")) / "debug"
+        self.assertEqual(entry_points(lone / "kern.spv"), ["scale"])
+        self.assertTrue((lone / "app.exe").is_file())
+
+        self.congo("new", "user", cwd=self.root)
+        user = self.root / "user"
+        write(user / "src" / "user.cone", self.PROGRAM.format(name="user"))
+        run = self.congo("run", cwd=user)
+        self.assertTrue((user / "build" / "debug" / "kern.spv").is_file())
+        self.assertNotIn("Copying", run.stdout)
+
+        write(kern / "tests" / "beside.cone", self.PROGRAM.format(name="beside"))
+        write(kern / "tests" / "beside.out", "half of 8 is 4\nkern.spv is here\n")
+        write(kern / "examples" / "show.cone", self.PROGRAM.format(name="show"))
+        run = self.congo("test", cwd=kern)
+        self.assertIn("test beside ... ok", run.stdout)
+        self.assertIn("example show ... built", run.stdout)
+        self.assertEqual(entry_points(out / "examples" / "show" / "kern.spv"), ["scale"])
+        self.assertNotIn("Copying", run.stdout)
+        # Its kernels validated, counted as a test, where spirv-val is on PATH;
+        # only built, and said so, where it is not
+        if shutil.which("spirv-val", path=self.env["PATH"]):
+            self.assertIn("     kernels kern.spv ... valid\n", run.stdout)
+            self.assertIn("kern: 2 tests: 2 passed, 0 failed; 1 example: 1 built", run.stdout)
+            folder = Path(shutil.which("spirv-val", path=self.env["PATH"])).parent
+            self.env["PATH"] = os.pathsep.join(
+                p for p in self.env["PATH"].split(os.pathsep)
+                if p and os.path.normcase(os.path.abspath(p)) != os.path.normcase(str(folder)))
+            run = self.congo("test", cwd=kern)
+        self.assertIn("     kernels kern.spv ... built, not validated: spirv-val, the Vulkan"
+                      " SDK's, is not on PATH\n", run.stdout)
+        self.assertIn("kern: 1 test: 1 passed, 0 failed; 1 example: 1 built", run.stdout)
+        # A filter runs only the tests it names, and not the validation
+        run = self.congo("test", "beside", cwd=kern)
+        self.assertNotIn("kernels kern.spv", run.stdout)
+
+    def test_kernels_are_found_in_source_only(self):
+        # 'fn @compute' in a comment or a string is no kernel; and a package
+        # not marked has none built, whatever its source holds
+        pkgs = self.root / "pkgs"
+        self.registry(pkgs)
+        quiet = self.package(pkgs / "quiet", "quiet", """
+            // fn @compute(64) scale(inv Invocation, out &[]mut f32) is not here
+            mod quiet;
+
+            pub fn said() &[]u8 {
+              "fn @compute(64)";
+            }
+            """)
+        run = self.congo("build", cwd=quiet)
+        self.assertNotIn("for the GPU", run.stdout)
+        self.assertFalse((quiet / "build" / "debug" / "quiet.spv").exists())
+        plain = self.package(pkgs / "kern", "kern", self.KERN, gpu=False)
+        run = self.congo("build", cwd=plain)
+        self.assertNotIn("for the GPU", run.stdout)
+        self.assertFalse((plain / "build" / "debug" / "kern.spv").exists())
+
+    def test_an_import_not_marked_is_refused(self):
+        pkgs = self.root / "pkgs"
+        self.registry(pkgs)
+        self.package(pkgs / "plain", "plain", "mod plain;\n\npub fn one() i32 {\n  1i32;\n}\n",
+                     gpu=False)
+        self.package(pkgs / "loose", "loose", "mod loose;\n\npub fn two() i32 {\n  2i32;\n}\n",
+                     gpu=False)
+        mid = self.package(pkgs / "mid", "mid",
+                           "mod mid;\n\nimport plain;\n\npub fn three() i32 {\n"
+                           "  plain.one() + 2i32;\n}\n")
+        kern = self.package(pkgs / "kern", "kern", """
+            mod kern;
+
+            import mid;
+            import loose;
+
+            pub fn @compute(64) fill(inv Invocation, out &[]mut i32) {
+              imm i = usize.from(inv.globalId[0usize]);
+              if i < out.len {
+                out[i] = mid.three() + loose.two();
+              }
+            }
+            """)
+        run = self.congo("build", cwd=kern, ok=False)
+        self.assertEqual(run.returncode, 1)
+        where = Path("src") / "kern.cone"
+        self.assertIn(
+            "congo: error: kern is compiled for the GPU, and so is every package it imports,"
+            " each of which must be marked for the GPU with targets = [\"native\", \"gpu\"] in"
+            " its congo.toml; these are not:\n"
+            f"    plain: kern imports mid at {where}:3; mid imports plain at"
+            f" {mid / 'src' / 'mid.cone'}:3\n"
+            f"    loose: kern imports loose at {where}:4\n", run.stderr)
+        # Refused before anything is compiled
+        self.assertNotIn("Compiling", run.stdout)
+        self.assertFalse(list((kern / "build").rglob(f"*{congo.OBJ_EXT}")))
+        # A marked package being built is refused the same way, kernels or none
+        run = self.congo("build", cwd=mid, ok=False)
+        self.assertIn("mid is compiled for the GPU, and so is every package it imports",
+                      run.stderr)
+        self.assertIn(f"    plain: mid imports plain at {Path('src') / 'mid.cone'}:3",
+                      run.stderr)
+        # A program that imports mid builds nothing for the GPU, and so is not
+        write(self.root / "app.cone", "mod app;\n\nimport mid;\n\nfn main() i32 {\n"
+                                      "  mid.three() - 3i32;\n}\n")
+        self.congo("run", "app.cone", cwd=self.root)
+
+    def test_a_package_compiled_for_the_gpu_is_in_a_folder_named_for_it(self):
+        # conec finds a package on its search path by its folder's name
+        pkgs = self.root / "pkgs"
+        self.registry(pkgs)
+        kern = self.package(pkgs / "kernels", "kern", self.KERN)
+        run = self.congo("build", cwd=kern, ok=False)
+        self.assertIn(f"congo: error: kern's GPU build compiles kern from its source, which"
+                      f" conec finds by its name on its package search path ({pkgs},"
+                      f" {congo.REPO_PACKAGES}): there it finds no kern, not"
+                      f" {kern / 'src' / 'kern.cone'}; it looks for a package in a folder"
+                      f" named for it, and kern is in {kern}", run.stderr)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

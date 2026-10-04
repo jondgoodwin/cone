@@ -123,6 +123,7 @@ void keywordInit() {
     keyAdd("@initpure", InitPureToken);
     keyAdd("@intrinsic", IntrinsicAttrToken);
     keyAdd("@threadlocal", ThreadLocalToken);
+    keyAdd("@workgroup", WorkgroupToken);
     keyAdd("@compute", ComputeAttrToken);
     keyAdd("extends", ExtendsToken);
     // Retired like 'include', and kept a keyword for the same reason: released

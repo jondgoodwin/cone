@@ -28,6 +28,8 @@ struct Session {
   pub out String;
   pub mode String;
   pub objs Dict[String, String];   // each library compiled into out, by name
+  pub spvs Dict[String, String];   // each package's kernels compiled into out, by name
+  pub gpuChecked List[String];     // packages whose imports were checked for the GPU
   pub warned List[String];         // the packages whose hand include file was warned of
   pub conec String;                // found at the first compile; "" before
   pub hasLinker Bool;
@@ -41,7 +43,8 @@ struct Session {
 
 fn newSession(repo &[]u8, reg Registry, out &[]u8, mode &[]u8, defines &List[String]) Session {
   new Session(String.from(repo), reg, String.from(out), String.from(mode), Dict[String, String].empty(),
-    List[String].empty(), String.empty(), false, noLinkerYet(), copyStrings(defines));
+    Dict[String, String].empty(), List[String].empty(), List[String].empty(), String.empty(), false, noLinkerYet(),
+    copyStrings(defines));
 }
 
 // Build pkg and everything it imports into its build folder, each package
@@ -81,7 +84,11 @@ fn build(s &mut Session, top usize) Result[String, String] {
   if isLibrary {
     imm obj = objs[objs.len() - 1usize].copy();
     imm place = shown(obj.view());
-    imm finished = cat(s.mode.view(), " library object ", place.view());
+    mut finished = cat(s.mode.view(), " library object ", place.view());
+    if s.spvs.contains(name.view()) {
+      imm kernels = shown(s.spvs[name.view()].view());
+      finished <- " and kernels ", kernels.view();
+    }
     say("Finished", finished.view());
     return Ok[String, String][obj];
   }
@@ -169,7 +176,7 @@ fn lonePackage(given &[]u8) Result[Package, String] {
   }
   imm folder = parentOf(file.view());
   Ok[Package, String][new Package(name, String.empty(), String.from("executable"), folder, file.copy(), true,
-    List[String].empty(), List[String].empty(), List[String].empty())];
+    List[String].empty(), List[String].empty(), List[String].empty(), false)];
 }
 
 // Write the package's build description into out and compile the package
@@ -211,6 +218,21 @@ fn compileUnit(conec &[]u8, reg &Registry, plan &Plan, u usize, out &[]u8, inclu
     imm compiling = cat(label.view(), " (", pkg.root.view(), ")");
     say("Compiling", compiling.view());
   }
+  if not runConec(conec, defines, argList("-o", out, desc.view())) {
+    return Error[String, String][cat("could not compile ", pkg.name.view(), " (build description: ", desc.view(), ")")];
+  }
+  imm objName = cat(pkg.name.view(), ".obj");
+  imm obj = joined(out, objName.view());
+  if not fs.isFile(obj.view()) { return Error[String, String][cat("conec wrote no object at ", obj.view())]; }
+  if output.equals("library") and not fs.isFile(incl.view()) {
+    return Error[String, String][cat("conec wrote no include file for ", pkg.name.view(), " at ", incl.view())];
+  }
+  Ok[String, String][obj];
+}
+
+// Run conec with the -D defines after it, then rest, and show what it said
+// but its closing 'Compile finished' line; whether it succeeded
+fn runConec(conec &[]u8, defines &List[String], rest List[String]) Bool {
   mut args = argList(conec);
   mut d = 0usize;
   while d < defines.len() {
@@ -218,9 +240,11 @@ fn compileUnit(conec &[]u8, reg &Registry, plan &Plan, u usize, out &[]u8, inclu
     args.push(defines[d].copy());
     d = d + 1usize;
   }
-  args.push(String.from("-o"));
-  args.push(String.from(out));
-  args.push(desc.copy());
+  mut r = 0usize;
+  while r < rest.len() {
+    args.push(rest[r].copy());
+    r = r + 1usize;
+  }
   mut chatter = String.empty();
   mut code = 0u32;
   match process.run(args.view()) {
@@ -249,16 +273,7 @@ fn compileUnit(conec &[]u8, reg &Registry, plan &Plan, u usize, out &[]u8, inclu
     printStr("\n");
     printFlush();
   }
-  if code != 0u32 {
-    return Error[String, String][cat("could not compile ", pkg.name.view(), " (build description: ", desc.view(), ")")];
-  }
-  imm objName = cat(pkg.name.view(), ".obj");
-  imm obj = joined(out, objName.view());
-  if not fs.isFile(obj.view()) { return Error[String, String][cat("conec wrote no object at ", obj.view())]; }
-  if output.equals("library") and not fs.isFile(incl.view()) {
-    return Error[String, String][cat("conec wrote no include file for ", pkg.name.view(), " at ", incl.view())];
-  }
-  Ok[String, String][obj];
+  code == 0u32;
 }
 
 fn makeFolder(folder &[]u8) {
@@ -313,6 +328,24 @@ fn compile(s &mut Session, plan &Plan, top usize, topOut &[]u8, announce Bool) R
     }
     i = i + 1usize;
   }
+  // Before anything is compiled: a package compiled for the GPU, and a
+  // marked package being built, import only packages marked for it
+  i = 0usize;
+  while i < plan.order.len() {
+    imm u = *plan.order[i];
+    imm pkg = s.reg.packages[plan.units[u].pkg];
+    if (plan.units[u].kernels or (plan.units[u].pkg == top and pkg.gpu)) and not holdsName(&s.gpuChecked, pkg.name.view()) {
+      match checkGpuMarks(plan, &s.reg, u) {
+        case is Ok {}
+        case imm e Error {
+          changes.restore();
+          return Error[List[String], String][e.value.copy()];
+        }
+      }
+      s.gpuChecked.push(pkg.name.copy());
+    }
+    i = i + 1usize;
+  }
   mut objs = List[String].empty();
   i = 0usize;
   while i < plan.order.len() {
@@ -339,6 +372,25 @@ fn compile(s &mut Session, plan &Plan, top usize, topOut &[]u8, announce Bool) R
         s.objs.insert(name, obj.copy());
       }
       objs.push(obj);
+    }
+    i = i + 1usize;
+  }
+  // Then the kernels of each marked package that has them, once a session,
+  // into the build folder, beside its object
+  mut coreUnit = 0usize;
+  imm hasCore = plan.unitNamed(&s.reg, "core", &mut coreUnit);
+  i = 0usize;
+  while i < plan.order.len() {
+    imm u = *plan.order[i];
+    imm name = s.reg.packages[plan.units[u].pkg].name.copy();
+    if plan.units[u].kernels and hasCore and not s.spvs.contains(name.view()) {
+      match compileGpu(s, plan, u, coreUnit) {
+        case imm ok Ok { s.spvs.insert(name, ok.value.copy()); }
+        case imm e Error {
+          changes.restore();
+          return Error[List[String], String][e.value.copy()];
+        }
+      }
     }
     i = i + 1usize;
   }
@@ -473,27 +525,33 @@ fn findRuntime(repo &[]u8, name &[]u8, pkgName &[]u8, folders &List[String], pat
 fn copyRuntime(source &[]u8, folder &[]u8, name &[]u8) Result[Bool, String] {
   imm file = cat(name, ".dll");
   imm target = joined(folder, file.view());
+  copyIfChanged(source, target.view());
+}
+
+// Copy a file, unless the copy at target is the same already, byte for byte;
+// whether it copied
+fn copyIfChanged(source &[]u8, target &[]u8) Result[Bool, String] {
   mut data = String.empty();
   match fs.readFile(source) {
     case mut ok Ok { data <=> ok.value; }
     case imm e Error {
       imm why = e.value.message();
-      return Error[Bool, String][cat("cannot copy ", source, " to ", target.view(), ": ", why.view())];
+      return Error[Bool, String][cat("cannot copy ", source, " to ", target, ": ", why.view())];
     }
   }
-  if fs.isFile(target.view()) {
+  if fs.isFile(target) {
     mut there = String.empty();
-    match fs.readFile(target.view()) {
+    match fs.readFile(target) {
       case mut ok Ok { there <=> ok.value; }
       case is Error {}
     }
     if there.len() == data.len() and there.equals(data.view()) { return Ok[Bool, String][false]; }
   }
-  match fs.writeFile(target.view(), data.view()) {
+  match fs.writeFile(target, data.view()) {
     case is Ok {}
     case imm e Error {
       imm why = e.value.message();
-      return Error[Bool, String][cat("cannot copy ", source, " to ", target.view(), ": ", why.view())];
+      return Error[Bool, String][cat("cannot copy ", source, " to ", target, ": ", why.view())];
     }
   }
   Ok[Bool, String][true];
@@ -664,6 +722,30 @@ fn link(s &mut Session, plan &Plan, objs &List[String], exe &[]u8, announce Bool
         }
       }
       case imm e Error { return Error[void, String][e.value.copy()]; }
+    }
+    i = i + 1usize;
+  }
+  // The kernels of every package of the build, each beside the program as a
+  // runtime DLL is, where gpuwork's readSpirv finds it by its name
+  i = 0usize;
+  while i < units.len() {
+    imm name = reg.packages[plan.units[*units[i]].pkg].name.view();
+    if s.spvs.contains(name) {
+      imm spv = s.spvs[name].copy();
+      imm spvFolder = parentOf(spv.view());
+      if not samePath(spvFolder.view(), exeFolder.view()) {
+        imm spvName = path.name(spv.view());
+        imm target = joined(exeFolder.view(), spvName.view());
+        match copyIfChanged(spv.view(), target.view()) {
+          case imm ok Ok {
+            if ok.value and announce {
+              imm place = shown(spv.view());
+              say("Copying", place.view());
+            }
+          }
+          case imm e Error { return Error[void, String][e.value.copy()]; }
+        }
+      }
     }
     i = i + 1usize;
   }

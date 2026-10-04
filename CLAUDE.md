@@ -49,7 +49,9 @@ Visual Studio projects stay at the root.
   and `definedInt("NAME")`, for `conec -D`, are a provisional mechanism
   whose final design is open; and `Invocation`, which invocation of a
   compute dispatch is running, what a compute entry point,
-  `fn @compute(64) name(...)`, may take); `stdio` prints;
+  `fn @compute(64) name(...)`, may take, with `workgroupBarrier` and
+  `storageBarrier`, a compute workgroup's barriers, intrinsics outside `mem`);
+  `stdio` prints;
   `libc` and `posix` are C packages of raw bindings to the C library and the
   POSIX functions beyond it (Windows first), and `core` imports `libc` for its
   allocator; `sdl` is a C package of raw bindings to SDL3 (a window for
@@ -106,7 +108,14 @@ Visual Studio projects stay at the root.
   kernel a CPU twin (`runTwin`) and `checkParity` comparing the two bit for
   bit; its test kernels are Slang fixtures, and a Cone compute entry point
   (`fn @compute(64) name(inv Invocation, parts &[]Part, out &[]mut f32)`),
-  compiled by `conec` for SPIR-V's Vulkan form, is a kernel it loads too;
+  compiled by `conec` for SPIR-V's Vulkan form, is a kernel it loads too,
+  `readSpirv("<package>.spv")` reading the module Congo built and copied
+  beside the program;
+  `gpusample` is the sample of a package marked for the GPU (`targets =
+  ["native", "gpu"]` in its `congo.toml`, as `libc`, `geomath`, `noise` and
+  `sdf` are): a kernel over `geomath`, which Congo compiles into
+  `gpusample.spv`, and a test running it on the GPU through `gpuwork` against
+  the same function on the CPU;
   `geomath` is 2-D and 3-D math, pure maths: values and operations with
   results of a known size, no collections (vectors,
   quaternions, matrices, transforms, boxes, rays, planes, frusta and their
@@ -137,7 +146,13 @@ Visual Studio projects stay at the root.
   window's points, the same bits, and `voxelRemesh` (a closed mesh rebuilt
   as even quads at a voxel size: inside by exact ray parity, distances in a
   band, meshed by `sdfmesh`'s surface nets, channels from the nearest
-  point); its example `coast.cone` is the island coastline experiments;
+  point), and `bevelEdges` and `bevelVertices` (Blender's Bevel: strips with a
+  superellipse profile, sharp mitres, a box's corner patched on the
+  superellipsoid, one clamp factor for overlap, selections by list, angle or
+  a bevel-weight channel, channels blended by place), and `unsubdivide` (Blender's
+  Un-Subdivide: a grid of one subdivision level halved per iteration, the
+  kept vertices where they were, so a subdivided cage returns to its
+  connectivity; what is not on a grid kept and reported); its example `coast.cone` is the island coastline experiments;
   `noise` is coherent noise over `geomath`, a pure function of a seed and a
   point: the PCG integer hashes (`pcg`, `pcg2d`, `pcg3d`, `pcg4d`, seeded
   lattice hashes, exact hash to float), value and gradient noise with
@@ -389,6 +404,33 @@ Visual Studio projects stay at the root.
   certificates (`tests/certs`, README there), and its examples
   `get.cone` (HTTPS from a real server, the OS verifying) and
   `bench.cone` (handshakes, throughput, memory);
+  `url` is URLs as data, per RFC 3986: read (`Url.parse`; the scheme and a
+  host name lower-cased, '.' and '..' segments removed, spaces and bytes
+  past ASCII percent-encoded; a refusal a `UrlError`, the byte and why),
+  resolved against a base (`resolve`, RFC 3986's section 5.2, every example
+  of its section 5.4 in its tests) and written back (`text`, `origin`,
+  `authority` as Host is written, `target` as a request's), a host a name,
+  an IPv4 address or an IPv6 one (internationalized names, zones and
+  IPvFuture refused by name), with percent-encoding's helpers;
+  `httpclient` is HTTP fetched by URL, over `httpconn`, `tls` and `url`: a
+  `Client` per Loop owning a driver (`get`, or `send` a `Request`; events to
+  a `Sink` as httpconn's, exactly one final answer each; `fetchWhole` and
+  `getWhole`, a whole body up to a limit, in one call), connections pooled
+  per origin (kept alive and reused, `maxPerOrigin`, `maxTotal`, an idle
+  timeout, one TLS context per client so sessions resume), the request
+  scheduler (four intents, Urgent, Visible, Prefetch and Background, and a
+  score within each, `reprioritize`; a request given a connection only once
+  one is free, the first by intent, then score, then the order asked),
+  retries of what is safe to repeat (httpconn's `unsent`, or an idempotent
+  method and no response), redirects followed (301, 302, 303, 307, 308; 10
+  at most; credentials dropped across origins), cancel, cancel groups and
+  deadlines carried down to the connection, and body credit released by the
+  consumer (`release`); its tests are offline (a loopback server, plain and
+  over TLS with `tls`'s test certificates, on the client's Loop or on a
+  thread of its own; `assets.cone` the 3-D asset tier's use, its calls set
+  beside fetch()'s), and its examples `fetch.cone` (one URL from a real
+  server: status, fields, the body's size, the timing) and `bench.cone`
+  (throughput, latency and memory over loopback);
   `collections` is a growable `List[T]`, an owned `String` and a string-keyed
   `Dict[K, V]`, each holding its elements in one block from `libc`'s
   allocator and moving them with core's `mem` intrinsics; `arena` is an
@@ -528,7 +570,11 @@ Visual Studio projects stay at the root.
   each source file's header for its `mod` line and imports, resolves the
   imports through the package-folder registries (`packages/` first), writes one
   build description per package, compiles each package on its own with `conec`,
-  and links with `conestd`. `tools/congo/README.md` is its guide and design;
+  and links with `conestd`. A package marked for the GPU (`targets =
+  ["native", "gpu"]`) whose source holds compute entry points is also
+  compiled for the GPU into `build/<mode>/<name>.spv`, copied beside every
+  program that imports it, once every package it imports is found marked.
+  `tools/congo/README.md` is its guide and design;
   `python tools/congo/test_congo.py` checks it against a built `conec`.
   `tools/congo/` is also the package of its port to Cone (`congo.toml`,
   `src/congo.cone`), which `congo.py build` there builds first and which then

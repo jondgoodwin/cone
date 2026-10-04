@@ -1,0 +1,1466 @@
+// The Client: its tables, the driver's events it reads, and the scheduler.
+//
+// How it is built. Fetches and pooled connections are records in two
+// tables, each in blocks of 64 that never move while the client lives,
+// reused through free lists, as httpconn's are; a FetchId is a record's
+// index and generation. Origins are records of their own, one per scheme,
+// host and port the client has fetched from, each holding its queue of
+// waiting fetches and its idle connections. Every connection and every
+// request the client makes is its driver's, with a Here sink whose token
+// names the client's record (and its generation), so the driver's events
+// come back to the record they are about; the client's own timers (a
+// fetch's deadline and group) are submitted with the driver's upperToken.
+//
+// 'pump' takes the driver's events, turning each request's into the
+// fetch's (or following a redirect, or retrying), each connection's into
+// the pool's state; then the scheduler hands free connections to the best
+// waiting fetches and opens connections where fetches wait; then the driver
+// is pumped again so what was asked goes out, until nothing moves. Every
+// final answer goes through 'finishFetch', which frees the record: so each
+// fetch is answered once, by construction (I1).
+
+const recsPerBlock = 64u32;
+const genMask = 0xFFFFFFu32;
+
+fn nextGen(g u32) u32 {if g >= genMask {1u32;} else {g + 1u32;};}
+
+// A fetch's state
+const fFree = 0u32;
+const fQueued = 1u32;       // waiting for a connection
+const fActive = 2u32;       // its request on a connection
+
+// A pooled connection's state
+const pFree = 0u32;
+const pConnecting = 1u32;
+const pIdle = 2u32;
+const pBusy = 3u32;
+const pClosing = 4u32;      // on its way out: counted nowhere
+
+// How a fetch ends
+const endNone = 0u32;
+const endDone = 1u32;
+const endFailed = 2u32;
+const endCancelled = 3u32;
+const endTimedOut = 4u32;
+const endLimit = 5u32;      // fetchWhole's limit passed: Failed, Stage.Limit
+
+// The driver sinks' tokens: a connection's, a request's (+ generation << 32
+// + index)
+const tokConn = 0x4000000000000000u64;
+const tokReq = 0x8000000000000000u64;
+const kWatch = 1u8;
+
+const sendChunk = 65536usize;          // the most of a body one send carries
+const drainLimit = 65536usize;         // a redirect's body read past this is cut off
+const heldRetryNs = 1000000i64;        // events held for a full channel are tried again after this
+
+// A fetch
+struct Fetch {
+  gen u32;
+  state u32;
+  nextFree u32;
+  seq u64;                  // the order asked
+  intent Intent;
+  score i64;
+  sink Sink;
+  method Method;
+  methodText String;
+  url Url;
+  headers Headers;
+  body String;
+  origin u32;
+  conn u32;                 // its pooled connection, while active
+  req httpconn.ReqId;       // its request on the driver, the last attempt's
+  deadline Instant;
+  group Option[CancelGroup];
+  watch OpId;               // the timer for its deadline and group, or none
+  ending u32;               // asked to end while under way: endCancelled, endTimedOut, endLimit
+  delivered Bool;           // its Response has gone to its sink
+  following Bool;           // the response under way is a redirect to follow
+  cutting Bool;             // ...whose body was cut off
+  location String;
+  redirectStatus u16;
+  drained usize;
+  held usize;               // body bytes delivered Here, not yet released
+  sent usize;               // body bytes sent, this attempt
+  retries u32;
+  maxRedirects u32;
+  heldEvents u32;           // its events held for a full channel
+  timing Timing;
+
+  fn methodName(self &) &[]u8 {
+    if method == Method.Other[] {methodText.view();} else {methodToken(method);};
+  }
+}
+
+// A pooled connection
+struct PConn {
+  gen u32;
+  state u32;
+  nextFree u32;
+  id httpconn.ConnId;
+  origin u32;
+  fetch u32;                // the fetch on it, while busy
+  uses u32;                 // exchanges given it
+}
+
+// An origin: its pool and its queue
+struct Origin {
+  key String;               // 'https://example.com:443'
+  secure Bool;
+  host String;              // without an IPv6 address's brackets
+  port u16;
+  queue List[u32];          // fetches waiting
+  idle List[u32];           // pooled connections idle, the latest last
+  open u32;                 // connections connecting, idle or busy
+  connecting u32;
+}
+
+// A client of HTTP and HTTPS servers on one Loop (see the package's header)
+pub struct Client {
+  cfg Config;
+  pool Pool;
+  drv httpconn.Driver;
+  tlsc Option[tls.Client];
+  tlsFailure Failure;
+  fetchBlocks List[*Fetch];
+  fetchCount u32;
+  freeFetch u32;
+  liveFetches u32;
+  queuedN u32;
+  seq u64;
+  connBlocks List[*PConn];
+  connCount u32;
+  freeConn u32;
+  total u32;                // connections connecting, idle or busy
+  origins List[*Origin];
+  dev List[httpconn.Event];
+  comps List[Completion];
+  ready List[Event];        // events for this thread, until pump hands them over
+  heldE List[Event];        // events held for a full channel, in order...
+  heldS List[Sink];         // ...where each goes,
+  heldF List[u32];          // ...its fetch and generation,
+  heldG List[u32];
+  heldN List[usize];        // ...the body bytes it releases once taken,
+  heldQ List[httpconn.ReqId];   // ...and to which request
+  wantSchedule Bool;
+  st ClientStats;
+
+  // A client whose connections take cfg's limits and buffers from pool. Its
+  // TLS context is made now from cfg.tls; if that fails (a root bundle with
+  // no certificate), every https fetch fails with why (Stage.Tls)
+  pub fn make(cfg Config, pool Pool, file &[]u8 = srcFile(), line u32 = srcLine()) Client {
+    if cfg.maxPerOrigin == 0u32 or cfg.maxTotal == 0u32 {
+      panic("httpclient: maxPerOrigin and maxTotal are at least 1", file, line);
+    }
+    mut c = cfg;
+    c.conn.protocol.idleTimeout = c.idleTimeout;
+    mut tc = tls.ClientConfig.make();
+    tc <=> c.tlsConfig;
+    mut tlsc Option[tls.Client] = None[tls.Client][];
+    mut tf = Failure.none();
+    match tls.Client.make(tc) {
+      case imm r Ok {tlsc = Some[tls.Client][r.value];}
+      case imm e Error {
+        tf = Failure.make(Stage.Tls[], e.value.osError, ErrorKind.Unsupported[], e.value.message().view());
+      }
+    }
+    imm d = httpconn.Driver.make(c.conn, pool);
+    new Client(cfg: c, pool: pool, drv: d, tlsc: tlsc, tlsFailure: tf,
+      fetchBlocks: List[*Fetch].empty(), fetchCount: 0u32, freeFetch: noEntry, liveFetches: 0u32,
+      queuedN: 0u32, seq: 0u64, connBlocks: List[*PConn].empty(), connCount: 0u32, freeConn: noEntry,
+      total: 0u32, origins: List[*Origin].empty(), dev: List[httpconn.Event].empty(),
+      comps: List[Completion].empty(), ready: List[Event].empty(), heldE: List[Event].empty(),
+      heldS: List[Sink].empty(), heldF: List[u32].empty(), heldG: List[u32].empty(),
+      heldN: List[usize].empty(), heldQ: List[httpconn.ReqId].empty(), wantSchedule: false,
+      st: ClientStats.zero());
+  }
+
+  // Its counters, as they are now
+  pub fn stats(self &) ClientStats {
+    mut s = st;
+    s.queuedNow = queuedN;
+    s.activeNow = liveFetches - queuedN;
+    s.openNow = total;
+    mut idle = 0u32;
+    mut o = 0usize;
+    while o < origins.len() {
+      idle = idle + u32.from((*origins[o] as &Origin).idle.len());
+      o = o + 1usize;
+    }
+    s.idleNow = idle;
+    s.origins = u32.from(origins.len());
+    s;
+  }
+
+  // Its driver's counters: connections, requests and bytes
+  pub fn driverStats(self &) httpconn.DriverStats {drv.stats();}
+
+  // Fetches not yet answered
+  pub fn live(self &) u32 {liveFetches;}
+
+  // Fetches waiting for a connection
+  pub fn queued(self &) u32 {queuedN;}
+
+  // Events held for full channels, still to be delivered: a client with any
+  // must go on being driven
+  pub fn held(self &) usize {heldE.len() + drv.held();}
+
+  // Whether id names a fetch not yet answered
+  pub fn isLive(self &, id FetchId) Bool {self.fetchIndex(id) != noEntry;}
+
+  // ---------------------------------------------------------------------------
+  // The tables
+  // ---------------------------------------------------------------------------
+
+  fn fetchAt(self &, i u32) *Fetch {
+    *fetchBlocks[usize.from(i / recsPerBlock)] + usize.from(i % recsPerBlock);
+  }
+
+  fn connAt(self &, i u32) *PConn {
+    *connBlocks[usize.from(i / recsPerBlock)] + usize.from(i % recsPerBlock);
+  }
+
+  fn originAt(self &, i u32) *Origin {*origins[usize.from(i)];}
+
+  fn idOf(self &, fi u32) FetchId {new FetchId(fi, (self.fetchAt(fi) as &Fetch).gen);}
+
+  // The live fetch id names, or noEntry
+  fn fetchIndex(self &, id FetchId) u32 {
+    if id.isNone() or id.index >= fetchCount {return noEntry;}
+    imm f = self.fetchAt(id.index) as &Fetch;
+    if f.gen != id.gen or f.state == fFree {return noEntry;}
+    id.index;
+  }
+
+  fn blankFetch(self &, next u32) Fetch {
+    new Fetch(gen: 1u32, state: fFree, nextFree: next, seq: 0u64, intent: Intent.Visible[], score: 0i64,
+      sink: Sink.Here[0u64], method: Method.Get[], methodText: String.empty(), url: Url.empty(),
+      headers: Headers.empty(), body: String.empty(), origin: noEntry, conn: noEntry,
+      req: httpconn.ReqId.none(), deadline: forever(), group: None[CancelGroup][], watch: OpId.none(),
+      ending: endNone, delivered: false, following: false, cutting: false, location: String.empty(),
+      redirectStatus: 0u16, drained: 0usize, held: 0usize, sent: 0usize, retries: 0u32,
+      maxRedirects: 0u32, heldEvents: 0u32, timing: Timing.zero());
+  }
+
+  fn newFetch(self &mut) u32 {
+    if freeFetch == noEntry {
+      imm block = libc.malloc(usize.from(recsPerBlock) * mem.sizeof[Fetch]()) as *Fetch;
+      if block as usize == 0usize {panic("httpclient: out of memory for the fetch table");}
+      imm base = fetchCount;
+      mut j = 0u32;
+      while j < recsPerBlock {
+        imm next = if j + 1u32 < recsPerBlock {base + j + 1u32;} else {noEntry;};
+        mem.writeRaw[Fetch](block + usize.from(j), self.blankFetch(next));
+        j = j + 1u32;
+      }
+      fetchBlocks.push(block);
+      fetchCount = fetchCount + recsPerBlock;
+      freeFetch = base;
+    }
+    imm i = freeFetch;
+    imm f = self.fetchAt(i) as &mut Fetch;
+    freeFetch = f.nextFree;
+    f.nextFree = noEntry;
+    f.state = fQueued;
+    f.origin = noEntry;
+    f.conn = noEntry;
+    f.req = httpconn.ReqId.none();
+    f.watch = OpId.none();
+    f.ending = endNone;
+    f.delivered = false;
+    f.following = false;
+    f.cutting = false;
+    f.redirectStatus = 0u16;
+    f.drained = 0usize;
+    f.held = 0usize;
+    f.sent = 0usize;
+    f.retries = 0u32;
+    f.heldEvents = 0u32;
+    f.timing = Timing.zero();
+    liveFetches = liveFetches + 1u32;
+    i;
+  }
+
+  fn freeFetchRec(self &mut, i u32) {
+    imm f = self.fetchAt(i) as &mut Fetch;
+    f.state = fFree;
+    f.gen = nextGen(f.gen);
+    f.sink = Sink.Here[0u64];
+    f.methodText = String.empty();
+    f.url = Url.empty();
+    f.headers = Headers.empty();
+    f.body = String.empty();
+    f.group = None[CancelGroup][];
+    f.location = String.empty();
+    f.nextFree = freeFetch;
+    freeFetch = i;
+    liveFetches = liveFetches - 1u32;
+  }
+
+  fn blankConn(self &, next u32) PConn {
+    new PConn(gen: 1u32, state: pFree, nextFree: next, id: httpconn.ConnId.none(), origin: noEntry,
+      fetch: noEntry, uses: 0u32);
+  }
+
+  fn newConn(self &mut) u32 {
+    if freeConn == noEntry {
+      imm block = libc.malloc(usize.from(recsPerBlock) * mem.sizeof[PConn]()) as *PConn;
+      if block as usize == 0usize {panic("httpclient: out of memory for the connection table");}
+      imm base = connCount;
+      mut j = 0u32;
+      while j < recsPerBlock {
+        imm next = if j + 1u32 < recsPerBlock {base + j + 1u32;} else {noEntry;};
+        mem.writeRaw[PConn](block + usize.from(j), self.blankConn(next));
+        j = j + 1u32;
+      }
+      connBlocks.push(block);
+      connCount = connCount + recsPerBlock;
+      freeConn = base;
+    }
+    imm i = freeConn;
+    imm p = self.connAt(i) as &mut PConn;
+    freeConn = p.nextFree;
+    p.nextFree = noEntry;
+    p.state = pConnecting;
+    p.fetch = noEntry;
+    p.uses = 0u32;
+    i;
+  }
+
+  fn freeConnRec(self &mut, i u32) {
+    imm p = self.connAt(i) as &mut PConn;
+    p.state = pFree;
+    p.gen = nextGen(p.gen);
+    p.id = httpconn.ConnId.none();
+    p.nextFree = freeConn;
+    freeConn = i;
+  }
+
+  // The origin of a URL: its record, made the first time
+  fn originFor(self &mut, u &Url) u32 {
+    imm secure = u.isSecure();
+    imm port = u.effectivePort();
+    mut k = 0usize;
+    while k < origins.len() {
+      imm og = *origins[k] as &Origin;
+      if og.port == port and og.secure == secure and og.host.view() == u.host.view() {return u32.from(k);}
+      k = k + 1usize;
+    }
+    imm o = libc.malloc(mem.sizeof[Origin]()) as *Origin;
+    if o as usize == 0usize {panic("httpclient: out of memory for an origin");}
+    mem.writeRaw[Origin](o, new Origin(key: u.origin(), secure: secure, host: u.host.copy(),
+      port: u.effectivePort(), queue: List[u32].empty(), idle: List[u32].empty(), open: 0u32,
+      connecting: 0u32));
+    origins.push(o);
+    u32.from(origins.len() - 1usize);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Fetching
+  // ---------------------------------------------------------------------------
+
+  // A GET of a URL written as text, its events to sink (see the package's
+  // header, FETCHING)
+  pub fn get(self &mut, lp &mut Loop, text &[]u8, sink Sink, file &[]u8 = srcFile(), line u32 = srcLine()) FetchId {
+    self.send(lp, Request.get(text), sink, file, line);
+  }
+
+  // A request, its events to sink (see the package's header, FETCHING). A
+  // request whose fields are the client's to write (Host, Content-Length,
+  // Transfer-Encoding), or whose method is not a token or is CONNECT, is a
+  // program error: a panic at the caller's line
+  pub fn send(self &mut, lp &mut Loop, req Request, sink Sink, file &[]u8 = srcFile(), line u32 = srcLine()) FetchId {
+    mut r = req;
+    if not isToken(r.methodName()) {panic("httpclient: the request's method is not a token", file, line);}
+    if r.method == Method.Connect[] {panic("httpclient: CONNECT is not supported", file, line);}
+    if r.headers.has("Host") {panic("httpclient: Host is written from the request's URL, not its fields", file, line);}
+    if r.headers.has("Content-Length") or r.headers.has("Transfer-Encoding") {
+      panic("httpclient: framing fields are the client's to write, from the request's body", file, line);
+    }
+    imm now = Instant.now();
+    imm fi = self.newFetch();
+    imm f = self.fetchAt(fi) as &mut Fetch;
+    mut s = sink;
+    f.sink <=> s;
+    f.method = r.method;
+    f.methodText <=> r.methodText;
+    f.url <=> r.url;
+    f.headers <=> r.headers;
+    if not f.headers.has("User-Agent") {f.headers.add("User-Agent", cfg.userAgent.view());}
+    if not f.headers.has("Accept") {f.headers.add("Accept", "*/*");}
+    f.body <=> r.body;
+    f.intent = r.intent;
+    f.score = r.score;
+    f.deadline = r.deadline;
+    f.group <=> r.group;
+    f.maxRedirects = if r.maxRedirects == useConfig {cfg.maxRedirects;} else {r.maxRedirects;};
+    f.seq = seq;
+    seq = seq + 1u64;
+    f.timing.queued = now;
+    st.fetches = st.fetches + 1u64;
+    imm id = self.idOf(fi);
+    // Answered at once: a bad URL, a full queue, a cancelled group, a past deadline
+    if not r.urlError.isNone() {
+      self.refuse(lp, fi, Stage.Url[], r.urlError.message().view());
+      return id;
+    }
+    if not f.url.isHttp() {
+      self.refuse(lp, fi, Stage.Url[], "only http and https URLs are fetched");
+      return id;
+    }
+    if queuedN >= cfg.maxQueued {
+      self.refuse(lp, fi, Stage.Queue[], "maxQueued requests already wait for a connection");
+      return id;
+    }
+    mut dl = f.deadline;
+    mut cancelled = false;
+    imm g = f.group;
+    match g {
+      case imm gv Some {
+        if gv.value.isCancelled() {cancelled = true;}
+        if gv.value.deadline() < dl {dl = gv.value.deadline();}
+      }
+      else {}
+    }
+    f.deadline = dl;
+    if cancelled {
+      self.finishFetch(lp, fi, endCancelled, Failure.none());
+      return id;
+    }
+    if dl <= now {
+      self.finishFetch(lp, fi, endTimedOut, Failure.none());
+      return id;
+    }
+    // Its deadline and group, watched by one timer on the loop
+    imm wt = drv.upperToken(kWatch, (u64.from(f.gen & genMask) << 24u64) | u64.from(fi));
+    match g {
+      case imm gv Some {
+        imm at = if dl < forever() {dl;} else {now + Duration.fromHours(87600i64);};
+        f.watch = lp.afterIn(at, Target.Here[wt], gv.value);
+      }
+      else {
+        if dl < forever() {f.watch = lp.after(dl, Target.Here[wt]);}
+      }
+    }
+    self.enqueue(fi);
+    id;
+  }
+
+  // A fetch that cannot be made is answered Failed at once
+  fn refuse(self &mut, lp &mut Loop, fi u32, stage Stage, detail &[]u8) {
+    mut fl = Failure.make(stage, 0u32, if stage == Stage.Queue[] {ErrorKind.TooLarge[];} else {ErrorKind.Malformed[];}, detail);
+    fl.unsent = true;
+    fl.error.noResponse = true;
+    st.refused = st.refused + 1u64;
+    self.finishFetch(lp, fi, endFailed, fl);
+  }
+
+  // Into its origin's queue, to wait for a connection
+  fn enqueue(self &mut, fi u32) {
+    imm f = self.fetchAt(fi) as &mut Fetch;
+    imm oi = self.originFor(&f.url);
+    f.origin = oi;
+    f.state = fQueued;
+    f.conn = noEntry;
+    f.sent = 0usize;
+    f.following = false;
+    f.cutting = false;
+    f.drained = 0usize;
+    (self.originAt(oi) as &mut Origin).queue.push(fi);
+    queuedN = queuedN + 1u32;
+    if queuedN > st.queuedMax {st.queuedMax = queuedN;}
+    wantSchedule = true;
+  }
+
+  // The program is done with n bytes of a fetch's body that Data events to
+  // this thread handed it: credit back to its connection, which reads again
+  pub fn release(self &mut, id FetchId, n usize) {
+    imm fi = self.fetchIndex(id);
+    if fi == noEntry or n == 0usize {return;}
+    imm f = self.fetchAt(fi) as &mut Fetch;
+    imm m = if n < f.held {n;} else {f.held;};
+    if m == 0usize {return;}
+    f.held = f.held - m;
+    drv.release(f.req, m);
+  }
+
+  // Ask a fetch to end (see the package's header, CANCEL AND DEADLINES):
+  // true while its answer is still to come
+  pub fn cancel(self &mut, lp &mut Loop, id FetchId) Bool {
+    imm fi = self.fetchIndex(id);
+    if fi == noEntry {return false;}
+    self.cancelFetch(lp, fi, endCancelled);
+    true;
+  }
+
+  // A fetch's intent and score, changed: a waiting fetch takes its new place
+  // in the order at once. True while its answer is still to come
+  pub fn reprioritize(self &mut, id FetchId, intent Intent, score i64) Bool {
+    imm fi = self.fetchIndex(id);
+    if fi == noEntry {return false;}
+    imm f = self.fetchAt(fi) as &mut Fetch;
+    f.intent = intent;
+    f.score = score;
+    true;
+  }
+
+  // Every idle pooled connection closed (politely): how many
+  pub fn closeIdle(self &mut, lp &mut Loop) u32 {
+    mut n = 0u32;
+    mut o = 0usize;
+    while o < origins.len() {
+      imm og = *origins[o] as &mut Origin;
+      while og.idle.len() > 0usize {
+        self.retire(lp, *og.idle[0usize], true);
+        n = n + 1u32;
+      }
+      o = o + 1usize;
+    }
+    n;
+  }
+
+  // Every fetch answered Cancelled, every connection reset
+  pub fn abortAll(self &mut, lp &mut Loop) {
+    mut i = 0u32;
+    while i < fetchCount {
+      imm f = self.fetchAt(i) as &Fetch;
+      if f.state == fQueued {self.finishFetch(lp, i, endCancelled, Failure.none());}
+      elif f.state == fActive {(self.fetchAt(i) as &mut Fetch).ending = endCancelled;}
+      i = i + 1u32;
+    }
+    drv.abortAll(lp);
+    wantSchedule = false;
+  }
+
+  // Fetch fi is cancelled (how: endCancelled, endTimedOut, endLimit)
+  fn cancelFetch(self &mut, lp &mut Loop, fi u32, how u32) {
+    imm f = self.fetchAt(fi) as &mut Fetch;
+    if f.state == fQueued {
+      self.finishFetch(lp, fi, how, Failure.none());
+    } elif f.state == fActive {
+      if f.ending == endNone {f.ending = how;}
+      drv.cancel(lp, f.req);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Endings
+  // ---------------------------------------------------------------------------
+
+  // Fetch fi's one final answer: sent to its sink, and the fetch freed
+  fn finishFetch(self &mut, lp &mut Loop, fi u32, how u32, fl Failure) {
+    imm f = self.fetchAt(fi) as &mut Fetch;
+    if f.state == fFree {return;}
+    if f.state == fQueued and f.origin != noEntry {
+      imm og = self.originAt(f.origin) as &mut Origin;
+      if removeValue(&mut og.queue, fi) {queuedN = queuedN - 1u32;}
+    }
+    if not f.watch.isNone() {
+      lp.cancel(f.watch);
+      f.watch = OpId.none();
+    }
+    if f.held > 0usize {
+      drv.release(f.req, f.held);
+      f.held = 0usize;
+    }
+    f.timing.ended = Instant.now();
+    mut k EventKind = EventKind.Done[];
+    mut failure = fl;
+    if how == endDone {
+      st.done = st.done + 1u64;
+    } elif how == endFailed or how == endLimit {
+      st.failed = st.failed + 1u64;
+      k = EventKind.Failed[];
+      if how == endLimit {
+        failure = Failure.make(Stage.Limit[], 0u32, ErrorKind.TooLarge[], "the body is longer than the limit it was fetched with");
+      }
+    } elif how == endCancelled {
+      st.cancelled = st.cancelled + 1u64;
+      k = EventKind.Cancelled[];
+    } else {
+      st.timedOut = st.timedOut + 1u64;
+      k = EventKind.TimedOut[];
+    }
+    mut ev = Event.make(k, f.sink.token, self.idOf(fi));
+    ev.timing = f.timing;
+    if k == EventKind.Failed[] {
+      failure.attempts = f.timing.attempts;
+      ev.failure = failure;
+    }
+    self.emit(fi, 0usize, ev);
+    self.freeFetchRec(fi);
+  }
+
+  // Whether fetch fi may be sent again after its connection failed with fl
+  // (see the package's header, RETRIES)
+  fn canRetry(self &, fi u32, fl &Failure) Bool {
+    imm f = self.fetchAt(fi) as &Fetch;
+    if f.delivered or f.ending != endNone or f.retries >= cfg.maxRetries {return false;}
+    imm s = fl.stage;
+    if s != Stage.Read[] and s != Stage.Write[] and s != Stage.Closed[] {return false;}
+    if fl.unsent {return true;}
+    fl.error.noResponse and isIdempotent(f.method);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Events to sinks
+  // ---------------------------------------------------------------------------
+
+  // Hand e, about fetch fi, to its sink; 'credit' is the body bytes a Data
+  // event releases once a channel takes it
+  fn emit(self &mut, fi u32, credit usize, e Event) {
+    st.events = st.events + 1u64;
+    imm f = self.fetchAt(fi) as &mut Fetch;
+    if not isChan(&mut f.sink) {
+      ready.push(e);
+      return;
+    }
+    if f.heldEvents > 0u32 {
+      self.hold(fi, credit, e);
+      return;
+    }
+    mut s Sink = Sink.Here[0u64];
+    s <=> f.sink;
+    mut back = blankEvent();
+    mut sent = sinkTaken;
+    s, sent = trySink(s, e, &mut back);
+    f.sink <=> s;
+    if sent == sinkFull {
+      self.hold(fi, credit, back);
+      return;
+    }
+    if sent == sinkGone {st.dropped = st.dropped + 1u64;}
+    if credit > 0usize {drv.release(f.req, credit);}
+  }
+
+  fn hold(self &mut, fi u32, credit usize, e Event) {
+    imm f = self.fetchAt(fi) as &mut Fetch;
+    st.held = st.held + 1u64;
+    heldE.push(e);
+    heldS.push(copySink(&mut f.sink));
+    heldF.push(fi);
+    heldG.push(f.gen);
+    heldN.push(credit);
+    heldQ.push(f.req);
+    f.heldEvents = f.heldEvents + 1u32;
+  }
+
+  // Try again the events held for full channels, in order: a fetch's later
+  // events stay behind its first still held
+  fn retryHeld(self &mut) {
+    if heldE.len() == 0usize {return;}
+    mut ke = List[Event].empty();
+    mut ks = List[Sink].empty();
+    mut kf = List[u32].empty();
+    mut kg = List[u32].empty();
+    mut kn = List[usize].empty();
+    mut kq = List[httpconn.ReqId].empty();
+    mut blocked = List[u64].empty();
+    mut k = 0usize;
+    while k < heldE.len() {
+      mut e = blankEvent();
+      imm es = &mut heldE[k];
+      e <=> *es;
+      mut s Sink = Sink.Here[0u64];
+      imm ss = &mut heldS[k];
+      s <=> *ss;
+      imm fi = *heldF[k];
+      imm gen = *heldG[k];
+      imm n = *heldN[k];
+      imm q = *heldQ[k];
+      k = k + 1usize;
+      imm key = (u64.from(gen) << 32u64) | u64.from(fi);
+      mut stay = false;
+      mut j = 0usize;
+      while j < blocked.len() {
+        if *blocked[j] == key {stay = true;}
+        j = j + 1usize;
+      }
+      if not stay {
+        mut e2 = blankEvent();
+        mut sent = sinkTaken;
+        s, sent = trySink(s, e, &mut e2);
+        if sent == sinkGone {st.dropped = st.dropped + 1u64;}
+        if sent != sinkFull {
+          imm f = self.fetchAt(fi) as &mut Fetch;
+          if f.gen == gen and f.state != fFree and f.heldEvents > 0u32 {f.heldEvents = f.heldEvents - 1u32;}
+          if n > 0usize {drv.release(q, n);}
+          continue;
+        }
+        blocked.push(key);
+        ke.push(e2);
+      } else {
+        ke.push(e);
+      }
+      ks.push(s);
+      kf.push(fi);
+      kg.push(gen);
+      kn.push(n);
+      kq.push(q);
+    }
+    heldE <=> ke;
+    heldS <=> ks;
+    heldF <=> kf;
+    heldG <=> kg;
+    heldN <=> kn;
+    heldQ <=> kq;
+  }
+
+  // Events for this thread, moved to out: how many
+  fn handOver(self &mut, out &mut List[Event]) usize {
+    imm n = ready.len();
+    if n == 0usize {return 0usize;}
+    if out.len() == 0usize {
+      *out <=> ready;
+      return n;
+    }
+    mut k = 0usize;
+    while k < n {
+      mut e = blankEvent();
+      imm slot = &mut ready[k];
+      e <=> *slot;
+      out.push(e);
+      k = k + 1usize;
+    }
+    ready.clear();
+    n;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Driving
+  // ---------------------------------------------------------------------------
+
+  // The latest a poll of the loop may wait to (see the package's header,
+  // THE CLIENT)
+  pub fn wakeAt(self &) Instant {
+    if ready.len() > 0usize or wantSchedule {return new Instant();}
+    mut w = drv.wakeAt();
+    if heldE.len() > 0usize {
+      imm h = Instant.now() + Duration.fromNanos(heldRetryNs);
+      if h < w {w = h;}
+    }
+    w;
+  }
+
+  // Poll the loop, at most until 'until' and not at all while events are
+  // ready; hand the client what completed; drive what it touched; append the
+  // events for this thread to out: how many
+  pub fn poll(self &mut, lp &mut Loop, until Instant, out &mut List[Event]) usize {
+    mut n = self.pump(lp, out);
+    mut limit = until;
+    imm w = self.wakeAt();
+    if w < limit {limit = w;}
+    if n > 0usize {limit = new Instant();}
+    mut cs = List[Completion].empty();
+    cs <=> comps;
+    lp.poll(limit, &mut cs);
+    mut k = 0usize;
+    while k < cs.len() {
+      imm c = &mut cs[k];
+      if not self.complete(lp, c) {st.unclaimed = st.unclaimed + 1u64;}
+      k = k + 1usize;
+    }
+    cs.clear();
+    comps <=> cs;
+    n + self.pump(lp, out);
+  }
+
+  // A completion from the loop: true if it was this client's (its driver's,
+  // or one of its own timers), which takes what it needs from it
+  pub fn complete(self &mut, lp &mut Loop, comp &mut Completion) Bool {
+    if drv.complete(lp, comp) {return true;}
+    if not drv.isUpperToken(comp.token) {return false;}
+    imm n = comp.token & 0xFFFFFFFFFFFFu64;
+    imm fi = u32.from(n & u64.from(genMask));
+    imm gen = u32.from((n >> 24u64) & u64.from(genMask));
+    if fi >= fetchCount {return true;}
+    imm f = self.fetchAt(fi) as &mut Fetch;
+    if (f.gen & genMask) != gen or f.state == fFree or f.watch != comp.id {return true;}
+    f.watch = OpId.none();
+    self.cancelFetch(lp, fi, if comp.status == diag.outcomeDone {endTimedOut;} else {endCancelled;});
+    true;
+  }
+
+  // Drive everything the completions and calls have touched, and append the
+  // events for this thread to out: how many
+  pub fn pump(self &mut, lp &mut Loop, out &mut List[Event]) usize {
+    self.retryHeld();
+    mut rounds = 0u32;
+    while rounds < 64u32 {
+      imm got = self.takeDriverEvents(lp);
+      mut did = false;
+      if wantSchedule {
+        wantSchedule = false;
+        did = self.schedule(lp);
+      }
+      if not did and got == 0usize {break;}
+      rounds = rounds + 1u32;
+    }
+    self.handOver(out);
+  }
+
+  // The driver's events, each to the fetch or connection it is about: how
+  // many
+  fn takeDriverEvents(self &mut, lp &mut Loop) usize {
+    mut evs = List[httpconn.Event].empty();
+    evs <=> dev;
+    imm n = drv.pump(lp, &mut evs);
+    mut k = 0usize;
+    while k < evs.len() {
+      imm e = &mut evs[k];
+      k = k + 1usize;
+      imm t = e.token;
+      imm index = u32.from(t & 0xFFFFFFFFu64);
+      imm gen = u32.from((t >> 32u64) & u64.from(genMask));
+      if (t & tokReq) != 0u64 {
+        if index < fetchCount {
+          imm f = self.fetchAt(index) as &Fetch;
+          if f.gen == gen and f.state == fActive and f.req == e.req {
+            self.onRequest(lp, index, e);
+            continue;
+          }
+        }
+        // A request the client no longer follows: its body's credit back
+        if e.kind == httpconn.EventKind.Data[] {drv.release(e.req, e.buf.len());}
+      } elif (t & tokConn) != 0u64 {
+        if index < connCount {
+          imm p = self.connAt(index) as &PConn;
+          if p.gen == gen and p.state != pFree {self.onConn(lp, index, e);}
+        }
+      }
+    }
+    evs.clear();
+    dev <=> evs;
+    n;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Connections
+  // ---------------------------------------------------------------------------
+
+  // A pooled connection's event: connected, or closed
+  fn onConn(self &mut, lp &mut Loop, pc u32, e &mut httpconn.Event) {
+    imm p = self.connAt(pc) as &mut PConn;
+    imm og = self.originAt(p.origin) as &mut Origin;
+    if e.kind == httpconn.EventKind.Connected[] {
+      if p.state == pConnecting {
+        p.state = pIdle;
+        og.connecting = og.connecting - 1u32;
+        og.idle.push(pc);
+        wantSchedule = true;
+      }
+      return;
+    }
+    if e.kind != httpconn.EventKind.Closed[] {return;}
+    imm was = p.state;
+    if was == pConnecting {
+      og.connecting = og.connecting - 1u32;
+      og.open = og.open - 1u32;
+      total = total - 1u32;
+    } elif was == pIdle {
+      removeValue(&mut og.idle, pc);
+      og.open = og.open - 1u32;
+      total = total - 1u32;
+    } elif was == pBusy {
+      og.open = og.open - 1u32;
+      total = total - 1u32;
+    }
+    st.closed = st.closed + 1u64;
+    imm oi = p.origin;
+    // A connection that could not be made (or whose TLS failed before its
+    // first exchange) fails what waits for its origin, when nothing else is
+    // open to it: they would meet the same failure
+    imm s = e.failure.stage;
+    imm establishing = was == pConnecting or (p.uses <= 1u32 and s == httpconn.Stage.Tls[]);
+    if not e.clean and establishing and og.open == og.connecting {
+      imm fl = Failure.fromConn(&e.failure);
+      while og.queue.len() > 0usize {
+        imm fi = *og.queue[0usize];
+        imm f = self.fetchAt(fi) as &mut Fetch;
+        f.timing.attempts = f.timing.attempts + 1u32;
+        self.finishFetch(lp, fi, endFailed, fl.copy());
+      }
+    }
+    self.freeConnRec(pc);
+    wantSchedule = true;
+  }
+
+  // An exchange on connection pc has ended well: it is idle in its pool if
+  // it can carry another, else it closes
+  fn connDone(self &mut, lp &mut Loop, pc u32) {
+    imm p = self.connAt(pc) as &mut PConn;
+    if p.state != pBusy {return;}
+    p.fetch = noEntry;
+    imm og = self.originAt(p.origin) as &mut Origin;
+    if drv.isIdle(p.id) {
+      p.state = pIdle;
+      og.idle.push(pc);
+    } else {
+      self.retire(lp, pc, false);
+    }
+    wantSchedule = true;
+  }
+
+  // The exchange on connection pc ended otherwise than well (failed,
+  // cancelled): the connection is ending -- unless the request never
+  // started on it (cancelled while the driver still held it), when it is
+  // free again
+  fn connEnded(self &mut, lp &mut Loop, pc u32) {
+    imm p = self.connAt(pc) as &mut PConn;
+    if p.state == pBusy and drv.isIdle(p.id) {
+      self.connDone(lp, pc);
+    } else {
+      self.retire(lp, pc, false);
+    }
+  }
+
+  // Connection pc leaves the pool: closed now (politely) when 'close', or
+  // already ending; its Closed frees its record
+  fn retire(self &mut, lp &mut Loop, pc u32, close Bool) {
+    imm p = self.connAt(pc) as &mut PConn;
+    imm og = self.originAt(p.origin) as &mut Origin;
+    if p.state == pIdle {removeValue(&mut og.idle, pc);}
+    if p.state == pConnecting {og.connecting = og.connecting - 1u32;}
+    if p.state != pClosing and p.state != pFree {
+      og.open = og.open - 1u32;
+      total = total - 1u32;
+    }
+    p.state = pClosing;
+    p.fetch = noEntry;
+    if close {drv.close(lp, p.id);}
+    wantSchedule = true;
+  }
+
+  // Open a connection to origin oi
+  fn openConn(self &mut, lp &mut Loop, oi u32) {
+    imm og = self.originAt(oi) as &mut Origin;
+    imm pc = self.newConn();
+    imm p = self.connAt(pc) as &mut PConn;
+    p.origin = oi;
+    og.open = og.open + 1u32;
+    og.connecting = og.connecting + 1u32;
+    total = total + 1u32;
+    st.connects = st.connects + 1u64;
+    imm sink = httpconn.Sink.Here[tokConn | (u64.from(p.gen) << 32u64) | u64.from(pc)];
+    if not og.secure {
+      p.id = drv.connect(lp, og.host.view(), og.port, sink);
+      return;
+    }
+    imm t = tlsc;
+    match t {
+      case imm c Some {
+        p.id = drv.connectWith(lp, og.host.view(), og.port, new So[tls.Stream](c.value.stream(og.host.view(), pool)), sink);
+      }
+      else {
+        // No TLS context: nothing for this origin can be fetched
+        og.open = og.open - 1u32;
+        og.connecting = og.connecting - 1u32;
+        total = total - 1u32;
+        self.freeConnRec(pc);
+        while og.queue.len() > 0usize {
+          imm fi = *og.queue[0usize];
+          self.finishFetch(lp, fi, endFailed, tlsFailure.copy());
+        }
+      }
+    }
+  }
+
+  // An idle connection closed to make room: the one idle longest, of an
+  // origin nothing waits for. False when there is none
+  fn closeAnIdle(self &mut, lp &mut Loop) Bool {
+    mut o = 0usize;
+    while o < origins.len() {
+      imm og = *origins[o] as &mut Origin;
+      if og.queue.len() == 0usize and og.idle.len() > 0usize {
+        imm pc = *og.idle[0usize];
+        self.retire(lp, pc, true);
+        return true;
+      }
+      o = o + 1usize;
+    }
+    false;
+  }
+
+  // ---------------------------------------------------------------------------
+  // The scheduler (see the package's header, INTENTS AND THE ORDER)
+  // ---------------------------------------------------------------------------
+
+  // Whether fetch a goes before fetch b: by intent, then score, then the
+  // order asked
+  fn before(self &, a u32, b u32) Bool {
+    imm fa = self.fetchAt(a) as &Fetch;
+    imm fb = self.fetchAt(b) as &Fetch;
+    imm ra = intentRank(fa.intent);
+    imm rb = intentRank(fb.intent);
+    if ra != rb {return ra < rb;}
+    if fa.score != fb.score {return fa.score > fb.score;}
+    fa.seq < fb.seq;
+  }
+
+  // Where the first of origin oi's queue is in it
+  fn firstIn(self &, oi u32) usize {
+    imm og = self.originAt(oi) as &Origin;
+    mut best = 0usize;
+    mut k = 1usize;
+    while k < og.queue.len() {
+      if self.before(*og.queue[k], *og.queue[best]) {best = k;}
+      k = k + 1usize;
+    }
+    best;
+  }
+
+  // Free connections to the first waiting fetches; connections opened where
+  // fetches wait, the origins whose first fetch is first getting them first.
+  // Whether it did anything
+  fn schedule(self &mut, lp &mut Loop) Bool {
+    mut did = false;
+    mut o = 0u32;
+    while o < u32.from(origins.len()) {
+      imm og = self.originAt(o) as &mut Origin;
+      while og.queue.len() > 0usize and og.idle.len() > 0usize {
+        imm pc = *og.idle[og.idle.len() - 1usize];
+        imm p = self.connAt(pc) as &mut PConn;
+        if not drv.isIdle(p.id) {
+          // It is closing under us (the server's close, its idle timeout)
+          self.retire(lp, pc, false);
+          continue;
+        }
+        og.idle.pop();
+        imm pos = self.firstIn(o);
+        imm fi = *og.queue[pos];
+        removeAt(&mut og.queue, pos);
+        queuedN = queuedN - 1u32;
+        self.dispatch(lp, fi, pc);
+        did = true;
+      }
+      o = o + 1u32;
+    }
+    while true {
+      mut bestO = noEntry;
+      mut bestF = noEntry;
+      o = 0u32;
+      while o < u32.from(origins.len()) {
+        imm og = self.originAt(o) as &Origin;
+        if og.queue.len() > usize.from(og.connecting) and og.open < cfg.maxPerOrigin {
+          imm fi = *og.queue[self.firstIn(o)];
+          if bestF == noEntry or self.before(fi, bestF) {
+            bestO = o;
+            bestF = fi;
+          }
+        }
+        o = o + 1u32;
+      }
+      if bestO == noEntry {break;}
+      if total >= cfg.maxTotal and not self.closeAnIdle(lp) {break;}
+      self.openConn(lp, bestO);
+      did = true;
+    }
+    did;
+  }
+
+  // Fetch fi's request, on idle connection pc
+  fn dispatch(self &mut, lp &mut Loop, fi u32, pc u32) {
+    imm f = self.fetchAt(fi) as &mut Fetch;
+    imm p = self.connAt(pc) as &mut PConn;
+    f.state = fActive;
+    f.conn = pc;
+    f.sent = 0usize;
+    p.state = pBusy;
+    p.fetch = fi;
+    p.uses = p.uses + 1u32;
+    imm target = f.url.target();
+    imm authority = f.url.authority();
+    mut head = RequestHead.make(f.methodName(), target.view(), authority.view());
+    head.scheme = f.url.scheme.copy();
+    head.headers = f.headers.copy();
+    imm body = if f.body.len() > 0usize {BodyLength.sized(u64.from(f.body.len()));} else {BodyLength.empty();};
+    f.timing.dispatched = Instant.now();
+    f.timing.attempts = f.timing.attempts + 1u32;
+    f.timing.reused = p.uses > 1u32;
+    st.sent = st.sent + 1u64;
+    if f.timing.reused {st.reused = st.reused + 1u64;}
+    f.req = drv.request(lp, p.id, head, body, httpconn.Sink.Here[tokReq | (u64.from(f.gen) << 32u64) | u64.from(fi)]);
+  }
+
+  // As much of fetch fi's body as its connection takes now
+  fn sendBody(self &mut, lp &mut Loop, fi u32) {
+    imm f = self.fetchAt(fi) as &mut Fetch;
+    imm all = f.body.view();
+    while f.sent < all.len {
+      imm n = if all.len - f.sent < sendChunk {all.len - f.sent;} else {sendChunk;};
+      mut b = IoBuf.empty();
+      match pool.take(n) {
+        case mut s Some {b <=> s.value;}
+        case is None[IoBuf] {}
+      }
+      if b.capacity() == 0usize {
+        // The pool refused: the request cannot be sent
+        f.ending = endFailed;
+        drv.cancel(lp, f.req);
+        return;
+      }
+      b.append(&all[f.sent .. f.sent + n]);
+      match drv.sendData(f.req, b) {
+        case is None[IoBuf] {f.sent = f.sent + n;}
+        else {return;}      // refused: Writable comes when there is room
+      }
+    }
+    drv.finish(f.req);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Requests
+  // ---------------------------------------------------------------------------
+
+  // An event of fetch fi's request on the driver
+  fn onRequest(self &mut, lp &mut Loop, fi u32, e &mut httpconn.Event) {
+    imm f = self.fetchAt(fi) as &mut Fetch;
+    imm k = e.kind;
+    if k == httpconn.EventKind.Response[] {
+      f.timing.firstByte = Instant.now();
+      imm status = e.response.status;
+      if f.ending == endNone and followsRedirect(status) and f.maxRedirects > 0u32 {
+        match e.response.headers.get("Location") {
+          case imm loc Some {
+            f.following = true;
+            f.location = String.from(loc.value);
+            f.redirectStatus = status;
+            f.drained = 0usize;
+            return;
+          }
+          else {}
+        }
+      }
+      f.delivered = true;
+      mut ev = Event.make(EventKind.Response[], f.sink.token, self.idOf(fi));
+      ev.response <=> e.response;
+      ev.body = e.body;
+      ev.url = f.url.text();
+      self.emit(fi, 0usize, ev);
+    } elif k == httpconn.EventKind.Data[] {
+      imm n = e.buf.len();
+      if f.following {
+        // A redirect's body: read and dropped, cut off past drainLimit
+        drv.release(f.req, n);
+        f.drained = f.drained + n;
+        if f.drained > drainLimit and not f.cutting {
+          f.cutting = true;
+          drv.cancel(lp, f.req);
+        }
+        return;
+      }
+      mut ev = Event.make(EventKind.Data[], f.sink.token, self.idOf(fi));
+      ev.buf <=> e.buf;
+      if isChan(&mut f.sink) {
+        self.emit(fi, n, ev);
+      } else {
+        f.held = f.held + n;
+        self.emit(fi, 0usize, ev);
+      }
+    } elif k == httpconn.EventKind.End[] {
+      if f.following {return;}
+      mut ev = Event.make(EventKind.End[], f.sink.token, self.idOf(fi));
+      ev.trailers <=> e.trailers;
+      self.emit(fi, 0usize, ev);
+    } elif k == httpconn.EventKind.Writable[] {
+      self.sendBody(lp, fi);
+    } elif k == httpconn.EventKind.Done[] {
+      imm pc = f.conn;
+      self.connDone(lp, pc);
+      if f.following {
+        self.follow(lp, fi);
+      } else {
+        self.finishFetch(lp, fi, endDone, Failure.none());
+      }
+    } elif k == httpconn.EventKind.Failed[] {
+      self.connEnded(lp, f.conn);
+      imm fl = Failure.fromConn(&e.failure);
+      if f.ending == endLimit or f.ending == endCancelled or f.ending == endTimedOut {
+        self.finishFetch(lp, fi, if f.ending == endLimit {endLimit;} else {endFailed;}, fl);
+      } elif self.canRetry(fi, &fl) {
+        f.retries = f.retries + 1u32;
+        st.retries = st.retries + 1u64;
+        self.enqueue(fi);
+      } else {
+        self.finishFetch(lp, fi, endFailed, fl);
+      }
+    } elif k == httpconn.EventKind.Cancelled[] or k == httpconn.EventKind.TimedOut[] {
+      self.connEnded(lp, f.conn);
+      if f.cutting and f.ending == endNone {
+        self.follow(lp, fi);
+      } elif f.ending == endFailed {
+        self.finishFetch(lp, fi, endFailed,
+          Failure.make(Stage.Limit[], 0u32, ErrorKind.TooLarge[], "the buffer pool refused a buffer for the request's body"));
+      } elif f.ending == endTimedOut or f.ending == endLimit {
+        self.finishFetch(lp, fi, f.ending, Failure.none());
+      } elif k == httpconn.EventKind.TimedOut[] {
+        self.finishFetch(lp, fi, endTimedOut, Failure.none());
+      } else {
+        self.finishFetch(lp, fi, endCancelled, Failure.none());
+      }
+    }
+  }
+
+  // Fetch fi's response was a redirect, read whole: the next request (see
+  // the package's header, REDIRECTS)
+  fn follow(self &mut, lp &mut Loop, fi u32) {
+    imm f = self.fetchAt(fi) as &mut Fetch;
+    f.following = false;
+    f.cutting = false;
+    imm status = f.redirectStatus;
+    if f.timing.redirects >= f.maxRedirects {
+      mut d = String.from("more than ");
+      d.appendUInt(u64.from(f.maxRedirects));
+      d.append(" redirects");
+      self.finishFetch(lp, fi, endFailed, Failure.make(Stage.Redirect[], 0u32, ErrorKind.TooLarge[], d.view()));
+      return;
+    }
+    mut next = Url.empty();
+    mut why = String.empty();
+    match f.url.resolve(f.location.view()) {
+      case mut r Ok {next <=> r.value;}
+      case imm x Error {why = x.value.message();}
+    }
+    if why.len() == 0usize and not next.isHttp() {why = String.from("it is not an http or https URL");}
+    if why.len() > 0usize {
+      mut d = String.from("the Location '");
+      d.append(f.location.view());
+      d.append("' cannot be followed: ");
+      d.append(why.view());
+      self.finishFetch(lp, fi, endFailed, Failure.make(Stage.Redirect[], 0u32, ErrorKind.Malformed[], d.view()));
+      return;
+    }
+    // 303 makes it a GET (a HEAD stays one), as 301 and 302 do of a POST
+    imm toGet = (status == 303u16 and f.method != Method.Head[]) or
+      ((status == 301u16 or status == 302u16) and f.method == Method.Post[]);
+    if toGet and f.method != Method.Get[] {
+      f.method = Method.Get[];
+      f.methodText = String.empty();
+      f.body = String.empty();
+      f.headers.remove("Content-Type");
+      f.headers.remove("Content-Encoding");
+      f.headers.remove("Content-Language");
+      f.headers.remove("Content-Location");
+    }
+    // Credentials never cross origins
+    if not next.sameOrigin(&f.url) {
+      f.headers.remove("Authorization");
+      f.headers.remove("Proxy-Authorization");
+      f.headers.remove("Cookie");
+    }
+    if not next.hasFragment and f.url.hasFragment {
+      next.fragment = f.url.fragment.copy();
+      next.hasFragment = true;
+    }
+    f.url <=> next;
+    f.timing.redirects = f.timing.redirects + 1u32;
+    f.retries = 0u32;
+    st.redirects = st.redirects + 1u64;
+    self.enqueue(fi);
+  }
+
+  // ---------------------------------------------------------------------------
+  // One call
+  // ---------------------------------------------------------------------------
+
+  // A request fetched whole: the loop driven until its final answer, its body
+  // gathered up to limit bytes (past it, Failed at Stage.Limit). Other
+  // fetches' events that arrive meanwhile wait for the next poll
+  pub fn fetchWhole(self &mut, lp &mut Loop, req Request, limit usize, file &[]u8 = srcFile(), line u32 = srcLine()) Response {
+    imm id = self.send(lp, req, Sink.Here[0u64], file, line);
+    mut resp = Response.blank();
+    mut others = List[Event].empty();
+    mut going = true;
+    mut evs = List[Event].empty();
+    while going {
+      self.poll(lp, forever(), &mut evs);
+      mut k = 0usize;
+      while k < evs.len() {
+        mut e = blankEvent();
+        imm slot = &mut evs[k];
+        e <=> *slot;
+        k = k + 1usize;
+        if e.id != id {
+          others.push(e);
+        } elif e.kind == EventKind.Response[] {
+          resp.status = e.response.status;
+          resp.headers <=> e.response.headers;
+          resp.url <=> e.url;
+        } elif e.kind == EventKind.Data[] {
+          imm n = e.buf.len();
+          if resp.body.len() + n > limit {
+            imm fi = self.fetchIndex(id);
+            if fi != noEntry {self.cancelFetch(lp, fi, endLimit);}
+          } else {
+            resp.body.append(e.buf.view());
+          }
+          self.release(id, n);
+        } elif e.isTerminal() {
+          resp.outcome = e.kind;
+          resp.failure <=> e.failure;
+          resp.timing = e.timing;
+          going = false;
+        }
+      }
+      evs.clear();
+    }
+    // What came for others goes first at the next poll
+    while ready.len() > 0usize {
+      mut e = blankEvent();
+      match ready.pop() {
+        case mut s Some {e <=> s.value;}
+        case is None[Event] {}
+      }
+      evs.push(e);
+    }
+    while evs.len() > 0usize {
+      mut e = blankEvent();
+      match evs.pop() {
+        case mut s Some {e <=> s.value;}
+        case is None[Event] {}
+      }
+      others.push(e);
+    }
+    ready <=> others;
+    resp;
+  }
+
+  // Its death: the tables' blocks and the origins, every record's values with
+  // them. The connections are its driver's, which dies with it; the sockets
+  // the loop's
+  fn final(self &uni) {
+    mut b = 0usize;
+    while b < fetchBlocks.len() {
+      imm block = *fetchBlocks[b];
+      mut j = 0u32;
+      while j < recsPerBlock {
+        mem.finalize[Fetch](block + usize.from(j));
+        j = j + 1u32;
+      }
+      libc.free(block as *u8);
+      b = b + 1usize;
+    }
+    b = 0usize;
+    while b < connBlocks.len() {
+      imm block = *connBlocks[b];
+      mut j = 0u32;
+      while j < recsPerBlock {
+        mem.finalize[PConn](block + usize.from(j));
+        j = j + 1u32;
+      }
+      libc.free(block as *u8);
+      b = b + 1usize;
+    }
+    b = 0usize;
+    while b < origins.len() {
+      imm o = *origins[b];
+      mem.finalize[Origin](o);
+      libc.free(o as *u8);
+      b = b + 1usize;
+    }
+  }
+}
+
+// One URL fetched whole, with a loop and a client of its own made for it
+// and gone after (see the package's header, FETCHING)
+pub fn getWhole(text &[]u8, limit usize) Response {
+  mut lp = Loop.mustMake();
+  mut c = Client.make(Config.make(), Pool.make());
+  mut r = c.fetchWhole(&mut lp, Request.get(text), limit);
+  c.abortAll(&mut lp);
+  mut evs = List[Event].empty();
+  c.pump(&mut lp, &mut evs);
+  r;
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+// Whether a status is a redirect the client follows
+fn followsRedirect(s u16) Bool {
+  s == 301u16 or s == 302u16 or s == 303u16 or s == 307u16 or s == 308u16;
+}
+
+// An event holding nothing, to swap one out of where it is held
+fn blankEvent() Event {Event.make(EventKind.Data[], 0u64, FetchId.none());}
+
+// What a channel sink did with an event
+const sinkTaken = 0u32;
+const sinkFull = 1u32;
+const sinkGone = 2u32;
+
+// A second sink to the same place: a channel's sender cloned. (The sink is
+// swapped into a local to be matched: Cone narrows only a local's variant,
+// error 1034)
+fn copySink(s &mut Sink) Sink {
+  mut here Sink = Sink.Here[0u64];
+  here <=> *s;
+  mut out Sink = Sink.Here[here.token];
+  match &here {
+    case imm c &Chan {out = Sink.Chan[here.token, c.tx.clone()];}
+    else {}
+  }
+  *s <=> here;
+  out;
+}
+
+// Whether a sink is a channel
+fn isChan(s &mut Sink) Bool {
+  mut here Sink = Sink.Here[0u64];
+  here <=> *s;
+  mut yes = false;
+  match &here {
+    case is &Chan {yes = true;}
+    else {}
+  }
+  *s <=> here;
+  yes;
+}
+
+// Send e on a channel sink, never waiting; the sink is moved in and handed
+// back. A full channel hands e back in 'back'
+fn trySink(s Sink, e Event, back &mut Event) Sink, u32 {
+  mut here = s;
+  mut how = sinkTaken;
+  match &here {
+    case imm ch &Chan {
+      match ch.tx.trySend(e) {
+        case mut r Some {
+          if ch.tx.isClosed() {
+            how = sinkGone;
+          } else {
+            *back <=> r.value;
+            how = sinkFull;
+          }
+        }
+        else {}
+      }
+    }
+    else {}
+  }
+  here, how;
+}
+
+fn removeAt(l &mut List[u32], k usize) {
+  mut j = k;
+  while j + 1usize < l.len() {
+    l.swap(j, j + 1usize);
+    j = j + 1usize;
+  }
+  l.pop();
+}
+
+// Remove v from l, keeping the order: whether it was there
+fn removeValue(l &mut List[u32], v u32) Bool {
+  mut k = 0usize;
+  while k < l.len() {
+    if *l[k] == v {
+      removeAt(l, k);
+      return true;
+    }
+    k = k + 1usize;
+  }
+  false;
+}
