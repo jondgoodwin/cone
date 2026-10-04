@@ -20,8 +20,9 @@
 		kernels, a marked package's and a <span class="pre">gpu/</span> folder's (below,
 		"A package's kernels"). Not yet:
 		refusing the features a GPU lacks where they are written, textures, a checked form of
-		workgroup memory, a CPU twin that runs a workgroup's invocations together (so that one
-		reading another's writes across a barrier gets the GPU's answer), one package's
+		workgroup memory, a CPU twin in <span class="pre">gpuwork</span> that runs a workgroup's
+		invocations together (so that one reading another's writes across a barrier gets the
+		GPU's answer; the barrier hook it needs is built, below), one package's
 		<span class="pre">gpu/</span> folder using another's, and
 		<span class="pre">f16</span>.</i></p>
 
@@ -343,13 +344,16 @@ fn @compute(256) prefix(inv Invocation, input &amp;[]u32, out &amp;[]mut u32) {
 		barrier between, is the program's to arrange. <i>(A checked form, each invocation owning
 		its own place and reading the others' only after a barrier, is to come.)</i></p>
 
-	<p>On the CPU a workgroup global is an ordinary global, one copy, and the loop that runs
-		a kernel runs one invocation at a time, workgroup by workgroup. A kernel whose
+	<p>On the CPU a workgroup global is an ordinary global, one copy, and the workgroups run
+		one after another, so that copy serves the workgroup running. A loop that runs a
+		workgroup's invocations one at a time gives the GPU's answer for a kernel whose
 		invocations read, after a barrier, only what the invocations before them in that order
-		wrote (the last invocation of a workgroup gathering what the others counted, say) gives
-		the same answer on both. One whose invocations read what invocations after them write,
-		as the prefix sum above does, needs its workgroup's invocations run together, which the
-		CPU's loop does not yet do.</p>
+		wrote (the last invocation of a workgroup gathering what the others counted, say). One
+		whose invocations read what invocations after them write, as the prefix sum above
+		does, needs its workgroup's invocations run together, on threads that meet at each
+		barrier: what the <a href="#cpubarriers">barrier hook</a> is for. The loop in
+		<span class="pre">gpuwork</span> does not yet do that. Nothing resets the one copy
+		between workgroups, which on a GPU starts undefined anyway.</p>
 
 	<h2 id="barriers">Barriers</h2>
 
@@ -362,7 +366,62 @@ pub fn @intrinsic storageBarrier()</code></pre>
 		after <span class="pre">storageBarrier</span>, what was written to the buffers the kernel
 		binds, as the other invocations of the same workgroup see it. Every invocation of a
 		workgroup must reach the same barrier, so one is never written where some invocations
-		of a workgroup go and others do not. On the CPU each is nothing.</p>
+		of a workgroup go and others do not.</p>
+
+	<h3 id="cpubarriers">Barriers on the CPU</h3>
+
+<pre><code>pub extern {
+  fn setBarrierHook(hook &amp;fn(ctx *u8, kind u32), ctx *u8);
+  fn clearBarrierHook();
+}</code></pre>
+
+	<p>On the CPU a kernel is an ordinary function, and what a barrier must do depends on how
+		the program runs it. Run one invocation at a time, there is no one to wait for, and a
+		barrier does nothing. Run with a workgroup's invocations on threads, one a thread, each
+		thread must wait at every barrier until the others have reached it. So on the CPU each
+		barrier calls a function the running thread names, its <i>barrier hook</i>, and does
+		nothing when the thread has named none. A thread that runs invocations together sets
+		its hook to a real barrier, and every barrier the kernel reaches on that thread waits
+		there.</p>
+
+	<p><span class="pre">setBarrierHook(hook, ctx)</span> sets this thread's hook: each barrier
+		calls <span class="pre">hook(ctx, kind)</span>, where <span class="pre">ctx</span> is what
+		was given here, the barrier itself say, and <span class="pre">kind</span> is 0 at a
+		<span class="pre">workgroupBarrier</span> and 1 at a
+		<span class="pre">storageBarrier</span>. <span class="pre">clearBarrierHook()</span> takes it
+		away. Each thread has its own hook, none until it sets one, so a thread pool's thread
+		sets its hook once, two twins can run workgroups at once on threads of their own, and
+		a thread that set none runs a kernel one invocation at a time as before. On the CPU
+		memory is the same for both kinds, so one barrier serves both. Both are core's, the
+		work conestd's, and on a GPU the hook is never called.</p>
+
+<pre><code>fn wait(ctx *u8, kind u32) {
+  imm b = ctx as *Barrier;     // the program's own: a count and a generation, say
+  ...                          // every invocation's thread waits here for the others
+}
+
+fn lane(l Lane) {              // one invocation of each workgroup, on its own thread
+  setBarrierHook(&amp;wait, l.bar as *u8);
+  ...                          // the kernel, called for this thread's invocations
+  clearBarrierHook();
+}</code></pre>
+
+	<p>The hook is called on the thread the barrier is on, and what it does is the program's:
+		it must not return until every invocation of the workgroup has reached the barrier,
+		and must order memory as a lock does, what each wrote before seen by every other after
+		(the sync package's atomics and futex do both). A hook that returns at once, or one set
+		on a thread that runs a workgroup's invocations one at a time, makes the barrier
+		nothing; one whose wait never ends, because an invocation of the workgroup never comes,
+		never returns. The compiler's test <span class="pre">concurrency_compute_barrier_threads</span>
+		runs the prefix sum above this way, its four invocations on four threads.</p>
+
+	<p>With no hook set, a barrier costs the load of the thread's hook and a branch not taken.
+		Measured on an i7-13700HX, the prefix sum above, with 17 barriers an invocation, ran in
+		13 to 15 ns an invocation against 2.7 to 3.5 ns with its barriers taken out, about
+		0.6 ns a barrier. That is the load (on Windows a thread-local is reached by four
+		loads) and what the optimizer may no longer do across a barrier, since a hook, if set,
+		lets other threads change workgroup memory there. On WebAssembly a barrier is
+		nothing.</p>
 
 	<p style="text-align: right; margin-top: 2em;">
 		<a href="refmodule.html"><img alt="_" src="next.png" /></a>

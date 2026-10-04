@@ -442,12 +442,16 @@ static LLVMValueRef genlDeclaredIntrinsic(GenState *gen, FnDclNode *fndcl, LLVMV
     case ShrMaskedIntrinsic:
         return genlBitIntrinsic(gen, intrinsic->intrinsicFn, type, fnargs);
 
-    // A GPU workgroup's barriers (genlgpusync.c). The CPU runs a kernel one
-    // invocation at a time, so there is nothing to wait for
+    // A GPU workgroup's barriers (genlgpusync.c): on a GPU an instruction, on
+    // the CPU a call to the thread's barrier hook when it has set one.
+    // WebAssembly links no conestd, which holds the hook, and runs a kernel one
+    // invocation at a time: there each is nothing
     case WorkgroupBarrierIntrinsic:
     case StorageBarrierIntrinsic:
         if (gen->opt->gpu)
             genlGpuBarrier(gen, intrinsic->intrinsicFn == StorageBarrierIntrinsic);
+        else if (!gen->opt->wasm)
+            genlCpuBarrier(gen, intrinsic->intrinsicFn == StorageBarrierIntrinsic);
         return NULL;
 
     default:

@@ -1,0 +1,33 @@
+// barrier: what a compute kernel's barriers call on the CPU.
+//
+// On a GPU, 'workgroupBarrier()' and 'storageBarrier()' are an instruction
+// each. On the CPU each is a call to the hook the running thread has set with
+// core's 'setBarrierHook', when it has set one, and nothing when it has not
+// (compiler/c/doc/phases/generation.md, "Barriers on the CPU"). A kernel's
+// CPU twin that runs a workgroup's invocations on threads sets each thread's
+// hook to a real barrier, every invocation of the workgroup waiting there for
+// the others; a twin running one invocation at a time sets none.
+//
+// The hook and its context are thread-local, so two twins can run
+// workgroups at once on threads of their own, and a pool's thread sets its
+// hook once. The compiler loads 'cone_barrierHook' at each barrier, by its C
+// name, and calls it with 'cone_barrierCtx' and the barrier's kind (0
+// workgroupBarrier, 1 storageBarrier) when it is not null.
+
+// The hook, a Cone function '&fn(ctx *u8, kind u32)', as its address; null
+// for none
+pub mut @threadlocal cone_barrierHook *u8 = null;
+
+// What the hook is handed first: whatever its setter gave
+pub mut @threadlocal cone_barrierCtx *u8 = null;
+
+pub fn cone_setBarrierHook(hook &fn(ctx *u8, kind u32), ctx *u8) {
+  cone_barrierCtx = ctx;
+  mut h = hook;
+  cone_barrierHook = core.mem.readRaw[*u8](&mut h as **u8);
+}
+
+pub fn cone_clearBarrierHook() {
+  cone_barrierHook = null;
+  cone_barrierCtx = null;
+}

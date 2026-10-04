@@ -140,10 +140,22 @@ pub struct Invocation {
 // workgroup's '@workgroup' globals (workgroupBarrier) or to the buffers the
 // kernel binds (storageBarrier), every other reads after it. Every invocation
 // of the workgroup must reach the same barrier, so one is never written where
-// some invocations of a workgroup go and others do not. The CPU runs a kernel
-// one invocation at a time, so there each is nothing.
+// some invocations of a workgroup go and others do not. On the CPU each calls
+// the hook this thread has set with 'setBarrierHook', and is nothing when it
+// has set none, as when a kernel runs one invocation at a time.
 pub fn @intrinsic workgroupBarrier() {}
 pub fn @intrinsic storageBarrier() {}
+
+pub extern {
+  // The function a barrier calls on the CPU, on this thread: what a kernel's
+  // CPU twin that runs a workgroup's invocations on threads sets each one's
+  // to, a real barrier. It is handed 'ctx' and the barrier's kind, 0 for
+  // workgroupBarrier and 1 for storageBarrier. Each thread has its own; one
+  // that has set none, or cleared it, calls nothing at a barrier. On a GPU
+  // the hook is never called
+  fn @c("cone_setBarrierHook") setBarrierHook(hook &fn(ctx *u8, kind u32), ctx *u8);
+  fn @c("cone_clearBarrierHook") clearBarrierHook();
+}
 
 // The two regions every module reaches. A region is a struct declaring the
 // built-in trait 'RegionRef', and the compiler knows neither of these by name:
