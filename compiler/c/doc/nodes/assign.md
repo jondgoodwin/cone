@@ -57,7 +57,10 @@ target's content *before* the store rather than after.
 
 Operator-assignment (`+=`) is **not** this node. `parseOpEq` builds an
 `FnCallNode` with `FlagOpAssgn`; `fnCallOpAssgn` and `fnCallOpEqMethod` lower it
-to the base operator's method. `<=>` is a `SwapNode`, its own thing.
+to the base operator's method, `{imm tmp = &mut x; *tmp = *tmp + e}`. An `e`
+holding an `await` is made first, into a local of the rewrite, so that the
+place is borrowed, read and written after the seam
+([Flow](../phases/flow.md), "A seam"). `<=>` is a `SwapNode`, its own thing.
 
 ## Parse
 

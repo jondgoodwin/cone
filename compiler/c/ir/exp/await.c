@@ -422,6 +422,19 @@ static int awaitIsMessage(FnDclNode *fn) {
 
 static int awaitWalk(INode *node, int check, uint32_t *bad);
 
+void awaitLeftCallMsg(INode *left, char *what) {
+    errorMsgNode(left, ErrorAwaitLeftCall,
+        "%s, written to the left of an 'await' in the same statement, is made by a call or a temporary, and is used after the 'await'. The rest of the statement runs after the 'await', which ends every borrow: only a plain path -- a local, 'self', a field, an element at a plain index -- is reached again there, never what a call made. Bind what the call makes to a local first, and use the local here.",
+        what);
+}
+
+// A place, or a place's base, written to the left of a seam in its statement
+// and reached after it, that is no plain path
+static void awaitLeftCall(INode *left, char *what, uint32_t *bad) {
+    awaitLeftCallMsg(left, what);
+    ++*bad;
+}
+
 // Each 'await' in 'node' -- in what it awaits too -- reported once as standing
 // where the split is not built, for the reason 'why' its construct gives
 static void awaitReportIn(INode *node, char *why, uint32_t *bad);
@@ -481,22 +494,44 @@ static int awaitWalk(INode *node, int check, uint32_t *bad) {
     case BlockRetTag:
     case ReturnTag:
         return awaitWalk(((BreakRetNode *)node)->exp, check, bad);
-    // The value is made first, then the place's address is taken: an 'await'
-    // in the place would wait while that address is held
+    // The value is made first, then the place's address is taken, after any
+    // seam in the place, the value in flight across it. Only a simple
+    // assignment's place is split
     case AssignTag:
     {
-        int found = awaitWalk(((AssignNode *)node)->rval, check, bad);
-        found |= awaitWalkUnsplit(((AssignNode *)node)->lval, check, bad,
-            "in the place an assignment stores into, whose address would be held across the seam");
+        AssignNode *assign = (AssignNode *)node;
+        int found = awaitWalk(assign->rval, check, bad);
+        if (assign->assignType == NormalAssign && assign->lval->tag != VTupleTag)
+            found |= awaitWalk(assign->lval, check, bad);
+        else
+            found |= awaitWalkUnsplit(assign->lval, check, bad,
+                assign->lval->tag == VTupleTag ? "in the places a parallel assignment stores into"
+                : "in the place an assignment stores into whose old value is its value");
         return found;
     }
+    // The side holding a seam reaches its place first; the other, after the
+    // seam, must be reached again there
     case SwapTag:
     {
-        int found = awaitWalkUnsplit(((SwapNode *)node)->lval, check, bad,
-            "in a place a swap exchanges, whose address would be held across the seam");
-        found |= awaitWalkUnsplit(((SwapNode *)node)->rval, check, bad,
-            "in a place a swap exchanges, whose address would be held across the seam");
-        return found;
+        SwapNode *swap = (SwapNode *)node;
+        int inl = awaitWalk(swap->lval, 0, bad);
+        int inr = awaitWalk(swap->rval, 0, bad);
+        if (inl && inr) {
+            if (check) {
+                awaitReportIn(swap->lval, "in both places a swap exchanges", bad);
+                awaitReportIn(swap->rval, "in both places a swap exchanges", bad);
+            }
+            return 1;
+        }
+        if (!inl && !inr)
+            return 0;
+        if (check) {
+            awaitWalk(inl ? swap->lval : swap->rval, check, bad);
+            awaitWalk(inl ? swap->rval : swap->lval, check, bad);
+            if (inr && !awaitIsPath(swap->lval))
+                awaitLeftCall(swap->lval, "This place", bad);
+        }
+        return 1;
     }
     case VTupleTag:
         return awaitWalkNodes(((TupleNode *)node)->elems, check, bad);
@@ -525,17 +560,27 @@ static int awaitWalk(INode *node, int check, uint32_t *bad) {
         found |= awaitWalkNodes(call->args, check, bad);
         return found;
     }
-    // The array's address is taken before its index is made
+    // An index holding a seam is made first, and the place it indexes is
+    // reached after the seam, as a plain path: what is indexed may not hold a
+    // seam of its own, nor be reached through a call
     case ArrIndexTag:
     {
         FnCallNode *call = (FnCallNode *)node;
-        int found = awaitWalk(call->objfn, check, bad);
-        INode **nodesp;
-        uint32_t cnt;
-        for (nodesFor(call->args, cnt, nodesp))
-            found |= awaitWalkUnsplit(*nodesp, check, bad,
-                "in the index of a place, whose address would be held across the seam");
-        return found;
+        int inbase = awaitWalk(call->objfn, check, bad);
+        if (!awaitWalkNodes(call->args, 0, bad))
+            return inbase;
+        if (check) {
+            if (node->flags & FlagRange)
+                awaitReportNodes(call->args, "in the bounds of a slice taken of an array or a slice", bad);
+            else if (inbase)
+                awaitReportNodes(call->args, "in the index of a place whose base holds an 'await' too", bad);
+            else {
+                awaitWalkNodes(call->args, check, bad);
+                if (!awaitIsPath(call->objfn))
+                    awaitLeftCall(call->objfn, "This place's base", bad);
+            }
+        }
+        return 1;
     }
     case CastTag:
     case IsTag:
@@ -664,6 +709,116 @@ static void awaitReportIn(INode *node, char *why, uint32_t *bad) {
 int awaitWithin(INode *node) {
     uint32_t bad = 0;
     return awaitWalk(node, 0, &bad);
+}
+
+// *********************
+// Where a seam cuts inside a statement (await.h, awaitIsPath): what to the left
+// of the 'await' is reached again after it
+// *********************
+
+// The actor's own handle made from a plain path: 'Page.self'(self)', which
+// 'self.m()' and 'selfactor.m()' send m through
+static int awaitIsHandle(INode *node) {
+    if (node->tag != FnCallTag)
+        return 0;
+    FnCallNode *call = (FnCallNode *)node;
+    if (!isNameUseNode(call->objfn) || call->args == NULL || call->args->used != 1)
+        return 0;
+    INode *dcl = ((NameUseNode *)call->objfn)->dclnode;
+    return dcl && dcl->tag == FnDclTag && actorOfSelfFn((FnDclNode *)dcl) != NULL
+        && awaitIsPath(nodesGet(call->args, 0));
+}
+
+int awaitIsPath(INode *node) {
+    while (1) {
+        if (isNameUseNode(node)) {
+            INode *dcl = isExpNode(node) ? ((NameUseNode *)node)->dclnode : NULL;
+            return dcl && (dcl->tag == VarDclTag || dcl->tag == ConstDclTag);
+        }
+        switch (node->tag) {
+        case FldAccessTag:
+            node = ((FnCallNode *)node)->objfn;
+            break;
+        case ArrIndexTag:
+        {
+            FnCallNode *index = (FnCallNode *)node;
+            INode **nodesp;
+            uint32_t cnt;
+            // An index is a value read: a literal, or a plain path's value,
+            // converted or not
+            for (nodesFor(index->args, cnt, nodesp)) {
+                INode *arg = *nodesp;
+                while (arg->tag == CastTag)
+                    arg = ((CastNode *)arg)->exp;
+                if (arg->tag != ULitTag && !awaitIsPath(arg))
+                    return 0;
+            }
+            node = index->objfn;
+            break;
+        }
+        case DerefTag:
+            node = ((StarNode *)node)->vtexp;
+            break;
+        case BorrowTag:
+        case ArrayBorrowTag:
+            node = ((RefNode *)node)->vtexp;
+            break;
+        case CastTag:
+            if (node->flags & FlagConvert)
+                return 0;
+            node = ((CastNode *)node)->exp;
+            break;
+        // The actor's own handle; or a lock's guard, a new owner of what a
+        // lock permission reaches that holds its lock (borrowLockPlace): a
+        // borrow through it, '&mut *count', takes the lock after the seam
+        case TempTag:
+        {
+            INode *exp = ((TempNode *)node)->exp;
+            if (exp->tag == CastTag && (exp->flags & FlagLockAcquire)) {
+                exp = ((CastNode *)exp)->exp;
+                if (exp->tag != RefCountTag)
+                    return 0;
+                node = ((RefCountNode *)exp)->exp;
+                break;
+            }
+            return awaitIsHandle(exp);
+        }
+        default:
+            return 0;
+        }
+    }
+}
+
+int awaitReReached(INode *node) {
+    INode *type = iexpGetTypeDcl(node);
+    if (type == NULL || (type->tag != RefTag && type->tag != ArrayRefTag && type->tag != VirtRefTag)
+        || itypeGetTypeDcl(((RefNode *)type)->region) != borrowRef)
+        return 0;
+    return awaitIsPath(node);
+}
+
+uint32_t awaitOrder(Nodes *nodes, uint32_t *order) {
+    uint32_t cnt = nodes ? nodes->used : 0;
+    uint32_t last = 0;  // One past the last operand holding a seam
+    for (uint32_t i = cnt; i > 0; --i) {
+        if (awaitWithin(nodesGet(nodes, i - 1))) {
+            last = i;
+            break;
+        }
+    }
+    uint32_t pos = 0;
+    for (uint32_t i = 0; i < last; ++i) {
+        if (i + 1 == last || !awaitReReached(nodesGet(nodes, i)))
+            order[pos++] = i;
+    }
+    uint32_t lead = pos;
+    for (uint32_t i = 0; i + 1 < last; ++i) {
+        if (awaitReReached(nodesGet(nodes, i)))
+            order[pos++] = i;
+    }
+    for (uint32_t i = last; i < cnt; ++i)
+        order[pos++] = i;
+    return lead;
 }
 
 // A continuation waiting in the pending table is off the stack, where the

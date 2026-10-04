@@ -187,7 +187,9 @@ uint32_t loanSeamLive(INode *seam, uint32_t var);
 
 // The loans in flight across a seam -- an operand already walked whose call
 // or value is made after it -- are used after it: one that is not global is
-// reported at once, at the seam
+// reported at once, at the operand when it was made by a call or a temporary
+// (ErrorAwaitLeftCall: only a plain path is reached again after the seam,
+// awaitReReached), and otherwise at the seam
 void loanSeamFlight(INode *seam);
 
 // An access to a place: each holder that may hold a loan it conflicts with gets
@@ -210,6 +212,8 @@ void loanReturnedBy(uint32_t loan, Name *method);
 uint32_t loanFlightMark();
 void loanFlightPush(PathSet *carried, uint32_t reserved);
 void loanFlightPop(uint32_t mark);
+// The same, naming the operand whose loans they are, for a seam's message
+void loanFlightPushOf(PathSet *carried, uint32_t reserved, INode *operand);
 
 // An access to a place while loans are in flight: one it conflicts with is
 // reported at once (a reserved receiver's loan conflicts as a read-only one)

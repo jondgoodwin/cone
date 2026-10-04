@@ -1,0 +1,80 @@
+// Where an 'await' cuts inside an expression, the rest of the statement runs
+// after the seam, and what is written to the left of the 'await' and used
+// after it is reached again there -- a plain path only: a local, 'self', a
+// field, an element at a plain index, a borrow of one (concurrency_await_expr).
+// What a call made cannot be made again, so a borrow, or a place's base,
+// written to the left of the 'await' and made by a call or a temporary is
+// refused, ErrorAwaitLeftCall, its message saying to bind it to a local first.
+// C# refuses the same (a 'ref' a call returned cannot be preserved across an
+// 'await'). Each refusal is beside the same statement written as the message
+// says, which is accepted.
+//
+// - a place's base made by a call, 'box().items[await ...]';
+// - a borrow a call returned, 'take(ref(&x), await ...)';
+// - a method's receiver borrowed of a call's temporary, 'box().twice(await ...)';
+// - a borrow of a call's temporary, 'take(&mk(), await ...)';
+// - the left side of a swap whose index a call makes, the right side holding
+//   the 'await';
+// - and a borrow a local holds, 'take(r, await ...)': 'r' is reached again
+//   after the seam, but what it holds ended there, the ordinary ErrorFrozen.
+
+mod concurrency_await_expr_refused;
+
+import actors;
+
+struct Box {
+  pub items Array[u64, 4];
+  pub n u64;
+  fn twice(self &, n u64) u64 {n + n;}
+}
+
+fn box() Box {new Box([1u64, 2u64, 3u64, 4u64], 1u64);}
+fn ref(r &u64) &u64 {r;}
+fn take(r &u64, n u64) u64 {*r + n;}
+fn mk() u64 {3u64;}
+
+actor Clock {
+  pub async do now(self) u64 {2u64;}
+}
+
+actor Page {
+  clock Clock;
+  body u64;
+  items Array[u64, 4];
+
+  pub async do base(self) {
+    body = box().items[await clock.now()];      //~ ErrorAwaitLeftCall "This place's base, written to the left of an 'await' in the same statement, is made by a call or a temporary"
+    imm b = box();
+    body = b.items[await clock.now()];
+  }
+
+  pub async do returned(self) {
+    imm x = 3u64;
+    body = take(ref(&x), await clock.now());    //~ ErrorAwaitLeftCall "This borrow, written to the left of an 'await' in the same statement"
+    body = take(&x, await clock.now());
+  }
+
+  pub async do receiver(self) {
+    body = box().twice(await clock.now());      //~ ErrorAwaitLeftCall "Bind what the call makes to a local first"
+    imm b = box();
+    body = b.twice(await clock.now());
+  }
+
+  pub async do temporary(self) {
+    body = take(&mk(), await clock.now());      //~ ErrorAwaitLeftCall "This borrow"
+    imm m = mk();
+    body = take(&m, await clock.now());
+  }
+
+  pub async do swapped(self) {
+    items[mk()] <=> items[await clock.now()];   //~ ErrorAwaitLeftCall "This place, written to the left of an 'await'"
+    imm i = mk();
+    items[i] <=> items[await clock.now()];
+  }
+
+  pub async do held(self) {
+    imm x = 3u64;
+    imm r = &x;
+    body = take(r, await clock.now());          //~ ErrorFrozen "The borrow 'r' holds of 'x' (made at 77:13) ends at this 'await'"
+  }
+}

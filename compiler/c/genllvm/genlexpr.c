@@ -1809,8 +1809,9 @@ static LLVMValueRef genlSubslice(GenState *gen, FnCallNode *fncall) {
 // Index a fixed-size array, given a pointer to the array itself. The caller
 // supplies that pointer because where it comes from depends on what is being
 // indexed: an array lval has its address taken, while a reference to an array
-// already holds the address as its value.
-LLVMValueRef genlArrayIndex(GenState *gen, FnCallNode *fncall, ArrayNode *objtype, LLVMValueRef arrayp) {
+// already holds the address as its value. 'pre' holds the indexes, where they
+// were made before the array was reached (genlAddr), or is NULL.
+static LLVMValueRef genlArrayIndex(GenState *gen, FnCallNode *fncall, ArrayNode *objtype, LLVMValueRef arrayp, LLVMValueRef *pre) {
     // Allocate a indexing buffer for GEP
     LLVMValueRef indexes[2];
     LLVMValueRef *indexp = &indexes[0];
@@ -1824,7 +1825,7 @@ LLVMValueRef genlArrayIndex(GenState *gen, FnCallNode *fncall, ArrayNode *objtyp
         ULitNode *dimen = (ULitNode*)nodesGet(objtype->dimens, arg);
         assert(dimen->tag == ULitTag);
         LLVMValueRef count = LLVMConstInt(genlUsize(gen), dimen->uintlit, 0);
-        LLVMValueRef index = genlExpr(gen, nodesGet(fncall->args, arg));
+        LLVMValueRef index = pre ? pre[arg] : genlExpr(gen, nodesGet(fncall->args, arg));
         genlBoundsCheck(gen, (INode*)fncall, index, count);
         indexp[arg+1] = index;
     }
@@ -1869,9 +1870,24 @@ LLVMValueRef genlAddr(GenState *gen, INode *lval) {
     {
         FnCallNode *fncall = (FnCallNode *)lval;
         INode *objtype = iexpGetTypeDcl(fncall->objfn);
+        // An index holding a seam is made first, and the place it indexes,
+        // a plain path, is reached after the seam (awaitIsPath; flow's
+        // pwPlace walks it in this order)
+        LLVMValueRef *pre = NULL;
+        if (gen->seams) {
+            INode **argp;
+            uint32_t cnt;
+            for (nodesFor(fncall->args, cnt, argp)) {
+                if (awaitWithin(*argp)) {
+                    pre = (LLVMValueRef *)memAllocBlk(fncall->args->used * sizeof(LLVMValueRef));
+                    genlExprsAcross(gen, fncall->args, pre);
+                    break;
+                }
+            }
+        }
         switch (objtype->tag) {
         case ArrayTag: {
-            return genlArrayIndex(gen, fncall, (ArrayNode*)objtype, genlAddr(gen, fncall->objfn));
+            return genlArrayIndex(gen, fncall, (ArrayNode*)objtype, genlAddr(gen, fncall->objfn), pre);
         }
         case RefTag: {
             // A reference to a fixed-size array, indexed without an explicit
@@ -1881,7 +1897,7 @@ LLVMValueRef genlAddr(GenState *gen, INode *lval) {
             // they are compile-time constants as for any fixed array.
             ArrayNode *arraytype = (ArrayNode*)itypeGetTypeDcl(((RefNode*)objtype)->vtexp);
             assert(arraytype->tag == ArrayTag);
-            return genlArrayIndex(gen, fncall, arraytype, genlExpr(gen, fncall->objfn));
+            return genlArrayIndex(gen, fncall, arraytype, genlExpr(gen, fncall->objfn), pre);
         }
         // An element of a slice, or of what a pointer points at, is reached by
         // arithmetic, which a kernel folds into an access chain or refuses
@@ -1889,7 +1905,7 @@ LLVMValueRef genlAddr(GenState *gen, INode *lval) {
         case ArrayRefTag: {
             LLVMValueRef arrref = genlExpr(gen, fncall->objfn);
             LLVMValueRef count = LLVMBuildExtractValue(gen->builder, arrref, 1, "count");
-            LLVMValueRef index = genlExpr(gen, nodesGet(fncall->args, 0));
+            LLVMValueRef index = pre ? pre[0] : genlExpr(gen, nodesGet(fncall->args, 0));
             genlBoundsCheck(gen, (INode*)fncall, index, count);
             LLVMValueRef sliceptr = LLVMBuildExtractValue(gen->builder, arrref, 0, "sliceptr");
             LLVMValueRef elem = LLVMBuildGEP2(gen->builder, genlPointeeType(gen, objtype), sliceptr, &index, 1, "");
@@ -1901,7 +1917,7 @@ LLVMValueRef genlAddr(GenState *gen, INode *lval) {
             assert(deref->tag == DerefTag);
             LLVMValueRef arrref = genlExpr(gen, deref->vtexp);
             LLVMValueRef count = LLVMBuildExtractValue(gen->builder, arrref, 1, "count");
-            LLVMValueRef index = genlExpr(gen, nodesGet(fncall->args, 0));
+            LLVMValueRef index = pre ? pre[0] : genlExpr(gen, nodesGet(fncall->args, 0));
             genlBoundsCheck(gen, (INode*)fncall, index, count);
             LLVMValueRef sliceptr = LLVMBuildExtractValue(gen->builder, arrref, 0, "sliceptr");
             LLVMValueRef elem = LLVMBuildGEP2(gen->builder, genlPointeeType(gen, objtype), sliceptr, &index, 1, "");
@@ -1909,7 +1925,7 @@ LLVMValueRef genlAddr(GenState *gen, INode *lval) {
             return elem;
         }
         case PtrTag: {
-            LLVMValueRef index = genlExpr(gen, nodesGet(fncall->args, 0));
+            LLVMValueRef index = pre ? pre[0] : genlExpr(gen, nodesGet(fncall->args, 0));
             LLVMValueRef elem = LLVMBuildGEP2(gen->builder, genlPointeeType(gen, objtype), genlExpr(gen, fncall->objfn), &index, 1, "");
             genlGpuSite(gen, elem, (INode*)fncall);
             return elem;
@@ -2092,10 +2108,16 @@ static int genlOwnersOnly(INode *type) {
     return 1;
 }
 
+// Store 'rval' into 'lval', whose address genlAddr has taken already
+static void genlStoreTo(GenState *gen, INode *lval, LLVMValueRef lvalptr, LLVMValueRef rval);
+
 void genlStore(GenState *gen, INode *lval, LLVMValueRef rval) {
     if (isNameUseNode(lval) && isExpNode(lval) && ((NameUseNode*)lval)->namesym == anonName)
         return;
-    LLVMValueRef lvalptr = genlAddr(gen, lval);
+    genlStoreTo(gen, lval, genlAddr(gen, lval), rval);
+}
+
+static void genlStoreTo(GenState *gen, INode *lval, LLVMValueRef lvalptr, LLVMValueRef rval) {
     INode *lvaltype = ((IExpNode*)lval)->vtype;
     // The previous value is released exactly as scope exit would release it,
     // unless the target held none (genlStoreHeld)
@@ -2498,8 +2520,17 @@ static LLVMValueRef genlTerm(GenState *gen, INode *termnode) {
         SwapNode *node = (SwapNode*)termnode;
         INode *lval = node->lval;
         INode *rval = node->rval;
-        LLVMValueRef lvalptr = genlAddr(gen, lval);
-        LLVMValueRef rvalptr = genlAddr(gen, rval);
+        // The right side holding a seam reaches its place first, and the
+        // left, a plain path, after the seam (awaitWalk; flow's pwSwap)
+        LLVMValueRef lvalptr, rvalptr;
+        if (gen->seams && awaitWithin(rval) && !awaitWithin(lval)) {
+            rvalptr = genlAddr(gen, rval);
+            lvalptr = genlAddr(gen, lval);
+        }
+        else {
+            lvalptr = genlAddr(gen, lval);
+            rvalptr = genlAddr(gen, rval);
+        }
         LLVMValueRef rightval = LLVMBuildLoad2(gen->builder, genlType(gen, genlAddrType(rval)), rvalptr, "");
         LLVMValueRef leftval = LLVMBuildLoad2(gen->builder, genlType(gen, genlAddrType(lval)), lvalptr, "");
         LLVMBuildStore(gen->builder, rightval, lvalptr);
@@ -2533,7 +2564,19 @@ static LLVMValueRef genlTerm(GenState *gen, INode *termnode) {
 
         if (lval->tag != VTupleTag) {
             // A tuple-typed lval receives a value tuple whole
-            if (rval->tag != VTupleTag || assignOneTakesTuple(node)) {
+            int whole = rval->tag != VTupleTag || assignOneTakesTuple(node);
+            // A seam in the place, 'items[await i] = v': the value is made
+            // first and waits in flight across the seam, and the place is
+            // reached after it (flow's pwAssign)
+            if (gen->seams && awaitWithin(lval)) {
+                uint32_t mark = gen->flightcnt;
+                INode *valtype = ((IExpNode *)rval)->vtype;
+                LLVMValueRef slot = genlKeepAcross(gen, rval, valtype, valueref);
+                LLVMValueRef lvalptr = genlAddr(gen, lval);
+                valueref = genlKeptAcross(gen, slot, valueref, mark);
+                genlStoreTo(gen, lval, lvalptr, whole ? valueref : LLVMBuildExtractValue(gen->builder, valueref, 0, ""));
+            }
+            else if (whole) {
                 genlStore(gen, lval, valueref); // simple assignment
             }
             else {

@@ -97,6 +97,14 @@ ActorInfo *actorOfState(INode *type) {
     return NULL;
 }
 
+ActorInfo *actorOfSelfFn(FnDclNode *fn) {
+    for (uint32_t i = 0; i < actorCnt; ++i) {
+        if (fn != NULL && actors[i]->selffn == fn)
+            return actors[i];
+    }
+    return NULL;
+}
+
 ActorMessage *actorMessageOfSend(FnDclNode *send, ActorInfo **info) {
     INode *owner = inodeGetOwner((INode *)send);
     for (uint32_t i = 0; i < actorCnt; ++i) {

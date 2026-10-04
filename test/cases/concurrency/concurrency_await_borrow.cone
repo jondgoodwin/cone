@@ -8,9 +8,16 @@
 //   after the seam;
 // - a borrow held by a droppable whose finalizer reads it: its death, after
 //   the seam, uses it;
-// - a borrow an argument of a call around the 'await' carries, which the call
-//   uses after the seam -- a method's receiver among them, 'self' itself
-//   borrowed for the call.
+// - a borrow a value carries, made before the seam for a call made after it:
+//   'peek(v, await give())', 'v' a local holding a borrow. A value written to
+//   the left of the 'await' is made before the seam and travels; the borrow
+//   it carries ends there.
+//
+// A borrow of a plain path written to the left of the 'await' for a call made
+// after it -- 'take(&x, await give())', or 'self' lent as a method's receiver
+// -- is no such borrow: the rest of the statement runs after the seam, and the
+// borrow is taken there (concurrency_await_expr). One a call made is refused,
+// ErrorAwaitLeftCall (concurrency_await_expr_refused).
 //
 // A borrow a caller lends through a parameter never reaches a seam: a
 // behaviour's parameters cross to the actor's thread, so none is a borrow, and
@@ -32,22 +39,27 @@ struct Holds {
   fn final(self &uni) {imm seen = *r;}
 }
 
+struct View {
+  pub r &u64;
+}
+
 fn give() u64 {5u64;}
 fn take(r &u64, n u64) u64 {*r + n;}
+fn peek(v View, n u64) u64 {*v.r + n;}
 
 actor Page {
   body u64;
 
   pub async do ofState(self) {
     imm r = &body;
-    await give();          //~ ErrorFrozen "The borrow 'r' holds of '*self' (made at 42:13) ends at this 'await'"
+    await give();          //~ ErrorFrozen "The borrow 'r' holds of '*self' (made at 54:13) ends at this 'await'"
     body = *r;
   }
 
   pub async do ofLocal(self) {
     imm x = 3u64;
     imm r = &x;
-    await give();          //~ ErrorFrozen "The borrow 'r' holds of 'x' (made at 49:13) ends at this 'await'"
+    await give();          //~ ErrorFrozen "The borrow 'r' holds of 'x' (made at 61:13) ends at this 'await'"
     body = *r;
   }
 
@@ -59,11 +71,17 @@ actor Page {
 
   pub async do inFlight(self) {
     imm x = 3u64;
-    body = take(&x, await give());   //~ ErrorFrozen "A borrow of 'x' (made at 62:17) ends at this 'await'"
+    imm v = new View(&x);
+    body = peek(v, await give());    //~ ErrorFrozen "A borrow of 'x' (made at 74:22) ends at this 'await'"
+  }
+
+  pub async do takenAfter(self) {
+    imm x = 3u64;
+    body = take(&x, await give());   //~ ErrorUnbuiltAwait "move into the continuation's record [x]"
   }
 
   pub async do receiver(self) {
-    body = self.twice(await give()); //~ ErrorFrozen "A borrow of what the caller lent through 'self'"
+    body = self.twice(await give()); //~ ErrorUnbuiltAwait "move into the continuation's record []"
   }
 
   fn twice(self, n u64) u64 {n + n;}

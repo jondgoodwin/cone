@@ -64,7 +64,13 @@
 # 'await' on anything else hands its record straight to its second half:
 # concurrency_await_split runs each split behaviour beside its twin with no
 # 'await', the two traces the same, and pins the halves' shapes;
-# concurrency_await_unsplit is where the split is not built yet. The chapter
+# concurrency_await_unsplit is where the split is not built yet. Where an
+# 'await' cuts inside an expression, the rest of the statement runs after the
+# seam: concurrency_await_expr runs each shape beside its twin under
+# '--await-direct', concurrency_await_expr_reply awaits behaviours while
+# another message changes the state, and concurrency_await_expr_refused is a
+# borrow or a place a call made to the left of the 'await'
+# (ErrorAwaitLeftCall). The chapter
 # is doc/reference/refconccomm.html, "Actors" and "Awaiting a reply", whose
 # examples are concurrency_actor_manual's, _shapes' and _selfsend's and
 # concurrency_await_manual's (run) and concurrency_await_manual_refused's
@@ -278,7 +284,7 @@ tags = ["parse", "typecheck"]
 
 [scenario.concurrency_await_borrow]
 category = "reject"
-description = "A seam ends every borrow that is not global: one of the state through 'self', or of a local, named after the 'await'; one a droppable's finalizer reads; one an argument of a call around the 'await' carries, a receiver among them: each the ordinary ErrorFrozen at the 'await'. Not named after it, the seam is accepted, ending it"
+description = "A seam ends every borrow that is not global: one of the state through 'self', or of a local, named after the 'await'; one a droppable's finalizer reads; one a value carries, made before the 'await' for a call after it: each the ordinary ErrorFrozen at the 'await'. Not named after it, the seam is accepted, ending it; and a borrow of a plain path, or 'self' as a receiver, written to the left of the 'await' is taken after it, and accepted"
 tags = ["flow"]
 
 [scenario.concurrency_await_static]
@@ -341,12 +347,63 @@ contains = [
 
 [scenario.concurrency_await_unsplit]
 category = "reject"
-description = "Under --await-direct, an 'await' where the split is not built is ErrorUnbuiltAwait: in the index of a place, a place stored into, a place swapped; in an array's contents filled in memory"
+description = "Under --await-direct, an 'await' where the split is not built is ErrorUnbuiltAwait: in an index whose place's base holds an 'await' too, in both places a swap exchanges, in a slice's bounds, in a parallel assignment's places, among the entries one '<-' appends; in an array's contents filled in memory"
 tags = ["flow"]
 
 [[scenario.concurrency_await_unsplit.run]]
 name = "direct"
 options = ["--await-direct"]
+
+[scenario.concurrency_await_expr]
+category = "run"
+description = "Under --await-direct, where an 'await' cuts inside an expression the rest of the statement runs after the seam, each split behaviour printing what its twin with no 'await' prints: a receiver lent again after the seam beside a droppable argument in flight; a place stored into, read and swapped at an index holding the 'await', the value stored made first; a borrow of a droppable local taken after the seam; a compound assignment's place borrowed, read and written after it; a place two indexes deep"
+tags = ["typecheck", "flow", "genllvm", "runtime"]
+
+[[scenario.concurrency_await_expr.run]]
+name = "direct"
+options = ["--await-direct"]
+
+[[scenario.concurrency_await_expr.run]]
+name = "direct-debug"
+options = ["--await-direct", "--debug"]
+
+[[scenario.concurrency_await_expr.check]]
+name = "a-value-made-first-travels-a-place-is-reached-again"
+target = "preir"
+contains = [
+  # the droppable argument in flight, then 'g'; 'self' never travels
+  "8receiver'1.record\" = type { %Fin, %Fin }",
+  # the value stored, in flight, then 'g'
+  "6stored'1.record\" = type { i64, %Fin }",
+  # nothing: 'items' is the state's, reached again after the seam
+  "7indexed'1\"(ptr %0, i64 %1)",
+  # 'a', the left side, a local reached again after the seam
+  "7swapped'1.record\" = type { i64 }",
+  # 'f', borrowed after the seam, and 'h', the last declared first
+  "8borrowed'1.record\" = type { %Fin, %Fin }",
+  # nothing at the first seam; 'y' at the second, its place borrowed after it
+  "5added'1\"(ptr %0, i64 %1)",
+  "5added'2.record\" = type { i64 }",
+  # the value stored in flight, then 'row', the inner index
+  "6nested'1.record\" = type { i64, i64 }",
+]
+
+[scenario.concurrency_await_expr_refused]
+category = "reject"
+description = "What is written to the left of an 'await' and used after it is reached again after the seam only where it is a plain path: a place's base, a borrow, a method's receiver, a borrow of a temporary, a swap's other side, each made by a call, is ErrorAwaitLeftCall, beside the statement written as its message says, which is accepted; a borrow a local holds is the ordinary ErrorFrozen"
+tags = ["flow"]
+
+[scenario.concurrency_await_expr_reply]
+category = "run"
+description = "An 'await' on a behaviour inside an expression: the rest of the statement runs after the reply, against the state another message changed meanwhile -- a receiver, a place stored into, read, swapped and added to, a borrow of a local, an element two indexes deep, a lock borrow taken only after the seam so the actor answering takes the lock meanwhile; a value to the left read before; and a behaviour of the actor's own, or of another actor in a field, sent with an awaited argument, its handle made after the seam"
+tags = ["typecheck", "flow", "genllvm", "runtime"]
+
+[[scenario.concurrency_await_expr_reply.run]]
+name = "release"
+
+[[scenario.concurrency_await_expr_reply.run]]
+name = "debug"
+options = ["--debug"]
 
 [scenario.concurrency_await_reply]
 category = "run"
@@ -452,7 +509,7 @@ tags = ["flow"]
 
 [scenario.concurrency_await_manual]
 category = "run"
-description = "The reference manual's examples of 'await' in an actor's methods, run one after another: the worked example (Page, Fetcher, Net), one scope's drop timing and order, a ''static' borrow and a lock given back across an 'await', 'selfactor' awaited, one request answered once, and a loop holding an 'await'; and refpermlock.html's lock borrowed for a statement, given back at an 'await' within it, which another actor then takes"
+description = "The reference manual's examples of 'await' in an actor's methods, run one after another: the worked example (Page, Fetcher, Net), one scope's drop timing and order, a ''static' borrow and a lock given back across an 'await', 'selfactor' awaited, one request answered once, a loop holding an 'await', and the rest of a statement run after its 'await' (a place's index, a receiver, a compound assignment); and refpermlock.html's lock borrowed for a statement, given back at an 'await' within it, which another actor then takes"
 tags = ["typecheck", "flow", "genllvm", "runtime"]
 
 [[scenario.concurrency_await_manual.run]]
@@ -464,5 +521,5 @@ options = ["--debug"]
 
 [scenario.concurrency_await_manual_refused]
 category = "reject"
-description = "The refusals the reference manual shows for 'await' in an actor's behaviours: a borrow used after the 'await' that ended it, one made before it for a call after it (a synchronous method's receiver, an argument), a lock borrow named after it; an 'await' in a synchronous 'fn' (ErrorAwaitPlace) and on a behaviour returning nothing (ErrorAwaitVoid); and each 'await' not built yet -- on a function's call, in a place's index, whose continuation would hold a traced reference"
+description = "The refusals the reference manual shows for 'await' in an actor's behaviours: a borrow used after the 'await' that ended it, a borrow a call made to the left of the 'await' (ErrorAwaitLeftCall), a lock borrow named after it; an 'await' in a synchronous 'fn' (ErrorAwaitPlace) and on a behaviour returning nothing (ErrorAwaitVoid); and each 'await' not built yet -- on a function's call, in both places a swap exchanges, whose continuation would hold a traced reference"
 tags = ["flow"]

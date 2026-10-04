@@ -1230,9 +1230,21 @@ its second half, with the value awaited, and returns what the second half
 returns. `concurrency_await_split` runs each split behaviour beside its twin
 with no `await` and pins the halves' shapes.
 
-An `await` whose construct holds an address or memory being filled across it
--- the index of a place, a place stored into or swapped, an array's contents
-filled in memory -- is not split ([Flow](flow.md), "A seam").
+**Where a seam cuts inside a statement**, the rest of the statement runs after
+it, so an address is never held across it: a place written to the left of the
+`await` -- a plain path ([Flow](flow.md), "A seam") -- is reached again after
+the seam. `genlExprsAcross` takes its operands in `awaitOrder`'s order, a
+receiver or a borrow of a plain path written before the last operand holding a
+seam made just after it, never in flight; an index holding a seam is made
+before the place it indexes (`genlAddr`, its values handed to
+`genlArrayIndex`); a swap's side holding a seam reaches its place before the
+other side does; and an assignment's value, made first, is kept in flight
+(`genlKeepAcross`, `genlKeptAcross`) while a place holding a seam is reached,
+then stored (`genlStoreTo`). An `await` whose construct still holds an address
+or memory being filled across it -- an index whose place's base holds a seam
+too, both places of a swap, a slice's bounds, a parallel assignment's places,
+an array's contents filled in memory -- is not split ([Flow](flow.md), "A
+seam").
 
 ### A message's reply
 
@@ -1744,8 +1756,10 @@ variables.
   dominate its use: `--verify` says so. Every site that evaluates operands in
   turn and uses the earlier ones afterwards goes through `genlExprsAcross`,
   which keeps each in flight across a seam ("A split method"); an address held
-  that way cannot be, and its `await` is refused before generation
-  (`awaitWalk`), so a new such site needs one or the other.
+  that way cannot be, so it is taken after the seam, as a place written to the
+  left of an `await` is, or its `await` is refused before generation
+  (`awaitWalk`). A new such site needs one or the other, in the same order flow
+  walks it.
 - **A message seam is laid out before it is reached**, by its envelope, the
   last argument of the call it awaits ("A message's reply"). Anything that
   makes a temporary, or puts a value in flight, between that argument and the
@@ -1844,7 +1858,8 @@ variables.
 | `genllvm/genlawait.c` | `genlAwait`, `genlSeamLayout`, `genlSeamGiveBack`, `genlSeamRecord` | a seam of a split method: what is awaited, the record laid out (once) and its second half and resume function declared, the locks given back, the record built and parked, the return; what follows in a `resume` block ("A split method") |
 | | `genlSplitHalves`, `genlSplitHalf`, `genlSeamEntry` | each second half: the method generated again, its entry moving the record's values back and branching to the seam's `resume` block |
 | | `genlAwaitReply`, `genlSeamResume` | a message seam's envelope, the seam laid out and its record's slot reserved where it is passed; the seam's resume function, which takes the record out of the pending table, calls the second half and answers ("A message's reply") |
-| | `genlExprsAcross`, `genlHasSeam` | operands in order, each made before a later one's seam kept in flight across it (`GenFlight`) |
+| | `genlExprsAcross`, `genlHasSeam` | operands in order (`awaitOrder`'s, where a seam cuts them), each made before a later one's seam kept in flight across it (`GenFlight`), a receiver or a borrow of a plain path made after it |
+| | `genlKeepAcross`, `genlKeptAcross` | one value kept in flight across a seam to come, and read back after it: an assignment's value while its place, holding the seam, is reached |
 | | `genlHeldBegin`, `genlHeldIf` | a temporary lock guard's flag, and code run while it holds its lock |
 | | `genlFinalizeAt`, `genlCallDrop`, `genlEachElem` | a value's death in place, whatever its type: a local's, a field's, a region value's before its `free`, and the `finalize` intrinsic |
 | | `genlTypeDrop`, `genlStructDrop`, `genlEnumDrop` | the body of a drop the compiler gave a type: a struct's `final` calls, its fields' deaths, its owners' release; an enum's tag dispatching to its variant's |

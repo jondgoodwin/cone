@@ -507,6 +507,8 @@ enum ErrorCode {
     ErrorIsCondCopy = 1277,    // 'is Copy if ...': Copy is what a type is when nothing makes it move, so the condition is written on Move
     ErrorUnbuiltIsCond = 1278,  // A condition on an 'is' entry of a trait or an enum's variant, which is not built
 
+    ErrorAwaitLeftCall = 1279,  // A borrow, or a place's base, written to the left of an 'await' in its statement and made by a call: it would be used after the seam, and only a plain path (a local, 'self', a field) is reached again there
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name

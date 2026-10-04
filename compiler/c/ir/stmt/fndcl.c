@@ -617,7 +617,7 @@ void fnDclTypeCheck(TypeCheckState *pstate, FnDclNode *fnnode) {
     // holds its value there is drop flags' state (flowpath.c, pwSeam)
     int seams = fstate.awaits != NULL;
     if ((fstate.gate || fstate.dropgate || flowGpu || seams) && errors == errorsOnEntry)
-        flowPathWalk(fnnode, fstate.gate != 0 || flowGpu || seams, fstate.dropgate || seams);
+        flowPathWalk(fnnode, fstate.gate != 0 || flowGpu || seams, fstate.dropgate || seams, seams);
     // The seams every rule accepted: a message's are split, where the split is
     // built (generation makes its halves); any other is reported not built
     // yet where it stands, with what its continuation would carry

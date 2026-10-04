@@ -1,0 +1,221 @@
+// Where an 'await' cuts inside an expression (actor-continuations' build
+// rule for a seam in an expression): 'await e' is 't = e; await t', and the
+// rest of the statement runs after the seam, as the first statement of the
+// second half. A value made to the left of the 'await', in the order the
+// statement is evaluated, is made before the seam and travels in the record;
+// a place written to its left -- a receiver, a place stored into, indexed or
+// swapped, a borrow of one -- is a plain path, reached again after the seam.
+// What is awaited here is a plain function, so this compiles with
+// '--await-direct', for tests: each seam hands its record straight to its
+// second half (concurrency_await_split). concurrency_await_expr_reply awaits
+// behaviours, with another message changing the state while each waits.
+//
+// Each behaviour is run beside its twin with no 'await' ('plain'), and the two
+// traces are the same: what is awaited runs first, then the place is reached,
+// and each value dies where and in the order the one scope says.
+//
+// - receiver: 'self.keep(make(60u64), await give(6u64))': the droppable
+//   argument made before the seam travels in flight; 'self', the receiver,
+//   is lent again after it;
+// - stored: 'items[await give(1u64)] = mk(7u64)': the value is made first, as
+//   an assignment's always is, then the index, then the place;
+// - indexed: 'body = items[await give(2u64)] + make(63u64).n': the index,
+//   then the place read, a temporary made after the seam dying at the
+//   statement's end;
+// - swapped: 'a <=> items[await give(3u64)]': the right side's index first,
+//   then both places;
+// - borrowed: 'body = look(&f, await give(4u64))': 'f', a droppable local,
+//   travels in the record and is borrowed after the seam;
+// - added: 'body += await give(5u64)' and 'y += await give(6u64)': the place
+//   is borrowed, read and written after the seam;
+// - several: two seams in one call, a borrow before each made after the last;
+//   a receiver borrowed of a droppable local, 'v.push(await ...)', 'v'
+//   travelling; and a receiver and a value in flight in a loop, whose second
+//   half runs the loop's next pass to the seam again;
+// - nested: a place two indexes deep, the inner index a plain path.
+
+mod concurrency_await_expr;
+
+import stdio use *;
+import actors;
+import collections use List;
+
+struct Fin {
+  pub n u64;
+  fn final(self &uni) {printStr("  drop "); printUInt(n); printStr("\n");}
+}
+
+fn give(n u64) u64 {printStr("  give "); printUInt(n); printStr("\n"); n;}
+fn mk(n u64) u64 {printStr("  mk "); printUInt(n); printStr("\n"); n;}
+fn make(n u64) Fin {printStr("  make "); printUInt(n); printStr("\n"); new Fin(n);}
+fn look(f &Fin, n u64) u64 {printStr("  look "); printUInt(f.n); printStr("\n"); f.n + n;}
+fn four(a &u64, b u64, c &u64, d u64) u64 {*a * 1000u64 + b * 100u64 + *c * 10u64 + d;}
+fn say(s &[]u8, n u64) {printStr("  "); printStr(s); printStr(" "); printUInt(n); printStr("\n");}
+fn head(s &[]u8) {printStr(s); printStr("\n");}
+
+actor Page {
+  body u64;
+  items Array[u64, 4];
+  grid Array[Array[u64, 3], 2];
+
+  fn keep(self, f Fin, n u64) {say("keep", f.n + n); body = f.n + n;}
+
+  pub async do receiver(self) {
+    head("receiver");
+    imm g = new Fin(64u64);
+    self.keep(make(60u64), await give(6u64));
+    say("body", body);
+  }
+  pub async do receiverPlain(self) {
+    head("receiver plain");
+    imm g = new Fin(64u64);
+    self.keep(make(60u64), give(6u64));
+    say("body", body);
+  }
+
+  pub async do stored(self) {
+    head("stored");
+    imm g = new Fin(65u64);
+    items[await give(1u64)] = mk(7u64);
+    say("items1", items[1]);
+  }
+  pub async do storedPlain(self) {
+    head("stored plain");
+    imm g = new Fin(65u64);
+    items[give(1u64)] = mk(7u64);
+    say("items1", items[1]);
+  }
+
+  pub async do indexed(self) {
+    head("indexed");
+    items[2] = 5u64;
+    body = items[await give(2u64)] + make(63u64).n;
+    say("body", body);
+  }
+  pub async do indexedPlain(self) {
+    head("indexed plain");
+    items[2] = 5u64;
+    body = items[give(2u64)] + make(63u64).n;
+    say("body", body);
+  }
+
+  pub async do swapped(self) {
+    head("swapped");
+    items[3] = 9u64;
+    mut a = 1u64;
+    a <=> items[await give(3u64)];
+    say("a", a);
+    say("items3", items[3]);
+  }
+  pub async do swappedPlain(self) {
+    head("swapped plain");
+    items[3] = 9u64;
+    mut a = 1u64;
+    a <=> items[give(3u64)];
+    say("a", a);
+    say("items3", items[3]);
+  }
+
+  pub async do borrowed(self) {
+    head("borrowed");
+    imm f = new Fin(30u64);
+    imm h = new Fin(31u64);
+    body = look(&f, await give(4u64));
+    say("body", body);
+  }
+  pub async do borrowedPlain(self) {
+    head("borrowed plain");
+    imm f = new Fin(30u64);
+    imm h = new Fin(31u64);
+    body = look(&f, give(4u64));
+    say("body", body);
+  }
+
+  pub async do added(self) {
+    head("added");
+    body = 100u64;
+    body += await give(5u64);
+    mut y = 10u64;
+    y += await give(6u64);
+    say("body", body);
+    say("y", y);
+  }
+  pub async do addedPlain(self) {
+    head("added plain");
+    body = 100u64;
+    body += give(5u64);
+    mut y = 10u64;
+    y += give(6u64);
+    say("body", body);
+    say("y", y);
+  }
+
+  pub async do several(self) {
+    head("several");
+    imm x = 1u64;
+    imm y = 3u64;
+    body = four(&x, await give(2u64), &y, await give(4u64));
+    say("four", body);
+    mut v = List[u64].empty();
+    v.push(await give(5u64));
+    say("len", v.len());
+    mut i = 0u64;
+    while i < 2u64 {
+      self.keep(make(i), await give(i));
+      i = i + 1u64;
+    }
+  }
+  pub async do severalPlain(self) {
+    head("several plain");
+    imm x = 1u64;
+    imm y = 3u64;
+    body = four(&x, give(2u64), &y, give(4u64));
+    say("four", body);
+    mut v = List[u64].empty();
+    v.push(give(5u64));
+    say("len", v.len());
+    mut i = 0u64;
+    while i < 2u64 {
+      self.keep(make(i), give(i));
+      i = i + 1u64;
+    }
+  }
+
+  pub async do nested(self) {
+    head("nested");
+    imm row = 1u64;
+    grid[row][await give(2u64)] = mk(77u64);
+    say("grid12", grid[1][2]);
+  }
+  pub async do nestedPlain(self) {
+    head("nested plain");
+    imm row = 1u64;
+    grid[row][give(2u64)] = mk(77u64);
+    say("grid12", grid[1][2]);
+  }
+}
+
+fn main() {
+  initAll();
+  actors.configure(new actors.Options(workers: 1u32));
+  {
+    imm p = new Page(0u64, [0u64, 0u64, 0u64, 0u64], [[0u64, 0u64, 0u64], [0u64, 0u64, 0u64]]);
+    p.receiver();
+    p.receiverPlain();
+    p.stored();
+    p.storedPlain();
+    p.indexed();
+    p.indexedPlain();
+    p.swapped();
+    p.swappedPlain();
+    p.borrowed();
+    p.borrowedPlain();
+    p.added();
+    p.addedPlain();
+    p.several();
+    p.severalPlain();
+    p.nested();
+    p.nestedPlain();
+  }
+  finalAll();
+}

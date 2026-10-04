@@ -84,36 +84,48 @@ static LLVMValueRef genlFlightKeep(GenState *gen, LLVMValueRef val, INode *type)
     return slot;
 }
 
-// Each node's value in order. Where a later node holds a seam, each value made
-// before it -- 'x' in 'two(x, await give())' -- is no variable's, and is used
-// after the seam: it waits in a slot of its own, which the seam's record
-// carries, and is read back once the last of them is made
+// Each node's value, in the order a seam gives them (awaitOrder). Where a
+// later node holds a seam, each value made before it -- 'x' in
+// 'two(x, await give())' -- is no variable's, and is used after the seam: it
+// waits in a slot of its own, which the seam's record carries, and is read
+// back once the last of them is made. A receiver or a borrow of a plain path
+// written before it is made after it instead, and is no value in flight
 void genlExprsAcross(GenState *gen, Nodes *nodes, LLVMValueRef *vals) {
     uint32_t cnt = nodes->used;
-    uint32_t across = 0;    // One past the last node holding a seam
-    if (gen->seams) {
-        for (uint32_t i = cnt; i > 0; --i) {
-            if (awaitWithin(nodesGet(nodes, i - 1))) {
-                across = i;
-                break;
-            }
-        }
+    uint32_t localorder[8];
+    uint32_t *order = cnt <= 8 ? localorder : (uint32_t *)memAllocBlk(cnt * sizeof(uint32_t));
+    uint32_t across = 0;    // How many lead the order up to the last node holding a seam
+    if (gen->seams)
+        across = awaitOrder(nodes, order);
+    else {
+        for (uint32_t i = 0; i < cnt; ++i)
+            order[i] = i;
     }
     uint32_t mark = gen->flightcnt;
     LLVMValueRef *slots = across > 1 ? (LLVMValueRef *)memAllocBlk(across * sizeof(LLVMValueRef)) : NULL;
-    for (uint32_t i = 0; i < cnt; ++i) {
+    for (uint32_t k = 0; k < cnt; ++k) {
+        uint32_t i = order[k];
         INode *node = nodesGet(nodes, i);
         vals[i] = genlExpr(gen, node);
-        if (i + 1 < across)
-            slots[i] = genlFlightConst(node) ? NULL : genlFlightKeep(gen, vals[i], ((IExpNode *)node)->vtype);
+        if (k + 1 < across)
+            slots[k] = genlFlightConst(node) ? NULL : genlFlightKeep(gen, vals[i], ((IExpNode *)node)->vtype);
     }
     if (across > 1) {
-        for (uint32_t i = 0; i + 1 < across; ++i) {
-            if (slots[i])
-                vals[i] = LLVMBuildLoad2(gen->builder, LLVMGetAllocatedType(slots[i]), slots[i], "inflight");
+        for (uint32_t k = 0; k + 1 < across; ++k) {
+            if (slots[k])
+                vals[order[k]] = LLVMBuildLoad2(gen->builder, LLVMGetAllocatedType(slots[k]), slots[k], "inflight");
         }
         gen->flightcnt = mark;
     }
+}
+
+LLVMValueRef genlKeepAcross(GenState *gen, INode *node, INode *type, LLVMValueRef val) {
+    return genlFlightConst(node) ? NULL : genlFlightKeep(gen, val, type);
+}
+
+LLVMValueRef genlKeptAcross(GenState *gen, LLVMValueRef slot, LLVMValueRef val, uint32_t mark) {
+    gen->flightcnt = mark;
+    return slot ? LLVMBuildLoad2(gen->builder, LLVMGetAllocatedType(slot), slot, "inflight") : val;
 }
 
 // ---- Lock guards a seam gives back -------------------------------------------

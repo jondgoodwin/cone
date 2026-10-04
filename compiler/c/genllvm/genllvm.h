@@ -456,9 +456,16 @@ LLVMValueRef genlAwait(GenState *gen, AwaitNode *node);
 LLVMValueRef genlAwaitReply(GenState *gen, AwaitReplyNode *node);
 // Each second half of a split method whose first half was just generated
 void genlSplitHalves(GenState *gen, FnDclNode *fnnode);
-// Generate each of 'nodes' into 'vals', in order: in a split method, a value
-// made before a later node's seam is kept in flight across it (GenFlight)
+// Generate each of 'nodes' into 'vals', in the order a seam gives them
+// (awaitOrder): in a split method, a value made before a later node's seam is
+// kept in flight across it (GenFlight), and a receiver or a borrow of a plain
+// path before it is made after it
 void genlExprsAcross(GenState *gen, Nodes *nodes, LLVMValueRef *vals);
+// One value 'node' made, of 'type', kept in flight across a seam to come: its
+// slot, or NULL for a constant. Once past the seam, genlKeptAcross reads it
+// back and pops the flights to 'mark', gen->flightcnt before the keep
+LLVMValueRef genlKeepAcross(GenState *gen, INode *node, INode *type, LLVMValueRef val);
+LLVMValueRef genlKeptAcross(GenState *gen, LLVMValueRef slot, LLVMValueRef val, uint32_t mark);
 // Whether a seam is generated inside 'node', in a split method
 int genlHasSeam(GenState *gen, INode *node);
 // A lock's guard's flag, made as a temporary guard is kept (genlTempKeep)
