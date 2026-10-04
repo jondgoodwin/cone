@@ -1985,6 +1985,12 @@ void genpgm(GenState *gen, ProgramNode *pgm) {
         return;
     }
 
+    // Every aggregate value too large to carry whole is moved into memory and
+    // copied there (genlaggcopy.c). Not on a GPU target, where 'memcpy' is
+    // not legal and its own pipeline breaks every aggregate into scalars
+    if (!gen->opt->gpu)
+        genlAggCopies(gen);
+
     // Verify generated IR
     if (gen->opt->verify) {
         timerBegin(VerifyTimer);

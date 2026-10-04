@@ -549,6 +549,10 @@ loaded (`genlArrayLitScalars`).
 "An allocation runs in one order"), by the same runs, each store taking the
 write barrier in a traced region.
 
+That chain, and a type literal's below, is built in a slot of memory, part by
+part, where the value is more than 64 bytes: `genlAggCopies`
+([generation](../phases/generation.md), "Large aggregates").
+
 A type literal is the same `insertvalue` chain, with one special case: a
 **nullable-pointer** enum has no struct at all, so the literal is either a null
 pointer or the payload alone, with the tag discarded. A number's conversion is
