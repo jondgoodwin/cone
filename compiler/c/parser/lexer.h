@@ -188,8 +188,10 @@ enum TokenTypes {
     WhereToken,    // 'where', which opens a generic's constraints
     NewToken,      // 'new': a construction, 'new Point(1, 2)', and an initializer's permission, '&new'
     TrynewToken,   // 'trynew': an allocation that may fail, 'trynew Rc[mut, Node](1)', giving an Option
-    AwaitToken,    // 'await': in an actor's method, wait for what is awaited; the method is cut there, a seam
+    AwaitToken,    // 'await': in an actor's behaviour, wait for what is awaited; the behaviour is cut there, a seam
     SelfActorToken, // 'selfactor': in an actor's method, the actor's own handle
+    AsyncToken,    // 'async': the first word of 'async do', which declares an actor's behaviour; nothing alone
+    DoToken,       // 'do': the second word of 'async do'; nothing alone
     VoidToken,     // 'void'
     nilToken,      // 'nil'
     nullToken,     // 'null'

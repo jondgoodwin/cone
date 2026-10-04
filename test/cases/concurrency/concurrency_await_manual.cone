@@ -45,7 +45,7 @@ struct Buffer {
 }
 
 actor Net {
-  pub fn read(self, url u64) Buffer {
+  pub async do read(self, url u64) Buffer {
     say("  read", url);
     new Buffer(url * 100u64);
   }
@@ -54,7 +54,7 @@ actor Net {
 actor Fetcher {
   net Net;
 
-  pub fn fetch(self, url u64) Buffer {
+  pub async do fetch(self, url u64) Buffer {
     imm conn = new Conn(url);             // opened
     imm buf = await net.read(conn.url);   // conn waits, with the method
     say("  fetched", buf.size);
@@ -66,7 +66,7 @@ actor Page {
   fetcher Fetcher;
   body u64;
 
-  pub fn load(self, u u64) {
+  pub async do load(self, u u64) {
     say("load", u);
     imm b = await fetcher.fetch(u);       // pauses here
     body = b.size;                        // and resumes when the reply comes
@@ -82,13 +82,13 @@ struct Note {
 }
 
 actor Clock {
-  pub fn now(self) u64 {42u64;}
+  pub async do now(self) u64 {42u64;}
 }
 
 actor Logger {
   clock Clock;
 
-  pub fn log(self) u64 {
+  pub async do log(self) u64 {
     imm first = new Note(1u64);
     imm second = new Note(2u64);
     imm t = await clock.now();
@@ -104,7 +104,7 @@ imm limit u64 = 100u64;
 actor Gauge {
   clock Clock;
 
-  pub fn check(self) u64 {
+  pub async do check(self) u64 {
     imm max = &limit;                     // a borrow of a global: 'static
     imm t = await clock.now();
     *max - t;                             // still valid after the 'await'
@@ -119,7 +119,7 @@ actor Tally {
   count Arc[Mutex, Count];
   clock Clock;
 
-  pub fn bump(self) u64 {
+  pub async do bump(self) u64 {
     imm c = &mut *count;                  // takes the lock
     c.n += 1u64;
     imm t = await clock.now();            // gives it back
@@ -131,9 +131,9 @@ actor Tally {
 
 // manual: selfactor
 actor Doubler {
-  pub fn double(self, n u64) u64 {n * 2u64;}
+  pub async do double(self, n u64) u64 {n * 2u64;}
 
-  pub fn twice(self, n u64) u64 {
+  pub async do twice(self, n u64) u64 {
     imm once = await selfactor.double(n);  // a message to itself
     imm again = await selfactor.double(once);
     again;
@@ -146,7 +146,7 @@ actor Cache {
   net Net;
   hot u64;
 
-  pub fn get(self, url u64) u64 {
+  pub async do get(self, url u64) u64 {
     if url == hot {
       return 1u64;                        // answered here, at once
     }
@@ -160,7 +160,7 @@ actor Cache {
 actor Sizes {
   net Net;
 
-  pub fn total(self, n u64) u64 {
+  pub async do total(self, n u64) u64 {
     mut sum = 0u64;
     each i in 0u64 < n {
       imm b = await net.read(i);          // one request at a time
@@ -179,7 +179,7 @@ actor Sizes {
 actor Locker {
   count Arc[Mutex, Count];
 
-  pub fn now(self) u64 {
+  pub async do now(self) u64 {
     (&mut *count).n += 1u64;
     42u64;
   }
@@ -189,7 +189,7 @@ actor Mixed {
   count Arc[Mutex, Count];
   locker Locker;
 
-  pub fn read(self) u64 {
+  pub async do read(self) u64 {
     (&mut *count).n = 7u64;
     imm x = (&*count).n + await locker.now();
     x + (&*count).n;
@@ -206,7 +206,7 @@ actor Driver {
   cache Cache;
   sizes Sizes;
 
-  pub fn go(self) {
+  pub async do go(self) {
     say("log", await logger.log());
     say("check", await gauge.check());
     say("bump", await tally.bump());

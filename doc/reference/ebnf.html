@@ -42,7 +42,7 @@
 		/* a fold clause only on a module's global, an 'extern' one included: a local, a parameter and a type's static have no namespace to fold into */
 	fn_stmt ::= fn_type block
 	block ::= '{' stmt* '}'
-	stmt ::= if_stmt | match_stmt | block | while_stmt | break_stmt | cont_stmt | each_stmt | return_stmt | do_stmt | exp_stmt | ';'
+	stmt ::= if_stmt | match_stmt | block | while_stmt | break_stmt | cont_stmt | each_stmt | return_stmt | exp_stmt | ';'
 	if_stmt ::= 'if' logic_exp block ( 'elif' logic_exp block )* ( 'else' block )?
 	match_stmt ::= 'match' exp ('using' exp)? ('into' var_list)? ('with' exp ('into' var_list)? block)+ ('else' block)?
 	while_stmt ::= 'while' logic_exp block
@@ -50,7 +50,6 @@
 	break_stmt ::= 'break' ';'
 	cont_stmt  ::= 'continue' ';'
 	return_stmt ::= 'return' this_exp? ';'
-	do_stmt ::= 'do' exp? block
 	exp_stmt   ::= this_exp ';'
 	
 	this_exp ::= exp (('using' exp)? block)?
@@ -121,10 +120,13 @@
 	folditems ::= ident_token ('as' ident_token)? (',' ident_token ('as' ident_token)?)*
 		| 'but' ident_token (',' ident_token)*   /* omitted admits every member of the sibling named */
 	traittype ::= 'trait' ident_token? isaclause? ('{' structstmt* '}')?   /* a synonym for 'struct trait' */
-	actortype ::= 'actor' ident_token '{' structstmt* '}'
-		/* its fields are its private state, never 'pub'; each 'pub' method is a message, which returns
-		   nothing and whose parameters are Sendable; 'init' and 'final' as a struct's; no static, macro,
-		   'extern' or 'use'. 'new Name(args)' runs its 'init' and answers its handle. Needs 'import actors' */
+	actortype ::= 'actor' ident_token '{' (structstmt | behaviourstmt)* '}'
+		/* its fields are its private state, never 'pub'; each behaviour is a message, whose parameters
+		   and returned value are Sendable; each 'fn' method is synchronous and never 'pub' ('init' and
+		   'final' as a struct's); no static, macro, 'extern' or 'use'. 'new Name(args)' runs its 'init'
+		   and answers its handle. Needs 'import actors' */
+	behaviourstmt ::= 'pub'? 'async' 'do' ident_token '(' fnparm (',' fnparm)* ')' type? block
+		/* an actor's behaviour: its first parameter 'self'; 'async' and 'do' mean nothing apart */
 	unbuiltkind ::= 'actor' 'trait' ident_token? ('{' structstmt* '}')?   /* accepted, not implemented */
 	enumtype ::= 'enum' '@unsized'? ident_token genparms? nbrtype? (('extends' genqualname) | isaclause)? whereclause? '{' enumstmt* '}'
 		/* 'extends' names another enum, a generic one with its type arguments, whose variants
@@ -163,7 +165,7 @@
 	as_exp ::= prefix_exp ('as' type)*
 		/* 'into' is retired: a value converts with 'f32.from(x)', and a reference narrows to a variant by a match or a bound 'if' */
 	prefix_exp ::= ('.'|'<-'|'-'|'~'|'*'|'++'|'--'|'await')* term | addr | plus_alloc
-		/* 'await' only in an actor's method; built on a message to an actor that returns a value */
+		/* 'await' only in an actor's behaviour; built on a behaviour of an actor that returns a value */
 	addr ::= ('&'|'&<'|'&[]') perm_type? (fn_stmt | (term suffix*))
 		/* '&[]' only borrows: there is no owning array reference, and '+[]' is refused */
 	plus_alloc ::= '?'? '+' ident_token ('-' perm_type)? prefix_exp

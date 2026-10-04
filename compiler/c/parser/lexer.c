@@ -160,12 +160,18 @@ void keywordInit() {
     // An allocation that may fail, 'trynew Rc[mut, Node](1)': an Option of the
     // reference, None when memory runs out
     keyAdd("trynew", TrynewToken);
-    // In an actor's method, wait for what is awaited: the method is cut there,
-    // a seam where it returns to the actor's dispatcher
+    // In an actor's behaviour, wait for what is awaited: the behaviour is cut
+    // there, a seam where it returns to the actor's dispatcher
     keyAdd("await", AwaitToken);
     // In an actor's method, the actor's own handle: 'self' is its state,
     // which never leaves it
     keyAdd("selfactor", SelfActorToken);
+    // 'async do' declares an actor's behaviour, a method its handle sends as
+    // a message and its dispatcher runs later. The two words are one keyword
+    // phrase: neither means anything alone, and the parser says so where one
+    // is written without the other (parseBehaviourWords)
+    keyAdd("async", AsyncToken);
+    keyAdd("do", DoToken);
 
     keyAdd("void", VoidToken);
     keyAdd("nil", nilToken);
@@ -184,7 +190,6 @@ void keywordInit() {
     // and are deliberately absent here: both already work, as a method's first
     // parameter and as a 'with' block's value, so they are implemented rather
     // than reserved.
-    keyAdd("async", ReservedToken);
     keyAdd("baseurl", ReservedToken);
     keyAdd("context", ReservedToken);
     keyAdd("local", ReservedToken);

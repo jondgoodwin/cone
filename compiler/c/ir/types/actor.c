@@ -43,7 +43,7 @@ static void actorCheckReturn(ActorInfo *info, FnDclNode *fn) {
     char what[512], reason[512];
     genericNotSendableWhy(type, what, reason);
     errorMsgNode(((FnSigNode *)fn->vtype)->rettype, ErrorNotSendable,
-        "Actor %s's message %s returns a %s, which is not Sendable: %s %s. The value goes back to the actor that awaits it, on the thread that runs that actor, so it must be Sendable.",
+        "Actor %s's behaviour %s returns a %s, which is not Sendable: %s %s. The value goes back to the actor that awaits it, on the thread that runs that actor, so it must be Sendable.",
         &info->handle->namesym->namestr, &fn->namesym->namestr, typename, what, reason);
 }
 
@@ -77,7 +77,7 @@ void actorCheckAll() {
                     &actorname->namestr, &parm->namesym->namestr, typename, what, reason);
             else
                 errorMsgNode((INode *)parm, ErrorNotSendable,
-                    "Actor %s's message %s takes %s, a %s, which is not Sendable: %s %s. A message carries its arguments to the thread the actor runs on, so each must be Sendable.",
+                    "Actor %s's behaviour %s takes %s, a %s, which is not Sendable: %s %s. A message carries its arguments to the thread the actor runs on, so each must be Sendable.",
                     &actorname->namestr, &fn->namesym->namestr, &parm->namesym->namestr, typename, what, reason);
         }
         for (uint32_t j = 0; j < info->nmsgs; ++j)
@@ -123,6 +123,28 @@ int actorMethodAwaits(ActorInfo *info, FnDclNode *method) {
             return 1;
     }
     return 0;
+}
+
+ActorInfo *actorOfBehaviour(FnDclNode *fn) {
+    ActorInfo *info = actorOfState(inodeGetOwner((INode *)fn));
+    if (info == NULL || info->behaviours == NULL)
+        return NULL;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(info->behaviours, cnt, nodesp)) {
+        if (*nodesp == (INode *)fn)
+            return info;
+    }
+    return NULL;
+}
+
+ActorMessage *actorMessageNamed(ActorInfo *info, Name *name) {
+    for (uint32_t j = 0; j < info->nmsgs; ++j) {
+        FnDclNode *method = info->msgs[j].method;
+        if (method->namesym == name || (method->overloadsym && method->overloadsym == name))
+            return &info->msgs[j];
+    }
+    return NULL;
 }
 
 INode *actorStateMember(INode *type, Name *name, StructNode **state) {

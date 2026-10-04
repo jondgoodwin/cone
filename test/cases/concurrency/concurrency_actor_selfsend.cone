@@ -1,0 +1,67 @@
+// An actor naming one of its own behaviours sends it: 'self.later(1)' posts
+// the message to the actor's own mailbox and goes on at once, with no seam,
+// and the behaviour runs later, when the actor takes the message up -- as
+// 'selfactor.later(1)' does. So start prints both its lines before either
+// 'later' runs. The same from a synchronous helper, written bare
+// ('later(2)' is 'self.later(2)'), and of a behaviour holding an 'await'
+// (finish), which only its dispatcher runs. A behaviour that is not 'pub'
+// is a message all the same, sent from its own module. 'await self.double(21)'
+// awaits one of the actor's own behaviours, which runs while finish waits,
+// and finish then sends show from its second half.
+//
+// Each sender's messages to one actor are handled in the order sent, and
+// everything here is the one actor's, so the output is the same every run:
+//   start 1, start ends 1, later 1, later 2, finish 42, show 10.
+//
+// The reference manual shows Echo (doc/reference/refconccomm.html, "Sending
+// to itself"), copied verbatim from between the "manual:" lines.
+
+mod concurrency_actor_selfsend;
+
+import stdio use *;
+import actors;
+
+fn say(s &[]u8, n u64) {printStr(s); printStr(" "); printUInt(n); printStr("\n");}
+
+// manual: self
+actor Echo {
+  pub async do start(self) {
+    say("start", 1u64);
+    self.later(1u64);             // a send to itself: start goes on at once
+    self.relay();                 // a synchronous helper, an ordinary call
+    say("start ends", 1u64);
+  }
+
+  async do later(self, k u64) {
+    say("later", k);
+    if k == 2u64 {
+      self.finish();
+    }
+  }
+
+  fn relay(self) {
+    later(2u64);                  // 'self.later(2)': a send, from a helper too
+  }
+
+  async do finish(self) {
+    imm d = await self.double(21u64);
+    say("finish", d);
+    self.show(d / 2u64 - 11u64);
+  }
+
+  async do double(self, k u64) u64 {k * 2u64;}
+
+  async do show(self, k u64) {
+    say("show", k);
+  }
+}
+// manual: end
+
+fn main() {
+  initAll();
+  {
+    imm e = new Echo();
+    e.start();
+  }
+  finalAll();
+}

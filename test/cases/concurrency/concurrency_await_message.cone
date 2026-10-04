@@ -1,23 +1,23 @@
-// Where an 'await' on a message, and 'selfactor', are refused:
+// Where an 'await' on a behaviour, and 'selfactor', are refused:
 //
-// - An 'await' on a message that returns nothing is not built: there is no
-//   value for a reply to carry (ErrorUnbuiltAwait, after the seam's rules
-//   are checked, naming what its record would carry).
-// - A message holding an 'await' is its dispatcher's to call: each seam
-//   returns to the dispatcher, and called from another method it would cut
-//   that method too, where nothing shows it (ErrorUnbuiltAwait at the call).
+// - An 'await' on a behaviour that returns nothing (ErrorAwaitVoid): such a
+//   behaviour sends no reply, since whether one is sent is its signature's to
+//   say, and a caller that needs to know it finished awaits one that declares
+//   a return type. Through another actor's handle and through 'self' alike.
 // - A record that would hold a traced reference: a continuation waits in
 //   the actor's pending table, off the stack, which the collector does not
 //   trace yet (ErrorUnbuiltAwait at the 'await').
-// - What a message returns goes back to the actor awaiting it, on its
+// - What a behaviour returns goes back to the actor awaiting it, on its
 //   thread: it must be Sendable (ErrorNotSendable at the return type).
-// - 'selfactor', the actor's own handle, stands only where 'await' may: in
-//   an actor's method, not its 'init', which runs before the actor exists,
-//   nor its 'final', nor a function or another type's method
-//   (ErrorSelfActorPlace).
+// - 'selfactor', the actor's own handle, stands in an actor's methods, not
+//   its 'init', which runs before the actor exists, nor its 'final', nor a
+//   function or another type's method (ErrorSelfActorPlace).
 //
-// A message that returns a value may be sent with no 'await', its value
-// dropped, and awaited (concurrency_await_reply runs both).
+// A behaviour holding an 'await' may be named from another of the actor's
+// methods: 'self.load()' is a send, which goes on at once and cuts nothing
+// (concurrency_actor_selfsend runs it). A behaviour that returns a value may
+// be sent with no 'await', its value dropped, and awaited
+// (concurrency_await_reply runs both).
 
 mod concurrency_await_message;
 
@@ -27,9 +27,9 @@ import collector;
 struct Cell {pub n u64;}
 
 actor Peer {
-  pub fn ping(self) {}
-  pub fn get(self) u64 {3u64;}
-  pub fn share(self) Rc[mut, u64] {new Rc[mut, u64](1u64);}   //~ ErrorNotSendable "Actor Peer's message share returns a Rc[mut, u64], which is not Sendable"
+  pub async do ping(self) {}
+  pub async do get(self) u64 {3u64;}
+  pub async do share(self) Rc[mut, u64] {new Rc[mut, u64](1u64);}   //~ ErrorNotSendable "Actor Peer's behaviour share returns a Rc[mut, u64], which is not Sendable"
 }
 
 actor Page {
@@ -41,19 +41,25 @@ actor Page {
     *self = new Self(p, 0u64);
   }
 
-  pub fn quiet(self) {
-    await peer.ping();      //~ ErrorUnbuiltAwait "'await' on a message that returns nothing is not built, so nothing is generated for it. Its seam would end the borrows held by []"
+  pub async do quiet(self) {
+    await peer.ping();      //~ ErrorAwaitVoid "'await' waits for a behaviour's reply, and ping returns nothing, so it sends none: a behaviour with no return type owes its caller nothing. If the caller needs to know ping finished, declare a return type -- a status saying whether it worked -- and await that."
   }
 
-  pub fn load(self) {
+  async do nothing(self) {}
+
+  pub async do quieter(self) {
+    await self.nothing();   //~ ErrorAwaitVoid "and nothing returns nothing, so it sends none"
+  }
+
+  pub async do load(self) {
     body = await peer.get();
   }
 
-  pub fn calls(self) {
-    self.load();            //~ ErrorUnbuiltAwait "A call of load, a method of actor Page holding an 'await', is not built"
+  pub async do calls(self) {
+    self.load();            // a send: no seam here
   }
 
-  pub fn traced(self) {
+  pub async do traced(self) {
     imm g = new Gc[mut, Cell](1u64);
     imm v = await peer.get();   //~ ErrorUnbuiltAwait "'await' whose continuation holds a traced reference is not built: g would wait in the actor's pending table"
     body = v + g.n;

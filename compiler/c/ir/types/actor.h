@@ -22,9 +22,9 @@
 #ifndef actor_h
 #define actor_h
 
-// One message of an actor: its method, and the handle's methods that send it
+// One message of an actor: its behaviour, and the handle's methods that send it
 typedef struct ActorMessage {
-    FnDclNode *method;      // The state's 'pub' method
+    FnDclNode *method;      // The state's method declared 'async do', the behaviour
     FnDclNode *send;        // The handle's method sending it, no reply wanted
     FnDclNode *ask;         // The handle's method sending it awaited, with a reply's
                             // envelope; NULL where the method returns nothing
@@ -37,6 +37,7 @@ typedef struct ActorInfo {
     Nodes *crossing;        // FnDclNode, VarDclNode pairs: each argument that crosses to the actor
     ActorMessage *msgs;     // Its messages, in the order written
     uint32_t nmsgs;
+    Nodes *behaviours;      // The state's methods declared 'async do', refused ones too
     Nodes *awaiting;        // The state's methods whose bodies hold an 'await'
     FnDclNode *dispatch;    // The dispatch function, which alone calls a message
     FnDclNode *selffn;      // 'selfactor': the handle, from the state
@@ -83,6 +84,12 @@ ActorMessage *actorMessageOfSend(FnDclNode *send, ActorInfo **info);
 
 // Does the body of this method of an actor's state hold an 'await'?
 int actorMethodAwaits(ActorInfo *info, FnDclNode *method);
+
+// The actor whose behaviour 'fn' is, declared 'async do', or NULL
+ActorInfo *actorOfBehaviour(FnDclNode *fn);
+
+// The message of actor 'info' whose behaviour is named 'name', or NULL
+ActorMessage *actorMessageNamed(ActorInfo *info, Name *name);
 
 // The member of an actor's state that 'name' names, where 'type' is the
 // actor's handle and the handle has no such member of its own, or NULL. '*state'

@@ -1,12 +1,14 @@
 /** Parse an actor declaration, and generate what it stands for
  *
- * 'actor Counter { count u64; fn init(self &new, n u64) {...}; pub fn bump(self,
- * n u64) {...} }' declares an actor: state that lives on, reached by nothing
- * but messages, each a call of one of its 'pub' methods, run later, one at a
- * time, on whichever worker thread of the actors package takes it up. No node
- * stands for an actor. The parser turns its declaration into the four
- * declarations the actors package runs an actor by, generated as Cone source
- * and parsed here, in this order:
+ * 'actor Counter { count u64; fn init(self &new, n u64) {...}; pub async do
+ * bump(self, n u64) {...} }' declares an actor: state that lives on, reached by
+ * nothing but messages, each a call of one of its behaviours (its methods
+ * declared 'async do'), run later, one at a time, on whichever worker thread of
+ * the actors package takes it up. Its methods declared 'fn' -- its 'init', its
+ * 'final', and helpers -- are synchronous, run inside the actor by whatever
+ * calls them. No node stands for an actor. The parser turns its declaration
+ * into the four declarations the actors package runs an actor by, generated as
+ * Cone source and parsed here, in this order:
  *
  *   struct Counter.State {count u64; fn init...; fn bump...} the body as written
  *   struct Counter {                                         the handle
@@ -15,10 +17,15 @@
  *       actors.startActor[Counter.State, Counter.Msg](new Counter.State(n), &Counter.dispatch));}
  *     pub fn bump(self &, n u64) {actors.send[Counter.Msg](mailbox, Counter.Msg.bump[n]);}
  *   }
- *   enum Counter.Msg is Sendable {struct bump {n u64;}}     one variant per message
+ *   enum Counter.Msg is Sendable {struct bump {n u64;}}     one variant per behaviour
  *   fn Counter.dispatch(self &mut Counter.State, msg *Counter.Msg) {
  *     if &*msg is &Counter.Msg.bump {imm p = msg as *Counter.Msg.bump; self.bump(actors.take(&(*p).n));}
  *   }
+ *
+ * The handle's method sending a behaviour is 'pub' where the behaviour is. In
+ * the state the behaviour is an ordinary method, which only the dispatcher
+ * calls: 'self.bump(n)' written in the actor's own methods sends it, through
+ * the actor's handle (selfActorSend).
  *
  * and, once per module, the helper 'actors.take' (a function of the module's
  * own, named as no source can spell), which moves a field out of a message:
@@ -27,17 +34,17 @@
  * What an 'await' and a message's reply need (compiler/c/doc/phases/parse.md,
  * section 6, and generation.md, "A message's reply"):
  *
- * - a message that returns a value, 'pub fn get(self, k u64) u64', has a
- *   second variant, its request awaited, 'struct get'ask {k u64; reply'
+ * - a behaviour that returns a value, 'pub async do get(self, k u64) u64', has
+ *   a second variant, its request awaited, 'struct get'ask {k u64; reply'
  *   actors.Reply;}', the handle a second method sending it, and the dispatch
  *   an arm that answers it;
  * - an actor whose body holds an 'await' (DclTexts.awaiting) has hidden
- *   fields in its state, its pending table and, where a message returning a
+ *   fields in its state, its pending table and, where a behaviour returning a
  *   value awaits, its Answer slot; two resume variants and their arms; and
  *   'Counter.reply'' and 'Counter.replyid'', which make a request's
  *   envelope;
- * - an actor writing 'selfactor' has 'Counter.self'', its handle from its
- *   state.
+ * - an actor with a behaviour, or writing 'selfactor', has 'Counter.self'',
+ *   its handle from its state.
  *
  * The derived names -- 'Counter.State', 'Counter.Msg', 'Counter.dispatch',
  * the handle's one field, and the bindings of the actors and sync packages the
@@ -145,6 +152,47 @@ static int parseActorTextHas(char *from, char *to, char *word) {
     return 0;
 }
 
+// ---- 'async do' ----------------------------------------------------------------
+
+// Pass over a declaration that will not be read: up to its ';', or through its
+// '{ ... }', whichever comes first
+static void parseBehaviourSkip() {
+    while (!lexIsToken(SemiToken) && !lexIsToken(LCurlyToken) && !lexIsToken(RCurlyToken) && !lexIsToken(EofToken))
+        lexNextToken();
+    if (lexIsToken(LCurlyToken))
+        parseSkipDclBody();
+    else if (lexIsToken(SemiToken))
+        lexNextToken();
+}
+
+int parseBehaviourWords(char *where) {
+    if (lexIsToken(DoToken)) {
+        errorMsgLex(ErrorBehaviourWords,
+            "'do' means nothing alone: an actor's behaviour is declared 'async do name(self, ...)', and a function 'fn'.");
+        parseBehaviourSkip();
+        return 0;
+    }
+    if (!lexNextIsWord("do")) {
+        if (lexNextIsWord("fn"))
+            errorMsgLex(ErrorBehaviourWords,
+                "'async fn' is not Cone's: 'async' means nothing alone. An actor's behaviour, which runs when the actor is scheduled, is declared 'async do name(self, ...)'; a function, which runs when it is called, is 'fn'.");
+        else
+            errorMsgLex(ErrorBehaviourWords,
+                "'async' means nothing alone: an actor's behaviour is declared 'async do name(self, ...)'.");
+        parseBehaviourSkip();
+        return 0;
+    }
+    if (where) {
+        errorMsgLex(ErrorBehaviourWords,
+            "'async do' declares an actor's behaviour, which only an actor's body holds, and this is %s. A function here is declared 'fn'.",
+            where);
+        parseBehaviourSkip();
+        return 0;
+    }
+    lexNextToken();
+    return 1;
+}
+
 // ---- The generated text ------------------------------------------------------
 
 typedef struct GenText {
@@ -222,7 +270,18 @@ static int parseActorIsInit(FnDclNode *fn) {
     return fn->namesym == initName || fn->overloadsym == initName;
 }
 
-// Does this message return a value, as written?
+// Was this function of the actor's body declared 'async do', a behaviour?
+static int parseActorIsBehaviour(DclTexts *texts, FnDclNode *fn) {
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(texts->behaviours, cnt, nodesp)) {
+        if (*nodesp == (INode *)fn)
+            return 1;
+    }
+    return 0;
+}
+
+// Does this behaviour return a value, as written?
 static int parseActorReturns(FnDclNode *fn) {
     INode *rettype = ((FnSigNode *)fn->vtype)->rettype;
     return rettype != NULL && rettype->tag != VoidTag;
@@ -239,10 +298,11 @@ static int parseActorAwaits(DclTexts *texts, FnDclNode *fn) {
     return 0;
 }
 
-// Check a method's 'self': the state, lent to the method for the message it
-// handles. Written bare it is the state borrowed 'mut', which the method has
-// alone while it runs; '&' and '&mut' are taken as written; an initializer's
-// is '&new' and the finalizer's '&uni', as any type's are.
+// Check a method's 'self': the state, lent to a behaviour for the message it
+// handles, and to a synchronous method by its caller. Written bare it is the
+// state borrowed 'mut', which the method has alone while it runs; '&' and
+// '&mut' are taken as written; an initializer's is '&new' and the finalizer's
+// '&uni', as any type's are.
 static int parseActorSelf(StructNode *state, FnDclNode *fn) {
     VarDclNode *self = (VarDclNode *)nodesGet(((FnSigNode *)fn->vtype)->parms, 0);
     INode *type = self->vtype;
@@ -265,7 +325,7 @@ static int parseActorSelf(StructNode *state, FnDclNode *fn) {
     return 0;
 }
 
-// Check the parameters of a message or an initializer, which cross to the
+// Check the parameters of a behaviour or an initializer, which cross to the
 // actor's thread, and record each for the thread check (actorCheckAll). What
 // cannot cross whatever it turns out to be -- a borrow, a lifetime, the
 // state itself -- is refused here. 'crossing' takes the function and each
@@ -287,7 +347,7 @@ static int parseActorParms(DclTexts *texts, StructNode *state, Name *actorname, 
             || parseActorTextHas(text->type, text->typeend, "Self")) {
             errorMsgNode((INode *)parm, ErrorNotSendable,
                 "Actor %s's %s %s takes %s, the actor's own state, which never leaves the actor. %s.",
-                &actorname->namestr, isinit ? "initializer" : "message", &fn->namesym->namestr,
+                &actorname->namestr, isinit ? "initializer" : "behaviour", &fn->namesym->namestr,
                 &parm->namesym->namestr, crossesto);
             ok = 0;
             continue;
@@ -295,7 +355,7 @@ static int parseActorParms(DclTexts *texts, StructNode *state, Name *actorname, 
         if (parseActorIsBorrow(parm->vtype) || memchr(text->type, '\'', text->typeend - text->type)) {
             errorMsgNode((INode *)parm, ErrorNotSendable,
                 "Actor %s's %s %s takes %s, a borrowed reference, which is not Sendable: no borrow may leave its thread. %s; pass an owner that may cross, such as a 'uni' one, or an 'Arc'.",
-                &actorname->namestr, isinit ? "initializer" : "message", &fn->namesym->namestr,
+                &actorname->namestr, isinit ? "initializer" : "behaviour", &fn->namesym->namestr,
                 &parm->namesym->namestr, crossesto);
             ok = 0;
             continue;
@@ -306,10 +366,10 @@ static int parseActorParms(DclTexts *texts, StructNode *state, Name *actorname, 
     return ok;
 }
 
-// The members of an actor's body: which are messages, which initializers, and
-// what may not be there at all
+// The members of an actor's body: which are behaviours, which initializers,
+// and what may not be there at all
 typedef struct ActorMembers {
-    Nodes *messages;     // The 'pub' methods, each a message
+    Nodes *messages;     // The behaviours that may be sent, each a message
     Nodes *inits;        // Its initializers, 'init' and those joining the overload name
     Nodes *crossing;     // Each argument that crosses to the actor (actorRegister)
     uint32_t declared;   // How many initializers it declares, refused ones too
@@ -350,21 +410,33 @@ static void parseActorMembers(DclTexts *texts, StructNode *state, Name *actornam
         if (node->tag != FnDclTag)
             continue;
         FnDclNode *fn = (FnDclNode *)node;
+        int behaviour = parseActorIsBehaviour(texts, fn);
         if (fn->flags & FlagExtern) {
             errorMsgNode(node, ErrorActorMember, "An actor's method is written with its body: 'extern' declares one defined elsewhere, which an actor's never is.");
             continue;
         }
         // A function without 'self' is a helper of the state's, reached from its
-        // methods; it has no state to run on, so it is no message
+        // methods; it has no state to run on, so it is no behaviour
         if (!(fn->flags & FlagMethFld)) {
-            if (fn->flags & FlagPub)
+            if (behaviour)
                 errorMsgNode(node, ErrorActorMember,
-                    "%s has no 'self', so it would not run on actor %s: only a method is a message, and an actor is made with 'new'. Declare a function that needs no actor outside it.",
+                    "%s is declared 'async do', a behaviour of actor %s's, and has no 'self': a behaviour runs on the actor's state, which is its first parameter, 'self'.",
+                    &fn->namesym->namestr, &actorname->namestr);
+            else if (fn->flags & FlagPub)
+                errorMsgNode(node, ErrorActorMember,
+                    "%s has no 'self', so it would not run on actor %s: only a behaviour is a message, and an actor is made with 'new'. Declare a function that needs no actor outside it.",
                     &fn->namesym->namestr, &actorname->namestr);
             continue;
         }
         if (!parseActorSelf(state, fn))
             continue;
+        if (behaviour && (fn->namesym == finalName || parseActorIsInit(fn))) {
+            errorMsgNode(node, ErrorActorMember,
+                "An actor's %s is synchronous, declared 'fn': %s. A behaviour, 'async do', is a message the actor runs when it is scheduled.",
+                fn->namesym == finalName ? "'final'" : "initializer",
+                fn->namesym == finalName ? "it runs as the actor dies" : "it runs on the thread making the actor, before the actor exists");
+            continue;
+        }
         if (fn->namesym == finalName)
             continue;
         if (parseActorIsInit(fn)) {
@@ -373,16 +445,23 @@ static void parseActorMembers(DclTexts *texts, StructNode *state, Name *actornam
                 nodesAdd(&members->inits, node);
             continue;
         }
-        if (!(fn->flags & FlagPub))
+        // A method declared 'fn' is synchronous: run inside the actor, by the
+        // method that calls it, never sent. Nothing outside the actor reaches it
+        if (!behaviour) {
+            if (fn->flags & FlagPub)
+                errorMsgNode(node, ErrorActorMember,
+                    "%s is a 'fn' of actor %s's: synchronous, run inside the actor by the method that calls it, so nothing outside the actor reaches it, and it is never 'pub'. A message the actor's handle sends is a behaviour, declared 'async do': 'pub async do %s(...)'.",
+                    &fn->namesym->namestr, &actorname->namestr, &fn->namesym->namestr);
             continue;
+        }
 
-        // A message. What it returns goes back in a reply to an 'await' that
-        // sent it, and is dropped where it was sent with none
+        // A behaviour, sent as a message. What it returns goes back in a reply
+        // to an 'await' that sent it, and is dropped where it was sent with none
         int ok = 1;
         FnSigNode *sig = (FnSigNode *)fn->vtype;
         if (fn->genericinfo) {
             errorMsgNode(node, ErrorActorMember,
-                "Actor %s's message %s is generic, which a message cannot be yet: each message is one variant of the actor's message type.",
+                "Actor %s's behaviour %s is generic, which a behaviour cannot be yet: each is one variant of the actor's message type.",
                 &actorname->namestr, &fn->namesym->namestr);
             ok = 0;
         }
@@ -390,7 +469,7 @@ static void parseActorMembers(DclTexts *texts, StructNode *state, Name *actornam
         PermNode *selfperm = parseActorPerm((RefNode *)self->vtype);
         if (selfperm != mutPerm && selfperm != roPerm) {
             errorMsgNode((INode *)self, ErrorActorMember,
-                "A message's 'self' is the actor's state, lent for the message: 'self', 'self &' or 'self &mut'.");
+                "A behaviour's 'self' is the actor's state, lent for the message: 'self', 'self &' or 'self &mut'.");
             ok = 0;
         }
         if (parseActorParms(texts, state, actorname, fn, &members->crossing) && ok)
@@ -525,8 +604,9 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
 
     // The body, read as a struct's, is the state. Where each field's and
     // parameter's type and default are written is kept, to be written again
-    DclTexts texts = {NULL, 0, 0, 0, NULL, 0};
+    DclTexts texts = {NULL, 0, 0, 0, NULL, 0, NULL};
     texts.awaiting = newNodes(4);
+    texts.behaviours = newNodes(8);
     DclTexts *svtexts = parse->dcltexts;
     parse->dcltexts = &texts;
     StructNode *state = (StructNode *)parseStruct(parse, 0);
@@ -782,16 +862,17 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
         genSlot(&g, GenDispatch);
         genPuts(&g, "));}\n");
     }
-    // A message that returns a value is sent awaited by a second method, which
-    // an 'await' calls in place of the first (awaitTypeCheck): it takes the
-    // reply's envelope too, which goes in the message, beside the arguments
+    // A behaviour that returns a value is sent awaited by a second method,
+    // which an 'await' calls in place of the first (awaitTypeCheck): it takes
+    // the reply's envelope too, which goes in the message, beside the
+    // arguments. Each is as public as the behaviour
     ask = GenSlots;
     for (nodesFor(members.messages, cnt, nodesp)) {
         FnDclNode *fn = (FnDclNode *)*nodesp;
         int returns = parseActorReturns(fn);
         for (int asked = 0; asked <= returns; ++asked) {
             uint32_t variant = asked ? ask++ : 0;
-            genPuts(&g, "  pub fn ");
+            genPuts(&g, (fn->flags & FlagPub) ? "  pub fn " : "  fn ");
             if (asked)
                 genSlot(&g, variant);
             else {
@@ -1014,8 +1095,9 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
         genPuts(&g, ".replyData(&r)]);\n  r;\n}\n");
     }
 
-    // 'selfactor': the actor's own handle, another owner of its mailbox
-    int selfs = texts.selfactors > 0;
+    // 'selfactor': the actor's own handle, another owner of its mailbox, which
+    // 'self.m()' sends a behaviour through as well
+    int selfs = texts.selfactors > 0 || members.messages->used > 0;
     if (selfs) {
         genPuts(&g, "fn ");
         genSlot(&g, GenSelf);
@@ -1088,6 +1170,7 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
     info->state = state;
     info->crossing = members.crossing;
     info->awaiting = texts.awaiting;
+    info->behaviours = texts.behaviours;
     info->nmsgs = members.messages->used;
     info->msgs = (ActorMessage *)memAllocBlk((info->nmsgs ? info->nmsgs : 1) * sizeof(ActorMessage));
     ask = GenSlots;

@@ -25,10 +25,12 @@
 # is doc/reference/refconccomm.html, "Actors"), and the actors package's
 # runtime it generates declarations for (mailbox, work-stealing scheduler,
 # quiescence, handles counted through 'Arc'). The concurrency_actor_*
-# scenarios are the declaration: what 'new' makes, a message's arguments
-# moved in, many threads sending to one actor, actors made in a loop, and the
-# refusals at parse (concurrency_actor_parse), at type check
-# (concurrency_actor_typecheck) and without the package
+# scenarios are the declaration: what 'new' makes, a behaviour's arguments
+# moved in, many threads sending to one actor, actors made in a loop, a
+# behaviour's four shapes (concurrency_actor_shapes), 'self.m()' a send
+# (concurrency_actor_selfsend), and the refusals at parse
+# (concurrency_actor_parse, and concurrency_behaviour_words for 'async do'
+# itself), at type check (concurrency_actor_typecheck) and without the package
 # (concurrency_actor_runtime). The concurrency_actors_* scenarios are the
 # runtime, driven by declared actors: the scheduler's paths, the counting
 # that decides when an actor dies, quiescence; they are here, not in the
@@ -47,25 +49,26 @@
 # concurrency_actor_order's; concurrency_actors_stress declares the collector,
 # holding nodes, above the nodes, whose message carries a node.
 #
-# 'await' in an actor's method: a seam, where the method returns to the
-# actor's dispatcher to wait. An 'await' on a message to an actor that returns
-# a value waits for its reply: concurrency_await_reply runs it end to end and
-# pins the envelope's and the record's shapes, and concurrency_await_message
-# is where it and 'selfactor' are refused. Any other 'await' is reported
-# where it stands (ErrorUnbuiltAwait), its message naming the borrows it
-# ends, the locks it gives back, its continuation's record and that record's
-# order of death, and what it leaves; that message is what
-# concurrency_await_record, _droporder, _static and _lock pin, each awaiting
-# a message that returns nothing. A borrow named after the seam is the
-# ordinary ErrorFrozen at the seam (concurrency_await_borrow, _lock); where
-# 'await' may stand is concurrency_await_place. With '--await-direct', for
-# tests, an 'await' on anything else hands its record straight to its second
-# half: concurrency_await_split runs each split message beside its twin with
-# no 'await', the two traces the same, and pins the halves' shapes;
+# 'await' in an actor's behaviour: a seam, where the behaviour returns to the
+# actor's dispatcher to wait. An 'await' on a behaviour of an actor that
+# returns a value waits for its reply: concurrency_await_reply runs it end to
+# end and pins the envelope's and the record's shapes, and
+# concurrency_await_message is where it and 'selfactor' are refused. Any
+# other 'await' is reported where it stands (ErrorUnbuiltAwait), its message
+# naming the borrows it ends, the locks it gives back, its continuation's
+# record and that record's order of death, and what it leaves; that message
+# is what concurrency_await_record, _droporder, _static and _lock pin, each
+# awaiting a plain function. A borrow named after the seam is the ordinary
+# ErrorFrozen at the seam (concurrency_await_borrow, _lock); where 'await' may
+# stand is concurrency_await_place. With '--await-direct', for tests, an
+# 'await' on anything else hands its record straight to its second half:
+# concurrency_await_split runs each split behaviour beside its twin with no
+# 'await', the two traces the same, and pins the halves' shapes;
 # concurrency_await_unsplit is where the split is not built yet. The chapter
 # is doc/reference/refconccomm.html, "Actors" and "Awaiting a reply", whose
-# examples are concurrency_await_manual's (run) and
-# concurrency_await_manual_refused's (refused), copied from them; flow's note is
+# examples are concurrency_actor_manual's, _shapes' and _selfsend's and
+# concurrency_await_manual's (run) and concurrency_await_manual_refused's
+# (refused), copied from them; flow's note is
 # compiler/c/doc/phases/flow.md, "A seam", and generation's
 # compiler/c/doc/phases/generation.md, "A split method" and "A message's
 # reply".
@@ -161,8 +164,28 @@ tags = ["typecheck", "genllvm", "runtime"]
 
 [scenario.concurrency_actor_counter]
 category = "run"
-description = "A declared actor made by 'new Counter(100, 3)', its init running on fresh state; four threads and main send it 40007 messages through copies of its handle, each handled alone with the state 'mut', calling a private method; the total is exact at quiescence"
+description = "A declared actor made by 'new Counter(100, 3)', its init running on fresh state; four threads and main send it 40007 messages through copies of its handle, each handled alone with the state 'mut', calling a synchronous helper; the total is exact at quiescence"
 tags = ["parse", "typecheck", "genllvm", "runtime"]
+
+[scenario.concurrency_actor_manual]
+category = "run"
+description = "The reference manual's first actor, verbatim: an initializer, two behaviours, a synchronous helper called from one, a finalizer; two messages sent, the program ending at quiescence"
+tags = ["parse", "typecheck", "genllvm", "runtime"]
+
+[scenario.concurrency_actor_private]
+category = "reject"
+description = "A behaviour that is not 'pub' is sent from its own module and refused from another, as a private member is; a synchronous method is refused through the handle from any module"
+tags = ["typecheck"]
+
+[scenario.concurrency_actor_shapes]
+category = "run"
+description = "A behaviour's four shapes, return type or not by 'await' or not, each built and run: fire and forget, calling a synchronous helper that sees the state; a cheap query replying at the end of its one run; one that awaits and owes nobody; the full handshake, awaited through 'self'"
+tags = ["parse", "typecheck", "flow", "genllvm", "runtime"]
+
+[scenario.concurrency_actor_selfsend]
+category = "run"
+description = "'self.m()' on one of the actor's own behaviours is a send: the caller goes on at once and m runs later, from a behaviour and from a synchronous helper (written bare), of a behaviour that is not 'pub' and of one holding an 'await'; 'await self.m()' awaits one of its own"
+tags = ["typecheck", "genllvm", "runtime"]
 
 [scenario.concurrency_actor_oneway]
 category = "run"
@@ -181,12 +204,17 @@ tags = ["typecheck", "genllvm", "runtime"]
 
 [scenario.concurrency_actor_parse]
 category = "reject"
-description = "What an actor's declaration may not say: a message carrying a borrow, generic, or taking 'self &uni';a 'pub' field; a static; a 'pub' function without 'self'; 'extern'; a macro; a generic actor; one naming an abstraction"
+description = "What an actor's declaration may not say: a behaviour carrying a borrow, generic, or taking 'self &uni'; a 'pub' field; a static; a 'pub' function without 'self'; 'extern'; a macro; a behaviour without 'self'; 'init' or 'final' as a behaviour; a 'pub fn' method, which is synchronous; a generic actor; one naming an abstraction"
+tags = ["parse"]
+
+[scenario.concurrency_behaviour_words]
+category = "reject"
+description = "'async' or 'do' without the other, and 'async fn', are ErrorBehaviourWords in an actor's body; so is 'async do' in a struct's, a trait's or an enum's body, at a module's top level and in a function's body"
 tags = ["parse"]
 
 [scenario.concurrency_actor_typecheck]
 category = "reject"
-description = "An actor's private state and its non-'pub' methods reached through its handle; a message's and an initializer's argument that is not Sendable, refused at the parameter"
+description = "An actor's private state and its synchronous methods reached through its handle; a behaviour's and an initializer's argument that is not Sendable, refused at the parameter; 'self.m()' on a behaviour in the init, in the final, and through a state made with 'new Self', ErrorBehaviourSend"
 tags = ["typecheck"]
 
 [scenario.concurrency_actor_runtime]
@@ -245,17 +273,17 @@ tags = ["typecheck"]
 
 [scenario.concurrency_await_place]
 category = "reject"
-description = "'await' outside an actor's method -- in a plain function, a struct's method, an actor's init and its final -- is ErrorAwaitPlace at the 'await'"
+description = "'await' outside an actor's behaviour -- in a plain function, a struct's method, an actor's init, its final and a synchronous helper, the last told to await at the top of a behaviour -- is ErrorAwaitPlace at the 'await'; in a behaviour, 'pub' or not, it is accepted"
 tags = ["parse", "typecheck"]
 
 [scenario.concurrency_await_borrow]
 category = "reject"
-description = "A seam ends every borrow that is not global: one of the state through 'self', of a local, or lent through a parameter, named after the 'await'; one a droppable's finalizer reads; one an argument of a call around the 'await' carries, a receiver among them: each the ordinary ErrorFrozen at the 'await'. Not named after it, the seam is accepted, ending it"
+description = "A seam ends every borrow that is not global: one of the state through 'self', or of a local, named after the 'await'; one a droppable's finalizer reads; one an argument of a call around the 'await' carries, a receiver among them: each the ordinary ErrorFrozen at the 'await'. Not named after it, the seam is accepted, ending it"
 tags = ["flow"]
 
 [scenario.concurrency_await_static]
 category = "reject"
-description = "A ''static' borrow crosses a seam: a borrow of a global, and a reborrow through a ''static' parameter, used after the 'await', are accepted and travel in the continuation's record (ErrorUnbuiltAwait)"
+description = "A ''static' borrow crosses a seam: a borrow of a global, and a reborrow through one, used after the 'await', are accepted and travel in the continuation's record (ErrorUnbuiltAwait)"
 tags = ["flow"]
 
 [scenario.concurrency_await_lock]
@@ -275,7 +303,7 @@ tags = ["flow"]
 
 [scenario.concurrency_await_split]
 category = "run"
-description = "Under --await-direct each message holding an 'await' is split, each seam handing its record straight to its second half: every split message prints what its twin with no 'await' prints, its values dying where and in the order the one scope says -- an empty record, a value in flight, droppables in order, two seams, a seam in a loop, a drop flag, temporaries and a moved value across, locks given back, a return after the seam, a void await"
+description = "Under --await-direct each behaviour holding an 'await' is split, each seam handing its record straight to its second half: every split behaviour prints what its twin with no 'await' prints, its values dying where and in the order the one scope says -- an empty record, a value in flight, droppables in order, two seams, a seam in a loop, a drop flag, temporaries and a moved value across, locks given back, a return after the seam, a void await"
 tags = ["flow", "genllvm", "runtime"]
 
 [[scenario.concurrency_await_split.run]]
@@ -313,7 +341,7 @@ contains = [
 
 [scenario.concurrency_await_unsplit]
 category = "reject"
-description = "Under --await-direct, an 'await' where the split is not built is ErrorUnbuiltAwait: in a method that is no message, as every seam is without the option; in the index of a place, a place stored into, a place swapped; in an array's contents filled in memory"
+description = "Under --await-direct, an 'await' where the split is not built is ErrorUnbuiltAwait: in the index of a place, a place stored into, a place swapped; in an array's contents filled in memory"
 tags = ["flow"]
 
 [[scenario.concurrency_await_unsplit.run]]
@@ -356,7 +384,7 @@ contains = [
 
 [scenario.concurrency_await_message]
 category = "reject"
-description = "An 'await' on a message returning nothing, a call of a message holding an 'await' from another method, and a record holding a traced reference are ErrorUnbuiltAwait; a message returning what is not Sendable is ErrorNotSendable; 'selfactor' outside an actor's method -- its init, its final, a function, another type's method -- is ErrorSelfActorPlace"
+description = "An 'await' on a behaviour returning nothing, through another actor's handle or through 'self', is ErrorAwaitVoid; a record holding a traced reference is ErrorUnbuiltAwait; a behaviour returning what is not Sendable is ErrorNotSendable; 'self.m()' on a behaviour holding an 'await' is a send, refused nowhere; 'selfactor' outside an actor's method -- its init, its final, a function, another type's method -- is ErrorSelfActorPlace"
 tags = ["typecheck", "flow"]
 
 [scenario.concurrency_iobuf_loan]
@@ -436,5 +464,5 @@ options = ["--debug"]
 
 [scenario.concurrency_await_manual_refused]
 category = "reject"
-description = "The refusals the reference manual shows for 'await' in an actor's methods: a borrow used after the 'await' that ended it, one made before it for a call after it (a receiver, an argument), a lock borrow named after it; and each 'await' not built yet -- on a function's call, on a message returning nothing, in a method that is not a message, in a place's index, whose continuation would hold a traced reference -- and a call of a message holding one"
+description = "The refusals the reference manual shows for 'await' in an actor's behaviours: a borrow used after the 'await' that ended it, one made before it for a call after it (a synchronous method's receiver, an argument), a lock borrow named after it; an 'await' in a synchronous 'fn' (ErrorAwaitPlace) and on a behaviour returning nothing (ErrorAwaitVoid); and each 'await' not built yet -- on a function's call, in a place's index, whose continuation would hold a traced reference"
 tags = ["flow"]

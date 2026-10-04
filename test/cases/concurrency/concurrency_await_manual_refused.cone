@@ -11,12 +11,15 @@
 //   receiver, or an argument. Each is refused at the 'await'; beside them,
 //   the 'await' written as a statement of its own first, accepted.
 // - A lock borrow named after the 'await'.
+// - An 'await' in a synchronous 'fn' of the actor, ErrorAwaitPlace, beside
+//   the behaviour written the way the message teaches: the 'await' at its
+//   top, the synchronous work pushed down onto the 'fn'.
+// - An 'await' on a behaviour that returns nothing, ErrorAwaitVoid, beside
+//   one awaiting a behaviour that answers with a status.
 // - What is not built yet, each ErrorUnbuiltAwait where it is written: an
-//   'await' on anything but a message (a plain function's call standing for
-//   an I/O operation's completion), on a message that returns nothing, in a
-//   method that is not a message, in a place's index, store or swap, and
-//   whose continuation would hold a traced reference; and a call of a message
-//   holding an 'await' from another of the actor's methods.
+//   'await' on anything but a behaviour (a plain function's call standing for
+//   an I/O operation's completion), in a place's index, and whose
+//   continuation would hold a traced reference.
 
 mod concurrency_await_manual_refused;
 
@@ -28,8 +31,8 @@ struct Count {pub n u64;}
 struct Cell {pub n u64;}
 
 actor Clock {
-  pub fn now(self) u64 {42u64;}
-  pub fn tick(self) {}
+  pub async do now(self) u64 {42u64;}
+  pub async do tick(self) {}
 }
 
 fn compute() u64 {5u64;}
@@ -40,13 +43,13 @@ actor Meter {
   clock Clock;
   reading u64;
 
-  pub fn stale(self) {
+  pub async do stale(self) {
     imm r = &reading;
-    imm t = await clock.now();  //~ ErrorFrozen "The borrow 'r' holds of '*self' (made at 44:13) ends at this 'await', where the method returns to its actor's dispatcher to wait, and 'r' is used again at 46:16"
+    imm t = await clock.now();  //~ ErrorFrozen "The borrow 'r' holds of '*self' (made at 47:13) ends at this 'await', where the method returns to its actor's dispatcher to wait, and 'r' is used again at 49:16"
     reading = *r + t;
   }
 
-  pub fn fresh(self) {
+  pub async do fresh(self) {
     imm t = await clock.now();
     imm r = &reading;           // borrowed after the 'await'
     reading = *r + t;
@@ -54,18 +57,18 @@ actor Meter {
 // manual: end
 
 // manual: in flight
-  pub fn store(self, n u64) {reading = n;}
+  fn store(self, n u64) {reading = n;}
 
-  pub fn receiver(self) {
+  pub async do receiver(self) {
     self.store(await clock.now());       //~ ErrorFrozen "A borrow of what the caller lent through 'self'"
   }
 
-  pub fn argument(self) {
+  pub async do argument(self) {
     imm x = 3u64;
-    reading = add(&x, await clock.now()); //~ ErrorFrozen "A borrow of 'x' (made at 65:19) ends at this 'await'"
+    reading = add(&x, await clock.now()); //~ ErrorFrozen "A borrow of 'x' (made at 68:19) ends at this 'await'"
   }
 
-  pub fn hoisted(self) {
+  pub async do hoisted(self) {
     imm t = await clock.now();
     self.store(t);
   }
@@ -77,45 +80,66 @@ actor Tally {
   count Arc[Mutex, Count];
   clock Clock;
 
-  pub fn held(self) {
+  pub async do held(self) {
     imm c = &mut *count;          // takes the lock
-    imm t = await clock.now();    //~ ErrorFrozen "The borrow 'c' holds through the lock taken at 81:19 (made at 81:13) ends at this 'await', where the method returns to its actor's dispatcher to wait, and 'c' is used again at 83:5"
+    imm t = await clock.now();    //~ ErrorFrozen "The borrow 'c' holds through the lock taken at 84:19 (made at 84:13) ends at this 'await', where the method returns to its actor's dispatcher to wait, and 'c' is used again at 86:5"
     c.n += t;
   }
 }
 
+
+// manual: synchronous
+actor Reporter {
+  clock Clock;
+  last u64;
+
+  pub async do report(self) {
+    imm t = await clock.now();    // the 'await', at the top of the behaviour
+    last = self.format(t);        // the synchronous work, pushed down
+  }
+
+  fn format(self &, t u64) u64 {
+    t * 1000u64 + last;
+  }
+
+  fn stamp(self) {
+    last = await clock.now();     //~ ErrorAwaitPlace "This one is in stamp, a 'fn' of actor Reporter's: synchronous"
+  }
+}
+// manual: end
+
+// manual: nothing returned
+actor Log {
+  pub async do flush(self) {}             // owes its caller nothing
+  pub async do commit(self) Bool {true;}  // answers with a status
+}
+
+actor Writer {
+  log Log;
+  saved Bool;
+
+  pub async do save(self) {
+    await log.flush();            //~ ErrorAwaitVoid "flush returns nothing, so it sends none"
+    saved = await log.commit();   // waits until commit has run, and learns whether it worked
+  }
+}
+// manual: end
 
 // manual: not built
 actor Waiter {
   clock Clock;
   last u64;
 
-  pub fn onFunction(self) {
+  pub async do onFunction(self) {
     last = await compute();       //~ ErrorUnbuiltAwait "'await' is not built yet"
   }
 
-  pub fn onNothing(self) {
-    await clock.tick();           //~ ErrorUnbuiltAwait "'await' on a message that returns nothing is not built"
-  }
-
-  fn helper(self) u64 {
-    await clock.now();            //~ ErrorUnbuiltAwait "'await' is not built yet"
-  }
-
-  pub fn caller(self) {
-    last = await clock.now();
-  }
-
-  pub fn callsCaller(self) {
-    self.caller();                //~ ErrorUnbuiltAwait "A call of caller, a method of actor Waiter holding an 'await', is not built"
-  }
-
-  pub fn indexed(self) {
+  pub async do indexed(self) {
     imm items = [1u64, 2u64, 3u64];
     last = items[await clock.now()];  //~ ErrorUnbuiltAwait "it stands in the index of a place"
   }
 
-  pub fn traced(self) {
+  pub async do traced(self) {
     imm g = new Gc[mut, Cell](1u64);
     imm t = await clock.now();    //~ ErrorUnbuiltAwait "'await' whose continuation holds a traced reference is not built"
     last = t + g.n;

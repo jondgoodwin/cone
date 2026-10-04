@@ -1173,9 +1173,9 @@ SPIR-V and its own pipeline breaks every aggregate into scalars
 
 ### A split method
 
-An actor's message holding an `await` is cut at each one, a seam, where it
+An actor's behaviour holding an `await` is cut at each one, a seam, where it
 returns to the dispatcher to wait ([Flow](flow.md), "A seam", which says what
-each variable in scope does there and which methods are split). A seam is a
+each variable in scope does there and which behaviours are split). A seam is a
 return to the dispatcher, not to the author: what the author can see -- when
 each value dies, and in which order -- is what the method does uncut. So a
 split method (`awaitSplitOf`, `GenState.seams`) is generated whole, more than
@@ -1222,13 +1222,13 @@ part built.
 
 A second half's parameters are `self`, the record (one struct, named
 `<method>'<n>.record`, by value), and the value awaited. **An empty record is
-no parameter**, and a void `await` gives no result. A second half returns
-what the method returns. A seam awaiting a message waits for its reply (next).
-Under `--await-direct` (`awaitDirect`), which is for tests, a seam awaiting
-anything else hands its record straight to its second half, with the value
-awaited, and returns what the second half returns. `concurrency_await_split`
-runs each split message beside its twin with no `await` and pins the halves'
-shapes.
+no parameter**, and a void `await` (under `--await-direct`, below) gives no
+result. A second half returns what the method returns. A seam awaiting a
+behaviour waits for its reply (next). Under `--await-direct` (`awaitDirect`),
+which is for tests, a seam awaiting anything else hands its record straight to
+its second half, with the value awaited, and returns what the second half
+returns. `concurrency_await_split` runs each split behaviour beside its twin
+with no `await` and pins the halves' shapes.
 
 An `await` whose construct holds an address or memory being filled across it
 -- the index of a place, a place stored into or swapped, an array's contents
@@ -1236,7 +1236,9 @@ filled in memory -- is not split ([Flow](flow.md), "A seam").
 
 ### A message's reply
 
-What a seam awaits is a message to an actor, sent awaited: type check made
+What a seam awaits is a behaviour of an actor, one that returns a value (one
+returning nothing sends no reply, and type check refuses an `await` on it),
+sent awaited: type check made
 the call the handle's second method for it, whose last argument is the
 request's envelope (`AwaitReplyNode`). The envelope is in the message, never
 in the method's parameters; what the author wrote is unchanged. The seam's
@@ -1271,9 +1273,9 @@ field of its state, and the reply's dispatch calls the second half.
   both moved. **An empty record has no slot, no id and no lookup**: its resume
   variant and resume function take none.
 
-A message that returns a value and holds an `await` answers its own request
+A behaviour that returns a value and holds an `await` answers its own request
 whichever half returns its value. The request's envelope waits, while the
-message runs, in the state's hidden `Answer` slot, which the dispatcher fills
+behaviour runs, in the state's hidden `Answer` slot, which the dispatcher fills
 (`actors.ask`, or `askNone` for a send with no `await`, whose value is then
 dropped). Each seam of such a method takes it into its record first
 (`GenSeamAnswer`), leaving the slot empty, and the second half's entry puts it

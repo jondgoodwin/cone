@@ -1,14 +1,15 @@
-// A message holding an 'await' is split (actor-continuations, the split and
+// A behaviour holding an 'await' is split (actor-continuations, the split and
 // the record): its first half runs to each seam, gives back the locks whose
 // borrows end there, moves every value it still holds into the seam's
 // record, and returns; the seam's second half moves the record's values back
-// where they were and runs the rest of the method, the value awaited arriving
-// as its result. What is awaited here is no message, which has no reply to
-// wait for, so this compiles with '--await-direct', for tests: each seam
-// hands its record straight to its second half, with the value it awaited
-// (concurrency_await_reply awaits messages).
+// where they were and runs the rest of the behaviour, the value awaited
+// arriving as its result. What is awaited here is a plain function, not a
+// behaviour, which has no reply to wait for, so this compiles with
+// '--await-direct', for tests: each seam hands its record straight to its
+// second half, with the value it awaited (concurrency_await_reply awaits
+// behaviours).
 //
-// A seam is a return to the dispatcher, not to the author, so each message
+// A seam is a return to the dispatcher, not to the author, so each behaviour
 // here does what its twin with no 'await' does -- the same values, the same
 // prints, each value dying where and in the order the one scope says. Each
 // is run beside its twin ('plain'), and the two traces are the same:
@@ -62,20 +63,20 @@ actor Page {
   body u64;
   count Arc[Mutex, Count];
 
-  pub fn fetch(self, u Fin) {
+  pub async do fetch(self, u Fin) {
     head("fetch");
     imm b = await size(u);
     body = b;
     say("fetched", body);
   }
-  pub fn fetchPlain(self, u Fin) {
+  pub async do fetchPlain(self, u Fin) {
     head("fetch plain");
     imm b = size(u);
     body = b;
     say("fetched", body);
   }
 
-  pub fn ordered(self, k u64) {
+  pub async do ordered(self, k u64) {
     head("ordered");
     imm first = new Fin(1u64);
     imm mid = new Fin(2u64);
@@ -88,7 +89,7 @@ actor Page {
     say("first", first.n);
     body = body + last.n;
   }
-  pub fn orderedPlain(self, k u64) {
+  pub async do orderedPlain(self, k u64) {
     head("ordered plain");
     imm first = new Fin(1u64);
     imm mid = new Fin(2u64);
@@ -102,7 +103,7 @@ actor Page {
     body = body + last.n;
   }
 
-  pub fn several(self) {
+  pub async do several(self) {
     head("several");
     imm f = new Fin(20u64);
     body = await give(1u64);
@@ -110,7 +111,7 @@ actor Page {
     body = three(body, await give(2u64), f.n + g.n);
     say("several", body);
   }
-  pub fn severalPlain(self) {
+  pub async do severalPlain(self) {
     head("several plain");
     imm f = new Fin(20u64);
     body = give(1u64);
@@ -119,7 +120,7 @@ actor Page {
     say("several", body);
   }
 
-  pub fn looped(self) {
+  pub async do looped(self) {
     head("looped");
     mut i = 0u64;
     imm step = 2u64;
@@ -130,7 +131,7 @@ actor Page {
     }
     say("looped", i);
   }
-  pub fn loopedPlain(self) {
+  pub async do loopedPlain(self) {
     head("looped plain");
     mut i = 0u64;
     imm step = 2u64;
@@ -142,7 +143,7 @@ actor Page {
     say("looped", i);
   }
 
-  pub fn flagged(self, c Bool) {
+  pub async do flagged(self, c Bool) {
     headc("flagged", c);
     imm f = new Fin(30u64);
     if c {
@@ -151,7 +152,7 @@ actor Page {
     body = await give(3u64);
     say("flagged", body);
   }
-  pub fn flaggedPlain(self, c Bool) {
+  pub async do flaggedPlain(self, c Bool) {
     headc("flagged plain", c);
     imm f = new Fin(30u64);
     if c {
@@ -161,14 +162,14 @@ actor Page {
     say("flagged", body);
   }
 
-  pub fn temps(self) {
+  pub async do temps(self) {
     head("temps");
     body = three(make(50u64).n, await give(5u64), make(51u64).n);
     say("temps", body);
     body = eat(make(40u64), await give(4u64));
     say("temps", body);
   }
-  pub fn tempsPlain(self) {
+  pub async do tempsPlain(self) {
     head("temps plain");
     body = three(make(50u64).n, give(5u64), make(51u64).n);
     say("temps", body);
@@ -176,7 +177,7 @@ actor Page {
     say("temps", body);
   }
 
-  pub fn locked(self) {
+  pub async do locked(self) {
     head("locked");
     (&mut *count).n = 0u64;
     imm g = &mut *count;
@@ -187,7 +188,7 @@ actor Page {
     h.n = h.n + 1u64;
     say("locked", body * 10u64 + h.n);
   }
-  pub fn lockedPlain(self) {
+  pub async do lockedPlain(self) {
     head("locked plain");
     (&mut *count).n = 0u64;
     {
@@ -201,7 +202,7 @@ actor Page {
     say("locked", body * 10u64 + h.n);
   }
 
-  pub fn early(self, c Bool) {
+  pub async do early(self, c Bool) {
     headc("early", c);
     imm f = new Fin(70u64);
     imm n = await give(7u64);
@@ -212,7 +213,7 @@ actor Page {
     imm g = new Fin(71u64);
     say("late", n);
   }
-  pub fn earlyPlain(self, c Bool) {
+  pub async do earlyPlain(self, c Bool) {
     headc("early plain", c);
     imm f = new Fin(70u64);
     imm n = give(7u64);
@@ -224,12 +225,12 @@ actor Page {
     say("late", n);
   }
 
-  pub fn voided(self) {
+  pub async do voided(self) {
     head("voided");
     await note();
     say("voided", body);
   }
-  pub fn voidedPlain(self) {
+  pub async do voidedPlain(self) {
     head("voided plain");
     note();
     say("voided", body);

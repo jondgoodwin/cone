@@ -556,7 +556,7 @@ init's `self`, `&new`; in a value, `&new Point(1, 2)` is a borrow of a
 construction, a temporary, which the borrow's type check refuses.
 
 **`await` is a prefix operator, at `parsePrefix`'s level.** `await x` waits for
-`x` in an actor's method; the method is cut there, a seam. Its operand is a
+`x` in an actor's behaviour; the behaviour is cut there, a seam. Its operand is a
 prefix operand, a term with its suffixes, so `await f.get() + 1` adds to what
 the wait gives and `await` binds no looser than `-` does. It builds an
 `AwaitNode` and nothing more; where it may stand is type check's
@@ -570,8 +570,19 @@ declarations.
 handle. It builds a `SelfActorNode`, which type check lowers to a call of the
 function the actor's declaration generated for it (`selfActorTypeCheck`,
 `ErrorSelfActorPlace`). An actor's body counts its uses
-(`DclTexts.selfactors`), so an actor that writes none generates no function
-for it.
+(`DclTexts.selfactors`): an actor that writes none, and has no behaviour to
+send through `self.m()`, generates no function for it.
+
+**`async do` is one keyword of two words.** `async` and `do` are each a token
+(`AsyncToken`, `DoToken`), and neither means anything alone. In an actor's
+body, `parseStruct` reads `async do` up to the `do` (`parseBehaviourWords`),
+then the method as a function, `parseFn` skipping the `do` as it skips `fn`,
+and notes it a behaviour (`DclTexts.behaviours`). Either word without the
+other, `async fn`, and `async do` anywhere but an actor's body -- another
+type's body, a module's top level, a function's body -- are
+`ErrorBehaviourWords`, reported at the word, and the declaration is passed over
+whole (to its `;`, or through its `{ ... }`), so nothing in it is reported
+again.
 
 **It desugars.** `match` becomes a block holding an anonymous capture variable
 plus an `if` chain, each case's patterns becoming its condition: `is T` an `is`
@@ -599,35 +610,40 @@ a literal is constant-folded in place, and an integer literal records it
 actor. `actor Counter { ... }` is read by `parseStruct` as a struct's body, the
 actor's *state*, while `ParseState.dcltexts` records where each field's and
 parameter's type and default value are written (`parseVarDcl`,
-`parseFieldDclBody`, `parseFnSig`); the members are checked
-(`ErrorActorMember`, a borrow or the state itself carried in a message
-`ErrorNotSendable`), a bare `self` becomes `self &mut`, and the other three
-declarations are written as Cone source and parsed from a lexer of their own:
-the handle under the actor's own name (one field owning the mailbox, an
-initializer per one of the state's or the implicit one's fields, a send method
-per message, all calling the `actors` package), the message enum (`is
-Sendable`, a variant per `pub` method, its fields the parameters' types as
+`parseFieldDclBody`, `parseFnSig`), and which methods are behaviours; the
+members are checked (`ErrorActorMember`: among the rest, a behaviour without
+`self`, `init` or `final` as a behaviour, a `pub fn` method other than `init`,
+which is synchronous and reached by nothing outside the actor; a borrow or the
+state itself carried in a message `ErrorNotSendable`), a bare `self` becomes
+`self &mut`, and the other three declarations are written as Cone source and
+parsed from a lexer of their own: the handle under the actor's own name (one
+field owning the mailbox, an initializer per one of the state's or the
+implicit one's fields, a send method per behaviour, as public as the
+behaviour, all calling the `actors` package), the message enum (`is
+Sendable`, a variant per behaviour, its fields the parameters' types as
 written), and the dispatch function. They join the module in that order,
 after the state; nothing depends on it, since the handle reaches the enum only
-through a reference, which lays out nothing of its target.
+through a reference, which lays out nothing of its target. A method declared
+`fn` stays the state's alone, synchronous, called as any struct's method is.
 
-A message may return a value, which a reply carries back to an `await`. Each
+A behaviour may return a value, which a reply carries back to an `await`. Each
 that does has a second variant, its request awaited (`fetch'ask`: its
 parameters and the reply's envelope, an `actors.Reply`), a second send method
 on the handle taking the envelope, and a dispatch arm that answers
 (`actors.answerNow`); sent with no `await`, its value is dropped. An actor
 whose body holds an `await` gets two hidden fields in its state, after those
 written and each with a default, so a construction as written leaves them to
-it -- its pending table, and, where a message returning a value holds an
-`await`, the Answer slot that message's envelope waits in while it runs (read
+it -- its pending table, and, where a behaviour returning a value holds an
+`await`, the Answer slot that behaviour's envelope waits in while it runs (read
 as a struct's fields, `Counter.hidden'`, and moved into the state) -- two
 resume variants (`resume'`, `resumeid'`: the seam's resume function, the
 record's id where it has a record, and where the value returned is) with
 their dispatch arms, and the two functions that make a request's envelope
-(`Counter.reply'`, `Counter.replyid'`). Such a message returning a value is
+(`Counter.reply'`, `Counter.replyid'`). Such a behaviour returning a value is
 dispatched through the Answer slot (`actors.ask`, `askNone`, `keep`,
-`answerAt`). An actor writing `selfactor` gets `Counter.self'`, which makes the
-handle from the state ([Generation](generation.md), "A message's reply"). What
+`answerAt`). An actor with a behaviour, or writing `selfactor`, gets
+`Counter.self'`, which makes the handle from the state
+([Generation](generation.md), "A message's reply"). What
 the compiler needs of all this later is recorded in the actor's `ActorInfo`
 (`ir/types/actor.h`).
 
@@ -643,7 +659,7 @@ functions generation calls for a seam are found as it is bound
 (`actorRuntime`). Each generated declaration is marked `DclActorGen`, which a
 library compile exports whatever its visibility: the include file keeps the
 actor whole, its bodies too, so an importer generates them again, the same.
-What crosses to the actor, and what a message returns, is checked after type
+What crosses to the actor, and what a behaviour returns, is checked after type
 check (`actorCheckAll`, `ir/types/actor.c`).
 
 **It binds module-level names.** `modAddNode`, `modAddNamedNode` and `modAddFn`
@@ -812,7 +828,8 @@ numbers.
 | `shared/fileio.c` | `fileFindSrc`, `fileFindLocal`, `fileFindPackage`, `fileFolderScan`, `fileDesignatedFile` | locate a source file without reading it — beside a file, on the package search path (saying when it found a package's source root), or the one then the other; list a folder's `.cone` files and subfolders, sorted; probe a folder for the designated file that makes it a module folder |
 | | `parseImport`, `parseRetiredInclude` | the one source-composition form, and the retired one reported |
 | | `parseRetiredTypedef` | the retired `typedef` reported, pointed at `alias` |
-| `parser/parseactor.c` | `parseActor`, `parseActorMembers`, `parseActorRuntime`, `parseDclText` | an actor: its body read as the state, its members checked, the `actors` package found and bound once per module, and the message enum, the handle and the dispatch function written and parsed, with what its seams, its messages returning a value and `selfactor` need (section 6), recorded in its `ActorInfo`; `actor trait` refused |
+| `parser/parseactor.c` | `parseActor`, `parseActorMembers`, `parseActorRuntime`, `parseDclText` | an actor: its body read as the state, its members checked, the `actors` package found and bound once per module, and the message enum, the handle and the dispatch function written and parsed, with what its seams, its behaviours returning a value and `selfactor` need (section 6), recorded in its `ActorInfo`; `actor trait` refused |
+| | `parseBehaviourWords` | `async do`, read up to the `do` in an actor's body; either word alone, `async fn`, and `async do` anywhere else `ErrorBehaviourWords`, the declaration passed over (section 6) |
 | `parser/parsehelper.c` | `parseBlockStart`, `parseBlockEnd` | `{` and `}`, with recovery |
 | | `parseEndOfStatement`, `parseSkipToNextStmt`, `parseCloseTok` | the required `;`, and the two resyncs |
 | `parser/parseexpr.c` | `parseAnyExpr`, `parseSimpleExpr` | the two expression entry points |
