@@ -121,7 +121,6 @@ imm tris = net.readBackMesh(&mut device);            // or a mesh.Mesh, the GPU'
 | `mesher.meshOnTwin(grid, &[]f32) SurfaceNet` | the same kernels run on the CPU as their twins; slow, for tests |
 | `GridNet` | `ok`, `grid`, `vertexCount`, `triangleCount`, and on the GPU `positions` and `normals` (a Vec3 each, 12 bytes; usable as vertex buffers), `indices` (three u32 a triangle; usable as an index buffer), `vertexCells` (each vertex's cell's number), `samples` (handed back) |
 | `net.readBack(device) SurfaceNet`, `net.readBackMesh(device) mesh.Mesh` | read back; the buffers stay on the GPU |
-| `divExact(a, b)`, `sqrtExact(x)` | IEEE's correctly rounded division and square root, from integer steps (`gpu/gridnet.cone`) |
 
 **The same mesh as `surfaceNet`'s.** Given the samples `surfaceNet` takes
 (`SampleGrid.covering` of the same box and cell size, which computes each
@@ -147,10 +146,11 @@ How it is made the same:
 - **The CPU's arithmetic.** Additions, subtractions and multiplications in
   the CPU's order (conec never fuses them on the GPU); the crossing's
   `d0 / (d0 - d1)` and the average's `1 / count` by `divExact`, the
-  normal's length by `sqrtExact`: Vulkan lets a GPU's division be 2.5 ulp
-  off and its square root 1, and both are made here from integer long
+  normal's length by `sqrtExact`, both sdf's: Vulkan lets a GPU's division
+  be 2.5 ulp off and its square root 1, and both are made from integer long
   division and the digit-by-digit root, correctly rounded, subnormals
-  included. The test checks each against the CPU's on 1,000,000 arguments.
+  included. sdf's `tests/exact.cone` checks each against the CPU's on
+  1,000,000 arguments.
 - **The same tables.** The GPU reads `surfaceNet`'s own tables of a cell's
   pieces (`netTables`), packed two words a config, so its cells split into
   the same pieces.
@@ -205,14 +205,6 @@ first job's buffers 2–3 ms, recording and submitting its 13 dispatches
 3–5 ms, waiting for it 6.5 ms; the second job about 4.5 ms in all.
 `mesh` makes every buffer anew each call; keeping them between calls
 would save most of the first two.
-
-**Compiler defects worked round.** conec today miscompiles, for the GPU, a
-`while` loop that carries an f32 (or a struct of them) and indexes a slice
-in its body, when the loop is inside a branch: the loop runs once, and
-what follows it is skipped (the loop's back edge becomes a constant exit).
-`place` therefore reads every sample and table word it needs before its
-loops, and blends the corner gradients without a loop. A loop carrying
-only integers is compiled correctly (the scans, `classify`, `emit`).
 
 Sources: Gibson, "Constrained elastic surface nets", 1998, and Lysenko's
 "Smooth voxel terrain, part 2" (0fps.net, 2012), for surface nets;

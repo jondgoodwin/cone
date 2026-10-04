@@ -1,0 +1,115 @@
+// ======== Exact division and square root, from integer steps ========
+//
+// A GPU's own division may be 2.5 ulp off and its square root 1 ulp
+// (Vulkan allows both), so code that must give the CPU's bits on every GPU
+// (sdfmesh's GPU mesher, a part's relaxation and normals) divides and takes
+// roots with these: IEEE's correctly rounded results, rounded to nearest
+// even, made from integer steps only, subnormals included. On the CPU they
+// give the machine's own bits, only more slowly. tests/exact.cone checks
+// each against the CPU's on 1,000,000 arguments.
+
+// a / b, rounded to nearest even as IEEE division rounds it, from integer
+// steps only (long division of the significands), so every GPU and the CPU
+// give the same bits. Subnormal arguments and results are exact too. NaN,
+// infinity and a zero divisor are left to the machine's own division
+pub fn divExact(a f32, b f32) f32 {
+  imm ua = a as u32;
+  imm ub = b as u32;
+  imm sign = (ua ^ ub) & 0x80000000u32;
+  mut ea = (ua >> 23u32) & 0xffu32;
+  mut eb = (ub >> 23u32) & 0xffu32;
+  mut ma = ua & 0x7fffffu32;
+  mut mb = ub & 0x7fffffu32;
+  if ea == 255u32 or eb == 255u32 or (eb == 0u32 and mb == 0u32) { return a / b; }
+  if ea == 0u32 and ma == 0u32 { return sign as f32; }
+  // Exponents carry 64 over IEEE's bias, so a subnormal's stays positive
+  // when its significand is normalized
+  ea = ea + 64u32;
+  eb = eb + 64u32;
+  if ea == 64u32 {
+    ea = 65u32;
+    while ma < 0x800000u32 { ma = ma << 1u32; ea = ea - 1u32; }
+  } else {
+    ma = ma | 0x800000u32;
+  }
+  if eb == 64u32 {
+    eb = 65u32;
+    while mb < 0x800000u32 { mb = mb << 1u32; eb = eb - 1u32; }
+  } else {
+    mb = mb | 0x800000u32;
+  }
+  // The quotient's biased exponent, plus 512
+  mut e = ea + 127u32 + 512u32 - eb;
+  if ma < mb { ma = ma << 1u32; e = e - 1u32; }
+  // 25 bits of ma / mb, in [1, 2): 24 and the rounding bit
+  mut q = 0u32;
+  mut r = ma;
+  mut i = 0u32;
+  while i < 25u32 {
+    q = q << 1u32;
+    if r >= mb { r = r - mb; q = q | 1u32; }
+    r = r << 1u32;
+    i = i + 1u32;
+  }
+  mut sticky = r != 0u32;
+  if e > 512u32 {
+    mut mant = q >> 1u32;
+    if (q & 1u32) == 1u32 and (sticky or (mant & 1u32) == 1u32) { mant = mant + 1u32; }
+    mut be = e - 512u32;
+    if mant == 0x1000000u32 { mant = 0x800000u32; be = be + 1u32; }
+    if be >= 255u32 { return (sign | 0x7f800000u32) as f32; }
+    return (sign | (be << 23u32) | (mant & 0x7fffffu32)) as f32;
+  }
+  // Subnormal: k more bits shifted out
+  imm k = 513u32 - e;
+  if k > 25u32 { return sign as f32; }
+  mut mant = q >> (k + 1u32);
+  imm round = (q >> k) & 1u32;
+  if (q & ((1u32 << k) - 1u32)) != 0u32 { sticky = true; }
+  if round == 1u32 and (sticky or (mant & 1u32) == 1u32) { mant = mant + 1u32; }
+  (sign | mant) as f32;
+}
+
+// The square root of x, rounded to nearest even as IEEE's is, from integer
+// steps only (the digit-by-digit root of the significand), so every GPU and
+// the CPU give the same bits. Zero, a negative, infinity and NaN are left to
+// the machine's own
+pub fn sqrtExact(x f32) f32 {
+  imm u = x as u32;
+  mut e = (u >> 23u32) & 0xffu32;
+  mut m = u & 0x7fffffu32;
+  if e == 255u32 or (u & 0x80000000u32) != 0u32 or u == 0u32 { return x.sqrt(); }
+  e = e + 64u32;
+  if e == 64u32 {
+    e = 65u32;
+    while m < 0x800000u32 { m = m << 1u32; e = e - 1u32; }
+  } else {
+    m = m | 0x800000u32;
+  }
+  // x = m 2^(e - 214); make the power even
+  if (e & 1u32) == 1u32 { m = m << 1u32; e = e - 1u32; }
+  // The root of R = m 2^26 (below 2^51, two words), two bits at a time
+  imm hi = m >> 6u32;
+  imm lo = m << 26u32;
+  mut root = 0u32;
+  mut rem = 0u32;
+  mut j = 0u32;
+  while j < 26u32 {
+    imm pos = 50u32 - 2u32 * j;
+    imm pair = if pos >= 32u32 { (hi >> (pos - 32u32)) & 3u32; } else { (lo >> pos) & 3u32; };
+    rem = (rem << 2u32) | pair;
+    imm t = (root << 2u32) | 1u32;
+    if rem >= t { rem = rem - t; root = (root << 1u32) | 1u32; } else { root = root << 1u32; }
+    j = j + 1u32;
+  }
+  // root has 25 or 26 bits: keep 24, round on the rest
+  mut sticky = rem != 0u32;
+  imm s = if root >= 0x2000000u32 { 2u32; } else { 1u32; };
+  mut mant = root >> s;
+  imm round = (root >> (s - 1u32)) & 1u32;
+  if s == 2u32 and (root & 1u32) != 0u32 { sticky = true; }
+  if round == 1u32 and (sticky or (mant & 1u32) == 1u32) { mant = mant + 1u32; }
+  mut be = 30u32 + s + e / 2u32;
+  if mant == 0x1000000u32 { mant = 0x800000u32; be = be + 1u32; }
+  ((be << 23u32) | (mant & 0x7fffffu32)) as f32;
+}

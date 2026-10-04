@@ -150,6 +150,15 @@ sample's point as `surfaceNet` does, so a field sampled there gives its
 samples, bit for bit, where the field's arithmetic is the same bits;
 `index`, `sampleCount`, `cellCount`.
 
+**Exact arithmetic** (`exact.cone`): `divExact(a, b)` and `sqrtExact(x)`,
+IEEE's correctly rounded division and square root (to nearest even,
+subnormals included), made from integer long division and the
+digit-by-digit root. Vulkan lets a GPU's own division be 2.5 ulp off and
+its square root 1, so GPU code that must give the CPU's bits uses these:
+sdfmesh's GPU mesher and the starship's relaxation and normals.
+`tests/exact.cone` checks each against the CPU's on 1,000,000 arguments.
+Cone only: Slang code has no use for them yet.
+
 **Noise detail** (`detail.cone`, over `noise`):
 `displace(d, p, seed, octaves, frequency, amplitude)` adds fBm and is not a
 distance; `fbmDetail(d, p, seed, octaves, size)` is Quilez's fBm of
