@@ -1,0 +1,40 @@
+// An instance whose arguments meet the condition on its 'Move' entry moves:
+// a use after the move is refused, as for any move type. The first is the
+// reference manual's (refmove.html, "Move for some instances"), the use of g
+// after 'imm g2 = g'. Each is an instance only the condition makes move: its
+// fields hold nothing that moves. move_conditional runs the instances that
+// copy, assigned from twice. One function, since flow analysis stops after the
+// first function with an error.
+
+mod move_flow_conditional;
+
+struct Handle is Move {
+   pub id i32;
+}
+struct Cell[T] {
+   pub v T;
+}
+struct Future[T] is Move if T is Move {
+   pub c Rc[imm, Cell[T]];
+}
+struct Pair[A, B] is Move if B is Move {
+  pub n i64;
+}
+enum Signal[T] is Move if T is Move {
+  struct Quiet {}
+  struct Loud { pub n i64; }
+}
+
+fn uses() {
+  imm g = new Future[Handle](new Rc[imm, Cell[Handle]](new Cell[Handle](new Handle(7))));
+  imm g2 = g;     // moves g: Handle moves, so Future[Handle] does
+  imm g3 = g;     //~ ErrorMove:12 "moved out"
+
+  imm q = new Pair[i32, Handle](2);
+  imm q2 = q;
+  imm q3 = q;     //~ ErrorMove:12 "moved out"
+
+  imm s Signal[Handle] = Signal.Quiet[Handle][];
+  imm s2 = s;
+  imm s3 = s;     //~ ErrorMove:12 "moved out"
+}

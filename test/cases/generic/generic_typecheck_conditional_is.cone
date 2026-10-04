@@ -1,0 +1,71 @@
+// An instance whose arguments do not meet the condition on an 'is' entry lacks
+// the entry: a requirement asking for it is refused at the use, naming the
+// condition that is false, and one asking for Copy of an instance that moves
+// by its condition names the condition that is true. Where a field makes the
+// instance move (rule 4), the condition explains nothing, and the message
+// names none. An instance lacking a trait's entry lacks its default methods.
+// A generic function taking the conditional type is refused at the instance
+// its argument makes. And a trailing 'where' keeps its own meaning, a
+// requirement on the whole type: 'is Move where T is Move' refuses
+// Req[i32] outright. The first refusal is the reference manual's
+// (refgeneric.html, "A type that is a trait for some instances").
+
+mod generic_typecheck_conditional_is;
+
+struct Handle is Move {
+  pub id i64;
+}
+struct Cell[T] {
+  pub v T;
+}
+struct Future[T] is Move if T is Move {
+  pub c Rc[imm, Cell[T]];
+}
+fn moves[X](x &X) i32 where X is Move { 1; }
+fn copies[X](x &X) i32 where X is Copy { 0; }
+
+struct Holds[T] is Move if T is Copy {
+  pub h Handle;
+}
+
+trait Checked {}
+struct Plain {
+  pub n i64;
+}
+struct Wrapper[T] is Checked if T is Checked {
+  pub v T;
+}
+fn checked[X](x &X) i64 where X is Checked { 1; }
+
+trait Show {
+  fn show(self &) i64;
+  fn twice(self &) i64 { self.show() * 2; }
+}
+struct Labelled[T] is Show if T is Show {
+  pub v T;
+  pub fn show(self &) i64 where T is Show {
+    v.show() + 100;
+  }
+}
+fn shown[X](x &X) i64 where X is Show { x.show(); }
+
+fn relayCopy[T](f &Future[T]) i32 { copies(f); }   //~ ErrorWhereUnmet:43 "Future is Move where T is Move, and that is true for T = Handle"
+
+struct Req[T] is Move where T is Move {
+  pub n i64;
+}
+
+fn main() {
+  imm futureOfI32 = new Future[i32](new Rc[imm, Cell[i32]](new Cell[i32](5)));
+  imm futureOfHandle = new Future[Handle](new Rc[imm, Cell[Handle]](new Cell[Handle](new Handle(7))));
+  moves(&futureOfHandle);    // fine: Future[Handle] is Move
+  moves(&futureOfI32);       //~ ErrorWhereUnmet:8 "Future is Move only where T is Move, and that is false for T = i32"
+  copies(&futureOfHandle);   //~ ErrorWhereUnmet:9 "Future is Move where T is Move, and that is true for T = Handle"
+  copies(&new Holds[Handle](new Handle(1)));   //~ ErrorWhereUnmet:9 "Holds[Handle] is not Copy."
+  checked(&new Wrapper[Plain](new Plain(1)));   //~ ErrorWhereUnmet:10 "Wrapper is Checked only where T is Checked, and that is false for T = Plain"
+  imm lp = new Labelled[Plain](new Plain(6));
+  shown(&lp);                //~ ErrorWhereUnmet:8 "Labelled is Show only where T is Show, and that is false for T = Plain"
+  lp.twice();                //~ ErrorNoMbr:5 "`twice` not found"
+  relayCopy(&futureOfHandle);
+  imm r = new Req[i32](1);   //~ ErrorWhereUnmet:18 "Req requires T is Move, and i32 is not Move."
+}

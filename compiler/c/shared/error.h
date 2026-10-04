@@ -502,6 +502,11 @@ enum ErrorCode {
     ErrorAwaitVoid = 1274,      // 'await' on a behaviour that returns nothing, which sends no reply: a caller that needs to know it finished awaits one that declares a return type
     ErrorBehaviourSend = 1275,  // 'self.m()' on one of the actor's own behaviours where it cannot be sent: in its 'init' or 'final', in a function that is not one of its methods, or through a state that is not the method's own 'self'
 
+    // A condition on one entry of a type's 'is' list, 'is Move if T is Move' (ir/types/struct.c)
+    ErrorIsCondNoParms = 1276,  // A condition on an 'is' entry of a type with no type parameters, so nothing to vary by instance
+    ErrorIsCondCopy = 1277,    // 'is Copy if ...': Copy is what a type is when nothing makes it move, so the condition is written on Move
+    ErrorUnbuiltIsCond = 1278,  // A condition on an 'is' entry of a trait or an enum's variant, which is not built
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name

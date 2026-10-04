@@ -390,9 +390,10 @@ runs.
 | `extendsbase` | the **type expression** whatever base an `extends` names, on the same terms: the concrete type this enriches, or, **on an enum, the enum whose variants join this one's set**. **A separate slot from `basetrait` on purpose**: they are different assertions, a type may write both, and every walk that reads `basetrait` is asking about an abstraction — which is also why an enum's base is here and not there, since no substitution runs between the two enums. `structEnumBaseDcl` unwraps this one for an enum. A generic enum is named here with its arguments (`Option[T]`), an `FnCallNode` until type check replaces it with the instance |
 | `extendsdcl` | an **enriched** base's declaration, written once its members have been taken and NULL until then — so it says both *which* type this enriches and *that* the enrichment has happened, which is what tells name resolution's expansion from type check's. `structExtendsRoot` walks it to the bottom of the chain, and `structExtendsEquiv` compares two roots: that comparison is the whole substitution rule. **Always NULL for an enum**, deliberately: an enum extension licenses no substitution, so it writes nothing the rule reads |
 | `siblings` | a **field-like node per type-body `use`**, or NULL: its `vtype` the type expression of the sibling named, its `fold` what the clause admits. Never in `fields`, because a sibling contributes no representation; the node type is reused for what it already carries through cloning — a type expression and a clause. Read only by `structUseSiblings` |
+| `condis` | a generic type's **`is` entries carrying a condition**, `is Move if T is Move`, or NULL: a placeholder field per entry, its `vtype` the trait named and its `value` the condition. Never in `fields` or `basetrait`, and never taken into the template: each instance meeting the condition gets a placeholder of its own, and lacks the entry otherwise ([generic](generic.md), "Name resolution" and "Type check"). Always NULL on an instance |
 | `lifecycle` | unlowered copies of this type's `final` and `clone`, set aside as its layout settles and before its methods are type checked (`structKeepLifecycle`), or NULL. Read only by an enrichment taken after that — in type check, where this type or its enrichment is a generic's instance — since by then the methods themselves may be lowered (see Hazards) |
 | `derived` | for an **enum**, its variants in declaration order — **an extension's begins with its copies of its base's list**, in the base's order, and they are in no module's node list, so this is how the module walk and generation reach them (`structEnumCopyCount` says how many: those whose `instnode` is the extension). A generic instance's list holds the instances of its template's variants, copies included, put there by `genericMemoize`. A variant is in exactly one enum's list. The index is the `tagnbr` only where nothing pinned one, which is what generation asks before using the tag to index the vtable list |
-| `traits` | every abstraction whose members were taken — the base, and each further name in the `is` list (every name, for an enum or a variant) — or NULL. Written where the members are taken (`structInheritTrait`) and read by type check's two requirement checks and by a library compile's export of the methods meeting a requirement (`fnIsTraitMethod`), the only things that still need to know which trait a requirement came from. **Which entry is the base is asked of `basetrait`, not of this list's order**, since the field walk that fills it runs backwards |
+| `traits` | every abstraction whose members were taken — the base, and each further name in the `is` list (every name, for an enum or a variant) — or NULL. Written where the members are taken (`structInheritTrait`), and for an instance's `is` entry whose condition it meets as the instance is cloned (`cloneStructNode`), and read by type check's two requirement checks and by a library compile's export of the methods meeting a requirement (`fnIsTraitMethod`), the only things that still need to know which trait a requirement came from. **Which entry is the base is asked of `basetrait`, not of this list's order**, since the field walk that fills it runs backwards |
 | `fields` | all fields in layout order. A declared field may carry a fold clause (`FieldDclNode.fold`); a folded copy is never here |
 | `vtable` | NULL until `structMakeVtable` |
 | `tagnbr` | discriminant value, assigned at parse: the value the author pinned, which may be negative, or the next in sequence (`structTagFollow`). **All 64 bits, read as `tagstate` says** |
@@ -800,7 +801,8 @@ members", is the mechanism.
 3. Type check every trait in `traits`, so each is laid out before this type is.
 4. **Walk fields backwards.** Backwards so that splicing does not invalidate the
    cursor. An ordinary field is type checked. A placeholder still standing —
-   the generic case — is expanded exactly as name
+   the generic case, an instance of a generic trait or an `is` entry whose
+   condition the instance's arguments meet (`condis`) — is expanded exactly as name
    resolution expands one (`structInheritTrait`), except that nothing is
    hooked: no body is resolved after this. Such a type's inherited members
    cannot be named bare (see Hazards). One read from an `is` list that names an
@@ -1041,6 +1043,11 @@ one in its `is` list like any trait (first or not; either way it lands in
   unknown attribute naming `is Move`.
 - `is Copy` is an assertion and changes nothing: refused (`ErrorCopyMove`,
   step 11) where the type moves anyway, and so where it declares `Move` too.
+- `is Move if T is Move`, on a generic struct or enum, is decided per instance:
+  an instance meeting the condition is marked `MoveType` as it is cloned, and
+  one not meeting it lacks the entry, so it copies unless another route makes
+  it move ([generic](generic.md), "Type check"). `Copy` takes no condition
+  (`ErrorIsCondCopy`): a type copies wherever nothing makes it move.
 
 The declared trait lives in `traits` and the grant in the flag, so a type is
 asked "is it Move" through `itypeIsMove`, never by looking for `moveTrait` in
@@ -1048,10 +1055,10 @@ its list. A declaration reaches exactly as far as an inferred move does (type
 check, step 6): up the base chain, so **a variant declaring it makes its enum
 move** — if any variant moves, the enum moves [Jon 26 Sep] — and an implementer
 declaring it marks its open trait too, as an inferred move always has. It never
-reaches down: a trait declaring `is Move` does not make its implementers move. Nothing
-in the language asks the question yet: `where` and a compile-time `if` are not
-built, and the expression `v is Move` is the variant test, which refuses a value
-without a tag.
+reaches down: a trait declaring `is Move` does not make its implementers move. A
+generic asks the question with `where T is Move` or `where T is Copy`; a
+compile-time `if` is not built, and the expression `v is Move` is the variant
+test, which refuses a value without a tag.
 
 ### What a container's element borrows cost it
 

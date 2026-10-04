@@ -167,6 +167,10 @@ Nodes *parseGenericParms(ParseState *parse, int annotate, LifeParms **lifes, Lif
 // lifetime comparisons into '*orderp' (NULL refuses them), with its type
 // parameters' lifetime bounds, 'T + 'a', where 'bounds' allows them
 void parseWhere(ParseState *parse, Nodes **wherep, LifeOrder **orderp, int bounds);
+// Parse the condition on one entry of a type's 'is' list, with the lexer on
+// its 'if' ('is Move if T is Move'), read as a 'where' clause's is. NULL,
+// reported, where it is refused.
+INode *parseIsCondition(ParseState *parse);
 INode *parseIf(ParseState *parse);
 INode *parseMatch(ParseState *parse);
 INode *parseWhile(ParseState *parse, Name *lifesym, int stmtflag);
