@@ -398,6 +398,54 @@ category = "run"
 description = "A value stored over is finalized as it is replaced -- a struct, a field, an element, a tuple, an enum, a parameter, in a loop, in a parallel assignment, through a reference -- on the paths where its holder holds it, and nothing is finalized where the holder, or the variable a field is part of, holds nothing"
 tags = ["flow", "genllvm", "runtime"]
 
+# A value too large to carry as one LLVM value is copied in memory wherever it
+# is copied (generation.md, "Large aggregates"). A run, because the claim is
+# that each copy is one -- the original and the copy are read after either
+# changes -- and that a large value that finalizes still dies once and where it
+# did; both builds, since a debug build's copies are the ones nothing
+# optimizes away, and its instruction selection is what crashed on a copy of
+# an Array[i8, 100000]. The checks pin that a copy is a memcpy, that a large
+# argument is a pointer and a large result a slot, and that no large value is
+# loaded, stored or built whole.
+[scenario.struct_copy_large]
+category = "run"
+description = "A struct, array or tuple of more than 64 bytes is copied with llvm.memcpy, passed by pointer and returned through a slot: an initializer, an assignment, a swap, a left assignment, an argument, a result, a field, an element, a literal, an 'if', a tuple, 100,000 bytes; a large value that finalizes dies once where it did"
+tags = ["genllvm", "runtime"]
+
+[[scenario.struct_copy_large.run]]
+name = "release"
+options = []
+
+[[scenario.struct_copy_large.run]]
+name = "debug"
+options = ["--debug"]
+
+[[scenario.struct_copy_large.check]]
+name = "a-large-copy-is-a-memcpy"
+target = "preir"
+contains = ["call void @llvm.memcpy.p0.p0.i64(ptr align 1 %b, ptr align 1 %a, i64 100000, i1 false)"]
+
+[[scenario.struct_copy_large.check]]
+name = "a-large-argument-is-a-pointer-and-a-large-result-a-slot"
+target = "preir"
+contains = [
+  "define internal void @make(ptr noalias sret(%Big) %sret, i64 %0)",
+  "define internal i64 @total(ptr noalias readonly %0)",
+  "define internal void @doubled(ptr noalias sret(%Big) %sret, ptr noalias readonly %0)",
+  "define internal %void @drop(ptr noalias readonly %0)",
+]
+
+[[scenario.struct_copy_large.check]]
+name = "no-large-value-is-loaded-stored-or-built-whole"
+target = "preir"
+excludes = [
+  "load %Big", "store %Big", "insertvalue %Big", "extractvalue %Big",
+  "load %Pair", "store %Pair", "insertvalue %Pair",
+  "load %Held", "store %Held", "insertvalue %Held",
+  "load [100000 x i8]", "store [100000 x i8]",
+  "phi %Big",
+]
+
 # 'drop' is an ordinary method name: a type the compiler gives a drop may
 # declare a method named 'drop' too, and the two are distinct declarations
 # with distinct symbols. Before, both were named 'drop' and the compile was

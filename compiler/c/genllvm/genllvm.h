@@ -352,6 +352,12 @@ LLVMValueRef genlFnDclParm(GenState *gen, FnDclNode *fndcl, VarDclNode *var);
 // one no declaration names)
 void genlFnDclReturn(GenState *gen, FnDclNode *fndcl, LLVMValueRef retval);
 
+// genlaggcopy.c: once the module is generated, every struct, array or tuple
+// value too large to carry whole is moved into memory: copied with
+// 'llvm.memcpy', passed by a pointer to the caller's copy and returned into a
+// slot the caller passes. Not run on a GPU target
+void genlAggCopies(GenState *gen);
+
 // genltype.c
 // Generate a type value
 LLVMTypeRef genlType(GenState *gen, INode *typ);

@@ -1,0 +1,133 @@
+// A struct, array or tuple larger than 64 bytes is copied in memory, with
+// 'llvm.memcpy', and never carried as one LLVM value: LLVM's backend takes such
+// a value apart element by element, so that a copy of a struct of seven
+// Array[u64, 1024] cost seconds to compile, and one of an Array[i8, 100000]
+// crashed instruction selection. Wherever a value is copied: a variable's
+// initializer, an assignment, a swap, an argument, a result, a field or an
+// element read, a struct or array literal gathering values, an 'if' choosing
+// one. A function taking one is passed a pointer to its caller's copy, and one
+// returning one fills a slot its caller passes ('sret'): the preir checks pin
+// both, and that no large value is loaded, stored or built whole.
+//
+// Each copy is checked to be a copy: the original is changed after it, or the
+// copy is, and both are read. A large value that finalizes is moved, passed,
+// returned, reassigned and swapped, and its 'final' runs once, where it ran
+// when the value was carried whole.
+
+mod struct_copy_large;
+
+import stdio use *;
+
+fn show(label &[]u8, n u64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(i64.from(n));
+  printStr("\n");
+}
+
+// 8 KiB and a word, as diag's Histogram
+struct Big {
+  pub a Array[u64, 1024];
+  pub n u64;
+}
+
+struct Pair {
+  pub x Big;
+  pub y Big;
+}
+
+// 264 bytes, which finalize
+struct Held {
+  pub n i64;
+  pub pad Array[u64, 32];
+  fn final(self &uni) { printStr("F"); printInt(n); printStr(" "); }
+}
+
+fn make(seed u64) Big {
+  mut b = new Big(new Array[u64, 1024] <- fill 0u64, seed);
+  b.a[0usize] = seed;
+  b.a[1023usize] = seed * 2u64;
+  b;
+}
+
+// An argument
+fn total(b Big) u64 { b.a[0usize] + b.a[1023usize] + b.n; }
+
+// An argument changed in its copy, and returned
+fn doubled(mut b Big) Big {
+  b.n = b.n * 2u64;
+  b;
+}
+
+// A result chosen by an 'if'
+fn pick(c Bool) Big { if c { make(9u64); } else { make(10u64); }; }
+
+fn cond(c Bool) Bool { c; }
+
+fn copies() {
+  imm a = make(3u64);
+  mut c = a;
+  c.a[0usize] = 100u64;
+  show("init-original", a.a[0usize]);
+  show("init-copy", c.a[0usize]);
+  c = a;
+  show("assign", c.a[0usize]);
+  show("argument", total(a));
+  imm d = doubled(a);
+  show("result", d.n);
+  show("result-original", a.n);
+  imm p = new Pair(make(1u64), make(2u64));
+  show("literal", p.x.a[1023usize] + p.y.n);
+  mut e = p.y;
+  e.n = 50u64;
+  show("field", e.a[0usize] + e.n);
+  show("field-original", p.y.n);
+  mut arr = [make(5u64), make(6u64)];
+  imm g = arr[1usize];
+  arr[1usize].n = 60u64;
+  show("element", g.n);
+  show("element-original", arr[1usize].n);
+  mut s = make(7u64);
+  mut t = make(8u64);
+  s <=> t;
+  show("swap", s.n * 10u64 + t.n);
+  imm old = s := make(11u64);
+  show("left-assign", old.n * 100u64 + s.n);
+  show("if", pick(cond(true)).n * 100u64 + pick(cond(false)).n);
+  imm tup = (make(12u64), 13u64);
+  imm tb = tup.0;
+  show("tuple", tb.a[1023usize] + tup.1);
+}
+
+// An array of 100,000 bytes copied whole, then assigned contents
+fn bytes() {
+  imm a = new Array[i8, 100000] <- fill 7i8;
+  mut b = a;
+  b[99999usize] = 1i8;
+  show("bytes", u64.from(a[99999usize]) * 10u64 + u64.from(b[99999usize]) + u64.from(b[0usize]) * 100u64);
+  b = new Array[i8, 100000] <- fill 3i8;
+  show("bytes-assigned", u64.from(b[0usize]) * 10u64 + u64.from(b[99999usize]));
+}
+
+fn keep(h Held) Held { printStr("kept "); h; }
+fn drop(h Held) { printStr("dropped "); }
+
+fn finals() {
+  printStr("finals: ");
+  imm h = new Held(1, new Array[u64, 32] <- fill 0u64);
+  imm k = keep(h);
+  drop(k);
+  mut r = new Held(2, new Array[u64, 32] <- fill 0u64);
+  r = new Held(3, new Array[u64, 32] <- fill 0u64);
+  mut q = new Held(4, new Array[u64, 32] <- fill 0u64);
+  r <=> q;
+  printStr("end ");
+}
+
+fn main() i32 {
+  copies();
+  bytes();
+  finals();
+  printStr("|\n");
+  0i32;
+}
