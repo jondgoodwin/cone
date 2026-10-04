@@ -2,7 +2,10 @@
 // certificates (tests/certs, README there), their bytes moved between them
 // by hand, with no socket and no loop. Checked: the handshake (TLS 1.3 and
 // 1.2, ALPN), data both ways, a body larger than many records, close_notify
-// both ways, a stream that ends without it, resumption, and each refusal:
+// both ways, a stream that ends without it, resumption (TLS 1.3's tickets
+// cached as they come, each used once, so that connections opened while
+// the first is still open each resume; TLS 1.2's session resumed by several
+// at once), and each refusal:
 // a wrong name, an expired certificate, an untrusted root, pinning both
 // ways, the OS's verifier offline against the test root, no shared version,
 // no shared application protocol, garbage for a handshake, and contexts
@@ -14,6 +17,7 @@ import stdio use *;
 import testing use *;
 import fs;
 import collections use List, String;
+import thread;
 import tls;
 
 // A file of the certificates' folder, tests/certs: congo test runs a test
@@ -108,6 +112,29 @@ fn pump(c &mut tls.Session, s &mut tls.Session, cin &mut String, sin &mut String
   }
 }
 
+// Contexts for a thread to make sessions from, shared with other threads
+struct Driving {
+  pub cl tls.Client;
+  pub srv tls.Server;
+}
+
+// A hundred sessions one after another, on a thread of its own: how many
+// resumed. OpenSSL hands each one's tickets over on this thread
+fn driveMany(d Driving) u32 {
+  mut cin = String.empty();
+  mut sin = String.empty();
+  mut resumed = 0u32;
+  mut k = 0u32;
+  while k < 100u32 {
+    mut c = d.cl.session("localhost");
+    mut s = d.srv.session();
+    pump(&mut c, &mut s, &mut cin, &mut sin);
+    if c.isOpen() and c.info().resumed {resumed = resumed + 1u32;}
+    k = k + 1u32;
+  }
+  resumed;
+}
+
 fn kindName(s &tls.Session) &[]u8 {
   if s.isFailed() {tls.errorName(s.error().kind);} else {"none";}
 }
@@ -192,17 +219,67 @@ fn main() i32 {
   imm after = tls.stats();
   expectUInt(after.closeNotifySent - before.closeNotifySent, 2u64, "two close_notify sent");
   expectUInt(after.closeNotifyReceived - before.closeNotifyReceived, 2u64, "two received");
-  expectUInt(u64.from(cl.cachedSessions()), 0u64, "nothing cached while the session lives");
-  // The first dies, its session kept to resume; one that never opened keeps none
+  // The server's two tickets came after the handshake, and were cached as
+  // they came, the session still alive
+  expectUInt(u64.from(cl.cachedSessions()), 2u64, "the server's two tickets are cached while the session lives");
+  // The first dies, adding nothing; one that never opened keeps nothing
   c = cl.session("never.example");
-  expectUInt(u64.from(cl.cachedSessions()), 1u64, "the first session is kept to resume");
+  expectUInt(u64.from(cl.cachedSessions()), 2u64, "a session's end adds none, nor does one that never opened");
   c = cl.session("localhost");
-  expectUInt(u64.from(cl.cachedSessions()), 0u64, "the new session took it");
+  expectUInt(u64.from(cl.cachedSessions()), 1u64, "the new session took one: a ticket is used once");
   s = srv.session();
   pump(&mut c, &mut s, &mut cin, &mut sin);
   require(c.isOpen(), "the second handshake is done");
   expect(c.info().resumed, "the second session is resumed");
   expect(s.info().resumed, "the server says so too");
+  expectUInt(u64.from(cl.cachedSessions()), 2u64, "a resumed handshake brings one more ticket (OpenSSL's server sends one)");
+
+  // Connections at once, the defect #317 had: the first still open, its
+  // tickets cached as they came; two more opened together each resume from
+  // one, and a fourth opened with them finds none left
+  imm cc = client(roots());
+  mut c1 = cc.session("localhost");
+  mut s1 = srv.session();
+  pump(&mut c1, &mut s1, &mut cin, &mut sin);
+  require(c1.isOpen() and not c1.info().resumed, "at once: the first, a full handshake");
+  expectUInt(u64.from(cc.cachedSessions()), 2u64, "at once: the first, still open, has given two tickets");
+  mut c2 = cc.session("localhost");
+  mut c3 = cc.session("localhost");
+  expectUInt(u64.from(cc.cachedSessions()), 0u64, "at once: the second and third took one each");
+  mut c4 = cc.session("localhost");
+  mut s2 = srv.session();
+  mut s3 = srv.session();
+  mut s4 = srv.session();
+  pump(&mut c2, &mut s2, &mut cin, &mut sin);
+  pump(&mut c3, &mut s3, &mut cin, &mut sin);
+  pump(&mut c4, &mut s4, &mut cin, &mut sin);
+  require(c2.isOpen() and c3.isOpen() and c4.isOpen(), "at once: three more handshakes");
+  expect(c1.isOpen(), "at once: the first is still open");
+  expect(c2.info().resumed and s2.info().resumed, "at once: the second resumes, the first still open");
+  expect(c3.info().resumed and s3.info().resumed, "at once: the third, opened with it, resumes too");
+  expect(not c4.info().resumed and not s4.info().resumed, "at once: the fourth finds no ticket left (each is used once)");
+  expectUInt(u64.from(cc.cachedSessions()), 4u64, "at once: one new ticket from each resumed, two from the full");
+  // Five opened at once with nothing cached, five full handshakes: ten
+  // tickets for one server, of which the newest eight are kept
+  imm cx = client(roots());
+  mut f1 = cx.session("localhost");
+  mut f2 = cx.session("localhost");
+  mut f3 = cx.session("localhost");
+  mut f4 = cx.session("localhost");
+  mut f5 = cx.session("localhost");
+  mut g1 = srv.session();
+  mut g2 = srv.session();
+  mut g3 = srv.session();
+  mut g4 = srv.session();
+  mut g5 = srv.session();
+  pump(&mut f1, &mut g1, &mut cin, &mut sin);
+  pump(&mut f2, &mut g2, &mut cin, &mut sin);
+  pump(&mut f3, &mut g3, &mut cin, &mut sin);
+  pump(&mut f4, &mut g4, &mut cin, &mut sin);
+  pump(&mut f5, &mut g5, &mut cin, &mut sin);
+  expect(f5.isOpen() and not f5.info().resumed, "five full handshakes at once");
+  expectUInt(u64.from(cx.cachedSessions()), 8u64, "ten tickets for one server: eight kept");
+  expectUInt(u64.from(cx.cachedSessions()) + u64.from(cc.cachedSessions()), 12u64, "...in its own context");
 
   // A stream that ends without close_notify
   s.write("last words");
@@ -226,11 +303,40 @@ fn main() i32 {
   expect(c.info().version == tls.TlsVersion.Tls12[], "TLS 1.2");
   expectStr(c.info().versionName.view(), "TLSv1.2", "named TLSv1.2");
   expectStr(c.info().alpn.view(), "http/1.1", "ALPN in TLS 1.2 too");
+  expectUInt(u64.from(cl12.cachedSessions()), 1u64, "a TLS 1.2 session is cached as its handshake ends");
+  // Two at once while the first is open: each resumes the one session
+  mut d1 = cl12.session("localhost");
+  mut d2 = cl12.session("localhost");
+  mut e1 = srv.session();
+  mut e2 = srv.session();
+  pump(&mut d1, &mut e1, &mut cin, &mut sin);
+  pump(&mut d2, &mut e2, &mut cin, &mut sin);
+  expect(d1.isOpen() and d1.info().resumed and e1.info().resumed, "TLS 1.2: a second connection resumes, the first open");
+  expect(d2.isOpen() and d2.info().resumed and e2.info().resumed, "TLS 1.2: and a third, at once: the session is used again");
+  expectUInt(u64.from(cl12.cachedSessions()), 1u64, "TLS 1.2: one session kept for the server");
   c = cl12.session("never.example");
   c = cl12.session("localhost");
   s = srv.session();
   pump(&mut c, &mut s, &mut cin, &mut sin);
   expect(c.isOpen() and c.info().resumed, "a TLS 1.2 session is resumed");
+
+  // Threads: four drive TLS 1.3 sessions from one client context at once,
+  // two TLS 1.2. The context holds four tickets, and each resumed session
+  // brings one back, so with four threads one is always there: every
+  // session resumes. The cache's lock is taken on each thread as its
+  // tickets come
+  imm t1 = thread.start(new Driving(cc, srv), &driveMany);
+  imm t2 = thread.start(new Driving(cc, srv), &driveMany);
+  imm t3 = thread.start(new Driving(cc, srv), &driveMany);
+  imm t4 = thread.start(new Driving(cc, srv), &driveMany);
+  imm t12a = thread.start(new Driving(cl12, srv), &driveMany);
+  imm t12b = thread.start(new Driving(cl12, srv), &driveMany);
+  imm r13 = t1.join() + t2.join() + t3.join() + t4.join();
+  imm r12 = t12a.join() + t12b.join();
+  expectUInt(u64.from(r13), 400u64, "threads: 400 TLS 1.3 sessions on four threads, every one resumed");
+  expectUInt(u64.from(r12), 200u64, "threads: 200 TLS 1.2 sessions on two, every one resumed");
+  expectUInt(u64.from(cc.cachedSessions()), 4u64, "threads: the four tickets are still there");
+  expectUInt(u64.from(cl12.cachedSessions()), 1u64, "threads: and the one TLS 1.2 session");
 
   // A name the certificate does not hold
   c = cl.session("wrong.example");

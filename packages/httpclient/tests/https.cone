@@ -1,9 +1,11 @@
 // HTTPS, offline: a TLS server on 127.0.0.1 (the tls package's test
 // certificates, its test root given to the client as its only trust
 // anchor) on the client's Loop. Checked: five GETs one after another on one
-// TLS connection, one handshake; three at once, the kept connection reused
-// and the first new one resuming the TLS session the client's one context
-// cached (TLS contexts are shared per client); an http origin beside it; a
+// TLS connection, one handshake; two at once, the kept connection reused and
+// a new one resuming from a ticket the kept one was sent, while it is still
+// open; three at once after both close, two resuming from the tickets the
+// client's one context cached (TLS contexts are shared per client) and the
+// third finding none left; an http origin beside it; a
 // server whose certificate the client does not trust failing its fetch at
 // Stage.Tls, and the one waiting behind it too, never retried.
 
@@ -467,6 +469,35 @@ fn secure(port u16, path &[]u8) String {
   u;
 }
 
+// n GETs of /hello asked for at once, driven to their final answers: how
+// many were Done
+fn atOnce(cl &mut Client, sv &mut Srv, lp &mut Loop, port u16, n u32) u32 {
+  mut k = 0u32;
+  while k < n {
+    cl.get(lp, secure(port, "/hello").view(), Sink.Here[2u64]);
+    k = k + 1u32;
+  }
+  mut out = List[Event].empty();
+  mut dones = 0u32;
+  mut finals = 0u32;
+  imm giveUp = Instant.now() + Duration.fromSeconds(10i64);
+  while finals < n and Instant.now() < giveUp {
+    step(cl, sv, lp, &mut out, giveUp);
+    mut j = 0usize;
+    while j < out.len() {
+      imm e = &mut out[j];
+      if e.kind == EventKind.Data[] {cl.release(e.id, e.buf.len());}
+      if e.isTerminal() {
+        finals = finals + 1u32;
+        if e.kind == EventKind.Done[] {dones = dones + 1u32;}
+      }
+      j = j + 1usize;
+    }
+    out.clear();
+  }
+  dones;
+}
+
 fn main() i32 {
   imm pool = Pool.make();
   mut lp = Loop.mustMake();
@@ -496,41 +527,30 @@ fn main() i32 {
   imm t1 = tls.stats();
   expectUInt(t1.handshakes - t0.handshakes, 2u64, "...one handshake, on each side");
 
-  // The kept connection closed: its session cached, to resume
-  expectUInt(u64.from(cl.closeIdle(&mut lp)), 1u64, "closeIdle: the one idle connection");
+  // Two at once, the kept connection pooled: it takes one, and a new
+  // connection the other, resuming from a ticket the kept one was sent
+  // after its handshake, while it is still open
+  expectUInt(u64.from(atOnce(&mut cl, &mut sv, &mut lp, good, 2u32)), 2u64, "two at once beside the kept connection: Done");
+  expectUInt(sv.accepted, 2u64, "...one more connection");
+  imm t1a = tls.stats();
+  expectUInt(t1a.handshakes - t1.handshakes, 2u64, "...one more handshake, on each side");
+  expectUInt(t1a.resumed - t1.resumed, 2u64, "...resumed, on each side, the kept connection still open");
+
+  // The kept connections closed: their tickets stay cached, to resume
+  expectUInt(u64.from(cl.closeIdle(&mut lp)), 2u64, "closeIdle: the two idle connections");
   idleFor(&mut cl, &mut sv, &mut lp, Duration.fromMillis(50i64));
   expectUInt(u64.from(cl.stats().openNow), 0u64, "...closed");
   imm t1b = tls.stats();
 
-  // Three at once: three new connections, the first resuming
-  k = 0u32;
-  while k < 3u32 {
-    cl.get(&mut lp, secure(good, "/hello").view(), Sink.Here[2u64]);
-    k = k + 1u32;
-  }
-  mut out = List[Event].empty();
-  mut dones = 0u32;
-  mut finals = 0u32;
-  imm giveUp = Instant.now() + Duration.fromSeconds(10i64);
-  while finals < 3u32 and Instant.now() < giveUp {
-    step(&mut cl, &mut sv, &mut lp, &mut out, giveUp);
-    mut j = 0usize;
-    while j < out.len() {
-      imm e = &mut out[j];
-      if e.kind == EventKind.Data[] {cl.release(e.id, e.buf.len());}
-      if e.isTerminal() {
-        finals = finals + 1u32;
-        if e.kind == EventKind.Done[] {dones = dones + 1u32;}
-      }
-      j = j + 1usize;
-    }
-    out.clear();
-  }
-  expectUInt(u64.from(dones), 3u64, "three at once: Done");
-  expectUInt(sv.accepted, 4u64, "...three more connections");
+  // Three at once: three new connections, two resuming from the two
+  // tickets cached (the first connection's second, the second's one), the
+  // third finding none left (each is used once)
+  expectUInt(u64.from(atOnce(&mut cl, &mut sv, &mut lp, good, 3u32)), 3u64, "three at once: Done");
+  expectUInt(sv.accepted, 5u64, "...three more connections");
   imm t2 = tls.stats();
   expectUInt(t2.handshakes - t1b.handshakes, 6u64, "...three handshakes, on each side");
-  expectUInt(t2.resumed - t1b.resumed, 2u64, "...one of them resuming the closed one's session, on each side");
+  expectUInt(t2.resumed - t1b.resumed, 4u64, "...two of them resuming, on each side");
+  mut out = List[Event].empty();
 
   // An http origin beside it
   imm p = fetchSeen(&mut cl, &mut sv, &mut lp, Request.get(url(plain, "/hello").view()));

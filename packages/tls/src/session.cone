@@ -12,6 +12,12 @@
 // so nothing of Cone's is reached from OpenSSL's callback but that number.
 // A pinned key is checked at once, on this thread; the OS's chain engine
 // is handed out as a pool operation. Events are bits, each reported once.
+// A client that resumes has a block of arrivals in its SSL object's ticket
+// slot, where OpenSSL's newSession callback (context.cone) leaves each
+// session it is sent to resume with; after each call into OpenSSL that may
+// have taken one in (the handshake, a read), 'harvest' moves them into the
+// context's cache under its lock, which is never held across a call into
+// OpenSSL.
 
 // Phases
 const pHandshake = 0u32;
@@ -44,6 +50,7 @@ pub struct Session is Move {
   ssl *u8;
   rbio *u8;           // the network's bytes, for OpenSSL to read
   wbio *u8;           // OpenSSL's bytes, for the network
+  arrivals *u8;       // a resuming client's: sessions OpenSSL handed over, not yet cached
   state Shared;
   isServer Bool;
   kind VerifyKind;
@@ -88,7 +95,7 @@ pub struct Session is Move {
     imm r = BIO_new(BIO_s_mem());
     imm w = BIO_new(BIO_s_mem());
     SSL_set_bio(ssl, r, w);
-    new Session(ssl: ssl, rbio: r, wbio: w, state: st, isServer: server, kind: kind, pins: pins,
+    new Session(ssl: ssl, rbio: r, wbio: w, arrivals: null, state: st, isServer: server, kind: kind, pins: pins,
       resume: resume, lane: lane, offline: offline, host: String.empty(), phase: pHandshake,
       events: 0u32, verifyWanted: false, ownError: false, verifyAt: new Instant(),
       verifyTime: Duration.zero(), begun: false, begunAt: new Instant(), handshakeTime: Duration.zero(),
@@ -112,6 +119,8 @@ pub struct Session is Move {
         SSL_set_session(s.ssl, cached);
         SSL_SESSION_free(cached);
       }
+      s.arrivals = arrivalsMake();
+      SSL_set_ex_data(s.ssl, ticketSlot(), s.arrivals);
     }
     // The ClientHello is ready to go at once
     s.advance();
@@ -136,6 +145,7 @@ pub struct Session is Move {
     BIO_write_ex(rbio, &cipher[0usize] as *u8, cipher.len, &mut put);
     mayRead = true;
     self.advance();
+    self.harvest();
     cipher.len;
   }
 
@@ -182,8 +192,15 @@ pub struct Session is Move {
   // Whether plaintext may be waiting to be read
   pub fn canRead(self &) Bool {phase == pOpen and mayRead and not gotClose;}
 
-  // Plaintext that came, into out: how many bytes; 0 when none is ready
+  // Plaintext that came, into out: how many bytes; 0 when none is ready.
+  // TLS 1.3's tickets, which come after the handshake, are taken in here
   pub fn read(self &mut, out &[]mut u8) usize {
+    imm got = self.readSome(out);
+    self.harvest();
+    got;
+  }
+
+  fn readSome(self &mut, out &[]mut u8) usize {
     if phase != pOpen or gotClose or out.len == 0usize {return 0usize;}
     ERR_clear_error();
     mut got = 0usize;
@@ -512,24 +529,50 @@ pub struct Session is Move {
     }
     phase = pHandshake;
     self.advance();
+    self.harvest();
     if code != 0u32 and phase != pFailed {self.fail(err.kind, err.code, "");}
   }
 
+  // The sessions OpenSSL handed over since the last harvest, into the
+  // context's cache: OpenSSL's call has returned, so its lock is taken
+  // here, one statement for each, and no call into OpenSSL is under way
+  fn harvest(self &mut) {
+    if arrivals as usize == 0usize {return;}
+    imm n = *(arrivals as *usize);
+    mut k = 0usize;
+    while k < n {
+      imm sess = (*arrivalAt(arrivals, k)) as *u8;
+      (&mut *state).putCached(host.view(), sess);
+      k = k + 1usize;
+    }
+    *(arrivals as *usize) = 0usize;
+  }
+
   fn final(self &uni) {
-    // A client keeps its session to resume the server with, when it can be
+    if arrivals as usize != 0usize {
+      self.harvest();
+      SSL_set_ex_data(ssl, ticketSlot(), null);
+      libc.free(arrivals);
+    }
     if not isServer and resume and wasOpen and phase != pFailed {
-      imm sess = SSL_get1_session(ssl);
-      if sess as usize != 0usize {
-        if SSL_SESSION_is_resumable(sess) == 1i32 {
-          (&mut *state).putCached(host.view(), sess);
-          // Freed with no close_notify sent, OpenSSL would mark the session
-          // it is keeping not resumable (ssl_clear_bad_session); the
-          // connection did not fail, so it is let go as if it had closed
-          SSL_set_shutdown(ssl, sslSentShutdown | sslReceivedShutdown);
-        } else {
-          SSL_SESSION_free(sess);
+      // A TLS 1.2 session goes back to the cache: the same one, which stays
+      // (putCached keeps one copy), or one the server renewed by a new ticket
+      if SSL_version(ssl) != tls13Version {
+        imm sess = SSL_get1_session(ssl);
+        if sess as usize != 0usize {
+          if SSL_SESSION_is_resumable(sess) == 1i32 {
+            (&mut *state).putCached(host.view(), sess);
+          } else {
+            SSL_SESSION_free(sess);
+          }
         }
       }
+      // Freed with no close_notify sent, OpenSSL would mark the session it
+      // holds not resumable (ssl_clear_bad_session), and that session is
+      // one the cache holds too: the last ticket that came, or the TLS 1.2
+      // session. The connection did not fail, so it is let go as if it had
+      // closed
+      SSL_set_shutdown(ssl, sslSentShutdown | sslReceivedShutdown);
     }
     SSL_free(ssl);
   }
