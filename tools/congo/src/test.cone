@@ -21,6 +21,7 @@ const testTimeoutSeconds = 60i64;
 struct Tally {
   pub passed u64;
   pub failed u64;
+  pub skipped u64;           // debug-only tests, not built or run in a release test
   pub built u64;
   pub unbuilt u64;
   pub broken u64;            // packages that did not build, so nothing of theirs ran
@@ -29,6 +30,7 @@ struct Tally {
   pub fn add(self &mut, other &Tally) {
     passed = passed + other.passed;
     failed = failed + other.failed;
+    skipped = skipped + other.skipped;
     built = built + other.built;
     unbuilt = unbuilt + other.unbuilt;
     broken = broken + other.broken;
@@ -42,12 +44,20 @@ struct Tally {
   pub fn ok(self &) Bool { failed == 0u64 and unbuilt == 0u64 and broken == 0u64; }
 
   pub fn summary(self &) String {
-    mut text = counted(passed + failed, "test");
+    mut text = counted(passed + failed + skipped, "test");
     text <- ": ";
     text <- passed;
     text <- " passed, ";
     text <- failed;
-    text <- " failed; ";
+    text <- " failed";
+    // Said only where a test was skipped, so a report without one reads as
+    // it always has
+    if skipped > 0u64 {
+      text <- ", ";
+      text <- skipped;
+      text <- " skipped (debug only)";
+    }
+    text <- "; ";
     imm examples = counted(built + unbuilt, "example");
     text <- examples.view(), ": ";
     text <- built;
@@ -62,7 +72,7 @@ struct Tally {
   }
 }
 
-fn emptyTally() Tally { new Tally(0u64, 0u64, 0u64, 0u64, 0u64, List[String].empty()); }
+fn emptyTally() Tally { new Tally(0u64, 0u64, 0u64, 0u64, 0u64, 0u64, List[String].empty()); }
 
 // '1 test', '2 tests'
 fn counted(n u64, word &[]u8) String {
@@ -214,6 +224,14 @@ fn expectedExit(program &[]u8) Result[String, String] {
   imm written = pyRepr(text.view());
   Error[String, String][cat(place.view(), " must hold one integer, the exit status the test ends with; it holds ",
     written.view())];
+}
+
+// tests/<name>.debug, whatever it holds, marks a test debug-only: a test of a
+// check made in a debug build alone (assertDebug, assertDebugMsg), which has
+// nothing to say in a release build. A release test skips it
+fn debugOnly(program &[]u8) Bool {
+  imm marker = withSuffix(program, ".debug");
+  fs.isFile(marker.view());
 }
 
 // Folder paths in the order congo.py's sorted() puts Windows paths: by
@@ -482,6 +500,14 @@ fn testPackage(repo &[]u8, pkg Package, mode &[]u8, filter &[]u8, hasFilter Bool
   while i < tests.len() {
     imm file = tests[i].view();
     imm stem = path.stem(file);
+    // Not built or run, so nothing is blessed for it either
+    if mode == "release" and debugOnly(file) {
+      imm skippedLine = cat("        test ", stem.view(), " ... skipped (debug only)");
+      report(skippedLine.view(), "");
+      tally.skipped = tally.skipped + 1u64;
+      i = i + 1usize;
+      continue;
+    }
     imm verdict = runTest(&mut s, file, bless);
     mut outcome &[]u8 = "ok";
     if not verdict.passed { outcome = "FAILED"; }
@@ -573,7 +599,7 @@ fn cmdTest(filter &[]u8, hasFilter Bool, release Bool, bless Bool, defines &List
     total.add(&tally);
     i = i + 1usize;
   }
-  if hasFilter and total.passed + total.failed + total.built + total.unbuilt + total.broken == 0u64 {
+  if hasFilter and total.passed + total.failed + total.skipped + total.built + total.unbuilt + total.broken == 0u64 {
     fail(cat("no test or example has '", filter, "' in its name"));
   }
   if manifests.len() > 1usize {
