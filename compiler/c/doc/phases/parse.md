@@ -630,7 +630,13 @@ A behaviour may return a value, which a reply carries back to an `await`. Each
 that does has a second variant, its request awaited (`fetch'ask`: its
 parameters and the reply's envelope, an `actors.Reply`), a second send method
 on the handle taking the envelope, and a dispatch arm that answers
-(`actors.answerNow`); sent with no `await`, its value is dropped. An actor
+(`actors.answerNow`); sent with no `await`, its value is dropped. It has a
+third send method too (`fetch'future`), which makes an `actors.Future` of the
+returned type, written as the behaviour's return type was (its text recorded
+by `parseFnSig`), sends the request awaited with the future's producer's
+reference as its envelope (`actors.futureFor`, `futureReply`), and gives back
+the future; a call whose value is kept is made a call of it
+(`actorFutureCall`). An actor
 whose body holds an `await` gets two hidden fields in its state, after those
 written and each with a default, so a construction as written leaves them to
 it -- its pending table, and, where a behaviour returning a value holds an
@@ -656,8 +662,9 @@ only a lexer given `Lexer.gennames` reads. A diagnostic against the generated
 text is reported at the actor's name with the generated line beside it
 (`Lexer.genat`). The module must import `actors` (`ErrorActorRuntime`), whose
 functions generation calls for a seam are found as it is bound
-(`actorRuntime`), and so is its `Awaitable`, the generic an `await` on an
-operation awaits an instance of (`actorAwaitable`). Each generated declaration is marked `DclActorGen`, which a
+(`actorRuntime`), and so are its `Awaitable`, the generic an `await` on an
+operation awaits an instance of (`actorAwaitable`), and its `Future`, which a
+kept call of a behaviour gives and an `await` may wait for (`actorFuture`). Each generated declaration is marked `DclActorGen`, which a
 library compile exports whatever its visibility: the include file keeps the
 actor whole, its bodies too, so an importer generates them again, the same.
 What crosses to the actor, and what a behaviour returns, is checked after type

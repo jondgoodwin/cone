@@ -1,0 +1,95 @@
+// The examples of the reference manual's section on storing a future
+// (doc/reference/refconccomm.html, "Storing a future"), compiled and run, so
+// the page cannot drift from what the compiler does. Each block the page
+// shows is copied from here verbatim, between the "manual:" lines; what the
+// page leaves out is the scaffolding below them, which runs the examples one
+// after another. The refusals the page shows are
+// concurrency_await_manual_refused's.
+//
+// - Basket.total keeps two futures, both requests in flight, and awaits them
+//   in order: 12 + 15.
+// - Office.file keeps a future of a move value, Report, and awaits it once.
+// - Office.pass hands a future to Archive, which awaits it: 6, and 7 back.
+//
+// Each printed value was checked by hand against the source.
+
+mod concurrency_future_manual;
+
+import stdio use *;
+import actors;
+
+fn say(s &[]u8, n u64) {printStr(s); printStr(" "); printUInt(n); printStr("\n");}
+
+// manual: two in flight
+actor Stock {
+  pub async do price(self, item u64) u64 {item * 3u64;}
+}
+
+actor Basket {
+  stock Stock;
+
+  pub async do total(self) u64 {
+    imm apples = stock.price(4u64);     // sent: a future comes back at once
+    imm pears = stock.price(5u64);      // both requests are in flight
+    imm a = await apples;               // waits for the first
+    imm p = await pears;                // then for the second
+    a + p;
+  }
+}
+// manual: end
+
+// manual: moved and handed on
+struct Report is Move {
+  pub lines u64;
+}
+
+actor Printer {
+  pub async do render(self, n u64) Report {new Report(n * 2u64);}
+}
+
+actor Archive {
+  pub async do keep(self, f actors.Future[u64]) u64 {
+    imm n = await f;                    // the value arrives here
+    n + 1u64;
+  }
+}
+
+actor Office {
+  printer Printer;
+  stock Stock;
+  archive Archive;
+
+  pub async do file(self) u64 {
+    imm r = printer.render(10u64);      // a Future[Report], which moves
+    imm report = await r;               // the Report is taken out of it
+    report.lines;
+  }
+
+  pub async do pass(self) u64 {
+    imm f = stock.price(2u64);
+    await archive.keep(f);              // the future goes to Archive
+  }
+}
+// manual: end
+
+actor Driver {
+  basket Basket;
+  office Office;
+
+  pub async do go(self) {
+    say("total", await basket.total());
+    say("file", await office.file());
+    say("pass", await office.pass());
+  }
+}
+
+fn main() {
+  initAll();
+  {
+    imm stock = new Stock();
+    imm d = new Driver(new Basket(stock), new Office(new Printer(), stock, new Archive()));
+    d.go();
+  }
+  finalAll();
+  say("futures live", u64.from(actors.liveFutures()));
+}

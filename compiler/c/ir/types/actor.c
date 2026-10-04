@@ -16,21 +16,25 @@ static uint32_t actorMax = 0;
 
 FnDclNode *actorRuntime[ActorRtCount];
 char *actorRuntimeNames[ActorRtCount] = {
-    "parkReserve", "parked", "unpark", "recordFree", "answerTo", "answered", "startAwait"
+    "parkReserve", "parked", "unpark", "recordFree", "answerTo", "answered", "startAwait",
+    "futureReady", "futureRegister", "futureOpen", "futureTaken"
 };
 
 StructNode *actorAwaitable = NULL;
+StructNode *actorFuture = NULL;
+INode *actorAwaitOperand = NULL;
 
-INode *actorAwaitableResult(INode *type) {
-    if (actorAwaitable == NULL || type == NULL || actorAwaitable->genericinfo == NULL
-        || actorAwaitable->genericinfo->memonodes == NULL)
+// The one type argument of 'type', where it is an instance of 'generic'
+static INode *actorInstanceArg(StructNode *generic, INode *type) {
+    if (generic == NULL || type == NULL || generic->genericinfo == NULL
+        || generic->genericinfo->memonodes == NULL)
         return NULL;
     type = itypeGetTypeDcl(type);
     if (type == NULL || type->tag != StructTag)
         return NULL;
     INode **nodesp;
     uint32_t cnt;
-    for (nodesFor(actorAwaitable->genericinfo->memonodes, cnt, nodesp)) {
+    for (nodesFor(generic->genericinfo->memonodes, cnt, nodesp)) {
         ++nodesp; --cnt;  // pairs: the call, then its instance
         if (*nodesp != type)
             continue;
@@ -38,6 +42,41 @@ INode *actorAwaitableResult(INode *type) {
         return args && args->used == 1 ? nodesGet(args, 0) : NULL;
     }
     return NULL;
+}
+
+INode *actorAwaitableResult(INode *type) {
+    return actorInstanceArg(actorAwaitable, type);
+}
+
+INode *actorFutureResult(INode *type) {
+    return actorInstanceArg(actorFuture, type);
+}
+
+void actorFutureCall(TypeCheckState *pstate, FnCallNode *call) {
+    if (call->objfn == NULL || !isNameUseNode(call->objfn))
+        return;
+    INode *dcl = ((NameUseNode *)call->objfn)->dclnode;
+    if (dcl == NULL || dcl->tag != FnDclTag)
+        return;
+    ActorInfo *callee;
+    ActorMessage *msg = actorMessageOfSend((FnDclNode *)dcl, &callee);
+    if (msg == NULL)
+        return;
+    // Whether a value comes back is the behaviour's declaration to say, as
+    // for an 'await' (ErrorAwaitVoid)
+    if (msg->future == NULL) {
+        Name *name = msg->method->namesym;
+        errorMsgNode((INode *)call, ErrorFutureVoid,
+            "%s returns nothing, so its call gives no future to keep: a behaviour with no return type owes its caller nothing, and calling it sends a message and forgets it. Call it as a statement of its own; or, if the caller needs to know %s finished, declare a return type -- a status saying whether it worked -- and keep or await that.",
+            &name->namestr, &name->namestr);
+        return;
+    }
+    fnCallDemandCandidates((INode *)msg->future);
+    FnSigNode *sig = (FnSigNode *)msg->future->vtype;
+    NameUseNode *use = (NameUseNode *)call->objfn;
+    use->dclnode = (INode *)msg->future;
+    use->vtype = (INode *)sig;
+    call->vtype = sig->rettype;
 }
 
 void actorRegister(ActorInfo *info) {

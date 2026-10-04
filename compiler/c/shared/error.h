@@ -512,6 +512,10 @@ enum ErrorCode {
     // An 'await' on an operation (actors.Awaitable: an I/O operation)
     ErrorAwaitUnused = 1280,    // The result an awaited operation answers with, a failure among what it may say, is not used
 
+    // Futures: a behaviour's value stored and awaited later (actors.Future[T])
+    ErrorAwaitNotFuture = 1281, // An 'await' on a value that is no future, behaviour's reply or operation: it waits for no answer
+    ErrorFutureVoid = 1282,     // The value of a call of a behaviour returning nothing is used: there is no future to keep
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name

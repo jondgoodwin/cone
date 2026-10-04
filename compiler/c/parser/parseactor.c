@@ -37,7 +37,10 @@
  * - a behaviour that returns a value, 'pub async do get(self, k u64) u64', has
  *   a second variant, its request awaited, 'struct get'ask {k u64; reply'
  *   actors.Reply;}', the handle a second method sending it, and the dispatch
- *   an arm that answers it;
+ *   an arm that answers it; and the handle a third method, 'get'future',
+ *   which makes an actors.Future of what it returns and sends the request
+ *   awaited with the future's producer's reference as its envelope, for a
+ *   call whose value is kept (actorFutureCall);
  * - an actor whose body holds an 'await' (DclTexts.awaiting) has hidden
  *   fields in its state, its pending table and, where a behaviour returning a
  *   value awaits, its Answer slot; two resume variants and their arms; and
@@ -577,6 +580,10 @@ static int parseActorRuntime(ParseState *parse, StructNode *at, Name *actorname,
     // What an 'await' on an operation awaits (ir/exp/await.c, awaitOperation)
     INode *awaitable = namespaceFind(&actorsmod->namespace, nametblFind("Awaitable", 9));
     actorAwaitable = awaitable && awaitable->tag == StructTag ? (StructNode *)awaitable : NULL;
+    // A behaviour's future, which a call whose value is used gives, and an
+    // 'await' may wait for (actorFutureCall, awaitFuture)
+    INode *future = namespaceFind(&actorsmod->namespace, nametblFind("Future", 6));
+    actorFuture = future && future->tag == StructTag ? (StructNode *)future : NULL;
 
     // The dispatch function moves each argument out of the message where it
     // lies in its node, which is then freed without being finalized: so every
@@ -652,8 +659,10 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
     }
 
     // The names this actor's declarations are known by: the shared ones, its
-    // own, and each request variant's (from GenSlots on, in message order)
-    uint32_t nnames = GenSlots + nasks;
+    // own, each request variant's (from GenSlots on, in message order), and
+    // each handle method's that stores a request's future (from GenSlots +
+    // nasks on)
+    uint32_t nnames = GenSlots + 2 * nasks;
     Name **names = (Name **)memAllocBlk(nnames * sizeof(Name *));
     for (int i = 0; i < GenState; ++i)
         names[i] = genShared[i];
@@ -677,7 +686,10 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
         FnDclNode *fn = (FnDclNode *)*nodesp;
         if (parseActorReturns(fn)) {
             snprintf(buf, sizeof(buf), "%s'ask", &fn->namesym->namestr);
-            names[ask++] = nametblPrivate(buf, strlen(buf));
+            names[ask] = nametblPrivate(buf, strlen(buf));
+            snprintf(buf, sizeof(buf), "%s'future", &fn->namesym->namestr);
+            names[ask + nasks] = nametblPrivate(buf, strlen(buf));
+            ++ask;
         }
     }
     state->namesym = names[GenState];
@@ -943,6 +955,75 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
             genPuts(&g, "]);}\n");
         }
     }
+    // A behaviour that returns a value is called for its future by a third
+    // method, which a call whose value is used calls in place of the first
+    // (actorFutureCall): it makes the future, Pending, and sends the request
+    // awaited, its envelope the future's producer's reference, and gives back
+    // the future, the consumer's. It is as public as the behaviour, and is
+    // called with every argument the first was, defaults appended already
+    ask = GenSlots;
+    for (nodesFor(members.messages, cnt, nodesp)) {
+        FnDclNode *fn = (FnDclNode *)*nodesp;
+        if (!parseActorReturns(fn))
+            continue;
+        uint32_t variant = ask++;
+        DclText *rettext = parseActorText(&texts, fn->vtype);
+        int tuple = ((FnSigNode *)fn->vtype)->rettype->tag == TupleTag;
+        GenText rt = {NULL, 0, 0};
+        genPuts(&rt, tuple ? "(" : "");
+        if (rettext)
+            genPutn(&rt, rettext->type, rettext->typeend - rettext->type);
+        genPuts(&rt, tuple ? ")" : "");
+        genPuts(&g, (fn->flags & FlagPub) ? "  pub fn " : "  fn ");
+        genSlot(&g, variant + nasks);
+        genPuts(&g, "(self &");
+        INode **parmp;
+        uint32_t parmcnt;
+        for (nodesFor(((FnSigNode *)fn->vtype)->parms, parmcnt, parmp)) {
+            VarDclNode *parm = (VarDclNode *)*parmp;
+            if (parm->namesym == selfName)
+                continue;
+            DclText *text = parseActorText(&texts, (INode *)parm);
+            genPuts(&g, ", ");
+            genName(&g, parm->namesym);
+            genPuts(&g, " ");
+            genPutn(&g, text->type, text->typeend - text->type);
+        }
+        genPuts(&g, ") ");
+        genSlot(&g, GenActors);
+        genPuts(&g, ".Future[");
+        genPutn(&g, rt.text, rt.len);
+        genPuts(&g, "] {\n    imm f = ");
+        genSlot(&g, GenActors);
+        genPuts(&g, ".futureFor[");
+        genPutn(&g, rt.text, rt.len);
+        genPuts(&g, ", ");
+        genSlot(&g, GenMsg);
+        genPuts(&g, "](");
+        genSlot(&g, GenMailbox);
+        genPuts(&g, ");\n    ");
+        genSlot(&g, GenActors);
+        genPuts(&g, ".send[");
+        genSlot(&g, GenMsg);
+        genPuts(&g, "](");
+        genSlot(&g, GenMailbox);
+        genPuts(&g, ", ");
+        genSlot(&g, GenMsg);
+        genPuts(&g, ".");
+        genSlot(&g, variant);
+        genPuts(&g, "[");
+        for (nodesFor(((FnSigNode *)fn->vtype)->parms, parmcnt, parmp)) {
+            VarDclNode *parm = (VarDclNode *)*parmp;
+            if (parm->namesym == selfName)
+                continue;
+            genName(&g, parm->namesym);
+            genPuts(&g, ", ");
+        }
+        genSlot(&g, GenActors);
+        genPuts(&g, ".futureReply[");
+        genPutn(&g, rt.text, rt.len);
+        genPuts(&g, "](&f)]);\n    f;\n  }\n");
+    }
     genPuts(&g, "}\n");
 
     genPutn(&g, ge.text, ge.len);
@@ -1184,6 +1265,8 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
         am->method = fn;
         am->send = NULL;
         am->ask = NULL;
+        am->future = NULL;
+        Name *futurename = parseActorReturns(fn) ? names[ask + nasks] : NULL;
         Name *askname = parseActorReturns(fn) ? names[ask++] : NULL;
         INode **hp;
         uint32_t hcnt;
@@ -1196,6 +1279,8 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
                 am->send = hfn;
             else if (askname && hfn->namesym == askname)
                 am->ask = hfn;
+            else if (futurename && hfn->namesym == futurename)
+                am->future = hfn;
         }
     }
     actorRegister(info);

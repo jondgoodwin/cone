@@ -1349,6 +1349,7 @@ INode *parseFnSig(ParseState *parse, int reftype) {
     // A '{' after the return type opens the body of the function being
     // declared, so nothing read here may claim it as its own.
     parse->inrettype = 1;
+    char *rettypep = lex->tokp;
     if ((fnsig->rettype = parseType(parse)) != unknownType) {
         // Handle multiple return types: 'fn ceil(x i32) i32, i32'. Inside a
         // list -- a parameter list, a tuple, arguments -- the comma continues
@@ -1363,6 +1364,10 @@ INode *parseFnSig(ParseState *parse, int reftype) {
             }
             fnsig->rettype = (INode*)rettype;
         }
+        // An actor's behaviour returning a value: the text its type is written
+        // with, for the handle's method that stores its future (parseactor.c)
+        if (parse->dcltexts && !reftype)
+            parseDclText(parse, (INode*)fnsig, rettypep, lex->prevend, NULL, NULL);
     }
     else {
         fnsig->rettype = (INode*)newVoidNode();

@@ -499,7 +499,11 @@ Visual Studio projects stay at the root.
   timed benchmark, and `Awaitable[R]`, an operation a behaviour may `await`,
   started at the seam with the reply's envelope its answer, an `R`, goes back
   in, and a pending table that drops (abandons) the records still parked when
-  its actor dies; `aio` is the I/O an actor's behaviour awaits, over `actors`
+  its actor dies, and `Future[T]`, a behaviour's value kept to be awaited
+  later, here or in another actor (`futures.cone`: the futures region, one
+  atomic count for the producer's and the consumer's references, and the
+  state, the value and the parked waiters in its payload; `liveFutures`);
+  `aio` is the I/O an actor's behaviour awaits, over `actors`
   and `iocore`: `aio.listen`, `aio.connect`, a `Socket`'s `accept`, `read`,
   `write` and `localAddr`, each an `actors.Awaitable` answering a `Result`
   (a read's success its buffer back, what arrived appended), done by one I/O

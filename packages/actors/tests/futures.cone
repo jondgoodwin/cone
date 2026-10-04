@@ -1,0 +1,83 @@
+// Futures from the package's side, through this package compiled as a
+// library: the futures region, Future[T] and the cell's protocol are the
+// package's, and the functions the compiler's generated code calls are
+// exported. A Worker's values are stored as futures and awaited later -- one
+// pending (the Asker's own behaviour, which cannot have run), one arrived,
+// a copy future awaited twice, a move one awaited once, one handed to another
+// actor -- and one is never awaited; every future is freed by the end, each
+// move value finalized once.
+
+mod futures;
+
+import testing use *;
+import actors;
+
+struct Sums {
+  pub got Atomic[u64];
+  pub drops Atomic[u64];
+}
+
+imm sums Sums;
+
+fn @initpure init() {
+  sums = new Sums(Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+}
+
+struct Token is Move {
+  pub n u64;
+  fn final(self &uni) {sums.drops.add(n);}
+}
+
+actor Worker {
+  pub async do square(self, n u64) u64 {n * n;}
+  pub async do token(self, n u64) Token {new Token(n);}
+}
+
+actor Taker {
+  pub async do take(self, f actors.Future[u64]) u64 {
+    imm v = await f;
+    sums.got.add(v);
+    v;
+  }
+}
+
+actor Asker {
+  w Worker;
+  t Taker;
+
+  pub async do half(self, n u64) u64 {n / 2u64;}
+
+  fn lose(self) {
+    imm lost = w.token(1000u64);
+  }
+
+  pub async do go(self) {
+    imm own = selfactor.half(20u64);
+    sums.got.add(await own);                  // 10
+    imm early = w.square(3u64);
+    imm later = await w.square(4u64);
+    sums.got.add(await early + later);        // 9 + 16
+    imm c = w.square(5u64);
+    sums.got.add(await c + await c);          // 25 + 25
+    imm m = w.token(7u64);
+    imm tok = await m;
+    sums.got.add(tok.n);                      // 7
+    sums.got.add(await t.take(w.square(6u64)));   // 36, and 36 by take
+    self.lose();
+  }
+}
+
+fn main() i32 {
+  initAll();
+  {
+    imm a = new Asker(new Worker(), new Taker());
+    a.go();
+  }
+  finalAll();
+  // 10 + 25 + 50 + 7 + 36 + 36
+  expectUInt(sums.got.load(), 164u64, "each future's value, opened once per 'await'");
+  // tok, 7, dies with go; the token never awaited, 1000, with its future
+  expectUInt(sums.drops.load(), 1007u64, "each move value finalized once");
+  expectUInt(u64.from(actors.liveFutures()), 0u64, "every future freed");
+  done();
+}

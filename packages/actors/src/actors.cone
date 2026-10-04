@@ -45,6 +45,9 @@
 //   actors.sendable(v)              v, if it may cross threads (the check)
 //   actors.Awaitable[R]             an operation a behaviour may 'await', whose
 //                                   answer is an R (AWAITING, below)
+//   actors.Future[T]                a behaviour's value kept, to 'await' later
+//                                   (FUTURES, below)
+//   actors.liveFutures()            how many futures are not yet freed
 //   actors.waitQuiet()              wait until no actor is queued or running
 //
 // The four before Awaitable are what an actor's own code calls, and the compiler
@@ -238,6 +241,19 @@
 // finishes the operation, on whatever thread, to write the R into it as
 // answerNow does; the reply then resumes the behaviour as any reply does. The
 // 'await''s value is the R as the operation declared it.
+//
+// FUTURES. A call of a behaviour returning a T whose value is kept, 'imm fut =
+// peer.count()', sends the request awaited at once and gives a Future[T]: the
+// handle's method the compiler generates for it makes a future, Pending
+// (futureFor), and the request's envelope is the future's producer's
+// reference, a Reply whose 'cell' is the future (futureReply), so the actor
+// answering writes the value into the future as answerNow writes it into a
+// reply, knowing nothing of who will await it. An 'await' on the future goes
+// on at once if it has its ending (futureReady), and otherwise parks as an
+// awaited request does, its envelope's node parked on the future
+// (futureRegister) until the future pushes it; either way the value is opened
+// out of the future (futureOpen, futureTaken). futures.cone is the future
+// itself: the futures region, Future[T], and the protocol.
 //
 // One request has one reply, exactly once: a slot is freed only by its
 // reply. A continuation waiting holds its actor alive through the envelope's
@@ -657,22 +673,37 @@ fn releaseHold[M Sendable](h *Header) {
 // that awaits, its resume message written already (which second half, and
 // the record's id), with room after it for the returned value, at 'data'.
 // So the actor answering knows nothing of the other's type: it writes the
-// value at 'data' and pushes 'node'. A Reply with no 'to' wants no answer.
-// Sendable on trust, as Mailbox is: the runtime orders every hand-off of it.
+// value at 'data' and pushes 'node'. Or the request's value is stored, not
+// awaited at once ('imm fut = f.g(x)'): then the Reply is the producer's
+// reference to a future (FUTURES, futures.cone), 'cell', and 'data' is
+// where in the future the value goes; it names no actor. A Reply with no
+// 'to' and no 'cell' wants no answer. Sendable on trust, as Mailbox is: the
+// runtime orders every hand-off of it.
 pub struct Reply is Sendable {
   to *Header = null;
   node *Link = null;
   data *u8 = null;
+  cell *u8 = null;
 
   // A reply never sent: its node is freed (its resume message holds nothing
-  // to finalize) and its count let go
+  // to finalize) and its count let go. A future's is abandoned: nothing will
+  // ever arrive in it, and whoever awaits it is told so
   fn final(self &uni) {
     if to as usize != 0usize {
       libc.free(node as *u8);
       imm release = (*to).release;
       release(to);
     }
+    elif cell as usize != 0usize {
+      futureEnd(cell, futAbandoned);
+    }
   }
+}
+
+// Whether the reply goes anywhere: to an actor that awaits it, or into a
+// future
+fn wanted(r &Reply) Bool {
+  r.to as usize != 0usize or r.cell as usize != 0usize;
 }
 
 // The round-up of n to a multiple of a, a power of two
@@ -727,17 +758,30 @@ pub fn replyPut[M Sendable](r &Reply, msg M) {
 // Send the reply, its value written: push its node to the actor that awaits.
 // The count the envelope held becomes the scheduler's owner when the push
 // finds the actor idle, as a send's own would; otherwise it is let go
+// A future's reply has had its value written into the future, which arrives
 fn post(r &mut Reply) {
+  imm c = r.cell;
+  if c as usize != 0usize {
+    r.cell = null;
+    futureEnd(c, futArrived);
+    return;
+  }
   imm h = r.to;
   if h as usize == 0usize {
     return;
   }
-  if running == 0usize {
-    die("actors: a reply sent after the runtime stopped");
-  }
   imm n = r.node;
   r.to = null;
   r.node = null;
+  pushReply(h, n);
+}
+
+// Push a reply's node n, its value written, to the actor h that awaits it,
+// whose count the envelope held
+fn pushReply(h *Header, n *Link) {
+  if running == 0usize {
+    die("actors: a reply sent after the runtime stopped");
+  }
   if mailPush(h, n) {
     schedule(h);
   } else {
@@ -750,7 +794,7 @@ fn post(r &mut Reply) {
 // request: the value goes back in the reply
 pub fn answerNow[R](rp Reply, v R) {
   mut r = rp;
-  if r.to as usize == 0usize {
+  if !wanted(&r) {
     return;
   }
   mem.writeRaw[R](r.data as *R, v);
@@ -793,7 +837,7 @@ pub fn answerTo(slot &mut Answer) *u8 {
   if slot.held == 0u8 {
     return null;
   }
-  if slot.reply.to as usize == 0usize {
+  if !wanted(&slot.reply) {
     return 1usize as *u8;
   }
   slot.reply.data;

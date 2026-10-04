@@ -38,18 +38,22 @@
 		will call it exists. A behaviour may return a value, and
 		<span class="pre">await</span> on a behaviour of an actor waits for it: the behaviour
 		awaiting is cut there, what it still needs waits in its actor until the reply comes, and
-		the rest of it runs then (<a href="#await">Awaiting a reply</a>); an actor names its own
+		the rest of it runs then (<a href="#await">Awaiting a reply</a>); a call of such a
+		behaviour whose value is kept gives a <i>future</i>, <span class="pre">actors.Future[T]</span>,
+		which may be stored, handed on and awaited later (<a href="#future">Storing a
+		future</a>); an actor names its own
 		handle <span class="pre">selfactor</span>, and <span class="pre">self.m()</span>, where
 		<span class="pre">m</span> is one of its own behaviours, sends it. The compiler checks an
 		<span class="pre">await</span> &mdash; that it stands in a behaviour, that what it awaits
 		returns a value, and that no borrow but a <span class="pre">'static</span> one is used
 		after it, every other ending there &mdash; and builds it on a behaviour that returns
-		a value and on an I/O operation the <span class="pre">aio</span> package makes
-		(<a href="refconcio.html#await-io">Awaiting I/O</a>): an <span class="pre">await</span> on
-		anything else, in a few constructs the cut does not reach yet, or one whose continuation
-		would hold a traced reference, is reported where it is written; nor is there a time limit
-		on an <span class="pre">await</span>, or a way to cancel one
-		(<a href="#await-unbuilt">Not built yet</a>). The
+		a value, on a future, and on an I/O operation the <span class="pre">aio</span> package
+		makes (<a href="refconcio.html#await-io">Awaiting I/O</a>); an <span class="pre">await</span>
+		on anything else is refused. One in a few constructs the cut does not reach yet, or one
+		whose continuation would hold a traced reference, is reported where it is written; nor is
+		there a time limit on an <span class="pre">await</span>, a way to cancel one, or a way to
+		await whichever of several futures arrives first (<a href="#await-unbuilt">Not built
+		yet</a>). The
 		compiler's <span class="pre">--await-direct</span> option, which is for testing the cut,
 		runs the rest of the behaviour at once after an <span class="pre">await</span> on anything
 		else, with the value awaited. Not implemented: <span class="pre">actor trait</span>, a
@@ -655,7 +659,8 @@ between the awaits.
 	<ol>
 	<li><b>It asks.</b> What follows <span class="pre">await</span> is a behaviour of an actor
 		that returns a value. It is sent, as any message is, and the request carries where the
-		reply goes.</li>
+		reply goes. (Or it is a future, a request sent earlier: <a href="#future">Storing a
+		future</a>.)</li>
 	<li><b>The behaviour pauses.</b> It returns to its actor's dispatcher. What the rest of the
 		behaviour needs waits in the actor (below), not on a stack, so the worker goes on to other
 		work.</li>
@@ -910,6 +915,133 @@ actor Cache {
 		may also be sent with no <span class="pre">await</span>, and its value is then
 		dropped.</p>
 
+	<h4 id="future">Storing a future</h4>
+	<p>A call of a behaviour that returns a value, written where its value is kept &mdash; bound
+		to a local, passed on, returned &mdash; sends the request at once and gives back a
+		<i>future</i>: a value standing for what the behaviour will return. An
+		<span class="pre">await</span> on the future waits for that value. So several requests can
+		be in flight at once, and their answers collected later:</p>
+<pre>
+actor Stock {
+  pub async do price(self, item u64) u64 {item * 3u64;}
+}
+
+actor Basket {
+  stock Stock;
+
+  pub async do total(self) u64 {
+    imm apples = stock.price(4u64);     // sent: a future comes back at once
+    imm pears = stock.price(5u64);      // both requests are in flight
+    imm a = await apples;               // waits for the first
+    imm p = await pears;                // then for the second
+    a + p;
+  }
+}
+</pre>
+	<p><span class="pre">await basket.total()</span> is <span class="pre">27</span>. Both requests are
+		sent before either is waited for, so Stock may work on the second while Basket waits for
+		the first. A behaviour is declared once, and how it is called says what becomes of its
+		value:</p>
+	<ul>
+	<li><span class="pre">await stock.price(4u64)</span> sends it and waits here: the
+		<span class="pre">await</span>'s value is the behaviour's, and no future is made.</li>
+	<li><span class="pre">imm f = stock.price(4u64)</span> sends it and keeps its future, an
+		<span class="pre">actors.Future[u64]</span>, for an <span class="pre">await</span>
+		later.</li>
+	<li><span class="pre">stock.price(4u64);</span>, a statement of its own, sends it and forgets
+		it: its value is dropped.</li>
+	</ul>
+	<p>An <span class="pre">await</span> on a future pauses only if the value has not arrived. If
+		it has, the behaviour goes on at once: nothing pauses, nothing waits in the actor, and none
+		of the actor's other messages runs in between, so a future collected after other work is
+		often free. If it has not, the behaviour pauses just as on a reply
+		(<a href="#await">What an await does</a>), every borrow ending there, and resumes when the
+		value arrives. Either way, what crosses the <span class="pre">await</span> is
+		<a href="#await-cross">what crosses any await</a>.</p>
+	<p>A future is a value like any other. It may be stored and awaited much later, and it may be
+		handed to another actor in a message and awaited there: it belongs to whoever holds it,
+		never to the actor that made the call, and whoever holds it may await it. It crosses to
+		another thread where its value may: <span class="pre">Future[T]</span> is
+		<span class="pre">Sendable</span> where <span class="pre">T</span> is. It copies or moves
+		as its value does. <span class="pre">Future[u64]</span> copies, and each
+		<span class="pre">await</span> on a copy gives the value again. A future of a value that
+		moves, a <span class="pre">Future[Report]</span> where <span class="pre">Report</span> is a
+		move type, moves too: the <span class="pre">await</span> takes the value out of it, and
+		the future goes with it, so no second <span class="pre">await</span> could take the value
+		again:</p>
+<pre>
+struct Report is Move {
+  pub lines u64;
+}
+
+actor Printer {
+  pub async do render(self, n u64) Report {new Report(n * 2u64);}
+}
+
+actor Archive {
+  pub async do keep(self, f actors.Future[u64]) u64 {
+    imm n = await f;                    // the value arrives here
+    n + 1u64;
+  }
+}
+
+actor Office {
+  printer Printer;
+  stock Stock;
+  archive Archive;
+
+  pub async do file(self) u64 {
+    imm r = printer.render(10u64);      // a Future[Report], which moves
+    imm report = await r;               // the Report is taken out of it
+    report.lines;
+  }
+
+  pub async do pass(self) u64 {
+    imm f = stock.price(2u64);
+    await archive.keep(f);              // the future goes to Archive
+  }
+}
+</pre>
+	<p><span class="pre">await office.file()</span> is <span class="pre">20</span>, and
+		<span class="pre">await office.pass()</span> is <span class="pre">7</span>. Awaiting
+		<span class="pre">r</span> a second time is refused, as any use of a moved value is:</p>
+<pre>
+actor Desk {
+  printer Printer;
+
+  pub async do twice(self) u64 {
+    imm r = printer.render(10u64);
+    imm report = await r;
+    imm again = await r;          // refused: r moved into the first 'await'
+    report.lines;
+  }
+}
+</pre>
+<pre>
+This variable's value has been moved out. It is no longer there to use.
+</pre>
+	<p>A future nobody awaits is no error and costs nothing more: the behaviour runs, its value
+		arrives, and it is finalized when the last holder of the future lets go, or when the value
+		arrives, whichever is later. Letting go of a future does not stop its behaviour, which is
+		already running on its own actor.</p>
+	<p>An <span class="pre">await</span> assumes the value arrives, as it nearly always does, and
+		hands it over directly, with no wrapper to unwrap. When the behaviour owing it can never
+		answer &mdash; its actor died while the behaviour was paused on something abandoned
+		itself &mdash; the future is <i>abandoned</i>, and an <span class="pre">await</span> on it
+		panics, reported at the <span class="pre">await</span>:</p>
+<pre>
+actors: an awaited future will never arrive: the behaviour owing it (request 1) ended without answering
+</pre>
+	<p>The request number counts the futures the program has made, so the report says which one
+		it was. Where the failure is one the program should handle, the behaviour declares it in
+		its return type, a <span class="pre">Result</span>, and the future's value is that
+		<span class="pre">Result</span>.</p>
+	<p>Only a future, a behaviour's reply and an operation are awaited. An
+		<span class="pre">await</span> on anything else waits for no answer, and is refused: an
+		<span class="pre">await</span> on a function's call, whose value is there as soon as the
+		call returns (<a href="#await-unbuilt">below</a>), or on a number. And a behaviour that
+		returns nothing gives no future (<a href="#await-nothing">next</a>).</p>
+
 	<h4 id="await-nothing">A behaviour that returns nothing</h4>
 	<p>Whether a reply is sent is the behaviour's declaration to say, never its caller's: one
 		with no return type sends none, so there is nothing to await, and an
@@ -936,6 +1068,24 @@ actor Writer {
 'await' waits for a behaviour's reply, and flush returns nothing, so it sends none: a
 behaviour with no return type owes its caller nothing. If the caller needs to know flush
 finished, declare a return type -- a status saying whether it worked -- and await that.
+</pre>
+	<p>For the same reason its call gives no future: one whose value is kept is refused. Written
+		as a statement of its own, it sends the message and forgets it.</p>
+<pre>
+actor Keeper {
+  log Log;
+
+  pub async do keep(self) {
+    log.flush();                  // sent, and forgotten
+    imm f = log.flush();          // refused: flush gives no future
+  }
+}
+</pre>
+<pre>
+flush returns nothing, so its call gives no future to keep: a behaviour with no return
+type owes its caller nothing, and calling it sends a message and forgets it. Call it as a
+statement of its own; or, if the caller needs to know flush finished, declare a return
+type -- a status saying whether it worked -- and keep or await that.
 </pre>
 	<p>An acknowledgement is not flow control. A sender that awaits each reply before sending
 		again has one message outstanding at a time, so the two run in lockstep, a round trip
@@ -964,16 +1114,13 @@ actor Sizes {
 		requests run one after another, a round trip each, and the actor's other messages run in
 		between the passes, perhaps changing what the loop reads. A borrow the loop holds ends at
 		the <span class="pre">await</span> on every pass. Requests that do not depend on one
-		another's replies need not wait in turn: sent without <span class="pre">await</span>, they
-		run at once, and each answer can come back as a message to
-		<span class="pre">selfactor</span>.</p>
+		another's replies need not wait in turn: each call's future kept, they are all in flight at
+		once, and their values are awaited afterwards (<a href="#future">Storing a
+		future</a>).</p>
 
 	<h4 id="await-unbuilt">Not built yet</h4>
 	<p>Each of these is reported where it is written, as not built:</p>
 	<ul>
-	<li><b>Awaiting anything but a behaviour or an I/O operation.</b> An
-		<span class="pre">await</span> on a function's call is not built. (An I/O operation is
-		awaited as a reply is: <a href="refconcio.html#await-io">Awaiting I/O</a>.)</li>
 	<li><b>A few places an <span class="pre">await</span> may not cut yet</b>: in the index of
 		a place whose base holds an <span class="pre">await</span> of its own
 		(<span class="pre">m[await f()][await g()]</span>), in both places a swap exchanges, in a
@@ -991,17 +1138,25 @@ actor Sizes {
 		end ends one early: a behaviour paused on I/O is abandoned then, the rest of it never run,
 		and its values are finalized once nothing else holds its actor
 		(<a href="refconcio.html#await-io">Awaiting I/O</a>); a behaviour whose reply was owed by
-		one abandoned so is abandoned with it.</li>
+		one abandoned so is abandoned with it, and a future it owed is abandoned
+		(<a href="#future">Storing a future</a>).</li>
+	<li><b>Awaiting several futures at once.</b> An <span class="pre">await</span> waits for one
+		future. Waiting for whichever of several arrives first, or for all of them in one
+		<span class="pre">await</span>, is not built: several are awaited one after another.</li>
+	<li><b>Looking at a future without opening it.</b> An <span class="pre">await</span> opens the
+		future and panics if its value never arrives. There is no way yet to ask whether it
+		arrived, or to handle an abandoned one, without the panic.</li>
 	</ul>
-	<p>Three of them, where <span class="pre">compute</span> is a plain function and
-		<span class="pre">Cell</span> a struct:</p>
+	<p>Two of them, beside an <span class="pre">await</span> refused for what it awaits, where
+		<span class="pre">compute</span> is a plain function and <span class="pre">Cell</span> a
+		struct:</p>
 <pre>
 actor Waiter {
   clock Clock;
   last u64;
 
   pub async do onFunction(self) {
-    last = await compute();       // not built: compute is a function
+    last = await compute();       // refused: compute's u64 is no future
   }
 
   pub async do swapped(self) {

@@ -53,8 +53,9 @@
 # actor's dispatcher to wait. An 'await' on a behaviour of an actor that
 # returns a value waits for its reply: concurrency_await_reply runs it end to
 # end and pins the envelope's and the record's shapes, and
-# concurrency_await_message is where it and 'selfactor' are refused. Any
-# other 'await' is reported where it stands (ErrorUnbuiltAwait), its message
+# concurrency_await_message is where it and 'selfactor' are refused. An
+# 'await' on a future is concurrency_future's (below). An 'await' on anything
+# else waits for no answer and is refused (ErrorAwaitNotFuture), its message
 # naming the borrows it ends, the locks it gives back, its continuation's
 # record and that record's order of death, and what it leaves; that message
 # is what concurrency_await_record, _droporder, _static and _lock pin, each
@@ -289,7 +290,7 @@ tags = ["flow"]
 
 [scenario.concurrency_await_static]
 category = "reject"
-description = "A ''static' borrow crosses a seam: a borrow of a global, and a reborrow through one, used after the 'await', are accepted and travel in the continuation's record (ErrorUnbuiltAwait)"
+description = "A ''static' borrow crosses a seam: a borrow of a global, and a reborrow through one, used after the 'await', are accepted and travel in the continuation's record (the message of ErrorAwaitNotFuture, the 'await' being on a plain function)"
 tags = ["flow"]
 
 [scenario.concurrency_await_lock]
@@ -521,7 +522,7 @@ options = ["--debug"]
 
 [scenario.concurrency_await_manual_refused]
 category = "reject"
-description = "The refusals the reference manual shows for 'await' in an actor's behaviours: a borrow used after the 'await' that ended it, a borrow a call made to the left of the 'await' (ErrorAwaitLeftCall), a lock borrow named after it; an 'await' in a synchronous 'fn' (ErrorAwaitPlace) and on a behaviour returning nothing (ErrorAwaitVoid); and each 'await' not built yet -- on a function's call, in both places a swap exchanges, whose continuation would hold a traced reference"
+description = "The refusals the reference manual shows for 'await' in an actor's behaviours: a borrow used after the 'await' that ended it, a borrow a call made to the left of the 'await' (ErrorAwaitLeftCall), a lock borrow named after it; an 'await' in a synchronous 'fn' (ErrorAwaitPlace) and on a behaviour returning nothing (ErrorAwaitVoid); an 'await' on a function's call (ErrorAwaitNotFuture); each 'await' not built yet -- in both places a swap exchanges, whose continuation would hold a traced reference; and of futures, a move one awaited twice and a kept call of a behaviour returning nothing (ErrorFutureVoid)"
 tags = ["flow"]
 
 [scenario.concurrency_await_operation]
@@ -562,3 +563,75 @@ contains = [
 category = "reject"
 description = "What an awaited operation (an actors.Awaitable, an I/O operation) answers with must be used: an 'await' on one that is a statement of its own, in the middle of a behaviour or as the last statement of one returning nothing, is ErrorAwaitUnused; bound to a local and matched it is accepted, and an 'await' on a behaviour's reply whose value is unused is not touched"
 tags = ["typecheck"]
+
+# -------- futures: a behaviour's value stored, awaited later --------
+#
+# A call of a behaviour returning a T whose value is used gives an
+# actors.Future[T]; as a statement of its own it is fire and forget. 'await'
+# on the future parks unless it has its ending already (concurrency_future;
+# concurrency_future_arrived pins, by the messages the workers handle, that an
+# 'await' on one already arrived goes on with no seam); one never answered
+# panics at the 'await' (concurrency_future_abandoned). What is refused is
+# concurrency_future_refused; the manual's examples are
+# concurrency_future_manual's.
+
+[scenario.concurrency_future]
+category = "run"
+description = "A behaviour's value stored as an actors.Future[T] and awaited later: a future of the actor's own behaviour, which parks, its droppables dying where the one scope says; one arrived before its 'await'; two in flight awaited in order; Future[u64] copied and awaited twice; Future[Note] moved and awaited once; a future handed to another actor and awaited there; in a loop, beside a value in flight, of a tuple; one never awaited, its value finalized when it is freed; and every future freed by the end"
+tags = ["typecheck", "flow", "genllvm", "runtime"]
+
+[[scenario.concurrency_future.run]]
+name = "release"
+
+[[scenario.concurrency_future.run]]
+name = "debug"
+options = ["--debug"]
+
+[scenario.concurrency_future_arrived]
+category = "run"
+description = "An 'await' on a future already arrived goes on at once, with no seam: the workers handle 7 messages, where a reply resuming it would make 8; one on a future still pending parks and is resumed by a message; and the first half's arrived path opens the value where it stands"
+tags = ["genllvm", "runtime"]
+
+[[scenario.concurrency_future_arrived.run]]
+name = "release"
+
+[[scenario.concurrency_future_arrived.run]]
+name = "debug"
+options = ["--debug"]
+
+[[scenario.concurrency_future_arrived.check]]
+name = "an-await-on-a-future-looks-first-and-opens-an-arrived-one-where-it-stands"
+target = "preir"
+contains = [
+  "%ready = call i1 @_CNvC6actors11futureReady(ptr %future)",
+  "label %arrived, label %pending",
+  "call i1 @_CNvC6actors14futureRegister(ptr %future, %Reply ",
+  "call ptr @_CNvC6actors10futureOpen(ptr %future, ",
+]
+
+[scenario.concurrency_future_abandoned]
+category = "run"
+description = "A future whose callee dies without answering -- its behaviour parked on an operation that dropped its envelope, its record dropped with the actor -- is Abandoned, and the 'await' on it panics, at the 'await''s line, naming the request"
+tags = ["genllvm", "runtime"]
+program_exit = "abort"
+stderr_mask = ['(?<=panic in thread )\d+']
+
+[[scenario.concurrency_future_abandoned.run]]
+name = "release"
+
+[scenario.concurrency_future_refused]
+category = "reject"
+description = "Futures refuse: a move future (Future[Note]) awaited twice, the second finding it moved, beside a copy one (Future[u64]) awaited twice; an 'await' on a value that is no future (ErrorAwaitNotFuture); the value of a call of a behaviour returning nothing kept (ErrorFutureVoid), beside the call as a statement; and a future crossing to an actor only where its value is Sendable (ErrorNotSendable)"
+tags = ["typecheck", "flow"]
+
+[scenario.concurrency_future_manual]
+category = "run"
+description = "The reference manual's examples of storing a future, run one after another: two requests in flight, kept as futures and awaited in order; a future of a move value awaited once; a future handed to another actor and awaited there"
+tags = ["typecheck", "flow", "genllvm", "runtime"]
+
+[[scenario.concurrency_future_manual.run]]
+name = "release"
+
+[[scenario.concurrency_future_manual.run]]
+name = "debug"
+options = ["--debug"]

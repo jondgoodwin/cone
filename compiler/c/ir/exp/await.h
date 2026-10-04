@@ -22,10 +22,14 @@
  * operation of the aio package's): the seam starts it, handing it a reply's
  * envelope as a request carries one, and its answer, an R, is the 'await''s
  * value; an 'await' on one whose value is unwanted is refused
- * (ErrorAwaitUnused). Any other 'await' is reported unbuilt
- * (ErrorUnbuiltAwait), naming what its continuation would carry, unless
- * '--await-direct', for tests, hands its record straight to its second
- * half. compiler/c/doc/phases/flow.md, "A seam", and
+ * (ErrorAwaitUnused). Or what is awaited is a future, a value of the actors
+ * package's Future[T], which a call of a behaviour returning a T gives where
+ * its value is used (actorFutureCall): the seam parks on it unless it has
+ * its ending already, when the behaviour goes on at once, and the 'await''s
+ * value is the T opened out of it. An 'await' on anything else waits for no
+ * answer, and is refused (ErrorAwaitNotFuture), naming what its continuation
+ * would carry, unless '--await-direct', for tests, hands its record straight
+ * to its second half. compiler/c/doc/phases/flow.md, "A seam", and
  * compiler/c/doc/phases/generation.md, "A split method" and "A message's
  * reply", are the notes.
  *
@@ -73,8 +77,14 @@ typedef struct AwaitNode {
     FnDclNode *message; // What is awaited is this behaviour of an actor, sent awaited; NULL for anything else
     INode *awaitable;   // Or what is awaited is an operation, of this instance of actors.Awaitable[R],
                         // started at the seam; NULL for anything else
+    INode *future;      // Or what is awaited is a future, of this instance of actors.Future[T]:
+                        // parked on unless it has its ending already; NULL for anything else
     uint8_t walked;     // The loan walk reached it on some path
 } AwaitNode;
+
+// Does this seam wait for an answer -- a message's reply, an operation's, a
+// future's ending -- so that its record parks in the actor's pending table?
+#define awaitParks(node) ((node)->message || (node)->awaitable || (node)->future)
 
 // The envelope of the request a message 'await' sends: the last argument of
 // the handle's method that sends it awaited. Generation makes it where the

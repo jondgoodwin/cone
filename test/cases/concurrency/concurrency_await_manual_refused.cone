@@ -1,9 +1,9 @@
-// The refusals the reference manual's section on 'await' in an actor's
-// methods shows (doc/reference/refconccomm.html, "Awaiting a reply"), each
-// block copied there from between the "manual:" lines, verbatim but for each
-// line's expected diagnostic, which the page writes as a comment saying what
-// is refused. The examples that run are concurrency_await_manual's.
-//
+// The refusals the reference manual's sections on 'await' show (refconccomm,
+// "Awaiting a reply" and "Storing a future"), each block copied there from
+// between the "manual:" lines, verbatim but for each line's diagnostic, which
+// the page writes as a comment saying what is refused. The examples that run
+// are concurrency_await_manual's and concurrency_future_manual's. Last, two
+// of futures: a move one awaited twice; a kept call of 'flush' (ErrorFutureVoid).
 // - A borrow used after the 'await' that ended it: the ordinary ErrorFrozen,
 //   at the 'await'. Beside it, the same method written to borrow afresh
 //   after the 'await', which is accepted.
@@ -18,10 +18,10 @@
 //   top, the synchronous work pushed down onto the 'fn'.
 // - An 'await' on a behaviour that returns nothing, ErrorAwaitVoid, beside
 //   one awaiting a behaviour that answers with a status.
-// - What is not built yet, each ErrorUnbuiltAwait where it is written: an
-//   'await' on anything but a behaviour (a plain function's call standing for
-//   an I/O operation's completion), in both places a swap exchanges, and
-//   whose continuation would hold a traced reference.
+// - An 'await' on a function's call, which waits for no answer,
+//   ErrorAwaitNotFuture; and what is not built yet, each ErrorUnbuiltAwait: an
+//   'await' in both places a swap exchanges, and one whose continuation would
+//   hold a traced reference.
 
 mod concurrency_await_manual_refused;
 
@@ -126,7 +126,7 @@ actor Waiter {
   last u64;
 
   pub async do onFunction(self) {
-    last = await compute();       //~ ErrorUnbuiltAwait "'await' is not built yet"
+    last = await compute();       //~ ErrorAwaitNotFuture "awaits a u64, which is none of them"
   }
 
   pub async do swapped(self) {
@@ -139,6 +139,38 @@ actor Waiter {
     imm g = new Gc[mut, Cell](1u64);
     imm t = await clock.now();    //~ ErrorUnbuiltAwait "'await' whose continuation holds a traced reference is not built"
     last = t + g.n;
+  }
+}
+// manual: end
+
+// manual: kept twice
+struct Report is Move {
+  pub lines u64;
+}
+
+actor Printer {
+  pub async do render(self, n u64) Report {new Report(n * 2u64);}
+}
+
+actor Desk {
+  printer Printer;
+
+  pub async do twice(self) u64 {
+    imm r = printer.render(10u64);
+    imm report = await r;
+    imm again = await r;          //~ ErrorMove "This variable's value has been moved out"
+    report.lines;
+  }
+}
+// manual: end
+
+// manual: nothing to keep
+actor Keeper {
+  log Log;
+
+  pub async do keep(self) {
+    log.flush();                  // sent, and forgotten
+    imm f = log.flush();          //~ ErrorFutureVoid "flush returns nothing, so its call gives no future to keep"
   }
 }
 // manual: end

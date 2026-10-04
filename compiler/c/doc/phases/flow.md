@@ -1263,13 +1263,16 @@ below is checked; what then becomes of the seams flow accepted is
 generation makes the behaviour's first half and a second half for each seam,
 from what is noted here ([Generation](generation.md), "A split method"), when
 each awaits a behaviour of an actor that returns a value
-(`AwaitNode.message`, which type check set, sending it awaited) or an
+(`AwaitNode.message`, which type check set, sending it awaited), an
 operation, an `actors.Awaitable[R]` started at the seam (`AwaitNode.awaitable`,
-an I/O operation), whose reply calls the second half. Under `--await-direct`, which is for tests, a seam
+an I/O operation), or a future, an `actors.Future[T]` (`AwaitNode.future`),
+whose answer calls the second half (`awaitParks`). The 'await' takes its
+operand as a call takes an argument, so a future that copies is copied
+(counted) and one that moves is moved. Under `--await-direct`, which is for tests, a seam
 awaiting anything else is split too, handing its record straight to its
-second half. Otherwise -- an `await` on anything else -- each is reported as
-not built (`ErrorUnbuiltAwait`, `awaitReportUnbuilt`), the message saying what
-its seam would carry. A behaviour's `await` standing where the split is not
+second half. Otherwise -- an `await` on anything else, which waits for no
+answer -- each is refused (`ErrorAwaitNotFuture`, `awaitReportSeams`), the
+message saying what its seam would carry. A behaviour's `await` standing where the split is not
 built yet is reported so too, at the `await` (`awaitWalk`): in the index of a
 place whose base holds a seam too, in both places a swap exchanges, in a
 slice's bounds, in a parallel assignment's places or one storing its place's
@@ -1418,7 +1421,8 @@ Everything else about permissions is type check's: `permMatches` in
 | `ErrorFrozen` | `loanUse`, for a conflict `loanAccess` recorded; `loanFlightAccess`, `loanFlightActivate` | a source read, changed, moved, borrowed or ended while a borrow of it that forbids that is still to be used; reported at the access, naming the borrow (or the method that returned it) and its next use. Or, at once, an access conflicting with a loan an earlier operand of the same call or literal carries, or a two-phase receiver conflicting at its call with what another argument carries |
 | `ErrorFrozen` | `loanUse`, for a seam's `AccessSeam` conflict; `loanSeamFlight` | a borrow that is not global, held at a seam (`await`) and used after it, reported at the seam where it ended; or one an operand around the seam carries in flight, a plain path |
 | `ErrorAwaitLeftCall` | `loanSeamFlight`; `awaitWalk`, from `awaitSplitOrReport` | a borrow, or a place's base or a swap's other side, written to the left of an `await` in its statement and used after it, made by a call or a temporary: only a plain path is reached again after the seam |
-| `ErrorUnbuiltAwait` | `awaitReportUnbuilt`, `awaitReportIn` and `awaitRecordTraced`, from `awaitSplitOrReport`; `pwSeamVar` | an `await` every seam rule accepted, in a behaviour flow found no error in, that is not split -- not on a behaviour returning a value (without `--await-direct`): not built, the message naming what its seam would end, give back, carry and leave; or, in a behaviour that is split, one standing where the split is not built (an index whose place's base holds a seam too, both places of a swap, a slice's bounds, a parallel assignment's places, the entries of one `<-`, an array's contents filled in memory), or a seam whose record would hold a traced reference |
+| `ErrorAwaitNotFuture` | `awaitReportSeams`, from `awaitSplitOrReport` | an `await` every seam rule accepted, in a behaviour flow found no error in, on something that waits for no answer -- not a behaviour's reply, a future or an operation (without `--await-direct`): refused, the message naming what its seam would end, give back, carry and leave |
+| `ErrorUnbuiltAwait` | `awaitReportUnbuilt`, `awaitReportIn` and `awaitRecordTraced`, from `awaitSplitOrReport`; `pwSeamVar` | in a behaviour that is split, an `await` standing where the split is not built (an index whose place's base holds a seam too, both places of a swap, a slice's bounds, a parallel assignment's places, the entries of one `<-`, an array's contents filled in memory), or a seam whose record would hold a traced reference |
 
 A value an array's contents or `n of x` repeat is evaluated once per element,
 so the ordinary move rule judges it: the loop `n of x` lowers to is walked as

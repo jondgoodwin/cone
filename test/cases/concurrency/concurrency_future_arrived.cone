@@ -1,0 +1,56 @@
+// An 'await' on a future that has arrived already goes on at once: no record
+// is parked, no envelope made, and nothing comes back through the mailbox. It
+// is pinned by what the workers count, every message any actor handled, a
+// reply that resumes a parked behaviour among them:
+//
+// - arrived: 'early' is requested first, then 'later' awaited. Maker runs its
+//   messages in the order sent, so 'early' has its value before the reply to
+//   'later' is sent, and the 'await' on it parks nothing. Messages: go, the
+//   two requests, the reply to 'later': 4.
+// - pending: a future of the actor's own behaviour cannot have its value while
+//   the actor runs this one, so its 'await' parks and is resumed by a message
+//   of its own. Messages: parks, double, the resume: 3.
+//
+// So 7 in all; with a seam at the arrived 'await' it would be 8. Each value
+// was checked by hand against the source.
+
+mod concurrency_future_arrived;
+
+import stdio use *;
+import actors;
+
+fn say(s &[]u8, n u64) {printStr(s); printStr(" "); printUInt(n); printStr("\n");}
+
+actor Maker {
+  pub async do count(self, n u64) u64 {n * 10u64;}
+}
+
+actor Asker {
+  m Maker;
+
+  pub async do go(self) {
+    imm early = m.count(5u64);
+    imm later = await m.count(6u64);
+    say("arrived", await early);
+    say("later", later);
+    selfactor.parks();
+  }
+
+  pub async do double(self, n u64) u64 {n * 2u64;}
+
+  pub async do parks(self) {
+    imm f = selfactor.double(4u64);
+    say("pending", await f);
+  }
+}
+
+fn main() {
+  initAll();
+  {
+    imm a = new Asker(new Maker());
+    a.go();
+  }
+  finalAll();
+  say("messages", actors.stats().messages);
+  say("futures live", u64.from(actors.liveFutures()));
+}
