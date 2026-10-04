@@ -21,8 +21,8 @@
  * an operation, a value of the actors package's Awaitable[R] (an I/O
  * operation of the aio package's): the seam starts it, handing it a reply's
  * envelope as a request carries one, and its answer, an R, is the 'await''s
- * value; an 'await' on one whose value is unwanted is refused
- * (ErrorAwaitUnused). Any other 'await' is reported unbuilt
+ * value; an 'await' on one whose value is unwanted is warned
+ * (WarnAwaitUnused). Any other 'await' is reported unbuilt
  * (ErrorUnbuiltAwait), naming what its continuation would carry, unless
  * '--await-direct', for tests, hands its record straight to its second
  * half. compiler/c/doc/phases/flow.md, "A seam", and
