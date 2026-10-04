@@ -1,0 +1,56 @@
+// ======== SampleGrid: where a field is sampled, for a mesher ========
+//
+// A field sampled on a grid of cubic cells: sample (x, y, z) is at
+// origin + cellSize (x, y, z), numbered x + samplesX (y + samplesY z), x
+// fastest. It is one plain value of seven 32-bit numbers, laid out alike on
+// the CPU and in a GPU's buffer, so the code that samples a field (a part's
+// own kernel, one invocation a sample) and sdfmesh's mesher (on the CPU, or
+// its GPU half, gpu/gridnet.cone) read one declaration of it.
+//
+// A sample's point is computed as sdfmesh's 'surfaceNet' computes it, each
+// coordinate origin + cellSize * index, one multiplication and one addition,
+// each rounded on its own (the GPU never fuses them, conec's NoContraction):
+// a field sampled at 'point' on either side gives surfaceNet's samples, bit
+// for bit, wherever the field's own arithmetic is the same bits.
+
+pub struct SampleGrid {
+  pub origin Vec3;        // sample (0, 0, 0)
+  pub cellSize f32;       // the step between samples, the same each way
+  pub samplesX u32;       // samples along x, y and z: one more than the cells
+  pub samplesY u32;
+  pub samplesZ u32;
+
+  // The grid surfaceNet samples 'box' on in cells 'cellSize' a side: the box
+  // and one cell more on every side, so a box holding a closed shape gives a
+  // closed mesh
+  pub fn covering(box Aabb3, cellSize f32) SampleGrid {
+    imm cs = cellSize;
+    imm lo = box.min - new Vec3(cs, cs, cs);
+    imm extent = box.max - box.min;
+    imm nx = u32.from(libc.ceilf(extent.x / cs)) + 2u32;
+    imm ny = u32.from(libc.ceilf(extent.y / cs)) + 2u32;
+    imm nz = u32.from(libc.ceilf(extent.z / cs)) + 2u32;
+    new SampleGrid(lo, cs, nx + 1u32, ny + 1u32, nz + 1u32);
+  }
+
+  // How many samples, and how many cells
+  pub fn sampleCount(self &) u32 { samplesX * samplesY * samplesZ; }
+  pub fn cellCount(self &) u32 { (samplesX - 1u32) * (samplesY - 1u32) * (samplesZ - 1u32); }
+
+  // Sample (x, y, z)'s number
+  pub fn index(self &, x u32, y u32, z u32) u32 { x + samplesX * (y + samplesY * z); }
+
+  // Sample (x, y, z)'s point
+  pub fn point(self &, x u32, y u32, z u32) Vec3 {
+    new Vec3(origin.x + cellSize * f32.from(x), origin.y + cellSize * f32.from(y),
+      origin.z + cellSize * f32.from(z));
+  }
+
+  // Sample i's point (i below sampleCount)
+  pub fn pointOf(self &, i u32) Vec3 {
+    imm x = i % samplesX;
+    imm y = (i / samplesX) % samplesY;
+    imm z = i / (samplesX * samplesY);
+    self.point(x, y, z);
+  }
+}

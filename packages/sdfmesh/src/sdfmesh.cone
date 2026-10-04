@@ -7,17 +7,40 @@
 //   mesh.Mesh, each quad cut along its shorter diagonal) and 'toPolyMesh'
 //   (a mesh.PolyMesh, for 'validate').
 // - 'netLevels', a chain of levels of detail, each meshed from the field.
+// - 'GridMesher', the same surface nets on the GPU, of a grid already
+//   sampled (sdf's SampleGrid, its samples in a buffer, which a part's own
+//   kernel may have written): 'mesh' leaves a 'GridNet' on the GPU, vertex
+//   and index buffers a renderer can draw, and 'readBack' makes it a
+//   SurfaceNet; 'meshOnTwin' runs the same kernels on the CPU. Bit for bit
+//   surfaceNet's dense, unrelaxed net, but for the normals, which come from
+//   the grid.
 //
 // It is a tool, not maths: what it makes is a mesh of a size known only
-// once it is made, held in Lists. The mesher here runs on the CPU, on one
-// thread; a GPU mesher is to join it. The field it meshes is the sdf
-// package's (the Shape trait, and 'gradient' for the normals); what it
-// makes is mesh's Mesh and PolyMesh, whose 'meshHash' pins the bits.
+// once it is made, held in Lists or GPU buffers. The CPU mesher runs on one
+// thread. The field it meshes is the sdf package's (the Shape trait, and
+// 'gradient' for the normals); what it makes is mesh's Mesh and PolyMesh,
+// whose 'meshHash' pins the bits.
 //
-// Its files are one module, and only this one, the root, imports:
+// It is in two halves, as a package with GPU code is (tools/congo/README.md,
+// "A package's gpu/ folder"). src/ is the root module, its files one module,
+// and only this one, the root, imports:
 //
-//   mesher.cone     SurfaceNet, surfaceNet, netLevels, and the tables of a
-//                   cell's pieces
+//   mesher.cone       SurfaceNet, surfaceNet, netLevels, and the tables of a
+//                     cell's pieces
+//   gridmesher.cone   GridMesher and GridNet: gpu/'s kernels run through
+//                     gpuwork, on the GPU or as their twins
+//
+// gpu/ is the GPU half, compiled into sdfmesh for the CPU as the submodule
+// 'gridnet', and for the GPU into sdfmesh.spv:
+//
+//   gridnet.cone      the kernels (classify, countQuads, scanTotals,
+//                     scanApply, gather, place, emit), and divExact and
+//                     sqrtExact, IEEE's division and square root made from
+//                     integer steps
+//
+// Importing sdfmesh brings gpuwork and gpu with it, and so SDL3: a program
+// that imports it links SDL3.lib, which must be on LIB, and gets SDL3.dll
+// beside it, whether it meshes on the GPU or not.
 
 mod sdfmesh;
 
@@ -26,3 +49,9 @@ import geomath use *;
 import collections use *;
 import mesh;
 import sdf use *;
+import gpu use Device, Buffer, BUFFER_USAGE_STORAGE, BUFFER_USAGE_COPY_DST, BUFFER_USAGE_COPY_SRC,
+  BUFFER_USAGE_VERTEX, BUFFER_USAGE_INDEX;
+import gpuwork use Kernel, Job, Works, Target, Completion, READ, READ_WRITE, readSpirv, upload, zeroed, runTwin;
+// gpu/'s exact arithmetic, for importers (and the tests, which check it
+// against the CPU's)
+pub use gridnet divExact, sqrtExact;

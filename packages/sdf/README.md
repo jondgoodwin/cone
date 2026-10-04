@@ -139,6 +139,17 @@ a tree, roots, veins, struts. No Slang twin yet.
 differences, six evaluations), `normal(shape, p, h)` (Quilez's tetrahedron,
 four).
 
+**Sample grid** (`grid.cone`): `SampleGrid`, where a field is sampled for a
+mesher, one plain value of seven 32-bit numbers (`origin`, `cellSize`,
+`samplesX`, `samplesY`, `samplesZ`), laid out alike on the CPU and in a GPU
+buffer, so a part's own sampling kernel and sdfmesh's mesher, on the CPU or
+the GPU, share one declaration. `SampleGrid.covering(box, cellSize)` is the
+grid sdfmesh's `surfaceNet` samples `box` on (the box and a cell more each
+way); `point(x, y, z)` and `pointOf(i)` (sample i, x fastest) compute a
+sample's point as `surfaceNet` does, so a field sampled there gives its
+samples, bit for bit, where the field's arithmetic is the same bits;
+`index`, `sampleCount`, `cellCount`.
+
 **Noise detail** (`detail.cone`, over `noise`):
 `displace(d, p, seed, octaves, frequency, amplitude)` adds fBm and is not a
 distance; `fbmDetail(d, p, seed, octaves, size)` is Quilez's fBm of
