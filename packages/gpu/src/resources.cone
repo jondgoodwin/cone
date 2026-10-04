@@ -91,6 +91,7 @@ struct BufferBackend {
   buffer vulkan.Buffer;
   memory vulkan.DeviceMemory;
   mapped *u8;
+  coherent Bool;   // mapped memory needing no invalidate before the CPU reads it
 }
 
 // A buffer of bytes the GPU reads or writes
@@ -103,13 +104,25 @@ pub struct Buffer {
 
   // No buffer: what a field holds before a buffer is made for it (not valid)
   pub fn none() Buffer {
-    new Buffer(new BufferBackend(0usize as vulkan.Device, new vulkan.Buffer(0u64), new vulkan.DeviceMemory(0u64), nullp()), 0u64, 0u32);
+    new Buffer(new BufferBackend(0usize as vulkan.Device, new vulkan.Buffer(0u64), new vulkan.DeviceMemory(0u64), nullp(),
+      true), 0u64, 0u32);
   }
 
   // Its bytes, for a buffer the CPU maps (MAP_READ or MAP_WRITE); null for
   // any other. What the GPU wrote is there once the frame that wrote it is
-  // done ('device.waitIdle', or FRAMES_IN_FLIGHT frames later).
-  pub fn mappedRange(self &) *u8 { backend.mapped; }
+  // done ('device.waitIdle', or FRAMES_IN_FLIGHT frames later). A buffer the
+  // CPU only reads is in cached memory where the GPU has it (see gpu.cone,
+  // Memory); where that memory is not coherent, each call makes the mapping
+  // current (vkInvalidateMappedMemoryRanges), so ask for it once the GPU is
+  // done, and read through what it answers.
+  pub fn mappedRange(self &) *u8 {
+    if !backend.coherent and (backend.mapped as usize) != 0usize {
+      imm range = new vulkan.MappedMemoryRange(memory: backend.memory);
+      check(vulkan.invalidateMappedMemoryRanges(backend.device, 1u32, &range as *vulkan.MappedMemoryRange),
+        "vkInvalidateMappedMemoryRanges");
+    }
+    backend.mapped;
+  }
 
   // Its end, once the GPU is idle
   fn final(self &uni) {
