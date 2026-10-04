@@ -46,7 +46,7 @@
 //   FAILED_INDEX  FAILED_RANGE  FAILED_PANIC  FAILED_ALLOCATION  ERROR_BUFFER_WORDS
 //   kernel.setTwin1(&f) ... kernel.setTwin7(&f)  kernel.setTwin(f)        (THE TWIN)
 //   Invocation  Words: w.u32s() .f32sMut() .atomicU32s() .atomicI32s() ...
-//   runTwin(kernel, buffers, x, y, z)
+//   runTwin(kernel, buffers, x, y, z)  kernel.together  MAX_TOGETHER_INVOCATIONS
 //   checkParity(device, kernel, buffers, x, y, z): Parity
 //   refusals()
 //
@@ -201,14 +201,31 @@
 // function written as the kernel is. Either way the
 // kernel's body is one Cone function both sides call: a loop over
 // invocations is how the CPU runs a kernel. 'runTwin' runs it over buffers
-// of words, invocation by invocation in a fixed order, one thread. A
-// kernel's '@workgroup' globals are, on the CPU, ordinary globals, one copy,
-// and its barriers nothing (the compiler's native form), so a kernel whose
-// invocations read, after a barrier, only what the invocations before them
-// in that order wrote (the last of a workgroup gathering the others' work)
-// gives the GPU's answer on its twin; one whose invocations read what later
-// ones write (a prefix sum across a workgroup) does not, and has no twin
-// yet (Not here yet).
+// of words, workgroup by workgroup in a fixed order. A kernel without
+// barriers runs invocation by invocation, in a fixed order, on the calling
+// thread. A kernel with them ('kernel.together': 'Kernel.make' finds an
+// OpControlBarrier, which 'workgroupBarrier()' and 'storageBarrier()' each
+// are, in its entry point or any function it calls, however deep) runs each
+// workgroup's invocations together: one thread for each invocation of a
+// workgroup (at most MAX_TOGETHER_INVOCATIONS, 256, WebGPU's limit and the
+// compiler's; more is refused), started by 'runTwin' and joined before it
+// returns, each running its invocation of every workgroup in turn. Each
+// thread sets its barrier hook (core's 'setBarrierHook', thread-local) to a
+// generation-counting futex barrier the workgroup's threads meet at, so a
+// barrier waits for every invocation of the workgroup, as on the GPU, and
+// orders every write before it before every read after it; a
+// storageBarrier waits as a workgroupBarrier does. The threads meet there
+// again after each workgroup, so the workgroups run one after another and
+// the one native copy of each '@workgroup' global is the running
+// workgroup's own. Nothing resets it between workgroups: on the GPU
+// workgroup memory starts undefined, so a correct kernel writes its
+// '@workgroup' memory before it reads it, and one that reads first gets, on
+// its twin, what the last workgroup left. Every invocation must reach every
+// barrier its workgroup's others do, as on the GPU (barriers in uniform
+// control flow): one that returns early, or fails, leaves the others waiting
+// for ever. So a prefix sum across a workgroup, or a tree reduction, whose
+// invocations read after a barrier what others wrote, gives the GPU's answer
+// on its twin (tests/kernels.cone runs each 100 times, bit for bit).
 // 'checkParity' runs a kernel on the GPU and its twin on the CPU over the
 // same starting buffers and compares every word each wrote, bit for bit:
 // anything that shapes geometry must be the same on every GPU and on the
@@ -228,10 +245,10 @@
 //
 // Not here yet: the parallel building blocks as library functions
 // (count-then-write, prefix sums, compaction; tests/kernels.cone has a
-// compaction and a workgroup's sum written as kernels); a twin that runs a
-// workgroup's invocations together, meeting at its barriers, which needs the
-// compiler to give a native barrier something to call (today it compiles to
-// nothing); delivery to
+// compaction, a workgroup's sum, a workgroup's prefix sum and a tree
+// reduction written as kernels); a pool of twin threads kept across
+// dispatches (today each 'runTwin' of a kernel with barriers starts its
+// own); delivery to
 // an actor; a Here job that completes without its frame ending (a Loop job
 // does); reusing bind groups across
 // jobs; GPU memory as a region; textures; and whether a read-only input is
@@ -244,12 +261,13 @@
 //
 //   gpuwork.cone  refusals, kernelFailures
 //   kernel.cone   Kernel, its direct twin, and what is read from the SPIR-V:
-//                 its workgroup, its bindings' shapes, its Cone source files;
-//                 readSpirv
+//                 its workgroup, its bindings' shapes, its Cone source files,
+//                 whether it has barriers; readSpirv
 //   job.cone      buffers made and read back, Job, and a Cone kernel's error
 //                 buffer and KernelFailure
 //   works.cone    Ticket, Target, Completion and Works
-//   twin.cone     Words, runTwin, checkParity and Parity
+//   twin.cone     Words, runTwin (a workgroup together on threads, for a
+//                 kernel with barriers), checkParity and Parity
 
 mod gpuwork;
 
