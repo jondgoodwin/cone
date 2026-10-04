@@ -1,0 +1,59 @@
+// The program ends with an actor paused on I/O: Waiter listens, tells main it
+// is listening, and awaits a connection nobody makes. finalAll() waits until
+// no actor is queued or running -- Waiter, paused, is neither -- and then
+// ends the I/O: its loop cancels the accept and closes the socket, and the
+// answer is not delivered. The paused behaviour is abandoned: its reply's
+// envelope is dropped, which lets go of the last count of Waiter, which
+// dies; its pending table drops the record, so 'keep' and the listening
+// socket the record holds are finalized, and the rest of the behaviour never
+// runs ('accepted' is never printed). Main prints 'end' after.
+
+mod ending;
+
+import stdio use *;
+import sync use Oneshot, OneshotSender, OneshotReceiver;
+import iocore use SocketAddr, IoError;
+import actors;
+import aio use Socket;
+
+struct Note {
+  pub n u64;
+  fn final(self &uni) {printStr("  drop "); printUInt(n); printStr("\n");}
+}
+
+fn socketOf(r Result[Socket, IoError]) Socket {
+  mut res = r;
+  mut s = Socket.none();
+  match &mut res {
+    case mut ok &mut Ok {s <=> ok.value;}
+    else {}
+  }
+  s;
+}
+
+actor Waiter {
+  pub async do serve(self, ready OneshotSender[u64]) {
+    imm keep = new Note(1u64);
+    imm l = await aio.listen(SocketAddr.localhost(0u16));
+    imm ls = socketOf(l);
+    printStr("listening\n");
+    mut r = ready;
+    r.send(1u64);
+    imm c = await ls.accept();
+    printStr("accepted\n");
+  }
+}
+
+fn main() {
+  initAll();
+  mut tx OneshotSender[u64];
+  mut rx OneshotReceiver[u64];
+  tx, rx = Oneshot[u64].make();
+  {
+    imm w = new Waiter();
+    w.serve(tx);
+  }
+  rx.recv();
+  finalAll();
+  printStr("end\n");
+}

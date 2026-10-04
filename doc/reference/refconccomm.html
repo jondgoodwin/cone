@@ -43,11 +43,12 @@
 		<span class="pre">m</span> is one of its own behaviours, sends it. The compiler checks an
 		<span class="pre">await</span> &mdash; that it stands in a behaviour, that what it awaits
 		returns a value, and that no borrow but a <span class="pre">'static</span> one is used
-		after it, every other ending there &mdash; and builds it only on a behaviour that returns
-		a value: an <span class="pre">await</span> on anything else (an I/O completion among
-		them), in a few constructs the cut does not reach yet, or one whose continuation would
-		hold a traced reference, is reported where it is written; nor is there a time limit on an
-		<span class="pre">await</span>, or a way to cancel one
+		after it, every other ending there &mdash; and builds it on a behaviour that returns
+		a value and on an I/O operation the <span class="pre">aio</span> package makes
+		(<a href="refconcio.html#await-io">Awaiting I/O</a>): an <span class="pre">await</span> on
+		anything else, in a few constructs the cut does not reach yet, or one whose continuation
+		would hold a traced reference, is reported where it is written; nor is there a time limit
+		on an <span class="pre">await</span>, or a way to cancel one
 		(<a href="#await-unbuilt">Not built yet</a>). The
 		compiler's <span class="pre">--await-direct</span> option, which is for testing the cut,
 		runs the rest of the behaviour at once after an <span class="pre">await</span> on anything
@@ -602,6 +603,10 @@ loaded 700
 		connection, <span class="pre">conn</span>, is still open while it waits, and closes when
 		<span class="pre">fetch</span> ends, after the reply came, just as it would if
 		<span class="pre">read</span> had been an ordinary call.</p>
+	<p>An I/O operation is awaited the same way, its answer coming back as a reply does: a
+		real <span class="pre">read</span> of a socket is
+		<span class="pre">await conn.read(buf)</span>
+		(<a href="refconcio.html#await-io">Awaiting I/O</a>).</p>
 
 	<h4 id="await-sync">Await in a behaviour</h4>
 	<p>An <span class="pre">await</span> stands only in a behaviour: not in a plain function or a
@@ -966,8 +971,9 @@ actor Sizes {
 	<h4 id="await-unbuilt">Not built yet</h4>
 	<p>Each of these is reported where it is written, as not built:</p>
 	<ul>
-	<li><b>Awaiting anything but a behaviour.</b> An <span class="pre">await</span> on an I/O
-		operation's completion, or on a function's call, is not built.</li>
+	<li><b>Awaiting anything but a behaviour or an I/O operation.</b> An
+		<span class="pre">await</span> on a function's call is not built. (An I/O operation is
+		awaited as a reply is: <a href="refconcio.html#await-io">Awaiting I/O</a>.)</li>
 	<li><b>A few places an <span class="pre">await</span> may not cut yet</b>: in the index of
 		a place whose base holds an <span class="pre">await</span> of its own
 		(<span class="pre">m[await f()][await g()]</span>), in both places a swap exchanges, in a
@@ -981,7 +987,11 @@ actor Sizes {
 		collector does not see a paused behaviour's values. (<span class="pre">Gc</span> is not
 		supported inside an actor at all yet, "Inside an actor", above.)</li>
 	<li><b>Timeouts and cancellation.</b> A paused behaviour waits until its reply comes. There
-		is no time limit on the wait, and no way to cancel a paused behaviour.</li>
+		is no time limit on the wait, and no way to cancel a paused behaviour. Only the program's
+		end ends one early: a behaviour paused on I/O is abandoned then, the rest of it never run,
+		and its values are finalized once nothing else holds its actor
+		(<a href="refconcio.html#await-io">Awaiting I/O</a>); a behaviour whose reply was owed by
+		one abandoned so is abandoned with it.</li>
 	</ul>
 	<p>Three of them, where <span class="pre">compute</span> is a plain function and
 		<span class="pre">Cell</span> a struct:</p>

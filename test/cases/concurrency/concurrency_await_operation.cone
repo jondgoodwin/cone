@@ -1,0 +1,134 @@
+// An 'await' on an operation: a value of the actors package's Awaitable[R],
+// which its maker starts at the seam, handing it the envelope of the reply its
+// answer, an R, comes back in, as a behaviour's value comes back. The 'await''s
+// value is that R, whatever it is: nothing is added by 'await' itself. The aio
+// package's I/O operations are the Awaitables that matter (its own tests run
+// them on real sockets); here they are made by hand, so that the seam's
+// shapes and an abandoned continuation are seen with no I/O at all:
+//
+// - now(v) answers v at once, from inside its start, while the first half is
+//   still running: the reply is a message in the actor's own mailbox, so the
+//   second half runs once the first has returned to the dispatcher;
+// - never() drops the envelope unanswered, as the aio package does at the
+//   program's end: the continuation is abandoned.
+//
+// Prober.go sends each case to the actor itself, so each first half runs in
+// turn, then each second half, as each reply is queued behind the messages
+// before it:
+//
+// - empty: nothing is held at the seam, so there is no record, no slot and
+//   no id;
+// - kept: a number used after the seam and a droppable never named again
+//   travel in the record; the droppable dies after the last print, as if the
+//   behaviour were not cut;
+// - flight: a value made before the seam, in the same call as the 'await',
+//   travels as a value in flight;
+// - result: the operation's answer is a Result, matched as any is;
+// - abandoned: the reply never comes. The record waits in the pending table
+//   until the actor dies, its last count gone with the envelope, and then it
+//   is dropped: its droppable's finalizer runs and its second half never
+//   does.
+//
+// Main prints 'end' once finalAll has found the runtime quiet: the actor
+// died before that, its abandoned record's droppable with it.
+
+mod concurrency_await_operation;
+
+import stdio use *;
+import libc;
+import actors;
+
+fn say(s &[]u8, n u64) {printStr(s); printStr(" "); printUInt(n); printStr("\n");}
+
+struct Fin {
+  pub n u64;
+  fn final(self &uni) {say("  drop", n);}
+}
+
+fn two(a u64, b u64) u64 {a * 10u64 + b;}
+
+// An operation answering v as soon as it is started
+fn startNow[R](ctx *u8, rp actors.Reply) {
+  imm v = mem.readRaw[R](ctx as *R);
+  libc.free(ctx);
+  actors.answerNow[R](rp, v);
+}
+
+fn dropNow[R](ctx *u8) {
+  imm v = mem.readRaw[R](ctx as *R);
+  libc.free(ctx);
+}
+
+fn now[R](v R) actors.Awaitable[R] {
+  imm ctx = libc.malloc(mem.sizeof[R]());
+  mem.writeRaw[R](ctx as *R, v);
+  actors.Awaitable[R].make(ctx, &startNow[R], &dropNow[R]);
+}
+
+// An operation that never answers: its envelope dropped, the actor's count
+// let go with it
+fn startNever(ctx *u8, rp actors.Reply) {
+  say("  never started", 0u64);
+}
+
+fn dropNever(ctx *u8) {}
+
+fn never() actors.Awaitable[u64] {
+  actors.Awaitable[u64].make(1usize as *u8, &startNever, &dropNever);
+}
+
+actor Prober {
+  pub async do go(self) {
+    selfactor.empty();
+    selfactor.kept();
+    selfactor.flight();
+    selfactor.result();
+    selfactor.abandoned();
+  }
+
+  pub async do empty(self) {
+    say("empty", 0u64);
+    imm v = await now[u64](5u64);
+    say("empty after", v);
+  }
+
+  pub async do kept(self) {
+    imm k = new Fin(1u64);
+    imm x = 7u64;
+    say("kept", x);
+    imm v = await now[u64](5u64);
+    say("kept after", v + x);
+  }
+
+  pub async do flight(self) {
+    imm a = 3u64;
+    say("flight", a);
+    say("flight after", two(a, await now[u64](4u64)));
+  }
+
+  pub async do result(self) {
+    say("result", 0u64);
+    imm r = await now[Result[u64, u32]](Error[u64, u32][13u32]);
+    match r {
+      case imm ok Ok {say("result ok", ok.value);}
+      case imm e Error {say("result error", u64.from(e.value));}
+    }
+  }
+
+  pub async do abandoned(self) {
+    imm k = new Fin(9u64);
+    say("abandoned", 0u64);
+    imm v = await never();
+    say("abandoned after", v + k.n);
+  }
+}
+
+fn main() {
+  initAll();
+  {
+    imm p = new Prober();
+    p.go();
+  }
+  finalAll();
+  say("end", 0u64);
+}

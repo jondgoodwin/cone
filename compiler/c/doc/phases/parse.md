@@ -656,7 +656,8 @@ only a lexer given `Lexer.gennames` reads. A diagnostic against the generated
 text is reported at the actor's name with the generated line beside it
 (`Lexer.genat`). The module must import `actors` (`ErrorActorRuntime`), whose
 functions generation calls for a seam are found as it is bound
-(`actorRuntime`). Each generated declaration is marked `DclActorGen`, which a
+(`actorRuntime`), and so is its `Awaitable`, the generic an `await` on an
+operation awaits an instance of (`actorAwaitable`). Each generated declaration is marked `DclActorGen`, which a
 library compile exports whatever its visibility: the include file keeps the
 actor whole, its bodies too, so an importer generates them again, the same.
 What crosses to the actor, and what a behaviour returns, is checked after type

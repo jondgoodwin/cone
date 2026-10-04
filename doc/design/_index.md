@@ -253,7 +253,7 @@ design behind it.
 | **Safety and trust** | `refsafety` · `reftypesafe` · `reftrust` · `refintrinsic` | [Safety](safety.md) · [intrinsic](../../compiler/c/doc/nodes/intrinsic.md) |
 | **Error handling** | `refexcept` · `refoption` · `refresult` | [Panics](panics.md); ⚠ **no note for recoverable errors** |
 | **Metaprogramming** | `refmacro` · `refmeta` | [generic](../../compiler/c/doc/nodes/generic.md) |
-| **Concurrency** | `refconc` · `refconccomm` · `refconcio` · `refcorout` | ⚠ **no note; no thread layer in the language** (OS threads and the futex are library code, the `thread` package, described in `refconc`; the `actor` declaration and the `actors` package it runs on are described in `refconccomm`, "Actors", and `await` in an actor's behaviour in "Awaiting a reply"; the parser generates an actor's declarations, [Parse](../../compiler/c/doc/phases/parse.md) section 6) |
+| **Concurrency** | `refconc` · `refconccomm` · `refconcio` · `refcorout` | ⚠ **no note; no thread layer in the language** (OS threads and the futex are library code, the `thread` package, described in `refconc`; the `actor` declaration and the `actors` package it runs on are described in `refconccomm`, "Actors", and `await` in an actor's behaviour in "Awaiting a reply", and on an I/O operation of the `aio` package in `refconcio`, "Awaiting I/O"; the parser generates an actor's declarations, [Parse](../../compiler/c/doc/phases/parse.md) section 6) |
 | **Collections** | `reftypecoll` | ⚠ **no note** |
 
 ⚠ **A reference page shows the language's *intended* shape, not only what is

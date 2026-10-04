@@ -1,0 +1,67 @@
+// What an awaited operation answers with must be used: an I/O operation's
+// answer is a Result, saying whether it worked, as a synchronous call that
+// can fail answers, and an 'await' whose value nothing takes would drop the
+// failure unread. So an 'await' on an operation (an actors.Awaitable) that is
+// a statement of its own is refused, in the middle of a behaviour and as its
+// last statement, where a behaviour returning nothing drops it too
+// (ErrorAwaitUnused). Bound to a local, or used, it is accepted. An 'await'
+// on a behaviour's reply is not touched by this. Careless is the reference
+// manual's refusal (refconcio.html, "Awaiting I/O"), verbatim, on the aio
+// package's write.
+
+mod concurrency_await_operation_unused;
+
+import libc;
+import iobuf use Pool;
+import actors;
+import aio use Socket;
+
+fn startNow(ctx *u8, rp actors.Reply) {
+  actors.answerNow[Result[u64, u32]](rp, Ok[u64, u32][1u64]);
+}
+
+fn dropNow(ctx *u8) {}
+
+fn op() actors.Awaitable[Result[u64, u32]] {
+  actors.Awaitable[Result[u64, u32]].make(1usize as *u8, &startNow, &dropNow);
+}
+
+actor Peer {
+  pub async do count(self) u64 {3u64;}
+}
+
+actor User {
+  peer Peer;
+  last u64;
+
+  pub async do dropped(self) {
+    await op();                       //~ ErrorAwaitUnused:5 "is not used"
+    last = 1u64;
+  }
+
+  pub async do droppedLast(self) {
+    await op();                       //~ ErrorAwaitUnused:5 "bind it"
+  }
+
+  pub async do bound(self) {
+    imm r = await op();
+    match r {
+      case imm ok Ok {last = ok.value;}
+      else {last = 0u64;}
+    }
+  }
+
+  pub async do replied(self) {
+    await peer.count();
+  }
+}
+
+actor Careless {
+  pool Pool;
+
+  pub async do careless(self, conn Socket) {
+    await conn.write(pool.mustTake(64usize));   // refused: the answer is not used //~ ErrorAwaitUnused:5 "answers with a Result"
+  }
+}
+
+fn main() {}

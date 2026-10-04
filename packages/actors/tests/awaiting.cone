@@ -7,7 +7,9 @@
 // slots; each sum is checked once finalAll has found everything quiet.
 //
 // Then the pending table alone: ids are slots, a slot freed is the next one
-// taken, and a block keeps what was written into it.
+// taken, and a block keeps what was written into it; and a table that dies
+// with records still parked drops each of them, through the drop function
+// each was parked with, and frees its block.
 
 mod awaiting;
 
@@ -17,12 +19,24 @@ import actors;
 struct Sums {
   pub got Atomic[u64];
   pub replies Atomic[u64];
+  pub dropped Atomic[u64];
+}
+
+// A record's drop function, as the compiler makes one for a seam: here the
+// record is one u64, added up as it is dropped
+fn dropRecord(record *u8) {
+  sums.dropped.add(*(record as *u64) + 1000u64);
+}
+
+fn dropFn() *u8 {
+  mut f = &dropRecord;
+  *(&mut f as **u8);
 }
 
 imm sums Sums;
 
 fn @initpure init() {
-  sums = new Sums(Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+  sums = new Sums(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64));
 }
 
 actor Squarer {
@@ -64,7 +78,7 @@ fn main() i32 {
   mut ids Array[u64, 10] = [0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64];
   mut i = 0usize;
   while i < 10usize {
-    ids[i] = actors.parkReserve(&mut p, 8usize);
+    ids[i] = actors.parkReserve(&mut p, 8usize, dropFn());
     *(actors.parked(&mut p, ids[i]) as *u64) = u64.from(i) * 7u64;
     i = i + 1usize;
   }
@@ -73,12 +87,26 @@ fn main() i32 {
   imm b3 = actors.unpark(&mut p, ids[3]);
   expectUInt(*(b3 as *u64), 21u64, "the block keeps what was written");
   actors.recordFree(b3);
-  imm again = actors.parkReserve(&mut p, 8usize);
+  imm again = actors.parkReserve(&mut p, 8usize, dropFn());
   expectUInt(again, 3u64, "a slot freed is the next taken");
   i = 0usize;
   while i < 10usize {
     actors.recordFree(actors.unpark(&mut p, ids[i]));
     i = i + 1usize;
   }
+  expectUInt(sums.dropped.load(), 0u64, "a record unparked is not dropped");
+
+  {
+    mut q = new actors.Pending();
+    mut k = 1u64;
+    while k <= 3u64 {
+      imm id = actors.parkReserve(&mut q, 8usize, dropFn());
+      *(actors.parked(&mut q, id) as *u64) = k;
+      k = k + 1u64;
+    }
+    actors.recordFree(actors.unpark(&mut q, 1u64));
+  }
+  // Records 1 and 3, in slots 0 and 2, were parked when q died: 1001 + 1003
+  expectUInt(sums.dropped.load(), 2004u64, "a table dying drops each record still parked, once");
   done();
 }

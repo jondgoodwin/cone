@@ -16,8 +16,29 @@ static uint32_t actorMax = 0;
 
 FnDclNode *actorRuntime[ActorRtCount];
 char *actorRuntimeNames[ActorRtCount] = {
-    "parkReserve", "parked", "unpark", "recordFree", "answerTo", "answered"
+    "parkReserve", "parked", "unpark", "recordFree", "answerTo", "answered", "startAwait"
 };
+
+StructNode *actorAwaitable = NULL;
+
+INode *actorAwaitableResult(INode *type) {
+    if (actorAwaitable == NULL || type == NULL || actorAwaitable->genericinfo == NULL
+        || actorAwaitable->genericinfo->memonodes == NULL)
+        return NULL;
+    type = itypeGetTypeDcl(type);
+    if (type == NULL || type->tag != StructTag)
+        return NULL;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(actorAwaitable->genericinfo->memonodes, cnt, nodesp)) {
+        ++nodesp; --cnt;  // pairs: the call, then its instance
+        if (*nodesp != type)
+            continue;
+        Nodes *args = itypeInstanceTypeArgs(type);
+        return args && args->used == 1 ? nodesGet(args, 0) : NULL;
+    }
+    return NULL;
+}
 
 void actorRegister(ActorInfo *info) {
     if (actorCnt == actorMax) {

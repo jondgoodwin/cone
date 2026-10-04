@@ -1,0 +1,90 @@
+// The hook target: an answer handed to another runtime's code, which the
+// loop knows nothing of. A Sink is that runtime's pointer and two functions
+// made for it, and the loop calls 'deliver' with the answer, on its own
+// thread, once.
+//
+// 1. A timer and an external operation answered to hooks: each deliver is
+//    handed its own pointer, and the answer with its token, its outcome and
+//    its buffer; nothing comes to poll's own list.
+// 2. A loop that dies with a timer still to fire delivers its answer,
+//    Cancelled, to the hook, as it does to every target owed elsewhere.
+// 3. A Sink that dies without delivering calls 'drop' instead, once.
+
+mod hook;
+
+import testing use *;
+import collections use List;
+import time use Instant, Duration;
+import iobuf use *;
+import iocore use *;
+import diag;
+
+// What one hook saw: written by its functions, read by main
+struct Seen {
+  pub delivered u64;
+  pub dropped u64;
+  pub token u64;
+  pub status u32;
+  pub n usize;
+  pub bufcap usize;
+}
+
+fn seen() Seen {new Seen(0u64, 0u64, 0u64, 99u32, 0usize, 0usize);}
+
+fn deliverTo(ctx *u8, c Completion) {
+  imm s = ctx as *Seen;
+  (*s).delivered = (*s).delivered + 1u64;
+  (*s).token = c.token;
+  (*s).status = c.status;
+  (*s).n = c.n;
+  (*s).bufcap = c.buf.capacity();
+}
+
+fn droppedAt(ctx *u8) {
+  imm s = ctx as *Seen;
+  (*s).dropped = (*s).dropped + 1u64;
+}
+
+fn hookOf(s &mut Seen, token u64) Target {
+  Target.Hook[token, Sink.make(s as *Seen as *u8, &deliverTo, &droppedAt)];
+}
+
+fn main() i32 {
+  mut timer = seen();
+  mut ext = seen();
+  mut late = seen();
+  mut never = seen();
+  {
+    mut lp = Loop.mustMake();
+    imm pool = Pool.make();
+    lp.after(Instant.now() + Duration.fromMillis(1i64), hookOf(&mut timer, 7u64));
+    mut comp = lp.external(hookOf(&mut ext, 8u64), pool.mustTake(4096usize));
+    comp.done(5usize);
+    mut out = List[Completion].empty();
+    imm limit = Instant.now() + Duration.fromSeconds(5i64);
+    while (timer.delivered == 0u64 or ext.delivered == 0u64) and Instant.now() < limit {
+      lp.poll(limit, &mut out);
+    }
+    expectUInt(u64.from(out.len()), 0u64, "1: nothing came to poll's own list");
+    expectUInt(timer.delivered, 1u64, "1: the timer's hook delivered once");
+    expectUInt(timer.token, 7u64, "1: with its token");
+    expectUInt(u64.from(timer.status), u64.from(diag.outcomeDone), "1: Done");
+    expectUInt(ext.delivered, 1u64, "1: the external operation's hook delivered once");
+    expectUInt(ext.token, 8u64, "1: with its token");
+    expectUInt(u64.from(ext.n), 5u64, "1: and its count");
+    expectUInt(u64.from(ext.bufcap), 4096u64, "1: and its buffer back");
+    expectUInt(timer.dropped + ext.dropped, 0u64, "1: neither dropped");
+
+    lp.after(Instant.now() + Duration.fromSeconds(60i64), hookOf(&mut late, 9u64));
+  }
+  expectUInt(late.delivered, 1u64, "2: the loop's death delivered the timer's answer");
+  expectUInt(u64.from(late.status), u64.from(diag.outcomeCancelled), "2: Cancelled");
+  expectUInt(late.dropped, 0u64, "2: not dropped");
+
+  {
+    imm t = hookOf(&mut never, 10u64);
+  }
+  expectUInt(never.dropped, 1u64, "3: a Sink that dies undelivered calls drop");
+  expectUInt(never.delivered, 0u64, "3: and never deliver");
+  done();
+}

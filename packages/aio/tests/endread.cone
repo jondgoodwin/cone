@@ -1,0 +1,70 @@
+// The program ends with an actor paused on a read that is never answered:
+// Talker listens, connects to itself (the connection waits in the listener's
+// backlog, never accepted), tells main, and awaits a read on a connection
+// whose peer never sends. finalAll() ends the I/O: the read is cancelled and
+// its answer not delivered, so the paused behaviour is abandoned. The record
+// holds the connected socket, the listening one, and two notes, which die as
+// the behaviour's one scope says: the last declared first. The read's buffer
+// goes home to its pool; nothing after the 'await' runs.
+
+mod endread;
+
+import stdio use *;
+import sync use Oneshot, OneshotSender, OneshotReceiver;
+import iobuf use Pool;
+import iocore use SocketAddr, IoError;
+import actors;
+import aio use Socket;
+
+struct Note {
+  pub n u64;
+  fn final(self &uni) {printStr("  drop "); printUInt(n); printStr("\n");}
+}
+
+fn socketOf(r Result[Socket, IoError]) Socket {
+  mut res = r;
+  mut s = Socket.none();
+  match &mut res {
+    case mut ok &mut Ok {s <=> ok.value;}
+    else {}
+  }
+  s;
+}
+
+actor Talker {
+  pool Pool;
+
+  pub async do talk(self, ready OneshotSender[u64]) {
+    imm first = new Note(1u64);
+    imm l = await aio.listen(SocketAddr.localhost(0u16));
+    imm ls = socketOf(l);
+    imm a = await ls.localAddr();
+    mut port = 0u16;
+    match a {
+      case imm addr Ok {port = addr.value.port();}
+      else {}
+    }
+    imm c = await aio.connect(SocketAddr.localhost(port));
+    imm conn = socketOf(c);
+    imm second = new Note(2u64);
+    printStr("connected\n");
+    mut r = ready;
+    r.send(1u64);
+    imm got = await conn.read(pool.mustTake(4096usize));
+    printStr("read\n");
+  }
+}
+
+fn main() {
+  initAll();
+  mut tx OneshotSender[u64];
+  mut rx OneshotReceiver[u64];
+  tx, rx = Oneshot[u64].make();
+  {
+    imm t = new Talker(Pool.make());
+    t.talk(tx);
+  }
+  rx.recv();
+  finalAll();
+  printStr("end\n");
+}

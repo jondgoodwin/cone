@@ -64,6 +64,7 @@
 //   addressesIn(&buf)  fileStatIn(&buf)  Lane.general()  Lane.dns()  addLane(cfg)  l.stats()
 //   Target.Here[token]  Target.Post[token, waker]           (TARGETS)
 //   Target.Chan[token, tx]  Target.Once[token, oneshotTx]  Target.Status[token, board, slot]
+//   Target.Hook[token, sink]  Sink.make(ctx, deliver, drop)
 //   StatusArray.make(n): s.isReady(i) s.isFree(i) s.take(i, out) s.len()
 //   CancelGroup.make()  .until(deadline): g.child() g.childUntil(d) g.shield(d)
 //     g.cancel() g.isCancelled() g.deadline() g.id()
@@ -135,6 +136,16 @@
 //   status arrays): 'isReady(i)', then 'take(i, out)'. The slot is claimed
 //   at submit and free again once taken; a slot given a second operation
 //   while it holds one, or out of range, is a panic at the caller's line.
+//
+// The last hands the answer to another runtime, which the loop knows nothing
+// of (I11): Target.Hook[token, sink], where a Sink is that runtime's own
+// pointer ('ctx') and two plain functions made for it. The loop calls
+// 'deliver(ctx, answer)' on its own thread, once, where it would have sent
+// the answer; a Sink that dies without delivering (its loop gone before the
+// operation was started, say) calls 'drop(ctx)' instead. The functions run
+// inside poll, or inside the loop's death, so they hand the answer on and
+// never call back into the loop: the actor runtime's I/O thread (the aio
+// package) turns each answer into a message to the actor that awaits it.
 //
 // Each of these answers is stamped delivered when the loop hands it over,
 // and a loop whose answers all go elsewhere still sees its poll return as
@@ -537,6 +548,40 @@ pub enum Target {
   pub struct Chan {pub tx Sender[Completion];}
   pub struct Once {pub tx OneshotSender[Completion];}
   pub struct Status {pub board StatusArray; pub slot u32;}
+  pub struct Hook {pub sink Sink;}
+}
+
+// Where a Target.Hook's answer goes: code of another runtime's (an actor
+// runtime's, a green-thread runtime's), which the loop calls on its own
+// thread with the answer, and which must only hand it on (see the package's
+// header, TARGETS). The loop knows nothing of that runtime: 'ctx' is the
+// runtime's own, and two functions made for it take it -- 'deliver', with
+// the answer, once; or 'drop', when the Sink dies without having delivered
+// one. Sendable on trust, as the runtime that made it promises: its ctx may
+// be handed on and dropped on any thread
+pub struct Sink is Sendable, Move {
+  ctx *u8;
+  deliver &fn(ctx *u8, c Completion);
+  drop &fn(ctx *u8);
+
+  pub fn make(ctx *u8, deliver &fn(ctx *u8, c Completion), drop &fn(ctx *u8)) Sink {
+    new Sink(ctx, deliver, drop);
+  }
+
+  // Hand the answer on: ctx is deliver's from now on
+  fn give(self &mut, c Completion) {
+    imm x = ctx;
+    ctx = null;
+    imm f = deliver;
+    f(x, c);
+  }
+
+  fn final(self &uni) {
+    if ctx as usize != 0usize {
+      imm f = drop;
+      f(ctx);
+    }
+  }
 }
 
 // How an operation ended: its one terminal reply (I1)

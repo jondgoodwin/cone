@@ -43,8 +43,11 @@
 //                                   a new actor: its 'Arc[opaq, Mailbox[M]]'
 //   actors.send[M](mb, msg)         queue msg in the actor's mailbox
 //   actors.sendable(v)              v, if it may cross threads (the check)
+//   actors.Awaitable[R]             an operation a behaviour may 'await', whose
+//                                   answer is an R (AWAITING, below)
+//   actors.waitQuiet()              wait until no actor is queued or running
 //
-// The last four are what an actor's own code calls, and the compiler
+// The four before Awaitable are what an actor's own code calls, and the compiler
 // generates that code from the 'actor' declaration
 // (compiler/c/parser/parseactor.c). The package is 'actors' because 'actor'
 // (the declaration's keyword) is a keyword, as are 'async' and 'do', and
@@ -228,10 +231,25 @@
 //   seam carries it in the record, so whichever half returns the value
 //   answers (answerTo).
 //
+// What is awaited may instead be an OPERATION, an Awaitable[R]: something its
+// maker starts at the seam, whose one answer is an R -- the aio package's I/O
+// operations are Awaitables. The seam makes the same envelope and hands it to
+// the operation's start function (startAwait), which arranges for whatever
+// finishes the operation, on whatever thread, to write the R into it as
+// answerNow does; the reply then resumes the behaviour as any reply does. The
+// 'await''s value is the R as the operation declared it.
+//
 // One request has one reply, exactly once: a slot is freed only by its
 // reply. A continuation waiting holds its actor alive through the envelope's
-// count, and its request is a message in another actor's mailbox or that
-// actor's own continuation, so quiescence is never found with one parked.
+// count. Its request is a message in another actor's mailbox, that actor's
+// own continuation, or an operation in flight: quiescence is found with
+// continuations parked only on operations, which the aio package ends at the
+// program's end. A continuation whose envelope is dropped unanswered is
+// ABANDONED: when its actor dies -- the envelope's count gone, nothing else
+// holding it -- the pending table drops its record, through the drop function
+// the compiler made for the seam, so each value the paused behaviour held is
+// finalized in the order its one scope gives, and the rest of the behaviour
+// never runs.
 //
 // THE RUNTIME starts and stops by itself. Its workers start with the first
 // actor, on whichever thread starts it (sync's Once makes two first starts
@@ -266,7 +284,10 @@
 // Quiescence is judged on the assumption that, once the finalizer has begun,
 // every message is sent by an actor: a thread other than main that goes on
 // sending must be joined first, or its message may be the one that arrives
-// after the workers have stopped. Main sends nothing while it waits.
+// after the workers have stopped. Main sends nothing while it waits. The aio
+// package's I/O thread sends replies too; its own finalizer, which finalAll()
+// runs before this one, waits for quiet (waitQuiet), ends the I/O, and joins
+// the thread.
 //
 // 'actors.stats()' answers what the workers have done so far (Stats:
 // workers; messages handled; turns, an actor taken from a queue and run;
@@ -818,33 +839,58 @@ pub fn resumeId[S](st &mut S, run *u8, id u64, data *u8) {
 // An actor's pending table: its parked continuations' records, each in a
 // block of its own, keyed by a plain id, the slot's index. A slot holds a
 // record's block, or, free, the next free slot's index + 1, times 2, plus 1.
-// Only the actor's own methods touch it, one at a time.
+// A block begins with its record's drop function, which the compiler made
+// for the seam, and its record follows, recordHead bytes in. Only the actor's
+// own methods touch it, one at a time.
 pub struct Pending {
   slots *usize = null;
   cap usize = 0usize;
   free usize = 0usize;     // The first free slot's index + 1, or 0
   count usize = 0usize;    // How many records are parked
 
-  // Every record parked is owed a reply, whose envelope counts this actor, so
-  // an actor dies with none parked
+  // An actor that dies with records parked abandons them: each record is
+  // dropped, its values' finalizers run in the order its seam's would have
+  // run them, and its second half never runs. Every record parked is owed a
+  // reply whose envelope counts this actor, so it dies with one parked only
+  // when that envelope was dropped unanswered: the I/O it awaited was ended
+  // at the program's end (the aio package), or the actor that was to answer
+  // abandoned its own continuation holding the envelope
   fn final(self &uni) {
-    if count != 0usize {
-      die("actors: an actor died with continuations parked");
+    if slots as usize == 0usize {
+      return;
     }
-    if slots as usize != 0usize {
-      libc.free(slots as *u8);
+    mut i = 0usize;
+    while count != 0usize and i < cap {
+      imm v = *(slots + i);
+      if v & 1usize == 0usize {
+        imm block = v as *u8;
+        mut d = *(block as **u8);
+        imm drop = mem.readRaw[&fn(record *u8)](&mut d as *(&fn(record *u8)));
+        drop(block + recordHead);
+        libc.free(block);
+        count = count - 1usize;
+      }
+      i = i + 1usize;
     }
+    libc.free(slots as *u8);
   }
 }
 
+// Where a record begins in its block, after its drop function: room enough
+// that a record aligned as malloc aligns stays so
+const recordHead = 16usize;
+
 // A slot for a record of 'size' bytes, its block allocated: the id, which the
-// request's resume message carries. A PLAIN ID, with no generation: a slot is
-// freed only by the one reply its record is owed, which comes exactly once,
-// and that reply's envelope holds this actor's count, so no reply can be
-// stale, doubled, or sent to an actor that has died. A generation becomes
-// necessary exactly when a timeout can free a slot while its reply is still
-// in flight, and nothing has a timeout path yet.
-pub fn parkReserve(p &mut Pending, size usize) u64 {
+// request's resume message carries. 'drop' is the record's drop function,
+// '&fn(record *u8)', which the table calls if the actor dies with the record
+// parked. A PLAIN ID, with no generation: a slot is freed only by the one
+// reply its record is owed, which comes exactly once, and that reply's
+// envelope holds this actor's count, so no reply can be stale, doubled, or
+// sent to an actor that has died. A generation becomes necessary exactly
+// when a timeout or a cancel can free a slot while its reply is still in
+// flight, and nothing has a timeout path yet: an I/O operation's answer
+// comes exactly once too, and its envelope counts the actor the same way.
+pub fn parkReserve(p &mut Pending, size usize, drop *u8) u64 {
   if p.free == 0usize {
     mut newcap = 8usize;
     if p.cap != 0usize {newcap = p.cap * 2usize;}
@@ -873,35 +919,71 @@ pub fn parkReserve(p &mut Pending, size usize) u64 {
   imm id = p.free - 1usize;
   imm slot = p.slots + id;
   p.free = *slot / 2usize;
-  mut bytes = size;
-  if bytes == 0usize {bytes = 1usize;}
-  imm block = libc.malloc(bytes);
+  imm block = libc.malloc(recordHead + size);
   if block as usize == 0usize {
     die("actors: out of memory for a continuation");
   }
+  *(block as **u8) = drop;
   *slot = block as usize;
   p.count = p.count + 1usize;
   u64.from(id);
 }
 
-// The block of the record parked at id, to write the record into
+// Where the record parked at id goes in its block, to write it there
 pub fn parked(p &mut Pending, id u64) *u8 {
-  *(p.slots + usize.from(id)) as *u8;
+  (*(p.slots + usize.from(id)) as *u8) + recordHead;
 }
 
-// The reply for id arrived: its record's block, the slot freed
+// The reply for id arrived: where its record is, the slot freed
 pub fn unpark(p &mut Pending, id u64) *u8 {
   imm slot = p.slots + usize.from(id);
   imm block = *slot as *u8;
   *slot = p.free * 2usize + 1usize;
   p.free = usize.from(id) + 1usize;
   p.count = p.count - 1usize;
-  block;
+  block + recordHead;
 }
 
-// A record's block, once its values are moved out
-pub fn recordFree(block *u8) {
-  libc.free(block);
+// A record's block, once its values are moved out: 'record' is where unpark
+// said it was
+pub fn recordFree(record *u8) {
+  libc.free(((record as usize) - recordHead) as *u8);
+}
+
+// What an 'await' in a behaviour may wait for besides another actor's reply:
+// an operation started at the seam, an I/O operation above all (the aio
+// package), whose one answer is an R. Its maker erases its type: 'ctx' is the
+// maker's, and two functions made for it take it -- 'start', at the seam,
+// with the envelope of the reply the answer goes back in, written as
+// answerNow writes a behaviour's value; or 'drop', when the Awaitable dies
+// unawaited. The compiler generates the seam's call (startAwait). R is in no
+// field: it is the type the 'await' gives, which the maker's start promises
+// to write
+pub struct Awaitable[R] is Move {
+  ctx *u8;
+  start &fn(ctx *u8, rp Reply);
+  drop &fn(ctx *u8);
+
+  pub fn make(ctx *u8, start &fn(ctx *u8, rp Reply), drop &fn(ctx *u8)) Awaitable[R] {
+    new Awaitable[R](ctx, start, drop);
+  }
+
+  fn final(self &uni) {
+    if ctx as usize != 0usize {
+      imm f = drop;
+      f(ctx);
+    }
+  }
+}
+
+// The seam starts what it awaits: 'a' is where the Awaitable lies, moved there
+// by the generated code, which finalizes nothing of it, and its ctx is start's
+// from now on. Every Awaitable[R] is laid out alike, whatever its R
+pub fn startAwait(a *u8, rp Reply) {
+  imm aw = a as *Awaitable[u8];
+  imm x = (*aw).ctx;
+  imm f = (*aw).start;
+  f(x, rp);
 }
 
 // ---------------------------------------------------------------------------
@@ -1430,12 +1512,9 @@ fn startWorkers() {
   }
 }
 
-// Wait until quiescent, then stop and join the workers, keeping their totals
-fn stopWorkers() {
-  if me != 0usize {
-    die("actors: the runtime stopped from one of its own workers, which would wait for itself");
-  }
-  imm s = running as *Sched;
+// Wait until s is quiescent. 'done' says the stop has begun, so that the
+// last worker to go to sleep wakes this thread to look again
+fn quiesce(s *Sched) {
   mem.atomicStore[u32](&(*s).done as *u32, 1u32, MemOrder.SeqCst[]);
   while true {
     imm q = ld32(&(*s).quiet as *u32);
@@ -1444,6 +1523,30 @@ fn stopWorkers() {
     }
     sync.futexWait(&(*s).quiet, q);
   }
+}
+
+// Wait until no actor is queued or running, as the module's finalizer does
+// before it stops the workers: for a package whose own finalizer runs before
+// this one's and acts once all is quiet -- aio's, which then ends the I/O
+// still awaited. Nothing if no actor started the workers; a panic on one of
+// them, which would wait for itself
+pub fn waitQuiet() {
+  if running == 0usize {
+    return;
+  }
+  if me != 0usize {
+    die("actors: waitQuiet called on one of the runtime's own workers, which would wait for itself");
+  }
+  quiesce(running as *Sched);
+}
+
+// Wait until quiescent, then stop and join the workers, keeping their totals
+fn stopWorkers() {
+  if me != 0usize {
+    die("actors: the runtime stopped from one of its own workers, which would wait for itself");
+  }
+  imm s = running as *Sched;
+  quiesce(s);
   mem.atomicStore[u32](&(*s).stopping as *u32, 1u32, MemOrder.SeqCst[]);
   mem.atomicAdd[u32](&(*s).epoch as *u32, 1u32, MemOrder.SeqCst[]);
   sync.futexWakeAll(&(*s).epoch);

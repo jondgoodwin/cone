@@ -13,9 +13,9 @@
 
     <div class="text">
 
-	<p style="margin-left: 40px;"><i>Note: The text below this note is the original exploration
-		of the question, kept as it was written. What is built is in library packages,
-		Windows only for now:</i></p>
+	<p style="margin-left: 40px;"><i>Note: The text under "The original exploration", below, is
+		the original exploration of the question, kept as it was written. What is built is in
+		library packages, Windows only for now:</i></p>
 	<ul style="margin-left: 40px; font-style: italic;">
 	<li><b>Blocking, synchronous I/O:</b> <span class="pre">fs</span> (files and folders),
 		<span class="pre">path</span> and <span class="pre">env</span> (beneath them, the
@@ -38,10 +38,172 @@
 		<span class="pre">url</span>, URLs as data; and <span class="pre">httpclient</span>,
 		which fetches an <span class="pre">http://</span> or <span class="pre">https://</span>
 		URL in one call, with connection pooling, retries and redirects.</li>
-	<li><b>Not built yet:</b> an actor's behaviour awaiting an I/O operation's completion.
-		A behaviour can already await another actor's reply
-		(<a href="refconccomm.html#await">Awaiting a reply</a>).</li>
+	<li><b>I/O an actor awaits:</b> <span class="pre">aio</span>. An actor's behaviour may
+		<span class="pre">await</span> a socket's operation &mdash; listen, accept, connect, read,
+		write &mdash; and pauses there until the operation's answer comes, as it pauses for another
+		actor's reply (<a href="refconccomm.html#await">Awaiting a reply</a>; below,
+		<a href="#await-io">Awaiting I/O</a>). TCP sockets only.</li>
 	</ul>
+
+	<h2 id="await-io">Awaiting I/O</h2>
+	<p>An actor's behaviour waits for I/O the way it waits for another actor's reply: with
+		<span class="pre">await</span>. The <span class="pre">aio</span> package makes each
+		operation; awaited, the behaviour pauses, the actor goes on with its other messages, and
+		when the operation has finished, the rest of the behaviour runs with its answer. A server
+		and a client, each an actor:</p>
+<pre>
+// The Socket an answer holds, swapped out of it: Socket.none() if it failed
+fn socketOf(r Result[Socket, IoError]) Socket {
+  mut res = r;
+  mut s = Socket.none();
+  match &amp;mut res {
+    case mut ok &amp;mut Ok {s &lt;=&gt; ok.value;}
+    case imm e &amp;mut Error {say("failed", u64.from(e.value.code));}
+  }
+  s;
+}
+
+actor Client {
+  pool Pool;
+
+  pub async do send(self, port u16) {
+    imm conn = socketOf(await aio.connect(SocketAddr.localhost(port)));
+    mut buf = pool.mustTake(64usize);
+    buf.append("hello");
+    imm sent = await conn.write(buf);          // pauses until all of it is sent
+    match sent {
+      case imm e Error {say("write failed", u64.from(e.value.code));}
+      else {}
+    }
+  }                                           // conn closes here
+}
+
+actor Server {
+  pool Pool;
+  client Client;
+
+  pub async do serve(self) u64 {
+    imm listener = socketOf(await aio.listen(SocketAddr.localhost(0u16)));
+    imm addr = await listener.localAddr();     // the port the system chose
+    match addr {
+      case imm a Ok {client.send(a.value.port());}
+      case imm e Error {say("no address", u64.from(e.value.code));}
+    }
+    imm conn = socketOf(await listener.accept());
+    imm none = await conn.read(IoBuf.empty());           // a buffer with no room
+    match none {
+      case imm e Error {say("no room: error", u64.from(e.value.code));}
+      else {}
+    }
+    mut total = 0u64;
+    mut more = true;
+    while more {
+      imm got = await conn.read(pool.mustTake(4096usize));
+      match got {
+        case imm b Ok {
+          if b.value.len() == 0usize {
+            say("end of stream", total);                 // the peer closed
+            more = false;
+          } else {
+            say("received", u64.from(b.value.len()));
+            total = total + u64.from(b.value.len());
+          }
+        }
+        case imm e Error {
+          say("read failed", u64.from(e.value.code));
+          more = false;
+        }
+      }
+    }
+    total;
+  }
+}
+</pre>
+	<p>(<span class="pre">say</span> prints a word and a number on a line;
+		<span class="pre">Pool</span> and <span class="pre">IoBuf</span> are
+		<span class="pre">iobuf</span>'s, <span class="pre">SocketAddr</span> and
+		<span class="pre">IoError</span> <span class="pre">iocore</span>'s, and
+		<span class="pre">Socket</span> <span class="pre">aio</span>'s.) Sent
+		<span class="pre">serve()</span>, the server prints:</p>
+<pre>
+no room: error 122
+received 5
+end of stream 5
+</pre>
+	<p>Each <span class="pre">await</span> there pauses one behaviour, and only it. While the
+		server waits for a connection, the client waits for its connect; the worker threads run
+		neither until an answer comes.</p>
+
+	<h3>What an operation answers</h3>
+	<p>Each operation declares its own answer, and the <span class="pre">await</span>'s value is
+		exactly that: <span class="pre">await</span> adds nothing to it. An operation that can fail
+		answers as a synchronous call that can fail does, with a <span class="pre">Result</span>:
+		the success, or the operating system's failure, an <span class="pre">IoError</span> whose
+		<span class="pre">code</span> is the system's error number.</p>
+	<ul>
+	<li><span class="pre">aio.listen(addr)</span>, <span class="pre">aio.connect(addr)</span>,
+		<span class="pre">listener.accept()</span>: a <span class="pre">Socket</span>. Cone does
+		not yet move a value out of a matched variant's field, so it comes out by a swap, as
+		<span class="pre">socketOf</span> does.</li>
+	<li><span class="pre">conn.read(buf)</span>: the buffer, given back with what arrived
+		appended to it. The buffer is moved into the read, which is how the system may write into
+		it while the behaviour waits, and the read's answer is how it comes back. At the end of the
+		stream, when the peer has closed, it comes back as it went, its length unchanged. A failed
+		read's buffer goes home to its pool.</li>
+	<li><span class="pre">conn.write(buf)</span>: the count written, which is all of the buffer;
+		the buffer goes home.</li>
+	<li><span class="pre">s.localAddr()</span>: the address the socket is bound to.</li>
+	</ul>
+	<p>An operation's answer must be used. An <span class="pre">await</span> on one that is a
+		statement of its own would drop the failure unread, so it is refused:</p>
+<pre>
+  pub async do careless(self, conn Socket) {
+    await conn.write(pool.mustTake(64usize));   // refused: the answer is not used
+  }
+</pre>
+<pre>
+This 'await' waits for an operation, which answers with a Result, and the answer is not
+used. An operation's answer says whether it worked, a failure among what it may say, as a
+synchronous call that can fail answers, and it must be looked at: bind it, 'imm r = await
+...', and match on it.
+</pre>
+	<p>An operation is made by the call (<span class="pre">conn.read(buf)</span>) and started by
+		the <span class="pre">await</span>; one made and never awaited does nothing, and is
+		dropped. An operation that did not finish &mdash; cancelled, because its socket was closed
+		while it was in flight &mdash; has no answer to give, and the <span class="pre">await</span>
+		panics, naming the line that made the operation. Nothing lets a behaviour put a time limit
+		on an awaited operation, or cancel one.</p>
+
+	<h3>Sockets</h3>
+	<p>A <span class="pre">Socket</span> moves: it may be sent in a message to another actor.
+		Dropping it closes the socket, after whatever operations were started on it before. A
+		socket in a paused behaviour waits with the behaviour, as any value does
+		(<a href="refconccomm.html#await-cross">What crosses an await</a>), so it stays open
+		until the behaviour ends.</p>
+
+	<h3>The I/O thread, and the program's end</h3>
+	<p>The operations run on one thread of their own, the I/O thread, which the first operation
+		awaited starts: it waits in <span class="pre">iocore</span>'s completion loop, and hands each
+		answer to the actor awaiting it as a message, in its mailbox. The worker threads never wait
+		on I/O. An operation in flight keeps the actor awaiting it alive, whether or not anything
+		else holds the actor, as a request to another actor does.</p>
+	<p>At the program's end, <span class="pre">finalAll()</span> waits until no actor is queued or
+		running &mdash; an actor paused on I/O is neither &mdash; and then ends the I/O: every
+		operation still in flight is cancelled and every socket closed, and the answers are not
+		delivered. Each behaviour still paused on one is <b>abandoned</b>: the rest of it never
+		runs, and every value it held when it paused is finalized, in the order it would have died
+		in had the behaviour ended there, once nothing else holds its actor. A server waiting for a
+		connection that never comes ends this way; so does a read from a peer that never
+		sends.</p>
+
+	<h3 id="await-io-unbuilt">Not built yet</h3>
+	<ul>
+	<li>A time limit on an awaited operation, and cancelling one.</li>
+	<li>Files, the blocking pool's work, UDP, and a socket's half-close, awaited.</li>
+	<li>More than one I/O thread.</li>
+	</ul>
+
+	<h2>The original exploration</h2>
 
 	<p>I/O encompasses any processing activity that extends beyond the boundaries of CPU/memory computation,
 		including user input and presentation, file or network requests, timers, etc.

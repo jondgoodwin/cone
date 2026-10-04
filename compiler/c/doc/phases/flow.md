@@ -1263,8 +1263,9 @@ below is checked; what then becomes of the seams flow accepted is
 generation makes the behaviour's first half and a second half for each seam,
 from what is noted here ([Generation](generation.md), "A split method"), when
 each awaits a behaviour of an actor that returns a value
-(`AwaitNode.message`, which type check set, sending it awaited), whose reply
-calls the second half. Under `--await-direct`, which is for tests, a seam
+(`AwaitNode.message`, which type check set, sending it awaited) or an
+operation, an `actors.Awaitable[R]` started at the seam (`AwaitNode.awaitable`,
+an I/O operation), whose reply calls the second half. Under `--await-direct`, which is for tests, a seam
 awaiting anything else is split too, handing its record straight to its
 second half. Otherwise -- an `await` on anything else -- each is reported as
 not built (`ErrorUnbuiltAwait`, `awaitReportUnbuilt`), the message saying what

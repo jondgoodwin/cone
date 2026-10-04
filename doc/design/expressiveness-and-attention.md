@@ -102,7 +102,7 @@ sharing, means most aliasing questions never arise to be asked.
 concurrency one.** [References and Regions](references-and-regions.md) carries
 what borrowing does today.
 
-## Actors, and why they rate highly [differs: a reply comes only to an 'await' on a behaviour; no 'actor trait', no generic actor]
+## Actors, and why they rate highly [differs: a reply comes only to an 'await' on a behaviour or an I/O operation; no 'actor trait', no generic actor]
 
 > *"What I like about actors is how much simpler it makes talking about
 > concurrency and designing around concurrency, and the modularness of it, as
@@ -125,7 +125,9 @@ quiescence), and each method declared `fn` synchronous, run inside the actor
 by its caller. A behaviour may return a value to an `await` in another
 behaviour, which pauses only that behaviour until the reply comes: its callers
 are not marked, since its dispatcher, not a caller, runs it (the reference
-manual's "Awaiting a reply").
+manual's "Awaiting a reply"). A socket's operation, made by the `aio`
+package, is awaited the same way: the runtime's I/O thread does it, and its
+answer comes back as a reply does ("Awaiting I/O").
 
 ## The evidence offered that expressiveness pays
 
