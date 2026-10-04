@@ -102,7 +102,7 @@ var ConeHighlightRules = function() {
             regex: /\b(?:mod|import|use|but|pub|extern)\b/
         }, {
             token: "keyword.other.declaration.cone",
-            regex: /\b(?:fn|struct|trait|enum|alias|macro|const|static|overload|extends|actor)\b/
+            regex: /\b(?:fn|struct|trait|enum|alias|macro|const|static|overload|extends|actor|async|do)\b/
         }, {
             token: "keyword.other.new.cone",
             regex: /\b(?:new|trynew)\b/
@@ -120,7 +120,7 @@ var ConeHighlightRules = function() {
             regex: /\b(?:while|each|in|by)\b/
         }, {
             token: "keyword.other.reserved.cone",
-            regex: /\b(?:async|baseurl|context|local|selfmethod|wait|yield|throw|catch|spawn)\b/
+            regex: /\b(?:baseurl|context|local|selfmethod|wait|yield|throw|catch|spawn)\b/
         }, {
             token: "text",
             regex: /\-|\+|\*|\/(?![\/*])|%|<<|>>/

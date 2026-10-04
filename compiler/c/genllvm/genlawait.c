@@ -1,4 +1,4 @@
-/** Generation of a split method: an actor's message holding an 'await'
+/** Generation of a split method: an actor's behaviour holding an 'await'
  * @file
  *
  * A seam ('await') is a return to the actor's dispatcher, not to the author:

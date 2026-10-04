@@ -464,10 +464,10 @@ enum ErrorCode {
     ErrorLifetimeBound = 1249,  // A lifetime bound not met or not built: a borrow that is not global given for a ''static' bound, a value holding a borrow not known to last ''a' coerced to '&<Trait + 'a', a value holding a borrow that is not global made an owning virtual reference ('So[Trait]', bounded by ''static'), a bound on a generic type's parameter
 
     // Actors: 'actor Name { ... }' (parser/parseactor.c, ir/types/actor.h). A
-    // message's argument that is not Sendable is ErrorNotSendable; the state
+    // behaviour's argument that is not Sendable is ErrorNotSendable; the state
     // reached through a handle is ErrorNotPublic
-    // 1250 was ErrorActorReturn; a message may return a value, which a reply carries back to an 'await'
-    ErrorActorMember = 1251,    // What an actor's body may not hold, or a form of it not built: a 'pub' field, a static, a 'pub' function without 'self', a generic message, a macro, a 'use', an 'extern' or a 'self' of another kind; a generic actor, its 'is', 'extends' or an attribute
+    // 1250 was ErrorActorReturn; a behaviour may return a value, which a reply carries back to an 'await'
+    ErrorActorMember = 1251,    // What an actor's body may not hold, or a form of it not built: a 'pub' field, a static, a 'pub' function without 'self', a 'pub fn' method other than 'init', a behaviour without 'self' or named 'init' or 'final', a generic behaviour, a macro, a 'use', an 'extern' or a 'self' of another kind; a generic actor, its 'is', 'extends' or an attribute
     ErrorActorRuntime = 1252,   // An actor declared in a module that does not import the actors package it runs on
 
     // GPU targets: what a SPIR-V module cannot hold, refused where it is
@@ -494,10 +494,13 @@ enum ErrorCode {
     ErrorWorkgroupData = 1268,  // What a '@workgroup' global holds: anything but 32-bit numbers, their atomics, and structs and fixed arrays of them
     ErrorGpuAtomicPlace = 1269, // In a kernel, an atomic operation on memory invocations do not share: a local, or a global not '@workgroup'
 
-    // 'await' in an actor's method (ir/exp/await.c; its seam, ir/flowpath.c)
-    ErrorAwaitPlace = 1270,     // 'await' outside an actor's method: in a function, a method of another type, or an actor's 'init' or 'final', which no dispatcher runs
-    ErrorUnbuiltAwait = 1271,   // An 'await' every seam rule accepted, where its continuation is not built: one not on a message, one on a message returning nothing, one whose record holds a traced reference; or a call of a method holding one, not from its dispatcher
+    // 'await' in an actor's behaviour (ir/exp/await.c; its seam, ir/flowpath.c)
+    ErrorAwaitPlace = 1270,     // 'await' outside an actor's behaviour: in a function, a method of another type, or an actor's 'fn' -- its 'init', its 'final' or a synchronous helper -- which no dispatcher runs as a message
+    ErrorUnbuiltAwait = 1271,   // An 'await' every seam rule accepted, where its continuation is not built: one not on a behaviour, one whose record holds a traced reference
     ErrorSelfActorPlace = 1272, // 'selfactor' outside an actor's method: in a function, a method of another type, or an actor's 'init' or 'final'
+    ErrorBehaviourWords = 1273, // 'async' or 'do' without the other, or 'async do' anywhere but in an actor's body: the two words together declare an actor's behaviour, and neither means anything alone
+    ErrorAwaitVoid = 1274,      // 'await' on a behaviour that returns nothing, which sends no reply: a caller that needs to know it finished awaits one that declares a return type
+    ErrorBehaviourSend = 1275,  // 'self.m()' on one of the actor's own behaviours where it cannot be sent: in its 'init' or 'final', in a function that is not one of its methods, or through a state that is not the method's own 'self'
 
     // Warnings
     WarnCode = 3000,

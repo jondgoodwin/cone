@@ -1072,6 +1072,20 @@ int fnCallLowerMethod(TypeCheckState *pstate, FnCallNode *callnode) {
         return 0;
     }
 
+    // 'self.m()', m one of an actor's behaviours, is a send: its receiver
+    // becomes the actor's handle, whose method sends m (selfActorSend)
+    int send = selfActorSend(pstate, callnode, objdereftype);
+    if (send < 0)
+        return -1;
+    if (send > 0) {
+        obj = callnode->objfn;
+        if (inodeIsError(obj)) {
+            callnode->vtype = errorType;
+            return -1;
+        }
+        objdereftype = iexpGetDerefTypeDcl(obj);
+    }
+
     // Visibility is that of the binding the caller's name reaches: a method's
     // DclPrivate bit, or the 'pub' flag of a field or an overload name. A public
     // overload name may therefore select a private concrete candidate. A name
@@ -1105,19 +1119,19 @@ int fnCallLowerMethod(TypeCheckState *pstate, FnCallNode *callnode) {
         // A generic type's method this instance lacks, its 'where' clause unmet
         if (foundnode == NULL && genericReportAbsent((INode*)callnode, objdereftype, methsym))
             return -1;
-        // An actor's handle carries its messages and nothing else: its state,
-        // and the methods it does not make messages, are its own
+        // An actor's handle carries its behaviours and nothing else: its state,
+        // and its synchronous methods, run only inside it, are its own
         StructNode *state;
         INode *statemember = foundnode == NULL ? actorStateMember(objdereftype, methsym, &state) : NULL;
         if (statemember) {
             Name *actorname = ((StructNode*)objdereftype)->namesym;
             if (statemember->tag == FieldDclTag)
                 errorMsgNode((INode*)callnode, ErrorNotPublic,
-                    "`%s` is part of actor %s's private state, which only its own methods reach, one message at a time. Send it a message that uses it.",
+                    "`%s` is part of actor %s's private state, which only its own methods reach, one message at a time. Send it a behaviour that uses it.",
                     &methsym->namestr, &actorname->namestr);
             else
                 errorMsgNode((INode*)callnode, ErrorNotPublic,
-                    "`%s` is private to actor %s: only its 'pub' methods are messages, which its handle sends.",
+                    "`%s` is a synchronous method of actor %s's, run only inside the actor: its handle sends the actor's behaviours, declared 'async do', and nothing else.",
                     &methsym->namestr, &actorname->namestr);
             return -1;
         }
@@ -1281,9 +1295,6 @@ int fnCallLowerMethod(TypeCheckState *pstate, FnCallNode *callnode) {
     callnode->objfn = (INode*)methodrefnode;
     callnode->methfld = NULL;
     callnode->vtype = ((FnSigNode*)selected->vtype)->rettype;
-
-    // A method of an actor holding an 'await' is its dispatcher's to call
-    awaitCallCheck(pstate, (INode*)callnode, selected);
 
     // Handle copying of value arguments and default arguments
     fnCallFinalizeArgs(callnode);

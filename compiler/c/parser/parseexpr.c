@@ -220,6 +220,12 @@ INode *parseTerm(ParseState *parse) {
         return parseLifetime(parse, 0);
     case LCurlyToken:
         return parseExprBlock(parse, 0);
+    // 'async do' declares an actor's behaviour, in an actor's body: reported,
+    // with either word alone, and the declaration passed over
+    case AsyncToken:
+    case DoToken:
+        parseBehaviourWords("a function's body");
+        return NULL;
     default:
         errorMsgLex(ErrorBadTerm, "Invalid term: expected name, literal, etc.");
         lexNextToken(); // Avoid infinite loop

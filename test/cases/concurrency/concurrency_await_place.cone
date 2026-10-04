@@ -1,12 +1,17 @@
-// Where 'await' may stand: in a method of an actor, where the method is cut
-// and returns to the actor's dispatcher to wait. Anywhere else is
-// ErrorAwaitPlace, at the 'await': a plain function, a method of a struct,
-// and an actor's 'init' and 'final', which an actor's body declares beside
-// its methods and which no dispatcher runs -- 'init' on the thread making the
-// actor, 'final' as it dies. Its operand is checked all the same.
+// Where 'await' may stand: in an actor's behaviour, a method declared
+// 'async do', where the behaviour is cut and returns to the actor's
+// dispatcher to wait. Anywhere else is ErrorAwaitPlace, at the 'await': a
+// plain function, a method of a struct, and every 'fn' of an actor, which is
+// synchronous and which no dispatcher runs as a message -- its 'init', on the
+// thread making the actor, its 'final', as it dies, and a helper, run inside
+// the method that calls it, which the message says to await in the behaviour
+// instead, pushing the synchronous work down. Its operand is checked all the
+// same.
 //
-// An 'await' in an actor's method is accepted, and reported as not built
-// (concurrency_await_*).
+// An 'await' in a behaviour is accepted: 'fine' and 'unseen' here, the second
+// a behaviour that is not 'pub', which is a message all the same; what is
+// built of one is concurrency_await_reply's, and what is not
+// concurrency_await_*'s.
 
 mod concurrency_await_place;
 
@@ -15,13 +20,13 @@ import actors;
 fn give() u64 {5u64;}
 
 fn plain() u64 {
-  await give();            //~ ErrorAwaitPlace "this one is in a function that is not a method of an actor"
+  await give();            //~ ErrorAwaitPlace "This one is in a function that is not an actor's behaviour."
 }
 
 struct Plain {
   n u64;
   fn get(self) u64 {
-    await give();          //~ ErrorAwaitPlace "this one is in a function that is not a method of an actor"
+    await give();          //~ ErrorAwaitPlace "This one is in a function that is not an actor's behaviour."
   }
 }
 
@@ -29,11 +34,25 @@ actor Page {
   body u64;
 
   fn init(self &new) {
-    await give();          //~ ErrorAwaitPlace "this one is in an actor's initializer"
+    await give();          //~ ErrorAwaitPlace "This one is in actor Page's initializer"
     *self = new Self(body: 0u64);
   }
 
+  pub async do get(self) u64 {body;}
+
+  pub async do fine(self) {
+    body = await self.get();
+  }
+
+  async do unseen(self) {
+    body = await selfactor.get();
+  }
+
+  fn helper(self) {
+    await self.get();      //~ ErrorAwaitPlace "'await' stands only in an actor's behaviour, declared 'async do', where the behaviour is cut and returns to the actor's dispatcher to wait. This one is in helper, a 'fn' of actor Page's: synchronous, run inside the method that calls it, which cannot pause partway through a call. An 'await' belongs at the top of a behaviour: await there, and push the synchronous work down, onto a helper like this one or a type the actor owns, to run between the awaits."
+  }
+
   fn final(self &uni) {
-    await give();          //~ ErrorAwaitPlace "this one is in an actor's finalizer"
+    await give();          //~ ErrorAwaitPlace "This one is in actor Page's finalizer"
   }
 }
