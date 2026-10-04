@@ -145,7 +145,10 @@ type while each call gives its own orderings.
    kinds' LLVM-type switch. An atomic operation is caught earlier, in
    `genlFnCall` (`intrinsicAtomicCallee`), where the call's arguments are still
    at hand: `genlAtomicIntrinsic` reads its orderings from them
-   (`intrinsicCallOrders`), which type check has already found allowed.
+   (`intrinsicCallOrders`), which type check has already found allowed. So is
+   a `writeRaw` whose value is a construction by a declared init
+   (`intrinsicCallIs`), before its value is evaluated, so that the init fills
+   the place written to.
 
 ## Each kind, and how LLVM implements it
 
@@ -157,7 +160,7 @@ type while each call gives its own orderings.
 | `finalize[T]` | expansion | `genlFinalizeAt`: release an owning reference; a struct's or an enum's drop; a tuple's elements, an array's in element order |
 | `sliceFromParts[T]`, `…Mut` | expansion | two `insertvalue`s into the `{ptr, usize}` pair |
 | `readRaw[T]` | expansion | a load (`%rawread`) |
-| `writeRaw[T]` | expansion | a store |
+| `writeRaw[T]` | expansion | a store; where the value is a construction by a declared init, `new T(...)`, the init is called with the pointer as its `self`, filling it in place (`genlFnCall`, `genlNewInto`), as an allocation's value is: so an init that uses its `self`'s address -- an actor's, sending through its own handle -- sees where the value stays |
 | `moveRaw[T]` | operation | `LLVMBuildMemMove` of `count * sizeof(T)` bytes |
 | `typeRecord[T]` | constant | the address of T's record, a private constant `genlTypeRecord` builds once per object |
 | `holdsTraced[T]` | constant | `itypeHoldsTraced`, a front-end question, emitted as an `i1` |

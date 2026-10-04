@@ -35,13 +35,15 @@ fn @initpure init() {
   results = new Results(Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64));
 }
 
-// The handle: its initializer, which starts the actor, and its send functions
+// The handle: its initializer, which makes the actor's block, makes the state
+// in it in place and starts the actor, and its send functions
 struct Player {
   mb Arc[opaq, actors.Mailbox[Player_msg]];
 
   fn init(self &new, first u64) {
-    *self = new Player(mb: actors.startActor[Player_state, Player_msg](
-      new Player_state(first), &Player_dispatch));
+    imm st = actors.makeActor[Player_state, Player_msg](&Player_dispatch);
+    mem.writeRaw[Player_state](st, new Player_state(first));
+    *self = new Player(mb: actors.startActor[Player_state, Player_msg](st));
   }
 
   pub fn meet(self &, p Player) {

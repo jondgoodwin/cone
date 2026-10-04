@@ -13,14 +13,22 @@
  *   struct Counter.State {count u64; fn init...; fn bump...} the body as written
  *   struct Counter {                                         the handle
  *     mailbox Arc[opaq, actors.Mailbox[Counter.Msg]];
- *     fn init(self &new, n u64) {*self = new Self(mailbox:
- *       actors.startActor[Counter.State, Counter.Msg](new Counter.State(n), &Counter.dispatch));}
+ *     fn init(self &new, n u64) {
+ *       imm st = actors.makeActor[Counter.State, Counter.Msg](&Counter.dispatch);
+ *       mem.writeRaw[Counter.State](st, new Counter.State(n));
+ *       *self = new Self(mailbox: actors.startActor[Counter.State, Counter.Msg](st));}
  *     pub fn bump(self &, n u64) {actors.send[Counter.Msg](mailbox, Counter.Msg.bump[n]);}
  *   }
  *   enum Counter.Msg is Sendable {struct bump {n u64;}}     one variant per behaviour
  *   fn Counter.dispatch(self &mut Counter.State, msg *Counter.Msg) {
  *     if &*msg is &Counter.Msg.bump {imm p = msg as *Counter.Msg.bump; self.bump(actors.take(&(*p).n));}
  *   }
+ *
+ * The handle's initializer makes the actor's block first and constructs the
+ * state in it in place (a construction written raw is filled where it is
+ * written, genlFnCall), so the state's own 'init' runs on the state where it
+ * stays, in an actor that is real already: 'selfactor' and a send to itself
+ * are good there, and the messages they send run once the init has returned.
  *
  * The handle's method sending a behaviour is 'pub' where the behaviour is. In
  * the state the behaviour is an ordinary method, which only the dispatcher
@@ -97,6 +105,8 @@ enum GenSlot {
     GenEnvelope,    // A request variant's envelope, its reply
     GenResume,      // The resume variant whose second half takes no record
     GenResumeId,    // The resume variant whose second half takes a record, by its id
+    GenMem,         // Core's 'mem', whatever the actor's own names hide it
+    GenAt,          // The handle's initializer's local: where the state is made
     GenState,       // 'Counter.State'
     GenMsg,         // 'Counter.Msg'
     GenDispatch,    // 'Counter.dispatch'
@@ -244,6 +254,47 @@ static void genParm(GenText *g, DclText *text, Name *name) {
         genPuts(g, " = ");
         genPutn(g, text->value, text->valueend - text->value);
     }
+}
+
+// The body of one of the handle's initializers, round the state's construction,
+// whose arguments the caller writes between the two: the actor's block made,
+// the state constructed in it in place, so that its init runs on the state
+// where it stays, in an actor that is real already, then the actor started
+// (the actors package, A NEW ACTOR)
+static void genStartOpen(GenText *g) {
+    genPuts(g, ") {imm ");
+    genSlot(g, GenAt);
+    genPuts(g, " = ");
+    genSlot(g, GenActors);
+    genPuts(g, ".makeActor[");
+    genSlot(g, GenState);
+    genPuts(g, ", ");
+    genSlot(g, GenMsg);
+    genPuts(g, "](&");
+    genSlot(g, GenDispatch);
+    genPuts(g, "); ");
+    genSlot(g, GenMem);
+    genPuts(g, ".writeRaw[");
+    genSlot(g, GenState);
+    genPuts(g, "](");
+    genSlot(g, GenAt);
+    genPuts(g, ", new ");
+    genSlot(g, GenState);
+    genPuts(g, "(");
+}
+
+static void genStartClose(GenText *g) {
+    genPuts(g, ")); *self = new Self(");
+    genSlot(g, GenMailbox);
+    genPuts(g, ": ");
+    genSlot(g, GenActors);
+    genPuts(g, ".startActor[");
+    genSlot(g, GenState);
+    genPuts(g, ", ");
+    genSlot(g, GenMsg);
+    genPuts(g, "](");
+    genSlot(g, GenAt);
+    genPuts(g, "));}\n");
 }
 
 // ---- What the body may hold --------------------------------------------------
@@ -434,7 +485,7 @@ static void parseActorMembers(DclTexts *texts, StructNode *state, Name *actornam
             errorMsgNode(node, ErrorActorMember,
                 "An actor's %s is synchronous, declared 'fn': %s. A behaviour, 'async do', is a message the actor runs when it is scheduled.",
                 fn->namesym == finalName ? "'final'" : "initializer",
-                fn->namesym == finalName ? "it runs as the actor dies" : "it runs on the thread making the actor, before the actor exists");
+                fn->namesym == finalName ? "it runs as the actor dies" : "it runs on the thread making the actor, before the actor takes any message");
             continue;
         }
         if (fn->namesym == finalName)
@@ -547,6 +598,8 @@ static int parseActorRuntime(ParseState *parse, StructNode *at, Name *actorname,
         genShared[GenEnvelope] = nametblPrivate("reply'", 6);
         genShared[GenResume] = nametblPrivate("resume'", 7);
         genShared[GenResumeId] = nametblPrivate("resumeid'", 9);
+        genShared[GenMem] = nametblPrivate("mem", 3);
+        genShared[GenAt] = nametblPrivate("state'", 6);
     }
     if (namespaceFind(&mod->namespace, genShared[GenActors]))
         return 1;
@@ -559,15 +612,28 @@ static int parseActorRuntime(ParseState *parse, StructNode *at, Name *actorname,
         return 0;
     }
     ModuleNode *syncmod = parseActorFindImport(actorsmod->imports, "sync");
-    if (syncmod == NULL || namespaceFind(&actorsmod->namespace, nametblFind("startActor", 10)) == NULL) {
+    if (syncmod == NULL || namespaceFind(&actorsmod->namespace, nametblFind("startActor", 10)) == NULL
+        || namespaceFind(&actorsmod->namespace, nametblFind("makeActor", 9)) == NULL) {
         errorMsgNode((INode *)at, ErrorActorRuntime,
-            "Actor %s runs on the actors package, and the module %s imports as actors is not that package: it has no startActor, or does not import sync.",
+            "Actor %s runs on the actors package, and the module %s imports as actors is not that package: it has no makeActor or startActor, or does not import sync.",
+            &actorname->namestr, &mod->namesym->namestr);
+        return 0;
+    }
+    // Core's 'mem', reached by a name of its own, so that an initializer's
+    // parameter named 'mem' does not hide it from the text written in that
+    // initializer
+    ModuleNode *coremod = parseActorFindImport(mod->imports, "core");
+    INode *memdcl = coremod ? namespaceFind(&coremod->namespace, nametblFind("mem", 3)) : NULL;
+    if (memdcl == NULL) {
+        errorMsgNode((INode *)at, ErrorActorRuntime,
+            "Actor %s runs on core's 'mem', which module %s does not reach.",
             &actorname->namestr, &mod->namesym->namestr);
         return 0;
     }
     parseActorBind(mod, genShared[GenActors], (INode *)actorsmod, FlagImportName);
     parseActorBind(mod, genShared[GenSync], (INode *)syncmod, FlagImportName);
     parseActorBind(mod, genShared[GenSendable], (INode *)sendableTrait, 0);
+    parseActorBind(mod, genShared[GenMem], memdcl, 0);
 
     // What generation calls for a split method's seams, which no source names
     for (int i = 0; i < ActorRtCount; ++i) {
@@ -794,17 +860,7 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
             genPuts(&g, ", ");
             genParm(&g, text, field->namesym);
         }
-        genPuts(&g, ") {*self = new Self(");
-        genSlot(&g, GenMailbox);
-        genPuts(&g, ": ");
-        genSlot(&g, GenActors);
-        genPuts(&g, ".startActor[");
-        genSlot(&g, GenState);
-        genPuts(&g, ", ");
-        genSlot(&g, GenMsg);
-        genPuts(&g, "](new ");
-        genSlot(&g, GenState);
-        genPuts(&g, "(");
+        genStartOpen(&g);
         int first = 1;
         for (nodelistFor(&state->fields, cnt, nodesp)) {
             FieldDclNode *field = (FieldDclNode *)*nodesp;
@@ -818,9 +874,7 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
             genPuts(&g, ": ");
             genName(&g, field->namesym);
         }
-        genPuts(&g, "), &");
-        genSlot(&g, GenDispatch);
-        genPuts(&g, "));}\n");
+        genStartClose(&g);
     }
     for (nodesFor(members.inits, cnt, nodesp)) {
         FnDclNode *fn = (FnDclNode *)*nodesp;
@@ -840,17 +894,7 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
             genPuts(&g, ", ");
             genParm(&g, parseActorText(&texts, (INode *)parm), parm->namesym);
         }
-        genPuts(&g, ") {*self = new Self(");
-        genSlot(&g, GenMailbox);
-        genPuts(&g, ": ");
-        genSlot(&g, GenActors);
-        genPuts(&g, ".startActor[");
-        genSlot(&g, GenState);
-        genPuts(&g, ", ");
-        genSlot(&g, GenMsg);
-        genPuts(&g, "](new ");
-        genSlot(&g, GenState);
-        genPuts(&g, "(");
+        genStartOpen(&g);
         int first = 1;
         for (nodesFor(((FnSigNode *)fn->vtype)->parms, parmcnt, parmp)) {
             VarDclNode *parm = (VarDclNode *)*parmp;
@@ -861,9 +905,7 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
             first = 0;
             genName(&g, parm->namesym);
         }
-        genPuts(&g, "), &");
-        genSlot(&g, GenDispatch);
-        genPuts(&g, "));}\n");
+        genStartClose(&g);
     }
     // A behaviour that returns a value is sent awaited by a second method,
     // which an 'await' calls in place of the first (awaitTypeCheck): it takes

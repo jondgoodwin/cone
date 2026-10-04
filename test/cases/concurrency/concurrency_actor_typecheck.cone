@@ -10,10 +10,14 @@
 //   its thread may still be the state's own (concurrency_actors_rcstate), and
 //   a handle crosses (the lines without annotations).
 // - 'self.note(n)', note a behaviour, is a send to the actor itself
-//   (concurrency_actor_selfsend runs it). Where there is no actor to send to
-//   it is ErrorBehaviourSend: in the 'init', which runs before the actor
-//   exists, in the 'final', as it dies, and through a state that is not the
-//   method's own 'self' -- one made with 'new Self(...)' is in no actor.
+//   (concurrency_actor_selfsend runs it), the 'init' included, which runs on
+//   the state in the actor (concurrency_actor_init_sends). Where there is no
+//   actor to send to it is ErrorBehaviourSend: in the 'final', as it dies, and
+//   through a state that is not the method's own 'self' -- one made with
+//   'new Self(field: ...)' is in no actor.
+// - So an init the state declares runs only as the actor is made: 'new
+//   Self(...)' running one in a method is ErrorActorStateInit, since its
+//   sends would reach no actor.
 
 mod concurrency_actor_typecheck;
 
@@ -27,7 +31,7 @@ actor Keeper {
 
   fn init(self &new, from Rc[mut, Log]) {   //~ ErrorNotSendable "Actor Keeper's initializer takes from, a Rc[mut, Log], which is not Sendable"
     *self = new Self(count: 0u64, log: from);
-    self.note(1u64);                        //~ ErrorBehaviourSend "note is a behaviour of actor Keeper's, so calling it sends it to the actor, as a message; this call is in an actor's initializer"
+    self.note(1u64);                        // a send, run once the init returns
   }
 
   pub async do note(self, n u64) {count = count + n;}
@@ -37,8 +41,12 @@ actor Keeper {
   fn helper(self) {}
 
   fn fresh(self) {
-    mut s = new Self(new Rc[mut, Log](0u64));
+    mut s = new Self(count: 0u64, log: new Rc[mut, Log](0u64));
     s.note(1u64);                           //~ ErrorBehaviourSend "only this method's own 'self' is the state of an actor the runtime holds"
+  }
+
+  fn initAgain(self) {
+    mut s = new Self(new Rc[mut, Log](0u64));   //~ ErrorActorStateInit "This runs an init actor Keeper's state declares, on a state that is in no actor"
   }
 
   fn final(self &uni) {

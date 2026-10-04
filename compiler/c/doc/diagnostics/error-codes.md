@@ -354,7 +354,7 @@ a borrow that is too short is the loan walk's `ErrorFrozen`, `ErrorEscape` or
 parameter of the function is `ErrorWhereSubject`, and of a lifetime its
 signature does not name `ErrorLifetimeUndeclared`.
 
-An actor's declaration has four codes of its own and borrows two. What its
+An actor's declaration has five codes of its own and borrows two. What its
 body may not hold, or a form of it not built (a `pub` field, a static, a
 `pub` function without `self`, a `pub fn` method other than `init`, a
 behaviour without `self` or named `init` or `final`, a generic behaviour, a
@@ -364,8 +364,10 @@ the `actors` package is `ErrorActorRuntime`; `async` or `do` without the other,
 or `async do` outside an actor's body, is `ErrorBehaviourWords`, a parse code
 of its own because the two words are one keyword and neither alone is
 anything; and `self.m()` on one of the actor's behaviours where there is no
-actor to send it to -- the `init`, the `final`, a state that is not the
-method's own `self` -- is `ErrorBehaviourSend`. A behaviour's or an
+actor to send it to -- the `final`, a state that is not the method's own
+`self` -- is `ErrorBehaviourSend`; and the state constructed with an `init` it
+declares anywhere but the handle's initializer, where the init would run on a
+state in no actor, is `ErrorActorStateInit`. A behaviour's or an
 initializer's parameter, or a behaviour's returned type, that cannot cross
 threads is `ErrorNotSendable`, the thread check's code, whatever finds it --
 the parser, for a borrow or the state itself, or `actorCheckAll` after type
@@ -386,7 +388,9 @@ message says why and, where the seam's rules were checked, what its
 continuation would carry: an `await` on anything but a behaviour or an
 operation, in a construct the split does not reach, or whose record would hold
 a traced reference. `selfactor` outside an actor's methods, or in
-its `init` or `final`, is `ErrorSelfActorPlace`.
+its `final`, is `ErrorSelfActorPlace`; in its `init` before the state is
+filled, it is a use through an unfilled `self`, `ErrorInitSelf`, as
+`self.m()` there is.
 
 A GPU target takes four codes, one per remedy, all for what SPIR-V's logical
 addressing cannot type. A reference, or a value holding one, chosen at run

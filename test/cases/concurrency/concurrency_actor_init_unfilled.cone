@@ -1,0 +1,42 @@
+// An actor's init may send to the actor itself once its state is filled, as
+// any init may use its 'self' then: 'selfactor' and 'self.m()' are uses
+// through 'self', so before '*self = ...' each is ErrorInitSelf, as a method
+// called on it is. After the store both are sends
+// (concurrency_actor_init_sends runs them).
+
+mod concurrency_actor_init_unfilled;
+
+import actors;
+
+actor Early {
+  n u64;
+
+  fn init(self &new) {
+    self.later(1u64);            //~ ErrorInitSelf "self holds no value until '*self = value' fills it"
+    *self = new Self(n: 0u64);
+    self.later(2u64);            // filled: a send
+  }
+
+  pub async do later(self, k u64) {n = n + k;}
+}
+
+actor Eager {
+  n u64;
+
+  fn init(self &new, k u64) {
+    imm me = selfactor;          //~ ErrorInitSelf "self holds no value until '*self = value' fills it"
+    *self = new Self(n: k);
+    imm again = selfactor;       // filled: the actor's handle
+  }
+
+  pub async do later(self, k u64) {n = n + k;}
+}
+
+fn main() {
+  initAll();
+  {
+    imm a = new Early();
+    imm b = new Eager(1u64);
+  }
+  finalAll();
+}

@@ -712,6 +712,16 @@ FnDclNode *intrinsicAtomicCallee(FnCallNode *call) {
     return kind >= AtomicLoadIntrinsic && kind <= AtomicCompareSwapIntrinsic ? fndcl : NULL;
 }
 
+int intrinsicCallIs(FnCallNode *call, int16_t kind) {
+    INode *callee = call->objfn;
+    if (isNameUseNode(callee))
+        callee = ((NameUseNode *)callee)->dclnode;
+    if (callee == NULL || callee->tag != FnDclTag || !(((FnDclNode *)callee)->dclinfo.facts & DclIntrinsic))
+        return 0;
+    FnDclNode *fndcl = (FnDclNode *)callee;
+    return intrinsicIsDeclared(fndcl) && ((IntrinsicNode *)fndcl->value)->intrinsicFn == kind;
+}
+
 int intrinsicSrcKind(INode *node) {
     if (node == NULL || node->tag != FnCallTag)
         return 0;
