@@ -92,6 +92,7 @@ add_executable(conec
 	compiler/c/ir/exp/allocate.c
 	compiler/c/ir/exp/arraylit.c
 	compiler/c/ir/exp/assign.c
+	compiler/c/ir/exp/await.c
 	compiler/c/ir/exp/block.c
 	compiler/c/ir/exp/borrow.c
 	compiler/c/ir/exp/cast.c

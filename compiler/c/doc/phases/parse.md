@@ -555,6 +555,15 @@ node `?T` builds (`QuesTag`), which name resolution takes apart. After `&` insid
 init's `self`, `&new`; in a value, `&new Point(1, 2)` is a borrow of a
 construction, a temporary, which the borrow's type check refuses.
 
+**`await` is a prefix operator, at `parsePrefix`'s level.** `await x` waits for
+`x` in an actor's method; the method is cut there, a seam. Its operand is a
+prefix operand, a term with its suffixes, so `await f.get() + 1` adds to what
+the wait gives and `await` binds no looser than `-` does. It builds an
+`AwaitNode` and nothing more; where it may stand is type check's
+(`awaitTypeCheck`, `ErrorAwaitPlace`) and what its seam does is the loan walk's
+([Flow](flow.md), "A seam"). `await` is a keyword, so no program may name
+anything `await`.
+
 **It desugars.** `match` becomes a block holding an anonymous capture variable
 plus an `if` chain, each case's patterns becoming its condition: `is T` an `is`
 node, `<v` (and every comparison) the operator call with the captured value on
@@ -776,7 +785,7 @@ numbers.
 | `parser/parseexpr.c` | `parseAnyExpr`, `parseSimpleExpr` | the two expression entry points |
 | | `parseAssign` … `parseMult`, `parseCast` | the precedence cascade (section 3) |
 | | `parseRetiredInto` | the retired `into` reported, pointed at `T.from(x)` and a checked narrowing |
-| | `parsePrefix`, `parseAmper`, `parsePlus` | prefix operators; borrowed and region-managed references |
+| | `parsePrefix`, `parseAmper`, `parsePlus` | prefix operators, `await` among them; borrowed and region-managed references |
 | | `parseSuffix`, `parseDotCall`, `parseArgs`, `parseArg` | postfix `.`, `()`, `[]`, `++`, `--`; named values. The `.` production serves a member of a value and a path through a namespace alike |
 | | `parseTerm`, `parseNameUse`, `parseArrayLit` | literals, parens, blocks-as-expressions, names; a parenthesized entry list when `entryparen` says the term begins an entry |
 | | `parseAppend`, `parseEntries`, `parseEntry`, `parseContentsAfter` | the list after `<-`, its entries and their contextual words, and a construction's contents inside a comma list (section 3) |

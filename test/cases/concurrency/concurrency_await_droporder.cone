@@ -1,0 +1,41 @@
+// A seam keeps drop order exactly (actor-continuations, "Consequences"): every
+// droppable still holding its value moves into the continuation's record,
+// whether it is named after the 'await' or not, and none is dropped at the
+// seam. So the record's values die where the method's one scope says, in the
+// order a method with no seam would finalize them: the inner block's first,
+// then the outer locals, the last declared first.
+//
+// Here 'mid' is never named after the seam. Dropped at the seam, it would die
+// first; it travels, and dies between 'last' and 'first' as written. Nothing
+// is built yet, so the 'await' is reported as not built (ErrorUnbuiltAwait),
+// the message naming the record and its order of death.
+
+mod concurrency_await_droporder;
+
+import actors;
+
+struct Fin {
+  pub n u64;
+  fn final(self &uni) {}
+}
+
+actor Peer {
+  pub fn ping(self) {}
+}
+
+actor Page {
+  body u64;
+  peer Peer;
+
+  pub fn ordered(self) {
+    imm first = new Fin(1u64);
+    imm mid = new Fin(2u64);
+    imm last = new Fin(3u64);
+    {
+      imm inner = new Fin(4u64);
+      await peer.ping();   //~ ErrorUnbuiltAwait "move into the continuation's record [first, mid, last, inner], finalized as if the method were not cut, in the order [inner, last, mid, first]"
+      body = inner.n;
+    }
+    body = body + first.n + last.n;
+  }
+}

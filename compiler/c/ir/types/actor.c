@@ -70,6 +70,14 @@ void actorCheckAll() {
     }
 }
 
+int actorIsState(INode *type) {
+    for (uint32_t i = 0; i < actorCnt; ++i) {
+        if ((INode *)actors[i].state == type)
+            return 1;
+    }
+    return 0;
+}
+
 INode *actorStateMember(INode *type, Name *name, StructNode **state) {
     for (uint32_t i = 0; i < actorCnt; ++i) {
         if ((INode *)actors[i].handle != type)

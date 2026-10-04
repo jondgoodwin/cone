@@ -47,6 +47,18 @@
 # concurrency_actor_order's; concurrency_actors_stress declares the collector,
 # holding nodes, above the nodes, whose message carries a node.
 #
+# 'await' in an actor's method: a seam, where the method returns to the
+# actor's dispatcher to wait. The continuation is not built, so every
+# scenario is a diagnostic one: a seam every rule accepts is reported where it
+# stands (ErrorUnbuiltAwait), its message naming the borrows it ends, the locks
+# it gives back, its continuation's record and that record's order of death,
+# and what it leaves; that message is what concurrency_await_record,
+# _droporder, _static and _lock pin. A borrow named after the seam is the
+# ordinary ErrorFrozen at the seam (concurrency_await_borrow, _lock); where
+# 'await' may stand is concurrency_await_place. The chapter is
+# doc/reference/refconccomm.html, "Actors"; flow's note is
+# compiler/c/doc/phases/flow.md, "A seam".
+#
 # I/O buffers: concurrency_iobuf_loan pins, against the iobuf package, that the
 # thread check and the type check together keep a borrowed buffer from being
 # lent to an operation or crossing to the thread its completion arrives on;
@@ -203,6 +215,38 @@ tags = ["typecheck", "genllvm", "runtime"]
 category = "reject"
 description = "An actor's state holding 'Rc[mut, T]' is not Sendable: refused over a Channel and by thread.start, while its handle, an Arc[opaq, Mailbox], crosses both"
 tags = ["typecheck"]
+
+# -------- 'await': a seam --------
+
+[scenario.concurrency_await_place]
+category = "reject"
+description = "'await' outside an actor's method -- in a plain function, a struct's method, an actor's init and its final -- is ErrorAwaitPlace at the 'await'"
+tags = ["parse", "typecheck"]
+
+[scenario.concurrency_await_borrow]
+category = "reject"
+description = "A seam ends every borrow that is not global: one of the state through 'self', of a local, or lent through a parameter, named after the 'await'; one a droppable's finalizer reads; one an argument of a call around the 'await' carries, a receiver among them: each the ordinary ErrorFrozen at the 'await'. Not named after it, the seam is accepted, ending it"
+tags = ["flow"]
+
+[scenario.concurrency_await_static]
+category = "reject"
+description = "A ''static' borrow crosses a seam: a borrow of a global, and a reborrow through a ''static' parameter, used after the 'await', are accepted and travel in the continuation's record (ErrorUnbuiltAwait)"
+tags = ["flow"]
+
+[scenario.concurrency_await_lock]
+category = "reject"
+description = "A lock borrow, through an actor's field or a global, is never ''static': its loan is of the guard, a local, so named after the 'await' it is refused as any ended borrow is; not named, the seam gives the lock back and the guard does not travel"
+tags = ["flow"]
+
+[scenario.concurrency_await_record]
+category = "reject"
+description = "What a seam's continuation record holds: a droppable never named again travels; a dead number does not, a live one does; a droppable moved out before the seam holds nothing; liveness follows the paths, an 'if''s arms and a loop's next pass; a local whose initializer holds the 'await' holds nothing yet"
+tags = ["flow"]
+
+[scenario.concurrency_await_droporder]
+category = "reject"
+description = "A seam keeps drop order: a droppable never named after the 'await' travels with the rest, so the record dies inner block first, then the last declared first, as a method with no seam would"
+tags = ["flow"]
 
 [scenario.concurrency_iobuf_loan]
 category = "reject"

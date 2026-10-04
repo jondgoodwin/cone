@@ -1213,6 +1213,9 @@ void flowTempEscape(INode *node, int out) {
     case RefCountTag:
         flowTempEscape(((RefCountNode *)node)->exp, out);
         return;
+    case AwaitTag:
+        flowTempEscape(((AwaitNode *)node)->exp, flowTempOut(out, ((AwaitNode *)node)->vtype));
+        return;
     case HollowTag:
         if (((HollowNode *)node)->exp)
             flowTempEscape(((HollowNode *)node)->exp, out);
@@ -1370,6 +1373,20 @@ void flowLoadValue(FlowState *fstate, INode **nodep) {
         break;
     case TempTag:
         break;
+    // A seam: what is awaited runs before it, and the 'await' takes its
+    // value, as a call takes an argument. What the seam does is the loan
+    // walk's (flowpath.c, pwSeam), which walks every function holding one
+    // (fnDclTypeCheck); this walk notes where they are
+    case AwaitTag:
+    {
+        AwaitNode *await = (AwaitNode *)*nodep;
+        flowLoadValue(fstate, &await->exp);
+        flowHandleMoveOrCopy(&await->exp);
+        if (fstate->awaits == NULL)
+            fstate->awaits = newNodes(4);
+        nodesAdd(&fstate->awaits, (INode *)await);
+        break;
+    }
     case NotLogicTag:
         flowLoadValue(fstate, &((LogicNode *)*nodep)->lexp);
         break;
@@ -1752,6 +1769,7 @@ void flowStateInit(FlowState *fstate, FnSigNode *fnsig) {
     fstate->inflightcnt = 0;
     fstate->dropgate = 0;
     fstate->jumped = 0;
+    fstate->awaits = NULL;
 }
 
 // A value handed out that carries a borrow: what it holds, and so how long it

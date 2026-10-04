@@ -769,6 +769,16 @@ INode *parsePrefix(ParseState *parse) {
         return (INode *)node;
     }
 
+    // 'await' (a seam in an actor's method): what follows is what is awaited,
+    // a prefix operand, so 'await f.get() + 1' adds to what the wait gives
+    case AwaitToken:
+    {
+        AwaitNode *node = newAwaitNode();
+        lexNextToken();
+        node->exp = parsePrefix(parse);
+        return (INode *)node;
+    }
+
     // No prefix operator: get the term with its suffixes
     default:
         parse->entryparen = entryparen;

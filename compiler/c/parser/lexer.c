@@ -160,6 +160,9 @@ void keywordInit() {
     // An allocation that may fail, 'trynew Rc[mut, Node](1)': an Option of the
     // reference, None when memory runs out
     keyAdd("trynew", TrynewToken);
+    // In an actor's method, wait for what is awaited: the method is cut there,
+    // a seam where it returns to the actor's dispatcher
+    keyAdd("await", AwaitToken);
 
     keyAdd("void", VoidToken);
     keyAdd("nil", nilToken);

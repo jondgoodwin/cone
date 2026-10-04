@@ -28,6 +28,9 @@ void actorRegister(StructNode *handle, StructNode *state, Nodes *crossing);
 // Called once, when type check has finished and every type is laid out
 void actorCheckAll();
 
+// Is this the state of an actor, whose methods its dispatcher runs?
+int actorIsState(INode *type);
+
 // The member of an actor's state that 'name' names, where 'type' is the
 // actor's handle and the handle has no such member of its own, or NULL. '*state'
 // is set to the state. A use of it is a use of the actor's private state

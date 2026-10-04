@@ -51,6 +51,9 @@ typedef struct {
     uint8_t fired;
 } Pending;
 #define PendingChosen 0xFF
+// A variable's live mark at a seam (loanSeamLive): fired, it records the
+// variable as used after the seam, and reports nothing
+#define PendingSeamLive 0xFE
 
 static Loan *loans = NULL;
 static uint32_t nloans = 0;
@@ -447,6 +450,10 @@ uint32_t loanNotGlobalIn(PathSet *set) {
     return 0;
 }
 
+int loanIsGlobal(uint32_t id) {
+    return loans[id].kind != LoanCaller && !loanIsLocal(id);
+}
+
 uint32_t loanNotBoundIn(FnSigNode *sig, PathSet *set, Name *bound) {
     if (set == NULL || set == &pathSetAll)
         return 0;
@@ -617,6 +624,51 @@ void loanAccess(Place *pl, int access, INode *node) {
         for (uint32_t k = 0; k < nsaturated; ++k)
             loanPend(node, access, id, saturated[k]);
     }
+}
+
+uint32_t loanSeamEnds(PathSet *holds) {
+    if (loanNotGlobalIn(holds) == 0)
+        return 0;
+    if (holds == &pathSetAll)
+        return loanNotGlobalIn(holds);
+    // The borrow the holder was given is the one to name: a near loan, which
+    // is where it points -- one of this function's own storage, else a
+    // reborrow through a reference, whose own loans end with it
+    for (int pass = 0; pass < 2; ++pass) {
+        for (uint32_t i = 0; i < holds->cnt; ++i) {
+            uint32_t id = loanOf(holds->ids[i]);
+            if ((holds->ids[i] & LoanFar) || loans[id].kind == LoanCaller)
+                continue;
+            if (pass == 0 ? loanIsLocal(id) : loans[id].place.deref)
+                return id;
+        }
+    }
+    return loanNotGlobalIn(holds);
+}
+
+uint32_t loanSeamPending(INode *seam, uint32_t loan, uint32_t holder) {
+    return loanPending(seam, AccessSeam, loan, holder);
+}
+
+// Keyed by the seam, the holder, and a middle number no loan's id reaches:
+// apart from a pending conflict's key, a report's (node, 0, 1), a caller
+// loan's and a choice's (bit 30)
+uint32_t loanSeamLive(INode *seam, uint32_t var) {
+    uint32_t id = mapGet(seam, 0x20000000u, var);
+    if (id)
+        return id;
+    if (npendings >= pendingcap)
+        pendings = (Pending *)pathGrow(pendings, &pendingcap, sizeof(Pending));
+    id = npendings++;
+    Pending *pend = &pendings[id];
+    pend->access = seam;
+    pend->loan = 0;
+    pend->other = 0;
+    pend->holder = var;
+    pend->kind = PendingSeamLive;
+    pend->fired = 0;
+    mapPut(seam, 0x20000000u, var, id);
+    return id;
 }
 
 // *********************
@@ -831,6 +883,25 @@ void loanNotBoxable(INode *node, uint32_t loan) {
         srcname, loanWhere(&loans[loan], where, sizeof(where)));
 }
 
+// What a borrow a seam ends is of, as the reader would say it: what the caller
+// lent through a parameter, what a lock's guard holds the lock for (the guard
+// a borrow through a lock permission reads through), a temporary, or a place
+static char *loanSeamOf(uint32_t id, char *buf, size_t size) {
+    Loan *loan = &loans[id];
+    VarDclNode *root = pathVars[loan->place.var].var;
+    INode *roottype = root->vtype ? itypeGetTypeDcl(root->vtype) : NULL;
+    char srcname[128];
+    if (loan->kind == LoanCaller)
+        snprintf(buf, size, "of what the caller lent through '%s'", &root->namesym->namestr);
+    else if (!loan->place.deref && roottype && roottype->tag == RefTag && permHeldKind(((RefNode *)roottype)->perm))
+        snprintf(buf, size, "through the lock taken at %u:%u", root->linenbr, loanColumn((INode *)root));
+    else if (loanTempKind(&loan->place) != LoanTempNone)
+        snprintf(buf, size, "of %s", loanSourceName(&loan->place, srcname, sizeof(srcname)));
+    else
+        snprintf(buf, size, "of '%s'", loanSourceName(&loan->place, srcname, sizeof(srcname)));
+    return buf;
+}
+
 // A use of a holder is a node naming it, or, where its value dies with a
 // finalizer that may read what it holds, its declaration (pwHolderDies)
 static void loanReport(Pending *pend, INode *usenode) {
@@ -846,6 +917,17 @@ static void loanReport(Pending *pend, INode *usenode) {
     else
         snprintf(used, sizeof(used), "at %u:%u", usenode->linenbr, loanColumn(usenode));
     char *mutably = loan->writes ? " mutably" : "";
+    // A seam ends the borrow itself, whatever its source, as a scope's end
+    // ends the borrows of what it declared: the ordinary diagnostic, at the
+    // seam as where the borrow ended
+    if (pend->kind == AccessSeam) {
+        char of[200];
+        errorMsgNode(pend->access, ErrorFrozen,
+            "The borrow '%s' holds %s (made %s) ends at this 'await', where the method returns to its actor's dispatcher to wait, and '%s' is used again %s.",
+            &holder->namesym->namestr, loanSeamOf(pend->loan, of, sizeof(of)), where,
+            &holder->namesym->namestr, used);
+        return;
+    }
     int temp = loanTempKind(&loan->place);
     if (pend->kind == AccessEnd && temp == LoanTempStatement) {
         errorMsgNode(pend->access, ErrorFrozen,
@@ -880,6 +962,11 @@ void loanUse(uint32_t var, INode *usenode) {
         Pending *pend = &pendings[pending->ids[i]];
         if (pend->fired)
             continue;
+        if (pend->kind == PendingSeamLive) {
+            pend->fired = 1;
+            pathSeamLive(pend->access, pend->holder);
+            continue;
+        }
         if (pend->kind == PendingChosen) {
             pend->fired = 1;
             char what[160];
@@ -1001,6 +1088,26 @@ void loanFlightActivate(uint32_t mark, uint32_t receiver, int access, INode *nod
             errorMsgNode(node, ErrorFrozen,
                 "'%s' is borrowed%s (%s) by another argument of this call, which the call uses. It may not be %s as the call's receiver too.",
                 srcname, loan->writes ? " mutably" : "", where, loanAttempt(access));
+            return;
+        }
+    }
+}
+
+void loanSeamFlight(INode *seam) {
+    for (uint32_t f = 0; f < nflights; ++f) {
+        PathSet *set = flights[f].loans;
+        for (uint32_t i = 0; i < set->cnt; ++i) {
+            uint32_t id = loanOf(set->ids[i]);
+            if (loanIsGlobal(id))
+                continue;
+            if (!loanReportOnce(seam))
+                return;
+            char of[200];
+            char where[160];
+            loanWhere(&loans[id], where, sizeof(where));
+            errorMsgNode(seam, ErrorFrozen,
+                "A borrow %s (made %s) ends at this 'await', where the method returns to its actor's dispatcher to wait, and a call or value still being made around it uses that borrow after it.",
+                loanSeamOf(id, of, sizeof(of)), where);
             return;
         }
     }

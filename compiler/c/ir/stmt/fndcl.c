@@ -612,8 +612,16 @@ void fnDclTypeCheck(TypeCheckState *pstate, FnDclNode *fnnode) {
     // blockFlow found no error, for either or both in one walk. On a GPU
     // target every function is walked for loans, whose checks there
     // (flowloan.h, "GPU targets") no trigger of the gate stands for
-    if ((fstate.gate || fstate.dropgate || flowGpu) && errors == errorsOnEntry)
-        flowPathWalk(fnnode, fstate.gate != 0 || flowGpu, fstate.dropgate);
+    // A function holding an 'await' is walked for both, whatever the gates
+    // say: the seam's rules are the loan walk's, and whether a variable still
+    // holds its value there is drop flags' state (flowpath.c, pwSeam)
+    int seams = fstate.awaits != NULL;
+    if ((fstate.gate || fstate.dropgate || flowGpu || seams) && errors == errorsOnEntry)
+        flowPathWalk(fnnode, fstate.gate != 0 || flowGpu || seams, fstate.dropgate || seams);
+    // A seam every rule accepted is not built yet: reported where it stands,
+    // with what its continuation would carry
+    if (seams && errors == errorsOnEntry)
+        awaitReportUnbuilt(fstate.awaits);
     if (timerFine)
         timerBegin(svTimer);
     flowGateCount(&fstate);

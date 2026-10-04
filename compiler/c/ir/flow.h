@@ -45,6 +45,7 @@ typedef struct FlowState {
     uint16_t inflightcnt;   // How many of 'inflight' are in use
     uint8_t dropgate;   // 1: some variable's state may differ by path, so the path walk decides its drops
     uint8_t jumped;     // Set by blockFlow and ifFlow: every path through the block or 'if' jumped away
+    Nodes *awaits;      // Each 'await' the walk met, a seam the loan walk applies its rules to, or NULL
     VarDclNode *inflight[FlowInflightMax];  // The variable each waiting operand's borrow is of
 } FlowState;
 

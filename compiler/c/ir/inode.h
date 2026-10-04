@@ -152,6 +152,7 @@ enum NodeTags {
     OfEntryTag,     // 'n of x', an entry on the right of '<-' (EntryNode, lowered at type check)
     FillEntryTag,   // 'fill x', an entry on the right of '<-' (EntryNode, lowered at type check)
     PairEntryTag,   // 'k: v', an entry on the right of '<-' (EntryNode, lowered at type check)
+    AwaitTag,       // 'await x': a seam in an actor's method, where it waits for x (AwaitNode)
     AbsenceTag,    // unique, unclonable node for absence of info
 
     // Unnamed type node
