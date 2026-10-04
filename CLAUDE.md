@@ -124,6 +124,10 @@ Visual Studio projects stay at the root.
   `main` runs as the kernel `fill` on the GPU through `gpuwork` and calls on
   the CPU, every word compared and identical; `test_congo.py` runs it, since
   a test cannot import a program;
+  `meshedpart` is the sample of a part sampled and meshed on the GPU, a
+  program: its `gpu/part.cone` samples an sdf shape on a `SampleGrid`, and
+  sdfmesh's `GridMesher` meshes the samples there; `main` compares both
+  with the CPU's and times them (nothing runs it automatically);
   `geomath` is 2-D and 3-D math, pure maths: values and operations with
   results of a known size, no collections (vectors,
   quaternions, matrices, transforms, boxes, rays, planes, frusta and their
@@ -203,8 +207,12 @@ Visual Studio projects stay at the root.
   `mesh`: `surfaceNet`, surface nets on the CPU with a vertex per piece of
   surface in a cell (a manifold, closed mesh), gradient normals and blocks
   far from the surface skipped, into a `mesh.Mesh` or `PolyMesh`, and
-  `netLevels` (levels of detail); a GPU mesher is to join it; its README
-  holds what was measured;
+  `netLevels` (levels of detail); and `GridMesher`, the same surface nets
+  on the GPU (its `gpu/gridnet.cone`, run through `gpuwork`) of a grid a
+  part already sampled (sdf's `SampleGrid`), bit for bit `surfaceNet`'s
+  dense, unrelaxed mesh but for normals from the grid, left in GPU buffers
+  or read back; importing it brings `gpuwork` and so SDL3; its README holds
+  what was measured;
   `morphogen` is form that arises from growth rules, as graphs of points,
   over `geomath`, `collections`, `noise` and `sdf`: `BranchGraph` (a forest
   of nodes, parents numbered first), space colonization (`colonize` with
