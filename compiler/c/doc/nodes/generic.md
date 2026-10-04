@@ -215,6 +215,18 @@ after it, an `and` or `or` with no clause after it, and a `(` never closed. A ty
 with no type parameters writing one is `ErrorWhereNoParms` here; a function's is
 known only at name resolution.
 
+**A condition may also follow one entry of a type's `is` list**, after `if`:
+`struct Fut[T] is Move if T is Move`. `parseIsCondition` reads it with the same
+functions, so it takes the same forms and refuses the same ones, and also a
+lifetime comparison, which no instance could decide; the refusals name it a
+condition on an `is` entry (`parseInIsCond`). It is kept whole, one condition, not
+split at its `and`s, since it decides one entry rather than listing requirements.
+`parseStruct` holds the entry apart, in `StructNode.condis`, as a placeholder
+field whose `vtype` is the trait and whose `value` is the condition; it is never
+the base, wherever it is written. A refused condition drops its entry, and
+recovery skips to the next entry, the type's `where` or its block. A `where` after
+the list is the type's requirement, as it always was.
+
 **The inline form takes no `or`.** `[T A + B]` requires every trait it names, and
 `parseGenericParms` refuses `or` after them, `ErrorGenParmOr`, dropping that
 parameter's annotation and skipping to its `,` or `]`: a choice is written in a
@@ -261,6 +273,18 @@ the `where` clause may name a type; in the inline slot a type means a value
 parameter (Shape, above). A function that is neither generic nor a member of a
 generic type (the resolving `typenode`, which for a variant is the variant,
 carrying its enum's parameters) has nothing to constrain: `ErrorWhereNoParms`.
+
+**A condition on an `is` entry is vetted where the type's other `is` names are**
+(`structCondIsNameRes`, from `structNameRes`, its parameters hooked), and the
+entry is kept in `condis` only if every check passes; nothing of it is taken into
+the template. Refused at the declaration: an entry of a trait's list or of an
+enum's variant, not built (`ErrorUnbuiltIsCond`); a type with no type parameters
+(`ErrorIsCondNoParms`); an entry naming `Copy`, which is written on `Move`
+instead (`ErrorIsCondCopy`); one naming no trait (`ErrorInvType`) or a closed
+type; and a condition whose clauses do not pass `genericConditionNameRes` called
+with the type's own parameters (`genericIsConditionNameRes`), which also refuses,
+as `ErrorWhereSubject`, a subject that is a type parameter but not one of the
+type's own. The trait it names is resolved on demand, as any `is` name is.
 
 Two consequences that define the phase boundary:
 
@@ -557,6 +581,24 @@ finds the template through the instance's memo entry and reports
 `ErrorWhereAbsent` naming the unmet condition, as a requirement names it. A
 generic method's own clauses over its own parameters stay uses in the copy and
 are requirements at its instance.
+
+**An `is` entry's condition decides whether the instance has the entry**, by
+the same evaluation. `genericAbsentMembers` lists each `condis` entry whose
+condition is not true at the arguments (an unknown counts as not true), and
+`cloneStructNode` gives the instance a placeholder for each entry not listed: an
+`IsMixin` field whose `vtype` is the clone of the entry's, appended to `fields`,
+which the instance's type check takes in as it takes an instance of a generic
+trait (`structInheritTrait`: default methods copied, requirements checked). A
+trait that is a declaration is recorded in the instance's `traits` at once, and
+`Move` or `AtomicValue` marks it `MoveType` at once, as name resolution marks a
+declared one, so a type or a constraint asking before the instance is laid out
+is answered. An entry not met leaves the instance without it, and so, for Move,
+copying unless another rule makes it move: the entry can add Move, never remove
+it. `genericConditioned` counts a `condis` as reading the arguments' layouts, so
+an instance made as a reference's target settles its arguments first. An unmet
+requirement whose argument is such an instance says why
+(`genericCondIsWhy`): the entry's condition is false there, or, asked for
+`Copy`, an `is Move if` condition is true.
 
 **Depth is the only cycle detector.** No mark can catch runaway expansion,
 because every expansion is a fresh node — nothing ever returns to the same node.

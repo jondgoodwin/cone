@@ -499,6 +499,11 @@ enum ErrorCode {
     ErrorUnbuiltAwait = 1271,   // An 'await' every seam rule accepted, where its continuation is not built: one not on a message, one on a message returning nothing, one whose record holds a traced reference; or a call of a method holding one, not from its dispatcher
     ErrorSelfActorPlace = 1272, // 'selfactor' outside an actor's method: in a function, a method of another type, or an actor's 'init' or 'final'
 
+    // A condition on one entry of a type's 'is' list, 'is Move if T is Move' (ir/types/struct.c)
+    ErrorIsCondNoParms = 1273,  // A condition on an 'is' entry of a type with no type parameters, so nothing to vary by instance
+    ErrorIsCondCopy = 1274,     // 'is Copy if ...': Copy is what a type is when nothing makes it move, so the condition is written on Move
+    ErrorUnbuiltIsCond = 1275,  // A condition on an 'is' entry of a trait or an enum's variant, which is not built
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name

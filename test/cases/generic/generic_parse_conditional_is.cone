@@ -1,0 +1,47 @@
+// What the parser reads of a condition on an 'is' entry, 'is Move if T is
+// Move', and what it refuses. It reads what a 'where' clause reads -- 'T is
+// Name', '+'-joined names, clauses joined by 'and' and 'or', grouped by
+// parentheses -- so 'grouped' and 'several' parse clean, and a trailing
+// 'where' after the entry is the type's own requirement, as it always was. A
+// condition is refused, one diagnostic each, where a 'where' clause's would
+// be -- 'not', a relation between parameters, no trait, a dangling 'or', an
+// unclosed parenthesis -- and for a lifetime comparison, which decides nothing
+// for an instance. Recovery skips to the next entry, the 'where' or the block,
+// so the body and the rest of the list still parse.
+
+mod generic_parse_conditional_is;
+
+trait Tag {}
+trait Mark {}
+
+struct Grouped[T, U] is Move if (T is Move or U is Move) and T is Tag + Mark {
+  pub v T;
+}
+
+struct Several[T] is Tag if T is Tag, Mark, Move if T is Move where T is Mark {
+  pub v T;
+}
+
+struct Negated[T] is Move if not T is Move {           //~ ErrorWhereForm:30 "'not' is not built"
+  pub v T;
+}
+
+struct Related[T, U] is Move if T < U {                //~ ErrorWhereForm:35 "relation between two parameters"
+  pub v T;
+}
+
+struct NoTrait[T] is Move if T is {                    //~ ErrorWhereForm:35 "a trait, named"
+  pub v T;
+}
+
+struct Dangling[T] is Move if T is Move or {           //~ ErrorWhereForm:44 "is a type parameter's name, 'is', and a trait"
+  pub v T;
+}
+
+struct Unclosed[T] is Move if (T is Move, Tag {        //~ ErrorWhereForm:41 "closed by a ')'"
+  pub v T;
+}
+
+struct Lifetimes[T] is Move if 'a >= 'b {              //~ ErrorWhereForm:32 "a lifetime is never instanced"
+  pub v T;
+}

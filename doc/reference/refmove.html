@@ -25,9 +25,10 @@
 		and a finalizer still makes it a move type. Assigning to the anonymous
 		variable '_' to destroy a value early is not. A move out of an indexed array element is
 		permitted, and deactivates the whole array, rather than being prohibited.
-		A generic may require <span class="pre">where T is Move</span> or <span class="pre">where T is Copy</span>
-		(see below), but there is no compile-time <span class="pre">if</span>, a type cannot yet be
-		declared Move only when its parameter is, and <span class="pre">v is Move</span>
+		A generic may require <span class="pre">where T is Move</span> or <span class="pre">where T is Copy</span>,
+		and a generic type may be Move for only some of its instances,
+		<span class="pre">is Move if T is Move</span> (see below). There is no compile-time
+		<span class="pre">if</span>, and <span class="pre">v is Move</span>
 		in an expression is the variant test, which refuses a value that has no variants.</i></p>
 	
 	<p>Values are copied as they flow from 
@@ -83,7 +84,9 @@ struct Handle is Move {
 </pre>
 			So does a type declaring <span class="pre">AtomicValue</span>, the marker of an
 			<a href="refconc.html#atomic">atomic value</a>: a copy of one would be a second value
-			that no atomic operation on the first could reach.</li>
+			that no atomic operation on the first could reach.
+			A generic type may declare it for only some of its instances
+			(<a href="#conditional">Move for some instances</a>).</li>
 		<li>If the type implements an initializer method that essentially enables the creation of a copy,
 			the type's values have copy semantics.
 			Since the compiler automatically uses this cloning method (when implemented)
@@ -129,6 +132,60 @@ struct Log is Copy {       // **ERROR**: its finalizer makes it move
 	<p>An owning reference is a move type when its permission forbids aliasing, or when its
 		region ref declares <span class="pre">Move</span>, as <span class="pre">So</span> does
 		(<a href="refregionglo.html">Regions</a>).</p>
+
+	<h3 id="conditional">Move for some instances</h3>
+	<p>A generic type that holds a value of its type parameter already moves exactly when
+		that parameter does, by rule 4: a <span class="pre">Box[i32]</span> holding an
+		<span class="pre">i32</span> copies, and a <span class="pre">Box[Handle]</span> holding a
+		<span class="pre">Handle</span> moves. A generic type that holds no value of its
+		parameter, but stands for one, has no such field for rule 4 to find. A future is the
+		usual case: it holds a shared reference to a cell where the result will be put, and a
+		shared reference copies whatever it points at. Such a type says when it moves with a
+		condition on the <span class="pre">Move</span> entry of its <span class="pre">is</span>
+		list, written after the word <span class="pre">if</span>:</p>
+<pre>
+struct Handle is Move {
+   pub id i32;
+}
+struct Cell[T] {
+   pub v T;
+}
+struct Future[T] is Move if T is Move {
+   pub c Rc[imm, Cell[T]];
+}
+
+imm f = new Future[i32](new Rc[imm, Cell[i32]](new Cell[i32](5)));
+imm f2 = f;     // a copy: i32 does not move, so neither does Future[i32]
+imm f3 = f;     // another copy; f is still there
+
+imm g = new Future[Handle](new Rc[imm, Cell[Handle]](new Cell[Handle](new Handle(7))));
+imm g2 = g;     // moves g: Handle moves, so Future[Handle] does
+imm g3 = g;     // **ERROR** g was moved out
+</pre>
+	<p>In plain words: a <span class="pre">Future</span> of something that moves moves too,
+		so the result inside it can be taken only once, and a <span class="pre">Future</span> of
+		something that copies can be copied freely.</p>
+	<p>Each instance decides the condition with its own type arguments.
+		Where the condition holds, the instance is <span class="pre">Move</span>. Where it does
+		not, the instance lacks the entry, so it copies, unless one of the other rules above
+		makes it move: a condition can add <span class="pre">Move</span>, never take it away. A
+		<span class="pre">Future</span> holding a <span class="pre">Handle</span> field of its
+		own would move whatever its condition said.</p>
+	<p>The condition is written the way a <span class="pre">where</span> clause's is
+		(<a href="refgeneric.html#where">Where clause</a>): clauses <span class="pre">T is Name</span>,
+		joined with <span class="pre">and</span> and <span class="pre">or</span> and grouped by
+		parentheses, each about one of the type's own type parameters. A condition may ask about
+		one parameter of several: <span class="pre">struct Pair[A, B] is Move if B is Move</span>
+		moves only when its second argument does.</p>
+	<p><span class="pre">Copy</span> takes no condition. A type copies wherever nothing makes it
+		move, so the condition is always written on <span class="pre">Move</span>, and an instance
+		that does not meet it copies. A type with no type parameters takes no condition either:
+		every use of it is the same type, so there is nothing for a condition to vary.</p>
+	<p>The condition belongs to the one entry it follows. A <span class="pre">where</span>
+		clause after the <span class="pre">is</span> list says something different: it is a
+		requirement on the whole type. <span class="pre">struct Future[T] is Move where T is Move</span>
+		makes every instance move, and refuses <span class="pre">Future[i32]</span> outright,
+		since <span class="pre">i32</span> does not meet the requirement.</p>
 
 	<h2>Move Capabilities and Restrictions</h2>
 	<p>Even when we want to prohibit the copying of these values,

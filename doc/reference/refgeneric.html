@@ -26,8 +26,11 @@
 			joined by and only, on any function and on a struct declaring lifetimes,
 			and a lifetime bound on a generic function's type parameter,
 			<span class="pre">[T + 'a]</span>, <span class="pre">[T Trait + 'a]</span>,
-			<span class="pre">where T + 'a</span> or <span class="pre">where T is Trait + 'a</span>.
-			Not yet: a lifetime bound on a generic type's parameter, a clause relating two
+			<span class="pre">where T + 'a</span> or <span class="pre">where T is Trait + 'a</span>,
+			and a condition on one entry of a generic struct's or enum's <span class="pre">is</span>
+			list, <span class="pre">is Move if T is Move</span>.
+			Not yet: a condition on an <span class="pre">is</span> entry of a trait or of an
+			enum's variant, a lifetime bound on a generic type's parameter, a clause relating two
 			parameters or constraining a type expression, not, constraints on a generic
 			module's or a macro's parameters, and checking a generic's body against its
 			constraints where it is declared. An enum's variant is constructed with its values in square brackets, as written here: that is the current spelling, and how a variant is constructed is an open design question (<a href="refenum.html#init">Enums</a>).</i></p>
@@ -456,6 +459,72 @@ cb.add(true);    // ERROR: no method add for Cell[Bool]: it exists only where T 
 		<span class="pre">where T is Integer or T is Bool</span>, so an
 		<span class="pre">Atomic[Bool]</span> has <span class="pre">bitOr</span> and no
 		<span class="pre">add</span>, and an <span class="pre">Atomic[*Node]</span> has neither.</p>
+
+	<h3 id="conditionalis">A type that is a trait for some instances</h3>
+	<p>One entry of a generic type's <span class="pre">is</span> list may carry a condition,
+		written after the word <span class="pre">if</span>. Each instance decides it with its own
+		type arguments: an instance meeting the condition has the entry, as if it had been
+		written without one, and an instance not meeting it lacks the entry. The condition is
+		written as a <span class="pre">where</span> clause's is, and asks only about the type's
+		own type parameters.</p>
+	<p>The plainest use is a future, which must move when what it holds moves, and copy when
+		that copies (<a href="refmove.html#conditional">Move for some instances</a>):</p>
+<pre>
+struct Cell[T] {
+  pub v T;
+}
+struct Future[T] is Move if T is Move {
+  pub c Rc[imm, Cell[T]];
+}
+
+fn moves[X](x &amp;X) i32 where X is Move { 1; }
+
+moves(&amp;futureOfHandle);    // fine: Future[Handle] is Move
+moves(&amp;futureOfI32);       // ERROR: moves requires X is Move, and Future[i32] is not Move.
+                           // Future is Move only where T is Move, and that is false for T = i32.
+</pre>
+	<p>In plain words: <span class="pre">Future[T]</span> is a move type exactly when
+		<span class="pre">T</span> is, and a generic function asking
+		<span class="pre">where X is Move</span> gets the answer for the instance it is given.</p>
+	<p>The same works for any trait. A marker trait, one requiring nothing of a value, is met
+		only by a type declaring it, so a wrapper passes it on by declaring it under the same
+		condition:</p>
+<pre>
+trait Checked {}
+struct Wrapper[T] is Checked if T is Checked {
+  pub v T;
+}
+</pre>
+	<p>A trait with methods is met where the instance has them. Its methods are written with
+		the same condition as a <span class="pre">where</span> clause
+		(<a href="#methodwhere">A method that exists only for some instances</a>), so an instance
+		lacking the entry lacks them too:</p>
+<pre>
+trait Show {
+  fn show(self &amp;) i64;
+}
+struct Labelled[T] is Show if T is Show {
+  pub v T;
+  pub fn show(self &amp;) i64 where T is Show {
+    v.show() + 100;
+  }
+}
+</pre>
+	<p>Such a trait is still met structurally as well: an instance that has every method it
+		requires fits it whatever its <span class="pre">is</span> list says, as any type does.
+		<span class="pre">is Sendable if T is Sendable</span> declares an instance safe to send
+		to another thread, on the type's word, only where its argument is.</p>
+	<p>An entry with a condition is never the type's base, whichever position it is written
+		in, since what a type stands on does not vary by instance. <span class="pre">Copy</span>
+		takes no condition: a type copies wherever nothing makes it move, so the condition is
+		written on <span class="pre">Move</span>. A type with no type parameters takes none,
+		having nothing to vary. A condition on an entry of a trait's <span class="pre">is</span>
+		list, which a trait passes on to every type implementing it, and on an enum's variant,
+		which is made with its enum, is not built: it is refused.</p>
+	<p>A <span class="pre">where</span> clause after the <span class="pre">is</span> list keeps
+		its own meaning, a requirement on the whole type:
+		<span class="pre">struct Future[T] is Move where T is Move</span> is Move for every
+		instance and refuses <span class="pre">Future[i32]</span>.</p>
 
 	<h3>Constraints not built yet</h3>
 	<p>A <span class="pre">where</span> clause is meant to be able to say more than

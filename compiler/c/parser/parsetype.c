@@ -814,6 +814,23 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
                 INode *named = parseTypeName(parse);  // Could be a qualified name or generic
                 if (nth == 1)
                     firstis = named;
+                // An entry with a condition, 'is Move if T is Move', is an
+                // instance's only where its arguments meet the condition, so it
+                // is held apart from the list (StructNode.condis) and is never
+                // the base: what a type stands on does not vary by instance
+                if (lexIsToken(IfToken)) {
+                    FieldDclNode *entry = newFieldDclNode(anonName, (INode*)immPerm);
+                    inodeLexCopy((INode*)entry, named);
+                    entry->flags |= IsMixin | FlagMethFld;
+                    entry->vtype = named;
+                    entry->value = parseIsCondition(parse);
+                    if (entry->value) {
+                        if (strnode->condis == NULL)
+                            strnode->condis = newNodes(2);
+                        nodesAdd(&strnode->condis, (INode*)entry);
+                    }
+                    continue;
+                }
                 if (nth == 1 && !(isenum || isvariant)) {
                     strnode->basetrait = named;
                     continue;

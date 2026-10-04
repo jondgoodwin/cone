@@ -638,9 +638,16 @@ static void parseWhereSkip() {
         lexNextToken();
 }
 
+// Is the condition being parsed one on an entry of a type's 'is' list,
+// 'is Move if T is Move', rather than a 'where' clause? The two are read alike;
+// only what a refusal calls the condition differs.
+static int parseInIsCond = 0;
+
 // 'not' is not built [Jon 27 Sep]: a clause says what a type is
 static void parseWhereNot() {
-    errorMsgLex(ErrorWhereForm, "'not' is not built: a 'where' clause says what a type parameter is, and clauses are joined by 'and' and 'or'.");
+    errorMsgLex(ErrorWhereForm, parseInIsCond
+        ? "'not' is not built: a condition on an 'is' entry says what a type parameter is, and clauses are joined by 'and' and 'or'."
+        : "'not' is not built: a 'where' clause says what a type parameter is, and clauses are joined by 'and' and 'or'.");
 }
 
 // Join two conditions with 'and' or 'or', positioned where the left one is
@@ -751,11 +758,19 @@ static INode *parseWhereTerm(ParseState *parse, LifeOrder **orderp) {
         if (inner == NULL)
             return NULL;
         if (!lexIsToken(RParenToken)) {
-            errorMsgLex(ErrorWhereForm, "A '(' in a 'where' clause is closed by a ')' after the clauses it groups.");
+            errorMsgLex(ErrorWhereForm, parseInIsCond
+                ? "A '(' in a condition on an 'is' entry is closed by a ')' after the clauses it groups."
+                : "A '(' in a 'where' clause is closed by a ')' after the clauses it groups.");
             return NULL;
         }
         lexNextToken();
         return inner;
+    }
+    // A condition on an 'is' entry decides, per instance, what the instance
+    // is, and a lifetime is never instanced, so it decides nothing
+    if (parseInIsCond && lexIsToken(LifetimeToken)) {
+        errorMsgLex(ErrorWhereForm, "A condition on an 'is' entry asks what a type parameter is, and a lifetime is never instanced, so it decides nothing for an instance.");
+        return NULL;
     }
     if (lexIsToken(LifetimeToken))
         return parseWhereLife(parse, orderp);
@@ -769,7 +784,9 @@ static INode *parseWhereTerm(ParseState *parse, LifeOrder **orderp) {
         return NULL;
     }
     if (!lexIsToken(IdentToken)) {
-        errorMsgLex(ErrorWhereForm, "A 'where' clause is a type parameter's name, 'is', and a trait: 'where T is Integer'.");
+        errorMsgLex(ErrorWhereForm, parseInIsCond
+            ? "A condition on an 'is' entry is a type parameter's name, 'is', and a trait: 'is Move if T is Move'."
+            : "A 'where' clause is a type parameter's name, 'is', and a trait: 'where T is Integer'.");
         return NULL;
     }
     INode *subject = (INode*)newNameUseNode(lex->val.ident);
@@ -817,6 +834,7 @@ static INode *parseWhereTerm(ParseState *parse, LifeOrder **orderp) {
         if (!lexIsToken(IdentToken)) {
             errorMsgLex(ErrorWhereForm, lexIsToken(LifetimeToken)
                 ? "A lifetime bound alone is written 'T + 'a': what a type parameter 'is' is a trait, named."
+                : parseInIsCond ? "What a type parameter 'is' in a condition on an 'is' entry is a trait, named."
                 : "What a type parameter 'is' in a 'where' clause is a trait, named.");
             return NULL;
         }
@@ -903,6 +921,26 @@ void parseWhere(ParseState *parse, Nodes **wherep, LifeOrder **orderp, int bound
         return;
     }
     parseWhereAdd(wherep, cond);
+}
+
+// Parse the condition on one entry of a type's 'is' list, with the lexer on
+// its 'if': 'is Move if T is Move'. It is read as a 'where' clause's condition
+// is -- 'T is Name', '+'-joined traits, clauses joined by 'and' and 'or',
+// grouped by parentheses -- and kept whole, since it decides one entry rather
+// than being a list of requirements. No lifetime takes part. NULL, reported,
+// where it is refused; what is left of it is then skipped to the next entry,
+// the type's 'where' or its block.
+INode *parseIsCondition(ParseState *parse) {
+    lexNextToken();  // past 'if'
+    parseInIsCond = 1;
+    INode *cond = parseWhereOr(parse, NULL);
+    parseInIsCond = 0;
+    if (cond == NULL) {
+        while (!lexIsToken(LCurlyToken) && !lexIsToken(SemiToken) && !lexIsToken(RCurlyToken)
+            && !lexIsToken(CommaToken) && !lexIsToken(WhereToken) && !lexIsToken(EofToken))
+            lexNextToken();
+    }
+    return cond;
 }
 
 // Parse a list of generic variables and add to the genericnode.

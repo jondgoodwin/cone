@@ -273,6 +273,17 @@ for a parameter annotated in a way that is not built, as a macro's parameter
 given one is; `or` there, `[T A or B]`, is `ErrorGenParmOr`, whose remedy is to
 move the choice into a `where` clause.
 
+A condition on one entry of a type's `is` list, `is Move if T is Move`, is written
+as a `where` clause's is, so its form and its clauses are refused under the same
+three codes (`ErrorWhereForm`, `ErrorWhereSubject` -- which also takes a subject
+that is not one of the type's own parameters -- and `ErrorWhereTrait`), with
+messages naming it a condition on an `is` entry; an instance lacking the entry is
+refused, where something requires it, as `ErrorWhereUnmet`. Three codes are its
+own, one per remedy: `ErrorIsCondNoParms`, a type with no type parameters, whose
+remedy is to drop the `if`; `ErrorIsCondCopy`, a condition on `Copy`, whose
+remedy is to write it on `Move`; and `ErrorUnbuiltIsCond`, one on a trait's or an
+enum variant's entry, which is not built.
+
 That is a narrow licence, and the tell that it has been stretched is the
 scenarios: **when a scenario needs a message substring to tell two uses of one
 code apart, the substring is doing the code's job.** Wrong arity, a non-type

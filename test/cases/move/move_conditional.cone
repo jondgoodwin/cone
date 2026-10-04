@@ -1,0 +1,143 @@
+// A condition on the 'Move' entry of a generic type's 'is' list,
+// 'is Move if T is Move': each instance decides it with its own type
+// arguments, and is Move where it holds. Where it does not, the instance
+// copies, unless another rule makes it move: a field that moves still does
+// (rule 4), so a condition can add Move and never take it away.
+//
+// Each instance's move-ness is shown two ways: by a generic function that
+// requires 'X is Move' or 'X is Copy' accepting it (the 1s and 0s printed), and
+// by what a value of it may do -- a copy type is assigned from twice, a move
+// type once (move_flow_conditional refuses the second). A flat 'is Move' on a
+// generic is unchanged: every instance moves. Each printed value was checked by
+// hand against the source.
+
+mod move_conditional;
+
+import stdio use *;
+
+fn show(label &[]u8, n i64) {
+  printStr(label);
+  printStr(" ");
+  printInt(n);
+  printStr("\n");
+}
+
+fn moves[X](x &X) i64 where X is Move { 1; }
+fn copies[X](x &X) i64 where X is Copy { 0; }
+
+struct Handle is Move {
+  pub id i64;
+}
+struct Box[T] {
+  pub v T;
+}
+struct Cell[T] {
+  pub v T;
+}
+
+// The future: it holds no T, only a shared reference, which copies
+struct Fut[T] is Move if T is Move {
+  pub c Rc[imm, Cell[T]];
+}
+
+// A condition naming one of two parameters
+struct Pair[A, B] is Move if B is Move {
+  pub n i64;
+}
+
+// A condition joined by 'or' and 'and', grouped
+struct Either[A, B] is Move if A is Move or (B is Move and A is Copy) {
+  pub n i64;
+}
+
+// Rule 4 wins: the Handle field makes every instance move, the condition
+// false or not
+struct Holds[T] is Move if T is Copy {
+  pub h Handle;
+}
+
+// A flat 'is Move', unchanged: every instance moves
+struct Owned[T] is Move {
+  pub n i64;
+}
+
+// An enum's entry, decided per instance the same way
+enum Signal[T] is Move if T is Move {
+  struct Quiet {}
+  struct Loud { pub n i64; }
+}
+
+// A struct holding an instance moves as the instance does (rule 4)
+struct Holder {
+  pub f Fut[Handle];
+}
+struct HolderI {
+  pub f Fut[i32];
+}
+
+// An instance named as a reference's target inside the type it is about,
+// decided before that type is laid out: Fut[Node] is Move, Fut[NodeC] Copy
+struct Node is Move {
+  pub next ?Rc[imm, Fut[Node]];
+}
+struct NodeC {
+  pub next ?Rc[imm, Fut[NodeC]];
+}
+fn probe(a &Fut[Node], b &Fut[NodeC]) i64 {
+  moves(a) + copies(b);
+}
+
+fn main() {
+  // Fut[i32] copies: assigned from twice, and still there
+  imm a = new Fut[i32](new Rc[imm, Cell[i32]](new Cell[i32](5)));
+  imm a2 = a;
+  imm a3 = a;
+  show("Fut[i32] copies", copies(&a));                  // 0
+  show("Fut[i32] still there", i64.from(a3.c.v));       // 5
+
+  // Fut[Handle] moves, once
+  imm b = new Fut[Handle](new Rc[imm, Cell[Handle]](new Cell[Handle](new Handle(7))));
+  imm b2 = b;
+  show("Fut[Handle] moves", moves(&b2));                // 1
+  show("Fut[Handle] moved value", b2.c.v.id);           // 7
+
+  // An argument that moves by rule 4 is Move to the condition
+  imm c = new Fut[Box[Handle]](new Rc[imm, Cell[Box[Handle]]](new Cell[Box[Handle]](new Box[Handle](new Handle(8)))));
+  show("Fut[Box[Handle]] moves", moves(&c));            // 1
+  imm d = new Fut[Box[i32]](new Rc[imm, Cell[Box[i32]]](new Cell[Box[i32]](new Box[i32](9))));
+  show("Fut[Box[i32]] copies", copies(&d));             // 0
+
+  // One of two parameters
+  imm p = new Pair[Handle, i32](1);
+  imm p2 = p;
+  imm p3 = p;
+  show("Pair[Handle, i32] copies", copies(&p3));        // 0
+  imm q = new Pair[i32, Handle](2);
+  show("Pair[i32, Handle] moves", moves(&q));           // 1
+
+  // 'or' and 'and'
+  show("Either[Handle, i32] moves", moves(&new Either[Handle, i32](1)));    // 1
+  show("Either[i32, Handle] moves", moves(&new Either[i32, Handle](1)));    // 1
+  show("Either[i32, i64] copies", copies(&new Either[i32, i64](1)));        // 0
+
+  // Rule 4 wins over a false condition
+  show("Holds[i32] moves", moves(&new Holds[i32](new Handle(1))));         // 1
+  show("Holds[Handle] moves", moves(&new Holds[Handle](new Handle(2))));   // 1
+
+  // A flat 'is Move' moves for every argument
+  show("Owned[i32] moves", moves(&new Owned[i32](3)));  // 1
+
+  // The enum
+  imm s Signal[i32] = Signal.Loud[i32][4];
+  imm s2 = s;
+  imm s3 = s;
+  show("Signal[i32] copies", copies(&s3));              // 0
+  imm t Signal[Handle] = Signal.Quiet[Handle][];
+  show("Signal[Handle] moves", moves(&t));              // 1
+
+  // Holding an instance
+  imm h = new Holder(new Fut[Handle](new Rc[imm, Cell[Handle]](new Cell[Handle](new Handle(3)))));
+  show("Holder moves", moves(&h));                      // 1
+  imm hi = new HolderI(new Fut[i32](new Rc[imm, Cell[i32]](new Cell[i32](4))));
+  show("HolderI copies", copies(&hi));                  // 0
+}
