@@ -37,6 +37,15 @@
  *   this compiler agrees. A C-named function keeps the C ABI genlcabi.c gives
  *   it: it is marked as it is declared ("cone-cabi"), and left alone.
  *
+ * The same remaking gives a smaller aggregate result a register, since LLVM
+ * returns a first-class aggregate one register per field, and on Win64 sends
+ * a third and fourth float through the x87 stack (GenlRetClass): a struct of
+ * 2 to 4 floats, or 2 doubles, returns as one vector; any other of up to 16
+ * bytes, but one or two scalars, as one or two integers, through memory as
+ * clang does; and one of 17 to 64 bytes through a slot its caller passes
+ * ('sret'), loaded and stored whole. Arguments of 64 bytes or less are passed
+ * as they were.
+ *
  * A home is never written once its value exists: a slot is filled where its
  * value is made and only read after, which is what lets a part's address, a
  * select or a callee read it in place. Every copy is made at the point the
@@ -70,6 +79,20 @@
 // The marker a C-named function carries from its declaration to here
 #define GenlCAbiMarker "cone-cabi"
 
+// An aggregate result of at most this many bytes, but a pair of scalars,
+// returns in one or two registers as a vector or integers; a larger one up to
+// GenlAggCopyMin through a slot its caller passes
+#define GenlRetRegMax 16
+
+// How a function returns its result
+typedef enum {
+    GenlRetWhole,   // as its own LLVM type: a scalar, or an aggregate of one or two scalars
+    GenlRetVector,  // a struct of 2 to 4 floats or 2 doubles, as one vector
+    GenlRetInt,     // any other aggregate of up to 16 bytes, as an integer or two
+    GenlRetSlot,    // an aggregate of 17 to 64 bytes, stored whole in its caller's slot ('sret')
+    GenlRetLarge,   // a large aggregate, copied from its home into its caller's slot ('sret')
+} GenlRetClass;
+
 // Where a large value lives
 typedef struct {
     LLVMValueRef key;       // the value
@@ -88,7 +111,8 @@ typedef struct {
 typedef struct {
     GenState *gen;
     LLVMValueRef fn;
-    LLVMValueRef sret;      // the slot its large result is returned in, or NULL
+    GenlRetClass retclass;  // how it returns its result
+    LLVMValueRef sret;      // the slot its result is returned in ('sret'), or NULL
     LLVMValueRef at;        // the instruction new code is put before
     GenlAggHomes homes;
     LLVMValueRef *dead;     // instructions replaced, erased once all are
@@ -118,6 +142,83 @@ static int genlAggIsLarge(GenState *gen, LLVMTypeRef type) {
 
 static unsigned genlAggAlignOf(GenState *gen, LLVMTypeRef type) {
     return LLVMABIAlignmentOfType(gen->datalayout, type);
+}
+
+// ---- How a result returns -------------------------------------------------------
+
+// The scalars an aggregate holds, all its parts' parts: how many (counting
+// stops past 'max'), their bytes, and the one type they all have, or NULL
+static void genlAggLeaves(GenState *gen, LLVMTypeRef type, unsigned max, unsigned *count,
+        unsigned long long *bytes, LLVMTypeRef *same, int *mixed) {
+    LLVMTypeKind kind = LLVMGetTypeKind(type);
+    if (kind == LLVMStructTypeKind || kind == LLVMArrayTypeKind) {
+        unsigned cnt = kind == LLVMStructTypeKind
+            ? LLVMCountStructElementTypes(type) : (unsigned)LLVMGetArrayLength2(type);
+        for (unsigned i = 0; i < cnt && *count <= max; ++i) {
+            LLVMTypeRef part = kind == LLVMStructTypeKind ? LLVMStructGetTypeAtIndex(type, i) : LLVMGetElementType(type);
+            genlAggLeaves(gen, part, max, count, bytes, same, mixed);
+        }
+        return;
+    }
+    ++*count;
+    *bytes += LLVMStoreSizeOfType(gen->datalayout, type);
+    if (*same == NULL && !*mixed)
+        *same = type;
+    else if (*same != type) {
+        *same = NULL;
+        *mixed = 1;
+    }
+}
+
+// How a function returning a value of 'type' returns it, and for a vector or
+// integers, the LLVM type it returns instead ('coerced')
+static GenlRetClass genlAggRetClass(GenState *gen, LLVMTypeRef type, LLVMTypeRef *coerced) {
+    *coerced = NULL;
+    LLVMTypeKind kind = LLVMGetTypeKind(type);
+    if ((kind != LLVMStructTypeKind && kind != LLVMArrayTypeKind) || !LLVMTypeIsSized(type))
+        return GenlRetWhole;
+    unsigned long long size = LLVMStoreSizeOfType(gen->datalayout, type);
+    if (size > GenlAggCopyMin)
+        return GenlRetLarge;
+    if (size == 0)
+        return GenlRetWhole;
+    unsigned count = 0;
+    unsigned long long bytes = 0;
+    LLVMTypeRef same = NULL;
+    int mixed = 0;
+    genlAggLeaves(gen, type, GenlRetRegMax, &count, &bytes, &same, &mixed);
+    if (size <= GenlRetRegMax) {
+        // One scalar, or a pair (a slice's pointer and length): LLVM already
+        // returns each in a register of its own, as Rust's ScalarPair does
+        LLVMTypeKind samekind = same ? LLVMGetTypeKind(same) : LLVMVoidTypeKind;
+        int floats = samekind == LLVMFloatTypeKind || samekind == LLVMDoubleTypeKind;
+        if (count <= 1 || (count == 2 && !floats))
+            return GenlRetWhole;
+        // All one float type, with no padding: one vector register
+        if (floats && bytes == size && (samekind == LLVMFloatTypeKind ? count <= 4 : count == 2)) {
+            *coerced = LLVMVectorType(same, count);
+            return GenlRetVector;
+        }
+        LLVMTypeRef i64 = LLVMInt64TypeInContext(gen->context);
+        if (size > 8) {
+            LLVMTypeRef pair[2] = { i64, i64 };
+            *coerced = LLVMStructTypeInContext(gen->context, pair, 2, 0);
+        }
+        else
+            *coerced = LLVMIntTypeInContext(gen->context, size <= 1 ? 8 : size <= 2 ? 16 : size <= 4 ? 32 : 64);
+        return GenlRetInt;
+    }
+    return GenlRetSlot;
+}
+
+static GenlRetClass genlAggRetClassOf(GenState *gen, LLVMTypeRef type) {
+    LLVMTypeRef coerced;
+    return genlAggRetClass(gen, type, &coerced);
+}
+
+// Is a result of this class returned through a slot its caller passes?
+static int genlAggRetSret(GenlRetClass retclass) {
+    return retclass == GenlRetSlot || retclass == GenlRetLarge;
 }
 
 // ---- Homes, by value ---------------------------------------------------------
@@ -388,12 +489,26 @@ static int genlAggSigLarge(GenState *gen, LLVMTypeRef fntype) {
     return large;
 }
 
+// Does Cone's convention change a function of this type: does it take or
+// return a large value, or return a smaller aggregate otherwise than whole?
+static int genlAggSigChanged(GenState *gen, LLVMTypeRef fntype) {
+    return genlAggRetClassOf(gen, LLVMGetReturnType(fntype)) != GenlRetWhole || genlAggSigLarge(gen, fntype);
+}
+
+// Is this a call LLVM itself defines, whose type no convention changes?
+static int genlAggIsIntrinsic(LLVMValueRef callee) {
+    return callee && LLVMIsAFunction(callee) && LLVMGetIntrinsicID(callee) != 0;
+}
+
 // The function type taking a pointer for each large parameter, and returning
-// a large result through a slot passed first
+// its result as genlAggRetClass says: through a slot passed first, as a
+// vector or integers, or as it is
 static LLVMTypeRef genlAggSig(GenState *gen, LLVMTypeRef fntype) {
     LLVMTypeRef ptr = LLVMPointerTypeInContext(gen->context, 0);
     LLVMTypeRef rettype = LLVMGetReturnType(fntype);
-    int sret = genlAggIsLarge(gen, rettype);
+    LLVMTypeRef coerced;
+    GenlRetClass retclass = genlAggRetClass(gen, rettype, &coerced);
+    int sret = genlAggRetSret(retclass);
     unsigned nparms = LLVMCountParamTypes(fntype);
     LLVMTypeRef *parms = (LLVMTypeRef *)malloc((nparms + 2) * sizeof(LLVMTypeRef));
     LLVMGetParamTypes(fntype, parms + sret);
@@ -401,6 +516,8 @@ static LLVMTypeRef genlAggSig(GenState *gen, LLVMTypeRef fntype) {
         parms[0] = ptr;
         rettype = LLVMVoidTypeInContext(gen->context);
     }
+    else if (coerced)
+        rettype = coerced;
     for (unsigned i = sret; i < nparms + sret; ++i) {
         if (genlAggIsLarge(gen, parms[i]))
             parms[i] = ptr;
@@ -439,10 +556,12 @@ static void genlAggCopyAttrs(LLVMValueRef from, LLVMValueRef to, LLVMAttributeIn
 }
 
 // The attributes of a function or call whose type genlAggSig changed: the
-// result slot's, then each parameter's, a large one's its own
+// result slot's, then each parameter's, a large one's its own. A result
+// returned as a vector or integers keeps none of its own
 static void genlAggSigAttrs(GenState *gen, LLVMValueRef from, LLVMValueRef to, LLVMTypeRef oldtype, int call) {
     LLVMTypeRef rettype = LLVMGetReturnType(oldtype);
-    int sret = genlAggIsLarge(gen, rettype);
+    GenlRetClass retclass = genlAggRetClassOf(gen, rettype);
+    int sret = genlAggRetSret(retclass);
     genlAggCopyAttrs(from, to, LLVMAttributeFunctionIndex, LLVMAttributeFunctionIndex, call);
     if (sret) {
         LLVMAttributeRef attrs[2] = { genlAggSretAttr(gen, rettype), genlAggEnumAttr(gen, "noalias") };
@@ -453,7 +572,7 @@ static void genlAggSigAttrs(GenState *gen, LLVMValueRef from, LLVMValueRef to, L
                 LLVMAddAttributeAtIndex(to, 1, attrs[a]);
         }
     }
-    else
+    else if (retclass == GenlRetWhole)
         genlAggCopyAttrs(from, to, LLVMAttributeReturnIndex, LLVMAttributeReturnIndex, call);
     unsigned nparms = LLVMCountParamTypes(oldtype);
     LLVMTypeRef *parms = (LLVMTypeRef *)malloc((nparms + 1) * sizeof(LLVMTypeRef));
@@ -470,14 +589,14 @@ static void genlAggSigAttrs(GenState *gen, LLVMValueRef from, LLVMValueRef to, L
     free(parms);
 }
 
-// Remake a function taking or returning a large value with the type genlAggSig
+// Remake a function genlAggSigChanged names with the type genlAggSig
 // gives it, under the same name, with its body; its large parameters' homes
 // are the new pointer parameters. The old function is left, empty and
 // unnamed, its large parameters still used, for genlAggFns to delete
 static LLVMValueRef genlAggRetype(GenState *gen, LLVMValueRef fn, GenlAggHomes *params) {
     LLVMTypeRef oldtype = LLVMGlobalGetValueType(fn);
     LLVMTypeRef newtype = genlAggSig(gen, oldtype);
-    int sret = genlAggIsLarge(gen, LLVMGetReturnType(oldtype));
+    int sret = genlAggRetSret(genlAggRetClassOf(gen, LLVMGetReturnType(oldtype)));
     size_t namelen;
     const char *oldname = LLVMGetValueName2(fn, &namelen);
     char *name = (char *)malloc(namelen + 1);
@@ -538,14 +657,82 @@ static LLVMValueRef genlAggRetype(GenState *gen, LLVMValueRef fn, GenlAggHomes *
     return newfn;
 }
 
-// A call taking or returning a large value, remade to genlAggSig's type with
-// each large argument's home, and a slot for a large result
+// Each float of 'val', a small aggregate of one float type, put in turn into
+// the vector 'vec' from its 'n'th element
+static LLVMValueRef genlAggToVector(GenState *gen, LLVMValueRef val, LLVMValueRef vec, unsigned *n) {
+    LLVMTypeRef type = LLVMTypeOf(val);
+    LLVMTypeKind kind = LLVMGetTypeKind(type);
+    if (kind == LLVMStructTypeKind || kind == LLVMArrayTypeKind) {
+        unsigned cnt = kind == LLVMStructTypeKind
+            ? LLVMCountStructElementTypes(type) : (unsigned)LLVMGetArrayLength2(type);
+        for (unsigned i = 0; i < cnt; ++i)
+            vec = genlAggToVector(gen, LLVMBuildExtractValue(gen->builder, val, i, ""), vec, n);
+        return vec;
+    }
+    LLVMValueRef idx = LLVMConstInt(LLVMInt32TypeInContext(gen->context), (*n)++, 0);
+    return LLVMBuildInsertElement(gen->builder, vec, val, idx, "");
+}
+
+// The aggregate of type 'type' made of the vector 'vec's floats from its 'n'th
+static LLVMValueRef genlAggFromVector(GenState *gen, LLVMValueRef vec, LLVMTypeRef type, unsigned *n) {
+    LLVMTypeKind kind = LLVMGetTypeKind(type);
+    if (kind == LLVMStructTypeKind || kind == LLVMArrayTypeKind) {
+        unsigned cnt = kind == LLVMStructTypeKind
+            ? LLVMCountStructElementTypes(type) : (unsigned)LLVMGetArrayLength2(type);
+        LLVMValueRef agg = LLVMGetPoison(type);
+        for (unsigned i = 0; i < cnt; ++i) {
+            LLVMTypeRef part = kind == LLVMStructTypeKind ? LLVMStructGetTypeAtIndex(type, i) : LLVMGetElementType(type);
+            agg = LLVMBuildInsertValue(gen->builder, agg, genlAggFromVector(gen, vec, part, n), i, "");
+        }
+        return agg;
+    }
+    LLVMValueRef idx = LLVMConstInt(LLVMInt32TypeInContext(gen->context), (*n)++, 0);
+    return LLVMBuildExtractElement(gen->builder, vec, idx, "");
+}
+
+// 'val' of type 'from' as type 'to', through a slot of the function's frame,
+// as clang coerces a C struct to integers: an aggregate stored and integers
+// loaded ('toint'), or the reverse. For integers, the slot is zeroed first
+// where the aggregate's scalars leave a byte of them (padding, or the bytes
+// past its end), so that no integer loaded holds an undefined byte
+static LLVMValueRef genlAggRecast(GenlAggFn *st, LLVMValueRef val, LLVMTypeRef from, LLVMTypeRef to, int toint) {
+    GenState *gen = st->gen;
+    unsigned long long fromsize = LLVMStoreSizeOfType(gen->datalayout, from);
+    unsigned long long tosize = LLVMStoreSizeOfType(gen->datalayout, to);
+    LLVMTypeRef wide = tosize > fromsize ? to : from;
+    unsigned align = genlAggAlignOf(gen, from) > genlAggAlignOf(gen, to) ? genlAggAlignOf(gen, from) : genlAggAlignOf(gen, to);
+    LLVMValueRef slot = genlAggSlot(st, wide);
+    if (LLVMGetAlignment(slot) < align)
+        LLVMSetAlignment(slot, align);
+    if (toint) {
+        unsigned count = 0;
+        unsigned long long bytes = 0;
+        LLVMTypeRef same = NULL;
+        int mixed = 0;
+        genlAggLeaves(gen, from, ~0u - 1, &count, &bytes, &same, &mixed);
+        if (bytes < tosize) {
+            LLVMValueRef zero = LLVMBuildStore(gen->builder, LLVMConstNull(to), slot);
+            LLVMSetAlignment(zero, align);
+        }
+    }
+    LLVMValueRef store = LLVMBuildStore(gen->builder, val, slot);
+    LLVMSetAlignment(store, genlAggAlignOf(gen, from));
+    LLVMValueRef load = LLVMBuildLoad2(gen->builder, to, slot, "");
+    LLVMSetAlignment(load, genlAggAlignOf(gen, to));
+    return load;
+}
+
+// A call taking a large value or returning an aggregate, remade to
+// genlAggSig's type with each large argument's home, and a slot for a result
+// returned through one
 static void genlAggCall(GenlAggFn *st, LLVMValueRef call) {
     GenState *gen = st->gen;
     LLVMTypeRef oldtype = LLVMGetCalledFunctionType(call);
     LLVMTypeRef newtype = genlAggSig(gen, oldtype);
     LLVMTypeRef rettype = LLVMGetReturnType(oldtype);
-    int sret = genlAggIsLarge(gen, rettype);
+    LLVMTypeRef coerced;
+    GenlRetClass retclass = genlAggRetClass(gen, rettype, &coerced);
+    int sret = genlAggRetSret(retclass);
     unsigned nargs = LLVMGetNumArgOperands(call);
     LLVMValueRef *args = (LLVMValueRef *)malloc((nargs + 2) * sizeof(LLVMValueRef));
     LLVMValueRef slot = NULL;
@@ -559,10 +746,29 @@ static void genlAggCall(GenlAggFn *st, LLVMValueRef call) {
     free(args);
     LLVMSetInstructionCallConv(newcall, LLVMGetInstructionCallConv(call));
     genlAggSigAttrs(gen, call, newcall, oldtype, 1);
-    if (sret)
+    switch (retclass) {
+    case GenlRetLarge:
         genlAggPut(&st->homes, call, slot, genlAggAlignOf(gen, rettype), 1);
-    else if (LLVMGetTypeKind(rettype) != LLVMVoidTypeKind)
-        LLVMReplaceAllUsesWith(call, newcall);
+        break;
+    case GenlRetSlot: {
+        LLVMValueRef load = LLVMBuildLoad2(gen->builder, rettype, slot, "");
+        LLVMSetAlignment(load, genlAggAlignOf(gen, rettype));
+        LLVMReplaceAllUsesWith(call, load);
+        break;
+    }
+    case GenlRetVector: {
+        unsigned n = 0;
+        LLVMReplaceAllUsesWith(call, genlAggFromVector(gen, newcall, rettype, &n));
+        break;
+    }
+    case GenlRetInt:
+        LLVMReplaceAllUsesWith(call, genlAggRecast(st, newcall, coerced, rettype, 0));
+        break;
+    default:
+        if (LLVMGetTypeKind(rettype) != LLVMVoidTypeKind)
+            LLVMReplaceAllUsesWith(call, newcall);
+        break;
+    }
     genlAggDead(st, call);
 }
 
@@ -644,13 +850,15 @@ static void genlAggInst(GenlAggFn *st, LLVMValueRef inst) {
     case LLVMCall: {
         LLVMValueRef callee = LLVMGetCalledValue(inst);
         LLVMTypeRef fntype = LLVMGetCalledFunctionType(inst);
-        if (!genlAggSigLarge(gen, fntype))
+        if (genlAggIsIntrinsic(callee) || !genlAggSigChanged(gen, fntype))
             return;
         if (!genlAggIsCAbi(callee)) {
             genlAggCall(st, inst);
             return;
         }
         // A C-named function keeps its own convention
+        if (!genlAggSigLarge(gen, fntype))
+            return;
         genlAggLoadOperands(st, inst);
         if (large)
             genlAggHomeOf(st, inst);
@@ -740,8 +948,33 @@ static void genlAggInst(GenlAggFn *st, LLVMValueRef inst) {
         if (LLVMGetNumOperands(inst) == 0)
             return;
         LLVMValueRef val = LLVMGetOperand(inst, 0);
-        if (!genlAggIsLarge(gen, LLVMTypeOf(val)))
+        LLVMTypeRef valtype = LLVMTypeOf(val);
+        if (!genlAggIsLarge(gen, valtype)) {
+            // A smaller aggregate, as its function's type now returns it
+            LLVMTypeRef coerced;
+            if (genlAggRetClass(gen, valtype, &coerced) != st->retclass)
+                return;
+            switch (st->retclass) {
+            case GenlRetSlot: {
+                LLVMValueRef store = LLVMBuildStore(gen->builder, val, st->sret);
+                LLVMSetAlignment(store, genlAggAlignOf(gen, valtype));
+                LLVMBuildRetVoid(gen->builder);
+                break;
+            }
+            case GenlRetVector: {
+                unsigned n = 0;
+                LLVMBuildRet(gen->builder, genlAggToVector(gen, val, LLVMGetPoison(coerced), &n));
+                break;
+            }
+            case GenlRetInt:
+                LLVMBuildRet(gen->builder, genlAggRecast(st, val, valtype, coerced, 1));
+                break;
+            default:
+                return;
+            }
+            genlAggDead(st, inst);
             return;
+        }
         if (!st->sret) {
             genlAggLoadOperands(st, inst);
             return;
@@ -973,9 +1206,10 @@ static LLVMBasicBlockRef *genlAggBlockOrder(LLVMValueRef fn, uint32_t *count) {
     return order;
 }
 
-// Does anything in the function make, take or return a large value?
-static int genlAggFnLarge(GenState *gen, LLVMValueRef fn, int sret, GenlAggHomes *params) {
-    if (sret || params->used > 0)
+// Does anything in the function make, take or return a large value, return
+// its result otherwise than whole, or call a function that does?
+static int genlAggFnLarge(GenState *gen, LLVMValueRef fn, GenlRetClass retclass, GenlAggHomes *params) {
+    if (retclass != GenlRetWhole || params->used > 0)
         return 1;
     for (LLVMBasicBlockRef blk = LLVMGetFirstBasicBlock(fn); blk; blk = LLVMGetNextBasicBlock(blk)) {
         for (LLVMValueRef inst = LLVMGetFirstInstruction(blk); inst; inst = LLVMGetNextInstruction(inst)) {
@@ -983,21 +1217,22 @@ static int genlAggFnLarge(GenState *gen, LLVMValueRef fn, int sret, GenlAggHomes
                 return 1;
             if (LLVMIsAStoreInst(inst) && genlAggIsLarge(gen, LLVMTypeOf(LLVMGetOperand(inst, 0))))
                 return 1;
-            if (LLVMIsACallInst(inst) && genlAggSigLarge(gen, LLVMGetCalledFunctionType(inst)))
+            if (LLVMIsACallInst(inst) && genlAggSigChanged(gen, LLVMGetCalledFunctionType(inst)))
                 return 1;
         }
     }
     return 0;
 }
 
-static void genlAggFn(GenState *gen, LLVMValueRef fn, int sret, GenlAggHomes *params) {
-    if (!genlAggFnLarge(gen, fn, sret, params))
+static void genlAggFn(GenState *gen, LLVMValueRef fn, GenlRetClass retclass, GenlAggHomes *params) {
+    if (!genlAggFnLarge(gen, fn, retclass, params))
         return;
     GenlAggFn st;
     memset(&st, 0, sizeof(st));
     st.gen = gen;
     st.fn = fn;
-    st.sret = sret ? LLVMGetParam(fn, 0) : NULL;
+    st.retclass = retclass;
+    st.sret = genlAggRetSret(retclass) ? LLVMGetParam(fn, 0) : NULL;
     st.homes.mask = 63;
     st.homes.slots = (GenlAggHome *)calloc(64, sizeof(GenlAggHome));
     st.done.mask = 63;
@@ -1056,10 +1291,12 @@ static void genlAggFn(GenState *gen, LLVMValueRef fn, int sret, GenlAggHomes *pa
 }
 
 // Move every aggregate value larger than GenlAggCopyMin bytes into memory,
-// over the whole module (see the head of this file)
+// and return every smaller aggregate result in registers or a slot, over the
+// whole module (see the head of this file)
 void genlAggCopies(GenState *gen) {
-    // The functions taking or returning a large value, remade with pointers;
-    // the old ones are deleted once nothing uses their parameters
+    // The functions taking a large value or returning an aggregate, remade
+    // with pointers or another result type; the old ones are deleted once
+    // nothing uses their parameters
     uint32_t nold = 0, maxold = 0;
     LLVMValueRef *old = NULL;
     uint32_t nfns = 0, maxfns = 0;
@@ -1075,15 +1312,16 @@ void genlAggCopies(GenState *gen) {
     genlAggConsts = &consts;
     for (LLVMValueRef fn = LLVMGetFirstFunction(gen->module); fn; fn = LLVMGetNextFunction(fn))
         genlAggPush(&fns, &nfns, &maxfns, fn);
-    char *sret = (char *)calloc(nfns + 1, 1);   // whether each returns its large result through a slot
+    // how each returns its result
+    GenlRetClass *retclass = (GenlRetClass *)calloc(nfns + 1, sizeof(GenlRetClass));
     for (uint32_t f = 0; f < nfns; ++f) {
         LLVMValueRef fn = fns[f];
         if (LLVMGetIntrinsicID(fn) != 0 || genlAggIsCAbi(fn))
             continue;
         LLVMTypeRef fntype = LLVMGlobalGetValueType(fn);
-        if (!genlAggSigLarge(gen, fntype))
+        if (!genlAggSigChanged(gen, fntype))
             continue;
-        sret[f] = (char)genlAggIsLarge(gen, LLVMGetReturnType(fntype));
+        retclass[f] = genlAggRetClassOf(gen, LLVMGetReturnType(fntype));
         fns[f] = genlAggRetype(gen, fn, &params);
         genlAggPush(&old, &nold, &maxold, fn);
     }
@@ -1103,7 +1341,7 @@ void genlAggCopies(GenState *gen) {
             if (p->key && LLVMGetParamParent(p->home) == fn)
                 genlAggPut(&own, p->key, p->home, p->align, 0);
         }
-        genlAggFn(gen, fn, sret[f], &own);
+        genlAggFn(gen, fn, retclass[f], &own);
         free(own.slots);
     }
 
@@ -1111,7 +1349,7 @@ void genlAggCopies(GenState *gen) {
         LLVMDeleteFunction(old[o]);
     for (LLVMValueRef fn = LLVMGetFirstFunction(gen->module); fn; fn = LLVMGetNextFunction(fn))
         LLVMRemoveStringAttributeAtIndex(fn, LLVMAttributeFunctionIndex, GenlCAbiMarker, (unsigned)strlen(GenlCAbiMarker));
-    free(sret);
+    free(retclass);
     free(params.slots);
     free(consts.slots);
     genlAggConsts = NULL;
