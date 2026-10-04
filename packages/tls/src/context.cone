@@ -6,8 +6,26 @@
 // from it holds one owner, so a context outlives its sessions (OpenSSL's
 // callbacks read the ALPN list a server's state holds). Each session's
 // SSL object also holds its own reference on the SSL_CTX, OpenSSL's way.
+//
+// The client's cache. OpenSSL hands over each session to resume as it comes
+// (SSL_CTX_sess_set_new_cb): a TLS 1.3 ticket when it arrives after the
+// handshake, a TLS 1.2 session as the handshake ends. Its callback,
+// newSession, touches nothing of Cone's but the session's own list of
+// arrivals, a block of memory in the SSL object's ticket slot; the session
+// moves them into the cache once OpenSSL's call has returned
+// (Session.harvest), so this lock is never taken inside OpenSSL, whichever
+// thread drives the session, and under it OpenSSL is asked only about and
+// to count a session's references (SSL_SESSION_is_resumable, _up_ref,
+// _free, _get_protocol_version), none of which calls back. So a connection opened while another to the
+// same server is still open resumes from the tickets that one was sent.
+// A TLS 1.3 ticket is used once: it is taken out of the cache to resume,
+// and a server sends several (OpenSSL's, two after a full handshake), kept
+// up to maxPerServer so that connections opened at once each resume. A TLS
+// 1.2 session may be resumed again and again: it stays in the cache, one
+// for each server, shared by every connection resuming it.
 
 const maxCached = 256usize;      // sessions a client keeps to resume, at most
+const maxPerServer = 8usize;     // TLS 1.3 tickets kept for one server, at most
 
 // A cached session: which server it is for, and OpenSSL's SSL_SESSION
 struct Cached {
@@ -27,47 +45,73 @@ struct CtxState is Sendable {
   lane Lane;
   offline Bool;
   alpn *u8;               // a server's: the length (u32), then ALPN's wire format
-  cache List[Cached];
+  cache List[Cached];     // oldest first
 
-  // A session for 'key' to resume, taken out of the cache (a TLS 1.3 ticket
-  // is used once), or null
+  // A session for 'key' to resume, or null: the newest the cache holds for
+  // it. A TLS 1.3 ticket is taken out (it is used once); a TLS 1.2 session
+  // stays, and the caller is given a reference of its own. One OpenSSL has
+  // marked not resumable (its connection failed) is dropped on the way
   fn takeCached(self &mut, key &[]u8) *u8 {
-    mut k = 0usize;
-    while k < cache.len() {
-      if cache[k].key.view() == key {
-        imm s = cache[k].sess;
-        imm last = cache.len() - 1usize;
-        if k != last {cache.swap(k, last);}
-        cache.pop();
+    mut k = cache.len();
+    while k > 0usize {
+      k = k - 1usize;
+      if cache[k].key.view() != key {continue;}
+      imm s = cache[k].sess;
+      if SSL_SESSION_is_resumable(s) != 1i32 {
+        self.dropAt(k);
+      } elif SSL_SESSION_get_protocol_version(s) == tls13Version {
+        self.removeAt(k);
+        return s;
+      } else {
+        SSL_SESSION_up_ref(s);
         return s;
       }
-      k = k + 1usize;
     }
     null;
   }
 
-  // Keep a session to resume 'key' with, in place of any before it; the
-  // oldest goes past maxCached
+  // Keep a session to resume 'key' with; the cache takes the reference. A
+  // TLS 1.3 ticket joins the server's others, its oldest going past
+  // maxPerServer; a TLS 1.2 session replaces what the server had; past
+  // maxCached in all, the oldest goes
   fn putCached(self &mut, key &[]u8, sess *u8) {
-    mut k = 0usize;
-    while k < cache.len() {
-      if cache[k].key.view() == key {
-        SSL_SESSION_free(cache[k].sess);
-        (&mut cache[k]).sess = sess;
+    imm tls13 = SSL_SESSION_get_protocol_version(sess) == tls13Version;
+    mut held = 0usize;
+    mut k = cache.len();
+    while k > 0usize {
+      k = k - 1usize;
+      if cache[k].key.view() != key {continue;}
+      if cache[k].sess as usize == sess as usize {
+        // Already here: a TLS 1.2 session handed back by its connection
+        SSL_SESSION_free(sess);
         return;
       }
-      k = k + 1usize;
-    }
-    if cache.len() >= maxCached {
-      SSL_SESSION_free(cache[0usize].sess);
-      mut j = 0usize;
-      while j + 1usize < cache.len() {
-        cache.swap(j, j + 1usize);
-        j = j + 1usize;
+      if not tls13 {
+        self.dropAt(k);
+      } elif held + 1usize >= maxPerServer {
+        self.dropAt(k);
+      } else {
+        held = held + 1usize;
       }
-      cache.pop();
     }
+    if cache.len() >= maxCached {self.dropAt(0usize);}
     cache.push(new Cached(String.from(key), sess));
+  }
+
+  // The entry at k out of the cache, its session freed, the order kept
+  fn dropAt(self &mut, k usize) {
+    SSL_SESSION_free(cache[k].sess);
+    self.removeAt(k);
+  }
+
+  // The entry at k out of the cache, its session the caller's, the order kept
+  fn removeAt(self &mut, k usize) {
+    mut j = k;
+    while j + 1usize < cache.len() {
+      cache.swap(j, j + 1usize);
+      j = j + 1usize;
+    }
+    cache.pop();
   }
 
   fn cachedCount(self &) usize {cache.len();}
@@ -157,8 +201,15 @@ pub struct Client {
   pub fn make(cfg ClientConfig) Result[Client, TlsError] {
     imm ctx = newCtx(TLS_client_method(), cfg.minVersion, cfg.maxVersion);
     if ctx as usize == 0usize {return Error[Client, TlsError][configError("SSL_CTX_new failed")];}
-    // Sessions are cached here, not in OpenSSL's own cache
-    SSL_CTX_ctrl(ctx, ctrlSessCacheMode, sessCacheOff, null);
+    // Sessions are cached here, not in OpenSSL's own cache: OpenSSL hands
+    // each over as it comes (see the header)
+    imm resume = cfg.resume and ticketSlot() >= 0i32;
+    if resume {
+      SSL_CTX_ctrl(ctx, ctrlSessCacheMode, sessCacheClient | sessCacheNoInternalStore, null);
+      SSL_CTX_sess_set_new_cb(ctx, &newSession);
+    } else {
+      SSL_CTX_ctrl(ctx, ctrlSessCacheMode, sessCacheOff, null);
+    }
     imm wire = alpnWire(&cfg.alpn);
     if wire.len() > 0usize {
       imm w = wire.view();
@@ -187,7 +238,7 @@ pub struct Client {
       k = k + 1usize;
     }
     imm st = new Shared(new CtxState(ctx: ctx, server: false, kind: kind, pins: pins,
-      resume: cfg.resume, lane: cfg.verifyLane, offline: cfg.offline, alpn: null,
+      resume: resume, lane: cfg.verifyLane, offline: cfg.offline, alpn: null,
       cache: List[Cached].empty()));
     Ok[Client, TlsError][new Client(st)];
   }
@@ -291,4 +342,37 @@ fn @c("coneTlsAlpnSelect") alpnSelect(ssl *u8, out &mut *u8, outLen &mut u8, off
   *out = chosen;
   *outLen = chosenLen;
   tlsextErrOk;
+}
+
+// ---------------------------------------------------------------------------
+// Sessions to resume, as they come
+// ---------------------------------------------------------------------------
+
+// A client session's arrivals: a block of memory its SSL object's ticket
+// slot points to, a count and then up to maxArrivals SSL_SESSIONs, each a
+// pointer's size. The session empties it after each of OpenSSL's calls
+const maxArrivals = 8usize;
+
+fn arrivalsMake() *u8 {
+  imm b = libc.malloc(mem.sizeof[usize]() * (1usize + maxArrivals));
+  *(b as *usize) = 0usize;
+  b;
+}
+
+// The n-th arrival's place in a block
+fn arrivalAt(b *u8, n usize) *usize {(b + mem.sizeof[usize]() * (1usize + n)) as *usize;}
+
+// OpenSSL hands a client session over to be kept, to resume its server
+// with (SSL_CTX_sess_set_new_cb): a TLS 1.3 ticket after the handshake, a
+// TLS 1.2 session as it ends. It goes on the session's arrivals, nothing of
+// Cone's touched but them and no lock taken; 1 keeps OpenSSL's reference,
+// 0 gives it back (no arrivals block, or the block is full)
+fn @c("coneTlsNewSession") newSession(ssl *u8, sess *u8) i32 {
+  imm b = SSL_get_ex_data(ssl, ticketSlot());
+  if b as usize == 0usize {return 0i32;}
+  imm n = *(b as *usize);
+  if n >= maxArrivals {return 0i32;}
+  *arrivalAt(b, n) = sess as usize;
+  *(b as *usize) = n + 1usize;
+  1i32;
 }

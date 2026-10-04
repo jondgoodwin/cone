@@ -38,7 +38,7 @@
 //   drv.listenWith(&mut lp, addr, new So[TlsMaker](new TlsMaker(server, pool)), Sink.Here[100u64]);
 //
 //   ClientConfig.make()  c.verify c.alpn c.minVersion c.maxVersion      (CONFIGURATION)
-//     c.resume c.backend c.verifyLane c.offline
+//     c.resume c.backend c.verifyLane c.offline                         (RESUMPTION)
 //   ServerConfig.make(certFile, keyFile)  s.alpn s.minVersion s.maxVersion s.backend
 //   Verifier.platform()  Verifier.roots(pem)  Verifier.pinnedSha256(hex)  (VERIFIERS)
 //     Verifier.insecureDevelopmentOnly()
@@ -87,6 +87,17 @@
 // protocols it accepts by ALPN, in its order of preference; a client offering
 // none of them is refused with no_application_protocol. A Client and a
 // Server are handles: copied to share, between threads too.
+//
+// RESUMPTION. A Client that resumes caches, for each server name, what it
+// is sent to resume with, as it arrives: TLS 1.3's tickets, which come
+// after the handshake (OpenSSL's servers send two after a full handshake,
+// one after a resumed one), and a TLS 1.2 session as its handshake ends. A
+// new session to that name takes the newest. A TLS 1.3 ticket is used once,
+// so connections opened together each take their own, up to 8 kept for a
+// server; a TLS 1.2 session stays, shared by every connection resuming it.
+// A connection opened while another to the same server is still open
+// resumes, as long as a ticket is left; past 256 in all, the oldest go.
+// 'cachedSessions()' says how many are kept.
 //
 // VERIFIERS. Who decides that a server is who it claims to be:
 // - Verifier.platform(), the default: the operating system. On Windows the
@@ -154,6 +165,11 @@
 // - Over loopback through httpconn's driver, connect, handshake, one GET of
 //   64 bytes and a reset: plain HTTP p50 0.11 ms; TLS 1.2 to 1.3 ms full,
 //   0.82 to 0.95 ms resumed.
+// - A second connection opened while the first to the same server is still
+//   open ('bench -- concurrent'): it resumes from a ticket the first was
+//   sent, every time; in memory p50 0.59 to 0.62 ms, over loopback with its
+//   GET 0.82 to 0.85 ms. Before tickets were cached as they came, it made a
+//   full handshake: 0.88 ms and 1.18 ms.
 // - Bulk, one connection, a 256 MiB body: plain 2.5 to 3.2 GB/s; TLS (AES-256-GCM)
 //   1.07 to 1.21 GB/s.
 // - Memory: a client and a server session, open and idle, about 87 KB the
@@ -175,6 +191,7 @@ import iocore use Op, Completion, Outcome, Lane, LaneConfig, IoError, addLane;
 
 fn @initpure init() {
   laneOnce = Once.make();
+  slotOnce = Once.make();
   nHandshakes = Atomic[u64].of(0u64);
   nResumed = Atomic[u64].of(0u64);
   nFailures = Atomic[u64].of(0u64);
@@ -454,4 +471,22 @@ fn makeLane() {
 pub fn defaultVerifyLane() Lane {
   laneOnce.callOnce(&makeLane);
   laneMade;
+}
+
+// ---------------------------------------------------------------------------
+// The SSL object's ticket slot
+// ---------------------------------------------------------------------------
+
+imm slotOnce Once;
+mut slotMade i32 = -1i32;
+
+fn makeSlot() {
+  slotMade = CRYPTO_get_ex_new_index(0i32, 0i32, null, null, null, null);
+}
+
+// The SSL objects' ex_data index holding a client session's arrivals
+// (context.cone), OpenSSL's for the process; -1 if OpenSSL gave none
+fn ticketSlot() i32 {
+  slotOnce.callOnce(&makeSlot);
+  slotMade;
 }

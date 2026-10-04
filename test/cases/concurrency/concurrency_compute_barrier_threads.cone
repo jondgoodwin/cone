@@ -1,0 +1,127 @@
+// A kernel's CPU twin running a workgroup's invocations on threads, each
+// thread having set its barrier hook (core's setBarrierHook) to a real
+// barrier. The kernel is the GPU chapter's workgroup prefix sum, whose
+// invocations read, after a barrier, what invocations after them wrote, so
+// that run one invocation at a time it gives another answer. Here a dispatch
+// of 3 workgroups of 4 runs on 4 threads, one invocation of each workgroup a
+// thread, the workgroups one after another, so the one copy of the
+// '@workgroup' global serves the workgroup running; every barrier waits at a
+// generation-counting futex barrier, which the hook's context points at.
+//
+// The hook is the thread's own: the main thread, which set none, then runs
+// the same dispatch one invocation at a time, its barriers doing nothing, and
+// gets the one-at-a-time answer, where a hook shared by every thread would
+// have it wait forever for three invocations that never come.
+
+mod concurrency_compute_barrier_threads;
+
+import stdio use *;
+import thread;
+import sync;
+
+mut @workgroup scan Array[u32, 4];
+
+fn @compute(4) prefix(inv Invocation, input &[]u32, out &[]mut u32) {
+  imm g = usize.from(inv.globalId[0]);
+  imm l = usize.from(inv.localIndex);
+  scan[l] = input[g];
+  workgroupBarrier();
+  mut step = 1usize;
+  while step < 4usize {
+    imm add = if l >= step {scan[l - step];} else {0u32;};
+    workgroupBarrier();
+    scan[l] = scan[l] + add;
+    workgroupBarrier();
+    step = step * 2usize;
+  }
+  out[g] = scan[l];
+}
+
+// A barrier for 4 threads: the last to arrive resets the count and opens the
+// next generation; the others sleep until the generation has moved on
+struct Barrier {
+  pub arrived Atomic[u32];
+  pub generation Atomic[u32];
+}
+
+// The hook: ctx is the Barrier
+fn barrierWait(ctx *u8, kind u32) {
+  imm b = ctx as *Barrier;
+  imm gen = (*b).generation.load();
+  if (*b).arrived.add(1u32) == 3u32 {
+    (*b).arrived.store(0u32);
+    (*b).generation.store(gen + 1u32);
+    sync.futexWakeAll(&(*b).generation);
+  }
+  else {
+    while (*b).generation.load() == gen {
+      sync.futexWait(&(*b).generation, gen);
+    }
+  }
+}
+
+// What a thread is given: its place in each workgroup, the barrier, and the
+// dispatch's two buffers
+struct Lane is Sendable {
+  pub l u32;
+  pub bar *Barrier;
+  pub input *u32;
+  pub out *u32;
+}
+
+fn run(lane Lane) {
+  setBarrierHook(&barrierWait, lane.bar as *u8);
+  imm input = mem.sliceFromParts[u32](lane.input, 12usize);
+  imm out = mem.sliceFromPartsMut[u32](lane.out, 12usize);
+  mut g = 0u32;
+  while g < 3u32 {
+    imm inv = new Invocation([g * 4u32 + lane.l, 0u32, 0u32], [lane.l, 0u32, 0u32], [g, 0u32, 0u32], lane.l, [3u32, 1u32, 1u32]);
+    prefix(inv, input, out);
+    // The workgroup done on every thread before the next one begins
+    barrierWait(lane.bar as *u8, 0u32);
+    g = g + 1u32;
+  }
+  clearBarrierHook();
+}
+
+fn show(what &[]u8, out &[]u32) {
+  printStr(what);
+  mut i = 0usize;
+  while i < out.len {
+    printStr(" ");
+    printUInt(u64.from(out[i]));
+    i = i + 1usize;
+  }
+  printStr("\n");
+}
+
+fn main() {
+  mut bar = new Barrier(Atomic[u32].of(0u32), Atomic[u32].of(0u32));
+  mut input Array[u32, 12] = [1u32, 2u32, 3u32, 4u32, 5u32, 6u32, 7u32, 8u32, 9u32, 10u32, 11u32, 12u32];
+  mut out Array[u32, 12] = [0u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32];
+  imm pin = &mut input as *u32;
+  imm pout = &mut out as *u32;
+  imm pbar = &mut bar as *Barrier;
+  imm t0 = thread.start(new Lane(0u32, pbar, pin, pout), &run);
+  imm t1 = thread.start(new Lane(1u32, pbar, pin, pout), &run);
+  imm t2 = thread.start(new Lane(2u32, pbar, pin, pout), &run);
+  imm t3 = thread.start(new Lane(3u32, pbar, pin, pout), &run);
+  t0.join();
+  t1.join();
+  t2.join();
+  t3.join();
+  show("on threads:", &out);
+
+  // One invocation at a time on this thread, which set no hook
+  mut g = 0u32;
+  while g < 3u32 {
+    mut l = 0u32;
+    while l < 4u32 {
+      imm inv = new Invocation([g * 4u32 + l, 0u32, 0u32], [l, 0u32, 0u32], [g, 0u32, 0u32], l, [3u32, 1u32, 1u32]);
+      prefix(inv, &input, &mut out);
+      l = l + 1u32;
+    }
+    g = g + 1u32;
+  }
+  show("one at a time:", &out);
+}

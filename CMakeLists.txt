@@ -176,6 +176,7 @@ target_compile_definitions(conec PRIVATE CONE_PACKAGES_DIR="${CMAKE_SOURCE_DIR}/
 # libc, so it is rebuilt when they change.
 set(CONESTD_CONE
 	${CMAKE_SOURCE_DIR}/packages/conestd/conestd.cone
+	${CMAKE_SOURCE_DIR}/packages/conestd/barrier.cone
 	${CMAKE_SOURCE_DIR}/packages/conestd/panic.cone
 	${CMAKE_SOURCE_DIR}/packages/conestd/roots.cone
 	${CMAKE_SOURCE_DIR}/packages/conestd/stdio.cone
