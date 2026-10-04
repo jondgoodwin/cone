@@ -497,10 +497,10 @@ enum ErrorCode {
     // 'await' in an actor's behaviour (ir/exp/await.c; its seam, ir/flowpath.c)
     ErrorAwaitPlace = 1270,     // 'await' outside an actor's behaviour: in a function, a method of another type, or an actor's 'fn' -- its 'init', its 'final' or a synchronous helper -- which no dispatcher runs as a message
     ErrorUnbuiltAwait = 1271,   // An 'await' every seam rule accepted, where its continuation is not built: one not on a behaviour, one whose record holds a traced reference
-    ErrorSelfActorPlace = 1272, // 'selfactor' outside an actor's method: in a function, a method of another type, or an actor's 'init' or 'final'
+    ErrorSelfActorPlace = 1272, // 'selfactor' outside an actor's method: in a function, a method of another type, or an actor's 'final'
     ErrorBehaviourWords = 1273, // 'async' or 'do' without the other, or 'async do' anywhere but in an actor's body: the two words together declare an actor's behaviour, and neither means anything alone
     ErrorAwaitVoid = 1274,      // 'await' on a behaviour that returns nothing, which sends no reply: a caller that needs to know it finished awaits one that declares a return type
-    ErrorBehaviourSend = 1275,  // 'self.m()' on one of the actor's own behaviours where it cannot be sent: in its 'init' or 'final', in a function that is not one of its methods, or through a state that is not the method's own 'self'
+    ErrorBehaviourSend = 1275,  // 'self.m()' on one of the actor's own behaviours where it cannot be sent: in its 'final', in a function that is not one of its methods, or through a state that is not the method's own 'self'
 
     // A condition on one entry of a type's 'is' list, 'is Move if T is Move' (ir/types/struct.c)
     ErrorIsCondNoParms = 1276,  // A condition on an 'is' entry of a type with no type parameters, so nothing to vary by instance
@@ -510,6 +510,9 @@ enum ErrorCode {
     ErrorAwaitLeftCall = 1279,  // A borrow, or a place's base, written to the left of an 'await' in its statement and made by a call: it would be used after the seam, and only a plain path (a local, 'self', a field) is reached again there
 
     // 1280 was ErrorAwaitUnused; an awaited operation's unused result is warned, WarnAwaitUnused
+
+    // An actor's 'init' runs on the state in the actor's block (parser/parseactor.c)
+    ErrorActorStateInit = 1290, // An actor's state constructed with an 'init' it declares anywhere but the making of the actor: the init would run on a state in no actor, whose sends reach nothing
 
     // Warnings
     WarnCode = 3000,

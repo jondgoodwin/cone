@@ -39,15 +39,17 @@
 //                                   actors.noWorker
 //   actors.Mailbox[M]               what an actor's handle owns: the runtime's
 //                                   part of an actor taking messages M
-//   actors.startActor[S, M](state, &dispatch)
-//                                   a new actor: its 'Arc[opaq, Mailbox[M]]'
+//   actors.makeActor[S, M](&dispatch)
+//                                   a new actor's block: where its state goes
+//   actors.startActor[S, M](st)     the actor, its state made: its
+//                                   'Arc[opaq, Mailbox[M]]'
 //   actors.send[M](mb, msg)         queue msg in the actor's mailbox
 //   actors.sendable(v)              v, if it may cross threads (the check)
 //   actors.Awaitable[R]             an operation a behaviour may 'await', whose
 //                                   answer is an R (AWAITING, below)
 //   actors.waitQuiet()              wait until no actor is queued or running
 //
-// The four before Awaitable are what an actor's own code calls, and the compiler
+// The five before Awaitable are what an actor's own code calls, and the compiler
 // generates that code from the 'actor' declaration
 // (compiler/c/parser/parseactor.c). The package is 'actors' because 'actor'
 // (the declaration's keyword) is a keyword, as are 'async' and 'do', and
@@ -77,15 +79,16 @@
 //
 //   (c) The handle, 'Counter': one field, the 'Arc[opaq, T]' owner of the
 //       actor's Mailbox that startActor answers; an initializer for each of
-//       the state's, which makes the state and starts the actor; and a send
-//       function per behaviour, as public as it, which builds the variant and
-//       sends it.
+//       the state's, which makes the actor's block, runs the state's init in
+//       it, and starts the actor (A NEW ACTOR, below); and a send function per
+//       behaviour, as public as it, which builds the variant and sends it.
 //
 //         struct Counter {
 //           mailbox Arc[opaq, actors.Mailbox[Counter.Msg]];
 //           fn init(self &new, start u64) {
-//             *self = new Self(mailbox: actors.startActor[Counter.State, Counter.Msg](
-//               new Counter.State(start), &Counter.dispatch));
+//             imm st = actors.makeActor[Counter.State, Counter.Msg](&Counter.dispatch);
+//             mem.writeRaw[Counter.State](st, new Counter.State(start));
+//             *self = new Self(mailbox: actors.startActor[Counter.State, Counter.Msg](st));
 //           }
 //           pub fn add(self &, n u64) {
 //             actors.send[Counter.Msg](mailbox, Counter.Msg.add[n]);
@@ -137,6 +140,20 @@
 // 'finalize', made for the state's type when the actor started, which the
 // Mailbox's finalizer calls before the block is freed.
 //
+// A NEW ACTOR is real before its state's 'init' runs, and that init runs on
+// the state where it will stay: the handle's initializer makes the block, the
+// state unmade (makeActor), runs the init in it (a construction written raw
+// fills the place it is written to), then starts the actor (startActor). So
+// 'selfactor', and a send to the actor itself, are good inside the init and
+// anything it calls. The actor runs no message until the init returns: its
+// mailbox starts BUSY, not idle, as though a worker were running it, so a
+// send made meanwhile -- by the init, or by another actor handed the handle
+// -- queues its message and schedules nothing. startActor then does what a
+// worker does at the end of a turn: it marks the mailbox idle or, finding
+// messages there, takes the scheduler's owner and queues the actor, which
+// runs them in the order sent. A panic in the init is the panic: the program
+// ends, and the block is never freed.
+//
 // AN ACTOR'S LIFE. An actor lives while anything holds a handle to it or it
 // has a message to handle. While it is queued to run, or running, the
 // scheduler holds one owner of it too, taken by the send that found it idle
@@ -161,7 +178,7 @@
 // order the sends took their places, and a send has taken its place before
 // it returns. What a message carries must be Sendable, which the compiler
 // asks of every message's parameters, and of every initializer's, where they
-// are declared, and 'send', 'startActor' and Mailbox ask of the message enum:
+// are declared, and 'send', 'makeActor' and Mailbox ask of the message enum:
 // numbers, 'uni' and 'So' owners (which move), 'Arc[imm, T]' and lock-managed
 // 'Arc' owners, handles; never a borrow, a 'mut' owner, an 'Rc' owner or a
 // 'Gc' reference. actors.sendable is the same check, for code written by hand.
@@ -551,29 +568,55 @@ fn finalizeState[S, M Sendable](h *Header) {
 // reaches an actor only through its Header.
 // ---------------------------------------------------------------------------
 
-// A new actor from its state and its dispatch function: the 'Arc[opaq, T]'
-// owner of its Mailbox, which its handle holds. The workers start first, if
-// this is the first actor. The state is moved into an 'Arc' allocation after
-// the Mailbox, and its mailbox made: one stub node, idle. Nothing else can
-// reach the actor until this returns, so the header is written plainly;
-// whatever hands the handle on orders it. The dispatch function is handed
-// each message where it lies in its node, and takes it: it moves every field
-// out, and the node is then freed with nothing in it finalized.
-pub fn startActor[S, M Sendable](state S, dispatch &fn(s &mut S, m *M)) Arc[opaq, Mailbox[M]] {
+// A new actor is made in two steps (A NEW ACTOR, above), which the handle's
+// initializer generated for each of the state's calls:
+//
+//   imm st = actors.makeActor[S, M](&dispatch);   the block, the state unmade
+//   mem.writeRaw[S](st, new S(...));               the init, filling it in place
+//   actors.startActor[S, M](st)                    the handle's owner
+
+// A new actor's block, its state not yet made: where the state goes, for its
+// init to fill. The workers start first, if this is the first actor. An
+// 'Arc' allocation holds the Mailbox and then the state, its mailbox one stub
+// node, busy; its count is one, the owner startActor answers. The state's
+// bytes are a placeholder until its init fills them, never read or finalized.
+// Nothing outside the init can reach the actor until startActor returns, so
+// the header is written plainly; whatever hands the handle on orders it. The
+// dispatch function is handed each message where it lies in its node, and
+// takes it: it moves every field out, and the node is then freed with nothing
+// in it finalized.
+pub fn makeActor[S, M Sendable](dispatch &fn(s &mut S, m *M)) *S {
   ensureRunning();
   imm stub = libc.malloc(mem.sizeof[Link]()) as *Link;
-  if stub as usize == 0usize {
-    die("actors: out of memory for a mailbox");
+  imm room = libc.malloc(mem.sizeof[S]() + 1usize);
+  if stub as usize == 0usize or room as usize == 0usize {
+    die("actors: out of memory for an actor");
   }
   (*stub).next = nullLink();
   mut f = dispatch;
-  imm h = new Header(((stub as usize) | idleBit) as *Link, stub, nullHeader(),
+  imm h = new Header(stub, stub, nullHeader(),
     &runBatch[S, M], &releaseHold[M], &finalizeState[S, M], *(&mut f as **u8));
-  imm b = new Arc[opaq, Block[S, M]](Mailbox[M].made(h), state);
-  // The owner of the block, remade as the owner of its first part: the same
-  // address and the same count, moved, not copied
+  imm b = new Arc[opaq, Block[S, M]](Mailbox[M].made(h), mem.readRaw[S](room as *S));
+  libc.free(room);
+  // The owner of the block, put away uncounted as its address, which is the
+  // Header's: startActor remakes it
   mut slot *u8 = null;
   mem.writeRaw[Arc[opaq, Block[S, M]]](&mut slot as *(Arc[opaq, Block[S, M]]), b);
+  stateOf[S, M](slot as *Header);
+}
+
+// The actor whose state at st its init has made: the 'Arc[opaq, T]' owner of
+// its Mailbox, which its handle holds -- the owner makeActor put away, remade
+// from the address, moved, not copied. Its mailbox is marked idle, unless a
+// message was sent while the init ran: then the actor is queued, as a send
+// finding it idle queues it, to run them in the order sent.
+pub fn startActor[S, M Sendable](st *S) Arc[opaq, Mailbox[M]] {
+  imm h = headerOf[S, M](&*st);
+  if !mailMarkIdle(h) {
+    holdArc[M](h);
+    schedule(h);
+  }
+  mut slot = h;
   mem.readRaw[Arc[opaq, Mailbox[M]]](&mut slot as *(Arc[opaq, Mailbox[M]]));
 }
 

@@ -728,7 +728,11 @@ place (`genlNewFill`), or the value made or finished is stored there, no
 value init running, or an array's contents (`FlagAllocFill`, the literal
 not evaluated before `alloc`) fill it in place, element by element and run by
 run (`genlArrayLitInto`), each value evaluated then; then the reference
-goes to its destination. A `trynew`'s contents are therefore evaluated only
+goes to its destination. A declared init fills in place in two other places:
+a local it initializes, and a construction written raw,
+`mem.writeRaw[T](p, new T(...))`, whose init is called with `p` as its `self`
+(`genlFnCall`) -- how an actor's state is made in its block, so that its init
+runs on the state where it stays. A `trynew`'s contents are therefore evaluated only
 on the path where the memory was had. A traced region's `alloc` may collect, so the
 arguments' traced parts are births ("Roots", below), rooted while it runs.
 And `alloc` links the new block into the collector's heap, where an `init`

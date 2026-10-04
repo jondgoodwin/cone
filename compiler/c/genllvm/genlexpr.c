@@ -992,6 +992,21 @@ LLVMValueRef genlFnCall(GenState *gen, FnCallNode *fncall) {
     if (intrinsicBuildConst((INode*)fncall, &buildconst))
         return LLVMConstInt(genlType(gen, fncall->vtype), (uint64_t)buildconst, 1);
 
+    // 'mem.writeRaw[T](p, new T(...))' by a declared init fills p in place: the
+    // init runs with p as its self, as an allocation's value is filled
+    // (genlallocref), so what the init does with its self's address -- an
+    // actor's init sending through its own handle -- reaches where the value
+    // stays. The pointer is evaluated first, then the construction's
+    // arguments, as for any call
+    if (fncall->args->used == 2 && intrinsicCallIs(fncall, WriteRawIntrinsic)) {
+        INode *value = nodesGet(fncall->args, 1);
+        if (value->tag == FnCallTag && (value->flags & FlagNew)) {
+            LLVMValueRef dest = genlExpr(gen, nodesGet(fncall->args, 0));
+            genlNewInto(gen, value, dest);
+            return NULL;
+        }
+    }
+
     // Get count and Valuerefs for all the arguments to pass to the function
     uint32_t fnargcnt = fncall->args->used;
     LLVMValueRef *fnargs = (LLVMValueRef*)memAllocBlk(fnargcnt * sizeof(LLVMValueRef*));

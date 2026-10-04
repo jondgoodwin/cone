@@ -232,6 +232,9 @@ void intrinsicCallCheck(FnCallNode *call, FnDclNode *fndcl);
 // instance holds an IntrinsicNode of an atomic kind
 FnDclNode *intrinsicAtomicCallee(FnCallNode *call);
 
+// Does a call expand the declared intrinsic of this kind (WriteRawIntrinsic...)?
+int intrinsicCallIs(FnCallNode *call, int16_t kind);
+
 // The orderings a checked call to an atomic intrinsic was given, in the order
 // of its parameters: one, or compareSwap's success and failure
 void intrinsicCallOrders(FnCallNode *call, FnDclNode *fndcl, MemOrderKind *orders);

@@ -626,6 +626,19 @@ after the state; nothing depends on it, since the handle reaches the enum only
 through a reference, which lays out nothing of its target. A method declared
 `fn` stays the state's alone, synchronous, called as any struct's method is.
 
+**The actor is real before its state's `init` runs.** Each of the handle's
+initializers makes the actor's block first (`actors.makeActor`, its mailbox
+busy), writes the state's construction into it raw, `` `#mem`.writeRaw(st,
+new Counter.State(args)) ``, which generation fills in place
+([Generation](generation.md), `genlFnCall`), so the state's init runs on the
+state where it stays, and then starts the actor (`actors.startActor`), which
+queues it if the init sent it anything. So `selfactor` and `self.m()` are good
+in the init and in what it calls, and the init's messages run after it.
+`` `#mem` `` is core's `mem`, bound privately, so that an initializer's
+parameter named `mem` does not hide it, and `` `#state'` `` the local holding the
+block. An init the state declares is run nowhere else (`ErrorActorStateInit`,
+`typeLitNewChecked`).
+
 A behaviour may return a value, which a reply carries back to an `await`. Each
 that does has a second variant, its request awaited (`fetch'ask`: its
 parameters and the reply's envelope, an `actors.Reply`), a second send method
@@ -649,7 +662,7 @@ the compiler needs of all this later is recorded in the actor's `ActorInfo`
 
 The derived names -- `Counter.State`, `Counter.Msg`, `Counter.dispatch`, the
 handle's field, the hidden fields, variants and functions above, and the
-bindings of the `actors` and `sync` modules and of `Sendable` the text
+bindings of the `actors` and `sync` modules, of core's `mem` and of `Sendable` the text
 reaches them through, bound once per module -- are `nametblPrivate` names,
 which no source can spell; the generated text writes them `` `#n` ``, which
 only a lexer given `Lexer.gennames` reads. A diagnostic against the generated
