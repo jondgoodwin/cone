@@ -1,0 +1,264 @@
+// sdfmesh's GPU mesher, GridMesher, against its CPU mesher, surfaceNet.
+//
+// - divExact and sqrtExact, gpu/gridnet.cone's division and square root
+//   from integer steps, are the CPU's own, bit for bit: 1,000,000 pairs of
+//   finite f32s from a hash (a quarter of them subnormal or near it, a
+//   quarter in the mesher's range, a crossing's d0 / (d0 - d1)), every one
+//   identical to the CPU's division, and 1,000,000 square roots to sqrtf.
+// - Five shapes sampled on the CPU at the points sdf's SampleGrid.covering
+//   gives (surfaceNet's own samples, the same bits): a sphere, a box, a
+//   torus, a plate thinner than a cell (cells it crosses twice, surface on
+//   both sides of one sample row) and the horn (its tip thinner than a
+//   cell). Each is meshed by surfaceNet (dense, unrelaxed), by GridMesher
+//   on the GPU and read back, and by GridMesher's twins on the CPU. The GPU
+//   makes surfaceNet's mesh: the same vertices in the same order at the
+//   same bits, and the same quads, so the same triangles from 'toMesh'.
+//   The order is the CPU's because the GPU's is fixed by prefix sums, not
+//   by atomics, so the comparison needs no sorting; it is order-free in
+//   the stronger sense that no order could differ. The twin makes the
+//   GPU's every word, normals included. The GPU's normals (the grid's) are
+//   compared with surfaceNet's (the shape's gradient): the least cosine
+//   between the two, and how many are under 0.99, are printed, so pinned.
+//   Every mesh is valid as a PolyMesh, with the Euler characteristic of its
+//   shape (the plate's 10: see main).
+// - The GPU's index buffer, read back as it is ('readBackMesh'), holds
+//   SurfaceNet.toMesh's triangles, index for index; the GridNet's counts are
+//   the read-back net's.
+//
+// Its output pins each shape's counts and normals' agreement; it needs a
+// GPU driver with Vulkan 1.3 and SDL3 (on LIB, and SDL3.dll beside it).
+// GPUWORK_REPORT set prints the adapter.
+
+mod gpumesh;
+
+import testing use *;
+import stdio use *;
+import libc;
+import geomath use *;
+import collections use *;
+import mesh;
+import noise use pcg;
+import sdf use *;
+import sdfmesh use *;
+import gpu use *;
+import gpuwork use refusals, kernelFailures;
+
+fn bits(f f32) u32 { f as u32; }
+
+// ---- Division and square root from integers ----
+
+fn exactArithmetic() {
+  mut divMismatch = 0u32;
+  mut divCompared = 0u32;
+  mut i = 0u32;
+  while i < 1000000u32 {
+    mut ua = pcg(i * 2u32);
+    mut ub = pcg(i * 2u32 + 1u32);
+    imm kind = i % 4u32;
+    if kind == 1u32 {
+      // Subnormal or tiny: exponent 0 to 3
+      ua = (ua & 0x807fffffu32) | ((ua >> 8u32) & 0x01800000u32);
+      if (i & 8u32) != 0u32 { ub = (ub & 0x807fffffu32) | ((ub >> 8u32) & 0x01800000u32); }
+    } elif kind == 2u32 {
+      // A crossing: d0 and d1 of opposite signs, near a cell's size
+      imm d0 = ((ua & 0x007fffffu32) | 0x3c000000u32) as f32;
+      imm d1 = ((ub & 0x007fffffu32) | 0xbc000000u32 | ((ub & 0x00000300u32) << 15u32)) as f32;
+      ua = d0 as u32;
+      ub = (d0 - d1) as u32;
+    }
+    imm a = ua as f32;
+    imm b = ub as f32;
+    imm ea = (ua >> 23u32) & 0xffu32;
+    imm eb = (ub >> 23u32) & 0xffu32;
+    if ea != 255u32 and eb != 255u32 and (ub & 0x7fffffffu32) != 0u32 {
+      if bits(divExact(a, b)) != bits(a / b) {
+        if divMismatch == 0u32 {
+          print <- "divExact differs: "; print <- u64.from(ua); print <- " / "; print <- u64.from(ub); print <- "\n";
+        }
+        divMismatch = divMismatch + 1u32;
+      }
+      divCompared = divCompared + 1u32;
+    }
+    i = i + 1u32;
+  }
+  expectUInt(u64.from(divMismatch), 0u64, "divExact: every quotient the CPU's");
+  expect(divCompared > 990000u32, "divExact: most pairs finite");
+
+  mut sqrtMismatch = 0u32;
+  i = 0u32;
+  while i < 1000000u32 {
+    mut u = pcg(i ^ 0x5bd1e995u32) & 0x7fffffffu32;
+    if i % 4u32 == 1u32 { u = u & 0x00ffffffu32; }
+    if ((u >> 23u32) & 0xffu32) != 255u32 and u != 0u32 {
+      imm x = u as f32;
+      if bits(sqrtExact(x)) != bits(x.sqrt()) {
+        if sqrtMismatch == 0u32 { print <- "sqrtExact differs at "; print <- u64.from(u); print <- "\n"; }
+        sqrtMismatch = sqrtMismatch + 1u32;
+      }
+    }
+    i = i + 1u32;
+  }
+  expectUInt(u64.from(sqrtMismatch), 0u64, "sqrtExact: every root the CPU's");
+  // Corners: exact squares, the smallest subnormal, the largest finite
+  expectUInt(u64.from(bits(sqrtExact(4.))), u64.from(bits(2.)), "sqrtExact(4)");
+  expectUInt(u64.from(bits(sqrtExact(1u32 as f32))), u64.from(bits((1u32 as f32).sqrt())), "sqrtExact(min subnormal)");
+  expectUInt(u64.from(bits(sqrtExact(0x7f7fffffu32 as f32))), u64.from(bits((0x7f7fffffu32 as f32).sqrt())),
+    "sqrtExact(max)");
+  expectUInt(u64.from(bits(divExact(1u32 as f32, 2.))), u64.from(bits((1u32 as f32) / 2.)),
+    "divExact: half the least subnormal, to even");
+  expectUInt(u64.from(bits(divExact(3u32 as f32, 2.))), u64.from(bits((3u32 as f32) / 2.)),
+    "divExact: 1.5 least subnormals, to even");
+}
+
+// ---- Shapes ----
+
+struct Ball {
+  pub centre Vec3;
+  pub r f32;
+  pub fn distance(self &, p Vec3) f32 { sphere(p - centre, r); }
+}
+
+struct Block {
+  pub extent Vec3;
+  pub fn distance(self &, p Vec3) f32 { box(p - new Vec3(0.03, -0.02, 0.01), extent); }
+}
+
+struct Ring {
+  pub fn distance(self &, p Vec3) f32 { torus(p - new Vec3(0.01, 0.02, -0.03), 0.8, 0.25); }
+}
+
+// A plate thinner than a cell, tilted so it cuts the cells unevenly
+struct Plate {
+  pub fn distance(self &, p Vec3) f32 {
+    imm q = new Vec3(p.x, p.y - 0.15 * p.x - 0.1 * p.z, p.z);
+    box(q, new Vec3(0.9, 0.03, 0.7));
+  }
+}
+
+// ---- One shape, three ways ----
+
+// The two nets, vertex by vertex and quad by quad, bit for bit: how many
+// differ ('normals' false compares positions and quads only)
+fn differences(a &SurfaceNet, b &SurfaceNet, normals Bool) u64 {
+  mut d = 0u64;
+  if a.vertexCount() != b.vertexCount() or a.quadCount() != b.quadCount() { return 1000000000u64; }
+  mut i = 0usize;
+  while i < a.vertexCount() {
+    imm p = *a.positions[i];
+    imm q = *b.positions[i];
+    if bits(p.x) != bits(q.x) or bits(p.y) != bits(q.y) or bits(p.z) != bits(q.z) { d = d + 1u64; }
+    if normals {
+      imm n = *a.normals[i];
+      imm m = *b.normals[i];
+      if bits(n.x) != bits(m.x) or bits(n.y) != bits(m.y) or bits(n.z) != bits(m.z) { d = d + 1u64; }
+    }
+    i = i + 1usize;
+  }
+  i = 0usize;
+  while i < a.quads.len() {
+    if *a.quads[i] != *b.quads[i] { d = d + 1u64; }
+    i = i + 1usize;
+  }
+  d;
+}
+
+fn meshShape[S Shape](device &mut Device, mesher &GridMesher, shape &S, box Aabb3, cs f32, euler i64,
+    label &[]u8) {
+  imm grid = SampleGrid.covering(box, cs);
+  imm cpu = surfaceNet(shape, box, cs, 0u32, false);
+  expectUInt(u64.from(grid.samplesX), u64.from(cpu.cellsX) + 1u64, label);
+  expectUInt(u64.from(grid.samplesY), u64.from(cpu.cellsY) + 1u64, label);
+  expectUInt(u64.from(grid.samplesZ), u64.from(cpu.cellsZ) + 1u64, label);
+
+  // The samples, on the CPU, at SampleGrid's points
+  imm n = grid.sampleCount();
+  mut samples = List[f32].withCapacity(usize.from(n));
+  mut i = 0u32;
+  while i < n {
+    samples.push(shape.distance(grid.pointOf(i)));
+    i = i + 1u32;
+  }
+
+  // On the GPU, read back; and on the twin
+  mut onGpu = mesher.meshSamples(device, grid, samples.view());
+  require(onGpu.ok, label);
+  imm gpuNet = onGpu.readBack(device);
+  imm twinNet = mesher.meshOnTwin(grid, samples.view());
+
+  expectUInt(u64.from(onGpu.vertexCount), u64.from(gpuNet.vertexCount()), label);
+  expectUInt(u64.from(onGpu.triangleCount), 2u64 * u64.from(gpuNet.quadCount()), label);
+  expectUInt(differences(&cpu, &gpuNet, false), 0u64, label);
+  expectUInt(differences(&twinNet, &gpuNet, true), 0u64, label);
+
+  // The GPU's own triangles, as its index buffer holds them, are toMesh's
+  imm cm = cpu.toMesh();
+  imm gm = onGpu.readBackMesh(device);
+  expectUInt(u64.from(gm.indices.len()), u64.from(cm.indices.len()), label);
+  mut sameTriangles = true;
+  mut t = 0usize;
+  while t < cm.indices.len() and t < gm.indices.len() {
+    if *cm.indices[t] != *gm.indices[t] { sameTriangles = false; }
+    t = t + 1usize;
+  }
+  expect(sameTriangles, label);
+  expectUInt(u64.from(mesh.meshHash(&gm)), u64.from(mesh.meshHash(&gpuNet.toMesh())), label);
+
+  // The grid's normals against the shape's gradient: the least cosine, and
+  // how many are under 0.99 (8 degrees)
+  mut least = 1.;
+  mut under = 0u32;
+  mut v = 0usize;
+  while v < gpuNet.vertexCount() {
+    imm c = (*gpuNet.normals[v]).dot(*cpu.normals[v]);
+    if c < least { least = c; }
+    if c < 0.99 { under = under + 1u32; }
+    v = v + 1usize;
+  }
+  mut problems = List[String].empty();
+  imm pm = gpuNet.toPolyMesh(&mut problems);
+  expectInt(i64.from(problems.len()), 0, label);
+  expectInt(i64.from(pm.validate().len()), 0, label);
+  expectInt(i64.from(pm.vertexCount()) - i64.from(pm.edgeCount()) + i64.from(pm.faceCount()), euler, label);
+  printStr(label);
+  print <- ": "; print <- u64.from(n); print <- " samples, "; print <- gpuNet.vertexCount(); print <- " vertices, ";
+  print <- gpuNet.quadCount() * 2usize; print <- " triangles, hash "; print <- u64.from(mesh.meshHash(&gm));
+  print <- "; normals against the gradient's: least cosine "; print <- i64.from(libc.floorf(least * 10000.));
+  print <- "e-4, "; print <- u64.from(under); print <- " under 0.99\n";
+}
+
+fn main() i32 {
+  exactArithmetic();
+
+  mut instance = Instance.create("sdfmesh gpumesh");
+  require(instance.isValid(), "a Vulkan 1.3 instance");
+  mut none = Surface.none();
+  mut adapter = instance.requestAdapter(&none, POWER_PREFERENCE_HIGH_PERFORMANCE);
+  require(adapter.isValid(), "an adapter");
+  mut device = adapter.requestDevice();
+  require(device.isValid(), "a device");
+  if (libc.getenv(&"GPUWORK_REPORT" as *u8) as usize) != 0usize {
+    printStr("adapter: ");
+    printStr(adapter.name.view());
+    printStr("\n");
+  }
+  imm mesher = GridMesher.make(&device);
+  require(mesher.isValid(), "the mesher's kernels, from sdfmesh.spv, with their twins");
+
+  imm unit = new Aabb3(new Vec3(-1.1, -1.1, -1.1), new Vec3(1.1, 1.1, 1.1));
+  meshShape(&mut device, &mesher, &new Ball(new Vec3(0.031, -0.017, 0.012), 0.93), unit, 0.1, 2, "sphere");
+  meshShape(&mut device, &mesher, &new Block(new Vec3(0.8, 0.45, 0.6)), unit, 0.09, 2, "box");
+  meshShape(&mut device, &mesher, &new Ring(), unit, 0.07, 0, "torus");
+  // Thinner than a cell, the plate is sampled inside along only some rows
+  // of samples, and its mesh, surfaceNet's as much as the GPU's, is in
+  // pieces: valid, but V - E + F is 10
+  meshShape(&mut device, &mesher, &new Plate(), new Aabb3(new Vec3(-1., -0.5, -0.8), new Vec3(1., 0.5, 0.8)), 0.1, 10,
+    "thin plate");
+  imm horn = Horn.make(3.4, 0.34, 0.97, 1.7, 22, 0.12);
+  meshShape(&mut device, &mesher, &horn, horn.bounds(), 0.06, 2, "horn");
+
+  expectUInt(u64.from(refusals()), 0u64, "nothing refused");
+  expectUInt(u64.from(kernelFailures()), 0u64, "no kernel failed on the GPU");
+  expectUInt(u64.from(failures()), 0u64, "no Vulkan call failed");
+  expectUInt(u64.from(validationMessages()), 0u64, "no validation message");
+  done();
+}

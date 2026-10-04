@@ -124,6 +124,18 @@ Visual Studio projects stay at the root.
   `main` runs as the kernel `fill` on the GPU through `gpuwork` and calls on
   the CPU, every word compared and identical; `test_congo.py` runs it, since
   a test cannot import a program;
+  `meshedpart` is the sample of a part sampled and meshed on the GPU, a
+  program: its `gpu/part.cone` samples an sdf shape on a `SampleGrid`, and
+  sdfmesh's `GridMesher` meshes the samples there; `main` compares both
+  with the CPU's and times them (nothing runs it automatically);
+  `starship` is Elizabeth's skeletal dragon ship, a program and a part:
+  `src/` builds its description on the CPU (with `sculpt`'s paths) into
+  one buffer-shaped `ShipData`, meshes and draws it; `gpu/shipfield.cone`
+  is its distance field over that description and the kernels that sample
+  it sparsely, relax the mesh `GridMesher` makes and give it the field's
+  normals, so the CPU's `surfaceNet` and the GPU evaluate one declaration;
+  `--gpu`, `--compare` and `--runs` mesh on the GPU, compare and time it;
+  `test_congo.py` checks the GPU's meshes against the CPU's in coarse cells;
   `geomath` is 2-D and 3-D math, pure maths: values and operations with
   results of a known size, no collections (vectors,
   quaternions, matrices, transforms, boxes, rays, planes, frusta and their
@@ -203,8 +215,12 @@ Visual Studio projects stay at the root.
   `mesh`: `surfaceNet`, surface nets on the CPU with a vertex per piece of
   surface in a cell (a manifold, closed mesh), gradient normals and blocks
   far from the surface skipped, into a `mesh.Mesh` or `PolyMesh`, and
-  `netLevels` (levels of detail); a GPU mesher is to join it; its README
-  holds what was measured;
+  `netLevels` (levels of detail); and `GridMesher`, the same surface nets
+  on the GPU (its `gpu/gridnet.cone`, run through `gpuwork`) of a grid a
+  part already sampled (sdf's `SampleGrid`), bit for bit `surfaceNet`'s
+  dense, unrelaxed mesh but for normals from the grid, left in GPU buffers
+  or read back; importing it brings `gpuwork` and so SDL3; its README holds
+  what was measured;
   `morphogen` is form that arises from growth rules, as graphs of points,
   over `geomath`, `collections`, `noise` and `sdf`: `BranchGraph` (a forest
   of nodes, parents numbered first), space colonization (`colonize` with

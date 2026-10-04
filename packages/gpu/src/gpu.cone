@@ -100,6 +100,9 @@
 //   of 'device.timestampPeriod' nanoseconds; WebGPU's are nanoseconds.
 // - 'copyTextureToBuffer' packs rows with no gap; WebGPU pads each to 256
 //   bytes.
+// - 'queue.clearBuffer' zeroes a buffer's bytes on the GPU ahead of the next
+//   submission, as 'writeBuffer' writes; WebGPU's 'clearBuffer' is the
+//   command encoder's (a WebGPU backend would record it into one of its own).
 //
 // Coordinates are WebGPU's, whatever the backend's: clip space has y up and
 // depth from 0 to 1, and a texture's first row is its top. On Vulkan, whose
@@ -157,7 +160,8 @@
 // before each attachment for what earlier commands did with it; a copy from
 // a texture moves it to the copy-source layout and back. An attachment
 // cleared at the start of a pass is moved from 'undefined', since what it
-// held is not kept. 'queue.writeBuffer' copies from staging memory, in
+// held is not kept. 'queue.writeBuffer' copies from staging memory, and
+// 'queue.clearBuffer' fills with zeros, in
 // commands submitted ahead of the next submission, between a barrier after
 // everything earlier (a write after a read) and one before everything later
 // (a read after the write). A storage texture rests in the general layout,
@@ -179,7 +183,17 @@
 // Memory. Every buffer and texture has a memory allocation of its own (a
 // dedicated allocation): a buffer the CPU maps (MAP_READ or MAP_WRITE) in
 // memory the CPU sees and keeps mapped, anything else in the GPU's own
-// memory, filled by 'queue.writeBuffer' through staging memory. Staging is a
+// memory, filled by 'queue.writeBuffer' through staging memory (or zeroed
+// by 'queue.clearBuffer', on the GPU). What the CPU writes (staging, and a
+// MAP_WRITE buffer) is in coherent memory, uncached and write-combined where
+// the GPU offers it, which is right for writes. A buffer the CPU only reads
+// (MAP_READ alone: a read-back) is in memory the CPU caches, coherent where
+// there is such (every desktop GPU has it), which the CPU copies out of as
+// fast as from its own memory, where from uncached memory it is some twenty
+// times slower (on the RTX 4060 Laptop, 40 MB in 6 ms against 135 ms; read
+// a word at a time, 856 ms); cached memory that is not coherent is the
+// fallback, invalidated by each 'mappedRange', and coherent uncached memory
+// the last. Staging is a
 // block per frame in flight, handed out from its start (a bump allocator)
 // and reset when the frame comes round; a write too big for the block
 // retires it until then and takes a bigger one. Suballocating buffers and

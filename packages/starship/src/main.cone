@@ -1,0 +1,484 @@
+// starship's main: the command line, the meshes (on the CPU, the GPU or
+// both) and the shots
+
+const LEVELS = 2usize;
+const FINEST f32 = 0.03;
+// Each CPU mesh's meshHash at the default cells: the frame's levels, then
+// the membrane's
+imm PINNED Array[u32, 4] = [0x6546dd06u32, 0xac5f7b3bu32, 0xfc52904fu32, 0x095a0c06u32];
+imm PARTS Array[&[]u8, 2] = ["frame", "membrane"];
+const WIDTH = 1920u32;
+const HEIGHT = 1080u32;
+
+// The parts' names, one bit each in this order
+imm PART_NAMES Array[&[]u8, 16] = ["gesture", "core", "ribs", "keel", "blades", "spars", "membrane", "spikes",
+  "shoulder", "comb", "lance", "head", "maw", "lights", "muscles", "relief"];
+
+extern {
+  fn @c("atof") atof(s *u8) f64;
+}
+
+// ---- Arguments ----
+
+fn cstrEquals(a *u8, b &[]u8) Bool {
+  mut i = 0usize;
+  while i < b.len {
+    if *(a + i) != b[i] { return false; }
+    i = i + 1usize;
+  }
+  *(a + b.len) == 0u8;
+}
+
+fn appendCstr(s &mut String, c *u8) {
+  mut i = 0usize;
+  while *(c + i) != 0u8 {
+    s.appendByte(*(c + i));
+    i = i + 1usize;
+  }
+}
+
+// A count's digits at 'at', and where they stop
+fn digits(at *u8, n &mut u32) *u8 {
+  mut p = at;
+  *n = 0u32;
+  while *p >= u8.from('0') and *p <= u8.from('9') {
+    *n = *n * 10u32 + u32.from(*p - u8.from('0'));
+    p = p + 1usize;
+  }
+  p;
+}
+
+// The shots' size from '--size WxH'; false unless the width is a multiple
+// of 64 (the readback's rows must be 256 bytes) and both are given
+fn parseSize(text *u8, w &mut u32, h &mut u32) Bool {
+  imm x = digits(text, w);
+  if *x != u8.from('x') { return false; }
+  imm end = digits(x + 1usize, h);
+  *end == 0u8 and *w > 0u32 and *h > 0u32 and *w % 64u32 == 0u32;
+}
+
+// A camera from '--camera': ten numbers, comma-separated, into 'out' (the
+// eye, the target, up, then the field of view in degrees); false unless
+// there were ten
+fn parseCamera(text *u8, out &mut Array[f32, 10]) Bool {
+  mut at = text;
+  mut n = 0usize;
+  while n < 10usize {
+    out[n] = f32.from(atof(at));
+    n = n + 1usize;
+    while *at != 0u8 and *at != u8.from(',') { at = at + 1usize; }
+    if *at == 0u8 { return n == 10usize; }
+    at = at + 1usize;
+  }
+  false;
+}
+
+// The bit of the part named 'text', or 0
+fn partBit(text *u8) u32 {
+  mut i = 0usize;
+  while i < 16usize {
+    if cstrEquals(text, PART_NAMES[i]) { return 1u32 << u32.from(i); }
+    i = i + 1usize;
+  }
+  0u32;
+}
+
+// ---- Times ----
+
+fn sortTimes(times &mut List[i64]) {
+  mut i = 0usize;
+  while i < times.len() {
+    mut j = i + 1usize;
+    while j < times.len() {
+      if *times[j] < *times[i] {
+        imm t = *times[i];
+        times.set(i, *times[j]);
+        times.set(j, t);
+      }
+      j = j + 1usize;
+    }
+    i = i + 1usize;
+  }
+}
+
+// The least and the median of some times, in seconds
+fn summary(label &[]u8, times &mut List[i64]) {
+  sortTimes(times);
+  printStr(label);
+  print <- " least "; print <- f64.from(*times[0usize]) / 1000000.; print <- " s, median ";
+  print <- f64.from(*times[times.len() / 2usize]) / 1000000.; print <- " s\n";
+}
+
+fn hexOf(h u32) String {
+  mut hex = String.empty();
+  hex.appendHex(u64.from(h), 8usize);
+  hex;
+}
+
+// ---- The demo ----
+
+fn main(argc i32, argv **u8) i32 {
+  mut shots = String.empty();
+  shots <- "starship";
+  mut objPrefix = String.empty();
+  mut cameras = List[Array[f32, 10]].empty();
+  mut masks = false;
+  mut first = 0usize;           // the finest level meshed
+  mut width = WIDTH;
+  mut height = HEIGHT;
+  mut has = ALL;
+  mut onGpu = false;
+  mut compare = false;
+  mut runs = 0u32;
+  mut sparse = true;
+  mut finest = FINEST;
+  mut slab = 0u32;
+  mut drawing = true;
+  mut onlyPart = 2usize;         // 2: both
+  mut a = 1;
+  while a < argc {
+    imm arg = *(argv + usize.from(a));
+    if cstrEquals(arg, "--mask") { masks = true; a = a + 1; continue; }
+    if cstrEquals(arg, "--coarse") { first = 1usize; a = a + 1; continue; }
+    if cstrEquals(arg, "--gpu") { onGpu = true; a = a + 1; continue; }
+    if cstrEquals(arg, "--compare") { compare = true; a = a + 1; continue; }
+    if cstrEquals(arg, "--dense") { sparse = false; a = a + 1; continue; }
+    if cstrEquals(arg, "--no-shots") { drawing = false; a = a + 1; continue; }
+    if a + 1 >= argc { print <- "Missing the value after an argument\n"; return 2; }
+    if cstrEquals(arg, "--size") {
+      if !parseSize(*(argv + usize.from(a + 1)), &mut width, &mut height) { print <- "--size wants WxH, W a multiple of 64\n"; return 2; }
+    }
+    elif cstrEquals(arg, "--shots") { shots = String.empty(); appendCstr(&mut shots, *(argv + usize.from(a + 1))); }
+    elif cstrEquals(arg, "--obj") { appendCstr(&mut objPrefix, *(argv + usize.from(a + 1))); }
+    elif cstrEquals(arg, "--camera") {
+      mut c = new Array[f32, 10] <- fill 0f;
+      if !parseCamera(*(argv + usize.from(a + 1)), &mut c) { print <- "--camera wants ten numbers: ex,ey,ez,tx,ty,tz,ux,uy,uz,fov\n"; return 2; }
+      cameras.push(c);
+    }
+    elif cstrEquals(arg, "--without") {
+      imm bit = partBit(*(argv + usize.from(a + 1)));
+      if bit == 0u32 { print <- "--without wants a part: gesture, core, ribs, keel, blades, spars, membrane, spikes, shoulder, comb, lance, head, maw, lights, muscles or relief\n"; return 2; }
+      has = has & (ALL ^ bit);
+    }
+    elif cstrEquals(arg, "--runs") { mut n = 0u32; digits(*(argv + usize.from(a + 1)), &mut n); runs = n; }
+    elif cstrEquals(arg, "--part") {
+      imm which = *(argv + usize.from(a + 1));
+      if cstrEquals(which, "frame") { onlyPart = 0usize; } elif cstrEquals(which, "membrane") { onlyPart = 1usize; }
+      else { print <- "--part wants frame or membrane\n"; return 2; }
+    }
+    elif cstrEquals(arg, "--slab") { mut n = 0u32; digits(*(argv + usize.from(a + 1)), &mut n); slab = n; }
+    elif cstrEquals(arg, "--cell") {
+      finest = f32.from(atof(*(argv + usize.from(a + 1))));
+      if !(finest > 0.) { print <- "--cell wants a size above 0\n"; return 2; }
+    }
+    else { print <- "Unknown argument; use --shots PREFIX, --obj PREFIX, --camera ..., --size WxH, --without PART, --mask, --coarse, --gpu, --compare, --runs N, --dense, --cell C, --slab N and --no-shots\n"; return 2; }
+    a = a + 2;
+  }
+  imm useGpu = onGpu or compare or runs > 0u32;
+
+  // The GPU, no window
+  mut instance = Instance.create("starship");
+  mut none = Surface.none();
+  imm powerEnv = libc.getenv(&"GPU_POWER_PREFERENCE" as *u8);
+  mut preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
+  if (powerEnv as usize) != 0usize and libc.strcmp(powerEnv, &"low-power" as *u8) == 0i32 { preference = POWER_PREFERENCE_LOW_POWER; }
+  mut adapter = instance.requestAdapter(&none, preference);
+  if (drawing or useGpu) and (!instance.isValid() or !adapter.isValid()) {
+    print <- "No GPU can draw\n";
+    return 1;
+  }
+  mut device = adapter.requestDevice();
+  if drawing or useGpu {
+    print <- "Adapter: "; printStr(adapter.name.view());
+    if instance.validation { print <- "; validation on\n"; } else { print <- "; validation off\n"; }
+  }
+  // The GPU's kernels, made only when meshing there (starship.spv and
+  // sdfmesh.spv beside the program)
+  mut meshers = List[ShipMesher].empty();
+  if useGpu {
+    mut sm = ShipMesher.make(&device);
+    sm.slabLayers = slab;
+    if !sm.isValid() { print <- "The GPU's kernels could not be made (starship.spv, sdfmesh.spv)\n"; return 1; }
+    meshers.push(sm);
+  }
+
+  // The frame and the membranes, each meshed at LEVELS levels
+  mut meshes = List[mesh.Mesh].empty();
+  mut ok = true;
+  mut sampleFlips = 0u32;       // levels whose GPU samples differ from the CPU's in sign
+  mut part = 0usize;
+  while part < 2usize {
+    if onlyPart != 2usize and part != onlyPart {
+      // Left out: an empty mesh in its place at each level
+      mut skipped = first;
+      while skipped < LEVELS { meshes.push(mesh.Mesh.empty()); skipped = skipped + 1usize; }
+      part = part + 1usize;
+      continue;
+    }
+    imm ship = makeShip(part == 1usize, has);
+    imm box = shipBounds(&ship);
+    mut cell = finest;
+    mut level = 0usize;
+    while level < first { cell = cell * 2.; level = level + 1usize; }
+    while level < LEVELS {
+      mut cpuMesh = mesh.Mesh.empty();
+      if !onGpu or compare {
+        imm started = sdl.GetPerformanceCounter();
+        imm net = surfaceNet(&ship, box, cell, 1u32, true);
+        cpuMesh = net.toMesh();
+        imm h = mesh.meshHash(&cpuMesh);
+        printStr(PARTS[part]); print <- ", level "; print <- level; print <- ": cells of "; print <- cell; print <- ", ";
+        print <- cpuMesh.vertexCount(); print <- " vertices, "; print <- cpuMesh.triangleCount(); print <- " triangles, ";
+        print <- net.evaluations; print <- " distances, ";
+        print <- f64.from(sdl.GetPerformanceCounter() - started) / f64.from(sdl.GetPerformanceFrequency()); print <- " s on the CPU; hash ";
+        printStr(hexOf(h).view());
+        if finest != FINEST { print <- "\n"; }
+        elif h == PINNED[part * LEVELS + level] { print <- " (as pinned)\n"; }
+        else { print <- " (NOT as pinned)\n"; ok = false; }
+      }
+      mut gpuMesh = mesh.Mesh.empty();
+      if compare {
+        printStr(PARTS[part]); print <- ", level "; print <- level; print <- ":\n";
+        if !meshers[0usize].checkSamples(&mut device, &ship, box, cell, sparse, cell * 2.) { sampleFlips = sampleFlips + 1u32; }
+      }
+      if useGpu {
+        mut sampling = List[i64].empty();
+        mut meshing = List[i64].empty();
+        mut relaxing = List[i64].empty();
+        mut reading = List[i64].empty();
+        mut totals = List[i64].empty();
+        imm count = if runs > 0u32 { runs; } else { 1u32; };
+        mut r = 0u32;
+        mut stats = new GpuStats(0u64, 0u32, 0u32, false);
+        while r < count {
+          mut times = GpuTimes.zero();
+          gpuMesh = meshers[0usize].meshShip(&mut device, &ship, box, cell, 1u32, sparse, &mut times, &mut stats);
+          if !stats.ok { print <- "Meshing on the GPU FAILED\n"; ok = false; break; }
+          sampling.push(times.sampling);
+          meshing.push(times.meshing);
+          relaxing.push(times.relaxing);
+          reading.push(times.reading);
+          totals.push(times.total());
+          r = r + 1u32;
+        }
+        printStr(PARTS[part]); print <- ", level "; print <- level; print <- ": cells of "; print <- cell; print <- ", ";
+        print <- gpuMesh.vertexCount(); print <- " vertices, "; print <- gpuMesh.triangleCount(); print <- " triangles on the GPU (";
+        print <- stats.samples; print <- " samples in "; print <- stats.slabs; print <- " slabs, ";
+        if sparse { print <- stats.blocks; print <- " blocks"; } else { print <- "dense"; }
+        print <- "); hash "; printStr(hexOf(mesh.meshHash(&gpuMesh)).view()); print <- "\n";
+        if stats.ok {
+          summary("  sampling:          ", &mut sampling);
+          summary("  meshing:           ", &mut meshing);
+          summary("  relax and normals: ", &mut relaxing);
+          summary("  reading back:      ", &mut reading);
+          summary("  in all:            ", &mut totals);
+        }
+        if compare and stats.ok {
+          mut label = String.empty();
+          label <- PARTS[part];
+          label <- ", level ";
+          label.appendByte(u8.from('0') + u8.from(level));
+          if !compareMeshes(label.view(), &gpuMesh, &cpuMesh, cell) { print <- "  NOT the CPU's mesh\n"; ok = false; }
+        }
+      }
+      imm m = if onGpu { gpuMesh; } else { cpuMesh; };
+      if objPrefix.len() > 0usize {
+        mut name = objPrefix.copy();
+        name <- "-";
+        name <- PARTS[part];
+        name <- "-lod";
+        name.appendByte(u8.from('0') + u8.from(level));
+        name <- ".obj";
+        if !mesh.writeObj(&m, name.view()) { print <- "Could NOT write "; printStr(name.view()); print <- "\n"; ok = false; }
+      }
+      meshes.push(m);
+      cell = cell * 2.;
+      level = level + 1usize;
+    }
+    part = part + 1usize;
+  }
+  if has != ALL { print <- "Parts left out, so the hashes are not the pinned ones\n"; }
+
+  if !drawing {
+    print <- "Vulkan failures: "; print <- u64.from(failures());
+    print <- "; kernel failures: "; print <- u64.from(kernelFailures());
+    print <- "; validation messages: "; print <- u64.from(validationMessages()); print <- "\n";
+    if !ok or failures() != 0u32 or kernelFailures() != 0u32 or validationMessages() != 0u32 { print <- "FAILED\n"; return 1; }
+    print <- "OK\n";
+    return 0;
+  }
+  mut renderer = Renderer.create(&mut device, TEXTURE_FORMAT_RGBA16_FLOAT, TEXTURE_FORMAT_DEPTH32_FLOAT);
+
+  // Space: black, the planet's dim red light from below (for the
+  // image-based lighting), a cold sun low on the right, behind the ship
+  mut sky = Sky.dusk(radians(30.), radians(22.));
+  sky.sunColor = new Color(6., 6.5, 8., 1.);
+  sky.zenith = new Color(0.001, 0.0012, 0.003, 1.);
+  sky.horizon = new Color(0.006, 0.004, 0.005, 1.);
+  sky.glow = new Color(0.02, 0.022, 0.03, 1.);
+  sky.ground = new Color(0.01, 0.003, 0.002, 1.);
+  sky.groundFade = 3.;
+  renderer.setSky(&mut device, &sky);
+  imm light = sky.sunLight(new Color(3.0, 3.2, 3.8, 1.), new Color(0.05, 0.05, 0.05, 1.));
+
+  // The frame: blue-black chitin under a glossy lacquer, so the highlights
+  // trace every ridge; the membrane darker and rougher
+  mut metal = PbrMaterial.standard(new Color(0.07, 0.08, 0.12, 1.), 0.85, 0.3);
+  metal.clearcoat = 0.9;
+  metal.clearcoatRoughness = 0.08;
+  imm frameM = renderer.addPbrMaterial(&mut device, &metal);
+  imm leather = PbrMaterial.standard(new Color(0.035, 0.04, 0.065, 1.), 0.5, 0.55);
+  imm membraneM = renderer.addPbrMaterial(&mut device, &leather);
+  // The lights, by how hot: the wings' cool blue-white rows, the dim warm
+  // ports, the eyes, the mouth's smoulder hottest of all
+  imm blue = Material.plain(new Color(45., 55., 160., 1.));
+  imm port = Material.plain(new Color(30., 13., 4., 1.));
+  imm eyeHot = Material.plain(new Color(260., 120., 30., 1.));
+  imm mouthHot = Material.plain(new Color(600., 230., 50., 1.));
+  mut glowMaterials = List[MaterialHandle].empty();
+  glowMaterials.push(renderer.addMaterial(&mut device, &blue));
+  glowMaterials.push(renderer.addMaterial(&mut device, &port));
+  glowMaterials.push(renderer.addMaterial(&mut device, &eyeHot));
+  glowMaterials.push(renderer.addMaterial(&mut device, &mouthHot));
+  imm frameMesh = renderer.addMesh(&mut device, meshes[0usize]);
+  // Without the membrane its mesh is empty, and is not drawn
+  imm skin = meshes[LEVELS - first].triangleCount() > 0usize;
+  imm membraneMesh = if skin { renderer.addMesh(&mut device, meshes[LEVELS - first]); } else { frameMesh; };
+  imm ballMesh = mesh.Mesh.sphere(1., 10);
+  imm ball = renderer.addMesh(&mut device, &ballMesh);
+  // The planet: a great rust-red ball below and beyond
+  imm planetMesh = mesh.Mesh.sphere(1., 96);
+  imm planet = renderer.addMesh(&mut device, &planetMesh);
+  imm rust = PbrMaterial.standard(new Color(0.32, 0.1, 0.05, 1.), 0., 0.9);
+  imm planetM = renderer.addPbrMaterial(&mut device, &rust);
+  mut starMeshes = List[MeshHandle].empty();
+  mut g = 0u32;
+  while g < 3u32 {
+    imm s = stars(g);
+    mut idx = List[u32].empty();
+    mut j = 0u32;
+    while j < u32.from(s.len()) { idx.push(j); j = j + 1u32; }
+    starMeshes.push(renderer.addLines(&mut device, s.view(), idx.view()));
+    g = g + 1u32;
+  }
+
+  mut list = DrawList.empty();
+  list.add(frameMesh, frameM, Mat4.identity());
+  if skin { list.add(membraneMesh, membraneM, Mat4.identity()); }
+  imm ship = makeShip(false, has);
+  imm glows = lights(&ship);
+  mut i = 0usize;
+  while i < glows.len() {
+    imm l = glows[i];
+    list.add(ball, *glowMaterials[usize.from(l.kind)], Mat4.fromTrs(l.at, Quat.identity(), l.size));
+    i = i + 1usize;
+  }
+  // The silhouette: the ship and its lights in one flat white, lit by an
+  // ambient white alone, so every pixel of it is 1
+  imm flatWhite = Material.plain(new Color(1., 1., 1., 1.));
+  imm white = renderer.addMaterial(&mut device, &flatWhite);
+  mut maskList = DrawList.empty();
+  maskList.add(frameMesh, white, Mat4.identity());
+  if skin { maskList.add(membraneMesh, white, Mat4.identity()); }
+  i = 0usize;
+  while i < glows.len() {
+    imm l = glows[i];
+    maskList.add(ball, white, Mat4.fromTrs(l.at, Quat.identity(), l.size));
+    i = i + 1usize;
+  }
+  imm flat = Light.directional(v(0., -1., 0.), new Color(0., 0., 0., 1.), new Color(1., 1., 1., 1.));
+  list.add(planet, planetM, Mat4.fromTrs(v(171., -169., -13.), Quat.identity(), v(150., 150., 150.)));
+  imm starColors Array[f32, 3] = [0.6, 1.5, 4.];
+  i = 0usize;
+  while i < 3usize {
+    imm c = starColors[i];
+    list.addLines(*starMeshes[i], Mat4.identity(), new Color(c, c, c * 1.1, 1.));
+    i = i + 1usize;
+  }
+
+  // The shots: as the reference frames it, from the side, from ahead
+  imm targetDesc = new TextureDescriptor(width, height, TEXTURE_FORMAT_RGBA8_UNORM_SRGB,
+    TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
+  mut target = device.createTexture(&targetDesc);
+  imm depthDesc = new TextureDescriptor(width, height, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT);
+  mut depth = device.createTexture(&depthDesc);
+  mut post = Post.create(&mut device, TEXTURE_FORMAT_RGBA8_UNORM_SRGB, width, height);
+  mut readback = device.createBuffer(u64.from(width) * u64.from(height) * 4u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  if !renderer.isValid() or !post.isValid() or !target.isValid() {
+    print <- "The renderer could not be made\n";
+    return 1;
+  }
+  mut camera = Camera.make();
+  camera.fov = radians(35.);
+  camera.near = 0.5;
+  camera.far = 600.;
+  // The shots: a three-quarter view from above and behind, the side, the
+  // front, the top, the head close, the near wing's edge close
+  imm names Array[&[]u8, 6] = ["-hero", "-side", "-front", "-top", "-head", "-edge"];
+  mut eyes = List[Vec3].empty();
+  mut targets = List[Vec3].empty();
+  mut ups = List[Vec3].empty();
+  mut fovs = List[f32].empty();
+  if cameras.len() == 0usize {
+    eyes.push(v(-9., 15., 17.)); targets.push(v(5.5, -0.3, 0.5)); ups.push(v(0., 1., 0.)); fovs.push(30.);
+    eyes.push(v(6., 0.8, 24.)); targets.push(v(6., 0.3, 0.)); ups.push(v(0., 1., 0.)); fovs.push(35.);
+    eyes.push(v(-14., 3., 0.)); targets.push(v(5., -0.3, 0.)); ups.push(v(0., 1., 0.)); fovs.push(40.);
+    eyes.push(v(6., 26., 0.)); targets.push(v(6., 0., 0.)); ups.push(v(-1., 0., 0.)); fovs.push(38.);
+    eyes.push(v(-2.3, 0.9, 2.1)); targets.push(v(-0.45, -0.15, 0.05)); ups.push(v(0., 1., 0.)); fovs.push(34.);
+    eyes.push(v(5.5, 5.5, 5.)); targets.push(v(7.2, 0.1, 2.6)); ups.push(v(0., 1., 0.)); fovs.push(35.);
+  }
+  mut c = 0usize;
+  while c < cameras.len() {
+    imm n = *cameras[c];
+    eyes.push(v(n[0usize], n[1usize], n[2usize]));
+    targets.push(v(n[3usize], n[4usize], n[5usize]));
+    ups.push(v(n[6usize], n[7usize], n[8usize]));
+    fovs.push(n[9usize]);
+    c = c + 1usize;
+  }
+  imm bloom = post.bloom * 2.;
+  imm toneMapper = post.toneMapper;
+  imm passes = if masks { 2; } else { 1; };
+  mut s = 0usize;
+  while s < eyes.len() {
+    camera.lookAt(*eyes[s], *targets[s], *ups[s]);
+    camera.fov = radians(*fovs[s]);
+    mut name = shots.copy();
+    if cameras.len() == 0usize { name <- names[s]; }
+    else {
+      name <- "-cam";
+      if s >= 10usize { name.appendByte(u8.from('0') + u8.from(s / 10usize % 10usize)); }
+      name.appendByte(u8.from('0') + u8.from(s % 10usize));
+    }
+    mut pass = 0;
+    while pass < passes {
+      // The mask: no sky, no bloom, no tone mapping
+      renderer.drawSky = pass == 0;
+      post.bloom = if pass == 0 { bloom; } else { 0.; };
+      post.toneMapper = if pass == 0 { toneMapper; } else { TONE_MAP_NONE; };
+      mut encoder = device.createCommandEncoder();
+      if pass == 0 { renderer.render(&mut device, &mut encoder, &post.hdr, &depth, &camera, &light, &list); }
+      else { renderer.render(&mut device, &mut encoder, &post.hdr, &depth, &camera, &flat, &maskList); }
+      post.apply(&mut encoder, &target);
+      encoder.copyTextureToBuffer(&target, &readback);
+      device.queue.submit(encoder.finish());
+      device.endFrame();
+      device.waitIdle();
+      imm shot = Image.fromTexels(readback.mappedRange(), i32.from(width), i32.from(height), false);
+      mut file = name.copy();
+      if pass == 1 { file <- "-mask"; }
+      file <- ".bmp";
+      if shot.save(file.view()) { print <- "Shot: "; printStr(file.view()); print <- "\n"; }
+      else { print <- "Could NOT write "; printStr(file.view()); print <- "\n"; ok = false; }
+      pass = pass + 1;
+    }
+    s = s + 1usize;
+  }
+
+  print <- "Vulkan failures: "; print <- u64.from(failures());
+  print <- "; kernel failures: "; print <- u64.from(kernelFailures());
+  print <- "; validation messages: "; print <- u64.from(validationMessages()); print <- "\n";
+  if !ok or failures() != 0u32 or kernelFailures() != 0u32 or validationMessages() != 0u32 { print <- "FAILED\n"; return 1; }
+  print <- "OK\n";
+  0;
+}

@@ -1,0 +1,220 @@
+// Vecbench: what geomath's vector arithmetic costs on the CPU, per operation,
+// on the real clock, beside bench's matrix arithmetic. It prints
+//
+// - Vec3 + Vec3, Vec3.dot, Vec3.cross and Vec3.normalize: each over 4,096
+//   pairs (in cache), 2,000 times over;
+// - Mat4 * Vec4: 4,096 vectors through a matrix, 2,000 times over;
+// - 1M points through a matrix: a million points (12 MB, out of cache)
+//   carried through a placement 'm * p', 20 times over;
+// - 1M particles: each step a million particles moved by their velocity, the
+//   velocity pulled towards a centre by the unit direction to it, 20 steps;
+//
+// then a hash of every result's bits, the same on every run, build and
+// machine: a change in it is a change in what the arithmetic computed, not in
+// how fast. Build it optimised to measure:
+//
+//   congo run --release packages/geomath/examples/vecbench.cone
+
+mod vecbench;
+
+import stdio use *;
+import libc;
+import time use Duration, Instant;
+import geomath use *;
+
+// FNV-1a over 32-bit words: a value's bits folded in, so any change shows
+fn mix(h u32, bits u32) u32 {(h ^ bits) * 16777619u32;}
+
+fn mix3(h u32, v Vec3) u32 {mix(mix(mix(h, v.x as u32), v.y as u32), v.z as u32);}
+
+// A slice of n values of T, from the C allocator, never given back
+fn block[T](n usize) &[]mut T {
+  mem.sliceFromPartsMut(libc.malloc(n * mem.sizeof[T]()) as *T, n);
+}
+
+fn report(what &[]u8, took Duration, n u64) {
+  printStr(what);
+  printFloat(f64.from(took.nanos()) / f64.from(n));
+  printStr(" ns each\n");
+}
+
+fn main() i32 {
+  mut h = 2166136261u32;
+
+  // Vec3 operations, in cache
+  {
+    imm n = 4096usize;
+    imm passes = 2000u64;
+    imm a = block[Vec3](n);
+    imm b = block[Vec3](n);
+    imm o = block[Vec3](n);
+    imm d = block[f32](n);
+    mut i = 0usize;
+    while i < n {
+      imm t = f32.from(i % 977usize) * 0.01;
+      a[i] = new Vec3(t, 1. - t, 2. * t + 0.5);
+      b[i] = new Vec3(0.5 - t, t * t, 1. + t);
+      i = i + 1usize;
+    }
+
+    mut t0 = Instant.now();
+    mut pass = 0u64;
+    while pass < passes {
+      i = 0usize;
+      while i < n {
+        o[i] = a[i] + b[i];
+        i = i + 1usize;
+      }
+      pass = pass + 1u64;
+    }
+    report("Vec3 + Vec3:           ", t0.elapsed(), passes * u64.from(n));
+    i = 0usize;
+    while i < n {
+      h = mix3(h, o[i]);
+      i = i + 1usize;
+    }
+
+    t0 = Instant.now();
+    pass = 0u64;
+    while pass < passes {
+      i = 0usize;
+      while i < n {
+        d[i] = a[i].dot(b[i]);
+        i = i + 1usize;
+      }
+      pass = pass + 1u64;
+    }
+    report("Vec3.dot:              ", t0.elapsed(), passes * u64.from(n));
+    i = 0usize;
+    while i < n {
+      h = mix(h, d[i] as u32);
+      i = i + 1usize;
+    }
+
+    t0 = Instant.now();
+    pass = 0u64;
+    while pass < passes {
+      i = 0usize;
+      while i < n {
+        o[i] = a[i].cross(b[i]);
+        i = i + 1usize;
+      }
+      pass = pass + 1u64;
+    }
+    report("Vec3.cross:            ", t0.elapsed(), passes * u64.from(n));
+    i = 0usize;
+    while i < n {
+      h = mix3(h, o[i]);
+      i = i + 1usize;
+    }
+
+    t0 = Instant.now();
+    pass = 0u64;
+    while pass < passes {
+      i = 0usize;
+      while i < n {
+        o[i] = a[i].normalize();
+        i = i + 1usize;
+      }
+      pass = pass + 1u64;
+    }
+    report("Vec3.normalize:        ", t0.elapsed(), passes * u64.from(n));
+    i = 0usize;
+    while i < n {
+      h = mix3(h, o[i]);
+      i = i + 1usize;
+    }
+  }
+
+  imm axis = new Vec3(1., 2., 3.).normalize();
+  imm m = Mat4.fromTrs(new Vec3(1., 2., 3.), Quat.angleAxis(0.5, axis), new Vec3(2., 1., 0.5));
+
+  // Mat4 * Vec4, in cache
+  {
+    imm n = 4096usize;
+    imm passes = 2000u64;
+    imm v = block[Vec4](n);
+    imm o = block[Vec4](n);
+    mut i = 0usize;
+    while i < n {
+      imm t = f32.from(i % 977usize) * 0.01;
+      v[i] = new Vec4(t, 1. - t, 2. * t, 1.);
+      i = i + 1usize;
+    }
+    imm t0 = Instant.now();
+    mut pass = 0u64;
+    while pass < passes {
+      i = 0usize;
+      while i < n {
+        o[i] = m * v[i];
+        i = i + 1usize;
+      }
+      pass = pass + 1u64;
+    }
+    report("Mat4 * Vec4:           ", t0.elapsed(), passes * u64.from(n));
+    i = 0usize;
+    while i < n {
+      h = mix(mix(mix(mix(h, o[i].x as u32), o[i].y as u32), o[i].z as u32), o[i].w as u32);
+      i = i + 1usize;
+    }
+  }
+
+  // A million points through a placement, and a million particles stepped
+  {
+    imm n = 1000000usize;
+    imm passes = 20u64;
+    imm p = block[Vec3](n);
+    imm o = block[Vec3](n);
+    imm vel = block[Vec3](n);
+    mut i = 0usize;
+    while i < n {
+      imm t = f32.from(i % 977usize) * 0.01;
+      p[i] = new Vec3(t, 1. - t, 2. * t);
+      vel[i] = new Vec3(0.1 * t, -0.05, 0.02 * t);
+      i = i + 1usize;
+    }
+
+    mut t0 = Instant.now();
+    mut pass = 0u64;
+    while pass < passes {
+      i = 0usize;
+      while i < n {
+        o[i] = m * p[i];
+        i = i + 1usize;
+      }
+      pass = pass + 1u64;
+    }
+    report("1M points, m * p:      ", t0.elapsed(), passes * u64.from(n));
+    i = 0usize;
+    while i < n {
+      h = mix3(h, o[i]);
+      i = i + 1usize;
+    }
+
+    imm center = new Vec3(0.5, 0.5, 1.);
+    imm dt f32 = 0.01;
+    t0 = Instant.now();
+    pass = 0u64;
+    while pass < passes {
+      i = 0usize;
+      while i < n {
+        imm pull = (center - p[i]).normalize();
+        vel[i] = vel[i] + pull * dt;
+        p[i] = p[i] + vel[i] * dt;
+        i = i + 1usize;
+      }
+      pass = pass + 1u64;
+    }
+    report("1M particles, a step:  ", t0.elapsed(), passes * u64.from(n));
+    i = 0usize;
+    while i < n {
+      h = mix3(mix3(h, p[i]), vel[i]);
+      i = i + 1usize;
+    }
+  }
+
+  printStr("hash of every result: ");
+  printInt(i64.from(h));
+  printStr("\n");
+  0;
+}

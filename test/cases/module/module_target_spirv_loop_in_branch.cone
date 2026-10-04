@@ -1,0 +1,55 @@
+// A 'while' loop inside a kernel's bounds branch, carrying an f32 and reading
+// a slice in its body, on SPIR-V's Vulkan form: its back edge stays a
+// conditional branch. LLVM's structurizer, given a loop entered straight from
+// a conditional branch, made the back edge always exit, so the loop ran once
+// and what followed it was skipped; every loop is now given a preheader
+// before the control flow is structured. The shapes: the index in the loop's
+// body, under an 'if' inside the loop, and a call in the loop's body.
+// packages/gpusample's 'loops' test runs the same kernels on a GPU.
+
+mod module_target_spirv_loop_in_branch;
+
+fn @compute(64) sumInBranch(inv Invocation, a &[]f32, out &[]mut f32) {
+  imm i = usize.from(inv.globalId[0usize]);
+  if i < out.len {
+    mut sum = 0.;
+    mut k = 0u32;
+    while k < 4u32 {
+      sum = sum + a[i] * f32.from(k + 1u32);
+      k = k + 1u32;
+    }
+    out[i] = sum;
+  }
+}
+
+fn @compute(64) sumIfInLoop(inv Invocation, a &[]f32, b &[]f32, out &[]mut f32) {
+  imm i = usize.from(inv.globalId[0usize]);
+  if i < out.len {
+    mut sum = 0.;
+    mut k = 0u32;
+    while k < 4u32 {
+      if (k & 1u32) == 1u32 { sum = sum + a[i] * 0.25; }
+      else { sum = sum + b[i]; }
+      k = k + 1u32;
+    }
+    out[i] = sum;
+  }
+}
+
+fn stepOf(x f32, y f32, k u32) f32 {
+  if y < 0. { return 0.; }
+  if (k & 1u32) == 0u32 { x * 0.5 + y; } else { x - y * f32.from(k); };
+}
+
+fn @compute(64) sumCallInLoop(inv Invocation, a &[]f32, b &[]f32, out &[]mut f32) {
+  imm i = usize.from(inv.globalId[0usize]);
+  if i < out.len {
+    mut sum = 0.;
+    mut k = 0u32;
+    while k < 4u32 {
+      sum = sum + stepOf(a[i], b[i], k);
+      k = k + 1u32;
+    }
+    out[i] = sum;
+  }
+}

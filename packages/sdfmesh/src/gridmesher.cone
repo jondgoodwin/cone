@@ -1,0 +1,589 @@
+// ======== Meshing a sampled grid: surface nets, on the GPU ========
+//
+// The CPU half of the GPU mesher: gpu/gridnet.cone's kernels, run on the GPU
+// through gpuwork ('GridMesher.mesh') or on the CPU as their twins
+// ('meshOnTwin'). It is given a grid's samples, one f32 a sample of an
+// sdf.SampleGrid, as a part's own kernel wrote them on the GPU or as the
+// CPU made them, and makes the surface net 'surfaceNet' would make of them,
+// dense and unrelaxed: the same vertices, in the same order, at the same
+// bits, and the same quads, cut into triangles as 'SurfaceNet.toMesh' cuts
+// them. Its normals are the grid's (gpu/gridnet.cone says how), not the
+// shape's gradient, which it never sees.
+//
+//   mut mesher = GridMesher.make(&device);       // reads sdfmesh.spv beside the program
+//   imm grid = SampleGrid.covering(box, 0.03);
+//   ... a kernel writes grid.sampleCount() distances into 'samples' ...
+//   mut net = mesher.mesh(&mut device, grid, samples);  // a GridNet: buffers on the GPU
+//   imm cpu = net.readBack(&mut device);           // a SurfaceNet, if wanted
+//
+// The mesh stays on the GPU: a GridNet's positions and normals (a Vec3 a
+// vertex) are made for drawing as vertex buffers and its indices (three a
+// triangle) as an index buffer, as well as storage. 'mesh' waits for the
+// GPU twice: once for the counts, by which it sizes the vertex and index
+// buffers, then for the vertices and triangles. Its buffers are made anew
+// each call, and none is zeroed but the scans' one-word bases: the kernels
+// write every other word before any is read (zeroing them cost 30 to 70 ms
+// on a grid of 3.5 million samples, measured).
+
+// The kernels' order in GridMesher
+const KClassify = 0u32;
+const KCountQuads = 1u32;
+const KScanTotals = 2u32;
+const KScanApply = 3u32;
+const KGather = 4u32;
+const KPlace = 5u32;
+const KEmit = 6u32;
+
+// How a slot of a meshing run starts
+const SlotWords = 0u32;        // its words, uploaded
+const SlotZero = 1u32;         // zeros
+const SlotDrawable = 2u32;     // not set, a buffer a renderer can draw from, which the kernels fill
+const SlotSamples = 3u32;      // the samples, handed in
+const SlotScratch = 4u32;      // not set: the kernels write every word before any is read
+
+// The most words a buffer holds: WebGPU's storage binding, 128 MiB
+const MaxBufferWords = 33554432u64;
+
+// One dispatch of a run: a kernel over slots, so many invocations
+struct NetPass {
+  kernel u32;
+  slots List[u32];
+  invocations u32;
+}
+
+// A run of the kernels over numbered slots, the same for the GPU (each slot
+// a buffer given to the job in order, so its job slot is its number) and
+// for the twin (each slot a list of words)
+struct NetPlan {
+  kinds List[u32];
+  sizes List[u64];               // words
+  starts List[List[u32]];        // a SlotWords slot's words
+  passes List[NetPass];
+
+  fn empty() NetPlan {
+    new NetPlan(List[u32].empty(), List[u64].empty(), List[List[u32]].empty(), List[NetPass].empty());
+  }
+
+  fn add(self &mut, kind u32, size u64, words List[u32]) u32 {
+    kinds.push(kind);
+    sizes.push(size);
+    starts.push(words);
+    u32.from(kinds.len() - 1usize);
+  }
+  fn words(self &mut, words List[u32]) u32 {
+    imm n = u64.from(words.len());
+    self.add(SlotWords, n, words);
+  }
+  fn zeros(self &mut, n u64) u32 { self.add(SlotZero, n, List[u32].empty()); }
+  fn scratch(self &mut, n u64) u32 { self.add(SlotScratch, n, List[u32].empty()); }
+  fn drawable(self &mut, n u64) u32 { self.add(SlotDrawable, n, List[u32].empty()); }
+
+  fn pass(self &mut, kernel u32, slots &[]u32, invocations u32) {
+    mut s = List[u32].withCapacity(slots.len);
+    mut i = 0usize;
+    while i < slots.len {
+      s.push(slots[i]);
+      i = i + 1usize;
+    }
+    passes.push(new NetPass(kernel, s, invocations));
+  }
+
+  // The words of the largest slot
+  fn largest(self &) u64 {
+    mut m = 0u64;
+    mut i = 0usize;
+    while i < sizes.len() {
+      if *sizes[i] > m { m = *sizes[i]; }
+      i = i + 1usize;
+    }
+    m;
+  }
+}
+
+// A plain value's words, as a by-value kernel parameter's buffer holds them
+fn valueWords[T](value &T) List[u32] {
+  imm n = mem.sizeof[T]() / 4usize;
+  imm p = value as *u32;
+  mut out = List[u32].withCapacity(n);
+  mut i = 0usize;
+  while i < n {
+    out.push(*(p + i));
+    i = i + 1usize;
+  }
+  out;
+}
+
+// An exclusive prefix sum of slot 'items' (its first 'count' words), in
+// place: each block of 256 summed, the sums scanned the same way (level
+// upon level, until one block is left, which one invocation scans), and each
+// block then scanned from its sum's start
+fn planScan(plan &mut NetPlan, items u32, count u32) {
+  imm step = plan.words(valueWords(&new gridnet.ScanStep(count)));
+  if count <= gridnet.ScanBlock {
+    imm base = plan.zeros(1u64);
+    plan.pass(KScanApply, &[step, items, base], 1u32);
+    return;
+  }
+  imm blocks = (count + gridnet.ScanBlock - 1u32) / gridnet.ScanBlock;
+  imm totals = plan.scratch(u64.from(blocks));
+  plan.pass(KScanTotals, &[step, items, totals], blocks);
+  planScan(plan, totals, blocks);
+  plan.pass(KScanApply, &[step, items, totals], blocks);
+}
+
+// The slots every run has, in this order
+const SSamples = 0u32;
+const STables = 1u32;
+const SGrid = 2u32;
+const SConfigs = 3u32;
+const SCellStarts = 4u32;
+const SQuadStarts = 5u32;
+
+// The first part of a run: each cell's config and vertex count, each
+// sample's quad count, both scanned, and the two totals into the plan's
+// last slot (its answer)
+fn planCounts(grid SampleGrid, tables &List[u32]) NetPlan {
+  mut plan = NetPlan.empty();
+  imm cells = grid.cellCount();
+  imm samples = grid.sampleCount();
+  plan.add(SlotSamples, u64.from(samples), List[u32].empty());
+  mut t = List[u32].withCapacity(tables.len());
+  mut i = 0usize;
+  while i < tables.len() {
+    t.push(*tables[i]);
+    i = i + 1usize;
+  }
+  plan.words(t);
+  plan.words(valueWords(&grid));
+  plan.scratch(u64.from(cells));
+  plan.scratch(u64.from(cells) + 1u64);
+  plan.scratch(u64.from(samples) + 1u64);
+  plan.pass(KClassify, &[SGrid, STables, SSamples, SConfigs, SCellStarts], cells);
+  plan.pass(KCountQuads, &[SGrid, STables, SConfigs, SQuadStarts], samples);
+  planScan(&mut plan, SCellStarts, cells + 1u32);
+  planScan(&mut plan, SQuadStarts, samples + 1u32);
+  imm totals = plan.words(valueWords(&new gridnet.NetTotals(cells, samples)));
+  imm out = plan.scratch(2u64);
+  plan.pass(KGather, &[totals, SCellStarts, SQuadStarts, out], 1u32);
+  plan;
+}
+
+// The second part, after the first: the vertices and the triangles, into
+// four new slots (positions, normals, vertex cells, indices), whose numbers
+// it answers in 'out'
+fn planMesh(plan &mut NetPlan, grid SampleGrid, vertices u32, quads u32, out &mut List[u32]) {
+  imm positions = plan.drawable(3u64 * u64.from(vertices));
+  imm normals = plan.drawable(3u64 * u64.from(vertices));
+  imm cells = plan.scratch(u64.from(vertices));
+  imm indices = plan.drawable(6u64 * u64.from(quads));
+  plan.pass(KPlace, &[SGrid, STables, SSamples, SCellStarts, positions, normals, cells], grid.cellCount());
+  plan.pass(KEmit, &[SGrid, STables, SConfigs, SCellStarts, SQuadStarts, positions, indices], grid.sampleCount());
+  out.push(positions);
+  out.push(normals);
+  out.push(cells);
+  out.push(indices);
+}
+
+// Workgroups for n invocations of 64 each: x, and y rows of x (a dispatch is
+// at most 65,535 a side; the kernels flatten the two)
+fn groupsX(n u32) u32 {
+  imm g = (n + 63u32) / 64u32;
+  if g == 0u32 { 1u32; } elif g <= 65535u32 { g; } else { 32768u32; };
+}
+fn groupsY(n u32) u32 {
+  imm g = (n + 63u32) / 64u32;
+  imm x = groupsX(n);
+  if g <= x { 1u32; } else { (g + x - 1u32) / x; };
+}
+
+// surfaceNet's tables of a cell's pieces, two words a config, as
+// gpu/gridnet.cone reads them ('tablePieces', 'tableEdge')
+fn packedTables() List[u32] {
+  imm tables = netTables();
+  mut out = List[u32].withCapacity(512usize);
+  mut config = 0usize;
+  while config < 256usize {
+    mut w0 = 0u32;
+    mut w1 = 0u32;
+    mut e = 0usize;
+    while e < 12usize {
+      imm p = *tables.edgePiece[config * 12usize + e];
+      imm bits = if p == NoPiece { gridnet.NoPieceBits; } else { u32.from(p); };
+      if e < 8usize { w0 = w0 | (bits << (4u32 * u32.from(e))); }
+      else { w1 = w1 | (bits << (4u32 * u32.from(e - 8usize))); }
+      e = e + 1usize;
+    }
+    w1 = w1 | (u32.from(*tables.pieces[config]) << 16u32);
+    out.push(w0);
+    out.push(w1);
+    config = config + 1usize;
+  }
+  out;
+}
+
+// ---- The result: a surface net on the GPU ----
+
+// What 'GridMesher.mesh' makes, left on the GPU: the vertices' positions and
+// normals (a Vec3 each, 12 bytes, usable as vertex buffers), each vertex's
+// cell's number, and the triangles' indices (three u32 each, usable as an
+// index buffer), in surfaceNet's order; and the samples, handed back. 'ok'
+// is false when it could not be made (gpuwork says why, on stderr)
+pub struct GridNet {
+  pub ok Bool;
+  pub grid SampleGrid;
+  pub vertexCount u32;
+  pub triangleCount u32;
+  pub samples Buffer;
+  pub positions Buffer;
+  pub normals Buffer;
+  pub vertexCells Buffer;
+  pub indices Buffer;
+
+  fn failed(grid SampleGrid, samples Buffer) GridNet {
+    new GridNet(false, grid, 0u32, 0u32, samples, Buffer.none(), Buffer.none(), Buffer.none(), Buffer.none());
+  }
+
+  // The net read back to the CPU as a SurfaceNet: its quads made again from
+  // the triangle pairs, so that 'toMesh' gives these triangles back. It
+  // waits for the GPU. The buffers stay on the GPU, in the GridNet
+  pub fn readBack(self &mut, device &mut Device) SurfaceNet {
+    mut p = List[u32].empty();
+    mut n = List[u32].empty();
+    mut ix = List[u32].empty();
+    if !self.readWords(device, &mut p, &mut n, &mut ix) {
+      return netOfWords(grid, &List[u32].empty(), &List[u32].empty(), &List[u32].empty(), 0u32, 0u32);
+    }
+    netOfWords(grid, &p, &n, &ix, vertexCount, triangleCount);
+  }
+
+  // The net read back as a mesh.Mesh: the positions, the normals and the
+  // GPU's own triangles, its index buffer's words as they are. It waits for
+  // the GPU; the buffers stay on the GPU
+  pub fn readBackMesh(self &mut, device &mut Device) mesh.Mesh {
+    mut p = List[u32].empty();
+    mut n = List[u32].empty();
+    mut ix = List[u32].empty();
+    mut m = mesh.Mesh.empty();
+    if !self.readWords(device, &mut p, &mut n, &mut ix) { return m; }
+    mut v = 0usize;
+    while v < usize.from(vertexCount) and 3usize * v + 2usize < p.len() and 3usize * v + 2usize < n.len() {
+      m.positions.push(new Vec3(*p[3usize * v] as f32, *p[3usize * v + 1usize] as f32, *p[3usize * v + 2usize] as f32));
+      m.normals.push(new Vec3(*n[3usize * v] as f32, *n[3usize * v + 1usize] as f32, *n[3usize * v + 2usize] as f32));
+      v = v + 1usize;
+    }
+    mut i = 0usize;
+    while i < 3usize * usize.from(triangleCount) and i < ix.len() {
+      m.indices.push(*ix[i]);
+      i = i + 1usize;
+    }
+    m;
+  }
+
+  // The positions', normals' and indices' words, read back
+  fn readWords(self &mut, device &mut Device, pw &mut List[u32], nw &mut List[u32], iw &mut List[u32]) Bool {
+    if !ok { return false; }
+    mut works = Works.make();
+    mut job = Job.make(device);
+    mut p = Buffer.none();
+    mut n = Buffer.none();
+    mut ix = Buffer.none();
+    p <=> positions;
+    n <=> normals;
+    ix <=> indices;
+    imm sp = job.give(p);
+    imm sn = job.give(n);
+    imm si = job.give(ix);
+    imm bp = job.readback(device, sp);
+    imm bn = job.readback(device, sn);
+    imm bi = job.readback(device, si);
+    imm ticket = works.submit(device, job, Target.Here[0u64]);
+    mut done = List[Completion].empty();
+    works.waitFor(device, ticket, &mut done);
+    if done.len() != 1usize { return false; }
+    imm c = &mut done[0usize];
+    imm read = c.ok;
+    if read {
+      *pw = c.words(bp);
+      *nw = c.words(bn);
+      *iw = c.words(bi);
+    }
+    positions = c.take(sp);
+    normals = c.take(sn);
+    indices = c.take(si);
+    read;
+  }
+}
+
+// A SurfaceNet from the words of its positions, normals and triangles: each
+// pair of triangles one quad again ((a, b, c), (a, c, d) is cut along a to
+// c; (a, b, d), (b, c, d) along b to d; either way the quad is a, b, c, d)
+fn netOfWords(grid SampleGrid, p &List[u32], n &List[u32], ix &List[u32], vertices u32, triangles u32) SurfaceNet {
+  imm nv = usize.from(vertices);
+  mut positions = List[Vec3].withCapacity(nv);
+  mut normals = List[Vec3].withCapacity(nv);
+  mut v = 0usize;
+  while v < nv and 3usize * v + 2usize < p.len() and 3usize * v + 2usize < n.len() {
+    positions.push(new Vec3(*p[3usize * v] as f32, *p[3usize * v + 1usize] as f32, *p[3usize * v + 2usize] as f32));
+    normals.push(new Vec3(*n[3usize * v] as f32, *n[3usize * v + 1usize] as f32, *n[3usize * v + 2usize] as f32));
+    v = v + 1usize;
+  }
+  imm nq = usize.from(triangles) / 2usize;
+  mut quads = List[u32].withCapacity(4usize * nq);
+  mut q = 0usize;
+  while q < nq and 6usize * q + 5usize < ix.len() {
+    imm o = 6usize * q;
+    imm a = *ix[o];
+    imm b = *ix[o + 1usize];
+    if *ix[o + 3usize] == a {
+      quads.push(a); quads.push(b); quads.push(*ix[o + 2usize]); quads.push(*ix[o + 5usize]);
+    } else {
+      quads.push(a); quads.push(b); quads.push(*ix[o + 4usize]); quads.push(*ix[o + 5usize]);
+    }
+    q = q + 1usize;
+  }
+  new SurfaceNet(positions, normals, quads, grid.cellSize, grid.samplesX - 1u32, grid.samplesY - 1u32,
+    grid.samplesZ - 1u32, 0u64, u64.from(grid.sampleCount()), 0u32, 0u32);
+}
+
+// ---- The mesher: the kernels, made once ----
+
+// gpu/gridnet.cone's kernels, from sdfmesh.spv (which Congo copies beside
+// every program that imports sdfmesh), each with its CPU twin
+pub struct GridMesher {
+  classify Kernel;
+  countQuads Kernel;
+  scanTotals Kernel;
+  scanApply Kernel;
+  gather Kernel;
+  place Kernel;
+  emit Kernel;
+  tables List[u32];
+
+  // The kernels, made on 'device'. Check 'isValid': sdfmesh.spv must be
+  // beside the program
+  pub fn make(device &Device) GridMesher {
+    imm spirv = readSpirv("sdfmesh.spv");
+    imm s = spirv.view();
+    mut m = new GridMesher(
+      Kernel.make(device, s, "classify", &[READ, READ, READ, READ_WRITE, READ_WRITE]),
+      Kernel.make(device, s, "countQuads", &[READ, READ, READ, READ_WRITE]),
+      Kernel.make(device, s, "scanTotals", &[READ, READ, READ_WRITE]),
+      Kernel.make(device, s, "scanApply", &[READ, READ_WRITE, READ]),
+      Kernel.make(device, s, "gather", &[READ, READ, READ, READ_WRITE]),
+      Kernel.make(device, s, "place", &[READ, READ, READ, READ, READ_WRITE, READ_WRITE, READ_WRITE]),
+      Kernel.make(device, s, "emit", &[READ, READ, READ, READ, READ, READ, READ_WRITE]),
+      packedTables());
+    m.classify.setTwin5(&gridnet.classify);
+    m.countQuads.setTwin4(&gridnet.countQuads);
+    m.scanTotals.setTwin3(&gridnet.scanTotals);
+    m.scanApply.setTwin3(&gridnet.scanApply);
+    m.gather.setTwin4(&gridnet.gather);
+    m.place.setTwin7(&gridnet.place);
+    m.emit.setTwin7(&gridnet.emit);
+    m;
+  }
+
+  // Whether every kernel was made, with its twin
+  pub fn isValid(self &) Bool {
+    classify.isValid() and countQuads.isValid() and scanTotals.isValid() and scanApply.isValid()
+      and gather.isValid() and place.isValid() and emit.isValid()
+      and classify.hasTwin and countQuads.hasTwin and scanTotals.hasTwin and scanApply.hasTwin
+      and gather.hasTwin and place.hasTwin and emit.hasTwin;
+  }
+
+  fn kernel(self &, k u32) &Kernel {
+    if k == KClassify { &classify; } elif k == KCountQuads { &countQuads; } elif k == KScanTotals { &scanTotals; }
+    elif k == KScanApply { &scanApply; } elif k == KGather { &gather; } elif k == KPlace { &place; } else { &emit; };
+  }
+
+  // Record the plan's passes from 'first' into a job whose slots are the
+  // plan's
+  fn record(self &, device &mut Device, job &mut Job, plan &NetPlan, first usize) Bool {
+    mut ok = true;
+    mut i = first;
+    while i < plan.passes.len() {
+      imm pass = plan.passes[i];
+      ok = job.dispatch(device, self.kernel(pass.kernel), pass.slots.view(), groupsX(pass.invocations),
+        groupsY(pass.invocations)) and ok;
+      i = i + 1usize;
+    }
+    ok;
+  }
+
+  // The surface net of 'samples' (grid.sampleCount() f32 distances, x
+  // fastest, in a buffer gpuwork can bind: one a kernel wrote, or 'upload's),
+  // made on the GPU and left there. It waits for the GPU. The samples are
+  // handed back in the GridNet
+  pub fn mesh(self &, device &mut Device, grid SampleGrid, samples Buffer) GridNet {
+    // The counts
+    mut plan = planCounts(grid, &tables);
+    if plan.largest() > MaxBufferWords or 6u64 * u64.from(grid.sampleCount()) > 0xffffffffu64 {
+      return GridNet.failed(grid, samples);
+    }
+    mut works = Works.make();
+    mut job = Job.make(device);
+    job.give(samples);
+    mut s = 1usize;
+    while s < plan.kinds.len() {
+      job.give(makeBuffer(device, &plan, s));
+      s = s + 1usize;
+    }
+    self.record(device, &mut job, &plan, 0usize);
+    imm answer = job.readback(device, u32.from(plan.kinds.len() - 1usize));
+    imm ticket = works.submit(device, job, Target.Here[0u64]);
+    mut done = List[Completion].empty();
+    works.waitFor(device, ticket, &mut done);
+    if done.len() != 1usize { return GridNet.failed(grid, Buffer.none()); }
+    mut buffers = List[Buffer].empty();
+    {
+      imm c = &mut done[0usize];
+      s = 0usize;
+      while s < plan.kinds.len() {
+        buffers.push(c.take(u32.from(s)));
+        s = s + 1usize;
+      }
+      if !c.ok {
+        return GridNet.failed(grid, takeBuffer(&mut buffers, 0usize));
+      }
+    }
+    imm totals = done[0usize].words(answer);
+    imm vertices = *totals[0usize];
+    imm quads = *totals[1usize];
+
+    // The vertices and the triangles
+    imm before = plan.passes.len();
+    mut outs = List[u32].empty();
+    planMesh(&mut plan, grid, vertices, quads, &mut outs);
+    if plan.largest() > MaxBufferWords {
+      return GridNet.failed(grid, takeBuffer(&mut buffers, 0usize));
+    }
+    mut job2 = Job.make(device);
+    s = 0usize;
+    while s < buffers.len() {
+      job2.give(takeBuffer(&mut buffers, s));
+      s = s + 1usize;
+    }
+    while s < plan.kinds.len() {
+      job2.give(makeBuffer(device, &plan, s));
+      s = s + 1usize;
+    }
+    self.record(device, &mut job2, &plan, before);
+    imm ticket2 = works.submit(device, job2, Target.Here[0u64]);
+    mut done2 = List[Completion].empty();
+    works.waitFor(device, ticket2, &mut done2);
+    if done2.len() != 1usize { return GridNet.failed(grid, Buffer.none()); }
+    imm c2 = &mut done2[0usize];
+    imm ok = c2.ok;
+    new GridNet(ok, grid, vertices, 2u32 * quads, c2.take(SSamples), c2.take(*outs[0usize]), c2.take(*outs[1usize]),
+      c2.take(*outs[2usize]), c2.take(*outs[3usize]));
+  }
+
+  // The same of samples on the CPU: uploaded, then meshed on the GPU
+  pub fn meshSamples(self &, device &mut Device, grid SampleGrid, samples &[]f32) GridNet {
+    imm words = mem.sliceFromParts[u32](if samples.len > 0usize { &samples[0usize] as *u32; } else { null as *u32; },
+      samples.len);
+    self.mesh(device, grid, upload(device, words));
+  }
+
+  // The same mesh made by the kernels' CPU twins, one invocation at a time
+  // in a fixed order, read out as a SurfaceNet: bit for bit what the GPU
+  // makes and 'readBack' reads. Slow; for tests
+  pub fn meshOnTwin(self &, grid SampleGrid, samples &[]f32) SurfaceNet {
+    mut plan = planCounts(grid, &tables);
+    mut store = List[List[u32]].empty();
+    mut s = 0usize;
+    while s < plan.kinds.len() {
+      store.push(twinWords(&plan, s, samples));
+      s = s + 1usize;
+    }
+    self.runTwins(&plan, &mut store, 0usize);
+    imm last = store.len() - 1usize;
+    imm vertices = *store[last][0usize];
+    imm quads = *store[last][1usize];
+    imm before = plan.passes.len();
+    mut outs = List[u32].empty();
+    planMesh(&mut plan, grid, vertices, quads, &mut outs);
+    while s < plan.kinds.len() {
+      store.push(twinWords(&plan, s, samples));
+      s = s + 1usize;
+    }
+    self.runTwins(&plan, &mut store, before);
+    netOfWords(grid, store[usize.from(*outs[0usize])], store[usize.from(*outs[1usize])],
+      store[usize.from(*outs[3usize])], vertices, 2u32 * quads);
+  }
+
+  // Run the plan's passes from 'first' on their twins over the slots' words
+  fn runTwins(self &, plan &NetPlan, store &mut List[List[u32]], first usize) {
+    mut i = first;
+    while i < plan.passes.len() {
+      imm pass = plan.passes[i];
+      mut bufs = List[List[u32]].withCapacity(pass.slots.len());
+      mut k = 0usize;
+      while k < pass.slots.len() {
+        bufs.push(takeWords(store, usize.from(*pass.slots[k])));
+        k = k + 1usize;
+      }
+      runTwin(self.kernel(pass.kernel), &mut bufs, groupsX(pass.invocations), groupsY(pass.invocations));
+      k = 0usize;
+      while k < pass.slots.len() {
+        store.set(usize.from(*pass.slots[k]), takeWords(&mut bufs, k));
+        k = k + 1usize;
+      }
+      i = i + 1usize;
+    }
+  }
+}
+
+// Element i of a list moved out, an empty one left in its place
+fn takeBuffer(list &mut List[Buffer], i usize) Buffer {
+  mut b = Buffer.none();
+  imm r = &mut list[i];
+  b <=> *r;
+  b;
+}
+fn takeWords(list &mut List[List[u32]], i usize) List[u32] {
+  mut w = List[u32].empty();
+  imm r = &mut list[i];
+  w <=> *r;
+  w;
+}
+
+// Slot s's buffer on the GPU, as the plan starts it
+fn makeBuffer(device &mut Device, plan &NetPlan, s usize) Buffer {
+  imm kind = *plan.kinds[s];
+  if kind == SlotWords { return upload(device, plan.starts[s].view()); }
+  if kind == SlotZero { return zeroed(device, usize.from(*plan.sizes[s])); }
+  // Not set: written by the kernels (a buffer of nothing is one Vec3 long)
+  imm bytes = 4u64 * *plan.sizes[s];
+  imm draw = if kind == SlotDrawable { BUFFER_USAGE_VERTEX | BUFFER_USAGE_INDEX; } else { 0u32; };
+  device.createBuffer(if bytes == 0u64 { 12u64; } else { bytes; },
+    BUFFER_USAGE_STORAGE | BUFFER_USAGE_COPY_DST | BUFFER_USAGE_COPY_SRC | draw);
+}
+
+// Slot s's words on the twin, as the plan starts it
+fn twinWords(plan &NetPlan, s usize, samples &[]f32) List[u32] {
+  imm kind = *plan.kinds[s];
+  mut out = List[u32].withCapacity(usize.from(*plan.sizes[s]));
+  if kind == SlotWords {
+    imm w = plan.starts[s].view();
+    mut i = 0usize;
+    while i < w.len {
+      out.push(w[i]);
+      i = i + 1usize;
+    }
+  } elif kind == SlotSamples {
+    mut i = 0usize;
+    while i < samples.len {
+      out.push(samples[i] as u32);
+      i = i + 1usize;
+    }
+  } else {
+    mut i = 0u64;
+    imm n = if *plan.sizes[s] == 0u64 { 1u64; } else { *plan.sizes[s]; };
+    while i < n {
+      out.push(0u32);
+      i = i + 1u64;
+    }
+  }
+  out;
+}

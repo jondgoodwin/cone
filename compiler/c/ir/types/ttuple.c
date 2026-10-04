@@ -78,8 +78,16 @@ void ttupleNameRes(NameResState *pstate, TupleNode *tuple) {
     }
     if (tag == -1 && abstained)
         tag = VTupleTag;
-    if (tag >= 0)
+    if (tag >= 0) {
         tuple->tag = tag;
+        // A value tuple is an expression from here on, and every expression
+        // carries a value type from the moment it is one: unknown until type
+        // check infers it, as every other expression's constructor sets it.
+        // Left null, a compile that stops after name resolution reports a
+        // bad program holds a value tuple --checktree takes for a defect
+        if (tag == VTupleTag)
+            tuple->vtype = unknownType;
+    }
     else
         errorMsgNode((INode*)tuple, ErrorBadElems, "Elements of tuple must be all types or all values");
 }

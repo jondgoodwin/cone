@@ -121,6 +121,31 @@ pub struct Queue {
       &region as *vulkan.BufferCopy);
   }
 
+  // Set 'size' bytes of 'buffer' from 'offset' to zero, on the GPU, ahead of
+  // whatever is submitted next and in order with the writes made before it,
+  // as 'writeBuffer' writes: no bytes cross from the CPU (vkCmdFillBuffer).
+  // The buffer must have BUFFER_USAGE_COPY_DST, and 'offset' and 'size' be
+  // multiples of 4. WebGPU's 'clearBuffer' is the command encoder's; this is
+  // the queue's, for a buffer zeroed before any encoder records into it.
+  pub fn clearBuffer(self &mut, buffer &Buffer, offset u64, size u64) {
+    if size == 0u64 { return; }
+    if (buffer.usage & BUFFER_USAGE_COPY_DST) == 0u32 {
+      fail("clearBuffer: the buffer was not made with BUFFER_USAGE_COPY_DST");
+      return;
+    }
+    if (offset & 3u64) != 0u64 or (size & 3u64) != 0u64 or offset + size > buffer.size {
+      fail("clearBuffer: the offset or size is not a multiple of 4, or the bytes run past the buffer's end");
+      return;
+    }
+    imm cmd = uploadCommands(self);
+    if isNull(cmd) { return; }
+    // After the frame's earlier copies and clears, which may have written
+    // the same bytes
+    memoryBarrier(cmd, vulkan.PIPELINE_STAGE_2_ALL_TRANSFER_BIT, vulkan.ACCESS_2_TRANSFER_WRITE_BIT,
+      vulkan.PIPELINE_STAGE_2_ALL_TRANSFER_BIT, vulkan.ACCESS_2_TRANSFER_WRITE_BIT);
+    vulkan.cmdFillBuffer(cmd, buffer.backend.buffer, offset, size, 0u32);
+  }
+
   // Write all of 'texture' (one made with TEXTURE_USAGE_COPY_DST, a color
   // texture shaders sample or a storage texture; its first level) from
   // 'data': its rows from the top, each 'bytesPerRow' bytes apart (at least
@@ -304,7 +329,7 @@ fn stagingRoom(queue &mut Queue, size u64) Bool {
   if queue.backend.frames[i].staging.size * 2u64 > blockSize { blockSize = queue.backend.frames[i].staging.size * 2u64; }
   while blockSize < size { blockSize = blockSize * 2u64; }
   imm made = allocateBuffer(queue.backend.device, &queue.backend.memory, blockSize,
-    vulkan.BUFFER_USAGE_TRANSFER_SRC_BIT, true);
+    vulkan.BUFFER_USAGE_TRANSFER_SRC_BIT, BUFFER_USAGE_MAP_WRITE);
   queue.backend.frames[i].staging = new StagingBlock(made.buffer, made.memory, made.mapped, blockSize);
   queue.backend.frames[i].stagingUsed = 0u64;
   made.memory.h != 0u64 and (made.mapped as usize) != 0usize;

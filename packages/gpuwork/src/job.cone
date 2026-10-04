@@ -24,31 +24,25 @@ pub fn uploadValue[T](device &mut Device, value &T) Buffer {
   buffer;
 }
 
-// A buffer of 'count' words, every one zero: for a kernel to write. Check
-// 'isValid'.
+// A buffer of 'count' words, every one zero: for a kernel to write. The
+// zeros are written by the GPU ('queue.clearBuffer', a fill command), ahead
+// of whatever is submitted next, as an upload is; none cross from the CPU.
+// Check 'isValid'.
 pub fn zeroed(device &mut Device, count usize) Buffer {
   imm bytes = u64.from(count) * 4u64;
   imm buffer = device.createBuffer(if bytes == 0u64 { 4u64; } else { bytes; }, WORK_USAGE);
-  if bytes > 0u64 and buffer.isValid() {
-    imm zeros = libc.calloc(count, 4usize);
-    device.queue.writeBuffer(&buffer, 0u64, zeros, bytes);
-    libc.free(zeros);
-  }
+  if bytes > 0u64 and buffer.isValid() { device.queue.clearBuffer(&buffer, 0u64, bytes); }
   buffer;
 }
 
 // The words of a buffer the CPU reads (a job's readback, once its job is
-// complete), copied out; none for a buffer the CPU does not map
+// complete), copied out in one block; none for a buffer the CPU does not map
 pub fn wordsOf(buffer &Buffer) List[u32] {
-  imm p = buffer.mappedRange() as *u32;
+  imm p = buffer.mappedRange();
   imm n = usize.from(buffer.size / 4u64);
-  mut out = List[u32].withCapacity(n);
-  if (p as usize) == 0usize { return out; }
-  mut i = 0usize;
-  while i < n {
-    out.push(*(p + i));
-    i = i + 1usize;
-  }
+  if (p as usize) == 0usize or n == 0usize { return List[u32].withCapacity(n); }
+  mut out = new List[u32](n) <- fill 0u32;
+  libc.memcpy(&mut out[0usize] as *u8, p, 4usize * n);
   out;
 }
 
@@ -129,8 +123,11 @@ pub struct Job {
     // kept with the job from now on, even if the dispatch is refused)
     if kernel.isCone {
       imm errors = zeroed(device, usize.from(ERROR_BUFFER_WORDS));
+      // Mapped for reading and writing, so in coherent memory on every GPU:
+      // the watcher thread reads its words through their address, where
+      // nothing could invalidate a mapping that was not coherent
       imm errorsRead = device.createBuffer(u64.from(ERROR_BUFFER_WORDS) * 4u64,
-        BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+        BUFFER_USAGE_MAP_READ | BUFFER_USAGE_MAP_WRITE | BUFFER_USAGE_COPY_DST);
       imm valid = errors.isValid() and errorsRead.isValid();
       checks.push(errorCheck(errors, errorsRead, kernel, dispatches));
       if !valid {
