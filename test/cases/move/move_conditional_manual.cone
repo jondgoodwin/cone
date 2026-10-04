@@ -1,0 +1,83 @@
+// The reference manual's examples of a condition on an 'is' entry, run:
+// refmove.html, "Move for some instances" (Future, Cell, Handle), and
+// refgeneric.html, "A type that is a trait for some instances" (moves,
+// Checked, Wrapper, Show, Labelled). Each is copied from the page as written;
+// the lines the pages mark as errors are move_flow_conditional's and
+// generic_typecheck_conditional_is's. Each printed value was checked by hand
+// against the source.
+
+mod move_conditional_manual;
+
+import stdio use *;
+
+fn show(label &[]u8, n i64) {
+  printStr(label);
+  printStr(" ");
+  printInt(n);
+  printStr("\n");
+}
+
+// refmove.html
+struct Handle is Move {
+   pub id i32;
+}
+struct Cell[T] {
+   pub v T;
+}
+struct Future[T] is Move if T is Move {
+   pub c Rc[imm, Cell[T]];
+}
+
+// refgeneric.html
+fn moves[X](x &X) i32 where X is Move { 1; }
+fn copies[X](x &X) i32 where X is Copy { 0; }
+
+trait Checked {}
+struct Wrapper[T] is Checked if T is Checked {
+  pub v T;
+}
+struct Seal is Checked {
+  pub n i64;
+}
+fn checked[X](x &X) i64 where X is Checked { x.v.n; }
+
+trait Show {
+  fn show(self &) i64;
+}
+struct Labelled[T] is Show if T is Show {
+  pub v T;
+  pub fn show(self &) i64 where T is Show {
+    v.show() + 100;
+  }
+}
+struct Shown is Show {
+  pub n i64;
+  pub fn show(self &) i64 { n; }
+}
+struct Plain {
+  pub n i64;
+}
+fn shown[X](x &X) i64 where X is Show { x.show(); }
+
+fn main() {
+  imm f = new Future[i32](new Rc[imm, Cell[i32]](new Cell[i32](5)));
+  imm f2 = f;     // a copy: i32 does not move, so neither does Future[i32]
+  imm f3 = f;     // another copy; f is still there
+  show("f", i64.from(f.c.v));                         // 5
+  show("f3", i64.from(f3.c.v));                       // 5
+
+  imm g = new Future[Handle](new Rc[imm, Cell[Handle]](new Cell[Handle](new Handle(7))));
+  imm g2 = g;     // moves g: Handle moves, so Future[Handle] does
+  show("g2", i64.from(g2.c.v.id));                    // 7
+
+  show("moves Future[Handle]", i64.from(moves(&g2)));   // 1
+  show("copies Future[i32]", i64.from(copies(&f2)));     // 0
+
+  imm w = new Wrapper[Seal](new Seal(3));
+  show("checked Wrapper[Seal]", checked(&w));           // 3
+
+  imm l = new Labelled[Shown](new Shown(5));
+  show("shown Labelled[Shown]", shown(&l));             // 5 + 100 = 105
+  imm lp = new Labelled[Plain](new Plain(6));
+  show("Labelled[Plain] v", lp.v.n);                    // 6
+}

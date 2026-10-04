@@ -773,6 +773,10 @@ static void incWalkStruct(IncGen *g, StructNode *strnode) {
         if (!((*nodesp)->flags & IsTagField))
             incWalkType(g, ((FieldDclNode*)*nodesp)->vtype);
     }
+    if (strnode->condis) {
+        for (nodesFor(strnode->condis, cnt, nodesp))
+            incWalkType(g, ((FieldDclNode*)*nodesp)->vtype);
+    }
     if (strnode->siblings) {
         for (nodesFor(strnode->siblings, cnt, nodesp))
             incWalkType(g, ((FieldDclNode*)*nodesp)->vtype);

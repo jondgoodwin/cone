@@ -1,0 +1,93 @@
+// A condition on one entry of a generic type's 'is' list, for traits other
+// than Move (move_conditional has Move): each instance decides the condition
+// with its own type arguments, has the entry where it holds, and lacks it
+// where it does not. A marker, met only by a declaration, is passed on by a
+// wrapper declaring it under the same condition. A trait with methods is
+// paired with methods carrying the same condition as a 'where' clause, and
+// the trait's default method is taken in by the instance that has the entry
+// only. 'is Sendable if T is Sendable' declares an instance sendable, on its
+// word, only where its argument is. And a generic function taking the
+// conditional type asks 'where X is Move' of the instance it is given.
+// Each printed value was checked by hand against the source.
+
+mod generic_conditional_is;
+
+import stdio use *;
+
+fn show(label &[]u8, n i64) {
+  printStr(label);
+  printStr(" ");
+  printInt(n);
+  printStr("\n");
+}
+
+// A marker
+trait Checked {}
+struct Seal is Checked {
+  pub n i64;
+}
+struct Wrapper[T] is Checked if T is Checked {
+  pub v T;
+}
+fn checked[X](x &X) i64 where X is Checked { 1; }
+
+// A trait with a required method and a default one
+trait Show {
+  fn show(self &) i64;
+  fn twice(self &) i64 { self.show() * 2; }
+}
+struct Shown is Show {
+  pub n i64;
+  pub fn show(self &) i64 { n; }
+}
+struct Plain {
+  pub n i64;
+}
+struct Labelled[T] is Show if T is Show {
+  pub v T;
+  pub fn show(self &) i64 where T is Show {
+    v.show() + 100;
+  }
+}
+fn shown[X](x &X) i64 where X is Show { x.twice(); }
+
+// Sendable, on the type's word, where the argument is
+struct Shared[T] is Sendable if T is Sendable {
+  pub r Rc[imm, i64];
+}
+fn sendable[X](x &X) i64 where X is Sendable { 1; }
+
+// A generic function taking the conditional type
+struct Handle is Move {
+  pub id i64;
+}
+struct Cell[T] {
+  pub v T;
+}
+struct Fut[T] is Move if T is Move {
+  pub c Rc[imm, Cell[T]];
+}
+fn moves[X](x &X) i64 where X is Move { 1; }
+fn copies[X](x &X) i64 where X is Copy { 0; }
+fn relayMove[T](f &Fut[T]) i64 { moves(f); }
+fn relayCopy[T](f &Fut[T]) i64 { copies(f); }
+
+fn main() {
+  show("Wrapper[Seal] is Checked", checked(&new Wrapper[Seal](new Seal(1))));             // 1
+  show("Wrapper[Wrapper[Seal]] is Checked",
+    checked(&new Wrapper[Wrapper[Seal]](new Wrapper[Seal](new Seal(1)))));                // 1
+
+  // Labelled[Shown] takes Show's default 'twice': (5 + 100) * 2
+  imm l = new Labelled[Shown](new Shown(5));
+  show("Labelled[Shown] twice", shown(&l));                                              // 210
+  show("Labelled[Shown] show", l.show());                                                // 105
+  imm lp = new Labelled[Plain](new Plain(6));
+  show("Labelled[Plain] v", lp.v.n);                                                     // 6
+
+  show("Shared[i32] is Sendable", sendable(&new Shared[i32](new Rc[imm, i64](1))));      // 1
+
+  imm b = new Fut[Handle](new Rc[imm, Cell[Handle]](new Cell[Handle](new Handle(7))));
+  show("relayMove Fut[Handle]", relayMove(&b));                                          // 1
+  imm a = new Fut[i32](new Rc[imm, Cell[i32]](new Cell[i32](5)));
+  show("relayCopy Fut[i32]", relayCopy(&a));                                             // 0
+}

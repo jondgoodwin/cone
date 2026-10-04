@@ -26,6 +26,7 @@ StructNode *newStructNode(Name *namesym) {
     snode->derived = NULL;
     snode->traits = NULL;
     snode->siblings = NULL;
+    snode->condis = NULL;
     snode->lifecycle = NULL;
     snode->vtable = NULL;
     snode->genericinfo = NULL;
@@ -40,6 +41,8 @@ StructNode *newStructNode(Name *namesym) {
     snode->threadbound = CarriesBorrowUnknown;
     return snode;
 }
+
+static StructNode *structNameResTrait(INode *typeexp);
 
 // Is this member of a generic type one its instance is cloned without?
 static int structMemberAbsent(Nodes *absent, INode *member) {
@@ -129,6 +132,34 @@ INode *cloneStructNode(CloneState *cstate, StructNode *node) {
             namespaceAdd(&newnode->namespace, newfld->namesym, (INode*)newfld);
         }
         ++newnodesp;
+    }
+    // An 'is' entry with a condition is the instance's where its arguments meet
+    // the condition, and missing from it (listed in 'absent') where they do not.
+    // One it takes stands as a placeholder, as an instance of a generic trait
+    // does, and its type check takes the trait in (structTypeCheck). Move, or an
+    // atomic value, is marked at once, as name resolution marks a declared one,
+    // so that a type asking before this one is laid out is answered. The entry
+    // can only add Move: whatever else makes the instance move still does.
+    newnode->condis = NULL;
+    if (node->condis && node->genericinfo) {
+        for (nodesFor(node->condis, cnt, nodesp)) {
+            FieldDclNode *entry = (FieldDclNode*)*nodesp;
+            if (structMemberAbsent(absent, (INode*)entry))
+                continue;
+            FieldDclNode *placeholder = newFieldDclNode(anonName, (INode*)immPerm);
+            inodeLexCopy((INode*)placeholder, (INode*)entry);
+            placeholder->flags |= IsMixin | FlagMethFld;
+            placeholder->vtype = cloneNode(cstate, entry->vtype);
+            nodelistAdd(&newnode->fields, (INode*)placeholder);
+            StructNode *trait = structNameResTrait(entry->vtype);
+            if (trait == NULL)
+                continue;   // an instance of a generic trait, recorded when type check takes it in
+            if (newnode->traits == NULL)
+                newnode->traits = newNodes(2);
+            nodesAdd(&newnode->traits, (INode*)trait);
+            if (trait == moveTrait || trait == atomicValueTrait)
+                newnode->flags |= MoveType;
+        }
     }
     // The copy's method list has to start empty. memcpy carried the original's
     // 'used' count across, and iNsTypeAddFn appends at that count -- so writing
@@ -339,6 +370,10 @@ static void structInheritTrait(StructNode *node, uint32_t fldpos, StructNode *tr
             structAddEnumFinal(node, (FnDclNode*)cloneNode(cstate, (INode*)traitmeth));
     }
 
+    // An instance records an 'is' entry its arguments meet as it is cloned
+    // (cloneStructNode), so that it is answered before this runs
+    if (structDeclaresTrait(node, trait))
+        return;
     if (node->traits == NULL)
         node->traits = newNodes(2);
     nodesAdd(&node->traits, (INode*)trait);
@@ -1894,6 +1929,68 @@ static int structRefuseClosedIs(StructNode *node, FieldDclNode *field, StructNod
     return 1;
 }
 
+// Resolve and vet each 'is' entry with a condition, 'is Move if T is Move',
+// keeping in 'condis' only those an instance may take: the entry names a
+// trait, it is not Copy, and the condition asks about the type's own type
+// parameters as a 'where' clause would. Nothing is taken in here: the generic
+// itself has none of them, and each instance takes those its arguments meet
+// (genericAbsentMembers, cloneStructNode). 'ownenum' is the enum a variant
+// belongs to, or NULL.
+static void structCondIsNameRes(NameResState *pstate, StructNode *node, StructNode *ownenum) {
+    char *name = &node->namesym->namestr;
+    Nodes *kept = NULL;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(node->condis, cnt, nodesp)) {
+        FieldDclNode *entry = (FieldDclNode*)*nodesp;
+        // A trait's 'is' list passes what it names on to every implementer,
+        // and a variant's instances are made with its enum's: neither is built
+        if ((node->flags & TraitType) && !(node->flags & EnumType)) {
+            errorMsgNode(entry->value, ErrorUnbuiltIsCond,
+                "A condition on an 'is' entry of a trait is not built: %s passes its 'is' list on to each type that implements it. A struct or an enum may write one.", name);
+            continue;
+        }
+        if (ownenum) {
+            errorMsgNode(entry->value, ErrorUnbuiltIsCond,
+                "A condition on an 'is' entry of an enum's variant is not built. Write it on the enum, %s, whose instance decides it.",
+                &ownenum->namesym->namestr);
+            continue;
+        }
+        if (node->genericinfo == NULL || node->genericinfo->parms == NULL || node->genericinfo->parms->used == 0) {
+            errorMsgNode(entry->value, ErrorIsCondNoParms,
+                "%s has no type parameters, so a condition on its 'is' entry has nothing to vary by: every use of it is the same type. Write the entry without 'if', or leave it out.", name);
+            continue;
+        }
+        inodeNameRes(pstate, &entry->vtype);
+        StructNode *trait = structNameResTrait(entry->vtype);
+        if (trait == copyTrait) {
+            errorMsgNode(entry->vtype, ErrorIsCondCopy,
+                "Copy takes no condition: a type is Copy wherever nothing makes it move, so the condition is written on Move, 'is Move if ...', and an instance not meeting it copies.");
+            continue;
+        }
+        if (trait == NULL && entry->vtype->tag != FnCallTag) {
+            // A name that bound nothing was reported where it was resolved
+            if (!isNameUseNode(entry->vtype) || ((NameUseNode*)entry->vtype)->dclnode != NULL)
+                errorMsgNode(entry->vtype, ErrorInvType, "An 'is' names an abstraction, and this is not one");
+            continue;
+        }
+        if (trait && structRefuseClosedIs(node, entry, trait, NULL))
+            continue;
+        if (!genericIsConditionNameRes(pstate, node->genericinfo->parms, entry->value))
+            continue;
+        if (trait && !structNameResDemand(pstate, trait)) {
+            errorMsgNode(entry->vtype, ErrorCircular,
+                "Cannot take in %s here: %s is not complete until %s is, so each depends on the other.",
+                &trait->namesym->namestr, &trait->namesym->namestr, name);
+            continue;
+        }
+        if (kept == NULL)
+            kept = newNodes(node->condis->used);
+        nodesAdd(&kept, (INode*)entry);
+    }
+    node->condis = kept;
+}
+
 void structNameRes(NameResState *pstate, StructNode *node) {
     INode **nodesp;
     uint32_t cnt;
@@ -2089,6 +2186,12 @@ void structNameRes(NameResState *pstate, StructNode *node) {
         }
         ++fldi;
     }
+
+    // Each 'is' entry with a condition is resolved and vetted on the same terms,
+    // and taken in by no one here: each instance takes it where its arguments
+    // meet the condition (cloneStructNode)
+    if (node->condis)
+        structCondIsNameRes(pstate, node, enclosing);
 
     // And every sibling a type-body 'use' names, on the same terms and for the
     // same reason. Its own 'extends' has to have been taken before the base it
@@ -3380,6 +3483,11 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
         structInheritTrait(node, fldpos, trait, &cstate);
         clonePopState();
     }
+    // An instance may have just taken an 'is' entry whose condition its
+    // arguments meet (cloneStructNode), which may say what its element borrows
+    // cost it, as one name resolution took would have
+    if (node->instnode)
+        structLendsDeclared(node);
 
     // Every placeholder is gone, so the concrete base's members are taken here as
     // name resolution would have taken them, and before the fold clauses below

@@ -80,6 +80,14 @@ int genericIsInstanceOf(INode *fn, FnDclNode *generic);
 // a member of, or whose name is not a trait
 void genericConstraintsNameRes(NameResState *pstate, Nodes *parms, Nodes **wherep);
 
+// Resolve and vet the condition on one entry of a generic type's 'is' list,
+// 'is Move if T is Move', once its type parameters 'parms' are hooked: a
+// condition as a 'where' clause writes one, each clause asking about one of
+// 'parms'. Returns 0, reported, where any clause is refused. An instance has
+// the entry where its arguments make the condition true (genericInstantiate
+// evaluates it, as it does a method's 'where').
+int genericIsConditionNameRes(NameResState *pstate, Nodes *parms, INode *cond);
+
 // Is 'type' what 'trait' says, as a constraint asks it? A marker trait -- one
 // requiring nothing of a value, the compiler's own among them -- by the
 // compiler's grant or an 'is' declaration only; any other trait by a
