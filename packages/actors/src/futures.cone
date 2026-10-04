@@ -45,6 +45,15 @@
 // the node is dispatched, the second half opens the future through the
 // reference in it.
 //
+// ABANDONED, a future ends its waiters' behaviours quietly: each parked one
+// is abandoned as a behaviour paused on the request itself would be when its
+// envelope is dropped unanswered -- its record dropped when its actor dies,
+// its values finalized in the order its scope gives, its second half never
+// run -- so that the program's end, which cancels and abandons what is
+// outstanding, ends 'imm f = s.next(); await f' as it ends 'await s.next()'.
+// An 'await' that finds the future abandoned already panics at its line
+// (futureOpen): a bare 'await' assumes the value arrives.
+//
 // REGISTERING AND SEEING IT ARRIVE are one atomic step: a waiter joins the
 // list with a compare-and-swap of its head, which fails once the producer has
 // closed it, and then it does not park: the behaviour goes on at once, as an
@@ -180,18 +189,31 @@ fn futureRelease[T](c *u8) {
 }
 
 // The future whose payload is at c has its ending, s: Arrived, its value
-// written, or Abandoned. The state is stored, the waiter list closed, each
-// waiter pushed to its actor, and the producer's count let go
+// written, or Abandoned. The state is stored, the waiter list closed, and
+// the producer's count let go last. Arrived, each waiter is pushed to its
+// actor, to resume. Abandoned, each is abandoned (ABANDONED, above) as an
+// envelope dropped unanswered is (Reply's final): its node freed, the
+// future's reference it held and its actor's count let go, its record left
+// parked for its actor's death to drop
 fn futureEnd(c *u8, s u32) {
   imm cell = c as *FutureCell[u8];
+  imm release = (*cell).release;
   mem.atomicStore[u32](&(*cell).state as *u32, s, MemOrder.Release[]);
   mut w = mem.atomicSwap[*Waiter](&(*cell).waiters as **Waiter, waitersClosed as *Waiter, MemOrder.AcqRel[]);
   while w as usize != 0usize {
     imm next = (*w).next;
-    pushReply((*w).to, (*w).node);
+    imm to = (*w).to;
+    imm node = (*w).node;
+    if s == futArrived {
+      pushReply(to, node);
+    } else {
+      release(c);
+      libc.free(node as *u8);
+      imm letgo = (*to).release;
+      letgo(to);
+    }
     w = next;
   }
-  imm release = (*cell).release;
   release(c);
 }
 

@@ -1336,7 +1336,9 @@ future's reference, a link, the actor awaiting and the node), and handed to
 the future's waiter list with one compare-and-swap, or finds the list closed
 because the future has its ending by now. Parked, the record moves into its
 slot and the method returns, as at any seam; the future pushes the node when
-it has its ending, and the resume function opens it. Not parked, the slot
+its value arrives, and the resume function opens it. Abandoned instead, the
+future drops the node, as an envelope dropped unanswered is, so the record
+stays parked until its actor's death drops it ("An abandoned record"). Not parked, the slot
 reserved for the record is given back, its block freed with nothing in it,
 and the behaviour goes on where it stands, as above. **Opening the future**
 (`genlFutureOpen`), on either path, asks `actors.futureOpen` where its value
@@ -1357,7 +1359,8 @@ The table calls it when its actor dies with the record still parked
 (`Pending`'s finalizer), which happens only when the envelope the record was
 owed was dropped unanswered: the I/O it awaited was ended at the program's end,
 or the actor that was to answer abandoned its own continuation, which held the
-envelope. The second half never runs. An empty record parks nothing and has no
+envelope, or the future the record waits on was abandoned so, dropping the
+envelope parked on it ("A future"). The second half never runs. An empty record parks nothing and has no
 drop function.
 
 The pending table is not traced: a record that would hold a traced reference
