@@ -1,0 +1,821 @@
+// shipfield: the starship's GPU half, its signed distance field and the
+// kernels that sample it, relax its mesh's vertices and give them normals.
+// Congo compiles it twice: into starship for the CPU, as the submodule
+// 'shipfield', whose ShipData is the Shape src/ hands sdfmesh's CPU mesher;
+// and for the GPU, without src/, into build/<mode>/starship.spv, whose
+// kernels src/gpumesh.cone runs through gpuwork. So the CPU and the GPU
+// evaluate one declaration of the ship.
+//
+// THE DESCRIPTION, ONE BUFFER. Ship.make (src/ship.cone) builds the ship on
+// the CPU, with Lists and sculpt's paths, and writes what the distance
+// reads into one ShipData: the spine's points, radii and keel depths, the
+// ribbing's and the blades' cells' frames along the spine with their radii,
+// the head's frame, the lance's points and the flags. Fixed arrays of 32-bit
+// numbers only, about 9 KB, so the same struct is a storage buffer on the
+// GPU, laid out alike on both sides.
+//
+// THE KERNELS, one invocation each, 64 a workgroup:
+//   blocks   a block of 4 cells a side of the whole grid: its centre's
+//            distance and whether it is far from the surface, as sdfmesh's
+//            sparse surfaceNet tests it
+//   sample   a sample of one slab of the grid: its distance, or, where every
+//            block holding it is far, the last such block's centre distance
+//            (the value surfaceNet leaves there), for sdfmesh's GridMesher
+//   probe    a vertex and one of its seven probes: the distance at the
+//            vertex, or a tenth of a cell either side of it on an axis
+//   move     a vertex moved along the gradient by the distance, kept in its
+//            cell: surfaceNet's relaxation
+//   shade    a vertex's normal, the unit gradient from its six probes
+//   recut    a quad cut again along its shorter diagonal, at the relaxed
+//            positions, as SurfaceNet.toMesh cuts it
+//   layerEnd how many of a slab's vertices are in its first layer of cells,
+//            the ones the slab before it already made
+//
+// Every function the distance calls is sdf's, noise's or geomath's, all
+// marked for the GPU; nothing here comes from sculpt or sdfmesh. Their
+// square roots and divisions are the GPU's own, within an ulp or two of the
+// CPU's, so the GPU's distances are close to the CPU's, not always the same
+// bits. The relaxation's and the normals' own arithmetic (the gradient's
+// scale, its length, the unit vector) is done exactly, by 'divExact' and
+// 'sqrtExact', copies of sdfmesh's (its gpu/ folder cannot be imported).
+
+mod shipfield;
+
+import libc;
+import geomath use *;
+import noise;
+import sdf use *;
+
+// ---- The numbers ----
+
+pub const SEGMENTS = 40;                // the body's polyline: 41 points
+pub const RIBS_N = 80;                  // the ribbing's copies along the spine
+pub const BLADES_N = 70;                // the dorsal blades' copies
+pub const SEED = 1977u32;
+pub const MEMBRANE f32 = 0.035;         // the membrane's half-thickness
+pub const RELIEF f32 = 0.004;           // the relief on the frame, per unit of ridged fBm
+pub const HEAD_SCALE f32 = 1.3;         // the head's features are drawn in units this much smaller
+pub const MEMBRANE_RELIEF f32 = 0.009;  // and the crackle on the membranes
+pub const GRAIN f32 = 9.;               // its first octave's frequency
+pub const STRETCH f32 = 0.4;            // its grain: features 1 / STRETCH times longer along x
+
+// The parts, one bit each, so any can be left out
+pub const GESTURE = 1u32;
+pub const CORE = 2u32;
+pub const RIBS = 4u32;
+pub const KEEL = 8u32;
+pub const BLADES = 16u32;
+pub const SPARS = 32u32;
+pub const SKIN = 64u32;
+pub const SPIKES = 128u32;
+pub const SHOULDER = 256u32;
+pub const COMB = 512u32;
+pub const LANCE = 1024u32;
+pub const HEAD = 2048u32;
+pub const MAW = 4096u32;
+pub const LIGHTS = 8192u32;
+pub const MUSCLES = 16384u32;
+pub const TEXTURE = 32768u32;
+pub const ALL = 65535u32;
+
+pub fn v(x f32, y f32, z f32) Vec3 { new Vec3(x, y, z); }
+pub fn absf(a f32) f32 { libc.fabsf(a); }
+pub fn minf(a f32, b f32) f32 { if a < b { a; } else { b; }; }
+pub fn maxf(a f32, b f32) f32 { if a > b { a; } else { b; }; }
+pub fn clampf(a f32, lo f32, hi f32) f32 { minf(maxf(a, lo), hi); }
+pub fn jitter(i i32, salt u32) f32 { noise.toSigned(noise.hash1(i, SEED + salt)); }
+
+// Whether a part held by the ball 'r' about 'c' can change 'd' by a smooth
+// union reaching 'k' (the quadratic smooth minimum blends only within 4k,
+// so skipping a part that cannot leaves the union exactly as it xs)
+fn near(p Vec3, c Vec3, r f32, d f32, k f32) Bool { (p - c).length() - r < d + 4. * k; }
+
+// Two tapered capsules end to end, through a, b and c
+fn chain(p Vec3, a Vec3, b Vec3, c Vec3, r0 f32, r1 f32, r2 f32) f32 {
+  minf(taperedCapsule(p, a, b, r0, r1), taperedCapsule(p, b, c, r1, r2));
+}
+
+// A blade: the flat triangle from the foot's two corners to the tip, 'half'
+// thick, with a midrib from the foot's middle tapering to the tip, so it
+// stays whole on the mesh however thin
+fn blade(p Vec3, a Vec3, b Vec3, tip Vec3, half f32, rib f32) f32 {
+  minf(triangle(p, a, b, tip) - half, taperedCapsule(p, (a + b) * 0.5, tip, rib, 0.004));
+}
+
+// A blade folded along its midrib, like a blade of grass: two flat halves
+// from the foot's middle 'm' to the tip, their outer corners 'a' and 'b'
+fn foldedBlade(p Vec3, a Vec3, m Vec3, b Vec3, tip Vec3, half f32, rib f32) f32 {
+  minf(minf(triangle(p, a, m, tip), triangle(p, m, b, tip)) - half, taperedCapsule(p, m, tip, rib, 0.004));
+}
+
+// 'd' raised by 'amp' times ridged fBm (three octaves from GRAIN, gain 0.6);
+// within 4 amp of the surface only
+fn relief(p Vec3, d f32, amp f32, seed u32) f32 {
+  if absf(d) > 4. * amp { return d; }
+  d - amp * noise.ridged3(v(p.x * STRETCH, p.y, p.z) * GRAIN, SEED + seed, 3, 2., 0.6).value;
+}
+
+// ---- The far wing's pose ----
+
+// The near wing mirrored, then turned about PIVOT by the rotation whose
+// transpose's rows are these (4 degrees of sweep, 15 of lift)
+imm PIVOT Array[f32, 3] = [5.8, 0.4, -1.0];
+imm POSE Array[f32, 9] = [0.9636, 0.2588, -0.0674, -0.2582, 0.9659, 0.0181, 0.0698, 0., 0.9976];
+
+// The point in the near wing's space where 'p' is: itself on the near side,
+// else posed back and mirrored
+fn wingSpace(p Vec3) Vec3 {
+  if p.z >= 0. { return p; }
+  imm d = p - v(PIVOT[0usize], PIVOT[1usize], PIVOT[2usize]);
+  imm x = POSE[0usize] * d.x + POSE[1usize] * d.y + POSE[2usize] * d.z + PIVOT[0usize];
+  imm y = POSE[3usize] * d.x + POSE[4usize] * d.y + POSE[5usize] * d.z + PIVOT[1usize];
+  imm z = POSE[6usize] * d.x + POSE[7usize] * d.y + POSE[8usize] * d.z + PIVOT[2usize];
+  v(x, y, 0. - z);
+}
+
+// A point of the near wing placed on the far wing
+pub fn farWing(w Vec3) Vec3 {
+  imm d = v(w.x, w.y, 0. - w.z) - v(PIVOT[0usize], PIVOT[1usize], PIVOT[2usize]);
+  // The rotation is the transpose of POSE
+  v(POSE[0usize] * d.x + POSE[3usize] * d.y + POSE[6usize] * d.z + PIVOT[0usize],
+    POSE[1usize] * d.x + POSE[4usize] * d.y + POSE[7usize] * d.z + PIVOT[1usize],
+    POSE[2usize] * d.x + POSE[5usize] * d.y + POSE[8usize] * d.z + PIVOT[2usize]);
+}
+
+// ---- The head's frame: along the snout, rolled toward the viewer ----
+
+pub struct HeadFrame {
+  pub o Vec3;       // the head's centre (control point 1)
+  pub x Vec3;       // forward, along the snout
+  pub y Vec3;       // its up, rolled toward +z
+  pub z Vec3;       // its side
+
+  // Head space, mirrored across its own mid-plane
+  pub fn toHead(self &, p Vec3) Vec3 {
+    imm d = p - o;
+    v(d.dot(x), d.dot(y), absf(d.dot(z)));
+  }
+  pub fn world(self &, l Vec3) Vec3 { o + (x * l.x + y * l.y + z * l.z) * HEAD_SCALE; }
+}
+
+// ---- The ship's description: one buffer ----
+
+pub struct ShipData {
+  pub spine Array[Vec3, 41];              // the body's polyline, head to lance
+  pub radii Array[f32, 41];               // the core's radius at each point
+  pub keels Array[f32, 41];               // how far the keel hangs below it
+  pub ribFrames Array[CurveFrame, 80];    // the ribbing's cells' frames along the spine
+  pub ribR Array[f32, 80];                // the core's radius at each copy
+  pub ribK Array[f32, 80];                // and the keel's depth
+  pub bladeFrames Array[CurveFrame, 70];  // the dorsal blades' cells' frames
+  pub bladeR Array[f32, 70];              // the core's radius at each blade
+  pub head HeadFrame;
+  pub lanceA Vec3;                        // control points 9, 10 and 11: the lance
+  pub lanceB Vec3;
+  pub lanceC Vec3;
+  pub up f32;            // +1 or -1: which way the frames' up axis points from the back
+  pub swap u32;          // 1: up is the frames' binormal (else their normal)
+  pub has u32;           // the parts drawn
+  pub skinOnly u32;      // 1: the membranes alone; 0: everything else
+
+  pub fn on(self &, part u32) Bool { (has & part) != 0u32; }
+
+  // The core along the spine, and the keel below the chest. Each is the
+  // hard union of its capsules (consecutive ones share their end balls, so
+  // there is no crease); only the keel is blended into the core
+  pub fn body(self &, q Vec3) f32 {
+    mut core f32 = 3.4028235e38;
+    mut keel f32 = 3.4028235e38;
+    mut i = 0usize;
+    while i < usize.from(SEGMENTS) {
+      imm a = spine[i];
+      imm b = spine[i + 1usize];
+      imm ra = radii[i];
+      imm rb = radii[i + 1usize];
+      imm ka = keels[i];
+      imm kb = keels[i + 1usize];
+      if near(q, a, (b - a).length() + ra + ka + 0.2, minf(core, keel), 0.12) {
+        if self.on(CORE) { core = minf(core, taperedCapsule(q, a, b, ra, rb)); }
+        if ka + kb > 0.05 {
+          keel = minf(keel, taperedCapsule(q, a - v(0., ka, 0.), b - v(0., kb, 0.), ra * 0.75, rb * 0.75));
+        }
+      }
+      i = i + 1usize;
+    }
+    smoothUnion(core, keel, 0.12);
+  }
+
+  // The lance: smooth, continuing the spine to its point, a small collar,
+  // a barb where the comb ends and a long slender spine below, down and back
+  pub fn lance(self &, q Vec3) f32 {
+    imm a = lanceA;
+    imm b = lanceB;
+    imm c = lanceC;
+    mut d = chain(q, a, b, c, 0.12, 0.07, 0.006);
+    imm dir = (b - a).normalize();
+    d = smoothUnion(d, taperedCapsule(q, a - dir * 0.05, a + dir * 0.25, 0.2, 0.11), 0.04);
+    d = minf(d, taperedCapsule(q, a + dir * 0.2 + v(0., 0., 0.1), a + dir * -0.15 + v(0., -0.25, 0.3), 0.04, 0.004));
+    d = minf(d, chain(q, a + v(-0.5, -0.1, 0.), a + v(0.2, -0.65, 0.), a + v(0.75, -0.95, 0.), 0.05, 0.03, 0.004));
+    d;
+  }
+
+  // The head, in its own frame (forward x, up y, side z)
+  pub fn headAt(self &, l Vec3) f32 {
+    // The skull, and the snout tapering to a beak
+    mut d = ellipsoid(l - v(0.05, 0.02, 0.), v(0.42, 0.21, 0.21));
+    d = smoothUnion(d, taperedCapsule(l, v(0.05, 0., 0.), v(0.74, -0.03, 0.), 0.17, 0.05), 0.08);
+    // The nose ridge up the centre line, flattening as it rises
+    d = smoothUnion(d, taperedCapsule(l, v(0.62, 0.07, 0.), v(0.0, 0.2, 0.), 0.035, 0.02), 0.05);
+    // The brows over the eyes, and the eyes' sockets
+    d = smoothUnion(d, taperedCapsule(l, v(0.45, 0.12, 0.13), v(0.18, 0.16, 0.17), 0.03, 0.04), 0.03);
+    d = smoothSubtract(d, sphere(l - v(0.36, 0.07, 0.19), 0.055), 0.015);
+    // The prongs, curving forward past the mouth
+    d = smoothUnion(d, chain(l, v(0.42, -0.1, 0.13), v(0.74, -0.12, 0.17), v(0.98, -0.06, 0.09), 0.032, 0.02, 0.004), 0.03);
+    // The ear: a swept-back fan of long thin strands behind the eye, toward
+    // the neck and the underside; then three side spikes behind it
+    mut k = 0;
+    while k < 5 {
+      imm f = f32.from(k);
+      imm root = v(0.12 - 0.04 * f, 0.02 - 0.03 * f, 0.18);
+      imm mid = root + v(-0.3, -0.04 - 0.02 * f, 0.07 + 0.015 * f);
+      imm tip = root + v(-0.62 - 0.06 * jitter(k, 31u32), -0.12 - 0.05 * f, 0.13 + 0.03 * f);
+      d = smoothUnion(d, chain(l, root, mid, tip, 0.03, 0.018, 0.003), 0.02);
+      k = k + 1;
+    }
+    k = 0;
+    while k < 3 {
+      imm f = f32.from(k);
+      imm root = v(-0.25 - 0.2 * f, 0.08 - 0.02 * f, 0.17);
+      d = smoothUnion(d, taperedCapsule(l, root, root + v(-0.45 + 0.08 * f, 0.1, 0.2), 0.035, 0.003), 0.02);
+      k = k + 1;
+    }
+    // Two small blades on the crown, where the dorsal row begins
+    d = minf(d, blade(l, v(0.32, 0.17, -0.03), v(0.38, 0.17, 0.03), v(0.18, 0.33, 0.), 0.01, 0.025));
+    d = minf(d, blade(l, v(0.14, 0.2, -0.03), v(0.2, 0.2, 0.03), v(-0.02, 0.38, 0.), 0.01, 0.025));
+    d;
+  }
+
+  // The mouth: a slot opening sideways across the snout's front, fixed
+  // open, with slats across it and a ledge beneath, in the head's frame
+  pub fn maw(self &, l Vec3, d f32) f32 {
+    mut e = smoothSubtract(d, ellipsoid(l - v(0.74, -0.04, 0.), v(0.13, 0.045, 0.12)), 0.012);
+    e = minf(e, box(l - v(0.68, -0.04, 0.), v(0.05, 0.035, 0.012)));
+    e = minf(e, box(l - v(0.67, -0.04, 0.065), v(0.05, 0.035, 0.012)));
+    e = smoothUnion(e, taperedCapsule(l, v(0.72, -0.11, 0.), v(0.35, -0.15, 0.), 0.045, 0.07), 0.03);
+    e = smoothUnion(e, taperedCapsule(l, v(0.7, -0.1, 0.09), v(0.4, -0.13, 0.13), 0.03, 0.04), 0.02);
+    e;
+  }
+
+  // The muscles binding the wing to the torso: the shoulder group into the
+  // collar, the fan converging on the root, and the low binder along the
+  // top of the underside to the main spar's root, with a ladder of fourteen
+  // rungs across its top
+  pub fn muscles(self &, q Vec3) f32 {
+    mut d = taperedCapsule(q, v(5.2, 1.3, 0.25), v(6.55, 0.55, 0.85), 0.34, 0.2);
+    d = smoothUnion(d, taperedCapsule(q, v(5.9, 1.25, 0.25), v(6.95, 0.6, 0.65), 0.26, 0.14), 0.04);
+    d = smoothUnion(d, taperedCapsule(q, v(4.5, 1.25, 0.3), v(6.0, 0.25, 1.35), 0.3, 0.14), 0.04);
+    d = smoothUnion(d, taperedCapsule(q, v(5.0, 0.95, 0.35), v(5.8, 0.15, 1.5), 0.28, 0.13), 0.04);
+    d = smoothUnion(d, taperedCapsule(q, v(5.6, 0.8, 0.35), v(6.2, 0.25, 1.25), 0.24, 0.12), 0.04);
+    imm a = v(3.7, 0.95, 0.3);
+    imm b = v(4.78, -0.17, 1.94);
+    d = smoothUnion(d, taperedCapsule(q, a, b, 0.26, 0.12), 0.04);
+    // The rungs: across the binder's top, square to its axis
+    imm axis = (b - a).normalize();
+    imm across = axis.cross(v(0., 1., 0.)).normalize();
+    imm top = across.cross(axis).normalize();
+    mut k = 0;
+    while k < 14 {
+      imm t = 0.12 + 0.055 * f32.from(k);
+      imm r = 0.26 + (0.12 - 0.26) * t;
+      imm c = a.lerp(b, t) + top * (r * 0.92);
+      d = smoothUnion(d, capsule(q, c - across * (r * 0.75), c + across * (r * 0.75), 0.03), 0.015);
+      k = k + 1;
+    }
+    d;
+  }
+
+  // The shoulder: knobs on the wing's root, and the collar from them along
+  // the upper edge's root
+  pub fn shoulder(self &, w Vec3) f32 {
+    mut d = sphere(w - v(6.68, 0.64, 0.5), 0.19);
+    d = smoothUnion(d, sphere(w - v(6.55, 0.52, 0.85), 0.16), 0.06);
+    d = smoothUnion(d, sphere(w - v(6.3, 0.6, 0.55), 0.15), 0.06);
+    d = smoothUnion(d, chain(w, v(6.5, 0.52, 0.8), v(6.9, 0.46, 1.05), v(7.15, 0.45, 1.15), 0.12, 0.08, 0.05), 0.05);
+    d;
+  }
+
+  // The wing's frame: the main spar (its joints the light row's), the long
+  // bone inside it from the shoulder to the tip, two cross-bones from it to
+  // the second and third spikes, the rear spar from the tip up to the needle
+  pub fn spars(self &, w Vec3) f32 {
+    imm tip = v(3.61, -2.23, 7.66);
+    mut b = chain(w, v(4.78, -0.17, 1.94), v(4.6, -0.9, 3.9), v(4.3, -1.55, 5.9), 0.13, 0.1, 0.07);
+    b = minf(b, taperedCapsule(w, v(4.3, -1.55, 5.9), tip, 0.07, 0.03));
+    // The light row's boundary line, on the membrane beside the spar
+    b = minf(b, chain(w, v(5.0, -0.06, 2.0), v(4.8, -0.82, 3.92), v(4.48, -1.45, 5.75), 0.024, 0.022, 0.02));
+    b = smoothUnion(b, chain(w, v(6.52, 0.41, 1.07), v(6.25, 0.19, 1.62), v(6.08, -0.21, 2.76), 0.08, 0.07, 0.065), 0.03);
+    b = smoothUnion(b, chain(w, v(6.08, -0.21, 2.76), v(4.99, -1.22, 5.3), tip, 0.065, 0.05, 0.03), 0.03);
+    b = smoothUnion(b, taperedCapsule(w, v(6.25, 0.19, 1.62), v(7.25, 0.21, 2.08), 0.05, 0.025), 0.03);
+    b = smoothUnion(b, taperedCapsule(w, v(6.08, -0.21, 2.76), v(7.08, -0.2, 3.27), 0.05, 0.025), 0.03);
+    b = smoothUnion(b, chain(w, tip, v(5.7, -1.22, 5.67), v(7.1, -0.5, 4.22), 0.03, 0.06, 0.07), 0.03);
+    b;
+  }
+
+  // The upper edge's five spikes, sharp flat blades in the wing's plane
+  pub fn spikes(self &, w Vec3) f32 {
+    imm h = 0.012;
+    mut d = blade(w, v(6.85, 0.62, 0.42), v(7.05, 0.6, 0.6), v(8.3, 1.2, 0.42), h, 0.04);
+    d = minf(d, blade(w, v(7.05, 0.5, 1.02), v(7.2, 0.48, 1.18), v(7.88, 0.68, 1.02), h, 0.035));
+    d = minf(d, blade(w, v(6.95, 0.33, 1.58), v(6.98, 0.3, 1.72), v(7.12, 0.31, 1.7), h, 0.02));
+    d = minf(d, blade(w, v(7.0, 0.22, 2.0), v(7.02, 0.18, 2.2), v(7.42, 0.23, 2.12), h, 0.03));
+    d = minf(d, blade(w, v(7.0, 0.24, 1.95), v(7.05, 0.22, 2.05), v(7.3, 0.25, 1.99), h, 0.02));
+    d = minf(d, blade(w, v(7.0, 0.18, 2.15), v(7.02, 0.16, 2.22), v(7.2, 0.18, 2.17), h, 0.018));
+    d = minf(d, blade(w, v(6.9, -0.17, 3.15), v(6.92, -0.23, 3.38), v(7.2, -0.2, 3.31), h, 0.03));
+    d = minf(d, blade(w, v(6.95, -0.13, 3.1), v(6.98, -0.16, 3.2), v(7.18, -0.14, 3.16), h, 0.02));
+    d = minf(d, blade(w, v(6.9, -0.22, 3.3), v(6.92, -0.25, 3.4), v(7.05, -0.24, 3.36), h, 0.018));
+    d = minf(d, blade(w, v(6.95, -0.47, 4.12), v(7.12, -0.55, 4.3), v(7.92, -0.2, 3.68), h, 0.045));
+    d;
+  }
+
+  // The membrane: panels stretched between the bones; the free edges
+  // scalloped between the spike tips
+  pub fn membraneAt(self &, w Vec3) f32 {
+    imm m0 = v(4.78, -0.17, 1.94);
+    imm m1 = v(4.6, -0.9, 3.9);
+    imm m2 = v(4.3, -1.55, 5.9);
+    imm tip = v(3.61, -2.23, 7.66);
+    imm j0 = v(6.52, 0.41, 1.07);
+    imm j1 = v(6.25, 0.19, 1.62);
+    imm j2 = v(6.08, -0.21, 2.76);
+    imm j4 = v(4.64, -1.56, 6.16);
+    imm root = v(6.75, 0.47, 0.95);
+    imm s2 = v(7.38, 0.22, 2.11);
+    imm s3 = v(7.17, -0.2, 3.3);
+    imm needle = v(7.88, -0.2, 3.7);
+    // Between the main spar and the long bone: the oval panel
+    mut m = membrane(w, m0, m1, j0, j2, 0.);
+    m = minf(m, membrane(w, m1, m2, j2, j4, 0.));
+    m = minf(m, membrane(w, m2, tip, j4, tip, 0.));
+    // Above the long bone, between the cross-bones, out to the free edge
+    m = minf(m, membrane(w, j0, j1, root, s2, 0.3));
+    m = minf(m, membrane(w, j1, j2, s2, s3, 0.35));
+    m = minf(m, membrane(w, j2, tip, s3, needle, 0.3));
+    m - MEMBRANE;
+  }
+
+  // The signed distance: the membranes alone, or the frame
+  pub fn distance(self &, p Vec3) f32 {
+    imm q = v(p.x, p.y, absf(p.z));
+    imm w = wingSpace(p);
+    if skinOnly != 0u32 {
+      if !self.on(SKIN) { return 1.; }
+      if !near(w, v(5.7, -0.8, 4.4), 4.8, 0., 0.) { return (w - v(5.7, -0.8, 4.4)).length() - 4.8; }
+      imm m = self.membraneAt(w);
+      if !self.on(TEXTURE) { return m; }
+      return relief(p, m, MEMBRANE_RELIEF, 2u32);
+    }
+    mut d = self.body(q);
+    // The spine's copies reach less than 1.5 from it
+    if (has & (RIBS | KEEL | BLADES)) != 0u32 {
+      mut axis f32 = 3.4028235e38;
+      mut i = 0usize;
+      while i < usize.from(SEGMENTS) {
+        axis = minf(axis, capsule(q, spine[i], spine[i + 1usize], 0.));
+        i = i + 1usize;
+      }
+      if axis - 1.6 < d {
+        if (has & (RIBS | KEEL)) != 0u32 {
+          imm ribCells = new CurveCells(&ribFrames[..]);
+          imm ribbing = new Ribbing(self);
+          d = smoothUnion(d, repeatAlongCells(&ribCells, &ribbing, p), 0.008);
+        }
+        if self.on(BLADES) {
+          imm bladeCells = new CurveCells(&bladeFrames[..]);
+          imm blades = new Blades(self);
+          d = minf(d, repeatAlongCells(&bladeCells, &blades, p));
+        }
+      }
+    }
+    if self.on(LANCE) and near(q, v(12., 0.9, 0.), 2.4, d, 0.04) { d = smoothUnion(d, self.lance(q), 0.04); }
+    if near(q, v(0., 0., 0.), 1.7, d, 0.05) {
+      imm l = head.toHead(p) * (1. / HEAD_SCALE);
+      if self.on(HEAD) { d = smoothUnion(d, self.headAt(l) * HEAD_SCALE, 0.05); }
+      if self.on(MAW) { d = self.maw(l, d * (1. / HEAD_SCALE)) * HEAD_SCALE; }
+    }
+    if self.on(MUSCLES) and near(q, v(5.4, 0.6, 1.0), 1.9, d, 0.06) { d = smoothUnion(d, self.muscles(q), 0.06); }
+    if self.on(SHOULDER) and near(w, v(6.7, 0.5, 0.85), 0.8, d, 0.06) { d = smoothUnion(d, self.shoulder(w), 0.06); }
+    if near(w, v(5.7, -0.6, 4.2), 4.8, d, 0.03) {
+      if self.on(SPARS) { d = smoothUnion(d, self.spars(w), 0.03); }
+      if self.on(SPIKES) and near(w, v(7.3, 0.3, 2.2), 2.4, d, 0.02) { d = smoothUnion(d, self.spikes(w), 0.01); }
+    }
+    if !self.on(TEXTURE) { return d; }
+    // The lance is a rest area: no relief past the comb
+    if p.x > 10.7 { return d; }
+    relief(p, d, RELIEF, 1u32);
+  }
+}
+
+// ---- Along the spine: the ribbing and the underside spikes ----
+
+// In each copy's frame: 'side' out to the side, 'up' up, z along (to the
+// tail); sdf's Repeated, over the ship's ribbing cells
+struct Ribbing['a] {
+  pub ship &'a ShipData;
+
+  pub fn repeatedDistance(self &, q Vec3, index i32, u f32) f32 {
+    imm r = ship.ribR[usize.from(index)];
+    imm k = ship.ribK[usize.from(index)];
+    imm has = ship.has;
+    imm l = if ship.swap != 0u32 { v(absf(q.x), q.y * ship.up, q.z); } else { v(absf(q.y), q.x * ship.up, q.z); };
+    mut d f32 = 3.4028235e38;
+    // The ribbing: a short rib down each flank from beside the spine to the
+    // torso's side, leaning back a little; varied in reach and lean
+    if (has & RIBS) != 0u32 and u > 0.02 and u < 0.93 {
+      imm reach = 1. + 0.15 * jitter(index, 11u32);
+      imm lean = 0.03 * (1. + jitter(index, 12u32));
+      d = chain(l, v(r * 0.35, r * 1.0, 0.), v(r * 0.95, r * 0.5, lean), v(r * 1.1 * reach, r * -0.25 * reach, lean * 2.), 0.045, 0.042, 0.022);
+    }
+    // The underside spikes: every other copy, a short thin blade below the
+    // keel, pointing forward and down, toward the head
+    if (has & KEEL) != 0u32 and u > 0.03 and u < 0.78 and index % 2 == 0 {
+      imm len = (0.32 - 0.22 * u) * (1. + 0.3 * jitter(index, 13u32));
+      imm foot = v(0., 0.03 - maxf(r, r * 0.75 + k), 0.);
+      imm tip = foot + v(0., len * -0.55, len * -0.85);
+      d = minf(d, blade(l, foot + v(0., 0., -0.05), foot + v(0., 0., 0.06), tip, 0.008, 0.028));
+    }
+    d;
+  }
+
+  pub fn bound(self &, index i32, u f32) f32 {
+    ship.ribR[usize.from(index)] + ship.ribK[usize.from(index)] + 0.45;
+  }
+}
+
+// ---- Along the spine: the dorsal blades ----
+
+struct Blades['a] {
+  pub ship &'a ShipData;
+
+  // The blade's height at u: short on the head, longest on the neck, the
+  // torso's a little shorter, then the tail comb shrinking to the lance
+  pub fn heightAt(self &, u f32) f32 {
+    if u < 0.05 { return 0.22 + 2. * u; }
+    if u < 0.3 { return 0.32 + 0.3 * sin(3.14159 * (u - 0.05) / 0.5); }
+    if u < 0.68 { return 0.62 - 0.4 * (u - 0.3); }
+    0.47 - 0.95 * (u - 0.68);
+  }
+
+  // One blade at 'z' along the copy, of height 'h', its foot 'w' long,
+  // raked back by 'rake', turned by 'yaw' and folded to the side 'fold'
+  pub fn one(self &, side f32, upc f32, along f32, r f32, z f32, h f32, w f32, rake f32, yaw f32, fold f32, rib f32) f32 {
+    imm p = v(side, upc, along);
+    imm m = v(0., r * 0.82, z);
+    imm a = v(fold - w * yaw, r * 0.82, z - w);
+    imm b = v(fold + w * yaw, r * 0.82, z + w);
+    imm tip = v(fold * 0.3, r * 0.82 + h, z + h * rake);
+    foldedBlade(p, a, m, b, tip, 0.012, rib);
+  }
+
+  pub fn repeatedDistance(self &, q Vec3, index i32, u f32) f32 {
+    imm has = ship.has;
+    if (has & BLADES) == 0u32 or u > 0.995 { return 3.4028235e38; }
+    imm r = ship.bladeR[usize.from(index)];
+    imm side = if ship.swap != 0u32 { q.x; } else { q.y; };
+    imm upc = if ship.swap != 0u32 { q.y * ship.up; } else { q.x * ship.up; };
+    imm h = self.heightAt(u) * (1. + 0.22 * jitter(index, 21u32));
+    imm rake = 1.1 + 0.25 * jitter(index, 22u32);
+    imm yaw = 0.2 * jitter(index, 23u32);
+    imm fold = if index % 2 == 0 { 0.035; } else { -0.035; };
+    imm comb = u > 0.68;
+    imm w = if comb { 0.06; } else { 0.1; };
+    mut d = self.one(side, upc, q.z, r, 0., h, w, rake, yaw, fold, 0.03);
+    // The tail comb: denser, a second, finer ray between each pair
+    if comb and (has & COMB) != 0u32 {
+      d = minf(d, self.one(side, upc, q.z, r, 0.09, h * 0.8, 0.04, rake + 0.15, 0. - yaw, 0. - fold, 0.022));
+    }
+    d;
+  }
+
+  pub fn bound(self &, index i32, u f32) f32 {
+    ship.bladeR[usize.from(index)] + 1.4;
+  }
+}
+
+// ---- Exact arithmetic from integers (copies of sdfmesh's gpu/gridnet.cone) ----
+
+// a / b, rounded to nearest even as IEEE division rounds it, from integer
+// steps only, so every GPU and the CPU give the same bits. NaN, infinity
+// and a zero divisor are left to the machine's own division
+pub fn divExact(a f32, b f32) f32 {
+  imm ua = a as u32;
+  imm ub = b as u32;
+  imm sign = (ua ^ ub) & 0x80000000u32;
+  mut ea = (ua >> 23u32) & 0xffu32;
+  mut eb = (ub >> 23u32) & 0xffu32;
+  mut ma = ua & 0x7fffffu32;
+  mut mb = ub & 0x7fffffu32;
+  if ea == 255u32 or eb == 255u32 or (eb == 0u32 and mb == 0u32) { return a / b; }
+  if ea == 0u32 and ma == 0u32 { return sign as f32; }
+  ea = ea + 64u32;
+  eb = eb + 64u32;
+  if ea == 64u32 {
+    ea = 65u32;
+    while ma < 0x800000u32 { ma = ma << 1u32; ea = ea - 1u32; }
+  } else {
+    ma = ma | 0x800000u32;
+  }
+  if eb == 64u32 {
+    eb = 65u32;
+    while mb < 0x800000u32 { mb = mb << 1u32; eb = eb - 1u32; }
+  } else {
+    mb = mb | 0x800000u32;
+  }
+  mut e = ea + 127u32 + 512u32 - eb;
+  if ma < mb { ma = ma << 1u32; e = e - 1u32; }
+  mut q = 0u32;
+  mut r = ma;
+  mut i = 0u32;
+  while i < 25u32 {
+    q = q << 1u32;
+    if r >= mb { r = r - mb; q = q | 1u32; }
+    r = r << 1u32;
+    i = i + 1u32;
+  }
+  mut sticky = r != 0u32;
+  if e > 512u32 {
+    mut mant = q >> 1u32;
+    if (q & 1u32) == 1u32 and (sticky or (mant & 1u32) == 1u32) { mant = mant + 1u32; }
+    mut be = e - 512u32;
+    if mant == 0x1000000u32 { mant = 0x800000u32; be = be + 1u32; }
+    if be >= 255u32 { return (sign | 0x7f800000u32) as f32; }
+    return (sign | (be << 23u32) | (mant & 0x7fffffu32)) as f32;
+  }
+  imm k = 513u32 - e;
+  if k > 25u32 { return sign as f32; }
+  mut mant = q >> (k + 1u32);
+  imm round = (q >> k) & 1u32;
+  if (q & ((1u32 << k) - 1u32)) != 0u32 { sticky = true; }
+  if round == 1u32 and (sticky or (mant & 1u32) == 1u32) { mant = mant + 1u32; }
+  (sign | mant) as f32;
+}
+
+// The square root of x, rounded to nearest even as IEEE's is, from integer
+// steps only. Zero, a negative, infinity and NaN are left to the machine's
+pub fn sqrtExact(x f32) f32 {
+  imm u = x as u32;
+  mut e = (u >> 23u32) & 0xffu32;
+  mut m = u & 0x7fffffu32;
+  if e == 255u32 or (u & 0x80000000u32) != 0u32 or u == 0u32 { return x.sqrt(); }
+  e = e + 64u32;
+  if e == 64u32 {
+    e = 65u32;
+    while m < 0x800000u32 { m = m << 1u32; e = e - 1u32; }
+  } else {
+    m = m | 0x800000u32;
+  }
+  if (e & 1u32) == 1u32 { m = m << 1u32; e = e - 1u32; }
+  imm hi = m >> 6u32;
+  imm lo = m << 26u32;
+  mut root = 0u32;
+  mut rem = 0u32;
+  mut j = 0u32;
+  while j < 26u32 {
+    imm pos = 50u32 - 2u32 * j;
+    imm pair = if pos >= 32u32 { (hi >> (pos - 32u32)) & 3u32; } else { (lo >> pos) & 3u32; };
+    rem = (rem << 2u32) | pair;
+    imm t = (root << 2u32) | 1u32;
+    if rem >= t { rem = rem - t; root = (root << 1u32) | 1u32; } else { root = root << 1u32; }
+    j = j + 1u32;
+  }
+  mut sticky = rem != 0u32;
+  imm s = if root >= 0x2000000u32 { 2u32; } else { 1u32; };
+  mut mant = root >> s;
+  imm round = (root >> (s - 1u32)) & 1u32;
+  if s == 2u32 and (root & 1u32) != 0u32 { sticky = true; }
+  if round == 1u32 and (sticky or (mant & 1u32) == 1u32) { mant = mant + 1u32; }
+  mut be = 30u32 + s + e / 2u32;
+  if mant == 0x1000000u32 { mant = 0x800000u32; be = be + 1u32; }
+  ((be << 23u32) | (mant & 0x7fffffu32)) as f32;
+}
+
+// ---- The gradient, as sdfmesh's surfaceNet takes it ----
+
+// The unit gradient from the six distances a tenth of a cell 'h' either side
+// of a point on each axis (+x, -x, +y, -y, +z, -z), as sdf's 'gradient' and
+// sdfmesh's 'unitGradient' make it, every rounding the CPU's; (1, 0, 0)
+// where the field is flat
+pub fn unitGradientOf(xp f32, xm f32, yp f32, ym f32, zp f32, zm f32, h f32) Vec3 {
+  imm inv = divExact(0.5, h);
+  imm g = new Vec3((xp - xm) * inv, (yp - ym) * inv, (zp - zm) * inv);
+  imm len = sqrtExact(g.x * g.x + g.y * g.y + g.z * g.z);
+  if len > 0. { g * divExact(1., len); } else { new Vec3(1., 0., 0.); };
+}
+
+// Probe k of a point: the point itself (0), then +x, -x, +y, -y, +z and -z
+// by h, as sdf's 'gradient' places them
+pub fn probePoint(p Vec3, k u32, h f32) Vec3 {
+  if k == 1u32 { new Vec3(p.x + h, p.y, p.z); }
+  elif k == 2u32 { new Vec3(p.x - h, p.y, p.z); }
+  elif k == 3u32 { new Vec3(p.x, p.y + h, p.z); }
+  elif k == 4u32 { new Vec3(p.x, p.y - h, p.z); }
+  elif k == 5u32 { new Vec3(p.x, p.y, p.z + h); }
+  elif k == 6u32 { new Vec3(p.x, p.y, p.z - h); }
+  else { p; };
+}
+
+// ---- The kernels ----
+
+// Cells a side of a block the sparse pass tests at once, as surfaceNet's
+pub const BLOCK = 4u32;
+
+// What every kernel is given: the whole grid, and the slab of it this pass
+// works on (sample layers z0 to z0 + layers - 1), with the passes' settings
+pub struct Sweep {
+  pub grid SampleGrid;   // the whole grid, as surfaceNet samples the ship's box
+  pub z0 u32;            // the slab's first sample layer in it
+  pub layers u32;        // the slab's sample layers
+  pub sparse u32;        // 1: sample only where a block may meet the surface
+  pub count u32;         // the pass's items: blocks, vertices or quads
+  pub probe0 u32;        // 'probe': the first of the seven probes it takes
+  pub probes u32;        // and how many
+  pub h f32;             // the probes' step, a tenth of a cell
+}
+
+// The invocation's number, the dispatch flattened: x, then rows of x
+// workgroups of 64
+fn flatId(inv Invocation) u32 {
+  inv.globalId[0usize] + inv.globalId[1usize] * inv.groupCount[0usize] * 64u32;
+}
+
+// Blocks along each axis of the whole grid
+pub fn blocksAlong(cells u32) u32 { (cells + BLOCK - 1u32) / BLOCK; }
+
+// Each block's centre distance, and whether it is far from the surface: its
+// centre farther than half its diagonal, with 1% to spare, as surfaceNet's
+// sparse pass decides it (the arithmetic is surfaceNet's)
+pub fn @compute(64) blocks(inv Invocation, s Sweep, ships &[]ShipData, centres &[]mut f32, far &[]mut u32) {
+  imm b = flatId(inv);
+  if b >= s.count { return; }
+  imm g = s.grid;
+  imm nx = g.samplesX - 1u32;
+  imm ny = g.samplesY - 1u32;
+  imm nz = g.samplesZ - 1u32;
+  imm blx = blocksAlong(nx);
+  imm bly = blocksAlong(ny);
+  imm kx = b % blx;
+  imm ky = (b / blx) % bly;
+  imm kz = b / (blx * bly);
+  imm x0 = kx * BLOCK;
+  imm y0 = ky * BLOCK;
+  imm z0 = kz * BLOCK;
+  imm x1 = if x0 + BLOCK < nx { x0 + BLOCK; } else { nx; };
+  imm y1 = if y0 + BLOCK < ny { y0 + BLOCK; } else { ny; };
+  imm z1 = if z0 + BLOCK < nz { z0 + BLOCK; } else { nz; };
+  imm cs = g.cellSize;
+  imm lo = g.origin;
+  imm centre = new Vec3(lo.x + cs * 0.5 * f32.from(x0 + x1), lo.y + cs * 0.5 * f32.from(y0 + y1),
+    lo.z + cs * 0.5 * f32.from(z0 + z1));
+  imm sx = f32.from(x1 - x0);
+  imm sy = f32.from(y1 - y0);
+  imm sz = f32.from(z1 - z0);
+  imm half = 0.5 * cs * sqrtExact(sx * sx + sy * sy + sz * sz);
+  imm d = ships[0usize].distance(centre);
+  centres[usize.from(b)] = d;
+  far[usize.from(b)] = if absf(d) > half * 1.01 { 1u32; } else { 0u32; };
+}
+
+// The blocks holding sample coordinate 'x' along an axis of 'cells' cells:
+// from the first to the last
+fn firstBlock(x u32) u32 { if x % BLOCK == 0u32 and x > 0u32 { x / BLOCK - 1u32; } else { x / BLOCK; }; }
+fn lastBlock(x u32, cells u32) u32 {
+  imm k = x / BLOCK;
+  imm n = blocksAlong(cells);
+  if k < n { k; } else { n - 1u32; };
+}
+
+// One slab's samples: the ship's distance at each, or, sparse, where every
+// block holding the sample is far, the centre distance of the last of them
+// in surfaceNet's order (z, y, x), the value surfaceNet leaves there. Each
+// point is the whole grid's, so two slabs sample their shared layers alike
+pub fn @compute(64) sample(inv Invocation, s Sweep, ships &[]ShipData, centres &[]f32, far &[]u32, out &[]mut f32) {
+  imm i = flatId(inv);
+  imm g = s.grid;
+  if i >= g.samplesX * g.samplesY * s.layers { return; }
+  imm x = i % g.samplesX;
+  imm y = (i / g.samplesX) % g.samplesY;
+  imm z = i / (g.samplesX * g.samplesY) + s.z0;
+  if s.sparse == 0u32 {
+    out[usize.from(i)] = ships[0usize].distance(g.point(x, y, z));
+    return;
+  }
+  imm nx = g.samplesX - 1u32;
+  imm ny = g.samplesY - 1u32;
+  imm nz = g.samplesZ - 1u32;
+  imm blx = blocksAlong(nx);
+  imm bly = blocksAlong(ny);
+  imm xl = lastBlock(x, nx);
+  imm yl = lastBlock(y, ny);
+  imm zl = lastBlock(z, nz);
+  mut needed = 0u32;
+  mut kz = firstBlock(z);
+  while kz <= zl {
+    mut ky = firstBlock(y);
+    while ky <= yl {
+      mut kx = firstBlock(x);
+      while kx <= xl {
+        if far[usize.from(kx + blx * (ky + bly * kz))] == 0u32 { needed = 1u32; }
+        kx = kx + 1u32;
+      }
+      ky = ky + 1u32;
+    }
+    kz = kz + 1u32;
+  }
+  if needed == 1u32 {
+    out[usize.from(i)] = ships[0usize].distance(g.point(x, y, z));
+  } else {
+    out[usize.from(i)] = centres[usize.from(xl + blx * (yl + bly * zl))];
+  }
+}
+
+// The distance at one of a vertex's seven probes, s.probes of them from
+// s.probe0: invocation j is vertex j / s.probes. 'probed' holds seven a vertex
+pub fn @compute(64) probe(inv Invocation, s Sweep, ships &[]ShipData, positions &[]Vec3, probed &[]mut f32) {
+  imm j = flatId(inv);
+  if s.probes == 0u32 or j >= s.count * s.probes { return; }
+  imm vx = j / s.probes;
+  imm k = s.probe0 + j % s.probes;
+  imm p = positions[usize.from(vx)];
+  probed[usize.from(7u32 * vx + k)] = ships[0usize].distance(probePoint(p, k, s.h));
+}
+
+// Each vertex moved along the unit gradient by its distance, kept inside its
+// cell, as surfaceNet relaxes it: the cell is the whole grid's (its corner
+// the whole grid's point), whichever slab the vertex was made in
+pub fn @compute(64) move(inv Invocation, s Sweep, cells &[]u32, probed &[]f32, positions &[]mut Vec3) {
+  imm vx = flatId(inv);
+  if vx >= s.count { return; }
+  imm g = s.grid;
+  imm o = usize.from(7u32 * vx);
+  imm d = probed[o];
+  imm gr = unitGradientOf(probed[o + 1usize], probed[o + 2usize], probed[o + 3usize], probed[o + 4usize],
+    probed[o + 5usize], probed[o + 6usize], s.h);
+  imm nx = g.samplesX - 1u32;
+  imm ny = g.samplesY - 1u32;
+  imm c = cells[usize.from(vx)];
+  imm lower = g.point(c % nx, (c / nx) % ny, c / (nx * ny) + s.z0);
+  imm cs = g.cellSize;
+  imm upper = lower + new Vec3(cs, cs, cs);
+  imm p = positions[usize.from(vx)];
+  positions[usize.from(vx)] = new Vec3(clampf(p.x - gr.x * d, lower.x, upper.x), clampf(p.y - gr.y * d, lower.y, upper.y),
+    clampf(p.z - gr.z * d, lower.z, upper.z));
+}
+
+// Each vertex's normal: the unit gradient of the field at it
+pub fn @compute(64) shade(inv Invocation, s Sweep, probed &[]f32, normals &[]mut Vec3) {
+  imm vx = flatId(inv);
+  if vx >= s.count { return; }
+  imm o = usize.from(7u32 * vx);
+  normals[usize.from(vx)] = unitGradientOf(probed[o + 1usize], probed[o + 2usize], probed[o + 3usize],
+    probed[o + 4usize], probed[o + 5usize], probed[o + 6usize], s.h);
+}
+
+fn dot3(a Vec3, b Vec3) f32 { a.x * b.x + a.y * b.y + a.z * b.z; }
+
+// Each quad (two triangles, six indices) cut again along its shorter
+// diagonal at the relaxed positions, the first (0 to 2) when they are
+// equal, as SurfaceNet.toMesh cuts it. The quad is a, b, c, d either way the
+// mesher cut it: (a, b, c), (a, c, d) or (a, b, d), (b, c, d)
+pub fn @compute(64) recut(inv Invocation, s Sweep, positions &[]Vec3, indices &[]mut u32) {
+  imm q = flatId(inv);
+  if q >= s.count { return; }
+  imm o = usize.from(6u32 * q);
+  imm a = indices[o];
+  imm b = indices[o + 1usize];
+  imm c = if indices[o + 3usize] == a { indices[o + 2usize]; } else { indices[o + 4usize]; };
+  imm d = indices[o + 5usize];
+  imm ac = positions[usize.from(c)] - positions[usize.from(a)];
+  imm bd = positions[usize.from(d)] - positions[usize.from(b)];
+  if dot3(ac, ac) <= dot3(bd, bd) {
+    indices[o] = a; indices[o + 1usize] = b; indices[o + 2usize] = c;
+    indices[o + 3usize] = a; indices[o + 4usize] = c; indices[o + 5usize] = d;
+  } else {
+    indices[o] = a; indices[o + 1usize] = b; indices[o + 2usize] = d;
+    indices[o + 3usize] = b; indices[o + 4usize] = c; indices[o + 5usize] = d;
+  }
+}
+
+// How many of the slab's vertices (s.count) are in its first layer of
+// cells: the vertices' cells never fall, so the first in a later layer, by
+// bisection. One invocation
+pub fn @compute(64) layerEnd(inv Invocation, s Sweep, cells &[]u32, out &[]mut u32) {
+  if flatId(inv) != 0u32 { return; }
+  imm g = s.grid;
+  imm layer = (g.samplesX - 1u32) * (g.samplesY - 1u32);
+  mut lo = 0u32;
+  mut hi = s.count;
+  while lo < hi {
+    imm mid = lo + (hi - lo) / 2u32;
+    if cells[usize.from(mid)] < layer { lo = mid + 1u32; } else { hi = mid; }
+  }
+  out[0usize] = lo;
+}

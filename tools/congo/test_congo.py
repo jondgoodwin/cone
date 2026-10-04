@@ -2181,6 +2181,31 @@ class GpuFolder(unittest.TestCase):
                          "12288 values compared, 12288 identical\n14 checks passed\n")
         self.assertEqual(entry_points(sample / "build" / "debug" / "gpupart.spv"), ["fill"])
 
+    @unittest.skipUnless(IS_WINDOWS and sdl3_on_lib(),
+                         "the starship needs SDL3.lib on LIB, a GPU driver with Vulkan 1.3, and"
+                         " Windows")
+    def test_the_starship_meshed_on_the_gpu_as_on_the_cpu(self):
+        # packages/starship: a part whose gpu/ holds its distance field and
+        # the kernels that sample it and relax its mesh. In coarse cells, and
+        # cut into slabs so that their joining is exercised, every level of
+        # the frame and the membranes meshed on the GPU is the CPU's mesh:
+        # the same counts and triangles, index for index, no sample of a
+        # different sign, positions within a hundredth of a cell. The
+        # program exits 0 only if each comparison held. Run from a copy, so
+        # the repository's package folder gets no build/
+        ship = self.root / "starship"
+        shutil.copytree(congo.REPO_PACKAGES / "starship", ship,
+                        ignore=shutil.ignore_patterns("build"))
+        run = self.congo("run", "--release", "--", "--cell", "0.16", "--slab", "12", "--compare",
+                         "--no-shots", cwd=ship)
+        said = self.program_output(run)
+        self.assertEqual(said.count("triangles: 0 indices different, in 0 quads"), 4, said)
+        self.assertEqual(said.count(" 0 of a different sign"), 4, said)
+        self.assertEqual(said.count(" 0 more than a hundredth of a cell"), 4, said)
+        self.assertTrue(said.endswith("OK\n"), said)
+        self.assertEqual(entry_points(ship / "build" / "release" / "starship.spv"),
+                         ["blocks", "sample", "probe", "move", "shade", "recut", "layerEnd"])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
