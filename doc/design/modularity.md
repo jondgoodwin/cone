@@ -303,8 +303,9 @@ below it is library code, the `thread` package: OS threads started on a
 function and one moved value, joined through an owning handle, and the futex
 the blocking layers are to be built on; and the `actors` package, a runtime of
 mailboxes and a work-stealing scheduler, which runs the actors an `actor`
-declaration declares, their messages one-way. It is ground a thread layer
-would be built on, not that layer.
+declaration declares, their messages one-way unless an actor's method awaits
+one, pausing until the reply. It is ground a thread layer would be
+built on, not that layer.
 
 ## Hazards
 

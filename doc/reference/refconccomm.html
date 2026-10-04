@@ -37,14 +37,16 @@
 		will call it exists. A message may return a value, and
 		<span class="pre">await</span> on a message to an actor waits for it: the method is cut
 		there, what it still needs waits in its actor until the reply comes, and the rest of the
-		method runs then (<a href="#actors">Actors</a>, "Awaiting"); an actor names its own handle
+		method runs then (<a href="#await">Awaiting a reply</a>); an actor names its own handle
 		<span class="pre">selfactor</span>. The compiler checks an <span class="pre">await</span>
 		&mdash; where it may stand, and that no borrow but a <span class="pre">'static</span> one is
 		used after it, every other ending there &mdash; and builds it only on a message that returns
 		a value, in a message of the actor's own: an <span class="pre">await</span> on anything
 		else (an I/O completion among them), on a message returning nothing, in a method that is not
-		a message, or one whose continuation would hold a traced reference, is reported where it is
-		written, and so is a call of a message holding one from another of the actor's methods. The
+		a message, inside a place, or one whose continuation would hold a traced reference, is
+		reported where it is written, and so is a call of a message holding one from another of the
+		actor's methods; nor is there a time limit on an <span class="pre">await</span>, or a way to
+		cancel one (<a href="#await-unbuilt">Not built yet</a>). The
 		compiler's <span class="pre">--await-direct</span> option, which is for testing the cut,
 		runs the rest of the method at once after an <span class="pre">await</span> on anything
 		else, with the value awaited. Not implemented: <span class="pre">actor trait</span>, a
@@ -319,41 +321,20 @@ fn main() {
 		block is freed. Actors that hold handles to each other in a cycle never die by counting, as
 		a cycle of <span class="pre">Arc</span> owners never does, until one of them lets go.</p>
 	<p><b>Messages.</b> A send is one-way: it queues the message and returns. An answer comes
-		back only to an <span class="pre">await</span>, or as a message sent back to a handle
-		passed along.
+		back only to an <span class="pre">await</span> (<a href="#await">Awaiting a reply</a>), or
+		as a message sent back to a handle passed along.
 		Each sender's messages to one actor are handled in the order sent, and a message is never
 		overtaken by one it caused. Each argument arrives moved into the method's call, once: a
 		value that may only move (a <span class="pre">uni</span> or <span class="pre">So</span>
 		owner) arrives whole, and a counted one (a handle, an <span class="pre">Arc</span>, a
 		lock-managed <span class="pre">Arc[Mutex, T]</span>) is counted once.</p>
 	<p><b>Awaiting.</b> In a message, <span class="pre">await</span> on a message to an actor
-		that returns a value sends it and waits for that value, which is the
-		<span class="pre">await</span>'s:</p>
-<pre>
-actor Page {
-  body Buffer;
-  fetcher Fetcher;
-  pub fn load(self, u Url) {
-    imm b = await fetcher.fetch(u);    // the method is cut here
-    body = b;                          // and runs on when the reply comes
-  }
-}
-</pre>
-	<p>The method is cut at the <span class="pre">await</span>: it returns to its actor's
-		dispatcher there, so the actor handles other messages meanwhile, and what the rest of the
-		method needs waits in the actor until the reply comes, when the rest runs. Every borrow
-		ends at the cut, but a <span class="pre">'static</span> one; a lock taken through a borrow
-		is given back there. Every value still held waits, moved, and dies where it would have if
-		the method were not cut. The reply goes back to the actor that awaited, whose handle the
-		request carries, counted, so it cannot die meanwhile; the message's signature is as
-		written. A message that returns a value may itself <span class="pre">await</span>, and it
-		answers when it returns. In a method, <span class="pre">selfactor</span> is the actor's own
-		handle, another owner of it, which may be sent anywhere a handle may;
-		<span class="pre">self</span> is its state, which never leaves it. Not built yet: an
-		<span class="pre">await</span> on anything but such a message, on a message returning
-		nothing, or in a method that is not a message; and a call of a message holding an
-		<span class="pre">await</span> from another of the actor's methods, which would cut that
-		method too, where nothing shows it.</p>
+		that returns a value sends it and waits for that value: the method pauses there, the actor
+		handles other messages meanwhile, and the reply resumes the method
+		(<a href="#await">Awaiting a reply</a>, below). In a method,
+		<span class="pre">selfactor</span> is the actor's own handle, another owner of it, which
+		may be sent anywhere a handle may; <span class="pre">self</span> is its state, which never
+		leaves it.</p>
 	<p><b>Inside an actor</b> a method may use what a single thread may: borrows, and
 		<span class="pre">So</span> and <span class="pre">Rc</span> owners, whose count need not be
 		atomic, since one worker at a time runs an actor and every hand-off of an actor between
@@ -433,6 +414,384 @@ actor.increment();
 		any value ever being calculated or returned.  If a return value is desired, then one can pass the along a reference
 		to the actor to which a message back can be sent.</p>
 	
+	<h3 id="await">Awaiting a reply</h3>
+	<p>A message is one-way: the sender goes on at once, and whatever the method returns is
+		dropped. Inside an actor's own method, <span class="pre">await</span> sends a message and
+		waits for what it returns:</p>
+<pre>
+struct Conn {
+  pub url u64;
+  fn final(self &amp;uni) {say("  close", url);}
+}
+
+struct Buffer {
+  pub size u64;
+}
+
+actor Net {
+  pub fn read(self, url u64) Buffer {
+    say("  read", url);
+    new Buffer(url * 100u64);
+  }
+}
+
+actor Fetcher {
+  net Net;
+
+  pub fn fetch(self, url u64) Buffer {
+    imm conn = new Conn(url);             // opened
+    imm buf = await net.read(conn.url);   // conn waits, with the method
+    say("  fetched", buf.size);
+    buf;                                  // the reply to the 'await' on fetch
+  }                                       // conn closes here
+}
+
+actor Page {
+  fetcher Fetcher;
+  body u64;
+
+  pub fn load(self, u u64) {
+    say("load", u);
+    imm b = await fetcher.fetch(u);       // pauses here
+    body = b.size;                        // and resumes when the reply comes
+    say("loaded", body);
+  }
+}
+</pre>
+	<p>(<span class="pre">say</span> prints a word and a number on a line.) Sent
+		<span class="pre">page.load(7u64)</span>, this prints:</p>
+<pre>
+load 7
+  read 7
+  fetched 700
+  close 7
+loaded 700
+</pre>
+	<p>When <span class="pre">load</span> reaches its <span class="pre">await</span>, it sends
+		<span class="pre">fetch</span> to the fetcher and <b>pauses</b>. The worker running Page does
+		not wait with it: Page goes back to its mailbox, and its other messages run meanwhile. When
+		<span class="pre">fetch</span> returns its <span class="pre">Buffer</span>, the value comes
+		back to Page as a <i>reply</i>, and <span class="pre">load</span> <b>resumes</b> just after
+		the <span class="pre">await</span>, whose value it is. Fetcher does the same at its own
+		<span class="pre">await</span>: while Net reads, Fetcher is free to handle other fetches. Its
+		connection, <span class="pre">conn</span>, is still open while it waits, and closes when
+		<span class="pre">fetch</span> ends, after the reply came, just as it would if
+		<span class="pre">read</span> had been an ordinary call.</p>
+
+	<h4>Every method of an actor is asynchronous</h4>
+	<p>Nothing marks a method that awaits. There is no <span class="pre">async</span> keyword
+		(the word is reserved, and unused): a message that awaits is declared, sent and awaited
+		exactly as one that does not, its signature is as written, and no sender can tell the
+		difference. This departs from C#, Rust and JavaScript, where a function that awaits must be
+		marked <span class="pre">async</span> and its callers must await it in turn, all the way up
+		the stack. In Cone, the code that runs an actor's method is the actor's dispatcher, at the
+		top of its worker's stack, and every message already runs later than it was sent; so an
+		<span class="pre">await</span> pauses only the message it is written in, and goes no
+		further.</p>
+	<p>An <span class="pre">await</span> may stand only in an actor's method: not in a plain
+		function or a struct's method, and not in an actor's <span class="pre">init</span> or
+		<span class="pre">final</span>, which no dispatcher runs (the first runs on the thread making
+		the actor, the second as it dies). Today it is built in a message, a
+		<span class="pre">pub</span> method ("Not built yet", below). A method may hold any number
+		of them.</p>
+
+	<h4>What an await does</h4>
+	<ol>
+	<li><b>It asks.</b> What follows <span class="pre">await</span> is a message to an actor that
+		returns a value. It is sent, as any message is, and the request carries where the reply
+		goes.</li>
+	<li><b>The method pauses.</b> It returns to its actor's dispatcher. What the rest of the
+		method needs waits in the actor (below), not on a stack, so the worker goes on to other
+		work.</li>
+	<li><b>Other messages run.</b> The actor handles the rest of its mailbox meanwhile, one message
+		at a time, as always, messages it sends itself among them. So its state may have changed
+		by the time the method resumes: what the method read from its fields before the
+		<span class="pre">await</span>, it reads again after.</li>
+	<li><b>The reply resumes it.</b> When the method asked returns, its value comes back to the
+		actor that awaited, as a message in its mailbox. When that message's turn comes, the rest
+		of the method runs, with the value as the <span class="pre">await</span>'s, perhaps on
+		another worker thread.</li>
+	</ol>
+
+	<h4>It reads as one scope</h4>
+	<p>The method runs in parts, with other messages between them, but it is still the one
+		method written, with one scope. Every value it holds when it pauses dies where it would if
+		the method had never paused, and in the same order:</p>
+<pre>
+struct Note {
+  pub n u64;
+  fn final(self &amp;uni) {say("  drop", n);}
+}
+
+actor Clock {
+  pub fn now(self) u64 {42u64;}
+}
+
+actor Logger {
+  clock Clock;
+
+  pub fn log(self) u64 {
+    imm first = new Note(1u64);
+    imm second = new Note(2u64);
+    imm t = await clock.now();
+    say("  at", t + first.n);             // 'second' is not named again
+    t;
+  }                                       // second dies, then first
+}
+</pre>
+	<p><span class="pre">logger.log()</span> prints <span class="pre">at 43</span>, then
+		<span class="pre">drop 2</span>, then <span class="pre">drop 1</span>.
+		<span class="pre">second</span> is never named after the <span class="pre">await</span>, yet
+		it waits too, and dies at the method's end, the last declared first, as it would in a
+		method with no <span class="pre">await</span>. Nothing is dropped early at an
+		<span class="pre">await</span>, so what a finalizer does (closing a file, giving back a
+		buffer) happens where the method's text says. An <span class="pre">await</span> returns to
+		the dispatcher, not to the author: the author reads one method, and the pause shows only
+		in when the rest of it runs, and in what the actor's other messages did meanwhile.</p>
+
+	<h4 id="await-cross">What crosses an await</h4>
+	<ul>
+	<li><b>Values move.</b> Every value the method still needs after the
+		<span class="pre">await</span>, and every value with a finalizer it still holds, waits for
+		the reply, and comes back to the same local when the method resumes. It is moved, never
+		copied: a counted owner (an <span class="pre">Arc</span>, an actor's handle) is not counted
+		again, and a value that may only move waits like any other. A local that is not used
+		again and has nothing to do as it dies is simply left behind.</li>
+	<li><b>Borrows end.</b> Every borrowed reference the method holds ends at the
+		<span class="pre">await</span>, as if its scope ended there: while the method is paused,
+		other messages run, and may change or drop what was borrowed. Holding one at an
+		<span class="pre">await</span> is no error; <i>using</i> one after it is (next).</li>
+	<li><b>A <span class="pre">'static</span> borrow does not end.</b> A borrow of a global may
+		already be returned from a function, since what it points at outlives every function; for
+		the same reason it crosses an <span class="pre">await</span>:
+<pre>
+imm limit u64 = 100u64;
+
+actor Gauge {
+  clock Clock;
+
+  pub fn check(self) u64 {
+    imm max = &amp;limit;                     // a borrow of a global: 'static
+    imm t = await clock.now();
+    *max - t;                             // still valid after the 'await'
+  }
+}
+</pre>
+		</li>
+	<li><b>A lock is given back.</b> A borrow through a
+		<a href="refpermlock.html">lock permission</a> holds its lock for as long as the borrow
+		lasts, so the borrow ends at the <span class="pre">await</span> and the lock is given back
+		there. To reach the value again, the method borrows it again:
+<pre>
+struct Count {pub n u64;}
+
+actor Tally {
+  count Arc[Mutex, Count];
+  clock Clock;
+
+  pub fn bump(self) u64 {
+    imm c = &amp;mut *count;                  // takes the lock
+    c.n += 1u64;
+    imm t = await clock.now();            // gives it back
+    (&amp;mut *count).n += t;                 // takes it again, for the statement
+    (&amp;*count).n;
+  }
+}
+</pre>
+		A lock borrow is never <span class="pre">'static</span>, since it borrows a hidden local
+		that holds the lock, so it never crosses: no method holds a lock while it waits.</li>
+	<li><b>The state is lent afresh.</b> <span class="pre">self</span> and the actor's fields may
+		be used after an <span class="pre">await</span>: the dispatcher lends the state again when
+		the method resumes. A borrow made <i>through</i> <span class="pre">self</span> before the
+		<span class="pre">await</span> ends, as any borrow does.</li>
+	</ul>
+
+	<h4>Using a borrow after an await</h4>
+	<p>A borrow used after the <span class="pre">await</span> that ended it is refused, with the
+		error any borrow used after its end gets, pointing at the <span class="pre">await</span> as
+		where it ended:</p>
+<pre>
+actor Meter {
+  clock Clock;
+  reading u64;
+
+  pub fn stale(self) {
+    imm r = &amp;reading;
+    imm t = await clock.now();  // refused: r's borrow ends here, and r is used below
+    reading = *r + t;
+  }
+
+  pub fn fresh(self) {
+    imm t = await clock.now();
+    imm r = &amp;reading;           // borrowed after the 'await'
+    reading = *r + t;
+  }
+</pre>
+<pre>
+The borrow 'r' holds of '*self' (made at ..) ends at this 'await', where the method
+returns to its actor's dispatcher to wait, and 'r' is used again at ..
+</pre>
+	<p>The same is true of a borrow made before the <span class="pre">await</span> for a call that
+		is only made after it: a method's receiver, or an argument written to its left. The
+		<span class="pre">await</span> is then written as a statement of its own, first. In the
+		same actor, where <span class="pre">add</span> is a function taking a
+		<span class="pre">&amp;u64</span> and a number:</p>
+<pre>
+  pub fn store(self, n u64) {reading = n;}
+
+  pub fn receiver(self) {
+    self.store(await clock.now());       // refused: 'self' was lent for the call before the 'await'
+  }
+
+  pub fn argument(self) {
+    imm x = 3u64;
+    reading = add(&amp;x, await clock.now()); // refused: &amp;x was made before the 'await'
+  }
+
+  pub fn hoisted(self) {
+    imm t = await clock.now();
+    self.store(t);
+  }
+</pre>
+	<p>A lock borrow used after the <span class="pre">await</span> is refused the same way, the
+		message naming the lock it held.</p>
+
+	<h4><span class="pre">self</span> and <span class="pre">selfactor</span></h4>
+	<p>An actor has two selves. <span class="pre">self</span> is its <i>state</i>, lent to the
+		method while it runs; it never leaves the actor. <span class="pre">selfactor</span> is its
+		<i>handle</i>: another owner of the actor, a value that may go anywhere a handle may &mdash;
+		into a message, into another actor's state, or to an <span class="pre">await</span> on one
+		of its own messages:</p>
+<pre>
+actor Doubler {
+  pub fn double(self, n u64) u64 {n * 2u64;}
+
+  pub fn twice(self, n u64) u64 {
+    imm once = await selfactor.double(n);  // a message to itself
+    imm again = await selfactor.double(once);
+    again;
+  }
+}
+</pre>
+	<p><span class="pre">await doubler.twice(5u64)</span> is <span class="pre">20</span>. Each
+		<span class="pre">double</span> is queued in Doubler's own mailbox, and runs because
+		<span class="pre">twice</span> has paused and the actor is free. A method calling
+		<span class="pre">self.double(n)</span> directly would not send anything: it would run
+		<span class="pre">double</span> at once, as any struct's method does, and its value would be
+		the call's. <span class="pre">selfactor</span> may be written in any of the actor's methods,
+		but not in its <span class="pre">init</span>, which runs before the actor exists, nor in its
+		<span class="pre">final</span>, nor anywhere outside the actor.</p>
+
+	<h4>One request, one reply</h4>
+	<p>An <span class="pre">await</span> sends one request and takes exactly one reply. A message
+		that returns a value answers once, when it returns, from whichever path it returns by:</p>
+<pre>
+actor Cache {
+  net Net;
+  hot u64;
+
+  pub fn get(self, url u64) u64 {
+    if url == hot {
+      return 1u64;                        // answered here, at once
+    }
+    imm b = await net.read(url);
+    b.size;                               // or here, once the reply came
+  }
+}
+</pre>
+	<p>A reply always has an actor to go to: the request holds a counted handle of the actor that
+		awaited, so that actor cannot die while its reply is owed. A message that returns a value
+		may also be sent with no <span class="pre">await</span>, and its value is then
+		dropped.</p>
+
+	<h4>An await in a loop</h4>
+	<p>An <span class="pre">await</span> may stand in a loop, and a loop's variables cross it as any
+		others do. It is legal, but poor practice:</p>
+<pre>
+actor Sizes {
+  net Net;
+
+  pub fn total(self, n u64) u64 {
+    mut sum = 0u64;
+    each i in 0u64 &lt; n {
+      imm b = await net.read(i);          // one request at a time
+      sum = sum + b.size;
+    }
+    sum;
+  }
+}
+</pre>
+	<p>Each pass sends one request and waits for its reply before the next is sent, so the
+		requests run one after another, a round trip each, and the actor's other messages run in
+		between the passes, perhaps changing what the loop reads. A borrow the loop holds ends at
+		the <span class="pre">await</span> on every pass. Requests that do not depend on one
+		another's replies need not wait in turn: sent without <span class="pre">await</span>, they
+		run at once, and each answer can come back as a message to
+		<span class="pre">selfactor</span>.</p>
+
+	<h4 id="await-unbuilt">Not built yet</h4>
+	<p>Each of these is reported where it is written, as not built:</p>
+	<ul>
+	<li><b>Awaiting anything but a message.</b> An <span class="pre">await</span> on an I/O
+		operation's completion, or on a function's call, is not built.</li>
+	<li><b>An <span class="pre">await</span> in a method that is not a message</b>, such as a
+		private method of the actor that a message calls.</li>
+	<li><b>A direct call of a message holding an <span class="pre">await</span></b> from another
+		of the actor's methods, <span class="pre">self.load(u)</span>: such a message is called
+		only by its actor's dispatcher.</li>
+	<li><b>An <span class="pre">await</span> on a message that returns nothing.</b></li>
+	<li><b>An <span class="pre">await</span> inside a place</b>: in the index of a place
+		(<span class="pre">items[await f()]</span>), in a place assigned to, or in a place a swap
+		exchanges; and in an array's contents that repeat a value more than 16 times
+		(<span class="pre">&lt;- fill await f()</span>). An <span class="pre">await</span> in the
+		value assigned, <span class="pre">body = await f()</span>, is built.</li>
+	<li><b>A traced reference waiting for a reply.</b> An <span class="pre">await</span> at which
+		the method holds a <span class="pre">Gc</span> reference it would keep is refused: the
+		collector does not see a paused method's values. (<span class="pre">Gc</span> is not
+		supported inside an actor at all yet, "Inside an actor", above.)</li>
+	<li><b>Timeouts and cancellation.</b> A paused method waits until its reply comes. There is no
+		time limit on the wait, and no way to cancel a paused method.</li>
+	</ul>
+	<p>Most of them, where <span class="pre">compute</span> is a plain function and
+		<span class="pre">Cell</span> a struct:</p>
+<pre>
+actor Waiter {
+  clock Clock;
+  last u64;
+
+  pub fn onFunction(self) {
+    last = await compute();       // not built: compute is a function
+  }
+
+  pub fn onNothing(self) {
+    await clock.tick();           // not built: tick returns nothing
+  }
+
+  fn helper(self) u64 {
+    await clock.now();            // not built: helper is not a message
+  }
+
+  pub fn caller(self) {
+    last = await clock.now();
+  }
+
+  pub fn callsCaller(self) {
+    self.caller();                // not built: caller holds an 'await'
+  }
+
+  pub fn indexed(self) {
+    imm items = [1u64, 2u64, 3u64];
+    last = items[await clock.now()];  // not built: in a place's index
+  }
+
+  pub fn traced(self) {
+    imm g = new Gc[mut, Cell](1u64);
+    imm t = await clock.now();    // not built: g would wait for the reply
+    last = t + g.n;
+  }
+}
+</pre>
+
 	<h2>Shared, Mutable Objects</h2>
 	<p>In most cases, the above approach is the most efficient when threads do not require shared access
 		to mutable objects. 

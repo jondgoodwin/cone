@@ -1,0 +1,236 @@
+// The examples of the reference manual's section on 'await' in an actor's
+// methods (doc/reference/refconccomm.html, "Awaiting a reply"), compiled and
+// run, so the page cannot drift from what the compiler does. Each block the
+// page shows is copied from here verbatim, between the "manual:" lines; what
+// the page leaves out is the scaffolding below them that drives the examples
+// one after another, so their output is the same on every run. The refusals
+// the page shows are concurrency_await_manual_refused's.
+//
+// - The worked example: Page.load awaits Fetcher.fetch, which awaits
+//   Net.read. load's continuation holds nothing ('u' was moved into the
+//   request, 'b' holds nothing yet); fetch's holds 'conn', which closes when
+//   fetch ends, after its reply came.
+// - One scope: Logger.log's two notes, one never named after the 'await',
+//   both die at the method's end, the last declared first.
+// - What crosses: a borrow of a global (''static') used after the 'await';
+//   a lock taken through a borrow, given back at the 'await' and taken again.
+// - 'selfactor': Doubler.twice awaits its own messages, which run while it
+//   waits.
+// - One request, one reply: Cache.get answers once, from before its 'await'
+//   or after it.
+// - A loop holding an 'await', which is legal: each pass waits for its reply.
+//
+// doc/reference/refpermlock.html shows Tally.bump too, and says what Mixed
+// below checks.
+//
+// Driver.go runs each in turn, awaiting each one's reply, and sends
+// Page.load last, which returns nothing and so is not awaited.
+
+mod concurrency_await_manual;
+
+import stdio use *;
+import actors;
+import sync use Arc, Mutex;
+
+fn say(s &[]u8, n u64) {printStr(s); printStr(" "); printUInt(n); printStr("\n");}
+
+// manual: worked example
+struct Conn {
+  pub url u64;
+  fn final(self &uni) {say("  close", url);}
+}
+
+struct Buffer {
+  pub size u64;
+}
+
+actor Net {
+  pub fn read(self, url u64) Buffer {
+    say("  read", url);
+    new Buffer(url * 100u64);
+  }
+}
+
+actor Fetcher {
+  net Net;
+
+  pub fn fetch(self, url u64) Buffer {
+    imm conn = new Conn(url);             // opened
+    imm buf = await net.read(conn.url);   // conn waits, with the method
+    say("  fetched", buf.size);
+    buf;                                  // the reply to the 'await' on fetch
+  }                                       // conn closes here
+}
+
+actor Page {
+  fetcher Fetcher;
+  body u64;
+
+  pub fn load(self, u u64) {
+    say("load", u);
+    imm b = await fetcher.fetch(u);       // pauses here
+    body = b.size;                        // and resumes when the reply comes
+    say("loaded", body);
+  }
+}
+// manual: end
+
+// manual: one scope
+struct Note {
+  pub n u64;
+  fn final(self &uni) {say("  drop", n);}
+}
+
+actor Clock {
+  pub fn now(self) u64 {42u64;}
+}
+
+actor Logger {
+  clock Clock;
+
+  pub fn log(self) u64 {
+    imm first = new Note(1u64);
+    imm second = new Note(2u64);
+    imm t = await clock.now();
+    say("  at", t + first.n);             // 'second' is not named again
+    t;
+  }                                       // second dies, then first
+}
+// manual: end
+
+// manual: static
+imm limit u64 = 100u64;
+
+actor Gauge {
+  clock Clock;
+
+  pub fn check(self) u64 {
+    imm max = &limit;                     // a borrow of a global: 'static
+    imm t = await clock.now();
+    *max - t;                             // still valid after the 'await'
+  }
+}
+// manual: end
+
+// manual: lock
+struct Count {pub n u64;}
+
+actor Tally {
+  count Arc[Mutex, Count];
+  clock Clock;
+
+  pub fn bump(self) u64 {
+    imm c = &mut *count;                  // takes the lock
+    c.n += 1u64;
+    imm t = await clock.now();            // gives it back
+    (&mut *count).n += t;                 // takes it again, for the statement
+    (&*count).n;
+  }
+}
+// manual: end
+
+// manual: selfactor
+actor Doubler {
+  pub fn double(self, n u64) u64 {n * 2u64;}
+
+  pub fn twice(self, n u64) u64 {
+    imm once = await selfactor.double(n);  // a message to itself
+    imm again = await selfactor.double(once);
+    again;
+  }
+}
+// manual: end
+
+// manual: one reply
+actor Cache {
+  net Net;
+  hot u64;
+
+  pub fn get(self, url u64) u64 {
+    if url == hot {
+      return 1u64;                        // answered here, at once
+    }
+    imm b = await net.read(url);
+    b.size;                               // or here, once the reply came
+  }
+}
+// manual: end
+
+// manual: loop
+actor Sizes {
+  net Net;
+
+  pub fn total(self, n u64) u64 {
+    mut sum = 0u64;
+    each i in 0u64 < n {
+      imm b = await net.read(i);          // one request at a time
+      sum = sum + b.size;
+    }
+    sum;
+  }
+}
+// manual: end
+
+// Not shown, but said on refpermlock.html: a borrow through a lock that is
+// no local's lasts to the end of its statement, or to an 'await' within it.
+// Mixed reads under the lock, then awaits Locker, which takes the same lock:
+// were it still held, Locker would wait for it, and Mixed for Locker, for
+// good. 7 + 42, then 8 once Locker has added its 1.
+actor Locker {
+  count Arc[Mutex, Count];
+
+  pub fn now(self) u64 {
+    (&mut *count).n += 1u64;
+    42u64;
+  }
+}
+
+actor Mixed {
+  count Arc[Mutex, Count];
+  locker Locker;
+
+  pub fn read(self) u64 {
+    (&mut *count).n = 7u64;
+    imm x = (&*count).n + await locker.now();
+    x + (&*count).n;
+  }
+}
+
+actor Driver {
+  mixed Mixed;
+  page Page;
+  logger Logger;
+  gauge Gauge;
+  tally Tally;
+  doubler Doubler;
+  cache Cache;
+  sizes Sizes;
+
+  pub fn go(self) {
+    say("log", await logger.log());
+    say("check", await gauge.check());
+    say("bump", await tally.bump());
+    say("twice", await doubler.twice(5u64));
+    say("get hot", await cache.get(3u64));
+    say("get cold", await cache.get(4u64));
+    say("total", await sizes.total(3u64));
+    say("mixed", await mixed.read());
+    page.load(7u64);
+  }
+}
+
+fn main() {
+  initAll();
+  {
+    imm net = new Net();
+    imm clock = new Clock();
+    imm fetcher = new Fetcher(net);
+    imm page = new Page(fetcher, 0u64);
+    imm count = new Arc[Mutex, Count](0u64);
+    imm shared = new Arc[Mutex, Count](0u64);
+    imm d = new Driver(new Mixed(shared, new Locker(shared)), page, new Logger(clock), new Gauge(clock), new Tally(count, clock),
+      new Doubler(), new Cache(net, 3u64), new Sizes(net));
+    d.go();
+  }
+  finalAll();
+}
