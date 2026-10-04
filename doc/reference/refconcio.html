@@ -13,15 +13,35 @@
 
     <div class="text">
 
-	<p style="margin-left: 40px;"><i>Note: None of this is implemented or really designed.
-		Thus, this text is exploratory in nature, for now. What is built is blocking,
-		synchronous I/O with no concurrency of its own: the library packages
-		<span class="pre">fs</span> (files and folders),
-		<span class="pre">path</span> and <span class="pre">env</span>, on Windows only
-		for now (beneath them, the <span class="pre">posix</span> package maps POSIX onto
-		the Windows C runtime), and <span class="pre">process</span>, which runs a
-		program and waits for it, its insides written over Windows' own
-		<span class="pre">kernel32</span>, Windows only.</i></p>
+	<p style="margin-left: 40px;"><i>Note: The text below this note is the original exploration
+		of the question, kept as it was written. What is built is in library packages,
+		Windows only for now:</i></p>
+	<ul style="margin-left: 40px; font-style: italic;">
+	<li><b>Blocking, synchronous I/O:</b> <span class="pre">fs</span> (files and folders),
+		<span class="pre">path</span> and <span class="pre">env</span> (beneath them, the
+		<span class="pre">posix</span> package maps POSIX onto the Windows C runtime), and
+		<span class="pre">process</span>, which runs a program and waits for it, its insides
+		written over Windows' own <span class="pre">kernel32</span>.</li>
+	<li><b>Asynchronous I/O, completion-based:</b> <span class="pre">iocore</span> is the
+		completion loop, over an I/O completion port. A program hands a loop a job (receive
+		into this buffer, send these bytes, accept a connection, read a file at an offset,
+		wake at a time) and later gets exactly one answer for it, carrying the buffer back.
+		A job can carry a deadline and belong to a cancel group, and a blocking pool runs
+		work that has no completion form. Beneath it: <span class="pre">iobuf</span>, owned
+		buffers lent to an operation by moving them; <span class="pre">timewheel</span>, its
+		timers; <span class="pre">time</span> and <span class="pre">calendar</span>, time
+		values; and <span class="pre">diag</span>, records of where an operation's time went.</li>
+	<li><b>HTTP and TLS over it:</b> <span class="pre">http1</span>, HTTP/1.1's connection
+		core, sans-IO; <span class="pre">httpconn</span>, which joins it to real sockets on a
+		loop, client and server; <span class="pre">tls</span>, TLS 1.2 and 1.3 over OpenSSL,
+		also sans-IO, with a server's certificate checked by the operating system;
+		<span class="pre">url</span>, URLs as data; and <span class="pre">httpclient</span>,
+		which fetches an <span class="pre">http://</span> or <span class="pre">https://</span>
+		URL in one call, with connection pooling, retries and redirects.</li>
+	<li><b>Not built yet:</b> an actor's method awaiting an I/O operation's completion.
+		An actor's method can already await another actor's reply
+		(<a href="refconccomm.html#await">Awaiting a reply</a>).</li>
+	</ul>
 
 	<p>I/O encompasses any processing activity that extends beyond the boundaries of CPU/memory computation,
 		including user input and presentation, file or network requests, timers, etc.
