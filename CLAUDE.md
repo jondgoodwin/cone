@@ -116,6 +116,12 @@ Visual Studio projects stay at the root.
   `sdf` are): a kernel over `geomath`, which Congo compiles into
   `gpusample.spv`, and a test running it on the GPU through `gpuwork` against
   the same function on the CPU;
+  `gpupart` is the sample of a package with a `gpu/` folder, a program: its
+  GPU half, `gpu/pattern.cone`, the root's submodule `pattern` (a PCG hash
+  and floats made from it by additions and multiplications), which its
+  `main` runs as the kernel `fill` on the GPU through `gpuwork` and calls on
+  the CPU, every word compared and identical; `test_congo.py` runs it, since
+  a test cannot import a program;
   `geomath` is 2-D and 3-D math, pure maths: values and operations with
   results of a known size, no collections (vectors,
   quaternions, matrices, transforms, boxes, rays, planes, frusta and their
@@ -574,6 +580,10 @@ Visual Studio projects stay at the root.
   ["native", "gpu"]`) whose source holds compute entry points is also
   compiled for the GPU into `build/<mode>/<name>.spv`, copied beside every
   program that imports it, once every package it imports is found marked.
+  A package's `gpu/` folder, beside `src/`, holds more submodules of its root,
+  marked by being there: compiled into the package for the CPU, and for the GPU
+  without `src/` (which `gpu/` may not use) into the same `.spv`, a program's
+  too.
   `tools/congo/README.md` is its guide and design;
   `python tools/congo/test_congo.py` checks it against a built `conec`.
   `tools/congo/` is also the package of its port to Cone (`congo.toml`,

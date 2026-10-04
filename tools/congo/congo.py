@@ -30,7 +30,10 @@ A package marked for the GPU (targets = ["native", "gpu"]) whose source holds
 compute entry points ('fn @compute') is also compiled for the GPU [Jon 3 Oct
 2026], into build/<mode>/<name>.spv, which is copied beside every program that
 imports it; Congo first refuses any package it imports that is not marked.
-That compile is the one exception to the rule above: every function on a GPU
+A package's gpu/ folder, beside src/, is marked by being there: its modules
+are submodules of the root, compiled into the package for the CPU and, without
+src/, which they may not use, into the same .spv. The GPU compile is the one
+exception to the rule above: every function on a GPU
 is inlined into its kernel, so the packages a kernel calls into are compiled
 from their source, which conec finds on its package search path.
 
@@ -96,6 +99,8 @@ TARGETS = ("native", "gpu")
 # the kernels gpuwork loads
 GPU_TRIPLE = "spirv1.6-unknown-vulkan1.3"
 SPV_EXT = ".spv"
+# A package's folder of GPU modules, beside src/: the folder is the marking
+GPU_FOLDER = "gpu"
 
 # The words the compiler's lexer never reads as a name: its keywords and the
 # words it reserves for features not built yet (compiler/c/parser/lexer.c,
@@ -274,8 +279,8 @@ def read_targets(path: Path, targets: object, output: str) -> bool:
                          " for the GPU alone is not built yet")
     if "gpu" in targets and output != "library":
         raise CongoError(f"{path}: [package] targets names \"gpu\", and an executable is"
-                         " not built for the GPU: put its kernels in a library package it"
-                         " imports")
+                         " not built for the GPU: put its kernels in its gpu/ folder, or in a"
+                         " library package it imports")
     return "gpu" in targets
 
 
@@ -490,6 +495,7 @@ class Module:
     children: list["Module"] = field(default_factory=list)
     imports: list[Import] = field(default_factory=list)
     extends: Import | None = None     # from the 'mod' line of its first file
+    gpu: bool = False     # in the package's gpu/ folder, at any depth: compiled for the GPU too
 
     def add_imports(self, header: Header) -> None:
         if header.extends is not None and self.extends is None:
@@ -586,7 +592,68 @@ def scan_package(pkg: Package) -> Module:
         module = Module(pkg.name, [pkg.src])
         module.add_imports(scan_header(pkg.src))
         return module
-    return scan_folder_module(pkg.name, pkg.src.parent, pkg.src)
+    tree = scan_folder_module(pkg.name, pkg.src.parent, pkg.src)
+    if (pkg.root / GPU_FOLDER).is_dir():
+        scan_gpu_folder(pkg, tree)
+    return tree
+
+
+def scan_gpu_folder(pkg: Package, tree: Module) -> None:
+    """A package's gpu/ folder, beside src/ [Jon 3 Oct 2026]: Cone source that
+    runs on the GPU, the folder itself the marking. It holds submodules of the
+    package's root module, each laid out as it would be in src/: a file opening
+    with its own 'mod' line is a module of one file, named for the file, and a
+    subfolder holding its designated file is a module folder, scanned by the
+    usual rules. src/ reaches them as it reaches any submodule, by name; they
+    are compiled for the CPU as part of the package, and for the GPU, without
+    src/, into the package's one .spv. A file with no 'mod' line would join no
+    module there, and a folder with no designated file would organise
+    nothing, so each is refused."""
+    folder = pkg.root / GPU_FOLDER
+    if pkg.gpu:
+        raise CongoError(f"{folder}: {pkg.name} is marked for the GPU (targets = [\"native\","
+                         f" \"gpu\"]), so all of it is compiled for the GPU already; a gpu/"
+                         f" folder is for a package that is not: move gpu/'s modules into"
+                         f" src/, or take \"gpu\" out of targets")
+    files, folders = cone_files(folder)
+    found: list[Module] = []
+    for file in files:
+        header = scan_header(file)
+        if header.mod is None:
+            raise CongoError(f"{file}: a file in gpu/ opens with its own 'mod' line, as a"
+                             f" module of one file named for the file: gpu/ holds the"
+                             f" package's GPU modules, and a file with no 'mod' line would"
+                             f" join none")
+        if name_fault(file.stem):
+            raise CongoError(f"{file}: a one-file module is named by its file:"
+                             f" '{file.stem}' {name_fault(file.stem)}; rename the file"
+                             f" and its 'mod' line")
+        module = Module(file.stem, [file])
+        module.add_imports(header)
+        found.append(module)
+    for sub in folders:
+        inner = sub / f"{sub.name}.cone"
+        if not inner.is_file():
+            raise CongoError(f"{sub}: a folder in gpu/ is a module folder, holding its"
+                             f" designated file, {sub.name}.cone: gpu/ holds the package's"
+                             f" GPU modules, and a folder with none would be part of no"
+                             f" module")
+        if name_fault(sub.name):
+            raise CongoError(f"{inner}: a module folder names its module:"
+                             f" '{sub.name}' {name_fault(sub.name)}; rename the folder,"
+                             f" its designated file and its 'mod' line")
+        found.append(scan_folder_module(sub.name, sub, inner))
+    in_src = list(tree.children)
+    for module in found:
+        clash = next((m for m in in_src if m.name == module.name), None)
+        if clash is not None:
+            raise CongoError(f"{module.files[0]}: {pkg.name} has two submodules named"
+                             f" '{module.name}', this one in gpu/ and {clash.files[0]} in"
+                             f" src/; rename one")
+        for inner_module, _ in module.walk():
+            inner_module.gpu = True
+        tree.children.append(module)
+    tree.children.sort(key=lambda m: m.name)
 
 
 # ---------------------------------------------------------------------------
@@ -668,7 +735,9 @@ class Unit:
     tree: Module
     deps: dict[str, Package]                          # other packages, first-seen order
     lines: dict[int, dict[str, Package]]              # id(module) -> import name -> package
-    kernels: bool = False     # marked for the GPU, and its source holds compute entry points
+    kernels: bool = False     # what is compiled for the GPU holds compute entry points
+    # The packages its gpu/ folder imports, first-seen order; None where it has no gpu/
+    gpu_deps: dict[str, Package] | None = None
 
 
 def include_for(pkg: Package, out: Path) -> Path:
@@ -694,13 +763,24 @@ def resolve_imports(pkg: Package, tree: Module, registry: Registry) -> Unit:
     lines: dict[int, dict[str, Package]] = {}
     for module, parent in tree.walk():
         mine = lines.setdefault(id(module), {})
-        sisters = {m.name for m in parent.children} if parent else set()
+        sisters = {m.name: m for m in parent.children} if parent else {}
+        # A module of gpu/ is compiled for the GPU without src/, so it may not
+        # use src/: not a sister there, and not a name of the root [Jon 3 Oct]
+        from_gpu = module.gpu and parent is not None and not parent.gpu
+        if from_gpu and module.extends is not None:
+            sister = sisters.get(module.extends.name)
+            if sister is not None and not sister.gpu:
+                raise gpu_uses_src(pkg, module.extends, "extends", sister)
         for imp in module.imports:
             if imp.name is None:
                 raise CongoError(f"{imp.where()}: import {imp.written}: a Congo build"
                                  f" imports a package by its name, not by a path")
             if imp.name in sisters:
+                if from_gpu and not sisters[imp.name].gpu:
+                    raise gpu_uses_src(pkg, imp, "import", sisters[imp.name])
                 continue
+            if from_gpu and imp.name != PRELUDE and registry.find(imp.name) is None:
+                raise gpu_uses_src(pkg, imp, "import", None)
             if imp.name == PRELUDE:
                 # The prelude is loaded already; an explicit import of it names
                 # the very file it was loaded from, so the two are one module
@@ -718,11 +798,31 @@ def resolve_imports(pkg: Package, tree: Module, registry: Registry) -> Unit:
             deps.setdefault(found.name, found)
             mine[imp.name] = found
     check_module_loops(pkg, tree, registry)
-    # Only a package marked for the GPU has its kernels built, so only its
-    # source is read past the headers
-    kernels = pkg.gpu and any(holds_kernel(file) for module, _ in tree.walk()
-                              for file in module.files)
-    return Unit(pkg, tree, deps, lines, kernels)
+    # Only what is compiled for the GPU has its kernels built, so only its
+    # source is read past the headers: a marked package's, or its gpu/ folder's
+    kernels = any(holds_kernel(file) for module, _ in tree.walk()
+                  if pkg.gpu or module.gpu for file in module.files)
+    gpu_deps = None
+    if any(module.gpu for module, _ in tree.walk()):
+        gpu_deps = {}
+        for module, _ in tree.walk():
+            if module.gpu:
+                for dep in lines[id(module)].values():
+                    if dep.name != PRELUDE:
+                        gpu_deps.setdefault(dep.name, dep)
+    return Unit(pkg, tree, deps, lines, kernels, gpu_deps)
+
+
+def gpu_uses_src(pkg: Package, imp: Import, verb: str, sister: Module | None) -> CongoError:
+    """The refusal of a gpu/ module's import or extends of src/: a sister
+    there, or a name of the root module, whose designated file is in src/."""
+    what = (f"{sister.name} is a module of {pkg.name}'s src/ ({shown(sister.files[0])})"
+            if sister is not None else
+            f"{imp.name} is no package, so it would be a name of {pkg.name}'s root module,"
+            f" in src/")
+    return CongoError(f"{imp.where()}: {verb} {imp.name}: {what}, and gpu/ may not use src/:"
+                      f" gpu/ is compiled for the GPU without src/. Move what both need into"
+                      f" gpu/, which src/ may use")
 
 
 def check_module_loops(pkg: Package, tree: Module, registry: Registry) -> None:
@@ -786,8 +886,12 @@ def check_module_loops(pkg: Package, tree: Module, registry: Registry) -> None:
     visit(tree)
 
 
-def first_import(unit: Unit, name: str) -> Import:
+def first_import(unit: Unit, name: str, gpu_only: bool = False) -> Import:
+    """The first import of name in the package, in walk order; of its gpu/
+    folder only, where asked."""
     for module, _ in unit.tree.walk():
+        if gpu_only and not module.gpu:
+            continue
         for imp in module.imports:
             if imp.name == name:
                 return imp
@@ -1331,15 +1435,20 @@ def run_conec(command: list[str], env: dict[str, str]) -> bool:
 
 def check_gpu_marks(unit: Unit, units: dict[str, Unit]) -> None:
     """Refuse every package unit imports, at any depth, that is not marked for
-    the GPU, naming the imports that pulled each one in. The prelude, which
-    no package imports, is not asked; what it holds that a GPU lacks is the
-    compiler's to refuse where it is used."""
+    the GPU, naming the imports that pulled each one in: every package a
+    marked package imports, or, for a package with a gpu/ folder, every one
+    that folder imports. The prelude, which no package imports, is not asked;
+    what it holds that a GPU lacks is the compiler's to refuse where it is
+    used."""
     unmarked: dict[str, str] = {}
     seen: set[str] = set()
+    folder = unit.gpu_deps is not None and not unit.pkg.gpu
 
     def visit(here: Unit, chain: list[str]) -> None:
-        for name, dep in here.deps.items():
-            step = f"{here.pkg.name} imports {name} at {first_import(here, name).where()}"
+        start = here is unit and folder
+        for name, dep in (here.gpu_deps if start else here.deps).items():
+            step = (f"{here.pkg.name} imports {name} at"
+                    f" {first_import(here, name, gpu_only=start).where()}")
             if not dep.gpu:
                 unmarked.setdefault(name, "; ".join([*chain, step]))
             elif name not in seen:
@@ -1349,7 +1458,8 @@ def check_gpu_marks(unit: Unit, units: dict[str, Unit]) -> None:
     visit(unit, [])
     if unmarked:
         listed = "\n".join(f"    {name}: {chain}" for name, chain in unmarked.items())
-        raise CongoError(f"{unit.pkg.name} is compiled for the GPU, and so is every package it"
+        what = f"{unit.pkg.name}'s gpu/ folder" if folder else unit.pkg.name
+        raise CongoError(f"{what} is compiled for the GPU, and so is every package it"
                          f" imports, each of which must be marked for the GPU with targets ="
                          f" [\"native\", \"gpu\"] in its congo.toml; these are not:\n{listed}")
 
@@ -1366,20 +1476,22 @@ def found_on_search_path(name: str, folders: list[Path]) -> Path | None:
     return None
 
 
-def gpu_search_folders(unit: Unit, packages: list[Package], core: Package) -> list[Path]:
-    """The folders a GPU build hands conec's --path: the folder each package
-    of the build is in, the package's own first, but the packages folder
-    (core's), which conec searches last anyway. Checked: conec must find each
-    package where Congo found it, which needs each in a folder named for it,
-    and none hidden by another of its name earlier on the path."""
+def gpu_search_folders(unit: Unit, packages: list[Package], core: Package,
+                       lead: list[Path]) -> list[Path]:
+    """The folders a GPU build hands conec's --path: 'lead' first (a gpu/
+    folder, whose modules the build imports by name), then the folder each
+    package it compiles is in, but the packages folder (core's), which conec
+    searches last anyway. Checked: conec must find each package where Congo
+    found it, which needs each in a folder named for it, and none hidden by
+    another of its name earlier on the path (a gpu/ module among them)."""
     packages_folder = core.root.parent
-    folders: list[Path] = []
-    for pkg in [unit.pkg, *packages]:
+    folders: list[Path] = list(lead)
+    for pkg in packages:
         folder = pkg.root.parent
         if folder != packages_folder and folder not in folders:
             folders.append(folder)
     searched = [*folders, packages_folder]
-    for pkg in [unit.pkg, *packages]:
+    for pkg in packages:
         found = found_on_search_path(pkg.name, searched)
         if found is None or os.path.normcase(found.resolve()) != os.path.normcase(pkg.src.resolve()):
             there = f"finds {found}" if found is not None else f"finds no {pkg.name}"
@@ -1402,26 +1514,92 @@ import {name};
 """
 
 
+GPU_FOLDER_MODULE = """\
+// The GPU build of {name}'s gpu/ folder, written by Congo for conec; rewritten
+// on every build. Its compute entry points are the kernels of {name}{ext}. Each
+// module of gpu/ is imported, after the modules of gpu/ it imports, and found
+// on the package search path, which gpu/ leads.
+
+mod {module};
+{imports}"""
+
+
+def gpu_closure(unit: Unit, units: dict[str, Unit], core: Package) -> list[Package]:
+    """What a gpu/ folder's GPU build compiles from source: the packages the
+    folder imports and everything they import, each after what it imports,
+    the prelude first, after what it imports itself (libc)."""
+    seen: dict[str, Package] = {}
+
+    def visit(pkg: Package) -> None:
+        for name, dep in units[pkg.name].deps.items():
+            if name not in seen:
+                visit(dep)
+                seen[name] = dep
+
+    visit(core)
+    seen[PRELUDE] = core
+    for name, dep in (unit.gpu_deps or {}).items():
+        if name not in seen:
+            visit(dep)
+            seen[name] = dep
+    return list(seen.values())
+
+
+def gpu_module_order(tree: Module) -> list[Module]:
+    """The modules of gpu/, the root's submodules drawn from it, each after
+    those of them it extends or imports: the order the GPU build imports them
+    in, so that each is compiled into the module, not only declared (an
+    import conec meets first beside its importer's file is declared alone)."""
+    mine = {m.name: m for m in tree.children if m.gpu}
+    order: list[Module] = []
+    done: set[str] = set()
+
+    def visit(module: Module) -> None:
+        done.add(module.name)
+        needs = [module.extends] if module.extends is not None else []
+        for imp in [*needs, *module.imports]:
+            if imp.name in mine and imp.name not in done:
+                visit(mine[imp.name])
+        order.append(module)
+
+    for module in mine.values():
+        if module.name not in done:
+            visit(module)
+    return order
+
+
 def compile_gpu(conec: Path, unit: Unit, units: dict[str, Unit], core: Package, out: Path,
                 mode: str, env: dict[str, str]) -> Path:
-    """Compile a marked package's kernels into out/<name>.spv: a direct conec
-    compile, for SPIR-V's Vulkan form, of a module that imports the package,
-    in out/gpu/<name>/, so that the package and everything it imports are
-    found on the package search path and compiled from their source."""
+    """Compile a package's kernels into out/<name>.spv: a direct conec compile,
+    for SPIR-V's Vulkan form, in out/gpu/<name>/, of a module written here,
+    so that what it imports is found on the package search path and compiled
+    from its source. For a marked package, the module imports the package;
+    for a package with a gpu/ folder, it imports each module of gpu/ by name,
+    gpu/ leading the search path, and src/ is never compiled for the GPU."""
     pkg = unit.pkg
-    packages = closure(unit, units, core)
-    folders = gpu_search_folders(unit, packages, core)
+    module = f"{pkg.name}_gpu"
+    if unit.gpu_deps is not None:
+        packages = gpu_closure(unit, units, core)
+        gpu_folder = pkg.root / GPU_FOLDER
+        folders = gpu_search_folders(unit, packages, core, [gpu_folder])
+        imports = "".join(f"\nimport {m.name};" for m in gpu_module_order(unit.tree))
+        text = GPU_FOLDER_MODULE.format(name=pkg.name, module=module, ext=SPV_EXT,
+                                        imports=imports + "\n" if imports else "")
+        shown_root = gpu_folder
+    else:
+        packages = closure(unit, units, core)
+        folders = gpu_search_folders(unit, [unit.pkg, *packages], core, [])
+        text = GPU_MODULE.format(name=pkg.name, module=module, ext=SPV_EXT)
+        shown_root = pkg.root
     work = out / "gpu" / pkg.name
     work.mkdir(parents=True, exist_ok=True)
-    module = f"{pkg.name}_gpu"
     source = work / f"{module}.cone"
-    source.write_text(GPU_MODULE.format(name=pkg.name, module=module, ext=SPV_EXT),
-                      encoding="utf-8")
+    source.write_text(text, encoding="utf-8")
     spv = out / f"{pkg.name}{SPV_EXT}"
     spv.unlink(missing_ok=True)
     written = work / f"{module}{SPV_EXT}"
     written.unlink(missing_ok=True)
-    say("Compiling", f"{pkg.label()} for the GPU ({pkg.root})")
+    say("Compiling", f"{pkg.label()} for the GPU ({shown_root})")
     command = [str(conec), f"--triple={GPU_TRIPLE}"]
     if mode == "debug":
         command.append("--debug")
@@ -1515,7 +1693,8 @@ class Session:
         # Before anything is compiled: a package compiled for the GPU, and a
         # marked package being built, import only packages marked for it
         for unit in order:
-            if ((unit.kernels or (unit.pkg is top and unit.pkg.gpu))
+            if ((unit.kernels or (unit.pkg is top and (unit.pkg.gpu
+                                                        or unit.gpu_deps is not None)))
                     and unit.pkg.name not in self.gpu_checked):
                 check_gpu_marks(unit, by_name)
                 self.gpu_checked.add(unit.pkg.name)

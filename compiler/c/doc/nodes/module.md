@@ -953,8 +953,13 @@ kernels as a direct compile, for SPIR-V's Vulkan form, of a one-line module
 importing the package, with `--path` naming the folders its packages are in:
 the package and every package it imports are found on the search path and
 compiled into the kernel's module from source (`tools/congo/README.md`,
-"Kernels for the GPU"). A described build that could name a package's source
-in place of its include file would retire that.
+"Kernels for the GPU"). A package's `gpu/` folder is built the same way: the
+module imports each of the folder's modules by name, with the folder first on
+`--path`, so that `fileFindPackage` finds each there and it generates. It
+imports them each after those of them it imports, because a sister that one
+of them imports and that is not loaded yet is met first beside its importer's
+file, by `fileFindLocal`, and is then only declared. A described build that
+could name a package's source in place of its include file would retire that.
 
 That asymmetry is the whole of the separate-compilation gap, and both sides of
 it are visible in emitted IR:

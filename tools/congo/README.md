@@ -55,6 +55,7 @@ hello/
     congo.toml          the manifest
     src/hello.cone      the root module's designated file, named for the package
     src/...             the root module's other files, and its submodules
+    gpu/                optional: modules that run on the GPU too (below, "A package's gpu/ folder")
     tests/              the package's tests, one program each (congo test runs them)
     examples/           programs showing the package's API, each a lone file
     build/debug/        what a build writes; build/release/ for --release
@@ -106,7 +107,7 @@ output = "executable"
 | `name` | the package's name, a Cone name; the root is `src/<name>.cone` |
 | `version` | `MAJOR.MINOR.PATCH`. Recorded and checked for form; never compared yet |
 | `output` | `"executable"` or `"library"`: what the package builds into |
-| `targets` | what the package may be compiled for: `"native"`, the machine Congo runs on, and `"gpu"`. `["native", "gpu"]` marks a library for the GPU (below, "Kernels for the GPU"). Optional: `["native"]` where it is not written |
+| `targets` | what the package may be compiled for: `"native"`, the machine Congo runs on, and `"gpu"`. `["native", "gpu"]` marks a library for the GPU, all of it (below, "Kernels for the GPU"); a package with GPU code beside the rest puts it in its `gpu/` folder instead, and names no target for it. Optional: `["native"]` where it is not written |
 
 A package that needs C libraries linked adds a `[link]` table (below, "C
 packages"):
@@ -409,8 +410,10 @@ targets = ["native", "gpu"]
 
 The spelling is a placeholder. `targets` must name `"native"` (a package for
 the GPU alone is not built yet), and only a library may name `"gpu"`: a
-program has a `main`, which a GPU does not run, so a program's kernels go in a
-library it imports.
+program has a `main`, which a GPU does not run, so a program's kernels go in
+its `gpu/` folder (below), or in a library it imports. Marking suits a library
+that is GPU-safe throughout (`noise`, `geomath`, `sdf`, `libc`); a package
+whose GPU code sits beside code that is not uses a `gpu/` folder instead.
 
 **A marked package's kernels are its compute entry points**, written in its
 `src/` like any function (`fn @compute(64) shade(inv Invocation, ...)`; the
@@ -504,6 +507,106 @@ Vulkan SDK's `spirv-val --target-env vulkan1.3`, and counts that as a test:
 `kernels gpusample.spv ... valid`, or `FAILED` with what `spirv-val` said.
 Where `spirv-val` is not on `PATH` the kernels are only built, and the line
 says so; that is never a failure. A name filter (`congo test vec`) skips it.
+
+### A package's gpu/ folder
+
+**A package's GPU half goes in a `gpu/` folder beside `src/`** [Jon 3 Oct
+2026]. A part of a 3-D world is often both: code that runs on the CPU and
+calls into the GPU, and the kernels it dispatches. The CPU half is `src/`, as
+always. The GPU half is `gpu/`, and **being in the folder is what marks it**:
+no manifest key, and no marker on any function. Congo checks everything in
+`gpu/` against the GPU's rules, compiles it into the package for the CPU, so
+that `src/` calls the same functions and both halves share one declaration of
+each buffer's struct, and compiles it for the GPU, without `src/`, into the
+package's one `.spv`. A program can have one as well as a library: its `main`
+stays in `src/`, which never reaches the GPU build.
+
+```
+gpupart/
+    congo.toml              output = "executable"; no targets
+    src/gpupart.cone        the root: mod gpupart; its imports; 'use pattern Settings, Cell;'
+    src/main.cone           main: calls pattern.cell on the CPU, dispatches 'fill' on the GPU
+    gpu/pattern.cone        mod pattern; import noise ...; cell, and fn @compute(64) fill
+```
+
+```
+> congo run
+   ...
+   Compiling gpupart v0.1.0 (C:\src\cone\packages\gpupart)
+   Compiling gpupart v0.1.0 for the GPU (C:\src\cone\packages\gpupart\gpu)
+     Linking build\debug\gpupart.exe
+```
+
+**`gpu/` holds submodules of the package's root**, laid out as they would be
+in `src/`: a file opening with its own `mod` line is a module of one file
+(`gpu/pattern.cone`, the module `pattern`), and a subfolder holding its
+designated file is a module folder (`gpu/mesher/mesher.cone` and the files
+beside it), under the usual rules inside. `src/` names them as it names any
+submodule (the reference manual's *Modules* page): by path, `pattern.cell(i,
+s)`, or folded, `use pattern Settings, Cell;`, and a library re-exports them
+to its importers with `pub use`. A module of `src/` may import one of `gpu/`'s,
+its sister, by name. So nothing new is written to reach `gpu/`, and the
+package's root file is still the one place the root's imports are written.
+
+The rules, each checked before anything is compiled:
+
+- **A file directly in `gpu/` opens with its own `mod` line, and a folder
+  there holds its designated file.** A file with none would join no module,
+  and a folder with none would organise nothing; each is refused, naming it.
+  A module of `gpu/` named as one of `src/`'s is refused too.
+- **`gpu/` may not use `src/`**: a module of `gpu/` that imports or extends a
+  module of `src/`, or imports a name of the root, is refused, since `gpu/` is
+  compiled for the GPU without `src/`. Its modules import one another as
+  sisters, and `src/` may use all of them.
+
+  ```
+  congo: error: gpu\kern.cone:3: import helpers: helpers is a module of lib's src/
+  (src\helpers.cone), and gpu/ may not use src/: gpu/ is compiled for the GPU without
+  src/. Move what both need into gpu/, which src/ may use
+  ```
+
+- **Every package `gpu/` imports must be marked for the GPU**, at any depth,
+  as every package a marked package imports must be (above). So I/O, threads,
+  actors, locks and collections, whose packages are not marked, are refused
+  where `gpu/` imports them, while `src/` imports what it likes:
+
+  ```
+  congo: error: lib's gpu/ folder is compiled for the GPU, and so is every package it
+  imports, each of which must be marked for the GPU with targets = ["native", "gpu"] in
+  its congo.toml; these are not:
+      stdio: lib imports stdio at gpu\kern.cone:4
+  ```
+
+- **What a GPU cannot do inside `gpu/` is the compiler's to refuse**, as it is
+  inside a marked package: everything in `gpu/` is compiled for the GPU,
+  called by a kernel or not (a function calling itself, say, is `conec`'s
+  error 1256).
+- **A package marked for the GPU has no `gpu/` folder**: all of it is compiled
+  for the GPU already, so the folder is refused there.
+
+**The kernels are the compute entry points of `gpu/`**, all of them in one
+`build/<mode>/<name>.spv`, copied beside every program of the build as a
+marked package's is (above), and validated by `congo test` the same way. A
+`gpu/` folder with no entry point builds no `.spv`; its imports are checked
+all the same when the package is the one being built.
+
+**How the GPU build finds `gpu/`.** It is the marked package's build (above)
+with `gpu/` in place of the package: Congo writes
+`build/<mode>/gpu/<name>/<name>_gpu.cone`, a module that imports each module
+of `gpu/` by its name, each after those of them it imports, and compiles it
+for the GPU with `gpu/` first on `--path`, so that `conec` finds each module
+there and compiles it from source, with the marked packages they import. (The
+order matters: a sister `conec` meets first beside its importer's file, rather
+than on the search path, is declared and not compiled.) A module of `gpu/`
+named as a package that build compiles (`libc`, say) would hide it, and is
+refused with the folder-name message above.
+
+`packages/gpupart` is the sample, a program: `gpu/pattern.cone` hashes each
+cell's index with `noise`'s PCG and makes floats from the hash by additions
+and multiplications, and `main` runs its kernel `fill` on the GPU through
+`gpuwork` and the same `cell` function on the CPU, and compares every word:
+all 12,288 are identical. A test program cannot import a program, so
+`test_congo.py` runs it, where SDL3's `lib` folder is on `LIB`.
 
 ## Testing a package
 
@@ -630,7 +733,8 @@ beside the compiler's suite, `python test/run.py`, which tests the compiler.
 1. **Find the package**: the nearest `congo.toml` in this folder or one above
    it; or, for `congo run file.cone`, the lone file, a program of one module
    named by its `mod` line or else by the file.
-2. **Scan**: walk `src/`, read each file's header, and make the module tree.
+2. **Scan**: walk `src/`, and `gpu/` where there is one, read each file's
+   header, and make the module tree.
    Each module's name comes from a name Congo can read without parsing: the
    manifest's for the root, a one-file module's file, a module folder, and a
    lone file's `mod` line, or else the file. Each must be a Cone name that is
@@ -655,8 +759,9 @@ beside the compiler's suite, `python test/run.py`, which tests the compiler.
    only what their own lines give them. The format is the compiler's:
    `compiler/c/doc/nodes/module.md`, "A described build".
 5. **Compile the kernels** of each package marked for the GPU whose source
-   holds compute entry points, into `build/<mode>/<name>.spv`, once its
-   imports are known to be marked (above, "Kernels for the GPU").
+   holds compute entry points, and of each package whose `gpu/` folder holds
+   them, into `build/<mode>/<name>.spv`, once its imports are known to be
+   marked (above, "Kernels for the GPU" and "A package's gpu/ folder").
 6. **Link** the objects, the program's first, with `conestd`, the C libraries
    the packages' `[link]` tables name, and the C runtime,
    into `build/<mode>/<name>.exe`, and copy beside it the DLLs their `[link]
@@ -738,7 +843,15 @@ and copied beside a lone file, a package's program, a test and an example;
 its validation by `spirv-val`, and the note where it is not on `PATH`;
 `fn @compute` in a comment or a string, or in a package not marked, building
 nothing; an import not marked refused with its chain, before any compile; and
-a package in a folder not named for it refused).
+a package in a folder not named for it refused), and the `gpu/` folder (a
+library's and a program's, a module of one file and a module folder, one
+importing the other, a module of `src/` importing one of `gpu/`; the
+description listing them, the GPU build's module importing them in order, the
+entry point read back, and the `.spv` beside an importer; `gpu/` refused its
+use of `src/` three ways, an unmarked import, a function calling itself, and
+the layout's refusals; no `.spv` without an entry point; and, where SDL3's
+`lib` folder is on `LIB`, `packages/gpupart` run on the GPU, every word
+identical).
 Each program is compiled against the include files its packages' compiles
 generated. The test suite (`test/run.py`) does not run Congo, and does not run
 the packages' tests: `congo test` in `packages/` does.
@@ -772,8 +885,8 @@ program linked or a library's object, the build folder, the descriptions),
 `congo run` of the current package or a lone file, `congo test` (above, "Testing a
 package": the package built, each test built, run within its time and
 compared with its `.out`, `.exit` and `.err`, `--bless`, the name filter, the
-examples built, a folder of packages), a marked package's kernels (above,
-"Kernels for the GPU"), and `congo clean` of either, matching
+examples built, a folder of packages), a marked package's kernels and a
+`gpu/` folder's (above, "Kernels for the GPU"), and `congo clean` of either, matching
 `congo.py` message for message, file for file and exit status for exit status
 — the current package's manifest found by walking up and checked as
 `congo.py` checks it, the header scan, the package's folder module tree and its
@@ -849,7 +962,9 @@ Where it differs from `congo.py`:
   has kernels too, since each is compiled into it from source); the GPU build
   described to `conec` like every other compile, rather than found on its
   search path; and another GPU target than Vulkan 1.3's SPIR-V (WebGPU's
-  WGSL).
+  WGSL). Of the `gpu/` folder: one package's `gpu/` using another's (a
+  part's kernel over a mesher in `sdfmesh/gpu/`, say). Only a marked package
+  can be imported into GPU code today, and a marked package has no `gpu/`.
 - A static library file (`.lib`/`.a`) for a library package; it builds an object.
 - An internet registry, downloads, a lockfile and version selection.
 - Incremental builds: Congo rebuilds everything, every time.

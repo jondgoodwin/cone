@@ -20,13 +20,14 @@ struct Module {
   pub hasExtends Bool;
   pub extended Import;      // from the 'mod' line of its first file
   pub lines List[Line];    // what resolving its imports found, in import order
+  pub gpu Bool;            // in the package's gpu/ folder, at any depth: compiled for the GPU too
 }
 
 fn newModule(name &[]u8, file &[]u8, hasParent Bool, parent usize) Module {
   mut files = List[String].empty();
   files.push(String.from(file));
   new Module(String.from(name), files, List[usize].empty(), hasParent, parent,
-    List[Import].empty(), false, noImport(), List[Line].empty());
+    List[Import].empty(), false, noImport(), List[Line].empty(), false);
 }
 
 // A file's imports join its module's, each once
@@ -246,7 +247,122 @@ fn scanPackage(pkg &Package) Result[List[Module], String] {
     case is Ok {}
     case imm e Error { return Error[List[Module], String][e.value.copy()]; }
   }
+  imm gpuFolder = joined(pkg.root.view(), "gpu");
+  if fs.isDir(gpuFolder.view()) {
+    match scanGpuFolder(pkg, &mut mods, gpuFolder.view()) {
+      case is Ok {}
+      case imm e Error { return Error[List[Module], String][e.value.copy()]; }
+    }
+  }
   Ok[List[Module], String][mods];
+}
+
+// A package's gpu/ folder, beside src/ [Jon 3 Oct 2026]: Cone source that
+// runs on the GPU, the folder itself the marking. It holds submodules of the
+// package's root module, each laid out as it would be in src/: a file
+// opening with its own 'mod' line is a module of one file, named for the
+// file, and a subfolder holding its designated file is a module folder,
+// scanned by the usual rules. src/ reaches them as it reaches any submodule,
+// by name; they are compiled for the CPU as part of the package, and for the
+// GPU, without src/, into the package's one .spv. A file with no 'mod' line
+// would join no module there, and a folder with no designated file would
+// organise nothing, so each is refused.
+fn scanGpuFolder(pkg &Package, mods &mut List[Module], folder &[]u8) Result[void, String] {
+  if pkg.gpu {
+    return Error[void, String][cat(folder, ": ", pkg.name.view(),
+      " is marked for the GPU (targets = [\"native\", \"gpu\"]), so all of it is compiled for the GPU already; a gpu/ folder is for a package that is not: move gpu/'s modules into src/, or take \"gpu\" out of targets")];
+  }
+  mut inSrc = List[usize].empty();
+  mut i = 0usize;
+  while i < mods[0usize].children.len() {
+    inSrc.push(*mods[0usize].children[i]);
+    i = i + 1usize;
+  }
+  mut found = List[usize].empty();
+  imm listing = coneFiles(folder);
+  i = 0usize;
+  while i < listing.files.len() {
+    imm file = listing.files[i].view();
+    mut header = noHeader();
+    match scanHeader(file) {
+      case mut h Ok { header <=> h.value; }
+      case imm e Error { return Error[void, String][e.value.copy()]; }
+    }
+    if not header.hasMod {
+      return Error[void, String][cat(file, ": a file in gpu/ opens with its own 'mod' line, as a module of one file named for the file: gpu/ holds the package's GPU modules, and a file with no 'mod' line would join none")];
+    }
+    imm stem = path.stem(file);
+    imm fault = nameFault(stem.view());
+    if not fault.isEmpty() {
+      return Error[void, String][cat(file, ": a one-file module is named by its file: '", stem.view(), "' ", fault.view(),
+        "; rename the file and its 'mod' line")];
+    }
+    imm child = mods.len();
+    mods.push(newModule(stem.view(), file, true, 0usize));
+    addImports(&mut mods[child], &header);
+    found.push(child);
+    i = i + 1usize;
+  }
+  i = 0usize;
+  while i < listing.folders.len() {
+    imm sub = listing.folders[i].view();
+    imm subName = path.name(sub);
+    imm innerName = cat(subName.view(), ".cone");
+    imm inner = joined(sub, innerName.view());
+    if not fs.isFile(inner.view()) {
+      return Error[void, String][cat(sub, ": a folder in gpu/ is a module folder, holding its designated file, ", innerName.view(),
+        ": gpu/ holds the package's GPU modules, and a folder with none would be part of no module")];
+    }
+    imm fault = nameFault(subName.view());
+    if not fault.isEmpty() {
+      return Error[void, String][cat(inner.view(), ": a module folder names its module: '", subName.view(), "' ", fault.view(),
+        "; rename the folder, its designated file and its 'mod' line")];
+    }
+    match scanFolderModule(mods, subName.view(), sub, inner.view(), true, 0usize) {
+      case imm k Ok { found.push(k.value); }
+      case imm e Error { return Error[void, String][e.value.copy()]; }
+    }
+    i = i + 1usize;
+  }
+  mut kids = List[usize].empty();
+  i = 0usize;
+  while i < inSrc.len() {
+    kids.push(*inSrc[i]);
+    i = i + 1usize;
+  }
+  i = 0usize;
+  while i < found.len() {
+    imm m = *found[i];
+    mut j = 0usize;
+    while j < inSrc.len() {
+      imm clash = *inSrc[j];
+      if mods[clash].name.equals(mods[m].name.view()) {
+        return Error[void, String][cat(mods[m].files[0usize].view(), ": ", pkg.name.view(), " has two submodules named '", mods[m].name.view(),
+          "', this one in gpu/ and ", mods[clash].files[0usize].view(), " in src/; rename one")];
+      }
+      j = j + 1usize;
+    }
+    imm subtree = walkSubtree(mods, m);
+    j = 0usize;
+    while j < subtree.len() {
+      imm here = &mut mods[*subtree[j]];
+      here.gpu = true;
+      j = j + 1usize;
+    }
+    kids.push(m);
+    i = i + 1usize;
+  }
+  imm root = &mut mods[0usize];
+  root.children = List[usize].empty();
+  setChildren(mods, 0usize, &kids);
+  succeeded();
+}
+
+// Module m and every module inside it
+fn walkSubtree(mods &List[Module], m usize) List[usize] {
+  mut out = List[usize].empty();
+  walkFrom(mods, m, &mut out);
+  out;
 }
 
 // The modules in walk order: each module, then each of its children's walks

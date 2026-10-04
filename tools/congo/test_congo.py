@@ -1714,7 +1714,7 @@ class GpuKernels(unittest.TestCase):
         write(pkg / "congo.toml", '[package]\nname = "lib1"\nversion = "0.1.0"\n'
                                   'output = "executable"\ntargets = ["native", "gpu"]\n')
         self.assertIn('[package] targets names "gpu", and an executable is not built for the'
-                      ' GPU: put its kernels in a library package it imports',
+                      ' GPU: put its kernels in its gpu/ folder, or in a library package it imports',
                       self.congo("build", cwd=pkg, ok=False).stderr)
         # ["native"] is what a manifest without the key says: no GPU build
         write(pkg / "congo.toml", head + 'targets = ["native"]\n')
@@ -1864,6 +1864,322 @@ class GpuKernels(unittest.TestCase):
                       f" {congo.REPO_PACKAGES}): there it finds no kern, not"
                       f" {kern / 'src' / 'kern.cone'}; it looks for a package in a folder"
                       f" named for it, and kern is in {kern}", run.stderr)
+
+
+def sdl3_on_lib() -> bool:
+    """Whether SDL3's import library is in a folder LIB lists, as a program
+    over gpu needs to link (and its DLL, beside it, to run)."""
+    return any((Path(folder) / "SDL3.lib").is_file()
+               for folder in os.environ.get("LIB", "").split(os.pathsep) if folder)
+
+
+class GpuFolder(unittest.TestCase):
+    """A package's gpu/ folder, beside src/ [Jon 3 Oct 2026]: its modules,
+    submodules of the package's root, compiled for the CPU as part of the
+    package, and for the GPU without src/ into the package's one .spv; the
+    folder checked against the GPU's rules as a marked package is, and gpu/
+    refused any use of src/."""
+
+    setUp = Scenarios.setUp
+    tearDown = Scenarios.tearDown
+    congo = Scenarios.congo
+    program_output = Scenarios.program_output
+    registry = Scenarios.registry
+
+    # A module folder of gpu/: maths, with a file joining it
+    MATHS = """
+        mod maths;
+
+        import geomath use *;
+
+        pub fn half(x f32) f32 {
+          x * 0.5;
+        }
+        """
+    MATHS_MORE = """
+        pub fn len(p Vec3) f32 {
+          p.length();
+        }
+        """
+    # A module of one file in gpu/, importing its sister there, maths
+    KERN = """
+        mod kern;
+
+        import geomath use Vec3;
+        import maths;
+
+        // A kernel: one invocation for each point
+        pub fn @compute(64) scale(inv Invocation, points &[]Vec3, out &[]mut f32) {
+          imm i = usize.from(inv.globalId[0usize]);
+          if i < out.len and i < points.len {
+            out[i] = maths.half(maths.len(points[i]));
+          }
+        }
+        """
+
+    def package(self, folder: Path, name: str, source: str, output: str = "library",
+                targets: str = "") -> Path:
+        write(folder / "congo.toml", f'[package]\nname = "{name}"\nversion = "0.1.0"\n'
+                                     f'output = "{output}"\n{targets}')
+        write(folder / "src" / f"{name}.cone", source)
+        return folder
+
+    def gpu_modules(self, pkg: Path) -> None:
+        write(pkg / "gpu" / "maths" / "maths.cone", self.MATHS)
+        write(pkg / "gpu" / "maths" / "more.cone", self.MATHS_MORE)
+        write(pkg / "gpu" / "kern.cone", self.KERN)
+
+    def test_a_library_with_a_gpu_folder(self):
+        pkgs = self.root / "pkgs"
+        self.registry(pkgs)
+        shapes = self.package(pkgs / "shapes", "shapes", """
+            mod shapes;
+
+            // gpu/'s modules are the root's submodules: reached by name, folded
+            // by use, re-exported by pub use
+            pub use maths half;
+
+            pub fn quarter(x f32) f32 {
+              maths.half(user.halved(x));
+            }
+            """)
+        # A module of src/ may import one of gpu/, its sister
+        write(shapes / "src" / "user.cone", """
+            mod user;
+
+            import maths;
+
+            pub fn halved(x f32) f32 {
+              maths.half(x);
+            }
+            """)
+        self.gpu_modules(shapes)
+        run = self.congo("build", cwd=shapes)
+        self.assertIn(f"Compiling shapes v0.1.0 for the GPU ({shapes / 'gpu'})", run.stdout)
+        out = shapes / "build" / "debug"
+        self.assertIn(f"Finished debug library object {Path('build/debug/shapes.obj')} and"
+                      f" kernels {Path('build/debug/shapes.spv')}", run.stdout)
+        self.assertEqual(entry_points(out / "shapes.spv"), ["scale"])
+        # For the CPU, gpu/'s modules are in the package's one description,
+        # beside src/'s
+        desc = (out / "shapes.conebuild").read_text()
+        self.assertRegex(desc, r'\n    kern: \{\n        ".*/shapes/gpu/kern\.cone"\n')
+        self.assertRegex(desc, r'\n    maths: \{\n        ".*/shapes/gpu/maths/maths\.cone"\n'
+                               r'        ".*/shapes/gpu/maths/more\.cone"\n'
+                               r'        import geomath: ')
+        self.assertRegex(desc, r'\n    user: \{\n        ".*/shapes/src/user\.cone"\n')
+        # For the GPU, a module importing each of gpu/'s, maths before kern,
+        # which imports it, found where gpu/ leads the search path
+        module = (out / "gpu" / "shapes" / "shapes_gpu.cone").read_text()
+        self.assertIn("// The GPU build of shapes's gpu/ folder, written by Congo for conec;"
+                      " rewritten\n", module)
+        self.assertTrue(module.endswith("\nmod shapes_gpu;\n\nimport maths;\nimport kern;\n"),
+                        module)
+        self.congo("build", "--release", cwd=shapes)
+        self.assertEqual(entry_points(shapes / "build" / "release" / "shapes.spv"), ["scale"])
+
+        # A program that imports it calls gpu/'s functions through src/, and
+        # gets shapes.spv beside it
+        write(self.root / "app.cone", """
+            mod app;
+
+            import stdio;
+            import shapes;
+
+            fn main() i32 {
+              if shapes.quarter(8.) == 2. and shapes.half(8.) == 4. {
+                stdio.print <- "a quarter of 8 is 2\\n";
+              }
+              0i32;
+            }
+            """)
+        run = self.congo("run", "app.cone", cwd=self.root)
+        self.assertEqual(self.program_output(run), "a quarter of 8 is 2\n")
+        lone = next((self.root / "home" / "lone").glob("app-*")) / "debug"
+        self.assertEqual(entry_points(lone / "shapes.spv"), ["scale"])
+
+    def test_a_program_with_a_gpu_folder(self):
+        # A program needs no targets to have a gpu/ folder, and its main never
+        # reaches the GPU build: only gpu/ is compiled for the GPU
+        self.congo("new", "app", cwd=self.root)
+        app = self.root / "app"
+        write(app / "src" / "app.cone", """
+            mod app;
+
+            import stdio;
+
+            fn main() i32 {
+              if maths.half(8.) == 4. {
+                stdio.print <- "half of 8 is 4\\n";
+              }
+              0i32;
+            }
+            """)
+        self.gpu_modules(app)
+        run = self.congo("run", cwd=app)
+        self.assertIn(f"Compiling app v0.1.0 for the GPU ({app / 'gpu'})", run.stdout)
+        self.assertEqual(self.program_output(run), "half of 8 is 4\n")
+        self.assertEqual(entry_points(app / "build" / "debug" / "app.spv"), ["scale"])
+        self.assertNotIn("import app;", (app / "build" / "debug" / "gpu" / "app" /
+                                         "app_gpu.cone").read_text())
+        # congo test validates its kernels, as a library's
+        run = self.congo("test", cwd=app)
+        self.assertIn("     kernels app.spv ... ", run.stdout)
+
+    def test_gpu_may_not_use_src(self):
+        pkgs = self.root / "pkgs"
+        self.registry(pkgs)
+        lib = self.package(pkgs / "lib", "lib", """
+            mod lib;
+
+            pub fn answer() i32 {
+              42i32;
+            }
+            """)
+        write(lib / "src" / "helpers.cone", "mod helpers;\n\npub fn one() i32 {\n  1i32;\n}\n")
+        tail = (", and gpu/ may not use src/: gpu/ is compiled for the GPU without src/. Move"
+                " what both need into gpu/, which src/ may use")
+        kern = Path("gpu") / "kern.cone"
+        helpers = Path("src") / "helpers.cone"
+        for source, said in (
+                ("mod kern;\n\nimport helpers;\n",
+                 f"{kern}:3: import helpers: helpers is a module of lib's src/ ({helpers})"),
+                ("mod kern;\n\nimport answer;\n",
+                 f"{kern}:3: import answer: answer is no package, so it would be a name of"
+                 f" lib's root module, in src/"),
+                ("mod kern extends helpers;\n",
+                 f"{kern}:1: extends helpers: helpers is a module of lib's src/ ({helpers})")):
+            write(lib / "gpu" / "kern.cone", source)
+            run = self.congo("build", cwd=lib, ok=False)
+            self.assertEqual(run.returncode, 1)
+            self.assertIn(f"congo: error: {said}{tail}\n", run.stderr)
+            self.assertNotIn("Compiling", run.stdout)
+
+    def test_what_gpu_may_not_hold_is_refused(self):
+        pkgs = self.root / "pkgs"
+        self.registry(pkgs)
+        # src/ may print; gpu/ may not, since stdio is not marked for the GPU
+        lib = self.package(pkgs / "lib", "lib", "mod lib;\n\nimport stdio;\n")
+        write(lib / "gpu" / "kern.cone", """
+            mod kern;
+
+            import geomath;
+            import stdio;
+
+            pub fn @compute(64) fill(inv Invocation, out &[]mut f32) {
+              imm i = usize.from(inv.globalId[0usize]);
+              if i < out.len {
+                out[i] = 1.;
+              }
+            }
+            """)
+        run = self.congo("build", cwd=lib, ok=False)
+        self.assertIn(
+            "congo: error: lib's gpu/ folder is compiled for the GPU, and so is every package it"
+            " imports, each of which must be marked for the GPU with targets = [\"native\","
+            " \"gpu\"] in its congo.toml; these are not:\n"
+            f"    stdio: lib imports stdio at {Path('gpu') / 'kern.cone'}:4\n", run.stderr)
+        self.assertNotIn("Compiling", run.stdout)
+        # What a GPU cannot do is the compiler's to refuse, anywhere in gpu/,
+        # called by a kernel or not: here a function calling itself
+        write(lib / "gpu" / "kern.cone", """
+            mod kern;
+
+            pub fn down(n u32) u32 {
+              if n == 0u32 {0u32;} else {down(n - 1u32);};
+            }
+
+            pub fn @compute(64) fill(inv Invocation, out &[]mut f32) {
+              imm i = usize.from(inv.globalId[0usize]);
+              if i < out.len {
+                out[i] = 1.;
+              }
+            }
+            """)
+        run = self.congo("build", cwd=lib, ok=False)
+        self.assertIn("Error 1256: On a GPU target a function may not call itself", run.stdout)
+        self.assertIn(f"congo: error: could not compile lib for the GPU"
+                      f" ({lib / 'build' / 'debug' / 'gpu' / 'lib' / 'lib_gpu.cone'})",
+                      run.stderr)
+
+    def test_a_gpu_folder_without_entry_points(self):
+        pkgs = self.root / "pkgs"
+        self.registry(pkgs)
+        lib = self.package(pkgs / "lib", "lib", "mod lib;\n\npub use maths half;\n")
+        write(lib / "gpu" / "maths" / "maths.cone", self.MATHS)
+        run = self.congo("build", cwd=lib)
+        self.assertNotIn("for the GPU", run.stdout)
+        self.assertFalse((lib / "build" / "debug" / "lib.spv").exists())
+        self.assertIn(f"Finished debug library object {Path('build/debug/lib.obj')}\n",
+                      run.stdout)
+        # Its imports are checked all the same
+        write(lib / "gpu" / "maths" / "maths.cone", "mod maths;\n\nimport stdio;\n")
+        run = self.congo("build", cwd=lib, ok=False)
+        self.assertIn("lib's gpu/ folder is compiled for the GPU", run.stderr)
+
+    def test_the_gpu_folder_is_laid_out_as_src_is(self):
+        pkgs = self.root / "pkgs"
+        self.registry(pkgs)
+        lib = self.package(pkgs / "lib", "lib", "mod lib;\n")
+        loose = lib / "gpu" / "loose.cone"
+        write(loose, "pub fn one() i32 {\n  1i32;\n}\n")
+        self.assertIn(f"congo: error: {loose}: a file in gpu/ opens with its own 'mod' line, as"
+                      f" a module of one file named for the file: gpu/ holds the package's GPU"
+                      f" modules, and a file with no 'mod' line would join none\n",
+                      self.congo("build", cwd=lib, ok=False).stderr)
+        loose.unlink()
+        bare = lib / "gpu" / "bare"
+        write(bare / "one.cone", "pub fn one() i32 {\n  1i32;\n}\n")
+        self.assertIn(f"congo: error: {bare}: a folder in gpu/ is a module folder, holding its"
+                      f" designated file, bare.cone: gpu/ holds the package's GPU modules, and"
+                      f" a folder with none would be part of no module\n",
+                      self.congo("build", cwd=lib, ok=False).stderr)
+        shutil.rmtree(bare)
+        write(lib / "src" / "twice.cone", "mod twice;\n")
+        write(lib / "gpu" / "twice.cone", "mod twice;\n")
+        self.assertIn(f"congo: error: {lib / 'gpu' / 'twice.cone'}: lib has two submodules"
+                      f" named 'twice', this one in gpu/ and {lib / 'src' / 'twice.cone'} in"
+                      f" src/; rename one\n", self.congo("build", cwd=lib, ok=False).stderr)
+        (lib / "src" / "twice.cone").unlink()
+        self.congo("build", cwd=lib)
+        # gpu/ leads the GPU build's search path, so a module of it may not
+        # take the name of a package that build compiles from source
+        write(lib / "gpu" / "libc.cone", "mod libc;\n")
+        write(lib / "gpu" / "kern.cone", "mod kern;\n\npub fn @compute(64) fill(inv Invocation,"
+                                         " out &[]mut f32) {\n}\n")
+        self.assertIn(f"congo: error: lib's GPU build compiles libc from its source, which conec"
+                      f" finds by its name on its package search path ({lib / 'gpu'},"
+                      f" {congo.REPO_PACKAGES}): there it finds {lib / 'gpu' / 'libc.cone'}, not"
+                      f" {congo.REPO_PACKAGES / 'libc' / 'src' / 'libc.cone'}\n",
+                      self.congo("build", cwd=lib, ok=False).stderr)
+        (lib / "gpu" / "libc.cone").unlink()
+        self.assertEqual(entry_points(lib / "build" / "debug" / "lib.spv")
+                         if self.congo("build", cwd=lib) else [], ["fill"])
+        # A package marked for the GPU is compiled for it whole: a gpu/ folder
+        # there is refused
+        write(lib / "congo.toml", '[package]\nname = "lib"\nversion = "0.1.0"\n'
+                                  'output = "library"\ntargets = ["native", "gpu"]\n')
+        self.assertIn(f"congo: error: {lib / 'gpu'}: lib is marked for the GPU (targets ="
+                      f" [\"native\", \"gpu\"]), so all of it is compiled for the GPU already;"
+                      f" a gpu/ folder is for a package that is not: move gpu/'s modules into"
+                      f" src/, or take \"gpu\" out of targets\n",
+                      self.congo("build", cwd=lib, ok=False).stderr)
+
+    @unittest.skipUnless(IS_WINDOWS and sdl3_on_lib(),
+                         "the sample needs SDL3.lib on LIB, a GPU driver with Vulkan 1.3, and"
+                         " Windows")
+    def test_the_sample_program_with_a_gpu_folder(self):
+        # packages/gpupart: a program whose main dispatches gpu/'s kernel
+        # through gpuwork and calls the same function on the CPU, every word
+        # identical, bit for bit. Run from a copy, so the repository's
+        # package folder gets no build/
+        sample = self.root / "gpupart"
+        shutil.copytree(congo.REPO_PACKAGES / "gpupart", sample,
+                        ignore=shutil.ignore_patterns("build"))
+        run = self.congo("run", cwd=sample)
+        self.assertEqual(self.program_output(run),
+                         "12288 values compared, 12288 identical\n14 checks passed\n")
+        self.assertEqual(entry_points(sample / "build" / "debug" / "gpupart.spv"), ["fill"])
 
 
 if __name__ == "__main__":
