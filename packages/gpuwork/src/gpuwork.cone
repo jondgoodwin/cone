@@ -45,7 +45,8 @@
 //     .invocation .index, f.kindName() f.message()  kernelFailures()
 //   FAILED_INDEX  FAILED_RANGE  FAILED_PANIC  FAILED_ALLOCATION  ERROR_BUFFER_WORDS
 //   kernel.setTwin1(&f) ... kernel.setTwin7(&f)  kernel.setTwin(f)        (THE TWIN)
-//   Invocation  Words  runTwin(kernel, buffers, x, y, z)
+//   Invocation  Words: w.u32s() .f32sMut() .atomicU32s() .atomicI32s() ...
+//   runTwin(kernel, buffers, x, y, z)
 //   checkParity(device, kernel, buffers, x, y, z): Parity
 //   refusals()
 //
@@ -191,13 +192,23 @@
 // its buffer's first bytes (a buffer too small for it refuses the run); a
 // parameter that is a struct where the SPIR-V binds a slice is refused (only
 // sizes can be compared, so a slice where it binds a 16-byte struct is not).
-// A kernel from
+// A slice of atomics, '&[]mut Atomic[u32]' or '&[]mut Atomic[i32]' (a
+// counter whose 'add' hands each invocation its slot), is a slice parameter
+// like any other. A kernel from
 // elsewhere has a twin written as an adapter, 'setTwin(f)', given the
-// buffers as Words (32-bit words, read as u32s, i32s, f32s or one struct)
-// and calling a Cone function written as the kernel is. Either way the
+// buffers as Words (32-bit words, read as u32s, i32s, f32s, atomics of u32
+// or i32 ('atomicU32s', 'atomicI32s') or one struct) and calling a Cone
+// function written as the kernel is. Either way the
 // kernel's body is one Cone function both sides call: a loop over
 // invocations is how the CPU runs a kernel. 'runTwin' runs it over buffers
-// of words, invocation by invocation in a fixed order, one thread.
+// of words, invocation by invocation in a fixed order, one thread. A
+// kernel's '@workgroup' globals are, on the CPU, ordinary globals, one copy,
+// and its barriers nothing (the compiler's native form), so a kernel whose
+// invocations read, after a barrier, only what the invocations before them
+// in that order wrote (the last of a workgroup gathering the others' work)
+// gives the GPU's answer on its twin; one whose invocations read what later
+// ones write (a prefix sum across a workgroup) does not, and has no twin
+// yet (Not here yet).
 // 'checkParity' runs a kernel on the GPU and its twin on the CPU over the
 // same starting buffers and compares every word each wrote, bit for bit:
 // anything that shapes geometry must be the same on every GPU and on the
@@ -215,15 +226,19 @@
 // not ok, with its buffers back, when its frame is done. The gpu package's
 // own failures are its 'failures()'.
 //
-// Not here yet: the parallel building blocks (count-then-write, prefix sums,
-// compaction), which wait for Cone kernels with workgroup memory; delivery to
+// Not here yet: the parallel building blocks as library functions
+// (count-then-write, prefix sums, compaction; tests/kernels.cone has a
+// compaction and a workgroup's sum written as kernels); a twin that runs a
+// workgroup's invocations together, meeting at its barriers, which needs the
+// compiler to give a native barrier something to call (today it compiles to
+// nothing); delivery to
 // an actor; a Here job that completes without its frame ending (a Loop job
 // does); reusing bind groups across
 // jobs; GPU memory as a region; textures; and whether a read-only input is
 // moved into a job or shared immutably (today every buffer is moved); a
-// direct twin whose Invocation is not its first parameter; building a
-// package's Cone kernels (the tests' kernels.cone is compiled by
-// tests/kernels.py until congo builds a GPU package's kernels).
+// direct twin whose Invocation is not its first parameter. (Congo builds the
+// kernels of a library marked for the GPU; the tests' kernels.cone, a
+// program, has its own compiled by tests/kernels.py.)
 //
 // Its files are one module, and only this one, the root, imports:
 //

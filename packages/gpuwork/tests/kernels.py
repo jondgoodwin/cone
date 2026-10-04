@@ -44,7 +44,9 @@ The compiler is CONEC if set, else the repository's build/x64-release/conec.exe;
 it is warned about if older than the compiler's sources (a direct conec run
 does not check, as congo and test/run.py do).
 
-This is a test-local step until congo builds a package's GPU kernels itself.
+This is a test-local step: Congo builds the kernels of a library marked for
+the GPU (tools/congo/README.md, "Kernels for the GPU"), and kernels.cone is a
+program, its kernels written in it.
 Python 3.11 or later, standard library only.
 """
 
