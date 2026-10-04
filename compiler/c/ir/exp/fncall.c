@@ -2471,6 +2471,20 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
     if (isNameUseNode(node->objfn) && isExpNode(node->objfn)
         && ((NameUseNode*)node->objfn)->dclnode->flags & FlagMethFld
         && !(node->objfn->flags & FlagQualified)) {
+        // Only a method has a receiver to reach a method through: not a static
+        // function's body, and not a signature, which is checked with no
+        // function of its own around it -- as for a bare field name, in
+        // nameUseTypeCheck. A member's name hides a module of the same name
+        // inside its type, so 'mesh.Mesh' in the signature of a method named
+        // 'mesh' arrives here.
+        if (pstate->fn == NULL || !(pstate->fn->flags & FlagMethFld)) {
+            NameUseNode *member = (NameUseNode*)node->objfn;
+            errorMsgNode(node->objfn, ErrorUnkName,
+                "%s is a %s, and there is no self here to reach it through.",
+                &member->namesym->namestr, member->dclnode->tag == FieldDclTag ? "field" : "method");
+            node->vtype = errorType;
+            return;
+        }
         // Build a resolved 'self' node
         NameUseNode *selfnode = newNameUseNode(selfName);
         selfnode->dclnode = nodesGet(((FnSigNode*)pstate->fn->vtype)->parms, 0);
@@ -2739,6 +2753,13 @@ void fnCallFlow(FlowState *fstate, FnCallNode **nodep) {
     INode **argsp;
     uint32_t cnt;
     uint16_t inflight = fstate->inflightcnt;
+    // A call type check gave up on without a diagnostic of its own, because what
+    // it reads failed elsewhere -- a field of a value returned by a function
+    // whose signature failed -- passes this function's flow gate but was never
+    // lowered: a field access still has no arguments. The failure was reported
+    // where it happened, and generation will not run.
+    if (node->vtype == errorType)
+        return;
     // A method called on an init's 'self' reaches through it (flowNewSelf)
     INode *callee = isNameUseNode(node->objfn) ? ((NameUseNode*)node->objfn)->dclnode : NULL;
     int method = callee && callee->tag == FnDclTag && (callee->flags & FlagMethFld);

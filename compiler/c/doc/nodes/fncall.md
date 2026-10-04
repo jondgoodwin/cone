@@ -236,6 +236,12 @@ reject an overload name everywhere else. Bail if `objfn` is already marked
   not called, its value is constructed with `new`.
 - **A bare method or field name** (`FlagMethFld`, not `FlagQualified`) →
   rewrite to `self.method`, synthesizing a resolved `self` from parameter 0.
+  Outside a method there is no `self`, so it is `ErrorUnkName`, "there is no
+  self here to reach it through", as for a bare field name
+  ([nameuse](nameuse.md), step 2): a static function's body, and a signature,
+  which is checked with no function of its own around it. A member's name
+  hides a module of the same name inside its type, so `mesh.Mesh` in a
+  signature of a type with a method `mesh` arrives here.
 - **An overload set** → `fnCallLowerOverloadFn` type checks every candidate not
   yet analyzed (`fnCallDemandCandidates`, as a member name's are below), then
   picks the concrete candidate.
@@ -631,6 +637,11 @@ Three entry points, by what the node became:
   a plain reference's field access had a dereference injected and `derefFlow`
   reads through that, but a virtual reference's did not, so this is where its
   `MayRead` is asked.
+
+**`fnCallFlow` skips a call whose type is the error type.** Such a call
+passed its function's flow gate, because what failed was reported elsewhere —
+a field of a value returned by a function whose signature failed — but type
+check gave up on it unlowered, so a field access still has no arguments.
 
 **`fnCallFlow` does not flow `objfn`**, so a call through an uninitialized
 function-reference variable goes unreported. See Hazards.
