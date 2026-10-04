@@ -212,6 +212,11 @@ static void genlCAbiMarkExtends(GenState *gen, FnSigNode *fnsig, LLVMValueRef fn
 void genlCAbiDeclare(GenState *gen, FnDclNode *fndcl, LLVMValueRef fn) {
     if (!genlIsCAbiFn(fndcl))
         return;
+    // Marked, so that the copying of large aggregates in memory leaves its
+    // convention alone (genlaggcopy.c, which removes the mark)
+    if (!gen->opt->gpu)
+        LLVMAddAttributeAtIndex(fn, LLVMAttributeFunctionIndex,
+            LLVMCreateStringAttribute(gen->context, "cone-cabi", 9, "", 0));
     FnSigNode *fnsig = (FnSigNode*)itypeGetTypeDcl(fndcl->vtype);
     unsigned long long size;
     if (genlCAbiPass(gen, fnsig->rettype, &size) == CAbiIndirect)

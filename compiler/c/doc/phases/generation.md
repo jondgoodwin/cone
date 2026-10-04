@@ -380,7 +380,10 @@ thread-binding.
 ### C-named functions and the C ABI
 
 A struct handed to LLVM as a first-class value crosses a call one register per
-field, which no C ABI does. So a **C-named function a module owns**
+field, which no C ABI does. (Cone's own convention passes one of more than 64
+bytes by a pointer instead, and returns it through a slot: section 6, "Large
+aggregates", which leaves a C-named function's convention alone.) So a
+**C-named function a module owns**
 (`genlIsCAbiFn`: `DclCName`, its owner a module) — an `extern` one C defines,
 a body C calls — has its structs lowered in `genlcabi.c`, the one place that
 knows the platform's C ABI (`gen->cabi`, `genlCAbiTarget`, from the triple).
@@ -1074,6 +1077,64 @@ starts its own base and leaves the stack as it found it.
 **A `break`'s phi edge is recorded after its releases**, from the block the
 jump leaves: a release (`dealiasRef`'s test) splits the block.
 
+### Large aggregates
+
+**A struct, array or tuple of more than `GenlAggCopyMin` (64) bytes is never
+carried as one LLVM value.** Expression generation makes every aggregate a
+first-class value — a variable read is one `load` of the whole, a literal an
+`insertvalue` chain, a copy one `store`, an argument and a result passed
+whole — and LLVM's backend takes such a value apart element by element, as
+instcombine does a load or store of one up to 1024 elements long: an
+`Array[u64, 1024]` is a thousand values for instruction selection to schedule
+and allocate, and a copy of an `Array[i8, 100000]` crashed it. So once the
+module is generated, before it is verified or dumped (`.preir` shows the
+result), `genlAggCopies` (`genlaggcopy.c`) moves each such value into memory,
+which is how clang generates C's structs. **Why 64:** measured on seven
+structs of N `u64`s and one more, each made by a call and gathered by a
+literal, carried whole a value of 24 to 136 bytes cost a debug build's code
+generation a few milliseconds and a release build nothing measurable, while
+one of 1 KiB cost 0.1 s and one of 8 KiB 5.6 s (debug) or 3.6 s (release); and
+at 64 every `geomath` type is still carried whole (a `Mat4` is 64 bytes), so
+its bench runs as it did, where at 16 a `Mat4` times a point ran 65% slower
+(and a `Mat4` times a `Vec4` four times faster). Measured 4 October 2026.
+
+The rewrite:
+
+- each value gets a **home**, an address holding it. A `load` copies what it
+  reads into a slot of its own with `llvm.memcpy`, at the load, so the value
+  is what memory held there whatever is stored after; one whose only uses
+  read a part, or store or return it once, with nothing between that could
+  write memory, is read where it lies instead. An `insertvalue` copies the
+  aggregate it adds to, or takes its slot over where it is that value's only
+  use in the same block, and stores the part. An `extractvalue` is the
+  part's address in its aggregate's home: loaded for a small part, the
+  address itself for a large one. A select chooses between two homes, and a
+  phi has a slot of its own, copied into at the end of each predecessor (a
+  block put on an edge from a block branching elsewhere too);
+- a `store` and a `ret` copy from the home; a null constant is a `memset`, a
+  struct constant stored field by field, any other array constant copied from
+  a private constant of it;
+- **a function taking one takes a pointer to its caller's copy**, marked
+  `noalias readonly`, and **one returning one fills a slot its caller passes
+  first** (`sret`), as clang's Win64 convention does for C. Each such
+  function is remade with that type under its name (its body, attributes,
+  COMDAT and debug information moved over), and every call to that type,
+  direct or through a vtable slot or a reference, passes homes; every object
+  this compiler makes agrees. A **C-named function** keeps the C ABI
+  (`genlcabi.c`): `genlCAbiDeclare` marks it `"cone-cabi"`, which the pass
+  reads and removes.
+
+A home is never written once its value exists, which is what lets a part's
+address, a select or a callee read it in place. Each copy is made where its
+value was loaded, stored, passed or returned, so what each sees of memory,
+and the order of every call, a drop among them, is what it was. An
+instruction the pass does not know is handed its operand loaded whole from
+the home, and stored into a slot when it makes one, as before. A release
+build's optimizer then forwards the copies (`memcpyopt`, SROA); a debug build
+keeps them. **Not on a GPU target**, where `llvm.memcpy` is not legal Vulkan
+SPIR-V and its own pipeline breaks every aggregate into scalars
+(`genlGpuAggregates`, section 7).
+
 ### A split method
 
 An actor's message holding an `await` is cut at each one, a seam, where it
@@ -1598,12 +1659,11 @@ variables.
   in: `f(mk(1).n, { imm x = mk(2); if c { return; } 3; })` finalizes the first
   `mk` before `x`. Each dies once; only the order, in that shape, is not
   newest first.
-- **An array copied, assigned, passed or returned is one aggregate value**, and
-  LLVM's instruction selection takes an aggregate load or store apart element
-  by element: `imm c = a` of an `Array[i8, 100000]`, or contents assigned over a
-  variable of that type, crashes it. Only a local's initializer from an
-  array's contents is filled in place ([literals](../nodes/literals.md),
-  "Generation").
+- **A function taking or returning a large aggregate is a different LLVM
+  function after `genlAggCopies`** (section 6, "Large aggregates"): remade with
+  pointer parameters and the old one deleted, so a `FnDclNode`'s `llvmvar`, or
+  any other function value kept from generation, is stale once it has run.
+  Nothing after it reads one.
 
 ## 9. Code pointer map
 
@@ -1612,7 +1672,7 @@ variables.
 | `conec.c` | `main` | calls `genSetup` **before** parsing, for target pointer size |
 | `genllvm/genllvm.c` | `genSetup`, `genClose` | target machine, data layout, context, `%void`; LLVM's pretty stack trace, for a crash inside LLVM |
 | | `genlLLVMOptions` | the LLVM options `CONE_LLVM_OPTIONS` names, and a GPU target's own (the flat address space; machine CSE, loop strength reduction and CodeGenPrepare off), parsed before the context exists |
-| | `genpgm` | generate, verify, dump, optimize (release: LLVM's `default<O2>` for the target machine; a GPU target's pipeline inlines, breaks up aggregates and infers address spaces, then the kernels are settled, then the control flow is structured, at every level), emit; nothing past generation once it reported an error, nor once a kernel's slice was refused |
+| | `genpgm` | generate, move large aggregates into memory (not on a GPU target), verify, dump, optimize (release: LLVM's `default<O2>` for the target machine; a GPU target's pipeline inlines, breaks up aggregates and infers address spaces, then the kernels are settled, then the control flow is structured, at every level), emit; nothing past generation once it reported an error, nor once a kernel's slice was refused |
 | | `genlGpuCalls`, `genlCallWalk`, `genlRecursion` | on a GPU target, every defined function but a kernel marked `alwaysinline`, and a cycle of calls refused (section 7) |
 | | `genlGpuAggregates`, `genlGpuAggregatesFn`, `genlAggLeaves` | on a GPU target, after optimization, each struct or array value carried as its scalar leaves (section 7) |
 | | `genlGpuRetypeFn`, `genlGpuPointee` | on a GPU target, after optimization, a first field's address computed from its struct's type again (for a load, a store, an address computation or an atomic), and an array's from its first element's (section 7) |
@@ -1654,7 +1714,11 @@ variables.
 | | `genlGpuSyncPatch` | the emitted module put right: a relaxed atomic's semantics None, a compare-and-swap's result rid of the insertions the backend writes after it |
 | `genllvm/genlcabi.c` | `genlCAbiTarget`, `genlIsCAbiFn`, `genlCAbiPass` | which C ABI the target follows, which functions cross by it, and how one struct crosses |
 | | `genlCAbiExtend`, `genlCAbiMarkExtends` | the `zeroext` or `signext` a narrow integer crosses with, marked on a declaration or a call |
-| | `genlFnDclType`, `genlCAbiDeclare`, `genlFnDclCall`, `genlFnDclParm`, `genlFnDclReturn` | a declared function's LLVM type, its `sret` and widening marks, a direct call to it, its prologue's parameters and its returns — lowered for a C-named one |
+| | `genlFnDclType`, `genlCAbiDeclare`, `genlFnDclCall`, `genlFnDclParm`, `genlFnDclReturn` | a declared function's LLVM type, its `sret` and widening marks (and the `"cone-cabi"` mark `genlAggCopies` leaves alone), a direct call to it, its prologue's parameters and its returns — lowered for a C-named one |
+| `genllvm/genlaggcopy.c` | `genlAggCopies`, `genlAggFn` | once the module is generated, every struct, array or tuple of more than `GenlAggCopyMin` bytes moved into memory, function by function (section 6, "Large aggregates") |
+| | `genlAggRetype`, `genlAggSig`, `genlAggCall` | a function taking or returning one remade with pointer parameters and a result slot first; each call to that type passing homes |
+| | `genlAggInst`, `genlAggHomeOf`, `genlAggReadInPlace` | each instruction making or taking one, rewritten to copy between homes; a value's home, made where it is; a load read where it lies when nothing between could change it |
+| | `genlAggCopyTo`, `genlAggConstTo`, `genlAggPhis`, `genlAggEdge` | a copy with `llvm.memcpy`, a constant's with `llvm.memset` or field by field, each phi's slot filled at its predecessors' ends, an edge given a block of its own |
 | `genllvm/genlstmt.c` | `genlBlock` | block creation, phi state, terminator suppression; each statement's temporaries finalized at its end |
 | | `genlBreak`, `genlReturn` | phi edges, temporaries and dealias; inlined-return-as-break |
 | `genllvm/genlexpr.c` | `genlExpr`, `genlAddr`, `genlStore` | the value / address / store trio — section 4 |
