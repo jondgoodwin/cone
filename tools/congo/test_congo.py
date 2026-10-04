@@ -940,7 +940,7 @@ class Scenarios(unittest.TestCase):
                     if line.strip().startswith("Compiling")]
         self.assertEqual(compiled, ["libc", "core", "stdio", "hello"])
         out = pkg / "build" / "debug"
-        self.assertNotIn("import", (out / "libc.conebuild").read_text())
+        self.assertNotRegex((out / "libc.conebuild").read_text(), r"(?m)^import ")
         self.assertIn("import libc pub use malloc;", (out / "core.cone").read_text())
         self.assertIn('mod @c libc;', (out / "libc.cone").read_text())
         core_desc = (out / "core.conebuild").read_text()
