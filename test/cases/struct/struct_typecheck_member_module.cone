@@ -1,0 +1,78 @@
+// A member's name hides a module of the same name inside its type. A field,
+// method, static function or static variable is reached by its bare name in
+// its type's methods, and in their signatures, so 'libc.Timespec' written in a
+// type that declares a member named 'libc' reads 'libc' as that member rather
+// than the module. Where the member is a field or a method, the bare name means
+// 'self.libc', and a signature has no self to reach it through.
+//
+// A method named like the module, with the module written in its own
+// signature, crashed the compiler: the rewrite to 'self.libc' read the
+// parameters of whatever function the check was nested in, and a signature is
+// checked inside none. A use of what such a method returns then crashed flow,
+// which walked a field access type check had left unlowered.
+mod struct_typecheck_member_module;
+import libc;
+
+// The method's own signature
+struct OwnSig {
+  n i32;
+  fn libc(self &) libc.Timespec {  //~ ErrorUnkName:19 "libc is a method, and there is no self here to reach it through"
+    new libc.Timespec(1, 2);
+  }
+}
+
+// Another method's signature, in a type that has a method named like the module
+struct OtherSig {
+  n i32;
+  fn libc(self &) i32 { n; }
+  fn stamp(self &) libc.Timespec {  //~ ErrorUnkName:20 "libc is a method, and there is no self here to reach it through"
+    new libc.Timespec(1, 2);
+  }
+}
+
+// A field named like the module, the module in a method's signature
+struct FieldSig {
+  libc i32;
+  fn stamp(self &) libc.Timespec {  //~ ErrorUnkName:20 "libc is a field, and there is no self here to reach it through"
+    new libc.Timespec(1, 2);
+  }
+}
+
+// In a body the member is reached through self, and is not a type
+struct OwnBody {
+  n i32;
+  fn libc(self &) i64 {
+    new libc.Timespec(1, 2).tv_sec;  //~ ErrorNewType:13 "'new' constructs a value of a type"
+  }
+}
+
+struct FieldBody {
+  libc i32;
+  fn stamp(self &) i64 {
+    new libc.Timespec(1, 2).tv_sec;  //~ ErrorNewType:13 "'new' constructs a value of a type"
+  }
+}
+
+// A static function has no self to reach a method through either
+struct Selfless {
+  n i32;
+  fn meth(self &) i32 { n; }
+  fn make() i32 {
+    meth();  //~ ErrorUnkName:5 "meth is a method, and there is no self here to reach it through"
+  }
+}
+
+// A signature that fails any other way leaves the same unlowered field access
+// behind it, a generic instance refused there among them
+struct Box[T] { v T; }
+fn boxed() Box[i32, i32] {  //~ ErrorArgCount:15
+  new Box[i32](1);
+}
+
+// What the failed signatures return is used, and flow does not walk it
+fn main() i32 {
+  imm a = new OwnSig(1);
+  imm b = new OtherSig(1);
+  imm c = new FieldSig(1);
+  i32.from(a.libc().tv_sec + b.stamp().tv_sec + c.stamp().tv_sec) + boxed().v;
+}
