@@ -135,10 +135,17 @@ what `pub import m use …` says, and is accepted as the same import.
 module's `mod` line): when its first fold pass runs, `importDefaultFold` gives it
 a copy of that clause as its `fold` and sets `isdefault`. A clause the import
 writes replaces the default whole.
+**`rename` is the name an `as` binds the module under**, `import math as m`, or
+NULL. `parseImport` reads it after the module and before any clause;
+`importBindModule` binds the alias under it (`importBoundName`), its target still
+the module, and the module's own name is bound to nothing here. An import of a
+name of the parent takes it the same way: `binding`'s alias is under the rename,
+its target the parent's name, which is what `importBindName` looks up. A use of
+the old name finds the import that renamed it (`importRenaming`) and says so.
 
 **A module imports another once.** `parseImport` finds a prior import of the same
 module among the module's `imports`, whatever file of the module wrote it, and
-asks `importSame`: the same `ispub` on each binding, and the same clause — star or
+asks `importSame`: the same `rename`, the same `ispub` on each binding, and the same clause — star or
 not, the same `but` names, or the same listed names under the same spellings, in
 any order. Either way the second import is `ErrorDupImport`, reported at the
 second and naming the file and line of the first; `importSame` decides only what

@@ -415,7 +415,8 @@ def scan_header(path: Path) -> Header:
     is a dependency like an import, and 'is' and 'use' are passed over. 'mod
     trait' declares a module trait and is not a 'mod' line. An
     'import' is 'import name' or 'import "path"', optionally with 'pub', and
-    whatever 'use' clause follows."""
+    whatever 'as' and 'use' clause follow: the name read is the package's,
+    whatever name 'as' binds it under."""
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
     except OSError as exc:

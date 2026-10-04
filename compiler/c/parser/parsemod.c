@@ -397,14 +397,15 @@ static ImportNode *parseImportPrior(ModuleNode *mod, ModuleNode *imported) {
 }
 
 // Hold an import of a name of the parent, to be bound in the fold passes: an
-// alias under the name, not yet pointing at anything (importBindName). Two
-// imports of one name are refused here, as two imports of one module are
+// alias under the name -- or its 'as' name -- not yet pointing at anything
+// (importBindName). Two imports of one name are refused here, as two imports of
+// one module are, whatever each binds it under
 static ImportNode *parseImportName(ParseState *parse, ImportNode *importnode, Name *name) {
     INode **nodesp;
     uint32_t cnt;
     for (nodesFor(parse->mod->imports, cnt, nodesp)) {
         ImportNode *prior = (ImportNode*)*nodesp;
-        if (prior->binding == NULL || prior->binding->namesym != name)
+        if (prior->binding == NULL || ((NameUseNode*)prior->binding->target)->namesym != name)
             continue;
         errorMsgNode((INode*)importnode, ErrorDupImport,
             "%s is imported already, at %s:%u. A module imports a name once: leave out the second.",
@@ -413,7 +414,7 @@ static ImportNode *parseImportName(ParseState *parse, ImportNode *importnode, Na
     }
     NameUseNode *target = newNameUseNode(name);
     inodeLexCopy((INode*)target, (INode*)importnode);
-    AliasDclNode *alias = newNameAliasDclNode(name, (INode*)target);
+    AliasDclNode *alias = newNameAliasDclNode(importnode->rename ? importnode->rename : name, (INode*)target);
     inodeLexCopy((INode*)alias, (INode*)importnode);
     alias->flags |= FlagImportName;
     if (importnode->ispub)
@@ -424,6 +425,10 @@ static ImportNode *parseImportName(ParseState *parse, ImportNode *importnode, Na
 
 // Parse import statement. 'pubflag' re-exports what the import binds: the
 // module's name here, and every name it folds in.
+//
+// The module may be followed by 'as' and a name, which binds it under that name
+// rather than its own (importBindModule): every form takes it, a name or a path,
+// a module or a name of the parent, with a clause or without.
 //
 // What follows the module is a 'use' clause, the one a global carries: '*', a
 // list with 'as', a block, '* but', and 'pub use'. The clause is the one
@@ -460,6 +465,22 @@ ImportNode *parseImport(ParseState *parse, uint16_t pubflag) {
         else {
             errorMsgLex(ErrorBadTerm, "An import does not name a member with '.': a selective import is written with a 'use' clause, as in 'import mod use a, b as c'.");
             if (lexIsToken(IdentToken))
+                lexNextToken();
+        }
+    }
+    // 'as' binds the module under another name, before any clause, as 'use'
+    // names a folded member's local name after the member's own. A word that is
+    // not a name is reported and passed over, so the statement still ends where
+    // it was written
+    if (lexIsToken(AsToken)) {
+        lexNextToken();
+        if (lexIsToken(IdentToken)) {
+            importnode->rename = lex->val.ident;
+            lexNextToken();
+        }
+        else {
+            errorMsgLex(ErrorNoIdent, "Expected the name the import binds the module under here, after 'as'.");
+            if (!lexIsToken(SemiToken) && !parseIsFoldClause())
                 lexNextToken();
         }
     }

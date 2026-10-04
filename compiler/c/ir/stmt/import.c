@@ -17,6 +17,7 @@ ImportNode *newImportNode() {
     node->module = NULL;
     node->fold = NULL;
     node->binding = NULL;
+    node->rename = NULL;
     node->ispub = 0;
     node->isextends = 0;
     node->isuse = 0;
@@ -50,8 +51,10 @@ static void importPrintNames(Nodes *names, int listed) {
 // Serialize a import node
 void importPrint(ImportNode *node) {
     inodeFprint(node->ispub ? "pub import %s" : "import %s",
-        node->binding ? &node->binding->namesym->namestr
+        node->binding ? &((NameUseNode*)node->binding->target)->namesym->namestr
         : node->module ? &node->module->namesym->namestr : "stdio");
+    if (node->rename)
+        inodeFprint(" as %s", &node->rename->namestr);
     FoldClause *fold = node->fold;
     if (fold == NULL)
         return;
@@ -111,8 +114,9 @@ static int importFoldsNothing(FoldClause *fold) {
 
 // Do two imports of one module say the same thing? Asked at parse, before a star
 // clause's items are made, so a star clause is compared on its 'but' names.
+// Bound under different names is different, an 'as' and none included.
 int importSame(ImportNode *a, ImportNode *b) {
-    if (a->module != b->module || a->ispub != b->ispub)
+    if (a->module != b->module || a->ispub != b->ispub || a->rename != b->rename)
         return 0;
     FoldClause *afold = a->fold;
     FoldClause *bfold = b->fold;
@@ -123,6 +127,30 @@ int importSame(ImportNode *a, ImportNode *b) {
     if (afold->star)
         return importNamesSame(afold->excludes, bfold->excludes, 0);
     return importNamesSame(afold->items, bfold->items, 1);
+}
+
+// The name an import binds its module under (import.h)
+Name *importBoundName(ImportNode *node) {
+    if (node->rename)
+        return node->rename;
+    return node->binding ? node->binding->namesym : node->module->namesym;
+}
+
+// The import of this module that binds what is named 'name' under another name
+// (import.h). A use of the old name is unbound, and is told the new one
+ImportNode *importRenaming(ModuleNode *mod, Name *name) {
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(mod->imports, cnt, nodesp)) {
+        ImportNode *import = (ImportNode*)*nodesp;
+        if (import->rename == NULL)
+            continue;
+        Name *own = import->binding ? ((NameUseNode*)import->binding->target)->namesym
+            : import->module ? import->module->namesym : NULL;
+        if (own == name)
+            return import;
+    }
+    return NULL;
 }
 
 // Bind the imported module's name in the importing module.
@@ -144,17 +172,22 @@ int importSame(ImportNode *a, ImportNode *b) {
 // that extends this one does not take it (FlagImportName, importStarAdmits): it
 // imports the module itself if it names it [Jon 23 Sep]. What the import's 'use'
 // clause folds in is a part of this module, and does travel.
+//
+// 'import x as y' binds the alias under 'y', its target still the module x, and
+// 'x' is not bound here at all. A rename meeting another name of this module
+// collides exactly as the module's own name would (modAddNamedNode).
 void importBindModule(ModuleNode *mod, ImportNode *node) {
     ModuleNode *newmod = node->module;
+    Name *name = importBoundName(node);
     NameUseNode *target = newNameUseNode(newmod->namesym);
     inodeLexCopy((INode*)target, (INode*)node);
     target->dclnode = (INode*)newmod;
-    AliasDclNode *alias = newNameAliasDclNode(newmod->namesym, (INode*)target);
+    AliasDclNode *alias = newNameAliasDclNode(name, (INode*)target);
     inodeLexCopy((INode*)alias, (INode*)node);
     alias->flags |= FlagImportName;
     if (node->ispub)
         alias->flags |= FlagPub;
-    modAddNamedNode(mod, newmod->namesym, (INode*)alias);
+    modAddNamedNode(mod, name, (INode*)alias);
 }
 
 // Point an import's alias at the binding it stands for, 'found' in its source.
@@ -217,6 +250,12 @@ static void importFoldItem(ModuleNode *mod, ImportNode *import, AliasDclNode *al
             errorMsgNode((INode*)alias, ErrorBadFold,
                 "%s is the module being folded, and it is a name of this module already.",
                 &srcname->namestr);
+        // Renamed, the module is bound under the import's 'as' name, and a fold
+        // of its own name would undo the rename
+        else if (import->rename)
+            errorMsgNode((INode*)alias, ErrorBadFold,
+                "%s is the module being imported, and the import binds it already, as %s.",
+                &srcname->namestr, &import->rename->namestr);
         else
             errorMsgNode((INode*)alias, ErrorBadFold,
                 "%s is the module being imported, and the import binds that name already.",
@@ -404,7 +443,8 @@ void importBindName(ModuleNode *mod, ImportNode *node) {
     if (alias == NULL || ((NameUseNode*)alias->target)->dclnode != NULL)
         return;     // Bound, or refused, in an earlier pass
     ModuleNode *parent = (ModuleNode*)mod->dclinfo.owner;
-    Name *name = alias->namesym;
+    // The parent's name, which an 'as' binds here under another
+    Name *name = ((NameUseNode*)alias->target)->namesym;
     INode *found = namespaceFind(&parent->namespace, name);
     if (found == NULL) {
         if (!modFoldReporting())
@@ -433,7 +473,7 @@ void importBindName(ModuleNode *mod, ImportNode *node) {
         if (prior->tag != AliasDclTag)
             errorMsgNode((INode*)node, ErrorDupName,
                 "%s is already a name of this module, which declares it. The import would bind %s's %s under the same name, and a name of a module is unique.",
-                &name->namestr, &parent->namesym->namestr, &name->namestr);
+                &alias->namesym->namestr, &parent->namesym->namestr, &name->namestr);
         else
             modFoldDupReport(modFoldCollisionAt(mod, (INode*)node, (INode*)alias, prior), alias, prior);
         return;
@@ -508,7 +548,7 @@ void importNameRes(NameResState *pstate, ImportNode *node) {
         if (node->fold != NULL)
             errorMsgNode(node->fold->at, ErrorGenModBare,
                 "%s is a generic module, whose names belong to each instance: nothing of it can be folded. Name an instance's member as %s[...].name.",
-                &node->module->namesym->namestr, &node->module->namesym->namestr);
+                &node->module->namesym->namestr, &importBoundName(node)->namestr);
         node->fold = NULL;
         return;
     }

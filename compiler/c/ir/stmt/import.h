@@ -52,11 +52,20 @@
 // onto the import when its first fold pass runs (importDefaultFold), so each
 // importer's bindings are its own and carry its own visibility; 'isdefault'
 // marks the copy. A clause the import writes replaces the default whole.
+//
+// 'import x as y' binds the module -- or the name of the parent -- under 'y'
+// instead of its own name, and 'x' is bound to nothing here. Nothing else about
+// the import changes: what its clause folds, its visibility, and the rule of one
+// import per module, which is about the module and not the name it is bound
+// under. A field or method named like a module hides the module inside its
+// type, signatures included, and renaming the import is one way round that
+// (nameUseNoSelf).
 typedef struct ImportNode {
     INodeHdr;
     ModuleNode *module;
     FoldClause *fold;   // The names its 'use' clause folds in -- or, written with none, its module's default -- or NULL for none
     struct AliasDclNode *binding; // An import of a name of the parent: the alias it binds, bound in the fold passes; else NULL
+    Name *rename;       // 'as': the name the import binds in place of the module's own (or the parent's name), else NULL
     uint16_t ispub;     // 'pub import': the module's own binding is public here
     uint16_t isextends; // The fold a module's 'extends' makes, rather than an import statement
     uint16_t isuse;     // The fold a module's standalone 'use' of a submodule makes, rather than an import statement
@@ -76,6 +85,14 @@ void importPrint(ImportNode *pgm);
 // import is refused either way [Jon 23 Sep]; this decides which the diagnostic
 // says, the same import written twice or two that disagree.
 int importSame(ImportNode *a, ImportNode *b);
+
+// The name an import binds its module under here: its 'as' name, or else the
+// module's own
+Name *importBoundName(ImportNode *node);
+
+// The import of this module that binds what is named 'name' under another name,
+// with 'as', or NULL: what a use of the old name is told
+ImportNode *importRenaming(ModuleNode *mod, Name *name);
 
 // Bind the imported module's name in the importing module, as an alias carrying
 // this import's visibility. Done at parse, because a later statement in the file
