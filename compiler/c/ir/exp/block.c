@@ -471,12 +471,17 @@ void blockFlow(FlowState *fstate, BlockNode **blknode) {
         ++flowDepth;
 
     // Ensure last node is return, blockret, break or continue
-    // Inject blockret, if not present
+    // Inject blockret, if not present. Type check already ended a block whose
+    // last statement is no expression -- '{ imm f = new Fin(1); }' -- with a
+    // 'blockret nil' (blockTypeCheck), and a second one after it would be a
+    // second exit from the same scope: the drop walk, which records a release
+    // at every exit it meets, would finalize 'f' at both.
     INode **lastnodep = &nodesLast(blk->stmts);
     switch ((*lastnodep)->tag) {
     case ReturnTag:
     case BreakTag:
     case ContinueTag:
+    case BlockRetTag:
         break;
     default:
     {

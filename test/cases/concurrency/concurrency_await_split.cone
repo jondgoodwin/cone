@@ -30,7 +30,10 @@
 //   end after the seam does not give it back a second time;
 // - early: a 'return' in the second half;
 // - voided: what is awaited is void, and nothing travels: the second half
-//   takes 'self' alone.
+//   takes 'self' alone;
+// - blocked: blocks ending in their declaration, one nested in another,
+//   before the seam and after it: each local dies once, at its block's end,
+//   in the half that runs it.
 
 mod concurrency_await_split;
 
@@ -235,6 +238,23 @@ actor Page {
     note();
     say("voided", body);
   }
+
+  pub async do blocked(self) {
+    head("blocked");
+    { imm f = new Fin(80u64); }
+    { imm g = new Fin(81u64); { imm h = new Fin(82u64); } }
+    body = await give(8u64);
+    { imm k = new Fin(83u64); }
+    say("blocked", body);
+  }
+  pub async do blockedPlain(self) {
+    head("blocked plain");
+    { imm f = new Fin(80u64); }
+    { imm g = new Fin(81u64); { imm h = new Fin(82u64); } }
+    body = give(8u64);
+    { imm k = new Fin(83u64); }
+    say("blocked", body);
+  }
 }
 
 fn main() {
@@ -264,6 +284,8 @@ fn main() {
     p.earlyPlain(false);
     p.voided();
     p.voidedPlain();
+    p.blocked();
+    p.blockedPlain();
   }
   finalAll();
 }
