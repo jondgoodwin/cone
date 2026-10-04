@@ -127,6 +127,43 @@ Nodes *awaitSplitOf(FnDclNode *fn);
 // Whether an 'await' stands anywhere inside 'node' (not inside a function it declares)
 int awaitWithin(INode *node);
 
+// Where a seam cuts inside a statement, the rest of the statement runs after
+// it: 'await e' is 't = e; await t', and what is still to be done once t is
+// made is the second half's first statement. A value computed to the left of
+// the 'await' in the order of evaluation is made before the seam and travels
+// in the record ('two(x, await f())'). A place, or a borrow of one, written to
+// its left is reached again after the seam instead -- 'self.store(await f())',
+// 'items[await i] = 7', 'take(&x, await y)' -- where it is a plain path: a
+// variable ('self' among them), a field, a dereference or an index of a plain
+// path, the index itself a plain path or a literal; or the actor's own handle
+// made from one, as 'self.m()' sends m through ('Page.self'(self)'). Neither
+// reaches anything a call makes, so reaching it after the seam does nothing a
+// reader could see but find what is there then. A borrow a call made, or a
+// place reached through one, cannot be made again, and is refused
+// (ErrorAwaitLeftCall): flowloan.c, loanSeamFlight; awaitWalk here.
+//
+// Is 'node' a plain path?
+int awaitIsPath(INode *node);
+
+// Is 'node', an operand standing before a seam held by a later operand of the
+// same list, made only after that seam: a plain path whose value is a borrowed
+// reference -- a receiver, or a borrow written to the left of the 'await'?
+int awaitReReached(INode *node);
+
+// The order a list of operands is evaluated in, as indexes into 'nodes',
+// written into 'order', which holds nodes->used of them: the order written,
+// but that each operand re-reached after the last of them holding a seam
+// (awaitReReached) comes just after it. Answers how many operands lead the
+// order up to and including that last one: each before it is made before its
+// seam and is in flight across it. 0 where no operand holds a seam. Flow and
+// generation both take an operand list in this order
+uint32_t awaitOrder(Nodes *nodes, uint32_t *order);
+
+// Refuse 'left', written to the left of a seam in its statement and used
+// after it, which a call or a temporary made (ErrorAwaitLeftCall). 'what'
+// names it, capitalized: "This borrow", "This place's base"
+void awaitLeftCallMsg(INode *left, char *what);
+
 // Whether a type is a lock's guard's: a reference whose permission says it
 // holds its lock (permHeldKind), which a seam gives back
 int awaitIsGuardType(INode *type);

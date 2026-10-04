@@ -141,8 +141,10 @@ void *pathGrow(void *buf, uint32_t *cap, size_t size);
 
 // Walk a function's body (after blockFlow), if the gate marked it: with borrow
 // freezing ('loans') for the loan gate, with drop flags ('drops') for the drop
-// gate (FlowState.dropgate), or both in one walk
-void flowPathWalk(FnDclNode *fndcl, int loans, int drops);
+// gate (FlowState.dropgate), or both in one walk. 'seams' says it holds an
+// 'await', so its operands are walked in the order a seam gives them
+// (awaitOrder)
+void flowPathWalk(FnDclNode *fndcl, int loans, int drops, int seams);
 
 // Print the walk's tallies for -V 2
 void flowPathPrint();

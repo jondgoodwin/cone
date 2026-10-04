@@ -1,0 +1,142 @@
+// Where an 'await' on a behaviour cuts inside an expression, the rest of the
+// statement runs after the reply comes, against the state as it is then
+// (actor-continuations' build rule for a seam in an expression). Helper.get
+// sends Page a 'poke' before it answers, so poke runs while Page waits, and
+// changes Page's state: what Page reads before its 'await' it read before
+// poke, and what it reaches after, it reaches after poke.
+//
+// - receiver: 'self.store(await ...)' -- self is lent again after the seam,
+//   and store runs after poke;
+// - stored: 'items[await ...] = mk(7u64)' -- mk runs first, then the
+//   request, then the place, after poke;
+// - indexed: 'items[await ...]' read after poke, poke's 1000 seen;
+// - value: 'body + await ...' -- body is a value, read before the request,
+//   poke's 1000 not seen;
+// - swapped: 'a <=> items[await ...]', after poke;
+// - borrowed: 'take(&x, await ...)', x travelling and borrowed after;
+// - added: 'body += await ...' reads and writes body after poke, so poke's
+//   change is kept;
+// - nested: an element two indexes deep, the inner index a field read after;
+// - locked: 'addTo(&mut *count, await ...)' takes the lock after the seam, so
+//   Helper takes it meanwhile -- were it taken before, the two would wait for
+//   each other for good;
+// - sent: 'self.show(await self.double(5u64))', show one of Page's own
+//   behaviours: the handle it is sent through is made after the seam;
+//   'selfactor.show(...)' the same; and 'h.note(...)', sent to the Helper a
+//   field holds.
+
+mod concurrency_await_expr_reply;
+
+import stdio use *;
+import actors;
+import sync use Arc, Mutex;
+
+struct Count {pub n u64;}
+
+fn say(s &[]u8, n u64) {printStr("  "); printStr(s); printStr(" "); printUInt(n); printStr("\n");}
+fn head(s &[]u8) {printStr(s); printStr("\n");}
+fn mk(n u64) u64 {say("mk", n); n;}
+fn take(r &u64, n u64) u64 {say("take", *r); *r + n;}
+fn addTo(c &mut Count, n u64) {say("add", c.n + n); c.n = c.n + n;}
+
+actor Helper {
+  count Arc[Mutex, Count];
+
+  pub async do get(self, p Page, n u64) u64 {
+    say("get", n);
+    (&mut *count).n += 1u64;
+    p.poke();
+    n;
+  }
+
+  pub async do note(self, n u64) {say("note", n);}
+}
+
+actor Page {
+  h Helper;
+  count Arc[Mutex, Count];
+  body u64;
+  row u64;
+  items Array[u64, 4];
+  grid Array[Array[u64, 3], 2];
+
+  fn store(self, n u64) {say("store", n); body = n;}
+
+  pub async do poke(self) {
+    say("poke", body);
+    body = body + 1000u64;
+    items[2] = items[2] + 1000u64;
+  }
+
+  pub async do show(self, n u64) {say("show", n);}
+  pub async do double(self, n u64) u64 {say("double", n); n * 2u64;}
+
+  pub async do run(self) {
+    head("receiver");
+    body = 1u64;
+    self.store(await h.get(selfactor, 3u64));
+    say("body", body);
+
+    head("stored");
+    items[2] = 0u64;
+    items[await h.get(selfactor, 2u64)] = mk(7u64);
+    say("items2", items[2]);
+
+    head("indexed");
+    items[2] = 5u64;
+    imm v = items[await h.get(selfactor, 2u64)];
+    say("v", v);
+
+    head("value");
+    body = 1u64;
+    imm w = body + await h.get(selfactor, 1u64);
+    say("w", w);
+    say("body", body);
+
+    head("swapped");
+    items[2] = 9u64;
+    mut a = 1u64;
+    a <=> items[await h.get(selfactor, 2u64)];
+    say("a", a);
+    say("items2", items[2]);
+
+    head("borrowed");
+    imm x = 30u64;
+    body = take(&x, await h.get(selfactor, 4u64));
+    say("body", body);
+
+    head("added");
+    body = 100u64;
+    body += await h.get(selfactor, 5u64);
+    say("body", body);
+    mut y = 10u64;
+    y += await h.get(selfactor, 6u64);
+    say("y", y);
+
+    head("nested");
+    row = 1u64;
+    grid[row][await h.get(selfactor, 2u64)] = 77u64;
+    say("grid12", grid[1][2]);
+
+    head("locked");
+    (&mut *count).n = 0u64;
+    addTo(&mut *count, await h.get(selfactor, 7u64));
+    say("count", (&*count).n);
+
+    head("sent");
+    self.show(await self.double(5u64));
+    selfactor.show(await self.double(6u64));
+    h.note(await self.double(7u64));    // the last thing Page prints, so Helper's note comes after
+  }
+}
+
+fn main() {
+  initAll();
+  {
+    imm count = new Arc[Mutex, Count](0u64);
+    imm p = new Page(new Helper(count), count, 0u64, 0u64, [0u64, 0u64, 0u64, 0u64],
+      [[0u64, 0u64, 0u64], [0u64, 0u64, 0u64]]);
+    p.run();
+  }
+  finalAll();
+}

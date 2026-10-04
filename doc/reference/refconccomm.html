@@ -45,8 +45,8 @@
 		returns a value, and that no borrow but a <span class="pre">'static</span> one is used
 		after it, every other ending there &mdash; and builds it only on a behaviour that returns
 		a value: an <span class="pre">await</span> on anything else (an I/O completion among
-		them), inside a place, or one whose continuation would hold a traced reference, is
-		reported where it is written; nor is there a time limit on an
+		them), in a few constructs the cut does not reach yet, or one whose continuation would
+		hold a traced reference, is reported where it is written; nor is there a time limit on an
 		<span class="pre">await</span>, or a way to cancel one
 		(<a href="#await-unbuilt">Not built yet</a>). The
 		compiler's <span class="pre">--await-direct</span> option, which is for testing the cut,
@@ -782,31 +782,79 @@ actor Meter {
 The borrow 'r' holds of '*self' (made at ..) ends at this 'await', where the method
 returns to its actor's dispatcher to wait, and 'r' is used again at ..
 </pre>
-	<p>The same is true of a borrow made before the <span class="pre">await</span> for a call that
-		is only made after it: a method's receiver, or an argument written to its left. The
-		<span class="pre">await</span> is then written as a statement of its own, first. In the
-		same actor, where <span class="pre">add</span> is a function taking a
-		<span class="pre">&amp;u64</span> and a number, and <span class="pre">store</span> a
-		synchronous method:</p>
-<pre>
-  fn store(self, n u64) {reading = n;}
-
-  pub async do receiver(self) {
-    self.store(await clock.now());       // refused: 'self' was lent for the call before the 'await'
-  }
-
-  pub async do argument(self) {
-    imm x = 3u64;
-    reading = add(&amp;x, await clock.now()); // refused: &amp;x was made before the 'await'
-  }
-
-  pub async do hoisted(self) {
-    imm t = await clock.now();
-    self.store(t);
-  }
-</pre>
 	<p>A lock borrow used after the <span class="pre">await</span> is refused the same way, the
 		message naming the lock it held.</p>
+
+	<h4 id="await-statement">The rest of the statement</h4>
+	<p>An <span class="pre">await</span> may stand inside a larger expression. What follows
+		<span class="pre">await</span> is worked out first, up to the request it sends; then the
+		behaviour pauses, and the rest of the statement runs when the reply comes, as the first
+		thing the behaviour does when it resumes:</p>
+<pre>
+actor Counter {
+  pub async do next(self) u64 {2u64;}
+}
+
+actor Shelf {
+  counter Counter;
+  slots Array[u64, 4];
+  total u64;
+
+  fn put(self, n u64) {total = total + n;}
+
+  pub async do stock(self) u64 {
+    slots[await counter.next()] = 7u64;   // slots is reached after the 'await'
+    self.put(await counter.next());       // and so is self, put's receiver
+    total += await counter.next();        // total is read and written after it
+    slots[2] + total;
+  }
+}
+</pre>
+	<p><span class="pre">await shelf.stock()</span> is <span class="pre">11</span>. Each statement
+		runs as if the value awaited were made first, into a local of its own:
+		<span class="pre">imm i = await counter.next(); slots[i] = 7u64;</span>. So what the rest
+		of the statement reaches &mdash; <span class="pre">slots</span>, the state through
+		<span class="pre">self</span>, <span class="pre">total</span> &mdash; it reaches as it is
+		when the behaviour resumes, after whatever the actor's other messages did meanwhile, and
+		nothing of it is borrowed while the behaviour waits. A borrow written to the left of the
+		<span class="pre">await</span> is taken then too: <span class="pre">add(&amp;x, await
+		clock.now())</span> borrows <span class="pre">x</span> once the reply has come, and
+		<span class="pre">total += await counter.next()</span> loses nothing another message added
+		to <span class="pre">total</span> while it waited. Rust holds such a borrow across its
+		<span class="pre">await</span> instead, which it can because nothing else may change what
+		an exclusive borrow reaches while it waits; inside an actor, its other messages run
+		meanwhile.</p>
+	<p>A value is not reached again. One made to the left of the <span class="pre">await</span>,
+		in the order the statement is worked out &mdash; an argument before it, an operator's
+		operand &mdash; is made before the request is sent and waits with the method: in
+		<span class="pre">total + await counter.next()</span>, <span class="pre">total</span> is
+		read before the <span class="pre">await</span>. The value an assignment stores is made
+		before its place is reached, so in <span class="pre">slots[await counter.next()] =
+		f()</span>, <span class="pre">f</span> runs first.</p>
+	<p>What is reached again is a plain path: a local, <span class="pre">self</span>, a field, an
+		element at a plain index, or a borrow of one. A borrow a call made cannot be made again, so
+		a borrow, or a place, made by a call to the left of the <span class="pre">await</span> is
+		refused, and the message says to bind what the call makes to a local first. In
+		<span class="pre">Meter</span>, where <span class="pre">add</span> is a function taking a
+		<span class="pre">&amp;u64</span> and a number, and <span class="pre">compute</span> one
+		returning a number:</p>
+<pre>
+  pub async do fromCall(self) {
+    reading = add(&amp;compute(), await clock.now());  // refused: compute() made what is borrowed
+  }
+
+  pub async do bound(self) {
+    imm c = compute();
+    reading = add(&amp;c, await clock.now());          // c is borrowed after the 'await'
+  }
+</pre>
+<pre>
+This borrow, written to the left of an 'await' in the same statement, is made by a call
+or a temporary, and is used after the 'await'. The rest of the statement runs after the
+'await', which ends every borrow: only a plain path -- a local, 'self', a field, an
+element at a plain index -- is reached again there, never what a call made. Bind what
+the call makes to a local first, and use the local here.
+</pre>
 
 	<h4><span class="pre">self</span> and <span class="pre">selfactor</span></h4>
 	<p>An actor has two selves. <span class="pre">self</span> is its <i>state</i>, lent to the
@@ -920,11 +968,14 @@ actor Sizes {
 	<ul>
 	<li><b>Awaiting anything but a behaviour.</b> An <span class="pre">await</span> on an I/O
 		operation's completion, or on a function's call, is not built.</li>
-	<li><b>An <span class="pre">await</span> inside a place</b>: in the index of a place
-		(<span class="pre">items[await f()]</span>), in a place assigned to, or in a place a swap
-		exchanges; and in an array's contents that repeat a value more than 16 times
-		(<span class="pre">&lt;- fill await f()</span>). An <span class="pre">await</span> in the
-		value assigned, <span class="pre">body = await f()</span>, is built.</li>
+	<li><b>A few places an <span class="pre">await</span> may not cut yet</b>: in the index of
+		a place whose base holds an <span class="pre">await</span> of its own
+		(<span class="pre">m[await f()][await g()]</span>), in both places a swap exchanges, in a
+		slice's bounds (<span class="pre">&amp;items[await f()..3]</span>), in the places of a
+		parallel assignment, among the entries one <span class="pre">&lt;-</span> appends
+		(<span class="pre">v &lt;- (1, await f())</span>), and in an array's contents that repeat
+		a value more than 16 times (<span class="pre">&lt;- fill await f()</span>). Written as a
+		statement of its own first, each <span class="pre">await</span> is built.</li>
 	<li><b>A traced reference waiting for a reply.</b> An <span class="pre">await</span> at which
 		the behaviour holds a <span class="pre">Gc</span> reference it would keep is refused: the
 		collector does not see a paused behaviour's values. (<span class="pre">Gc</span> is not
@@ -943,9 +994,9 @@ actor Waiter {
     last = await compute();       // not built: compute is a function
   }
 
-  pub async do indexed(self) {
-    imm items = [1u64, 2u64, 3u64];
-    last = items[await clock.now()];  // not built: in a place's index
+  pub async do swapped(self) {
+    mut items = [1u64, 2u64, 3u64];
+    items[await clock.now()] &lt;=&gt; items[await clock.now()];  // not built: in both places
   }
 
   pub async do traced(self) {

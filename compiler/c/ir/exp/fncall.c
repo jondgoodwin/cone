@@ -1744,6 +1744,23 @@ void fnCallOpAssgn(TypeCheckState *pstate, FnCallNode **nodep) {
         return;
     }
 
+    // An operand holding an 'await', 'x += await f()', is made first, into a
+    // local of the rewrite: the seam comes before the place is borrowed, so the
+    // rest of the statement -- borrowing the place, reading it, storing the
+    // sum -- runs after the seam, where the place is reached again (await.h,
+    // awaitIsPath). Made after the borrow, the operand's seam would end it
+    VarDclNode *operand = NULL;
+    if (callnode->args && callnode->args->used == 1 && awaitWithin(nodesGet(callnode->args, 0))) {
+        INode *exp = nodesGet(callnode->args, 0);
+        operand = newVarDclFull(tempLocalName, VarDclTag, ((IExpNode*)exp)->vtype, (INode*)immPerm, exp);
+        inodeLexCopy((INode*)operand, exp);
+        NameUseNode *opname = newNameUseNode(tempLocalName);
+        opname->vtype = operand->vtype;
+        opname->dclnode = (INode *)operand;
+        inodeLexCopy((INode*)opname, exp);
+        nodesGet(callnode->args, 0) = (INode *)opname;
+    }
+
     // Let's try rewriting to: {imm tmp = lval; *tmp = *tmp + expr}
     VarDclNode *tmpvar = newVarDclFull(tempName, VarDclTag, ((IExpNode*)callnode->objfn)->vtype, (INode*)immPerm, callnode->objfn);
     inodeLexCopy((INode*)tmpvar, (INode*)callnode);
@@ -1771,6 +1788,8 @@ void fnCallOpAssgn(TypeCheckState *pstate, FnCallNode **nodep) {
     inodeLexCopy((INode*)blk, (INode*)callnode);
     blk->vtype = callnode->vtype;
     blk->flags |= FlagKeepTemps;
+    if (operand)
+        nodesAdd(&blk->stmts, (INode*)operand);
     nodesAdd(&blk->stmts, (INode*)tmpvar);
     nodesAdd(&blk->stmts, (INode*)tmpassgn);
     *((INode**)nodep) = (INode*)blk;

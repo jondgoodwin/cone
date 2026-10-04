@@ -501,6 +501,7 @@ enum ErrorCode {
     ErrorBehaviourWords = 1273, // 'async' or 'do' without the other, or 'async do' anywhere but in an actor's body: the two words together declare an actor's behaviour, and neither means anything alone
     ErrorAwaitVoid = 1274,      // 'await' on a behaviour that returns nothing, which sends no reply: a caller that needs to know it finished awaits one that declares a return type
     ErrorBehaviourSend = 1275,  // 'self.m()' on one of the actor's own behaviours where it cannot be sent: in its 'init' or 'final', in a function that is not one of its methods, or through a state that is not the method's own 'self'
+    ErrorAwaitLeftCall = 1279,  // A borrow, or a place's base, written to the left of an 'await' in its statement and made by a call: it would be used after the seam, and only a plain path (a local, 'self', a field) is reached again there
 
     // Warnings
     WarnCode = 3000,

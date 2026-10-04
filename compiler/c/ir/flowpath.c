@@ -388,6 +388,24 @@ void *pathGrow(void *buf, uint32_t *cap, size_t size) {
     return grown;
 }
 
+// Does the function being walked hold an 'await'? Then an operand list is
+// walked in the order generation makes it (awaitOrder)
+static int pwSeams = 0;
+
+// The order to walk 'nodes' in: as written, but where a seam cuts it
+// (awaitOrder). 'local' holds up to 8
+static uint32_t *pwOrder(Nodes *nodes, uint32_t *local) {
+    uint32_t cnt = nodes ? nodes->used : 0;
+    uint32_t *order = cnt <= 8 ? local : (uint32_t *)memAllocBlk(cnt * sizeof(uint32_t));
+    if (pwSeams)
+        awaitOrder(nodes, order);
+    else {
+        for (uint32_t i = 0; i < cnt; ++i)
+            order[i] = i;
+    }
+    return order;
+}
+
 // Is this type a borrowed reference: one whose referent belongs to another?
 static int pwIsBorrowed(INode *typedcl) {
     return (typedcl->tag == RefTag || typedcl->tag == ArrayRefTag || typedcl->tag == VirtRefTag)
@@ -852,9 +870,18 @@ static int pwPlace(INode **nodep, Place *pl, PathSet **base) {
     }
     case ArrIndexTag:
     {
-        // A reference to an array and a slice are indexed with no dereference injected
+        // A reference to an array and a slice are indexed with no dereference
+        // injected. An index holding a seam is made first, and the place it
+        // indexes reached after the seam, as generation does (genlAddr)
         FnCallNode *index = (FnCallNode *)node;
         uint16_t objtag = iexpGetTypeDcl(index->objfn)->tag;
+        int seamfirst = pwSeams && awaitWithin((INode *)index) && !awaitWithin(index->objfn);
+        if (seamfirst) {
+            INode **argsp;
+            uint32_t cnt;
+            for (nodesFor(index->args, cnt, argsp))
+                pwValue(argsp, 0);
+        }
         int found = objtag == RefTag || objtag == ArrayRefTag || objtag == PtrTag
             ? pwThrough(&index->objfn, pl, base) : pwPlace(&index->objfn, pl, base);
         // On a GPU target, elements holding references are picked only by a
@@ -870,7 +897,8 @@ static int pwPlace(INode **nodep, Place *pl, PathSet **base) {
         INode **argsp;
         uint32_t cnt;
         for (nodesFor(index->args, cnt, argsp)) {
-            pwValue(argsp, 0);
+            if (!seamfirst)
+                pwValue(argsp, 0);
             if (holdsrefs && !pwIsLitIndex(*argsp))
                 loanIndexedRefs(node);
         }
@@ -1575,24 +1603,27 @@ static PathSet *pwCall(FnCallNode *call) {
     PathSet *localsets[8];
     uint32_t nargs = call->args == NULL ? 0 : call->args->used;
     PathSet **argsets = nargs <= 8 ? localsets : (PathSet **)memAllocBlk(nargs * sizeof(PathSet *));
-    INode **argsp;
-    uint32_t cnt;
-    uint32_t argi = 0;
-    for (nodesFor(call->args, cnt, argsp)) {
+    // In the order generation makes them: a receiver or a borrow of a plain
+    // path before a seam another argument holds is made after it (awaitOrder)
+    uint32_t localorder[8];
+    uint32_t *order = pwOrder(call->args, localorder);
+    for (uint32_t k = 0; k < nargs; ++k) {
+        uint32_t argi = order[k];
+        INode **argsp = &nodesGet(call->args, argi);
         PathSet *carried;
-        if (meth && argsp == &nodesGet(call->args, 0)) {
+        if (meth && argi == 0) {
             carried = pwReceiver(call, meth, &recvpl, &recvloan, &recvaccess);
             twophase = recvloan && pwTwoPhase(recvaccess);
-            loanFlightPush(carried, twophase ? recvloan : 0);
+            loanFlightPushOf(carried, twophase ? recvloan : 0, *argsp);
             recvholds = carried;
-            argsets[argi++] = carried;
+            argsets[argi] = carried;
             continue;
         }
         carried = pwValue(argsp, 1);
-        loanFlightPush(carried, 0);
+        loanFlightPushOf(carried, 0, *argsp);
         if (carries)
             result = pathSetUnion(result, pwArgCarries(sig, argi, rettype, carried));
-        argsets[argi++] = carried;
+        argsets[argi] = carried;
     }
     if (pathLoans && (sig || lifeStaticBoundSeen)) {
         // A signature naming no lifetime may still bound one by ''static'
@@ -1691,8 +1722,15 @@ static PathSet *pwAssign(AssignNode *node) {
             ++index;
         }
     }
-    else
+    else {
+        // A seam in the place comes after the value is made, which is in
+        // flight across it (genlTerm, AssignTag)
+        uint32_t mark = loanFlightMark();
+        if (pwSeams && awaitWithin(node->lval))
+            loanFlightPushOf(holds, 0, node->rval);
         pwStore(&node->lval, holds, node->rval->tag == VTupleTag && !assignOneTakesTuple(node) ? &nodesGet(((TupleNode *)node->rval)->elems, 0) : &node->rval);
+        loanFlightPop(mark);
+    }
     return holds;
 }
 
@@ -1703,7 +1741,11 @@ static void pwSwap(SwapNode *node) {
     PathSet *holds[2] = { NULL, NULL };
     Place places[2];
     int found[2] = { 0, 0 };
-    for (int i = 0; i < 2; ++i) {
+    // A side holding a seam reaches its place first, the other after the
+    // seam, as generation does (genlTerm, SwapTag)
+    int first = pwSeams && awaitWithin(node->rval) && !awaitWithin(node->lval) ? 1 : 0;
+    for (int k = 0; k < 2; ++k) {
+        int i = k ^ first;
         VarDclNode *var = pwNamedVar(*sides[i]);
         Place *pl = &places[i];
         PathSet *base;
@@ -2223,6 +2265,17 @@ static void pwSeamVar(AwaitNode *node, uint32_t index, int isparm) {
         flags |= SeamDies;
     if (pwIsGuard(var))
         flags |= SeamGuard;
+    // The borrow an operator's rewrite keeps in a temporary that is no holder
+    // (pwVarDcl): only '<-' given a list of entries, one holding the seam,
+    // still holds it there, its receiver borrowed once for all of them. A
+    // compound assignment makes an operand holding a seam before it borrows
+    // (fnCallOpAssgn)
+    if (var->namesym == tempName && (flags & SeamOpen) && !pv->holder && var->vtype
+        && pwIsBorrowed(itypeGetTypeDcl(var->vtype)) && node->seamno != UINT32_MAX) {
+        node->seamno = UINT32_MAX;
+        errorMsgNode((INode *)node, ErrorUnbuiltAwait,
+            "'await' is not built here yet, so nothing is generated for it: it stands among the entries a '<-' appends, whose receiver is borrowed once for all of them and would be held across the seam. Append the awaited value with a '<-' of its own.");
+    }
     // Every borrow that is not global ends: a pending conflict, fired by the
     // holder's next use, and the loans gone from what it holds, so what they
     // froze is free from here on
@@ -2300,20 +2353,21 @@ static PathSet *pwValue(INode **nodep, int move) {
         // where it holds one (flowloan.h); elsewhere a value's tags are not
         // of the type it is part of.
         PathSet *holds = NULL;
-        INode **nodesp;
-        uint32_t cnt;
         uint32_t mark = loanFlightMark();
         Nodes *elems = node->tag == VTupleTag ? ((TupleNode *)node)->elems : ((FnCallNode *)node)->args;
         StructNode *slotted = node->tag == TypeLitTag ? lifeSlotted(((IExpNode *)node)->vtype) : NULL;
-        uint32_t fieldi = 0;
-        for (nodesFor(elems, cnt, nodesp)) {
+        uint32_t localorder[8];
+        uint32_t *order = pwOrder(elems, localorder);
+        uint32_t nelems = elems ? elems->used : 0;
+        for (uint32_t k = 0; k < nelems; ++k) {
+            uint32_t fieldi = order[k];
+            INode **nodesp = &nodesGet(elems, fieldi);
             INode **valp = (*nodesp)->tag == NamedValTag ? &((NamedValNode *)*nodesp)->val : nodesp;
             PathSet *carried = pwValue(valp, node->tag == TypeLitTag || move);
-            loanFlightPush(carried, 0);
+            loanFlightPushOf(carried, 0, *valp);
             uint32_t tag = 0;
             if (slotted && fieldi < slotted->fields.used)
                 tag = lifeFieldTag(slotted, (FieldDclNode *)nodelistGet(&slotted->fields, fieldi));
-            ++fieldi;
             carried = tag ? pathSetRemake(carried, RemakeTagged, tag, 0) : pathSetUntagged(carried);
             holds = pathSetUnion(holds, carried);
         }
@@ -2323,12 +2377,15 @@ static PathSet *pwValue(INode **nodep, int move) {
     case ArrayLitTag:
     {
         PathSet *holds = NULL;
-        INode **nodesp;
-        uint32_t cnt;
         uint32_t mark = loanFlightMark();
-        for (nodesFor(((ArrayNode *)node)->elems, cnt, nodesp)) {
+        Nodes *elems = ((ArrayNode *)node)->elems;
+        uint32_t localorder[8];
+        uint32_t *order = pwOrder(elems, localorder);
+        uint32_t nelems = elems ? elems->used : 0;
+        for (uint32_t k = 0; k < nelems; ++k) {
+            INode **nodesp = &nodesGet(elems, order[k]);
             PathSet *carried = pwValue(nodesp, 1);
-            loanFlightPush(carried, 0);
+            loanFlightPushOf(carried, 0, *nodesp);
             holds = pathSetUnion(holds, pathSetUntagged(carried));
         }
         loanFlightPop(mark);
@@ -2433,7 +2490,7 @@ static PathSet *pwCallerLoans(uint32_t var) {
     return holds;
 }
 
-void flowPathWalk(FnDclNode *fndcl, int loans, int drops) {
+void flowPathWalk(FnDclNode *fndcl, int loans, int drops, int seams) {
     // The walk's state is file-static, as flow's variable stack is: safe
     // because flow never runs re-entrantly, which this holds it to
     static int walking = 0;
@@ -2447,6 +2504,7 @@ void flowPathWalk(FnDclNode *fndcl, int loans, int drops) {
         ++statLoanFns;
     pathLoans = loans;
     pathDrops = drops;
+    pwSeams = seams;
     pathGpuChoices = flowGpu && loans;
     pwRetFirst = NULL;
     pwRetSeen = 0;

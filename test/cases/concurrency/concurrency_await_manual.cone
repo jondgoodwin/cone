@@ -19,6 +19,8 @@
 // - One request, one reply: Cache.get answers once, from before its 'await'
 //   or after it.
 // - A loop holding an 'await', which is legal: each pass waits for its reply.
+// - The rest of the statement: Shelf.stock's 'await's cut a place's index, a
+//   receiver's call and a compound assignment, each finished after its reply.
 //
 // doc/reference/refpermlock.html shows Tally.bump too, and says what Mixed
 // below checks.
@@ -171,6 +173,27 @@ actor Sizes {
 }
 // manual: end
 
+// manual: rest of the statement
+actor Counter {
+  pub async do next(self) u64 {2u64;}
+}
+
+actor Shelf {
+  counter Counter;
+  slots Array[u64, 4];
+  total u64;
+
+  fn put(self, n u64) {total = total + n;}
+
+  pub async do stock(self) u64 {
+    slots[await counter.next()] = 7u64;   // slots is reached after the 'await'
+    self.put(await counter.next());       // and so is self, put's receiver
+    total += await counter.next();        // total is read and written after it
+    slots[2] + total;
+  }
+}
+// manual: end
+
 // Not shown, but said on refpermlock.html: a borrow through a lock that is
 // no local's lasts to the end of its statement, or to an 'await' within it.
 // Mixed reads under the lock, then awaits Locker, which takes the same lock:
@@ -205,6 +228,7 @@ actor Driver {
   doubler Doubler;
   cache Cache;
   sizes Sizes;
+  shelf Shelf;
 
   pub async do go(self) {
     say("log", await logger.log());
@@ -214,6 +238,7 @@ actor Driver {
     say("get hot", await cache.get(3u64));
     say("get cold", await cache.get(4u64));
     say("total", await sizes.total(3u64));
+    say("stock", await shelf.stock());
     say("mixed", await mixed.read());
     page.load(7u64);
   }
@@ -229,7 +254,7 @@ fn main() {
     imm count = new Arc[Mutex, Count](0u64);
     imm shared = new Arc[Mutex, Count](0u64);
     imm d = new Driver(new Mixed(shared, new Locker(shared)), page, new Logger(clock), new Gauge(clock), new Tally(count, clock),
-      new Doubler(), new Cache(net, 3u64), new Sizes(net));
+      new Doubler(), new Cache(net, 3u64), new Sizes(net), new Shelf(new Counter(), [0u64, 0u64, 0u64, 0u64], 0u64));
     d.go();
   }
   finalAll();

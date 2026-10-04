@@ -361,13 +361,17 @@ the parser, for a borrow or the state itself, or `actorCheckAll` after type
 check -- and the state's field or synchronous method reached through the
 handle is `ErrorNotPublic`, as any private member is.
 
-`await` has three codes. Where it may not stand -- anywhere but a behaviour --
+`await` has four codes. Where it may not stand -- anywhere but a behaviour --
 is `ErrorAwaitPlace`; on a behaviour that returns nothing, which sends no
-reply, it is `ErrorAwaitVoid`, a rule rather than a gap; where it stands and is
-not built is `ErrorUnbuiltAwait`, whose message says why and, where the seam's
-rules were checked, what its continuation would carry: an `await` on anything
-but a behaviour, in a construct the split does not reach, or whose record
-would hold a traced reference. `selfactor` outside an actor's methods, or in
+reply, it is `ErrorAwaitVoid`, a rule rather than a gap; a borrow or a place
+written to its left in the same statement, which the rest of the statement
+uses after the seam, that a call or a temporary made rather than a plain path
+is `ErrorAwaitLeftCall`, also a rule, its message naming the fix (bind it to a
+local first); where it stands and is not built is `ErrorUnbuiltAwait`, whose
+message says why and, where the seam's rules were checked, what its
+continuation would carry: an `await` on anything but a behaviour, in a
+construct the split does not reach, or whose record would hold a traced
+reference. `selfactor` outside an actor's methods, or in
 its `init` or `final`, is `ErrorSelfActorPlace`.
 
 A GPU target takes four codes, one per remedy, all for what SPIR-V's logical

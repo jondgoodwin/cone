@@ -78,6 +78,9 @@ int actorIsState(INode *type);
 // The actor whose state 'type' is, or NULL
 ActorInfo *actorOfState(INode *type);
 
+// The actor whose handle 'fn' makes from its state ('selfactor'), or NULL
+ActorInfo *actorOfSelfFn(FnDclNode *fn);
+
 // The message a handle's method sends, and its actor, or NULL where 'send' is
 // no handle's method that sends one
 ActorMessage *actorMessageOfSend(FnDclNode *send, ActorInfo **info);

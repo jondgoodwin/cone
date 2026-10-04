@@ -1003,6 +1003,7 @@ void loanReturnedBy(uint32_t loan, Name *method) {
 typedef struct {
     PathSet *loans;     // what one operand carries
     uint32_t reserved;  // a two-phase receiver's own loan among them, or 0
+    INode *operand;     // the operand, where its pusher named it, or NULL
 } Flight;
 
 static Flight *flights = NULL;
@@ -1012,14 +1013,19 @@ uint32_t loanFlightMark() {
     return nflights;
 }
 
-void loanFlightPush(PathSet *carried, uint32_t reserved) {
+void loanFlightPushOf(PathSet *carried, uint32_t reserved, INode *operand) {
     if (carried == NULL || carried == &pathSetAll)
         return;
     if (nflights == flightcap)
         flights = (Flight *)pathGrow(flights, &flightcap, sizeof(Flight));
     flights[nflights].loans = carried;
     flights[nflights].reserved = reserved;
+    flights[nflights].operand = operand;
     ++nflights;
+}
+
+void loanFlightPush(PathSet *carried, uint32_t reserved) {
+    loanFlightPushOf(carried, reserved, NULL);
 }
 
 void loanFlightPop(uint32_t mark) {
@@ -1102,6 +1108,13 @@ void loanSeamFlight(INode *seam) {
                 continue;
             if (!loanReportOnce(seam))
                 return;
+            // A plain path is reached again after the seam (awaitReReached),
+            // so what is in flight was made by a call or a temporary
+            INode *operand = flights[f].operand;
+            if (operand && !awaitIsPath(operand)) {
+                awaitLeftCallMsg(operand, "This borrow");
+                return;
+            }
             char of[200];
             char where[160];
             loanWhere(&loans[id], where, sizeof(where));
