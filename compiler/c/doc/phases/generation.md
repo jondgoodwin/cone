@@ -1478,13 +1478,15 @@ every target.
 
 What does not work yet:
 
-- A kernel's CPU twin in `gpuwork` still runs one invocation at a time, so a
-  kernel whose invocations read, after a barrier, what invocations after them
-  write (a workgroup's prefix sum) gives another answer there; nothing
-  refuses it. The barrier hook is what a twin running a workgroup on threads
-  sets (`concurrency_compute_barrier_threads` runs one by hand).
 - A `@workgroup` global has one native copy, which nothing resets or poisons
-  between workgroups; a twin cannot yet find a module's workgroup globals.
+  between workgroups, and a twin cannot find a module's workgroup globals. A
+  GPU's workgroup memory starts undefined too, so a kernel that reads one
+  before writing it is wrong on both; finding them (a named section, its
+  bounds, a core function) would serve only a poisoning debug aid, and could
+  not work on WebAssembly, so it is not planned. (`gpuwork`'s twin runs a
+  kernel with barriers, found from `OpControlBarrier` in its entry point's
+  call tree, a workgroup at a time, one thread an invocation, each thread's
+  hook a real barrier, #337; a kernel without one, an invocation at a time.)
 - An imported package's functions are left as imports where a build
   description compiles the package on its own, so a kernel calling one
   carries the `Linkage` capability, which Vulkan's environment refuses; found
