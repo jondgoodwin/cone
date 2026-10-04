@@ -651,7 +651,8 @@ packages/geomath/
 4. **Builds each example**, `examples/<name>.cone`, the same way, and does not
    run it. An example that does not build is a failure.
 
-Each result prints as `test <name> ... ok` or `FAILED`, then a summary line;
+Each result prints as `test <name> ... ok` or `FAILED` (or, for a debug-only
+test in a release test, `skipped (debug only)`, below), then a summary line;
 `congo test` exits 1 if anything failed. A package with no `tests/` folder says
 so, and still builds its examples.
 
@@ -669,6 +670,21 @@ so, and still builds its examples.
   Each package's builds go in its own `build/` folder, as a build of it would.
 - **A test of an executable package** cannot import it, since only a library
   can be imported; `congo test` says so and fails the tests.
+- **A debug-only test** has a file `tests/<name>.debug` beside it; what the
+  file holds does not matter. It is for a test of a check made only in a debug
+  build, `assertDebug` or `assertDebugMsg`: a debug build panics on the broken
+  check, which the test expects, while a release build leaves the check out,
+  so the test has nothing to say there. `congo test` runs it as any other
+  test; `congo test --release` does not build or run it (nor bless it), and
+  reports it as skipped rather than passed or failed:
+
+  ```
+          test outoforder ... skipped (debug only)
+        Result frame: 4 tests: 3 passed, 0 failed, 1 skipped (debug only); 1 example: 1 built, 0 failed to build
+  ```
+
+  A skipped test is not a failure. Where nothing is skipped, the summary
+  reads as before.
 
 ### Writing checks with `testing`
 
@@ -884,7 +900,8 @@ template, byte for byte), `congo build` (debug and `--release`, `-D`, a
 program linked or a library's object, the build folder, the descriptions),
 `congo run` of the current package or a lone file, `congo test` (above, "Testing a
 package": the package built, each test built, run within its time and
-compared with its `.out`, `.exit` and `.err`, `--bless`, the name filter, the
+compared with its `.out`, `.exit` and `.err`, a `.debug` test skipped in a
+release test, `--bless`, the name filter, the
 examples built, a folder of packages), a marked package's kernels and a
 `gpu/` folder's (above, "Kernels for the GPU"), and `congo clean` of either, matching
 `congo.py` message for message, file for file and exit status for exit status

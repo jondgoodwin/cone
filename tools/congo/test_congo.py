@@ -1382,6 +1382,94 @@ class Testing(unittest.TestCase):
         self.assertEqual((pkg / "tests" / "wrong.out").read_text(), "5\n")
         self.congo("test", "doubles", cwd=pkg)
 
+    def halver(self, root: Path) -> Path:
+        """A library whose one function checks its argument in a debug build
+        only; a test of it that passes in either build, and one, marked
+        debug-only by its .debug file, that breaks the check."""
+        pkg = root / "halver"
+        write(pkg / "congo.toml",
+              '[package]\nname = "halver"\nversion = "0.1.0"\noutput = "library"\n')
+        # The check is on line 4 of the file, which the panic names
+        write(pkg / "src" / "halver.cone",
+              "mod halver;\n"
+              "\n"
+              "pub fn half(n i64) i64 {\n"
+              '  assertDebugMsg(n % 2i64 == 0i64, "only an even number halves");\n'
+              "  n / 2i64;\n"
+              "}\n")
+        test = """
+            mod {name};
+
+            import stdio use *;
+            import halver;
+
+            fn main() i32 {{
+              printInt(halver.half({n}i64));
+              printStr("\\n");
+              0i32;
+            }}
+            """
+        write(pkg / "tests" / "even.cone", test.format(name="even", n=8))
+        write(pkg / "tests" / "even.out", "4\n")
+        write(pkg / "tests" / "odd.cone", test.format(name="odd", n=7))
+        write(pkg / "tests" / "odd.debug", "")
+        return pkg
+
+    def test_a_debug_only_test(self):
+        pkg = self.halver(self.root)
+        # Released, it is not built or run, and so --bless writes nothing for
+        # it: a release build would not panic, and its status is not the
+        # test's. The run still succeeds
+        run = self.congo("test", "--release", "--bless", cwd=pkg)
+        self.assertIn("test even ... ok", run.stdout)
+        self.assertIn("test odd ... skipped (debug only)", run.stdout)
+        self.assertIn("halver: 2 tests: 1 passed, 0 failed, 1 skipped (debug only);"
+                      " 0 examples: 0 built, 0 failed to build", run.stdout)
+        for suffix in (".out", ".exit", ".err"):
+            self.assertFalse((pkg / "tests" / f"odd{suffix}").exists(), suffix)
+        self.assertFalse((pkg / "build" / "release" / "tests" / "odd").exists())
+        # In a debug build it runs as any test does: blessed, it panics, so its
+        # status is written beside its output
+        run = self.congo("test", "--bless", cwd=pkg)
+        self.assertIn("test odd ... ok", run.stdout)
+        self.assertIn("blessed", run.stdout)
+        self.assertNotIn("skipped", run.stdout)
+        self.assertIn("halver: 2 tests: 2 passed, 0 failed; 0 examples", run.stdout)
+        self.assertNotEqual((pkg / "tests" / "odd.exit").read_text().strip(), "0")
+        # With the panic's line expected on stderr, it passes in debug ...
+        write(pkg / "tests" / "odd.err",
+              "panic at halver.cone:4: only an even number halves\n")
+        run = self.congo("test", cwd=pkg)
+        self.assertIn("test odd ... ok", run.stdout)
+        # ... and a wrong one fails: the test ran
+        write(pkg / "tests" / "odd.err", "panic at halver.cone:4: something else\n")
+        run = self.congo("test", "odd", cwd=pkg, ok=False)
+        self.assertIn("test odd ... FAILED", run.stdout)
+        self.assertIn("stderr differs:", run.stdout)
+        # Released, the name filter finds it, and skipping it is not a failure
+        run = self.congo("test", "odd", "--release", cwd=pkg)
+        self.assertIn("test odd ... skipped (debug only)", run.stdout)
+        self.assertIn("halver: 1 test: 0 passed, 0 failed, 1 skipped (debug only);",
+                      run.stdout)
+        self.assertNotIn("no test or example has", run.stderr)
+
+    def test_a_package_of_debug_only_tests(self):
+        # Every test debug-only: in a release test, each is skipped and the
+        # run succeeds, for the package and for a folder of packages
+        shelf = self.root / "shelf"
+        pkg = self.halver(shelf)
+        (pkg / "tests" / "even.cone").unlink()
+        run = self.congo("test", "--release", cwd=pkg)
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assertIn("test odd ... skipped (debug only)", run.stdout)
+        self.assertIn("halver: 1 test: 0 passed, 0 failed, 1 skipped (debug only);"
+                      " 0 examples: 0 built, 0 failed to build", run.stdout)
+        self.assertNotIn("failed:", run.stderr)
+        self.congo("new", "plain", str(shelf / "plain"), "--lib", cwd=self.root)
+        run = self.congo("test", "--release", cwd=shelf)
+        self.assertIn("2 packages: 1 test: 0 passed, 0 failed, 1 skipped (debug only);"
+                      " 0 examples: 0 built, 0 failed to build", run.stdout)
+
     def test_no_tests_and_a_folder_of_packages(self):
         shelf = self.root / "shelf"
         self.congo("new", "plain", str(shelf / "plain"), "--lib", cwd=self.root)
