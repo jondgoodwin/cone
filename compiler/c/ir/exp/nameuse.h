@@ -69,6 +69,10 @@ void nameUseBaseInstanceMember(TypeCheckState *pstate, NameUseNode *name);
 // at the use 'name', and return 1 if 'dcl' is one
 int nameUseTemplateMember(NameUseNode *name, INode *dcl);
 
+// Report a bare field or method name 'name' where there is no self to reach it
+// through, naming the fixes where the member's name hides a module
+void nameUseNoSelf(TypeCheckState *pstate, NameUseNode *name);
+
 // Handle type check for variable/function name use references
 void nameUseTypeCheck(TypeCheckState *pstate, NameUseNode **name);
 

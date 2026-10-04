@@ -1,0 +1,60 @@
+// 'import x as y' BINDS THE MODULE UNDER 'y' INSTEAD OF ITS OWN NAME. 'y' is used
+// exactly as 'x' would have been -- a type, a function, a module nested in it --
+// and 'x' is bound to nothing here. Every form the import takes takes it: a name
+// or a quoted path, a package or a sister, with a 'use' clause after the rename
+// or none, 'pub' or not, and a module's default fold still applies.
+//
+// The rename is one of two ways round a member that shadows a module. A field
+// or method named like a module hides it inside its type, its signatures
+// included, as any inner name hides an outer one: model renames its import, and
+// Clock, below, reaches the module through this module's own name, which no
+// member hides.
+//
+// The folder holds a tree of six sisters:
+//   geometry/geometry.cone  a type and a function, and metric, a module nested in it
+//   geometry/metric.cone    'pub mod metric', reached through geometry's new name
+//   ident/ident.cone        a generic module, 'mod ident[T]'
+//   units/units.cone        a default fold, 'mod units use metres'
+//   sketch/sketch.cone      'import geometry as geo': type, function, nested
+//                           module; 'import ident as same': an instance
+//   plot/plot.cone          a 'use' clause after the rename; 'pub import' renamed
+//   model/model.cone        a method named geometry, the import renamed round it
+
+mod module_import_as;
+
+// A quoted path, renamed, with a 'use' clause after the rename
+import "stdio" as io use printStr;
+
+// Under its own name, which a method of Clock hides
+import libc;
+
+struct Clock {
+  n i64;
+  // 'libc' here is the method; the module is reached through this module's name
+  fn libc(self &) module_import_as.libc.Timespec {
+    new module_import_as.libc.Timespec(n, 9i32);
+  }
+}
+
+fn show(label &[]u8, n i64) {
+  printStr(label);
+  printStr(" = ");
+  io.printInt(n);
+  printStr("\n");
+}
+
+fn main() i32 {
+  // geo.dist2((1,2),(4,6)) + geo.metric.cm(3) + same[i64].of(5): 9 + 16 + 30 + 5
+  show("renamed-type-fn-nested-generic", sketch.width());
+  // d2((1,1),(4,5)) + metres(2): 9 + 16 + 2000
+  show("use-after-rename", plot.area());
+  // 'pub import units as u': the new name is public, and so is the default fold
+  show("pub-renamed-module", plot.u.inches(2i64));
+  show("pub-renamed-default-fold", plot.metres(3i64));
+  // The method named geometry returns geomod.Point(7, 8)
+  show("rename-round-a-member", model.reach(7i64));
+  // The method named libc returns libc.Timespec(5, 9)
+  imm t = new Clock(5i64).libc();
+  show("through-own-name", t.tv_sec * 10i64 + i64.from(t.tv_nsec));
+  0i32;
+}

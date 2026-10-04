@@ -241,7 +241,9 @@ reject an overload name everywhere else. Bail if `objfn` is already marked
   ([nameuse](nameuse.md), step 2): a static function's body, and a signature,
   which is checked with no function of its own around it. A member's name
   hides a module of the same name inside its type, so `mesh.Mesh` in a
-  signature of a type with a method `mesh` arrives here.
+  signature of a type with a method `mesh` arrives here, and `nameUseNoSelf`'s
+  message names the two ways past it: import the module under another name, or
+  reach it through the module's own name.
 - **An overload set** → `fnCallLowerOverloadFn` type checks every candidate not
   yet analyzed (`fnCallDemandCandidates`, as a member name's are below), then
   picks the concrete candidate.
