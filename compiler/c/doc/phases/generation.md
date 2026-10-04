@@ -381,8 +381,9 @@ thread-binding.
 
 A struct handed to LLVM as a first-class value crosses a call one register per
 field, which no C ABI does. (Cone's own convention passes one of more than 64
-bytes by a pointer instead, and returns it through a slot: section 6, "Large
-aggregates", which leaves a C-named function's convention alone.) So a
+bytes by a pointer instead, and returns an aggregate as a vector, as integers
+or through a slot: section 6, "Large aggregates", which leaves a C-named
+function's convention alone.) So a
 **C-named function a module owns**
 (`genlIsCAbiFn`: `DclCName`, its owner a module) — an `extern` one C defines,
 a body C calls — has its structs lowered in `genlcabi.c`, the one place that
@@ -424,8 +425,9 @@ passes through the same four with its Cone signature untouched.
 
 **Not lowered:** a call through a `&fn`, which is typed by its Cone signature
 (`genlPointeeType`) and carries no widening marks. A C-named function's address handed to C is right, since
-C calls it; Cone calling a C-named function with a struct parameter through a
-`&fn`, or C's function pointer with one, is not. A type's `fn @c` method keeps
+C calls it; Cone calling a C-named function with a struct parameter or result
+through a `&fn`, or C's function pointer with one, is not (such a call takes
+Cone's convention, section 6, "Large aggregates"). A type's `fn @c` method keeps
 Cone's convention, since a vtable slot calls it by its Cone signature.
 
 ### Enums
@@ -1124,6 +1126,40 @@ The rewrite:
   (`genlcabi.c`): `genlCAbiDeclare` marks it `"cone-cabi"`, which the pass
   reads and removes.
 
+**A smaller aggregate result is returned in registers or through its caller's
+slot, never one register per field** (`genlAggRetClass`). LLVM returns a
+first-class aggregate one register per field, and Win64's backend sends the
+third and fourth floats of a `Vec4` through the x87 stack, through memory, on
+every return. The same remaking, of every function, declaration and call of
+that type, direct or through a vtable slot or a `&fn`, returns:
+
+- a struct, array or tuple of **2 to 4 `f32`s, or 2 `f64`s**, with no padding,
+  as one vector (`<4 x float>`, `<3 x float>`, `<2 x double>`): one `xmm`
+  register. The callee builds the vector from the value's parts, and the
+  caller the value from the vector's elements;
+- **any other of up to 16 bytes** as one integer of its size rounded up to 1,
+  2, 4 or 8 bytes, or `{ i64, i64 }` (two integer registers), through a slot
+  of the frame, as clang coerces a C struct: the callee zeroes the slot where
+  the value's scalars leave a byte (padding, or bytes past its end), stores
+  the value and loads the integers; the caller stores the integers and loads
+  the value. **One or two scalars return as they are**, as Rust's `ScalarPair`
+  does, since LLVM already gives each its own register: a slice's pointer and
+  length, a pair of `i32`s;
+- **one of 17 to 64 bytes through a slot its caller passes first** (`sret`),
+  the value stored there whole and loaded whole after the call.
+
+Arguments of 64 bytes or less are passed as they were: passing one by a
+pointer to a copy the caller makes was measured slower than this (the caller
+writes the copy a field at a time, and the callee reads it back 16 bytes at a
+time, which the processor cannot forward from the stores). The return shape is
+a function of the LLVM type alone, so every module computes the same one.
+**Measured** against returning every aggregate whole, on `geomath`'s bench
+with its matrix methods out of line (each operation a call; i7-13700HX, best
+of 15, at the `generic` / `raptorlake` CPU): `Mat4 * Vec4` 6.6 / 3.8 ns
+against 11.7 / 6.9, `Mat3 * Mat3` 6.7 / 6.2 against 10.0 / 9.9, `Mat4 * point`
+3.2 / 3.3 against 3.6 / 3.5, and `Mat4 * Mat4` 18.6 / 9.4 against 18.3 / 10.9,
+every result the same bits. Measured 4 October 2026.
+
 A home is never written once its value exists, which is what lets a part's
 address, a select or a callee read it in place. Each copy is made where its
 value was loaded, stored, passed or returned, so what each sees of memory,
@@ -1659,9 +1695,10 @@ variables.
   in: `f(mk(1).n, { imm x = mk(2); if c { return; } 3; })` finalizes the first
   `mk` before `x`. Each dies once; only the order, in that shape, is not
   newest first.
-- **A function taking or returning a large aggregate is a different LLVM
-  function after `genlAggCopies`** (section 6, "Large aggregates"): remade with
-  pointer parameters and the old one deleted, so a `FnDclNode`'s `llvmvar`, or
+- **A function taking a large aggregate, or returning any aggregate but one or
+  two scalars, is a different LLVM function after `genlAggCopies`** (section
+  6, "Large aggregates"): remade with pointer parameters or another result
+  type and the old one deleted, so a `FnDclNode`'s `llvmvar`, or
   any other function value kept from generation, is stale once it has run.
   Nothing after it reads one.
 
@@ -1715,7 +1752,7 @@ variables.
 | `genllvm/genlcabi.c` | `genlCAbiTarget`, `genlIsCAbiFn`, `genlCAbiPass` | which C ABI the target follows, which functions cross by it, and how one struct crosses |
 | | `genlCAbiExtend`, `genlCAbiMarkExtends` | the `zeroext` or `signext` a narrow integer crosses with, marked on a declaration or a call |
 | | `genlFnDclType`, `genlCAbiDeclare`, `genlFnDclCall`, `genlFnDclParm`, `genlFnDclReturn` | a declared function's LLVM type, its `sret` and widening marks (and the `"cone-cabi"` mark `genlAggCopies` leaves alone), a direct call to it, its prologue's parameters and its returns — lowered for a C-named one |
-| `genllvm/genlaggcopy.c` | `genlAggCopies`, `genlAggFn` | once the module is generated, every struct, array or tuple of more than `GenlAggCopyMin` bytes moved into memory, function by function (section 6, "Large aggregates") |
+| `genllvm/genlaggcopy.c` | `genlAggCopies`, `genlAggFn`, `genlAggRetClass` | once the module is generated, every struct, array or tuple of more than `GenlAggCopyMin` bytes moved into memory, function by function, and every smaller aggregate result returned as a vector, as integers or through a slot (section 6, "Large aggregates") |
 | | `genlAggRetype`, `genlAggSig`, `genlAggCall` | a function taking or returning one remade with pointer parameters and a result slot first; each call to that type passing homes |
 | | `genlAggInst`, `genlAggHomeOf`, `genlAggReadInPlace` | each instruction making or taking one, rewritten to copy between homes; a value's home, made where it is; a load read where it lies when nothing between could change it |
 | | `genlAggCopyTo`, `genlAggConstTo`, `genlAggPhis`, `genlAggEdge` | a copy with `llvm.memcpy`, a constant's with `llvm.memset` or field by field, each phi's slot filled at its predecessors' ends, an edge given a block of its own |
