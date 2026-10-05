@@ -442,6 +442,9 @@ int genlAggPassesByPtr(GenState *gen, LLVMTypeRef type);
 // Mark an instruction so
 void genlMark(GenState *gen, LLVMValueRef inst, const char *mark);
 
+// genllvm.c: a target machine for the options' triple, CPU and features
+LLVMTargetMachineRef genlCreateMachine(ConeOptions *opt);
+
 // genltype.c
 // Generate a type value
 LLVMTypeRef genlType(GenState *gen, INode *typ);

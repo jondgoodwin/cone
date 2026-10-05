@@ -1234,21 +1234,29 @@ LLVMTargetMachineRef genlCreateMachine(ConeOptions *opt) {
 }
 
 // Generate requested object file
-void genlOut(char *objpath, char *asmpath, LLVMModuleRef mod, LLVMTargetMachineRef machine) {
+void genlOut(ConeOptions *opt, char *objpath, char *asmpath, LLVMModuleRef mod, LLVMTargetMachineRef machine) {
     char *err;
 
     // Generate assembly file if requested. LLVM's SPIR-V backend rewrites the
     // module it emits (its intrinsics, its own types), and crashes emitting
-    // that again, so on a GPU target the assembly is emitted from a copy.
+    // that again, so on a GPU target the assembly is emitted from a copy, by
+    // a target machine of its own: the backend keeps what it learns of a
+    // module in the machine's subtarget, keyed by addresses, and a second
+    // module emitted by one machine, the copy disposed between, now and then
+    // met a stale entry at a reused address and failed to select (genlGpuOut)
     if (asmpath) {
         int gpu = strncmp(LLVMGetTarget(mod), "spirv", 5) == 0;
         LLVMModuleRef asmmod = gpu ? LLVMCloneModule(mod) : mod;
-        if (LLVMTargetMachineEmitToFile(machine, asmmod, asmpath, LLVMAssemblyFile, &err) != 0) {
+        LLVMTargetMachineRef asmmachine = gpu ? genlCreateMachine(opt) : machine;
+        if (asmmachine && LLVMTargetMachineEmitToFile(asmmachine, asmmod, asmpath, LLVMAssemblyFile, &err) != 0) {
             errorMsg(ErrorGenErr, "Could not emit asm file: %s", err);
             LLVMDisposeMessage(err);
         }
-        if (gpu)
+        if (gpu) {
             LLVMDisposeModule(asmmod);
+            if (asmmachine)
+                LLVMDisposeTargetMachine(asmmachine);
+        }
     }
 
     // Generate .o or .obj file
@@ -2145,7 +2153,7 @@ void genpgm(GenState *gen, ProgramNode *pgm) {
         if (gen->opt->vulkan)
             genlGpuOut(gen, objpath, asmpath);
         else
-            genlOut(objpath, asmpath, gen->module, gen->machine);
+            genlOut(gen->opt, objpath, asmpath, gen->module, gen->machine);
     }
 
     LLVMDisposeModule(gen->module);

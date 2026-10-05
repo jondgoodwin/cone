@@ -1156,9 +1156,18 @@ static char *genlGpuNoContractionAsm(const char *text, size_t len) {
 void genlGpuOut(GenState *gen, char *objpath, char *asmpath) {
     char *err;
     if (asmpath) {
+        // Emitted by a target machine of its own: LLVM's SPIR-V backend keeps
+        // what it learns of a module's types and values in the machine's
+        // subtarget, keyed by their addresses, and a second module emitted
+        // by the same machine, the copy disposed between, now and then met
+        // a stale entry at a reused address and failed to select an
+        // instruction (measured: 4 compiles in 150)
         LLVMModuleRef asmmod = LLVMCloneModule(gen->module);
+        LLVMTargetMachineRef asmmachine = genlCreateMachine(gen->opt);
         LLVMMemoryBufferRef asmbuf;
-        if (LLVMTargetMachineEmitToMemoryBuffer(gen->machine, asmmod, LLVMAssemblyFile, &err, &asmbuf) != 0) {
+        if (asmmachine == NULL)
+            ;
+        else if (LLVMTargetMachineEmitToMemoryBuffer(asmmachine, asmmod, LLVMAssemblyFile, &err, &asmbuf) != 0) {
             errorMsg(ErrorGenErr, "Could not emit asm file: %s", err);
             LLVMDisposeMessage(err);
         }
@@ -1177,6 +1186,8 @@ void genlGpuOut(GenState *gen, char *objpath, char *asmpath) {
             LLVMDisposeMemoryBuffer(asmbuf);
         }
         LLVMDisposeModule(asmmod);
+        if (asmmachine)
+            LLVMDisposeTargetMachine(asmmachine);
     }
     LLVMMemoryBufferRef buf;
     if (LLVMTargetMachineEmitToMemoryBuffer(gen->machine, gen->module, LLVMObjectFile, &err, &buf) != 0) {

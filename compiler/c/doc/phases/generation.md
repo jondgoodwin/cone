@@ -1614,8 +1614,12 @@ it. So the GPU pipeline and what follows it keep to those shapes:
   or call making one has its leaves extracted just after it, and a use taking
   it whole (a return, a store, a call) gets it rebuilt just before. One of
   more than 256 leaves is left whole.
-- **`--asm` emits from a copy of the module**, since the backend rewrites the
-  module it emits and crashes emitting it again (`genlOut`).
+- **`--asm` emits from a copy of the module, by a target machine of its
+  own**, since the backend rewrites the module it emits and crashes emitting
+  it again, and keeps what it learns of a module in the machine's subtarget,
+  keyed by addresses: a second module emitted by one machine, the copy
+  disposed between, failed instruction selection in about 3 compiles in 100
+  (`genlOut`, `genlGpuOut`).
 
 Where the backend still crashes, `conec` says where, as `llc` does: `genSetup`
 enables LLVM's pretty stack trace, so the crash names the pass and the
@@ -1965,7 +1969,7 @@ variables.
 | | `genlLinkage`, `genlDefinition`, `genlIsDefinedHere`, `genlVtableDefinition` | linkage, storage class and calling convention, together, from the declaration facts and what this object does with the symbol: declares it, defines it, defines and exports it, or defines it shared |
 | | `genlComdat`, `genlNameAnonFn` | the per-definition COMDAT that lets the linker drop a symbol, its kind read off the linkage; the private name an anonymous `fn` needs to have one |
 | | `genlComdatSupport` | what the target's object format does with COMDATs |
-| | `genlOut` | emit object and asm, the asm from a copy of the module on a GPU target |
+| | `genlOut` | emit object and asm, the asm from a copy of the module, by a target machine of its own, on a GPU target |
 | `ir/export.c` | `dclIsInstance` | whether a declaration is a generic's instance or a member of one — every function and global of a generic module's instance among them |
 | | `dclIsExported`, `typeHoldsExpanded` | whether a library compile exports a definition to its importers; the include-file generator asks the same |
 | `genllvm/genltype.c` | `genlType`, `_genlType` | the memoizing entry, which generates the queued pointees once the outermost type is done, and the per-tag lowering switch |
