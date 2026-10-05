@@ -35,13 +35,36 @@
 #define objext "o"
 #endif
 
+// May a parameter passed as a pointer be read where its caller's storage is,
+// rather than copied into the parameter's own slot (generation.md, "Lending a
+// place to a call")? Only one its body cannot change and never borrows, so
+// that nothing writes through the pointer and nothing keeps it: its binding
+// is not 'mut', flow saw no borrow of it, nothing finalizes its type and it
+// holds no traced reference (both of which take its slot's address); not in
+// a split method, whose parameters outlive its first half's call; not for a
+// C-named function, which keeps C's ABI
+static int genlParmInPlace(GenState *gen, FnDclNode *fndcl, VarDclNode *var) {
+    if (gen->opt->gpu || gen->seams || genlIsCAbiFn(fndcl))
+        return 0;
+    if (!(var->flowlend & VarLendSeen) || (var->flowlend & VarLendBorrowed))
+        return 0;
+    if (var->perm == NULL || (permGetFlags(var->perm) & MayWrite))
+        return 0;
+    if (itypeNeedsFinal(var->vtype) || itypeHoldsTraced(var->vtype))
+        return 0;
+    return genlAggPassesByPtr(gen, genlType(gen, var->vtype));
+}
+
 // Generate parameter variable of the function 'fndcl' being generated
 void genlParmVar(GenState *gen, FnDclNode *fndcl, VarDclNode *var) {
     assert(var->tag == VarDclTag);
     // We always alloca in case variable is mutable or we want to take address of its value
     var->llvmvar = genlAlloca(gen, genlType(gen, var->vtype), &var->namesym->namestr);
     genlRootNote(gen, var->llvmvar, var->vtype);
-    LLVMBuildStore(gen->builder, genlFnDclParm(gen, fndcl, var), var->llvmvar);
+    LLVMValueRef store = LLVMBuildStore(gen->builder, genlFnDclParm(gen, fndcl, var), var->llvmvar);
+    // The slot is then the pointer the parameter is passed as (genlAggCopies)
+    if (genlParmInPlace(gen, fndcl, var))
+        genlMark(gen, store, GenlParmHomeMark);
     genlDropFlagBegin(gen, var, DropFlagWhole);
 }
 

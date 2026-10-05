@@ -380,9 +380,11 @@ thread-binding.
 ### C-named functions and the C ABI
 
 A struct handed to LLVM as a first-class value crosses a call one register per
-field, which no C ABI does. (Cone's own convention passes one of more than 64
-bytes by a pointer instead, and returns an aggregate as a vector, as integers
-or through a slot: section 6, "Large aggregates", which leaves a C-named
+field, which no C ABI does. (Cone's own convention passes one of more than 16
+bytes, holding more than two scalars, by a pointer instead, to its caller's
+own storage where nothing can change it during the call, and returns an
+aggregate as a vector, as integers or through a slot: section 6, "Large
+aggregates" and "Lending a place to a call", which leave a C-named
 function's convention alone.) So a
 **C-named function a module owns**
 (`genlIsCAbiFn`: `DclCName`, its owner a module) — an `extern` one C defines,
@@ -1120,9 +1122,10 @@ The rewrite:
 - a `store` and a `ret` copy from the home; a null constant is a `memset`, a
   struct constant stored field by field, any other array constant copied from
   a private constant of it;
-- **a function taking one takes a pointer to its caller's copy**, marked
-  `noalias readonly`, and **one returning one fills a slot its caller passes
-  first** (`sret`), as clang's Win64 convention does for C. Each such
+- **a function taking one takes a pointer** (`genlAggByPtr`, a smaller one
+  too: "Lending a place to a call", below), and **one returning one fills a
+  slot its caller passes first** (`sret`), as clang's Win64 convention does
+  for C. Each such
   function is remade with that type under its name (its body, attributes,
   COMDAT and debug information moved over), and every call to that type,
   direct or through a vtable slot or a reference, passes homes; every object
@@ -1152,11 +1155,8 @@ that type, direct or through a vtable slot or a `&fn`, returns:
 - **one of 17 to 64 bytes through a slot its caller passes first** (`sret`),
   the value stored there whole and loaded whole after the call.
 
-Arguments of 64 bytes or less are passed as they were: passing one by a
-pointer to a copy the caller makes was measured slower than this (the caller
-writes the copy a field at a time, and the callee reads it back 16 bytes at a
-time, which the processor cannot forward from the stores). The return shape is
-a function of the LLVM type alone, so every module computes the same one.
+The return shape is a function of the LLVM type alone, so every module
+computes the same one.
 **Measured** against returning every aggregate whole, on `geomath`'s bench
 with its matrix methods out of line (each operation a call; i7-13700HX, best
 of 15, at the `generic` / `raptorlake` CPU): `Mat4 * Vec4` 6.6 / 3.8 ns
@@ -1174,6 +1174,101 @@ build's optimizer then forwards the copies (`memcpyopt`, SROA); a debug build
 keeps them. **Not on a GPU target**, where `llvm.memcpy` is not legal Vulkan
 SPIR-V and its own pipeline breaks every aggregate into scalars
 (`genlGpuAggregates`, section 7).
+
+### Lending a place to a call
+
+**A struct, array or tuple argument of more than 16 bytes, holding more than
+two scalars, is passed as a pointer** (`genlAggByPtr`, `GenlPassPtrMin`), and
+that pointer is to its caller's own storage, with no copy, wherever the
+permissions prove that nothing can change that storage until the call
+returns. "By value" stays the language's promise: the callee sees the value
+its caller passed, whatever the call does meanwhile. The rule (`genlLendable`,
+every case written out, anything not named copied, since a wrong lend is a
+miscompile):
+
+- the argument's type is passed as a pointer, nothing finalizes it, and it
+  holds no traced reference (a finalizer and a collector's root take its
+  slot's address);
+- it is a variable, or a field, tuple element or array element of one at any
+  depth, **never reached through a reference or a pointer**. A `mut` slice's
+  element may be written through another alias, and what an `imm` reference
+  reaches may be freed by a later argument: in `take(*r, consume(own))`,
+  with `r` borrowed from the `Rc` `own`, the borrow's last use is before
+  `consume`, which may free what `r` points at, and flow lets it;
+- the variable is a local or a parameter: never a global or a static, never
+  a match's binding sharing another variable's storage (`flowMatchInPlace`);
+- flow saw its whole function, and nothing there borrows it, or a part of it,
+  with a permission that may write (anything but `imm` and `ro`, `opaq`
+  included, since an atomic is written through one), nor makes a raw pointer
+  of a borrow of it (`VarLendWritable`, set by `flowLendNote` as `borrowFlow`
+  walks each borrow). So no `&mut` route to it is passed in the call or held
+  anywhere: `viaMut(u, &mut u)` copies `u`;
+- an `imm` variable is then lent. One the program may assign is lent only
+  when no other argument, nor the callee's expression, holds anything that
+  could assign it (`genlLendQuiet`: names, literals, reads, borrows, casts,
+  calls, and literals of them; an assignment, a swap, a block or an `if` is
+  not), since those may run after its load: `take(z, (z = w).b)` copies `z`.
+  A call cannot reach it, since nothing borrows it to write.
+
+Only a call keeping Cone's convention lends (`genlCallLends`): a direct call
+of a Cone function, or one through a `&fn`, a pointer or a vtable, which
+every module remakes alike. Not a C-named function, which keeps C's ABI
+(`genlcabi.c`); not an `inline` function or an intrinsic, which have no call;
+not a construction by a declared `init` (`genlNewArgs`), whose arguments are
+copied; not in a split method, whose arguments may wait in flight across a
+seam (`genlExprsAcross`); not on a GPU target, where nothing is passed as a
+pointer and every function is inlined.
+
+**Generation hands the pass a place.** `genlFnCall` evaluates each lendable
+argument as its place's address (`genlAddr`) and a load from it, marked
+`GenlLendMark` (`genlArgsLending`), every other argument as its value. In
+`genlAggCopies`, a marked load whose every use is an argument a Cone function
+takes as a pointer (`genlAggLent`) is passed its address, and the load goes.
+Anything else passed as a pointer is copied into a slot of the caller's
+frame (`genlAggArgPtr`): a value loaded for that call alone by
+`llvm.memcpy` where it was loaded, so it is what memory held there, copied
+wide; another call's result of 17 to 64 bytes is passed the slot it was
+returned in, which only that call writes; any other value is stored, one of
+floats alone 16 bytes at a time, as vectors (`genlAggWideStore`), so the
+callee's 16-byte loads are forwarded from stores of the same bytes. A large
+value's home is its place where it is lent, and is passed as before
+otherwise.
+
+**The callee reads its caller's storage where it is**, unless it may change
+it. Its parameter is `ptr noalias readonly captures(none) dereferenceable(N)`:
+nothing changes what it points at until the call returns, and nothing keeps
+it past. `genlParmVar` stores each parameter into its variable's slot, as
+always, and marks the store `GenlParmHomeMark` where the parameter is only
+read (`genlParmInPlace`: its binding is not `mut`, flow saw no borrow of it
+at all, nothing finalizes its type, it holds no traced reference, and the
+function is neither split nor C-named); the pass then makes the pointer the
+variable's slot (`genlAggParmInPlace`), and every read, and every lend of it
+on, is through the pointer. Any other parameter is copied into its slot as
+the body begins: a large one by `llvm.memcpy` from its home, a smaller one
+loaded whole (`genlAggParmLoad`) and stored. A borrow of a parameter takes
+the address of that copy, so the pointer is never kept.
+
+**Why 16 bytes.** Passed whole, a 16-byte `Vec4` is four floats in registers
+or stack slots. Passed as a pointer, a `Vec4` made in registers must be
+stored first: measured on out-of-line functions of a 12-byte `Vec3` and a
+16-byte `Vec4` made fresh in each call, a pointer for every struct of three
+scalars or more was 2.1 to 2.7 times slower on `Vec3` (`cross` then `add`,
+4.9 → 10.4 / 13.2 ns) and 1.3 times slower on a `Vec4` dot product (1.09 →
+1.38 ns), while it gained on `Mat4 * Vec4` (1.39 → 1.08 ns) and a `Vec4`
+chain whose accumulator it lent. At more than 16 bytes the pointer gained
+everywhere measured.
+
+**Measured** on `geomath`'s bench with its matrix methods out of line (each
+operation a call; i7-13700HX, best of 9, interleaved, at the `generic` /
+`raptorlake` CPU), against passing every argument of 64 bytes or less whole:
+`Mat4 * Mat4` 6.9 / 5.9 ns against 18.8 / 8.9, `Mat4 * Vec4` 1.40 / 1.08
+against 6.8 / 3.9, `Mat4 * point` 1.66 / 1.50 against 3.2 / 3.4, and
+`Mat3 * Mat3` 4.4 / 4.2 against 6.8 / 6.2, every result the same bits; the
+shipped bench, its methods `inline`, is unchanged. The matrix, an `imm`
+local, is lent; the bench's other operand, a `mut` slice's element, is
+copied, and a release build's optimizer forwards that copy itself where it
+proves nothing the call reaches can write the slice's memory. Measured 4
+October 2026.
 
 ### A split method
 
@@ -1836,11 +1931,12 @@ variables.
   in: `f(mk(1).n, { imm x = mk(2); if c { return; } 3; })` finalizes the first
   `mk` before `x`. Each dies once; only the order, in that shape, is not
   newest first.
-- **A function taking a large aggregate, or returning any aggregate but one or
-  two scalars, is a different LLVM function after `genlAggCopies`** (section
-  6, "Large aggregates"): remade with pointer parameters or another result
-  type and the old one deleted, so a `FnDclNode`'s `llvmvar`, or
-  any other function value kept from generation, is stale once it has run.
+- **A function taking an aggregate passed as a pointer, or returning any
+  aggregate but one or two scalars, is a different LLVM function after
+  `genlAggCopies`** (section 6, "Large aggregates", "Lending a place to a
+  call"): remade with pointer parameters or another result type and the old
+  one deleted, so a `FnDclNode`'s `llvmvar`, or any other function value
+  kept from generation, is stale once it has run.
   Nothing after it reads one.
 
 ## 9. Code pointer map
@@ -1860,6 +1956,7 @@ variables.
 | | `genlGlobalSyms`, `genlGlobalImpl` | declare a node's symbol; emit its body |
 | | `genlImportedInstances` | emit the bodies of the instances this compile made of a module it does not generate |
 | | `genlFn`, `genlParmVar`, `genlAlloca` | function body (a split method's first half, then its second halves), parameter allocas, entry-block alloca placement |
+| | `genlParmInPlace` | whether a parameter passed as a pointer is only read, its store marked for the pass to read it in place (section 6, "Lending a place to a call") |
 | | `genlRootNote`, `genlRootBirth`, `genlRootFrame`, `genlRootsSave`, `genlRootsRestore` | roots: a slot noted as one, a birth's slot, the frame's map, push and pops; the roots set aside around a nested function |
 | | `genlGloFnName`, `genlGloVarName` | declare a function or global under the symbol `nameSymbol` spells |
 | | `genlIsVoidMain` | whether a function is a `main` returning nothing, generated returning `i32 0` for the exit status |
@@ -1897,6 +1994,9 @@ variables.
 | | `genlAggRetype`, `genlAggSig`, `genlAggCall` | a function taking or returning one remade with pointer parameters and a result slot first; each call to that type passing homes |
 | | `genlAggInst`, `genlAggHomeOf`, `genlAggReadInPlace` | each instruction making or taking one, rewritten to copy between homes; a value's home, made where it is; a load read where it lies when nothing between could change it |
 | | `genlAggCopyTo`, `genlAggConstTo`, `genlAggPhis`, `genlAggEdge` | a copy with `llvm.memcpy`, a constant's with `llvm.memset` or field by field, each phi's slot filled at its predecessors' ends, an edge given a block of its own |
+| | `genlAggByPtr`, `genlAggPassesByPtr` | whether an argument of an LLVM type is passed as a pointer (section 6, "Lending a place to a call") |
+| | `genlAggLent`, `genlAggArgPtr`, `genlAggWideStore` | a load generation lent, passed its address; any other argument passed as a pointer, copied: where it was loaded, a call's result slot passed on, or stored wide |
+| | `genlAggParmInPlace`, `genlAggParmLoad` | a parameter only read, its variable's slot made the pointer; any other read whole as the body begins |
 | `genllvm/genlstmt.c` | `genlBlock` | block creation, phi state, terminator suppression; each statement's temporaries finalized at its end |
 | | `genlBreak`, `genlReturn` | phi edges, temporaries and dealias; inlined-return-as-break |
 | `genllvm/genlexpr.c` | `genlExpr`, `genlAddr`, `genlStore` | the value / address / store trio — section 4 |
@@ -1909,6 +2009,7 @@ variables.
 | | `genlBitIntrinsic` | an integer's bit intrinsics and the integer methods built from them: counts, rotates, masked shifts |
 | | `genlShift` | `<<` and `>>` on an integer, defined past the width: a compare and a select, none for a constant amount |
 | | `genlAtomicIntrinsic` | an atomic intrinsic, reached from `genlFnCall` with the call's constant orderings |
+| | `genlLendable`, `genlLendQuiet`, `genlCallLends`, `genlArgsLending` | whether a call may be handed an argument's own storage, each case written out; a call keeping Cone's convention; its arguments, each lent place loaded from its address and marked (section 6, "Lending a place to a call") |
 | | `genlConvert`, `genlRecast`, `genlIsType` | the three cast forms |
 | | `genlArrayIndex`, `genlBoundsCheck` | multi-dimensional GEP and its checks |
 | | `genlArrayLitInto`, `genlArrayRun` | an array's contents repeating a value, or the scalars of one written with several sizes, filled in place element by element, into a variable or an allocation: a `memset` for a null constant, a loop for any other repeated value, never one aggregate ([literals](../nodes/literals.md), "Generation") |

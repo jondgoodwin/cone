@@ -1,0 +1,56 @@
+// The program: each argument lent where nothing can change it during the
+// call, copied where something can, and every callee in another object.
+
+mod prog;
+
+import stdio use *;
+import lendee use *;
+
+fn show(label &[]u8, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+fn main() i32 {
+  // An 'imm' local, lent; the callee lends it on, recursing
+  imm x = new Big(1, 2, 3);
+  show("imm", digits(x));
+  show("depth", depth(x, 3));
+
+  // A '&mut' route to the argument passed beside it: copied
+  mut u = new Big(1, 2, 3);
+  show("route", viaMut(u, &mut u));
+  show("route-after", digits(u));
+
+  // A global the callee writes: copied
+  show("global", writesGlobal(glob));
+  show("global-after", digits(glob));
+
+  // An element of a 'mut' slice passed beside the slice: copied
+  mut arr = [new Big(1, 2, 3), new Big(4, 5, 6)];
+  {
+    imm s = &[]mut arr;
+    show("slice", writeThenRead(s[1usize], s));
+  }
+  show("slice-after", digits(arr[1usize]));
+
+  // The callee assigns its 'mut' parameter: the caller's value stays
+  show("bump", bump(x));
+  show("bump-after", digits(x));
+
+  // A parameter returned is a copy; a local nothing borrows, lent and reassigned
+  mut y = new Big(1, 2, 3);
+  imm r = same(y);
+  y.a = 50;
+  show("returned", digits(r));
+  y = same(y);
+  show("reassigned", digits(y));
+
+  // An assignment in a later argument: copied before it
+  mut z = new Big(1, 2, 3);
+  show("assigned-later", take(z, (z = new Big(7, 8, 9)).b));
+  show("assigned-after", digits(z));
+  0i32;
+}

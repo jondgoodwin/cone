@@ -103,7 +103,10 @@ Put these first, because every one of them is load-bearing.
    shared path is not refused, and two copies of one `&mut` may reach one
    place two ways. `borrowFlow`, in the
    main walk, still asks only that what is borrowed was not moved out, as a read
-   does; it deactivates nothing and records nothing about the borrow.
+   does; it deactivates nothing, and records only, on the variable whose own
+   storage holds the place, that it is borrowed and whether to write
+   (`flowLendNote`, `VarFlowLend`), which generation asks before it lends that
+   storage to a call ([generation](generation.md), "Lending a place to a call").
 2. **A lifetime is a `uint16_t` block-nesting depth on the borrow expression's
    type node.** Not a constraint variable, not region inference. 0 is global, 1
    is the caller band (what a borrowed parameter points at), 2+ is a block of
@@ -1569,6 +1572,7 @@ droppable noted as holding nothing is never finalized.
 | | `flowHeldCounted`, `flowVariantHeldCounted` | does a copy of this struct, enum, tuple or array add a holder to a counted reference its death releases |
 | | `flowMatchBound`, `flowMatchInPlace` | the matched value a match's binding stands for, or NULL; whether the binding is by value, naming the matched value's own storage |
 | | `flowScopePush`, `flowScopePop`, `flowAddVar` | the variable stack |
+| | `flowLendNote`, `flowLendWritable` | a borrow of a variable's own storage, or a raw pointer made of one, noted on it for generation's lending (`VarFlowLend`); whether a borrow's permission may write |
 | | `flowScopeDealias`, `flowVarRelease`, `flowScopeHandsBack` | build a scope's release list; skip an uninitialized, moved-out or handed-back variable; release a hollowed one hollow; one variable's release, whole or hollow, in a `DropFlagNode` where asked; whether a scope hands one of its variables back whole |
 | | `flowVarSetFlags`, `flowVarLogMark`, `flowVarPathTake`, `flowVarRollback`, `flowVarJoin` | the main walk's variable flags, logged so that an `if`'s arms are walked from one state and joined |
 | | `flowDropTracked`, `flowDropNote`, `flowDropOwner`, `flowLvalRootVar` | the drop gate: a tracked variable changed deeper than its declaration; the variable owning a binding's value; the local a store's target is part of |
@@ -1582,7 +1586,7 @@ droppable noted as holding nothing is never finalized.
 | `ir/exp/assign.c` | `assignlvalrtype`, `assignSingleFlow`, `assignBorrowLifetimeCheck`, `assignIsLocalPlace` | `MayWrite`, `VarInitialized`/`VarMoved`/`VarHollow`, `FlagFirstAssign`, the `HollowNode` round a hollowed variable's new value, borrow lifetime of a store into a global or through a reference (one into a variable's own storage is the loan walk's) |
 | `ir/stmt/swap.c` | `swapFlow` | `MayWrite` on both sides; borrow lifetime once in each direction |
 | `ir/exp/nameuse.c` | `nameuseFlow`, `nameuseFlowBorrowed` | the only place the flags are *diagnosed* on, a hollowed variable as a moved one; both `ErrorMove` messages, and for a borrowed variable only the moved-out one |
-| `ir/exp/borrow.c` | `borrowFlow`, `borrowFlowPlace` | the borrowed place must not be moved out: the variable at its root goes to `nameuseFlowBorrowed`, which refuses it moved out or hollowed but not uninitialized; a reference it is reached through is loaded as a value and not read through, an index is read; a temporary at its root wrapped; no aliasing tracked |
+| `ir/exp/borrow.c` | `borrowFlow`, `borrowFlowPlace` | the borrowed place must not be moved out: the variable at its root goes to `nameuseFlowBorrowed`, which refuses it moved out or hollowed but not uninitialized; a reference it is reached through is loaded as a value and not read through, an index is read; a temporary at its root wrapped; no aliasing tracked, but the borrow noted on the variable at its root (`flowLendNote`) |
 | `ir/stmt/return.c` | `returnFlowEscape` | `ErrorEscape` for a returned borrow of a local |
 | `ir/exp/arraylit.c` | `arrayLitFlow` | each element of the list form a holder; the fill form's one constant read |
 | `ir/types/reference.c` | `refAdoptInfections` | where a reference type acquires `MoveType` |

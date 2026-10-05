@@ -26,6 +26,7 @@ typedef struct VarDclNode {
     uint16_t flowtempflags;    // Data flow pass temporary flags
     uint16_t flowdepth;        // Data flow: the conditional depth it was declared at (flowDepth)
     uint8_t flowtracked;       // Data flow: 0 not yet asked, 1 its state is not followed for drops, 2 it is (flowDropTracked)
+    uint8_t flowlend;          // Data flow: what generation's lending asks of a local (VarFlowLend)
     uint32_t flowindex;        // Transient: this variable's index in the loan walk (flowpath.c), 0 outside one
     Nodes *hollowed;           // Data flow: each move that took what this owning reference points at, or an element of it, out
     Nodes *hollowall;          // Data flow: every such move in the function, on any path (a drop flag's hollow release)
@@ -46,6 +47,19 @@ enum VarFlowTemp {
     // with a flag, as a drop flag follows a value, since the code after the
     // seam ends the guard's scope too
     VarSeamHeld = 0x0020
+};
+
+// What flow found of a local or parameter anywhere in its function, which
+// generation asks before it lends the variable's own storage to a call in
+// place of a copy (genlLendable), or reads a parameter where its caller's
+// storage is in place of copying it (genlParmVar). Only ever added to.
+enum VarFlowLend {
+    VarLendSeen = 0x01,         // Flow walked its declaration: the two below are complete
+    VarLendBorrowed = 0x02,     // Something borrows it, or a part of it, with any permission
+    // Something borrows it, or a part of it, with a permission other than
+    // 'imm' or 'ro', or makes a raw pointer of a borrow of it: a way for code
+    // other than its own assignments to change it
+    VarLendWritable = 0x04
 };
 
 VarDclNode *newVarDclNode(Name *namesym, uint16_t tag, INode *perm);

@@ -1,0 +1,221 @@
+// A struct of more than 16 bytes, holding more than two scalars, is passed to
+// a Cone function as a pointer. The caller lends its own storage only where
+// the permissions prove nothing else can change it until the call returns:
+// an 'imm' local or parameter, a local nothing borrows to write and no other
+// argument assigns, a field or element of either. Anything else is copied
+// first, so every callee here sees the value its caller passed, whatever
+// the call does meanwhile: a write through a '&mut' route passed beside it,
+// a write to the global it came from, a write through the 'mut' slice beside
+// it, an assignment in a later argument, an owner a later argument consumes.
+// A callee assigning its own 'mut' parameter changes its copy alone; one only
+// reading it reads where its caller's storage is, and lends it on, recursing.
+// What a callee returns or stores of its parameter is a copy.
+
+mod struct_pass_lend;
+
+import stdio use *;
+
+fn show(label &[]u8, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+fn showF(label &[]u8, n f32) {
+  printStr(label);
+  printStr(" = ");
+  printFloat(f64.from(n));
+  printStr("\n");
+}
+
+struct Big {
+  pub a i64;
+  pub b i64;
+  pub c i64;
+}
+
+struct Outer {
+  pub tag i64;
+  pub inner Big;
+}
+
+struct Holder {
+  pub kept Big;
+  pub n i64;
+}
+
+// 36 bytes of floats: a copy of one made in registers is stored as vectors
+struct M3 {
+  pub m Array[f32, 9];
+}
+
+// 16 bytes: passed whole, as before
+struct V4 {
+  pub x f32;
+  pub y f32;
+  pub z f32;
+  pub w f32;
+}
+
+fn digits(v Big) i64 { v.a + v.b * 10 + v.c * 100; }
+
+// A parameter only read is read in place, and lent on
+fn sumImm(v Big) i64 { digits(v); }
+fn fieldOf(v Big) i64 { digits(v); }
+fn elemOf(v Big) i64 { digits(v); }
+
+// Each writes what its caller's argument came from, then reads its parameter
+fn viaMut(v Big, q &mut Big) i64 {
+  q.a = 9;
+  q.b = 9;
+  q.c = 9;
+  digits(v);
+}
+
+mut glob Big = new Big(1, 2, 3);
+
+fn writesGlobal(v Big) i64 {
+  glob.a = 7;
+  glob.b = 7;
+  glob.c = 7;
+  digits(v);
+}
+
+fn writeThenRead(v Big, s &[]mut Big) i64 {
+  s[1usize] = new Big(7, 8, 9);
+  digits(v);
+}
+
+// Assigns its own copy
+fn bump(mut v Big) i64 {
+  v.a = v.a + 100;
+  digits(v);
+}
+
+// Lends its parameter on at every depth
+fn depth(v Big, n i64) i64 {
+  if n == 0 {
+    digits(v);
+  }
+  else {
+    depth(v, n - 1) + v.a;
+  }
+}
+
+fn same(v Big) Big { v; }
+fn hold(v Big) Holder { new Holder(v, 5); }
+
+fn take(v Big, n i64) i64 { digits(v) * 1000 + n; }
+
+fn consume(o Rc[imm, Big]) i64 { o.b; }
+
+fn pick[T](a T, b T, first Bool) T {
+  if first {
+    a;
+  }
+  else {
+    b;
+  }
+}
+
+trait Counter {
+  pub fn countOf(self &, v Big) i64;
+}
+
+struct Adder is Counter {
+  pub base i64;
+  fn countOf(self &, v Big) i64 { base + digits(v); }
+}
+
+fn m3sum(m M3) f32 {
+  mut s = 0.;
+  mut i = 0usize;
+  while i < 9usize {
+    s = s + m.m[i] * f32.from(i + 1usize);
+    i = i + 1usize;
+  }
+  s;
+}
+
+fn m3of(k f32) M3 { new M3([k, k, k, k, k, k, k, k, k]); }
+
+// A value made in registers, copied: stored as vectors
+fn m3made(k f32) f32 { m3sum(new M3([k, k, k, k, k, k, k, k, k])); }
+
+fn v4sum(v V4) f32 { v.x + v.y * 10. + v.z * 100. + v.w * 1000.; }
+
+fn main() {
+  // An 'imm' local, lent
+  imm x = new Big(1, 2, 3);
+  show("imm", sumImm(x));
+
+  // A '&mut' route to the argument passed beside it: copied
+  mut u = new Big(1, 2, 3);
+  show("route", viaMut(u, &mut u));
+  show("route-after", digits(u));
+
+  // A global the callee writes: copied
+  show("global", writesGlobal(glob));
+  show("global-after", digits(glob));
+
+  // An element of a 'mut' slice passed beside the slice: copied
+  mut arr = [new Big(1, 2, 3), new Big(4, 5, 6)];
+  {
+    imm s = &[]mut arr;
+    show("slice", writeThenRead(s[1usize], s));
+  }
+  show("slice-after", digits(arr[1usize]));
+
+  // The callee assigns its 'mut' parameter: the caller's value stays
+  show("bump", bump(x));
+  show("bump-after", digits(x));
+
+  // Recursion, lending the parameter on at each call
+  show("depth", depth(x, 3));
+
+  // A parameter returned, and stored: copies of the value passed
+  mut y = new Big(1, 2, 3);
+  imm r = same(y);
+  imm h = hold(y);
+  y.a = 50;
+  show("returned", digits(r));
+  show("stored", digits(h.kept));
+  show("changed", digits(y));
+  y = same(y);
+  show("reassigned", digits(y));
+
+  // An assignment in a later argument: copied before it
+  mut z = new Big(1, 2, 3);
+  show("assigned-later", take(z, (z = new Big(7, 8, 9)).b));
+  show("assigned-after", digits(z));
+  mut w = new Big(1, 2, 3);
+  show("block-later", take(w, {w = new Big(4, 5, 6); 1;}));
+  show("block-after", digits(w));
+
+  // A field and an element of 'imm' locals, lent
+  imm o = new Outer(1, new Big(4, 5, 6));
+  show("field", fieldOf(o.inner));
+  imm pair = [new Big(1, 1, 1), new Big(2, 2, 2)];
+  show("element", elemOf(pair[1usize]));
+
+  // Through an 'imm' reference whose owner a later argument consumes: copied
+  imm own = new Rc[imm, Big](new Big(1, 2, 3));
+  imm rr = &imm *own;
+  show("consumed-later", take(*rr, consume(own)));
+
+  // Through a '&fn', a vtable and a generic instance
+  imm viaFn &fn(v Big) i64 = &fn(v Big) i64 {v.a * 7;};
+  show("fnref", viaFn(x));
+  imm ad = new Adder(1000);
+  imm cnt &<Counter = &ad;
+  show("vtable", cnt.countOf(x));
+  show("generic", digits(pick[Big](x, o.inner, false)));
+
+  // Floats: a lent local, and a value made in registers, copied
+  imm mm = new M3([1., 2., 3., 4., 5., 6., 7., 8., 9.]);
+  showF("m3-lent", m3sum(mm));
+  showF("m3-returned", m3sum(m3of(0.5)));
+  showF("m3-made", m3made(0.25));
+  showF("v4-whole", v4sum(new V4(1., 2., 3., 4.)));
+}

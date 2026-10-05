@@ -959,6 +959,193 @@ int genlNewInto(GenState *gen, INode *exp, LLVMValueRef dest) {
     return 1;
 }
 
+// ---- Lending a place to a call ----------------------------------------------
+//
+// An argument passed by value is the language's promise, and a struct passed
+// as a pointer (genlAggPassesByPtr) is passed one to a copy, unless the
+// permissions prove that nothing can change the argument's own storage until
+// the call returns: then the call is handed that storage, with no copy
+// (generation.md, "Lending a place to a call"). A wrong lend is a miscompile,
+// so every doubt answers no.
+
+// Is every part of an expression evaluated alongside a lent argument unable
+// to assign a variable? Only what is built of names, literals, reads,
+// borrows, casts, calls and literals of them is; an assignment, a swap, a
+// block, an 'if', or anything not listed here is not. A call cannot reach
+// the variable: genlLendable lends a variable that may be assigned only
+// where nothing in its function borrows it to write (VarLendWritable)
+static int genlLendQuiet(INode *node) {
+    if (isNameUseNode(node))
+        return 1;
+    INode **nodesp;
+    uint32_t cnt;
+    switch (node->tag) {
+    case ULitTag: case FLitTag: case NilLitTag: case NullLitTag: case StringLitTag: case SizeofTag:
+        return 1;
+    case FnCallTag: case ArrIndexTag: case FldAccessTag: case TypeLitTag:
+    {
+        FnCallNode *call = (FnCallNode *)node;
+        if (call->objfn && !genlLendQuiet(call->objfn))
+            return 0;
+        if (call->args) {
+            for (nodesFor(call->args, cnt, nodesp)) {
+                if (!genlLendQuiet(*nodesp))
+                    return 0;
+            }
+        }
+        return 1;
+    }
+    case NamedValTag:
+        return genlLendQuiet(((NamedValNode *)node)->val);
+    case CastTag: case IsTag:
+        return genlLendQuiet(((CastNode *)node)->exp);
+    case DerefTag:
+        return genlLendQuiet(((StarNode *)node)->vtexp);
+    case BorrowTag: case ArrayBorrowTag: case AllocateTag:
+        return genlLendQuiet(((RefNode *)node)->vtexp);
+    case NotLogicTag:
+        return genlLendQuiet(((LogicNode *)node)->lexp);
+    case OrLogicTag: case AndLogicTag:
+        return genlLendQuiet(((LogicNode *)node)->lexp) && genlLendQuiet(((LogicNode *)node)->rexp);
+    case VTupleTag:
+        for (nodesFor(((TupleNode *)node)->elems, cnt, nodesp)) {
+            if (!genlLendQuiet(*nodesp))
+                return 0;
+        }
+        return 1;
+    case TempTag:
+        return genlLendQuiet(((TempNode *)node)->exp);
+    default:
+        return 0;
+    }
+}
+
+// May the call 'fncall' be handed the storage of its argument 'argi' itself,
+// rather than a copy? Every case is written out, and anything not named here
+// is copied:
+//
+// - the argument is a struct, tuple or array passed as a pointer
+//   (genlAggPassesByPtr), whose type nothing finalizes and which holds no
+//   traced reference;
+// - it is a variable, or a field, tuple element or array element of one at
+//   any depth, never through a reference or a pointer: what a reference
+//   reaches may be freed or written by another argument (a 'mut' slice's
+//   element, or an 'imm' reference whose owner a later argument moves into a
+//   call that drops it);
+// - the variable is a local or a parameter, never a global or a static, and
+//   never a match's binding sharing another variable's storage;
+// - flow saw its whole function, and nothing there borrows it, or a part of
+//   it, to write, nor makes a raw pointer of a borrow of it (VarLendWritable):
+//   so no '&mut' route to it is passed in this call or held anywhere;
+// - an 'imm' variable is then lent. One the program may assign is lent only
+//   when no other argument of the call, nor the callee's expression, could
+//   assign it (genlLendQuiet), since those may be evaluated after it.
+static int genlLendable(GenState *gen, FnCallNode *fncall, uint32_t argi) {
+    INode *arg = nodesGet(fncall->args, argi);
+    INode *type = ((IExpNode *)arg)->vtype;
+    INode *typedcl = itypeGetTypeDcl(type);
+    if (typedcl->tag != StructTag && typedcl->tag != TTupleTag && typedcl->tag != ArrayTag)
+        return 0;
+    if ((typedcl->flags & NullablePtr) || itypeNeedsFinal(type) || itypeHoldsTraced(type))
+        return 0;
+    if (!genlAggPassesByPtr(gen, genlType(gen, type)))
+        return 0;
+    INode *place = arg;
+    while (1) {
+        if (isNameUseNode(place) && isExpNode(place)) {
+            VarDclNode *var = (VarDclNode *)((NameUseNode *)place)->dclnode;
+            if (var == NULL || var->tag != VarDclTag || var->scope == 0 || (var->flags & FlagStatic)
+                    || var->llvmvar == NULL || flowMatchInPlace(var))
+                return 0;
+            if (!(var->flowlend & VarLendSeen) || (var->flowlend & VarLendWritable))
+                return 0;
+            if (var->perm && !(permGetFlags(var->perm) & MayWrite))
+                return 1;
+            // A variable the program may assign: no other part of the call may
+            if (!genlLendQuiet(fncall->objfn))
+                return 0;
+            INode **nodesp;
+            uint32_t cnt;
+            for (nodesFor(fncall->args, cnt, nodesp)) {
+                if (*nodesp != arg && !genlLendQuiet(*nodesp))
+                    return 0;
+            }
+            return 1;
+        }
+        switch (place->tag) {
+        case FldAccessTag:
+        {
+            FnCallNode *access = (FnCallNode *)place;
+            INode *objtype = iexpGetTypeDcl(access->objfn);
+            if ((place->flags & FlagBorrow) || (objtype->tag != StructTag && objtype->tag != TTupleTag)
+                    || (objtype->flags & NullablePtr))
+                return 0;
+            if (!isNameUseNode(access->methfld) && access->methfld->tag != ULitTag)
+                return 0;
+            place = access->objfn;
+            break;
+        }
+        case ArrIndexTag:
+        {
+            FnCallNode *access = (FnCallNode *)place;
+            if ((place->flags & (FlagBorrow | FlagRange)) || iexpGetTypeDcl(access->objfn)->tag != ArrayTag)
+                return 0;
+            place = access->objfn;
+            break;
+        }
+        default:
+            return 0;
+        }
+    }
+}
+
+// Does the call keep Cone's convention, so that an argument it takes as a
+// pointer may be lent? Not on a GPU target, where nothing is passed as a
+// pointer; not in a split method, whose arguments may wait in flight across
+// a seam; not to an inline function, an intrinsic, or a C-named function,
+// which keeps C's ABI (genlcabi.c). A call through a '&fn', a pointer or a
+// vtable takes Cone's convention, as every one does (genlAggCopies)
+static int genlCallLends(GenState *gen, FnCallNode *fncall) {
+    if (gen->opt->gpu || gen->seams || fncall->args == NULL || fncall->args->used == 0)
+        return 0;
+    INode *objfn = fncall->objfn;
+    if (objfn->tag == DerefTag || (fncall->flags & FlagVDisp))
+        return 1;
+    INode *fntype = iexpGetTypeDcl(objfn);
+    if (fntype->tag == RefTag || fntype->tag == PtrTag)
+        return 1;
+    FnDclNode *fndcl;
+    if (objfn->tag == FnDclTag)
+        fndcl = (FnDclNode *)objfn;
+    else if (isNameUseNode(objfn) && ((NameUseNode *)objfn)->dclnode && ((NameUseNode *)objfn)->dclnode->tag == FnDclTag)
+        fndcl = (FnDclNode *)((NameUseNode *)objfn)->dclnode;
+    else
+        return 0;
+    if ((fndcl->flags & FlagInline) || (fndcl->value && fndcl->value->tag != BlockTag) || genlIsCAbiFn(fndcl))
+        return 0;
+    return 1;
+}
+
+// The call's arguments, in order: each lent place's storage loaded where it
+// is and marked so (GenlLendMark), for genlAggCopies to hand the call its
+// address; every other argument's value
+static void genlArgsLending(GenState *gen, FnCallNode *fncall, LLVMValueRef *fnargs) {
+    INode **nodesp;
+    uint32_t cnt;
+    uint32_t i = 0;
+    for (nodesFor(fncall->args, cnt, nodesp)) {
+        if (genlLendable(gen, fncall, i)) {
+            INode *type = ((IExpNode *)*nodesp)->vtype;
+            LLVMValueRef addr = genlAddr(gen, *nodesp);
+            fnargs[i] = LLVMBuildLoad2(gen->builder, genlType(gen, type), addr, "lent");
+            genlMark(gen, fnargs[i], GenlLendMark);
+        }
+        else
+            fnargs[i] = genlExpr(gen, *nodesp);
+        ++i;
+    }
+}
+
 // Generate a function call, including special intrinsics
 LLVMValueRef genlFnCall(GenState *gen, FnCallNode *fncall) {
     if (fncall->flags & FlagNew)
@@ -1010,7 +1197,10 @@ LLVMValueRef genlFnCall(GenState *gen, FnCallNode *fncall) {
     // Get count and Valuerefs for all the arguments to pass to the function
     uint32_t fnargcnt = fncall->args->used;
     LLVMValueRef *fnargs = (LLVMValueRef*)memAllocBlk(fnargcnt * sizeof(LLVMValueRef*));
-    genlExprsAcross(gen, fncall->args, fnargs);
+    if (genlCallLends(gen, fncall))
+        genlArgsLending(gen, fncall, fnargs);
+    else
+        genlExprsAcross(gen, fncall->args, fnargs);
 
     // An atomic intrinsic reads its orderings from the call's own arguments
     FnDclNode *atomic = intrinsicAtomicCallee(fncall);

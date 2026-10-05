@@ -662,4 +662,6 @@ static void borrowFlowPlace(FlowState *fstate, INode **placep) {
 // No aliasing of borrows is tracked.
 void borrowFlow(FlowState *fstate, RefNode **nodep) {
     borrowFlowPlace(fstate, &(*nodep)->vtexp);
+    // What generation's lending of a local to a call asks (VarFlowLend)
+    flowLendNote((*nodep)->vtexp, flowLendWritable((INode *)*nodep));
 }

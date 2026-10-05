@@ -430,9 +430,9 @@ name = "a-large-argument-is-a-pointer-and-a-large-result-a-slot"
 target = "preir"
 contains = [
   "define internal void @make(ptr noalias sret(%Big) %sret, i64 %0)",
-  "define internal i64 @total(ptr noalias readonly %0)",
-  "define internal void @doubled(ptr noalias sret(%Big) %sret, ptr noalias readonly %0)",
-  "define internal %void @drop(ptr noalias readonly %0)",
+  "define internal i64 @total(ptr noalias readonly captures(none) dereferenceable(8200) %0)",
+  "define internal void @doubled(ptr noalias sret(%Big) %sret, ptr noalias readonly captures(none) dereferenceable(8200) %0)",
+  "define internal %void @drop(ptr noalias readonly captures(none) dereferenceable(264) %0)",
 ]
 
 [[scenario.struct_copy_large.check]]
@@ -452,7 +452,8 @@ excludes = [
 # field is read back, from a direct call, a method, a '&fn', a vtable slot, an
 # 'if' and a result returned on; both builds, since a debug build keeps every
 # coercion through memory. The checks pin each shape on the definition and the
-# call, that arguments keep theirs, and that no such result returns whole.
+# call, that an argument of 16 bytes keeps its own, and that no such result
+# returns whole.
 [scenario.struct_return_registers]
 category = "run"
 description = "A struct, array or tuple of 64 bytes or less returns as one vector (2 to 4 floats, 2 doubles), as an integer or two (any other of up to 16 bytes, but a pair of scalars), or through the caller's slot (17 to 64 bytes): directly, as a method, through a '&fn' and a vtable slot, from an 'if' and returned on"
@@ -518,6 +519,98 @@ target = "preir"
 excludes = [
   "ret %V4", "ret %V3", "ret %V2", "ret %D2", "ret [4 x float]", "ret %Rgb", "ret %Flags", "ret %Mixed",
   "ret %M3", "ret %Three", "call %V4", "call %Rgb", "call %M3", "call %Three",
+]
+
+# A struct argument of more than 16 bytes, holding more than two scalars, is
+# passed as a pointer: to the caller's own storage where the permissions prove
+# nothing can change it until the call returns, otherwise to a copy
+# (generation.md, "Lending a place to a call"). A run, because a wrong lend is
+# a miscompile that shows as a value: each callee here writes, or a later
+# argument assigns or consumes, what its argument came from, and reads its
+# parameter after; both builds. The checks pin the pointer the callee takes and
+# reads in place, the lend of each place the rule allows, and the copy of each
+# it refuses: a '&mut' route passed beside it, a global, a 'mut' slice's
+# element, an assignment in a later argument, a place through a reference.
+[scenario.struct_pass_lend]
+category = "run"
+description = "A struct of more than 16 bytes is passed as a pointer to its caller's storage where nothing can change it during the call (an 'imm' local, a field or element of one, a parameter, a local nothing borrows to write and no other argument assigns), and to a copy otherwise: a '&mut' route beside it, a global the callee writes, a 'mut' slice element beside the slice, an assignment in a later argument, an 'imm' reference whose owner a later argument consumes; a 'mut' parameter assigned, recursion, a parameter returned and stored, a '&fn', a vtable, a generic"
+tags = ["genllvm", "runtime"]
+
+[[scenario.struct_pass_lend.run]]
+name = "release"
+options = []
+
+[[scenario.struct_pass_lend.run]]
+name = "debug"
+options = ["--debug"]
+
+[[scenario.struct_pass_lend.check]]
+name = "the-callee-takes-a-pointer-and-reads-it-in-place"
+target = "preir"
+contains = [
+  "define internal i64 @digits(ptr noalias readonly captures(none) dereferenceable(24) %0)",
+  "define internal float @m3sum(ptr noalias readonly captures(none) dereferenceable(36) %0)",
+  "%v1 = load %Big, ptr %0, align 8",
+  "define internal float @v4sum(%V4 %0)",
+]
+
+[[scenario.struct_pass_lend.check]]
+name = "each-place-the-rule-allows-is-lent"
+target = "preir"
+contains = [
+  "call i64 @sumImm(ptr %x)",
+  "call i64 @fieldOf(ptr %inner)",
+  "call i64 @depth(ptr %x, i64 3)",
+  "call i64 @digits(ptr %0)",
+  "call i64 @digits(ptr %y)",
+  "call float @m3sum(ptr %mm)",
+]
+
+[[scenario.struct_pass_lend.check]]
+name = "each-place-the-rule-refuses-is-copied"
+target = "preir"
+contains = [
+  "call i64 @viaMut(ptr %agg",
+  "call i64 @writesGlobal(ptr %agg",
+  "call i64 @writeThenRead(ptr %agg",
+  "call i64 @take(ptr %agg",
+  "%v = alloca %Big",
+  "store <4 x float>",
+]
+excludes = [
+  "@viaMut(ptr %u", "@writesGlobal(ptr @glob", "@take(ptr %z", "@take(ptr %w", "@take(ptr %own",
+]
+
+# The same rule where every callee is in a package compiled on its own and
+# linked: each call a real one, optimised, the caller's optimizer unable to
+# see what the callee writes. Release only: what is tested is what the
+# optimizer does with the pointer around a call it cannot see into.
+[scenario.struct_pass_lend_link]
+category = "run"
+description = "Structs of more than 16 bytes passed to a package compiled on its own, optimised: an 'imm' local lent and lent on by a recursing callee, and copied where a '&mut' route is beside it, where it is a global the callee writes, where it is a 'mut' slice element beside the slice, and before a later argument assigns it; a 'mut' parameter assigned, a parameter returned"
+tags = ["genllvm", "runtime"]
+link = ["lendee/lendee.conebuild"]
+include = ["include/lendee.cone"]
+
+[[scenario.struct_pass_lend_link.check]]
+name = "the-imm-local-is-lent-and-the-rest-copied"
+target = "preir"
+contains = [
+  "6digits(ptr %x)",
+  "5depth(ptr %x, i64 3)",
+  "6viaMut(ptr %agg",
+  "12writesGlobal(ptr %agg",
+  "13writeThenRead(ptr %agg",
+  "4take(ptr %agg",
+]
+
+[[scenario.struct_pass_lend_link.check]]
+name = "the-package-takes-a-pointer-it-only-reads"
+target = "preir"
+object = "lendee"
+contains = [
+  "6digits(ptr noalias readonly captures(none) dereferenceable(24) %0)",
+  "5depth(ptr noalias readonly captures(none) dereferenceable(24) %0, i64 %1)",
 ]
 
 # 'drop' is an ordinary method name: a type the compiler gives a drop may

@@ -28,6 +28,7 @@ VarDclNode *newVarDclNode(Name *namesym, uint16_t tag, INode *perm) {
     name->flowindex = 0;
     name->flowdepth = 0;
     name->flowtracked = 0;
+    name->flowlend = 0;
     name->hollowed = NULL;
     name->hollowall = NULL;
     name->llvmflag = NULL;
@@ -51,6 +52,7 @@ VarDclNode *newVarDclFull(Name *namesym, uint16_t tag, INode *type, INode *perm,
     name->flowindex = 0;
     name->flowdepth = 0;
     name->flowtracked = 0;
+    name->flowlend = 0;
     name->hollowed = NULL;
     name->hollowall = NULL;
     name->llvmflag = NULL;
@@ -68,6 +70,8 @@ VarDclNode *cloneVarDclShell(VarDclNode *node) {
     // memcpy carries the type check marks with everything else, and a clone that
     // kept them would be skipped by the guard in inodeTypeCheck.
     newnode->flags &= 0xffff - (TypeChecked | TypeChecking);
+    // What flow finds of the copy is the copy's own (VarLendSeen)
+    newnode->flowlend = 0;
     return newnode;
 }
 
