@@ -1359,6 +1359,15 @@ void flowLoadValue(FlowState *fstate, INode **nodep) {
         flowLoadValue(fstate, &((CastNode *)*nodep)->exp);
         if ((*nodep)->tag == CastTag)
             flowGateBoxed(fstate, *nodep);
+        // A raw pointer made of a borrow carries no permission: what it
+        // points at may be written through it (VarLendWritable)
+        if ((*nodep)->tag == CastTag && iexpGetTypeDcl(*nodep)->tag == PtrTag) {
+            INode *operand = ((CastNode *)*nodep)->exp;
+            while (operand->tag == CastTag)
+                operand = ((CastNode *)operand)->exp;
+            if (operand->tag == BorrowTag || operand->tag == ArrayBorrowTag)
+                flowLendNote(((RefNode *)operand)->vtexp, 1);
+        }
         // A lock's guard is a new owner of the value its operand points at:
         // the operand is copied in, counted, or a temporary moved in
         // (borrowLockPlace), and the guard is the temporary
@@ -1472,6 +1481,56 @@ void flowAddVar(VarDclNode *varnode) {
     stackp->node = varnode;
     stackp->flags = 0;
     varnode->flowdepth = flowDepth;
+    varnode->flowlend |= VarLendSeen;
+    // A match's binding by value may be the matched variable's own storage
+    // (flowMatchInPlace), which one declared 'mut' writes: so the matched
+    // variable is noted as if borrowed to write
+    INode *matched = flowMatchBound((INode *)varnode);
+    if (matched && ((NameUseNode *)matched)->dclnode && ((NameUseNode *)matched)->dclnode->tag == VarDclTag)
+        ((VarDclNode *)((NameUseNode *)matched)->dclnode)->flowlend |= VarLendBorrowed | VarLendWritable;
+}
+
+// A borrow of 'place' was walked: note it on the variable whose own storage
+// holds the place (a field, tuple element or array element of it, any depth),
+// and whether the borrow may write there (VarFlowLend). A place reached
+// through a reference is no variable's storage, and nothing is noted.
+void flowLendNote(INode *place, int writable) {
+    while (1) {
+        if (isNameUseNode(place) && isExpNode(place)) {
+            INode *dcl = ((NameUseNode *)place)->dclnode;
+            if (dcl && dcl->tag == VarDclTag)
+                ((VarDclNode *)dcl)->flowlend |= VarLendBorrowed | (writable ? VarLendWritable : 0);
+            return;
+        }
+        switch (place->tag) {
+        case FldAccessTag:
+        case ArrIndexTag:
+        {
+            INode *objfn = ((FnCallNode *)place)->objfn;
+            uint16_t objtag = iexpGetTypeDcl(objfn)->tag;
+            if (objtag != StructTag && objtag != TTupleTag && objtag != ArrayTag)
+                return;
+            place = objfn;
+            break;
+        }
+        case CastTag:
+            place = ((CastNode *)place)->exp;
+            break;
+        default:
+            return;
+        }
+    }
+}
+
+// Does a borrow, of either kind, grant a permission that may write, or reach
+// past permissions altogether? Only 'imm' and 'ro' write nothing.
+int flowLendWritable(INode *borrow) {
+    INode *type = iexpGetTypeDcl(borrow);
+    INode *perm = (type->tag == RefTag || type->tag == ArrayRefTag) ? ((RefNode *)type)->perm : NULL;
+    if (perm == NULL)
+        return 1;
+    perm = itypeGetTypeDcl(perm);
+    return perm != (INode *)immPerm && perm != (INode *)roPerm;
 }
 
 // Start a new scope

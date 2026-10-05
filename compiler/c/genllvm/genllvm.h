@@ -425,9 +425,25 @@ void genlFnDclReturn(GenState *gen, FnDclNode *fndcl, LLVMValueRef retval);
 
 // genlaggcopy.c: once the module is generated, every struct, array or tuple
 // value too large to carry whole is moved into memory: copied with
-// 'llvm.memcpy', passed by a pointer to the caller's copy and returned into a
-// slot the caller passes. Not run on a GPU target
+// 'llvm.memcpy', passed by a pointer and returned into a slot the caller
+// passes; a smaller one returned in registers, and one of more than 16 bytes
+// passed by a pointer, to its caller's storage where generation lent it. Not
+// run on a GPU target
 void genlAggCopies(GenState *gen);
+// Is an argument of this LLVM type passed to a Cone function as a pointer
+// (never on a GPU target)?
+int genlAggPassesByPtr(GenState *gen, LLVMTypeRef type);
+// The marks generation leaves for genlAggCopies, each an empty node: a load
+// of a place whose storage the call it is passed to may be handed in place
+// of a copy (genlLendable), and the store of a parameter into its variable's
+// slot where the body may read its caller's storage in place (genlParmVar)
+#define GenlLendMark "cone.lend"
+#define GenlParmHomeMark "cone.parmhome"
+// Mark an instruction so
+void genlMark(GenState *gen, LLVMValueRef inst, const char *mark);
+
+// genllvm.c: a target machine for the options' triple, CPU and features
+LLVMTargetMachineRef genlCreateMachine(ConeOptions *opt);
 
 // genltype.c
 // Generate a type value

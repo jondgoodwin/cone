@@ -350,7 +350,19 @@ Fields and constants have no flow participation at all.
   (`genlFnDclParm`, [generation](../phases/generation.md), "C-named functions
   and the C ABI"). A parameter arrives as an SSA value but Cone lets
   you assign to it and borrow from it, so it needs storage. `genlAlloca` hoists
-  it to the entry block for mem2reg to undo.
+  it to the entry block for mem2reg to undo. A struct passed as a pointer
+  that the body only reads (not `mut`, never borrowed, nothing finalizing it:
+  `genlParmInPlace`, from the `VarFlowLend` flags flow leaves) has its store
+  marked, and `genlAggCopies` makes the pointer the variable's storage, so
+  the body reads its caller's storage where it is ([generation](../phases/generation.md),
+  "Lending a place to a call").
+- **`flowlend`** (`VarFlowLend`) — what flow found of a local or parameter
+  anywhere in its function: that it walked the declaration (`VarLendSeen`,
+  `flowAddVar`), that something borrows it or a part of it
+  (`VarLendBorrowed`), and that a borrow may write there, or a raw pointer is
+  made of one (`VarLendWritable`, `flowLendNote`). Only ever added to, and
+  cleared on a clone. Generation asks it before lending the variable's
+  storage to a call (`genlLendable`).
 - **`genlGloVarName`** then **`genlGloVar`** — `LLVMAddGlobal` under the symbol
   `nameSymbol` spells, marked constant for `imm`, `thread_local` for
   `DclThreadLocal` (and then never constant), on a GPU target in address

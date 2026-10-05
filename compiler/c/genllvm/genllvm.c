@@ -35,13 +35,36 @@
 #define objext "o"
 #endif
 
+// May a parameter passed as a pointer be read where its caller's storage is,
+// rather than copied into the parameter's own slot (generation.md, "Lending a
+// place to a call")? Only one its body cannot change and never borrows, so
+// that nothing writes through the pointer and nothing keeps it: its binding
+// is not 'mut', flow saw no borrow of it, nothing finalizes its type and it
+// holds no traced reference (both of which take its slot's address); not in
+// a split method, whose parameters outlive its first half's call; not for a
+// C-named function, which keeps C's ABI
+static int genlParmInPlace(GenState *gen, FnDclNode *fndcl, VarDclNode *var) {
+    if (gen->opt->gpu || gen->seams || genlIsCAbiFn(fndcl))
+        return 0;
+    if (!(var->flowlend & VarLendSeen) || (var->flowlend & VarLendBorrowed))
+        return 0;
+    if (var->perm == NULL || (permGetFlags(var->perm) & MayWrite))
+        return 0;
+    if (itypeNeedsFinal(var->vtype) || itypeHoldsTraced(var->vtype))
+        return 0;
+    return genlAggPassesByPtr(gen, genlType(gen, var->vtype));
+}
+
 // Generate parameter variable of the function 'fndcl' being generated
 void genlParmVar(GenState *gen, FnDclNode *fndcl, VarDclNode *var) {
     assert(var->tag == VarDclTag);
     // We always alloca in case variable is mutable or we want to take address of its value
     var->llvmvar = genlAlloca(gen, genlType(gen, var->vtype), &var->namesym->namestr);
     genlRootNote(gen, var->llvmvar, var->vtype);
-    LLVMBuildStore(gen->builder, genlFnDclParm(gen, fndcl, var), var->llvmvar);
+    LLVMValueRef store = LLVMBuildStore(gen->builder, genlFnDclParm(gen, fndcl, var), var->llvmvar);
+    // The slot is then the pointer the parameter is passed as (genlAggCopies)
+    if (genlParmInPlace(gen, fndcl, var))
+        genlMark(gen, store, GenlParmHomeMark);
     genlDropFlagBegin(gen, var, DropFlagWhole);
 }
 
@@ -1211,21 +1234,29 @@ LLVMTargetMachineRef genlCreateMachine(ConeOptions *opt) {
 }
 
 // Generate requested object file
-void genlOut(char *objpath, char *asmpath, LLVMModuleRef mod, LLVMTargetMachineRef machine) {
+void genlOut(ConeOptions *opt, char *objpath, char *asmpath, LLVMModuleRef mod, LLVMTargetMachineRef machine) {
     char *err;
 
     // Generate assembly file if requested. LLVM's SPIR-V backend rewrites the
     // module it emits (its intrinsics, its own types), and crashes emitting
-    // that again, so on a GPU target the assembly is emitted from a copy.
+    // that again, so on a GPU target the assembly is emitted from a copy, by
+    // a target machine of its own: the backend keeps what it learns of a
+    // module in the machine's subtarget, keyed by addresses, and a second
+    // module emitted by one machine, the copy disposed between, now and then
+    // met a stale entry at a reused address and failed to select (genlGpuOut)
     if (asmpath) {
         int gpu = strncmp(LLVMGetTarget(mod), "spirv", 5) == 0;
         LLVMModuleRef asmmod = gpu ? LLVMCloneModule(mod) : mod;
-        if (LLVMTargetMachineEmitToFile(machine, asmmod, asmpath, LLVMAssemblyFile, &err) != 0) {
+        LLVMTargetMachineRef asmmachine = gpu ? genlCreateMachine(opt) : machine;
+        if (asmmachine && LLVMTargetMachineEmitToFile(asmmachine, asmmod, asmpath, LLVMAssemblyFile, &err) != 0) {
             errorMsg(ErrorGenErr, "Could not emit asm file: %s", err);
             LLVMDisposeMessage(err);
         }
-        if (gpu)
+        if (gpu) {
             LLVMDisposeModule(asmmod);
+            if (asmmachine)
+                LLVMDisposeTargetMachine(asmmachine);
+        }
     }
 
     // Generate .o or .obj file
@@ -2122,7 +2153,7 @@ void genpgm(GenState *gen, ProgramNode *pgm) {
         if (gen->opt->vulkan)
             genlGpuOut(gen, objpath, asmpath);
         else
-            genlOut(objpath, asmpath, gen->module, gen->machine);
+            genlOut(gen->opt, objpath, asmpath, gen->module, gen->machine);
     }
 
     LLVMDisposeModule(gen->module);

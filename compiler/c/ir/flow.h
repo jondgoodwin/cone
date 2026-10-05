@@ -172,6 +172,12 @@ void flowNewSelfReturn(FlowState *fstate, INode *at);
 // Add a just declared variable to the data flow stack
 void flowAddVar(VarDclNode *varnode);
 
+// A borrow of 'place' was walked: note it on the variable whose storage holds
+// the place, and whether it may write there (VarFlowLend)
+void flowLendNote(INode *place, int writable);
+// Does a borrow grant a permission that may write (any but 'imm' and 'ro')?
+int flowLendWritable(INode *borrow);
+
 // Start a new scope
 size_t flowScopePush();
 
