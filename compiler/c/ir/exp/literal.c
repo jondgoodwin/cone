@@ -473,9 +473,81 @@ void slitPrint(SLitNode *lit) {
     inodeFprint("\"%s\"", lit->strlit);
 }
 
-// Type check string literal node
+// Type check string literal node. A literal is a borrow of its text that lasts
+// for the whole program, '&imm str' (global scope, the default of newRefNodeFull).
+// One already taken as the bytes it holds, an array (slitAsArray), stays so.
 void slitTypeCheck(TypeCheckState *pstate, SLitNode *node) {
+    if (node->vtype != unknownType && node->vtype != NULL && itypeGetTypeDcl(node->vtype)->tag == ArrayTag)
+        return;
+    // 'str' is named, as a written '&str' names it, so that a generic given
+    // this type as an argument (inferred from a literal) copies a name, not
+    // the struct
+    node->vtype = (INode*)newRefNodeFull(RefTag, (INode*)node, borrowRef, newPermUseNode(immPerm),
+        newNameUseFromDclNode((INode*)strTypeDcl, (INode*)node));
+}
+
+// Take a literal as the bytes it holds, an array of its length with no NUL
+// counted (the NUL after them stays in the constant, for C). An array is the
+// literal's place in memory: what a written borrow of it, '&"text"', is a
+// reference to, and what fills a byte array (slitCoerce).
+void slitAsArray(SLitNode *node) {
     node->vtype = (INode*)newArrayNodeTyped((INode*)node, node->strlen, (INode*)u8Type);
+}
+
+// Is this a string literal still typed as the '&imm str' it is?
+static int slitIsText(INode *node) {
+    return node->tag == StringLitTag && ((SLitNode*)node)->vtype != unknownType
+        && itypeGetTypeDcl(((SLitNode*)node)->vtype)->tag == RefTag;
+}
+
+// Is this type a byte array exactly as long as the literal's text?
+static int slitFitsArray(SLitNode *node, INode *totypedcl) {
+    return totypedcl->tag == ArrayTag && itypeGetTypeDcl(arrayElemType(totypedcl)) == (INode*)u8Type
+        && arrayDim1(totypedcl) == node->strlen;
+}
+
+// Is this type an owner of 'str', in any region?
+static int slitIsStrOwner(INode *totypedcl) {
+    return totypedcl->tag == RefTag && itypeGetTypeDcl(((RefNode*)totypedcl)->region) != borrowRef
+        && refIsFat((RefNode*)totypedcl);
+}
+
+// Would a string literal be taken where this type is wanted, beyond the
+// '&str' it is (and the '&[]u8' that converts from it)? A byte array of its
+// length, filled by it; or an owner of 'str', which it is copied into.
+int slitMatches(INode *node, INode *totypedcl) {
+    if (!slitIsText(node))
+        return 0;
+    return slitFitsArray((SLitNode*)node, totypedcl) || slitIsStrOwner(totypedcl);
+}
+
+// Coerce a string literal to a byte array it fills or an owner of 'str' it is
+// copied into [Jon 6 Oct: "Implicit copy is better."]. The copy is the
+// allocation 'new So[str](lit)' builds, region and permission as the wanted
+// type has them. Only the literal itself is taken this way: any other '&str'
+// needs the 'new'. Returns 1 when *nodep now has the wanted type, 0 when the
+// literal is not wanted as either (nothing changed, nothing reported).
+int slitCoerce(INode **nodep, INode *totypedcl) {
+    if (!slitIsText(*nodep))
+        return 0;
+    SLitNode *lit = (SLitNode*)*nodep;
+    if (slitFitsArray(lit, totypedcl)) {
+        slitAsArray(lit);
+        return 1;
+    }
+    if (!slitIsStrOwner(totypedcl))
+        return 0;
+    RefNode *reftype = (RefNode*)totypedcl;
+    RefNode *alloc = newRefNode(AllocateTag);
+    inodeLexCopy((INode*)alloc, (INode*)lit);
+    alloc->region = reftype->region;
+    alloc->perm = reftype->perm;
+    alloc->vtexp = (INode*)lit;
+    alloc->vtype = totypedcl;
+    regionAllocTypeCheck(alloc->region);
+    permInitTypeCheck(itypeGetTypeDcl(alloc->perm));
+    *nodep = (INode*)alloc;
+    return 1;
 }
 
 // A reinterpretation ('as') of a constant number to a number or pointer type is
@@ -503,10 +575,15 @@ static int litIsConstCast(CastNode *node) {
         || (exp->tag == CastTag && litIsConstCast((CastNode*)exp));
 }
 
+// A string literal wanted as a '&[]u8' is the literal reinterpreted (a recast of
+// the '&imm str' it is), and as constant as it is.
+static int litIsTextAsBytes(CastNode *node) {
+    return !(node->flags & FlagConvert) && node->exp->tag == StringLitTag;
+}
+
 // A borrow of a string literal is a constant too: the text is a constant
 // global, so its reference -- or, as a slice, its address and length -- is known
-// before anything runs. That is the auto-borrow a string literal gets when a
-// '&[]u8' wants it, as well as a written '&[]"text"' or '&"text"'. So is a
+// before anything runs. That is a written '&[]"text"' or '&"text"'. So is a
 // borrow of an array literal whose elements are all constants, '&[1, 2, 3]',
 // which generation places in a constant global the same way. A value tuple
 // whose values are all constants, '1, 2', is a constant as a struct literal of
@@ -523,6 +600,7 @@ int litIsLiteral(INode* node) {
         || (node->tag == VTupleTag && vtupleIsLiteral((TupleNode*)node))
         || nameUseNames(node, ConstDclTag)
         || (node->tag == CastTag && litIsConstCast((CastNode*)node))
+        || (node->tag == CastTag && litIsTextAsBytes((CastNode*)node))
         );
 }
 

@@ -1,4 +1,4 @@
-// ---- Device and Queue: the frames in flight, and the Queue ----
+// ---- Device and CommandQueue: the frames in flight, and the CommandQueue ----
 
 // A block of staging memory, mapped
 struct StagingBlock {
@@ -32,7 +32,7 @@ struct ReleasedBuffer {
 }
 
 // Destroy the buffers frame 'i' released
-fn destroyReleased(queue &mut Queue, i usize) {
+fn destroyReleased(queue &mut CommandQueue, i usize) {
   mut r = 0usize;
   while r < usize.from(queue.backend.frames[i].releasedCount) {
     vulkan.destroyBuffer(queue.backend.device, queue.backend.frames[i].released[r].buffer, nullp());
@@ -61,7 +61,7 @@ struct QueueBackend {
 
 // The device's queue: what it submits runs in the order submitted. It keeps
 // the frames in flight.
-pub struct Queue {
+pub struct CommandQueue {
   backend QueueBackend;
 
   // Submit the commands 'cmd' holds, after the uploads 'writeBuffer' asked
@@ -228,7 +228,7 @@ pub struct Queue {
 // Begin a frame, if one is not begun: wait until the GPU has finished the
 // frame that last used this frame's state, and reset its command pools and
 // staging memory
-fn beginQueueFrame(queue &mut Queue) {
+fn beginQueueFrame(queue &mut CommandQueue) {
   if queue.backend.inFrame or (queue.backend.device as *u8 as usize) == 0usize { return; }
   imm device = queue.backend.device;
   imm i = usize.from(queue.backend.frameIndex);
@@ -255,7 +255,7 @@ fn beginQueueFrame(queue &mut Queue) {
 }
 
 // The next unused command buffer of the current frame's pool, begun
-fn nextCommandBuffer(queue &mut Queue) vulkan.CommandBuffer {
+fn nextCommandBuffer(queue &mut CommandQueue) vulkan.CommandBuffer {
   imm i = usize.from(queue.backend.frameIndex);
   if queue.backend.frames[i].used == MAX_FRAME_COMMAND_BUFFERS {
     fail("a frame recorded more than 16 command buffers");
@@ -295,7 +295,7 @@ fn memoryBarrier(cmd vulkan.CommandBuffer, srcStage u64, srcAccess u64, dstStage
 // of the next submission. They start with a barrier after everything
 // submitted before them (their copies write what earlier commands may still
 // read or write).
-fn uploadCommands(queue &mut Queue) vulkan.CommandBuffer {
+fn uploadCommands(queue &mut CommandQueue) vulkan.CommandBuffer {
   beginQueueFrame(queue);
   imm i = usize.from(queue.backend.frameIndex);
   if !isNull(queue.backend.frames[i].upload) { return queue.backend.frames[i].upload; }
@@ -310,7 +310,7 @@ fn uploadCommands(queue &mut Queue) vulkan.CommandBuffer {
 // Room for 'size' bytes in the frame's staging block, from 'stagingUsed'
 // (made a multiple of 16): a bigger block if they do not fit, the old one
 // retired until the frame comes round again
-fn stagingRoom(queue &mut Queue, size u64) bool {
+fn stagingRoom(queue &mut CommandQueue, size u64) bool {
   imm i = usize.from(queue.backend.frameIndex);
   imm at = (queue.backend.frames[i].stagingUsed + 15u64) & 0xFFFFFFFFFFFFFFF0u64;
   if queue.backend.frames[i].staging.buffer.h != 0u64 and at + size <= queue.backend.frames[i].staging.size {
@@ -338,7 +338,7 @@ fn stagingRoom(queue &mut Queue, size u64) bool {
 // Submit 'cmd' (if not null), after the frame's uploads (if any), waiting
 // for the acquired swapchain image if no submission has yet, signalling
 // 'fence' and 'signalCount' semaphores
-fn submitCommands(queue &mut Queue, cmd vulkan.CommandBuffer, fence vulkan.Fence, signalCount u32,
+fn submitCommands(queue &mut CommandQueue, cmd vulkan.CommandBuffer, fence vulkan.Fence, signalCount u32,
     signals *vulkan.SemaphoreSubmitInfo) bool {
   mut cbis = new Array[vulkan.CommandBufferSubmitInfo, 2] <- fill new vulkan.CommandBufferSubmitInfo(
     commandBuffer: nullCommandBuffer());

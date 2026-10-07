@@ -212,7 +212,7 @@ parameter names**.
    rule reads the value **after** coercion, so it must still be a literal once
    coerced: an untyped integer literal adopts the declared type, a float literal
    or a constant's use widened to a wider number of its kind is folded into a
-   literal of that type, and a string literal borrowed to a slice is a borrow of
+   literal of that type, and a string literal converted to a slice is a recast of
    a literal (all in [literals](literals.md)); a number conversion a coercion
    wraps around a constant expression is folded with it (`imm g i64 = K + 1`),
    but any other coercion wraps the value in a node that is not a literal. So

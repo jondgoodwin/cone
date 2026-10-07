@@ -121,6 +121,43 @@ class NotNames(unittest.TestCase):
         self.assertIn("not a Cone name", congo.name_fault("two-words"))
 
 
+@unittest.skipUnless(IS_WINDOWS, "the loader's dialogs are Windows'")
+class ErrorMode(unittest.TestCase):
+    """A program that cannot find a DLL ends with a status; it never stops at
+    the loader's modal dialog on the desktop. Only the error mode is checked
+    here, never a program that is missing a DLL, which would show the dialog
+    were the mode wrong (RuntimeLibraries runs one, once the mode is shown to
+    be set)."""
+
+    SEM_FAILCRITICALERRORS, SEM_NOOPENFILEERRORBOX = 0x1, 0x8000
+    PRINT_MODE = "import ctypes; print(ctypes.WinDLL('kernel32').GetErrorMode())"
+
+    def test_congo_sets_the_error_mode_its_children_inherit(self):
+        wanted = self.SEM_FAILCRITICALERRORS | self.SEM_NOOPENFILEERRORBOX
+        # Congo's main, started from a parent whose mode is nothing (as a
+        # plain console's is, whatever the machine running this test has set),
+        # then what a child it starts reports of its own mode
+        code = ("import sys, ctypes; sys.path.insert(0, sys.argv[1]); import congo, subprocess\n"
+                "ctypes.WinDLL('kernel32').SetErrorMode(0)\n"
+                "try: congo.main(['new', '--help'])\n"
+                "except SystemExit: pass\n"
+                "print(subprocess.run([sys.executable, '-c', sys.argv[2]],"
+                " capture_output=True, text=True).stdout.strip())\n")
+        ran = subprocess.run([sys.executable, "-c", code, str(HERE), self.PRINT_MODE],
+                             capture_output=True, text=True, env=dict(os.environ, PYTHONPATH=""))
+        inherited = int(ran.stdout.strip().splitlines()[-1])
+        self.assertEqual(inherited & wanted, wanted, ran.stdout + ran.stderr)
+
+    def test_an_exit_status_of_a_missing_dll_is_named(self):
+        exe = Path(tempfile.gettempdir()) / "prog.exe"
+        self.assertEqual(congo.dll_note(0xC0000135, exe),
+                         f"\n{exe} could not start: a DLL it needs was not found (0xC0000135)")
+        self.assertEqual(congo.dll_note(3221225781, exe), congo.dll_note(0xC0000135, exe))
+        self.assertEqual(congo.dll_note(0, exe), "")
+        self.assertEqual(congo.dll_note(None, exe), "")
+        self.assertEqual(congo.dll_note(0xC0000409, exe), "")
+
+
 @unittest.skipUnless(IS_WINDOWS, "an inherited Visual Studio environment is Windows'")
 class InheritedLinker(unittest.TestCase):
     """Which inherited link.exe links for x64, and what LIB keeps when Congo
@@ -1620,6 +1657,10 @@ class RuntimeLibraries(unittest.TestCase):
         run = self.congo("run", "app.cone", cwd=self.root, ok=False)
         self.assertNotEqual(run.returncode, 0)
         out = next((self.root / "home" / "lone").glob("app-*")) / "debug"
+        # ... and says so, by the program's full path, the loader's dialog
+        # suppressed (ErrorMode)
+        self.assertIn(f"{(out / 'app.exe').resolve()} could not start: a DLL it needs was"
+                      f" not found (0xC0000135)", run.stderr)
         self.assertTrue((out / "app.exe").is_file())
         self.assertFalse((out / "tri3.dll").exists())
 
@@ -1669,6 +1710,33 @@ class RuntimeLibraries(unittest.TestCase):
         run = self.congo("run", "app.cone", cwd=self.root, ok=False)
         self.assertIn("'runtimes' is not a [link] key; the keys are libraries, paths and"
                       " runtime", run.stderr)
+
+    def test_a_test_missing_its_dll_names_the_program(self):
+        # 'congo test' runs the program as a debuggee; with no dialog, the
+        # failure says which program could not start
+        packages = self.root / "cpkgs"
+        self.registry(packages)
+        self.tri(packages, None)
+        user = self.root / "user"
+        write(user / "congo.toml",
+              '[package]\nname = "user"\nversion = "0.1.0"\noutput = "library"\n')
+        write(user / "src" / "user.cone", "mod user;\n\nimport tri;\n")
+        write(user / "tests" / "triple.cone", """
+            mod triple;
+
+            import stdio;
+            import tri;
+
+            fn main() i32 {
+              stdio.print <- tri.triple(14i32);
+              0i32;
+            }
+            """)
+        write(user / "tests" / "triple.out", "42")
+        run = self.congo("test", cwd=user, ok=False)
+        exe = (user / "build" / "debug" / "tests" / "triple" / "triple.exe").resolve()
+        self.assertIn(f"{exe} could not start: a DLL it needs was not found (0xC0000135)",
+                      run.stdout + run.stderr)
 
     def test_an_importer_inherits_the_list(self):
         # A program importing a library that imports tri names nothing of
