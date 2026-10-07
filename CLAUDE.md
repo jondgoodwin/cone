@@ -560,7 +560,12 @@ Visual Studio projects stay at the root.
   render pass (its depth kept for a later pass with `keepDepth`), its items
   gathered into batches of one material and one mesh, each one instanced
   draw whose copies' model matrices and tints are in a storage buffer of
-  instances (`renderframe.slang`'s `Instance`), and `Image` (BMP read
+  instances (`renderframe.slang`'s `Instance`), custom pipelines
+  (`src/custom.cone`: a caller's own Slang over `renderframe.slang`, its
+  materials' parameters and textures, r32float fields from
+  `addFieldTexture`, drawn and instanced with the rest; its test
+  `custom.cone`), dynamic meshes rewritten in place each frame
+  (`addDynamicMesh`, `writeDynamicMesh`), and `Image` (BMP read
   and written); its tests need a GPU driver but no window, and its examples
   are `pipevk.cone`, the pipe demo: `sculpt`'s bent, subdivided pipe, the
   cage and three levels side by side, lit, on Vulkan, checked by pixels
