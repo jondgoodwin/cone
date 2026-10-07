@@ -508,7 +508,7 @@ Visual Studio projects stay at the root.
   elements in one block from `libc`'s allocator (an `OrderedDict` in two) and
   moving them with core's `mem` intrinsics; and the capability traits, met by
   the collections' method names alone (Cone's traits are structural): `Collection`,
-  `Indexed[T]`, `Stack[T]`, `Queue[T]`, `Map[K, V]` and `SetAlgebra[T]` (the
+  `Indexed[T]`, `Stack[T]`, `Fifo[T]`, `Map[K, V]` and `SetAlgebra[T]` (the
   generic ones taken as virtual references, `&<mut Stack[i64]`, since a generic
   trait's instance is not a constraint yet; `Collection` is also a constraint); `arena` is an
   `Arena`, a dynamic region whose values are finalized, newest first, and

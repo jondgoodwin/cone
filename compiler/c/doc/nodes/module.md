@@ -842,7 +842,7 @@ Cone package over `libc`: a growable `List[T]`, an owned `String` and a
 `Dict[K, V]` (a SwissTable over any `K` that is `Hash`), `OrderedDict[K, V]` (the same
 table indexing a dense array, so it iterates in insertion order), `Set[T]` and a ring-buffer `Deque[T]`,
 each holding its elements in one block from the C allocator and moving them with core's `mem` intrinsics,
-and the structural capability traits `Collection`, `Indexed`, `Stack`, `Queue`, `Map` and `SetAlgebra`; its generic types'
+and the structural capability traits `Collection`, `Indexed`, `Stack`, `Fifo`, `Map` and `SetAlgebra`; its generic types'
 methods are written whole into its include file, so each importer compiles the
 instances it uses.
 The shape is Jon's [Jon 23 Sep], taken before C modules so the built-ins would

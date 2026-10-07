@@ -75,7 +75,7 @@
 // error, and a panic.
 //
 // What a collection can do is named by a few small traits at the end of this file,
-// 'Collection', 'Indexed', 'Stack', 'Queue', 'Map' and 'SetAlgebra', which the
+// 'Collection', 'Indexed', 'Stack', 'Fifo', 'Map' and 'SetAlgebra', which the
 // collections meet by their methods' names alone.
 
 mod collections;
@@ -312,7 +312,7 @@ pub struct List[T] is ShapeChanging, Sendable {
 // the values into it in order, the front one in slot 0, which is the only time
 // they move, and it never shrinks. 'push' and 'pop' work at the back, as a
 // List's do; 'pushFront' and 'popFront' at the front. So a Deque is a Stack
-// (at its back) and a Queue (in at the back, out at the front).
+// (at its back) and a Fifo (in at the back, out at the front).
 //
 // Its values do not lie in one run of memory when they wrap round the block's
 // end, so there is no 'view' of them: walk them with 'items', or by position.
@@ -957,18 +957,23 @@ pub struct Dict[K Hash, V] is ShapeChanging, Sendable {
   pub fn capacity(self &) usize { items + left; }
   pub fn isEmpty(self &) bool { items == 0usize; }
 
-  // Move key and value in. A key it already holds has its entry replaced:
-  // the old key and value are finalized, and it answers true.
-  pub fn insert(self &mut, key K, value V) bool {
+  // Move key and value in. A key it already holds has its entry replaced: the
+  // old key is finalized and the old value moved out to the caller, as an
+  // Option (Rust's HashMap::insert); None when the key was new. The Option's
+  // value dies with the caller's binding, or at the end of a statement that
+  // ignores it.
+  pub fn insert(self &mut, key K, value V) Option[V] {
     imm hash = self.hashOf(&key);
     imm found = self.freeOrFound(hash, &key);
     if self.isFull(found) {
-      mem.finalize(slots + found);
+      imm slot = (slots + found) as &mut DictEntry[K, V];
+      mem.finalize(&slot.key as *K);
+      imm old = mem.readRaw(&slot.value as *V);
       mem.writeRaw(slots + found, new DictEntry[K, V](key, value));
-      return true;
+      return Some[V][old];
     }
     self.fill(self.roomFor(hash, found), hash, key, value);
-    false;
+    None[V][];
   }
 
   // 'dict <- key: value' is 'dict.insert(key, value)': a later value for a key
@@ -1385,19 +1390,21 @@ pub struct OrderedDict[K Hash, V] is ShapeChanging, Sendable {
   pub fn isEmpty(self &) bool { count == 0usize; }
 
   // Move key and value in, at the end. A key it already holds has its entry
-  // replaced where it stands: the old key and value are finalized, and it
-  // answers true.
-  pub fn insert(self &mut, key K, value V) bool {
+  // replaced where it stands: the old key is finalized and the old value moved
+  // out to the caller, as an Option; None when the key was new.
+  pub fn insert(self &mut, key K, value V) Option[V] {
     imm hash = self.hashOf(&key);
     imm found = self.freeOrFound(hash, &key);
     if self.isFull(found) {
-      imm slot = dense +self.posOf(found);
-      mem.finalize(slot);
-      mem.writeRaw(slot, new OrderedEntry[K, V](hash, key, value));
-      return true;
+      imm at = dense +self.posOf(found);
+      imm slot = at as &mut OrderedEntry[K, V];
+      mem.finalize(&slot.key as *K);
+      imm old = mem.readRaw(&slot.value as *V);
+      mem.writeRaw(at, new OrderedEntry[K, V](hash, key, value));
+      return Some[V][old];
     }
     self.fill(self.roomFor(hash, found), hash, key, value);
-    false;
+    None[V][];
   }
 
   // 'dict <- key: value' is 'dict.insert(key, value)'
@@ -1925,22 +1932,23 @@ pub trait Stack[T] {
 
 // Values pushed at the back and popped from the front, the first in the first
 // out (Deque)
-pub trait Queue[T] {
+pub trait Fifo[T] {
   pub fn push(self &mut, value T);
   pub fn popFront(self &mut) Option[T];
 }
 
-// Values found by a key (Dict, OrderedDict). 'insert' answers whether the key
-// was already there, its old value replaced; 'remove' moves the value out.
+// Values found by a key (Dict, OrderedDict). 'insert' answers the old value,
+// moved out, when the key was already there (Rust's HashMap::insert), else
+// None; 'remove' moves the value out.
 pub trait Map[K, V] {
   pub fn get(self &, key &K) Option[&V];
-  pub fn insert(self &mut, key K, value V) bool;
+  pub fn insert(self &mut, key K, value V) Option[V];
   pub fn remove(self &mut, key &K) Option[V];
   pub fn contains(self &, key &K) bool;
 }
 
 // Values that are members or are not (Set). 'insert' answers whether the
-// element was new, the opposite sense to Map's.
+// element was new (a bool, where Map's answers the old value).
 pub trait SetAlgebra[T] {
   pub fn insert(self &mut, item T) bool;
   pub fn remove(self &mut, item &T) bool;

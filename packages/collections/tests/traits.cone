@@ -1,4 +1,4 @@
-// The capability traits: Collection, Indexed, Stack, Queue, Map and SetAlgebra.
+// The capability traits: Collection, Indexed, Stack, Fifo, Map and SetAlgebra.
 // A type fits a trait by having its methods; none of these collections
 // declares one, and the little Pile below, written here, fits Stack the same
 // way. A trait that mentions an element type is generic, so a function takes
@@ -121,14 +121,14 @@ fn stacks() {
   expectUInt(u64.from(popLength(&mut ds)), 2, "Deque[String] does");
 }
 
-// -------- Queue: Deque --------
+// -------- Fifo: Deque --------
 
-fn enqueue(q &<mut Queue[i64], n i64) {
+fn enqueue(q &<mut Fifo[i64], n i64) {
   mut i = 1i64;
   while i <= n { q.push(i); i = i + 1i64; }
 }
 
-fn dequeueAll(q &<mut Queue[i64]) i64 {
+fn dequeueAll(q &<mut Fifo[i64]) i64 {
   mut order = 0i64;
   while true {
     match q.popFront() {
@@ -179,7 +179,13 @@ fn fill(m &<mut Map[u64, i64]) {
   m.insert(2u64, 20i64);
 }
 
-fn replaced(m &<mut Map[u64, i64]) bool { m.insert(2u64, 21i64); }
+// The old value comes back, moved out, or -1 for a key that was new
+fn replaced(m &<mut Map[u64, i64]) i64 {
+  match m.insert(2u64, 21i64) {
+    case imm v Some {v.value;}
+    case is None {-1i64;}
+  }
+}
 
 fn lookup(m &<Map[u64, i64], k u64) i64 {
   imm key = k;
@@ -222,9 +228,12 @@ fn maps() {
   expectInt(lookup(&d, 3u64), -1, "a key it lacks");
   expect(has(&d, 2u64), "Dict contains");
   expect(not has(&o, 3u64), "OrderedDict does not contain 3");
-  expect(replaced(&mut d), "insert answers true for a key it held");
-  expect(replaced(&mut o), "the same for OrderedDict");
+  expectInt(replaced(&mut d), 20, "insert answers the old value for a key it held");
+  expectInt(replaced(&mut o), 20, "the same for OrderedDict");
   expectInt(lookup(&o, 2u64), 21, "and the value is replaced");
+  expectInt(replaced(&mut d), 21, "a second replacement answers the first");
+  mut fresh = new Dict[u64, i64];
+  expectInt(replaced(&mut fresh), -1, "a key that was new answers None");
   expectInt(take(&mut d, 1u64), 10, "remove moves the value out");
   expectInt(take(&mut o, 1u64), 10, "OrderedDict too");
   expectInt(take(&mut d, 1u64), -1, "a second remove finds nothing");
@@ -264,6 +273,35 @@ fn sets() {
   expectUInt(u64.from(s.len()), 1, "one left");
 }
 
+// A value with a finalizer, put in through a Map and replaced: the old one is
+// handed back and dies once, when the caller lets go of it
+mut deaths = 0i64;
+struct Counted {
+  pub n i64;
+  fn final(self &uni) { deaths = deaths + 1i64; }
+}
+
+fn putCounted(m &<mut Map[u64, Counted], n i64) i64 {
+  imm before = deaths;
+  match m.insert(1u64, new Counted(n)) {
+    case imm old Some {
+      expectInt(deaths, before, "the old value is alive in the Option");
+      old.value.n;
+    }
+    case is None {-1i64;}
+  }
+}
+
+fn finalizedThroughMap() {
+  mut d = new Dict[u64, Counted];
+  mut o = new OrderedDict[u64, Counted];
+  expectInt(putCounted(&mut d, 1i64), -1, "first put, Dict");
+  expectInt(putCounted(&mut d, 2i64), 1, "second put answers the first");
+  expectInt(deaths, 1, "the first died once, when the answer was dropped");
+  expectInt(putCounted(&mut o, 3i64), -1, "first put, OrderedDict");
+  expectInt(putCounted(&mut o, 4i64), 3, "second put answers the first");
+  expectInt(deaths, 2, "the first died once");
+}
 fn main() i32 {
   collectionTrait();
   stacks();
@@ -271,5 +309,7 @@ fn main() i32 {
   indexed();
   maps();
   sets();
+  finalizedThroughMap();
+  expectInt(deaths, 4, "the two held died with their collections");
   done();
 }
