@@ -176,7 +176,7 @@ void stdlibInit(int ptrsize) {
     // 'str', the dynamically sized body of bytes. It has no fields and no size
     // of its own, so it is held only through a reference, which carries the
     // count of bytes: '&str', 'So[str]', 'Rc[str]'. A name every module
-    // reaches, as 'Array' is, unless it declares the name itself.
+    // reaches, as 'Array' is, and a module may not declare it itself.
     strTypeDcl = newStructNode(strTypeName);
     strTypeDcl->flags |= FlagPub | NameResolved | TypeChecked | OpaqueType | DeclaredOpaque;
     strTypeName->node = (INode*)strTypeDcl;
