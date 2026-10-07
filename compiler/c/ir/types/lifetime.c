@@ -1149,6 +1149,20 @@ int lifeParmBounded(INode *generic, Name *tparm) {
     return 0;
 }
 
+int lifeParmStaticBounded(INode *generic, Name *tparm) {
+    if (generic == NULL || generic->tag != FnDclTag)
+        return 0;
+    FnSigNode *sig = (FnSigNode *)((FnDclNode *)generic)->vtype;
+    if (sig == NULL || sig->tag != FnSigTag || sig->lifeorder == NULL)
+        return 0;
+    Name *bound = lifeBoundName(tparm);
+    for (uint32_t i = 0; i < sig->lifeorder->count; ++i) {
+        if (sig->lifeorder->pairs[2 * i] == bound && sig->lifeorder->pairs[2 * i + 1] == staticLifeName)
+            return 1;
+    }
+    return 0;
+}
+
 // Is 'tparm' one of a generic declaration's own type parameters?
 static int lifeIsTypeParm(GenericInfo *info, Name *tparm) {
     if (info == NULL || info->parms == NULL)
