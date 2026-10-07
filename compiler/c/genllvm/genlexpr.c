@@ -2609,7 +2609,11 @@ static LLVMValueRef genlTerm(GenState *gen, INode *termnode) {
             return LLVMBuildInsertValue(gen->builder, fat,
                 LLVMConstInt(genlType(gen, (INode*)usizeType), strnode->strlen, 0), 1, "strlen");
         }
-        return LLVMBuildLoad2(gen->builder, genlType(gen, strnode->vtype), genlAddr(gen, termnode), "");
+        // The text filling a byte array (slitCoerce) is the constant of its bytes
+        // alone, with no NUL: a load of the literal's global would not be a
+        // constant, which a global's initializer needs when the literal is an
+        // element of one array in another ('[ "abc", "def" ]' as an Array of Array)
+        return LLVMConstStringInContext2(gen->context, strnode->strlit, strnode->strlen, 1);
     }
     case RefCountTag:
     {
