@@ -1,0 +1,354 @@
+// Flock, Bird and the steering. The numbers are this package's own (own),
+// tuned for small birds (sparrows, finches, swifts) seen at 10 to 80 m, by
+// their behaviour in the package's test (they stay over home, clear of the
+// ground and the hill, and keep together); the neighbourhood is from
+// Ballerini and others (PNAS 2008), the wing beat's rate from small birds'
+// 8 to 15 Hz (from memory, not fetched).
+
+pub const MODE_FLAP = 0u32;
+pub const MODE_GLIDE = 1u32;
+
+// How many nearest neighbours a bird follows (Ballerini et al. found 6 or 7
+// for starlings) and within what range, metres
+const NEIGHBOURS = 7usize;
+const PERCEPTION = 12.;
+// A bird sees 270 degrees: not what is more than 135 degrees off its heading
+const FOV_COS = -0.7071;
+// The distance within which another bird is too close, metres
+const TOO_CLOSE = 1.8;
+// The strongest acceleration a bird steers with, m/s2
+const MAX_ACCEL = 12.;
+
+// Where the flocks live and how they fly
+pub struct FlockParams {
+  pub home Vec3;            // the point the flocks keep over: x and z are what matter
+  pub homeRadius f32;       // how far from home a bird may wander before it is pulled back
+  pub minClearance f32;     // the least height above the ground a bird keeps, metres
+  pub cruiseHeight f32;     // the height above the ground it cruises at, metres (each bird's a little its own)
+  pub cruiseSpeed f32;      // m/s
+  pub minSpeed f32;         // no bird goes slower: it cannot hover
+  pub maxSpeed f32;
+  pub flockSize u32;        // birds in each of the first two flocks, the rest fly alone
+
+  // Birds over 'home': 90 m radius, 9 m above the ground at the least (the
+  // canopy's height), cruising 16 m above it at 9 m/s between 6 and 12
+  pub fn standard(home Vec3) FlockParams {
+    new FlockParams(home, 90., 9., 16., 9., 6., 12., 17u32);
+  }
+}
+
+// One bird: where it is, how it is moving, how its wings are beating
+pub struct Bird {
+  pub pos Vec3;
+  pub vel Vec3;
+  pub forward Vec3;         // unit, smoothed from the velocity
+  pub bank f32;             // radians, positive rolls the right wing down
+  pub group u32;            // whose waypoint it follows
+  pub speedBias f32;        // 0.9 to 1.1 of the cruise speed
+  pub weightBias f32;       // 0.85 to 1.15 of the steering terms
+  pub heightBias f32;       // metres added to the cruise height
+  pub wander f32;           // an angle, turning slowly
+  pub mode u32;             // MODE_FLAP or MODE_GLIDE
+  pub timer f32;            // seconds left in the mode
+  pub phase f32;            // the wings' phase, radians
+  pub rate f32;             // the wings' beat, Hz, smoothed
+  pub amp f32;              // how far the wings beat, 0 (held out) to 1, smoothed
+}
+
+// What a renderer needs of a bird
+pub struct BirdPose {
+  pub position Vec3;        // with the body's small bob in it
+  pub forward Vec3;         // unit
+  pub up Vec3;              // unit, leaning into a turn
+  pub right Vec3;           // unit
+  pub phase f32;            // the wings' phase, radians
+  pub amp f32;              // the wings' amplitude, 0 to 1
+  pub rate f32;             // the wings' beat, Hz
+  pub mode u32;
+}
+
+pub struct Flock {
+  pub birds List[Bird];
+  pub params FlockParams;
+  pub waypoints List[Vec3];       // each group's, where it is travelling to
+  pub waypointTimers List[f32];   // seconds until each changes
+  pub time f32;
+  pub seed u32;
+  steps u32;
+
+  // 'count' birds: two flocks of 'params.flockSize' (fewer if 'count' is
+  // smaller) and the rest loners, each loner its own group, scattered over
+  // the home from 'seed', each cruise height above the ground 'ground' gives
+  pub fn make(count usize, params FlockParams, seed u32, ground &fn(f32, f32) f32) Flock {
+    mut f = new Flock(List[Bird].empty(), params, List[Vec3].empty(), List[f32].empty(), 0., seed, 0u32);
+    imm size = usize.from(params.flockSize);
+    mut i = 0usize;
+    mut groups = 0u32;
+    while i < count {
+      imm group = if i < size { 0u32; } elif i < 2usize * size { 1u32; } else { 2u32 + u32.from(i - 2usize * size); };
+      if group >= groups { groups = group + 1u32; }
+      i = i + 1usize;
+    }
+    mut g = 0u32;
+    while g < groups {
+      f.waypoints.push(params.home);
+      f.waypointTimers.push(0.);
+      g = g + 1u32;
+    }
+    mut k = 0usize;
+    while k < count {
+      imm group = if k < size { 0u32; } elif k < 2usize * size { 1u32; } else { 2u32 + u32.from(k - 2usize * size); };
+      imm uk = u32.from(k);
+      // A flock starts about a point 40 m from home, round it by group
+      imm ga = f32.from(group) * 2.2 + 0.5;
+      imm cx = params.home.x + 40. * cos(ga);
+      imm cz = params.home.z + 40. * sin(ga);
+      imm px = cx + (unit(seed, uk, 1u32) - 0.5) * 16.;
+      imm pz = cz + (unit(seed, uk, 2u32) - 0.5) * 16.;
+      imm py = ground(px, pz) + params.cruiseHeight + (unit(seed, uk, 3u32) - 0.5) * 8.;
+      imm heading = unit(seed, uk, 4u32) * 2. * pi;
+      imm dir = new Vec3(cos(heading), 0., sin(heading));
+      imm sb = 0.9 + 0.2 * unit(seed, uk, 5u32);
+      imm v = dir * (params.cruiseSpeed * sb);
+      f.birds.push(new Bird(new Vec3(px, py, pz), v, dir, 0., group, sb, 0.85 + 0.3 * unit(seed, uk, 6u32),
+        (unit(seed, uk, 7u32) - 0.5) * 12., unit(seed, uk, 8u32) * 2. * pi, MODE_FLAP, 0.4 + 0.4 * unit(seed, uk, 9u32),
+        unit(seed, uk, 10u32) * 2. * pi, 8., 0.8));
+      k = k + 1usize;
+    }
+    f;
+  }
+
+  // The state of bird 'i' for drawing: its place, its frame (forward, up
+  // leaning into the turn, right) and its wings
+  pub fn pose(self &, i usize) BirdPose {
+    imm b = *birds[i];
+    imm worldUp = new Vec3(0., 1., 0.);
+    mut right = b.forward.cross(worldUp);
+    right = if right.length() < 0.0001 { new Vec3(1., 0., 0.); } else { right.normalize(); };
+    imm level = right.cross(b.forward).normalize();
+    // Leaning into a turn: up tilts towards the side the bird turns to
+    imm up = (level * cos(b.bank) + right * sin(b.bank)).normalize();
+    imm r2 = b.forward.cross(up).normalize();
+    // A small bob with each beat
+    imm bob = 0.025 * sin(b.phase) * b.amp;
+    new BirdPose(b.pos + level * bob, b.forward, up, r2, b.phase, b.amp, b.rate, b.mode);
+  }
+
+  // Move every bird on by 'dt' seconds (a fixed step of 1/30 s is what it
+  // was tuned at; the steering is not exact at more than 0.1 s). 'ground'
+  // gives the height of the ground at (x, z), hill and all.
+  pub fn step(self &mut, dt f32, ground &fn(f32, f32) f32) {
+    time = time + dt;
+    steps = steps + 1u32;
+    self.moveWaypoints(dt, ground);
+    imm n = birds.len();
+    mut copy = List[Bird].empty();
+    mut i = 0usize;
+    while i < n {
+      copy.push(*birds[i]);
+      i = i + 1usize;
+    }
+    i = 0usize;
+    while i < n {
+      imm b = self.stepBird(&copy, i, dt, ground);
+      birds.set(i, b);
+      i = i + 1usize;
+    }
+  }
+
+  // Each group's waypoint changed when its time is up: a point within 70
+  // per cent of the home radius, 12 to 22 m above the ground there
+  fn moveWaypoints(self &mut, dt f32, ground &fn(f32, f32) f32) {
+    mut g = 0usize;
+    while g < waypoints.len() {
+      imm left = *waypointTimers[g] - dt;
+      if left <= 0. {
+        imm ug = u32.from(g);
+        imm angle = unit(seed, ug + steps * 7u32, 100u32) * 2. * pi;
+        imm radius = params.homeRadius * 0.7 * unit(seed, ug + steps * 7u32, 101u32).sqrt();
+        imm x = params.home.x + radius * cos(angle);
+        imm z = params.home.z + radius * sin(angle);
+        imm y = ground(x, z) + params.cruiseHeight + (unit(seed, ug + steps * 7u32, 102u32) - 0.3) * 10.;
+        waypoints.set(g, new Vec3(x, y, z));
+        waypointTimers.set(g, 25. + 15. * unit(seed, ug + steps * 7u32, 103u32));
+      } else {
+        waypointTimers.set(g, left);
+      }
+      g = g + 1usize;
+    }
+  }
+
+  // Bird 'i' after a step, steered by the others as they were at its start
+  fn stepBird(self &, old &List[Bird], i usize, dt f32, ground &fn(f32, f32) f32) Bird {
+    mut b = *old[i];
+    imm p = params;
+    imm ui = u32.from(i);
+    // ---- the nearest neighbours, in sight and in range ----
+    mut bestD = new Array[f32, 7] <- fill 1000000.;
+    mut bestJ = new Array[usize, 7] <- fill 0usize;
+    mut count = 0usize;
+    imm heading = if b.vel.length() > 0.001 { b.vel.normalize(); } else { b.forward; };
+    mut j = 0usize;
+    while j < old.len() {
+      if j != i {
+        imm q = *old[j];
+        imm d = q.pos - b.pos;
+        imm d2 = d.lengthSquared();
+        if d2 < PERCEPTION * PERCEPTION and d2 > 0.000001 {
+          if d.dot(heading) > FOV_COS * d2.sqrt() {
+            // Insert into the sorted nearest few
+            if count < NEIGHBOURS or d2 < bestD[NEIGHBOURS - 1usize] {
+              mut at = if count < NEIGHBOURS { count; } else { NEIGHBOURS - 1usize; };
+              while at > 0usize and bestD[at - 1usize] > d2 {
+                bestD[at] = bestD[at - 1usize];
+                bestJ[at] = bestJ[at - 1usize];
+                at = at - 1usize;
+              }
+              bestD[at] = d2;
+              bestJ[at] = j;
+              if count < NEIGHBOURS { count = count + 1usize; }
+            }
+          }
+        }
+      }
+      j = j + 1usize;
+    }
+    // ---- flocking: separation, alignment, cohesion ----
+    mut sep = new Vec3(0., 0., 0.);
+    mut velSum = new Vec3(0., 0., 0.);
+    mut posSum = new Vec3(0., 0., 0.);
+    mut k = 0usize;
+    while k < count {
+      imm q = *old[bestJ[k]];
+      imm away = b.pos - q.pos;
+      imm d2 = if bestD[k] < 0.04 { 0.04; } else { bestD[k]; };
+      if bestD[k] < TOO_CLOSE * TOO_CLOSE { sep = sep + away * (1. / d2); }
+      velSum = velSum + q.vel;
+      posSum = posSum + q.pos;
+      k = k + 1usize;
+    }
+    mut a = sep * 3.5;
+    if count > 0usize {
+      imm inv = 1. / f32.from(count);
+      // Alignment: relax to the neighbours' velocity in about a second
+      a = a + (velSum * inv - b.vel) * 1.0;
+      // Cohesion: towards their centre, strongest beyond 4 m
+      imm toward = posSum * inv - b.pos;
+      imm dist = toward.length();
+      if dist > 0.01 { a = a + toward * (0.9 / dist * clampf(dist / 4., 0., 1.)); }
+    }
+    // ---- where it is going: its group's waypoint, and a drifting wander ----
+    imm wp = *waypoints[usize.from(b.group)];
+    imm goal = wp - b.pos;
+    if goal.length() > 0.01 { a = a + goal.normalize() * 2.2; }
+    b.wander = b.wander + (unit(seed, ui + steps * 131u32, 200u32) - 0.5) * 2.4 * dt * 6.;
+    a = a + new Vec3(cos(b.wander), 0.25 * sin(b.wander * 2.), sin(b.wander)) * 0.8;
+    a = a * b.weightBias;
+    // ---- home: a soft leash ----
+    imm toHome = new Vec3(p.home.x - b.pos.x, 0., p.home.z - b.pos.z);
+    imm homeDist = toHome.length();
+    imm edge = p.homeRadius * 0.6;
+    if homeDist > edge {
+      imm f = (homeDist - edge) / (p.homeRadius * 0.4);
+      a = a + toHome.normalize() * (f * f * 8.);
+    }
+    // ---- the ground: look ahead, climb, steer off rising ground ----
+    imm here = ground(b.pos.x, b.pos.z);
+    imm ahead1 = ground(b.pos.x + b.vel.x * 0.8, b.pos.z + b.vel.z * 0.8);
+    imm ahead2 = ground(b.pos.x + b.vel.x * 1.6, b.pos.z + b.vel.z * 1.6);
+    imm ahead3 = ground(b.pos.x + b.vel.x * 2.6, b.pos.z + b.vel.z * 2.6);
+    imm higher = if ahead1 > ahead2 { ahead1; } else { ahead2; };
+    imm higher2 = if higher > ahead3 { higher; } else { ahead3; };
+    imm highest = if higher2 > here { higher2; } else { here; };
+    imm clearAhead = b.pos.y + b.vel.y * 1.6 - highest;
+    imm want = p.minClearance + 6.;
+    if clearAhead < want { a.y = a.y + clampf((want - clearAhead) / want, 0., 1.5) * 12.; }
+    imm clearHere = b.pos.y - here;
+    if clearHere < p.minClearance { a.y = a.y + clampf((p.minClearance - clearHere) / p.minClearance, 0., 1.) * 16.; }
+    imm rise = highest - here;
+    if rise > 3. {
+      // Sideways, away from the slope's uphill: the gradient from points 6 m round
+      imm gx = ground(b.pos.x + 6., b.pos.z) - ground(b.pos.x - 6., b.pos.z);
+      imm gz = ground(b.pos.x, b.pos.z + 6.) - ground(b.pos.x, b.pos.z - 6.);
+      imm gl = (gx * gx + gz * gz).sqrt();
+      if gl > 0.001 { a = a + new Vec3(0. - gx / gl, 0., 0. - gz / gl) * (clampf(rise / 10., 0., 1.) * 4.); }
+    }
+    // Hold the cruise height above the ground
+    imm target = p.cruiseHeight + b.heightBias;
+    a.y = a.y + clampf((target - clearHere) * 0.25, -2., 2.);
+    // ---- limit, and the speed's own law ----
+    imm al = a.length();
+    if al > MAX_ACCEL { a = a * (MAX_ACCEL / al); }
+    imm sp0 = b.vel.length();
+    imm cruise = p.cruiseSpeed * b.speedBias;
+    // Towards the cruise speed, and a climb costs speed and a dive gives it
+    imm along = heading * ((cruise - sp0) * 0.6 - 9.81 * 0.35 * heading.y);
+    b.vel = b.vel + (a + along) * dt;
+    imm lo = p.minSpeed * b.speedBias;
+    imm hi = p.maxSpeed * b.speedBias;
+    imm sp = b.vel.length();
+    if sp < lo { b.vel = if sp > 0.001 { b.vel * (lo / sp); } else { heading * lo; }; }
+    if sp > hi { b.vel = b.vel * (hi / sp); }
+    b.pos = b.pos + b.vel * dt;
+    // ---- orientation ----
+    imm fwd = b.vel.normalize();
+    imm blend = 1. - libc.expf(-8. * dt);
+    imm sm = b.forward * (1. - blend) + fwd * blend;
+    b.forward = if sm.length() > 0.001 { sm.normalize(); } else { fwd; };
+    imm worldUp = new Vec3(0., 1., 0.);
+    mut right = b.forward.cross(worldUp);
+    right = if right.length() < 0.0001 { new Vec3(1., 0., 0.); } else { right.normalize(); };
+    imm lateral = a.dot(right);
+    imm bankTarget = clampf(lateral * 0.08, -0.9, 0.9);
+    b.bank = b.bank + (bankTarget - b.bank) * (1. - libc.expf(-dt / 0.15));
+    // ---- the wings ----
+    imm speed = b.vel.length();
+    imm climb = b.vel.y;
+    b.timer = b.timer - dt;
+    if b.mode == MODE_GLIDE and (speed < cruise - 1. or climb > 0.6) {
+      b.mode = MODE_FLAP;
+      b.timer = 0.4 + 0.4 * unit(seed, ui + steps * 17u32, 300u32);
+    }
+    if b.timer <= 0. {
+      if b.mode == MODE_FLAP {
+        // After a burst, glide, unless it needs the lift
+        if speed >= cruise - 1. and climb <= 0.3 {
+          b.mode = MODE_GLIDE;
+          b.timer = 0.3 + 0.5 * unit(seed, ui + steps * 17u32, 301u32);
+        } else {
+          b.timer = 0.4 + 0.4 * unit(seed, ui + steps * 17u32, 302u32);
+        }
+      } else {
+        b.mode = MODE_FLAP;
+        b.timer = 0.4 + 0.4 * unit(seed, ui + steps * 17u32, 303u32);
+      }
+    }
+    imm up01 = clampf(climb / 3., 0., 1.);
+    imm down01 = clampf(0. - climb / 3., 0., 1.);
+    // Flapping: 7 Hz level, up to 13 Hz climbing hard, 4.5 Hz diving; gliding: wings held out with a slow slight beat
+    imm rateTarget = if b.mode == MODE_FLAP { 7. + 6. * up01 - 2.5 * down01; } else { 1.5; };
+    imm ampTarget = if b.mode == MODE_FLAP { 0.75 + 0.25 * up01; } else { 0.15; };
+    b.rate = b.rate + (rateTarget - b.rate) * (1. - libc.expf(-dt * 6.));
+    b.amp = b.amp + (ampTarget - b.amp) * (1. - libc.expf(-dt * 10.));
+    b.phase = b.phase + 2. * pi * b.rate * dt;
+    if b.phase > 2. * pi { b.phase = b.phase - 2. * pi; }
+    b;
+  }
+}
+
+fn clampf(v f32, lo f32, hi f32) f32 {
+  if v < lo { return lo; }
+  if v > hi { return hi; }
+  v;
+}
+
+// A hash of (seed, a, b) to [0, 1): the PCG mix noise uses, chained (own)
+fn unit(seed u32, a u32, b u32) f32 {
+  f32.from(pcg(seed ^ pcg(a ^ pcg(b))) >> 8u32) * 0.000000059604644775390625;
+}
+
+fn pcg(v u32) u32 {
+  imm state = v * 747796405u + 2891336453u;
+  imm word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+  (word >> 22u) ^ word;
+}
