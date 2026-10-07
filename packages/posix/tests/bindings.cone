@@ -52,7 +52,7 @@ fn showText(label &[]u8, text *u8) {
 
 fn yes(b bool) i64 {if b {1i64;} else {0i64;};}
 
-fn same(a *u8, b *u8) i64 {yes(strcmp(a, b) == 0i32);}
+fn same(a *u8, b cstr) i64 {yes(strcmp(cstr.fromPtr(a), b) == 0i32);}
 
 // A type's size in bytes, read off the address of the second of an array of
 // them laid at address zero
@@ -70,16 +70,16 @@ fn newFindData() FindData64 {
   new FindData64(0u32, 0i64, 0i64, 0i64, 0i64, new Array[u8, 260] <- fill 0u8);
 }
 
-fn writeFile(name *u8, text *u8) {
-  imm f = fopen(name, &[]"wb");
-  fwrite(text, 1usize, strlen(text), f);
+fn writeFile(name cstr, text cstr) {
+  imm f = fopen(name, "wb");
+  fwrite(text.ptr(), 1usize, strlen(text), f);
   fclose(f);
 }
 
 // What a command prints, read to the end through a pipe into 'buf', which is
 // left NUL-terminated with its final line end taken off; the command's status
-fn capture(command *u8, buf *u8, size usize) i32 {
-  imm pipe = popen(command, &[]"r");
+fn capture(command cstr, buf *u8, size usize) i32 {
+  imm pipe = popen(command, "r");
   imm got = fread(buf, 1usize, size - 1usize, pipe);
   buf[got] = 0u8;
   if got > 0usize and buf[got - 1usize] == '\n' {buf[got - 1usize] = 0u8;};
@@ -92,23 +92,23 @@ fn layouts() {
 }
 
 fn environment() {
-  imm name = &[]"CONE_POSIX_TEST";
-  show("setenv", i64.from(setenv(name, &[]"first", 1i32)));
+  imm name cstr = "CONE_POSIX_TEST";
+  show("setenv", i64.from(setenv(name, "first", 1i32)));
   showText("getenv", getenv(name));
-  show("setenv-keep", i64.from(setenv(name, &[]"second", 0i32)));
+  show("setenv-keep", i64.from(setenv(name, "second", 0i32)));
   showText("getenv-kept", getenv(name));
-  show("setenv-replace", i64.from(setenv(name, &[]"second", 1i32)));
+  show("setenv-replace", i64.from(setenv(name, "second", 1i32)));
   showText("getenv-replaced", getenv(name));
-  imm wide = &[]"CONE_POSIX_TEST_É";
-  show("setenv-utf8", i64.from(setenv(wide, &[]"日本 é", 1i32)));
-  show("getenv-utf8-same", same(getenv(wide), &[]"日本 é"));
+  imm wide cstr = "CONE_POSIX_TEST_É";
+  show("setenv-utf8", i64.from(setenv(wide, "日本 é", 1i32)));
+  show("getenv-utf8-same", same(getenv(wide), "日本 é"));
   show("unsetenv-utf8", i64.from(unsetenv(wide)));
-  show("setenv-not-utf8-EINVAL", yes(setenv(wide, &[]"\xFF", 1i32) == EINVAL));
+  show("setenv-not-utf8-EINVAL", yes(setenv(wide, "\xFF", 1i32) == EINVAL));
 }
 
 // After the processes have seen it
 fn unsetting() {
-  imm name = &[]"CONE_POSIX_TEST";
+  imm name cstr = "CONE_POSIX_TEST";
   show("unsetenv", i64.from(unsetenv(name)));
   show("getenv-after-unsetenv-null", yes(getenv(name) == null));
   show("unsetenv-again", i64.from(unsetenv(name)));
@@ -116,28 +116,28 @@ fn unsetting() {
 
 fn processes() {
   mut buf = new Array[u8, 64] <- fill 0u8;
-  imm at *u8 = &[]buf;
-  show("popen-status", i64.from(capture(&[]"echo hello", at, 64usize)));
+  imm at *u8 = &[]buf as *u8;
+  show("popen-status", i64.from(capture("echo hello", at, 64usize)));
   showText("captured", at);
-  capture(&[]"echo %CONE_POSIX_TEST%", at, 64usize);
+  capture("echo %CONE_POSIX_TEST%", at, 64usize);
   showText("child-sees-setenv", at);
-  show("pclose-exit-status", i64.from(capture(&[]"exit /b 4", at, 64usize)));
+  show("pclose-exit-status", i64.from(capture("exit /b 4", at, 64usize)));
 }
 
 // Whatever an interrupted run left behind, cleared; each call may fail
-fn clearAway(dir *u8) {
+fn clearAway(dir cstr) {
   if chdir(dir) == 0i32 {
-    remove(&[]"a.txt");
-    remove(&[]"b.txt");
-    rmdir(&[]"sub");
-    chdir(&[]"..");
+    remove("a.txt");
+    remove("b.txt");
+    rmdir("sub");
+    chdir("..");
     rmdir(dir);
   };
 }
 
 fn filesAndDirectories() {
-  imm dir = &[]"module_package_posix.dir";
-  show("chdir-temp", i64.from(chdir(getenv(&[]"TEMP"))));
+  imm dir cstr = "module_package_posix.dir";
+  show("chdir-temp", i64.from(chdir(cstr.fromPtr(getenv("TEMP")))));
   clearAway(dir);
 
   show("mkdir", i64.from(mkdir(dir, 0x1EDu32)));
@@ -149,42 +149,42 @@ fn filesAndDirectories() {
   // In and back out: getcwd inside is getcwd outside, a '\' and the name
   mut outside = new Array[u8, 260] <- fill 0u8;
   mut inside = new Array[u8, 260] <- fill 0u8;
-  imm out *u8 = &[]outside;
-  imm in2 *u8 = &[]inside;
+  imm out *u8 = &[]outside as *u8;
+  imm in2 *u8 = &[]inside as *u8;
   show("getcwd-null", yes(getcwd(out, 260usize) == null));
   show("chdir-in", i64.from(chdir(dir)));
   getcwd(in2, 260usize);
-  imm outlen = strlen(out);
+  imm outlen = strlen(cstr.fromPtr(out));
   show("getcwd-inside-extends-outside",
-    yes(strlen(in2) == outlen + 25usize and in2[outlen] == '\\' and same(in2 + outlen + 1usize, dir) == 1i64));
+    yes(strlen(cstr.fromPtr(in2)) == outlen + 25usize and in2[outlen] == '\\' and same(in2 + outlen + 1usize, dir) == 1i64));
 
   // realpath, into a buffer and malloc'd: the directory and the file's name
   mut real = new Array[u8, 260] <- fill 0u8;
-  imm rp *u8 = &[]real;
-  realpath(&[]"a.txt", rp);
-  show("realpath-length", i64.from(strlen(rp) - strlen(in2)));
-  imm grown = realpath(&[]"./sub/../a.txt", null);
-  show("realpath-malloced-same", same(grown, rp));
+  imm rp *u8 = &[]real as *u8;
+  realpath("a.txt", rp);
+  show("realpath-length", i64.from(strlen(cstr.fromPtr(rp)) - strlen(cstr.fromPtr(in2))));
+  imm grown = realpath("./sub/../a.txt", null);
+  show("realpath-malloced-same", same(grown, cstr.fromPtr(rp)));
   free(grown);
 
   // Three entries: a file of five bytes, an empty one, and a directory
-  writeFile(&[]"a.txt", &[]"12345");
-  writeFile(&[]"b.txt", &[]"");
-  show("mkdir-sub", i64.from(mkdir(&[]"sub", 0x1EDu32)));
+  writeFile("a.txt", "12345");
+  writeFile("b.txt", "");
+  show("mkdir-sub", i64.from(mkdir("sub", 0x1EDu32)));
   st = newStat();
-  show("stat-file", i64.from(stat(&[]"a.txt", &mut st)));
+  show("stat-file", i64.from(stat("a.txt", &mut st)));
   show("stat-file-size", st.st_size);
   show("stat-file-is-regular", yes((st.st_mode & S_IFMT) == S_IFREG));
   show("stat-file-mtime-after-2020", yes(st.st_mtime > 1577836800i64));
-  show("stat-missing", i64.from(stat(&[]"missing.txt", &mut st)));
+  show("stat-missing", i64.from(stat("missing.txt", &mut st)));
 
   listing();
   posixListing();
 
-  show("remove-a", i64.from(remove(&[]"a.txt")));
-  show("remove-b", i64.from(remove(&[]"b.txt")));
-  show("rmdir-sub", i64.from(rmdir(&[]"sub")));
-  show("chdir-out", i64.from(chdir(&[]"..")));
+  show("remove-a", i64.from(remove("a.txt")));
+  show("remove-b", i64.from(remove("b.txt")));
+  show("rmdir-sub", i64.from(rmdir("sub")));
+  show("chdir-out", i64.from(chdir("..")));
   show("rmdir", i64.from(rmdir(dir)));
   show("stat-after-rmdir", i64.from(stat(dir, &mut st)));
 }
@@ -192,7 +192,7 @@ fn filesAndDirectories() {
 // The Windows-only listing, of the current directory
 fn listing() {
   mut info = newFindData();
-  imm handle = _findfirst64(&[]"*", &mut info);
+  imm handle = _findfirst64("*", &mut info);
   show("findfirst-failed", yes(handle == -1isize));
   mut entries = 0i64;
   mut aSize = -1i64;
@@ -200,11 +200,11 @@ fn listing() {
   mut subIsDir = 0i64;
   mut going = handle != -1isize;
   while going {
-    imm name *u8 = &[]info.name;
-    if same(name, &[]"a.txt") == 1i64 {aSize = info.size;};
-    if same(name, &[]"b.txt") == 1i64 {bSize = info.size;};
-    if same(name, &[]"sub") == 1i64 {subIsDir = yes((info.attrib & _A_SUBDIR) != 0u32);};
-    if same(name, &[]".") == 0i64 and same(name, &[]"..") == 0i64 {entries = entries + 1i64;};
+    imm name *u8 = &[]info.name as *u8;
+    if same(name, "a.txt") == 1i64 {aSize = info.size;};
+    if same(name, "b.txt") == 1i64 {bSize = info.size;};
+    if same(name, "sub") == 1i64 {subIsDir = yes((info.attrib & _A_SUBDIR) != 0u32);};
+    if same(name, ".") == 0i64 and same(name, "..") == 0i64 {entries = entries + 1i64;};
     going = _findnext64(handle, &mut info) == 0i32;
   };
   show("findclose", i64.from(_findclose(handle)));
@@ -217,7 +217,7 @@ fn listing() {
 // POSIX's listing, of the current directory: the three entries and '.' and
 // '..', each with its kind
 fn posixListing() {
-  imm dir = opendir(&[]".");
+  imm dir = opendir(".");
   show("opendir-null", yes(dir == null));
   mut entries = 0i64;
   mut dots = 0i64;
@@ -226,15 +226,15 @@ fn posixListing() {
   mut e = readdir(dir);
   while e != null {
     imm entry = e as &dirent;
-    imm name *u8 = &[]entry.d_name;
-    if same(name, &[]".") == 1i64 or same(name, &[]"..") == 1i64 {
+    imm name *u8 = &[]entry.d_name as *u8;
+    if same(name, ".") == 1i64 or same(name, "..") == 1i64 {
       dots = dots + 1i64;
       if entry.d_type != DT_DIR {dots = dots + 100i64;};
     } else {
       entries = entries + 1i64;
     };
-    if same(name, &[]"a.txt") == 1i64 {aType = i64.from(entry.d_type);};
-    if same(name, &[]"sub") == 1i64 {subType = i64.from(entry.d_type);};
+    if same(name, "a.txt") == 1i64 {aType = i64.from(entry.d_type);};
+    if same(name, "sub") == 1i64 {subType = i64.from(entry.d_type);};
     e = readdir(dir);
   };
   show("readdir-entries", entries);
@@ -244,22 +244,22 @@ fn posixListing() {
   show("readdir-end-null", yes(readdir(dir) == null));
   show("closedir", i64.from(closedir(dir)));
 
-  imm missing = opendir(&[]"missing");
+  imm missing = opendir("missing");
   show("opendir-missing-null", yes(missing == null));
   show("opendir-missing-ENOENT", yes(*errno() == ENOENT));
-  imm file = opendir(&[]"a.txt");
+  imm file = opendir("a.txt");
   show("opendir-file-null", yes(file == null));
   show("opendir-file-ENOTDIR", yes(*errno() == ENOTDIR));
 
   mut st = newStat();
-  show("lstat-file", i64.from(lstat(&[]"a.txt", &mut st)));
+  show("lstat-file", i64.from(lstat("a.txt", &mut st)));
   show("lstat-file-is-regular", yes((st.st_mode & S_IFMT) == S_IFREG));
   show("lstat-file-size", st.st_size);
-  show("lstat-dir", i64.from(lstat(&[]"sub", &mut st)));
+  show("lstat-dir", i64.from(lstat("sub", &mut st)));
   show("lstat-dir-is-dir", yes((st.st_mode & S_IFMT) == S_IFDIR));
-  show("lstat-missing", i64.from(lstat(&[]"missing", &mut st)));
+  show("lstat-missing", i64.from(lstat("missing", &mut st)));
   show("lstat-missing-ENOENT", yes(*errno() == ENOENT));
-  show("mkdir-again-EEXIST", yes(mkdir(&[]"sub", 0x1EDu32) != 0i32 and *errno() == EEXIST));
+  show("mkdir-again-EEXIST", yes(mkdir("sub", 0x1EDu32) != 0i32 and *errno() == EEXIST));
 }
 
 fn main() i32 {

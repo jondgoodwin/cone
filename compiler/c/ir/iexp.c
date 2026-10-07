@@ -157,6 +157,49 @@ INode *iexpCoerceType(INode *from, INode *totypedcl) {
 
 static int iexpCoerceShape(INode **from, INode *totype);
 
+// Is this a reference to text: '&str', which a literal is?
+static int iexpIsTextRef(INode *type) {
+    return type->tag == RefTag && itypeGetTypeDcl(((RefNode*)type)->vtexp) == (INode*)strTypeDcl;
+}
+
+// Refuse, saying what is meant, a crossing between a slice, text, a raw
+// pointer and a 'cstr' that the C boundary asks to be explicit. Answers 1
+// having reported it. The caller builds the conversion anyway, so what uses the
+// value says nothing more.
+static int iexpCPtrMismatch(INode *from, INode *totypedcl) {
+    INode *fromtype = iexpGetTypeDcl(from);
+    int toptr = totypedcl->tag == PtrTag;
+    int tocstr = totypedcl == (INode*)cstrTypeDcl;
+    if (toptr && fromtype->tag == ArrayRefTag
+        && itypeIsSame(((RefNode*)fromtype)->vtexp, ((StarNode*)totypedcl)->vtexp)) {
+        errorMsgNode(from, ErrorCPtrConv,
+            "A slice is an address and a count, not a pointer. Take its address explicitly, 'xs as *%s'; a C function that takes a string is declared with 'cstr'.",
+            itypeName(((StarNode*)totypedcl)->vtexp));
+        return 1;
+    }
+    if (toptr && iexpIsTextRef(fromtype)) {
+        errorMsgNode(from, ErrorCPtrConv,
+            "Text is not a pointer. A C function that takes a string is declared with 'cstr', which a literal or a String's 'cstr()' is; for the bytes alone, 's as &[]u8' and then 'as *u8'.");
+        return 1;
+    }
+    if (toptr && fromtype == (INode*)cstrTypeDcl) {
+        errorMsgNode(from, ErrorCPtrConv,
+            "A cstr is not a raw pointer. Its pointer is 'c.ptr()'.");
+        return 1;
+    }
+    if (tocstr && fromtype->tag == PtrTag) {
+        errorMsgNode(from, ErrorCPtrConv,
+            "A raw pointer is no cstr, which promises a NUL after its bytes. 'cstr.fromPtr(p)' says that this pointer's bytes end in one.");
+        return 1;
+    }
+    if (tocstr && (iexpIsTextRef(fromtype) || fromtype->tag == ArrayRefTag)) {
+        errorMsgNode(from, ErrorCPtrConv,
+            "Text or a slice promises no NUL after its bytes, so it is no cstr. A literal is one, and so is a String's 'cstr()': 'String.from(s).cstr()' copies this.");
+        return 1;
+    }
+    return 0;
+}
+
 int iexpCharNumberMismatch(INode *from, INode *totypedcl) {
     INode *fromtype = iexpGetTypeDcl(from);
     // A number here is any but bool, which has its own message, and char
@@ -265,7 +308,7 @@ static int iexpCoerceShape(INode **from, INode *totype) {
         // A char is no number, nor a number a char (a non-ASCII character
         // literal wanted as a u8 included): the conversion is asked for. It is
         // then built anyway, as for a bool, so what uses the value says nothing more.
-        if (iexpCharNumberMismatch(*from, totypedcl)) {
+        if (iexpCharNumberMismatch(*from, totypedcl) || iexpCPtrMismatch(*from, totypedcl)) {
             INode *conv = (INode*)newConvCastNode(*from, totypedcl);
             inodeLexCopy(conv, *from);
             *from = conv;

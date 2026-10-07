@@ -100,6 +100,8 @@ Name *sizedTraitName;
 Name *dynSizedTraitName;
 Name *immutableTraitName;
 Name *strTypeName;
+Name *cstrTypeName;
+Name *cstrPtrFieldName;
 Name *lockPermTraitName;
 Name *acquireMutMethodName;
 Name *releaseMutMethodName;

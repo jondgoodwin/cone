@@ -535,6 +535,9 @@ enum ErrorCode {
     // Characters
     ErrorCharNotNbr = 1334,     // A char where a number is wanted, or a number where a char is wanted: a char converts only explicitly, 'u8.from(c)' and 'char.from(b)'; a non-ASCII character literal is no u8
 
+    // The C boundary
+    ErrorCPtrConv = 1335,       // A slice or text where a raw pointer is wanted, or a raw pointer or text where a cstr is wanted: a slice's pointer is asked for with 'as', text reaches C as a cstr, and a pointer becomes a cstr with 'cstr.fromPtr'
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name

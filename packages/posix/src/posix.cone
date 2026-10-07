@@ -2,8 +2,8 @@
 // beyond the ISO C library, for files, directories, processes and the
 // environment. A program reaches it with 'import posix'. It is built on the
 // libc package, whose 'FILE' stream it shares, and like libc it is raw: C
-// names, C types, C strings ('*u8' to bytes ending in a NUL, which a string
-// literal carries), errors as C reports them. The Cone-flavoured layer over
+// names, C types, C strings (a 'cstr', a pointer to bytes ending in a NUL, which
+// a string literal converts to), errors as C reports them. The Cone-flavoured layer over
 // it is the 'fs' package (files and folders) and the 'env' package (the
 // environment).
 //
@@ -87,14 +87,14 @@ pub const ENOTEMPTY = 41i32;
 // a symbolic link or a directory junction to what it leads to, as POSIX's
 // does; 'lstat', below, does not.
 pub extern {
-  fn @c("_stat64") stat(path *u8, buf &mut Stat) i32;
-  fn @c("_chdir") chdir(path *u8) i32;
-  fn @c("_rmdir") rmdir(path *u8) i32;
+  fn @c("_stat64") stat(path cstr, buf &mut Stat) i32;
+  fn @c("_chdir") chdir(path cstr) i32;
+  fn @c("_rmdir") rmdir(path cstr) i32;
 }
 
 // mkdir(path, mode): Windows has no permission bits, so 'mode' is ignored
-extern fn _mkdir(path *u8) i32;
-pub fn mkdir(path *u8, mode u32) i32 inline {_mkdir(path);}
+extern fn _mkdir(path cstr) i32;
+pub fn mkdir(path cstr, mode u32) i32 inline {_mkdir(path);}
 
 // getcwd(buf, size): the runtime's '_getcwd' takes the size as an 'int'
 extern fn _getcwd(buf *u8, size i32) *u8;
@@ -106,8 +106,8 @@ pub fn getcwd(buf *u8, size usize) *u8 inline {_getcwd(buf, i32.from(size));}
 // says. Unlike POSIX's, it neither requires the path to exist nor resolves
 // symbolic links: it only makes the path absolute and removes '.' and '..'.
 pub const PATH_MAX = 260usize;
-extern fn _fullpath(resolved *u8, path *u8, size usize) *u8;
-pub fn realpath(path *u8, resolved *u8) *u8 inline {_fullpath(resolved, path, PATH_MAX);}
+extern fn _fullpath(resolved *u8, path cstr, size usize) *u8;
+pub fn realpath(path cstr, resolved *u8) *u8 inline {_fullpath(resolved, path, PATH_MAX);}
 
 // stdlib.h: the environment, read and changed in UTF-8. Windows keeps it in
 // UTF-16, and the runtime's narrow 'getenv' reads a copy it converts once,
@@ -129,11 +129,11 @@ const invalidUtf8Fails = 8u32;      // MB_ERR_INVALID_CHARS
 
 // A C string's UTF-8 as UTF-16 ending in a 0, in a block from malloc the
 // caller frees; null when it is not UTF-8
-fn utf16FromUtf8(s *u8) *u16 {
-  imm n = MultiByteToWideChar(utf8Page, invalidUtf8Fails, s, -1i32, null, 0i32);
+fn utf16FromUtf8(s cstr) *u16 {
+  imm n = MultiByteToWideChar(utf8Page, invalidUtf8Fails, s.ptr(), -1i32, null, 0i32);
   if n == 0i32 {return null;};
   imm p = libc.malloc(usize.from(n) * 2usize) as *u16;
-  MultiByteToWideChar(utf8Page, invalidUtf8Fails, s, -1i32, p, n);
+  MultiByteToWideChar(utf8Page, invalidUtf8Fails, s.ptr(), -1i32, p, n);
   p;
 }
 
@@ -141,7 +141,7 @@ fn utf16FromUtf8(s *u8) *u16 {
 mut envAnswer = 0usize;
 mut envAnswerSize = 0usize;
 
-fn getenvUtf8(name *u8) *u8 {
+fn getenvUtf8(name cstr) *u8 {
   imm wname = utf16FromUtf8(name);
   if wname == null {return null;};
   imm wvalue = _wgetenv(wname);
@@ -158,7 +158,7 @@ fn getenvUtf8(name *u8) *u8 {
   envAnswer as *u8;
 }
 
-fn setenvUtf8(name *u8, value *u8, overwrite i32) i32 {
+fn setenvUtf8(name cstr, value cstr, overwrite i32) i32 {
   imm wname = utf16FromUtf8(name);
   if wname == null {return EINVAL;};
   imm wvalue = utf16FromUtf8(value);
@@ -177,25 +177,25 @@ fn setenvUtf8(name *u8, value *u8, overwrite i32) i32 {
 
 // getenv(name): the variable's value, in a block overwritten by the next
 // call, as POSIX allows; null when it is not set
-pub fn getenv(name *u8) *u8 inline {getenvUtf8(name);}
+pub fn getenv(name cstr) *u8 inline {getenvUtf8(name);}
 
 // setenv(name, value, overwrite): the runtime's '_wputenv_s' always
 // overwrites, so where 'overwrite' is zero and the variable is set, nothing
 // is done, as POSIX says. It returns 0, or an error number where POSIX
 // returns -1.
-pub fn setenv(name *u8, value *u8, overwrite i32) i32 inline {setenvUtf8(name, value, overwrite);}
+pub fn setenv(name cstr, value cstr, overwrite i32) i32 inline {setenvUtf8(name, value, overwrite);}
 
 // unsetenv(name): removes a variable, which is not an error when it is not
 // set. The runtime's '_wputenv_s' removes one given an empty value, which is
 // also why, on Windows, 'setenv' with an empty value removes the variable
 // rather than setting it empty.
-pub fn unsetenv(name *u8) i32 inline {setenvUtf8(name, &[]"", 1i32);}
+pub fn unsetenv(name cstr) i32 inline {setenvUtf8(name, "", 1i32);}
 
 // stdio.h: running a command through the shell (cmd.exe on Windows) with a
 // pipe to what it prints ('r') or to what it reads ('w'). 'pclose' waits for
 // it and returns its exit status.
 pub extern {
-  fn @c("_popen") popen(command *u8, mode *u8) *libc.FILE;
+  fn @c("_popen") popen(command cstr, mode cstr) *libc.FILE;
   fn @c("_pclose") pclose(stream *libc.FILE) i32;
 }
 
@@ -223,7 +223,7 @@ pub struct FindData64 {
 pub const _A_SUBDIR = 0x10u32;
 
 pub extern {
-  fn _findfirst64(pattern *u8, info &mut FindData64) isize;
+  fn _findfirst64(pattern cstr, info &mut FindData64) isize;
   fn _findnext64(handle isize, info &mut FindData64) i32;
   fn _findclose(handle isize) i32;
 }
@@ -251,7 +251,8 @@ fn emptyFindData() FindData64 {
 
 // Whether a C string holds '*' or '?', which '_findfirst64' would read as a
 // pattern rather than a name
-fn hasWildcard(path *u8) bool {
+fn hasWildcard(cpath cstr) bool {
+  imm path = cpath.ptr();
   mut i = 0usize;
   while path[i] != 0u8 {
     if path[i] == '*' or path[i] == '?' {return true;};
@@ -265,7 +266,7 @@ fn hasWildcard(path *u8) bool {
 // Windows every reparse point counts as a link (a symbolic link, a
 // junction, and the special entries '_A_REPARSE' names), its size zero and
 // its times its own; anything else is '_stat64''s answer.
-pub fn lstat(path *u8, buf &mut Stat) i32 {
+pub fn lstat(path cstr, buf &mut Stat) i32 {
   if not hasWildcard(path) {
     mut info = emptyFindData();
     imm handle = _findfirst64(path, &mut info);
@@ -316,16 +317,17 @@ pub struct DIR {
 // opendir(name): opens a directory for 'readdir', or answers null with
 // errno set: ENOENT where nothing has that name, ENOTDIR where a file does.
 // On Windows it lists the pattern 'name/*'.
-pub fn opendir(name *u8) *DIR {
+pub fn opendir(cname cstr) *DIR {
   mut st = emptyStat();
-  if stat(name, &mut st) != 0i32 {return null;};
+  if stat(cname, &mut st) != 0i32 {return null;};
   if (st.st_mode & S_IFMT) != S_IFDIR {
     *libc.errno() = ENOTDIR;
     return null;
   };
   // The pattern: the name, a '/' unless it ends in a separator already (or
   // is a drive, 'C:'), and '*'
-  imm len = libc.strlen(name);
+  imm name = cname.ptr();
+  imm len = libc.strlen(cname);
   imm pattern = libc.malloc(len + 3usize);
   libc.memcpy(pattern, name, len);
   mut at = len;
@@ -342,7 +344,7 @@ pub fn opendir(name *u8) *DIR {
   imm d = dir as &mut DIR;
   *d = new DIR(-1isize, false, emptyFindData(), new dirent(0u64, DT_UNKNOWN, new Array[u8, 260] <- fill 0u8));
   imm saved = *libc.errno();
-  d.handle = _findfirst64(pattern, &mut d.data);
+  d.handle = _findfirst64(cstr.fromPtr(pattern), &mut d.data);
   libc.free(pattern);
   // A directory with nothing in it, not even '.' (a drive's root), lists nothing
   if d.handle == -1isize {*libc.errno() = saved;} else {d.pending = true;};

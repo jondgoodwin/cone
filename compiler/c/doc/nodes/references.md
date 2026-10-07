@@ -440,7 +440,8 @@ trait ([struct](struct.md), "A reference to an enum converts").
 
 `ptrMatches` is fully invariant, but `itypeMatches` separately accepts a
 reference as a `ConvSubtype` to a pointer, **ignoring region and permission
-entirely**.
+entirely**. A slice is not accepted: it is an address and a count, and its pointer
+is asked for with `as` ([cast](cast.md), `castTypeCheck`).
 
 ### `refAdoptInfections`
 

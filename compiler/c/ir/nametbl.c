@@ -255,6 +255,8 @@ void nametblInit() {
     dynSizedTraitName = nametblFind("DynSized", 8);
     immutableTraitName = nametblFind("Immutable", 9);
     strTypeName = nametblFind("str", 3);
+    cstrTypeName = nametblFind("cstr", 4);
+    cstrPtrFieldName = nametblFind("p", 1);
     lockPermTraitName = nametblFind("LockPermission", 14);
     acquireMutMethodName = nametblFind("acquireMut", 10);
     releaseMutMethodName = nametblFind("releaseMut", 10);

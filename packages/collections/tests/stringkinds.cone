@@ -167,10 +167,11 @@ fn main() i32 {
   // -------- the NUL after the bytes --------
   mut e = String.empty();
   expectUInt(u64.from(libc.strlen(e.cstr())), 0, "an empty String is a C string");
+  expectUInt(u64.from(e.cstr().ptr()[0usize]), 0, "an empty String's C string is the static empty literal: a NUL");
   expectBool(e.view().isEmpty, true, "its view is empty");
   e.append("ab");
   expectUInt(u64.from(libc.strlen(e.cstr())), 2, "NUL after append");
-  expectUInt(u64.from(e.cstr()[2usize]), 0, "the NUL itself");
+  expectUInt(u64.from(e.cstr().ptr()[2usize]), 0, "the NUL itself");
   e.appendByte('c');
   expectUInt(u64.from(libc.strlen(e.cstr())), 3, "NUL after appendByte");
   e.appendInt(-45i64);
@@ -178,12 +179,12 @@ fn main() i32 {
   expectUInt(u64.from(libc.strlen(e.cstr())), 6, "NUL after appendInt");
   e.appendHex(255u64, 2usize);
   expectStr(e.view(), "abc-45ff", "appendHex");
-  expectUInt(u64.from(e.cstr()[8usize]), 0, "NUL after appendHex");
+  expectUInt(u64.from(e.cstr().ptr()[8usize]), 0, "NUL after appendHex");
   e.padEnd(10usize, '.');
-  expectUInt(u64.from(e.cstr()[10usize]), 0, "NUL after padEnd");
+  expectUInt(u64.from(e.cstr().ptr()[10usize]), 0, "NUL after padEnd");
   e.truncate(3usize);
   expectStr(e.view(), "abc", "truncate");
-  expectUInt(u64.from(e.cstr()[3usize]), 0, "NUL after truncate");
+  expectUInt(u64.from(e.cstr().ptr()[3usize]), 0, "NUL after truncate");
   e.truncate(30usize);
   expectStr(e.view(), "abc", "truncate past the end leaves it");
   e.clear();
@@ -209,7 +210,7 @@ fn main() i32 {
   expectStr(m.view(), "ac", "remove the middle");
   m.remove(0usize, 2usize);
   expectBool(m.isEmpty(), true, "remove everything");
-  expectUInt(u64.from(m.cstr()[0usize]), 0, "NUL after removing everything");
+  expectUInt(u64.from(m.cstr().ptr()[0usize]), 0, "NUL after removing everything");
   mut u = String.from("aé");
   u.insert(1usize, "-");
   expectStr(u.view(), "a-é", "insert before a multibyte character");
@@ -224,6 +225,13 @@ fn main() i32 {
   imm g = String.empty();
   imm gz = g.freeze();
   expectUInt(u64.from(gz.len), 0, "freezing nothing makes an empty owner");
+  // The block keeps its NUL, so the owner is a C string with nothing copied;
+  // an empty one holds a one-byte block of its own
+  expectUInt(u64.from(cstr.fromOwned(&fz).len()), 11, "a frozen String is a C string");
+  expectStr(cstr.fromOwned(&fz).view(), "frozen text", "and reads back as its text");
+  expectUInt(u64.from(cstr.fromOwned(&gz).len()), 0, "an empty frozen String is the empty C string");
+  imm fzbytes &[]u8 = &*fz;
+  expectUInt(u64.from((fzbytes as *u8)[11usize]), 0, "the NUL after a frozen String's bytes");
 
   // -------- the copies the String hands out --------
   imm joined = String.join(names.view(), ", ");

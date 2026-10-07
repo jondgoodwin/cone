@@ -108,14 +108,7 @@ pub struct FsError {
       out.append(other.view());
     }
     out.append(": ");
-    imm text = libc.strerror(code);
-    if text == null {
-      out.append("error ");
-      out.appendInt(i64.from(code));
-    }
-    else {
-      out.append(mem.sliceFromParts(text, libc.strlen(text)));
-    }
+    out.append(libc.strerror(code).view());
     out;
   }
 
@@ -160,8 +153,8 @@ fn useUtf8() {
   if utf8Checked { return; }
   utf8Checked = true;
   imm now = libc.setlocale(libc.LC_CTYPE, null);
-  if now != null and libc.strcmp(now, &[]"C") == 0i32 {
-    libc.setlocale(libc.LC_CTYPE, &[]".UTF-8");
+  if now != null and libc.strcmp(cstr.fromPtr(now), "C") == 0i32 {
+    libc.setlocale(libc.LC_CTYPE, &".UTF-8" as *u8);
   }
 }
 
@@ -229,11 +222,11 @@ pub fn readFile(path &[]u8) Result[String, FsError] {
   if hasNul(path) { return fail[String]("readFile", path, posix.EINVAL); }
   useUtf8();
   mut c = String.from(path);
-  imm f = libc.fopen(c.cstr(), &[]"rb");
+  imm f = libc.fopen(c.cstr(), "rb");
   if f == null { return fail[String]("readFile", path, openErrno(path)); }
   mut out = String.empty();
   mut buf = new Array[u8, 65536] <- fill 0u8;
-  imm bp *u8 = &[]buf;
+  imm bp *u8 = &[]buf as *u8;
   mut going = true;
   while going {
     imm n = libc.fread(bp, 1usize, 65536usize, f);
@@ -248,13 +241,13 @@ pub fn readFile(path &[]u8) Result[String, FsError] {
 }
 
 // Open with mode, write data, close; a failure anywhere is op's
-fn writeWith(op &[]u8, path &[]u8, data &[]u8, mode *u8) Result[void, FsError] {
+fn writeWith(op &[]u8, path &[]u8, data &[]u8, mode cstr) Result[void, FsError] {
   if hasNul(path) { return fail[void](op, path, posix.EINVAL); }
   useUtf8();
   mut c = String.from(path);
   imm f = libc.fopen(c.cstr(), mode);
   if f == null { return fail[void](op, path, openErrno(path)); }
-  imm wrote = if data.len > 0usize {libc.fwrite(data, 1usize, data.len, f);} else {0usize;};
+  imm wrote = if data.len > 0usize {libc.fwrite(data as *u8, 1usize, data.len, f);} else {0usize;};
   imm code = lastErrno();
   imm closed = libc.fclose(f);
   if wrote != data.len { return fail[void](op, path, code); }
@@ -265,12 +258,12 @@ fn writeWith(op &[]u8, path &[]u8, data &[]u8, mode *u8) Result[void, FsError] {
 // Make the file hold exactly data, making it if it is not there and
 // replacing what it held if it is
 pub fn writeFile(path &[]u8, data &[]u8) Result[void, FsError] {
-  writeWith("writeFile", path, data, &[]"wb");
+  writeWith("writeFile", path, data, "wb");
 }
 
 // Add data to the end of the file, making it if it is not there
 pub fn appendFile(path &[]u8, data &[]u8) Result[void, FsError] {
-  writeWith("appendFile", path, data, &[]"ab");
+  writeWith("appendFile", path, data, "ab");
 }
 
 // -------- names --------
@@ -373,8 +366,8 @@ pub fn readDir(path &[]u8) Result[List[DirEntry], FsError] {
   mut e = posix.readdir(dir);
   while e != null {
     imm entry = e as &posix.dirent;
-    imm np *u8 = &[]entry.d_name;
-    imm name = mem.sliceFromParts(np, libc.strlen(np));
+    imm np *u8 = &[]entry.d_name as *u8;
+    imm name = cstr.fromPtr(np).view();
     if name != "." and name != ".." {
       imm t = entry.d_type;
       out.push(new DirEntry(String.from(name), join(path, name),
@@ -512,7 +505,7 @@ pub fn currentDir() Result[String, FsError] {
   // A null buffer of size 0: the runtime allocates one as long as it needs
   imm got = posix.getcwd(null, 0usize);
   if got == null { return fail[String]("currentDir", "", lastErrno()); }
-  imm here = normalize(mem.sliceFromParts(got, libc.strlen(got)));
+  imm here = normalize(cstr.fromPtr(got).view());
   libc.free(got);
   Ok[String, FsError][here];
 }
@@ -538,7 +531,7 @@ pub fn absolute(path &[]u8) Result[String, FsError] {
   mut c = String.from(path);
   imm got = posix.realpath(c.cstr(), null);
   if got == null { return fail[String]("absolute", path, lastErrno()); }
-  imm full = normalize(mem.sliceFromParts(got, libc.strlen(got)));
+  imm full = normalize(cstr.fromPtr(got).view());
   libc.free(got);
   Ok[String, FsError][full];
 }

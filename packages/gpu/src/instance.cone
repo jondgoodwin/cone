@@ -54,13 +54,13 @@ pub struct Instance {
       exts[usize.from(next)] = *(surfaceExts + usize.from(next));
       next = next + 1u32;
     }
-    result.debugMessages = hasInstanceExtension(nullp(), &"VK_EXT_debug_utils" as *u8);
+    result.debugMessages = hasInstanceExtension(nullp(), "VK_EXT_debug_utils");
     if result.debugMessages {
       exts[usize.from(next)] = &"VK_EXT_debug_utils" as *u8;
       next = next + 1u32;
     }
     imm layerName = &"VK_LAYER_KHRONOS_validation" as *u8;
-    result.validation = hasInstanceLayer(layerName);
+    result.validation = hasInstanceLayer(cstr.fromPtr(layerName));
     imm layers Array[*u8, 1] = [layerName];
 
     // Synchronization validation, set through the layer's settings: it checks
@@ -68,7 +68,7 @@ pub struct Instance {
     // accesses heuristic makes it see what shaders read and write through
     // storage buffers and storage textures, from the SPIR-V: without it,
     // a compute pass's writes are invisible to it.
-    result.syncValidation = result.validation and hasInstanceExtension(layerName, &"VK_EXT_layer_settings" as *u8);
+    result.syncValidation = result.validation and hasInstanceExtension(layerName, "VK_EXT_layer_settings");
     if result.syncValidation {
       exts[usize.from(next)] = &"VK_EXT_layer_settings" as *u8;
       next = next + 1u32;
@@ -94,7 +94,7 @@ pub struct Instance {
       messageType: types, pfnUserCallback: &onDebugMessage, pUserData: nullp());
     if result.debugMessages { chain = &dbgChained as *u8; }
     mut name = String.from(appName);
-    imm app = new vulkan.ApplicationInfo(pApplicationName: name.cstr(), pEngineName: &"Cone gpu" as *u8);
+    imm app = new vulkan.ApplicationInfo(pApplicationName: name.cstr().ptr(), pEngineName: &"Cone gpu" as *u8);
     mut layerCount = 0u32;
     if result.validation { layerCount = 1u32; }
     imm ci = new vulkan.InstanceCreateInfo(pNext: chain, pApplicationInfo: &app as *vulkan.ApplicationInfo,
@@ -148,7 +148,7 @@ pub struct Instance {
       imm counted = check(vulkan.enumeratePhysicalDevices(backend.handle, &mut n, null), "vkEnumeratePhysicalDevices");
       mut devices = List[vulkan.PhysicalDevice].empty();
       devices.resize(usize.from(n), 0usize as vulkan.PhysicalDevice);
-      if counted and check(vulkan.enumeratePhysicalDevices(backend.handle, &mut n, devices.viewMut()),
+      if counted and check(vulkan.enumeratePhysicalDevices(backend.handle, &mut n, devices.viewMut() as *vulkan.PhysicalDevice),
           "vkEnumeratePhysicalDevices") {
         devices.truncate(usize.from(n));
         mut i = 0usize;
@@ -209,7 +209,7 @@ fn adapterScore(physical vulkan.PhysicalDevice, surface vulkan.SurfaceKHR, power
   mut props = zeroed[vulkan.PhysicalDeviceProperties]();
   vulkan.getPhysicalDeviceProperties(physical, &mut props);
   if props.apiVersion < vulkan.API_VERSION_1_3 { return 0; }
-  if !hasDeviceExtension(physical, &"VK_KHR_swapchain" as *u8) { return 0; }
+  if !hasDeviceExtension(physical, "VK_KHR_swapchain") { return 0; }
 
   mut f13 = new vulkan.PhysicalDeviceVulkan13Features();
   mut f2 = new vulkan.PhysicalDeviceFeatures2(pNext: &mut f13 as *u8, features: zeroed[vulkan.PhysicalDeviceFeatures]());
@@ -221,7 +221,7 @@ fn adapterScore(physical vulkan.PhysicalDevice, surface vulkan.SurfaceKHR, power
   vulkan.getPhysicalDeviceQueueFamilyProperties(physical, &mut n, null);
   mut families = List[vulkan.QueueFamilyProperties].empty();
   families.resize(usize.from(n), zeroed[vulkan.QueueFamilyProperties]());
-  vulkan.getPhysicalDeviceQueueFamilyProperties(physical, &mut n, families.viewMut());
+  vulkan.getPhysicalDeviceQueueFamilyProperties(physical, &mut n, families.viewMut() as *vulkan.QueueFamilyProperties);
   families.truncate(usize.from(n));
   mut i = 0u32;
   while i < n {
@@ -328,7 +328,7 @@ pub struct Adapter {
     vulkan.getPhysicalDeviceQueueFamilyProperties(backend.physical, &mut n, null);
     mut families = List[vulkan.QueueFamilyProperties].empty();
     families.resize(usize.from(n), zeroed[vulkan.QueueFamilyProperties]());
-    vulkan.getPhysicalDeviceQueueFamilyProperties(backend.physical, &mut n, families.viewMut());
+    vulkan.getPhysicalDeviceQueueFamilyProperties(backend.physical, &mut n, families.viewMut() as *vulkan.QueueFamilyProperties);
     families.truncate(usize.from(n));
     if backend.queueFamily < n and families[usize.from(backend.queueFamily)].timestampValidBits > 0u32 {
       result.timestampPeriod = props.limits.timestampPeriod;

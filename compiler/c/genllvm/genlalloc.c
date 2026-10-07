@@ -1354,7 +1354,9 @@ LLVMValueRef genlallocref(GenState *gen, RefNode *allocatenode) {
         unsigned long long header = LLVMOffsetOfElement(gen->datalayout, reftype->typeinfo->structype, ValueField);
         unsigned long long elemsize = LLVMABISizeOfType(gen->datalayout, valuetypllvm);
         count = LLVMBuildExtractValue(gen->builder, value, 1, "count");
-        sizeval = LLVMBuildAdd(gen->builder, LLVMConstInt(usize, header, 0),
+        // One byte more than the elements, for the NUL that text always keeps
+        // after its bytes (itypeLenBodyElem is 'str''s bytes so far)
+        sizeval = LLVMBuildAdd(gen->builder, LLVMConstInt(usize, header + 1, 0),
             LLVMBuildMul(gen->builder, count, LLVMConstInt(usize, elemsize, 0), "bytes"), "allocsize");
     }
 
@@ -1453,6 +1455,11 @@ LLVMValueRef genlallocref(GenState *gen, RefNode *allocatenode) {
             LLVMConstInt(genlType(gen, (INode*)usizeType), LLVMABISizeOfType(gen->datalayout, valuetypllvm), 0), "bytes");
         unsigned align = LLVMABIAlignmentOfType(gen->datalayout, valuetypllvm);
         LLVMBuildMemCpy(gen->builder, valuep, align, LLVMBuildExtractValue(gen->builder, value, 0, "source"), align, bytes);
+        // The NUL after the bytes, which a C string needs and the count leaves out
+        LLVMValueRef bytesptr = LLVMBuildBitCast(gen->builder, valuep,
+            LLVMPointerType(LLVMInt8TypeInContext(gen->context), 0), "");
+        LLVMValueRef nulptr = LLVMBuildGEP2(gen->builder, LLVMInt8TypeInContext(gen->context), bytesptr, &bytes, 1, "nul");
+        LLVMBuildStore(gen->builder, LLVMConstInt(LLVMInt8TypeInContext(gen->context), 0, 0), nulptr);
     }
     else if (declinit)
         genlNewFill(gen, declinit, initargs, valuep);

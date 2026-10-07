@@ -278,10 +278,17 @@ the literal's own business but each decided from its tag:
   collections' `String` takes a literal wherever one is wanted. It is the type's
   statement that a literal may stand for it, so the function must be public and
   the type not generic; a literal is the only thing taken, as for an owner.
+  Core's `cstr`, C's `const char *`, declares one (`new cstr(bytes as *u8)`), so a
+  literal is a C string wherever one is wanted: the node is the inline call, and
+  the pointer it holds is the literal's own global, whose NUL the type does not
+  count. A `&str` that is not a literal is not taken (`ErrorCPtrConv`: it promises
+  no NUL).
 - A written borrow of a literal, `&"text"` or `&[]"text"`, retypes the literal as
   the array (`borrowTypeCheck`), so the borrow is a reference to it as before:
-  the idiom `&"text" as *u8` and the slice `&[]"text"`.
-  The literal as an array is also an lval.
+  `&"text"` the array behind the text (no NUL counted), which `&"text" as *u8`
+  takes the address of, and `&[]"text"` the slice. It is the way a literal
+  reaches a C parameter that is a `*u8` rather than a `cstr`: a buffer, or a
+  pointer that may be null. The literal as an array is also an lval.
 
 A string literal wanted as a `&[]u8` is a `CastTag` recast of the `StringLitTag`
 node, and `litIsLiteral` accepts that (`litIsTextAsBytes`), so a global's,
@@ -626,6 +633,14 @@ leaves the NUL out, and taken as an array it is recast to a pointer to the
 array type, so a load, a copy and a slice's count all see the text's bytes
 only; the terminator is reachable only through a pointer handed to code that
 reads to it.
+
+**An owner of `str` keeps a NUL after its bytes too.** The allocation that copies a
+`&str` into a region (`genlAllocate`, a body whose reference carries its length)
+asks the region for the header, the bytes and one more byte, and stores a zero
+there after the copy, in every region, so `So[str]`, `Rc[str]` and the rest are as
+much a C string as the literal they may have been copied from (`cstr.fromOwned`).
+The count leaves the byte out. A `String` keeps its own (collections), and
+`freeze` carries it into the `So[str]` it makes.
 
 **So does a global byte array initialized from a string literal.** It is not a
 copy: its storage is the initialized data, so like the literal it gets the
