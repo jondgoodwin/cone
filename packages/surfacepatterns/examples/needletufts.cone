@@ -1,0 +1,161 @@
+// needletufts: bakes the needle tufts (a white pine's, a hemlock's spray, a
+// balsam fir's), times each, prints the mean alpha of each cell, and writes
+// each as a BMP laid over a sky-blue ground (the alpha as the soft edge it
+// is) so the needles can be looked at. It needs no window and no GPU.
+//
+//   congo run packages/surfacepatterns/examples/needletufts.cone -- --out DIR
+//   congo run packages/surfacepatterns/examples/needletufts.cone -- --out DIR --size 512
+//
+// '--size N' bakes cells N texels square (256 by default). '--out DIR' is
+// the folder the BMPs go in (it must exist); without it nothing is written.
+// Each file is DIR/tuft-<kind>.bmp.
+
+mod needletufts;
+
+import stdio use *;
+import libc;
+import collections use *;
+import geomath use *;
+import time use Instant;
+import pbrmaterial use *;
+import surfacepatterns use *;
+
+fn parseCount(s *u8) i32 {
+  if (s as usize) == 0usize or *s == 0u8 { return -1; }
+  mut n = 0;
+  mut i = 0usize;
+  while *(s + i) != 0u8 {
+    imm c = *(s + i);
+    if c < '0' or c > '9' { return -1; }
+    n = n * 10 + i32.from(c - '0');
+    i = i + 1usize;
+  }
+  n;
+}
+
+fn cstrEquals(a *u8, b &[]u8) bool {
+  mut i = 0usize;
+  while i < b.len {
+    if *(a + i) != b[i] { return false; }
+    i = i + 1usize;
+  }
+  *(a + b.len) == 0u8;
+}
+
+fn cstrString(s *u8) String {
+  mut out = String.empty();
+  mut i = 0usize;
+  while *(s + i) != 0u8 {
+    out.appendByte(*(s + i));
+    i = i + 1usize;
+  }
+  out;
+}
+
+fn put32(out &mut List[u8], v u32) {
+  out.push(u8.from(v & 0xFFu32));
+  out.push(u8.from((v >> 8u32) & 0xFFu32));
+  out.push(u8.from((v >> 16u32) & 0xFFu32));
+  out.push(u8.from((v >> 24u32) & 0xFFu32));
+}
+
+// A 24-bit BMP of an RGBA map over the ground (r, g, b), rows bottom first as the format has them
+fn saveBmp(dir &String, name &[]u8, m &TexelMap, gr f32, gg f32, gb f32) bool {
+  imm w = m.width;
+  imm h = m.height;
+  imm rowSize = (w * 3 + 3) / 4 * 4;
+  imm pixelBytes = rowSize * h;
+  mut out = List[u8].withCapacity(usize.from(54 + pixelBytes));
+  out.push('B');
+  out.push('M');
+  put32(&mut out, u32.from(54 + pixelBytes));
+  put32(&mut out, 0u32);
+  put32(&mut out, 54u32);
+  put32(&mut out, 40u32);
+  put32(&mut out, u32.from(w));
+  put32(&mut out, u32.from(h));
+  out.push(1u8);
+  out.push(0u8);
+  out.push(24u8);
+  out.push(0u8);
+  put32(&mut out, 0u32);
+  put32(&mut out, u32.from(pixelBytes));
+  put32(&mut out, 2835u32);
+  put32(&mut out, 2835u32);
+  put32(&mut out, 0u32);
+  put32(&mut out, 0u32);
+  mut y = 0;
+  while y < h {
+    mut x = 0;
+    while x < w {
+      imm a = f32.from(m.at(x, y, 3)) / 255.;
+      mut c = 2;
+      while c >= 0 {
+        imm g = if c == 0 { gr; } elif c == 1 { gg; } else { gb; };
+        out.push(unitByte((f32.from(m.at(x, y, c)) * a + g * (1. - a)) / 255.));
+        c = c - 1;
+      }
+      x = x + 1;
+    }
+    mut pad = w * 3;
+    while pad < rowSize {
+      out.push(0u8);
+      pad = pad + 1;
+    }
+    y = y + 1;
+  }
+  mut path = dir.copy();
+  path <- "/tuft-";
+  path <- name;
+  path <- ".bmp";
+  imm v = out.view();
+  imm f = libc.fopen(path.cstr(), &"wb" as *u8);
+  if !f { return false; }
+  imm written = libc.fwrite(&v[0] as *u8, 1usize, v.len, f);
+  libc.fclose(f);
+  written == v.len;
+}
+
+fn report(dir &String, name &[]u8, p &NeedleTuftParams) bool {
+  imm t = Instant.now();
+  imm m = bakeNeedleTuft(p);
+  printStr(name); print <- ": "; print <- t.elapsed().secondsF64() * 1000.; print <- " ms; hash "; print <- mapHash(&m);
+  imm cells = tuftCells(p.kind);
+  mut c = 0;
+  while c < cells {
+    print <- "; cell "; print <- c; print <- " mean alpha "; print <- meanAlpha(&m, c, cells);
+    c = c + 1;
+  }
+  print <- "\n";
+  if dir.len() == 0usize { return true; }
+  // over sky blue, and over a dark green (a tuft seen against the foliage behind it)
+  saveBmp(dir, name, &m, 150., 175., 205.);
+}
+
+fn main(argc i32, argv **u8) i32 {
+  mut size = 256;
+  mut dir = String.empty();
+  mut a = 1;
+  while a < argc {
+    imm arg = *(argv + usize.from(a));
+    if cstrEquals(arg, "--size") and a + 1 < argc {
+      size = parseCount(*(argv + usize.from(a + 1)));
+      a = a + 1;
+    } elif cstrEquals(arg, "--out") and a + 1 < argc {
+      dir = cstrString(*(argv + usize.from(a + 1)));
+      a = a + 1;
+    } else {
+      print <- "Unknown argument; use --size N and --out DIR\n";
+      return 2;
+    }
+    a = a + 1;
+  }
+  if size < 32 {
+    print <- "--size wants a whole number, 32 or more\n";
+    return 2;
+  }
+  mut ok = report(&dir, "pine", &NeedleTuftParams.whitePine(size, 5u32));
+  ok = report(&dir, "hemlock", &NeedleTuftParams.hemlock(size, 6u32)) and ok;
+  ok = report(&dir, "fir", &NeedleTuftParams.balsamFir(size, 7u32)) and ok;
+  if ok { 0; } else { print <- "A file could not be written\n"; 1; };
+}

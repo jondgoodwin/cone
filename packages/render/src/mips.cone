@@ -19,10 +19,21 @@
 // the one above in each direction (at least 1); where the size above is odd,
 // a texel averages the 2 or 3 above it that its footprint touches. The alpha
 // channel is averaged as it is (not weighted by itself).
+//
+// A CUT-OUT card (a conifer's needle tuft, a fence) is the exception, MIP_CUTOUT.
+// A plain average of its alpha thins as the levels shrink: a tuft a third
+// covered keeps a third as its mean alpha, but a material that cuts out below
+// one half then discards every texel of a small level, and the tree seen from
+// afar has no foliage left. So each level's alpha is scaled until the same
+// share of its texels passes the cut-off as the base level's (the alpha-to-coverage
+// practice of foliage, and Castano, "Computing Alpha Mipmaps", 2010), and
+// its colour is averaged weighted by alpha, so the clear texels' colour does not
+// dilute the needles'.
 
 pub const MIP_COLOUR = 0u32;     // sRGB colour: averaged in linear light
 pub const MIP_LINEAR = 1u32;     // numbers (roughness, metallic, occlusion): averaged as they are
 pub const MIP_NORMAL = 2u32;     // a tangent-space normal map: averaged as vectors, made unit length
+pub const MIP_CUTOUT = 3u32;     // sRGB colour with an alpha that cuts out: colour weighted by alpha, coverage kept
 
 // How many levels a texture of this size has: down to one texel
 pub fn mipLevelCount(width u32, height u32) u32 {
@@ -78,10 +89,66 @@ fn srgbEncode(v f32, thresholds &[]f32) u8 {
 // A byte for a value in 0 to 1
 fn unitByte(v f32) u8 { colorByte(v); }
 
+// Rewrite the alpha bytes of the level just written to 'out' (from 'start', four
+// bytes a texel, alpha the fourth) from its averaged alpha 'level', scaled by
+// the factor that lets 'coverage' of its texels reach 'cutoff': the alpha that
+// the texel 'coverage' of the way down from the brightest has is the one that
+// is raised to the cut-off. The scale is read off a 256-bin histogram of the alpha
+// (the coverage is met to within a bin), and held to at most 8 times.
+fn cutoutCoverage(out &mut List[u8], start usize, level &List[f32], cutoff f32, coverage f32) {
+  imm texels = level.len() / 4usize;
+  mut bins = List[usize].withCapacity(256usize);
+  mut z = 0usize;
+  while z < 256usize { bins.push(0usize); z = z + 1usize; }
+  mut t = 0usize;
+  while t < texels {
+    imm a = *level[t * 4usize + 3usize];
+    imm k = if a >= 1. { 255usize; } elif a <= 0. { 0usize; } else { usize.from(u32.from(a * 255.)); };
+    bins.set(k, *bins[k] + 1usize);
+    t = t + 1usize;
+  }
+  // from the top bin down, until 'coverage' of the texels are counted
+  imm want = coverage * f32.from(texels);
+  mut counted f32 = 0.;
+  mut before f32 = 0.;
+  mut k = 255usize;
+  mut found = false;
+  while !found and k > 0usize {
+    before = counted;
+    counted = counted + f32.from(*bins[k]);
+    if counted >= want { found = true; } else { k = k - 1usize; }
+  }
+  // the bin where the count passes 'want' goes wholly in or wholly out, whichever lands nearer
+  // (alpha is quantised at the small levels, and a bin can hold a good part of the texels): in,
+  // the threshold is its lower edge; out, the next bin's
+  mut edge = k;
+  if found and want - before < counted - want and k < 255usize { edge = k + 1usize; }
+  imm threshold = f32.from(u32.from(edge)) / 255.;
+  if threshold <= 0.0001 { return; }
+  mut scale = cutoff / threshold;
+  if scale > 8. { scale = 8.; }
+  if scale < 0.5 { scale = 0.5; }
+  t = 0usize;
+  while t < texels {
+    imm a = *level[t * 4usize + 3usize] * scale;
+    out.set(start + t * 4usize + 3usize, unitByte(a));
+    t = t + 1usize;
+  }
+}
+
 // All the levels of the RGBA image 'rgba' ('width' x 'height', rows from the
 // top as uploaded), one after another from the largest, which is 'rgba'
 // itself, each tightly packed. 'kind' is MIP_COLOUR, MIP_LINEAR or MIP_NORMAL.
 pub fn buildMips(rgba &List[u8], width u32, height u32, kind u32) List[u8] {
+  buildMipsCut(rgba, width, height, kind, 0.5);
+}
+
+// The same, and for 'kind' MIP_CUTOUT with the material's cut-off: each level's
+// alpha scaled so that as many of its texels are at or above 'cutoff' as the
+// base level's are, its colour averaged weighted by alpha
+pub fn buildMipsCut(rgba &List[u8], width u32, height u32, kind u32, cutoff f32) List[u8] {
+  imm cutKind = kind == MIP_CUTOUT;
+  imm colourKind = kind == MIP_COLOUR or cutKind;
   mut out = List[u8].withCapacity(usize.from(width) * usize.from(height) * 5usize + 64usize);
   imm base = rgba.view();
   mut c = 0usize;
@@ -102,7 +169,7 @@ pub fn buildMips(rgba &List[u8], width u32, height u32, kind u32) List[u8] {
     imm b = base[i];
     if channel == 3usize {
       prev.push(f32.from(b) / 255.);
-    } elif kind == MIP_COLOUR {
+    } elif colourKind {
       prev.push(decodeV[usize.from(b)]);
     } elif kind == MIP_NORMAL {
       prev.push(f32.from(b) / 255. * 2. - 1.);
@@ -110,6 +177,17 @@ pub fn buildMips(rgba &List[u8], width u32, height u32, kind u32) List[u8] {
       prev.push(f32.from(b) / 255.);
     }
     i = i + 1usize;
+  }
+  // A cut-out's coverage: the share of the base level's texels at or above the cut-off
+  mut coverage f32 = 0.;
+  if cutKind {
+    mut passing = 0usize;
+    mut t = 0usize;
+    while t < base.len() / 4usize {
+      if f32.from(base[t * 4usize + 3usize]) / 255. >= cutoff { passing = passing + 1usize; }
+      t = t + 1usize;
+    }
+    coverage = f32.from(passing) / f32.from(base.len() / 4usize);
   }
 
   mut pw = width;
@@ -119,6 +197,7 @@ pub fn buildMips(rgba &List[u8], width u32, height u32, kind u32) List[u8] {
     imm nh = if ph > 1u32 { ph >> 1u32; } else { 1u32; };
     imm src = prev.view();
     mut next = List[f32].withCapacity(usize.from(nw) * usize.from(nh) * 4usize);
+    imm levelStart = out.len();
     mut y = 0u32;
     while y < nh {
       // The rows above this one's footprint covers
@@ -134,6 +213,10 @@ pub fn buildMips(rgba &List[u8], width u32, height u32, kind u32) List[u8] {
         mut g = 0.;
         mut b = 0.;
         mut a = 0.;
+        // (a cut-out's colour weighted by alpha)
+        mut wr = 0.;
+        mut wg = 0.;
+        mut wb = 0.;
         mut sy = y0;
         while sy < y1 {
           mut sx = x0;
@@ -143,14 +226,23 @@ pub fn buildMips(rgba &List[u8], width u32, height u32, kind u32) List[u8] {
             g = g + src[at + 1usize];
             b = b + src[at + 2usize];
             a = a + src[at + 3usize];
+            wr = wr + src[at] * src[at + 3usize];
+            wg = wg + src[at + 1usize] * src[at + 3usize];
+            wb = wb + src[at + 2usize] * src[at + 3usize];
             sx = sx + 1u32;
           }
           sy = sy + 1u32;
         }
         imm inv = 1. / f32.from((y1 - y0) * (x1 - x0));
-        r = r * inv;
-        g = g * inv;
-        b = b * inv;
+        if cutKind and a > 0.0001 {
+          r = wr / a;
+          g = wg / a;
+          b = wb / a;
+        } else {
+          r = r * inv;
+          g = g * inv;
+          b = b * inv;
+        }
         a = a * inv;
         if kind == MIP_NORMAL {
           // The average of unit vectors is shorter than one; made unit again.
@@ -170,7 +262,7 @@ pub fn buildMips(rgba &List[u8], width u32, height u32, kind u32) List[u8] {
         next.push(g);
         next.push(b);
         next.push(a);
-        if kind == MIP_COLOUR {
+        if colourKind {
           out.push(srgbEncode(r, thresholdsV));
           out.push(srgbEncode(g, thresholdsV));
           out.push(srgbEncode(b, thresholdsV));
@@ -187,6 +279,9 @@ pub fn buildMips(rgba &List[u8], width u32, height u32, kind u32) List[u8] {
         x = x + 1u32;
       }
       y = y + 1u32;
+    }
+    if cutKind and coverage > 0. and coverage < 1. {
+      cutoutCoverage(&mut out, levelStart, &next, cutoff, coverage);
     }
     prev = next;
     pw = nw;

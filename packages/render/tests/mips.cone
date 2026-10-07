@@ -91,6 +91,21 @@ fn levelMean(chain &List[u8], w u32, h u32, level u32, c usize, srgb bool) f64 {
   sum / f64.from(lw * lh);
 }
 
+// The share of level 'level''s texels whose alpha reaches 'cutoff'
+fn passingShare(chain &List[u8], w u32, h u32, level u32, cutoff f32) f64 {
+  imm lw = if (w >> level) > 0u32 { w >> level; } else { 1u32; };
+  imm lh = if (h >> level) > 0u32 { h >> level; } else { 1u32; };
+  imm start = levelStart(w, h, level);
+  imm v = chain.view();
+  mut n = 0usize;
+  mut i = 0usize;
+  while i < usize.from(lw) * usize.from(lh) {
+    if f32.from(v[(start + i) * 4usize + 3usize]) / 255. >= cutoff { n = n + 1usize; }
+    i = i + 1usize;
+  }
+  f64.from(n) / f64.from(lw * lh);
+}
+
 fn px(p *u8, x usize, y usize, c usize) i64 { i64.from(*(p + (y * 128usize + x) * 4usize + c)); }
 
 // The mean and standard deviation of channel 0 over row 'y' from x0 up to x1
@@ -231,6 +246,46 @@ fn main() i32 {
     imm last = levelStart(8u32, 8u32, 3u32) * 4usize;
     expectInt(i64.from(v[last]), 128i64, "opposite tilts cancel: x is flat");
     expectInt(i64.from(v[last + 2usize]), 255i64, "and the vector points straight out");
+  }
+  {
+    // A cut-out card: about a quarter of the texels opaque (orange), the rest clear and black. A plain
+    // chain's alpha averages towards 0.25, so at 8 x 8 no texel reaches a cut-off of 0.5;
+    // the cut-out chain keeps the share that passes, and the colour of what shows
+    mut base = List[u8].empty();
+    mut y = 0u32;
+    while y < 64u32 {
+      mut x = 0u32;
+      while x < 64u32 {
+        imm solid = (x * 7u32 + y * 13u32 + (x * y) % 5u32) % 10u32 < 3u32;
+        base.push(if solid { 200u8; } else { 0u8; });
+        base.push(if solid { 100u8; } else { 0u8; });
+        base.push(if solid { 50u8; } else { 0u8; });
+        base.push(if solid { 255u8; } else { 0u8; });
+        x = x + 1u32;
+      }
+      y = y + 1u32;
+    }
+    imm plain = buildMips(&base, 64u32, 64u32, MIP_COLOUR);
+    imm cut = buildMipsCut(&base, 64u32, 64u32, MIP_CUTOUT, 0.5);
+    expectUInt(u64.from(cut.len()), u64.from(plain.len()), "a cut-out chain holds the same levels");
+    imm baseShare = passingShare(&cut, 64u32, 64u32, 0u32, 0.5);
+    mut worstShare = 0d;
+    mut level = 1u32;
+    while level < 5u32 {
+      imm s = passingShare(&cut, 64u32, 64u32, level, 0.5);
+      imm d = if s > baseShare { s - baseShare; } else { baseShare - s; };
+      if d > worstShare { worstShare = d; }
+      level = level + 1u32;
+    }
+    imm plainShare = passingShare(&plain, 64u32, 64u32, 3u32, 0.5);
+    expectFloat(baseShare, 0.24d, 0.06d, "the base level is about a quarter opaque");
+    expectFloat(worstShare, 0., 0.12d, "a cut-out chain keeps the share of texels that pass, at every level to 4 x 4");
+    expectFloat(plainShare, 0., 0.01d, "a plain chain loses them all by 8 x 8");
+    imm start3 = levelStart(64u32, 64u32, 3u32) * 4usize;
+    imm cv = cut.view();
+    imm pv = plain.view();
+    expect(cv[start3] > 185u8 and cv[start3] < 215u8, "a cut-out level's colour is the opaque texels', not diluted by the clear ones");
+    expect(pv[start3] < 150u8, "where a plain chain's is dimmed by them");
   }
 
   // ---- 2. On the GPU ----
