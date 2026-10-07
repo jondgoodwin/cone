@@ -309,6 +309,24 @@ by value, an array and a function go on to the table's own rows.
 | `VirtRefTag` | fill in `()` as `methfld` if absent and not indexing, so `f(u)` calls the trait's `()` as ``f.`()`(u)`` does; `==`, `!=` or an ordering is `ErrorRefNoCompare`; else `fnCallLowerPtrMethod`, else set `FlagVDisp` and `fnCallLowerMethod`, whose selection (`fnSigViableCall`) takes only a method whose `self` permission the receiver's grants, and where `fnCallFinalizeArgs` lends an owning receiver as a borrowed virtual reference (`fnCallLendVirtOwner`) |
 | `PtrTag` | the pointer's own operators first, then the value's fields and named methods |
 
+**Text has three lowerings of its own, ahead of that dispatch.** `fnCallTextOf` asks
+whether a receiver's type, through any references and owners, is `str` or a
+struct that lends it (`structLentBody`). Then: (1) `==`, `!=` and the orderings
+between two texts of different kinds replace each operand that lends by the call
+of its lending method (`fnCallLentOperands`, `structLendView`), so the comparison
+is `str`'s own operator on two borrows, and `String == So[str]` needs no operator
+of either; (2) a borrowed range of text, `&s[a..b]`, `&s[a..]`, `&s[a...b]`, is a
+call of the `slice`, `sliceFrom` or `sliceThrough` method (`fnCallLowerStrRange`,
+asked once the receiver is checked, as the dispatch's first test of a range). The
+receiver is the borrow `borrowReassocIndex` put around what is indexed; it is
+dropped, the method borrowing its receiver itself, and what it borrowed is used
+as it stands: the place, the reference where the place was reached through one
+(the borrow's dereference is removed), or, for a temporary the borrow hid in a
+local of the statement (`varDclTempValue`: the `s.view()` of `&s.view()[1..]`),
+the expression it was, the local never declared. The methods refuse a bound
+inside a character. A range of text not borrowed is `ErrorBadIndex`; (3) a byte index `s[i]` is the `[]` method of
+`str`, found as any struct's is.
+
 **A comparison on a reference compares what it refers to.** A reference reads
 as its value everywhere else — `r.x`, `r.method()` — so `==`, `!=` and the four
 orderings do too, and `===`/`!==` are what ask whether two references point to

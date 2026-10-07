@@ -1,0 +1,237 @@
+// The kinds of text, and what they share: 'str' (a literal, a slice of one), a
+// String that lends one, an owner of one ('So[str]', 'Rc[str]'). The methods of
+// 'str' are written once, on 'str', and a String reaches them through its view
+// ('use str via view'); '==' and the orderings compare the bytes whatever the
+// kinds; a literal is copied into a String wherever one is wanted; the String
+// keeps a NUL after its bytes for C, and 'freeze' hands its bytes to a So[str].
+// Every expected value is worked out by hand from the literals:
+// - "héllo" is h, é (the two bytes C3 A9), l, l, o: 6 bytes, a character
+//   starting at 0, 1, 3, 4 and 5, and not at 2;
+// - positions and pieces by counting bytes.
+
+mod stringkinds;
+
+import testing use *;
+import collections use *;
+import libc;
+
+struct Named {
+  pub name String;
+}
+
+fn upper(s String) String {
+  mut out = String.from(s.view());
+  out.upperAscii();
+  out;
+}
+
+fn made() String { "made"; }
+
+fn lengthOf(s &str) usize { s.len; }
+
+fn expectOpt(got Option[usize], want u64, label &[]u8) {
+  match got {
+    case imm s Some {expectUInt(u64.from(s.value), want, label);}
+    case is None {expect(false, label);}
+  }
+}
+
+fn expectNone(got Option[usize], label &[]u8) {
+  match got {
+    case is Some[usize] {expect(false, label);}
+    case is None[usize] {expect(true, label);}
+  }
+}
+
+fn main() i32 {
+  // -------- str: the methods, on a literal --------
+  imm t = "  héllo wörld \t\n";
+  expectUInt(u64.from("héllo".len), 6, "len counts bytes");
+  expectBool("".isEmpty, true, "an empty literal is empty");
+  expectBool("a".isEmpty, false, "a is not empty");
+  expectUInt(u64.from("héllo"[0usize]), 104, "byte 0 is h");
+  expectUInt(u64.from("héllo"[1usize]), 195, "byte 1 is the first of é, C3");
+  expectUInt(u64.from("héllo".bytes()[5usize]), 111, "bytes() reaches byte 5, o");
+  expectBool("héllo".isCharBoundary(1usize), true, "a character starts at 1");
+  expectBool("héllo".isCharBoundary(2usize), false, "none starts at 2, inside é");
+  expectBool("héllo".isCharBoundary(6usize), true, "the end is a boundary");
+  expectBool("héllo".isCharBoundary(7usize), false, "past the end is not");
+
+  expectBool("import core".startsWith("import"), true, "starts");
+  expectBool("import core".startsWith("core"), false, "does not start");
+  expectBool("import core".endsWith("core"), true, "ends");
+  expectBool("core".endsWith("import core"), false, "a longer suffix does not fit");
+  expectBool("abc".startsWith(""), true, "everything starts with nothing");
+  expectOpt("héllo wörld".find("wör"), 7, "find: h(1) é(2) l l o(3) space(1) = 7");
+  expectOpt("héllo".find(""), 0, "an empty needle is at 0");
+  expectNone("héllo".find("x"), "find: absent");
+  expectOpt("abcabc".findFrom("bc", 2usize), 4, "findFrom: the second bc");
+  expectBool("héllo".contains("llo"), true, "contains");
+  expectBool("héllo".contains("lll"), false, "does not contain");
+
+  // The ASCII whitespace at an end: two spaces, then the text, then a space, a
+  // tab and a line feed. "héllo wörld" is 6 + 1 + 6 = 13 bytes
+  expectUInt(u64.from(t.len), 18, "the padded text is 18 bytes");
+  expectUInt(u64.from(t.trimStart().len), 16, "trimStart drops two");
+  expectUInt(u64.from(t.trimEnd().len), 15, "trimEnd drops three");
+  expectUInt(u64.from(t.trim().len), 13, "trim drops both");
+  expectBool(t.trim() == "héllo wörld", true, "trim leaves the text");
+  expectBool("   ".trim().isEmpty, true, "all spaces trim to nothing");
+
+  // -------- slicing by byte range, on a character boundary --------
+  imm h = "héllo";
+  expectBool(&h[0usize..3usize] == "hé", true, "bytes 0 up to 3 are h and é");
+  expectBool(&h[3usize..] == "llo", true, "from byte 3");
+  expectBool(&h[1usize...2usize] == "é", true, "bytes 1 and 2 are é, the last included");
+  expectUInt(u64.from(h.slice(1usize, 3usize).len), 2, "slice() is the same");
+  expectUInt(u64.from(h.sliceFrom(3usize).len), 3, "sliceFrom()");
+  expectBool(&h[0usize..0usize] == "", true, "an empty range at 0 is empty");
+  // A range through a borrow and through a temporary
+  imm hr = &h;
+  expectBool(&hr[3usize..] == "llo", true, "a range through a reference");
+  expectBool(&"héllo wörld".trim()[7usize..] == "wörld", true, "a range of a temporary");
+
+  // -------- == and the orderings across the kinds --------
+  mut a = String.from("abc");
+  mut b = String.from("abd");
+  imm owned So[str] = "abc";
+  imm shared Rc[str] = "abd";
+  imm lit = "abc";
+  expectBool(lit == "abc", true, "literal == literal");
+  expectBool(a == a, true, "String == String");
+  expectBool(a == b, false, "abc is not abd");
+  expectBool(a != b, true, "abc != abd");
+  expectBool(a == lit, true, "String == &str");
+  expectBool(lit == a, true, "&str == String");
+  expectBool(a == "abc", true, "String == literal");
+  expectBool("abc" == a, true, "literal == String");
+  expectBool(owned == lit, true, "So[str] == &str");
+  expectBool(lit == owned, true, "&str == So[str]");
+  expectBool(owned == a, true, "So[str] == String");
+  expectBool(a == owned, true, "String == So[str]");
+  expectBool(shared == b, true, "Rc[str] == String");
+  expectBool(shared == owned, false, "Rc[str] abd is not So[str] abc");
+  expectBool(owned != shared, true, "So[str] != Rc[str]");
+  expectBool(&a == &b, false, "references to Strings compare the text");
+  expectBool(&a === &a, true, "=== is the same place");
+  expectBool(&a === &b, false, "=== two Strings are two places");
+
+  expectBool(a < b, true, "abc < abd");
+  expectBool(b < a, false, "abd < abc is false");
+  expectBool(a < a, false, "abc < abc is false");
+  expectBool(a <= a, true, "abc <= abc");
+  expectBool(b > a, true, "abd > abc");
+  expectBool(a >= b, false, "abc >= abd is false");
+  expectBool("ab" < "abc", true, "a prefix sorts first");
+  expectBool("" < "a", true, "nothing sorts before a");
+  expectBool("Z" < "a", true, "by byte, a capital sorts before a small letter");
+  expectBool("é" > "z", true, "é is C3 A9, past z at 7A, as its code point U+E9 is");
+  expectBool("日" > "é", true, "E6 97 A5 sorts after C3 A9, as U+65E5 after U+E9");
+  expectBool(lit < b, true, "&str < String");
+  expectBool(a < "abd", true, "String < literal");
+  expectBool(owned < shared, true, "So[str] < Rc[str]");
+  expectInt(i64.from("abc".compare("abd")), -1, "compare: before");
+  expectInt(i64.from("abd".compare("abc")), 1, "compare: after");
+  expectInt(i64.from("abc".compare("abc")), 0, "compare: equal");
+
+  // -------- a literal becomes a String wherever one is wanted --------
+  imm c String = "literal";
+  expectUInt(u64.from(c.len), 7, "a literal into a String variable");
+  expectBool(c == "literal", true, "and it is that text");
+  expectStr(upper("shout").view(), "SHOUT", "a literal as an argument");
+  expectStr(made().view(), "made", "a literal as a result");
+  imm n = new Named("field");
+  expectStr(n.name.view(), "field", "a literal as a field");
+  mut names = List[String].empty();
+  names.push("core");
+  names.push("stdio");
+  expectUInt(u64.from(names.len()), 2, "a literal pushed onto a list");
+  expectStr(names[1usize].view(), "stdio", "the second one");
+  expectUInt(u64.from(lengthOf("four")), 4, "a literal stays a &str where one is wanted");
+  expectUInt(u64.from(lengthOf(c.view())), 7, "and a String lends one");
+
+  // -------- the String reaches str's methods through its view --------
+  imm padded = String.from("  héllo  ");
+  expectUInt(u64.from(padded.trimStart().len), 8, "trimStart through the String");
+  expectUInt(u64.from(padded.trimEnd().len), 8, "trimEnd through the String");
+  expectBool(padded.isCharBoundary(4usize), false, "a boundary asked of the String: inside é");
+  expectBool(padded.isCharBoundary(5usize), true, "a boundary asked of the String");
+  expectBool(&padded[2usize..8usize] == "héllo", true, "a range of a String");
+  expectBool(&padded[2usize...4usize] == "hé", true, "bytes 2 to 4 are h and é, the last included");
+  imm viewed = padded.view();
+  expectUInt(u64.from(viewed.bytes().len), 10, "bytes() of the view: four spaces, h, é (2), l, l, o");
+  imm viaOwner So[str] = "xyz";
+  expectBool(viaOwner.startsWith("xy"), true, "a method reached through So[str]");
+  expectUInt(u64.from(shared.len), 3, "and through Rc[str]");
+
+  // -------- the NUL after the bytes --------
+  mut e = String.empty();
+  expectUInt(u64.from(libc.strlen(e.cstr())), 0, "an empty String is a C string");
+  expectBool(e.view().isEmpty, true, "its view is empty");
+  e.append("ab");
+  expectUInt(u64.from(libc.strlen(e.cstr())), 2, "NUL after append");
+  expectUInt(u64.from(e.cstr()[2usize]), 0, "the NUL itself");
+  e.appendByte('c');
+  expectUInt(u64.from(libc.strlen(e.cstr())), 3, "NUL after appendByte");
+  e.appendInt(-45i64);
+  expectStr(e.view(), "abc-45", "appendInt");
+  expectUInt(u64.from(libc.strlen(e.cstr())), 6, "NUL after appendInt");
+  e.appendHex(255u64, 2usize);
+  expectStr(e.view(), "abc-45ff", "appendHex");
+  expectUInt(u64.from(e.cstr()[8usize]), 0, "NUL after appendHex");
+  e.padEnd(10usize, '.');
+  expectUInt(u64.from(e.cstr()[10usize]), 0, "NUL after padEnd");
+  e.truncate(3usize);
+  expectStr(e.view(), "abc", "truncate");
+  expectUInt(u64.from(e.cstr()[3usize]), 0, "NUL after truncate");
+  e.truncate(30usize);
+  expectStr(e.view(), "abc", "truncate past the end leaves it");
+  e.clear();
+  expectUInt(u64.from(libc.strlen(e.cstr())), 0, "NUL after clear");
+  expectBool(e.isEmpty(), true, "cleared is empty");
+  e.append("again");
+  expectStr(e.view(), "again", "a cleared String grows again");
+
+  // -------- insert, remove --------
+  mut m = String.from("ac");
+  m.insert(1usize, "b");
+  expectStr(m.view(), "abc", "insert in the middle");
+  m.insert(0usize, ">>");
+  expectStr(m.view(), ">>abc", "insert at the start");
+  m.insert(5usize, "<<");
+  expectStr(m.view(), ">>abc<<", "insert at the end");
+  expectUInt(u64.from(libc.strlen(m.cstr())), 7, "NUL after insert");
+  m.remove(0usize, 2usize);
+  expectStr(m.view(), "abc<<", "remove the start");
+  m.remove(3usize, 5usize);
+  expectStr(m.view(), "abc", "remove the end");
+  m.remove(1usize, 2usize);
+  expectStr(m.view(), "ac", "remove the middle");
+  m.remove(0usize, 2usize);
+  expectBool(m.isEmpty(), true, "remove everything");
+  expectUInt(u64.from(m.cstr()[0usize]), 0, "NUL after removing everything");
+  mut u = String.from("aé");
+  u.insert(1usize, "-");
+  expectStr(u.view(), "a-é", "insert before a multibyte character");
+  u.remove(2usize, 4usize);
+  expectStr(u.view(), "a-", "remove a multibyte character");
+
+  // -------- freeze: the bytes move to a So[str] --------
+  imm f = String.from("frozen text");
+  imm fz = f.freeze();
+  expectUInt(u64.from(fz.len), 11, "frozen length");
+  expectBool(fz == "frozen text", true, "frozen text");
+  imm g = String.empty();
+  imm gz = g.freeze();
+  expectUInt(u64.from(gz.len), 0, "freezing nothing makes an empty owner");
+
+  // -------- the copies the String hands out --------
+  imm joined = String.join(names.view(), ", ");
+  expectStr(joined.view(), "core, stdio", "join");
+  expectUInt(u64.from(libc.strlen(joined.cstr())), 11, "NUL after join");
+  imm sub = joined.sub(6usize, 11usize);
+  expectStr(sub.view(), "stdio", "sub");
+  expectUInt(u64.from(libc.strlen(sub.cstr())), 5, "NUL after sub");
+
+  return done();
+}

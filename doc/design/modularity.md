@@ -198,6 +198,15 @@ declaration. **That is the one place in the language where two independent
 libraries disagreeing is resolvable by the party who needs both** — which is what
 made reuse across package boundaries a language problem in the first place.
 
+**A type that lends a body folds it in the same way.** `String` holds bytes and
+lends them as a `&str`; `use str via view` makes the methods of `str` names of
+`String`, each called on the borrow `view()` gives, so the read methods of text
+are written once, on `str`, and every owner or borrow of either reaches them. It
+is Rust's `Deref` where it is wanted, for method names only: no value converts
+implicitly, and nothing is subtyped ([struct](../../compiler/c/doc/nodes/struct.md),
+"Lending a body"). ▸ **What it costs** is one call of the lending method at each
+use, which inlines to the pointer and the length.
+
 **`import` composes; the folder gathers.** `import` binds another module's name —
 a sister found in the registry the enclosing module is, or a module loaded from a
 path — and a `use` clause folds its public names into the importer, selected,

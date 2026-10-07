@@ -39,6 +39,180 @@ pub enum Result[T,E] {
 pub use Option;
 pub use Result;
 
+// 'str', the body of text: bytes, UTF-8 by convention, held only through a
+// reference that carries their count ('&str', 'So[str]', 'Rc[str]'). The
+// compiler makes the type (corelib.c); this is its methods, written once, and
+// a 'String' or any owner of either reaches them. Positions are bytes, and a
+// position that is not the start of a character is a program error where a
+// method says so.
+pub struct @opaque str {
+  // The number of bytes, not characters
+  pub fn len(self &) usize inline {
+    imm b &[]u8 = self;
+    b.len;
+  }
+
+  pub fn isEmpty(self &) bool inline {
+    imm b &[]u8 = self;
+    b.len == 0usize;
+  }
+
+  // The bytes themselves
+  pub fn bytes(self &) &[]u8 inline { self; }
+
+  // The byte at index; an index past the end is a program error
+  pub fn `[]`(self &, index usize) u8 inline {
+    imm b &[]u8 = self;
+    b[index];
+  }
+
+  // Whether a character starts at byte index, or the text ends there: the
+  // places a slice may begin or end. Past the end it is false.
+  pub fn isCharBoundary(self &, index usize) bool inline {
+    imm b &[]u8 = self;
+    if index > b.len { false; }
+    else if index == b.len { true; }
+    else { (b[index] & 0xC0u8) != 0x80u8; }
+  }
+
+  // The part from byte start up to, not including, byte end: what
+  // '&s[start..end]' is. A range out of order or past the end, and a bound
+  // that falls inside a character, are program errors, as in Rust.
+  pub fn slice(self &, start usize, end usize, file &[]u8 = srcFile(), line u32 = srcLine()) &str inline {
+    strCheckRange(self, start, end, file, line);
+    imm b &[]u8 = self;
+    &b[start..end] as &str;
+  }
+
+  // '&s[start..]'
+  pub fn sliceFrom(self &, start usize, file &[]u8 = srcFile(), line u32 = srcLine()) &str inline {
+    imm b &[]u8 = self;
+    self.slice(start, b.len, file, line);
+  }
+
+  // '&s[start...last]', the byte at last included
+  pub fn sliceThrough(self &, start usize, last usize, file &[]u8 = srcFile(), line u32 = srcLine()) &str inline {
+    self.slice(start, last + 1usize, file, line);
+  }
+
+  // Whether the text begins, or ends, with these bytes
+  pub fn startsWith(self &, prefix &str) bool inline {
+    imm b &[]u8 = self;
+    imm p &[]u8 = prefix;
+    p.len <= b.len and strBytesAt(b, 0usize, p);
+  }
+
+  pub fn endsWith(self &, suffix &str) bool inline {
+    imm b &[]u8 = self;
+    imm p &[]u8 = suffix;
+    p.len <= b.len and strBytesAt(b, b.len - p.len, p);
+  }
+
+  // Where needle first starts, as a byte index, or None. An empty needle is
+  // found at 0.
+  pub fn find(self &, needle &str) Option[usize] inline {
+    self.findFrom(needle, 0usize);
+  }
+
+  // Where needle first starts at or after byte index from
+  pub fn findFrom(self &, needle &str, from usize) Option[usize] inline {
+    imm b &[]u8 = self;
+    imm n &[]u8 = needle;
+    mut i = from;
+    while i + n.len <= b.len {
+      if strBytesAt(b, i, n) { return Some[usize][i]; }
+      i = i + 1usize;
+    }
+    None[usize][];
+  }
+
+  pub fn contains(self &, needle &str) bool inline {
+    match self.findFrom(needle, 0usize) {
+      case is Some[usize] {true;}
+      case is None[usize] {false;}
+    }
+  }
+
+  // The text without the ASCII whitespace (space, tab, line feed, form feed,
+  // carriage return) at its start, at its end, or at both
+  pub fn trimStart(self &) &str inline {
+    imm b &[]u8 = self;
+    mut a = 0usize;
+    while a < b.len and strIsSpace(b[a]) { a = a + 1usize; }
+    &b[a..] as &str;
+  }
+
+  pub fn trimEnd(self &) &str inline {
+    imm b &[]u8 = self;
+    mut e = b.len;
+    while e > 0usize and strIsSpace(b[e - 1usize]) { e = e - 1usize; }
+    &b[..e] as &str;
+  }
+
+  pub fn trim(self &) &str inline {
+    imm b &[]u8 = self;
+    mut a = 0usize;
+    mut e = b.len;
+    while a < e and strIsSpace(b[a]) { a = a + 1usize; }
+    while e > a and strIsSpace(b[e - 1usize]) { e = e - 1usize; }
+    &b[a..e] as &str;
+  }
+
+  // -1, 0 or 1 as the bytes sort before, with or after o's, a text that is
+  // the start of a longer one first. UTF-8's byte order is code-point order.
+  pub fn compare(self &, o &str) i32 inline {
+    imm a &[]u8 = self;
+    imm b &[]u8 = o;
+    mut i = 0usize;
+    while i < a.len and i < b.len {
+      if a[i] < b[i] { return -1i32; }
+      if a[i] > b[i] { return 1i32; }
+      i = i + 1usize;
+    }
+    if a.len < b.len { -1i32; } else if a.len > b.len { 1i32; } else { 0i32; }
+  }
+
+  // The same bytes
+  pub fn eq overload `==`(self &, o &str) bool inline {
+    imm a &[]u8 = self;
+    imm b &[]u8 = o;
+    a.len == b.len and strBytesAt(a, 0usize, b);
+  }
+
+  // By byte: the order of the code points they spell
+  pub fn lt overload `<`(self &, o &str) bool inline { self.compare(o) < 0i32; }
+  pub fn le overload `<=`(self &, o &str) bool inline { self.compare(o) <= 0i32; }
+  pub fn gt overload `>`(self &, o &str) bool inline { self.compare(o) > 0i32; }
+  pub fn ge overload `>=`(self &, o &str) bool inline { self.compare(o) >= 0i32; }
+}
+
+// A panic unless start up to end is a range of the text between characters.
+// Apart from 'slice' so that nothing there branches ahead of the borrow it
+// returns (a GPU target refuses a reference chosen at run time)
+fn strCheckRange(s &str, start usize, end usize, file &[]u8, line u32) inline {
+  if start > end or not (s.isCharBoundary(start) and s.isCharBoundary(end)) {
+    panic("str: a range out of order, past the end, or beginning or ending inside a character", file, line);
+  }
+}
+
+// Whether the bytes of 'b' are those of 'a' from index 'at', the caller having
+// made sure they fit. A loop of its own and not a slice comparison, which would
+// instantiate a generic in every compile that loads core.
+fn strBytesAt(a &[]u8, at usize, b &[]u8) bool inline {
+  mut i = 0usize;
+  mut same = true;
+  while same and i < b.len {
+    same = a[at + i] == b[i];
+    i = i + 1usize;
+  }
+  same;
+}
+
+// ASCII whitespace as Rust's is_ascii_whitespace has it
+fn strIsSpace(b u8) bool inline {
+  b == ' ' or b == '\t' or b == '\n' or b == '\r' or b == 0x0Cu8;
+}
+
 // A panic ends the program where something that must not happen has: an index
 // out of bounds, memory exhausted, an invariant broken. It is a bug report, not
 // error handling, which is Option's and Result's. The runtime does the work

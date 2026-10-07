@@ -1,0 +1,101 @@
+// Folding the body a type lends: 'use str via view;' in a type's body makes the
+// public methods of 'str' names of the type, each reached through the borrow of
+// 'str' the type's own 'view' method gives. 'g.startsWith("he")' is
+// 'g.view().startsWith("he")', and a type whose declaration says so reaches
+// them from a value, a borrow, a unique owner and a counted one alike.
+//
+// - A name the type declares itself, or leaves out with 'but', is the type's:
+//   'len' here answers 100 and 'str's would answer the text's bytes.
+// - An operator is a method like any: '<' between a Greeting and a literal
+//   compares their bytes, as '==' does across the kinds of text.
+// - A range borrowed from the type, '&g[3..]', is the 'sliceFrom' it lends.
+// - 'fromLiteral' is the one function that makes a literal a Greeting wherever
+//   one is wanted.
+//
+// Each printed value was checked by hand against the source.
+
+mod struct_use_lend;
+
+import stdio use *;
+
+struct Greeting {
+  pub text &str;
+
+  // The borrow of the text this type lends
+  pub fn view(self &) &str { text; }
+
+  // Where a Greeting is wanted, a literal is made one by this
+  pub fn fromLiteral(s &str) Greeting { new Greeting(s); }
+
+  // Its own, so 'str's is left out
+  pub fn len(self &) usize { 100usize; }
+
+  use str via view but len;
+}
+
+fn show(label &str, n i64) {
+  printStr(label);
+  printStr(" ");
+  printInt(n);
+  printStr("\n");
+}
+
+fn flag(b bool) i64 { if b {1;} else {0;}; }
+
+// A borrow of a Greeting reaches the same names: 'find' answers where
+fn through(g &Greeting) i64 {
+  match g.find("world") {
+    case imm at Some {i64.from(at.value);}
+    case is None {-1;}
+  }
+}
+
+fn wanted(g Greeting) i64 {
+  i64.from(g.view().len);
+}
+
+fn made() Greeting { "made"; }
+
+fn main() {
+  imm g = new Greeting("hello world");
+
+  // From a value: 'hello world' is 11 bytes, 'world' starts at 6
+  show("startsWith", flag(g.startsWith("hello")));
+  show("endsWith", flag(g.endsWith("hello")));
+  show("contains", flag(g.contains("o w")));
+  show("trim", i64.from(new Greeting("  pad ").trim().len));
+  show("trimStart", i64.from(new Greeting("  pad ").trimStart().len));
+  show("trimEnd", i64.from(new Greeting("  pad ").trimEnd().len));
+  show("index", i64.from(g[1usize]));
+  show("isEmpty", flag(g.isEmpty()));
+
+  // The type's own name wins where 'but' left the folded one out
+  show("own len", i64.from(g.len()));
+  show("the text's len", i64.from(g.view().len));
+
+  // Through a borrow, a unique owner and a counted one
+  show("borrow", through(&g));
+  imm owner = new So[Greeting](new Greeting("hello world"));
+  show("So", flag(owner.startsWith("hello")));
+  imm shared = new Rc[Greeting](new Greeting("hello world"));
+  show("Rc", flag(shared.endsWith("world")));
+
+  // A range borrowed from the type: bytes 6 up to the end, 'world'
+  show("sliceFrom", i64.from((&g[6usize..]).len));
+  show("slice", flag(&g[6usize..9usize] == "wor"));
+  show("sliceThrough", flag(&g[0usize...4usize] == "hello"));
+
+  // Operators between a Greeting and other text compare bytes
+  show("==", flag(g == "hello world"));
+  show("!=", flag(g != "hello world"));
+  show("<", flag(g < "hello zone"));
+  show(">=", flag(g >= "hello zone"));
+  show("literal on the left", flag("hello" < g));
+  show("two Greetings", flag(g == new Greeting("hello world")));
+
+  // A literal where a Greeting is wanted
+  imm h Greeting = "hi";
+  show("variable", i64.from(h.view().len));
+  show("argument", wanted("four"));
+  show("result", i64.from(made().view().len));
+}

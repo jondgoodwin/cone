@@ -266,6 +266,14 @@ and a type that is not `Hash`. Both are cured in the type declaring `Hash`, by
 a `hash` of its own that feeds what identifies it, or by leaving the field out
 of the key; the second also by declaring the field's type `Hash`.
 
+`ErrorLend` is a type body's `use T via m` that cannot lend: `m` is no method
+the type declares (a name nothing binds, or a field), `T` is an enum, a trait or
+the type itself, or the clause admits a member of `T` that is not a method (a
+field, a static), reported at the clause or the item. What the clause names
+wrongly in the ordinary way keeps the fold's codes: a name `T` lacks is
+`ErrorNoMbr`, a private one `ErrorNotPublic`, a name the type already has
+`ErrorDupName`, the body's `final` or `clone` `ErrorBadFold`.
+
 A generic's constraints take seven codes. Two are what a clause refuses at an
 instance, and their remedies differ in whose code changes: `ErrorWhereUnmet` is
 an instance of a generic function or type whose arguments do not meet a

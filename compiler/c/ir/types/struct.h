@@ -149,7 +149,18 @@ int structNameResDemand(NameResState *pstate, StructNode *type);
 // becomes the access to the field the name was folded through, recursing into
 // that field's type where the name is folded there too. Nothing happens for a
 // name the type declares itself.
-void structFoldReceiver(StructNode *type, Name *name, INode **objp, INode *lexnode);
+// A name folded from a body the type lends ('use str via view') shifts the
+// receiver by calling the lending method instead.
+void structFoldReceiver(TypeCheckState *pstate, StructNode *type, Name *name, INode **objp, INode *lexnode);
+
+// The body a type lends and folds in ('use str via view'), and the method it is
+// lent through; NULL for a type that lends none
+StructNode *structLentBody(StructNode *type);
+Name *structLentVia(StructNode *type);
+
+// '*objp', a value or a reference to a type that lends a body, becomes the
+// borrow of the body that type's lending method gives
+void structLendView(TypeCheckState *pstate, StructNode *type, INode **objp, INode *lexnode);
 
 // Unwrap one hop: the declaration of the base this type names
 StructNode *structBaseTraitDcl(StructNode *node);

@@ -512,13 +512,30 @@ static int slitIsStrOwner(INode *totypedcl) {
         && refIsFat((RefNode*)totypedcl);
 }
 
+// The static function 'fromLiteral(text &str) Self' a struct declares to say a
+// string literal may stand where a value of it is wanted, the text copied in
+// (collections' String does); NULL for any other type.
+static FnDclNode *slitFromLiteralFn(INode *totypedcl) {
+    if (totypedcl->tag != StructTag || ((StructNode*)totypedcl)->genericinfo
+        || (totypedcl->flags & (TraitType | EnumType)))
+        return NULL;
+    INode *found = iNsTypeFindFnField((INsTypeNode*)totypedcl, nametblFind("fromLiteral", 11));
+    if (found && found->tag == AliasDclTag)
+        found = aliasDclResolve(found);
+    if (found == NULL || found->tag != FnDclTag || (found->flags & FlagMethFld) || inodeIsPrivate(found))
+        return NULL;
+    return (FnDclNode*)found;
+}
+
 // Would a string literal be taken where this type is wanted, beyond the
 // '&str' it is (and the '&[]u8' that converts from it)? A byte array of its
-// length, filled by it; or an owner of 'str', which it is copied into.
+// length, filled by it; an owner of 'str', which it is copied into; or a type
+// that declares 'fromLiteral', which makes its value from it.
 int slitMatches(INode *node, INode *totypedcl) {
     if (!slitIsText(node))
         return 0;
-    return slitFitsArray((SLitNode*)node, totypedcl) || slitIsStrOwner(totypedcl);
+    return slitFitsArray((SLitNode*)node, totypedcl) || slitIsStrOwner(totypedcl)
+        || slitFromLiteralFn(totypedcl) != NULL;
 }
 
 // Coerce a string literal to a byte array it fills or an owner of 'str' it is
@@ -533,6 +550,16 @@ int slitCoerce(INode **nodep, INode *totypedcl) {
     SLitNode *lit = (SLitNode*)*nodep;
     if (slitFitsArray(lit, totypedcl)) {
         slitAsArray(lit);
+        return 1;
+    }
+    // A type that declares 'fromLiteral' is made by calling it on the literal
+    FnDclNode *fromlit = slitFromLiteralFn(totypedcl);
+    if (fromlit) {
+        fnCallDemandCandidates((INode*)fromlit);
+        FnCallNode *call = newFnCallLower((INode*)lit, (INode*)newNameUseFromDclNode((INode*)fromlit, (INode*)lit), 1);
+        nodesAdd(&call->args, (INode*)lit);
+        fnCallFinalizeArgs(call);
+        *nodep = (INode*)call;
         return 1;
     }
     if (!slitIsStrOwner(totypedcl))

@@ -1427,6 +1427,68 @@ own: an alias resolves to the sibling's declaration, and the call is a direct ca
 to it with the receiver recast, exactly as a call on a value of the sibling's own
 type is (`struct_use_sibling`, `a-folded-method-is-not-cloned-per-folding-type`).
 
+### Lending a body
+
+`use str via view;` in a struct's body folds in the **body the type lends**: the
+public methods of `str` become names of the type, each reached through the
+borrow the type's own `view` method gives. The language is in
+[refinherit](../../../../doc/reference/refinherit.html), "Folding a body the type
+lends"; this is the mechanism, built generally and applied today to
+collections' `String` (`str`'s methods are written once, in core).
+
+**It is a sibling clause with a `via`.** The parser (`parseUseSibling`) reads
+`via` as the connecting word only here, after the type the clause names, and
+holds the method name in `FieldDclNode.via` on the same field-like node a
+sibling's clause is held in (`StructNode.siblings`), so cloning, printing, the
+include file and the expansion order are the sibling's. `structUseSiblingExpand`
+branches on `via` to `structLendExpand`, which needs the body complete as a
+sibling is, and the lending method to be a method the type declares
+(`ErrorLend`, as are an enum, a trait, or the type itself as the body).
+
+**Entries are aliases, as a sibling's are.** `structLendItem` binds each
+admitted name to the body's declaration and enters the alias in the type's
+namespace, so a lookup finds `AliasDclTag` and a call is the direct call of the
+body's method: nothing is copied per lending type (`struct_use_lend`,
+`a-folded-method-is-not-cloned-per-lending-type`). The star clause admits what
+`FoldAdmitMembers` does, so a field of the body would be admitted, and
+`structLendItem` refuses it: only a method, an overload set or a macro method
+folds (`ErrorLend`), since a field is not reached through a borrow of the
+whole. A name missing from the body is `ErrorNoMbr`, a private one
+`ErrorNotPublic`, `final` and `clone` `ErrorBadFold`, and a name the type
+already has `ErrorDupName`, with `as` or `but` to settle it.
+
+**The receiver is shifted by calling the lender.** `structFoldReceiver` first asks
+`structLendUseOf` whether a lend admits the name; if so `structLendReceiver`
+rewrites the receiver `x` into the call `x.view()`, lowered by
+`fnCallLowerMethod` (the receiver is checked already, and checking it again
+fails on a node that is not idempotent, `new Greeting(..)` among them). Selection
+then goes on against a `&str` receiver, so a value, a borrow, a `So[T]` and an
+`Rc[T]` of the lending type all arrive, each by the receiver coercion a method
+call always has. The call's returned borrow keeps the receiver loaned, as any
+method's does. A vtable slot satisfied by a lent method is not built
+(`structFoldPath` knows only field folds).
+
+**Three places in the call lowering know a lend,** all through `fnCallTextOf`,
+which answers whether a type is `str` or lends it, through any references:
+`==` and the orderings between two kinds of text replace a lending operand by its
+view (`fnCallLentOperands`, before the dispatch), so `String == So[str]` is
+`str`'s `==` on two borrows whichever side is which; a borrowed range `&x[a..b]`
+of such a type is the call of `slice`, `sliceFrom` or `sliceThrough`
+(`fnCallLowerStrRange`, which drops the borrow the parser put around the
+receiver; fncall.md says how a temporary it hid is taken); and a literal wanted as a struct that declares a
+static `fromLiteral(&str)` is the call of it (`slitFromLiteralFn`, in
+`slitMatches` and `slitCoerce`).
+
+**`str` itself is declared in core.** Its struct is the compiler's own
+(`strTypeDcl`, made in `stdlibInit` with its `Immutable` marker); core's source
+declares `pub struct @opaque str { ... }` with its methods, and `stdlibAdoptStr`
+makes the parser use the compiler's node for that declaration, once, instead of
+a second struct of the name. The generator's self-check parses core's include
+file again beside the program, and there `modAddNamedNode` lets that second
+declaration hide the compiler's. Every method is `inline`, so none is emitted
+unless called, and none instantiates a generic (a `str` method that compared
+slices would put `mem.sliceEq[u8]` into every compile that loads core).
+
 ## An enum extending an enum
 
 `extends` on an enum names the enum whose variants this one copies into its set. The

@@ -20,6 +20,7 @@ FieldDclNode *newFieldDclNode(Name *namesym, INode *perm) {
     fldnode->value = NULL;
     fldnode->fold = NULL;
     fldnode->hop = NULL;
+    fldnode->via = NULL;
     fldnode->index = 0;
     fldnode->lifeslots = 0;
     fldnode->lifeknown = 0;

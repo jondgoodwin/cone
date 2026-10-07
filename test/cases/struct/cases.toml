@@ -721,6 +721,27 @@ contains = [
   "%Slim = type { i32, i32 }",
 ]
 
+# A type that LENDS a body folds it in, 'use str via view': the methods of 'str'
+# become the type's names, each called on the borrow the type's 'view' gives.
+# Separate from struct_use_sibling, which folds in methods whose receiver is
+# already the type's own by a shared base: here there is no shared base, and
+# the receiver is rewritten to a call of the lending method. The claims are
+# which receiver each folded call ran on -- through a value, a borrow, a unique
+# and a counted owner -- that a name the type declares or leaves out by 'but' is
+# its own, that a range borrowed from it is the lent body's slice and its
+# operators compare the lent bytes, and that a literal becomes one through
+# 'fromLiteral'. The folded method is the body's own declaration, never copied
+# per lending type, which a check pins.
+[scenario.struct_use_lend]
+category = "run"
+description = "Folding the body a type lends with 'use str via view': its methods through a value, a borrow, a unique and a counted owner; a name left out by 'but'; a range borrowed from the type; its operators; and a literal made one by 'fromLiteral'"
+tags = ["parse", "nameres", "typecheck", "genllvm", "runtime"]
+
+[[scenario.struct_use_lend.check]]
+name = "a-folded-method-is-not-cloned-per-lending-type"
+target = "symbols"
+excludes = ["Greeting.startsWith", "Greeting.find", "Greeting.trim", "Greeting.slice"]
+
 # The motivating case is enriching somebody else's type, so the pair is put on
 # opposite sides of a module boundary: the base is resolved on demand from the
 # other module's scope, and the enrichment still reads its private members. A
@@ -772,7 +793,7 @@ diagnostics = 18
 category = "reject"
 description = "A fold clause written where none may be, and the shapes neither the field form nor the body form may take"
 tags = ["parse"]
-diagnostics = 17
+diagnostics = 18
 
 # -------- name resolution stage --------
 
@@ -811,6 +832,18 @@ category = "reject"
 description = "What a type body's 'use' may name as a sibling, and what it may admit of one"
 tags = ["nameres"]
 diagnostics = 17
+
+# The lend: 'use T via m'. The lending method m must be a method the type
+# declares; T must be a struct other than the type itself; a name the type
+# declares is its own, so the fold of it collides unless 'but' leaves it out; a
+# name T has not got, listed or left out, is not a name to fold. Separate from
+# struct_nameres_use_sibling, which needs a shared base, because the two folds
+# admit different things of different types.
+[scenario.struct_nameres_use_lend]
+category = "reject"
+description = "What a type body's 'use T via m' may lend: a method the type declares, the body of a struct that is not the type itself, no name left unfolded or missing"
+tags = ["nameres"]
+diagnostics = 8
 
 # A pub field of a pub type is reached from outside the module, so a private
 # type it names is refused, however the field's type names it. A private

@@ -75,8 +75,14 @@ void modAddNamedNode(ModuleNode *mod, Name *name, INode *node) {
         name->node = NULL;
     }
 
-    // Hook into global name table (and add to namednodes), if not already there
-    if (!name->node) {
+    // Hook into global name table (and add to namednodes), if not already there.
+    // The declaration of core's 'str' is the node the name already holds
+    // (stdlibAdoptStr)
+    // The generator's self-check parses core's include file again beside the
+    // program, and its 'str' is a struct of its own that hides the compiler's
+    if (!name->node || name->node == node
+        || (name == strTypeName && name->node == (INode*)strTypeDcl && node->tag == StructTag
+            && mod->namesym == nametblFind("core", 4))) {
         nametblHookNode(name, (INode*)node);
         namespaceSet(&mod->namespace, name, node);
         return;

@@ -29,7 +29,11 @@
 		starts from a concrete type and enriches it with methods — see
 		<a href="#enrich">Enriching a concrete type</a>. And in the <b>type's body</b>, with
 		<span class="pre">use</span>, it folds in a <i>sibling</i>: somebody else's enrichment of that
-		same base — see <a href="#siblings">Composing several enrichments of one base</a>.</p>
+		same base — see <a href="#siblings">Composing several enrichments of one base</a>. A type that lends a
+		<i>body</i> &mdash; a <span class="pre">String</span> lends the text it holds as a
+		<span class="pre">&amp;str</span> &mdash; folds the body's methods in with the same
+		<span class="pre">use</span> and a <span class="pre">via</span>: see
+		<a href="#lend">Folding a body the type lends</a>.</p>
 	<p>There is a fourth place, and it is not inside a type at all: a <b>module's global variable</b>
 		may carry the same clause, folding its type's members in as names of the module &mdash; see
 		<a href="#globals">Folding through a global</a>. A module has exactly one instance, so that is
@@ -430,6 +434,78 @@ struct Rich extends Meter {
 	<p>A <span class="pre">use</span> inside a type is always this — composition, on the producer's
 		side, saying what this type is built out of. It is never an import: ordinary name lookup
 		inside a type's methods comes from the enclosing module, as it always did.</p>
+
+	<h2 id="lend">Folding a body the type lends</h2>
+	<p>Some types hold a thing and show the world a <i>view</i> of it. A <span class="pre">String</span>
+		holds a block of bytes, and lends them as a <span class="pre">&amp;str</span>, a borrow of text.
+		Everything one can ask of text &mdash; its length, whether it starts with something, where
+		something is in it, a part of it &mdash; is a method of <span class="pre">str</span>, written once.
+		A type that lends a body can make those methods its own names, without writing any of them, by saying
+		which of its methods does the lending:</p>
+<pre>
+struct Title {
+  text So[str];
+
+  // The borrow of text this type lends
+  pub fn view(self &amp;) &amp;str { text; }
+
+  // Every public method of str is now a name of Title, reached through view()
+  use str via view;
+}
+
+imm t = new Title("Dune");     // a literal is copied into the So[str]
+t.len                          // 4:      t.view().len
+t.startsWith("Du")             // true:   t.view().startsWith("Du")
+&amp;t[1..3]                       // "un":   t.view().slice(1, 3), a &amp;str of the bytes 1 and 2
+t &lt; "Dunes"                    // true:   t.view() &lt; "Dunes", compared byte by byte
+</pre>
+	<p>It is the field's fold with the receiver rewritten differently. A field's fold reaches a part of the
+		value, <span class="pre">car.engine</span>; this one reaches what a method gives,
+		<span class="pre">title.view()</span>, so <b>no field is involved and no storage is added</b>. As with a
+		field, <b>no forwarding method is generated</b>: <span class="pre">t.len</span> is a call of
+		<span class="pre">str</span>'s own <span class="pre">len</span>, with the borrow <span class="pre">view</span>
+		gave as its <span class="pre">self</span>, and the same method serves every type that lends
+		a <span class="pre">str</span>. The borrow of the call is the view's: while a result of
+		<span class="pre">t.trim()</span> is used, <span class="pre">t</span> stays borrowed, as it does for
+		<span class="pre">t.view()</span> itself.</p>
+	<ul>
+		<li><b>The clause is a sibling's with a <span class="pre">via</span>.</b>
+			<span class="pre">use str via view;</span> admits every public member; a list after it admits just
+			those, and <span class="pre">but</span> leaves some out, as everywhere
+			(<span class="pre">use str via view but len, find;</span>). A name the type declares itself is
+			the type's own, and folding the same name is a collision, so the type leaves it out by
+			<span class="pre">but</span> and keeps its own. <span class="pre">String</span> does this for
+			the few that take a <span class="pre">&amp;[]u8</span> or answer a copy.</li>
+		<li><b>The lending method is the type's own</b> &mdash; one the type declares, taking the type as
+			<span class="pre">self</span> and giving the borrow. <span class="pre">via</span> naming nothing the type
+			declares, or a field, is an error.</li>
+		<li><b>Only methods fold,</b> and only a struct is lent: a field of the body is not reached through a
+			borrow, a static has no value to lend, and an enum or a trait has no body.</li>
+		<li><b>Every holder reaches them.</b> A value, a borrow, a <span class="pre">So[Title]</span> or an
+			<span class="pre">Rc[Title]</span> calls a folded method as it calls the type's own, because every owner
+			already lends its value as a borrow to a method's <span class="pre">self</span> (see
+			<a href="reftypesafe.html">Implicit Coercion of 'self'</a>). Nothing is written per region or per
+			permission.</li>
+		<li><b>Operators come with them, and compare the lent text.</b> <span class="pre">==</span> and the
+			orderings between two kinds of text &mdash; a literal, a <span class="pre">String</span>, a
+			<span class="pre">So[str]</span>, an <span class="pre">Rc[str]</span> &mdash; compare their bytes,
+			whichever are which, so <span class="pre">title == "Dune"</span> and
+			<span class="pre">"Dune" &lt; title</span> both work; a type that lends text is replaced by its
+			borrow on either side. <span class="pre">===</span> is still whether two references are the same place.</li>
+		<li><b>Ranges are the lent text's.</b> <span class="pre">&amp;t[a..b]</span>, <span class="pre">&amp;t[a..]</span>
+			and <span class="pre">&amp;t[a...b]</span> call <span class="pre">slice</span>,
+			<span class="pre">sliceFrom</span> and <span class="pre">sliceThrough</span>, which refuse a bound that falls
+			inside a character.</li>
+		<li><b>Where a literal is wanted as the type,</b> a static function
+			<span class="pre">fromLiteral(text &amp;str)</span> the type declares makes one from it
+			(<span class="pre">imm t Title = "Dune";</span>, or <span class="pre">"Dune"</span> passed
+			where a <span class="pre">Title</span> is a parameter); that is how a literal becomes a
+			<span class="pre">String</span> wherever one is wanted.</li>
+		<li><b>What it does not do:</b> a lend grants names and no subtyping (a <span class="pre">Title</span> is not
+			a <span class="pre">str</span>, and is passed where a <span class="pre">&amp;str</span> is wanted as
+			<span class="pre">t.view()</span>), and a folded method reached through a virtual reference to a
+			trait is not built.</li>
+	</ul>
 
 	<h2 id="globals">Folding through a global</h2>
 	<p>A module is a namespace too, and a global variable is to a module what a field is to a type:

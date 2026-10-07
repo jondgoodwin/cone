@@ -275,6 +275,16 @@ static void varDclExtendEmit(VarDclExtend *ext, VarDclNode *var) {
     nodesAdd(&ext->tail, (INode *)init);
 }
 
+// The expression a hidden local was made of, when 'node' names one in this
+// statement; else 'node'. For a use of the temporary that takes its value as it
+// stands, in place of a borrow of the local: the hidden local is then never
+// declared, as for any the statement's end puts back.
+INode *varDclTempValue(TypeCheckState *pstate, INode *node) {
+    VarDclExtend *ext = pstate->extend;
+    VarDclTemp *temp = ext ? varDclTempOf(ext, node) : NULL;
+    return temp ? temp->var->value : node;
+}
+
 static void varDclExtendExp(VarDclExtend *ext, INode **nodep);
 
 // A hidden local extended: first what its own value extends. What its value

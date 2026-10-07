@@ -61,6 +61,12 @@ extern StructNode *arrayTypeDcl;
 // the number of bytes (itypeLenBodyElem, refIsFat)
 extern StructNode *strTypeDcl;
 
+// The compiler's own 'str' struct, when module 'mod' is core declaring 'str' for
+// the first time, so that core's declaration gives it its methods instead of
+// making a second struct of the name; else NULL. Its flags are those of a
+// declaration still to be name resolved and type checked.
+StructNode *stdlibAdoptStr(Name *name, ModuleNode *mod);
+
 // The two functions a program calls to run its stitched init and final
 // (genlStitch): 'initAll()' and 'finalAll()', names every module reaches as it
 // reaches 'i64', and which a declaration of its own hides
