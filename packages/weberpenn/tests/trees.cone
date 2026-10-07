@@ -46,6 +46,28 @@ fn main() i32 {
   imm fa = foliageMesh(&a, &fp);
   imm fb = foliageMesh(&b, &fp);
   expect(mesh.meshHash(&fa) == mesh.meshHash(&fb), "the same seed gives the same foliage");
+  // flutter's per-leaf data: none by default; with sway, a color a vertex, each leaf's vertices a
+  // phase in [0, 1) apart from the others', their offsets from the leaf's stem short (a leaf is
+  // under a metre) and the same shapes as without
+  expectInt(i64.from(fa.colors.len()), 0, "no sway data unless asked for");
+  mut swayParams = mapleFoliage(5u32);
+  swayParams.sway = true;
+  imm swaying = foliageMesh(&a, &swayParams);
+  expectInt(i64.from(swaying.colors.len()), i64.from(swaying.positions.len()), "sway: a color a vertex");
+  expectInt(i64.from(swaying.positions.len()), i64.from(fa.positions.len()), "sway changes no geometry");
+  mut swayOk = true;
+  mut phases = List[f32].empty();
+  mut lastPhase f32 = -1.;
+  mut k = 0usize;
+  while k < swaying.colors.len() {
+    imm c0 = *swaying.colors[k];
+    if c0.alpha < 0. or c0.alpha >= 1. { swayOk = false; }
+    if c0.red * c0.red + c0.green * c0.green + c0.blue * c0.blue > 1. { swayOk = false; }
+    if c0.alpha != lastPhase { phases.push(c0.alpha); lastPhase = c0.alpha; }
+    k = k + 1usize;
+  }
+  expect(swayOk, "sway: phases in [0, 1), offsets within a metre of the pivot");
+  expectInt(i64.from(phases.len()), i64.from(a.sites.len()), "sway: one phase for each leaf");
   imm p2 = redMaple(4u32, 11.);
   imm c = grow(&p2);
   expect(mesh.meshHash(&branchMesh(&c, &tp)) != mesh.meshHash(&ba), "another seed gives another tree");

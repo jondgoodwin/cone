@@ -15,6 +15,13 @@
 // which destroys them once the GPU has finished the frames that drew them.
 // The handle never changes: whatever holds it draws the new version.
 //
+// A mesh with vertex colors (the Mesh's 'colors', one Color a vertex) also has
+// a SWAY stream, the colors uploaded as they are, 16 bytes a vertex. Render
+// draws no color from it: it is the per-leaf data of a flutter material
+// (pbr.slang's vertexSway): the vertex's offset from its leaf's pivot and the
+// leaf's phase. A mesh with no colors has no such stream and costs nothing
+// for it.
+//
 // A SKINNED mesh ('addSkinnedMesh', skin.cone) has two more vertex buffers,
 // its Skin's joints and weights, four bytes a vertex each; it is drawn by
 // the skinned variant of its material's pipeline. Its bounding sphere is the
@@ -34,11 +41,12 @@ pub struct GpuMesh {
   pub radius f32;
   pub joints Buffer;               // a skinned mesh's joints, four bytes a vertex; none otherwise
   pub weights Buffer;              // and their weights
+  pub sway Buffer;                 // a mesh with colors: them, as flutter's per-leaf data; none otherwise
 
   // No mesh: what a slot's spare version holds (not valid)
   pub fn none() GpuMesh {
     new GpuMesh(Buffer.none(), Buffer.none(), Buffer.none(), Buffer.none(), 0u32, 0u32, List[Group].empty(),
-      PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, new Vec3(0., 0., 0.), 0., Buffer.none(), Buffer.none());
+      PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, new Vec3(0., 0., 0.), 0., Buffer.none(), Buffer.none(), Buffer.none());
   }
 
   pub fn isValid(self &) bool { positions.isValid() and indices.isValid() and indexCount > 0u32; }
@@ -55,6 +63,7 @@ pub struct GpuMesh {
     queue.releaseBuffer(&mut indices);
     queue.releaseBuffer(&mut joints);
     queue.releaseBuffer(&mut weights);
+    queue.releaseBuffer(&mut sway);
     vertexCount = 0u32;
     indexCount = 0u32;
     groups.clear();
@@ -122,6 +131,9 @@ fn uploadTriangles(device &mut Device, m &Mesh) GpuMesh {
       i = i + 1usize;
     }
     g.uvs = filledBuffer(device, bytesOf[Vec2](&zeros), u64.from(n) * 8u64, BUFFER_USAGE_VERTEX);
+  }
+  if m.colors.len() == n {
+    g.sway = filledBuffer(device, bytesOf[Color](&m.colors), u64.from(n) * 16u64, BUFFER_USAGE_VERTEX);
   }
   g.indices = filledBuffer(device, bytesOf[u32](&m.indices), u64.from(g.indexCount) * 4u64, BUFFER_USAGE_INDEX);
   if m.groups.len() == 0usize {

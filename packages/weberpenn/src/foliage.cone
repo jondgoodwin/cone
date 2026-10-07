@@ -32,6 +32,28 @@ pub struct FoliageParams {
   pub needleWidth f32 = 0.03;
   pub tufts i32 = 3;            // needle sprays at a site
   pub needleDroop f32 = 0.3;
+  // Per-leaf data for render's flutter (the mesh's colors, one a vertex): the
+  // vertex's offset from its leaf's pivot, the stem node the leaf grows from
+  // (xyz, in the tree's own metres), and the leaf's phase in turns (w), the same
+  // for every vertex of the leaf, a different number for each. Plumes carry
+  // none.
+  pub sway bool = false;
+}
+
+// The golden ratio's fractional part: the phases of successive leaves
+// stay far apart however many there are, with no draw from the generator
+// (whose sequence the leaves' shapes depend on)
+const GOLDEN = 0.6180339887;
+
+// Give the vertices of one leaf, from 'first' to the mesh's end, their
+// sway colors: each one's offset from 'pivot', and the leaf's phase
+fn addSway(m &mut mesh.Mesh, first usize, pivot Vec3, phase f32) {
+  mut i = first;
+  while i < m.positions.len() {
+    imm d = *m.positions[i] - pivot;
+    m.colors.push(new Color(d.x, d.y, d.z, phase));
+    i = i + 1usize;
+  }
 }
 
 // The lobed outline of a red maple's blade: S at the angle 'th' (degrees
@@ -203,6 +225,7 @@ pub fn foliageMesh(tree &Tree, fp &FoliageParams) mesh.Mesh {
     imm h = clampf(s.pos.y / maxf(0.5, tree.height), 0., 1.);
     imm o = clampf(libc.sqrtf(s.pos.x * s.pos.x + s.pos.z * s.pos.z) / crown, 0., 1.);
     imm tone = clampf(0.3 * h + 0.4 * o + 0.3 * rng.unit(), 0., 1.);
+    imm leafFirst = m.positions.len();
     if fp.kind == FOLIAGE_MAPLE {
       imm size = fp.leafSize * (1. + fp.leafSizeV * rng.signed());
       // the petiole leaves the node across the stem, rising, and the blade runs on flat
@@ -231,6 +254,10 @@ pub fn foliageMesh(tree &Tree, fp &FoliageParams) mesh.Mesh {
         addSpike(&mut m, s.pos, tip, fp.needleWidth, wide, nrm, tone, 0.3 + 0.3 * rng.unit());
         t = t + 1;
       }
+    }
+    if fp.sway {
+      imm turns = GOLDEN * f32.from(i + 1usize) + 0.137 * f32.from(fp.seed % 97u32);
+      addSway(&mut m, leafFirst, s.pos, turns - libc.floorf(turns));
     }
     i = i + 1usize;
   }
