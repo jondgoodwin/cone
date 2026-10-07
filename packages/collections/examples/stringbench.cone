@@ -1,0 +1,91 @@
+// Bench: what a lookup of a Dict[String, u64] costs by the body the String
+// lends, 100,000 keys, on the real clock. For each it prints nanoseconds per
+// lookup:
+//
+// - by a literal: one key looked up again and again, so the cache is warm
+//   and what is timed is the hash, the probe and the compare;
+// - by a view: every key's own text, in the order they went in;
+// - by a view, scrambled: the same keys in another order;
+// - by a String: the keys themselves, borrowed.
+//
+// Build it optimised to measure:
+//
+//   congo run --release packages/collections/examples/stringbench.cone
+
+mod stringbench;
+
+import stdio use *;
+import time use Duration, Instant;
+import collections use *;
+
+const n = 100000usize;
+
+fn ns(start Instant, count usize) i64 {
+  start.elapsed().nanos() / i64.from(count);
+}
+
+fn report(label &[]u8, nanos i64) {
+  printStr(label);
+  printStr(": ");
+  printInt(nanos);
+  printStr(" ns\n");
+}
+
+fn main() i32 {
+  mut keys = List[String].withCapacity(n);
+  mut d = Dict[String, u64].deterministic();
+  mut i = 0usize;
+  while i < n {
+    mut key = String.from("key");
+    key.appendUInt(u64.from(i));
+    d.insert(key.copy(), u64.from(i));
+    keys.push(key);
+    i = i + 1usize;
+  }
+  imm reps = 20usize;
+  imm gap = 7919usize;
+  mut sum = 0u64;
+  mut pass = 0usize;
+
+  // key54321 is in the table
+  mut t = Instant.now();
+  while pass < reps * 10usize {
+    i = 0usize;
+    while i < n { sum = sum + *d["key54321"]; i = i + 1usize; }
+    pass = pass + 1usize;
+  }
+  report("by a literal", ns(t, n * reps * 10usize));
+
+  pass = 0usize;
+  t = Instant.now();
+  while pass < reps {
+    i = 0usize;
+    while i < n { sum = sum + *d[keys[i].view()]; i = i + 1usize; }
+    pass = pass + 1usize;
+  }
+  report("by a view, in order", ns(t, n * reps));
+
+  pass = 0usize;
+  t = Instant.now();
+  while pass < reps {
+    i = 0usize;
+    while i < n { sum = sum + *d[keys[(i * gap) % n].view()]; i = i + 1usize; }
+    pass = pass + 1usize;
+  }
+  report("by a view, scrambled", ns(t, n * reps));
+
+  pass = 0usize;
+  t = Instant.now();
+  while pass < reps {
+    i = 0usize;
+    while i < n { sum = sum + *d[keys[(i * gap) % n]]; i = i + 1usize; }
+    pass = pass + 1usize;
+  }
+  report("by a String, scrambled", ns(t, n * reps));
+
+  // Keep the results alive
+  printStr("checksum ");
+  printUInt(sum);
+  printStr("\n");
+  0i32;
+}
