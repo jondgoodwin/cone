@@ -487,8 +487,9 @@ Three adjustments, two of them asymmetric on purpose:
   ambiguity.
 - **The borrow retry** (`fnCallBorrowReceiver`). A receiver held as a value
   reaches a method declaring `self &` or `self &mut`: it is probed as a `ro`
-  borrow, then a `mut` one, and the first that selects a candidate is made by
-  `borrowMutRef`, so the permission check and the lifetime are a written
+  borrow, then (for a receiver whose type declares `Immutable`, whose `self &`
+  is `&imm`) an `imm` one, then a `mut` one, and the first that selects a
+  candidate is made by `borrowMutRef`, so the permission check and the lifetime are a written
   `&mut v`'s — `ErrorBadPerm` for `&mut` of an immutable variable, and the
   borrow's scope carried into a returned borrow. It runs only after both
   selections above found nothing, so a by-value candidate is always preferred.

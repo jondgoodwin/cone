@@ -52,6 +52,13 @@ extern int refAllowNewPerm;
 // decides, whatever the region (itypeLenBodyElem).
 int refIsFat(RefNode *ref);
 
+// The two rules of the marker 'Immutable' (itypeIsImmutable), kept apart: the
+// permission a reference to such a type takes when none is written ('imm', or
+// NULL where the type does not declare it), and the refusal of 'mut', 'mut1'
+// and a lock permission on it (ErrorImmutableWrite; answers whether refused)
+INode *refImmutableDefaultPerm(INode *target);
+int refImmutableBan(INode *lexnode, INode *perm, INode *target);
+
 // Allocate normalized reference type info
 void *refTypeInfoAlloc();
 

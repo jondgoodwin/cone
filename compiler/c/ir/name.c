@@ -98,6 +98,7 @@ Name *pointerTraitName;
 Name *sendableTraitName;
 Name *sizedTraitName;
 Name *dynSizedTraitName;
+Name *immutableTraitName;
 Name *strTypeName;
 Name *lockPermTraitName;
 Name *acquireMutMethodName;

@@ -124,6 +124,15 @@ category = "run"
 description = "A borrow of the body of bytes ('&str'), fat as an owner of it is: made of a slice of bytes and converted back with 'as', passed, returned, stored in a struct, in an Option, lent by an owner and reborrowed from it, compared by identity, and 16 bytes where a thin borrow is 8"
 tags = ["typecheck", "flow", "genllvm", "runtime"]
 
+# The marker 'Immutable', which 'str' and a struct declare: the default
+# permission is 'imm', so a borrow, a method's receiver and an owner written with
+# no permission are 'imm' and an 'Rc' of one copies; a finalizer still takes
+# 'self &uni'. The refusals are ref_typecheck_immutable and ref_flow_immutable.
+[scenario.ref_immutable]
+category = "run"
+description = "A type declaring Immutable ('str', and a struct): '&str' and '&imm str' are one type, 'ro' and 'opaq' borrow it, 'Rc[str]' and an 'Rc' of the struct copy, its 'self &' and borrow are 'imm', its finalizer takes 'self &uni' and runs once, and 'where T is Immutable' is met by both"
+tags = ["typecheck", "flow", "genllvm", "runtime"]
+
 # -------- name resolution stage --------
 
 [scenario.ref_nameres_fnref]
@@ -133,6 +142,12 @@ tags = ["parse", "nameres"]
 diagnostics = 3
 
 # -------- type check stage --------
+
+[scenario.ref_typecheck_immutable]
+category = "reject"
+description = "'mut', 'mut1' and a lock permission on a type declaring Immutable ('str', a struct): on a borrow, an owner in 'So' and 'Rc', in a struct's 'self &mut', through a generic's argument and in a '&mut *v', each naming Immutable; and 'where T is Immutable' unmet by an integer and by a struct holding an Immutable one"
+tags = ["typecheck"]
+diagnostics = 12
 
 [scenario.ref_typecheck_borrow]
 category = "reject"
@@ -184,6 +199,15 @@ diagnostics = 10
 [scenario.ref_flow_body]
 category = "reject"
 description = "A borrow of the body of bytes held to the lifetime of its owner: reborrowed with '&*' or lent, it may not be returned, and the owner replaced while it is used later is frozen"
+tags = ["flow"]
+diagnostics = 3
+
+# Separate from ref_flow_body because its subject is the owner's permission: what
+# Immutable changes is the one left unwritten, so 'Rc[str]' copies and 'Rc[uni,
+# str]' and a plain struct's 'Rc' move, as an 'So' of anything does.
+[scenario.ref_flow_immutable]
+category = "reject"
+description = "An owner of an Immutable type with no permission written copies and is used again; with 'uni' written, an 'Rc' of a type that does not declare it, and an 'So' of one that does, it moves"
 tags = ["flow"]
 diagnostics = 3
 

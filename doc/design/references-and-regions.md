@@ -427,6 +427,15 @@ memory the region gives. Each owner carries its own count, which is right
 because the body never grows: a growable one would need a count every holder
 sees, and keeps it (`List`, below).
 
+**`str` never changes, and says so.** It declares the marker `Immutable`, which a
+type declares and the compiler never grants. A reference to a type declaring it,
+written with no permission, is `imm` (`&str` is `&imm str`, `Rc[str]` is
+`Rc[imm, str]` and copies), and the permissions that write through a shared path
+(`mut`, `mut1`, a lock permission) are refused on it. The two effects are kept
+apart: the default stays whatever the ban later allows, so code never changes
+meaning when a unique `str` is given length-preserving methods. Any struct may
+declare it.
+
 **A slice is a borrow of its elements, and an array that is owned is not an
 array reference.** A statically sized array is reached by a thin reference with
 its size in the type, and an array whose whole length is chosen at runtime and

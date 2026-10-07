@@ -1,0 +1,51 @@
+// Whether an owner of an Immutable type moves or copies is its permission's
+// doing, and Immutable changes only the permission left unwritten. 'Rc[str]' is
+// 'Rc[imm, str]' and copies, so the original is used again after the copy
+// (no diagnostic below); 'Rc[uni, str]' is written, is the only owner and
+// moves, as is 'Rc[Tag]' of a struct that does not declare Immutable and 'So[str]'
+// in every permission, a Move region's one owner.
+
+mod ref_flow_immutable;
+
+struct Tag is Immutable {
+  pub n i32;
+}
+
+struct Plain {
+  pub n i32;
+}
+
+fn show(s &str) {
+}
+
+fn copies(v &str) {
+  imm a = new Rc[str](v);
+  imm b = a;
+  show(a);
+  show(b);
+}
+
+fn copiesTag() {
+  imm a = new Rc[Tag](1i32);
+  imm b = a;
+  imm c = a;
+  imm d = b.n + c.n + a.n;
+}
+
+fn uniMoves(v &str) {
+  imm a = new Rc[uni, str](v);
+  imm b = a;
+  show(a);                       //~ ErrorMove "moved out"
+}
+
+fn plainMoves() {
+  imm a = new Rc[Plain](1i32);
+  imm b = a;
+  imm c = a.n;                   //~ ErrorMove "moved out"
+}
+
+fn soMoves(v &str) {
+  imm a = new So[str](v);
+  imm b = a;
+  show(a);                       //~ ErrorMove "moved out"
+}

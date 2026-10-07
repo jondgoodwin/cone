@@ -5,14 +5,16 @@
 // reference. It has no value to construct or move in, so an allocation of it
 // copies a borrow of one, 'new So[str](view)': none, or more, or something
 // that is not a borrow of one, is refused. A borrow of it reads and does not
-// write (a '&mut' of a '&' is ErrorBadPerm), and a reference to it compares
+// write (a '&mut' of it is ErrorImmutableWrite: str declares Immutable, and
+// ref_typecheck_immutable has the rest of that), and a reference to it compares
 // by identity only: '==' reads the body, which declares no such operator. It
 // is the size of a pointer and a count, and converts to nothing narrower or of
 // another kind (region_body and ref_body have the slice of bytes it converts to).
 //
 // An owner of it that is the only holder moves like any: the copy of a
 // 'uni' owner is a move, and the original is gone (ErrorMove, which flow
-// reports in a function whose own check passed).
+// reports in a function whose own check passed). Written with no permission an
+// owner of it is 'imm' and copies (ref_flow_immutable), so 'uni' is written.
 
 mod region_typecheck_body;
 
@@ -40,7 +42,7 @@ fn compare(a &str, b &str) {
 }
 
 fn write(v &str) {
-  imm m = &mut *v;               //~ ErrorBadPerm:11 "Borrowed reference cannot obtain this permission"
+  imm m = &mut *v;               //~ ErrorImmutableWrite:11 "str declares Immutable"
 }
 
 fn convert(v &str) {
@@ -58,7 +60,7 @@ fn show(s &str) {
 
 // Flow: a unique owner moves, and the original is gone
 fn moved(v &str) {
-  imm a = new Rc[str](v);
+  imm a = new Rc[uni, str](v);
   imm b = a;
   show(a);                       //~ ErrorMove:8 "moved out"
 }
