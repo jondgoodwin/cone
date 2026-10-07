@@ -1,0 +1,38 @@
+// hash: the seed a program's hashers start from.
+//
+// core's 'Hasher.seeded()' mixes this one number into every hash it makes, so
+// the numbers differ from run to run and nobody outside the process can tell
+// which keys collide (core's 'processSeed' is this function). It is 64 random
+// bits from the OS, drawn the first time anything asks, from any thread, and
+// then the same for the rest of the process. The OS's generator is the C
+// runtime's 'rand_s', which the UCRT answers from the system's own
+// (RtlGenRandom) and which needs no library beyond the ones every program links.
+
+// The seed once drawn, 0 until then. Read and set only atomically
+mut hashSeed = 0u64;
+
+// The C runtime's 32 random bits from the OS: 0 if it drew them, else an error
+extern fn rand_s(value *u32) i32;
+
+pub fn cone_hashSeed() u64 {
+  imm drawn = core.mem.atomicLoad[u64](&hashSeed as *u64, core.MemOrder.SeqCst[]);
+  if drawn != 0u64 {return drawn;}
+
+  mut low = 0u32;
+  mut high = 0u32;
+  mut fresh = 0u64;
+  if rand_s(&mut low as *u32) == 0 and rand_s(&mut high as *u32) == 0 {
+    fresh = (u64.from(high) << 32u64) | u64.from(low);
+  }
+  else {
+    // The OS refused, which it does not: the clock and where this global sits
+    // are not secret, but are different every run
+    fresh = (u64.from(libc.time(null)) * 0x9e3779b97f4a7c15u64) ^ u64.from((&hashSeed as *u64) as usize);
+  }
+  if fresh == 0u64 {fresh = 0x9e3779b97f4a7c15u64;}
+
+  // Two threads drawing at once settle on whichever stored first
+  imm settled = core.mem.atomicCompareSwap[u64](&hashSeed as *u64, 0u64, fresh,
+    core.MemOrder.SeqCst[], core.MemOrder.SeqCst[]);
+  if settled.1 {fresh;} else {settled.0;}
+}

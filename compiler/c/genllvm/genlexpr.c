@@ -442,6 +442,19 @@ static LLVMValueRef genlDeclaredIntrinsic(GenState *gen, FnDclNode *fndcl, LLVMV
     case ShrMaskedIntrinsic:
         return genlBitIntrinsic(gen, intrinsic->intrinsicFn, type, fnargs);
 
+    // The two halves of a 64 by 64 bit product, xored. With both operands
+    // zero-extended, a 64-bit target does the i128 multiply in one instruction
+    case MulFoldIntrinsic: {
+        LLVMTypeRef i128 = LLVMIntTypeInContext(gen->context, 128);
+        LLVMTypeRef i64 = LLVMInt64TypeInContext(gen->context);
+        LLVMValueRef a = LLVMBuildZExt(gen->builder, fnargs[0], i128, "mulfolda");
+        LLVMValueRef b = LLVMBuildZExt(gen->builder, fnargs[1], i128, "mulfoldb");
+        LLVMValueRef product = LLVMBuildMul(gen->builder, a, b, "mulfoldp");
+        LLVMValueRef high = LLVMBuildLShr(gen->builder, product, LLVMConstInt(i128, 64, 0), "mulfoldh");
+        return LLVMBuildXor(gen->builder, LLVMBuildTrunc(gen->builder, product, i64, "mulfoldlo"),
+            LLVMBuildTrunc(gen->builder, high, i64, "mulfoldhi"), "mulfold");
+    }
+
     // A GPU workgroup's barriers (genlgpusync.c): on a GPU an instruction, on
     // the CPU a call to the thread's barrier hook when it has set one.
     // WebAssembly links no conestd, which holds the hook, and runs a kernel one

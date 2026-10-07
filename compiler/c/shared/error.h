@@ -521,6 +521,11 @@ enum ErrorCode {
     // 'Sized' and 'DynSized', granted by the compiler from a type's size (ir/types/struct.c)
     ErrorSizeMarkerUse = 1296,  // 'Sized' or 'DynSized' declared by a type: both are granted, by whether the type's size is known at compile time or carried by a reference to it, and a declaration could only contradict that
 
+    // Hashing: core's Hash trait, and the hash the compiler supplies for a struct declaring it
+    ErrorHashFloat = 1330,      // A struct declaring Hash with no hash of its own has a float field: NaN is not equal to itself and -0 is equal to 0, so no hash of the bits agrees with ==
+    ErrorHashField = 1331,      // A struct declaring Hash with no hash of its own has a field whose type is not Hash, so the compiler has nothing to feed for it
+    ErrorHashNoEq = 1332,       // A type declaring Hash has no '==': a hash is only meaningful against the equality that decides which keys are the same
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name

@@ -550,7 +550,7 @@ int itypeThreadBoundHow(INode *type, int *settled, StaticBorrow how) {
     int svprovisional = itypeBoundProvisional;
     StaticBorrow svhow = itypeStaticHow;
     itypeBoundProvisional = 0;
-    itypeStaticHow = how == StaticNever ? StaticOff : how;
+    itypeStaticHow = how;
     int bound = itypeThreadBoundAt(type);
     if (settled)
         *settled = bound || !itypeBoundProvisional;
@@ -740,7 +740,7 @@ static INode *itypeThreadBoundCulprit(INode *type, char *path, size_t size,
 INode *itypeThreadBoundWhyHow(INode *type, char *path, size_t size, StaticBorrow how) {
     StructNode *seen[ThreadBoundPathMax];
     StaticBorrow svhow = itypeStaticHow;
-    itypeStaticHow = how == StaticNever ? StaticOff : how;
+    itypeStaticHow = how;
     path[0] = '\0';
     INode *culprit = itypeThreadBoundCulprit(type, path, size, seen, 0);
     itypeStaticHow = svhow;

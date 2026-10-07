@@ -223,6 +223,10 @@ void nametblInit() {
 
     optionName = nametblFind("Option", 6);
     fromName = nametblFind("from", 4);
+    hashName = nametblFind("hash", 4);
+    hashTraitName = nametblFind("Hash", 4);
+    hasherName = nametblFind("Hasher", 6);
+    writeU64Name = nametblFind("writeU64", 8);
     ofName = nametblFind("of", 2);
     fillName = nametblFind("fill", 4);
     lenName = nametblFind("len", 3);

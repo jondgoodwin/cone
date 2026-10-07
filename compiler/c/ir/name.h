@@ -96,6 +96,10 @@ extern Name *refIndexName; // "&[]"
 extern Name *optionName;   // "Option"
 
 extern Name *fromName;     // "from", a number type's conversion: 'u64.from(count)'
+extern Name *hashName;     // "hash", what core's Hash trait requires: 'key.hash(h)'
+extern Name *hashTraitName;  // "Hash", core's trait of a value that feeds a hasher
+extern Name *hasherName;     // "Hasher", core's hasher, the algorithm a Hash feeds
+extern Name *writeU64Name;   // "writeU64", the Hasher method an integer's hash feeds its bits through
 
 // The contextual words of a '<-' list's entries, 'n of x' and 'fill x': names
 // everywhere else, read as words only on the right of '<-' (parseEntry); and

@@ -106,7 +106,6 @@ int itypeThreadBound(INode *type, int *settled);
 // vouched for
 typedef enum {
     StaticOff,          // Not allowed: every borrow binds its thread
-    StaticNever,        // As StaticOff, where a diagnostic is not to offer the way (a behaviour's reply)
     StaticVouched,      // A generic's parameter bounded by ''static': the call is checked to hand it only global borrows
     StaticWritten       // A signature's own types: a borrow qualifies only where it is written ''static'
 } StaticBorrow;

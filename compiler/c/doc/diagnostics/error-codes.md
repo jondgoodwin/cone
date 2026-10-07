@@ -257,6 +257,15 @@ whose type holds an atomic value anywhere inline, whose remedy is a global.
 `is Copy` beside the marker is `ErrorCopyMove`, the code for every type that
 moves and says Copy.
 
+Core's `Hash` takes three, one per remedy. `ErrorHashNoEq` is a type declaring
+`Hash` with no `==`, whose remedy is to write one, reported on the type.
+`ErrorHashFloat` and `ErrorHashField` are the two fields the compiler cannot
+supply a `hash` over, reported at the field: a float, whose NaN is not equal to
+itself and whose -0 equals 0, so that no hash of its bits agrees with its `==`,
+and a type that is not `Hash`. Both are cured in the type declaring `Hash`, by
+a `hash` of its own that feeds what identifies it, or by leaving the field out
+of the key; the second also by declaring the field's type `Hash`.
+
 A generic's constraints take seven codes. Two are what a clause refuses at an
 instance, and their remedies differ in whose code changes: `ErrorWhereUnmet` is
 an instance of a generic function or type whose arguments do not meet a

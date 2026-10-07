@@ -234,6 +234,64 @@ struct Node is Id {
 		<span class="pre">extends</span> and <span class="pre">is</span> together, in either order:
 		they assert different things.</p>
 
+	<h3 id="hash"><span class="pre">Hash</span>, and the hash the compiler supplies</h3>
+
+	<p>A key of a table, or anything else looked up by what identifies it, says what identifies it
+		by feeding a <span class="pre">Hasher</span>, and the <span class="pre">Hasher</span> turns
+		what was fed into a number. The two are kept apart, as Rust's <span class="pre">Hash</span>
+		and <span class="pre">Hasher</span> are and Swift's <span class="pre">hash(into:)</span>
+		is: a type decides what it feeds, and whatever holds the keys decides the algorithm, so
+		changing the algorithm changes no key type. Both are core's, reached from every module
+		without an import. The trait is</p>
+<pre>
+pub trait Hash {
+  pub fn hash(self &amp;, h &amp;mut Hasher);
+}
+</pre>
+	<p>and the rule that ties it to equality is that if two values are <span class="pre">==</span>
+		they feed a hasher the same things. So a type that declares <span class="pre">is Hash</span>
+		must have a <span class="pre">==</span>, and is refused without one.</p>
+	<p>A <span class="pre">struct</span> that declares <span class="pre">Hash</span> and writes no
+		<span class="pre">hash</span> is given one by the compiler, as <span class="pre">!=</span>
+		is derived from <span class="pre">==</span>: it feeds each field, in the order declared.</p>
+<pre>
+struct Id is Hash {
+  pub slot u32;
+  pub gen u32;
+  pub fn `==`(self, o Id) bool {slot == o.slot and gen == o.gen;}
+}
+
+mut h = Hasher.seeded();
+id.hash(&amp;mut h);          // feeds slot, then gen
+imm number = h.finish();
+</pre>
+	<p>It feeds the fields, never the struct's bytes, because the bytes between fields are
+		undefined. It is refused, at the field, where a field has no hash that agrees with its
+		<span class="pre">==</span>: a float (NaN is not equal to itself and -0 is equal to 0), or any
+		type that is not <span class="pre">Hash</span>, such as a struct that does not declare it, a
+		reference, a slice, a tuple, an array or a pointer. A type that wants such a field in its key
+		writes its own <span class="pre">hash</span>, which feeds what identifies it:</p>
+<pre>
+  pub fn hash(self &amp;, h &amp;mut Hasher) {
+    h.writeU64(u64.from(slot) | (u64.from(gen) &lt;&lt; 32u64));   // two halves, mixed once
+  }
+</pre>
+	<p>Every integer type and <span class="pre">bool</span> is <span class="pre">Hash</span>, feeding
+		its bits; a float is not. A value whose length varies feeds a terminator after its bytes,
+		<span class="pre">h.writeStr(bytes)</span>, which is the bytes then the byte
+		<span class="pre">0xFF</span>, so that where one ends and the next begins is part of
+		what is fed: <span class="pre">("ab", "c")</span> and <span class="pre">("a", "bc")</span>
+		differ as the two parts of one key. A fixed-size run of bytes is
+		<span class="pre">h.writeBytes(bytes)</span>.</p>
+	<p>The <span class="pre">Hasher</span> is a fast hash of the wyhash family: each word fed is
+		xored into its state and multiplied (<a href="refintrinsic.html">mulFold</a>), and bytes go
+		through wyhash itself. <span class="pre">Hasher.seeded()</span> starts it from a seed drawn
+		at random from the operating system once for the process (<span class="pre">processSeed()</span>
+		is that number), so which keys collide is different on every run and no one outside can tell:
+		the defence against keys chosen to collide. <span class="pre">Hasher.withSeed(n)</span> starts
+		it from a seed of your own, and then the same keys give the same numbers on every run and
+		build, for a table whose order must be reproducible.</p>
+
 	<h3 id="self"><span class="pre">Self</span> in a trait</h3>
 
 	<p>Inside a trait, <span class="pre">Self</span> stands for the type complying with it. A

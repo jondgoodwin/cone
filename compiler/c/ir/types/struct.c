@@ -2000,6 +2000,10 @@ void structNameRes(NameResState *pstate, StructNode *node) {
     if (node->flags & (NameResolved | NameResolving))
         return;
     node->flags |= NameResolving;
+    // The integers' and bool's 'hash' names core's Hasher in its signature, so
+    // it is declared as soon as the Hasher is (nbrAddHashMethods)
+    if (coreIsHasher((INode*)node))
+        nbrAddHashMethods(node);
     // An extension's comparison waits until its set is its base's plus its own,
     // below: what the comparison can be is decided by whether any variant in the
     // whole set carries fields.
@@ -3199,6 +3203,97 @@ static void structCheckCopy(StructNode *node) {
             : "%s is declared Copy, but it moves.", name);
 }
 
+// A type declaring core's Hash (Hash is 'pub trait Hash' in core, known by its
+// name and package) has an '==': a hash tells which keys might be equal, and the
+// '==' decides which are. A struct that declares it and writes no 'hash' is
+// given one, as '!=' is derived from '==' and '+=' from '+': the 'hash' that
+// feeds each field, in order, to the hasher. Fields, never the struct's bytes,
+// since padding is undefined and a field's own 'hash' may differ from its bits.
+//
+// Refused where a field has no hash that agrees with its '==': a float (NaN is
+// not equal to itself and -0 is equal to 0), or any type that is not Hash. The
+// body is built resolved against the inherited requirement's parameters, so
+// type check reaches it as it would a written one, and a field of a struct that
+// is itself supplied reaches that struct's own.
+static void structHashCheck(StructNode *node) {
+    if ((node->flags & (TraitType | EnumType)) || node->traits == NULL)
+        return;
+    INode **traitp;
+    uint32_t cnt;
+    StructNode *hashtrait = NULL;
+    for (nodesFor(node->traits, cnt, traitp))
+        if (coreIsHashTrait(*traitp))
+            hashtrait = (StructNode*)*traitp;
+    if (hashtrait == NULL)
+        return;
+    char *name = &node->namesym->namestr;
+    if (namespaceFind(&node->namespace, eqName) == NULL)
+        errorMsgNode((INode*)node, ErrorHashNoEq,
+            "%s declares Hash and has no `==`. A hash only says which keys might be equal; `==` decides which are, so a type that is Hash declares both.",
+            name);
+
+    // Only the requirement's own bodiless clone is filled: a 'hash' the author wrote,
+    // or an extern one, stands
+    INode *binding = namespaceFind(&node->namespace, hashName);
+    if (binding == NULL || binding->tag != FnDclTag)
+        return;
+    FnDclNode *hashfn = (FnDclNode*)binding;
+    if (hashfn->value != NULL || (hashfn->flags & FlagExtern))
+        return;
+
+    // Every field must be one that has a hash agreeing with its '=='
+    int refused = 0;
+    INode **nodesp;
+    for (nodelistFor(&node->fields, cnt, nodesp)) {
+        FieldDclNode *field = (FieldDclNode*)*nodesp;
+        if (field->flags & IsMixin)
+            continue;
+        INode *fldtype = itypeGetTypeDcl(field->vtype);
+        char *fname = &field->namesym->namestr;
+        if (fldtype->tag == FloatNbrTag) {
+            errorMsgNode((INode*)field, ErrorHashFloat,
+                "%s declares Hash and writes no `hash`, and its field %s is %s: a float has no hash that agrees with `==`, since NaN is not equal to itself and -0 is equal to 0. Hash an integer made from it (its bits, or its value rounded) in a `hash` of your own, or leave the float out of the key.",
+                name, fname, itypeName(fldtype));
+            refused = 1;
+        }
+        else if (fldtype->tag == IntNbrTag || fldtype->tag == UintNbrTag)
+            continue;
+        else if (fldtype->tag == StructTag && !(fldtype->flags & (TraitType | EnumType))
+            && genericTypeIs(field->vtype, hashtrait))
+            continue;
+        else {
+            errorMsgNode((INode*)field, ErrorHashField,
+                "%s declares Hash and writes no `hash`, and its field %s is %s, which is not Hash. Declare it Hash, or write a `hash` of your own that feeds what identifies %s.",
+                name, fname, fldtype->tag == PtrTag ? "a pointer" : itypeName(fldtype), name);
+            refused = 1;
+        }
+    }
+
+    // A refused struct gets an empty body, so type check says nothing more of it
+    BlockNode *block = newBlockNode();
+    inodeLexCopy((INode*)block, (INode*)node);
+    hashfn->value = (INode*)block;
+    if (refused)
+        return;
+    FnSigNode *sig = (FnSigNode*)hashfn->vtype;
+    INode *selfparm = nodesGet(sig->parms, 0);
+    INode *hparm = nodesGet(sig->parms, 1);
+    for (nodelistFor(&node->fields, cnt, nodesp)) {
+        FieldDclNode *field = (FieldDclNode*)*nodesp;
+        if (field->flags & IsMixin)
+            continue;
+        // self.field.hash(h)
+        FnCallNode *access = newFnCallLower((INode*)node, newNameUseFromDclNode(selfparm, (INode*)node), 0);
+        access->methfld = (INode*)newMemberUseNode(field->namesym);
+        inodeLexCopy(access->methfld, (INode*)node);
+        FnCallNode *call = newFnCallLower((INode*)node, (INode*)access, 1);
+        call->methfld = (INode*)newMemberUseNode(hashName);
+        inodeLexCopy(call->methfld, (INode*)node);
+        nodesAdd(&call->args, newNameUseFromDclNode(hparm, (INode*)node));
+        nodesAdd(&block->stmts, (INode*)call);
+    }
+}
+
 // Check a laid-out type's members: its methods, static functions and statics,
 // then every overload set it declares, then what the traits taken into it require
 // of those members. Every layout the program has begun is finished by now.
@@ -3568,6 +3663,9 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
     structCheckIsaFields(node);
     // And an atomic value is one field an atomic operation acts on
     structAtomicValueCheck(node, 1);
+    // And a type declaring core's Hash has an '==', and the 'hash' of a struct
+    // that writes none is supplied from its fields
+    structHashCheck(node);
 
     // Use inference rules to decide if struct is a MoveType
     // based on whether its fields are, and whether it supports the .final method.

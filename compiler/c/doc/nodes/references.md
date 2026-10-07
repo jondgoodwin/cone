@@ -489,11 +489,10 @@ the whole program is not in the type, which instancing erases, so the mode says
 who vouches: `StaticVouched` for a generic's parameter bounded `+ 'static`
 (`genericStaticHow`; each call is held to hand it only global borrows, by
 `lifePartStatic`), `StaticWritten` for a signature that writes the borrow
-`'static`, the only form an actor's behaviour or initializer takes. A struct's
+`'static`, the only form an actor's behaviour or initializer takes, in its
+parameters and its reply. A struct's
 remembered answer is the strict one: a mode other than `StaticOff` trusts its
-"not bound", asks again where it was "bound", and remembers neither. A
-behaviour's reply is asked as `StaticNever`, `StaticOff` with a diagnostic that
-does not offer the way.
+"not bound", asks again where it was "bound", and remembers neither.
 
 ## Lock permissions
 

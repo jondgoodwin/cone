@@ -318,6 +318,37 @@ static void nbrBitMethods(NbrNode *nbrtype) {
     }
 }
 
+// The 'hash' every integer type and bool has, which core's Hash trait requires
+// of a type: 'x.hash(h)' feeds the value's bits to the hasher. The compiler
+// grants those types Hash (genericTypeIs) and this gives the grant its method,
+// so that a generic function's 'key.hash(h)' on a key of one of them has
+// something to call. Made once core's Hasher is name resolved, since its
+// signature names it. A call is rewritten to the Hasher's 'writeU64' at type
+// check (fnCallHashNumber), so the method has no body of its own. Floats have
+// none: NaN is not equal to itself and -0 is equal to 0.
+void nbrAddHashMethods(StructNode *hasher) {
+    NbrNode *types[] = {boolType, u8Type, u16Type, u32Type, u64Type, usizeType,
+        i8Type, i16Type, i32Type, i64Type, isizeType};
+    Name *self = nametblFind("self", 4);
+    Name *hname = nametblFind("h", 1);
+    for (size_t i = 0; i < sizeof(types) / sizeof(types[0]); ++i) {
+        NbrNode *nbrtype = types[i];
+        if (iNsTypeFindFnField((INsTypeNode*)nbrtype, hashName))
+            return;     // already given: the compile met core's Hasher once
+        NameUseNode *selftype = newNameUseNode(nbrtype->namesym);
+        selftype->dclnode = (INode*)nbrtype;
+        NameUseNode *hashertype = newNameUseNode(hasherName);
+        hashertype->dclnode = (INode*)hasher;
+        RefNode *mutref = newRefNodeFull(RefTag, NULL, borrowRef, newPermUseNode(mutPerm), (INode*)hashertype);
+        FnSigNode *sig = newFnSigNode();
+        sig->rettype = (INode*)newVoidNode();
+        nodesAdd(&sig->parms, (INode*)newVarDclFull(self, VarDclTag, (INode*)selftype, newPermUseNode(immPerm), NULL));
+        nodesAdd(&sig->parms, (INode*)newVarDclFull(hname, VarDclTag, (INode*)mutref, newPermUseNode(immPerm), NULL));
+        iNsTypeAddFn((INsTypeNode*)nbrtype, newFnDclNode(hashName, FlagMethFld | FlagPub,
+            (INode*)sig, (INode*)newIntrinsicNode(HashNbrIntrinsic)));
+    }
+}
+
 // Declare built-in number types and their names
 void stdNbrInit(int ptrsize) {
     boolType = newNbrTypeNode("bool", UintNbrTag, 1);

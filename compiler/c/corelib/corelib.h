@@ -108,4 +108,8 @@ void stdlibInit(int ptrsize);
 void keywordInit();
 void stdNbrInit(int ptrsize);
 
+// Give every integer type and bool the method core's Hash requires of them,
+// 'hash(self, h &mut Hasher)', once core's Hasher is name resolved
+void nbrAddHashMethods(StructNode *hasher);
+
 #endif
