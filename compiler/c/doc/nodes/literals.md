@@ -238,7 +238,7 @@ crosses threads under the static-borrow rule. It is a value, a fat `{ptr, usize}
 built from the address of its constant and `strlen`; see "A literal and its
 neighbours" below for what it converts to.
 
-**A literal and its neighbours.** Four conversions meet a literal, none of them
+**A literal and its neighbours.** Five conversions meet a literal, none of them
 the literal's own business but each decided from its tag:
 
 - `&str` to `&[]u8`, any `&str` and not only a literal: `arrayRefMatchesRef` answers
@@ -257,6 +257,13 @@ the literal's own business but each decided from its tag:
   type wanted, its region and permission that type's. Only the literal node
   itself is taken this way; a variable or a call of type `&str` is not, and
   needs `new`.
+- A literal wanted as a struct that declares a static function
+  `fromLiteral(text &str) Self` (`slitFromLiteralFn`): the node becomes the call
+  of it on the literal, built lowered (`newFnCallLower`, `fnCallFinalizeArgs`)
+  since a coercion has no type check state to check a call with. That is how
+  collections' `String` takes a literal wherever one is wanted. It is the type's
+  statement that a literal may stand for it, so the function must be public and
+  the type not generic; a literal is the only thing taken, as for an owner.
 - A written borrow of a literal, `&"text"` or `&[]"text"`, retypes the literal as
   the array (`borrowTypeCheck`), so the borrow is a reference to it as before:
   the idiom `&"text" as *u8` and the slice `&[]"text"`.

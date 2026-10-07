@@ -1199,7 +1199,7 @@ int fnCallLowerMethod(TypeCheckState *pstate, FnCallNode *callnode) {
     // tried, and selection, borrowing and the permission checks then see the
     // receiver the method was declared for
     if (folded) {
-        structFoldReceiver((StructNode*)objdereftype, methsym, &callnode->objfn, (INode*)callnode);
+        structFoldReceiver(pstate, (StructNode*)objdereftype, methsym, &callnode->objfn, (INode*)callnode);
         obj = callnode->objfn;
     }
 
@@ -1662,6 +1662,86 @@ static void fnCallLowerRefCompare(TypeCheckState *pstate, FnCallNode *node) {
     fnCallLowerMethod(pstate, node);
 }
 
+// The text a receiver reaches, through any references: 'str' itself, or a type
+// that lends it (structLentBody). NULL for anything else.
+static StructNode *fnCallTextOf(INode *objtype) {
+    for (;;) {
+        if (objtype->tag == RefTag)
+            objtype = itypeGetTypeDcl(((RefNode*)objtype)->vtexp);
+        else
+            break;
+    }
+    if (objtype == (INode*)strTypeDcl)
+        return strTypeDcl;
+    if (objtype->tag == StructTag && structLentBody((StructNode*)objtype) == strTypeDcl)
+        return (StructNode*)objtype;
+    return NULL;
+}
+
+// A range borrowed from text, '&s[a..b]', '&s[a..]' or '&s[a...b]', is a call
+// of the text's 'slice', 'sliceFrom' or 'sliceThrough' on what is being
+// indexed: the method checks the bounds fall between characters and gives a
+// '&str' that keeps the text borrowed, as any method's borrow does. Answers 0,
+// changing nothing, where the receiver is not text.
+//
+// The receiver is the borrow the parser put around it, already checked
+// (borrowReassocIndex). That borrow is dropped: the method borrows its receiver
+// itself, as 'x.slice(a, b)' written out would. What it borrowed is the place
+// itself, or, where the place is reached through a reference, the reference
+// ('s' for a '&str' s: the borrow dereferenced it); a temporary the borrow
+// hid in a local of the statement (the 's.view()' of '&s.view()[1..]') is taken
+// as the expression it was, the local never declared.
+static int fnCallLowerStrRange(TypeCheckState *pstate, FnCallNode *node) {
+    if ((node->flags & (FlagIndex | FlagRange | FlagBorrow)) != (FlagIndex | FlagRange | FlagBorrow)
+        || node->methfld != NULL || node->objfn == NULL || node->objfn->tag != BorrowTag)
+        return 0;
+    RefNode *borrow = (RefNode*)node->objfn;
+    if (!(borrow->flags & FlagSuffix) || fnCallTextOf(iexpGetTypeDcl(borrow->vtexp)) == NULL)
+        return 0;
+    INode *recv = borrow->vtexp;
+    if (recv->tag == DerefTag)
+        recv = ((StarNode*)recv)->vtexp;
+    node->objfn = varDclTempValue(pstate, recv);
+    // A reference to a reference to text is read through to the reference to it
+    for (;;) {
+        INode *rtype = iexpGetTypeDcl(node->objfn);
+        if (rtype->tag != RefTag || itypeGetTypeDcl(((RefNode*)rtype)->vtexp)->tag != RefTag)
+            break;
+        derefInject(&node->objfn);
+    }
+    Name *meth = node->args->used == 1 ? nametblFind("sliceFrom", 9)
+        : (node->flags & FlagRangeIncl) ? nametblFind("sliceThrough", 12) : nametblFind("slice", 5);
+    node->methfld = (INode*)newMemberUseNode(meth);
+    node->flags &= ~(FlagIndex | FlagBorrow | FlagRange | FlagRangeIncl);
+    if (fnCallLowerMethod(pstate, node) == 0) {
+        errorMsgNode((INode*)node, ErrorNoMeth, "No method named %s found that matches the range.", &meth->namestr);
+        node->vtype = errorType;
+    }
+    return 1;
+}
+
+// '==', '!=' and the orderings between two kinds of text -- 'str' through any
+// reference or owner, and a type that lends one -- compare the bytes, as Rust's
+// cross-type PartialEq does: a lending operand (a String) is replaced by the
+// borrow it lends, 'a.view()', so the comparison is between two texts, whether
+// the operands are values or references.
+static void fnCallLentOperands(TypeCheckState *pstate, FnCallNode *node) {
+    Name *op = fnCallOperatorName(node);
+    if (op == NULL || !fnCallIsValueCompare(op) || node->args == NULL || node->args->used != 1)
+        return;
+    INode **argp = &nodesGet(node->args, 0);
+    if (!isExpNode(node->objfn) || !isExpNode(*argp))
+        return;
+    StructNode *left = fnCallTextOf(iexpGetTypeDcl(node->objfn));
+    StructNode *right = fnCallTextOf(iexpGetTypeDcl(*argp));
+    if (left == NULL || right == NULL || (left == strTypeDcl && right == strTypeDcl))
+        return;
+    if (left != strTypeDcl)
+        structLendView(pstate, left, &node->objfn, (INode*)node);
+    if (right != strTypeDcl)
+        structLendView(pstate, right, argp, (INode*)node);
+}
+
 // The receiver is a plain reference to a trait (or union) and the name it calls
 // is a method rather than a field. Return 0 when this is not that case.
 //
@@ -1859,6 +1939,11 @@ static int fnCallNeFromEq(FnCallNode *node, INode *objtype) {
     INode *held = objtype->tag == RefTag ? itypeGetTypeDcl(((RefNode*)objtype)->vtexp) : objtype;
     if (held->tag == ArrayTag && argtype && argtype->tag == ArrayRefTag)
         objtype = argtype;
+    // Text against a slice of bytes is compared as the slice it converts to
+    // (fnCallArrayAsSlice), which '!=' derives from '==' as for two slices
+    if (objtype->tag == RefTag && argtype && argtype->tag == ArrayRefTag
+        && itypeGetTypeDcl(((RefNode*)objtype)->vtexp) == (INode*)strTypeDcl)
+        return 1;
     // A reference against a value is refused under the '!=' that was written,
     // not under a derived '=='
     if (objtype->tag == RefTag && argtype && argtype->tag != RefTag)
@@ -2397,7 +2482,7 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
                     // A folded macro method expands with the field it was
                     // folded through as its self, as a folded method runs with it
                     if (folded)
-                        structFoldReceiver((StructNode*)rcvtype, membersym, &node->objfn, (INode*)node);
+                        structFoldReceiver(pstate, (StructNode*)rcvtype, membersym, &node->objfn, (INode*)node);
                     macroMethodTypeCheck(pstate, nodep, (MacroDclNode*)found);
                     return;
                 }
@@ -2587,6 +2672,9 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
     if (!fnCallTypeNullOperands(node))
         return;
 
+    // Text of different kinds compared: a lending operand is its borrow
+    fnCallLentOperands(pstate, node);
+
     // Handle when method operator requires an lval
     // This is true for ++, --, <- and operator-equals (+=)
     INode *objtype = iexpGetTypeDcl(node->objfn);
@@ -2631,6 +2719,10 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
         *((INode**)nodep) = (INode*)derivedne;
     }
 
+    // A range borrowed from text, '&s[a..b]', is a call of the text's 'slice'
+    if ((node->flags & FlagRange) && fnCallLowerStrRange(pstate, node))
+        return;
+
     // A range index slices an array or a slice, which fnCallArrIndex does. Any
     // other receiver is refused here, before its '[]' method could be handed the
     // range's two ends as though they were two indices.
@@ -2642,6 +2734,8 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
         errorMsgNode((INode*)node, ErrorBadIndex,
             iexpGetTypeDcl(held)->tag == PtrTag
                 ? "A slice of part of what a pointer points at is not implemented; mem.sliceFromParts makes one"
+                : fnCallTextOf(iexpGetTypeDcl(held)) != NULL
+                ? "A range of text makes a part of it only when borrowed, as &s[a..b]: the text itself has no size to hold by value"
                 : "A range may only index an array or a slice");
         node->vtype = errorType;
         return;

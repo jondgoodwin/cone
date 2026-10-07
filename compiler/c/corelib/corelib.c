@@ -20,6 +20,7 @@ INode *borrowRef;
 INode *neverType;
 StructNode *arrayTypeDcl;
 StructNode *strTypeDcl;
+static int strTypeAdopted;
 PermNode *uniPerm;
 PermNode *mutPerm;
 PermNode *immPerm;
@@ -109,6 +110,14 @@ static StructNode *newBuiltinTrait(Name *name) {
     trait->flags |= TraitType | FlagPub | NameResolved | TypeChecked;
     name->node = (INode*)trait;
     return trait;
+}
+
+StructNode *stdlibAdoptStr(Name *name, ModuleNode *mod) {
+    if (name != strTypeName || strTypeAdopted || mod == NULL || mod->namesym != nametblFind("core", 4))
+        return NULL;
+    strTypeAdopted = 1;
+    strTypeDcl->flags &= ~(NameResolved | TypeChecked);
+    return strTypeDcl;
 }
 
 int corelibIsBuiltinTrait(INode *node) {

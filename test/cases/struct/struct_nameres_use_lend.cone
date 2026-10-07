@@ -1,0 +1,72 @@
+// What a type body's 'use T via m' may lend, and what it may admit of it.
+//
+// Name resolution stage: a lent body is folded into the type's dictionary while
+// the type is resolved, as a sibling is, so everything here is reported there.
+// A name-resolution diagnostic stops the compile before type checking. The
+// clause's grammar is struct_parse_fold's; this is the other side of
+// struct_use_lend, which is what a lend that works does.
+
+mod struct_nameres_use_lend;
+
+trait Shape {
+  pub fn area(self &) i32;
+}
+
+enum Event {
+  tag i32;
+  pub struct Click { pub x i32; }
+}
+
+// The lending method must be one the type declares: a name nothing in the type
+// binds, and one that is a field
+struct NoLender {
+  pub text &str;
+  use str via view;              //~ ErrorLend "NoLender lends str through view, and NoLender declares no method of that name"
+}
+
+struct FieldLender {
+  pub text &str;
+  use str via text;              //~ ErrorLend "FieldLender lends str through text, and FieldLender declares no method of that name"
+}
+
+// What is lent is the body of a struct: an enum's variant set is its identity,
+// a trait has no body of its own, and a type does not lend itself
+struct LendsEnum {
+  pub text &str;
+  pub fn view(self &) &str { text; }
+  use Event via view;            //~ ErrorLend "Event is an enum"
+}
+
+struct LendsTrait {
+  pub text &str;
+  pub fn view(self &) &str { text; }
+  use Shape via view;            //~ ErrorLend "Shape is an abstraction"
+}
+
+struct LendsItself {
+  pub text &str;
+  pub fn view(self &) &str { text; }
+  use LendsItself via view;      //~ ErrorLend "LendsItself cannot lend itself"
+}
+
+// A name the type declares is its own, and the fold of the same name is refused
+// unless 'but' leaves it out
+struct Collides {
+  pub text &str;
+  pub fn view(self &) &str { text; }
+  pub fn len(self &) usize { 0usize; }
+  use str via view;              //~ ErrorDupName "len is already a name of Collides"
+}
+
+// A name the body has not got, listed or left out
+struct NoSuchName {
+  pub text &str;
+  pub fn view(self &) &str { text; }
+  use str via view cosine;       //~ ErrorNoMbr "has no member named cosine to fold in"
+}
+
+struct NoSuchExclusion {
+  pub text &str;
+  pub fn view(self &) &str { text; }
+  use str via view but cosine;   //~ ErrorNoMbr "has no member named cosine to leave out"
+}

@@ -413,6 +413,19 @@ static FieldDclNode *parseUseSibling(ParseState *parse) {
         lexNextToken();
     }
     use->vtype = parseTypeName(parse);
+    // 'use str via view;' folds in the body this type lends: the type's own
+    // 'view' method gives a borrow of a 'str', and the members of 'str' are
+    // names of this type, each reached through that borrow. 'via' is read as
+    // the connecting word only here, so it stays a name everywhere else.
+    if (lexIsToken(IdentToken) && lex->val.ident == nametblFind("via", 3)) {
+        lexNextToken();
+        if (lexIsToken(IdentToken)) {
+            use->via = lex->val.ident;
+            lexNextToken();
+        }
+        else
+            errorMsgLex(ErrorNoIdent, "Expected the name of the method this type lends the body through, as in 'use str via view;'");
+    }
     parseUseAdmits(parse, fold,
         "A type body's 'use' brings in every member of what it names already; '*' says nothing more.");
     return use;
@@ -732,7 +745,11 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
     int named = lexIsToken(IdentToken);
     if (!named)
         errorMsgLex(ErrorNoIdent, "Expected a name for the type");
-    strnode = newStructNode(named ? lex->val.ident : anonName);
+    // core's declaration of 'str' is not a new struct but the compiler's own,
+    // given its methods (stdlibAdoptStr)
+    strnode = named ? stdlibAdoptStr(lex->val.ident, parse->mod) : NULL;
+    if (strnode == NULL)
+        strnode = newStructNode(named ? lex->val.ident : anonName);
     strnode->tag = tag;
     strnode->flags |= strflags;
     parse->typenode = (INsTypeNode *)strnode;

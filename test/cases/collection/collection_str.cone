@@ -1,0 +1,118 @@
+// The methods of 'str', the body of text, written once in core and reached from
+// a literal, a '&str', and an owner of one ('So[str]', 'Rc[str]'); a part of the
+// text taken with a range, '&s[a..b]'; and '==' and the orderings between the
+// kinds of text, by byte. (collections' String reaches the same methods through
+// a lent body, and struct_use_lend is that fold; the String is the package's.)
+//
+// "héllo" is h, é (the two bytes C3 A9), l, l, o: 6 bytes, with a character
+// starting at 0, 1, 3, 4 and 5 and none at 2. Each printed value was checked by
+// hand against the literals.
+
+mod collection_str;
+
+import stdio use *;
+
+fn show(label &str, n i64) {
+  printStr(label);
+  printStr(" ");
+  printInt(n);
+  printStr("\n");
+}
+
+fn flag(b bool) i64 { if b {1;} else {0;}; }
+
+fn foundAt(found Option[usize]) i64 {
+  match found {
+    case imm at Some {i64.from(at.value);}
+    case is None {-1;}
+  }
+}
+
+fn start() usize { 1usize; }
+
+// Bounds read from fields and added, in a method of a type of the test's own
+struct Cursor {
+  pub at usize;
+  pub width usize;
+  pub fn part(self &, s &str) &str { &s[at .. at + width]; }
+}
+
+// The text through a parameter, and a part of what was passed
+fn tail(s &str) &str { &s[2usize..]; }
+
+fn main() {
+  imm h = "héllo";
+
+  // Sizes and bytes
+  show("len", i64.from(h.len));
+  show("isEmpty", flag("".isEmpty()));
+  show("not empty", flag(h.isEmpty()));
+  show("byte 0", i64.from(h[0usize]));
+  show("byte 1", i64.from(h[1usize]));
+  show("bytes() len", i64.from(h.bytes().len));
+  show("boundary 1", flag(h.isCharBoundary(1usize)));
+  show("boundary 2", flag(h.isCharBoundary(2usize)));
+  show("boundary 6", flag(h.isCharBoundary(6usize)));
+  show("boundary 7", flag(h.isCharBoundary(7usize)));
+
+  // Searching: 'llo' starts after h (1) and é (2), at byte 3
+  show("startsWith", flag(h.startsWith("hé")));
+  show("endsWith", flag(h.endsWith("llo")));
+  show("endsWith longer", flag("lo".endsWith("llo")));
+  show("find", foundAt(h.find("llo")));
+  show("find none", foundAt(h.find("z")));
+  show("find empty", foundAt(h.find("")));
+  show("findFrom", foundAt("abcabc".findFrom("bc", 2usize)));
+  show("contains", flag(h.contains("ll")));
+
+  // ASCII whitespace at the ends
+  imm padded = " \t héllo \r\n";
+  show("padded len", i64.from(padded.len));
+  show("trim", i64.from(padded.trim().len));
+  show("trimStart", i64.from(padded.trimStart().len));
+  show("trimEnd", i64.from(padded.trimEnd().len));
+
+  // Ranges: bytes 0 up to 3 are h and é; from 3 are llo; 1 through 2 is é
+  show("slice", flag(&h[0usize..3usize] == "hé"));
+  show("sliceFrom", flag(&h[3usize..] == "llo"));
+  show("sliceThrough", flag(&h[1usize...2usize] == "é"));
+  show("through a parameter", flag(tail("xyz") == "z"));
+  imm r = &h;
+  show("through a reference", flag(&r[3usize..] == "llo"));
+  show("of a result", flag(&h.trim()[3usize..] == "llo"));
+  show("of a part", flag(&(&h[3usize..])[1usize..] == "lo"));
+  // Bounds that are computed, in a method of a struct that calls through a reference
+  show("computed bounds", flag(&h[start()..start() + 2usize] == "é"));
+  show("computed through a field", flag(new Cursor(1usize, 2usize).part(h) == "é"));
+  // A part of a temporary held in a variable: the temporary is the trimmed text
+  imm held = &padded.trim()[3usize..];
+  show("held", flag(held == "llo"));
+  imm heldFrom = &padded.trimStart()[1usize...2usize];
+  show("held through", flag(heldFrom == "é"));
+
+  // Owners reach the methods, and compare
+  imm owned So[str] = "héllo";
+  imm shared Rc[str] = "héllo";
+  show("So len", i64.from(owned.len));
+  show("Rc find", foundAt(shared.find("llo")));
+  show("So == Rc", flag(owned == shared));
+  show("So == &str", flag(owned == h));
+  show("&str == Rc", flag(h == shared));
+  show("So == literal", flag(owned == "héllo"));
+  show("literal == So, unequal", flag("hello" == owned));
+  show("So range", flag(&owned[3usize..] == "llo"));
+
+  // By byte, which is the order of the code points
+  show("<", flag("abc" < "abd"));
+  show("< prefix", flag("ab" < "abc"));
+  show("<=", flag("abc" <= "abc"));
+  show(">", flag("b" > "abc"));
+  show(">=", flag("abc" >= "abd"));
+  show("capital", flag("Z" < "a"));
+  show("é past z", flag("é" > "z"));
+  show("日 past é", flag("日" > "é"));
+  show("So < Rc", flag(owned < shared));
+  show("compare", i64.from("abc".compare("abd")));
+  show("compare after", i64.from("b".compare("abc")));
+  show("compare equal", i64.from("abc".compare("abc")));
+}

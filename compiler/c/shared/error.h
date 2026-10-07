@@ -529,6 +529,9 @@ enum ErrorCode {
     ErrorHashField = 1331,      // A struct declaring Hash with no hash of its own has a field whose type is not Hash, so the compiler has nothing to feed for it
     ErrorHashNoEq = 1332,       // A type declaring Hash has no '==': a hash is only meaningful against the equality that decides which keys are the same
 
+    // Lending a body: a type body's 'use str via view'
+    ErrorLend = 1333,           // A 'use T via m' that cannot lend: m is no method the type declares, T is an enum or a trait or the type itself, or it folds a member of T that is not a method
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name

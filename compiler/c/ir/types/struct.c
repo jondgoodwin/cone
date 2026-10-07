@@ -680,7 +680,16 @@ static void structFoldReceiverWalk(StructNode *type, Name *name, INode **objp, I
 // that is itself a reference is the receiver as it stands. A value receiver
 // stays a value, as the path written out would, and reaches only what a value
 // reaches: a method taking self by value. The fold adds no rule of its own.
-void structFoldReceiver(StructNode *type, Name *name, INode **objp, INode *lexnode) {
+static FieldDclNode *structLendUseOf(StructNode *type, Name *name);
+static void structLendReceiver(TypeCheckState *pstate, FieldDclNode *use, INode **objp, INode *lexnode);
+void structFoldReceiver(TypeCheckState *pstate, StructNode *type, Name *name, INode **objp, INode *lexnode) {
+    // A name folded from a body the type lends: the receiver becomes the borrow
+    // of the body the type's lending method gives
+    FieldDclNode *lend = structLendUseOf(type, name);
+    if (lend) {
+        structLendReceiver(pstate, lend, objp, lexnode);
+        return;
+    }
     INode *objtype = iexpGetTypeDcl(*objp);
     structFoldReceiverWalk(type, name, objp, lexnode);
     if (objtype->tag == RefTag) {
@@ -1637,6 +1646,171 @@ static void structUseSiblingItem(StructNode *node, StructNode *sib, AliasDclNode
         nametblHookNode(alias->namesym, (INode*)alias);
 }
 
+// ---- 'use T via m': folding the body a type lends ------------------------
+//
+// A type that lends a borrow of a body through one of its methods -- a String's
+// 'view' gives a '&str' -- may fold the body's methods in as its own names:
+// 'use str via view;'. Like a field's fold it adds names and no representation,
+// and a call of a folded name reaches the method with its receiver shifted, but
+// the shift is a call of the lending method rather than the access to a field:
+// 'name.len' is 'name.view().len'. The body's methods are written once, on the
+// body, and every owner or borrow of the lending type reaches them as it
+// reaches the type's own.
+
+// The 'use' node of the lend that admits this name, or NULL when no lend of the
+// type does
+static FieldDclNode *structLendUseOf(StructNode *type, Name *name) {
+    if (type->siblings == NULL)
+        return NULL;
+    INode **usep;
+    uint32_t usecnt;
+    for (nodesFor(type->siblings, usecnt, usep)) {
+        FieldDclNode *use = (FieldDclNode*)*usep;
+        if (use->via == NULL || use->fold == NULL)
+            continue;
+        INode **itemp;
+        uint32_t itemcnt;
+        for (nodesFor(use->fold->items, itemcnt, itemp)) {
+            if (((AliasDclNode*)*itemp)->namesym == name)
+                return use;
+        }
+    }
+    return NULL;
+}
+
+// The body a type lends and folds, or NULL when it lends none
+StructNode *structLentBody(StructNode *type) {
+    if (type->siblings == NULL)
+        return NULL;
+    INode **usep;
+    uint32_t usecnt;
+    for (nodesFor(type->siblings, usecnt, usep)) {
+        FieldDclNode *use = (FieldDclNode*)*usep;
+        if (use->via != NULL && use->vtype->tag != FnCallTag && isTypeNode(use->vtype)) {
+            INode *dcl = itypeGetTypeDcl(use->vtype);
+            if (dcl && dcl->tag == StructTag)
+                return (StructNode*)dcl;
+        }
+    }
+    return NULL;
+}
+
+// The method a type lends its body through
+Name *structLentVia(StructNode *type) {
+    if (type->siblings == NULL)
+        return NULL;
+    INode **usep;
+    uint32_t usecnt;
+    for (nodesFor(type->siblings, usecnt, usep)) {
+        FieldDclNode *use = (FieldDclNode*)*usep;
+        if (use->via != NULL)
+            return use->via;
+    }
+    return NULL;
+}
+
+// Rewrite the receiver of a call to a method the type folds from a lent body:
+// '*objp' becomes the call of the lending method on it, whose result, the
+// borrow of the body, is the receiver the method was declared for
+static void structLendReceiver(TypeCheckState *pstate, FieldDclNode *use, INode **objp, INode *lexnode) {
+    FnCallNode *view = newFnCallNode(*objp, 0);
+    inodeLexCopy((INode*)view, lexnode);
+    view->methfld = (INode*)newMemberUseNode(use->via);
+    inodeLexCopy(view->methfld, lexnode);
+    // The receiver is checked already, so the call is lowered, not checked
+    if (fnCallLowerMethod(pstate, view) != 1)
+        view->vtype = errorType;
+    *objp = (INode*)view;
+}
+
+// '*objp', a value or a reference to a type that lends a body, becomes the
+// borrow of the body that type's lending method gives
+void structLendView(TypeCheckState *pstate, StructNode *type, INode **objp, INode *lexnode) {
+    Name *via = structLentVia(type);
+    if (via == NULL)
+        return;
+    FieldDclNode lend;
+    lend.via = via;
+    structLendReceiver(pstate, &lend, objp, lexnode);
+}
+
+// Expand one item of a lent body's fold: bind its target in the body and enter
+// it in this type's namespace as an alias. Only a method, an overload set or a
+// macro method of the body folds: a field is not reached through a borrow of
+// the whole, and a static has no value to lend.
+static void structLendItem(StructNode *node, StructNode *body, AliasDclNode *alias, int hook) {
+    NameUseNode *target = (NameUseNode*)alias->target;
+    Name *srcname = target->namesym;
+    INode *found = namespaceFind(&body->namespace, srcname);
+    if (found == NULL) {
+        errorMsgNode((INode*)alias, ErrorNoMbr, "%s has no member named %s to fold in.",
+            &body->namesym->namestr, &srcname->namestr);
+        return;
+    }
+    if (srcname == finalName || srcname == cloneName) {
+        errorMsgNode((INode*)alias, ErrorBadFold, "%s belongs to %s's own values' lifecycle, so it does not fold.",
+            &srcname->namestr, &body->namesym->namestr);
+        return;
+    }
+    if (inodeIsPrivate(found)) {
+        errorMsgNode((INode*)alias, ErrorNotPublic, "%s is private to %s, so it does not fold.",
+            &srcname->namestr, &body->namesym->namestr);
+        return;
+    }
+    INode *dcl = aliasDclResolve(found);
+    if (dcl == NULL)
+        return;
+    if ((dcl->tag != FnDclTag && dcl->tag != FnOverloadDclTag && dcl->tag != MacroDclTag) || !inodeIsMember(dcl)) {
+        errorMsgNode((INode*)alias, ErrorLend,
+            "%s is not a method of %s: only methods fold from a body that is lent, since the body is reached through a borrow of it.",
+            &srcname->namestr, &body->namesym->namestr);
+        return;
+    }
+    target->dclnode = dcl;
+    INode *prior = namespaceAdd(&node->namespace, alias->namesym, (INode*)alias);
+    if (prior) {
+        errorMsgNode((INode*)alias, ErrorDupName,
+            "%s is already a name of %s. A folded name must be unique: rename it with 'as', or leave it out with 'but'.",
+            &alias->namesym->namestr, &node->namesym->namestr);
+        return;
+    }
+    if (hook)
+        nametblHookNode(alias->namesym, (INode*)alias);
+}
+
+// Expand a type-body 'use T via m' (see above). The lending method must be one
+// this type declares, and the body a struct complete before this type is.
+static void structLendExpand(StructNode *node, FieldDclNode *use, StructNode *body, int hook) {
+    FoldClause *fold = use->fold;
+    if (body->flags & EnumType) {
+        errorMsgNode(fold->at, ErrorLend, "%s is an enum, and its variant set is its identity rather than a body to lend.",
+            &body->namesym->namestr);
+        return;
+    }
+    if (body->flags & TraitType) {
+        errorMsgNode(fold->at, ErrorLend, "%s is an abstraction, and a fold reaches members a body has.",
+            &body->namesym->namestr);
+        return;
+    }
+    if (body == node) {
+        errorMsgNode(fold->at, ErrorLend, "%s cannot lend itself.", &node->namesym->namestr);
+        return;
+    }
+    INode *lender = namespaceFind(&node->namespace, use->via);
+    if (lender == NULL || !(lender->tag == FnDclTag || lender->tag == FnOverloadDclTag) || !(lender->flags & FlagMethFld)) {
+        errorMsgNode(fold->at, ErrorLend,
+            "%s lends %s through %s, and %s declares no method of that name.",
+            &node->namesym->namestr, &body->namesym->namestr, &use->via->namestr, &node->namesym->namestr);
+        return;
+    }
+    if (fold->star)
+        foldStarItems(&body->namespace, body->namesym, fold, FoldAdmitMembers);
+    INode **itemp;
+    uint32_t cnt;
+    for (nodesFor(fold->items, cnt, itemp))
+        structLendItem(node, body, (AliasDclNode*)*itemp, hook);
+}
+
 // Expand one type-body 'use' into this type's namespace. Nothing happens while
 // the sibling is not a declaration yet; the clause is then expanded when the
 // instance is type checked.
@@ -1651,6 +1825,10 @@ static void structUseSiblingExpand(StructNode *node, FieldDclNode *use, int hook
     if (sib->tag == StructTag && !(sib->flags & NameResolved) && sib != node) {
         errorMsgNode(fold->at, ErrorCircular, "A fold needs %s complete, and %s is not complete until %s is.",
             &sib->namesym->namestr, &sib->namesym->namestr, &node->namesym->namestr);
+        return;
+    }
+    if (use->via) {
+        structLendExpand(node, use, sib, hook);
         return;
     }
     if (!structUseSiblingEligible(node, sib, fold->at))

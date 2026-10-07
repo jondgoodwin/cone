@@ -120,4 +120,9 @@ Nodes *varDclExtendEnd(TypeCheckState *pstate, VarDclExtend *ext);
 // such a statement.
 int varDclExtendTemp(TypeCheckState *pstate, INode **slot);
 
+// The expression a hidden local was made of, when 'node' names one made in this
+// statement; else 'node'. For a use that takes the temporary's value as it
+// stands instead of borrowing the local, which is then never declared.
+INode *varDclTempValue(TypeCheckState *pstate, INode *node);
+
 #endif

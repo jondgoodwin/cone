@@ -497,23 +497,54 @@ pub struct DequeItems['a, T] {
 
 // -------- String --------
 
-// An owned, growable run of bytes: text, usually UTF-8, though nothing here
-// looks at more than bytes. It is a List[u8] and no more, so it lives, moves
-// and dies as a list does. A string literal is a '&[]u8', not a String; every
-// method that reads text takes a '&[]u8', which a literal is and which 'view()'
-// gives of a String, so 's.startsWith("import")' and 'a.equals(b.view())'.
+// An owned, growable string: text, UTF-8 by convention, though the methods
+// that change it look at no more than bytes. It is a List[u8] and one spare
+// byte, so it lives, moves and dies as a list does. Its block always has a NUL
+// after the bytes (which the length leaves out), rewritten by each change, so
+// that C can be handed its bytes with no copy ('cstr'); a String that holds
+// nothing has no block at all.
+//
+// It lends a '&str', its 'view()', and folds the methods of 'str' in as its
+// own (the 'use' line below): 's.trimStart()', 's.isCharBoundary(i)', 's <
+// t', each is written once on 'str'. A literal is a '&str', and wherever a
+// String is wanted a literal is copied into one ('fromLiteral'), so
+// 'imm s String = "core"' and 'names.push("core")'. The methods below that
+// take text take a '&[]u8', which a '&str' converts to; the ones that are also
+// 'str's keep these spellings, left out of the fold.
 pub struct String is ShapeChanging, Hash {
-  bytes List[u8];
+  buf List[u8];
+
+  use str via view but len, isEmpty, `[]`, startsWith, endsWith, find, findFrom, contains, trim, compare, eq, `==`;
 
   pub fn empty() String { new String(List[u8].empty()); }
 
-  pub fn withCapacity(n usize) String { new String(List[u8].withCapacity(n)); }
+  // An empty String with room for n bytes (and the NUL after them)
+  pub fn withCapacity(n usize) String {
+    if n == 0usize { return String.empty(); }
+    new String(List[u8].withCapacity(n + 1usize));
+  }
 
   // A String holding a copy of the bytes of s
   pub fn from(s &[]u8) String {
     mut str = String.withCapacity(s.len);
     str.append(s);
     str;
+  }
+
+  // A String holding a copy of this text: what a literal becomes where a
+  // String is wanted, '"core"' in the place of 'String.from("core")'
+  pub fn fromLiteral(s &str) String { String.from(s); }
+
+  // The bytes it holds, for the methods here that work on bytes, and the NUL
+  // kept after them. The block is nothing until the first byte arrives.
+  fn raw(self &) &[]u8 inline { mem.sliceFromParts(buf.ptr, buf.used); }
+
+  // Write the NUL after the bytes, making room for it first. A String with no
+  // block has nothing to terminate: its view is the static empty literal.
+  fn seal(self &mut) {
+    if buf.ptr == null { return; }
+    if buf.used >= buf.cap { buf.reserve(1usize); }
+    mem.writeRaw(buf.ptr + buf.used, 0u8);
   }
 
   // A String holding a copy of the bytes of a C string, up to its NUL: what
@@ -541,32 +572,56 @@ pub struct String is ShapeChanging, Hash {
   // method that makes a type's values copyable, which a String's are not.)
   pub fn copy(self &) String { String.from(self.view()); }
 
-  pub fn len(self &) usize { bytes.len(); }
-  pub fn isEmpty(self &) bool { bytes.len() == 0usize; }
+  pub fn len(self &) usize { buf.used; }
+  pub fn isEmpty(self &) bool { buf.used == 0usize; }
 
-  // Its bytes, for reading them now
-  pub fn view(self &) &[]u8 { bytes.view(); }
+  // Its text, for reading it now: the static empty literal when it holds
+  // nothing, else its bytes. While the borrow is used the String may not change.
+  pub fn view(self &) &str {
+    if buf.used == 0usize { return ""; }
+    self.raw() as &str;
+  }
 
   // Its bytes, for changing them in place (nothing checks they stay UTF-8)
-  pub fn viewMut(self &mut) &[]mut u8 { bytes.viewMut(); }
+  pub fn viewMut(self &mut) &[]mut u8 { buf.viewMut(); }
+
+  // The String is consumed: its bytes stay where they are, in the block it
+  // owned, which becomes a So[str]'s. The block is shrunk to hold the text and
+  // its NUL, never copied. A String that holds nothing makes a one-byte block,
+  // since the owner of a 'str' always owns heap bytes.
+  pub fn freeze(self) So[str] {
+    mut me = self;
+    imm n = me.buf.used;
+    imm p = libc.realloc(me.buf.ptr as *u8, n + 1usize);
+    p[n] = 0u8;
+    me.buf.ptr = null;
+    me.buf.used = 0usize;
+    me.buf.cap = 0usize;
+    mem.sliceFromParts(p, n) as So[str];
+  }
 
   // The byte at index
-  pub fn `[]`(self &, index usize) u8 { *bytes[index]; }
+  pub fn `[]`(self &, index usize) u8 { *buf[index]; }
 
   // -------- adding to the end --------
 
+  // Add the bytes of s (a '&str' is one) at the end. Rust's 'push_str'.
   pub fn append overload `<-`(self &mut, s &[]u8) {
-    bytes.reserve(s.len);
+    buf.reserve(s.len + 1usize);
     mut i = 0usize;
-    while i < s.len { bytes.push(s[i]); i = i + 1usize; }
+    while i < s.len { buf.push(s[i]); i = i + 1usize; }
+    self.seal();
   }
 
-  pub fn appendByte(self &mut, b u8) { bytes.push(b); }
+  pub fn appendByte(self &mut, b u8) {
+    buf.push(b);
+    self.seal();
+  }
 
   // An integer in decimal, with a '-' before a negative one
   pub fn appendInt overload `<-`(self &mut, n i64) {
     if n < 0i64 {
-      bytes.push('-');
+      buf.push('-');
       // The magnitude as a u64, which holds even the most negative i64's
       self.appendUInt(0u64 - u64.from(n));
     }
@@ -588,8 +643,9 @@ pub struct String is ShapeChanging, Hash {
     }
     while count > 0usize {
       count = count - 1usize;
-      bytes.push(digits[count]);
+      buf.push(digits[count]);
     }
+    self.seal();
   }
 
   // The low 'width' hex digits of n, lowercase, leading zeros kept
@@ -598,15 +654,58 @@ pub struct String is ShapeChanging, Hash {
     while d > 0usize {
       d = d - 1usize;
       imm nibble = u8.from((n >> u64.from(d * 4usize)) & 15u64);
-      bytes.push(if nibble < 10u8 {'0' + nibble;} else {'a' + nibble - 10u8;});
+      buf.push(if nibble < 10u8 {'0' + nibble;} else {'a' + nibble - 10u8;});
     }
+    self.seal();
+  }
+
+  // Put s into the text so that it begins at byte index: "ac" with "b" put at
+  // 1 is "abc". The index is a position between characters, 0 up to the
+  // length, and anything else is a program error.
+  pub fn insert(self &mut, index usize, s &str, file &[]u8 = srcFile(), line u32 = srcLine()) {
+    if index > buf.used or not self.view().isCharBoundary(index) {
+      panic("collections: String.insert at a position that is not between characters", file, line);
+    }
+    imm text &[]u8 = s;
+    if text.len == 0usize { return; }
+    imm old = buf.used;
+    buf.reserve(text.len + 1usize);
+    mem.moveRaw(buf.ptr + index + text.len, buf.ptr + index, old - index);
+    mut i = 0usize;
+    while i < text.len { mem.writeRaw(buf.ptr + index + i, text[i]); i = i + 1usize; }
+    buf.used = old + text.len;
+    self.seal();
+  }
+
+  // Take away the bytes from start up to, not including, end: "abcd" with 1
+  // to 3 removed is "ad". Both are positions between characters, start not
+  // after end and end not past the length, or it is a program error.
+  pub fn remove(self &mut, start usize, end usize, file &[]u8 = srcFile(), line u32 = srcLine()) {
+    imm v = self.view();
+    if start > end or end > buf.used or not (v.isCharBoundary(start) and v.isCharBoundary(end)) {
+      panic("collections: String.remove of a range that is not between characters", file, line);
+    }
+    mem.moveRaw(buf.ptr + start, buf.ptr + end, buf.used - end);
+    buf.used = buf.used - (end - start);
+    self.seal();
+  }
+
+  // Cut it to n bytes, keeping its block; one of n bytes or fewer is left
+  // alone. n is a position between characters, or it is a program error.
+  pub fn truncate(self &mut, n usize, file &[]u8 = srcFile(), line u32 = srcLine()) {
+    if n >= buf.used { return; }
+    if not self.view().isCharBoundary(n) {
+      panic("collections: String.truncate to a length that is not between characters", file, line);
+    }
+    buf.used = n;
+    self.seal();
   }
 
   // Every '\' made a '/', or any byte made another
   pub fn replaceByte(self &mut, from u8, to u8) {
     mut i = 0usize;
-    while i < bytes.len() {
-      if *bytes[i] == from { bytes.set(i, to); }
+    while i < buf.used {
+      if *buf[i] == from { buf.set(i, to); }
       i = i + 1usize;
     }
   }
@@ -615,7 +714,7 @@ pub struct String is ShapeChanging, Hash {
   // "aaa" with "aa" made "b" is "ba". An empty 'from' is found before each
   // byte and at the end, so "ab" with "" made "-" is "-a-b-".
   pub fn replace(self &mut, from &[]u8, to &[]u8) {
-    imm v = self.view();
+    imm v = self.raw();
     mut out = String.withCapacity(v.len);
     mut i = 0usize;
     if from.len == 0usize {
@@ -642,27 +741,28 @@ pub struct String is ShapeChanging, Hash {
   // it. One that long already, or longer, is left as it is. Width counts
   // bytes, so a character beyond ASCII counts each of its UTF-8 bytes.
   pub fn padStart(self &mut, width usize, fill u8 = ' ') {
-    if bytes.len() >= width { return; }
+    if buf.used >= width { return; }
     mut out = String.withCapacity(width);
-    mut n = width - bytes.len();
+    mut n = width - buf.used;
     while n > 0usize { out.appendByte(fill); n = n - 1usize; }
-    out.append(self.view());
+    out.append(self.raw());
     *self = out;
   }
 
   // The same, put after its bytes: "ab" padded to 4 is "ab  ", which
   // left-aligns it
   pub fn padEnd(self &mut, width usize, fill u8 = ' ') {
-    while bytes.len() < width { bytes.push(fill); }
+    while buf.used < width { buf.push(fill); }
+    self.seal();
   }
 
   // Each ASCII capital letter, A to Z, made small; every other byte, those
   // of characters beyond ASCII included, left as it is
   pub fn lowerAscii(self &mut) {
     mut i = 0usize;
-    while i < bytes.len() {
-      imm b = *bytes[i];
-      bytes.set(i, asciiLower(b));
+    while i < buf.used {
+      imm b = *buf[i];
+      buf.set(i, asciiLower(b));
       i = i + 1usize;
     }
   }
@@ -670,24 +770,27 @@ pub struct String is ShapeChanging, Hash {
   // Each ASCII small letter, a to z, made a capital; every other byte left
   pub fn upperAscii(self &mut) {
     mut i = 0usize;
-    while i < bytes.len() {
-      imm b = *bytes[i];
-      bytes.set(i, asciiUpper(b));
+    while i < buf.used {
+      imm b = *buf[i];
+      buf.set(i, asciiUpper(b));
       i = i + 1usize;
     }
   }
 
   // Empty it, keeping its block
-  pub fn clear(self &mut) { bytes.clear(); }
+  pub fn clear(self &mut) {
+    buf.clear();
+    self.seal();
+  }
 
   // -------- reading --------
 
-  pub fn equals(self &, s &[]u8) bool { self.view() == s; }
+  pub fn equals(self &, s &[]u8) bool { self.raw() == s; }
 
   // Whether it holds the same bytes as s once ASCII letters are made one
   // case: "Path" equals "PATH" this way. Bytes beyond ASCII must match exactly.
   pub fn equalsIgnoreAsciiCase(self &, s &[]u8) bool {
-    imm v = self.view();
+    imm v = self.raw();
     if v.len != s.len { return false; }
     mut i = 0usize;
     while i < v.len {
@@ -699,26 +802,26 @@ pub struct String is ShapeChanging, Hash {
 
   // -1, 0 or 1 as it sorts before, with or after s, byte by byte, a shorter
   // string before a longer one it begins
-  pub fn compare(self &, s &[]u8) i32 { bytesCompare(self.view(), s); }
+  pub fn compare(self &, s &[]u8) i32 { bytesCompare(self.raw(), s); }
 
   pub fn startsWith(self &, s &[]u8) bool {
-    imm v = self.view();
+    imm v = self.raw();
     s.len <= v.len and &v[..s.len] == s;
   }
 
   pub fn endsWith(self &, s &[]u8) bool {
-    imm v = self.view();
+    imm v = self.raw();
     s.len <= v.len and &v[v.len - s.len..] == s;
   }
 
   // Where s first starts in it, or None. An empty s is found at 0.
-  pub fn find(self &, s &[]u8) Option[usize] { bytesFind(self.view(), s, 0usize); }
+  pub fn find(self &, s &[]u8) Option[usize] { bytesFind(self.raw(), s, 0usize); }
 
   // Where s first starts at or after 'from'
-  pub fn findFrom(self &, s &[]u8, from usize) Option[usize] { bytesFind(self.view(), s, from); }
+  pub fn findFrom(self &, s &[]u8, from usize) Option[usize] { bytesFind(self.raw(), s, from); }
 
   pub fn contains(self &, s &[]u8) bool {
-    match bytesFind(self.view(), s, 0usize) {
+    match bytesFind(self.raw(), s, 0usize) {
       case is Some[usize] {true;}
       case is None[usize] {false;}
     }
@@ -738,14 +841,14 @@ pub struct String is ShapeChanging, Hash {
 
   // A copy of the bytes from 'start' up to, not including, 'end'
   pub fn sub(self &, start usize, end usize) String {
-    imm v = self.view();
+    imm v = self.raw();
     String.from(&v[start..end]);
   }
 
   // A copy without the spaces, tabs, carriage returns and line feeds at
   // either end
   pub fn trim(self &) String {
-    imm v = self.view();
+    imm v = self.raw();
     mut a = 0usize;
     mut b = v.len;
     while a < b and isSpace(v[a]) { a = a + 1usize; }
@@ -758,7 +861,7 @@ pub struct String is ShapeChanging, Hash {
   // begin another line, so "a\nb\n" and "a\r\nb" are both two lines, and ""
   // is none.
   pub fn lines(self &) List[String] {
-    imm v = self.view();
+    imm v = self.raw();
     mut out = List[String].empty();
     mut start = 0usize;
     mut i = 0usize;
@@ -782,7 +885,7 @@ pub struct String is ShapeChanging, Hash {
   // Copies of the pieces between each 'sep': "a,b,,c" is four pieces, the
   // third empty; "" is one empty piece
   pub fn split(self &, sep u8) List[String] {
-    imm v = self.view();
+    imm v = self.raw();
     mut out = List[String].empty();
     mut start = 0usize;
     mut i = 0usize;
@@ -800,10 +903,9 @@ pub struct String is ShapeChanging, Hash {
   // A pointer to its bytes with a NUL after them, for a C function. It is
   // good until the string next changes or dies; the NUL is not one of its
   // bytes.
-  pub fn cstr(self &mut) *u8 {
-    bytes.push(0u8);
-    bytes.pop();
-    bytes.view();
+  pub fn cstr(self &) *u8 {
+    if buf.ptr == null { return &"" as *u8; }
+    buf.ptr;
   }
 }
 
