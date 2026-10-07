@@ -61,6 +61,41 @@ IS_WINDOWS = os.name == "nt"
 # The status a program ends with through the C library's 'abort', as a panic
 # does: the Microsoft C library's fail-fast, 0xC0000409, or death by SIGABRT
 ABORT_STATUS = 0xC0000409 if IS_WINDOWS else -6
+# What Windows ends a program with when a DLL it needs is not found
+STATUS_DLL_NOT_FOUND = 0xC0000135
+
+
+def hard_errors_to_status() -> None:
+    """Windows only, once at start-up: the loader's missing-DLL dialog, and
+    the other hard-error and file-open boxes, become an exit status.
+
+    A program started without a DLL it needs would otherwise stop at a modal
+    dialog on the desktop, waiting for a person (and the test timing out). A
+    child process inherits this process's error mode, so every program the
+    runner starts, a test program or the compiler, ends with the status
+    instead (see 'dll_note'). Running as the debuggee does not prevent the
+    dialog; the error mode does. OR-ed into the mode already set, as
+    SetErrorMode's documentation advises; no launch passes
+    CREATE_DEFAULT_ERROR_MODE, which would undo this."""
+    if not IS_WINDOWS:
+        return
+    import ctypes
+    k = ctypes.WinDLL("kernel32")
+    k.SetErrorMode.argtypes = [ctypes.c_uint]
+    k.SetErrorMode.restype = ctypes.c_uint
+    SEM_FAILCRITICALERRORS, SEM_NOOPENFILEERRORBOX = 0x1, 0x8000
+    k.SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOOPENFILEERRORBOX | k.SetErrorMode(0))
+
+
+def dll_note(code: int | None, exe: Path | str) -> str:
+    """A line saying that the program, by its full path, did not start
+    because a DLL it needs was not found, if it ended with
+    STATUS_DLL_NOT_FOUND; empty for any other status. With the loader's dialog
+    gone, this line is how a person learns of it."""
+    if IS_WINDOWS and code is not None and code & 0xFFFFFFFF == STATUS_DLL_NOT_FOUND:
+        return (f"\n{os.path.abspath(exe)} could not start: a DLL it needs was not found"
+                " (0xC0000135)")
+    return ""
 
 # Tier per group, from the group table in compiler/c/doc/diagnostics/test-suite.md section 1.
 # Results are reported tier 0 first, because tier 1 and 2 groups assume the
@@ -2681,7 +2716,8 @@ class Runner:
             return
         if ran.code != scenario.program_exit:
             result.status = FAIL
-            result.problems.append(f"program exited {ran.code}, expected {scenario.program_exit}")
+            result.problems.append(f"program exited {ran.code}, expected {scenario.program_exit}"
+                                   + dll_note(ran.code, exe))
             return
 
         # Recorded here, before the comparison rather than after it, because a
@@ -3577,6 +3613,7 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--max-output", type=int, default=8 * 1024 * 1024,
                         help="bytes of output before a process is killed")
     args = parser.parse_args(argv)
+    hard_errors_to_status()
 
     args.conec = (args.conec or default_conec()).resolve()
     if args.conestd is None:

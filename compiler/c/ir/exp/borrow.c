@@ -471,6 +471,12 @@ void borrowTypeCheck(TypeCheckState *pstate, RefNode **nodep) {
     if (iexpTypeCheckAny(pstate, &node->vtexp) == 0)
         return;
 
+    // A written borrow of a string literal, '&"text"', borrows the bytes the
+    // text is kept in: a reference to an array of its length, '&[]"text"' the
+    // slice of them. (The literal alone is the borrow of its text, '&imm str'.)
+    if (node->vtexp->tag == StringLitTag)
+        slitAsArray((SLitNode*)node->vtexp);
+
     // A borrow reaches the whole suffixed term, so '&p.sum()' borrows the
     // call's result -- a temporary -- and '(&p).sum()' is how a method is
     // called on a borrowed receiver. A constant literal is not a temporary: it

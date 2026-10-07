@@ -133,6 +133,13 @@ category = "run"
 description = "A type declaring Immutable ('str', and a struct): '&str' and '&imm str' are one type, 'ro' and 'opaq' borrow it, 'Rc[str]' and an 'Rc' of the struct copy, its 'self &' and borrow are 'imm', its finalizer takes 'self &uni' and runs once, and 'where T is Immutable' is met by both"
 tags = ["typecheck", "flow", "genllvm", "runtime"]
 
+# A string literal is the borrow of its text that lasts for the whole program,
+# '&imm str'. The refusals are ref_typecheck_literal.
+[scenario.ref_literal]
+category = "run"
+description = "A string literal as '&imm str': any '&str' converts implicitly to '&[]u8' (a parameter, variable, field, return, '=='), the way back is 'as'; the NUL after the text for C, the written borrow '&\"text\"' still the array; a literal fills a byte array of its length (variable, field, parameter, return, constant, global, assignment) and is copied into an owner of 'str' (So, Rc, Arc: variable, parameter, return, field, branch)"
+tags = ["typecheck", "genllvm", "runtime"]
+
 # -------- name resolution stage --------
 
 [scenario.ref_nameres_fnref]
@@ -148,6 +155,12 @@ category = "reject"
 description = "'mut', 'mut1' and a lock permission on a type declaring Immutable ('str', a struct): on a borrow, an owner in 'So' and 'Rc', in a struct's 'self &mut', through a generic's argument and in a '&mut *v', each naming Immutable; and 'where T is Immutable' unmet by an integer and by a struct holding an Immutable one"
 tags = ["typecheck"]
 diagnostics = 12
+
+[scenario.ref_typecheck_literal]
+category = "reject"
+description = "What a string literal does not do: '&[]u8' is no '&str' without 'as', a literal fills no byte array of another length and no other array, another '&str' or a slice is copied into no owner of 'str', a literal is no '&[]mut u8' and no '&mut str'"
+tags = ["typecheck"]
+diagnostics = 10
 
 [scenario.ref_typecheck_borrow]
 category = "reject"
@@ -337,9 +350,9 @@ options = ["--triple=spirv1.6-unknown-vulkan1.3"]
 # earlier refused
 [scenario.ref_gpu_global]
 category = "reject"
-description = "On a GPU target, a global holding a reference, bare or in a struct; a string literal's global is accepted"
+description = "On a GPU target, a global holding a reference, bare, in a struct or a string literal; a byte array a literal fills is accepted"
 tags = ["genllvm"]
-diagnostics = 2
+diagnostics = 3
 
 [[scenario.ref_gpu_global.run]]
 name = "vulkan"
