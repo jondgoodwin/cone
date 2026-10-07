@@ -435,6 +435,26 @@ pub struct @opaque mem {
   pub fn @intrinsic shrMasked[T](x T, n u32) T {
     x >> T.from(n % (u32.from(mem.sizeof[T]()) * 8u32));
   }
+
+  // The full 128-bit product of a and b, its high 64 bits and its low 64 bits
+  // exclusive-or'd: the mixing step of the wyhash family, one multiply on a
+  // 64-bit target. The low half alone is 'a * b', so the high half alone is
+  // 'mulFold(a, b) ^ (a * b)'. The fallback body forms the product from 32-bit
+  // halves
+  pub fn @intrinsic mulFold(a u64, b u64) u64 {
+    imm lowmask = 0xFFFFFFFFu64;
+    imm a0 = a & lowmask;
+    imm a1 = a >> 32u64;
+    imm b0 = b & lowmask;
+    imm b1 = b >> 32u64;
+    imm p00 = a0 * b0;
+    imm p01 = a0 * b1;
+    imm p10 = a1 * b0;
+    imm p11 = a1 * b1;
+    imm mid = (p00 >> 32u64) + (p01 & lowmask) + (p10 & lowmask);
+    imm high = p11 + (p01 >> 32u64) + (p10 >> 32u64) + (mid >> 32u64);
+    high ^ (a * b);
+  }
 }
 
 // ATOMIC VALUES: Atomic[T], an integer, a bool or a raw pointer that several
@@ -701,5 +721,163 @@ pub struct Atomic[T] is AtomicValue, Move where T is Integer or T is bool or T i
         mem.atomicCompareSwap[T](p, expected, desired, MemOrder.SeqCst[], MemOrder.SeqCst[]);
       }
     }
+  }
+}
+
+// HASHING: what a value feeds a hasher (Hash), and the algorithm that turns what
+// it fed into a number (Hasher), kept apart as Rust's Hash and Hasher are and as
+// Swift's 'hash(into:)' is. A key type says what identifies it, in 'hash'; a
+// collection owns the Hasher, so changing the algorithm changes no key type.
+//
+//   struct Id is Hash {            // no 'hash' written: the compiler supplies one
+//     pub slot u32;                // that feeds each field, in order
+//     pub gen u32;
+//     pub fn `==`(self, o Id) bool {slot == o.slot and gen == o.gen;}
+//   }
+//
+//   mut h = Hasher.seeded();       // seeded once per process, at random
+//   id.hash(&mut h);
+//   imm number = h.finish();
+//
+// The rule that ties hashing to equality: if a == b then a and b feed the same
+// things, so a type that is Hash has a '==' (refused otherwise). Variable-length
+// values feed a terminator after their bytes ('writeStr'), so that ("ab", "c")
+// and ("a", "bc") differ as the parts of one key. Floats are not Hash, since NaN
+// is not equal to itself and -0 is equal to 0. A struct that declares Hash and
+// writes no 'hash' is given one that feeds its fields, in order (never its
+// bytes: padding is undefined), and the compiler refuses it where a field is a
+// float or not Hash. Every integer type and bool is Hash, feeding its bits.
+//
+// The compiler knows this trait and the Hasher by their names and this package
+// (compiler/c/ir/types/struct.c, structHashCheck), as it knows TypeRecord.
+pub trait Hash {
+  pub fn hash(self &, h &mut Hasher);
+}
+
+pub extern {
+  // The seed this process hashes with unless a hasher is built with another:
+  // 64 random bits from the OS, drawn the first time anything asks, on any
+  // thread, and the same for the rest of the process. Never 0. A table that
+  // keeps this seed visits its entries in a different order on every run
+  fn @c("cone_hashSeed") processSeed() u64;
+}
+
+// The algorithm. A word a value feeds it ('writeU64') is xored into the state
+// and the state multiplied by an odd constant, 128 bits wide, the two halves of
+// the product folded together by xor: foldhash's step, of the wyhash family, one
+// multiply. A run of bytes ('writeBytes') goes through wyhash, final version 4.3,
+// seeded with the state, which takes 16 bytes at a time. The state starts as the
+// seed and every word is mixed into it, so without the seed nobody can tell
+// which keys collide: that is the defence against hostile ones. Seeded from the
+// process's random seed ('seeded'), or with a fixed one ('withSeed') that gives
+// the same numbers on every run.
+pub struct Hasher {
+  state u64;
+
+  // A hasher with the process's seed (processSeed): different on every run
+  pub fn seeded() Hasher inline {Hasher.withSeed(processSeed());}
+
+  // A hasher with this seed: the same numbers for the same feed on every run,
+  // and different seeds give different numbers
+  pub fn withSeed(seed u64) Hasher inline {
+    new Hasher(seed ^ mem.mulFold(seed ^ 0x2d358dccaa6c78a5u64, 0x8bb84b93962eacc9u64));
+  }
+
+  // Feed a word
+  pub fn writeU64(self &mut, v u64) inline {
+    state = mem.mulFold(state ^ v, 0x9e3779b97f4a7c15u64);
+  }
+  pub fn writeU32(self &mut, v u32) inline {self.writeU64(u64.from(v));}
+  pub fn writeU16(self &mut, v u16) inline {self.writeU64(u64.from(v));}
+  pub fn writeU8(self &mut, v u8) inline {self.writeU64(u64.from(v));}
+
+  // Feed bytes: wyhash of them, seeded with the state, becomes the state. These
+  // bytes alone, with nothing marking where they end: for a value of fixed size
+  pub fn writeBytes(self &mut, b &[]u8) inline {
+    state = Hasher.wyhash(b, state);
+  }
+
+  // Feed a value of any length, text or bytes: its bytes, then the terminator
+  // 0xFF (a byte UTF-8 never holds, as Rust's 'write_str' ends with), so that
+  // where one such value ends and the next begins is part of what is fed
+  pub fn writeStr(self &mut, b &[]u8) inline {
+    self.writeBytes(b);
+    self.writeU8(0xFFu8);
+  }
+
+  // The number this feed comes to. Asking does not change the hasher: more may
+  // be fed afterwards
+  pub fn finish(self &) u64 inline {
+    mem.mulFold(state ^ 0x4b33a62ed433d4a3u64, 0x4d5a2da51de1aa47u64);
+  }
+
+  // wyhash, final version 4.3 (Wang Yi, public domain), its default secret, of
+  // the bytes with this seed: the published function itself, whose own numbers
+  // are its tests. For a seed or a hash that is not a running Hasher's state
+  pub fn wyhash(b &[]u8, seed u64) u64 inline {
+    if b.len == 0usize {Hasher.wyhashAt(null, 0usize, seed);}
+    else {Hasher.wyhashAt(&b[0usize] as *u8, b.len, seed);}
+  }
+
+  // wyhash of the len bytes at p, little-endian reads. One multiply and fold
+  // per 16 bytes
+  fn wyhashAt(p *u8, len usize, seed u64) u64 inline {
+    mut s = seed ^ mem.mulFold(seed ^ 0x2d358dccaa6c78a5u64, 0x8bb84b93962eacc9u64);
+    mut a = 0u64;
+    mut b = 0u64;
+    if len <= 16usize {
+      if len >= 4usize {
+        imm q = (len >> 3usize) << 2usize;
+        a = (Hasher.read4(p) << 32u64) | Hasher.read4(p + q);
+        b = (Hasher.read4(p + (len - 4usize)) << 32u64) | Hasher.read4(p + (len - 4usize - q));
+      }
+      else if len > 0usize {
+        a = (u64.from(mem.readRaw[u8](p)) << 16u64)
+          | (u64.from(mem.readRaw[u8](p + (len >> 1usize))) << 8u64)
+          | u64.from(mem.readRaw[u8](p + (len - 1usize)));
+      }
+    }
+    else {
+      mut i = len;
+      mut q = p;
+      if i >= 48usize {
+        mut see1 = s;
+        mut see2 = s;
+        while i >= 48usize {
+          s = mem.mulFold(Hasher.read8(q) ^ 0x8bb84b93962eacc9u64, Hasher.read8(q + 8usize) ^ s);
+          see1 = mem.mulFold(Hasher.read8(q + 16usize) ^ 0x4b33a62ed433d4a3u64, Hasher.read8(q + 24usize) ^ see1);
+          see2 = mem.mulFold(Hasher.read8(q + 32usize) ^ 0x4d5a2da51de1aa47u64, Hasher.read8(q + 40usize) ^ see2);
+          q = q + 48usize;
+          i = i - 48usize;
+        }
+        s = s ^ see1 ^ see2;
+      }
+      while i > 16usize {
+        s = mem.mulFold(Hasher.read8(q) ^ 0x8bb84b93962eacc9u64, Hasher.read8(q + 8usize) ^ s);
+        i = i - 16usize;
+        q = q + 16usize;
+      }
+      a = Hasher.read8(q + (i - 16usize));
+      b = Hasher.read8(q + (i - 8usize));
+    }
+    // The last step multiplies a and b into the halves of their product, the low
+    // half in a and the high in b (the high is the fold less the low), and mixes
+    // those with the secret and the length
+    a = a ^ 0x8bb84b93962eacc9u64;
+    b = b ^ s;
+    imm low = a * b;
+    imm high = mem.mulFold(a, b) ^ low;
+    mem.mulFold(low ^ 0x2d358dccaa6c78a5u64 ^ u64.from(len), high ^ 0x8bb84b93962eacc9u64);
+  }
+
+  // Four and eight bytes at p, little-endian, however p is aligned
+  fn read4(p *u8) u64 inline {
+    u64.from(mem.readRaw[u8](p))
+      | (u64.from(mem.readRaw[u8](p + 1usize)) << 8u64)
+      | (u64.from(mem.readRaw[u8](p + 2usize)) << 16u64)
+      | (u64.from(mem.readRaw[u8](p + 3usize)) << 24u64);
+  }
+  fn read8(p *u8) u64 inline {
+    Hasher.read4(p) | (Hasher.read4(p + 4usize) << 32u64);
   }
 }

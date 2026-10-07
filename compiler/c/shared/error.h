@@ -518,6 +518,11 @@ enum ErrorCode {
     ErrorAwaitNotFuture = 1281, // An 'await' on a value that is no future, behaviour's reply or operation: it waits for no answer
     ErrorFutureVoid = 1282,     // The value of a call of a behaviour returning nothing is used: there is no future to keep
 
+    // Hashing: core's Hash trait, and the hash the compiler supplies for a struct declaring it
+    ErrorHashFloat = 1330,      // A struct declaring Hash with no hash of its own has a float field: NaN is not equal to itself and -0 is equal to 0, so no hash of the bits agrees with ==
+    ErrorHashField = 1331,      // A struct declaring Hash with no hash of its own has a field whose type is not Hash, so the compiler has nothing to feed for it
+    ErrorHashNoEq = 1332,       // A type declaring Hash has no '==': a hash is only meaningful against the equality that decides which keys are the same
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name

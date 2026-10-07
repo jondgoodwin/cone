@@ -1059,6 +1059,32 @@ static void fnCallPrivateVtable(FnCallNode *callnode, INode *member, INode *trai
             &name->namestr, &traitname->namestr, &traitname->namestr);
 }
 
+// An integer's or bool's 'hash(self, h &mut Hasher)', which core's Hash requires
+// of every type that is Hash (corenumber.c, nbrAddHashMethods). It is no function:
+// the call becomes core's 'h.writeU64(bits)', the value converted to a u64, the
+// sign extended for a signed integer. The receiver is the value, already
+// selected, and the one argument is the hasher. Answers the method the call is
+// now to, or NULL after reporting that core's Hasher lacks it.
+static FnDclNode *fnCallHashNumber(FnCallNode *callnode, FnDclNode *selected) {
+    FnSigNode *sig = (FnSigNode*)selected->vtype;
+    VarDclNode *hparm = (VarDclNode*)nodesGet(sig->parms, 1);
+    INode *hasher = itypeGetTypeDcl(((RefNode*)itypeGetTypeDcl(hparm->vtype))->vtexp);
+    INode *write = hasher->tag == StructTag ? iNsTypeFindFnField((INsTypeNode*)hasher, writeU64Name) : NULL;
+    if (write == NULL || write->tag != FnDclTag) {
+        errorMsgNode((INode*)callnode, ErrorNoMbr,
+            "core's Hasher has no `writeU64`, which an integer's `hash` feeds its bits through.");
+        callnode->vtype = errorType;
+        return NULL;
+    }
+    fnCallDemandCandidates(write);
+    INode *bits = (INode*)newConvCastNode(callnode->objfn, (INode*)u64Type);
+    inodeLexCopy(bits, callnode->objfn);
+    callnode->objfn = nodesGet(callnode->args, 0);
+    callnode->args = newNodes(1);
+    nodesAdd(&callnode->args, bits);
+    return (FnDclNode*)write;
+}
+
 // Returns 1 when lowered, 0 when the receiver's type supports no methods at all
 // (so the caller may try another way), and -1 when a diagnostic was reported.
 int fnCallLowerMethod(TypeCheckState *pstate, FnCallNode *callnode) {
@@ -1244,6 +1270,13 @@ int fnCallLowerMethod(TypeCheckState *pstate, FnCallNode *callnode) {
     }
 
     fnCallPrivateVtable(callnode, (INode*)selected, objdereftype, notpublic);
+
+    if (selected->value && selected->value->tag == IntrinsicTag
+        && ((IntrinsicNode*)selected->value)->intrinsicFn == HashNbrIntrinsic) {
+        selected = fnCallHashNumber(callnode, selected);
+        if (selected == NULL)
+            return -1;
+    }
 
     // An enum's equality reads its discriminant, which is the whole of the value
     // only where every variant is empty. Where a variant carries fields, those

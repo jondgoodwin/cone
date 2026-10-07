@@ -471,6 +471,11 @@ static int genericTypeIsHow(INode *type, StructNode *trait, StaticBorrow how) {
         return 1;
     if (trait == pointerTrait && dcl->tag == PtrTag)
         return 1;
+    // core's Hash is granted to the integers and bool, which feed their bits
+    // (nbrAddHashMethods). Not to a float: NaN is not equal to itself and -0 is
+    // equal to 0, so no hash of a float's bits agrees with its '=='
+    if ((dcl->tag == IntNbrTag || dcl->tag == UintNbrTag) && coreIsHashTrait((INode*)trait))
+        return 1;
     // Sendable is the thread check's: granted to every type holding nothing
     // bound to its thread, and to a type declaring it, on its word, where its
     // type arguments are Sendable. A borrow of the whole program is let cross

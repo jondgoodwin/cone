@@ -416,6 +416,37 @@ class Scenarios(unittest.TestCase):
         self.assertNotEqual(failed.returncode, 0)
         self.assertIn("-D LEVEL takes an integer", failed.stdout + failed.stderr)
 
+    def test_the_hash_seed_is_drawn_once_per_process(self):
+        # core's Hasher.seeded() starts from the process's seed, 64 random bits
+        # from the OS that conestd draws on first use (processSeed): the same
+        # for every ask within a run, never 0, and different on another run, so
+        # a table keyed by it visits its entries in another order each time
+        write(self.root / "seed.cone", """
+            mod seed;
+
+            import stdio use *;
+
+            fn main() i32 {
+              print <- processSeed();
+              print <- " ";
+              print <- processSeed();
+              print <- " ";
+              if Hasher.seeded().finish() == Hasher.withSeed(processSeed()).finish() {print <- "same";}
+              else {print <- "different";}
+              print <- "\\n";
+              0i32;
+            }
+            """)
+        seeds = []
+        for _ in range(3):
+            run = self.congo("run", "seed.cone", cwd=self.root)
+            first, again, same = self.program_output(run).split()
+            self.assertEqual(first, again)
+            self.assertNotEqual(first, "0")
+            self.assertEqual(same, "same")
+            seeds.append(first)
+        self.assertEqual(len(set(seeds)), 3, "three runs, three seeds")
+
     def test_a_lone_file_under_a_non_ascii_folder(self):
         # A path beyond ASCII, in the folder and the file's name, reaches conec
         # whole: the source is read, and the build description, the object and
