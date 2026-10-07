@@ -1,0 +1,42 @@
+// What an actor's behaviour or initializer may not take, though it writes the
+// borrow ''static', refused at the parameter once its type is known
+// (ErrorNotSendable), each saying which part of the rule failed:
+//
+// - a permission that is not 'imm', 'opaq' or 'uni': 'ro' only stops this
+//   holder writing, 'mut' lets a holder write while others read;
+// - what an 'imm' borrow reaches must be safe to read from two threads: an
+//   'Rc' is not, nor is a struct holding one;
+// - a borrow deeper in the type must be written ''static' too, where the
+//   parameter's own is: a struct holding a 'ro' one is refused;
+// (A borrow not written ''static', a named lifetime and a reply naming one are
+// refused at parse: concurrency_static_borrow_actor_parse.)
+
+mod concurrency_static_borrow_actor_refused;
+
+import actors;
+import sync use *;
+
+struct Point {pub x i32; pub y i32;}
+
+// Holds an owner whose count is not atomic
+struct Counted {pub r Rc[imm, Point];}
+
+// Holds a 'ro' borrow of the whole program
+struct Reads {pub p &'static Point;}
+
+actor Bad {
+  total u64;
+
+  fn init(self &new, p &'static Point) {                //~ ErrorNotSendable "Actor Bad's initializer takes p, a &ro Point, which is not Sendable"
+    *self = new Self(total: 0u64);
+  }
+
+  pub async do reads(self, p &'static u64) {}           //~ ErrorNotSendable "a borrowed reference of permission ro"
+  pub async do writes(self, p &'static mut u64) {}      //~ ErrorNotSendable "a borrowed reference of permission mut"
+  pub async do counted(self, p &'static imm Counted) {} //~ ErrorNotSendable "Counted.r is Rc[imm, Point], an owner that may be copied"
+  pub async do rc(self, p &'static imm Rc[imm, Point]) {} //~ ErrorNotSendable "what the borrow points at is Rc[imm, Point]"
+  pub async do holds(self, r Reads) {}                  //~ ErrorNotSendable "Reads.p is &ro Point, a borrowed reference of permission ro"
+  pub async do fine(self, p &'static imm Point) {}
+}
+
+fn main() {}

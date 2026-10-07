@@ -409,6 +409,12 @@ int itypeDropReadsBorrow(INode *type) {
 
 static int itypeBoundProvisional = 0;
 
+// Whether a borrow that lives for the whole program is let cross, in the walk
+// being made (itypeThreadBoundHow): the walk is the same, but for that one
+// reference rule. It answers differently from the answer remembered per
+// struct, which is the strict one.
+static StaticBorrow itypeStaticHow = StaticOff;
+
 static int itypeThreadBoundAt(INode *type);
 
 // Is one of this instance's type arguments bound to its thread?
@@ -425,15 +431,31 @@ static int itypeArgsThreadBound(INode *type) {
     return 0;
 }
 
+// What a reference says of crossing in the walk being made: a borrow that lives
+// for the whole program crosses, if it is imm, opaq or uni and what it points
+// at does (refStaticCrosses), where the walk lets it
+static RefBinds itypeRefBinds(RefNode *ref) {
+    RefBinds binds = refThreadBinds(ref);
+    if (binds == RefBindsBorrow && refStaticCrosses(ref, itypeStaticHow) == StaticQualifies)
+        return RefCrosses;
+    return binds;
+}
+
 // A trait whose implementers are open-ended: not an enum or other closed one
 static int itypeIsOpenTrait(StructNode *type) {
     return (type->flags & TraitType) && !(type->flags & HasTagField);
 }
 
 static int itypeStructThreadBound(StructNode *type) {
-    switch (type->threadbound) {
+    // Letting a borrow of the whole program cross can only free a struct the
+    // strict walk binds: a "not bound" remembered holds, a "bound" is asked
+    // again and not remembered, nor is a "not bound" this walk finds
+    uint8_t strict = type->threadbound;
+    switch (strict) {
     case CarriesBorrowYes:
-        return 1;
+        if (itypeStaticHow == StaticOff)
+            return 1;
+        break;
     case CarriesBorrowNo:
         return 0;
     case CarriesBorrowAsking:
@@ -473,7 +495,9 @@ static int itypeStructThreadBound(StructNode *type) {
 
     if (!(type->flags & TypeChecked))
         itypeBoundProvisional = 1;
-    if (bound && (type->flags & TypeChecked))
+    if (itypeStaticHow != StaticOff)
+        type->threadbound = strict;
+    else if (bound && (type->flags & TypeChecked))
         type->threadbound = CarriesBorrowYes;
     else if (!bound && !itypeBoundProvisional)
         type->threadbound = CarriesBorrowNo;
@@ -494,7 +518,7 @@ static int itypeThreadBoundAt(INode *type) {
     case RefTag:
     case ArrayRefTag:
     case VirtRefTag:
-        switch (refThreadBinds((RefNode *)type)) {
+        switch (itypeRefBinds((RefNode *)type)) {
         case RefCrossesAll:
             return 0;
         case RefCrosses:
@@ -522,14 +546,21 @@ static int itypeThreadBoundAt(INode *type) {
     }
 }
 
-int itypeThreadBound(INode *type, int *settled) {
+int itypeThreadBoundHow(INode *type, int *settled, StaticBorrow how) {
     int svprovisional = itypeBoundProvisional;
+    StaticBorrow svhow = itypeStaticHow;
     itypeBoundProvisional = 0;
+    itypeStaticHow = how == StaticNever ? StaticOff : how;
     int bound = itypeThreadBoundAt(type);
     if (settled)
         *settled = bound || !itypeBoundProvisional;
     itypeBoundProvisional = svprovisional;
+    itypeStaticHow = svhow;
     return bound;
+}
+
+int itypeThreadBound(INode *type, int *settled) {
+    return itypeThreadBoundHow(type, settled, StaticOff);
 }
 
 // Append to 'buf' a type as the thread check's message spells it: a reference
@@ -606,10 +637,17 @@ static INode *itypeThreadBoundCulprit(INode *type, char *path, size_t size,
     case RefTag:
     case ArrayRefTag:
     case VirtRefTag:
-        switch (refThreadBinds((RefNode *)type)) {
+        switch (itypeRefBinds((RefNode *)type)) {
         case RefCrossesAll:
             return NULL;
         case RefCrosses:
+            // A borrow of the whole program that crosses leaves its target
+            // to blame: a struct names itself and its field, anything else
+            // is named as what the borrow points at
+            if (path[0] == '\0' && refThreadBinds((RefNode *)type) == RefBindsBorrow
+                && isTypeNode(((RefNode *)type)->vtexp)
+                && itypeGetTypeDcl(((RefNode *)type)->vtexp)->tag != StructTag)
+                snprintf(path, size, "what the borrow points at");
             return itypeThreadBoundCulprit(((RefNode *)type)->vtexp, path, size, seen, nseen);
         default:
             return type;
@@ -624,7 +662,7 @@ static INode *itypeThreadBoundCulprit(INode *type, char *path, size_t size,
         uint32_t cnt;
         uint32_t index = 0;
         for (nodesFor(((TupleNode *)type)->elems, cnt, nodesp)) {
-            if (itypeThreadBound(*nodesp, NULL)) {
+            if (itypeThreadBoundHow(*nodesp, NULL, itypeStaticHow)) {
                 snprintf(path + used, size - used, used ? ".%u" : "element %u", index);
                 return itypeThreadBoundCulprit(*nodesp, path, size, seen, nseen);
             }
@@ -653,7 +691,7 @@ static INode *itypeThreadBoundCulprit(INode *type, char *path, size_t size,
             if (args == NULL)
                 return NULL;
             for (nodesFor(args, cnt, nodesp)) {
-                if (!itypeThreadBound(*nodesp, NULL))
+                if (!itypeThreadBoundHow(*nodesp, NULL, itypeStaticHow))
                     continue;
                 path[0] = '\0';
                 INode *culprit = itypeThreadBoundCulprit(*nodesp, path, size, seen, nseen);
@@ -672,7 +710,7 @@ static INode *itypeThreadBoundCulprit(INode *type, char *path, size_t size,
         }
         for (nodelistFor(&strnode->fields, cnt, nodesp)) {
             FieldDclNode *field = (FieldDclNode *)*nodesp;
-            if (!itypeThreadBound(field->vtype, NULL))
+            if (!itypeThreadBoundHow(field->vtype, NULL, itypeStaticHow))
                 continue;
             snprintf(path + used, size - used, ".%s", &field->namesym->namestr);
             INode *culprit = itypeThreadBoundCulprit(field->vtype, path, size, seen, nseen);
@@ -683,7 +721,7 @@ static INode *itypeThreadBoundCulprit(INode *type, char *path, size_t size,
         // An enum's variant is named by itself
         if (strnode->derived) {
             for (nodesFor(strnode->derived, cnt, nodesp)) {
-                if (!itypeThreadBound(*nodesp, NULL))
+                if (!itypeThreadBoundHow(*nodesp, NULL, itypeStaticHow))
                     continue;
                 path[0] = '\0';
                 INode *culprit = itypeThreadBoundCulprit(*nodesp, path, size, seen, nseen);
@@ -699,10 +737,18 @@ static INode *itypeThreadBoundCulprit(INode *type, char *path, size_t size,
     }
 }
 
-INode *itypeThreadBoundWhy(INode *type, char *path, size_t size) {
+INode *itypeThreadBoundWhyHow(INode *type, char *path, size_t size, StaticBorrow how) {
     StructNode *seen[ThreadBoundPathMax];
+    StaticBorrow svhow = itypeStaticHow;
+    itypeStaticHow = how == StaticNever ? StaticOff : how;
     path[0] = '\0';
-    return itypeThreadBoundCulprit(type, path, size, seen, 0);
+    INode *culprit = itypeThreadBoundCulprit(type, path, size, seen, 0);
+    itypeStaticHow = svhow;
+    return culprit;
+}
+
+INode *itypeThreadBoundWhy(INode *type, char *path, size_t size) {
+    return itypeThreadBoundWhyHow(type, path, size, StaticOff);
 }
 
 // Set when an answer reached a struct not yet type checked, whose fields may

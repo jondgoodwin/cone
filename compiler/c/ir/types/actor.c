@@ -96,12 +96,12 @@ void actorRegister(ActorInfo *info) {
 static void actorCheckReturn(ActorInfo *info, FnDclNode *fn) {
     INode *type = ((FnSigNode *)fn->vtype)->rettype;
     if (type == NULL || type == unknownType || type->tag == UnknownTag
-        || itypeGetTypeDcl(type)->tag == VoidTag || !itypeThreadBound(type, NULL))
+        || itypeGetTypeDcl(type)->tag == VoidTag || !itypeThreadBoundHow(type, NULL, StaticNever))
         return;
     char typename[256] = "";
     itypeSpellCat(typename, sizeof(typename), type, 0);
     char what[512], reason[512];
-    genericNotSendableWhy(type, what, reason);
+    genericNotSendableWhy(type, what, reason, StaticNever);
     errorMsgNode(((FnSigNode *)fn->vtype)->rettype, ErrorNotSendable,
         "Actor %s's behaviour %s returns a %s, which is not Sendable: %s %s. The value goes back to the actor that awaits it, on the thread that runs that actor, so it must be Sendable.",
         &info->handle->namesym->namestr, &fn->namesym->namestr, typename, what, reason);
@@ -124,12 +124,12 @@ void actorCheckAll() {
             INode *type = parm->vtype;
             if (type == NULL || type == unknownType || type->tag == UnknownTag)
                 continue;
-            if (!itypeThreadBound(type, NULL))
+            if (!itypeThreadBoundHow(type, NULL, StaticWritten))
                 continue;
             char typename[256] = "";
             itypeSpellCat(typename, sizeof(typename), type, 0);
             char what[512], reason[512];
-            genericNotSendableWhy(type, what, reason);
+            genericNotSendableWhy(type, what, reason, StaticWritten);
             int isinit = fn->namesym == initName || fn->overloadsym == initName;
             if (isinit)
                 errorMsgNode((INode *)parm, ErrorNotSendable,

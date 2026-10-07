@@ -468,6 +468,25 @@ arguments is). `genericTypeIs` grants `Sendable` to what the walk finds unbound;
 an unmet `T is Sendable` is `ErrorNotSendable`, whose message names the culprit
 and its path (`itypeThreadBoundWhy`). See [Generics](generic.md), Constraints.
 
+**A borrow of the whole program** is the one exception to the borrow row, where
+the walk is asked to allow it (`itypeThreadBoundHow`, a `StaticBorrow`;
+`refStaticCrosses` is the rule for one borrow). It crosses if its permission is
+`imm`, `opaq` or `uni` (`ro` and `mut` only stop or allow one holder: `ro`
+does not stop another's writing) and its lifetime is not an invariant one (a
+brand: its arena dies with its owner), and then, like an owner, if what it
+points at does, which is the `Arc[imm, T]` test for `imm` and `opaq` and the
+move test for `uni`. A guard never crosses. A `uni` borrow of a named global is
+refused where it is made, so the walk need not tell one. That the borrow lasts
+the whole program is not in the type, which instancing erases, so the mode says
+who vouches: `StaticVouched` for a generic's parameter bounded `+ 'static`
+(`genericStaticHow`; each call is held to hand it only global borrows, by
+`lifePartStatic`), `StaticWritten` for a signature that writes the borrow
+`'static`, the only form an actor's behaviour or initializer takes. A struct's
+remembered answer is the strict one: a mode other than `StaticOff` trusts its
+"not bound", asks again where it was "bound", and remembers neither. A
+behaviour's reply is asked as `StaticNever`, `StaticOff` with a diagnostic that
+does not offer the way.
+
 ## Lock permissions
 
 A struct declaring the built-in trait `LockPermission` may stand in a managed
