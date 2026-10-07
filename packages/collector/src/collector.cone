@@ -69,7 +69,8 @@
 // HOW IT COLLECTS: Acorn's collector (acornvm, avm_gc.cpp), incremental, with
 // Lua's separation of finalizers. Every object carries a header, the region
 // ref: the next object in its list, its link in the gray list, the type
-// record the compiler handed 'alloc', and its colour. A collection runs a
+// record the compiler handed 'alloc', its colour, and how many bytes it takes
+// beyond its record's (a body's length). A collection runs a
 // step at a time, in phases:
 // - MARK: every root is handed to 'mark' (mem.traceRoots), which turns a
 //   white object gray and puts it on the gray list; then, a step at a time,
@@ -278,12 +279,21 @@ pub struct Gc is RegionRef, Traced {
   pub gray usize;      // its link in the gray list
   pub ty *TypeRecord;  // the value's type record: size, alignment, finalizer, trace
   pub marked u32;      // its colour
+  pub extra u32;       // the bytes it takes beyond its record's, in eights: a body's elements past the one a record counts
 
   // 'new Gc[T](...)': the byte count of {header, value}, and T's type record.
-  // The value has been evaluated already, so every root is in its slot.
+  // The value has been evaluated already, so every root is in its slot. A body
+  // whose length a reference carries ('Gc[str]', 'Gc[Array[T]]') has the
+  // record of one element and as many bytes as its length makes, so the size
+  // is what says how many bytes the object takes.
   fn alloc(size usize, ty *TypeRecord) *u8 {
     readEnv();
-    imm bytes = objBytes(ty);
+    imm bytes = bodyBytes(size, ty);
+    // The surplus is kept in eights in 32 bits, so a body can be 32 GiB past
+    // its record's one element; a longer one is memory that is not there
+    if (bytes - objBytes(ty)) / 8usize > 4294967295usize {
+      return null;
+    }
     if !stepping and autoOn {
       // The limit caps the heap, so a heap held under one is collected (and
       // finalized) in the ordinary way, not only in emergencies
@@ -294,10 +304,10 @@ pub struct Gc is RegionRef, Traced {
         stepOwed();
       }
     }
-    mut p = tryMalloc(size, bytes);
+    mut p = tryMalloc(bytes);
     if p as usize == 0usize and !stepping {
       fullCollect(true);
-      p = tryMalloc(size, bytes);
+      p = tryMalloc(bytes);
     }
     if p as usize == 0usize {
       return p;
@@ -306,7 +316,8 @@ pub struct Gc is RegionRef, Traced {
     // roots, traced again at the atomic step, or through a store, which the
     // barrier shades; during the sweep, the new white, which survives it
     imm fin = ((ty as &TypeRecord).flags & 1u32) != 0u32;
-    mem.writeRaw(p as *Gc, new Gc(if fin {finobj;} else {allgc;}, 0usize, ty, curWhite));
+    imm extra = u32.from((bytes - objBytes(ty)) / 8usize);
+    mem.writeRaw(p as *Gc, new Gc(if fin {finobj;} else {allgc;}, 0usize, ty, curWhite, extra));
     if fin { finobj = p as usize; } else { allgc = p as usize; }
     totalBytes = totalBytes + bytes;
     nobjects = nobjects + 1usize;
@@ -372,12 +383,12 @@ pub struct Gc is RegionRef, Traced {
     if work > maxStep { maxStep = work; }
   }
 
-  // Memory for an object, unless it would pass the limit
-  fn tryMalloc(size usize, bytes usize) *u8 {
+  // Memory for an object of 'bytes' bytes, unless it would pass the limit
+  fn tryMalloc(bytes usize) *u8 {
     if maxBytes != 0usize and totalBytes + bytes > maxBytes {
       return null;
     }
-    libc.malloc(size);
+    libc.malloc(bytes);
   }
 
   // n rounded up to a multiple of align, a power of two
@@ -398,6 +409,23 @@ pub struct Gc is RegionRef, Traced {
     mut al = rec.align;
     if al < mem.alignof[Gc]() { al = mem.alignof[Gc](); }
     roundUp(valueOffset(ty) + rec.size, al);
+  }
+
+  // The bytes an object takes, for a size the compiler asked for: the record's
+  // count, or more when the object is a body longer than its one element. Never
+  // fewer than the size asked for, so what is allocated is what is counted.
+  fn bodyBytes(size usize, ty *TypeRecord) usize {
+    imm rec = ty as &TypeRecord;
+    mut al = rec.align;
+    if al < mem.alignof[Gc]() { al = mem.alignof[Gc](); }
+    imm asked = roundUp(size, al);
+    imm one = objBytes(ty);
+    if asked > one { asked; } else { one; }
+  }
+
+  // The bytes the object whose header is 'h' takes: as counted when it was made
+  fn heldBytes(h &Gc) usize {
+    objBytes(h.ty) + usize.from(h.extra) * 8usize;
   }
 
   fn header(at usize) &mut Gc {
@@ -426,7 +454,7 @@ pub struct Gc is RegionRef, Traced {
     imm at = grays;
     imm h = header(at);
     grays = h.gray;
-    imm bytes = objBytes(h.ty);
+    imm bytes = heldBytes(h);
     if keeping {
       h.marked = h.marked | black | keptBit;
     }
@@ -598,7 +626,7 @@ pub struct Gc is RegionRef, Traced {
       return 1usize;
     }
     imm h = header(at);
-    imm bytes = objBytes(h.ty);
+    imm bytes = heldBytes(h);
     nswept = nswept + 1usize;
     if h.marked & (whites ^ curWhite) != 0u32 {
       if sweepAt == 0usize { setListHead(sweepList, h.next); } else { header(sweepAt).next = h.next; }
@@ -651,7 +679,7 @@ pub struct Gc is RegionRef, Traced {
     if tobefnz == 0usize { gcPhase = pausePhase; }
     imm fin = (h.ty as &TypeRecord).finalize;
     fin(valueOf(at));
-    objBytes(h.ty);
+    heldBytes(h);
   }
 
   // One piece of the collection, whichever phase it is in; its work
@@ -699,7 +727,7 @@ pub struct Gc is RegionRef, Traced {
     while at != 0usize {
       imm h = header(at);
       h.marked = (h.marked & finalizedBit) | curWhite;
-      work = work + objBytes(h.ty);
+      work = work + heldBytes(h);
       at = h.next;
     }
     work;

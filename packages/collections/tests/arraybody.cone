@@ -1,0 +1,83 @@
+// 'List[T]' and 'Array[T]', the body of a run-time length: a list lends
+// '&Array[T]' as its 'view' and folds the body's methods in as its own (as a
+// String does 'str''s), and 'freeze()' moves its block into a 'So[Array[T]]',
+// shrunk to fit and never copied, whose death finalizes each element once.
+// Each Fin records its death by appending its digit to 'log', so a log of 123
+// means 1 died, then 2, then 3. Every expected value is worked out by hand.
+
+mod arraybody;
+
+import testing use *;
+import collections use *;
+
+mut log = 0i64;
+
+struct Fin {
+  pub n i64;
+  fn final(self &uni) { log = log * 10i64 + n; }
+}
+
+fn total(xs &Array[i64]) i64 {
+  mut t = 0i64;
+  mut i = 0usize;
+  while i < xs.len { t = t + xs[i]; i = i + 1usize; }
+  t;
+}
+
+fn countOf[T](xs &Array[T]) u64 { u64.from(xs.len); }
+
+// The list's death after a freeze finalizes nothing: the values moved with
+// the block, and die with its owner, first to last, once
+fn frozenDies() {
+  imm l = new List[Fin] <- new Fin(1), new Fin(2), new Fin(3);
+  imm owner = l.freeze();
+  expectInt(log, 0, "freezing finalizes nothing");
+  expectUInt(u64.from(owner.len), 3, "the owner holds all three");
+  expectInt(owner[1usize].n, 2, "and reads them in place");
+}
+
+fn plain() {
+  mut l = List[i64].empty();
+  mut i = 1i64;
+  while i <= 10i64 { l.push(i); i = i + 1i64; }
+  // The folded 'len' is the body's, through the list's view
+  expectUInt(u64.from(l.len), 10, "len, folded in from the body");
+  expectUInt(u64.from(l.len()), 10, "and called with parentheses");
+  expectUInt(u64.from(l.view().len), 10, "the view is the body's borrow");
+  expectUInt(countOf(l.view()), 10, "inferring the element from the view");
+  expectInt(total(l.view()), 55, "the view reads its numbers: 1 through 10");
+  // Ten pushes grew the block to 16 slots; the frozen block is exactly ten
+  expectUInt(u64.from(l.capacity()), 16, "the list had room for sixteen");
+  imm owner = l.freeze();
+  expectUInt(u64.from(owner.len), 10, "the owner is exactly ten long");
+  expectInt(total(owner), 55, "and holds the same numbers");
+  expectInt(owner[9usize], 10, "the last is 10");
+  expectUInt(countOf(owner), 10, "inferring the element from the owner");
+}
+
+fn empty() {
+  imm l = List[i64].empty();
+  imm owner = l.freeze();
+  expectUInt(u64.from(owner.len), 0, "an empty list freezes to an empty body");
+  expectInt(total(owner), 0, "with nothing to read");
+}
+
+// A list of Strings: each one moves with the block and is finalized with it
+fn strings() {
+  mut names = List[String].empty();
+  names.push(String.from("ab"));
+  names.push(String.from("cde"));
+  imm owner = names.freeze();
+  expectUInt(u64.from(owner.len), 2, "two strings");
+  expectUInt(u64.from(owner[1usize].len), 3, "the second is cde");
+  expectBool(owner[0usize].equals("ab"), true, "the first is ab");
+}
+
+fn main() i32 {
+  frozenDies();
+  expectInt(log, 123, "the owner's death finalizes first to last");
+  plain();
+  empty();
+  strings();
+  done();
+}

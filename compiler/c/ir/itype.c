@@ -583,6 +583,14 @@ void itypeSpellCat(char *buf, size_t size, INode *type, int depth) {
         Name *regname = region && region->tag == StructTag ? ((StructNode *)region)->namesym : NULL;
         char *rname = regname ? &regname->namestr : "?";
         if (region == borrowRef) {
+            // A slice is the borrow of the body of a run-time length: '&ro Array[T]'
+            if (dcl->tag == ArrayRefTag) {
+                snprintf(buf + used, size - used, "&%s Array[", pname);
+                itypeSpellCat(buf, size, ref->vtexp, depth + 1);
+                used = strlen(buf);
+                snprintf(buf + used, size - used, "]");
+                return;
+            }
             snprintf(buf + used, size - used, "&%s %s", pname, shape);
             itypeSpellCat(buf, size, ref->vtexp, depth + 1);
             return;
@@ -967,9 +975,13 @@ int itypeRefuseBareGeneric(INode *type) {
     if (dcl == NULL || dcl->tag != StructTag || ((StructNode*)dcl)->genericinfo == NULL)
         return 0;
     Name *generic = ((StructNode*)dcl)->namesym;
-    errorMsgNode(type, ErrorArgCount,
-        "%s is generic, so it is not a type: each of its instances is, written with its type arguments as %s[...].",
-        &generic->namestr, &generic->namestr);
+    if (dcl == (INode*)arrayTypeDcl)
+        errorMsgNode(type, ErrorArrayTypeArgs,
+            "Array is a type only with its element type: 'Array[T]' is the body of a run-time length, 'Array[T, n]' the array of n elements, and 'Array[T, n, m]' one with a size for each dimension.");
+    else
+        errorMsgNode(type, ErrorArgCount,
+            "%s is generic, so it is not a type: each of its instances is, written with its type arguments as %s[...].",
+            &generic->namestr, &generic->namestr);
     // Bound to the error type from here on, so that nothing reached through this
     // name -- an alias's uses, a parameter's arguments -- reports it again
     ((NameUseNode*)type)->dclnode = errorType;
@@ -1255,10 +1267,31 @@ int itypeIsConcrete(INode *type) {
 }
 
 // The element type of a dynamically sized body whose length a reference to it
-// carries, or NULL for any other type. 'str' is the one such body so far: its
-// elements are bytes.
+// carries, or NULL for any other type. 'str' is one, its elements bytes; the
+// other is 'Array[T]', the instance of core's generic body of that name, its
+// elements T. (An instance has no layout of its own to ask: the element is the
+// type argument it was made with.)
 INode *itypeLenBodyElem(INode *type) {
-    return itypeGetTypeDcl(type) == (INode*)strTypeDcl ? (INode*)u8Type : NULL;
+    INode *dcl = itypeGetTypeDcl(type);
+    if (dcl == (INode*)strTypeDcl)
+        return (INode*)u8Type;
+    INode *instnode = dcl->instnode;
+    if (dcl->tag != StructTag || instnode == NULL || arrayTypeDcl->genericinfo == NULL
+        || (instnode->tag != FnCallTag && instnode->tag != TypeLitTag
+            && instnode->tag != ArrIndexTag && instnode->tag != FldAccessTag)
+        || !isNameUseNode(((FnCallNode*)instnode)->objfn)
+        || nameUseGetDcl((NameUseNode*)((FnCallNode*)instnode)->objfn) != (INode*)arrayTypeDcl)
+        return NULL;
+    Nodes *typeargs = itypeInstanceTypeArgs(dcl);
+    if (typeargs == NULL || typeargs->used != 1)
+        return NULL;
+    return nodesGet(typeargs, 0);
+}
+
+// Is this type 'Array[T]', the body of a run-time length?
+int itypeIsArrayBody(INode *type) {
+    INode *dcl = itypeGetTypeDcl(type);
+    return dcl != (INode*)strTypeDcl && itypeLenBodyElem(type) != NULL;
 }
 
 // Is the size of a value of this type known at compile time ('Sized')?
@@ -1345,6 +1378,15 @@ char *itypeName(INode *type) {
     default:
         break;
     }
+    // The body of a run-time length is named with its element, as it is written
+    if (itypeIsArrayBody(dcltype)) {
+        static char bodynames[4][96];
+        static unsigned bodynext;
+        char *elemname = itypeName(itypeLenBodyElem(dcltype));
+        char *buf = bodynames[bodynext++ & 3];
+        snprintf(buf, sizeof(bodynames[0]), "Array[%s]", elemname);
+        return buf;
+    }
     Name *namesym = inodeGetName(dcltype);
     return namesym ? (char*)&namesym->namestr : "this type";
 }
@@ -1394,6 +1436,8 @@ static char *itypeNoSizeOwnCause(INode *dcltype, uint32_t depth) {
         return "is not a value at all. Use a reference to a function instead";
 
     // A body whose length a reference carries has no size of its own to hold
+    if (itypeIsArrayBody(dcltype))
+        return "is a dynamically sized body, whose length is carried by a reference to it. Hold it through a reference: '&Array[T]', 'So[Array[T]]', 'Rc[Array[T]]'";
     if (itypeLenBodyElem(dcltype) != NULL)
         return "is a dynamically sized body, whose length is carried by a reference to it. Hold it through a reference: '&str', 'So[str]', 'Rc[str]'";
 

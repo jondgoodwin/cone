@@ -106,17 +106,29 @@ TypeCompare arrayRefMatchesRef(RefNode *to, RefNode *from, SubtypeConstraint con
     // It converts to '&[]u8' wherever one is wanted (the permission may only
     // narrow, so a '&imm str' is no '&[]mut u8'), but not back: bytes need not
     // be UTF-8, so '&[]u8' to '&str' is the explicit 'as'.
+    //
+    // An owner or a borrow of 'Array[T]', the body of a run-time length, is a
+    // slice of its elements in the same way, and lends as any owner lends a
+    // borrow, so its region may be any.
+    INode *fromelem;
+    int frombody = 0;
     if (refIsFat(from)) {
-        if (itypeGetTypeDcl(from->region) != borrowRef || to->vtexp == NULL || !itypeIsSame(to->vtexp, (INode*)u8Type)
-            || permMatches(to->perm, from->perm) == NoMatch)
-            return NoMatch;
-        return CastSubtype;
+        if (!itypeIsArrayBody(from->vtexp)) {
+            if (itypeGetTypeDcl(from->region) != borrowRef || to->vtexp == NULL || !itypeIsSame(to->vtexp, (INode*)u8Type)
+                || permMatches(to->perm, from->perm) == NoMatch)
+                return NoMatch;
+            return CastSubtype;
+        }
+        fromelem = itypeLenBodyElem(from->vtexp);
+        frombody = 1;
     }
-
-    // From type must be a reference to
-    ArrayNode *arraytype = (ArrayNode*)from->vtexp;
-    if (arraytype->tag != ArrayTag)
-        return NoMatch;
+    else {
+        // From type must be a reference to
+        ArrayNode *arraytype = (ArrayNode*)from->vtexp;
+        if (arraytype->tag != ArrayTag)
+            return NoMatch;
+        fromelem = arrayElemType((INode*)arraytype);
+    }
 
     // Start with matching the references' regions
     if (regionMatches(to->region, from->region, constraint) == NoMatch)
@@ -132,20 +144,20 @@ TypeCompare arrayRefMatchesRef(RefNode *to, RefNode *from, SubtypeConstraint con
     switch (permGetFlags(to->perm) & (MayWrite | MayRead)) {
     case 0:
     case MayRead:
-        if (refHeldMoveSeenAsCopy(to->vtexp, arrayElemType((INode*)arraytype)))
+        if (refHeldMoveSeenAsCopy(to->vtexp, fromelem))
             return NoMatch;
-        match = itypeMatches(to->vtexp, arrayElemType((INode*)arraytype), constraint); // covariant
+        match = itypeMatches(to->vtexp, fromelem, constraint); // covariant
         break;
     case MayWrite:
-        match = itypeMatches(arrayElemType((INode*)arraytype), to->vtexp, constraint); // contravariant
+        match = itypeMatches(fromelem, to->vtexp, constraint); // contravariant
         break;
     case MayRead | MayWrite:
-        return itypeIsSame(to->vtexp, arrayElemType((INode*)arraytype)) ? ConvSubtype : NoMatch; // invariant
+        return itypeIsSame(to->vtexp, fromelem) ? (frombody ? CastSubtype : ConvSubtype) : NoMatch; // invariant
     }
     switch (match) {
     case EqMatch:
     case CastSubtype:
-        return ConvSubtype;
+        return frombody ? CastSubtype : ConvSubtype;
     case ConvSubtype:
         return constraint == Monomorph ? ConvSubtype : NoMatch;
     default:

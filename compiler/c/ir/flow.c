@@ -1906,7 +1906,8 @@ static int flowGateIsOwnedLent(CastNode *cast) {
         return 0;
     INode *to = iexpGetTypeDcl((INode *)cast);
     INode *from = iexpGetTypeDcl(cast->exp);
-    return (to->tag == RefTag || to->tag == VirtRefTag) && from->tag == to->tag
+    return (to->tag == RefTag || to->tag == VirtRefTag || to->tag == ArrayRefTag)
+        && (from->tag == to->tag || (to->tag == ArrayRefTag && from->tag == RefTag))
         && flowGateIsBorrowRef(to) && !flowGateIsBorrowRef(from);
 }
 

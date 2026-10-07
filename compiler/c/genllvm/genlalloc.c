@@ -1354,9 +1354,12 @@ LLVMValueRef genlallocref(GenState *gen, RefNode *allocatenode) {
         unsigned long long header = LLVMOffsetOfElement(gen->datalayout, reftype->typeinfo->structype, ValueField);
         unsigned long long elemsize = LLVMABISizeOfType(gen->datalayout, valuetypllvm);
         count = LLVMBuildExtractValue(gen->builder, value, 1, "count");
-        // One byte more than the elements, for the NUL that text always keeps
-        // after its bytes (itypeLenBodyElem is 'str''s bytes so far)
-        sizeval = LLVMBuildAdd(gen->builder, LLVMConstInt(usize, header + 1, 0),
+        // One byte more than the elements: the NUL that text always keeps after
+        // its bytes. An 'Array[T]' keeps nothing there, so it takes only what
+        // its elements take, except that an empty one with no header (a 'So')
+        // would ask its region for no memory at all
+        unsigned long long spare = itypeIsArrayBody(reftype->vtexp) && header > 0 ? 0 : 1;
+        sizeval = LLVMBuildAdd(gen->builder, LLVMConstInt(usize, header + spare, 0),
             LLVMBuildMul(gen->builder, count, LLVMConstInt(usize, elemsize, 0), "bytes"), "allocsize");
     }
 

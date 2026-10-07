@@ -427,7 +427,7 @@ static void fnDclComputeCheck(FnDclNode *fnnode) {
     FnSigNode *sig = (FnSigNode *)fnnode->vtype;
     if (itypeGetTypeDcl(sig->rettype)->tag != VoidTag)
         errorMsgNode(sig->rettype, ErrorComputeSig,
-            "An entry point returns nothing: what a kernel makes, it writes into a slice it was given, '&[]mut T'.");
+            "An entry point returns nothing: what a kernel makes, it writes into a slice it was given, '&mut Array[T]'.");
     int invocations = 0, buffers = 0;
     INode **nodesp;
     uint32_t cnt;
@@ -452,7 +452,7 @@ static void fnDclComputeCheck(FnDclNode *fnnode) {
         }
         else {
             errorMsgNode((INode *)parm, ErrorComputeSig,
-                "An entry point's parameter '%s' is %s; it may be core's Invocation, a slice, '&[]T' read or '&[]mut T' written, or a struct taken by value, each slice and struct a buffer the dispatch binds.",
+                "An entry point's parameter '%s' is %s; it may be core's Invocation, a slice, '&Array[T]' read or '&mut Array[T]' written, or a struct taken by value, each slice and struct a buffer the dispatch binds.",
                 &parm->namesym->namestr, itypeName(parm->vtype));
             continue;
         }
@@ -543,7 +543,13 @@ void fnDclTypeCheck(TypeCheckState *pstate, FnDclNode *fnnode) {
     // Ensure self parameter on a method is (reference to) its enclosing type
     if (fnnode->flags & FlagMethFld) {
         INode *selfparm = nodesGet(((FnSigNode *)(fnnode->vtype))->parms, 0);
-        if (iexpGetDerefTypeDcl(selfparm) != pstate->typenode)
+        // An 'Array[T]' method's self is the slice '&Array[T]', the one borrow
+        // of the body, whose target is the element
+        INode *selfdcl = iexpGetTypeDcl(selfparm);
+        int selfisbody = selfdcl->tag == ArrayRefTag && pstate->typenode->tag == StructTag
+            && itypeIsArrayBody((INode*)pstate->typenode)
+            && itypeIsSame(((RefNode*)selfdcl)->vtexp, itypeLenBodyElem((INode*)pstate->typenode));
+        if (!selfisbody && iexpGetDerefTypeDcl(selfparm) != pstate->typenode)
             errorMsgNode((INode*)fnnode, ErrorInvType, "self parameter for a method must match, or be a reference to, its type");
     }
 

@@ -13,7 +13,11 @@
 
     <div class="text">
 
-    <p style="margin-left: 40px;"><i>Note: Borrowing a slice from an array, from a slice, or from a
+    <p style="margin-left: 40px;"><i>Note: A slice is written <span class="pre">&amp;Array[T]</span>, the borrow of the body
+        <span class="pre">Array[T]</span> (<a href="#owned">below</a>), and <span class="pre">&amp;mut Array[T]</span>
+        where it changes its elements; the older <span class="pre">&amp;[]T</span> and
+        <span class="pre">&amp;[]mut T</span> are the same types and are still accepted, so the examples on this
+        page that use them are no different. Borrowing a slice from an array, from a slice, or from a
         collection that lends one (<span class="pre">List</span>'s <span class="pre">view()</span>),
         indexing it, subslices of an array or a slice using <span class="pre">..</span> or
         <span class="pre">...</span>, with either end left out, and comparing two slices
@@ -45,14 +49,18 @@
         A slice does not own its elements: it is borrowed from something that does,
         and like any <a href="refborref.html">borrowed reference</a> it may not outlive it.</p>
 
-    <h2>Owned Arrays</h2>
-    <p>Every array reference is borrowed. There is no owning array reference:
-        a <a href="refallocref.html">managed reference</a> is thin, virtual, or fat with the count of a
-        <a href="refallocref.html#dynbody">dynamically sized body</a> such as <span class="pre">str</span>,
-        never an array reference. A slice of bytes, <span class="pre">&amp;[]u8</span>, and a borrow of
-        that body, <span class="pre">&amp;str</span>, are the same pair of words and different types,
-        and either converts to the other with <span class="pre">as</span>.
-        What owns an array is one of these:</p>
+    <h2 id="owned">Owned Arrays</h2>
+    <p>The body of a run-time length is <span class="pre">Array[T]</span>, the array type without a size.
+        It has no size of its own, so it is held only through a reference that carries the count, and the
+        slice <i>is</i> its borrow: <span class="pre">&amp;Array[T]</span> is the slice (the older spelling,
+        <span class="pre">&amp;[]T</span>, is the same type, and <span class="pre">&amp;mut Array[T]</span> the
+        slice that changes its elements). Every array reference is borrowed. There is no owning array
+        reference: a <a href="refallocref.html">managed reference</a> is thin, virtual, or fat with the count of a
+        <a href="refallocref.html#dynbody">dynamically sized body</a>, <span class="pre">str</span> or
+        <span class="pre">Array[T]</span>, never an array reference. A slice of bytes,
+        <span class="pre">&amp;[]u8</span>, and a borrow of the text body, <span class="pre">&amp;str</span>, are the
+        same pair of words and different types, and either converts to the other with
+        <span class="pre">as</span>. What owns an array is one of these:</p>
     <ul>
     <li><b>A fixed-size array</b>, whose size is part of its type.
         It may be held in a variable or a field, or allocated in a region and reached by a thin reference
@@ -62,6 +70,27 @@
 <pre>
 imm grid = new Rc[mut, Array[i32, 4]] &lt;- fill 0i32;      // grid's type: Rc[mut, Array[i32, 4]]
 imm made = new Rc[mut, Array[i32, 4]](new Array[i32, 4] &lt;- 1, 2, 3, 4);
+</pre>
+    </li>
+    <li><b>An owner of <span class="pre">Array[T]</span></b>, when the number of elements is chosen at runtime
+        and never changes: <span class="pre">So[Array[T]]</span>, <span class="pre">Rc[Array[T]]</span>,
+        <span class="pre">Arc[Array[T]]</span> or <span class="pre">Gc[Array[T]]</span>, each a pointer and a count,
+        one hop to the elements. It is allocated by copying the elements of a slice, as an owner of
+        <span class="pre">str</span> is, so only where the elements copy; a list's
+        <span class="pre">freeze()</span> moves its own into one instead, any element included. The owner has
+        <span class="pre">len</span>, indexes (<span class="pre">o[i]</span>) and takes a borrowed range
+        (<span class="pre">&amp;o[a..b]</span>) as a slice does, and is lent as the slice wherever a
+        <span class="pre">&amp;Array[T]</span> is wanted, a generic's element type inferred from it. Which of the
+        <a href="reftypecoll.html">three kinds of list</a> it is comes from its permission: held writable
+        (<span class="pre">So[Array[T]]</span>, <span class="pre">Rc[mut, Array[T]]</span>) its elements change but
+        its length does not; held <span class="pre">imm</span> (<span class="pre">Rc[imm, Array[T]]</span>,
+        <span class="pre">Arc[imm, Array[T]]</span>) nothing changes. A borrow of a fixed-size array,
+        <span class="pre">&amp;Array[T, n]</span>, converts to the slice.
+<pre>
+imm primes = new Array[i32, 4] &lt;- 2, 3, 5, 7;
+imm shared = new Rc[imm, Array[i32]](&amp;primes);     // a copy: a pointer and a count
+imm total = sum(shared);                           // lent as the &amp;Array[i32] sum takes
+imm frozen = list.freeze();                        // a List[T]'s block, moved into a So[Array[T]]
 </pre>
     </li>
     <li><b>A collection</b>, when the number of elements is chosen at runtime.

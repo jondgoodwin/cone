@@ -1,0 +1,47 @@
+// Folding the body of a run-time length a type lends: 'use Array[i32] via view;'
+// makes 'len', the one method 'Array[T]' declares, a name of the type, reached
+// through the '&Array[i32]' the type's own 'view' gives. The name is a method
+// like the type's own, so it satisfies a trait's slot: the virtual reference to
+// 'Counted' built from a Bag calls a small function that lends the view and
+// then calls the body's 'len' on it.
+//
+// Each printed value was checked by hand against the source.
+
+mod struct_use_lend_array;
+
+import stdio use *;
+
+trait Counted {
+  pub fn len(self &) usize;
+}
+
+struct Bag {
+  pub items &Array[i32];
+
+  // The borrow of the elements this type lends
+  pub fn view(self &) &Array[i32] { items; }
+
+  use Array[i32] via view;
+}
+
+// The same name through a trait, statically and through a virtual reference
+fn staticCount[C Counted](c &C) usize { c.len(); }
+fn dynCount(c &<Counted) usize { c.len(); }
+
+fn show(label &str, n i64) {
+  printStr(label);
+  printStr(" ");
+  printInt(n);
+  printStr("\n");
+}
+
+fn main() {
+  imm numbers Array[i32, 5] = [1, 2, 3, 4, 5];
+  imm bag = new Bag(&numbers);
+  show("len", i64.from(bag.len));
+  show("static", i64.from(staticCount(&bag)));
+  show("virtual", i64.from(dynCount(&bag)));
+  imm small Array[i32, 2] = [7, 8];
+  imm other = new Bag(&small);
+  show("another", i64.from(dynCount(&other)));
+}

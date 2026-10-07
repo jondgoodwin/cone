@@ -1,0 +1,100 @@
+// The collector counts a body of a run-time length by its length: 'Gc[str]' and
+// 'Gc[Array[T]]' are a pointer and a count, and the object takes its header and
+// as many elements as it has, not the one element its type record describes.
+// The count decides when a collection starts and what a limit allows, so it
+// is the bytes the object really takes (the block is allocated that size too).
+//
+// A Gc header is 32 bytes (the next link, the gray link, the type record and
+// the colour), and a value follows it at an offset of 32 for these elements.
+// Every size below was worked out by hand from that:
+//
+//   Gc[Array[i64]] of 100:  32 + 100 * 8                      = 832
+//   Gc[Array[i32]] of 3:    32 + 3 * 4 = 44, rounded up to 8  = 48
+//   Gc[str] of 11 bytes:    32 + 11 + 1 (the NUL) = 44 -> 48
+//   Gc[Array[i64]] empty:   32 + 0 = 32, but an object is counted as at
+//                           least its record's one element, 32 + 8 = 40
+
+mod arraybody;
+
+import testing use *;
+import collector;
+
+fn settle() {
+  Gc.collect();
+  Gc.collect();
+}
+
+fn live() u64 { u64.from(Gc.liveObjects()); }
+fn bytes() u64 { u64.from(Gc.liveBytes()); }
+
+// 100 numbers, 0 through 99, in an array
+fn hundred() Array[i64, 100] {
+  mut a = new Array[i64, 100] <- fill 0i64;
+  mut i = 0usize;
+  while i < 100usize { a[i] = i64.from(i); i = i + 1usize; }
+  a;
+}
+
+fn sumOf(xs &Array[i64]) i64 {
+  mut t = 0i64;
+  mut i = 0usize;
+  while i < xs.len { t = t + xs[i]; i = i + 1usize; }
+  t;
+}
+
+// Made and dropped inside a call: its frame is gone when the caller collects
+fn garbage(a &Array[i64, 100]) {
+  imm g = new Gc[Array[i64]](a);
+  expectUInt(bytes(), 1664, "a hundred numbers are counted whole, beside the one the caller holds");
+  expectInt(sumOf(g), 4950, "and read back through the owner");
+}
+
+fn kept(a &Array[i64, 100]) {
+  imm k = new Gc[Array[i64]](a);
+  garbage(a);
+  settle();
+  expectUInt(live(), 1, "the array a root holds is kept and the dropped one freed");
+  expectUInt(bytes(), 832, "and only the kept one is counted");
+  expectUInt(u64.from(k.len), 100, "it keeps its length");
+  expectInt(sumOf(k), 4950, "and its numbers");
+}
+
+fn small() {
+  imm three Array[i32, 3] = [7, 8, 9];
+  imm t = new Gc[Array[i32]](&three);
+  expectUInt(bytes(), 48, "three i32s are counted to the alignment of the header");
+  expectInt(i64.from(t[2usize]), 9, "the last is there");
+}
+
+fn empty() {
+  imm none = new Array[i64, 1] <- fill 0i64;
+  imm nothing = &none[0usize..0usize];
+  imm e = new Gc[Array[i64]](nothing);
+  expectUInt(bytes(), 40, "an empty body is counted as its record's one element");
+  expectUInt(u64.from(e.len), 0, "though it holds none");
+}
+
+fn text() {
+  imm raw &[]u8 = "hello world";
+  imm s = new Gc[str](raw as &str);
+  expectUInt(bytes(), 48, "eleven bytes of text, and the NUL after them");
+  expectUInt(u64.from(s.len), 11, "the text is as long as it was");
+}
+
+fn main() i32 {
+  imm a = hundred();
+  kept(&a);
+  settle();
+  expectUInt(live(), 0, "all of it is freed once its roots are gone");
+  expectUInt(bytes(), 0, "and no bytes are left counted");
+  small();
+  settle();
+  expectUInt(bytes(), 0, "the small one is freed too");
+  empty();
+  settle();
+  expectUInt(bytes(), 0, "and the empty one");
+  text();
+  settle();
+  expectUInt(bytes(), 0, "and the text");
+  done();
+}

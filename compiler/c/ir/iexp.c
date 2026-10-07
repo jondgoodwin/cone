@@ -501,6 +501,16 @@ int iexpIsLval(INode *lval) {
         return iexpIsLval(((FnCallNode *)lval)->objfn);
     case FldAccessTag:
         return iexpIsLval(((FnCallNode *)lval)->objfn);
+    case FnCallTag:
+        // A call already reported as bad is not reported again as no place
+        return ((IExpNode *)lval)->vtype == errorType;
+    case CastTag:
+        // An owner of 'Array[T]' lent as the slice it is indexed through
+        // (fnCallBodyAsSlice) is the owner's place
+        if (!(lval->flags & FlagConvert) && iexpGetTypeDcl(lval)->tag == ArrayRefTag
+            && iexpGetTypeDcl(((CastNode *)lval)->exp)->tag == RefTag)
+            return iexpIsLval(((CastNode *)lval)->exp);
+        return 0;
     default:
         return 0;
     }

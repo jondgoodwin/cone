@@ -243,6 +243,18 @@ void refNameRes(NameResState *pstate, RefNode *node) {
             errorMsgNode((INode*)node, ErrorPlusAlloc,
                 "An allocation is written 'new Rc[mut, Rect](...)', the concrete type, and the reference coerces where a virtual one is wanted.");
     }
+    // '&Array[T]' written out is the slice, '&[]T': the same type, so it is the
+    // slice's node from here on (the borrow of the body of a run-time length)
+    else if (node->tag == RefTag && node->region == (INode*)borrowRef && node->vtexp->tag == FnCallTag) {
+        FnCallNode *call = (FnCallNode*)node->vtexp;
+        if ((call->flags & (FlagIndex | FlagRange)) == FlagIndex && call->methfld == NULL
+            && call->args != NULL && call->args->used == 1 && isNameUseNode(call->objfn)
+            && arrayTypeDcl->genericinfo != NULL
+            && nameUseGetDcl((NameUseNode*)call->objfn) == (INode*)arrayTypeDcl) {
+            node->tag = ArrayRefTag;
+            node->vtexp = nodesGet(call->args, 0);
+        }
+    }
 }
 
 // An owning reference's region is a struct declaring 'is RegionRef': that is
@@ -364,6 +376,17 @@ void refTypeCheck(TypeCheckState *pstate, RefNode *node) {
     int waiting;
     if (refTargetTypeCheck(pstate, &node->vtexp, &waiting) == 0)
         return;
+    // A borrow of the body of a run-time length, '&Array[T]' (reached here
+    // through an alias, or built by the compiler; refNameRes retags the one
+    // written out), is the slice
+    if (node->tag == RefTag && itypeGetTypeDcl(node->region) == borrowRef && itypeIsArrayBody(node->vtexp)) {
+        node->tag = ArrayRefTag;
+        node->vtexp = itypeLenBodyElem(node->vtexp);
+        refAdoptInfections(node);
+        regionTracedRefNote(node);
+        node->typeinfo = typetblFind((INode*)node, refTypeInfoAlloc);
+        return;
+    }
     // Immutable's two rules, each its own call
     INode *immperm = permunwritten ? refImmutableDefaultPerm(node->vtexp) : NULL;
     // A permission refused is reported once and stands as 'imm' after, so the
