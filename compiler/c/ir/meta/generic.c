@@ -11,6 +11,26 @@
 #include <stdio.h>
 #include <assert.h>
 
+// Hook every parameter, then resolve what follows each: a bound may name a
+// parameter declared after it, '[S Stack[T], T]'
+void genericParmsNameRes(NameResState *pstate, Nodes *parms) {
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(parms, cnt, nodesp)) {
+        GenVarDclNode *parm = (GenVarDclNode *)*nodesp;
+        nametblHookNode(parm->namesym, *nodesp);
+    }
+    for (nodesFor(parms, cnt, nodesp)) {
+        GenVarDclNode *parm = (GenVarDclNode *)*nodesp;
+        if (parm->annot == NULL)
+            continue;
+        INode **annotp;
+        uint32_t annotcnt;
+        for (nodesFor(parm->annot, annotcnt, annotp))
+            inodeNameRes(pstate, annotp);
+    }
+}
+
 // Create a new generic info block
 GenericInfo *newGenericInfo() {
     GenericInfo *geninfo = (GenericInfo*)memAllocBlk(sizeof(GenericInfo));

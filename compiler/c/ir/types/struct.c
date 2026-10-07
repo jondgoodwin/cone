@@ -2042,8 +2042,7 @@ void structNameRes(NameResState *pstate, StructNode *node) {
     // it, so doing it before the push would bind it in the enclosing scope and
     // the matching pop would never remove it.
     if (node->genericinfo) {
-        for (nodesFor(node->genericinfo->parms, cnt, nodesp))
-            inodeNameRes(pstate, nodesp);
+        genericParmsNameRes(pstate, node->genericinfo->parms);
         // The type's requirements on its arguments
         genericConstraintsNameRes(pstate, node->genericinfo->parms, &node->genericinfo->where);
     }

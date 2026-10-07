@@ -644,7 +644,8 @@ inherited member bare, exactly as it names the type's own.
    so its bodies keep what they bound in the base's scope.
 3. Resolve generic parameters **inside** the push — resolving one hooks it, so
    doing it beforehand would bind it in the enclosing scope and the matching pop
-   would never remove it.
+   would never remove it. All are hooked before any bound is resolved
+   (`genericParmsNameRes`).
 4. **Resolve `basetrait` now**, before the type's own namespace is hooked — the
    comment says "before any other name in type is hooked", and the reason is
    scoping: once step 7 hooks the members, they shadow module scope, and the

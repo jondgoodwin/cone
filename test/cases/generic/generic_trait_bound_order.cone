@@ -1,0 +1,120 @@
+// A bound may name a type parameter declared after it: '[S Stack[T], T]'
+// reads as '[T, S Stack[T]]' does, as in Rust. Every parameter is in scope
+// for every bound, whichever side of it it is written. A function, a generic
+// method and a generic type are each shown, with the bound inline and in a
+// 'where' clause; the type argument is written, or inferred from the bound.
+// Each printed value was checked by hand against the source.
+
+mod generic_trait_bound_order;
+
+import stdio use *;
+
+fn show(label &[]u8, n i64) {
+  printStr(label);
+  printStr(" ");
+  printInt(n);
+  printStr("\n");
+}
+
+fn showOpt(label &[]u8, o Option[i64]) {
+  match o {
+    case imm s Some[i64] { show(label, s.value); }
+    case is None { show(label, -1); }
+  }
+}
+
+trait Stack[T] {
+  pub fn push(self &mut, v T);
+  pub fn pop(self &mut) Option[T];
+}
+
+trait Peek[T] {
+  pub fn peek(self &) Option[T];
+}
+
+struct Slot {
+  pub n i64;
+  pub has bool;
+  pub fn push(self &mut, v i64) {
+    n = v;
+    has = true;
+  }
+  pub fn pop(self &mut) Option[i64] {
+    if has {
+      has = false;
+      Some[i64][n];
+    }
+    else {
+      None[i64][];
+    }
+  }
+  pub fn peek(self &) Option[i64] {
+    if has { Some[i64][n]; } else { None[i64][]; }
+  }
+}
+
+// The bound first, the parameter it names after
+fn drain[S Stack[T], T](s &mut S) Option[T] {
+  s.pop();
+}
+
+fn fill[S Stack[T], T](s &mut S, v T) {
+  s.push(v);
+}
+
+// Two bounds, each naming a parameter declared later
+fn peekThenPop[S Stack[T] + Peek[T], T](s &mut S) Option[T] {
+  imm seen = s.peek();
+  s.pop();
+}
+
+// Between two parameters, and nested in another bound's argument
+fn middle[S Stack[T], T, U Peek[T]](s &mut S, u &U) Option[T] {
+  s.pop();
+  u.peek();
+}
+
+// A generic method
+struct Tool {
+  pub k i64;
+  pub fn viaMethod[S Stack[T], T](self &, s &mut S) Option[T] {
+    s.pop();
+  }
+}
+
+// A generic type: its bound names the parameter after it
+struct Holder[S Stack[T], T] {
+  pub inner S;
+  pub fn take(self &mut) Option[T] {
+    inner.pop();
+  }
+}
+
+fn main() {
+  mut box = new Slot(0, false);
+
+  fill[Slot, i64](&mut box, 7);
+  showOpt("explicit", drain[Slot, i64](&mut box));
+
+  fill(&mut box, 8i64);
+  showOpt("inferred", drain(&mut box));
+
+  fill(&mut box, 5i64);
+  showOpt("two", peekThenPop(&mut box));
+
+  fill(&mut box, 6i64);
+  imm other = new Slot(11, true);
+  showOpt("middle", middle(&mut box, &other));
+
+  imm tool = new Tool(1);
+  fill(&mut box, 9i64);
+  showOpt("method", tool.viaMethod(&mut box));
+
+  mut h = new Holder[Slot, i64](new Slot(0, false));
+  fill(&mut h.inner, 12i64);
+  showOpt("holder", h.take());
+
+  mut h2 = new Holder(new Slot(0, false));
+  fill(&mut h2.inner, 13i64);
+  showOpt("holder2", h2.take());
+}
