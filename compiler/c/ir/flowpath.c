@@ -751,6 +751,16 @@ static int pwMayAlias(INode *reftype) {
     return (permGetFlags(((RefNode *)reftype)->perm) & MayAlias) != 0;
 }
 
+// May a holder other than this reference change what it points at while it is
+// used? Every permission that may alias and does not allow interior references
+// (MayIntRefSum, as castSumInterior reads it): 'mut', 'ro' (its holder only
+// promises not to), and a lock permission, whose value is reached by a borrow
+// taking the lock. Not 'imm', 'mut1' or a held lock's.
+static int pwMayAliasWritten(INode *reftype) {
+    return pwMayAlias(reftype) && !(permGetFlags(((RefNode *)reftype)->perm) & MayIntRefSum)
+        && itypeGetTypeDcl(((RefNode *)reftype)->perm) != (INode *)opaqPerm;
+}
+
 // The place reached through the reference 'ref' evaluates to. Through a
 // borrowed reference it is a root of its own, what the reference points at,
 // keyed by the variable the reference is read from; through an owning one, a
@@ -775,6 +785,7 @@ static int pwThrough(INode **refp, Place *pl, PathSet **base) {
         pl->nsteps = 0;
         pl->shared = pwMayAlias(reftype);
         pl->sharedlen = 0;
+        pl->shwrite = pwMayAliasWritten(reftype);
         pl->owned = 0;
         pl->far = refpl.deref;
         pl->referent = refpl.nsteps == 0 && !refpl.deref ? ((RefNode *)reftype)->vtexp : NULL;
@@ -795,6 +806,8 @@ static int pwThrough(INode **refp, Place *pl, PathSet **base) {
             pl->shared = 1;
             pl->sharedlen = pl->nsteps;
         }
+        if (pwMayAliasWritten(reftype))
+            pl->shwrite = 1;
     }
     return 1;
 }
@@ -825,6 +838,7 @@ static int pwPlace(INode **nodep, Place *pl, PathSet **base) {
         pl->nsteps = 0;
         pl->shared = 0;
         pl->sharedlen = 0;
+        pl->shwrite = 0;
         pl->owned = 0;
         pl->far = 0;
         pl->use = node;
@@ -840,6 +854,7 @@ static int pwPlace(INode **nodep, Place *pl, PathSet **base) {
         pl->nsteps = 0;
         pl->shared = 0;
         pl->sharedlen = 0;
+        pl->shwrite = 0;
         pl->owned = 0;
         pl->far = 0;
         pl->use = node;
@@ -979,6 +994,12 @@ static PathSet *pwLend(INode *site, Place *pl, INode *perm, int access, uint32_t
             && !lent.shared) {
             lent.shared = 1;
             lent.sharedlen = lent.nsteps;
+        }
+        // MEASURE: Rust's freeze applied to a shape-changing container reached through a shared path
+        if (referent && referent->tag == StructTag && ((StructNode *)referent)->lends == LendsShapeChanging
+            && lent.shared && getenv("CONE_SHAPE_FREEZE")) {
+            lent.shared = 0;
+            lent.sharedlen = 0;
         }
     }
     uint32_t id = loanMake(site, &lent, perm);
@@ -1568,6 +1589,47 @@ static void pwStaticArgs(FnCallNode *call, FnSigNode *sig, PathSet **argsets) {
     }
 }
 
+// A call whose result borrows from its receiver, a place reached through a
+// shared path that another holder may change: refuse it when the receiver is a
+// container that may change shape ('ShapeChanging'), whose elements another
+// holder's push can move out from under the borrow. Not the ordinary freezing
+// of 'uni' places, which the loan itself checks.
+static struct { char text[400]; uint32_t loan; } measure[512];
+static int nmeasure = 0;
+static void pwShapeShared(FnCallNode *call, Place *recvpl, uint32_t recvloan) {
+    INode *recvtype = iexpGetTypeDcl(nodesGet(call->args, 0));
+    INode *container = recvtype->tag == RefTag ? itypeGetTypeDcl(((RefNode *)recvtype)->vtexp) : NULL;
+    if (container == NULL || container->tag != StructTag || ((StructNode *)container)->lends != LendsShapeChanging)
+        return;
+    // The reference the place is reached through cannot write, and what it
+    // was borrowed from is a place the walk sees a loan on, which nothing else
+    // may change while the reference is used
+    VarDclNode *rv = pathVars[recvpl->var].var;
+    INode *rt = rv ? itypeGetTypeDcl(rv->vtype) : NULL;
+    PathSet *held = pathVars[recvpl->var].holds;
+    int frozen = recvpl->deref && !recvpl->owned && rt && rt->tag == RefTag
+        && !(permGetFlags(((RefNode *)rt)->perm) & MayWrite) && held && held != &pathSetAll && held->cnt > 0;
+    for (uint32_t i = 0; frozen && i < held->cnt; ++i)
+        frozen = loanExcludesWriters(held->ids[i]);
+    // MEASURE
+    if (getenv("CONE_SHAPE_LOG") && nmeasure < 512) {
+        const char *perm = rt && rt->tag == RefTag ? &((NameUseNode *)((RefNode *)rt)->perm)->namesym->namestr : "-";
+        int kinds[5] = { 0, 0, 0, 0, 0 };
+        if (pathVars[recvpl->var].holds && pathVars[recvpl->var].holds != &pathSetAll)
+            for (uint32_t i = 0; i < pathVars[recvpl->var].holds->cnt; ++i)
+                ++kinds[loanKindOfEntry(pathVars[recvpl->var].holds->ids[i])];
+        snprintf(measure[nmeasure].text, sizeof(measure[0].text), "%s:%u\t%s\troot=%s\trootperm=%s\tderef=%d\towned=%d\tsteps=%d\tfrozen=%d\tholds=S%dX%dA%dP%dC%d",
+            call->lexer->url, call->linenbr, &((StructNode *)container)->namesym->namestr, rv ? &rv->namesym->namestr : "?", perm,
+            recvpl->deref, recvpl->owned, recvpl->nsteps, frozen, kinds[0], kinds[1], kinds[2], kinds[3], kinds[4]);
+        measure[nmeasure++].loan = recvloan;
+    }
+    if (frozen)
+        return;
+    errorMsgNode((INode *)call, WarnShapeShared,
+        "This borrow points into '%s', which may move its elements when it changes, and the path to it is shared: another reference to the same value could push or remove while the borrow is still used. Borrow it through a 'uni' or 'imm' path, take a lock, or copy the element out.",
+        &((StructNode *)container)->namesym->namestr);
+}
+
 // A call: the function reference it calls through, then each argument in
 // order, each carrying its loans in flight until the call is made. A borrow
 // the call returns (or a value holding one) carries every argument's loans --
@@ -1661,8 +1723,12 @@ static PathSet *pwCall(FnCallNode *call) {
         else
             loanReturnedBy(recvloan, ((NameUseNode *)call->objfn)->namesym);
     }
-    if (meth)
-        result = pathSetUnion(result, pwArgCarries(sig, 0, rettype, recvholds));
+    if (meth) {
+        PathSet *fromrecv = pwArgCarries(sig, 0, rettype, recvholds);
+        if (recvloan && recvpl.shwrite && pathSetHasLoan(fromrecv, recvloan))
+            pwShapeShared(call, &recvpl, recvloan);
+        result = pathSetUnion(result, fromrecv);
+    }
     // What the result's borrows point at may be anything its arguments reach
     // ('h.r' returned from '&h'): every loan both near and far, and of no
     // struct's slot
@@ -1756,6 +1822,7 @@ static void pwSwap(SwapNode *node) {
             pl->nsteps = 0;
             pl->shared = 0;
             pl->sharedlen = 0;
+            pl->shwrite = 0;
             pl->owned = 0;
             pl->far = 0;
             pl->use = *sides[i];
@@ -2508,6 +2575,7 @@ void flowPathWalk(FnDclNode *fndcl, int loans, int drops, int seams) {
     pathGpuChoices = flowGpu && loans;
     pwRetFirst = NULL;
     pwRetSeen = 0;
+    nmeasure = 0;
     loanWalkBegin();
     if (drops)
         dropWalkBegin();
@@ -2535,6 +2603,15 @@ void flowPathWalk(FnDclNode *fndcl, int loans, int drops, int seams) {
             pathSetFacts(index, pwCallerLoans(index), NULL);
     }
     pwBlock((BlockNode *)fndcl->value, 1, 1);
+    // MEASURE
+    if (nmeasure) {
+        FILE *f = fopen(getenv("CONE_SHAPE_LOG"), "a");
+        for (int i = 0; f && i < nmeasure; ++i)
+            fprintf(f, "%s\theld=%d\n", measure[i].text, loanHeldByVariable(measure[i].loan));
+        if (f)
+            fclose(f);
+        nmeasure = 0;
+    }
     if (drops)
         dropWalkEnd(errors == errorsOnEntry);
 

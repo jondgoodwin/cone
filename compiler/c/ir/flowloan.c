@@ -196,6 +196,19 @@ static uint8_t loanKindOf(INode *perm, Place *pl) {
     }
 }
 
+int loanKindOfEntry(uint32_t entry) {
+    return loans[entry & LoanIdMask].kind;
+}
+
+int loanHeldByVariable(uint32_t entry) {
+    return loans[entry & LoanIdMask].nmay > 0;
+}
+
+int loanExcludesWriters(uint32_t entry) {
+    uint8_t kind = loans[entry & LoanIdMask].kind;
+    return kind == LoanShared || kind == LoanExcl;
+}
+
 uint32_t loanMake(INode *site, Place *pl, INode *perm) {
     uint32_t id = mapGet(site, 0, 0);
     if (id)

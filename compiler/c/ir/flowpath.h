@@ -57,6 +57,8 @@ typedef struct {
     uint8_t nsteps;     // A path longer than PlaceMaxSteps is cut short, which only overlaps more
     uint8_t shared;     // 1: reached through a shared path
     uint8_t sharedlen;  // then, how many steps lead to the first reference that may alias (0: the root's)
+    uint8_t shwrite;    // 1: some reference on the way, other than 'imm', may alias, so that another
+                        // holder may change what the place is in (a container's block may move)
     uint8_t owned;      // 1: a step dereferences an owning reference others may own too ('Rc'), so
                         // the place may outlive its root variable
     uint8_t far;        // deref: the reference was itself read through a borrowed one ('**pp',
