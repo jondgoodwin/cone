@@ -1,0 +1,76 @@
+// What a borrow of the whole program still may not do across threads. A
+// generic bounds its parameter, 'A Sendable + 'static', to let such a borrow
+// cross; the bound lets a borrow of the whole program cross only if it is
+// 'imm', 'opaq' or 'uni' and what it reaches does, and each diagnostic says
+// which part of that failed:
+//
+// - 'ro', the default permission, only stops this holder writing, so another
+//   holder could still change what it reaches; 'mut' lets a holder write while
+//   others read;
+// - what an 'imm' borrow reaches must be safe to read from two threads: an
+//   'Rc' (a count that is not atomic) and a traced 'Gc' reference are not,
+//   whether the borrow is the type argument or sits in a struct;
+// - a 'uni' borrow of a named global is no borrow at all (ErrorBadPerm): any
+//   code reaches a global by name, so it is not unique;
+// - an invariant lifetime is an arena's brand, not the whole program: a key
+//   is refused, and 'Sendable' alone, without the bound, refuses even an
+//   'imm' borrow of a global;
+// - a borrow that is not global is refused at the call, where the bound is
+//   checked (ErrorLifetimeBound), and without the bound a borrow is refused as
+//   it was.
+
+mod concurrency_static_borrow_refused;
+
+import arena use *;
+import collector;
+import sync use *;
+import thread;
+
+imm seed u64 = 7u64;
+mut count u64 = 0u64;
+
+struct Point {pub x i32; pub y i32;}
+
+// Holds an owner whose count is not atomic
+struct Counted {pub r Rc[imm, Point];}
+
+// A traced region
+struct Tr is RegionRef, Traced {
+  fn alloc(size usize) *u8 inline { malloc(size); }
+  fn mark(self &uni Tr, perm u32, mode u32) { }
+}
+
+fn crosses[T Sendable + 'static]() {}
+fn show[A Sendable + 'static](a A) {}
+fn plain[A Sendable](a A) {}
+
+fn read(p &u64) u64 {*p;}
+
+fn keyed(a &DynArena['=a], k &'=a imm Point) {
+  show(k);                              //~ ErrorNotSendable "a borrow of an invariant lifetime, an arena's brand and not the whole program"
+}
+
+fn main() {
+  // The default permission, and one that writes
+  show(&seed);                          //~ ErrorNotSendable "&ro u64 is not Sendable: it is a borrowed reference of permission ro"
+  show(&mut count);                     //~ ErrorNotSendable "&mut u64 is not Sendable: it is a borrowed reference of permission mut"
+  imm t = thread.start(&seed, &read);   //~ ErrorNotSendable "start requires A is Sendable, and &ro u64 is not Sendable"
+  crosses[&Point]();                    //~ ErrorNotSendable "'ro' only stops this holder writing: another holder could still change what it reaches"
+
+  // What an 'imm' borrow reaches
+  crosses[&imm Rc[imm, Point]]();       //~ ErrorNotSendable "what the borrow points at is Rc[imm, Point], an owner that may be copied, and Rc does not declare ThreadSafe"
+  crosses[&imm Counted]();              //~ ErrorNotSendable "Counted.r is Rc[imm, Point], an owner that may be copied"
+  crosses[&imm Tr[imm, Point]]();       //~ ErrorNotSendable "a reference the Tr collector traces"
+  crosses[&imm Gc[imm, Point]]();       //~ ErrorNotSendable "Gc collector traces"
+  crosses[&uni Counted]();              //~ ErrorNotSendable "Counted.r is Rc[imm, Point], an owner that may be copied"
+  crosses[&imm *u8]();                  //~ ErrorNotSendable "what the borrow points at is *u8, a raw pointer"
+
+  // A 'uni' borrow of a named global cannot be made
+  show(&uni count);                     //~ ErrorBadPerm
+
+  // Not the whole program, or not bounded
+  imm stacked = 5u64;
+  show(&imm stacked);                   //~ ErrorLifetimeBound "must be global"
+  plain(&imm seed);                     //~ ErrorNotSendable "A borrow that lives for the whole program does cross where the generic bounds that type parameter 'Sendable + 'static'"
+  crosses[&&imm u64]();                 //~ ErrorNotSendable "&ro &imm u64 is not Sendable: it is a borrowed reference of permission ro"
+}

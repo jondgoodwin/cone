@@ -455,7 +455,9 @@ static void genericDemandMatch(StructNode *trait, StructNode *type) {
     }
 }
 
-int genericTypeIs(INode *type, StructNode *trait) {
+// Is the type 'trait', a borrow that lives for the whole program let cross as
+// 'how' says where the trait is Sendable?
+static int genericTypeIsHow(INode *type, StructNode *trait, StaticBorrow how) {
     INode *dcl = itypeGetTypeDcl(type);
     // The compiler's grants: every type is exactly one of Move and Copy, the
     // integer types of 8 to 64 bits, signed and unsigned, are Integer, and the
@@ -471,9 +473,11 @@ int genericTypeIs(INode *type, StructNode *trait) {
         return 1;
     // Sendable is the thread check's: granted to every type holding nothing
     // bound to its thread, and to a type declaring it, on its word, where its
-    // type arguments are Sendable
+    // type arguments are Sendable. A borrow of the whole program is let cross
+    // only where the generic bounds its parameter by ''static', which each call
+    // is checked to meet
     if (trait == sendableTrait)
-        return !itypeThreadBound(dcl, NULL);
+        return !itypeThreadBoundHow(dcl, NULL, how);
     // Sized and DynSized are the type's size: known at compile time, or known
     // at compile time or carried by a reference to it. A type cannot declare
     // either.
@@ -492,6 +496,22 @@ int genericTypeIs(INode *type, StructNode *trait) {
     // uses are made by, under the constraint monomorphization asks for
     genericDemandMatch(trait, strnode);
     return structMatches(trait, dcl, Monomorph) != NoMatch;
+}
+
+int genericTypeIs(INode *type, StructNode *trait) {
+    return genericTypeIsHow(type, trait, StaticOff);
+}
+
+// The generic function whose requirements are being decided: a parameter it
+// bounds by ''static' is handed only borrows of the whole program, which
+// Sendable then lets cross
+static INode *genericWhereOwner = NULL;
+
+static StaticBorrow genericStaticHow(StructNode *trait, GenVarDclNode *parm) {
+    if (trait == sendableTrait && parm && genericWhereOwner
+        && lifeParmStaticBounded(genericWhereOwner, parm->namesym))
+        return StaticVouched;
+    return StaticOff;
 }
 
 // What a condition comes to at an instance's arguments. Unknown is a
@@ -547,7 +567,7 @@ static WhereValue genericConditionValue(INode *cond, Nodes *parms, Nodes *args, 
     if (type == NULL || (trait == NULL && named == NULL) || (parm == NULL && !nested))
         return WhereUnknown;
     if (trait)
-        return genericTypeIs(type, trait) ? WhereTrue : WhereFalse;
+        return genericTypeIsHow(type, trait, genericStaticHow(trait, parm)) ? WhereTrue : WhereFalse;
     // A type is met by itself alone
     return itypeIsSame(type, named) ? WhereTrue : WhereFalse;
 }
@@ -658,9 +678,9 @@ static void genericBindingsCat(char *buf, size_t size, INode *cond, Nodes *parms
 // thing binds it to its thread. Returns whether the cause is one most often met
 // through a local -- a borrow or a permission -- whose own 'mut' is not what is
 // checked. Each buffer holds 512 bytes.
-int genericNotSendableWhy(INode *arg, char *what, char *reason) {
+int genericNotSendableWhy(INode *arg, char *what, char *reason, StaticBorrow how) {
     char path[256];
-    INode *culprit = itypeThreadBoundWhy(arg, path, sizeof(path));
+    INode *culprit = itypeThreadBoundWhyHow(arg, path, sizeof(path), how);
     const size_t whatsize = 512, reasonsize = 512;
     what[0] = '\0';
     reason[0] = '\0';
@@ -689,10 +709,33 @@ int genericNotSendableWhy(INode *arg, char *what, char *reason) {
         Name *permname = perm ? inodeGetName(perm) : NULL;
         switch (refThreadBinds(ref)) {
         case RefBindsBorrow:
-            local = 1;
-            snprintf(reason, reasonsize,
-                "a borrowed reference, and no borrow may leave its thread: its lifetime is checked in that thread alone");
+        {
+            StaticVerdict verdict = refStaticCrosses(ref, how);
+            if (verdict == StaticBadPerm) {
+                local = 1;
+                snprintf(reason, reasonsize,
+                    "a borrowed reference of permission %s, and a borrow crosses threads only if it lives for the whole program and is imm or opaq (any number of threads may read what it reaches, and none writes) or uni (it moves, so one holder has it). %s",
+                    permname ? &permname->namestr : "?",
+                    perm == (INode *)roPerm
+                        ? "'ro' only stops this holder writing: another holder could still change what it reaches"
+                        : "This permission lets a holder write while others may read");
+            }
+            else if (verdict == StaticInvariant)
+                snprintf(reason, reasonsize,
+                    "a borrow of an invariant lifetime, an arena's brand and not the whole program: the arena dies when its owner drops it, and a key reaches nothing without its arena, so a key may not leave its thread");
+            else if (verdict == StaticUnwritten)
+                snprintf(reason, reasonsize,
+                    "a borrowed reference not written 'static: only a borrow written &'static imm, &'static opaq or &'static uni, which lives for the whole program, may be sent to another thread");
+            else {
+                local = 1;
+                snprintf(reason, reasonsize,
+                    "a borrowed reference, and no borrow may leave its thread: its lifetime is checked in that thread alone");
+                if (how == StaticOff && (perm == (INode *)immPerm || perm == (INode *)opaqPerm || perm == (INode *)uniPerm))
+                    strcat(reason,
+                        ". A borrow that lives for the whole program does cross where the generic bounds that type parameter 'Sendable + 'static'");
+            }
             break;
+        }
         case RefBindsTraced:
             snprintf(reason, reasonsize,
                 "a reference the %s collector traces, and a collector is single threaded, so a traced reference may not leave its thread",
@@ -721,11 +764,11 @@ int genericNotSendableWhy(INode *arg, char *what, char *reason) {
 // Sendable, saying what binds it to its thread and where that sits in it. A
 // borrow or a permission is the cause most often met through a local, and a
 // local's own 'mut' is not what is checked, so the message says so.
-static void genericNotSendableMsg(INode *errnode, Name *name, GenVarDclNode *parm, INode *arg) {
+static void genericNotSendableMsg(INode *errnode, Name *name, GenVarDclNode *parm, INode *arg, StaticBorrow how) {
     char argname[256] = "";
     genericTypeNameCat(argname, sizeof(argname), arg, 0);
     char what[512], reason[512];
-    int local = genericNotSendableWhy(arg, what, reason);
+    int local = genericNotSendableWhy(arg, what, reason, how);
     errorMsgNode(errnode, ErrorNotSendable, "%s requires %s is Sendable, and %s is not Sendable: %s %s.%s",
         &name->namestr, &parm->namesym->namestr, argname, what, reason,
         local ? " What is checked is the types of the references a value holds, not how a variable was declared: a local declared 'mut x = 5' holds a number, which is Sendable." : "");
@@ -739,6 +782,7 @@ typedef struct {
     Name *name;             // The generic's name
     GenVarDclNode *parm;    // The parameter the clause asks about
     INode *arg;             // Its argument
+    StaticBorrow how;       // Whether a borrow of the whole program crosses there
 } SendableNote;
 
 static SendableNote *genericSendableNotes = NULL;
@@ -758,7 +802,8 @@ static void genericSendableNote(FnCallNode *srcgencall, Nodes *where, Nodes *par
         if (arg == NULL || parm == NULL)
             continue;
         int settled;
-        if (itypeThreadBound(arg, &settled) || settled)
+        StaticBorrow how = genericStaticHow(sendableTrait, parm);
+        if (itypeThreadBoundHow(arg, &settled, how) || settled)
             continue;
         if (genericSendableCnt == genericSendableMax) {
             uint32_t newmax = genericSendableMax ? genericSendableMax * 2 : 16;
@@ -773,6 +818,7 @@ static void genericSendableNote(FnCallNode *srcgencall, Nodes *where, Nodes *par
         note->name = name;
         note->parm = parm;
         note->arg = arg;
+        note->how = how;
     }
 }
 
@@ -781,8 +827,8 @@ void genericSendableCheckAll() {
     genericSendableCnt = 0;
     for (uint32_t i = 0; i < cnt; ++i) {
         SendableNote *note = &genericSendableNotes[i];
-        if (itypeThreadBound(note->arg, NULL))
-            genericNotSendableMsg(note->where, note->name, note->parm, note->arg);
+        if (itypeThreadBoundHow(note->arg, NULL, note->how))
+            genericNotSendableMsg(note->where, note->name, note->parm, note->arg, note->how);
     }
 }
 
@@ -844,11 +890,14 @@ static int genericRequirementsMet(FnCallNode *srcgencall, INode *generic, Generi
             name = owner->namesym;
         }
     }
+    genericWhereOwner = generic;
     INode *cond = genericUnmetCondition(where, parms, srcgencall->args);
     if (cond == NULL) {
         genericSendableNote(srcgencall, where, parms, name);
+        genericWhereOwner = NULL;
         return 1;
     }
+    genericWhereOwner = NULL;
     // A condition joined by 'or' or 'and' is false as a whole, and named whole
     if (cond->tag != IsTag) {
         char text[256] = "";
@@ -863,7 +912,10 @@ static int genericRequirementsMet(FnCallNode *srcgencall, INode *generic, Generi
     INode *arg = genericClauseType((CastNode*)cond, parms, srcgencall->args, &parm);
     StructNode *trait = genericNamedTrait(((CastNode*)cond)->typ);
     if (trait == sendableTrait) {
-        genericNotSendableMsg((INode*)srcgencall, name, parm, arg);
+        genericWhereOwner = generic;
+        StaticBorrow how = genericStaticHow(trait, parm);
+        genericWhereOwner = NULL;
+        genericNotSendableMsg((INode*)srcgencall, name, parm, arg, how);
         return 0;
     }
     char argname[256] = "";

@@ -80,6 +80,17 @@ typedef enum {
 
 RefBinds refThreadBinds(RefNode *ref);
 
+// Why a borrow does not qualify to cross as one of the whole program's
+typedef enum {
+    StaticQualifies,    // It does (what it points at is asked separately)
+    StaticNotBorrow,    // Not a borrow at all, or a guard: its own rule decides
+    StaticBadPerm,      // Its permission is not imm, opaq or uni
+    StaticInvariant,    // Its lifetime is an invariant one, an arena's brand
+    StaticUnwritten     // It is not written ''static' (StaticWritten only)
+} StaticVerdict;
+
+StaticVerdict refStaticCrosses(RefNode *ref, StaticBorrow how);
+
 // Create a new ArrayDerefNode from an ArrayRefNode
 RefNode *newArrayDerefNodeFrom(RefNode *refnode);
 

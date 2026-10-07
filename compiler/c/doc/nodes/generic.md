@@ -522,9 +522,15 @@ is met by that type alone (`itypeIsSame`). Every other question a clause asks is
   asked of the walk (`itypeThreadBound`) before anything else: it is granted to
   every type holding nothing bound to its thread, and a type declaring it is
   taken at its word only where its type arguments are `Sendable` too
-  ([References](references.md), `refThreadBinds`). A lone `T is Sendable` that
+  ([References](references.md), `refThreadBinds`). A borrow of the whole
+  program crosses where the clause's parameter is also bounded `+ 'static`
+  (`genericStaticHow`, `lifeParmStaticBounded`: the walk then runs as
+  `StaticVouched`, `itypeThreadBoundHow`), the call being checked to hand it
+  only global borrows ([Lifetimes](../phases/flow.md), "Named lifetimes");
+  an unbounded parameter refuses every borrow. A lone `T is Sendable` that
   is unmet is `ErrorNotSendable`, not `ErrorWhereUnmet`: its message names what
-  binds the argument and where it sits, and says that a local's `mut` is not
+  binds the argument and where it sits, which part of the borrow rule a borrow
+  failed (`genericNotSendableWhy`), and says that a local's `mut` is not
   what is checked. One that was met while a struct the argument reaches was
   still being laid out is noted (`genericSendableNote`) and judged again once
   type check has finished (`genericSendableCheckAll`, from `conec.c`).
