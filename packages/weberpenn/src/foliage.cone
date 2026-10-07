@@ -10,9 +10,15 @@
 
 pub const FOLIAGE_MAPLE = 0;
 pub const FOLIAGE_NEEDLES = 1;
+pub const FOLIAGE_PLUMES = 2;   // a pine's: along each branch, two crossed ribbons of needles, widest a third of the way out
 
 pub struct FoliageParams {
   pub kind i32 = 0;
+  pub plumeFromLevel i32 = 1;   // plumes: the stems of this level and above carry them
+  pub plumeStart f32 = 0.3;     // from this fraction along the stem
+  pub plumeWidth f32 = 0.28;    // half the widest, over the stem's length
+  pub plumeMax f32 = 0.8;       // the most half-width, metres
+  pub plumeDroop f32 = 0.35;    // the ribbon's edges fall by this much of its half-width
   pub seed u32 = 7u32;
   pub leafSize f32 = 0.09;      // a blade's length, metres
   pub leafSizeV f32 = 0.2;      // the fraction it varies by
@@ -21,7 +27,7 @@ pub struct FoliageParams {
   pub droop f32 = 0.35;         // the tip's fall, in blade lengths squared
   pub fold f32 = 0.25;          // each half lifted from the midrib
   pub lift f32 = 0.35;          // how far the petiole rises from the horizontal, radians
-  pub lean f32 = 0.6;           // the outward share in the normals
+  pub lean f32 = 0.85;          // the outward share in the normals
   pub needleLength f32 = 0.16;
   pub needleWidth f32 = 0.03;
   pub tufts i32 = 3;            // needle sprays at a site
@@ -120,12 +126,77 @@ fn addSpike(m &mut mesh.Mesh, a Vec3, b Vec3, w f32, wide Vec3, nrm Vec3, tone f
   m.indices.push(first + 3u32); m.indices.push(first + 4u32); m.indices.push(first + 5u32);
 }
 
+// Plumes: along every stem of the plume levels, from 'plumeStart' to its tip,
+// two ribbons of needles crossing at right angles about it, one flat and one
+// on edge, each as wide as sin(pi sqrt(t)) times 'plumeWidth' of the stem's
+// length (at most 'plumeMax'), its edges drooping, and drawn from both sides.
+fn addPlumes(m &mut mesh.Mesh, tree &Tree, fp &FoliageParams, rng &mut Rng, centre Vec3) {
+  mut s = 0usize;
+  while s < tree.stems.len() {
+    imm st = tree.stems[s];
+    if st.level >= fp.plumeFromLevel and st.points.len() >= 2usize {
+      imm n = st.points.len();
+      imm half = minf(fp.plumeMax, fp.plumeWidth * st.length) * (0.85 + 0.3 * rng.unit());
+      imm tone = clampf(0.25 + 0.45 * clampf(st.points[n - 1usize].y / maxf(0.5, tree.height), 0., 1.) + 0.3 * rng.unit(), 0., 1.);
+      mut rib = 0;
+      while rib < 2 {
+        imm firstV = u32.from(m.positions.len());
+        mut j = 0usize;
+        mut count = 0u32;
+        while j < n {
+          imm t = f32.from(j) / f32.from(n - 1);
+          if t >= fp.plumeStart - 0.0001 {
+            imm p = *st.points[j];
+            imm prev = *st.points[if j == 0usize { 0usize; } else { j - 1usize; }];
+            imm next = *st.points[if j + 1usize < n { j + 1usize; } else { n - 1usize; }];
+            imm tan = unitv(next - prev);
+            imm flat = unitv(tan.cross(v3(0., 1., 0.)));
+            imm edge = unitv(flat.cross(tan));
+            imm across = if rib == 0 { flat; } else { unitv(edge + v3(0., 0.4, 0.)); };
+            imm u01 = (t - fp.plumeStart) / maxf(0.01, 1. - fp.plumeStart);
+            imm w = half * libc.sinf(pi * libc.sqrtf(clampf(u01 * 0.85 + 0.15, 0., 1.))) * (0.35 + 0.65 * (1. - 0.4 * u01));
+            imm drop = v3(0., 0. - fp.plumeDroop * w, 0.);
+            imm radial = unitv(p - centre);
+            imm nn = unitv(unitv(across.cross(tan)) * (1. - fp.lean) + radial * fp.lean + v3(0., 0.25, 0.));
+            // left and right edge, front copy then back copy (same normals: the lighting is the crown's)
+            m.positions.push(p + across * w + drop);
+            m.positions.push(p - across * w + drop);
+            m.normals.push(nn); m.normals.push(nn);
+            m.uvs.push(new Vec2(tone, 0.12)); m.uvs.push(new Vec2(tone, 0.64));
+            count = count + 1u32;
+          }
+          j = j + 1usize;
+        }
+        // the quads between rows, both windings
+        mut q = 0u32;
+        while q + 1u32 < count {
+          imm a = firstV + q * 2u32;
+          imm b = a + 1u32;
+          imm c = a + 2u32;
+          imm d = a + 3u32;
+          m.indices.push(a); m.indices.push(b); m.indices.push(c);
+          m.indices.push(b); m.indices.push(d); m.indices.push(c);
+          m.indices.push(a); m.indices.push(c); m.indices.push(b);
+          m.indices.push(b); m.indices.push(c); m.indices.push(d);
+          q = q + 1u32;
+        }
+        rib = rib + 1;
+      }
+    }
+    s = s + 1usize;
+  }
+}
+
 // Leaves (or needles) at every site of 'tree', in one mesh
 pub fn foliageMesh(tree &Tree, fp &FoliageParams) mesh.Mesh {
   mut m = mesh.Mesh.empty();
   mut rng = Rng.make(fp.seed);
   imm crown = maxf(0.5, tree.reach);
   imm centre = v3(0., tree.height * 0.55, 0.);
+  if fp.kind == FOLIAGE_PLUMES {
+    addPlumes(&mut m, tree, fp, &mut rng, centre);
+    return m;
+  }
   mut i = 0usize;
   while i < tree.sites.len() {
     imm s = *tree.sites[i];
