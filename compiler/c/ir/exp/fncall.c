@@ -1566,8 +1566,8 @@ static void fnCallLowerSliceCompare(TypeCheckState *pstate, FnCallNode *node) {
     fnCallFinalizeArgs(node);
 }
 
-// An array, or a reference to one, compared with a slice is taken as the
-// slice it converts to, as the other side of a slice's comparison already is:
+// An array, a reference to one, or a '&str' (a string literal is one), compared
+// with a slice is taken as the slice it converts to, as the other side of a slice's comparison already is:
 // '"box" == s' means what 's == "box"' does. Answers 0, changing nothing,
 // where the other side is not a slice.
 static int fnCallArrayAsSlice(TypeCheckState *pstate, FnCallNode *node) {
@@ -1608,7 +1608,9 @@ static void fnCallLowerRefCompare(TypeCheckState *pstate, FnCallNode *node) {
     RefNode *reftype = (RefNode*)iexpGetTypeDcl(node->objfn);
     INode **argp = &nodesGet(node->args, 0);
     if (iexpGetTypeDcl(*argp)->tag != RefTag) {
-        if (itypeGetTypeDcl(reftype->vtexp)->tag == ArrayTag && fnCallArrayAsSlice(pstate, node))
+        // A reference to an array, or to 'str' (a literal is one), is taken as a slice
+        if ((itypeGetTypeDcl(reftype->vtexp)->tag == ArrayTag || refIsFat(reftype))
+            && fnCallArrayAsSlice(pstate, node))
             return;
         errorMsgNode((INode*)node, ErrorRefCompareMixed,
             "`%s` on a reference compares the value it refers to, so the other side must be a reference too. Dereference the reference (`*r`) to compare it with a value.",

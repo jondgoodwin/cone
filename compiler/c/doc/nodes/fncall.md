@@ -350,8 +350,8 @@ function whose body is the loop: the node becomes a call of its instance at
 the receiver's element type (`genericMethodInstance`), the receiver its first
 argument, and `fnCallFinalizeArgs` converts the other side to that slice as it
 does any slice argument, so an array, a reference to one or a string literal
-is compared too; an array or a reference to one on the left is converted the
-same way first (`fnCallArrayAsSlice`). A value pattern on a slice, `case
+is compared too; an array, a reference to one or a `&str` (a string literal is
+one) on the left is converted the same way first (`fnCallArrayAsSlice`). A value pattern on a slice, `case
 "box"`, is the same `==` (`castMatchValueTypeCheck`). The function is found
 by its name and its package, as core's `TypeRecord` is: `sliceEqDclNameRes`
 remembers its declaration when it is name resolved, held to that one

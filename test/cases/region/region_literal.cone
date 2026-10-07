@@ -1,0 +1,49 @@
+// A string literal is copied into an owner of 'str' in any region, as
+// 'new R[str](literal)' would copy it: the region's own methods run at the same
+// events (ref_literal runs So, Rc and Arc). 'Tally' counts like 'Rc' with a
+// 16-byte header, so "hello world" (11 bytes) asks for 27; 'Solo' has no
+// header, so "abc" asks for 3. The text is copied, and each region frees its
+// own copy, the later variable first. The literal itself is read-only and
+// lives on.
+//
+// Each printed value was checked by hand against the source.
+
+mod region_literal;
+
+import stdio use *;
+import libc;
+
+fn line(label &[]u8, n usize) {
+  printStr(label);
+  printInt(i64.from(n));
+  printStr("\n");
+}
+
+struct Tally is RegionRef {
+  owners usize;
+  serial u32;
+  fn alloc(size usize) *u8 inline { line("alloc ", size); malloc(size); }
+  fn init(self &new) inline { *self = new Tally(1usize, 42u32); }
+  fn aliasRef(self &uni Tally) inline { owners = owners + 1usize; line("alias, owners ", owners); }
+  fn dealiasRef(self &uni Tally) bool inline { owners = owners - 1usize; line("dealias, owners ", owners); owners == 0usize; }
+  fn free(self &uni Tally) inline { line("free, serial ", usize.from(serial)); libc.free(self as *u8); }
+}
+
+struct Solo is RegionRef, Move {
+  fn alloc(size usize) *u8 inline { line("solo alloc ", size); malloc(size); }
+  fn free(self &uni Solo) inline { printStr("solo free\n"); libc.free(self as *u8); }
+}
+
+fn count(s &str) usize { (s as &[]u8).len; }
+
+// A literal given to a parameter that takes the owner: the callee's parameter drops it
+fn read(r Tally[imm, str]) usize { count(r); }
+
+fn main() {
+  imm a Tally[imm, str] = "hello world";
+  line("len ", count(a));
+  imm s Solo[str] = "abc";
+  line("len ", count(s));
+  line("param ", read("passed"));
+  printStr("end\n");
+}
