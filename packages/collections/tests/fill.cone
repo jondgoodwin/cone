@@ -1,0 +1,149 @@
+// A List that C fills: 'resize', 'viewMut' and 'truncate', the "ask how many,
+// then fill" pattern of C APIs such as Vulkan's queries. The C function
+// writes through a pointer and a count it was given, and may write fewer
+// elements than it was told it could; the list resizes to the count, lends
+// 'viewMut()' where C wants a pointer, and truncates to the count written.
+// Every expected value is worked out by hand:
+// - a list grows by 'resize' with copies of the value, and its block as 'reserve'
+//   grows it: 5 values in an empty list need exactly 5 (more than double 0),
+//   and 2 more past 5 need 7, less than double 5, so the block becomes 10;
+// - 'truncate' and a shrinking 'resize' finalize the values dropped, first to
+//   last, and keep the block; a Fin that dies adds its digit to 'log', so a
+//   log of 45 says 4 died and then 5.
+//
+// The view reaches C's '*T' through the implicit '&[]T' to '*T' coercion; once
+// that coercion is removed it is spelled 'l.viewMut() as *T'.
+
+mod fill;
+
+import testing use *;
+import collections use *;
+import libc;
+import posix;
+
+struct Pair {
+  pub a i32;
+  pub b i32;
+}
+
+// C's memcpy, bound over Pair instead of bytes: it writes 'count' bytes
+// through its first pointer
+extern fn memcpy(dest *Pair, src *Pair, count usize) *Pair;
+
+// A stand-in for a C query that fills at most 'cap' pairs and says how many
+// it wrote, as vkEnumerate...(count, props) does: three pairs (1,2) (3,4) (5,6)
+fn fillPairs(out *Pair, cap usize, written &mut usize) {
+  mut three = new Array[Pair, 3] <- fill new Pair(0, 0);
+  three[0usize] = new Pair(1, 2);
+  three[1usize] = new Pair(3, 4);
+  three[2usize] = new Pair(5, 6);
+  mut n = 3usize;
+  if cap < n { n = cap; }
+  memcpy(out, &three[0usize] as *Pair, n * mem.sizeof[Pair]());
+  *written = n;
+}
+
+mut log = 0i64;
+
+struct Fin {
+  pub n i64;
+  fn final(self &uni) { log = log * 10i64 + n; }
+}
+
+fn main() i32 {
+  // Growing: five sevens, in a block of exactly 5
+  mut z = List[i64].empty();
+  z.resize(5usize, 7i64);
+  expectUInt(u64.from(z.len()), 5, "resize grows an empty list");
+  expectUInt(u64.from(z.capacity()), 5, "grown by reserve's rule: exactly 5, more than double 0");
+  expectInt(*z[0usize], 7, "first copy");
+  expectInt(*z[4usize], 7, "last copy");
+  z.set(2usize, 9i64);
+  // Growing again keeps what is there and copies the new value in after it
+  z.resize(7usize, 1i64);
+  expectUInt(u64.from(z.len()), 7, "grown to seven");
+  expectInt(*z[2usize], 9, "kept the value set");
+  expectInt(*z[4usize], 7, "kept the old copies");
+  expectInt(*z[5usize], 1, "new copy, first");
+  expectInt(*z[6usize], 1, "new copy, last");
+  // Same length: nothing changes
+  z.resize(7usize, 0i64);
+  expectInt(*z[6usize], 1, "same length changes nothing");
+  // Shrinking drops the end and keeps the block
+  z.resize(3usize, 0i64);
+  expectUInt(u64.from(z.len()), 3, "shrunk to three");
+  expectUInt(u64.from(z.capacity()), 10, "shrinking keeps the block");
+  expectInt(*z[2usize], 9, "the kept values are as they were");
+  z.resize(0usize, 0i64);
+  expectBool(z.isEmpty(), true, "resized to nothing");
+  z.resize(2usize, 4i64);
+  expectInt(*z[1usize], 4, "regrown after emptying");
+
+  // truncate: no-op at or past the length, shortens below it
+  z.truncate(5usize);
+  expectUInt(u64.from(z.len()), 2, "truncate past the length does nothing");
+  z.truncate(2usize);
+  expectUInt(u64.from(z.len()), 2, "truncate to the length does nothing");
+  z.truncate(1usize);
+  expectUInt(u64.from(z.len()), 1, "truncate shortens");
+  expectInt(*z[0usize], 4, "truncate keeps the front");
+  expectUInt(u64.from(z.capacity()), 10, "truncate keeps the block");
+  z.truncate(0usize);
+  expectBool(z.isEmpty(), true, "truncate to zero");
+  mut none = List[i64].empty();
+  none.truncate(0usize);
+  none.truncate(3usize);
+  expectUInt(u64.from(none.len()), 0, "truncate of a list with no block");
+
+  // C fills a list of structs. Told it may write 8, it writes 3: the list
+  // is resized to 8 zero pairs, filled through the view, and cut to 3
+  mut pairs = List[Pair].empty();
+  pairs.resize(8usize, new Pair(0, 0));
+  mut written = 0usize;
+  fillPairs(pairs.viewMut(), pairs.len(), &mut written);
+  expectUInt(u64.from(written), 3, "C wrote three");
+  pairs.truncate(written);
+  expectUInt(u64.from(pairs.len()), 3, "cut to what C wrote");
+  expectInt(i64.from(pairs[0usize].a), 1, "first pair a");
+  expectInt(i64.from(pairs[0usize].b), 2, "first pair b");
+  expectInt(i64.from(pairs[1usize].a), 3, "second pair a");
+  expectInt(i64.from(pairs[2usize].b), 6, "third pair b");
+  // Told it may write 2, it writes 2, and the third is not touched
+  mut again = 0usize;
+  mut small = List[Pair].empty();
+  small.resize(2usize, new Pair(-1, -1));
+  fillPairs(small.viewMut(), small.len(), &mut again);
+  small.truncate(again);
+  expectUInt(u64.from(small.len()), 2, "capped at the two it was given");
+  expectInt(i64.from(small[1usize].a), 3, "second pair, capped call");
+
+  // The same with a real C function: getcwd(buf, size) writes the current
+  // folder as a NUL-terminated string, far fewer bytes than the 512 it may
+  mut buf = List[u8].empty();
+  buf.resize(512usize, 0u8);
+  imm got = posix.getcwd(buf.viewMut(), buf.len());
+  expect(got != null, "getcwd filled the buffer");
+  imm n = libc.strlen(buf.view());
+  expect(n > 0usize and n < 512usize, "the folder's name is short of the buffer");
+  buf.truncate(n);
+  expectUInt(u64.from(buf.len()), u64.from(n), "cut to the string's length");
+  expect(*buf[n - 1usize] != 0u8, "no NUL kept");
+
+  // Finalizers: truncate drops the values beyond n, first to last, once each
+  {
+    mut l = new List[Fin] <- new Fin(1), new Fin(2), new Fin(3), new Fin(4), new Fin(5);
+    l.truncate(7usize);
+    expectInt(log, 0, "truncate past the length finalizes nothing");
+    l.truncate(3usize);
+    expectInt(log, 45, "truncate finalizes 4 then 5");
+    expectUInt(u64.from(l.len()), 3, "three left");
+    l.truncate(3usize);
+    expectInt(log, 45, "truncate to the length finalizes nothing more");
+    l.push(new Fin(6));
+    expectInt(log, 45, "pushing into the freed place finalizes nothing");
+  }
+  // The list's death finalizes what is left, once: 1 2 3 and 6
+  expectInt(log, 451236, "the rest die once, first to last");
+
+  done();
+}
