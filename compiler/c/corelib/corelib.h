@@ -97,6 +97,10 @@ extern StructNode *sendableTrait;
 // '@unsized' enum, is held through a thin reference only
 extern StructNode *sizedTrait;
 extern StructNode *dynSizedTrait;
+// 'Immutable', which a type declares with 'is' ('str' does, in stdlibInit): a
+// reference to it written with no permission is 'imm', and 'mut', 'mut1' and a
+// lock permission are refused on it (refImmutableDefaultPerm, refImmutableBan)
+extern StructNode *immutableTrait;
 // 'LockPermission', which a struct declares to stand in a managed reference's
 // permission slot: 'Arc[Mutex, T]' (ir/types/permission.c)
 extern StructNode *lockPermTrait;
