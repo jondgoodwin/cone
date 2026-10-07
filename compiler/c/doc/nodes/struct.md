@@ -1119,7 +1119,12 @@ too. What the compiler adds:
 - **The grant.** `genericTypeIs` answers true of every integer type and `bool`
   (never a float) asked `is Hash`, and `nbrAddHashMethods` (`corenumber.c`)
   gives each a `hash` method so a generic's `key.hash(h)` reaches something:
-  [intrinsic](intrinsic.md), "An integer's and bool's `hash`".
+  [intrinsic](intrinsic.md), "An integer's and bool's `hash`". It answers true
+  of `So[str]` and `Rc[str]` too (`genericIsTextOwner`), which have no method of
+  their own: a call on one reaches `str`'s `hash` through the text it lends, so a
+  generic hashes a key it holds by reference as `(*key).hash(h)`: a method call
+  reads through one reference, and `&So[str]` is two. (A struct field of that
+  type still has no supplied `hash`: the list below stands.)
 - **An `==`.** A type declaring it with none is `ErrorHashNoEq`, whether or not
   it writes a `hash` (`structHashCheck`, at layout beside `structAtomicValueCheck`).
 - **The supplied `hash`.** A struct declaring `Hash` that writes no `hash`

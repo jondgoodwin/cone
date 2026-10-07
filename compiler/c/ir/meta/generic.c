@@ -498,6 +498,25 @@ static INode *genericNamedType(INode *node) {
     return node;
 }
 
+// A type written out as an instance, where a 'where' clause names one:
+// 'where K is So[str]', 'where T is Option[i64]'. A generic type given its
+// arguments, or a reference type (a region's, 'So[str]', is one), whose parts
+// may name the generic's own parameters. It is met by that type alone, as a
+// named type is; it is made at the arguments when the clause is decided
+// (genericConditionValue).
+static int genericIsTypeInstance(INode *node) {
+    if (node->tag == RefTag)
+        return 1;
+    if (node->tag != FnCallTag || !isNameUseNode(((FnCallNode*)node)->objfn))
+        return 0;
+    INode *dcl = nameUseGetDcl((NameUseNode*)((FnCallNode*)node)->objfn);
+    if (dcl == NULL || dcl->tag != StructTag || (dcl->flags & TraitType))
+        return 0;
+    // (A region's own declaration need not be resolved yet: the clause is
+    // vetted during name resolution, so ask what its 'is' list wrote.)
+    return ((StructNode*)dcl)->genericinfo != NULL || regionStructWritesRegionRef((StructNode*)dcl);
+}
+
 // Append the name a clause's subject 'is' to 'buf': a trait's or a type's
 static void genericTypeNameCat(char *buf, size_t size, INode *type, int depth);
 static void genericTemplateNameCat(char *buf, size_t size, INode *node, int depth);
@@ -517,6 +536,8 @@ static void genericClauseNameCat(char *buf, size_t size, CastNode *clause, Struc
     }
     else if (genericNamedType(clause->typ))
         genericTypeNameCat(buf, size, clause->typ, 0);
+    else if (genericIsTypeInstance(clause->typ))
+        genericTemplateNameCat(buf, size, clause->typ, 0);
     else {
         size_t used = strlen(buf);
         snprintf(buf + used, size - used, "?");
@@ -577,7 +598,10 @@ static int genericConditionNameRes(NameResState *pstate, INode *cond, Nodes *own
         if (!genericTraitInstanceVet(clause->typ))
             ok = 0;
     }
-    else if (genericNamedTrait(clause->typ) == NULL && genericNamedType(clause->typ) == NULL) {
+    // A type written as an instance is met by that type alone, in a 'where'
+    // clause; in a condition on an 'is' entry it is not built
+    else if (genericNamedTrait(clause->typ) == NULL && genericNamedType(clause->typ) == NULL
+        && !(ownparms == NULL && genericIsTypeInstance(clause->typ))) {
         StructNode *bare = ownparms ? NULL : genericNamedBareGenericTrait(clause->typ);
         if (bare)
             errorMsgNode(clause->typ, ErrorWhereTrait,
@@ -586,7 +610,7 @@ static int genericConditionNameRes(NameResState *pstate, INode *cond, Nodes *own
         else if (!isNameUseNode(clause->typ) || ((NameUseNode*)clause->typ)->dclnode != NULL)
             errorMsgNode(clause->typ, ErrorWhereTrait, ownparms
                 ? "What a type parameter 'is' in a condition on an 'is' entry is a trait or a type, and this is neither. (A generic trait's or type's instance is not built in a condition yet.)"
-                : "What a type parameter 'is' in a 'where' clause is a trait or a type, and this is neither. (A generic type's instance is not built as a constraint yet.)");
+                : "What a type parameter 'is' in a 'where' clause is a trait or a type, and this is neither. (A generic type is named with its arguments: Option[i64].)");
         ok = 0;
     }
     return ok;
@@ -706,6 +730,13 @@ static void genericDemandMatch(StructNode *trait, StructNode *type) {
     }
 }
 
+// Is this reference an owner of core's 'str' (So[str], Rc[str]: any region but
+// a borrow's)?
+static int genericIsTextOwner(RefNode *ref) {
+    return itypeGetTypeDcl(ref->region) != borrowRef && refIsFat(ref)
+        && itypeGetTypeDcl(ref->vtexp) == (INode*)strTypeDcl;
+}
+
 // Is the type 'trait', a borrow that lives for the whole program let cross as
 // 'how' says where the trait is Sendable?
 static int genericTypeIsHow(INode *type, StructNode *trait, StaticBorrow how) {
@@ -726,6 +757,10 @@ static int genericTypeIsHow(INode *type, StructNode *trait, StaticBorrow how) {
     // (nbrAddHashMethods). Not to a float: NaN is not equal to itself and -0 is
     // equal to 0, so no hash of a float's bits agrees with its '=='
     if ((dcl->tag == IntNbrTag || dcl->tag == UintNbrTag) && coreIsHashTrait((INode*)trait))
+        return 1;
+    // and to an owner of text, So[str] and Rc[str]: its '==' compares the
+    // bytes, and the 'hash' a call on it reaches is str's, which feeds them
+    if (dcl->tag == RefTag && coreIsHashTrait((INode*)trait) && genericIsTextOwner((RefNode*)dcl))
         return 1;
     // Sendable is the thread check's: granted to every type holding nothing
     // bound to its thread, and to a type declaring it, on its word, where its
@@ -785,18 +820,12 @@ typedef enum {
 static INode *genericCondSite = NULL;
 static TypeCheckState *genericCondState = NULL;
 
-// The trait a clause says its subject is, at these arguments: the trait it
-// names, or, where it names an instance of a generic trait, 'Stack[T]', that
-// instance made by giving the trait the arguments its own type arguments come
-// to -- 'Stack[i64]' where T is i64. Made by cloning the clause's trait with
-// the parameters substituted and checking it, as the same spelling in a
-// signature is, so the instance is the one the program's other uses of it name.
-// NULL if the clause names no trait, or the instance could not be made, which
-// was reported where it failed.
-static StructNode *genericClauseTrait(CastNode *clause, Nodes *parms, Nodes *args) {
-    StructNode *trait = genericNamedTrait(clause->typ);
-    if (trait || genericNamedGenericTrait(clause->typ) == NULL)
-        return trait;
+// What a clause names written out as an instance, 'Stack[T]' or 'So[str]', at
+// these arguments: a clone of it with the parameters substituted, checked as
+// the same spelling in a signature is, so that it is the instance the program's
+// other uses of it name -- 'Stack[i64]' where T is i64. NULL if it could not be
+// made, which was reported where it failed.
+static INode *genericClauseCloneChecked(CastNode *clause, Nodes *parms, Nodes *args) {
     CloneState cstate;
     uint32_t dclpos = cloneDclPush();
     clonePushState(&cstate, genericCondSite ? genericCondSite : clause->typ, NULL, 0, parms, args);
@@ -814,6 +843,19 @@ static StructNode *genericClauseTrait(CastNode *clause, Nodes *parms, Nodes *arg
     }
     inodeTypeCheckAny(tstate, &copy);
     if (inodeIsError(copy) || !isTypeNode(copy))
+        return NULL;
+    return copy;
+}
+
+// The trait a clause says its subject is, at these arguments: the trait it
+// names, or, where it names an instance of a generic trait, that instance.
+// NULL if the clause names no trait, or the instance could not be made.
+static StructNode *genericClauseTrait(CastNode *clause, Nodes *parms, Nodes *args) {
+    StructNode *trait = genericNamedTrait(clause->typ);
+    if (trait || genericNamedGenericTrait(clause->typ) == NULL)
+        return trait;
+    INode *copy = genericClauseCloneChecked(clause, parms, args);
+    if (copy == NULL)
         return NULL;
     INode *dcl = itypeGetTypeDcl(copy);
     if (dcl->tag != StructTag || !(dcl->flags & TraitType) || ((StructNode*)dcl)->genericinfo)
@@ -872,6 +914,16 @@ static WhereValue genericConditionValue(INode *cond, Nodes *parms, Nodes *args, 
             return WhereUnknown;
     }
     INode *named = trait ? NULL : genericNamedType(((CastNode*)cond)->typ);
+    // A type written as an instance, 'So[str]', is made at these arguments and
+    // met by itself alone
+    if (trait == NULL && named == NULL && genericIsTypeInstance(((CastNode*)cond)->typ)) {
+        if (type == NULL || (parm == NULL && !nested))
+            return WhereUnknown;
+        INode *inst = genericClauseCloneChecked((CastNode*)cond, parms, args);
+        if (inst == NULL)
+            return WhereUnknown;
+        return itypeIsSame(type, inst) ? WhereTrue : WhereFalse;
+    }
     if (type == NULL || (trait == NULL && named == NULL) || (parm == NULL && !nested))
         return WhereUnknown;
     if (trait)
