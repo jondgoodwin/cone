@@ -1,0 +1,96 @@
+// The gait's numbers. Each says where it comes from and whether it was
+// checked against a source (S), taken from a source in a form this package
+// changed (T, tuned), or is this package's own choice (own).
+
+// Speed at which a person changes from walking to running, from the Froude
+// number v^2 / (g L) = 0.5 at the hip height L (Alexander 1976; the
+// walk-run transition at a Froude number near 0.5 holds across body sizes
+// and across gravities, Kram, Domingo and Ferris, J Exp Biol 1997) (S).
+pub fn walkRunSpeed(hipHeight f32, gravity f32) f32 { (0.5 * gravity * hipHeight).sqrt(); }
+
+// The speed (m/s) a normal walker walks at, the stride's reference (own; a
+// preferred human walking speed, near 1.3 to 1.4 m/s)
+pub const REF_SPEED = 1.4;
+
+// Stride length (one foot's step to its next, in metres) for height 'h' at
+// speed 'v': 0.80 H at 1.4 m/s, growing as the square root of the speed
+// (T). A normal stride is about 1.41 m for a 1.75 m adult (0.81 H) at 1.4 m/s
+// (Whittle, Gait Analysis, from memory: NOT fetched); the square-root growth is
+// a fit to the sublinear growth Grieve (1968) measured (also from memory),
+// tuned by eye. Held between 0.2 H and 1.4 H.
+// The reference note's 0.85 H was a little long: its half-stance put the
+// ankle out of the leg's reach.
+pub fn strideLength(h f32, v f32) f32 {
+  imm vv = if v < 0.3 { 0.3; } else { v; };
+  clampf(0.80 * h * (vv / REF_SPEED).sqrt(), 0.2 * h, 1.4 * h);
+}
+
+// The duty factor: the share of the cycle a foot is on the ground. 0.62
+// walking up to 1.4 m/s (stance is about 62 per cent of a normal gait
+// cycle, swing 38) (S), falling in a straight line to 0.40 at 4 m/s (running
+// is stance about 40 per cent: the search results agree with the note) (T),
+// and never below 0.30 (own).
+pub fn dutyFactor(v f32) f32 {
+  if v <= 1.4 { return 0.62; }
+  clampf(0.62 - (v - 1.4) * (0.22 / 2.6), 0.30, 0.62);
+}
+
+// Foot geometry, as fractions of the height H (Drillis and Contini via
+// Winter, S, but for the heel and ball, which are own: the foot is 0.152 H
+// long, the ankle 0.039 H above the sole; the heel 0.04 H behind the ankle
+// and the ball of the foot 0.07 H ahead of it (the ball is at about 70 per
+// cent of the foot's length from the heel); the Drillis and Contini
+// constants were confirmed as that table's by a search, but their mapping to
+// segments was not fetched from the primary text)
+pub const ANKLE_HEIGHT = 0.039;
+pub const HEEL_BACK = 0.040;
+pub const BALL_AHEAD = 0.070;
+
+// Stance, as a fraction t of the foot's time on the ground (own): the heel
+// rocker (toe up 12 degrees, down to flat) to 0.12, flat to 0.55, then the
+// ankle goes over the ball while the heel rises to 35 degrees toe down
+pub const HEEL_ROCKER_END = 0.12;
+pub const TOE_ROCKER_START = 0.55;
+pub const HEEL_STRIKE_PITCH = 0.2094395;   // 12 degrees, toe up
+pub const TOE_OFF_PITCH = 0.6108652;       // 35 degrees, toe down
+
+// The foot's ankle, relative to its heel's contact point, at stance fraction
+// t: (forward, up, pitch (toe up positive)), in the foot's own heading
+pub fn rocker(h f32, t f32) Vec3 {
+  imm hb = HEEL_BACK * h;
+  imm a = ANKLE_HEIGHT * h;
+  imm ball = (HEEL_BACK + BALL_AHEAD) * h;
+  if t < HEEL_ROCKER_END {
+    // Pivoting about the heel: the ankle's offset (hb, a) turned toe up
+    imm th = HEEL_STRIKE_PITCH * (1. - smoothstep(0., HEEL_ROCKER_END, t));
+    imm c = cos(th);
+    imm s = sin(th);
+    return new Vec3(hb * c - a * s, hb * s + a * c, th);
+  }
+  if t < TOE_ROCKER_START {
+    return new Vec3(hb, a, 0.);
+  }
+  // Pivoting about the ball: the ankle's offset from it (-BALL_AHEAD H, a)
+  // turned toe down
+  imm th = 0. - TOE_OFF_PITCH * smoothstep(TOE_ROCKER_START, 1., t);
+  imm c = cos(th);
+  imm s = sin(th);
+  imm ox = 0. - BALL_AHEAD * h;
+  new Vec3(ball + ox * c - a * s, ox * s + a * c, th);
+}
+
+// The arm's swing amplitude in radians at speed 'v': 12.3 degrees each way
+// at 1.4 m/s (a 24.6 degree swing about the shoulder in normal walking, T:
+// the note's 25 degrees each way is about twice that), growing with speed
+// to about 3 times
+pub fn armSwing(v f32) f32 { 0.2147 * clampf(v / REF_SPEED, 0., 3.); }
+
+// Pelvic rotation about the vertical, 4 degrees each way (Saunders, Inman and
+// Eberhart 1953, from memory: the paper was not fetched, T: the note said 5) at 1.4
+// m/s; the pelvic list (the swing side dropping), 2.5 degrees each way (the
+// note's 3, T); the sideways sway of the pelvis, 0.0135 H each way (the note's
+// 0.02 H was too wide: the 1953 figures put the whole sideways travel near
+// 4 to 5 cm, T); all in proportion to the speed up to 1.5 times
+pub const PELVIS_YAW = 0.0698132;
+pub const PELVIS_LIST = 0.0436332;
+pub const PELVIS_SWAY = 0.0135;

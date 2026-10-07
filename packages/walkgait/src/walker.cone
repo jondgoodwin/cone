@@ -1,0 +1,348 @@
+// The Walker: gait state for one humanoid, and its update.
+
+// One foot: swinging or on the ground, and where
+pub struct Foot {
+  pub swinging bool;
+  pub heel Vec3;          // the heel's contact point in the world: this stance's, or where the swing will land
+  pub yaw f32;            // the foot's heading in this stance (radians; 0 faces -z)
+  pub liftAnkle Vec3;     // where the ankle was when the swing began
+  pub liftPitch f32;
+  pub liftYaw f32;
+  pub landHeel Vec3;      // where this swing will land
+  pub landYaw f32;
+  pub ankle Vec3;         // the ankle now, in the world
+  pub pitch f32;          // the foot's pitch now, toe up positive
+  pub t f32;              // fraction through the stance or the swing
+  pub calm bool;          // this swing began with the walker stopped: it lands beside the pelvis
+}
+
+fn newFoot() Foot {
+  imm z = new Vec3(0., 0., 0.);
+  new Foot(false, z, 0., z, 0., 0., z, 0., z, 0., 0., false);
+}
+
+pub struct Walker {
+  pub height f32;
+  pub phase f32;            // cycles; the left foot's, the right's half a cycle on
+  pub speed f32;            // the smoothed speed, m/s
+  pub frozen bool;          // standing: the phase does not advance
+  pub stillSteps i32;       // landings since the walker stopped
+  pub flat f32;             // 1: standing flat footed
+  pub left Foot;
+  pub right Foot;
+  pub started bool;
+  pub wasGrounded bool;
+  pub pelvisY f32;          // the pelvis' height above the model's origin, smoothed
+  pub pelvisVy f32;
+  pub air f32;              // 1: airborne
+  pub crouchTime f32;       // seconds since a hard landing
+  pub crouchDepth f32;      // metres
+  pub clock f32;            // seconds, for the idle layer
+  pub seed u32;             // desynchronises beings
+  pub shiftFrom f32;        // weight shift: sideways offset in units of H, from and to
+  pub shiftTo f32;
+  pub shiftStart f32;       // when it began
+  pub shiftNext f32;        // when the next begins
+  pub rng u32;
+
+  // A walker for a being 'height' metres tall; 'seed' makes its idle motion its own
+  pub fn make(height f32, seed u32) Walker {
+    new Walker(height, 0., 0., true, 0i32, 1., newFoot(), newFoot(), false, true, 0., 0., 0., 100., 0., 0., seed,
+      0., 0., -100., 2. + f32.from(seed % 5u32), seed * 747796405u32 + 2891336453u32);
+  }
+
+  // The leg's length from hip joint to ankle, and one leg's two segments
+  pub fn legReach(self &) f32 { (0.245 + 0.246) * height; }
+
+  // The pelvis' height at rest, standing: the ankle's height plus 97 per
+  // cent of the full leg
+  pub fn standingPelvis(self &) f32 { ANKLE_HEIGHT * height + 0.97 * self.legReach(); }
+
+  // A hard landing at 'speed' m/s: the pelvis drops by 0.04 H for each m/s,
+  // at most 0.30 H, in 60 ms, and recovers in about half a second (the note)
+  pub fn impact(self &mut, impactSpeed f32) {
+    crouchTime = 0.;
+    crouchDepth = clampf(0.04 * height * impactSpeed, 0., 0.30 * height);
+  }
+
+  fn nextRandom(self &mut) f32 {
+    rng = rng * 747796405u32 + 2891336453u32;
+    imm w = ((rng >> ((rng >> 28u32) + 4u32)) ^ rng) * 277803737u32;
+    imm r = (w >> 22u32) ^ w;
+    f32.from(r & 0xFFFFu32) / 65536.;
+  }
+
+  // The foot at fraction through stance; 'side' -1 left, 1 right
+  fn stanceAnkle(self &, foot &Foot, t f32) Vec3 {
+    imm r = rocker(height, t);
+    imm fx = 0. - sin(foot.yaw);
+    imm fz = 0. - cos(foot.yaw);
+    new Vec3(foot.heel.x + fx * r.x, foot.heel.y + r.y, foot.heel.z + fz * r.x);
+  }
+
+  // Put both feet flat on the ground beside the pelvis at 'at', facing 'yaw'
+  fn stand(self &mut, at Vec3, yaw f32, ground &fn(f32, f32) f32) {
+    mut side = -1.;
+    while side < 1.5 {
+      imm fx = 0. - sin(yaw);
+      imm fz = 0. - cos(yaw);
+      imm rx = cos(yaw);
+      imm rz = 0. - sin(yaw);
+      imm hip = 0.0955 * height * side;
+      imm hb = HEEL_BACK * height;
+      imm hx = at.x + rx * hip - fx * hb;
+      imm hz = at.z + rz * hip - fz * hb;
+      imm heel = new Vec3(hx, ground(hx, hz), hz);
+      mut f = newFoot();
+      f.heel = heel;
+      f.yaw = yaw;
+      f.landHeel = heel;
+      f.landYaw = yaw;
+      if side < 0. { left = f; } else { right = f; }
+      side = side + 2.;
+    }
+    phase = 0.;
+    frozen = true;
+    flat = 1.;
+    stillSteps = 2i32;
+    started = true;
+  }
+
+  // Begin a swing for 'foot' ('side' -1 left, 1 right): where it will land,
+  // from the body at 'at' going 'dir' (+1 forward) at the stride 'stride'
+  // with duty 'duty', facing 'yaw'
+  fn beginSwing(self &, foot &mut Foot, side f32, at Vec3, yaw f32, dir f32, stride f32, duty f32, ground &fn(f32, f32) f32) {
+    foot.swinging = true;
+    foot.liftAnkle = foot.ankle;
+    foot.liftPitch = foot.pitch;
+    foot.liftYaw = foot.yaw;
+    self.aimLanding(foot, side, at, yaw, dir, stride, duty, 0., ground);
+  }
+
+  // Where 'foot''s swing will land, from the body as it is now: aimed again
+  // every step of the swing, so a body that slows or stops mid-swing brings
+  // the landing in with it (a person shortens the step)
+  // 'u' is how far through the swing it is: the pelvis has that much less
+  // of the swing to travel, so the landing is the pelvis' travel left in
+  // the swing plus half the stance's, ahead of where the pelvis is now.
+  fn aimLanding(self &, foot &mut Foot, side f32, at Vec3, yaw f32, dir f32, stride f32, duty f32, u f32,
+      ground &fn(f32, f32) f32) {
+    foot.calm = speed < 0.08;
+    imm k = smoothstep(0.05, 0.5, speed);
+    imm ahead = dir * stride * k * ((1. - u) * (1. - duty) + duty * 0.5);
+    imm fx = 0. - sin(yaw);
+    imm fz = 0. - cos(yaw);
+    imm rx = cos(yaw);
+    imm rz = 0. - sin(yaw);
+    imm hip = 0.0955 * height * side;
+    imm hb = HEEL_BACK * height;
+    imm hx = at.x + rx * hip + fx * (ahead - hb);
+    imm hz = at.z + rz * hip + fz * (ahead - hb);
+    foot.landHeel = new Vec3(hx, ground(hx, hz), hz);
+    foot.landYaw = yaw;
+  }
+
+  // One foot placed for this step. 'phi' is the foot's own phase in cycles.
+  fn placeFoot(self &mut, foot &mut Foot, side f32, phi f32, duty f32, at Vec3, yaw f32, dir f32, stride f32,
+      moving bool, ground &fn(f32, f32) f32) {
+    imm swingNow = phi >= duty;
+    if swingNow and !foot.swinging {
+      self.beginSwing(foot, side, at, yaw, dir, stride, duty, ground);
+    } elif !swingNow and foot.swinging {
+      foot.swinging = false;
+      foot.heel = foot.landHeel;
+      foot.yaw = foot.landYaw;
+      if foot.calm { stillSteps = stillSteps + 1i32; }
+    }
+    if swingNow {
+      imm u = (phi - duty) / (1. - duty);
+      if foot.swinging { self.aimLanding(foot, side, at, yaw, dir, stride, duty, u, ground); }
+      foot.t = u;
+      imm s = smoothstep(0., 1., u);
+      imm r0 = rocker(height, 0.);
+      imm fx = 0. - sin(foot.landYaw);
+      imm fz = 0. - cos(foot.landYaw);
+      imm landAnkle = new Vec3(foot.landHeel.x + fx * r0.x, foot.landHeel.y + r0.y, foot.landHeel.z + fz * r0.x);
+      mut p = foot.liftAnkle.lerp(landAnkle, s);
+      imm clearance = height * (0.012 + 0.018 * clampf(speed / REF_SPEED, 0., 1.5));
+      p = new Vec3(p.x, p.y + clearance * sin(pi * u), p.z);
+      foot.ankle = p;
+      foot.pitch = foot.liftPitch + (r0.z - foot.liftPitch) * s;
+      // The heading turns by the shortest way
+      mut dy = foot.landYaw - foot.liftYaw;
+      while dy > pi { dy = dy - 2. * pi; }
+      while dy < -pi { dy = dy + 2. * pi; }
+      foot.yaw = foot.liftYaw + dy * s;
+    } else {
+      imm t = phi / duty;
+      foot.t = t;
+      imm r = rocker(height, t);
+      imm rest = rocker(height, 0.3);
+      imm fx = 0. - sin(foot.yaw);
+      imm fz = 0. - cos(foot.yaw);
+      imm a0 = new Vec3(foot.heel.x + fx * r.x, foot.heel.y + r.y, foot.heel.z + fz * r.x);
+      imm a1 = new Vec3(foot.heel.x + fx * rest.x, foot.heel.y + rest.y, foot.heel.z + fz * rest.x);
+      foot.ankle = a0.lerp(a1, flat);
+      foot.pitch = r.z * (1. - flat);
+    }
+  }
+
+  // One step of 'dt' seconds. The body stands at 'at' (its feet's ground
+  // point: the model's origin), faces 'yaw', moves 'forward' m/s along its
+  // facing (negative: backwards) and turns 'turn' rad/s. 'grounded' is false
+  // while it falls. 'ground' answers the ground's height under (x, z).
+  // 'pose' is rewritten and 'models' brought up to date for the skeleton
+  // 'skel' (a humanoid of this walker's height).
+  pub fn update(self &mut, skel &Skeleton, pose &mut Pose, models &mut List[Transform3], at Vec3, yaw f32,
+      forward f32, turn f32, grounded bool, ground &fn(f32, f32) f32, dt f32) {
+    clock = clock + dt;
+    imm h = height;
+    if !started or (grounded and !wasGrounded) { self.stand(at, yaw, ground); pelvisY = self.standingPelvis() + 0.; }
+    wasGrounded = grounded;
+    imm v = if forward < 0. { 0. - forward; } else { forward; };
+    imm dir = if forward < 0. { -1.; } else { 1.; };
+    // The caller's speed is the body's own, already smooth (it ramps at a set
+    // acceleration), and the landings are aimed from it every step
+    speed = v;
+    imm duty = dutyFactor(speed);
+    imm stride = strideLength(h, speed);
+    imm turning = (if turn < 0. { 0. - turn; } else { turn; }) > 0.25;
+    imm moving = speed > 0.08 or turning or v > 0.08;
+    if grounded {
+      if moving {
+        frozen = false;
+        stillSteps = 0i32;
+        if v > 0.08 or speed > 0.08 {
+          phase = frac(phase + v * dt / stride);
+        } else {
+          phase = frac(phase + 0.5 * dt * clampf(if turn < 0. { 0. - turn; } else { turn; }, 0., 1.));
+        }
+      } elif !frozen {
+        phase = frac(phase + 0.8 * dt);
+      }
+    }
+    air = air + ((if grounded { 0.; } else { 1.; }) - air) * (1. - libc.expf(-12. * dt));
+    flat = clampf(flat + (if frozen and grounded { 6.; } else { -6.; }) * dt, 0., 1.);
+
+    if grounded {
+      self.placeFoot(&mut left, -1., phase, duty, at, yaw, dir, stride, moving, ground);
+      self.placeFoot(&mut right, 1., frac(phase + 0.5), duty, at, yaw, dir, stride, moving, ground);
+      if !moving and stillSteps >= 2i32 and !frozen { frozen = true; }
+    }
+
+    // ---- the pose ----
+    mut i = 0usize;
+    while i < skel.boneCount() { pose.locals.set(i, skel.restOf(i)); i = i + 1usize; }
+    imm amp = clampf(speed / REF_SPEED, 0., 1.5) * smoothstep(0.05, 0.5, speed);
+    imm cyc = 2. * pi * phase;
+    imm idle = 1. - smoothstep(0.05, 0.4, speed);
+    imm yAxis = new Vec3(0., 1., 0.);
+    imm xAxis = new Vec3(1., 0., 0.);
+    imm zAxis = new Vec3(0., 0., 1.);
+
+    // Weight shift, while standing: every 4 to 9 seconds a new side
+    if clock >= shiftNext {
+      shiftFrom = shiftFrom + (shiftTo - shiftFrom) * smoothstep(0., 1.2, clock - shiftStart);
+      imm pick = self.nextRandom();
+      shiftTo = if pick < 0.33 { -0.025; } elif pick < 0.66 { 0.; } else { 0.025; };
+      shiftStart = clock;
+      shiftNext = clock + 4. + 5. * self.nextRandom();
+    }
+    imm shift = (shiftFrom + (shiftTo - shiftFrom) * smoothstep(0., 1.2, clock - shiftStart)) * idle * (1. - air);
+    imm breath = sin(2. * pi * 0.25 * clock + f32.from(seed % 7u32)) + 0.15 * sin(4. * pi * 0.25 * clock);
+    imm breathW = 1. - 0.5 * (1. - idle);
+
+    // Pelvis: height from the legs, then sway, turn and list
+    imm pelvisYaw = 0. - PELVIS_YAW * amp * cos(cyc);
+    imm pelvisList = PELVIS_LIST * amp * cos(cyc - 2. * pi * (duty * 0.5 + 0.5)) + shift * 0.12;
+    imm sway = (0. - PELVIS_SWAY * h * amp * cos(cyc - 2. * pi * duty * 0.5)) + shift * h;
+    // The target pelvis height, from the two ankles
+    imm toModel = Quat.angleAxis(yaw, yAxis).conjugate();
+    mut targetY = self.standingPelvis() + at.y;
+    mut sideI = 0;
+    while sideI < 2 {
+      imm side = if sideI == 0 { -1.; } else { 1.; };
+      imm fa = if sideI == 0 { left.ankle; } else { right.ankle; };
+      imm m = toModel * (fa - at);
+      imm hx = sway + side * 0.0955 * h;
+      imm dx = m.x - hx;
+      imm dz = m.z;
+      imm r = 0.97 * self.legReach();
+      imm room = r * r - dx * dx - dz * dz;
+      imm ymax = (fa.y) + (if room > 0. { room.sqrt(); } else { 0.; });
+      if ymax < targetY { targetY = ymax; }
+      sideI = sideI + 1;
+    }
+    if grounded {
+      // The crouch of a hard landing
+      crouchTime = crouchTime + dt;
+      mut crouch = 0.;
+      if crouchTime < 0.06 { crouch = crouchDepth * crouchTime / 0.06; }
+      elif crouchTime < 0.5 { crouch = crouchDepth * (1. - smoothstep(0.06, 0.5, crouchTime)); }
+      targetY = targetY - crouch;
+    } else {
+      targetY = at.y + self.standingPelvis();
+    }
+    // Critically damped, 22 rad/s
+    imm w = 22.;
+    imm err = pelvisY - (targetY - at.y);
+    pelvisVy = pelvisVy + (0. - w * w * err - 2. * w * pelvisVy) * dt;
+    pelvisY = pelvisY + pelvisVy * dt;
+    if pelvisY > self.standingPelvis() + 0.02 { pelvisY = self.standingPelvis() + 0.02; pelvisVy = 0.; }
+
+    pose.setTranslation(PELVIS, new Vec3(sway, pelvisY, 0.));
+    pose.setRotation(PELVIS, Quat.angleAxis(pelvisYaw, yAxis) * Quat.angleAxis(pelvisList, zAxis));
+    // The spine and chest turn the other way; the head keeps its heading
+    imm lean = 0. - 0.0523599 * clampf(speed / REF_SPEED, 0., 2.) * smoothstep(0.05, 0.5, speed);
+    imm breathePitch = radians(1.) * breath * breathW;
+    pose.setRotation(SPINE, Quat.angleAxis(1.1 * PELVIS_YAW * amp * cos(cyc) , yAxis) * Quat.angleAxis(0. - pelvisList * 0.5 - shift * 0.06, zAxis)
+      * Quat.angleAxis(lean * 0.5 + breathePitch * 0.4, xAxis));
+    pose.setRotation(CHEST, Quat.angleAxis(0.8 * PELVIS_YAW * amp * cos(cyc), yAxis) * Quat.angleAxis(0. - pelvisList * 0.3 - shift * 0.03, zAxis)
+      * Quat.angleAxis(lean * 0.5 + breathePitch, xAxis));
+    pose.setRotation(NECK, Quat.angleAxis(0.45 * PELVIS_YAW * amp * cos(cyc), yAxis) * Quat.angleAxis(pelvisList * 0.5, zAxis));
+    pose.setRotation(HEAD, Quat.angleAxis(0.45 * PELVIS_YAW * amp * cos(cyc), yAxis) * Quat.angleAxis(pelvisList * 0.5 + shift * 0.1, zAxis)
+      * Quat.angleAxis(0. - lean * 0.8, xAxis));
+    // Shoulders lift with the breath
+    imm lift = 0.004 * h * breath * breathW;
+    pose.setTranslation(CLAVICLE_L, skel.restOf(CLAVICLE_L).translation + new Vec3(0., lift, 0.));
+    pose.setTranslation(CLAVICLE_R, skel.restOf(CLAVICLE_R).translation + new Vec3(0., lift, 0.));
+
+    // Arms: against the legs. The left leg is forward at phase 0.
+    imm swing = armSwing(speed) * smoothstep(0.05, 0.5, speed);
+    imm armL = 0. - swing * cos(cyc);
+    imm armR = swing * cos(cyc);
+    imm airArms = 0.3 * air;
+    pose.setRotation(UPPER_ARM_L, Quat.angleAxis(armL, xAxis) * Quat.angleAxis(0. - airArms, zAxis) * skel.restOf(UPPER_ARM_L).rotation);
+    pose.setRotation(UPPER_ARM_R, Quat.angleAxis(armR, xAxis) * Quat.angleAxis(airArms, zAxis) * skel.restOf(UPPER_ARM_R).rotation);
+    imm fl = 0.2 + 0.6 * (if armL > 0. { armL; } else { 0.; }) + 0.3 * clampf((speed - 2.5) / 2., 0., 1.);
+    imm fr = 0.2 + 0.6 * (if armR > 0. { armR; } else { 0.; }) + 0.3 * clampf((speed - 2.5) / 2., 0., 1.);
+    pose.setRotation(FOREARM_L, Quat.angleAxis(fl, xAxis));
+    pose.setRotation(FOREARM_R, Quat.angleAxis(fr, xAxis));
+
+    skel.modelTransforms(pose, models);
+
+    // ---- legs: reach each ankle to its place ----
+    sideI = 0;
+    while sideI < 2 {
+      imm side = if sideI == 0 { -1.; } else { 1.; };
+      imm thigh = if sideI == 0 { THIGH_L; } else { THIGH_R; };
+      imm foot = if sideI == 0 { FOOT_L; } else { FOOT_R; };
+      imm f = if sideI == 0 { left; } else { right; };
+      mut target = toModel * (f.ankle - at);
+      if !grounded {
+        // Falling: the feet hang under the hips, a little bent
+        imm hipPos = (*models[thigh]).translation;
+        imm hang = new Vec3(hipPos.x, hipPos.y - 0.93 * self.legReach(), hipPos.z + side * 0.04 * h);
+        target = target.lerp(hang, air);
+      }
+      imm pole = new Vec3(side * 0.12, 0., -1.).normalize();
+      aimLimb(skel, pose, models, thigh, target, pole, 0.5235988);
+      // The foot: held to its heading in the world and its pitch
+      mut fyaw = f.yaw - yaw;
+      imm footRot = Quat.angleAxis(fyaw, yAxis) * Quat.angleAxis(f.pitch * (1. - air), xAxis);
+      skel.setModelRotation(pose, models, foot, footRot);
+      skel.recompose(pose, models, foot);
+      sideI = sideI + 1;
+    }
+  }
+}

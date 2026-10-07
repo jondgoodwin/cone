@@ -1,0 +1,77 @@
+// Two-bone inverse kinematics, in closed form (the law of cosines; Inigo
+// Quilez's "Simple IK" derives the same), and its application to a pose.
+
+// A limb solved: where its middle joint (knee, elbow) and its end (ankle,
+// wrist) are, and whether the end is at the target
+pub struct LimbSolution {
+  pub mid Vec3;
+  pub end Vec3;
+  pub reached bool;
+}
+
+// The middle and end of a limb of segments 'l1' and 'l2' hanging from 'root',
+// whose end is to reach 'target', the middle joint bending towards 'pole' (a
+// direction; its part along the limb is ignored). A target out of reach is
+// clamped along the same line to the longest reach, and a target too near
+// to the smallest reach that keeps the joint's interior angle at
+// 'minInterior' radians or more (a knee flexed at most pi - minInterior).
+//
+// The reach is smoothed so a leg does not snap straight: a distance beyond
+// 'soft' times the full length (0.98 is good) eases towards the full length
+// exponentially instead of meeting it at an angle.
+pub fn solveTwoBone(root Vec3, target Vec3, l1 f32, l2 f32, pole Vec3, minInterior f32, soft f32) LimbSolution {
+  imm toTarget = target - root;
+  imm d0 = toTarget.length();
+  mut u = new Vec3(0., -1., 0.);
+  if d0 > 0.00001 { u = toTarget * (1. / d0); }
+  imm full = (l1 + l2) * 0.99995;
+  imm minD = (l1 * l1 + l2 * l2 - 2. * l1 * l2 * cos(minInterior)).sqrt();
+  mut d = d0;
+  if d > full * soft {
+    imm s = full * soft;
+    imm room = full - s;
+    d = s + room * (1. - libc.expf(-(d0 - s) / room));
+  }
+  if d < minD { d = minD; }
+  imm a = (l1 * l1 - l2 * l2 + d * d) / (2. * d);
+  imm h = clampf(l1 * l1 - a * a, 0., 1.0e9).sqrt();
+  mut p = pole - u * pole.dot(u);
+  if p.length() < 0.0001 {
+    p = if absf(u.z) < 0.9 { new Vec3(0., 0., -1.) - u * (-u.z); } else { new Vec3(1., 0., 0.) - u * u.x; };
+  }
+  p = p.normalize();
+  new LimbSolution(root + u * a + p * h, root + u * d, d0 <= full * 1.0001 and d0 >= minD);
+}
+
+// Bone 'top' and the two bones below it (each the first child of the one
+// before: thigh, shin, foot) turned so the third bone's origin reaches
+// 'target' (model space) with the middle joint towards 'pole'. 'models' must
+// be current for 'top' and every bone before it; it is brought up to date
+// from the middle bone on. The rotations are the smallest from the pose's
+// own, so a twist already there stays. Returns the solution (end clamped to
+// reach).
+pub fn aimLimb(skel &Skeleton, pose &mut Pose, models &mut List[Transform3], top usize, target Vec3, pole Vec3,
+    minInterior f32) LimbSolution {
+  imm midBone = usize.from(skel.childOf(top));
+  imm endBone = usize.from(skel.childOf(midBone));
+  imm restMid = skel.restOf(midBone).translation;
+  imm restEnd = skel.restOf(endBone).translation;
+  imm l1 = restMid.length();
+  imm l2 = restEnd.length();
+  imm root = (*models[top]).translation;
+  imm sol = solveTwoBone(root, target, l1, l2, pole, minInterior, 0.98);
+  // The top bone: from where its segment points now to where it must
+  imm topRot = (*models[top]).rotation;
+  imm nowDir = topRot * restMid.normalize();
+  imm newTop = Quat.fromVectors(nowDir, sol.mid - root) * topRot;
+  skel.setModelRotation(pose, models, top, newTop);
+  models.set(top, new Transform3(root, newTop, new Vec3(1., 1., 1.)));
+  skel.recompose(pose, models, midBone);
+  // The middle bone likewise
+  imm midRot = (*models[midBone]).rotation;
+  imm midNow = midRot * restEnd.normalize();
+  imm newMid = Quat.fromVectors(midNow, sol.end - sol.mid) * midRot;
+  skel.setModelRotation(pose, models, midBone, newMid);
+  skel.recompose(pose, models, midBone);
+  sol;
+}
