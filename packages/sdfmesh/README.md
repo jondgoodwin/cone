@@ -117,8 +117,8 @@ imm tris = net.readBackMesh(&mut device);            // or a mesh.Mesh, the GPU'
 |---|---|
 | `GridMesher.make(device)`, `isValid()` | the seven kernels, from `sdfmesh.spv`, each with its CPU twin |
 | `mesher.mesh(device, grid, samples Buffer) GridNet` | the samples meshed on the GPU; waits for the GPU twice (the counts, then the mesh) |
-| `mesher.meshSamples(device, grid, &[]f32) GridNet` | the same of samples on the CPU, uploaded first |
-| `mesher.meshOnTwin(grid, &[]f32) SurfaceNet` | the same kernels run on the CPU as their twins; slow, for tests |
+| `mesher.meshSamples(device, grid, &Array[f32]) GridNet` | the same of samples on the CPU, uploaded first |
+| `mesher.meshOnTwin(grid, &Array[f32]) SurfaceNet` | the same kernels run on the CPU as their twins; slow, for tests |
 | `GridNet` | `ok`, `grid`, `vertexCount`, `triangleCount`, and on the GPU `positions` and `normals` (a Vec3 each, 12 bytes; usable as vertex buffers), `indices` (three u32 a triangle; usable as an index buffer), `vertexCells` (each vertex's cell's number), `samples` (handed back) |
 | `net.readBack(device) SurfaceNet`, `net.readBackMesh(device) mesh.Mesh` | read back; the buffers stay on the GPU |
 

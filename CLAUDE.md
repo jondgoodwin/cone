@@ -36,7 +36,7 @@ Visual Studio projects stay at the root.
   imports (`Option`, `Result`, the methods of `str`, the text body whose struct
   the compiler makes and core's `pub struct @opaque str` gives its methods, all
   `inline`, `Array[T]`, the body of a run-time length whose borrow is the slice
-  `&Array[T]` (the same type as `&[]T`), a generic struct the compiler's `Array`
+  `&Array[T]`, a generic struct the compiler's `Array`
   becomes when core declares it, whose `len` is written there, and
   `cstr`, C's `const char *`, a one-pointer struct the compiler makes
   too so that the C-named modules can declare their strings with it, whose
@@ -122,7 +122,7 @@ Visual Studio projects stay at the root.
   watcher thread waits on the job's own fence and wakes the loop); every
   kernel a CPU twin (`runTwin`) and `checkParity` comparing the two bit for
   bit; its test kernels are Slang fixtures, and a Cone compute entry point
-  (`fn @compute(64) name(inv Invocation, parts &[]Part, out &[]mut f32)`),
+  (`fn @compute(64) name(inv Invocation, parts &Array[Part], out &mut Array[f32])`),
   compiled by `conec` for SPIR-V's Vulkan form, is a kernel it loads too,
   `readSpirv("<package>.spv")` reading the module Congo built and copied
   beside the program;

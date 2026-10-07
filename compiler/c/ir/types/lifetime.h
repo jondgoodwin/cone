@@ -2,7 +2,7 @@
  * @file
  *
  * A borrowed reference type written in a function's signature may name its
- * lifetime, right after the '&': '&'a T', '&'a mut T', '&[]'a u8'. Each name is
+ * lifetime, right after the '&': '&'a T', '&'a mut T', '&'a Array[u8]'. Each name is
  * one lifetime of the caller's, and a borrow written with none has the unnamed
  * lifetime, one more name, shared by every unannotated borrow in the signature
  * -- and by every borrow an unannotated value of another type holds (a field of
@@ -10,7 +10,7 @@
  * outlives every name and ties nothing to anything.
  *
  * A struct (or enum) may declare lifetimes in its bracket list, apart from its
- * type parameters: 'struct Cursor['a] { items &[]'a R; }'. Its fields name them
+ * type parameters: 'struct Cursor['a] { items &'a Array[R]; }'. Its fields name them
  * and nothing else; a struct whose fields name one lifetime and whose brackets
  * declare none takes that one as declared. A lifetime changes no layout and no
  * code, so it is never instanced: 'Cursor['a]' and 'Cursor' are one type. A use

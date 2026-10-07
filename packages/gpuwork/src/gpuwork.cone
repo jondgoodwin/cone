@@ -53,13 +53,13 @@
 // KERNELS. A Kernel is a compute entry point of SPIR-V, made into a pipeline
 // once and used by any number of jobs. Its parameters are bound in order:
 // binding i is parameter i, group 0, each one storage buffer, READ (a
-// read-only slice, '&[]T', or a struct passed by value, which is a small
+// read-only slice, '&Array[T]', or a struct passed by value, which is a small
 // read-only storage buffer: there are no push constants, which WebGPU lacks)
-// or READ_WRITE (a slice it writes, '&[]mut T'); at most 8. A buffer holds
+// or READ_WRITE (a slice it writes, '&mut Array[T]'); at most 8. A buffer holds
 // 32-bit numbers (u32, i32, f32) and structs and fixed arrays of them. Its
 // workgroup's size is read from the SPIR-V. These are the rules of the Cone
 // compiler's compute entry points
-// ('fn @compute(64) bake(inv Invocation, parts &[]Part, out &[]mut f32)',
+// ('fn @compute(64) bake(inv Invocation, parts &Array[Part], out &mut Array[f32])',
 // compiled with 'conec --triple=spirv1.6-unknown-vulkan1.3'; the Invocation
 // is not a binding, and may stand anywhere among the parameters), and a
 // kernel from elsewhere that keeps them is loaded the same way (the tests
@@ -187,15 +187,15 @@
 // once for each Invocation of a dispatch, with the dispatch's buffers. A Cone
 // kernel's own function is its twin, compiled for the CPU, where a compute
 // entry point is an ordinary function: 'kernel.setTwin3(&bake)' for
-// 'fn @compute(64) bake(inv Invocation, s Settings, parts &[]Part,
-// out &[]mut f32)', one of 'setTwin1' to 'setTwin7' for each count of
+// 'fn @compute(64) bake(inv Invocation, s Settings, parts &Array[Part],
+// out &mut Array[f32])', one of 'setTwin1' to 'setTwin7' for each count of
 // buffers, the Invocation first. Each slice parameter is given its buffer as
 // a slice of as many elements as the buffer holds (its element's size read
 // from the SPIR-V's ArrayStride), as on the GPU, and each struct parameter
 // its buffer's first bytes (a buffer too small for it refuses the run); a
 // parameter that is a struct where the SPIR-V binds a slice is refused (only
 // sizes can be compared, so a slice where it binds a 16-byte struct is not).
-// A slice of atomics, '&[]mut Atomic[u32]' or '&[]mut Atomic[i32]' (a
+// A slice of atomics, '&mut Array[Atomic[u32]]' or '&mut Array[Atomic[i32]]' (a
 // counter whose 'add' hands each invocation its slot), is a slice parameter
 // like any other. A kernel from
 // elsewhere has a twin written as an adapter, 'setTwin(f)', given the
@@ -303,23 +303,23 @@ mut kernelFailureCount = 0u32;
 pub fn kernelFailures() u32 { kernelFailureCount; }
 
 // Report a refusal, and count it
-fn fail(msg &[]u8) {
+fn fail(msg &Array[u8]) {
   refusalCount = refusalCount + 1u32;
   say(msg);
 }
 
 // Report a kernel's failure on the GPU, and count it
-fn failKernel(msg &[]u8) {
+fn failKernel(msg &Array[u8]) {
   kernelFailureCount = kernelFailureCount + 1u32;
   say(msg);
 }
 
 // Print a line to stderr, "gpuwork: " first
-fn say(msg &[]u8) {
+fn say(msg &Array[u8]) {
   mut m = String.from("gpuwork: ");
   m <- msg;
   m.appendByte('\n');
-  imm v &[]u8 = m.view();
+  imm v &Array[u8] = m.view();
   libc.fflush(libc.stdout());
   libc.fwrite(v as *u8, 1usize, v.len, libc.stderr());
 }

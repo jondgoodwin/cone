@@ -342,7 +342,7 @@ INode **borrowTempRoot(INode **nodep) {
 }
 
 // Retype a borrowed constant array literal to the reference type it is wanted
-// as, when their element types differ: '&[1, 2, 3]' wanted as a '&[]u32'. The
+// as, when their element types differ: '&[1, 2, 3]' wanted as a '&Array[u32]'. The
 // literal was typed from its elements alone, since a borrow passes no expected
 // type to what it borrows, so its untyped number literals settled on i32. Coercing
 // each element to the wanted element type is what arrayLitCoerce does for the

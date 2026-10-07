@@ -79,7 +79,7 @@ static void arrayLitTypeCheckElems(TypeCheckState *pstate, ArrayNode *arrlit) {
 // lists, by coercing each element to that type's element type. That is what a
 // struct literal's field value and a variable's initializer get, so a string
 // literal borrows as a slice and an untyped number literal adopts the number
-// type -- which also lets strings of different lengths share an '&[]u8'
+// type -- which also lets strings of different lengths share an '&Array[u8]'
 // element, where settling the type among the elements alone finds no type in
 // common. When some element does not coerce, the literal settles its type from
 // its elements as it does when no type is expected, and the receiver reports

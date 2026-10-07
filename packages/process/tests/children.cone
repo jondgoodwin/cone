@@ -52,8 +52,8 @@ const synchronize = 0x100000u32;     // SYNCHRONIZE
 
 // -------- the child --------
 
-fn out(s &[]u8) { libc.fwrite(s as *u8, 1usize, s.len, libc.stdout()); }
-fn err(s &[]u8) { libc.fwrite(s as *u8, 1usize, s.len, libc.stderr()); }
+fn out(s &Array[u8]) { libc.fwrite(s as *u8, 1usize, s.len, libc.stdout()); }
+fn err(s &Array[u8]) { libc.fwrite(s as *u8, 1usize, s.len, libc.stderr()); }
 
 fn number(s &String) u64 {
   match parseUInt(s.view()) {
@@ -62,7 +62,7 @@ fn number(s &String) u64 {
   }
 }
 
-fn isAscii(s &[]u8) bool {
+fn isAscii(s &Array[u8]) bool {
   mut i = 0usize;
   while i < s.len {
     if s[i] >= 0x80u8 { return false; }
@@ -107,7 +107,7 @@ fn childArgs(a &List[String], argc i32, argv **u8) i32 {
 
 // Bytes as hex, two digits each, so that nothing the C runtime's text mode
 // does to a line end can change them on the way back
-fn hexOf(s &[]u8) String {
+fn hexOf(s &Array[u8]) String {
   mut h = String.empty();
   mut i = 0usize;
   while i < s.len {
@@ -250,7 +250,7 @@ fn child(a &List[String], argc i32, argv **u8) i32 {
 
 // The test's folder: TEMP's absolute path and the name, after checking
 // that it is that and nothing shorter
-fn makeRoot(name &[]u8) String {
+fn makeRoot(name &Array[u8]) String {
   imm temp = libc.getenv("TEMP");
   require(temp != null, "TEMP is set");
   mut root = String.empty();
@@ -265,7 +265,7 @@ fn makeRoot(name &[]u8) String {
 }
 
 // This executable, '--child' and a mode
-fn childCommand(exe &[]u8, mode &[]u8) List[String] {
+fn childCommand(exe &Array[u8], mode &Array[u8]) List[String] {
   mut c = List[String].empty();
   c.push(String.from(exe));
   c.push(String.from("--child"));
@@ -278,7 +278,7 @@ fn emptyOutput() process.Output {
 }
 
 // The Output of a run that must have started
-fn ran(r Result[process.Output, process.ProcessError], label &[]u8) process.Output {
+fn ran(r Result[process.Output, process.ProcessError], label &Array[u8]) process.Output {
   mut o = emptyOutput();
   match r {
     case mut ok Ok { o <=> ok.value; }
@@ -292,7 +292,7 @@ fn ran(r Result[process.Output, process.ProcessError], label &[]u8) process.Outp
 
 // The message of a run that must have failed, with the strings named
 // replaced, and its code
-fn failedWith(r Result[process.Output, process.ProcessError], exe &[]u8, root &[]u8, code u32, want &[]u8, label &[]u8) {
+fn failedWith(r Result[process.Output, process.ProcessError], exe &Array[u8], root &Array[u8], code u32, want &Array[u8], label &Array[u8]) {
   match r {
     case imm e Error {
       mut m = e.value.message();
@@ -307,7 +307,7 @@ fn failedWith(r Result[process.Output, process.ProcessError], exe &[]u8, root &[
 
 // -------- the parent: the checks --------
 
-fn captured(exe &[]u8) {
+fn captured(exe &Array[u8]) {
   imm c = childCommand(exe, "hello");
   imm o = ran(process.run(c.view()), "hello");
   // The C runtime's standard output is in text mode: '\n' goes out as '\r\n'
@@ -318,7 +318,7 @@ fn captured(exe &[]u8) {
   expectBool(o.timedOut, false, "hello in time");
 }
 
-fn exitsWith(exe &[]u8, code u64) {
+fn exitsWith(exe &Array[u8], code u64) {
   mut c = childCommand(exe, "exit");
   mut n = String.empty();
   n.appendUInt(code);
@@ -331,7 +331,7 @@ fn exitsWith(exe &[]u8, code u64) {
   expectStr(o.stdout.view(), "", label.view());
 }
 
-fn exitCodes(exe &[]u8) {
+fn exitCodes(exe &Array[u8]) {
   exitsWith(exe, 0u64);
   exitsWith(exe, 1u64);
   exitsWith(exe, 255u64);
@@ -340,7 +340,7 @@ fn exitCodes(exe &[]u8) {
   exitsWith(exe, 4294967295u64);
 }
 
-fn panics(exe &[]u8) {
+fn panics(exe &Array[u8]) {
   imm c = childCommand(exe, "panic");
   imm o = ran(process.run(c.view()), "panic");
   // abort, which a Cone panic ends in: the fast-fail code, 0xC0000409
@@ -353,7 +353,7 @@ fn panics(exe &[]u8) {
 
 // With 'crashReport: false': a crash ends the child here, with the exit
 // code Windows would have given it, and everything else is as without it
-fn crashesUnreported(exe &[]u8) {
+fn crashesUnreported(exe &Array[u8]) {
   imm c = childCommand(exe, "panic");
   imm o = ran(process.run(c.view(), new process.Options(crashReport: false)), "unreported panic");
   expectUInt(u64.from(o.exitCode), 3221226505u64, "an unreported panic's exit code");
@@ -408,7 +408,7 @@ fn crashesUnreported(exe &[]u8) {
     "stopped after 300 ms, not 10 s, crashes unreported");
 }
 
-fn bigStreams(exe &[]u8) {
+fn bigStreams(exe &Array[u8]) {
   imm size = 1048576usize;
   mut c = childCommand(exe, "streams");
   c.push(String.from("1048576"));
@@ -426,7 +426,7 @@ fn bigStreams(exe &[]u8) {
   expectBool(right, true, "each megabyte byte for byte, in order");
 }
 
-fn timesOut(exe &[]u8) {
+fn timesOut(exe &Array[u8]) {
   mut c = childCommand(exe, "sleep");
   c.push(String.from("10000"));
   imm began = Instant.now();
@@ -448,7 +448,7 @@ fn timesOut(exe &[]u8) {
 
 // A child that starts a grandchild and waits for it: the time limit stops
 // both, and the grandchild's process is gone after
-fn treeStopped(exe &[]u8, root &[]u8) {
+fn treeStopped(exe &Array[u8], root &Array[u8]) {
   imm idFile = path.join(root, "grandchild.txt");
   mut c = childCommand(exe, "tree");
   c.push(idFile.copy());
@@ -474,7 +474,7 @@ fn treeStopped(exe &[]u8, root &[]u8) {
   expectBool(gone, true, "the grandchild stopped with it");
 }
 
-fn workingFolder(exe &[]u8, root &[]u8) {
+fn workingFolder(exe &Array[u8], root &Array[u8]) {
   imm c = childCommand(exe, "cwd");
   imm o = ran(process.run(c.view(), new process.Options(dir: root)), "cwd");
   expectStr(o.stdout.view(), root, "started in the folder given");
@@ -509,13 +509,13 @@ fn workingFolder(exe &[]u8, root &[]u8) {
   }
 }
 
-fn standardInput(exe &[]u8) {
+fn standardInput(exe &Array[u8]) {
   imm c = childCommand(exe, "stdin");
   imm o = ran(process.run(c.view()), "stdin");
   expectStr(o.stdout.view(), "0", "standard input is NUL: nothing to read");
 }
 
-fn environment(exe &[]u8) {
+fn environment(exe &Array[u8]) {
   env.set("CONE_PROCESS_TEST", "inherited, é 日本");
   mut c = childCommand(exe, "env");
   c.push(String.from("CONE_PROCESS_TEST"));
@@ -538,7 +538,7 @@ fn environment(exe &[]u8) {
 
 // Every string of up to four of these
 fn allStrings(list &mut List[String]) {
-  imm alphabet &[]u8 = "a \t\"\\";
+  imm alphabet &Array[u8] = "a \t\"\\";
   list.push(String.empty());
   mut from = 0usize;
   mut len = 1usize;
@@ -575,7 +575,7 @@ fn splitComma(s &String) List[String] {
   parts;
 }
 
-fn roundTrip(exe &[]u8, items &List[String], label &[]u8) {
+fn roundTrip(exe &Array[u8], items &List[String], label &Array[u8]) {
   mut c = childCommand(exe, "args");
   mut i = 0usize;
   while i < items.len() {
@@ -606,7 +606,7 @@ fn roundTrip(exe &[]u8, items &List[String], label &[]u8) {
   expectUInt(u64.from(wrong), 0u64, label);
 }
 
-fn arguments(exe &[]u8) {
+fn arguments(exe &Array[u8]) {
   mut every = List[String].empty();
   allStrings(&mut every);
   expectUInt(u64.from(every.len()), 781u64, "every string of up to four");
@@ -625,7 +625,7 @@ fn arguments(exe &[]u8) {
   roundTrip(exe, &some, "UTF-8, paths, quotes, the empty string, a line break");
 }
 
-fn rawLine(exe &[]u8) {
+fn rawLine(exe &Array[u8]) {
   // The program quoted, then arguments as the line writes them
   mut line = String.from("\"");
   line.append(exe);
@@ -643,7 +643,7 @@ fn rawLine(exe &[]u8) {
   }
 }
 
-fn inherited(exe &[]u8) {
+fn inherited(exe &Array[u8]) {
   // The child writes into this test's own output, which its .out pins
   stdio.printStr("a child sharing this output:\n");
   stdio.printFlush();
@@ -654,7 +654,7 @@ fn inherited(exe &[]u8) {
   expectStr(o.stderr.view(), "", "nothing captured from stderr when inherited");
 }
 
-fn failures(exe &[]u8, root &[]u8) {
+fn failures(exe &Array[u8], root &Array[u8]) {
   mut none = List[String].empty();
   none.push(String.from("cone-process-test-no-such-program"));
   imm r = process.run(none.view());
@@ -688,7 +688,7 @@ fn failures(exe &[]u8, root &[]u8) {
     "run a\"b: The filename, directory name, or volume label syntax is incorrect", "a quote in the program");
 }
 
-fn me(exe &[]u8) {
+fn me(exe &Array[u8]) {
   expectBool(path.isAbsolute(exe), true, "currentExe is absolute");
   imm name = path.name(exe);
   expectStr(name.view(), "children.exe", "currentExe names this test");

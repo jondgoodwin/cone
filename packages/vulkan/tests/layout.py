@@ -48,11 +48,11 @@ import stdio use *;
 import libc;
 import vulkan;
 
-fn size(name &[]u8, n usize, a usize) {
+fn size(name &Array[u8], n usize, a usize) {
   printStr(name); printStr(" size "); printUInt(u64.from(n)); printStr(" align "); printUInt(u64.from(a)); printStr("\\n");
 }
 
-fn o(name &[]u8, base usize, p *u8) {
+fn o(name &Array[u8], base usize, p *u8) {
   printStr(name); printStr(" "); printUInt(u64.from((p as usize) - base)); printStr("\\n");
 }
 

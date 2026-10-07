@@ -519,7 +519,9 @@ INode *parseAmper(ParseState *parse) {
     case AmperToken:
         anode = newRefNode(RefTag); break;
     case ArrayRefToken:
-        anode = newRefNode(ArrayRefTag); break;
+        anode = newRefNode(ArrayRefTag);
+        anode->bracketSpelled = 1;
+        break;
     case VirtRefToken:
         anode = newRefNode(VirtRefTag); break;
     }

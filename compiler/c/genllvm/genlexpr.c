@@ -1884,7 +1884,7 @@ static LLVMValueRef genlSrcFileGlobal(GenState *gen, char *text, size_t len) {
     return sglobal;
 }
 
-// A constant '&[]u8' slice of a source file's name
+// A constant '&Array[u8]' slice of a source file's name
 LLVMValueRef genlSrcFileSlice(GenState *gen, char *text, size_t len) {
     LLVMValueRef parts[2] = {genlSrcFileText(gen, text, len), LLVMConstInt(genlUsize(gen), len, 0)};
     return LLVMConstStructInContext(gen->context, parts, 2, 0);

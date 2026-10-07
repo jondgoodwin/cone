@@ -1,7 +1,7 @@
 // ---- Kernels: a compute program uploaded once, and what it binds ----
 
-// How a kernel uses a binding: a read-only slice ('&[]T') or a by-value
-// struct, both read-only storage buffers; or a slice it writes ('&[]mut T'),
+// How a kernel uses a binding: a read-only slice ('&Array[T]') or a by-value
+// struct, both read-only storage buffers; or a slice it writes ('&mut Array[T]'),
 // a read-write storage buffer
 pub const READ = 1u32;
 pub const READ_WRITE = 2u32;
@@ -30,8 +30,8 @@ const SHAPE_STRUCT = 1u32;
 const SHAPE_SLICE = 2u32;
 
 // What a kernel's twin is until it is given one
-fn noTwin(inv Invocation, buffers &[]Words) {}
-fn noDirect(f *u8, inv Invocation, buffers &[]Words) {}
+fn noTwin(inv Invocation, buffers &Array[Words]) {}
+fn noDirect(f *u8, inv Invocation, buffers &Array[Words]) {}
 
 // A compute kernel: its SPIR-V made into a pipeline once, with the layout of
 // its bindings (binding i is parameter i, group 0, each a storage buffer;
@@ -45,7 +45,7 @@ pub struct Kernel {
   access Array[u32, 8];
   pub bindings u32;                // how many, the error buffer not counted
   pub workgroup Array[u32, 3];     // invocations a workgroup, each way
-  twin &fn(Invocation, &[]Words);
+  twin &fn(Invocation, &Array[Words]);
   pub hasTwin bool;
   pub isCone bool;                 // compiled from Cone: it has an error buffer
   pub name String;                 // its entry point
@@ -54,7 +54,7 @@ pub struct Kernel {
   shapes Array[u32, 8];            // each binding's, from the SPIR-V
   strides Array[u32, 8];           // ...and a slice's element's bytes
   direct *u8;                      // a direct twin: the kernel's own function,
-  call &fn(*u8, Invocation, &[]Words);   // and what calls it with the bindings
+  call &fn(*u8, Invocation, &Array[Words]);   // and what calls it with the bindings
   hasDirect bool;
   needs Array[u32, 8];             // the bytes a by-value struct parameter reads
   pub together bool;               // it has barriers (OpControlBarrier, read from the
@@ -65,7 +65,7 @@ pub struct Kernel {
   // from Cone (its module names its source files in "cone.file" strings) is
   // given its error buffer, so at most MAX_CONE_KERNEL_BINDINGS. Check
   // 'isValid'.
-  pub fn make(device &Device, spirv &[]u32, entryPoint &[]u8, access &[]u32) Kernel {
+  pub fn make(device &Device, spirv &Array[u32], entryPoint &Array[u8], access &Array[u32]) Kernel {
     mut acc = new Array[u32, 8] <- fill 0u32;
     mut ok = true;
     mut fileIds = List[u32].empty();
@@ -123,7 +123,7 @@ pub struct Kernel {
   // Give it its CPU twin: a function called once for each invocation of a
   // dispatch, with the dispatch's buffers as words, in the same order as the
   // kernel's bindings
-  pub fn setTwin(self &mut, f &fn(Invocation, &[]Words)) {
+  pub fn setTwin(self &mut, f &fn(Invocation, &Array[Words])) {
     twin = f;
     hasTwin = true;
     hasDirect = false;
@@ -131,9 +131,9 @@ pub struct Kernel {
 
   // Give it its CPU twin directly: the kernel's own Cone function, compiled
   // for the CPU, taking its Invocation first and then one parameter for each
-  // binding ('&[]T', '&[]mut T' or a struct by value), as the compute entry
+  // binding ('&Array[T]', '&mut Array[T]' or a struct by value), as the compute entry
   // point does: 'kernel.setTwin2(&scale)' for 'fn @compute(64) scale(inv
-  // Invocation, a &[]f32, out &[]mut f32)'. One for each count of buffers.
+  // Invocation, a &Array[f32], out &mut Array[f32])'. One for each count of buffers.
   // Refused if the count is not the kernel's bindings, or a parameter is a
   // struct where the SPIR-V binds a slice (see 'fits').
   pub fn setTwin1[A](self &mut, f &fn(Invocation, A)) {
@@ -190,7 +190,7 @@ pub struct Kernel {
   // slice's size (16 bytes) is not caught. A binding the entry point does not
   // use is taken as a slice if T is a slice's size, else as a struct.
   fn fits[T](self &mut, i usize) bool {
-    imm sliceSized = mem.sizeof[T]() == mem.sizeof[&[]u32]();
+    imm sliceSized = mem.sizeof[T]() == mem.sizeof[&Array[u32]]();
     if shapes[i] == SHAPE_UNKNOWN {
       shapes[i] = if sliceSized { SHAPE_SLICE; } else { SHAPE_STRUCT; };
     }
@@ -202,7 +202,7 @@ pub struct Kernel {
     true;
   }
 
-  fn setDirect(self &mut, f *u8, c &fn(*u8, Invocation, &[]Words)) {
+  fn setDirect(self &mut, f *u8, c &fn(*u8, Invocation, &Array[Words])) {
     direct = f;
     call = c;
     hasDirect = true;
@@ -244,28 +244,28 @@ fn param[T](w &Words) T {
   if w.slice { mem.readRaw[T](w as *T); } else { mem.readRaw[T](w.ptr as *T); }
 }
 
-fn call1[A](f *u8, inv Invocation, w &[]Words) {
+fn call1[A](f *u8, inv Invocation, w &Array[Words]) {
   fnOf[&fn(Invocation, A)](f)(inv, param[A](&w[0usize]));
 }
-fn call2[A, B](f *u8, inv Invocation, w &[]Words) {
+fn call2[A, B](f *u8, inv Invocation, w &Array[Words]) {
   fnOf[&fn(Invocation, A, B)](f)(inv, param[A](&w[0usize]), param[B](&w[1usize]));
 }
-fn call3[A, B, C](f *u8, inv Invocation, w &[]Words) {
+fn call3[A, B, C](f *u8, inv Invocation, w &Array[Words]) {
   fnOf[&fn(Invocation, A, B, C)](f)(inv, param[A](&w[0usize]), param[B](&w[1usize]), param[C](&w[2usize]));
 }
-fn call4[A, B, C, D](f *u8, inv Invocation, w &[]Words) {
+fn call4[A, B, C, D](f *u8, inv Invocation, w &Array[Words]) {
   fnOf[&fn(Invocation, A, B, C, D)](f)(inv, param[A](&w[0usize]), param[B](&w[1usize]), param[C](&w[2usize]),
     param[D](&w[3usize]));
 }
-fn call5[A, B, C, D, E](f *u8, inv Invocation, w &[]Words) {
+fn call5[A, B, C, D, E](f *u8, inv Invocation, w &Array[Words]) {
   fnOf[&fn(Invocation, A, B, C, D, E)](f)(inv, param[A](&w[0usize]), param[B](&w[1usize]),
     param[C](&w[2usize]), param[D](&w[3usize]), param[E](&w[4usize]));
 }
-fn call6[A, B, C, D, E, F](f *u8, inv Invocation, w &[]Words) {
+fn call6[A, B, C, D, E, F](f *u8, inv Invocation, w &Array[Words]) {
   fnOf[&fn(Invocation, A, B, C, D, E, F)](f)(inv, param[A](&w[0usize]), param[B](&w[1usize]),
     param[C](&w[2usize]), param[D](&w[3usize]), param[E](&w[4usize]), param[F](&w[5usize]));
 }
-fn call7[A, B, C, D, E, F, G](f *u8, inv Invocation, w &[]Words) {
+fn call7[A, B, C, D, E, F, G](f *u8, inv Invocation, w &Array[Words]) {
   fnOf[&fn(Invocation, A, B, C, D, E, F, G)](f)(inv, param[A](&w[0usize]), param[B](&w[1usize]),
     param[C](&w[2usize]), param[D](&w[3usize]), param[E](&w[4usize]), param[F](&w[5usize]),
     param[G](&w[6usize]));
@@ -280,7 +280,7 @@ fn call7[A, B, C, D, E, F, G](f *u8, inv Invocation, w &[]Words) {
 // an absolute one is read as it is. Empty, and refused (refusals()), where
 // the file cannot be read or is not whole 32-bit words: Kernel.make refuses
 // an empty module in turn.
-pub fn readSpirv(file &[]u8) List[u32] {
+pub fn readSpirv(file &Array[u8]) List[u32] {
   mut full = String.from(file);
   if not path.isAbsolute(file) {
     match process.currentExe() {
@@ -320,7 +320,7 @@ pub fn readSpirv(file &[]u8) List[u32] {
 
 // The workgroup size of compute entry point 'name' in 'spirv' (OpEntryPoint
 // GLCompute, then its OpExecutionMode LocalSize), or zeros if there is none
-fn workgroupOf(spirv &[]u32, name &[]u8) Array[u32, 3] {
+fn workgroupOf(spirv &Array[u32], name &Array[u8]) Array[u32, 3] {
   mut size = new Array[u32, 3] <- fill 0u32;
   imm id = entryIdOf(spirv, name);
   mut i = 5usize;                  // past the header
@@ -341,7 +341,7 @@ fn workgroupOf(spirv &[]u32, name &[]u8) Array[u32, 3] {
 }
 
 // The id of compute entry point 'name' (OpEntryPoint GLCompute), or all ones
-fn entryIdOf(spirv &[]u32, name &[]u8) u32 {
+fn entryIdOf(spirv &Array[u32], name &Array[u8]) u32 {
   mut i = 5usize;
   while i < spirv.len {
     imm word = spirv[i];
@@ -361,7 +361,7 @@ fn entryIdOf(spirv &[]u32, name &[]u8) u32 {
 // (224) in its function or in any function it calls (OpFunctionCall, 57),
 // however deep. A Cone kernel's 'workgroupBarrier()' and 'storageBarrier()'
 // are each one, as a Slang or HLSL kernel's barriers are.
-fn hasBarriers(spirv &[]u32, name &[]u8) bool {
+fn hasBarriers(spirv &Array[u32], name &Array[u8]) bool {
   mut todo = List[u32].empty();
   mut seen = List[u32].empty();
   todo.push(entryIdOf(spirv, name));
@@ -391,7 +391,7 @@ fn hasBarriers(spirv &[]u32, name &[]u8) bool {
 
 // The source files a module compiled from Cone names, each in an
 // OpSourceExtension "cone.file <id> <name>": appended to 'ids' and 'names'
-fn coneFilesOf(spirv &[]u32, ids &mut List[u32], names &mut List[String]) {
+fn coneFilesOf(spirv &Array[u32], ids &mut List[u32], names &mut List[String]) {
   mut i = 5usize;
   while i < spirv.len {
     imm word = spirv[i];
@@ -401,7 +401,7 @@ fn coneFilesOf(spirv &[]u32, ids &mut List[u32], names &mut List[String]) {
     if (word & 0xFFFFu32) == 4u32 and count >= 2usize {
       imm text = stringAt(spirv, i + 1usize, i + count);
       imm v = text.view();
-      imm prefix &[]u8 = "cone.file ";
+      imm prefix &Array[u8] = "cone.file ";
       if v.len > prefix.len and startsWith(v, prefix) {
         mut k = prefix.len;
         mut id = 0u32;
@@ -425,7 +425,7 @@ fn coneFilesOf(spirv &[]u32, ids &mut List[u32], names &mut List[String]) {
 // Binding which the entry point's function uses (LLVM lists every variable
 // of the module in every entry point's interface, so the function's body
 // says which are its own).
-fn shapesOf(spirv &[]u32, name &[]u8, n u32, shapes &mut Array[u32, 8], strides &mut Array[u32, 8]) {
+fn shapesOf(spirv &Array[u32], name &Array[u8], n u32, shapes &mut Array[u32, 8], strides &mut Array[u32, 8]) {
   imm entry = entryIdOf(spirv, name);
   mut vars = List[u32].empty();       // storage buffer variables: id,
   mut varTypes = List[u32].empty();   // pointer type,
@@ -511,20 +511,20 @@ fn shapesOf(spirv &[]u32, name &[]u8, n u32, shapes &mut Array[u32, 8], strides 
 }
 
 // The type an OpTypePointer (32) %id points at
-fn pointeeOf(spirv &[]u32, id u32) u32 {
+fn pointeeOf(spirv &Array[u32], id u32) u32 {
   imm at = instructionOf(spirv, 32u32, id);
   if at == 0usize or usize.from(spirv[at] >> 16u32) < 4usize { 0xFFFFFFFFu32; } else { spirv[at + 3usize]; };
 }
 
 // The type of an OpTypeStruct (30) %id's first member
-fn firstMemberOf(spirv &[]u32, id u32) u32 {
+fn firstMemberOf(spirv &Array[u32], id u32) u32 {
   imm at = instructionOf(spirv, 30u32, id);
   if at == 0usize or usize.from(spirv[at] >> 16u32) < 3usize { 0xFFFFFFFFu32; } else { spirv[at + 2usize]; };
 }
 
 // The ArrayStride of OpTypeRuntimeArray (29) %id (4 if undecorated), or 0
 // if %id is not one
-fn runtimeArrayStride(spirv &[]u32, id u32) u32 {
+fn runtimeArrayStride(spirv &Array[u32], id u32) u32 {
   if instructionOf(spirv, 29u32, id) == 0usize { return 0u32; }
   mut i = 5usize;
   while i < spirv.len {
@@ -542,7 +542,7 @@ fn runtimeArrayStride(spirv &[]u32, id u32) u32 {
 
 // Where the instruction of opcode 'op' whose result (its first operand) is
 // 'id' starts, or 0
-fn instructionOf(spirv &[]u32, op u32, id u32) usize {
+fn instructionOf(spirv &Array[u32], op u32, id u32) usize {
   mut i = 5usize;
   while i < spirv.len {
     imm word = spirv[i];
@@ -555,7 +555,7 @@ fn instructionOf(spirv &[]u32, op u32, id u32) usize {
 }
 
 // Where 'id' is in 'ids', or its length
-fn indexOf(ids &[]u32, id u32) usize {
+fn indexOf(ids &Array[u32], id u32) usize {
   mut k = 0usize;
   while k < ids.len {
     if ids[k] == id { return k; }
@@ -564,7 +564,7 @@ fn indexOf(ids &[]u32, id u32) usize {
   ids.len;
 }
 
-fn startsWith(s &[]u8, prefix &[]u8) bool {
+fn startsWith(s &Array[u8], prefix &Array[u8]) bool {
   if s.len < prefix.len { return false; }
   mut k = 0usize;
   while k < prefix.len {
@@ -576,7 +576,7 @@ fn startsWith(s &[]u8, prefix &[]u8) bool {
 
 // The literal string in words 'from' to 'end' of 'spirv' (its bytes packed
 // four a word, the first in the low byte, ending in a zero)
-fn stringAt(spirv &[]u32, from usize, end usize) String {
+fn stringAt(spirv &Array[u32], from usize, end usize) String {
   mut s = String.empty();
   mut k = 0usize;
   while from + k / 4usize < end {
@@ -589,7 +589,7 @@ fn stringAt(spirv &[]u32, from usize, end usize) String {
 }
 
 // Whether the literal string in words 'from' to 'end' of 'spirv' is 'name'
-fn nameIs(spirv &[]u32, from usize, end usize, name &[]u8) bool {
+fn nameIs(spirv &Array[u32], from usize, end usize, name &Array[u8]) bool {
   mut k = 0usize;
   while true {
     imm w = from + k / 4usize;

@@ -1,4 +1,4 @@
-/** Handling for the borrowed array reference (slice) type, '&[]T'
+/** Handling for the borrowed array reference (slice) type, '&Array[T]'
  * @file
  *
  * This source file is part of the Cone Programming Language C compiler
@@ -9,7 +9,7 @@
 
 // Serialize an array reference type
 void arrayRefPrint(RefNode *node) {
-    inodeFprint("&[](");
+    inodeFprint("&Array(");
     inodePrintNode(node->region);
     inodeFprint(" ");
     inodePrintNode((INode*)node->perm);
@@ -21,7 +21,7 @@ void arrayRefPrint(RefNode *node) {
 // Serialize a dereferenced array reference: the slice itself, so the same
 // three parts as the reference without its '&'
 void arrayDerefPrint(RefNode *node) {
-    inodeFprint("[](");
+    inodeFprint("Array(");
     inodePrintNode(node->region);
     inodeFprint(" ");
     inodePrintNode((INode*)node->perm);
@@ -32,11 +32,23 @@ void arrayDerefPrint(RefNode *node) {
 
 // Name resolution of an array reference node. Every one is borrowed ('&[]'):
 // there is no owning array reference, so one whose operand is not a type is
-// a borrow building a slice.
+// a borrow building a slice, '&[]x'. One whose operand is a type is the
+// retired spelling of the slice type, '&[]T' for '&Array[T]', which is refused
+// here, where a type is told from a value (a generic parameter counts as a
+// type: a template's '&[]T' would otherwise pass as a borrow until it is
+// instantiated). The node is kept as the slice type it means, so that the
+// compile goes on and reports what else is wrong.
 void arrayRefNameRes(NameResState *pstate, RefNode *node) {
     inodeNameRes(pstate, &node->region);
     inodeNameRes(pstate, (INode**)&node->perm);
     inodeNameRes(pstate, &node->vtexp);
+
+    int isType = isTypeNode(node->vtexp) || inodeIsProvisionalType(node->vtexp);
+    if (node->bracketSpelled && isType) {
+        errorMsgNode((INode*)node, ErrorSliceSpelling,
+            "A slice is spelled '&Array[T]', not '&[]T': '&[]mut T' is now '&mut Array[T]', and a lifetime goes after the '&' as on any borrow, '&'a mut Array[T]'.");
+        node->bracketSpelled = 0;
+    }
 
     // If this is not a reference type, turn it into a borrow constructor
     if (!isTypeNode(node->vtexp))
@@ -50,13 +62,6 @@ void arrayRefTypeCheck(TypeCheckState *pstate, RefNode *node) {
     itypeTypeCheck(pstate, &node->region);
     refRegionCheck(&node->region);
     itypeTypeCheck(pstate, (INode**)&node->perm);
-    // See refTypeCheck: '&[]' before a ')' parses with no element type, and
-    // nothing ever fills a slice's in.
-    if (node->vtexp == unknownType) {
-        errorMsgNode((INode*)node, ErrorNoRefType, "A slice reference must specify its element type.");
-        node->vtexp = errorType;
-        return;
-    }
     if (node->vtexp) {
         refTargetTypeCheck(pstate, &node->vtexp, NULL);
         // A slice spelled out in source must acquire the same move semantics as
@@ -103,9 +108,9 @@ TypeCompare arrayRefMatches(RefNode *to, RefNode *from, SubtypeConstraint constr
 // At best, we get ConvSubtype, because a conversion is needed to convert ref to arrayref
 TypeCompare arrayRefMatchesRef(RefNode *to, RefNode *from, SubtypeConstraint constraint) {
     // A borrow of 'str' is a slice of bytes already: the same pointer and count.
-    // It converts to '&[]u8' wherever one is wanted (the permission may only
-    // narrow, so a '&imm str' is no '&[]mut u8'), but not back: bytes need not
-    // be UTF-8, so '&[]u8' to '&str' is the explicit 'as'.
+    // It converts to '&Array[u8]' wherever one is wanted (the permission may only
+    // narrow, so a '&imm str' is no '&mut Array[u8]'), but not back: bytes need not
+    // be UTF-8, so '&Array[u8]' to '&str' is the explicit 'as'.
     //
     // An owner or a borrow of 'Array[T]', the body of a run-time length, is a
     // slice of its elements in the same way, and lends as any owner lends a

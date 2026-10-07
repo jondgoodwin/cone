@@ -23,6 +23,7 @@ RefNode *newRefNode(uint16_t tag) {
     refnode->lifename = NULL;
     refnode->bound = NULL;
     refnode->plusSpelled = 0;
+    refnode->bracketSpelled = 0;
     return refnode;
 }
 
@@ -243,16 +244,21 @@ void refNameRes(NameResState *pstate, RefNode *node) {
             errorMsgNode((INode*)node, ErrorPlusAlloc,
                 "An allocation is written 'new Rc[mut, Rect](...)', the concrete type, and the reference coerces where a virtual one is wanted.");
     }
-    // '&Array[T]' written out is the slice, '&[]T': the same type, so it is the
+    // '&Array[T]' written out is the slice type, so it is the
     // slice's node from here on (the borrow of the body of a run-time length)
     else if (node->tag == RefTag && node->region == (INode*)borrowRef && node->vtexp->tag == FnCallTag) {
         FnCallNode *call = (FnCallNode*)node->vtexp;
         if ((call->flags & (FlagIndex | FlagRange)) == FlagIndex && call->methfld == NULL
             && call->args != NULL && call->args->used == 1 && isNameUseNode(call->objfn)
-            && arrayTypeDcl->genericinfo != NULL
-            && nameUseGetDcl((NameUseNode*)call->objfn) == (INode*)arrayTypeDcl) {
+            && stdlibIsArrayBody(nameUseGetDcl((NameUseNode*)call->objfn))) {
             node->tag = ArrayRefTag;
             node->vtexp = nodesGet(call->args, 0);
+            // A key is a plain reference. The parser refuses an invariant lifetime on
+            // the retired '&[]', and could not on this spelling, which it reads as
+            // a reference to a generic instance
+            if (node->lifename && lifeIsInvariant(node->lifename))
+                errorMsgNode((INode*)node, ErrorLifetimeInvariant,
+                    "An invariant lifetime is on a plain reference, '&'=a T': a slice or a virtual reference does not take one.");
         }
     }
 }

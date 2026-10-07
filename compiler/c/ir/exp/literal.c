@@ -574,7 +574,7 @@ static FnDclNode *slitFromLiteralFn(INode *totypedcl) {
 }
 
 // Would a string literal be taken where this type is wanted, beyond the
-// '&str' it is (and the '&[]u8' that converts from it)? A byte array of its
+// '&str' it is (and the '&Array[u8]' that converts from it)? A byte array of its
 // length, filled by it; an owner of 'str', which it is copied into; or a type
 // that declares 'fromLiteral', which makes its value from it.
 int slitMatches(INode *node, INode *totypedcl) {
@@ -648,7 +648,7 @@ static int litIsConstCast(CastNode *node) {
         || (exp->tag == CastTag && litIsConstCast((CastNode*)exp));
 }
 
-// A string literal wanted as a '&[]u8' is the literal reinterpreted (a recast of
+// A string literal wanted as a '&Array[u8]' is the literal reinterpreted (a recast of
 // the '&imm str' it is), and as constant as it is.
 static int litIsTextAsBytes(CastNode *node) {
     return !(node->flags & FlagConvert) && node->exp->tag == StringLitTag;

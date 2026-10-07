@@ -273,7 +273,7 @@ size question (section 6): one of its types is always asked while in flight.
 **Only by-value containment lays a type out.** A struct's field, an array's
 element, a tuple's element and a variant's payload hold a value of their type,
 so each asks that type its size, which is read from its layout. A reference of
-any kind — `&T`, `*T`, `&[]T`, `&<Trait`, an owning one (`So[T]`, `Rc[perm, T]`,
+any kind — `&T`, `*T`, `&Array[T]`, `&<Trait`, an owning one (`So[T]`, `Rc[perm, T]`,
 `Arc[perm, T]`, a traced region's, with or without a lock permission), a
 function reference — is one or two pointers whatever it points at, and an
 `Option` of one is still one pointer, its null the `None`. So laying a

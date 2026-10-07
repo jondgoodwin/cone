@@ -349,7 +349,7 @@ flag** — release is the default and `--debug` turns it off.
 | `*T` | `ptr` |
 | **`&T`, `&mut T`, `Rc[T]`, `So[T]`** | **`ptr`, identically.** Region and permission contribute nothing to the reference value |
 | **`&str`, `So[str]`, `Rc[str]`** (any reference whose target carries its length, `refIsFat`) | **anonymous `{ ptr, usize }`**, as a slice's, in every region and for a borrow |
-| **`&[]T`** | **anonymous `{ ptr, usize }`** — element pointer at 0, element **count** at 1 |
+| **`&Array[T]`** | **anonymous `{ ptr, usize }`** — element pointer at 0, element **count** at 1 |
 | **`&<Trait`** | **named `{ ptr, ptr }`** — the object, then its vtable |
 | `fn` signature | `LLVMFunctionType`, never varargs; a `&fn` is a `ptr` to it. A C-named function's structs are lowered to the C ABI's shape ("C-named functions and the C ABI", below) |
 | struct / trait | named struct, fields in declaration order. **A trait's body is its own fields**, which are a prefix of every implementer's, so `&Trait` points at the trait's layout and reaches the fields the trait declares. Only a type declared `@opaque` is left an opaque LLVM struct, and `DeclaredOpaque` — not `OpaqueType` — is what says so: a trait carries `OpaqueType` because it has no size as a *value*, which does not mean it has no fields |
@@ -361,7 +361,7 @@ Every pointer is LLVM's opaque `ptr`, whatever it points at: the table's pointee
 lives in the Cone type, never in the LLVM one (section 4).
 
 **A pointee is generated after the type that reached it, not inside it.**
-Lowering a `*T`, `&T` or `&[]T` queues `T`, and `genlType` generates the queue
+Lowering a `*T`, `&T` or `&Array[T]` queues `T`, and `genlType` generates the queue
 when the outermost type it was asked for is done, before returning to anything
 but type generation. Generated in place, a struct reaching itself through a
 reference is reached again while its own body is still empty: with `A` holding
@@ -371,7 +371,7 @@ generation sees the difference, since every pointee is generated before
 `genlType` returns to it — which the nullable-pointer flag (below), set when an
 enum is generated and read by expression generation, needs.
 
-Verified: `&[]i32` emits `{ ptr, i64 }`, with `extractvalue ..., 1` yielding a
+Verified: `&Array[i32]` emits `{ ptr, i64 }`, with `extractvalue ..., 1` yielding a
 *count* of 3 for a 3-element array — not a byte length.
 
 **Erased with no representation at all:** lifetimes (`LifetimeTag` has no
@@ -888,7 +888,7 @@ This is what the CLAUDE.md warning is about. The conventions:
 | `genlExpr(nameuse)` | the loaded value |
 | `genlAddr(x)` | pointer to `x`'s type |
 | `&T` value | a `ptr` to the `T` |
-| `&[]T` value, `&<Trait` value, a reference whose target carries its length (`&str`, `So[str]`) | an **aggregate value**, not a pointer |
+| `&Array[T]` value, `&<Trait` value, a reference whose target carries its length (`&str`, `So[str]`) | an **aggregate value**, not a pointer |
 | owning reference value | a `ptr` to the `T`, **past** the header |
 | allocation base, the region's header | `ref` stepped back by the value's offset in `%refstruct` (`genlRegionHeader`) |
 | vtable field slot | an `i32` **byte offset**, applied to the object pointer as a GEP over `i8` |

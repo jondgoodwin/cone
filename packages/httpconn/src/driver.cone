@@ -1019,7 +1019,7 @@ pub struct Driver {
 
   // A connection that could not be made, or broke: every request on it
   // answered, and it ends
-  fn failConn(self &mut, lp &mut Loop, i u32, stage Stage, code u32, kind ErrorKind, detail &[]u8) {
+  fn failConn(self &mut, lp &mut Loop, i u32, stage Stage, code u32, kind ErrorKind, detail &Array[u8]) {
     imm c = self.connAt(i) as &mut Conn;
     if c.state == cFree {return;}
     if c.state == cClosing {
@@ -1170,12 +1170,12 @@ pub struct Driver {
 
   // A client connection to host:port, its life told to sink (see the
   // package's header, CONNECTIONS)
-  pub fn connect(self &mut, lp &mut Loop, host &[]u8, port u16, sink Sink) ConnId {
+  pub fn connect(self &mut, lp &mut Loop, host &Array[u8], port u16, sink Sink) ConnId {
     self.connectWith(lp, host, port, plainLayer(), sink);
   }
 
   // A client connection whose bytes pass through layer (see LAYERS)
-  pub fn connectWith(self &mut, lp &mut Loop, host &[]u8, port u16, layer So[Layer], sink Sink) ConnId {
+  pub fn connectWith(self &mut, lp &mut Loop, host &Array[u8], port u16, layer So[Layer], sink Sink) ConnId {
     imm now = Instant.now();
     imm i = self.openClient(lp, layer, sink, now);
     imm c = self.connAt(i) as &mut Conn;
@@ -1243,25 +1243,25 @@ pub struct Driver {
   // A request on a client connection, its events to sink (see the package's
   // header, REQUESTS)
   pub fn request(self &mut, lp &mut Loop, conn ConnId, head RequestHead, body BodyLength, sink Sink,
-      file &[]u8 = srcFile(), line u32 = srcLine()) ReqId {
+      file &Array[u8] = srcFile(), line u32 = srcLine()) ReqId {
     self.ask(lp, conn, head, body, sink, None[CancelGroup][], forever(), file, line);
   }
 
   // A request answered TimedOut if it has not ended by deadline
   pub fn requestBy(self &mut, lp &mut Loop, conn ConnId, head RequestHead, body BodyLength, sink Sink,
-      deadline Instant, file &[]u8 = srcFile(), line u32 = srcLine()) ReqId {
+      deadline Instant, file &Array[u8] = srcFile(), line u32 = srcLine()) ReqId {
     self.ask(lp, conn, head, body, sink, None[CancelGroup][], deadline, file, line);
   }
 
   // A request in a cancel group: the group's cancel cancels it, and its
   // deadline is the tighter of 'deadline' and the group's
   pub fn requestIn(self &mut, lp &mut Loop, conn ConnId, head RequestHead, body BodyLength, sink Sink,
-      group CancelGroup, deadline Instant, file &[]u8 = srcFile(), line u32 = srcLine()) ReqId {
+      group CancelGroup, deadline Instant, file &Array[u8] = srcFile(), line u32 = srcLine()) ReqId {
     self.ask(lp, conn, head, body, sink, Some[CancelGroup][group], deadline, file, line);
   }
 
   fn ask(self &mut, lp &mut Loop, conn ConnId, head RequestHead, body BodyLength, sink Sink,
-      group Option[CancelGroup], deadline Instant, file &[]u8, line u32) ReqId {
+      group Option[CancelGroup], deadline Instant, file &Array[u8], line u32) ReqId {
     checkHead(&head, file, line);
     imm now = Instant.now();
     imm ri = self.newReq();
@@ -1327,7 +1327,7 @@ pub struct Driver {
   }
 
   // A request that cannot be made is answered Failed at once, never sent
-  fn refuse(self &mut, lp &mut Loop, ri u32, stage Stage, detail &[]u8) {
+  fn refuse(self &mut, lp &mut Loop, ri u32, stage Stage, detail &Array[u8]) {
     mut f = Failure.make(stage, 0u32, if stage == Stage.Limit[] {ErrorKind.TooLarge[];} else {ErrorKind.Closed[];}, detail);
     f.unsent = true;
     f.error.noResponse = true;
@@ -1431,7 +1431,7 @@ pub struct Driver {
   // SERVING): its body, if any, by sendData and finish. False if the
   // request has ended (its connection closed)
   pub fn respond(self &mut, req ReqId, head ResponseHead, body BodyLength,
-      file &[]u8 = srcFile(), line u32 = srcLine()) bool {
+      file &Array[u8] = srcFile(), line u32 = srcLine()) bool {
     imm ri = self.reqIndex(req);
     if ri == noEntry {return false;}
     imm r = self.reqAt(ri) as &mut Req;
@@ -1449,7 +1449,7 @@ pub struct Driver {
   }
 
   // A server's interim response, a 1xx other than 101, before its final one
-  pub fn sendInterim(self &mut, req ReqId, head ResponseHead, file &[]u8 = srcFile(), line u32 = srcLine()) bool {
+  pub fn sendInterim(self &mut, req ReqId, head ResponseHead, file &Array[u8] = srcFile(), line u32 = srcLine()) bool {
     imm ri = self.reqIndex(req);
     if ri == noEntry {return false;}
     imm r = self.reqAt(ri) as &Req;
@@ -1460,7 +1460,7 @@ pub struct Driver {
   }
 
   // '100 Continue': the server wants the request's body
-  pub fn sendContinue(self &mut, req ReqId, file &[]u8 = srcFile(), line u32 = srcLine()) bool {
+  pub fn sendContinue(self &mut, req ReqId, file &Array[u8] = srcFile(), line u32 = srcLine()) bool {
     self.sendInterim(req, ResponseHead.make(100u16), file, line);
   }
 
@@ -1473,7 +1473,7 @@ pub struct Driver {
   // Some[buf] back, refused, when the connection's send queue is at its
   // watermark or the request has not started -- Writable says when to try
   // again (see the package's header, CREDIT)
-  pub fn sendData(self &mut, req ReqId, buf IoBuf, file &[]u8 = srcFile(), line u32 = srcLine()) Option[IoBuf] {
+  pub fn sendData(self &mut, req ReqId, buf IoBuf, file &Array[u8] = srcFile(), line u32 = srcLine()) Option[IoBuf] {
     imm ri = self.reqIndex(req);
     if ri == noEntry {return None[IoBuf][];}
     imm r = self.reqAt(ri) as &mut Req;
@@ -1501,12 +1501,12 @@ pub struct Driver {
   }
 
   // The body is whole
-  pub fn finish(self &mut, req ReqId, file &[]u8 = srcFile(), line u32 = srcLine()) {
+  pub fn finish(self &mut, req ReqId, file &Array[u8] = srcFile(), line u32 = srcLine()) {
     self.finishWith(req, Headers.empty(), file, line);
   }
 
   // The body is whole, and these trailer fields follow it (a chunked body)
-  pub fn finishWith(self &mut, req ReqId, trailers Headers, file &[]u8 = srcFile(), line u32 = srcLine()) {
+  pub fn finishWith(self &mut, req ReqId, trailers Headers, file &Array[u8] = srcFile(), line u32 = srcLine()) {
     imm ri = self.reqIndex(req);
     if ri == noEntry {return;}
     imm r = self.reqAt(ri) as &mut Req;
@@ -1725,7 +1725,7 @@ fn removeValue(l &mut List[u32], v u32) {
 }
 
 // host as an IPv4 address written as one ('127.0.0.1'), with port
-fn parseV4(host &[]u8, port u16) Option[SocketAddr] {
+fn parseV4(host &Array[u8], port u16) Option[SocketAddr] {
   mut parts = new Array[u8, 4] <- fill 0u8;
   mut part = 0usize;
   mut v = 0u32;
@@ -1753,7 +1753,7 @@ fn parseV4(host &[]u8, port u16) Option[SocketAddr] {
 
 // A request head's program errors, reported at the caller's line (the core
 // checks them again where it writes the head)
-fn checkHead(head &RequestHead, file &[]u8, line u32) {
+fn checkHead(head &RequestHead, file &Array[u8], line u32) {
   if not isToken(head.methodName()) {panic("httpconn: the request's method is not a token", file, line);}
   if head.method == Method.Connect[] {panic("httpconn: CONNECT is not supported", file, line);}
   if not isVisible(head.target.view()) {panic("httpconn: the request's target is empty or holds a space or a control character", file, line);}
@@ -1764,7 +1764,7 @@ fn checkHead(head &RequestHead, file &[]u8, line u32) {
   }
 }
 
-fn isVisible(s &[]u8) bool {
+fn isVisible(s &Array[u8]) bool {
   if s.len == 0usize {return false;}
   mut i = 0usize;
   while i < s.len {

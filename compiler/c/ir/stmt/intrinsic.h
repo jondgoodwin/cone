@@ -89,8 +89,8 @@ enum IntrinsicFn {
     AlignofIntrinsic,       // alignof[T]() usize
     NeedsFinalIntrinsic,    // needsFinal[T]() bool
     FinalizeIntrinsic,      // finalize[T](p *T)
-    SliceFromPartsIntrinsic,    // sliceFromParts[T](p *T, len usize) &[]T
-    SliceFromPartsMutIntrinsic, // sliceFromPartsMut[T](p *T, len usize) &[]mut T
+    SliceFromPartsIntrinsic,    // sliceFromParts[T](p *T, len usize) &Array[T]
+    SliceFromPartsMutIntrinsic, // sliceFromPartsMut[T](p *T, len usize) &mut Array[T]
     ReadRawIntrinsic,       // readRaw[T](p *T) T
     WriteRawIntrinsic,      // writeRaw[T](p *T, value T)
     MoveRawIntrinsic,       // moveRaw[T](to *T, from *T, count usize)
@@ -114,7 +114,7 @@ enum IntrinsicFn {
     // Where the call is written: its source file's name, and its line. Written
     // as a parameter's default value, where each call taking the default is
     // (fnCallFinalizeArgs), which is how 'panic' reports its caller
-    SrcFileIntrinsic,       // srcFile() &[]u8
+    SrcFileIntrinsic,       // srcFile() &Array[u8]
     SrcLineIntrinsic,       // srcLine() u32
     // Whether this is a debug build ('conec --debug', or 'build: debug' in a
     // build description): a constant, so only the side of an 'if' on it that
@@ -127,8 +127,8 @@ enum IntrinsicFn {
     IsLinuxIntrinsic,       // isLinux() bool
     IsMacOSIntrinsic,       // isMacOS() bool
     IsWasmIntrinsic,        // isWasm() bool
-    IsDefinedIntrinsic,     // isDefined(name &[]u8) bool
-    DefinedIntIntrinsic,    // definedInt(name &[]u8) i64
+    IsDefinedIntrinsic,     // isDefined(name &Array[u8]) bool
+    DefinedIntIntrinsic,    // definedInt(name &Array[u8]) i64
     // An integer's bits. Each is also a method of every integer type
     // (corenumber.c), its node carrying that type as its typearg, which is how
     // 'x.leadingZeros()' reaches the same registry entry 'mem.leadingZeros(x)'
@@ -223,7 +223,7 @@ StructNode *typeRecordStruct(void);
 // hold it to its signature and remember it for sliceEqFn
 void sliceEqDclNameRes(FnDclNode *fndcl);
 
-// Core's generic 'mem.sliceEq[T](a &[]T, b &[]T) bool', which '==' and '!=' on
+// Core's generic 'mem.sliceEq[T](a &Array[T], b &Array[T]) bool', which '==' and '!=' on
 // two slices call (fnCallLowerSliceCompare); NULL before core's declaration is
 // name resolved, or in a compile whose core declares none
 FnDclNode *sliceEqFn(void);

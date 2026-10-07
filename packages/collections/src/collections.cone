@@ -175,27 +175,27 @@ pub struct List[T] is ShapeChanging, Sendable {
   // A borrow of the value at index, for reading it now. Each of these four
   // reports an index out of range at the line of its caller, which its
   // 'file' and 'line' default to
-  pub fn `[]`(self &, index usize, file &[]u8 = srcFile(), line u32 = srcLine()) &T {
+  pub fn `[]`(self &, index usize, file &Array[u8] = srcFile(), line u32 = srcLine()) &T {
     if index >= used { outOfRange(index, used, file, line); }
     (ptr + index) as &T;
   }
 
   // A mutable borrow of the value at index, for changing it in place:
   // '&mut list[i]'
-  pub fn `&[]`(self &mut, index usize, file &[]u8 = srcFile(), line u32 = srcLine()) &mut T {
+  pub fn `&[]`(self &mut, index usize, file &Array[u8] = srcFile(), line u32 = srcLine()) &mut T {
     if index >= used { outOfRange(index, used, file, line); }
     (ptr + index) as &mut T;
   }
 
   // Put value at index, finalizing the value it replaces
-  pub fn set(self &mut, index usize, value T, file &[]u8 = srcFile(), line u32 = srcLine()) {
+  pub fn set(self &mut, index usize, value T, file &Array[u8] = srcFile(), line u32 = srcLine()) {
     if index >= used { outOfRange(index, used, file, line); }
     mem.finalize(ptr + index);
     mem.writeRaw(ptr + index, value);
   }
 
   // Exchange the values at two indexes
-  pub fn swap(self &mut, a usize, b usize, file &[]u8 = srcFile(), line u32 = srcLine()) {
+  pub fn swap(self &mut, a usize, b usize, file &Array[u8] = srcFile(), line u32 = srcLine()) {
     if a >= used { outOfRange(a, used, file, line); }
     if b >= used { outOfRange(b, used, file, line); }
     if a == b { return; }
@@ -442,14 +442,14 @@ pub struct Deque[T] is ShapeChanging, Sendable {
 
   // A borrow of the value at position index from the front, for reading it
   // now. An index out of range is a panic at the line of the caller
-  pub fn `[]`(self &, index usize, file &[]u8 = srcFile(), line u32 = srcLine()) &T {
+  pub fn `[]`(self &, index usize, file &Array[u8] = srcFile(), line u32 = srcLine()) &T {
     if index >= used { outOfRange(index, used, file, line); }
     (ptr + self.slot(index)) as &T;
   }
 
   // A mutable borrow of the value at position index, for changing it in place:
   // '&mut deque[i]'
-  pub fn `&[]`(self &mut, index usize, file &[]u8 = srcFile(), line u32 = srcLine()) &mut T {
+  pub fn `&[]`(self &mut, index usize, file &Array[u8] = srcFile(), line u32 = srcLine()) &mut T {
     if index >= used { outOfRange(index, used, file, line); }
     (ptr + self.slot(index)) as &mut T;
   }
@@ -534,7 +534,7 @@ pub struct DequeItems['a, T] {
 // t', each is written once on 'str'. A literal is a '&str', and wherever a
 // String is wanted a literal is copied into one ('fromLiteral'), so
 // 'imm s String = "core"' and 'names.push("core")'. The methods below that
-// take text take a '&[]u8', which a '&str' converts to; the ones that are also
+// take text take a '&Array[u8]', which a '&str' converts to; the ones that are also
 // 'str's keep these spellings, left out of the fold.
 pub struct String is ShapeChanging, Hash {
   buf List[u8];
@@ -550,7 +550,7 @@ pub struct String is ShapeChanging, Hash {
   }
 
   // A String holding a copy of the bytes of s
-  pub fn from(s &[]u8) String {
+  pub fn from(s &Array[u8]) String {
     mut str = String.withCapacity(s.len);
     str.append(s);
     str;
@@ -562,7 +562,7 @@ pub struct String is ShapeChanging, Hash {
 
   // The bytes it holds, for the methods here that work on bytes, and the NUL
   // kept after them. The block is nothing until the first byte arrives.
-  fn raw(self &) &[]u8 inline { mem.sliceFromParts(buf.ptr, buf.used); }
+  fn raw(self &) &Array[u8] inline { mem.sliceFromParts(buf.ptr, buf.used); }
 
   // Write the NUL after the bytes, making room for it first. A String with no
   // block has nothing to terminate: its view is the static empty literal.
@@ -576,7 +576,7 @@ pub struct String is ShapeChanging, Hash {
   // a C function answers, or one of main's 'argv'. Given a raw pointer, which
   // C may leave null, a null one is a program error, a panic at the line of
   // the caller; a 'cstr' is never null.
-  pub fn fromCStrPtr overload fromCStr(p *u8, file &[]u8 = srcFile(), line u32 = srcLine()) String {
+  pub fn fromCStrPtr overload fromCStr(p *u8, file &Array[u8] = srcFile(), line u32 = srcLine()) String {
     if p == null { panic("collections: a null pointer is not a C string", file, line); }
     String.from(CStr.fromPtr(p).view());
   }
@@ -585,7 +585,7 @@ pub struct String is ShapeChanging, Hash {
 
   // The views of 'parts' one after another, with 'sep' between each two:
   // 'String.join(names.view(), ", ")'. No parts make an empty String.
-  pub fn join(parts &[]String, sep &[]u8) String {
+  pub fn join(parts &Array[String], sep &Array[u8]) String {
     mut out = String.empty();
     mut i = 0usize;
     while i < parts.len {
@@ -611,7 +611,7 @@ pub struct String is ShapeChanging, Hash {
   }
 
   // Its bytes, for changing them in place (nothing checks they stay UTF-8)
-  pub fn viewMut(self &mut) &[]mut u8 { buf.viewMut(); }
+  pub fn viewMut(self &mut) &mut Array[u8] { buf.viewMut(); }
 
   // The String is consumed: its bytes stay where they are, in the block it
   // owned, which becomes a So[str]'s. The block is shrunk to hold the text and
@@ -634,7 +634,7 @@ pub struct String is ShapeChanging, Hash {
   // -------- adding to the end --------
 
   // Add the bytes of s (a '&str' is one) at the end. Rust's 'push_str'.
-  pub fn append overload `<-`(self &mut, s &[]u8) {
+  pub fn append overload `<-`(self &mut, s &Array[u8]) {
     buf.reserve(s.len + 1usize);
     mut i = 0usize;
     while i < s.len { buf.push(s[i]); i = i + 1usize; }
@@ -690,11 +690,11 @@ pub struct String is ShapeChanging, Hash {
   // Put s into the text so that it begins at byte index: "ac" with "b" put at
   // 1 is "abc". The index is a position between characters, 0 up to the
   // length, and anything else is a program error.
-  pub fn insert(self &mut, index usize, s &str, file &[]u8 = srcFile(), line u32 = srcLine()) {
+  pub fn insert(self &mut, index usize, s &str, file &Array[u8] = srcFile(), line u32 = srcLine()) {
     if index > buf.used or not self.view().isCharBoundary(index) {
       panic("collections: String.insert at a position that is not between characters", file, line);
     }
-    imm text &[]u8 = s;
+    imm text &Array[u8] = s;
     if text.len == 0usize { return; }
     imm old = buf.used;
     buf.reserve(text.len + 1usize);
@@ -708,7 +708,7 @@ pub struct String is ShapeChanging, Hash {
   // Take away the bytes from start up to, not including, end: "abcd" with 1
   // to 3 removed is "ad". Both are positions between characters, start not
   // after end and end not past the length, or it is a program error.
-  pub fn remove(self &mut, start usize, end usize, file &[]u8 = srcFile(), line u32 = srcLine()) {
+  pub fn remove(self &mut, start usize, end usize, file &Array[u8] = srcFile(), line u32 = srcLine()) {
     imm v = self.view();
     if start > end or end > buf.used or not (v.isCharBoundary(start) and v.isCharBoundary(end)) {
       panic("collections: String.remove of a range that is not between characters", file, line);
@@ -720,7 +720,7 @@ pub struct String is ShapeChanging, Hash {
 
   // Cut it to n bytes, keeping its block; one of n bytes or fewer is left
   // alone. n is a position between characters, or it is a program error.
-  pub fn truncate(self &mut, n usize, file &[]u8 = srcFile(), line u32 = srcLine()) {
+  pub fn truncate(self &mut, n usize, file &Array[u8] = srcFile(), line u32 = srcLine()) {
     if n >= buf.used { return; }
     if not self.view().isCharBoundary(n) {
       panic("collections: String.truncate to a length that is not between characters", file, line);
@@ -741,7 +741,7 @@ pub struct String is ShapeChanging, Hash {
   // Every 'from' made 'to', left to right, the pieces never overlapping:
   // "aaa" with "aa" made "b" is "ba". An empty 'from' is found before each
   // byte and at the end, so "ab" with "" made "-" is "-a-b-".
-  pub fn replace(self &mut, from &[]u8, to &[]u8) {
+  pub fn replace(self &mut, from &Array[u8], to &Array[u8]) {
     imm v = self.raw();
     mut out = String.withCapacity(v.len);
     mut i = 0usize;
@@ -813,11 +813,11 @@ pub struct String is ShapeChanging, Hash {
 
   // -------- reading --------
 
-  pub fn equals(self &, s &[]u8) bool { self.raw() == s; }
+  pub fn equals(self &, s &Array[u8]) bool { self.raw() == s; }
 
   // Whether it holds the same bytes as s once ASCII letters are made one
   // case: "Path" equals "PATH" this way. Bytes beyond ASCII must match exactly.
-  pub fn equalsIgnoreAsciiCase(self &, s &[]u8) bool {
+  pub fn equalsIgnoreAsciiCase(self &, s &Array[u8]) bool {
     imm v = self.raw();
     if v.len != s.len { return false; }
     mut i = 0usize;
@@ -830,25 +830,25 @@ pub struct String is ShapeChanging, Hash {
 
   // -1, 0 or 1 as it sorts before, with or after s, byte by byte, a shorter
   // string before a longer one it begins
-  pub fn compare(self &, s &[]u8) i32 { bytesCompare(self.raw(), s); }
+  pub fn compare(self &, s &Array[u8]) i32 { bytesCompare(self.raw(), s); }
 
-  pub fn startsWith(self &, s &[]u8) bool {
+  pub fn startsWith(self &, s &Array[u8]) bool {
     imm v = self.raw();
     s.len <= v.len and &v[..s.len] == s;
   }
 
-  pub fn endsWith(self &, s &[]u8) bool {
+  pub fn endsWith(self &, s &Array[u8]) bool {
     imm v = self.raw();
     s.len <= v.len and &v[v.len - s.len..] == s;
   }
 
   // Where s first starts in it, or None. An empty s is found at 0.
-  pub fn find(self &, s &[]u8) Option[usize] { bytesFind(self.raw(), s, 0usize); }
+  pub fn find(self &, s &Array[u8]) Option[usize] { bytesFind(self.raw(), s, 0usize); }
 
   // Where s first starts at or after 'from'
-  pub fn findFrom(self &, s &[]u8, from usize) Option[usize] { bytesFind(self.raw(), s, from); }
+  pub fn findFrom(self &, s &Array[u8], from usize) Option[usize] { bytesFind(self.raw(), s, from); }
 
-  pub fn contains(self &, s &[]u8) bool {
+  pub fn contains(self &, s &Array[u8]) bool {
     match bytesFind(self.raw(), s, 0usize) {
       case is Some[usize] {true;}
       case is None[usize] {false;}
@@ -931,7 +931,7 @@ pub struct String is ShapeChanging, Hash {
   // dies; the NUL is not one of its bytes. A NUL inside the text would end the
   // string early for C, so it is a panic, at the line of the caller. An empty
   // String holds no block, and its C string is the static empty literal.
-  pub fn cstr(self &, file &[]u8 = srcFile(), line u32 = srcLine()) CStr {
+  pub fn cstr(self &, file &Array[u8] = srcFile(), line u32 = srcLine()) CStr {
     if buf.ptr == null { return ""; }
     if libc.memchr(buf.ptr, 0i32, buf.used) != null {
       panic("collections: String.cstr of text holding a NUL byte, which would end the C string early", file, line);
@@ -1186,24 +1186,24 @@ pub struct Dict[K Hash, V] is ShapeChanging, Sendable {
   // 'dict[&key]': a borrow of key's value. A key it does not hold is a program
   // error, a panic at the line of the caller (naming the key, when it is
   // given as text): ask 'contains' first.
-  pub fn indexKey overload `[]`(self &, key &K, file &[]u8 = srcFile(), line u32 = srcLine()) &V {
+  pub fn indexKey overload `[]`(self &, key &K, file &Array[u8] = srcFile(), line u32 = srcLine()) &V {
     imm i = self.find(self.hashOf(key), key);
     if i == noBucket { panic("collections: Dict has no entry for the key", file, line); }
     &slots[i].value;
   }
-  pub fn indexText overload `[]`(self &, key &str, file &[]u8 = srcFile(), line u32 = srcLine()) &V where K is String or K is So[str] or K is Rc[str] {
+  pub fn indexText overload `[]`(self &, key &str, file &Array[u8] = srcFile(), line u32 = srcLine()) &V where K is String or K is So[str] or K is Rc[str] {
     imm i = self.find(self.hashOf(key), key);
     if i == noBucket { missingKey(key, file, line); }
     &slots[i].value;
   }
 
   // '&mut dict[&key]': a borrow of key's value for changing it, a panic as above
-  pub fn indexMutKey overload `&[]`(self &mut, key &K, file &[]u8 = srcFile(), line u32 = srcLine()) &mut V {
+  pub fn indexMutKey overload `&[]`(self &mut, key &K, file &Array[u8] = srcFile(), line u32 = srcLine()) &mut V {
     imm i = self.find(self.hashOf(key), key);
     if i == noBucket { panic("collections: Dict has no entry for the key", file, line); }
     &mut slots[i].value;
   }
-  pub fn indexMutText overload `&[]`(self &mut, key &str, file &[]u8 = srcFile(), line u32 = srcLine()) &mut V where K is String or K is So[str] or K is Rc[str] {
+  pub fn indexMutText overload `&[]`(self &mut, key &str, file &Array[u8] = srcFile(), line u32 = srcLine()) &mut V where K is String or K is So[str] or K is Rc[str] {
     imm i = self.find(self.hashOf(key), key);
     if i == noBucket { missingKey(key, file, line); }
     &mut slots[i].value;
@@ -1580,24 +1580,24 @@ pub struct OrderedDict[K Hash, V] is ShapeChanging, Sendable {
 
   // 'dict[&key]': a borrow of key's value; a key it does not hold is a panic
   // at the line of the caller (naming the key, when it is given as text)
-  pub fn indexKey overload `[]`(self &, key &K, file &[]u8 = srcFile(), line u32 = srcLine()) &V {
+  pub fn indexKey overload `[]`(self &, key &K, file &Array[u8] = srcFile(), line u32 = srcLine()) &V {
     imm b = self.find(self.hashOf(key), key);
     if b == noBucket { panic("collections: OrderedDict has no entry for the key", file, line); }
     &dense[self.posOf(b)].value;
   }
-  pub fn indexText overload `[]`(self &, key &str, file &[]u8 = srcFile(), line u32 = srcLine()) &V where K is String or K is So[str] or K is Rc[str] {
+  pub fn indexText overload `[]`(self &, key &str, file &Array[u8] = srcFile(), line u32 = srcLine()) &V where K is String or K is So[str] or K is Rc[str] {
     imm b = self.find(self.hashOf(key), key);
     if b == noBucket { missingKey(key, file, line); }
     &dense[self.posOf(b)].value;
   }
 
   // '&mut dict[&key]': a borrow of key's value for changing it, a panic as above
-  pub fn indexMutKey overload `&[]`(self &mut, key &K, file &[]u8 = srcFile(), line u32 = srcLine()) &mut V {
+  pub fn indexMutKey overload `&[]`(self &mut, key &K, file &Array[u8] = srcFile(), line u32 = srcLine()) &mut V {
     imm b = self.find(self.hashOf(key), key);
     if b == noBucket { panic("collections: OrderedDict has no entry for the key", file, line); }
     &mut dense[self.posOf(b)].value;
   }
-  pub fn indexMutText overload `&[]`(self &mut, key &str, file &[]u8 = srcFile(), line u32 = srcLine()) &mut V where K is String or K is So[str] or K is Rc[str] {
+  pub fn indexMutText overload `&[]`(self &mut, key &str, file &Array[u8] = srcFile(), line u32 = srcLine()) &mut V where K is String or K is So[str] or K is Rc[str] {
     imm b = self.find(self.hashOf(key), key);
     if b == noBucket { missingKey(key, file, line); }
     &mut dense[self.posOf(b)].value;
@@ -2046,15 +2046,15 @@ pub trait Map[K, V] {
 // -------- byte slices --------
 
 // The functions the types above read text with, public for text that is
-// only a '&[]u8'.
+// only a '&Array[u8]'.
 
 // Whether a and b hold the same bytes: 'a == b'
-pub fn bytesEqual(a &[]u8, b &[]u8) bool {
+pub fn bytesEqual(a &Array[u8], b &Array[u8]) bool {
   a == b;
 }
 
 // -1, 0 or 1 as a sorts before, with or after b
-pub fn bytesCompare(a &[]u8, b &[]u8) i32 {
+pub fn bytesCompare(a &Array[u8], b &Array[u8]) i32 {
   mut i = 0usize;
   while i < a.len and i < b.len {
     if a[i] < b[i] { return -1i32; }
@@ -2065,7 +2065,7 @@ pub fn bytesCompare(a &[]u8, b &[]u8) i32 {
 }
 
 // Where needle first starts in hay at or after 'from', or None
-pub fn bytesFind(hay &[]u8, needle &[]u8, from usize) Option[usize] {
+pub fn bytesFind(hay &Array[u8], needle &Array[u8], from usize) Option[usize] {
   mut i = from;
   while i + needle.len <= hay.len {
     if &hay[i..i + needle.len] == needle { return Some[usize][i]; }
@@ -2087,7 +2087,7 @@ pub fn asciiUpper(b u8) u8 { if b >= 'a' and b <= 'z' {b - 32u8;} else {b;}; }
 // or more digits, 0 to 9, and nothing else, no spaces either ('trim' first).
 // None for any other text, and for a number beyond i64's range, which is
 // -9223372036854775808 to 9223372036854775807.
-pub fn parseInt(text &[]u8) Option[i64] {
+pub fn parseInt(text &Array[u8]) Option[i64] {
   mut start = 0usize;
   mut negative = false;
   if text.len > 0usize and (text[0usize] == '-' or text[0usize] == '+') {
@@ -2108,7 +2108,7 @@ pub fn parseInt(text &[]u8) Option[i64] {
 
 // The same for a u64, 0 to 18446744073709551615: a '+' or nothing, then the
 // digits. A '-' is None, even before 0.
-pub fn parseUInt(text &[]u8) Option[u64] {
+pub fn parseUInt(text &Array[u8]) Option[u64] {
   mut start = 0usize;
   if text.len > 0usize and text[0usize] == '+' { start = 1usize; }
   digitsValue(&text[start..], 18446744073709551615u64);
@@ -2116,7 +2116,7 @@ pub fn parseUInt(text &[]u8) Option[u64] {
 
 // The value of one or more decimal digits and nothing else, or None when
 // there are none, when anything else is there, or when it is beyond limit
-fn digitsValue(digits &[]u8, limit u64) Option[u64] {
+fn digitsValue(digits &Array[u8], limit u64) Option[u64] {
   if digits.len == 0usize { return None[u64][]; }
   mut n = 0u64;
   mut i = 0usize;
@@ -2136,7 +2136,7 @@ fn digitsValue(digits &[]u8, limit u64) Option[u64] {
 
 // Each a panic, reported where the method finding it was called
 
-fn outOfRange(index usize, length usize, file &[]u8, line u32) Never {
+fn outOfRange(index usize, length usize, file &Array[u8], line u32) Never {
   mut msg = String.from("collections: index ");
   msg.appendUInt(u64.from(index));
   msg.append(" is out of range for a length of ");
@@ -2145,7 +2145,7 @@ fn outOfRange(index usize, length usize, file &[]u8, line u32) Never {
 }
 
 // A lookup by '[]' of a key given as text that is not held: the panic names it
-fn missingKey(key &str, file &[]u8, line u32) Never {
+fn missingKey(key &str, file &Array[u8], line u32) Never {
   mut msg = String.from("collections: no entry for the key \"");
   msg.append(key);
   msg.append("\"");

@@ -137,6 +137,24 @@ StructNode *stdlibAdoptArray(Name *name, ModuleNode *mod) {
     return arrayTypeDcl;
 }
 
+int stdlibIncludeChecking;
+
+int stdlibIsArrayBody(INode *dcl) {
+    if (dcl == (INode*)arrayTypeDcl)
+        return arrayTypeDcl->genericinfo != NULL;
+    // core's include file is checked as a second module named core, beside the
+    // one just compiled, and only the first can adopt the compiler's struct: the
+    // second declares a struct of the name of its own. The check is of names
+    // alone, and a slice of it must be the slice for core's intrinsics to match
+    if (stdlibIncludeChecking && dcl != NULL && dcl->tag == StructTag
+        && ((StructNode*)dcl)->namesym == arrayTypeDcl->namesym
+        && ((StructNode*)dcl)->genericinfo != NULL) {
+        ModuleNode *mod = dclInfoGetModule(dcl);
+        return mod != NULL && mod->namesym == nametblFind("core", 4);
+    }
+    return 0;
+}
+
 // core's declaration of 'cstr' is not a new struct but the compiler's own, given
 // the field and the methods it writes. The struct the compiler made for the
 // modules that have no core (stdlibInit) is emptied: core says what it holds.

@@ -368,7 +368,7 @@ candidate. `fnCallLowerRefCompare`:
 **A comparison of two slices compares their elements**
 (`fnCallLowerSliceCompare`): equal when the counts are and each element is `==`
 to its partner. A slice has no order, so an ordering is `ErrorRefNoCompare`.
-The comparison is core's `mem.sliceEq[T](a &[]T, b &[]T) bool`, a generic
+The comparison is core's `mem.sliceEq[T](a &Array[T], b &Array[T]) bool`, a generic
 function whose body is the loop: the node becomes a call of its instance at
 the receiver's element type (`genericMethodInstance`), the receiver its first
 argument, and `fnCallFinalizeArgs` converts the other side to that slice as it

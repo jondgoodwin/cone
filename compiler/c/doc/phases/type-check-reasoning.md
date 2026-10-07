@@ -72,7 +72,7 @@ ignores the parameter and is coerced *after* it has been checked.
 type, the function's return type, and a call's parameter or a struct literal's
 field when the callee is already known (section 7, stage 1). An `if` or block
 given one coerces each branch to it, so `"orbit"` and `"flight"`, arrays of two
-lengths, meet as the `&[]u8` wanted; given none, they must meet on their own
+lengths, meet as the `&Array[u8]` wanted; given none, they must meet on their own
 (section 6), and do not.
 
 So the normal path is `iexpTypeCheckCoerce`:

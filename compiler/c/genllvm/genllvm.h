@@ -268,7 +268,7 @@ void genlFnAttr(GenState *gen, LLVMValueRef fn, char *name);
 // The source file a node was written in, as a panic reports it: its name
 // without its folders
 char *genlSrcFileName(INode *node, size_t *len);
-// A constant '&[]u8' slice of a source file's name, as genlSrcFileName gives it
+// A constant '&Array[u8]' slice of a source file's name, as genlSrcFileName gives it
 LLVMValueRef genlSrcFileSlice(GenState *gen, char *text, size_t len);
 // The address of the constant copy of a source file's name, made once a module
 LLVMValueRef genlSrcFileText(GenState *gen, char *text, size_t len);

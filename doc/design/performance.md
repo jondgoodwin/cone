@@ -161,7 +161,7 @@ checking if it ever stops being true.
 | --- | --- | --- |
 | **`Rc` reference** | one `usize` in the header; an increment per new holder, a decrement and zero-test per release | the `Rc[...]` in the type allocated |
 | **`So` reference** | no header bytes; a `free` at release | the `So[...]` |
-| **slice `&[]T`** | two words, passed by value | the `[]` |
+| **slice `&Array[T]`** | two words, passed by value | the `[]` |
 | **virtual reference `&<Trait`** | two words; an indirect call through a loaded slot | the `<` |
 | **array or slice index** | a compare and branch per dimension | the `[i]` |
 | **raw pointer index** | nothing — unchecked, deliberately | the `*` |
@@ -176,7 +176,7 @@ you write it.
 The two that surprise people are the fat pointers — a slice, a virtual
 reference, and a reference to a body whose length it carries (`&str`, `So[str]`)
 are twice the size of a plain reference and are passed by value, so a
-function taking `&[]T` moves two words per call.
+function taking `&Array[T]` moves two words per call.
 
 ## How the compiler cashes this in
 

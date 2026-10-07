@@ -111,7 +111,7 @@ class NotNames(unittest.TestCase):
         # The Cone Congo keeps the same three lists, in src/header.cone
         header = (HERE / "src" / "header.cone").read_text(encoding="utf-8")
         lists = {name: set(words.split()) for name, words in
-                 re.findall(r'fn (is\w+)\(w &\[\]u8\) bool \{\s*inWords\(w, "([^"]*)"\)', header)}
+                 re.findall(r'fn (is\w+)\(w &Array\[u8\]\) bool \{\s*inWords\(w, "([^"]*)"\)', header)}
         self.assertEqual(lists, {"isKeyword": congo.KEYWORDS, "isReserved": congo.RESERVED,
                                  "isPermission": congo.PERMISSIONS})
         self.assertIsNone(congo.name_fault("usecheck"))
@@ -377,7 +377,7 @@ class Scenarios(unittest.TestCase):
 
             import stdio;
 
-            pub fn line(label &[]u8, n i64) {
+            pub fn line(label &Array[u8], n i64) {
               stdio.printStr(label);
               stdio.print <- " = ";
               stdio.print <- n;
@@ -1884,7 +1884,7 @@ class GpuKernels(unittest.TestCase):
         }
 
         // A kernel: one invocation for each point
-        pub fn @compute(64) scale(inv Invocation, points &[]Vec3, out &[]mut f32) {
+        pub fn @compute(64) scale(inv Invocation, points &Array[Vec3], out &mut Array[f32]) {
           imm i = usize.from(inv.globalId[0usize]);
           if i < out.len and i < points.len {
             out[i] = half(points[i].length());
@@ -2016,10 +2016,10 @@ class GpuKernels(unittest.TestCase):
         pkgs = self.root / "pkgs"
         self.registry(pkgs)
         quiet = self.package(pkgs / "quiet", "quiet", """
-            // fn @compute(64) scale(inv Invocation, out &[]mut f32) is not here
+            // fn @compute(64) scale(inv Invocation, out &mut Array[f32]) is not here
             mod quiet;
 
-            pub fn said() &[]u8 {
+            pub fn said() &Array[u8] {
               "fn @compute(64)";
             }
             """)
@@ -2047,7 +2047,7 @@ class GpuKernels(unittest.TestCase):
             import mid;
             import loose;
 
-            pub fn @compute(64) fill(inv Invocation, out &[]mut i32) {
+            pub fn @compute(64) fill(inv Invocation, out &mut Array[i32]) {
               imm i = usize.from(inv.globalId[0usize]);
               if i < out.len {
                 out[i] = mid.three() + loose.two();
@@ -2134,7 +2134,7 @@ class GpuFolder(unittest.TestCase):
         import maths;
 
         // A kernel: one invocation for each point
-        pub fn @compute(64) scale(inv Invocation, points &[]Vec3, out &[]mut f32) {
+        pub fn @compute(64) scale(inv Invocation, points &Array[Vec3], out &mut Array[f32]) {
           imm i = usize.from(inv.globalId[0usize]);
           if i < out.len and i < points.len {
             out[i] = maths.half(maths.len(points[i]));
@@ -2291,7 +2291,7 @@ class GpuFolder(unittest.TestCase):
             import geomath;
             import stdio;
 
-            pub fn @compute(64) fill(inv Invocation, out &[]mut f32) {
+            pub fn @compute(64) fill(inv Invocation, out &mut Array[f32]) {
               imm i = usize.from(inv.globalId[0usize]);
               if i < out.len {
                 out[i] = 1.;
@@ -2314,7 +2314,7 @@ class GpuFolder(unittest.TestCase):
               if n == 0u32 {0u32;} else {down(n - 1u32);};
             }
 
-            pub fn @compute(64) fill(inv Invocation, out &[]mut f32) {
+            pub fn @compute(64) fill(inv Invocation, out &mut Array[f32]) {
               imm i = usize.from(inv.globalId[0usize]);
               if i < out.len {
                 out[i] = 1.;
@@ -2371,7 +2371,7 @@ class GpuFolder(unittest.TestCase):
         # take the name of a package that build compiles from source
         write(lib / "gpu" / "libc.cone", "mod libc;\n")
         write(lib / "gpu" / "kern.cone", "mod kern;\n\npub fn @compute(64) fill(inv Invocation,"
-                                         " out &[]mut f32) {\n}\n")
+                                         " out &mut Array[f32]) {\n}\n")
         self.assertIn(f"congo: error: lib's GPU build compiles libc from its source, which conec"
                       f" finds by its name on its package search path ({lib / 'gpu'},"
                       f" {congo.REPO_PACKAGES}): there it finds {lib / 'gpu' / 'libc.cone'}, not"

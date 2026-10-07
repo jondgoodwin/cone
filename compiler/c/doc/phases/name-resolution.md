@@ -190,7 +190,7 @@ functions included.
 | `StarTag` | `PtrTag` / `DerefTag` | `ptrNameRes` |
 | `ArrayTag` | `ArrayLitTag` when the first element is not a type, and `ErrorFillLiteral` when a size was written too, `[3; 0]`, the retired fill literal; when it is a type and a size was written, `[3; i32]`, the old spelling of an array type, `ErrorArrayTypeOld` and the tag is left alone; a generic parameter's use waits for the clone | `arrayNameRes` |
 | `RefTag` | `BorrowTag` / `AllocateTag`, by region | `refNameRes` |
-| `ArrayRefTag` | `ArrayBorrowTag`: every array reference is borrowed | `arrayRefNameRes` |
+| `ArrayRefTag` | `ArrayBorrowTag`: every array reference is borrowed. One written `&[]` whose operand is a type, a generic parameter included, is the retired slice type and is refused (`ErrorSliceSpelling`: it is `&Array[T]`); `&Array[T]` reaches here as a `RefTag` | `arrayRefNameRes` |
 | `QuesTag` | `FnCallTag` for `Option[T]`, including a generic parameter's `?T` | `allocateQuesNameRes` |
 | `FnCallTag` that is a namespace hop | the bound name use, or a plain call of it | `fnCallNameResPath` |
 | `FnCallTag` indexing `Array` | the array type, `ArrayTag`, one node per size | `arrayTypeLower` |

@@ -120,7 +120,7 @@ int genericInferStructParms(TypeCheckState *pstate, Nodes *genparms, StructNode 
 // A managed reference type, 'Rc[mut, T]', is a call until type check lowers
 // it, and matches a reference, its last argument against what the reference
 // points at. In a template a type parameter is not yet
-// a type, so '*T' is held as a dereference and '&T' or '&[]T' as a borrow
+// a type, so '*T' is held as a dereference and '&T' or '&Array[T]' as a borrow
 // (cloneStarNode, cloneRefNode), and each spelling is accepted here. Region
 // and permission take no part, but for a region that is itself a type
 // parameter, 'R[mut, T]', which takes the argument's region: the instance's

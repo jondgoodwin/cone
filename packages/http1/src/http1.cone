@@ -328,7 +328,7 @@ pub struct Connection is Move {
   // A server connection, awaiting its first request
   pub fn server(cfg Config, pool Pool, now Instant) Connection {Connection.make(false, cfg, pool, now);}
 
-  fn make(client bool, cfg Config, pool Pool, now Instant, file &[]u8 = srcFile(), line u32 = srcLine()) Connection {
+  fn make(client bool, cfg Config, pool Pool, now Instant, file &Array[u8] = srcFile(), line u32 = srcLine()) Connection {
     if cfg.maxBuffered < cfg.maxHeadBytes {panic("http1: maxBuffered must hold a whole head (maxHeadBytes)", file, line);}
     new Connection(clientRole: client, cfg: cfg, pool: pool, now: now,
       input: Chain.make(cfg.maxBuffered), eof: false, rs: ReadState.Idle[], remaining: 0u64,
@@ -349,7 +349,7 @@ pub struct Connection is Move {
 
   // Bytes that arrived, at 'at': an empty buffer says the peer has finished
   // sending. More than readCredit() is a program error
-  pub fn handleInput(self &mut, buf IoBuf, at Instant, file &[]u8 = srcFile(), line u32 = srcLine()) {
+  pub fn handleInput(self &mut, buf IoBuf, at Instant, file &Array[u8] = srcFile(), line u32 = srcLine()) {
     now = at;
     imm n = buf.len();
     if n == 0usize {
@@ -568,7 +568,7 @@ pub struct Connection is Move {
 
   // A client's request: its head now, its body (if any) by sendData and
   // finish. One at a time: anything but canSendRequest() is a program error
-  pub fn sendRequest(self &mut, head RequestHead, body BodyLength, file &[]u8 = srcFile(), line u32 = srcLine()) {
+  pub fn sendRequest(self &mut, head RequestHead, body BodyLength, file &Array[u8] = srcFile(), line u32 = srcLine()) {
     if not clientRole {panic("http1: sendRequest on a server's connection", file, line);}
     if not self.canSendRequest() {panic("http1: sendRequest while an exchange is in progress or the connection is closed (no pipelining)", file, line);}
     imm name = head.methodName();
@@ -620,7 +620,7 @@ pub struct Connection is Move {
   // A server's response to the request it has read: its head now, its body
   // (if any) by sendData and finish. With no request awaiting it, a program
   // error; after the connection has failed, it does nothing
-  pub fn sendResponse(self &mut, head ResponseHead, body BodyLength, file &[]u8 = srcFile(), line u32 = srcLine()) {
+  pub fn sendResponse(self &mut, head ResponseHead, body BodyLength, file &Array[u8] = srcFile(), line u32 = srcLine()) {
     if clientRole {panic("http1: sendResponse on a client's connection", file, line);}
     if closed or failed {return;}
     if not requestSeen or ws != WriteState.Idle[] {panic("http1: sendResponse with no request awaiting one", file, line);}
@@ -665,7 +665,7 @@ pub struct Connection is Move {
   }
 
   // A server's interim response, a 1xx other than 101, before its final one
-  pub fn sendInterim(self &mut, head ResponseHead, file &[]u8 = srcFile(), line u32 = srcLine()) {
+  pub fn sendInterim(self &mut, head ResponseHead, file &Array[u8] = srcFile(), line u32 = srcLine()) {
     if clientRole {panic("http1: sendInterim on a client's connection", file, line);}
     if closed or failed {return;}
     if not requestSeen or ws != WriteState.Idle[] {panic("http1: sendInterim with no request awaiting a response", file, line);}
@@ -682,7 +682,7 @@ pub struct Connection is Move {
   // connection has closed or the body was abandoned), or Some[buf] back when
   // the queue is past its watermark. Sending with no body under way, or past
   // a Content-Length, is a program error
-  pub fn sendData(self &mut, buf IoBuf, file &[]u8 = srcFile(), line u32 = srcLine()) Option[IoBuf] {
+  pub fn sendData(self &mut, buf IoBuf, file &Array[u8] = srcFile(), line u32 = srcLine()) Option[IoBuf] {
     if closed or failed or abandoned {return None[IoBuf][];}
     if ws != WriteState.Sized[] and ws != WriteState.Chunked[] and ws != WriteState.UntilClose[] {
       panic("http1: sendData with no body being sent", file, line);
@@ -705,13 +705,13 @@ pub struct Connection is Move {
   // The body is whole. Nothing more to do (already whole, abandoned, or the
   // connection closed) does nothing; short of a Content-Length is a program
   // error
-  pub fn finish(self &mut, file &[]u8 = srcFile(), line u32 = srcLine()) {
+  pub fn finish(self &mut, file &Array[u8] = srcFile(), line u32 = srcLine()) {
     self.finishWith(Headers.empty(), file, line);
   }
 
   // The body is whole, and these trailer fields follow it (a chunked body
   // only: trailers on any other is a program error)
-  pub fn finishWith(self &mut, trailers Headers, file &[]u8 = srcFile(), line u32 = srcLine()) {
+  pub fn finishWith(self &mut, trailers Headers, file &Array[u8] = srcFile(), line u32 = srcLine()) {
     if closed or failed or abandoned or ws == WriteState.Done[] or ws == WriteState.Idle[] {return;}
     if ws == WriteState.Sized[] and wremaining != 0u64 {panic("http1: finish short of the body's Content-Length", file, line);}
     if ws != WriteState.Chunked[] and not trailers.isEmpty() {panic("http1: trailer fields go only after a chunked body", file, line);}
@@ -777,7 +777,7 @@ pub struct Connection is Move {
     Event.Failed[e];
   }
 
-  fn fail(self &mut, kind ErrorKind, status u16, why &[]u8) {
+  fn fail(self &mut, kind ErrorKind, status u16, why &Array[u8]) {
     self.failWith(HttpError.make(kind, status, why));
   }
 
@@ -1124,7 +1124,7 @@ pub struct Connection is Move {
     mut copied = false;
     match input.contiguous(0usize, at) {
       case imm s Some {ok = parseChunkLine(s.value, &cfg, &mut size, &mut err);}
-      case is None[&[]u8] {copied = true;}
+      case is None[&Array[u8]] {copied = true;}
     }
     if copied {
       // The line lies across segments: copy it out to read it
@@ -1248,7 +1248,7 @@ pub struct Connection is Move {
   // ------------------------------------------------------------- writing, inside
 
   // Append bytes to what is to be sent, gathering small writes in the tail
-  fn put(self &mut, bytes &[]u8) {
+  fn put(self &mut, bytes &Array[u8]) {
     mut i = 0usize;
     while i < bytes.len {
       if tail.room() == 0usize {
@@ -1356,7 +1356,7 @@ pub struct Connection is Move {
 
 // A request target's or an authority's text: not empty, and only visible
 // ASCII
-fn isTargetText(s &[]u8) bool {
+fn isTargetText(s &Array[u8]) bool {
   if s.len == 0usize {return false;}
   mut i = 0usize;
   while i < s.len {

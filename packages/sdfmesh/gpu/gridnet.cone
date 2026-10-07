@@ -94,10 +94,10 @@ fn edgeEnd(e u32) u32 { edgeStart(e) | (1u32 << (e / 4u32)); }
 // (src/gridmesher.cone packs them): word 0 holds edges 0 to 7's piece
 // numbers, four bits each, and word 1 edges 8 to 11's, then the count of
 // pieces in bits 16 to 19; NoPieceBits is an edge not crossed
-pub fn tablePieces(tables &[]u32, config u32) u32 {
+pub fn tablePieces(tables &Array[u32], config u32) u32 {
   (tables[usize.from(2u32 * config + 1u32)] >> 16u32) & 15u32;
 }
-pub fn tableEdge(tables &[]u32, config u32, e u32) u32 {
+pub fn tableEdge(tables &Array[u32], config u32, e u32) u32 {
   if e < 8u32 {
     (tables[usize.from(2u32 * config)] >> (4u32 * e)) & 15u32;
   } else {
@@ -116,12 +116,12 @@ fn flatId(inv Invocation) u32 {
 fn sampleAt(g SampleGrid, x u32, y u32, z u32) usize { usize.from(x + g.samplesX * (y + g.samplesY * z)); }
 
 // The sample at corner c of cell (x, y, z)
-fn cornerValue(g SampleGrid, values &[]f32, x u32, y u32, z u32, c u32) f32 {
+fn cornerValue(g SampleGrid, values &Array[f32], x u32, y u32, z u32, c u32) f32 {
   values[sampleAt(g, x + cornerBit(c, 0u32), y + cornerBit(c, 1u32), z + cornerBit(c, 2u32))];
 }
 
 // Cell (x, y, z)'s config: bit c set when its corner c is inside (below 0)
-fn cellConfig(g SampleGrid, values &[]f32, x u32, y u32, z u32) u32 {
+fn cellConfig(g SampleGrid, values &Array[f32], x u32, y u32, z u32) u32 {
   mut config = 0u32;
   mut c = 0u32;
   while c < 8u32 {
@@ -146,7 +146,7 @@ fn cellAlong(g SampleGrid, a u32, pa u32, pu u32, pv u32) u32 {
 // cells round it are in the grid and its ends' signs differ. Its lower end
 // is corner 3 of the edge, a * 4 + 3, of the cell below it on the other two
 // axes, whose config says both
-fn quadEdge(g SampleGrid, tables &[]u32, configs &[]u32, x u32, y u32, z u32, a u32) bool {
+fn quadEdge(g SampleGrid, tables &Array[u32], configs &Array[u32], x u32, y u32, z u32, a u32) bool {
   imm u = (a + 1u32) % 3u32;
   imm w = (a + 2u32) % 3u32;
   imm pa = pick(a, x, y, z);
@@ -165,8 +165,8 @@ fn quadEdge(g SampleGrid, tables &[]u32, configs &[]u32, x u32, y u32, z u32, a 
 // Each cell's config, and how many vertices it has (its pieces). 'counts'
 // has a word more than there are cells, which invocation 0 makes 0 and the
 // scan the total (no buffer need start as zeros)
-pub fn @compute(64) classify(inv Invocation, g SampleGrid, tables &[]u32, values &[]f32, configs &[]mut u32,
-    counts &[]mut u32) {
+pub fn @compute(64) classify(inv Invocation, g SampleGrid, tables &Array[u32], values &Array[f32], configs &mut Array[u32],
+    counts &mut Array[u32]) {
   imm i = flatId(inv);
   imm nx = g.samplesX - 1u32;
   imm ny = g.samplesY - 1u32;
@@ -181,7 +181,7 @@ pub fn @compute(64) classify(inv Invocation, g SampleGrid, tables &[]u32, values
 
 // How many of each sample's three edges carry a quad. 'counts' has a word
 // more than there are samples, which invocation 0 makes 0
-pub fn @compute(64) countQuads(inv Invocation, g SampleGrid, tables &[]u32, configs &[]u32, counts &[]mut u32) {
+pub fn @compute(64) countQuads(inv Invocation, g SampleGrid, tables &Array[u32], configs &Array[u32], counts &mut Array[u32]) {
   imm i = flatId(inv);
   imm samples = g.samplesX * g.samplesY * g.samplesZ;
   if i == 0u32 { counts[usize.from(samples)] = 0u32; }
@@ -200,7 +200,7 @@ pub fn @compute(64) countQuads(inv Invocation, g SampleGrid, tables &[]u32, conf
 }
 
 // The sum of each block of ScanBlock counts (the last block may be short)
-pub fn @compute(64) scanTotals(inv Invocation, s ScanStep, items &[]u32, totals &[]mut u32) {
+pub fn @compute(64) scanTotals(inv Invocation, s ScanStep, items &Array[u32], totals &mut Array[u32]) {
   imm b = flatId(inv);
   imm start = b * ScanBlock;
   if start < s.count {
@@ -217,7 +217,7 @@ pub fn @compute(64) scanTotals(inv Invocation, s ScanStep, items &[]u32, totals 
 
 // Each block of ScanBlock counts made exclusive sums, the block's from
 // 'bases[b]', in index order
-pub fn @compute(64) scanApply(inv Invocation, s ScanStep, items &[]mut u32, bases &[]u32) {
+pub fn @compute(64) scanApply(inv Invocation, s ScanStep, items &mut Array[u32], bases &Array[u32]) {
   imm b = flatId(inv);
   imm start = b * ScanBlock;
   if start < s.count {
@@ -234,7 +234,7 @@ pub fn @compute(64) scanApply(inv Invocation, s ScanStep, items &[]mut u32, base
 }
 
 // The vertices and quads in all, the last words of the two scans
-pub fn @compute(64) gather(inv Invocation, t NetTotals, cellStarts &[]u32, quadStarts &[]u32, out &[]mut u32) {
+pub fn @compute(64) gather(inv Invocation, t NetTotals, cellStarts &Array[u32], quadStarts &Array[u32], out &mut Array[u32]) {
   if flatId(inv) == 0u32 {
     out[0usize] = cellStarts[usize.from(t.cells)];
     out[1usize] = quadStarts[usize.from(t.samples)];
@@ -243,12 +243,12 @@ pub fn @compute(64) gather(inv Invocation, t NetTotals, cellStarts &[]u32, quadS
 
 // The gradient's direction at sample (x, y, z), unscaled: the central
 // difference on each axis, or twice the one-sided one at the grid's faces
-fn cornerGradient(g SampleGrid, values &[]f32, x u32, y u32, z u32) Vec3 {
+fn cornerGradient(g SampleGrid, values &Array[f32], x u32, y u32, z u32) Vec3 {
   new Vec3(axisDifference(g, values, x, y, z, 0u32), axisDifference(g, values, x, y, z, 1u32),
     axisDifference(g, values, x, y, z, 2u32));
 }
 
-fn axisDifference(g SampleGrid, values &[]f32, x u32, y u32, z u32, a u32) f32 {
+fn axisDifference(g SampleGrid, values &Array[f32], x u32, y u32, z u32, a u32) f32 {
   imm p = pick(a, x, y, z);
   imm n = pick(a, g.samplesX, g.samplesY, g.samplesZ);
   imm dx = if a == 0u32 { 1u32; } else { 0u32; };
@@ -265,7 +265,7 @@ fn axisDifference(g SampleGrid, values &[]f32, x u32, y u32, z u32, a u32) f32 {
 }
 
 // The gradient at corner c of cell (x, y, z)
-fn cellCornerGradient(g SampleGrid, values &[]f32, x u32, y u32, z u32, c u32) Vec3 {
+fn cellCornerGradient(g SampleGrid, values &Array[f32], x u32, y u32, z u32, c u32) Vec3 {
   cornerGradient(g, values, x + cornerBit(c, 0u32), y + cornerBit(c, 1u32), z + cornerBit(c, 2u32));
 }
 
@@ -283,8 +283,8 @@ fn cornerWeight(at Vec3, c u32) f32 {
 // counts) puts them: at the average of the piece's edge crossings, each
 // found by linear interpolation of the two ends' distances, as surfaceNet
 // places them, with the grid's normal there and the cell's number
-pub fn @compute(64) place(inv Invocation, g SampleGrid, tables &[]u32, values &[]f32, starts &[]u32,
-    positions &[]mut Vec3, normals &[]mut Vec3, vertexCells &[]mut u32) {
+pub fn @compute(64) place(inv Invocation, g SampleGrid, tables &Array[u32], values &Array[f32], starts &Array[u32],
+    positions &mut Array[Vec3], normals &mut Array[Vec3], vertexCells &mut Array[u32]) {
   imm i = flatId(inv);
   imm nx = g.samplesX - 1u32;
   imm ny = g.samplesY - 1u32;
@@ -339,7 +339,7 @@ pub fn @compute(64) place(inv Invocation, g SampleGrid, tables &[]u32, values &[
 
 // The vertex of the cell at (pa, cu, cv) along (a, a + 1, a + 2) on the
 // edge of sample (pa, pu, pv) along a
-fn edgeVertex(g SampleGrid, tables &[]u32, configs &[]u32, starts &[]u32, a u32, pa u32, pu u32, pv u32,
+fn edgeVertex(g SampleGrid, tables &Array[u32], configs &Array[u32], starts &Array[u32], a u32, pa u32, pu u32, pv u32,
     cu u32, cv u32) u32 {
   imm cell = cellAlong(g, a, pa, cu, cv);
   imm config = configs[usize.from(cell)];
@@ -354,8 +354,8 @@ fn dot3(a Vec3, b Vec3) f32 { a.x * b.x + a.y * b.y + a.z * b.z; }
 // surfaceNet makes them, each cut into two triangles along its shorter
 // diagonal (the first, 0 to 2, when they are equal), as SurfaceNet.toMesh
 // cuts them: six indices a quad
-pub fn @compute(64) emit(inv Invocation, g SampleGrid, tables &[]u32, configs &[]u32, starts &[]u32,
-    quadStarts &[]u32, positions &[]Vec3, indices &[]mut u32) {
+pub fn @compute(64) emit(inv Invocation, g SampleGrid, tables &Array[u32], configs &Array[u32], starts &Array[u32],
+    quadStarts &Array[u32], positions &Array[Vec3], indices &mut Array[u32]) {
   imm i = flatId(inv);
   if i >= g.samplesX * g.samplesY * g.samplesZ { return; }
   imm x = i % g.samplesX;

@@ -108,9 +108,8 @@ type while each call gives its own orderings.
      `ErrorIntrinsicPlace`;
    - its name must be in the registry, else `ErrorIntrinsicName`;
    - its signature must match the entry's shapes, else `ErrorIntrinsicSig`. In a
-     generic template `*T` is still a `DerefTag` and `&[]T` an `ArrayBorrowTag`,
-     because a type parameter is not yet a type (`cloneStarNode`,
-     `cloneRefNode`), so both spellings are accepted. An atomic ordering is
+     generic template `*T` is still a `DerefTag`, because a type parameter is not
+     yet a type (`cloneStarNode`), so both are accepted. An atomic ordering is
      core's enum named `MemOrder` (`memOrderEnum`, known by name and package as
      `TypeRecord` is), and compareSwap's result the tuple `T, bool`;
    - a body the entry allows no fallback for, or no body where there is no
@@ -227,8 +226,8 @@ also remembers the struct its result points at (`typeRecordStruct`), which is
 how generation builds a root map's records, where no declaration names the
 type.
 
-`mem` also holds one function that is no intrinsic: `sliceEq[T](a &[]T,
-b &[]T) bool`, what `==` and `!=` on two slices call ([fncall](fncall.md), "A
+`mem` also holds one function that is no intrinsic: `sliceEq[T](a &Array[T],
+b &Array[T]) bool`, what `==` and `!=` on two slices call ([fncall](fncall.md), "A
 comparison of two slices compares their elements"). Its body is its
 implementation, compiled as any generic function's, and it has no registry
 entry; the compiler knows it the way it knows `TypeRecord`, by its name and its

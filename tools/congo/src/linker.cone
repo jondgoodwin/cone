@@ -5,7 +5,7 @@
 
 // CONEC names the compiler; else the Cone repository's own build,
 // build/x64-release/conec.exe; else 'conec' on PATH
-fn findConec(repo &[]u8) Result[String, String] {
+fn findConec(repo &Array[u8]) Result[String, String] {
   imm named = envOr("CONEC", "");
   if not named.isEmpty() {
     imm p = winPath(named.view());
@@ -26,7 +26,7 @@ fn findConec(repo &[]u8) Result[String, String] {
 // A stale conec fails good sources in ways that look like a language
 // regression. The repository's build is checked against its sources, as the
 // test runner checks it.
-fn warnIfStale(repo &[]u8, conec &[]u8) {
+fn warnIfStale(repo &Array[u8], conec &Array[u8]) {
   mut stamp = new time.Timestamp();
   match fs.stat(conec) {
     case imm s Ok { stamp = s.value.modified; }
@@ -62,7 +62,7 @@ fn warnIfStale(repo &[]u8, conec &[]u8) {
 }
 
 // CONESTD names the runtime library; else it is the one built beside conec
-fn findConestd(conec &[]u8) Result[String, String] {
+fn findConestd(conec &Array[u8]) Result[String, String] {
   imm named = envOr("CONESTD", "");
   mut lib = String.empty();
   if not named.isEmpty() { lib = winPath(named.view()); }
@@ -77,8 +77,8 @@ fn findConestd(conec &[]u8) Result[String, String] {
 }
 
 // Arguments for process.run, from slices
-fn argList(a &[]u8, b &[]u8 = "", c &[]u8 = "", d &[]u8 = "", e &[]u8 = "", f &[]u8 = "",
-    g &[]u8 = "", h &[]u8 = "", i &[]u8 = "") List[String] {
+fn argList(a &Array[u8], b &Array[u8] = "", c &Array[u8] = "", d &Array[u8] = "", e &Array[u8] = "", f &Array[u8] = "",
+    g &Array[u8] = "", h &Array[u8] = "", i &Array[u8] = "") List[String] {
   mut out = List[String].empty();
   out.push(String.from(a));
   if b.len > 0usize { out.push(String.from(b)); }
@@ -129,7 +129,7 @@ fn findVcvars() String {
 
 // Git for Windows ships a coreutils link.exe, which is not a linker at all,
 // so an inherited link.exe is trusted only when it says it is Microsoft's
-fn isMsvcLinker(tool &[]u8) bool {
+fn isMsvcLinker(tool &Array[u8]) bool {
   imm args = argList(tool, "/?");
   match process.run(args.view(), new process.Options(timeout: time.Duration.fromSeconds(20))) {
     case imm ok Ok {
@@ -147,7 +147,7 @@ fn isMsvcLinker(tool &[]u8) bool {
 // arm64), or "" when nothing says. Its folder says first,
 // bin\Host<host>\<target>, since that is the linker that would run; else
 // what VsDevCmd.bat and vcvars*.bat record, VSCMD_ARG_TGT_ARCH.
-fn msvcTarget(tool &[]u8) String {
+fn msvcTarget(tool &Array[u8]) String {
   imm folder = parentOf(tool);
   imm above = parentOf(folder.view());
   mut host = path.name(above.view());
@@ -164,7 +164,7 @@ fn msvcTarget(tool &[]u8) String {
 
 // A folder as os.path.normcase(os.path.normpath()) spells it, with a '\'
 // after it
-fn normFolder(p &[]u8) String {
+fn normFolder(p &Array[u8]) String {
   mut n = path.normalize(p);
   n.replaceByte('/', '\\');
   n.lowerAscii();
@@ -228,7 +228,7 @@ fn runVcvars(changes &mut EnvChanges) Result[Vcvars, String] {
   // batch path. The marker divides what vcvars64.bat prints, in the
   // console's code page, from the environment, which 'cmd /u' prints in
   // UTF-16 so that every value arrives whole.
-  imm marker &[]u8 = "--congo: vcvars64.bat's environment--";
+  imm marker &Array[u8] = "--congo: vcvars64.bat's environment--";
   imm line = cat("cmd /c \"\"", vcvars.view(), "\" && echo ", marker, "&& cmd /u /c set\"");
   mut out = String.empty();
   mut err = String.empty();
@@ -282,14 +282,14 @@ fn runVcvars(changes &mut EnvChanges) Result[Vcvars, String] {
 
 // Why no Microsoft link.exe was found: which vcvars64.bat ran and how its
 // output ended, and the folders searched
-fn noLinker(tool &[]u8, pathList &[]u8, ran &Vcvars) String {
+fn noLinker(tool &Array[u8], pathList &Array[u8], ran &Vcvars) String {
   mut text = String.from("no Microsoft link.exe: install Visual Studio's C++ tools (Congo runs vcvars64.bat to find it)");
   if tool.len > 0usize { text <- "\nthe link.exe found, ", tool, ", is not Microsoft's"; }
   if ran.ran {
     imm trimmed = ran.printed.trim();
     imm all = splitLines(trimmed.view());
     imm from = if all.len() > 15usize {all.len() - 15usize;} else {0usize;};
-    mut said &[]u8 = "(the end of it):";
+    mut said &Array[u8] = "(the end of it):";
     if all.len() == 0usize { said = "nothing"; }
     text <- "\nran ", ran.file.view(), ", which printed ", said;
     mut i = from;
@@ -337,7 +337,7 @@ fn noLinkerYet() Linker {
 // are: Visual Studio's default Developer Command Prompt links for x86. The
 // environment is worked out in Congo's own and put back after; the Linker
 // holds what it set, for each link.
-fn findLinker(conestd &[]u8) Result[Linker, String] {
+fn findLinker(conestd &Array[u8]) Result[Linker, String] {
   mut changes = noChanges();
   match linkerIn(&mut changes) {
     case imm ok Ok {
