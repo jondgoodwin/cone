@@ -32,7 +32,10 @@
 // - Material, the standard lit one: a base color times a texture (the
 //   texture optional), Lambert diffuse and Blinn-Phong specular, and an
 //   emissive color, in Slang (lit.slang); and lines in one flat color
-//   (lines.slang), for wireframes and edges.
+//   (lines.slang), for wireframes and edges. Every material has an alpha
+//   mode, glTF's: opaque, cut out (ALPHA_MASK: a fragment below the
+//   cut-off is discarded; leaves, fences) or see-through (ALPHA_BLEND:
+//   glass, glowing panes, light painted on with an alpha of 0).
 // - One lighting convention for every material (renderframe.slang): the
 //   light's color is irradiance (lux in physical units), ambient light,
 //   sky and emissive colors are radiance (nits), and everything drawn is
@@ -112,13 +115,23 @@
 // stones in one material is one draw. Copies of one skinned mesh batch the
 // same way, each with bones of its own, found through its bone base.
 //
-// THE DRAW ORDER. Opaque draws (all there are yet) are sorted batch by
-// batch, meshes (Blinn-Phong or physically based, by their material)
-// before lines, front to back by the distance from the camera to
-// the nearest model origin of the batch, so nearer surfaces fill the depth
-// buffer first and hide what is behind them before it is shaded.
-// Transparent draws, back to front, come with blending. The sky comes last,
-// where nothing was drawn (depth tested at the far plane).
+// THE DRAW ORDER. Opaque draws are sorted batch by batch, meshes
+// (Blinn-Phong or physically based, by their material; cut-out ones among
+// them) before lines, front to back by the distance from the camera to the
+// nearest model origin of the batch, so nearer surfaces fill the depth
+// buffer first and hide what is behind them before it is shaded. The sky
+// comes next, where nothing was drawn (depth tested at the far plane). Then
+// the see-through draws (a material whose alpha mode is ALPHA_BLEND, or a
+// custom pipeline made so): sorted copy by copy, back to front by the
+// distance to the centre of each copy's bounding sphere, blended with
+// premultiplied alpha, depth tested against the opaque surfaces but not
+// written. They are still instanced: a run of copies of one mesh in one
+// material that lie next to each other in that order is one draw, its
+// instances back to front (Vulkan draws an instanced draw's instances in
+// order), so the order is right copy by copy, and copies that do not
+// interleave with others (a row of lantern panes) stay one draw. Sorting
+// is by object, not by triangle: one mesh's own see-through faces are drawn
+// in its index order.
 //
 // Its files are one module, and only this one, the root, imports:
 //
@@ -184,7 +197,7 @@ fn readFile(path &[]u8, ok &mut bool) String {
 // immediates
 const FRAME_BYTES = 224u64;
 const IMMEDIATE_BYTES = 80u32;
-const MATERIAL_BYTES = 48u64;
+const MATERIAL_BYTES = 64u64;
 // An instance's bytes (renderframe.slang's Instance: a model matrix and a
 // tint) and how many the instance buffer holds at first
 const INSTANCE_BYTES = 80u64;
@@ -205,6 +218,16 @@ const BOUND_PBR = 3u32;
 const BOUND_CUSTOM = 4u32;
 const BOUND_LIT_SKINNED = 5u32;
 const BOUND_PBR_SKINNED = 6u32;
+const BOUND_LIT_BLEND = 7u32;
+const BOUND_PBR_BLEND = 8u32;
+const BOUND_LIT_SKINNED_BLEND = 9u32;
+const BOUND_PBR_SKINNED_BLEND = 10u32;
+
+// The draw list's layers, in the order they are drawn: opaque meshes, then
+// lines, then (after the sky) what is see-through
+const LAYER_OPAQUE = 0u32;
+const LAYER_LINES = 1u32;
+const LAYER_BLEND = 2u32;
 
 // What each render pass draws with: the renderer's pipelines, bind groups and
 // the resources it hands out handles to
@@ -252,6 +275,14 @@ pub struct Renderer {
   pub boneBases Buffer;            // each instance's first bone, or NO_BONES; as many as the instances
   pub boneBaseData List[u32];      // gathered on the CPU before one write
   pub bonesDrawn u32;              // how many bones the last render wrote
+  // The see-through (ALPHA_BLEND) variants of the lit and physically based
+  // pipelines and of their skinned ones: blended with premultiplied alpha,
+  // the depth tested, not written
+  pub litBlendPipeline RenderPipeline;
+  pub pbrBlendPipeline RenderPipeline;
+  pub litSkinnedBlendPipeline RenderPipeline;
+  pub pbrSkinnedBlendPipeline RenderPipeline;
+  pub blendedDrawn u32;            // how many see-through copies the last render drew
   // Store the depth buffer at the end of 'render' (it is discarded
   // otherwise), so that a later pass into the same target -- glowing
   // particles drawn additively, say -- is depth tested against the scene
@@ -352,6 +383,34 @@ pub struct Renderer {
       vertexEntryPoint: "vertexSkinned", buffers: &skinnedBuffers, fragmentModule: &pbrShader, colorFormat: colorFormat,
       cullMode: CULL_MODE_BACK, depthFormat: depthFormat, depthWriteEnabled: true, depthCompare: COMPARE_FUNCTION_LESS);
     mut pbrSkinnedPipeline = device.createRenderPipeline(&pbrSkinnedDesc);
+    // The see-through variants: the same, but blended with premultiplied
+    // alpha (src + (1 - src alpha) x dst, the alpha likewise), the depth
+    // tested and not written, so what is behind one pane still shows through
+    // the next
+    imm litBlendDesc = new RenderPipelineDescriptor(layout: &layout, vertexModule: &litShader, buffers: &litBuffers,
+      fragmentModule: &litShader, colorFormat: colorFormat, cullMode: CULL_MODE_BACK,
+      depthFormat: depthFormat, depthWriteEnabled: false, depthCompare: COMPARE_FUNCTION_LESS,
+      blendEnabled: true, colorSrcFactor: BLEND_FACTOR_ONE, colorDstFactor: BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+      alphaSrcFactor: BLEND_FACTOR_ONE, alphaDstFactor: BLEND_FACTOR_ONE_MINUS_SRC_ALPHA);
+    mut litBlendPipeline = device.createRenderPipeline(&litBlendDesc);
+    imm pbrBlendDesc = new RenderPipelineDescriptor(layout: &pbrLayout, vertexModule: &pbrShader, buffers: &litBuffers,
+      fragmentModule: &pbrShader, colorFormat: colorFormat, cullMode: CULL_MODE_BACK,
+      depthFormat: depthFormat, depthWriteEnabled: false, depthCompare: COMPARE_FUNCTION_LESS,
+      blendEnabled: true, colorSrcFactor: BLEND_FACTOR_ONE, colorDstFactor: BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+      alphaSrcFactor: BLEND_FACTOR_ONE, alphaDstFactor: BLEND_FACTOR_ONE_MINUS_SRC_ALPHA);
+    mut pbrBlendPipeline = device.createRenderPipeline(&pbrBlendDesc);
+    imm litSkinnedBlendDesc = new RenderPipelineDescriptor(layout: &layout, vertexModule: &litShader,
+      vertexEntryPoint: "vertexSkinned", buffers: &skinnedBuffers, fragmentModule: &litShader, colorFormat: colorFormat,
+      cullMode: CULL_MODE_BACK, depthFormat: depthFormat, depthWriteEnabled: false, depthCompare: COMPARE_FUNCTION_LESS,
+      blendEnabled: true, colorSrcFactor: BLEND_FACTOR_ONE, colorDstFactor: BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+      alphaSrcFactor: BLEND_FACTOR_ONE, alphaDstFactor: BLEND_FACTOR_ONE_MINUS_SRC_ALPHA);
+    mut litSkinnedBlendPipeline = device.createRenderPipeline(&litSkinnedBlendDesc);
+    imm pbrSkinnedBlendDesc = new RenderPipelineDescriptor(layout: &pbrLayout, vertexModule: &pbrShader,
+      vertexEntryPoint: "vertexSkinned", buffers: &skinnedBuffers, fragmentModule: &pbrShader, colorFormat: colorFormat,
+      cullMode: CULL_MODE_BACK, depthFormat: depthFormat, depthWriteEnabled: false, depthCompare: COMPARE_FUNCTION_LESS,
+      blendEnabled: true, colorSrcFactor: BLEND_FACTOR_ONE, colorDstFactor: BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+      alphaSrcFactor: BLEND_FACTOR_ONE, alphaDstFactor: BLEND_FACTOR_ONE_MINUS_SRC_ALPHA);
+    mut pbrSkinnedBlendPipeline = device.createRenderPipeline(&pbrSkinnedBlendDesc);
     // The sky: one triangle at the far plane, where nothing nearer was
     // drawn (depth tested less or equal against the cleared 1, not written)
     imm skyBuffers = [new VertexBufferLayout(arrayStride: 12u64, attributes: &positionAttr)];
@@ -380,7 +439,7 @@ pub struct Renderer {
       0u32, 0u64, pbrShader, environmentLayout, pbrLayout, pbrPipeline, skyPipeline, environment, false, 0., 1., pbrMaterialLayout,
       instances, FIRST_INSTANCES, List[f32].empty(), List[DrawKey].empty(), List[DrawBatch].empty(), 0u32,
       Pool[PipelineSlot].empty(), litSkinnedPipeline, pbrSkinnedPipeline, bones, FIRST_BONES, boneBases,
-      List[u32].empty(), 0u32);
+      List[u32].empty(), 0u32, litBlendPipeline, pbrBlendPipeline, litSkinnedBlendPipeline, pbrSkinnedBlendPipeline, 0u32);
     mut w = new Image(1, 1, 3, List[u8].empty());
     w.pixels.push(255u8);
     w.pixels.push(255u8);
@@ -394,7 +453,8 @@ pub struct Renderer {
     litPipeline.isValid() and linesPipeline.isValid() and frameGroup.isValid() and sampler.isValid()
       and frameUniforms.isValid() and pbrPipeline.isValid() and skyPipeline.isValid() and environment.isValid()
       and instances.isValid() and litSkinnedPipeline.isValid() and pbrSkinnedPipeline.isValid() and bones.isValid()
-      and boneBases.isValid();
+      and boneBases.isValid() and litBlendPipeline.isValid() and pbrBlendPipeline.isValid()
+      and litSkinnedBlendPipeline.isValid() and pbrSkinnedBlendPipeline.isValid();
   }
 
   // The frame's group made again, after a buffer in it was replaced
@@ -670,7 +730,7 @@ pub struct Renderer {
     mut group = device.createBindGroup(&materialLayout, &entries);
     imm pbr = PbrMaterial.standard(material.baseColor, 0., 0.5);
     new MaterialHandle(materials.add(new MaterialSlot(*material, uniforms, group, MATERIAL_BLINN_PHONG, pbr,
-      PipelineHandle.none())));
+      PipelineHandle.none(), material.alphaMode == ALPHA_BLEND)));
   }
 
   // A physically based material to draw with (pbr.slang), lit by the
@@ -689,7 +749,7 @@ pub struct Renderer {
     mut group = device.createBindGroup(&pbrMaterialLayout, &entries);
     imm plain = Material.plain(material.baseColor);
     new MaterialHandle(materials.add(new MaterialSlot(plain, uniforms, group, MATERIAL_PBR, *material,
-      PipelineHandle.none())));
+      PipelineHandle.none(), material.alphaMode == ALPHA_BLEND)));
   }
 
   // Change a physically based material's parameters (not its textures,
@@ -706,6 +766,7 @@ pub struct Renderer {
     slot.pbr.metallicRoughnessTexture = bound.metallicRoughnessTexture;
     slot.pbr.normalTexture = bound.normalTexture;
     slot.pbr.occlusionTexture = bound.occlusionTexture;
+    slot.blend = material.alphaMode == ALPHA_BLEND;
     true;
   }
 
@@ -723,8 +784,8 @@ pub struct Renderer {
     if textures.alive(bound.occlusionTexture.slot) { m.occlusionStrength; } else { 0.; };
   }
 
-  // Change a material's color and shine (not its texture), from the next
-  // submission on
+  // Change a material's color, shine, glow and alpha mode (not its
+  // texture), from the next submission on
   pub fn setMaterial(self &mut, device &mut Device, h MaterialHandle, material &Material) bool {
     if !materials.alive(h.slot) { return false; }
     imm params = materialParams(material);
@@ -735,6 +796,9 @@ pub struct Renderer {
     slot.params.specular = material.specular;
     slot.params.shininess = material.shininess;
     slot.params.emissive = material.emissive;
+    slot.params.alphaMode = material.alphaMode;
+    slot.params.alphaCutoff = material.alphaCutoff;
+    slot.blend = material.alphaMode == ALPHA_BLEND;
     true;
   }
 
@@ -770,13 +834,18 @@ pub struct Renderer {
       new VertexBufferLayout(arrayStride: 12u64, attributes: &normalAttr),
       new VertexBufferLayout(arrayStride: 8u64, attributes: &uvAttr)];
     imm streams = if desc.streams < 1u32 { 1usize; } elif desc.streams > 3u32 { 3usize; } else { usize.from(desc.streams); };
+    // See-through: premultiplied alpha, the depth tested but not written
+    imm blend = desc.alphaMode == ALPHA_BLEND;
+    imm dstFactor = if blend { BLEND_FACTOR_ONE_MINUS_SRC_ALPHA; } else { BLEND_FACTOR_ZERO; };
     imm pipelineDesc = new RenderPipelineDescriptor(layout: &layout, vertexModule: &shader,
       vertexEntryPoint: desc.vertexEntryPoint, buffers: &buffers[..streams], fragmentModule: &shader,
       fragmentEntryPoint: desc.fragmentEntryPoint, colorFormat: colorFormat, cullMode: desc.cullMode,
-      depthFormat: depthFormat, depthWriteEnabled: desc.depthWrite, depthCompare: COMPARE_FUNCTION_LESS);
+      depthFormat: depthFormat, depthWriteEnabled: desc.depthWrite and !blend, depthCompare: COMPARE_FUNCTION_LESS,
+      blendEnabled: blend, colorSrcFactor: BLEND_FACTOR_ONE, colorDstFactor: dstFactor,
+      alphaSrcFactor: BLEND_FACTOR_ONE, alphaDstFactor: dstFactor);
     mut pipeline = device.createRenderPipeline(&pipelineDesc);
     new PipelineHandle(pipelines.add(new PipelineSlot(shader, materialLayout, layout, pipeline, u32.from(desc.textures.len),
-      desc.paramBytes, desc.environment)));
+      desc.paramBytes, desc.environment, blend)));
   }
 
   // Whether 'h' names a pipeline that was made
@@ -814,7 +883,8 @@ pub struct Renderer {
     mut group = device.createBindGroup(&pipelines[pipeline.slot].materialLayout, entries.view());
     imm plain = Material.plain(new Color(1., 1., 1., 1.));
     imm pbr = PbrMaterial.standard(plain.baseColor, 0., 0.5);
-    new MaterialHandle(materials.add(new MaterialSlot(plain, uniforms, group, MATERIAL_CUSTOM, pbr, pipeline)));
+    imm blend = pipelines[pipeline.slot].blend;
+    new MaterialHandle(materials.add(new MaterialSlot(plain, uniforms, group, MATERIAL_CUSTOM, pbr, pipeline, blend)));
   }
 
   // Change a custom material's parameters, from the next submission on
@@ -947,15 +1017,26 @@ pub struct Renderer {
     mut bound = BOUND_NONE;
     mut boundMaterial = Ref[MaterialSlot].none();
     mut boundPipeline = Ref[PipelineSlot].none();
+    mut skyDrawn = !drawSky;
+    blendedDrawn = 0u32;
     mut b = 0usize;
     while b < batches.len() {
       imm batch = *batches[b];
+      // The sky, where nothing opaque was drawn, before anything
+      // see-through (which writes no depth for it to be tested against)
+      if batch.layer == LAYER_BLEND and !skyDrawn {
+        self.recordSky(&mut pass);
+        skyDrawn = true;
+        bound = BOUND_NONE;
+        boundMaterial = Ref[MaterialSlot].none();
+      }
       imm first = *keys[usize.from(batch.first)];
       imm item = list.items[usize.from(first.item)];
       // gatherBatches kept only items whose mesh (and material) are alive
       imm slot = meshes[item.mesh.slot];
       imm m = slot.current();
-      imm lines = batch.lines != 0u32;
+      imm lines = batch.layer == LAYER_LINES;
+      imm blend = batch.layer == LAYER_BLEND;
       mut skinned = false;
       if lines {
         if bound != BOUND_LINES {
@@ -989,11 +1070,19 @@ pub struct Renderer {
             boundMaterial = Ref[MaterialSlot].none();
           }
         } elif mslot.kind == MATERIAL_PBR {
-          // A skinned mesh is drawn by the pipeline's skinned variant
+          // A skinned mesh is drawn by the pipeline's skinned variant, a
+          // see-through one by its blended variant
           skinned = m.isSkinned();
-          imm want = if skinned { BOUND_PBR_SKINNED; } else { BOUND_PBR; };
+          imm want = if blend {
+            if skinned { BOUND_PBR_SKINNED_BLEND; } else { BOUND_PBR_BLEND; };
+          } else {
+            if skinned { BOUND_PBR_SKINNED; } else { BOUND_PBR; };
+          };
           if bound != want {
-            pass.setPipeline(if skinned { &pbrSkinnedPipeline; } else { &pbrPipeline; });
+            if want == BOUND_PBR { pass.setPipeline(&pbrPipeline); }
+            elif want == BOUND_PBR_SKINNED { pass.setPipeline(&pbrSkinnedPipeline); }
+            elif want == BOUND_PBR_BLEND { pass.setPipeline(&pbrBlendPipeline); }
+            else { pass.setPipeline(&pbrSkinnedBlendPipeline); }
             pass.setBindGroup(0u32, &frameGroup);
             pass.setBindGroup(2u32, &environment.group);
             bound = want;
@@ -1001,9 +1090,16 @@ pub struct Renderer {
           }
         } else {
           skinned = m.isSkinned();
-          imm want = if skinned { BOUND_LIT_SKINNED; } else { BOUND_LIT; };
+          imm want = if blend {
+            if skinned { BOUND_LIT_SKINNED_BLEND; } else { BOUND_LIT_BLEND; };
+          } else {
+            if skinned { BOUND_LIT_SKINNED; } else { BOUND_LIT; };
+          };
           if bound != want {
-            pass.setPipeline(if skinned { &litSkinnedPipeline; } else { &litPipeline; });
+            if want == BOUND_LIT { pass.setPipeline(&litPipeline); }
+            elif want == BOUND_LIT_SKINNED { pass.setPipeline(&litSkinnedPipeline); }
+            elif want == BOUND_LIT_BLEND { pass.setPipeline(&litBlendPipeline); }
+            else { pass.setPipeline(&litSkinnedBlendPipeline); }
             pass.setBindGroup(0u32, &frameGroup);
             bound = want;
             boundMaterial = Ref[MaterialSlot].none();
@@ -1039,17 +1135,22 @@ pub struct Renderer {
         g = g + 1usize;
       }
       instancesDrawn = instancesDrawn + batch.count;
+      if blend { blendedDrawn = blendedDrawn + batch.count; }
       b = b + 1usize;
     }
-    // The sky, where nothing was drawn
-    if drawSky {
-      pass.setPipeline(&skyPipeline);
-      pass.setBindGroup(0u32, &frameGroup);
-      pass.setBindGroup(2u32, &environment.group);
-      pass.draw(3u32, 1u32, 0u32, 0u32);
-      drawCalls = drawCalls + 1u32;
-    }
+    // The sky, where nothing was drawn, if nothing see-through came
+    if !skyDrawn { self.recordSky(&mut pass); }
     pass.end();
+  }
+
+  // Draw the sky into 'pass': one triangle at the far plane, where nothing
+  // nearer was drawn
+  fn recordSky(self &mut, pass &mut RenderPass) {
+    pass.setPipeline(&skyPipeline);
+    pass.setBindGroup(0u32, &frameGroup);
+    pass.setBindGroup(2u32, &environment.group);
+    pass.draw(3u32, 1u32, 0u32, 0u32);
+    drawCalls = drawCalls + 1u32;
   }
 
   // Whether 'list' draws a mesh with a physically based material
@@ -1070,11 +1171,18 @@ pub struct Renderer {
   }
 
   // Gather 'list's items into 'batches', in the order they are drawn: an
-  // item of a mesh and material that are alive gets a key; the keys are
-  // sorted by (lines last, material, mesh, distance), so each run of one
-  // material and one mesh is a batch (a line is a batch of its own); the
-  // batches are then sorted meshes before lines, each nearest the camera at
-  // 'eye' first (by the distance to the nearest of its models' origins)
+  // item of a mesh and material that are alive gets a key, in its layer
+  // (opaque meshes, lines, see-through); the keys are sorted by layer, then
+  // the opaque ones and lines by (material, mesh, distance), so each run of
+  // one material and one mesh is a batch (a line is a batch of its own), and
+  // the see-through ones by distance alone, farthest from the camera at
+  // 'eye' first, each copy by the centre of its bounding sphere where the
+  // copy puts it (a large pane is mis-sorted by its origin), so a batch of
+  // them is a run of copies of one mesh and material that are next to each
+  // other in that order. The batches are then sorted by layer, the opaque
+  // ones and lines nearest first (by the nearest of their models' origins),
+  // so nearer surfaces fill the depth buffer first; the see-through ones keep
+  // their order, back to front.
   fn gatherBatches(self &mut, list &DrawList, eye Vec3) {
     keys.clear();
     batches.clear();
@@ -1085,11 +1193,17 @@ pub struct Renderer {
       if meshes.alive(item.mesh.slot) {
         imm m = meshes[item.mesh.slot].current();
         if m.isValid() {
-          imm d = item.model.translation().distanceSquared(eye);
           if m.topology == PRIMITIVE_TOPOLOGY_LINE_LIST {
-            keys.push(new DrawKey(1u32, u32.from(i), item.mesh.slot.slot(), u32.from(i), d));
+            imm d = item.model.translation().distanceSquared(eye);
+            keys.push(new DrawKey(LAYER_LINES, u32.from(i), item.mesh.slot.slot(), u32.from(i), d));
           } elif materials.alive(item.material.slot) {
-            keys.push(new DrawKey(0u32, item.material.slot.slot(), item.mesh.slot.slot(), u32.from(i), d));
+            if materials[item.material.slot].blend {
+              imm d = (item.model * m.center).distanceSquared(eye);
+              keys.push(new DrawKey(LAYER_BLEND, item.material.slot.slot(), item.mesh.slot.slot(), u32.from(i), d));
+            } else {
+              imm d = item.model.translation().distanceSquared(eye);
+              keys.push(new DrawKey(LAYER_OPAQUE, item.material.slot.slot(), item.mesh.slot.slot(), u32.from(i), d));
+            }
           }
         }
       }
@@ -1101,12 +1215,13 @@ pub struct Renderer {
     while k < keys.len() {
       imm first = *keys[k];
       mut end = k + 1usize;
-      while end < keys.len() and keys[end].lines == first.lines and keys[end].material == first.material
+      while end < keys.len() and keys[end].layer == first.layer and keys[end].material == first.material
           and keys[end].mesh == first.mesh {
         end = end + 1usize;
       }
-      // The keys of a run are sorted nearest first
-      batches.push(new DrawBatch(u32.from(k), u32.from(end - k), 0u32, first.distance, first.lines));
+      // The keys of a run are sorted nearest first (or, see-through,
+      // farthest first)
+      batches.push(new DrawBatch(u32.from(k), u32.from(end - k), 0u32, first.distance, first.layer, u32.from(k)));
       k = end;
     }
     batches.sortBy(&byDistance);
@@ -1180,11 +1295,13 @@ pub struct Renderer {
 
 // An item of the draw list, as batching sorts it
 pub struct DrawKey {
-  lines u32;                   // 1 for lines (drawn after meshes, each alone)
+  layer u32;                   // LAYER_OPAQUE, LAYER_LINES (each alone) or LAYER_BLEND
   material u32;                // its material's slot (a line: its own index, so it batches with nothing)
   mesh u32;                    // its mesh's slot
   item u32;                    // its index in the draw list
-  distance f32;                // its model's origin's distance from the eye, squared
+  // Its distance from the eye, squared: its model's origin's, or, if it is
+  // see-through, its bounding sphere's centre's
+  distance f32;
 }
 
 // One instanced draw: 'count' keys from 'first', drawn as the instances
@@ -1193,12 +1310,19 @@ pub struct DrawBatch {
   first u32;
   count u32;
   firstInstance u32;
-  distance f32;                // its nearest copy's distance from the eye, squared
-  lines u32;
+  distance f32;                // its nearest copy's distance from the eye, squared (see-through: its farthest's)
+  layer u32;
+  order u32;                   // its first key's place among the sorted keys
 }
 
 fn byBatch(a &DrawKey, b &DrawKey) i32 {
-  if a.lines != b.lines { return if a.lines < b.lines { -1i32; } else { 1i32; }; }
+  if a.layer != b.layer { return if a.layer < b.layer { -1i32; } else { 1i32; }; }
+  if a.layer == LAYER_BLEND {
+    // Back to front, copy by copy; ties by the item's place in the list
+    if a.distance > b.distance { return -1i32; }
+    if a.distance < b.distance { return 1i32; }
+    return if a.item < b.item { -1i32; } elif a.item > b.item { 1i32; } else { 0i32; };
+  }
   if a.material != b.material { return if a.material < b.material { -1i32; } else { 1i32; }; }
   if a.mesh != b.mesh { return if a.mesh < b.mesh { -1i32; } else { 1i32; }; }
   if a.distance < b.distance { return -1i32; }
@@ -1207,17 +1331,22 @@ fn byBatch(a &DrawKey, b &DrawKey) i32 {
 }
 
 fn byDistance(a &DrawBatch, b &DrawBatch) i32 {
-  if a.lines != b.lines { return if a.lines < b.lines { -1i32; } else { 1i32; }; }
+  if a.layer != b.layer { return if a.layer < b.layer { -1i32; } else { 1i32; }; }
+  if a.layer == LAYER_BLEND {
+    // Kept in the keys' order, back to front
+    return if a.order < b.order { -1i32; } elif a.order > b.order { 1i32; } else { 0i32; };
+  }
   if a.distance < b.distance { return -1i32; }
   if a.distance > b.distance { return 1i32; }
   0i32;
 }
 
 // A material's parameters as lit.slang's MaterialParams has them
-fn materialParams(material &Material) Array[f32, 12] {
+fn materialParams(material &Material) Array[f32, 16] {
   [material.baseColor.red, material.baseColor.green, material.baseColor.blue, material.baseColor.alpha,
     material.specular.red, material.specular.green, material.specular.blue, material.shininess,
-    material.emissive.red, material.emissive.green, material.emissive.blue, 0.];
+    material.emissive.red, material.emissive.green, material.emissive.blue, 0.,
+    f32.from(material.alphaMode), material.alphaCutoff, 0., 0.];
 }
 
 // What a draw list holds: a mesh, the material it is drawn with (not used

@@ -591,11 +591,17 @@ Visual Studio projects stay at the root.
   render pass (its depth kept for a later pass with `keepDepth`), its items
   gathered into batches of one material and one mesh, each one instanced
   draw whose copies' model matrices and tints are in a storage buffer of
-  instances (`renderframe.slang`'s `Instance`), custom pipelines
+  instances (`renderframe.slang`'s `Instance`), every material's alpha
+  mode, glTF's (`ALPHA_OPAQUE`, `ALPHA_MASK`: cut out below a cut-off,
+  `ALPHA_BLEND`: see-through, drawn after the opaque draws and the sky,
+  copy by copy back to front, still instanced where copies lie next to
+  each other in that order, premultiplied alpha, depth tested and not
+  written; its test `blend.cone`, both orders and a cut-out, checked
+  against blending worked out by hand), custom pipelines
   (`src/custom.cone`: a caller's own Slang over `renderframe.slang`, its
-  materials' parameters and textures, r32float fields from
-  `addFieldTexture`, drawn and instanced with the rest; its test
-  `custom.cone`), dynamic meshes rewritten in place each frame
+  materials' parameters and textures (none: `noTextures()`), r32float
+  fields from `addFieldTexture`, opaque or see-through, drawn and
+  instanced with the rest; its test `custom.cone`), dynamic meshes rewritten in place each frame
   (`addDynamicMesh`, `writeDynamicMesh`), skinned meshes (`src/skin.cone`,
   `src/skinning.slang`: a `Skin` of four joints and weights a vertex,
   `addSkinnedMesh`, drawn by `DrawList.addSkinned` with a skinning matrix
