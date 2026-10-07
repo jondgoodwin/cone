@@ -114,7 +114,8 @@
 		<a href="#toro">nearly any permission</a>,
 		simply by promising not to change the value the reference points at.
 		This polymorphic flexibility is why a borrowed reference's default permission
-		is <span class="pre">ro</span>, if no permission is explicitly specified.</p></dd>
+		is <span class="pre">ro</span>, if no permission is explicitly specified,
+		except to a type that <a href="#immutable">declares it never changes</a>.</p></dd>
 	
 	<dt>opaq</dt>
 	<dd>An <span class="pre">opaq</span> (opaque) reference
@@ -123,6 +124,43 @@
 	<a href="refstruct.html#opaque">opaque</a> values,
 	where it makes no sense to access the value they point to.</p></dd>
 	</dl>
+
+	<h2 id="immutable">A Type That Never Changes: Immutable</h2>
+	<p>A type may declare that nothing ever changes it through a reference, with the marker
+		<span class="pre">Immutable</span>, which a type declares and the compiler never grants:
+		the body of text <span class="pre">str</span> declares it, and any struct may,
+		<span class="pre">struct Money is Immutable {..}</span>. It has two effects, and they are
+		separate.</p>
+	<ul>
+		<li><b>The default permission is <span class="pre">imm</span>.</b> A reference to the type
+		written with no permission is <span class="pre">imm</span>: <span class="pre">&amp;str</span>
+		is <span class="pre">&amp;imm str</span>, a method's <span class="pre">self &amp;</span>
+		is <span class="pre">&amp;imm</span>, and an owner in a region that copies, written without
+		a permission, is <span class="pre">imm</span> too, so <span class="pre">Rc[str]</span> is
+		<span class="pre">Rc[imm, str]</span> and its owners are copied, where
+		<span class="pre">Rc[T]</span> of an ordinary type is <span class="pre">uni</span> and
+		moves. <span class="pre">imm</span> may still be written, and so may
+		<span class="pre">ro</span> and <span class="pre">opaq</span>. A borrow made with
+		<span class="pre">&amp;</span> from a place that cannot be borrowed as
+		<span class="pre">imm</span> (a <span class="pre">mut</span> variable) is
+		<span class="pre">ro</span>, as it is for any type.</li>
+		<li><b>The permissions that write through a shared path are refused.</b>
+		<span class="pre">mut</span>, <span class="pre">mut1</span> and a lock permission
+		(<span class="pre">Rc[Rwcell, str]</span>) on the type are an error that names
+		<span class="pre">Immutable</span>, so there is no <span class="pre">&amp;mut str</span>.
+		<span class="pre">uni</span> is not refused: it is the one holder's, a finalizer
+		receives its <span class="pre">self</span> as <span class="pre">&amp;uni</span>, and
+		<span class="pre">Rc[uni, str]</span> is a unique owner that moves.</li>
+	</ul>
+<pre>
+fn length(s &amp;str) usize {..}          // s is &amp;imm str
+imm a = new Rc[str](view);            // Rc[imm, str]
+imm b = a;                            // copied, not moved: a is still held
+imm m &amp;mut str = ..;                  // ** ILLEGAL! str is Immutable **
+</pre>
+	<p>The marker is a promise the compiler holds a reference to, not a check of the type's
+		own fields: a struct declaring it is trusted not to write its own fields through a
+		<span class="pre">uni</span> or a variable's name.</p>
 
 	<h2>Variable vs. Reference Permissions</h2>
 	<p>Initially, it may feel confusing,  distinguishing the role of

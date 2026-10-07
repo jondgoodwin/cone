@@ -1,0 +1,37 @@
+// A generic bounded by ''static' that forwards what it is handed to a second
+// one, handed a slice that is not global: a slice of a local, an element's
+// thin borrow of the same local, and a slice the caller lent through a
+// parameter. A slice is refused where a thin borrow of the same place is.
+//
+// Verdict: refuse, ErrorLifetimeBound at each argument.
+// Basis: language rule (3 Oct 2026): 'T + 'static' says T holds no
+// non-static borrow, however the reference is shaped (reflifefn.html,
+// "Lifetime bounds").
+// Master 0fa1c7cd: refused the same, and refused as well inside 'keep' at
+// the forwarding call, "as instantiated by" each of these.
+
+mod lifetime_bound_static_fat_refused;
+
+imm arr Array[u64, 3] = [1u64, 2u64, 3u64];
+
+fn inner[T + 'static](x T) {}
+
+fn keep[T + 'static](x T) {
+  inner[T](x);
+}
+
+fn lent(p &[]u64) {
+  keep(p);                      //~ ErrorLifetimeBound "caller lent"
+}
+
+fn leave() {
+  imm loc Array[u64, 3] = [4u64, 5u64, 6u64];
+  keep(&[]imm loc);             //~ ErrorLifetimeBound "bounded by ''static'"
+  keep(&imm loc[0]);            //~ ErrorLifetimeBound "bounded by ''static'"
+}
+
+fn main() {
+  keep(&[]imm arr);
+  lent(&[]imm arr);
+  leave();
+}

@@ -769,6 +769,7 @@ elsewhere, whichever walk arrived at it.
 | `ErrorNoRefType` (1074) | a reference or slice type never says what it refers to — `refTypeCheck` and `arrayRefTypeCheck` are its only two sites |
 | `ErrorNoSize` (1069) | a value's type cannot say how large it is — six causes, named in the message |
 | `ErrorSizeMarkerUse` (1296) | a type declares `Sized` or `DynSized`, which the compiler grants from the type's size |
+| `ErrorImmutableWrite` (1297) | `mut`, `mut1` or a lock permission written on a reference to a type declaring `Immutable` (`refImmutableBan`, from `refTypeCheck` and `borrowTypeCheck`) |
 | `ErrorCircular` (1068) | a constant or inferred declaration is defined in terms of itself. Name resolution raises the same code for two types that each extend or name the other in an `is` |
 | `ErrorInstDepth` (1067) | generic or macro expansion nests past `TypeCheckLoopMax` |
 

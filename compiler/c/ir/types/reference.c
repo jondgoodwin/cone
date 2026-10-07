@@ -36,6 +36,37 @@ int refIsFat(RefNode *ref) {
         && itypeLenBodyElem(ref->vtexp) != NULL;
 }
 
+// 'Immutable' [Jon 6 Oct], rule one, the default permission: a reference to a
+// type declaring Immutable, written with no permission, is 'imm' where any
+// other borrow's is 'ro' and any other owner's 'uni'. So '&str' is '&imm str'
+// and 'Rc[str]' copies, an 'imm' owner being one that may be aliased. Answers
+// the permission to use for 'target', or NULL where the default stays. It
+// stays forever: existing code never changes its meaning when rule two loosens.
+INode *refImmutableDefaultPerm(INode *target) {
+    return itypeIsImmutable(target) ? newPermUseNode(immPerm) : NULL;
+}
+
+// 'Immutable', rule two, the ban on mutation: a permission that writes through
+// a path others share, 'mut', 'mut1' or a lock permission ('Arc[Mutex, str]'),
+// is refused on a reference to a type declaring Immutable, written or
+// inherited from a generic's argument. 'uni' is not refused: it is the one
+// holder's, a 'final' receives its 'self' as it, and a unique owner of a str
+// ('So[uni, str]') is that alone, there being no write to make through a str.
+// This is the rule a later loosening narrows (a 'uni' borrow of an owned 'str'
+// given length-preserving methods) without touching rule one. Answers whether
+// the permission is refused, after saying so.
+int refImmutableBan(INode *lexnode, INode *perm, INode *target) {
+    if (perm == NULL || perm == unknownType || !itypeIsImmutable(target))
+        return 0;
+    INode *permdcl = itypeGetTypeDcl(perm);
+    if (permdcl != (INode*)mutPerm && permdcl != (INode*)mut1Perm && !permIsLock(permdcl))
+        return 0;
+    errorMsgNode(lexnode, ErrorImmutableWrite,
+        "%s declares Immutable, so nothing changes it through a reference: '%s' is refused. Write no permission (a reference to it is 'imm'), or 'imm', 'ro' or 'opaq'.",
+        itypeName(target), itypeName(perm));
+    return 1;
+}
+
 // Allocate info for normalized reference type
 void *refTypeInfoAlloc() {
     RefTypeInfo *refinfo = memAllocBlk(sizeof(RefTypeInfo));
@@ -302,7 +333,10 @@ static void refVtableBuild(TypeCheckState *pstate, INode *trait, void *extra) {
 void refTypeCheck(TypeCheckState *pstate, RefNode *node) {
     int allownew = refAllowNewPerm;
     refAllowNewPerm = 0;
-    if (node->perm == unknownType)
+    // No permission written: the default, which rule one of Immutable replaces
+    // below once the target is known
+    int permunwritten = node->perm == unknownType;
+    if (permunwritten)
         node->perm = newPermUseNode(node->vtexp->tag == FnSigTag ? opaqPerm :
         (node->region == borrowRef ? roPerm : uniPerm));
     refRefusePlusType(node);
@@ -330,6 +364,16 @@ void refTypeCheck(TypeCheckState *pstate, RefNode *node) {
     int waiting;
     if (refTargetTypeCheck(pstate, &node->vtexp, &waiting) == 0)
         return;
+    // Immutable's two rules, each its own call
+    INode *immperm = permunwritten ? refImmutableDefaultPerm(node->vtexp) : NULL;
+    // A permission refused is reported once and stands as 'imm' after, so the
+    // reference's uses check quietly
+    if (immperm == NULL && !permunwritten && refImmutableBan((INode*)node, node->perm, node->vtexp))
+        immperm = newPermUseNode(immPerm);
+    if (immperm) {
+        node->perm = immperm;
+        itypeTypeCheck(pstate, (INode**)&node->perm);
+    }
     refRefuseRegionRef(node);
     refAdoptInfections(node);
     if (lifeIsInvariant(node->lifename) && node->instnode == NULL) {

@@ -1275,6 +1275,14 @@ int itypeIsDynSized(INode *type) {
         || (dcl->tag == StructTag && itypeIsOpenTrait((StructNode*)dcl));
 }
 
+// Does this type declare 'Immutable' [Jon 6 Oct]? 'str' does, and any struct
+// may with 'is Immutable'. It is declared and never granted, and a type holding
+// an Immutable one is not for that reason Immutable.
+int itypeIsImmutable(INode *type) {
+    INode *dcl = itypeGetTypeDcl(type);
+    return dcl->tag == StructTag && structDeclaresTrait((StructNode*)dcl, immutableTrait);
+}
+
 // How many hops of an infection path are worth following or printing. Ordinary
 // code is one or two; the bound is here so that a pathological nesting -- or a
 // by-value cycle already reported and still in the tree -- cannot run this off

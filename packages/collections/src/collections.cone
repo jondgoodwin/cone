@@ -1,5 +1,6 @@
-// The collections package: a growable list, an owned string and a
-// dictionary of any keys that are Hash, each holding its elements in one block of memory
+// The collections package: a growable list, an owned string, a dictionary of
+// any keys that are Hash (and an ordered one, which visits in insertion order)
+// and a set, each holding its elements in one block of memory
 // that it gets, grows and gives back through the C allocator ('libc.malloc',
 // 'realloc', 'free'). Built as Congo needs them, and no further.
 //
@@ -45,7 +46,7 @@
 // and 'entries' do lend borrows, and the compiler keeps a dictionary in a
 // local loaned while one is used.)
 //
-// Threads: List and Dict declare 'Sendable', so a collection may be moved
+// Threads: List, Dict, OrderedDict and Set declare 'Sendable', so a collection may be moved
 // to another thread, or shared as 'Arc[imm, T]', where its elements may. The
 // declaration is a promise the compiler takes on trust for the block's raw
 // pointer, which it cannot check; an instance is Sendable only where its type
@@ -656,6 +657,20 @@ fn ctrlSet(ctrl *u8, mask usize, i usize, v u8) {
   mem.writeRaw[u8](ctrl + (((i + mask + 1usize - 8usize) & mask) + 8usize), v);
 }
 
+// Make bucket i's control byte empty if no search can have gone past it (a
+// full group around it that has an empty bucket on one side), else removed.
+// It answers whether it became empty
+fn ctrlErase(ctrl *u8, mask usize, i usize) bool {
+  imm before = matchEmpty(ctrlGroup(ctrl, (i + mask + 1usize - 8usize) & mask));
+  imm after = matchEmpty(ctrlGroup(ctrl, i));
+  if (before.leadingZeros() >> 3u32) + (after.trailingZeros() >> 3u32) >= 8u32 {
+    ctrlSet(ctrl, mask, i, ctrlRemoved);
+    return false;
+  }
+  ctrlSet(ctrl, mask, i, ctrlEmpty);
+  true;
+}
+
 // A flag (0x80) in each byte of g that holds t, and perhaps one that doesn't, in
 // a byte just after one that does
 fn matchTag(g u64, t u8) u64 {
@@ -986,15 +1001,7 @@ pub struct Dict[K Hash, V] is ShapeChanging, Sendable {
   // The bucket becomes empty if no search can have gone past it (a full group
   // around it that has an empty bucket on one side), else removed
   fn take(self &mut, i usize) Option[V] {
-    imm before = matchEmpty(ctrlGroup(ctrl, (i + mask + 1usize - 8usize) & mask));
-    imm after = matchEmpty(ctrlGroup(ctrl, i));
-    if (before.leadingZeros() >> 3u32) + (after.trailingZeros() >> 3u32) >= 8u32 {
-      ctrlSet(ctrl, mask, i, ctrlRemoved);
-    }
-    else {
-      ctrlSet(ctrl, mask, i, ctrlEmpty);
-      left = left + 1usize;
-    }
+    if ctrlErase(ctrl, mask, i) { left = left + 1usize; }
     items = items - 1usize;
     // The value is read out of its bucket raw, since nothing moves out of a
     // field, and the key is finalized where it sits
@@ -1095,6 +1102,574 @@ pub struct DictEntries['a, K Hash, V] {
     pos = i + 1usize;
     Some[&DictEntry[K, V]][(dict.slots + i) as &DictEntry[K, V]];
   }
+}
+
+// -------- OrderedDict --------
+
+// A dictionary that visits its entries in the order they were first inserted:
+// the layout of Python's compact dict and Rust's IndexMap. Two blocks. The
+// entries are dense, one array of (hash, key, value) in insertion order, and
+// 'keys', 'values' and 'entries' walk it front to back, with no empty buckets
+// to skip. Beside it is an index, a SwissTable's control bytes (the same bytes,
+// the same eight-at-a-time probe and the same 7-in-8 fullness as Dict's) and,
+// for each bucket, a u32 that is the position of its entry in the array. A
+// lookup probes the control bytes, reads the position, and compares the key
+// there: one hop more than Dict's, which keeps its entries in the buckets
+// themselves.
+//
+// The order is the point, so it does not change except as the entries do:
+// inserting a key it already holds replaces that entry in its place, and
+// removing one closes the gap, every later entry moving down one and its index
+// fixed (IndexMap's shift_remove). That makes 'remove' cost the entries after
+// the removed one; 'swapRemove' is O(1) and moves the last entry into the gap,
+// which breaks the order, and is named for it. The index is a u32, so a table
+// holds fewer than 2^32 entries.
+//
+// Everything else is Dict's: K is any Hash type, a key lookup takes a '&K', an
+// OrderedDict[String, V] takes the bytes of a key too, each has a seed of its
+// own ('empty' the process's, 'deterministic' a fixed one; the order of
+// iteration does not depend on it, only which bucket a key is in), the block
+// starts at 8 buckets (7 entries), and a borrow from a lookup or a cursor is
+// good only until the table next changes.
+
+// One entry: the hash of its key, as the dictionary computed it, kept so that
+// growing never hashes again, and the key and the value
+pub struct OrderedEntry[K, V] {
+  pub hash u64;
+  pub key K;
+  pub value V;
+}
+
+pub struct OrderedDict[K Hash, V] is ShapeChanging, Sendable {
+  ctrl *u8;                        // the control bytes, past the index in its block
+  index *u32;                      // per bucket, its entry's position; live only where ctrl is full
+  dense *OrderedEntry[K, V];       // the entries in order, 'count' live, room for 7/8 of the buckets
+  mask usize;                      // the buckets, less one
+  count usize;                     // how many entries
+  left usize;                      // how many more empty buckets may be filled before it is rebuilt
+  hasher Hasher;
+
+  // An empty dictionary, 'new OrderedDict[String, i64]': no block until the
+  // first entry arrives
+  pub fn initEmpty overload init(self &new) {
+    *self = new OrderedDict(null, null, null, 0usize, 0usize, 0usize, Hasher.seeded());
+  }
+
+  pub fn empty() OrderedDict { new OrderedDict(null, null, null, 0usize, 0usize, 0usize, Hasher.seeded()); }
+
+  // An empty dictionary with a fixed seed
+  pub fn deterministic() OrderedDict { OrderedDict.withSeed(fixedSeed); }
+
+  // An empty dictionary with this seed: a key hashes to what 'Hasher.withSeed(seed)'
+  // makes of what it feeds
+  pub fn withSeed(seed u64) OrderedDict {
+    new OrderedDict(null, null, null, 0usize, 0usize, 0usize, Hasher.withSeed(seed));
+  }
+
+  // How many entries it holds, and how many it holds before it next grows
+  pub fn len(self &) usize { count; }
+  pub fn capacity(self &) usize { if ctrl == null {0usize;} else {bucketsCapacity(mask + 1usize);}; }
+  pub fn isEmpty(self &) bool { count == 0usize; }
+
+  // Move key and value in, at the end. A key it already holds has its entry
+  // replaced where it stands: the old key and value are finalized, and it
+  // answers true.
+  pub fn insert(self &mut, key K, value V) bool {
+    imm hash = self.hashOf(&key);
+    imm found = self.freeOrFound(hash, &key);
+    if self.isFull(found) {
+      imm slot = dense +self.posOf(found);
+      mem.finalize(slot);
+      mem.writeRaw(slot, new OrderedEntry[K, V](hash, key, value));
+      return true;
+    }
+    self.fill(self.roomFor(hash, found), hash, key, value);
+    false;
+  }
+
+  // 'dict <- key: value' is 'dict.insert(key, value)'
+  pub fn insertPair overload `<-`(self &mut, key K, value V) { self.insert(key, value); }
+
+  // A borrow of key's value for changing it in place: the value already there,
+  // or else the one given, moved in at the end, with one search
+  pub fn getOrInsert(self &mut, key K, value V) &mut V {
+    imm hash = self.hashOf(&key);
+    imm found = self.freeOrFound(hash, &key);
+    if self.isFull(found) { return &mut dense[self.posOf(found)].value; }
+    imm p = self.fill(self.roomFor(hash, found), hash, key, value);
+    &mut dense[p].value;
+  }
+
+  // Whether it holds key
+  pub fn containsKey overload contains(self &, key &K) bool { self.find(self.hashOf(key), key) != noBucket; }
+
+  // A borrow of key's value, for reading it now, or None
+  pub fn getKey overload get(self &, key &K) Option[&V] {
+    imm b = self.find(self.hashOf(key), key);
+    if b == noBucket { return None[&V][]; }
+    Some[&V][&dense[self.posOf(b)].value];
+  }
+
+  // A borrow of key's value for changing it in place, or None
+  pub fn getMutKey overload getMut(self &mut, key &K) Option[&mut V] {
+    imm b = self.find(self.hashOf(key), key);
+    if b == noBucket { return None[&mut V][]; }
+    Some[&mut V][&mut dense[self.posOf(b)].value];
+  }
+
+  // A copy of key's value, or None: the lookup that holds no borrow into the
+  // table, so it works through a shared owner, where V copies
+  pub fn getCopyKey overload getCopy(self &, key &K) Option[V] where V is Copy {
+    imm b = self.find(self.hashOf(key), key);
+    if b == noBucket { return None[V][]; }
+    Some[V][dense[self.posOf(b)].value];
+  }
+
+  // 'dict[&key]': a borrow of key's value; a key it does not hold is a panic
+  // at the line of the caller
+  pub fn indexKey overload `[]`(self &, key &K, file &[]u8 = srcFile(), line u32 = srcLine()) &V {
+    imm b = self.find(self.hashOf(key), key);
+    if b == noBucket { panic("collections: OrderedDict has no entry for the key", file, line); }
+    &dense[self.posOf(b)].value;
+  }
+
+  // '&mut dict[&key]': a borrow of key's value for changing it, a panic as above
+  pub fn indexMutKey overload `&[]`(self &mut, key &K, file &[]u8 = srcFile(), line u32 = srcLine()) &mut V {
+    imm b = self.find(self.hashOf(key), key);
+    if b == noBucket { panic("collections: OrderedDict has no entry for the key", file, line); }
+    &mut dense[self.posOf(b)].value;
+  }
+
+  // Move key's value out and finalize the key it was held under, or None when
+  // it holds no such key. Every entry after it moves down one place, so the
+  // others keep their order
+  pub fn removeKey overload remove(self &mut, key &K) Option[V] {
+    imm b = self.find(self.hashOf(key), key);
+    if b == noBucket { return None[V][]; }
+    Some[V][self.takeShift(b)];
+  }
+
+  // The same, but the last entry takes the removed one's place instead of the
+  // later ones all moving down: O(1), and the order is no longer the order of
+  // insertion
+  pub fn swapRemove(self &mut, key &K) Option[V] {
+    imm b = self.find(self.hashOf(key), key);
+    if b == noBucket { return None[V][]; }
+    Some[V][self.takeSwap(b)];
+  }
+
+  // The same for an OrderedDict[String, V], given a key as bytes
+  pub fn containsBytes overload contains(self &, key &[]u8) bool where K is String {
+    self.findBytes(key) != noBucket;
+  }
+
+  pub fn getBytes overload get(self &, key &[]u8) Option[&V] where K is String {
+    imm b = self.findBytes(key);
+    if b == noBucket { return None[&V][]; }
+    Some[&V][&dense[self.posOf(b)].value];
+  }
+
+  pub fn getMutBytes overload getMut(self &mut, key &[]u8) Option[&mut V] where K is String {
+    imm b = self.findBytes(key);
+    if b == noBucket { return None[&mut V][]; }
+    Some[&mut V][&mut dense[self.posOf(b)].value];
+  }
+
+  pub fn getCopyBytes overload getCopy(self &, key &[]u8) Option[V] where K is String and V is Copy {
+    imm b = self.findBytes(key);
+    if b == noBucket { return None[V][]; }
+    Some[V][dense[self.posOf(b)].value];
+  }
+
+  pub fn indexBytes overload `[]`(self &, key &[]u8, file &[]u8 = srcFile(), line u32 = srcLine()) &V where K is String {
+    imm b = self.findBytes(key);
+    if b == noBucket { missingKey(key, file, line); }
+    &dense[self.posOf(b)].value;
+  }
+
+  pub fn indexMutBytes overload `&[]`(self &mut, key &[]u8, file &[]u8 = srcFile(), line u32 = srcLine()) &mut V where K is String {
+    imm b = self.findBytes(key);
+    if b == noBucket { missingKey(key, file, line); }
+    &mut dense[self.posOf(b)].value;
+  }
+
+  pub fn removeBytes overload remove(self &mut, key &[]u8) Option[V] where K is String {
+    imm b = self.findBytes(key);
+    if b == noBucket { return None[V][]; }
+    Some[V][self.takeShift(b)];
+  }
+
+  // Finalize every key and value, first inserted to last, and keep the blocks:
+  // it holds nothing, with the room it had
+  pub fn clear(self &mut) {
+    if ctrl == null { return; }
+    if mem.needsFinal[OrderedEntry[K, V]]() {
+      mut i = 0usize;
+      while i < count {
+        mem.finalize(dense +i);
+        i = i + 1usize;
+      }
+    }
+    libc.memset(ctrl, 255i32, mask + 1usize + 8usize);
+    count = 0usize;
+    left = bucketsCapacity(mask + 1usize);
+  }
+
+  // Cursors over what it holds, each giving a borrow into the table for reading
+  // now, with 'next' until it answers None, in the order of insertion. The
+  // table may not change while one is used.
+  pub fn keys(self &) OrderedKeys[K, V] { new OrderedKeys[K, V](self, 0usize); }
+  pub fn values(self &) OrderedValues[K, V] { new OrderedValues[K, V](self, 0usize); }
+  pub fn entries(self &) OrderedEntries[K, V] { new OrderedEntries[K, V](self, 0usize); }
+
+  // The hash of a key: the key fed to this dictionary's hasher
+  fn hashOf(self &, key &K) u64 {
+    mut h = hasher;
+    key.hash(&mut h);
+    h.finish();
+  }
+
+  // Whether the bucket holds an entry (its control byte's top bit is clear)
+  fn isFull(self &, b usize) bool { mem.readRaw[u8](ctrl + b) < ctrlRemoved; }
+
+  // The position in 'dense' of the entry the full bucket b names
+  fn posOf(self &, b usize) usize { usize.from(mem.readRaw[u32](index + b)); }
+
+  // The bucket naming the entry that holds key, or noBucket
+  fn find(self &, hash u64, key &K) usize {
+    if count == 0usize { return noBucket; }
+    imm t = hashTag(hash);
+    mut pos = usize.from(hash) & mask;
+    mut stride = 0usize;
+    while true {
+      imm g = ctrlGroup(ctrl, pos);
+      mut m = matchTag(g, t);
+      while m != 0u64 {
+        imm b = (pos + flagByte(m)) & mask;
+        if &dense[self.posOf(b)].key == key { return b; }
+        m = m & (m - 1u64);
+      }
+      if matchEmpty(g) != 0u64 { return noBucket; }
+      stride = stride + 8usize;
+      pos = (pos + stride) & mask;
+    }
+    noBucket;
+  }
+
+  // The bucket naming the String that holds these bytes, or noBucket: key is
+  // hashed as a String feeds the hasher (its bytes, then the terminator)
+  fn findBytes(self &, key &[]u8) usize where K is String {
+    if count == 0usize { return noBucket; }
+    mut h = hasher;
+    h.writeStr(key);
+    imm hash = h.finish();
+    imm t = hashTag(hash);
+    mut pos = usize.from(hash) & mask;
+    mut stride = 0usize;
+    while true {
+      imm g = ctrlGroup(ctrl, pos);
+      mut m = matchTag(g, t);
+      while m != 0u64 {
+        imm b = (pos + flagByte(m)) & mask;
+        if dense[self.posOf(b)].key.view() == key { return b; }
+        m = m & (m - 1u64);
+      }
+      if matchEmpty(g) != 0u64 { return noBucket; }
+      stride = stride + 8usize;
+      pos = (pos + stride) & mask;
+    }
+    noBucket;
+  }
+
+  // The bucket naming the entry at position p, whose key hashes to hash. The
+  // entry is there, so the search finds it
+  fn bucketAt(self &, hash u64, p usize) usize {
+    imm t = hashTag(hash);
+    mut pos = usize.from(hash) & mask;
+    mut stride = 0usize;
+    while true {
+      imm g = ctrlGroup(ctrl, pos);
+      mut m = matchTag(g, t);
+      while m != 0u64 {
+        imm b = (pos + flagByte(m)) & mask;
+        if self.posOf(b) == p { return b; }
+        m = m & (m - 1u64);
+      }
+      if matchEmpty(g) != 0u64 { unreachable("collections: OrderedDict index lost an entry"); }
+      stride = stride + 8usize;
+      pos = (pos + stride) & mask;
+    }
+    noBucket;
+  }
+
+  // One search for an insert: the bucket naming key's entry, if there is one,
+  // else the first empty or removed bucket in the probe sequence. The blocks
+  // are made when there are none yet. Whether it found key is 'isFull'
+  fn freeOrFound(self &mut, hash u64, key &K) usize {
+    if ctrl == null { self.resize(8usize); }
+    imm t = hashTag(hash);
+    mut pos = usize.from(hash) & mask;
+    mut stride = 0usize;
+    mut spare = noBucket;
+    while true {
+      imm g = ctrlGroup(ctrl, pos);
+      mut m = matchTag(g, t);
+      while m != 0u64 {
+        imm b = (pos + flagByte(m)) & mask;
+        if &dense[self.posOf(b)].key == key { return b; }
+        m = m & (m - 1u64);
+      }
+      if spare == noBucket {
+        imm free = matchFree(g);
+        if free != 0u64 { spare = (pos + flagByte(free)) & mask; }
+      }
+      if matchEmpty(g) != 0u64 { return spare; }
+      stride = stride + 8usize;
+      pos = (pos + stride) & mask;
+    }
+    spare;
+  }
+
+  // The bucket a new entry goes in, given the free one the search found: the
+  // index is rebuilt first (grown, or at its size when removed buckets are
+  // most of what fills it) if the bucket is an empty one and none are left
+  // to fill. The entries array has room whenever the index does
+  fn roomFor(self &mut, hash u64, spare usize) usize {
+    if left > 0usize or mem.readRaw[u8](ctrl + spare) != ctrlEmpty { return spare; }
+    imm wanted = count + 1usize;
+    imm buckets = mask + 1usize;
+    self.resize(if wanted <= bucketsCapacity(buckets) / 2usize {buckets;} else {capacityBuckets(wanted);});
+    freeBucket(ctrl, mask, hash);
+  }
+
+  // Append an entry, named by the free bucket b. It answers its position
+  fn fill(self &mut, b usize, hash u64, key K, value V) usize {
+    if mem.readRaw[u8](ctrl + b) == ctrlEmpty { left = left - 1usize; }
+    ctrlSet(ctrl, mask, b, hashTag(hash));
+    imm p = count;
+    mem.writeRaw[u32](index + b, u32.from(p));
+    mem.writeRaw(dense +p, new OrderedEntry[K, V](hash, key, value));
+    count = p + 1usize;
+    p;
+  }
+
+  // Make bucket b, which names a live entry, free
+  fn release(self &mut, b usize) {
+    if ctrlErase(ctrl, mask, b) { left = left + 1usize; }
+  }
+
+  // Remove the entry bucket b names, closing the gap: its key is finalized,
+  // its value moved out, the later entries move down one place, and each one's
+  // bucket is told. A short tail is found one entry at a time by hash; a long
+  // one by reading the whole index
+  fn takeShift(self &mut, b usize) V {
+    imm p = self.posOf(b);
+    self.release(b);
+    imm slot = (dense +p) as &mut OrderedEntry[K, V];
+    mem.finalize(&slot.key as *K);
+    imm value = mem.readRaw(&slot.value as *V);
+    count = count - 1usize;
+    imm moved = count - p;
+    if moved > 0usize {
+      mem.moveRaw(dense +p, dense +p + 1usize, moved);
+      if moved * 8usize < mask + 1usize {
+        mut q = p;
+        while q < count {
+          mem.writeRaw[u32](index + self.bucketAt(dense[q].hash, q + 1usize), u32.from(q));
+          q = q + 1usize;
+        }
+      }
+      else {
+        mut i = 0usize;
+        while i <= mask {
+          if self.isFull(i) and self.posOf(i) > p {
+            mem.writeRaw[u32](index + i, u32.from(self.posOf(i) - 1usize));
+          }
+          i = i + 1usize;
+        }
+      }
+    }
+    value;
+  }
+
+  // Remove the entry bucket b names, the last entry taking its place
+  fn takeSwap(self &mut, b usize) V {
+    imm p = self.posOf(b);
+    self.release(b);
+    imm slot = (dense +p) as &mut OrderedEntry[K, V];
+    mem.finalize(&slot.key as *K);
+    imm value = mem.readRaw(&slot.value as *V);
+    count = count - 1usize;
+    if p != count {
+      imm lastBucket = self.bucketAt(dense[count].hash, count);
+      mem.moveRaw(dense +p, dense +count, 1usize);
+      mem.writeRaw[u32](index + lastBucket, u32.from(p));
+    }
+    value;
+  }
+
+  // A new index of this many buckets (a power of two, 8 or more) over the same
+  // entries, in the same order; the entries array grows with it
+  fn resize(self &mut, buckets usize) {
+    if buckets > 4294967296usize { panic("collections: OrderedDict is past 2^32 buckets", srcFile(), srcLine()); }
+    imm base = libc.malloc(buckets * 5usize + 8usize);
+    imm fresh = base + buckets * 4usize;
+    libc.memset(fresh, 255i32, buckets + 8usize);
+    imm freshIndex = base as *u32;
+    imm freshMask = buckets - 1usize;
+    mut i = 0usize;
+    while i < count {
+      imm hash = dense[i].hash;
+      imm j = freeBucket(fresh, freshMask, hash);
+      ctrlSet(fresh, freshMask, j, hashTag(hash));
+      mem.writeRaw[u32](freshIndex + j, u32.from(i));
+      i = i + 1usize;
+    }
+    imm oldCap = if ctrl == null {0usize;} else {bucketsCapacity(mask + 1usize);};
+    imm newCap = bucketsCapacity(buckets);
+    if newCap != oldCap {
+      dense = libc.realloc(dense as *u8, newCap * mem.sizeof[OrderedEntry[K, V]]()) as *OrderedEntry[K, V];
+    }
+    if ctrl != null { libc.free(index as *u8); }
+    ctrl = fresh;
+    index = freshIndex;
+    mask = freshMask;
+    left = newCap - count;
+  }
+
+  // Its death: each entry's key and value, first inserted to last, then the blocks
+  fn final(self &uni) {
+    if ctrl != null {
+      if mem.needsFinal[OrderedEntry[K, V]]() {
+        mut i = 0usize;
+        while i < count {
+          mem.finalize(dense +i);
+          i = i + 1usize;
+        }
+      }
+      libc.free(dense as *u8);
+      libc.free(index as *u8);
+    }
+  }
+}
+
+// A cursor over an OrderedDict's keys: 'next' gives a borrow of each in turn,
+// in the order of insertion. It borrows the dictionary, which may not change
+// while the cursor, or a key it gave, is used
+pub struct OrderedKeys['a, K Hash, V] {
+  dict &'a OrderedDict[K, V];
+  pos usize;
+
+  pub fn next(self &mut) Option[&'a K] {
+    if pos >= dict.count { return None[&K][]; }
+    imm i = pos;
+    pos = i + 1usize;
+    Some[&K][&dict.dense[i].key];
+  }
+}
+
+// A cursor over an OrderedDict's values, in the order of insertion
+pub struct OrderedValues['a, K Hash, V] {
+  dict &'a OrderedDict[K, V];
+  pos usize;
+
+  pub fn next(self &mut) Option[&'a V] {
+    if pos >= dict.count { return None[&V][]; }
+    imm i = pos;
+    pos = i + 1usize;
+    Some[&V][&dict.dense[i].value];
+  }
+}
+
+// A cursor over an OrderedDict's entries: a borrow of each key with its value
+// (and its hash), in the order of insertion
+pub struct OrderedEntries['a, K Hash, V] {
+  dict &'a OrderedDict[K, V];
+  pos usize;
+
+  pub fn next(self &mut) Option[&'a OrderedEntry[K, V]] {
+    if pos >= dict.count { return None[&OrderedEntry[K, V]][]; }
+    imm i = pos;
+    pos = i + 1usize;
+    Some[&OrderedEntry[K, V]][(dict.dense +i) as &OrderedEntry[K, V]];
+  }
+}
+
+// -------- Set --------
+
+// A set of T, unordered: a Dict of T to nothing, so it has the Dict's table, its
+// seed and its rules. T is any Hash type; a Set[String] also takes the bytes of
+// an element. Its elements are visited in the table's order, which is the
+// seed's: sort them, or ask 'contains', and never rely on it. A borrow from a
+// cursor is good only until the set next changes.
+
+// What a Set's dictionary holds beside each element: nothing, in no bytes
+struct Member {}
+
+pub struct Set[T Hash] is ShapeChanging, Sendable {
+  dict Dict[T, Member];
+
+  // An empty set, 'new Set[String]'. Its seed is the process's
+  pub fn initEmpty overload init(self &new) { *self = new Set(Dict[T, Member].empty()); }
+
+  pub fn empty() Set { new Set(Dict[T, Member].empty()); }
+
+  // An empty set with a fixed seed: the same elements inserted in the same
+  // order are visited in the same order on every run
+  pub fn deterministic() Set { new Set(Dict[T, Member].deterministic()); }
+
+  // An empty set with this seed
+  pub fn withSeed(seed u64) Set { new Set(Dict[T, Member].withSeed(seed)); }
+
+  pub fn len(self &) usize { dict.len(); }
+  pub fn capacity(self &) usize { dict.capacity(); }
+  pub fn isEmpty(self &) bool { dict.isEmpty(); }
+
+  // Move item in. It answers whether it was new: an element the set already
+  // holds stays, and the item given dies
+  pub fn insert(self &mut, item T) bool {
+    imm before = dict.len();
+    dict.getOrInsert(item, new Member());
+    dict.len() > before;
+  }
+
+  // 'set <- item' is 'set.insert(item)'
+  pub fn insertItem overload `<-`(self &mut, item T) { self.insert(item); }
+
+  // Whether it holds item
+  pub fn containsItem overload contains(self &, item &T) bool { dict.contains(item); }
+
+  // Remove item, finalizing the element held; whether it was there
+  pub fn removeItem overload remove(self &mut, item &T) bool {
+    match dict.remove(item) {
+      case is Some[Member] {true;}
+      case is None[Member] {false;}
+    }
+  }
+
+  // The same for a Set[String], given an element as bytes
+  pub fn containsBytes overload contains(self &, item &[]u8) bool where T is String { dict.contains(item); }
+
+  pub fn removeBytes overload remove(self &mut, item &[]u8) bool where T is String {
+    match dict.remove(item) {
+      case is Some[Member] {true;}
+      case is None[Member] {false;}
+    }
+  }
+
+  // Finalize every element and keep the room
+  pub fn clear(self &mut) { dict.clear(); }
+
+  // A cursor over its elements: 'next' gives a borrow of each in turn, in the
+  // table's order, until it answers None
+  pub fn items(self &) SetItems[T] { new SetItems[T](dict.keys()); }
+}
+
+// A cursor over a set's elements
+pub struct SetItems['a, T Hash] {
+  inner DictKeys['a, T, Member];
+
+  pub fn next(self &mut) Option[&'a T] { inner.next(); }
 }
 
 // -------- byte slices --------
