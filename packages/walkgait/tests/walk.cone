@@ -1,0 +1,188 @@
+// The walk on flat ground: the numbers of the gait, the cycle's period, the
+// feet's contact in the right phase windows, a planted foot staying where it
+// is, the reach of the legs, the idle motion and a hard landing's crouch.
+//
+// A 1.75 m walker goes at 1.4 m/s for 8 seconds in 1/60 s steps. At that
+// speed the stride is 0.80 H = 1.4 m and the cycle one second exactly, with
+// the duty factor 0.62, so a foot is down for 0.62 s and swings for 0.38 s.
+// Then it stops.
+
+mod walk;
+
+import testing use *;
+import collections use List;
+import geomath use *;
+import bonepose use *;
+import walkgait use *;
+
+fn near(got f32, want f32, within f32, label &[]u8) bool {
+  expectFloat(f64.from(got), f64.from(want), f64.from(within), label);
+}
+
+fn flatGround(x f32, z f32) f32 { 0.; }
+
+fn testNumbers() {
+  near(walkRunSpeed(0.93, 9.81), 2.1366, 0.001, "walk-run speed for a 0.93 m hip");
+  near(strideLength(1.75, 1.4), 1.4, 0.0001, "stride at 1.4 m/s is 0.8 H");
+  near(strideLength(1.75, 0.35), 0.7, 0.0001, "stride grows as the square root of speed (a quarter of the speed, half the stride)");
+  near(strideLength(1.75, 10.), 2.45, 0.0001, "and is held to 1.4 H");
+  near(dutyFactor(1.0), 0.62, 0.0001, "duty 0.62 walking");
+  near(dutyFactor(4.0), 0.40, 0.0001, "duty 0.40 at 4 m/s");
+  // The rocker is continuous at the ends of its three parts
+  imm r1 = rocker(1.75, 0.1199);
+  imm r2 = rocker(1.75, 0.1201);
+  near(r1.x, r2.x, 0.001, "heel rocker meets flat: x");
+  near(r1.y, r2.y, 0.001, "and y");
+  imm r3 = rocker(1.75, 0.5499);
+  imm r4 = rocker(1.75, 0.5501);
+  near(r3.x, r4.x, 0.001, "flat meets toe rocker: x");
+  near(r3.y, r4.y, 0.001, "and y");
+  // Flat: the ankle 0.039 H above the sole and 0.04 H ahead of the heel
+  imm flat = rocker(1.75, 0.3);
+  near(flat.x, 0.04 * 1.75, 0.0001, "flat foot: the ankle 0.04 H ahead of the heel");
+  near(flat.y, 0.039 * 1.75, 0.0001, "and 0.039 H up");
+}
+
+fn main() i32 {
+  testNumbers();
+  imm h = 1.75;
+  imm skel = humanoid(h);
+  mut pose = skel.restPose();
+  mut models = List[Transform3].empty();
+  mut w = Walker.make(h, 3u32);
+  imm dt = 1. / 60.;
+  imm v = 1.4;
+  mut z = 0.;
+  mut frame = 0;
+  mut ankleHere = new Vec3(0., 0., 0.);
+  mut planted = false;
+  mut driftWorst = 0.;
+  mut lowest = 10.;
+  mut highest = 0.;
+  mut swingClear = 0.;
+  mut stanceHigh = 0.;
+  mut flatCount = 0;
+  mut swingCount = 0;
+  mut overReach = 0.;
+  mut yAtT6 = 0.;
+  mut yAtT7 = 0.;
+  mut zrelAtT6 = 0.;
+  mut zrelAtT7 = 0.;
+  mut stances = 0;
+  mut wasSwinging = false;
+  while frame < 480 {
+    z = z - v * dt;
+    imm at = new Vec3(0., 0., z);
+    w.update(&skel, &mut pose, &mut models, at, 0., v, 0., true, &flatGround, dt);
+    imm ankle = (*models[FOOT_L]).translation + at;
+    imm hip = (*models[THIGH_L]).translation + at;
+    if frame >= 240 {
+      // Planted: in the flat part of a stance the left ankle does not move
+      imm inFlat = !w.left.swinging and w.left.t > 0.16 and w.left.t < 0.54;
+      if inFlat {
+        flatCount = flatCount + 1;
+        if !planted { ankleHere = ankle; planted = true; stances = stances + 1; }
+        imm d = (ankle - ankleHere).length();
+        if d > driftWorst { driftWorst = d; }
+        if absf(ankle.y - 0.039 * h) > stanceHigh { stanceHigh = absf(ankle.y - 0.039 * h); }
+      } else {
+        planted = false;
+      }
+      if w.left.swinging and w.left.t > 0.45 and w.left.t < 0.55 {
+        swingCount = swingCount + 1;
+        if ankle.y - 0.039 * h > swingClear { swingClear = ankle.y - 0.039 * h; }
+      }
+      imm pelvisY = (*models[PELVIS]).translation.y;
+      if pelvisY < lowest { lowest = pelvisY; }
+      if pelvisY > highest { highest = pelvisY; }
+      // The leg: hip to ankle, never past its reach
+      imm leg = (ankle - hip).length();
+      if leg > overReach { overReach = leg; }
+    }
+    // Sampled a cycle (60 frames) apart: the same phase, the same pose
+    if frame == 360 { yAtT6 = ankle.y; zrelAtT6 = ankle.z - z; }
+    if frame == 420 { yAtT7 = ankle.y; zrelAtT7 = ankle.z - z; }
+    frame = frame + 1;
+  }
+  near(yAtT7, yAtT6, 0.003, "periodic: the ankle's height a cycle later");
+  near(zrelAtT7, zrelAtT6, 0.003, "periodic: the ankle's place against the body a cycle later");
+  expectBool(stances >= 3, true, "at least three stances measured");
+  near(driftWorst, 0., 0.01, "a foot in the flat of its stance stays put (within 1 cm)");
+  near(stanceHigh, 0., 0.005, "and flat on the ground");
+  expectBool(swingClear > 0.03, true, "the swing foot clears the ground by more than 3 cm at mid-swing");
+  expectBool(swingClear < 0.15, true, "and by less than 15 cm");
+  imm full = (0.245 + 0.246) * h;
+  expectBool(overReach < full, true, "the leg never past its full length");
+  expectBool(overReach > 0.9 * full, true, "and walks fairly straight");
+  imm bob = highest - lowest;
+  expectBool(bob > 0.015 and bob < 0.10, true, "the pelvis bobs by between 1.5 and 10 cm");
+  // The phase windows: at the phase 0.31 (mid-stance of the left) the left is down
+  // and at 0.81 it swings (duty 0.62)
+  expectBool(w.speed > 1.39, true, "the speed settled at 1.4 m/s");
+
+  // Phase windows against the walker's own phase, run again slowly to read them
+  mut w2 = Walker.make(h, 5u32);
+  mut p2 = skel.restPose();
+  mut m2 = List[Transform3].empty();
+  mut z2 = 0.;
+  mut k = 0;
+  mut leftDownOk = true;
+  mut leftUpOk = true;
+  mut rightOk = true;
+  while k < 300 {
+    z2 = z2 - v * dt;
+    w2.update(&skel, &mut p2, &mut m2, new Vec3(0., 0., z2), 0., v, 0., true, &flatGround, dt);
+    if k > 120 {
+      imm ph = w2.phase;
+      if ph > 0.05 and ph < 0.57 and w2.left.swinging { leftDownOk = false; }
+      if ph > 0.67 and ph < 0.97 and !w2.left.swinging { leftUpOk = false; }
+      // The right foot is half a cycle on: it swings while the phase is in 0.17 to 0.47
+      if ph > 0.17 and ph < 0.45 and !w2.right.swinging { rightOk = false; }
+      if ph > 0.55 and ph < 0.95 and w2.right.swinging { rightOk = false; }
+    }
+    k = k + 1;
+  }
+  expectBool(leftDownOk, true, "the left foot is down while the phase is 0.05 to 0.57");
+  expectBool(leftUpOk, true, "and swinging while it is 0.67 to 0.97");
+  expectBool(rightOk, true, "the right foot is half a cycle behind");
+
+  // Stopping: two more steps and then both feet flat and still
+  mut s = 0;
+  while s < 240 {
+    w.update(&skel, &mut pose, &mut models, new Vec3(0., 0., z), 0., 0., 0., true, &flatGround, dt);
+    s = s + 1;
+  }
+  expectBool(w.frozen, true, "stopped: the walker stands");
+  imm la = (*models[FOOT_L]).translation;
+  imm ra = (*models[FOOT_R]).translation;
+  near(la.y, 0.039 * h, 0.005, "left foot flat");
+  near(ra.y, 0.039 * h, 0.005, "right foot flat");
+  near(la.z, ra.z, 0.05, "feet level with each other, not staggered");
+  near(ra.x - la.x, 0.191 * h, 0.03, "feet a hip's width apart");
+  // The idle layer: the chest moves with breath
+  imm c1 = pose.rotation(CHEST);
+  mut moved = false;
+  s = 0;
+  while s < 120 {
+    w.update(&skel, &mut pose, &mut models, new Vec3(0., 0., z), 0., 0., 0., true, &flatGround, dt);
+    imm c2 = pose.rotation(CHEST);
+    if c1.dot(c2) < 0.99999 { moved = true; }
+    s = s + 1;
+  }
+  expectBool(moved, true, "standing, the chest breathes");
+
+  // A hard landing: the pelvis drops, then recovers
+  imm before = (*models[PELVIS]).translation.y;
+  w.impact(8.);
+  mut low = before;
+  s = 0;
+  while s < 120 {
+    w.update(&skel, &mut pose, &mut models, new Vec3(0., 0., z), 0., 0., 0., true, &flatGround, dt);
+    imm py = (*models[PELVIS]).translation.y;
+    if py < low { low = py; }
+    s = s + 1;
+  }
+  expectBool(before - low > 0.2, true, "a landing at 8 m/s drops the pelvis more than 20 cm");
+  near((*models[PELVIS]).translation.y, before, 0.03, "and it has recovered after 2 s");
+  done();
+}

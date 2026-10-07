@@ -1,0 +1,98 @@
+// A Dict keyed by Ref, 3D Web's case: a side table of data about what a pool
+// holds, found by the reference the pool gave. Two references are equal exactly
+// when they name the same occupant of the same slot, so a removed value's old
+// Ref and the next occupant's, which share a slot, are two keys. Every expected
+// value is worked out by hand:
+// - 200 values added to an empty pool take slots 0 to 199, generation 1; the
+//   side table holds 200 entries, 'slot * 10' for each;
+// - removing the even slots' values and adding 100 more reuses those slots
+//   (the free list gives them back newest first) at generation 3, so the old
+//   references are stale and the new ones are different keys; the table has the
+//   200 old references (stale ones included, since removing from a pool tells
+//   the table nothing) and 100 new, 300 in all.
+
+mod refdict;
+
+import testing use *;
+import pool use *;
+import collections use *;
+
+struct Npc { pub hp i64; }
+
+fn main() i32 {
+  mut p = Pool[Npc].empty();
+  mut side = Dict[Ref[Npc], i64].empty();
+  mut refs = List[Ref[Npc]].empty();
+  mut i = 0u32;
+  while i < 200u32 {
+    imm r = p.add(new Npc(i64.from(i)));
+    refs.push(r);
+    side.insert(r, i64.from(i) * 10);
+    i = i + 1u32;
+  }
+  expectUInt(u64.from(side.len()), 200, "two hundred references");
+  mut wrong = 0i64;
+  i = 0u32;
+  while i < 200u32 {
+    if *side[refs[usize.from(i)]] != i64.from(i) * 10 { wrong = wrong + 1i64; }
+    i = i + 1u32;
+  }
+  expectInt(wrong, 0, "each reference finds its own entry");
+  expectBool(side.contains(&Ref[Npc].none()), false, "none is not a key");
+  expectBool(side.contains(&Ref[Npc].of(3u32, 1u32)), true, "a reference made by slot and generation");
+  expectBool(side.contains(&Ref[Npc].of(3u32, 3u32)), false, "slot 3's next occupant is not there yet");
+
+  // Remove the even slots' values, add 100 new ones: the slots are reused
+  i = 0u32;
+  while i < 200u32 {
+    p.remove(*refs[usize.from(i)]);
+    i = i + 2u32;
+  }
+  mut fresh = List[Ref[Npc]].empty();
+  i = 0u32;
+  while i < 100u32 {
+    imm r = p.add(new Npc(1000i64 + i64.from(i)));
+    fresh.push(r);
+    side.insert(r, 5000i64 + i64.from(i));
+    i = i + 1u32;
+  }
+  expectUInt(u64.from(side.len()), 300, "the old references stay until removed");
+  i = 0u32;
+  while i < 100u32 {
+    imm r = fresh[usize.from(i)];
+    if r.generation() != 3u32 { wrong = wrong + 1i64; }
+    if *side[r] != 5000i64 + i64.from(i) { wrong = wrong + 1i64; }
+    i = i + 1u32;
+  }
+  expectInt(wrong, 0, "a reused slot's new reference is a new key at generation 3");
+  // An old reference whose slot was reused still finds its own entry, the pool
+  // says it is dead, and the table, asked with the pool's help, can be tidied
+  imm stale = refs[0usize];
+  expectBool(p.alive(*stale), false, "the old reference is dead");
+  expectBool(side.contains(stale), true, "and its entry is still in the table");
+  match side.remove(stale) {
+    case imm v Some {expectInt(v.value, 0, "removed the stale entry");}
+    case is None {expect(false, "removed the stale entry");}
+  }
+  expectUInt(u64.from(side.len()), 299, "one fewer");
+  mut tidied = 0i64;
+  i = 0u32;
+  while i < 200u32 {
+    imm r = refs[usize.from(i)];
+    if not p.alive(*r) {
+      if not isNone(side.remove(r)) { tidied = tidied + 1i64; }
+    }
+    i = i + 1u32;
+  }
+  // 100 even slots' references were dead; slot 0's was removed above
+  expectInt(tidied, 99, "the other dead references tidied away");
+  expectUInt(u64.from(side.len()), 200, "the 100 live old ones and the 100 new");
+  done();
+}
+
+fn isNone(o Option[i64]) bool {
+  match o {
+    case is Some[i64] {false;}
+    case is None[i64] {true;}
+  }
+}

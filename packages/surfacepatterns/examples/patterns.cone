@@ -1,0 +1,196 @@
+// patterns: bakes every surfacepatterns pattern on the CPU, times each, and
+// writes its base colour map, its normal map and its base colour tiled 2 x 2
+// (so a seam or a visible repeat shows) as BMPs. It needs no window and no
+// GPU.
+//
+//   congo run packages/surfacepatterns/examples/patterns.cone -- --out DIR
+//   congo run packages/surfacepatterns/examples/patterns.cone -- --out DIR --size 512
+//
+// '--size N' bakes tiles N texels square (1024 by default). '--out DIR' is
+// the folder the BMPs go in (it must exist); without it nothing is written.
+// Each file is DIR/<pattern>-basecolor.bmp, -normal.bmp and -tiled.bmp.
+
+mod patterns;
+
+import stdio use *;
+import libc;
+import collections use *;
+import geomath use *;
+import time use Instant;
+import pbrmaterial use *;
+import surfacepatterns use *;
+
+// ---- Arguments ----
+
+fn parseCount(s *u8) i32 {
+  if (s as usize) == 0usize or *s == 0u8 { return -1; }
+  mut n = 0;
+  mut i = 0usize;
+  while *(s + i) != 0u8 {
+    imm c = *(s + i);
+    if c < '0' or c > '9' { return -1; }
+    n = n * 10 + i32.from(c - '0');
+    i = i + 1usize;
+  }
+  n;
+}
+
+fn cstrEquals(a *u8, b &[]u8) bool {
+  mut i = 0usize;
+  while i < b.len {
+    if *(a + i) != b[i] { return false; }
+    i = i + 1usize;
+  }
+  *(a + b.len) == 0u8;
+}
+
+fn cstrString(s *u8) String {
+  mut out = String.empty();
+  mut i = 0usize;
+  while *(s + i) != 0u8 {
+    out.appendByte(*(s + i));
+    i = i + 1usize;
+  }
+  out;
+}
+
+// ---- BMP output ----
+
+fn put32(out &mut List[u8], v u32) {
+  out.push(u8.from(v & 0xFFu32));
+  out.push(u8.from((v >> 8u32) & 0xFFu32));
+  out.push(u8.from((v >> 16u32) & 0xFFu32));
+  out.push(u8.from((v >> 24u32) & 0xFFu32));
+}
+
+// A 24-bit BMP of a texel map, rows bottom first as the format has them
+// (gray made RGB); 'tiled' repeats it 2 x 2 at half the resolution
+fn saveBmp(dir &String, name &[]u8, map &[]u8, m &TexelMap, tiled bool) bool {
+  imm w = m.width;
+  imm h = m.height;
+  imm rowSize = (w * 3 + 3) / 4 * 4;
+  imm pixelBytes = rowSize * h;
+  mut out = List[u8].withCapacity(usize.from(54 + pixelBytes));
+  out.push('B');
+  out.push('M');
+  put32(&mut out, u32.from(54 + pixelBytes));
+  put32(&mut out, 0u32);
+  put32(&mut out, 54u32);
+  put32(&mut out, 40u32);
+  put32(&mut out, u32.from(w));
+  put32(&mut out, u32.from(h));
+  out.push(1u8);
+  out.push(0u8);
+  out.push(24u8);
+  out.push(0u8);
+  put32(&mut out, 0u32);
+  put32(&mut out, u32.from(pixelBytes));
+  put32(&mut out, 2835u32);
+  put32(&mut out, 2835u32);
+  put32(&mut out, 0u32);
+  put32(&mut out, 0u32);
+  mut y = 0;
+  while y < h {
+    mut x = 0;
+    while x < w {
+      mut sx = x;
+      mut sy = y;
+      if tiled { sx = (x * 2) % w; sy = (y * 2) % h; }
+      // BMP wants blue, green, red
+      mut c = 2;
+      while c >= 0 {
+        if m.channels == 1 { out.push(m.at(sx, sy, 0)); } else { out.push(m.at(sx, sy, c)); }
+        c = c - 1;
+      }
+      x = x + 1;
+    }
+    mut pad = w * 3;
+    while pad < rowSize {
+      out.push(0u8);
+      pad = pad + 1;
+    }
+    y = y + 1;
+  }
+  mut path = dir.copy();
+  path <- "/";
+  path <- name;
+  path <- "-";
+  path <- map;
+  path <- ".bmp";
+  imm v = out.view();
+  imm f = libc.fopen(path.cstr(), &"wb" as *u8);
+  if !f { return false; }
+  imm written = libc.fwrite(&v[0] as *u8, 1usize, v.len, f);
+  libc.fclose(f);
+  written == v.len;
+}
+
+fn saveSet(dir &String, name &[]u8, set &TextureSet) bool {
+  mut ok = saveBmp(dir, name, "basecolor", &set.baseColor, false);
+  ok = saveBmp(dir, name, "normal", &set.normal, false) and ok;
+  ok = saveBmp(dir, name, "tiled", &set.baseColor, true) and ok;
+  ok;
+}
+
+// Report one pattern: its bake time and map hashes, and save it
+fn report(dir &String, name &[]u8, set &TextureSet, seconds f64) bool {
+  printStr(name); print <- ": "; print <- seconds * 1000.; print <- " ms; base colour hash ";
+  print <- mapHash(&set.baseColor); print <- ", normal hash "; print <- mapHash(&set.normal); print <- "\n";
+  if dir.len() == 0usize { return true; }
+  saveSet(dir, name, set);
+}
+
+fn main(argc i32, argv **u8) i32 {
+  mut size = 1024;
+  mut dir = String.empty();
+  mut a = 1;
+  while a < argc {
+    imm arg = *(argv + usize.from(a));
+    if cstrEquals(arg, "--size") and a + 1 < argc {
+      size = parseCount(*(argv + usize.from(a + 1)));
+      a = a + 1;
+    } elif cstrEquals(arg, "--out") and a + 1 < argc {
+      dir = cstrString(*(argv + usize.from(a + 1)));
+      a = a + 1;
+    } else {
+      print <- "Unknown argument; use --size N and --out DIR\n";
+      return 2;
+    }
+    a = a + 1;
+  }
+  if size < 16 {
+    print <- "--size wants a whole number, 16 or more\n";
+    return 2;
+  }
+  print <- "Baking "; print <- size; print <- " x "; print <- size; print <- " tiles on the CPU\n";
+  mut ok = true;
+
+  mut t = Instant.now();
+  imm siding = bakePlanks(&PlankParams.siding(size, 1u32));
+  ok = report(&dir, "siding", &siding, t.elapsed().secondsF64()) and ok;
+  t = Instant.now();
+  imm decking = bakePlanks(&PlankParams.decking(size, 2u32));
+  ok = report(&dir, "decking", &decking, t.elapsed().secondsF64()) and ok;
+  t = Instant.now();
+  imm shingles = bakeShingles(&ShingleParams.cedar(size, 3u32));
+  ok = report(&dir, "shingles", &shingles, t.elapsed().secondsF64()) and ok;
+  t = Instant.now();
+  imm flags = bakeFlagstones(&FlagstoneParams.garden(size, 4u32));
+  ok = report(&dir, "flagstones", &flags, t.elapsed().secondsF64()) and ok;
+  t = Instant.now();
+  imm rock = bakeRock(&RockParams.granite(size, 5u32));
+  ok = report(&dir, "rock", &rock, t.elapsed().secondsF64()) and ok;
+  t = Instant.now();
+  imm edging = bakeEdgingStones(&EdgingStoneParams.fieldstone(size, 6u32));
+  ok = report(&dir, "edgingstones", &edging, t.elapsed().secondsF64()) and ok;
+  t = Instant.now();
+  imm maple = bakeBark(&BarkParams.redMaple(size, 7u32));
+  ok = report(&dir, "bark-maple", &maple, t.elapsed().secondsF64()) and ok;
+  t = Instant.now();
+  imm pine = bakeBark(&BarkParams.pine(size, 8u32));
+  ok = report(&dir, "bark-pine", &pine, t.elapsed().secondsF64()) and ok;
+  t = Instant.now();
+  imm brick = bakeBricks(&BrickParams.standard(size, 9u32));
+  ok = report(&dir, "brick", &brick, t.elapsed().secondsF64()) and ok;
+  if ok { 0; } else { print <- "A file could not be written\n"; 1; };
+}

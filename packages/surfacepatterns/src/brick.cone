@@ -1,0 +1,87 @@
+// ======== Brick: running bond ========
+//
+// Courses of bricks, every other course shifted half a brick (stretcher
+// bond), mortar joints recessed below the bricks' faces and the bricks'
+// edges (arrises) rounded over. Each brick takes one of four shades, about
+// one in fourteen a dark one, with its own brightness, mottled by noise. The
+// tile holds a whole number of bricks a course and an even number of
+// courses, so the bond continues across the wrap. This is the recipe of the
+// browser's chimney (browser/src/bakedworld/chimney.cone) for a plain wall,
+// without that stack's corners, sheet layout and flaunching.
+
+pub struct BrickParams {
+  pub size i32;               // texels a side
+  pub tileMetres f32;         // the tile's side, metres
+  pub seed u32;
+  pub brickLength f32;        // metres, a brick's face along the course
+  pub brickHeight f32;        // metres, a brick's face high
+  pub mortar f32;             // metres: the joint's width, both ways
+  pub recess f32;             // metres the mortar lies below the brick faces
+  pub arris f32;              // metres: the width a brick's edge is rounded over
+  pub shades Array[Color, 4]; // the four shades (linear) bricks are drawn from
+  pub dark Color;             // the dark ones, about one brick in fourteen
+  pub mortarColor Color;
+  pub variation f32;          // each brick's brightness varied by +- this fraction
+
+  // Standard UK bricks 215 x 65 mm with 10 mm joints recessed 6 mm, in the chimney's
+  // red-browns, on a 1.8 m tile (8 bricks by 24 courses)
+  pub fn standard(size i32, seed u32) BrickParams {
+    new BrickParams(size, 1.8, seed, 0.215, 0.065, 0.010, 0.006, 0.004,
+      [rgb255(153., 66., 46.), rgb255(138., 59., 42.), rgb255(166., 82., 59.), rgb255(128., 60., 46.)],
+      rgb255(89., 41., 32.), rgb255(171., 166., 153.), 0.06);
+  }
+}
+
+// One texel of a brick tile at the tile point (u, v)
+pub fn brickTexel(p &BrickParams, u f32, v f32) PatternTexel {
+  imm pitchL = p.brickLength + p.mortar;
+  imm pitchH = p.brickHeight + p.mortar;
+  imm cols = wholeCount(p.tileMetres, pitchL, 2);
+  mut rows = wholeCount(p.tileMetres, pitchH, 2);
+  if rows % 2 == 1 { rows = rows + 1; }
+  imm cellL = p.tileMetres / f32.from(cols);
+  imm cellH = p.tileMetres / f32.from(rows);
+  imm yv = v * f32.from(rows);
+  imm j = posMod(i32.from(libc.floorf(yv)), rows);
+  imm ly = frac(yv) * cellH;
+  imm shift = if j % 2 == 1 { 0.5; } else { 0.; };
+  imm xv = u * f32.from(cols) - shift;
+  imm b = posMod(i32.from(libc.floorf(xv)), cols);
+  imm lx = frac(xv) * cellL;
+  // inside the brick's face: the distance to its nearest edge (negative in a joint)
+  imm hm = p.mortar * 0.5;
+  imm inside = minF(minF(lx - hm, cellL - hm - lx), minF(ly - hm, cellH - hm - ly));
+
+  imm key = hash2(j, b, p.seed);
+  imm grain = fbmNoise(u, v, cols * 24, rows * 24, p.seed + 81u32, 2, 0.5);
+  imm mottle = fbmNoise(u, v, cols * 3, rows * 3, p.seed + 82u32, 3, 0.5);
+  imm onBrick = smoothstep01(-0.0005, 0.0005, inside);
+
+  // the brick: one in fourteen dark, else one of the four shades; its own brightness
+  imm pick = toUnit(key.x);
+  mut shade = p.dark;
+  if pick >= 0.07 { shade = p.shades[usize.from(key.x % 4u32)]; }
+  imm bright = (1. + 0.5 * p.variation * grain + 0.8 * p.variation * mottle) * (1. + p.variation * (toUnit(key.y) * 2. - 1.));
+  imm brick = scaleRgb(shade, bright);
+  imm mortarRgb = scaleRgb(p.mortarColor, 1. + 0.05 * grain + 0.06 * mottle);
+
+  imm face = smoothstep01(0., p.arris, inside) * (0.97 + 0.03 * grain);
+  imm height = onBrick * face + (1. - onBrick) * 0.06 * (0.5 + 0.5 * grain);
+  imm rough = if inside > 0. { 0.82 + 0.1 * (1. - face); } else { 0.95; };
+  new PatternTexel(clamp01(height), mixRgb(mortarRgb, brick, onBrick), rough, 0.6 + 0.4 * height);
+}
+
+// A brick tile's maps
+pub fn bakeBricks(p &BrickParams) TextureSet {
+  mut field = PatternField.empty(p.size, p.tileMetres, p.recess);
+  mut y = 0;
+  while y < p.size {
+    mut x = 0;
+    while x < p.size {
+      field.put(x, y, brickTexel(p, texelCentre(x, p.size), texelCentre(y, p.size)));
+      x = x + 1;
+    }
+    y = y + 1;
+  }
+  finishField(&mut field, 0.01, 3);
+}

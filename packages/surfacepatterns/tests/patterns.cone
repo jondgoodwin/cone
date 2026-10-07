@@ -1,0 +1,296 @@
+// The surfacepatterns package's patterns. Only a failure prints.
+//
+// For each of the nine patterns (board-and-batten siding, decking, shingles,
+// flagstones, rock, edging stones, maple and pine bark, brick), baked 128
+// texels square:
+// - Determinism: a second bake gives the same bytes in every map, and a
+//   different seed gives a different base colour.
+// - Seamless tiling: every pattern's texel function repeats every 1 in u
+//   and in v, at 300 probe points (the same point one tile right, one up,
+//   three left and two up gives the same height, colour, roughness and
+//   cavity). A bake varies nothing but the texel function, and a function
+//   that repeats everywhere has no seam at the wrap.
+// - Ranges: the height field lies in [0, 1], every normal decodes to within
+//   0.02 of unit length with z up, the ORM's occlusion and roughness are
+//   bytes (occlusion open somewhere), and the base colour is neither flat
+//   nor black.
+// And, hand-picked from each pattern's own structure: a batten stands above
+// the board beside it, a butt joint lies below its board, a shingle's butt
+// is above its top, mortar is below a brick's face, flagstone gaps fill a
+// fraction of the tile, whole feature counts round as asked.
+// Last, the maps of each at 64 x 64, pinned by their FNV-1a hashes.
+
+mod patterns;
+
+import testing use *;
+import libc;
+import geomath use *;
+import collections use *;
+import pbrmaterial use *;
+import surfacepatterns use *;
+
+const SIZE = 128;
+
+fn sameTexel(a PatternTexel, b PatternTexel) bool {
+  libc.fabsf(a.height - b.height) < 0.002 and libc.fabsf(a.colour.red - b.colour.red) < 0.002
+    and libc.fabsf(a.colour.green - b.colour.green) < 0.002 and libc.fabsf(a.colour.blue - b.colour.blue) < 0.002
+    and libc.fabsf(a.rough - b.rough) < 0.002 and libc.fabsf(a.cavity - b.cavity) < 0.002;
+}
+
+// How many of three shifted copies of a texel differ from it: the same
+// point one tile right, one tile up, and three tiles left and two up
+fn shiftedDiffers(a PatternTexel, right PatternTexel, up PatternTexel, far PatternTexel) i32 {
+  mut n = 0;
+  if !sameTexel(a, right) { n = n + 1; }
+  if !sameTexel(a, up) { n = n + 1; }
+  if !sameTexel(a, far) { n = n + 1; }
+  n;
+}
+
+const PROBES = 300;
+
+// The probe point i: spread over the tile, away from any grid
+fn probeU(i i32) f32 { frac(f32.from(i) * 0.6180339 + 0.1234); }
+fn probeV(i i32) f32 { frac(f32.from(i) * 0.7548776 + 0.4321); }
+
+// A pattern repeats every tile: at 300 points, the texel one tile away (and
+// three away one way, two the other) is the same texel. This holds
+// everywhere, so across the wrap too: it is what makes the tile seamless.
+// A few probes fall within rounding of a hard edge and flip (u + 1 has fewer
+// bits below the point than u), so up to 1 in 50 may differ.
+fn checkPeriodic(bad i32, name &[]u8) {
+  expect(bad <= PROBES * 3 / 50, label(name, ": repeats every tile").view());
+}
+
+// The standard deviation of a map's channel 0, in bytes
+fn spread(m &TexelMap) f64 {
+  mut sum = 0d;
+  mut sum2 = 0d;
+  imm n = usize.from(m.width * m.height);
+  mut i = 0usize;
+  while i < n {
+    imm b = f64.from(*m.pixels[i * usize.from(m.channels)]);
+    sum = sum + b;
+    sum2 = sum2 + b * b;
+    i = i + 1usize;
+  }
+  imm mean = sum / f64.from(n);
+  libc.sqrt(sum2 / f64.from(n) - mean * mean);
+}
+
+fn label(name &[]u8, what &[]u8) String {
+  mut s = String.from(name);
+  s <- what;
+  s;
+}
+
+fn checkSet(set &TextureSet, name &[]u8) {
+  mut inRange = true;
+  mut unit = true;
+  mut openSomewhere = false;
+  mut y = 0;
+  while y < SIZE {
+    mut x = 0;
+    while x < SIZE {
+      imm h = set.height.at(x, y);
+      if h < 0. or h > 1. { inRange = false; }
+      imm nx = byteUnit(set.normal.at(x, y, 0)) * 2. - 1.;
+      imm ny = byteUnit(set.normal.at(x, y, 1)) * 2. - 1.;
+      imm nz = byteUnit(set.normal.at(x, y, 2)) * 2. - 1.;
+      imm len = libc.sqrtf(nx * nx + ny * ny + nz * nz);
+      if len < 0.98 or len > 1.02 or nz <= 0. { unit = false; }
+      if set.orm.at(x, y, 0) > 240u8 { openSomewhere = true; }
+      x = x + 1;
+    }
+    y = y + 1;
+  }
+  expect(inRange, label(name, ": height in [0, 1]").view());
+  expect(unit, label(name, ": normals unit length, z up").view());
+  expect(openSomewhere, label(name, ": occlusion open somewhere").view());
+  expect(spread(&set.baseColor) > 6d, label(name, ": base colour not flat").view());
+  expect(spread(&set.normal) > 1d, label(name, ": normal not flat").view());
+}
+
+fn main() i32 {
+  // ---- Each pattern: ranges, seams ----
+  imm siding = bakePlanks(&PlankParams.siding(SIZE, 1u32));
+  imm decking = bakePlanks(&PlankParams.decking(SIZE, 2u32));
+  imm shingles = bakeShingles(&ShingleParams.cedar(SIZE, 3u32));
+  imm flags = bakeFlagstones(&FlagstoneParams.garden(SIZE, 4u32));
+  imm rock = bakeRock(&RockParams.granite(SIZE, 5u32));
+  imm edging = bakeEdgingStones(&EdgingStoneParams.fieldstone(SIZE, 6u32));
+  imm maple = bakeBark(&BarkParams.redMaple(SIZE, 7u32));
+  imm pine = bakeBark(&BarkParams.pine(SIZE, 8u32));
+  imm brick = bakeBricks(&BrickParams.standard(SIZE, 9u32));
+  checkSet(&siding, "siding");
+  checkSet(&decking, "decking");
+  checkSet(&shingles, "shingles");
+  checkSet(&flags, "flagstones");
+  checkSet(&rock, "rock");
+  checkSet(&edging, "edging stones");
+  checkSet(&maple, "maple bark");
+  checkSet(&pine, "pine bark");
+  checkSet(&brick, "brick");
+
+  // ---- Seamless tiling: every texel function repeats every tile ----
+  imm pp1 = PlankParams.siding(SIZE, 1u32);
+  imm pp2 = PlankParams.decking(SIZE, 2u32);
+  imm pp3 = ShingleParams.cedar(SIZE, 3u32);
+  imm pp4 = FlagstoneParams.garden(SIZE, 4u32);
+  imm pp5 = RockParams.granite(SIZE, 5u32);
+  imm pp6 = EdgingStoneParams.fieldstone(SIZE, 6u32);
+  imm pp7 = BarkParams.redMaple(SIZE, 7u32);
+  imm pp8 = BarkParams.pine(SIZE, 8u32);
+  imm pp9 = BrickParams.standard(SIZE, 9u32);
+  mut bad1 = 0;
+  mut bad2 = 0;
+  mut bad3 = 0;
+  mut bad4 = 0;
+  mut bad5 = 0;
+  mut bad6 = 0;
+  mut bad7 = 0;
+  mut bad8 = 0;
+  mut bad9 = 0;
+  mut i = 0;
+  while i < PROBES {
+    imm u = probeU(i);
+    imm v = probeV(i);
+    bad1 = bad1 + shiftedDiffers(plankTexel(&pp1, u, v), plankTexel(&pp1, u + 1., v), plankTexel(&pp1, u, v + 1.), plankTexel(&pp1, u - 3., v + 2.));
+    bad2 = bad2 + shiftedDiffers(plankTexel(&pp2, u, v), plankTexel(&pp2, u + 1., v), plankTexel(&pp2, u, v + 1.), plankTexel(&pp2, u - 3., v + 2.));
+    bad3 = bad3 + shiftedDiffers(shingleTexel(&pp3, u, v), shingleTexel(&pp3, u + 1., v), shingleTexel(&pp3, u, v + 1.), shingleTexel(&pp3, u - 3., v + 2.));
+    bad4 = bad4 + shiftedDiffers(flagstoneTexel(&pp4, u, v), flagstoneTexel(&pp4, u + 1., v), flagstoneTexel(&pp4, u, v + 1.), flagstoneTexel(&pp4, u - 3., v + 2.));
+    bad5 = bad5 + shiftedDiffers(rockTexel(&pp5, u, v), rockTexel(&pp5, u + 1., v), rockTexel(&pp5, u, v + 1.), rockTexel(&pp5, u - 3., v + 2.));
+    bad6 = bad6 + shiftedDiffers(edgingStoneTexel(&pp6, u, v), edgingStoneTexel(&pp6, u + 1., v), edgingStoneTexel(&pp6, u, v + 1.), edgingStoneTexel(&pp6, u - 3., v + 2.));
+    bad7 = bad7 + shiftedDiffers(barkTexel(&pp7, u, v), barkTexel(&pp7, u + 1., v), barkTexel(&pp7, u, v + 1.), barkTexel(&pp7, u - 3., v + 2.));
+    bad8 = bad8 + shiftedDiffers(barkTexel(&pp8, u, v), barkTexel(&pp8, u + 1., v), barkTexel(&pp8, u, v + 1.), barkTexel(&pp8, u - 3., v + 2.));
+    bad9 = bad9 + shiftedDiffers(brickTexel(&pp9, u, v), brickTexel(&pp9, u + 1., v), brickTexel(&pp9, u, v + 1.), brickTexel(&pp9, u - 3., v + 2.));
+    i = i + 1;
+  }
+  checkPeriodic(bad1, "siding");
+  checkPeriodic(bad2, "decking");
+  checkPeriodic(bad3, "shingles");
+  checkPeriodic(bad4, "flagstones");
+  checkPeriodic(bad5, "rock");
+  checkPeriodic(bad6, "edging stones");
+  checkPeriodic(bad7, "maple bark");
+  checkPeriodic(bad8, "pine bark");
+  checkPeriodic(bad9, "brick");
+
+  // ---- Determinism, and the seed ----
+  imm siding2 = bakePlanks(&PlankParams.siding(SIZE, 1u32));
+  expectUInt(mapHash(&siding2.baseColor), mapHash(&siding.baseColor), "siding: a second bake gives the same base colour");
+  expectUInt(mapHash(&siding2.normal), mapHash(&siding.normal), "siding: and the same normals");
+  expectUInt(mapHash(&siding2.orm), mapHash(&siding.orm), "siding: and the same ORM");
+  imm sidingOther = bakePlanks(&PlankParams.siding(SIZE, 99u32));
+  expect(mapHash(&sidingOther.baseColor) != mapHash(&siding.baseColor), "siding: another seed gives another base colour");
+  imm flags2 = bakeFlagstones(&FlagstoneParams.garden(SIZE, 4u32));
+  expectUInt(mapHash(&flags2.baseColor), mapHash(&flags.baseColor), "flagstones: a second bake gives the same base colour");
+  imm flagsOther = bakeFlagstones(&FlagstoneParams.garden(SIZE, 5u32));
+  expect(mapHash(&flagsOther.baseColor) != mapHash(&flags.baseColor), "flagstones: another seed gives another base colour");
+  imm pine2 = bakeBark(&BarkParams.pine(SIZE, 8u32));
+  expectUInt(mapHash(&pine2.normal), mapHash(&pine.normal), "bark: a second bake gives the same normals");
+
+  // ---- Whole feature counts ----
+  expectInt(i64.from(wholeCount(1.6, 0.2, 1)), 8i64, "1.6 m of 0.2 m boards is 8");
+  expectInt(i64.from(wholeCount(1.6, 0.21, 1)), 8i64, "0.21 m boards round to 8 too");
+  expectInt(i64.from(wholeCount(0.1, 0.5, 2)), 2i64, "at least two");
+
+  // ---- Structure: siding ----
+  imm sp = PlankParams.siding(SIZE, 1u32);
+  // the first seam, at u = 0, is under a batten; the first board's middle is 1/16 of the tile along
+  imm onBatten = plankTexel(&sp, 0.0001, 0.5);
+  imm onBoard = plankTexel(&sp, 0.0625, 0.5);
+  expect(onBatten.height > onBoard.height + 0.3, "siding: a batten stands well above the board beside it");
+  expect(onBoard.cavity > 0.99, "siding: a board's middle is open");
+  // a board's edge not under a batten: a plain-board tile's joint is a dark gap
+  imm plain = new PlankParams(SIZE, 1.6, 1u32, 0.2, 0., 0., 0., 0.006, rgb255(150., 112., 78.), rgb255(112., 82., 58.), 0.1, 0.5, 0.2);
+  imm gapTexel = plankTexel(&plain, 0.0001, 0.5);
+  imm faceTexel = plankTexel(&plain, 0.0625, 0.5);
+  expect(gapTexel.height < faceTexel.height, "planks: the gap between boards is below their faces");
+  expect(gapTexel.colour.green < faceTexel.colour.green, "planks: and darker");
+  // a butt joint in decking: a gap across the board, 1/12 of a 1.2 m length in
+  imm dp = PlankParams.decking(SIZE, 2u32);
+  mut minJoint = 1.;
+  mut v = 0.;
+  while v < 1. {
+    imm t = plankTexel(&dp, 0.035, v);
+    if t.height < minJoint { minJoint = t.height; }
+    v = v + 0.001;
+  }
+  expect(minJoint < 0.05, "decking: a butt joint cuts across a board");
+
+  // ---- Structure: shingles ----
+  imm shp = ShingleParams.cedar(SIZE, 3u32);
+  // down a shingle's course (8 courses to 1.12 m: 1/8 of the tile each): its butt is high, its top low
+  mut butts = 0.;
+  mut tops = 0.;
+  mut s = 0;
+  while s < 16 {
+    imm u = 0.03 + f32.from(s) * 0.0613;
+    butts = butts + shingleTexel(&shp, u, 0.015).height;
+    tops = tops + shingleTexel(&shp, u, 0.1125).height;
+    s = s + 1;
+  }
+  expect(butts > tops, "shingles: a course is thicker at its butt than at its top");
+
+  // ---- Structure: brick ----
+  imm bp = BrickParams.standard(SIZE, 9u32);
+  // a brick's face, and the mortar joint between two courses
+  imm face = brickTexel(&bp, 0.1, 0.5 / 24.);
+  imm joint = brickTexel(&bp, 0.1, 0.0001);
+  expect(face.height > joint.height + 0.5, "brick: mortar is below a brick's face");
+  expect(joint.colour.red > face.colour.red * 0.95 and joint.colour.green > face.colour.green, "brick: the mortar is paler than the brick");
+
+  // ---- Structure: flagstones ----
+  mut gaps = 0;
+  mut y = 0;
+  while y < SIZE {
+    mut x = 0;
+    while x < SIZE {
+      if flags.height.at(x, y) < 0.15 { gaps = gaps + 1; }
+      x = x + 1;
+    }
+    y = y + 1;
+  }
+  imm gapFraction = f64.from(gaps) / f64.from(SIZE * SIZE);
+  expect(gapFraction > 0.02d and gapFraction < 0.4d, "flagstones: the gaps fill a fraction of the tile, neither none nor most");
+
+  // ---- Voronoi cells wrap ----
+  imm c0 = voronoi(0.0003, 0.5, 6, 0.8, 3u32);
+  imm c1 = voronoi(1.0003, 0.5, 6, 0.8, 3u32);
+  expectInt(i64.from(c1.id), i64.from(c0.id), "voronoi: the cell at u + 1 is the cell at u");
+  expectFloat(f64.from(c1.edge), f64.from(c0.edge), 0.001d, "voronoi: and its edge distance");
+  imm d0 = voronoi(0.5, 0.0003, 6, 0.8, 3u32);
+  imm d1 = voronoi(0.5, 1.0003, 6, 0.8, 3u32);
+  expectInt(i64.from(d1.id), i64.from(d0.id), "voronoi: the cell at v + 1 is the cell at v");
+
+  // ---- The maps, pinned (64 x 64) ----
+  imm psiding = bakePlanks(&PlankParams.siding(64, 1u32));
+  imm pdecking = bakePlanks(&PlankParams.decking(64, 2u32));
+  imm pshingles = bakeShingles(&ShingleParams.cedar(64, 3u32));
+  imm pflags = bakeFlagstones(&FlagstoneParams.garden(64, 4u32));
+  imm prock = bakeRock(&RockParams.granite(64, 5u32));
+  imm pedging = bakeEdgingStones(&EdgingStoneParams.fieldstone(64, 6u32));
+  imm pmaple = bakeBark(&BarkParams.redMaple(64, 7u32));
+  imm ppine = bakeBark(&BarkParams.pine(64, 8u32));
+  imm pbrick = bakeBricks(&BrickParams.standard(64, 9u32));
+  expectUInt(mapHash(&psiding.baseColor), 11834894042052870218u64, "siding base colour hash");
+  expectUInt(mapHash(&psiding.normal), 8054275256692994452u64, "siding normal hash");
+  expectUInt(mapHash(&pdecking.baseColor), 17278943436236764665u64, "decking base colour hash");
+  expectUInt(mapHash(&pdecking.normal), 1917831362513118443u64, "decking normal hash");
+  expectUInt(mapHash(&pshingles.baseColor), 14627461503588062449u64, "shingles base colour hash");
+  expectUInt(mapHash(&pshingles.normal), 15282945235568484365u64, "shingles normal hash");
+  expectUInt(mapHash(&pflags.baseColor), 12871695003912235805u64, "flagstones base colour hash");
+  expectUInt(mapHash(&pflags.normal), 13390351162645180874u64, "flagstones normal hash");
+  expectUInt(mapHash(&prock.baseColor), 11307852312574469359u64, "rock base colour hash");
+  expectUInt(mapHash(&prock.normal), 1458989176702738390u64, "rock normal hash");
+  expectUInt(mapHash(&pedging.baseColor), 14714456678011210024u64, "edging stones base colour hash");
+  expectUInt(mapHash(&pedging.normal), 2678277251493513257u64, "edging stones normal hash");
+  expectUInt(mapHash(&pmaple.baseColor), 16959911503221452294u64, "maple bark base colour hash");
+  expectUInt(mapHash(&pmaple.normal), 3560563515558253232u64, "maple bark normal hash");
+  expectUInt(mapHash(&ppine.baseColor), 269772670858913372u64, "pine bark base colour hash");
+  expectUInt(mapHash(&ppine.normal), 1066169902690234359u64, "pine bark normal hash");
+  expectUInt(mapHash(&pbrick.baseColor), 840881677068934509u64, "brick base colour hash");
+  expectUInt(mapHash(&pbrick.normal), 11609824894281100299u64, "brick normal hash");
+  done();
+}

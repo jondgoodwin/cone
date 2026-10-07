@@ -249,6 +249,19 @@ Visual Studio projects stay at the root.
   and normal maps plus the masks, its maps pinned by `mapHash` in its test;
   its example `spheres.cone` bakes three materials and draws them on spheres
   through render;
+  `surfacepatterns` is procedural patterns that lay out a real surface's
+  structure, over `pbrmaterial`, `noise`, `geomath` and `collections`:
+  board-and-batten siding and decking (`PlankParams`), cedar shingles,
+  flagstones, rough rock and rounded edging stones, furrowed bark (red
+  maple, pine) and running-bond brick, each a parameters struct (sizes in
+  metres, linear colours, a seed), a `bake...` giving pbrmaterial's
+  `TextureSet` (so it uploads as a noise-baked material does) and a pure
+  `...Texel` of the tile point, on periodic hashed noise (a lattice of any
+  size each way) and periodic Voronoi cells; a tile fits a whole number of
+  its boards, stones or bricks and repeats every 1 in u and v; its
+  `patterns` example bakes and times all nine and writes each one's base
+  colour, normal and 2 x 2 tiled maps as BMPs, and its test pins their
+  hashes;
   `vfx` is visual effects over `gpu`, `render`, `geomath` and `noise`,
   beginning with particles: `Emitter`, a stateless emitter (a particle a
   closed-form function of event seed, layer seed, spawn index and age: a
@@ -262,6 +275,18 @@ Visual Studio projects stay at the root.
   (`src/sprites.slang`, additive, depth tested against the depth render
   keeps with `keepDepth`), before bloom and tone mapping; its example
   `burner.cone` is the hot-air balloon's burner flame, fired in bursts;
+  `bonepose` is a skeleton as data over `geomath`: bones (parent before
+  child, rest transform), sockets (a bone and an offset), a `Pose` of local
+  transforms, forward kinematics (`modelTransforms`, `socketModel`), closed-form
+  two-bone inverse kinematics (`solveTwoBone`, `aimLimb`: the target clamped to
+  reach, the joint to a smallest interior angle, the middle joint towards a
+  pole) and `humanoid`, the 19-bone mannequin skeleton from the Drillis and
+  Contini proportions; `walkgait` is a phase-driven biped walk over it: a
+  phase advanced by the distance travelled so planted feet never slide, a foot
+  that rolls heel, flat and toe, landing places asked of the ground by a
+  function, two-bone IK on the legs, the pelvis as high as the legs allow,
+  arms against legs, an idle layer (breathing, weight shift) and a
+  hard-landing crouch (`Walker.update`, `Walker.impact`);
   `testing` is the checks a package's tests call (`expectInt`, `require…`,
   `done`), ordinary library code the compiler knows nothing of;
   `textdiff` is the line diff of two lists of lines or two texts: the edit
@@ -464,8 +489,11 @@ Visual Studio projects stay at the root.
   beside fetch()'s), and its examples `fetch.cone` (one URL from a real
   server: status, fields, the body's size, the timing) and `bench.cone`
   (throughput, latency and memory over loopback);
-  `collections` is a growable `List[T]`, an owned `String` and a string-keyed
-  `Dict[K, V]`, each holding its elements in one block from `libc`'s
+  `collections` is a growable `List[T]`, an owned `String` and `Dict[K, V]`, a
+  SwissTable (control bytes probed eight at a time, up to 7/8 full) over any
+  `K` that is `Hash`, ids and integers included, unordered, each dictionary
+  hashing with a seed of its own (the process's, or fixed by
+  `Dict.deterministic()`), each holding its elements in one block from `libc`'s
   allocator and moving them with core's `mem` intrinsics; `arena` is an
   `Arena`, a dynamic region whose values are finalized, newest first, and
   freed together when it dies, and which, held in a local, is the scratch
@@ -525,10 +553,15 @@ Visual Studio projects stay at the root.
   (swapped in at the next frame, the old buffers released after the frames
   that drew them), `LodChain` (levels of detail chosen by index or by
   projected size, with hysteresis), `Camera` (depth 0 to 1) and `Light`
-  (one directional light and ambient), the standard lit material (Lambert
-  and Blinn-Phong, a base color times a texture) and flat lines, both in
+  (one directional light and ambient), one lighting convention for every
+  material (`src/renderframe.slang`: the light's colour an irradiance, lux
+  in physical units, ambient, sky and emissive colours radiance, nits, and
+  everything drawn multiplied by the renderer's `exposure`, which
+  `exposureFromEv100` gives, Frostbite's), the standard lit material (Lambert
+  and Blinn-Phong, a base color times a texture, an emissive colour) and flat lines, both in
   Slang (`src/lit.slang`, `src/lines.slang`), the physically based material
-  (`PbrMaterial`, `src/pbr.slang` over the `brdf` module: GGX, a clear coat,
+  (`PbrMaterial`, `src/pbr.slang` over the `brdf` module: GGX, an emissive
+  colour and strength (glTF's), a clear coat,
   everywhere or in wet patches, a Belcour-Barla thin film whose
   thickness is `noise`'s warped fBm, and glTF's metallic-roughness, normal
   and occlusion maps, linear textures from `addLinearTexture`, the normal
@@ -539,14 +572,23 @@ Visual Studio projects stay at the root.
   `src/ibl.slang`: prefiltered specular and diffuse cubes, the split sum's
   table), `Post` (`src/post.slang`: the half-float frame, bloom, and tone
   mapping by AgX, ACES's fit or Reinhard), a `DrawList` drawn in one
-  render pass (its depth kept for a later pass with `keepDepth`), the model matrix in the immediates, and `Image` (BMP read
+  render pass (its depth kept for a later pass with `keepDepth`), its items
+  gathered into batches of one material and one mesh, each one instanced
+  draw whose copies' model matrices and tints are in a storage buffer of
+  instances (`renderframe.slang`'s `Instance`), custom pipelines
+  (`src/custom.cone`: a caller's own Slang over `renderframe.slang`, its
+  materials' parameters and textures, r32float fields from
+  `addFieldTexture`, drawn and instanced with the rest; its test
+  `custom.cone`), dynamic meshes rewritten in place each frame
+  (`addDynamicMesh`, `writeDynamicMesh`), and `Image` (BMP read
   and written); its tests need a GPU driver but no window, and its examples
   are `pipevk.cone`, the pipe demo: `sculpt`'s bent, subdivided pipe, the
   cage and three levels side by side, lit, on Vulkan, checked by pixels
   read back, its camera steered by `controls` (orbit and fly), with a
   scripted-input mode (`--script`, events pushed into SDL's own queue) and
   an input-to-present latency readout, and `pipepbr.cone`, the lighting floor: the pipe in Blinn-Phong
-  beside it in black chitin with a thin film, under the dusk, tone-mapped;
+  beside it in black chitin with a thin film, under the dusk, tone-mapped,
+  and `instances.cone`, the time to draw thousands of copies of one mesh;
   `window` is a window for Vulkan (`openVulkan`, which the `gpu` package
   draws into), through `sdl`, its size in pixels and in its own units, and
   the render loop's glue (frame time, quit, Escape, fullscreen, resize,
