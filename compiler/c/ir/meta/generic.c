@@ -223,8 +223,30 @@ static int genericInferType(FnCallNode *inferredgencall, Nodes *genparms, INode 
 // Infer generic type parameters from the function call arguments 'args', which
 // match the signature's parameters from 'firstparm' on: 1 for a method called
 // on a receiver, whose 'self' is not among the arguments yet, else 0.
+static void genericInferFromBounds(Nodes *genparms, Nodes *where, FnCallNode *inferredgencall);
+
+// An unsuffixed integer literal passed for a parameter that is a bare type
+// parameter, 'v T': it is whichever number type is wanted, and only defaults to
+// i32 if nothing else says (litAdoptNumberType)
+static int genericArgIsAdaptable(INode *arg, INode *parmtype) {
+    return arg->tag == ULitTag && (arg->flags & FlagUnkType) && nameUseNames(parmtype, GenVarDclTag);
+}
+
+// The type a bare type parameter has been given so far, or NULL
+static INode *genericCapturedType(FnCallNode *gencall, Nodes *genparms, INode *parmtype) {
+    INode **genvarp;
+    uint32_t genvarcnt;
+    INode **genargp = &nodesGet(gencall->args, 0);
+    for (nodesFor(genparms, genvarcnt, genvarp)) {
+        if (((GenVarDclNode *)(*genvarp))->namesym == ((NameUseNode*)parmtype)->namesym)
+            return *genargp;
+        ++genargp;
+    }
+    return NULL;
+}
+
 static int genericInferFnParms(TypeCheckState *pstate, Nodes *genparms, FnSigNode *genfnsig,
-        Nodes *args, uint32_t firstparm, INode *errnode, FnCallNode *inferredgencall) {
+        Nodes *args, uint32_t firstparm, INode *errnode, FnCallNode *inferredgencall, Nodes *where) {
 
     if (args == NULL)
         return 1;
@@ -244,10 +266,36 @@ static int genericInferFnParms(TypeCheckState *pstate, Nodes *genparms, FnSigNod
         // Capture the type of each generic variable the parameter's type names.
         // A 'null' is whichever pointer type is wanted, so says nothing of
         // which; another argument may, and the call's coercion then types it.
-        if (!litIsUntypedNull(*argsp)
+        // So does an unsuffixed integer literal for a bare type parameter,
+        // which is taken up below, once the other arguments and the bounds
+        // have had their say.
+        if (!litIsUntypedNull(*argsp) && !genericArgIsAdaptable(*argsp, parmtype)
             && genericInferType(inferredgencall, genparms, parmtype, argtype) == 0) {
             errorMsgNode(*argsp, ErrorInvType, "Inconsistent type for generic function");
             retcode = 0;
+        }
+        ++parmp;
+    }
+
+    // A type parameter no argument names, only the bound of one that is named,
+    // is read off that argument's methods, before a literal's default is
+    // taken for it
+    genericInferFromBounds(genparms, where, inferredgencall);
+
+    // What is left to a literal: it names its parameter's type, i32, only if
+    // nothing did. Otherwise it is converted to that type with the call's
+    // other arguments, as an integer literal is wherever a number type is wanted.
+    parmp = &nodesGet(genfnsig->parms, firstparm);
+    for (nodesFor(args, cnt, argsp)) {
+        INode *parmtype = ((VarDclNode *)(*parmp))->vtype;
+        if (genericArgIsAdaptable(*argsp, parmtype)) {
+            INode *given = genericCapturedType(inferredgencall, genparms, parmtype);
+            if (given == NULL)
+                genericInferType(inferredgencall, genparms, parmtype, ((IExpNode *)*argsp)->vtype);
+            else if (!itypeIsSame(given, ((IExpNode *)*argsp)->vtype) && iexpMatches(argsp, given, Coercion) == NoMatch) {
+                errorMsgNode(*argsp, ErrorInvType, "Inconsistent type for generic function");
+                retcode = 0;
+            }
         }
         ++parmp;
     }
@@ -2052,9 +2100,8 @@ int genericSubstitute(TypeCheckState *pstate, FnCallNode **srcgencallp) {
         uint32_t firstparm = (nodetoclone->flags & FlagMethFld) && !(objfn->flags & FlagQualified) ? 1 : 0;
         if (genericInferFnParms(pstate, genericinfo->parms,
             (FnSigNode*)itypeGetTypeDcl(((FnDclNode *)nodetoclone)->vtype), srcgencall->args, firstparm,
-            (INode*)srcgencall, inferredgencall) == 0)
+            (INode*)srcgencall, inferredgencall, ((FnDclNode *)nodetoclone)->where) == 0)
             return 1;
-        genericInferFromBounds(genericinfo->parms, ((FnDclNode *)nodetoclone)->where, inferredgencall);
         break;
     }
     case StructTag:
@@ -2112,9 +2159,8 @@ FnDclNode *genericMethodInstance(TypeCheckState *pstate, FnCallNode *callnode, F
         while (nparms--)
             nodesAdd(&gencall->args, (INode*)NULL);
         if (genericInferFnParms(pstate, genericinfo->parms, (FnSigNode*)itypeGetTypeDcl(genmeth->vtype),
-            callnode->args, 1, (INode*)callnode, gencall) == 0)
+            callnode->args, 1, (INode*)callnode, gencall, genmeth->where) == 0)
             return NULL;
-        genericInferFromBounds(genericinfo->parms, genmeth->where, gencall);
         for (nodesFor(gencall->args, cnt, argsp)) {
             if (*argsp == NULL) {
                 errorMsgNode((INode*)callnode, ErrorInvType, "Could not infer all of generic's type parameters.");

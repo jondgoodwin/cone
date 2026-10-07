@@ -464,10 +464,24 @@ false diagnostic. The cost is silent acceptance — see Hazards.
    capture the function's. It fills empty slots only and ignores a disagreement, so
    the constraint, decided afterwards as ever, is what refuses a type whose
    methods contradict one another, naming the method. A slot an argument already
-   filled stays: an unsuffixed literal passed as `v T` is `i32`, so `fill(&mut box, 8)`
-   asks for `Stack[i32]` and is refused for a box of `i64`. No associated type is
+   filled stays. No associated type is
    involved: a structural trait has no impl to look an answer up in, so the
    methods are the only place it can be read.
+
+   **An unsuffixed integer literal passed for a bare type parameter** (`v T`;
+   `ULitTag` with `FlagUnkType`, `genericArgIsAdaptable`) does not capture in the
+   first pass, as an untyped `null` does not: it is whichever number type is
+   wanted. `genericInferFnParms` runs in three steps: every other argument, then
+   the bounds (`genericInferFromBounds`), then the literals. A literal meets a
+   slot already given by taking it, where `iexpMatches` accepts it as that type
+   (the call's own check then converts it and judges its range,
+   `ErrorLitRange`), else `ErrorInvType` "Inconsistent type"; it fills an empty slot
+   with its own type, `i32`, only when nothing else did. So `fill(&mut box, 8)` on
+   a stack of `i64` types the 8 as `i64`, and `max(big, 6)` follows `big`, in
+   either order. Only this shape defers: a literal for `&T` or `Box[T]` matches
+   nothing anyway. A float literal has no such flag and is an `f32`, as it is
+   anywhere; a type literal's arguments (`genericInferStructParms`) are inferred
+   as before.
 
 **A generic method called on a receiver** — `h.pick(6)`, `h.pick[i32](6)` — is
 instantiated by `fnCallLowerMethod` rather than here, since the method is known
