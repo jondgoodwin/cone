@@ -267,7 +267,11 @@ not generic, or an instance of a generic trait written with its type arguments,
 `Stack[T]` (`genericNamedGenericTrait`: a call whose head names a generic trait,
 given as many arguments as the trait has parameters, `ErrorArgCount`; not in a
 condition on an `is` entry), or a type that is neither a generic type nor a trait
-(`genericNamedType`): `where T is bool` [Jon 27 Sep]. The inline slot takes the
+(`genericNamedType`): `where T is bool` [Jon 27 Sep], or a type written out as an
+instance (`genericIsTypeInstance`: a reference type, a call whose head names a
+generic type, or a region applied to a type, `So[str]`, whose declaration is asked
+by what its `is` list wrote, `regionStructWritesRegionRef`, since it need not be
+resolved yet), in a `where` clause and not in a condition on an `is` entry. The inline slot takes the
 same, `[T, S Stack[T]]`. The arguments are resolved with every parameter hooked
 (`genericParmsNameRes` hooks them all, then resolves what follows each), so a
 bound names a parameter written after it as well as before: `[S Stack[T], T]`. A generic trait named
@@ -505,7 +509,12 @@ or the copy of a default, by `fnSigVrefEqual`, and `itypeIsSame` finds no two
 uses of a type parameter the same — a use of one is not a type, so neither
 resolves to a declaration — so every such type is `ErrorInvType`, "none of
 what it declares has the signature". Comparing them would mean matching type
-parameters by position.
+parameters by position. The opposite pairing, a type's generic method against a
+trait's method that is not generic, is refused by design, as in Rust:
+`iNsTypeFindVrefMethod` skips a generic candidate then, so it never fits a
+bound, an `is` or a virtual reference, whether or not its signature names its
+own parameter (`generic_typecheck_generic_method_bound`,
+`trait_typecheck_generic_method`).
 
 `genericMemoize` validates arity and that every argument is a type, then looks
 up: **the memo key is the stored call's argument list, compared pairwise with
@@ -555,7 +564,11 @@ instance.
 ### Constraints
 
 **Evaluated, never solved** (Principles). A clause naming a type, `T is bool`,
-is met by that type alone (`itypeIsSame`). Every other question a clause asks is
+is met by that type alone (`itypeIsSame`); so is one written as an instance,
+`K is So[str]` or `U is Option[T]`, made at the arguments first, as a generic
+trait's is (`genericClauseCloneChecked`), so that it is the type the program's
+other uses of the spelling name (`So[imm, str]`, its default permission given).
+Every other question a clause asks is
 `genericTypeIs(type, trait)`, which is what `is` answers of a type:
 
 - **The compiler's grants.** Every type is exactly one of `Move` and `Copy`
@@ -564,7 +577,8 @@ is met by that type alone (`itypeIsSame`). Every other question a clause asks is
   is every raw pointer type, `*T` whatever `T` and its permission — a `PtrTag`,
   never a reference; and core's `Hash`, a trait with a method, is granted to
   every integer type and `bool` as well (`coreIsHashTrait`; [struct](struct.md),
-  "Hash"). `Integer or bool or Pointer` is exactly what an atomic
+  "Hash"), and to an owner of `str`, `So[str]` and `Rc[str]` (`genericIsTextOwner`).
+  `Integer or bool or Pointer` is exactly what an atomic
   operation takes (`intrinsicIsAtomicType`), so core's `Atomic[T]` requires just
   what its `AtomicValue` marker admits. `Sendable` is the thread check's, and is
   asked of the walk (`itypeThreadBound`) before anything else: it is granted to
@@ -635,7 +649,10 @@ clause naming an instance of a generic trait says why the argument does not fit
 it (`genericFitWhy`): the first method the trait requires that the type lacks, or
 has only with another signature, each spelled as the instance's types come to
 (`genericSigCat`: `pop(self &mut) Option[i64]`), then a field likewise; a non-struct
-is told only a struct fits by its methods. The clause is spelled with the instance's
+is told only a struct fits by its methods. A method the type has only as a generic
+one is said so and its signature is not spelled, since it is written in type
+parameters that are not types (spelling it was `ErrorUnreachable`, "a request for
+the name of a node that has none"). The clause is spelled with the instance's
 arguments (`Stack[i64]`), not as written. A non-generic trait's message is
 unchanged. A failed
 instance is never memoized, so each use asking for it is refused where it is.

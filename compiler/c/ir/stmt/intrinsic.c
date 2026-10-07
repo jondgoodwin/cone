@@ -554,7 +554,7 @@ static int intrinsicClassOf(INode *type) {
     INode *dcl = itypeGetTypeDcl(type);
     if (dcl == (INode *)boolType)
         return ClassBool;
-    if ((dcl->tag == IntNbrTag || dcl->tag == UintNbrTag)
+    if ((dcl->tag == IntNbrTag || dcl->tag == UintNbrTag) && dcl != (INode *)charType
         && ((NbrNode *)dcl)->bits >= 8 && ((NbrNode *)dcl)->bits <= 64)
         return ClassInt;
     if (dcl->tag == PtrTag)

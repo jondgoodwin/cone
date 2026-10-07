@@ -855,6 +855,11 @@ static int fnCallBoolOperandWantsNumber(FnCallNode *callnode, INode *foundnode, 
                 itypeName(wanted), itypeName(wanted));
             return 1;
         }
+        // Nor does a char reach a number, a number a char, or a non-ASCII
+        // character literal a u8; the same report names the conversion
+        if (isExpNode(*argsp) && (wanted = iNsTypeNumberParm(foundnode, argi))
+            && iexpCharNumberMismatch(*argsp, wanted))
+            return 1;
         ++argi;
     }
     return 0;
@@ -1096,6 +1101,9 @@ static FnDclNode *fnCallHashNumber(FnCallNode *callnode, FnDclNode *selected) {
 // (so the caller may try another way), and -1 when a diagnostic was reported.
 int fnCallLowerMethod(TypeCheckState *pstate, FnCallNode *callnode) {
     INode *obj = callnode->objfn;
+    // An ASCII character literal beside a byte is that byte, whichever side it is on
+    if (callnode->flags & FlagOperator)
+        litAdoptCharBesideByte(&callnode->objfn, callnode->args);
     assert(isNameUseNode(callnode->methfld));
     NameUseNode *methfld = (NameUseNode*)callnode->methfld;
     Name *methsym = methfld->namesym;
@@ -1453,6 +1461,8 @@ static void fnCallRefNoCompare(FnCallNode *node, Name *op, char *why) {
     node->vtype = errorType;
 }
 
+static StructNode *fnCallTextOf(INode *objtype);
+
 // Read through one operand of a comparison, positioned on the comparison
 static void fnCallDerefOperand(INode **operandp, FnCallNode *node) {
     derefInject(operandp);
@@ -1620,6 +1630,20 @@ static void fnCallLowerRefCompare(TypeCheckState *pstate, FnCallNode *node) {
     }
 
     INode *referent = itypeGetTypeDcl(reftype->vtexp);
+
+    // Text through an owner, '&So[str]' or '&Rc[str]', against text one level
+    // shallower, '&str': only the owner's side is read through, as '&str ==
+    // &So[str]' already reads through the owner when it takes its other side, so
+    // the comparison does not depend on operand order
+    if (referent->tag == RefTag) {
+        INode *otherreferent = itypeGetTypeDcl(((RefNode*)iexpGetTypeDcl(*argp))->vtexp);
+        if (otherreferent->tag != RefTag && otherreferent->tag != PtrTag && otherreferent->tag != ArrayRefTag
+            && fnCallTextOf(iexpGetTypeDcl(node->objfn)) != NULL && fnCallTextOf(iexpGetTypeDcl(*argp)) != NULL) {
+            fnCallDerefOperand(&node->objfn, node);
+            fnCallLowerRefCompare(pstate, node);
+            return;
+        }
+    }
     if (referent->tag == PtrTag || referent->tag == RefTag || referent->tag == ArrayRefTag) {
         fnCallDerefOperand(&node->objfn, node);
         fnCallDerefOperand(argp, node);

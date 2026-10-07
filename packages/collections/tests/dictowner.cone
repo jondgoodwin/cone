@@ -1,0 +1,178 @@
+// An owner of text as a key: a Dict, an OrderedDict and a Set of So[str] (the
+// natural string key: immutable, with no spare capacity) or of Rc[str]. An
+// owner of text is Hash, feeding what 'str' and a String feed, so a literal, a
+// view, a String's text or another owner of the same bytes finds a key through
+// the '&str' lookups, and a literal given to 'insert' is copied into the owner
+// (no 'fromLiteral' is written for it). Every expected value is worked out by
+// hand from the keys:
+// - core is 1, stdio 2, libc 3 and "héllo" 4, inserted in that order;
+// - a key is found only by all its bytes: a prefix, a longer text and the
+//   empty text are not keys;
+// - an OrderedDict visits in the order of insertion.
+
+mod dictowner;
+
+import testing use *;
+import collections use *;
+
+fn expectRef(got Option[&i64], want i64, label &[]u8) {
+  match got {
+    case imm s Some {expectInt(*s.value, want, label);}
+    case is None {expect(false, label);}
+  }
+}
+
+fn expectOpt(got Option[i64], want i64, label &[]u8) {
+  match got {
+    case imm s Some {expectInt(s.value, want, label);}
+    case is None {expect(false, label);}
+  }
+}
+
+fn expectNone(got Option[i64], label &[]u8) {
+  match got {
+    case is Some[i64] {expect(false, label);}
+    case is None[i64] {expect(true, label);}
+  }
+}
+
+// What a key of any Hash type feeds a Hasher seeded with 7: a generic bounded
+// by Hash, so the bound is asked of the type
+fn hashed[K](k &K) u64 where K is Hash {
+  mut h = Hasher.withSeed(7u64);
+  (*k).hash(&mut h);
+  h.finish();
+}
+
+fn textHash(s &str) u64 {
+  mut h = Hasher.withSeed(7u64);
+  s.hash(&mut h);
+  h.finish();
+}
+
+// A cursor's next key is this text
+fn isKey(got Option[&So[str]], want &str, label &[]u8) {
+  match got {
+    case imm k Some {expect(want == k.value, label);}
+    case is None {expect(false, label);}
+  }
+}
+
+fn hashing() {
+  imm so So[str] = "core";
+  imm rc Rc[str] = "core";
+  imm text = String.from("core");
+  expectUInt(hashed(&so), textHash("core"), "a So[str] is Hash and feeds what the text does");
+  expectUInt(hashed(&rc), textHash("core"), "so does an Rc[str]");
+  expectUInt(hashed(&text), textHash("core"), "and a String");
+  expect(hashed(&so) != textHash("cord"), "another text");
+}
+
+fn dict() {
+  mut d = Dict[So[str], i64].empty();
+  // A literal is copied into the owner it is wanted as
+  expectNone(d.insert("core", 1), "a new key: None");
+  d.insert("stdio", 2);
+  imm owner So[str] = "libc";
+  d.insert(owner, 3);
+  d.insert("héllo", 4);
+  expectUInt(u64.from(d.len()), 4, "four keys");
+
+  expectRef(d.get("core"), 1, "get, by a literal");
+  expectRef(d.get("héllo"), 4, "get, by a literal with a two-byte character");
+  expectRef(d.get("libc"), 3, "get, by a literal, a key inserted as an owner");
+  imm text = String.from("stdio");
+  expectRef(d.get(text.view()), 2, "get, by a String's view");
+  imm line = "-- stdio --";
+  expectRef(d.get(line.slice(3usize, 8usize)), 2, "get, by a slice of text");
+  imm so So[str] = "libc";
+  expectRef(d.get(so), 3, "get, by a So[str]");
+  imm rc Rc[str] = "core";
+  expectRef(d.get(rc), 1, "get, by an Rc[str]");
+  expectRef(d.get(&so), 3, "get, by a reference to the key's own kind");
+  expect(d.contains("stdio"), "contains");
+  expect(not d.contains("std"), "not a prefix");
+  expect(not d.contains("stdios"), "not a longer text");
+  expect(not d.contains(""), "not the empty text");
+
+  expectOpt(d.getCopy("core"), 1, "getCopy");
+  match d.getMut("core") {
+    case mut v Some {*v.value = 10;}
+    case is None {expect(false, "getMut finds core");}
+  }
+  expectInt(*d["core"], 10, "changed through getMut, read through d[literal]");
+  *&mut d["core"] = 11;
+  expectInt(*d["core"], 11, "changed through &mut d[literal]");
+
+  // The same text again replaces the value and gives back the old one
+  expectOpt(d.insert("core", 12), 11, "insert of a key held: the old value");
+  expectUInt(u64.from(d.len()), 4, "still four");
+  expectInt(*d["core"], 12, "the new value");
+
+  expectOpt(d.remove("stdio"), 2, "remove, by a literal");
+  expect(not d.contains("stdio"), "stdio is gone");
+  expectNone(d.remove("stdio"), "removing it again");
+  expectOpt(d.remove(so), 3, "remove, by a So[str]");
+  expectUInt(u64.from(d.len()), 2, "two left: core and héllo");
+}
+
+fn shared() {
+  mut d = Dict[Rc[str], i64].empty();
+  d.insert("a", 5);
+  imm key Rc[str] = "b";
+  d.insert(key, 6);
+  expectRef(d.get("a"), 5, "an Rc[str] key, found by a literal");
+  expectRef(d.get("b"), 6, "an Rc[str] key inserted as an owner");
+  imm so So[str] = "b";
+  expectRef(d.get(so), 6, "found by a So[str]");
+  expect(not d.contains("c"), "not another");
+  expectOpt(d.remove("a"), 5, "remove, by a literal");
+  expectUInt(u64.from(d.len()), 1, "one left");
+}
+
+fn ordered() {
+  mut d = OrderedDict[So[str], i64].empty();
+  d.insert("z", 1);
+  d.insert("y", 2);
+  d.insert("x", 3);
+  expectRef(d.get("y"), 2, "get, by a literal");
+  expect(d.contains("x"), "contains, by a literal");
+  expect(not d.contains("w"), "not another");
+  mut c = d.keys();
+  isKey(c.next(), "z", "first in the order of insertion");
+  isKey(c.next(), "y", "second");
+  isKey(c.next(), "x", "third");
+  expectOpt(d.remove("y"), 2, "remove, by a literal");
+  mut c2 = d.keys();
+  isKey(c2.next(), "z", "the others keep their order: z");
+  isKey(c2.next(), "x", "then x");
+  d.insert("w", 4);
+  expectOpt(d.swapRemove("z"), 1, "swapRemove, by a literal");
+  mut c3 = d.keys();
+  isKey(c3.next(), "w", "w took z's place");
+  isKey(c3.next(), "x", "then x");
+}
+
+fn set() {
+  mut s = Set[So[str]].empty();
+  expect(s.insert("core"), "a new element");
+  s.insert("stdio");
+  expect(not s.insert("core"), "a repeat adds nothing");
+  expectUInt(u64.from(s.len()), 2, "two elements");
+  expect(s.contains("core"), "contains, by a literal");
+  expect(not s.contains("cor"), "not a prefix");
+  imm so So[str] = "stdio";
+  expect(s.contains(so), "contains, by a So[str]");
+  expect(s.remove("stdio"), "removed, by a literal");
+  expect(not s.remove("stdio"), "removed once");
+  expectUInt(u64.from(s.len()), 1, "one left");
+}
+
+fn main() i32 {
+  hashing();
+  dict();
+  shared();
+  ordered();
+  set();
+  done();
+}

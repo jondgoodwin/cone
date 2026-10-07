@@ -1,0 +1,99 @@
+// A char is a Unicode code point in 32 bits, and a single-quoted literal is one.
+// It is compared and hashed, and converts to and from the numbers only
+// explicitly, 'u32.from(c)' and 'char.from(n)' (typemgmt_typecheck_char refuses
+// the implicit ways). An ASCII character literal is a u8 where a u8 is wanted
+// (lexical_literals shows that in more places); here a char is a parameter, a
+// return, a field, an Option's value, a global and a hash's key.
+//
+// Every number is worked out by hand: 'A' is 65, 'a' 97, 'z' 122 and 'k' 107;
+// upper-casing a letter takes 32 from it; 'é' is U+00E9 (233), '€' U+20AC
+// (8364) and the emoji U+1F600 (128512), and the ordering of chars is the
+// ordering of those numbers; U+263A is 9786.
+
+mod typemgmt_char;
+
+import stdio use *;
+
+fn show(label &[]u8, n u64) {
+  printStr(label);
+  printStr(" = ");
+  printUInt(n);
+  printStr("\n");
+}
+
+fn code(c char) u64 {
+  u64.from(u32.from(c));
+}
+
+fn flag(yes bool) u64 {
+  if yes { 1u64; } else { 0u64; }
+}
+
+// ASCII letters only: a char has no arithmetic, so its value is converted to
+// a number and back
+fn upper(c char) char {
+  if c >= 'a' and c <= 'z' { return char.from(u32.from(c) - 32u32); }
+  c;
+}
+
+struct Glyph {
+  pub c char;
+  pub byte u8;
+}
+
+fn hashOf[K Hash](k &K, seed u64) u64 {
+  mut h = Hasher.withSeed(seed);
+  k.hash(&mut h);
+  h.finish();
+}
+
+imm smiley char = char.from(0x263Au32);
+
+fn main() {
+  // A literal, a parameter, a return
+  show("plain", code('A'));
+  show("upper a", code(upper('a')));
+  show("upper q", code(upper('q')));
+  show("upper A stays", code(upper('A')));
+  show("upper e-acute stays", code(upper('é')));
+
+  // In a struct: the same literal is a char in one field and a byte in the other
+  imm g = new Glyph('z', 'z');
+  show("field char", code(g.c));
+  show("field byte", u64.from(g.byte));
+
+  // In an Option
+  imm some Option[char] = Some[char]['k'];
+  match some {
+    case imm s Some {show("some", code(s.value));}
+    case is None {show("some", 0u64);}
+  }
+
+  // A global, folded from a conversion
+  show("global", code(smiley));
+
+  // Compared as the numbers they are
+  show("equal", flag('a' == 'a'));
+  show("not equal", flag('a' != 'b'));
+  show("less", flag('a' < 'b'));
+  show("greater or equal", flag('b' >= 'b'));
+  show("e-acute after z", flag('é' > 'z'));
+  show("euro after e-acute", flag('€' > 'é'));
+  show("emoji after euro", flag('\U0001F600' > '€'));
+
+  // Conversions, each way and again by reinterpretation
+  imm b = 'z';
+  show("to u8", u64.from(u8.from(b)));
+  show("to u32", u64.from(u32.from(b)));
+  show("to u64", u64.from(b));
+  show("from u8", code(char.from(107u8)));
+  show("from u32", code(char.from(8364u32)));
+  show("reinterpreted to u32", u64.from(b as u32));
+  show("reinterpreted from u32", code(97u32 as char));
+  // A conversion to a byte keeps the low 8 bits: U+20AC is 0xAC
+  show("euro to u8", u64.from(u8.from('€')));
+
+  // A char hashes as the word of its value, as the u32 of the same number does
+  show("hash equals the u32's", flag(hashOf(&'a', 5u64) == hashOf(&97u32, 5u64)));
+  show("hash tells chars apart", flag(hashOf(&'a', 5u64) != hashOf(&'b', 5u64)));
+}

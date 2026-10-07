@@ -926,10 +926,10 @@ pub struct String is ShapeChanging, Hash {
 //
 // K is any type that is Hash (core's trait, which also requires its '=='), so
 // ids, integers, structs and Strings all work: 'Dict[pool.Ref[T], V]',
-// 'Dict[u64, V]', 'Dict[String, V]', a struct declared 'is Hash'. A lookup takes
-// a '&K'. (A Dict[String, V] also takes a key as a '&str', the body a String
-// lends, so a literal, a view or a So[str] finds a String key without building
-// one.)
+// 'Dict[u64, V]', 'Dict[String, V]', 'Dict[So[str], V]', a struct declared
+// 'is Hash'. A lookup takes a '&K'. (A Dict of String, So[str] or Rc[str] keys
+// also takes a key as a '&str', the body they lend or hold, so a literal, a view
+// or any owner of text finds a key without building one.)
 //
 // Each dictionary keeps a hasher of its own, started from a seed, and hashes a
 // key by feeding it to a copy of that hasher. 'empty' takes the process's seed
@@ -1096,9 +1096,11 @@ pub struct Dict[K Hash, V] is ShapeChanging, Sendable {
   }
 
   // The lookups. Each takes a '&K', the key itself (which is all an id key
-  // has), and, for a String key, a '&str', the body a String lends: a literal,
-  // a view of some text, a So[str] and an Rc[str] are all lent as one, and find
-  // the key they equal with no String built. They hash and compare as the key
+  // has), and, for a key that is a String, a So[str] or an Rc[str], a '&str',
+  // the body it lends or holds: a literal, a view of some text, a So[str] and an
+  // Rc[str] are all lent as one, and find the key they equal with no String
+  // built. (An owner of text is Hash, feeding what 'str' feeds. Inserting a
+  // literal into a Dict of So[str] copies it into the owner.) They hash and compare as the key
   // does ('str' feeds a Hasher what a String does, and '==' compares the
   // bytes), so whatever equals a key finds its bucket. An overload set names
   // every member, so the ones for text end in Text; callers write the plain
@@ -1106,7 +1108,7 @@ pub struct Dict[K Hash, V] is ShapeChanging, Sendable {
 
   // Whether it holds key
   pub fn containsKey overload contains(self &, key &K) bool { self.find(self.hashOf(key), key) != noBucket; }
-  pub fn containsText overload contains(self &, key &str) bool where K is String {
+  pub fn containsText overload contains(self &, key &str) bool where K is String or K is So[str] or K is Rc[str] {
     self.find(self.hashOf(key), key) != noBucket;
   }
 
@@ -1116,7 +1118,7 @@ pub struct Dict[K Hash, V] is ShapeChanging, Sendable {
     if i == noBucket { return None[&V][]; }
     Some[&V][&slots[i].value];
   }
-  pub fn getText overload get(self &, key &str) Option[&V] where K is String {
+  pub fn getText overload get(self &, key &str) Option[&V] where K is String or K is So[str] or K is Rc[str] {
     imm i = self.find(self.hashOf(key), key);
     if i == noBucket { return None[&V][]; }
     Some[&V][&slots[i].value];
@@ -1128,7 +1130,7 @@ pub struct Dict[K Hash, V] is ShapeChanging, Sendable {
     if i == noBucket { return None[&mut V][]; }
     Some[&mut V][&mut slots[i].value];
   }
-  pub fn getMutText overload getMut(self &mut, key &str) Option[&mut V] where K is String {
+  pub fn getMutText overload getMut(self &mut, key &str) Option[&mut V] where K is String or K is So[str] or K is Rc[str] {
     imm i = self.find(self.hashOf(key), key);
     if i == noBucket { return None[&mut V][]; }
     Some[&mut V][&mut slots[i].value];
@@ -1142,7 +1144,7 @@ pub struct Dict[K Hash, V] is ShapeChanging, Sendable {
     if i == noBucket { return None[V][]; }
     Some[V][slots[i].value];
   }
-  pub fn getCopyText overload getCopy(self &, key &str) Option[V] where K is String and V is Copy {
+  pub fn getCopyText overload getCopy(self &, key &str) Option[V] where (K is String or K is So[str] or K is Rc[str]) and V is Copy {
     imm i = self.find(self.hashOf(key), key);
     if i == noBucket { return None[V][]; }
     Some[V][slots[i].value];
@@ -1156,7 +1158,7 @@ pub struct Dict[K Hash, V] is ShapeChanging, Sendable {
     if i == noBucket { panic("collections: Dict has no entry for the key", file, line); }
     &slots[i].value;
   }
-  pub fn indexText overload `[]`(self &, key &str, file &[]u8 = srcFile(), line u32 = srcLine()) &V where K is String {
+  pub fn indexText overload `[]`(self &, key &str, file &[]u8 = srcFile(), line u32 = srcLine()) &V where K is String or K is So[str] or K is Rc[str] {
     imm i = self.find(self.hashOf(key), key);
     if i == noBucket { missingKey(key, file, line); }
     &slots[i].value;
@@ -1168,7 +1170,7 @@ pub struct Dict[K Hash, V] is ShapeChanging, Sendable {
     if i == noBucket { panic("collections: Dict has no entry for the key", file, line); }
     &mut slots[i].value;
   }
-  pub fn indexMutText overload `&[]`(self &mut, key &str, file &[]u8 = srcFile(), line u32 = srcLine()) &mut V where K is String {
+  pub fn indexMutText overload `&[]`(self &mut, key &str, file &[]u8 = srcFile(), line u32 = srcLine()) &mut V where K is String or K is So[str] or K is Rc[str] {
     imm i = self.find(self.hashOf(key), key);
     if i == noBucket { missingKey(key, file, line); }
     &mut slots[i].value;
@@ -1181,7 +1183,7 @@ pub struct Dict[K Hash, V] is ShapeChanging, Sendable {
     if i == noBucket { return None[V][]; }
     self.take(i);
   }
-  pub fn removeText overload remove(self &mut, key &str) Option[V] where K is String {
+  pub fn removeText overload remove(self &mut, key &str) Option[V] where K is String or K is So[str] or K is Rc[str] {
     imm i = self.find(self.hashOf(key), key);
     if i == noBucket { return None[V][]; }
     self.take(i);
@@ -1211,10 +1213,12 @@ pub struct Dict[K Hash, V] is ShapeChanging, Sendable {
   pub fn values(self &) DictValues[K, V] { new DictValues[K, V](self, 0usize); }
   pub fn entries(self &) DictEntries[K, V] { new DictEntries[K, V](self, 0usize); }
 
-  // The hash of a key: the key fed to this dictionary's hasher
+  // The hash of a key: the key fed to this dictionary's hasher. '(*key)' and
+  // not 'key': a So[str] or Rc[str] key is a reference itself, and a method
+  // call reads through one reference only, so it is read through to its text
   fn hashOf[B](self &, key &B) u64 {
     mut h = hasher;
-    key.hash(&mut h);
+    (*key).hash(&mut h);
     h.finish();
   }
 
@@ -1495,12 +1499,12 @@ pub struct OrderedDict[K Hash, V] is ShapeChanging, Sendable {
   }
 
   // The lookups, as Dict's are: each takes a '&K', the key itself, and, for a
-  // String key, a '&str', the body it lends (the ones ending in Text; callers
-  // write the plain name)
+  // String, So[str] or Rc[str] key, a '&str', the body it lends or holds (the
+  // ones ending in Text; callers write the plain name)
 
   // Whether it holds key
   pub fn containsKey overload contains(self &, key &K) bool { self.find(self.hashOf(key), key) != noBucket; }
-  pub fn containsText overload contains(self &, key &str) bool where K is String {
+  pub fn containsText overload contains(self &, key &str) bool where K is String or K is So[str] or K is Rc[str] {
     self.find(self.hashOf(key), key) != noBucket;
   }
 
@@ -1510,7 +1514,7 @@ pub struct OrderedDict[K Hash, V] is ShapeChanging, Sendable {
     if b == noBucket { return None[&V][]; }
     Some[&V][&dense[self.posOf(b)].value];
   }
-  pub fn getText overload get(self &, key &str) Option[&V] where K is String {
+  pub fn getText overload get(self &, key &str) Option[&V] where K is String or K is So[str] or K is Rc[str] {
     imm b = self.find(self.hashOf(key), key);
     if b == noBucket { return None[&V][]; }
     Some[&V][&dense[self.posOf(b)].value];
@@ -1522,7 +1526,7 @@ pub struct OrderedDict[K Hash, V] is ShapeChanging, Sendable {
     if b == noBucket { return None[&mut V][]; }
     Some[&mut V][&mut dense[self.posOf(b)].value];
   }
-  pub fn getMutText overload getMut(self &mut, key &str) Option[&mut V] where K is String {
+  pub fn getMutText overload getMut(self &mut, key &str) Option[&mut V] where K is String or K is So[str] or K is Rc[str] {
     imm b = self.find(self.hashOf(key), key);
     if b == noBucket { return None[&mut V][]; }
     Some[&mut V][&mut dense[self.posOf(b)].value];
@@ -1535,7 +1539,7 @@ pub struct OrderedDict[K Hash, V] is ShapeChanging, Sendable {
     if b == noBucket { return None[V][]; }
     Some[V][dense[self.posOf(b)].value];
   }
-  pub fn getCopyText overload getCopy(self &, key &str) Option[V] where K is String and V is Copy {
+  pub fn getCopyText overload getCopy(self &, key &str) Option[V] where (K is String or K is So[str] or K is Rc[str]) and V is Copy {
     imm b = self.find(self.hashOf(key), key);
     if b == noBucket { return None[V][]; }
     Some[V][dense[self.posOf(b)].value];
@@ -1548,7 +1552,7 @@ pub struct OrderedDict[K Hash, V] is ShapeChanging, Sendable {
     if b == noBucket { panic("collections: OrderedDict has no entry for the key", file, line); }
     &dense[self.posOf(b)].value;
   }
-  pub fn indexText overload `[]`(self &, key &str, file &[]u8 = srcFile(), line u32 = srcLine()) &V where K is String {
+  pub fn indexText overload `[]`(self &, key &str, file &[]u8 = srcFile(), line u32 = srcLine()) &V where K is String or K is So[str] or K is Rc[str] {
     imm b = self.find(self.hashOf(key), key);
     if b == noBucket { missingKey(key, file, line); }
     &dense[self.posOf(b)].value;
@@ -1560,7 +1564,7 @@ pub struct OrderedDict[K Hash, V] is ShapeChanging, Sendable {
     if b == noBucket { panic("collections: OrderedDict has no entry for the key", file, line); }
     &mut dense[self.posOf(b)].value;
   }
-  pub fn indexMutText overload `&[]`(self &mut, key &str, file &[]u8 = srcFile(), line u32 = srcLine()) &mut V where K is String {
+  pub fn indexMutText overload `&[]`(self &mut, key &str, file &[]u8 = srcFile(), line u32 = srcLine()) &mut V where K is String or K is So[str] or K is Rc[str] {
     imm b = self.find(self.hashOf(key), key);
     if b == noBucket { missingKey(key, file, line); }
     &mut dense[self.posOf(b)].value;
@@ -1574,7 +1578,7 @@ pub struct OrderedDict[K Hash, V] is ShapeChanging, Sendable {
     if b == noBucket { return None[V][]; }
     Some[V][self.takeShift(b)];
   }
-  pub fn removeText overload remove(self &mut, key &str) Option[V] where K is String {
+  pub fn removeText overload remove(self &mut, key &str) Option[V] where K is String or K is So[str] or K is Rc[str] {
     imm b = self.find(self.hashOf(key), key);
     if b == noBucket { return None[V][]; }
     Some[V][self.takeShift(b)];
@@ -1588,7 +1592,7 @@ pub struct OrderedDict[K Hash, V] is ShapeChanging, Sendable {
     if b == noBucket { return None[V][]; }
     Some[V][self.takeSwap(b)];
   }
-  pub fn swapRemoveText overload swapRemove(self &mut, key &str) Option[V] where K is String {
+  pub fn swapRemoveText overload swapRemove(self &mut, key &str) Option[V] where K is String or K is So[str] or K is Rc[str] {
     imm b = self.find(self.hashOf(key), key);
     if b == noBucket { return None[V][]; }
     Some[V][self.takeSwap(b)];
@@ -1620,7 +1624,7 @@ pub struct OrderedDict[K Hash, V] is ShapeChanging, Sendable {
   // The hash of a key: the key fed to this dictionary's hasher
   fn hashOf[B](self &, key &B) u64 {
     mut h = hasher;
-    key.hash(&mut h);
+    (*key).hash(&mut h);
     h.finish();
   }
 
@@ -1917,11 +1921,11 @@ pub struct Set[T Hash] is ShapeChanging, Sendable {
     }
   }
 
-  // The same, given a String element as a '&str', the body it lends (a literal
-  // finds it)
-  pub fn containsText overload contains(self &, item &str) bool where T is String { dict.contains(item); }
+  // The same, given a String, So[str] or Rc[str] element as a '&str', the body
+  // it lends or holds (a literal finds it)
+  pub fn containsText overload contains(self &, item &str) bool where T is String or T is So[str] or T is Rc[str] { dict.contains(item); }
 
-  pub fn removeText overload remove(self &mut, item &str) bool where T is String {
+  pub fn removeText overload remove(self &mut, item &str) bool where T is String or T is So[str] or T is Rc[str] {
     match dict.remove(item) {
       case is Some[Member] {true;}
       case is None[Member] {false;}

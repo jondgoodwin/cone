@@ -346,7 +346,12 @@ candidate. `fnCallLowerRefCompare`:
 - **A referent that is a pointer, a reference or a slice is read through** on
   both sides, and the result compared as it would be by value: a pointer by its
   own operators, a reference by this same function again, a slice by
-  `fnCallLowerSliceCompare`.
+  `fnCallLowerSliceCompare`. The exception is text: an owner of it,
+  `&So[str]` or `&Rc[str]`, whose referent is a reference, against a `&str`,
+  whose referent is `str` itself, is read through on the owner's side only,
+  and the comparison goes on between `So[str]` and `&str`. That is what
+  `&str == &So[str]` already does by the `str` operator's taking the owner as
+  its other side, so text compares alike in either order.
 - **A referent whose type declares the operator** is asked first with the
   operands as written, so a method declared for references (`self &`,
   `other &T`) takes them unchanged. Only when no candidate matches are both
@@ -543,8 +548,13 @@ the message says the method takes `self &mut` and names `x[i]` and
 `&mut x[i]` (`fnCallRefIndexWantsMut`, still `ErrorNoCandidate`). An operator
 or an index given a `bool` where a candidate declares a number, `n + b` or
 `list[b]`, is `ErrorBoolNotNbr` naming that number's `from`
-(`fnCallBoolOperandWantsNumber`): a `bool` coerces to no number. Neither probe
-changes anything; the refusal is the same.
+(`fnCallBoolOperandWantsNumber`): a `bool` coerces to no number. The same probe
+reports a `char` where a candidate declares a number, a number where it declares
+a `char`, and a character literal of 128 or more where it declares a `u8`, as
+`ErrorCharNotNbr` (`iexpCharNumberMismatch`). Neither probe changes anything;
+the refusal is the same. Before any candidate is tried, a character literal that
+is a binary operator's receiver, beside a `u8` argument, is retyped `u8`
+(`litAdoptCharBesideByte`), so `'0' + digit` selects the byte's `+`.
 
 ### The list after `<-`
 
