@@ -173,6 +173,11 @@ INode *itypeLenBodyElem(INode *type);
 int itypeIsSized(INode *type);
 int itypeIsDynSized(INode *type);
 
+// Does this type declare the marker 'Immutable' ('str', or a struct with
+// 'is Immutable')? A reference to it written with no permission is 'imm', and
+// 'mut', 'mut1' and a lock permission are refused on it (reference.c).
+int itypeIsImmutable(INode *type);
+
 // Why this type cannot report a size, as a sentence naming the cause and the
 // remedy, or NULL where the type is sized and may be held by value.
 //

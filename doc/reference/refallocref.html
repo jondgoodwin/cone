@@ -30,8 +30,9 @@
 			<span class="pre">&lt;-</span>. Not implemented: contents after a
 			<span class="pre">trynew</span> of anything but an array. The body of bytes,
 			<span class="pre">str</span>, may be owned in any region, a pointer and a count of
-			bytes (<a href="#dynbody">below</a>); its methods, its literals and its immutability are not
-			built, so it is allocated by copying a borrow of one made of a slice of bytes.</i></p>
+			bytes (<a href="#dynbody">below</a>), and declares <a href="refperm.html#immutable">Immutable</a>;
+			its methods and its literals are not built, so it is allocated by copying a borrow of one made
+			of a slice of bytes.</i></p>
 
 	<p>When you allocate a new value within a region, you get back an owning reference that points to the new object.
 		For some regions, multiple alias copies may be created which are also owning references.
@@ -132,8 +133,13 @@ imm names = new Rc[mut, List[i32]](10) &lt;- 1, 2, 3;
 		<span class="pre">str</span>, is reached by a reference that carries their count: a pointer
 		and a <span class="pre">usize</span>, in every region and for a borrow alike
 		(<span class="pre">&amp;str</span>, <span class="pre">So[str]</span>,
-		<span class="pre">Rc[imm, str]</span>, <span class="pre">Arc[imm, str]</span>,
-		<span class="pre">Gc[imm, str]</span>), 16 bytes where a reference to a type with a size is 8.
+		<span class="pre">Rc[str]</span>, <span class="pre">Arc[str]</span>,
+		<span class="pre">Gc[str]</span>), 16 bytes where a reference to a type with a size is 8.
+		<span class="pre">str</span> declares <a href="refperm.html#immutable">Immutable</a>, so a
+		reference to it written with no permission is <span class="pre">imm</span>
+		(<span class="pre">&amp;str</span> is <span class="pre">&amp;imm str</span>,
+		<span class="pre">Rc[str]</span> is <span class="pre">Rc[imm, str]</span>) and
+		<span class="pre">mut</span> is refused on it.
 		The region's header sits before the first byte as it does for any value, and the owner
 		points at the byte, so one hop reaches the text.</p>
 	<p>There is no value of such a body to construct or to move in, so its allocation takes a
@@ -145,12 +151,14 @@ imm names = new Rc[mut, List[i32]](10) &lt;- 1, 2, 3;
 <pre>
 imm bytes &amp;[]u8 = "hello";
 imm view = bytes as &amp;str;                    // a borrow of the bytes: 5 of them
-imm text = new Rc[imm, str](view);           // a copy, in Rc's memory
-imm same = trynew So[imm, str](view);        // an Option, None if memory ran out
+imm text = new Rc[str](view);                // a copy, in Rc's memory
+imm same = trynew So[str](view);             // an Option, None if memory ran out
 printStr(text as &amp;[]u8);                      // lent as a borrow, then viewed as bytes
 </pre>
 	<p>An owner of a body is a counted owner or a single one by its region and permission, like
-		any other: copies, parameters and fields are counted, a <span class="pre">uni</span> owner
+		any other: copies, parameters and fields are counted (an owner of <span class="pre">str</span>,
+		written with no permission, is <span class="pre">imm</span> and copies, though an
+		<span class="pre">So</span> owner still moves), a <span class="pre">uni</span> owner
 		moves, and the last to go gives the block back through the region's
 		<span class="pre">free</span>. A collector's region marks it through its pointer. Each
 		owner carries its own count, which is right because the body never grows.</p>

@@ -960,8 +960,15 @@ static FnDclNode *fnCallBorrowReceiver(TypeCheckState *pstate, FnCallNode *calln
     // borrow would be '&mut *p', a reference made from a pointer
     if (obj->tag == DerefTag && iexpGetTypeDcl(((StarNode*)obj)->vtexp)->tag == PtrTag)
         return NULL;
-    PermNode *perms[] = {roPerm, mutPerm};
-    for (int i = 0; i < 2; ++i) {
+    // A type declaring Immutable has 'self &' as 'self &imm', which a 'ro'
+    // borrow is not accepted as, so 'imm' is tried between the two
+    PermNode *perms[3];
+    int nperms = 0;
+    perms[nperms++] = roPerm;
+    if (itypeIsImmutable(objtype))
+        perms[nperms++] = immPerm;
+    perms[nperms++] = mutPerm;
+    for (int i = 0; i < nperms; ++i) {
         INode *perm = newPermUseNode(perms[i]);
         INode *probe = newBorrowMutRef(obj, objtype, perm);
         enum OverloadMatch probestatus;
@@ -2206,10 +2213,11 @@ static void fnCallLowerManagedRef(TypeCheckState *pstate, FnCallNode **nodep) {
                 "A managed reference type's first of two arguments is its permission: '%s[mut, T]'.",
                 &regname->namestr);
     }
-    if (perm == NULL) {
-        perm = newPermUseNode(uniPerm);
-        inodeLexCopy(perm, (INode*)node);
-    }
+    // Left out, the permission is the reference's to settle once it knows what
+    // it refers to: 'uni', or 'imm' where the type declares Immutable
+    // (refTypeCheck)
+    if (perm == NULL)
+        perm = unknownType;
     if (fnCallArgIsPerm(vtype)) {
         errorMsgNode(vtype, ErrorRefTypePerm,
             "A managed reference type's last argument is the type it refers to, not a permission: '%s[%s, T]'.",

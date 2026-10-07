@@ -1,0 +1,121 @@
+// 'Immutable', the marker a type declares with 'is' (the compiler's 'str' does).
+// Its first effect is the default permission: a reference to such a type
+// written with no permission is 'imm', so '&str' is '&imm str' (either spelling
+// goes where the other is wanted), and an owner in a region that copies, 'Rc[str]',
+// is 'Rc[imm, str]': it is copied, where 'Rc[T]' of an ordinary type is 'uni'
+// and moves. A struct of this file's declares it too, and gets all of it: its
+// 'self &' is 'imm', its 'Rc' copies, a borrow of its immutable value is
+// 'imm', and a 'where T is Immutable' constraint is met by it and by 'str'. A
+// permission that does not write may still be written: 'ro' and 'opaq' on
+// the type, and 'uni' for the one holder, whose 'Rc[uni, str]' moves and
+// whose finalizer receives 'self &uni'.
+//
+// Each printed value was checked by hand against the source.
+
+mod ref_immutable;
+
+import stdio use *;
+
+fn show(label &[]u8, n i64) {
+  printStr(label);
+  printStr(" ");
+  printInt(n);
+  printStr("\n");
+}
+
+fn size(s &str) i64 {i64.from((s as &[]u8).len);}
+
+// '&str' and '&imm str' are one type; 'ro' and 'opaq' borrow what '&imm' does
+fn viaImm(s &imm str) i64 {size(s);}
+fn viaRo(s &ro str) i64 {i64.from((s as &[]u8).len);}
+fn viaOpaq(s &opaq str) i64 {i64.from(1);}
+
+// An owner that copies is passed on, and still held by the caller
+fn owned(o Rc[str]) i64 {size(o);}
+fn ownedImm(o Rc[imm, str]) i64 {size(o);}
+
+struct Tag is Immutable {
+  pub n i32;
+  pub fn read(self &) i32 {n;}
+  pub fn plus(self &, other &Tag) i32 {n + other.n;}
+}
+
+// An Immutable type that finalizes: the finalizer receives 'self &uni'
+struct Noisy is Immutable {
+  pub n i32;
+  pub fn final(self &uni) {
+    printStr("noisy gone\n");
+  }
+}
+
+fn needsImmutable[T]() i64 where T is Immutable {3;}
+
+// A link to itself through an owner, whose layout is in flight when the owner is checked
+struct Link is Immutable {
+  pub n i32;
+  pub next Option[Rc[Link]];
+}
+
+// A generic's field, 'Rc[T]', is 'imm' where T declares Immutable and 'uni' where it does not
+struct Holder[T] {
+  pub r Rc[T];
+}
+
+fn main() {
+  imm bytes &[]u8 = "hello";
+  imm v = bytes as &str;
+  imm w &imm str = v;
+  show("borrow", size(w));
+  show("imm", viaImm(v));
+  show("ro", viaRo(v));
+  show("opaq", viaOpaq(v));
+
+  // 'Rc[str]' copies, so each copy and the original all read
+  imm a = new Rc[str](v);
+  imm b = a;
+  imm c = a;
+  show("copies", size(a) + size(b) + size(c));
+  show("passed", owned(a) + ownedImm(a) + owned(b));
+
+  // 'So' moves in any permission; lent, the body reads
+  imm s = new So[str](v);
+  show("lent", size(s));
+
+  // The struct: a plain value, an 'Rc' that copies, and a borrow
+  imm t = new Tag(4i32);
+  show("method", i64.from(t.read()));
+  imm r = new Rc[Tag](7i32);
+  imm r2 = r;
+  imm r3 = r;
+  show("rc copies", i64.from(r.read() + r2.read() + r3.read()));
+  show("borrowed", i64.from(t.plus(&t)));
+  imm lent &Tag = &t;
+  show("lent tag", i64.from(lent.n));
+
+  // The link is held by the next one and still by its maker
+  imm first = new Rc[Link](10i32, None[Rc[Link]][]);
+  imm second = new Rc[Link](20i32, Some[Rc[Link]][first]);
+  show("link", i64.from(first.n + second.n));
+
+  // The generic's instance copies out of its field, twice
+  imm h = new Holder[str](a);
+  imm h1 = h.r;
+  imm h2 = h.r;
+  show("generic", size(h.r) + size(h1) + size(h2));
+
+  // The constraint, met by both
+  show("str", needsImmutable[str]());
+  show("tag", needsImmutable[Tag]());
+
+  // Finalized once: in a scope, and by the last copy of an 'Rc'
+  {
+    imm n = new Noisy(1i32);
+    show("scope", i64.from(n.n));
+  }
+  {
+    imm o = new Rc[Noisy](2i32);
+    imm o2 = o;
+    show("shared", i64.from(o.n + o2.n));
+  }
+  show("end", 0i64);
+}
