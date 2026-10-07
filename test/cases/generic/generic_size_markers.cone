@@ -1,0 +1,99 @@
+// 'Sized' and 'DynSized', the compiler's two markers for a type's size, asked
+// as a constraint. 'Sized': the size is known at compile time, so a value of
+// the type may be held and a reference to it is one pointer. 'DynSized': the
+// size is known at compile time or is carried by a reference to the type, so
+// every Sized type and also an open trait, whose reference carries a vtable,
+// and a body such as 'str', whose reference carries a length. A type with
+// neither -- one declared @opaque, an '@unsized' enum -- is reached by a thin
+// reference and told nothing of its size (generic_typecheck_size_markers).
+//
+// Each function below is a requirement, met at every instance made here; the
+// refusals are the reject scenario's. Each printed value was checked by hand
+// against the source: 1 is a Sized requirement met, 2 a DynSized one, and the
+// sizes are a pointer's, 8, and a pointer and a count, 16.
+
+mod generic_size_markers;
+
+import stdio use *;
+
+fn show(label &[]u8, n i64) {
+  printStr(label);
+  printStr(" ");
+  printInt(n);
+  printStr("\n");
+}
+
+trait Shape {
+  pub fn area(self &) i64;
+}
+
+struct Rect is Shape {
+  pub w i64;
+  pub h i64;
+  pub fn area(self &) i64 {w * h;}
+}
+
+struct Point {
+  pub x i32;
+  pub y i32;
+}
+
+enum Colour {
+  Red, Green;
+}
+
+// The two spellings of each requirement
+fn sized[T]() i64 where T is Sized {1;}
+fn sizedInline[T Sized]() i64 {1;}
+fn dyn[T]() i64 where T is DynSized {2;}
+fn dynInline[T DynSized]() i64 {2;}
+
+// A generic type bounded by one, holding a reference to its argument
+struct View[T DynSized] {
+  pub at &T;
+}
+
+fn main() {
+  // Every type with a size is both
+  show("i32 sized", sized[i32]());
+  show("f64 sized", sized[f64]());
+  show("bool sized", sized[bool]());
+  show("struct sized", sized[Point]());
+  show("enum sized", sized[Colour]());
+  show("tuple sized", sized[(i32, f64)]());
+  show("array sized", sized[Array[u8, 16]]());
+  show("pointer sized", sized[*u8]());
+  show("reference sized", sized[&Point]());
+  show("slice sized", sized[&[]u8]());
+  show("owner sized", sized[So[Point]]());
+  show("owner of str sized", sized[So[str]]());
+  show("borrow of str sized", sized[&str]());
+  show("inline sized", sizedInline[Point]());
+  show("i32 dyn", dyn[i32]());
+  show("struct dyn", dyn[Point]());
+  show("array dyn", dyn[Array[u8, 16]]());
+  show("owner of str dyn", dyn[So[str]]());
+  show("inline dyn", dynInline[Point]());
+
+  // An open trait and the body of bytes are DynSized and not Sized
+  show("trait dyn", dyn[Shape]());
+  show("str dyn", dyn[str]());
+  show("inline trait dyn", dynInline[Shape]());
+
+  // A generic type bounded by DynSized takes a body of bytes and a type with a size
+  imm bytes &[]u8 = "abc";
+  imm s = bytes as &str;
+  imm w = new View[str](s);
+  show("view of str", i64.from((w.at as &[]u8).len));
+  imm p = new Point(5i32, 6i32);
+  imm q = new View[Point](&p);
+  show("view of a struct", i64.from(q.at.x));
+
+  // A thin reference is a pointer, a fat one a pointer and a count
+  show("size of &Point", i64.from(mem.sizeof[&Point]()));
+  show("size of So[Point]", i64.from(mem.sizeof[So[Point]]()));
+  show("size of &str", i64.from(mem.sizeof[&str]()));
+  show("size of So[str]", i64.from(mem.sizeof[So[str]]()));
+  show("size of Rc[imm, str]", i64.from(mem.sizeof[Rc[imm, str]]()));
+  show("size of &[]u8", i64.from(mem.sizeof[&[]u8]()));
+}

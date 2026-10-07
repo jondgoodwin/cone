@@ -13,7 +13,8 @@ construction until type check makes it an `AllocateTag` node
 ("Allocation"). Type check builds the *result* type, records a
 lifetime, and interns. Flow moves or copies an allocation's value and enforces the
 lifetime at two consumers, and the loan walk the rest. Generation lowers a plain reference to a bare
-pointer and two others to fat pointers.
+pointer, and a virtual reference, a slice and a reference whose target carries its length
+("A target that carries its length", below) to fat pointers.
 
 *Provenance: read from source; the LLVM shapes and the allocation header were
 measured against emitted IR.*
@@ -76,9 +77,11 @@ lifetimes: brands").
 | `AllocateTag` | exp | initial value | built `RefTag`, or an `Option` call under `FlagQues` |
 
 **Every array reference is borrowed.** There is no owning array reference: a
-managed reference is thin or virtual, an owned runtime-sized array is a `List`,
+managed reference is thin, virtual, or fat with a length ("A target that
+carries its length", below), an owned runtime-sized array is a `List`,
 and a shared one is `Rc[List[T]]`. An `ArrayRefTag`'s region is always
-`borrowRef`.
+`borrowRef`. A slice of bytes and a borrow of `str` are two types of one
+layout, `{ptr, usize}`, and convert to each other by `as`.
 
 The group is the discriminator: type tags are `TypeGroup`, constructor tags
 are `ExpGroup`. **The `scope` that matters is the one on a borrow's
@@ -333,6 +336,11 @@ holds the one, and the other's value is a trait's.
   coerced to it as a variable's initial value is (`iexpTypeCheckCoerce`), so a
   number literal adopts the type and a variant becomes its enum; one that does
   not coerce is `ErrorInvType`.
+- **A body whose length the reference carries** (`str`) has no value at all:
+  exactly one positional argument is a borrow of one, `&str`, coerced to that
+  type (`ErrorAllocValue` otherwise, `ErrorInvType` for a value that is no such
+  borrow), and the allocation copies what it borrows ("A target that carries its
+  length", below).
 
 A generic's instance decides by its own types, since a template is checked
 only as each instance: `new Rc[T](x)` with `x` a `T` is the finished value in
@@ -643,7 +651,7 @@ in a field or captured.
 
 | Tag | LLVM |
 | --- | --- |
-| `RefTag` | `ptr` — **identical for borrowed and owning** |
+| `RefTag` | `ptr` — **identical for borrowed and owning** — or, where its target carries its length (`refIsFat`), anonymous `{ ptr, usize }` as a slice's, whatever the region |
 | `VirtRefTag` | named `{ ptr, ptr }`: the object, then its vtable |
 | `ArrayRefTag` | anonymous `{ ptr, usize }`, count at index 1 |
 
@@ -684,7 +692,52 @@ a new value, flow walks through it as through a recast, so a plain owner
 converted is moved into the virtual reference, or counted for a counted region,
 and a local returned converted is exempt from its scope's release.
 
-`BorrowTag` generates as nothing but `genlAddr(vtexp)`.
+`BorrowTag` generates as nothing but `genlAddr(vtexp)`, but for a borrow whose
+type is fat: what a fat reference points at has no address of its own, so the
+borrow of its dereference is the reference itself (`&*owner`, an owner lent
+as a borrow), as the borrow of a slice's dereference is the slice.
+
+## A target that carries its length
+
+A reference is thin or fat by its **target**, in every region and for a borrow
+alike. `itypeLenBodyElem` answers whether a type is a *dynamically sized body*, one
+whose elements run on from the pointer for a count the reference carries, and
+what its element type is; `refIsFat` asks it of a `RefTag`'s `vtexp`. The one such
+body is `str`, `strTypeDcl` (corelib.c): a struct declared `@opaque` with no
+fields, element `u8`. A trait's reference carries a vtable instead and is its own
+tag, `VirtRefTag`.
+
+The markers `Sized` and `DynSized` (`itypeIsSized`, `itypeIsDynSized`, granted
+in `genericTypeIs`) say which: `Sized` is a type with a size (`itypeIsConcrete`),
+`DynSized` that, an open trait, or a body with a length. An `@opaque` type and
+an `@unsized` enum are neither, and their references are thin.
+
+- **Type check.** `refTypeCheck` checks the target as for any reference, and the
+  body is refused where a size is asked, by `itypeNoSizeOwnCause` (a variable, a
+  field, `mem.sizeof`: `ErrorNoSize`, `ErrorIntrinsicType`). A borrow of one with
+  no permission written is `ro`, where a borrow of any other type with no size
+  is `opaq` (`borrowTypeCheck`). `castBitsize` gives a fat `RefTag` the size of a
+  slice, so `as` converts between `&str` and `&[]u8` and between an owner and a
+  borrow of the same body, checking nothing else.
+- **Allocation.** There is no value to construct or move in. `typeLitAllocValue`
+  takes exactly one argument, coerced to a `&str` borrow, as the allocation's
+  value; `genlallocref` asks `alloc` for the header and `count * sizeof(element)`
+  bytes (the count being the view's), and copies the view's elements in with a
+  `memcpy`, returning the pointer and the count. The element type stands in the
+  `{region, perm, value}` header's value field (`genlRefTypeSetup`), so the
+  header's size is the same for every length and `genlRegionHeader` steps back
+  by a constant. A region's `alloc` that takes a record is handed the element's
+  (a collector counts an object by its record, so a body counts as its header and
+  one element).
+- **Release.** `genlRefPtr` takes word 0 wherever a pointer is wanted (the
+  header, a trace, a null test); a nullable-pointer enum holding one tests word 0.
+  The owner's death finalizes each element, in a loop over word 1, where the
+  element needs it, then calls `free` with the header (`genlRegionDeath`).
+- **Tracing.** `genlTraceRef` marks a fat owner through word 0.
+
+The count is not part of any region's header: it travels in each reference, so
+each owner of one value holds its own copy, which is right only for a body that
+never changes length.
 
 ## Hazards
 
@@ -703,6 +756,12 @@ and a local returned converted is exempt from its scope's release.
   path and the allocate path have different invariants for the same field.
   Anything reading `typeinfo` off an arbitrary reference type crashes on borrows
   only.
+- **A `RefTag` is not always one pointer.** Where `refIsFat` holds its value is
+  `{ptr, usize}`, so a null test, a header computed from the value or a GEP of
+  it must take word 0 first (`genlRefPtr`); a place that asks the LLVM type of
+  a `RefTag` for a pointer is wrong for it. `str` has no dereference worth
+  loading: `*r` of a fat reference is refused where it would be held, and a
+  borrow of it is the reference.
 - **A virtual reference type has no `typeinfo`.** `genlRegionHeader` reads the
   header's offset from it, so anything reaching a region method through an
   owning virtual reference goes through `genlOwnerHeader`, which reads the

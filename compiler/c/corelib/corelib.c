@@ -19,6 +19,7 @@ INode *elseCond;
 INode *borrowRef;
 INode *neverType;
 StructNode *arrayTypeDcl;
+StructNode *strTypeDcl;
 PermNode *uniPerm;
 PermNode *mutPerm;
 PermNode *immPerm;
@@ -96,6 +97,8 @@ StructNode *atomicValueTrait;
 StructNode *integerTrait;
 StructNode *pointerTrait;
 StructNode *sendableTrait;
+StructNode *sizedTrait;
+StructNode *dynSizedTrait;
 StructNode *lockPermTrait;
 
 // A trait the compiler declares, with no members, bound as a name every module
@@ -114,6 +117,7 @@ int corelibIsBuiltinTrait(INode *node) {
         || node == (INode*)noLoanMutTrait || node == (INode*)noLoanReadTrait
         || node == (INode*)atomicValueTrait || node == (INode*)integerTrait
         || node == (INode*)pointerTrait || node == (INode*)sendableTrait
+        || node == (INode*)sizedTrait || node == (INode*)dynSizedTrait
         || node == (INode*)lockPermTrait;
 }
 
@@ -168,6 +172,14 @@ void stdlibInit(int ptrsize) {
     arrayTypeDcl = newStructNode(nametblFind("Array", 5));
     arrayTypeDcl->flags |= FlagPub | NameResolved | TypeChecked | OpaqueType | DeclaredOpaque;
     arrayTypeDcl->namesym->node = (INode*)arrayTypeDcl;
+
+    // 'str', the dynamically sized body of bytes. It has no fields and no size
+    // of its own, so it is held only through a reference, which carries the
+    // count of bytes: '&str', 'So[str]', 'Rc[str]'. A name every module
+    // reaches, as 'Array' is, unless it declares the name itself.
+    strTypeDcl = newStructNode(strTypeName);
+    strTypeDcl->flags |= FlagPub | NameResolved | TypeChecked | OpaqueType | DeclaredOpaque;
+    strTypeName->node = (INode*)strTypeDcl;
 
     // 'RegionRef', the trait a region ref struct declares with 'is' [Jon 25
     // Sep]. Each method a region may declare is optional, with a fixed shape
@@ -251,6 +263,17 @@ void stdlibInit(int ptrsize) {
     // instance of a generic type declaring it is Sendable only where its
     // type arguments are.
     sendableTrait = newBuiltinTrait(sendableTraitName);
+    // 'Sized' and 'DynSized' [Jon 6 Oct]: what a type's size is. 'Sized': the
+    // size is known at compile time, so a value may be held, and a reference
+    // to it is one thin pointer. 'DynSized': the size is known at compile time
+    // or carried by a reference to the type, which is then fat: a trait's
+    // reference carries a vtable, a body such as 'str' a length. A type with
+    // neither (declared @opaque, or an '@unsized' enum) is reached by a thin
+    // reference and its size is not told. Granted by the compiler from the type
+    // (genericTypeIs) and asked only by a constraint, 'where T is Sized'; a
+    // type cannot declare either.
+    sizedTrait = newBuiltinTrait(sizedTraitName);
+    dynSizedTrait = newBuiltinTrait(dynSizedTraitName);
     // 'LockPermission': a struct declaring it may stand in a managed
     // reference's permission slot, 'Arc[Mutex, T]', as a lock permission. Its
     // value is the lock, kept in the allocation's header between the region's

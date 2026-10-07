@@ -47,6 +47,11 @@ RefNode *newRefNode(uint16_t tag);
 // Set while a signature's 'self' is checked: the one place '&new' is written
 extern int refAllowNewPerm;
 
+// Does this reference type carry the length of its target: a pointer and a
+// count, where a reference to a type with a size is a pointer alone? The target
+// decides, whatever the region (itypeLenBodyElem).
+int refIsFat(RefNode *ref);
+
 // Allocate normalized reference type info
 void *refTypeInfoAlloc();
 

@@ -348,6 +348,7 @@ flag** — release is the default and `--debug` turns it off.
 | **permission** | **`%void`** — permissions are fully erased |
 | `*T` | `ptr` |
 | **`&T`, `&mut T`, `Rc[T]`, `So[T]`** | **`ptr`, identically.** Region and permission contribute nothing to the reference value |
+| **`&str`, `So[str]`, `Rc[str]`** (any reference whose target carries its length, `refIsFat`) | **anonymous `{ ptr, usize }`**, as a slice's, in every region and for a borrow |
 | **`&[]T`** | **anonymous `{ ptr, usize }`** — element pointer at 0, element **count** at 1 |
 | **`&<Trait`** | **named `{ ptr, ptr }`** — the object, then its vtable |
 | `fn` signature | `LLVMFunctionType`, never varargs; a `&fn` is a `ptr` to it. A C-named function's structs are lowered to the C ABI's shape ("C-named functions and the C ABI", below) |
@@ -579,6 +580,15 @@ What follows from that:
   a `So`, whose header is empty), and its death calls the record's `finalize`
   on the object (`genlVirtFinalize`) where a plain reference's calls
   `genlFinalizeAt`.
+- **An owning reference to a body that carries its length is the fat `{ptr, usize}`
+  value, and its header is as constant as a thin one's.** The element type
+  stands in the allocation's value field (`genlRefTypeSetup`), since the body has
+  no size, so the header sits a fixed offset before the first element, found
+  from word 0 by `genlRegionHeader` with no record read. The allocation asks
+  `alloc` for that offset plus `count * sizeof(element)` and copies the view's
+  elements in (`genlallocref`); the owner's death finalizes the elements, where
+  they need it, in a loop over word 1, and then frees the header
+  (`genlRegionDeath`).
 
 **The release routines call the region's methods and know no region.**
 `genlReleaseOwning` is one owner going away: `genlRegionDealias` calls the
@@ -874,7 +884,7 @@ This is what the CLAUDE.md warning is about. The conventions:
 | `genlExpr(nameuse)` | the loaded value |
 | `genlAddr(x)` | pointer to `x`'s type |
 | `&T` value | a `ptr` to the `T` |
-| `&[]T` value, `&<Trait` value | an **aggregate value**, not a pointer |
+| `&[]T` value, `&<Trait` value, a reference whose target carries its length (`&str`, `So[str]`) | an **aggregate value**, not a pointer |
 | owning reference value | a `ptr` to the `T`, **past** the header |
 | allocation base, the region's header | `ref` stepped back by the value's offset in `%refstruct` (`genlRegionHeader`) |
 | vtable field slot | an `i32` **byte offset**, applied to the object pointer as a GEP over `i8` |

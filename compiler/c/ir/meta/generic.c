@@ -474,6 +474,13 @@ int genericTypeIs(INode *type, StructNode *trait) {
     // type arguments are Sendable
     if (trait == sendableTrait)
         return !itypeThreadBound(dcl, NULL);
+    // Sized and DynSized are the type's size: known at compile time, or known
+    // at compile time or carried by a reference to it. A type cannot declare
+    // either.
+    if (trait == sizedTrait)
+        return itypeIsSized(dcl);
+    if (trait == dynSizedTrait)
+        return itypeIsDynSized(dcl);
     if (dcl->tag != StructTag)
         return 0;
     StructNode *strnode = (StructNode*)dcl;

@@ -472,6 +472,15 @@ LLVMTypeRef _genlType(GenState *gen, char *name, INode *typ) {
 
     case RefTag:
         genlPointeeLater(((RefNode *)typ)->vtexp);
+        // A reference to a body whose length it carries is fat, in every
+        // region and for a borrow: the pointer, then the count of elements,
+        // as a slice's is
+        if (refIsFat((RefNode *)typ)) {
+            LLVMTypeRef fattypes[2];
+            fattypes[0] = LLVMPointerTypeInContext(gen->context, 0);
+            fattypes[1] = _genlType(gen, "", (INode*)usizeType);
+            return LLVMStructTypeInContext(gen->context, fattypes, 2, 0);
+        }
         return LLVMPointerTypeInContext(gen->context, 0);
 
     case VirtRefTag:

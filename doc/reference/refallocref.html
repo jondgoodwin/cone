@@ -28,7 +28,10 @@
 			An allocation's parentheses hold the value's initializer arguments or a finished
 			value, <span class="pre">new Rc[imm, i32](4)</span>, and contents may follow it after
 			<span class="pre">&lt;-</span>. Not implemented: contents after a
-			<span class="pre">trynew</span> of anything but an array.</i></p>
+			<span class="pre">trynew</span> of anything but an array. The body of bytes,
+			<span class="pre">str</span>, may be owned in any region, a pointer and a count of
+			bytes (<a href="#dynbody">below</a>); its methods, its literals and its immutability are not
+			built, so it is allocated by copying a borrow of one made of a slice of bytes.</i></p>
 
 	<p>When you allocate a new value within a region, you get back an owning reference that points to the new object.
 		For some regions, multiple alias copies may be created which are also owning references.
@@ -122,6 +125,36 @@ imm grid = new So[Array[i32, 2, 3]] &lt;- 1, 2, 3, 4, 5, 6;
 imm names = new Rc[mut, List[i32]](10) &lt;- 1, 2, 3;
 </pre>
 
+	<h3 id="dynbody">Allocating a Dynamically Sized Body</h3>
+	<p>Some types have no size to hold: a value of one is never in a variable, a field or a
+		parameter, only behind a reference, which carries what is missing. A trait's
+		<a href="refvirtref.html">virtual reference</a> carries a vtable. The body of bytes,
+		<span class="pre">str</span>, is reached by a reference that carries their count: a pointer
+		and a <span class="pre">usize</span>, in every region and for a borrow alike
+		(<span class="pre">&amp;str</span>, <span class="pre">So[str]</span>,
+		<span class="pre">Rc[imm, str]</span>, <span class="pre">Arc[imm, str]</span>,
+		<span class="pre">Gc[imm, str]</span>), 16 bytes where a reference to a type with a size is 8.
+		The region's header sits before the first byte as it does for any value, and the owner
+		points at the byte, so one hop reaches the text.</p>
+	<p>There is no value of such a body to construct or to move in, so its allocation takes a
+		borrow of one in the parentheses and copies the bytes the borrow holds, as many as it has,
+		into the memory the region gives: the region is asked for the header and those bytes. A
+		borrow of the body is made from a slice of bytes with <span class="pre">as</span>, and
+		converts back the same way; both are the same pair and
+		<span class="pre">as</span> checks only that.</p>
+<pre>
+imm bytes &amp;[]u8 = "hello";
+imm view = bytes as &amp;str;                    // a borrow of the bytes: 5 of them
+imm text = new Rc[imm, str](view);           // a copy, in Rc's memory
+imm same = trynew So[imm, str](view);        // an Option, None if memory ran out
+printStr(text as &amp;[]u8);                      // lent as a borrow, then viewed as bytes
+</pre>
+	<p>An owner of a body is a counted owner or a single one by its region and permission, like
+		any other: copies, parameters and fields are counted, a <span class="pre">uni</span> owner
+		moves, and the last to go gives the block back through the region's
+		<span class="pre">free</span>. A collector's region marks it through its pointer. Each
+		owner carries its own count, which is right because the body never grows.</p>
+
 	<h3 id="type">Owning Reference Types</h3>
 	<p>Wherever a type is written &mdash; a variable, a field, a parameter, a return type,
 		an <a href="reftypealias.html">alias</a>, a generic's argument, an allocation &mdash; an owning
@@ -140,7 +173,9 @@ mut list = List[Gc[imm, Leaf]].empty();
 		<span class="pre">new R[A][mut, Node](1)</span>.
 		When the value type is an open trait, the reference is a
 		<a href="refvirtref.html">virtual reference</a>, which carries a vtable beside its
-		pointer (<span class="pre">Rc[mut, Shape]</span>); for any other value type, an enum
+		pointer (<span class="pre">Rc[mut, Shape]</span>); when it is a body whose length the
+		reference carries, it is a <a href="#dynbody">pointer and a count</a>
+		(<span class="pre">So[str]</span>); for any other value type, an enum
 		included, it is a single pointer.</p>
 	<p>One place still writes an owning reference type the older way, with a plus sign: a
 		<a href="refmatch.html">match</a> pattern that narrows to an owning reference,

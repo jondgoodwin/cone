@@ -3256,6 +3256,12 @@ static void structCheckMembers(StructNode *node) {
             regionThreadSafeUseCheck(node);
     }
 
+    // 'Sized' and 'DynSized' are the compiler's to grant, from the type's size
+    if (structDeclaresTrait(node, sizedTrait) || structDeclaresTrait(node, dynSizedTrait))
+        errorMsgNode((INode*)node, ErrorSizeMarkerUse,
+            "%s may not declare Sized or DynSized: the compiler grants both, by whether a type's size is known at compile time or carried by a reference to it.",
+            &node->namesym->namestr);
+
     structCheckCopy(node);
 }
 

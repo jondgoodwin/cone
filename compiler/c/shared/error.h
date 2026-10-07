@@ -518,6 +518,9 @@ enum ErrorCode {
     ErrorAwaitNotFuture = 1281, // An 'await' on a value that is no future, behaviour's reply or operation: it waits for no answer
     ErrorFutureVoid = 1282,     // The value of a call of a behaviour returning nothing is used: there is no future to keep
 
+    // 'Sized' and 'DynSized', granted by the compiler from a type's size (ir/types/struct.c)
+    ErrorSizeMarkerUse = 1296,  // 'Sized' or 'DynSized' declared by a type: both are granted, by whether the type's size is known at compile time or carried by a reference to it, and a declaration could only contradict that
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name

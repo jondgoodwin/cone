@@ -91,11 +91,12 @@ older one keeps what it published.
 ## When one code carries several causes
 
 `ErrorNoSize` is the worked example, and the reasoning generalizes. A type can
-fail to have a size five ways — `@opaque`, a trait or an `@unsized` enum, a
-function signature, a struct with an unsized field, and a type still being laid
-out. All five report `ErrorNoSize`, and the cause is named in the message.
+fail to have a size six ways — `@opaque`, a trait or an `@unsized` enum, a
+function signature, a struct with an unsized field, a body whose length a
+reference carries (`str`), and a type still being laid out. All six report
+`ErrorNoSize`, and the cause is named in the message.
 
-**Five codes would be indistinguishable to everything except the wording**, and
+**Six codes would be indistinguishable to everything except the wording**, and
 the wording is what the author actually needs — each cause has a different
 remedy. So the test is not "is this a different condition?" but "would a caller
 ever branch on which?" If nothing would, one code and a specific message is

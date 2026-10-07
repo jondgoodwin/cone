@@ -1,0 +1,64 @@
+// What is refused of a body whose length a reference carries ('str', the body
+// of bytes). It has no size of its own, so it is held only through a
+// reference, in every region: held by value it is ErrorNoSize, whether a
+// local, a parameter or a field, and so is its value read out through a
+// reference. It has no value to construct or move in, so an allocation of it
+// copies a borrow of one, 'new So[str](view)': none, or more, or something
+// that is not a borrow of one, is refused. A borrow of it reads and does not
+// write (a '&mut' of a '&' is ErrorBadPerm), and a reference to it compares
+// by identity only: '==' reads the body, which declares no such operator. It
+// is the size of a pointer and a count, and converts to nothing narrower or of
+// another kind (region_body and ref_body have the slice of bytes it converts to).
+//
+// An owner of it that is the only holder moves like any: the copy of a
+// 'uni' owner is a move, and the original is gone (ErrorMove, which flow
+// reports in a function whose own check passed).
+
+mod region_typecheck_body;
+
+struct Bad {
+  pub s str;                     //~ ErrorNoSize:7 "Field s cannot be held by value"
+}
+
+fn byValue(s str) {              //~ ErrorNoSize:12 "str is a dynamically sized body, whose length is carried by a reference to it"
+}
+
+fn deref(r &str, o So[str]) {
+  imm a = *r;                    //~ ErrorNoSize:7 "Variable a cannot be held by value"
+  imm b = *o;                    //~ ErrorNoSize:7 "Variable b cannot be held by value"
+}
+
+fn allocate(v &str) {
+  imm none = new So[str]();      //~ ErrorAllocValue:14 "its allocation copies a borrow of one"
+  imm two = new So[str](v, v);   //~ ErrorAllocValue:13 "str has no value to construct"
+  imm number = new So[str](5);   //~ ErrorInvType:28 "copied from a borrow of str"
+}
+
+fn compare(a &str, b &str) {
+  imm same = a == b;             //~ ErrorRefNoCompare:16 "the type they refer to declares no such operator"
+  imm less = a < b;              //~ ErrorRefNoCompare:16 "References have no order of their own"
+}
+
+fn write(v &str) {
+  imm m = &mut *v;               //~ ErrorBadPerm:11 "Borrowed reference cannot obtain this permission"
+}
+
+fn convert(v &str) {
+  imm n = v as i64;              //~ ErrorInvType:11 "same sized primitive type"
+  imm p = v as *u8;              //~ ErrorInvType:11 "same sized primitive type"
+  imm r = v as &i32;             //~ ErrorInvType:11 "same sized primitive type"
+}
+
+fn size() {
+  imm n = mem.sizeof[str]();     //~ ErrorIntrinsicType:21 "The intrinsic sizeof needs a type with a size"
+}
+
+fn show(s &str) {
+}
+
+// Flow: a unique owner moves, and the original is gone
+fn moved(v &str) {
+  imm a = new Rc[str](v);
+  imm b = a;
+  show(a);                       //~ ErrorMove:8 "moved out"
+}
