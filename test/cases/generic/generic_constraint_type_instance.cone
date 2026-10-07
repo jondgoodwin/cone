@@ -1,0 +1,58 @@
+// A clause may name a generic type's instance as well as a trait or a plain
+// type: 'where K is So[str]', 'where T is Option[i64]'. Like 'T is bool', it is
+// met by that type alone, and it joins others with 'and' and 'or'. A region's
+// reference, 'So[str]' and 'Rc[str]', is one (it is not a generic type but a
+// region applied to a type), and so is an instance whose arguments name the
+// generic's own parameters: 'where U is Option[T]' asks of the two arguments
+// together. The clause's instance is made at the arguments, so 'So[str]' is
+// the one the program's other uses of it name, 'So[imm, str]'.
+//
+// 'Cell[K]' has 'text' only where K is an owner of text, and 'opt' only where
+// it is an Option[i64]. Each printed value was checked by hand against the
+// source: a method that exists prints its own number, and a function whose
+// condition holds is generated and called.
+
+mod generic_constraint_type_instance;
+
+import stdio use *;
+
+fn show(label &[]u8, n i64) {
+  printStr(label);
+  printStr(" ");
+  printInt(n);
+  printStr("\n");
+}
+
+struct Cell[K] {
+  pub k K;
+  pub fn text(self &) i64 where K is So[str] or K is Rc[str] {1;}
+  pub fn opt(self &) i64 where K is Option[i64] {2;}
+  pub fn soOnly(self &) i64 where K is So[str] {3;}
+}
+
+fn textOwner[T](x &T) i64 where T is So[str] or T is Rc[str] {10;}
+fn textOrInt[T](x &T) i64 where T is So[str] or T is Integer {20;}
+fn holds[T, U](a &T, b &U) i64 where U is Option[T] {30;}
+fn both[T](x &T) i64 where T is So[str] and T is Move {40;}
+
+fn main() {
+  imm so So[str] = "abc";
+  imm rc Rc[str] = "abc";
+  show("textOwner So", textOwner(&so));
+  show("textOwner Rc", textOwner(&rc));
+  show("textOrInt So", textOrInt(&so));
+  show("textOrInt i32", textOrInt(&7i32));
+  show("both So", both(&so));
+
+  imm n = 5i64;
+  imm o = Some[i64][n];
+  show("holds Option[i64]", holds(&n, &o));
+
+  imm cs = new Cell[So[str]]("k");
+  imm cr = new Cell[Rc[str]]("k");
+  imm co = new Cell[Option[i64]](None[i64][]);
+  show("So text", cs.text());
+  show("So soOnly", cs.soOnly());
+  show("Rc text", cr.text());
+  show("Option opt", co.opt());
+}

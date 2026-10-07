@@ -267,7 +267,11 @@ not generic, or an instance of a generic trait written with its type arguments,
 `Stack[T]` (`genericNamedGenericTrait`: a call whose head names a generic trait,
 given as many arguments as the trait has parameters, `ErrorArgCount`; not in a
 condition on an `is` entry), or a type that is neither a generic type nor a trait
-(`genericNamedType`): `where T is bool` [Jon 27 Sep]. The inline slot takes the
+(`genericNamedType`): `where T is bool` [Jon 27 Sep], or a type written out as an
+instance (`genericIsTypeInstance`: a reference type, a call whose head names a
+generic type, or a region applied to a type, `So[str]`, whose declaration is asked
+by what its `is` list wrote, `regionStructWritesRegionRef`, since it need not be
+resolved yet), in a `where` clause and not in a condition on an `is` entry. The inline slot takes the
 same, `[T, S Stack[T]]`. The arguments are resolved with every parameter hooked
 (`genericParmsNameRes` hooks them all, then resolves what follows each), so a
 bound names a parameter written after it as well as before: `[S Stack[T], T]`. A generic trait named
@@ -555,7 +559,11 @@ instance.
 ### Constraints
 
 **Evaluated, never solved** (Principles). A clause naming a type, `T is bool`,
-is met by that type alone (`itypeIsSame`). Every other question a clause asks is
+is met by that type alone (`itypeIsSame`); so is one written as an instance,
+`K is So[str]` or `U is Option[T]`, made at the arguments first, as a generic
+trait's is (`genericClauseCloneChecked`), so that it is the type the program's
+other uses of the spelling name (`So[imm, str]`, its default permission given).
+Every other question a clause asks is
 `genericTypeIs(type, trait)`, which is what `is` answers of a type:
 
 - **The compiler's grants.** Every type is exactly one of `Move` and `Copy`
@@ -564,7 +572,8 @@ is met by that type alone (`itypeIsSame`). Every other question a clause asks is
   is every raw pointer type, `*T` whatever `T` and its permission — a `PtrTag`,
   never a reference; and core's `Hash`, a trait with a method, is granted to
   every integer type and `bool` as well (`coreIsHashTrait`; [struct](struct.md),
-  "Hash"). `Integer or bool or Pointer` is exactly what an atomic
+  "Hash"), and to an owner of `str`, `So[str]` and `Rc[str]` (`genericIsTextOwner`).
+  `Integer or bool or Pointer` is exactly what an atomic
   operation takes (`intrinsicIsAtomicType`), so core's `Atomic[T]` requires just
   what its `AtomicValue` marker admits. `Sendable` is the thread check's, and is
   asked of the walk (`itypeThreadBound`) before anything else: it is granted to
