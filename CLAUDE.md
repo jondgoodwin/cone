@@ -557,14 +557,18 @@ Visual Studio projects stay at the root.
   `src/ibl.slang`: prefiltered specular and diffuse cubes, the split sum's
   table), `Post` (`src/post.slang`: the half-float frame, bloom, and tone
   mapping by AgX, ACES's fit or Reinhard), a `DrawList` drawn in one
-  render pass (its depth kept for a later pass with `keepDepth`), the model matrix in the immediates, and `Image` (BMP read
+  render pass (its depth kept for a later pass with `keepDepth`), its items
+  gathered into batches of one material and one mesh, each one instanced
+  draw whose copies' model matrices and tints are in a storage buffer of
+  instances (`renderframe.slang`'s `Instance`), and `Image` (BMP read
   and written); its tests need a GPU driver but no window, and its examples
   are `pipevk.cone`, the pipe demo: `sculpt`'s bent, subdivided pipe, the
   cage and three levels side by side, lit, on Vulkan, checked by pixels
   read back, its camera steered by `controls` (orbit and fly), with a
   scripted-input mode (`--script`, events pushed into SDL's own queue) and
   an input-to-present latency readout, and `pipepbr.cone`, the lighting floor: the pipe in Blinn-Phong
-  beside it in black chitin with a thin film, under the dusk, tone-mapped;
+  beside it in black chitin with a thin film, under the dusk, tone-mapped,
+  and `instances.cone`, the time to draw thousands of copies of one mesh;
   `window` is a window for Vulkan (`openVulkan`, which the `gpu` package
   draws into), through `sdl`, its size in pixels and in its own units, and
   the render loop's glue (frame time, quit, Escape, fullscreen, resize,

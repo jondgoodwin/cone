@@ -65,6 +65,12 @@
 //    middle is ((0.4, 0.2, 0.8) + (0.1, 0.2, 0)) x 0.5 = (0.25, 0.2, 0.4),
 //    stored (63.75, 51, 102): (64, 51, 102); the background is exposed too,
 //    (0.1, 0.2, 0.3), stored (25.5, 51, 76.5), so 25 or 26 and 76 or 77.
+// 10. Instanced: the cube scaled by 0.4 at x = -0.6 and, tinted magenta (1,
+//    0, 1), at x = +0.6, in the plain material: one batch, so one draw of
+//    two instances and 24 triangles. Their +z faces, 2.8 from the camera,
+//    have their middles at pixel x = 32 -+ 0.6 / (2.8 t) x 32 = 17.3 and
+//    46.7: (17, 32) is (102, 51, 204), (47, 32) the tint's (102, 0, 204),
+//    and the middle, between them, the background.
 //
 // It needs a GPU driver with Vulkan 1.3 and SDL3.dll (which loads Vulkan);
 // no window, no display of its own, and no Vulkan SDK (with it, validation
@@ -299,6 +305,20 @@ fn main() i32 {
   expectPixel(p, 32usize, 32usize, 64, 51, 102, 1d, "lit and glowing, exposed by a half");
   expectPixel(p, 32usize, 4usize, 26, 51, 77, 1d, "the background exposed by a half");
   renderer.exposure = 1.;
+
+  // ---- 10. Instanced: two copies, one draw ----
+  imm left = Mat4.fromTrs(new Vec3(-0.6, 0., 0.), Quat.identity(), new Vec3(0.4, 0.4, 0.4));
+  imm right = Mat4.fromTrs(new Vec3(0.6, 0., 0.), Quat.identity(), new Vec3(0.4, 0.4, 0.4));
+  list.clear();
+  list.add(cube2, plain, left);
+  list.addTinted(cube2, plain, right, new Color(1., 0., 1., 1.));
+  drawFrame(&mut renderer, &mut device, &color, &depth, &readback, &camera, &headOn, &list);
+  expectUInt(u64.from(renderer.drawCalls), 1u64, "two copies of one mesh in one material: one draw");
+  expectUInt(u64.from(renderer.instancesDrawn), 2u64, "of two instances");
+  expectUInt(renderer.triangles, 24u64, "24 triangles");
+  expectPixel(p, 17usize, 32usize, 102, 51, 204, 1d, "the left copy, untinted");
+  expectPixel(p, 47usize, 32usize, 102, 0, 204, 1d, "the right copy, its own tint");
+  expectPixel(p, 32usize, 32usize, 51, 102, 153, 0d, "between them the background");
 
   expectUInt(u64.from(failures()), 0u64, "no Vulkan call failed");
   expectUInt(u64.from(validationMessages()), 0u64, "no validation message");

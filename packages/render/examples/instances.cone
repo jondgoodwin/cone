@@ -1,0 +1,130 @@
+// instances: how long the renderer takes to draw many copies of one mesh in
+// one material, the case instancing is for (a meadow's stones, a forest's
+// leaves). No window: each case is drawn into a 1280 x 720 half-float
+// target, as a Post's frame is, many frames over, and timed two ways: the
+// CPU's time in 'render' (sorting the draw list and recording the pass),
+// and the GPU's time for the pass, from two timestamps either side of it.
+//
+//   congo run packages/render/examples/instances.cone
+//
+// The cases: a grid of N copies of a small cube (12 triangles) and of a
+// sphere (924 triangles), each copy 0.3 across, 1 m apart on the ground,
+// seen from above and to one side so all of them are in view. Every copy is
+// one item of the draw list, as a scene's parts are; the renderer draws
+// them as it does any list. It prints, per case, the mean of each time over
+// the frames after the first ten, and the draws the renderer made.
+//
+// GPU_POWER_PREFERENCE=low-power runs it on the integrated GPU where there
+// are two.
+
+mod instances;
+
+import stdio use *;
+import libc;
+import sdl;
+import geomath use *;
+import collections use *;
+import mesh use Mesh;
+import gpu use *;
+import render use *;
+
+const W = 1280u32;
+const H = 720u32;
+
+fn seconds(from u64, to u64) f64 {
+  f64.from(to - from) / f64.from(sdl.GetPerformanceFrequency());
+}
+
+// Draw 'n' copies of 'm', 'frames' times, and print the times
+fn timeCase(device &mut Device, renderer &mut Renderer, color &Texture, depth &Texture, queries &QuerySet,
+    resolved &Buffer, readback &Buffer, name &[]u8, m &Mesh, n u32, frames u32) {
+  imm h = renderer.addMesh(device, m);
+  imm material = Material.shiny(new Color(0.55, 0.5, 0.45, 1.), 0.3, 24.);
+  imm mh = renderer.addMaterial(device, &material);
+  imm side = u32.from(libc.ceilf(f32.from(n).sqrt()));
+  mut list = DrawList.empty();
+  mut i = 0u32;
+  while i < n {
+    imm x = f32.from(i % side) - f32.from(side) * 0.5;
+    imm z = f32.from(i / side) - f32.from(side) * 0.5;
+    imm model = Mat4.fromTrs(new Vec3(x, 0.15, z), Quat.identity(), new Vec3(0.3, 0.3, 0.3));
+    list.add(h, mh, model);
+    i = i + 1u32;
+  }
+  mut camera = Camera.make();
+  imm reach = f32.from(side);
+  camera.lookAt(new Vec3(0., reach * 0.7, reach * 0.9), new Vec3(0., 0., 0.), new Vec3(0., 1., 0.));
+  camera.far = reach * 4.;
+  camera.background = new Color(0.2, 0.3, 0.4, 1.);
+  imm light = Light.directional(new Vec3(-0.3, -1., -0.4), Color.gray(2.), Color.gray(0.2));
+  mut cpu = 0d;
+  mut gpuTime = 0d;
+  mut counted = 0u32;
+  mut f = 0u32;
+  while f < frames {
+    mut encoder = device.createCommandEncoder();
+    encoder.writeTimestamp(queries, 0u32);
+    imm t0 = sdl.GetPerformanceCounter();
+    renderer.render(device, &mut encoder, color, depth, &camera, &light, &list);
+    imm t1 = sdl.GetPerformanceCounter();
+    encoder.writeTimestamp(queries, 1u32);
+    encoder.resolveQuerySet(queries, 0u32, 2u32, resolved, 0u64);
+    encoder.copyBufferToBuffer(resolved, 0u64, readback, 0u64, 16u64);
+    device.queue.submit(encoder.finish());
+    device.endFrame();
+    device.waitIdle();
+    if f >= 10u32 {
+      imm ticks = readback.mappedRange() as *u64;
+      imm start = *ticks;
+      imm end = *(ticks + 1usize);
+      cpu = cpu + seconds(t0, t1);
+      gpuTime = gpuTime + f64.from(end - start) * f64.from(device.timestampPeriod) * 1.0e-9d;
+      counted = counted + 1u32;
+    }
+    f = f + 1u32;
+  }
+  printStr(name); print <- " x "; print <- u64.from(n); print <- ": draws "; print <- u64.from(renderer.drawCalls);
+  print <- ", triangles "; print <- renderer.triangles;
+  print <- "; CPU (render) "; print <- cpu / f64.from(counted) * 1000d; print <- " ms";
+  print <- ", GPU (the pass) "; print <- gpuTime / f64.from(counted) * 1000d; print <- " ms\n";
+  renderer.removeMesh(device, h);
+}
+
+fn main(argc i32, argv **u8) i32 {
+  imm frames = 100u32;
+  mut instance = Instance.create("render instances");
+  mut none = Surface.none();
+  mut preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
+  imm env = libc.getenv(&"GPU_POWER_PREFERENCE" as *u8);
+  if (env as usize) != 0usize {
+    if libc.strcmp(env, &"low-power" as *u8) == 0i32 { preference = POWER_PREFERENCE_LOW_POWER; }
+  }
+  mut adapter = instance.requestAdapter(&none, preference);
+  if !adapter.isValid() {
+    print <- "No GPU\n";
+    return 1i32;
+  }
+  print <- "Adapter: "; printStr(adapter.name.view()); print <- "\n";
+  mut device = adapter.requestDevice();
+  imm target = new TextureDescriptor(W, H, TEXTURE_FORMAT_RGBA16_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT);
+  mut color = device.createTexture(&target);
+  imm depthDesc = new TextureDescriptor(W, H, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT);
+  mut depth = device.createTexture(&depthDesc);
+  mut renderer = Renderer.create(&mut device, TEXTURE_FORMAT_RGBA16_FLOAT, TEXTURE_FORMAT_DEPTH32_FLOAT);
+  mut queries = device.createQuerySet(QUERY_TYPE_TIMESTAMP, 2u32);
+  mut resolved = device.createBuffer(256u64, BUFFER_USAGE_QUERY_RESOLVE | BUFFER_USAGE_COPY_SRC);
+  mut readback = device.createBuffer(16u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  if !renderer.isValid() or !queries.isValid() {
+    print <- "The renderer or the timestamps could not be made\n";
+    return 1i32;
+  }
+  imm cube = Mesh.cube(0.5);
+  imm sphere = Mesh.sphere(0.5, 22);
+  timeCase(&mut device, &mut renderer, &color, &depth, &queries, &resolved, &readback, "cube", &cube, 1000u32, frames);
+  timeCase(&mut device, &mut renderer, &color, &depth, &queries, &resolved, &readback, "cube", &cube, 10000u32, frames);
+  timeCase(&mut device, &mut renderer, &color, &depth, &queries, &resolved, &readback, "sphere", &sphere, 1000u32, frames);
+  timeCase(&mut device, &mut renderer, &color, &depth, &queries, &resolved, &readback, "sphere", &sphere, 10000u32, frames);
+  print <- "Vulkan failures: "; print <- u64.from(failures());
+  print <- "; validation messages: "; print <- u64.from(validationMessages()); print <- "\n";
+  0i32;
+}

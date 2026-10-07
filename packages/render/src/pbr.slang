@@ -41,7 +41,8 @@
 // parameters, a texture that multiplies the base colour, a sampler, then
 // the metallic-roughness, normal and occlusion textures), group 2 the
 // environment's (the sky's parameters, the cubes, the table and their
-// sampler). The immediates are the draw's: its model matrix and a tint.
+// sampler). Each drawn copy's model matrix and tint are its instance's,
+// in group 0 (renderframe.slang).
 
 import brdf;
 import sky;
@@ -56,11 +57,6 @@ struct PbrParams {
     float4 wet;                    // 64: where the coat lies: fBm's scale (0: everywhere), level, softness, seed
     float4 maps;                   // 80: the normal map's scale (0: no normal map), the occlusion map's strength
     float4 emissive;               // 96: rgb radiance (nits in physical units), its strength multiplied in
-};
-
-struct Immediates {
-    float4x4 model;                // 0-63
-    float4 tint;                   // 64-79
 };
 
 [[vk::binding(0, 1)]] ConstantBuffer<PbrParams> material;
@@ -78,7 +74,6 @@ struct Immediates {
 [[vk::binding(2, 2)]] TextureCube specularCube;
 [[vk::binding(3, 2)]] Texture2D brdfTable;
 [[vk::binding(4, 2)]] SamplerState environmentSampler;
-[[vk::push_constant]] ConstantBuffer<Immediates> draw;
 
 // The specular cube's levels: roughness 0 at level 0, 1 at the last
 static const float SPECULAR_LEVELS = 6.0;
@@ -96,17 +91,20 @@ struct VertexOutput {
     float3 normal : NORMAL;
     float2 uv : TEXCOORD;
     float3 local : TEXCOORD1;      // the model's own coordinates, where the film's noise is read
+    nointerpolation float4 tint : COLOR;
 };
 
 [shader("vertex")]
-VertexOutput vertexMain(VertexInput input) {
+VertexOutput vertexMain(VertexInput input, uint id : SV_VulkanInstanceID) {
     VertexOutput output;
-    float4 world = mul(draw.model, float4(input.position, 1.0));
+    Instance inst = instances[id];
+    float4 world = mul(inst.model, float4(input.position, 1.0));
     output.position = mul(frame.viewProjection, world);
     output.world = world.xyz;
-    output.normal = worldNormal(draw.model, input.normal);
+    output.normal = worldNormal(inst.model, input.normal);
     output.uv = input.uv;
     output.local = input.position;
+    output.tint = inst.tint;
     return output;
 }
 
@@ -171,7 +169,7 @@ float4 fragmentMain(VertexOutput input) : SV_Target {
     float loh = saturate(dot(l, h));
     float3 r = reflect(-v, n);
 
-    float4 base = material.baseColor * baseTexture.Sample(baseSampler, input.uv) * draw.tint;
+    float4 base = material.baseColor * baseTexture.Sample(baseSampler, input.uv) * input.tint;
     float4 metalRough = metallicRoughnessTexture.Sample(baseSampler, input.uv);
     float metallic = material.surface.x * metalRough.b;
     float roughness = clamp(material.surface.y * metalRough.g, 0.045, 1.0);
@@ -232,7 +230,7 @@ float4 fragmentMain(VertexOutput input) : SV_Target {
 
     // What it gives off: radiance, not lit, so not divided by pi; the
     // draw's tint multiplies it as it does the base
-    float3 emitted = material.emissive.rgb * draw.tint.rgb;
+    float3 emitted = material.emissive.rgb * input.tint.rgb;
     return float4((direct + ambient + emitted) * frame.exposure.x, base.a);
 }
 

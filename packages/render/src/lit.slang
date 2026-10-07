@@ -12,9 +12,9 @@
 // times the base color; the emissive color is radiance, added. All of it
 // times the exposure.
 //
-// Group 0 is the frame's (renderframe.slang), group 1 the material's; the
-// immediates (push constants) are the draw's: its model matrix, and a tint
-// the color (and the emissive color) is multiplied by.
+// Group 0 is the frame's (renderframe.slang): the frame's uniforms and the
+// instances, each copy's model matrix and a tint the color (and the
+// emissive color) is multiplied by; group 1 is the material's.
 
 import renderframe;
 
@@ -24,15 +24,9 @@ struct MaterialParams {
     float4 emissive;               // 32: rgb radiance (nits in physical units)
 };
 
-struct Immediates {
-    float4x4 model;                // 0-63: the draw's model coordinates to the world's
-    float4 tint;                   // 64-79
-};
-
 [[vk::binding(0, 1)]] ConstantBuffer<MaterialParams> material;
 [[vk::binding(1, 1)]] Texture2D baseTexture;
 [[vk::binding(2, 1)]] SamplerState baseSampler;
-[[vk::push_constant]] ConstantBuffer<Immediates> draw;
 
 struct VertexInput {
     float3 position : POSITION;    // location 0, vertex buffer 0
@@ -45,16 +39,19 @@ struct VertexOutput {
     float3 world : POSITION;
     float3 normal : NORMAL;
     float2 uv : TEXCOORD;
+    nointerpolation float4 tint : COLOR;
 };
 
 [shader("vertex")]
-VertexOutput vertexMain(VertexInput input) {
+VertexOutput vertexMain(VertexInput input, uint id : SV_VulkanInstanceID) {
     VertexOutput output;
-    float4 world = mul(draw.model, float4(input.position, 1.0));
+    Instance inst = instances[id];
+    float4 world = mul(inst.model, float4(input.position, 1.0));
     output.position = mul(frame.viewProjection, world);
     output.world = world.xyz;
-    output.normal = worldNormal(draw.model, input.normal);
+    output.normal = worldNormal(inst.model, input.normal);
     output.uv = input.uv;
+    output.tint = inst.tint;
     return output;
 }
 
@@ -69,9 +66,9 @@ float4 fragmentMain(VertexOutput input) : SV_Target {
         float3 h = normalize(l + v);
         specular = pow(max(dot(n, h), 0.0), material.specular.w);
     }
-    float4 base = material.baseColor * baseTexture.Sample(baseSampler, input.uv) * draw.tint;
+    float4 base = material.baseColor * baseTexture.Sample(baseSampler, input.uv) * input.tint;
     float3 direct = frame.lightColor.rgb * (1.0 / RENDER_PI);
     float3 color = base.rgb * (frame.ambient.rgb + direct * diffuse) + material.specular.rgb * direct * specular
-        + material.emissive.rgb * draw.tint.rgb;
+        + material.emissive.rgb * input.tint.rgb;
     return float4(color * frame.exposure.x, base.a);
 }
