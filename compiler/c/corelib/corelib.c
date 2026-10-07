@@ -21,6 +21,8 @@ INode *neverType;
 StructNode *arrayTypeDcl;
 StructNode *strTypeDcl;
 static int strTypeAdopted;
+StructNode *cstrTypeDcl;
+static int cstrTypeAdopted;
 PermNode *uniPerm;
 PermNode *mutPerm;
 PermNode *immPerm;
@@ -121,6 +123,19 @@ StructNode *stdlibAdoptStr(Name *name, ModuleNode *mod) {
     return strTypeDcl;
 }
 
+// core's declaration of 'cstr' is not a new struct but the compiler's own, given
+// the field and the methods it writes. The struct the compiler made for the
+// modules that have no core (stdlibInit) is emptied: core says what it holds.
+StructNode *stdlibAdoptCStr(Name *name, ModuleNode *mod) {
+    if (name != cstrTypeName || cstrTypeAdopted || mod == NULL || mod->namesym != nametblFind("core", 4))
+        return NULL;
+    cstrTypeAdopted = 1;
+    iNsTypeInit((INsTypeNode*)cstrTypeDcl, 8);
+    nodelistInit(&cstrTypeDcl->fields, 8);
+    cstrTypeDcl->flags &= ~(NameResolved | TypeChecked);
+    return cstrTypeDcl;
+}
+
 int corelibIsBuiltinTrait(INode *node) {
     return node == (INode*)regionRefTrait || node == (INode*)moveTrait || node == (INode*)copyTrait
         || node == (INode*)tracedTrait || node == (INode*)threadSafeTrait
@@ -192,6 +207,25 @@ void stdlibInit(int ptrsize) {
     strTypeDcl = newStructNode(strTypeName);
     strTypeDcl->flags |= FlagPub | NameResolved | TypeChecked | OpaqueType | DeclaredOpaque;
     strTypeName->node = (INode*)strTypeDcl;
+
+    // 'cstr', a borrowed C string: a struct of one raw pointer to bytes that
+    // end in a NUL. A name every module reaches, as 'str' is, so that the
+    // C-named modules, which have no prelude, declare their strings with it.
+    // It is built whole here, field and all, for a compile that has no core;
+    // core's own declaration of it, with its methods, replaces the field with
+    // its own (stdlibAdoptCStr). Name resolved, and type checked when first named.
+    cstrTypeDcl = newStructNode(cstrTypeName);
+    cstrTypeDcl->flags |= FlagPub | NameResolved;
+    cstrTypeName->node = (INode*)cstrTypeDcl;
+    {
+        StarNode *ptrtype = newStarNode(PtrTag);
+        ptrtype->vtexp = (INode*)u8Type;
+        FieldDclNode *field = newFieldDclNode(cstrPtrFieldName, (INode*)mutPerm);
+        field->vtype = (INode*)ptrtype;
+        field->index = 0;
+        field->flags |= FlagMethFld;
+        structAddField(cstrTypeDcl, field);
+    }
 
     // 'RegionRef', the trait a region ref struct declares with 'is' [Jon 25
     // Sep]. Each method a region may declare is optional, with a fixed shape

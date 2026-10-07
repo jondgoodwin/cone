@@ -11,8 +11,8 @@
 //   last, and keep the block; a Fin that dies adds its digit to 'log', so a
 //   log of 45 says 4 died and then 5.
 //
-// The view reaches C's '*T' through the implicit '&[]T' to '*T' coercion; once
-// that coercion is removed it is spelled 'l.viewMut() as *T'.
+// The view reaches C's '*T' with 'l.viewMut() as *T': a slice is an address and
+// a count, so it is not a pointer unless asked to be.
 
 mod fill;
 
@@ -100,7 +100,7 @@ fn main() i32 {
   mut pairs = List[Pair].empty();
   pairs.resize(8usize, new Pair(0, 0));
   mut written = 0usize;
-  fillPairs(pairs.viewMut(), pairs.len(), &mut written);
+  fillPairs(pairs.viewMut() as *Pair, pairs.len(), &mut written);
   expectUInt(u64.from(written), 3, "C wrote three");
   pairs.truncate(written);
   expectUInt(u64.from(pairs.len()), 3, "cut to what C wrote");
@@ -112,7 +112,7 @@ fn main() i32 {
   mut again = 0usize;
   mut small = List[Pair].empty();
   small.resize(2usize, new Pair(-1, -1));
-  fillPairs(small.viewMut(), small.len(), &mut again);
+  fillPairs(small.viewMut() as *Pair, small.len(), &mut again);
   small.truncate(again);
   expectUInt(u64.from(small.len()), 2, "capped at the two it was given");
   expectInt(i64.from(small[1usize].a), 3, "second pair, capped call");
@@ -121,9 +121,9 @@ fn main() i32 {
   // folder as a NUL-terminated string, far fewer bytes than the 512 it may
   mut buf = List[u8].empty();
   buf.resize(512usize, 0u8);
-  imm got = posix.getcwd(buf.viewMut(), buf.len());
+  imm got = posix.getcwd(buf.viewMut() as *u8, buf.len());
   expect(got != null, "getcwd filled the buffer");
-  imm n = libc.strlen(buf.view());
+  imm n = libc.strlen(cstr.fromPtr(buf.view() as *u8));
   expect(n > 0usize and n < 512usize, "the folder's name is short of the buffer");
   buf.truncate(n);
   expectUInt(u64.from(buf.len()), u64.from(n), "cut to the string's length");

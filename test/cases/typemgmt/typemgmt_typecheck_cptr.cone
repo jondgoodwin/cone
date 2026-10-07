@@ -1,0 +1,47 @@
+// The C boundary's crossings are explicit. A slice is an address and a count,
+// so it is not a pointer, and 'xs as *u8' takes its address; text reaches C as
+// a 'cstr', which a literal is and a String's 'cstr()' makes; a raw pointer
+// becomes a cstr only by 'cstr.fromPtr', which says its bytes end in a NUL;
+// and a cstr's pointer is 'c.ptr()'. typemgmt_cstr runs the explicit ways.
+//
+// Type-check stage only. A literal converts to a cstr, so a literal is not
+// refused anywhere here; text that is not a literal is.
+
+mod typemgmt_typecheck_cptr;
+
+import libc;
+
+fn wantPtr(p *u8) {
+}
+
+fn wantCStr(c cstr) {
+}
+
+fn slices(s &[]u8) {
+  wantPtr(s);                          //~ ErrorCPtrConv:11 "A slice is an address and a count, not a pointer"
+  imm p *u8 = s;                       //~ ErrorCPtrConv:15 "'xs as *u8'"
+  libc.fwrite(s, 1usize, s.len, libc.stderr());   //~ ErrorCPtrConv:15 "not a pointer"
+  wantCStr(s);                         //~ ErrorCPtrConv:12 "promises no NUL after its bytes"
+}
+
+fn text(t &str) {
+  wantPtr(t);                          //~ ErrorCPtrConv:11 "Text is not a pointer"
+  wantCStr(t);                         //~ ErrorCPtrConv:12 "so it is no cstr"
+  libc.strlen(t);                      //~ ErrorCPtrConv:15 "'String.from(s).cstr()' copies this"
+}
+
+fn pointers(p *u8, c cstr) {
+  wantCStr(p);                         //~ ErrorCPtrConv:12 "A raw pointer is no cstr"
+  libc.strlen(p);                      //~ ErrorCPtrConv:15 "'cstr.fromPtr(p)'"
+  wantPtr(c);                          //~ ErrorCPtrConv:11 "A cstr is not a raw pointer"
+  imm q *u8 = c;                       //~ ErrorCPtrConv:15 "Its pointer is 'c.ptr()'"
+}
+
+// None of these is refused: the explicit ways
+fn fine(s &[]u8, p *u8, c cstr) {
+  wantPtr(s as *u8);
+  wantPtr(c.ptr());
+  wantCStr(cstr.fromPtr(p));
+  wantCStr("a literal");
+  wantCStr(c);
+}

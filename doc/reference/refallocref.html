@@ -158,7 +158,8 @@ printStr(text);                              // lent as a borrow, then converted
 </pre>
 	<p>A <b>string literal is a <span class="pre">&amp;imm str</span></b>: a borrow of its text, in
 		read-only memory, that lasts as long as the program, so it may be sent to another thread.
-		The text is followed by a zero byte for C that the count leaves out. Wherever an owner of
+		The text is followed by a zero byte for C that the count leaves out, and an owner of
+		<span class="pre">str</span> keeps one after its bytes too (<a href="#cstr">below</a>). Wherever an owner of
 		<span class="pre">str</span> is wanted, in any region, a literal (and only a literal) is
 		copied into one without <span class="pre">new</span>; any other <span class="pre">&amp;str</span>
 		is copied with <span class="pre">new</span> as above.</p>
@@ -173,6 +174,50 @@ greet("Jayne");                              // the same copy, into an Rc
 		<span class="pre">s.freeze()</span> moves a <span class="pre">String</span>'s bytes into a
 		<span class="pre">So[str]</span> without copying them
 		(<a href="reftypecoll.html">collection types</a>).</p>
+
+	<h3 id="cstr">C Strings: cstr</h3>
+	<p>A C function that takes text takes a <span class="pre">const char *</span>: one pointer to bytes that
+		end in a zero, whose length it finds by scanning for the zero. Cone's name for that is
+		<span class="pre">cstr</span>, a borrowed C string, and a C binding declares its strings with it:
+		<span class="pre">extern fn puts(s cstr) i32;</span>. It is a pointer and no more (a one-field struct that
+		crosses to C as one), and it promises the zero. Nothing else does: a <span class="pre">&amp;str</span> may
+		be part of a longer text and a slice never has one, so neither converts to a
+		<span class="pre">cstr</span>, nor does a raw pointer. What does:</p>
+	<ul>
+		<li>A <b>literal</b>, wherever a <span class="pre">cstr</span> is wanted: <span class="pre">puts("hi")</span>.</li>
+		<li>A <b>String</b>, <span class="pre">s.cstr()</span>, with no copy: its block always keeps a zero after
+			its bytes, rewritten by each change, and a String that holds nothing has a static empty literal for
+			one. A zero <i>inside</i> the text would end the string early for C, so <span class="pre">cstr()</span>
+			scans for one (at <span class="pre">memchr</span>'s speed) and <b>panics</b>, at the caller's line, if it
+			finds it. It is good until the String next changes or dies.</li>
+		<li>An <b>owner of text</b> keeps the zero after its bytes too, however it was made (copied from a
+			literal or a view, or by <span class="pre">s.freeze()</span>): <span class="pre">cstr.fromOwned(&amp;owner)</span>
+			checks the text for a zero inside, as <span class="pre">cstr()</span> does.</li>
+		<li>A <b>general <span class="pre">&amp;str</span></b>, which promises nothing after its bytes, reaches C by a
+			copy: <span class="pre">String.from(s).cstr()</span>. There is no owned C-string type; a String is one.</li>
+		<li>A <b>raw pointer</b> the caller knows ends in a zero, <span class="pre">cstr.fromPtr(p)</span>: an
+			<span class="pre">argv</span> entry, what <span class="pre">getenv</span> answers when it is not null. A
+			C function that may take or answer a null string stays a <span class="pre">*u8</span> in its binding.</li>
+	</ul>
+	<p>From C, <span class="pre">c.view()</span> is the <span class="pre">&amp;str</span> of a
+		<span class="pre">cstr</span>, found by scanning for the zero and <b>not checked to be UTF-8</b> (text is UTF-8
+		by convention), <span class="pre">c.len()</span> the count of bytes before it, and
+		<span class="pre">c.ptr()</span> the pointer, for a function that takes a buffer. Copy the view into a
+		<span class="pre">String</span> to keep it (<span class="pre">String.fromCStr(c)</span>); whether C or Cone frees what
+		a C function answered is the binding's knowledge, which copies and then calls C's
+		<span class="pre">free</span>.</p>
+<pre>
+imm name String = "core";
+libc.remove(name.cstr());                    // a pointer to its bytes and the zero, no copy
+libc.remove("old.tmp");                      // a literal is a cstr where one is wanted
+imm text = libc.strerror(2i32).view();       // a &amp;str of C's answer, scanned
+libc.fwrite(bytes as *u8, 1usize, bytes.len, f);  // a buffer and a count: a pointer, asked for
+</pre>
+	<p>A slice is an address and a count, so it is <b>not</b> a pointer: the implicit conversion of a
+		slice to a raw pointer is gone, and <span class="pre">xs as *T</span> takes the address of a
+		slice's first element, for a C function that takes a buffer and a length
+		(<a href="reftypesafe.html#slicenoptr">a slice coerces to no pointer</a>). A buffer and its length are
+		two parameters in C, so they stay a <span class="pre">*u8</span> and a count.</p>
 
 	<h3 id="strmethods">The Methods of str</h3>
 	<p><span class="pre">str</span> has the methods one expects of text, written once on

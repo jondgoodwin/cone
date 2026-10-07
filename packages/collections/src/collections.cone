@@ -82,6 +82,10 @@ mod collections;
 
 import libc;
 
+// A String's own method is named 'cstr', which hides the type of that name
+// inside String's declaration; this is the type, for there
+alias CStr = cstr;
+
 // -------- List --------
 
 // A growable list of T, in one block of 'cap' slots of which the first 'used'
@@ -548,12 +552,15 @@ pub struct String is ShapeChanging, Hash {
   }
 
   // A String holding a copy of the bytes of a C string, up to its NUL: what
-  // a C function answers, or one of main's 'argv'. A null pointer is a
-  // program error, a panic at the line of the caller.
-  pub fn fromCStr(p *u8, file &[]u8 = srcFile(), line u32 = srcLine()) String {
+  // a C function answers, or one of main's 'argv'. Given a raw pointer, which
+  // C may leave null, a null one is a program error, a panic at the line of
+  // the caller; a 'cstr' is never null.
+  pub fn fromCStrPtr overload fromCStr(p *u8, file &[]u8 = srcFile(), line u32 = srcLine()) String {
     if p == null { panic("collections: a null pointer is not a C string", file, line); }
-    String.from(mem.sliceFromParts(p, libc.strlen(p)));
+    String.from(CStr.fromPtr(p).view());
   }
+
+  pub fn fromCStrValue overload fromCStr(c CStr) String { String.from(c.view()); }
 
   // The views of 'parts' one after another, with 'sep' between each two:
   // 'String.join(names.view(), ", ")'. No parts make an empty String.
@@ -898,12 +905,17 @@ pub struct String is ShapeChanging, Hash {
     out;
   }
 
-  // A pointer to its bytes with a NUL after them, for a C function. It is
-  // good until the string next changes or dies; the NUL is not one of its
-  // bytes.
-  pub fn cstr(self &) *u8 {
-    if buf.ptr == null { return &"" as *u8; }
-    buf.ptr;
+  // Its bytes as a C string, for a C function: they already have a NUL after
+  // them, so nothing is copied. It is good until the string next changes or
+  // dies; the NUL is not one of its bytes. A NUL inside the text would end the
+  // string early for C, so it is a panic, at the line of the caller. An empty
+  // String holds no block, and its C string is the static empty literal.
+  pub fn cstr(self &, file &[]u8 = srcFile(), line u32 = srcLine()) CStr {
+    if buf.ptr == null { return ""; }
+    if libc.memchr(buf.ptr, 0i32, buf.used) != null {
+      panic("collections: String.cstr of text holding a NUL byte, which would end the C string early", file, line);
+    }
+    CStr.fromPtr(buf.ptr);
   }
 }
 

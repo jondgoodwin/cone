@@ -82,6 +82,8 @@ void modAddNamedNode(ModuleNode *mod, Name *name, INode *node) {
     // program, and its 'str' is a struct of its own that hides the compiler's
     if (!name->node || name->node == node
         || (name == strTypeName && name->node == (INode*)strTypeDcl && node->tag == StructTag
+            && mod->namesym == nametblFind("core", 4))
+        || (name == cstrTypeName && name->node == (INode*)cstrTypeDcl && node->tag == StructTag
             && mod->namesym == nametblFind("core", 4))) {
         nametblHookNode(name, (INode*)node);
         namespaceSet(&mod->namespace, name, node);

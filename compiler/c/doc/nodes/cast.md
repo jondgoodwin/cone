@@ -168,6 +168,17 @@ pointer or a reference and back; a slice reinterprets as neither
 (`ErrorInvType`). Generation picks `ptrtoint`, `inttoptr` or a bitcast by the
 LLVM kinds, so it needs nothing of its own for them.
 
+**A slice `as` a pointer to its own element type is the one conversion `as`
+makes** (`xs as *u8`): a slice is two words, so it cannot be a reinterpretation, and
+`castTypeCheck` turns the node into a conversion (`FlagConvert`) before the size
+test, which `genlConvert` generates as the extraction of the slice's pointer word.
+It is what the implicit slice-to-pointer coercion used to build, asked for:
+`itypeMatches` no longer accepts a slice for a pointer, and `iexpCoerce` reports
+the attempt (`iexpCPtrMismatch`, `ErrorCPtrConv`) in the way it reports a `bool`
+for a number, building the conversion anyway so that nothing more is said. The same
+code refuses text (`&str`), a `cstr` and a raw pointer where the other is wanted,
+each message naming the explicit spelling.
+
 **Convert** is a bound pattern's conversion (`FlagMatchBind`), the only one
 type check sees: an injected conversion is built already typed. It permits,
 and nothing else:

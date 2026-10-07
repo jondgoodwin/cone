@@ -218,6 +218,56 @@ pub struct @opaque str {
   }
 }
 
+// 'cstr', a borrowed C string: one pointer to bytes that end in a NUL, which is
+// what C's 'const char *' is, so a C binding declares its strings with it
+// ('extern fn puts(s cstr) i32'). Its length is found by scanning for the NUL.
+// The compiler makes the type (corelib.c), so the C-named modules can name it;
+// this is its field and its methods.
+//
+// What reaches C as one: a literal, which converts where a 'cstr' is wanted
+// ('fromLiteral'); a String's 'cstr()' (collections); an owner of text,
+// 'cstr.fromOwned'. A general '&str' promises no NUL after its bytes (it may be
+// a part of a longer text), so it is copied into a String first:
+// 'String.from(s).cstr()'.
+pub struct cstr {
+  p *u8;
+
+  // The C string a pointer already is. The caller promises it points at bytes
+  // that end in a NUL and stay as they are while the cstr is used: this is the
+  // way from C's raw pointers (an 'argv' entry, what 'getenv' answers when it
+  // is not null) to a cstr.
+  pub fn fromPtr(ptr *u8) cstr inline { new cstr(ptr); }
+
+  // What a literal becomes where a cstr is wanted. A literal's bytes are
+  // followed by a NUL, in the program for as long as it runs.
+  pub fn fromLiteral(text &str) cstr inline {
+    imm b &[]u8 = text;
+    new cstr(b as *u8);
+  }
+
+  // The C string of an owner of text, which keeps a NUL after its bytes. A NUL
+  // inside the text would end the string early for C, so it is a panic.
+  pub fn fromOwned(owner &So[str], file &[]u8 = srcFile(), line u32 = srcLine()) cstr inline {
+    imm b &[]u8 = &**owner;
+    if libc.memchr(b as *u8, 0i32, b.len) != null {
+      panic("cstr: text holding a NUL byte cannot be a C string", file, line);
+    }
+    new cstr(b as *u8);
+  }
+
+  // The pointer, for a C function that takes a buffer and not a string
+  pub fn ptr(self) *u8 inline { p; }
+
+  // How many bytes come before the NUL
+  pub fn len(self) usize inline { libc.strlen(self); }
+
+  // Its text, found by scanning for the NUL and not checked to be UTF-8 (text
+  // is UTF-8 by convention). Copy it into a String to keep it. A cstr is a
+  // pointer, held by value; the text is the bytes it points at, so the view
+  // does not borrow the cstr itself.
+  pub fn view(self) &str inline { mem.sliceFromParts(p, libc.strlen(self)) as &str; }
+}
+
 // A panic unless start up to end is a range of the text between characters.
 // Apart from 'slice' so that nothing there branches ahead of the borrow it
 // returns (a GPU target refuses a reference chosen at run time)

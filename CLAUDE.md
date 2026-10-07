@@ -35,7 +35,9 @@ Visual Studio projects stay at the root.
   Congo compiles dependents against that. `core` is the prelude every module
   imports (`Option`, `Result`, the methods of `str`, the text body whose struct
   the compiler makes and core's `pub struct @opaque str` gives its methods, all
-  `inline`, the `So` and `Rc` regions, `Rwcell`, the
+  `inline`, and `cstr`, C's `const char *`, a one-pointer struct the compiler makes
+  too so that the C-named modules can declare their strings with it, whose
+  field and methods are core's, the `So` and `Rc` regions, `Rwcell`, the
   lock permission for `Rc` (`Rc[Rwcell, T]`), `TypeRecord`, the
   per-type record the compiler builds, `mem`, holding the intrinsics
   declared with `@intrinsic`, and `MemOrder`, the orderings its atomic ones

@@ -1,0 +1,93 @@
+// A cstr is C's 'const char *': one pointer to bytes that end in a NUL, which a
+// C binding declares its strings with. A literal converts to one where one is
+// wanted; it is read back as text by scanning for the NUL; a raw pointer
+// becomes one only by 'cstr.fromPtr', and a slice's pointer is asked for with
+// 'as' (typemgmt_typecheck_cptr refuses the implicit ways).
+//
+// Every number is worked out by hand, counting the bytes of each literal:
+// "hello" is 5, "" is 0, "core" is 4, "ab\x00cd" is 5 bytes to the compiler and
+// 2 to C, which stops at the NUL, and 'b' is 98.
+
+mod typemgmt_cstr;
+
+import stdio use *;
+import libc;
+
+fn show(label &[]u8, n u64) {
+  printStr(label);
+  printStr(" = ");
+  printUInt(n);
+  printStr("\n");
+}
+
+// A function whose parameter is a cstr: a literal arrives as one
+fn lengthOf(c cstr) u64 {
+  u64.from(libc.strlen(c));
+}
+
+fn pick(yes bool) cstr {
+  if yes { "yes"; } else { "no"; }
+}
+
+// Blocks of the sizes an owner's copy asks for, filled with 0xFF and given
+// back, so that a block the copy is handed holds 0xFF where its NUL belongs
+// unless the copy writes the NUL
+fn dirtyTheHeap() {
+  mut n = 8usize;
+  while n <= 96usize {
+    imm p = libc.malloc(n);
+    libc.memset(p, 255i32, n);
+    libc.free(p);
+    n = n + 8usize;
+  }
+}
+
+fn main() {
+  // A literal where a cstr is wanted: an argument of a C binding and of a
+  // function of ours, a return, a local and a field
+  show("strlen hello", u64.from(libc.strlen("hello")));
+  show("strlen empty", u64.from(libc.strlen("")));
+  show("lengthOf core", lengthOf("core"));
+  show("C stops at a NUL", u64.from(libc.strlen("ab\x00cd")));
+  show("pick yes", u64.from(pick(true).len()));
+  show("pick no", u64.from(pick(false).len()));
+  imm c cstr = "core";
+  show("local len", u64.from(c.len()));
+
+  // Read back as text: the bytes up to the NUL
+  imm text = c.view();
+  show("view len", u64.from(text.len()));
+  show("view equals", if text == "core" { 1u64; } else { 0u64; });
+  show("view of a NUL inside", u64.from(cstr.fromLiteral("ab\x00cd").view().len()));
+  show("view of empty", u64.from(cstr.fromLiteral("").view().len()));
+
+  // The pointer, for a buffer parameter; and a pointer made a cstr
+  imm p = c.ptr();
+  show("ptr byte 1 of core", u64.from(p[1usize]));
+  show("ptr byte 4 is the NUL", u64.from(p[4usize]));
+  imm back = cstr.fromPtr(&"xyz" as *u8);
+  show("fromPtr len", u64.from(back.len()));
+  show("strcmp equal", if libc.strcmp(c, "core") == 0i32 { 1u64; } else { 0u64; });
+  show("strcmp differs", if libc.strcmp(c, "cord") == 0i32 { 1u64; } else { 0u64; });
+
+  // A slice's pointer, asked for with 'as': the first byte, and the NUL a
+  // literal keeps after its bytes, which the slice leaves out of its count
+  imm s &[]u8 = "AB";
+  imm sp = s as *u8;
+  show("slice len", u64.from(s.len));
+  show("slice as pointer, byte 1", u64.from(sp[1usize]));
+  show("literal NUL after the slice", u64.from(sp[2usize]));
+
+  // An owner of text keeps the same NUL after its bytes: a copy of a literal,
+  // by So and by Rc, and the C string of the owner
+  dirtyTheHeap();
+  imm so So[str] = "abc";
+  imm sobytes &[]u8 = &*so;
+  show("So[str] len", u64.from(sobytes.len));
+  show("So[str] NUL", u64.from((sobytes as *u8)[3usize]));
+  show("So[str] as a cstr", u64.from(cstr.fromOwned(&so).len()));
+  dirtyTheHeap();
+  imm shared Rc[str] = "wxyz";
+  imm sharedbytes &[]u8 = &*shared;
+  show("Rc[str] NUL", u64.from((sharedbytes as *u8)[4usize]));
+}

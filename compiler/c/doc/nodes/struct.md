@@ -1495,6 +1495,22 @@ declaration hide the compiler's. Every method is `inline`, so none is emitted
 unless called, and none instantiates a generic (a `str` method that compared
 slices would put `mem.sliceEq[u8]` into every compile that loads core).
 
+**`cstr` is declared the same way, and has a field.** `cstr` is C's `const char *`
+(a one-field struct holding a `*u8`, which crosses to C as one pointer: `genlCAbiPass` makes a struct of 8 bytes one
+integer on Win64), and the C-named modules, which get no prelude and
+cannot import core (core imports libc), declare their strings with it. So the compiler
+makes the struct whole in `stdlibInit` (`cstrTypeDcl`, name resolved, type checked on
+first use, with the field `p`) and binds the name for every module as it does
+`str`. Core's source declares `pub struct cstr { p *u8; ... }` with its methods
+(`fromPtr`, `fromLiteral`, `fromOwned`, `ptr`, `len`, `view`), and `stdlibAdoptCStr`
+hands the parser the compiler's node, emptied, for that declaration: a compile
+with core gets core's field and methods, one without (libc's own) the
+compiler's field. A literal converts to it through `fromLiteral` (`slitFromLiteralFn`),
+so the hook is not special to it; the struct adds no case to `slitCoerce`.
+`cstr` is not a keyword, so a type may declare a method of that name
+(collections' `String.cstr`), which hides the type inside that declaration:
+collections spells the type there through an alias.
+
 ## An enum extending an enum
 
 `extends` on an enum names the enum whose variants this one copies into its set. The
