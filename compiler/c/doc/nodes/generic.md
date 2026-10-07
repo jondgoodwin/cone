@@ -263,8 +263,15 @@ refusing, `ErrorGenParmConstr`, a name that resolves to no trait — and then
 resolves every clause of every written condition (`genericConditionNameRes`),
 keeping a condition whose clauses each have a subject that is a type parameter
 (the function's own, or its generic type's) and a name that is a trait that is
-not generic, or a type that is neither a generic type nor a trait
-(`genericNamedType`): `where T is bool` [Jon 27 Sep]. A subject that is anything
+not generic, or an instance of a generic trait written with its type arguments,
+`Stack[T]` (`genericNamedGenericTrait`: a call whose head names a generic trait,
+given as many arguments as the trait has parameters, `ErrorArgCount`; not in a
+condition on an `is` entry), or a type that is neither a generic type nor a trait
+(`genericNamedType`): `where T is bool` [Jon 27 Sep]. The inline slot takes the
+same, `[T, S Stack[T]]`. The arguments are resolved with the parameters hooked so
+far, so a bound names the parameters written before it. A generic trait named
+with no arguments names no trait, `ErrorGenParmConstr` inline and `ErrorWhereTrait`
+in a clause, each saying to give the arguments. A subject that is anything
 else is `ErrorWhereSubject`, and a name that is neither `ErrorWhereTrait`; a name
 that bound nothing was reported as unknown where it was resolved. A condition
 with any clause refused is dropped whole, since an `or` missing a side would say
@@ -432,13 +439,35 @@ false diagnostic. The cost is silent acceptance — see Hazards.
    type naming a generic's own type parameter — the signature of `&half`, a
    generic function not instantiated — captures nothing. Region and permission
    otherwise take no part: the instance's own check of the call judges them. Any other
-   shape captures nothing. A slot filled twice must agree by `itypeIsSame`.
+   shape captures nothing. A slot filled twice must agree by `itypeIsSame`. A
+   captured struct is held as a use of its name: an argument whose type is the
+   struct's declaration itself (a block's or an `if`'s value types so,
+   `iexpMultiInfer`) would be cloned into the instance as a second copy of the
+   struct, methods and all.
    Any slot still NULL is "could not infer". A generic method named bare inside its type's braces
    is called on an implicit `self` that is not among the arguments, so they are
    matched against the parameters after it; named through its type,
    `Holder.pick(&h, 6)`, the receiver is the first argument. The instance's name
    use keeps the `FlagQualified` of the name it stands for, so the second is
    never rewritten to `self.pick` (`genericKeepQualified`).
+
+   **A type parameter that only a bound names** — `T` in `[T, S Stack[T]]` — is
+   inferred last, from the bound (`genericInferFromBounds`, for a function, a
+   generic method and a generic type's literal), when a slot is still empty after
+   the arguments. For each clause of the `where` list whose name is a generic trait
+   and whose subject has its argument, each method the trait requires is matched
+   with the argument type's method of that name (the one candidate with as many
+   parameters, `genericMatchMethod`): every parameter after `self`, then the
+   return type, is matched by `genericInferType`, the trait's signature from its
+   template against the method's checked one, capturing what the *trait's* own
+   parameters are; those are then matched against the clause's arguments, which
+   capture the function's. It fills empty slots only and ignores a disagreement, so
+   the constraint, decided afterwards as ever, is what refuses a type whose
+   methods contradict one another, naming the method. A slot an argument already
+   filled stays: an unsuffixed literal passed as `v T` is `i32`, so `fill(&mut box, 8)`
+   asks for `Stack[i32]` and is refused for a box of `i64`. No associated type is
+   involved: a structural trait has no impl to look an answer up in, so the
+   methods are the only place it can be read.
 
 **A generic method called on a receiver** — `h.pick(6)`, `h.pick[i32](6)` — is
 instantiated by `fnCallLowerMethod` rather than here, since the method is known
@@ -550,6 +579,19 @@ is met by that type alone (`itypeIsSame`). Every other question a clause asks is
   match is otherwise exact, and a virtual reference's is exact throughout. A **marker** — a trait requiring
   nothing of a value, the compiler's own built-in traits among them — is never
   fitted: every type would fit it, so fitting it would say nothing.
+- **An instance of a generic trait** (`Stack[T]` in a clause) is made at the
+  arguments before it is asked (`genericClauseTrait`): the clause's trait is cloned
+  with the parameters hooked to their arguments, as a body is, and type checked,
+  which memoizes it as any `Stack[i64]` written in a signature, so the declaration
+  test (`is Stack[i64]`) and the structural one above see the instance the rest of
+  the program names. The walk it is checked under is the use that asked for the
+  instance (`genericCondState`, `genericCondSite`, saved and restored around
+  `genericRequirementsMet` and `genericAbsentMembers`); a condition decided with
+  none, to explain a refusal, uses a fresh one. A clause whose instance could not
+  be made was reported there and is unknown here. The instance is a trait with
+  members, so the test is `structMatches` under `Monomorph` with `Self` the type
+  asked about, exactly as for a non-generic trait; `Stack[i64]` and `Stack[f64]`
+  are different traits, and a type may fit both.
 
 **A condition is evaluated whole** (`genericConditionValue`), `or` and `and` as
 in an expression, the right side asked only where the left does not decide it,
@@ -573,7 +615,14 @@ the generic, the clause and the argument, or, for a condition joined by `or` or
 (`genericBindingsCat`), and an error node stands for the instance,
 so nothing inside the generic is checked against arguments it was never meant
 for. A variant answers to its enum's clauses. A type position holding the error
-node settles to `errorType` (`itypeTypeCheck`), so what uses it is quiet. A failed
+node settles to `errorType` (`itypeTypeCheck`), so what uses it is quiet. A
+clause naming an instance of a generic trait says why the argument does not fit
+it (`genericFitWhy`): the first method the trait requires that the type lacks, or
+has only with another signature, each spelled as the instance's types come to
+(`genericSigCat`: `pop(self &mut) Option[i64]`), then a field likewise; a non-struct
+is told only a struct fits by its methods. The clause is spelled with the instance's
+arguments (`Stack[i64]`), not as written. A non-generic trait's message is
+unchanged. A failed
 instance is never memoized, so each use asking for it is refused where it is.
 
 **On a method of a generic type, a clause over the type's parameters is a
@@ -755,6 +804,17 @@ are [Names and Namespaces](../../../../doc/design/names-and-namespaces.md), "Sym
   test.
 - **Only a struct fits a trait structurally.** A number type meets the markers
   granted to it and no trait with members.
+- **A clause naming a generic trait's instance type checks and instantiates
+  while the evaluator runs**, so evaluating a condition can instantiate other
+  generics and re-enter `genericRequirementsMet`. Whatever it keeps for a
+  use (`genericCondSite`, `genericCondState`) is saved and restored around the
+  call, never cleared; a loop over a list in the evaluator must not share its
+  counter with an inner loop (`nodesFor` counts down in `cnt`).
+- **A bounded generic's body is checked against the argument type, not the
+  trait.** In `drain[T, S Stack[T]]`, a call `s.push(v)` is judged in each
+  instance by the argument's own method, which the constraint has already shown
+  to have the trait's signature at those arguments. A call of a method the trait
+  does not declare is accepted whenever every argument happens to have it.
 - **`Self` is read as the implementer only where it is written `Self`.** The
   requirement's type is compared as written (`fnSigReqTypeSame`), through a
   reference, pointer or slice, so a requirement naming its trait outright means

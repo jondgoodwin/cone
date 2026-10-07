@@ -16,6 +16,15 @@ mod dict;
 import testing use *;
 import collections use *;
 
+// Whether an insert replaced an entry: the old value came back. It is dropped here,
+// so a value with a finalizer dies here
+fn wasHeld[T](old Option[T]) bool {
+  match old {
+    case is Some {true;}
+    case is None {false;}
+  }
+}
+
 fn main() i32 {
   // Empty: no block yet
   mut d = Dict[String, i64].empty();
@@ -28,12 +37,18 @@ fn main() i32 {
   expectUInt(u64.from(keysOf(&d).len()), 0, "no keys");
 
   // Insert, then replace
-  expectBool(d.insert(String.from("core"), 1), false, "a new key");
+  expectBool(wasHeld(d.insert(String.from("core"), 1)), false, "a new key");
   expectUInt(u64.from(d.capacity()), 7, "the first entry makes 8 buckets, room for 7");
-  expectBool(d.insert(String.from("stdio"), 2), false, "another new key");
-  expectBool(d.insert(String.from("core"), 5), true, "the same key replaces");
+  expectBool(wasHeld(d.insert(String.from("stdio"), 2)), false, "another new key");
+  expectBool(wasHeld(d.insert(String.from("core"), 5)), true, "the same key replaces");
   expectUInt(u64.from(d.len()), 2, "replacing adds nothing");
   expectInt(*d["core"], 5, "the replaced value");
+  match d.insert(String.from("core"), 6) {
+    case imm old Some {expectInt(old.value, 5, "a replacing insert answers the old value");}
+    case is None {expect(false, "a replacing insert answers the old value");}
+  }
+  expectInt(*d["core"], 6, "and holds the new one");
+  d.insert(String.from("core"), 5);
   expectInt(*d["stdio"], 2, "the other value");
   expectBool(d.contains("stdio"), true, "contains stdio");
   expectBool(d.contains("std"), false, "not a prefix of a key");

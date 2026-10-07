@@ -1,0 +1,39 @@
+// A collection built with '<-' and then borrowed into a generic function that
+// infers its type argument from it. 'new List[i64] <- 1, 2, 3' is a block (the
+// list is built in a variable the block hands on), and a block's value is typed
+// as the struct's declaration itself, which inference captured as the type
+// argument and instantiating 'used' cloned as a second copy of the collection,
+// methods and all, where it stopped with 'cloning is not implemented for a node
+// of tag 4'. Every expected value is worked out by hand:
+// - '1, 2, 3' appends three values: 3
+// - 'new List[i64](100) <- fill 0' fills the 100 slots it has room for: 100
+// - two pairs with different keys give a dictionary of 2, and the third's key
+//   repeats the first's, so it replaces that value and adds none: 2
+// - a set's third element repeats the first, and a set holds each once: 2
+
+mod inferblock;
+
+import testing use *;
+import collections use *;
+
+fn used[C](c &C) usize { c.len(); }
+
+fn main() i32 {
+  imm l = new List[i64] <- 1i64, 2i64, 3i64;
+  expectUInt(u64.from(used(&l)), 3, "a list built with '<-'");
+
+  imm w = new List[i64](100usize) <- fill 0i64;
+  expectUInt(u64.from(used(&w)), 100, "a list filled to its capacity");
+
+  imm d = new Dict[String, i64] <- String.from("a"): 1i64, String.from("b"): 2i64, String.from("a"): 3i64;
+  expectUInt(u64.from(used(&d)), 2, "a dictionary built with '<-'");
+
+  imm s = new Set[i64] <- 1i64, 2i64, 1i64;
+  expectUInt(u64.from(used(&s)), 2, "a set built with '<-'");
+
+  mut m = new List[i64] <- 4i64;
+  m <- 5i64;
+  expectUInt(u64.from(used(&m)), 2, "a list built with '<-' and appended to");
+
+  done();
+}

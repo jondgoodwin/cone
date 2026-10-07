@@ -1,0 +1,75 @@
+// A type argument inferred from a variable whose value is a block's or an
+// 'if''s. Those two give the type their branches agree on, and what they hold is
+// the struct's declaration itself, not a use of its name: inference captured
+// that declaration as the type argument, and instantiating the generic function
+// cloned it into the instance as a second copy of the struct, methods and all.
+// The clone met a method's checked body, whose blocks hold the 'blockret' that
+// type check ends a block with, and stopped with 'cloning is not implemented for
+// a node of tag 4'. No call below writes a type argument.
+//
+// The methods end in a statement ('if ... { ... }') so that each body holds a
+// 'blockret', which is what the clone could not copy; 'Cell[T]' is a generic
+// type's instance, 'Tally' a plain struct.
+//
+// Each printed value was checked by hand against the source:
+// - block: 41, the value Tally holds
+// - if: 7, the branch taken, as 'a' holds 41 and is above 0
+// - mut: 1 then add 2 gives 3, and adding -5 changes nothing, as 'add' ignores
+//   a number not above 0
+// - same-type: 41 + 5, a block's Tally and a plain one inferring the same C, so
+//   'both' accepts them as one type
+// - cell-block: 9, a Cell[i64] from a block
+
+mod generic_infer_value_type;
+
+import stdio use *;
+
+struct Tally {
+  n i64;
+  fn add(self &mut, k i64) {
+    if k > 0i64 {
+      n = n + k;
+    }
+  }
+  fn get(self &) i64 { n; }
+}
+
+struct Cell[T] {
+  v T;
+  fn set(self &mut, x T) {
+    if true {
+      v = x;
+    }
+  }
+  fn get(self &) T { v; }
+}
+
+fn peek[C](c &C) i64 { c.get(); }
+fn both[C](x &C, y &C) i64 { x.get() + y.get(); }
+
+fn show(label &[]u8, n i64) {
+  printStr(label);
+  printStr(" ");
+  printInt(n);
+  printStr("\n");
+}
+
+fn main() i32 {
+  imm a = { new Tally(41i64); };
+  show("block", peek(&a));
+
+  imm b = if a.get() > 0i64 { new Cell[i64](7i64); } else { new Cell[i64](8i64); };
+  show("if", peek(&b));
+
+  mut c = { new Tally(1i64); };
+  c.add(2i64);
+  c.add(-5i64);
+  show("mut", peek(&c));
+
+  imm d = new Tally(5i64);
+  show("same-type", both(&a, &d));
+
+  imm e = { new Cell[i64](9i64); };
+  show("cell-block", peek(&e));
+  0i32;
+}

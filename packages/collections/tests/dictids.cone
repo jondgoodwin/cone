@@ -20,6 +20,15 @@ mod dictids;
 import testing use *;
 import collections use *;
 
+// Whether an insert replaced an entry: the old value came back. It is dropped here,
+// so a value with a finalizer dies here
+fn wasHeld[T](old Option[T]) bool {
+  match old {
+    case is Some {true;}
+    case is None {false;}
+  }
+}
+
 // Two halves, a word each: the hash is supplied, the fields in order
 struct Id is Hash {
   pub slot u32;
@@ -101,7 +110,7 @@ fn integers() {
     k = k + 1u64;
   }
   expectUInt(wrong, 0, "none of the next hundred");
-  expectBool(d.insert(77u64, 1u64), true, "inserting a held key replaces");
+  expectBool(wasHeld(d.insert(77u64, 1u64)), true, "inserting a held key replaces");
   expectUInt(*d[&77u64], 1, "the replaced value");
   d.insert(77u64, 231u64);
   expectUInt(u64.from(d.len()), 10000, "replacing adds nothing");
@@ -130,7 +139,7 @@ fn integers() {
   // Put the even ones back, over the removed buckets
   k = 0u64;
   while k < 10000u64 {
-    if d.insert(k, k * 5u64) { wrong = wrong + 1u64; }
+    if wasHeld(d.insert(k, k * 5u64)) { wrong = wrong + 1u64; }
     k = k + 2u64;
   }
   expectUInt(wrong, 0, "the even keys were new again");
@@ -172,7 +181,7 @@ fn ids() {
   expectInt(*d[&new Id(5u32, 3u32)], -2, "generation 3");
   expectInt(*d[&new Id(5u32, 1u32)], -1, "generation 1");
   expectInt(*d[&new Id(5u32, 11u32)], 5, "generation 11, the first");
-  expectBool(d.insert(new Id(5u32, 1u32), -3), true, "the same id replaces");
+  expectBool(wasHeld(d.insert(new Id(5u32, 1u32), -3)), true, "the same id replaces");
   match d.remove(&new Id(5u32, 3u32)) {
     case imm v Some {expectInt(v.value, -2, "removed generation 3");}
     case is None {expect(false, "removed generation 3");}
