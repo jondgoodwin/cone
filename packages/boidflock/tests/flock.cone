@@ -1,0 +1,97 @@
+// Forty birds over a home point for three minutes, on ground with a hill in
+// it: they stay near home, never touch the ground or the hill, keep their
+// speed between the limits, keep together, and beat their wings faster
+// climbing than descending.
+//
+// The ground: gentle swell everywhere (2 m) and a hill 30 m high, 35 m wide
+// (a Gaussian), 70 m east of home, so the birds' leash would take some of
+// them over it.
+
+mod flock;
+
+import libc;
+import testing use *;
+import stdio use *;
+import collections use List;
+import geomath use *;
+import boidflock use *;
+
+fn hillGround(x f32, z f32) f32 {
+  imm dx = x - 70.;
+  imm dz = z - 10.;
+  30. * libc.expf(-(dx * dx + dz * dz) / (2. * 35. * 35.)) + 2. * sin(x * 0.05) * cos(z * 0.07);
+}
+
+fn main() i32 {
+  imm home = new Vec3(0., 1., 0.);
+  imm params = FlockParams.standard(home);
+  mut flock = Flock.make(40usize, params, 7u32, &hillGround);
+  expectInt(i64.from(flock.birds.len()), 40i64, "forty birds");
+  imm dt = 1. / 30.;
+  mut farthest = 0.;
+  mut lowest = 1000.;
+  mut slowest = 1000.;
+  mut fastest = 0.;
+  mut closest = 1000.;
+  mut nearestSum = 0.;
+  mut nearestCount = 0.;
+  mut climbRate = 0.;
+  mut climbN = 0.;
+  mut diveRate = 0.;
+  mut diveN = 0.;
+  mut glideN = 0.;
+  mut flapN = 0.;
+  mut spread = 0.;
+  mut steps = 0;
+  while steps < 5400 {
+    flock.step(dt, &hillGround);
+    mut i = 0usize;
+    while i < flock.birds.len() {
+      imm b = *flock.birds[i];
+      imm dx = b.pos.x - home.x;
+      imm dz = b.pos.z - home.z;
+      imm hd = (dx * dx + dz * dz).sqrt();
+      if hd > farthest { farthest = hd; }
+      imm clear = b.pos.y - hillGround(b.pos.x, b.pos.z);
+      if clear < lowest { lowest = clear; }
+      imm sp = b.vel.length();
+      if sp < slowest { slowest = sp; }
+      if sp > fastest { fastest = sp; }
+      if steps > 600 {
+        if b.vel.y > 1. and b.mode == MODE_FLAP { climbRate = climbRate + b.rate; climbN = climbN + 1.; }
+        if b.vel.y < -1. and b.mode == MODE_FLAP { diveRate = diveRate + b.rate; diveN = diveN + 1.; }
+        if b.mode == MODE_GLIDE { glideN = glideN + 1.; } else { flapN = flapN + 1.; }
+      }
+      if steps % 30 == 0 and steps > 600 {
+        mut nearest = 1000.;
+        mut j = 0usize;
+        while j < flock.birds.len() {
+          if j != i {
+            imm d = (*flock.birds[j]).pos.distance(b.pos);
+            if d < nearest { nearest = d; }
+          }
+          j = j + 1usize;
+        }
+        if nearest < closest { closest = nearest; }
+        nearestSum = nearestSum + nearest;
+        nearestCount = nearestCount + 1.;
+      }
+      i = i + 1usize;
+    }
+    steps = steps + 1;
+  }
+  print <- "farthest from home "; print <- farthest; print <- " m; lowest clearance "; print <- lowest;
+  print <- " m; speed "; print <- slowest; print <- " to "; print <- fastest; print <- "; closest pair "; print <- closest;
+  print <- " m; mean nearest "; print <- nearestSum / nearestCount; print <- " m; flap rate climbing ";
+  print <- climbRate / climbN; print <- " Hz, diving "; print <- diveRate / diveN; print <- " Hz; gliding share ";
+  print <- glideN / (glideN + flapN); print <- "\n";
+  expectBool(farthest < params.homeRadius * 1.6, true, "the birds stay within 1.6 home radii of home");
+  expectBool(lowest > 3., true, "no bird comes within 3 m of the ground or the hill");
+  expectBool(slowest > params.minSpeed * 0.85 and fastest < params.maxSpeed * 1.15, true, "speeds stay in the limits (birds cannot hover)");
+  expectBool(closest > 0.2, true, "no two birds touch");
+  expectBool(nearestSum / nearestCount < 6., true, "a bird's nearest neighbour is within 6 m on average: they flock");
+  expectBool(climbN > 100. and diveN > 100., true, "birds both climb and dive");
+  expectBool(climbRate / climbN > diveRate / diveN + 2., true, "wings beat faster climbing than diving");
+  expectBool(glideN / (glideN + flapN) > 0.1 and glideN / (glideN + flapN) < 0.7, true, "they glide between a tenth and 7 tenths of the time");
+  done();
+}
