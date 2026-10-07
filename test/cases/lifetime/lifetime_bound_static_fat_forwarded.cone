@@ -1,0 +1,51 @@
+// A global's thin borrow, slice and '&str', each handed to a generic
+// bounded by ''static' that forwards it to a second one with the same bound.
+// The parameter of the first function is the caller's borrow, which its
+// bound makes global in the instance, as a thin reference's is: a slice's
+// and a '&str''s too.
+//
+// Verdict: accept; prints 7, 2, 3, 3 and 20.
+// Basis: language rule (3 Oct 2026): 'T + 'static' says T holds no
+// non-static borrow; a borrow of a global lasts every lifetime, whether the
+// reference is a pointer or a pointer and a count (refmodule.html names the
+// global lifetime ''static'; reflifefn.html, "Lifetime bounds").
+// Master 0fa1c7cd: a slice was refused, ErrorLifetimeBound at the forwarding
+// call 'inner[T](x)', "as instantiated by" the call in main; the thin
+// borrow and the '&str' were accepted.
+
+mod lifetime_bound_static_fat_forwarded;
+
+import stdio use *;
+
+imm arr Array[u64, 3] = [1u64, 2u64, 3u64];
+imm seed u64 = 7u64;
+imm bytes Array[u8, 3] = [104u8, 105u8, 33u8];
+
+fn inner[T + 'static](x T) T {
+  x;
+}
+
+fn keep[T + 'static](x T) T {
+  inner[T](x);
+}
+
+fn keepTwice[T + 'static](x T) T {
+  keep[T](inner[T](x));
+}
+
+fn main() {
+  imm thin = keep(&imm seed);
+  printInt(i64.from(*thin));
+  printStr("\n");
+  imm slice = keep(&[]imm arr);
+  printInt(i64.from(slice[1]));
+  printStr("\n");
+  printInt(i64.from(slice.len));
+  printStr("\n");
+  imm text = keep(&[]imm bytes as &str);
+  printInt(i64.from((text as &[]u8).len));
+  printStr("\n");
+  imm twice = keepTwice(&[]imm arr);
+  printInt(i64.from(twice[0] + twice[1] + twice[2]) * 3 + 2);
+  printStr("\n");
+}
