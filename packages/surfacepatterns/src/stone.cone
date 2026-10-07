@@ -1,0 +1,156 @@
+// ======== Stone: a rough rock face, and rounded stones laid side by side ========
+//
+// Two patterns. 'bakeRock' is a rough natural rock surface: lumpy ridged
+// noise over fine grain, split into blocks by dark cracks (the edges of a
+// Voronoi tiling), banded faintly by strata, with lichen on the upper faces.
+// 'bakeEdgingStones' is rounded fieldstones packed in a bed of soil, as along a
+// garden's edge or a path: each stone a dome rising from the earth in its own
+// size, grey to brown, with lichen and moss on top.
+
+pub struct RockParams {
+  pub size i32;               // texels a side
+  pub tileMetres f32;         // the tile's side, metres
+  pub seed u32;
+  pub blockSize f32;          // metres: the blocks the cracks split the face into
+  pub relief f32;             // metres from the deepest crack to the highest lump
+  pub colorA Color;           // linear: the palest rock
+  pub colorB Color;           // the darkest
+  pub lichen Color;
+  pub lichenAmount f32;       // 0 to 1
+  pub strata f32;             // 0 to 1: how strong the banding is
+
+  // Grey granite with warm bands and pale-green lichen, blocks about 0.7 m,
+  // on a 2.1 m tile
+  pub fn granite(size i32, seed u32) RockParams {
+    new RockParams(size, 2.1, seed, 0.7, 0.12, rgb255(176., 168., 156.), rgb255(70., 68., 68.),
+      rgb255(150., 156., 118.), 0.3, 0.4);
+  }
+}
+
+pub struct EdgingStoneParams {
+  pub size i32;               // texels a side
+  pub tileMetres f32;         // the tile's side, metres
+  pub seed u32;
+  pub stoneSize f32;          // metres: the mean diameter
+  pub jitter f32;             // 0 a regular grid, 1 the most irregular
+  pub gap f32;                // metres between stones at their widest
+  pub height f32;             // metres a stone stands above the soil
+  pub colorA Color;           // linear: the palest stone
+  pub colorB Color;           // the darkest
+  pub lichen Color;
+  pub soil Color;
+  pub variation f32;          // brightness varied by +- this fraction
+
+  // Round grey and brown field stones 0.3 m across standing 0.1 m above dark soil,
+  // on a 1.5 m tile
+  pub fn fieldstone(size i32, seed u32) EdgingStoneParams {
+    new EdgingStoneParams(size, 1.5, seed, 0.3, 0.7, 0.02, 0.1, rgb255(148., 142., 130.),
+      rgb255(92., 84., 76.), rgb255(112., 128., 80.), rgb255(40., 32., 26.), 0.15);
+  }
+}
+
+// One texel of a rock tile at the tile point (u, v)
+pub fn rockTexel(p &RockParams, u f32, v f32) PatternTexel {
+  imm n = wholeCount(p.tileMetres, p.blockSize, 2);
+  imm cellM = p.tileMetres / f32.from(n);
+  // the blocks' outlines wander: the point is moved by a slow noise before the
+  // cells are found, and the crack's edge wobbles along its length
+  imm wu = u + 0.30 / f32.from(n) * fbmNoise(u, v, n * 2, n * 2, p.seed + 56u32, 3, 0.5);
+  imm wv = v + 0.30 / f32.from(n) * fbmNoise(u, v, n * 2, n * 2, p.seed + 57u32, 3, 0.5);
+  imm cell = voronoi(wu, wv, n, 0.9, p.seed);
+  imm key = unitHash3(cell.id, 5, p.seed);
+  imm lumps = ridgedNoise(u, v, n * 2, n * 2, p.seed + 51u32, 5, 0.6);
+  imm grain = fbmNoise(u, v, n * 16, n * 16, p.seed + 52u32, 2, 0.5);
+  imm cloud = fbmNoise(u, v, n * 2, n * 2, p.seed + 53u32, 3, 0.5);
+  imm wobble = fbmNoise(u, v, n * 10, n * 10, p.seed + 58u32, 3, 0.55);
+  imm edgeM = cell.edge * cellM + 0.014 * wobble;
+  // blocks tilt a little, each its own plane; a crack drops the surface
+  imm plane = 0.5 + 0.35 * ((cell.dx * (key.y - 0.5) + cell.dy * (key.z - 0.5)));
+  imm crack = 1. - smoothstep01(0.002, 0.012 + 0.03 * key.x, edgeM);
+  imm top = clamp01(0.22 * plane + 0.62 * lumps + 0.10 * grain + 0.04 + 0.12 * key.x);
+  imm h = top * (1. - 0.8 * crack);
+
+  // strata: bands across the tile wandering with a slow noise (periodic in v)
+  imm wander = fbmNoise(u, v, 2, 3, p.seed + 54u32, 2, 0.5);
+  imm band = 0.5 + 0.5 * sin(6.2831853 * (v * 6. + 0.7 * wander));
+  mut tone = clamp01(0.5 + 0.6 * cloud + 0.12 * grain - 0.25 * crack + (key.x - 0.5) * 0.7 + 0.35 * (lumps - 0.4));
+  tone = clamp01(tone + p.strata * 0.35 * (band - 0.5));
+  mut c = mixRgb(p.colorB, p.colorA, tone);
+  c = scaleRgb(c, 1. + 0.1 * grain);
+  // lichen on the upper, uncracked faces
+  imm lichenAmt = p.lichenAmount * smoothstep01(0.5, 0.75, h + 0.3 * cloud + 0.2 * fbmNoise(u, v, n * 6, n * 6, p.seed + 55u32, 3, 0.5))
+    * (1. - crack);
+  c = mixRgb(c, p.lichen, lichenAmt * 0.7);
+  c = scaleRgb(c, 1. - 0.55 * crack);
+  new PatternTexel(h, c, clamp01(0.82 + 0.1 * grain + 0.1 * lichenAmt), 0.45 + 0.55 * (1. - crack));
+}
+
+// A rock tile's maps
+pub fn bakeRock(p &RockParams) TextureSet {
+  mut field = PatternField.empty(p.size, p.tileMetres, p.relief);
+  mut y = 0;
+  while y < p.size {
+    mut x = 0;
+    while x < p.size {
+      field.put(x, y, rockTexel(p, texelCentre(x, p.size), texelCentre(y, p.size)));
+      x = x + 1;
+    }
+    y = y + 1;
+  }
+  finishField(&mut field, 0.04, 5);
+}
+
+fn edgingRelief(p &EdgingStoneParams) f32 { p.height * 1.15; }
+
+// One texel of an edging-stone tile at the tile point (u, v)
+pub fn edgingStoneTexel(p &EdgingStoneParams, u f32, v f32) PatternTexel {
+  imm n = wholeCount(p.tileMetres, p.stoneSize, 2);
+  imm cellM = p.tileMetres / f32.from(n);
+  imm cell = voronoi(u, v, n, p.jitter, p.seed);
+  imm key = unitHash3(cell.id, 9, p.seed);
+  imm edgeM = cell.edge * cellM;
+  imm gapHalf = p.gap * 0.5;
+  imm relief = edgingRelief(p);
+
+  // each stone a dome: the rounded profile over its distance from the edge,
+  // its radius the stone's inradius there (about edge distance at the centre)
+  // (a rounded rim over a short run, then a shallow dome over the rest, so the
+  // stone is a pillow and not a pyramid)
+  imm radius = maxF(cellM * 0.12 * (0.7 + 0.3 * key.x), 0.006);
+  imm e = clamp01((edgeM - gapHalf) / radius);
+  imm rim = libc.sqrtf(clamp01(1. - (1. - e) * (1. - e)));
+  imm d = cell.dist / (0.62 + 0.2 * key.y);
+  imm dome = rim * (0.3 + 0.7 * clamp01(1. - d * d));
+  imm stoneH = p.height * (0.65 + 0.35 * key.y);
+  imm fine = fbmNoise(u, v, n * 12, n * 12, p.seed + 61u32, 3, 0.55);
+  imm cloud = fbmNoise(u, v, n * 3, n * 3, p.seed + 62u32, 3, 0.5);
+  imm soilFine = fbmNoise(u, v, n * 20, n * 20, p.seed + 63u32, 2, 0.5);
+
+  imm hm = stoneH * dome * (1. + 0.02 * fine) + 0.01 * (0.5 + 0.5 * soilFine) * (1. - dome);
+
+  mut stone = mixRgb(p.colorA, p.colorB, clamp01(key.z * 0.8 + 0.4 * cloud));
+  stone = scaleRgb(stone, (1. + p.variation * (key.x * 2. - 1.)) * (1. + 0.15 * fine));
+  imm lichenAmt = smoothstep01(0.2, 0.55, cloud + 0.3 * fine + dome * 0.2 + (key.y - 0.5) * 0.5);
+  stone = mixRgb(stone, p.lichen, lichenAmt * 0.6);
+  // earth stains the stone near the ground
+  stone = mixRgb(stone, p.soil, 0.55 * (1. - smoothstep01(0.05, 0.5, dome)));
+  imm soil = scaleRgb(p.soil, 0.8 + 0.4 * (0.5 + 0.5 * soilFine));
+  imm onStone = smoothstep01(0., 0.12, dome);
+  new PatternTexel(clamp01(hm / relief), mixRgb(soil, stone, onStone), clamp01(0.95 - 0.2 * onStone + 0.1 * fine),
+    0.4 + 0.6 * smoothstep01(0., 0.5, dome));
+}
+
+// An edging-stone tile's maps
+pub fn bakeEdgingStones(p &EdgingStoneParams) TextureSet {
+  mut field = PatternField.empty(p.size, p.tileMetres, edgingRelief(p));
+  mut y = 0;
+  while y < p.size {
+    mut x = 0;
+    while x < p.size {
+      field.put(x, y, edgingStoneTexel(p, texelCentre(x, p.size), texelCentre(y, p.size)));
+      x = x + 1;
+    }
+    y = y + 1;
+  }
+  finishField(&mut field, 0.05, 5);
+}
