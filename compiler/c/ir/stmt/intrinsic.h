@@ -51,6 +51,12 @@ enum IntrinsicFn {
     // of '==' as an oversight. Never generated: type check stops the call.
     NoEqIntrinsic,
 
+    // An integer's or bool's 'hash': what core's Hash requires of every type that
+    // is Hash, declared on each of them so that 'key.hash(h)' on a generic's key
+    // reaches a method. Never generated: the call is rewritten at type check to
+    // core's 'Hasher.writeU64' of the value's bits (fnCallHashNumber)
+    HashNbrIntrinsic,
+
     // Bitwise
     NotIntrinsic,
     AndIntrinsic,
@@ -140,7 +146,10 @@ enum IntrinsicFn {
     // buffers, every other reads after it. The CPU runs a kernel one invocation
     // at a time, so there each is nothing (genllvm/genlgpusync.c)
     WorkgroupBarrierIntrinsic,  // workgroupBarrier()
-    StorageBarrierIntrinsic     // storageBarrier()
+    StorageBarrierIntrinsic,    // storageBarrier()
+    // The 128-bit product of two 64-bit numbers, its two halves xored: the
+    // mixing step of the wyhash family, one instruction on a 64-bit target
+    MulFoldIntrinsic            // mulFold(a u64, b u64) u64
 };
 
 // A MemOrder, core's enum of the orderings an atomic operation promises, in the
@@ -196,6 +205,13 @@ int typeRecordIsPtr(INode *type);
 // Whether a type is core's Invocation, which a compute entry point may take:
 // known by its name and its package, as the type record is
 int invocationIsCore(INode *type);
+
+// Whether a declaration is core's Hash trait, or core's Hasher: known by their
+// names and their package. The compiler grants Hash to the integers and bool,
+// gives them their 'hash' (nbrAddHashMethods) and supplies the 'hash' of a
+// struct that declares Hash and writes none (structSupplyHash)
+int coreIsHashTrait(INode *dcl);
+int coreIsHasher(INode *dcl);
 
 // Core's TypeRecord struct, once the core package's declaration of
 // 'mem.typeRecord' has been checked against the registry; NULL before, or in a

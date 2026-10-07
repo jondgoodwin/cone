@@ -1,0 +1,44 @@
+// A Ref is a key a table can hold: it is core's Hash, and feeds a hasher one
+// word, its slot in the low 32 bits and its generation in the high 32, so it is
+// mixed once and not a word for each half. Worked out by hand against core's
+// Hasher: the fixed seed 77 and the single word 3 | (5 << 32) come to
+// 2484516660017120679 (apart from this program, in arbitrary-precision integers).
+// Two references hash alike exactly when they are '==' (the same slot, the same
+// generation), whatever pool they name, and a removed value's old Ref and the
+// next occupant's differ, as '==' says they do.
+
+mod refhash;
+
+import testing use *;
+import pool use *;
+
+struct Npc { pub hp i64; }
+
+fn hashOf[K Hash](k &K) u64 {
+  mut h = Hasher.withSeed(77u64);
+  k.hash(&mut h);
+  h.finish();
+}
+
+fn main() i32 {
+  imm made = Ref[Npc].of(3u32, 5u32);
+  expectUInt(hashOf(&made), 2484516660017120679u64, "slot 3, generation 5, as one word");
+  mut one = Hasher.withSeed(77u64);
+  one.writeU64(3u64 | (5u64 << 32u64));
+  expectUInt(one.finish(), hashOf(&made), "the same as feeding that word by hand");
+
+  imm same = Ref[Npc].of(3u32, 5u32);
+  expectUInt(hashOf(&made), hashOf(&same), "equal references hash alike");
+  expect(hashOf(&made) != hashOf(&Ref[Npc].of(5u32, 3u32)), "the halves are not interchangeable");
+  expect(hashOf(&made) != hashOf(&Ref[Npc].of(3u32, 7u32)), "another generation");
+  expect(hashOf(&made) != hashOf(&Ref[Npc].none()), "none");
+
+  mut p = Pool[Npc].empty();
+  imm a = p.add(new Npc(1));
+  p.remove(a);
+  imm b = p.add(new Npc(2));
+  expectUInt(u64.from(a.slot()), u64.from(b.slot()), "the slot is taken again");
+  expect(a != b, "the old reference is not the new one");
+  expect(hashOf(&a) != hashOf(&b), "and does not hash with it");
+  done();
+}

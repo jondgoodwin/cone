@@ -1,0 +1,101 @@
+// What the compiler refuses of a type that declares core's Hash. It is Hash
+// only with an '==' to go with its hash (ErrorHashNoEq), and where it writes no
+// 'hash' of its own the compiler supplies one from its fields, which it refuses
+// for a field that has no hash agreeing with '==': a float, whose NaN is not
+// equal to itself and whose -0 is equal to 0 (ErrorHashFloat), and any type
+// that is not Hash (ErrorHashField): a struct that does not declare it, a
+// reference, a slice, a tuple, an array, a raw pointer, an enum. A type that
+// writes its own 'hash' is held to none of this but the '=='. Every refusal is
+// at the field, or at the type for a missing '=='; a generic's is at the
+// instance, since its field types are known there.
+
+mod trait_typecheck_hash;
+
+struct Plain { pub n i32; }
+
+enum Color { Red; Green; }
+
+// -------- a missing '==' --------
+
+struct NoEq is Hash {   //~ ErrorHashNoEq "NoEq declares Hash and has no `==`"
+  pub id u32;
+}
+
+// Writing a 'hash' of its own does not excuse it
+struct NoEqOwnHash is Hash {   //~ ErrorHashNoEq "NoEqOwnHash declares Hash and has no `==`"
+  pub id u32;
+  pub fn hash(self &, h &mut Hasher) {h.writeU32(id);}
+}
+
+// -------- a float --------
+
+struct HasF32 is Hash {
+  pub id u32;
+  pub w f32;   //~ ErrorHashFloat "its field w is f32: a float has no hash that agrees with `==`"
+  pub fn `==`(self, o HasF32) bool {id == o.id;}
+}
+
+struct HasF64 is Hash {
+  pub w f64;   //~ ErrorHashFloat "its field w is f64"
+  pub fn `==`(self, o HasF64) bool {true;}
+}
+
+// -------- a field that is not Hash --------
+
+struct HasPlain is Hash {
+  pub p Plain;   //~ ErrorHashField "its field p is Plain, which is not Hash"
+  pub fn `==`(self, o HasPlain) bool {true;}
+}
+
+struct HasRef is Hash {
+  pub r &i32;   //~ ErrorHashField "its field r is a reference, which is not Hash"
+  pub fn `==`(self, o HasRef) bool {true;}
+}
+
+struct HasSlice is Hash {
+  pub s &[]u8;   //~ ErrorHashField "its field s is a reference, which is not Hash"
+  pub fn `==`(self, o HasSlice) bool {true;}
+}
+
+struct HasTuple is Hash {
+  pub t (u32, u32);   //~ ErrorHashField "its field t is a tuple, which is not Hash"
+  pub fn `==`(self, o HasTuple) bool {true;}
+}
+
+struct HasArray is Hash {
+  pub a Array[u8, 4];   //~ ErrorHashField "its field a is an array, which is not Hash"
+  pub fn `==`(self, o HasArray) bool {true;}
+}
+
+struct HasPointer is Hash {
+  pub p *u8;   //~ ErrorHashField "its field p is a pointer, which is not Hash"
+  pub fn `==`(self, o HasPointer) bool {true;}
+}
+
+struct HasEnum is Hash {
+  pub c Color;   //~ ErrorHashField "its field c is Color, which is not Hash"
+  pub fn `==`(self, o HasEnum) bool {true;}
+}
+
+// -------- a generic, refused where its instance is made --------
+
+struct Pair[T] is Hash {
+  pub first T;   //~ ErrorHashFloat "its field first is f32"
+  pub second T;   //~ ErrorHashFloat "its field second is f32"
+  pub fn `==`(self, o Pair[T]) bool {true;}
+}
+
+// -------- a float is not Hash, asked of a key --------
+
+fn hashOf[K Hash](k &K) u64 {
+  mut h = Hasher.withSeed(1u64);
+  k.hash(&mut h);
+  h.finish();
+}
+
+fn main() {
+  imm good = new Pair[u32](1u32, 2u32);
+  imm bad = new Pair[f32](1.0, 2.0);
+  hashOf(&7u32);
+  hashOf(&2.5f32);   //~ ErrorWhereUnmet "hashOf requires K is Hash, and f32 is not Hash"
+}

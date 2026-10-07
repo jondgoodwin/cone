@@ -256,7 +256,7 @@ pub struct List[T] is ShapeChanging, Sendable {
 // and dies as a list does. A string literal is a '&[]u8', not a String; every
 // method that reads text takes a '&[]u8', which a literal is and which 'view()'
 // gives of a String, so 's.startsWith("import")' and 'a.equals(b.view())'.
-pub struct String is ShapeChanging {
+pub struct String is ShapeChanging, Hash {
   bytes List[u8];
 
   pub fn empty() String { new String(List[u8].empty()); }
@@ -478,8 +478,18 @@ pub struct String is ShapeChanging {
     }
   }
 
+  // Whether two hold the same bytes: the '==' that Hash requires of a type
+  // beside its 'hash'
+  pub fn eq overload `==`(self &, o &String) bool { self.view() == o.view(); }
+
   // FNV-1a, 64 bits, over its bytes
-  pub fn hash(self &) u64 { hashBytes(self.view()); }
+  pub fn fnv overload hash(self &) u64 { hashBytes(self.view()); }
+
+  // What identifies it to a Hasher (core's Hash): its bytes, then the
+  // terminator that marks where they end, so that as parts of one key ("ab",
+  // "c") and ("a", "bc") differ. The same a byte slice feeds (Hasher.writeStr),
+  // so a literal and a String of the same bytes hash alike
+  pub fn feed overload hash(self &, h &mut Hasher) { h.writeStr(self.view()); }
 
   // -------- copies of parts --------
 

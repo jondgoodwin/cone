@@ -1,0 +1,62 @@
+// A String is core's Hash: it feeds a Hasher its bytes and then the terminator
+// 0xFF (Hasher.writeStr), the same as a byte slice of those bytes feeds, so a
+// literal and a String of the same bytes hash alike; and it has the '==' Hash
+// requires. Every number was worked out apart from this program, by a second
+// implementation of the algorithm core documents (a Hasher seeded with 5: the
+// state is seed ^ mix(seed ^ s0, s1); a word is state = mix(state ^ word,
+// 0x9e3779b97f4a7c15); bytes are wyhash final version 4.3 seeded with the
+// state, checked against the published C; finish is mix(state ^ s2, s3)).
+// The old 64-bit FNV-1a 'hash()' of a String, which the Dict still uses, is
+// still there beside it (strings.cone checks it).
+
+mod stringhash;
+
+import testing use *;
+import collections use *;
+
+// A struct holding a String is Hash by the compiler's hash: the id's word, then
+// the name fed as a String feeds
+struct Entry is Hash {
+  pub id u32;
+  pub name String;
+  pub fn `==`(self &, o &Entry) bool {id == o.id and &name == &o.name;}
+}
+
+fn hashOf[K Hash](k &K) u64 {
+  mut h = Hasher.withSeed(5u64);
+  k.hash(&mut h);
+  h.finish();
+}
+
+fn main() i32 {
+  imm abc = String.from("abc");
+  expectUInt(hashOf(&abc), 9351666823611398977u64, "abc");
+  mut lit = Hasher.withSeed(5u64);
+  lit.writeStr("abc");
+  expectUInt(lit.finish(), hashOf(&abc), "a literal feeds what the String does");
+  expectUInt(hashOf(&String.empty()), 8832818385740763243u64, "empty");
+
+  // Where a String ends is fed: as the parts of one key the splits differ
+  mut split1 = Hasher.withSeed(5u64);
+  String.from("ab").hash(&mut split1);
+  String.from("c").hash(&mut split1);
+  mut split2 = Hasher.withSeed(5u64);
+  String.from("a").hash(&mut split2);
+  String.from("bc").hash(&mut split2);
+  expectUInt(split1.finish(), 4847334282203021615u64, "ab then c");
+  expectUInt(split2.finish(), 15252650360596429416u64, "a then bc");
+
+  // The compiler's hash over a struct holding one
+  imm key = new Entry(3u32, String.from("key"));
+  expectUInt(hashOf(&key), 15806619498058035278u64, "an id then a name");
+  expect(&key == &new Entry(3u32, String.from("key")), "equal entries");
+  expect(hashOf(&key) == hashOf(&new Entry(3u32, String.from("key"))), "hash alike");
+  expect(hashOf(&key) != hashOf(&new Entry(3u32, String.from("kez"))), "another name");
+  expect(hashOf(&key) != hashOf(&new Entry(4u32, String.from("key"))), "another id");
+
+  // '==' and the old hash
+  expect(&abc == &String.from("abc"), "equal Strings");
+  expect(&abc != &String.from("abd"), "unequal Strings");
+  expectUInt(String.from("foobar").hash(), 9625390261332436968u64, "FNV-1a of foobar, still");
+  done();
+}
