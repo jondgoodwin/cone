@@ -1,0 +1,279 @@
+// ======== The skeleton: stems grown level by level ========
+
+// A stem still to be built: where it starts, its frame, its length and the
+// radius at its base, and which stem bore it. 'share' is how much of a full
+// stem's children it bears (a clone bears the share of its remaining
+// length), 'pend' a bend (pitch, yaw) it still has to take up, 'gen' how
+// many clones deep it is.
+struct Job {
+  level i32;
+  parent i32;
+  pos Vec3;
+  q Quat;
+  length f32;
+  radius f32;
+  share f32;
+  pend Vec2;
+  gen i32;
+}
+
+// A level's nominal stem length: the trunk's, times each level's ratio
+fn nominalLength(p &TreeParams, trunk f32, lv i32) f32 {
+  mut l = trunk;
+  mut i = 1;
+  while i <= lv {
+    l = l * p.levelParams[usize.from(i)].length;
+    i = i + 1;
+  }
+  l;
+}
+
+// The radius of a stem at its fraction z along it: linear taper, and the
+// trunk's flare at its foot (the paper's: Flare (100^y - 1) / 100 + 1)
+fn radiusAt(p &TreeParams, lv i32, r0 f32, z f32, flared bool) f32 {
+  imm taper = p.levelParams[usize.from(lv)].taper;
+  mut r = r0 * (1. - taper * z * 0.97);
+  if lv == 0 and flared {
+    imm y = maxf(0., 1. - 8. * z);
+    r = r * (1. + p.flare * (libc.powf(100., y) - 1.) / 100. * 1.);
+  }
+  maxf(r, p.minRadius);
+}
+
+// Build one stem from 'job': its points, radii and frames, the clones it
+// splits off and the children and leaf sites along it
+fn buildStem(p &TreeParams, rng &mut Rng, job Job, trunk f32, tree &mut Tree, jobs &mut List[Job]) {
+  imm lv = job.level;
+  imm lp = p.levelParams[usize.from(lv)];
+  imm n = if lp.curveRes < 1 { 1; } else { lp.curveRes; };
+  imm segLen = job.length / f32.from(n);
+  mut pts = List[Vec3].withCapacity(usize.from(n) + 1usize);
+  mut rad = List[f32].withCapacity(usize.from(n) + 1usize);
+  mut frames = List[Quat].withCapacity(usize.from(n) + 1usize);
+  mut pos = job.pos;
+  mut q = job.q;
+  mut pend = job.pend;
+  mut radScale f32 = 1.;
+  pts.push(pos);
+  rad.push(radiusAt(p, lv, job.radius, 0., job.gen == 0));
+  frames.push(q);
+  mut splitErr = rng.unit();
+  mut kinkErr = rng.unit();
+  mut i = 0;
+  while i < n {
+    // The bend of this segment: curve over the first half, curveBack over the second
+    mut pitch f32 = 0.;
+    if lp.curveBack != 0. {
+      imm half = (n + 1) / 2;
+      if i < half { pitch = lp.curve / f32.from(half); }
+      else { pitch = lp.curveBack / f32.from(maxf(1., f32.from(n - half)) ); }
+    } else { pitch = lp.curve / f32.from(n); }
+    pitch = pitch + lp.curveV / f32.from(n) * rng.signed();
+    imm yaw = lp.curveV / f32.from(n) * rng.signed();
+    // The bend still owed (a split's, a kink's), half of it each segment
+    pitch = pitch + pend.x * 0.5;
+    imm yaw2 = yaw + pend.y * 0.5;
+    pend = new Vec2(pend.x * 0.5, pend.y * 0.5);
+    q = yawQ(pitchQ(q, pitch), yaw2);
+    // Attraction up: the axis turned towards the vertical, more the more it leans
+    if p.attractionUp != 0. and lv >= 1 {
+      imm a = axisOf(q);
+      imm decl = degrees(libc.acosf(clampf(a.y, -1., 1.)));
+      imm turn = p.attractionUp * decl / f32.from(n);
+      if a.y > -0.99 and a.y < 0.99 {
+        // rotate about the axis perpendicular to a in the vertical plane through a
+        imm side = unitv(a.cross(v3(0., 1., 0.)));
+        q = (Quat.angleAxis(radians(turn), side) * q).normalize();
+      }
+    }
+    pos = pos + axisOf(q) * segLen;
+    imm z = f32.from(i + 1) / f32.from(n);
+    pts.push(pos);
+    rad.push(radiusAt(p, lv, job.radius, z, job.gen == 0) * radScale);
+    frames.push(q);
+    // A dog-leg: the stem veers and recovers only in part
+    if lp.kink > 0. and i < n - 1 {
+      kinkErr = kinkErr + lp.kink;
+      if kinkErr >= 1. {
+        kinkErr = kinkErr - 1.;
+        imm az = rng.unit() * 6.2831853;
+        imm kx = lp.kinkAngle * libc.cosf(az);
+        imm ky = lp.kinkAngle * libc.sinf(az);
+        q = yawQ(pitchQ(q, kx), ky);
+        frames.set(frames.len() - 1usize, q);
+        pend = new Vec2(pend.x - kx * p.kinkRecover, pend.y - ky * p.kinkRecover);
+      }
+    }
+    // Splits: whole clones by error carry; each clone leaves at the split angle
+    // and the stem itself turns the other way, then both bend back
+    if lp.segSplits > 0. and i < n - 1 and job.gen < 3 {
+      splitErr = splitErr + lp.segSplits;
+      mut ns = i32.from(floorf(splitErr));
+      splitErr = splitErr - f32.from(ns);
+      while ns > 0 {
+        ns = ns - 1;
+        imm a = axisOf(q);
+        imm steep = libc.sqrtf(maxf(0., 1. - a.y * a.y));
+        imm sa = maxf(0., lp.splitAngle + lp.splitAngleV * rng.signed()) * (0.7 + 0.3 * steep);
+        imm az = rng.unit() * 6.2831853;
+        imm ax = v3(libc.cosf(az), 0., libc.sinf(az));
+        // the clone: turned by sa about a horizontal-in-frame axis at the azimuth
+        imm qc = (Quat.angleAxis(radians(sa), (q * ax)) * q).normalize();
+        imm rem = job.length * (1. - z);
+        imm rz = radiusAt(p, lv, job.radius, z, job.gen == 0) * radScale;
+        jobs.push(new Job(lv, job.parent, pos, qc, rem, rz * 0.7,
+          job.share * rem / maxf(0.001, job.length), new Vec2(0. - sa * 0.5, 0.), job.gen + 1));
+        q = (Quat.angleAxis(radians(0. - sa * 0.35), (q * ax)) * q).normalize();
+        radScale = radScale * 0.8;
+      }
+    }
+    i = i + 1;
+  }
+  // The tip is thin
+  rad.set(rad.len() - 1usize, maxf(p.minRadius, rad[rad.len() - 1usize] * 0.5));
+  imm si = i32.from(tree.stems.len());
+  // Highest point and farthest reach
+  mut k = 0usize;
+  while k < pts.len() {
+    imm pk = *pts[k];
+    if pk.y > tree.height { tree.height = pk.y; }
+    imm rr = libc.sqrtf(pk.x * pk.x + pk.z * pk.z);
+    if rr > tree.reach { tree.reach = rr; }
+    k = k + 1usize;
+  }
+  // Children
+  if lv < p.levels - 1 {
+    placeChildren(p, rng, job, trunk, &pts, &rad, &frames, si, jobs);
+  }
+  // Leaf sites on the stems that carry leaves
+  if lv >= p.leafFromLevel {
+    placeSites(p, rng, &pts, &frames, si, lv, &mut tree.sites);
+  }
+  tree.stems.push(new Stem(lv, job.parent, pts, rad, frames, job.length));
+}
+
+// The point and frame at the fraction t along a stem's polyline (equal segments)
+fn pointAt(pts &List[Vec3], frames &List[Quat], t f32, outQ &mut Quat) Vec3 {
+  imm n = pts.len() - 1usize;
+  imm f = clampf(t, 0., 1.) * f32.from(n);
+  mut i = usize.from(i32.from(floorf(f)));
+  if i >= n { i = n - 1usize; }
+  imm k = f - f32.from(i32.from(i));
+  *outQ = (*frames[i]).slerp(*frames[i + 1usize], k);
+  (*pts[i]).lerp(*pts[i + 1usize], k);
+}
+
+fn radiusAtT(rad &List[f32], t f32) f32 {
+  imm n = rad.len() - 1usize;
+  imm f = clampf(t, 0., 1.) * f32.from(n);
+  mut i = usize.from(i32.from(floorf(f)));
+  if i >= n { i = n - 1usize; }
+  imm k = f - f32.from(i32.from(i));
+  *rad[i] * (1. - k) + *rad[i + 1usize] * k;
+}
+
+// The children of the stem just built, in nodes along it
+fn placeChildren(p &TreeParams, rng &mut Rng, job Job, trunk f32, pts &List[Vec3], rad &List[f32],
+    frames &List[Quat], si i32, jobs &mut List[Job]) {
+  imm lv = job.level;
+  imm c = lv + 1;
+  imm cp = p.levelParams[usize.from(c)];
+  imm lp = p.levelParams[usize.from(lv)];
+  if lp.branches <= 0. { return; }
+  imm L = job.length;
+  // how many: the level's count scaled by this stem's share of a full one
+  mut want f32 = 0.;
+  if lv == 0 { want = lp.branches * job.share; }
+  else {
+    imm full = nominalLength(p, trunk, lv);
+    want = lp.branches * (0.2 + 0.8 * clampf(L / maxf(0.001, full), 0., 1.)) * job.share;
+  }
+  mut count = i32.from(floorf(want));
+  if rng.unit() < want - floorf(want) { count = count + 1; }
+  if count < 1 { return; }
+  imm zone0 = if lv == 0 and job.gen == 0 { p.baseSize; } else { 0.12; };
+  imm per = if cp.perNode < 1 { 1; } else { cp.perNode; };
+  imm groups = (count + per - 1) / per;
+  mut roll = rng.unit() * 360.;
+  mut g = 0;
+  mut made = 0;
+  while g < groups {
+    imm t = zone0 + (1. - zone0) * (f32.from(g) + 0.5 + 0.25 * rng.signed() * (if per == 1 { 1.; } else { 0.; })) / f32.from(groups);
+    imm tr = clampf((t - zone0) / (1. - zone0), 0., 1.);
+    mut qa = Quat.identity();
+    imm at = pointAt(pts, frames, t, &mut qa);
+    imm offLen = t * L;
+    // this node's turn
+    if per > 1 { roll = roll + cp.nodeTwist; }
+    mut j = 0;
+    while j < per and made < count {
+      if per == 1 { roll = roll + cp.rotate + cp.rotateV * rng.signed(); }
+      imm nodeRoll = if per == 1 { roll; } else { roll + 360. / f32.from(per) * f32.from(j); };
+      mut down f32 = 0.;
+      if cp.downAngleV >= 0. { down = cp.downAngle + cp.downAngleV * rng.signed(); }
+      else { down = cp.downAngle + (0. - cp.downAngleV) * (1. - 2. * tr) + 0.1 * (0. - cp.downAngleV) * rng.signed(); }
+      imm qr = rollQ(qa, nodeRoll);
+      imm qc = pitchQ(qr, down);
+      // the child's length
+      mut cl f32 = 0.;
+      if lv == 0 {
+        cl = L * (cp.length + cp.lengthV * rng.signed()) * shapeRatio(p, 1. - tr);
+      } else {
+        cl = (cp.length + cp.lengthV * rng.signed()) * maxf(0., L - 0.6 * offLen);
+      }
+      imm rp = radiusAtT(rad, t);
+      imm ratio = clampf(cl / maxf(0.001, L), 0.01, 1.);
+      imm rc = if cp.radiusShare > 0. { rp * cp.radiusShare * (1. + 0.15 * rng.signed()); }
+        else { minf(rp, rp * libc.powf(ratio, p.ratioPower)); };
+      if cl > 0.02 and rc > 0. {
+        // the radius at the base: radiusAt tapers from 'radius', so start at rc
+        jobs.push(new Job(c, si, at, qc, cl, rc, 1., new Vec2(0., 0.), 0));
+      }
+      made = made + 1;
+      j = j + 1;
+    }
+    g = g + 1;
+  }
+}
+
+// Leaf sites along a stem: nodes from its middle to its tip, each with the
+// level's perNode leaves leaving at its twist
+fn placeSites(p &TreeParams, rng &mut Rng, pts &List[Vec3], frames &List[Quat], si i32, lv i32, sites &mut List[LeafSite]) {
+  imm lp = p.levelParams[usize.from(lv)];
+  imm per = if lp.perNode < 1 { 1; } else { lp.perNode; };
+  imm nodes = if p.leafSites < 1 { 1; } else { p.leafSites; };
+  mut roll = rng.unit() * 360.;
+  mut k = 0;
+  while k < nodes {
+    imm t = 0.4 + 0.6 * f32.from(k + 1) / f32.from(nodes);
+    mut qa = Quat.identity();
+    imm at = pointAt(pts, frames, t, &mut qa);
+    roll = roll + (if per == 1 { lp.rotate; } else { lp.nodeTwist; });
+    mut j = 0;
+    while j < per {
+      imm r = roll + 360. / f32.from(per) * f32.from(j);
+      imm qr = rollQ(qa, r);
+      // the side a leaf leaves in: the frame's x
+      sites.push(new LeafSite(at, axisOf(qa), qr * v3(1., 0., 0.), si, t, k));
+      j = j + 1;
+    }
+    k = k + 1;
+  }
+}
+
+// Grow the tree 'p' describes: the same params give the same tree
+pub fn grow(p &TreeParams) Tree {
+  mut rng = Rng.make(p.seed);
+  mut tree = new Tree(List[Stem].empty(), List[LeafSite].empty(), 0., 0.);
+  mut jobs = List[Job].empty();
+  imm l0 = p.levelParams[0usize];
+  imm trunk = (p.scale + p.scaleV * rng.signed()) * (l0.length + l0.lengthV * rng.signed());
+  jobs.push(new Job(0, -1, v3(0., 0., 0.), Quat.identity(), trunk, trunk * p.ratio, 1., new Vec2(0., 0.), 0));
+  mut next = 0usize;
+  while next < jobs.len() {
+    imm job = *jobs[next];
+    buildStem(p, &mut rng, job, trunk, &mut tree, &mut jobs);
+    next = next + 1usize;
+  }
+  tree;
+}

@@ -640,7 +640,11 @@ packages/geomath/
    Windows would have given it, rather than being held by Windows Error
    Reporting, which takes many seconds when many programs crash at once
    (`congo.py`'s `Debuggee`; the `process` package's "A crash"). A test that
-   runs out of time shows what it wrote to stderr.
+   runs out of time shows what it wrote to stderr. Congo sets the process error
+   mode (`SEM_FAILCRITICALERRORS`) when it starts, which every program it runs
+   inherits (a test, an example, `congo run`), so a program missing a DLL it
+   needs ends with 0xC0000135 and Congo says so, rather than the loader's
+   modal dialog stopping it on the desktop.
 3. **Compares** what the test printed with `tests/<name>.out`, line ends and
    trailing blank lines aside, and its exit status with 0, or with the number
    in `tests/<name>.exit` where there is one. A test that writes to stderr on

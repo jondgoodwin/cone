@@ -1,6 +1,6 @@
 // The collections package: a growable list, an owned string, a dictionary of
-// any keys that are Hash (and an ordered one, which visits in insertion order)
-// and a set, each holding its elements in one block of memory
+// any keys that are Hash (and an ordered one, which visits in insertion order),
+// a set, and a double-ended queue, each holding its elements in one block of memory
 // that it gets, grows and gives back through the C allocator ('libc.malloc',
 // 'realloc', 'free'). Built as Congo needs them, and no further.
 //
@@ -46,7 +46,7 @@
 // and 'entries' do lend borrows, and the compiler keeps a dictionary in a
 // local loaned while one is used.)
 //
-// Threads: List, Dict, OrderedDict and Set declare 'Sendable', so a collection may be moved
+// Threads: List, Deque, Dict, OrderedDict and Set declare 'Sendable', so a collection may be moved
 // to another thread, or shared as 'Arc[imm, T]', where its elements may. The
 // declaration is a promise the compiler takes on trust for the block's raw
 // pointer, which it cannot check; an instance is Sendable only where its type
@@ -73,6 +73,10 @@
 //
 // An index out of range, or a key a dictionary does not hold, is a program
 // error, and a panic.
+//
+// What a collection can do is named by a few small traits at the end of this file,
+// 'Collection', 'Indexed', 'Stack', 'Queue' and 'Map', which the
+// collections meet by their methods' names alone.
 
 mod collections;
 
@@ -144,6 +148,20 @@ pub struct List[T] is ShapeChanging, Sendable {
     if used == 0usize { return None[T][]; }
     used = used - 1usize;
     Some[T][mem.readRaw(ptr + used)];
+  }
+
+  // A borrow of the last value, for reading it now, or None when it is empty:
+  // what 'pop' would move out, left where it is (the Stack trait's 'peek')
+  pub fn peek(self &) Option[&T] {
+    if used == 0usize { return None[&T][]; }
+    Some[&T][(ptr + (used - 1usize)) as &T];
+  }
+
+  // A borrow of the value at index, or None when index is out of range: the
+  // lookup that does not panic (the Indexed trait's 'get')
+  pub fn get(self &, index usize) Option[&T] {
+    if index >= used { return None[&T][]; }
+    Some[&T][(ptr + index) as &T];
   }
 
   // A borrow of the value at index, for reading it now. Each of these four
@@ -279,6 +297,201 @@ pub struct List[T] is ShapeChanging, Sendable {
   fn final(self &uni) {
     self.finalizeAll();
     libc.free(ptr as *u8);
+  }
+}
+
+// -------- Deque --------
+
+// A double-ended queue of T: a growable ring buffer (Rust's VecDeque). Its values
+// sit in one block of 'cap' slots, as a circle: the first value is in slot
+// 'head', the next after it, and so on round past the block's end to its start,
+// 'used' of them in all. That makes a push or a pop at either end O(1), where a
+// List can take a value off its front only by moving every other one down; and a
+// value is reached by its position from the front, 'deque[i]', one addition and
+// a compare more than a List's. Growing makes a block twice the size and moves
+// the values into it in order, the front one in slot 0, which is the only time
+// they move, and it never shrinks. 'push' and 'pop' work at the back, as a
+// List's do; 'pushFront' and 'popFront' at the front. So a Deque is a Stack
+// (at its back) and a Queue (in at the back, out at the front).
+//
+// Its values do not lie in one run of memory when they wrap round the block's
+// end, so there is no 'view' of them: walk them with 'items', or by position.
+// A borrow from a lookup or a cursor is good only until the deque next changes.
+pub struct Deque[T] is ShapeChanging, Sendable {
+  ptr *T;
+  head usize;    // the slot of the first value
+  used usize;
+  cap usize;
+
+  // An empty deque, 'new Deque[i32]': no block until the first value arrives
+  pub fn initEmpty overload init(self &new) { *self = new Deque(null, 0usize, 0usize, 0usize); }
+
+  // An empty deque whose block has room for exactly n values, 'new Deque[i32](100)'
+  pub fn initCapacity overload init(self &new, n usize) {
+    *self = new Deque(null, 0usize, 0usize, 0usize);
+    if n > 0usize {
+      self.ptr = libc.malloc(n * mem.sizeof[T]()) as *T;
+      self.cap = n;
+    }
+  }
+
+  // An empty deque: no block until the first value arrives
+  pub fn empty() Deque { new Deque(null, 0usize, 0usize, 0usize); }
+
+  // An empty deque whose block already has room for n values
+  pub fn withCapacity(n usize) Deque {
+    mut d = new Deque(null, 0usize, 0usize, 0usize);
+    d.reserve(n);
+    d;
+  }
+
+  // How many values it holds, and how many its block has room for
+  pub fn len(self &) usize { used; }
+  pub fn capacity(self &) usize { cap; }
+  pub fn isEmpty(self &) bool { used == 0usize; }
+
+  // Make room for 'more' values beyond those it holds. A block too small is
+  // replaced by one twice its size, or exactly big enough if that is more, and
+  // never smaller than 4; the values move into it with the first in slot 0.
+  // Every borrow into the old block is then stale.
+  pub fn reserve(self &mut, more usize) {
+    if used + more <= cap { return; }
+    mut want = cap * 2usize;
+    if want < used + more { want = used + more; }
+    if want < 4usize { want = 4usize; }
+    self.regrow(want);
+  }
+
+  // Move a value in at the back
+  pub fn push(self &mut, value T) {
+    self.reserve(1usize);
+    mem.writeRaw(ptr + self.slot(used), value);
+    used = used + 1usize;
+  }
+
+  // 'deque <- value' is 'deque.push(value)'
+  pub fn append overload `<-`(self &mut, value T) { self.push(value); }
+
+  // Move a value in at the front: it becomes position 0
+  pub fn pushFront(self &mut, value T) {
+    self.reserve(1usize);
+    head = if head == 0usize {cap - 1usize;} else {head - 1usize;};
+    mem.writeRaw(ptr + head, value);
+    used = used + 1usize;
+  }
+
+  // Move the last value out, or None when it is empty
+  pub fn pop(self &mut) Option[T] {
+    if used == 0usize { return None[T][]; }
+    used = used - 1usize;
+    Some[T][mem.readRaw(ptr + self.slot(used))];
+  }
+
+  // Move the first value out, or None when it is empty
+  pub fn popFront(self &mut) Option[T] {
+    if used == 0usize { return None[T][]; }
+    imm slot = head;
+    head = if head + 1usize == cap {0usize;} else {head + 1usize;};
+    used = used - 1usize;
+    Some[T][mem.readRaw(ptr + slot)];
+  }
+
+  // A borrow of the last value, for reading it now, or None when it is empty
+  pub fn peek(self &) Option[&T] {
+    if used == 0usize { return None[&T][]; }
+    Some[&T][(ptr + self.slot(used - 1usize)) as &T];
+  }
+
+  // A borrow of the first value, or None when it is empty
+  pub fn peekFront(self &) Option[&T] {
+    if used == 0usize { return None[&T][]; }
+    Some[&T][(ptr + head) as &T];
+  }
+
+  // A borrow of the value at position index from the front, or None when index
+  // is out of range
+  pub fn get(self &, index usize) Option[&T] {
+    if index >= used { return None[&T][]; }
+    Some[&T][(ptr + self.slot(index)) as &T];
+  }
+
+  // A borrow of the value at position index from the front, for reading it
+  // now. An index out of range is a panic at the line of the caller
+  pub fn `[]`(self &, index usize, file &[]u8 = srcFile(), line u32 = srcLine()) &T {
+    if index >= used { outOfRange(index, used, file, line); }
+    (ptr + self.slot(index)) as &T;
+  }
+
+  // A mutable borrow of the value at position index, for changing it in place:
+  // '&mut deque[i]'
+  pub fn `&[]`(self &mut, index usize, file &[]u8 = srcFile(), line u32 = srcLine()) &mut T {
+    if index >= used { outOfRange(index, used, file, line); }
+    (ptr + self.slot(index)) as &mut T;
+  }
+
+  // Finalize every value, front to back, and keep the block for reuse
+  pub fn clear(self &mut) {
+    self.finalizeAll();
+    head = 0usize;
+    used = 0usize;
+  }
+
+  // A cursor over its values, front to back: 'next' gives a borrow of each in
+  // turn until it answers None. The deque may not change while it is used.
+  pub fn items(self &) DequeItems[T] { new DequeItems[T](self, 0usize); }
+
+  // The slot of the value at position i, which may be the one just past the last
+  // when the caller is about to fill it
+  fn slot(self &, i usize) usize {
+    imm s = head + i;
+    if s >= cap {s - cap;} else {s;};
+  }
+
+  // A new block of 'want' slots (more than 'used') with every value moved into
+  // it in order, the front one in slot 0. The old block holds up to two runs:
+  // from 'head' to the block's end, and from its start round to the last value
+  fn regrow(self &mut, want usize) {
+    imm fresh = libc.malloc(want * mem.sizeof[T]()) as *T;
+    if used > 0usize {
+      imm firstRun = if head + used <= cap {used;} else {cap - head;};
+      mem.moveRaw(fresh, ptr + head, firstRun);
+      mem.moveRaw(fresh + firstRun, ptr, used - firstRun);
+    }
+    libc.free(ptr as *u8);
+    ptr = fresh;
+    head = 0usize;
+    cap = want;
+  }
+
+  fn finalizeAll(self &mut) {
+    if mem.needsFinal[T]() {
+      mut i = 0usize;
+      while i < used {
+        mem.finalize(ptr + self.slot(i));
+        i = i + 1usize;
+      }
+    }
+  }
+
+  // Its death: each value it holds, front to back, then the block
+  fn final(self &uni) {
+    self.finalizeAll();
+    libc.free(ptr as *u8);
+  }
+}
+
+// A cursor over a deque's values, front to back: 'next' gives a borrow of each
+// in turn. It borrows the deque, which may not change while the cursor, or a
+// value it gave, is used
+pub struct DequeItems['a, T] {
+  deque &'a Deque[T];
+  pos usize;
+
+  pub fn next(self &mut) Option[&'a T] {
+    if pos >= deque.used { return None[&T][]; }
+    imm i = pos;
+    pos = i + 1usize;
+    Some[&T][(deque.ptr + deque.slot(i)) as &T];
   }
 }
 
@@ -846,18 +1059,23 @@ pub struct Dict[K Hash, V] is ShapeChanging, Sendable {
   pub fn capacity(self &) usize { items + left; }
   pub fn isEmpty(self &) bool { items == 0usize; }
 
-  // Move key and value in. A key it already holds has its entry replaced:
-  // the old key and value are finalized, and it answers true.
-  pub fn insert(self &mut, key K, value V) bool {
+  // Move key and value in. A key it already holds has its entry replaced: the
+  // old key is finalized and the old value moved out to the caller, as an
+  // Option (Rust's HashMap::insert); None when the key was new. The Option's
+  // value dies with the caller's binding, or at the end of a statement that
+  // ignores it.
+  pub fn insert(self &mut, key K, value V) Option[V] {
     imm hash = self.hashOf(&key);
     imm found = self.freeOrFound(hash, &key);
     if self.isFull(found) {
-      mem.finalize(slots + found);
+      imm slot = (slots + found) as &mut DictEntry[K, V];
+      mem.finalize(&slot.key as *K);
+      imm old = mem.readRaw(&slot.value as *V);
       mem.writeRaw(slots + found, new DictEntry[K, V](key, value));
-      return true;
+      return Some[V][old];
     }
     self.fill(self.roomFor(hash, found), hash, key, value);
-    false;
+    None[V][];
   }
 
   // 'dict <- key: value' is 'dict.insert(key, value)': a later value for a key
@@ -1274,19 +1492,21 @@ pub struct OrderedDict[K Hash, V] is ShapeChanging, Sendable {
   pub fn isEmpty(self &) bool { count == 0usize; }
 
   // Move key and value in, at the end. A key it already holds has its entry
-  // replaced where it stands: the old key and value are finalized, and it
-  // answers true.
-  pub fn insert(self &mut, key K, value V) bool {
+  // replaced where it stands: the old key is finalized and the old value moved
+  // out to the caller, as an Option; None when the key was new.
+  pub fn insert(self &mut, key K, value V) Option[V] {
     imm hash = self.hashOf(&key);
     imm found = self.freeOrFound(hash, &key);
     if self.isFull(found) {
-      imm slot = dense +self.posOf(found);
-      mem.finalize(slot);
-      mem.writeRaw(slot, new OrderedEntry[K, V](hash, key, value));
-      return true;
+      imm at = dense +self.posOf(found);
+      imm slot = at as &mut OrderedEntry[K, V];
+      mem.finalize(&slot.key as *K);
+      imm old = mem.readRaw(&slot.value as *V);
+      mem.writeRaw(at, new OrderedEntry[K, V](hash, key, value));
+      return Some[V][old];
     }
     self.fill(self.roomFor(hash, found), hash, key, value);
-    false;
+    None[V][];
   }
 
   // 'dict <- key: value' is 'dict.insert(key, value)'
@@ -1772,6 +1992,61 @@ pub struct SetItems['a, T Hash] {
   inner DictKeys['a, T, Member];
 
   pub fn next(self &mut) Option[&'a T] { inner.next(); }
+}
+
+// -------- capability traits --------
+
+// What a collection can do, one small trait for each, so that a function asks
+// for exactly the ability it uses. A trait here is met structurally: a type
+// fits one by having the methods, whether or not it ever heard of the trait
+// (reference, "Traits"), so List, Deque, Dict, OrderedDict and Set declare
+// nothing, and a user's own type with the same methods fits too.
+//
+// The traits that mention an element type are generic ('Stack[T]'), and a
+// generic trait's instance is not built as a constraint yet ('[S Stack[T]]' is
+// refused), so a function takes one as a virtual reference, 'fn drain(s &<mut
+// Stack[i64])', and is called with '&mut list' or '&mut deque' as it is. Only
+// 'Collection', which mentions no element type, is also a constraint:
+// 'fn count[C Collection](c &C)'.
+//
+// The names an operation has are the same wherever it exists: 'push' and 'pop'
+// at the back, 'pushFront' and 'popFront' at the front, 'len', 'isEmpty'.
+
+// Anything that holds a number of values
+pub trait Collection {
+  pub fn len(self &) usize;
+  pub fn isEmpty(self &) bool;
+}
+
+// Values reached by their position, counted from the front (List, Deque). 'get'
+// answers None for a position that is out of range; the indexing '[i]' panics.
+pub trait Indexed[T] {
+  pub fn get(self &, index usize) Option[&T];
+}
+
+// Values pushed and popped at one end, the last in the first out (List, Deque,
+// at the back). 'peek' borrows the value 'pop' would move out.
+pub trait Stack[T] {
+  pub fn push(self &mut, value T);
+  pub fn pop(self &mut) Option[T];
+  pub fn peek(self &) Option[&T];
+}
+
+// Values pushed at the back and popped from the front, the first in the first
+// out (Deque)
+pub trait Queue[T] {
+  pub fn push(self &mut, value T);
+  pub fn popFront(self &mut) Option[T];
+}
+
+// Values found by a key (Dict, OrderedDict). 'insert' answers the old value,
+// moved out, when the key was already there (Rust's HashMap::insert), else
+// None; 'remove' moves the value out.
+pub trait Map[K, V] {
+  pub fn get(self &, key &K) Option[&V];
+  pub fn insert(self &mut, key K, value V) Option[V];
+  pub fn remove(self &mut, key &K) Option[V];
+  pub fn contains(self &, key &K) bool;
 }
 
 // -------- byte slices --------

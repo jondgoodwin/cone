@@ -1,0 +1,238 @@
+// ======== Foliage: leaves and needles at the leaf sites, as plain geometry ========
+//
+// No alpha cut-out is assumed: each leaf is its own blade of triangles, in
+// the shape of the leaf, drawn from both sides (every triangle twice, wound
+// the other way, with the other normal). Its uvs index a palette strip the
+// caller paints: u is the leaf's tone (0 the deep shade-green end, 1 the
+// sunlit end), v the place on the blade (0.08 to 0.68 up it: a darker edge
+// and a paler midrib) and 0.9 for a petiole. Its normals lean outward from the
+// crown's middle, so a crown shades as a ball instead of a heap of plates.
+
+pub const FOLIAGE_MAPLE = 0;
+pub const FOLIAGE_NEEDLES = 1;
+pub const FOLIAGE_PLUMES = 2;   // a pine's: along each branch, two crossed ribbons of needles, widest a third of the way out
+
+pub struct FoliageParams {
+  pub kind i32 = 0;
+  pub plumeFromLevel i32 = 1;   // plumes: the stems of this level and above carry them
+  pub plumeStart f32 = 0.3;     // from this fraction along the stem
+  pub plumeWidth f32 = 0.28;    // half the widest, over the stem's length
+  pub plumeMax f32 = 0.8;       // the most half-width, metres
+  pub plumeDroop f32 = 0.35;    // the ribbon's edges fall by this much of its half-width
+  pub seed u32 = 7u32;
+  pub leafSize f32 = 0.09;      // a blade's length, metres
+  pub leafSizeV f32 = 0.2;      // the fraction it varies by
+  pub petiole f32 = 0.06;       // metres
+  pub detail i32 = 9;           // outline points of a maple blade (25 and up are toothed)
+  pub droop f32 = 0.35;         // the tip's fall, in blade lengths squared
+  pub fold f32 = 0.25;          // each half lifted from the midrib
+  pub lift f32 = 0.35;          // how far the petiole rises from the horizontal, radians
+  pub lean f32 = 0.85;          // the outward share in the normals
+  pub needleLength f32 = 0.16;
+  pub needleWidth f32 = 0.03;
+  pub tufts i32 = 3;            // needle sprays at a site
+  pub needleDroop f32 = 0.3;
+}
+
+// The lobed outline of a red maple's blade: S at the angle 'th' (degrees
+// from the tip, round the blade's centre), 0 to 1. A tip lobe and two side
+// lobes, shallow V notches between them.
+fn mapleRadius(th f32) f32 {
+  mut best f32 = 0.;
+  mut k = 0;
+  while k < 3 {
+    imm phi = if k == 0 { 0.; } elif k == 1 { 55.; } else { -55.; };
+    imm a = if k == 0 { 1.; } else { 0.8; };
+    imm w = if k == 0 { 42.; } else { 36.; };
+    imm x = absf(th - phi) / w;
+    if x < 1. {
+      imm b = a * libc.powf(libc.cosf(1.5707963 * x), 1.5);
+      if b > best { best = b; }
+    }
+    k = k + 1;
+  }
+  0.5 + 0.5 * best;
+}
+
+// Add one maple blade: base 'at', the blade running along 'fy', its face towards 'fz',
+// 'size' long. 'tone' is its palette u.
+fn addMapleBlade(m &mut mesh.Mesh, fp &FoliageParams, at Vec3, fy Vec3, fz Vec3, size f32, tone f32, centre Vec3, crown f32) {
+  imm fx = unitv(fy.cross(fz));
+  imm n = if fp.detail < 5 { 5; } else { fp.detail; };
+  imm cy f32 = 0.35;
+  imm rr f32 = 0.65;
+  // the points: index 0 the base, 1 the centre, then the outline
+  imm first = u32.from(m.positions.len());
+  mut pu List[Vec2] = List[Vec2].empty();
+  pu.push(new Vec2(0., 0.));
+  pu.push(new Vec2(0., cy));
+  mut k = 0;
+  while k < n {
+    imm th = -165. + 330. * f32.from(k) / f32.from(n - 1);
+    mut s = mapleRadius(th);
+    if n >= 25 { s = s * (1. + (if k % 2 == 0 { 0.045; } else { -0.045; })); }
+    imm a = radians(th);
+    pu.push(new Vec2(rr * s * libc.sinf(a), cy + rr * s * libc.cosf(a)));
+    k = k + 1;
+  }
+  // front-face vertices then back-face vertices
+  mut side = 0;
+  while side < 2 {
+    mut i = 0usize;
+    while i < pu.len() {
+      imm q = *pu[i];
+      imm zz = fp.fold * absf(q.x) * 0.5 - fp.droop * q.y * q.y * 0.5 * (if i == 0usize { 0.; } else { 1.; });
+      imm p = at + fx * (q.x * size) + fy * (q.y * size) + fz * (zz * size);
+      imm radial = unitv(p - centre);
+      imm nf = if side == 0 { fz; } else { fz * -1.; };
+      m.positions.push(p);
+      m.normals.push(unitv(nf * (1. - fp.lean * 0.5) + radial * fp.lean));
+      m.uvs.push(new Vec2(tone, 0.08 + 0.6 * q.y));
+      i = i + 1usize;
+    }
+    side = side + 1;
+  }
+  imm np = u32.from(pu.len());
+  // the fan: centre (1) to each outline pair, and the base closing it
+  mut j = 0u32;
+  while j + 1u32 < u32.from(n) {
+    imm a = 2u32 + j;
+    // front: counterclockwise seen from fz, which is decreasing angle round the centre
+    m.indices.push(first + 1u32); m.indices.push(first + a + 1u32); m.indices.push(first + a);
+    m.indices.push(first + np + 1u32); m.indices.push(first + np + a); m.indices.push(first + np + a + 1u32);
+    j = j + 1u32;
+  }
+  // base to the first and last outline points
+  m.indices.push(first + 1u32); m.indices.push(first + 2u32); m.indices.push(first);
+  m.indices.push(first + np + 1u32); m.indices.push(first + np); m.indices.push(first + np + 2u32);
+  m.indices.push(first + 1u32); m.indices.push(first); m.indices.push(first + 1u32 + u32.from(n));
+  m.indices.push(first + np + 1u32); m.indices.push(first + np + 1u32 + u32.from(n)); m.indices.push(first + np);
+}
+
+// A thin triangle from 'a' to 'b', 'w' wide at the base, drawn both sides
+fn addSpike(m &mut mesh.Mesh, a Vec3, b Vec3, w f32, wide Vec3, nrm Vec3, tone f32, v f32) {
+  imm first = u32.from(m.positions.len());
+  imm l = a + wide * (w * 0.5);
+  imm r = a - wide * (w * 0.5);
+  mut side = 0;
+  while side < 2 {
+    imm nn = if side == 0 { nrm; } else { nrm * -1.; };
+    m.positions.push(l); m.normals.push(nn); m.uvs.push(new Vec2(tone, v));
+    m.positions.push(r); m.normals.push(nn); m.uvs.push(new Vec2(tone, v));
+    m.positions.push(b); m.normals.push(nn); m.uvs.push(new Vec2(tone, v + 0.1));
+    side = side + 1;
+  }
+  m.indices.push(first); m.indices.push(first + 2u32); m.indices.push(first + 1u32);
+  m.indices.push(first + 3u32); m.indices.push(first + 4u32); m.indices.push(first + 5u32);
+}
+
+// Plumes: along every stem of the plume levels, from 'plumeStart' to its tip,
+// two ribbons of needles crossing at right angles about it, one flat and one
+// on edge, each as wide as sin(pi sqrt(t)) times 'plumeWidth' of the stem's
+// length (at most 'plumeMax'), its edges drooping, and drawn from both sides.
+fn addPlumes(m &mut mesh.Mesh, tree &Tree, fp &FoliageParams, rng &mut Rng, centre Vec3) {
+  mut s = 0usize;
+  while s < tree.stems.len() {
+    imm st = tree.stems[s];
+    if st.level >= fp.plumeFromLevel and st.points.len() >= 2usize {
+      imm n = st.points.len();
+      imm half = minf(fp.plumeMax, fp.plumeWidth * st.length) * (0.85 + 0.3 * rng.unit());
+      imm tone = clampf(0.25 + 0.45 * clampf(st.points[n - 1usize].y / maxf(0.5, tree.height), 0., 1.) + 0.3 * rng.unit(), 0., 1.);
+      mut rib = 0;
+      while rib < 2 {
+        imm firstV = u32.from(m.positions.len());
+        mut j = 0usize;
+        mut count = 0u32;
+        while j < n {
+          imm t = f32.from(j) / f32.from(n - 1);
+          if t >= fp.plumeStart - 0.0001 {
+            imm p = *st.points[j];
+            imm prev = *st.points[if j == 0usize { 0usize; } else { j - 1usize; }];
+            imm next = *st.points[if j + 1usize < n { j + 1usize; } else { n - 1usize; }];
+            imm tan = unitv(next - prev);
+            imm flat = unitv(tan.cross(v3(0., 1., 0.)));
+            imm edge = unitv(flat.cross(tan));
+            imm across = if rib == 0 { flat; } else { unitv(edge + v3(0., 0.4, 0.)); };
+            imm u01 = (t - fp.plumeStart) / maxf(0.01, 1. - fp.plumeStart);
+            imm w = half * libc.sinf(pi * libc.sqrtf(clampf(u01 * 0.85 + 0.15, 0., 1.))) * (0.35 + 0.65 * (1. - 0.4 * u01));
+            imm drop = v3(0., 0. - fp.plumeDroop * w, 0.);
+            imm radial = unitv(p - centre);
+            imm nn = unitv(unitv(across.cross(tan)) * (1. - fp.lean) + radial * fp.lean + v3(0., 0.25, 0.));
+            // left and right edge, front copy then back copy (same normals: the lighting is the crown's)
+            m.positions.push(p + across * w + drop);
+            m.positions.push(p - across * w + drop);
+            m.normals.push(nn); m.normals.push(nn);
+            m.uvs.push(new Vec2(tone, 0.12)); m.uvs.push(new Vec2(tone, 0.64));
+            count = count + 1u32;
+          }
+          j = j + 1usize;
+        }
+        // the quads between rows, both windings
+        mut q = 0u32;
+        while q + 1u32 < count {
+          imm a = firstV + q * 2u32;
+          imm b = a + 1u32;
+          imm c = a + 2u32;
+          imm d = a + 3u32;
+          m.indices.push(a); m.indices.push(b); m.indices.push(c);
+          m.indices.push(b); m.indices.push(d); m.indices.push(c);
+          m.indices.push(a); m.indices.push(c); m.indices.push(b);
+          m.indices.push(b); m.indices.push(c); m.indices.push(d);
+          q = q + 1u32;
+        }
+        rib = rib + 1;
+      }
+    }
+    s = s + 1usize;
+  }
+}
+
+// Leaves (or needles) at every site of 'tree', in one mesh
+pub fn foliageMesh(tree &Tree, fp &FoliageParams) mesh.Mesh {
+  mut m = mesh.Mesh.empty();
+  mut rng = Rng.make(fp.seed);
+  imm crown = maxf(0.5, tree.reach);
+  imm centre = v3(0., tree.height * 0.55, 0.);
+  if fp.kind == FOLIAGE_PLUMES {
+    addPlumes(&mut m, tree, fp, &mut rng, centre);
+    return m;
+  }
+  mut i = 0usize;
+  while i < tree.sites.len() {
+    imm s = *tree.sites[i];
+    imm h = clampf(s.pos.y / maxf(0.5, tree.height), 0., 1.);
+    imm o = clampf(libc.sqrtf(s.pos.x * s.pos.x + s.pos.z * s.pos.z) / crown, 0., 1.);
+    imm tone = clampf(0.3 * h + 0.4 * o + 0.3 * rng.unit(), 0., 1.);
+    if fp.kind == FOLIAGE_MAPLE {
+      imm size = fp.leafSize * (1. + fp.leafSizeV * rng.signed());
+      // the petiole leaves the node across the stem, rising, and the blade runs on flat
+      imm side = unitv(s.side - s.axis * s.axis.dot(s.side));
+      imm pd = unitv(side * libc.cosf(fp.lift) + s.axis * 0.35 + v3(0., libc.sinf(fp.lift), 0.));
+      imm base = s.pos + pd * fp.petiole;
+      mut fy = unitv(v3(pd.x, pd.y * 0.25, pd.z));
+      imm fz0 = unitv(v3(0., 1., 0.) - fy * fy.y);
+      imm fz = unitv(fz0 + side * 0.15 * rng.signed());
+      fy = unitv(fy - fz * fy.dot(fz));
+      addSpike(&mut m, s.pos, base, 0.006, unitv(pd.cross(fz)), fz, tone, 0.9);
+      addMapleBlade(&mut m, fp, base, fy, fz, size, tone, centre, crown);
+    } else {
+      imm tf = if fp.tufts < 1 { 1; } else { fp.tufts; };
+      mut t = 0;
+      while t < tf {
+        imm ang = 6.2831853 * (f32.from(t) + 0.5 * rng.unit()) / f32.from(tf);
+        imm sideA = unitv(s.side - s.axis * s.axis.dot(s.side));
+        imm sideB = s.axis.cross(sideA);
+        imm out = unitv(sideA * libc.cosf(ang) + sideB * libc.sinf(ang));
+        imm dir = unitv(out * 0.9 + s.axis * 0.5 - v3(0., fp.needleDroop, 0.));
+        imm len = fp.needleLength * (1. + fp.leafSizeV * rng.signed());
+        imm tip = s.pos + dir * len;
+        imm wide = unitv(dir.cross(v3(0., 1., 0.)));
+        imm nrm = unitv(unitv(wide.cross(dir)) * (1. - fp.lean * 0.5) + unitv(s.pos - centre) * fp.lean);
+        addSpike(&mut m, s.pos, tip, fp.needleWidth, wide, nrm, tone, 0.3 + 0.3 * rng.unit());
+        t = t + 1;
+      }
+    }
+    i = i + 1usize;
+  }
+  m;
+}

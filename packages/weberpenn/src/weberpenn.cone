@@ -1,0 +1,199 @@
+// The weberpenn package: trees grown by Weber and Penn's parametric method
+// (SIGGRAPH 1995, "Creation and rendering of realistic trees"), with the
+// additions a maple and a pine need, as a skeleton of stems and then meshes.
+// A program reaches it with 'import weberpenn', and gets:
+//
+// - TreeParams and LevelParams: the dials. A tree is levels of stems (the
+//   trunk is level 0, its limbs level 1, their branches level 2, twigs 3),
+//   and each level has the paper's dials: how many children it bears
+//   ('branches'), their length as a fraction of the parent's ('length',
+//   'lengthV'), 'taper', the stem's 'curveRes' segments, its 'curve' and
+//   'curveBack' (degrees, over the first and second half: an S), 'curveV'
+//   (random bend), 'segSplits' (clones per segment, spread by error carry,
+//   not independent dice) with 'splitAngle', 'downAngle' (the child's angle
+//   from its parent; a negative 'downAngleV' makes it wide low on the parent
+//   and steep high up) and 'rotate' (the spiral between successive children).
+//   Global: 'shape' (the envelope that sets the limbs' lengths down the
+//   trunk: the paper's eight, and 8, a table of 11 values the caller
+//   measures), 'scale', 'baseSize' (the bare fraction of the trunk), 'ratio'
+//   and 'ratioPower' (radius from length), 'flare' and 'attractionUp'.
+// - What the paper does not have, added: 'perNode' and 'nodeTwist'. A level
+//   with perNode 1 puts its children in a spiral (the paper's 'rotate'); 2
+//   puts them in opposite pairs, each pair 'nodeTwist' degrees on from the
+//   one below (90: a maple's opposite decussate branching); 3 or more puts
+//   them in whorls (a pine's), each whorl twisted from the last. And 'kink'
+//   (the chance per segment) with 'kinkAngle': a dog-leg, a stem that veers
+//   off and recovers only partly, where a maple's leader was lost and a side
+//   bud took over.
+// - grow: the skeleton from a seed, as a Tree (stems, each a polyline with
+//   a radius and a frame at each point, and the sites where leaves go).
+//   It is deterministic: the same params and seed give the same tree, bit
+//   for bit, from noise's PCG hash.
+// - branchMesh: the stems swept into tubes (a mesh.Mesh, uvs for a bark tile
+//   wrapped a whole number of times round each stem, metres up it).
+// - foliageMesh: leaves or needles at the leaf sites, or plumes along the
+//   branches, as a mesh.Mesh of plain geometry (no alpha cut-out: every
+//   leaf is its own double-sided blade, its uvs a palette strip's tone and
+//   a position along the blade; a plume is two crossed ribbons of needles
+//   along a stem).
+//
+// Where it departs from the paper: the divergence of a split's clone about
+// the vertical is simplified (a random azimuth, its angle scaled by the
+// stem's steepness), a child stem's count is rounded by the random stream
+// (the paper carries the error), 'attractionUp' omits the orientation cosine,
+// and there is no pruning envelope: 'shape' sets the limbs' lengths only.
+//
+// Its files are one module, and only this one, the root, imports:
+//
+//   weberpenn.cone   this overview, the params, the random stream and the helpers
+//   grow.cone        the skeleton
+//   tube.cone        the branches as a mesh
+//   foliage.cone     leaves and needles as a mesh
+//   species.cone     starting params: a red maple, a white pine
+
+mod weberpenn;
+
+import libc;
+import collections use *;
+import geomath use *;
+import mesh;
+import noise use { pcg, toUnit };
+
+pub const SHAPE_CONICAL = 0;
+pub const SHAPE_SPHERICAL = 1;
+pub const SHAPE_HEMISPHERICAL = 2;
+pub const SHAPE_CYLINDRICAL = 3;
+pub const SHAPE_TAPERED_CYLINDRICAL = 4;
+pub const SHAPE_FLAME = 5;
+pub const SHAPE_INVERSE_CONICAL = 6;
+pub const SHAPE_TEND_FLAME = 7;
+pub const SHAPE_CUSTOM = 8;
+
+pub const LEVELS = 4usize;
+
+// One level's dials (degrees, and lengths as fractions)
+pub struct LevelParams {
+  pub branches f32 = 0.;        // children (of the next level) this level's longest stem bears
+  pub length f32 = 0.5;         // this level's stems' length: a fraction of the parent's (level 0: of 'scale')
+  pub lengthV f32 = 0.;
+  pub taper f32 = 1.;           // 0 a cylinder, 1 a cone to a point
+  pub curveRes i32 = 4;         // segments
+  pub curve f32 = 0.;           // total bend over the first half (the whole stem if curveBack is 0)
+  pub curveBack f32 = 0.;       // total bend over the second half; non-zero: an S
+  pub curveV f32 = 0.;          // random bend, degrees over the stem
+  pub segSplits f32 = 0.;       // clones per segment
+  pub splitAngle f32 = 0.;
+  pub splitAngleV f32 = 0.;
+  pub kink f32 = 0.;            // chance per segment of a dog-leg
+  pub kinkAngle f32 = 0.;
+  pub downAngle f32 = 45.;      // the angle of its children from it
+  pub downAngleV f32 = 0.;      // random; negative: wide low, steep high, by this much
+  pub rotate f32 = 140.;        // spiral between successive children (perNode 1)
+  pub rotateV f32 = 0.;
+  pub radiusShare f32 = 0.;     // a stem of this level starts this fraction of its parent's radius there
+                                // (the pipe model's: limbs whose areas sum to the trunk's); 0: the paper's
+                                // formula, the parent's radius times (length ratio) ^ ratioPower
+  pub perNode i32 = 1;          // children at a node: 1 spiral, 2 opposite, 3+ a whorl
+  pub nodeTwist f32 = 90.;      // each node's turn from the one below
+}
+
+pub struct TreeParams {
+  pub seed u32 = 1u32;
+  pub levels i32 = 3;           // stem levels, 1 to 4
+  pub shape i32 = 8;
+  pub envelope Array[f32, 11] = [0.15, 0.4, 0.6, 0.7, 0.76, 0.84, 0.97, 0.97, 0.9, 0.8, 0.7];
+  pub scale f32 = 10.;          // the trunk's nominal length, metres
+  pub scaleV f32 = 0.;
+  pub baseSize f32 = 0.24;      // the fraction of the trunk with no limbs
+  pub ratio f32 = 0.015;        // a stem's radius over its length
+  pub ratioPower f32 = 1.5;     // a child's radius over its parent's, by the length ratio to this power
+  pub flare f32 = 0.6;
+  pub attractionUp f32 = 0.;
+  pub kinkRecover f32 = 0.4;    // the share of a dog-leg's bend the stem straightens again
+  pub minRadius f32 = 0.0012;
+  pub leafFromLevel i32 = 3;    // stems of this level and above carry leaf sites
+  pub leafSites i32 = 4;        // sites on each such stem
+  pub levelParams Array[LevelParams, 4] = [new LevelParams(), new LevelParams(), new LevelParams(), new LevelParams()];
+}
+
+// A place for a leaf (or a pair, or a whorl's needles) on a stem
+pub struct LeafSite {
+  pub pos Vec3;
+  pub axis Vec3;                // the stem's direction there
+  pub side Vec3;                // the direction the node's leaf leaves in, across the stem
+  pub stem i32;
+  pub t f32;                    // 0 at the stem's base, 1 its tip
+  pub nodeIndex i32;
+}
+
+// One stem: a polyline with a radius and a frame at each point; the frame's
+// local y is the stem's axis
+pub struct Stem {
+  pub level i32;
+  pub parent i32;
+  pub points List[Vec3];
+  pub radii List[f32];
+  pub frames List[Quat];
+  pub length f32;
+}
+
+pub struct Tree {
+  pub stems List[Stem];
+  pub sites List[LeafSite];
+  pub height f32;               // the highest point
+  pub reach f32;                // the farthest from the trunk's axis, across
+}
+
+// ---- the random stream and small helpers ----
+
+pub struct Rng {
+  pub state u32;
+
+  pub fn make(seed u32) Rng { new Rng(pcg(seed ^ 0x5bd1e995u32)); }
+  pub fn next(self &mut) u32 {
+    state = state + 0x9E3779B9u32;
+    pcg(state);
+  }
+  // [0, 1)
+  pub fn unit(self &mut) f32 { toUnit(self.next()); }
+  // [-1, 1)
+  pub fn signed(self &mut) f32 { self.unit() * 2. - 1.; }
+}
+
+fn minf(a f32, b f32) f32 { if a < b { a; } else { b; }; }
+fn maxf(a f32, b f32) f32 { if a > b { a; } else { b; }; }
+fn clampf(v f32, lo f32, hi f32) f32 { if v < lo { lo; } elif v > hi { hi; } else { v; }; }
+fn absf(a f32) f32 { libc.fabsf(a); }
+fn floorf(a f32) f32 { libc.floorf(a); }
+fn v3(x f32, y f32, z f32) Vec3 { new Vec3(x, y, z); }
+fn unitv(v Vec3) Vec3 {
+  imm l = v.length();
+  if l < 0.0000001 { new Vec3(0., 1., 0.); } else { v * (1. / l); };
+}
+
+// The envelope's ratio at r, 0 at the crown's top to 1 at the limbs' lowest
+// (the paper's ShapeRatio for its eight shapes; 8, the table)
+pub fn shapeRatio(p &TreeParams, r f32) f32 {
+  imm x = clampf(r, 0., 1.);
+  imm s = p.shape;
+  if s == SHAPE_CONICAL { return 0.2 + 0.8 * x; }
+  if s == SHAPE_SPHERICAL { return 0.2 + 0.8 * libc.sinf(pi * x); }
+  if s == SHAPE_HEMISPHERICAL { return 0.2 + 0.8 * libc.sinf(0.5 * pi * x); }
+  if s == SHAPE_CYLINDRICAL { return 1.; }
+  if s == SHAPE_TAPERED_CYLINDRICAL { return 0.5 + 0.5 * x; }
+  if s == SHAPE_FLAME { return if x <= 0.7 { x / 0.7; } else { (1. - x) / 0.3; }; }
+  if s == SHAPE_INVERSE_CONICAL { return 1. - 0.8 * x; }
+  if s == SHAPE_TEND_FLAME { return if x <= 0.7 { 0.5 + 0.5 * x / 0.7; } else { 0.5 + 0.5 * (1. - x) / 0.3; }; }
+  imm f = x * 10.;
+  imm i = i32.from(floorf(f));
+  if i >= 10 { return p.envelope[10usize]; }
+  imm k = f - f32.from(i);
+  p.envelope[usize.from(i)] * (1. - k) + p.envelope[usize.from(i + 1)] * k;
+}
+
+// Rotating a frame about its own axes: roll about its y (the stem's axis),
+// pitch about its x, yaw about its z, in degrees
+fn rollQ(q Quat, deg f32) Quat { (q * Quat.angleAxis(radians(deg), v3(0., 1., 0.))).normalize(); }
+fn pitchQ(q Quat, deg f32) Quat { (q * Quat.angleAxis(radians(deg), v3(1., 0., 0.))).normalize(); }
+fn yawQ(q Quat, deg f32) Quat { (q * Quat.angleAxis(radians(deg), v3(0., 0., 1.))).normalize(); }
+fn axisOf(q Quat) Vec3 { q * v3(0., 1., 0.); }

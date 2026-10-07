@@ -28,10 +28,11 @@
 			<span class="pre">[T + 'a]</span>, <span class="pre">[T Trait + 'a]</span>,
 			<span class="pre">where T + 'a</span> or <span class="pre">where T is Trait + 'a</span>,
 			and a condition on one entry of a generic struct's or enum's <span class="pre">is</span>
-			list, <span class="pre">is Move if T is Move</span>.
+			list, <span class="pre">is Move if T is Move</span>, and a generic trait's
+				instance as a constraint, <span class="pre">[T, S Stack[T]]</span>.
 			Not yet: a condition on an <span class="pre">is</span> entry of a trait or of an
 			enum's variant, a lifetime bound on a generic type's parameter, a clause relating two
-			parameters or constraining a type expression, not, constraints on a generic
+			parameters other than by a generic trait's instance, or constraining a type expression, not, constraints on a generic
 			module's or a macro's parameters, and checking a generic's body against its
 			constraints where it is declared. An enum's variant is constructed with its values in square brackets, as written here: that is the current spelling, and how a variant is constructed is an open design question (<a href="refenum.html#init">Enums</a>).</i></p>
 	
@@ -106,6 +107,9 @@ imm n = first(&amp;nums);     // T is i32
 imm v = unbox(&amp;boxedf);   // T is f32, when boxedf is a Box[f32]
 imm w = apply(7, &amp;widen); // A is i32 and R is i64
 </pre>
+		<p>A type parameter that no argument names, but the constraint of one that an
+			argument does, is read off that argument's methods: see
+			<a href="#generictrait">A generic trait as a constraint</a>.</p>
 	
 	<h2>Generic Types</h2>
 	<p>Generic types work similarly to generic functions.
@@ -359,6 +363,55 @@ fn fill[T Integer + Copy](dst &amp;[]mut T, v T) {
   ...
 }
 </pre>
+
+	<h3 id="generictrait">A generic trait as a constraint</h3>
+	<p>A trait with type parameters of its own is a constraint when it is given its
+		type arguments, which may be the function's other type parameters or types. The
+		constraint is written in the square brackets or in a <span class="pre">where</span>
+		clause (below), as for any trait:</p>
+<pre>
+trait Stack[T] {
+  pub fn push(self &amp;mut, v T);
+  pub fn pop(self &amp;mut) Option[T];
+}
+
+fn drain[T, S Stack[T]](s &amp;mut S) Option[T] {s.pop();}
+fn fillTwo[S Stack[i64]](s &amp;mut S, a i64, b i64) {s.push(a); s.push(b);}
+fn peeked[T, S](s &amp;mut S) Option[T] where S is Stack[T] and S is Peek[T] {...}
+fn both[T, S Stack[T] + Peek[T]](s &amp;mut S) {...}
+</pre>
+	<p>A type fits <span class="pre">Stack[i64]</span> as it fits any trait, by having the
+		methods the trait requires, here <span class="pre">push(self &amp;mut, v i64)</span> and
+		<span class="pre">pop(self &amp;mut) Option[i64]</span>, the trait's signatures with
+		<span class="pre">T</span> replaced by <span class="pre">i64</span>; or by saying
+		<span class="pre">is Stack[i64]</span>. <span class="pre">Stack[i64]</span> and
+		<span class="pre">Stack[f64]</span> are different traits, so one type may fit both.
+		Whether it does is decided where the function is used, for the arguments it is
+		given. A type that does not fit is refused there, naming the trait at the arguments
+		of that use, the method it lacks or has with another signature, and the signature
+		required:</p>
+<pre>
+// WrongParm has push(self &amp;mut, v bool)
+drain[i64, WrongParm](&amp;mut wp);
+// ERROR: drain requires S is Stack[i64], and WrongParm is not Stack[i64].
+//   WrongParm has push(self &amp;mut, v bool), but Stack[i64] requires push(self &amp;mut, v i64).
+</pre>
+	<p>The arguments may be written, <span class="pre">drain[i64, IntSlot](&amp;mut box)</span>, or
+		inferred. The type parameter <span class="pre">S</span> is inferred from the
+		argument as always. <span class="pre">T</span>, which no argument's type names, is
+		then read off the methods <span class="pre">S</span> has: each parameter type and
+		the return type of the trait's methods are matched with those of the same-named method
+		of the type, so <span class="pre">drain(&amp;mut box)</span> finds <span class="pre">i64</span> in
+		<span class="pre">IntSlot</span>'s <span class="pre">pop</span>. It fills only
+		what is still empty, and the constraint is then decided as above, so a type whose methods
+		disagree is refused with the message above. A type parameter another argument names
+		is inferred from that argument first: an unsuffixed literal such as
+		<span class="pre">fill(&amp;mut box, 8)</span> is an <span class="pre">i32</span>, and
+		<span class="pre">8i64</span> or the type arguments written are needed for an
+		<span class="pre">i64</span> box. A constraint names a generic trait only with all its
+		type arguments, so <span class="pre">[S Stack]</span> is refused, and it names only the
+		parameters written before it: <span class="pre">[T, S Stack[T]]</span>, not
+		<span class="pre">[S Stack[T], T]</span>.</p>
 
 	<h3 id="where">Where clause</h3>
 	<p>The same constraints may instead be written as a

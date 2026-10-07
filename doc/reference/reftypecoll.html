@@ -96,8 +96,10 @@
 		copies, which is the lookup that works through a shared <span class="pre">Rc[mut, Dict[K, V]]</span>),
 		<span class="pre">contains</span>, <span class="pre">remove</span> (the value moved out, the key
 		finalized), <span class="pre">d[&amp;k]</span> and <span class="pre">&amp;mut d[&amp;k]</span>
-		(a panic for a key it does not hold), <span class="pre">insert(k, v)</span> (true when it replaced an
-		entry, finalizing the old key and value), <span class="pre">getOrInsert(k, v)</span> (a mutable
+		(a panic for a key it does not hold), <span class="pre">insert(k, v)</span> (when it replaced an
+		entry, finalizing the old key, an <span class="pre">Option</span> holding the old value moved out to
+		the caller, as Rust's does, and <span class="pre">None</span> for a new key; the value dies with the
+		caller's binding, or at the end of a statement that ignores it; <span class="pre">d &lt;- k: v</span> ignores it), <span class="pre">getOrInsert(k, v)</span> (a mutable
 		borrow of the value held, or else <span class="pre">v</span> moved in, with one search:
 		<span class="pre">*counts.getOrInsert(word, 0) += 1</span>), <span class="pre">clear</span>,
 		<span class="pre">len</span> and <span class="pre">capacity</span> (the entries it holds before it
@@ -135,10 +137,57 @@
 		elements. A <span class="pre">Set[String]</span> takes an element as bytes
 		(<span class="pre">s.contains("core")</span>). It has no union or intersection yet.</i></p>
 
+	<p style="margin-left: 40px;"><i>Note: <span class="pre">Deque[T]</span> is a double-ended queue, a
+			growable ring buffer (Rust's <span class="pre">VecDeque</span>): its values are in one block, as a
+			circle, the first at a slot that moves, so <span class="pre">push</span> and
+			<span class="pre">pop</span> at the back and <span class="pre">pushFront</span> and
+			<span class="pre">popFront</span> at the front are all O(1), where a
+			<span class="pre">List</span> can take a value off its front only by moving every other one.
+			<span class="pre">peek()</span> and <span class="pre">peekFront()</span> are an
+			<span class="pre">Option</span> of a borrow of the last and the first value,
+			<span class="pre">get(i)</span> the same of position <span class="pre">i</span> counted from the
+			front (<span class="pre">None</span> past the end), <span class="pre">d[i]</span> and
+			<span class="pre">&amp;mut d[i]</span> borrow it (a panic past the end), and
+			<span class="pre">items()</span> is a cursor over borrows from the front to the back.
+			A full block is replaced by one twice the size (4, 8, 16, ...), the values moved in order with the
+			first in slot 0; it never shrinks. <span class="pre">reserve(n)</span>,
+			<span class="pre">capacity</span>, <span class="pre">clear</span> (finalizing front to back,
+			keeping the block), <span class="pre">len</span>, <span class="pre">isEmpty</span> and
+			<span class="pre">new Deque[T](n)</span>, a block of exactly <span class="pre">n</span> slots,
+			are a list's. Its values may wrap round the block's end, so it has no
+			<span class="pre">view()</span>: read them by position or with the cursor.</i></p>
+
+	<p style="margin-left: 40px;"><i>Note: <span class="pre">List</span> also has
+			<span class="pre">peek()</span> (an <span class="pre">Option</span> of a borrow of the last value) and
+			<span class="pre">get(i)</span> (the same for position <span class="pre">i</span>, <span class="pre">None</span>
+			past the end), which do not panic.</i></p>
+
+	<p style="margin-left: 40px;"><i>Note: The <span class="pre">collections</span> package also declares
+			five small traits, one for each thing a collection can do, so that a function asks for exactly the
+			ability it uses; each is met structurally (<a href="reftrait.html">Traits</a>), by having the
+			methods, so none of the collections declares one. <span class="pre">Collection</span>
+			(<span class="pre">len</span>, <span class="pre">isEmpty</span>: <span class="pre">List</span>,
+			<span class="pre">Deque</span>, <span class="pre">String</span>, <span class="pre">Dict</span>,
+			<span class="pre">OrderedDict</span>, <span class="pre">Set</span>);
+			<span class="pre">Indexed[T]</span> (<span class="pre">get(i)</span>: <span class="pre">List</span>,
+			<span class="pre">Deque</span>); <span class="pre">Stack[T]</span> (<span class="pre">push</span> and
+			<span class="pre">pop</span> at the back, <span class="pre">peek</span>: <span class="pre">List</span>,
+			<span class="pre">Deque</span>); <span class="pre">Queue[T]</span> (<span class="pre">push</span> at
+			the back, <span class="pre">popFront</span>: <span class="pre">Deque</span>);
+			<span class="pre">Map[K, V]</span> (<span class="pre">get</span>, <span class="pre">insert</span>,
+			<span class="pre">remove</span>, <span class="pre">contains</span> by a <span class="pre">&amp;K</span>:
+			<span class="pre">Dict</span>, <span class="pre">OrderedDict</span>). A generic trait's instance is not
+			built as a constraint yet, so a function takes the ones that mention an element type as a virtual
+			reference, <span class="pre">fn drain(s &amp;&lt;mut Stack[i64])</span> called with
+			<span class="pre">&amp;mut list</span> or <span class="pre">&amp;mut deque</span>; <span class="pre">Collection</span>,
+			which mentions none, is also a constraint, <span class="pre">fn count[C Collection](c &amp;C)</span>.
+			<span class="pre">Map</span>'s <span class="pre">insert</span> answers the old value, an <span class="pre">Option</span>
+			(<span class="pre">None</span> for a new key). A <span class="pre">Set</span> is not covered by a trait yet;
+			its <span class="pre">insert</span> answers whether the element was new.</i></p>
 	<p>A collection type holds some number of values (elements) that are all the same type.
 		The standard library offers a number of versatile collection types,
-		such as <span class="pre">List</span>, <span class="pre">Dict</span>, <span class="pre">OrderedDict</span>
-		and <span class="pre">Set</span>.</p>
+		such as <span class="pre">List</span>, <span class="pre">Deque</span>, <span class="pre">Dict</span>,
+		<span class="pre">OrderedDict</span> and <span class="pre">Set</span>.</p>
 	<p>All such collection types are built on top of the array primitive types,
 		whose elements are co-located in memory and are individually accessed using an integer index:</p>
 	<ul>

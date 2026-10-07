@@ -1,0 +1,177 @@
+// When a Deque's values die, and in what order. Each Fin records its death by
+// appending its digit to 'log', so a log of 312 says 3 died, then 1, then 2.
+// Every expected log is worked out by hand from the rules:
+// - a deque's death finalizes its values front to back, wherever the ring puts
+//   them in the block (a run that wraps round the end is still read in order),
+//   then frees the block;
+// - 'pop' and 'popFront' move a value out, and it dies where it ends up (here,
+//   the binding of the match arm, at the arm's end);
+// - 'clear' finalizes front to back and keeps the block;
+// - growing, 'peek' and reading by position move or borrow values and finalize
+//   none, nor does the move into a new block when the values were split at both
+//   ends of the old one.
+
+mod dequefinal;
+
+import testing use *;
+import collections use *;
+
+mut log = 0i64;
+
+struct Fin {
+  pub n i64;
+  fn final(self &uni) { log = log * 10i64 + n; }
+}
+
+// A block of 4 with the values 3, 4, 5, 6 at slots 2, 3, 0, 1: the first two are
+// at the block's end and the last two at its start, so the run wraps
+fn wrapped() Deque[Fin] {
+  mut d = new Deque[Fin] <- new Fin(1), new Fin(2), new Fin(3), new Fin(4);
+  match d.popFront() {
+    case imm s Some {expectInt(s.value.n, 1, "popped 1 from the front");}
+    case is None {expect(false, "popped 1");}
+  }
+  match d.popFront() {
+    case imm s Some {expectInt(s.value.n, 2, "popped 2 from the front");}
+    case is None {expect(false, "popped 2");}
+  }
+  d.push(new Fin(5));
+  d.push(new Fin(6));
+  d;
+}
+
+fn diesWrapped() {
+  imm d = wrapped();
+  expectInt(log, 12, "the two popped died as they were popped");
+  expectUInt(u64.from(d.capacity()), 4, "in the block of 4");
+}
+
+// Front pushes go to the last slots: 3, 2, 1 from the front
+fn diesFrontPushed() {
+  mut d = Deque[Fin].empty();
+  d.pushFront(new Fin(1));
+  d.pushFront(new Fin(2));
+  d.pushFront(new Fin(3));
+}
+
+// The wrapped run, grown into a block of 8 by a fifth value: nothing dies
+fn growsSplit() {
+  mut d = wrapped();
+  log = 0;
+  d.push(new Fin(7));
+  expectUInt(u64.from(d.capacity()), 8, "the fifth value doubled the block");
+  expectInt(log, 0, "growing finalizes nothing");
+  expectInt(d[0usize].n, 3, "front after growing");
+  expectInt(d[4usize].n, 7, "back after growing");
+}
+
+fn peeked() {
+  imm d = new Deque[Fin] <- new Fin(1), new Fin(2);
+  match d.peek() {
+    case imm s Some {expectInt(s.value.n, 2, "peek is the back");}
+    case is None {expect(false, "peek");}
+  }
+  match d.peekFront() {
+    case imm s Some {expectInt(s.value.n, 1, "peekFront is the front");}
+    case is None {expect(false, "peekFront");}
+  }
+  expectInt(log, 0, "a borrow finalizes nothing");
+}
+
+fn popped() {
+  mut d = new Deque[Fin] <- new Fin(1), new Fin(2), new Fin(3);
+  match d.pop() {
+    case imm s Some {expectInt(s.value.n, 3, "popped 3 from the back");}
+    case is None {expect(false, "popped 3");}
+  }
+  expectInt(log, 3, "the popped value dies with its binding");
+  match d.popFront() {
+    case imm s Some {expectInt(s.value.n, 1, "popped 1 from the front");}
+    case is None {expect(false, "popped 1");}
+  }
+  expectInt(log, 31, "then the one popped from the front");
+}
+
+fn cleared() {
+  mut d = wrapped();
+  log = 0;
+  d.clear();
+  expectInt(log, 3456, "clear finalizes front to back across the wrap");
+  expectUInt(u64.from(d.len()), 0, "empty");
+  expectUInt(u64.from(d.capacity()), 4, "with its block kept");
+  d.pushFront(new Fin(8));
+  d.push(new Fin(9));
+}
+
+// Two deques inside a deque: the inner ones die in order, each in order
+fn nested() {
+  imm first = new Deque[Fin] <- new Fin(1), new Fin(2);
+  imm second = new Deque[Fin] <- new Fin(3);
+  imm outer = new Deque[Deque[Fin]] <- first, second;
+}
+
+fn singleOwner() {
+  imm owned = new So[Deque[Fin]](Deque[Fin].empty());
+  owned.push(new Fin(4));
+  owned.pushFront(new Fin(5));
+  expectUInt(u64.from(owned.len()), 2, "pushed through its So owner");
+}
+
+// Counted instead of logged: a long run that grows the block many times, with
+// values pushed at both ends, finalizes each value exactly once, in all
+mut deaths = 0i64;
+mut sum = 0i64;
+struct Counted {
+  pub n i64;
+  fn final(self &uni) { deaths = deaths + 1i64; sum = sum + n; }
+}
+
+fn manyGrowths() {
+  mut d = Deque[Counted].empty();
+  mut i = 1i64;
+  while i <= 100i64 {
+    if i % 2i64 == 0i64 { d.pushFront(new Counted(i)); } else { d.push(new Counted(i)); }
+    i = i + 1i64;
+  }
+  expectInt(deaths, 0, "growing five times finalizes nothing");
+  expectUInt(u64.from(d.capacity()), 128, "4 doubled five times");
+  mut taken = 0i64;
+  while taken < 30i64 {
+    match d.popFront() {
+      case imm s Some {expectInt(s.value.n % 2i64, 0, "the front was an even one");}
+      case is None {expect(false, "popFront");}
+    }
+    taken = taken + 1i64;
+  }
+  expectInt(deaths, 30, "thirty popped, thirty finalized");
+}
+
+fn main() i32 {
+  diesWrapped();
+  expectInt(log, 123456, "the wrapped deque died front to back");
+  log = 0;
+  diesFrontPushed();
+  expectInt(log, 321, "front pushes die last pushed first");
+  log = 0;
+  growsSplit();
+  expectInt(log, 34567, "grown deque dies front to back in order");
+  log = 0;
+  peeked();
+  expectInt(log, 12, "front to back");
+  log = 0;
+  popped();
+  expectInt(log, 312, "the one left, 2, dies with the deque");
+  log = 0;
+  cleared();
+  expectInt(log, 345689, "the cleared values died, then the two pushed after");
+  log = 0;
+  nested();
+  expectInt(log, 123, "a deque of deques");
+  log = 0;
+  singleOwner();
+  expectInt(log, 54, "a deque behind So dies with its owner, front first");
+  manyGrowths();
+  expectInt(deaths, 100, "each of a hundred died exactly once");
+  expectInt(sum, 5050, "1 + 2 + ... + 100");
+  done();
+}
