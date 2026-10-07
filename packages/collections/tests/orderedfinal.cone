@@ -1,0 +1,297 @@
+// An OrderedDict finalizes every key and value exactly once: on a replacing
+// insert (the old key and the old value), on remove and swapRemove (the key at
+// once, the value when its binding ends), on clear, and when the dictionary
+// dies, through growth, the shifting of later entries on a removal, and a
+// rebuilt index, none of which finalize anything. Every key and value made by
+// 'key' and 'val' has a serial number of its own (keys and values are counted
+// apart, 1 up, under 64), and its death sets that serial's bit in a mask: a bit
+// already set when a death arrives is a second death of one object, counted. A
+// key made with serial 0 is a probe for a lookup and is not tracked. A key's
+// death also notes whether the serial is lower than the last key's to die:
+// keys put in with rising serials die in that order, first inserted first, on
+// clear and at the dictionary's death. Every expected count is worked out by
+// hand from the rules above.
+
+mod orderedfinal;
+
+import testing use *;
+import collections use *;
+
+mut keySerial = 0u64;
+mut valSerial = 0u64;
+mut keyDeaths = 0i64;
+mut keyMask = 0u64;
+mut keyTwice = 0i64;
+mut lastKey = 0u64;
+mut keyBackwards = 0i64;
+mut valDeaths = 0i64;
+mut valMask = 0u64;
+mut valTwice = 0i64;
+
+fn reset() {
+  keySerial = 0u64;
+  valSerial = 0u64;
+  keyDeaths = 0i64;
+  keyMask = 0u64;
+  keyTwice = 0i64;
+  lastKey = 0u64;
+  keyBackwards = 0i64;
+  valDeaths = 0i64;
+  valMask = 0u64;
+  valTwice = 0i64;
+}
+
+// Equal by id alone, so a later key with the same id replaces an earlier one
+struct Key is Hash {
+  pub id u64;
+  pub tag u64;
+  pub fn `==`(self &, o &Key) bool {id == o.id;}
+  pub fn hash(self &, h &mut Hasher) { h.writeU64(id); }
+  fn final(self &uni) {
+    if tag != 0u64 {
+      keyDeaths = keyDeaths + 1i64;
+      imm bit = 1u64 << tag;
+      if (keyMask & bit) != 0u64 { keyTwice = keyTwice + 1i64; }
+      keyMask = keyMask | bit;
+      if tag < lastKey { keyBackwards = keyBackwards + 1i64; }
+      lastKey = tag;
+    }
+  }
+}
+
+struct Val {
+  pub tag u64;
+  fn final(self &uni) {
+    if tag != 0u64 {
+      valDeaths = valDeaths + 1i64;
+      imm bit = 1u64 << tag;
+      if (valMask & bit) != 0u64 { valTwice = valTwice + 1i64; }
+      valMask = valMask | bit;
+    }
+  }
+}
+
+fn key(id u64) Key {
+  keySerial = keySerial + 1u64;
+  new Key(id, keySerial);
+}
+
+fn val() Val {
+  valSerial = valSerial + 1u64;
+  new Val(valSerial);
+}
+
+fn probe(id u64) Key { new Key(id, 0u64); }
+
+fn counts(keys i64, vals i64, label &[]u8) {
+  expectInt(keyDeaths, keys, label);
+  expectInt(valDeaths, vals, label);
+  expectInt(keyTwice + valTwice, 0, label);
+}
+
+fn isNone(o Option[Val]) bool {
+  match o {
+    case is Some[Val] {false;}
+    case is None[Val] {true;}
+  }
+}
+
+// The ids of the keys held, in order, as "1 2 3"
+fn ids(d &OrderedDict[Key, Val]) String {
+  mut out = String.empty();
+  mut c = d.keys();
+  mut first = true;
+  while true {
+    match c.next() {
+      case imm k Some {
+        if not first { out.append(" "); }
+        first = false;
+        out.appendUInt(k.value.id);
+      }
+      case is None {break;}
+    }
+  }
+  out;
+}
+
+// A replacing insert finalizes the old key and the old value, and the new pair
+// is the one held, in the old pair's place
+fn overwrite() {
+  mut d = OrderedDict[Key, Val].empty();
+  expectBool(d.insert(key(1u64), val()), false, "a new key");
+  counts(0, 0, "nothing dies on a new key");
+  expectBool(d.insert(key(2u64), val()), false, "another key");
+  expectBool(d.insert(key(1u64), val()), true, "the same key replaces");
+  counts(1, 1, "the old key and the old value died");
+  expectStr(ids(&d).view(), "1 2", "the replacement stands where the old pair did");
+  expectUInt(u64.from(d.len()), 2, "two held");
+  mut c = d.entries();
+  match c.next() {
+    case imm e Some {
+      expectUInt(e.value.key.tag, 3, "the first entry is the new key, made third");
+      expectUInt(e.value.value.tag, 3, "with the new value, made third");
+    }
+    case is None {expect(false, "an entry");}
+  }
+}
+
+// remove finalizes the key at once and hands the value back, and the pairs that
+// shift down are not finalized
+fn removed() {
+  mut d = OrderedDict[Key, Val].empty();
+  d.insert(key(1u64), val());
+  d.insert(key(2u64), val());
+  d.insert(key(3u64), val());
+  match d.remove(&probe(1u64)) {
+    case imm v Some {
+      counts(1, 0, "the key died on remove; the value is in hand");
+      expectUInt(v.value.tag, 1, "it is the value of key 1 (made first)");
+    }
+    case is None {expect(false, "removed key 1");}
+  }
+  counts(1, 1, "the value died with its binding");
+  expectStr(ids(&d).view(), "2 3", "the later pairs shifted down");
+  expect(isNone(d.remove(&probe(1u64))), "removing it again");
+  counts(1, 1, "a miss kills nothing");
+  expectUInt(u64.from(d.len()), 2, "two held");
+  expect(not isNone(d.remove(&probe(3u64))), "the last removed");
+  counts(2, 2, "its pair died");
+  expectStr(ids(&d).view(), "2", "one left");
+}
+
+fn swapRemoved() {
+  mut d = OrderedDict[Key, Val].empty();
+  d.insert(key(1u64), val());
+  d.insert(key(2u64), val());
+  d.insert(key(3u64), val());
+  match d.swapRemove(&probe(1u64)) {
+    case imm v Some {
+      counts(1, 0, "the key died on swapRemove; the value is in hand");
+      expectUInt(v.value.tag, 1, "it is the value of key 1");
+    }
+    case is None {expect(false, "removed key 1");}
+  }
+  counts(1, 1, "the value died with its binding");
+  expectStr(ids(&d).view(), "3 2", "the last pair took its place");
+  expect(isNone(d.swapRemove(&probe(1u64))), "removing it again");
+  counts(1, 1, "a miss kills nothing");
+}
+
+fn cleared() {
+  mut d = OrderedDict[Key, Val].empty();
+  mut i = 1u64;
+  while i <= 20u64 {
+    d.insert(key(i), val());
+    i = i + 1u64;
+  }
+  counts(0, 0, "twenty pairs, through two doublings, none died");
+  d.clear();
+  counts(20, 20, "clear finalized every key and value once");
+  expectInt(keyBackwards, 0, "in the order they went in");
+  expectUInt(u64.from(d.len()), 0, "cleared");
+  expectUInt(u64.from(d.capacity()), 28, "it keeps its 32 buckets");
+  d.insert(key(5u64), val());
+  expectBool(d.contains(&probe(5u64)), true, "an entry after clear");
+  counts(20, 20, "the new pair is alive");
+}
+
+fn dies(n u64) {
+  mut d = OrderedDict[Key, Val].empty();
+  mut i = 1u64;
+  while i <= n {
+    d.insert(key(i), val());
+    i = i + 1u64;
+  }
+  counts(0, 0, "grown to hold the pairs, none died");
+}
+
+// Removed buckets, filled again, and shifts while many are removed. 14 pairs
+// fill 16 buckets; removing the first 12 shifts the rest down each time; 12
+// more go in, over the removed buckets or by rebuilding the index. Whichever,
+// the 12 died on remove and nothing else died until the end.
+fn churn() {
+  mut d = OrderedDict[Key, Val].empty();
+  mut i = 1u64;
+  while i <= 14u64 {
+    d.insert(key(i), val());
+    i = i + 1u64;
+  }
+  i = 1u64;
+  while i <= 12u64 {
+    expect(not isNone(d.remove(&probe(i))), "removed one of the first twelve");
+    i = i + 1u64;
+  }
+  counts(12, 12, "twelve pairs died on remove");
+  expectStr(ids(&d).view(), "13 14", "two left");
+  i = 100u64;
+  while i < 112u64 {
+    d.insert(key(i), val());
+    i = i + 1u64;
+  }
+  counts(12, 12, "filling the removed buckets killed nothing");
+  expectUInt(u64.from(d.len()), 14, "fourteen held");
+  expectStr(ids(&d).view(), "13 14 100 101 102 103 104 105 106 107 108 109 110 111", "in order");
+  expectBool(d.contains(&probe(13u64)), true, "a survivor is still there");
+  expectBool(d.contains(&probe(111u64)), true, "and the last in");
+}
+
+// A dictionary that holds eight and is fed sixty: each key out as the one eight
+// later goes in, over removed buckets, and an index rebuilt at its own size
+// when they are most of what fills it
+fn rolling() {
+  mut d = OrderedDict[Key, Val].empty();
+  mut i = 1u64;
+  while i <= 60u64 {
+    d.insert(key(i), val());
+    if i > 8u64 {
+      if isNone(d.remove(&probe(i - 8u64))) { expect(false, "the key eight back was held"); }
+    }
+    i = i + 1u64;
+  }
+  expectUInt(u64.from(d.len()), 8, "eight held");
+  expect(d.capacity() <= 14usize, "it never grew past 16 buckets");
+  counts(52, 52, "fifty-two pairs died on remove");
+  expectStr(ids(&d).view(), "53 54 55 56 57 58 59 60", "the last eight, in order");
+}
+
+fn getOrInsert() {
+  mut d = OrderedDict[Key, Val].empty();
+  d.getOrInsert(key(1u64), val());
+  counts(0, 0, "a missing key is inserted, the pair kept");
+  d.getOrInsert(key(1u64), val());
+  counts(1, 1, "a held key: the pair given dies, the held one stays");
+  expectUInt(u64.from(d.len()), 1, "one held");
+  expectUInt(d.getOrInsert(probe(1u64), new Val(0u64)).tag, 1, "the first value is still the one held");
+}
+
+fn main() i32 {
+  overwrite();
+  // three keys and three values were made; one pair died on the replacing
+  // insert and the other two with the dictionary
+  counts(3, 3, "a dictionary's death finalizes the pairs still held");
+  reset();
+  removed();
+  // three pairs: 1 and 3 died on remove, 2 with the dictionary
+  counts(3, 3, "all three pairs died, once each");
+  reset();
+  swapRemoved();
+  counts(3, 3, "all three pairs died, once each");
+  reset();
+  cleared();
+  counts(21, 21, "the pair put in after clear died with the dictionary");
+  reset();
+  dies(40u64);
+  counts(40, 40, "forty pairs, five doublings, each died once at the dictionary's death");
+  expectInt(keyBackwards, 0, "in the order they went in");
+  reset();
+  churn();
+  counts(26, 26, "twelve removed, then the fourteen held at the end");
+  reset();
+  rolling();
+  counts(60, 60, "sixty made, fifty-two removed and the eight held at the end");
+  expectInt(keyBackwards, 0, "removed in order, and the eight held die in order");
+  reset();
+  getOrInsert();
+  counts(2, 2, "the pair given and the pair held");
+  done();
+}

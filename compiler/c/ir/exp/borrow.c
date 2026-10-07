@@ -586,8 +586,20 @@ void borrowTypeCheck(TypeCheckState *pstate, RefNode **nodep) {
 
     // Ensure requested/inferred permission matches lval's permission
     INode *refperm = node->perm;
-    if (refperm == unknownType)
+    if (refperm == unknownType) {
         refperm = newPermUseNode(itypeIsConcrete(refvtype) || itypeLenBodyElem(refvtype) ? roPerm : opaqPerm);
+        // Immutable's rule one: 'imm', where the place allows it. A place that
+        // does not (a 'mut' variable, a 'ro' borrow) keeps the ordinary default,
+        // so that a borrow of what is already held stays possible
+        INode *immperm = tag == RefTag ? refImmutableDefaultPerm(refvtype) : NULL;
+        if (immperm && permMatches(immperm, lvalperm) != NoMatch)
+            refperm = immperm;
+    }
+    // Rule two, for a permission written
+    else if (tag == RefTag && refImmutableBan((INode*)node, refperm, refvtype)) {
+        refused = 1;
+        refperm = newPermUseNode(immPerm);
+    }
     if (!refused && !permMatches(refperm, lvalperm))
         errorMsgNode((INode *)node, ErrorBadPerm, "Borrowed reference cannot obtain this permission");
 

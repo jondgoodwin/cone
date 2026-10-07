@@ -253,6 +253,7 @@ void nametblInit() {
     sendableTraitName = nametblFind("Sendable", 8);
     sizedTraitName = nametblFind("Sized", 5);
     dynSizedTraitName = nametblFind("DynSized", 8);
+    immutableTraitName = nametblFind("Immutable", 9);
     strTypeName = nametblFind("str", 3);
     lockPermTraitName = nametblFind("LockPermission", 14);
     acquireMutMethodName = nametblFind("acquireMut", 10);

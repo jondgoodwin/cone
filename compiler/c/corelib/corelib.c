@@ -99,6 +99,7 @@ StructNode *pointerTrait;
 StructNode *sendableTrait;
 StructNode *sizedTrait;
 StructNode *dynSizedTrait;
+StructNode *immutableTrait;
 StructNode *lockPermTrait;
 
 // A trait the compiler declares, with no members, bound as a name every module
@@ -118,6 +119,7 @@ int corelibIsBuiltinTrait(INode *node) {
         || node == (INode*)atomicValueTrait || node == (INode*)integerTrait
         || node == (INode*)pointerTrait || node == (INode*)sendableTrait
         || node == (INode*)sizedTrait || node == (INode*)dynSizedTrait
+        || node == (INode*)immutableTrait
         || node == (INode*)lockPermTrait;
 }
 
@@ -274,6 +276,19 @@ void stdlibInit(int ptrsize) {
     // type cannot declare either.
     sizedTrait = newBuiltinTrait(sizedTraitName);
     dynSizedTrait = newBuiltinTrait(dynSizedTraitName);
+    // 'Immutable' [Jon 6 Oct]: a type that declares it, with 'is', is never
+    // changed through a reference. Unlike 'Sized' it is declared, not granted:
+    // 'str' declares it here, and any struct may. It has two effects, kept as
+    // two rules apart (ir/types/reference.c) so the second may be loosened
+    // later without touching the first: a reference to the type written with
+    // no permission is 'imm' (refImmutableDefaultPerm), so '&str' is '&imm str'
+    // and 'Rc[str]' copies; and the permissions that write through a shared
+    // path, 'mut', 'mut1' and a lock permission, are refused on it
+    // (refImmutableBan). Trusted: the compiler does not check the type's own
+    // fields.
+    immutableTrait = newBuiltinTrait(immutableTraitName);
+    strTypeDcl->traits = newNodes(1);
+    nodesAdd(&strTypeDcl->traits, (INode*)immutableTrait);
     // 'LockPermission': a struct declaring it may stand in a managed
     // reference's permission slot, 'Arc[Mutex, T]', as a lock permission. Its
     // value is the lock, kept in the allocation's header between the region's

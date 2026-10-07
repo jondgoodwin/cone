@@ -160,7 +160,10 @@ there and the `+` spelling stands until patterns are given their own.
 
 The region names the reference, and its brackets hold an optional permission,
 then the value type: `Rc[Node]`, `Rc[mut, Node]`, `Gc[imm, Leaf]`. Left out,
-the permission is `uni`. It is ordinary generic syntax, so it parses as an
+the permission is `uni` (`imm` for a value type declaring `Immutable`; "A type
+that never changes", below). Lowering leaves it as `unknownType` for
+`refTypeCheck` to settle, since it is the value type's declaration that
+decides. It is ordinary generic syntax, so it parses as an
 `FnCallNode` flagged `FlagIndex` (`parseSuffix`), and it stays one until type
 check lowers it into a `RefNode`. Everything from type check on sees only the
 `RefNode`.
@@ -361,7 +364,8 @@ before `typeLitNewChecked` would report it as no type.
 `allocateValueCheck` so that nothing after it reports again. A `new`
 allocation reaches `allocateValueCheck` directly, its value already checked.
 
-`allocateValueCheck`: default the permission to `uni`; refuse an abstract or
+`allocateValueCheck`: default the permission to `uni` (`imm` for a value whose
+type declares `Immutable`); refuse an abstract or
 zero-size value type (an array literal's dimension is a constant there as
 everywhere, so an allocated array is a fixed-size one, reached by a thin
 reference); build the result type, a `RefTag`, unless `new` gave it the one it
@@ -444,7 +448,8 @@ Where a reference type acquires `MoveType`: **when its permission lacks
 `MayAlias`, or its region is itself a move type.** Of the six permissions only
 `uni` lacks `MayAlias`, and a region ref is a move type by declaring `is Move`,
 as `So` does ([struct](struct.md), "Move and Copy"). Since a managed reference
-type defaults to `uni`, every owning reference written without a permission moves; one with an
+type defaults to `uni`, every owning reference written without a permission moves (but
+for one to a type declaring `Immutable`, which defaults to `imm` and copies); one with an
 aliasable permission into a region ref declaring neither `Move` nor `aliasRef`
 copies, and the copy calls nothing.
 
@@ -733,8 +738,9 @@ an `@unsized` enum are neither, and their references are thin.
 - **Type check.** `refTypeCheck` checks the target as for any reference, and the
   body is refused where a size is asked, by `itypeNoSizeOwnCause` (a variable, a
   field, `mem.sizeof`: `ErrorNoSize`, `ErrorIntrinsicType`). A borrow of one with
-  no permission written is `ro`, where a borrow of any other type with no size
-  is `opaq` (`borrowTypeCheck`). `castBitsize` gives a fat `RefTag` the size of a
+  no permission written is `imm`, as `str` declares `Immutable` ("A type that
+  never changes", below), where a borrow of any other type with no size is
+  `opaq` (`borrowTypeCheck`). `castBitsize` gives a fat `RefTag` the size of a
   slice, so `as` converts between `&str` and `&[]u8` and between an owner and a
   borrow of the same body, checking nothing else.
 - **Allocation.** There is no value to construct or move in. `typeLitAllocValue`
@@ -756,6 +762,48 @@ an `@unsized` enum are neither, and their references are thin.
 The count is not part of any region's header: it travels in each reference, so
 each owner of one value holds its own copy, which is right only for a body that
 never changes length.
+
+## A type that never changes
+
+`Immutable` (`immutableTrait`, corelib.c) is a marker a type **declares**:
+`strTypeDcl` lists it in its `traits` as stdlibInit builds it, and any struct
+may with `is Immutable`. It is not granted, so `itypeIsImmutable` is just
+`structDeclaresTrait`, and a type holding an Immutable one is not for that
+reason Immutable. It is a built-in trait (`corelibIsBuiltinTrait`), so no module
+may declare a trait of that name.
+
+It has two effects, each its own function in `types/reference.c` and called
+apart, so the second can be loosened without touching the first:
+
+- **`refImmutableDefaultPerm(target)`, the default permission.** A reference to
+  the target written with no permission is `imm`, where the other default would
+  be `ro` for a borrow and `uni` for an owner. It is asked in `refTypeCheck`
+  *after* the target is checked (a generic instance, a name, `Self`), because
+  the permission of a type in a field or a signature is settled before its
+  target is known otherwise; the provisional default is replaced and its use node
+  checked. A managed reference type's lowering (`fnCallLowerManagedRef`) therefore
+  leaves an unwritten permission `unknownType` where it used to write `uni`.
+  `allocateValueCheck` asks it for the retired `+` spelling, and `borrowTypeCheck`
+  for `&x`, falling back to the ordinary default where the place cannot be
+  borrowed as `imm` (a `mut` variable, a `ro` reference), so reborrowing
+  something already held stays possible. An `imm` owner may be aliased, so
+  `refAdoptInfections` leaves it a copy type: `Rc[str]` copies where `Rc[T]`
+  moves. The autoborrow of a receiver (`fnCallBorrowReceiver`) tries `imm`
+  between `ro` and `mut` for such a type, since its `self &` is `&imm` and `ro`
+  does not coerce to it.
+- **`refImmutableBan(node, perm, target)`, the ban on mutation.** `mut`, `mut1`
+  and a lock permission written on a reference to the target are
+  `ErrorImmutableWrite`, which names `Immutable`: in `refTypeCheck` for a
+  reference type (in a signature, a field, an alias, a generic's argument, `new`'s
+  type), and in `borrowTypeCheck` for `&mut *v`. A refused permission stands as
+  `imm` afterwards so that its uses check quietly. **`uni` is not refused**: a
+  `final`'s `self` is `&uni` (structSetDropFn, and the check that a `final` takes
+  it), the drop the compiler builds takes one, and a unique owner of a `str`
+  (`So[uni, str]`) is only unique, there being nothing to write through one.
+  What an `Immutable` struct's own methods write through a `uni` receiver, or
+  through a variable's name, is not checked: the marker is trusted as `Sendable`
+  is. Slices (`&[]T` of an Immutable `T`), raw pointers and virtual references to
+  a trait declaring it take no part in either rule.
 
 ## Hazards
 

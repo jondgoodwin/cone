@@ -1,0 +1,49 @@
+// What 'Immutable' refuses. A type that declares it (the compiler's 'str', or a
+// struct 'is Immutable') is never changed through a reference, so the
+// permissions that write through a path others share are an error that names
+// Immutable: 'mut' and 'mut1' written on a borrow, on an owner in any region,
+// in a field, a generic's argument or an expression ('&mut *v'), and a lock
+// permission ('Rc[Rwcell, str]'). A struct's own 'self &mut' method is refused
+// the same. 'uni', 'imm', 'ro' and 'opaq' are not (ref_immutable runs them),
+// and a constraint 'where T is Immutable' is unmet by a type that does not
+// declare it, whatever the type holds.
+
+mod ref_typecheck_immutable;
+
+struct Tag is Immutable {
+  pub n i32;
+  pub fn set(self &mut, v i32) {n = v;}   //~ ErrorImmutableWrite "Tag declares Immutable, so nothing changes it through a reference: 'mut' is refused"
+}
+
+// Holds a Tag, and is not itself Immutable
+struct Plain {
+  pub t Tag;
+}
+
+// A generic's field, refused where an instance names it
+struct Slot[T] {
+  pub r Rc[mut, T];                       //~ ErrorImmutableWrite "str declares Immutable"
+}
+
+fn borrowMut(a &mut str) {}               //~ ErrorImmutableWrite "'mut' is refused"
+fn borrowMut1(a &mut1 str) {}             //~ ErrorImmutableWrite "'mut1' is refused"
+fn ownerSo(a So[mut, str]) {}             //~ ErrorImmutableWrite "'mut' is refused"
+fn ownerRc(a Rc[mut1, str]) {}            //~ ErrorImmutableWrite "'mut1' is refused"
+fn locked(a Rc[Rwcell, str]) {}           //~ ErrorImmutableWrite "'Rwcell' is refused"
+fn borrowTag(a &mut Tag) {}               //~ ErrorImmutableWrite "Tag declares Immutable"
+fn ownerTag(a Rc[mut, Tag]) {}            //~ ErrorImmutableWrite "Tag declares Immutable"
+
+fn reborrow(v &str) {
+  imm m = &mut *v;                        //~ ErrorImmutableWrite "str declares Immutable"
+}
+
+fn instance() {
+  imm k Slot[str];
+}
+
+fn needs[T]() where T is Immutable {}
+
+fn constraint() {
+  needs[i32]();                           //~ ErrorWhereUnmet "needs requires T is Immutable, and i32 is not Immutable"
+  needs[Plain]();                         //~ ErrorWhereUnmet "needs requires T is Immutable, and Plain is not Immutable"
+}

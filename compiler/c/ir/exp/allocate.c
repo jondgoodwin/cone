@@ -93,11 +93,15 @@ void allocateTypeCheck(TypeCheckState *pstate, RefNode **nodep) {
 void allocateValueCheck(TypeCheckState *pstate, RefNode **nodep) {
     RefNode *node = *nodep;
 
-    // The default permission type is 'uni'
-    if (node->perm == unknownType)
-        node->perm = newPermUseNode(uniPerm);
-
     INode *vtype = ((IExpNode*)node->vtexp)->vtype;
+
+    // The default permission type is 'uni', or 'imm' for a type declaring
+    // Immutable
+    if (node->perm == unknownType) {
+        INode *immperm = refImmutableDefaultPerm(vtype);
+        node->perm = immperm ? immperm : newPermUseNode(uniPerm);
+    }
+
     if (!itypeIsConcrete(vtype) || itypeIsZeroSize(vtype)) {
         errorMsgNode(node->vtexp, ErrorInvType, "May not allocate a value of abstract or zero-size type");
     }
