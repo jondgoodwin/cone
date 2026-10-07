@@ -294,10 +294,22 @@ pub struct Adapter {
     imm f13 = new vulkan.PhysicalDeviceVulkan13Features(synchronization2: vulkan.TRUE,
       dynamicRendering: vulkan.TRUE);
     imm exts Array[*u8, 1] = [&"VK_KHR_swapchain" as *u8];
+    // Anisotropic filtering, the one optional core feature asked for: on
+    // where the GPU has it (every desktop one does), else samplers filter
+    // trilinearly only ('Device.maxAnisotropy' is 0)
+    mut props = zeroed[vulkan.PhysicalDeviceProperties]();
+    vulkan.getPhysicalDeviceProperties(backend.physical, &mut props);
+    mut available = new vulkan.PhysicalDeviceFeatures2(pNext: null, features: zeroed[vulkan.PhysicalDeviceFeatures]());
+    vulkan.getPhysicalDeviceFeatures2(backend.physical, &mut available);
+    mut enabled = zeroed[vulkan.PhysicalDeviceFeatures]();
+    if available.features.raw[vulkan.FEATURE_SAMPLER_ANISOTROPY] == vulkan.TRUE and props.limits.maxSamplerAnisotropy >= 1. {
+      enabled.raw[vulkan.FEATURE_SAMPLER_ANISOTROPY] = vulkan.TRUE;
+      result.maxAnisotropy = props.limits.maxSamplerAnisotropy;
+    }
     imm dci = new vulkan.DeviceCreateInfo(pNext: &f13 as *u8, queueCreateInfoCount: 1u32,
       pQueueCreateInfos: &qci as *vulkan.DeviceQueueCreateInfo, ppEnabledLayerNames: null,
       enabledExtensionCount: 1u32, ppEnabledExtensionNames: &exts as **u8,
-      pEnabledFeatures: null);
+      pEnabledFeatures: &enabled as *vulkan.PhysicalDeviceFeatures);
     mut device = 0usize as vulkan.Device;
     if !check(vulkan.createDevice(backend.physical, &dci, nullp(), &mut device), "vkCreateDevice") { return result; }
     result.backend.device = device;
@@ -312,8 +324,6 @@ pub struct Adapter {
     vulkan.getPhysicalDeviceMemoryProperties(backend.physical, &mut result.queue.backend.memory);
 
     // Timestamps, if the queue keeps time: a tick's length
-    mut props = zeroed[vulkan.PhysicalDeviceProperties]();
-    vulkan.getPhysicalDeviceProperties(backend.physical, &mut props);
     mut n = 0u32;
     vulkan.getPhysicalDeviceQueueFamilyProperties(backend.physical, &mut n, null);
     mut families = List[vulkan.QueueFamilyProperties].empty();

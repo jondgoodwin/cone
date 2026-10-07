@@ -1,0 +1,311 @@
+// Mip chains and filtering. Only a failure prints.
+//
+// Part 1, on the CPU ('buildMips', what 'addTexture', 'addLinearTexture' and
+// 'addNormalTexture' make their chains with):
+// - A 64 x 64 texture has 7 levels; 64 x 16 has 7 (down to 1 x 1); 5 x 3 has
+//   3. The chain holds every level, tightly packed, the first being the image.
+// - Each level's average equals the base level's: for sRGB colour in linear
+//   light (a black and white checker's 1 x 1 level is sRGB 188, which is linear
+//   0.5), for linear maps in the bytes themselves (within the byte rounding).
+// - A normal map's every texel is a unit vector at every level, and two
+//   normals tilted opposite ways average to the flat one (128, 128, 255).
+//
+// Part 2, on a real GPU with no window: a plane receding to the horizon, seen
+// from 0.5 above it, into a 128 x 128 rgba8unorm texture (a lit value stored
+// as it is, no sRGB curve). A checkerboard of 1-texel squares is lit to half
+// of what a white texture is, since half its texels are black (linear light),
+// and in the plane's far rows, where a pixel covers many texels, every pixel
+// shows that average: grey, not a pattern. A checkerboard of 16-texel
+// squares, in the near rows, is still resolved, black squares and white ones,
+// so the mips blur only what a pixel covers more of than it shows.
+//
+// It needs a GPU driver with Vulkan 1.3 and SDL3.dll; with the Vulkan SDK,
+// validation and synchronization validation are on, and must say nothing.
+// GPU_POWER_PREFERENCE=low-power tests an integrated GPU where there are two.
+
+mod mips;
+
+import testing use *;
+import libc;
+import collections use *;
+import geomath use *;
+import mesh use Mesh;
+import gpu use *;
+import render use *;
+
+// A width x height RGBA image, rows from the top, squares 'square' texels
+// across alternating (low, high) per channel
+fn checkerRgba(width u32, height u32, square u32, low u8, high u8) List[u8] {
+  mut l = List[u8].empty();
+  mut y = 0u32;
+  while y < height {
+    mut x = 0u32;
+    while x < width {
+      imm v = if ((x / square) + (y / square)) % 2u32 == 0u32 { high; } else { low; };
+      l.push(v);
+      l.push(v);
+      l.push(v);
+      l.push(255u8);
+      x = x + 1u32;
+    }
+    y = y + 1u32;
+  }
+  l;
+}
+
+// The sRGB byte's linear light
+fn linear(b u8) f64 {
+  imm c = f64.from(b) / 255d;
+  if c <= 0.04045d { return c / 12.92d; }
+  libc.pow((c + 0.055d) / 1.055d, 2.4d);
+}
+
+// Where level 'level' starts in a chain of a 'w' x 'h' image, in texels, and
+// its size
+fn levelStart(w u32, h u32, level u32) usize {
+  mut at = 0usize;
+  mut l = 0u32;
+  while l < level {
+    imm lw = if (w >> l) > 0u32 { w >> l; } else { 1u32; };
+    imm lh = if (h >> l) > 0u32 { h >> l; } else { 1u32; };
+    at = at + usize.from(lw) * usize.from(lh);
+    l = l + 1u32;
+  }
+  at;
+}
+
+// The mean of channel 'c' over level 'level' of the chain, as bytes
+// ('srgb' false) or linear light ('srgb')
+fn levelMean(chain &List[u8], w u32, h u32, level u32, c usize, srgb bool) f64 {
+  imm lw = if (w >> level) > 0u32 { w >> level; } else { 1u32; };
+  imm lh = if (h >> level) > 0u32 { h >> level; } else { 1u32; };
+  imm start = levelStart(w, h, level);
+  imm v = chain.view();
+  mut sum = 0d;
+  mut i = 0usize;
+  while i < usize.from(lw) * usize.from(lh) {
+    imm b = v[(start + i) * 4usize + c];
+    sum = sum + if srgb { linear(b); } else { f64.from(b); };
+    i = i + 1usize;
+  }
+  sum / f64.from(lw * lh);
+}
+
+fn px(p *u8, x usize, y usize, c usize) i64 { i64.from(*(p + (y * 128usize + x) * 4usize + c)); }
+
+// The mean and standard deviation of channel 0 over row 'y' from x0 up to x1
+fn rowStats(p *u8, y usize, x0 usize, x1 usize, mean &mut f64, spread &mut f64) {
+  mut sum = 0d;
+  mut x = x0;
+  while x < x1 {
+    sum = sum + f64.from(px(p, x, y, 0usize));
+    x = x + 1usize;
+  }
+  imm m = sum / f64.from(x1 - x0);
+  mut sq = 0d;
+  x = x0;
+  while x < x1 {
+    imm d = f64.from(px(p, x, y, 0usize)) - m;
+    sq = sq + d * d;
+    x = x + 1usize;
+  }
+  *mean = m;
+  *spread = libc.sqrt(sq / f64.from(x1 - x0));
+}
+
+// The plane drawn in 'material' from 0.5 above it, read back
+fn drawPlane(renderer &mut Renderer, device &mut Device, color &Texture, depth &Texture, readback &Buffer,
+    plane MeshHandle, material MaterialHandle) {
+  mut camera = Camera.make();
+  camera.fov = radians(40.);
+  camera.lookAt(new Vec3(0., 0.5, 0.), new Vec3(0., 0.5, -10.), new Vec3(0., 1., 0.));
+  camera.background = new Color(0., 0., 0., 1.);
+  imm light = Light.directional(new Vec3(0., -1., 0.), Color.gray(1.8849556), Color.gray(0.2));
+  mut list = DrawList.empty();
+  list.add(plane, material, Mat4.fromTrs(new Vec3(0., 0., 0.), Quat.identity(), new Vec3(100., 1., 100.)));
+  mut encoder = device.createCommandEncoder();
+  renderer.render(device, &mut encoder, color, depth, &camera, &light, &list);
+  encoder.copyTextureToBuffer(color, readback);
+  device.queue.submit(encoder.finish());
+  device.endFrame();
+  device.waitIdle();
+}
+
+fn image(rgba &List[u8], w i32, h i32) Image {
+  mut img = new Image(w, h, 4, List[u8].empty());
+  imm v = rgba.view();
+  mut i = 0usize;
+  while i < v.len() {
+    img.pixels.push(v[i]);
+    i = i + 1usize;
+  }
+  img;
+}
+
+fn main() i32 {
+  // ---- 1. The chains ----
+  expectUInt(u64.from(mipLevelCount(64u32, 64u32)), 7u64, "64 x 64: 7 levels");
+  expectUInt(u64.from(mipLevelCount(64u32, 16u32)), 7u64, "64 x 16: 7 levels, down to 1 x 1");
+  expectUInt(u64.from(mipLevelCount(5u32, 3u32)), 3u64, "5 x 3: 3 levels");
+  expectUInt(u64.from(mipLevelCount(1u32, 1u32)), 1u64, "1 x 1: 1 level");
+
+  {
+    imm base = checkerRgba(64u32, 64u32, 1u32, 0u8, 255u8);
+    imm chain = buildMips(&base, 64u32, 64u32, MIP_COLOUR);
+    // 64^2 + 32^2 + ... + 1 = 5461 texels
+    expectUInt(u64.from(chain.len()), 5461u64 * 4u64, "a colour chain holds every level");
+    imm v = chain.view();
+    imm b = base.view();
+    mut same = true;
+    mut i = 0usize;
+    while i < b.len() {
+      if v[i] != b[i] { same = false; }
+      i = i + 1usize;
+    }
+    expect(same, "the first level is the image");
+    mut level = 0u32;
+    while level < 7u32 {
+      expectFloat(levelMean(&chain, 64u32, 64u32, level, 0usize, true), 0.5, 0.01d,
+        "a colour level's mean in linear light is the base's");
+      level = level + 1u32;
+    }
+    expectInt(i64.from(v[(levelStart(64u32, 64u32, 6u32)) * 4usize]), 188i64, "the 1 x 1 level of black and white is sRGB 188");
+    expectInt(i64.from(v[(levelStart(64u32, 64u32, 6u32)) * 4usize + 3usize]), 255i64, "opaque stays opaque");
+  }
+  {
+    // A not-square, not-even image
+    imm base = checkerRgba(5u32, 3u32, 1u32, 20u8, 220u8);
+    imm chain = buildMips(&base, 5u32, 3u32, MIP_LINEAR);
+    expectUInt(u64.from(chain.len()), (15u64 + 2u64 + 1u64) * 4u64, "5 x 3, 2 x 1, 1 x 1");
+    expectFloat(levelMean(&chain, 5u32, 3u32, 2u32, 0usize, false), 120., 25d, "the 1 x 1 level is near the middle of 20 and 220");
+  }
+  {
+    imm base = checkerRgba(32u32, 16u32, 1u32, 0u8, 200u8);
+    imm chain = buildMips(&base, 32u32, 16u32, MIP_LINEAR);
+    mut level = 0u32;
+    while level < mipLevelCount(32u32, 16u32) {
+      expectFloat(levelMean(&chain, 32u32, 16u32, level, 1usize, false), 100., 1.1d,
+        "a linear level's mean in bytes is the base's");
+      level = level + 1u32;
+    }
+  }
+  {
+    // Normals tilted +x and -x in stripes: (0.6, 0, 0.8) is bytes (204, 128, 230)
+    mut base = List[u8].empty();
+    mut y = 0u32;
+    while y < 8u32 {
+      mut x = 0u32;
+      while x < 8u32 {
+        if x % 2u32 == 0u32 {
+          base.push(204u8);
+        } else {
+          base.push(51u8);
+        }
+        base.push(128u8);
+        base.push(230u8);
+        base.push(255u8);
+        x = x + 1u32;
+      }
+      y = y + 1u32;
+    }
+    imm chain = buildMips(&base, 8u32, 8u32, MIP_NORMAL);
+    imm v = chain.view();
+    mut worst = 0d;
+    mut level = 1u32;
+    while level < 4u32 {
+      imm lw = 8u32 >> level;
+      imm start = levelStart(8u32, 8u32, level);
+      mut i = 0usize;
+      while i < usize.from(lw * lw) {
+        imm nx = f64.from(v[(start + i) * 4usize]) / 255d * 2d - 1d;
+        imm ny = f64.from(v[(start + i) * 4usize + 1usize]) / 255d * 2d - 1d;
+        imm nz = f64.from(v[(start + i) * 4usize + 2usize]) / 255d * 2d - 1d;
+        imm len = libc.sqrt(nx * nx + ny * ny + nz * nz);
+        imm off = if len > 1d { len - 1d; } else { 1d - len; };
+        if off > worst { worst = off; }
+        i = i + 1usize;
+      }
+      level = level + 1u32;
+    }
+    expectFloat(worst, 0., 0.02d, "a normal map's every texel is a unit vector at every level");
+    imm last = levelStart(8u32, 8u32, 3u32) * 4usize;
+    expectInt(i64.from(v[last]), 128i64, "opposite tilts cancel: x is flat");
+    expectInt(i64.from(v[last + 2usize]), 255i64, "and the vector points straight out");
+  }
+
+  // ---- 2. On the GPU ----
+  mut instance = Instance.create("render mips");
+  require(instance.isValid(), "a Vulkan 1.3 instance");
+  mut none = Surface.none();
+  mut preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
+  imm env = libc.getenv(&"GPU_POWER_PREFERENCE" as *u8);
+  if (env as usize) != 0usize {
+    if libc.strcmp(env, &"low-power" as *u8) == 0i32 { preference = POWER_PREFERENCE_LOW_POWER; }
+  }
+  mut adapter = instance.requestAdapter(&none, preference);
+  require(adapter.isValid(), "an adapter");
+  mut device = adapter.requestDevice();
+  require(device.isValid(), "a device");
+  expect(device.maxAnisotropy == 0. or device.maxAnisotropy >= 1., "the device's anisotropy is none or at least 1");
+
+  imm target = new TextureDescriptor(128u32, 128u32, TEXTURE_FORMAT_RGBA8_UNORM,
+    TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
+  mut color = device.createTexture(&target);
+  imm depthDesc = new TextureDescriptor(128u32, 128u32, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT);
+  mut depth = device.createTexture(&depthDesc);
+  mut readback = device.createBuffer(65536u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  imm p = readback.mappedRange();
+  mut renderer = Renderer.create(&mut device, TEXTURE_FORMAT_RGBA8_UNORM, TEXTURE_FORMAT_DEPTH32_FLOAT);
+  require(renderer.isValid(), "a renderer");
+
+  // The plane repeats its texture 100 times across its 200 units: 2 units a repeat
+  imm planeMesh = Mesh.plane(4, 100.);
+  imm plane = renderer.addMesh(&mut device, &planeMesh);
+
+  // White: the lit value of a texel of 1 is 0.8 (ambient 0.2, light 0.6)
+  imm whiteMaterial = Material.plain(new Color(1., 1., 1., 1.));
+  imm white = renderer.addMaterial(&mut device, &whiteMaterial);
+  drawPlane(&mut renderer, &mut device, &color, &depth, &readback, plane, white);
+  mut mean = 0d;
+  mut spread = 0d;
+  rowStats(p, 67usize, 20usize, 108usize, &mut mean, &mut spread);
+  expectFloat(mean, 204., 2d, "a white plane: 0.8 in the far rows");
+
+  // 1-texel squares: in the far rows, grey
+  imm fineRgba = checkerRgba(64u32, 64u32, 1u32, 0u8, 255u8);
+  imm fineImage = image(&fineRgba, 64, 64);
+  imm fineTexture = renderer.addTexture(&mut device, &fineImage);
+  imm fineMaterial = Material.textured(new Color(1., 1., 1., 1.), fineTexture);
+  imm fine = renderer.addMaterial(&mut device, &fineMaterial);
+  drawPlane(&mut renderer, &mut device, &color, &depth, &readback, plane, fine);
+  mut row = 66usize;
+  while row < 70usize {
+    rowStats(p, row, 20usize, 108usize, &mut mean, &mut spread);
+    expectFloat(mean, 102., 10d, "the far rows of a fine checkerboard average to half the white plane's");
+    expectFloat(spread, 0., 5d, "and every pixel of them shows that average, not the pattern");
+    row = row + 1usize;
+  }
+
+  // 16-texel squares: in the near rows, resolved
+  imm coarseRgba = checkerRgba(64u32, 64u32, 16u32, 0u8, 255u8);
+  imm coarseImage = image(&coarseRgba, 64, 64);
+  imm coarseTexture = renderer.addTexture(&mut device, &coarseImage);
+  imm coarseMaterial = Material.textured(new Color(1., 1., 1., 1.), coarseTexture);
+  imm coarse = renderer.addMaterial(&mut device, &coarseMaterial);
+  drawPlane(&mut renderer, &mut device, &color, &depth, &readback, plane, coarse);
+  mut lo = 255i64;
+  mut hi = 0i64;
+  mut x = 0usize;
+  while x < 128usize {
+    imm v = px(p, x, 124usize, 0usize);
+    if v < lo { lo = v; }
+    if v > hi { hi = v; }
+    x = x + 1usize;
+  }
+  expect(lo < 40i64, "near the camera, a coarse checkerboard's black squares are black");
+  expect(hi > 170i64, "and its white squares white");
+
+  expectUInt(u64.from(failures()), 0u64, "no Vulkan call failed");
+  expectUInt(u64.from(validationMessages()), 0u64, "no validation message");
+  done();
+}
