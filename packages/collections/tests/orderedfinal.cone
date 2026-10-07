@@ -17,6 +17,15 @@ mod orderedfinal;
 import testing use *;
 import collections use *;
 
+// Whether an insert replaced an entry: the old value came back. It is dropped here,
+// so a value with a finalizer dies here
+fn wasHeld[T](old Option[T]) bool {
+  match old {
+    case is Some {true;}
+    case is None {false;}
+  }
+}
+
 mut keySerial = 0u64;
 mut valSerial = 0u64;
 mut keyDeaths = 0i64;
@@ -118,10 +127,10 @@ fn ids(d &OrderedDict[Key, Val]) String {
 // is the one held, in the old pair's place
 fn overwrite() {
   mut d = OrderedDict[Key, Val].empty();
-  expectBool(d.insert(key(1u64), val()), false, "a new key");
+  expectBool(wasHeld(d.insert(key(1u64), val())), false, "a new key");
   counts(0, 0, "nothing dies on a new key");
-  expectBool(d.insert(key(2u64), val()), false, "another key");
-  expectBool(d.insert(key(1u64), val()), true, "the same key replaces");
+  expectBool(wasHeld(d.insert(key(2u64), val())), false, "another key");
+  expectBool(wasHeld(d.insert(key(1u64), val())), true, "the same key replaces");
   counts(1, 1, "the old key and the old value died");
   expectStr(ids(&d).view(), "1 2", "the replacement stands where the old pair did");
   expectUInt(u64.from(d.len()), 2, "two held");
@@ -264,6 +273,26 @@ fn getOrInsert() {
   expectUInt(d.getOrInsert(probe(1u64), new Val(0u64)).tag, 1, "the first value is still the one held");
 }
 
+// A replacing insert answers the old value, moved out: the old key died inside
+// the insert, the old value lives in the Option the caller gets and dies when
+// its binding ends, once; an insert whose answer is ignored kills it at the end
+// of the statement. Serials: keys 1, 2, 3 and values 1, 2, 3 in the order made.
+fn returnsOld() {
+  mut d = OrderedDict[Key, Val].empty();
+  d.insert(key(1u64), val());
+  match d.insert(key(1u64), val()) {
+    case imm old Some {
+      counts(1, 0, "the old key died inside insert; the old value is still alive");
+      expectUInt(old.value.tag, 1, "the value that comes back is the first one");
+    }
+    case is None {expect(false, "a held key answers its old value");}
+  }
+  counts(1, 1, "the returned value died when its binding ended");
+  d.insert(key(1u64), val());
+  counts(2, 2, "an ignored answer dies at the end of its statement");
+  expectBool(wasHeld(d.insert(key(9u64), val())), false, "a new key answers None");
+  counts(2, 2, "and kills nothing");
+}
 fn main() i32 {
   overwrite();
   // three keys and three values were made; one pair died on the replacing
@@ -293,5 +322,10 @@ fn main() i32 {
   reset();
   getOrInsert();
   counts(2, 2, "the pair given and the pair held");
+  reset();
+  returnsOld();
+  // four keys and four values were made, two pairs died during the test, and the
+  // two held die with the dictionary
+  counts(4, 4, "the held pairs died with the dictionary, once each");
   done();
 }

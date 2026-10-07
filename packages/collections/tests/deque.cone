@@ -1,0 +1,331 @@
+// Deque: a ring buffer. Pushing and popping at both ends, positions counted from
+// the front, the block growing while its values wrap round its end, and a
+// long run of mixed operations checked against a plain List used as the model.
+// Every expected value is worked out by hand:
+// - the first value makes a block of 4 slots; a full block doubles (4, 8, 16);
+// - 'pushFront' puts the value in the slot before 'head' (the last slot, when
+//   head is 0), so after pushFront 1, 2, 3 the order from the front is 3, 2, 1;
+// - 'popFront' moves head on by one, round to slot 0 past the last slot.
+
+mod deque;
+
+import testing use *;
+import collections use *;
+
+// The deque's values from the front, as one number with the front's digit
+// first: [3, 4, 5] reads 345. Only digits 0 to 9 may be held.
+fn digits(d &Deque[i64]) i64 {
+  mut c = d.items();
+  mut n = 0i64;
+  while true {
+    match c.next() {
+      case imm e Some {n = n * 10i64 + *e.value;}
+      case is None {break;}
+    }
+  }
+  n;
+}
+
+// The same read by position, '[i]', which must agree with the cursor
+fn digitsByIndex(d &Deque[i64]) i64 {
+  mut n = 0i64;
+  mut i = 0usize;
+  while i < d.len() {
+    n = n * 10i64 + *d[i];
+    i = i + 1usize;
+  }
+  n;
+}
+
+fn popFrontOr(d &mut Deque[i64]) i64 {
+  match d.popFront() {
+    case imm s Some {s.value;}
+    case is None {-1i64;}
+  }
+}
+
+fn popOr(d &mut Deque[i64]) i64 {
+  match d.pop() {
+    case imm s Some {s.value;}
+    case is None {-1i64;}
+  }
+}
+
+fn peekOr(d &Deque[i64]) i64 {
+  match d.peek() {
+    case imm s Some {*s.value;}
+    case is None {-1i64;}
+  }
+}
+
+fn peekFrontOr(d &Deque[i64]) i64 {
+  match d.peekFront() {
+    case imm s Some {*s.value;}
+    case is None {-1i64;}
+  }
+}
+
+fn empties() {
+  mut d = Deque[i64].empty();
+  expectUInt(u64.from(d.len()), 0, "an empty deque holds nothing");
+  expect(d.isEmpty(), "and says so");
+  expectUInt(u64.from(d.capacity()), 0, "with no block yet");
+  expectInt(popOr(&mut d), -1, "pop answers None");
+  expectInt(popFrontOr(&mut d), -1, "popFront answers None");
+  expectInt(peekOr(&d), -1, "peek answers None");
+  expectInt(peekFrontOr(&d), -1, "peekFront answers None");
+  expectInt(digits(&d), 0, "its cursor ends at once");
+  imm made = new Deque[i64];
+  expectUInt(u64.from(made.capacity()), 0, "'new' makes none either");
+}
+
+fn backAndFront() {
+  mut d = new Deque[i64] <- 1, 2, 3;
+  expectUInt(u64.from(d.len()), 3, "three pushed at the back");
+  expectUInt(u64.from(d.capacity()), 4, "in a block of 4");
+  expectInt(digits(&d), 123, "in order from the front");
+  expectInt(peekOr(&d), 3, "peek is the back");
+  expectInt(peekFrontOr(&d), 1, "peekFront is the front");
+  expectInt(popOr(&mut d), 3, "pop takes the back");
+  expectInt(popFrontOr(&mut d), 1, "popFront takes the front");
+  expectInt(digits(&d), 2, "one left");
+  expectInt(popFrontOr(&mut d), 2, "and it is both ends");
+  expect(d.isEmpty(), "now empty");
+
+  mut f = Deque[i64].empty();
+  f.pushFront(1);
+  f.pushFront(2);
+  f.pushFront(3);
+  expectInt(digits(&f), 321, "pushFront puts each before the others");
+  expectInt(digitsByIndex(&f), 321, "and '[i]' agrees");
+  expectInt(peekFrontOr(&f), 3, "the last pushed is the front");
+  expectInt(peekOr(&f), 1, "the first pushed is the back");
+  f.push(4);
+  expectInt(digits(&f), 3214, "a push goes to the back");
+  expectUInt(u64.from(f.capacity()), 4, "all in the one block");
+  expectInt(popOr(&mut f), 4, "pop");
+  expectInt(popOr(&mut f), 1, "pop");
+  expectInt(popFrontOr(&mut f), 3, "popFront");
+  expectInt(popFrontOr(&mut f), 2, "popFront");
+  expectInt(popFrontOr(&mut f), -1, "then none");
+}
+
+// Four slots; two are used from slot 2, then two more go in at slots 0 and 1,
+// so the values 3, 4, 5, 6 lie at slots 2, 3, 0, 1: split across the block's
+// ends. A fifth makes a block of 8 and moves the two runs into it in order
+fn growthSplitAtBack() {
+  mut d = new Deque[i64] <- 1, 2, 3, 4;
+  expectInt(popFrontOr(&mut d), 1, "front 1");
+  expectInt(popFrontOr(&mut d), 2, "front 2");
+  d.push(5);
+  d.push(6);
+  expectUInt(u64.from(d.capacity()), 4, "still the block of 4");
+  expectInt(digits(&d), 3456, "wrapped, in order");
+  expectInt(digitsByIndex(&d), 3456, "by position too");
+  d.push(7);
+  expectUInt(u64.from(d.capacity()), 8, "the fifth value doubles the block");
+  expectInt(digits(&d), 34567, "the two runs joined in order");
+  expectInt(digitsByIndex(&d), 34567, "by position too");
+  expectInt(peekFrontOr(&d), 3, "front");
+  expectInt(peekOr(&d), 7, "back");
+}
+
+// Two values at slots 0 and 1, then two pushed at the front land at slots 3 and
+// 2: from the front they read 8, 9, 1, 2, the first run at slots 2 and 3
+fn growthSplitAtFront() {
+  mut d = new Deque[i64] <- 1, 2;
+  d.pushFront(9);
+  d.pushFront(8);
+  expectUInt(u64.from(d.capacity()), 4, "a block of 4, full");
+  expectInt(digits(&d), 8912, "front pushes wrapped to the last slots");
+  d.pushFront(7);
+  expectUInt(u64.from(d.capacity()), 8, "growing");
+  expectInt(digits(&d), 78912, "in order after the move");
+  d.push(3);
+  expectInt(digits(&d), 789123, "back push after growth");
+}
+
+// Not a power of two: 10 slots, the head moved to slot 3, ten values in
+fn oddCapacity() {
+  mut d = Deque[i64].withCapacity(10);
+  expectUInt(u64.from(d.capacity()), 10, "room for exactly ten");
+  mut i = 1i64;
+  while i <= 3i64 { d.push(i); i = i + 1i64; }
+  expectInt(popFrontOr(&mut d), 1, "1 out");
+  expectInt(popFrontOr(&mut d), 2, "2 out");
+  expectInt(popFrontOr(&mut d), 3, "3 out");
+  // head is at slot 3 and nothing is held; nine values reach slot 11 = slot 1
+  i = 1i64;
+  while i <= 9i64 { d.push(i); i = i + 1i64; }
+  expectUInt(u64.from(d.capacity()), 10, "nine fit");
+  expectInt(digits(&d), 123456789, "wrapped past slot 9 to slot 0");
+  d.push(0);
+  d.push(1);
+  expectUInt(u64.from(d.capacity()), 20, "the eleventh doubles it");
+  expectInt(digitsByIndex(&d), 12345678901, "all eleven in order");
+  imm sized = new Deque[i64](100);
+  expectUInt(u64.from(sized.capacity()), 100, "'new Deque[i64](100)' has room for 100");
+}
+
+// Reserve makes room for 'more' beyond the values held
+fn reserved() {
+  mut d = new Deque[i64] <- 1, 2;
+  d.reserve(2);
+  expectUInt(u64.from(d.capacity()), 4, "room already");
+  d.reserve(3);
+  expectUInt(u64.from(d.capacity()), 8, "doubled when 5 are wanted");
+  d.reserve(20);
+  expectUInt(u64.from(d.capacity()), 22, "exactly 22 when doubling is not enough");
+  expectInt(digits(&d), 12, "the values survived");
+}
+
+fn changedInPlace() {
+  mut d = new Deque[i64] <- 1, 2, 3;
+  imm second = &mut d[1usize];
+  *second = 7i64;
+  expectInt(digits(&d), 173, "a value changed in place");
+  d.pushFront(0);
+  imm third = &mut d[3usize];
+  *third = 9i64;
+  expectInt(digits(&d), 179, "and the last, after a front push");
+}
+
+fn getAnswers() {
+  mut d = new Deque[i64] <- 5, 6;
+  d.pushFront(4);
+  match d.get(0usize) {
+    case imm s Some {expectInt(*s.value, 4, "get 0");}
+    case is None {expect(false, "get 0");}
+  }
+  match d.get(2usize) {
+    case imm s Some {expectInt(*s.value, 6, "get 2");}
+    case is None {expect(false, "get 2");}
+  }
+  match d.get(3usize) {
+    case is Some {expect(false, "get 3 is out of range");}
+    case is None {expect(true, "get 3 is out of range");}
+  }
+}
+
+fn cleared() {
+  mut d = new Deque[i64] <- 1, 2, 3, 4;
+  popFrontOr(&mut d);
+  d.push(5);
+  d.clear();
+  expectUInt(u64.from(d.len()), 0, "cleared");
+  expectUInt(u64.from(d.capacity()), 4, "with its room kept");
+  d.pushFront(8);
+  d.push(9);
+  expectInt(digits(&d), 89, "usable again from the front");
+}
+
+// Many mixed operations, each also done to a List that is the model: the front
+// push rebuilds the list and the front pop shifts it down. After every one the
+// two must agree on both ends and their length, and every 61st time on all
+// values by position. The run is a xorshift sequence, the same every time.
+fn modelPushFront(m &mut List[i64], v i64) {
+  mut n = List[i64].withCapacity(m.len() + 1usize);
+  n.push(v);
+  mut i = 0usize;
+  while i < m.len() { n.push(*m[i]); i = i + 1usize; }
+  *m = n;
+}
+
+fn modelPopFront(m &mut List[i64]) {
+  mut n = List[i64].withCapacity(m.len());
+  mut i = 1usize;
+  while i < m.len() { n.push(*m[i]); i = i + 1usize; }
+  *m = n;
+}
+
+fn sameAsModel(d &Deque[i64], m &List[i64]) bool {
+  if d.len() != m.len() { return false; }
+  mut i = 0usize;
+  while i < m.len() {
+    if *d[i] != *m[i] { return false; }
+    i = i + 1usize;
+  }
+  true;
+}
+
+fn againstModel() {
+  mut d = Deque[i64].empty();
+  mut m = List[i64].empty();
+  mut x = 0x9E3779B97F4A7C15u64;
+  mut agree = true;
+  mut grewTo = 0usize;
+  mut i = 0i64;
+  while i < 6000i64 {
+    x = x ^ (x << 13u64);
+    x = x ^ (x >> 7u64);
+    x = x ^ (x << 17u64);
+    imm op = (x >> 33u64) % 8u64;
+    if op < 3u64 {
+      d.push(i);
+      m.push(i);
+    }
+    else if op < 5u64 {
+      d.pushFront(i);
+      modelPushFront(&mut m, i);
+    }
+    else if op == 5u64 {
+      match m.pop() {
+        case imm want Some {if popOr(&mut d) != want.value {agree = false;}}
+        case is None {if popOr(&mut d) != -1i64 {agree = false;}}
+      }
+    }
+    else {
+      imm wantFront = if m.len() == 0usize {-1i64;} else {*m[0usize];};
+      if popFrontOr(&mut d) != wantFront {agree = false;}
+      if m.len() > 0usize { modelPopFront(&mut m); }
+    }
+    if d.len() != m.len() { agree = false; }
+    if m.len() > 0usize {
+      if peekFrontOr(&d) != *m[0usize] { agree = false; }
+      if peekOr(&d) != *m[m.len() - 1usize] { agree = false; }
+    }
+    if d.capacity() > grewTo { grewTo = d.capacity(); }
+    if i % 61i64 == 0i64 and not sameAsModel(&d, &m) { agree = false; }
+    i = i + 1i64;
+  }
+  expect(agree, "every one of 6000 operations agreed with the model");
+  expect(sameAsModel(&d, &m), "and so did the whole contents at the end");
+  expect(grewTo >= 64usize, "the run grew the block several times, wrapping as it went");
+}
+
+// Alternating the two ends keeps a deque of one or two values moving round and
+// round a block of 4 without ever growing it
+fn alternating() {
+  mut d = Deque[i64].empty();
+  d.push(0);
+  mut i = 1i64;
+  mut ok = true;
+  while i <= 40i64 {
+    d.pushFront(i);
+    if popOr(&mut d) != i - 1i64 { ok = false; }
+    if peekFrontOr(&d) != i { ok = false; }
+    if i % 2i64 == 0i64 {
+      d.push(i);
+      if popFrontOr(&mut d) != i { ok = false; }
+    }
+    i = i + 1i64;
+  }
+  expect(ok, "forty alternations gave the right values");
+  expectUInt(u64.from(d.capacity()), 4, "in a block that never grew");
+  expectInt(digitsByIndex(&d), 40, "leaving only the last front push");
+}
+
+fn main() i32 {
+  empties();
+  backAndFront();
+  growthSplitAtBack();
+  growthSplitAtFront();
+  oddCapacity();
+  reserved();
+  changedInPlace();
+  getAnswers();
+  cleared();
+  againstModel();
+  alternating();
+  done();
+}

@@ -74,7 +74,7 @@ Visual Studio projects stay at the root.
   SDL hands out, volk's way (`load`, `loadInstance`, `loadDevice`), and its
   `layout` test checks every struct against `cl.exe`; `gpu` is Cone's own
   thin GPU layer, shaped like WebGPU's objects (`Instance`, `Adapter`,
-  `Device` and its `Queue`, `Surface`, `SwapChain`, `CommandEncoder`,
+  `Device` and its `CommandQueue`, `Surface`, `SwapChain`, `CommandEncoder`,
   `RenderPass` (indirect draws too), `ComputePassEncoder` (dispatch, and
   indirect dispatch), `Texture` (drawn into, sampled and filled by
   `writeTexture`, or both, or a storage texture compute reads and writes;
@@ -499,10 +499,18 @@ Visual Studio projects stay at the root.
   `u32` positions probed by `Dict`'s own control-byte group probe; an
   overwrite keeps the entry's place, `remove` shifts the later entries down,
   `swapRemove` is O(1) and breaks the order; its example `dictbench.cone`
-  times it against `Dict`); and `Set[T]`, a `Dict` whose value takes no
-  bytes (`insert` answers whether the element was new); each holding its
+  times it against `Dict`); `Set[T]`, a `Dict` whose value takes no
+  bytes (`insert` answers whether the element was new); and `Deque[T]`, a
+  growable ring buffer (Rust's `VecDeque`: O(1) `push`/`pop` at the back and
+  `pushFront`/`popFront` at the front, `peek`/`peekFront`, `get(i)`, `[i]` by
+  position from the front, an `items()` cursor, doubling from 4 with the wrapped
+  run moved in order); each holding its
   elements in one block from `libc`'s allocator (an `OrderedDict` in two) and
-  moving them with core's `mem` intrinsics; `arena` is an
+  moving them with core's `mem` intrinsics; and the capability traits, met by
+  the collections' method names alone (Cone's traits are structural): `Collection`,
+  `Indexed[T]`, `Stack[T]`, `Queue[T]` and `Map[K, V]` (the
+  generic ones taken as virtual references, `&<mut Stack[i64]`, since a generic
+  trait's instance is not a constraint yet; `Collection` is also a constraint); `arena` is an
   `Arena`, a dynamic region whose values are finalized, newest first, and
   freed together when it dies, and which, held in a local, is the scratch
   arena, and `DynArena['=a]`, the invariant-lifetime dynamic arena, whose
