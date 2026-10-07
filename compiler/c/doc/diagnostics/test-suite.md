@@ -459,6 +459,11 @@ Some facts belong to the file rather than a line:
   block freed twice, used once freed or written past its end ends the
   program with 0xC0000374 (STATUS_HEAP_CORRUPTION) where the normal heap
   would carry on, so a miscompiled count or release fails its scenario.
+  A program started without a DLL it needs would stop at the loader's modal
+  dialog on the desktop, which being a debuggee does not prevent; the runner
+  sets the process error mode (`SEM_FAILCRITICALERRORS`) once at start-up,
+  every program it starts inherits it, and the program ends with 0xC0000135
+  (STATUS_DLL_NOT_FOUND) instead, which the failure message names.
 - **What differs from run to run on stderr**, `stderr_mask`, a list of
   regular expressions for a `run` scenario: each match in the program's stderr
   is written `<masked>` before it is compared with the `.err` file, which

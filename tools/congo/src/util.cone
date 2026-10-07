@@ -136,8 +136,9 @@ fn utf8Text(bytes &[]u8) String {
   newlines(text.view());
 }
 
-// kernel32's, for the text a console program writes
+// kernel32's, for the text a console program writes, and the error mode
 extern {
+  fn @c(system) SetErrorMode(mode u32) u32;
   fn @c(system) GetConsoleOutputCP() u32;
   fn @c(system) GetOEMCP() u32;
   fn @c(system) MultiByteToWideChar(page u32, flags u32, from *u8, fromLen i32, to *u16, toLen i32) i32;
@@ -146,6 +147,31 @@ extern {
 }
 
 const utf8Page = 65001u32;
+
+// Once at start-up, as congo.py's hard_errors_to_status: the loader's
+// missing-DLL dialog, and the other hard-error and file-open boxes, become
+// an exit status. A program started without a DLL it needs would otherwise
+// stop at a modal dialog on the desktop, waiting for a person. A child
+// process inherits this process's error mode, so every program Congo starts
+// ends with the status instead (see dllNote). OR-ed into the mode already
+// set, as SetErrorMode's documentation advises; process.run never passes
+// CREATE_DEFAULT_ERROR_MODE, which would undo this.
+fn hardErrorsToStatus() {
+  imm before = SetErrorMode(0u32);
+  SetErrorMode(before | 0x8001u32);       // | SEM_FAILCRITICALERRORS | SEM_NOOPENFILEERRORBOX
+}
+
+// A line saying that the program, by its full path, did not start because a
+// DLL it needs was not found, if it ended with STATUS_DLL_NOT_FOUND; empty
+// for any other status. With the loader's dialog gone, this line is how a
+// person learns of it
+fn dllNote(code u32, exe &[]u8) String {
+  if code == 0xC0000135u32 {
+    imm full = resolved(exe);
+    return cat(full.view(), " could not start: a DLL it needs was not found (0xC0000135)");
+  }
+  String.empty();
+}
 
 // n UTF-16 units from p, as UTF-8; a lone surrogate becomes U+FFFD
 fn fromUtf16(p *u16, n i32) String {
