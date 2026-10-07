@@ -65,7 +65,9 @@
 //   skinned variants of the lit and physically based pipelines.
 // - Image, pixels from BMP (or made: 'Image.checker'), written as BMP too;
 //   'addTexture' hands one to the GPU as sRGB colour, 'addLinearTexture' as
-//   numbers (a normal map, an ORM map).
+//   numbers (an ORM map), 'addNormalTexture' as a normal map; each with its
+//   whole mip chain (mips.cone), which the renderer's sampler filters
+//   trilinearly and anisotropically (16 where the device can).
 //
 // A frame, once a window, a device and a swapchain are open (the window and
 // gpu packages):
@@ -428,7 +430,9 @@ pub struct Renderer {
     imm frameGroupEntries = [BindGroupEntry.buffer(0u32, &frameUniforms), BindGroupEntry.buffer(1u32, &instances),
       BindGroupEntry.buffer(2u32, &bones), BindGroupEntry.buffer(3u32, &boneBases)];
     mut frameGroup = device.createBindGroup(&frameLayout, &frameGroupEntries);
-    imm samplerDesc = new SamplerDescriptor();
+    // Trilinear, and anisotropic to 16 where the device does it (fewer
+    // where it does less; none where it does none)
+    imm samplerDesc = new SamplerDescriptor(mipmapFilter: FILTER_MODE_LINEAR, maxAnisotropy: 16u32);
     mut sampler = device.createSampler(&samplerDesc);
     imm dusk = Sky.dusk(radians(4.), radians(180.));
     mut environment = Environment.create(device, &environmentLayout, &dusk);
@@ -682,18 +686,30 @@ pub struct Renderer {
   // An image for materials to sample, handed to the GPU now: sRGB, four
   // channels (an RGB image's alpha opaque), its rows as the image has them,
   // bottom first, so a uv's v of 0 is its bottom row (mesh's uvs, v up)
+  //
+  // Every texture added here has its whole mip chain (mips.cone), made now,
+  // so a surface seen small or at a slant is filtered, not aliased: colour
+  // averaged in linear light.
   pub fn addTexture(self &mut, device &mut Device, img &Image) TextureHandle {
-    self.addTextureAs(device, img, TEXTURE_FORMAT_RGBA8_UNORM_SRGB);
+    self.addTextureAs(device, img, TEXTURE_FORMAT_RGBA8_UNORM_SRGB, MIP_COLOUR);
   }
 
   // The same, its bytes read as they are, not decoded from sRGB: for maps
-  // that hold numbers rather than colours (a normal map, glTF's
-  // metallic-roughness and occlusion maps)
+  // that hold numbers rather than colours (glTF's metallic-roughness and
+  // occlusion maps); each level averages the numbers. A normal map is
+  // 'addNormalTexture'.
   pub fn addLinearTexture(self &mut, device &mut Device, img &Image) TextureHandle {
-    self.addTextureAs(device, img, TEXTURE_FORMAT_RGBA8_UNORM);
+    self.addTextureAs(device, img, TEXTURE_FORMAT_RGBA8_UNORM, MIP_LINEAR);
   }
 
-  fn addTextureAs(self &mut, device &mut Device, img &Image, format u32) TextureHandle {
+  // A tangent-space normal map, read as it is like 'addLinearTexture', but
+  // each level's vectors averaged and made unit length again, which
+  // averaging the bytes would not do
+  pub fn addNormalTexture(self &mut, device &mut Device, img &Image) TextureHandle {
+    self.addTextureAs(device, img, TEXTURE_FORMAT_RGBA8_UNORM, MIP_NORMAL);
+  }
+
+  fn addTextureAs(self &mut, device &mut Device, img &Image, format u32, kind u32) TextureHandle {
     imm w = u32.from(img.width);
     imm h = u32.from(img.height);
     mut rgba = List[u8].withCapacity(usize.from(w * h * 4u32));
@@ -707,11 +723,18 @@ pub struct Renderer {
       rgba.push(if img.channels == 4 {*img.pixels[at + 3usize];} else {255u8;});
       p = p + 1usize;
     }
-    imm desc = new TextureDescriptor(w, h, format, TEXTURE_USAGE_TEXTURE_BINDING | TEXTURE_USAGE_COPY_DST);
+    imm levels = if n > 0usize { mipLevelCount(w, h); } else { 1u32; };
+    imm desc = new TextureDescriptor(w, h, format, TEXTURE_USAGE_TEXTURE_BINDING | TEXTURE_USAGE_COPY_DST, levels);
     mut texture = device.createTexture(&desc);
     if n > 0usize {
-      imm v = rgba.view();
-      device.queue.writeTexture(&texture, &v[0] as *u8, w * 4u32);
+      if levels > 1u32 {
+        imm chain = buildMips(&rgba, w, h, kind);
+        imm cv = chain.view();
+        device.queue.writeTextureLevels(&texture, &cv[0] as *u8);
+      } else {
+        imm v = rgba.view();
+        device.queue.writeTexture(&texture, &v[0] as *u8, w * 4u32);
+      }
     }
     new TextureHandle(textures.add(new TextureSlot(texture)));
   }
