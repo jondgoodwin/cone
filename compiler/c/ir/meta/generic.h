@@ -16,6 +16,11 @@ typedef struct GenericInfo {
 // Create a new generic info block
 GenericInfo *newGenericInfo();
 
+// Name resolution of a generic function's or type's type parameters, inside
+// the hooked context its caller pushed: all are hooked first, then what follows
+// each is resolved, so a bound may name a parameter declared after it
+void genericParmsNameRes(NameResState *pstate, Nodes *parms);
+
 // Serialize
 void genericInfoPrint(GenericInfo *info);
 
