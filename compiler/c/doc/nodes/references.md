@@ -742,7 +742,15 @@ an `@unsized` enum are neither, and their references are thin.
   never changes", below), where a borrow of any other type with no size is
   `opaq` (`borrowTypeCheck`). `castBitsize` gives a fat `RefTag` the size of a
   slice, so `as` converts between `&str` and `&[]u8` and between an owner and a
-  borrow of the same body, checking nothing else.
+  borrow of the same body, checking nothing else. Implicitly a `&str` goes to a
+  `&[]u8` (`arrayRefMatchesRef`, a recast, the permission narrowing as it must:
+  `imm` to `ro`, never `mut`) and a `&[]u8` does not go to a `&str`.
+- **A string literal is `&imm str`.** Its value is the pair of its constant's
+  address and its length, `slitTypeCheck` types it as that reference, and it is a
+  borrow of the whole program (global scope). It is copied into an owner of the
+  body wherever one is wanted (`slitCoerce`): the node becomes the allocation
+  `new R[str](lit)` builds, with no `new` written. Only the literal node itself is,
+  never another `&str` ([literals](literals.md)).
 - **Allocation.** There is no value to construct or move in. `typeLitAllocValue`
   takes exactly one argument, coerced to a `&str` borrow, as the allocation's
   value; `genlallocref` asks `alloc` for the header and `count * sizeof(element)`

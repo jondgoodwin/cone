@@ -146,14 +146,26 @@ imm names = new Rc[mut, List[i32]](10) &lt;- 1, 2, 3;
 		borrow of one in the parentheses and copies the bytes the borrow holds, as many as it has,
 		into the memory the region gives: the region is asked for the header and those bytes. A
 		borrow of the body is made from a slice of bytes with <span class="pre">as</span>, and
-		converts back the same way; both are the same pair and
-		<span class="pre">as</span> checks only that.</p>
+		converts to a slice implicitly; both are the same pair and
+		<span class="pre">as</span> checks only that, so the way back is the written
+		<span class="pre">as</span>, since bytes need not be UTF-8.</p>
 <pre>
 imm bytes &amp;[]u8 = "hello";
 imm view = bytes as &amp;str;                    // a borrow of the bytes: 5 of them
 imm text = new Rc[str](view);                // a copy, in Rc's memory
 imm same = trynew So[str](view);             // an Option, None if memory ran out
-printStr(text as &amp;[]u8);                      // lent as a borrow, then viewed as bytes
+printStr(text);                              // lent as a borrow, then converted to bytes
+</pre>
+	<p>A <b>string literal is a <span class="pre">&amp;imm str</span></b>: a borrow of its text, in
+		read-only memory, that lasts as long as the program, so it may be sent to another thread.
+		The text is followed by a zero byte for C that the count leaves out. Wherever an owner of
+		<span class="pre">str</span> is wanted, in any region, a literal (and only a literal) is
+		copied into one without <span class="pre">new</span>; any other <span class="pre">&amp;str</span>
+		is copied with <span class="pre">new</span> as above.</p>
+<pre>
+imm name So[str] = "Padma";                  // new So[str]("Padma"), copied from read-only memory
+fn greet(who Rc[str]) {..}
+greet("Jayne");                              // the same copy, into an Rc
 </pre>
 	<p>An owner of a body is a counted owner or a single one by its region and permission, like
 		any other: copies, parameters and fields are counted (an owner of <span class="pre">str</span>,
