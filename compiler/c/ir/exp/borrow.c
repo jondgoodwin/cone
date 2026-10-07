@@ -587,7 +587,7 @@ void borrowTypeCheck(TypeCheckState *pstate, RefNode **nodep) {
     // Ensure requested/inferred permission matches lval's permission
     INode *refperm = node->perm;
     if (refperm == unknownType)
-        refperm = newPermUseNode(itypeIsConcrete(refvtype) ? roPerm : opaqPerm);
+        refperm = newPermUseNode(itypeIsConcrete(refvtype) || itypeLenBodyElem(refvtype) ? roPerm : opaqPerm);
     if (!refused && !permMatches(refperm, lvalperm))
         errorMsgNode((INode *)node, ErrorBadPerm, "Borrowed reference cannot obtain this permission");
 

@@ -1,0 +1,31 @@
+// A borrow of the body of bytes ('&str') is held to the lifetime of what it
+// borrows from, as a thin borrow is: the owner is a local that dies at the
+// function's end, so a borrow of it, lent or reborrowed with '&*', may not be
+// returned (ErrorEscape); and an owner replaced while a borrow of it is
+// used afterwards is frozen until that last use (ErrorFrozen).
+
+mod ref_flow_body;
+
+import stdio use *;
+
+fn reborrowed(v &str) &str {
+  imm o = new So[imm, str](v);
+  &*o;                           //~ ErrorEscape:3 "outlives the local value it points to"
+}
+
+fn lent(v &str) &str {
+  imm o = new Rc[imm, str](v);
+  o;                             //~ ErrorEscape:3 "outlives the local value it points to"
+}
+
+fn replaced(v &str) {
+  mut o = new So[imm, str](v);
+  imm b &str = &*o;
+  o = new So[imm, str](v);       //~ ErrorFrozen:3 "may not be changed until after that last use"
+  printStr(b as &[]u8);
+}
+
+// The caller's borrow is the caller's, so handing it back is fine
+fn passed(v &str) &str {
+  v;
+}

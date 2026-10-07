@@ -400,7 +400,7 @@ built to carry first-class-region pairing as well as simple nesting. The
 mechanism is credited to Cyclone's restricted-alias pointers plus the insight of
 annotating a borrow with a *lifetime* rather than with an arena.
 
-## The four kinds of reference, and what each is for
+## The kinds of reference, and what each is for
 
 | Written | Kind | Runtime |
 | --- | --- | --- |
@@ -408,17 +408,34 @@ annotating a borrow with a *lifetime* rather than with an arena.
 | `Region[perm, T]` | owning — the region releases it | `T*`, pointing **past** a header |
 | `&[]T` | slice — a borrowed run of elements | `{T*, usize}` |
 | `&<Trait` | virtual — dispatches through a vtable | `{i8*, Vtable*}` |
+| `&str`, `Region[perm, str]` | to a body whose length it carries — borrowed or owning | `{u8*, usize}`, the owner pointing **past** its header |
 
-**A slice is always borrowed.** A managed reference is thin or virtual; there
-is no managed array reference. A statically sized array is reached by a thin
-reference with its size in the type, and an array whose whole length is chosen
-at runtime is a collection, a `List`, shared as a managed reference to it,
-`Rc[List[T]]`. A length carried in a fat pointer works against sharing: every
-copy of the pointer would carry its own, where a shared, growable array needs
-one count that every holder sees, and the list keeps it. Sharing costs a second
-block and a second hop; a list held in a local is used directly.
+**Every reference is thin or fat by its target.** A target whose size is known
+at compile time (`Sized`) is reached by one pointer, in every region and for a
+borrow. A target whose size is not known there, but which a reference to it can
+carry (`DynSized`), is reached by a pointer and the missing information: a
+trait's reference carries a vtable, which holds the size of what it points at,
+and a body such as `str` a count of its elements. A type declared `@opaque`, and
+an `@unsized` enum, are neither: their references are thin and tell nothing of
+the size. `Sized` and `DynSized` are markers the compiler grants from the type,
+asked by a constraint (`where T is DynSized`).
 
-Two of the four are fat pointers, and **the first two are indistinguishable at
+**A body whose length a reference carries has no size to hold.** `str` is never
+a local, a field or a parameter, only the target of a reference. It is allocated
+by copying a borrow of one, `new So[str](view)`, as long as the view, into the
+memory the region gives. Each owner carries its own count, which is right
+because the body never grows: a growable one would need a count every holder
+sees, and keeps it (`List`, below).
+
+**A slice is a borrow of its elements, and an array that is owned is not an
+array reference.** A statically sized array is reached by a thin reference with
+its size in the type, and an array whose whole length is chosen at runtime and
+may grow is a collection, a `List`, shared as a managed reference to it,
+`Rc[List[T]]`: a length carried in each fat pointer works against sharing a
+growable array, where every holder needs the one count the list keeps. Sharing
+costs a second block and a second hop; a list held in a local is used directly.
+
+Three of the five are fat pointers, and **the first two are indistinguishable at
 runtime** — region and permission are entirely compile-time. That is the single
 fact most likely to mislead when reading generated IR.
 

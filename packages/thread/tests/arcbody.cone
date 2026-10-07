@@ -1,0 +1,60 @@
+// An 'Arc[imm, str]' read by two threads: the sync package's 'Arc' counts its
+// owners atomically, and a reference to a body whose length it carries is fat
+// in it as in every region, so each thread's owner is a pointer and a count
+// and the bytes sit after the count's header. main allocates the string by
+// copying a view of a literal, and starts two readers, handing each an owner:
+// 'thread.start' takes its argument by value, so each call copies main's owner
+// (one more, counted by 'aliasRef'), which moves into the thread and dies when
+// the reader returns. main's own owner goes at the end of the block that
+// started them; the bytes live until the last of the three has gone, and the
+// block is freed once.
+//
+// 'thread.start' takes only a Sendable argument, which an 'Arc[imm, str]' is:
+// Arc declares ThreadSafe, and a body of bytes holds nothing bound to its thread.
+//
+// Worked out by hand: "read by two threads" is 19 bytes, 2 of them 'e'.
+
+mod arcbody;
+
+import testing use *;
+import thread;
+import sync use *;
+
+// The gate the readers wait at, so the string is held by both when main's owner goes
+imm gate Atomic[bool];
+
+fn @initpure init() {
+  gate = Atomic[bool].of(false);
+}
+
+// The bytes of a borrow of the string, which the reader indexes
+fn bytes(s &str) &[]u8 { s as &[]u8; }
+
+// How many bytes of the string, and how many of them 'e', in one number
+fn reader(m Arc[imm, str]) u64 {
+  imm text = bytes(m);
+  mut es = 0u64;
+  mut i = 0usize;
+  while i < text.len {
+    if text[i] == 101u8 { es = es + 1u64; }
+    i = i + 1usize;
+  }
+  while !gate.load() { thread.yieldNow(); }
+  u64.from(text.len) * 100u64 + es;
+}   // this thread's owner of m goes here
+
+fn main() i32 {
+  initAll();
+  mut a thread.Thread[u64];
+  mut b thread.Thread[u64];
+  {
+    imm literal &[]u8 = "read by two threads";
+    imm m = new Arc[imm, str](literal as &str);
+    a = thread.start(m, &reader);
+    b = thread.start(m, &reader);
+  }   // main's owner goes: the readers hold the only two
+  gate.store(true);
+  expectUInt(a.join(), 1902u64, "the first reader read 19 bytes, 2 of them 'e'");
+  expectUInt(b.join(), 1902u64, "and so did the second");
+  done();
+}

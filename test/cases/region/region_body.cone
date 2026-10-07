@@ -1,0 +1,166 @@
+// An owning reference to a body whose length it carries ('str', the body of
+// bytes) is fat in every region: a pointer to the first byte and a count, one
+// hop, the region's header before the bytes. The compiler calls the region's
+// methods at each reference event exactly as it does for a thin owner, and
+// the allocation asks 'alloc' for the header and as many bytes as the view it
+// copies from has. Each method below prints, so the output is the whole
+// assertion, and every number in it is worked out by hand:
+//
+// - 'Tally' counts like 'Rc' and keeps an 8-byte count and a 4-byte serial in
+//   its header, which is 16 bytes with its own padding; the bytes follow it.
+//   "hello world" is 11 bytes, so its allocation asks for 27, and the empty
+//   string for 16.
+// - 'Solo' declares 'Move' and has no header, so the same text asks for 11. A
+//   'Holder' of one fat owner is 16 bytes.
+// - A copy, a parameter and a field are each one more owner, counted; a
+//   death at the last owner runs 'free' with the serial 'init' stored there,
+//   which proves the header was found before the bytes and not guessed at.
+// - Nothing finalizes: a byte has no death of its own.
+// - A fallible allocation (the last section) is in regions that print nothing,
+//   since the owner a 'Some' holds is not released with the Option.
+
+mod region_body;
+
+import stdio use *;
+import libc;
+
+fn line(label &[]u8, n usize) {
+  printStr(label);
+  printInt(i64.from(n));
+  printStr("\n");
+}
+
+struct Tally is RegionRef {
+  owners usize;
+  serial u32;
+  fn alloc(size usize) *u8 inline { line("alloc ", size); malloc(size); }
+  fn init(self &new) inline { *self = new Tally(1usize, 42u32); }
+  fn aliasRef(self &uni Tally) inline { owners = owners + 1usize; line("alias, owners ", owners); }
+  fn dealiasRef(self &uni Tally) bool inline { owners = owners - 1usize; line("dealias, owners ", owners); owners == 0usize; }
+  fn free(self &uni Tally) inline { line("free, serial ", usize.from(serial)); libc.free(self as *u8); }
+}
+
+struct Solo is RegionRef, Move {
+  fn alloc(size usize) *u8 inline { line("solo alloc ", size); malloc(size); }
+  fn free(self &uni Solo) inline { printStr("solo free\n"); libc.free(self as *u8); }
+}
+
+// A region that prints nothing, and one whose every allocation fails
+struct Plain is RegionRef, Move {
+  fn alloc(size usize) *u8 inline { malloc(size); }
+  fn free(self &uni Plain) inline { libc.free(self as *u8); }
+}
+
+struct NoMemory is RegionRef {
+  fn alloc(size usize) *u8 inline { 0usize as *u8; }
+}
+
+// The bytes a borrow of the string holds, and how many
+fn bytes(s &str) &[]u8 { s as &[]u8; }
+
+fn show(s &str) {
+  printStr(bytes(s));
+  printStr("\n");
+}
+
+fn count(s &str) usize { bytes(s).len; }
+
+struct Holder {
+  pub name Tally[imm, str];
+}
+
+// Two copies made and dropped in an inner block, then the original
+fn counted(v &str) {
+  printStr("-- counted\n");
+  imm a = new Tally[imm, str](v);
+  {
+    imm b = a;
+    imm c = b;
+    line("len ", count(c));
+    show(c);
+  }
+  printStr("inner block done\n");
+}
+
+// A copy passed to a call is one more owner, which the callee's parameter drops
+fn read(r Tally[imm, str]) usize { count(r); }
+
+fn passed(v &str) {
+  printStr("-- passed\n");
+  imm a = new Tally[imm, str](v);
+  line("len ", read(a));
+}
+
+// A single owner: the copy is a move, and the text dies once
+fn single(v &str) {
+  printStr("-- single\n");
+  imm s = new Solo[str](v);
+  imm t = s;
+  line("len ", count(t));
+}
+
+// An owner held by a value in another region: its death releases the owner
+// the field holds before its own memory goes back
+fn held(v &str) {
+  printStr("-- held\n");
+  imm h = new Solo[Holder](new Holder(new Tally[imm, str](v)));
+  show(h.name);
+}
+
+// An owner returned, and one in a tuple
+fn made(v &str) Tally[imm, str] { new Tally[imm, str](v); }
+
+fn pair(v &str) (Tally[imm, str], i32) { (made(v), 3i32); }
+
+fn returned(v &str) {
+  printStr("-- returned\n");
+  imm a = made(v);
+  imm p = pair(v);
+  show(a);
+  show(p.0);
+  printStr("end of returned\n");
+}
+
+// The empty string is a header and no bytes
+fn empty() {
+  printStr("-- empty\n");
+  imm nothing &[]u8 = "";
+  imm e = new Tally[imm, str](nothing as &str);
+  line("len ", count(e));
+}
+
+// A fallible allocation yields an Option of the owner, None where memory ran out
+fn peek(o &imm Option[Plain[imm, str]]) usize {
+  match o {
+    case imm s &Some[Plain[imm, str]] {count(s.value);}
+    else {0usize;}
+  }
+}
+
+fn peekNever(o &imm Option[NoMemory[imm, str]]) usize {
+  match o {
+    case imm s &Some[NoMemory[imm, str]] {count(s.value);}
+    else {0usize;}
+  }
+}
+
+fn fallible(v &str) {
+  printStr("-- fallible\n");
+  imm some = trynew Plain[imm, str](v);
+  line("some ", peek(&imm some));
+  imm none = trynew NoMemory[imm, str](v);
+  line("none ", peekNever(&imm none));
+}
+
+fn main() {
+  imm text &[]u8 = "hello world";
+  imm v = text as &str;
+  counted(v);
+  passed(v);
+  single(v);
+  held(v);
+  returned(v);
+  empty();
+  fallible(v);
+  printStr("-- end\n");
+}

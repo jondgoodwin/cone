@@ -32,12 +32,15 @@ void genlRefTypeSetup(GenState *gen, RefNode *reftype) {
     if (refinfo->structype)
         return;
 
-    // Build composite struct, with "fields" for region, perm, and vtype
+    // Build composite struct, with "fields" for region, perm, and vtype. A
+    // body whose length the reference carries has no size to lay out: the
+    // header is followed by its first element, and the elements run on from there
     LLVMTypeRef field_types[3];
     LLVMTypeRef *fieldtypep = &field_types[0];
     *fieldtypep++ = genlType(gen, reftype->region);
     *fieldtypep++ = genlType(gen, reftype->perm);
-    *fieldtypep = genlType(gen, reftype->vtexp);
+    INode *elemtype = itypeLenBodyElem(reftype->vtexp);
+    *fieldtypep = genlType(gen, elemtype ? elemtype : reftype->vtexp);
     LLVMTypeRef structype = LLVMStructCreateNamed(gen->context, "refstruct");
     LLVMStructSetBody(structype, field_types, 3, 0);
     refinfo->structype = structype;
@@ -46,10 +49,11 @@ void genlRefTypeSetup(GenState *gen, RefNode *reftype) {
 }
 
 
-// The pointer a release routine works on. A single reference is its pointer;
-// a virtual reference's is its object pointer, its fat pointer's first word.
+// The pointer a release routine works on. A thin reference is its pointer;
+// a virtual reference's is its object pointer, its fat pointer's first word,
+// and so is the pointer of a reference that carries a length.
 static LLVMValueRef genlRefPtr(GenState *gen, LLVMValueRef ref, RefNode *refnode) {
-    if (refnode->tag == VirtRefTag)
+    if (refnode->tag == VirtRefTag || refIsFat(refnode))
         return LLVMBuildExtractValue(gen->builder, ref, 0, "objptr");
     return ref;
 }
@@ -330,6 +334,9 @@ static void genlTraceRef(GenState *gen, LLVMValueRef refptr, RefNode *refnode) {
         return;
     FnDclNode *markmeth = regionMethod(refnode->region, genlTraceBarrier ? writeBarrierMethodName : markMethodName);
     LLVMValueRef ref = LLVMBuildLoad2(gen->builder, genlType(gen, (INode*)refnode), refptr, "tracedref");
+    // A reference that carries a length is traced by its pointer
+    if (refIsFat(refnode))
+        ref = LLVMBuildExtractValue(gen->builder, ref, 0, "tracedptr");
     // Each is placed just after the current block, so the mark lands before its join
     LLVMBasicBlockRef doneblk = genlInsertBlock(gen, genlTraceBarrier ? "barriered" : "marked");
     LLVMBasicBlockRef markblk = genlInsertBlock(gen, genlTraceBarrier ? "barrier" : "mark");
@@ -768,8 +775,11 @@ void genlAliasHeld(GenState *gen, LLVMValueRef valptr, INode *type, long long am
                 continue;
             RefNode *reftype = (RefNode *)itypeGetTypeDcl(((FieldDclNode *)nodelistGet(&variant->fields, 1))->vtype);
             LLVMValueRef ref = LLVMBuildLoad2(gen->builder, strtype, valptr, "nullable");
+            // A fat reference is null by its pointer, its first word
+            LLVMValueRef refptr = LLVMGetTypeKind(strtype) == LLVMPointerTypeKind
+                ? ref : LLVMBuildExtractValue(gen->builder, ref, 0, "nullableptr");
             LLVMBasicBlockRef someblk = genlInsertBlock(gen, "aliassome");
-            LLVMBuildCondBr(gen->builder, LLVMBuildIsNotNull(gen->builder, ref, "present"), someblk, doneblk);
+            LLVMBuildCondBr(gen->builder, LLVMBuildIsNotNull(gen->builder, refptr, "present"), someblk, doneblk);
             LLVMPositionBuilderAtEnd(gen->builder, someblk);
             genlRegionAlias(gen, ref, amount, reftype);
         }
@@ -1012,6 +1022,13 @@ static void genlRegionDeath(GenState *gen, LLVMValueRef ref, LLVMValueRef valptr
     }
     if (refnode->tag == VirtRefTag)
         genlVirtFinalize(gen, ref, valptr, refnode);
+    else if (refIsFat(refnode)) {
+        // Each element dies in place, as a fixed array's do, the count being
+        // the reference's second word
+        INode *elemtype = itypeLenBodyElem(refnode->vtexp);
+        if (itypeNeedsFinal(elemtype))
+            genlEachElem(gen, valptr, LLVMBuildExtractValue(gen->builder, ref, 1, "count"), elemtype, genlFinalizeElem, 0);
+    }
     else
         genlFinalizeAt(gen, valptr, refnode->vtexp);
     FnDclNode *freemeth = regionMethod(refnode->region, freeMethodName);
@@ -1248,6 +1265,13 @@ void genlRegionAlias(GenState *gen, LLVMValueRef ref, long long amount, RefNode 
     LLVMPositionBuilderAtEnd(gen->builder, doneblk);
 }
 
+// The fat reference to a body: its pointer, then the count of its elements
+static LLVMValueRef genlFatRef(GenState *gen, LLVMTypeRef fattype, LLVMValueRef ptr, LLVMValueRef count) {
+    LLVMValueRef ref = LLVMGetUndef(fattype);
+    ref = LLVMBuildInsertValue(gen->builder, ref, ptr, 0, "fatptr");
+    return LLVMBuildInsertValue(gen->builder, ref, count, 1, "fatcount");
+}
+
 // An allocation, 'new Rc[mut, Node](1)', or of a finished value moved in,
 // 'new Rc[i32](5)': a reference to the value made in its region's memory,
 // or, for 'trynew', null (None) when that memory could not be had. In order:
@@ -1305,6 +1329,13 @@ LLVMValueRef genlallocref(GenState *gen, RefNode *allocatenode) {
     long long allocsize = LLVMABISizeOfType(gen->datalayout, reftype->typeinfo->structype);
     LLVMValueRef sizeval = LLVMConstInt(genlType(gen, (INode*)usizeType), allocsize, 0);
 
+    // A body whose length the reference carries is allocated by copying a
+    // borrow of one: the header, then as many elements as it has. Its length
+    // is not known until the borrow is evaluated, below.
+    int fat = refIsFat(reftype);
+    INode *elemtype = fat ? itypeLenBodyElem(reftype->vtexp) : NULL;
+    LLVMValueRef count = NULL;
+
     // The arguments first, in every region: a declared init's (filled in place
     // below), or the value itself, the implicit init's literal or a finished
     // value moved in, 'new Rc[i32](5)', stored below
@@ -1318,6 +1349,14 @@ LLVMValueRef genlallocref(GenState *gen, RefNode *allocatenode) {
         initargs = genlNewArgs(gen, declinit);
     else if (contents == NULL)
         value = genlExpr(gen, valnode);
+    if (fat) {
+        LLVMTypeRef usize = genlType(gen, (INode*)usizeType);
+        unsigned long long header = LLVMOffsetOfElement(gen->datalayout, reftype->typeinfo->structype, ValueField);
+        unsigned long long elemsize = LLVMABISizeOfType(gen->datalayout, valuetypllvm);
+        count = LLVMBuildExtractValue(gen->builder, value, 1, "count");
+        sizeval = LLVMBuildAdd(gen->builder, LLVMConstInt(usize, header, 0),
+            LLVMBuildMul(gen->builder, count, LLVMConstInt(usize, elemsize, 0), "bytes"), "allocsize");
+    }
 
     // Do region allocation (using its alloc method) and then bitcast to multi-layered-struct ptr.
     // An 'alloc' that asks for it is handed the value type's record after the
@@ -1329,7 +1368,7 @@ LLVMValueRef genlallocref(GenState *gen, RefNode *allocatenode) {
     allocargs[0] = sizeval;
     if (regionAllocTakesRecord(region)) {
         VarDclNode *recparm = (VarDclNode *)nodesGet(((FnSigNode *)itypeGetTypeDcl(allocmeth->vtype))->parms, 1);
-        allocargs[allocargcnt++] = genlTypeRecord(gen, reftype->vtexp, recparm->vtype);
+        allocargs[allocargcnt++] = genlTypeRecord(gen, fat ? elemtype : reftype->vtexp, recparm->vtype);
     }
     LLVMValueRef malloc = genlFnCallInternal(gen, SimpleDispatch, (INode*)allocmeth, allocargcnt, allocargs, NULL);
     LLVMValueRef ptrstructype = LLVMBuildBitCast(gen->builder, malloc, reftype->typeinfo->ptrstructype, "");
@@ -1352,6 +1391,8 @@ LLVMValueRef genlallocref(GenState *gen, RefNode *allocatenode) {
         genlPanic(gen, (INode*)allocatenode, PanicAlloc, &sizeval);
     else {
         blkvals[0] = LLVMBuildBitCast(gen->builder, ptrstructype, valueptrtyp, "");
+        if (fat)
+            blkvals[0] = genlFatRef(gen, reftypellvm, blkvals[0], count);
         // The phi's predecessor is whatever block the builder ended up in, which is not
         // necessarily the block we positioned it in: generating the value above may have
         // emitted branches of its own, splitting the block it started in.
@@ -1380,7 +1421,7 @@ LLVMValueRef genlallocref(GenState *gen, RefNode *allocatenode) {
     if (traced && gen->fn) {
         fillroot = genlAlloca(gen, reftypellvm, "filling");
         genlRootNote(gen, fillroot, (INode*)reftype);
-        LLVMBuildStore(gen->builder, valuep, fillroot);
+        LLVMBuildStore(gen->builder, fat ? genlFatRef(gen, reftypellvm, valuep, count) : valuep, fillroot);
     }
 
     // The region's 'init', if it has one, fills the header in place: its self
@@ -1405,8 +1446,15 @@ LLVMValueRef genlallocref(GenState *gen, RefNode *allocatenode) {
     // barrier as any store through a reference does; a value already made is
     // stored. That store needs the barrier only where an init ran between the
     // root and it, which could have collected: otherwise nothing can have
-    // finished with the new block yet.
-    if (declinit)
+    // finished with the new block yet. A body of elements copies the borrow's
+    // elements in.
+    if (fat) {
+        LLVMValueRef bytes = LLVMBuildMul(gen->builder, count,
+            LLVMConstInt(genlType(gen, (INode*)usizeType), LLVMABISizeOfType(gen->datalayout, valuetypllvm), 0), "bytes");
+        unsigned align = LLVMABIAlignmentOfType(gen->datalayout, valuetypllvm);
+        LLVMBuildMemCpy(gen->builder, valuep, align, LLVMBuildExtractValue(gen->builder, value, 0, "source"), align, bytes);
+    }
+    else if (declinit)
         genlNewFill(gen, declinit, initargs, valuep);
     // An array's contents are filled in place, an element at a time, each
     // value evaluated now; any of them may allocate, and so collect, so in a
@@ -1424,7 +1472,7 @@ LLVMValueRef genlallocref(GenState *gen, RefNode *allocatenode) {
     // alive past its owners.
     if (fillroot)
         LLVMBuildStore(gen->builder, LLVMConstNull(reftypellvm), fillroot);
-    blkvals[nulls] = valuep;
+    blkvals[nulls] = fat ? genlFatRef(gen, reftypellvm, valuep, count) : valuep;
 
     // Finish up block, start new one, and return allocated. As above, an initial value
     // holding another allocation splits initblk, so the edge arrives from wherever the

@@ -265,7 +265,7 @@ all late in the file, check that gate first.
   distinct causes with different remedies, the cases belong side by side, so that
   a reader can check each cause names the right advice and a change that reworded
   one is visible against the others. `struct_typecheck_nosize` is that file for
-  `ErrorNoSize` and its five causes.
+  `ErrorNoSize` and its six causes.
 
 **Length is not a reason to split.** Ten scenarios carry more than six
 diagnostics and one carries fifteen, so any threshold would describe nothing the

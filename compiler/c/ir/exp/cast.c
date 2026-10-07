@@ -260,8 +260,10 @@ uint32_t castBitsize(INode *type) {
     }
     switch (type->tag) {
     case PtrTag:
-    case RefTag:
         return ptrsize;
+    case RefTag:
+        // A reference that carries a length is a pointer and a count, a slice's size
+        return refIsFat((RefNode *)type) ? ptrsize << 1 : ptrsize;
     case ArrayRefTag:
         return ptrsize << 1;
     default:

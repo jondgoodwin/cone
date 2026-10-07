@@ -1,0 +1,52 @@
+// 'Sized' and 'DynSized' refused where a type does not meet them, and the
+// markers themselves refused as something a type declares.
+//
+// A requirement of Sized is unmet by every type with no size known at compile
+// time: the body of bytes, an open trait, a type declared @opaque, an
+// '@unsized' enum. A requirement of DynSized is unmet by the last two as well:
+// a reference to an @opaque type or an '@unsized' enum is one pointer, and
+// carries no size, where a reference to a trait carries a vtable and one to
+// the body of bytes a length. A type may not declare either marker, since the
+// compiler grants both from the type's size and a declaration could only
+// contradict it (the same refusal for a struct, whatever else it declares).
+
+mod generic_typecheck_size_markers;
+
+trait Shape {
+  pub fn area(self &) i64;
+}
+
+struct @opaque Handle {
+}
+
+enum @unsized Message {
+  pub stamp i32;
+
+  struct Text { pub len i32; }
+  struct Blob { pub a i64; pub b i64; }
+}
+
+fn sized[T]() i64 where T is Sized {1;}
+fn dyn[T]() i64 where T is DynSized {2;}
+fn dynInline[T DynSized]() i64 {2;}
+
+struct DeclaresSized is Sized {   //~ ErrorSizeMarkerUse:8 "DeclaresSized may not declare Sized or DynSized"
+  pub n i32;
+}
+
+struct DeclaresDyn is DynSized {  //~ ErrorSizeMarkerUse:8 "the compiler grants both"
+  pub n i32;
+}
+
+struct DeclaresBoth is Sized, DynSized {  //~ ErrorSizeMarkerUse:8 "DeclaresBoth may not declare"
+}
+
+fn main() {
+  sized[str]();                   //~ ErrorWhereUnmet:8 "sized requires T is Sized, and str is not Sized"
+  sized[Shape]();                 //~ ErrorWhereUnmet:8 "and Shape is not Sized"
+  sized[Handle]();                //~ ErrorWhereUnmet:8 "and Handle is not Sized"
+  sized[Message]();               //~ ErrorWhereUnmet:8 "and Message is not Sized"
+  dyn[Handle]();                  //~ ErrorWhereUnmet:6 "dyn requires T is DynSized, and Handle is not DynSized"
+  dyn[Message]();                 //~ ErrorWhereUnmet:6 "and Message is not DynSized"
+  dynInline[Message]();           //~ ErrorWhereUnmet:12 "dynInline requires T is DynSized"
+}

@@ -1251,6 +1251,30 @@ int itypeIsConcrete(INode *type) {
     return !(dcltype->flags & OpaqueType);
 }
 
+// The element type of a dynamically sized body whose length a reference to it
+// carries, or NULL for any other type. 'str' is the one such body so far: its
+// elements are bytes.
+INode *itypeLenBodyElem(INode *type) {
+    return itypeGetTypeDcl(type) == (INode*)strTypeDcl ? (INode*)u8Type : NULL;
+}
+
+// Is the size of a value of this type known at compile time ('Sized')?
+int itypeIsSized(INode *type) {
+    return itypeIsConcrete(type);
+}
+
+// Is the size of a value of this type known at compile time or carried by a
+// reference to it ('DynSized')? A type with a size; an open trait, whose
+// reference carries a vtable, which holds the size of what it points at; and a
+// body such as 'str', whose reference carries a length. An '@unsized' enum is
+// none of the last two: its variants differ in size, but a reference to it is
+// thin and the size is read from the value's tag.
+int itypeIsDynSized(INode *type) {
+    INode *dcl = itypeGetTypeDcl(type);
+    return itypeIsConcrete(type) || itypeLenBodyElem(type) != NULL
+        || (dcl->tag == StructTag && itypeIsOpenTrait((StructNode*)dcl));
+}
+
 // How many hops of an infection path are worth following or printing. Ordinary
 // code is one or two; the bound is here so that a pathological nesting -- or a
 // by-value cycle already reported and still in the tree -- cannot run this off
@@ -1357,6 +1381,10 @@ static char *itypeNoSizeOwnCause(INode *dcltype, uint32_t depth) {
     // A function signature is a description of a call, not a value
     if (dcltype->tag == FnSigTag)
         return "is not a value at all. Use a reference to a function instead";
+
+    // A body whose length a reference carries has no size of its own to hold
+    if (itypeLenBodyElem(dcltype) != NULL)
+        return "is a dynamically sized body, whose length is carried by a reference to it. Hold it through a reference: '&str', 'So[str]', 'Rc[str]'";
 
     if (dcltype->tag == StructTag) {
         // Opacity is infectious. Where a field carried it, this type is not the

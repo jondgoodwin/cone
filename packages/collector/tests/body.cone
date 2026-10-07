@@ -1,0 +1,89 @@
+// A reference into a traced region goes fat for a body whose length it
+// carries, as it does in every region: 'Gc[imm, str]' is a pointer and a count
+// of bytes, with the object's header before the bytes. The collector marks it
+// through its pointer, so the block is kept while a root reaches it, however
+// that root is held, and freed when none does. Every count is worked out by
+// hand from the rules: the roots are what the running functions hold, so each
+// section's garbage is made in functions whose frames are gone when it
+// collects, and settle() collects twice, which frees every unreachable object.
+//
+// What is not measured is the collector's byte count (liveBytes, setLimit):
+// it counts an object as its header and its value's type record, which for a
+// body whose length a reference carries is one element, whatever the length.
+
+mod body;
+
+import testing use *;
+import collector;
+
+fn settle() {
+  Gc.collect();
+  Gc.collect();
+}
+
+fn live() u64 { u64.from(Gc.liveObjects()); }
+
+// The bytes as a borrowed slice, which the checks read through
+fn view(s &str) &[]u8 { s as &[]u8; }
+
+fn same(a &[]u8, b &[]u8) bool {
+  if a.len != b.len { return false; }
+  mut i = 0usize;
+  while i < a.len {
+    if a[i] != b[i] { return false; }
+    i = i + 1usize;
+  }
+  true;
+}
+
+// A string made and dropped inside a call: its frame is gone when the caller collects
+fn garbage(v &str) {
+  imm g = new Gc[imm, str](v);
+  expectUInt(u64.from(view(g).len), 11, "the copy is as long as its view");
+}
+
+struct Holder {
+  pub name Gc[imm, str];
+  pub n i64;
+}
+
+fn held(v &str) Gc[imm, Holder] {
+  new Gc[imm, Holder](new Holder(new Gc[imm, str](v), 7));
+}
+
+fn kept(v &str) {
+  imm k = new Gc[imm, str](v);
+  garbage(v);
+  settle();
+  expectUInt(live(), 1, "the string a root holds is kept and the dropped one freed");
+  expect(same(view(k), "hello world"), "the kept string reads back whole");
+}
+
+fn inObject(v &str) {
+  imm h = held(v);
+  settle();
+  expectUInt(live(), 2, "the object and the string it holds are both kept");
+  expect(same(view(h.name), "hello world"), "the string reads back through the object");
+  expectInt(h.n, 7, "and the field beside it");
+}
+
+fn empty() {
+  imm nothing &[]u8 = "";
+  imm e = new Gc[imm, str](nothing as &str);
+  settle();
+  expectUInt(live(), 1, "an empty string is an object");
+  expectUInt(u64.from(view(e).len), 0, "with no bytes");
+}
+
+fn main() i32 {
+  imm text &[]u8 = "hello world";
+  imm v = text as &str;
+  kept(v);
+  settle();
+  expectUInt(live(), 0, "all of it is freed once its roots are gone");
+  inObject(v);
+  settle();
+  expectUInt(live(), 0, "and the object with its string");
+  empty();
+  done();
+}
