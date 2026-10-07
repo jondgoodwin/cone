@@ -83,7 +83,7 @@ int typeLitIsLiteral(FnCallNode *node) {
     return 1;
 }
 
-// May a value of fromtype be converted to Bool? A number may, and so may a
+// May a value of fromtype be converted to bool? A number may, and so may a
 // reference or a pointer, which converts by asking whether it is non-null, as a
 // condition asks
 static int typeLitConvertsToBool(INode *fromtype) {
@@ -105,12 +105,12 @@ int typeLitNbrFromCheck(FnCallNode *conv, INode *type) {
     INode *first = nodesGet(conv->args, 0);
     INode *firsttype = itypeGetTypeDcl(((IExpNode*)first)->vtype);
 
-    // 'Bool.from(value)' accepts a reference or a pointer too. Every other
+    // 'bool.from(value)' accepts a reference or a pointer too. Every other
     // number type requires a number source: a pointer has no conversion to an
     // integer.
     if (type == (INode*)boolType) {
         if (!typeLitConvertsToBool(firsttype)) {
-            errorMsgNode((INode*)first, ErrorNbrFrom, "Bool.from converts a number, a reference or a pointer");
+            errorMsgNode((INode*)first, ErrorNbrFrom, "bool.from converts a number, a reference or a pointer");
             return 0;
         }
         return 1;

@@ -70,7 +70,7 @@ substitution.
 
 **Some bindings are never hooked and never popped.** `stdPermInit` and
 `stdNbrInit` assign `namesym->node` directly before any hook table exists, so
-`uni`, `mut`, `imm`, `ro`, `i32`, `Bool` and the rest are visible for the whole
+`uni`, `mut`, `imm`, `ro`, `i32`, `bool` and the rest are visible for the whole
 compile. `keyAdd` does the same for keywords, with a `KeywordTag` sentinel.
 `initAll` and `finalAll` are bound the same way (`newStitchFn`), and so are
 the built-in traits, `Move`, `Copy`, `Integer`, `Pointer`, `AtomicValue` and

@@ -46,7 +46,7 @@ INode *cloneIntrinsicNode(CloneState *cstate, IntrinsicNode *node) {
 typedef enum {
     ShapeVoid,          // no result
     ShapeUsize,         // usize
-    ShapeBool,          // Bool
+    ShapeBool,          // bool
     ShapeT,             // T
     ShapePtrT,          // *T
     ShapeSliceT,        // &[]T: a borrowed slice, read only
@@ -54,7 +54,7 @@ typedef enum {
     ShapePtrTypeRecord, // *TypeRecord: core's type record (typeRecordIsPtr)
     ShapeU32,           // u32
     ShapeOrder,         // MemOrder: core's enum of atomic orderings, a constant at each call
-    ShapeTBool,         // T, Bool: a tuple of the two
+    ShapeTBool,         // T, bool: a tuple of the two
     ShapeSliceU8,       // &[]u8: a borrowed slice of bytes, read only
     ShapeI64            // i64
 } IntrinsicShape;
@@ -64,7 +64,7 @@ typedef enum {
 typedef enum {
     ClassSized = 0,     // any type with a size (intrinsicDclTypeCheck)
     ClassInt = 1,       // an integer type of 8 to 64 bits, usize and isize among them
-    ClassBool = 2,      // Bool
+    ClassBool = 2,      // bool
     ClassPtr = 4        // a raw pointer, to anything
 } IntrinsicClass;
 
@@ -98,7 +98,7 @@ static IntrinsicSpec intrinsicRegistry[] = {
         1, 0, {0}, ShapeUsize, 0, 0, PhaseConstant, 1},
     {"alignof", AlignofIntrinsic, "alignof[T]() usize",
         1, 0, {0}, ShapeUsize, 0, 0, PhaseConstant, 1},
-    {"needsFinal", NeedsFinalIntrinsic, "needsFinal[T]() Bool",
+    {"needsFinal", NeedsFinalIntrinsic, "needsFinal[T]() bool",
         1, 0, {0}, ShapeBool, 0, 0, PhaseConstant, 1},
     {"finalize", FinalizeIntrinsic, "finalize[T](p *T)",
         1, 1, {ShapePtrT}, ShapeVoid, 1, 0, PhaseExpansion, 1},
@@ -114,7 +114,7 @@ static IntrinsicSpec intrinsicRegistry[] = {
         1, 3, {ShapePtrT, ShapePtrT, ShapeUsize}, ShapeVoid, 1, 1, PhaseOperation, 1},
     {"typeRecord", TypeRecordIntrinsic, "typeRecord[T]() *TypeRecord",
         1, 0, {0}, ShapePtrTypeRecord, 0, 0, PhaseConstant, 1},
-    {"holdsTraced", HoldsTracedIntrinsic, "holdsTraced[T]() Bool",
+    {"holdsTraced", HoldsTracedIntrinsic, "holdsTraced[T]() bool",
         1, 0, {0}, ShapeBool, 0, 0, PhaseConstant, 1},
     {"trace", TraceIntrinsic, "trace[T](p *T, mode u32)",
         1, 2, {ShapePtrT, ShapeU32}, ShapeVoid, 1, 0, PhaseExpansion, 1},
@@ -143,7 +143,7 @@ static IntrinsicSpec intrinsicRegistry[] = {
     {"atomicMax", AtomicMaxIntrinsic, "atomicMax[T](p *T, value T, order MemOrder) T",
         1, 3, {ShapePtrT, ShapeT, ShapeOrder}, ShapeT, 1, 1, PhaseOperation, 1, ClassInt},
     {"atomicCompareSwap", AtomicCompareSwapIntrinsic,
-        "atomicCompareSwap[T](p *T, expected T, desired T, success MemOrder, failure MemOrder) T, Bool",
+        "atomicCompareSwap[T](p *T, expected T, desired T, success MemOrder, failure MemOrder) T, bool",
         1, 5, {ShapePtrT, ShapeT, ShapeT, ShapeOrder, ShapeOrder}, ShapeTBool, 1, 1, PhaseOperation, 1,
         ClassInt | ClassBool | ClassPtr},
     // Where the call is: a constant at each call, and for a default value at
@@ -153,20 +153,20 @@ static IntrinsicSpec intrinsicRegistry[] = {
     {"srcLine", SrcLineIntrinsic, "srcLine() u32",
         0, 0, {0}, ShapeU32, 0, 0, PhaseExpansion, 1},
     // Whether the compile is a debug build: a constant each compile
-    {"isDebugBuild", IsDebugBuildIntrinsic, "isDebugBuild() Bool",
+    {"isDebugBuild", IsDebugBuildIntrinsic, "isDebugBuild() bool",
         0, 0, {0}, ShapeBool, 0, 0, PhaseConstant, 1},
     // TEMPORARY, a provisional mechanism whose final design is open: the
     // target's OS, from its triple, and what '-D' defined, constants each
     // compile as isDebugBuild is (intrinsicBuildConst)
-    {"isWindows", IsWindowsIntrinsic, "isWindows() Bool",
+    {"isWindows", IsWindowsIntrinsic, "isWindows() bool",
         0, 0, {0}, ShapeBool, 0, 0, PhaseConstant, 1},
-    {"isLinux", IsLinuxIntrinsic, "isLinux() Bool",
+    {"isLinux", IsLinuxIntrinsic, "isLinux() bool",
         0, 0, {0}, ShapeBool, 0, 0, PhaseConstant, 1},
-    {"isMacOS", IsMacOSIntrinsic, "isMacOS() Bool",
+    {"isMacOS", IsMacOSIntrinsic, "isMacOS() bool",
         0, 0, {0}, ShapeBool, 0, 0, PhaseConstant, 1},
-    {"isWasm", IsWasmIntrinsic, "isWasm() Bool",
+    {"isWasm", IsWasmIntrinsic, "isWasm() bool",
         0, 0, {0}, ShapeBool, 0, 0, PhaseConstant, 1},
-    {"isDefined", IsDefinedIntrinsic, "isDefined(name &[]u8) Bool",
+    {"isDefined", IsDefinedIntrinsic, "isDefined(name &[]u8) bool",
         0, 1, {ShapeSliceU8}, ShapeBool, 0, 0, PhaseConstant, 1},
     {"definedInt", DefinedIntIntrinsic, "definedInt(name &[]u8) i64",
         0, 1, {ShapeSliceU8}, ShapeI64, 0, 0, PhaseConstant, 1},
@@ -409,7 +409,7 @@ StructNode *typeRecordStruct(void) {
 // they are, by its name and its package, and held to its one signature so that
 // the call the compiler builds is sure to fit it
 static FnDclNode *sliceEqCore = NULL;
-static IntrinsicSpec sliceEqSpec = {"sliceEq", 0, "sliceEq[T](a &[]T, b &[]T) Bool",
+static IntrinsicSpec sliceEqSpec = {"sliceEq", 0, "sliceEq[T](a &[]T, b &[]T) bool",
     1, 2, {ShapeSliceT, ShapeSliceT}, ShapeBool, 0, 1, PhaseExpansion, 0};
 
 void sliceEqDclNameRes(FnDclNode *fndcl) {
@@ -538,8 +538,8 @@ static int intrinsicClassOf(INode *type) {
 static char *intrinsicClassWords(int tclass) {
     switch (tclass) {
     case ClassInt:                          return "an integer type of 8 to 64 bits";
-    case ClassInt | ClassBool:              return "an integer type of 8 to 64 bits or Bool";
-    case ClassInt | ClassBool | ClassPtr:   return "an integer type of 8 to 64 bits, Bool or a raw pointer";
+    case ClassInt | ClassBool:              return "an integer type of 8 to 64 bits or bool";
+    case ClassInt | ClassBool | ClassPtr:   return "an integer type of 8 to 64 bits, bool or a raw pointer";
     default:                                return "of another class";
     }
 }
@@ -567,8 +567,8 @@ int intrinsicClassCheck(FnDclNode *fndcl) {
     if (intrinsicClassOf(type) & spec->tclass)
         return 1;
     // Reported where the program's own source chose the type: an instance
-    // called from a generic's instance -- a 'Bump[Bool]' whose unconstrained
-    // 'add' calls atomicAdd[Bool] -- at the outermost place that asked, as a raw
+    // called from a generic's instance -- a 'Bump[bool]' whose unconstrained
+    // 'add' calls atomicAdd[bool] -- at the outermost place that asked, as a raw
     // placement of a traced reference is (regionTracedRawNote), and once
     // there however many of that instance's calls are refused
     static INode *lastwhere = NULL;
@@ -590,7 +590,7 @@ int intrinsicClassCheck(FnDclNode *fndcl) {
 }
 
 // Is this a type some atomic operation acts on: an integer of 8 to 64 bits,
-// Bool or a raw pointer? What an atomic value may hold (structAtomicValueCheck)
+// bool or a raw pointer? What an atomic value may hold (structAtomicValueCheck)
 int intrinsicIsAtomicType(INode *type) {
     return intrinsicClassOf(type) != 0;
 }

@@ -143,7 +143,7 @@ static int regionMethReturnsNothing(FnDclNode *meth) {
 }
 
 // Check the shape of 'aliasRef', 'dealiasRef' or 'free' where the region
-// declares it: '(self &uni R)', returning Bool for 'dealiasRef' and nothing for
+// declares it: '(self &uni R)', returning bool for 'dealiasRef' and nothing for
 // the others
 static void regionCheckSelfMeth(StructNode *region, Name *name, int retbool) {
     INode *member = iNsTypeFindFnField((INsTypeNode*)region, name);
@@ -158,7 +158,7 @@ static void regionCheckSelfMeth(StructNode *region, Name *name, int retbool) {
         return;
     if (retbool)
         errorMsgNode(member, ErrorRegionMeth,
-            "A region's dealiasRef must be declared 'fn dealiasRef(self &uni %s) Bool': it is handed the header, and answers whether the owner that went was the last.",
+            "A region's dealiasRef must be declared 'fn dealiasRef(self &uni %s) bool': it is handed the header, and answers whether the owner that went was the last.",
             &region->namesym->namestr);
     else
         errorMsgNode(member, ErrorRegionMeth,

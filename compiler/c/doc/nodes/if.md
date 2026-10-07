@@ -3,7 +3,7 @@ implies, and what `match` lowers into it.
 
 **At a glance.** `parseIf` and `parseMatch` both build it — `match` is
 de-sugared here, not later. Name resolution walks conditions and arms
-uniformly. Type check coerces each condition to `Bool`, folds the arms into one
+uniformly. Type check coerces each condition to `bool`, folds the arms into one
 type, and may rewrite the last condition into an `else`. Flow walks **both arms
 against one shared state**. Generation builds the basic blocks and a phi.
 
@@ -79,7 +79,7 @@ never sees them. For a guard that is the rule: the guard may fail. For `or` it i
 a gap: `case is A or is B` accounts for neither variant, and a match that relies
 on it needs an `else`. A variant named alone, `case A`, is its `is` test once
 checked and counts; any other value alone is an `==` call and counts for
-nothing, so `case true` and `case false` on a `Bool` need an `else` to be a
+nothing, so `case true` and `case false` on a `bool` need an `else` to be a
 value, as `case ==true` and `case ==false` do.
 
 ## Name resolution
@@ -91,7 +91,7 @@ retagging happens inside the arms.
 ## Type check
 
 **Pass 1**, per pair: check the condition; if it is an `is`, run
-`ifExhaustCheck`; if it is not `elseCond`, coerce it to `Bool` — which is where
+`ifExhaustCheck`; if it is not `elseCond`, coerce it to `bool` — which is where
 an implicit `.isTrue` reaches a conditional. An `elseCond` sets `hasElse`, and
 must be last. Then check the arm against `expectType` and fold its type into the
 type in common — **unless the arm jumps away** (`ifBlockJumps`: it ends in a
@@ -136,7 +136,7 @@ match too.
 
 Because `ifTypeCheck` calls this *before* testing for `elseCond`, the rewrite
 takes effect for the very condition being processed: `hasElse` becomes true and
-no `Bool` coercion is attempted. That is how a `match` covering every variant
+no `bool` coercion is attempted. That is how a `match` covering every variant
 becomes a value-producing expression with no written `else`.
 
 `ifRemoveReturns`, called from `returnTypeCheck`, strips the redundant `return`

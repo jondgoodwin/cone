@@ -17,7 +17,7 @@ kind**, not by Cone tag.
 | --- | --- |
 | `exp` | the value being converted or tested |
 | `typ` | the target type, or the type being tested against |
-| `vtype` | `typ` for a cast; `Bool` for `is` |
+| `vtype` | `typ` for a cast; `bool` for `is` |
 
 Six forms:
 
@@ -256,9 +256,9 @@ virtual references and fat pointers are in play.
 
 `genlConvert` (`FlagConvert`, and a number's conversion method, `u64.from(x)`,
 which is lowered to a type literal, [literals](literals.md)):
-- anything → `Bool` is tested **first**, and asks what the `isTrue` intrinsic
+- anything → `bool` is tested **first**, and asks what the `isTrue` intrinsic
   asks of a condition: a ref/ptr `LLVMBuildIsNotNull`, an integer `icmp ne 0`,
-  a float `fcmp une 0.0` (0 and -0 false, NaN true). Without that arm, `Bool`
+  a float `fcmp une 0.0` (0 and -0 false, NaN true). Without that arm, `bool`
   being a 1-bit unsigned would send it down the number path: an integer
   truncated to its low bit (2 false), a float through `fptoui` (0.5 false, NaN
   poison), a pointer truncated.

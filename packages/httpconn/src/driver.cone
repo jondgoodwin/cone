@@ -68,7 +68,7 @@ struct Conn {
   gen u32;
   state u32;
   nextFree u32;
-  server Bool;
+  server bool;
   listener ListenerId;
   sock Handle;
   core http1.Connection;
@@ -80,22 +80,22 @@ struct Conn {
   callOp OpId;              // the layer's work on the blocking pool, in flight
   connectBy Instant;
   peer SocketAddr;
-  recvOut Bool;             // a receive is in flight
-  readyOut Bool;            // a zero-byte receive is in flight
-  readyHit Bool;            // ...and has said data is there: the next receive takes it
+  recvOut bool;             // a receive is in flight
+  readyOut bool;            // a zero-byte receive is in flight
+  readyHit bool;            // ...and has said data is there: the next receive takes it
   sendsOut u32;
-  eof Bool;                 // the socket's receiving side has ended, or failed
-  eofFed Bool;              // ...and the core has been told
-  shut Bool;                // its sending side is shut
-  closeAsked Bool;          // 'close': end once what was asked of it is done
+  eof bool;                 // the socket's receiving side has ended, or failed
+  eofFed bool;              // ...and the core has been told
+  shut bool;                // its sending side is shut
+  closeAsked bool;          // 'close': end once what was asked of it is done
   timer OpId;               // the core's deadline, or the linger, on the loop's timers
   timerAt Instant;
   current u32;              // the request under way, or noEntry
   waiting List[u32];        // a client's requests waiting their turn
   flushing List[u32];       // a server's requests answered whole, their bytes going out
-  failed Bool;
+  failed bool;
   failure Failure;
-  dirty Bool;
+  dirty bool;
   held u32;                 // its events held for a full channel
   inAtStart u64;            // the core's bytes received when the current request started
 }
@@ -107,25 +107,25 @@ struct Req {
   nextFree u32;
   conn u32;
   connGen u32;
-  server Bool;
+  server bool;
   sink Sink;
   head RequestHead;         // a client's, until it starts
   body BodyLength;
-  isHead Bool;              // a HEAD request: its response has no body
+  isHead bool;              // a HEAD request: its response has no body
   watch OpId;               // the timer for its deadline and group, or none
-  wrote Bool;               // a byte of it has gone to the kernel
-  responded Bool;           // a server's response has begun
-  finished Bool;            // what it sends is whole
-  readDone Bool;            // what it reads is whole
-  gotResponse Bool;         // a client's response head (or an interim one) has come
-  wantWritable Bool;        // tell it when it may send again
+  wrote bool;               // a byte of it has gone to the kernel
+  responded bool;           // a server's response has begun
+  finished bool;            // what it sends is whole
+  readDone bool;            // what it reads is whole
+  gotResponse bool;         // a client's response head (or an interim one) has come
+  wantWritable bool;        // tell it when it may send again
   timing Timing;
 }
 
 // A listening socket
 struct Lst {
   gen u32;
-  open Bool;
+  open bool;
   sock Handle;
   sink Sink;
   make So[LayerMaker];
@@ -147,7 +147,7 @@ pub struct Driver {
   freeReq u32;
   listeners List[Lst];
   acceptsOut u32;
-  rearm Bool;
+  rearm bool;
   dirty List[u32];
   work List[u32];
   ready List[Event];        // events for this thread, until pump hands them over
@@ -188,7 +188,7 @@ pub struct Driver {
   pub fn config(self &) Config {cfg;}
 
   // Whether a token is one of this driver's operations
-  pub fn owns(self &, token u64) Bool {(token >> 56u64) == (tokBase >> 56u64);}
+  pub fn owns(self &, token u64) bool {(token >> 56u64) == (tokBase >> 56u64);}
 
   fn tok(self &, kind u64, index u32, gen u32) u64 {
     tokBase | (kind << 48u64) | (u64.from(gen & genMask) << 24u64) | u64.from(index & genMask);
@@ -204,7 +204,7 @@ pub struct Driver {
   }
 
   // Whether a token is one 'upperToken' made, and its kind and n
-  pub fn isUpperToken(self &, token u64) Bool {self.owns(token) and ((token >> 48u64) & 128u64) != 0u64;}
+  pub fn isUpperToken(self &, token u64) bool {self.owns(token) and ((token >> 48u64) & 128u64) != 0u64;}
 
   // ---------------------------------------------------------------------------
   // The tables
@@ -260,7 +260,7 @@ pub struct Driver {
   }
 
   // A new connection, its core in its role, its layer and sink given
-  fn newConn(self &mut, server Bool, layer So[Layer], sink Sink, now Instant) u32 {
+  fn newConn(self &mut, server bool, layer So[Layer], sink Sink, now Instant) u32 {
     if freeConn == noEntry {
       imm block = libc.malloc(usize.from(recsPerBlock) * mem.sizeof[Conn]()) as *Conn;
       if block as usize == 0usize {panic("httpconn: out of memory for the connection table");}
@@ -785,7 +785,7 @@ pub struct Driver {
     }
   }
 
-  fn flushed(self &, i u32) Bool {
+  fn flushed(self &, i u32) bool {
     imm c = self.connAt(i) as &Conn;
     c.sendsOut == 0u32 and c.core.queued() == 0usize and c.layer.pending() == 0usize;
   }
@@ -934,7 +934,7 @@ pub struct Driver {
   }
 
   // Why request ri failed when its connection did, or closed under it
-  fn failureFor(self &, i u32, ri u32, waiting Bool) Failure {
+  fn failureFor(self &, i u32, ri u32, waiting bool) Failure {
     imm c = self.connAt(i) as &Conn;
     imm r = self.reqAt(ri) as &Req;
     mut f = Failure.none();
@@ -956,7 +956,7 @@ pub struct Driver {
 
   // Answer every request on connection i: Cancelled when cancelAll; else a
   // server's answered and sent whole is Done, any other Failed
-  fn answerAll(self &mut, lp &mut Loop, i u32, cancelAll Bool) {
+  fn answerAll(self &mut, lp &mut Loop, i u32, cancelAll bool) {
     imm c = self.connAt(i) as &mut Conn;
     imm sent = self.flushed(i);
     while c.flushing.len() > 0usize {
@@ -984,7 +984,7 @@ pub struct Driver {
 
   // Connection i ends now: its socket closed (reset, when 'reset'), what is
   // left on it answered, its one Closed sent, its record freed
-  fn closeNow(self &mut, lp &mut Loop, i u32, reset Bool, cancelAll Bool) {
+  fn closeNow(self &mut, lp &mut Loop, i u32, reset bool, cancelAll bool) {
     imm c = self.connAt(i) as &mut Conn;
     if c.state == cFree {return;}
     if not c.connOp.isNone() {
@@ -1040,7 +1040,7 @@ pub struct Driver {
   // A completion from the loop: true if it was this driver's, which takes
   // what it needs from it (its buffer); false if it was not (see the
   // package's header, THE DRIVER)
-  pub fn complete(self &mut, lp &mut Loop, comp &mut Completion) Bool {
+  pub fn complete(self &mut, lp &mut Loop, comp &mut Completion) bool {
     imm token = comp.token;
     if not self.owns(token) {return false;}
     imm kind = (token >> 48u64) & 255u64;
@@ -1365,7 +1365,7 @@ pub struct Driver {
   }
 
   // Stop accepting: the connections it made go on
-  pub fn stopListening(self &mut, lp &mut Loop, l ListenerId) Bool {
+  pub fn stopListening(self &mut, lp &mut Loop, l ListenerId) bool {
     if l.index >= u32.from(listeners.len()) {return false;}
     imm e = &mut listeners[usize.from(l.index)];
     if e.gen != l.gen or not e.open {return false;}
@@ -1431,7 +1431,7 @@ pub struct Driver {
   // SERVING): its body, if any, by sendData and finish. False if the
   // request has ended (its connection closed)
   pub fn respond(self &mut, req ReqId, head ResponseHead, body BodyLength,
-      file &[]u8 = srcFile(), line u32 = srcLine()) Bool {
+      file &[]u8 = srcFile(), line u32 = srcLine()) bool {
     imm ri = self.reqIndex(req);
     if ri == noEntry {return false;}
     imm r = self.reqAt(ri) as &mut Req;
@@ -1449,7 +1449,7 @@ pub struct Driver {
   }
 
   // A server's interim response, a 1xx other than 101, before its final one
-  pub fn sendInterim(self &mut, req ReqId, head ResponseHead, file &[]u8 = srcFile(), line u32 = srcLine()) Bool {
+  pub fn sendInterim(self &mut, req ReqId, head ResponseHead, file &[]u8 = srcFile(), line u32 = srcLine()) bool {
     imm ri = self.reqIndex(req);
     if ri == noEntry {return false;}
     imm r = self.reqAt(ri) as &Req;
@@ -1460,7 +1460,7 @@ pub struct Driver {
   }
 
   // '100 Continue': the server wants the request's body
-  pub fn sendContinue(self &mut, req ReqId, file &[]u8 = srcFile(), line u32 = srcLine()) Bool {
+  pub fn sendContinue(self &mut, req ReqId, file &[]u8 = srcFile(), line u32 = srcLine()) bool {
     self.sendInterim(req, ResponseHead.make(100u16), file, line);
   }
 
@@ -1536,7 +1536,7 @@ pub struct Driver {
 
   // Ask a request to end (see the package's header, CANCEL AND DEADLINES):
   // true while its answer is still to come
-  pub fn cancel(self &mut, lp &mut Loop, req ReqId) Bool {
+  pub fn cancel(self &mut, lp &mut Loop, req ReqId) bool {
     imm ri = self.reqIndex(req);
     if ri == noEntry {return false;}
     self.cancelReq(lp, ri, false);
@@ -1544,7 +1544,7 @@ pub struct Driver {
   }
 
   // Request ri is cancelled, or its deadline has come
-  fn cancelReq(self &mut, lp &mut Loop, ri u32, timedOut Bool) {
+  fn cancelReq(self &mut, lp &mut Loop, ri u32, timedOut bool) {
     imm r = self.reqAt(ri) as &mut Req;
     if r.state == rFree {return;}
     imm how = if timedOut {endTimedOut;} else {endCancelled;};
@@ -1571,7 +1571,7 @@ pub struct Driver {
 
   // Close a connection once what was asked of it is done (see the
   // package's header, CONNECTIONS): false if it names none
-  pub fn close(self &mut, lp &mut Loop, conn ConnId) Bool {
+  pub fn close(self &mut, lp &mut Loop, conn ConnId) bool {
     imm ci = self.connIndex(conn);
     if ci == noEntry {return false;}
     (self.connAt(ci) as &mut Conn).closeAsked = true;
@@ -1580,7 +1580,7 @@ pub struct Driver {
   }
 
   // Reset a connection now: every request on it answered Cancelled
-  pub fn abort(self &mut, lp &mut Loop, conn ConnId) Bool {
+  pub fn abort(self &mut, lp &mut Loop, conn ConnId) bool {
     imm ci = self.connIndex(conn);
     if ci == noEntry {return false;}
     imm c = self.connAt(ci) as &mut Conn;
@@ -1607,13 +1607,13 @@ pub struct Driver {
   }
 
   // Whether a connection is open: connected (or accepted), not yet closing
-  pub fn isOpen(self &, conn ConnId) Bool {
+  pub fn isOpen(self &, conn ConnId) bool {
     imm ci = self.connIndex(conn);
     ci != noEntry and (self.connAt(ci) as &Conn).state == cOpen;
   }
 
   // Whether a client connection is open and free: a request on it starts at once
-  pub fn isIdle(self &, conn ConnId) Bool {
+  pub fn isIdle(self &, conn ConnId) bool {
     imm ci = self.connIndex(conn);
     if ci == noEntry {return false;}
     imm c = self.connAt(ci) as &Conn;
@@ -1764,7 +1764,7 @@ fn checkHead(head &RequestHead, file &[]u8, line u32) {
   }
 }
 
-fn isVisible(s &[]u8) Bool {
+fn isVisible(s &[]u8) bool {
   if s.len == 0usize {return false;}
   mut i = 0usize;
   while i < s.len {

@@ -209,7 +209,7 @@ pub struct Config {
   pub bodyTimeout Duration;
   pub idleTimeout Duration;
   pub expectTimeout Duration;
-  pub autoErrorResponse Bool;
+  pub autoErrorResponse bool;
 
   // The defaults
   pub fn make() Config {
@@ -268,21 +268,21 @@ const maxCopy = 65536usize;               // the most a body buffer copied out o
 
 // One HTTP/1.1 connection's protocol state (see the package's header)
 pub struct Connection is Move {
-  clientRole Bool;
+  clientRole bool;
   cfg Config;
   pool Pool;
   now Instant;              // the time the last call brought
 
   // Reading
   input Chain;              // what arrived and is not yet parsed or handed on
-  eof Bool;                 // the peer has finished sending
+  eof bool;                 // the peer has finished sending
   rs ReadState;
   remaining u64;            // the body's or the chunk's bytes still to come
   headBuf IoBuf;            // a head being gathered, copied out of the input
   headScan usize;           // how far it has been checked
-  sawBytes Bool;            // a byte of the head awaited has arrived
+  sawBytes bool;            // a byte of the head awaited has arrived
   outstanding usize;        // body bytes handed out, not yet released
-  headInFlight Bool;        // a client's request in flight is a HEAD
+  headInFlight bool;        // a client's request in flight is a HEAD
 
   // Writing
   ws WriteState;
@@ -290,30 +290,30 @@ pub struct Connection is Move {
   out Chain;                // whole buffers ready to send, in order
   tail IoBuf;               // small writes gathering after them
   held Chain;               // a body held back for 100 Continue
-  holding Bool;
-  abandoned Bool;           // the rest of the body being sent is dropped
-  requestSeen Bool;         // a server's request awaits its response
-  answeringHead Bool;       // ...and was a HEAD
-  peer10 Bool;              // ...and was HTTP/1.0
+  holding bool;
+  abandoned bool;           // the rest of the body being sent is dropped
+  requestSeen bool;         // a server's request awaits its response
+  answeringHead bool;       // ...and was a HEAD
+  peer10 bool;              // ...and was HTTP/1.0
 
-  keepAlive Bool;
+  keepAlive bool;
 
   // Deadlines, each an Instant and whether it runs
   headAt Instant;
-  headArmed Bool;
+  headArmed bool;
   bodyAt Instant;
-  bodyArmed Bool;
+  bodyArmed bool;
   idleAt Instant;
-  idleArmed Bool;
+  idleArmed bool;
   expectAt Instant;
-  expectArmed Bool;
-  armHead Bool;             // start the head timeout at the next transmit
-  armExpect Bool;           // start the expect timeout at the next transmit
+  expectArmed bool;
+  armHead bool;             // start the head timeout at the next transmit
+  armExpect bool;           // start the expect timeout at the next transmit
 
   // The end
-  closed Bool;
-  failed Bool;
-  failureOut Bool;
+  closed bool;
+  failed bool;
+  failureOut bool;
   failure HttpError;
 
   // Counts
@@ -328,7 +328,7 @@ pub struct Connection is Move {
   // A server connection, awaiting its first request
   pub fn server(cfg Config, pool Pool, now Instant) Connection {Connection.make(false, cfg, pool, now);}
 
-  fn make(client Bool, cfg Config, pool Pool, now Instant, file &[]u8 = srcFile(), line u32 = srcLine()) Connection {
+  fn make(client bool, cfg Config, pool Pool, now Instant, file &[]u8 = srcFile(), line u32 = srcLine()) Connection {
     if cfg.maxBuffered < cfg.maxHeadBytes {panic("http1: maxBuffered must hold a whole head (maxHeadBytes)", file, line);}
     new Connection(clientRole: client, cfg: cfg, pool: pool, now: now,
       input: Chain.make(cfg.maxBuffered), eof: false, rs: ReadState.Idle[], remaining: 0u64,
@@ -343,7 +343,7 @@ pub struct Connection is Move {
       exchanges: 0u64, bytesIn: 0u64, bytesOut: 0u64);
   }
 
-  pub fn isClient(self &) Bool {clientRole;}
+  pub fn isClient(self &) bool {clientRole;}
 
   // ------------------------------------------------------------- the four calls
 
@@ -562,7 +562,7 @@ pub struct Connection is Move {
 
   // Whether a request may be sent now: a client, open, with no exchange in
   // progress
-  pub fn canSendRequest(self &) Bool {
+  pub fn canSendRequest(self &) bool {
     clientRole and not closed and not failed and not eof and ws == WriteState.Idle[] and rs == ReadState.Idle[];
   }
 
@@ -732,11 +732,11 @@ pub struct Connection is Move {
 
   // Whether the connection has ended, cleanly or not: nothing more will be
   // read
-  pub fn isClosed(self &) Bool {closed or failed;}
+  pub fn isClosed(self &) bool {closed or failed;}
 
   // Whether the driver should close the socket now: the connection has
   // ended and everything it had to send has been taken
-  pub fn shouldClose(self &) Bool {(closed or failed) and out.len() == 0usize and tail.len() == 0usize;}
+  pub fn shouldClose(self &) bool {(closed or failed) and out.len() == 0usize and tail.len() == 0usize;}
 
   // End the connection now, dropping whatever was not yet sent: HTTP/1.1's
   // only way to cancel an exchange
@@ -751,13 +751,13 @@ pub struct Connection is Move {
 
   // ------------------------------------------------------------- reading, inside
 
-  fn inBody(self &) Bool {
+  fn inBody(self &) bool {
     rs == ReadState.Sized[] or rs == ReadState.ChunkSize[] or rs == ReadState.ChunkData[] or
       rs == ReadState.ChunkEnd[] or rs == ReadState.Trailers[] or rs == ReadState.UntilClose[];
   }
 
   // Waiting on the consumer to release credit
-  fn blocked(self &) Bool {outstanding >= cfg.bodyWindow;}
+  fn blocked(self &) bool {outstanding >= cfg.bodyWindow;}
 
   // A server's request head begins: its timeout runs, from its first byte
   fn startHead(self &mut) {
@@ -1059,7 +1059,7 @@ pub struct Connection is Move {
 
   // A chunk's size line: true once read (the state moved on), false when it
   // has not all arrived or the connection failed
-  fn chunkSize(self &mut) Bool {
+  fn chunkSize(self &mut) bool {
     mut at = 0usize;
     mut found = false;
     mut skip = 2usize;              // the line's end: CRLF, or (a client's) an LF alone
@@ -1356,7 +1356,7 @@ pub struct Connection is Move {
 
 // A request target's or an authority's text: not empty, and only visible
 // ASCII
-fn isTargetText(s &[]u8) Bool {
+fn isTargetText(s &[]u8) bool {
   if s.len == 0usize {return false;}
   mut i = 0usize;
   while i < s.len {

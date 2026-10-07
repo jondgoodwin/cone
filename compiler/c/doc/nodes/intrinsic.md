@@ -42,7 +42,7 @@ over the one type parameter `T` (or over none: `traceRoots`, `srcFile`,
 belongs in `trust`), whether a Cone fallback body may be written, the phase that
 answers it, whether this back end lowers it itself, and the class of types `T`
 may be where that is narrower than every type with a size (`IntrinsicClass`: the
-atomic operations take an integer of 8 to 64 bits, `Bool` or a raw pointer, or
+atomic operations take an integer of 8 to 64 bits, `bool` or a raw pointer, or
 part of that, and an integer's bit operations an integer). No LLVM name appears in
 it. ▸ **Forbids** passing an LLVM intrinsic name through (`@intrinsic("llvm.…")`)
 and deciding a new intrinsic's meaning from an LLVM type: the LLVM instructions
@@ -101,7 +101,7 @@ type while each call gives its own orderings.
      because a type parameter is not yet a type (`cloneStarNode`,
      `cloneRefNode`), so both spellings are accepted. An atomic ordering is
      core's enum named `MemOrder` (`memOrderEnum`, known by name and package as
-     `TypeRecord` is), and compareSwap's result the tuple `T, Bool`;
+     `TypeRecord` is), and compareSwap's result the tuple `T, bool`;
    - a body the entry allows no fallback for, or no body where there is no
      lowering, is `ErrorIntrinsicBody`.
    A declaration that passes either keeps its body as an **inline** function
@@ -117,10 +117,10 @@ type while each call gives its own orderings.
    `ErrorIntrinsicType`, before a fallback body is checked. It is reported at
    the outermost place that instantiated it, where the program chose the type,
    and once there: a generic type whose methods call `atomicAdd[T]` for a `T`
-   it does not constrain is refused at the program's `Bump[Bool]`, by the first
+   it does not constrain is refused at the program's `Bump[bool]`, by the first
    of those methods, not in the generic's source once per method. (core's
    `Atomic[T]` says with `where T is Integer` that its `add` exists only for
-   an integer, so an `Atomic[Bool]` never reaches this.) Then `intrinsicDclTypeCheck`: a declared
+   an integer, so an `Atomic[bool]` never reaches this.) Then `intrinsicDclTypeCheck`: a declared
    intrinsic's instance has no body to check; its `typearg` is type checked and
    must have a size (`itypeNoSizeCause`), else `ErrorIntrinsicType`, reported at
    the call that instantiated it (`instnode`), not in core. An instance of
@@ -192,7 +192,7 @@ reached only from the untaken side are still generated.
 
 Each atomic instruction is aligned as `T` is (`LLVMABIAlignmentOfType`), and
 its ordering is LLVM's name for the `MemOrder` (`genlAtomicOrdering`: `Relaxed`
-is `monotonic`). A `Bool` is an `i1` in a byte, and LLVM's atomics take no
+is `monotonic`). A `bool` is an `i1` in a byte, and LLVM's atomics take no
 `i1`, so it is operated on as that byte: the value zero-extended in, the result
 truncated out.
 
@@ -216,7 +216,7 @@ how generation builds a root map's records, where no declaration names the
 type.
 
 `mem` also holds one function that is no intrinsic: `sliceEq[T](a &[]T,
-b &[]T) Bool`, what `==` and `!=` on two slices call ([fncall](fncall.md), "A
+b &[]T) bool`, what `==` and `!=` on two slices call ([fncall](fncall.md), "A
 comparison of two slices compares their elements"). Its body is its
 implementation, compiled as any generic function's, and it has no registry
 entry; the compiler knows it the way it knows `TypeRecord`, by its name and its

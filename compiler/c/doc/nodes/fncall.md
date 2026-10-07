@@ -274,7 +274,7 @@ reject an overload name everywhere else. Bail if `objfn` is already marked
 - **`!=` on a type that declares `==` and no `!=`** (`fnCallNeFromEq`) → the
   node is renamed to `==` and a `NotLogicTag` node takes its place in the
   tree, wrapping it; stage 3 then lowers the `==` like any other operator, and
-  its answer is coerced to `Bool` (through `isTrue` if need be). The type asked
+  its answer is coerced to `bool` (through `isTrue` if need be). The type asked
   is a struct receiver's own, or the struct a reference refers to, through any
   number of references — `!=` on references compares the values, so
   `fnCallLowerRefCompare` lowers the renamed `==` exactly as it would a written
@@ -345,7 +345,7 @@ candidate. `fnCallLowerRefCompare`:
 **A comparison of two slices compares their elements**
 (`fnCallLowerSliceCompare`): equal when the counts are and each element is `==`
 to its partner. A slice has no order, so an ordering is `ErrorRefNoCompare`.
-The comparison is core's `mem.sliceEq[T](a &[]T, b &[]T) Bool`, a generic
+The comparison is core's `mem.sliceEq[T](a &[]T, b &[]T) bool`, a generic
 function whose body is the loop: the node becomes a call of its instance at
 the receiver's element type (`genericMethodInstance`), the receiver its first
 argument, and `fnCallFinalizeArgs` converts the other side to that slice as it
@@ -359,7 +359,7 @@ signature, and `sliceEqFn` hands it out.
 
 The body compares each pair as `&a[i] == &b[i]`, which is a comparison of
 references, so every element type gets the `==` this function already selects:
-a number's or a `Bool`'s built-in one (a float's IEEE `==`, so a NaN is unequal
+a number's or a `bool`'s built-in one (a float's IEEE `==`, so a NaN is unequal
 to everything and -0.0 equals 0.0), a pointer's on the address, one a struct
 declares on the value or on references, a payload-free enum's, and through a
 reference or a nested slice, what it refers to. Nothing is copied. A body in
@@ -522,9 +522,9 @@ message of their own. An indexed borrow `&x[i]` reaches `` `&[]` `` with the
 read-only receiver `&x`, and where a `&mut` receiver would have been accepted
 the message says the method takes `self &mut` and names `x[i]` and
 `&mut x[i]` (`fnCallRefIndexWantsMut`, still `ErrorNoCandidate`). An operator
-or an index given a `Bool` where a candidate declares a number, `n + b` or
+or an index given a `bool` where a candidate declares a number, `n + b` or
 `list[b]`, is `ErrorBoolNotNbr` naming that number's `from`
-(`fnCallBoolOperandWantsNumber`): a `Bool` coerces to no number. Neither probe
+(`fnCallBoolOperandWantsNumber`): a `bool` coerces to no number. Neither probe
 changes anything; the refusal is the same.
 
 ### The list after `<-`

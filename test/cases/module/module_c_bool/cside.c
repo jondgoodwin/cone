@@ -7,7 +7,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-/* An integer the Cone side cannot see through, to make a Bool of */
+/* An integer the Cone side cannot see through, to make a bool of */
 int32_t c_int(int32_t n) { return n; }
 
 /* The byte a 'bool' argument arrived as */

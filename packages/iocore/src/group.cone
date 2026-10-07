@@ -26,7 +26,7 @@ struct GroupState is Sendable {
   flag Atomic[u32];         // 1 once cancelled
   first Atomic[u64];        // the first loop registered: the fast path
   deadline Instant;         // the tighter of its own and its parent's (a shield: its own)
-  shield Bool;              // its parent's cancel and deadline do not reach it
+  shield bool;              // its parent's cancel and deadline do not reach it
   parent Option[CancelGroup];
   lock Mutex;
   loops List[u64];          // the loops registered: their ids...
@@ -51,7 +51,7 @@ pub struct CancelGroup {
   // A new group, live, whose operations answer TimedOut at deadline
   pub fn until(deadline Instant) CancelGroup {CancelGroup.made(deadline, false, None[CancelGroup][]);}
 
-  fn made(deadline Instant, shield Bool, parent Option[CancelGroup]) CancelGroup {
+  fn made(deadline Instant, shield bool, parent Option[CancelGroup]) CancelGroup {
     new CancelGroup(new Arc[imm, GroupState](new GroupState(
       flag: Atomic[u32].of(0u32), first: Atomic[u64].of(0u64), deadline: deadline,
       shield: shield, parent: parent, lock: Mutex.make(),
@@ -81,7 +81,7 @@ pub struct CancelGroup {
   // Ask every operation in the group, and in its children, to end: each
   // still answers once, saying how it ended. True the first time; false
   // once it was cancelled already (idempotent). From any thread
-  pub fn cancel(self &) Bool {
+  pub fn cancel(self &) bool {
     if s.flag.swap(1u32) != 0u32 {return false;}
     imm st = s.lists();
     st.lock.lock();
@@ -96,7 +96,7 @@ pub struct CancelGroup {
 
   // Whether this group is cancelled: by its own cancel, or an ancestor's up
   // to a shield. A state: true from the cancel on
-  pub fn isCancelled(self &) Bool {
+  pub fn isCancelled(self &) bool {
     if s.flag.load() != 0u32 {return true;}
     if s.shield {return false;}
     match s.parent {
@@ -110,7 +110,7 @@ pub struct CancelGroup {
   pub fn deadline(self &) Instant {s.deadline;}
 
   // Whether it is a shield
-  pub fn isShield(self &) Bool {s.shield;}
+  pub fn isShield(self &) bool {s.shield;}
 
   // Its id, unique in the process: 1, 2, 3...
   pub fn id(self &) u64 {s.gid;}

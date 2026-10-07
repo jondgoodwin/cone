@@ -377,7 +377,7 @@ const char *fnDclComputeData(INode *type, char *path, size_t size) {
         if (bits == 32)
             return NULL;
         if (bits == 1)
-            return "a Bool, which WebGPU cannot share";
+            return "a bool, which WebGPU cannot share";
         static char why[128];
         snprintf(why, sizeof(why), "%s, a number of %u bits, which WebGPU cannot share", itypeName(dcl), bits);
         return why;

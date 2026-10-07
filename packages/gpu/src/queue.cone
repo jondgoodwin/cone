@@ -11,7 +11,7 @@ struct StagingBlock {
 // One frame in flight's state
 struct FrameState {
   fence vulkan.Fence;          // signalled by the frame's last submission
-  pending Bool;                // its fence will be signalled
+  pending bool;                // its fence will be signalled
   pool vulkan.CommandPool;     // recording thread 0's pool (one per thread, when there are threads)
   buffers Array[vulkan.CommandBuffer, 16];   // allocated from the pool, reused each time the frame comes round
   allocated u32;
@@ -52,10 +52,10 @@ struct QueueBackend {
   handle vulkan.Queue;
   device vulkan.Device;
   acquired vulkan.Semaphore;   // the current swapchain image's acquire semaphore,
-  waiting Bool;                // until a submission waits for it
+  waiting bool;                // until a submission waits for it
   frames Array[FrameState, 2];
   frameIndex u32;              // which of 'frames' is being recorded
-  inFrame Bool;
+  inFrame bool;
   memory vulkan.PhysicalDeviceMemoryProperties;
 }
 
@@ -67,7 +67,7 @@ pub struct Queue {
   // Submit the commands 'cmd' holds, after the uploads 'writeBuffer' asked
   // for. The first submission after a swapchain texture is acquired waits
   // for it to be ready to draw into.
-  pub fn submit(self &mut, cmd CommandBuffer) Bool {
+  pub fn submit(self &mut, cmd CommandBuffer) bool {
     if isNull(cmd.backend.cmd) { return false; }
     submitCommands(self, cmd.backend.cmd, new vulkan.Fence(0u64), 0u32, null);
   }
@@ -76,7 +76,7 @@ pub struct Queue {
   // not submitted before) once the GPU has finished these commands and
   // everything submitted before them. False, and the fence not submitted,
   // if nothing was.
-  pub fn submitSignalling(self &mut, cmd CommandBuffer, fence &mut Fence) Bool {
+  pub fn submitSignalling(self &mut, cmd CommandBuffer, fence &mut Fence) bool {
     if isNull(cmd.backend.cmd) or fence.fence.h == 0u64 or fence.submitted { return false; }
     fence.submitted = submitCommands(self, cmd.backend.cmd, fence.fence, 0u32, null);
     fence.submitted;
@@ -85,7 +85,7 @@ pub struct Queue {
   // Signal 'fence' (one from 'createFence', not submitted before) once the
   // GPU has finished everything submitted so far, and the uploads asked for
   // since: a submission of no commands of its own
-  pub fn signal(self &mut, fence &mut Fence) Bool {
+  pub fn signal(self &mut, fence &mut Fence) bool {
     if fence.fence.h == 0u64 or fence.submitted { return false; }
     fence.submitted = submitCommands(self, nullCommandBuffer(), fence.fence, 0u32, null);
     fence.submitted;
@@ -310,7 +310,7 @@ fn uploadCommands(queue &mut Queue) vulkan.CommandBuffer {
 // Room for 'size' bytes in the frame's staging block, from 'stagingUsed'
 // (made a multiple of 16): a bigger block if they do not fit, the old one
 // retired until the frame comes round again
-fn stagingRoom(queue &mut Queue, size u64) Bool {
+fn stagingRoom(queue &mut Queue, size u64) bool {
   imm i = usize.from(queue.backend.frameIndex);
   imm at = (queue.backend.frames[i].stagingUsed + 15u64) & 0xFFFFFFFFFFFFFFF0u64;
   if queue.backend.frames[i].staging.buffer.h != 0u64 and at + size <= queue.backend.frames[i].staging.size {
@@ -339,7 +339,7 @@ fn stagingRoom(queue &mut Queue, size u64) Bool {
 // for the acquired swapchain image if no submission has yet, signalling
 // 'fence' and 'signalCount' semaphores
 fn submitCommands(queue &mut Queue, cmd vulkan.CommandBuffer, fence vulkan.Fence, signalCount u32,
-    signals *vulkan.SemaphoreSubmitInfo) Bool {
+    signals *vulkan.SemaphoreSubmitInfo) bool {
   mut cbis = new Array[vulkan.CommandBufferSubmitInfo, 2] <- fill new vulkan.CommandBufferSubmitInfo(
     commandBuffer: nullCommandBuffer());
   mut count = 0usize;

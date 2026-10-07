@@ -174,7 +174,7 @@ Documented intent allows libraries packaged for import. Package-level namespace 
 
 The default rule is: **one spelling, one NameDef, at each namespace level**. This applies across declaration categories. A type and a variable, or a macro and a module, may not coexist under the same spelling in one namespace. With the exception of `extern`s and overloading, declaring duplicate names in the same namespace results in a compiler error.
 
-A name of core is a name of every module, since the automatic import of core is a wildcard, so a module that declares `Option`, is named `Option` or imports a sister of that name has two things under one name, and is refused. The core import is written nowhere, so the collision is reported at what the module wrote, saying that core has the name. ⚠ **The built-in number types, `Bool`, the permissions and `initAll`/`finalAll` are not in any module's namespace** — they are bound for the whole compile and looked up after a module's own names ([Name Resolution](../../compiler/c/doc/phases/name-resolution.md)) — yet a global name one of them holds is refused too, reported at the declaration and naming the built-in. Nothing written settles whether it should be: the reference's identifiers rule lets a program define any identifier but a keyword, and the lookup order would let a module's name hide a built-in.
+A name of core is a name of every module, since the automatic import of core is a wildcard, so a module that declares `Option`, is named `Option` or imports a sister of that name has two things under one name, and is refused. The core import is written nowhere, so the collision is reported at what the module wrote, saying that core has the name. ⚠ **The built-in number types, `bool`, the permissions and `initAll`/`finalAll` are not in any module's namespace** — they are bound for the whole compile and looked up after a module's own names ([Name Resolution](../../compiler/c/doc/phases/name-resolution.md)) — yet a global name one of them holds is refused too, reported at the declaration and naming the built-in. Nothing written settles whether it should be: the reference's identifiers rule lets a program define any identifier but a keyword, and the lookup order would let a module's name hide a built-in.
 
 #### `extern` handling of duplicate names
 
@@ -604,7 +604,7 @@ visibility; linkage is the compiler's to derive.
 | visibility bit | whether a library compile exports it (L1); no export-table visibility is set in any compile |
 | supply: defined in this compile, or externally supplied | |
 | naming regime: C-style or Cone-style | |
-| calling convention, for C-style names | how a module's C-named function passes and returns a struct, a Bool and a narrow integer: as the platform's C ABI does, [generation](../../compiler/c/doc/phases/generation.md), "C-named functions and the C ABI" |
+| calling convention, for C-style names | how a module's C-named function passes and returns a struct, a bool and a narrow integer: as the platform's C ABI does, [generation](../../compiler/c/doc/phases/generation.md), "C-named functions and the C ABI" |
 
 ### Spelling
 
@@ -703,7 +703,7 @@ ident    = decimal ["_"] bytes                   bytes in [A-Za-z0-9_]; "_" when
          | "u" decimal "_" bytes                 punycode over the basic set [A-Za-z0-9_], delimiter "_"
          | "o" code                              an operator method
 
-type     = letter                                a built-in number type, Bool, or void
+type     = letter                                a built-in number type, bool, or void
          | path                                  any other named type
          | "T" {type} "E"                        tuple
          | "F" {type} "E" type                   fn signature: parameters, then return type
@@ -770,7 +770,7 @@ user type named `i64` inside a module is still a path:
 
 | | | | | | | |
 | --- | --- | --- | --- | --- | --- | --- |
-| `a` i8 | `s` i16 | `l` i32 | `x` i64 | `i` isize | `f` f32 | `b` Bool |
+| `a` i8 | `s` i16 | `l` i32 | `x` i64 | `i` isize | `f` f32 | `b` bool |
 | `h` u8 | `t` u16 | `m` u32 | `y` u64 | `j` usize | `d` f64 | `u` void |
 
 `n` and `o`, v0's i128 and u128, are read by the demangler and declared by

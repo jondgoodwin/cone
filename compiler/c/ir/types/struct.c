@@ -3103,7 +3103,7 @@ static void structLayoutVariants(TypeCheckState *pstate, StructNode *node) {
 }
 
 // A type declaring 'AtomicValue' is a struct of exactly one field, which an
-// atomic operation acts on: an integer of 8 to 64 bits, a Bool or a raw
+// atomic operation acts on: an integer of 8 to 64 bits, a bool or a raw
 // pointer. Nothing else can be changed indivisibly in place: a float or a
 // struct has no atomic instruction, a traced reference stored atomically would
 // skip its write barrier, and an owning one would be duplicated or lost. Which
@@ -3133,7 +3133,7 @@ static int structAtomicValueCheck(StructNode *node, int report) {
     if (kind) {
         if (report)
             errorMsgNode(where, ErrorAtomicValueShape,
-                "%s is %s, and only a struct of one field may declare AtomicValue: an atomic value is one number, Bool or raw pointer, changed in place.",
+                "%s is %s, and only a struct of one field may declare AtomicValue: an atomic value is one number, bool or raw pointer, changed in place.",
                 name, kind);
         return 0;
     }
@@ -3148,7 +3148,7 @@ static int structAtomicValueCheck(StructNode *node, int report) {
     if (!intrinsicIsAtomicType(field->vtype)) {
         if (report)
             errorMsgNode(node->instnode ? where : (INode*)field, ErrorAtomicValueType,
-                "%s declares AtomicValue, so its field %s must be an integer of 8 to 64 bits, a Bool or a raw pointer, and %s is none of them.",
+                "%s declares AtomicValue, so its field %s must be an integer of 8 to 64 bits, a bool or a raw pointer, and %s is none of them.",
                 name, &field->namesym->namestr, itypeName(field->vtype));
         return 0;
     }

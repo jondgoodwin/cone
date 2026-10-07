@@ -165,7 +165,7 @@ enum ErrorCode {
     ErrorIntrinsicName = 1161,  // '@intrinsic' on a function whose name the compiler's registry does not define
     ErrorIntrinsicSig = 1162,   // An intrinsic declared with a signature other than the registry's: type parameters, parameters or return type
     ErrorIntrinsicBody = 1163,  // A body written for an intrinsic the registry gives no fallback, or none where it has no lowering to use instead
-    ErrorIntrinsicType = 1164,  // An intrinsic instantiated at a type outside its type class: one with no size, or for an atomic operation one that is not an integer of 8 to 64 bits, Bool or a raw pointer, as the operation allows
+    ErrorIntrinsicType = 1164,  // An intrinsic instantiated at a type outside its type class: one with no size, or for an atomic operation one that is not an integer of 8 to 64 bits, bool or a raw pointer, as the operation allows
 
     // The compiler's own invariants. This is the one code no source is supposed
     // to be able to produce, and so the one code with no scenario: reaching it
@@ -347,7 +347,7 @@ enum ErrorCode {
 
     // The built-in marker 'AtomicValue' (ir/types/struct.c, structAtomicValueCheck; ir/stmt/const.c)
     ErrorAtomicValueShape = 1183, // 'AtomicValue' declared by something other than a struct of exactly one field: a trait, an enum, a variant, or a struct of no fields or several
-    ErrorAtomicValueType = 1184, // An atomic value's one field of a type no atomic operation acts on: not an integer of 8 to 64 bits, a Bool or a raw pointer
+    ErrorAtomicValueType = 1184, // An atomic value's one field of a type no atomic operation acts on: not an integer of 8 to 64 bits, a bool or a raw pointer
     ErrorAtomicValueConst = 1185, // A 'const' whose type holds an atomic value: each use of a const is a fresh copy, which no atomic operation could share
 
     // Generic constraints: 'where T is Name and ... or ...', and '[T Name + Name]' (parser/parsefnflow.c, parseWhere; ir/meta/generic.c)
@@ -391,7 +391,7 @@ enum ErrorCode {
 
     // A number's conversion, 'u64.from(count)' (ir/exp/fncall.c, ir/exp/typelit.c)
     ErrorNbrBracket = 1207,     // 'u64[count]': a number type takes no '[...]'; a conversion is the method 'u64.from(count)'
-    ErrorNbrFrom = 1208,        // A number type's 'from' named without a call, given other than one value, or given a value that does not convert: Bool's takes a number, reference or pointer, every other's a number
+    ErrorNbrFrom = 1208,        // A number type's 'from' named without a call, given other than one value, or given a value that does not convert: bool's takes a number, reference or pointer, every other's a number
 
     // Construction, 'new Point(1, 2)', and the 'init' that fills a value in place (ir/exp/typelit.c, ir/exp/fncall.c, ir/stmt/fndcl.c, ir/flow.c)
     ErrorStructBracket = 1209,  // 'Point[1, 2]': a struct's value is constructed 'new Point(1, 2)'; an enum's variant keeps the brackets
@@ -441,7 +441,7 @@ enum ErrorCode {
 
     // Literals and implicit coercion
     ErrorNullNotPtr = 1237,     // A 'null' wanted as something other than a raw pointer, or where nothing says which raw pointer type it is
-    ErrorBoolNotNbr = 1238,     // A Bool where a number is wanted: a Bool converts to a number only explicitly, 'T.from(b)'
+    ErrorBoolNotNbr = 1238,     // A bool where a number is wanted: a bool converts to a number only explicitly, 'T.from(b)'
     ErrorPtrSizedAs = 1257,     // 'as' between usize or isize and a fixed-width number: a pointer's width differs by target, so it converts, 'T.from(x)'
 
     // Constants of the build (TEMPORARY, a provisional mechanism whose final design is open)

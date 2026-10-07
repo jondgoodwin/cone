@@ -394,11 +394,11 @@ pub struct OpId {
   gen u32;
 
   pub fn none() OpId {new OpId(noEntry, 0u32);}
-  pub fn isNone(self) Bool {gen == 0u32;}
+  pub fn isNone(self) bool {gen == 0u32;}
   // As one number, for diagnostics: the generation above the entry
   pub fn number(self) u64 {(u64.from(gen) << 32u64) | u64.from(index);}
-  pub fn `==`(self, o OpId) Bool {index == o.index and gen == o.gen;}
-  pub fn `!=`(self, o OpId) Bool {index != o.index or gen != o.gen;}
+  pub fn `==`(self, o OpId) bool {index == o.index and gen == o.gen;}
+  pub fn `!=`(self, o OpId) bool {index != o.index or gen != o.gen;}
 }
 
 // A socket or a file a loop holds (see the package's header, HANDLES)
@@ -407,9 +407,9 @@ pub struct Handle {
   gen u32;
 
   pub fn none() Handle {new Handle(noEntry, 0u32);}
-  pub fn isNone(self) Bool {gen == 0u32;}
-  pub fn `==`(self, o Handle) Bool {index == o.index and gen == o.gen;}
-  pub fn `!=`(self, o Handle) Bool {index != o.index or gen != o.gen;}
+  pub fn isNone(self) bool {gen == 0u32;}
+  pub fn `==`(self, o Handle) bool {index == o.index and gen == o.gen;}
+  pub fn `!=`(self, o Handle) bool {index != o.index or gen != o.gen;}
 }
 
 // Why something could not be done: Windows' error number
@@ -475,7 +475,7 @@ pub struct SocketAddr {
   }
 
   pub fn port(self &) u16 {(u16.from(raw[2usize]) << 8u16) | u16.from(raw[3usize]);}
-  pub fn isV6(self &) Bool {raw[0usize] == 23u8;}
+  pub fn isV6(self &) bool {raw[0usize] == 23u8;}
   pub fn family(self &) u16 {u16.from(raw[0usize]);}
 
   fn setPort(self &mut, port u16) {
@@ -607,7 +607,7 @@ pub struct Completion {
   pub dequeued Instant;
   pub delivered Instant;
 
-  pub fn isDone(self &) Bool {status == diag.outcomeDone;}
+  pub fn isDone(self &) bool {status == diag.outcomeDone;}
   // Done's count, or 0
   pub fn count(self &) usize {if status == diag.outcomeDone {n;} else {0usize;};}
 
@@ -641,7 +641,7 @@ fn blankCompletion() Completion {
 // any thread, which is what a port is for
 struct Port is Sendable {
   handle usize;
-  closed Atomic[Bool];    // its loop has gone: nobody will take what is posted
+  closed Atomic[bool];    // its loop has gone: nobody will take what is posted
 
   // The last owner has gone: answers posted since the loop died are
   // dropped (their buffers go home), and the port closed
@@ -675,14 +675,14 @@ pub struct Waker {
   port Arc[imm, Port];
 
   // End the loop's current or next poll: false if the loop has gone
-  pub fn wake(self &) Bool {
+  pub fn wake(self &) bool {
     if port.closed.load() {return false;}
     PostQueuedCompletionStatus(port.handle, 0u32, keyWake, null) != 0i32;
   }
 
   // Post an answer to the loop: false, and the answer dropped (its buffer
   // home), if the loop has gone
-  fn post(self &, c Completion) Bool {
+  fn post(self &, c Completion) bool {
     if port.closed.load() {return false;}
     imm block = libc.malloc(mem.sizeof[Completion]()) as *Completion;
     mem.writeRaw[Completion](block, c);
@@ -695,24 +695,24 @@ pub struct Waker {
   }
 
   // Whether its loop has gone
-  fn isGone(self &) Bool {port.closed.load();}
+  fn isGone(self &) bool {port.closed.load();}
 
   // A packet carrying nothing but its key (keyGroup): false if the loop
   // has gone
-  fn signal(self &, key usize) Bool {
+  fn signal(self &, key usize) bool {
     if port.closed.load() {return false;}
     PostQueuedCompletionStatus(port.handle, 0u32, key, null) != 0i32;
   }
 
   // Ask the loop to cancel operation id: false if the loop has gone
-  fn postCancel(self &, id OpId) Bool {
+  fn postCancel(self &, id OpId) bool {
     if port.closed.load() {return false;}
     PostQueuedCompletionStatus(port.handle, 0u32, keyCancel, usize.from(id.number()) as *u8) != 0i32;
   }
 
   // Hand a job that has run back to its loop: false, and the box still the
   // caller's, if the loop has gone
-  fn postJob(self &, b *JobBox) Bool {
+  fn postJob(self &, b *JobBox) bool {
     if port.closed.load() {return false;}
     PostQueuedCompletionStatus(port.handle, 0u32, keyJob, b as *u8) != 0i32;
   }
@@ -724,7 +724,7 @@ pub struct Waker {
 pub struct Request is Move {
   waker Waker;
   op OpId;
-  armed Bool;             // its death still cancels: neither cancelled nor detached
+  armed bool;             // its death still cancels: neither cancelled nor detached
 
   // The operation it names
   pub fn id(self &) OpId {op;}
@@ -732,7 +732,7 @@ pub struct Request is Move {
   // Ask the operation to end, from any thread: the loop cancels it at its
   // next poll, as 'lp.cancel(id)' would. True once asked; false if the loop
   // has gone. Idempotent
-  pub fn cancel(self &mut) Bool {
+  pub fn cancel(self &mut) bool {
     if not armed {return not waker.isGone();}
     armed = false;
     waker.postCancel(op);

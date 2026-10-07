@@ -153,7 +153,7 @@ the base's privates, and its base's variants', through any value
 (`typeLitStructReorder`, its caller and `genericInferStructParms`) and by a
 construction through a private `init`.
 
-A call to `isTrue` that a coercion to `Bool` injects (`iexpCoerce`) is lowered
+A call to `isTrue` that a coercion to `bool` injects (`iexpCoerce`) is lowered
 with no type check state, so only a receiver named `self` reaches a private one;
 every other is refused, in the module too. The state is not threaded through
 `iexpCoerce`'s callers.
@@ -1005,7 +1005,7 @@ one both take runs the declared one; two declared ones taking them is
 call counts it, coercions of untyped literals included, so a declared init
 with the fields' own shape -- or any whose arguments an untyped literal also
 passes to the fields, since such a literal passes to any number type and an
-integer one to `Bool` -- takes every positional construction it is viable
+integer one to `bool` -- takes every positional construction it is viable
 for. The implicit init is reached by the fields' names, which only it takes:
 inside a declared init, `*self = new T(field: value)` fills the value
 field-wise, and `*self = new T(...)` whose positional arguments select the
@@ -1087,7 +1087,7 @@ and the compiler knows nothing else of that type. What it brings:
 
 - **Its shape** (`structAtomicValueCheck`, at layout beside
   `structCheckIsaFields`): a struct of exactly one field, which some atomic
-  operation acts on — an integer of 8 to 64 bits, `Bool` or a raw pointer
+  operation acts on — an integer of 8 to 64 bits, `bool` or a raw pointer
   (`intrinsicIsAtomicType`, the widest of the atomic intrinsics' classes).
   Anything else declaring it is `ErrorAtomicValueShape` (a trait, an enum, a
   variant, no field or several) or `ErrorAtomicValueType` (the field). A
@@ -1095,11 +1095,11 @@ and the compiler knows nothing else of that type. What it brings:
   (`Atomic[f64]` in the program, not the field in core), and a refused
   instance's methods are not type checked (step 9), since each would refuse
   the same type again in terms of its body. Which operations a type offers is
-  its own affair: `Atomic[T]` requires `T is Integer or T is Bool or T is
+  its own affair: `Atomic[T]` requires `T is Integer or T is bool or T is
   Pointer`, just what the marker admits, so another `T` is refused as an unmet
   requirement before the marker is asked; and its `add` and `sub` exist only
   where `T is Integer`, its bit operations only where `T is Integer or T is
-  Bool` ([generic](generic.md), "Constraints").
+  bool` ([generic](generic.md), "Constraints").
 - **It moves**, as `Move` does, marked at the end of name resolution and at
   layout; `is Copy` beside it is `ErrorCopyMove` (step 11).
 - **It spreads outward** (`itypeHoldsAtomic`, below): a global whose type holds
