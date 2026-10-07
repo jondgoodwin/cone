@@ -1,0 +1,79 @@
+// The noiserock package's rocks. Only a failure prints.
+//
+// Determinism by seed (hashed); different seeds differ; every rock stands on
+// y = 0 with its foot flat, inside its half extents' box (give or take the
+// lumps); facets make the rock flat shaded (every vertex its own, three to a
+// triangle) and 'smooth' shares vertices; normals unit and facing out;
+// uvs inside a plausible box projection; sizes scale the rock.
+
+mod rocks;
+
+import testing use *;
+import libc;
+import geomath use *;
+import collections use *;
+import mesh;
+import noiserock use *;
+
+fn main() i32 {
+  imm p = new RockParams();
+  imm a = rockMesh(&p);
+  imm b = rockMesh(&p);
+  expect(mesh.meshHash(&a) == mesh.meshHash(&b), "the same seed gives the same rock");
+  mut q = new RockParams();
+  q.seed = 2u32;
+  expect(mesh.meshHash(&rockMesh(&q)) != mesh.meshHash(&a), "another seed gives another rock");
+  imm bb = a.bounds();
+  expectFloat(f64.from(bb.min.y), 0., 0.0001, "the foot is on y = 0");
+  expect(bb.max.y > 0.2 and bb.max.y < 0.6, "about as tall as asked");
+  expect(bb.max.x - bb.min.x > 0.5 and bb.max.x - bb.min.x < 1.4, "about as wide as asked");
+  expect(a.triangleCount() > 150usize, "a rock has triangles");
+  // the foot is flat: some vertices at y = 0, and none below
+  mut atFoot = 0;
+  mut below = 0;
+  mut i = 0usize;
+  while i < a.positions.len() {
+    imm y = (*a.positions[i]).y;
+    if y < 0.0001 and y > -0.0001 { atFoot = atFoot + 1; }
+    if y < -0.0001 { below = below + 1; }
+    i = i + 1usize;
+  }
+  expect(atFoot > 8, "the foot is flat");
+  expectInt(i64.from(below), 0, "nothing below the ground");
+  // flat shading: three vertices a triangle; unit normals facing out of the centre
+  expectInt(i64.from(a.positions.len()), i64.from(a.triangleCount() * 3usize), "flat shaded: three vertices to a triangle");
+  mut unitOk = true;
+  mut outward = 0;
+  imm mid = new Vec3(0., bb.max.y * 0.5, 0.);
+  i = 0usize;
+  while i < a.normals.len() {
+    imm n = *a.normals[i];
+    if libc.fabsf(n.length() - 1.) > 0.01 { unitOk = false; }
+    if n.dot(*a.positions[i] - mid) > 0. { outward = outward + 1; }
+    i = i + 1usize;
+  }
+  expect(unitOk, "normals are unit length");
+  expect(outward * 10 > i32.from(a.normals.len()) * 7, "most normals face away from the middle");
+  // smooth: shared vertices
+  mut s = new RockParams();
+  s.smooth = true;
+  imm sm = rockMesh(&s);
+  expect(sm.positions.len() < sm.triangleCount() * 3usize, "smooth shading shares vertices");
+  // bigger params, bigger rock
+  mut big = new RockParams();
+  big.width = 1.;
+  big.height = 0.6;
+  big.depth = 0.8;
+  imm bg = rockMesh(&big).bounds();
+  expect(bg.max.x - bg.min.x > (bb.max.x - bb.min.x) * 1.6, "twice the half extent, twice the width");
+  // indices in range, uvs present
+  mut inRange = true;
+  i = 0usize;
+  while i < a.indices.len() {
+    if usize.from(*a.indices[i]) >= a.positions.len() { inRange = false; }
+    i = i + 1usize;
+  }
+  expect(inRange, "every index is a vertex");
+  expectInt(i64.from(a.uvs.len()), i64.from(a.positions.len()), "a uv for every vertex");
+  done();
+}

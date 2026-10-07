@@ -37,6 +37,11 @@
 // sun's colour is irradiance, the environment and the emissive colour are
 // radiance, and what it outputs is multiplied by the frame's exposure.
 //
+// Its alpha is used as its alpha mode says (material.cone): not at all; to
+// cut out a fragment below the cut-off; or, see-through, as premultiplied
+// alpha: the diffuse light (the sun's and the environment's) times alpha,
+// the reflections and the glow added whole (glass).
+//
 // Group 0 is the frame's (renderframe.slang), group 1 the material's (its
 // parameters, a texture that multiplies the base colour, a sampler, then
 // the metallic-roughness, normal and occlusion textures), group 2 the
@@ -56,9 +61,13 @@ struct PbrParams {
     float4 film;                   // 32: the film's least and greatest thickness (nm), its index, 1 if there is a film
     float4 filmNoise;              // 48: the noise's scale (a unit of model space), drift a second, warp, seed
     float4 wet;                    // 64: where the coat lies: fBm's scale (0: everywhere), level, softness, seed
-    float4 maps;                   // 80: the normal map's scale (0: no normal map), the occlusion map's strength
+    float4 maps;                   // 80: the normal map's scale (0: no normal map), the occlusion map's strength,
+                                   //     the alpha mode (0 opaque, 1 cut out, 2 see-through), the cut-off
     float4 emissive;               // 96: rgb radiance (nits in physical units), its strength multiplied in
 };
+
+static const uint ALPHA_MASK = 1;
+static const uint ALPHA_BLEND = 2;
 
 [[vk::binding(0, 1)]] ConstantBuffer<PbrParams> material;
 [[vk::binding(1, 1)]] Texture2D baseTexture;
@@ -190,6 +199,13 @@ float4 fragmentMain(VertexOutput input) : SV_Target {
     float3 r = reflect(-v, n);
 
     float4 base = material.baseColor * baseTexture.Sample(baseSampler, input.uv) * input.tint;
+    uint alphaMode = uint(material.maps.z + 0.5);
+    if (alphaMode == ALPHA_MASK) {
+        if (base.a < material.maps.w) {
+            discard;
+        }
+        base.a = 1.0;
+    }
     float4 metalRough = metallicRoughnessTexture.Sample(baseSampler, input.uv);
     float metallic = material.surface.x * metalRough.b;
     float roughness = clamp(material.surface.y * metalRough.g, 0.045, 1.0);
@@ -226,6 +242,7 @@ float4 fragmentMain(VertexOutput input) : SV_Target {
 
     // The sun
     float3 direct = float3(0.0, 0.0, 0.0);
+    float3 directDiffuse = float3(0.0, 0.0, 0.0);
     if (nol > 0.0) {
         float3 f = fresnelSchlick(f0, loh);
         float3 specular = distributionGGX(noh, a) * visibilitySmithGGX(nov, nol, a) * f * energy;
@@ -233,6 +250,7 @@ float4 fragmentMain(VertexOutput input) : SV_Target {
         float3 baseLobe = (diffuse + specular) * (1.0 - coatFl);
         float3 coatLobe = distributionGGX(noh, coatA) * visibilityKelemen(loh) * coatFl;
         direct = (baseLobe + coatLobe) * frame.lightColor.rgb * nol;
+        directDiffuse = diffuse * (1.0 - coatFl) * frame.lightColor.rgb * nol;
     }
 
     // The sky
@@ -251,7 +269,15 @@ float4 fragmentMain(VertexOutput input) : SV_Target {
     // What it gives off: radiance, not lit, so not divided by pi; the
     // draw's tint multiplies it as it does the base
     float3 emitted = material.emissive.rgb * input.tint.rgb;
-    return float4((direct + ambient + emitted) * frame.exposure.x, base.a);
+    float3 color = direct + ambient + emitted;
+    if (alphaMode == ALPHA_BLEND) {
+        // Premultiplied: of the diffuse light (the sun's and the
+        // environment's) only the share alpha covers; the reflections and the
+        // glow whole
+        float3 envDiffuse = diffuseColor * irradiance * (1.0 - coatFv) * (strength * occlusion);
+        color = color - (directDiffuse + envDiffuse) * (1.0 - base.a);
+    }
+    return float4(color * frame.exposure.x, base.a);
 }
 
 // ---- The sky behind the scene ----
