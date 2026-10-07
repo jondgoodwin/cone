@@ -1,0 +1,275 @@
+// The capability traits: Collection, Indexed, Stack, Queue, Map and SetAlgebra.
+// A type fits a trait by having its methods; none of these collections
+// declares one, and the little Pile below, written here, fits Stack the same
+// way. A trait that mentions an element type is generic, so a function takes
+// it as a virtual reference ('&<mut Stack[i64]'); Collection mentions none and
+// is also a constraint, '[C Collection]'. Every expected value is worked out
+// by hand from the pushes made.
+
+mod traits;
+
+import testing use *;
+import collections use *;
+
+// -------- Collection, as a constraint and as a virtual reference --------
+
+fn countOf[C Collection](c &C) usize { c.len(); }
+fn emptyOf[C Collection](c &C) bool { c.isEmpty(); }
+fn countDyn(c &<Collection) usize { c.len(); }
+
+fn collectionTrait() {
+  // Built by pushes: a generic call on a value made with '<-' is an internal
+  // compiler error today, with or without a trait
+  mut l = List[i64].empty();
+  l.push(1i64);
+  l.push(2i64);
+  l.push(3i64);
+  mut d = Deque[i64].empty();
+  d.push(1i64);
+  d.push(2i64);
+  imm s = String.from("four");
+  mut m = new Dict[u64, i64];
+  m.insert(1u64, 10i64);
+  mut o = new OrderedDict[u64, i64];
+  o.insert(1u64, 10i64);
+  o.insert(2u64, 20i64);
+  mut st = new Set[u64];
+  st.insert(7u64);
+  st.insert(8u64);
+  st.insert(9u64);
+  expectUInt(u64.from(countOf(&l)), 3, "List is a Collection");
+  expectUInt(u64.from(countOf(&d)), 2, "Deque is");
+  expectUInt(u64.from(countOf(&s)), 4, "String is");
+  expectUInt(u64.from(countOf(&m)), 1, "Dict is");
+  expectUInt(u64.from(countOf(&o)), 2, "OrderedDict is");
+  expectUInt(u64.from(countOf(&st)), 3, "Set is");
+  expect(not emptyOf(&l), "a List of three is not empty");
+  expect(emptyOf(&Deque[i64].empty()), "an empty Deque is");
+  expectUInt(u64.from(countDyn(&d)), 2, "through a virtual reference too");
+  expectUInt(u64.from(countDyn(&st)), 3, "a Set through one");
+}
+
+// -------- Stack: List and Deque, and a type of this file's --------
+
+fn sumByPopping(s &<mut Stack[i64]) i64 {
+  mut total = 0i64;
+  while true {
+    match s.pop() {
+      case imm v Some {total = total * 10i64 + v.value;}
+      case is None {break;}
+    }
+  }
+  total;
+}
+
+fn pushThree(s &<mut Stack[i64]) {
+  s.push(1i64);
+  s.push(2i64);
+  s.push(3i64);
+}
+
+fn topOf(s &<Stack[i64]) i64 {
+  match s.peek() {
+    case imm v Some {*v.value;}
+    case is None {-1i64;}
+  }
+}
+
+// Strings do not copy: a Stack[String] moves them in and out
+fn pushNames(s &<mut Stack[String]) {
+  s.push(String.from("a"));
+  s.push(String.from("bc"));
+}
+
+fn popLength(s &<mut Stack[String]) usize {
+  match s.pop() {
+    case imm v Some {v.value.len();}
+    case is None {0usize;}
+  }
+}
+
+// A type with the three methods and no declaration
+struct Pile {
+  pub items List[i64];
+  pub fn push(self &mut, value i64) { items.push(value); }
+  pub fn pop(self &mut) Option[i64] { items.pop(); }
+  pub fn peek(self &) Option[&i64] { items.peek(); }
+}
+
+fn stacks() {
+  mut l = List[i64].empty();
+  mut d = Deque[i64].empty();
+  pushThree(&mut l);
+  pushThree(&mut d);
+  expectInt(topOf(&l), 3, "List peek is the last pushed");
+  expectInt(topOf(&d), 3, "Deque peek is too");
+  expectInt(sumByPopping(&mut l), 321, "List pops last in, first out");
+  expectInt(sumByPopping(&mut d), 321, "Deque does");
+  expectInt(topOf(&l), -1, "peek of nothing");
+  expectUInt(u64.from(l.len()), 0, "emptied");
+
+  mut p = new Pile(List[i64].empty());
+  pushThree(&mut p);
+  expectInt(topOf(&p), 3, "a Pile peeks");
+  expectInt(sumByPopping(&mut p), 321, "and pops");
+
+  mut ls = List[String].empty();
+  mut ds = Deque[String].empty();
+  pushNames(&mut ls);
+  pushNames(&mut ds);
+  expectUInt(u64.from(popLength(&mut ls)), 2, "List[String] gives the last back");
+  expectUInt(u64.from(popLength(&mut ds)), 2, "Deque[String] does");
+}
+
+// -------- Queue: Deque --------
+
+fn enqueue(q &<mut Queue[i64], n i64) {
+  mut i = 1i64;
+  while i <= n { q.push(i); i = i + 1i64; }
+}
+
+fn dequeueAll(q &<mut Queue[i64]) i64 {
+  mut order = 0i64;
+  while true {
+    match q.popFront() {
+      case imm v Some {order = order * 10i64 + v.value;}
+      case is None {break;}
+    }
+  }
+  order;
+}
+
+fn queues() {
+  mut d = Deque[i64].empty();
+  enqueue(&mut d, 4i64);
+  expectInt(dequeueAll(&mut d), 1234, "first in, first out");
+  expect(d.isEmpty(), "then empty");
+  // Taken from the front and added at the back round a block of 4, again
+  enqueue(&mut d, 3i64);
+  expectInt(dequeueAll(&mut d), 123, "again");
+  enqueue(&mut d, 6i64);
+  expectInt(dequeueAll(&mut d), 123456, "and after growing");
+}
+
+// -------- Indexed: List and Deque --------
+
+fn at(x &<Indexed[i64], i usize) i64 {
+  match x.get(i) {
+    case imm v Some {*v.value;}
+    case is None {-1i64;}
+  }
+}
+
+fn indexed() {
+  imm l = new List[i64] <- 5, 6, 7;
+  mut d = new Deque[i64] <- 6, 7;
+  d.pushFront(5);
+  expectInt(at(&l, 0usize), 5, "List get 0");
+  expectInt(at(&l, 2usize), 7, "List get 2");
+  expectInt(at(&l, 3usize), -1, "List get past the end");
+  expectInt(at(&d, 0usize), 5, "Deque get 0, counted from the front");
+  expectInt(at(&d, 2usize), 7, "Deque get 2");
+  expectInt(at(&d, 3usize), -1, "Deque get past the end");
+}
+
+// -------- Map: Dict and OrderedDict --------
+
+fn fill(m &<mut Map[u64, i64]) {
+  m.insert(1u64, 10i64);
+  m.insert(2u64, 20i64);
+}
+
+fn replaced(m &<mut Map[u64, i64]) bool { m.insert(2u64, 21i64); }
+
+fn lookup(m &<Map[u64, i64], k u64) i64 {
+  imm key = k;
+  match m.get(&key) {
+    case imm v Some {*v.value;}
+    case is None {-1i64;}
+  }
+}
+
+fn has(m &<Map[u64, i64], k u64) bool {
+  imm key = k;
+  m.contains(&key);
+}
+
+fn take(m &<mut Map[u64, i64], k u64) i64 {
+  imm key = k;
+  match m.remove(&key) {
+    case imm v Some {v.value;}
+    case is None {-1i64;}
+  }
+}
+
+// A map by Strings, which also have the by-bytes forms the trait does not ask for
+fn describe(m &<mut Map[String, i64]) i64 {
+  m.insert(String.from("x"), 5i64);
+  imm key = String.from("x");
+  match m.get(&key) {
+    case imm v Some {*v.value;}
+    case is None {-1i64;}
+  }
+}
+
+fn maps() {
+  mut d = new Dict[u64, i64];
+  mut o = new OrderedDict[u64, i64];
+  fill(&mut d);
+  fill(&mut o);
+  expectInt(lookup(&d, 1u64), 10, "Dict get");
+  expectInt(lookup(&o, 2u64), 20, "OrderedDict get");
+  expectInt(lookup(&d, 3u64), -1, "a key it lacks");
+  expect(has(&d, 2u64), "Dict contains");
+  expect(not has(&o, 3u64), "OrderedDict does not contain 3");
+  expect(replaced(&mut d), "insert answers true for a key it held");
+  expect(replaced(&mut o), "the same for OrderedDict");
+  expectInt(lookup(&o, 2u64), 21, "and the value is replaced");
+  expectInt(take(&mut d, 1u64), 10, "remove moves the value out");
+  expectInt(take(&mut o, 1u64), 10, "OrderedDict too");
+  expectInt(take(&mut d, 1u64), -1, "a second remove finds nothing");
+  expectUInt(u64.from(d.len()), 1, "one left in the Dict");
+
+  mut ds = new Dict[String, i64];
+  mut os = new OrderedDict[String, i64];
+  expectInt(describe(&mut ds), 5, "Dict[String, i64] is a Map[String, i64]");
+  expectInt(describe(&mut os), 5, "OrderedDict[String, i64] is");
+}
+
+// -------- SetAlgebra: Set --------
+
+fn addAll(s &<mut SetAlgebra[u64]) bool {
+  s.insert(4u64);
+  s.insert(5u64);
+  s.insert(4u64);
+}
+
+fn member(s &<SetAlgebra[u64], k u64) bool {
+  imm key = k;
+  s.contains(&key);
+}
+
+fn forget(s &<mut SetAlgebra[u64], k u64) bool {
+  imm key = k;
+  s.remove(&key);
+}
+
+fn sets() {
+  mut s = new Set[u64];
+  expect(not addAll(&mut s), "the third insert, of 4 again, is not new");
+  expect(member(&s, 5u64), "contains 5");
+  expect(not member(&s, 6u64), "does not contain 6");
+  expect(forget(&mut s, 4u64), "remove answers true for a member");
+  expect(not forget(&mut s, 4u64), "and false the second time");
+  expectUInt(u64.from(s.len()), 1, "one left");
+}
+
+fn main() i32 {
+  collectionTrait();
+  stacks();
+  queues();
+  indexed();
+  maps();
+  sets();
+  done();
+}
