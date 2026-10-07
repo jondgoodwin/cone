@@ -10,14 +10,17 @@
 // pixel (px, py) is seen through x = ((px + 0.5) / 32 - 1) 2.5 t, y = (1 -
 // (py + 0.5) / 32) 2.5 t on the face, so the face's edges at +-0.5 are 13.7
 // pixels either side of the middle. The background is (0.2, 0.4, 0.6),
-// stored (51, 102, 153). Each lit value is base x (ambient + light x cos) +
-// specular x light x (cos to the half-way vector)^shininess:
+// stored (51, 102, 153). The light is irradiance and the ambient light
+// radiance (the renderer's one lighting convention), so each lit value is
+// base x (ambient + light / pi x cos) + specular x light / pi x (cos to the
+// half-way vector)^shininess; the light below is 0.6 pi = 1.8849556, so
+// light / pi is 0.6:
 //
 // 1. Upload and read back: the cube's 24 positions, normals and uvs and its
 //    36 indices, copied back out of the GPU mesh's buffers, are the Mesh's
 //    own bytes; the mesh has one group of 36 indices, 24 vertices, and a
 //    bounding sphere about the origin of radius sqrt(0.75) = 0.8660254.
-// 2. Lit head on: the light travelling (0, 0, -1), color 0.6, ambient 0.2;
+// 2. Lit head on: the light travelling (0, 0, -1), color 0.6 pi, ambient 0.2;
 //    the material (0.5, 0.25, 1), no specular. The middle pixel (32, 32) is
 //    on the face, its normal (0, 0, 1) straight at the light: (0.5, 0.25, 1)
 //    x 0.8 = (0.4, 0.2, 0.8), stored (102, 51, 204). The top middle, (32, 4),
@@ -57,6 +60,11 @@
 //    their frame comes round two frames on, then are gone.
 // 8. Removed: the handle then reaches nothing, a draw of it is skipped (no
 //    draws), and its buffers wait their two frames too.
+// 9. Emissive and exposure: the plain material of case 2 giving off (0.1,
+//    0.2, 0), drawn with the renderer's exposure 0.5, lit head on: the
+//    middle is ((0.4, 0.2, 0.8) + (0.1, 0.2, 0)) x 0.5 = (0.25, 0.2, 0.4),
+//    stored (63.75, 51, 102): (64, 51, 102); the background is exposed too,
+//    (0.1, 0.2, 0.3), stored (25.5, 51, 76.5), so 25 or 26 and 76 or 77.
 //
 // It needs a GPU driver with Vulkan 1.3 and SDL3.dll (which loads Vulkan);
 // no window, no display of its own, and no Vulkan SDK (with it, validation
@@ -194,7 +202,7 @@ fn main() i32 {
   mut camera = Camera.make();
   camera.lookAt(new Vec3(0., 0., 3.), new Vec3(0., 0., 0.), new Vec3(0., 1., 0.));
   camera.background = new Color(0.2, 0.4, 0.6, 1.);
-  imm headOn = Light.directional(new Vec3(0., 0., -1.), Color.gray(0.6), Color.gray(0.2));
+  imm headOn = Light.directional(new Vec3(0., 0., -1.), Color.gray(1.8849556), Color.gray(0.2));
   imm plainMaterial = Material.plain(new Color(0.5, 0.25, 1., 1.));
   imm plain = renderer.addMaterial(&mut device, &plainMaterial);
   mut list = DrawList.empty();
@@ -214,7 +222,7 @@ fn main() i32 {
   expectPixel(p, 32usize, 32usize, 255, 204, 255, 1d, "a highlight head on: the light's color added");
 
   // ---- 4. Lambert at an angle ----
-  imm slanted = Light.directional(new Vec3(0., -0.6, -0.8), Color.gray(0.6), Color.gray(0.2));
+  imm slanted = Light.directional(new Vec3(0., -0.6, -0.8), Color.gray(1.8849556), Color.gray(0.2));
   list.clear();
   list.add(h, plain, Mat4.identity());
   drawFrame(&mut renderer, &mut device, &color, &depth, &readback, &camera, &slanted, &list);
@@ -279,6 +287,18 @@ fn main() i32 {
   device.beginFrame();
   expectUInt(u64.from(device.queue.pendingReleases()), 0u64, "and destroyed two frames on");
   device.endFrame();
+
+  // ---- 9. Emissive and exposure ----
+  imm cube2 = renderer.addMesh(&mut device, &cube);
+  imm glowingMaterial = plainMaterial.glowing(new Color(0.5, 1., 0., 1.), 0.2);
+  imm glowing = renderer.addMaterial(&mut device, &glowingMaterial);
+  renderer.exposure = 0.5;
+  list.clear();
+  list.add(cube2, glowing, Mat4.identity());
+  drawFrame(&mut renderer, &mut device, &color, &depth, &readback, &camera, &headOn, &list);
+  expectPixel(p, 32usize, 32usize, 64, 51, 102, 1d, "lit and glowing, exposed by a half");
+  expectPixel(p, 32usize, 4usize, 26, 51, 77, 1d, "the background exposed by a half");
+  renderer.exposure = 1.;
 
   expectUInt(u64.from(failures()), 0u64, "no Vulkan call failed");
   expectUInt(u64.from(validationMessages()), 0u64, "no validation message");
