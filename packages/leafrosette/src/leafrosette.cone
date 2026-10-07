@@ -1,0 +1,321 @@
+// The leafrosette package: low plants that grow as a ring of blades from one
+// point, as meshes. A program reaches it with 'import leafrosette', and gets:
+//
+// - hostaMesh: a hosta's rosette: broad ovate leaves in the golden-angle
+//   spiral, the inner ones short and steep, the outer long and arching over,
+//   each a grid with a creased midrib and a rippled margin.
+// - fernMesh: a vase of fern fronds: each an arching rachis (a curve that
+//   rises and falls over) with pairs of leaflets down it, the longest near
+//   the base third and tapering to the tip.
+// - flowerClumpMesh: a clump of small flowers on thin stems, each a ring of
+//   petals round a centre, the stems leaning out and varying in height.
+//
+// Every mesh stands on y = 0 with its middle on x = z = 0, is drawn from both
+// sides (the blades are one surface deep: each triangle is there twice, wound
+// the other way, with the other normal) and carries uvs for a small painted
+// strip the caller makes: u picks a part (hosta and fern: the position across
+// the blade, 0 to 1, and v along it; flowers: u at 0.125 a stem, 0.375 a
+// petal, 0.625 a centre, 0.875 a petal's darker base), so one image of a few
+// texels gives each its colours. Each is a pure function of its params and
+// seed: a family is one set of params and a few seeds.
+
+mod leafrosette;
+
+import libc;
+import collections use *;
+import geomath use *;
+import mesh;
+import noise use { pcg, toUnit };
+
+struct Rng {
+  state u32;
+  fn next(self &mut) u32 { state = state + 0x9E3779B9u32; pcg(state); }
+  fn unit(self &mut) f32 { toUnit(self.next()); }
+  fn signed(self &mut) f32 { self.unit() * 2. - 1.; }
+}
+
+fn rngOf(seed u32) Rng { new Rng(pcg(seed ^ 0x2545f491u32)); }
+fn v3(x f32, y f32, z f32) Vec3 { new Vec3(x, y, z); }
+fn unitv(v Vec3) Vec3 {
+  imm l = v.length();
+  if l < 0.0000001 { v3(0., 1., 0.); } else { v * (1. / l); };
+}
+
+// A mesh given normals (smooth, from its triangles) and its other side: every
+// vertex and triangle again, wound the other way, with the normal reversed
+fn bothSides(m &mut mesh.Mesh) {
+  m.computeSmoothNormals();
+  imm n = u32.from(m.positions.len());
+  imm nv = m.positions.len();
+  imm ni = m.indices.len();
+  mut v = 0usize;
+  while v < nv {
+    m.positions.push(*m.positions[v]);
+    m.normals.push(*m.normals[v] * -1.);
+    m.uvs.push(*m.uvs[v]);
+    v = v + 1usize;
+  }
+  mut i = 0usize;
+  while i < ni {
+    m.indices.push(*m.indices[i] + n);
+    m.indices.push(*m.indices[i + 2usize] + n);
+    m.indices.push(*m.indices[i + 1usize] + n);
+    i = i + 3usize;
+  }
+}
+
+// ======== Hosta ========
+
+pub struct HostaParams {
+  pub seed u32 = 1u32;
+  pub leaves i32 = 9;
+  pub length f32 = 0.30;        // the longest leaf, metres
+  pub width f32 = 0.62;         // a leaf's width over its length
+  pub across i32 = 3;           // grid columns, each side of the midrib
+  pub rows i32 = 4;
+  pub droop f32 = 70.;          // degrees the leaf's rise falls over its length (the outer ones)
+}
+
+pub fn hostaMesh(p &HostaParams) mesh.Mesh {
+  mut rng = rngOf(p.seed);
+  mut m = mesh.Mesh.empty();
+  imm n = if p.leaves < 3 { 3; } else { p.leaves; };
+  imm cols = if p.across < 1 { 1; } else { p.across; };
+  imm rows = if p.rows < 2 { 2; } else { p.rows; };
+  mut li = 0;
+  while li < n {
+    // the spiral: outer leaves first, each next one 137.5 degrees on and
+    // younger: shorter and more upright
+    imm age = f32.from(li) / f32.from(n - 1);
+    imm az = radians(137.508) * f32.from(li) + rng.signed() * 0.15;
+    imm len = p.length * (1. - 0.62 * age) * (1. + 0.1 * rng.signed());
+    imm wid = len * p.width;
+    imm rise0 = radians(28. + 52. * age + 6. * rng.signed());
+    imm sweep = radians(p.droop * (1. - 0.6 * age));
+    imm r0 = 0.012 + 0.02 * (1. - age);
+    imm ca = libc.cosf(az);
+    imm sa = libc.sinf(az);
+    imm out = v3(ca, 0., sa);
+    imm side = v3(0. - sa, 0., ca);
+    imm first = u32.from(m.positions.len());
+    // along the leaf: the midrib is a curve rising at rise0 and falling over
+    mut c = v3(out.x * r0, 0.02, out.z * r0);
+    mut r = 0;
+    while r <= rows {
+      imm t = f32.from(r) / f32.from(rows);
+      if r > 0 {
+        imm tm = (f32.from(r) - 0.5) / f32.from(rows);
+        imm el = rise0 - sweep * tm;
+        c = c + (out * libc.cosf(el) + v3(0., libc.sinf(el), 0.)) * (len / f32.from(rows));
+      }
+      // an ovate outline: widest a third of the way up, pointed at the tip, notched at the base
+      imm sn = libc.sinf(libc.powf(t, 0.7) * pi);
+      imm prof = libc.powf(if sn < 0. { 0.; } else { sn; }, 0.85) * (0.35 + 0.65 * libc.sinf(t * 1.4 + 0.9));
+      imm hw = wid * 0.5 * (if prof < 0. { 0.; } else { prof; });
+      mut k = -cols;
+      while k <= cols {
+        imm u = f32.from(k) / f32.from(cols);
+        // each half lifted from the midrib, the margin rippled
+        imm lift = 0.22 * hw * libc.fabsf(u) + 0.012 * libc.sinf(t * 11. + u * 3. + f32.from(li)) * libc.fabsf(u);
+        imm sag = 0. - 0.1 * hw * u * u * t;
+        imm pp = c + side * (u * hw) + v3(0., lift + sag, 0.);
+        m.positions.push(v3(pp.x, if pp.y < 0.004 { 0.004; } else { pp.y; }, pp.z));
+        m.uvs.push(new Vec2(0.5 + 0.5 * u, t));
+        k = k + 1;
+      }
+      r = r + 1;
+    }
+    imm ring = u32.from(2 * cols + 1);
+    mut rr = 0;
+    while rr < rows {
+      mut k = 0;
+      while k < 2 * cols {
+        imm a = first + u32.from(rr) * ring + u32.from(k);
+        imm b = a + 1u32;
+        imm cc = a + ring;
+        imm d = cc + 1u32;
+        // seen from above (+y) counterclockwise: a (left, near), b (right, near), d, c
+        m.indices.push(a); m.indices.push(cc); m.indices.push(b);
+        m.indices.push(b); m.indices.push(cc); m.indices.push(d);
+        k = k + 1;
+      }
+      rr = rr + 1;
+    }
+    li = li + 1;
+  }
+  bothSides(&mut m);
+  m;
+}
+
+// ======== Fern ========
+
+pub struct FernParams {
+  pub seed u32 = 1u32;
+  pub fronds i32 = 9;
+  pub length f32 = 0.7;         // the longest frond, metres
+  pub pairs i32 = 12;           // leaflet pairs
+  pub leaflet f32 = 0.17;       // the longest leaflet's length, over the frond's
+  pub arch f32 = 95.;           // degrees the frond falls over its length
+}
+
+pub fn fernMesh(p &FernParams) mesh.Mesh {
+  mut rng = rngOf(p.seed);
+  mut m = mesh.Mesh.empty();
+  imm nf = if p.fronds < 2 { 2; } else { p.fronds; };
+  imm np = if p.pairs < 3 { 3; } else { p.pairs; };
+  mut fi = 0;
+  while fi < nf {
+    imm az = 6.2831853 * (f32.from(fi) + 0.3 * rng.signed()) / f32.from(nf);
+    imm len = p.length * (0.62 + 0.38 * rng.unit());
+    imm out = v3(libc.cosf(az), 0., libc.sinf(az));
+    imm side = v3(0. - libc.sinf(az), 0., libc.cosf(az));
+    imm rise0 = radians(62. + 14. * rng.signed());
+    imm fall = radians(p.arch * (0.8 + 0.4 * rng.unit()));
+    // the rachis, in segments; leaflets leave from stations along it
+    mut c = v3(out.x * 0.01, 0.01, out.z * 0.01);
+    mut prevTan = out * libc.cosf(rise0) + v3(0., libc.sinf(rise0), 0.);
+    mut k = 0;
+    imm segs = np;
+    while k < segs {
+      imm t0 = f32.from(k) / f32.from(segs);
+      imm t1 = f32.from(k + 1) / f32.from(segs);
+      imm el = rise0 - fall * (t0 + t1) * 0.5;
+      imm tan = out * libc.cosf(el) + v3(0., libc.sinf(el), 0.);
+      imm c1 = c + tan * (len / f32.from(segs));
+      // the leaflet's length: longest about a third up, to nothing at the tip
+      imm tm = (t0 + t1) * 0.5;
+      imm sz = p.leaflet * len * libc.powf(libc.sinf(libc.powf(tm, 0.6) * pi), 0.8) * (0.4 + 0.6 * (1. - tm));
+      imm span = len / f32.from(segs);
+      mut s = -1;
+      while s <= 1 {
+        if s != 0 {
+          imm sg = f32.from(s);
+          // the leaflet leaves at 70 degrees from the rachis, in the frond's plane tilted down at its tip
+          imm dir = unitv(side * (sg * 0.9) + tan * 0.45 - v3(0., 0.28, 0.));
+          imm first = u32.from(m.positions.len());
+          m.positions.push(c);
+          m.uvs.push(new Vec2(0., t0));
+          m.positions.push(c1);
+          m.uvs.push(new Vec2(0., t1));
+          m.positions.push(c1 * 0.5 + c * 0.5 + dir * sz);
+          m.uvs.push(new Vec2(1., tm));
+          // counterclockwise seen from above: a right leaflet (sg > 0) runs one way, a left the other
+          if s > 0 { m.indices.push(first); m.indices.push(first + 2u32); m.indices.push(first + 1u32); }
+          else { m.indices.push(first); m.indices.push(first + 1u32); m.indices.push(first + 2u32); }
+        }
+        s = s + 1;
+      }
+      c = c1;
+      prevTan = tan;
+      k = k + 1;
+    }
+    fi = fi + 1;
+  }
+  bothSides(&mut m);
+  m;
+}
+
+// ======== Flowers ========
+
+pub struct FlowerParams {
+  pub seed u32 = 1u32;
+  pub flowers i32 = 5;
+  pub height f32 = 0.30;        // a stem's mean height, metres
+  pub spread f32 = 0.12;        // the clump's radius
+  pub petals i32 = 8;
+  pub head f32 = 0.025;         // a head's radius
+}
+
+fn addFlower(m &mut mesh.Mesh, rng &mut Rng, base Vec3, lean Vec3, h f32, petals i32, head f32) {
+  // the stem: three sides, three segments, bending out with the lean
+  imm top = base + v3(0., h, 0.) + lean * (h * 0.5);
+  imm sides = 3;
+  imm segs = 3;
+  imm first = u32.from(m.positions.len());
+  mut k = 0;
+  while k <= segs {
+    imm t = f32.from(k) / f32.from(segs);
+    imm c = base + v3(0., h * t, 0.) + lean * (h * 0.5 * t * t);
+    imm r = 0.0035 * (1. - 0.3 * t);
+    mut j = 0;
+    while j < sides {
+      imm a = 6.2831853 * f32.from(j) / f32.from(sides);
+      m.positions.push(c + v3(r * libc.cosf(a), 0., r * libc.sinf(a)));
+      m.uvs.push(new Vec2(0.125, 0.5));
+      j = j + 1;
+    }
+    k = k + 1;
+  }
+  k = 0;
+  while k < segs {
+    mut j = 0;
+    while j < sides {
+      imm a = first + u32.from(k * sides + j);
+      imm b = first + u32.from(k * sides + (j + 1) % sides);
+      imm c2 = a + u32.from(sides);
+      imm d = b + u32.from(sides);
+      m.indices.push(a); m.indices.push(b); m.indices.push(c2);
+      m.indices.push(b); m.indices.push(d); m.indices.push(c2);
+      j = j + 1;
+    }
+    k = k + 1;
+  }
+  // the head: a centre disc and a ring of petals leaning out and up, the head facing up and a little out
+  imm up = unitv(v3(0., 1., 0.) + lean * 0.6);
+  imm side1 = unitv(up.cross(v3(0.3, 0., 1.)));
+  imm side2 = up.cross(side1);
+  imm cf = u32.from(m.positions.len());
+  m.positions.push(top + up * 0.004);
+  m.uvs.push(new Vec2(0.625, 0.5));
+  mut q = 0;
+  while q < 6 {
+    imm a = 6.2831853 * f32.from(q) / 6.;
+    m.positions.push(top + (side1 * libc.cosf(a) + side2 * libc.sinf(a)) * (head * 0.3));
+    m.uvs.push(new Vec2(0.625, 0.5));
+    q = q + 1;
+  }
+  q = 0;
+  while q < 6 {
+    m.indices.push(cf); m.indices.push(cf + 1u32 + u32.from(q)); m.indices.push(cf + 1u32 + u32.from((q + 1) % 6));
+    q = q + 1;
+  }
+  // petals: a diamond each (two triangles), from the centre's edge out
+  q = 0;
+  while q < petals {
+    imm a = 6.2831853 * (f32.from(q) + 0.2 * rng.signed()) / f32.from(petals);
+    imm dir = side1 * libc.cosf(a) + side2 * libc.sinf(a);
+    imm tang = up.cross(dir);
+    imm r0 = top + dir * (head * 0.28);
+    imm tip = top + dir * head + up * (head * 0.18);
+    imm mid = top + dir * (head * 0.65) + up * (head * 0.12);
+    imm w = head * 0.34;
+    imm p0 = m.positions.len();
+    imm pf = u32.from(p0);
+    m.positions.push(r0); m.uvs.push(new Vec2(0.875, 0.5));
+    m.positions.push(mid - tang * w); m.uvs.push(new Vec2(0.375, 0.5));
+    m.positions.push(mid + tang * w); m.uvs.push(new Vec2(0.375, 0.5));
+    m.positions.push(tip); m.uvs.push(new Vec2(0.375, 0.5));
+    // counterclockwise seen from above (the head's up): r0, mid+, mid-, then mid-, mid+, tip
+    m.indices.push(pf); m.indices.push(pf + 1u32); m.indices.push(pf + 2u32);
+    m.indices.push(pf + 1u32); m.indices.push(pf + 3u32); m.indices.push(pf + 2u32);
+    q = q + 1;
+  }
+}
+
+pub fn flowerClumpMesh(p &FlowerParams) mesh.Mesh {
+  mut rng = rngOf(p.seed);
+  mut m = mesh.Mesh.empty();
+  mut i = 0;
+  while i < p.flowers {
+    imm a = rng.unit() * 6.2831853;
+    imm r = p.spread * libc.sqrtf(rng.unit());
+    imm base = v3(r * libc.cosf(a), 0., r * libc.sinf(a));
+    imm lean = v3(libc.cosf(a), 0., libc.sinf(a)) * (0.25 + 0.3 * rng.unit());
+    imm hh = p.height * (0.7 + 0.6 * rng.unit());
+    imm hd = p.head * (0.8 + 0.4 * rng.unit());
+    addFlower(&mut m, &mut rng, base, lean, hh, p.petals, hd);
+    i = i + 1;
+  }
+  bothSides(&mut m);
+  m;
+}

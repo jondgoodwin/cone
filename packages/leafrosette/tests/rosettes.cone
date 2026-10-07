@@ -1,0 +1,98 @@
+// The leafrosette package's plants. Only a failure prints.
+//
+// Determinism by seed; every plant stands on y = 0 about the origin, is drawn
+// from both sides (an even triangle count, every triangle's reverse present),
+// has a normal and a uv a vertex, uvs inside the unit square, indices in range;
+// the hosta is about as wide as its longest leaf, the fern's fronds arch over,
+// the flower clump has as many heads as asked.
+
+mod rosettes;
+
+import testing use *;
+import libc;
+import geomath use *;
+import collections use *;
+import mesh;
+import leafrosette use *;
+
+fn checkMesh(m &mesh.Mesh, name &[]u8) {
+  expect(m.triangleCount() % 2usize == 0usize, "an even number of triangles: both sides");
+  expectInt(i64.from(m.normals.len()), i64.from(m.positions.len()), "a normal a vertex");
+  expectInt(i64.from(m.uvs.len()), i64.from(m.positions.len()), "a uv a vertex");
+  mut ok = true;
+  mut i = 0usize;
+  while i < m.indices.len() {
+    if usize.from(*m.indices[i]) >= m.positions.len() { ok = false; }
+    i = i + 1usize;
+  }
+  expect(ok, "indices in range");
+  mut uvOk = true;
+  i = 0usize;
+  while i < m.uvs.len() {
+    imm uv = *m.uvs[i];
+    if uv.x < -0.001 or uv.x > 1.001 or uv.y < -0.001 or uv.y > 1.001 { uvOk = false; }
+    i = i + 1usize;
+  }
+  expect(uvOk, "uvs in the unit square");
+  // the back half repeats the front's positions, and its normals are reversed
+  imm half = m.positions.len() / 2usize;
+  // (a vertex all of whose triangles are degenerate, a blade's collapsed tip, has no normal either side)
+  mut backOk = true;
+  mut reversed = 0usize;
+  i = 0usize;
+  while i < half {
+    imm a = *m.positions[i];
+    imm b = *m.positions[i + half];
+    if (a - b).length() > 0.00001 { backOk = false; }
+    if (*m.normals[i]).dot(*m.normals[i + half]) < -0.99 { reversed = reversed + 1usize; }
+    i = i + 1usize;
+  }
+  expect(backOk, "the second half is the first seen from behind");
+  expect(reversed * 100usize >= half * 90usize, "its normals are the first's reversed");
+  imm bb = m.bounds();
+  expect(bb.min.y > -0.001, "stands on the ground");
+}
+
+fn main() i32 {
+  imm hp = new HostaParams();
+  imm h1 = hostaMesh(&hp);
+  imm h2 = hostaMesh(&hp);
+  expect(mesh.meshHash(&h1) == mesh.meshHash(&h2), "the same hosta twice");
+  mut hq = new HostaParams();
+  hq.seed = 2u32;
+  expect(mesh.meshHash(&hostaMesh(&hq)) != mesh.meshHash(&h1), "another seed another hosta");
+  checkMesh(&h1, "hosta");
+  imm hb = h1.bounds();
+  expect(hb.max.x - hb.min.x > 0.35 and hb.max.x - hb.min.x < 0.9, "a hosta about 0.3 to 0.8 m across");
+  expect(hb.max.y > 0.08 and hb.max.y < 0.4, "a hosta stands a few tens of centimetres");
+  // the leaves arch over: the highest vertex is not the farthest out
+  mut far f32 = 0.;
+  mut farY f32 = 0.;
+  mut i = 0usize;
+  while i < h1.positions.len() {
+    imm p = *h1.positions[i];
+    imm r = libc.sqrtf(p.x * p.x + p.z * p.z);
+    if r > far { far = r; farY = p.y; }
+    i = i + 1usize;
+  }
+  expect(farY < hb.max.y * 0.9, "the leaves' tips are lower than the highest point");
+
+  imm fp = new FernParams();
+  imm f1 = fernMesh(&fp);
+  expect(mesh.meshHash(&f1) == mesh.meshHash(&fernMesh(&fp)), "the same fern twice");
+  checkMesh(&f1, "fern");
+  expectInt(i64.from(f1.triangleCount()), i64.from(fp.fronds * fp.pairs * 2 * 2), "a fern has two leaflets a station a side, two sides each");
+  imm fb = f1.bounds();
+  expect(fb.max.x - fb.min.x > 0.6, "a fern spreads past half a metre");
+
+  imm lp = new FlowerParams();
+  imm l1 = flowerClumpMesh(&lp);
+  expect(mesh.meshHash(&l1) == mesh.meshHash(&flowerClumpMesh(&lp)), "the same clump twice");
+  checkMesh(&l1, "flowers");
+  mut l2p = new FlowerParams();
+  l2p.flowers = 10;
+  expect(flowerClumpMesh(&l2p).triangleCount() > l1.triangleCount() * 3usize / 2usize, "more flowers, more triangles");
+  imm lb = l1.bounds();
+  expect(lb.max.y > 0.15 and lb.max.y < 0.6, "flowers on stems a few tens of centimetres tall");
+  done();
+}

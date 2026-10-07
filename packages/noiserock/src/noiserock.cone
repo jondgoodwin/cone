@@ -1,0 +1,130 @@
+// The noiserock package: rocks as meshes, from a sphere cut by planes and
+// roughened by noise. A program reaches it with 'import noiserock', and gets
+// 'rockMesh': a UV sphere stretched to a rock's width, height and depth, its
+// surface pushed in and out by 3-D fractal noise (the lumps), then cut by a
+// handful of random planes (the facets: each point's radius is held below
+// every plane's, so a plane that bites leaves a flat face), flattened at the
+// foot so it sits on y = 0, and given a little fine roughness. A rock is a
+// pure function of its params and seed, so one 'RockParams' and a few seeds
+// make a family.
+//
+// 'smooth' false gives flat shading (every triangle its own vertices and its
+// face's normal), the look of split stone; true gives smooth normals, the
+// look of a water-worn boulder or a path's edging stone. uvs are a box
+// projection onto the plane most nearly facing each triangle (or vertex),
+// 'tileMetres' to a tile, so a rock texture tile (a granite's, say) runs at
+// its own scale whatever the rock's size.
+
+mod noiserock;
+
+import libc;
+import collections use *;
+import geomath use *;
+import mesh;
+import noise use { pcg, toUnit, fbm3 };
+
+pub struct RockParams {
+  pub seed u32 = 1u32;
+  pub width f32 = 0.5;          // half extents, metres
+  pub height f32 = 0.3;
+  pub depth f32 = 0.4;
+  pub rings i32 = 10;           // latitude bands of the sphere
+  pub slices i32 = 16;
+  pub facets i32 = 7;           // cutting planes
+  pub facetDepth f32 = 0.78;    // how far in the planes lie: 1 touches the sphere, less cuts deeper
+  pub bumpAmp f32 = 0.16;       // the lumps, a fraction of the radius
+  pub bumpFreq f32 = 1.4;
+  pub roughAmp f32 = 0.025;     // fine roughness after the cuts
+  pub flatBase f32 = 0.55;      // the foot is cut flat this fraction of the height below the middle
+  pub smooth bool = false;
+  pub tileMetres f32 = 2.1;
+}
+
+struct Rng {
+  state u32;
+  fn next(self &mut) u32 { state = state + 0x9E3779B9u32; pcg(state); }
+  fn unit(self &mut) f32 { toUnit(self.next()); }
+}
+
+fn dirOf(ring i32, slice i32, rings i32, slices i32) Vec3 {
+  imm th = pi * f32.from(ring) / f32.from(rings);
+  imm ph = 2. * pi * f32.from(slice) / f32.from(slices);
+  new Vec3(libc.sinf(th) * libc.cosf(ph), libc.cosf(th), libc.sinf(th) * libc.sinf(ph));
+}
+
+// The rock described, standing on y = 0 (its foot flat), centred on x = z = 0
+pub fn rockMesh(p &RockParams) mesh.Mesh {
+  mut rng = new Rng(pcg(p.seed ^ 0x7f4a7c15u32));
+  // the cutting planes: unit normals and their distances
+  mut nrm = List[Vec3].empty();
+  mut off = List[f32].empty();
+  mut i = 0;
+  while i < p.facets {
+    imm z = rng.unit() * 2. - 1.;
+    imm a = rng.unit() * 6.2831853;
+    imm r = libc.sqrtf(1. - z * z);
+    nrm.push(new Vec3(r * libc.cosf(a), z, r * libc.sinf(a)));
+    off.push(p.facetDepth + 0.14 * rng.unit());
+    i = i + 1;
+  }
+  imm rings = if p.rings < 3 { 3; } else { p.rings; };
+  imm slices = if p.slices < 4 { 4; } else { p.slices; };
+  mut m = mesh.Mesh.empty();
+  imm yMin = 0. - p.height * p.flatBase;
+  mut ring = 0;
+  while ring <= rings {
+    mut slice = 0;
+    while slice < slices {
+      imm d = dirOf(ring, slice, rings, slices);
+      mut r f32 = 1. + p.bumpAmp * noise.fbm3(d * p.bumpFreq, p.seed, 3, 2., 0.5).value;
+      mut k = 0usize;
+      while k < nrm.len() {
+        imm c = d.dot(*nrm[k]);
+        if c > 0.05 {
+          imm lim = *off[k] / c;
+          if lim < r { r = lim; }
+        }
+        k = k + 1usize;
+      }
+      mut pt = new Vec3(d.x * r * p.width, d.y * r * p.height, d.z * r * p.depth);
+      pt.y = if pt.y < yMin { yMin; } else { pt.y; };
+      imm rough = p.roughAmp * noise.fbm3(pt * 5., p.seed + 17u32, 2, 2., 0.5).value;
+      pt = pt + d * (rough * p.width);
+      pt.y = if pt.y < yMin { yMin; } else { pt.y; };
+      m.positions.push(new Vec3(pt.x, pt.y - yMin, pt.z));
+      slice = slice + 1;
+    }
+    ring = ring + 1;
+  }
+  // triangles, wound counterclockwise seen from outside
+  ring = 0;
+  while ring < rings {
+    mut slice = 0;
+    while slice < slices {
+      imm a = u32.from(ring * slices + slice);
+      imm b = u32.from(ring * slices + (slice + 1) % slices);
+      imm c = u32.from((ring + 1) * slices + slice);
+      imm d = u32.from((ring + 1) * slices + (slice + 1) % slices);
+      if ring > 0 { m.indices.push(a); m.indices.push(b); m.indices.push(c); }
+      if ring < rings - 1 { m.indices.push(b); m.indices.push(d); m.indices.push(c); }
+      slice = slice + 1;
+    }
+    ring = ring + 1;
+  }
+  if p.smooth { m.computeSmoothNormals(); } else { m.computeFlatNormals(); }
+  // box-projected uvs
+  imm off0 = new Vec2(toUnit(pcg(p.seed + 3u32)), toUnit(pcg(p.seed + 5u32)));
+  mut v = 0usize;
+  while v < m.positions.len() {
+    imm q = *m.positions[v];
+    imm n = *m.normals[v];
+    imm ax = libc.fabsf(n.x);
+    imm ay = libc.fabsf(n.y);
+    imm az = libc.fabsf(n.z);
+    imm uv = if ay >= ax and ay >= az { new Vec2(q.x, q.z); }
+      elif ax >= az { new Vec2(q.z, q.y); } else { new Vec2(q.x, q.y); };
+    m.uvs.push(new Vec2(uv.x / p.tileMetres + off0.x, uv.y / p.tileMetres + off0.y));
+    v = v + 1usize;
+  }
+  m;
+}
