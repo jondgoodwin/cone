@@ -1,0 +1,72 @@
+// A generic trait's instance as a constraint, refused where a type does not
+// fit it. The message names the generic, the parameter, the trait at the
+// arguments the instance has ('Stack[i64]', not 'Stack[T]') and what the
+// argument lacks: the method, spelled as the trait requires it with its type
+// arguments substituted, and the signature the argument has instead.
+
+mod generic_typecheck_trait_bound;
+
+trait Stack[T] {
+  pub fn push(self &mut, v T);
+  pub fn pop(self &mut) Option[T];
+}
+
+// Fits Stack[i64]
+struct Good {
+  pub n i64;
+  pub fn push(self &mut, v i64) { n = v; }
+  pub fn pop(self &mut) Option[i64] { Some[i64][n]; }
+}
+
+// No pop
+struct NoPop {
+  pub n i64;
+  pub fn push(self &mut, v i64) { n = v; }
+}
+
+// push takes the wrong type once T is i64
+struct WrongParm {
+  pub n i64;
+  pub fn push(self &mut, v bool) { n = 1; }
+  pub fn pop(self &mut) Option[i64] { Some[i64][n]; }
+}
+
+// pop returns the wrong type once T is i64
+struct WrongRet {
+  pub n i64;
+  pub fn push(self &mut, v i64) { n = v; }
+  pub fn pop(self &mut) i64 { n; }
+}
+
+// Fits Stack[i64], not Stack[f64]
+fn drain[T, S Stack[T]](s &mut S) Option[T] {
+  s.pop();
+}
+
+fn drainWhere[T, S](s &mut S) Option[T] where S is Stack[T] {
+  s.pop();
+}
+
+fn fillInts[S Stack[i64]](s &mut S) {
+  s.push(1);
+}
+
+fn main() {
+  mut good = new Good(0);
+  mut nopop = new NoPop(0);
+  mut wp = new WrongParm(0);
+  mut wr = new WrongRet(0);
+  drain[i64, Good](&mut good);
+  fillInts(&mut good);
+  // A missing method
+  drain[i64, NoPop](&mut nopop);              //~ ErrorWhereUnmet:8 "NoPop has no method pop, which Stack[i64] requires"
+  // A parameter of the wrong type once T is i64, and a return of the wrong type
+  drainWhere[i64, WrongParm](&mut wp);        //~ ErrorWhereUnmet:13 "WrongParm has push(self &mut, v bool), but Stack[i64] requires push(self &mut, v i64)"
+  drain[i64, WrongRet](&mut wr);              //~ ErrorWhereUnmet:8 "WrongRet has pop(self &mut) i64, but Stack[i64] requires pop(self &mut) Option[i64]"
+  // The trait at other arguments is another trait
+  drain[f64, Good](&mut good);                //~ ErrorWhereUnmet:8 "Good has push(self &mut, v i64), but Stack[f64] requires push(self &mut, v f64)"
+  // A concrete argument in the bound names it in the message
+  fillInts(&mut nopop);                       //~ ErrorWhereUnmet:11 "fillInts requires S is Stack[i64], and NoPop is not Stack[i64]"
+  // T read from the first method that says (push: bool), then the rest refuse
+  drain(&mut wp);                             //~ ErrorWhereUnmet:8 "WrongParm has pop(self &mut) Option[i64], but Stack[bool] requires pop(self &mut) Option[bool]"
+}
