@@ -383,7 +383,7 @@ it is. `itypeNoSizeCause` answers, and there are six ways the answer is no:
 | Cause | Where it comes from | Remedy the message names |
 | --- | --- | --- |
 | declared `@opaque` | the `@opaque` marker, `parsetype.c` | hold it through a reference |
-| a body whose length a reference carries (`str`) | `itypeLenBodyElem` | hold it through a reference, `&str` or `So[str]` |
+| a body whose length a reference carries (`str`, `Array[T]`) | `itypeLenBodyElem` | hold it through a reference: `&str` or `So[str]`, `&Array[T]` or `So[Array[T]]` |
 | a trait that is not `SameSize` | `structTypeCheck` | use a virtual reference, `&<Trait>` |
 | a function signature | `fnSigTypeCheck` | use a reference to a function |
 | a struct with an unsized field | `structTypeCheck`, infectiously | fix that field — the cause is further down |
@@ -396,8 +396,8 @@ author needs, so the cause lives in the text.
 Which types have a size, and which a reference to the type can tell the size
 of, are the markers `Sized` and `DynSized` (`itypeIsSized`, `itypeIsDynSized`,
 granted in `genericTypeIs`): `DynSized` is every `Sized` type, an open trait
-(its reference carries a vtable) and a body such as `str` (its reference
-carries a count). A type declared `@opaque` and an `@unsized` enum are
+(its reference carries a vtable) and a body such as `str` or `Array[T]` (its
+reference carries a count). A type declared `@opaque` and an `@unsized` enum are
 neither. A type declaring either marker is `ErrorSizeMarkerUse`
 (`structTypeCheck`).
 

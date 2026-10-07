@@ -1440,7 +1440,10 @@ public methods of `str` become names of the type, each reached through the
 borrow the type's own `view` method gives. The language is in
 [refinherit](../../../../doc/reference/refinherit.html), "Folding a body the type
 lends"; this is the mechanism, built generally and applied today to
-collections' `String` (`str`'s methods are written once, in core).
+collections' `String` (`str`'s methods are written once, in core) and `List[T]`
+(`use Array[T] via view;`, `Array[T]` being core's generic body of a run-time
+length: its instance is the body, found as a clause's sibling once the list's
+instance is made).
 
 **It is a sibling clause with a `via`.** The parser (`parseUseSibling`) reads
 `via` as the connecting word only here, after the type the clause names, and
@@ -1471,8 +1474,12 @@ fails on a node that is not idempotent, `new Greeting(..)` among them). Selectio
 then goes on against a `&str` receiver, so a value, a borrow, a `So[T]` and an
 `Rc[T]` of the lending type all arrive, each by the receiver coercion a method
 call always has. The call's returned borrow keeps the receiver loaned, as any
-method's does. A vtable slot satisfied by a lent method is not built
-(`structFoldPath` knows only field folds).
+method's does. A vtable slot satisfied by a lent method is filled by a thunk
+that calls the lending method on the erased receiver and then the body's method
+on the borrow it gives (`structMapVtableImpl` records the lending method as the
+slot's path, where a field fold records fields; `genlVtableThunk`). The body's
+method must be a function that exists, so an `inline` one fills no slot and the
+type is not an implementer.
 
 **Three places in the call lowering know a lend,** all through `fnCallTextOf`,
 which answers whether a type is `str` or lends it, through any references:
@@ -1494,6 +1501,11 @@ file again beside the program, and there `modAddNamedNode` lets that second
 declaration hide the compiler's. Every method is `inline`, so none is emitted
 unless called, and none instantiates a generic (a `str` method that compared
 slices would put `mem.sliceEq[u8]` into every compile that loads core).
+`Array[T]` is declared in core the same way (`stdlibAdoptArray`, the compiler's
+`Array` struct that names the array type), as a generic; its methods are not
+`inline`, since a type that folds one must fill a trait's slot with it, and a
+generic instance is emitted by the program that makes it, so core still defines
+nothing.
 
 **`cstr` is declared the same way, and has a field.** `cstr` is C's `const char *`
 (a one-field struct holding a `*u8`, which crosses to C as one pointer: `genlCAbiPass` makes a struct of 8 bytes one

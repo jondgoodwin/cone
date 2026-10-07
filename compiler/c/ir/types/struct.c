@@ -3958,8 +3958,21 @@ static VtableImpl *structMapVtableImpl(StructNode *basenode, StructNode *strnode
             // type holds by folding satisfies the slot too, and the fields its
             // receiver is reached through are recorded for the slot's thunk
             nodesAdd(&impl->methfld, (INode*)strmeth);
-            nodesAdd(&impl->foldpaths, strbinding->tag == AliasDclTag
-                ? (INode*)structFoldPath(strnode, meth->namesym, NULL) : NULL);
+            // A method folded from a body the type lends is reached by calling
+            // the lending method first: the path is that one method, not fields
+            FieldDclNode *lend = strbinding->tag == AliasDclTag ? structLendUseOf(strnode, meth->namesym) : NULL;
+            if (lend) {
+                INode *lender = namespaceFind(&strnode->namespace, lend->via);
+                // An 'inline' method has no symbol for a slot to point at
+                if (lender == NULL || lender->tag != FnDclTag || (strmeth->flags & FlagInline))
+                    return NULL;
+                Nodes *lendpath = newNodes(1);
+                nodesAdd(&lendpath, lender);
+                nodesAdd(&impl->foldpaths, (INode*)lendpath);
+            }
+            else
+                nodesAdd(&impl->foldpaths, strbinding->tag == AliasDclTag
+                    ? (INode*)structFoldPath(strnode, meth->namesym, NULL) : NULL);
         }
         else {
             // Find the corresponding field with matching name and vtype. A

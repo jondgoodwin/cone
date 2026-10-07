@@ -21,6 +21,7 @@ INode *neverType;
 StructNode *arrayTypeDcl;
 StructNode *strTypeDcl;
 static int strTypeAdopted;
+static int arrayTypeAdopted;
 StructNode *cstrTypeDcl;
 static int cstrTypeAdopted;
 PermNode *uniPerm;
@@ -121,6 +122,19 @@ StructNode *stdlibAdoptStr(Name *name, ModuleNode *mod) {
     strTypeAdopted = 1;
     strTypeDcl->flags &= ~(NameResolved | TypeChecked);
     return strTypeDcl;
+}
+
+// core's declaration of 'Array[T]', the dynamically sized body of any element
+// type, is not a new struct either but the compiler's own 'Array', which until
+// then names only the array type 'Array[T, n]'. It becomes a generic struct with
+// one parameter; a use with sizes is still lowered to the array type
+// (arrayTypeLower), a use with the element alone is its instance.
+StructNode *stdlibAdoptArray(Name *name, ModuleNode *mod) {
+    if (name != arrayTypeDcl->namesym || arrayTypeAdopted || mod == NULL || mod->namesym != nametblFind("core", 4))
+        return NULL;
+    arrayTypeAdopted = 1;
+    arrayTypeDcl->flags &= ~(NameResolved | TypeChecked);
+    return arrayTypeDcl;
 }
 
 // core's declaration of 'cstr' is not a new struct but the compiler's own, given

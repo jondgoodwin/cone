@@ -1,0 +1,62 @@
+// What 'Array[T]', the body of a run-time length, will not accept: it has no
+// size of its own, so it is held only through a reference (a variable, a field
+// or a size asked of it is refused); its allocation copies the elements of a
+// borrow, so an element that moves is refused; a borrow of it is the slice,
+// read only unless written 'mut'; and the element type is part of its type. A
+// collector traces an object by the type record of one element, so a traced
+// region owns no array of elements that hold traced references.
+
+mod array_reject_body;
+
+import collector;
+
+struct Leaf {
+  pub n i32;
+}
+
+fn tracedElements(leaves &Array[Gc[imm, Leaf]]) {
+  imm owner = new Gc[Array[Gc[imm, Leaf]]](leaves);  //~ ErrorAllocValue "only its first would be found"
+}
+
+// An element that moves, as a counted resource does
+struct Token {
+  pub n i32;
+  fn final(self &uni) {}
+}
+
+struct Held {
+  pub elems Array[i32];                  //~ ErrorNoSize "dynamically sized body"
+}
+
+fn byValue() {
+  mut whole Array[i32];                  //~ ErrorNoSize "dynamically sized body"
+}
+
+fn size() usize {
+  mem.sizeof[Array[i32]]();              //~ ErrorIntrinsicType "dynamically sized body"
+}
+
+fn copied(tokens &Array[Token]) {
+  imm owner = new So[Array[Token]](tokens);  //~ ErrorAllocValue "an element of this type moves"
+}
+
+fn written(xs &Array[i32]) {
+  xs[0usize] = 5;                        //~ ErrorNoMut
+}
+
+// Held 'imm', its elements change through no path
+fn assignedImm(o Rc[imm, Array[i32]]) {
+  o[0usize] = 1;                         //~ ErrorNoMut "cannot be changed through it"
+}
+
+fn lentWritableImm(o Rc[imm, Array[i32]]) {
+  fill(o);                               //~ ErrorInvType
+}
+
+fn fill(xs &mut Array[i32]) {}
+
+fn elements(bytes &Array[u8]) i32 {
+  sumOf(bytes);                          //~ ErrorInvType
+}
+
+fn sumOf(xs &Array[i32]) i32 { 0; }

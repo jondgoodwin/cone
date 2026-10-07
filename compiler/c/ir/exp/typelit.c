@@ -421,6 +421,14 @@ static INode *typeLitAllocValue(TypeCheckState *pstate, FnCallNode *node, INode 
                 itypeName(vtype), itypeName(vtype));
             return NULL;
         }
+        // The elements are copied bit for bit, so each must be one that copies:
+        // an owner of moving elements is made by moving them in (a List's 'freeze')
+        if (itypeIsArrayBody(vtype) && itypeIsMove(itypeLenBodyElem(vtype))) {
+            errorMsgNode((INode*)node, ErrorAllocValue,
+                "%s is allocated by copying a borrow of its elements, and an element of this type moves, so it cannot be copied. Move them in: 'list.freeze()' makes a So[%s] of a List's elements.",
+                itypeName(vtype), itypeName(vtype));
+            return NULL;
+        }
         INode *viewtype = (INode*)newRefNodeFull(RefTag, (INode*)node, borrowRef, newPermUseNode(roPerm), vtype);
         if (!itypeTypeCheck(pstate, &viewtype))
             return NULL;
@@ -491,6 +499,17 @@ static void typeLitNewAllocate(TypeCheckState *pstate, FnCallNode **nodep, RefNo
     if (reftype->tag == VirtRefTag) {
         errorMsgNode((INode*)node, ErrorNewType,
             "A virtual reference refers to a trait, which has no value to construct: allocate a type implementing it, as 'new Rc[mut, Rect](...)', and the reference coerces where the virtual one is wanted.");
+        return;
+    }
+
+    // A collector traces an object by its type record, which describes one
+    // element of a body, so a body whose elements hold traced references would
+    // have only its first one found
+    if (itypeIsArrayBody(reftype->vtexp) && regionIsTraced(reftype->region)
+        && itypeHoldsTraced(itypeLenBodyElem(reftype->vtexp))) {
+        errorMsgNode((INode*)node, ErrorAllocValue,
+            "%s is traced by the type record of one element, so a traced region cannot own an array of elements that hold traced references: only its first would be found.",
+            itypeName(reftype->vtexp));
         return;
     }
 

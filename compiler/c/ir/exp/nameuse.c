@@ -459,7 +459,7 @@ void nameUseTypeCheckType(TypeCheckState *pstate, NameUseNode **namep) {
     NameUseNode *name = *namep;
     // 'Array' is a type only with its element type and sizes, which name
     // resolution lowers (arrayTypeLower); alone it names nothing
-    if (name->dclnode == (INode*)arrayTypeDcl) {
+    if (name->dclnode == (INode*)arrayTypeDcl && arrayTypeDcl->genericinfo == NULL) {
         errorMsgNode((INode*)name, ErrorArrayTypeArgs,
             "Array is the array type only with its element type and size: 'Array[T, n]', or 'Array[T, n, m]' with one size for each dimension.");
         *((INode**)namep) = newErrorNode((INode*)name);

@@ -96,6 +96,10 @@ pub struct List[T] is ShapeChanging, Sendable {
   used usize;
   cap usize;
 
+  // The methods of 'Array[T]', the body 'view' lends, are the list's too, as
+  // 'str''s are a String's: its 'len', written once on the body
+  use Array[T] via view;
+
   // An empty list, 'new List[i32]': no block until the first value arrives
   pub fn initEmpty overload init(self &new) { *self = new List(null, 0usize, 0usize); }
 
@@ -119,8 +123,8 @@ pub struct List[T] is ShapeChanging, Sendable {
     l;
   }
 
-  // How many values it holds, and how many its block has room for
-  pub fn len(self &) usize { used; }
+  // How many values it holds ('len', the body's), and how many its block has
+  // room for
   pub fn capacity(self &) usize { cap; }
   pub fn isEmpty(self &) bool { used == 0usize; }
 
@@ -235,14 +239,31 @@ pub struct List[T] is ShapeChanging, Sendable {
     }
   }
 
-  // A slice of every value it holds, for reading them now
-  pub fn view(self &) &[]T { mem.sliceFromParts(ptr, used); }
+  // A slice of every value it holds, for reading them now: a borrow of the
+  // body 'Array[T]', whose methods the list folds in
+  pub fn view(self &) &Array[T] { mem.sliceFromParts(ptr, used); }
 
   // A mutable slice of every value it holds, for changing them in place:
   // what a function that fills a slice writes into, a C function included.
   // The list stays borrowed mutably while the slice is used, so nothing else
   // may read or change it until the slice's last use
-  pub fn viewMut(self &mut) &[]mut T { mem.sliceFromPartsMut(ptr, used); }
+  pub fn viewMut(self &mut) &mut Array[T] { mem.sliceFromPartsMut(ptr, used); }
+
+  // The list is consumed: its values stay where they are, in the block it
+  // owned, which becomes a So[Array[T]]'s. The block is shrunk to hold them,
+  // never copied, and what the owner's death finalizes is each of them. A list
+  // that holds nothing makes a one-byte block, since the owner of an 'Array'
+  // always owns heap bytes.
+  pub fn freeze(self) So[Array[T]] {
+    mut me = self;
+    imm n = me.used;
+    imm bytes = n * mem.sizeof[T]();
+    imm p = libc.realloc(me.ptr as *u8, if bytes == 0usize {1usize;} else {bytes;}) as *T;
+    me.ptr = null;
+    me.used = 0usize;
+    me.cap = 0usize;
+    mem.sliceFromParts(p, n) as So[Array[T]];
+  }
 
   // Put its values in order: 'order(a, b)' is negative when a goes before b,
   // positive when after, and 0 when either may go first, as 'compare' and

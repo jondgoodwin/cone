@@ -84,6 +84,8 @@ void modAddNamedNode(ModuleNode *mod, Name *name, INode *node) {
         || (name == strTypeName && name->node == (INode*)strTypeDcl && node->tag == StructTag
             && mod->namesym == nametblFind("core", 4))
         || (name == cstrTypeName && name->node == (INode*)cstrTypeDcl && node->tag == StructTag
+            && mod->namesym == nametblFind("core", 4))
+        || (name == arrayTypeDcl->namesym && name->node == (INode*)arrayTypeDcl && node->tag == StructTag
             && mod->namesym == nametblFind("core", 4))) {
         nametblHookNode(name, (INode*)node);
         namespaceSet(&mod->namespace, name, node);

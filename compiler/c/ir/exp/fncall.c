@@ -307,9 +307,13 @@ void fnCallNameRes(NameResState *pstate, FnCallNode **nodep) {
     }
 
     // 'Array[f32, 3]' is the array type, lowered here rather than at type check
-    // because name resolution's own type-or-value votes ask isTypeNode of it
+    // because name resolution's own type-or-value votes ask isTypeNode of it.
+    // 'Array[T]' with the element alone is the body of a run-time length, the
+    // generic struct core declares: an ordinary instance, not lowered here.
     if ((node->flags & FlagIndex) && node->methfld == NULL
-        && isNameUseNode(node->objfn) && nameUseGetDcl((NameUseNode*)node->objfn) == (INode*)arrayTypeDcl)
+        && isNameUseNode(node->objfn) && nameUseGetDcl((NameUseNode*)node->objfn) == (INode*)arrayTypeDcl
+        && !(arrayTypeDcl->genericinfo != NULL && !(node->flags & FlagRange)
+            && node->args != NULL && node->args->used == 1))
         arrayTypeLower(pstate, (INode**)nodep);
 }
 
@@ -1686,6 +1690,62 @@ static void fnCallLowerRefCompare(TypeCheckState *pstate, FnCallNode *node) {
     fnCallLowerMethod(pstate, node);
 }
 
+// An owner of 'Array[T]' indexed, 'o[i]', '&o[a..b]' or '&o[i]', is indexed as
+// the slice it lends: the receiver is coerced to '&Array[T]' (the slice, read
+// only unless the borrow written is writable, or an element is assigned), and
+// the index goes on as a slice's. A range borrowed has the borrow the parser
+// put round the receiver dropped, as for text (fnCallLowerStrRange). Answers 1
+// when the receiver was replaced, 0 when the index is not of an owner of the
+// body, and -1 when the owner cannot be lent as the index needs (reported).
+static int fnCallBodyAsSlice(TypeCheckState *pstate, FnCallNode *node) {
+    if (!(node->flags & FlagIndex) || node->methfld != NULL || (node->flags & FlagLvalOp))
+        return 0;
+    INode *recv = node->objfn;
+    // Read only, unless an element is assigned through the owner, or borrowed
+    // writable as written
+    INode *perm = (INode*)(node == fnCallSetIndex ? mutPerm : roPerm);
+    if ((node->flags & FlagBorrow) && recv->tag == BorrowTag && (recv->flags & FlagSuffix)) {
+        perm = ((RefNode*)recv)->perm;
+        INode *inner = ((RefNode*)recv)->vtexp;
+        if (inner->tag == DerefTag)
+            inner = ((StarNode*)inner)->vtexp;
+        if (!isExpNode(inner))
+            return 0;
+        INode *held = iexpGetTypeDcl(inner);
+        while (held->tag == RefTag && itypeGetTypeDcl(((RefNode*)held)->vtexp)->tag == RefTag) {
+            derefInject(&inner);
+            held = iexpGetTypeDcl(inner);
+        }
+        if (held->tag != RefTag || !itypeIsArrayBody(((RefNode*)held)->vtexp))
+            return 0;
+        recv = varDclTempValue(pstate, inner);
+    }
+    else {
+        INode *held = iexpGetTypeDcl(recv);
+        while (held->tag == RefTag && itypeGetTypeDcl(((RefNode*)held)->vtexp)->tag == RefTag) {
+            derefInject(&recv);
+            held = iexpGetTypeDcl(recv);
+        }
+        if (held->tag != RefTag || !itypeIsArrayBody(((RefNode*)held)->vtexp))
+            return 0;
+    }
+    INode *held = iexpGetTypeDcl(recv);
+    INode *slicetype = (INode*)newRefNodeFull(ArrayRefTag, (INode*)node, borrowRef, perm,
+        itypeLenBodyElem(((RefNode*)held)->vtexp));
+    if (!itypeTypeCheck(pstate, &slicetype))
+        return -1;
+    if (!iexpCoerce(&recv, slicetype)) {
+        if (perm == (INode*)roPerm)
+            errorMsgNode((INode*)node, ErrorBadIndex, "This owner of an Array cannot be lent as a slice to read it through.");
+        else
+            errorMsgNode((INode*)node, ErrorNoMut,
+                "The elements of this owner of an Array cannot be changed through it: its permission does not allow a writable borrow.");
+        return -1;
+    }
+    node->objfn = recv;
+    return 1;
+}
+
 // The text a receiver reaches, through any references: 'str' itself, or a type
 // that lends it (structLentBody). NULL for anything else.
 static StructNode *fnCallTextOf(INode *objtype) {
@@ -2742,6 +2802,15 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
         derivedne->lexp = (INode*)node;
         *((INode**)nodep) = (INode*)derivedne;
     }
+
+    // An owner of 'Array[T]' indexed is indexed as the slice it lends
+    int lent = fnCallBodyAsSlice(pstate, node);
+    if (lent < 0) {
+        node->vtype = errorType;
+        return;
+    }
+    if (lent)
+        objtype = iexpGetTypeDcl(node->objfn);
 
     // A range borrowed from text, '&s[a..b]', is a call of the text's 'slice'
     if ((node->flags & FlagRange) && fnCallLowerStrRange(pstate, node))

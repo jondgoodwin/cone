@@ -57,6 +57,11 @@ extern INode *neverType;
 // every bracketed use into an array type node (arrayTypeLower)
 extern StructNode *arrayTypeDcl;
 
+// The compiler's own 'Array' struct, when module 'mod' is core declaring 'Array[T]'
+// for the first time, so that core's declaration makes it the generic body of a
+// run-time length instead of a second struct of the name; else NULL.
+StructNode *stdlibAdoptArray(Name *name, ModuleNode *mod);
+
 // 'str', the dynamically sized body of bytes (stdlibInit): a type with no
 // fields and no size of its own, held only through a reference, which carries
 // the number of bytes (itypeLenBodyElem, refIsFat)

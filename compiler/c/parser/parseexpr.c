@@ -637,8 +637,8 @@ INode *parseAmper(ParseState *parse) {
 // 'Rc[mut, Node]', and type check refuses this spelling of one outside a match
 // pattern's root (plusSpelled), which keeps it until patterns have their own.
 //
-// There is no owning array reference: an owned runtime-sized array is a List,
-// and one shared is 'Rc[List[T]]'. '+[]' stays a token so that it can be
+// There is no owning array reference: an owned run-time-sized array is a
+// 'So[Array[T]]' (shared, 'Rc[Array[T]]'), a growable one a List. '+[]' stays a token so that it can be
 // refused, once, at the token, and read through as the thin form so that what
 // follows parses as written. A parse diagnostic ends the compile before name
 // resolution, so what is built for it is never analysed.
@@ -650,7 +650,7 @@ INode *parsePlus(ParseState *parse) {
         anode = newRefNode(RefTag); break;
     case PlusArrayRefToken:
         errorMsgLex(ErrorOwnedArrayRef,
-            "There is no owning array reference '+[]': an owned runtime-sized array is a List, shared as 'Rc[List[T]]'; a borrowed slice is '&[]T'.");
+            "There is no owning array reference '+[]': an owned run-time-sized array is a 'So[Array[T]]', shared as 'Rc[Array[T]]', and a growable one a List; a borrowed slice is '&Array[T]'.");
         anode = newRefNode(RefTag); break;
     case PlusVirtRefToken:
         anode = newRefNode(VirtRefTag); break;
