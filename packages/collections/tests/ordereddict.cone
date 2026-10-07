@@ -17,6 +17,15 @@ mod ordereddict;
 import testing use *;
 import collections use *;
 
+// Whether an insert replaced an entry: the old value came back. It is dropped here,
+// so a value with a finalizer dies here
+fn wasHeld[T](old Option[T]) bool {
+  match old {
+    case is Some {true;}
+    case is None {false;}
+  }
+}
+
 struct Id is Hash {
   pub slot u32;
   pub gen u32;
@@ -103,18 +112,23 @@ fn words() {
   expect(isNone(d.swapRemove(&String.from("c"))), "swap removing from empty");
   expectStr(order(&d).view(), "", "no keys");
 
-  expectBool(d.insert(String.from("c"), 1), false, "c is new");
-  expectBool(d.insert(String.from("a"), 2), false, "a is new");
-  expectBool(d.insert(String.from("b"), 3), false, "b is new");
+  expectBool(wasHeld(d.insert(String.from("c"), 1)), false, "c is new");
+  expectBool(wasHeld(d.insert(String.from("a"), 2)), false, "a is new");
+  expectBool(wasHeld(d.insert(String.from("b"), 3)), false, "b is new");
   expectUInt(u64.from(d.capacity()), 7, "the first entry makes 8 buckets, room for 7");
   expectStr(order(&d).view(), "c a b", "insertion order, not sorted");
   expectStr(pairs(&d).view(), "c=1 a=2 b=3", "keys with values");
 
   // An overwrite keeps the entry's place
-  expectBool(d.insert(String.from("a"), 20), true, "a is held");
+  expectBool(wasHeld(d.insert(String.from("a"), 20)), true, "a is held");
   expectStr(order(&d).view(), "c a b", "an overwrite keeps its place");
   expectStr(valueOrder(&d).view(), "1 20 3", "with the new value");
   expectUInt(u64.from(d.len()), 3, "overwriting adds nothing");
+  match d.insert(String.from("a"), 21) {
+    case imm old Some {expectInt(old.value, 20, "an overwrite answers the old value");}
+    case is None {expect(false, "an overwrite answers the old value");}
+  }
+  d.insert(String.from("a"), 20);
 
   // Removing from the front: the others close up
   match d.remove("c") {
@@ -234,7 +248,7 @@ fn growth() {
   i = 0u64;
   while i < 100u64 {
     imm k = *model[usize.from(i)];
-    if not d.insert(k, k * 3u64) { wrong = wrong + 1i64; }
+    if not wasHeld(d.insert(k, k * 3u64)) { wrong = wrong + 1i64; }
     i = i + 10u64;
   }
   expectInt(wrong, 0, "each of those was held");
