@@ -1,0 +1,196 @@
+// Mip chains for the textures materials sample, made on the CPU as a texture
+// is added and uploaded with it ('Queue.writeTextureLevels').
+//
+// WHY THE CPU. The GPU could blit each level from the one above
+// (vkCmdBlitImage), but the gpu package has no blit, a linear blit needs the
+// format to support it (the sRGB one does on every GPU met, but it is the
+// driver's say), and a blit averages an sRGB texture's samples by whatever
+// route the driver takes; a normal map must be renormalised by a shader
+// besides. On the CPU the average is exact and the same on every GPU: a
+// colour texture's texels are decoded from sRGB, averaged in linear light
+// and encoded again; a normal map's are averaged as vectors and made unit
+// length again; any other map's (roughness, metallic, occlusion) are
+// averaged as the numbers they are. What it costs is time as a texture is
+// added (about a third more texels than the base level, read once each),
+// which the caller sees at load, not in a frame.
+//
+// Each level is made from the one above it kept in floating point, so the
+// 8-bit rounding of a level does not pile up down the chain. A level is half
+// the one above in each direction (at least 1); where the size above is odd,
+// a texel averages the 2 or 3 above it that its footprint touches. The alpha
+// channel is averaged as it is (not weighted by itself).
+
+pub const MIP_COLOUR = 0u32;     // sRGB colour: averaged in linear light
+pub const MIP_LINEAR = 1u32;     // numbers (roughness, metallic, occlusion): averaged as they are
+pub const MIP_NORMAL = 2u32;     // a tangent-space normal map: averaged as vectors, made unit length
+
+// How many levels a texture of this size has: down to one texel
+pub fn mipLevelCount(width u32, height u32) u32 {
+  mut size = if width > height { width; } else { height; };
+  mut n = 1u32;
+  while size > 1u32 {
+    size = size >> 1u32;
+    n = n + 1u32;
+  }
+  n;
+}
+
+// The linear light of sRGB value 'c' (0 to 1)
+fn srgbDecode(c f32) f32 {
+  if c <= 0.04045 { return c / 12.92; }
+  libc.powf((c + 0.055) / 1.055, 2.4);
+}
+
+// Table: the linear light of each of the 256 sRGB bytes
+fn srgbDecodeTable() List[f32] {
+  mut t = List[f32].withCapacity(256usize);
+  mut i = 0u32;
+  while i < 256u32 {
+    t.push(srgbDecode(f32.from(i) / 255.));
+    i = i + 1u32;
+  }
+  t;
+}
+
+// Table: the 255 linear values half-way between neighbouring sRGB bytes, so
+// the byte nearest a linear value is how many of them it passes
+fn srgbThresholds(decode &[]f32) List[f32] {
+  mut t = List[f32].withCapacity(255usize);
+  mut i = 0usize;
+  while i < 255usize {
+    t.push((decode[i] + decode[i + 1usize]) * 0.5);
+    i = i + 1usize;
+  }
+  t;
+}
+
+// The sRGB byte nearest the linear value 'v'
+fn srgbEncode(v f32, thresholds &[]f32) u8 {
+  mut lo = 0usize;
+  mut hi = 255usize;
+  while lo < hi {
+    imm mid = (lo + hi) / 2usize;
+    if v > thresholds[mid] { lo = mid + 1usize; } else { hi = mid; }
+  }
+  u8.from(lo);
+}
+
+// A byte for a value in 0 to 1
+fn unitByte(v f32) u8 { colorByte(v); }
+
+// All the levels of the RGBA image 'rgba' ('width' x 'height', rows from the
+// top as uploaded), one after another from the largest, which is 'rgba'
+// itself, each tightly packed. 'kind' is MIP_COLOUR, MIP_LINEAR or MIP_NORMAL.
+pub fn buildMips(rgba &List[u8], width u32, height u32, kind u32) List[u8] {
+  mut out = List[u8].withCapacity(usize.from(width) * usize.from(height) * 5usize + 64usize);
+  imm base = rgba.view();
+  mut c = 0usize;
+  while c < base.len() {
+    out.push(base[c]);
+    c = c + 1usize;
+  }
+  imm decode = srgbDecodeTable();
+  imm decodeV = decode.view();
+  imm thresholds = srgbThresholds(decodeV);
+  imm thresholdsV = thresholds.view();
+
+  // The base level in the floating-point form its kind averages in
+  mut prev = List[f32].withCapacity(base.len());
+  mut i = 0usize;
+  while i < base.len() {
+    imm channel = i % 4usize;
+    imm b = base[i];
+    if channel == 3usize {
+      prev.push(f32.from(b) / 255.);
+    } elif kind == MIP_COLOUR {
+      prev.push(decodeV[usize.from(b)]);
+    } elif kind == MIP_NORMAL {
+      prev.push(f32.from(b) / 255. * 2. - 1.);
+    } else {
+      prev.push(f32.from(b) / 255.);
+    }
+    i = i + 1usize;
+  }
+
+  mut pw = width;
+  mut ph = height;
+  while pw > 1u32 or ph > 1u32 {
+    imm nw = if pw > 1u32 { pw >> 1u32; } else { 1u32; };
+    imm nh = if ph > 1u32 { ph >> 1u32; } else { 1u32; };
+    imm src = prev.view();
+    mut next = List[f32].withCapacity(usize.from(nw) * usize.from(nh) * 4usize);
+    mut y = 0u32;
+    while y < nh {
+      // The rows above this one's footprint covers
+      imm y0 = y * ph / nh;
+      mut y1 = ((y + 1u32) * ph + nh - 1u32) / nh;
+      if y1 > ph { y1 = ph; }
+      mut x = 0u32;
+      while x < nw {
+        imm x0 = x * pw / nw;
+        mut x1 = ((x + 1u32) * pw + nw - 1u32) / nw;
+        if x1 > pw { x1 = pw; }
+        mut r = 0.;
+        mut g = 0.;
+        mut b = 0.;
+        mut a = 0.;
+        mut sy = y0;
+        while sy < y1 {
+          mut sx = x0;
+          while sx < x1 {
+            imm at = (usize.from(sy) * usize.from(pw) + usize.from(sx)) * 4usize;
+            r = r + src[at];
+            g = g + src[at + 1usize];
+            b = b + src[at + 2usize];
+            a = a + src[at + 3usize];
+            sx = sx + 1u32;
+          }
+          sy = sy + 1u32;
+        }
+        imm inv = 1. / f32.from((y1 - y0) * (x1 - x0));
+        r = r * inv;
+        g = g * inv;
+        b = b * inv;
+        a = a * inv;
+        if kind == MIP_NORMAL {
+          // The average of unit vectors is shorter than one; made unit again.
+          // A cancelled one (no direction left) is flat.
+          imm len = libc.sqrtf(r * r + g * g + b * b);
+          if len > 0.0001 {
+            r = r / len;
+            g = g / len;
+            b = b / len;
+          } else {
+            r = 0.;
+            g = 0.;
+            b = 1.;
+          }
+        }
+        next.push(r);
+        next.push(g);
+        next.push(b);
+        next.push(a);
+        if kind == MIP_COLOUR {
+          out.push(srgbEncode(r, thresholdsV));
+          out.push(srgbEncode(g, thresholdsV));
+          out.push(srgbEncode(b, thresholdsV));
+        } elif kind == MIP_NORMAL {
+          out.push(unitByte(r * 0.5 + 0.5));
+          out.push(unitByte(g * 0.5 + 0.5));
+          out.push(unitByte(b * 0.5 + 0.5));
+        } else {
+          out.push(unitByte(r));
+          out.push(unitByte(g));
+          out.push(unitByte(b));
+        }
+        out.push(unitByte(a));
+        x = x + 1u32;
+      }
+      y = y + 1u32;
+    }
+    prev = next;
+    pw = nw;
+    ph = nh;
+  }
+  out;
+}
