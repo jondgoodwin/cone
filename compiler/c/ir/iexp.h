@@ -28,6 +28,12 @@ int iexpTypeCheckAny(TypeCheckState *pstate, INode **from);
 // Return whether it is okay for from expression to be coerced to to-type
 TypeCompare iexpMatches(INode **from, INode *totype, SubtypeConstraint constraint);
 
+// A char where a number is wanted, a number where a char is wanted, or a
+// non-ASCII character literal wanted as a u8: none reaches the other
+// implicitly. Reports it (ErrorCharNotNbr), naming the explicit conversion, and
+// answers 1; answers 0, saying nothing, for any other pair of types.
+int iexpCharNumberMismatch(INode *from, INode *totypedcl);
+
 // Coerce from-node's type to 'to' expected type, if needed
 // Return 1 if type "matches", 0 otherwise
 int iexpCoerce(INode **from, INode *totypep);
