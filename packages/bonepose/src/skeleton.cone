@@ -1,0 +1,132 @@
+// Bone, Socket, Skeleton and Pose, and the forward kinematics.
+
+// A bone: its parent's number (-1: the root, whose parent is the model
+// origin) and its rest transform relative to the parent
+pub struct Bone {
+  pub parent i32;
+  pub rest Transform3;
+}
+
+// A socket: a named place on a bone, by number, with an offset in the bone's frame
+pub struct Socket {
+  pub bone usize;
+  pub offset Transform3;
+}
+
+// A pose: one local transform per bone, relative to its parent
+pub struct Pose {
+  pub locals List[Transform3];
+
+  pub fn count(self &) usize { locals.len(); }
+
+  // Bone 'i''s local rotation
+  pub fn rotation(self &, i usize) Quat { (*locals[i]).rotation; }
+
+  // Bone 'i''s local rotation replaced (its translation kept)
+  pub fn setRotation(self &mut, i usize, q Quat) {
+    imm t = *locals[i];
+    locals.set(i, new Transform3(t.translation, q, t.scale));
+  }
+
+  // Bone 'i''s local translation replaced (its rotation kept)
+  pub fn setTranslation(self &mut, i usize, p Vec3) {
+    imm t = *locals[i];
+    locals.set(i, new Transform3(p, t.rotation, t.scale));
+  }
+
+  pub fn copy(self &) Pose {
+    mut out = Pose.empty();
+    mut i = 0usize;
+    while i < locals.len() { out.locals.push(*locals[i]); i = i + 1usize; }
+    out;
+  }
+
+  pub fn empty() Pose { new Pose(List[Transform3].empty()); }
+}
+
+pub struct Skeleton {
+  pub bones List[Bone];
+  pub sockets List[Socket];
+
+  pub fn empty() Skeleton { new Skeleton(List[Bone].empty(), List[Socket].empty()); }
+
+  pub fn boneCount(self &) usize { bones.len(); }
+  pub fn socketCount(self &) usize { sockets.len(); }
+
+  // A bone added under 'parent' (-1: the root), which must already exist:
+  // its number
+  pub fn addBone(self &mut, parent i32, rest Transform3) usize {
+    bones.push(new Bone(parent, rest));
+    bones.len() - 1usize;
+  }
+
+  // A socket added on 'bone', at 'offset' in its frame: its number
+  pub fn addSocket(self &mut, bone usize, offset Transform3) usize {
+    sockets.push(new Socket(bone, offset));
+    sockets.len() - 1usize;
+  }
+
+  // The parent of bone 'i' (-1 for the root)
+  pub fn parentOf(self &, i usize) i32 { (*bones[i]).parent; }
+
+  // Bone 'i''s rest transform relative to its parent
+  pub fn restOf(self &, i usize) Transform3 { (*bones[i]).rest; }
+
+  // The first bone whose parent is 'i', or -1: a limb's next segment
+  pub fn childOf(self &, i usize) i32 {
+    mut k = 0usize;
+    while k < bones.len() {
+      if (*bones[k]).parent == i32.from(i) { return i32.from(k); }
+      k = k + 1usize;
+    }
+    -1i32;
+  }
+
+  // The rest pose
+  pub fn restPose(self &) Pose {
+    mut p = Pose.empty();
+    mut i = 0usize;
+    while i < bones.len() { p.locals.push((*bones[i]).rest); i = i + 1usize; }
+    p;
+  }
+
+  // Forward kinematics: 'pose' composed down the tree, each bone's
+  // transform in model space (parent's times its own), into 'out'
+  pub fn modelTransforms(self &, pose &Pose, out &mut List[Transform3]) {
+    out.clear();
+    mut i = 0usize;
+    while i < bones.len() {
+      imm p = (*bones[i]).parent;
+      imm lt = *pose.locals[i];
+      if p < 0i32 { out.push(lt); } else { out.push((*out[usize.from(p)]) * lt); }
+      i = i + 1usize;
+    }
+  }
+
+  // Bone 'i''s transform in model space again after its local or a
+  // parent's changed: bone 'i' and every bone after it are recomposed
+  // ('from' the first changed bone; parents come before children)
+  pub fn recompose(self &, pose &Pose, out &mut List[Transform3], from usize) {
+    mut i = from;
+    while i < bones.len() {
+      imm p = (*bones[i]).parent;
+      imm lt = *pose.locals[i];
+      if p < 0i32 { out.set(i, lt); } else { out.set(i, (*out[usize.from(p)]) * lt); }
+      i = i + 1usize;
+    }
+  }
+
+  // Socket 's' in model space, given the bones' model transforms
+  pub fn socketModel(self &, models &List[Transform3], s usize) Transform3 {
+    imm sk = *sockets[s];
+    (*models[sk.bone]) * sk.offset;
+  }
+
+  // Bone 'i' turned so its model-space rotation is 'q' (its position as
+  // its parent leaves it): its local rotation set; 'models' is not updated
+  pub fn setModelRotation(self &, pose &mut Pose, models &List[Transform3], i usize, q Quat) {
+    imm p = (*bones[i]).parent;
+    if p < 0i32 { pose.setRotation(i, q); return; }
+    pose.setRotation(i, (*models[usize.from(p)]).rotation.conjugate() * q);
+  }
+}

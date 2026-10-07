@@ -256,6 +256,18 @@ Visual Studio projects stay at the root.
   (`src/sprites.slang`, additive, depth tested against the depth render
   keeps with `keepDepth`), before bloom and tone mapping; its example
   `burner.cone` is the hot-air balloon's burner flame, fired in bursts;
+  `bonepose` is a skeleton as data over `geomath`: bones (parent before
+  child, rest transform), sockets (a bone and an offset), a `Pose` of local
+  transforms, forward kinematics (`modelTransforms`, `socketModel`), closed-form
+  two-bone inverse kinematics (`solveTwoBone`, `aimLimb`: the target clamped to
+  reach, the joint to a smallest interior angle, the middle joint towards a
+  pole) and `humanoid`, the 19-bone mannequin skeleton from the Drillis and
+  Contini proportions; `walkgait` is a phase-driven biped walk over it: a
+  phase advanced by the distance travelled so planted feet never slide, a foot
+  that rolls heel, flat and toe, landing places asked of the ground by a
+  function, two-bone IK on the legs, the pelvis as high as the legs allow,
+  arms against legs, an idle layer (breathing, weight shift) and a
+  hard-landing crouch (`Walker.update`, `Walker.impact`);
   `testing` is the checks a package's tests call (`expectInt`, `require…`,
   `done`), ordinary library code the compiler knows nothing of;
   `textdiff` is the line diff of two lists of lines or two texts: the edit

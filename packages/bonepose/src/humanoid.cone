@@ -1,0 +1,95 @@
+// The 19-bone humanoid, and its bone and socket numbers.
+//
+// Proportions are fractions of the body's height H, the Drillis and Contini
+// (1966) table that Winter's "Biomechanics and Motor Control of Human
+// Movement" prints: hip 0.530, knee 0.285, ankle 0.039, shoulder 0.818,
+// elbow 0.630, wrist 0.485, chin 0.870, eye 0.936, shoulder width 0.259, hip
+// width 0.191, foot length 0.152, hand 0.108. Each bone's offset from its
+// parent is the difference of two of those heights. The spine, chest, neck and head
+// split the hip-to-shoulder-to-chin run between them (0.070, 0.130, 0.088,
+// 0.052; the split is this package's, not the table's).
+//
+// A being faces -z; its left is -x. The rest pose is standing, the arms 15
+// degrees out from the body (an A-pose), hands and feet in line with their
+// bones. The root is the pelvis, 0.530 H above the ground point at the
+// model's origin.
+
+pub const PELVIS = 0usize;
+pub const SPINE = 1usize;
+pub const CHEST = 2usize;
+pub const NECK = 3usize;
+pub const HEAD = 4usize;
+pub const CLAVICLE_L = 5usize;
+pub const CLAVICLE_R = 6usize;
+pub const UPPER_ARM_L = 7usize;
+pub const UPPER_ARM_R = 8usize;
+pub const FOREARM_L = 9usize;
+pub const FOREARM_R = 10usize;
+pub const HAND_L = 11usize;
+pub const HAND_R = 12usize;
+pub const THIGH_L = 13usize;
+pub const THIGH_R = 14usize;
+pub const SHIN_L = 15usize;
+pub const SHIN_R = 16usize;
+pub const FOOT_L = 17usize;
+pub const FOOT_R = 18usize;
+pub const HUMANOID_BONES = 19usize;
+
+// Sockets
+pub const SOCKET_EYE = 0usize;          // on the head, between the eyes, at the face
+pub const SOCKET_HAND_R_GRIP = 1usize;  // in the right palm (a sword's hilt)
+pub const SOCKET_HAND_L_GRIP = 2usize;
+pub const SOCKET_BACK = 3usize;         // on the chest, behind (a quiver)
+pub const SOCKET_HIP_L = 4usize;
+pub const SOCKET_HIP_R = 5usize;
+pub const SOCKET_HEAD_TOP = 6usize;
+pub const SOCKET_SOLE_L = 7usize;       // on the foot, under the ankle, at the sole
+pub const SOCKET_SOLE_R = 8usize;
+pub const HUMANOID_SOCKETS = 9usize;
+
+// The arms' rest angle out from the body, radians (15 degrees)
+pub const ARM_REST_ABDUCTION = 0.2617994;
+
+fn at(x f32, y f32, z f32) Transform3 { new Transform3(new Vec3(x, y, z), Quat.identity(), new Vec3(1., 1., 1.)); }
+
+// The humanoid skeleton for a being 'height' metres tall
+pub fn humanoid(height f32) Skeleton {
+  imm h = height;
+  mut s = Skeleton.empty();
+  imm pelvis = s.addBone(-1i32, at(0., 0.530 * h, 0.));
+  imm spine = s.addBone(i32.from(pelvis), at(0., 0.070 * h, 0.));
+  imm chest = s.addBone(i32.from(spine), at(0., 0.130 * h, 0.));
+  imm neck = s.addBone(i32.from(chest), at(0., 0.088 * h, 0.));
+  imm head = s.addBone(i32.from(neck), at(0., 0.052 * h, 0.));
+  // Clavicles at shoulder height (0.818 H); shoulder joints 0.1295 H from the middle
+  imm claL = s.addBone(i32.from(chest), at(-0.020 * h, 0.088 * h, -0.020 * h));
+  imm claR = s.addBone(i32.from(chest), at(0.020 * h, 0.088 * h, -0.020 * h));
+  // Upper arms: turned out 15 degrees about z (the left, at -x, the other way)
+  imm outR = Quat.angleAxis(ARM_REST_ABDUCTION, new Vec3(0., 0., 1.));
+  imm outL = Quat.angleAxis(-ARM_REST_ABDUCTION, new Vec3(0., 0., 1.));
+  imm uaL = s.addBone(i32.from(claL), new Transform3(new Vec3(-0.1095 * h, 0., 0.), outL, new Vec3(1., 1., 1.)));
+  imm uaR = s.addBone(i32.from(claR), new Transform3(new Vec3(0.1095 * h, 0., 0.), outR, new Vec3(1., 1., 1.)));
+  // Down their own axes: elbow 0.188 H below the shoulder, wrist 0.145 H below that
+  imm faL = s.addBone(i32.from(uaL), at(0., -0.188 * h, 0.));
+  imm faR = s.addBone(i32.from(uaR), at(0., -0.188 * h, 0.));
+  imm haL = s.addBone(i32.from(faL), at(0., -0.145 * h, 0.));
+  imm haR = s.addBone(i32.from(faR), at(0., -0.145 * h, 0.));
+  // Legs: hips 0.0955 H out, knee 0.245 H below the hip, ankle 0.246 H below the knee
+  imm thL = s.addBone(i32.from(pelvis), at(-0.0955 * h, 0., 0.));
+  imm thR = s.addBone(i32.from(pelvis), at(0.0955 * h, 0., 0.));
+  imm shL = s.addBone(i32.from(thL), at(0., -0.245 * h, 0.));
+  imm shR = s.addBone(i32.from(thR), at(0., -0.245 * h, 0.));
+  imm ftL = s.addBone(i32.from(shL), at(0., -0.246 * h, 0.));
+  imm ftR = s.addBone(i32.from(shR), at(0., -0.246 * h, 0.));
+
+  s.addSocket(head, at(0., 0.066 * h, -0.060 * h));
+  s.addSocket(haR, at(0., -0.050 * h, 0.));
+  s.addSocket(haL, at(0., -0.050 * h, 0.));
+  s.addSocket(chest, at(0., 0.020 * h, 0.060 * h));
+  s.addSocket(pelvis, at(-0.0955 * h, 0., 0.));
+  s.addSocket(pelvis, at(0.0955 * h, 0., 0.));
+  s.addSocket(head, at(0., 0.130 * h, 0.));
+  s.addSocket(ftL, at(0., -0.039 * h, 0.));
+  s.addSocket(ftR, at(0., -0.039 * h, 0.));
+  s;
+}
