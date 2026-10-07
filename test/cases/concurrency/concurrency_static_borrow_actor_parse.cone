@@ -3,8 +3,9 @@
 // or '&'static uni T' (concurrency_static_borrow_send). A borrow not written
 // so is refused where it is written, at parse, as it always was
 // (ErrorNotSendable), and so is a lifetime of any other name, which no
-// message carries. A behaviour's reply carries no borrow of any kind: it is
-// written into code the compiler generates, where no lifetime can be named.
+// message carries. A behaviour's reply is held to the same: it may name
+// ''static' (concurrency_static_borrow_reply) and no other lifetime, an
+// invariant one included.
 //
 // Which permission and what it reaches are the thread check's, judged once the
 // types are known (concurrency_static_borrow_actor_refused).
@@ -24,8 +25,14 @@ actor Bad {
   pub async do named(self, p &'a imm u64) {}  //~ ErrorNotSendable "Actor Bad's behaviour named takes p, a borrowed reference, which is not Sendable"
   pub async do nested(self, p Option[&'a imm u64]) {}  //~ ErrorNotSendable "Actor Bad's behaviour nested takes p, a borrowed reference"
   pub async do inside(self, p Option[&'static imm u64]) {}  // 'static inside a type is the language's own rule (ErrorLifetimePlace), judged after parse
-  pub async do reply(self) &'static imm u64 {  //~ ErrorNotSendable "Actor Bad's behaviour reply returns a type naming a lifetime, which is not Sendable"
+  pub async do reply(self) &'a imm u64 {  //~ ErrorNotSendable "Actor Bad's behaviour reply returns a type naming a lifetime other than 'static"
     &imm total;
+  }
+  pub async do brand(self) &'=a imm u64 {  //~ ErrorNotSendable "returns a type naming a lifetime other than 'static"
+    &imm total;
+  }
+  pub async do kept(self) Option[&'a imm u64] {  //~ ErrorNotSendable "returns a type naming a lifetime other than 'static"
+    None[&imm u64][];
   }
   pub async do offered(self, p &'static imm u64) {}
 }

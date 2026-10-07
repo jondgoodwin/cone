@@ -128,7 +128,7 @@ RefBinds refThreadBinds(RefNode *ref) {
 // parameter is bounded ''static' (StaticVouched), the signature's where it is
 // written so (StaticWritten).
 StaticVerdict refStaticCrosses(RefNode *ref, StaticBorrow how) {
-    if (how == StaticOff || how == StaticNever || itypeGetTypeDcl(ref->region) != borrowRef || permHeldKind(ref->perm))
+    if (how == StaticOff ||itypeGetTypeDcl(ref->region) != borrowRef || permHeldKind(ref->perm))
         return StaticNotBorrow;
     INode *perm = ref->perm && isTypeNode(ref->perm) ? itypeGetTypeDcl(ref->perm) : NULL;
     if (perm != (INode *)immPerm && perm != (INode *)opaqPerm && perm != (INode *)uniPerm)
