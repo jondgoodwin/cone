@@ -1,0 +1,96 @@
+// An unsuffixed integer literal passed for a parameter that is a bare type
+// parameter, 'v T', is whichever number type is wanted: it names T only if
+// nothing else does. The other arguments say first, then a bound on another
+// parameter ('S Stack[T]' read off the argument's methods), and only a literal
+// left alone takes its default, i32. So 'fill(&mut box, 8)' on a stack of i64
+// types the 8 as an i64, as 'imm n i64 = 8' does.
+//
+// Each printed value was checked by hand against the source.
+
+mod generic_infer_literal;
+
+import stdio use *;
+
+fn show(label &[]u8, n i64) {
+  printStr(label);
+  printStr(" ");
+  printInt(n);
+  printStr("\n");
+}
+
+trait Stack[T] {
+  pub fn push(self &mut, v T);
+  pub fn pop(self &mut) Option[T];
+}
+
+struct Slot {
+  pub n i64;
+  pub fn push(self &mut, v i64) { n = v; }
+  pub fn pop(self &mut) Option[i64] { Some[i64][n]; }
+}
+
+struct Byte {
+  pub n u8;
+  pub fn push(self &mut, v u8) { n = v; }
+  pub fn pop(self &mut) Option[u8] { Some[u8][n]; }
+}
+
+struct Real {
+  pub n f64;
+  pub fn push(self &mut, v f64) { n = v; }
+  pub fn pop(self &mut) Option[f64] { Some[f64][n]; }
+}
+
+fn fill[T, S Stack[T]](s &mut S, v T) {
+  s.push(v);
+}
+
+fn fillWhere[S, T](s &mut S, v T) where S is Stack[T] {
+  s.push(v);
+}
+
+struct Tool {
+  pub k i64;
+  pub fn viaMethod[T, S Stack[T]](self &, s &mut S, v T) {
+    s.push(v);
+  }
+}
+
+fn first[T](a T, b T) T {a;}
+fn second[T](a T, b T) T {b;}
+fn one[T](a T) T {a;}
+
+fn main() {
+  // The bound says T: the literal is an i64, a u8, an f64
+  mut slot = new Slot(0);
+  fill(&mut slot, 8);
+  show("i64", slot.n);
+  fillWhere(&mut slot, 9);
+  show("where", slot.n);
+  imm tool = new Tool(1);
+  tool.viaMethod(&mut slot, 10);
+  show("method", slot.n);
+  fill(&mut slot, 5000000000);
+  show("wide", slot.n);
+
+  mut byte = new Byte(0);
+  fill(&mut byte, 200);
+  show("u8", i64.from(byte.n));
+
+  mut real = new Real(0.0);
+  fill(&mut real, 3);
+  if real.n == 3.0 {
+    show("f64", 1);
+  }
+
+  // Another argument says T: the literal follows it, whichever comes first
+  imm big i64 = 5000000000;
+  show("first", first(big, 7));
+  show("second", second(7, big));
+
+  // Nothing says: the literal's own i32
+  imm plain i32 = one(7);
+  show("default", i64.from(plain));
+  imm both i32 = first(3, 4);
+  show("both", i64.from(both));
+}
