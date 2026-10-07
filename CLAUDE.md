@@ -464,8 +464,11 @@ Visual Studio projects stay at the root.
   beside fetch()'s), and its examples `fetch.cone` (one URL from a real
   server: status, fields, the body's size, the timing) and `bench.cone`
   (throughput, latency and memory over loopback);
-  `collections` is a growable `List[T]`, an owned `String` and a string-keyed
-  `Dict[K, V]`, each holding its elements in one block from `libc`'s
+  `collections` is a growable `List[T]`, an owned `String` and `Dict[K, V]`, a
+  SwissTable (control bytes probed eight at a time, up to 7/8 full) over any
+  `K` that is `Hash`, ids and integers included, unordered, each dictionary
+  hashing with a seed of its own (the process's, or fixed by
+  `Dict.deterministic()`), each holding its elements in one block from `libc`'s
   allocator and moving them with core's `mem` intrinsics; `arena` is an
   `Arena`, a dynamic region whose values are finalized, newest first, and
   freed together when it dies, and which, held in a local, is the scratch
