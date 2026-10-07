@@ -23,6 +23,12 @@
 //   nanometres varies over the surface as domain-warped fractal noise of the
 //   model's own coordinates, drifting with time, so the colours swirl.
 //
+// - foliage, on top of any of that, each off by default: BACKLIT
+//   TRANSLUCENCY, light that reaches a thin surface's far side and comes out
+//   of its near side in the surface's own colour (a leaf against the sun
+//   glows like stained glass); and FLUTTER, each leaf of a tree turning a few
+//   degrees about its stem on its own phase, in the vertex stage.
+//
 // Lit by the one directional light, and by the sky through image-based
 // lighting: a diffuse cube (irradiance), a specular cube prefiltered by
 // roughness, one level a roughness step, and the split sum's table.
@@ -64,6 +70,7 @@ struct PbrParams {
     float4 maps;                   // 80: the normal map's scale (0: no normal map), the occlusion map's strength,
                                    //     the alpha mode (0 opaque, 1 cut out, 2 see-through), the cut-off
     float4 emissive;               // 96: rgb radiance (nits in physical units), its strength multiplied in
+    float4 foliage;                // 112: the translucency (0: none), its lobe's exponent, the flutter's most turn (radians, 0: none)
 };
 
 static const uint ALPHA_MASK = 1;
@@ -131,6 +138,58 @@ VertexOutput vertexSkinned(SkinnedVertexInput input, uint id : SV_VulkanInstance
     output.position = mul(frame.viewProjection, world);
     output.world = world.xyz;
     output.normal = worldNormal(inst.model, skinVector(skin, input.normal));
+    output.uv = input.uv;
+    output.local = input.position;
+    output.tint = inst.tint;
+    return output;
+}
+
+// ---- Flutter ----
+//
+// A mesh drawn with a flutter material carries, in a fourth vertex stream
+// (location 3, the mesh's colors, gpumesh.cone), for each vertex: xyz its
+// offset from its leaf's pivot (the leaf's stem), in model coordinates, and
+// w the leaf's phase in turns, one number for the whole leaf. Each leaf is
+// turned about its pivot by a small rotation vector w: a turn about a
+// horizontal axis of its own (an azimuth from its phase) and a slower sway
+// about the vertical, each a sine of the frame's time, on the leaf's own
+// period (0.6 to 1.8 seconds, from its phase) and phase. For turns of a few degrees the
+// displacement of a vertex is w x offset (the small-angle rotation, which
+// needs no matrix), and the normal turns by w x n so the light catches and
+// loses the leaf as it moves. A vertex at the pivot (a stem's end) stays.
+// Model space is y up, which is how a tree stands.
+
+struct SwayInput {
+    float3 position : POSITION;
+    float3 normal : NORMAL;
+    float2 uv : TEXCOORD;
+    float4 sway : COLOR;
+};
+
+void flutterLeaf(float3 offset, float phase, float amount, float time, inout float3 position, inout float3 normal) {
+    float period = 0.6 + 1.2 * frac(phase * 13.7);
+    float s1 = sin(6.2831853 * frac(time / period + phase));
+    float s2 = sin(6.2831853 * frac(time / (period * 1.7) + phase * 3.1));
+    // The same axis for every vertex of the leaf (from its phase), so it
+    // turns as one piece and is not bent
+    float azimuth = 6.2831853 * frac(phase * 7.7);
+    float3 pitch = float3(cos(azimuth), 0.0, sin(azimuth));
+    float3 turn = amount * (s1 * pitch + (0.6 * s2) * float3(0.0, 1.0, 0.0));
+    position += cross(turn, offset);
+    normal += cross(turn, normal);
+}
+
+[shader("vertex")]
+VertexOutput vertexSway(SwayInput input, uint id : SV_VulkanInstanceID) {
+    VertexOutput output;
+    Instance inst = instances[id];
+    float3 position = input.position;
+    float3 normal = input.normal;
+    flutterLeaf(input.sway.xyz, input.sway.w, material.foliage.z, frame.viewport.z, position, normal);
+    float4 world = mul(inst.model, float4(position, 1.0));
+    output.position = mul(frame.viewProjection, world);
+    output.world = world.xyz;
+    output.normal = worldNormal(inst.model, normal);
     output.uv = input.uv;
     output.local = input.position;
     output.tint = inst.tint;
@@ -270,6 +329,35 @@ float4 fragmentMain(VertexOutput input) : SV_Target {
     // draw's tint multiplies it as it does the base
     float3 emitted = material.emissive.rgb * input.tint.rgb;
     float3 color = direct + ambient + emitted;
+    if (material.foliage.x > 0.0) {
+        // Backlit translucency, the two-sided foliage model of Barré-Brisebois
+        // and Bouchard ("Approximating Translucency for a Fast, Cheap and
+        // Convincing Subsurface Scattering Look", GDC 2011, as Frostbite
+        // shipped it), and of Crysis's foliage (Sousa, "Vegetation
+        // Procedural Animation and Shading in Crysis", GPU Gems 3, ch. 16):
+        // the light reaching the far side is the diffuse of the reversed
+        // normal, and the part that goes straight on to the eye is a lobe
+        // about the light's direction, bent by the normal ('distortion'
+        // 0.2) so it follows the surface. Both leave in the base colour,
+        // the leaf's own; the sky's light on the far side comes through
+        // too, as the 'ambient' term of theirs, at 0.4 of its strength (a
+        // leaf lit from the sky alone should not brighten a tree seen with
+        // the sun behind us). The leaf's thickness is folded into the
+        // material's strength (the papers read it from a map); with no
+        // shadows, a leaf behind others glows as if it were open to the
+        // sun. The colour that comes through is the base colour to the power
+        // 1.5: light crosses the leaf's pigment on its way in and on its way
+        // out, so what leaves is more saturated than what reflects (a
+        // squared colour would be the whole of it), which also keeps a
+        // bright orange from tone-mapping to cream.
+        float back = saturate(dot(-n, l));
+        float3 bent = normalize(l + n * 0.2);
+        float lobe = pow(saturate(dot(v, -bent)), material.foliage.y);
+        float3 sunThrough = frame.lightColor.rgb * (back * (0.4 + 1.6 * lobe) * (1.0 / PI));
+        float3 skyThrough = irradianceCube.SampleLevel(environmentSampler, -n, 0.0).rgb * (0.4 * strength * occlusion);
+        float3 through = pow(max(base.rgb, 0.0), 1.5);
+        color += through * (1.0 - metallic) * material.foliage.x * (sunThrough + skyThrough);
+    }
     if (alphaMode == ALPHA_BLEND) {
         // Premultiplied: of the diffuse light (the sun's and the
         // environment's) only the share alpha covers; the reflections and the

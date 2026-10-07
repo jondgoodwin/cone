@@ -224,6 +224,7 @@ const BOUND_LIT_BLEND = 7u32;
 const BOUND_PBR_BLEND = 8u32;
 const BOUND_LIT_SKINNED_BLEND = 9u32;
 const BOUND_PBR_SKINNED_BLEND = 10u32;
+const BOUND_PBR_SWAY = 11u32;
 
 // The draw list's layers, in the order they are drawn: opaque meshes, then
 // lines, then (after the sky) what is see-through
@@ -285,6 +286,9 @@ pub struct Renderer {
   pub litSkinnedBlendPipeline RenderPipeline;
   pub pbrSkinnedBlendPipeline RenderPipeline;
   pub blendedDrawn u32;            // how many see-through copies the last render drew
+  // The physically based pipeline for a mesh with a SWAY stream (gpumesh.cone)
+  // drawn with a flutter material: a fourth vertex buffer, the colors
+  pub pbrSwayPipeline RenderPipeline;
   // Store the depth buffer at the end of 'render' (it is discarded
   // otherwise), so that a later pass into the same target -- glowing
   // particles drawn additively, say -- is depth tested against the scene
@@ -333,7 +337,8 @@ pub struct Renderer {
     // A physically based material's own group: the parameters, the base
     // colour's texture and the sampler, as the lit material's, then the
     // metallic-roughness, normal and occlusion maps
-    imm pbrMaterialEntries = [new BindGroupLayoutEntry(binding: 0u32, visibility: SHADER_STAGE_FRAGMENT),
+    // (the parameters are read by the vertex stage too: flutter)
+    imm pbrMaterialEntries = [new BindGroupLayoutEntry(binding: 0u32, visibility: SHADER_STAGE_VERTEX | SHADER_STAGE_FRAGMENT),
       new BindGroupLayoutEntry(binding: 1u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_TEXTURE),
       new BindGroupLayoutEntry(binding: 2u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_SAMPLER),
       new BindGroupLayoutEntry(binding: 3u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_TEXTURE),
@@ -368,6 +373,17 @@ pub struct Renderer {
       fragmentModule: &pbrShader, colorFormat: colorFormat, cullMode: CULL_MODE_BACK,
       depthFormat: depthFormat, depthWriteEnabled: true, depthCompare: COMPARE_FUNCTION_LESS);
     mut pbrPipeline = device.createRenderPipeline(&pbrDesc);
+    // The same for a mesh with a sway stream, drawn with a flutter material:
+    // the colors as a fourth buffer, read at location 3
+    imm swayAttr = [new VertexAttribute(VERTEX_FORMAT_FLOAT32X4, 0u64, 3u32)];
+    imm swayBuffers = [new VertexBufferLayout(arrayStride: 12u64, attributes: &positionAttr),
+      new VertexBufferLayout(arrayStride: 12u64, attributes: &normalAttr),
+      new VertexBufferLayout(arrayStride: 8u64, attributes: &uvAttr),
+      new VertexBufferLayout(arrayStride: 16u64, attributes: &swayAttr)];
+    imm pbrSwayDesc = new RenderPipelineDescriptor(layout: &pbrLayout, vertexModule: &pbrShader,
+      vertexEntryPoint: "vertexSway", buffers: &swayBuffers, fragmentModule: &pbrShader, colorFormat: colorFormat,
+      cullMode: CULL_MODE_BACK, depthFormat: depthFormat, depthWriteEnabled: true, depthCompare: COMPARE_FUNCTION_LESS);
+    mut pbrSwayPipeline = device.createRenderPipeline(&pbrSwayDesc);
     // Their skinned variants: the same three buffers, then the joints (four
     // bytes read as integers) and the weights (four bytes read as 0 to 1)
     imm jointsAttr = [new VertexAttribute(VERTEX_FORMAT_UINT8X4, 0u64, 3u32)];
@@ -443,7 +459,8 @@ pub struct Renderer {
       0u32, 0u64, pbrShader, environmentLayout, pbrLayout, pbrPipeline, skyPipeline, environment, false, 0., 1., pbrMaterialLayout,
       instances, FIRST_INSTANCES, List[f32].empty(), List[DrawKey].empty(), List[DrawBatch].empty(), 0u32,
       Pool[PipelineSlot].empty(), litSkinnedPipeline, pbrSkinnedPipeline, bones, FIRST_BONES, boneBases,
-      List[u32].empty(), 0u32, litBlendPipeline, pbrBlendPipeline, litSkinnedBlendPipeline, pbrSkinnedBlendPipeline, 0u32);
+      List[u32].empty(), 0u32, litBlendPipeline, pbrBlendPipeline, litSkinnedBlendPipeline, pbrSkinnedBlendPipeline, 0u32,
+      pbrSwayPipeline);
     mut w = new Image(1, 1, 3, List[u8].empty());
     w.pixels.push(255u8);
     w.pixels.push(255u8);
@@ -458,7 +475,7 @@ pub struct Renderer {
       and frameUniforms.isValid() and pbrPipeline.isValid() and skyPipeline.isValid() and environment.isValid()
       and instances.isValid() and litSkinnedPipeline.isValid() and pbrSkinnedPipeline.isValid() and bones.isValid()
       and boneBases.isValid() and litBlendPipeline.isValid() and pbrBlendPipeline.isValid()
-      and litSkinnedBlendPipeline.isValid() and pbrSkinnedBlendPipeline.isValid();
+      and litSkinnedBlendPipeline.isValid() and pbrSkinnedBlendPipeline.isValid() and pbrSwayPipeline.isValid();
   }
 
   // The frame's group made again, after a buffer in it was replaced
@@ -1061,6 +1078,7 @@ pub struct Renderer {
       imm lines = batch.layer == LAYER_LINES;
       imm blend = batch.layer == LAYER_BLEND;
       mut skinned = false;
+      mut sway = false;
       if lines {
         if bound != BOUND_LINES {
           pass.setPipeline(&linesPipeline);
@@ -1096,13 +1114,16 @@ pub struct Renderer {
           // A skinned mesh is drawn by the pipeline's skinned variant, a
           // see-through one by its blended variant
           skinned = m.isSkinned();
+          // A flutter material on a mesh that carries its leaves' data
+          sway = !blend and !skinned and mslot.pbr.flutter > 0. and m.sway.isValid();
           imm want = if blend {
             if skinned { BOUND_PBR_SKINNED_BLEND; } else { BOUND_PBR_BLEND; };
           } else {
-            if skinned { BOUND_PBR_SKINNED; } else { BOUND_PBR; };
+            if skinned { BOUND_PBR_SKINNED; } elif sway { BOUND_PBR_SWAY; } else { BOUND_PBR; };
           };
           if bound != want {
             if want == BOUND_PBR { pass.setPipeline(&pbrPipeline); }
+            elif want == BOUND_PBR_SWAY { pass.setPipeline(&pbrSwayPipeline); }
             elif want == BOUND_PBR_SKINNED { pass.setPipeline(&pbrSkinnedPipeline); }
             elif want == BOUND_PBR_BLEND { pass.setPipeline(&pbrBlendPipeline); }
             else { pass.setPipeline(&pbrSkinnedBlendPipeline); }
@@ -1138,6 +1159,7 @@ pub struct Renderer {
         pass.setVertexBuffer(1u32, &m.normals, 0u64);
         pass.setVertexBuffer(2u32, &m.uvs, 0u64);
       }
+      if sway { pass.setVertexBuffer(3u32, &m.sway, 0u64); }
       if skinned {
         pass.setVertexBuffer(3u32, &m.joints, 0u64);
         pass.setVertexBuffer(4u32, &m.weights, 0u64);
