@@ -14,6 +14,12 @@
 // version), and releases the old version's buffers with 'queue.releaseBuffer',
 // which destroys them once the GPU has finished the frames that drew them.
 // The handle never changes: whatever holds it draws the new version.
+//
+// A SKINNED mesh ('addSkinnedMesh', skin.cone) has two more vertex buffers,
+// its Skin's joints and weights, four bytes a vertex each; it is drawn by
+// the skinned variant of its material's pipeline. Its bounding sphere is the
+// bind pose's made larger by SKINNED_BOUNDS_SCALE, since a posed vertex may
+// leave the bind pose's sphere.
 
 pub struct GpuMesh {
   pub positions Buffer;
@@ -26,14 +32,19 @@ pub struct GpuMesh {
   pub topology u32;                // PRIMITIVE_TOPOLOGY_TRIANGLE_LIST or _LINE_LIST
   pub center Vec3;                 // its bounding sphere, in its own coordinates
   pub radius f32;
+  pub joints Buffer;               // a skinned mesh's joints, four bytes a vertex; none otherwise
+  pub weights Buffer;              // and their weights
 
   // No mesh: what a slot's spare version holds (not valid)
   pub fn none() GpuMesh {
     new GpuMesh(Buffer.none(), Buffer.none(), Buffer.none(), Buffer.none(), 0u32, 0u32, List[Group].empty(),
-      PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, new Vec3(0., 0., 0.), 0.);
+      PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, new Vec3(0., 0., 0.), 0., Buffer.none(), Buffer.none());
   }
 
   pub fn isValid(self &) bool { positions.isValid() and indices.isValid() and indexCount > 0u32; }
+
+  // Whether it is skinned: drawn by its bones
+  pub fn isSkinned(self &) bool { joints.isValid() and weights.isValid(); }
 
   // Give its buffers back: they are destroyed once the GPU has finished the
   // frames that may use them, and it holds nothing
@@ -42,6 +53,8 @@ pub struct GpuMesh {
     queue.releaseBuffer(&mut normals);
     queue.releaseBuffer(&mut uvs);
     queue.releaseBuffer(&mut indices);
+    queue.releaseBuffer(&mut joints);
+    queue.releaseBuffer(&mut weights);
     vertexCount = 0u32;
     indexCount = 0u32;
     groups.clear();
@@ -121,6 +134,22 @@ fn uploadTriangles(device &mut Device, m &Mesh) GpuMesh {
     }
   }
   boundingSphere(m.positions.view(), &mut g.center, &mut g.radius);
+  g;
+}
+
+// How much larger a skinned mesh's bounding sphere is than its bind pose's
+pub const SKINNED_BOUNDS_SCALE f32 = 1.5;
+
+// A skinned mesh uploaded: the triangles as 'uploadTriangles' makes them,
+// and the skin's joints and weights (none, an unskinned mesh, if the skin
+// has not one entry a vertex)
+fn uploadSkinned(device &mut Device, m &Mesh, skin &Skin) GpuMesh {
+  mut g = uploadTriangles(device, m);
+  imm n = usize.from(g.vertexCount);
+  if n == 0usize or skin.joints.len() != n or skin.weights.len() != n { return g; }
+  g.joints = filledBuffer(device, bytesOf[u32](&skin.joints), u64.from(n) * 4u64, BUFFER_USAGE_VERTEX);
+  g.weights = filledBuffer(device, bytesOf[u32](&skin.weights), u64.from(n) * 4u64, BUFFER_USAGE_VERTEX);
+  g.radius = g.radius * SKINNED_BOUNDS_SCALE;
   g;
 }
 

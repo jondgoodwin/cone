@@ -1,0 +1,145 @@
+// Skins: what binds a mesh's vertices to a skeleton's bones, and the bones
+// a skinned copy is drawn with.
+//
+// LINEAR BLEND SKINNING. Each vertex of a skinned mesh names up to four
+// joints (bone numbers, 0 to 255) and their weights; a copy of the mesh is
+// drawn with one SKINNING MATRIX a bone, the transform that carries the
+// mesh as modelled (its bind pose) to where the posed bone takes it, in the
+// model's own coordinates: the bone's posed model transform times the
+// inverse of its bind-pose model transform. A vertex goes where the sum of
+// its joints' matrices, each times its weight, takes it (skinning.slang
+// does it on the GPU, 'skinPoint' here on the CPU, the same sums in the same
+// order). The bones are rigid (rotations and translations: a skeleton's
+// pose), so the blended 3 x 3 carries the normal too.
+//
+// Why linear blending and not dual quaternions: blending matrices shrinks a
+// joint that twists far (the "candy wrapper") or bends far, where a dual
+// quaternion blend keeps the volume; but a mannequin's joints are hinges and
+// balls that bend less than 150 degrees and barely twist, its body is lofted
+// with the blend zones its joints need, and linear blending is what every
+// engine's skinned path starts from, cheaper, and blends any number of bones
+// exactly. A bone is an opaque BoneXform in the shader (three rows of a
+// 3 x 4 matrix), so dual quaternions later change skinning.slang and the
+// bones' layout, not the meshes or their weights.
+//
+// A SKIN is a mesh's per-vertex joints and weights, one entry a vertex in
+// the mesh's vertex order: four bytes of joints (the first in the lowest
+// byte) and four bytes of weights, read as 0 to 1, made to sum to exactly
+// 255 so they sum to 1 on the GPU. 'addSkinnedMesh' uploads a mesh with its
+// skin; 'DrawList.addSkinned' draws a copy of it with its skinning
+// matrices, one a bone.
+
+// No bones: a draw item that is not skinned
+pub const NO_BONES = 0xFFFFFFFFu32;
+// A bone's bytes in the bone buffer (skinning.slang's BoneXform), and its floats
+pub const BONE_BYTES = 48u64;
+pub const BONE_FLOATS = 12usize;
+// How many bones the bone buffer holds at first (grown by doubling)
+pub const FIRST_BONES = 256u32;
+
+pub struct Skin {
+  pub joints List[u32];        // each vertex's four joints, a byte each, the first in the lowest byte
+  pub weights List[u32];       // and their weights, a byte each in the same order, summing to 255
+
+  pub fn empty() Skin { new Skin(List[u32].empty(), List[u32].empty()); }
+
+  // How many vertices it has entries for
+  pub fn len(self &) usize { joints.len(); }
+
+  // The next vertex's entry: joints 'j0' to 'j3' (each below 256) with
+  // weights 'w0' to 'w3' (not negative; scaled to sum to 1, then to bytes
+  // summing to 255, the largest remainders rounded up). Weights summing to
+  // nothing give the first joint all of it.
+  pub fn push(self &mut, j0 u32, j1 u32, j2 u32, j3 u32, w0 f32, w1 f32, w2 f32, w3 f32) {
+    joints.push((j0 & 0xFFu32) | ((j1 & 0xFFu32) << 8u32) | ((j2 & 0xFFu32) << 16u32) | ((j3 & 0xFFu32) << 24u32));
+    mut w = [clampWeight(w0), clampWeight(w1), clampWeight(w2), clampWeight(w3)];
+    imm sum = w[0] + w[1] + w[2] + w[3];
+    if sum <= 0. {
+      weights.push(255u32);
+      return;
+    }
+    // Each weight's share of 255: its whole part, then what is left handed
+    // out one at a time to the largest remainders
+    mut q = [0u32, 0u32, 0u32, 0u32];
+    mut rem = [0., 0., 0., 0.];
+    mut given = 0u32;
+    mut k = 0usize;
+    while k < 4usize {
+      imm share = w[k] / sum * 255.;
+      q[k] = u32.from(share);
+      rem[k] = share - f32.from(q[k]);
+      given = given + q[k];
+      k = k + 1usize;
+    }
+    while given < 255u32 {
+      mut best = 0usize;
+      k = 1usize;
+      while k < 4usize {
+        if rem[k] > rem[best] { best = k; }
+        k = k + 1usize;
+      }
+      q[best] = q[best] + 1u32;
+      rem[best] = -1.;
+      given = given + 1u32;
+    }
+    weights.push(q[0] | (q[1] << 8u32) | (q[2] << 16u32) | (q[3] << 24u32));
+  }
+
+  // Vertex 'v''s joint 'k' (0 to 3)
+  pub fn joint(self &, v usize, k usize) usize { usize.from((*joints[v] >> (8u32 * u32.from(k))) & 0xFFu32); }
+
+  // Vertex 'v''s weight 'k' as the GPU reads it, 0 to 1
+  pub fn weight(self &, v usize, k usize) f32 {
+    f32.from((*weights[v] >> (8u32 * u32.from(k))) & 0xFFu32) / 255.;
+  }
+
+  // Where vertex 'v', modelled at 'p', goes under the skinning matrices
+  // 'bones' (one a bone): the CPU's twin of skinning.slang, its matrices
+  // blended row by row in the same order, then the point carried
+  pub fn skinPoint(self &, v usize, bones &[]Mat4, p Vec3) Vec3 {
+    imm b = self.blend(v, bones);
+    new Vec3(b[0] * p.x + b[1] * p.y + b[2] * p.z + b[3],
+      b[4] * p.x + b[5] * p.y + b[6] * p.z + b[7],
+      b[8] * p.x + b[9] * p.y + b[10] * p.z + b[11]);
+  }
+
+  // The same for a direction (a normal: turned, not moved, not normalized)
+  pub fn skinVector(self &, v usize, bones &[]Mat4, d Vec3) Vec3 {
+    imm b = self.blend(v, bones);
+    new Vec3(b[0] * d.x + b[1] * d.y + b[2] * d.z, b[4] * d.x + b[5] * d.y + b[6] * d.z,
+      b[8] * d.x + b[9] * d.y + b[10] * d.z);
+  }
+
+  // Vertex 'v''s blended matrix: three rows of four
+  fn blend(self &, v usize, bones &[]Mat4) Array[f32, 12] {
+    mut out = new Array[f32, 12] <- fill 0f;
+    mut k = 0usize;
+    while k < 4usize {
+      imm j = self.joint(v, k);
+      imm w = self.weight(v, k);
+      if j < bones.len {
+        imm rows = boneRows(bones[j]);
+        mut e = 0usize;
+        while e < 12usize {
+          out[e] = out[e] + rows[e] * w;
+          e = e + 1usize;
+        }
+      }
+      k = k + 1usize;
+    }
+    out;
+  }
+}
+
+fn clampWeight(w f32) f32 { if w > 0. { w; } else { 0.; }; }
+
+// A skinning matrix as the bone buffer holds it (skinning.slang's
+// BoneXform): its first three rows, four floats each
+pub fn boneRows(m Mat4) Array[f32, 12] {
+  [m.m[0], m.m[4], m.m[8], m.m[12], m.m[1], m.m[5], m.m[9], m.m[13], m.m[2], m.m[6], m.m[10], m.m[14]];
+}
+
+// The skinning matrix of a bone posed at 'posed' whose bind pose is 'bind'
+// (both its transform in the model's coordinates): the bind pose undone,
+// then the pose
+pub fn skinningMatrix(posed Mat4, bind Mat4) Mat4 { posed * bind.inverse(); }

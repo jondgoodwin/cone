@@ -48,6 +48,7 @@ import brdf;
 import sky;
 import noise;
 import renderframe;
+import skinning;
 
 struct PbrParams {
     float4 baseColor;              // 0: rgba, linear
@@ -102,6 +103,25 @@ VertexOutput vertexMain(VertexInput input, uint id : SV_VulkanInstanceID) {
     output.position = mul(frame.viewProjection, world);
     output.world = world.xyz;
     output.normal = worldNormal(inst.model, input.normal);
+    output.uv = input.uv;
+    output.local = input.position;
+    output.tint = inst.tint;
+    return output;
+}
+
+// The same for a skinned mesh (skinning.slang): its position and normal
+// carried by the vertex's blended bones first, then placed by the copy's
+// model matrix. The film's noise is read at the vertex as modelled, so it
+// stays on the surface as the bones move it.
+[shader("vertex")]
+VertexOutput vertexSkinned(SkinnedVertexInput input, uint id : SV_VulkanInstanceID) {
+    VertexOutput output;
+    Instance inst = instances[id];
+    BoneXform skin = vertexSkin(id, input.joints, input.weights);
+    float4 world = mul(inst.model, float4(skinPoint(skin, input.position), 1.0));
+    output.position = mul(frame.viewProjection, world);
+    output.world = world.xyz;
+    output.normal = worldNormal(inst.model, skinVector(skin, input.normal));
     output.uv = input.uv;
     output.local = input.position;
     output.tint = inst.tint;
