@@ -552,14 +552,14 @@ static void parseActorMembers(DclTexts *texts, StructNode *state, Name *actornam
                 "A behaviour's 'self' is the actor's state, lent for the message: 'self', 'self &' or 'self &mut'.");
             ok = 0;
         }
-        // The reply's type is written into code the compiler generates, as a
-        // type argument, where no lifetime can be named: a borrow of the whole
-        // program may be sent to an actor, and does not come back
+        // The reply goes back in a message too: a borrow of the whole program
+        // may, written ''static' (which the thread check then judges,
+        // actorCheckAll); a lifetime of any other name never
         if (parseActorReturns(fn)) {
             DclText *rettext = parseActorText(texts, fn->vtype);
-            if (rettext && rettext->type && memchr(rettext->type, '\'', rettext->typeend - rettext->type)) {
+            if (rettext && rettext->type && !parseActorOnlyStatic(rettext->type, rettext->typeend)) {
                 errorMsgNode(sig->rettype, ErrorNotSendable,
-                    "Actor %s's behaviour %s returns a type naming a lifetime, which is not Sendable: a reply is written into code the compiler generates, where no lifetime can be named, so no borrow, even one that lives for the whole program, goes back in it. Return an owner that may cross, such as a 'uni' one, or an 'Arc'.",
+                    "Actor %s's behaviour %s returns a type naming a lifetime other than 'static, which is not Sendable: no borrow but one that lives for the whole program, written &'static imm, &'static opaq or &'static uni, goes back in a reply.",
                     &actorname->namestr, &fn->namesym->namestr);
                 ok = 0;
             }
@@ -1054,6 +1054,19 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
         if (rettext)
             genPutn(&rt, rettext->type, rettext->typeend - rettext->type);
         genPuts(&rt, tuple ? ")" : "");
+        // The same, as an expression reads it, where a type argument is written
+        // among a call's: no lifetime can be named there, and a generic is
+        // instanced with its type arguments' lifetimes erased in any case
+        GenText rtx = {NULL, 0, 0};
+        for (uint32_t at = 0; at < rt.len; ++at) {
+            if (rt.len - at >= 7 && memcmp(rt.text + at, "'static", 7) == 0) {
+                at += 6;
+                if (at + 1 < rt.len && rt.text[at + 1] == ' ')
+                    ++at;
+                continue;
+            }
+            genPutn(&rtx, rt.text + at, 1);
+        }
         genPuts(&g, (fn->flags & FlagPub) ? "  pub fn " : "  fn ");
         genSlot(&g, variant + nasks);
         genPuts(&g, "(self &");
@@ -1076,7 +1089,7 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
         genPuts(&g, "] {\n    imm f = ");
         genSlot(&g, GenActors);
         genPuts(&g, ".futureFor[");
-        genPutn(&g, rt.text, rt.len);
+        genPutn(&g, rtx.text, rtx.len);
         genPuts(&g, ", ");
         genSlot(&g, GenMsg);
         genPuts(&g, "](");
@@ -1101,7 +1114,7 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
         }
         genSlot(&g, GenActors);
         genPuts(&g, ".futureReply[");
-        genPutn(&g, rt.text, rt.len);
+        genPutn(&g, rtx.text, rtx.len);
         genPuts(&g, "](&f)]);\n    f;\n  }\n");
     }
     genPuts(&g, "}\n");
