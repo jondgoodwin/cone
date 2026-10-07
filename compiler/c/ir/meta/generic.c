@@ -265,7 +265,7 @@ static StructNode *genericNamedTrait(INode *node) {
 }
 
 // The type a 'where' clause's name resolved to, where it names a type rather
-// than a trait: 'where T is Bool' [Jon 27 Sep], met by that type alone. NULL
+// than a trait: 'where T is bool' [Jon 27 Sep], met by that type alone. NULL
 // for anything else; a generic type is not one until given its arguments.
 static INode *genericNamedType(INode *node) {
     if (!isNameUseNode(node) || !isTypeNode(node))

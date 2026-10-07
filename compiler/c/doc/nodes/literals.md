@@ -132,7 +132,7 @@ argument to an overload set, a generic or an operator, which is type checked
 before its callee is chosen. Every other literal is typed by
 `itypeTypeCheck(&node->vtype)` alone.
 
-**`Bool` is the one number type it refuses.** `Bool` is a 1-bit unsigned, so it
+**`bool` is the one number type it refuses.** `bool` is a 1-bit unsigned, so it
 answers `UintNbrTag` like any other, but its only values are `true` and `false`
 and a literal reaches it the way every other number does — through the `isTrue`
 coercion in [Type Check Reasoning](../phases/type-check-reasoning.md),
@@ -141,7 +141,7 @@ for it, so both of its callers fall through to that coercion and every position
 agrees. `typemgmt_success` pins all of them — initializer, assignment, argument,
 return value, struct-literal field, `if`, `not`, `and` and `or` — each with a
 value whose low bit is 0, because `1` and `-1` read the same either way.
-`true` and `false` are built carrying `Bool`, never `FlagUnkType`, so the rule
+`true` and `false` are built carrying `bool`, never `FlagUnkType`, so the rule
 never reaches them.
 
 **Adopting the type is what builds the constant at the right width.** The
@@ -218,7 +218,7 @@ It measures the magnitude written, recovered through `FlagLitNeg`: a signed
 *N*-bit type holds magnitudes up to 2^(*N*-1)-1, or 2^(*N*-1) negated, so
 `-128i8` fits and `128i8` does not; an unsigned type holds magnitudes up to
 2^*N*-1 negated or not, because the manual has a minus on an unsigned literal
-leave it unsigned, so `-1u8` is `255`, negation in its own width. `Bool` is
+leave it unsigned, so `-1u8` is `255`, negation in its own width. `bool` is
 not asked, since no literal is built at it. The message quotes the literal as
 written, digits and suffix, with a `-` for the folded minus; the typed message
 gives the type's range. Reported once: the literal is left a zero of its type,
@@ -325,7 +325,7 @@ number type written with brackets, `u64[count]`, is
 `ErrorNbrBracket`, because a number's conversion is its method,
 `u64.from(count)`. That call reaches this node another way: `fnCallNumberFrom`
 ([fncall](fncall.md)) checks its one value, has `typeLitNbrFromCheck` accept a
-number (and for `Bool` a reference or pointer, as `typeLitConvertsToBool` says),
+number (and for `bool` a reference or pointer, as `typeLitConvertsToBool` says),
 and retags the call `TypeLitTag` with the number as its type, so it never passes
 through `typeLitTypeCheck`. `typeLitStructReorder` walks the struct's fields
 in declaration order and rewrites `args` to match: a `NamedValNode` is moved
@@ -426,9 +426,9 @@ expression in a function body is generated as written, and LLVM folds it.
 constants (followed through any constant naming another):
 - a call of a number type's operator method whose body is an intrinsic
   (`litFoldOp`): `+ - * / %`, `& | ^ << >>`, unary `-` and `~`, the six
-  comparisons (a `Bool`), and the `isTrue` a coercion to `Bool` injects; the
-  operators on `Bool` itself among them;
-- `not`, `and` and `or` over `Bool` constants;
+  comparisons (a `bool`), and the `isTrue` a coercion to `bool` injects; the
+  operators on `bool` itself among them;
+- `not`, `and` and `or` over `bool` constants;
 - a number's conversion, `T.from(x)` (a `TypeLitTag` of a number type) and the
   `FlagConvert` cast a coercion's widening injects, by `litFoldConvert`, which
   does what `genlConvert` generates;

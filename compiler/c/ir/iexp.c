@@ -187,7 +187,7 @@ static int iexpCoerceShape(INode **from, INode *totype) {
     // is chosen, so litTypeCheck had no expected type to give it -- takes the
     // number type it is wanted as rather
     // than being converted to it, which would build the constant at 32 bits
-    // first. Bool is refused by litAdoptNumberType itself, so a literal meets it
+    // first. bool is refused by litAdoptNumberType itself, so a literal meets it
     // as any number does, through isTrue.
     if (litAdoptNumberType(from, totypedcl))
         return 1;
@@ -205,12 +205,12 @@ static int iexpCoerceShape(INode **from, INode *totype) {
         // So may a borrowed constant one, and the borrow then match as it is
         if (borrowConstLitCoerce(*from, totypedcl))
             return iexpMatches(from, totypedcl, Coercion) != NoMatch && iexpCoerce(from, totype);
-        // A Bool wanted as a number is refused here, naming the conversion that
+        // A bool wanted as a number is refused here, naming the conversion that
         // would say what it means. The conversion is then built anyway, so what
         // uses the value sees the type it wanted and says nothing more.
         if (iexpGetTypeDcl(*from) == (INode*)boolType && isNbr(totypedcl)) {
             errorMsgNode(*from, ErrorBoolNotNbr,
-                "A Bool is not a number, and %s is wanted here. Convert it explicitly, '%s.from(b)', which gives 0 or 1.",
+                "A bool is not a number, and %s is wanted here. Convert it explicitly, '%s.from(b)', which gives 0 or 1.",
                 itypeName(totypedcl), itypeName(totypedcl));
             INode *conv = (INode*)newConvCastNode(*from, totypedcl);
             inodeLexCopy(conv, *from);

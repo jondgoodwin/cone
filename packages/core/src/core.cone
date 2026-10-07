@@ -73,24 +73,24 @@ pub extern {
 // Whether this compile is a debug build: 'conec --debug', or 'build: debug' in
 // the build description Congo writes. A constant, so the side of an 'if' on it
 // that this build does not take is never generated and never reaches the object
-pub fn @intrinsic isDebugBuild() Bool;
+pub fn @intrinsic isDebugBuild() bool;
 
 // TEMPORARY, a provisional mechanism whose final design is open. Constants of
 // the compile as isDebugBuild is, so the side of an 'if' on them that this
 // build does not take is never generated (both sides are still type checked).
 // The OS the compile targets, from its target triple: no flag
-pub fn @intrinsic isWindows() Bool;
-pub fn @intrinsic isLinux() Bool;
-pub fn @intrinsic isMacOS() Bool;
-pub fn @intrinsic isWasm() Bool;
+pub fn @intrinsic isWindows() bool;
+pub fn @intrinsic isLinux() bool;
+pub fn @intrinsic isMacOS() bool;
+pub fn @intrinsic isWasm() bool;
 // Whether conec's command line defined name, '-D name' or '-D name=123', and
 // the integer it was given: 1 for '-D name', 0 when it was not defined. The
 // name is a string literal
-pub fn @intrinsic isDefined(name &[]u8) Bool;
+pub fn @intrinsic isDefined(name &[]u8) bool;
 pub fn @intrinsic definedInt(name &[]u8) i64;
 
 // Panic unless cond holds. Checked in every build, release included
-pub fn assert(cond Bool, msg &[]u8 = "assertion failed", file &[]u8 = srcFile(),
+pub fn assert(cond bool, msg &[]u8 = "assertion failed", file &[]u8 = srcFile(),
     line u32 = srcLine()) inline {
   if !cond {panic(msg, file, line);}
 }
@@ -185,7 +185,7 @@ pub struct Rc is RegionRef {
   fn alloc(size usize) *u8 inline {libc.malloc(size);}
   fn init(self &new) inline {*self = new Rc(1usize);}
   fn aliasRef(self &uni Rc) inline {cnt = cnt + 1usize;}
-  fn dealiasRef(self &uni Rc) Bool inline {cnt = cnt - 1usize; cnt == 0usize;}
+  fn dealiasRef(self &uni Rc) bool inline {cnt = cnt - 1usize; cnt == 0usize;}
   fn free(self &uni Rc) inline {libc.free(self as *u8);}
 }
 
@@ -285,13 +285,13 @@ pub struct @opaque mem {
   pub fn @intrinsic sizeof[T]() usize;
   pub fn @intrinsic alignof[T]() usize;
   // Whether finalizing a T does anything
-  pub fn @intrinsic needsFinal[T]() Bool;
+  pub fn @intrinsic needsFinal[T]() bool;
   // Run the death of the T at p where it sits, without freeing its memory
   pub fn @intrinsic finalize[T](p *T);
   // T's record: its size, its alignment, its finalizer, its trace. A constant
   pub fn @intrinsic typeRecord[T]() *TypeRecord;
   // Whether a T holds a traced reference where it sits: a constant
-  pub fn @intrinsic holdsTraced[T]() Bool;
+  pub fn @intrinsic holdsTraced[T]() bool;
   // Hand every traced reference in the T at p to its region's 'mark', with
   // mode where 'mark' takes it
   pub fn @intrinsic trace[T](p *T, mode u32);
@@ -307,7 +307,7 @@ pub struct @opaque mem {
   // its '==' on references is asked as it is and no element is copied. Not an
   // intrinsic: this body is what '==' and '!=' on two slices call, an
   // instance for each element type, which the compiler finds here by its name
-  pub fn sliceEq[T](a &[]T, b &[]T) Bool {
+  pub fn sliceEq[T](a &[]T, b &[]T) bool {
     if a.len != b.len {return false;}
     mut i = 0usize;
     while i < a.len {
@@ -338,9 +338,9 @@ pub struct @opaque mem {
   }
 
   // The atomic operations on the T at p, each indivisible: no other thread
-  // sees it half done. T is an integer type of 8 to 64 bits, Bool or a raw
+  // sees it half done. T is an integer type of 8 to 64 bits, bool or a raw
   // pointer (add, sub, min and max take an integer, and and, or and xor an
-  // integer or a Bool). The order is a constant MemOrder. A read-modify-write answers the
+  // integer or a bool). The order is a constant MemOrder. A read-modify-write answers the
   // value p held before it, and add and sub wrap. The fallback bodies are the
   // plain operations, which are right only while one thread reaches p.
   pub fn @intrinsic atomicLoad[T](p *T, order MemOrder) T {*p;}
@@ -374,7 +374,7 @@ pub struct @opaque mem {
   // Store desired at p if it holds expected: the value p held, and whether
   // the store was made. 'failure' is the order when it was not
   pub fn @intrinsic atomicCompareSwap[T](p *T, expected T, desired T,
-      success MemOrder, failure MemOrder) T, Bool {
+      success MemOrder, failure MemOrder) T, bool {
     imm old = *p;
     if old == expected {
       *p = desired;
@@ -437,7 +437,7 @@ pub struct @opaque mem {
   }
 }
 
-// ATOMIC VALUES: Atomic[T], an integer, a Bool or a raw pointer that several
+// ATOMIC VALUES: Atomic[T], an integer, a bool or a raw pointer that several
 // threads may read and change at once without a lock, each change
 // indivisible. It is here rather than in the sync package because it needs
 // nothing of the OS, as Rust keeps its atomics in 'core::sync::atomic'; sync
@@ -465,7 +465,7 @@ pub struct @opaque mem {
 // 'AtomicValue'; it knows nothing else of this type.
 //
 // T is an integer type of 8 to 64 bits ('usize' and 'isize' among them), a
-// Bool, or a raw pointer, '*T': what the type's 'where' clause says, and just
+// bool, or a raw pointer, '*T': what the type's 'where' clause says, and just
 // what the AtomicValue marker admits. Any other T is refused where the Atomic
 // is named. Which operations an Atomic has depends on its T, each method's
 // own 'where' clause saying when it exists:
@@ -482,14 +482,14 @@ pub struct @opaque mem {
 //   a.bitAnd(v), a.bitOr(v), a.bitXor(v)
 //                            the bitwise operation with v, answering the
 //                            value before ('and' and 'or' are keywords):
-//                            for an integer or a Bool, as flags
+//                            for an integer or a bool, as flags
 //   a.add(v), a.sub(v)       add or subtract v, answering the value before;
 //                            both wrap: for an integer only
 //   a.min(v), a.max(v)       keep the lesser or the greater of the value and
 //                            v, answering the value before, compared signed
 //                            for a signed T: for an integer only
 //
-// So 'Atomic[Bool]' is a flag, set with store or bitOr and tested with load,
+// So 'Atomic[bool]' is a flag, set with store or bitOr and tested with load,
 // and 'Atomic[*Node]' is the head of a lock-free list, moved on with
 // compareSwap. 'flag.add(true)' is refused where it is written, saying that
 // add exists only where T is Integer.
@@ -523,7 +523,7 @@ pub struct @opaque mem {
 // alignment. Each operation reaches the value through a raw pointer to it and
 // calls mem's intrinsic for the operation, one atomic instruction.
 
-pub struct Atomic[T] is AtomicValue, Move where T is Integer or T is Bool or T is Pointer {
+pub struct Atomic[T] is AtomicValue, Move where T is Integer or T is bool or T is Pointer {
   value T;
 
   // A new atomic value holding v
@@ -554,16 +554,16 @@ pub struct Atomic[T] is AtomicValue, Move where T is Integer or T is Bool or T i
   pub fn max(self &opaq, v T) T where T is Integer {
     mem.atomicMax[T](self as *T, v, MemOrder.SeqCst[]);
   }
-  pub fn bitAnd(self &opaq, v T) T where T is Integer or T is Bool {
+  pub fn bitAnd(self &opaq, v T) T where T is Integer or T is bool {
     mem.atomicAnd[T](self as *T, v, MemOrder.SeqCst[]);
   }
-  pub fn bitOr(self &opaq, v T) T where T is Integer or T is Bool {
+  pub fn bitOr(self &opaq, v T) T where T is Integer or T is bool {
     mem.atomicOr[T](self as *T, v, MemOrder.SeqCst[]);
   }
-  pub fn bitXor(self &opaq, v T) T where T is Integer or T is Bool {
+  pub fn bitXor(self &opaq, v T) T where T is Integer or T is bool {
     mem.atomicXor[T](self as *T, v, MemOrder.SeqCst[]);
   }
-  pub fn compareSwap(self &opaq, expected T, desired T) T, Bool {
+  pub fn compareSwap(self &opaq, expected T, desired T) T, bool {
     mem.atomicCompareSwap[T](self as *T, expected, desired, MemOrder.SeqCst[], MemOrder.SeqCst[]);
   }
 
@@ -633,7 +633,7 @@ pub struct Atomic[T] is AtomicValue, Move where T is Integer or T is Bool or T i
       else {mem.atomicMax[T](self as *T, v, MemOrder.SeqCst[]);}
     }
   }
-  pub fn bitAndOrdered(self &opaq, v T, order MemOrder) T where T is Integer or T is Bool {
+  pub fn bitAndOrdered(self &opaq, v T, order MemOrder) T where T is Integer or T is bool {
     match order {
       case is MemOrder.Relaxed {mem.atomicAnd[T](self as *T, v, MemOrder.Relaxed[]);}
       case is MemOrder.Acquire {mem.atomicAnd[T](self as *T, v, MemOrder.Acquire[]);}
@@ -642,7 +642,7 @@ pub struct Atomic[T] is AtomicValue, Move where T is Integer or T is Bool or T i
       else {mem.atomicAnd[T](self as *T, v, MemOrder.SeqCst[]);}
     }
   }
-  pub fn bitOrOrdered(self &opaq, v T, order MemOrder) T where T is Integer or T is Bool {
+  pub fn bitOrOrdered(self &opaq, v T, order MemOrder) T where T is Integer or T is bool {
     match order {
       case is MemOrder.Relaxed {mem.atomicOr[T](self as *T, v, MemOrder.Relaxed[]);}
       case is MemOrder.Acquire {mem.atomicOr[T](self as *T, v, MemOrder.Acquire[]);}
@@ -651,7 +651,7 @@ pub struct Atomic[T] is AtomicValue, Move where T is Integer or T is Bool or T i
       else {mem.atomicOr[T](self as *T, v, MemOrder.SeqCst[]);}
     }
   }
-  pub fn bitXorOrdered(self &opaq, v T, order MemOrder) T where T is Integer or T is Bool {
+  pub fn bitXorOrdered(self &opaq, v T, order MemOrder) T where T is Integer or T is bool {
     match order {
       case is MemOrder.Relaxed {mem.atomicXor[T](self as *T, v, MemOrder.Relaxed[]);}
       case is MemOrder.Acquire {mem.atomicXor[T](self as *T, v, MemOrder.Acquire[]);}
@@ -664,7 +664,7 @@ pub struct Atomic[T] is AtomicValue, Move where T is Integer or T is Bool or T i
   // 'failure' is the ordering when d is not stored, which is a load: it may
   // be Relaxed, Acquire or SeqCst, and no stronger than 'success'
   pub fn compareSwapOrdered(self &opaq, expected T, desired T,
-      success MemOrder, failure MemOrder) T, Bool {
+      success MemOrder, failure MemOrder) T, bool {
     imm p = self as *T;
     match failure {
       case is MemOrder.Relaxed {

@@ -264,7 +264,7 @@ resolves every clause of every written condition (`genericConditionNameRes`),
 keeping a condition whose clauses each have a subject that is a type parameter
 (the function's own, or its generic type's) and a name that is a trait that is
 not generic, or a type that is neither a generic type nor a trait
-(`genericNamedType`): `where T is Bool` [Jon 27 Sep]. A subject that is anything
+(`genericNamedType`): `where T is bool` [Jon 27 Sep]. A subject that is anything
 else is `ErrorWhereSubject`, and a name that is neither `ErrorWhereTrait`; a name
 that bound nothing was reported as unknown where it was resolved. A condition
 with any clause refused is dropped whole, since an `or` missing a side would say
@@ -508,15 +508,15 @@ instance.
 
 ### Constraints
 
-**Evaluated, never solved** (Principles). A clause naming a type, `T is Bool`,
+**Evaluated, never solved** (Principles). A clause naming a type, `T is bool`,
 is met by that type alone (`itypeIsSame`). Every other question a clause asks is
 `genericTypeIs(type, trait)`, which is what `is` answers of a type:
 
 - **The compiler's grants.** Every type is exactly one of `Move` and `Copy`
   (`itypeIsMove`); `Integer` is `i8` … `i64`, `u8` … `u64`, `isize` and
-  `usize` — an `IntNbrTag`, or a `UintNbrTag` that is not `Bool`; and `Pointer`
+  `usize` — an `IntNbrTag`, or a `UintNbrTag` that is not `bool`; and `Pointer`
   is every raw pointer type, `*T` whatever `T` and its permission — a `PtrTag`,
-  never a reference. `Integer or Bool or Pointer` is exactly what an atomic
+  never a reference. `Integer or bool or Pointer` is exactly what an atomic
   operation takes (`intrinsicIsAtomicType`), so core's `Atomic[T]` requires just
   what its `AtomicValue` marker admits. `Sendable` is the thread check's, and is
   asked of the walk (`itypeThreadBound`) before anything else: it is granted to
@@ -551,7 +551,7 @@ Inside an `or` or an `and` a substituted subject is asked as it stands, since
 the whole is decided here. `genericUnmetCondition` finds the first condition
 that is false; an unknown one is left to where its parameter is bound. So a
 generic method's condition joining its type's parameter and its own, `where T is
-Integer or U is Bool`, is unknown when the type's instance is made — the method
+Integer or U is bool`, is unknown when the type's instance is made — the method
 exists there — and decided, as a requirement, at the method's instance.
 
 **On a generic function or type, a constraint is a requirement.**
@@ -573,7 +573,7 @@ condition for the method existing.** Before an instance is cloned,
 the one struct cloned next, as `structshell` is) and copies the instance without
 them: they are not in its namespace or its member list, so they are neither
 checked nor generated there, and what the instance fits structurally is what it
-has — `Cell[i32]` is an `Adder`, `Cell[Bool]` is not, to a constraint and to a
+has — `Cell[i32]` is an `Adder`, `Cell[bool]` is not, to a constraint and to a
 virtual reference alike. Settled before the reservation and the clone, because a
 structural clause may analyze the argument's own methods. A call on the instance
 that finds nothing asks `genericReportAbsent`, from `fnCallLowerMethod`, which

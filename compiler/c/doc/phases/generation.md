@@ -343,7 +343,7 @@ flag** — release is the default and `--debug` turns it off.
 
 | Cone | LLVM |
 | --- | --- |
-| integer / float | `i1`…`i64`, `float`/`double`. Bool is a 1-bit unsigned |
+| integer / float | `i1`…`i64`, `float`/`double`. bool is a 1-bit unsigned |
 | **`void`** | **`%void = type {}`** — a zero-field named struct, *not* LLVM `void`. A function returning nothing returns `%void`; so does `nil` |
 | **permission** | **`%void`** — permissions are fully erased |
 | `*T` | `ptr` |
@@ -401,13 +401,13 @@ ABI only for a struct of one scalar.
 An **integer narrower than C's `int`** keeps its LLVM type, but carries the
 widening C's convention gives it in its register (`genlCAbiExtend`), on the
 declaration or definition and at each direct call (`genlCAbiMarkExtends`), as
-an argument and as a result. A `Bool` is C's `bool`, `zeroext` on Win64, SysV
-and wasm32 alike; without it a Bool whose register's upper bits were never
+an argument and as a result. A `bool` is C's `bool`, `zeroext` on Win64, SysV
+and wasm32 alike; without it a bool whose register's upper bits were never
 cleared reaches C, which trusts the whole byte, as that register's low byte. An 8- or
 16-bit integer is `signext` or `zeroext` by its sign on SysV and wasm32, and
 unmarked on Win64, where the callee widens it: the marks clang gives the same
-C declaration for each target. A C-named body's incoming Bool is then trusted
-to be 0 or 1. A `Bool` field is one byte holding 0 or 1, as a C `bool` field
+C declaration for each target. A C-named body's incoming bool is then trusted
+to be 0 or 1. A `bool` field is one byte holding 0 or 1, as a C `bool` field
 is, so a struct holding one needs nothing more.
 
 Only a Cone **struct** is lowered (`StructTag` whose LLVM type is a struct). A
@@ -458,7 +458,7 @@ Three shapes, the first two chosen in `genlSetupTaggedTrait`:
     `%Message = { i8, i32, [8 x i8], [0 x i64] }`. **It is never a copy of one
     variant's layout**, because an enum value is loaded, stored and passed as a
     first-class aggregate, and LLVM does not carry an aggregate's padding bytes:
-    a smaller variant's field in a hole of the largest's layout — a `Bool` at
+    a smaller variant's field in a hole of the largest's layout — a `bool` at
     byte 1 beside an `i32` at byte 4 — was lost in the copy. The enum's own
     fields are the discriminant and any common fields, which begin every variant
     at the same offsets, so a common field or the tag is still read by index.
@@ -582,7 +582,7 @@ What follows from that:
 
 **The release routines call the region's methods and know no region.**
 `genlReleaseOwning` is one owner going away: `genlRegionDealias` calls the
-region's `dealiasRef` and branches on its `Bool` to the death. A region without
+region's `dealiasRef` and branches on its `bool` to the death. A region without
 `dealiasRef` goes straight to the death when it is `Move` (single owner,
 `regionIsMove`), and emits nothing at all otherwise: that value never dies by an
 owner, whether its copies are counted or free. The death,

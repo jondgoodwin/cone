@@ -75,9 +75,9 @@ struct Fetch {
   group Option[CancelGroup];
   watch OpId;               // the timer for its deadline and group, or none
   ending u32;               // asked to end while under way: endCancelled, endTimedOut, endLimit
-  delivered Bool;           // its Response has gone to its sink
-  following Bool;           // the response under way is a redirect to follow
-  cutting Bool;             // ...whose body was cut off
+  delivered bool;           // its Response has gone to its sink
+  following bool;           // the response under way is a redirect to follow
+  cutting bool;             // ...whose body was cut off
   location String;
   redirectStatus u16;
   drained usize;
@@ -107,7 +107,7 @@ struct PConn {
 // An origin: its pool and its queue
 struct Origin {
   key String;               // 'https://example.com:443'
-  secure Bool;
+  secure bool;
   host String;              // without an IPv6 address's brackets
   port u16;
   queue List[u32];          // fetches waiting
@@ -143,7 +143,7 @@ pub struct Client {
   heldG List[u32];
   heldN List[usize];        // ...the body bytes it releases once taken,
   heldQ List[httpconn.ReqId];   // ...and to which request
-  wantSchedule Bool;
+  wantSchedule bool;
   st ClientStats;
 
   // A client whose connections take cfg's limits and buffers from pool. Its
@@ -207,7 +207,7 @@ pub struct Client {
   pub fn held(self &) usize {heldE.len() + drv.held();}
 
   // Whether id names a fetch not yet answered
-  pub fn isLive(self &, id FetchId) Bool {self.fetchIndex(id) != noEntry;}
+  pub fn isLive(self &, id FetchId) bool {self.fetchIndex(id) != noEntry;}
 
   // ---------------------------------------------------------------------------
   // The tables
@@ -487,7 +487,7 @@ pub struct Client {
 
   // Ask a fetch to end (see the package's header, CANCEL AND DEADLINES):
   // true while its answer is still to come
-  pub fn cancel(self &mut, lp &mut Loop, id FetchId) Bool {
+  pub fn cancel(self &mut, lp &mut Loop, id FetchId) bool {
     imm fi = self.fetchIndex(id);
     if fi == noEntry {return false;}
     self.cancelFetch(lp, fi, endCancelled);
@@ -496,7 +496,7 @@ pub struct Client {
 
   // A fetch's intent and score, changed: a waiting fetch takes its new place
   // in the order at once. True while its answer is still to come
-  pub fn reprioritize(self &mut, id FetchId, intent Intent, score i64) Bool {
+  pub fn reprioritize(self &mut, id FetchId, intent Intent, score i64) bool {
     imm fi = self.fetchIndex(id);
     if fi == noEntry {return false;}
     imm f = self.fetchAt(fi) as &mut Fetch;
@@ -594,7 +594,7 @@ pub struct Client {
 
   // Whether fetch fi may be sent again after its connection failed with fl
   // (see the package's header, RETRIES)
-  fn canRetry(self &, fi u32, fl &Failure) Bool {
+  fn canRetry(self &, fi u32, fl &Failure) bool {
     imm f = self.fetchAt(fi) as &Fetch;
     if f.delivered or f.ending != endNone or f.retries >= cfg.maxRetries {return false;}
     imm s = fl.stage;
@@ -768,7 +768,7 @@ pub struct Client {
 
   // A completion from the loop: true if it was this client's (its driver's,
   // or one of its own timers), which takes what it needs from it
-  pub fn complete(self &mut, lp &mut Loop, comp &mut Completion) Bool {
+  pub fn complete(self &mut, lp &mut Loop, comp &mut Completion) bool {
     if drv.complete(lp, comp) {return true;}
     if not drv.isUpperToken(comp.token) {return false;}
     imm n = comp.token & 0xFFFFFFFFFFFFu64;
@@ -917,7 +917,7 @@ pub struct Client {
 
   // Connection pc leaves the pool: closed now (politely) when 'close', or
   // already ending; its Closed frees its record
-  fn retire(self &mut, lp &mut Loop, pc u32, close Bool) {
+  fn retire(self &mut, lp &mut Loop, pc u32, close bool) {
     imm p = self.connAt(pc) as &mut PConn;
     imm og = self.originAt(p.origin) as &mut Origin;
     if p.state == pIdle {removeValue(&mut og.idle, pc);}
@@ -968,7 +968,7 @@ pub struct Client {
 
   // An idle connection closed to make room: the one idle longest, of an
   // origin nothing waits for. False when there is none
-  fn closeAnIdle(self &mut, lp &mut Loop) Bool {
+  fn closeAnIdle(self &mut, lp &mut Loop) bool {
     mut o = 0usize;
     while o < origins.len() {
       imm og = *origins[o] as &mut Origin;
@@ -988,7 +988,7 @@ pub struct Client {
 
   // Whether fetch a goes before fetch b: by intent, then score, then the
   // order asked
-  fn before(self &, a u32, b u32) Bool {
+  fn before(self &, a u32, b u32) bool {
     imm fa = self.fetchAt(a) as &Fetch;
     imm fb = self.fetchAt(b) as &Fetch;
     imm ra = intentRank(fa.intent);
@@ -1013,7 +1013,7 @@ pub struct Client {
   // Free connections to the first waiting fetches; connections opened where
   // fetches wait, the origins whose first fetch is first getting them first.
   // Whether it did anything
-  fn schedule(self &mut, lp &mut Loop) Bool {
+  fn schedule(self &mut, lp &mut Loop) bool {
     mut did = false;
     mut o = 0u32;
     while o < u32.from(origins.len()) {
@@ -1379,7 +1379,7 @@ pub fn getWhole(text &[]u8, limit usize) Response {
 // ---------------------------------------------------------------------------
 
 // Whether a status is a redirect the client follows
-fn followsRedirect(s u16) Bool {
+fn followsRedirect(s u16) bool {
   s == 301u16 or s == 302u16 or s == 303u16 or s == 307u16 or s == 308u16;
 }
 
@@ -1407,7 +1407,7 @@ fn copySink(s &mut Sink) Sink {
 }
 
 // Whether a sink is a channel
-fn isChan(s &mut Sink) Bool {
+fn isChan(s &mut Sink) bool {
   mut here Sink = Sink.Here[0u64];
   here <=> *s;
   mut yes = false;
@@ -1453,7 +1453,7 @@ fn removeAt(l &mut List[u32], k usize) {
 }
 
 // Remove v from l, keeping the order: whether it was there
-fn removeValue(l &mut List[u32], v u32) Bool {
+fn removeValue(l &mut List[u32], v u32) bool {
   mut k = 0usize;
   while k < l.len() {
     if *l[k] == v {

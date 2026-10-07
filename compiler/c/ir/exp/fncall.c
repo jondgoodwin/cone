@@ -835,9 +835,9 @@ static int fnCallRefIndexWantsMut(FnCallNode *callnode, INode *foundnode, Name *
     return 1;
 }
 
-// An operator or an index wanting a number, given a Bool, which never coerces to
+// An operator or an index wanting a number, given a bool, which never coerces to
 // one: 'n + b', '1u8 == b' and 'list[b]' select nothing. That refusal is the
-// rule; this reports it as the Bool coercion it is, naming the conversion, in
+// rule; this reports it as the bool coercion it is, naming the conversion, in
 // place of the bare no-candidate message, where a candidate declares a number
 // in that argument's place. Answer whether it reported.
 static int fnCallBoolOperandWantsNumber(FnCallNode *callnode, INode *foundnode, enum OverloadMatch status) {
@@ -851,7 +851,7 @@ static int fnCallBoolOperandWantsNumber(FnCallNode *callnode, INode *foundnode, 
         if (isExpNode(*argsp) && iexpGetTypeDcl(*argsp) == (INode*)boolType
             && (wanted = iNsTypeNumberParm(foundnode, argi))) {
             errorMsgNode(*argsp, ErrorBoolNotNbr,
-                "A Bool is not a number, and %s is wanted here. Convert it explicitly, '%s.from(b)', which gives 0 or 1.",
+                "A bool is not a number, and %s is wanted here. Convert it explicitly, '%s.from(b)', which gives 0 or 1.",
                 itypeName(wanted), itypeName(wanted));
             return 1;
         }
@@ -1422,7 +1422,7 @@ static void fnCallDerefOperand(INode **operandp, FnCallNode *node) {
 // Why two elements of this type cannot be compared with '==', or NULL when
 // they can. It asks what fnCallLowerRefCompare would of the '&a[i] == &b[i]'
 // that core's mem.sliceEq compares each pair with, so a refusal is reported
-// where the slices are compared rather than inside core: a number, Bool or
+// where the slices are compared rather than inside core: a number, bool or
 // pointer compares by its own '==', a reference and a slice by what they
 // refer to, and a struct or a payload-free enum by the '==' it declares.
 static char *fnCallSliceElemNoEq(INode *elemtype, char *buf, size_t size) {
@@ -1949,7 +1949,7 @@ static int fnCallTypeInstancePath(TypeCheckState *pstate, FnCallNode **nodep) {
 
 // 'u64.from(count)': a number type's conversion, the method of the type that
 // takes the value to convert. Every number type has one, taking any number
-// (Bool's also a reference or a pointer). Lowered here,
+// (bool's also a reference or a pointer). Lowered here,
 // once the receiver is known to be a number type -- named directly, through an
 // alias, or as the argument a type parameter has in an instance, since name
 // resolution sees only the parameter -- into the conversion node: a type
@@ -2765,7 +2765,7 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
         node->vtype = errorType;
     }
 
-    // 'not' takes a Bool, which a '==' returning anything else reaches through
+    // 'not' takes a bool, which a '==' returning anything else reaches through
     // isTrue. A '==' that selected nothing has been reported, and the 'not' carries
     // that on rather than earning a second diagnostic.
     if (derivedne) {

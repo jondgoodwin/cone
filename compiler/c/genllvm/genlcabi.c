@@ -18,7 +18,7 @@
  *
  * An integer narrower than C's 'int' keeps its LLVM type but is marked, on the
  * declaration and at each call, with the widening C gives it in its register:
- * a Bool, C's 'bool', 'zeroext' on all three; an 8- or 16-bit integer
+ * a bool, C's 'bool', 'zeroext' on all three; an 8- or 16-bit integer
  * 'signext' or 'zeroext' by its sign on SysV and wasm32, and nothing on Win64.
  *
  * Only a struct is lowered. A slice, a virtual reference, a tuple or an array

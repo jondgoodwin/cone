@@ -320,7 +320,7 @@ static void nbrBitMethods(NbrNode *nbrtype) {
 
 // Declare built-in number types and their names
 void stdNbrInit(int ptrsize) {
-    boolType = newNbrTypeNode("Bool", UintNbrTag, 1);
+    boolType = newNbrTypeNode("bool", UintNbrTag, 1);
     u8Type = newNbrTypeNode("u8", UintNbrTag, 8);
     u16Type = newNbrTypeNode("u16", UintNbrTag, 16);
     u32Type = newNbrTypeNode("u32", UintNbrTag, 32);

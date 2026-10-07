@@ -117,9 +117,9 @@ static uint32_t iNsTypeCandidates(INode **bindingp, INode ***candidatesp) {
     return 0;
 }
 
-// The number type, other than Bool, that some method candidate declares for the
+// The number type, other than bool, that some method candidate declares for the
 // parameter after 'self' numbered 'argi', or NULL when none does. It names what
-// a Bool argument there was wanted as, once no candidate accepted the call.
+// a bool argument there was wanted as, once no candidate accepted the call.
 INode *iNsTypeNumberParm(INode *binding, uint32_t argi) {
     INode **candidatep;
     uint32_t cnt = iNsTypeCandidates(&binding, &candidatep);

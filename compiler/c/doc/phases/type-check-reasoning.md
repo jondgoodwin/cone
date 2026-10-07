@@ -32,7 +32,7 @@ rather than describe.**
    differently at an argument, an assignment and a return. It does report four
    other things itself: an operand that is not an expression node at all,
    whatever `fnCallLowerMethod` reports on the `ConvByMeth` path, a `null`
-   wanted as anything but a raw pointer (`litAdoptNullType`), and a `Bool`
+   wanted as anything but a raw pointer (`litAdoptNullType`), and a `bool`
    wanted as a number (`ErrorBoolNotNbr`). For the last two it answers 1, so
    the caller says nothing more.
 4. **Overload selection filters, it does not rank.** Exactly one viable
@@ -90,10 +90,10 @@ a suffixed literal is against its own type. `iexpCoerce` does the same for a lit
 an overload set's, a generic's or an operator's argument is checked before its
 callee is chosen. Neither reaches the branches of an `if` or a block passed as
 such an argument, whose literals keep the `i32` default; generation refuses one
-whose value does not fit it ([literals](../nodes/literals.md)). **`Bool` is the one
+whose value does not fit it ([literals](../nodes/literals.md)). **`bool` is the one
 number type excluded** — `litAdoptNumberType` refuses it, so a literal meets
-`Bool` through section 5's `isTrue` branch as any other number does, rather than
-being built at `Bool`'s one bit and masked to it. Every other literal is typed by
+`bool` through section 5's `isTrue` branch as any other number does, rather than
+being built at `bool`'s one bit and masked to it. Every other literal is typed by
 the coercion in section 5.
 
 ## 4. The verdict vocabulary
@@ -136,17 +136,17 @@ for anything else.
 1. `itypeMatches(totype, fromtype, Coercion)` — the type-only question,
    dispatched by the *target* type's tag to `nbrMatches`, `structMatches`,
    `refMatches`, `arrayMatches`, `fnSigMatches` and the rest. `nbrMatches`
-   widens within one kind of number, and leaves `Bool` out on both sides: a
+   widens within one kind of number, and leaves `bool` out on both sides: a
    1-bit unsigned to the compiler, it is no number to the language, so it
    neither widens to an unsigned type nor meets one in a branch
-   (`nbrFindSuper`). `iexpCoerce` reports a `Bool` wanted as a number itself,
+   (`nbrFindSuper`). `iexpCoerce` reports a `bool` wanted as a number itself,
    `ErrorBoolNotNbr` naming `T.from(b)`, and injects the conversion so nothing
    that uses the value reports again; an operator or an index that selected no
-   method, given a `Bool` where a candidate declares a number, says the same in
+   method, given a `bool` where a candidate declares a number, says the same in
    place of its no-candidate message (`fnCallBoolOperandWantsNumber`, asking
    `iNsTypeNumberParm`).
-2. **Target is `Bool`**: look for an `isTrue` method on the source type.
-   This branch returns in both arms, so a `Bool` target never reaches the two
+2. **Target is `bool`**: look for an `isTrue` method on the source type.
+   This branch returns in both arms, so a `bool` target never reaches the two
    fallbacks below.
 3. **Source is an untyped integer literal** (`ULitTag` with `FlagUnkType`) and
    the target is any number type: `ConvSubtype`. Deliberately not a subtype
@@ -246,7 +246,7 @@ an `if` branch ending in a `return`, `break` or `continue` gives the `if` no
 value (`ifBlockJumps`), so neither has a say in the type in common.
 
 `ifTypeCheck` carries three obligations a block does not: each condition is
-coerced to `Bool` (which is where implicit `.isTrue` reaches a conditional), a
+coerced to `bool` (which is where implicit `.isTrue` reaches a conditional), a
 closed-variant `is` match that covers everything is rewritten into the `else`
 by `ifExhaustCheck`, and a value-producing `if` with no `else` is `ErrorNoElse`.
 
@@ -534,8 +534,8 @@ one binding of each.
   non-expression case. Grep for callers before changing its contract.
 - **`iexpTypeCheckCoerce` returns 1 on an untyped operand.** Success there means
   "do not complain again", not "this type checked".
-- **The `Bool` branch of `iexpMatches` short-circuits** the untyped-literal and
-  auto-borrow fallbacks. Adding a fallback below it will not apply to `Bool`.
+- **The `bool` branch of `iexpMatches` short-circuits** the untyped-literal and
+  auto-borrow fallbacks. Adding a fallback below it will not apply to `bool`.
 - **Adding a value path to a block means adding it to two loops** — the fold and
   the re-coercion pass in section 6.
 - **A node injected during type check takes the lexer's position**, which is end

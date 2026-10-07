@@ -104,7 +104,7 @@ pub struct Value {
   // Integer
   pub integer i64;
   // Boolean
-  pub boolean Bool;
+  pub boolean bool;
   // List: the strings, in order
   pub list List[String];
 }
@@ -138,7 +138,7 @@ pub struct Table {
   }
 
   // Whether it sets key, to a value of any kind
-  pub fn has(self &, key &[]u8) Bool { self.find(key) < entries.len(); }
+  pub fn has(self &, key &[]u8) bool { self.find(key) < entries.len(); }
 
   // Its keys, in the order written
   pub fn keys(self &) List[String] {
@@ -180,10 +180,10 @@ pub struct Table {
   }
 
   // key's 'true' or 'false', or None when it is not there or is not one
-  pub fn getBool(self &, key &[]u8) Option[Bool] {
+  pub fn getBool(self &, key &[]u8) Option[bool] {
     imm i = self.find(key);
-    if i == entries.len() or entries[i].value.kind != Kind.Boolean[] { return None[Bool][]; }
-    Some[Bool][entries[i].value.boolean];
+    if i == entries.len() or entries[i].value.kind != Kind.Boolean[] { return None[bool][]; }
+    Some[bool][entries[i].value.boolean];
   }
 
   // A copy of key's list of strings, or None when it is not there or is not
@@ -224,7 +224,7 @@ pub struct Document {
   }
 
   // Whether it has a table of that name
-  pub fn has(self &, name &[]u8) Bool { self.find(name) < tables.len(); }
+  pub fn has(self &, name &[]u8) bool { self.find(name) < tables.len(); }
 
   // The names of its tables, in the order written, the root's left out
   pub fn names(self &) List[String] {
@@ -259,7 +259,7 @@ pub struct Document {
 struct Reader {
   pub pos usize;
   pub line u32;
-  pub failed Bool;
+  pub failed bool;
   pub errLine u32;
   pub reason String;
 }
@@ -306,19 +306,19 @@ fn failAt(r &mut Reader, line u32, reason &[]u8) {
 
 fn fail(r &mut Reader, reason &[]u8) { failAt(r, r.line, reason); }
 
-fn isDigit(c u8) Bool { c >= '0' and c <= '9'; }
+fn isDigit(c u8) bool { c >= '0' and c <= '9'; }
 
 // A byte a bare key is made of
-fn isKeyByte(c u8) Bool {
+fn isKeyByte(c u8) bool {
   (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or isDigit(c) or c == '_' or c == '-';
 }
 
 // A control character: one TOML allows nowhere but as a line's end, and a
 // tab, which is a space
-fn isControl(c u8) Bool { (c < 0x20u8 and c != '\t') or c == 0x7Fu8; }
+fn isControl(c u8) bool { (c < 0x20u8 and c != '\t') or c == 0x7Fu8; }
 
 // Whether text holds want at pos
-fn startsAt(text &[]u8, pos usize, want &[]u8) Bool {
+fn startsAt(text &[]u8, pos usize, want &[]u8) bool {
   pos + want.len <= text.len and &text[pos..pos + want.len] == want;
 }
 
@@ -342,7 +342,7 @@ fn skipComment(text &[]u8, r &mut Reader) {
 
 // At a line's end, '\n' or '\r\n': past it. False, having failed, at a '\r'
 // with no '\n' after it, and at anything else.
-fn newline(text &[]u8, r &mut Reader) Bool {
+fn newline(text &[]u8, r &mut Reader) bool {
   if text[r.pos] == '\n' {
     r.pos = r.pos + 1usize;
     r.line = r.line + 1u32;
@@ -369,7 +369,7 @@ fn endLine(text &[]u8, r &mut Reader, what &[]u8) {
 }
 
 // A bare key, appended to dest: false, having failed, when there is none
-fn readKey(text &[]u8, r &mut Reader, dest &mut String, what &[]u8) Bool {
+fn readKey(text &[]u8, r &mut Reader, dest &mut String, what &[]u8) bool {
   imm start = r.pos;
   while r.pos < text.len and isKeyByte(text[r.pos]) { r.pos = r.pos + 1usize; }
   if r.pos > start {
@@ -482,7 +482,7 @@ fn addEntry(t &mut Table, key String, value Value, r &mut Reader) {
 
 // The value after '=', into dest: false, having failed, when there is none
 // the subset holds
-fn readValue(text &[]u8, r &mut Reader, dest &mut Value) Bool {
+fn readValue(text &[]u8, r &mut Reader, dest &mut Value) bool {
   if r.pos >= text.len or text[r.pos] == '\n' or text[r.pos] == '\r' or text[r.pos] == '#' {
     fail(r, "expected a value after '='");
     return false;
@@ -513,11 +513,11 @@ fn readValue(text &[]u8, r &mut Reader, dest &mut Value) Bool {
   readInteger(word, r, &mut dest.integer);
 }
 
-fn isWordEnd(c u8) Bool {
+fn isWordEnd(c u8) bool {
   c == ' ' or c == '\t' or c == '\n' or c == '\r' or c == '#' or c == ',' or c == ']';
 }
 
-fn hasByte(s &[]u8, b u8) Bool {
+fn hasByte(s &[]u8, b u8) bool {
   mut i = 0usize;
   while i < s.len {
     if s[i] == b { return true; }
@@ -528,7 +528,7 @@ fn hasByte(s &[]u8, b u8) Bool {
 
 // word as a decimal integer, into dest: false, having failed, when it is
 // another kind of value or none at all
-fn readInteger(word &[]u8, r &mut Reader, dest &mut i64) Bool {
+fn readInteger(word &[]u8, r &mut Reader, dest &mut i64) bool {
   imm signed = word.len > 0usize and (word[0usize] == '+' or word[0usize] == '-');
   imm body = if signed {&word[1usize..];} else {word;};
   if body == "inf" or body == "nan" {
@@ -592,7 +592,7 @@ fn readInteger(word &[]u8, r &mut Reader, dest &mut i64) Bool {
 
 // At '"': the string, its escapes decoded, appended to dest. False, having
 // failed, at a string the subset does not hold or one not closed.
-fn readString(text &[]u8, r &mut Reader, dest &mut String) Bool {
+fn readString(text &[]u8, r &mut Reader, dest &mut String) bool {
   if startsAt(text, r.pos, "\"\"\"") or startsAt(text, r.pos, "'''") {
     fail(r, "multi-line strings are not supported");
     return false;
@@ -628,7 +628,7 @@ fn readString(text &[]u8, r &mut Reader, dest &mut String) Bool {
 }
 
 // At '\' in a string: the character it stands for, appended to dest
-fn readEscape(text &[]u8, r &mut Reader, dest &mut String) Bool {
+fn readEscape(text &[]u8, r &mut Reader, dest &mut String) bool {
   r.pos = r.pos + 1usize;
   if r.pos >= text.len {
     fail(r, "the string is not closed with '\"' on its line");
@@ -668,7 +668,7 @@ fn hexValue(c u8) u32 {
 
 // The n hex digits after '\u' or '\U': the character they name, appended to
 // dest in UTF-8
-fn readCodePoint(text &[]u8, r &mut Reader, n usize, dest &mut String) Bool {
+fn readCodePoint(text &[]u8, r &mut Reader, n usize, dest &mut String) bool {
   mut cp = 0u32;
   mut i = 0usize;
   while i < n {
@@ -721,7 +721,7 @@ fn skipListSpace(text &[]u8, r &mut Reader) {
 }
 
 // At '[': a list of strings, each appended to dest
-fn readList(text &[]u8, r &mut Reader, dest &mut List[String]) Bool {
+fn readList(text &[]u8, r &mut Reader, dest &mut List[String]) bool {
   imm at = r.line;
   r.pos = r.pos + 1usize;
   while true {

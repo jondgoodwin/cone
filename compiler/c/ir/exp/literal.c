@@ -227,12 +227,12 @@ void litNameRes(NameResState* pstate, IExpNode *node) {
 // Returns 1 when *nodep is now a literal of the wanted type, 0 when it was not
 // an untyped integer literal or the type is not a number.
 //
-// Bool is a number type by tag -- a 1-bit unsigned -- but it is not a width to
+// bool is a number type by tag -- a 1-bit unsigned -- but it is not a width to
 // adopt: its only values are true and false, and a literal reaches it the way
 // any other number does, through isTrue. Adopting it masked the constant to its
-// low bit, so 'mut b Bool = 2', 'b = 2', a Bool return of 2, 'not 2' and
+// low bit, so 'mut b bool = 2', 'b = 2', a bool return of 2, 'not 2' and
 // '2 and 3' all read as false, while 'boolarg(2)' and 'Gauge[2]', which reach
-// Bool through coercion instead, read as true.
+// bool through coercion instead, read as true.
 int litAdoptNumberType(INode **nodep, INode *totype) {
     INode *node = *nodep;
     if (node->tag != ULitTag || !(node->flags & FlagUnkType))
@@ -366,7 +366,7 @@ int litWidenConst(INode **nodep, INode *totype) {
 // so '-128i8' fits and '128i8' does not. An unsigned type takes any magnitude
 // it can hold, negated or not: the manual has a minus on an unsigned literal
 // leave it unsigned, so '-1u8' is 255, the value negation has in 8 bits.
-// Bool is a 1-bit unsigned by tag but is never a literal's own type
+// bool is a 1-bit unsigned by tag but is never a literal's own type
 // (litAdoptNumberType refuses it), so it is not asked.
 static int litFitsType(ULitNode *lit) {
     NbrNode *type = (NbrNode*)itypeGetTypeDcl(lit->vtype);
@@ -565,7 +565,7 @@ static uint64_t litMask(NbrNode *type) {
 }
 
 // An integer's low bits, as many as its type holds, extended to 64:
-// sign-extended for a signed type, zero-extended for an unsigned one and Bool
+// sign-extended for a signed type, zero-extended for an unsigned one and bool
 static uint64_t litExtend(uint64_t v, NbrNode *type) {
     if (type->bits >= 64)
         return v;
@@ -675,7 +675,7 @@ static void litFoldOverflow(INode *at, NbrNode *type, char *what) {
         what, &type->namesym->namestr, range);
 }
 
-// Fold an integer operation. Returns 1 with the result, a Bool for a
+// Fold an integer operation. Returns 1 with the result, a bool for a
 // comparison, or 0 having reported why it has none.
 static int litFoldInt(INode *at, int16_t op, LitNbr *a, LitNbr *b, LitNbr *r) {
     NbrNode *type = a->type;
@@ -804,7 +804,7 @@ static int litFoldInt(INode *at, int16_t op, LitNbr *a, LitNbr *b, LitNbr *r) {
 
 // Fold a float operation, at the type's own width: an f32 is computed as an
 // f32, as it is at run time, never as a double rounded afterward. Returns 1
-// with the result, a Bool for a comparison, or 0 having reported why it has
+// with the result, a bool for a comparison, or 0 having reported why it has
 // none. Neither operand is a NaN or an infinity: a float literal is finite, and
 // a fold never yields either.
 static int litFoldFloat(INode *at, int16_t op, LitNbr *a, LitNbr *b, LitNbr *r) {
@@ -854,7 +854,7 @@ static int litFoldFloat(INode *at, int16_t op, LitNbr *a, LitNbr *b, LitNbr *r) 
 }
 
 // Convert a folded value to a number type, as 'T.from(x)' and a coercion's
-// widening do (genlConvert): to Bool, whether it is non-zero; to a narrower
+// widening do (genlConvert): to bool, whether it is non-zero; to a narrower
 // integer, its low bits; to a wider one, sign-extended only from a signed type
 // to a signed type and zero-extended from its own width otherwise; a float to
 // an integer, truncated toward zero; to a float, the nearest. Returns 1 with the

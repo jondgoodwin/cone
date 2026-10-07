@@ -390,7 +390,7 @@ void genlSameSizeTrait(GenState *gen, StructNode *base) {
     // does not preserve a first-class aggregate's padding bytes. So its type may
     // have no padding where any variant has a field: copying a variant's fields
     // would leave another variant's field in a hole of that layout and lose it
-    // (a Bool at byte 1 beside a variant whose i32 starts at byte 4). Bytes have
+    // (a bool at byte 1 beside a variant whose i32 starts at byte 4). Bytes have
     // no holes, and they reinterpret nothing, where another variant's scalar
     // types would.
     uint32_t ownfields = base->fields.used;

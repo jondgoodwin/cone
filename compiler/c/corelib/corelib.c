@@ -220,7 +220,7 @@ void stdlibInit(int ptrsize) {
     noLoanReadTrait = newBuiltinTrait(noLoanReadTraitName);
     // 'AtomicValue' [Jon 26 Sep]: a struct declaring it is changed only by
     // atomic operations, even where it is 'imm' -- the one exception to 'imm
-    // never changes'. It is a struct of one field, an integer, a Bool or a raw
+    // never changes'. It is a struct of one field, an integer, a bool or a raw
     // pointer (structAtomicValueCheck), and it moves. A value holding one
     // anywhere inline (itypeHoldsAtomic) is never placed in read-only memory,
     // nor held in a 'const'. The core package's 'Atomic[T]' declares it; the

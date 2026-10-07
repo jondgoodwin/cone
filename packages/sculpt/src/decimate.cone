@@ -203,7 +203,7 @@ struct Quadric {
   // conditioned: its determinant above 10^-8 of the cube of its trace (an
   // even A has 1/27 of it; one whose planes are all parallel, or all
   // through one line, has 0)
-  fn solve(self, out &mut DVec3) Bool {
+  fn solve(self, out &mut DVec3) bool {
     imm c00 = b2 * c2 - bc * bc;
     imm c01 = ac * bc - ab * c2;
     imm c02 = ab * bc - b2 * ac;
@@ -231,14 +231,14 @@ struct Collapser {
   pub origin DVec3;
   pub quad List[Quadric];     // per vertex
   pub area List[f64];         // per vertex: its triangles' summed area
-  pub alive List[Bool];       // per vertex: not yet collapsed into another
+  pub alive List[bool];       // per vertex: not yet collapsed into another
   pub ver List[u32];          // per vertex: bumped at each change, to tell a stale heap entry
-  pub pinned List[Bool];      // per vertex: never moves ("crease_vert" above 0)
+  pub pinned List[bool];      // per vertex: never moves ("crease_vert" above 0)
   pub mirror List[u32];       // per vertex: its mirror image, NoIndex for none
   pub axis u32;               // the symmetry
   pub tie f64;                // costs within it are alike: (0.000001 of the box's diagonal) squared
   pub tv List[u32];           // per triangle corner: its vertex
-  pub tAlive List[Bool];      // per triangle
+  pub tAlive List[bool];      // per triangle
   pub incHead List[u32];      // per vertex: the first node of its triangles' chain
   pub incNext List[u32];      // per node: the next in its chain
   pub incTri List[u32];       // per node: its triangle
@@ -249,13 +249,13 @@ struct Collapser {
   // The collapse 'evaluate' or 'check' chose: 'cOther' into 'cKeep' at
   // 'cPos', a fraction 'cT' of the way from cKeep to cOther, keeping cKeep's
   // place when 'cHalf'
-  pub cFound Bool;
+  pub cFound bool;
   pub cKeep u32;
   pub cOther u32;
   pub cPos DVec3;
   pub cT f32;
   pub cCost f64;
-  pub cHalf Bool;
+  pub cHalf bool;
   // The heap: entries' numbers in heap order, the first 'hn' in use
   pub hp List[u32];
   pub hn usize;
@@ -269,7 +269,7 @@ struct Collapser {
 
   // -------- the heap --------
 
-  fn before(self &, i u32, j u32) Bool {
+  fn before(self &, i u32, j u32) bool {
     imm ci = *eCost[usize.from(i)];
     imm cj = *eCost[usize.from(j)];
     if ci != cj { return ci < cj; }
@@ -356,7 +356,7 @@ struct Collapser {
     out;
   }
 
-  fn hasVertex(self &, t u32, v u32) Bool {
+  fn hasVertex(self &, t u32, v u32) bool {
     imm b = 3usize * usize.from(t);
     *tv[b] == v or *tv[b + 1usize] == v or *tv[b + 2usize] == v;
   }
@@ -368,7 +368,7 @@ struct Collapser {
   }
 
   // Two corners alike in every corner channel
-  fn sameCorner(self &, c1 usize, c2 usize) Bool {
+  fn sameCorner(self &, c1 usize, c2 usize) bool {
     imm nc = tv.len();
     mut s = 0usize;
     while s < ncSlots {
@@ -381,7 +381,7 @@ struct Collapser {
   }
 
   // Every corner at v alike: v is on no seam
-  fn seamFree(self &, v u32, tris &List[u32]) Bool {
+  fn seamFree(self &, v u32, tris &List[u32]) bool {
     if ncSlots == 0usize or tris.len() == 0usize { return true; }
     imm first = self.cornerAt(*tris[0usize], v);
     mut i = 1usize;
@@ -426,7 +426,7 @@ struct Collapser {
 
   // Whether collapsing edge a-b keeps the mesh a manifold: 'flank' the
   // triangles on the edge, ta and tb those about a and b
-  fn topologyOk(self &, a u32, b u32, ta &List[u32], tb &List[u32], flank &List[u32]) Bool {
+  fn topologyOk(self &, a u32, b u32, ta &List[u32], tb &List[u32], flank &List[u32]) bool {
     mut na = List[u32].withCapacity(16usize);
     mut ca = List[u32].withCapacity(16usize);
     mut nb = List[u32].withCapacity(16usize);
@@ -497,7 +497,7 @@ struct Collapser {
   }
 
   // Whether 'tris' holds a triangle with vertices w and x and not y
-  fn holds(self &, tris &List[u32], w u32, x u32, y u32) Bool {
+  fn holds(self &, tris &List[u32], w u32, x u32, y u32) bool {
     mut i = 0usize;
     while i < tris.len() {
       imm t = *tris[i];
@@ -510,7 +510,7 @@ struct Collapser {
   // Whether moving a and b to p turns no triangle about them over or flat
   // (those on the edge go, so they are not asked); ta and tb hold the
   // triangles about the two, in either order
-  fn flipFree(self &, a u32, b u32, p DVec3, ta &List[u32], tb &List[u32]) Bool {
+  fn flipFree(self &, a u32, b u32, p DVec3, ta &List[u32], tb &List[u32]) bool {
     mut i = 0usize;
     while i < ta.len() {
       imm t = *ta[i];
@@ -527,7 +527,7 @@ struct Collapser {
   }
 
   // Whether triangle t turns over, or loses its area, with a and b moved to p
-  fn flips(self &, t u32, a u32, b u32, p DVec3) Bool {
+  fn flips(self &, t u32, a u32, b u32, p DVec3) bool {
     imm base = 3usize * usize.from(t);
     imm v0 = *tv[base];
     imm v1 = *tv[base + 1usize];
@@ -546,7 +546,7 @@ struct Collapser {
   // Whether 'other' may collapse into 'keep' in place: each corner at
   // 'other' (in a triangle that stays) matches the corner at 'other' of a
   // triangle on the edge, and every such match agrees at 'keep'
-  fn compatible(self &, keep u32, other u32, tOther &List[u32], flank &List[u32]) Bool {
+  fn compatible(self &, keep u32, other u32, tOther &List[u32], flank &List[u32]) bool {
     if ncSlots == 0usize { return true; }
     mut i = 0usize;
     while i < tOther.len() {
@@ -621,7 +621,7 @@ struct Collapser {
 
   // A candidate collapse, taken when it is cheaper than the one found so
   // far and turns nothing over
-  fn consider(self &mut, keep u32, other u32, p DVec3, half Bool, q Quadric, w f64, ta &List[u32], tb &List[u32]) {
+  fn consider(self &mut, keep u32, other u32, p DVec3, half bool, q Quadric, w f64, ta &List[u32], tb &List[u32]) {
     imm cost = self.costAt(q, w, p);
     if cFound and cost >= cCost - tie { return; }
     if !self.flipFree(keep, other, p, ta, tb) { return; }
@@ -636,7 +636,7 @@ struct Collapser {
 
   // The cheapest allowed collapse of edge a-b, into the c fields; false
   // when none is allowed
-  fn evaluate(self &mut, a u32, b u32) Bool {
+  fn evaluate(self &mut, a u32, b u32) bool {
     cFound = false;
     if a == b or !*alive[usize.from(a)] or !*alive[usize.from(b)] { return false; }
     imm ta = self.liveTris(a);
@@ -683,7 +683,7 @@ struct Collapser {
   // Whether the given collapse ('other' into 'keep' at p, in place when
   // 'half') is allowed, setting the c fields when it is: the mirror of a
   // collapse chosen by 'evaluate'
-  fn check(self &mut, keep u32, other u32, p DVec3, half Bool) Bool {
+  fn check(self &mut, keep u32, other u32, p DVec3, half bool) bool {
     cFound = false;
     if keep == other or !*alive[usize.from(keep)] or !*alive[usize.from(other)] { return false; }
     if *pinned[usize.from(other)] or (!half and *pinned[usize.from(keep)]) { return false; }
@@ -1129,7 +1129,7 @@ fn startCollapser(m &PolyMesh, symmetry u32, weight &[]u8, te &mut List[u32], tf
   imm vcrease = m.findFloatChannel(VertexDomain, "crease_vert");
   imm ecrease = m.findFloatChannel(EdgeDomain, "crease");
   mut wts = List[f64].withCapacity(nv);
-  mut pinned = List[Bool].withCapacity(nv);
+  mut pinned = List[bool].withCapacity(nv);
   v = 0usize;
   while v < nv {
     wts.push(if wch != NoIndex {f64.from(m.float(wch, u32.from(v)));} else {1.d;});
@@ -1209,13 +1209,13 @@ fn startCollapser(m &PolyMesh, symmetry u32, weight &[]u8, te &mut List[u32], tf
     incHead.set(vc, u32.from(incTri.len() - 1usize));
   }
 
-  mut tAlive = List[Bool].withCapacity(nt);
+  mut tAlive = List[bool].withCapacity(nt);
   t = 0usize;
   while t < nt {
     tAlive.push(true);
     t = t + 1usize;
   }
-  mut alive = List[Bool].withCapacity(nv);
+  mut alive = List[bool].withCapacity(nv);
   mut ver = List[u32].withCapacity(nv);
   v = 0usize;
   while v < nv {
@@ -1272,7 +1272,7 @@ fn appendByCorner(dst &mut List[Vec3], src &List[Vec3], th &List[u32]) {
 
 // Whether edge e, with a face on each side, is a seam: a corner channel's
 // values differ across it at either end
-fn seamEdge(m &PolyMesh, e u32) Bool {
+fn seamEdge(m &PolyMesh, e u32) bool {
   imm h = 2u32 * e;
   imm tw = h + 1u32;
   if m.face(h) == NoIndex or m.face(tw) == NoIndex { return false; }
@@ -1282,7 +1282,7 @@ fn seamEdge(m &PolyMesh, e u32) Bool {
 }
 
 // Whether two corners (half-edges) differ in any corner channel of m
-fn cornersDiffer(m &PolyMesh, h1 u32, h2 u32) Bool {
+fn cornersDiffer(m &PolyMesh, h1 u32, h2 u32) bool {
   mut c = 0usize;
   while c < m.floats.len() {
     if m.floats[c].domain == CornerDomain and m.float(u32.from(c), h1) != m.float(u32.from(c), h2) { return true; }

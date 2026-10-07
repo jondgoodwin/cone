@@ -476,8 +476,8 @@ static LLVMAtomicOrdering genlAtomicOrdering(MemOrderKind order) {
 // the constants the call was given, which type check found allowed
 // (intrinsicCallCheck), so LLVM is never handed one it would refuse. Each is
 // one instruction, aligned as the type is, which a lock-free target does
-// indivisibly. A Bool is an i1 held in a byte: the instruction acts on the
-// byte, into which a Bool is written as 0 or 1 and out of which its low bit is
+// indivisibly. A bool is an i1 held in a byte: the instruction acts on the
+// byte, into which a bool is written as 0 or 1 and out of which its low bit is
 // read, since LLVM's atomics take no i1.
 static LLVMValueRef genlAtomicIntrinsic(GenState *gen, FnDclNode *fndcl, FnCallNode *call, LLVMValueRef *fnargs) {
     IntrinsicNode *intrinsic = (IntrinsicNode *)fndcl->value;
@@ -1220,9 +1220,9 @@ LLVMValueRef genlConvert(GenState *gen, INode* exp, INode* to) {
     INode *totype = itypeGetTypeDcl(to);
     LLVMValueRef genexp = genlExpr(gen, exp);
 
-    // Converting to Bool asks what the 'isTrue' intrinsic asks of a condition:
+    // Converting to bool asks what the 'isTrue' intrinsic asks of a condition:
     // is a reference or pointer non-null, is an integer non-zero, is a float
-    // neither 0 nor -0 (NaN is true). Bool is a 1-bit UintNbrTag, so without
+    // neither 0 nor -0 (NaN is true). bool is a 1-bit UintNbrTag, so without
     // this the number cases below would keep the low bit ('trunc': 2 was false)
     // and turn a float into an integer first (0.5 was false), and would read
     // NbrNode fields off a RefNode/StarNode and emit a 'trunc' of a pointer.

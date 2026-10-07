@@ -61,8 +61,8 @@ struct Rec {
   state u32;
   kind u32;
   asked u32;              // askedCancel, askedDeadline: a cancel has been asked, and why
-  hit Bool;               // its deadline has passed: the grace is running, or has run
-  abandon Bool;           // decided TimedOut while the kernel or the pool still holds it
+  hit bool;               // its deadline has passed: the grace is running, or has run
+  abandon bool;           // decided TimedOut while the kernel or the pool still holds it
   nextFree u32;
   handle usize;           // the OS handle the operation is on, for CancelIoEx
   newSock usize;          // Accept's or Connect's new socket, until registered
@@ -110,7 +110,7 @@ const recsPerBlock = 64u32;
 
 // Whether an operation of kind k is held in a JobBox: a pool job, or an
 // external operation
-fn boxed(k u32) Bool {k == diag.kindCall or k == diag.kindExternal;}
+fn boxed(k u32) bool {k == diag.kindCall or k == diag.kindExternal;}
 
 // What a handle is
 const hFree = 0u32;
@@ -149,7 +149,7 @@ pub struct Loop {
   freeRec u32;
   kernelHeld u32;         // records the kernel holds: it has not completed them
   grouped u32;            // records in flight in a cancel group
-  groupsDirty Bool;       // a group's cancel has been posted: look at the grouped records
+  groupsDirty bool;       // a group's cancel has been posted: look at the grouped records
   decided List[u32];
   heldC List[Completion]; // answers held back by a full channel...
   heldT List[Target];     // ...and where they go
@@ -160,13 +160,13 @@ pub struct Loop {
   entries *OverlappedEntry;
   timer usize;            // the high-resolution waitable timer
   packet usize;           // its wait completion packet, or 0 when none could be made
-  associated Bool;        // the packet is associated, and not yet taken from the port
+  associated bool;        // the packet is associated, and not yet taken from the port
   armedFor Instant;       // the instant the timer is set for
-  woken Bool;
+  woken bool;
   grace Duration;         // after a deadline, how long the kernel has to give the buffer back
   stats diag.Counters;
   sub diag.Subscriber;
-  subscribed Bool;
+  subscribed bool;
 
   // A new loop for the calling thread, or the reason there is none
   pub fn make() Result[Loop, IoError] {
@@ -201,7 +201,7 @@ pub struct Loop {
       packet = 0usize;
     }
     imm entries = libc.malloc(usize.from(batch) * mem.sizeof[OverlappedEntry]()) as *OverlappedEntry;
-    imm shared = new Arc[imm, Port](new Port(port, Atomic[Bool].of(false)));
+    imm shared = new Arc[imm, Port](new Port(port, Atomic[bool].of(false)));
     new Loop(
       loopId: diag.nextLoopId(), port: shared, portHandle: port,
       blocks: List[*Rec].empty(), recCount: 0u32, freeRec: noEntry, kernelHeld: 0u32,
@@ -325,12 +325,12 @@ pub struct Loop {
   }
 
   // Whether h names something this loop holds
-  pub fn isOpen(self &, h Handle) Bool {self.handleIndex(h) != noEntry;}
+  pub fn isOpen(self &, h Handle) bool {self.handleIndex(h) != noEntry;}
 
   // Close what h names: every operation in flight on it is cancelled (each
   // still answers), and h names nothing from now on. False if it named
   // nothing already
-  pub fn close(self &mut, h Handle) Bool {
+  pub fn close(self &mut, h Handle) bool {
     imm i = self.handleIndex(h);
     if i == noEntry {return false;}
     imm e = &mut handles[usize.from(i)];
@@ -359,7 +359,7 @@ pub struct Loop {
   // reset (RST), not finished, and what was not yet sent is dropped. As
   // 'close' otherwise: everything in flight on it is cancelled, and h names
   // nothing from now on. False if it named no socket
-  pub fn reset(self &mut, h Handle) Bool {
+  pub fn reset(self &mut, h Handle) bool {
     imm i = self.handleIndex(h);
     if i == noEntry {return false;}
     imm e = &mut handles[usize.from(i)];
@@ -585,7 +585,7 @@ pub struct Loop {
   // Send c on a channel without waiting: false when it is taken, or its
   // receiver has gone (c dropped, its buffer home); true when the channel
   // is full, c handed back in 'back'
-  fn tryChan(self &mut, tx &Sender[Completion], c Completion, back &mut Completion) Bool {
+  fn tryChan(self &mut, tx &Sender[Completion], c Completion, back &mut Completion) bool {
     mut full = false;
     match tx.trySend(c) {
       case mut s Some {
@@ -758,7 +758,7 @@ pub struct Loop {
 
   // The group's part of a submit: the record joins it, and the loop is told
   // when it is cancelled. True when it is cancelled already
-  fn join(self &mut, i u32, group Option[CancelGroup]) Bool {
+  fn join(self &mut, i u32, group Option[CancelGroup]) bool {
     imm r = self.recAt(i) as &mut Rec;
     mut g = group;
     r.group <=> g;
@@ -979,7 +979,7 @@ pub struct Loop {
     0u32;
   }
 
-  fn startRecv(self &mut, p *Rec, sock Handle, ready Bool) u32 {
+  fn startRecv(self &mut, p *Rec, sock Handle, ready bool) u32 {
     imm r = p as &mut Rec;
     imm raw = self.rawOf(sock, hSocket);
     if raw == invalidHandle {return errorInvalidHandle;}
@@ -1016,7 +1016,7 @@ pub struct Loop {
     0u32;
   }
 
-  fn startFile(self &mut, p *Rec, file Handle, at u64, write Bool) u32 {
+  fn startFile(self &mut, p *Rec, file Handle, at u64, write bool) u32 {
     imm r = p as &mut Rec;
     imm raw = self.rawOf(file, hFile);
     if raw == invalidHandle {return errorInvalidHandle;}
@@ -1066,7 +1066,7 @@ pub struct Loop {
   // Ask an operation or a timer to end (see the package's header, CANCEL):
   // true while its answer is still to come, false once it is decided or for
   // an id that names nothing
-  pub fn cancel(self &mut, id OpId) Bool {
+  pub fn cancel(self &mut, id OpId) bool {
     if id.isNone() or id.index >= recCount {return false;}
     imm r = self.recAt(id.index) as &mut Rec;
     if r.gen != id.gen or r.state != stFlight {return false;}

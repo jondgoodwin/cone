@@ -81,7 +81,7 @@ enum IntrinsicFn {
     // ('typearg'), fixed when its instance was type checked.
     SizeofIntrinsic,        // sizeof[T]() usize
     AlignofIntrinsic,       // alignof[T]() usize
-    NeedsFinalIntrinsic,    // needsFinal[T]() Bool
+    NeedsFinalIntrinsic,    // needsFinal[T]() bool
     FinalizeIntrinsic,      // finalize[T](p *T)
     SliceFromPartsIntrinsic,    // sliceFromParts[T](p *T, len usize) &[]T
     SliceFromPartsMutIntrinsic, // sliceFromPartsMut[T](p *T, len usize) &[]mut T
@@ -89,7 +89,7 @@ enum IntrinsicFn {
     WriteRawIntrinsic,      // writeRaw[T](p *T, value T)
     MoveRawIntrinsic,       // moveRaw[T](to *T, from *T, count usize)
     TypeRecordIntrinsic,    // typeRecord[T]() *TypeRecord
-    HoldsTracedIntrinsic,   // holdsTraced[T]() Bool
+    HoldsTracedIntrinsic,   // holdsTraced[T]() bool
     TraceIntrinsic,         // trace[T](p *T, mode u32)
     TraceRootsIntrinsic,    // traceRoots(mode u32)
     // The atomic operations: each takes its ordering as a constant MemOrder,
@@ -104,7 +104,7 @@ enum IntrinsicFn {
     AtomicXorIntrinsic,     // atomicXor[T](p *T, value T, order MemOrder) T
     AtomicMinIntrinsic,     // atomicMin[T](p *T, value T, order MemOrder) T: signed for a signed T
     AtomicMaxIntrinsic,     // atomicMax[T](p *T, value T, order MemOrder) T: signed for a signed T
-    AtomicCompareSwapIntrinsic, // atomicCompareSwap[T](p *T, expected T, desired T, success MemOrder, failure MemOrder) T, Bool
+    AtomicCompareSwapIntrinsic, // atomicCompareSwap[T](p *T, expected T, desired T, success MemOrder, failure MemOrder) T, bool
     // Where the call is written: its source file's name, and its line. Written
     // as a parameter's default value, where each call taking the default is
     // (fnCallFinalizeArgs), which is how 'panic' reports its caller
@@ -113,15 +113,15 @@ enum IntrinsicFn {
     // Whether this is a debug build ('conec --debug', or 'build: debug' in a
     // build description): a constant, so only the side of an 'if' on it that
     // the build takes is generated (genlIf)
-    IsDebugBuildIntrinsic,  // isDebugBuild() Bool
+    IsDebugBuildIntrinsic,  // isDebugBuild() bool
     // TEMPORARY, a provisional mechanism whose final design is open: constants
     // of the build like isDebugBuild, the target's OS from its triple, and
     // what '-D' defined (intrinsicBuildConst)
-    IsWindowsIntrinsic,     // isWindows() Bool
-    IsLinuxIntrinsic,       // isLinux() Bool
-    IsMacOSIntrinsic,       // isMacOS() Bool
-    IsWasmIntrinsic,        // isWasm() Bool
-    IsDefinedIntrinsic,     // isDefined(name &[]u8) Bool
+    IsWindowsIntrinsic,     // isWindows() bool
+    IsLinuxIntrinsic,       // isLinux() bool
+    IsMacOSIntrinsic,       // isMacOS() bool
+    IsWasmIntrinsic,        // isWasm() bool
+    IsDefinedIntrinsic,     // isDefined(name &[]u8) bool
     DefinedIntIntrinsic,    // definedInt(name &[]u8) i64
     // An integer's bits. Each is also a method of every integer type
     // (corenumber.c), its node carrying that type as its typearg, which is how
@@ -207,7 +207,7 @@ StructNode *typeRecordStruct(void);
 // hold it to its signature and remember it for sliceEqFn
 void sliceEqDclNameRes(FnDclNode *fndcl);
 
-// Core's generic 'mem.sliceEq[T](a &[]T, b &[]T) Bool', which '==' and '!=' on
+// Core's generic 'mem.sliceEq[T](a &[]T, b &[]T) bool', which '==' and '!=' on
 // two slices call (fnCallLowerSliceCompare); NULL before core's declaration is
 // name resolved, or in a compile whose core declares none
 FnDclNode *sliceEqFn(void);
@@ -220,7 +220,7 @@ FnDclNode *sliceEqFn(void);
 int intrinsicClassCheck(FnDclNode *fndcl);
 
 // Is this a type some atomic operation acts on: an integer of 8 to 64 bits,
-// Bool or a raw pointer?
+// bool or a raw pointer?
 int intrinsicIsAtomicType(INode *type);
 
 // Check a call to a declared intrinsic once its arguments are coerced and its

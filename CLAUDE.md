@@ -37,7 +37,7 @@ Visual Studio projects stay at the root.
   lock permission for `Rc` (`Rc[Rwcell, T]`), `TypeRecord`, the
   per-type record the compiler builds, `mem`, holding the intrinsics
   declared with `@intrinsic`, and `MemOrder`, the orderings its atomic ones
-  take; `Atomic[T]`, an integer, `Bool` or raw pointer changed only by
+  take; `Atomic[T]`, an integer, `bool` or raw pointer changed only by
   atomic operations over those intrinsics, which declares the built-in marker
   `AtomicValue` (core's because it needs no OS, as Rust keeps its atomics in
   `core::sync::atomic`); and `panic`, `assert`, `unreachable`, `todo` and `setPanicHook`, whose

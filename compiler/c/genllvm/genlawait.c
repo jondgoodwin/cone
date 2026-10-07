@@ -537,7 +537,7 @@ static LLVMValueRef genlFutureOpen(GenState *gen, AwaitNode *node, LLVMValueRef 
     return value;
 }
 
-// A Bool a runtime function answered, as a branch's condition
+// A bool a runtime function answered, as a branch's condition
 static LLVMValueRef genlTruth(GenState *gen, LLVMValueRef b) {
     return LLVMBuildICmp(gen->builder, LLVMIntNE, b, LLVMConstInt(LLVMTypeOf(b), 0, 0), "");
 }
