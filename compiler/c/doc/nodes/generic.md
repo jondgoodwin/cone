@@ -268,8 +268,9 @@ not generic, or an instance of a generic trait written with its type arguments,
 given as many arguments as the trait has parameters, `ErrorArgCount`; not in a
 condition on an `is` entry), or a type that is neither a generic type nor a trait
 (`genericNamedType`): `where T is bool` [Jon 27 Sep]. The inline slot takes the
-same, `[T, S Stack[T]]`. The arguments are resolved with the parameters hooked so
-far, so a bound names the parameters written before it. A generic trait named
+same, `[T, S Stack[T]]`. The arguments are resolved with every parameter hooked
+(`genericParmsNameRes` hooks them all, then resolves what follows each), so a
+bound names a parameter written after it as well as before: `[S Stack[T], T]`. A generic trait named
 with no arguments names no trait, `ErrorGenParmConstr` inline and `ErrorWhereTrait`
 in a clause, each saying to give the arguments. A subject that is anything
 else is `ErrorWhereSubject`, and a name that is neither `ErrorWhereTrait`; a name

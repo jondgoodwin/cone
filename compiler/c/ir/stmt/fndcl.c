@@ -195,10 +195,8 @@ void fnDclNameRes(NameResState *nstate, FnDclNode *fndclnode) {
     // Resolve generic parameters inside the hooked context. Resolving one hooks
     // it, so doing it before the push would bind it in the enclosing scope and
     // the matching pop would never remove it.
-    if (fndclnode->genericinfo) {
-        for (nodesFor(fndclnode->genericinfo->parms, cnt, nodesp))
-            inodeNameRes(nstate, nodesp);
-    }
+    if (fndclnode->genericinfo)
+        genericParmsNameRes(nstate, fndclnode->genericinfo->parms);
     // Its constraints: a generic function's are requirements on its own type
     // parameters, and a generic type's method's are conditions on the type's,
     // for the method to exist. A function that is neither has no parameter for
