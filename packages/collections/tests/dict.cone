@@ -1,18 +1,15 @@
-// Dict[String, V]: inserting, replacing, finding, removing, colliding and
-// growing. Every expected value is worked out by hand from the dictionary's
-// rules and FNV-1a's definition:
-// - the block starts at 8 slots and doubles before full and removed slots
-//   together would pass three quarters of it, so it holds 6 entries in 8
-//   slots, 12 in 16, 24 in 32, 48 in 64, 96 in 128, and 100 need 256; when
-//   removed slots are most of it, it is rebuilt at the same size instead;
-// - a key's first slot is its hash's low bits. For a one-byte key c, the hash
-//   is (basis ^ c) * prime; the basis ends in binary 101 and the prime in 011,
-//   so the low three bits are ((5 ^ (c & 7)) * 3) & 7. The letters a, i, q, y
-//   (0x61, 0x69, 0x71, 0x79) all end in 001, giving (4 * 3) & 7 = 4; h, p, x
-//   (0x68, 0x70, 0x78) end in 000, giving (5 * 3) & 7 = 7. The test checks
-//   those against 'hashBytes' before relying on them;
-// - a collision steps on to the next slot, wrapping from the last to the
-//   first; 'keys' lists the keys in slot order.
+// Dict[String, V]: inserting, replacing, finding, removing, growing and the
+// ways of asking, by a String and by bytes. A dictionary visits its entries in
+// an order that is the seed's, so nothing here prints or checks an order: the
+// keys are sorted, or summed, or looked up. Every expected value is worked
+// out by hand from the table's rules:
+// - the block starts at 8 buckets, which hold 7 entries (7 in every 8
+//   buckets), and doubles when an eighth arrives: 14 entries in 16 buckets,
+//   28 in 32, 56 in 64, 112 in 128, so 100 entries need 128 buckets, and
+//   'capacity' says how many entries it holds before it grows;
+// - removing an entry gives its room back, or leaves a removed bucket that is
+//   rebuilt away at the next growth, so a dictionary that fills and empties
+//   over and over does not grow without end.
 
 mod dict;
 
@@ -24,12 +21,15 @@ fn main() i32 {
   mut d = Dict[String, i64].empty();
   expectUInt(u64.from(d.len()), 0, "empty length");
   expectUInt(u64.from(d.capacity()), 0, "empty capacity");
+  expectBool(d.isEmpty(), true, "empty is empty");
   expectBool(d.contains("core"), false, "empty contains nothing");
   expectNone(d.remove("core"), "removing from empty");
+  expect(isNone(d.get("core")), "getting from empty");
+  expectUInt(u64.from(keysOf(&d).len()), 0, "no keys");
 
   // Insert, then replace
   expectBool(d.insert(String.from("core"), 1), false, "a new key");
-  expectUInt(u64.from(d.capacity()), 8, "the first entry makes 8 slots");
+  expectUInt(u64.from(d.capacity()), 7, "the first entry makes 8 buckets, room for 7");
   expectBool(d.insert(String.from("stdio"), 2), false, "another new key");
   expectBool(d.insert(String.from("core"), 5), true, "the same key replaces");
   expectUInt(u64.from(d.len()), 2, "replacing adds nothing");
@@ -38,63 +38,46 @@ fn main() i32 {
   expectBool(d.contains("stdio"), true, "contains stdio");
   expectBool(d.contains("std"), false, "not a prefix of a key");
   expectBool(d.contains(""), false, "not the empty key");
+
+  // Asking by a String, as well as by bytes
+  imm stdio = String.from("stdio");
+  expectBool(d.contains(&stdio), true, "contains, by a String");
+  expectRef(d.get(&stdio), 2, "get, by a String");
+  expectRef(d.get("stdio"), 2, "get, by bytes");
+  expectRef(d.get(stdio.view()), 2, "get, by a view");
+  expect(isNone(d.get(&String.from("std"))), "get of a missing String");
+  expectOpt(d.getCopy("core"), 5, "a copy of the value");
+  match d.getCopy("nope") {
+    case is Some[i64] {expect(false, "a copy of nothing");}
+    case is None[i64] {expect(true, "a copy of nothing");}
+  }
+
+  // Changing a value in place
+  match d.getMut("core") {
+    case mut v Some {*v.value = 6;}
+    case is None {expect(false, "getMut finds core");}
+  }
+  expectInt(*d["core"], 6, "changed through getMut");
+  *&mut d["core"] = 7;
+  expectInt(*d["core"], 7, "changed through &mut d[key]");
   expectOpt(d.remove("stdio"), 2, "removed stdio");
   expectBool(d.contains("stdio"), false, "stdio is gone");
   expectUInt(u64.from(d.len()), 1, "one left");
+  expectNone(d.remove("stdio"), "removing it again");
 
-  // The slot arithmetic above, checked
-  expectUInt(hashBytes("a") & 7u64, 4, "a starts at slot 4");
-  expectUInt(hashBytes("i") & 7u64, 4, "i starts at slot 4");
-  expectUInt(hashBytes("q") & 7u64, 4, "q starts at slot 4");
-  expectUInt(hashBytes("y") & 7u64, 4, "y starts at slot 4");
-  expectUInt(hashBytes("h") & 7u64, 7, "h starts at slot 7");
-  expectUInt(hashBytes("p") & 7u64, 7, "p starts at slot 7");
-  expectUInt(hashBytes("x") & 7u64, 7, "x starts at slot 7");
-
-  // Collisions: a, i, q take slots 4, 5, 6
-  mut c = new Dict[String, i64] <- String.from("a"): 1, String.from("i"): 2, String.from("q"): 3;
-  expectKeys(c.keys(), "a", "i", "q", "", "colliding keys in slots 4, 5, 6");
-  expectInt(*c["q"], 3, "the third of three colliding keys");
-  // Removing i leaves slot 5 marked removed: q, past it, is still found
-  expectOpt(c.remove("i"), 2, "removed the middle one");
-  expectBool(c.contains("i"), false, "i is gone");
-  expectBool(c.contains("q"), true, "q is found past the removed slot");
-  expectInt(*c["q"], 3, "q's value past the removed slot");
-  expectUInt(u64.from(c.len()), 2, "two left");
-  // y also starts at 4, and takes the removed slot 5
-  c.insert(String.from("y"), 4);
-  expectKeys(c.keys(), "a", "y", "q", "", "y reuses the removed slot");
-  // i again: 4, 5, 6 are full, so slot 7
-  c.insert(String.from("i"), 5);
-  expectKeys(c.keys(), "a", "y", "q", "i", "i comes back in slot 7");
-  expectInt(*c["i"], 5, "i's new value");
-  expectInt(*c["a"], 1, "a untouched");
-  expectBool(c.insert(String.from("y"), 6), true, "replacing a colliding key");
-  expectInt(*c["y"], 6, "y replaced");
-  expectUInt(u64.from(c.len()), 4, "four entries");
-
-  // Wrapping: h, p, x all start at slot 7, the last; p and x wrap to 0 and 1,
-  // so in slot order they come first
-  imm w = new Dict[String, i64] <- String.from("h"): 1, String.from("p"): 2, String.from("x"): 3;
-  expectKeys(w.keys(), "p", "x", "h", "", "wrapped past the last slot");
-  expectInt(*w["x"], 3, "found after wrapping");
-
-  // Removed slots rebuilt away: six entries fill 8 slots to the limit;
-  // removing five leaves one entry and five removed slots, so the next insert
-  // (one entry, five removed and one more, 7 of 8) rebuilds the block at the
-  // same size, since one entry is far under half of it
-  mut r = new Dict[String, i64] <- String.from("a"): 1, String.from("b"): 2, String.from("c"): 3,
-    String.from("d"): 4, String.from("e"): 5, String.from("f"): 6;
-  expectUInt(u64.from(r.capacity()), 8, "six fit in eight");
-  r.remove("a");
-  r.remove("b");
-  r.remove("c");
-  r.remove("d");
-  r.remove("e");
-  r.insert(String.from("g"), 7);
-  expectUInt(u64.from(r.capacity()), 8, "rebuilt at the same size");
-  expectUInt(u64.from(r.len()), 2, "f and g");
-  expectInt(*r["f"] + *r["g"], 13, "6 + 7");
+  // A count kept with one search each: the value there, or else the one given
+  mut counts = Dict[String, i64].empty();
+  mut w = 0i64;
+  while w < 30i64 {
+    mut word = String.from("w");
+    word.appendInt(w % 3i64);
+    *counts.getOrInsert(word, 0) += 1;
+    w = w + 1i64;
+  }
+  expectUInt(u64.from(counts.len()), 3, "three words");
+  expectInt(*counts["w0"], 10, "ten of w0");
+  expectInt(*counts["w1"], 10, "ten of w1");
+  expectInt(*counts["w2"], 10, "ten of w2");
 
   // Growth: k0 to k99, each mapped to its square. 0^2 + 1^2 + ... + 99^2 =
   // 99 * 100 * 199 / 6 = 328350
@@ -105,19 +88,23 @@ fn main() i32 {
     key.appendInt(n);
     g.insert(key, n * n);
     n = n + 1i64;
+    if n == 7i64 { expectUInt(u64.from(g.capacity()), 7, "seven fit in the first block"); }
+    if n == 8i64 { expectUInt(u64.from(g.capacity()), 14, "the eighth makes 16 buckets"); }
+    if n == 15i64 { expectUInt(u64.from(g.capacity()), 28, "the fifteenth makes 32"); }
   }
   expectUInt(u64.from(g.len()), 100, "a hundred entries");
-  expectUInt(u64.from(g.capacity()), 256, "8 doubled five times");
+  expectUInt(u64.from(g.capacity()), 112, "8 buckets doubled four times");
   mut wrong = 0i64;
   n = 0i64;
   while n < 100i64 {
     mut key = String.from("k");
     key.appendInt(n);
     if *g[key.view()] != n * n { wrong = wrong + 1i64; }
+    if *g[&key] != n * n { wrong = wrong + 1i64; }
     n = n + 1i64;
   }
   expectInt(wrong, 0, "every key finds its own square");
-  imm ks = g.keys();
+  imm ks = keysOf(&g);
   expectUInt(u64.from(ks.len()), 100, "a hundred keys");
   mut total = 0i64;
   mut j = 0usize;
@@ -128,6 +115,70 @@ fn main() i32 {
   expectInt(total, 328350, "the squares found through the keys");
   expectBool(g.contains("k100"), false, "no k100");
 
+  // The three cursors visit each entry once
+  mut seen = 0i64;
+  mut sumOfValues = 0i64;
+  mut keyBytes = 0i64;
+  mut kc = g.keys();
+  while true {
+    match kc.next() {
+      case imm k Some {seen = seen + 1i64; keyBytes = keyBytes + i64.from(k.value.len());}
+      case is None {break;}
+    }
+  }
+  expectInt(seen, 100, "keys visits a hundred");
+  // k0 to k9 are 2 bytes, k10 to k99 are 3: 10 * 2 + 90 * 3
+  expectInt(keyBytes, 290, "their lengths");
+  mut vc = g.values();
+  while true {
+    match vc.next() {
+      case imm v Some {sumOfValues = sumOfValues + *v.value;}
+      case is None {break;}
+    }
+  }
+  expectInt(sumOfValues, 328350, "values sum to the squares");
+  mut ec = g.entries();
+  mut pairs = 0i64;
+  mut mismatched = 0i64;
+  while true {
+    match ec.next() {
+      case imm e Some {
+        pairs = pairs + 1i64;
+        // k plus the digits: the square of the number it spells
+        imm num = parseInt(&e.value.key.view()[1usize..]);
+        match num {
+          case imm x Some {if x.value * x.value != e.value.value {mismatched = mismatched + 1i64;}}
+          case is None {mismatched = mismatched + 1i64;}
+        }
+      }
+      case is None {break;}
+    }
+  }
+  expectInt(pairs, 100, "entries visits a hundred");
+  expectInt(mismatched, 0, "each key beside its own value");
+  mut nothing = Dict[String, i64].empty();
+  expect(isNoneRef(nothing.keys().next()), "no keys of an empty dictionary");
+
+  // Fill and empty over and over: removed buckets are rebuilt away, so it does
+  // not keep growing (never more than 16 buckets for the 8 entries it holds)
+  mut churn = Dict[String, i64].empty();
+  mut round = 0i64;
+  while round < 200i64 {
+    mut key = String.from("c");
+    key.appendInt(round);
+    churn.insert(key, round);
+    if round >= 8i64 {
+      mut old = String.from("c");
+      old.appendInt(round - 8i64);
+      churn.remove(old.view());
+    }
+    round = round + 1i64;
+  }
+  expectUInt(u64.from(churn.len()), 8, "eight kept");
+  expect(churn.capacity() <= 14usize, "removed buckets do not make it grow without end");
+  expectInt(*churn["c199"], 199, "the newest");
+  expectBool(churn.contains("c191"), false, "the oldest dropped");
+
   // String values, replaced and removed: of two pairs with one key, the later wins
   mut s = new Dict[String, String] <- String.from("name"): String.from("core"), String.from("name"): String.from("stdio");
   expectStr(s["name"].view(), "stdio", "a replaced string value");
@@ -137,7 +188,49 @@ fn main() i32 {
   }
   expectUInt(u64.from(s.len()), 0, "none left");
 
+  // Cleared: it holds nothing and keeps its room, and takes entries again
+  g.clear();
+  expectUInt(u64.from(g.len()), 0, "cleared");
+  expectUInt(u64.from(g.capacity()), 112, "keeps its room");
+  expectBool(g.contains("k5"), false, "nothing found after clear");
+  g.insert(String.from("k5"), 25);
+  expectInt(*g["k5"], 25, "an entry after clear");
+
   done();
+}
+
+// Copies of the keys, in the table's order
+fn keysOf(d &Dict[String, i64]) List[String] {
+  mut out = List[String].empty();
+  mut c = d.keys();
+  while true {
+    match c.next() {
+      case imm k Some {out.push(k.value.copy());}
+      case is None {break;}
+    }
+  }
+  out;
+}
+
+fn isNone(o Option[&i64]) bool {
+  match o {
+    case is Some[&i64] {false;}
+    case is None[&i64] {true;}
+  }
+}
+
+fn isNoneRef(o Option[&String]) bool {
+  match o {
+    case is Some[&String] {false;}
+    case is None[&String] {true;}
+  }
+}
+
+fn expectRef(got Option[&i64], want i64, label &[]u8) {
+  match got {
+    case imm s Some {expectInt(*s.value, want, label);}
+    case is None {expect(false, label);}
+  }
 }
 
 fn expectOpt(got Option[i64], want i64, label &[]u8) {
@@ -152,25 +245,4 @@ fn expectNone(got Option[i64], label &[]u8) {
     case is Some[i64] {expect(false, label);}
     case is None[i64] {expect(true, label);}
   }
-}
-
-// The keys in slot order, as one string: "a y q" for a, y, q
-fn expectKeys(keys List[String], k1 &[]u8, k2 &[]u8, k3 &[]u8, k4 &[]u8, label &[]u8) {
-  mut got = String.empty();
-  mut i = 0usize;
-  while i < keys.len() {
-    if i > 0usize { got.append(" "); }
-    got.append(keys[i].view());
-    i = i + 1usize;
-  }
-  mut want = String.from(k1);
-  want.append(" ");
-  want.append(k2);
-  want.append(" ");
-  want.append(k3);
-  if k4.len > 0usize {
-    want.append(" ");
-    want.append(k4);
-  }
-  expectStr(got.view(), want.view(), label);
 }
