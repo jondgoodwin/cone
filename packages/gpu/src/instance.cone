@@ -143,16 +143,20 @@ pub struct Instance {
     mut chosenFamily = 0u32;
     mut chosenScore = 0;
     if self.isValid() {
-      mut n = 16u32;
-      mut devices = new Array[vulkan.PhysicalDevice, 16] <- fill 0usize as vulkan.PhysicalDevice;
-      if check(vulkan.enumeratePhysicalDevices(backend.handle, &mut n, &mut devices as *vulkan.PhysicalDevice),
+      // How many devices, asked first; every one is considered
+      mut n = 0u32;
+      imm counted = check(vulkan.enumeratePhysicalDevices(backend.handle, &mut n, null), "vkEnumeratePhysicalDevices");
+      mut devices = List[vulkan.PhysicalDevice].empty();
+      devices.resize(usize.from(n), 0usize as vulkan.PhysicalDevice);
+      if counted and check(vulkan.enumeratePhysicalDevices(backend.handle, &mut n, devices.viewMut()),
           "vkEnumeratePhysicalDevices") {
+        devices.truncate(usize.from(n));
         mut i = 0usize;
-        while i < usize.from(n) {
+        while i < devices.len() {
           mut family = 0u32;
-          imm score = adapterScore(devices[i], surface.backend.surface, powerPreference, &mut family);
+          imm score = adapterScore(*devices[i], surface.backend.surface, powerPreference, &mut family);
           if score > chosenScore {
-            chosen = devices[i];
+            chosen = *devices[i];
             chosenFamily = family;
             chosenScore = score;
           }
@@ -212,12 +216,13 @@ fn adapterScore(physical vulkan.PhysicalDevice, surface vulkan.SurfaceKHR, power
   vulkan.getPhysicalDeviceFeatures2(physical, &mut f2);
   if f13.dynamicRendering != vulkan.TRUE or f13.synchronization2 != vulkan.TRUE { return 0; }
 
-  // How many families, asked first, then at most 16 of them
+  // How many families, asked first, then all of them
   mut n = 0u32;
   vulkan.getPhysicalDeviceQueueFamilyProperties(physical, &mut n, null);
-  if n > 16u32 { n = 16u32; }
-  mut families = new Array[vulkan.QueueFamilyProperties, 16] <- fill zeroed[vulkan.QueueFamilyProperties]();
-  vulkan.getPhysicalDeviceQueueFamilyProperties(physical, &mut n, &mut families as *vulkan.QueueFamilyProperties);
+  mut families = List[vulkan.QueueFamilyProperties].empty();
+  families.resize(usize.from(n), zeroed[vulkan.QueueFamilyProperties]());
+  vulkan.getPhysicalDeviceQueueFamilyProperties(physical, &mut n, families.viewMut());
+  families.truncate(usize.from(n));
   mut i = 0u32;
   while i < n {
     mut presents = vulkan.TRUE;       // with no surface, any queue family that draws
@@ -311,9 +316,10 @@ pub struct Adapter {
     vulkan.getPhysicalDeviceProperties(backend.physical, &mut props);
     mut n = 0u32;
     vulkan.getPhysicalDeviceQueueFamilyProperties(backend.physical, &mut n, null);
-    if n > 16u32 { n = 16u32; }
-    mut families = new Array[vulkan.QueueFamilyProperties, 16] <- fill zeroed[vulkan.QueueFamilyProperties]();
-    vulkan.getPhysicalDeviceQueueFamilyProperties(backend.physical, &mut n, &mut families as *vulkan.QueueFamilyProperties);
+    mut families = List[vulkan.QueueFamilyProperties].empty();
+    families.resize(usize.from(n), zeroed[vulkan.QueueFamilyProperties]());
+    vulkan.getPhysicalDeviceQueueFamilyProperties(backend.physical, &mut n, families.viewMut());
+    families.truncate(usize.from(n));
     if backend.queueFamily < n and families[usize.from(backend.queueFamily)].timestampValidBits > 0u32 {
       result.timestampPeriod = props.limits.timestampPeriod;
     }
