@@ -84,6 +84,41 @@ MANIFEST = "congo.toml"
 OBJ_EXT = ".obj" if IS_WINDOWS else ".o"
 EXE_EXT = ".exe" if IS_WINDOWS else ""
 PRELUDE = "core"
+# What Windows ends a program with when a DLL it needs is not found
+STATUS_DLL_NOT_FOUND = 0xC0000135
+
+
+def hard_errors_to_status() -> None:
+    """Windows only, once at start-up: the loader's missing-DLL dialog, and
+    the other hard-error and file-open boxes, become an exit status.
+
+    A program started without a DLL it needs would otherwise stop at a modal
+    dialog on the desktop, waiting for a person. A child process inherits this
+    process's error mode, so every program Congo starts (a test, an example,
+    'congo run', the compiler) ends with the status instead (see 'dll_note').
+    Running as the debuggee does not prevent the dialog; the error mode does.
+    OR-ed into the mode already set, as SetErrorMode's documentation advises;
+    no launch passes CREATE_DEFAULT_ERROR_MODE, which would undo this."""
+    if not IS_WINDOWS:
+        return
+    import ctypes
+    k = ctypes.WinDLL("kernel32")
+    k.SetErrorMode.argtypes = [ctypes.c_uint]
+    k.SetErrorMode.restype = ctypes.c_uint
+    SEM_FAILCRITICALERRORS, SEM_NOOPENFILEERRORBOX = 0x1, 0x8000
+    k.SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOOPENFILEERRORBOX | k.SetErrorMode(0))
+
+
+def dll_note(code: int | None, exe: Path | str) -> str:
+    """A line saying that the program, by its full path, did not start
+    because a DLL it needs was not found, if it ended with
+    STATUS_DLL_NOT_FOUND; empty for any other status. With the loader's dialog
+    gone, this line is how a person learns of it."""
+    if IS_WINDOWS and code is not None and code & 0xFFFFFFFF == STATUS_DLL_NOT_FOUND:
+        return (f"\n{os.path.abspath(exe)} could not start: a DLL it needs was not found"
+                " (0xC0000135)")
+    return ""
+
 
 # TEMPORARY, a provisional mechanism whose final design is open: each '-D NAME'
 # or '-D NAME=123' given to build, run or test, passed to every conec compile of
@@ -1885,7 +1920,11 @@ def cmd_run(args: argparse.Namespace) -> int:
                          f" 'congo build' builds it")
     exe = build(pkg, "release" if args.release else "debug")
     say("Running", shown(exe))
-    return subprocess.run([str(exe), *args.args]).returncode
+    code = subprocess.run([str(exe), *args.args]).returncode
+    note = dll_note(code, exe)
+    if note:
+        print(note.lstrip("\n"), file=sys.stderr)
+    return code
 
 
 def cmd_clean(args: argparse.Namespace) -> int:
@@ -2157,6 +2196,11 @@ def run_test(session: Session, file: Path, bless: bool) -> tuple[bool, str]:
         err = ran.stderr.decode("utf-8", errors="replace")
         return False, (f"timed out after {TEST_TIMEOUT} seconds"
                        + (f"\nstderr:\n{indent(err, '  ')}" if err.strip() else ""))
+    # A program that could not start has nothing to compare, and this line is
+    # how a person learns why (no dialog says so)
+    not_started = dll_note(ran.returncode, exe)
+    if not_started:
+        return False, not_started.lstrip("\n")
     stdout = ran.stdout.decode("utf-8", errors="replace")
     stderr = ran.stderr.decode("utf-8", errors="replace")
     expected_path = file.with_suffix(".out")
@@ -2383,6 +2427,7 @@ def main(argv: list[str] | None = None) -> int:
         print("congo: needs Python 3.11 or later", file=sys.stderr)
         return 1
     utf8_streams()
+    hard_errors_to_status()
     args = parse_args(sys.argv[1:] if argv is None else argv)
     DEFINES[:] = getattr(args, "define", [])
     try:

@@ -74,7 +74,7 @@ Visual Studio projects stay at the root.
   SDL hands out, volk's way (`load`, `loadInstance`, `loadDevice`), and its
   `layout` test checks every struct against `cl.exe`; `gpu` is Cone's own
   thin GPU layer, shaped like WebGPU's objects (`Instance`, `Adapter`,
-  `Device` and its `Queue`, `Surface`, `SwapChain`, `CommandEncoder`,
+  `Device` and its `CommandQueue`, `Surface`, `SwapChain`, `CommandEncoder`,
   `RenderPass` (indirect draws too), `ComputePassEncoder` (dispatch, and
   indirect dispatch), `Texture` (drawn into, sampled and filled by
   `writeTexture`, or both, or a storage texture compute reads and writes;
