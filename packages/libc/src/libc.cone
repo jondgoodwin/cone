@@ -1,7 +1,10 @@
 // The libc package: raw bindings to the ISO C standard library. A program
 // reaches it with 'import libc', and calls each function by its C name, with
-// C's types: a C string is a '*u8' to bytes ending in a NUL, and a string
-// literal carries that NUL, so '&[]"rb"' can be passed straight through.
+// C's types: a C string that must be there is a 'cstr', a pointer to bytes
+// ending in a NUL, and a string literal converts to one, so '"rb"' can be
+// passed straight through. A C string that may be null, or that a function
+// answers and may answer null for, stays a '*u8': 'cstr.fromPtr' makes a
+// 'cstr' of one the caller knows is not.
 //
 // Raw means nothing is wrapped. Errors come back as C reports them (a null
 // pointer, a nonzero or negative return, errno), strings are the caller's to
@@ -40,8 +43,9 @@ pub extern {
 
 // stdlib.h: the environment and the process
 pub extern {
-  fn getenv(name *u8) *u8;
-  fn system(command *u8) i32;
+  // Answers null when the variable is not set
+  fn getenv(name cstr) *u8;
+  fn system(command cstr) i32;
   // Neither returns, which 'Never' says, so either may end a block that must
   // produce a value. Ends the program, flushing every stream
   fn exit(status i32) Never;
@@ -52,7 +56,7 @@ pub extern {
 
 // stdio.h: files
 pub extern {
-  fn fopen(path *u8, mode *u8) *FILE;
+  fn fopen(path cstr, mode cstr) *FILE;
   fn fclose(stream *FILE) i32;
   fn fread(buf *u8, size usize, count usize, stream *FILE) usize;
   fn fwrite(buf *u8, size usize, count usize, stream *FILE) usize;
@@ -62,11 +66,11 @@ pub extern {
   fn ferror(stream *FILE) i32;
   // Removes a file. On Windows it refuses a directory (EACCES); posix's
   // 'rmdir' removes an empty one
-  fn remove(path *u8) i32;
+  fn remove(path cstr) i32;
   // Gives a file or directory a new name, which may be in another directory
   // on the same volume. Where 'to' is already there, POSIX replaces it; the
   // Windows runtime refuses (EEXIST, or EACCES for a directory)
-  fn rename(from *u8, to *u8) i32;
+  fn rename(from cstr, to cstr) i32;
 }
 
 // errno.h: the number of the last error a C library function reported,
@@ -109,7 +113,7 @@ pub extern {
 // string.h: the text of an error number, "No such file or directory" for
 // ENOENT. The text is the C library's, good until the next call.
 pub extern {
-  fn strerror(errnum i32) *u8;
+  fn strerror(errnum i32) cstr;
 }
 
 // stdio.h: the standard streams. C's 'stdin', 'stdout' and 'stderr' are
@@ -129,7 +133,7 @@ pub fn stderr() *FILE inline {__acrt_iob_func(2u32);}
 // On Windows the narrow file functions ('fopen', 'remove', and posix's
 // 'mkdir' and folder listing) read a name in the locale's code page, the
 // system's ANSI one (1252, say) under "C", so a UTF-8 name with a byte above
-// 127 names some other file. 'setlocale(LC_ALL, &[]".UTF-8")' makes them
+// 127 names some other file. 'setlocale(LC_ALL, cstr.fromLiteral(".UTF-8").ptr())' makes them
 // read and answer names as UTF-8, and refuse a name that is not UTF-8.
 pub const LC_ALL = 0i32;
 pub const LC_COLLATE = 1i32;
@@ -138,13 +142,16 @@ pub const LC_MONETARY = 3i32;
 pub const LC_NUMERIC = 4i32;
 pub const LC_TIME = 5i32;
 pub extern {
+  // 'locale' may be null, which only asks, so it stays a '*u8'
   fn setlocale(category i32, locale *u8) *u8;
 }
 
 // string.h
 pub extern {
-  fn strlen(s *u8) usize;
-  fn strcmp(a *u8, b *u8) i32;
+  fn strlen(s cstr) usize;
+  fn strcmp(a cstr, b cstr) i32;
+  // The first byte equal to c in the count bytes at s, or null
+  fn memchr(s *u8, c i32, count usize) *u8;
   fn memcpy(dest *u8, src *u8, count usize) *u8;
   fn memset(dest *u8, value i32, count usize) *u8;
 }

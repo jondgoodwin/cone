@@ -415,7 +415,11 @@ Only a Cone **struct** is lowered (`StructTag` whose LLVM type is a struct). A
 slice, a virtual reference, a tuple or an array has no C counterpart and keeps
 Cone's convention — a slice's pointer and length arrive as two arguments, which
 is how a C function's `(char *, size_t)` takes them. A struct the
-nullable-pointer optimization made a bare pointer is a pointer.
+nullable-pointer optimization made a bare pointer is a pointer. `cstr`, C's
+`const char *`, is a struct of one raw pointer, not made a pointer by anything:
+it is 8 bytes, so Win64 passes and returns it as one integer, the register a
+pointer is in, and C reads it as the `char *` it is. It has no case of its own
+here.
 
 The lowering is applied at the four places a function's values cross:
 `genlFnDclType` (its LLVM function type, which `genlGloFnName` declares and

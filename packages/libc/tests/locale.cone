@@ -32,53 +32,57 @@ fn yes(b bool) i64 {if b {1i64;} else {0i64;};}
 
 fn isNull(p *u8) i64 {yes(p == null);}
 
+// A literal as the pointer a function that may take null takes
+fn lit(text cstr) *u8 {text.ptr();}
+
 // Whether the C string p ends with the C string end
-fn endsWith(p *u8, end *u8) bool {
-  imm n = strlen(p);
+fn endsWith(p *u8, end cstr) bool {
+  imm n = strlen(cstr.fromPtr(p));
   imm m = strlen(end);
-  m <= n and strcmp(p + (n - m), end) == 0i32;
+  m <= n and strcmp(cstr.fromPtr(p + (n - m)), end) == 0i32;
 }
 
 // TEMP, a '\', and the name, NUL included, into buf
-fn tempPath(buf *u8, name *u8) {
-  imm temp = getenv(&[]"TEMP");
-  imm templen = strlen(temp);
+fn tempPath(buf *u8, name cstr) {
+  imm temp = getenv("TEMP");
+  imm templen = strlen(cstr.fromPtr(temp));
   memcpy(buf, temp, templen);
   buf[templen] = '\\';
-  memcpy(buf + templen + 1usize, name, strlen(name) + 1usize);
+  memcpy(buf + templen + 1usize, name.ptr(), strlen(name) + 1usize);
 }
 
 fn main() i32 {
   imm asking *u8 = null;
-  show("starts-as-C", yes(strcmp(setlocale(LC_ALL, asking), &[]"C") == 0i32));
-  show("unknown-null", isNull(setlocale(LC_ALL, &[]"no-such-locale")));
-  show("still-C", yes(strcmp(setlocale(LC_ALL, asking), &[]"C") == 0i32));
+  show("starts-as-C", yes(strcmp(cstr.fromPtr(setlocale(LC_ALL, asking)), "C") == 0i32));
+  show("unknown-null", isNull(setlocale(LC_ALL, lit("no-such-locale"))));
+  show("still-C", yes(strcmp(cstr.fromPtr(setlocale(LC_ALL, asking)), "C") == 0i32));
 
-  imm utf8 = setlocale(LC_ALL, &[]".UTF-8");
+  imm utf8 = setlocale(LC_ALL, lit(".UTF-8"));
   show("utf8-null", isNull(utf8));
-  show("utf8-ends-utf8", yes(endsWith(utf8, &[]".utf8")));
-  show("ctype-ends-utf8", yes(endsWith(setlocale(LC_CTYPE, asking), &[]".utf8")));
+  show("utf8-ends-utf8", yes(endsWith(utf8, ".utf8")));
+  show("ctype-ends-utf8", yes(endsWith(setlocale(LC_CTYPE, asking), ".utf8")));
 
   mut path = new Array[u8, 512] <- fill 0u8;
-  imm name *u8 = &[]path;
-  tempPath(name, &[]"module_package_libc_\xC3\xA9\xE6\x97\xA5.tmp");
-  imm out = fopen(name, &[]"wb");
+  imm name *u8 = &[]path as *u8;
+  tempPath(name, "module_package_libc_\xC3\xA9\xE6\x97\xA5.tmp");
+  imm cname = cstr.fromPtr(name);
+  imm out = fopen(cname, "wb");
   show("utf8-name-fopen-null", isNull(out as *u8));
-  show("fwrite-count", i64.from(fwrite(&[]"caf\xC3\xA9", 1usize, 5usize, out)));
+  show("fwrite-count", i64.from(fwrite(&"caf\xC3\xA9" as *u8, 1usize, 5usize, out)));
   show("fclose", i64.from(fclose(out)));
   mut buf = new Array[u8, 16] <- fill 0u8;
-  imm back = fopen(name, &[]"rb");
-  show("read-back-count", i64.from(fread(&[]buf, 1usize, 16usize, back)));
+  imm back = fopen(cname, "rb");
+  show("read-back-count", i64.from(fread(&[]buf as *u8, 1usize, 16usize, back)));
   fclose(back);
-  show("read-back-equal", yes(strcmp(&[]buf, &[]"caf\xC3\xA9") == 0i32));
-  show("remove", i64.from(remove(name)));
-  show("fopen-after-remove-null", isNull(fopen(name, &[]"rb") as *u8));
+  show("read-back-equal", yes(strcmp(cstr.fromPtr(&[]buf as *u8), "caf\xC3\xA9") == 0i32));
+  show("remove", i64.from(remove(cname)));
+  show("fopen-after-remove-null", isNull(fopen(cname, "rb") as *u8));
 
   mut bad = new Array[u8, 512] <- fill 0u8;
-  imm badName *u8 = &[]bad;
-  tempPath(badName, &[]"module_package_libc_\xE9.tmp");
-  show("not-utf8-name-fopen-null", isNull(fopen(badName, &[]"wb") as *u8));
+  imm badName *u8 = &[]bad as *u8;
+  tempPath(badName, "module_package_libc_\xE9.tmp");
+  show("not-utf8-name-fopen-null", isNull(fopen(cstr.fromPtr(badName), "wb") as *u8));
 
-  show("back-to-C", yes(strcmp(setlocale(LC_ALL, &[]"C"), &[]"C") == 0i32));
+  show("back-to-C", yes(strcmp(cstr.fromPtr(setlocale(LC_ALL, lit("C"))), "C") == 0i32));
   0i32;
 }

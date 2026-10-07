@@ -68,6 +68,15 @@ extern StructNode *strTypeDcl;
 // declaration still to be name resolved and type checked.
 StructNode *stdlibAdoptStr(Name *name, ModuleNode *mod);
 
+// 'cstr', a borrowed C string (stdlibInit): a struct of one raw pointer to bytes
+// that end in a NUL, which C's 'const char *' is. The compiler makes it so that
+// the C-named modules, which get no prelude, can declare it in their bindings.
+extern StructNode *cstrTypeDcl;
+
+// The same for 'cstr': core's declaration of it gives the compiler's struct its
+// field and its methods. The struct is handed back empty.
+StructNode *stdlibAdoptCStr(Name *name, ModuleNode *mod);
+
 // The two functions a program calls to run its stitched init and final
 // (genlStitch): 'initAll()' and 'finalAll()', names every module reaches as it
 // reaches 'i64', and which a declaration of its own hides

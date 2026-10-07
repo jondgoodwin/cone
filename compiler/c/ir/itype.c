@@ -1177,7 +1177,10 @@ TypeCompare itypeMatches(INode *totype, INode *fromtype, SubtypeConstraint const
         return NoMatch;
 
     case PtrTag:
-        if (fromtype->tag == RefTag || fromtype->tag == ArrayRefTag)
+        // A reference to a value is the address of it. A slice is not: it is an
+        // address and a count, and the count is lost on the way to C, so the
+        // pointer is asked for with 'as' (castTypeCheck)
+        if (fromtype->tag == RefTag)
             return itypeIsSame(((RefNode*)fromtype)->vtexp, ((StarNode*)totype)->vtexp) ? ConvSubtype : NoMatch;
         if (fromtype->tag == PtrTag)
             return ptrMatches((StarNode*)totype, (StarNode*)fromtype, constraint);

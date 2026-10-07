@@ -380,6 +380,16 @@ void castTypeCheck(TypeCheckState *pstate, CastNode *node) {
     INode *fromtype = iexpGetTypeDcl(node->exp);
     INode *totype = itypeGetTypeDcl(node->vtype);
 
+    // A slice 'as' a pointer to its elements is the address of the first, the
+    // count dropped. It is no reinterpretation (a slice is two words), so it is
+    // the conversion the old implicit coercion made, asked for. Only the
+    // pointer of the slice's own element type: it is no way to retype memory.
+    if (!(node->flags & FlagConvert) && fromtype->tag == ArrayRefTag && totype->tag == PtrTag
+        && itypeIsSame(((RefNode*)fromtype)->vtexp, ((StarNode*)totype)->vtexp)) {
+        node->flags |= FlagConvert;
+        return;
+    }
+
     // Handle reinterpret casts, which must be same size
     if (!(node->flags & FlagConvert)) {
         // usize and isize are as wide as a pointer, which a fixed-width number

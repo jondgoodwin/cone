@@ -29,13 +29,15 @@ rather than describe.**
    is what makes unranked overload filtering possible at all.
 3. **Coercion does not report a type mismatch.** `iexpCoerce` returns 0 and the
    caller writes the diagnostic, which is why the same mismatch reads
-   differently at an argument, an assignment and a return. It does report five
+   differently at an argument, an assignment and a return. It does report six
    other things itself: an operand that is not an expression node at all,
    whatever `fnCallLowerMethod` reports on the `ConvByMeth` path, a `null`
    wanted as anything but a raw pointer (`litAdoptNullType`), a `bool`
-   wanted as a number (`ErrorBoolNotNbr`), and a `char` wanted as a number or a
-   number as a `char` (`ErrorCharNotNbr`). For the last three it answers 1, so
-   the caller says nothing more.
+   wanted as a number (`ErrorBoolNotNbr`), a `char` wanted as a number or a
+   number as a `char` (`ErrorCharNotNbr`), and a slice, text or `cstr` wanted as
+   a raw pointer, or a pointer, text or slice as a `cstr` (`ErrorCPtrConv`,
+   `iexpCPtrMismatch`, which names `xs as *u8`, `cstr.fromPtr` or `c.ptr()`).
+   For the last four it answers 1, so the caller says nothing more.
 4. **Overload selection filters, it does not rank.** Exactly one viable
    candidate is a match; two are an ambiguity. There is no best-match score and
    no preference order to memorize.

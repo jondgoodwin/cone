@@ -52,8 +52,8 @@ const synchronize = 0x100000u32;     // SYNCHRONIZE
 
 // -------- the child --------
 
-fn out(s &[]u8) { libc.fwrite(s, 1usize, s.len, libc.stdout()); }
-fn err(s &[]u8) { libc.fwrite(s, 1usize, s.len, libc.stderr()); }
+fn out(s &[]u8) { libc.fwrite(s as *u8, 1usize, s.len, libc.stdout()); }
+fn err(s &[]u8) { libc.fwrite(s as *u8, 1usize, s.len, libc.stderr()); }
 
 fn number(s &String) u64 {
   match parseUInt(s.view()) {
@@ -88,7 +88,7 @@ fn childArgs(a &List[String], argc i32, argv **u8) i32 {
     i = 0usize;
     while i < a.len() {
       imm p = *(argv + i);
-      if mem.sliceFromParts(p, libc.strlen(p)) != a[i].view() {
+      if cstr.fromPtr(p).view() != a[i].view() {
         err("the C runtime reads an argument otherwise\n");
         return 9i32;
       }
@@ -121,7 +121,7 @@ fn hexOf(s &[]u8) String {
 // by chunk, stderr 'A' to 'Z'
 fn childStreams(n usize) i32 {
   mut chunk = new Array[u8, 4096] <- fill 0u8;
-  imm cp *u8 = &[]chunk;
+  imm cp *u8 = &[]chunk as *u8;
   mut done = 0usize;
   mut k = 0usize;
   while done < n {
@@ -196,7 +196,7 @@ fn child(a &List[String], argc i32, argv **u8) i32 {
   }
   if mode.equals("stdin") {
     mut buf = new Array[u8, 256] <- fill 0u8;
-    imm bp *u8 = &[]buf;
+    imm bp *u8 = &[]buf as *u8;
     mut total = 0u64;
     mut n = libc.fread(bp, 1usize, 256usize, libc.stdin());
     while n > 0usize {
@@ -219,7 +219,7 @@ fn child(a &List[String], argc i32, argv **u8) i32 {
       i = i + 1usize;
     }
     mut buf = new Array[u16, 256] <- fill 0u16;
-    imm n = GetEnvironmentVariableW(&[]wname, &[]buf, 256u32);
+    imm n = GetEnvironmentVariableW(&[]wname as *u16, &[]buf as *u16, 256u32);
     if n == 0u32 {
       out("<none>");
       return 0i32;
@@ -251,10 +251,10 @@ fn child(a &List[String], argc i32, argv **u8) i32 {
 // The test's folder: TEMP's absolute path and the name, after checking
 // that it is that and nothing shorter
 fn makeRoot(name &[]u8) String {
-  imm temp = libc.getenv(&[]"TEMP");
+  imm temp = libc.getenv("TEMP");
   require(temp != null, "TEMP is set");
   mut root = String.empty();
-  match fs.absolute(mem.sliceFromParts(temp, libc.strlen(temp))) {
+  match fs.absolute(cstr.fromPtr(temp).view()) {
     case imm t Ok { root = path.join(t.value.view(), name); }
     case is Error { require(false, "TEMP has an absolute path"); }
   }

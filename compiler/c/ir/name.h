@@ -138,6 +138,8 @@ extern Name *sizedTraitName;     // "Sized", a type whose size is known at compi
 extern Name *dynSizedTraitName;  // "DynSized", a type whose size is known at compile time or carried by a reference to it
 extern Name *immutableTraitName; // "Immutable", a marker a type declares: its references default to imm, and mut is refused on it
 extern Name *strTypeName;       // "str", the dynamically sized body of bytes
+extern Name *cstrTypeName;      // "cstr", a borrowed C string: one pointer to bytes that end in a NUL
+extern Name *cstrPtrFieldName;  // "p", the pointer inside it
 
 // The built-in trait a lock permission declares, and the methods the compiler
 // calls on it as a borrow through a lock-managed reference begins and ends

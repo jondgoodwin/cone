@@ -68,55 +68,57 @@ fn memory() {
 fn files() {
   // TEMP, a '\', and the file's name, with the NUL the literal carries
   mut path = new Array[u8, 512] <- fill 0u8;
-  imm name *u8 = &[]path;
-  imm temp = getenv(&[]"TEMP");
-  imm templen = strlen(temp);
+  imm name *u8 = &[]path as *u8;
+  imm cname = cstr.fromPtr(name);
+  imm temp = getenv("TEMP");
+  imm templen = strlen(cstr.fromPtr(temp));
   memcpy(name, temp, templen);
-  memcpy(name + templen, &[]"\\module_package_libc.tmp", 25usize);
-  show("path-length", i64.from(strlen(name) - templen));
+  memcpy(name + templen, &"\\module_package_libc.tmp" as *u8, 25usize);
+  show("path-length", i64.from(strlen(cname) - templen));
 
-  imm out = fopen(name, &[]"wb");
+  imm out = fopen(cname, "wb");
   show("fopen-write-null", isNull(out as *u8));
   imm text = &[]"line one\nline two\n";
-  show("fwrite-count", i64.from(fwrite(text, 1usize, 18usize, out)));
+  show("fwrite-count", i64.from(fwrite(text as *u8, 1usize, 18usize, out)));
   show("fflush", i64.from(fflush(out)));
   show("fclose", i64.from(fclose(out)));
 
   mut buf = new Array[u8, 64] <- fill 0u8;
-  imm back = fopen(name, &[]"rb");
-  imm got = fread(&[]buf, 1usize, 64usize, back);
+  imm back = fopen(cname, "rb");
+  imm got = fread(&[]buf as *u8, 1usize, 64usize, back);
   fclose(back);
   show("fread-count", i64.from(got));
-  show("read-back-equal", if strcmp(&[]buf, text) == 0i32 {1i64;} else {0i64;});
+  show("read-back-equal", if strcmp(cstr.fromPtr(&[]buf as *u8), cstr.fromPtr(text as *u8)) == 0i32 {1i64;} else {0i64;});
 
   // rename, to the same name with '2' before its NUL, and back
   mut path2 = new Array[u8, 512] <- fill 0u8;
-  imm name2 *u8 = &[]path2;
-  imm len = strlen(name);
+  imm name2 *u8 = &[]path2 as *u8;
+  imm cname2 = cstr.fromPtr(name2);
+  imm len = strlen(cname);
   memcpy(name2, name, len);
   name2[len] = '2';
-  show("rename", i64.from(rename(name, name2)));
-  show("fopen-old-name-null", isNull(fopen(name, &[]"rb") as *u8));
+  show("rename", i64.from(rename(cname, cname2)));
+  show("fopen-old-name-null", isNull(fopen(cname, "rb") as *u8));
   show("errno-after-fopen", i64.from(*errno()));
   printStr("strerror = ");
-  printCStr(strerror(*errno()));
+  printCStr(strerror(*errno()).ptr());
   printStr("\n");
-  show("rename-back", i64.from(rename(name2, name)));
+  show("rename-back", i64.from(rename(cname2, cname)));
   *errno() = 0i32;
   show("errno-set", i64.from(*errno()));
 
   // ferror: nothing failed reading, and reading a stream opened for writing does
-  imm clean = fopen(name, &[]"rb");
-  fread(&[]buf, 1usize, 64usize, clean);
+  imm clean = fopen(cname, "rb");
+  fread(&[]buf as *u8, 1usize, 64usize, clean);
   show("ferror-clean", i64.from(ferror(clean)));
   fclose(clean);
-  imm writing = fopen(name, &[]"ab");
-  fread(&[]buf, 1usize, 64usize, writing);
+  imm writing = fopen(cname, "ab");
+  fread(&[]buf as *u8, 1usize, 64usize, writing);
   show("ferror-reading-a-writer", if ferror(writing) != 0i32 {1i64;} else {0i64;});
   fclose(writing);
 
-  show("remove", i64.from(remove(name)));
-  show("fopen-after-remove-null", isNull(fopen(name, &[]"rb") as *u8));
+  show("remove", i64.from(remove(cname)));
+  show("fopen-after-remove-null", isNull(fopen(cname, "rb") as *u8));
 }
 
 // time: seconds since 1970, after 2026 began, and stored where asked
@@ -138,19 +140,19 @@ fn clock() {
 }
 
 fn process() {
-  show("getenv-unset-null", isNull(getenv(&[]"CONE_LIBC_NEVER_SET")));
-  show("system-status", i64.from(system(&[]"exit /b 3")));
+  show("getenv-unset-null", isNull(getenv("CONE_LIBC_NEVER_SET")));
+  show("system-status", i64.from(system("exit /b 3")));
 }
 
 fn strings() {
-  show("strlen-literal", i64.from(strlen(&[]"hello")));
-  show("strcmp-less", if strcmp(&[]"abc", &[]"abd") < 0i32 {1i64;} else {0i64;});
+  show("strlen-literal", i64.from(strlen("hello")));
+  show("strcmp-less", if strcmp("abc", "abd") < 0i32 {1i64;} else {0i64;});
   mut buf = new Array[u8, 8] <- fill 0u8;
-  imm at *u8 = &[]buf;
+  imm at *u8 = &[]buf as *u8;
   memset(at, i32.from('x'), 3usize);
-  memcpy(at + 3usize, &[]"yz", 3usize);
+  memcpy(at + 3usize, &"yz" as *u8, 3usize);
   printStr("built = ");
-  printCStr(&[]buf);
+  printCStr(at);
   printStr("\n");
 }
 
@@ -199,7 +201,7 @@ fn maths() {
 
 fn streams() {
   printStr("stream = ");
-  fwrite(&[]"through stdout()\n", 1usize, 17usize, stdout());
+  fwrite(&"through stdout()\n" as *u8, 1usize, 17usize, stdout());
 }
 
 // Ends the program: nothing after the call runs

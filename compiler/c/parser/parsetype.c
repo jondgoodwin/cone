@@ -748,6 +748,8 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
     // core's declaration of 'str' is not a new struct but the compiler's own,
     // given its methods (stdlibAdoptStr)
     strnode = named ? stdlibAdoptStr(lex->val.ident, parse->mod) : NULL;
+    if (strnode == NULL && named)
+        strnode = stdlibAdoptCStr(lex->val.ident, parse->mod);
     if (strnode == NULL)
         strnode = newStructNode(named ? lex->val.ident : anonName);
     strnode->tag = tag;
