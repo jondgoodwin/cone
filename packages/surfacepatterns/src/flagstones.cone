@@ -1,0 +1,101 @@
+// ======== Flagstones: irregular paving stones with gaps between ========
+//
+// A jittered grid of points, one to a cell, wrapping across the tile; each
+// point's Voronoi cell is a flat stone, so the stones are irregular polygons
+// that fit together. Each stone sits at its own level, a little tilted, with
+// a rounded rim where it meets the gap; its colour is between 'colorA' and
+// 'colorB', mottled, with patches of 'lichen'. The gaps are filled with soil
+// ('gapSoil') under mortar-like crumbs or growth ('gapGrowth': moss or grass
+// green), depending on 'growth'. A whole number of stones fits the tile.
+
+pub struct FlagstoneParams {
+  pub size i32;               // texels a side
+  pub tileMetres f32;         // the tile's side, metres
+  pub seed u32;
+  pub stoneSize f32;          // metres: a stone's mean width
+  pub jitter f32;             // 0 a regular grid, 1 the most irregular
+  pub gap f32;                // metres: the gap between stones
+  pub bevel f32;              // metres: the width of a stone's rounded rim
+  pub unevenness f32;         // metres: how far stones differ in level
+  pub colorA Color;           // linear: the palest stone
+  pub colorB Color;           // the darkest
+  pub lichen Color;           // the patches on some stones
+  pub gapSoil Color;          // what shows in the gaps
+  pub gapGrowth Color;        // moss or grass in the gaps
+  pub growth f32;             // 0 to 1: how much of the gaps grows over
+  pub variation f32;          // each stone's brightness varied by +- this fraction
+
+  // Grey and warm sandstone flags, 0.5 m across, 35 mm gaps with moss
+  // and soil, on a 2 m tile
+  pub fn garden(size i32, seed u32) FlagstoneParams {
+    new FlagstoneParams(size, 2., seed, 0.5, 0.85, 0.035, 0.025, 0.012,
+      rgb255(150., 142., 128.), rgb255(96., 94., 90.), rgb255(122., 130., 88.),
+      rgb255(54., 42., 32.), rgb255(70., 98., 40.), 0.6, 0.16);
+  }
+}
+
+fn flagRelief(p &FlagstoneParams) f32 { 0.012 + p.unevenness + 0.004; }
+
+// One texel of a flagstone tile at the tile point (u, v)
+pub fn flagstoneTexel(p &FlagstoneParams, u f32, v f32) PatternTexel {
+  imm n = wholeCount(p.tileMetres, p.stoneSize, 2);
+  imm cellM = p.tileMetres / f32.from(n);
+  imm cell = voronoi(u, v, n, p.jitter, p.seed);
+  imm key = unitHash3(cell.id, 77, p.seed);
+  imm edgeM = cell.edge * cellM;
+  imm gapHalf = p.gap * 0.5;
+  imm relief = flagRelief(p);
+
+  imm fine = fbmNoise(u, v, n * 14, n * 14, p.seed + 41u32, 3, 0.55);
+  imm cloud = fbmNoise(u, v, n * 3, n * 3, p.seed + 42u32, 3, 0.5);
+  imm soilFine = fbmNoise(u, v, n * 20, n * 20, p.seed + 43u32, 2, 0.5);
+
+  mut hm f32 = 0.;
+  mut c = new Color(0., 0., 0., 1.);
+  mut rough f32 = 0.9;
+  mut cavity f32 = 1.;
+
+  // the stone's own level, a gentle tilt over it, the rim rounded over the bevel
+  imm tx = (key.y - 0.5) * 0.10;
+  imm ty = (key.z - 0.5) * 0.10;
+  imm stoneM = 0.012 + p.unevenness * key.x + (tx * cell.dx + ty * cell.dy) * cellM + 0.0015 * fine;
+  imm rise = smoothstep01(gapHalf, gapHalf + p.bevel, edgeM);
+  imm rim = libc.sqrtf(clamp01(1. - (1. - rise) * (1. - rise)));
+
+  // soil and growth in the gap, seen through the rim as the stone starts
+  imm growth = clamp01(0.5 + 0.9 * soilFine + 0.8 * cloud - (1. - p.growth) * 1.2);
+  imm gapColour = mixRgb(p.gapSoil, p.gapGrowth, growth);
+
+  // the stone: palette by tone, mottle, lichen, darker toward its rim
+  imm tone = clamp01(key.x * 1.1 - 0.05 + 0.3 * cloud);
+  mut stone = mixRgb(p.colorA, p.colorB, tone);
+  stone = scaleRgb(stone, (1. + p.variation * (key.y * 2. - 1.)) * (1. + 0.12 * fine));
+  // each stone leans a little warm or cool
+  imm warm = (key.z - 0.5) * 0.22;
+  stone = new Color(stone.red * (1. + warm), stone.green, stone.blue * (1. - warm), 1.);
+  imm lichenAmt = smoothstep01(0.25, 0.6, cloud + 0.35 * fine + (key.z - 0.5) * 0.5);
+  stone = mixRgb(stone, p.lichen, lichenAmt * 0.55);
+  stone = scaleRgb(stone, 0.8 + 0.2 * rim);
+
+  hm = stoneM * rim + 0.004 * (1. - rim) * (0.5 + 0.5 * soilFine) * (1. - rim);
+  c = mixRgb(gapColour, stone, smoothstep01(gapHalf - 0.003, gapHalf + 0.004, edgeM));
+  rough = 0.72 + 0.18 * (0.5 + 0.5 * fine) + 0.2 * lichenAmt;
+  rough = rough + (0.97 - rough) * (1. - smoothstep01(gapHalf - 0.003, gapHalf + 0.004, edgeM));
+  cavity = 0.45 + 0.55 * smoothstep01(0., gapHalf + p.bevel, edgeM);
+  new PatternTexel(clamp01(hm / relief), c, clamp01(rough), cavity);
+}
+
+// A flagstone tile's maps
+pub fn bakeFlagstones(p &FlagstoneParams) TextureSet {
+  mut field = PatternField.empty(p.size, p.tileMetres, flagRelief(p));
+  mut y = 0;
+  while y < p.size {
+    mut x = 0;
+    while x < p.size {
+      field.put(x, y, flagstoneTexel(p, texelCentre(x, p.size), texelCentre(y, p.size)));
+      x = x + 1;
+    }
+    y = y + 1;
+  }
+  finishField(&mut field, 0.04, 5);
+}

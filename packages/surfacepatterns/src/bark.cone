@@ -1,0 +1,101 @@
+// ======== Bark: furrowed, vertical ========
+//
+// Ridges and furrows running up the tile, the furrows meandering and
+// splitting as a warped, two-octave ridged noise makes them (a lattice
+// stretched along the trunk: wide across it, long up it), the ridges
+// crossed here and there by short cracks. Colour runs from the plates' two
+// shades to the dark in the furrows, with lichen on the plates. The tile is
+// a patch of trunk: wrap it round, and up, with its u along the
+// circumference and v up the trunk.
+
+pub struct BarkParams {
+  pub size i32;               // texels a side
+  pub tileMetres f32;         // the tile's side, metres
+  pub seed u32;
+  pub furrowWidth f32;        // metres: the spacing of the furrows across the trunk
+  pub furrowDepth f32;        // metres from the bottom of a furrow to the top of a ridge
+  pub meander f32;            // 0 straight furrows, 1 very wandering
+  pub colorA Color;           // linear: the paler plates
+  pub colorB Color;           // the darker plates
+  pub furrow Color;           // deep in a furrow
+  pub lichen Color;
+  pub lichenAmount f32;       // 0 to 1
+
+  // A red maple's: grey-brown, shallow narrow furrows, grey-green lichen, on a 1.2 m tile
+  pub fn redMaple(size i32, seed u32) BarkParams {
+    new BarkParams(size, 1.2, seed, 0.04, 0.014, 0.8, rgb255(120., 108., 98.), rgb255(84., 74., 68.),
+      rgb255(36., 30., 28.), rgb255(130., 142., 112.), 0.45);
+  }
+
+  // A pine's: warm red-brown plates, wide deep furrows, on a 1.2 m tile
+  pub fn pine(size i32, seed u32) BarkParams {
+    new BarkParams(size, 1.2, seed, 0.08, 0.035, 0.6, rgb255(140., 88., 60.), rgb255(100., 62., 44.),
+      rgb255(34., 24., 20.), rgb255(120., 130., 90.), 0.12);
+  }
+}
+
+// One texel of a bark tile at the tile point (u, v)
+pub fn barkTexel(p &BarkParams, u f32, v f32) PatternTexel {
+  imm n = wholeCount(p.tileMetres, p.furrowWidth, 4);
+  imm cellM = p.tileMetres / f32.from(n);
+  // The plates are strips running up the trunk. Strip k's left boundary,
+  // in grid cells, is k, moved by a fixed jitter and by its own slow
+  // wandering up the trunk (a one-dimensional noise, periodic in v); the
+  // moves total under half a cell, so the boundaries keep their order.
+  imm q = u * f32.from(n);
+  imm kk = i32.from(libc.floorf(q));
+  mut s = kk - 1;
+  if q >= barkBoundary(p, kk, v, n) { s = kk; }
+  if q >= barkBoundary(p, kk + 1, v, n) { s = kk + 1; }
+  imm dl = (q - barkBoundary(p, s, v, n)) * cellM;
+  imm dr = (barkBoundary(p, s + 1, v, n) - q) * cellM;
+  imm dedge = minF(dl, dr);
+  // the plate is cut into lengths by cracks across it, each length its own
+  imm segs = wholeCount(p.tileMetres, 0.22, 2);
+  // (the cracks wobble, and some plates are not cut at all at a given crack)
+  imm sv = v * f32.from(segs) + unitHash(posMod(s, n), 3, p.seed + 79u32) * f32.from(segs)
+    + 0.22 * fbmNoise(u, v, n * 4, 7, p.seed + 81u32, 2, 0.5);
+  imm seg = posMod(i32.from(libc.floorf(sv)), segs);
+  imm dcross = minF(frac(sv), 1. - frac(sv)) * (p.tileMetres / f32.from(segs));
+  imm key = unitHash3(posMod(s, n), seg, p.seed);
+  imm cutDepth = if unitHash(posMod(s, n), seg, p.seed + 82u32) < 0.45 { 0.55; } else { 0.08; };
+  imm fine = fbmNoise(u, v, n * 10, 40, p.seed + 75u32, 3, 0.55);
+  imm fibre = fbmNoise(u, v, n * 28, 9, p.seed + 83u32, 2, 0.5);
+  imm cloud = fbmNoise(u, v, n, 6, p.seed + 76u32, 3, 0.5);
+
+  // the profile across a plate: a furrow's floor, steep walls, a rounded top
+  imm wall = smoothstep01(0.08 * p.furrowWidth, 0.42 * p.furrowWidth, dedge);
+  imm top = 0.82 + 0.18 * smoothstep01(0.4 * p.furrowWidth, 0.5 * p.furrowWidth + 0.02, dedge) + 0.10 * (key.x - 0.5);
+  imm crossCut = 1. - cutDepth * (1. - smoothstep01(0.002, 0.012, dcross));
+  imm h = clamp01(wall * top * crossCut + 0.05 * fine * wall + 0.07 * fibre * wall);
+  imm plate = mixRgb(p.colorA, p.colorB, clamp01(key.y * 0.8 + 0.4 * cloud + 0.15 * fine));
+  imm onPlate = smoothstep01(0.06 * p.furrowWidth, 0.3 * p.furrowWidth, dedge) * crossCut;
+  mut c = mixRgb(p.furrow, scaleRgb(plate, (1. + 0.22 * fine + 0.25 * fibre) * (0.8 + 0.4 * key.z)), onPlate);
+  imm lichenAmt = p.lichenAmount * smoothstep01(0.2, 0.6, cloud + 0.5 * fbmNoise(u, v, n * 2, 8, p.seed + 77u32, 3, 0.5))
+    * onPlate;
+  c = mixRgb(c, p.lichen, lichenAmt * 0.7);
+  new PatternTexel(h, c, clamp01(0.9 - 0.1 * onPlate + 0.05 * fine), 0.3 + 0.7 * smoothstep01(0., 0.5, h));
+}
+
+// The left boundary, in grid cells of 'n' to the tile, of plate 'k' at height
+// 'v' on the trunk
+fn barkBoundary(p &BarkParams, k i32, v f32, n i32) f32 {
+  imm jitter = (unitHash(posMod(k, n), 1, p.seed + 78u32) - 0.5) * 0.4;
+  imm wander = valueNoise(0., v, 1, 4, hash1(posMod(k, n), p.seed + 80u32)) * 0.28 * p.meander;
+  f32.from(k) + jitter + wander;
+}
+
+// A bark tile's maps
+pub fn bakeBark(p &BarkParams) TextureSet {
+  mut field = PatternField.empty(p.size, p.tileMetres, p.furrowDepth);
+  mut y = 0;
+  while y < p.size {
+    mut x = 0;
+    while x < p.size {
+      field.put(x, y, barkTexel(p, texelCentre(x, p.size), texelCentre(y, p.size)));
+      x = x + 1;
+    }
+    y = y + 1;
+  }
+  finishField(&mut field, 0.03, 4);
+}

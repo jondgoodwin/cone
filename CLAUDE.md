@@ -249,6 +249,19 @@ Visual Studio projects stay at the root.
   and normal maps plus the masks, its maps pinned by `mapHash` in its test;
   its example `spheres.cone` bakes three materials and draws them on spheres
   through render;
+  `surfacepatterns` is procedural patterns that lay out a real surface's
+  structure, over `pbrmaterial`, `noise`, `geomath` and `collections`:
+  board-and-batten siding and decking (`PlankParams`), cedar shingles,
+  flagstones, rough rock and rounded edging stones, furrowed bark (red
+  maple, pine) and running-bond brick, each a parameters struct (sizes in
+  metres, linear colours, a seed), a `bake...` giving pbrmaterial's
+  `TextureSet` (so it uploads as a noise-baked material does) and a pure
+  `...Texel` of the tile point, on periodic hashed noise (a lattice of any
+  size each way) and periodic Voronoi cells; a tile fits a whole number of
+  its boards, stones or bricks and repeats every 1 in u and v; its
+  `patterns` example bakes and times all nine and writes each one's base
+  colour, normal and 2 x 2 tiled maps as BMPs, and its test pins their
+  hashes;
   `vfx` is visual effects over `gpu`, `render`, `geomath` and `noise`,
   beginning with particles: `Emitter`, a stateless emitter (a particle a
   closed-form function of event seed, layer seed, spawn index and age: a
