@@ -580,7 +580,13 @@ Visual Studio projects stay at the root.
   materials' parameters and textures, r32float fields from
   `addFieldTexture`, drawn and instanced with the rest; its test
   `custom.cone`), dynamic meshes rewritten in place each frame
-  (`addDynamicMesh`, `writeDynamicMesh`), and `Image` (BMP read
+  (`addDynamicMesh`, `writeDynamicMesh`), skinned meshes (`src/skin.cone`,
+  `src/skinning.slang`: a `Skin` of four joints and weights a vertex,
+  `addSkinnedMesh`, drawn by `DrawList.addSkinned` with a skinning matrix
+  a bone, linear blend skinning in skinned variants of the lit and
+  physically based pipelines, the bones found through each instance's
+  bone base; its test `skinning.cone`, a bent two-bone tube checked
+  against the CPU's `Skin.skinPoint`), and `Image` (BMP read
   and written); its tests need a GPU driver but no window, and its examples
   are `pipevk.cone`, the pipe demo: `sculpt`'s bent, subdivided pipe, the
   cage and three levels side by side, lit, on Vulkan, checked by pixels
