@@ -1,0 +1,134 @@
+// A string literal is a borrow of its text that lasts for the whole program,
+// '&imm str': a pointer to the bytes, in read-only memory and followed by a NUL
+// the count leaves out, and the number of bytes.
+//
+// - Any '&str' converts implicitly to a slice of bytes, '&[]u8', where one is
+//   wanted: a parameter, a variable, a field, a return, an operand of '=='.
+//   The way back is the explicit 'as &str' (ref_typecheck_literal refuses the
+//   implicit one).
+// - A literal fills a byte array of exactly its length, by value: a variable,
+//   a field, a parameter, a return, a constant, a global.
+// - A literal is copied into an owner of 'str' where one is wanted, in every
+//   region that holds a counted or unique owner. A '&str' that is not a literal
+//   needs 'new' (ref_typecheck_literal).
+// - '&"text"' still borrows the bytes the text is kept in: a reference to the
+//   array, which the C idiom '&"text" as *u8' takes the address of, and
+//   '&[]"text"' is the slice of them.
+//
+// Each printed value was checked by hand against the source.
+
+mod ref_literal;
+
+import stdio use *;
+import sync use *;
+import libc;
+
+fn show(label &[]u8, n i64) {
+  printStr(label);
+  printStr(" ");
+  printInt(n);
+  printStr("\n");
+}
+
+// A parameter taking text as bytes is given a literal, and a '&str' variable
+fn count(b &[]u8) i64 {i64.from(b.len);}
+fn countStr(s &str) i64 {count(s as &[]u8);}
+
+// A '&str' returned where bytes are the return type, and a literal returned as a '&str'
+fn asBytes(s &str) &[]u8 {s;}
+fn greeting() &str {"howdy";}
+
+struct Label {
+  pub bytes &[]u8;
+  pub text &str;
+}
+
+// A byte array filled by a literal, as a parameter, a return and a field
+fn sum4(a Array[u8, 4]) i64 {
+  i64.from(a[0]) + i64.from(a[1]) + i64.from(a[2]) + i64.from(a[3]);
+}
+fn riff() Array[u8, 4] {"RIFF";}
+struct Chunk {
+  pub tag Array[u8, 4];
+  pub size i32;
+}
+
+const MAGIC Array[u8, 3] = "PNG";
+imm header Array[u8, 4] = "WAVE";
+
+// An owner of 'str' wanted, given a literal: a parameter, a return, a field
+fn rc(p Rc[str]) i64 {countStr(p);}
+fn made() So[str] {"made";}
+struct Holder {
+  pub shared Arc[str];
+}
+
+fn main() {
+  // The count leaves out the NUL: "hello" is 5 bytes, "héllo" is 6 (é is two)
+  imm s = "hello";
+  show("count", countStr(s));
+  show("utf8", countStr("héllo"));
+  show("empty", countStr(""));
+
+  // '&str' to '&[]u8' implicitly: a call, a variable, a field, a return
+  show("param", count("abc"));
+  show("param from variable", count(s));
+  imm bytes &[]u8 = s;
+  show("variable", i64.from(bytes.len));
+  imm label = new Label("four", "fivee");
+  show("field bytes", i64.from(label.bytes.len));
+  show("field text", countStr(label.text));
+  show("return", i64.from(asBytes(s).len));
+  show("returned literal", countStr(greeting()));
+  show("byte", i64.from(bytes[1]));
+
+  // Back to '&str' is explicit, and the bytes are the same bytes
+  imm back = bytes as &str;
+  show("as str", countStr(back));
+  show("equal", if bytes == "hello" {1;} else {0;});
+  show("equal reversed", if "hello" == bytes {1;} else {0;});
+  show("not equal", if bytes == "help!" {1;} else {0;});
+
+  // The NUL is there for C: printCStr stops at it
+  printStr("c string: ");
+  printCStr(bytes);
+  printStr("|\n");
+  printStr("c idiom: ");
+  printCStr(&"wb" as *u8);
+  printStr("|\n");
+  show("c idiom length", i64.from(libc.strlen(&"wbx" as *u8)));
+  show("array borrow", i64.from((&[]"wbxy").len));
+
+  // A literal fills a byte array of its length
+  imm tag Array[u8, 4] = "RIFF";
+  show("array", i64.from(tag[0]));
+  show("array sum", sum4(tag));
+  show("array arg", sum4("ABCD"));
+  show("array return", i64.from(riff()[3]));
+  imm chunk = new Chunk("data", 9);
+  show("array field", i64.from(chunk.tag[0]));
+  show("constant", i64.from(MAGIC[1]));
+  show("global", i64.from(header[3]));
+  mut changeable Array[u8, 3] = "abc";
+  changeable[0] = 'x';
+  changeable = "def";
+  show("assigned", i64.from(changeable[2]));
+
+  // A literal is copied into an owner of 'str'
+  imm owned So[str] = "abc";
+  show("owner", countStr(owned));
+  show("shared param", rc("shared!"));
+  imm shared Rc[str] = "twice";
+  imm another = shared;
+  show("shared copy", countStr(shared) + countStr(another));
+  show("return owner", countStr(made()));
+  imm arc Arc[str] = "arc";
+  show("arc", countStr(arc));
+  imm holder = new Holder("field");
+  show("owner field", countStr(holder.shared));
+
+  // One chosen at run time: each branch is copied
+  mut choose = 1;
+  imm pick Rc[str] = if choose == 1 {"one";} else {"three";};
+  show("owner branch", countStr(pick));
+}

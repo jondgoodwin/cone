@@ -230,8 +230,41 @@ An explicit conversion is not a literal meeting a type: `u8.from(300)`
 converts the `i32` literal `300`, and keeps its low bits as any conversion
 does.
 
-`slitTypeCheck` sets a string's type to an array of `u8` sized from `strlen`. A
-string literal is also an lval.
+**A string literal is a borrow of its text, `&imm str`.** `slitTypeCheck` types
+it as a `RefTag` to `str` (named, as a written `&str` is, so a generic given the
+type as an argument copies a name and not the struct) with the `imm` permission,
+the `borrowRef` region and global scope (0): it lives for the whole program, so it
+crosses threads under the static-borrow rule. It is a value, a fat `{ptr, usize}`
+built from the address of its constant and `strlen`; see "A literal and its
+neighbours" below for what it converts to.
+
+**A literal and its neighbours.** Four conversions meet a literal, none of them
+the literal's own business but each decided from its tag:
+
+- `&str` to `&[]u8`, any `&str` and not only a literal: `arrayRefMatchesRef` answers
+  `CastSubtype` (a recast; the two share a layout) for a borrow-region fat `str`
+  reference and a slice of `u8` whose permission the reference's meets
+  (`imm` to `ro`, but not `mut`). It is never `&[]u8` to `&str`, which is
+  `as`. `fnCallLowerRefCompare` takes a `&str` on the left of `==` against a
+  slice as that slice (`fnCallArrayAsSlice`).
+- A literal fills a byte array exactly its length (`slitMatches`, `slitCoerce`,
+  asked at the head of `iexpCoerceShape` and answered by `iexpMatches`): the
+  node is retyped in place to `Array[u8, strlen]` (`slitAsArray`), whose
+  generation is the constant array of the text, no NUL counted. Any other length
+  or element type is the ordinary mismatch.
+- A literal wanted as an owner of `str`, in any region (`slitIsStrOwner`): the
+  node becomes the `AllocateTag` node `new R[str](lit)` builds, typed as the owner
+  type wanted, its region and permission that type's. Only the literal node
+  itself is taken this way; a variable or a call of type `&str` is not, and
+  needs `new`.
+- A written borrow of a literal, `&"text"` or `&[]"text"`, retypes the literal as
+  the array (`borrowTypeCheck`), so the borrow is a reference to it as before:
+  the idiom `&"text" as *u8` and the slice `&[]"text"`.
+  The literal as an array is also an lval.
+
+A string literal wanted as a `&[]u8` is a `CastTag` recast of the `StringLitTag`
+node, and `litIsLiteral` accepts that (`litIsTextAsBytes`), so a global's,
+constant's, field's or parameter's default may be one.
 
 **A `null` takes the raw pointer type it is wanted as, and no other type.** It
 is built with `nullLitType`, an absence node distinct by identity, which says
@@ -340,7 +373,7 @@ positional pass runs each value through `iexpCoerce` against its field's type: *
 field takes a value on the same terms a variable initializer does**, a variant
 standing in for its enum included. A value given by name is coerced inside its
 `NamedValNode`, which then takes the value's type: the wrapper is neither an
-lval nor a literal, so coercing it would refuse a string literal's borrow to a
+lval nor a literal, so coercing it would refuse a string literal's conversion to a
 slice and leave an untyped number literal at its default type.
 
 `litIsLiteral` is the compile-time-constant predicate the global, parameter and
@@ -348,10 +381,11 @@ field-default rules use. It accepts a use resolved to a `ConstDclTag`, which is
 what makes `imm g i32 = K` legal. It accepts a borrow (`BorrowTag` or
 `ArrayBorrowTag`) of a string literal too: the text is a constant global, so a
 reference to it, or a slice of it (its address and its length), is known before
-anything runs. That is the borrow `borrowAuto` wraps a string literal in when a
-`&[]u8` wants it, so `imm g &[]u8 = "text"` and a struct literal holding one as
-a field are literal initializers; generation's `genlExpr` builds the slice with
-instructions the builder folds to a constant aggregate. It accepts a borrow of
+anything runs. The literal itself, which is that address and length, is a literal
+too, alone or recast to a `&[]u8` (`litIsTextAsBytes`), so `imm g &[]u8 = "text"`
+and a struct literal holding one as a field are literal initializers;
+generation's `genlExpr` builds the `{ptr, usize}` with instructions the builder
+folds to a constant aggregate. It accepts a borrow of
 an array literal whose elements all satisfy it (`arrayLitIsLiteral`) on the same
 terms, so `imm g = &[1, 2, 3]` is a literal initializer, and a borrow of a named
 constant holding either (`borrowIsConstLit`), so `imm g = &K` is one too. It accepts a value
@@ -564,17 +598,22 @@ literal too (`typeLitIsLiteral`), which a global may take.
 interning, and constant merging is not in the pass list.
 
 **A string literal's global ends in a NUL its type does not count**, for C
-compatibility: `"hello"` is an `Array[u8, 5]` and its global a `[6 x i8]`. The
-`StringLitTag` case of `genlAddr` recasts the global's address to a pointer to
-the literal's own array type, so a load, a copy and a slice's count all see the
-text's bytes only; the terminator is reachable only through a pointer handed to
-code that reads to it.
+compatibility: `"hello"` is five bytes and its global a `[6 x i8]`. The
+`StringLitTag` case of `genlAddr` makes the global and returns its address; as a
+value (`genlExpr`) the literal is that address with the count `strlen`, which
+leaves the NUL out, and taken as an array it is recast to a pointer to the
+array type, so a load, a copy and a slice's count all see the text's bytes
+only; the terminator is reachable only through a pointer handed to code that
+reads to it.
 
-**So does a global variable initialized from a string literal.** It is not a
+**So does a global byte array initialized from a string literal.** It is not a
 copy: its storage is the initialized data, so like the literal it gets the
-terminating zero after the text, uncounted — `imm g = "hello"` and
-`mut g Array[u8, 5] = "hello"` are each an `Array[u8, 5]` stored in a `[6 x i8]`, and a
-`static` in a function body the same. `genlGloVarName` creates the longer
+terminating zero after the text, uncounted — `mut g Array[u8, 5] = "hello"` is an
+`Array[u8, 5]` stored in a `[6 x i8]`, and a `static` in a function body the
+same (`genlGloVarHasNul` asks that the literal has been taken as an array). A
+global given a literal as it is, `imm g = "hello"`, holds the `&imm str`, the
+`{ptr, usize}` of the literal's own global, and is refused on a GPU target
+as any global holding a reference is. `genlGloVarName` creates the longer
 global and keeps in `llvmvar` its address recast to a pointer to the
 variable's type, which is all any use sees; `genlGloVarGlobal` recovers the
 global itself for its initializer, COMDAT, constness and linkage. Every Cone
