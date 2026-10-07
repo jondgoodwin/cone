@@ -855,6 +855,11 @@ static int fnCallBoolOperandWantsNumber(FnCallNode *callnode, INode *foundnode, 
                 itypeName(wanted), itypeName(wanted));
             return 1;
         }
+        // Nor does a char reach a number, a number a char, or a non-ASCII
+        // character literal a u8; the same report names the conversion
+        if (isExpNode(*argsp) && (wanted = iNsTypeNumberParm(foundnode, argi))
+            && iexpCharNumberMismatch(*argsp, wanted))
+            return 1;
         ++argi;
     }
     return 0;
@@ -1096,6 +1101,9 @@ static FnDclNode *fnCallHashNumber(FnCallNode *callnode, FnDclNode *selected) {
 // (so the caller may try another way), and -1 when a diagnostic was reported.
 int fnCallLowerMethod(TypeCheckState *pstate, FnCallNode *callnode) {
     INode *obj = callnode->objfn;
+    // An ASCII character literal beside a byte is that byte, whichever side it is on
+    if (callnode->flags & FlagOperator)
+        litAdoptCharBesideByte(&callnode->objfn, callnode->args);
     assert(isNameUseNode(callnode->methfld));
     NameUseNode *methfld = (NameUseNode*)callnode->methfld;
     Name *methsym = methfld->namesym;

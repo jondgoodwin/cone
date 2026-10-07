@@ -60,6 +60,29 @@ pub struct @opaque str {
   // The bytes themselves
   pub fn bytes(self &) &[]u8 inline { self; }
 
+  // The code points, in order: a cursor whose 'next' gives each as a char. A
+  // byte that is not part of well-formed UTF-8 reads as U+FFFD, one for each
+  // such byte, so every char given is valid. Code points, not graphemes: a
+  // letter and its combining accent are two.
+  pub fn chars(self &) StrChars inline { new StrChars(self, 0usize); }
+
+  // The code points with the byte index each starts at, a cursor whose 'next'
+  // gives a StrCharIndex (its 'offset' and its 'ch')
+  pub fn charIndices(self &) StrCharIndices inline { new StrCharIndices(self, 0usize); }
+
+  // How many code points there are, counted by walking the text (O(n)); 'len' is
+  // the byte count. The count of what 'chars' gives.
+  pub fn charCount(self &) usize inline {
+    imm b &[]u8 = self;
+    mut i = 0usize;
+    mut count = 0usize;
+    while i < b.len {
+      i = i + strCharWidth(b, i);
+      count = count + 1usize;
+    }
+    count;
+  }
+
   // The byte at index; an index past the end is a program error
   pub fn `[]`(self &, index usize) u8 inline {
     imm b &[]u8 = self;
@@ -220,6 +243,113 @@ fn strBytesAt(a &[]u8, at usize, b &[]u8) bool inline {
 // ASCII whitespace as Rust's is_ascii_whitespace has it
 fn strIsSpace(b u8) bool inline {
   b == ' ' or b == '\t' or b == '\n' or b == '\r' or b == 0x0Cu8;
+}
+
+// A UTF-8 continuation byte: 10xxxxxx
+fn strIsCont(b u8) bool inline {
+  (b & 0xC0u8) == 0x80u8;
+}
+
+// Whether b is between lo and hi, both included
+fn strInRange(b u8, lo u8, hi u8) bool inline {
+  b >= lo and b <= hi;
+}
+
+// How many bytes the character starting at byte index i takes: its well-formed
+// UTF-8 sequence's length (1 to 4), or 1 for a byte that begins none. That is
+// Go's decoding: each byte of an ill-formed run is one replacement character,
+// and so is an overlong form (C0, C1, E0 80..9F, F0 80..8F), a surrogate (ED
+// A0..BF) and anything past U+10FFFF (F4 90.., F5..FF). i is inside the text.
+fn strCharWidth(b &[]u8, i usize) usize inline {
+  imm b0 = b[i];
+  imm left = b.len - i;
+  mut width = 1usize;
+  if b0 >= 0xC2u8 and b0 <= 0xDFu8 {
+    if left >= 2usize and strIsCont(b[i + 1usize]) { width = 2usize; }
+  }
+  elif b0 >= 0xE0u8 and b0 <= 0xEFu8 {
+    if left >= 3usize and strIsCont(b[i + 2usize]) {
+      imm b1 = b[i + 1usize];
+      mut second = strIsCont(b1);
+      if b0 == 0xE0u8 { second = strInRange(b1, 0xA0u8, 0xBFu8); }
+      elif b0 == 0xEDu8 { second = strInRange(b1, 0x80u8, 0x9Fu8); }
+      if second { width = 3usize; }
+    }
+  }
+  elif b0 >= 0xF0u8 and b0 <= 0xF4u8 {
+    if left >= 4usize and strIsCont(b[i + 2usize]) and strIsCont(b[i + 3usize]) {
+      imm b1 = b[i + 1usize];
+      mut second = strIsCont(b1);
+      if b0 == 0xF0u8 { second = strInRange(b1, 0x90u8, 0xBFu8); }
+      elif b0 == 0xF4u8 { second = strInRange(b1, 0x80u8, 0x8Fu8); }
+      if second { width = 4usize; }
+    }
+  }
+  width;
+}
+
+// The code point of the character at byte index i that takes 'width' bytes
+// (strCharWidth): U+FFFD for a byte that begins no well-formed sequence, so a
+// char made here is always a valid one
+fn strCharValue(b &[]u8, i usize, width usize) char inline {
+  imm b0 = u32.from(b[i]);
+  mut code = 0xFFFDu32;
+  if width == 1usize {
+    if b0 < 0x80u32 { code = b0; }
+  }
+  elif width == 2usize {
+    code = ((b0 & 0x1Fu32) << 6u32) | (u32.from(b[i + 1usize]) & 0x3Fu32);
+  }
+  elif width == 3usize {
+    code = ((b0 & 0x0Fu32) << 12u32) | ((u32.from(b[i + 1usize]) & 0x3Fu32) << 6u32)
+      | (u32.from(b[i + 2usize]) & 0x3Fu32);
+  }
+  else {
+    code = ((b0 & 0x07u32) << 18u32) | ((u32.from(b[i + 1usize]) & 0x3Fu32) << 12u32)
+      | ((u32.from(b[i + 2usize]) & 0x3Fu32) << 6u32) | (u32.from(b[i + 3usize]) & 0x3Fu32);
+  }
+  char.from(code);
+}
+
+// A cursor over a text's code points: 'next' gives each in turn, as a char, and
+// None past the last. A byte that is not part of well-formed UTF-8 reads as
+// U+FFFD, so every char it gives is valid. It borrows the text, which may not
+// change while the cursor is used.
+pub struct StrChars['a] {
+  text &'a str;
+  pos usize;
+
+  pub fn next(self &mut) Option[char] inline {
+    imm b &[]u8 = text;
+    if pos >= b.len { return None[char][]; }
+    imm width = strCharWidth(b, pos);
+    imm c = strCharValue(b, pos, width);
+    pos = pos + width;
+    Some[char][c];
+  }
+}
+
+// A code point with the byte index it starts at
+pub struct StrCharIndex {
+  pub offset usize;
+  pub ch char;
+}
+
+// A cursor over a text's code points, each with the byte index it starts at: the
+// positions a lexer reports, and a slice may begin or end at. Otherwise as
+// StrChars is.
+pub struct StrCharIndices['a] {
+  text &'a str;
+  pos usize;
+
+  pub fn next(self &mut) Option[StrCharIndex] inline {
+    imm b &[]u8 = text;
+    if pos >= b.len { return None[StrCharIndex][]; }
+    imm width = strCharWidth(b, pos);
+    imm at = new StrCharIndex(pos, strCharValue(b, pos, width));
+    pos = pos + width;
+    Some[StrCharIndex][at];
+  }
 }
 
 // A panic ends the program where something that must not happen has: an index

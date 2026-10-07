@@ -201,6 +201,25 @@ they come after. `lexical_reject_unclosed_string` and
 `lexical_reject_unclosed_mlstring` hold one literal each, since a literal that
 runs to the end of the file is one per file.
 
+**A character literal is a `char`, a Unicode scalar value.** `lexScanChar` reads
+one character, an escape or the character itself, and makes an `IntLitToken`
+whose `langtype` is `charType` (`char`, a 32-bit unsigned by tag with no
+arithmetic: `corenumber.c`); `parseTerm` builds its `ULitNode` and marks it
+`FlagCharLit`, the mark that lets the literal as written stand for a `u8`
+where one is wanted (type-check-reasoning.md). A character written as itself is
+read as UTF-8 to its code point, of one to four bytes (`utf8GetCode`); a byte
+that begins no UTF-8 character is `ErrorBadTok` ("holds the byte 0x80, which
+begins no UTF-8 character"), taking a cut-short lead byte's continuation bytes
+with it so the literal still closes. A `\x` escape is the code point of that
+value, so `'\xFF'` is U+00FF and not a byte. A value that is a surrogate
+(U+D800 to U+DFFF) or past U+10FFFF is `ErrorBadTok` at the literal, once (a
+literal already refused for a bad escape is not refused twice), and has the value
+U+FFFD. The `u` suffix, which once made a character literal a `u32`, is
+`ErrorBadTok` in the words that name `u32.from(c)`; a minus before a character
+literal is not folded into it (`parsePrefix`), so `-'a'` meets the `char` that
+has no `-`. `lexical_char_utf8`, `lexical_reject_char_value` and
+`lexical_reject_char_byte` hold them.
+
 **A character literal or back-ticked identifier cut off by the source's end
 stays on it.** A character literal missing its closing quote is `ErrorBadTok`,
 "Invalid lifetime or too-long character literal", at the opening quote, and its

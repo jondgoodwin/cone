@@ -217,6 +217,11 @@ FnDclNode *iNsTypeFindVrefMethod(INode *binding, FnDclNode *matchmeth, INode *se
     FnDclNode *found = NULL;
     while (cnt--) {
         FnDclNode *methnode = (FnDclNode *)*candidatep++;
+        // A generic method does not meet a requirement that is not generic: it
+        // is a family of methods, not the one the requirement asks for, and its
+        // signature is written in type parameters that are not types
+        if (methnode->genericinfo && !matchmeth->genericinfo)
+            continue;
         if (!fnSigVrefEqual((FnSigNode*)methnode->vtype, (FnSigNode*)matchmeth->vtype, selftype))
             continue;
         if (found)

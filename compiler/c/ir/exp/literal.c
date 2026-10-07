@@ -238,7 +238,9 @@ int litAdoptNumberType(INode **nodep, INode *totype) {
     if (node->tag != ULitTag || !(node->flags & FlagUnkType))
         return 0;
     INode *nbrtype = itypeGetTypeDcl(totype);
-    if (nbrtype == (INode*)boolType)
+    // Nor is a char one: an integer is no code point until it is converted,
+    // 'char.from(65)'
+    if (nbrtype == (INode*)boolType || nbrtype == (INode*)charType)
         return 0;
     switch (nbrtype->tag) {
     case IntNbrTag:
@@ -266,6 +268,46 @@ int litAdoptNumberType(INode **nodep, INode *totype) {
     default:
         return 0;
     }
+}
+
+// A character literal as written is a char, a 32-bit code point, and takes the
+// type u8 where a u8 is wanted, as an integer literal takes the number type its
+// context wants, but only when it is ASCII: 'a' is the byte 97, and 'é' is the
+// code point U+00E9, which as a single byte would be Latin-1 and not the two
+// bytes UTF-8 writes it with. So comparing a byte with 'a' keeps working, and
+// comparing it with 'é' is refused. Nothing else about a char reaches a number implicitly
+// (nbrMatches), and a named constant holding one is a char: it is the literal as
+// written that is flexible.
+int litCharMatchesByte(INode *node, INode *totypedcl) {
+    return node->tag == ULitTag && (node->flags & FlagCharLit) && totypedcl == (INode*)u8Type
+        && ((ULitNode*)node)->uintlit < 128;
+}
+
+int litAdoptCharAsByte(INode **nodep, INode *totype) {
+    INode *totypedcl = itypeGetTypeDcl(totype);
+    if (!litCharMatchesByte(*nodep, totypedcl))
+        return 0;
+    ((ULitNode*)*nodep)->vtype = totypedcl;
+    (*nodep)->flags &= ~FlagCharLit;
+    return 1;
+}
+
+// An ASCII character literal that is the receiver of a binary operator, beside
+// a u8, is that byte: '0' + digit, as the same literal on the other side
+// ('digit + '0'') is by the argument's wanting a u8. Whichever side it is on,
+// the byte decides. Returns 1 when the literal was retyped.
+int litAdoptCharBesideByte(INode **objp, Nodes *args) {
+    if (args == NULL || args->used != 1 || !litCharMatchesByte(*objp, (INode*)u8Type))
+        return 0;
+    INode *arg = nodesGet(args, 0);
+    if (!isExpNode(arg) || iexpGetTypeDcl(arg) != (INode*)u8Type)
+        return 0;
+    return litAdoptCharAsByte(objp, (INode*)u8Type);
+}
+
+int litCharRefusedAsByte(INode *node, INode *totypedcl) {
+    return node->tag == ULitTag && (node->flags & FlagCharLit) && totypedcl == (INode*)u8Type
+        && ((ULitNode*)node)->uintlit >= 128;
 }
 
 // Widen a float literal to a wider float type at compile time, in place of
@@ -439,8 +481,12 @@ void litTypeCheck(TypeCheckState* pstate, INode **nodep, INode *expectType) {
     itypeTypeCheck(pstate, &((IExpNode*)*nodep)->vtype);
 
     // An integer literal with a suffix has its type, and must fit it
-    if ((*nodep)->tag == ULitTag && !((*nodep)->flags & FlagUnkType))
+    if ((*nodep)->tag == ULitTag && !((*nodep)->flags & FlagUnkType)) {
         litCheckRange((ULitNode*)*nodep, 0);
+        // A character literal wanted as a byte is the byte, if it is ASCII
+        if (expectType != NULL && expectType != unknownType && expectType != noCareType)
+            litAdoptCharAsByte(nodep, expectType);
+    }
 
     // An untyped integer literal takes the number type it is wanted as. One that
     // arrives with no expected type -- an argument to an overload set, a generic

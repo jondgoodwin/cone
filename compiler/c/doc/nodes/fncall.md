@@ -543,8 +543,13 @@ the message says the method takes `self &mut` and names `x[i]` and
 `&mut x[i]` (`fnCallRefIndexWantsMut`, still `ErrorNoCandidate`). An operator
 or an index given a `bool` where a candidate declares a number, `n + b` or
 `list[b]`, is `ErrorBoolNotNbr` naming that number's `from`
-(`fnCallBoolOperandWantsNumber`): a `bool` coerces to no number. Neither probe
-changes anything; the refusal is the same.
+(`fnCallBoolOperandWantsNumber`): a `bool` coerces to no number. The same probe
+reports a `char` where a candidate declares a number, a number where it declares
+a `char`, and a character literal of 128 or more where it declares a `u8`, as
+`ErrorCharNotNbr` (`iexpCharNumberMismatch`). Neither probe changes anything;
+the refusal is the same. Before any candidate is tried, a character literal that
+is a binary operator's receiver, beside a `u8` argument, is retyped `u8`
+(`litAdoptCharBesideByte`), so `'0' + digit` selects the byte's `+`.
 
 ### The list after `<-`
 

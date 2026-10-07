@@ -27,6 +27,9 @@ INode *nbrFindSuper(INode *type1, INode *type2) {
     // A bool and a number have none: neither coerces to the other's type
     if (typ1 == boolType || typ2 == boolType)
         return NULL;
+    // So have a char and a number: a char is a code point, no quantity
+    if ((typ1 == charType) != (typ2 == charType))
+        return NULL;
     return typ1->bits >= typ2->bits ? type1 : type2;
 }
 
@@ -40,6 +43,12 @@ TypeCompare nbrMatches(INode *totype, INode *fromtype, SubtypeConstraint constra
     // bool through isTrue; a bool reaches no number implicitly, though it is a
     // 1-bit unsigned: true is not a count, and 'T.from(b)' says it is 0 or 1.
     if (totype == (INode*)boolType || fromtype == (INode*)boolType)
+        return NoMatch;
+
+    // A char reaches no number implicitly, nor a number a char, though a char is
+    // a 32-bit unsigned: a u8 above 127 would become a Latin-1 character, and a
+    // u32 may be no code point. They convert explicitly, 'u8.from(c)'
+    if (totype == (INode*)charType || fromtype == (INode*)charType)
         return NoMatch;
 
     if (totype->tag != fromtype->tag)

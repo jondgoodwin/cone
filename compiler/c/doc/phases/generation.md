@@ -343,7 +343,7 @@ flag** — release is the default and `--debug` turns it off.
 
 | Cone | LLVM |
 | --- | --- |
-| integer / float | `i1`…`i64`, `float`/`double`. bool is a 1-bit unsigned |
+| integer / float | `i1`…`i64`, `float`/`double`. bool is a 1-bit unsigned, char a 32-bit one |
 | **`void`** | **`%void = type {}`** — a zero-field named struct, *not* LLVM `void`. A function returning nothing returns `%void`; so does `nil` |
 | **permission** | **`%void`** — permissions are fully erased |
 | `*T` | `ptr` |

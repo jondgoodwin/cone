@@ -7,6 +7,7 @@
 
 #include "ir.h"
 
+#include <inttypes.h>
 #include <string.h>
 #include <assert.h>
 
@@ -64,10 +65,14 @@ TypeCompare iexpMatches(INode **from, INode *totype, SubtypeConstraint constrain
 
     // Handle implicit conversion of untyped literal integer to any number type
     INode *totyp = itypeGetTypeDcl(totype);
-    if ((*from)->tag == ULitTag && ((*from)->flags & FlagUnkType)
+    if ((*from)->tag == ULitTag && ((*from)->flags & FlagUnkType) && totyp != (INode*)charType
         && (totyp->tag == UintNbrTag || totyp->tag == IntNbrTag || totyp->tag == FloatNbrTag)) {
         return ConvSubtype;  // For literals, we do not care if to a supertype (for user convenience)
     }
+
+    // An ASCII character literal, as written, stands for a u8 where one is wanted
+    if (litCharMatchesByte(*from, totyp))
+        return ConvSubtype;
 
     // A string literal fills a byte array of its length, and is copied into an
     // owner of 'str'
@@ -152,6 +157,32 @@ INode *iexpCoerceType(INode *from, INode *totypedcl) {
 
 static int iexpCoerceShape(INode **from, INode *totype);
 
+int iexpCharNumberMismatch(INode *from, INode *totypedcl) {
+    INode *fromtype = iexpGetTypeDcl(from);
+    // A number here is any but bool, which has its own message, and char
+    int tonumber = isNbr(totypedcl) && totypedcl != (INode*)boolType && totypedcl != (INode*)charType;
+    int fromnumber = isNbr(fromtype) && fromtype != (INode*)boolType && fromtype != (INode*)charType;
+    if (litCharRefusedAsByte(from, totypedcl)) {
+        errorMsgNode(from, ErrorCharNotNbr,
+            "This character literal is U+%04" PRIX64 ", beyond ASCII, so it is no u8: a byte of its UTF-8 is not the code point. It is a char; convert it explicitly, 'u8.from(c)', for its low 8 bits, or write its bytes in a string.",
+            (uint64_t)((ULitNode*)from)->uintlit);
+        return 1;
+    }
+    if (fromtype == (INode*)charType && tonumber) {
+        errorMsgNode(from, ErrorCharNotNbr,
+            "A char is not a number, and %s is wanted here. Convert it explicitly, '%s.from(c)'.",
+            itypeName(totypedcl), itypeName(totypedcl));
+        return 1;
+    }
+    if (totypedcl == (INode*)charType && fromnumber) {
+        errorMsgNode(from, ErrorCharNotNbr,
+            "%s is not a char, and a char is wanted here. Convert it explicitly, 'char.from(n)'.",
+            itypeName(fromtype));
+        return 1;
+    }
+    return 0;
+}
+
 // Coerce from-node's type to 'to' expected type, if needed
 // Return 1 if type "matches", 0 otherwise. A value meeting a type also meets
 // its invariant lifetimes, which must be the same brands (lifeBrandsCoerce):
@@ -197,6 +228,10 @@ static int iexpCoerceShape(INode **from, INode *totype) {
     if (litAdoptNumberType(from, totypedcl))
         return 1;
 
+    // An ASCII character literal, as written, wanted as a u8 is that byte
+    if (litAdoptCharAsByte(from, totypedcl))
+        return 1;
+
     // A string literal fills a byte array of its length, or is copied into an
     // owner of 'str'
     if (slitCoerce(from, totypedcl))
@@ -222,6 +257,15 @@ static int iexpCoerceShape(INode **from, INode *totype) {
             errorMsgNode(*from, ErrorBoolNotNbr,
                 "A bool is not a number, and %s is wanted here. Convert it explicitly, '%s.from(b)', which gives 0 or 1.",
                 itypeName(totypedcl), itypeName(totypedcl));
+            INode *conv = (INode*)newConvCastNode(*from, totypedcl);
+            inodeLexCopy(conv, *from);
+            *from = conv;
+            return 1;
+        }
+        // A char is no number, nor a number a char (a non-ASCII character
+        // literal wanted as a u8 included): the conversion is asked for. It is
+        // then built anyway, as for a bool, so what uses the value says nothing more.
+        if (iexpCharNumberMismatch(*from, totypedcl)) {
             INode *conv = (INode*)newConvCastNode(*from, totypedcl);
             inodeLexCopy(conv, *from);
             *from = conv;

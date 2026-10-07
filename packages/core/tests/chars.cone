@@ -1,0 +1,101 @@
+// str's code points as every program meets them: core's 'chars', 'charIndices'
+// and 'charCount', declared in core's generated include file, which Congo
+// compiles this test against. Each number was worked out apart, from UTF-8's
+// layout and not read off this program:
+// - "aé€😀" is a (U+0061), é (U+00E9: C3 A9), € (U+20AC: E2 82 AC) and 😀
+//   (U+1F600, 128512: F0 9F 98 80): 1 + 2 + 3 + 4 = 10 bytes, 4 code points,
+//   starting at bytes 0, 1, 3 and 6;
+// - a byte that begins no well-formed sequence is one U+FFFD (65533), the
+//   way Go's range reads a string: a lone continuation byte (80), a lone lead
+//   byte cut short (E2 82), an overlong C0 80 (two), a surrogate ED A0 80
+//   (three), and F4 90 80 80, past U+10FFFF (four).
+
+mod chars;
+
+import stdio use *;
+
+fn show(label &[]u8, n u64) {
+  printStr(label);
+  printStr(" ");
+  printUInt(n);
+  printStr("\n");
+}
+
+// The code points of text, one after another
+fn codes(label &[]u8, text &str) {
+  printStr(label);
+  mut cs = text.chars();
+  while true {
+    match cs.next() {
+      case imm c Some {
+        printStr(" ");
+        printUInt(u64.from(c.value));
+      }
+      case is None {break;}
+    }
+  }
+  printStr("\n");
+}
+
+// The code points of text with the byte each starts at, as offset:code
+fn indexed(label &[]u8, text &str) {
+  printStr(label);
+  mut cs = text.charIndices();
+  while true {
+    match cs.next() {
+      case imm c Some {
+        printStr(" ");
+        printUInt(u64.from(c.value.offset));
+        printStr(":");
+        printUInt(u64.from(c.value.ch));
+      }
+      case is None {break;}
+    }
+  }
+  printStr("\n");
+}
+
+fn main() {
+  imm mixed = "aé€\U0001F600";
+  show("bytes", u64.from(mixed.len()));
+  show("count", u64.from(mixed.charCount()));
+  codes("chars", mixed);
+  indexed("indices", mixed);
+
+  // Empty, ASCII only and one code point
+  show("empty count", u64.from("".charCount()));
+  codes("empty chars", "");
+  show("ascii count", u64.from("hello".charCount()));
+  codes("ascii chars", "hi!");
+  codes("one", "\U0010FFFF");
+
+  // The first and last of each length: U+007F, U+0080, U+07FF, U+0800, U+FFFF,
+  // U+10000, U+10FFFF
+  codes("edges", "\x7F\u0080߿ࠀ￿\U00010000\U0010FFFF");
+
+  // Ill-formed bytes: one U+FFFD each, and well-formed text around them kept
+  codes("lone continuation", "a\x80z");
+  codes("cut short", "a\xE2\x82");
+  codes("overlong", "\xC0\x80");
+  codes("surrogate", "\xED\xA0\x80");
+  codes("past the end", "\xF4\x90\x80\x80");
+  codes("lead without its continuations", "\xF0\x9F\x98");
+  indexed("ill-formed indices", "a\x80é\xE2\x82z");
+  show("ill-formed count", u64.from("a\x80é\xE2\x82z".charCount()));
+
+  // The byte count is unchanged by any of it
+  show("ill-formed bytes", u64.from("a\x80é\xE2\x82z".len()));
+
+  // A slice from an offset charIndices gave is a character boundary
+  mut cs = mixed.charIndices();
+  cs.next();
+  cs.next();
+  match cs.next() {
+    case imm c Some {
+      show("slice at", u64.from(c.value.offset));
+      show("slice len", u64.from(mixed.sliceFrom(c.value.offset).len()));
+      show("slice is boundary", if mixed.isCharBoundary(c.value.offset) {1u64;} else {0u64;});
+    }
+    case is None {show("slice at", 0u64);}
+  }
+}

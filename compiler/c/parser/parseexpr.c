@@ -177,6 +177,9 @@ INode *parseTerm(ParseState *parse) {
     case IntLitToken:
         {
             ULitNode *node = newULitNode(lex->val.uintlit, lex->langtype);
+            // A character literal is the one integer literal the lexer types as char
+            if (lex->langtype == (INode*)charType)
+                node->flags |= FlagCharLit;
             lexNextToken();
             return (INode *)node;
         }
@@ -742,7 +745,8 @@ INode *parsePrefix(ParseState *parse) {
         FnCallNode *node = newFnCallOpname(NULL, minusName, 0);
         lexNextToken();
         INode *argnode = parsePrefix(parse);
-        if (argnode->tag == ULitTag) {
+        // A char is no quantity, so a minus before one is left to be refused
+        if (argnode->tag == ULitTag && !(argnode->flags & FlagCharLit)) {
             ((ULitNode*)argnode)->uintlit = 0 - ((ULitNode*)argnode)->uintlit;
             argnode->flags ^= FlagLitNeg;
             return argnode;

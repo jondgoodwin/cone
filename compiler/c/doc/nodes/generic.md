@@ -509,7 +509,12 @@ or the copy of a default, by `fnSigVrefEqual`, and `itypeIsSame` finds no two
 uses of a type parameter the same — a use of one is not a type, so neither
 resolves to a declaration — so every such type is `ErrorInvType`, "none of
 what it declares has the signature". Comparing them would mean matching type
-parameters by position.
+parameters by position. The opposite pairing, a type's generic method against a
+trait's method that is not generic, is refused by design, as in Rust:
+`iNsTypeFindVrefMethod` skips a generic candidate then, so it never fits a
+bound, an `is` or a virtual reference, whether or not its signature names its
+own parameter (`generic_typecheck_generic_method_bound`,
+`trait_typecheck_generic_method`).
 
 `genericMemoize` validates arity and that every argument is a type, then looks
 up: **the memo key is the stored call's argument list, compared pairwise with
@@ -644,7 +649,10 @@ clause naming an instance of a generic trait says why the argument does not fit
 it (`genericFitWhy`): the first method the trait requires that the type lacks, or
 has only with another signature, each spelled as the instance's types come to
 (`genericSigCat`: `pop(self &mut) Option[i64]`), then a field likewise; a non-struct
-is told only a struct fits by its methods. The clause is spelled with the instance's
+is told only a struct fits by its methods. A method the type has only as a generic
+one is said so and its signature is not spelled, since it is written in type
+parameters that are not types (spelling it was `ErrorUnreachable`, "a request for
+the name of a node that has none"). The clause is spelled with the instance's
 arguments (`Stack[i64]`), not as written. A non-generic trait's message is
 unchanged. A failed
 instance is never memoized, so each use asking for it is refused where it is.

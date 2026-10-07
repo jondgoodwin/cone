@@ -354,6 +354,7 @@ static char nameNbrLetter(INode *type) {
     if (type == (INode*)f32Type) return 'f';
     if (type == (INode*)f64Type) return 'd';
     if (type == (INode*)boolType) return 'b';
+    if (type == (INode*)charType) return 'w';
     return 0;
 }
 
