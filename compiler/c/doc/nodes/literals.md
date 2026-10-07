@@ -142,7 +142,21 @@ agrees. `typemgmt_success` pins all of them — initializer, assignment, argumen
 return value, struct-literal field, `if`, `not`, `and` and `or` — each with a
 value whose low bit is 0, because `1` and `-1` read the same either way.
 `true` and `false` are built carrying `bool`, never `FlagUnkType`, so the rule
-never reaches them.
+never reaches them. `char` is refused too: an integer is no code point until it
+is converted, `char.from(65)`, so `litAdoptNumberType` returns 0 for it as well,
+and a literal wanted as a `char` is `ErrorCharNotNbr` from `iexpCoerce`.
+
+**A character literal is a `char`, and is a `u8` only where a `u8` is wanted.**
+The lexer types it `char` (a 32-bit unsigned by tag, `charType`) and the parser
+marks it `FlagCharLit`; it is never `FlagUnkType`, so `litAdoptNumberType` does
+not touch it. `litAdoptCharAsByte` retypes a literal so marked whose value is
+below 128 when `u8` is wanted: `litTypeCheck` with an expected type,
+`iexpCoerce` for one that arrives untyped by context, and `fnCallLowerMethod`
+for a binary operator's receiver beside a `u8` argument. It drops the mark, so
+what it became is an ordinary `u8` literal. A value of 128 or more wanted as a
+`u8` is refused (`litCharRefusedAsByte`, reported by `iexpCharNumberMismatch`).
+The mark is on the literal as written: a named constant holding one is a
+`char`, which `typemgmt_typecheck_char` pins.
 
 **Adopting the type is what builds the constant at the right width.** The
 alternative, converting from the `i32` default, materializes the constant at 32

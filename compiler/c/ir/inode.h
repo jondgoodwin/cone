@@ -323,6 +323,10 @@ enum NodeTags {
 // bits. This records an odd number of folded minuses, which is what lets
 // litCheckRange read the magnitude the source wrote.
 #define FlagLitNeg    0x0002        // ULit: value is the negation of the digits written
+// A character literal as written, 'x': a char that stands for a u8 where one is
+// wanted and its value is ASCII (litAdoptCharAsByte). The parser sets it on the
+// literal only; a char made any other way is never taken for a byte.
+#define FlagCharLit   0x0004        // ULit: a character literal as written
 
 #define FlagFirstAssign 0x0080      // VarNameUse: assignment target held no prior value
 // Flow's marks for drop flags (compiler/c/doc/phases/flow.md, "Drop flags"). A

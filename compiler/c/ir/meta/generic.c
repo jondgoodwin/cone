@@ -718,7 +718,7 @@ static int genericTypeIsHow(INode *type, StructNode *trait, StaticBorrow how) {
     if (trait == copyTrait)
         return !itypeIsMove(dcl);
     if (trait == integerTrait
-        && (dcl->tag == IntNbrTag || (dcl->tag == UintNbrTag && dcl != (INode*)boolType)))
+        && (dcl->tag == IntNbrTag || (dcl->tag == UintNbrTag && dcl != (INode*)boolType && dcl != (INode*)charType)))
         return 1;
     if (trait == pointerTrait && dcl->tag == PtrTag)
         return 1;

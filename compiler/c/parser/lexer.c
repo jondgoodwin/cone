@@ -406,8 +406,8 @@ void lexScanChar(char *srcp) {
     }
 
     // Assume we have a lifetime variable if it starts with a letter, not followed by close single quote
-    if (isalpha(*srcp) && *(srcp+1)!='\'') {
-        while (isalnum(*srcp))
+    if (isalpha((unsigned char)*srcp) && *(srcp+1)!='\'') {
+        while (isalnum((unsigned char)*srcp))
             ++srcp;
         // Accept it if next char is non-single quote punctuation
         if (*srcp != '\'' && !(*srcp & 0x80)) {
@@ -427,11 +427,9 @@ void lexScanChar(char *srcp) {
     char *toklinep = lex->linep;
 
     // Obtain a single character/unicode (possibly escaped)
-    int isUnicode = 0;
-    if (*srcp == '\\') {
-        isUnicode = *(srcp + 1) == 'u' || *(srcp + 1) == 'U';
+    int errsbefore = errors;
+    if (*srcp == '\\')
         srcp = lexScanEscape(srcp, &lex->val.uintlit);
-    }
     // A raw line end is refused: '\n' and '\r' are how those characters are
     // written. The literal ends where its line does, and the scan stays on the
     // line end, so it is counted where any other is
@@ -441,7 +439,7 @@ void lexScanChar(char *srcp) {
         else
             errorMsgLex(ErrorBadTok, "A character literal cannot hold a line's end: write a new-line as '\\n'");
         lex->val.uintlit = *srcp;
-        lex->langtype = (INode*)u8Type;
+        lex->langtype = (INode*)charType;
         lex->toktype = IntLitToken;
         lex->srcp = srcp;
         return;
@@ -451,21 +449,49 @@ void lexScanChar(char *srcp) {
     else if (*srcp) {
         if (lexIsRawControl(srcp))
             lexRawControlError(srcp, "character literal");
-        lex->val.uintlit = *srcp++;
+        // A character written as itself is its code point, whatever its length
+        // in UTF-8. A byte that begins no UTF-8 character is refused
+        if ((unsigned char)*srcp >= 0x80 && utf8IsMultibyte(srcp)) {
+            lex->val.uintlit = utf8GetCode(srcp);
+            srcp += utf8ByteSkip(srcp);
+        }
+        else if ((unsigned char)*srcp >= 0x80) {
+            errorMsgLex(ErrorBadTok, "A character literal holds the byte 0x%02X, which begins no UTF-8 character",
+                (unsigned char)*srcp);
+            lex->val.uintlit = 0xFFFD;
+            // A lead byte cut short takes the continuation bytes it did get with
+            // it, so the literal still closes where it was meant to
+            if ((unsigned char)*srcp++ >= 0xC0)
+                while (((unsigned char)*srcp & 0xC0) == 0x80)
+                    ++srcp;
+        }
+        else
+            lex->val.uintlit = *srcp++;
     }
     else
         lex->val.uintlit = '\0';  // the source's end: stay on it
 
-    // If following character is end quote, return as integer literal
+    // If following character is end quote, return as a character literal: a char
     if (*srcp == '\'')
     {
         srcp++;
-        if (*srcp == 'u') {
-            lex->langtype = (INode*)u32Type;
+        // A char is a Unicode scalar value: no surrogate, nothing past U+10FFFF.
+        // It is refused, and taken as the replacement character so that the
+        // literal still has a value
+        // (A literal already refused, a bad escape in it say, is not refused twice.)
+        if (lex->val.uintlit > 0x10FFFF || (lex->val.uintlit >= 0xD800 && lex->val.uintlit <= 0xDFFF)) {
+            if (errors == errsbefore)
+                errorMsgLex(ErrorBadTok, "U+%04llX is no Unicode scalar value, so no char: a surrogate (U+D800 to U+DFFF) and anything past U+10FFFF is refused",
+                    (unsigned long long)lex->val.uintlit);
+            lex->val.uintlit = 0xFFFD;
+        }
+        // The 'u' suffix widened a character literal to a u32. A character literal
+        // is a char now, which converts explicitly: 'u32.from(c)'
+        if (*srcp == 'u' && !isalnum((unsigned char)srcp[1]) && srcp[1] != '_') {
+            errorMsgLex(ErrorBadTok, "A character literal has no 'u' suffix: it is a char. Its code point is 'u32.from(c)'");
             srcp++;
         }
-        else
-            lex->langtype = isUnicode || lex->val.uintlit >= 0x100 ? (INode*)u32Type : (INode*)u8Type;
+        lex->langtype = (INode*)charType;
         lex->toktype = IntLitToken;
         lex->srcp = srcp;
         return;
@@ -486,7 +512,7 @@ void lexScanChar(char *srcp) {
     errorMsgLex(ErrorBadTok, "Invalid lifetime or too-long character literal");
     lex->linenbr = endlinenbr;
     lex->linep = endlinep;
-    lex->langtype = (INode*)u8Type;
+    lex->langtype = (INode*)charType;
     lex->toktype = IntLitToken;
     lex->srcp = srcp;
 }

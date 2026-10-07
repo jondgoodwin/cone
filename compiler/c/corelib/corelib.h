@@ -30,6 +30,7 @@ extern PermNode *newPerm;
 
 // Primitive numeric types - for implicit (nondeclared but known) types
 extern NbrNode *boolType;    // i1
+extern NbrNode *charType;    // a Unicode code point, i32: a 32-bit unsigned by tag, no arithmetic
 extern NbrNode *i8Type;
 extern NbrNode *i16Type;
 extern NbrNode *i32Type;
