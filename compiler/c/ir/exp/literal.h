@@ -113,6 +113,17 @@ void slitPrint(SLitNode *node);
 // Type check string literal node
 void slitTypeCheck(TypeCheckState *pstate, SLitNode *node);
 
+// Take a literal as the array of bytes it holds, which a written borrow of it
+// is a reference to
+void slitAsArray(SLitNode *node);
+
+// Would a string literal be taken, where this type is wanted, as the byte
+// array it fills or the owner of 'str' it is copied into?
+int slitMatches(INode *node, INode *totypedcl);
+
+// Make it so, returning 1 when *nodep now has the wanted type
+int slitCoerce(INode **nodep, INode *totypedcl);
+
 int litIsLiteral(INode* node);
 
 // Fold a type-checked value where a constant is required -- an expression of

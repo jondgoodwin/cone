@@ -1,0 +1,68 @@
+// A string literal is a borrow of the whole program, '&imm str', so it crosses
+// threads and actors like any static, immutable borrow
+// (concurrency_static_borrow_send): handed to a thread through thread.start's
+// 'A Sendable + 'static', held by a struct a thread is handed, taken by an
+// actor's behaviour as '&'static str', and asked of the marker directly.
+//
+// Output: the byte count each thread and the actor computed, worked out by
+// hand: "literal" is 7, "view" 4, "thread" 6, and the actor's total
+// 7 + 4 = 11.
+
+mod concurrency_literal_send;
+
+import stdio use *;
+import thread;
+import actors;
+
+fn crosses[T Sendable + 'static]() {}
+
+fn size(s &str) usize {(s as &[]u8).len;}
+
+struct Named {pub text &'static str;}
+fn sizeOf(n Named) usize {(n.text as &[]u8).len;}
+
+actor Counter {
+  total usize;
+
+  fn init(self &new) {
+    *self = new Self(total: 0usize);
+  }
+
+  pub async do add(self, s &'static str) {
+    total = total + (s as &[]u8).len;
+  }
+
+  pub async do report(self &) {
+    printStr("total "); printUInt(u64.from(total)); printStr("\n");
+  }
+}
+
+fn feed(c Counter) usize {
+  c.add("view");
+  0usize;
+}
+
+fn main() {
+  crosses[&str]();
+  crosses[Named]();
+
+  imm a = thread.start("literal", &size);
+  imm b = thread.start(new Named("view"), &sizeOf);
+  printStr("threads ");
+  printUInt(u64.from(a.join()));
+  printStr(" ");
+  printUInt(u64.from(b.join()));
+  printStr(" ");
+  printUInt(u64.from(thread.start("thread", &size).join()));
+  printStr("\n");
+
+  initAll();
+  {
+    imm c = new Counter();
+    c.add("literal");
+    imm t = thread.start(c, &feed);
+    t.join();
+    c.report();
+  }
+  finalAll();
+}

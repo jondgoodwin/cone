@@ -69,6 +69,11 @@ TypeCompare iexpMatches(INode **from, INode *totype, SubtypeConstraint constrain
         return ConvSubtype;  // For literals, we do not care if to a supertype (for user convenience)
     }
 
+    // A string literal fills a byte array of its length, and is copied into an
+    // owner of 'str'
+    if (slitMatches(*from, totyp))
+        return ConvSubtype;
+
     // Can we auto-borrow to match on the expected type?
     if (borrowAutoMatches(*from, (RefNode*)totyp)) {
         return ConvBorrow;    // Auto-borrow
@@ -190,6 +195,11 @@ static int iexpCoerceShape(INode **from, INode *totype) {
     // first. bool is refused by litAdoptNumberType itself, so a literal meets it
     // as any number does, through isTrue.
     if (litAdoptNumberType(from, totypedcl))
+        return 1;
+
+    // A string literal fills a byte array of its length, or is copied into an
+    // owner of 'str'
+    if (slitCoerce(from, totypedcl))
         return 1;
 
     // Are types equivalent, or is 'to' a subtype of fromtypedcl?
