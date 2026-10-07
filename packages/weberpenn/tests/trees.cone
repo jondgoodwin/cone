@@ -1,0 +1,218 @@
+// The weberpenn package's trees. Only a failure prints.
+//
+// - Determinism: the same params and seed give the same skeleton and the same
+//   meshes (hashed, bit for bit); another seed gives another tree.
+// - The paper's levels and counts: one trunk, as many limbs as the level asked
+//   for, children only on the levels above, radii falling along every stem, the
+//   tree standing on y = 0 at its trunk's foot.
+// - Opposite pairs: a maple's limbs leave in pairs from one point, their
+//   horizontal directions opposite, and each pair a quarter turn from the
+//   one below; its leaf sites come in opposite pairs too.
+// - Whorls: a pine's limbs leave five to a point, their directions 72 degrees
+//   apart.
+// - Kinks and splits happen, and the shape ratio's table is read.
+// - The meshes: branch tubes and foliage have normals, uvs and indices in
+//   range; foliage is drawn from both sides.
+
+mod trees;
+
+import testing use *;
+import libc;
+import geomath use *;
+import collections use *;
+import mesh;
+import weberpenn use *;
+
+fn horiz(v Vec3) Vec3 {
+  imm l = libc.sqrtf(v.x * v.x + v.z * v.z);
+  new Vec3(v.x / l, 0., v.z / l);
+}
+
+// the direction a stem leaves its parent in (its first frame's axis)
+fn firstDir(t &Tree, s usize) Vec3 {
+  imm st = t.stems[s];
+  (*st.frames[0usize]) * new Vec3(0., 1., 0.);
+}
+
+fn main() i32 {
+  imm p = redMaple(3u32, 11.);
+  imm a = grow(&p);
+  imm b = grow(&p);
+  imm tp = new TubeParams();
+  imm fp = mapleFoliage(5u32);
+  imm ba = branchMesh(&a, &tp);
+  imm bb = branchMesh(&b, &tp);
+  expect(mesh.meshHash(&ba) == mesh.meshHash(&bb), "the same seed gives the same branches");
+  imm fa = foliageMesh(&a, &fp);
+  imm fb = foliageMesh(&b, &fp);
+  expect(mesh.meshHash(&fa) == mesh.meshHash(&fb), "the same seed gives the same foliage");
+  imm p2 = redMaple(4u32, 11.);
+  imm c = grow(&p2);
+  expect(mesh.meshHash(&branchMesh(&c, &tp)) != mesh.meshHash(&ba), "another seed gives another tree");
+  expectInt(i64.from(a.stems.len()), i64.from(b.stems.len()), "the same stem count");
+
+  // levels and counts
+  mut levelCount Array[i32, 4] = [0, 0, 0, 0];
+  mut limbsFromTrunk = 0;
+  mut s = 0usize;
+  while s < a.stems.len() {
+    imm st = a.stems[s];
+    levelCount[usize.from(st.level)] = levelCount[usize.from(st.level)] + 1;
+    if st.level == 1 and st.parent == 0 and s <= 7usize { limbsFromTrunk = limbsFromTrunk + 1; }
+    s = s + 1usize;
+  }
+  expectInt(i64.from(levelCount[0usize]), 1, "one trunk");
+  expectInt(i64.from(limbsFromTrunk), 7, "seven limbs leave the trunk, as asked");
+  expect(levelCount[1usize] >= 7, "at least the limbs");
+  expect(levelCount[2usize] > levelCount[1usize], "more branches than limbs");
+  expect(levelCount[3usize] > levelCount[2usize], "more twigs than branches");
+  // no stem has a child of a level below the tree's own
+  mut parentsOk = true;
+  mut falling = true;
+  s = 0usize;
+  while s < a.stems.len() {
+    imm st = a.stems[s];
+    if st.parent >= 0 {
+      imm par = a.stems[usize.from(st.parent)];
+      if par.level + 1 != st.level and par.level != st.level { parentsOk = false; }
+    }
+    mut k = 1usize;
+    while k < st.radii.len() {
+      // a stem's radius never grows along it by more than a hair (the tip is the thinnest)
+      if *st.radii[k] > *st.radii[k - 1usize] * 1.01 + 0.0000001 { falling = false; }
+      k = k + 1usize;
+    }
+    s = s + 1usize;
+  }
+  expect(parentsOk, "a stem's parent is its own level or the one above");
+  expect(falling, "radii fall along every stem");
+  imm trunk = a.stems[0usize];
+  expectFloat(f64.from((*trunk.points[0usize]).y), 0., 0.0001, "the trunk starts at y = 0");
+  expect(*trunk.radii[0usize] > *trunk.radii[trunk.radii.len() - 1usize] * 2., "the trunk tapers");
+  expect(a.height > 8. and a.height < 16., "a maple of nominal 11 m stands 8 to 16 m");
+
+  // opposite pairs: limbs 0 and 1 (then 2 and 3, 4 and 5) leave one point, horizontally opposite
+  mut pairsOk = true;
+  mut quarterOk = true;
+  mut node = 0usize;
+  while node < 3usize {
+    imm sa = 1usize + node * 2usize;
+    imm sb = sa + 1usize;
+    if (*a.stems[sa].points[0usize] - *a.stems[sb].points[0usize]).length() > 0.0001 { pairsOk = false; }
+    imm da = horiz(firstDir(&a, sa));
+    imm db = horiz(firstDir(&a, sb));
+    if da.dot(db) > -0.9 { pairsOk = false; }
+    if node > 0usize {
+      imm dp = horiz(firstDir(&a, sa - 2usize));
+      // a quarter turn from the pair below: the horizontal directions nearly perpendicular
+      if libc.fabsf(da.dot(dp)) > 0.5 { quarterOk = false; }
+    }
+    node = node + 1usize;
+  }
+  expect(pairsOk, "limbs leave in pairs from one point, horizontally opposite");
+  expect(quarterOk, "each pair of limbs a quarter turn from the one below");
+  // leaf sites in opposite pairs
+  mut sitesOk = true;
+  mut sidx = 0usize;
+  while sidx + 1usize < a.sites.len() {
+    imm x = a.sites[sidx];
+    imm y = a.sites[sidx + 1usize];
+    if x.stem != y.stem or (x.pos - y.pos).length() > 0.0001 or x.side.dot(y.side) > -0.99 { sitesOk = false; }
+    sidx = sidx + 2usize;
+  }
+  expect(sitesOk, "leaf sites come in opposite pairs");
+  expect(a.sites.len() > 500, "a maple has hundreds of leaf sites");
+
+  // a pine: whorls of five
+  imm pp = whitePine(2u32, 16.);
+  imm pt = grow(&pp);
+  mut whorlOk = true;
+  mut w = 0usize;
+  while w < 5usize {
+    // limbs 1..5 are the first whorl
+    imm s1 = 1usize + w;
+    if (*pt.stems[s1].points[0usize] - *pt.stems[1usize].points[0usize]).length() > 0.0001 { whorlOk = false; }
+    imm d0 = horiz(firstDir(&pt, 1usize));
+    imm dw = horiz(firstDir(&pt, s1));
+    imm cosw = d0.dot(dw);
+    imm want = libc.cosf(radians(72. * f32.from(w)));
+    if libc.fabsf(cosw - want) > 0.05 { whorlOk = false; }
+    w = w + 1usize;
+  }
+  expect(whorlOk, "a pine's limbs leave five to a point, 72 degrees apart");
+  expect(pt.height > 12. and pt.height < 20., "a pine of 16 m");
+  // a conifer's limbs are longest low
+  mut lowest f32 = 1000.;
+  mut lowLen f32 = 0.;
+  mut highLen f32 = 0.;
+  mut hy f32 = -1.;
+  s = 1usize;
+  while s < pt.stems.len() {
+    imm st = pt.stems[s];
+    if st.level == 1 {
+      imm y0 = (*st.points[0usize]).y;
+      if y0 < lowest { lowest = y0; lowLen = st.length; }
+      if y0 > hy { hy = y0; highLen = st.length; }
+    }
+    s = s + 1usize;
+  }
+  expect(lowLen > highLen * 1.5, "the lowest whorl's limbs are longer than the highest");
+
+  // the shape ratio's table is read
+  imm r0 = shapeRatio(&p, 0.);
+  imm r1 = shapeRatio(&p, 1.);
+  expectFloat(f64.from(r0), 0.412, 0.001, "the envelope at the top");
+  expectFloat(f64.from(r1), 1.44, 0.001, "the envelope at the foot");
+  imm conical = new TreeParams();
+  expectFloat(f64.from(shapeRatio(&conical, 0.5)), 0.97, 0.2, "a custom table's middle");
+
+  // kinks: with them off the limbs have fewer bends than with them on
+  mut np = redMaple(3u32, 11.);
+  mut lv1 = np.levelParams[1usize];
+  lv1.kink = 0.;
+  np.levelParams[1usize] = lv1;
+  imm straight = grow(&np);
+  expect(straight.stems.len() > 0usize, "a tree with no kinks grows");
+  expect(mesh.meshHash(&branchMesh(&straight, &tp)) != mesh.meshHash(&ba), "kinks change the tree");
+
+  // the meshes
+  expect(ba.triangleCount() > 2000usize, "branches have triangles");
+  expectInt(i64.from(ba.positions.len()), i64.from(ba.normals.len()), "a normal for every branch vertex");
+  expectInt(i64.from(ba.positions.len()), i64.from(ba.uvs.len()), "a uv for every branch vertex");
+  mut inRange = true;
+  mut i = 0usize;
+  while i < ba.indices.len() {
+    if usize.from(*ba.indices[i]) >= ba.positions.len() { inRange = false; }
+    i = i + 1usize;
+  }
+  expect(inRange, "every branch index is a vertex");
+  expectInt(i64.from(fa.positions.len()), i64.from(fa.normals.len()), "a normal for every foliage vertex");
+  expect(fa.triangleCount() > 5000usize, "foliage has triangles");
+  inRange = true;
+  mut allUv = true;
+  i = 0usize;
+  while i < fa.indices.len() {
+    if usize.from(*fa.indices[i]) >= fa.positions.len() { inRange = false; }
+    i = i + 1usize;
+  }
+  i = 0usize;
+  while i < fa.uvs.len() {
+    imm uv = *fa.uvs[i];
+    if uv.x < -0.001 or uv.x > 1.001 or uv.y < -0.001 or uv.y > 1.001 { allUv = false; }
+    i = i + 1usize;
+  }
+  expect(inRange, "every foliage index is a vertex");
+  expect(allUv, "foliage uvs lie inside the palette strip");
+  // both sides: the mean of the signed triangle normals against stored normals is balanced
+  mut up = 0;
+  mut down = 0;
+  i = 0usize;
+  while i + 2usize < fa.indices.len() {
+    imm tn = fa.triangleNormal(i / 3usize);
+    imm vn = *fa.normals[usize.from(*fa.indices[i])];
+    if tn.dot(vn) > 0. { up = up + 1; } else { down = down + 1; }
+    i = i + 3usize;
+  }
+  expect(up > down * 3, "foliage triangles face the normals they carry");
+  done();
+}

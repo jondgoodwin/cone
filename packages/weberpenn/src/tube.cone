@@ -1,0 +1,107 @@
+// ======== The branches as a mesh: each stem swept into a tube ========
+
+pub struct TubeParams {
+  pub tileMetres f32 = 1.2;     // the bark tile's side: v is metres up the stem over this
+  pub subdivide i32 = 2;        // pieces a segment is cut into (a Catmull-Rom curve through the points)
+  pub subRadius f32 = 0.02;     // stems thinner than this are not cut
+  pub fatSides i32 = 10;        // sides of a stem thicker than fatRadius
+  pub midSides i32 = 6;         // of one thicker than midRadius
+  pub thinSides i32 = 3;        // of the rest
+  pub fatRadius f32 = 0.10;
+  pub midRadius f32 = 0.02;
+  pub maxLevel i32 = 3;         // stems above this level are left out
+  pub sink f32 = 0.05;          // metres the trunk's foot is put below y = 0, so it stands in the ground
+}
+
+fn catmull(a Vec3, b Vec3, c Vec3, d Vec3, t f32) Vec3 {
+  imm t2 = t * t;
+  imm t3 = t2 * t;
+  (b * 2. + (c - a) * t + (a * 2. - b * 5. + c * 4. - d) * t2 + (b * 3. - a - c * 3. + d) * t3) * 0.5;
+}
+
+// The tubes of every stem of 'tree', in one mesh. Normals are radial; uvs are
+// u round the stem, a whole number of tile widths by the stem's base
+// circumference, and v the metres up the stem over 'tileMetres'.
+pub fn branchMesh(tree &Tree, tp &TubeParams) mesh.Mesh {
+  mut m = mesh.Mesh.empty();
+  mut s = 0usize;
+  while s < tree.stems.len() {
+    imm stem = tree.stems[s];
+    if stem.level <= tp.maxLevel and stem.points.len() >= 2usize {
+      sweepStem(&mut m, stem, tp);
+    }
+    s = s + 1usize;
+  }
+  m;
+}
+
+fn sweepStem(m &mut mesh.Mesh, stem &Stem, tp &TubeParams) {
+  imm np = stem.points.len();
+  mut maxR f32 = 0.;
+  mut i = 0usize;
+  while i < np { maxR = maxf(maxR, *stem.radii[i]); i = i + 1usize; }
+  imm sub = if maxR >= tp.subRadius { maxi(1, tp.subdivide); } else { 1; };
+  imm sides = if maxR > tp.fatRadius { tp.fatSides; } elif maxR > tp.midRadius { tp.midSides; } else { tp.thinSides; };
+  // The resampled path
+  mut P = List[Vec3].empty();
+  mut R = List[f32].empty();
+  i = 0usize;
+  while i + 1usize < np {
+    imm a = *stem.points[if i == 0usize { 0usize; } else { i - 1usize; }];
+    imm b = *stem.points[i];
+    imm c = *stem.points[i + 1usize];
+    imm d = *stem.points[if i + 2usize < np { i + 2usize; } else { np - 1usize; }];
+    mut k = 0;
+    while k < sub {
+      imm t = f32.from(k) / f32.from(sub);
+      P.push(catmull(a, b, c, d, t));
+      R.push(*stem.radii[i] * (1. - t) + *stem.radii[i + 1usize] * t);
+      k = k + 1;
+    }
+    i = i + 1usize;
+  }
+  P.push(*stem.points[np - 1usize]);
+  R.push(*stem.radii[np - 1usize]);
+  imm n = P.len();
+  // The frame along it, carried by parallel transport from the stem's first
+  mut nrm = (*stem.frames[0usize]) * v3(1., 0., 0.);
+  imm nu = maxi(1, i32.from(floorf(6.2831853 * maxR / tp.tileMetres + 0.5)));
+  imm base = u32.from(m.positions.len());
+  mut arc f32 = 0.;
+  mut k = 0usize;
+  while k < n {
+    imm prev = *P[if k == 0usize { 0usize; } else { k - 1usize; }];
+    imm next = *P[if k + 1usize < n { k + 1usize; } else { n - 1usize; }];
+    imm tan = unitv(next - prev);
+    nrm = unitv(nrm - tan * tan.dot(nrm));
+    imm bin = tan.cross(nrm);
+    if k > 0usize { arc = arc + (*P[k] - *P[k - 1usize]).length(); }
+    mut j = 0;
+    while j <= sides {
+      imm ph = 6.2831853 * f32.from(j) / f32.from(sides);
+      imm dir = nrm * libc.cosf(ph) + bin * libc.sinf(ph);
+      m.positions.push(*P[k] + dir * *R[k] - v3(0., if stem.level == 0 { tp.sink; } else { 0.; }, 0.));
+      m.normals.push(dir);
+      m.uvs.push(new Vec2(f32.from(nu) * f32.from(j) / f32.from(sides), arc / tp.tileMetres));
+      j = j + 1;
+    }
+    k = k + 1usize;
+  }
+  imm ring = u32.from(sides + 1);
+  k = 0usize;
+  while k + 1usize < n {
+    mut j = 0;
+    while j < sides {
+      imm a = base + u32.from(k) * ring + u32.from(j);
+      imm b = a + 1u32;
+      imm c = a + ring;
+      imm d = c + 1u32;
+      m.indices.push(a); m.indices.push(b); m.indices.push(c);
+      m.indices.push(b); m.indices.push(d); m.indices.push(c);
+      j = j + 1;
+    }
+    k = k + 1usize;
+  }
+}
+
+fn maxi(a i32, b i32) i32 { if a > b { a; } else { b; }; }
