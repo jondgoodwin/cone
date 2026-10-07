@@ -2195,9 +2195,10 @@ LLVMValueRef genlAddr(GenState *gen, INode *lval) {
     case StringLitTag:
     {
         // The constant carries a NUL after the text, for C compatibility, but
-        // the literal's type [strlen] u8 does not count it. The global is one
-        // byte longer than that type, and its address is recast to a pointer
-        // to the type, so every use sees the text's length and nothing more.
+        // neither the count of a '&str' nor the type [strlen] u8 of the text
+        // taken as bytes counts it. The global is one byte longer than that
+        // type, and its address is recast to a pointer to the type, so every
+        // use sees the text's length and nothing more.
         // (Under opaque pointers the recast folds away; on a GPU target the
         // address is the flat one, genlFlatAddr.)
         SLitNode *strnode = (SLitNode *)lval;
@@ -2599,7 +2600,20 @@ static LLVMValueRef genlTerm(GenState *gen, INode *termnode) {
         return genlExpr(gen, ((NamedValNode*)termnode)->val);
     case StringLitTag:
     {
-        return LLVMBuildLoad2(gen->builder, genlType(gen, ((SLitNode*)termnode)->vtype), genlAddr(gen, termnode), "");
+        SLitNode *strnode = (SLitNode*)termnode;
+        // The text as a '&imm str': the address of the constant, then the
+        // count of its bytes, which leaves out the NUL after them
+        if (itypeGetTypeDcl(strnode->vtype)->tag == RefTag) {
+            LLVMValueRef fat = LLVMGetUndef(genlType(gen, strnode->vtype));
+            fat = LLVMBuildInsertValue(gen->builder, fat, genlAddr(gen, termnode), 0, "strptr");
+            return LLVMBuildInsertValue(gen->builder, fat,
+                LLVMConstInt(genlType(gen, (INode*)usizeType), strnode->strlen, 0), 1, "strlen");
+        }
+        // The text filling a byte array (slitCoerce) is the constant of its bytes
+        // alone, with no NUL: a load of the literal's global would not be a
+        // constant, which a global's initializer needs when the literal is an
+        // element of one array in another ('[ "abc", "def" ]' as an Array of Array)
+        return LLVMConstStringInContext2(gen->context, strnode->strlit, strnode->strlen, 1);
     }
     case RefCountTag:
     {

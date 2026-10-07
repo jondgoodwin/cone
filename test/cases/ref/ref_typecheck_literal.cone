@@ -1,0 +1,35 @@
+// What a string literal's type, '&imm str', does not do. Bytes are not known to
+// be UTF-8, so a slice of them is no '&str' without the explicit 'as'
+// (ref_literal runs the conversions that are allowed). A literal fills a byte
+// array of exactly its length and no other array. Only the literal itself is
+// copied into an owner of 'str': another '&str' needs 'new'. Nothing writes
+// through a literal's permission, 'imm'.
+
+mod ref_typecheck_literal;
+
+fn takesStr(s &str) {}
+fn takesBytes(b &[]u8) {}
+fn takesMutBytes(b &[]mut u8) {}
+fn takesRc(r Rc[str]) {}
+
+fn bytesToStr(b &[]u8) {
+  imm s &str = b;                          //~ ErrorInvType "type does not match"
+  takesStr(b);                             //~ ErrorInvType "type does not match"
+}
+
+fn lengthDiffers() {
+  imm shorter Array[u8, 3] = "abcd";       //~ ErrorInvType "type does not match"
+  imm longer Array[u8, 5] = "abcd";        //~ ErrorInvType "type does not match"
+  imm words Array[u32, 4] = "abcd";        //~ ErrorInvType "type does not match"
+}
+
+fn notALiteral(s &str, b &[]u8) {
+  imm r Rc[str] = s;                       //~ ErrorInvType "type does not match"
+  takesRc(s);                              //~ ErrorInvType "type does not match"
+  imm o So[str] = b;                       //~ ErrorInvType "type does not match"
+}
+
+fn permissions() {
+  takesMutBytes("text");                   //~ ErrorInvType "type does not match"
+  imm m &mut str = "text";                 //~ ErrorImmutableWrite "Immutable"
+}
