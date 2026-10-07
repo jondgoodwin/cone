@@ -1461,6 +1461,8 @@ static void fnCallRefNoCompare(FnCallNode *node, Name *op, char *why) {
     node->vtype = errorType;
 }
 
+static StructNode *fnCallTextOf(INode *objtype);
+
 // Read through one operand of a comparison, positioned on the comparison
 static void fnCallDerefOperand(INode **operandp, FnCallNode *node) {
     derefInject(operandp);
@@ -1628,6 +1630,20 @@ static void fnCallLowerRefCompare(TypeCheckState *pstate, FnCallNode *node) {
     }
 
     INode *referent = itypeGetTypeDcl(reftype->vtexp);
+
+    // Text through an owner, '&So[str]' or '&Rc[str]', against text one level
+    // shallower, '&str': only the owner's side is read through, as '&str ==
+    // &So[str]' already reads through the owner when it takes its other side, so
+    // the comparison does not depend on operand order
+    if (referent->tag == RefTag) {
+        INode *otherreferent = itypeGetTypeDcl(((RefNode*)iexpGetTypeDcl(*argp))->vtexp);
+        if (otherreferent->tag != RefTag && otherreferent->tag != PtrTag && otherreferent->tag != ArrayRefTag
+            && fnCallTextOf(iexpGetTypeDcl(node->objfn)) != NULL && fnCallTextOf(iexpGetTypeDcl(*argp)) != NULL) {
+            fnCallDerefOperand(&node->objfn, node);
+            fnCallLowerRefCompare(pstate, node);
+            return;
+        }
+    }
     if (referent->tag == PtrTag || referent->tag == RefTag || referent->tag == ArrayRefTag) {
         fnCallDerefOperand(&node->objfn, node);
         fnCallDerefOperand(argp, node);

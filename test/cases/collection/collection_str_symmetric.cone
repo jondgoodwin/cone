@@ -1,0 +1,135 @@
+// '==', '!=' and the orderings between the kinds of text -- a '&str', a
+// '&String', a '&So[str]', a '&Rc[str]' and a literal -- compare the bytes, and
+// do not depend on the order of the operands: every pair is tried with each
+// kind on the left and on the right, so '&So[str] == &str' answers what
+// '&str == &So[str]' does (it was refused: error 1124). Each pair is a function
+// answering the six operators as a number of six digits, '==', '!=', '<', '<=',
+// '>' and '>=' in turn, 1 for true and 0 for false (leading zeros do not
+// print). Each is called with "abc" against "abd", "abd" against "abc" and
+// "abc" against "abc". By hand, the six answers are 0 1 1 1 0 0 for "abc"
+// against "abd" (printed 11100), 0 1 0 0 1 1 for "abd" against "abc" (printed
+// 10011) and 1 0 0 1 0 1 for equal texts (printed 100101). Against a literal,
+// the literal is always "abc", and the other side is "abc" or "abd".
+
+mod collection_str_symmetric;
+
+import stdio use *;
+import collections use *;
+
+fn show(label &str, n i64) {
+  printStr(label);
+  printStr(" ");
+  printInt(n);
+  printStr("\n");
+}
+
+fn code(eq bool, ne bool, lt bool, le bool, gt bool, ge bool) i64 {
+  mut n = 0i64;
+  if eq { n = n + 100000i64; }
+  if ne { n = n + 10000i64; }
+  if lt { n = n + 1000i64; }
+  if le { n = n + 100i64; }
+  if gt { n = n + 10i64; }
+  if ge { n = n + 1i64; }
+  n;
+}
+
+fn p_SS(x &str, y &str) i64 { code(x == y, x != y, x < y, x <= y, x > y, x >= y); }
+fn p_SG(x &str, y &String) i64 { code(x == y, x != y, x < y, x <= y, x > y, x >= y); }
+fn p_SO(x &str, y &So[str]) i64 { code(x == y, x != y, x < y, x <= y, x > y, x >= y); }
+fn p_SR(x &str, y &Rc[str]) i64 { code(x == y, x != y, x < y, x <= y, x > y, x >= y); }
+fn p_GS(x &String, y &str) i64 { code(x == y, x != y, x < y, x <= y, x > y, x >= y); }
+fn p_GG(x &String, y &String) i64 { code(x == y, x != y, x < y, x <= y, x > y, x >= y); }
+fn p_GO(x &String, y &So[str]) i64 { code(x == y, x != y, x < y, x <= y, x > y, x >= y); }
+fn p_GR(x &String, y &Rc[str]) i64 { code(x == y, x != y, x < y, x <= y, x > y, x >= y); }
+fn p_OS(x &So[str], y &str) i64 { code(x == y, x != y, x < y, x <= y, x > y, x >= y); }
+fn p_OG(x &So[str], y &String) i64 { code(x == y, x != y, x < y, x <= y, x > y, x >= y); }
+fn p_OO(x &So[str], y &So[str]) i64 { code(x == y, x != y, x < y, x <= y, x > y, x >= y); }
+fn p_OR(x &So[str], y &Rc[str]) i64 { code(x == y, x != y, x < y, x <= y, x > y, x >= y); }
+fn p_RS(x &Rc[str], y &str) i64 { code(x == y, x != y, x < y, x <= y, x > y, x >= y); }
+fn p_RG(x &Rc[str], y &String) i64 { code(x == y, x != y, x < y, x <= y, x > y, x >= y); }
+fn p_RO(x &Rc[str], y &So[str]) i64 { code(x == y, x != y, x < y, x <= y, x > y, x >= y); }
+fn p_RR(x &Rc[str], y &Rc[str]) i64 { code(x == y, x != y, x < y, x <= y, x > y, x >= y); }
+fn pl_S(x &str) i64 { code(x == "abc", x != "abc", x < "abc", x <= "abc", x > "abc", x >= "abc"); }
+fn pr_S(y &str) i64 { code("abc" == y, "abc" != y, "abc" < y, "abc" <= y, "abc" > y, "abc" >= y); }
+fn pl_G(x &String) i64 { code(x == "abc", x != "abc", x < "abc", x <= "abc", x > "abc", x >= "abc"); }
+fn pr_G(y &String) i64 { code("abc" == y, "abc" != y, "abc" < y, "abc" <= y, "abc" > y, "abc" >= y); }
+fn pl_O(x &So[str]) i64 { code(x == "abc", x != "abc", x < "abc", x <= "abc", x > "abc", x >= "abc"); }
+fn pr_O(y &So[str]) i64 { code("abc" == y, "abc" != y, "abc" < y, "abc" <= y, "abc" > y, "abc" >= y); }
+fn pl_R(x &Rc[str]) i64 { code(x == "abc", x != "abc", x < "abc", x <= "abc", x > "abc", x >= "abc"); }
+fn pr_R(y &Rc[str]) i64 { code("abc" == y, "abc" != y, "abc" < y, "abc" <= y, "abc" > y, "abc" >= y); }
+
+fn main() {
+  imm sabc = "abc";
+  imm sabd = "abd";
+  imm gabc = String.from("abc");
+  imm gabd = String.from("abd");
+  imm oabc So[str] = "abc";
+  imm oabd So[str] = "abd";
+  imm rabc Rc[str] = "abc";
+  imm rabd Rc[str] = "abd";
+  show("&str abc &str abd", p_SS(sabc, sabd));
+  show("&str abd &str abc", p_SS(sabd, sabc));
+  show("&str abc &str abc", p_SS(sabc, sabc));
+  show("&str abc &String abd", p_SG(sabc, &gabd));
+  show("&str abd &String abc", p_SG(sabd, &gabc));
+  show("&str abc &String abc", p_SG(sabc, &gabc));
+  show("&str abc &So[str] abd", p_SO(sabc, &oabd));
+  show("&str abd &So[str] abc", p_SO(sabd, &oabc));
+  show("&str abc &So[str] abc", p_SO(sabc, &oabc));
+  show("&str abc &Rc[str] abd", p_SR(sabc, &rabd));
+  show("&str abd &Rc[str] abc", p_SR(sabd, &rabc));
+  show("&str abc &Rc[str] abc", p_SR(sabc, &rabc));
+  show("&String abc &str abd", p_GS(&gabc, sabd));
+  show("&String abd &str abc", p_GS(&gabd, sabc));
+  show("&String abc &str abc", p_GS(&gabc, sabc));
+  show("&String abc &String abd", p_GG(&gabc, &gabd));
+  show("&String abd &String abc", p_GG(&gabd, &gabc));
+  show("&String abc &String abc", p_GG(&gabc, &gabc));
+  show("&String abc &So[str] abd", p_GO(&gabc, &oabd));
+  show("&String abd &So[str] abc", p_GO(&gabd, &oabc));
+  show("&String abc &So[str] abc", p_GO(&gabc, &oabc));
+  show("&String abc &Rc[str] abd", p_GR(&gabc, &rabd));
+  show("&String abd &Rc[str] abc", p_GR(&gabd, &rabc));
+  show("&String abc &Rc[str] abc", p_GR(&gabc, &rabc));
+  show("&So[str] abc &str abd", p_OS(&oabc, sabd));
+  show("&So[str] abd &str abc", p_OS(&oabd, sabc));
+  show("&So[str] abc &str abc", p_OS(&oabc, sabc));
+  show("&So[str] abc &String abd", p_OG(&oabc, &gabd));
+  show("&So[str] abd &String abc", p_OG(&oabd, &gabc));
+  show("&So[str] abc &String abc", p_OG(&oabc, &gabc));
+  show("&So[str] abc &So[str] abd", p_OO(&oabc, &oabd));
+  show("&So[str] abd &So[str] abc", p_OO(&oabd, &oabc));
+  show("&So[str] abc &So[str] abc", p_OO(&oabc, &oabc));
+  show("&So[str] abc &Rc[str] abd", p_OR(&oabc, &rabd));
+  show("&So[str] abd &Rc[str] abc", p_OR(&oabd, &rabc));
+  show("&So[str] abc &Rc[str] abc", p_OR(&oabc, &rabc));
+  show("&Rc[str] abc &str abd", p_RS(&rabc, sabd));
+  show("&Rc[str] abd &str abc", p_RS(&rabd, sabc));
+  show("&Rc[str] abc &str abc", p_RS(&rabc, sabc));
+  show("&Rc[str] abc &String abd", p_RG(&rabc, &gabd));
+  show("&Rc[str] abd &String abc", p_RG(&rabd, &gabc));
+  show("&Rc[str] abc &String abc", p_RG(&rabc, &gabc));
+  show("&Rc[str] abc &So[str] abd", p_RO(&rabc, &oabd));
+  show("&Rc[str] abd &So[str] abc", p_RO(&rabd, &oabc));
+  show("&Rc[str] abc &So[str] abc", p_RO(&rabc, &oabc));
+  show("&Rc[str] abc &Rc[str] abd", p_RR(&rabc, &rabd));
+  show("&Rc[str] abd &Rc[str] abc", p_RR(&rabd, &rabc));
+  show("&Rc[str] abc &Rc[str] abc", p_RR(&rabc, &rabc));
+  show("&str abc literal abc", pl_S(sabc));
+  show("&str abd literal abc", pl_S(sabd));
+  show("literal abc &str abc", pr_S(sabc));
+  show("literal abc &str abd", pr_S(sabd));
+  show("&String abc literal abc", pl_G(&gabc));
+  show("&String abd literal abc", pl_G(&gabd));
+  show("literal abc &String abc", pr_G(&gabc));
+  show("literal abc &String abd", pr_G(&gabd));
+  show("&So[str] abc literal abc", pl_O(&oabc));
+  show("&So[str] abd literal abc", pl_O(&oabd));
+  show("literal abc &So[str] abc", pr_O(&oabc));
+  show("literal abc &So[str] abd", pr_O(&oabd));
+  show("&Rc[str] abc literal abc", pl_R(&rabc));
+  show("&Rc[str] abd literal abc", pl_R(&rabd));
+  show("literal abc &Rc[str] abc", pr_R(&rabc));
+  show("literal abc &Rc[str] abd", pr_R(&rabd));
+}
