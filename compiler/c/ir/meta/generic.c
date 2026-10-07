@@ -34,7 +34,12 @@ void genericInfoPrint(GenericInfo *info) {
 }
 
 // Inference found an argtype that maps to a generic parmtype
-// Capture it, and return 0 if it does not match what we already thought it was
+// Capture it, and return 0 if it does not match what we already thought it was.
+// An argument is held as a use of its type, as one written is. A value's type
+// may be the struct's declaration itself -- a block's or an 'if''s value types
+// as the declaration its branches agree on (iexpMultiInfer) -- and a declaration
+// held as an argument would be cloned into the instance as a second copy of the
+// type, methods and all, instead of named by it.
 int genericCaptureType(FnCallNode *gencall, Nodes *genparms, INode *parmtype, INode *argtype) {
     INode **genvarp;
     uint32_t genvarcnt;
@@ -44,7 +49,7 @@ int genericCaptureType(FnCallNode *gencall, Nodes *genparms, INode *parmtype, IN
         // Found parameter with corresponding name? Capture/check type
         if (genvarname == ((NameUseNode*)parmtype)->namesym) {
             if (*genargp == NULL)
-                *genargp = argtype;
+                *genargp = argtype->tag == StructTag ? newNameUseFromDclNode(argtype, (INode*)gencall) : argtype;
             else if (!itypeIsSame(*genargp, argtype))
                 return 0;
             break;
