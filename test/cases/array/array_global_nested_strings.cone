@@ -1,0 +1,67 @@
+// A global nested array whose rows are string literals, and the same rows
+// spelled as bytes and as numbers. A string literal filling a byte array
+// (slitCoerce) was generated as a load of the literal's text, which is not a
+// constant, so as an element of an array in a global's initializer conec
+// crashed in LLVM. It is now the constant of the text's bytes, and the global a
+// constant array of constant rows.
+//
+// Every element is different, so a wrong row, column or byte prints a different
+// number. Each value is checked by hand against the source.
+
+mod array_global_nested_strings;
+
+import stdio use *;
+
+// 'a' 'b' 'c' = 97 98 99; 'd' 'e' 'f' = 100 101 102
+imm gstr Array[Array[u8, 3], 2] = ["abc", "def"];
+imm gbytes Array[Array[u8, 3], 2] = [[97u8, 98u8, 99u8], [100u8, 101u8, 102u8]];
+imm gnum Array[Array[i32, 2], 2] = [[10, 20], [30, 40]];
+// Rows of different content, a literal beside a row of bytes, three deep
+imm gmix Array[Array[u8, 2], 3] = ["xy", [1u8, 2u8], "AB"];
+imm gwide Array[Array[Array[u8, 2], 2], 2] = [["ab", "cd"], ["ef", "gh"]];
+
+fn row(r &Array[u8, 3]) {
+  printUInt(u64.from(r[0])); printStr(" ");
+  printUInt(u64.from(r[1])); printStr(" ");
+  printUInt(u64.from(r[2])); printStr("\n");
+}
+
+fn main() {
+  printUInt(u64.from(gstr[0][0])); printStr(" ");
+  printUInt(u64.from(gstr[0][2])); printStr(" ");
+  printUInt(u64.from(gstr[1][0])); printStr(" ");
+  printUInt(u64.from(gstr[1][1])); printStr(" ");
+  printUInt(u64.from(gstr[1][2])); printStr("\n");
+
+  printUInt(u64.from(gbytes[0][1])); printStr(" ");
+  printUInt(u64.from(gbytes[1][1])); printStr("\n");
+
+  printInt(i64.from(gnum[0][0])); printStr(" ");
+  printInt(i64.from(gnum[0][1])); printStr(" ");
+  printInt(i64.from(gnum[1][0])); printStr(" ");
+  printInt(i64.from(gnum[1][1])); printStr("\n");
+
+  printUInt(u64.from(gmix[0][0])); printStr(" ");
+  printUInt(u64.from(gmix[0][1])); printStr(" ");
+  printUInt(u64.from(gmix[1][0])); printStr(" ");
+  printUInt(u64.from(gmix[1][1])); printStr(" ");
+  printUInt(u64.from(gmix[2][0])); printStr(" ");
+  printUInt(u64.from(gmix[2][1])); printStr("\n");
+
+  printUInt(u64.from(gwide[0][1][0])); printStr(" ");
+  printUInt(u64.from(gwide[1][0][1])); printStr(" ");
+  printUInt(u64.from(gwide[1][1][1])); printStr("\n");
+
+  // A row borrowed from the global
+  row(&gstr[1]);
+  row(&gbytes[0]);
+
+  // The whole global borrowed as a slice of rows
+  imm rows &[]Array[u8, 3] = &gstr;
+  printUInt(u64.from(rows.len)); printStr(" ");
+  printUInt(u64.from(rows[1][2])); printStr("\n");
+
+  // The same literal as a local, for comparison
+  imm l Array[Array[u8, 3], 2] = ["abc", "def"];
+  printUInt(u64.from(l[1][1])); printStr("\n");
+}

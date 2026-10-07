@@ -102,7 +102,18 @@ TypeCompare arrayRefMatches(RefNode *to, RefNode *from, SubtypeConstraint constr
 // Will from reference coerce to a to arrayref (we know they are not the same)
 // At best, we get ConvSubtype, because a conversion is needed to convert ref to arrayref
 TypeCompare arrayRefMatchesRef(RefNode *to, RefNode *from, SubtypeConstraint constraint) {
-    // From type must be a reference to 
+    // A borrow of 'str' is a slice of bytes already: the same pointer and count.
+    // It converts to '&[]u8' wherever one is wanted (the permission may only
+    // narrow, so a '&imm str' is no '&[]mut u8'), but not back: bytes need not
+    // be UTF-8, so '&[]u8' to '&str' is the explicit 'as'.
+    if (refIsFat(from)) {
+        if (itypeGetTypeDcl(from->region) != borrowRef || to->vtexp == NULL || !itypeIsSame(to->vtexp, (INode*)u8Type)
+            || permMatches(to->perm, from->perm) == NoMatch)
+            return NoMatch;
+        return CastSubtype;
+    }
+
+    // From type must be a reference to
     ArrayNode *arraytype = (ArrayNode*)from->vtexp;
     if (arraytype->tag != ArrayTag)
         return NoMatch;

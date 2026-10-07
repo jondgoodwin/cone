@@ -373,12 +373,15 @@ void genlRootFrame(GenState *gen) {
     }
 }
 
-// Whether a global's storage is a string literal's text plus a NUL. Such a
-// global is not a copy of the literal: its storage is the initialized data,
-// so like the literal's own it is one byte longer than its type, and its
-// llvmvar is its address recast to a pointer to that type.
+// Whether a global's storage is a string literal's text plus a NUL: a global
+// of a byte array type (slitCoerce) given a literal. Such a global is not a
+// copy of the literal: its storage is the initialized data, so like the
+// literal's own it is one byte longer than its type, and its llvmvar is its
+// address recast to a pointer to that type. A global given a literal as the
+// '&imm str' it is holds that reference instead.
 static int genlGloVarHasNul(VarDclNode *glovar) {
-    return !(glovar->dclinfo.facts & DclExternal) && glovar->value && glovar->value->tag == StringLitTag;
+    return !(glovar->dclinfo.facts & DclExternal) && glovar->value && glovar->value->tag == StringLitTag
+        && itypeGetTypeDcl(((SLitNode*)glovar->value)->vtype)->tag == ArrayTag;
 }
 
 // The LLVM global itself behind a global variable's llvmvar, which is a
@@ -433,7 +436,7 @@ void genlGloVar(GenState *gen, VarDclNode *varnode) {
     }
 
     // The text, and the NUL after it that the variable's type does not count
-    else if (varnode->value->tag == StringLitTag) {
+    else if (genlGloVarHasNul(varnode)) {
         SLitNode *strnode = (SLitNode*)varnode->value;
         LLVMSetInitializer(global, LLVMConstStringInContext2(gen->context, strnode->strlit, strnode->strlen, 0));
     }
