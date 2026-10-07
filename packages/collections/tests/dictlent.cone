@@ -1,0 +1,228 @@
+// Looking a String key up by the body it lends. A Dict[String, V], an
+// OrderedDict[String, V] and a Set[String] take a key as a '&String' (the key
+// itself) or as a '&str', the text a String lends, and a '&str' is what a
+// literal is, what 'view()' and a slice of text give, and what a So[str] and
+// an Rc[str] are lent as: none of them builds a String to ask. They hash alike
+// because 'str', a String and a literal feed a Hasher the same bytes (the
+// bytes, then the terminator 0xFF), and '==' compares the bytes whichever kind
+// holds them. Every expected value is worked out by hand from the keys:
+// - core is 1, stdio 2, libc 3 and "héllo" 4 (h, é as two bytes, l, l, o:
+//   6 bytes), inserted in that order;
+// - a key is found only by all its bytes: a prefix, a longer text and the
+//   empty text are not keys.
+
+mod dictlent;
+
+import testing use *;
+import collections use *;
+
+fn isNone(o Option[&i64]) bool {
+  match o {
+    case is Some[&i64] {false;}
+    case is None[&i64] {true;}
+  }
+}
+
+fn expectRef(got Option[&i64], want i64, label &[]u8) {
+  match got {
+    case imm s Some {expectInt(*s.value, want, label);}
+    case is None {expect(false, label);}
+  }
+}
+
+fn expectOpt(got Option[i64], want i64, label &[]u8) {
+  match got {
+    case imm s Some {expectInt(s.value, want, label);}
+    case is None {expect(false, label);}
+  }
+}
+
+fn expectNone(got Option[i64], label &[]u8) {
+  match got {
+    case is Some[i64] {expect(false, label);}
+    case is None[i64] {expect(true, label);}
+  }
+}
+
+// What a key feeds a Hasher seeded with 7
+fn textHash(s &str) u64 {
+  mut h = Hasher.withSeed(7u64);
+  s.hash(&mut h);
+  h.finish();
+}
+
+fn stringHash(s &String) u64 {
+  mut h = Hasher.withSeed(7u64);
+  s.hash(&mut h);
+  h.finish();
+}
+
+// The keys of an ordered dictionary, in its order, joined by commas
+fn order(d &OrderedDict[String, i64]) String {
+  mut out = String.empty();
+  mut c = d.keys();
+  mut first = true;
+  while true {
+    match c.next() {
+      case imm k Some {
+        if not first { out.append(","); }
+        first = false;
+        out.append(k.value.view());
+      }
+      case is None {break;}
+    }
+  }
+  out;
+}
+
+fn main() i32 {
+  hashing();
+  dict();
+  ordered();
+  set();
+  done();
+}
+
+// Text of every kind feeds a Hasher the same, and two texts that differ do not
+fn hashing() {
+  imm core = String.from("core");
+  imm so So[str] = "core";
+  imm rc Rc[str] = "core";
+  expectUInt(textHash("core"), stringHash(&core), "a literal hashes as the String of its bytes");
+  expectUInt(textHash(core.view()), stringHash(&core), "a view hashes as its String");
+  expectUInt(textHash(so), stringHash(&core), "a So[str] is lent as a str and hashes alike");
+  expectUInt(textHash(rc), stringHash(&core), "so is an Rc[str]");
+  mut w = Hasher.withSeed(7u64);
+  w.writeStr("core");
+  expectUInt(w.finish(), stringHash(&core), "both feed writeStr's bytes and terminator");
+  expect(textHash("core") != textHash("cord"), "another text");
+  expect(textHash("core") != textHash("corex"), "a longer text");
+  expect(textHash("") != textHash("core"), "the empty text");
+  expect(&core == &String.from("core"), "equal Strings");
+  expect(core.view() == "core", "a view equals the literal");
+  expect(so == "core", "a So[str] equals the literal");
+  expect(core.view() == so, "and a view");
+}
+
+fn dict() {
+  mut d = Dict[String, i64].empty();
+  d.insert(String.from("core"), 1);
+  d.insert(String.from("stdio"), 2);
+  d.insert(String.from("libc"), 3);
+  d.insert(String.from("héllo"), 4);
+
+  // By a literal
+  expectBool(d.contains("core"), true, "contains, by a literal");
+  expectRef(d.get("stdio"), 2, "get, by a literal");
+  expectRef(d.get("héllo"), 4, "get, by a literal beyond ASCII");
+  expectBool(d.contains("cor"), false, "not a prefix of a key");
+  expectBool(d.contains("corex"), false, "not a longer text");
+  expectBool(d.contains(""), false, "not the empty text");
+  expect(isNone(d.get("nope")), "get of a missing literal");
+
+  // By a '&str' that is a part of other text
+  imm line = "xxcorexx stdio";
+  expectBool(d.contains(line.slice(2usize, 6usize)), true, "a slice of text");
+  expectRef(d.get(line.slice(9usize, 14usize)), 2, "another slice");
+  expectBool(d.contains(line.slice(2usize, 5usize)), false, "a slice that is a prefix");
+  expectBool(d.contains(line.slice(2usize, 7usize)), false, "a slice that is longer");
+
+  // By a String, borrowed as itself and as the text it lends
+  imm libc = String.from("libc");
+  expectRef(d.get(&libc), 3, "get, by a String");
+  expectRef(d.get(libc.view()), 3, "get, by its view");
+  expectBool(d.contains(&String.from("zzz")), false, "contains, by a String it lacks");
+
+  // By the owners of a str, which lend one
+  imm so So[str] = "libc";
+  imm rc Rc[str] = "stdio";
+  expectRef(d.get(so), 3, "get, by a So[str]");
+  expectRef(d.get(rc), 2, "get, by an Rc[str]");
+  imm frozen = String.from("héllo").freeze();
+  expectBool(d.contains(frozen), true, "contains, by a String's frozen text");
+
+  // The other lookups, by a literal
+  expectOpt(d.getCopy("core"), 1, "getCopy, by a literal");
+  match d.getCopy("nope") {
+    case is Some[i64] {expect(false, "getCopy of nothing");}
+    case is None[i64] {expect(true, "getCopy of nothing");}
+  }
+  match d.getMut("core") {
+    case mut v Some {*v.value = 10;}
+    case is None {expect(false, "getMut finds core");}
+  }
+  expectInt(*d["core"], 10, "changed through getMut, read through d[literal]");
+  *&mut d["core"] = 11;
+  expectInt(*d[&String.from("core")], 11, "changed through &mut d[literal], read by a String");
+  expectInt(*d[libc.view()], 3, "d[view]");
+  expectOpt(d.remove("stdio"), 2, "remove, by a literal");
+  expectBool(d.contains("stdio"), false, "stdio is gone");
+  expectNone(d.remove("stdio"), "removing it again");
+  expectOpt(d.remove(so), 3, "remove, by a So[str]");
+  expectUInt(u64.from(d.len()), 2, "two left: core and héllo");
+  expectOpt(d.remove(&String.from("core")), 11, "remove, by a String");
+  expectUInt(u64.from(d.len()), 1, "one left");
+
+  // A key put in under one kind of text is replaced through another
+  expect(isNone(d.get("again")), "not yet in");
+  d.insert(String.from("again"), 5);
+  d.insert("again", 6);
+  expectInt(*d["again"], 6, "a literal inserted is a String, and replaced the value");
+  expectUInt(u64.from(d.len()), 2, "one more key");
+}
+
+fn ordered() {
+  mut d = OrderedDict[String, i64].empty();
+  d.insert(String.from("core"), 1);
+  d.insert(String.from("stdio"), 2);
+  d.insert(String.from("libc"), 3);
+  expectBool(d.contains("stdio"), true, "contains, by a literal");
+  expectBool(d.contains("std"), false, "not a prefix");
+  expectRef(d.get("libc"), 3, "get, by a literal");
+  imm so So[str] = "core";
+  expectRef(d.get(so), 1, "get, by a So[str]");
+  imm line = "-- stdio --";
+  expectRef(d.get(line.slice(3usize, 8usize)), 2, "get, by a slice of text");
+  expectOpt(d.getCopy("stdio"), 2, "getCopy, by a literal");
+  match d.getMut("libc") {
+    case mut v Some {*v.value = 30;}
+    case is None {expect(false, "getMut finds libc");}
+  }
+  expectInt(*d["libc"], 30, "changed, read by d[literal]");
+  *&mut d["core"] = 10;
+  expectInt(*d[&String.from("core")], 10, "&mut d[literal]");
+  expectStr(order(&d).view(), "core,stdio,libc", "the order of insertion");
+  expectOpt(d.remove("stdio"), 2, "remove, by a literal");
+  expectStr(order(&d).view(), "core,libc", "the others keep their order");
+  d.insert(String.from("zlib"), 4);
+  expectStr(order(&d).view(), "core,libc,zlib", "a new key goes last");
+  // The last entry takes the removed one's place
+  expectOpt(d.swapRemove("core"), 10, "swapRemove, by a literal");
+  expectStr(order(&d).view(), "zlib,libc", "zlib took core's place");
+  expectNone(d.swapRemove("core"), "swapRemove of a key that is gone");
+}
+
+fn set() {
+  mut s = Set[String].empty();
+  s.insert(String.from("core"));
+  s.insert(String.from("stdio"));
+  s.insert(String.from("core"));
+  expectUInt(u64.from(s.len()), 2, "a repeat adds nothing");
+  expectBool(s.contains("core"), true, "contains, by a literal");
+  expectBool(s.contains("cor"), false, "not a prefix");
+  imm so So[str] = "stdio";
+  expectBool(s.contains(so), true, "contains, by a So[str]");
+  imm core = String.from("core");
+  expectBool(s.contains(&core), true, "contains, by a String");
+  expectBool(s.contains(core.view()), true, "contains, by its view");
+  expectBool(s.remove("stdio"), true, "removed, by a literal");
+  expectBool(s.remove("stdio"), false, "removed once");
+  expectBool(s.remove(&core), true, "removed, by a String");
+  expectUInt(u64.from(s.len()), 0, "none left");
+
+  // Ids are looked up as themselves
+  mut ids = Set[u64].empty();
+  ids.insert(7u64);
+  expectBool(ids.contains(&7u64), true, "an id");
+  expectBool(ids.contains(&8u64), false, "another id");
+}
