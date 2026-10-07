@@ -8,6 +8,7 @@ pub struct Device {
   pub queue CommandQueue;
   pub frameNumber u64;             // frames ended so far
   pub timestampPeriod f32 = 0.;    // nanoseconds a timestamp's tick; 0: its queue keeps no time
+  pub maxAnisotropy f32 = 0.;      // the most anisotropic filtering a sampler may ask for; 0: the GPU has none
 
   pub fn isValid(self &) bool { (backend.device as *u8 as usize) != 0usize; }
 
@@ -502,10 +503,18 @@ pub struct Device {
     if self.isValid() {
       mut mipmapMode = vulkan.SAMPLER_MIPMAP_MODE_NEAREST;
       if desc.mipmapFilter == FILTER_MODE_LINEAR { mipmapMode = vulkan.SAMPLER_MIPMAP_MODE_LINEAR; }
-      imm ci = new vulkan.SamplerCreateInfo(magFilter: vkFilter(desc.magFilter),
+      mut ci = new vulkan.SamplerCreateInfo(magFilter: vkFilter(desc.magFilter),
         minFilter: vkFilter(desc.minFilter), mipmapMode: mipmapMode, addressModeU: vkAddressMode(desc.addressModeU),
         addressModeV: vkAddressMode(desc.addressModeV), addressModeW: vkAddressMode(desc.addressModeW),
         minLod: desc.lodMinClamp, maxLod: desc.lodMaxClamp);
+      // Anisotropic filtering where asked for (above 1) and the device has it,
+      // as much as it can do if that is less
+      mut want = f32.from(desc.maxAnisotropy);
+      if want > maxAnisotropy { want = maxAnisotropy; }
+      if want > 1. {
+        ci.anisotropyEnable = vulkan.TRUE;
+        ci.maxAnisotropy = want;
+      }
       check(vulkan.createSampler(backend.device, &ci, nullp(), &mut sampler), "vkCreateSampler");
     }
     new Sampler(new SamplerBackend(backend.device, sampler));

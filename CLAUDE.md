@@ -581,7 +581,13 @@ Visual Studio projects stay at the root.
   everywhere or in wet patches, a Belcour-Barla thin film whose
   thickness is `noise`'s warped fBm, and glTF's metallic-roughness, normal
   and occlusion maps, linear textures from `addLinearTexture`, the normal
-  map's tangents from screen-space derivatives), an analytic dusk `Sky`
+  map's from `addNormalTexture`, which renormalises each mip level, and its
+  tangents from screen-space derivatives; every texture added has its whole
+  mip chain, made on the CPU in `src/mips.cone` (colour averaged in linear
+  light) and written by `queue.writeTextureLevels`, and the renderer's
+  sampler is trilinear and 16x anisotropic where `device.maxAnisotropy`,
+  from the `samplerAnisotropy` feature `requestDevice` enables when the GPU
+  has it, allows), an analytic dusk `Sky`
   (`src/sky.slang`, with a horizon line and cloud streaks where asked)
   drawn behind the scene and made
   by full-screen passes into image-based lighting (`Environment`,

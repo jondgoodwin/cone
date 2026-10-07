@@ -194,6 +194,63 @@ pub struct CommandQueue {
       vulkan.ACCESS_2_MEMORY_READ_BIT | vulkan.ACCESS_2_MEMORY_WRITE_BIT);
   }
 
+  // Write every mip level of 'texture' (a 2-D, single-layer one made with
+  // TEXTURE_USAGE_COPY_DST that shaders sample) from 'data': the levels one
+  // after another, the largest first, each tightly packed (its rows
+  // width x texel size bytes apart, from the top; a level is half the one
+  // before in each direction, at least 1). The bytes are copied now, and into
+  // the texture by the GPU ahead of whatever is submitted next, as
+  // 'writeTexture' does for the first level alone.
+  pub fn writeTextureLevels(self &mut, texture &Texture, data *u8) {
+    if (texture.usage & TEXTURE_USAGE_COPY_DST) == 0u32 {
+      fail("writeTextureLevels: the texture was not made with TEXTURE_USAGE_COPY_DST");
+      return;
+    }
+    if texture.backend.kind != KIND_SAMPLED or texture.dimension != TEXTURE_DIMENSION_2D
+        or texture.depthOrArrayLayers != 1u32 or texture.mipLevelCount > 16u32 {
+      fail("writeTextureLevels: only a single-layer 2-D texture shaders sample is written");
+      return;
+    }
+    imm texel = bytesPerTexel(texture.format);
+    imm levels = texture.mipLevelCount;
+    mut size = 0u64;
+    mut l = 0u32;
+    while l < levels {
+      imm w = if (texture.width >> l) > 0u32 { texture.width >> l; } else { 1u32; };
+      imm h = if (texture.height >> l) > 0u32 { texture.height >> l; } else { 1u32; };
+      size = size + u64.from(w) * u64.from(h) * u64.from(texel);
+      l = l + 1u32;
+    }
+    imm cmd = uploadCommands(self);
+    if isNull(cmd) or !stagingRoom(self, size) { return; }
+    imm i = usize.from(backend.frameIndex);
+    imm at = backend.frames[i].stagingUsed;
+    libc.memcpy(backend.frames[i].staging.mapped + usize.from(at), data, usize.from(size));
+    backend.frames[i].stagingUsed = at + size;
+    imm all = new vulkan.ImageSubresourceRange(aspectMask: vulkan.IMAGE_ASPECT_COLOR_BIT, levelCount: levels);
+    transitionRange(cmd, texture.backend.image, all, vulkan.IMAGE_LAYOUT_UNDEFINED,
+      vulkan.IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, vulkan.PIPELINE_STAGE_2_ALL_COMMANDS_BIT, vulkan.ACCESS_2_NONE,
+      vulkan.PIPELINE_STAGE_2_ALL_TRANSFER_BIT, vulkan.ACCESS_2_TRANSFER_WRITE_BIT);
+    mut regions = new Array[vulkan.BufferImageCopy, 16] <- fill zeroed[vulkan.BufferImageCopy]();
+    mut offset = at;
+    l = 0u32;
+    while l < levels {
+      imm w = if (texture.width >> l) > 0u32 { texture.width >> l; } else { 1u32; };
+      imm h = if (texture.height >> l) > 0u32 { texture.height >> l; } else { 1u32; };
+      regions[usize.from(l)] = new vulkan.BufferImageCopy(bufferOffset: offset, bufferRowLength: w,
+        imageSubresource: new vulkan.ImageSubresourceLayers(mipLevel: l),
+        imageOffset: new vulkan.Offset3D(0i32, 0i32, 0i32), imageExtent: new vulkan.Extent3D(w, h, 1u32));
+      offset = offset + u64.from(w) * u64.from(h) * u64.from(texel);
+      l = l + 1u32;
+    }
+    vulkan.cmdCopyBufferToImage(cmd, backend.frames[i].staging.buffer, texture.backend.image,
+      vulkan.IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, levels, &regions as *vulkan.BufferImageCopy);
+    transitionRange(cmd, texture.backend.image, all, vulkan.IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+      restLayout(texture.backend.kind), vulkan.PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
+      vulkan.ACCESS_2_TRANSFER_WRITE_BIT, vulkan.PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+      vulkan.ACCESS_2_MEMORY_READ_BIT | vulkan.ACCESS_2_MEMORY_WRITE_BIT);
+  }
+
   // Take 'buffer' out of use: it is not valid from now on, and its memory
   // is freed once the GPU has finished every frame that may have used it
   // (when this frame's state comes round again), without waiting for the
