@@ -1,0 +1,247 @@
+// Set: membership, insert answering whether the element was new, removing, the
+// ways of asking a Set[String], growth over a Dict whose values take no bytes,
+// and each element finalized once. A set is unordered, so nothing here prints
+// or checks an order: the elements are summed, counted or looked up. Every
+// expected value is worked out by hand:
+// - the table starts at 8 buckets, which hold 7 elements, and doubles when an
+//   eighth arrives, so 10000 elements need 16384 buckets and 'capacity' says 14336;
+// - an element a set already holds stays, and the item given dies.
+
+mod set;
+
+import testing use *;
+import collections use *;
+
+struct Id is Hash {
+  pub slot u32;
+  pub gen u32;
+  pub fn `==`(self, o Id) bool {slot == o.slot and gen == o.gen;}
+}
+
+// Equal by id alone, and counted when it dies
+mut deaths = 0i64;
+mut deathMask = 0u64;
+mut twice = 0i64;
+
+struct Tracked is Hash {
+  pub id u64;
+  pub tag u64;
+  pub fn `==`(self &, o &Tracked) bool {id == o.id;}
+  pub fn hash(self &, h &mut Hasher) { h.writeU64(id); }
+  fn final(self &uni) {
+    if tag != 0u64 {
+      deaths = deaths + 1i64;
+      imm bit = 1u64 << tag;
+      if (deathMask & bit) != 0u64 { twice = twice + 1i64; }
+      deathMask = deathMask | bit;
+    }
+  }
+}
+
+fn main() i32 {
+  entrySize();
+  strings();
+  integers();
+  ids();
+  deterministic();
+  finalizing();
+  done();
+}
+
+struct Nothing {}
+
+// A Set is a Dict whose value takes no bytes: its entry is its element
+fn entrySize() {
+  expectUInt(u64.from(mem.sizeof[DictEntry[u64, Nothing]]()), 8, "a u64 entry with no value takes 8 bytes");
+  expectUInt(u64.from(mem.sizeof[DictEntry[Id, Nothing]]()), 8, "an Id entry takes 8");
+  expectUInt(u64.from(mem.sizeof[DictEntry[u64, u64]]()), 16, "against 16 with a u64 value");
+}
+
+fn strings() {
+  mut s = Set[String].empty();
+  expectUInt(u64.from(s.len()), 0, "empty length");
+  expectUInt(u64.from(s.capacity()), 0, "empty capacity");
+  expectBool(s.isEmpty(), true, "empty is empty");
+  expectBool(s.contains("core"), false, "empty contains nothing");
+  expectBool(s.remove("core"), false, "removing from empty");
+
+  expectBool(s.insert(String.from("core")), true, "core is new");
+  expectBool(s.insert(String.from("stdio")), true, "stdio is new");
+  expectBool(s.insert(String.from("core")), false, "core is held");
+  expectUInt(u64.from(s.len()), 2, "a repeat adds nothing");
+  expectUInt(u64.from(s.capacity()), 7, "8 buckets, room for 7");
+  expectBool(s.isEmpty(), false, "not empty");
+
+  imm core = String.from("core");
+  expectBool(s.contains(&core), true, "contains, by a String");
+  expectBool(s.contains("core"), true, "by bytes");
+  expectBool(s.contains(core.view()), true, "by a view");
+  expectBool(s.contains("cor"), false, "not a prefix");
+  expectBool(s.contains(""), false, "not the empty string");
+
+  // The elements, counted and measured in bytes (4 + 5)
+  mut c = s.items();
+  mut n = 0u64;
+  mut bytes = 0u64;
+  while true {
+    match c.next() {
+      case imm e Some {
+        n = n + 1u64;
+        bytes = bytes + u64.from(e.value.len());
+      }
+      case is None {break;}
+    }
+  }
+  expectUInt(n, 2, "two elements visited");
+  expectUInt(bytes, 9, "core and stdio");
+
+  s <- String.from("libc");
+  expectUInt(u64.from(s.len()), 3, "<- inserts");
+  expectBool(s.remove("stdio"), true, "removed, by bytes");
+  expectBool(s.remove("stdio"), false, "removed once");
+  expectBool(s.remove(&core), true, "removed, by a String");
+  expectBool(s.contains("core"), false, "core is gone");
+  expectBool(s.contains("libc"), true, "libc stays");
+  expectUInt(u64.from(s.len()), 1, "one left");
+  s.clear();
+  expectUInt(u64.from(s.len()), 0, "cleared");
+  expectBool(s.contains("libc"), false, "libc is gone");
+  expectUInt(u64.from(s.capacity()), 7, "clear keeps the room");
+  expectBool(s.insert(String.from("libc")), true, "new again after clear");
+
+  imm made = new Set[String] <- String.from("a"), String.from("b"), String.from("a");
+  expectUInt(u64.from(made.len()), 2, "constructed with two of three");
+}
+
+fn integers() {
+  mut s = Set[u64].empty();
+  mut k = 0u64;
+  mut wrong = 0i64;
+  while k < 10000u64 {
+    if not s.insert(k * 7u64) { wrong = wrong + 1i64; }
+    k = k + 1u64;
+  }
+  expectInt(wrong, 0, "ten thousand new elements");
+  expectUInt(u64.from(s.len()), 10000, "ten thousand held");
+  expectUInt(u64.from(s.capacity()), 14336, "twelve doublings of 7");
+  k = 0u64;
+  while k < 10000u64 {
+    if s.insert(k * 7u64) { wrong = wrong + 1i64; }
+    k = k + 1u64;
+  }
+  expectInt(wrong, 0, "none of them new the second time");
+  expectUInt(u64.from(s.len()), 10000, "still ten thousand");
+  k = 0u64;
+  while k < 70000u64 {
+    if s.contains(&k) != (k % 7u64 == 0u64) { wrong = wrong + 1i64; }
+    k = k + 1u64;
+  }
+  expectInt(wrong, 0, "a multiple of seven below 70000 is held and nothing else");
+  // Remove the even multiples
+  k = 0u64;
+  while k < 10000u64 {
+    if k % 2u64 == 0u64 and not s.remove(&(k * 7u64)) { wrong = wrong + 1i64; }
+    k = k + 1u64;
+  }
+  expectInt(wrong, 0, "5000 removed");
+  expectUInt(u64.from(s.len()), 5000, "5000 left");
+  // The rest sum to 7 * (1 + 3 + ... + 9999) = 7 * 5000^2
+  mut total = 0u64;
+  mut c = s.items();
+  while true {
+    match c.next() {
+      case imm e Some {total = total + *e.value;}
+      case is None {break;}
+    }
+  }
+  expectUInt(total, 175000000, "the elements sum");
+  // And put back
+  k = 0u64;
+  while k < 10000u64 {
+    if k % 2u64 == 0u64 and not s.insert(k * 7u64) { wrong = wrong + 1i64; }
+    k = k + 1u64;
+  }
+  expectInt(wrong, 0, "put back as new");
+  expectUInt(u64.from(s.len()), 10000, "ten thousand again");
+}
+
+fn ids() {
+  mut s = Set[Id].empty();
+  mut i = 0u32;
+  while i < 300u32 {
+    s.insert(new Id(i, i % 5u32));
+    i = i + 1u32;
+  }
+  expectUInt(u64.from(s.len()), 300, "three hundred ids");
+  mut wrong = 0i64;
+  i = 0u32;
+  while i < 300u32 {
+    if not s.contains(&new Id(i, i % 5u32)) { wrong = wrong + 1i64; }
+    if s.contains(&new Id(i, i % 5u32 + 1u32)) { wrong = wrong + 1i64; }
+    i = i + 1u32;
+  }
+  expectInt(wrong, 0, "each id is held and not another generation of its slot");
+  expectBool(s.insert(new Id(3u32, 4u32)), true, "slot 3 with another generation is new");
+  expectBool(s.insert(new Id(3u32, 3u32)), false, "slot 3 with its own is held");
+  expectBool(s.remove(&new Id(3u32, 3u32)), true, "removed");
+  expectBool(s.contains(&new Id(3u32, 4u32)), true, "the other generation stays");
+}
+
+// One seed, one order; the process's seed is shared
+fn deterministic() {
+  mut a = Set[u64].deterministic();
+  mut b = Set[u64].deterministic();
+  mut c = Set[u64].withSeed(9u64);
+  mut k = 0u64;
+  while k < 50u64 {
+    a.insert(k * 13u64);
+    b.insert(k * 13u64);
+    c.insert(k * 13u64);
+    k = k + 1u64;
+  }
+  expectStr(listOf(&a).view(), listOf(&b).view(), "two deterministic sets agree");
+  expect(listOf(&a).view() != listOf(&c).view(), "another seed visits in another order");
+  expectUInt(u64.from(c.len()), 50, "the other seed holds them all");
+}
+
+fn listOf(s &Set[u64]) String {
+  mut out = String.empty();
+  mut c = s.items();
+  while true {
+    match c.next() {
+      case imm e Some {
+        out.appendUInt(*e.value);
+        out.append(",");
+      }
+      case is None {break;}
+    }
+  }
+  out;
+}
+
+fn tracked(id u64, tag u64) Tracked { new Tracked(id, tag); }
+
+// An insert of a held element: the item given dies, the held one stays. Remove,
+// clear and the set's death finalize what they hold, once each
+fn finalizing() {
+  {
+    mut s = Set[Tracked].empty();
+    expectBool(s.insert(tracked(1u64, 1u64)), true, "a new element");
+    expectBool(s.insert(tracked(2u64, 2u64)), true, "another");
+    expectInt(deaths, 0, "nothing died yet");
+    expectBool(s.insert(tracked(1u64, 3u64)), false, "the same id is held");
+    expectInt(deaths, 1, "the item given died");
+    expectUInt(deathMask, 8, "it was the third made (bit 3)");
+    expectBool(s.remove(&tracked(2u64, 0u64)), true, "removed");
+    expectInt(deaths, 2, "the element removed died");
+    expectBool(s.remove(&tracked(2u64, 0u64)), false, "removed once");
+    expectInt(deaths, 2, "a miss kills nothing");
+    s.insert(tracked(5u64, 4u64));
+    s.insert(tracked(6u64, 5u64));
+    s.clear();
+    expectInt(deaths, 5, "clear finalized the three it held (1, 4 and 5)");
+    s.insert(tracked(7u64, 6u64));
+  }
+  expectInt(deaths, 6, "the set's death finalized the one left");
+  expectInt(twice, 0, "no element died twice");
+}

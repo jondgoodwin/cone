@@ -1,0 +1,173 @@
+// Bench: what a Dict costs against an OrderedDict, on 100,000 u64 keys from a
+// fixed generator, on the real clock. For each it prints, per key or per entry
+// visited:
+//
+// - insert: 100,000 keys put in, growing from empty;
+// - hit: every key looked up (the order they went in), then in a scrambled order;
+// - miss: 100,000 keys that are not there;
+// - iterate: the values summed, a hundred passes over the table;
+// - remove: every key taken out of the Dict; from the OrderedDict, the first
+//   2,000 by the order-keeping removal (which moves every later entry down one
+//   place, so costs the entries after it) and the rest by the swapping one.
+//
+// Build it optimised to measure:
+//
+//   congo run --release packages/collections/examples/dictbench.cone
+
+mod dictbench;
+
+import stdio use *;
+import time use Duration, Instant;
+import collections use *;
+
+const n = 100000usize;
+
+// xorshift64*, for keys the same on every run
+struct Rng {
+  s u64;
+  fn next(self &mut) u64 {
+    s = s ^ (s >> 12u64);
+    s = s ^ (s << 25u64);
+    s = s ^ (s >> 27u64);
+    s * 2685821657736338717u64;
+  }
+}
+
+fn ns(start Instant, count usize) i64 {
+  start.elapsed().nanos() / i64.from(count);
+}
+
+fn line(label &[]u8, dict i64, ordered i64) {
+  printStr(label);
+  printStr(": Dict ");
+  printInt(dict);
+  printStr(" ns, OrderedDict ");
+  printInt(ordered);
+  printStr(" ns\n");
+}
+
+fn main() i32 {
+  mut rng = new Rng(88172645463325252u64);
+  mut keys = List[u64].withCapacity(n);
+  mut missing = List[u64].withCapacity(n);
+  mut i = 0usize;
+  while i < n {
+    keys.push(rng.next());
+    missing.push(rng.next());
+    i = i + 1usize;
+  }
+  // The same keys in another order: the scramble steps through them by 7919, a prime
+  imm gap = 7919usize;
+
+  mut d = Dict[u64, u64].deterministic();
+  mut o = OrderedDict[u64, u64].deterministic();
+
+  mut t = Instant.now();
+  i = 0usize;
+  while i < n { d.insert(*keys[i], i64.from(i) as u64); i = i + 1usize; }
+  imm dInsert = ns(t, n);
+  t = Instant.now();
+  i = 0usize;
+  while i < n { o.insert(*keys[i], i64.from(i) as u64); i = i + 1usize; }
+  line("insert", dInsert, ns(t, n));
+
+  // Hits in order, three passes so the first one's cache misses do not rule
+  mut sum = 0u64;
+  mut pass = 0u32;
+  t = Instant.now();
+  while pass < 3u32 {
+    i = 0usize;
+    while i < n { sum = sum + *d[keys[i]]; i = i + 1usize; }
+    pass = pass + 1u32;
+  }
+  imm dHit = ns(t, n * 3usize);
+  pass = 0u32;
+  t = Instant.now();
+  while pass < 3u32 {
+    i = 0usize;
+    while i < n { sum = sum + *o[keys[i]]; i = i + 1usize; }
+    pass = pass + 1u32;
+  }
+  line("hit, in order", dHit, ns(t, n * 3usize));
+
+  pass = 0u32;
+  t = Instant.now();
+  while pass < 3u32 {
+    i = 0usize;
+    while i < n { sum = sum + *d[keys[(i * gap) % n]]; i = i + 1usize; }
+    pass = pass + 1u32;
+  }
+  imm dHit2 = ns(t, n * 3usize);
+  pass = 0u32;
+  t = Instant.now();
+  while pass < 3u32 {
+    i = 0usize;
+    while i < n { sum = sum + *o[keys[(i * gap) % n]]; i = i + 1usize; }
+    pass = pass + 1u32;
+  }
+  line("hit, scrambled", dHit2, ns(t, n * 3usize));
+
+  mut found = 0u64;
+  t = Instant.now();
+  i = 0usize;
+  while i < n { if d.contains(missing[i]) { found = found + 1u64; } i = i + 1usize; }
+  imm dMiss = ns(t, n);
+  t = Instant.now();
+  i = 0usize;
+  while i < n { if o.contains(missing[i]) { found = found + 1u64; } i = i + 1usize; }
+  line("miss", dMiss, ns(t, n));
+
+  t = Instant.now();
+  pass = 0u32;
+  while pass < 100u32 {
+    mut c = d.values();
+    while true {
+      match c.next() {
+        case imm v Some {sum = sum + *v.value;}
+        case is None {break;}
+      }
+    }
+    pass = pass + 1u32;
+  }
+  imm dIter = ns(t, n * 100usize);
+  t = Instant.now();
+  pass = 0u32;
+  while pass < 100u32 {
+    mut c = o.values();
+    while true {
+      match c.next() {
+        case imm v Some {sum = sum + *v.value;}
+        case is None {break;}
+      }
+    }
+    pass = pass + 1u32;
+  }
+  line("iterate, per entry", dIter, ns(t, n * 100usize));
+
+  // Remove: the Dict all of them; the OrderedDict's first 2,000 keys, each at
+  // the front of what is left so that every other entry moves, then the rest
+  // swapped out
+  t = Instant.now();
+  i = 0usize;
+  while i < n { d.remove(keys[i]); i = i + 1usize; }
+  imm dRemove = ns(t, n);
+  t = Instant.now();
+  i = 0usize;
+  while i < 2000usize { o.remove(keys[i]); i = i + 1usize; }
+  imm shifted = ns(t, 2000usize);
+  t = Instant.now();
+  while i < n { o.swapRemove(keys[i]); i = i + 1usize; }
+  printStr("remove: Dict ");
+  printInt(dRemove);
+  printStr(" ns; OrderedDict, shifting from the front of 100,000 ");
+  printInt(shifted);
+  printStr(" ns, swapping ");
+  printInt(ns(t, n - 2000usize));
+  printStr(" ns\n");
+
+  // Keep the results alive
+  printStr("checksum ");
+  printUInt(sum + found + u64.from(d.len()) + u64.from(o.len()));
+  printStr("\n");
+  0i32;
+}

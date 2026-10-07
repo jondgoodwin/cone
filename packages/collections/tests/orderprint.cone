@@ -1,0 +1,70 @@
+// An OrderedDict printed as it stands: its entries come out in the order they
+// went in, on every run and under every seed, so a program may print one and
+// have its output pinned. The expected output is worked out by hand from that
+// rule: an overwrite keeps its place, a removal closes the gap, and a key put
+// back goes to the end.
+
+mod orderprint;
+
+import stdio use *;
+import collections use *;
+
+fn show(label &[]u8, d &OrderedDict[String, i64]) {
+  printStr(label);
+  printStr(":");
+  mut c = d.entries();
+  while true {
+    match c.next() {
+      case imm e Some {
+        printStr(" ");
+        printStr(e.value.key.view());
+        printStr("=");
+        printInt(e.value.value);
+      }
+      case is None {break;}
+    }
+  }
+  printStr("\n");
+}
+
+fn main() i32 {
+  mut d = OrderedDict[String, i64].empty();
+  d <- String.from("zebra"): 1, String.from("apple"): 2, String.from("mango"): 3;
+  show("inserted", &d);
+  d.insert(String.from("apple"), 20);
+  show("apple overwritten", &d);
+  d.remove("zebra");
+  show("zebra removed", &d);
+  d.insert(String.from("zebra"), 4);
+  show("zebra put back", &d);
+  d.insert(String.from("kiwi"), 5);
+  d.insert(String.from("fig"), 6);
+  d.remove("mango");
+  show("kiwi, fig in; mango out", &d);
+  d.swapRemove(&String.from("apple"));
+  show("apple swapped out", &d);
+
+  // The same on a fixed seed, and on a long run
+  mut e = OrderedDict[String, i64].deterministic();
+  e <- String.from("b"): 1, String.from("a"): 2;
+  show("deterministic", &e);
+  printStr("keys of 12:");
+  mut f = OrderedDict[u64, u64].withSeed(99u64);
+  mut k = 0u64;
+  while k < 12u64 {
+    f.insert((k * 5u64) % 13u64, k);
+    k = k + 1u64;
+  }
+  mut c = f.keys();
+  while true {
+    match c.next() {
+      case imm key Some {
+        printStr(" ");
+        printUInt(*key.value);
+      }
+      case is None {break;}
+    }
+  }
+  printStr("\n");
+  0i32;
+}

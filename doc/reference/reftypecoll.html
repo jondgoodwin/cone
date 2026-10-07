@@ -15,7 +15,9 @@
 
 	<p style="margin-left: 40px;"><i>Note: The library collection types are the
 		<span class="pre">collections</span> package's <span class="pre">List[T]</span> and
-		<span class="pre">Dict[K, V]</span> (keyed by any type that is <a href="reftrait.html#hash"><span class="pre">Hash</span></a>), with
+		<span class="pre">Dict[K, V]</span> (keyed by any type that is <a href="reftrait.html#hash"><span class="pre">Hash</span></a>),
+			<span class="pre">OrderedDict[K, V]</span> (the same, visiting in insertion order),
+			<span class="pre">Set[T]</span>, with
 		<span class="pre">String</span> beside them (<span class="pre">import collections use *;</span>). A list or a dictionary is
 		constructed with <span class="pre">new</span>, its first values after
 		<span class="pre">&lt;-</span>: <span class="pre">new List[i32](100) &lt;- fill 0</span>
@@ -72,9 +74,40 @@
 		<span class="pre">&amp;[]u8</span> (<span class="pre">d.contains("core")</span>), for every one of
 		these lookups.</i></p>
 
+	<p style="margin-left: 40px;"><i>Note: <span class="pre">OrderedDict[K, V]</span> is a
+		<span class="pre">Dict</span> that visits in the order of insertion, on every run and under every
+		seed, which is what a program wants to print, write out as a file, or replay (a JSON object, a
+		configuration, HTTP headers). It has the same methods under the same names, including the bytes
+		lookups of an <span class="pre">OrderedDict[String, V]</span> and the cursors
+		<span class="pre">keys()</span>, <span class="pre">values()</span> and <span class="pre">entries()</span>,
+		and the same seeds. Its layout is Python's compact dict and Rust's <span class="pre">IndexMap</span>: a
+		dense array of (hash, key, value) in insertion order, which the cursors walk front to back, and beside
+		it an index with the same control bytes and eight-at-a-time probe as <span class="pre">Dict</span>'s,
+		holding for each bucket a <span class="pre">u32</span> position in the array, so a table holds fewer than
+		2<sup>32</sup> entries. A lookup is one memory access slower than <span class="pre">Dict</span>'s;
+		iteration is faster, with no empty buckets to skip. Inserting a key it holds replaces that entry
+		<i>where it stands</i>; a key put back after a <span class="pre">remove</span> goes to the end.
+		<span class="pre">remove</span> keeps the order: every later entry moves down one place, so it costs
+		the entries after the one removed (<span class="pre">IndexMap</span>'s <span class="pre">shift_remove</span>).
+		<span class="pre">swapRemove(&amp;k)</span> is O(1) but moves the last entry into the hole, which
+		breaks the order. If you mostly look keys up and rarely iterate, <span class="pre">Dict</span> is the
+		faster choice.</i></p>
+
+	<p style="margin-left: 40px;"><i>Note: <span class="pre">Set[T]</span> is a set of any type that is
+		<span class="pre">Hash</span>: a <span class="pre">Dict</span> whose values take no bytes, so it has
+		the dictionary's table, seed and unordered visiting. <span class="pre">insert(x)</span> answers whether
+		<span class="pre">x</span> was new (a held element stays, and the item given dies),
+		<span class="pre">contains(&amp;x)</span>, <span class="pre">remove(&amp;x)</span> (true when it was
+		held), <span class="pre">clear</span>, <span class="pre">len</span>, <span class="pre">isEmpty</span>,
+		<span class="pre">capacity</span>, <span class="pre">deterministic()</span> and
+		<span class="pre">withSeed(n)</span>; <span class="pre">items()</span> is a cursor over borrows of the
+		elements. A <span class="pre">Set[String]</span> takes an element as bytes
+		(<span class="pre">s.contains("core")</span>). It has no union or intersection yet.</i></p>
+
 	<p>A collection type holds some number of values (elements) that are all the same type.
 		The standard library offers a number of versatile collection types,
-		such as <span class="pre">List</span> and <span class="pre">Dict</span>.</p>
+		such as <span class="pre">List</span>, <span class="pre">Dict</span>, <span class="pre">OrderedDict</span>
+		and <span class="pre">Set</span>.</p>
 	<p>All such collection types are built on top of the array primitive types,
 		whose elements are co-located in memory and are individually accessed using an integer index:</p>
 	<ul>

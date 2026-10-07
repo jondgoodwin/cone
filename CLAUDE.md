@@ -493,8 +493,16 @@ Visual Studio projects stay at the root.
   SwissTable (control bytes probed eight at a time, up to 7/8 full) over any
   `K` that is `Hash`, ids and integers included, unordered, each dictionary
   hashing with a seed of its own (the process's, or fixed by
-  `Dict.deterministic()`), each holding its elements in one block from `libc`'s
-  allocator and moving them with core's `mem` intrinsics; `arena` is an
+  `Dict.deterministic()`); `OrderedDict[K, V]`, the same methods and seeds
+  but iterating in insertion order (Python's compact dict and Rust's
+  `IndexMap`: a dense array of hash, key and value, indexed by a SwissTable of
+  `u32` positions probed by `Dict`'s own control-byte group probe; an
+  overwrite keeps the entry's place, `remove` shifts the later entries down,
+  `swapRemove` is O(1) and breaks the order; its example `dictbench.cone`
+  times it against `Dict`); and `Set[T]`, a `Dict` whose value takes no
+  bytes (`insert` answers whether the element was new); each holding its
+  elements in one block from `libc`'s allocator (an `OrderedDict` in two) and
+  moving them with core's `mem` intrinsics; `arena` is an
   `Arena`, a dynamic region whose values are finalized, newest first, and
   freed together when it dies, and which, held in a local, is the scratch
   arena, and `DynArena['=a]`, the invariant-lifetime dynamic arena, whose
