@@ -1,0 +1,46 @@
+// The surfacepatterns package: procedural patterns that fill a tile with a
+// recognizable surface (boards, shingles, flagstones, stone, bark, brick) and
+// produce the maps of a physically based material for it, over pbrmaterial.
+// pbrmaterial's own bake turns noise into a surface; this package lays out
+// the structure a real surface has (a board-and-batten wall, courses of
+// shingles, stones that fit together) and then gives each piece its own
+// colour and grain. A program reaches it with 'import surfacepatterns', and
+// gets, for each pattern, a parameters struct (sizes in metres, colours in
+// linear RGB, a seed), a preset of it, 'bake<Pattern>' giving the TextureSet
+// of pbrmaterial (base colour sRGB, ORM, tangent-space normal, height, and
+// all-zero wear and grime masks), and '<pattern>Texel', the pure function of
+// the tile point that 'bake' runs over every texel:
+//
+// - planks.cone      PlankParams (.siding: board-and-batten, .decking)
+// - shingles.cone    ShingleParams (.cedar)
+// - flagstones.cone  FlagstoneParams (.garden)
+// - stone.cone       RockParams (.granite), EdgingStoneParams (.fieldstone)
+// - bark.cone        BarkParams (.redMaple, .pine)
+// - brick.cone       BrickParams (.standard)
+// - field.cone       PatternTexel, PatternField, finishField, and the helpers:
+//                    periodic hashed noise (valueNoise, fbmNoise, ridgedNoise,
+//                    lattices of any size each way), periodic Voronoi cells
+//
+// TILING. A pattern is a function of the tile point (u, v) that repeats every
+// 1 in each: its lattices wrap at the tile's edges, and a pattern fits a
+// whole number of its features (boards, stones, bricks) to the tile, rounding
+// the size asked for. The tile is square, 'tileMetres' across; where a size
+// is in metres it is the real size on the surface. A 1024 tile is a texel of
+// about 2 mm on a 2 m tile.
+//
+// DETERMINISM. Every random number is noise's PCG hash of (seed, lattice
+// point), as in pbrmaterial: no stream, no platform RNG, the same maps on
+// every run. A pattern is baked on the CPU, as pbrmaterial's are: the texel
+// functions are pure, so a GPU kernel could run them, but a tile is baked
+// once at load. Textures are for appearance only, so square roots and powers
+// are used freely.
+//
+// Its files are one module, and only this one, the root, imports.
+
+mod surfacepatterns;
+
+import libc;
+import geomath use *;
+import collections use *;
+import noise use *;
+import pbrmaterial use *;

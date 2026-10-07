@@ -33,25 +33,21 @@
 // turned into the surface by tangents found from screen-space derivatives
 // (the meshes carry none).
 //
-// Group 0 is the frame's, group 1 the material's (its parameters, a texture
-// that multiplies the base colour, a sampler, then the metallic-roughness,
-// normal and occlusion textures), group 2 the environment's
-// (the sky's parameters, the cubes, the table and their sampler). The
-// immediates are the draw's: its model matrix and a tint.
+// It keeps the renderer's one lighting convention (renderframe.slang): the
+// sun's colour is irradiance, the environment and the emissive colour are
+// radiance, and what it outputs is multiplied by the frame's exposure.
+//
+// Group 0 is the frame's (renderframe.slang), group 1 the material's (its
+// parameters, a texture that multiplies the base colour, a sampler, then
+// the metallic-roughness, normal and occlusion textures), group 2 the
+// environment's (the sky's parameters, the cubes, the table and their
+// sampler). Each drawn copy's model matrix and tint are its instance's,
+// in group 0 (renderframe.slang).
 
 import brdf;
 import sky;
 import noise;
-
-struct Frame {
-    float4x4 viewProjection;       // 0
-    float4 cameraPosition;         // 64: xyz
-    float4 lightDirection;         // 80: xyz towards the light, unit
-    float4 lightColor;             // 96: rgb
-    float4 ambient;                // 112: rgb (the Blinn-Phong material's)
-    float4x4 inverseViewProjection;   // 128
-    float4 viewport;               // 192: width, height in pixels; time in seconds; the environment's strength
-};
+import renderframe;
 
 struct PbrParams {
     float4 baseColor;              // 0: rgba, linear
@@ -60,14 +56,9 @@ struct PbrParams {
     float4 filmNoise;              // 48: the noise's scale (a unit of model space), drift a second, warp, seed
     float4 wet;                    // 64: where the coat lies: fBm's scale (0: everywhere), level, softness, seed
     float4 maps;                   // 80: the normal map's scale (0: no normal map), the occlusion map's strength
+    float4 emissive;               // 96: rgb radiance (nits in physical units), its strength multiplied in
 };
 
-struct Immediates {
-    float4x4 model;                // 0-63
-    float4 tint;                   // 64-79
-};
-
-[[vk::binding(0, 0)]] ConstantBuffer<Frame> frame;
 [[vk::binding(0, 1)]] ConstantBuffer<PbrParams> material;
 [[vk::binding(1, 1)]] Texture2D baseTexture;
 [[vk::binding(2, 1)]] SamplerState baseSampler;
@@ -83,7 +74,6 @@ struct Immediates {
 [[vk::binding(2, 2)]] TextureCube specularCube;
 [[vk::binding(3, 2)]] Texture2D brdfTable;
 [[vk::binding(4, 2)]] SamplerState environmentSampler;
-[[vk::push_constant]] ConstantBuffer<Immediates> draw;
 
 // The specular cube's levels: roughness 0 at level 0, 1 at the last
 static const float SPECULAR_LEVELS = 6.0;
@@ -101,22 +91,20 @@ struct VertexOutput {
     float3 normal : NORMAL;
     float2 uv : TEXCOORD;
     float3 local : TEXCOORD1;      // the model's own coordinates, where the film's noise is read
+    nointerpolation float4 tint : COLOR;
 };
 
 [shader("vertex")]
-VertexOutput vertexMain(VertexInput input) {
+VertexOutput vertexMain(VertexInput input, uint id : SV_VulkanInstanceID) {
     VertexOutput output;
-    float4 world = mul(draw.model, float4(input.position, 1.0));
+    Instance inst = instances[id];
+    float4 world = mul(inst.model, float4(input.position, 1.0));
     output.position = mul(frame.viewProjection, world);
     output.world = world.xyz;
-    // The normal by the cofactor matrix of the model's 3 x 3, as lit.slang
-    float3 a0 = float3(draw.model[0][0], draw.model[1][0], draw.model[2][0]);
-    float3 a1 = float3(draw.model[0][1], draw.model[1][1], draw.model[2][1]);
-    float3 a2 = float3(draw.model[0][2], draw.model[1][2], draw.model[2][2]);
-    output.normal = cross(a1, a2) * input.normal.x + cross(a2, a0) * input.normal.y
-        + cross(a0, a1) * input.normal.z;
+    output.normal = worldNormal(inst.model, input.normal);
     output.uv = input.uv;
     output.local = input.position;
+    output.tint = inst.tint;
     return output;
 }
 
@@ -181,7 +169,7 @@ float4 fragmentMain(VertexOutput input) : SV_Target {
     float loh = saturate(dot(l, h));
     float3 r = reflect(-v, n);
 
-    float4 base = material.baseColor * baseTexture.Sample(baseSampler, input.uv) * draw.tint;
+    float4 base = material.baseColor * baseTexture.Sample(baseSampler, input.uv) * input.tint;
     float4 metalRough = metallicRoughnessTexture.Sample(baseSampler, input.uv);
     float metallic = material.surface.x * metalRough.b;
     float roughness = clamp(material.surface.y * metalRough.g, 0.045, 1.0);
@@ -240,7 +228,10 @@ float4 fragmentMain(VertexOutput input) : SV_Target {
     float3 envCoat = coatPrefiltered * coatFv * (coatAb.x + coatAb.y);
     float3 ambient = (envBase + envCoat) * (strength * occlusion);
 
-    return float4(direct + ambient, base.a);
+    // What it gives off: radiance, not lit, so not divided by pi; the
+    // draw's tint multiplies it as it does the base
+    float3 emitted = material.emissive.rgb * input.tint.rgb;
+    return float4((direct + ambient + emitted) * frame.exposure.x, base.a);
 }
 
 // ---- The sky behind the scene ----
@@ -266,5 +257,5 @@ float4 backgroundFragment(SkyOutput input) : SV_Target {
         1.0 - input.position.y / frame.viewport.y * 2.0);
     float4 far = mul(frame.inverseViewProjection, float4(ndc, 1.0, 1.0));
     float3 dir = far.xyz / far.w - frame.cameraPosition.xyz;
-    return float4(skyRadiance(dir, skyParams, true), 1.0);
+    return float4(skyRadiance(dir, skyParams, true) * frame.exposure.x, 1.0);
 }

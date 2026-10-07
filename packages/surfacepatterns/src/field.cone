@@ -1,0 +1,274 @@
+// ======== The shared field: a pattern's texels, and how they become a texture set ========
+//
+// Every generator in this package fills a PatternField, one PatternTexel for
+// each texel of a square tile, and 'finishField' turns the field into the
+// same TextureSet pbrmaterial bakes, so a pattern's maps upload and draw
+// exactly as a noise-baked material's do.
+
+// One texel of a pattern: its height (0 to 1, the field's 'relief' metres
+// deep over that range), base colour (linear), roughness, and 'cavity', the
+// ambient light the pattern's own geometry shuts out that a horizon search
+// over a height map would not see well (a mortar joint's depth, a crack):
+// 1 open, lower shut
+pub struct PatternTexel {
+  pub height f32;
+  pub colour Color;
+  pub rough f32;
+  pub cavity f32;
+}
+
+// A square tile of PatternTexels, 'size' texels a side and 'tileMetres'
+// across, rows bottom first. A texel is (x + 1/2) / size across and
+// (y + 1/2) / size up the tile, in tile units; the pattern is a function of
+// that point which repeats every 1.
+pub struct PatternField {
+  pub size i32;
+  pub tileMetres f32;
+  pub relief f32;
+  pub height ScalarMap;
+  pub colour List[f32];
+  pub rough List[f32];
+  pub cavity List[f32];
+
+  pub fn empty(size i32, tileMetres f32, relief f32) PatternField {
+    imm n = usize.from(size * size);
+    new PatternField(size, tileMetres, relief, ScalarMap.zeros(size), List[f32].withCapacity(n * 3usize),
+      List[f32].withCapacity(n), List[f32].withCapacity(n));
+  }
+
+  // Add the next texel, in row-major order from the bottom left (the
+  // height map is written in place)
+  pub fn put(self &mut, x i32, y i32, t PatternTexel) {
+    height.set(x, y, t.height);
+    colour.push(t.colour.red);
+    colour.push(t.colour.green);
+    colour.push(t.colour.blue);
+    rough.push(t.rough);
+    cavity.push(t.cavity);
+  }
+}
+
+// The field's maps: the normal from its height (whose 0 to 1 spans
+// 'relief' metres of the tile's 'tileMetres'), ambient occlusion as the
+// horizon search ('occlusionRadius' tile units, 'occlusionSteps' steps a
+// direction) times the pattern's cavity, base colour (sRGB), ORM, and the
+// height. The wear and grime masks of the TextureSet are all zero: these
+// patterns carry their weathering in their colour.
+pub fn finishField(f &mut PatternField, occlusionRadius f32, occlusionSteps i32) TextureSet {
+  imm size = f.size;
+  imm depth = f.relief / f.tileMetres;
+  mut baseColor = TexelMap.withCapacity(size, size, 3);
+  mut orm = TexelMap.withCapacity(size, size, 3);
+  mut normal = TexelMap.withCapacity(size, size, 3);
+  mut heightMap = TexelMap.withCapacity(size, size, 1);
+  mut wearMask = TexelMap.withCapacity(size, size, 1);
+  mut grimeMask = TexelMap.withCapacity(size, size, 1);
+  mut y = 0;
+  while y < size {
+    mut x = 0;
+    while x < size {
+      imm i = usize.from(y * size + x);
+      imm n = normalTexel(&f.height, x, y, depth);
+      mut ao = 1.;
+      if occlusionSteps > 0 {
+        ao = occlusionTexel(&f.height, x, y, occlusionRadius, occlusionSteps, depth);
+      }
+      ao = ao * *f.cavity[i];
+      baseColor.pixels.push(unitByte(srgbEncode(*f.colour[i * 3usize])));
+      baseColor.pixels.push(unitByte(srgbEncode(*f.colour[i * 3usize + 1usize])));
+      baseColor.pixels.push(unitByte(srgbEncode(*f.colour[i * 3usize + 2usize])));
+      orm.pixels.push(unitByte(ao));
+      orm.pixels.push(unitByte(*f.rough[i]));
+      orm.pixels.push(0u8);
+      normal.pixels.push(unitByte(n.x * 0.5 + 0.5));
+      normal.pixels.push(unitByte(n.y * 0.5 + 0.5));
+      normal.pixels.push(unitByte(n.z * 0.5 + 0.5));
+      heightMap.pixels.push(unitByte(f.height.at(x, y)));
+      wearMask.pixels.push(0u8);
+      grimeMask.pixels.push(0u8);
+      x = x + 1;
+    }
+    y = y + 1;
+  }
+  // the height field moves into the set, leaving the field's empty
+  mut height = ScalarMap.zeros(1);
+  height <=> f.height;
+  new TextureSet(size, baseColor, orm, normal, heightMap, wearMask, grimeMask, height);
+}
+
+// ---- Small helpers ----
+
+// 'x' less its floor: 0 up to (not including) 1
+pub fn frac(x f32) f32 { x - libc.floorf(x); }
+
+// 'i' taken round 0 to n - 1, for any sign
+pub fn posMod(i i32, n i32) i32 { ((i % n) + n) % n; }
+
+pub fn maxF(a f32, b f32) f32 { if a > b { a; } else { b; }; }
+pub fn minF(a f32, b f32) f32 { if a < b { a; } else { b; }; }
+
+// 'n' whole features of about 'size' metres across a tile 'tileMetres'
+// wide: at least 'least'
+pub fn wholeCount(tileMetres f32, size f32, least i32) i32 {
+  imm n = i32.from(libc.floorf(tileMetres / size + 0.5));
+  if n < least { least; } else { n; };
+}
+
+// Linear colour from sRGB components in 0 to 255 (how colours are written
+// in this package's defaults)
+pub fn rgb255(r f32, g f32, b f32) Color {
+  new Color(srgbDecode(r / 255.), srgbDecode(g / 255.), srgbDecode(b / 255.), 1.);
+}
+
+pub fn mixRgb(a Color, b Color, t f32) Color {
+  new Color(a.red + (b.red - a.red) * t, a.green + (b.green - a.green) * t, a.blue + (b.blue - a.blue) * t, 1.);
+}
+
+pub fn scaleRgb(a Color, k f32) Color { new Color(a.red * k, a.green * k, a.blue * k, 1.); }
+
+// ---- Periodic hashed noise ----
+
+// A random number in [0, 1) from two integers and a seed
+pub fn unitHash(a i32, b i32, seed u32) f32 { toUnit(hash2(a, b, seed).x); }
+
+// Three independent ones
+pub fn unitHash3(a i32, b i32, seed u32) Vec3 {
+  imm h = hash2(a, b, seed);
+  new Vec3(toUnit(h.x), toUnit(h.y), toUnit(h.z));
+}
+
+fn quintic(t f32) f32 { t * t * t * (t * (t * 6. - 15.) + 10.); }
+
+// Smooth value noise in [-1, 1] at the tile point (u, v), its lattice
+// 'px' cells across the tile and 'py' up it (they need not be equal, so
+// the grain of wood is long one way), wrapping exactly there
+pub fn valueNoise(u f32, v f32, px i32, py i32, seed u32) f32 {
+  imm fx = u * f32.from(px);
+  imm fy = v * f32.from(py);
+  imm gx = libc.floorf(fx);
+  imm gy = libc.floorf(fy);
+  imm tx = quintic(fx - gx);
+  imm ty = quintic(fy - gy);
+  imm x0 = posMod(i32.from(gx), px);
+  imm y0 = posMod(i32.from(gy), py);
+  imm x1 = posMod(x0 + 1, px);
+  imm y1 = posMod(y0 + 1, py);
+  imm a = toSigned(hash2(x0, y0, seed).x);
+  imm b = toSigned(hash2(x1, y0, seed).x);
+  imm c = toSigned(hash2(x0, y1, seed).x);
+  imm d = toSigned(hash2(x1, y1, seed).x);
+  imm bottom = a + (b - a) * tx;
+  imm top = c + (d - c) * tx;
+  bottom + (top - bottom) * ty;
+}
+
+// 'octaves' of valueNoise, each twice the lattice of the last and 'gain'
+// times its amplitude, normalized to [-1, 1]
+pub fn fbmNoise(u f32, v f32, px i32, py i32, seed u32, octaves i32, gain f32) f32 {
+  mut sum f32 = 0.;
+  mut total f32 = 0.;
+  mut amp f32 = 1.;
+  mut cx = px;
+  mut cy = py;
+  mut i = 0;
+  while i < octaves {
+    sum = sum + amp * valueNoise(u, v, cx, cy, hash1(i, seed));
+    total = total + amp;
+    amp = amp * gain;
+    cx = cx * 2;
+    cy = cy * 2;
+    i = i + 1;
+  }
+  sum / total;
+}
+
+// Ridged fbm in [0, 1]: creases where the noise crosses zero, sharp-edged
+// ridges between (1 - |n|, squared), normalized
+pub fn ridgedNoise(u f32, v f32, px i32, py i32, seed u32, octaves i32, gain f32) f32 {
+  mut sum f32 = 0.;
+  mut total f32 = 0.;
+  mut amp f32 = 1.;
+  mut cx = px;
+  mut cy = py;
+  mut i = 0;
+  while i < octaves {
+    imm n = 1. - libc.fabsf(valueNoise(u, v, cx, cy, hash1(i, seed)));
+    sum = sum + amp * n * n;
+    total = total + amp;
+    amp = amp * gain;
+    cx = cx * 2;
+    cy = cy * 2;
+    i = i + 1;
+  }
+  sum / total;
+}
+
+// ---- Periodic Voronoi cells ----
+
+// The cell of a jittered grid a point lies in
+pub struct Cell {
+  pub id i32;               // the cell's number, 0 to n * n - 1, by its grid position
+  pub key u32;              // a hash of the cell for per-stone random numbers
+  pub dx f32;               // the point less the cell's feature point, in grid cells
+  pub dy f32;
+  pub dist f32;             // the distance to the feature point, in grid cells
+  pub edge f32;             // the distance to the nearest edge of the cell, in grid cells
+}
+
+// The feature point of the grid cell (i, j), in grid cells, kept inside the
+// cell's middle: offset up to +-0.4 x 'jitter' from its centre
+fn featurePoint(i i32, j i32, n i32, jitter f32, seed u32) Vec2 {
+  imm h = hash2(posMod(i, n), posMod(j, n), seed);
+  new Vec2(f32.from(i) + 0.5 + (toUnit(h.x) - 0.5) * 0.8 * jitter, f32.from(j) + 0.5 + (toUnit(h.y) - 0.5) * 0.8 * jitter);
+}
+
+// The Voronoi cell at the tile point (u, v) for a grid of n x n feature
+// points, one to a cell, jittered by 'jitter' (0 a regular grid, 1 the most),
+// wrapping: the pattern repeats every 1. The edge distance is that to the
+// perpendicular bisector with the nearest neighbouring point.
+pub fn voronoi(u f32, v f32, n i32, jitter f32, seed u32) Cell {
+  imm px = u * f32.from(n);
+  imm py = v * f32.from(n);
+  imm ci = i32.from(libc.floorf(px));
+  imm cj = i32.from(libc.floorf(py));
+  mut best f32 = 1000.;
+  mut bi = ci;
+  mut bj = cj;
+  mut bp = new Vec2(0., 0.);
+  mut dj = -1;
+  while dj <= 1 {
+    mut di = -1;
+    while di <= 1 {
+      imm p = featurePoint(ci + di, cj + dj, n, jitter, seed);
+      imm ex = p.x - px;
+      imm ey = p.y - py;
+      imm d2 = ex * ex + ey * ey;
+      if d2 < best { best = d2; bi = ci + di; bj = cj + dj; bp = p; }
+      di = di + 1;
+    }
+    dj = dj + 1;
+  }
+  // the edge: the nearest perpendicular bisector among the cells round the winner
+  mut edge f32 = 1000.;
+  dj = -2;
+  while dj <= 2 {
+    mut di = -2;
+    while di <= 2 {
+      if !(di == 0 and dj == 0) {
+        imm p = featurePoint(bi + di, bj + dj, n, jitter, seed);
+        imm mx = (p.x + bp.x) * 0.5;
+        imm my = (p.y + bp.y) * 0.5;
+        imm nx = p.x - bp.x;
+        imm ny = p.y - bp.y;
+        imm len = libc.sqrtf(nx * nx + ny * ny);
+        // distance from the point to the bisector, along the line between the features
+        imm d = ((mx - px) * nx + (my - py) * ny) / len;
+        if d < edge { edge = d; }
+      }
+      di = di + 1;
+    }
+    dj = dj + 1;
+  }
+  imm id = posMod(bj, n) * n + posMod(bi, n);
+  new Cell(id, hash2(posMod(bi, n), posMod(bj, n), seed + 7919u32).z, px - bp.x, py - bp.y, libc.sqrtf(best), edge);
+}
