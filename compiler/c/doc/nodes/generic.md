@@ -430,7 +430,11 @@ false diagnostic. The cost is silent acceptance — see Hazards.
    type naming a generic's own type parameter — the signature of `&half`, a
    generic function not instantiated — captures nothing. Region and permission
    otherwise take no part: the instance's own check of the call judges them. Any other
-   shape captures nothing. A slot filled twice must agree by `itypeIsSame`.
+   shape captures nothing. A slot filled twice must agree by `itypeIsSame`. A
+   captured struct is held as a use of its name: an argument whose type is the
+   struct's declaration itself (a block's or an `if`'s value types so,
+   `iexpMultiInfer`) would be cloned into the instance as a second copy of the
+   struct, methods and all.
    Any slot still NULL is "could not infer". A generic method named bare inside its type's braces
    is called on an implicit `self` that is not among the arguments, so they are
    matched against the parameters after it; named through its type,
