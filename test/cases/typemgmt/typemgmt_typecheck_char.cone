@@ -1,0 +1,105 @@
+// A char is a code point and no number: it coerces implicitly to none, and no
+// number coerces to it.
+//
+// A char is 32 bits, and a 32-bit unsigned coerces to nothing narrower but to
+// every wider unsigned, so 'imm x u64 = c' would have compiled had the compiler
+// not refused it, as it refuses a bool wanted as a number
+// (typemgmt_typecheck_boolnbr). The other direction is refused for a reason of
+// its own: a u8 above 127 as a char would be a Latin-1 character, and a u32
+// may be no code point at all. Both convert explicitly,
+// 'u32.from(c)' and 'char.from(n)', which typemgmt_char runs.
+//
+// The one implicit crossing is the literal's: an ASCII character literal as
+// written is a u8 where a u8 is wanted (typemgmt_char), and a non-ASCII one is
+// refused there, 'é' being the code point U+00E9 and not the byte 0xE9.
+// An integer literal is no char either, 'char.from(65)' says it.
+//
+// Type-check stage only. A char has no arithmetic, no bits and no isTrue, so
+// it is no condition either.
+
+mod typemgmt_typecheck_char;
+
+fn wantU32(n u32) u32 {
+  n;
+}
+
+fn wantU8(n u8) u8 {
+  n;
+}
+
+fn wantChar(c char) char {
+  c;
+}
+
+imm globalCode u32 = 'x';           //~ ErrorCharNotNbr:22 "A char is not a number, and u32 is wanted here"
+
+fn initializer(c char) {
+  imm x u64 = c;                    //~ ErrorCharNotNbr:15 "Convert it explicitly, 'u64.from(c)'"
+  imm b u8 = c;                     //~ ErrorCharNotNbr:14 "and u8 is wanted here"
+}
+
+fn assignment(c char) {
+  mut n u32 = 0u32;
+  n = c;                            //~ ErrorCharNotNbr:7 "and u32 is wanted here"
+}
+
+fn argument(c char) {
+  wantU32(c);                       //~ ErrorCharNotNbr:11 "and u32 is wanted here"
+  wantU8(c);                        //~ ErrorCharNotNbr:10 "and u8 is wanted here"
+}
+
+fn returned(c char) u16 {
+  return c;                         //~ ErrorCharNotNbr:10 "and u16 is wanted here"
+}
+
+// A number wanted as a char
+fn numbers(b u8, n u32, i i64) {
+  imm c1 char = b;                  //~ ErrorCharNotNbr:17 "u8 is not a char, and a char is wanted here"
+  imm c2 char = n;                  //~ ErrorCharNotNbr:17 "u32 is not a char"
+  imm c3 char = i;                  //~ ErrorCharNotNbr:17 "i64 is not a char"
+  imm c4 char = 65;                 //~ ErrorCharNotNbr:17 "i32 is not a char"
+  imm c5 char = 65u32;              //~ ErrorCharNotNbr:17 "u32 is not a char"
+  wantChar(b);                      //~ ErrorCharNotNbr:12 "Convert it explicitly, 'char.from(n)'"
+}
+
+// A non-ASCII character literal wanted as a u8, in each place a literal is
+// taken for a byte
+fn wide(b u8) {
+  imm x u8 = 'é';                   //~ ErrorCharNotNbr:14 "This character literal is U+00E9, beyond ASCII, so it is no u8"
+  wantU8('€');                      //~ ErrorCharNotNbr:10 "U+20AC"
+  imm r = b == 'é';                 //~ ErrorCharNotNbr:16 "so it is no u8"
+}
+
+// A char and a byte beside one another, either way round
+fn beside(b u8, c char) {
+  imm r1 = c == b;                  //~ ErrorCharNotNbr:17 "u8 is not a char"
+  imm r2 = b == c;                  //~ ErrorCharNotNbr:17 "A char is not a number, and u8 is wanted here"
+  imm r3 = c < 66;                  //~ ErrorCharNotNbr:16 "i32 is not a char"
+}
+
+// It is the literal as written that stands for a byte, wherever it is written.
+// A name holding it is a char, and converts as one is
+const LETTER = 'a';
+
+fn named(b u8) {
+  imm r = b == LETTER;              //~ ErrorCharNotNbr:16 "A char is not a number, and u8 is wanted here"
+  imm s u8 = LETTER;                //~ ErrorCharNotNbr:14 "Convert it explicitly, 'u8.from(c)'"
+}
+
+// What a char has no methods for
+fn quantity(c char) {
+  imm sum = c + c;                  //~ ErrorNoMbr:15 "Method or field `+` not found"
+  imm neg = -c;                     //~ ErrorNoMbr:13 "`-` not found"
+  imm bits = c & c;                 //~ ErrorNoMbr:16 "`&` not found"
+  imm shifted = c << 1u32;          //~ ErrorNoMbr:19 "`<<` not found"
+  imm minus = -'a';                 //~ ErrorNoMbr:15 "`-` not found"
+  mut m = c;
+  ++m;                              //~ ErrorNoMbr:3 "`++` not found"
+  if c { }                          //~ ErrorInvType:6 "Conditional expression requires true/false value"
+}
+
+// A char indexes nothing: it is no number
+fn index(c char) {
+  imm cells Array[u8, 4] = [1u8, 2u8, 3u8, 4u8];
+  imm x = cells[c];                 //~ ErrorCharNotNbr:17 "and usize is wanted here"
+}

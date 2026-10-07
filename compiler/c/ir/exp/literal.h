@@ -88,6 +88,21 @@ void litNameRes(NameResState* pstate, IExpNode *node);
 // Returns 1 when *nodep is now a literal of that type, 0 otherwise.
 int litAdoptNumberType(INode **nodep, INode *totype);
 
+// Is this a character literal, as written, that stands for a u8 where one is
+// wanted: a char whose value is ASCII (below 128)? Answers for a type wanted of
+// u8 only. litAdoptCharAsByte gives the literal that type, returning 1 when
+// *nodep is now a u8 literal, 0 otherwise.
+int litCharMatchesByte(INode *node, INode *totypedcl);
+int litAdoptCharAsByte(INode **nodep, INode *totype);
+
+// An ASCII character literal that is a binary operator's receiver, beside a u8
+// argument, is that byte. Returns 1 when the literal was retyped.
+int litAdoptCharBesideByte(INode **objp, Nodes *args);
+
+// Is this a character literal, as written, beyond ASCII, wanted as a u8? The
+// literal is a code point and a byte is not one: refused, saying so
+int litCharRefusedAsByte(INode *node, INode *totypedcl);
+
 // Widen a float literal to a wider float type at compile time, keeping it a
 // literal. Returns 1 when *nodep is now a literal of that type, 0 otherwise.
 int litWidenFloat(INode **nodep, INode *totype);

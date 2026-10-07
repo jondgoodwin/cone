@@ -532,6 +532,9 @@ enum ErrorCode {
     // Lending a body: a type body's 'use str via view'
     ErrorLend = 1333,           // A 'use T via m' that cannot lend: m is no method the type declares, T is an enum or a trait or the type itself, or it folds a member of T that is not a method
 
+    // Characters
+    ErrorCharNotNbr = 1334,     // A char where a number is wanted, or a number where a char is wanted: a char converts only explicitly, 'u8.from(c)' and 'char.from(b)'; a non-ASCII character literal is no u8
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name

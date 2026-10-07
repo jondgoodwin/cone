@@ -24,6 +24,10 @@ static FnDclNode *newOverloadMethod(char *concretestr, Name *opsym, INode *sig, 
 // Create a new primitive number type node
 NbrNode *newNbrTypeNode(char *name, uint16_t typ, char bits) {
     Name *namesym = nametblFind(name, strlen(name));
+    // A char is a code point and no quantity: it is compared and hashed, and
+    // that is all. No arithmetic, no bits, no isTrue (a char is never a
+    // condition); a code point's value is reached by converting it, 'u32.from(c)'.
+    int ischar = strcmp(name, "char") == 0;
     // Start by creating the node for this number type
     NbrNode *nbrtype;
     newNode(nbrtype, NbrNode, typ);
@@ -62,7 +66,7 @@ NbrNode *newNbrTypeNode(char *name, uint16_t typ, char bits) {
 
     // Arithmetic operators (not applicable to boolean)
     // '-' is declared twice, so each declaration gets its own concrete name
-    if (bits > 1) {
+    if (bits > 1 && !ischar) {
         iNsTypeAddFn((INsTypeNode*)nbrtype, newOverloadMethod("_neg", minusName, (INode *)unarysig, (INode *)newIntrinsicNode(NegIntrinsic)));
         iNsTypeAddFn((INsTypeNode*)nbrtype, newFnDclNode(incrName, FlagMethFld | FlagPub,(INode *)mutrefsig, (INode *)newIntrinsicNode(IncrIntrinsic)));
         iNsTypeAddFn((INsTypeNode*)nbrtype, newFnDclNode(decrName, FlagMethFld | FlagPub,(INode *)mutrefsig, (INode *)newIntrinsicNode(DecrIntrinsic)));
@@ -76,7 +80,9 @@ NbrNode *newNbrTypeNode(char *name, uint16_t typ, char bits) {
     }
 
     // Bitwise operators (integer only)
-    if (typ != FloatNbrTag) {
+    if (ischar) {
+    }
+    else if (typ != FloatNbrTag) {
         opsym = nametblFind("~", 1);
         iNsTypeAddFn((INsTypeNode*)nbrtype, newFnDclNode(opsym, FlagMethFld | FlagPub,(INode *)unarysig, (INode *)newIntrinsicNode(NotIntrinsic)));
         iNsTypeAddFn((INsTypeNode*)nbrtype, newFnDclNode(andName, FlagMethFld | FlagPub,(INode *)binsig, (INode *)newIntrinsicNode(AndIntrinsic)));
@@ -101,7 +107,8 @@ NbrNode *newNbrTypeNode(char *name, uint16_t typ, char bits) {
     FnSigNode *istruesig = newFnSigNode();
     istruesig->rettype = (INode*)boolType;
     nodesAdd(&istruesig->parms, (INode *)newVarDclFull(parm1, VarDclTag, (INode*)nbrtypenode, newPermUseNode(immPerm), NULL));
-    iNsTypeAddFn((INsTypeNode*)nbrtype, newFnDclNode(istrueName, FlagMethFld | FlagPub,(INode *)istruesig, (INode *)newIntrinsicNode(IsTrueIntrinsic)));
+    if (!ischar)
+        iNsTypeAddFn((INsTypeNode*)nbrtype, newFnDclNode(istrueName, FlagMethFld | FlagPub,(INode *)istruesig, (INode *)newIntrinsicNode(IsTrueIntrinsic)));
 
     // Create function signature for comparison methods for this type
     FnSigNode *cmpsig = newFnSigNode();
@@ -327,7 +334,7 @@ static void nbrBitMethods(NbrNode *nbrtype) {
 // check (fnCallHashNumber), so the method has no body of its own. Floats have
 // none: NaN is not equal to itself and -0 is equal to 0.
 void nbrAddHashMethods(StructNode *hasher) {
-    NbrNode *types[] = {boolType, u8Type, u16Type, u32Type, u64Type, usizeType,
+    NbrNode *types[] = {boolType, charType, u8Type, u16Type, u32Type, u64Type, usizeType,
         i8Type, i16Type, i32Type, i64Type, isizeType};
     Name *self = nametblFind("self", 4);
     Name *hname = nametblFind("h", 1);
@@ -352,6 +359,7 @@ void nbrAddHashMethods(StructNode *hasher) {
 // Declare built-in number types and their names
 void stdNbrInit(int ptrsize) {
     boolType = newNbrTypeNode("bool", UintNbrTag, 1);
+    charType = newNbrTypeNode("char", UintNbrTag, 32);
     u8Type = newNbrTypeNode("u8", UintNbrTag, 8);
     u16Type = newNbrTypeNode("u16", UintNbrTag, 16);
     u32Type = newNbrTypeNode("u32", UintNbrTag, 32);

@@ -1,0 +1,92 @@
+// A String's code points: 'chars', 'charIndices' and 'charCount' are str's, and
+// a String reaches them through the fold of its lent '&str' (core's
+// packages/core/tests/chars.cone shows them on a '&str' itself, in every case).
+// Every expected value is worked out by hand:
+// - "aé€😀" is a (U+0061 = 97), é (U+00E9 = 233: C3 A9), € (U+20AC = 8364:
+//   E2 82 AC) and 😀 (U+1F600 = 128512: F0 9F 98 80): 10 bytes, 4 code points
+//   beginning at bytes 0, 1, 3 and 6; their values total 137206, their byte
+//   positions 10;
+// - a String built a byte at a time keeps what it is given: 'a', a lone
+//   continuation byte (0x80) and 'z' are 3 bytes and 3 code points, the
+//   middle one U+FFFD (65533), and after growing the String past its first
+//   block the code points are still what they were.
+
+mod chars;
+
+import testing use *;
+import collections use *;
+
+fn main() i32 {
+  imm s = String.from("aé€\U0001F600");
+  expectUInt(u64.from(s.len()), 10, "bytes");
+  expectUInt(u64.from(s.charCount()), 4, "code points");
+
+  mut total = 0u64;
+  mut seen = 0u64;
+  mut cs = s.chars();
+  while true {
+    match cs.next() {
+      case imm c Some {
+        total = total + u64.from(c.value);
+        seen = seen + 1u64;
+      }
+      case is None {break;}
+    }
+  }
+  expectUInt(seen, 4, "chars given");
+  expectUInt(total, 137206, "their values");
+
+  // With the byte each starts at
+  mut offsets = 0u64;
+  mut last = 0u64;
+  mut cis = s.charIndices();
+  while true {
+    match cis.next() {
+      case imm c Some {
+        offsets = offsets + u64.from(c.value.offset);
+        last = u64.from(c.value.ch);
+        expectBool(s.isCharBoundary(c.value.offset), true, "an offset it gives is a boundary");
+      }
+      case is None {break;}
+    }
+  }
+  expectUInt(offsets, 10, "their offsets");
+  expectUInt(last, 128512, "the last of them");
+
+  // Nothing: no code points, and a cursor that gives None at once
+  imm none = String.empty();
+  expectUInt(u64.from(none.charCount()), 0, "an empty String's code points");
+  mut nc = none.chars();
+  match nc.next() {
+    case is Some[char] {expect(false, "an empty String gives no char");}
+    case is None[char] {expect(true, "an empty String gives no char");}
+  }
+
+  // A byte that is no UTF-8 reads as U+FFFD, and is one code point
+  mut raw = String.from("a");
+  raw.appendByte(0x80u8);
+  raw.appendByte('z');
+  expectUInt(u64.from(raw.len()), 3, "raw bytes");
+  expectUInt(u64.from(raw.charCount()), 3, "raw code points");
+  mut rc = raw.chars();
+  mut codes = 0u64;
+  while true {
+    match rc.next() {
+      case imm c Some {codes = codes * 1000000u64 + u64.from(c.value);}
+      case is None {break;}
+    }
+  }
+  expectUInt(codes, 97u64 * 1000000000000u64 + 65533u64 * 1000000u64 + 122u64, "raw code points' values");
+
+  // A String grown past its first block (one two-byte character, then forty
+  // bytes of 'x': 42 bytes, 41 code points)
+  mut grown = String.from("é");
+  mut i = 0usize;
+  while i < 40usize {
+    grown.appendByte('x');
+    i = i + 1usize;
+  }
+  expectUInt(u64.from(grown.len()), 42, "grown bytes");
+  expectUInt(u64.from(grown.charCount()), 41, "grown code points");
+  return done();
+}

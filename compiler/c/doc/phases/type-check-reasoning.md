@@ -29,11 +29,12 @@ rather than describe.**
    is what makes unranked overload filtering possible at all.
 3. **Coercion does not report a type mismatch.** `iexpCoerce` returns 0 and the
    caller writes the diagnostic, which is why the same mismatch reads
-   differently at an argument, an assignment and a return. It does report four
+   differently at an argument, an assignment and a return. It does report five
    other things itself: an operand that is not an expression node at all,
    whatever `fnCallLowerMethod` reports on the `ConvByMeth` path, a `null`
-   wanted as anything but a raw pointer (`litAdoptNullType`), and a `bool`
-   wanted as a number (`ErrorBoolNotNbr`). For the last two it answers 1, so
+   wanted as anything but a raw pointer (`litAdoptNullType`), a `bool`
+   wanted as a number (`ErrorBoolNotNbr`), and a `char` wanted as a number or a
+   number as a `char` (`ErrorCharNotNbr`). For the last three it answers 1, so
    the caller says nothing more.
 4. **Overload selection filters, it does not rank.** Exactly one viable
    candidate is a match; two are an ambiguity. There is no best-match score and
@@ -145,6 +146,22 @@ for anything else.
    method, given a `bool` where a candidate declares a number, says the same in
    place of its no-candidate message (`fnCallBoolOperandWantsNumber`, asking
    `iNsTypeNumberParm`).
+   `char` is the same kind of number type: a 32-bit unsigned by tag that
+   `nbrMatches` leaves out on both sides (`nbrFindSuper` too), so it widens to
+   no number and no number narrows or widens to it, and `iexpCoerce` reports
+   either direction itself (`iexpCharNumberMismatch`, `ErrorCharNotNbr` naming
+   `T.from(c)` or `char.from(n)`), as an operator's no-candidate message does.
+   Its one implicit crossing is a literal's. A character literal as written
+   (a `ULitNode` marked `FlagCharLit`, which `litTypeCheck` and `iexpCoerce`
+   look for, and `iexpMatches` answers `ConvSubtype` for) takes the type `u8`
+   where a `u8` is wanted, if its value is below 128 (`litAdoptCharAsByte`); as
+   a binary operator's receiver beside a `u8` argument it takes it too
+   (`litAdoptCharBesideByte`, in `fnCallLowerMethod`, since an operator's
+   receiver is never wanted as anything). A literal of 128 or more wanted as a
+   `u8` is `ErrorCharNotNbr` in its own words. The mark is the literal's alone:
+   a named constant holding one, or a char any other way made, is a `char`. An
+   unsuffixed integer literal is no `char` either (`litAdoptNumberType` leaves
+   it, as it leaves `bool`).
 2. **Target is `bool`**: look for an `isTrue` method on the source type.
    This branch returns in both arms, so a `bool` target never reaches the two
    fallbacks below.

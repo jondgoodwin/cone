@@ -29,6 +29,7 @@ PermNode *mut1Perm;
 PermNode *opaqPerm;
 PermNode *newPerm;
 NbrNode *boolType;
+NbrNode *charType;
 NbrNode *i8Type;
 NbrNode *i16Type;
 NbrNode *i32Type;
