@@ -17,6 +17,7 @@
 // emissive color) is multiplied by; group 1 is the material's.
 
 import renderframe;
+import skinning;
 
 struct MaterialParams {
     float4 baseColor;              // 0: rgba, linear
@@ -50,6 +51,23 @@ VertexOutput vertexMain(VertexInput input, uint id : SV_VulkanInstanceID) {
     output.position = mul(frame.viewProjection, world);
     output.world = world.xyz;
     output.normal = worldNormal(inst.model, input.normal);
+    output.uv = input.uv;
+    output.tint = inst.tint;
+    return output;
+}
+
+// The same for a skinned mesh (skinning.slang): its position and normal
+// carried by the vertex's blended bones first, then placed by the copy's
+// model matrix
+[shader("vertex")]
+VertexOutput vertexSkinned(SkinnedVertexInput input, uint id : SV_VulkanInstanceID) {
+    VertexOutput output;
+    Instance inst = instances[id];
+    BoneXform skin = vertexSkin(id, input.joints, input.weights);
+    float4 world = mul(inst.model, float4(skinPoint(skin, input.position), 1.0));
+    output.position = mul(frame.viewProjection, world);
+    output.world = world.xyz;
+    output.normal = worldNormal(inst.model, skinVector(skin, input.normal));
     output.uv = input.uv;
     output.tint = inst.tint;
     return output;

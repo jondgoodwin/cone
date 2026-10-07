@@ -1,0 +1,159 @@
+// The sun's place, Preetham's numbers and the day's light.
+//
+// The figures marked "by hand" were worked out apart from the package, in
+// Python, from the formulas of Preetham, Shirley and Smits (1999) as printed
+// on pages 98 and 99 of the paper.
+
+mod daysky;
+
+import testing use *;
+import collections use List;
+import geomath use *;
+import analyticdaylight use *;
+
+fn near(got f32, want f32, within f32, label &[]u8) bool {
+  expectFloat(f64.from(got), f64.from(want), f64.from(within), label);
+}
+
+fn deg(r f32) f32 { r * (180. / pi); }
+
+// The sun's height and its compass bearing (degrees from north, east positive)
+fn heightDeg(d Vec3) f32 { deg(asin(d.y)); }
+fn bearingDeg(d Vec3) f32 { deg(atan2(d.x, 0. - d.z)); }
+
+fn testSun() {
+  imm cfg = DayConfig.standard();
+  imm decl = solarDeclination(cfg.dayOfYear);
+  near(deg(decl), 19.826, 0.01, "declination on day 140 is 19.83 degrees (by hand)");
+  imm noon = sunDirectionAt(cfg.latitude, decl, 12.);
+  near(heightDeg(noon), 64.826, 0.01, "noon height at 45 N on day 140 is 90 - 45 + 19.83");
+  near(noon.x, 0., 0.0001, "noon: due south, no east or west");
+  expectBool(noon.z > 0., true, "noon: south is +z");
+  // Sunrise and sunset by the sun's centre on the horizon, 0.84 degrees
+  // below it at 4:30 and 19:30 (the clock's dawn and dusk)
+  imm rise = sunDirectionAt(cfg.latitude, decl, 4.5);
+  imm set = sunDirectionAt(cfg.latitude, decl, 19.5);
+  near(heightDeg(rise), -0.844, 0.01, "4:30: the sun is at the horizon (-0.84 degrees, by hand)");
+  near(heightDeg(set), -0.844, 0.01, "19:30: the same");
+  // The bearing of sunrise from north at the horizon is acos(sin d / cos l) = 61.34
+  // acos(sin d / cos l) = 61.34 at el 0; the centre is 0.84 degrees below, so
+  // 60.37 (by hand: azimuth from the hour angle)
+  near(bearingDeg(rise), 60.37, 0.1, "sunrise bearing 60 degrees from north: east-north-east");
+  near(bearingDeg(set), -60.37, 0.1, "sunset: west-north-west");
+  expectBool(rise.x > 0. and rise.z < 0., true, "the sun rises in the east, and in the north of it");
+  expectBool(set.x < 0., true, "sets in the west");
+  // The sun's height at midnight: -(90 - 45 - 19.83) = -25.17
+  near(heightDeg(sunDirectionAt(cfg.latitude, decl, 0.)), -25.174, 0.01, "midnight: 25 degrees below the horizon");
+  // The sun moves east to west through the morning and the afternoon
+  expectBool(sunDirectionAt(cfg.latitude, decl, 9.).x > 0., true, "9:00 east of south");
+  expectBool(sunDirectionAt(cfg.latitude, decl, 15.).x < 0., true, "15:00 west of south");
+  // Night is 9 hours of the 24 minutes' 24: sun below -0.84 from 19.5 to 4.5
+  mut nightHours = 0.;
+  mut h = 0.;
+  while h < 24. {
+    if heightDeg(sunDirectionAt(cfg.latitude, decl, h + 0.005)) < -0.844 { nightHours = nightHours + 0.01; }
+    h = h + 0.01;
+  }
+  near(nightHours, 9., 0.05, "the sun is below the horizon 9 hours of 24");
+}
+
+fn testMoon() {
+  imm cfg = DayConfig.standard();
+  imm decl = solarDeclination(cfg.dayOfYear);
+  mut up = true;
+  mut h = 19.5;
+  while h < 28.4 {
+    imm sun = sunDirectionAt(cfg.latitude, decl, h);
+    imm moon = moonDirectionFor(sun);
+    if moon.y <= 0. and sun.y < -0.0147 { up = false; }
+    imm hh = if h < 24. { h; } else { h - 24.; };
+    if hh < 4.4 or hh > 19.6 { if moon.y < 0. { up = false; } }
+    h = h + 0.05;
+  }
+  expectBool(up, true, "the moon is up for the whole night, 19:30 to 4:30");
+  imm noonMoon = moonDirectionFor(sunDirectionAt(cfg.latitude, decl, 12.));
+  expectBool(noonMoon.y < 0., true, "and below the horizon at noon");
+  near(noonMoon.length(), 1., 0.0001, "unit length");
+  imm sunM = sunDirectionAt(cfg.latitude, decl, 0.);
+  near(moonDirectionFor(sunM).y, 0. - sunM.y, 0.0001, "as high as the sun is low");
+}
+
+fn testPreetham() {
+  // Coefficients at turbidity 2 (by hand: 0.1787 * 2 - 1.4630 and so on)
+  imm py = perezY(2.);
+  near(py.a, -1.1056, 0.0001, "Y: A at T = 2");
+  near(py.b, -0.2833, 0.0001, "Y: B at T = 2");
+  near(py.c, 5.2797, 0.0001, "Y: C at T = 2");
+  near(py.d, -2.3359, 0.0001, "Y: D at T = 2");
+  near(py.e, 0.2363, 0.0001, "Y: E at T = 2");
+  // Zenith luminance, nits, by hand from Yz = (4.0453 T - 4.9710) tan chi - 0.2155 T + 2.4192
+  near(zenithLuminance(2.5, 0.5), 8457.23, 1., "zenith luminance, T 2.5, sun 0.5 rad from the zenith");
+  near(zenithLuminance(2., pi / 4.), 4469.64, 1., "T 2, sun 45 degrees from the zenith");
+  near(zenithLuminance(6., 0.3), 31352.49, 3., "T 6, sun 0.3 rad from the zenith");
+  near(zenithChromaX(2.5, 0.5), 0.25343, 0.00002, "zenith x chromaticity (by hand)");
+  near(zenithChromaY(2.5, 0.5), 0.25923, 0.00002, "zenith y chromaticity (by hand)");
+  near(zenithChromaX(2., pi / 4.), 0.24119, 0.00002, "x at T 2, 45 degrees");
+  near(zenithChromaY(2., pi / 4.), 0.24409, 0.00002, "y at T 2, 45 degrees");
+  // The sky in the zenith direction is the zenith luminance, and bluish
+  imm sun = sunDirectionAt(DayConfig.standard().latitude, solarDeclination(140.), 12.);
+  imm sky = PreethamSky.make(2.5, sun);
+  imm up = sky.radiance(new Vec3(0., 1., 0.), sun);
+  near(lumaOf(up), sky.zenithY, sky.zenithY * 0.01, "looking straight up it is the zenith luminance");
+  expectBool(up.z > up.x, true, "and blue");
+  // Brighter toward the sun and toward the horizon than at the zenith's side
+  imm nearSun = sky.radiance((sun + new Vec3(0., 0.05, 0.)).normalize(), sun);
+  expectBool(lumaOf(nearSun) > lumaOf(up) * 1.5, true, "near the sun it is brighter than the zenith");
+}
+
+fn testLight() {
+  imm cfg = DayConfig.standard();
+  imm noon = DaySky.at(&cfg, 12.);
+  imm lit = noon.lighting();
+  imm lux = lumaOf(lit.sunColor);
+  near(lux, 105000., 12000., "noon sun: about 100 000 lux");
+  expectBool(lit.sunColor.x > lit.sunColor.z, true, "a little warm: red over blue");
+  near(lumaOf(lit.moonColor), 0., 0.0001, "no moonlight at noon");
+  expectBool(lit.lightDir.y > 0.9, true, "the light at noon is the sun, high");
+  imm amb = lumaOf(lit.ambient);
+  expectBool(amb > 3000. and amb < 14000., true, "noon ambient radiance is a few thousand nits");
+  // The sky at noon: blue at the zenith, brighter and paler at the horizon
+  imm zen = noon.radiance(new Vec3(0., 1., 0.));
+  expectBool(zen.z > zen.x * 1.2, true, "noon zenith is blue");
+  // Night
+  imm night = DaySky.at(&cfg, 0.);
+  imm nl = night.lighting();
+  near(lumaOf(nl.sunColor), 0., 0.0001, "midnight: no sunlight");
+  expectBool(nl.sunColor.x == 0., true, "none at all");
+  expectBool(lumaOf(nl.moonColor) > 0.05 and lumaOf(nl.moonColor) < 0.3, true, "moonlight is a fraction of a lux");
+  expectBool(nl.lightDir.y > 0.3, true, "the moon is the light and is up");
+  expectBool(lumaOf(nl.ambient) > 0.005, true, "the night's ambient is not black");
+  expectBool(night.night > 0.99 and noon.night < 0.01, true, "stars' share: 1 at night, 0 at noon");
+  // The sky's brightness falls steadily through dusk and has no jump at the
+  // patch's seams: tenth-hour steps through the evening, each between 0.5
+  // and 1 of the last (it falls, never jumps up or drops by more than half)
+  mut prev = lumaOf(DaySky.at(&cfg, 17.).radiance(new Vec3(0., 0.5, 0.866)));
+  mut h = 17.1;
+  mut ok = true;
+  mut worst = 1.;
+  while h < 21. {
+    imm cur = lumaOf(DaySky.at(&cfg, h).radiance(new Vec3(0., 0.5, 0.866)));
+    imm r = cur / prev;
+    if r < worst { worst = r; }
+    if r > 1.0 or r < 0.5 { ok = false; }
+    prev = cur;
+    h = h + 0.1;
+  }
+  expectBool(ok, true, "the evening sky only falls, and by no more than half in 0.1 h");
+  // Packed for the shader: 32 floats
+  mut out = List[f32].empty();
+  noon.pack(&mut out);
+  expectInt(i64.from(out.len()), 32i64, "the packed sky is eight float4s");
+}
+
+fn main() i32 {
+  testSun();
+  testMoon();
+  testPreetham();
+  testLight();
+  done();
+}

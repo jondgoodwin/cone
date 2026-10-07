@@ -1,0 +1,289 @@
+// A day's sky and the light it gives: Preetham's clear sky (preetham.cone)
+// down to the sun's 6th degree above the horizon, a twilight patch from
+// there into the night, the sun's and the moon's light and the sky's ambient.
+//
+// Marks as in sunmoon.cone: (S) from a source read, (own) this package's
+// choice, tuned by eye against how a dusk looks (no measurement was made).
+//
+// UNITS. Radiance in nits (cd/m2), irradiance in lux, linear RGB. The same
+// sky is in 'analyticdaylight.slang' for a shader; 'pack' writes the numbers
+// it reads, and the two are written to the same formulas.
+
+// The place and the day, and the sky's character: what DaySky.at needs besides the hour
+pub struct DayConfig {
+  pub latitude f32;        // radians, north positive
+  pub dayOfYear f32;       // 1 to 365
+  pub turbidity f32;       // Preetham's T; 2 to 6 is the fitted range
+  pub moonLit f32;         // the share of the moon's disc lit, 0 (new) to 1 (full)
+  pub moonLux f32;         // the full moon's irradiance, lux
+
+  // 45 degrees north on day 140 (20 May, which puts sunrise at 4:30 and
+  // sunset at 19:30 by the sun's centre at the horizon), turbidity 2.5
+  // (clean sea air; Preetham's fits are at 2 to 6), a waxing gibbous moon 85
+  // per cent lit, and a full moon's 0.25 lux (own; 0.1 to 0.3 lux is what
+  // measurements of the full moon give, from memory)
+  pub fn standard() DayConfig {
+    new DayConfig(45. * (pi / 180.), 140., 2.5, 0.85, 0.25);
+  }
+}
+
+// What a scene needs to light the ground: one directional light (the sun by
+// day, the moon at night) and the ambient radiance
+pub struct DayLighting {
+  pub lightDir Vec3;       // towards the light
+  pub lightColor Vec3;     // its irradiance, lux
+  pub sunColor Vec3;       // the sun's irradiance alone, lux
+  pub moonColor Vec3;      // the moon's alone, lux
+  pub ambient Vec3;        // radiance, nits
+}
+
+// Whether the hour's sun is up, and where it and the moon are, with what
+// the sky and the light are from it
+pub struct DaySky {
+  pub hour f32;
+  pub sunDir Vec3;
+  pub moonDir Vec3;
+  pub sunElevation f32;    // radians
+  pub preetham PreethamSky;
+  pub turbidity f32;
+  pub moonLit f32;
+  pub moonLux f32;
+  pub twilightMix f32;     // 0 all Preetham, 1 all twilight patch
+  pub twilightScale f32;   // nits: the twilight patch's unit, the zenith's luminance
+  pub glowWeight f32;      // how much of the sun's glow is left
+  pub venusWeight f32;     // the pink band opposite the sun
+  pub night f32;           // 0 day to 1 deep night: the stars' share
+  pub starAxis Vec3;       // the celestial pole's direction
+  pub starAngle f32;       // the sky's turn since the hour 0, radians
+  pub latitude f32;
+
+  // The sky at solar hour 'hour' under 'config'
+  pub fn at(config &DayConfig, hour f32) DaySky {
+    imm decl = solarDeclination(config.dayOfYear);
+    imm sun = sunDirectionAt(config.latitude, decl, hour);
+    imm moon = moonDirectionFor(sun);
+    imm e = elevationOf(sun);
+    imm eDeg = e * (180. / pi);
+    imm pre = PreethamSky.make(config.turbidity, sun);
+    // The twilight patch's unit: Preetham's zenith luminance at the sun's
+    // last good height, then falling as exp(0.65 per degree) once the sun is
+    // below 1 degree: about 1150 nits at the horizon, 23 at -6, 2.4 at -9.5,
+    // 0.5 at -12 and 0.01 at -18 (own, tuned so the sky stays about as bright
+    // as a mid-grey the scripted exposure (an EV falling from 12 to -1 over
+    // the same 18 degrees) would show; real twilight falls about a hundredfold
+    // in 6 degrees, 0.77 per degree)
+    imm below = if eDeg < 1. { eDeg - 1.; } else { 0.; };
+    imm scale = pre.zenithY * libc.expf(0.65 * below);
+    new DaySky(hour, sun, moon, e, pre, config.turbidity, config.moonLit, config.moonLux,
+      smoothstepf(6., 1., eDeg), scale, libc.expf(0. - maxf(0., 0. - eDeg) / 7.),
+      smoothstepf(0.5, -3., eDeg) * (1. - smoothstepf(-3., -10., eDeg)),
+      smoothstepf(-4., -14., eDeg),
+      new Vec3(0., sin(config.latitude), 0. - cos(config.latitude)), hour * (pi / 12.), config.latitude);
+  }
+
+  // The sky's radiance in direction 'dir' (unit length): Preetham's and the
+  // twilight patch's blend, and the night's floor, nits, linear RGB. No
+  // stars, sun or moon in it: they are drawn over it.
+  pub fn radiance(self &, dir Vec3) Vec3 {
+    mut c = new Vec3(0., 0., 0.);
+    if twilightMix < 1. { c = preetham.radiance(dir, sunDir) * (1. - twilightMix); }
+    if twilightMix > 0. { c = c + self.twilight(dir) * twilightMix; }
+    c + nightSky();
+  }
+
+  // The twilight patch alone, in direction 'dir': a vertical gradient from
+  // a pale horizon to a deep blue zenith, the orange glow round the sun's
+  // azimuth, the pink band opposite once the sun is below the horizon; all
+  // times the patch's unit (own: the palette is by eye)
+  pub fn twilight(self &, dir Vec3) Vec3 {
+    imm h = clampf(dir.y, 0., 1.);
+    imm hl = (dir.x * dir.x + dir.z * dir.z).sqrt();
+    imm sl = (sunDir.x * sunDir.x + sunDir.z * sunDir.z).sqrt();
+    mut az = 0.;
+    if hl > 0.0001 and sl > 0.0001 { az = (dir.x * sunDir.x + dir.z * sunDir.z) / (hl * sl); }
+    imm side = pow3(maxf(az, 0.));
+    imm base = twZenith() + (twHorizon() - twZenith()) * libc.expf(-5. * h);
+    imm glow = twGlow() * (side * libc.expf(-7. * h) * glowWeight);
+    imm elDeg = asin(h) * (180. / pi);
+    imm band = libc.expf(0. - ((elDeg - 8.) / 5.) * ((elDeg - 8.) / 5.)) * (1. - side) * venusWeight * 0.5;
+    (base + glow + twVenus() * band) * twilightScale;
+  }
+
+  // The sun's irradiance on a surface facing it, lux, through the air it
+  // crosses: Preetham's appendix A.1 (S, read, page 98): relative optical
+  // mass m = 1 / (cos thetaS + 0.15 (93.885 - thetaS degrees)^-1.253),
+  // Rayleigh transmittance exp(-0.008735 lambda^-4.08 m), Angstrom's
+  // aerosol exp(-beta lambda^-alpha m) with beta = 0.04608 T - 0.04586 and
+  // alpha = 1.3, and ozone exp(-k l m) with l = 0.0035 m and k from the
+  // paper's table 2 (6.7, 8.5 and 0.3 per m at 650, 550 and 450 nm), at
+  // three wavelengths standing for red, green and blue (own: the mixed gases
+  // and water vapour terms are left out). The top of the atmosphere is
+  // 128 000 lux white (own: 1361 W/m2 at about 94 lm/W, both from memory).
+  // The sun's last degree is faded out (own), so the light goes with it.
+  pub fn sunIrradiance(self &) Vec3 {
+    imm vis = smoothstepf(-1., 1., sunElevation * (180. / pi));
+    if vis <= 0. { return new Vec3(0., 0., 0.); }
+    imm m = airMass(sunDir.y);
+    imm t = transmittance(turbidity, m, 1.);
+    new Vec3(SUN_TOP * t.x * vis, SUN_TOP * t.y * vis, SUN_TOP * t.z * vis);
+  }
+
+  // The light a high cloud takes from the sun, lux: the sun's colour through
+  // about 0.4 of the air the ground sees it through (a cloud is above the
+  // low air, which is most of it), held until the sun is 6 degrees below
+  // the horizon, so the clouds go red and then dark after the ground does
+  // (own, by eye)
+  pub fn cloudIrradiance(self &) Vec3 {
+    imm eDeg = sunElevation * (180. / pi);
+    imm vis = smoothstepf(-6., -0.5, eDeg);
+    if vis <= 0. { return new Vec3(0., 0., 0.); }
+    imm held = if eDeg < 0.5 { 0.5 * (pi / 180.); } else { sunElevation; };
+    imm m = airMass(sin(held));
+    imm t = transmittance(turbidity, m, 0.4);
+    new Vec3(SUN_TOP * t.x * vis, SUN_TOP * t.y * vis, SUN_TOP * t.z * vis);
+  }
+
+  // The moon's irradiance, lux: the full moon's, as the lit share squared
+  // (a half moon gives far less than half the light), cool in colour, and
+  // coming in as the sun goes below 2 degrees and full by -7 (own)
+  pub fn moonIrradiance(self &) Vec3 {
+    imm w = smoothstepf(-2., -7., sunElevation * (180. / pi));
+    imm lux = moonLux * moonLit * moonLit * w;
+    new Vec3(lux * moonColor().x, lux * moonColor().y, lux * moonColor().z);
+  }
+
+  // The ambient radiance, nits: the sky's radiance averaged over the
+  // hemisphere with a cosine weight (nine directions: the zenith, four at 45
+  // degrees and four at 75, round the sun's azimuth, weighted 0.25, 0.125
+  // and 0.0625 each, the shares of cos * sin theta in the rings 0 to 30, 30
+  // to 60 and 60 to 90 degrees), plus a little of the light the ground
+  // throws back (own: 6 per cent of the sun's horizontal irradiance over
+  // pi, warm) and a night floor so the dark is never black (own)
+  pub fn ambient(self &) Vec3 {
+    imm sl = (sunDir.x * sunDir.x + sunDir.z * sunDir.z).sqrt();
+    imm ax = if sl > 0.0001 { sunDir.x / sl; } else { 0.; };
+    imm az = if sl > 0.0001 { sunDir.z / sl; } else { 1.; };
+    mut sum = self.radiance(new Vec3(0., 1., 0.)) * 0.25;
+    mut k = 0;
+    while k < 4 {
+      // Round the compass from the sun's azimuth, a quarter turn at a time
+      imm a = f32.from(k) * (pi / 2.);
+      imm cx = ax * cos(a) - az * sin(a);
+      imm cz = ax * sin(a) + az * cos(a);
+      imm c45 = (0.5).sqrt();
+      sum = sum + self.radiance(new Vec3(cx * c45, c45, cz * c45)) * 0.125;
+      imm s75 = sin(75. * (pi / 180.));
+      imm c75 = cos(75. * (pi / 180.));
+      sum = sum + self.radiance(new Vec3(cx * s75, c75, cz * s75)) * 0.0625;
+      k = k + 1;
+    }
+    imm sun = self.sunIrradiance();
+    imm horizontal = lumaOf(sun) * maxf(sunDir.y, 0.);
+    imm bounce = horizontal * 0.06 / pi;
+    new Vec3(sum.x + bounce * 1.0 + nightAmbient().x, sum.y + bounce * 0.85 + nightAmbient().y,
+      sum.z + bounce * 0.65 + nightAmbient().z);
+  }
+
+  // The scene's light: the sun while its light is the greater, else the moon
+  pub fn lighting(self &) DayLighting {
+    imm sun = self.sunIrradiance();
+    imm moon = self.moonIrradiance();
+    imm bySun = lumaOf(sun) >= lumaOf(moon);
+    new DayLighting(if bySun { sunDir; } else { moonDir; }, if bySun { sun; } else { moon; }, sun, moon, self.ambient());
+  }
+
+  // The numbers 'analyticdaylight.slang''s DaySkyParams reads, appended to
+  // 'out' (32 floats: eight float4s, in this order): the sun's direction and
+  // height; the moon's direction and lit share; the zenith's luminance and
+  // chromaticity and the turbidity; the twilight mix, unit, glow and band;
+  // the sun disc's radiance and radius; the night floor and the stars' share;
+  // the celestial pole and the sky's turn; the moon disc's radiance and radius
+  pub fn pack(self &, out &mut List[f32]) {
+    imm sun = self.sunIrradiance();
+    // The sun's disc: its irradiance times 30, nits (own: the real disc is
+    // thirty million times its irradiance in nits (the sun's solid angle is
+    // 6.8e-5 sr) and would overflow a half-float frame at any exposure that
+    // shows the sky; times 30 it is still far past white at the day's
+    // exposure, and at a sunset's, where the light is red and a thousand
+    // times weaker, shows a reddish disc; it is also drawn about twice the
+    // real width, below)
+    out.push(sunDir.x); out.push(sunDir.y); out.push(sunDir.z); out.push(sunElevation);
+    out.push(moonDir.x); out.push(moonDir.y); out.push(moonDir.z); out.push(moonLit);
+    out.push(preetham.zenithY); out.push(preetham.zenithX); out.push(preetham.zenithYc); out.push(turbidity);
+    out.push(twilightMix); out.push(twilightScale); out.push(glowWeight); out.push(venusWeight);
+    out.push(sun.x * 30.); out.push(sun.y * 30.); out.push(sun.z * 30.); out.push(SUN_RADIUS);
+    out.push(nightSky().x); out.push(nightSky().y); out.push(nightSky().z); out.push(night);
+    out.push(starAxis.x); out.push(starAxis.y); out.push(starAxis.z); out.push(starAngle);
+    out.push(MOON_RADIANCE * moonColor().x); out.push(MOON_RADIANCE * moonColor().y);
+    out.push(MOON_RADIANCE * moonColor().z); out.push(MOON_RADIUS);
+  }
+}
+
+// ---- the numbers (own, by eye, unless marked) ----
+
+// The sun's irradiance above the atmosphere, lux
+const SUN_TOP = 128000.;
+// The sun disc's angular radius as drawn, radians (the real one is 0.0047)
+pub const SUN_RADIUS = 0.011;
+// The moon's disc: radius as drawn (the real one is 0.0045), radiance of its
+// lit surface, nits (the full moon's is about 2500 to 6000; from memory)
+pub const MOON_RADIUS = 0.035;
+pub const MOON_RADIANCE = 2500.;
+fn moonColor() Vec3 { new Vec3(0.80, 0.92, 1.10); }
+// The sky's radiance with no sun or moon at all, nits: a deep blue
+fn nightSky() Vec3 { new Vec3(0.0035, 0.0065, 0.016); }
+// The ambient the night never goes below, nits
+fn nightAmbient() Vec3 { new Vec3(0.020, 0.032, 0.068); }
+// The twilight palette, each times the unit
+fn twZenith() Vec3 { new Vec3(0.40, 0.70, 1.60); }
+fn twHorizon() Vec3 { new Vec3(1.45, 0.95, 0.90); }
+fn twGlow() Vec3 { new Vec3(7.0, 2.0, 0.45); }
+fn twVenus() Vec3 { new Vec3(0.9, 0.55, 0.65); }
+
+fn maxf(a f32, b f32) f32 { if a > b { a; } else { b; }; }
+
+fn clampf(v f32, lo f32, hi f32) f32 {
+  if v < lo { return lo; }
+  if v > hi { return hi; }
+  v;
+}
+
+// 0 at 'a', 1 at 'b' (either way round), the cubic smoothstep between
+fn smoothstepf(a f32, b f32, x f32) f32 {
+  imm t = clampf((x - a) / (b - a), 0., 1.);
+  t * t * (3. - 2. * t);
+}
+
+fn pow3(x f32) f32 { x * x * x; }
+
+// The luminance of a linear colour (Rec. 709's weights)
+pub fn lumaOf(c Vec3) f32 { 0.2126 * c.x + 0.7152 * c.y + 0.0722 * c.z; }
+
+// Preetham's relative optical mass for the sun at sine-of-height 'sinEl'
+// (A.1 (S)): its angle from the zenith held at 90 degrees, where the formula
+// is 36.6
+pub fn airMass(sinEl f32) f32 {
+  imm cosT = clampUnit(sinEl);
+  imm thetaDeg = (acos(cosT)) * (180. / pi);
+  imm td = if thetaDeg > 90. { 90.; } else { thetaDeg; };
+  1. / (cosT_of(td) + 0.15 * libc.powf(93.885 - td, -1.253));
+}
+
+fn cosT_of(deg f32) f32 { cos(deg * (pi / 180.)); }
+
+// The transmittance of 'm' air masses at turbidity 't' for red, green and
+// blue (650, 550 and 450 nm), with the optical depths scaled by 'share'
+// (A.1 (S): Rayleigh, Angstrom's aerosol with alpha 1.3, and ozone)
+pub fn transmittance(t f32, m f32, share f32) Vec3 {
+  imm beta = 0.04608 * t - 0.04586;
+  new Vec3(libc.expf(0. - m * share * opticalDepth(0.65, beta, 6.7)),
+    libc.expf(0. - m * share * opticalDepth(0.55, beta, 8.5)),
+    libc.expf(0. - m * share * opticalDepth(0.45, beta, 0.3)));
+}
+
+// The optical depth of a vertical column at wavelength 'lambda' (micrometres):
+// 0.008735 lambda^-4.08 (Rayleigh) + beta lambda^-1.3 (aerosol) + k l (ozone,
+// l = 0.0035 m)
+fn opticalDepth(lambda f32, beta f32, ozoneK f32) f32 {
+  0.008735 * libc.powf(lambda, -4.08) + beta * libc.powf(lambda, -1.3) + ozoneK * 0.0035;
+}
