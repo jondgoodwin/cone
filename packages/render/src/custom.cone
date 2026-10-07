@@ -18,7 +18,7 @@
 //   binding 0          a uniform buffer of 'paramBytes' bytes, the
 //                      material's parameters ('addCustomMaterial',
 //                      'setCustomParams')
-//   bindings 1 to n    its textures, n of them, each of the sample type
+//   bindings 1 to n    its textures, n of them (perhaps none), each of the sample type
 //                      'textures' gives (TEXTURE_SAMPLE_TYPE_FLOAT for a
 //                      colour texture, _UNFILTERABLE_FLOAT for an r32float
 //                      field: 'addFieldTexture'), read in either stage
@@ -32,13 +32,25 @@ pub struct CustomPipeline {
   pub spirv &[]u32;                              // the SPIR-V module holding both stages
   pub vertexEntryPoint &[]u8 = "vertexMain";
   pub fragmentEntryPoint &[]u8 = "fragmentMain";
-  pub textures &[]u32;                           // each texture binding's TEXTURE_SAMPLE_TYPE_
+  pub textures &[]u32;                           // each texture binding's TEXTURE_SAMPLE_TYPE_ (none: 'noTextures()')
   pub streams u32 = 3u32;                        // the vertex streams it reads: 1 position, 2 and normal, 3 and uv
   pub paramBytes u64 = 16u64;                    // the parameters' bytes (a multiple of 16)
   pub environment bool = false;                  // bind the environment as group 2
   pub cullMode u32 = CULL_MODE_BACK;
   pub depthWrite bool = true;
+  // ALPHA_BLEND: see-through, drawn with the renderer's other see-through
+  // materials, after the opaque ones, back to front, blended with
+  // premultiplied alpha (src + (1 - src alpha) x dst; an alpha of 0 adds),
+  // depth tested but not written (whatever 'depthWrite' says). Otherwise
+  // opaque; a shader that cuts out (ALPHA_MASK) discards its own fragments.
+  pub alphaMode u32 = ALPHA_OPAQUE;
 }
+
+// No textures, for a CustomPipeline that binds none (its material's group
+// is then its parameters at binding 0 and the sampler at binding 1). A field
+// default cannot hold it: an empty slice has no constant spelling.
+imm NO_TEXTURES Array[u32, 1] = [0u32];
+pub fn noTextures() &[]u32 { &NO_TEXTURES[..0]; }
 
 // A custom pipeline in the renderer: its shader, layouts and pipeline
 pub struct PipelineSlot {
@@ -49,6 +61,7 @@ pub struct PipelineSlot {
   textureCount u32;
   paramBytes u64;
   environment bool;
+  blend bool = false;           // see-through (ALPHA_BLEND)
 }
 
 pub struct PipelineHandle {

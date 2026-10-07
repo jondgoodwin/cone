@@ -262,6 +262,30 @@ Visual Studio projects stay at the root.
   `patterns` example bakes and times all nine and writes each one's base
   colour, normal and 2 x 2 tiled maps as BMPs, and its test pins their
   hashes;
+  `weberpenn` is trees grown by Weber and Penn's parametric method
+  (SIGGRAPH 1995), over `mesh`, `geomath`, `collections` and `noise`:
+  `TreeParams` and a `LevelParams` a level (the paper's length, taper,
+  curve, split, down-angle and rotate dials, a custom crown-envelope
+  table), and two additions the paper lacks, a children-per-node count with
+  a twist (`perNode` 2, `nodeTwist` 90: a maple's opposite decussate pairs;
+  `perNode` 5 and up: a pine's whorls) and dog-leg `kink`s, `grow` giving a
+  `Tree` (stems with radii and frames, and leaf sites; deterministic from
+  the seed), `branchMesh` (the stems swept into tubes, uvs for a bark tile
+  wrapped a whole number of times round each stem), `foliageMesh` (maple
+  blades, needle sprays or pine plumes as plain double-sided geometry, no
+  alpha cut-out, normals leaning out of the crown) and `redMaple` and
+  `whitePine` starting params, the maple's fitted to a winter photograph;
+  its test checks determinism, the levels and counts, the opposite pairs and
+  whorls and the meshes;
+  `noiserock` is rock meshes over `mesh`, `geomath` and `noise`: `rockMesh`
+  cuts a noise-lumped sphere by random planes, flattens its foot onto y = 0
+  and box-projects uvs onto a tile, flat or smooth shaded, a pure function
+  of its params and seed;
+  `leafrosette` is low plants that grow as a ring of blades from one point,
+  over `mesh`, `geomath` and `noise`: `hostaMesh` (broad leaves in the
+  golden-angle spiral), `fernMesh` (arching fronds of leaflet pairs) and
+  `flowerClumpMesh` (stems and petal heads), each double-sided with uvs for
+  a few-texel painted strip;
   `vfx` is visual effects over `gpu`, `render`, `geomath` and `noise`,
   beginning with particles: `Emitter`, a stateless emitter (a particle a
   closed-form function of event seed, layer seed, spawn index and age: a
@@ -591,11 +615,17 @@ Visual Studio projects stay at the root.
   render pass (its depth kept for a later pass with `keepDepth`), its items
   gathered into batches of one material and one mesh, each one instanced
   draw whose copies' model matrices and tints are in a storage buffer of
-  instances (`renderframe.slang`'s `Instance`), custom pipelines
+  instances (`renderframe.slang`'s `Instance`), every material's alpha
+  mode, glTF's (`ALPHA_OPAQUE`, `ALPHA_MASK`: cut out below a cut-off,
+  `ALPHA_BLEND`: see-through, drawn after the opaque draws and the sky,
+  copy by copy back to front, still instanced where copies lie next to
+  each other in that order, premultiplied alpha, depth tested and not
+  written; its test `blend.cone`, both orders and a cut-out, checked
+  against blending worked out by hand), custom pipelines
   (`src/custom.cone`: a caller's own Slang over `renderframe.slang`, its
-  materials' parameters and textures, r32float fields from
-  `addFieldTexture`, drawn and instanced with the rest; its test
-  `custom.cone`), dynamic meshes rewritten in place each frame
+  materials' parameters and textures (none: `noTextures()`), r32float
+  fields from `addFieldTexture`, opaque or see-through, drawn and
+  instanced with the rest; its test `custom.cone`), dynamic meshes rewritten in place each frame
   (`addDynamicMesh`, `writeDynamicMesh`), skinned meshes (`src/skin.cone`,
   `src/skinning.slang`: a `Skin` of four joints and weights a vertex,
   `addSkinnedMesh`, drawn by `DrawList.addSkinned` with a skinning matrix

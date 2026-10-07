@@ -1,0 +1,384 @@
+// render's alpha modes, drawn on a real GPU with no window into a 64 x 64
+// rgba8unorm texture (a channel v stored as v x 255, rounded) and read
+// back, against values worked out by hand. Only a failure prints.
+//
+// The camera is offscreen.cone's: at (0, 0, 3) looking at the origin, a 50
+// degree field of view (t = tan 25deg = 0.4663077), so a pixel (px, py) sees
+// x = ((px + 0.5) / 32 - 1) D t on a plane facing it D away. The light is
+// ambient alone, radiance 1 (the directional light black), so a lit surface
+// is its base colour exactly. Every quad is mesh's plane turned to face +z;
+// behind them all, an opaque quad at z = 0 filling the target, its colour
+// (0.2, 0.4, 0.6), stored (51, 102, 153).
+//
+// See-through is premultiplied alpha: the target becomes src + (1 - a) x
+// dst, where src is the diffuse light times a, plus any highlight and glow.
+//
+// 1. Two see-through quads in front of the opaque one, overlapping in the
+//    middle: A, red (1, 0, 0) at alpha 0.5, 0.5 a side across, at x = -0.3,
+//    z = 0.5 (2.5 from the camera); B, blue (0, 0, 1) at alpha 0.25, at x =
+//    +0.3, z = 1 (2 away). Back to front, A then B:
+//    - A alone, pixel (15, 32) (x = -0.60 on A's plane, -0.48 on B's, which
+//      it misses): 0.5 (1, 0, 0) + 0.5 (0.2, 0.4, 0.6) = (0.6, 0.2, 0.3),
+//      stored (153, 51, 76.5);
+//    - B alone, (50, 32) (0.54 on B's plane; 0.67 on A's, missed): 0.25 (0,
+//      0, 1) + 0.75 (0.2, 0.4, 0.6) = (0.15, 0.3, 0.7), (38.25, 76.5, 178.5);
+//    - both, (32, 32): B over (A over the opaque) = 0.25 (0, 0, 1) + 0.75
+//      (0.6, 0.2, 0.3) = (0.45, 0.15, 0.475), (114.75, 38.25, 121.1). Drawn
+//      the wrong way round (A over B over the opaque) it would be (0.575,
+//      0.15, 0.35): the sort decides it;
+//    - (32, 4), above both, the opaque quad alone.
+//    The same whichever order the list holds them in. Three draws: the
+//    opaque quad, then A, then B; two see-through copies. A green quad at
+//    alpha 0.9 behind the opaque one (z = -0.5) is hidden: depth tested.
+// 2. Sorted copy by copy, still instanced: two copies of A, both at x = 0,
+//    at z = 0.5 and z = 1: one draw of two instances, back to front: the
+//    middle is 0.5 (1, 0, 0) + 0.5 (0.6, 0.2, 0.3) = (0.8, 0.1, 0.15),
+//    stored (204, 25.5, 38.25). With B between them at z = 0.75, the copies
+//    no longer lie next to each other in the order, so three see-through
+//    draws: A, B, A: (0.6, 0.2, 0.3), then (0.45, 0.15, 0.475), then 0.5 (1,
+//    0, 0) + 0.5 that = (0.725, 0.075, 0.2375), stored (184.9, 19.1, 60.6).
+// 3. Light painted on: a lit quad of alpha 0, black, glowing (0, 0.2, 0),
+//    see-through, adds its glow: the middle is (0.2, 0.6, 0.6), stored (51,
+//    153, 153).
+// 4. Physically based, see-through: no light at all (the environment's
+//    strength 0, the directional light black), a black base at alpha 0.5
+//    glowing (0.3, 0, 0): its only light is its glow, added whole, over half
+//    of what is behind: (0.3, 0, 0) + 0.5 (0.2, 0.4, 0.6) = (0.4, 0.2, 0.3),
+//    stored (102, 51, 76.5).
+// 5. Cut out: a quad at z = 0.5, its texture 4 x 4 texels, white, the left
+//    two columns of alpha 0 and the right two of alpha 1, its material (1,
+//    0.5, 0) cut out below 0.5. On its left half, (25, 32), the fragments
+//    are discarded: the opaque quad shows, (51, 102, 153); on its right,
+//    (38, 32), it is drawn opaque, (255, 127.5, 0). Behind it at z = 0.25 a
+//    see-through red quad at alpha 0.5: hidden on the right, where the cut-out
+//    wrote its depth; seen on the left, where it wrote none, (153, 51, 76.5).
+//    The same quad physically based (no light; glowing (1, 0.5, 0)) cuts
+//    out the same.
+// 6. A custom pipeline with no textures (addglow.slang), see-through, adding
+//    its parameters (0.3, 0.1, 0) at alpha 0: the middle is (0.5, 0.5,
+//    0.6), stored (127.5, 127.5, 153). A see-through custom draw is sorted
+//    with the rest: with A in front of it (A at z = 1, the glow's quad at
+//    z = 0.5), the glow is added first and A blended over that: 0.5 (1, 0,
+//    0) + 0.5 (0.5, 0.5, 0.6) = (0.75, 0.25, 0.3), stored (191, 64, 76.5).
+//
+// It needs a GPU driver with Vulkan 1.3 and SDL3.dll; with the Vulkan SDK,
+// validation is on and must say nothing.
+
+mod blend;
+
+import testing use *;
+import libc;
+import geomath use *;
+import collections use *;
+import mesh use Mesh;
+import gpu use *;
+import render use *;
+
+// Channel 'c' of pixel ('x', 'y') of a 64 x 64 rgba8 image at 'p'
+fn px(p *u8, x usize, y usize, c usize) i64 { i64.from(*(p + (y * 64usize + x) * 4usize + c)); }
+
+fn expectPixel(p *u8, x usize, y usize, r f64, g f64, b f64, label &[]u8) {
+  expectFloat(f64.from(px(p, x, y, 0usize)), r, 1.5d, label);
+  expectFloat(f64.from(px(p, x, y, 1usize)), g, 1.5d, label);
+  expectFloat(f64.from(px(p, x, y, 2usize)), b, 1.5d, label);
+}
+
+fn drawFrame(renderer &mut Renderer, device &mut Device, color &Texture, depth &Texture, readback &Buffer,
+    camera &Camera, light &Light, list &DrawList) {
+  mut encoder = device.createCommandEncoder();
+  renderer.render(device, &mut encoder, color, depth, camera, light, list);
+  encoder.copyTextureToBuffer(color, readback);
+  device.queue.submit(encoder.finish());
+  device.endFrame();
+  device.waitIdle();
+}
+
+// A quad facing +z, 'half' each way from (x, y, z): mesh's plane (2 across,
+// facing +y) turned up and scaled
+fn quadAt(x f32, y f32, z f32, half f32) Mat4 {
+  Mat4.fromTrs(new Vec3(x, y, z), Quat.angleAxis(pi * 0.5, new Vec3(1., 0., 0.)), new Vec3(half, half, half));
+}
+
+// A 4 x 4 image, white, its left two columns of alpha 0 and its right two of alpha 1
+fn halfClear() Image {
+  mut img = new Image(4, 4, 4, List[u8].empty());
+  mut y = 0;
+  while y < 4 {
+    mut x = 0;
+    while x < 4 {
+      img.pixels.push(255u8);
+      img.pixels.push(255u8);
+      img.pixels.push(255u8);
+      img.pixels.push(if x < 2 { 0u8; } else { 255u8; });
+      x = x + 1;
+    }
+    y = y + 1;
+  }
+  img;
+}
+
+fn main() i32 {
+  mut instance = Instance.create("render blend");
+  require(instance.isValid(), "a Vulkan 1.3 instance");
+  mut none = Surface.none();
+  mut preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
+  imm env = libc.getenv(&"GPU_POWER_PREFERENCE" as *u8);
+  if (env as usize) != 0usize {
+    if libc.strcmp(env, &"low-power" as *u8) == 0i32 { preference = POWER_PREFERENCE_LOW_POWER; }
+  }
+  mut adapter = instance.requestAdapter(&none, preference);
+  require(adapter.isValid(), "an adapter");
+  mut device = adapter.requestDevice();
+  require(device.isValid(), "a device");
+  imm target = new TextureDescriptor(64u32, 64u32, TEXTURE_FORMAT_RGBA8_UNORM,
+    TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
+  mut color = device.createTexture(&target);
+  imm depthDesc = new TextureDescriptor(64u32, 64u32, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT);
+  mut depth = device.createTexture(&depthDesc);
+  mut readback = device.createBuffer(16384u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  imm p = readback.mappedRange();
+  mut renderer = Renderer.create(&mut device, TEXTURE_FORMAT_RGBA8_UNORM, TEXTURE_FORMAT_DEPTH32_FLOAT);
+  require(renderer.isValid(), "a renderer");
+  mut camera = Camera.make();
+  camera.lookAt(new Vec3(0., 0., 3.), new Vec3(0., 0., 0.), new Vec3(0., 1., 0.));
+  camera.background = new Color(0., 0., 0., 1.);
+  // Ambient light of radiance 1 alone: a lit surface is its base colour
+  imm ambient = Light.directional(new Vec3(0., 0., -1.), Color.gray(0.), Color.gray(1.));
+  imm plane = Mesh.plane(1, 1.);
+  imm quad = renderer.addMesh(&mut device, &plane);
+  mut list = DrawList.empty();
+
+  imm wallMaterial = Material.plain(new Color(0.2, 0.4, 0.6, 1.));
+  imm wall = renderer.addMaterial(&mut device, &wallMaterial);
+  imm aMaterial = Material.plain(new Color(1., 0., 0., 1.)).translucent(0.5);
+  imm a = renderer.addMaterial(&mut device, &aMaterial);
+  imm bMaterial = Material.plain(new Color(0., 0., 1., 1.)).translucent(0.25);
+  imm b = renderer.addMaterial(&mut device, &bMaterial);
+  imm hiddenMaterial = Material.plain(new Color(0., 1., 0., 1.)).translucent(0.9);
+  imm hidden = renderer.addMaterial(&mut device, &hiddenMaterial);
+  imm behind = quadAt(0., 0., 0., 3.);
+
+  // ---- 1. Two see-through quads, in both orders ----
+  mut order = 0;
+  while order < 2 {
+    list.clear();
+    if order == 0 {
+      list.add(quad, a, quadAt(-0.3, 0., 0.5, 0.5));
+      list.add(quad, b, quadAt(0.3, 0., 1., 0.5));
+    } else {
+      list.add(quad, b, quadAt(0.3, 0., 1., 0.5));
+      list.add(quad, a, quadAt(-0.3, 0., 0.5, 0.5));
+    }
+    list.add(quad, hidden, quadAt(0., 0., -0.5, 0.5));
+    list.add(quad, wall, behind);
+    drawFrame(&mut renderer, &mut device, &color, &depth, &readback, &camera, &ambient, &list);
+    imm which = if order == 0 { "A first in the list"; } else { "B first in the list"; };
+    expectPixel(p, 15usize, 32usize, 153., 51., 76.5, which);
+    expectPixel(p, 50usize, 32usize, 38.25, 76.5, 178.5, which);
+    expectPixel(p, 32usize, 32usize, 114.75, 38.25, 121.1, which);
+    expectPixel(p, 32usize, 4usize, 51., 102., 153., which);
+    expectUInt(u64.from(renderer.drawCalls), 4u64, "the opaque quad, then the three see-through ones");
+    expectUInt(u64.from(renderer.blendedDrawn), 3u64, "three see-through copies");
+    order = order + 1;
+  }
+
+  // ---- 2. Sorted copy by copy, still instanced ----
+  list.clear();
+  list.add(quad, a, quadAt(0., 0., 1., 0.5));
+  list.add(quad, a, quadAt(0., 0., 0.5, 0.5));
+  list.add(quad, wall, behind);
+  drawFrame(&mut renderer, &mut device, &color, &depth, &readback, &camera, &ambient, &list);
+  expectUInt(u64.from(renderer.drawCalls), 2u64, "two copies of A next to each other: one draw");
+  expectPixel(p, 32usize, 32usize, 204., 25.5, 38.25, "A over A over the opaque quad");
+  list.add(quad, b, quadAt(0., 0., 0.75, 0.5));
+  drawFrame(&mut renderer, &mut device, &color, &depth, &readback, &camera, &ambient, &list);
+  expectUInt(u64.from(renderer.drawCalls), 4u64, "B between the copies of A: three see-through draws");
+  expectPixel(p, 32usize, 32usize, 184.9, 19.1, 60.6, "A over B over A over the opaque quad");
+
+  // ---- 3. Light painted on ----
+  imm addMaterial = Material.plain(new Color(0., 0., 0., 1.)).glowing(new Color(0., 1., 0., 1.), 0.2).translucent(0.);
+  imm added = renderer.addMaterial(&mut device, &addMaterial);
+  list.clear();
+  list.add(quad, added, quadAt(0., 0., 0.5, 0.5));
+  list.add(quad, wall, behind);
+  drawFrame(&mut renderer, &mut device, &color, &depth, &readback, &camera, &ambient, &list);
+  expectPixel(p, 32usize, 32usize, 51., 153., 153., "a glow at alpha 0, added");
+
+  // ---- 4. Physically based, see-through ----
+  renderer.environmentStrength = 0.;
+  imm dark = Light.directional(new Vec3(0., 0., -1.), Color.gray(0.), Color.gray(0.));
+  imm glassMaterial = PbrMaterial.standard(new Color(0., 0., 0., 1.), 0., 0.5).glowing(new Color(1., 0., 0., 1.), 0.3)
+    .translucent(0.5);
+  imm glass = renderer.addPbrMaterial(&mut device, &glassMaterial);
+  // The opaque quad glows its colour, as no light falls on it now
+  imm wallGlowMaterial = Material.plain(new Color(0., 0., 0., 1.)).glowing(new Color(0.2, 0.4, 0.6, 1.), 1.);
+  imm wallGlow = renderer.addMaterial(&mut device, &wallGlowMaterial);
+  list.clear();
+  list.add(quad, glass, quadAt(0., 0., 0.5, 0.5));
+  list.add(quad, wallGlow, behind);
+  drawFrame(&mut renderer, &mut device, &color, &depth, &readback, &camera, &dark, &list);
+  expectPixel(p, 32usize, 32usize, 102., 51., 76.5, "physically based: its glow over half of what is behind");
+  expectPixel(p, 32usize, 4usize, 51., 102., 153., "the opaque quad beside it");
+
+  // ---- 5. Cut out ----
+  imm img = halfClear();
+  imm tex = renderer.addTexture(&mut device, &img);
+  imm leafMaterial = Material.textured(new Color(1., 0.5, 0., 1.), tex).cutOut(0.5);
+  imm leaf = renderer.addMaterial(&mut device, &leafMaterial);
+  list.clear();
+  list.add(quad, leaf, quadAt(0., 0., 0.5, 0.5));
+  list.add(quad, a, quadAt(0., 0., 0.25, 0.5));
+  list.add(quad, wall, behind);
+  drawFrame(&mut renderer, &mut device, &color, &depth, &readback, &camera, &ambient, &list);
+  expectPixel(p, 38usize, 32usize, 255., 127.5, 0., "cut out: the opaque half drawn, hiding A behind it");
+  expectPixel(p, 25usize, 32usize, 153., 51., 76.5, "cut out: the clear half discarded, A seen through it");
+  imm pbrLeafMaterial = PbrMaterial.standard(new Color(1., 1., 1., 1.), 0., 0.5).glowing(new Color(1., 0.5, 0., 1.), 1.)
+    .cutOut(0.5);
+  mut pbrLeafWithTexture = pbrLeafMaterial;
+  pbrLeafWithTexture.texture = tex;
+  imm pbrLeaf = renderer.addPbrMaterial(&mut device, &pbrLeafWithTexture);
+  list.clear();
+  list.add(quad, pbrLeaf, quadAt(0., 0., 0.5, 0.5));
+  list.add(quad, wallGlow, behind);
+  drawFrame(&mut renderer, &mut device, &color, &depth, &readback, &camera, &dark, &list);
+  expectPixel(p, 38usize, 32usize, 255., 127.5, 0., "physically based, cut out: the opaque half");
+  expectPixel(p, 25usize, 32usize, 51., 102., 153., "physically based, cut out: the clear half");
+
+  // ---- 6. A custom pipeline with no textures, see-through ----
+  imm desc = new CustomPipeline(spirv: &ADDGLOW_SPIRV, textures: noTextures(), streams: 1u32, alphaMode: ALPHA_BLEND);
+  imm pipeline = renderer.addPipeline(&mut device, &desc);
+  require(renderer.hasPipeline(pipeline), "the custom pipeline of no textures made");
+  imm params = [0.3, 0.1, 0., 0.];
+  imm noMaps = List[TextureHandle].empty();
+  imm custom = renderer.addCustomMaterial(&mut device, pipeline, &params, noMaps.view());
+  expect(!custom.isNone(), "its material made");
+  list.clear();
+  list.add(quad, custom, quadAt(0., 0., 0.5, 0.5));
+  list.add(quad, wall, behind);
+  drawFrame(&mut renderer, &mut device, &color, &depth, &readback, &camera, &ambient, &list);
+  expectPixel(p, 32usize, 32usize, 127.5, 127.5, 153., "the custom glow added");
+  list.add(quad, a, quadAt(0., 0., 1., 0.5));
+  drawFrame(&mut renderer, &mut device, &color, &depth, &readback, &camera, &ambient, &list);
+  expectPixel(p, 32usize, 32usize, 191.25, 63.75, 76.5, "A in front, blended over the glow");
+
+  expectUInt(u64.from(failures()), 0u64, "no Vulkan call failed");
+  expectUInt(u64.from(validationMessages()), 0u64, "no validation message");
+  done();
+}
+
+// spirv-begin addglow.spv ADDGLOW_SPIRV
+// Written by tools/shaders/shaders.py from addglow.slang (sha256 92b73db7e9a4441880ab34625f3099dfff0b1a427ef594ff0c4083cc5d353d31): do not edit.
+imm ADDGLOW_SPIRV Array[u32, 662] = [
+  0x07230203u32, 0x00010500u32, 0x00280000u32, 0x0000006bu32, 0x00000000u32, 0x00020011u32,
+  0x00000001u32, 0x000b000au32, 0x5f565053u32, 0x5f52484bu32, 0x726f7473u32, 0x5f656761u32,
+  0x66667562u32, 0x735f7265u32, 0x61726f74u32, 0x635f6567u32, 0x7373616cu32, 0x00000000u32,
+  0x0003000eu32, 0x00000000u32, 0x00000001u32, 0x000d000fu32, 0x00000000u32, 0x00000002u32,
+  0x74726576u32, 0x614d7865u32, 0x00006e69u32, 0x0000001bu32, 0x00000023u32, 0x00000037u32,
+  0x00000042u32, 0x00000045u32, 0x0000002du32, 0x00000011u32, 0x000a000fu32, 0x00000004u32,
+  0x00000048u32, 0x67617266u32, 0x746e656du32, 0x6e69614du32, 0x00000000u32, 0x00000023u32,
+  0x00000055u32, 0x0000004cu32, 0x00030010u32, 0x00000048u32, 0x00000007u32, 0x00030003u32,
+  0x0000000bu32, 0x00000001u32, 0x00060005u32, 0x00000015u32, 0x74736e49u32, 0x65636e61u32,
+  0x6474735fu32, 0x00303334u32, 0x00050006u32, 0x00000015u32, 0x00000000u32, 0x65646f6du32,
+  0x0000006cu32, 0x00050006u32, 0x00000015u32, 0x00000001u32, 0x746e6974u32, 0x00000000u32,
+  0x00070005u32, 0x00000018u32, 0x75727453u32, 0x72757463u32, 0x75426465u32, 0x72656666u32,
+  0x00000000u32, 0x00060006u32, 0x00000018u32, 0x00000000u32, 0x656d5f5fu32, 0x7265626du32,
+  0x00000030u32, 0x00050005u32, 0x0000001bu32, 0x74736e69u32, 0x65636e61u32, 0x00000073u32,
+  0x00060005u32, 0x00000021u32, 0x6d617246u32, 0x74735f65u32, 0x30343164u32, 0x00000000u32,
+  0x00070006u32, 0x00000021u32, 0x00000000u32, 0x77656976u32, 0x6a6f7250u32, 0x69746365u32,
+  0x00006e6fu32, 0x00070006u32, 0x00000021u32, 0x00000001u32, 0x656d6163u32, 0x6f506172u32,
+  0x69746973u32, 0x00006e6fu32, 0x00070006u32, 0x00000021u32, 0x00000002u32, 0x6867696cu32,
+  0x72694474u32, 0x69746365u32, 0x00006e6fu32, 0x00060006u32, 0x00000021u32, 0x00000003u32,
+  0x6867696cu32, 0x6c6f4374u32, 0x0000726fu32, 0x00050006u32, 0x00000021u32, 0x00000004u32,
+  0x69626d61u32, 0x00746e65u32, 0x00090006u32, 0x00000021u32, 0x00000005u32, 0x65766e69u32,
+  0x56657372u32, 0x50776569u32, 0x656a6f72u32, 0x6f697463u32, 0x0000006eu32, 0x00060006u32,
+  0x00000021u32, 0x00000006u32, 0x77656976u32, 0x74726f70u32, 0x00000000u32, 0x00060006u32,
+  0x00000021u32, 0x00000007u32, 0x6f707865u32, 0x65727573u32, 0x00000000u32, 0x00040005u32,
+  0x00000023u32, 0x6d617266u32, 0x00000065u32, 0x00060005u32, 0x0000002du32, 0x75706e69u32,
+  0x6f702e74u32, 0x69746973u32, 0x00006e6fu32, 0x00060005u32, 0x00000035u32, 0x61726150u32,
+  0x735f736du32, 0x34316474u32, 0x00000030u32, 0x00050006u32, 0x00000035u32, 0x00000000u32,
+  0x6f6c6f63u32, 0x00000072u32, 0x00040005u32, 0x00000037u32, 0x61726170u32, 0x0000736du32,
+  0x000b0005u32, 0x00000045u32, 0x72746e65u32, 0x696f5079u32, 0x6150746eu32, 0x5f6d6172u32,
+  0x74726576u32, 0x614d7865u32, 0x632e6e69u32, 0x726f6c6fu32, 0x00000000u32, 0x00050005u32,
+  0x00000002u32, 0x74726576u32, 0x614d7865u32, 0x00006e69u32, 0x00050005u32, 0x0000004cu32,
+  0x75706e69u32, 0x6f632e74u32, 0x00726f6cu32, 0x000a0005u32, 0x00000055u32, 0x72746e65u32,
+  0x696f5079u32, 0x6150746eu32, 0x5f6d6172u32, 0x67617266u32, 0x746e656du32, 0x6e69614du32,
+  0x00000000u32, 0x00060005u32, 0x00000048u32, 0x67617266u32, 0x746e656du32, 0x6e69614du32,
+  0x00000000u32, 0x00040047u32, 0x00000011u32, 0x0000000bu32, 0x0000002bu32, 0x00050048u32,
+  0x00000015u32, 0x00000000u32, 0x00000023u32, 0x00000000u32, 0x00040048u32, 0x00000015u32,
+  0x00000000u32, 0x00000004u32, 0x00050048u32, 0x00000015u32, 0x00000000u32, 0x00000007u32,
+  0x00000010u32, 0x00050048u32, 0x00000015u32, 0x00000001u32, 0x00000023u32, 0x00000040u32,
+  0x00040047u32, 0x00000016u32, 0x00000006u32, 0x00000050u32, 0x00040047u32, 0x00000019u32,
+  0x00000006u32, 0x00000050u32, 0x00030047u32, 0x00000018u32, 0x00000002u32, 0x00050048u32,
+  0x00000018u32, 0x00000000u32, 0x00000023u32, 0x00000000u32, 0x00040047u32, 0x0000001bu32,
+  0x00000021u32, 0x00000001u32, 0x00040047u32, 0x0000001bu32, 0x00000022u32, 0x00000000u32,
+  0x00030047u32, 0x0000001bu32, 0x00000018u32, 0x00030047u32, 0x00000021u32, 0x00000002u32,
+  0x00050048u32, 0x00000021u32, 0x00000000u32, 0x00000023u32, 0x00000000u32, 0x00040048u32,
+  0x00000021u32, 0x00000000u32, 0x00000004u32, 0x00050048u32, 0x00000021u32, 0x00000000u32,
+  0x00000007u32, 0x00000010u32, 0x00050048u32, 0x00000021u32, 0x00000001u32, 0x00000023u32,
+  0x00000040u32, 0x00050048u32, 0x00000021u32, 0x00000002u32, 0x00000023u32, 0x00000050u32,
+  0x00050048u32, 0x00000021u32, 0x00000003u32, 0x00000023u32, 0x00000060u32, 0x00050048u32,
+  0x00000021u32, 0x00000004u32, 0x00000023u32, 0x00000070u32, 0x00050048u32, 0x00000021u32,
+  0x00000005u32, 0x00000023u32, 0x00000080u32, 0x00040048u32, 0x00000021u32, 0x00000005u32,
+  0x00000004u32, 0x00050048u32, 0x00000021u32, 0x00000005u32, 0x00000007u32, 0x00000010u32,
+  0x00050048u32, 0x00000021u32, 0x00000006u32, 0x00000023u32, 0x000000c0u32, 0x00050048u32,
+  0x00000021u32, 0x00000007u32, 0x00000023u32, 0x000000d0u32, 0x00040047u32, 0x00000023u32,
+  0x00000021u32, 0x00000000u32, 0x00040047u32, 0x00000023u32, 0x00000022u32, 0x00000000u32,
+  0x00040047u32, 0x0000002du32, 0x0000001eu32, 0x00000000u32, 0x00030047u32, 0x00000035u32,
+  0x00000002u32, 0x00050048u32, 0x00000035u32, 0x00000000u32, 0x00000023u32, 0x00000000u32,
+  0x00040047u32, 0x00000037u32, 0x00000021u32, 0x00000000u32, 0x00040047u32, 0x00000037u32,
+  0x00000022u32, 0x00000001u32, 0x00040047u32, 0x00000042u32, 0x0000000bu32, 0x00000000u32,
+  0x00040047u32, 0x00000045u32, 0x0000001eu32, 0x00000000u32, 0x00030047u32, 0x00000045u32,
+  0x0000000eu32, 0x00040047u32, 0x0000004cu32, 0x0000001eu32, 0x00000000u32, 0x00030047u32,
+  0x0000004cu32, 0x0000000eu32, 0x00040047u32, 0x00000055u32, 0x0000001eu32, 0x00000000u32,
+  0x00020013u32, 0x00000001u32, 0x00030021u32, 0x00000003u32, 0x00000001u32, 0x00030016u32,
+  0x00000006u32, 0x00000020u32, 0x00040017u32, 0x00000007u32, 0x00000006u32, 0x00000004u32,
+  0x00040018u32, 0x0000000bu32, 0x00000007u32, 0x00000004u32, 0x00040015u32, 0x0000000eu32,
+  0x00000020u32, 0x00000001u32, 0x00040020u32, 0x00000010u32, 0x00000001u32, 0x0000000eu32,
+  0x00040015u32, 0x00000012u32, 0x00000020u32, 0x00000000u32, 0x0004002bu32, 0x0000000eu32,
+  0x00000014u32, 0x00000000u32, 0x0004001eu32, 0x00000015u32, 0x0000000bu32, 0x00000007u32,
+  0x00040020u32, 0x00000016u32, 0x0000000cu32, 0x00000015u32, 0x0003001du32, 0x00000019u32,
+  0x00000015u32, 0x0003001eu32, 0x00000018u32, 0x00000019u32, 0x00040020u32, 0x0000001au32,
+  0x0000000cu32, 0x00000018u32, 0x000a001eu32, 0x00000021u32, 0x0000000bu32, 0x00000007u32,
+  0x00000007u32, 0x00000007u32, 0x00000007u32, 0x0000000bu32, 0x00000007u32, 0x00000007u32,
+  0x00040020u32, 0x00000022u32, 0x00000002u32, 0x00000021u32, 0x00040020u32, 0x00000024u32,
+  0x00000002u32, 0x0000000bu32, 0x00040017u32, 0x0000002au32, 0x00000006u32, 0x00000003u32,
+  0x00040020u32, 0x0000002cu32, 0x00000001u32, 0x0000002au32, 0x0004002bu32, 0x00000006u32,
+  0x0000002fu32, 0x3f800000u32, 0x0003001eu32, 0x00000035u32, 0x00000007u32, 0x00040020u32,
+  0x00000036u32, 0x00000002u32, 0x00000035u32, 0x00040020u32, 0x00000038u32, 0x00000002u32,
+  0x00000007u32, 0x00040020u32, 0x00000041u32, 0x00000003u32, 0x00000007u32, 0x00040020u32,
+  0x0000004bu32, 0x00000001u32, 0x00000007u32, 0x0004002bu32, 0x0000000eu32, 0x0000004eu32,
+  0x00000007u32, 0x0004002bu32, 0x00000006u32, 0x00000054u32, 0x00000000u32, 0x0004003bu32,
+  0x00000010u32, 0x00000011u32, 0x00000001u32, 0x0004003bu32, 0x0000001au32, 0x0000001bu32,
+  0x0000000cu32, 0x0004003bu32, 0x00000022u32, 0x00000023u32, 0x00000002u32, 0x0004003bu32,
+  0x0000002cu32, 0x0000002du32, 0x00000001u32, 0x0004003bu32, 0x00000036u32, 0x00000037u32,
+  0x00000002u32, 0x0004003bu32, 0x00000041u32, 0x00000042u32, 0x00000003u32, 0x0004003bu32,
+  0x00000041u32, 0x00000045u32, 0x00000003u32, 0x0004003bu32, 0x0000004bu32, 0x0000004cu32,
+  0x00000001u32, 0x0004003bu32, 0x00000041u32, 0x00000055u32, 0x00000003u32, 0x0004002bu32,
+  0x00000012u32, 0x00000063u32, 0x00000000u32, 0x00040020u32, 0x00000064u32, 0x0000000cu32,
+  0x0000000bu32, 0x0004002bu32, 0x00000012u32, 0x00000067u32, 0x00000001u32, 0x00040020u32,
+  0x00000068u32, 0x0000000cu32, 0x00000007u32, 0x00050036u32, 0x00000001u32, 0x00000002u32,
+  0x00000000u32, 0x00000003u32, 0x000200f8u32, 0x00000004u32, 0x0004003du32, 0x0000000eu32,
+  0x0000000fu32, 0x00000011u32, 0x0004007cu32, 0x00000012u32, 0x00000013u32, 0x0000000fu32,
+  0x00060041u32, 0x00000016u32, 0x00000017u32, 0x0000001bu32, 0x00000014u32, 0x00000013u32,
+  0x00050041u32, 0x00000064u32, 0x00000065u32, 0x00000017u32, 0x00000063u32, 0x0004003du32,
+  0x0000000bu32, 0x00000066u32, 0x00000065u32, 0x00050041u32, 0x00000068u32, 0x00000069u32,
+  0x00000017u32, 0x00000067u32, 0x0004003du32, 0x00000007u32, 0x0000006au32, 0x00000069u32,
+  0x00050041u32, 0x00000024u32, 0x00000025u32, 0x00000023u32, 0x00000014u32, 0x0004003du32,
+  0x0000000bu32, 0x00000026u32, 0x00000025u32, 0x0004003du32, 0x0000002au32, 0x0000002bu32,
+  0x0000002du32, 0x00050050u32, 0x00000007u32, 0x0000002eu32, 0x0000002bu32, 0x0000002fu32,
+  0x00050090u32, 0x00000007u32, 0x00000030u32, 0x0000002eu32, 0x00000066u32, 0x00050090u32,
+  0x00000007u32, 0x00000031u32, 0x00000030u32, 0x00000026u32, 0x00050041u32, 0x00000038u32,
+  0x00000039u32, 0x00000037u32, 0x00000014u32, 0x0004003du32, 0x00000007u32, 0x0000003au32,
+  0x00000039u32, 0x00050085u32, 0x00000007u32, 0x0000003du32, 0x0000003au32, 0x0000006au32,
+  0x0003003eu32, 0x00000042u32, 0x00000031u32, 0x0003003eu32, 0x00000045u32, 0x0000003du32,
+  0x000100fdu32, 0x00010038u32, 0x00050036u32, 0x00000001u32, 0x00000048u32, 0x00000000u32,
+  0x00000003u32, 0x000200f8u32, 0x00000049u32, 0x0004003du32, 0x00000007u32, 0x0000004au32,
+  0x0000004cu32, 0x0008004fu32, 0x0000002au32, 0x0000004du32, 0x0000004au32, 0x0000004au32,
+  0x00000000u32, 0x00000001u32, 0x00000002u32, 0x00050041u32, 0x00000038u32, 0x0000004fu32,
+  0x00000023u32, 0x0000004eu32, 0x0004003du32, 0x00000007u32, 0x00000050u32, 0x0000004fu32,
+  0x00050051u32, 0x00000006u32, 0x00000051u32, 0x00000050u32, 0x00000000u32, 0x0005008eu32,
+  0x0000002au32, 0x00000052u32, 0x0000004du32, 0x00000051u32, 0x00050050u32, 0x00000007u32,
+  0x00000053u32, 0x00000052u32, 0x00000054u32, 0x0003003eu32, 0x00000055u32, 0x00000053u32,
+  0x000100fdu32, 0x00010038u32
+];
+// spirv-end
