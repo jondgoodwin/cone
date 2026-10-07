@@ -26,6 +26,16 @@ RefNode *newRefNode(uint16_t tag) {
     return refnode;
 }
 
+// Does a reference to this type carry the length of what it points at, so that
+// it is a pointer and a count where one to a Sized type is a pointer alone?
+// The target decides, in every region and for a borrow alike. (A reference to
+// a trait is fat too, but carries a vtable, and is its own kind of reference,
+// VirtRefTag; a slice, ArrayRefTag, is a borrow's fat form for its elements.)
+int refIsFat(RefNode *ref) {
+    return ref->tag == RefTag && ref->vtexp && ref->vtexp != unknownType
+        && itypeLenBodyElem(ref->vtexp) != NULL;
+}
+
 // Allocate info for normalized reference type
 void *refTypeInfoAlloc() {
     RefTypeInfo *refinfo = memAllocBlk(sizeof(RefTypeInfo));
@@ -128,7 +138,7 @@ RefBinds refThreadBinds(RefNode *ref) {
 // parameter is bounded ''static' (StaticVouched), the signature's where it is
 // written so (StaticWritten).
 StaticVerdict refStaticCrosses(RefNode *ref, StaticBorrow how) {
-    if (how == StaticOff || how == StaticNever || itypeGetTypeDcl(ref->region) != borrowRef || permHeldKind(ref->perm))
+    if (how == StaticOff ||itypeGetTypeDcl(ref->region) != borrowRef || permHeldKind(ref->perm))
         return StaticNotBorrow;
     INode *perm = ref->perm && isTypeNode(ref->perm) ? itypeGetTypeDcl(ref->perm) : NULL;
     if (perm != (INode *)immPerm && perm != (INode *)opaqPerm && perm != (INode *)uniPerm)

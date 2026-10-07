@@ -56,6 +56,11 @@ extern INode *neverType;
 // every bracketed use into an array type node (arrayTypeLower)
 extern StructNode *arrayTypeDcl;
 
+// 'str', the dynamically sized body of bytes (stdlibInit): a type with no
+// fields and no size of its own, held only through a reference, which carries
+// the number of bytes (itypeLenBodyElem, refIsFat)
+extern StructNode *strTypeDcl;
+
 // The two functions a program calls to run its stitched init and final
 // (genlStitch): 'initAll()' and 'finalAll()', names every module reaches as it
 // reaches 'i64', and which a declaration of its own hides
@@ -85,6 +90,13 @@ extern StructNode *atomicValueTrait;
 extern StructNode *integerTrait;
 extern StructNode *pointerTrait;
 extern StructNode *sendableTrait;
+// 'Sized' and 'DynSized', which the compiler grants from a type's size: a type
+// whose size is known at compile time is Sized, and DynSized too; so is a type
+// whose size a reference to it carries, a trait (its vtable) or a body such
+// as 'str' (its length). A type with neither, one declared @opaque or an
+// '@unsized' enum, is held through a thin reference only
+extern StructNode *sizedTrait;
+extern StructNode *dynSizedTrait;
 // 'LockPermission', which a struct declares to stand in a managed reference's
 // permission slot: 'Arc[Mutex, T]' (ir/types/permission.c)
 extern StructNode *lockPermTrait;

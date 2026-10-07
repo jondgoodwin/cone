@@ -1,0 +1,96 @@
+// A borrowed reference to a body whose length it carries ('&str', a borrow of
+// the body of bytes) is fat as an owner is: a pointer to the first byte and a
+// count, 16 bytes where a thin borrow is 8. It is made of a slice of bytes,
+// '&[]u8', which is the same pair and keeps its own type: either converts to
+// the other with 'as', which checks the two are the same size and nothing
+// else. It is borrowed from an owner as any is, by the implicit lend or by
+// '&*owner', and passes, returns, is stored in a struct and sits in an Option
+// (a pair whose pointer is null for None) like any value. '===' asks whether
+// two are the same place: the same address and the same count.
+//
+// Each printed value was checked by hand against the source.
+
+mod ref_body;
+
+import stdio use *;
+
+fn show(label &[]u8, n i64) {
+  printStr(label);
+  printStr(" ");
+  printInt(n);
+  printStr("\n");
+}
+
+// The bytes of a borrow of the string, as a slice
+fn bytes(s &str) &[]u8 { s as &[]u8; }
+
+// The string a slice of bytes makes
+fn text(b &[]u8) &str { b as &str; }
+
+// A borrow handed back: the first or the second, by the flag
+fn pick(a &str, b &str, first bool) &str {
+  if first { a; } else { b; }
+}
+
+// The sum of the bytes' values, and the count
+fn sum(s &str) i64 {
+  imm b = bytes(s);
+  mut total = 0i64;
+  mut i = 0usize;
+  while i < b.len {
+    total = total + i64.from(b[i]);
+    i = i + 1usize;
+  }
+  total;
+}
+
+struct Named {
+  pub name &str;
+  pub n i64;
+}
+
+fn lengthOf(o &imm Option[&str]) i64 {
+  match o {
+    case imm s &Some[&str] {i64.from(bytes(s.value).len);}
+    else {-1i64;}
+  }
+}
+
+fn main() {
+  imm hello &[]u8 = "hello";
+  imm hi &[]u8 = "hi";
+  imm a = text(hello);
+  imm b = text(hi);
+  show("hello", i64.from(bytes(a).len));
+  show("sum of hello", sum(a));
+  show("sum of hi", sum(b));
+
+  // Chosen and returned
+  show("first", i64.from(bytes(pick(a, b, true)).len));
+  show("second", i64.from(bytes(pick(a, b, false)).len));
+
+  // Stored in a struct and read back through it
+  imm named = new Named(a, 7);
+  show("stored", i64.from(bytes(named.name).len));
+
+  // In an Option, which is the pair with a null pointer for None
+  imm some = Some[&str][a];
+  imm none = None[&str][];
+  show("some", lengthOf(&imm some));
+  show("none", lengthOf(&imm none));
+
+  // Borrowed from an owner: lent where a borrow is wanted, and reborrowed
+  imm owner = new So[imm, str](b);
+  show("lent", i64.from(bytes(owner).len));
+  imm again &str = &*owner;
+  show("reborrowed", sum(again));
+  imm copy = a;
+  show("same place", if copy === a {1i64;} else {0i64;});
+  show("another place", if again === b {1i64;} else {0i64;});
+
+  // The pair: 16 bytes, and the slice of bytes it converts to is the same size
+  show("size of &str", i64.from(mem.sizeof[&str]()));
+  show("size of &[]u8", i64.from(mem.sizeof[&[]u8]()));
+  show("size of &i32", i64.from(mem.sizeof[&i32]()));
+  show("size of Option[&str]", i64.from(mem.sizeof[Option[&str]]()));
+}

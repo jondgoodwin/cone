@@ -378,19 +378,28 @@ call needs its callee's signature, never its body.
 ## 6. Size
 
 A field or a variable holds its type by value, so that type has to say how large
-it is. `itypeNoSizeCause` answers, and there are five ways the answer is no:
+it is. `itypeNoSizeCause` answers, and there are six ways the answer is no:
 
 | Cause | Where it comes from | Remedy the message names |
 | --- | --- | --- |
 | declared `@opaque` | the `@opaque` marker, `parsetype.c` | hold it through a reference |
+| a body whose length a reference carries (`str`) | `itypeLenBodyElem` | hold it through a reference, `&str` or `So[str]` |
 | a trait that is not `SameSize` | `structTypeCheck` | use a virtual reference, `&<Trait>` |
 | a function signature | `fnSigTypeCheck` | use a reference to a function |
 | a struct with an unsized field | `structTypeCheck`, infectiously | fix that field — the cause is further down |
 | a by-value cycle: still being laid out | rule 4 | break the cycle with a reference |
 
-All five are one `ErrorCode`, `ErrorNoSize`. Five codes would be
+All six are one `ErrorCode`, `ErrorNoSize`. Six codes would be
 indistinguishable to everything except the message, and the message is what the
 author needs, so the cause lives in the text.
+
+Which types have a size, and which a reference to the type can tell the size
+of, are the markers `Sized` and `DynSized` (`itypeIsSized`, `itypeIsDynSized`,
+granted in `genericTypeIs`): `DynSized` is every `Sized` type, an open trait
+(its reference carries a vtable) and a body such as `str` (its reference
+carries a count). A type declared `@opaque` and an `@unsized` enum are
+neither. A type declaring either marker is `ErrorSizeMarkerUse`
+(`structTypeCheck`).
 
 **A reference answers its own size and never consults its target**, nor lays it
 out (section 4, "A reference does not demand its target"). A pointer is
@@ -758,7 +767,8 @@ elsewhere, whichever walk arrived at it.
 | Code | Raised when |
 | --- | --- |
 | `ErrorNoRefType` (1074) | a reference or slice type never says what it refers to — `refTypeCheck` and `arrayRefTypeCheck` are its only two sites |
-| `ErrorNoSize` (1069) | a value's type cannot say how large it is — five causes, named in the message |
+| `ErrorNoSize` (1069) | a value's type cannot say how large it is — six causes, named in the message |
+| `ErrorSizeMarkerUse` (1296) | a type declares `Sized` or `DynSized`, which the compiler grants from the type's size |
 | `ErrorCircular` (1068) | a constant or inferred declaration is defined in terms of itself. Name resolution raises the same code for two types that each extend or name the other in an `is` |
 | `ErrorInstDepth` (1067) | generic or macro expansion nests past `TypeCheckLoopMax` |
 
@@ -836,7 +846,7 @@ Kept so that reopening one is a decision rather than a rediscovery.
 | `ir/inode.c` | `inodeTypeCheck` | the dispatch switch, where both marks are set and tested, and where a struct, array or tuple layout is counted in flight |
 | | `inodeTypeCheckAny` | the same with no expected type |
 | `ir/itype.c` | `itypeTypeCheck` | check a node expected to be a type |
-| | `itypeNoSizeCause`, `itypeNoSizeExplain` | the five causes of section 6, and the hop-by-hop trace |
+| | `itypeNoSizeCause`, `itypeNoSizeExplain` | the six causes of section 6, and the hop-by-hop trace |
 | | `itypeVariantPending` | whether a variant of an enum is still being laid out — section 10.2 |
 | `ir/iexp.c` | `iexpTypeCheckAny` | check a node expected to be an expression |
 | `ir/types/struct.c` | `structTypeCheck` | the layout, steps 1 to 8a of section 10.1; sets `TypeChecked` at the layout point; `structSetDropFn` is step 8 |

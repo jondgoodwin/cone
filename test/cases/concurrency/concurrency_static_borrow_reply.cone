@@ -1,0 +1,98 @@
+// A behaviour's reply may carry a borrow of the whole program, under the rule
+// that governs a message's parameters (concurrency_static_borrow_send): it is
+// written ''static', is 'imm' or 'opaq' of what two threads may read at once,
+// or 'uni' of what may move, and is judged once the types are known. The
+// reply type is written into the code the compiler generates, as a type
+// argument among a call's, where no lifetime can be named, so the generated
+// code spells it without ''static': a generic is instanced with its type
+// arguments' lifetimes erased in any case.
+//
+// 'Store' replies with '&'static imm' borrows of a global number and a global
+// array, an '&'static opaq' one, a struct holding one, and a kept future of
+// each, which 'Client' awaits, here and later. A 'uni' reply is checked in
+// the signature that takes and returns one ('echo'): no 'uni' borrow of the
+// whole program can be made yet (concurrency_static_borrow_send).
+//
+// Output: 7 + 1 + 3 = 11 (the number, then the array's ends); the view's
+// middle, 2; whether the opaq reply is the global (same); the kept futures'
+// 7 and 1 + 2 + 3 = 6.
+
+mod concurrency_static_borrow_reply;
+
+import stdio use *;
+import actors;
+
+imm seed u64 = 7u64;
+imm table Array[u64, 3] = [1u64, 2u64, 3u64];
+
+// Holds a borrow of the whole program
+struct View {pub data &'static imm Array[u64, 3];}
+
+actor Store {
+  n u64;
+
+  pub async do number(self) &'static imm u64 {
+    &imm seed;
+  }
+
+  pub async do all(self) &'static imm Array[u64, 3] {
+    &imm table;
+  }
+
+  pub async do hidden(self) &'static opaq u64 {
+    &opaq seed;
+  }
+
+  pub async do view(self) View {
+    new View(&imm table);
+  }
+
+  pub async do echo(self, p &'static uni u64) &'static uni u64 {
+    p;
+  }
+}
+
+actor Client {
+  n u64;
+
+  pub async do run(self, s Store) {
+    imm a = await s.number();
+    imm t = await s.all();
+    printUInt(*a + (*t)[0] + (*t)[2]);
+    printStr("\n");
+    imm v = await s.view();
+    printUInt((*v.data)[1]);
+    printStr("\n");
+    imm h = await s.hidden();
+    printStr(if h === &opaq seed {"same";} else {"other";});
+    printStr("\n");
+  }
+
+  pub async do kept(self, s Store) {
+    imm fa = s.number();
+    imm ft = s.all();
+    imm a = await fa;
+    imm t = await ft;
+    printUInt(*a);
+    printStr(" ");
+    printUInt((*t)[0] + (*t)[1] + (*t)[2]);
+    printStr("\n");
+  }
+}
+
+fn main() {
+  initAll();
+  {
+    imm s = new Store(0u64);
+    imm c = new Client(0u64);
+    c.run(s);
+  }
+  finalAll();
+  initAll();
+  {
+    imm s = new Store(0u64);
+    imm c = new Client(0u64);
+    c.kept(s);
+  }
+  finalAll();
+}

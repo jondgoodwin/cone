@@ -2845,6 +2845,16 @@ static LLVMValueRef genlTerm(GenState *gen, INode *termnode) {
     case BorrowTag:
     {
         RefNode *anode = (RefNode*)termnode;
+        // What a reference that carries a length points at has no address of
+        // its own, only the reference: a borrow of it is that reference, as
+        // '&*s' of a slice is the slice (an owner lent as a borrow, a reborrow)
+        if (refIsFat((RefNode*)itypeGetTypeDcl(anode->vtype))) {
+            if (anode->vtexp->tag != DerefTag) {
+                errorUnreachable(termnode, "a borrow of a body whose length a reference carries, other than through that reference");
+                return NULL;
+            }
+            return genlExpr(gen, ((StarNode*)anode->vtexp)->vtexp);
+        }
         return genlAddr(gen, anode->vtexp);
     }
     case ArrayBorrowTag:

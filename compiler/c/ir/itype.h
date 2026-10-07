@@ -106,7 +106,6 @@ int itypeThreadBound(INode *type, int *settled);
 // vouched for
 typedef enum {
     StaticOff,          // Not allowed: every borrow binds its thread
-    StaticNever,        // As StaticOff, where a diagnostic is not to offer the way (a behaviour's reply)
     StaticVouched,      // A generic's parameter bounded by ''static': the call is checked to hand it only global borrows
     StaticWritten       // A signature's own types: a borrow qualifies only where it is written ''static'
 } StaticBorrow;
@@ -163,6 +162,16 @@ Nodes *itypeInstanceTypeArgs(INode *dclnode);
 // Return true if type has a concrete and instantiable. 
 // False for Opaque structs, traits, functions 
 int itypeIsConcrete(INode *type);
+
+// The element type of a dynamically sized body whose length a reference to it
+// carries ('str': a byte), or NULL for any other type
+INode *itypeLenBodyElem(INode *type);
+
+// Is the size of a value of this type known at compile time ('Sized')? Is it
+// known at compile time or carried by a reference to the type ('DynSized')?
+// The two built-in markers the compiler grants (genericTypeIs).
+int itypeIsSized(INode *type);
+int itypeIsDynSized(INode *type);
 
 // Why this type cannot report a size, as a sentence naming the cause and the
 // remedy, or NULL where the type is sized and may be held by value.

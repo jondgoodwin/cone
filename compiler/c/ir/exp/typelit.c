@@ -411,6 +411,27 @@ static INode *typeLitAllocValue(TypeCheckState *pstate, FnCallNode *node, INode 
     Nodes *args = node->args;
     INode **argp = args && args->used == 1 && nodesGet(args, 0)->tag != NamedValTag ? &nodesGet(args, 0) : NULL;
 
+    // A body whose length a reference carries has no value to construct or
+    // move in: it is allocated by copying a borrow of one, 'new So[str](view)',
+    // into the memory the region gives, as long as the view
+    if (itypeLenBodyElem(vtype)) {
+        if (argp == NULL) {
+            errorMsgNode((INode*)node, ErrorAllocValue,
+                "%s has no value to construct: its allocation copies a borrow of one, 'new So[%s](view)'.",
+                itypeName(vtype), itypeName(vtype));
+            return NULL;
+        }
+        INode *viewtype = (INode*)newRefNodeFull(RefTag, (INode*)node, borrowRef, newPermUseNode(roPerm), vtype);
+        if (!itypeTypeCheck(pstate, &viewtype))
+            return NULL;
+        if (!iexpTypeCheckCoerce(pstate, viewtype, argp)) {
+            errorMsgNode(*argp, ErrorInvType, "The value allocated is copied from a borrow of %s, '&%s'.",
+                itypeName(vtype), itypeName(vtype));
+            return NULL;
+        }
+        return isExpNode(*argp) ? *argp : NULL;
+    }
+
     if (typeLitHasInits(typedcl)) {
         // The one argument is checked as the construction would check it, so
         // one that is not the struct's own value reaches the inits unchanged

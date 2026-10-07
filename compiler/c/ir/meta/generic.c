@@ -483,6 +483,13 @@ static int genericTypeIsHow(INode *type, StructNode *trait, StaticBorrow how) {
     // is checked to meet
     if (trait == sendableTrait)
         return !itypeThreadBoundHow(dcl, NULL, how);
+    // Sized and DynSized are the type's size: known at compile time, or known
+    // at compile time or carried by a reference to it. A type cannot declare
+    // either.
+    if (trait == sizedTrait)
+        return itypeIsSized(dcl);
+    if (trait == dynSizedTrait)
+        return itypeIsDynSized(dcl);
     if (dcl->tag != StructTag)
         return 0;
     StructNode *strnode = (StructNode*)dcl;

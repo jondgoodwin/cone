@@ -173,8 +173,9 @@ checking if it ever stops being true.
 work: there is no construct in the table whose cost is invisible at the point
 you write it.
 
-The two that surprise people are the fat pointers — a slice and a virtual
-reference are twice the size of a plain reference and are passed by value, so a
+The two that surprise people are the fat pointers — a slice, a virtual
+reference, and a reference to a body whose length it carries (`&str`, `So[str]`)
+are twice the size of a plain reference and are passed by value, so a
 function taking `&[]T` moves two words per call.
 
 ## How the compiler cashes this in
