@@ -122,14 +122,29 @@ fn rotationOf(m Mat4) Quat {
   new Quat((m.m[8] + m.m[2]) / s, (m.m[9] + m.m[6]) / s, 0.25 * s, (m.m[1] - m.m[4]) / s);
 }
 
+// The exposure ('renderer.exposure') of a camera set to 'ev100', an exposure
+// value at ISO 100: the scene luminance (nits) that just saturates the
+// sensor is 1.2 x 2^EV100, so that luminance becomes 1. (Lagarde and de
+// Rousiers, "Moving Frostbite to Physically Based Rendering", 2014: the
+// saturation-based sensitivity, 78 / (S q) with S = 100 and q = 0.65.) The
+// sunny-16 rule puts a sunlit scene at EV100 15, an exposure of 1 / 39322.
+pub fn exposureFromEv100(ev100 f32) f32 {
+  1. / (1.2 * libc.powf(2., ev100));
+}
+
 // The light: one directional light, the sun's kind, and the ambient light
 // everything gets from everywhere. It reaches the shaders through the
 // renderer's frame uniforms. (More lights, and point and spot lights, would
-// come with a light list.)
+// come with a light list.) Every material takes it by one convention
+// (renderframe.slang): 'color' is the irradiance it gives a surface facing
+// it head on (lux, in a scene in physical units: the sun at noon about
+// 100 000), so a white diffuse surface facing it is color / pi bright;
+// 'ambient' is a radiance (nits), the light of an even sky, so that white
+// surface under it alone is 'ambient' bright.
 pub struct Light {
   pub direction Vec3;       // the way the light travels: unit length
-  pub color Color;          // what it gives a surface facing it head on
-  pub ambient Color;
+  pub color Color;          // its irradiance on a surface facing it head on
+  pub ambient Color;        // the sky's even radiance
 
   // A light travelling along 'direction'
   pub fn directional(direction Vec3, color Color, ambient Color) Light {

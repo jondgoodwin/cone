@@ -519,10 +519,15 @@ Visual Studio projects stay at the root.
   (swapped in at the next frame, the old buffers released after the frames
   that drew them), `LodChain` (levels of detail chosen by index or by
   projected size, with hysteresis), `Camera` (depth 0 to 1) and `Light`
-  (one directional light and ambient), the standard lit material (Lambert
-  and Blinn-Phong, a base color times a texture) and flat lines, both in
+  (one directional light and ambient), one lighting convention for every
+  material (`src/renderframe.slang`: the light's colour an irradiance, lux
+  in physical units, ambient, sky and emissive colours radiance, nits, and
+  everything drawn multiplied by the renderer's `exposure`, which
+  `exposureFromEv100` gives, Frostbite's), the standard lit material (Lambert
+  and Blinn-Phong, a base color times a texture, an emissive colour) and flat lines, both in
   Slang (`src/lit.slang`, `src/lines.slang`), the physically based material
-  (`PbrMaterial`, `src/pbr.slang` over the `brdf` module: GGX, a clear coat,
+  (`PbrMaterial`, `src/pbr.slang` over the `brdf` module: GGX, an emissive
+  colour and strength (glTF's), a clear coat,
   everywhere or in wet patches, a Belcour-Barla thin film whose
   thickness is `noise`'s warped fBm, and glTF's metallic-roughness, normal
   and occlusion maps, linear textures from `addLinearTexture`, the normal

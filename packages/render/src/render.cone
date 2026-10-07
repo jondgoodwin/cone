@@ -23,9 +23,13 @@
 //   and orientation or 'lookAt') and Light (one directional light and
 //   ambient light).
 // - Material, the standard lit one: a base color times a texture (the
-//   texture optional), Lambert diffuse and Blinn-Phong specular, in Slang
-//   (lit.slang); and lines in one flat color (lines.slang), for wireframes
-//   and edges.
+//   texture optional), Lambert diffuse and Blinn-Phong specular, and an
+//   emissive color, in Slang (lit.slang); and lines in one flat color
+//   (lines.slang), for wireframes and edges.
+// - One lighting convention for every material (renderframe.slang): the
+//   light's color is irradiance (lux in physical units), ambient light,
+//   sky and emissive colors are radiance (nits), and everything drawn is
+//   multiplied by 'exposure' as it is written ('exposureFromEv100').
 // - PbrMaterial, the physically based one (pbr.slang, over the brdf
 //   module): glTF 2.0's metallic-roughness base (GGX, Smith, Schlick,
 //   Lambert), a clear coat over it, and over the coat a thin film (Belcour
@@ -150,11 +154,11 @@ fn readFile(path &[]u8, ok &mut bool) String {
   text;
 }
 
-// The bytes of the frame uniforms (pbr.slang's Frame, whose first 128 are
-// lit.slang's) and of the immediates
-const FRAME_BYTES = 208u64;
+// The bytes of the frame uniforms (renderframe.slang's Frame) and of the
+// immediates
+const FRAME_BYTES = 224u64;
 const IMMEDIATE_BYTES = 80u32;
-const MATERIAL_BYTES = 32u64;
+const MATERIAL_BYTES = 48u64;
 
 // What a material slot holds: the Blinn-Phong material, or the physically
 // based one
@@ -203,6 +207,12 @@ pub struct Renderer {
   // otherwise), so that a later pass into the same target -- glowing
   // particles drawn additively, say -- is depth tested against the scene
   pub keepDepth bool = false;
+  // What every material's output, the sky's and the background's are
+  // multiplied by before they are written (pre-exposure: the frame then
+  // holds numbers near 1 however bright the scene's units). 1 for a scene
+  // lit in display units; 'exposureFromEv100' for one in physical units
+  // (the light in lux, ambient, sky and emissive in nits).
+  pub exposure f32 = 1.;
 
   // A renderer drawing into targets of 'colorFormat', with a depth texture
   // of 'depthFormat' (TEXTURE_FORMAT_DEPTH32_FLOAT). For physically based
@@ -529,6 +539,7 @@ pub struct Renderer {
     slot.params.baseColor = material.baseColor;
     slot.params.specular = material.specular;
     slot.params.shininess = material.shininess;
+    slot.params.emissive = material.emissive;
     true;
   }
 
@@ -560,7 +571,7 @@ pub struct Renderer {
     imm inverse = viewProjection.inverse();
     imm eye = camera.position();
     imm towards = new Vec3(0., 0., 0.) - light.direction;
-    mut frame = new Array[f32, 52] <- fill 0f;
+    mut frame = new Array[f32, 56] <- fill 0f;
     mut k = 0usize;
     while k < 16usize {
       frame[k] = viewProjection.m[k];
@@ -590,12 +601,16 @@ pub struct Renderer {
     frame[49] = f32.from(target.height);
     frame[50] = time;
     frame[51] = environmentStrength;
+    frame[52] = exposure;
     device.queue.writeBuffer(&frameUniforms, 0u64, &frame as *u8, FRAME_BYTES);
 
     // The order: lit before lines, each front to back
     imm order = self.drawOrder(list, eye);
 
-    imm color = new RenderPassColorAttachment(view: target.createView(), clearValue: camera.background);
+    // The background is light too: exposed like the rest
+    imm bg = camera.background;
+    imm clear = new Color(bg.red * exposure, bg.green * exposure, bg.blue * exposure, bg.alpha);
+    imm color = new RenderPassColorAttachment(view: target.createView(), clearValue: clear);
     imm depthStore = if keepDepth { STORE_OP_STORE; } else { STORE_OP_DISCARD; };
     imm depthAttachment = new RenderPassDepthStencilAttachment(view: depth.createView(), depthStoreOp: depthStore);
     mut pass = encoder.beginRenderPassWithDepth(&color, &depthAttachment);
@@ -731,9 +746,10 @@ pub struct Renderer {
 }
 
 // A material's parameters as lit.slang's MaterialParams has them
-fn materialParams(material &Material) Array[f32, 8] {
+fn materialParams(material &Material) Array[f32, 12] {
   [material.baseColor.red, material.baseColor.green, material.baseColor.blue, material.baseColor.alpha,
-    material.specular.red, material.specular.green, material.specular.blue, material.shininess];
+    material.specular.red, material.specular.green, material.specular.blue, material.shininess,
+    material.emissive.red, material.emissive.green, material.emissive.blue, 0.];
 }
 
 // What a draw list holds: a mesh, the material it is drawn with (not used
