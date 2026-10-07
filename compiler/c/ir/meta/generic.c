@@ -1287,19 +1287,30 @@ static void genericFitWhy(char *buf, size_t size, StructNode *trait, INode *type
                 &meth->namesym->namestr, traitname);
             return;
         }
+        // A generic method does not meet the trait's, which is not generic, and
+        // its signature, written in type parameters, is not spelled
         char found[256] = "";
-        if (binding->tag == FnDclTag)
-            genericSigCat(found, sizeof(found), (FnDclNode*)binding);
+        if (binding->tag == FnDclTag) {
+            if (((FnDclNode*)binding)->genericinfo == NULL)
+                genericSigCat(found, sizeof(found), (FnDclNode*)binding);
+        }
         else {
             Nodes *overloads = ((FnOverloadDclNode*)binding)->overloads;
             for (uint32_t i = 0; i < overloads->used; ++i) {
+                FnDclNode *cand = (FnDclNode*)nodesGet(overloads, i);
+                if (cand->genericinfo)
+                    continue;
                 size_t used = strlen(found);
-                if (i)
+                if (found[0])
                     snprintf(found + used, sizeof(found) - used, " and ");
-                genericSigCat(found, sizeof(found), (FnDclNode*)nodesGet(overloads, i));
+                genericSigCat(found, sizeof(found), cand);
             }
         }
-        snprintf(buf, size, " %s has %s, but %s requires %s.", typename, found, traitname, expected);
+        if (found[0] == '\0')
+            snprintf(buf, size, " %s has %s only as a generic method, and a generic method does not meet %s's %s, which is not generic and requires %s.",
+                typename, &meth->namesym->namestr, traitname, &meth->namesym->namestr, expected);
+        else
+            snprintf(buf, size, " %s has %s, but %s requires %s.", typename, found, traitname, expected);
         return;
     }
     for (nodelistFor(&trait->fields, cnt, nodesp)) {

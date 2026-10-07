@@ -1,0 +1,56 @@
+// A generic method does not meet a trait's method that is not generic, as in
+// Rust: a bound is refused, naming the type, the method and that the method is
+// generic, rather than reaching a compiler defect while the refusal was spelled.
+// Both bounds are tried: a generic trait's instance, whose message says what the
+// type has instead, and a trait with no type arguments. In each the method's own
+// type parameter is written in its signature ('key &B') or is not ('count[B]').
+// The same method with the signature the trait writes is accepted.
+
+mod generic_typecheck_generic_method_bound;
+
+trait Getter[K] {
+  fn get(self &, key &K) i64;
+}
+
+trait Counter {
+  fn count(self &) i64;
+}
+
+// Generic: the parameter is in the signature
+struct GenericGet {
+  v i64;
+  fn get[B](self &, key &B) i64 { self.v; }
+}
+
+// Generic: the parameter is in neither signature
+struct GenericCount {
+  v i64;
+  fn count[B](self &) i64 { self.v; }
+}
+
+// The same methods, not generic
+struct PlainGet {
+  v i64;
+  fn get(self &, key &u64) i64 { self.v; }
+}
+
+struct PlainCount {
+  v i64;
+  fn count(self &) i64 { self.v; }
+}
+
+fn useGetter[G Getter[u64]](g &G) i64 { g.get(&0u64); }
+
+fn useCounter[C Counter](c &C) i64 { c.count(); }
+
+fn main() i32 {
+  imm pg = new PlainGet(1);
+  imm pc = new PlainCount(2);
+  imm gg = new GenericGet(3);
+  imm gc = new GenericCount(4);
+  useGetter(&pg);
+  useCounter(&pc);
+  useGetter(&gg);       //~ ErrorWhereUnmet:12 "GenericGet has get only as a generic method, and a generic method does not meet Getter[u64]'s get"
+  useCounter(&gc);      //~ ErrorWhereUnmet:13 "useCounter requires C is Counter, and GenericCount is not Counter"
+  0;
+}

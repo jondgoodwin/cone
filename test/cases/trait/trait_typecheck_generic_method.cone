@@ -1,0 +1,41 @@
+// A generic method does not meet a trait's method that is not generic, in the
+// forms that are not a static bound (generic_typecheck_generic_method_bound):
+// a type that declares the trait with 'is', and a virtual reference made from a
+// type that has the method only as a generic one. Each is refused with the
+// diagnostic a wrong signature gets. The method's own type parameter is written
+// in the signature ('key &B') in one and is not in the other.
+
+mod trait_typecheck_generic_method;
+
+trait Getter[K] {
+  pub fn get(self &, key &K) i64;
+}
+
+trait Counter {
+  pub fn count(self &) i64;
+}
+
+struct DeclaresCount is Counter {   //~ ErrorInvType:8 "Type declares count, but none of what it declares has the signature Counter requires"
+  v i64;
+  pub fn count[B](self &) i64 { self.v; }
+}
+
+struct GenericGet {
+  v i64;
+  pub fn get[B](self &, key &B) i64 { self.v; }
+}
+
+struct PlainGet {
+  v i64;
+  pub fn get(self &, key &u64) i64 { self.v; }
+}
+
+fn viaGetter(g &<Getter[u64]) i64 { g.get(&0u64); }
+
+fn main() i32 {
+  imm pg = new PlainGet(1);
+  imm gg = new GenericGet(2);
+  viaGetter(&pg);
+  viaGetter(&gg);       //~ ErrorInvType:13 "Expression's type does not match declared parameter"
+  0;
+}
