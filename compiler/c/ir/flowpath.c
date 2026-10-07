@@ -757,6 +757,7 @@ static int pwMayAlias(INode *reftype) {
 // step further along the reference's own place. Nothing is tracked through a
 // raw pointer, or through a reference that is not read from a variable. A
 // reference that may alias makes the path shared from there on.
+static int pwIsOwnedLent(CastNode *cast);
 static int pwThrough(INode **refp, Place *pl, PathSet **base) {
     INode *reftype = iexpGetTypeDcl(*refp);
     if (reftype->tag != RefTag && reftype->tag != ArrayRefTag && reftype->tag != VirtRefTag) {
@@ -849,6 +850,11 @@ static int pwPlace(INode **nodep, Place *pl, PathSet **base) {
         return 1;
     case CastTag:
         if (node->flags & FlagConvert)
+            break;
+        // An owner of 'Array[T]' lent as the slice it is indexed through
+        // ('&o[a..b]') is a borrow of the owner, whose loan the walk of it as
+        // a value makes, not a place of its own
+        if (iexpGetTypeDcl(node)->tag == ArrayRefTag && pwIsOwnedLent((CastNode *)node))
             break;
         return pwPlace(&((CastNode *)node)->exp, pl, base);
     case FldAccessTag:
@@ -1011,7 +1017,9 @@ static PathSet *pwLend(INode *site, Place *pl, INode *perm, int access, uint32_t
 static int pwIsOwnedLent(CastNode *cast) {
     INode *to = iexpGetTypeDcl((INode *)cast);
     INode *from = iexpGetTypeDcl(cast->exp);
-    return (to->tag == RefTag || to->tag == VirtRefTag) && from->tag == to->tag
+    // An owner of 'Array[T]' lent as the slice is such a borrow too
+    return (to->tag == RefTag || to->tag == VirtRefTag || to->tag == ArrayRefTag)
+        && (from->tag == to->tag || (to->tag == ArrayRefTag && from->tag == RefTag))
         && pwIsBorrowed(to) && !pwIsBorrowed(from);
 }
 

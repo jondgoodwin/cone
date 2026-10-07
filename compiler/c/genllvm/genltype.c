@@ -53,26 +53,41 @@ static LLVMValueRef genlVtableThunk(GenState *gen, Vtable *vtable, VtableImpl *i
         LLVMPointerType(genlType(gen, recvtype), 0), "");
     INode **nodesp;
     uint32_t cnt;
-    for (nodesFor(path, cnt, nodesp)) {
-        FieldDclNode *field = (FieldDclNode*)*nodesp;
-        recv = LLVMBuildStructGEP2(gen->builder, genlType(gen, recvtype), recv, field->index, &field->namesym->namestr);
-        INode *fldtype = itypeGetTypeDcl(field->vtype);
-        if (fldtype->tag == RefTag || fldtype->tag == PtrTag) {
-            recv = LLVMBuildLoad2(gen->builder, genlType(gen, fldtype), recv, "");
-            recvtype = genlPointee(fldtype);
-        }
-        else
-            recvtype = fldtype;
+    // A method folded from a body the type lends: the path is the lending
+    // method alone, called with the receiver, and the borrow it gives (the
+    // body's reference, a pointer and a count) is the method's self
+    FnDclNode *lender = path->used == 1 && nodesGet(path, 0)->tag == FnDclTag ? (FnDclNode*)nodesGet(path, 0) : NULL;
+    if (lender) {
+        if (lender->llvmvar == NULL)
+            genlGloFnName(gen, lender);
+        LLVMTypeRef lenderself = LLVMTypeOf(LLVMGetParam(lender->llvmvar, 0));
+        LLVMValueRef lendarg = LLVMBuildBitCast(gen->builder, recv, lenderself, "");
+        recv = LLVMBuildCall2(gen->builder, genlType(gen, lender->vtype), lender->llvmvar, &lendarg, 1, "lent");
+        if (meth->llvmvar == NULL)
+            genlGloFnName(gen, meth);
     }
+    else {
+        for (nodesFor(path, cnt, nodesp)) {
+            FieldDclNode *field = (FieldDclNode*)*nodesp;
+            recv = LLVMBuildStructGEP2(gen->builder, genlType(gen, recvtype), recv, field->index, &field->namesym->namestr);
+            INode *fldtype = itypeGetTypeDcl(field->vtype);
+            if (fldtype->tag == RefTag || fldtype->tag == PtrTag) {
+                recv = LLVMBuildLoad2(gen->builder, genlType(gen, fldtype), recv, "");
+                recvtype = genlPointee(fldtype);
+            }
+            else
+                recvtype = fldtype;
+        }
 
-    // The method takes its self as it declared it: a pointer, or the value
-    if (meth->llvmvar == NULL)
-        genlGloFnName(gen, meth);
-    LLVMTypeRef selftype = LLVMTypeOf(LLVMGetParam(meth->llvmvar, 0));
-    if (LLVMGetTypeKind(selftype) == LLVMPointerTypeKind)
-        recv = LLVMBuildBitCast(gen->builder, recv, selftype, "");
-    else
-        recv = LLVMBuildLoad2(gen->builder, genlType(gen, recvtype), recv, "");
+        // The method takes its self as it declared it: a pointer, or the value
+        if (meth->llvmvar == NULL)
+            genlGloFnName(gen, meth);
+        LLVMTypeRef selftype = LLVMTypeOf(LLVMGetParam(meth->llvmvar, 0));
+        if (LLVMGetTypeKind(selftype) == LLVMPointerTypeKind)
+            recv = LLVMBuildBitCast(gen->builder, recv, selftype, "");
+        else
+            recv = LLVMBuildLoad2(gen->builder, genlType(gen, recvtype), recv, "");
+    }
 
     unsigned int argcnt = LLVMCountParams(fn);
     LLVMValueRef *args = (LLVMValueRef *)memAllocBlk(argcnt * sizeof(LLVMValueRef));

@@ -167,6 +167,10 @@ int itypeIsConcrete(INode *type);
 // carries ('str': a byte), or NULL for any other type
 INode *itypeLenBodyElem(INode *type);
 
+// Is this type 'Array[T]', the body of a run-time length (an instance of core's
+// generic of that name), whose borrow is the slice?
+int itypeIsArrayBody(INode *type);
+
 // Is the size of a value of this type known at compile time ('Sized')? Is it
 // known at compile time or carried by a reference to the type ('DynSized')?
 // The two built-in markers the compiler grants (genericTypeIs).

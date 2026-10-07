@@ -1,0 +1,56 @@
+// An 'Arc[imm, Array[i64]]' read by two threads: the body of a run-time length
+// is a pointer and a count in the sync package's 'Arc' as in every region, so
+// each thread's owner is a pointer and a count, the elements sit after the
+// count's header, and the atomic count of owners keeps them until the last has
+// gone. main allocates the array by copying a borrow of a fixed one, and starts
+// two readers, handing each an owner ('thread.start' takes its argument by
+// value, so each call copies main's owner, one more, counted by 'aliasRef').
+// main's own owner goes at the end of the block that started them; the
+// elements live until the last of the three has gone, and the block is freed
+// once.
+//
+// 'Arc[imm, ...]' is Sendable where its body is: a body of numbers holds
+// nothing bound to its thread.
+//
+// Worked out by hand: the numbers are 1 through 8, so 8 of them, summing to 36.
+
+mod arcarray;
+
+import testing use *;
+import thread;
+import sync use *;
+
+// The gate the readers wait at, so the array is held by both when main's owner goes
+imm gate Atomic[bool];
+
+fn @initpure init() {
+  gate = Atomic[bool].of(false);
+}
+
+// How many numbers, and their sum, in one number: count * 1000 + sum
+fn reader(m Arc[imm, Array[i64]]) u64 {
+  mut sum = 0u64;
+  mut i = 0usize;
+  while i < m.len {
+    sum = sum + u64.from(m[i]);
+    i = i + 1usize;
+  }
+  while !gate.load() { thread.yieldNow(); }
+  u64.from(m.len) * 1000u64 + sum;
+}   // this thread's owner of m goes here
+
+fn main() i32 {
+  initAll();
+  mut a thread.Thread[u64];
+  mut b thread.Thread[u64];
+  {
+    imm numbers = new Array[i64, 8] <- 1i64, 2i64, 3i64, 4i64, 5i64, 6i64, 7i64, 8i64;
+    imm m = new Arc[imm, Array[i64]](&numbers);
+    a = thread.start(m, &reader);
+    b = thread.start(m, &reader);
+  }   // main's owner goes: the readers hold the only two
+  gate.store(true);
+  expectUInt(a.join(), 8036u64, "the first reader read 8 numbers summing to 36");
+  expectUInt(b.join(), 8036u64, "and so did the second");
+  done();
+}

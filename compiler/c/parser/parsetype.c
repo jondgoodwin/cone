@@ -750,6 +750,8 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
     strnode = named ? stdlibAdoptStr(lex->val.ident, parse->mod) : NULL;
     if (strnode == NULL && named)
         strnode = stdlibAdoptCStr(lex->val.ident, parse->mod);
+    if (strnode == NULL && named)
+        strnode = stdlibAdoptArray(lex->val.ident, parse->mod);
     if (strnode == NULL)
         strnode = newStructNode(named ? lex->val.ident : anonName);
     strnode->tag = tag;

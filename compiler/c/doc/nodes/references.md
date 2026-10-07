@@ -726,10 +726,26 @@ as a borrow), as the borrow of a slice's dereference is the slice.
 A reference is thin or fat by its **target**, in every region and for a borrow
 alike. `itypeLenBodyElem` answers whether a type is a *dynamically sized body*, one
 whose elements run on from the pointer for a count the reference carries, and
-what its element type is; `refIsFat` asks it of a `RefTag`'s `vtexp`. The one such
-body is `str`, `strTypeDcl` (corelib.c): a struct declared `@opaque` with no
-fields, element `u8`. A trait's reference carries a vtable instead and is its own
-tag, `VirtRefTag`.
+what its element type is; `refIsFat` asks it of a `RefTag`'s `vtexp`. There are two
+such bodies. `str`, `strTypeDcl` (corelib.c), is a struct declared `@opaque` with no
+fields, element `u8`. `Array[T]` is an instance of core's generic struct of that name:
+`arrayTypeDcl`, the struct the compiler makes for `Array[T, n]`, becomes the generic
+when core declares `pub struct @opaque Array[T]` (`stdlibAdoptArray`, as `str` is
+adopted), and `itypeLenBodyElem` finds an instance by the call that made it
+(`dcl->instnode`, whose function is `arrayTypeDcl` and whose one type argument is the
+element). `Array[T, n]` is still lowered to the array type at name resolution
+(`arrayTypeLower`); a bracketed use with the element alone is left to be an ordinary
+generic instance (`fnCallNameRes`). A trait's reference carries a vtable instead and
+is its own tag, `VirtRefTag`.
+
+**The borrow of `Array[T]` is the slice.** `&Array[T]` is `&[]T`, one type with two
+spellings, so nothing downstream of the type check knows the body is there: a borrow
+of an instance (`refNameRes` for the spelling written out, `refTypeCheck` for one
+reached through an alias or built by the compiler) is retagged `ArrayRefTag` with the
+element as its target. Only an owner keeps the body as its target, `RefTag` with
+`vtexp` the instance, and it reaches the slice by the lend described under
+"Type check" below. `Array[T]`'s methods are core's, written on the instance; their
+`self` is that slice (`fnDclTypeCheck` accepts it as the type's own).
 
 The markers `Sized` and `DynSized` (`itypeIsSized`, `itypeIsDynSized`, granted
 in `genericTypeIs`) say which: `Sized` is a type with a size (`itypeIsConcrete`),
@@ -746,6 +762,14 @@ an `@unsized` enum are neither, and their references are thin.
   borrow of the same body, checking nothing else. Implicitly a `&str` goes to a
   `&[]u8` (`arrayRefMatchesRef`, a recast, the permission narrowing as it must:
   `imm` to `ro`, never `mut`) and a `&[]u8` does not go to a `&str`.
+  **An owner of `Array[T]`, in any region, is lent as the slice** by the same
+  function, a recast whose element variance is a slice's own. Flow reads that
+  recast as the borrow of the owner it is (`pwIsOwnedLent`, `flowGateIsOwnedLent`),
+  so the owner may not be moved while the slice, a range of it or an element's
+  borrow is used. Indexing an owner (`fnCallBodyAsSlice`) coerces the receiver to
+  the slice first, `ro` for a read, `mut` for an assigned element, the borrow's own
+  for `&mut o[i]`, and goes on as a slice's index does; a generic's element type is
+  inferred through an owner (`genericInferType`).
 - **A string literal is `&imm str`.** Its value is the pair of its constant's
   address and its length, `slitTypeCheck` types it as that reference, and it is a
   borrow of the whole program (global scope). It is copied into an owner of the
@@ -759,9 +783,14 @@ an `@unsized` enum are neither, and their references are thin.
   `memcpy`, returning the pointer and the count. The element type stands in the
   `{region, perm, value}` header's value field (`genlRefTypeSetup`), so the
   header's size is the same for every length and `genlRegionHeader` steps back
-  by a constant. A region's `alloc` that takes a record is handed the element's
-  (a collector counts an object by its record, so a body counts as its header and
-  one element).
+  by a constant. A region's `alloc` that takes a record is handed the element's,
+  after a size that is the bytes the object really takes; a collector counts an
+  object by that size, and not by its record's one element (`Gc` keeps the surplus
+  in its header, in the padding after its colour). One byte is allocated beyond the
+  elements: the NUL text keeps, and for an `Array[T]` only the byte that keeps an
+  empty one in a region with no header from asking for no memory. An `Array[T]`'s
+  allocation takes only elements that copy (`typeLitAllocValue`: the elements move
+  in only with a `List`'s `freeze`, which casts the slice of its block to the owner).
 - **Release.** `genlRefPtr` takes word 0 wherever a pointer is wanted (the
   header, a trace, a null test); a nullable-pointer enum holding one tests word 0.
   The owner's death finalizes each element, in a loop over word 1, where the

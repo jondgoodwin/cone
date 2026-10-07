@@ -163,6 +163,9 @@ static int genericInferType(FnCallNode *inferredgencall, Nodes *genparms, INode 
             elemtype = arrayElemType(argtype);
         else if (argtype->tag == RefTag && itypeGetTypeDcl(((RefNode *)argtype)->vtexp)->tag == ArrayTag)
             elemtype = arrayElemType(itypeGetTypeDcl(((RefNode *)argtype)->vtexp));
+        // An owner of 'Array[T]' is lent as the slice a parameter expects
+        else if (argtype->tag == RefTag && itypeIsArrayBody(((RefNode *)argtype)->vtexp))
+            elemtype = itypeLenBodyElem(((RefNode *)argtype)->vtexp);
         else
             return 1;
         return genericInferType(inferredgencall, genparms, ((RefNode *)parmtype)->vtexp, elemtype);
@@ -962,7 +965,8 @@ static void genericTypeNameCat(char *buf, size_t size, INode *type, int depth) {
         itypeSpellCat(buf, size, dcl, depth);
         return;
     }
-    snprintf(buf + used, size - used, "%s", itypeName(dcl));
+    // (the body of a run-time length is already named with its element)
+    snprintf(buf + used, size - used, "%s", itypeIsArrayBody(dcl) ? "Array" : itypeName(dcl));
     Nodes *args = dcl->tag == StructTag && depth < 4 ? itypeInstanceTypeArgs(dcl) : NULL;
     if (args == NULL)
         return;

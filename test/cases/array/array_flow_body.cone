@@ -1,0 +1,52 @@
+// An owner of 'Array[T]' lent as the slice is a borrow of what it owns, as an
+// owner lent as any borrow is: it may not be moved while the slice, a range of
+// it or an element's borrow is still to be used, and a borrow of it may not
+// outlive it. The owner's own reads ('o.len', 'o[i]') lend nothing that lasts.
+
+mod array_flow_body;
+
+fn lentWhole() usize {
+  imm fixed Array[i32, 3] = [1, 2, 3];
+  imm o = new So[Array[i32]](&fixed);
+  imm lent &Array[i32] = o;
+  imm moved = o;                         //~ ErrorFrozen "may not be moved"
+  lent.len;
+}
+
+fn lentRange() usize {
+  imm fixed Array[i32, 3] = [1, 2, 3];
+  imm o = new So[Array[i32]](&fixed);
+  imm part = &o[1usize..];
+  imm moved = o;                         //~ ErrorFrozen "may not be moved"
+  part.len;
+}
+
+fn lentElement() i32 {
+  imm fixed Array[i32, 3] = [1, 2, 3];
+  imm o = new So[Array[i32]](&fixed);
+  imm one = &o[1usize];
+  imm moved = o;                         //~ ErrorFrozen "may not be moved"
+  *one;
+}
+
+fn returnedOwner() &Array[i32] {
+  imm fixed Array[i32, 3] = [1, 2, 3];
+  imm o = new So[Array[i32]](&fixed);
+  o;                                     //~ ErrorEscape "outlives the local value"
+}
+
+fn returnedRange() &Array[i32] {
+  imm fixed Array[i32, 3] = [1, 2, 3];
+  imm o = new So[Array[i32]](&fixed);
+  &o[0usize..2usize];                    //~ ErrorEscape "outlives the local value"
+}
+
+// Reads that keep nothing lent leave the owner free to move
+fn readsThenMoves() usize {
+  imm fixed Array[i32, 3] = [1, 2, 3];
+  imm o = new So[Array[i32]](&fixed);
+  imm n = o.len;
+  imm first = o[0usize];
+  imm moved = o;
+  n;
+}

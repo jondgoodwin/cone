@@ -35,7 +35,10 @@ Visual Studio projects stay at the root.
   Congo compiles dependents against that. `core` is the prelude every module
   imports (`Option`, `Result`, the methods of `str`, the text body whose struct
   the compiler makes and core's `pub struct @opaque str` gives its methods, all
-  `inline`, and `cstr`, C's `const char *`, a one-pointer struct the compiler makes
+  `inline`, `Array[T]`, the body of a run-time length whose borrow is the slice
+  `&Array[T]` (the same type as `&[]T`), a generic struct the compiler's `Array`
+  becomes when core declares it, whose `len` is written there, and
+  `cstr`, C's `const char *`, a one-pointer struct the compiler makes
   too so that the C-named modules can declare their strings with it, whose
   field and methods are core's, the `So` and `Rc` regions, `Rwcell`, the
   lock permission for `Rc` (`Rc[Rwcell, T]`), `TypeRecord`, the
@@ -517,7 +520,9 @@ Visual Studio projects stay at the root.
   beside fetch()'s), and its examples `fetch.cone` (one URL from a real
   server: status, fields, the body's size, the timing) and `bench.cone`
   (throughput, latency and memory over loopback);
-  `collections` is a growable `List[T]`, an owned `String` (always a NUL after
+  `collections` is a growable `List[T]` (lending a `&Array[T]`, folding the methods of
+  `Array[T]` in with `use Array[T] via view`, frozen into a `So[Array[T]]` by
+  `freeze()`), an owned `String` (always a NUL after
   its bytes, lending a `&str` whose methods it folds in with `use str via view`,
   frozen into a `So[str]` by `freeze()`) and `Dict[K, V]`, a
   SwissTable (control bytes probed eight at a time, up to 7/8 full) over any

@@ -406,22 +406,23 @@ annotating a borrow with a *lifetime* rather than with an arena.
 | --- | --- | --- |
 | `&T` | borrowed — points at something someone else owns | `T*` |
 | `Region[perm, T]` | owning — the region releases it | `T*`, pointing **past** a header |
-| `&[]T` | slice — a borrowed run of elements | `{T*, usize}` |
+| `&Array[T]` (also written `&[]T`) | slice — the borrow of the body `Array[T]`, a run of elements | `{T*, usize}` |
 | `&<Trait` | virtual — dispatches through a vtable | `{i8*, Vtable*}` |
-| `&str`, `Region[perm, str]` | to a body whose length it carries — borrowed or owning | `{u8*, usize}`, the owner pointing **past** its header |
+| `&str`, `Region[perm, str]`, `Region[perm, Array[T]]` | to a body whose length it carries — borrowed or owning | `{T*, usize}`, the owner pointing **past** its header |
 
 **Every reference is thin or fat by its target.** A target whose size is known
 at compile time (`Sized`) is reached by one pointer, in every region and for a
 borrow. A target whose size is not known there, but which a reference to it can
 carry (`DynSized`), is reached by a pointer and the missing information: a
 trait's reference carries a vtable, which holds the size of what it points at,
-and a body such as `str` a count of its elements. A type declared `@opaque`, and
+and a body such as `str` or `Array[T]` a count of its elements. A type declared `@opaque`, and
 an `@unsized` enum, are neither: their references are thin and tell nothing of
 the size. `Sized` and `DynSized` are markers the compiler grants from the type,
 asked by a constraint (`where T is DynSized`).
 
 **A body whose length a reference carries has no size to hold.** `str` is never
-a local, a field or a parameter, only the target of a reference. It is allocated
+a local, a field or a parameter, only the target of a reference; so is
+`Array[T]`, the body of a run-time length, whose borrow is the slice. It is allocated
 by copying a borrow of one, `new So[str](view)`, as long as the view, into the
 memory the region gives. Each owner carries its own count, which is right
 because the body never grows: a growable one would need a count every holder
@@ -436,13 +437,16 @@ apart: the default stays whatever the ban later allows, so code never changes
 meaning when a unique `str` is given length-preserving methods. Any struct may
 declare it.
 
-**A slice is a borrow of its elements, and an array that is owned is not an
+**A slice is the borrow of `Array[T]`, and an array that is owned is not an
 array reference.** A statically sized array is reached by a thin reference with
-its size in the type, and an array whose whole length is chosen at runtime and
-may grow is a collection, a `List`, shared as a managed reference to it,
-`Rc[List[T]]`: a length carried in each fat pointer works against sharing a
-growable array, where every holder needs the one count the list keeps. Sharing
-costs a second block and a second hop; a list held in a local is used directly.
+its size in the type; an array whose length is chosen at run time and never
+changes is the body `Array[T]`, owned by a fat reference in any region
+(`So[Array[T]]`, `Rc[Array[T]]`), one hop; and one that may grow is a
+collection, a `List`, shared as a managed reference to it, `Rc[List[T]]`: a
+length carried in each fat pointer works against sharing a growable array,
+where every holder needs the one count the list keeps. Sharing costs a second
+block and a second hop; a list held in a local is used directly, lends its
+elements as the slice, and `freeze()` moves its block into a `So[Array[T]]`.
 
 Three of the five are fat pointers, and **the first two are indistinguishable at
 runtime** — region and permission are entirely compile-time. That is the single
