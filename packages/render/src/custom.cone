@@ -1,0 +1,57 @@
+// Custom pipelines: shaders of the caller's own, which a material may be
+// drawn with in the same pass, batched and instanced like the renderer's
+// own materials. Terrain sampling a heightfield in its vertex stage, water,
+// a sky and flocking birds each want one.
+//
+// THE CONTRACT. A custom pipeline's Slang imports renderframe.slang, so
+// group 0 is the renderer's: the frame's uniforms ('frame') and the
+// instances ('instances[SV_VulkanInstanceID]', the copy drawn: its model
+// matrix and tint). Its vertex stage takes the three vertex streams the
+// renderer uploads for every mesh (location 0 the position, 1 the normal,
+// 2 the uv, each float32), the first 'streams' of them, every one it is
+// given read (the validation layer warns of an attribute not read). It keeps the lighting
+// convention (the light's colour an irradiance, ambient and emissive
+// radiance) and multiplies what it writes by 'frame.exposure.x'. Group 1 is
+// its material's, laid out by the pipeline:
+//   binding 0          a uniform buffer of 'paramBytes' bytes, the
+//                      material's parameters ('addCustomMaterial',
+//                      'setCustomParams')
+//   bindings 1 to n    its textures, n of them, each of the sample type
+//                      'textures' gives (TEXTURE_SAMPLE_TYPE_FLOAT for a
+//                      colour texture, _UNFILTERABLE_FLOAT for an r32float
+//                      field: 'addFieldTexture'), read in either stage
+//   binding n + 1      the renderer's sampler (linear, repeating)
+// and group 2, if 'environment', is the environment's (pbr.slang's
+// bindings: the sky's parameters, the diffuse and specular cubes, the split
+// sum's table, their sampler).
+
+// What 'addPipeline' makes a pipeline of
+pub struct CustomPipeline {
+  pub spirv &[]u32;                              // the SPIR-V module holding both stages
+  pub vertexEntryPoint &[]u8 = "vertexMain";
+  pub fragmentEntryPoint &[]u8 = "fragmentMain";
+  pub textures &[]u32;                           // each texture binding's TEXTURE_SAMPLE_TYPE_
+  pub streams u32 = 3u32;                        // the vertex streams it reads: 1 position, 2 and normal, 3 and uv
+  pub paramBytes u64 = 16u64;                    // the parameters' bytes (a multiple of 16)
+  pub environment bool = false;                  // bind the environment as group 2
+  pub cullMode u32 = CULL_MODE_BACK;
+  pub depthWrite bool = true;
+}
+
+// A custom pipeline in the renderer: its shader, layouts and pipeline
+pub struct PipelineSlot {
+  shader ShaderModule;
+  materialLayout BindGroupLayout;
+  layout PipelineLayout;
+  pipeline RenderPipeline;
+  textureCount u32;
+  paramBytes u64;
+  environment bool;
+}
+
+pub struct PipelineHandle {
+  pub slot Ref[PipelineSlot];
+
+  pub fn none() PipelineHandle { new PipelineHandle(Ref[PipelineSlot].none()); }
+  pub fn isNone(self) bool { slot.isNone(); }
+}

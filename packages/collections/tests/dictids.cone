@@ -1,0 +1,429 @@
+// Dict keyed by what is not a String: integers, an id struct whose hash the
+// compiler supplies, a key that hashes like every other, and keys chosen to
+// collide. Every expected value is worked out by hand:
+// - the table holds 7 entries in every 8 buckets and doubles when full, so
+//   the capacities run 7, 14, 28, 56, ... 7168, 14336 (16384 buckets), and
+//   10000 entries need the last;
+// - 'Dict.withSeed(s)' hashes a key by feeding it to 'Hasher.withSeed(s)' and
+//   asking 'finish', so a test can find keys that share a tag (the top 7 bits
+//   of the hash) and the bucket they start at, which is the hash's low bits;
+// - the order 'keys' visits in comes from the hash, and was worked out apart
+//   from this program (an independent Python version of core's Hasher, a
+//   key's first bucket the hash's low 3 bits, a taken one stepping on to the
+//   next, wrapping, the buckets read from 0 up), for the keys 1 to 5 in 8
+//   buckets: with the fixed seed of 'deterministic' (0x243F6A8885A308D3) the
+//   keys start at buckets 6, 2, 1, 1, 4, so they are visited 3 2 4 5 1; with
+//   seed 7, 1 5 3 4 2.
+
+mod dictids;
+
+import testing use *;
+import collections use *;
+
+// Two halves, a word each: the hash is supplied, the fields in order
+struct Id is Hash {
+  pub slot u32;
+  pub gen u32;
+  pub fn `==`(self, o Id) bool {slot == o.slot and gen == o.gen;}
+}
+
+// A hash that is the same for every key: all of them in one probe chain
+struct Same is Hash {
+  pub n i64;
+  pub fn `==`(self, o Same) bool {n == o.n;}
+  pub fn hash(self &, h &mut Hasher) { h.writeU64(0u64); }
+}
+
+fn hashOf[K Hash](k &K, seed u64) u64 {
+  mut h = Hasher.withSeed(seed);
+  k.hash(&mut h);
+  h.finish();
+}
+
+fn main() i32 {
+  integers();
+  ids();
+  oneHash();
+  tagCollisions();
+  order();
+  counts();
+  smallKeys();
+  shared();
+  done();
+}
+
+// Through a shared owner on one thread: insert, contains and len work, and
+// 'getCopy' answers a copy of a value, with no borrow into the table held
+fn shared() {
+  imm a = new Rc[mut, Dict[u64, i64]](Dict[u64, i64].empty());
+  imm one = 1u64;
+  imm two = 2u64;
+  imm nine = 9u64;
+  a.insert(one, 10);
+  imm b = a;
+  b.insert(two, 20);
+  expectUInt(u64.from(a.len()), 2, "both owners see two entries");
+  expectBool(a.contains(&two), true, "contains through a shared owner");
+  match a.getCopy(&two) {
+    case imm v Some {expectInt(v.value, 20, "a copy of a value through a shared owner");}
+    case is None {expect(false, "a copy of a value through a shared owner");}
+  }
+  match b.getCopy(&nine) {
+    case is Some[i64] {expect(false, "no copy of a missing key");}
+    case is None[i64] {expect(true, "no copy of a missing key");}
+  }
+}
+
+// 10000 u64 keys: growth through twelve doublings, overwriting, removing half
+// (leaving removed buckets), putting them back
+fn integers() {
+  mut d = Dict[u64, u64].empty();
+  mut k = 0u64;
+  while k < 10000u64 {
+    d.insert(k, k * 3u64);
+    k = k + 1u64;
+  }
+  expectUInt(u64.from(d.len()), 10000, "ten thousand entries");
+  expectUInt(u64.from(d.capacity()), 14336, "twelve doublings of 7");
+  mut wrong = 0u64;
+  k = 0u64;
+  while k < 10000u64 {
+    match d.get(&k) {
+      case imm v Some {if *v.value != k * 3u64 { wrong = wrong + 1u64; }}
+      case is None {wrong = wrong + 1u64;}
+    }
+    k = k + 1u64;
+  }
+  expectUInt(wrong, 0, "every key finds its value");
+  k = 10000u64;
+  while k < 10100u64 {
+    if d.contains(&k) { wrong = wrong + 1u64; }
+    k = k + 1u64;
+  }
+  expectUInt(wrong, 0, "none of the next hundred");
+  expectBool(d.insert(77u64, 1u64), true, "inserting a held key replaces");
+  expectUInt(*d[&77u64], 1, "the replaced value");
+  d.insert(77u64, 231u64);
+  expectUInt(u64.from(d.len()), 10000, "replacing adds nothing");
+
+  // Remove the even keys, each answering its value
+  mut removedSum = 0u64;
+  k = 0u64;
+  while k < 10000u64 {
+    match d.remove(&k) {
+      case imm v Some {removedSum = removedSum + v.value;}
+      case is None {wrong = wrong + 1u64;}
+    }
+    k = k + 2u64;
+  }
+  expectUInt(wrong, 0, "each even key was held");
+  // 3 * (0 + 2 + ... + 9998) = 3 * 2 * (4999 * 5000 / 2)
+  expectUInt(removedSum, 74985000, "the removed values");
+  expectUInt(u64.from(d.len()), 5000, "5000 left");
+  k = 0u64;
+  while k < 10000u64 {
+    if d.contains(&k) != (k % 2u64 == 1u64) { wrong = wrong + 1u64; }
+    k = k + 1u64;
+  }
+  expectUInt(wrong, 0, "only the odd keys are held");
+
+  // Put the even ones back, over the removed buckets
+  k = 0u64;
+  while k < 10000u64 {
+    if d.insert(k, k * 5u64) { wrong = wrong + 1u64; }
+    k = k + 2u64;
+  }
+  expectUInt(wrong, 0, "the even keys were new again");
+  expectUInt(u64.from(d.len()), 10000, "ten thousand again");
+  expect(d.capacity() <= 14336usize, "reusing removed buckets does not grow it");
+  // Even keys now hold 5k, odd keys 3k: 5 * 24995000 + 3 * 25000000
+  mut total = 0u64;
+  mut c = d.values();
+  while true {
+    match c.next() {
+      case imm v Some {total = total + *v.value;}
+      case is None {break;}
+    }
+  }
+  expectUInt(total, 199975000, "the values sum");
+}
+
+fn ids() {
+  mut d = Dict[Id, i64].empty();
+  mut i = 0u32;
+  while i < 500u32 {
+    d.insert(new Id(i, (i % 7u32) * 2u32 + 1u32), i64.from(i));
+    i = i + 1u32;
+  }
+  expectUInt(u64.from(d.len()), 500, "five hundred ids");
+  mut wrong = 0i64;
+  i = 0u32;
+  while i < 500u32 {
+    imm key = new Id(i, (i % 7u32) * 2u32 + 1u32);
+    if *d[&key] != i64.from(i) { wrong = wrong + 1i64; }
+    // the same slot, another generation, is another key
+    if d.contains(&new Id(i, (i % 7u32) * 2u32 + 3u32)) { wrong = wrong + 1i64; }
+    i = i + 1u32;
+  }
+  expectInt(wrong, 0, "each id finds its own value and not another generation's");
+  d.insert(new Id(5u32, 1u32), -1);
+  d.insert(new Id(5u32, 3u32), -2);
+  expectUInt(u64.from(d.len()), 502, "slot 5 now holds three generations (11, 1 and 3)");
+  expectInt(*d[&new Id(5u32, 3u32)], -2, "generation 3");
+  expectInt(*d[&new Id(5u32, 1u32)], -1, "generation 1");
+  expectInt(*d[&new Id(5u32, 11u32)], 5, "generation 11, the first");
+  expectBool(d.insert(new Id(5u32, 1u32), -3), true, "the same id replaces");
+  match d.remove(&new Id(5u32, 3u32)) {
+    case imm v Some {expectInt(v.value, -2, "removed generation 3");}
+    case is None {expect(false, "removed generation 3");}
+  }
+  expectBool(d.contains(&new Id(5u32, 3u32)), false, "generation 3 is gone");
+  expectInt(*d[&new Id(5u32, 1u32)], -3, "generation 1 stays");
+  // The supplied hash feeds the fields in order, a word each
+  expect(hashOf(&new Id(1u32, 2u32), 3u64) != hashOf(&new Id(2u32, 1u32), 3u64), "the fields are not interchangeable");
+}
+
+// Every key hashes alike: one chain, and every search walks it
+fn oneHash() {
+  mut d = Dict[Same, i64].empty();
+  mut n = 0i64;
+  while n < 300i64 {
+    d.insert(new Same(n), n * 2i64);
+    n = n + 1i64;
+  }
+  expectUInt(u64.from(d.len()), 300, "three hundred keys with one hash");
+  mut wrong = 0i64;
+  n = 0i64;
+  while n < 300i64 {
+    if *d[&new Same(n)] != n * 2i64 { wrong = wrong + 1i64; }
+    n = n + 1i64;
+  }
+  expectInt(wrong, 0, "each found in the chain");
+  expectBool(d.contains(&new Same(300i64)), false, "a key not held");
+  // Remove the odd ones: the chain has holes, and the even ones are still found
+  n = 1i64;
+  while n < 300i64 {
+    match d.remove(&new Same(n)) {
+      case is Some[i64] {}
+      case is None[i64] {wrong = wrong + 1i64;}
+    }
+    n = n + 2i64;
+  }
+  expectInt(wrong, 0, "each odd key removed");
+  n = 0i64;
+  while n < 300i64 {
+    if d.contains(&new Same(n)) != (n % 2i64 == 0i64) { wrong = wrong + 1i64; }
+    n = n + 1i64;
+  }
+  expectInt(wrong, 0, "the even keys are held, past the holes");
+  // Back in over the removed buckets
+  n = 1i64;
+  while n < 300i64 {
+    d.insert(new Same(n), n * 3i64);
+    n = n + 2i64;
+  }
+  expectUInt(u64.from(d.len()), 300, "three hundred again");
+  n = 0i64;
+  while n < 300i64 {
+    imm want = if n % 2i64 == 0i64 {n * 2i64;} else {n * 3i64;};
+    if *d[&new Same(n)] != want { wrong = wrong + 1i64; }
+    n = n + 1i64;
+  }
+  expectInt(wrong, 0, "all found with their values");
+}
+
+// Keys that share a tag and a first bucket in a table of 64 buckets (the hash's
+// top 7 bits and low 6): found by hashing, so each is compared against many
+// others with the same control byte
+fn tagCollisions() {
+  imm seed = 11u64;
+  imm h0 = hashOf(&0u64, seed);
+  imm tag = h0 >> 57u64;
+  imm start = h0 & 63u64;
+  mut held = List[u64].empty();
+  held.push(0u64);
+  mut others = List[u64].empty();
+  mut k = 1u64;
+  while held.len() < 60usize or others.len() < 60usize {
+    imm h = hashOf(&k, seed);
+    if (h >> 57u64) == tag {
+      if (h & 63u64) == start {
+        if held.len() < 60usize { held.push(k); }
+      }
+      else if others.len() < 60usize { others.push(k); }
+    }
+    k = k + 1u64;
+  }
+  mut d = Dict[u64, u64].withSeed(seed);
+  mut i = 0usize;
+  while i < held.len() {
+    d.insert(*held[i], *held[i] + 1u64);
+    i = i + 1usize;
+  }
+  expectUInt(u64.from(d.len()), 60, "sixty keys with one tag and one start");
+  mut wrong = 0i64;
+  i = 0usize;
+  while i < held.len() {
+    if *d[held[i]] != *held[i] + 1u64 { wrong = wrong + 1i64; }
+    i = i + 1usize;
+  }
+  expectInt(wrong, 0, "each found among the others with its tag");
+  i = 0usize;
+  while i < others.len() {
+    if d.contains(others[i]) { wrong = wrong + 1i64; }
+    i = i + 1usize;
+  }
+  expectInt(wrong, 0, "sixty more with the tag and another start are not there");
+  // Remove every other one and look again
+  i = 0usize;
+  while i < held.len() {
+    match d.remove(held[i]) {
+      case is Some[u64] {}
+      case is None[u64] {wrong = wrong + 1i64;}
+    }
+    i = i + 2usize;
+  }
+  expectInt(wrong, 0, "thirty removed");
+  i = 0usize;
+  while i < held.len() {
+    if d.contains(held[i]) != (i % 2usize == 1usize) { wrong = wrong + 1i64; }
+    i = i + 1usize;
+  }
+  expectInt(wrong, 0, "the other thirty remain");
+  i = 0usize;
+  while i < others.len() {
+    d.insert(*others[i], 7u64);
+    i = i + 1usize;
+  }
+  expectUInt(u64.from(d.len()), 90, "sixty more in");
+  i = 0usize;
+  while i < held.len() {
+    if d.contains(held[i]) != (i % 2usize == 1usize) { wrong = wrong + 1i64; }
+    i = i + 1usize;
+  }
+  expectInt(wrong, 0, "the thirty are still there");
+}
+
+// The order of keys: fixed with a fixed seed, and not the same for every seed
+fn order() {
+  mut a = Dict[u64, i64].deterministic();
+  mut b = Dict[u64, i64].withSeed(7u64);
+  mut k = 1u64;
+  while k <= 5u64 {
+    a.insert(k, 0i64);
+    b.insert(k, 0i64);
+    k = k + 1u64;
+  }
+  expectStr(keyOrder(&a).view(), "3 2 4 5 1", "deterministic: the same order on every run");
+  expectStr(keyOrder(&b).view(), "1 5 3 4 2", "another seed, another order");
+
+  // The same keys inserted in the same order into dictionaries of one seed:
+  // the same order, though 100 keys in 128 buckets, past several growths
+  mut c = Dict[u64, i64].deterministic();
+  mut d = Dict[u64, i64].deterministic();
+  mut e = Dict[u64, i64].withSeed(8u64);
+  mut f = Dict[u64, i64].empty();
+  mut g = Dict[u64, i64].empty();
+  k = 0u64;
+  while k < 100u64 {
+    c.insert(k * 31u64, 0i64);
+    d.insert(k * 31u64, 0i64);
+    e.insert(k * 31u64, 0i64);
+    f.insert(k * 31u64, 0i64);
+    g.insert(k * 31u64, 0i64);
+    k = k + 1u64;
+  }
+  expectStr(keyOrder(&c).view(), keyOrder(&d).view(), "two deterministic dictionaries agree");
+  expect(keyOrder(&c).view() != keyOrder(&e).view(), "another seed visits in another order");
+  expectStr(keyOrder(&f).view(), keyOrder(&g).view(), "two empty() ones share the process's seed");
+}
+
+// The keys, in the table's order, as "k k k"
+fn keyOrder(d &Dict[u64, i64]) String {
+  mut out = String.empty();
+  mut c = d.keys();
+  mut first = true;
+  while true {
+    match c.next() {
+      case imm k Some {
+        if not first { out.append(" "); }
+        first = false;
+        out.appendUInt(*k.value);
+      }
+      case is None {break;}
+    }
+  }
+  out;
+}
+
+// Counting with one search each, and a borrow to change a value in place
+fn counts() {
+  mut d = Dict[u64, i64].empty();
+  mut k = 0u64;
+  while k < 1000u64 {
+    *d.getOrInsert(k % 10u64, 0) += 1;
+    k = k + 1u64;
+  }
+  expectUInt(u64.from(d.len()), 10, "ten counters");
+  mut off = 0i64;
+  k = 0u64;
+  while k < 10u64 {
+    if *d[&k] != 100i64 { off = off + 1i64; }
+    k = k + 1u64;
+  }
+  expectInt(off, 0, "a hundred each");
+  imm three = 3u64;
+  match d.getMut(&three) {
+    case mut v Some {*v.value = -5;}
+    case is None {expect(false, "getMut finds 3");}
+  }
+  expectInt(*d[&3u64], -5, "changed in place");
+  expectBool(isNoneMut(d.getMut(&99u64)), true, "getMut of a missing key");
+  // A copy out of the table, with no borrow held
+  match d.getCopy(&4u64) {
+    case imm v Some {expectInt(v.value, 100, "a copy of 4's value");}
+    case is None {expect(false, "a copy of 4's value");}
+  }
+  match d.getCopy(&40u64) {
+    case is Some[i64] {expect(false, "no copy of a missing key");}
+    case is None[i64] {expect(true, "no copy of a missing key");}
+  }
+}
+
+fn isNoneMut(o Option[&mut i64]) bool {
+  match o {
+    case is Some[&mut i64] {false;}
+    case is None[&mut i64] {true;}
+  }
+}
+
+// A key of any size that is Hash: a bool, a byte, a signed number
+fn smallKeys() {
+  mut b = Dict[bool, i64].empty();
+  b.insert(true, 1);
+  b.insert(false, 2);
+  b.insert(true, 3);
+  expectUInt(u64.from(b.len()), 2, "two bool keys");
+  expectInt(*b[&true], 3, "true");
+  expectInt(*b[&false], 2, "false");
+
+  mut s = Dict[i32, i64].empty();
+  mut n = -50i32;
+  while n < 50i32 {
+    s.insert(n, i64.from(n) * 2);
+    n = n + 1i32;
+  }
+  expectUInt(u64.from(s.len()), 100, "signed keys either side of 0");
+  expectInt(*s[&-50i32], -100, "-50");
+  expectInt(*s[&49i32], 98, "49");
+  expectBool(s.contains(&50i32), false, "50 is not held");
+
+  mut u = Dict[u8, i64].empty();
+  mut m = 0u32;
+  while m < 256u32 {
+    u.insert(u8.from(m), i64.from(m));
+    m = m + 1u32;
+  }
+  expectUInt(u64.from(u.len()), 256, "every byte");
+  expectInt(*u[&255u8], 255, "255");
+}

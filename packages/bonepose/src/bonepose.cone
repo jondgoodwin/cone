@@ -1,0 +1,60 @@
+// The bonepose package: a skeleton as data, a pose of it, forward kinematics
+// and two-bone inverse kinematics. A program reaches it with 'import
+// bonepose', and gets:
+//
+// - Skeleton: bones in an order where a parent comes before its child, each
+//   with its rest transform relative to its parent (translation and rotation;
+//   scale is 1, so a pose is rigid and normals need no special care), and
+//   sockets, named attachment points: a parent bone and an offset in its
+//   frame (the eyes, a hand that holds a sword). A socket is not a bone: it
+//   costs nothing to pose and is found by the same rule, bone times offset.
+// - Pose: one local transform per bone, relative to the bone's parent. A pose
+//   starts as the skeleton's rest pose; animation changes the rotations (and
+//   the root bone's translation).
+// - Forward kinematics: 'modelTransforms' composes a pose down the tree into
+//   model-space transforms (the skeleton's own space, the root bone's parent
+//   being the model origin), and 'socketModel' places a socket in it.
+// - Two-bone inverse kinematics: 'solveTwoBone' finds the middle and end
+//   joints of a limb of two segments whose end must reach a target, with a
+//   pole that says which way the middle joint bends; the target is clamped
+//   to what the limb can reach and the joint to a smallest interior angle.
+//   'aimLimb' applies it to a pose.
+// - 'humanoid', a 19-bone mannequin skeleton of a given height with its
+//   sockets, from the Drillis and Contini proportions Winter tabulates.
+//
+// Conventions are geomath's: right-handed, y up, metres, f32. A being faces
+// -z at rest: its right hand is +x, its left -x. A positive turn about x of a
+// bone that hangs down swings it forward (towards -z).
+//
+//   bonepose.cone   this overview, scalar helpers
+//   skeleton.cone   Bone, Socket, Skeleton, Pose and the forward kinematics
+//   ik.cone         solveTwoBone and aimLimb
+//   humanoid.cone   the 19-bone skeleton and its bone and socket numbers
+
+mod bonepose;
+
+import libc;
+import collections use *;
+import geomath use *;
+
+// A number held between 'lo' and 'hi'
+pub fn clampf(v f32, lo f32, hi f32) f32 {
+  if v < lo { return lo; }
+  if v > hi { return hi; }
+  v;
+}
+
+// 0 below 'a', 1 above 'b', the cubic smoothstep between
+pub fn smoothstep(a f32, b f32, x f32) f32 {
+  imm t = clampf((x - a) / (b - a), 0., 1.);
+  t * t * (3. - 2. * t);
+}
+
+// The fractional part of a number of cycles, 0 up to but not including 1
+pub fn frac(x f32) f32 {
+  imm f = x - libc.floorf(x);
+  if f >= 1. { return 0.; }
+  f;
+}
+
+pub fn absf(x f32) f32 { if x < 0. { return -x; } x; }

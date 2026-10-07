@@ -1,0 +1,127 @@
+// ======== Shingles: staggered courses of wooden shingles ========
+//
+// Courses of shingles from the bottom of the tile up, each course's butts
+// (the thick lower edges) lying over the tops of the course below: so up a
+// course a shingle thins away from its butt, then the next course's butt
+// stands over it. Within a course the shingles' vertical joints are jittered
+// in width, and each course is shifted by its own random amount, so joints
+// never line up between neighbouring courses. Each shingle has its own
+// colour, level and ragged butt; weathering greys them in streaks and darkens
+// the water stain under each butt. A whole number of courses and of
+// shingles a course fits the tile.
+
+pub struct ShingleParams {
+  pub size i32;               // texels a side
+  pub tileMetres f32;         // the tile's side, metres
+  pub seed u32;
+  pub shingleWidth f32;       // metres: the mean width
+  pub exposure f32;           // metres of each course showing
+  pub thickness f32;          // metres: a butt's thickness
+  pub gap f32;                // metres: the joint between shingles of a course
+  pub colorA Color;           // linear: the palest shingle
+  pub colorB Color;           // the darkest
+  pub variation f32;          // each shingle's brightness varied by +- this fraction
+  pub weather f32;            // 0 to 1: grey streaks and stain
+
+  // Cedar shingles: 0.13 m mean width, 0.14 m to the weather, 12 mm butts,
+  // weathering from warm brown to silver-grey, on a 1.12 m tile
+  pub fn cedar(size i32, seed u32) ShingleParams {
+    new ShingleParams(size, 1.12, seed, 0.13, 0.14, 0.012, 0.004,
+      rgb255(150., 104., 70.), rgb255(88., 66., 52.), 0.28, 0.6);
+  }
+}
+
+fn shingleRelief(p &ShingleParams) f32 { p.thickness + 0.003; }
+
+// The joint position of shingle 'k' of course 'j', in grid cells, jittered
+// about the cell's own place
+fn jointAt(k i32, j i32, n i32, seed u32) f32 {
+  f32.from(k) + (unitHash(posMod(k, n), j, seed + 5u32) - 0.5) * 0.55;
+}
+
+// One texel of a shingle tile at the tile point (u, v)
+pub fn shingleTexel(p &ShingleParams, u f32, v f32) PatternTexel {
+  imm rows = wholeCount(p.tileMetres, p.exposure, 2);
+  imm n = wholeCount(p.tileMetres, p.shingleWidth, 3);
+  imm cellM = p.tileMetres / f32.from(n);
+  imm courseM = p.tileMetres / f32.from(rows);
+  imm yv = v * f32.from(rows);
+  imm j = posMod(i32.from(libc.floorf(yv)), rows);
+  imm t = frac(yv);
+  imm tm = t * courseM;
+
+  // the shingle, by the course's shift and its jittered joints
+  imm q = u * f32.from(n) - unitHash(j, 3, p.seed) * f32.from(n);
+  imm kk = i32.from(libc.floorf(q));
+  // the shingle is the last whose joint is at or left of q: joints wander
+  // under 0.3 of a cell, so it is kk - 1, kk or kk + 1
+  mut s = kk - 1;
+  if q >= jointAt(kk, j, n, p.seed) { s = kk; }
+  if q >= jointAt(kk + 1, j, n, p.seed) { s = kk + 1; }
+  imm left = jointAt(s, j, n, p.seed);
+  imm right = jointAt(s + 1, j, n, p.seed);
+  imm key = unitHash3(posMod(s, n), j, p.seed);
+  imm dl = (q - left) * cellM;
+  imm dr = (right - q) * cellM;
+  imm dside = minF(dl, dr);
+
+  imm relief = shingleRelief(p);
+  // the shingle's ragged butt: below it the course beneath shows
+  imm butt = key.y * 0.025;
+
+  // wood: fibres run up the shingle, a few wandering lines; stain under the butt
+  imm fibres = fbmNoise(u, v + key.z, n * 14, rows * 2, p.seed + 31u32, 3, 0.55);
+  imm streak = 0.5 + 0.5 * fbmNoise(u, v, n * 3, rows, p.seed + 32u32, 3, 0.55);
+  imm stain = 1. - smoothstep01(0., 0.12, t);
+  imm weathered = clamp01(streak * 0.8 + 0.2 * (1. - stain));
+  // the shadow under the next course's butt, baked into the colour
+  imm shadow = 1. - 0.45 * smoothstep01(0.78, 0.99, t);
+  mut bright = (1. + p.variation * (key.x * 2. - 1.)) * (1. + 0.22 * fibres) * (1. - 0.18 * stain * p.weather) * shadow;
+  imm tone = clamp01(key.x * 0.8 + 0.2 * streak);
+  mut c = mixRgb(p.colorA, p.colorB, tone);
+  c = scaleRgb(c, bright);
+  c = mixRgb(c, new Color(0.20, 0.19, 0.18, 1.), weathered * p.weather * 0.65);
+
+  mut hm f32 = 0.;
+  mut cavity f32 = 1.;
+  mut rough = 0.82 + 0.1 * (1. - streak) * p.weather;
+  if t < butt {
+    // under the butt: the course below, in its shadow
+    hm = 0.0015;
+    c = scaleRgb(c, 0.4);
+    cavity = 0.45;
+  } elif dside < p.gap * 0.5 {
+    // a vertical joint: the course below shows through
+    hm = 0.002;
+    c = scaleRgb(c, 0.35);
+    cavity = 0.4;
+  } else {
+    // the shingle thins from its butt to the top, with a rounded butt edge and
+    // a rounded vertical edge, and its own small tilt and level
+    imm along = clamp01((tm - butt * courseM) / (courseM * (1. - butt)));
+    imm thin = 1. - 0.8 * along;
+    imm roundButt = smoothstep01(0., 0.004, tm - butt * courseM);
+    imm roundSide = smoothstep01(p.gap * 0.5, p.gap * 0.5 + 0.004, dside);
+    hm = 0.003 + (p.thickness - 0.003) * thin * (0.55 + 0.45 * minF(roundButt, roundSide)) * (0.9 + 0.1 * key.z)
+      + 0.0008 * fibres;
+    // the shadow the next course's butt throws on this one's top
+    cavity = 0.55 + 0.45 * smoothstep01(0.0, 0.25, 1. - t);
+    if along < 0.5 { cavity = minF(cavity, 0.75 + 0.25 * roundButt); }
+  }
+  new PatternTexel(clamp01(hm / relief), c, clamp01(rough), cavity);
+}
+
+// A shingle tile's maps
+pub fn bakeShingles(p &ShingleParams) TextureSet {
+  mut field = PatternField.empty(p.size, p.tileMetres, shingleRelief(p));
+  mut y = 0;
+  while y < p.size {
+    mut x = 0;
+    while x < p.size {
+      field.put(x, y, shingleTexel(p, texelCentre(x, p.size), texelCentre(y, p.size)));
+      x = x + 1;
+    }
+    y = y + 1;
+  }
+  finishField(&mut field, 0.02, 4);
+}

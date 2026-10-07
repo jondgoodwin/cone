@@ -14,7 +14,14 @@
 //   uploaded at once and drawn from the next frame on, and the old one's
 //   buffers are released to the frame that last drew it, destroyed when the
 //   GPU has finished it. That is what meshes that arrive at several levels
-//   of detail, sculpted at run time, need.
+//   of detail, sculpted at run time, need. A dynamic mesh
+//   ('addDynamicMesh') is room for a mesh rewritten in place frame by frame
+//   ('writeDynamicMesh').
+// - Custom pipelines (custom.cone): shaders of the caller's own
+//   ('addPipeline'), importing renderframe.slang, whose materials
+//   ('addCustomMaterial') bind parameters and textures of their own (an
+//   r32float field from 'addFieldTexture', read in the vertex stage, for a
+//   heightfield), drawn, batched and instanced with the rest.
 // - LodChain, the levels of detail of one object, most detailed first
 //   (LOD 0, as Unreal, Unity and Godot number them), chosen by index or by
 //   the size the object is drawn at, with hysteresis so it does not flicker
@@ -23,9 +30,13 @@
 //   and orientation or 'lookAt') and Light (one directional light and
 //   ambient light).
 // - Material, the standard lit one: a base color times a texture (the
-//   texture optional), Lambert diffuse and Blinn-Phong specular, in Slang
-//   (lit.slang); and lines in one flat color (lines.slang), for wireframes
-//   and edges.
+//   texture optional), Lambert diffuse and Blinn-Phong specular, and an
+//   emissive color, in Slang (lit.slang); and lines in one flat color
+//   (lines.slang), for wireframes and edges.
+// - One lighting convention for every material (renderframe.slang): the
+//   light's color is irradiance (lux in physical units), ambient light,
+//   sky and emissive colors are radiance (nits), and everything drawn is
+//   multiplied by 'exposure' as it is written ('exposureFromEv100').
 // - PbrMaterial, the physically based one (pbr.slang, over the brdf
 //   module): glTF 2.0's metallic-roughness base (GGX, Smith, Schlick,
 //   Lambert), a clear coat over it, and over the coat a thin film (Belcour
@@ -68,36 +79,43 @@
 // and the Post bloom and tone-map it into the swapchain's texture (post.cone
 // has the frame's shape).
 //
-// HOW IT IS BOUND. Group 0 is the frame's: one uniform buffer holding the
-// camera's view-projection matrix, its inverse and position, the light, the
-// target's size, the time and the environment's strength, written once a
-// frame ('queue.writeBuffer'). Group 1 is the material's: its parameters in
-// a uniform buffer of its own, its texture and the renderer's sampler; for
+// HOW IT IS BOUND. Group 0 is the frame's (renderframe.slang): one uniform
+// buffer holding the camera's view-projection matrix, its inverse and
+// position, the light, the target's size, the time, the environment's
+// strength and the exposure, and one storage buffer of instances, each
+// drawn copy's model matrix and tint (80 bytes), both written once a render
+// ('queue.writeBuffer'). Group 1 is the material's: its parameters in a
+// uniform buffer of its own, its texture and the renderer's sampler; for
 // the physically based material, its metallic-roughness, normal and
-// occlusion maps after them (its own layout, 'pbrMaterialLayout').
-// Group 2, bound for the physically based material and the sky, is the
-// environment's: the sky's parameters, its cubes and table, their sampler.
-// The
-// draw's own data -- its model matrix and tint, 80 bytes -- goes in the
-// immediates (Vulkan's push constants), which every Vulkan device offers 128
-// bytes of: per-draw data that changes every draw and is small is what push
-// constants are for, and it needs no buffer per object, no dynamic offsets
-// and no copy. When objects number in the thousands, a storage buffer of
-// transforms indexed by instance is the step after (GPU-driven drawing).
+// occlusion maps after them (its own layout, 'pbrMaterialLayout'); for a
+// custom pipeline's material, its parameters, its textures and the sampler,
+// as its pipeline lays them out (custom.cone). Group 2, bound for the
+// physically based material, the sky and a custom pipeline that asks, is
+// the environment's: the sky's parameters, its cubes and table, their
+// sampler. Lines take their model matrix and color from the
+// immediates (Vulkan's push constants) instead, one draw each.
 //
-// THE DRAW ORDER. Opaque draws (all there are yet) are sorted by pipeline,
-// meshes (Blinn-Phong or physically based, by their material) before lines,
-// and within one front to back by the distance from the
-// camera to each model's origin, so nearer surfaces fill the depth buffer
-// first and hide what is behind them before it is shaded. Transparent draws,
-// back to front, come with blending. The sky comes last, where nothing was
-// drawn (depth tested at the far plane).
+// INSTANCING. The draw list's items are gathered into batches, one per
+// (material, mesh): the copies of one mesh in one material, however many
+// items name them, are one instanced draw per material group of the mesh
+// ('drawIndexed' with an instance count and a first instance), their
+// instances side by side in the instance buffer. A scene of a thousand
+// stones in one material is one draw.
+//
+// THE DRAW ORDER. Opaque draws (all there are yet) are sorted batch by
+// batch, meshes (Blinn-Phong or physically based, by their material)
+// before lines, front to back by the distance from the camera to
+// the nearest model origin of the batch, so nearer surfaces fill the depth
+// buffer first and hide what is behind them before it is shaded.
+// Transparent draws, back to front, come with blending. The sky comes last,
+// where nothing was drawn (depth tested at the far plane).
 //
 // Its files are one module, and only this one, the root, imports:
 //
 //   render.cone    Renderer and DrawList
 //   gpumesh.cone   GpuMesh, mesh slots and handles, LodChain
 //   material.cone  Material, material and texture slots and handles; lit.slang's and lines.slang's SPIR-V
+//   custom.cone    CustomPipeline, pipeline slots and handles: the contract a custom pipeline keeps
 //   lighting.cone  Sky, PbrMaterial, Environment; pbr.slang's and ibl.slang's SPIR-V
 //   post.cone      Post: the HDR frame, bloom, tone mapping; post.slang's SPIR-V
 //   camera.cone    Camera, Light
@@ -150,22 +168,29 @@ fn readFile(path &[]u8, ok &mut bool) String {
   text;
 }
 
-// The bytes of the frame uniforms (pbr.slang's Frame, whose first 128 are
-// lit.slang's) and of the immediates
-const FRAME_BYTES = 208u64;
+// The bytes of the frame uniforms (renderframe.slang's Frame) and of the
+// immediates
+const FRAME_BYTES = 224u64;
 const IMMEDIATE_BYTES = 80u32;
-const MATERIAL_BYTES = 32u64;
+const MATERIAL_BYTES = 48u64;
+// An instance's bytes (renderframe.slang's Instance: a model matrix and a
+// tint) and how many the instance buffer holds at first
+const INSTANCE_BYTES = 80u64;
+const INSTANCE_FLOATS = 20usize;
+const FIRST_INSTANCES = 1024u32;
 
 // What a material slot holds: the Blinn-Phong material, or the physically
 // based one
 const MATERIAL_BLINN_PHONG = 0u32;
 const MATERIAL_PBR = 1u32;
+const MATERIAL_CUSTOM = 2u32;
 
 // The pipelines a draw may be bound to
 const BOUND_NONE = 0u32;
 const BOUND_LIT = 1u32;
 const BOUND_LINES = 2u32;
 const BOUND_PBR = 3u32;
+const BOUND_CUSTOM = 4u32;
 
 // What each render pass draws with: the renderer's pipelines, bind groups and
 // the resources it hands out handles to
@@ -199,10 +224,23 @@ pub struct Renderer {
   pub time f32;                    // seconds: what the physically based material's film drifts by
   pub environmentStrength f32;     // how strongly the environment lights (1: as the sky is)
   pub pbrMaterialLayout BindGroupLayout;   // a physically based material's group: materialLayout's, then its three maps
+  pub instances Buffer;            // every copy a render draws: its model matrix and tint (renderframe.slang's Instance)
+  pub instanceCapacity u32;        // how many the buffer holds; grown by doubling
+  pub instanceData List[f32];      // the copies' bytes, gathered on the CPU before one write
+  pub keys List[DrawKey];          // the draw list's items sorted into batches
+  pub batches List[DrawBatch];     // and the batches, in the order they are drawn
+  pub instancesDrawn u32;          // how many copies the last render drew
+  pub pipelines Pool[PipelineSlot];   // custom pipelines (custom.cone)
   // Store the depth buffer at the end of 'render' (it is discarded
   // otherwise), so that a later pass into the same target -- glowing
   // particles drawn additively, say -- is depth tested against the scene
   pub keepDepth bool = false;
+  // What every material's output, the sky's and the background's are
+  // multiplied by before they are written (pre-exposure: the frame then
+  // holds numbers near 1 however bright the scene's units). 1 for a scene
+  // lit in display units; 'exposureFromEv100' for one in physical units
+  // (the light in lux, ambient, sky and emissive in nits).
+  pub exposure f32 = 1.;
 
   // A renderer drawing into targets of 'colorFormat', with a depth texture
   // of 'depthFormat' (TEXTURE_FORMAT_DEPTH32_FLOAT). For physically based
@@ -211,7 +249,10 @@ pub struct Renderer {
   pub fn create(device &mut Device, colorFormat u32, depthFormat u32) Renderer {
     mut litShader = device.createShaderModule(&LIT_SPIRV);
     mut linesShader = device.createShaderModule(&LINES_SPIRV);
-    imm frameEntries = [new BindGroupLayoutEntry(binding: 0u32, visibility: SHADER_STAGE_VERTEX | SHADER_STAGE_FRAGMENT)];
+    // The frame's group: its uniforms, and the instances (read-only storage)
+    imm frameEntries = [new BindGroupLayoutEntry(binding: 0u32, visibility: SHADER_STAGE_VERTEX | SHADER_STAGE_FRAGMENT),
+      new BindGroupLayoutEntry(binding: 1u32, visibility: SHADER_STAGE_VERTEX | SHADER_STAGE_FRAGMENT,
+        bufferType: BUFFER_BINDING_TYPE_READ_ONLY_STORAGE)];
     mut frameLayout = device.createBindGroupLayout(&frameEntries);
     imm materialEntries = [new BindGroupLayoutEntry(binding: 0u32, visibility: SHADER_STAGE_FRAGMENT),
       new BindGroupLayoutEntry(binding: 1u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_TEXTURE),
@@ -280,7 +321,9 @@ pub struct Renderer {
     mut skyPipeline = device.createRenderPipeline(&skyDesc);
 
     mut frameUniforms = device.createBuffer(FRAME_BYTES, BUFFER_USAGE_UNIFORM | BUFFER_USAGE_COPY_DST);
-    imm frameGroupEntries = [BindGroupEntry.buffer(0u32, &frameUniforms)];
+    mut instances = device.createBuffer(u64.from(FIRST_INSTANCES) * INSTANCE_BYTES,
+      BUFFER_USAGE_STORAGE | BUFFER_USAGE_COPY_DST);
+    imm frameGroupEntries = [BindGroupEntry.buffer(0u32, &frameUniforms), BindGroupEntry.buffer(1u32, &instances)];
     mut frameGroup = device.createBindGroup(&frameLayout, &frameGroupEntries);
     imm samplerDesc = new SamplerDescriptor();
     mut sampler = device.createSampler(&samplerDesc);
@@ -290,7 +333,9 @@ pub struct Renderer {
     mut r = new Renderer(colorFormat, depthFormat, litShader, linesShader, frameLayout, materialLayout, layout,
       litPipeline, linesPipeline, frameUniforms, frameGroup, sampler, Pool[MeshSlot].empty(),
       Pool[TextureSlot].empty(), Pool[MaterialSlot].empty(), TextureHandle.none(), List[MeshHandle].empty(),
-      0u32, 0u64, pbrShader, environmentLayout, pbrLayout, pbrPipeline, skyPipeline, environment, false, 0., 1., pbrMaterialLayout);
+      0u32, 0u64, pbrShader, environmentLayout, pbrLayout, pbrPipeline, skyPipeline, environment, false, 0., 1., pbrMaterialLayout,
+      instances, FIRST_INSTANCES, List[f32].empty(), List[DrawKey].empty(), List[DrawBatch].empty(), 0u32,
+      Pool[PipelineSlot].empty());
     mut w = new Image(1, 1, 3, List[u8].empty());
     w.pixels.push(255u8);
     w.pixels.push(255u8);
@@ -302,7 +347,8 @@ pub struct Renderer {
   // Whether everything it draws with was made
   pub fn isValid(self &) bool {
     litPipeline.isValid() and linesPipeline.isValid() and frameGroup.isValid() and sampler.isValid()
-      and frameUniforms.isValid() and pbrPipeline.isValid() and skyPipeline.isValid() and environment.isValid();
+      and frameUniforms.isValid() and pbrPipeline.isValid() and skyPipeline.isValid() and environment.isValid()
+      and instances.isValid();
   }
 
   // Draw 'sky' behind the scene from the next render on, and light the
@@ -335,7 +381,7 @@ pub struct Renderer {
   // destroyed once the GPU has finished the frames that drew them. Answers
   // false if 'h' names no mesh.
   pub fn replaceMesh(self &mut, device &mut Device, h MeshHandle, m &Mesh) bool {
-    if !meshes.alive(h.slot) { return false; }
+    if !meshes.alive(h.slot) or meshes[h.slot].dynamicVertices > 0u32 { return false; }
     imm version = uploadTriangles(device, m);
     self.stage(device, h, version);
     true;
@@ -375,6 +421,74 @@ pub struct Renderer {
       slot.b.release(&mut device.queue);
     }
     meshes.remove(h.slot);
+  }
+
+  // A dynamic mesh: room for 'maxVertices' vertices and 'maxIndices'
+  // indices, filled frame by frame by 'writeDynamicMesh' (a flock's birds,
+  // water's waves made on the CPU). Its buffers are written in place by
+  // 'queue.writeBuffer', which the GPU runs after everything submitted
+  // before it, so a write never lands under a frame still drawing the last
+  // contents; it is drawn only once written.
+  pub fn addDynamicMesh(self &mut, device &mut Device, maxVertices u32, maxIndices u32) MeshHandle {
+    mut g = GpuMesh.none();
+    imm usage = BUFFER_USAGE_VERTEX | BUFFER_USAGE_COPY_DST | BUFFER_USAGE_COPY_SRC;
+    g.positions = device.createBuffer(u64.from(maxVertices) * 12u64, usage);
+    g.normals = device.createBuffer(u64.from(maxVertices) * 12u64, usage);
+    g.uvs = device.createBuffer(u64.from(maxVertices) * 8u64, usage);
+    g.indices = device.createBuffer(u64.from(maxIndices) * 4u64,
+      BUFFER_USAGE_INDEX | BUFFER_USAGE_COPY_DST | BUFFER_USAGE_COPY_SRC);
+    new MeshHandle(meshes.add(new MeshSlot(a: g, b: GpuMesh.none(), active: 0u32, pending: false, pendingFrame: 0u64,
+      version: 0u32, dynamicVertices: maxVertices, dynamicIndices: maxIndices)));
+  }
+
+  // Fill the dynamic mesh 'h' with 'm' (normals made smooth if it has none,
+  // uvs 0 if it has none), drawn by every render recorded after: write it
+  // before the render that draws it, once a frame. False if 'h' is not a
+  // dynamic mesh or 'm' does not fit its room.
+  pub fn writeDynamicMesh(self &mut, device &mut Device, h MeshHandle, m &Mesh) bool {
+    if !meshes.alive(h.slot) { return false; }
+    imm n = m.positions.len();
+    {
+      imm slot = meshes[h.slot];
+      if slot.dynamicVertices == 0u32 or n > usize.from(slot.dynamicVertices)
+          or m.indices.len() > usize.from(slot.dynamicIndices) {
+        return false;
+      }
+    }
+    mut slot = &mut meshes[h.slot];
+    if n == 0usize or m.indices.len() == 0usize {
+      slot.a.indexCount = 0u32;
+      return true;
+    }
+    device.queue.writeBuffer(&slot.a.positions, 0u64, bytesOf[Vec3](&m.positions), u64.from(n) * 12u64);
+    if m.normals.len() == n {
+      device.queue.writeBuffer(&slot.a.normals, 0u64, bytesOf[Vec3](&m.normals), u64.from(n) * 12u64);
+    } else {
+      mut withNormals = Mesh.empty();
+      withNormals.append(m);
+      withNormals.computeSmoothNormals();
+      device.queue.writeBuffer(&slot.a.normals, 0u64, bytesOf[Vec3](&withNormals.normals), u64.from(n) * 12u64);
+    }
+    if m.uvs.len() == n {
+      device.queue.writeBuffer(&slot.a.uvs, 0u64, bytesOf[Vec2](&m.uvs), u64.from(n) * 8u64);
+    } else {
+      device.queue.clearBuffer(&slot.a.uvs, 0u64, u64.from(n) * 8u64);
+    }
+    device.queue.writeBuffer(&slot.a.indices, 0u64, bytesOf[u32](&m.indices), u64.from(m.indices.len()) * 4u64);
+    slot.a.vertexCount = u32.from(n);
+    slot.a.indexCount = u32.from(m.indices.len());
+    slot.a.groups.clear();
+    if m.groups.len() == 0usize {
+      slot.a.groups.push(new Group(0u32, slot.a.indexCount, 0u32));
+    } else {
+      mut i = 0usize;
+      while i < m.groups.len() {
+        slot.a.groups.push(*m.groups[i]);
+        i = i + 1usize;
+      }
+    }
+    boundingSphere(m.positions.view(), &mut slot.a.center, &mut slot.a.radius);
+    true;
   }
 
   // Whether 'h' names a mesh
@@ -466,7 +580,8 @@ pub struct Renderer {
       BindGroupEntry.sampler(2u32, &sampler)];
     mut group = device.createBindGroup(&materialLayout, &entries);
     imm pbr = PbrMaterial.standard(material.baseColor, 0., 0.5);
-    new MaterialHandle(materials.add(new MaterialSlot(*material, uniforms, group, MATERIAL_BLINN_PHONG, pbr)));
+    new MaterialHandle(materials.add(new MaterialSlot(*material, uniforms, group, MATERIAL_BLINN_PHONG, pbr,
+      PipelineHandle.none())));
   }
 
   // A physically based material to draw with (pbr.slang), lit by the
@@ -484,7 +599,8 @@ pub struct Renderer {
       BindGroupEntry.texture(4u32, &normalView), BindGroupEntry.texture(5u32, &occlusionView)];
     mut group = device.createBindGroup(&pbrMaterialLayout, &entries);
     imm plain = Material.plain(material.baseColor);
-    new MaterialHandle(materials.add(new MaterialSlot(plain, uniforms, group, MATERIAL_PBR, *material)));
+    new MaterialHandle(materials.add(new MaterialSlot(plain, uniforms, group, MATERIAL_PBR, *material,
+      PipelineHandle.none())));
   }
 
   // Change a physically based material's parameters (not its textures,
@@ -529,6 +645,139 @@ pub struct Renderer {
     slot.params.baseColor = material.baseColor;
     slot.params.specular = material.specular;
     slot.params.shininess = material.shininess;
+    slot.params.emissive = material.emissive;
+    true;
+  }
+
+  // ---- Custom pipelines (custom.cone) ----
+
+  // A pipeline of the caller's own shaders, which materials made by
+  // 'addCustomMaterial' are drawn with (custom.cone has the contract its
+  // shaders keep). 'hasPipeline' says whether it was made.
+  pub fn addPipeline(self &mut, device &mut Device, desc &CustomPipeline) PipelineHandle {
+    mut shader = device.createShaderModule(desc.spirv);
+    imm stages = SHADER_STAGE_VERTEX | SHADER_STAGE_FRAGMENT;
+    mut entries = List[BindGroupLayoutEntry].empty();
+    entries.push(new BindGroupLayoutEntry(binding: 0u32, visibility: stages));
+    mut t = 0usize;
+    while t < desc.textures.len {
+      entries.push(new BindGroupLayoutEntry(binding: u32.from(t) + 1u32, visibility: stages, kind: BINDING_KIND_TEXTURE,
+        sampleType: desc.textures[t]));
+      t = t + 1usize;
+    }
+    entries.push(new BindGroupLayoutEntry(binding: u32.from(t) + 1u32, visibility: stages, kind: BINDING_KIND_SAMPLER));
+    mut materialLayout = device.createBindGroupLayout(entries.view());
+    mut layout = if desc.environment {
+      imm groups = [&frameLayout, &materialLayout, &environmentLayout];
+      device.createPipelineLayout(&groups, IMMEDIATE_BYTES);
+    } else {
+      imm groups = [&frameLayout, &materialLayout];
+      device.createPipelineLayout(&groups, IMMEDIATE_BYTES);
+    };
+    imm positionAttr = [new VertexAttribute(VERTEX_FORMAT_FLOAT32X3, 0u64, 0u32)];
+    imm normalAttr = [new VertexAttribute(VERTEX_FORMAT_FLOAT32X3, 0u64, 1u32)];
+    imm uvAttr = [new VertexAttribute(VERTEX_FORMAT_FLOAT32X2, 0u64, 2u32)];
+    imm buffers = [new VertexBufferLayout(arrayStride: 12u64, attributes: &positionAttr),
+      new VertexBufferLayout(arrayStride: 12u64, attributes: &normalAttr),
+      new VertexBufferLayout(arrayStride: 8u64, attributes: &uvAttr)];
+    imm streams = if desc.streams < 1u32 { 1usize; } elif desc.streams > 3u32 { 3usize; } else { usize.from(desc.streams); };
+    imm pipelineDesc = new RenderPipelineDescriptor(layout: &layout, vertexModule: &shader,
+      vertexEntryPoint: desc.vertexEntryPoint, buffers: &buffers[..streams], fragmentModule: &shader,
+      fragmentEntryPoint: desc.fragmentEntryPoint, colorFormat: colorFormat, cullMode: desc.cullMode,
+      depthFormat: depthFormat, depthWriteEnabled: desc.depthWrite, depthCompare: COMPARE_FUNCTION_LESS);
+    mut pipeline = device.createRenderPipeline(&pipelineDesc);
+    new PipelineHandle(pipelines.add(new PipelineSlot(shader, materialLayout, layout, pipeline, u32.from(desc.textures.len),
+      desc.paramBytes, desc.environment)));
+  }
+
+  // Whether 'h' names a pipeline that was made
+  pub fn hasPipeline(self &, h PipelineHandle) bool {
+    pipelines.alive(h.slot) and pipelines[h.slot].pipeline.isValid();
+  }
+
+  // A material drawn with the custom pipeline 'pipeline': its parameters
+  // 'params' (at most the pipeline's paramBytes; the rest 0) in a uniform
+  // buffer of its own, and 'maps', its textures, as many as the pipeline binds (a
+  // missing one is the white texture). None if 'pipeline' was not made.
+  pub fn addCustomMaterial(self &mut, device &mut Device, pipeline PipelineHandle, params &[]f32,
+      maps &[]TextureHandle) MaterialHandle {
+    if !self.hasPipeline(pipeline) { return MaterialHandle.none(); }
+    imm bytes = pipelines[pipeline.slot].paramBytes;
+    imm count = pipelines[pipeline.slot].textureCount;
+    mut uniforms = device.createBuffer(bytes, BUFFER_USAGE_UNIFORM | BUFFER_USAGE_COPY_DST);
+    self.writeParams(device, &uniforms, bytes, params);
+    mut views = List[TextureView].empty();
+    mut t = 0u32;
+    while t < count {
+      mut th = TextureHandle.none();
+      if usize.from(t) < maps.len { th = maps[usize.from(t)]; }
+      views.push(textures[self.orWhite(th).slot].texture.createView());
+      t = t + 1u32;
+    }
+    mut entries = List[BindGroupEntry].empty();
+    entries.push(BindGroupEntry.buffer(0u32, &uniforms));
+    t = 0u32;
+    while t < count {
+      entries.push(BindGroupEntry.texture(t + 1u32, views[usize.from(t)]));
+      t = t + 1u32;
+    }
+    entries.push(BindGroupEntry.sampler(count + 1u32, &sampler));
+    mut group = device.createBindGroup(&pipelines[pipeline.slot].materialLayout, entries.view());
+    imm plain = Material.plain(new Color(1., 1., 1., 1.));
+    imm pbr = PbrMaterial.standard(plain.baseColor, 0., 0.5);
+    new MaterialHandle(materials.add(new MaterialSlot(plain, uniforms, group, MATERIAL_CUSTOM, pbr, pipeline)));
+  }
+
+  // Change a custom material's parameters, from the next submission on
+  // (its textures stay those it was made with): a water's time, say
+  pub fn setCustomParams(self &mut, device &mut Device, h MaterialHandle, params &[]f32) bool {
+    if !materials.alive(h.slot) { return false; }
+    imm slot = materials[h.slot];
+    if slot.kind != MATERIAL_CUSTOM { return false; }
+    self.writeParams(device, &slot.uniforms, slot.uniforms.size, params);
+    true;
+  }
+
+  // Write 'params' into the first of 'bytes' bytes of 'uniforms', the rest 0
+  fn writeParams(self &, device &mut Device, uniforms &Buffer, bytes u64, params &[]f32) {
+    mut data = List[f32].empty();
+    imm n = usize.from(bytes / 4u64);
+    mut i = 0usize;
+    while i < n {
+      data.push(if i < params.len { params[i]; } else { 0.; });
+      i = i + 1usize;
+    }
+    if n > 0usize {
+      imm v = data.view();
+      device.queue.writeBuffer(uniforms, 0u64, &v[0] as *u8, bytes);
+    }
+  }
+
+  // A field for a custom material to read: 'width' by 'height' numbers, one
+  // f32 a texel (r32float), row by row from its first, handed to the GPU
+  // now. Not every GPU filters r32float, so a shader reads it texel by
+  // texel ('Load'), and its pipeline binds it as
+  // TEXTURE_SAMPLE_TYPE_UNFILTERABLE_FLOAT. A heightfield, say.
+  pub fn addFieldTexture(self &mut, device &mut Device, width u32, height u32, values &[]f32) TextureHandle {
+    imm desc = new TextureDescriptor(width, height, TEXTURE_FORMAT_R32_FLOAT,
+      TEXTURE_USAGE_TEXTURE_BINDING | TEXTURE_USAGE_COPY_DST);
+    mut texture = device.createTexture(&desc);
+    if values.len >= usize.from(width * height) and values.len > 0usize {
+      device.queue.writeTexture(&texture, &values[0] as *u8, width * 4u32);
+    }
+    new TextureHandle(textures.add(new TextureSlot(texture)));
+  }
+
+  // Write all of the field 'h' again from 'values' (as many as it has),
+  // ahead of the next submission: a field that changes frame by frame
+  pub fn writeFieldTexture(self &mut, device &mut Device, h TextureHandle, values &[]f32) bool {
+    if !textures.alive(h.slot) { return false; }
+    imm slot = textures[h.slot];
+    imm width = slot.texture.width;
+    if slot.texture.format != TEXTURE_FORMAT_R32_FLOAT or values.len < usize.from(width * slot.texture.height) {
+      return false;
+    }
+    device.queue.writeTexture(&slot.texture, &values[0] as *u8, width * 4u32);
     true;
   }
 
@@ -551,6 +800,7 @@ pub struct Renderer {
     self.update(device);
     drawCalls = 0u32;
     triangles = 0u64;
+    instancesDrawn = 0u32;
     if target.width == 0u32 or target.height == 0u32 { return; }
     if drawSky or self.drawsPbr(list) { environment.bake(encoder); }
 
@@ -560,7 +810,7 @@ pub struct Renderer {
     imm inverse = viewProjection.inverse();
     imm eye = camera.position();
     imm towards = new Vec3(0., 0., 0.) - light.direction;
-    mut frame = new Array[f32, 52] <- fill 0f;
+    mut frame = new Array[f32, 56] <- fill 0f;
     mut k = 0usize;
     while k < 16usize {
       frame[k] = viewProjection.m[k];
@@ -590,90 +840,104 @@ pub struct Renderer {
     frame[49] = f32.from(target.height);
     frame[50] = time;
     frame[51] = environmentStrength;
+    frame[52] = exposure;
     device.queue.writeBuffer(&frameUniforms, 0u64, &frame as *u8, FRAME_BYTES);
 
-    // The order: lit before lines, each front to back
-    imm order = self.drawOrder(list, eye);
+    // The batches, front to back, and their instances written
+    self.gatherBatches(list, eye);
+    self.writeInstances(device, list);
 
-    imm color = new RenderPassColorAttachment(view: target.createView(), clearValue: camera.background);
+    // The background is light too: exposed like the rest
+    imm bg = camera.background;
+    imm clear = new Color(bg.red * exposure, bg.green * exposure, bg.blue * exposure, bg.alpha);
+    imm color = new RenderPassColorAttachment(view: target.createView(), clearValue: clear);
     imm depthStore = if keepDepth { STORE_OP_STORE; } else { STORE_OP_DISCARD; };
     imm depthAttachment = new RenderPassDepthStencilAttachment(view: depth.createView(), depthStoreOp: depthStore);
     mut pass = encoder.beginRenderPassWithDepth(&color, &depthAttachment);
     mut bound = BOUND_NONE;
     mut boundMaterial = Ref[MaterialSlot].none();
-    mut i = 0usize;
-    while i < order.len() {
-      imm item = list.items[usize.from(*order[i])];
-      if meshes.alive(item.mesh.slot) {
-        imm slot = meshes[item.mesh.slot];
-        imm m = slot.current();
-        if m.isValid() {
-          imm lines = m.topology == PRIMITIVE_TOPOLOGY_LINE_LIST;
-          mut drawn = true;
-          if lines {
-            if bound != BOUND_LINES {
-              pass.setPipeline(&linesPipeline);
-              pass.setBindGroup(0u32, &frameGroup);
-              bound = BOUND_LINES;
-            }
-          } elif !materials.alive(item.material.slot) {
-            drawn = false;
-          } else {
-            // The material's kind chooses the pipeline
-            imm mslot = materials[item.material.slot];
-            if mslot.kind == MATERIAL_PBR {
-              if bound != BOUND_PBR {
-                pass.setPipeline(&pbrPipeline);
-                pass.setBindGroup(0u32, &frameGroup);
-                pass.setBindGroup(2u32, &environment.group);
-                bound = BOUND_PBR;
-                boundMaterial = Ref[MaterialSlot].none();
-              }
-            } elif bound != BOUND_LIT {
-              pass.setPipeline(&litPipeline);
-              pass.setBindGroup(0u32, &frameGroup);
-              bound = BOUND_LIT;
-              boundMaterial = Ref[MaterialSlot].none();
-            }
-            if !(boundMaterial == item.material.slot) {
-              pass.setBindGroup(1u32, &mslot.group);
-              boundMaterial = item.material.slot;
-            }
+    mut boundPipeline = Ref[PipelineSlot].none();
+    mut b = 0usize;
+    while b < batches.len() {
+      imm batch = *batches[b];
+      imm first = *keys[usize.from(batch.first)];
+      imm item = list.items[usize.from(first.item)];
+      // gatherBatches kept only items whose mesh (and material) are alive
+      imm slot = meshes[item.mesh.slot];
+      imm m = slot.current();
+      imm lines = batch.lines != 0u32;
+      if lines {
+        if bound != BOUND_LINES {
+          pass.setPipeline(&linesPipeline);
+          pass.setBindGroup(0u32, &frameGroup);
+          bound = BOUND_LINES;
+        }
+        // A line's model matrix and color in the immediates
+        mut immediates = new Array[f32, 20] <- fill 0f;
+        k = 0usize;
+        while k < 16usize {
+          immediates[k] = item.model.m[k];
+          k = k + 1usize;
+        }
+        immediates[16] = item.tint.red;
+        immediates[17] = item.tint.green;
+        immediates[18] = item.tint.blue;
+        immediates[19] = item.tint.alpha;
+        pass.setImmediates(0u32, &immediates as *u8, IMMEDIATE_BYTES);
+      } else {
+        // The material's kind chooses the pipeline
+        imm mslot = materials[item.material.slot];
+        if mslot.kind == MATERIAL_CUSTOM {
+          if bound != BOUND_CUSTOM or !(boundPipeline == mslot.pipeline.slot) {
+            imm ps = pipelines[mslot.pipeline.slot];
+            pass.setPipeline(&ps.pipeline);
+            pass.setBindGroup(0u32, &frameGroup);
+            if ps.environment { pass.setBindGroup(2u32, &environment.group); }
+            bound = BOUND_CUSTOM;
+            boundPipeline = mslot.pipeline.slot;
+            boundMaterial = Ref[MaterialSlot].none();
           }
-          if drawn {
-            mut immediates = new Array[f32, 20] <- fill 0f;
-            k = 0usize;
-            while k < 16usize {
-              immediates[k] = item.model.m[k];
-              k = k + 1usize;
-            }
-            immediates[16] = item.tint.red;
-            immediates[17] = item.tint.green;
-            immediates[18] = item.tint.blue;
-            immediates[19] = item.tint.alpha;
-            pass.setImmediates(0u32, &immediates as *u8, IMMEDIATE_BYTES);
-            pass.setVertexBuffer(0u32, &m.positions, 0u64);
-            if !lines {
-              pass.setVertexBuffer(1u32, &m.normals, 0u64);
-              pass.setVertexBuffer(2u32, &m.uvs, 0u64);
-            }
-            pass.setIndexBuffer(&m.indices, INDEX_FORMAT_UINT32, 0u64);
-            mut g = 0usize;
-            while g < m.groups.len() {
-              imm group = m.groups[g];
-              pass.drawIndexed(group.count, 1u32, group.start, 0i32, 0u32);
-              drawCalls = drawCalls + 1u32;
-              if lines {
-                triangles = triangles + u64.from(group.count / 2u32);
-              } else {
-                triangles = triangles + u64.from(group.count / 3u32);
-              }
-              g = g + 1usize;
-            }
+        } elif mslot.kind == MATERIAL_PBR {
+          if bound != BOUND_PBR {
+            pass.setPipeline(&pbrPipeline);
+            pass.setBindGroup(0u32, &frameGroup);
+            pass.setBindGroup(2u32, &environment.group);
+            bound = BOUND_PBR;
+            boundMaterial = Ref[MaterialSlot].none();
           }
+        } elif bound != BOUND_LIT {
+          pass.setPipeline(&litPipeline);
+          pass.setBindGroup(0u32, &frameGroup);
+          bound = BOUND_LIT;
+          boundMaterial = Ref[MaterialSlot].none();
+        }
+        if !(boundMaterial == item.material.slot) {
+          pass.setBindGroup(1u32, &mslot.group);
+          boundMaterial = item.material.slot;
         }
       }
-      i = i + 1usize;
+      pass.setVertexBuffer(0u32, &m.positions, 0u64);
+      if !lines {
+        pass.setVertexBuffer(1u32, &m.normals, 0u64);
+        pass.setVertexBuffer(2u32, &m.uvs, 0u64);
+      }
+      pass.setIndexBuffer(&m.indices, INDEX_FORMAT_UINT32, 0u64);
+      // One draw a material group of the mesh, for every copy in the batch
+      mut g = 0usize;
+      while g < m.groups.len() {
+        imm group = m.groups[g];
+        if lines {
+          pass.drawIndexed(group.count, 1u32, group.start, 0i32, 0u32);
+          triangles = triangles + u64.from(group.count / 2u32);
+        } else {
+          pass.drawIndexed(group.count, batch.count, group.start, 0i32, batch.firstInstance);
+          triangles = triangles + u64.from(group.count / 3u32) * u64.from(batch.count);
+        }
+        drawCalls = drawCalls + 1u32;
+        g = g + 1usize;
+      }
+      instancesDrawn = instancesDrawn + batch.count;
+      b = b + 1usize;
     }
     // The sky, where nothing was drawn
     if drawSky {
@@ -692,48 +956,143 @@ pub struct Renderer {
     while i < list.items.len() {
       imm item = list.items[i];
       if materials.alive(item.material.slot) {
-        if materials[item.material.slot].kind == MATERIAL_PBR { return true; }
+        imm mslot = materials[item.material.slot];
+        if mslot.kind == MATERIAL_PBR { return true; }
+        if mslot.kind == MATERIAL_CUSTOM and pipelines.alive(mslot.pipeline.slot) {
+          if pipelines[mslot.pipeline.slot].environment { return true; }
+        }
       }
       i = i + 1usize;
     }
     false;
   }
 
-  // The indices of 'list's items in the order they are drawn: lit meshes,
-  // then lines, each nearest the camera at 'eye' first (by the distance to
-  // its model's origin)
-  fn drawOrder(self &, list &DrawList, eye Vec3) List[u32] {
+  // Gather 'list's items into 'batches', in the order they are drawn: an
+  // item of a mesh and material that are alive gets a key; the keys are
+  // sorted by (lines last, material, mesh, distance), so each run of one
+  // material and one mesh is a batch (a line is a batch of its own); the
+  // batches are then sorted meshes before lines, each nearest the camera at
+  // 'eye' first (by the distance to the nearest of its models' origins)
+  fn gatherBatches(self &mut, list &DrawList, eye Vec3) {
+    keys.clear();
+    batches.clear();
     imm n = list.items.len();
-    mut order = List[u32].withCapacity(n);
-    mut keys = List[f32].withCapacity(n);
     mut i = 0usize;
     while i < n {
       imm item = list.items[i];
-      mut key = item.model.translation().distanceSquared(eye);
       if meshes.alive(item.mesh.slot) {
-        if meshes[item.mesh.slot].current().topology == PRIMITIVE_TOPOLOGY_LINE_LIST { key = key + 1.0e30; }
+        imm m = meshes[item.mesh.slot].current();
+        if m.isValid() {
+          imm d = item.model.translation().distanceSquared(eye);
+          if m.topology == PRIMITIVE_TOPOLOGY_LINE_LIST {
+            keys.push(new DrawKey(1u32, u32.from(i), item.mesh.slot.slot(), u32.from(i), d));
+          } elif materials.alive(item.material.slot) {
+            keys.push(new DrawKey(0u32, item.material.slot.slot(), item.mesh.slot.slot(), u32.from(i), d));
+          }
+        }
       }
-      // Insertion: stable, and the lists are short
-      mut at = order.len();
-      order.push(u32.from(i));
-      keys.push(key);
-      while at > 0usize and *keys[at - 1usize] > key {
-        order.set(at, *order[at - 1usize]);
-        keys.set(at, *keys[at - 1usize]);
-        at = at - 1usize;
-      }
-      order.set(at, u32.from(i));
-      keys.set(at, key);
       i = i + 1usize;
     }
-    order;
+    keys.sortBy(&byBatch);
+    // Runs of one material and mesh
+    mut k = 0usize;
+    while k < keys.len() {
+      imm first = *keys[k];
+      mut end = k + 1usize;
+      while end < keys.len() and keys[end].lines == first.lines and keys[end].material == first.material
+          and keys[end].mesh == first.mesh {
+        end = end + 1usize;
+      }
+      // The keys of a run are sorted nearest first
+      batches.push(new DrawBatch(u32.from(k), u32.from(end - k), 0u32, first.distance, first.lines));
+      k = end;
+    }
+    batches.sortBy(&byDistance);
+  }
+
+  // Write every batch's copies (model matrix and tint) into the instance
+  // buffer side by side, in the order the batches are drawn, and give each
+  // batch its first instance; the buffer is made larger first if it must be
+  fn writeInstances(self &mut, device &mut Device, list &DrawList) {
+    instanceData.clear();
+    mut count = 0u32;
+    mut b = 0usize;
+    while b < batches.len() {
+      mut batch = *batches[b];
+      batch.firstInstance = count;
+      batches.set(b, batch);
+      mut j = 0u32;
+      while j < batch.count {
+        imm item = list.items[usize.from(keys[usize.from(batch.first + j)].item)];
+        mut e = 0usize;
+        while e < 16usize {
+          instanceData.push(item.model.m[e]);
+          e = e + 1usize;
+        }
+        instanceData.push(item.tint.red);
+        instanceData.push(item.tint.green);
+        instanceData.push(item.tint.blue);
+        instanceData.push(item.tint.alpha);
+        j = j + 1u32;
+      }
+      count = count + batch.count;
+      b = b + 1usize;
+    }
+    if count == 0u32 { return; }
+    if count > instanceCapacity {
+      mut capacity = instanceCapacity;
+      while capacity < count { capacity = capacity * 2u32; }
+      device.queue.releaseBuffer(&mut instances);
+      instances = device.createBuffer(u64.from(capacity) * INSTANCE_BYTES, BUFFER_USAGE_STORAGE | BUFFER_USAGE_COPY_DST);
+      instanceCapacity = capacity;
+      imm entries = [BindGroupEntry.buffer(0u32, &frameUniforms), BindGroupEntry.buffer(1u32, &instances)];
+      frameGroup = device.createBindGroup(&frameLayout, &entries);
+    }
+    imm v = instanceData.view();
+    device.queue.writeBuffer(&instances, 0u64, &v[0] as *u8, u64.from(count) * INSTANCE_BYTES);
   }
 }
 
+// An item of the draw list, as batching sorts it
+pub struct DrawKey {
+  lines u32;                   // 1 for lines (drawn after meshes, each alone)
+  material u32;                // its material's slot (a line: its own index, so it batches with nothing)
+  mesh u32;                    // its mesh's slot
+  item u32;                    // its index in the draw list
+  distance f32;                // its model's origin's distance from the eye, squared
+}
+
+// One instanced draw: 'count' keys from 'first', drawn as the instances
+// from 'firstInstance' in the instance buffer
+pub struct DrawBatch {
+  first u32;
+  count u32;
+  firstInstance u32;
+  distance f32;                // its nearest copy's distance from the eye, squared
+  lines u32;
+}
+
+fn byBatch(a &DrawKey, b &DrawKey) i32 {
+  if a.lines != b.lines { return if a.lines < b.lines { -1i32; } else { 1i32; }; }
+  if a.material != b.material { return if a.material < b.material { -1i32; } else { 1i32; }; }
+  if a.mesh != b.mesh { return if a.mesh < b.mesh { -1i32; } else { 1i32; }; }
+  if a.distance < b.distance { return -1i32; }
+  if a.distance > b.distance { return 1i32; }
+  0i32;
+}
+
+fn byDistance(a &DrawBatch, b &DrawBatch) i32 {
+  if a.lines != b.lines { return if a.lines < b.lines { -1i32; } else { 1i32; }; }
+  if a.distance < b.distance { return -1i32; }
+  if a.distance > b.distance { return 1i32; }
+  0i32;
+}
+
 // A material's parameters as lit.slang's MaterialParams has them
-fn materialParams(material &Material) Array[f32, 8] {
+fn materialParams(material &Material) Array[f32, 12] {
   [material.baseColor.red, material.baseColor.green, material.baseColor.blue, material.baseColor.alpha,
-    material.specular.red, material.specular.green, material.specular.blue, material.shininess];
+    material.specular.red, material.specular.green, material.specular.blue, material.shininess,
+    material.emissive.red, material.emissive.green, material.emissive.blue, 0.];
 }
 
 // What a draw list holds: a mesh, the material it is drawn with (not used

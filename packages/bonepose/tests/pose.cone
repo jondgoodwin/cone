@@ -1,0 +1,184 @@
+// Forward kinematics, sockets and the humanoid, checked against values worked
+// out by hand.
+//
+// The chain: bone 0 is moved to (0, 1, 0) and turned a quarter turn about y;
+// bone 1 is 1 m along its x; bone 2 is 1 m along bone 1's z and turned a
+// quarter turn about z. A quarter turn about y takes x to -z and z to x, so
+// bone 1 is at (0, 1, 0) + (0, 0, -1) = (0, 1, -1), and bone 2 at
+// (0, 1, -1) + (1, 0, 0) = (1, 1, -1). Bone 2's turn is Ry * Rz: Rz takes x to
+// y and y to -x, then Ry takes y to y and -x to z, so its columns are x -> y
+// (0, 1, 0), y -> z (0, 0, 1), z -> x (1, 0, 0). A socket 2 m up its y is at
+// (1, 1, -1) + 2 (0, 0, 1) = (1, 1, 1).
+//
+// The humanoid, 1.75 m tall: the eye socket at 0.936 H (the table's eye
+// height), the head top at H, the soles on the ground, the shoulders 0.1295 H
+// out and at 0.818 H.
+
+mod pose;
+
+import testing use *;
+import collections use List;
+import geomath use *;
+import bonepose use *;
+
+fn near(got f32, want f32, within f32, label &[]u8) bool {
+  expectFloat(f64.from(got), f64.from(want), f64.from(within), label);
+}
+
+fn testChain() {
+  mut s = Skeleton.empty();
+  imm one = new Vec3(1., 1., 1.);
+  imm up = new Vec3(0., 1., 0.);
+  imm b0 = s.addBone(-1i32, new Transform3(new Vec3(0., 1., 0.), Quat.angleAxis(pi / 2., up), one));
+  imm b1 = s.addBone(i32.from(b0), new Transform3(new Vec3(1., 0., 0.), Quat.identity(), one));
+  imm b2 = s.addBone(i32.from(b1), new Transform3(new Vec3(0., 0., 1.), Quat.angleAxis(pi / 2., new Vec3(0., 0., 1.)), one));
+  s.addSocket(b2, new Transform3(new Vec3(0., 2., 0.), Quat.identity(), one));
+  expectInt(i64.from(s.boneCount()), 3, "three bones");
+  imm pose = s.restPose();
+  mut models = List[Transform3].empty();
+  s.modelTransforms(&pose, &mut models);
+  imm m = (*models[b2]).toMat4();
+  imm want = [0f, 1f, 0f, 0f,  0f, 0f, 1f, 0f,  1f, 0f, 0f, 0f,  1f, 1f, -1f, 1f];
+  mut i = 0usize;
+  while i < 16usize {
+    near(m.m[i], want[i], 0.00001, "bone 2's model matrix, cell");
+    i = i + 1usize;
+  }
+  imm p1 = (*models[b1]).translation;
+  near(p1.x, 0., 0.00001, "bone 1 x");
+  near(p1.y, 1., 0.00001, "bone 1 y");
+  near(p1.z, -1., 0.00001, "bone 1 z");
+  imm sock = s.socketModel(&models, 0usize).translation;
+  near(sock.x, 1., 0.00001, "socket x");
+  near(sock.y, 1., 0.00001, "socket y");
+  near(sock.z, 1., 0.00001, "socket z");
+
+  // A pose that turns bone 1 a quarter turn about its own z moves bone 2 only
+  mut turned = s.restPose();
+  turned.setRotation(b1, Quat.angleAxis(pi / 2., new Vec3(0., 0., 1.)));
+  s.modelTransforms(&turned, &mut models);
+  // Bone 1's z is still world x: bone 2 stays at (1, 1, -1)
+  imm q2 = (*models[b2]).translation;
+  near(q2.x, 1., 0.00001, "turning bone 1 about its z leaves bone 2's place: x");
+  near(q2.z, -1., 0.00001, "and z");
+  // Turned about its own x instead (world -z), bone 2's 1 m along z swings
+  // to the y axis' direction: bone 1's z becomes -y of bone 1... a quarter turn
+  // about x takes z to -y, so the offset (0,0,1) goes to (0,-1,0) in bone 1's
+  // frame, and bone 1's frame is Ry, which keeps y: bone 2 at (0, 1, -1) + (0,-1,0)
+  turned.setRotation(b1, Quat.angleAxis(pi / 2., new Vec3(1., 0., 0.)));
+  s.modelTransforms(&turned, &mut models);
+  imm r2 = (*models[b2]).translation;
+  near(r2.x, 0., 0.00001, "turning bone 1 about its x: x");
+  near(r2.y, 0., 0.00001, "y");
+  near(r2.z, -1., 0.00001, "z");
+}
+
+fn testHumanoid() {
+  imm h = 1.75;
+  imm s = humanoid(h);
+  expectInt(i64.from(s.boneCount()), 19, "nineteen bones");
+  expectInt(i64.from(s.socketCount()), 9, "nine sockets");
+  mut ordered = true;
+  mut i = 0usize;
+  while i < s.boneCount() {
+    if s.parentOf(i) >= i32.from(i) { ordered = false; }
+    i = i + 1usize;
+  }
+  expectBool(ordered, true, "every parent comes before its child");
+  imm pose = s.restPose();
+  mut models = List[Transform3].empty();
+  s.modelTransforms(&pose, &mut models);
+  imm eye = s.socketModel(&models, SOCKET_EYE).translation;
+  near(eye.y, 0.936 * h, 0.0001, "eye height 0.936 H");
+  imm top = s.socketModel(&models, SOCKET_HEAD_TOP).translation;
+  near(top.y, h, 0.0001, "head top at H");
+  imm sole = s.socketModel(&models, SOCKET_SOLE_L).translation;
+  near(sole.y, 0., 0.0001, "sole on the ground");
+  near(sole.x, -0.0955 * h, 0.0001, "left sole 0.0955 H to the left (-x)");
+  imm shoulder = (*models[UPPER_ARM_R]).translation;
+  near(shoulder.y, 0.818 * h, 0.0001, "shoulder height 0.818 H");
+  near(shoulder.x, 0.1295 * h, 0.0001, "right shoulder 0.1295 H out (+x)");
+  imm knee = (*models[SHIN_R]).translation;
+  near(knee.y, 0.285 * h, 0.0001, "knee height 0.285 H");
+  // The arm hangs 15 degrees out: the wrist is below the shoulder and further out
+  imm wrist = (*models[HAND_R]).translation;
+  near(wrist.x - shoulder.x, (0.188 + 0.145) * h * sin(radians(15.)), 0.0001, "wrist 15 degrees out from the shoulder");
+  near(shoulder.y - wrist.y, (0.188 + 0.145) * h * cos(radians(15.)), 0.0001, "and below it");
+}
+
+fn testSolve() {
+  imm origin = new Vec3(0., 0., 0.);
+  imm pole = new Vec3(0., 0., 1.);
+  // Two unit segments to (1, 1, 0): the middle joint is 1 m from both ends,
+  // at (1, 0, 0) or (0, 1, 0) rotated about the line to the target towards the pole:
+  // 45 degrees off the line... the law of cosines puts it half way along the
+  // line (0.7071, 0.7071) and 0.7071 m to the side, towards +z
+  imm a = solveTwoBone(origin, new Vec3(1., 1., 0.), 1., 1., pole, 0.5, 0.98);
+  near(a.end.x, 1., 0.0005, "reach (1,1,0): end x");
+  near(a.end.y, 1., 0.0005, "end y");
+  near(a.mid.length(), 1., 0.0005, "the middle joint is a segment from the root");
+  near((a.end - a.mid).length(), 1., 0.0005, "and a segment from the end");
+  expectBool(a.mid.z > 0.5, true, "the joint bends towards the pole");
+  near(a.mid.x, 0.5, 0.0005, "middle joint x");
+  near(a.mid.y, 0.5, 0.0005, "middle joint y");
+  near(a.mid.z, 0.7071, 0.001, "middle joint z");
+  expectBool(a.reached, true, "reached");
+
+  // A target far out of reach: clamped to the full length along the line
+  imm far = solveTwoBone(origin, new Vec3(5., 0., 0.), 1., 1., pole, 0.5, 0.98);
+  near(far.end.x, 2., 0.001, "out of reach: the end at the full length");
+  near(far.end.y, 0., 0.0001, "on the same line");
+  near((far.end - far.mid).length(), 1., 0.001, "second segment kept");
+  expectBool(far.reached, false, "not reached");
+
+  // A target very near: the interior angle stays at 30 degrees (0.5236)
+  imm near1 = solveTwoBone(origin, new Vec3(0., -0.01, 0.), 1., 1., pole, 0.5235988, 0.98);
+  near(near1.end.length(), (2. - 2. * cos(0.5235988)).sqrt(), 0.0005, "too near: the smallest reach");
+  near((near1.end - near1.mid).length(), 1., 0.001, "second segment kept when folded");
+
+  // Softening: a target at 0.99 of the full length does not make a straight leg
+  imm soft = solveTwoBone(origin, new Vec3(0., -1.98, 0.), 1., 1., pole, 0.5, 0.98);
+  expectBool(soft.end.length() < 1.99995, true, "a nearly straight limb stops short of straight");
+  expectBool(soft.end.length() > 1.97, true, "and not by much");
+}
+
+fn testAim() {
+  imm h = 1.75;
+  imm s = humanoid(h);
+  mut pose = s.restPose();
+  mut models = List[Transform3].empty();
+  s.modelTransforms(&pose, &mut models);
+  // The left foot lifted forward and up: ankle at (-0.0955 H, 0.25, -0.30)
+  imm target = new Vec3(-0.0955 * h, 0.25, -0.30);
+  imm sol = aimLimb(&s, &mut pose, &mut models, THIGH_L, target, new Vec3(0., 0., -1.), 0.5235988);
+  imm ankle = (*models[FOOT_L]).translation;
+  near(ankle.x, target.x, 0.001, "aimed ankle x");
+  near(ankle.y, target.y, 0.001, "aimed ankle y");
+  near(ankle.z, target.z, 0.001, "aimed ankle z");
+  // The model transforms agree with a fresh pass over the changed pose
+  mut again = List[Transform3].empty();
+  s.modelTransforms(&pose, &mut again);
+  imm a2 = (*again[FOOT_L]).translation;
+  near(a2.x, ankle.x, 0.0001, "recomposed ankle x");
+  near(a2.y, ankle.y, 0.0001, "recomposed ankle y");
+  near(a2.z, ankle.z, 0.0001, "recomposed ankle z");
+  // The knee is ahead of the line from hip to ankle (towards -z)
+  imm knee = (*models[SHIN_L]).translation;
+  imm hip = (*models[THIGH_L]).translation;
+  expectBool(knee.z < (hip.z + ankle.z) / 2. - 0.05, true, "the knee bends forward");
+  expectBool(sol.reached, true, "reachable");
+  // An unreachable target: 5 m away, the leg straight towards it
+  imm sol2 = aimLimb(&s, &mut pose, &mut models, THIGH_R, new Vec3(0., -5., -5.), new Vec3(0., 0., -1.), 0.5235988);
+  expectBool(sol2.reached, false, "the far target is not reached");
+  imm foot = (*models[FOOT_R]).translation;
+  imm legLen = (0.245 + 0.246) * h;
+  near((foot - (*models[THIGH_R]).translation).length(), legLen, 0.002, "clamped to the leg's length");
+}
+
+fn main() i32 {
+  testChain();
+  testHumanoid();
+  testSolve();
+  testAim();
+  done();
+}

@@ -15,7 +15,7 @@
 
 	<p style="margin-left: 40px;"><i>Note: The library collection types are the
 		<span class="pre">collections</span> package's <span class="pre">List[T]</span> and
-		<span class="pre">Dict[K, V]</span> (keyed by <span class="pre">String</span> only), with
+		<span class="pre">Dict[K, V]</span> (keyed by any type that is <a href="reftrait.html#hash"><span class="pre">Hash</span></a>), with
 		<span class="pre">String</span> beside them (<span class="pre">import collections use *;</span>). A list or a dictionary is
 		constructed with <span class="pre">new</span>, its first values after
 		<span class="pre">&lt;-</span>: <span class="pre">new List[i32](100) &lt;- fill 0</span>
@@ -41,6 +41,36 @@
 		only where <span class="pre">T</span> copies; a list of values with finalizers is shortened with
 		<span class="pre">truncate</span>.
 		The array primitives are implemented as far as the next two pages say.</i></p>
+
+	<p style="margin-left: 40px;"><i>Note: <span class="pre">Dict[K, V]</span> is a SwissTable: an
+		open-addressed table with a control byte for each bucket (empty, removed, or the top 7 bits of the
+		key's hash), read eight at a time as one 64-bit word, so a lookup compares a key only in a bucket
+		whose tag matches; it holds up to 7/8 of its buckets, and doubles when full. Its keys are any type
+		that is <span class="pre">Hash</span>: integers and <span class="pre">bool</span>, a
+		<span class="pre">String</span>, a <span class="pre">pool.Ref[T]</span>, a struct that declares
+		<span class="pre">is Hash</span> (the compiler supplies its hash from its fields); a float key is
+		refused. A key moves in and the dictionary owns it. It is <b>unordered</b>: each dictionary keeps a
+		seed of its own, the process's random one by default, so <span class="pre">keys()</span>,
+		<span class="pre">values()</span> and <span class="pre">entries()</span> (cursors, each
+		<span class="pre">next()</span> giving an <span class="pre">Option</span> of a borrow, the
+		dictionary loaned while one is used) visit in a different order on every run, and a program sorts,
+		or looks a key up, rather than rely on it. <span class="pre">Dict[K, V].deterministic()</span> fixes the
+		seed, and then the same keys inserted in the same order are visited in the same order on every run;
+		<span class="pre">Dict[K, V].withSeed(n)</span> takes one of your own. Lookups take a
+		<span class="pre">&amp;K</span>: <span class="pre">get(&amp;k)</span> is an
+		<span class="pre">Option</span> of a borrow of the value, <span class="pre">getMut</span> a mutable one,
+		<span class="pre">getCopy</span> an <span class="pre">Option</span> of a copy (only where the value
+		copies, which is the lookup that works through a shared <span class="pre">Rc[mut, Dict[K, V]]</span>),
+		<span class="pre">contains</span>, <span class="pre">remove</span> (the value moved out, the key
+		finalized), <span class="pre">d[&amp;k]</span> and <span class="pre">&amp;mut d[&amp;k]</span>
+		(a panic for a key it does not hold), <span class="pre">insert(k, v)</span> (true when it replaced an
+		entry, finalizing the old key and value), <span class="pre">getOrInsert(k, v)</span> (a mutable
+		borrow of the value held, or else <span class="pre">v</span> moved in, with one search:
+		<span class="pre">*counts.getOrInsert(word, 0) += 1</span>), <span class="pre">clear</span>,
+		<span class="pre">len</span> and <span class="pre">capacity</span> (the entries it holds before it
+		grows). A <span class="pre">Dict[String, V]</span> also takes the key as bytes, a
+		<span class="pre">&amp;[]u8</span> (<span class="pre">d.contains("core")</span>), for every one of
+		these lookups.</i></p>
 
 	<p>A collection type holds some number of values (elements) that are all the same type.
 		The standard library offers a number of versatile collection types,
