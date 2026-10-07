@@ -95,7 +95,7 @@ static void fnSigLifeCheck(TypeCheckState *pstate, INode *node, void *extra) {
     if (sig->lifestatic) {
         for (nodesFor(sig->parms, cnt, nodesp)) {
             INode *parmtype = ((VarDclNode*)*nodesp)->vtype;
-            if (parmtype->tag == RefTag && ((RefNode*)parmtype)->scope == 1
+            if ((parmtype->tag == RefTag || parmtype->tag == ArrayRefTag) && ((RefNode*)parmtype)->scope == 1
                 && lifeIsOwnBorrow(parmtype) && lifePartStatic(sig, parmtype, LifePartOwn))
                 ((RefNode*)parmtype)->scope = 0;
         }

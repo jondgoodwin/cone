@@ -1,0 +1,26 @@
+// A generic bounded by ''static' that forwards what it is handed to a second
+// one, handed a '&str' made from a local's bytes: written as the argument,
+// and held in a variable first. The cast hides the borrow from the argument's
+// type, so the loan walk judges what each argument carries.
+//
+// Verdict: refuse, ErrorLifetimeBound at each argument.
+// Basis: language rule (3 Oct 2026): 'T + 'static' says T holds no
+// non-static borrow, however the reference is shaped; a variable's lifetime
+// follows what it holds (the flow rule, 2 Oct 2026) (reflifefn.html,
+// "Lifetime bounds").
+// Master 0fa1c7cd: refused the same.
+
+mod lifetime_bound_static_fat_str_refused;
+
+fn inner[T + 'static](x T) {}
+
+fn keep[T + 'static](x T) {
+  inner[T](x);
+}
+
+fn main() {
+  imm bytes Array[u8, 3] = [104u8, 105u8, 33u8];
+  keep(&[]imm bytes as &str);   //~ ErrorLifetimeBound "carries a borrow of"
+  imm s = &[]imm bytes as &str;
+  keep(s);                      //~ ErrorLifetimeBound "carries a borrow of"
+}
