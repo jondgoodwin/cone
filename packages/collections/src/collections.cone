@@ -180,13 +180,42 @@ pub struct List[T] is ShapeChanging, Sendable {
     used = 0usize;
   }
 
+  // Shorten it to n values, finalizing each one dropped, first to last, and
+  // keeping the block. A list of n values or fewer is left as it is.
+  pub fn truncate(self &mut, n usize) {
+    if n >= used { return; }
+    if mem.needsFinal[T]() {
+      mut i = n;
+      while i < used { mem.finalize(ptr + i); i = i + 1usize; }
+    }
+    used = n;
+  }
+
+  // Make it exactly n values long. A longer list is truncated: the values
+  // beyond n are finalized, first to last. A shorter one grows, each new value
+  // a copy of 'value', and the block may move, as for 'reserve'. Only a type
+  // whose values copy can fill the new places, so a type with a finalizer
+  // (a move type) is shortened with 'truncate' instead.
+  //
+  // This, 'viewMut' and 'truncate' are how a C function fills a list: resize
+  // it to the count the function was told it may write, hand it 'viewMut()',
+  // and truncate to the count the function says it wrote.
+  pub fn resize(self &mut, n usize, value T) where T is Copy {
+    if n <= used { self.truncate(n); return; }
+    self.reserve(n - used);
+    while used < n {
+      mem.writeRaw(ptr + used, value);
+      used = used + 1usize;
+    }
+  }
+
   // A slice of every value it holds, for reading them now
   pub fn view(self &) &[]T { mem.sliceFromParts(ptr, used); }
 
   // A mutable slice of every value it holds, for changing them in place:
-  // what a function that fills a slice writes into. The list stays borrowed
-  // mutably while the slice is used, so nothing else may read or change it
-  // until the slice's last use
+  // what a function that fills a slice writes into, a C function included.
+  // The list stays borrowed mutably while the slice is used, so nothing else
+  // may read or change it until the slice's last use
   pub fn viewMut(self &mut) &[]mut T { mem.sliceFromPartsMut(ptr, used); }
 
   // Put its values in order: 'order(a, b)' is negative when a goes before b,
@@ -256,7 +285,7 @@ pub struct List[T] is ShapeChanging, Sendable {
 // and dies as a list does. A string literal is a '&[]u8', not a String; every
 // method that reads text takes a '&[]u8', which a literal is and which 'view()'
 // gives of a String, so 's.startsWith("import")' and 'a.equals(b.view())'.
-pub struct String is ShapeChanging {
+pub struct String is ShapeChanging, Hash {
   bytes List[u8];
 
   pub fn empty() String { new String(List[u8].empty()); }
@@ -478,8 +507,18 @@ pub struct String is ShapeChanging {
     }
   }
 
+  // Whether two hold the same bytes: the '==' that Hash requires of a type
+  // beside its 'hash'
+  pub fn eq overload `==`(self &, o &String) bool { self.view() == o.view(); }
+
   // FNV-1a, 64 bits, over its bytes
-  pub fn hash(self &) u64 { hashBytes(self.view()); }
+  pub fn fnv overload hash(self &) u64 { hashBytes(self.view()); }
+
+  // What identifies it to a Hasher (core's Hash): its bytes, then the
+  // terminator that marks where they end, so that as parts of one key ("ab",
+  // "c") and ("a", "bc") differ. The same a byte slice feeds (Hasher.writeStr),
+  // so a literal and a String of the same bytes hash alike
+  pub fn feed overload hash(self &, h &mut Hasher) { h.writeStr(self.view()); }
 
   // -------- copies of parts --------
 

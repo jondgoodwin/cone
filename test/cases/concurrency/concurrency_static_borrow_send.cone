@@ -1,0 +1,144 @@
+// A borrow that lives for the whole program may cross threads and actors, in
+// either of two cases: it is 'imm' or 'opaq' and what it reaches is safe for
+// two threads to read at once (Sendable, as an 'Arc[imm, T]'s value must be),
+// or it is 'uni' and what it reaches is safe to move.
+//
+// - A generic asks for it by bounding its parameter, 'A Sendable + 'static':
+//   thread.start does, so a thread is handed '&imm' borrows of a global
+//   number and of a global array, and one the thread's function returns
+//   crosses back. The call is checked to hand the parameter only global
+//   borrows (concurrency_static_borrow_refused).
+// - An actor's behaviour or initializer takes one by writing it so, as
+//   '&'static imm T': it travels in the message. A reply may carry
+//   one under the same rule (concurrency_static_borrow_reply).
+// - A 'uni' borrow of the whole program is checked in the signature that takes
+//   one, since no 'uni' borrow of a global can be made (a global is reached by
+//   name from anywhere, so it is not unique: ErrorBadPerm), and a leaked
+//   owner's does not exist yet. 'relay' hands one on to a thread and to an
+//   actor, and 'crosses' asks the marker of the type.
+// - A struct holding such a borrow, and an Option of one, cross as the borrow
+//   does.
+//
+// Output: the numbers each thread and the actor computed.
+
+mod concurrency_static_borrow_send;
+
+import stdio use *;
+import sync use *;
+import thread;
+import actors;
+
+imm seed u64 = 7u64;
+imm table Array[u64, 3] = [1u64, 2u64, 3u64];
+
+struct Point {pub x i32; pub y i32;}
+
+// Holds a borrow of the whole program
+struct View {pub data &'static imm Array[u64, 3];}
+
+fn crosses[T Sendable + 'static]() {}
+
+fn read(p &imm u64) u64 {*p + 1u64;}
+fn sumTable(t &imm Array[u64, 3]) u64 {(*t)[0] + (*t)[1] + (*t)[2];}
+fn sumView(v View) u64 {(*v.data)[0] + (*v.data)[2];}
+fn maybe(o Option[&imm u64]) u64 {
+  match o {
+    case imm s Some {*s.value;}
+    else {0u64;}
+  }
+}
+fn same(p &imm u64) &imm u64 {p;}
+fn touch(p &opaq u64) u64 {42u64;}
+fn moved(p &uni u64) u64 {*p + 100u64;}
+
+// A 'uni' borrow of the whole program, received through a parameter, goes
+// on to a thread
+fn relay(p &'static uni u64) u64 {
+  imm t = thread.start(p, &moved);
+  t.join();
+}
+
+actor Reader {
+  total u64;
+
+  fn init(self &new, p &'static imm u64) {
+    *self = new Self(total: *p);
+  }
+
+  pub async do add(self, p &'static imm u64) {
+    total = total + *p;
+  }
+
+  pub async do addTable(self, t &'static imm Array[u64, 3]) {
+    total = total + (*t)[0] + (*t)[1] + (*t)[2];
+  }
+
+  pub async do addView(self, v View) {
+    total = total + (*v.data)[1];
+  }
+
+  pub async do hide(self, p &'static opaq u64) {
+    total = total + 1000u64;
+  }
+
+  pub async do adopt(self, p &'static uni u64) {
+    *p = 0u64;
+  }
+
+  pub async do report(self &) {
+    printStr("total "); printUInt(total); printStr("\n");
+  }
+}
+
+fn feed(r Reader) u64 {
+  r.add(&imm seed);
+  r.addTable(&imm table);
+  0u64;
+}
+
+fn main() {
+  // What crosses without running anything
+  crosses[&imm u64]();
+  crosses[&opaq u64]();
+  crosses[&uni u64]();
+  crosses[&imm Array[u64, 3]]();
+  crosses[&imm Point]();
+  crosses[&imm Array[Point, 2]]();
+  crosses[Option[&imm Point]]();
+  crosses[View]();
+  crosses[So[View]]();
+  crosses[&imm Arc[imm, u64]]();
+
+  // A thread is handed borrows of global, immutable data
+  imm a = thread.start(&imm seed, &read);
+  imm b = thread.start(&imm table, &sumTable);
+  imm c = thread.start(new View(&imm table), &sumView);
+  imm opt Option[&imm u64] = Some[&imm u64][&imm seed];
+  imm d = thread.start(opt, &maybe);
+  imm e = thread.start(&opaq seed, &touch);
+  printStr("threads ");
+  printUInt(a.join());
+  printStr(" ");
+  printUInt(b.join());
+  printStr(" ");
+  printUInt(c.join());
+  printStr(" ");
+  printUInt(d.join());
+  printStr(" ");
+  printUInt(e.join());
+  printStr("\n");
+
+  // An actor is made from one and sent them, from here and from a thread
+  initAll();
+  {
+    imm r = new Reader(&imm seed);
+    r.add(&imm seed);
+    r.addTable(&imm table);
+    r.addView(new View(&imm table));
+    r.hide(&opaq seed);
+    imm t = thread.start(r, &feed);
+    t.join();
+    r.report();
+  }
+  finalAll();
+}

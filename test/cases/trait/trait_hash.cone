@@ -1,0 +1,168 @@
+// core's Hash: what a type feeds a Hasher, and the hash the compiler supplies
+// for a struct that declares it and writes none. Every number was worked out
+// apart (Python's integers) from the algorithm core documents: a Hasher's state
+// starts as seed ^ mix(seed ^ s0, s1); each word fed is state = mix(state ^ word,
+// 0x9e3779b97f4a7c15); finish is mix(state ^ s2, s3); mix(a, b) is the 128-bit
+// product's two halves xored; s0 to s3 are wyhash's default secret. The cases:
+//
+// - a struct with no 'hash' feeds each field in order (not in an order of its
+//   own choosing, not its bytes): the same fields the same number, any field
+//   changed another, two fields swapped another;
+// - a struct holding a struct that is itself supplied, and a generic's instance,
+//   are supplied alike;
+// - an integer of any width, signed or not, and bool feed their bits, so a key
+//   of one of them in a generic function reaches 'hash';
+// - a type that writes its own 'hash' keeps it, and a (u32, u32) identity fed as
+//   one word is mixed once (the pool's Ref does this);
+// - variable-length values feed a terminator, so ("ab", "c") and ("a", "bc")
+//   differ as the parts of one key;
+// - a fixed seed gives the same number on every run, another seed another, and
+//   the process's seed (random on every run: sync_hash_seed and the like check
+//   that across runs) is the same all through one.
+
+mod trait_hash;
+
+import stdio use *;
+
+struct Inner is Hash {
+  pub a u8;
+  pub b bool;
+  pub fn `==`(self, o Inner) bool {a == o.a and b == o.b;}
+}
+
+struct Outer is Hash {
+  pub n i64;
+  pub inner Inner;
+  pub k usize;
+  pub fn `==`(self, o Outer) bool {n == o.n and inner == o.inner and k == o.k;}
+}
+
+struct Pair[T] is Hash {
+  pub first T;
+  pub second T;
+  pub fn `==`(self, o Pair[T]) bool {first == o.first and second == o.second;}
+}
+
+// A hash of its own, feeding two halves as one word
+struct Id is Hash {
+  pub slot u32;
+  pub gen u32;
+  pub fn `==`(self, o Id) bool {slot == o.slot and gen == o.gen;}
+  pub fn hash(self &, h &mut Hasher) {
+    h.writeU64(u64.from(slot) | (u64.from(gen) << 32u64));
+  }
+}
+
+// The same two halves, supplied: a word each
+struct Halves is Hash {
+  pub slot u32;
+  pub gen u32;
+  pub fn `==`(self, o Halves) bool {slot == o.slot and gen == o.gen;}
+}
+
+struct Names is Hash {
+  pub first &[]u8;
+  pub second &[]u8;
+  pub fn `==`(self, o Names) bool {self.first == o.first and self.second == o.second;}
+  pub fn hash(self &, h &mut Hasher) {
+    h.writeStr(self.first);
+    h.writeStr(self.second);
+  }
+}
+
+// The key of a table, as a generic function sees it
+fn hashOf[K Hash](k &K, seed u64) u64 {
+  mut h = Hasher.withSeed(seed);
+  k.hash(&mut h);
+  h.finish();
+}
+
+fn show(label &[]u8, n u64) {
+  printStr(label);
+  printStr(" ");
+  printUInt(n);
+  printStr("\n");
+}
+
+fn yes(label &[]u8, b bool) {
+  printStr(label);
+  printStr(if b {" yes\n";} else {" NO\n";});
+}
+
+fn main() {
+  // Supplied: the fields in order, 1 then 2 then the terminal mix
+  imm halves = new Halves(1u32, 2u32);
+  show("halves", hashOf(&halves, 1u64));
+  yes("halves again", hashOf(&halves, 1u64) == hashOf(&new Halves(1u32, 2u32), 1u64));
+  yes("a field changed", hashOf(&halves, 1u64) != hashOf(&new Halves(1u32, 3u32), 1u64));
+  yes("fields swapped", hashOf(&halves, 1u64) != hashOf(&new Halves(2u32, 1u32), 1u64));
+  yes("another seed", hashOf(&halves, 1u64) != hashOf(&halves, 2u64));
+
+  // Written: one word, so the number a single writeU64 of it comes to
+  imm id = new Id(3u32, 5u32);
+  show("id", hashOf(&id, 77u64));
+  mut one = Hasher.withSeed(77u64);
+  one.writeU64(3u64 | (5u64 << 32u64));
+  yes("id is one word", one.finish() == hashOf(&id, 77u64));
+  yes("id differs from halves", hashOf(&id, 77u64) != hashOf(&new Halves(3u32, 5u32), 77u64));
+
+  // A struct holding a supplied struct
+  imm o1 = new Outer(-5i64, new Inner(7u8, true), 9usize);
+  imm o2 = new Outer(-5i64, new Inner(7u8, true), 9usize);
+  imm o3 = new Outer(-5i64, new Inner(7u8, false), 9usize);
+  imm o4 = new Outer(-5i64, new Inner(8u8, true), 9usize);
+  show("outer", hashOf(&o1, 11u64));
+  yes("outer again", hashOf(&o1, 11u64) == hashOf(&o2, 11u64));
+  yes("the inner bool", hashOf(&o1, 11u64) != hashOf(&o3, 11u64));
+  yes("the inner byte", hashOf(&o1, 11u64) != hashOf(&o4, 11u64));
+
+  // A generic's instances
+  imm p1 = new Pair[u16](1u16, 2u16);
+  imm p2 = new Pair[u16](2u16, 1u16);
+  show("pair", hashOf(&p1, 1u64));
+  yes("pair order", hashOf(&p1, 1u64) != hashOf(&p2, 1u64));
+  yes("pair of bools", hashOf(&new Pair[bool](true, false), 1u64) != hashOf(&new Pair[bool](false, true), 1u64));
+  yes("pair as halves", hashOf(&new Pair[u32](1u32, 2u32), 1u64) == hashOf(&halves, 1u64));
+
+  // Numbers feed their bits: any width, a signed one as the bits it holds
+  show("u8 255", hashOf(&255u8, 77u64));
+  show("u8 255 and i8 -1", if hashOf(&255u8, 77u64) == hashOf(&-1i8, 77u64) {1u64;} else {0u64;});
+  show("u64 255", hashOf(&255u64, 77u64));
+  yes("u8 255 is u64 255", hashOf(&255u8, 77u64) == hashOf(&255u64, 77u64));
+  show("true", hashOf(&true, 77u64));
+  yes("true is 1", hashOf(&true, 77u64) == hashOf(&1u8, 77u64));
+  yes("i32 and usize", hashOf(&7i32, 1u64) == hashOf(&7usize, 1u64));
+
+  // Where a variable-length value ends is fed
+  imm n1 = new Names("ab", "c");
+  imm n2 = new Names("a", "bc");
+  imm n3 = new Names("ab", "c");
+  yes("names split apart", hashOf(&n1, 1u64) != hashOf(&n2, 1u64));
+  yes("names again", hashOf(&n1, 1u64) == hashOf(&n3, 1u64));
+  mut bare1 = Hasher.withSeed(1u64);
+  bare1.writeStr("ab");
+  bare1.writeStr("c");
+  mut bare2 = Hasher.withSeed(1u64);
+  bare2.writeStr("abc");
+  yes("strs, one and two", bare1.finish() != bare2.finish());
+  mut ended = Hasher.withSeed(1u64);
+  ended.writeBytes("abc");
+  ended.writeU8(0xFFu8);
+  mut str = Hasher.withSeed(1u64);
+  str.writeStr("abc");
+  yes("a str is its bytes then 0xFF", ended.finish() == str.finish());
+
+  // Seeds
+  yes("the same seed", Hasher.withSeed(5u64).finish() == Hasher.withSeed(5u64).finish());
+  yes("another seed", Hasher.withSeed(5u64).finish() != Hasher.withSeed(6u64).finish());
+  show("seed 0, nothing fed", Hasher.withSeed(0u64).finish());
+  yes("the process seed is not 0", processSeed() != 0u64);
+  yes("the process seed stays", processSeed() == processSeed());
+  yes("seeded is the process's", Hasher.seeded().finish() == Hasher.withSeed(processSeed()).finish());
+  mut fed = Hasher.withSeed(9u64);
+  fed.writeU64(1u64);
+  imm once = fed.finish();
+  yes("finish changes nothing", fed.finish() == once);
+  fed.writeU64(2u64);
+  yes("more may be fed after", fed.finish() != once);
+}

@@ -1,0 +1,119 @@
+// core's mem.mulFold, the 128-bit product of two u64s with its two halves xored,
+// and wyhash built on it. Each product below was worked out apart in arbitrary
+// precision (Python's integers: (a * b >> 64) ^ (a * b mod 2^64)), including
+// the edges where a half-product carries into the next: all ones, a power of
+// two, and the two 32-bit halves meeting. wyhash's expected numbers are what
+// the published C implementation (wyhash final version 4.3, default secret)
+// answers, compiled apart: for its seven published messages, and for the bytes
+// (k * 7 + 3) mod 256 at every length from 0 to 130 with the seed 257 times
+// the length, which takes every path through it (up to 3 bytes, 4 to 16,
+// 17 to 47, and the 48-byte loop at 48, 96 and past it); the last line checks
+// all 131 together.
+//
+// Every operand comes through 'opaque', C compiled apart (opaque.c), so the
+// optimized run multiplies as the program runs; run again with the fallback
+// bodies, where mulFold forms the product from 32-bit halves, the same lines
+// come out. A seeded Hasher with a fixed seed gives the same numbers on every
+// run and build, and a different seed different ones; its numbers below were
+// worked out apart from the algorithm as documented in core.
+
+mod intrinsic_mulfold;
+
+import stdio use *;
+
+extern {
+  fn @c opaque(n u64) u64;
+}
+
+mut failures = 0u32;
+
+fn check(label &[]u8, got u64, want u64) {
+  if got == want {
+    printStr("ok   ");
+    printStr(label);
+    printStr("\n");
+  }
+  else {
+    failures = failures + 1u32;
+    printStr("FAIL ");
+    printStr(label);
+    printStr(" got ");
+    printUInt(got);
+    printStr(" want ");
+    printUInt(want);
+    printStr("\n");
+  }
+}
+
+fn fold(label &[]u8, a u64, b u64, want u64) {
+  check(label, mem.mulFold(opaque(a), opaque(b)), want);
+}
+
+fn main() {
+  fold("0 * 0", 0u64, 0u64, 0u64);
+  fold("1 * 1", 1u64, 1u64, 1u64);
+  fold("3 * 5", 3u64, 5u64, 15u64);
+  fold("max * max", 0xFFFFFFFFFFFFFFFFu64, 0xFFFFFFFFFFFFFFFFu64, 0xFFFFFFFFFFFFFFFFu64);
+  fold("max * 1", 0xFFFFFFFFFFFFFFFFu64, 1u64, 0xFFFFFFFFFFFFFFFFu64);
+  fold("2^63 * 2", 0x8000000000000000u64, 2u64, 1u64);
+  fold("2^32 * 2^32", 0x100000000u64, 0x100000000u64, 1u64);
+  fold("2^32-1 squared", 0xFFFFFFFFu64, 0xFFFFFFFFu64, 0xFFFFFFFE00000001u64);
+  fold("2^63 squared", 0x8000000000000000u64, 0x8000000000000000u64, 0x4000000000000000u64);
+  fold("high by low", 0xFFFFFFFF00000000u64, 0xFFFFFFFFu64, 0x1FFFFFFFEu64);
+  fold("pattern", 0x123456789abcdef0u64, 0xfedcba9876543210u64, 0x317228f48165bb22u64);
+  fold("golden ratio", 0x9e3779b97f4a7c15u64, 0xdeadbeefcafebabeu64, 0x8773e09e38107b8eu64);
+
+  check("empty", Hasher.wyhash("", opaque(0u64)), 0x93228a4de0eec5a2u64);
+  check("a", Hasher.wyhash("a", opaque(1u64)), 0xc5bac3db178713c4u64);
+  check("abc", Hasher.wyhash("abc", opaque(2u64)), 0xa97f2f7b1d9b3314u64);
+  check("message digest", Hasher.wyhash("message digest", opaque(3u64)), 0x786d1f1df3801df4u64);
+  check("alphabet", Hasher.wyhash("abcdefghijklmnopqrstuvwxyz", opaque(4u64)), 0xdca5a8138ad37c87u64);
+  check("alphanumerics", Hasher.wyhash("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789", opaque(5u64)), 0xb9e734f117cfaf70u64);
+  check("digits", Hasher.wyhash("12345678901234567890123456789012345678901234567890123456789012345678901234567890", opaque(6u64)), 0x6cc5eab49a92d617u64);
+
+  mut buf = new Array[u8, 200] <- fill 0u8;
+  mut k = 0usize;
+  while k < 200usize {
+    buf[k] = u8.from((k * 7usize + 3usize) & 255usize);
+    k = k + 1usize;
+  }
+  mut acc = 0u64;
+  mut len = 0usize;
+  while len <= 130usize {
+    imm got = Hasher.wyhash(&buf[0usize..len], opaque(u64.from(len) * 257u64));
+    acc = acc * 31u64 + got;
+    if len == 1usize {check("length 1", got, 0x967820ba76b758cdu64);}
+    if len == 2usize {check("length 2", got, 0x2cac35752aea9ad6u64);}
+    if len == 3usize {check("length 3", got, 0xb2a7c6abd437774eu64);}
+    if len == 4usize {check("length 4", got, 0x662f1a406d30da5cu64);}
+    if len == 8usize {check("length 8", got, 0xfd66622653ad06d0u64);}
+    if len == 9usize {check("length 9", got, 0x793459b47e819514u64);}
+    if len == 16usize {check("length 16", got, 0xd43bcd07f87154d0u64);}
+    if len == 17usize {check("length 17", got, 0xd1df50119a80518fu64);}
+    if len == 32usize {check("length 32", got, 0xb0fb1c39f8dd46e1u64);}
+    if len == 47usize {check("length 47", got, 0xac9fe427a73a41e7u64);}
+    if len == 48usize {check("length 48", got, 0x4117bb9c8ac404e1u64);}
+    if len == 49usize {check("length 49", got, 0x6e1b4a03987e2e1eu64);}
+    if len == 64usize {check("length 64", got, 0x0e9f0d4367c262f9u64);}
+    if len == 95usize {check("length 95", got, 0x31d58359b799668bu64);}
+    if len == 96usize {check("length 96", got, 0x9768cbd908f6a2fbu64);}
+    if len == 97usize {check("length 97", got, 0xf36a3a65c05142d6u64);}
+    if len == 130usize {check("length 130", got, 0x7a5e052270c71e8au64);}
+    len = len + 1usize;
+  }
+  check("131 lengths together", acc, 0xa7b210982cccebaau64);
+
+  // The same feed gives the same number whenever the seed is the same, and
+  // another seed another number; what a seed and a word come to is the
+  // documented algorithm's, worked out apart
+  mut a = Hasher.withSeed(opaque(1u64));
+  a.writeU64(opaque(7u64));
+  check("seed 1, word 7", a.finish(), 9502212237505047826u64);
+  mut b = Hasher.withSeed(opaque(2u64));
+  b.writeU64(opaque(7u64));
+  check("seed 2, word 7", b.finish(), 4609015634833549426u64);
+  check("seeds differ", if a.finish() != b.finish() {1u64;} else {0u64;}, 1u64);
+
+  printUInt(u64.from(failures));
+  printStr(" failures\n");
+}

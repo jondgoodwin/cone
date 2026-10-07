@@ -1106,6 +1106,41 @@ and the compiler knows nothing else of that type. What it brings:
   one is never an LLVM constant ([Generation](../phases/generation.md)), and a
   `const` whose type holds one is `ErrorAtomicValueConst`.
 
+### Hash
+
+`Hash` is an ordinary trait, declared in core (`pub trait Hash { pub fn
+hash(self &, h &mut Hasher); }`), that the compiler knows by its name and
+package, as it knows `TypeRecord` (`coreIsHashTrait`, `coreIsHasher`,
+`ir/stmt/intrinsic.c`). It is not one of the built-in markers: it has a method,
+so a type that writes a `hash` of the right signature fits it structurally
+too. What the compiler adds:
+
+- **The grant.** `genericTypeIs` answers true of every integer type and `bool`
+  (never a float) asked `is Hash`, and `nbrAddHashMethods` (`corenumber.c`)
+  gives each a `hash` method so a generic's `key.hash(h)` reaches something:
+  [intrinsic](intrinsic.md), "An integer's and bool's `hash`".
+- **An `==`.** A type declaring it with none is `ErrorHashNoEq`, whether or not
+  it writes a `hash` (`structHashCheck`, at layout beside `structAtomicValueCheck`).
+- **The supplied `hash`.** A struct declaring `Hash` that writes no `hash`
+  inherits the trait's requirement bodiless (`structInheritTrait`), and
+  `structHashCheck` fills it in: a block of `self.field.hash(h)` for each field,
+  in order, built resolved against the requirement's parameters, so type check
+  reaches it as it would a written body, and a supplied struct's field reaches
+  that struct's own. Fields, never bytes: padding is undefined, and a field's
+  own `hash` may feed less than its bits. A generic's instance is supplied when
+  it is laid out, where its field types are known. It is refused, by field,
+  where the field has no hash that agrees with its `==`: a float is
+  `ErrorHashFloat` (NaN is not equal to itself, -0 is equal to 0), and any type
+  that is not `Hash` — a struct that does not declare or fit it, a reference or
+  slice, a tuple, an array, a pointer, an enum — is `ErrorHashField`. A refused
+  struct is given an empty body so nothing more is said of it. An enum, a
+  variant and a trait are not supplied; one that declares `Hash` is asked for a
+  `hash` by the ordinary requirement check.
+
+The algorithm, `Hasher`, is core's Cone source (`mulFold` in
+[intrinsic](intrinsic.md) is its one intrinsic); its seed comes from conestd
+(`cone_hashSeed`, `packages/conestd/hash.cone`).
+
 ## Name folding
 
 A field's `use` clause (`FoldClause`, on the `FieldDclNode`) admits names of

@@ -102,8 +102,9 @@ void genericSendableCheckAll();
 // Why a type is not Sendable, as the thread check's diagnostics say it: where
 // the culprit sits in it, into 'what', and what kind of thing it is, into
 // 'reason', each 512 bytes. Returns whether the cause is a borrow or a
-// permission, which a diagnostic says is not a local's own 'mut'
-int genericNotSendableWhy(INode *arg, char *what, char *reason);
+// permission, which a diagnostic says is not a local's own 'mut'. 'how' is how
+// the check was made: whether a borrow of the whole program may cross there
+int genericNotSendableWhy(INode *arg, char *what, char *reason, StaticBorrow how);
 
 // When the method or function 'name' is absent from the generic type instance
 // 'typedcl' because its 'where' clause is not met there, report so at

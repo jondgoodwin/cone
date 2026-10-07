@@ -40,7 +40,13 @@ Visual Studio projects stay at the root.
   take; `Atomic[T]`, an integer, `bool` or raw pointer changed only by
   atomic operations over those intrinsics, which declares the built-in marker
   `AtomicValue` (core's because it needs no OS, as Rust keeps its atomics in
-  `core::sync::atomic`); and `panic`, `assert`, `unreachable`, `todo` and `setPanicHook`, whose
+  `core::sync::atomic`); `Hash`, the trait of a value that feeds a `Hasher`
+  what identifies it (the compiler supplies the `hash` of a struct that
+  declares it and writes none, over its fields, and grants it to the integers
+  and `bool`), and `Hasher`, the algorithm: foldhash's multiply and fold per
+  word and wyhash for bytes, seeded by `processSeed()` (random once per
+  process, conestd's) or by `Hasher.withSeed`, over the `mem.mulFold`
+  intrinsic; and `panic`, `assert`, `unreachable`, `todo` and `setPanicHook`, whose
   work is conestd's, with `srcFile` and `srcLine`, intrinsics outside `mem`,
   which as a parameter's default give a caller's location; and the macros
   `assertDebug` and `assertDebugMsg`, checked in a debug build only, through
@@ -605,8 +611,8 @@ Visual Studio projects stay at the root.
   plus per-node notes), `compiler/` (how `conec` itself is built and stays
   fast), and `diagnostics/` (measuring, error codes, test suite).
 - `packages/conestd/`: the runtime every native program links: printing, the
-  chain of traced roots, what a panic does, and the thread-local barrier hook
-  a kernel's barriers call on the CPU. It is Cone, one C-named module
+  chain of traced roots, what a panic does, the thread-local barrier hook
+  a kernel's barriers call on the CPU, and the process's hash seed. It is Cone, one C-named module
   (`conestd.cone` and the files beside it) that the build compiles with the
   `conec` it has just built, and one C file, `mainthread.c`, recording the
   thread the program started on before `main` runs, which Cone cannot say.

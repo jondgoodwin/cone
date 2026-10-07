@@ -118,6 +118,28 @@ RefBinds refThreadBinds(RefNode *ref) {
     return RefCrosses;
 }
 
+// Whether a borrow that lives for the whole program may cross to another
+// thread, where the thread check allows it (StaticBorrow): it must be 'imm' or
+// 'opaq' (many threads may read it, none writes) or 'uni' (it moves, and only
+// one holder has it), never 'ro', which only stops this holder writing; and its
+// lifetime must not be an invariant one, which is an arena's brand and not
+// "forever". What it points at is asked separately, as for an owner. That the
+// borrow does live for the whole program is the call's to check where a
+// parameter is bounded ''static' (StaticVouched), the signature's where it is
+// written so (StaticWritten).
+StaticVerdict refStaticCrosses(RefNode *ref, StaticBorrow how) {
+    if (how == StaticOff ||itypeGetTypeDcl(ref->region) != borrowRef || permHeldKind(ref->perm))
+        return StaticNotBorrow;
+    INode *perm = ref->perm && isTypeNode(ref->perm) ? itypeGetTypeDcl(ref->perm) : NULL;
+    if (perm != (INode *)immPerm && perm != (INode *)opaqPerm && perm != (INode *)uniPerm)
+        return StaticBadPerm;
+    if (ref->lifename && lifeIsInvariant(ref->lifename))
+        return StaticInvariant;
+    if (how == StaticWritten && ref->lifename != staticLifeName)
+        return StaticUnwritten;
+    return StaticQualifies;
+}
+
 // Create a reference node based on fully-known type parameters
 RefNode *newRefNodeFull(uint16_t tag, INode *lexnode, INode *region, INode *perm, INode *vtype) {
     RefNode *refnode = newRefNode(tag);

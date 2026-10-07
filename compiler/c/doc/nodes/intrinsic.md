@@ -7,7 +7,7 @@ they differ in who declares them and in how their meaning is decided.
 | --- | --- | --- |
 | Declared by | `corenumber.c`, `corelib.c`, `struct.c` (an enum's `==`) | `packages/core/src/core.cone`, as functions of the opaque struct `mem` |
 | Named | as a method or operator of a type | through `mem`: `mem.sizeof[T]()` |
-| Kinds | `NegIntrinsic` … `FinalAllIntrinsic` | `SizeofIntrinsic` … `ShrMaskedIntrinsic` (`FirstDeclaredIntrinsic` onward) |
+| Kinds | `NegIntrinsic` … `FinalAllIntrinsic` | `SizeofIntrinsic` … `MulFoldIntrinsic` (`FirstDeclaredIntrinsic` onward) |
 | Meaning decided | at generation, by the LLVM type kind of argument 0 | by the registry, in Cone terms; the Cone type rides on the node (`typearg`) |
 | Reference page | none: the number and pointer methods | `doc/reference/refintrinsic.html` |
 
@@ -30,6 +30,17 @@ never by an LLVM type kind. The methods are built in C only because Cone source
 cannot yet add a method to a number type; they keep the lowering under
 `--intrinsic-fallback`, which is what lets `intrinsic_bits` check each fallback
 body against it in one run.
+
+**An integer's and bool's `hash` is a method with no function behind it.**
+`nbrAddHashMethods` (`corenumber.c`), called when name resolution reaches core's
+`Hasher`, gives `bool` and every integer type `hash(self, h &mut Hasher)`, the
+method core's `Hash` trait requires, whose value is a `HashNbrIntrinsic` node
+(a kind built in C, below `FirstDeclaredIntrinsic`). It is never generated: type
+check, once the method is selected (`fnCallLowerMethod`), rewrites the call to
+the Hasher's own `writeU64` of the value converted to a `u64`
+(`fnCallHashNumber`). It exists so that `key.hash(h)` in a generic function
+reaches something for a `K` that is a number; the grant that makes `u32 is Hash`
+true is in `genericTypeIs` ([generic](generic.md), "Constraints").
 
 *Provenance: read from source and measured, September 2026.*
 
@@ -178,6 +189,7 @@ type while each call gives its own orderings.
 | `countOnes[T]`, `leadingZeros[T]`, `trailingZeros[T]` | operation | `llvm.ctpop`, and `llvm.ctlz` and `llvm.cttz` told 0 is not poison (`is_zero_poison` false), so 0 counts as the width; the count resized to an `i32`, `genlBitIntrinsic`. `T` an integer of 8 to 64 bits (`ClassInt`) |
 | `rotateLeft[T]`, `rotateRight[T]` | operation | `llvm.fshl` and `llvm.fshr` with `x` as both halves, the `u32` amount resized to `T`; the funnel shifts take it modulo the width themselves |
 | `shlMasked[T]`, `shrMasked[T]` | operation | the amount resized to `T` and anded with width - 1 (the width a power of two, so that is modulo the width), then `shl`, or `ashr` for a signed `T` and `lshr` for an unsigned one |
+| `mulFold` | operation | both `u64`s zero-extended to `i128`, one `mul`, the product's high half `lshr` 64, and the two halves `trunc`ated and xored (`genlDeclaredIntrinsic`): one multiply on a 64-bit target. Declared in `mem` with a fallback body that forms the product from 32-bit halves, which `intrinsic_mulfold` checks against the lowering. The mixing step of core's `Hasher` ([struct](struct.md), "Hash") |
 
 **Constants of the build drop the untaken side at generation.**
 `intrinsicBuildConst` answers whether a node is one of the constants above, or
@@ -261,6 +273,6 @@ package, and `sliceEqDclNameRes` holds the declaration to that one signature
 | hooks | `fndcl.c` `fnDclNameRes`, `fnDclTypeCheck`, `fnDclIsExpanded`; `fncall.c` `fnCallFinalizeArgs` |
 | forced fallback | `--intrinsic-fallback` → `intrinsicForceFallback` (`conec.c`) |
 | generation | `genlexpr.c` `genlDeclaredIntrinsic`, `genlBitIntrinsic`, `genlAtomicIntrinsic` (from `genlFnCall`); `genlalloc.c` `genlFinalizeAt`, `genlTypeRecord`, `genlTraceAt`; `genltype.c` `genlAlignof` |
-| an integer's bit methods | `corenumber.c` `nbrBitMethods` |
+| an integer's bit methods | `corenumber.c` `nbrBitMethods`; its `hash`, `nbrAddHashMethods` and `fncall.c` `fnCallHashNumber` |
 | declarations | `packages/core/src/core.cone`, `struct @opaque mem` and `enum MemOrder` |
 | tests | `test/cases/intrinsic/` |

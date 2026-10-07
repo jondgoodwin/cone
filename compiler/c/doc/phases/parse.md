@@ -613,8 +613,13 @@ parameter's type and default value are written (`parseVarDcl`,
 `parseFieldDclBody`, `parseFnSig`), and which methods are behaviours; the
 members are checked (`ErrorActorMember`: among the rest, a behaviour without
 `self`, `init` or `final` as a behaviour, a `pub fn` method other than `init`,
-which is synchronous and reached by nothing outside the actor; a borrow or the
-state itself carried in a message `ErrorNotSendable`), a bare `self` becomes
+which is synchronous and reached by nothing outside the actor; a borrow not
+written `'static`, a lifetime of any other name (in a reply too), or the
+state itself carried in a message `ErrorNotSendable`; a parameter or reply
+written `&'static P T` is let through, and `actorCheckAll` asks its permission and
+what it reaches; the reply's type is spelled into the generated calls without
+`'static`, since no lifetime is named among a call's type arguments and
+instancing erases it), a bare `self` becomes
 `self &mut`, and the other three declarations are written as Cone source and
 parsed from a lexer of their own: the handle under the actor's own name (one
 field owning the mailbox, an initializer per one of the state's or the

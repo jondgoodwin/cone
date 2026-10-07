@@ -21,7 +21,7 @@
  *   }
  *   enum Counter.Msg is Sendable {struct bump {n u64;}}     one variant per behaviour
  *   fn Counter.dispatch(self &mut Counter.State, msg *Counter.Msg) {
- *     if &*msg is &Counter.Msg.bump {imm p = msg as *Counter.Msg.bump; self.bump(actors.take(&(*p).n));}
+ *     if &*msg is &Counter.Msg.bump {imm p = (msg as *u8 as usize) as *Counter.Msg.bump; self.bump(actors.take(&(*p).n));}
  *   }
  *
  * The handle's initializer makes the actor's block first and constructs the
@@ -37,7 +37,10 @@
  *
  * and, once per module, the helper 'actors.take' (a function of the module's
  * own, named as no source can spell), which moves a field out of a message:
- * 'fn actors.take[T](p &T) T {mem.readRaw[T](p as *T);}'.
+ * 'fn actors.take[T + 'static](p &T) T {mem.readRaw[T]((p as *T as usize) as *T);}':
+ * what is moved out holds only borrows of the whole program, the only borrows a
+ * message carries, and none of the borrow of the node it is read from, which the
+ * trip through a number says to the loan walk.
  *
  * What an 'await' and a message's reply need (compiler/c/doc/phases/parse.md,
  * section 6, and generation.md, "A message's reply"):
@@ -320,6 +323,28 @@ static int parseActorIsBorrow(INode *type) {
     return ref->vtexp == NULL || ref->vtexp->tag != FnSigTag;
 }
 
+// Is this type, as parsed, a borrow written ''static', which lives for the
+// whole program? Whether it may cross is the thread check's (actorCheckAll):
+// 'imm', 'opaq' or 'uni', and what it points at Sendable
+static int parseActorIsStaticBorrow(INode *type) {
+    return parseActorIsBorrow(type) && ((RefNode *)type)->lifename == staticLifeName;
+}
+
+// Does every lifetime the type's text names read ''static'? Any other is a
+// lifetime of the actor's own, which no message carries
+static int parseActorOnlyStatic(char *from, char *to) {
+    for (char *at = from; at < to; ++at) {
+        if (*at != '\'')
+            continue;
+        if (to - at < 7 || memcmp(at + 1, "static", 6) != 0
+            || (to - at > 7 && ((at[7] >= 'a' && at[7] <= 'z') || (at[7] >= 'A' && at[7] <= 'Z')
+                || (at[7] >= '0' && at[7] <= '9') || at[7] == '_')))
+            return 0;
+        at += 6;
+    }
+    return 1;
+}
+
 static int parseActorIsInit(FnDclNode *fn) {
     return fn->namesym == initName || fn->overloadsym == initName;
 }
@@ -406,9 +431,10 @@ static int parseActorParms(DclTexts *texts, StructNode *state, Name *actorname, 
             ok = 0;
             continue;
         }
-        if (parseActorIsBorrow(parm->vtype) || memchr(text->type, '\'', text->typeend - text->type)) {
+        if ((parseActorIsBorrow(parm->vtype) && !parseActorIsStaticBorrow(parm->vtype))
+            || !parseActorOnlyStatic(text->type, text->typeend)) {
             errorMsgNode((INode *)parm, ErrorNotSendable,
-                "Actor %s's %s %s takes %s, a borrowed reference, which is not Sendable: no borrow may leave its thread. %s; pass an owner that may cross, such as a 'uni' one, or an 'Arc'.",
+                "Actor %s's %s %s takes %s, a borrowed reference, which is not Sendable: no borrow may leave its thread. %s; pass an owner that may cross, such as a 'uni' one, or an 'Arc', or a borrow that lives for the whole program, written &'static imm, &'static opaq or &'static uni.",
                 &actorname->namestr, isinit ? "initializer" : "behaviour", &fn->namesym->namestr,
                 &parm->namesym->namestr, crossesto);
             ok = 0;
@@ -525,6 +551,18 @@ static void parseActorMembers(DclTexts *texts, StructNode *state, Name *actornam
             errorMsgNode((INode *)self, ErrorActorMember,
                 "A behaviour's 'self' is the actor's state, lent for the message: 'self', 'self &' or 'self &mut'.");
             ok = 0;
+        }
+        // The reply goes back in a message too: a borrow of the whole program
+        // may, written ''static' (which the thread check then judges,
+        // actorCheckAll); a lifetime of any other name never
+        if (parseActorReturns(fn)) {
+            DclText *rettext = parseActorText(texts, fn->vtype);
+            if (rettext && rettext->type && !parseActorOnlyStatic(rettext->type, rettext->typeend)) {
+                errorMsgNode(sig->rettype, ErrorNotSendable,
+                    "Actor %s's behaviour %s returns a type naming a lifetime other than 'static, which is not Sendable: no borrow but one that lives for the whole program, written &'static imm, &'static opaq or &'static uni, goes back in a reply.",
+                    &actorname->namestr, &fn->namesym->namestr);
+                ok = 0;
+            }
         }
         if (parseActorParms(texts, state, actorname, fn, &members->crossing) && ok)
             nodesAdd(&members->messages, node);
@@ -657,7 +695,7 @@ static int parseActorRuntime(ParseState *parse, StructNode *at, Name *actorname,
     // one that is copied
     genPuts(g, "fn ");
     genSlot(g, GenTake);
-    genPuts(g, "[T](p &T) T {mem.readRaw[T](p as *T);}\n");
+    genPuts(g, "[T + 'static](p &T) T {mem.readRaw[T]((p as *T as usize) as *T);}\n");
     return 2;
 }
 
@@ -1016,6 +1054,19 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
         if (rettext)
             genPutn(&rt, rettext->type, rettext->typeend - rettext->type);
         genPuts(&rt, tuple ? ")" : "");
+        // The same, as an expression reads it, where a type argument is written
+        // among a call's: no lifetime can be named there, and a generic is
+        // instanced with its type arguments' lifetimes erased in any case
+        GenText rtx = {NULL, 0, 0};
+        for (uint32_t at = 0; at < rt.len; ++at) {
+            if (rt.len - at >= 7 && memcmp(rt.text + at, "'static", 7) == 0) {
+                at += 6;
+                if (at + 1 < rt.len && rt.text[at + 1] == ' ')
+                    ++at;
+                continue;
+            }
+            genPutn(&rtx, rt.text + at, 1);
+        }
         genPuts(&g, (fn->flags & FlagPub) ? "  pub fn " : "  fn ");
         genSlot(&g, variant + nasks);
         genPuts(&g, "(self &");
@@ -1038,7 +1089,7 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
         genPuts(&g, "] {\n    imm f = ");
         genSlot(&g, GenActors);
         genPuts(&g, ".futureFor[");
-        genPutn(&g, rt.text, rt.len);
+        genPutn(&g, rtx.text, rtx.len);
         genPuts(&g, ", ");
         genSlot(&g, GenMsg);
         genPuts(&g, "](");
@@ -1063,7 +1114,7 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
         }
         genSlot(&g, GenActors);
         genPuts(&g, ".futureReply[");
-        genPutn(&g, rt.text, rt.len);
+        genPutn(&g, rtx.text, rtx.len);
         genPuts(&g, "](&f)]);\n    f;\n  }\n");
     }
     genPuts(&g, "}\n");
@@ -1101,7 +1152,7 @@ void parseActor(ParseState *parse, uint16_t pubflag) {
                 genSlot(&g, variant);
             else
                 genName(&g, fn->namesym);
-            genPuts(&g, " {imm p = msg as *");
+            genPuts(&g, " {imm p = (msg as *u8 as usize) as *");
             genSlot(&g, GenMsg);
             genPuts(&g, ".");
             if (asked)

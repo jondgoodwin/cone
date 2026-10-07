@@ -56,7 +56,8 @@ typedef enum {
     ShapeOrder,         // MemOrder: core's enum of atomic orderings, a constant at each call
     ShapeTBool,         // T, bool: a tuple of the two
     ShapeSliceU8,       // &[]u8: a borrowed slice of bytes, read only
-    ShapeI64            // i64
+    ShapeI64,           // i64
+    ShapeU64            // u64
 } IntrinsicShape;
 
 // The types T may be, where an entry does not take every type with a size. A
@@ -192,6 +193,10 @@ static IntrinsicSpec intrinsicRegistry[] = {
         0, 0, {0}, ShapeVoid, 0, 1, PhaseOperation, 1},
     {"storageBarrier", StorageBarrierIntrinsic, "storageBarrier()",
         0, 0, {0}, ShapeVoid, 0, 1, PhaseOperation, 1},
+    // The full 128-bit product of a and b, its high and low halves xored: wyhash's
+    // mixing step. The fallback body works in 32-bit halves
+    {"mulFold", MulFoldIntrinsic, "mulFold(a u64, b u64) u64",
+        0, 2, {ShapeU64, ShapeU64}, ShapeU64, 0, 1, PhaseOperation, 1},
 };
 
 #define IntrinsicCount (sizeof(intrinsicRegistry) / sizeof(IntrinsicSpec))
@@ -287,6 +292,7 @@ static int intrinsicShapeIs(INode *type, IntrinsicShape shape, INode *tparm) {
     case ShapeUsize: return dcl == (INode *)usizeType;
     case ShapeU32:   return dcl == (INode *)u32Type;
     case ShapeI64:   return dcl == (INode *)i64Type;
+    case ShapeU64:   return dcl == (INode *)u64Type;
     case ShapeBool:  return dcl == (INode *)boolType;
     default:         return 0;
     }
@@ -373,6 +379,27 @@ int invocationIsCore(INode *type) {
     StructNode *strnode = (StructNode *)dcl;
     return strnode->namesym != NULL && strcmp(&strnode->namesym->namestr, "Invocation") == 0
         && strnode->genericinfo == NULL && !(strnode->flags & (TraitType | EnumType))
+        && intrinsicModuleIsCore(strnode->dclinfo.owner);
+}
+
+// Core's Hash trait and Hasher struct, known by their names and their package as
+// the type record is. A trait or struct of another module with the same name is
+// an ordinary one
+int coreIsHashTrait(INode *dcl) {
+    if (dcl == NULL || dcl->tag != StructTag)
+        return 0;
+    StructNode *strnode = (StructNode *)dcl;
+    return strnode->namesym == hashTraitName && strnode->genericinfo == NULL
+        && (strnode->flags & TraitType) && !(strnode->flags & EnumType)
+        && intrinsicModuleIsCore(strnode->dclinfo.owner);
+}
+
+int coreIsHasher(INode *dcl) {
+    if (dcl == NULL || dcl->tag != StructTag)
+        return 0;
+    StructNode *strnode = (StructNode *)dcl;
+    return strnode->namesym == hasherName && strnode->genericinfo == NULL
+        && !(strnode->flags & (TraitType | EnumType))
         && intrinsicModuleIsCore(strnode->dclinfo.owner);
 }
 

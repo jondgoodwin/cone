@@ -705,6 +705,26 @@ fn @intrinsic shrMasked[T](x T, n u32) T
 		(<a href="refexpr.html#shift">Shift operators</a>), and these shift by what is left after
 		taking whole widths off.</p>
 
+	<h3>mulFold</h3>
+<pre>
+fn @intrinsic mulFold(a u64, b u64) u64
+</pre>
+	<p>The full 128-bit product of <span class="pre">a</span> and <span class="pre">b</span>, its
+		high 64 bits and its low 64 bits exclusive-or'd together: the mixing step of the
+		wyhash family of hashes, which core's <span class="pre">Hasher</span> is built on
+		(<a href="reftrait.html#hash">Hash</a>). It is a function of two numbers and nothing
+		else, and is one multiply on a 64-bit target. The low half alone is
+		<span class="pre">a * b</span>, so the high half alone is
+		<span class="pre">mulFold(a, b) ^ (a * b)</span>. It is declared in
+		<span class="pre">mem</span> and has a fallback body, which forms the product from 32-bit
+		halves.</p>
+<pre>
+mem.mulFold(3u64, 5u64)                           // 15: the high half is 0
+mem.mulFold(0xFFFFFFFFFFFFFFFFu64, 1u64)          // 0xFFFFFFFFFFFFFFFF
+mem.mulFold(0xFFFFFFFFu64, 0xFFFFFFFFu64)         // 0xFFFFFFFE00000001
+mem.mulFold(0x8000000000000000u64, 2u64)          // 1: the product is 2^64, high half 1, low half 0
+</pre>
+
 	<h3>How LLVM does them</h3>
 
 	<p>The counts are <span class="pre">llvm.ctpop</span>, <span class="pre">llvm.ctlz</span> and
@@ -712,7 +732,9 @@ fn @intrinsic shrMasked[T](x T, n u32) T
 		resized to a <span class="pre">u32</span>; the rotates <span class="pre">llvm.fshl</span>
 		and <span class="pre">llvm.fshr</span> with <span class="pre">x</span> as both halves; and
 		the masked shifts a <span class="pre">shl</span>, <span class="pre">ashr</span> or
-		<span class="pre">lshr</span> by the amount's low bits.</p>
+		<span class="pre">lshr</span> by the amount's low bits. <span class="pre">mulFold</span>
+		extends both operands to 128 bits, multiplies, shifts the high half down and
+		exclusive-ors the halves.</p>
 
 	<p style="text-align: right; margin-top: 2em;">
 		<a href="reftoken.html"><img alt="_" src="next.png" /></a>

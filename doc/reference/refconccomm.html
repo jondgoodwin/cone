@@ -91,7 +91,8 @@
 		variant, one of these:</p>
 	<ul>
 	<li>a borrowed reference, of any permission, <span class="pre">&amp;imm</span> included: a
-		borrow's lifetime is checked in one thread alone, until scoped threads join inside it;</li>
+		borrow's lifetime is checked in one thread alone, until scoped threads join inside it
+		(but for a borrow that lasts the whole program, <a href="#static-borrow">below</a>);</li>
 	<li>an owner that may be copied whose permission is not race-safe:
 		<span class="pre">Rc[mut, T]</span>, <span class="pre">Arc[mut, T]</span>, and a lock permission for
 		one thread, <span class="pre">Rc[Rwcell, T]</span>; a lock permission for threads crosses,
@@ -123,6 +124,51 @@ struct Job {pub data &amp;mut Counter;}
 thread.start(job, &amp;work);
 // start requires A is Sendable, and Job is not Sendable: Job.data is &amp;mut Counter,
 // a borrowed reference, and no borrow may leave its thread ...
+</pre>
+	<p id="static-borrow"><b>A borrow that lasts the whole program</b> (<span class="pre">'static</span>,
+		<a href="reflifefn.html">Lifetimes</a>) is checked in no thread's scope, so it may cross threads
+		and actors in either of two cases, and in no other:</p>
+	<ul>
+	<li>it is <span class="pre">imm</span> or <span class="pre">opaq</span>, and what it reaches is
+		safe for two threads to read at once, as the value of an <span class="pre">Arc[imm, T]</span> must
+		be: no <span class="pre">Rc</span> and no <span class="pre">Gc</span> in it, no raw pointer, no
+		borrow that is itself refused;</li>
+	<li>it is <span class="pre">uni</span>, and what it reaches is safe to move. A
+		<span class="pre">uni</span> borrow moves, so one holder only has it.</li>
+	</ul>
+	<p>An <span class="pre">ro</span> borrow never crosses, even of a global:
+		<span class="pre">ro</span> only stops <i>this</i> holder from writing, and another holder
+		(<span class="pre">mut</span>) may still change what it reads
+		(<a href="refperm.html#ro">Permissions</a>). Nor does a <span class="pre">mut</span> one. Nor does
+		a borrow of an invariant lifetime (<span class="pre">&amp;'=a T</span>, a key): the lifetime is an
+		arena's brand, and the arena dies when its owner drops it. A <span class="pre">uni</span> borrow of
+		a named global is refused where it is made ("cannot obtain this permission"): any code
+		reaches a global by name, so it is not unique. A <span class="pre">uni</span> borrow of an
+		owner that nothing else can reach would be unique, and crosses; an owner leaked for the
+		rest of the program, which would make one, is not built yet, but a signature may already
+		take one: <span class="pre">fn f(p &amp;'static uni T)</span>.</p>
+	<p>A generic says that a type parameter may be such a borrow by bounding it,
+		<span class="pre">[A Sendable + 'static]</span> as <span class="pre">thread.start</span> does, and the
+		call is then checked to hand it only borrows of the whole program
+		(<a href="reflifefn.html">Lifetime bounds</a>); without the bound,
+		<span class="pre">Sendable</span> refuses every borrow as before. An actor's initializer or
+		behaviour takes one by writing it <span class="pre">'static</span>, and what it reaches is
+		asked the same way. So is a behaviour's reply: it may be
+		<span class="pre">&amp;'static imm T</span>, <span class="pre">&amp;'static opaq T</span> or
+		<span class="pre">&amp;'static uni T</span>, or a struct holding one, under the same rule.</p>
+<pre>
+imm table Array[u64, 3] = [1u64, 2u64, 3u64];
+fn sum(t &amp;imm Array[u64, 3]) u64 { (*t)[0] + (*t)[1] + (*t)[2]; }
+imm t = thread.start(&amp;imm table, &amp;sum);    // Ok: an imm borrow of a global
+
+actor Reader {
+  total u64;
+  pub async do addTable(self, t &amp;'static imm Array[u64, 3]) { total = total + (*t)[0]; }
+}
+
+thread.start(&amp;table, &amp;sum);                // Error: &amp;ro Array is not Sendable: it is a borrowed
+                                            // reference of permission ro ...
+thread.start(&amp;imm onTheStack, &amp;sum);       // Error: must be global
 </pre>
 	<p>Not checked yet: a <span class="pre">mut</span> global reached from several threads; a
 		value's own methods that change it through <span class="pre">&amp;</span> (sendable here also
@@ -347,8 +393,12 @@ actor Client {
 		a function without <span class="pre">self</span> is the actor's own, called from its
 		methods as a struct's is. A behaviour is not generic, and every parameter it takes is
 		<span class="pre">Sendable</span>, since the message carries its arguments to the thread
-		the actor runs on; a borrow is refused whatever it borrows. A behaviour may return a
-		value, which must be <span class="pre">Sendable</span> too: a send returns at once, before
+		the actor runs on; a borrow is refused unless it lasts the whole program, is written so
+		(<span class="pre">&amp;'static imm T</span>, <span class="pre">&amp;'static opaq T</span> or
+		<span class="pre">&amp;'static uni T</span>) and reaches what may cross
+		(<a href="#static-borrow">above</a>). A behaviour may return a
+		value, which must be <span class="pre">Sendable</span> too, by the same rule, so a borrow in it is
+		written <span class="pre">'static</span> as a parameter's is: a send returns at once, before
 		the behaviour runs, and the value is dropped, unless the behaviour was awaited
 		("Awaiting", below). An actor declares no static, macro, <span class="pre">extern</span>
 		method or <span class="pre">use</span>, no type parameters, and names no abstraction:

@@ -294,6 +294,10 @@ INode *lifeRenamed(INode *type, Name *to);
 // Does the generic function 'generic' bound its type parameter 'tparm'?
 int lifeParmBounded(INode *generic, Name *tparm);
 
+// Does it bound it by ''static' ('[T + 'static]'): every borrow its argument
+// holds is global, which each call is checked to hand it?
+int lifeParmStaticBounded(INode *generic, Name *tparm);
+
 // Check, at name resolution, that every bound a function's order holds is on
 // one of its own type parameters; a bound on anything else is refused and
 // dropped from the order

@@ -92,6 +92,24 @@ name = "each-is-done-as-the-program-runs"
 target = "llvmir"
 contains = ["@llvm.ctpop.i8(", "@llvm.ctlz.i16(", "@llvm.cttz.i64(", "@llvm.fshl.i32(", "@llvm.fshr.i64("]
 
+# The 128-bit product with its halves xored, and wyhash on it (core's Hasher):
+# each number worked out apart (Python's integers, the published C wyhash). Two
+# runs, one .out: the instruction, and the fallback body that forms the product
+# from 32-bit halves. Every operand comes through 'opaque' (opaque.c)
+[scenario.intrinsic_mulfold]
+category = "run"
+description = "mulFold on edge operands (all ones, powers of two, carries between the 32-bit halves) and wyhash final version 4.3 through it: its seven published messages and every length from 0 to 130, a fixed-seed Hasher's numbers; lowered and through the fallback body"
+tags = ["typecheck", "genllvm", "runtime"]
+link = ["opaque.c"]
+
+[[scenario.intrinsic_mulfold.run]]
+name = "lowered"
+options = []
+
+[[scenario.intrinsic_mulfold.run]]
+name = "fallback"
+options = ["--intrinsic-fallback", "--debug"]
+
 # The two have no fallback body, and no type parameter: each is a constant of
 # the call it is. What a panic reports is built on them (exception_caller)
 [scenario.intrinsic_srcloc]
@@ -232,6 +250,17 @@ contains = [
   "store i1 false, ptr %f",
 ]
 excludes = ["sizeof", "alignof", "needsFinal", "finalize", "sliceFromParts", "readRaw", "writeRaw", "moveRaw"]
+
+[scenario.intrinsic_genllvm_mulfold]
+category = "compile"
+description = "mulFold is expanded where it is called as one wide multiply: both operands extended to 128 bits, multiplied, the high half shifted down, and the two halves xored; no function or call of its own"
+tags = ["genllvm"]
+
+[[scenario.intrinsic_genllvm_mulfold.check]]
+name = "the-product-is-one-128-bit-multiply"
+target = "preir"
+contains = ["zext i64 %", "to i128", "mul i128", "lshr i128", "trunc i128", "xor i64"]
+excludes = ["mulFold(", "call i64 @mulFold"]
 
 [scenario.intrinsic_genllvm_fallback]
 category = "compile"

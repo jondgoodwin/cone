@@ -101,11 +101,24 @@ int itypeHoldsBorrow(INode *type);
 // leaned on a struct not yet type checked. Remembered per struct once final.
 int itypeThreadBound(INode *type, int *settled);
 
+// A borrow that lives for the whole program may cross threads where the thread
+// check is asked to allow it (refStaticCrosses). How the program's lifetime is
+// vouched for
+typedef enum {
+    StaticOff,          // Not allowed: every borrow binds its thread
+    StaticVouched,      // A generic's parameter bounded by ''static': the call is checked to hand it only global borrows
+    StaticWritten       // A signature's own types: a borrow qualifies only where it is written ''static'
+} StaticBorrow;
+
+// The same, a borrow of the whole program let cross as 'how' says
+int itypeThreadBoundHow(INode *type, int *settled, StaticBorrow how);
+
 // What binds a value of this type to its thread: the reference, raw pointer
 // or open trait found first, with 'path' set to where it sits in the type
 // ('Job.data', 'Pair.0', 'List.items[]'), empty where the type is the culprit
 // itself. NULL where the type is not bound.
 INode *itypeThreadBoundWhy(INode *type, char *path, size_t size);
+INode *itypeThreadBoundWhyHow(INode *type, char *path, size_t size, StaticBorrow how);
 
 // Append a type to 'buf' as a diagnostic spells it: a reference as it is
 // written ('&mut Point', 'Rc[imm, Point]', '*u64'), anything else by its name

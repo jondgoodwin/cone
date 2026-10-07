@@ -1,0 +1,58 @@
+// core's Hash and Hasher as every program meets them: declared in core's
+// generated include file, which Congo compiles this test against, since core is
+// the prelude. The language suite (test/cases/trait, test/cases/intrinsic)
+// compiles core straight from its source; this is the other path, and it shows
+// the trait, the Hasher with its inline methods, the extern for the process's
+// seed and the supplied hash of a struct all come through the include file whole.
+//
+// Each number was worked out apart (Python's integers; the published C wyhash,
+// final version 4.3, for its messages) and not read off this program: a Hasher's
+// state starts as seed ^ mix(seed ^ s0, s1); each word fed is state = mix(state ^
+// word, 0x9e3779b97f4a7c15); finish is mix(state ^ s2, s3); mix(a, b) is the
+// 128-bit product's halves xored; s0 to s3 are wyhash's default secret.
+
+mod hash;
+
+import stdio use *;
+
+struct Point is Hash {
+  pub x i32;
+  pub y i32;
+  pub fn `==`(self, o Point) bool {x == o.x and y == o.y;}
+}
+
+fn hashOf[K Hash](k &K, seed u64) u64 {
+  mut h = Hasher.withSeed(seed);
+  k.hash(&mut h);
+  h.finish();
+}
+
+fn show(label &[]u8, n u64) {
+  printStr(label);
+  printStr(" ");
+  printUInt(n);
+  printStr("\n");
+}
+
+fn main() {
+  // A supplied hash: the fields in order, 1 then 2, seed 1
+  show("point", hashOf(&new Point(1, 2), 1u64));
+  show("another point", hashOf(&new Point(2, 1), 1u64));
+  // An integer feeds its bits, as one word: 255, seed 77
+  show("u8", hashOf(&255u8, 77u64));
+  show("bool", hashOf(&true, 77u64));
+  // A fixed seed and a word fed by hand
+  mut h = Hasher.withSeed(1u64);
+  h.writeU64(7u64);
+  show("seed 1 word 7", h.finish());
+  // The process's seed is not 0 and is the same all through the process
+  show("process seed", if processSeed() != 0u64 and processSeed() == processSeed() {1u64;} else {0u64;});
+  // The published wyhash, seed as numbered
+  show("wyhash empty", Hasher.wyhash("", 0u64));
+  show("wyhash a", Hasher.wyhash("a", 1u64));
+  show("wyhash abc", Hasher.wyhash("abc", 2u64));
+  show("wyhash message digest", Hasher.wyhash("message digest", 3u64));
+  show("wyhash alphabet", Hasher.wyhash("abcdefghijklmnopqrstuvwxyz", 4u64));
+  show("wyhash alphanumerics", Hasher.wyhash("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789", 5u64));
+  show("wyhash digits", Hasher.wyhash("12345678901234567890123456789012345678901234567890123456789012345678901234567890", 6u64));
+}

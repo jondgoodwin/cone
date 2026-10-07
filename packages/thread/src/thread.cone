@@ -57,8 +57,11 @@
 //   after 'import sync use Arc'), which 'start' copies (one owner more, going
 //   when the thread is done with it), so that the value dies once, after the
 //   last thread lets it go (tests/arcshare.cone). Refused, naming what is at
-//   fault: a borrowed reference of any permission (to the starting thread's
-//   stack or anywhere else), a 'mut' or 'ro' owner, an 'Rc' owner of any
+//   fault: a borrowed reference, unless it lives for the whole program (a
+//   borrow of a global) and is 'imm', 'opaq' or 'uni' of what may cross
+//   itself, as 'A + 'static' says ('thread.start(&imm table, &sum)'); one to
+//   the starting thread's stack, or an 'ro' or 'mut' one, is refused. Also
+//   refused: a 'mut' or 'ro' owner, an 'Rc' owner of any
 //   permission but 'uni' (its count is not atomic), a 'Gc' reference, and a
 //   raw pointer, since nothing checks what it points at. A struct carrying raw
 //   pointers the program shares safely, with the sync package's atomics or
@@ -365,12 +368,12 @@ pub struct Options {
 
 // A new thread running f(arg), with no name and the default stack. 'arg' is
 // moved in.
-pub fn start[A Sendable, R Sendable](arg A, f &fn(a A) R) Thread[R] {
+pub fn start[A Sendable + 'static, R Sendable + 'static](arg A, f &fn(a A) R) Thread[R] {
   startWith[A, R](new Options(), arg, f);
 }
 
 // A new thread running f(arg), named and with the stack 'opts' says
-pub fn startWith[A Sendable, R Sendable](opts Options, arg A, f &fn(a A) R) Thread[R] {
+pub fn startWith[A Sendable + 'static, R Sendable + 'static](opts Options, arg A, f &fn(a A) R) Thread[R] {
   imm pk = libc.malloc(mem.sizeof[Packet[A, R]]()) as *Packet[A, R];
   if pk as usize == 0usize {
     die("thread: out of memory");
