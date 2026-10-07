@@ -1,0 +1,496 @@
+// render's skinning, on a real GPU with no window: a tube bent by two bones.
+//
+// The tube: radius 0.08, 1 long up +y from the origin, 16 sides, a ring
+// every 0.05 (21 rings). Two bones: bone 0 at the origin, bone 1 at
+// (0, 0.5, 0), its bind pose that translation. Each vertex's weights by its
+// height y, blended across the joint at 0.5: u = (y - 0.4) / 0.2 clamped
+// to 0 to 1, bone 1's weight smoothstep(u), bone 0's the rest; the other
+// two joints name bone 0 with no weight.
+//
+// 1. The skin's bytes: weights scaled to sum to 255 (largest remainders
+//    rounded up), joints a byte each.
+// 2. The compute twin (skintwin.slang): every vertex carried by its
+//    blended bones with skinning.slang's own functions, the ones the
+//    skinned vertex stages call, for the tube bent 90 degrees at the joint
+//    (bone 1 turned about +z, so the upper half points to -x): each
+//    position within 1e-5 of the CPU's ('Skin.skinPoint').
+// 3. Drawn, in the lit material, by an orthogonal camera at (0, 0.5, 3)
+//    looking down -z, 1 above and below its middle: x from -1 to 1, y from
+//    -0.5 to 1.5, 32 pixels a metre, into 64 x 64 (background (0.2, 0.4,
+//    0.6): a pixel is the tube's where red beats blue). Three copies of the
+//    one mesh: A as modelled at the origin, bent 90 degrees; B at (0.6,
+//    -0.4, 0), bent -45 degrees (towards +x); C at (-0.8, -0.4, 0), with no
+//    bones (drawn as modelled, straight). A and B are one instanced draw
+//    of two instances, each with its own bones; C, drawn with no bones, is
+//    a third instance of the same batch. The pixel under every ring's
+//    centre, as the CPU skins it, is the tube's; where the unbent upper
+//    halves of A and B would be is the background; C's top is the tube's.
+// 4. The same in the physically based material (the environment's light
+//    off): the skinned pbr pipeline draws A's bent arm.
+// 5. Bounds: a skinned mesh's bounding sphere is the bind pose's times 1.5.
+//
+// It needs a GPU driver with Vulkan 1.3 and SDL3.dll; with the Vulkan SDK,
+// validation is on and must say nothing.
+
+mod skinning;
+
+import testing use *;
+import libc;
+import geomath use *;
+import collections use *;
+import mesh use Mesh;
+import gpu use *;
+import render use *;
+
+const SIDES = 16usize;
+const RINGS = 21usize;
+const RADIUS f32 = 0.08;
+
+// The tube, and its skin
+fn tube(skin &mut Skin) Mesh {
+  mut m = Mesh.empty();
+  mut r = 0usize;
+  while r < RINGS {
+    imm y = f32.from(r) * 0.05;
+    imm u0 = (y - 0.4) / 0.2;
+    imm u = if u0 < 0. { 0.; } elif u0 > 1. { 1.; } else { u0; };
+    imm w1 = u * u * (3. - 2. * u);
+    mut k = 0usize;
+    while k < SIDES {
+      imm a = 2. * pi * f32.from(k) / f32.from(SIDES);
+      m.positions.push(new Vec3(RADIUS * cos(a), y, RADIUS * sin(a)));
+      m.normals.push(new Vec3(cos(a), 0., sin(a)));
+      skin.push(0u32, 1u32, 0u32, 0u32, 1. - w1, w1, 0., 0.);
+      k = k + 1usize;
+    }
+    r = r + 1usize;
+  }
+  r = 0usize;
+  while r + 1usize < RINGS {
+    mut k = 0usize;
+    while k < SIDES {
+      imm k1 = (k + 1usize) % SIDES;
+      imm v0 = u32.from(r * SIDES + k);
+      imm v1 = u32.from(r * SIDES + k1);
+      imm v2 = u32.from((r + 1usize) * SIDES + k1);
+      imm v3 = u32.from((r + 1usize) * SIDES + k);
+      m.indices.push(v0);
+      m.indices.push(v2);
+      m.indices.push(v1);
+      m.indices.push(v0);
+      m.indices.push(v3);
+      m.indices.push(v2);
+      k = k + 1usize;
+    }
+    r = r + 1usize;
+  }
+  m;
+}
+
+// The two bones' skinning matrices with bone 1 turned 'angle' about +z at the joint
+fn bent(angle f32) Array[Mat4, 2] {
+  imm bind1 = Mat4.fromTranslation(new Vec3(0., 0.5, 0.));
+  imm posed1 = Mat4.fromTrs(new Vec3(0., 0.5, 0.), Quat.angleAxis(angle, new Vec3(0., 0., 1.)), new Vec3(1., 1., 1.));
+  [Mat4.identity(), skinningMatrix(posed1, bind1)];
+}
+
+// Channel 'c' of pixel ('x', 'y') of a 64 x 64 rgba8 image at 'p'
+fn px(p *u8, x usize, y usize, c usize) i64 { i64.from(*(p + (y * 64usize + x) * 4usize + c)); }
+
+// Whether the world point 'w' lands on the tube's colour (red over blue)
+fn covered(p *u8, viewProjection Mat4, w Vec3) bool {
+  imm ndc = viewProjection.projectPoint(w);
+  imm fx = (ndc.x + 1.) * 0.5 * 64.;
+  imm fy = (1. - ndc.y) * 0.5 * 64.;
+  if fx < 0. or fy < 0. or fx >= 64. or fy >= 64. { return false; }
+  imm x = usize.from(fx);
+  imm y = usize.from(fy);
+  px(p, x, y, 0usize) > px(p, x, y, 2usize);
+}
+
+// Every inner ring's centre of copy 'model' with skinning matrices 'pose'
+// (as the CPU skins a vertex of the ring, with the centre's weights) on the
+// tube: how many are not. The end rings are the tube's open rims, on its
+// silhouette's edge, so they are left out.
+fn uncoveredRings(p *u8, viewProjection Mat4, skin &Skin, model Mat4, pose &[]Mat4) u32 {
+  mut misses = 0u32;
+  mut r = 1usize;
+  while r + 1usize < RINGS {
+    imm centre = new Vec3(0., f32.from(r) * 0.05, 0.);
+    if !covered(p, viewProjection, model * skin.skinPoint(r * SIDES, pose, centre)) { misses = misses + 1u32; }
+    r = r + 1usize;
+  }
+  misses;
+}
+
+fn drawFrame(renderer &mut Renderer, device &mut Device, color &Texture, depth &Texture, readback &Buffer,
+    camera &Camera, light &Light, list &DrawList) {
+  mut encoder = device.createCommandEncoder();
+  renderer.render(device, &mut encoder, color, depth, camera, light, list);
+  encoder.copyTextureToBuffer(color, readback);
+  device.queue.submit(encoder.finish());
+  device.endFrame();
+  device.waitIdle();
+}
+
+fn main() i32 {
+  // ---- 1. The skin's bytes ----
+  mut bytes = Skin.empty();
+  bytes.push(3u32, 7u32, 0u32, 0u32, 0.5, 0.5, 0., 0.);
+  bytes.push(1u32, 2u32, 3u32, 4u32, 0.2, 0.3, 0.5, 0.);
+  bytes.push(9u32, 0u32, 0u32, 0u32, 0., 0., 0., 0.);
+  expectUInt(u64.from(*bytes.weights[0]), u64.from(128u32 | (127u32 << 8u32)), "a half and a half: 128 and 127");
+  expectUInt(u64.from(*bytes.weights[1]), u64.from(51u32 | (77u32 << 8u32) | (127u32 << 16u32)),
+    "0.2, 0.3 and 0.5: 51, 77 (76.5 rounded up) and 127");
+  expectUInt(u64.from(*bytes.weights[2]), 255u64, "no weight at all: the first joint all of it");
+  expectUInt(u64.from(*bytes.joints[1]), u64.from(1u32 | (2u32 << 8u32) | (3u32 << 16u32) | (4u32 << 24u32)),
+    "the joints a byte each, the first lowest");
+  expectUInt(u64.from(bytes.joint(0usize, 1usize)), 7u64, "a joint read back");
+  expectFloat(f64.from(bytes.weight(1usize, 2usize)), 127d / 255d, 1e-7d, "a weight read back as the GPU reads it");
+
+  mut instance = Instance.create("render skinning");
+  require(instance.isValid(), "a Vulkan 1.3 instance");
+  mut none = Surface.none();
+  mut preference = POWER_PREFERENCE_HIGH_PERFORMANCE;
+  imm env = libc.getenv(&"GPU_POWER_PREFERENCE" as *u8);
+  if (env as usize) != 0usize {
+    if libc.strcmp(env, &"low-power" as *u8) == 0i32 { preference = POWER_PREFERENCE_LOW_POWER; }
+  }
+  mut adapter = instance.requestAdapter(&none, preference);
+  require(adapter.isValid(), "an adapter");
+  mut device = adapter.requestDevice();
+  require(device.isValid(), "a device");
+
+  mut skin = Skin.empty();
+  imm m = tube(&mut skin);
+  imm n = m.positions.len();
+  imm bend = bent(radians(90.));
+
+  // ---- 2. The compute twin ----
+  {
+    imm count = u32.from(n);
+    imm storage = BUFFER_USAGE_STORAGE | BUFFER_USAGE_COPY_DST;
+    mut positions = device.createBuffer(u64.from(count) * 12u64, storage);
+    mut joints = device.createBuffer(u64.from(count) * 4u64, storage);
+    mut weights = device.createBuffer(u64.from(count) * 4u64, storage);
+    mut pose = device.createBuffer(2u64 * BONE_BYTES, storage);
+    mut out = device.createBuffer(u64.from(count) * 12u64, BUFFER_USAGE_STORAGE | BUFFER_USAGE_COPY_SRC);
+    mut back = device.createBuffer(u64.from(count) * 12u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+    imm pv = m.positions.view();
+    device.queue.writeBuffer(&positions, 0u64, &pv[0] as *u8, u64.from(count) * 12u64);
+    imm jv = skin.joints.view();
+    device.queue.writeBuffer(&joints, 0u64, &jv[0] as *u8, u64.from(count) * 4u64);
+    imm wv = skin.weights.view();
+    device.queue.writeBuffer(&weights, 0u64, &wv[0] as *u8, u64.from(count) * 4u64);
+    mut rows = List[f32].empty();
+    mut b = 0usize;
+    while b < 2usize {
+      imm r = boneRows(bend[b]);
+      mut e = 0usize;
+      while e < BONE_FLOATS {
+        rows.push(r[e]);
+        e = e + 1usize;
+      }
+      b = b + 1usize;
+    }
+    imm rv = rows.view();
+    device.queue.writeBuffer(&pose, 0u64, &rv[0] as *u8, 2u64 * BONE_BYTES);
+    imm entries = [
+      new BindGroupLayoutEntry(binding: 4u32, visibility: SHADER_STAGE_COMPUTE, bufferType: BUFFER_BINDING_TYPE_READ_ONLY_STORAGE),
+      new BindGroupLayoutEntry(binding: 5u32, visibility: SHADER_STAGE_COMPUTE, bufferType: BUFFER_BINDING_TYPE_READ_ONLY_STORAGE),
+      new BindGroupLayoutEntry(binding: 6u32, visibility: SHADER_STAGE_COMPUTE, bufferType: BUFFER_BINDING_TYPE_READ_ONLY_STORAGE),
+      new BindGroupLayoutEntry(binding: 7u32, visibility: SHADER_STAGE_COMPUTE, bufferType: BUFFER_BINDING_TYPE_READ_ONLY_STORAGE),
+      new BindGroupLayoutEntry(binding: 8u32, visibility: SHADER_STAGE_COMPUTE, bufferType: BUFFER_BINDING_TYPE_STORAGE)];
+    mut groupLayout = device.createBindGroupLayout(&entries);
+    imm groupLayouts = [&groupLayout];
+    mut layout = device.createPipelineLayout(&groupLayouts, 4u32);
+    mut shader = device.createShaderModule(&SKINTWIN_SPIRV);
+    imm desc = new ComputePipelineDescriptor(layout: &layout, module: &shader, entryPoint: "skinMain");
+    mut pipeline = device.createComputePipeline(&desc);
+    require(pipeline.isValid(), "the compute twin's pipeline");
+    imm groupEntries = [BindGroupEntry.buffer(4u32, &positions), BindGroupEntry.buffer(5u32, &joints),
+      BindGroupEntry.buffer(6u32, &weights), BindGroupEntry.buffer(7u32, &pose), BindGroupEntry.buffer(8u32, &out)];
+    mut group = device.createBindGroup(&groupLayout, &groupEntries);
+    mut encoder = device.createCommandEncoder();
+    {
+      mut pass = encoder.beginComputePass();
+      pass.setPipeline(&pipeline);
+      pass.setBindGroup(0u32, &group);
+      imm immediates Array[u32, 1] = [count];
+      pass.setImmediates(0u32, &immediates as *u8, 4u32);
+      pass.dispatchWorkgroups((count + 63u32) / 64u32);
+      pass.end();
+    }
+    encoder.copyBufferToBuffer(&out, 0u64, &back, 0u64, u64.from(count) * 12u64);
+    device.queue.submit(encoder.finish());
+    device.endFrame();
+    device.waitIdle();
+    imm got = back.mappedRange() as *f32;
+    mut worst f32 = 0.;
+    mut moved f32 = 0.;
+    mut v = 0usize;
+    while v < n {
+      imm want = skin.skinPoint(v, &bend, *m.positions[v]);
+      imm g = new Vec3(*(got + v * 3usize), *(got + v * 3usize + 1usize), *(got + v * 3usize + 2usize));
+      imm d = g.distance(want);
+      if d > worst { worst = d; }
+      imm travel = want.distance(*m.positions[v]);
+      if travel > moved { moved = travel; }
+      v = v + 1usize;
+    }
+    expectFloat(f64.from(worst), 0d, 1e-5d, "every vertex skinned on the GPU where the CPU puts it (m)");
+    // The top ring's far side: from (0.08, 1, 0) to about (-0.5, 0.58, 0)
+    expect(moved > 0.6, "and the bend moved the top ring well away from where it was modelled");
+    expectFloat(f64.from(skin.skinPoint(n - SIDES / 2usize, &bend, *m.positions[n - SIDES / 2usize]).x), -0.5d, 1e-5d,
+      "the top ring's centre line turned to x = -0.5");
+  }
+
+  // ---- 3. Drawn ----
+  imm target = new TextureDescriptor(64u32, 64u32, TEXTURE_FORMAT_RGBA8_UNORM,
+    TEXTURE_USAGE_RENDER_ATTACHMENT | TEXTURE_USAGE_COPY_SRC);
+  mut color = device.createTexture(&target);
+  imm depthDesc = new TextureDescriptor(64u32, 64u32, TEXTURE_FORMAT_DEPTH32_FLOAT, TEXTURE_USAGE_RENDER_ATTACHMENT);
+  mut depth = device.createTexture(&depthDesc);
+  mut readback = device.createBuffer(16384u64, BUFFER_USAGE_MAP_READ | BUFFER_USAGE_COPY_DST);
+  imm p = readback.mappedRange();
+  mut renderer = Renderer.create(&mut device, TEXTURE_FORMAT_RGBA8_UNORM, TEXTURE_FORMAT_DEPTH32_FLOAT);
+  require(renderer.isValid(), "a renderer, its skinned pipelines too");
+  mut camera = Camera.make();
+  camera.projection = Orthogonal;
+  camera.viewHeight = 1.;
+  camera.lookAt(new Vec3(0., 0.5, 3.), new Vec3(0., 0.5, 0.), new Vec3(0., 1., 0.));
+  camera.background = new Color(0.2, 0.4, 0.6, 1.);
+  imm viewProjection = camera.projectionMatrix(1.) * camera.viewMatrix();
+  imm headOn = Light.directional(new Vec3(0., 0., -1.), Color.gray(1.8849556), Color.gray(0.2));
+  imm h = renderer.addSkinnedMesh(&mut device, &m, &skin);
+  expect(renderer.isSkinned(h), "the mesh is skinned");
+  imm redMaterial = Material.plain(new Color(1., 0., 0., 1.));
+  imm red = renderer.addMaterial(&mut device, &redMaterial);
+  imm modelA = Mat4.identity();
+  imm modelB = Mat4.fromTranslation(new Vec3(0.6, -0.4, 0.));
+  imm modelC = Mat4.fromTranslation(new Vec3(-0.8, -0.4, 0.));
+  imm bendB = bent(radians(-45.));
+  mut list = DrawList.empty();
+  list.addSkinned(h, red, modelA, &bend);
+  list.addSkinned(h, red, modelB, &bendB);
+  list.add(h, red, modelC);
+  expectUInt(u64.from(list.boneCount()), 4u64, "two copies' bones in the list");
+  drawFrame(&mut renderer, &mut device, &color, &depth, &readback, &camera, &headOn, &list);
+  expectUInt(u64.from(renderer.drawCalls), 1u64, "three copies of one mesh in one material: one draw");
+  expectUInt(u64.from(renderer.instancesDrawn), 3u64, "of three instances");
+  expectUInt(u64.from(renderer.bonesDrawn), 4u64, "and four bones written");
+  expectUInt(u64.from(uncoveredRings(p, viewProjection, &skin, modelA, &bend)), 0u64,
+    "A: every ring's centre, skinned on the CPU, drawn on the tube");
+  expectUInt(u64.from(uncoveredRings(p, viewProjection, &skin, modelB, &bendB)), 0u64,
+    "B: every ring's centre, with its own bones, drawn on the tube");
+  expect(!covered(p, viewProjection, new Vec3(0., 0.9, 0.)), "A's upper half is not where it was modelled");
+  expect(!covered(p, viewProjection, new Vec3(0.6, 0.5, 0.)), "nor B's");
+  expect(covered(p, viewProjection, new Vec3(-0.8, 0.5, 0.)), "C, with no bones, drawn straight, as modelled");
+  expect(covered(p, viewProjection, new Vec3(-0.35, 0.5, 0.)), "A's arm, turned to -x");
+
+  // ---- 4. Physically based ----
+  imm shiny = PbrMaterial.standard(new Color(1., 0., 0., 1.), 0., 0.5);
+  imm pbr = renderer.addPbrMaterial(&mut device, &shiny);
+  renderer.environmentStrength = 0.;        // lit by the sun alone: red stays red
+  list.clear();
+  list.addSkinned(h, pbr, modelA, &bend);
+  drawFrame(&mut renderer, &mut device, &color, &depth, &readback, &camera, &headOn, &list);
+  expectUInt(u64.from(renderer.drawCalls), 1u64, "the physically based skinned draw");
+  expectUInt(u64.from(uncoveredRings(p, viewProjection, &skin, modelA, &bend)), 0u64,
+    "A in the physically based material: every ring's centre on the tube");
+  expect(!covered(p, viewProjection, new Vec3(0., 0.9, 0.)), "and its upper half bent away");
+
+  // ---- 5. Bounds ----
+  mut centre = new Vec3(0., 0., 0.);
+  mut radius f32 = 0.;
+  renderer.meshBounds(h, &mut centre, &mut radius);
+  // The bind pose's sphere: centre (0, 0.5, 0), radius sqrt(0.5^2 + 0.08^2)
+  expectFloat(f64.from(radius), f64.from(libc.sqrtf(0.25 + 0.0064) * 1.5), 1e-5d,
+    "a skinned mesh's bounds: the bind pose's sphere, half as large again");
+
+  expectUInt(u64.from(failures()), 0u64, "no Vulkan call failed");
+  expectUInt(u64.from(validationMessages()), 0u64, "no validation message");
+  done();
+}
+
+// spirv-begin skintwin.spv SKINTWIN_SPIRV
+// Written by tools/shaders/shaders.py from skintwin.slang (sha256 f3d1306d24b3f17214de47ffa33f2864433b96dedfa61436de534628067c1161): do not edit.
+imm SKINTWIN_SPIRV Array[u32, 1053] = [
+  0x07230203u32, 0x00010500u32, 0x00280000u32, 0x00000193u32, 0x00000000u32, 0x00020011u32,
+  0x00000001u32, 0x000b000au32, 0x5f565053u32, 0x5f52484bu32, 0x726f7473u32, 0x5f656761u32,
+  0x66667562u32, 0x735f7265u32, 0x61726f74u32, 0x635f6567u32, 0x7373616cu32, 0x00000000u32,
+  0x0003000eu32, 0x00000000u32, 0x00000001u32, 0x000d000fu32, 0x00000005u32, 0x00000002u32,
+  0x6e696b73u32, 0x6e69614du32, 0x00000000u32, 0x0000001au32, 0x00000029u32, 0x0000003fu32,
+  0x0000004du32, 0x000000adu32, 0x000000d0u32, 0x00000016u32, 0x00060010u32, 0x00000002u32,
+  0x00000011u32, 0x00000040u32, 0x00000001u32, 0x00000001u32, 0x00030003u32, 0x0000000bu32,
+  0x00000001u32, 0x00030005u32, 0x00000017u32, 0x00000069u32, 0x00070005u32, 0x00000018u32,
+  0x656d6d49u32, 0x74616964u32, 0x735f7365u32, 0x33346474u32, 0x00000030u32, 0x00050006u32,
+  0x00000018u32, 0x00000000u32, 0x6e756f63u32, 0x00000074u32, 0x00050005u32, 0x0000001au32,
+  0x656d6d69u32, 0x74616964u32, 0x00007365u32, 0x00070005u32, 0x00000026u32, 0x75727453u32,
+  0x72757463u32, 0x75426465u32, 0x72656666u32, 0x00000000u32, 0x00060006u32, 0x00000026u32,
+  0x00000000u32, 0x656d5f5fu32, 0x7265626du32, 0x00000030u32, 0x00040005u32, 0x00000029u32,
+  0x6e696f6au32, 0x00007374u32, 0x00040005u32, 0x0000003fu32, 0x67696577u32, 0x00737468u32,
+  0x00030005u32, 0x00000045u32, 0x00000077u32, 0x00070005u32, 0x00000047u32, 0x656e6f42u32,
+  0x726f6658u32, 0x74735f6du32, 0x30333464u32, 0x00000000u32, 0x00050006u32, 0x00000047u32,
+  0x00000000u32, 0x30776f72u32, 0x00000000u32, 0x00050006u32, 0x00000047u32, 0x00000001u32,
+  0x31776f72u32, 0x00000000u32, 0x00050006u32, 0x00000047u32, 0x00000002u32, 0x32776f72u32,
+  0x00000000u32, 0x00070005u32, 0x0000004au32, 0x75727453u32, 0x72757463u32, 0x75426465u32,
+  0x72656666u32, 0x00000000u32, 0x00060006u32, 0x0000004au32, 0x00000000u32, 0x656d5f5fu32,
+  0x7265626du32, 0x00000030u32, 0x00040005u32, 0x0000004du32, 0x65736f70u32, 0x00000000u32,
+  0x00070005u32, 0x000000aau32, 0x75727453u32, 0x72757463u32, 0x75426465u32, 0x72656666u32,
+  0x00000000u32, 0x00060006u32, 0x000000aau32, 0x00000000u32, 0x656d5f5fu32, 0x7265626du32,
+  0x00000030u32, 0x00050005u32, 0x000000adu32, 0x69736f70u32, 0x6e6f6974u32, 0x00000073u32,
+  0x00070005u32, 0x000000ceu32, 0x74535752u32, 0x74637572u32, 0x64657275u32, 0x66667542u32,
+  0x00007265u32, 0x00060006u32, 0x000000ceu32, 0x00000000u32, 0x656d5f5fu32, 0x7265626du32,
+  0x00000030u32, 0x00040005u32, 0x000000d0u32, 0x6e696b73u32, 0x0064656eu32, 0x00050005u32,
+  0x00000002u32, 0x6e696b73u32, 0x6e69614du32, 0x00000000u32, 0x00040047u32, 0x00000016u32,
+  0x0000000bu32, 0x0000001cu32, 0x00030047u32, 0x00000018u32, 0x00000002u32, 0x00050048u32,
+  0x00000018u32, 0x00000000u32, 0x00000023u32, 0x00000000u32, 0x00040047u32, 0x00000024u32,
+  0x00000006u32, 0x00000004u32, 0x00040047u32, 0x00000027u32, 0x00000006u32, 0x00000004u32,
+  0x00030047u32, 0x00000026u32, 0x00000002u32, 0x00050048u32, 0x00000026u32, 0x00000000u32,
+  0x00000023u32, 0x00000000u32, 0x00040047u32, 0x00000029u32, 0x00000021u32, 0x00000005u32,
+  0x00040047u32, 0x00000029u32, 0x00000022u32, 0x00000000u32, 0x00030047u32, 0x00000029u32,
+  0x00000018u32, 0x00040047u32, 0x0000003fu32, 0x00000021u32, 0x00000006u32, 0x00040047u32,
+  0x0000003fu32, 0x00000022u32, 0x00000000u32, 0x00030047u32, 0x0000003fu32, 0x00000018u32,
+  0x00050048u32, 0x00000047u32, 0x00000000u32, 0x00000023u32, 0x00000000u32, 0x00050048u32,
+  0x00000047u32, 0x00000001u32, 0x00000023u32, 0x00000010u32, 0x00050048u32, 0x00000047u32,
+  0x00000002u32, 0x00000023u32, 0x00000020u32, 0x00040047u32, 0x00000048u32, 0x00000006u32,
+  0x00000030u32, 0x00040047u32, 0x0000004bu32, 0x00000006u32, 0x00000030u32, 0x00030047u32,
+  0x0000004au32, 0x00000002u32, 0x00050048u32, 0x0000004au32, 0x00000000u32, 0x00000023u32,
+  0x00000000u32, 0x00040047u32, 0x0000004du32, 0x00000021u32, 0x00000007u32, 0x00040047u32,
+  0x0000004du32, 0x00000022u32, 0x00000000u32, 0x00030047u32, 0x0000004du32, 0x00000018u32,
+  0x00040047u32, 0x000000a8u32, 0x00000006u32, 0x00000004u32, 0x00040047u32, 0x000000abu32,
+  0x00000006u32, 0x00000004u32, 0x00030047u32, 0x000000aau32, 0x00000002u32, 0x00050048u32,
+  0x000000aau32, 0x00000000u32, 0x00000023u32, 0x00000000u32, 0x00040047u32, 0x000000adu32,
+  0x00000021u32, 0x00000004u32, 0x00040047u32, 0x000000adu32, 0x00000022u32, 0x00000000u32,
+  0x00030047u32, 0x000000adu32, 0x00000018u32, 0x00030047u32, 0x000000ceu32, 0x00000002u32,
+  0x00050048u32, 0x000000ceu32, 0x00000000u32, 0x00000023u32, 0x00000000u32, 0x00040047u32,
+  0x000000d0u32, 0x00000021u32, 0x00000008u32, 0x00040047u32, 0x000000d0u32, 0x00000022u32,
+  0x00000000u32, 0x00020013u32, 0x00000001u32, 0x00030021u32, 0x00000003u32, 0x00000001u32,
+  0x00030016u32, 0x00000006u32, 0x00000020u32, 0x00040017u32, 0x00000007u32, 0x00000006u32,
+  0x00000004u32, 0x00040015u32, 0x00000012u32, 0x00000020u32, 0x00000000u32, 0x00040017u32,
+  0x00000013u32, 0x00000012u32, 0x00000003u32, 0x00040020u32, 0x00000015u32, 0x00000001u32,
+  0x00000013u32, 0x0003001eu32, 0x00000018u32, 0x00000012u32, 0x00040020u32, 0x00000019u32,
+  0x00000009u32, 0x00000018u32, 0x00040015u32, 0x0000001bu32, 0x00000020u32, 0x00000001u32,
+  0x0004002bu32, 0x0000001bu32, 0x0000001cu32, 0x00000000u32, 0x00040020u32, 0x0000001du32,
+  0x00000009u32, 0x00000012u32, 0x00020014u32, 0x00000020u32, 0x00040020u32, 0x00000024u32,
+  0x0000000cu32, 0x00000012u32, 0x0003001du32, 0x00000027u32, 0x00000012u32, 0x0003001eu32,
+  0x00000026u32, 0x00000027u32, 0x00040020u32, 0x00000028u32, 0x0000000cu32, 0x00000026u32,
+  0x00040017u32, 0x0000002bu32, 0x00000012u32, 0x00000004u32, 0x0004002bu32, 0x00000012u32,
+  0x00000032u32, 0x000000ffu32, 0x0004002bu32, 0x0000001bu32, 0x00000034u32, 0x00000008u32,
+  0x0004002bu32, 0x0000001bu32, 0x00000037u32, 0x00000010u32, 0x0004002bu32, 0x0000001bu32,
+  0x0000003au32, 0x00000018u32, 0x0005001eu32, 0x00000047u32, 0x00000007u32, 0x00000007u32,
+  0x00000007u32, 0x00040020u32, 0x00000048u32, 0x0000000cu32, 0x00000047u32, 0x0003001du32,
+  0x0000004bu32, 0x00000047u32, 0x0003001eu32, 0x0000004au32, 0x0000004bu32, 0x00040020u32,
+  0x0000004cu32, 0x0000000cu32, 0x0000004au32, 0x0004002bu32, 0x00000012u32, 0x000000a7u32,
+  0x00000003u32, 0x00040020u32, 0x000000a8u32, 0x0000000cu32, 0x00000006u32, 0x0003001du32,
+  0x000000abu32, 0x00000006u32, 0x0003001eu32, 0x000000aau32, 0x000000abu32, 0x00040020u32,
+  0x000000acu32, 0x0000000cu32, 0x000000aau32, 0x0004002bu32, 0x00000012u32, 0x000000b0u32,
+  0x00000001u32, 0x0004002bu32, 0x00000012u32, 0x000000b4u32, 0x00000002u32, 0x00040017u32,
+  0x000000b7u32, 0x00000006u32, 0x00000003u32, 0x0004002bu32, 0x00000006u32, 0x000000c1u32,
+  0x3f800000u32, 0x0003001eu32, 0x000000ceu32, 0x000000abu32, 0x00040020u32, 0x000000cfu32,
+  0x0000000cu32, 0x000000ceu32, 0x0004003bu32, 0x00000015u32, 0x00000016u32, 0x00000001u32,
+  0x0004003bu32, 0x00000019u32, 0x0000001au32, 0x00000009u32, 0x0004003bu32, 0x00000028u32,
+  0x00000029u32, 0x0000000cu32, 0x0004003bu32, 0x00000028u32, 0x0000003fu32, 0x0000000cu32,
+  0x0004003bu32, 0x0000004cu32, 0x0000004du32, 0x0000000cu32, 0x0004003bu32, 0x000000acu32,
+  0x000000adu32, 0x0000000cu32, 0x0004003bu32, 0x000000cfu32, 0x000000d0u32, 0x0000000cu32,
+  0x0004002bu32, 0x00000012u32, 0x000000dcu32, 0x00000000u32, 0x0004002bu32, 0x00000006u32,
+  0x0000016cu32, 0x3b808081u32, 0x0007002cu32, 0x00000007u32, 0x0000016du32, 0x0000016cu32,
+  0x0000016cu32, 0x0000016cu32, 0x0000016cu32, 0x00040020u32, 0x0000017au32, 0x0000000cu32,
+  0x00000007u32, 0x00050036u32, 0x00000001u32, 0x00000002u32, 0x00000000u32, 0x00000003u32,
+  0x000200f8u32, 0x00000004u32, 0x000300f7u32, 0x000000dau32, 0x00000000u32, 0x000300fbu32,
+  0x000000dcu32, 0x000000dbu32, 0x000200f8u32, 0x000000dbu32, 0x0004003du32, 0x00000013u32,
+  0x00000014u32, 0x00000016u32, 0x00050051u32, 0x00000012u32, 0x00000017u32, 0x00000014u32,
+  0x00000000u32, 0x00050041u32, 0x0000001du32, 0x0000001eu32, 0x0000001au32, 0x0000001cu32,
+  0x0004003du32, 0x00000012u32, 0x0000001fu32, 0x0000001eu32, 0x000500aeu32, 0x00000020u32,
+  0x00000021u32, 0x00000017u32, 0x0000001fu32, 0x000300f7u32, 0x00000011u32, 0x00000000u32,
+  0x000400fau32, 0x00000021u32, 0x00000010u32, 0x00000011u32, 0x000200f8u32, 0x00000010u32,
+  0x000200f9u32, 0x000000dau32, 0x000200f8u32, 0x00000011u32, 0x00060041u32, 0x00000024u32,
+  0x00000025u32, 0x00000029u32, 0x0000001cu32, 0x00000017u32, 0x0004003du32, 0x00000012u32,
+  0x0000002au32, 0x00000025u32, 0x000500c7u32, 0x00000012u32, 0x000000e4u32, 0x0000002au32,
+  0x00000032u32, 0x000500c2u32, 0x00000012u32, 0x000000e5u32, 0x0000002au32, 0x00000034u32,
+  0x000500c7u32, 0x00000012u32, 0x000000e6u32, 0x000000e5u32, 0x00000032u32, 0x000500c2u32,
+  0x00000012u32, 0x000000e7u32, 0x0000002au32, 0x00000037u32, 0x000500c7u32, 0x00000012u32,
+  0x000000e8u32, 0x000000e7u32, 0x00000032u32, 0x000500c2u32, 0x00000012u32, 0x000000e9u32,
+  0x0000002au32, 0x0000003au32, 0x000500c7u32, 0x00000012u32, 0x000000eau32, 0x000000e9u32,
+  0x00000032u32, 0x00070050u32, 0x0000002bu32, 0x000000ebu32, 0x000000e4u32, 0x000000e6u32,
+  0x000000e8u32, 0x000000eau32, 0x00060041u32, 0x00000024u32, 0x0000003eu32, 0x0000003fu32,
+  0x0000001cu32, 0x00000017u32, 0x0004003du32, 0x00000012u32, 0x00000040u32, 0x0000003eu32,
+  0x000500c7u32, 0x00000012u32, 0x000000eeu32, 0x00000040u32, 0x00000032u32, 0x000500c2u32,
+  0x00000012u32, 0x000000efu32, 0x00000040u32, 0x00000034u32, 0x000500c7u32, 0x00000012u32,
+  0x000000f0u32, 0x000000efu32, 0x00000032u32, 0x000500c2u32, 0x00000012u32, 0x000000f1u32,
+  0x00000040u32, 0x00000037u32, 0x000500c7u32, 0x00000012u32, 0x000000f2u32, 0x000000f1u32,
+  0x00000032u32, 0x000500c2u32, 0x00000012u32, 0x000000f3u32, 0x00000040u32, 0x0000003au32,
+  0x000500c7u32, 0x00000012u32, 0x000000f4u32, 0x000000f3u32, 0x00000032u32, 0x00070050u32,
+  0x0000002bu32, 0x000000f5u32, 0x000000eeu32, 0x000000f0u32, 0x000000f2u32, 0x000000f4u32,
+  0x00040070u32, 0x00000007u32, 0x00000042u32, 0x000000f5u32, 0x00050085u32, 0x00000007u32,
+  0x00000045u32, 0x00000042u32, 0x0000016du32, 0x00050051u32, 0x00000012u32, 0x00000046u32,
+  0x000000ebu32, 0x00000000u32, 0x00060041u32, 0x00000048u32, 0x00000049u32, 0x0000004du32,
+  0x0000001cu32, 0x00000046u32, 0x00050041u32, 0x0000017au32, 0x0000017bu32, 0x00000049u32,
+  0x000000dcu32, 0x0004003du32, 0x00000007u32, 0x0000017cu32, 0x0000017bu32, 0x00050041u32,
+  0x0000017au32, 0x0000017du32, 0x00000049u32, 0x000000b0u32, 0x0004003du32, 0x00000007u32,
+  0x0000017eu32, 0x0000017du32, 0x00050041u32, 0x0000017au32, 0x0000017fu32, 0x00000049u32,
+  0x000000b4u32, 0x0004003du32, 0x00000007u32, 0x00000180u32, 0x0000017fu32, 0x00050051u32,
+  0x00000012u32, 0x00000051u32, 0x000000ebu32, 0x00000001u32, 0x00060041u32, 0x00000048u32,
+  0x00000052u32, 0x0000004du32, 0x0000001cu32, 0x00000051u32, 0x00050041u32, 0x0000017au32,
+  0x00000181u32, 0x00000052u32, 0x000000dcu32, 0x0004003du32, 0x00000007u32, 0x00000182u32,
+  0x00000181u32, 0x00050041u32, 0x0000017au32, 0x00000183u32, 0x00000052u32, 0x000000b0u32,
+  0x0004003du32, 0x00000007u32, 0x00000184u32, 0x00000183u32, 0x00050041u32, 0x0000017au32,
+  0x00000185u32, 0x00000052u32, 0x000000b4u32, 0x0004003du32, 0x00000007u32, 0x00000186u32,
+  0x00000185u32, 0x00050051u32, 0x00000012u32, 0x00000056u32, 0x000000ebu32, 0x00000002u32,
+  0x00060041u32, 0x00000048u32, 0x00000057u32, 0x0000004du32, 0x0000001cu32, 0x00000056u32,
+  0x00050041u32, 0x0000017au32, 0x00000187u32, 0x00000057u32, 0x000000dcu32, 0x0004003du32,
+  0x00000007u32, 0x00000188u32, 0x00000187u32, 0x00050041u32, 0x0000017au32, 0x00000189u32,
+  0x00000057u32, 0x000000b0u32, 0x0004003du32, 0x00000007u32, 0x0000018au32, 0x00000189u32,
+  0x00050041u32, 0x0000017au32, 0x0000018bu32, 0x00000057u32, 0x000000b4u32, 0x0004003du32,
+  0x00000007u32, 0x0000018cu32, 0x0000018bu32, 0x00050051u32, 0x00000012u32, 0x0000005bu32,
+  0x000000ebu32, 0x00000003u32, 0x00060041u32, 0x00000048u32, 0x0000005cu32, 0x0000004du32,
+  0x0000001cu32, 0x0000005bu32, 0x00050041u32, 0x0000017au32, 0x0000018du32, 0x0000005cu32,
+  0x000000dcu32, 0x0004003du32, 0x00000007u32, 0x0000018eu32, 0x0000018du32, 0x00050041u32,
+  0x0000017au32, 0x0000018fu32, 0x0000005cu32, 0x000000b0u32, 0x0004003du32, 0x00000007u32,
+  0x00000190u32, 0x0000018fu32, 0x00050041u32, 0x0000017au32, 0x00000191u32, 0x0000005cu32,
+  0x000000b4u32, 0x0004003du32, 0x00000007u32, 0x00000192u32, 0x00000191u32, 0x00050051u32,
+  0x00000006u32, 0x000000fcu32, 0x00000045u32, 0x00000000u32, 0x0005008eu32, 0x00000007u32,
+  0x000000fdu32, 0x0000017cu32, 0x000000fcu32, 0x00050051u32, 0x00000006u32, 0x00000100u32,
+  0x00000045u32, 0x00000001u32, 0x0005008eu32, 0x00000007u32, 0x00000101u32, 0x00000182u32,
+  0x00000100u32, 0x00050081u32, 0x00000007u32, 0x00000102u32, 0x000000fdu32, 0x00000101u32,
+  0x00050051u32, 0x00000006u32, 0x00000105u32, 0x00000045u32, 0x00000002u32, 0x0005008eu32,
+  0x00000007u32, 0x00000106u32, 0x00000188u32, 0x00000105u32, 0x00050081u32, 0x00000007u32,
+  0x00000107u32, 0x00000102u32, 0x00000106u32, 0x00050051u32, 0x00000006u32, 0x0000010au32,
+  0x00000045u32, 0x00000003u32, 0x0005008eu32, 0x00000007u32, 0x0000010bu32, 0x0000018eu32,
+  0x0000010au32, 0x00050081u32, 0x00000007u32, 0x0000010cu32, 0x00000107u32, 0x0000010bu32,
+  0x0005008eu32, 0x00000007u32, 0x00000110u32, 0x0000017eu32, 0x000000fcu32, 0x0005008eu32,
+  0x00000007u32, 0x00000113u32, 0x00000184u32, 0x00000100u32, 0x00050081u32, 0x00000007u32,
+  0x00000114u32, 0x00000110u32, 0x00000113u32, 0x0005008eu32, 0x00000007u32, 0x00000117u32,
+  0x0000018au32, 0x00000105u32, 0x00050081u32, 0x00000007u32, 0x00000118u32, 0x00000114u32,
+  0x00000117u32, 0x0005008eu32, 0x00000007u32, 0x0000011bu32, 0x00000190u32, 0x0000010au32,
+  0x00050081u32, 0x00000007u32, 0x0000011cu32, 0x00000118u32, 0x0000011bu32, 0x0005008eu32,
+  0x00000007u32, 0x00000120u32, 0x00000180u32, 0x000000fcu32, 0x0005008eu32, 0x00000007u32,
+  0x00000123u32, 0x00000186u32, 0x00000100u32, 0x00050081u32, 0x00000007u32, 0x00000124u32,
+  0x00000120u32, 0x00000123u32, 0x0005008eu32, 0x00000007u32, 0x00000127u32, 0x0000018cu32,
+  0x00000105u32, 0x00050081u32, 0x00000007u32, 0x00000128u32, 0x00000124u32, 0x00000127u32,
+  0x0005008eu32, 0x00000007u32, 0x0000012bu32, 0x00000192u32, 0x0000010au32, 0x00050081u32,
+  0x00000007u32, 0x0000012cu32, 0x00000128u32, 0x0000012bu32, 0x00050084u32, 0x00000012u32,
+  0x000000a6u32, 0x000000a7u32, 0x00000017u32, 0x00060041u32, 0x000000a8u32, 0x000000a9u32,
+  0x000000adu32, 0x0000001cu32, 0x000000a6u32, 0x0004003du32, 0x00000006u32, 0x000000aeu32,
+  0x000000a9u32, 0x00050080u32, 0x00000012u32, 0x000000afu32, 0x000000a6u32, 0x000000b0u32,
+  0x00060041u32, 0x000000a8u32, 0x000000b1u32, 0x000000adu32, 0x0000001cu32, 0x000000afu32,
+  0x0004003du32, 0x00000006u32, 0x000000b2u32, 0x000000b1u32, 0x00050080u32, 0x00000012u32,
+  0x000000b3u32, 0x000000a6u32, 0x000000b4u32, 0x00060041u32, 0x000000a8u32, 0x000000b5u32,
+  0x000000adu32, 0x0000001cu32, 0x000000b3u32, 0x0004003du32, 0x00000006u32, 0x000000b6u32,
+  0x000000b5u32, 0x00060050u32, 0x000000b7u32, 0x000000b8u32, 0x000000aeu32, 0x000000b2u32,
+  0x000000b6u32, 0x00050050u32, 0x00000007u32, 0x00000131u32, 0x000000b8u32, 0x000000c1u32,
+  0x00050094u32, 0x00000006u32, 0x00000134u32, 0x0000010cu32, 0x00000131u32, 0x00050094u32,
+  0x00000006u32, 0x00000137u32, 0x0000011cu32, 0x00000131u32, 0x00050094u32, 0x00000006u32,
+  0x0000013au32, 0x0000012cu32, 0x00000131u32, 0x00060050u32, 0x000000b7u32, 0x0000013bu32,
+  0x00000134u32, 0x00000137u32, 0x0000013au32, 0x00060041u32, 0x000000a8u32, 0x000000cdu32,
+  0x000000d0u32, 0x0000001cu32, 0x000000a6u32, 0x00050051u32, 0x00000006u32, 0x000000d1u32,
+  0x0000013bu32, 0x00000000u32, 0x0003003eu32, 0x000000cdu32, 0x000000d1u32, 0x00060041u32,
+  0x000000a8u32, 0x000000d3u32, 0x000000d0u32, 0x0000001cu32, 0x000000afu32, 0x00050051u32,
+  0x00000006u32, 0x000000d4u32, 0x0000013bu32, 0x00000001u32, 0x0003003eu32, 0x000000d3u32,
+  0x000000d4u32, 0x00060041u32, 0x000000a8u32, 0x000000d6u32, 0x000000d0u32, 0x0000001cu32,
+  0x000000b3u32, 0x00050051u32, 0x00000006u32, 0x000000d7u32, 0x0000013bu32, 0x00000002u32,
+  0x0003003eu32, 0x000000d6u32, 0x000000d7u32, 0x000200f9u32, 0x000000dau32, 0x000200f8u32,
+  0x000000dau32, 0x000100fdu32, 0x00010038u32
+];
+// spirv-end

@@ -184,15 +184,16 @@ pub struct SwapChain {
 
     // The format: 8-bit BGRA or RGBA in sRGB, else whatever comes first
     if backend.format == vulkan.FORMAT_UNDEFINED {
-      // How many formats, asked first, then at most 32 of them
+      // How many formats, asked first, then all of them
       mut n = 0u32;
       check(vulkan.getPhysicalDeviceSurfaceFormatsKHR(backend.physical, backend.surface, &mut n,
         null), "vkGetPhysicalDeviceSurfaceFormatsKHR");
-      if n > 32u32 { n = 32u32; }
-      mut formats = new Array[vulkan.SurfaceFormatKHR, 32] <- fill new vulkan.SurfaceFormatKHR(0u32, 0u32);
+      mut formats = List[vulkan.SurfaceFormatKHR].empty();
+      formats.resize(usize.from(n), new vulkan.SurfaceFormatKHR(0u32, 0u32));
       imm r = vulkan.getPhysicalDeviceSurfaceFormatsKHR(backend.physical, backend.surface, &mut n,
-        &mut formats as *vulkan.SurfaceFormatKHR);
+        formats.viewMut());
       if r != vulkan.INCOMPLETE { check(r, "vkGetPhysicalDeviceSurfaceFormatsKHR"); }
+      formats.truncate(usize.from(n));
       if n == 0u32 {
         fail("the surface offers no formats");
         return false;
@@ -236,8 +237,20 @@ pub struct SwapChain {
     backend.swapchain = sc;
     if !made { return false; }
 
-    mut n = MAX_SWAPCHAIN_IMAGES;
-    check(vulkan.getSwapchainImagesKHR(device, sc, &mut n, &mut backend.images as *vulkan.Image), "vkGetSwapchainImagesKHR");
+    // How many images, asked first. The driver may make more than 'count';
+    // 'backend' keeps at most MAX_SWAPCHAIN_IMAGES of them
+    mut n = 0u32;
+    check(vulkan.getSwapchainImagesKHR(device, sc, &mut n, null), "vkGetSwapchainImagesKHR");
+    mut found = List[vulkan.Image].empty();
+    found.resize(usize.from(n), new vulkan.Image(0u64));
+    check(vulkan.getSwapchainImagesKHR(device, sc, &mut n, found.viewMut()), "vkGetSwapchainImagesKHR");
+    found.truncate(usize.from(n));
+    if n > MAX_SWAPCHAIN_IMAGES { n = MAX_SWAPCHAIN_IMAGES; }
+    mut k = 0usize;
+    while k < usize.from(n) {
+      backend.images[k] = *found[k];
+      k = k + 1usize;
+    }
     backend.count = n;
     imm sci = new vulkan.SemaphoreCreateInfo();
     mut i = 0usize;

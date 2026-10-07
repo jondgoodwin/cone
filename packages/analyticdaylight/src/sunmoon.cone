@@ -1,0 +1,58 @@
+// Where the sun and the moon are. Sources are marked as in walkgait: (S) a
+// source's formula, checked against the source, (own) this package's choice.
+
+// A number held between -1 and 1 (a sine from rounding a little outside)
+pub fn clampUnit(v f32) f32 {
+  if v < -1. { return -1.; }
+  if v > 1. { return 1.; }
+  v;
+}
+
+// Preetham, Shirley and Smits, "A Practical Analytic Model for Daylight"
+// (SIGGRAPH 1999), appendix A.6, read from the paper's page 99 (S): the
+// solar declination in radians for the day of the year J (1 to 365),
+// 0.4093 sin(2 pi (J - 81) / 368).
+pub fn solarDeclination(dayOfYear f32) f32 {
+  0.4093 * sin(2. * pi * (dayOfYear - 81.) / 368.);
+}
+
+// The sun's direction (towards it; x east, y up, z south) at solar hour
+// 'hour' (noon 12) for 'latitude' (radians, north positive) and declination
+// 'declination' (radians). Its height is the paper's A.6 (S):
+// sin(el) = sin(l) sin(d) + cos(l) cos(d) cos(H), with H = (hour - 12) 15
+// degrees the hour angle. Its azimuth, from south and positive towards the
+// west, is Meeus's (Astronomical Algorithms, chapter 13) (S):
+// A = atan2(sin H, cos H sin(l) - tan(d) cos(l)); the paper's printed
+// azimuth formula (A.6) has the sign of its sin(d) term the other way
+// round, which puts the sun's noon azimuth off south, so it is not used (own:
+// found by checking noon is due south). The hour is solar time: the equation
+// of time and longitude are left out (own).
+pub fn sunDirectionAt(latitude f32, declination f32, hour f32) Vec3 {
+  imm hourAngle = (hour - 12.) * (pi / 12.);
+  imm sinEl = sin(latitude) * sin(declination) + cos(latitude) * cos(declination) * cos(hourAngle);
+  imm el = asin(clampUnit(sinEl));
+  imm az = atan2(sin(hourAngle), cos(hourAngle) * sin(latitude) - tan(declination) * cos(latitude));
+  imm c = cos(el);
+  // From south, west positive: west is -x, south is +z
+  new Vec3(0. - c * sin(az), sinEl, c * cos(az));
+}
+
+// The moon's direction, given the sun's: as high as the sun is low, so it is
+// up all night and never in the day, and its azimuth the sun's turned half
+// a turn and 30 degrees more (own: the cheat that a night always has its
+// moon; a real moon's place needs its orbit, and a lunar month is far longer
+// than this scene's days)
+pub fn moonDirectionFor(sun Vec3) Vec3 {
+  imm h = new Vec3(sun.x, 0., sun.z);
+  imm flat = if h.length() < 0.0001 { new Vec3(0., 0., 1.); } else { h.normalize(); };
+  // Turned by 180 + 30 degrees about the vertical
+  imm a = pi + 30. * (pi / 180.);
+  imm c = cos(a);
+  imm s = sin(a);
+  imm turned = new Vec3(flat.x * c + flat.z * s, 0., 0. - flat.x * s + flat.z * c);
+  imm ground = (1. - sun.y * sun.y).sqrt();
+  new Vec3(turned.x * ground, 0. - sun.y, turned.z * ground);
+}
+
+// A direction's height above the horizon, radians (negative below it)
+pub fn elevationOf(dir Vec3) f32 { asin(clampUnit(dir.y)); }

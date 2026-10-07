@@ -55,6 +55,11 @@
 //   tone mapping by AgX (or ACES's fit, Reinhard, none).
 // - DrawList: what is drawn this frame, each a mesh, a material and a model
 //   matrix (and a tint), drawn in one render pass.
+// - Skinning (skin.cone, skinning.slang): a mesh bound to a skeleton's bones
+//   by a Skin (four joints and weights a vertex), uploaded by
+//   'addSkinnedMesh' and drawn by 'DrawList.addSkinned' with one skinning
+//   matrix a bone, which the GPU blends (linear blend skinning) in the
+//   skinned variants of the lit and physically based pipelines.
 // - Image, pixels from BMP (or made: 'Image.checker'), written as BMP too;
 //   'addTexture' hands one to the GPU as sRGB colour, 'addLinearTexture' as
 //   numbers (a normal map, an ORM map).
@@ -84,7 +89,11 @@
 // position, the light, the target's size, the time, the environment's
 // strength and the exposure, and one storage buffer of instances, each
 // drawn copy's model matrix and tint (80 bytes), both written once a render
-// ('queue.writeBuffer'). Group 1 is the material's: its parameters in a
+// ('queue.writeBuffer'); then, read by the skinned vertex stages only
+// (skinning.slang), the bones (a storage buffer of every skinned copy's
+// skinning matrices, 48 bytes a bone, each copy's run side by side) and the
+// bone bases (a storage buffer of a u32 an instance: where its copy's bones
+// start, or NO_BONES), both written once a render too. Group 1 is the material's: its parameters in a
 // uniform buffer of its own, its texture and the renderer's sampler; for
 // the physically based material, its metallic-roughness, normal and
 // occlusion maps after them (its own layout, 'pbrMaterialLayout'); for a
@@ -100,7 +109,8 @@
 // items name them, are one instanced draw per material group of the mesh
 // ('drawIndexed' with an instance count and a first instance), their
 // instances side by side in the instance buffer. A scene of a thousand
-// stones in one material is one draw.
+// stones in one material is one draw. Copies of one skinned mesh batch the
+// same way, each with bones of its own, found through its bone base.
 //
 // THE DRAW ORDER. Opaque draws (all there are yet) are sorted batch by
 // batch, meshes (Blinn-Phong or physically based, by their material)
@@ -116,13 +126,15 @@
 //   gpumesh.cone   GpuMesh, mesh slots and handles, LodChain
 //   material.cone  Material, material and texture slots and handles; lit.slang's and lines.slang's SPIR-V
 //   custom.cone    CustomPipeline, pipeline slots and handles: the contract a custom pipeline keeps
+//   skin.cone      Skin, the bones' layout, the CPU's twin of skinning.slang
 //   lighting.cone  Sky, PbrMaterial, Environment; pbr.slang's and ibl.slang's SPIR-V
 //   post.cone      Post: the HDR frame, bloom, tone mapping; post.slang's SPIR-V
 //   camera.cone    Camera, Light
 //   image.cone     Image
 //
 // and its shaders, Slang: lit, lines, pbr, ibl and post, and the modules
-// brdf and sky they import (pbr imports the noise package's too).
+// brdf, sky, renderframe and skinning they import (pbr imports the noise
+// package's too).
 //
 // Coordinates are geomath's and gpu's: right-handed, y up, the camera looking
 // down its -z, clip space's y up and depth from 0 to 1. Faces wind
@@ -191,6 +203,8 @@ const BOUND_LIT = 1u32;
 const BOUND_LINES = 2u32;
 const BOUND_PBR = 3u32;
 const BOUND_CUSTOM = 4u32;
+const BOUND_LIT_SKINNED = 5u32;
+const BOUND_PBR_SKINNED = 6u32;
 
 // What each render pass draws with: the renderer's pipelines, bind groups and
 // the resources it hands out handles to
@@ -231,6 +245,13 @@ pub struct Renderer {
   pub batches List[DrawBatch];     // and the batches, in the order they are drawn
   pub instancesDrawn u32;          // how many copies the last render drew
   pub pipelines Pool[PipelineSlot];   // custom pipelines (custom.cone)
+  pub litSkinnedPipeline RenderPipeline;   // the lit material, for a skinned mesh (lit.slang's vertexSkinned)
+  pub pbrSkinnedPipeline RenderPipeline;   // and the physically based one (pbr.slang's)
+  pub bones Buffer;                // every skinned copy's skinning matrices (skinning.slang's BoneXform)
+  pub boneCapacity u32;            // how many it holds; grown by doubling
+  pub boneBases Buffer;            // each instance's first bone, or NO_BONES; as many as the instances
+  pub boneBaseData List[u32];      // gathered on the CPU before one write
+  pub bonesDrawn u32;              // how many bones the last render wrote
   // Store the depth buffer at the end of 'render' (it is discarded
   // otherwise), so that a later pass into the same target -- glowing
   // particles drawn additively, say -- is depth tested against the scene
@@ -249,10 +270,13 @@ pub struct Renderer {
   pub fn create(device &mut Device, colorFormat u32, depthFormat u32) Renderer {
     mut litShader = device.createShaderModule(&LIT_SPIRV);
     mut linesShader = device.createShaderModule(&LINES_SPIRV);
-    // The frame's group: its uniforms, and the instances (read-only storage)
+    // The frame's group: its uniforms, the instances, the bones and the
+    // instances' bone bases (read-only storage)
     imm frameEntries = [new BindGroupLayoutEntry(binding: 0u32, visibility: SHADER_STAGE_VERTEX | SHADER_STAGE_FRAGMENT),
       new BindGroupLayoutEntry(binding: 1u32, visibility: SHADER_STAGE_VERTEX | SHADER_STAGE_FRAGMENT,
-        bufferType: BUFFER_BINDING_TYPE_READ_ONLY_STORAGE)];
+        bufferType: BUFFER_BINDING_TYPE_READ_ONLY_STORAGE),
+      new BindGroupLayoutEntry(binding: 2u32, visibility: SHADER_STAGE_VERTEX, bufferType: BUFFER_BINDING_TYPE_READ_ONLY_STORAGE),
+      new BindGroupLayoutEntry(binding: 3u32, visibility: SHADER_STAGE_VERTEX, bufferType: BUFFER_BINDING_TYPE_READ_ONLY_STORAGE)];
     mut frameLayout = device.createBindGroupLayout(&frameEntries);
     imm materialEntries = [new BindGroupLayoutEntry(binding: 0u32, visibility: SHADER_STAGE_FRAGMENT),
       new BindGroupLayoutEntry(binding: 1u32, visibility: SHADER_STAGE_FRAGMENT, kind: BINDING_KIND_TEXTURE),
@@ -311,6 +335,23 @@ pub struct Renderer {
       fragmentModule: &pbrShader, colorFormat: colorFormat, cullMode: CULL_MODE_BACK,
       depthFormat: depthFormat, depthWriteEnabled: true, depthCompare: COMPARE_FUNCTION_LESS);
     mut pbrPipeline = device.createRenderPipeline(&pbrDesc);
+    // Their skinned variants: the same three buffers, then the joints (four
+    // bytes read as integers) and the weights (four bytes read as 0 to 1)
+    imm jointsAttr = [new VertexAttribute(VERTEX_FORMAT_UINT8X4, 0u64, 3u32)];
+    imm weightsAttr = [new VertexAttribute(VERTEX_FORMAT_UNORM8X4, 0u64, 4u32)];
+    imm skinnedBuffers = [new VertexBufferLayout(arrayStride: 12u64, attributes: &positionAttr),
+      new VertexBufferLayout(arrayStride: 12u64, attributes: &normalAttr),
+      new VertexBufferLayout(arrayStride: 8u64, attributes: &uvAttr),
+      new VertexBufferLayout(arrayStride: 4u64, attributes: &jointsAttr),
+      new VertexBufferLayout(arrayStride: 4u64, attributes: &weightsAttr)];
+    imm litSkinnedDesc = new RenderPipelineDescriptor(layout: &layout, vertexModule: &litShader,
+      vertexEntryPoint: "vertexSkinned", buffers: &skinnedBuffers, fragmentModule: &litShader, colorFormat: colorFormat,
+      cullMode: CULL_MODE_BACK, depthFormat: depthFormat, depthWriteEnabled: true, depthCompare: COMPARE_FUNCTION_LESS);
+    mut litSkinnedPipeline = device.createRenderPipeline(&litSkinnedDesc);
+    imm pbrSkinnedDesc = new RenderPipelineDescriptor(layout: &pbrLayout, vertexModule: &pbrShader,
+      vertexEntryPoint: "vertexSkinned", buffers: &skinnedBuffers, fragmentModule: &pbrShader, colorFormat: colorFormat,
+      cullMode: CULL_MODE_BACK, depthFormat: depthFormat, depthWriteEnabled: true, depthCompare: COMPARE_FUNCTION_LESS);
+    mut pbrSkinnedPipeline = device.createRenderPipeline(&pbrSkinnedDesc);
     // The sky: one triangle at the far plane, where nothing nearer was
     // drawn (depth tested less or equal against the cleared 1, not written)
     imm skyBuffers = [new VertexBufferLayout(arrayStride: 12u64, attributes: &positionAttr)];
@@ -323,7 +364,10 @@ pub struct Renderer {
     mut frameUniforms = device.createBuffer(FRAME_BYTES, BUFFER_USAGE_UNIFORM | BUFFER_USAGE_COPY_DST);
     mut instances = device.createBuffer(u64.from(FIRST_INSTANCES) * INSTANCE_BYTES,
       BUFFER_USAGE_STORAGE | BUFFER_USAGE_COPY_DST);
-    imm frameGroupEntries = [BindGroupEntry.buffer(0u32, &frameUniforms), BindGroupEntry.buffer(1u32, &instances)];
+    mut bones = device.createBuffer(u64.from(FIRST_BONES) * BONE_BYTES, BUFFER_USAGE_STORAGE | BUFFER_USAGE_COPY_DST);
+    mut boneBases = device.createBuffer(u64.from(FIRST_INSTANCES) * 4u64, BUFFER_USAGE_STORAGE | BUFFER_USAGE_COPY_DST);
+    imm frameGroupEntries = [BindGroupEntry.buffer(0u32, &frameUniforms), BindGroupEntry.buffer(1u32, &instances),
+      BindGroupEntry.buffer(2u32, &bones), BindGroupEntry.buffer(3u32, &boneBases)];
     mut frameGroup = device.createBindGroup(&frameLayout, &frameGroupEntries);
     imm samplerDesc = new SamplerDescriptor();
     mut sampler = device.createSampler(&samplerDesc);
@@ -335,7 +379,8 @@ pub struct Renderer {
       Pool[TextureSlot].empty(), Pool[MaterialSlot].empty(), TextureHandle.none(), List[MeshHandle].empty(),
       0u32, 0u64, pbrShader, environmentLayout, pbrLayout, pbrPipeline, skyPipeline, environment, false, 0., 1., pbrMaterialLayout,
       instances, FIRST_INSTANCES, List[f32].empty(), List[DrawKey].empty(), List[DrawBatch].empty(), 0u32,
-      Pool[PipelineSlot].empty());
+      Pool[PipelineSlot].empty(), litSkinnedPipeline, pbrSkinnedPipeline, bones, FIRST_BONES, boneBases,
+      List[u32].empty(), 0u32);
     mut w = new Image(1, 1, 3, List[u8].empty());
     w.pixels.push(255u8);
     w.pixels.push(255u8);
@@ -348,7 +393,15 @@ pub struct Renderer {
   pub fn isValid(self &) bool {
     litPipeline.isValid() and linesPipeline.isValid() and frameGroup.isValid() and sampler.isValid()
       and frameUniforms.isValid() and pbrPipeline.isValid() and skyPipeline.isValid() and environment.isValid()
-      and instances.isValid();
+      and instances.isValid() and litSkinnedPipeline.isValid() and pbrSkinnedPipeline.isValid() and bones.isValid()
+      and boneBases.isValid();
+  }
+
+  // The frame's group made again, after a buffer in it was replaced
+  fn remakeFrameGroup(self &mut, device &mut Device) {
+    imm entries = [BindGroupEntry.buffer(0u32, &frameUniforms), BindGroupEntry.buffer(1u32, &instances),
+      BindGroupEntry.buffer(2u32, &bones), BindGroupEntry.buffer(3u32, &boneBases)];
+    frameGroup = device.createBindGroup(&frameLayout, &entries);
   }
 
   // Draw 'sky' behind the scene from the next render on, and light the
@@ -368,6 +421,34 @@ pub struct Renderer {
     new MeshHandle(meshes.add(new MeshSlot(version, GpuMesh.none(), 0u32, false, 0u64, 0u32)));
   }
 
+  // A skinned mesh to draw (skin.cone): 'm' as 'addMesh' takes it, and
+  // 'skin', its vertices' joints and weights, one entry a vertex in 'm''s
+  // order. Drawn by 'DrawList.addSkinned' with its bones; drawn as modelled
+  // by 'add'. A skin of the wrong length leaves it an unskinned mesh.
+  pub fn addSkinnedMesh(self &mut, device &mut Device, m &Mesh, skin &Skin) MeshHandle {
+    imm version = uploadSkinned(device, m, skin);
+    new MeshHandle(meshes.add(new MeshSlot(version, GpuMesh.none(), 0u32, false, 0u64, 0u32)));
+  }
+
+  // Whether 'h' names a skinned mesh
+  pub fn isSkinned(self &, h MeshHandle) bool {
+    meshes.alive(h.slot) and meshes[h.slot].current().isSkinned();
+  }
+
+  // The bounding sphere of the mesh 'h' as drawn, in its own coordinates
+  // (a skinned mesh's made larger: SKINNED_BOUNDS_SCALE); a radius of 0 if
+  // 'h' names none
+  pub fn meshBounds(self &, h MeshHandle, center &mut Vec3, radius &mut f32) {
+    if !meshes.alive(h.slot) {
+      *center = new Vec3(0., 0., 0.);
+      *radius = 0.;
+      return;
+    }
+    imm m = meshes[h.slot].current();
+    *center = m.center;
+    *radius = m.radius;
+  }
+
   // Lines to draw: 'positions', and 'indices' two to a line (a wireframe:
   // 'polyEdges' makes them of a PolyMesh's edges)
   pub fn addLines(self &mut, device &mut Device, positions &[]Vec3, indices &[]u32) MeshHandle {
@@ -383,6 +464,14 @@ pub struct Renderer {
   pub fn replaceMesh(self &mut, device &mut Device, h MeshHandle, m &Mesh) bool {
     if !meshes.alive(h.slot) or meshes[h.slot].dynamicVertices > 0u32 { return false; }
     imm version = uploadTriangles(device, m);
+    self.stage(device, h, version);
+    true;
+  }
+
+  // The same for a skinned mesh, with its skin
+  pub fn replaceSkinnedMesh(self &mut, device &mut Device, h MeshHandle, m &Mesh, skin &Skin) bool {
+    if !meshes.alive(h.slot) or meshes[h.slot].dynamicVertices > 0u32 { return false; }
+    imm version = uploadSkinned(device, m, skin);
     self.stage(device, h, version);
     true;
   }
@@ -843,9 +932,10 @@ pub struct Renderer {
     frame[52] = exposure;
     device.queue.writeBuffer(&frameUniforms, 0u64, &frame as *u8, FRAME_BYTES);
 
-    // The batches, front to back, and their instances written
+    // The batches, front to back, and their instances and bones written
     self.gatherBatches(list, eye);
     self.writeInstances(device, list);
+    self.writeBones(device, list);
 
     // The background is light too: exposed like the rest
     imm bg = camera.background;
@@ -866,6 +956,7 @@ pub struct Renderer {
       imm slot = meshes[item.mesh.slot];
       imm m = slot.current();
       imm lines = batch.lines != 0u32;
+      mut skinned = false;
       if lines {
         if bound != BOUND_LINES {
           pass.setPipeline(&linesPipeline);
@@ -898,18 +989,25 @@ pub struct Renderer {
             boundMaterial = Ref[MaterialSlot].none();
           }
         } elif mslot.kind == MATERIAL_PBR {
-          if bound != BOUND_PBR {
-            pass.setPipeline(&pbrPipeline);
+          // A skinned mesh is drawn by the pipeline's skinned variant
+          skinned = m.isSkinned();
+          imm want = if skinned { BOUND_PBR_SKINNED; } else { BOUND_PBR; };
+          if bound != want {
+            pass.setPipeline(if skinned { &pbrSkinnedPipeline; } else { &pbrPipeline; });
             pass.setBindGroup(0u32, &frameGroup);
             pass.setBindGroup(2u32, &environment.group);
-            bound = BOUND_PBR;
+            bound = want;
             boundMaterial = Ref[MaterialSlot].none();
           }
-        } elif bound != BOUND_LIT {
-          pass.setPipeline(&litPipeline);
-          pass.setBindGroup(0u32, &frameGroup);
-          bound = BOUND_LIT;
-          boundMaterial = Ref[MaterialSlot].none();
+        } else {
+          skinned = m.isSkinned();
+          imm want = if skinned { BOUND_LIT_SKINNED; } else { BOUND_LIT; };
+          if bound != want {
+            pass.setPipeline(if skinned { &litSkinnedPipeline; } else { &litPipeline; });
+            pass.setBindGroup(0u32, &frameGroup);
+            bound = want;
+            boundMaterial = Ref[MaterialSlot].none();
+          }
         }
         if !(boundMaterial == item.material.slot) {
           pass.setBindGroup(1u32, &mslot.group);
@@ -920,6 +1018,10 @@ pub struct Renderer {
       if !lines {
         pass.setVertexBuffer(1u32, &m.normals, 0u64);
         pass.setVertexBuffer(2u32, &m.uvs, 0u64);
+      }
+      if skinned {
+        pass.setVertexBuffer(3u32, &m.joints, 0u64);
+        pass.setVertexBuffer(4u32, &m.weights, 0u64);
       }
       pass.setIndexBuffer(&m.indices, INDEX_FORMAT_UINT32, 0u64);
       // One draw a material group of the mesh, for every copy in the batch
@@ -1015,6 +1117,7 @@ pub struct Renderer {
   // batch its first instance; the buffer is made larger first if it must be
   fn writeInstances(self &mut, device &mut Device, list &DrawList) {
     instanceData.clear();
+    boneBaseData.clear();
     mut count = 0u32;
     mut b = 0usize;
     while b < batches.len() {
@@ -1033,6 +1136,7 @@ pub struct Renderer {
         instanceData.push(item.tint.green);
         instanceData.push(item.tint.blue);
         instanceData.push(item.tint.alpha);
+        boneBaseData.push(item.bones);
         j = j + 1u32;
       }
       count = count + batch.count;
@@ -1044,12 +1148,33 @@ pub struct Renderer {
       while capacity < count { capacity = capacity * 2u32; }
       device.queue.releaseBuffer(&mut instances);
       instances = device.createBuffer(u64.from(capacity) * INSTANCE_BYTES, BUFFER_USAGE_STORAGE | BUFFER_USAGE_COPY_DST);
+      device.queue.releaseBuffer(&mut boneBases);
+      boneBases = device.createBuffer(u64.from(capacity) * 4u64, BUFFER_USAGE_STORAGE | BUFFER_USAGE_COPY_DST);
       instanceCapacity = capacity;
-      imm entries = [BindGroupEntry.buffer(0u32, &frameUniforms), BindGroupEntry.buffer(1u32, &instances)];
-      frameGroup = device.createBindGroup(&frameLayout, &entries);
+      self.remakeFrameGroup(device);
     }
     imm v = instanceData.view();
     device.queue.writeBuffer(&instances, 0u64, &v[0] as *u8, u64.from(count) * INSTANCE_BYTES);
+    imm bv = boneBaseData.view();
+    device.queue.writeBuffer(&boneBases, 0u64, &bv[0] as *u8, u64.from(count) * 4u64);
+  }
+
+  // Write the draw list's bones (every skinned copy's skinning matrices,
+  // side by side) into the bone buffer, made larger first if it must be
+  fn writeBones(self &mut, device &mut Device, list &DrawList) {
+    imm count = u32.from(list.bones.len() / BONE_FLOATS);
+    bonesDrawn = count;
+    if count == 0u32 { return; }
+    if count > boneCapacity {
+      mut capacity = boneCapacity;
+      while capacity < count { capacity = capacity * 2u32; }
+      device.queue.releaseBuffer(&mut bones);
+      bones = device.createBuffer(u64.from(capacity) * BONE_BYTES, BUFFER_USAGE_STORAGE | BUFFER_USAGE_COPY_DST);
+      boneCapacity = capacity;
+      self.remakeFrameGroup(device);
+    }
+    imm v = list.bones.view();
+    device.queue.writeBuffer(&bones, 0u64, &v[0] as *u8, u64.from(count) * BONE_BYTES);
   }
 }
 
@@ -1097,22 +1222,56 @@ fn materialParams(material &Material) Array[f32, 12] {
 
 // What a draw list holds: a mesh, the material it is drawn with (not used
 // by lines), where it is ('model', its coordinates into the world's), and a
-// tint its color is multiplied by (the color of lines)
+// tint its color is multiplied by (the color of lines); and, for a skinned
+// copy, its first bone in the list's 'bones' (NO_BONES for none)
 pub struct DrawItem {
   pub mesh MeshHandle;
   pub material MaterialHandle;
   pub model Mat4;
   pub tint Color;
+  pub bones u32 = NO_BONES;
 }
 
-// What a render pass draws
+// What a render pass draws: its items, and the skinned ones' bones, each
+// bone a skinning matrix as the bone buffer holds it (skin.cone's
+// 'boneRows', BONE_FLOATS floats), each item's run side by side
 pub struct DrawList {
   pub items List[DrawItem];
+  pub bones List[f32];
 
-  pub fn empty() DrawList { new DrawList(List[DrawItem].empty()); }
+  pub fn empty() DrawList { new DrawList(List[DrawItem].empty(), List[f32].empty()); }
 
-  pub fn clear(self &mut) { items.clear(); }
+  pub fn clear(self &mut) {
+    items.clear();
+    bones.clear();
+  }
   pub fn len(self &) usize { items.len(); }
+
+  // How many bones it holds
+  pub fn boneCount(self &) usize { bones.len() / BONE_FLOATS; }
+
+  // Draw the skinned mesh 'mesh' ('Renderer.addSkinnedMesh') with
+  // 'material', placed by 'model', posed by 'pose': its skinning matrices,
+  // one a bone of its skin's skeleton, in the model's coordinates (skin.cone)
+  pub fn addSkinned(self &mut, mesh MeshHandle, material MaterialHandle, model Mat4, pose &[]Mat4) {
+    self.addSkinnedTinted(mesh, material, model, new Color(1., 1., 1., 1.), pose);
+  }
+
+  // The same, its color multiplied by 'tint'
+  pub fn addSkinnedTinted(self &mut, mesh MeshHandle, material MaterialHandle, model Mat4, tint Color, pose &[]Mat4) {
+    imm first = u32.from(bones.len() / BONE_FLOATS);
+    mut b = 0usize;
+    while b < pose.len {
+      imm rows = boneRows(pose[b]);
+      mut e = 0usize;
+      while e < BONE_FLOATS {
+        bones.push(rows[e]);
+        e = e + 1usize;
+      }
+      b = b + 1usize;
+    }
+    items.push(new DrawItem(mesh, material, model, tint, first));
+  }
 
   // Draw 'mesh' with 'material', placed by 'model'
   pub fn add(self &mut, mesh MeshHandle, material MaterialHandle, model Mat4) {
