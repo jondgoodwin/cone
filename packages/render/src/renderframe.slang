@@ -19,7 +19,8 @@
 //   'exposureFromEv100' (camera.cone) gives the exposure of a camera at an
 //   EV100; a scene in display units (a light of about 1) uses exposure 1.
 //
-// The Frame's layout is render.cone's 'frame' array, FRAME_BYTES long.
+// The Frame's layout is render.cone's 'frame' array, FRAME_BYTES long; an
+// Instance's is INSTANCE_BYTES.
 
 struct Frame {
     float4x4 viewProjection;       // 0
@@ -32,7 +33,20 @@ struct Frame {
     float4 exposure;               // 208: x the exposure every output is multiplied by
 };
 
+// One drawn copy of a mesh: where it is (its model coordinates to the
+// world's) and the tint its colours are multiplied by. The renderer writes
+// every copy the frame draws into one storage buffer, those of a batch
+// (one mesh, one material) side by side, and draws each batch as one
+// instanced draw whose first instance is the batch's first copy, so a
+// vertex shader's SV_VulkanInstanceID (Vulkan's InstanceIndex, which counts
+// from the first instance) indexes 'instances' directly.
+struct Instance {
+    float4x4 model;                // 0
+    float4 tint;                   // 64
+};
+
 [[vk::binding(0, 0)]] ConstantBuffer<Frame> frame;
+[[vk::binding(1, 0)]] StructuredBuffer<Instance> instances;
 
 static const float RENDER_PI = 3.14159265358979;
 
