@@ -363,7 +363,7 @@ static void typeLitInitArgs(FnCallNode *node, FnSigNode *sig) {
     for (uint32_t i = node->args->used + 1; i < sig->parms->used; ++i) {
         // 'srcFile()' and 'srcLine()' answer where the construction is
         INode *dflt = ((VarDclNode *)nodesGet(sig->parms, i))->value;
-        if (intrinsicIsSrcCall(dflt))
+        if (intrinsicIsSrcDefault(dflt))
             dflt = intrinsicSrcCallAt(dflt, (INode*)node);
         nodesAdd(&node->args, dflt);
     }

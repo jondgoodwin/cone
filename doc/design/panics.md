@@ -41,7 +41,9 @@ returning it is only known not to return where it ends a block.
 **Core's functions** (`packages/core/src/core.cone`): `panic(msg)`;
 `assert(cond, msg)`, checked in every build, release included;
 `unreachable(msg)` and `todo(msg)`, each with a message of its own by default;
-and `setPanicHook(hook)`.
+and `setPanicHook(hook)`. A message is text (`&str`), and so are the message
+and the file a hook is handed; the `file` a function forwards stays a slice of
+bytes, which any `&str` converts to.
 
 **Checks a debug build alone makes** [Jon 27 Sep]: `assertDebug(cond)` and
 `assertDebugMsg(cond, msg)` are core **macros**, not functions, so the

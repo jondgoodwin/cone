@@ -689,7 +689,7 @@ void fnCallFinalizeArgs(FnCallNode *node) {
                 // call taking them is: each such call gets a copy of its own,
                 // placed there
                 INode *dflt = ((VarDclNode*)*parmp)->value;
-                if (intrinsicIsSrcCall(dflt))
+                if (intrinsicIsSrcDefault(dflt))
                     dflt = intrinsicSrcCallAt(dflt, (INode*)node);
                 nodesAdd(&node->args, dflt);
                 parmp++;
