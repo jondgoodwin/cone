@@ -40,20 +40,20 @@ fn hexOf(s &Array[u8]) String {
 }
 
 // key's string, or "<none>"
-fn strValue(t &toml.Table, key &Array[u8]) String {
+fn strValue(t &toml.Table, key &str) String {
   match t.getString(key) {
     case imm v Some { v.value.copy(); }
     case is None { String.from("<none>"); }
   }
 }
 
-fn strHex(t &toml.Table, key &Array[u8]) String {
+fn strHex(t &toml.Table, key &str) String {
   imm s = strValue(t, key);
   hexOf(s.view());
 }
 
 // key's integer, or -1
-fn int(t &toml.Table, key &Array[u8]) i64 {
+fn int(t &toml.Table, key &str) i64 {
   match t.getInt(key) {
     case imm v Some { v.value; }
     case is None { -1i64; }
@@ -61,7 +61,7 @@ fn int(t &toml.Table, key &Array[u8]) i64 {
 }
 
 // key's boolean as "true", "false" or "<none>"
-fn boolean(t &toml.Table, key &Array[u8]) String {
+fn boolean(t &toml.Table, key &str) String {
   match t.getBool(key) {
     case imm v Some { if v.value {String.from("true");} else {String.from("false");}; }
     case is None { String.from("<none>"); }
@@ -69,14 +69,14 @@ fn boolean(t &toml.Table, key &Array[u8]) String {
 }
 
 // key's list, its strings joined by '|', or "<none>"
-fn list(t &toml.Table, key &Array[u8]) String {
+fn list(t &toml.Table, key &str) String {
   match t.getStrings(key) {
     case imm v Some { String.join(v.value.view(), "|"); }
     case is None { String.from("<none>"); }
   }
 }
 
-fn kind(t &toml.Table, key &Array[u8]) String {
+fn kind(t &toml.Table, key &str) String {
   match t.kindOf(key) {
     case imm k Some {
       if k.value == toml.Kind.Text[] {String.from("text");}
@@ -88,27 +88,27 @@ fn kind(t &toml.Table, key &Array[u8]) String {
   }
 }
 
-fn isStr(t &toml.Table, key &Array[u8], want &Array[u8], label &Array[u8]) {
+fn isStr(t &toml.Table, key &str, want &Array[u8], label &Array[u8]) {
   imm got = strValue(t, key);
   expectStr(got.view(), want, label);
 }
 
-fn isHex(t &toml.Table, key &Array[u8], want &Array[u8], label &Array[u8]) {
+fn isHex(t &toml.Table, key &str, want &Array[u8], label &Array[u8]) {
   imm got = strHex(t, key);
   expectStr(got.view(), want, label);
 }
 
-fn isBool(t &toml.Table, key &Array[u8], want &Array[u8], label &Array[u8]) {
+fn isBool(t &toml.Table, key &str, want &Array[u8], label &Array[u8]) {
   imm got = boolean(t, key);
   expectStr(got.view(), want, label);
 }
 
-fn isList(t &toml.Table, key &Array[u8], want &Array[u8], label &Array[u8]) {
+fn isList(t &toml.Table, key &str, want &Array[u8], label &Array[u8]) {
   imm got = list(t, key);
   expectStr(got.view(), want, label);
 }
 
-fn isKind(t &toml.Table, key &Array[u8], want &Array[u8], label &Array[u8]) {
+fn isKind(t &toml.Table, key &str, want &Array[u8], label &Array[u8]) {
   imm got = kind(t, key);
   expectStr(got.view(), want, label);
 }
@@ -233,6 +233,12 @@ fn getters() {
   expectUInt(u64.from(t.lineOf("missing")), 0u64, "lineOf no key");
   imm keys = t.keys();
   isJoined(&keys, "s|i|b|l|key-with_dash-9", "keys in the order written");
+  // Keys and table names read back are Strings; their views look them up
+  expect(t.has(keys[0usize].view()), "has, by a key's view");
+  expectUInt(u64.from(t.lineOf(keys[3usize].view())), 5u64, "lineOf, by a key's view");
+  imm tables = doc.names();
+  expect(doc.has(tables[0usize].view()), "has a table, by a name's view");
+  expectStr(doc[tables[0usize].view()].name.view(), "t", "a table by a name's view");
   expect(not doc.has("u"), "has no such table");
   expect(not doc.has(""), "the root is not a named table");
   expectStr(t.name.view(), "t", "a table's name");
