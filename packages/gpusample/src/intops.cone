@@ -1,0 +1,22 @@
+// ---- Signed integer remainder and division, run on the GPU ----
+//
+// One kernel: for each x in 'xs' and divisor d in 'ds', four i32 words, x % 3,
+// x / 3, x % d and x / d. tests/intops.cone runs it on the GPU and compares
+// every word with the values worked out by hand: a signed remainder takes the
+// sign of its dividend (-7 % 3 is -1), a signed quotient truncates toward zero
+// (-7 / 3 is -2). The RTX 4060's driver computes SPIR-V's OpSRem unsigned,
+// so that -7 % 3 came back 0, the remainder of 4294967289; conec emits the
+// dividend less the quotient times the divisor instead
+// (compiler/c/doc/phases/generation.md, section 7).
+
+pub fn @compute(64) signedDivRem(inv Invocation, xs &Array[i32], ds &Array[i32], out &mut Array[i32]) {
+  imm i = usize.from(inv.globalId[0usize]);
+  if i < xs.len and i < ds.len and i * 4usize + 3usize < out.len {
+    imm x = xs[i];
+    imm d = ds[i];
+    out[i * 4usize] = x % 3;
+    out[i * 4usize + 1usize] = x / 3;
+    out[i * 4usize + 2usize] = x % d;
+    out[i * 4usize + 3usize] = x / d;
+  }
+}

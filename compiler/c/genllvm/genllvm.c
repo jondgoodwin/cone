@@ -2120,6 +2120,7 @@ void genpgm(GenState *gen, ProgramNode *pgm) {
     }
     if (gen->opt->gpu && !passerr) {
         genlGpuAggregates(gen);
+        genlGpuSignedRem(gen);
         // Each atomic's scope and ordering, from the memory it acts on; one in
         // a kernel on memory no other invocation reaches is refused, and
         // nothing is emitted

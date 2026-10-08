@@ -1797,6 +1797,16 @@ and emits no `llvm.fmuladd`, and LLVM's target machine fuses only those
 on a CPU with FMA instructions emits `vmulss` and `vaddss`, no `vfmadd`, as
 `generic` does.
 
+**A signed integer remainder is never `OpSRem`** (`genlGpuSignedRem`, after
+`genlGpuAggregates`). The RTX 4060's driver computes `OpSRem` and `OpSMod`
+unsigned, whatever the signedness of the integer type the module declares:
+`-7 % 3` came back 0, the remainder of 4294967289, and `5 % -3` came back 5.
+It computes `OpSDiv` correctly, and the Intel UHD 770's driver computes
+`OpSRem` correctly. So each `srem` is made `a - (a sdiv b) * b`, an `OpSDiv`,
+`OpIMul` and `OpISub`, after the pipeline: instcombine folds that expansion
+straight back into an `srem`. An unsigned remainder is `OpUMod`, as it was
+(`module_target_spirv_srem`; `gpusample`'s `intops` test runs it on the GPU).
+
 ### What invocations share
 
 **Invocations share a storage buffer and a `@workgroup` global**
@@ -1998,6 +2008,7 @@ variables.
 | | `genlGpuMath` | on a GPU target, a call to the C library's math by its C symbol as the LLVM intrinsic, GLSL.std.450's instruction (section 7, "The C library's math") |
 | | `genlGpuEntries`, `genlGpuRecord`, `genlGpuFileId`, `genlGpuOneReturn` | each kernel settled once everything is inlined: a failure recorded in its error buffer and the kernel left, its returns made one |
 | | `genlGpuSlices`, `genlGpuFold`, `genlGpuPartOf`, `genlGpuSite` | each step by pointer arithmetic folded into an access chain of a buffer or fixed array, or refused (`ErrorGpuSliceOrigin`) where the node it was made for is |
+| | `genlGpuSignedRem` | on a GPU target, after optimization, each `srem` made the dividend less the quotient times the divisor (section 7) |
 | | `genlGpuBufferAccess` | a struct or array loaded from or stored into a storage buffer a scalar at a time |
 | | `genlGpuOut`, `genlGpuPatch` | the Vulkan form's module emitted to memory, `OpArrayLength` and the source files' list written into it |
 | | `genlGpuNoContraction`, `genlGpuNoContractionAsm` | every float operation's result but a remainder's decorated `NoContraction`, in the module and in `--asm`'s text (section 7, "The C library's math") |

@@ -877,6 +877,33 @@ void genlGpuEntries(GenState *gen) {
     }
 }
 
+// A signed remainder a - (a sdiv b) * b, in place of srem, which the backend
+// emits as OpSRem. The RTX 4060's driver computes OpSRem and OpSMod unsigned
+// (-7 % 3 is 0, the remainder of 4294967289), whatever the signedness of the
+// type, and OpSDiv correctly. Done after the pipeline: instcombine would fold
+// the expansion straight back into an srem.
+void genlGpuSignedRem(GenState *gen) {
+    for (LLVMValueRef fn = LLVMGetFirstFunction(gen->module); fn; fn = LLVMGetNextFunction(fn)) {
+        for (LLVMBasicBlockRef blk = LLVMGetFirstBasicBlock(fn); blk; blk = LLVMGetNextBasicBlock(blk)) {
+            LLVMValueRef inst = LLVMGetFirstInstruction(blk);
+            while (inst) {
+                LLVMValueRef next = LLVMGetNextInstruction(inst);
+                if (LLVMGetInstructionOpcode(inst) == LLVMSRem) {
+                    LLVMValueRef a = LLVMGetOperand(inst, 0);
+                    LLVMValueRef b = LLVMGetOperand(inst, 1);
+                    LLVMPositionBuilderBefore(gen->builder, inst);
+                    LLVMValueRef quotient = LLVMBuildSDiv(gen->builder, a, b, "");
+                    LLVMValueRef product = LLVMBuildMul(gen->builder, quotient, b, "");
+                    LLVMValueRef rem = LLVMBuildSub(gen->builder, a, product, "");
+                    LLVMReplaceAllUsesWith(inst, rem);
+                    LLVMInstructionEraseFromParent(inst);
+                }
+                inst = next;
+            }
+        }
+    }
+}
+
 // ---- The module, once emitted -----------------------------------------------
 
 // SPIR-V's opcodes this reads or writes

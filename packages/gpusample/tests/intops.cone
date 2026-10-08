@@ -1,0 +1,97 @@
+// gpusample's signed division kernel (src/intops.cone) run on the GPU over
+// sixteen dividends (-7, -4, -3, -2, -1, 0, 1, 5, twice) and a divisor of 3
+// for the first eight and -3 for the second, and every word compared with
+// the value worked out by hand (a signed remainder takes the sign of its
+// dividend, a signed quotient truncates toward zero, as on the CPU, which
+// the same test checks against the same table). A GPU remainder computed
+// unsigned gives -7 % 3 == 0 where it must give -1.
+//
+// Only a failure prints. It needs a GPU driver with Vulkan 1.3 and
+// SDL3.dll; with the Vulkan SDK, the validation layers are on, and must say
+// nothing.
+
+mod intops;
+
+import testing use *;
+import stdio use *;
+import collections use List;
+import gpu use *;
+import gpuwork use *;
+import gpusample use *;
+
+const COUNT = 16usize;
+
+// For x = -7, -4, -3, -2, -1, 0, 1, 5: x % 3 and x / 3 (the same table serves
+// d = -3 for the remainder; the quotient there is the negation)
+const RTAB Array[i32, 8] = [-1, -1, 0, -2, -1, 0, 1, 2];
+const QTAB Array[i32, 8] = [-2, -1, -1, 0, 0, 0, 0, 1];
+const XS Array[i32, 8] = [-7, -4, -3, -2, -1, 0, 1, 5];
+
+fn main() i32 {
+  mut instance = Instance.create("gpusample intops");
+  require(instance.isValid(), "a Vulkan 1.3 instance");
+  mut none = Surface.none();
+  mut adapter = instance.requestAdapter(&none, POWER_PREFERENCE_HIGH_PERFORMANCE);
+  require(adapter.isValid(), "an adapter");
+  mut device = adapter.requestDevice();
+  require(device.isValid(), "a device");
+  imm spirv = readSpirv("gpusample.spv");
+  require(spirv.len() > 5usize, "gpusample.spv beside the program");
+  mut kernel = Kernel.make(&device, spirv.view(), "signedDivRem", &[READ, READ, READ_WRITE]);
+  require(kernel.isValid(), "the signedDivRem kernel");
+
+  mut xs = List[u32].empty();
+  mut ds = List[u32].empty();
+  mut i = 0usize;
+  while i < COUNT {
+    xs.push(u32.from(XS[i % 8usize]));
+    ds.push(u32.from(if i < 8usize { 3; } else { -3; }));
+    i = i + 1usize;
+  }
+
+  mut works = Works.make();
+  mut job = Job.make(&mut device);
+  imm xSlot = job.give(upload(&mut device, xs.view()));
+  imm dSlot = job.give(upload(&mut device, ds.view()));
+  imm outSlot = job.give(zeroed(&mut device, COUNT * 4usize));
+  require(job.dispatch(&mut device, &kernel, &[xSlot, dSlot, outSlot], 1u32), "the dispatch");
+  imm outBack = job.readback(&mut device, outSlot);
+  imm ticket = works.submit(&mut device, job, Target.Here[0u64]);
+  mut answers = List[Completion].empty();
+  works.waitFor(&mut device, ticket, &mut answers);
+  require(answers.len() == 1usize and answers[0usize].ok, "the GPU ran the job");
+  imm w = answers[0usize].words(outBack);
+  expectUInt(u64.from(w.len()), u64.from(COUNT * 4usize), "four words for each dividend");
+  expectUInt(u64.from(answers[0usize].failures.len()), 0u64, "no invocation failed a check");
+
+  mut wrong = 0u64;
+  i = 0usize;
+  while i < COUNT and i * 4usize + 3usize < w.len() {
+    imm k = i % 8usize;
+    imm x = XS[k];
+    imm wantRem = RTAB[k];
+    imm wantQuo = QTAB[k];
+    imm negd = i >= 8usize;
+    imm wantQuoD = if negd { 0 - wantQuo; } else { wantQuo; };
+    imm gotRem = *w[i * 4usize] as i32;
+    imm gotQuo = *w[i * 4usize + 1usize] as i32;
+    imm gotRemD = *w[i * 4usize + 2usize] as i32;
+    imm gotQuoD = *w[i * 4usize + 3usize] as i32;
+    if gotRem != wantRem or gotQuo != wantQuo or gotRemD != wantRem or gotQuoD != wantQuoD {
+      wrong = wrong + 1u64;
+      printStr("  x = "); print <- x;
+      printStr(if negd { ", d = -3: GPU "; } else { ", d = 3: GPU "; });
+      print <- gotRem; printStr(" "); print <- gotQuo; printStr(" "); print <- gotRemD; printStr(" "); print <- gotQuoD;
+      printStr(", expected "); print <- wantRem; printStr(" "); print <- wantQuo; printStr(" "); print <- wantRem; printStr(" "); print <- wantQuoD;
+      printStr("\n");
+    }
+    // The CPU, which must agree with the same table
+    if x % 3 != wantRem or x / 3 != wantQuo { wrong = wrong + 1u64; printStr("  the CPU disagrees at x = "); print <- x; printStr("\n"); }
+    i = i + 1usize;
+  }
+  expectUInt(wrong, 0u64, "every remainder and quotient the table's");
+  expectUInt(u64.from(refusals()), 0u64, "nothing refused");
+  expectUInt(u64.from(failures()), 0u64, "no Vulkan call failed");
+  expectUInt(u64.from(validationMessages()), 0u64, "no validation message");
+  done();
+}

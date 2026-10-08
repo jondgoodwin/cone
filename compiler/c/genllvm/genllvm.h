@@ -284,6 +284,9 @@ void genlComputeEntry(GenState *gen, FnDclNode *fnnode);
 // Settle each kernel once the GPU pipeline has inlined everything into it:
 // its failed checks recorded, its slices' elements reached by access chains
 void genlGpuEntries(GenState *gen);
+// Every signed remainder made a subtraction of the quotient's product, since
+// a Vulkan driver computes SPIR-V's OpSRem unsigned
+void genlGpuSignedRem(GenState *gen);
 // Emit a Vulkan form's module, what LLVM cannot say patched in
 void genlGpuOut(GenState *gen, char *objpath, char *asmpath);
 // Each struct or array a function loads from or stores into a storage buffer
