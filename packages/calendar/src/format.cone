@@ -36,14 +36,14 @@ struct Scan {
 fn newScan() Scan { new Scan(0usize, false, 0usize, String.empty()); }
 
 // The first failure is the one kept
-fn failAt(s &mut Scan, at usize, reason &Array[u8]) {
+fn failAt(s &mut Scan, at usize, reason &str) {
   if s.failed { return; }
   s.failed = true;
   s.at = at;
-  s.reason = String.from(reason as &str);
+  s.reason = String.from(reason);
 }
 
-fn fail(s &mut Scan, reason &Array[u8]) { failAt(s, s.pos, reason); }
+fn fail(s &mut Scan, reason &str) { failAt(s, s.pos, reason); }
 
 fn scanError(s &mut Scan) TimeError {
   mut reason = String.empty();
@@ -56,16 +56,16 @@ fn isLetter(c u8) bool { (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z'); }
 
 // Exactly n digits, their value; on anything else, a failure, 'expected two
 // digits for the month'
-fn digits(text &Array[u8], s &mut Scan, n usize, what &Array[u8]) i64 {
+fn digits(text &Array[u8], s &mut Scan, n usize, what &str) i64 {
   if s.failed { return 0i64; }
   mut v = 0i64;
   mut i = 0usize;
   while i < n {
     if s.pos + i >= text.len or not isDigit(text[s.pos + i]) {
       mut m = String.from("expected ");
-      m.append(countWord(n) as &str);
+      m.append(countWord(n));
       m.append(if n == 1usize {" digit for ";} else {" digits for ";});
-      m.append(what as &str);
+      m.append(what);
       failAt(s, s.pos + i, m.view());
       return 0i64;
     }
@@ -76,12 +76,12 @@ fn digits(text &Array[u8], s &mut Scan, n usize, what &Array[u8]) i64 {
   v;
 }
 
-fn countWord(n usize) &Array[u8] {
+fn countWord(n usize) &str {
   if n == 1usize {"a";} elif n == 2usize {"two";} elif n == 4usize {"four";} else {"several";};
 }
 
 // The byte c, or a failure saying what was expected
-fn oneByte(text &Array[u8], s &mut Scan, c u8, what &Array[u8]) {
+fn oneByte(text &Array[u8], s &mut Scan, c u8, what &str) {
   if s.failed { return; }
   if s.pos < text.len and text[s.pos] == c {
     s.pos = s.pos + 1usize;
@@ -91,21 +91,21 @@ fn oneByte(text &Array[u8], s &mut Scan, c u8, what &Array[u8]) {
 }
 
 // The end of the text, or a failure: 'unexpected text after the date'
-fn scanEnd(text &Array[u8], s &mut Scan, what &Array[u8]) {
+fn scanEnd(text &Array[u8], s &mut Scan, what &str) {
   if s.failed or s.pos >= text.len { return; }
   mut m = String.from("unexpected text after ");
-  m.append(what as &str);
+  m.append(what);
   fail(s, m.view());
 }
 
 // 'the month is 13, outside 01 to 12'
-fn outOfRange(s &mut Scan, at usize, part &Array[u8], value i64, range &Array[u8]) {
+fn outOfRange(s &mut Scan, at usize, part &str, value i64, range &str) {
   mut m = String.from("the ");
-  m.append(part as &str);
+  m.append(part);
   m.append(" is ");
   appendPadded(&mut m, value, 2usize);
   m.append(", outside ");
-  m.append(range as &str);
+  m.append(range);
   failAt(s, at, m.view());
 }
 
@@ -382,9 +382,10 @@ fn parseTimestamp(text &Array[u8]) Result[Timestamp, TimeError] {
 
 const monthAbbrs Array[u8, 36] = "JanFebMarAprMayJunJulAugSepOctNovDec";
 
-fn monthAbbr(month i64) &Array[u8] {
+fn monthAbbr(month i64) &str {
   imm at = usize.from(month - 1i64) * 3usize;
-  &monthAbbrs[at..at + 3usize];
+  imm abbr &Array[u8] = &monthAbbrs[at..at + 3usize];
+  abbr as &str;
 }
 
 // IMF-fixdate: 'Sun, 06 Nov 1994 08:49:37 GMT'. The fraction of a second is
@@ -393,11 +394,12 @@ fn httpDateOf(t Timestamp) String {
   imm dt = DateTime.fromTimestamp(t);
   imm d = dt.date();
   mut out = String.withCapacity(29usize);
-  out.appendBytes(&dayName(weekdayIndex(d.unixDays()))[0usize..3usize]);
+  imm day &Array[u8] = dayName(weekdayIndex(d.unixDays()));
+  out.appendBytes(&day[0usize..3usize]);
   out.append(", ");
   appendPadded(&mut out, i64.from(d.day()), 2usize);
   out.appendByte(' ');
-  out.append(monthAbbr(i64.from(d.month())) as &str);
+  out.append(monthAbbr(i64.from(d.month())));
   out.appendByte(' ');
   appendPadded(&mut out, i64.from(d.year()), 4usize);
   out.appendByte(' ');
@@ -425,7 +427,7 @@ fn scanMonth(text &Array[u8], s &mut Scan) i64 {
 }
 
 // The word, exactly
-fn literal(text &Array[u8], s &mut Scan, want &Array[u8], what &Array[u8]) {
+fn literal(text &Array[u8], s &mut Scan, want &Array[u8], what &str) {
   if s.failed { return; }
   if s.pos + want.len <= text.len and &text[s.pos..s.pos + want.len] == want {
     s.pos = s.pos + want.len;
@@ -464,7 +466,7 @@ fn parseHttp(text &Array[u8], now Timestamp) Result[Timestamp, TimeError] {
     imm comma = s.pos < text.len and text[s.pos] == ',';
     mut i = 0i64;
     while i < 7i64 {
-      imm full = dayName(i);
+      imm full &Array[u8] = dayName(i);
       if name.len == 3usize and name == &full[0usize..3usize] { weekday = i; }
       if name.len > 3usize and name == full { weekday = i; }
       i = i + 1i64;
@@ -555,9 +557,9 @@ fn parseHttp(text &Array[u8], now Timestamp) Result[Timestamp, TimeError] {
           mut m = String.empty();
           appendDate(&mut m, d.value);
           m.append(" is a ");
-          m.append(dayName(actual) as &str);
+          m.append(dayName(actual));
           m.append(", not a ");
-          m.append(dayName(weekday) as &str);
+          m.append(dayName(weekday));
           failAt(&mut s, nameAt, m.view());
         }
       }
@@ -565,7 +567,7 @@ fn parseHttp(text &Array[u8], now Timestamp) Result[Timestamp, TimeError] {
         mut m = String.from("the day is ");
         appendPadded(&mut m, day, 2usize);
         m.append(", and ");
-        m.append(monthAbbr(month) as &str);
+        m.append(monthAbbr(month));
         m.append(" ");
         appendPadded(&mut m, year, 4usize);
         m.append(" has ");
