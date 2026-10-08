@@ -120,7 +120,7 @@ pub struct FsError {
 }
 
 fn failure(op &Array[u8], p &Array[u8], code i32) FsError {
-  new FsError(String.from(op), String.from(p), String.empty(), code);
+  new FsError(String.fromBytes(op), String.fromBytes(p), String.empty(), code);
 }
 
 fn fail[T](op &Array[u8], p &Array[u8], code i32) Result[T, FsError] {
@@ -180,7 +180,7 @@ fn emptyStat() posix.Stat {
 pub fn stat(path &Array[u8]) Result[FileInfo, FsError] {
   if hasNul(path) { return fail[FileInfo]("stat", path, posix.EINVAL); }
   useUtf8();
-  mut c = String.from(path);
+  mut c = String.fromBytes(path);
   mut st = emptyStat();
   if posix.stat(c.cstr(), &mut st) != 0i32 { return fail[FileInfo]("stat", path, lastErrno()); }
   imm kind = st.st_mode & posix.S_IFMT;
@@ -192,7 +192,7 @@ pub fn stat(path &Array[u8]) Result[FileInfo, FsError] {
 fn kindOf(path &Array[u8]) u16 {
   if hasNul(path) { return 0u16; }
   useUtf8();
-  mut c = String.from(path);
+  mut c = String.fromBytes(path);
   mut st = emptyStat();
   if posix.stat(c.cstr(), &mut st) != 0i32 { return 0u16; }
   st.st_mode & posix.S_IFMT;
@@ -221,7 +221,7 @@ fn openErrno(path &Array[u8]) i32 {
 pub fn readFile(path &Array[u8]) Result[String, FsError] {
   if hasNul(path) { return fail[String]("readFile", path, posix.EINVAL); }
   useUtf8();
-  mut c = String.from(path);
+  mut c = String.fromBytes(path);
   imm f = libc.fopen(c.cstr(), "rb");
   if f == null { return fail[String]("readFile", path, openErrno(path)); }
   mut out = String.empty();
@@ -230,7 +230,7 @@ pub fn readFile(path &Array[u8]) Result[String, FsError] {
   mut going = true;
   while going {
     imm n = libc.fread(bp, 1usize, 65536usize, f);
-    if n > 0usize { out.append(mem.sliceFromParts(bp, n)); }
+    if n > 0usize { out.appendBytes(mem.sliceFromParts(bp, n)); }
     going = n == 65536usize;
   }
   imm broke = libc.ferror(f) != 0i32;
@@ -244,7 +244,7 @@ pub fn readFile(path &Array[u8]) Result[String, FsError] {
 fn writeWith(op &Array[u8], path &Array[u8], data &Array[u8], mode cstr) Result[void, FsError] {
   if hasNul(path) { return fail[void](op, path, posix.EINVAL); }
   useUtf8();
-  mut c = String.from(path);
+  mut c = String.fromBytes(path);
   imm f = libc.fopen(c.cstr(), mode);
   if f == null { return fail[void](op, path, openErrno(path)); }
   imm wrote = if data.len > 0usize {libc.fwrite(data as *u8, 1usize, data.len, f);} else {0usize;};
@@ -273,13 +273,13 @@ pub fn appendFile(path &Array[u8], data &Array[u8]) Result[void, FsError] {
 // refuses, EEXIST for a file and EACCES for a folder, and nothing changes.
 pub fn rename(from &Array[u8], to &Array[u8]) Result[void, FsError] {
   if hasNul(from) or hasNul(to) {
-    return Error[void, FsError][new FsError(String.from("rename"), String.from(from), String.from(to), posix.EINVAL)];
+    return Error[void, FsError][new FsError(String.from("rename"), String.fromBytes(from), String.fromBytes(to), posix.EINVAL)];
   }
   useUtf8();
-  mut a = String.from(from);
-  mut b = String.from(to);
+  mut a = String.fromBytes(from);
+  mut b = String.fromBytes(to);
   if libc.rename(a.cstr(), b.cstr()) != 0i32 {
-    return Error[void, FsError][new FsError(String.from("rename"), String.from(from), String.from(to), lastErrno())];
+    return Error[void, FsError][new FsError(String.from("rename"), String.fromBytes(from), String.fromBytes(to), lastErrno())];
   }
   succeeded();
 }
@@ -288,7 +288,7 @@ pub fn rename(from &Array[u8], to &Array[u8]) Result[void, FsError] {
 pub fn removeFile(path &Array[u8]) Result[void, FsError] {
   if hasNul(path) { return fail[void]("removeFile", path, posix.EINVAL); }
   useUtf8();
-  mut c = String.from(path);
+  mut c = String.fromBytes(path);
   if libc.remove(c.cstr()) != 0i32 { return fail[void]("removeFile", path, openErrno(path)); }
   succeeded();
 }
@@ -300,7 +300,7 @@ pub fn removeFile(path &Array[u8]) Result[void, FsError] {
 pub fn makeDir(path &Array[u8]) Result[void, FsError] {
   if hasNul(path) { return fail[void]("makeDir", path, posix.EINVAL); }
   useUtf8();
-  mut c = String.from(path);
+  mut c = String.fromBytes(path);
   if posix.mkdir(c.cstr(), 0x1FFu32) != 0i32 { return fail[void]("makeDir", path, lastErrno()); }
   succeeded();
 }
@@ -318,7 +318,7 @@ pub fn makeDirAll(path &Array[u8]) Result[void, FsError] {
     imm made = makeDirAll(up.view());
     if made is Error { return made; }
   }
-  mut c = String.from(path);
+  mut c = String.fromBytes(path);
   if posix.mkdir(c.cstr(), 0x1FFu32) != 0i32 {
     imm code = lastErrno();
     // Made meanwhile by someone else, or named with a '..' that mkdir read
@@ -331,7 +331,7 @@ pub fn makeDirAll(path &Array[u8]) Result[void, FsError] {
 pub fn removeDir(path &Array[u8]) Result[void, FsError] {
   if hasNul(path) { return fail[void]("removeDir", path, posix.EINVAL); }
   useUtf8();
-  mut c = String.from(path);
+  mut c = String.fromBytes(path);
   if posix.rmdir(c.cstr()) != 0i32 { return fail[void]("removeDir", path, lastErrno()); }
   succeeded();
 }
@@ -358,7 +358,7 @@ fn byName(a &DirEntry, b &DirEntry) i32 { a.name.compare(b.name.view()); }
 pub fn readDir(path &Array[u8]) Result[List[DirEntry], FsError] {
   if hasNul(path) { return fail[List[DirEntry]]("readDir", path, posix.EINVAL); }
   useUtf8();
-  mut c = String.from(path);
+  mut c = String.fromBytes(path);
   imm dir = posix.opendir(c.cstr());
   if dir == null { return fail[List[DirEntry]]("readDir", path, lastErrno()); }
   mut out = List[DirEntry].empty();
@@ -443,7 +443,7 @@ pub fn removeAll(path &Array[u8]) Result[void, FsError] {
     return fail[void]("removeAll", path, posix.EINVAL);
   }
   useUtf8();
-  mut c = String.from(path);
+  mut c = String.fromBytes(path);
   mut st = emptyStat();
   if posix.lstat(c.cstr(), &mut st) != 0i32 {
     imm code = lastErrno();
@@ -460,7 +460,7 @@ fn lastName(p &Array[u8]) String { path.name(p); }
 fn removeTree(path &Array[u8], kind u16) Result[void, FsError] {
   if kind == posix.S_IFLNK { return removeLink(path); }
   if kind != posix.S_IFDIR {
-    mut c = String.from(path);
+    mut c = String.fromBytes(path);
     if libc.remove(c.cstr()) != 0i32 { return fail[void]("removeAll", path, lastErrno()); }
     return succeeded();
   }
@@ -483,7 +483,7 @@ fn removeTree(path &Array[u8], kind u16) Result[void, FsError] {
       }
     }
   }
-  mut c = String.from(path);
+  mut c = String.fromBytes(path);
   if posix.rmdir(c.cstr()) != 0i32 { return fail[void]("removeAll", path, lastErrno()); }
   succeeded();
 }
@@ -491,7 +491,7 @@ fn removeTree(path &Array[u8], kind u16) Result[void, FsError] {
 // Remove a link itself: a link to a folder goes by rmdir on Windows, and a
 // link to a file by remove
 fn removeLink(path &Array[u8]) Result[void, FsError] {
-  mut c = String.from(path);
+  mut c = String.fromBytes(path);
   if posix.rmdir(c.cstr()) == 0i32 { return succeeded(); }
   if libc.remove(c.cstr()) == 0i32 { return succeeded(); }
   fail[void]("removeAll", path, lastErrno());
@@ -515,7 +515,7 @@ pub fn currentDir() Result[String, FsError] {
 pub fn setCurrentDir(path &Array[u8]) Result[void, FsError] {
   if hasNul(path) { return fail[void]("setCurrentDir", path, posix.EINVAL); }
   useUtf8();
-  mut c = String.from(path);
+  mut c = String.fromBytes(path);
   if posix.chdir(c.cstr()) != 0i32 { return fail[void]("setCurrentDir", path, lastErrno()); }
   succeeded();
 }
@@ -528,7 +528,7 @@ pub fn absolute(path &Array[u8]) Result[String, FsError] {
   if hasNul(path) { return fail[String]("absolute", path, posix.EINVAL); }
   if path.len == 0usize { return currentDir(); }
   useUtf8();
-  mut c = String.from(path);
+  mut c = String.fromBytes(path);
   imm got = posix.realpath(c.cstr(), null);
   if got == null { return fail[String]("absolute", path, lastErrno()); }
   imm full = normalize(cstr.fromPtr(got).view());

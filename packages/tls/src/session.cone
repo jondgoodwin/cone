@@ -105,9 +105,9 @@ pub struct Session is Move {
 
   fn client(st Shared, serverName &Array[u8]) Session {
     mut s = Session.blank(st, false);
-    s.host = String.from(serverName);
+    s.host = String.from(serverName as &str);
     SSL_set_connect_state(s.ssl);
-    mut name = String.from(serverName);
+    mut name = String.from(serverName as &str);
     imm cname = name.cstr();
     // SNI carries a DNS name, never an address (RFC 6066)
     if not isAddress(serverName) {SSL_ctrl(s.ssl, ctrlSetTlsextHostname, 0i32, cname.ptr());}
@@ -286,10 +286,10 @@ pub struct Session is Move {
     mut alen = 0u32;
     SSL_get0_alpn_selected(ssl, &mut ap, &mut alen);
     mut alpn = String.empty();
-    if alen > 0u32 {alpn.append(mem.sliceFromParts(ap, usize.from(alen)));}
+    if alen > 0u32 {alpn.appendBytes(mem.sliceFromParts(ap, usize.from(alen)));}
     imm v = if SSL_version(ssl) == tls13Version {TlsVersion.Tls13[];} else {TlsVersion.Tls12[];};
-    new TlsInfo(version: v, versionName: String.from(cText(SSL_get_version(ssl))),
-      cipher: String.from(cText(SSL_CIPHER_get_name(SSL_get_current_cipher(ssl)))), alpn: alpn,
+    new TlsInfo(version: v, versionName: String.from(cText(SSL_get_version(ssl)) as &str),
+      cipher: String.from(cText(SSL_CIPHER_get_name(SSL_get_current_cipher(ssl))) as &str), alpn: alpn,
       resumed: SSL_session_reused(ssl) == 1i32, verifiedBy: kind, handshakeTime: handshakeTime,
       verifyTime: verifyTime, closeNotify: gotClose, truncated: eof and not gotClose);
   }
@@ -397,7 +397,7 @@ pub struct Session is Move {
       if reason == reasonCertificateVerifyFailed {
         // OpenSSL's own check, against the Roots verifier's bundle
         imm vr = SSL_get_verify_result(ssl);
-        mut d = String.from(cText(X509_verify_cert_error_string(vr)));
+        mut d = String.from(cText(X509_verify_cert_error_string(vr)) as &str);
         d.append(" (OpenSSL's verify result ");
         d.appendInt(i64.from(vr));
         d.append(")");
@@ -407,7 +407,7 @@ pub struct Session is Move {
       if reason >= reasonAlertOffset and reason < reasonAlertOffset + 256u32 {
         imm alert = reason - reasonAlertOffset;
         mut d = String.from("the peer sent the fatal alert ");
-        d.append(cText(SSL_alert_desc_string_long(i32.from(alert))));
+        d.append(cText(SSL_alert_desc_string_long(i32.from(alert))) as &str);
         d.append(" (");
         d.appendUInt(u64.from(alert));
         d.append(")");
