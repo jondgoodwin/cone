@@ -125,7 +125,8 @@ fn appendEncoded(out &mut String, c u8) {
 
 // s with every byte that is not unreserved percent-encoded: a value for a
 // query or a path segment
-pub fn encodeComponent(s &Array[u8]) String {
+pub fn encodeComponent(text &str) String {
+  imm s &Array[u8] = text;
   mut out = String.withCapacity(s.len);
   mut i = 0usize;
   while i < s.len {
@@ -137,7 +138,8 @@ pub fn encodeComponent(s &Array[u8]) String {
 
 // s with its percent-encoding undone; None when a '%' is not followed by
 // two hex digits
-pub fn decode(s &Array[u8]) Option[String] {
+pub fn decode(text &str) Option[String] {
+  imm s &Array[u8] = text;
   mut out = String.withCapacity(s.len);
   mut i = 0usize;
   while i < s.len {
@@ -162,7 +164,7 @@ pub struct UrlError {
   pub at usize;           // the byte offset in the text, after the ends were trimmed
   pub why String;
 
-  pub fn make(at usize, why &Array[u8]) UrlError {new UrlError(at, String.from(why as &str));}
+  pub fn make(at usize, why &str) UrlError {new UrlError(at, String.from(why));}
   pub fn none() UrlError {new UrlError(0usize, String.empty());}
   pub fn isNone(self &) bool {why.len() == 0usize;}
 
@@ -187,7 +189,7 @@ pub enum HostKind {
 }
 
 // The default port of a scheme: 80 for http, 443 for https, 0 for any other
-pub fn defaultPort(scheme &Array[u8]) u16 {
+pub fn defaultPort(scheme &str) u16 {
   if scheme == "http" {80u16;} elif scheme == "https" {443u16;} else {0u16;}
 }
 
@@ -215,7 +217,7 @@ pub struct Url {
   }
 
   // An absolute URL read from text (see the package's header, READING)
-  pub fn parse(text &Array[u8]) Result[Url, UrlError] {
+  pub fn parse(text &str) Result[Url, UrlError] {
     mut u = Url.empty();
     imm t = trimEnds(text);
     imm e = parseInto(t, &mut u);
@@ -227,7 +229,7 @@ pub struct Url {
   }
 
   // The reference ref resolved against this URL (RFC 3986, 5.2)
-  pub fn resolve(self &, ref &Array[u8]) Result[Url, UrlError] {resolveRef(self, ref);}
+  pub fn resolve(self &, ref &str) Result[Url, UrlError] {resolveRef(self, ref);}
 
   // Another Url with the same parts
   pub fn copy(self &) Url {
@@ -430,7 +432,7 @@ fn parseAuthority(a &Array[u8], base usize, u &mut Url) UrlError {
       if isControl(ui[k]) {return UrlError.make(base + k, "a URL holds a control character");}
       k = k + 1usize;
     }
-    u.userinfo = String.from(ui as &str);
+    u.userinfo = String.fromBytes(ui);
     hostStart = at + 1usize;
   }
   imm hp = &a[hostStart ..];
@@ -571,7 +573,8 @@ fn finish(u &mut Url) UrlError {
 // ---------------------------------------------------------------------------
 
 // path without its '.' and '..' segments (RFC 3986, 5.2.4)
-pub fn removeDotSegments(path &Array[u8]) String {
+pub fn removeDotSegments(text &str) String {
+  imm path &Array[u8] = text;
   mut out = String.withCapacity(path.len);
   mut i = 0usize;
   imm n = path.len;
@@ -618,23 +621,23 @@ fn dropLastSegment(s &String) String {
 }
 
 // base's path merged with a relative path (RFC 3986, 5.2.3)
-fn merge(base &Url, rel &Array[u8]) String {
+fn merge(base &Url, rel &str) String {
   if base.hasAuthority and base.path.len() == 0usize {
     mut out = String.from("/");
-    out.append(rel as &str);
+    out.append(rel);
     return out;
   }
   imm v = base.path.view();
   mut k = v.len;
   while k > 0usize and v[k - 1usize] != '/' {k = k - 1usize;}
   mut out = String.from(&v[0usize .. k]);
-  out.append(rel as &str);
+  out.append(rel);
   out;
 }
 
 // The reference ref resolved against base, an absolute URL (RFC 3986,
 // 5.2.2), and checked as Url.parse checks one
-pub fn resolveRef(base &Url, ref &Array[u8]) Result[Url, UrlError] {
+pub fn resolveRef(base &Url, ref &str) Result[Url, UrlError] {
   mut r = Url.empty();
   imm e = parseInto(trimEnds(ref), &mut r);
   if not e.isNone() {return Error[Url, UrlError][e];}
