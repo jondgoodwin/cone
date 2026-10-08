@@ -1,0 +1,153 @@
+// The 'Path' type and its methods, each expected value worked out on paper from
+// the rules at the top of the package's source (the same rules the free
+// functions in 'lexical' check, here reached as methods):
+// - a literal becomes a Path where one is wanted by value (a variable, an
+//   argument, a result), and any other text is copied in with 'Path.from';
+//   where a Path is wanted borrowed a literal is not made one;
+// - 'parent', 'join' and 'normalize' answer a new Path; 'name', 'stem',
+//   'extension' and 'volume' answer a piece of the path's own text;
+// - two Paths are equal when their text is the same bytes, and hash alike.
+
+mod methods;
+
+import testing use *;
+import collections use *;
+import path use Path;
+
+// A literal given where a Path is wanted
+fn lenOf(p Path) usize { p.view().len(); }
+fn made() Path { "made/it.txt"; }
+
+fn parentIs(p Path, want &str) {
+  imm got = p.parent();
+  expectStr(got.view(), want, "parent");
+}
+
+fn nameIs(p Path, name &str, stem &str, ext &str) {
+  expectStr(p.name(), name, "name");
+  expectStr(p.stem(), stem, "stem");
+  expectStr(p.extension(), ext, "extension");
+}
+
+// Both forms of join: the other as a Path, and as text
+fn joinIs(a Path, b Path, want &str) {
+  imm got = a.join(&b);
+  expectStr(got.view(), want, "join a Path");
+  imm viaText = a.join(b.view());
+  expectStr(viaText.view(), want, "join text");
+}
+
+fn normalIs(p Path, want &str) {
+  imm got = p.normalize();
+  expectStr(got.view(), want, "normalize");
+}
+
+fn partsAre(p Path, want &str) {
+  imm ps = p.parts();
+  imm got = String.join(ps.view(), "|");
+  expectStr(got.view(), want, "parts");
+}
+
+fn hashOf(p &Path) u64 {
+  mut h = Hasher.withSeed(7u64);
+  p.hash(&mut h);
+  h.finish();
+}
+
+fn main() i32 {
+  // A literal becomes a Path wherever one is wanted by value: bytes kept as
+  // written
+  imm declared Path = "C:\\work\\a.txt";
+  expectStr(declared.view(), "C:\\work\\a.txt", "a literal declared as a Path");
+  expectUInt(u64.from(lenOf("four")), 4, "a literal given for a Path");
+  imm result = made();
+  expectStr(result.view(), "made/it.txt", "a literal returned as a Path");
+  // Any other text is copied in
+  imm s = String.from("é/日本");
+  imm copied = Path.from(s.view());
+  expectStr(copied.view(), "é/日本", "Path.from copies the text");
+  imm owned = Path.fromString(String.from("kept"));
+  expectStr(owned.view(), "kept", "Path.fromString keeps the String");
+  expectBool(Path.from("").isEmpty(), true, "an empty path is empty");
+  expectBool(declared.isEmpty(), false, "a path with text is not");
+  imm dup = declared.copy();
+  expectStr(dup.view(), "C:\\work\\a.txt", "a copy holds the same text");
+
+  // isAbsolute and volume
+  expectBool(Path.from("C:\\x").isAbsolute(), true, "C:\\x is absolute");
+  expectBool(Path.from("C:").isAbsolute(), false, "C: alone is not");
+  expectBool(Path.from("\\x").isAbsolute(), false, "\\x is not (no drive)");
+  expectBool(Path.from("x/y").isAbsolute(), false, "x/y is not");
+  expectBool(Path.from("\\\\server\\share").isAbsolute(), true, "a share is");
+  expectStr(Path.from("C:\\x").volume(), "C:", "the volume of C:\\x");
+  expectStr(Path.from("//server/share/x").volume(), "//server/share", "the volume of a share, as written");
+  expectStr(Path.from("x/y").volume(), "", "no volume");
+
+  // parent: C:\a\b.txt is in C:\a; a root is its own parent; a bare name is
+  // in the current folder, ""
+  parentIs("C:\\a\\b.txt", "C:\\a");
+  parentIs("a/b/c.txt", "a/b");
+  parentIs("a/b/", "a");
+  parentIs("C:\\x", "C:\\");
+  parentIs("C:\\", "C:\\");
+  parentIs("c.txt", "");
+  imm grand = Path.from("a/b/c.txt").parent().parent();
+  expectStr(grand.view(), "a", "parent chains: a/b/c.txt, a/b, a");
+
+  // name, stem and extension: the last dot splits the name
+  nameIs("C:\\a\\b.txt", "b.txt", "b", ".txt");
+  nameIs("a/b.tar.gz", "b.tar.gz", "b.tar", ".gz");
+  nameIs(".profile", ".profile", ".profile", "");
+  nameIs("a/b/", "b", "b", "");
+  nameIs("C:\\", "", "", "");
+  nameIs("é/日本.txt", "日本.txt", "日本", ".txt");
+
+  // join: a '/' between, unless the left ends in a separator; a right side
+  // with a drive or a share wins outright; one with only a root keeps the
+  // left's volume; nothing is normalized
+  joinIs("a", "b", "a/b");
+  joinIs("a/", "b", "a/b");
+  joinIs("C:\\work", "src/main.cone", "C:\\work/src/main.cone");
+  joinIs("C:\\a", "D:\\b", "D:\\b");
+  joinIs("C:\\a", "\\b", "C:\\b");
+  joinIs("a/b", "/c", "/c");
+  joinIs("a", "../b", "a/../b");
+  joinIs("", "b", "b");
+  joinIs("a", "", "a");
+  imm dir Path = "C:\\proj";
+  imm file = dir.join("src").join("m.cone");
+  expectStr(file.view(), "C:\\proj/src/m.cone", "join chains, a literal on the right");
+
+  // parts: the volume and root as one piece, then each name
+  partsAre("a/b/c", "a|b|c");
+  partsAre("C:\\a\\b", "C:\\|a|b");
+  partsAre("/a//b/", "/|a|b");
+  partsAre("a/./../b", "a|.|..|b");
+  partsAre("", "");
+
+  // normalize: one separator, no '.', a '..' drops the name before it
+  normalIs("a/./b/.", "a/b");
+  normalIs("a\\b", "a/b");
+  normalIs("a/b/../../..", "..");
+  normalIs("C:\\a\\..\\..\\b", "C:/b");
+  normalIs("C:\\", "C:/");
+  normalIs("a/..", ".");
+  normalIs("../a", "../a");
+
+  // Equal text is equal and hashes alike; a different spelling is not equal
+  imm one Path = "a/b";
+  imm same = Path.from("a/b");
+  imm other = Path.from("a\\b");
+  expectBool(one == &same, true, "the same text is equal");
+  expectBool(one == "a/b", true, "equal to a literal");
+  expectBool(one == &other, false, "another spelling is not equal");
+  expectUInt(hashOf(&one), hashOf(&same), "equal paths hash alike");
+  expectBool(hashOf(&one) != hashOf(&other), true, "another spelling hashes apart");
+  imm back = other.normalize();
+  expectBool(back == &one, true, "normalized, the two spellings meet");
+  mut seen = Dict[Path, i64].empty();
+  seen.insert(Path.from("a/b"), 7);
+  expectBool(seen.contains(&one), true, "a Path is a Dict key");
+
+  done();
+}
