@@ -377,7 +377,7 @@ class Scenarios(unittest.TestCase):
 
             import stdio;
 
-            pub fn line(label &Array[u8], n i64) {
+            pub fn line(label &str, n i64) {
               stdio.printStr(label);
               stdio.print <- " = ";
               stdio.print <- n;
