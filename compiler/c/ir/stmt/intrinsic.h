@@ -114,7 +114,7 @@ enum IntrinsicFn {
     // Where the call is written: its source file's name, and its line. Written
     // as a parameter's default value, where each call taking the default is
     // (fnCallFinalizeArgs), which is how 'panic' reports its caller
-    SrcFileIntrinsic,       // srcFile() &Array[u8]
+    SrcFileIntrinsic,       // srcFile() &str
     SrcLineIntrinsic,       // srcLine() u32
     // Whether this is a debug build ('conec --debug', or 'build: debug' in a
     // build description): a constant, so only the side of an 'if' on it that
@@ -261,6 +261,11 @@ int intrinsicSrcKind(INode *node);
 
 // Is this a call to 'srcFile()' or 'srcLine()'?
 #define intrinsicIsSrcCall(node) (intrinsicSrcKind(node) != 0)
+
+// Is this a parameter's default that answers where a call is: a call to
+// 'srcFile()' or 'srcLine()', or one under the cast that makes the text
+// 'srcFile()' gives the slice of bytes a parameter declares?
+int intrinsicIsSrcDefault(INode *node);
 
 // A copy of a call to 'srcFile()' or 'srcLine()' placed at 'site': a
 // parameter's default value, taken by the call 'site', answers where that call is

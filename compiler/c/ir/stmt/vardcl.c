@@ -570,7 +570,7 @@ void varDclTypeCheck(TypeCheckState *pstate, VarDclNode *name) {
         // (fnCallFinalizeArgs). An expression of constants is folded into the
         // one it computes (litFoldConst).
         if ((name->scope <= 1 || (name->flags & FlagStatic)) && !litFoldConst(&name->value)
-            && !(name->scope == 1 && !(name->flags & FlagStatic) && intrinsicIsSrcCall(name->value)))
+            && !(name->scope == 1 && !(name->flags & FlagStatic) && intrinsicIsSrcDefault(name->value)))
             errorMsgNode((INode*)name, ErrorNotLit, "Variable may only be initialized with a literal value.");
     }
 

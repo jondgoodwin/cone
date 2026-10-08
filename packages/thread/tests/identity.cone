@@ -14,6 +14,7 @@ mod identity;
 import testing use *;
 import thread;
 import time use Duration, Instant;
+import collections use String;
 
 extern {
   fn @c(system) GetCurrentThreadId() u32;
@@ -26,7 +27,7 @@ struct Seen {
   pub named bool;
 }
 
-fn look(want &Array[u8]) Seen {
+fn look(want &str) Seen {
   imm me = thread.current();
   new Seen(me.id(), GetCurrentThreadId(), me.name() == want);
 }
@@ -61,6 +62,14 @@ fn main() i32 {
   // A copy is the same thread
   imm again = main.copy();
   expectUInt(u64.from(again.id()), u64.from(main.id()), "a copy of a ThreadRef names the same thread");
+
+  // A name is text: a String's view names a thread with no cast, and the name
+  // is copied, so the String may die before the thread does
+  mut built = String.from("worker");
+  imm fromString = thread.startWith(new thread.Options(name: built.view()), 0i64, &lookWorker);
+  built <- "-renamed";
+  expectStr(fromString.name(), "worker", "a name taken from a String's view is copied");
+  expect(fromString.join().named, "the thread sees the name it was given from a String");
 
   // A named thread with its own stack size
   imm big = thread.startWith(new thread.Options(name: "worker", stackSize: 4194304usize), 0i64, &lookWorker);

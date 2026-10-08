@@ -56,6 +56,7 @@ typedef enum {
     ShapeOrder,         // MemOrder: core's enum of atomic orderings, a constant at each call
     ShapeTBool,         // T, bool: a tuple of the two
     ShapeSliceU8,       // &Array[u8]: a borrowed slice of bytes, read only
+    ShapeStr,           // &str: borrowed text, which shares a slice's layout
     ShapeI64,           // i64
     ShapeU64            // u64
 } IntrinsicShape;
@@ -149,8 +150,8 @@ static IntrinsicSpec intrinsicRegistry[] = {
         ClassInt | ClassBool | ClassPtr},
     // Where the call is: a constant at each call, and for a default value at
     // each call taking it (intrinsicSrcCallAt)
-    {"srcFile", SrcFileIntrinsic, "srcFile() &Array[u8]",
-        0, 0, {0}, ShapeSliceU8, 0, 0, PhaseExpansion, 1},
+    {"srcFile", SrcFileIntrinsic, "srcFile() &str",
+        0, 0, {0}, ShapeStr, 0, 0, PhaseExpansion, 1},
     {"srcLine", SrcLineIntrinsic, "srcLine() u32",
         0, 0, {0}, ShapeU32, 0, 0, PhaseExpansion, 1},
     // Whether the compile is a debug build: a constant each compile
@@ -237,6 +238,7 @@ static int intrinsicIsTParm(INode *type, INode *tparm) {
 }
 
 static int memOrderIs(INode *type);
+static int intrinsicModuleIsCore(INode *owner);
 
 // Whether a name-resolved declared type has the registry's shape
 static int intrinsicShapeIs(INode *type, IntrinsicShape shape, INode *tparm) {
@@ -269,6 +271,22 @@ static int intrinsicShapeIs(INode *type, IntrinsicShape shape, INode *tparm) {
         INode *perm = ref->perm == unknownType ? (INode *)roPerm : itypeGetTypeDcl(ref->perm);
         return ref->region == borrowRef && perm == (INode *)roPerm
             && isTypeNode(ref->vtexp) && itypeGetTypeDcl(ref->vtexp) == (INode *)u8Type;
+    }
+    case ShapeStr: {
+        // Text is read only: an unwritten permission is its default
+        if (type->tag != RefTag)
+            return 0;
+        RefNode *ref = (RefNode *)type;
+        INode *perm = ref->perm == unknownType ? (INode *)immPerm : itypeGetTypeDcl(ref->perm);
+        if (ref->region != borrowRef || !(perm == (INode *)immPerm || perm == (INode *)roPerm)
+            || !isTypeNode(ref->vtexp))
+            return 0;
+        // The compiler's 'str', or core's own declaration of it that the
+        // generator's self-check parses beside the program
+        INode *body = itypeGetTypeDcl(ref->vtexp);
+        return body == (INode *)strTypeDcl
+            || (body->tag == StructTag && ((StructNode *)body)->namesym == strTypeName
+                && intrinsicModuleIsCore(((StructNode *)body)->dclinfo.owner));
     }
     case ShapePtrTypeRecord:
         return typeRecordIsPtr(type);
@@ -763,9 +781,25 @@ int intrinsicSrcKind(INode *node) {
     return kind == SrcFileIntrinsic || kind == SrcLineIntrinsic ? kind : 0;
 }
 
+// Is this a parameter's default value that answers where a call is: a call to
+// 'srcFile()' or 'srcLine()', or one under the cast that makes the text
+// 'srcFile()' gives the slice of bytes a parameter declares
+int intrinsicIsSrcDefault(INode *node) {
+    while (node && node->tag == CastTag && !(node->flags & FlagConvert))
+        node = ((CastNode *)node)->exp;
+    return intrinsicSrcKind(node) != 0;
+}
+
 // The copy shares the call's function and its (empty) arguments, and has
-// been type checked as the default was
+// been type checked as the default was. Under a cast, the cast is copied too
 INode *intrinsicSrcCallAt(INode *call, INode *site) {
+    if (call->tag == CastTag) {
+        CastNode *cast = memAllocBlk(sizeof(CastNode));
+        memcpy(cast, call, sizeof(CastNode));
+        cast->exp = intrinsicSrcCallAt(cast->exp, site);
+        inodeLexCopy((INode *)cast, site);
+        return (INode *)cast;
+    }
     FnCallNode *copy = memAllocBlk(sizeof(FnCallNode));
     memcpy(copy, call, sizeof(FnCallNode));
     inodeLexCopy((INode *)copy, site);

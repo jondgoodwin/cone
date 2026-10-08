@@ -71,8 +71,8 @@
 // 'thread.startWith(new thread.Options(name: "worker", stackSize: s), arg, &f)'
 // does the same with options, each of which has a default:
 //
-// - 'name' ("" by default) is copied when the thread starts, so the slice
-//   need only live through the call. It is Cone's: the thread and its
+// - 'name' (text, "" by default) is copied when the thread starts, so the
+//   text need only live through the call. It is Cone's: the thread and its
 //   handle see it through 'name()', and the OS and its debuggers do not.
 // - 'stackSize' (0 by default) is how many bytes of address space to reserve
 //   for the thread's stack. 0 is the executable's default (1 MB as the Visual
@@ -213,7 +213,7 @@ const allProcessorGroups = 0xFFFFu16;          // ALL_PROCESSOR_GROUPS
 // ---------------------------------------------------------------------------
 
 // A panic, reported at the line calling 'die'
-fn die(msg &Array[u8], file &Array[u8] = srcFile(), line u32 = srcLine()) Never {
+fn die(msg &str, file &str = srcFile(), line u32 = srcLine()) Never {
   panic(msg, file, line);
 }
 
@@ -238,18 +238,19 @@ const parkEmpty = 0u32;
 const parkNotified = 1u32;
 const parkParked = 0xFFFFFFFFu32;
 
-fn infoNew(name &Array[u8], refs u32, id u32) *Info {
+fn infoNew(name &str, refs u32, id u32) *Info {
   imm size = mem.sizeof[Info]();
-  imm p = libc.malloc(size + name.len) as *Info;
+  imm nameBytes &Array[u8] = name;
+  imm p = libc.malloc(size + nameBytes.len) as *Info;
   if p as usize == 0usize {
     die("thread: out of memory");
   }
   (*p).refs = Atomic[u32].of(refs);
   (*p).id = Atomic[u32].of(id);
   (*p).park = Atomic[u32].of(parkEmpty);
-  (*p).nameLen = u32.from(name.len);
-  if name.len > 0usize {
-    libc.memcpy((p as *u8) + size, name as *u8, name.len);
+  (*p).nameLen = u32.from(nameBytes.len);
+  if nameBytes.len > 0usize {
+    libc.memcpy((p as *u8) + size, nameBytes as *u8, nameBytes.len);
   }
   p;
 }
@@ -273,8 +274,8 @@ fn parkWord(p *Info) &Atomic[u32] {
   &(*p).park as &Atomic[u32];
 }
 
-fn infoName(p *Info) &Array[u8] {
-  mem.sliceFromParts[u8]((p as *u8) + mem.sizeof[Info](), usize.from((*p).nameLen));
+fn infoName(p *Info) &str {
+  mem.sliceFromParts[u8]((p as *u8) + mem.sizeof[Info](), usize.from((*p).nameLen)) as &str;
 }
 
 // This thread's Info, or 0 before it has one
@@ -362,7 +363,7 @@ fn launch(entry Entry, pkt *u8, info *Info, stackSize usize) usize {
 // How to start a thread, for 'startWith': its name, and the bytes to reserve
 // for its stack, 0 for the executable's default
 pub struct Options {
-  pub name &Array[u8] = "";
+  pub name &str = "";
   pub stackSize usize = 0usize;
 }
 
@@ -432,7 +433,7 @@ pub struct Thread[R] {
 
   // The thread's OS id, its name, and making its parking token available
   pub fn id(self &) u32 { infoId(info); }
-  pub fn name(self &) &Array[u8] { infoName(info); }
+  pub fn name(self &) &str { infoName(info); }
   pub fn unpark(self &) { unparkInfo(info); }
 
   // A ThreadRef to the thread, to hand to others
@@ -464,7 +465,7 @@ pub struct ThreadRef is Sendable {
 
   // The thread's OS id, its name, and making its parking token available
   pub fn id(self &) u32 { infoId(info); }
-  pub fn name(self &) &Array[u8] { infoName(info); }
+  pub fn name(self &) &str { infoName(info); }
   pub fn unpark(self &) { unparkInfo(info); }
 
   // Another ThreadRef to the same thread
