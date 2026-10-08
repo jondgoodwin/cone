@@ -1,0 +1,74 @@
+// String's text API takes a &str, and bytes that are text meet a String through
+// the Bytes forms. Every expected value is worked out by hand: "héllo" is the
+// bytes 68 C3 A9 6C 6C 6F, six of them (é is two in UTF-8), so [0..3] is "hé",
+// [3..6] is "llo", and [1..3] is the two bytes of é alone.
+
+mod bytesforms;
+
+import testing use *;
+import collections use *;
+import libc;
+
+fn main() i32 {
+  imm raw &Array[u8] = "héllo";
+  expectUInt(u64.from(raw.len), 6, "the bytes of hello with an accent");
+
+  // fromBytes copies bytes
+  imm whole = String.fromBytes(raw);
+  expectUInt(u64.from(whole.len()), 6, "fromBytes of all six");
+  expectBool(whole.equals("héllo"), true, "fromBytes holds the same text");
+  imm head = String.fromBytes(&raw[0usize..3usize]);
+  expectUInt(u64.from(head.len()), 3, "fromBytes of the first three");
+  expectBool(head.equals("hé"), true, "the first three are hé");
+  imm accent = String.fromBytes(&raw[1usize..3usize]);
+  expectBool(accent.equals("é"), true, "the two bytes of é");
+  expectUInt(u64.from(accent.charCount()), 1, "which are one character");
+  imm none = String.fromBytes(&raw[2usize..2usize]);
+  expectBool(none.isEmpty(), true, "fromBytes of no bytes is empty");
+
+  // appendBytes adds bytes at the end, keeping the NUL after them
+  mut t = String.from("x");
+  t.appendBytes(&raw[3usize..6usize]);
+  expectBool(t.equals("xllo"), true, "appendBytes adds llo");
+  t.appendBytes(&raw[0usize..0usize]);
+  expectUInt(u64.from(t.len()), 4, "appendBytes of nothing adds nothing");
+  expectUInt(u64.from(libc.strlen(t.cstr())), 4, "the NUL is still after the bytes");
+
+  // from, append and <- take text, a literal or a view
+  mut u = String.from(t.view());
+  u.append("!");
+  u <- "?";
+  expectBool(u.equals("xllo!?"), true, "from a view, append and <- of text");
+  expectBool(u.startsWith("xl"), true, "startsWith of text");
+  expectBool(u.endsWith("!?"), true, "endsWith of text");
+  match u.find("lo") {
+    case imm at Some {expectUInt(u64.from(at.value), 2, "find of text");}
+    case is None {expect(false, "find of text");}
+  }
+  expectBool(u.contains("o!"), true, "contains of text");
+  expectInt(i64.from(u.compare("xllp")), -1, "compare of text");
+  expectBool(u.equalsIgnoreAsciiCase("XLLO!?"), true, "equalsIgnoreAsciiCase of text");
+  u.replace("l", "L");
+  expectBool(u.equals("xLLo!?"), true, "replace of text");
+
+  // join takes a &str between the pieces
+  mut parts = List[String].empty();
+  parts.push("a");
+  parts.push("b");
+  parts.push("c");
+  imm joined = String.join(parts.view(), ", ");
+  expectBool(joined.equals("a, b, c"), true, "join with a &str separator");
+
+  // a number is read from text; bytes say so first
+  imm digits &Array[u8] = "-42";
+  match parseInt(digits as &str) {
+    case imm n Some {expectInt(n.value, -42, "parseInt of bytes made text");}
+    case is None {expect(false, "parseInt of bytes made text");}
+  }
+  match parseUInt("17") {
+    case imm n Some {expectUInt(n.value, 17, "parseUInt of a literal");}
+    case is None {expect(false, "parseUInt of a literal");}
+  }
+
+  done();
+}

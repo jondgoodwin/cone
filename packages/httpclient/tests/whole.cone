@@ -94,7 +94,7 @@ fn reply(sv &mut Srv, req httpconn.ReqId, head bool, status u16, location &Array
   }
 }
 
-fn number(s &Array[u8]) u64 {
+fn number(s &str) u64 {
   match collections.parseUInt(s) {
     case imm v Some {v.value;}
     case is None[u64] {0u64;}
@@ -155,7 +155,7 @@ fn answer(sv &mut Srv, lp &mut Loop, k usize) {
   imm query = &t[(if q < t.len {q + 1usize;} else {q;}) ..];
   imm head = *sv.methods[k] == Method.Head[];
   if path == "/echo" {
-    mut b = String.from(methodToken(*sv.methods[k]));
+    mut b = String.from(methodToken(*sv.methods[k]) as &str);
     b.append(" ");
     b.append(sv.bodies[k].view());
     reply(sv, req, head, 200u16, "", b.view());
@@ -187,7 +187,7 @@ fn answer(sv &mut Srv, lp &mut Loop, k usize) {
     b.append(";cookie=");
     b.append(sv.cookies[k].view());
     b.append(";method=");
-    b.append(methodToken(*sv.methods[k]));
+    b.append(methodToken(*sv.methods[k]) as &str);
     b.append(";body=");
     b.append(if sv.bodies[k].len() == 0usize {"-";} else {sv.bodies[k].view();});
     reply(sv, req, head, 200u16, "", b.view());
@@ -240,7 +240,7 @@ fn forget(sv &mut Srv, k usize) {
 
 fn fieldOr(h &Headers, name &Array[u8]) String {
   match h.get(name) {
-    case imm v Some {String.from(v.value);}
+    case imm v Some {String.from(v.value as &str);}
     case is None[&Array[u8]] {String.from("-");}
   }
 }
@@ -265,7 +265,7 @@ fn serve(sv &mut Srv, lp &mut Loop, e &mut httpconn.Event) {
     sv.cookies.push(fieldOr(&e.request.headers, "Cookie"));
   } elif kind == httpconn.EventKind.Data[] {
     imm k = findReq(sv, e.req);
-    if k < sv.reqs.len() {(&mut sv.bodies[k]).append(e.buf.view());}
+    if k < sv.reqs.len() {(&mut sv.bodies[k]).appendBytes(e.buf.view());}
     sv.drv.release(e.req, e.buf.len());
   } elif kind == httpconn.EventKind.End[] {
     imm k = findReq(sv, e.req);
@@ -318,7 +318,7 @@ fn stopServer(sv &mut Srv, lp &mut Loop) {
   sv.drv.pump(lp, &mut sevs);
 }
 
-fn url(port u16, path &Array[u8]) String {
+fn url(port u16, path &str) String {
   mut u = String.from("http://127.0.0.1:");
   u.appendUInt(u64.from(port));
   u.append(path);
@@ -353,7 +353,7 @@ fn note(cl &mut Client, s &mut Seen, e &mut Event) {
     s.status = e.response.status;
     s.url = e.url.copy();
   } elif e.kind == EventKind.Data[] {
-    s.body.append(e.buf.view());
+    s.body.appendBytes(e.buf.view());
     cl.release(e.id, e.buf.len());
   } elif e.isTerminal() {
     s.finals = s.finals + 1u64;
@@ -498,7 +498,7 @@ fn main() i32 {
       if e.id == other {
         kinds.appendByte(eventName(e.kind)[0usize]);
         if e.kind == EventKind.Data[] {
-          body.append(e.buf.view());
+          body.appendBytes(e.buf.view());
           cl.release(e.id, e.buf.len());
         }
       }

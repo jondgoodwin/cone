@@ -534,12 +534,14 @@ pub struct DequeItems['a, T] {
 // t', each is written once on 'str'. A literal is a '&str', and wherever a
 // String is wanted a literal is copied into one ('fromLiteral'), so
 // 'imm s String = "core"' and 'names.push("core")'. The methods below that
-// take text take a '&Array[u8]', which a '&str' converts to; the ones that are also
-// 'str's keep these spellings, left out of the fold.
+// take text take a '&str'; a '&Array[u8]' is bytes, and meets a String through
+// the 'Bytes' forms ('fromBytes', 'appendBytes'), which look at no more than the
+// bytes. The methods of 'str' that a String has no reason to differ from, 'find'
+// and 'startsWith' among them, are the fold's.
 pub struct String is ShapeChanging, Hash {
   buf List[u8];
 
-  use str via view but len, isEmpty, `[]`, startsWith, endsWith, find, findFrom, contains, trim, compare, eq, `==`, hash;
+  use str via view but len, isEmpty, `[]`, trim, eq, `==`, hash;
 
   pub fn empty() String { new String(List[u8].empty()); }
 
@@ -549,10 +551,19 @@ pub struct String is ShapeChanging, Hash {
     new String(List[u8].withCapacity(n + 1usize));
   }
 
-  // A String holding a copy of the bytes of s
-  pub fn from(s &Array[u8]) String {
-    mut str = String.withCapacity(s.len);
+  // A String holding a copy of this text
+  pub fn from(s &str) String {
+    mut str = String.withCapacity(s.len());
     str.append(s);
+    str;
+  }
+
+  // A String holding a copy of these bytes, for bytes that are text (a buffer
+  // read from a file or a socket, a part of one). Nothing checks they are
+  // UTF-8: strings are UTF-8 by convention, as 'bytes as &str' is.
+  pub fn fromBytes(b &Array[u8]) String {
+    mut str = String.withCapacity(b.len);
+    str.appendBytes(b);
     str;
   }
 
@@ -585,7 +596,7 @@ pub struct String is ShapeChanging, Hash {
 
   // The views of 'parts' one after another, with 'sep' between each two:
   // 'String.join(names.view(), ", ")'. No parts make an empty String.
-  pub fn join(parts &Array[String], sep &Array[u8]) String {
+  pub fn join(parts &Array[String], sep &str) String {
     mut out = String.empty();
     mut i = 0usize;
     while i < parts.len {
@@ -633,11 +644,17 @@ pub struct String is ShapeChanging, Hash {
 
   // -------- adding to the end --------
 
-  // Add the bytes of s (a '&str' is one) at the end. Rust's 'push_str'.
-  pub fn append overload `<-`(self &mut, s &Array[u8]) {
-    buf.reserve(s.len + 1usize);
+  // Add the text s at the end. Rust's 'push_str'.
+  pub fn append overload `<-`(self &mut, s &str) {
+    self.appendBytes(s);
+  }
+
+  // Add these bytes at the end, for bytes that are text; nothing checks they
+  // are UTF-8 (see 'fromBytes')
+  pub fn appendBytes(self &mut, b &Array[u8]) {
+    buf.reserve(b.len + 1usize);
     mut i = 0usize;
-    while i < s.len { buf.push(s[i]); i = i + 1usize; }
+    while i < b.len { buf.push(b[i]); i = i + 1usize; }
     self.seal();
   }
 
@@ -741,19 +758,20 @@ pub struct String is ShapeChanging, Hash {
   // Every 'from' made 'to', left to right, the pieces never overlapping:
   // "aaa" with "aa" made "b" is "ba". An empty 'from' is found before each
   // byte and at the end, so "ab" with "" made "-" is "-a-b-".
-  pub fn replace(self &mut, from &Array[u8], to &Array[u8]) {
+  pub fn replace(self &mut, from &str, to &str) {
     imm v = self.raw();
+    imm f &Array[u8] = from;
     mut out = String.withCapacity(v.len);
     mut i = 0usize;
-    if from.len == 0usize {
+    if f.len == 0usize {
       while i < v.len { out.append(to); out.appendByte(v[i]); i = i + 1usize; }
       out.append(to);
     }
     else {
       while i < v.len {
-        if i + from.len <= v.len and &v[i..i + from.len] == from {
+        if i + f.len <= v.len and &v[i..i + f.len] == f {
           out.append(to);
-          i = i + from.len;
+          i = i + f.len;
         }
         else {
           out.appendByte(v[i]);
@@ -773,7 +791,7 @@ pub struct String is ShapeChanging, Hash {
     mut out = String.withCapacity(width);
     mut n = width - buf.used;
     while n > 0usize { out.appendByte(fill); n = n - 1usize; }
-    out.append(self.raw());
+    out.appendBytes(self.raw());
     *self = out;
   }
 
@@ -813,12 +831,13 @@ pub struct String is ShapeChanging, Hash {
 
   // -------- reading --------
 
-  pub fn equals(self &, s &Array[u8]) bool { self.raw() == s; }
+  pub fn equals(self &, s &str) bool { self.view() == s; }
 
   // Whether it holds the same bytes as s once ASCII letters are made one
   // case: "Path" equals "PATH" this way. Bytes beyond ASCII must match exactly.
-  pub fn equalsIgnoreAsciiCase(self &, s &Array[u8]) bool {
+  pub fn equalsIgnoreAsciiCase(self &, text &str) bool {
     imm v = self.raw();
+    imm s &Array[u8] = text;
     if v.len != s.len { return false; }
     mut i = 0usize;
     while i < v.len {
@@ -826,33 +845,6 @@ pub struct String is ShapeChanging, Hash {
       i = i + 1usize;
     }
     true;
-  }
-
-  // -1, 0 or 1 as it sorts before, with or after s, byte by byte, a shorter
-  // string before a longer one it begins
-  pub fn compare(self &, s &Array[u8]) i32 { bytesCompare(self.raw(), s); }
-
-  pub fn startsWith(self &, s &Array[u8]) bool {
-    imm v = self.raw();
-    s.len <= v.len and &v[..s.len] == s;
-  }
-
-  pub fn endsWith(self &, s &Array[u8]) bool {
-    imm v = self.raw();
-    s.len <= v.len and &v[v.len - s.len..] == s;
-  }
-
-  // Where s first starts in it, or None. An empty s is found at 0.
-  pub fn find(self &, s &Array[u8]) Option[usize] { bytesFind(self.raw(), s, 0usize); }
-
-  // Where s first starts at or after 'from'
-  pub fn findFrom(self &, s &Array[u8], from usize) Option[usize] { bytesFind(self.raw(), s, from); }
-
-  pub fn contains(self &, s &Array[u8]) bool {
-    match bytesFind(self.raw(), s, 0usize) {
-      case is Some[usize] {true;}
-      case is None[usize] {false;}
-    }
   }
 
   // Whether two hold the same bytes: the '==' that Hash requires of a type
@@ -868,7 +860,7 @@ pub struct String is ShapeChanging, Hash {
   // A copy of the bytes from 'start' up to, not including, 'end'
   pub fn sub(self &, start usize, end usize) String {
     imm v = self.raw();
-    String.from(&v[start..end]);
+    String.fromBytes(&v[start..end]);
   }
 
   // A copy without the spaces, tabs, carriage returns and line feeds at
@@ -879,7 +871,7 @@ pub struct String is ShapeChanging, Hash {
     mut b = v.len;
     while a < b and isSpace(v[a]) { a = a + 1usize; }
     while b > a and isSpace(v[b - 1usize]) { b = b - 1usize; }
-    String.from(&v[a..b]);
+    String.fromBytes(&v[a..b]);
   }
 
   // Copies of its lines. A line ends at '\n', and a '\r' just before it is
@@ -895,7 +887,7 @@ pub struct String is ShapeChanging, Hash {
       if v[i] == '\n' {
         mut end = i;
         if end > start and v[end - 1usize] == '\r' { end = end - 1usize; }
-        out.push(String.from(&v[start..end]));
+        out.push(String.fromBytes(&v[start..end]));
         start = i + 1usize;
       }
       i = i + 1usize;
@@ -903,7 +895,7 @@ pub struct String is ShapeChanging, Hash {
     if start < v.len {
       mut end = v.len;
       if v[end - 1usize] == '\r' { end = end - 1usize; }
-      out.push(String.from(&v[start..end]));
+      out.push(String.fromBytes(&v[start..end]));
     }
     out;
   }
@@ -917,12 +909,12 @@ pub struct String is ShapeChanging, Hash {
     mut i = 0usize;
     while i < v.len {
       if v[i] == sep {
-        out.push(String.from(&v[start..i]));
+        out.push(String.fromBytes(&v[start..i]));
         start = i + 1usize;
       }
       i = i + 1usize;
     }
-    out.push(String.from(&v[start..]));
+    out.push(String.fromBytes(&v[start..]));
     out;
   }
 
@@ -2045,8 +2037,9 @@ pub trait Map[K, V] {
 
 // -------- byte slices --------
 
-// The functions the types above read text with, public for text that is
-// only a '&Array[u8]'.
+// The functions the types above read bytes with, public for bytes that are
+// not a '&str' (a buffer, a part of one, a binary format), and the number
+// readers, which take text.
 
 // Whether a and b hold the same bytes: 'a == b'
 pub fn bytesEqual(a &Array[u8], b &Array[u8]) bool {
@@ -2087,7 +2080,8 @@ pub fn asciiUpper(b u8) u8 { if b >= 'a' and b <= 'z' {b - 32u8;} else {b;}; }
 // or more digits, 0 to 9, and nothing else, no spaces either ('trim' first).
 // None for any other text, and for a number beyond i64's range, which is
 // -9223372036854775808 to 9223372036854775807.
-pub fn parseInt(text &Array[u8]) Option[i64] {
+pub fn parseInt(s &str) Option[i64] {
+  imm text &Array[u8] = s;
   mut start = 0usize;
   mut negative = false;
   if text.len > 0usize and (text[0usize] == '-' or text[0usize] == '+') {
@@ -2108,7 +2102,8 @@ pub fn parseInt(text &Array[u8]) Option[i64] {
 
 // The same for a u64, 0 to 18446744073709551615: a '+' or nothing, then the
 // digits. A '-' is None, even before 0.
-pub fn parseUInt(text &Array[u8]) Option[u64] {
+pub fn parseUInt(s &str) Option[u64] {
+  imm text &Array[u8] = s;
   mut start = 0usize;
   if text.len > 0usize and text[0usize] == '+' { start = 1usize; }
   digitsValue(&text[start..], 18446744073709551615u64);
