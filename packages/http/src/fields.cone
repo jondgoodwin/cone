@@ -38,10 +38,10 @@ pub fn trimOws(s &Array[u8]) &Array[u8] {
 }
 
 // Why s is not a field name, or "" when it is one
-pub fn checkFieldName(s &Array[u8]) &Array[u8] {
-  if s.len == 0usize {return "a field's name is empty";}
+pub fn checkFieldName(s &str) &str {
+  if s.isEmpty() {return "a field's name is empty";}
   mut i = 0usize;
-  while i < s.len {
+  while i < s.len() {
     imm c = s[i];
     if isOws(c) {return "a field's name has a space or a tab in it, or before its colon";}
     if not isTchar(c) {return "a field's name has a character no token may hold";}
@@ -52,7 +52,7 @@ pub fn checkFieldName(s &Array[u8]) &Array[u8] {
 
 // Why s, its ends already trimmed, is not a field value, or "" when it is
 // one
-pub fn checkFieldValue(s &Array[u8]) &Array[u8] {
+pub fn checkFieldValue(s &Array[u8]) &str {
   mut i = 0usize;
   while i < s.len {
     imm c = s[i];
@@ -80,7 +80,7 @@ pub fn eqIgnoreCase(a &Array[u8], b &Array[u8]) bool {
 
 // Whether the comma-separated list 'list' has 'token' as a member, ignoring
 // case and the spaces around each member
-pub fn listHas(list &Array[u8], token &Array[u8]) bool {
+pub fn listHas(list &Array[u8], token &str) bool {
   mut start = 0usize;
   while start <= list.len {
     mut end = start;
@@ -101,7 +101,7 @@ pub struct Field {
   fvalue String;
 
   pub fn blank() Field {new Field(String.empty(), String.empty());}
-  pub fn name(self &) &Array[u8] {fname.view();}
+  pub fn name(self &) &str {fname.view();}
   pub fn value(self &) &Array[u8] {fvalue.view();}
 }
 
@@ -116,21 +116,21 @@ pub struct Headers {
 
   pub fn len(self &) usize {fields.len();}
   pub fn isEmpty(self &) bool {fields.len() == 0usize;}
-  pub fn nameAt(self &, i usize) &Array[u8] {fields[i].fname.view();}
+  pub fn nameAt(self &, i usize) &str {fields[i].fname.view();}
   pub fn valueAt(self &, i usize) &Array[u8] {fields[i].fvalue.view();}
 
   // Add a field after the others: false, and nothing added, when the name is
   // not a token or the value, its spaces and tabs at either end dropped, is
   // not a field value
-  pub fn add(self &mut, name &Array[u8], value &Array[u8]) bool {
+  pub fn add(self &mut, name &str, value &Array[u8]) bool {
     imm v = trimOws(value);
-    if checkFieldName(name).len != 0usize or checkFieldValue(v).len != 0usize {return false;}
-    fields.push(new Field(String.from(name as &str), String.from(v as &str)));
+    if not checkFieldName(name).isEmpty() or not checkFieldValue(v).isEmpty() {return false;}
+    fields.push(new Field(String.from(name), String.fromBytes(v)));
     true;
   }
 
   // Add a field whose value is a number written in decimal
-  pub fn addUInt(self &mut, name &Array[u8], n u64) bool {
+  pub fn addUInt(self &mut, name &str, n u64) bool {
     mut s = String.empty();
     s.appendUInt(n);
     self.add(name, s.view());
@@ -138,16 +138,16 @@ pub struct Headers {
 
   // Replace every field of this name with one holding value: false, and
   // nothing changed, when add would refuse it
-  pub fn set(self &mut, name &Array[u8], value &Array[u8]) bool {
+  pub fn set(self &mut, name &str, value &Array[u8]) bool {
     imm v = trimOws(value);
-    if checkFieldName(name).len != 0usize or checkFieldValue(v).len != 0usize {return false;}
+    if not checkFieldName(name).isEmpty() or not checkFieldValue(v).isEmpty() {return false;}
     self.remove(name);
-    fields.push(new Field(String.from(name as &str), String.from(v as &str)));
+    fields.push(new Field(String.from(name), String.fromBytes(v)));
     true;
   }
 
   // Remove every field of this name: how many
-  pub fn remove(self &mut, name &Array[u8]) usize {
+  pub fn remove(self &mut, name &str) usize {
     mut gone = 0usize;
     mut rev = List[Field].empty();
     while fields.len() > 0usize {
@@ -171,7 +171,7 @@ pub struct Headers {
   }
 
   // The first value of a field of this name, or None
-  pub fn get(self &, name &Array[u8]) Option[&Array[u8]] {
+  pub fn get(self &, name &str) Option[&Array[u8]] {
     mut i = 0usize;
     while i < fields.len() {
       if eqIgnoreCase(fields[i].fname.view(), name) {return Some[&Array[u8]][fields[i].fvalue.view()];}
@@ -181,7 +181,7 @@ pub struct Headers {
   }
 
   // How many fields have this name
-  pub fn count(self &, name &Array[u8]) usize {
+  pub fn count(self &, name &str) usize {
     mut n = 0usize;
     mut i = 0usize;
     while i < fields.len() {
@@ -191,11 +191,11 @@ pub struct Headers {
     n;
   }
 
-  pub fn has(self &, name &Array[u8]) bool {self.count(name) > 0usize;}
+  pub fn has(self &, name &str) bool {self.count(name) > 0usize;}
 
   // Whether any field of this name lists token among its comma-separated
   // members, ignoring case: 'hasToken("Connection", "close")'
-  pub fn hasToken(self &, name &Array[u8], token &Array[u8]) bool {
+  pub fn hasToken(self &, name &str, token &str) bool {
     mut i = 0usize;
     while i < fields.len() {
       if eqIgnoreCase(fields[i].fname.view(), name) and listHas(fields[i].fvalue.view(), token) {return true;}
@@ -206,14 +206,14 @@ pub struct Headers {
 
   // Every value of this name, in order, joined by ", " (RFC 9110, 5.3); ""
   // when there is none
-  pub fn joined(self &, name &Array[u8]) String {
+  pub fn joined(self &, name &str) String {
     mut out = String.empty();
     mut first = true;
     mut i = 0usize;
     while i < fields.len() {
       if eqIgnoreCase(fields[i].fname.view(), name) {
         if not first {out.append(", ");}
-        out.append(fields[i].fvalue.view());
+        out.appendBytes(fields[i].fvalue.view());
         first = false;
       }
       i = i + 1usize;

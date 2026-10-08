@@ -103,11 +103,11 @@ pub struct Session is Move {
       endTold: false, sentClose: false, err: TlsError.none());
   }
 
-  fn client(st Shared, serverName &Array[u8]) Session {
+  fn client(st Shared, serverName &str) Session {
     mut s = Session.blank(st, false);
-    s.host = String.from(serverName as &str);
+    s.host = String.from(serverName);
     SSL_set_connect_state(s.ssl);
-    mut name = String.from(serverName as &str);
+    mut name = String.from(serverName);
     imm cname = name.cstr();
     // SNI carries a DNS name, never an address (RFC 6066)
     if not isAddress(serverName) {SSL_ctrl(s.ssl, ctrlSetTlsextHostname, 0i32, cname.ptr());}
@@ -288,8 +288,8 @@ pub struct Session is Move {
     mut alpn = String.empty();
     if alen > 0u32 {alpn.appendBytes(mem.sliceFromParts(ap, usize.from(alen)));}
     imm v = if SSL_version(ssl) == tls13Version {TlsVersion.Tls13[];} else {TlsVersion.Tls12[];};
-    new TlsInfo(version: v, versionName: String.from(cText(SSL_get_version(ssl)) as &str),
-      cipher: String.from(cText(SSL_CIPHER_get_name(SSL_get_current_cipher(ssl))) as &str), alpn: alpn,
+    new TlsInfo(version: v, versionName: String.from(cText(SSL_get_version(ssl))),
+      cipher: String.from(cText(SSL_CIPHER_get_name(SSL_get_current_cipher(ssl)))), alpn: alpn,
       resumed: SSL_session_reused(ssl) == 1i32, verifiedBy: kind, handshakeTime: handshakeTime,
       verifyTime: verifyTime, closeNotify: gotClose, truncated: eof and not gotClose);
   }
@@ -361,7 +361,7 @@ pub struct Session is Move {
   }
 
   // The session fails: its error, reported once
-  fn fail(self &mut, kind TlsErrorKind, code u32, detail &Array[u8]) {
+  fn fail(self &mut, kind TlsErrorKind, code u32, detail &str) {
     if phase == pFailed {return;}
     if not ownError {err = TlsError.make(kind, code, detail);}
     phase = pFailed;
@@ -397,7 +397,7 @@ pub struct Session is Move {
       if reason == reasonCertificateVerifyFailed {
         // OpenSSL's own check, against the Roots verifier's bundle
         imm vr = SSL_get_verify_result(ssl);
-        mut d = String.from(cText(X509_verify_cert_error_string(vr)) as &str);
+        mut d = String.from(cText(X509_verify_cert_error_string(vr)));
         d.append(" (OpenSSL's verify result ");
         d.appendInt(i64.from(vr));
         d.append(")");
@@ -407,7 +407,7 @@ pub struct Session is Move {
       if reason >= reasonAlertOffset and reason < reasonAlertOffset + 256u32 {
         imm alert = reason - reasonAlertOffset;
         mut d = String.from("the peer sent the fatal alert ");
-        d.append(cText(SSL_alert_desc_string_long(i32.from(alert))) as &str);
+        d.append(cText(SSL_alert_desc_string_long(i32.from(alert))));
         d.append(" (");
         d.appendUInt(u64.from(alert));
         d.append(")");
@@ -580,10 +580,10 @@ pub struct Session is Move {
 
 // Whether a server's name is an IP address (written as one) rather than a
 // DNS name
-fn isAddress(name &Array[u8]) bool {
-  if name.len == 0usize {return false;}
+fn isAddress(name &str) bool {
+  if name.isEmpty() {return false;}
   mut k = 0usize;
-  while k < name.len {
+  while k < name.len() {
     imm c = name[k];
     if c == ':' {return true;}
     if not ((c >= '0' and c <= '9') or c == '.') {return false;}
