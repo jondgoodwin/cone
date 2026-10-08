@@ -65,7 +65,7 @@ pub struct Kernel {
   // from Cone (its module names its source files in "cone.file" strings) is
   // given its error buffer, so at most MAX_CONE_KERNEL_BINDINGS. Check
   // 'isValid'.
-  pub fn make(device &Device, spirv &Array[u32], entryPoint &Array[u8], access &Array[u32]) Kernel {
+  pub fn make(device &Device, spirv &Array[u32], entryPoint &str, access &Array[u32]) Kernel {
     mut acc = new Array[u32, 8] <- fill 0u32;
     mut ok = true;
     mut fileIds = List[u32].empty();
@@ -114,7 +114,7 @@ pub struct Kernel {
     imm desc = new ComputePipelineDescriptor(layout: &layout, module: &shader, entryPoint: entryPoint);
     mut pipeline = device.createComputePipeline(&desc);
     new Kernel(shader, groupLayout, layout, pipeline, acc, u32.from(access.len), size, &noTwin, false, isCone,
-      String.from(entryPoint as &str), fileIds, fileNames, shapes, strides, null as *u8, &noDirect, false,
+      String.from(entryPoint), fileIds, fileNames, shapes, strides, null as *u8, &noDirect, false,
       new Array[u32, 8] <- fill 0u32, ok and hasBarriers(spirv, entryPoint));
   }
 
@@ -320,7 +320,7 @@ pub fn readSpirv(file &Array[u8]) List[u32] {
 
 // The workgroup size of compute entry point 'name' in 'spirv' (OpEntryPoint
 // GLCompute, then its OpExecutionMode LocalSize), or zeros if there is none
-fn workgroupOf(spirv &Array[u32], name &Array[u8]) Array[u32, 3] {
+fn workgroupOf(spirv &Array[u32], name &str) Array[u32, 3] {
   mut size = new Array[u32, 3] <- fill 0u32;
   imm id = entryIdOf(spirv, name);
   mut i = 5usize;                  // past the header
@@ -341,7 +341,7 @@ fn workgroupOf(spirv &Array[u32], name &Array[u8]) Array[u32, 3] {
 }
 
 // The id of compute entry point 'name' (OpEntryPoint GLCompute), or all ones
-fn entryIdOf(spirv &Array[u32], name &Array[u8]) u32 {
+fn entryIdOf(spirv &Array[u32], name &str) u32 {
   mut i = 5usize;
   while i < spirv.len {
     imm word = spirv[i];
@@ -361,7 +361,7 @@ fn entryIdOf(spirv &Array[u32], name &Array[u8]) u32 {
 // (224) in its function or in any function it calls (OpFunctionCall, 57),
 // however deep. A Cone kernel's 'workgroupBarrier()' and 'storageBarrier()'
 // are each one, as a Slang or HLSL kernel's barriers are.
-fn hasBarriers(spirv &Array[u32], name &Array[u8]) bool {
+fn hasBarriers(spirv &Array[u32], name &str) bool {
   mut todo = List[u32].empty();
   mut seen = List[u32].empty();
   todo.push(entryIdOf(spirv, name));
@@ -425,7 +425,7 @@ fn coneFilesOf(spirv &Array[u32], ids &mut List[u32], names &mut List[String]) {
 // Binding which the entry point's function uses (LLVM lists every variable
 // of the module in every entry point's interface, so the function's body
 // says which are its own).
-fn shapesOf(spirv &Array[u32], name &Array[u8], n u32, shapes &mut Array[u32, 8], strides &mut Array[u32, 8]) {
+fn shapesOf(spirv &Array[u32], name &str, n u32, shapes &mut Array[u32, 8], strides &mut Array[u32, 8]) {
   imm entry = entryIdOf(spirv, name);
   mut vars = List[u32].empty();       // storage buffer variables: id,
   mut varTypes = List[u32].empty();   // pointer type,
@@ -589,7 +589,8 @@ fn stringAt(spirv &Array[u32], from usize, end usize) String {
 }
 
 // Whether the literal string in words 'from' to 'end' of 'spirv' is 'name'
-fn nameIs(spirv &Array[u32], from usize, end usize, name &Array[u8]) bool {
+fn nameIs(spirv &Array[u32], from usize, end usize, text &str) bool {
+  imm name &Array[u8] = text;      // compared byte for byte with the module's own
   mut k = 0usize;
   while true {
     imm w = from + k / 4usize;
