@@ -13,14 +13,14 @@ import libc;
 import env;
 
 // The variable's value, or "<none>"
-fn value(name &Array[u8]) String {
+fn value(name &str) String {
   match env.get(name) {
     case imm v Some { v.value.copy(); }
     case is None { String.from("<none>"); }
   }
 }
 
-fn valueIs(name &Array[u8], want &Array[u8], label &Array[u8]) {
+fn valueIs(name &str, want &Array[u8], label &Array[u8]) {
   imm got = value(name);
   expectStr(got.view(), want, label);
 }
@@ -55,6 +55,15 @@ fn main() i32 {
   imm status = libc.system("if \"%CONE_ENV_TEST_CHILD%\"==\"seen\" (exit 7) else (exit 3)");
   expectInt(i64.from(status), 7, "child sees the variable");
   env.unset("CONE_ENV_TEST_CHILD");
+
+  // A name and a value built as Strings are passed as their views, text
+  mut full = String.from("CONE_ENV_TEST_");
+  full <- "VIEW";
+  imm val = String.from("from a view");
+  env.set(full.view(), val.view());
+  valueIs(full.view(), "from a view", "set and get with a String's view");
+  env.unset(full.view());
+  valueIs(full.view(), "<none>", "unset with a String's view");
 
   // Windows: a name is read without regard to ASCII case
   env.set("Cone_Env_Test_Case", "mixed");

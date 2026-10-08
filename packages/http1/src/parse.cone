@@ -6,10 +6,10 @@
 // and says false. None of them reads a byte past the slice.
 
 // Fill err and say false
-fn bad(err &mut HttpError, kind ErrorKind, status u16, why &Array[u8]) bool {
+fn bad(err &mut HttpError, kind ErrorKind, status u16, why &str) bool {
   err.kind = kind;
   err.status = status;
-  err.detail = String.from(why as &str);
+  err.detail = String.from(why);
   false;
 }
 
@@ -65,7 +65,7 @@ fn parseRequestLine(line &Array[u8], head &mut RequestHead, err &mut HttpError) 
   imm ver = versionOf(&line[sp2 + 1usize .. line.len]);
   if ver == 1u32 {return bad(err, ErrorKind.Malformed[], 400u16, "the request line does not end in an HTTP version");}
   if ver == 0u32 {return bad(err, ErrorKind.Unsupported[], 505u16, "the request's major version is not 1");}
-  *head = RequestHead.make(method, target, "");
+  *head = RequestHead.make(method as &str, target as &str, "");
   head.version = if ver == 10u32 {Version.Http10[];} else {Version.Http11[];};
   true;
 }
@@ -132,31 +132,31 @@ fn parseFields(h &Array[u8], from usize, cfg &Config, request bool, takeHost boo
       if not pending {return bad(err, ErrorKind.Malformed[], malformed, "the first field line starts with a space or a tab");}
       imm more = trimOws(line);
       imm whyMore = checkFieldValue(more);
-      if whyMore.len != 0usize {return bad(err, ErrorKind.Malformed[], malformed, whyMore);}
+      if not whyMore.isEmpty() {return bad(err, ErrorKind.Malformed[], malformed, whyMore);}
       if not folded {
         unfolded = String.fromBytes(&h[valueAt .. valueEnd]);
         folded = true;
       }
       if more.len > 0usize {
         if unfolded.len() > 0usize {unfolded.append(" ");}
-        unfolded.append(more as &str);
+        unfolded.appendBytes(more);
       }
       at = lineNext(h, end);
       continue;
     }
     if pending {
-      addField(&h[nameAt .. nameEnd], if folded {unfolded.view();} else {&h[valueAt .. valueEnd];},
+      addField(&h[nameAt .. nameEnd] as &str, if folded {unfolded.view();} else {&h[valueAt .. valueEnd];},
         takeHost, headers, host, hostCount);
       folded = false;
     }
     imm colon = indexOf(line, ':', 0usize);
     if colon == line.len {return bad(err, ErrorKind.Malformed[], malformed, "a field line has no colon");}
-    imm name = &line[0usize .. colon];
+    imm name = &line[0usize .. colon] as &str;
     imm whyName = checkFieldName(name);
-    if whyName.len != 0usize {return bad(err, ErrorKind.Malformed[], malformed, whyName);}
+    if not whyName.isEmpty() {return bad(err, ErrorKind.Malformed[], malformed, whyName);}
     imm value = trimOws(&line[colon + 1usize .. line.len]);
     imm whyValue = checkFieldValue(value);
-    if whyValue.len != 0usize {return bad(err, ErrorKind.Malformed[], malformed, whyValue);}
+    if not whyValue.isEmpty() {return bad(err, ErrorKind.Malformed[], malformed, whyValue);}
     n = n + 1usize;
     if n > cfg.maxHeaders {return bad(err, ErrorKind.TooLarge[], status, "more fields than maxHeaders");}
     pending = true;
@@ -169,17 +169,17 @@ fn parseFields(h &Array[u8], from usize, cfg &Config, request bool, takeHost boo
     at = lineNext(h, end);
   }
   if pending {
-    addField(&h[nameAt .. nameEnd], if folded {unfolded.view();} else {&h[valueAt .. valueEnd];},
+    addField(&h[nameAt .. nameEnd] as &str, if folded {unfolded.view();} else {&h[valueAt .. valueEnd];},
       takeHost, headers, host, hostCount);
   }
   true;
 }
 
 // A field read and checked: to headers, or a request's Host to host
-fn addField(name &Array[u8], value &Array[u8], takeHost bool, headers &mut Headers, host &mut String, hostCount &mut usize) {
+fn addField(name &str, value &Array[u8], takeHost bool, headers &mut Headers, host &mut String, hostCount &mut usize) {
   if takeHost and eqIgnoreCase(name, "Host") {
     *hostCount = *hostCount + 1usize;
-    *host = String.from(value as &str);
+    *host = String.fromBytes(value);
   } else {
     headers.add(name, value);
   }

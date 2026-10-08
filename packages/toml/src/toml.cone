@@ -128,7 +128,7 @@ pub struct Table {
   }
 
   // Where key is among the entries, or their count when it is not there
-  fn find(self &, key &Array[u8]) usize {
+  fn find(self &, key &str) usize {
     mut i = 0usize;
     while i < entries.len() {
       if entries[i].key.view() == key { return i; }
@@ -138,7 +138,7 @@ pub struct Table {
   }
 
   // Whether it sets key, to a value of any kind
-  pub fn has(self &, key &Array[u8]) bool { self.find(key) < entries.len(); }
+  pub fn has(self &, key &str) bool { self.find(key) < entries.len(); }
 
   // Its keys, in the order written
   pub fn keys(self &) List[String] {
@@ -152,35 +152,35 @@ pub struct Table {
   }
 
   // The kind of key's value, or None when it is not there
-  pub fn kindOf(self &, key &Array[u8]) Option[Kind] {
+  pub fn kindOf(self &, key &str) Option[Kind] {
     imm i = self.find(key);
     if i == entries.len() { return None[Kind][]; }
     Some[Kind][entries[i].value.kind];
   }
 
   // The line key is set on, or 0 when it is not there
-  pub fn lineOf(self &, key &Array[u8]) u32 {
+  pub fn lineOf(self &, key &str) u32 {
     imm i = self.find(key);
     if i == entries.len() { return 0u32; }
     entries[i].value.line;
   }
 
   // key's string, or None when it is not there or is not a string
-  pub fn getString(self &, key &Array[u8]) Option[String] {
+  pub fn getString(self &, key &str) Option[String] {
     imm i = self.find(key);
     if i == entries.len() or entries[i].value.kind != Kind.Text[] { return None[String][]; }
     Some[String][entries[i].value.text.copy()];
   }
 
   // key's integer, or None when it is not there or is not an integer
-  pub fn getInt(self &, key &Array[u8]) Option[i64] {
+  pub fn getInt(self &, key &str) Option[i64] {
     imm i = self.find(key);
     if i == entries.len() or entries[i].value.kind != Kind.Integer[] { return None[i64][]; }
     Some[i64][entries[i].value.integer];
   }
 
   // key's 'true' or 'false', or None when it is not there or is not one
-  pub fn getBool(self &, key &Array[u8]) Option[bool] {
+  pub fn getBool(self &, key &str) Option[bool] {
     imm i = self.find(key);
     if i == entries.len() or entries[i].value.kind != Kind.Boolean[] { return None[bool][]; }
     Some[bool][entries[i].value.boolean];
@@ -188,7 +188,7 @@ pub struct Table {
 
   // A copy of key's list of strings, or None when it is not there or is not
   // a list
-  pub fn getStrings(self &, key &Array[u8]) Option[List[String]] {
+  pub fn getStrings(self &, key &str) Option[List[String]] {
     imm i = self.find(key);
     if i == entries.len() or entries[i].value.kind != Kind.List[] { return None[List[String]][]; }
     imm items = entries[i].value.list.view();
@@ -214,7 +214,7 @@ pub struct Document {
   }
 
   // Where the table named name is, or the count of tables when none is
-  fn find(self &, name &Array[u8]) usize {
+  fn find(self &, name &str) usize {
     mut i = 0usize;
     while i < tables.len() {
       if tables[i].name.view() == name { return i; }
@@ -224,7 +224,7 @@ pub struct Document {
   }
 
   // Whether it has a table of that name
-  pub fn has(self &, name &Array[u8]) bool { self.find(name) < tables.len(); }
+  pub fn has(self &, name &str) bool { self.find(name) < tables.len(); }
 
   // The names of its tables, in the order written, the root's left out
   pub fn names(self &) List[String] {
@@ -239,11 +239,11 @@ pub struct Document {
 
   // A borrow of the table named name. One it does not have is a program
   // error, a panic at the line of the caller: ask 'has' first.
-  pub fn `[]`(self &, name &Array[u8], file &Array[u8] = srcFile(), line u32 = srcLine()) &Table {
+  pub fn `[]`(self &, name &str, file &Array[u8] = srcFile(), line u32 = srcLine()) &Table {
     imm i = self.find(name);
     if i == tables.len() {
       mut m = String.from("toml: the document has no table [");
-      m.append(name as &str);
+      m.append(name);
       m.append("]");
       panic(m.view(), file, line);
     }
@@ -267,7 +267,9 @@ struct Reader {
 // No table yet: keys go into the root
 const rootTable = 0xFFFFFFFFFFFFFFFFusize;
 
-// Read text as TOML: the Document it holds, or why it cannot be read
+// Read text as TOML: the Document it holds, or why it cannot be read. The
+// text is taken as bytes, since 'parse' checks for itself that they are
+// UTF-8 (a '&str' is also accepted: it is bytes where bytes are wanted).
 pub fn parse(text &Array[u8]) Result[Document, TomlError] {
   mut r = new Reader(0usize, 1u32, false, 0u32, String.empty());
   mut doc = new Document();
@@ -297,14 +299,14 @@ pub fn parse(text &Array[u8]) Result[Document, TomlError] {
 }
 
 // The first failure is the one kept
-fn failAt(r &mut Reader, line u32, reason &Array[u8]) {
+fn failAt(r &mut Reader, line u32, reason &str) {
   if r.failed { return; }
   r.failed = true;
   r.errLine = line;
-  r.reason = String.from(reason as &str);
+  r.reason = String.from(reason);
 }
 
-fn fail(r &mut Reader, reason &Array[u8]) { failAt(r, r.line, reason); }
+fn fail(r &mut Reader, reason &str) { failAt(r, r.line, reason); }
 
 fn isDigit(c u8) bool { c >= '0' and c <= '9'; }
 
@@ -361,7 +363,7 @@ fn newline(text &Array[u8], r &mut Reader) bool {
 
 // Spaces, a comment if there is one, then the line's end or the text's.
 // Anything else fails with 'what'.
-fn endLine(text &Array[u8], r &mut Reader, what &Array[u8]) {
+fn endLine(text &Array[u8], r &mut Reader, what &str) {
   skipSpace(text, r);
   if r.pos < text.len and text[r.pos] == '#' { skipComment(text, r); }
   if r.failed or r.pos >= text.len { return; }
@@ -369,7 +371,7 @@ fn endLine(text &Array[u8], r &mut Reader, what &Array[u8]) {
 }
 
 // A bare key, appended to dest: false, having failed, when there is none
-fn readKey(text &Array[u8], r &mut Reader, dest &mut String, what &Array[u8]) bool {
+fn readKey(text &Array[u8], r &mut Reader, dest &mut String, what &str) bool {
   imm start = r.pos;
   while r.pos < text.len and isKeyByte(text[r.pos]) { r.pos = r.pos + 1usize; }
   if r.pos > start {
@@ -378,15 +380,15 @@ fn readKey(text &Array[u8], r &mut Reader, dest &mut String, what &Array[u8]) bo
   }
   if r.pos < text.len and (text[r.pos] == '"' or text[r.pos] == '\'') {
     mut m = String.from("quoted ");
-    m.append(what as &str);
+    m.append(what);
     m.append("s are not supported: a ");
-    m.append(what as &str);
+    m.append(what);
     m.append(" is letters, digits, '_' and '-'");
     fail(r, m.view());
     return false;
   }
   mut m = String.from("expected a ");
-  m.append(what as &str);
+  m.append(what);
   m.append(": letters, digits, '_' and '-'");
   fail(r, m.view());
   false;
