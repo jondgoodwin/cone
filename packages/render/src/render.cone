@@ -708,7 +708,16 @@ pub struct Renderer {
   // so a surface seen small or at a slant is filtered, not aliased: colour
   // averaged in linear light.
   pub fn addTexture(self &mut, device &mut Device, img &Image) TextureHandle {
-    self.addTextureAs(device, img, TEXTURE_FORMAT_RGBA8_UNORM_SRGB, MIP_COLOUR);
+    self.addTextureAs(device, img, TEXTURE_FORMAT_RGBA8_UNORM_SRGB, MIP_COLOUR, 0.5);
+  }
+
+  // The same for a card a material cuts out below 'cutoff' of its alpha (a
+  // needle tuft, a leaf, a fence; ALPHA_MASK): the colour of each level is
+  // averaged weighted by the alpha, and the alpha of each is raised until the
+  // same share of its texels passes 'cutoff' as the base level's do, so the
+  // card does not thin to nothing as it is seen from farther off (mips.cone)
+  pub fn addCutoutTexture(self &mut, device &mut Device, img &Image, cutoff f32) TextureHandle {
+    self.addTextureAs(device, img, TEXTURE_FORMAT_RGBA8_UNORM_SRGB, MIP_CUTOUT, cutoff);
   }
 
   // The same, its bytes read as they are, not decoded from sRGB: for maps
@@ -716,17 +725,17 @@ pub struct Renderer {
   // occlusion maps); each level averages the numbers. A normal map is
   // 'addNormalTexture'.
   pub fn addLinearTexture(self &mut, device &mut Device, img &Image) TextureHandle {
-    self.addTextureAs(device, img, TEXTURE_FORMAT_RGBA8_UNORM, MIP_LINEAR);
+    self.addTextureAs(device, img, TEXTURE_FORMAT_RGBA8_UNORM, MIP_LINEAR, 0.5);
   }
 
   // A tangent-space normal map, read as it is like 'addLinearTexture', but
   // each level's vectors averaged and made unit length again, which
   // averaging the bytes would not do
   pub fn addNormalTexture(self &mut, device &mut Device, img &Image) TextureHandle {
-    self.addTextureAs(device, img, TEXTURE_FORMAT_RGBA8_UNORM, MIP_NORMAL);
+    self.addTextureAs(device, img, TEXTURE_FORMAT_RGBA8_UNORM, MIP_NORMAL, 0.5);
   }
 
-  fn addTextureAs(self &mut, device &mut Device, img &Image, format u32, kind u32) TextureHandle {
+  fn addTextureAs(self &mut, device &mut Device, img &Image, format u32, kind u32, cutoff f32) TextureHandle {
     imm w = u32.from(img.width);
     imm h = u32.from(img.height);
     mut rgba = List[u8].withCapacity(usize.from(w * h * 4u32));
@@ -745,7 +754,7 @@ pub struct Renderer {
     mut texture = device.createTexture(&desc);
     if n > 0usize {
       if levels > 1u32 {
-        imm chain = buildMips(&rgba, w, h, kind);
+        imm chain = buildMipsCut(&rgba, w, h, kind, cutoff);
         imm cv = chain.view();
         device.queue.writeTextureLevels(&texture, &cv[0] as *u8);
       } else {

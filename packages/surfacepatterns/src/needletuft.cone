@@ -1,0 +1,416 @@
+// ======== Needle tufts: a conifer's foliage painted on a card ========
+//
+// Not a tiling surface like the others: an RGBA image for a cut-out card
+// (a quad, or three crossed, that the caller sets at the end of a limb), the
+// card's needles drawn as anti-aliased tapered strokes over a clear
+// background. Its alpha is the needles' coverage, soft over one texel at
+// each stroke's edge, so that a material cutting out below one half has an
+// edge as clean as the texture's resolution allows. The colours are sRGB
+// (as the base colour map of a TextureSet is) and each clear texel carries
+// the colour of the needles beside it, not black, so a texel filtered with
+// its neighbours (the sampler's, or a mip level's) does not dim the needles
+// at their edges.
+//
+// Three kinds, each one cell of 'size' texels square (the card's whole face),
+// the bottom row first as the other maps have it:
+//
+// - TUFT_PINE, an eastern white pine's: the end of a shoot seen face on, a
+//   short brown twig with a bud, and fascicles of five long fine needles
+//   radiating from the twig's last stretch like a starburst, forward and
+//   round, each needle a little curved, dark blue-green at its base and
+//   silvery towards its point. The image has four cells side by side: the
+//   tuft fresh, the tuft as it is in October (when last year's needles, the
+//   inner part of the tuft, are going tawny and a few are brown flecks), then
+//   a PAD, fresh and in October: a bough seen from above, a main twig with
+//   shoots off it, each ending in a smaller tuft, the whole a cloud of tufts
+//   for a card laid flat along a limb (a tier's pad of foliage).
+// - TUFT_HEMLOCK, an eastern hemlock's spray: a flat card, a main twig up its
+//   middle and side twigs coming off it alternately, each fringed on both
+//   sides with short flat needles in a row. Dark above.
+// - TUFT_FIR, a balsam fir's: the same, the needles longer, stiffer, set
+//   closer and swept forward, a denser comb.
+//
+// The mean coverage (alpha) of each is about 0.4, so most of a card is clear
+// and its fragments are cut out early; 'meanAlpha' measures it. What colours
+// and shapes are, are estimates to tune against photographs: they come from
+// botanical descriptions (needles 5 to 13 cm, five to a fascicle, blue-green
+// from the white bands inside; hemlock needles 1.3 cm in one plane, balsam
+// fir's 2 cm) and from the eye on three photographs.
+//
+// Every random number is noise's PCG hash through a stream seeded by the
+// params' seed, so a bake is the same on every run.
+
+pub const TUFT_PINE = 0;
+pub const TUFT_HEMLOCK = 1;
+pub const TUFT_FIR = 2;
+
+pub struct NeedleTuftParams {
+  pub kind i32;
+  pub size i32;               // texels a side of one cell
+  pub seed u32;
+  pub fascicles i32;          // pine: bundles of five needles; spray: needles in a row, a side twig's length over this scale
+  pub needleLength f32;       // a needle's length over the cell's side
+  pub needleWidth f32;        // its base width over the cell's side
+  pub base Color;             // sRGB (0 to 255 components): a needle at its base
+  pub tip Color;              // and at its point
+  pub tawny Color;            // the fading inner needles of October (pine's second cell)
+  pub brown Color;            // the twig, and the dead needles
+  pub sideTwigs i32;          // sprays: how many, each side of the main twig
+  pub forward f32;            // sprays: degrees a side twig leaves the main one at; needles lean forward by this much less than a right angle
+
+  // An eastern white pine's: 84 fascicles of five, needles 0.42 of the card long, deep blue-green
+  // to a duller silvery green (foliage reflects a tenth or so of the light: darker than it looks)
+  pub fn whitePine(size i32, seed u32) NeedleTuftParams {
+    new NeedleTuftParams(TUFT_PINE, size, seed, 84, 0.42, 0.0135, new Color(26., 54., 44., 1.), new Color(80., 118., 96., 1.),
+      new Color(146., 124., 64., 1.), new Color(96., 76., 58., 1.), 0, 0.);
+  }
+
+  // An eastern hemlock's: nine side twigs a side, needles dark and flat
+  pub fn hemlock(size i32, seed u32) NeedleTuftParams {
+    new NeedleTuftParams(TUFT_HEMLOCK, size, seed, 16, 0.085, 0.0098, new Color(24., 58., 40., 1.), new Color(58., 98., 70., 1.),
+      new Color(0., 0., 0., 1.), new Color(86., 66., 50., 1.), 9, 52.);
+  }
+
+  // A balsam fir's: eleven side twigs a side, needles longer, nearly black-green
+  pub fn balsamFir(size i32, seed u32) NeedleTuftParams {
+    new NeedleTuftParams(TUFT_FIR, size, seed, 20, 0.11, 0.0095, new Color(16., 44., 32., 1.), new Color(42., 82., 58., 1.),
+      new Color(0., 0., 0., 1.), new Color(80., 62., 48., 1.), 11, 40.);
+  }
+}
+
+// How many cells wide an image of this kind is
+// (a pine's: the tuft, the tuft in October, the pad, the pad in October)
+pub fn tuftCells(kind i32) i32 { if kind == TUFT_PINE { 4; } else { 1; }; }
+
+struct TuftRng {
+  state u32;
+
+  fn make(seed u32) TuftRng { new TuftRng(pcg(seed ^ 0x2c1b3c6du32)); }
+  fn unit(self &mut) f32 {
+    state = state + 0x9E3779B9u32;
+    toUnit(pcg(state));
+  }
+  fn signed(self &mut) f32 { self.unit() * 2. - 1.; }
+}
+
+// The picture being painted: premultiplied colour and alpha, a float each, over the whole image
+struct TuftCanvas {
+  w i32;
+  h i32;
+  px List[f32];               // r, g, b (premultiplied, sRGB values 0 to 255), a: four a texel
+}
+
+// Paint one needle: a quadratic curve from (ax, ay) through the control point (cx, cy) to
+// (bx, bz), points in the cell's unit square (y up), 'width0' texels wide at its base and 'taper'
+// of that less at its point, coloured 'c0' at the base to 'c1' at the point, 'age' the colour's
+// own (the first share of the needle, up to 'tawnyTo', is 'tawnyC' instead, when tawnyTo > 0).
+// The cell is 'cell' of the image's cells from the left; nothing leaves it.
+fn paintNeedle(cv &mut TuftCanvas, cell i32, size i32, ax f32, ay f32, cx f32, cy f32, bx f32, bz f32,
+    width0 f32, taper f32, c0 Color, c1 Color, tawnyC Color, tawnyTo f32) {
+  imm k = 10;
+  imm fs = f32.from(size);
+  // the polyline, in texels of the cell
+  mut xs Array[f32, 11] = [0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.];
+  mut ys Array[f32, 11] = [0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.];
+  mut minx f32 = 1.0e9;
+  mut maxx f32 = -1.0e9;
+  mut miny f32 = 1.0e9;
+  mut maxy f32 = -1.0e9;
+  mut i = 0;
+  while i <= k {
+    imm s = f32.from(i) / f32.from(k);
+    imm a = (1. - s) * (1. - s);
+    imm b = 2. * (1. - s) * s;
+    imm c = s * s;
+    imm x = (a * ax + b * cx + c * bx) * fs;
+    imm y = (a * ay + b * cy + c * bz) * fs;
+    xs[usize.from(i)] = x;
+    ys[usize.from(i)] = y;
+    if x < minx { minx = x; }
+    if x > maxx { maxx = x; }
+    if y < miny { miny = y; }
+    if y > maxy { maxy = y; }
+    i = i + 1;
+  }
+  imm pad = width0 + 2.;
+  imm x0 = maxi(0, i32.from(libc.floorf(minx - pad)));
+  imm x1 = mini(size - 1, i32.from(libc.floorf(maxx + pad)));
+  imm y0 = maxi(0, i32.from(libc.floorf(miny - pad)));
+  imm y1 = mini(size - 1, i32.from(libc.floorf(maxy + pad)));
+  mut py = y0;
+  while py <= y1 {
+    mut pxl = x0;
+    while pxl <= x1 {
+      imm qx = f32.from(pxl) + 0.5;
+      imm qy = f32.from(py) + 0.5;
+      mut best = 1.0e9;
+      mut bestS f32 = 0.;
+      mut j = 0;
+      while j < k {
+        imm sx = xs[usize.from(j)];
+        imm sy = ys[usize.from(j)];
+        imm dx = xs[usize.from(j + 1)] - sx;
+        imm dy = ys[usize.from(j + 1)] - sy;
+        imm len2 = dx * dx + dy * dy;
+        imm t = if len2 < 0.000001 { 0.; } else { clamp01(((qx - sx) * dx + (qy - sy) * dy) / len2); };
+        imm ex = qx - (sx + dx * t);
+        imm ey = qy - (sy + dy * t);
+        imm d = libc.sqrtf(ex * ex + ey * ey);
+        if d < best {
+          best = d;
+          bestS = (f32.from(j) + t) / f32.from(k);
+        }
+        j = j + 1;
+      }
+      imm half = 0.5 * width0 * (1. - taper * bestS);
+      imm cov = clamp01(half - best + 0.5);
+      if cov > 0.002 {
+        mut r = c0.red + (c1.red - c0.red) * bestS;
+        mut g = c0.green + (c1.green - c0.green) * bestS;
+        mut b = c0.blue + (c1.blue - c0.blue) * bestS;
+        if bestS < tawnyTo {
+          imm m = clamp01((tawnyTo - bestS) / 0.12);
+          r = r + (tawnyC.red - r) * m;
+          g = g + (tawnyC.green - g) * m;
+          b = b + (tawnyC.blue - b) * m;
+        }
+        imm at = usize.from(((py * cv.w) + cell * size + pxl) * 4);
+        imm keep = 1. - cov;
+        cv.px.set(at, *cv.px[at] * keep + r * cov);
+        cv.px.set(at + 1usize, *cv.px[at + 1usize] * keep + g * cov);
+        cv.px.set(at + 2usize, *cv.px[at + 2usize] * keep + b * cov);
+        cv.px.set(at + 3usize, *cv.px[at + 3usize] * keep + cov);
+      }
+      pxl = pxl + 1;
+    }
+    py = py + 1;
+  }
+}
+
+fn maxi(a i32, b i32) i32 { if a > b { a; } else { b; }; }
+fn mini(a i32, b i32) i32 { if a < b { a; } else { b; }; }
+
+// A needle from (ax, ay) leaving in the direction 'deg' (degrees from straight up, clockwise),
+// 'len' long (unit square), curving by 'bend' degrees over its length
+fn paintNeedleAt(cv &mut TuftCanvas, cell i32, size i32, ax f32, ay f32, deg f32, len f32, bend f32,
+    width0 f32, taper f32, c0 Color, c1 Color, tawnyC Color, tawnyTo f32) {
+  imm a0 = radians(deg);
+  imm a1 = radians(deg + bend);
+  imm cx = ax + libc.sinf(a0) * len * 0.5;
+  imm cy = ay + libc.cosf(a0) * len * 0.5;
+  // the end: the mean of the two headings for the second half
+  imm am = (a0 + a1) * 0.5;
+  imm bx = cx + libc.sinf(am) * len * 0.5 + libc.sinf(a1) * 0.0;
+  imm bz = cy + libc.cosf(am) * len * 0.5;
+  paintNeedle(cv, cell, size, ax, ay, cx, cy, bx, bz, width0, taper, c0, c1, tawnyC, tawnyTo);
+}
+
+// A twig: a thicker straight stroke in the twig colour
+fn paintTwig(cv &mut TuftCanvas, cell i32, size i32, ax f32, ay f32, bx f32, bz f32, width0 f32, c Color) {
+  paintNeedle(cv, cell, size, ax, ay, (ax + bx) * 0.5, (ay + bz) * 0.5, bx, bz, width0, 0.35, c, c, c, 0.);
+}
+
+// A starburst of fascicles: 'fascicles' bundles of five needles from along the last stretch of a
+// shoot that ends at (cx, cy), the shoot's heading 'heading' degrees (from straight up, clockwise),
+// the longest needle 'len' (unit square), each stroke 'w0' texels wide at its base. The bundles
+// point forward and round, from straight on to nearly back along the shoot, the older ones, lower
+// on it, leaning out more; 'october' fades the inner part of some needles to tawny, and a few go brown.
+fn paintTuft(cv &mut TuftCanvas, cell i32, size i32, p &NeedleTuftParams, rng &mut TuftRng, cx f32, cy f32,
+    heading f32, len f32, fascicles i32, w0 f32, october bool) {
+  imm hr = radians(heading);
+  imm dx = libc.sinf(hr);
+  imm dy = libc.cosf(hr);
+  mut f = 0;
+  while f < fascicles {
+    imm along = rng.unit();
+    // from the shoot's last stretch back from the bud
+    imm back = 0.43 * len * (1. - along);
+    imm ax = cx - dx * back + 0.01 * len * rng.signed();
+    imm ay = cy - dy * back;
+    imm lean = (6. + 150. * rng.unit()) * (0.7 + 0.3 * (1. - along));
+    imm side = if rng.unit() < 0.5 { -1.; } else { 1.; };
+    mut n = 0;
+    while n < 5 {
+      // five diverge a few degrees among themselves
+      imm deg = heading + side * lean + 11. * rng.signed();
+      imm l = len * (0.72 + 0.4 * rng.unit()) * (0.8 + 0.2 * along);
+      imm bend = rng.signed() * 22.;
+      imm dead = october and rng.unit() < 0.07;
+      imm tt = if october and rng.unit() < 0.6 { 0.30 + 0.22 * rng.unit(); } else { 0.; };
+      if dead {
+        paintNeedleAt(cv, cell, size, ax, ay, deg, l * 0.7, bend, w0, 0.5, p.brown, p.tawny, p.tawny, 0.);
+      } else {
+        paintNeedleAt(cv, cell, size, ax, ay, deg, l, bend, w0, 0.65, p.base, p.tip, p.tawny, tt);
+      }
+      n = n + 1;
+    }
+    f = f + 1;
+  }
+}
+
+// One pine tuft cell: a short brown twig, the starburst at its end and a bud
+fn paintPine(cv &mut TuftCanvas, p &NeedleTuftParams, rng &mut TuftRng, cell i32, october bool) {
+  imm size = p.size;
+  imm fs = f32.from(size);
+  paintTwig(cv, cell, size, 0.5, 0.0, 0.5 + 0.02 * rng.signed(), 0.5, 0.017 * fs, p.brown);
+  paintTuft(cv, cell, size, p, rng, 0.5, 0.52, 0., p.needleLength, p.fascicles, p.needleWidth * fs, october);
+  paintNeedle(cv, cell, size, 0.5, 0.49, 0.5, 0.505, 0.5, 0.52, 0.03 * fs, 0.0, p.brown, p.brown, p.brown, 0.);
+}
+
+// One pine pad cell: a bough seen from above, as it lies along a limb: a main twig up the middle,
+// short shoots off it alternately left and right at about fifty degrees forward, each ending in a
+// tuft (smaller than the tuft cell's, the needles finer), and a larger tuft at the main twig's end;
+// the needles of neighbouring tufts cross, so a pad of these is a cloud of them
+fn paintPad(cv &mut TuftCanvas, p &NeedleTuftParams, rng &mut TuftRng, cell i32, october bool) {
+  imm size = p.size;
+  imm fs = f32.from(size);
+  imm w0 = p.needleWidth * fs * 0.6;
+  imm bow = 0.03 * rng.signed();
+  paintNeedle(cv, cell, size, 0.5, 0.0, 0.5 + bow, 0.5, 0.5, 0.86, 0.014 * fs, 0.4, p.brown, p.brown, p.brown, 0.);
+  imm shoots = 13;
+  mut s = 0;
+  while s < shoots {
+    imm t = f32.from(s) / f32.from(shoots - 1);
+    imm sg = if s % 2 == 0 { -1.; } else { 1.; };
+    imm y0 = 0.05 + 0.75 * t;
+    imm ox = 0.5 + bow * 2. * (1. - (2. * t - 1.) * (2. * t - 1.));
+    imm ang = radians(48. + 14. * rng.signed());
+    imm reach = (0.26 - 0.1 * t) * (0.8 + 0.4 * rng.unit());
+    imm ex = ox + sg * libc.sinf(ang) * reach;
+    imm ey = y0 + libc.cosf(ang) * reach;
+    paintNeedle(cv, cell, size, ox, y0, (ox + ex) * 0.5, (y0 + ey) * 0.5, ex, ey, 0.008 * fs, 0.5, p.brown, p.brown, p.brown, 0.);
+    paintTuft(cv, cell, size, p, rng, ex, ey, sg * degrees(ang), 0.23, 20, w0, october);
+    s = s + 1;
+  }
+  paintTuft(cv, cell, size, p, rng, 0.5 + bow, 0.88, 0., 0.25, 26, w0, october);
+}
+
+// A spray: main twig up the middle, side twigs alternately, needles fringing each in two rows
+fn paintSpray(cv &mut TuftCanvas, p &NeedleTuftParams, rng &mut TuftRng) {
+  imm size = p.size;
+  imm fs = f32.from(size);
+  imm w0 = p.needleWidth * fs;
+  imm bow = 0.025 * rng.signed();
+  // the main twig, from the bottom to the tip, bowed a little
+  paintNeedle(cv, 0, size, 0.5, 0.0, 0.5 + bow, 0.5, 0.5, 0.97, 0.014 * fs, 0.5, p.brown, p.brown, p.brown, 0.);
+  imm per = if p.kind == TUFT_FIR { 0.011; } else { 0.0112; };
+  mut s = 0;
+  while s < p.sideTwigs {
+    imm t = (f32.from(s) + 0.5) / f32.from(p.sideTwigs);
+    // twigs are longest low on the spray and shorten to its tip
+    imm ly = 0.07 + 0.88 * t;
+    imm reach = 0.46 * (1. - 0.55 * t) * (0.6 + 0.55 * rng.unit());
+    mut side = 0;
+    while side < 2 {
+      imm sg = if side == 0 { -1.; } else { 1.; };
+      // now and then a side twig is missing, and each leaves at a slightly different angle
+      imm present = rng.unit() >= 0.08;
+      imm ang = radians(p.forward + 12. * rng.signed());
+      if present {
+      imm ox = 0.5 + bow * 2. * (1. - (2. * t - 1.) * (2. * t - 1.));
+      imm oy = ly + (if side == 0 { 0.; } else { 0.5 / f32.from(p.sideTwigs) * 0.88; });
+      // the side twig's far end
+      imm ex = ox + sg * libc.sinf(ang) * reach;
+      imm ey = oy + libc.cosf(ang) * reach * (if p.kind == TUFT_FIR { 1.1; } else { 0.8; });
+      // (ending inside the card)
+      imm exc = if ex < 0.02 { 0.02; } elif ex > 0.98 { 0.98; } else { ex; };
+      imm eyc = if ey > 0.985 { 0.985; } else { ey; };
+      paintNeedle(cv, 0, size, ox, oy, (ox + exc) * 0.5, (oy + eyc) * 0.5 + 0.01, exc, eyc, 0.0085 * fs, 0.5, p.brown, p.brown, p.brown, 0.);
+      // the twig's heading, from its ends
+      imm hdx = exc - ox;
+      imm hdy = eyc - oy;
+      imm tl = libc.sqrtf(hdx * hdx + hdy * hdy);
+      imm heading = degrees(libc.atan2f(hdx, hdy));
+      // needles in rows: a pair every 'per', one each side of the twig, leaning forward
+      mut u = 0.05;
+      while u < 1. {
+        imm px = ox + hdx * u;
+        imm py = oy + hdy * u;
+        // shorter towards the twig's tip
+        imm nl = p.needleLength * (1. - 0.5 * u) * (0.85 + 0.3 * rng.unit());
+        imm lean = if p.kind == TUFT_FIR { 52.; } else { 68.; };
+        mut r = 0;
+        while r < 2 {
+          imm rs = if r == 0 { -1.; } else { 1.; };
+          imm deg = heading + rs * (lean + 8. * rng.signed());
+          paintNeedleAt(cv, 0, size, px, py, deg, nl, rs * 9., w0, 0.4, p.base, p.tip, p.tawny, 0.);
+          r = r + 1;
+        }
+        u = u + per / maxF(0.15, tl);
+      }
+      }
+      side = side + 1;
+    }
+    s = s + 1;
+  }
+  // the main twig's own needles, shorter, towards the tip
+  mut u = 0.08;
+  while u < 0.97 {
+    mut r = 0;
+    while r < 2 {
+      imm rs = if r == 0 { -1.; } else { 1.; };
+      paintNeedleAt(cv, 0, size, 0.5 + bow * 2. * (1. - (2. * u - 1.) * (2. * u - 1.)), u, rs * (60. + 12. * rng.signed()),
+        p.needleLength * 0.8, rs * 8., w0, 0.4, p.base, p.tip, p.tawny, 0.);
+      r = r + 1;
+    }
+    u = u + per * 1.4;
+  }
+}
+
+// The needle tuft 'p' describes, as RGBA (sRGB colour, straight alpha) texels, the cells
+// ('tuftCells') side by side, rows from the bottom
+pub fn bakeNeedleTuft(p &NeedleTuftParams) TexelMap {
+  imm cells = tuftCells(p.kind);
+  imm w = p.size * cells;
+  imm h = p.size;
+  mut cv = new TuftCanvas(w, h, List[f32].withCapacity(usize.from(w * h * 4)));
+  mut i = 0;
+  while i < w * h * 4 { cv.px.push(0.); i = i + 1; }
+  mut rng = TuftRng.make(p.seed);
+  if p.kind == TUFT_PINE {
+    paintPine(&mut cv, p, &mut rng, 0, false);
+    paintPine(&mut cv, p, &mut rng, 1, true);
+    paintPad(&mut cv, p, &mut rng, 2, false);
+    paintPad(&mut cv, p, &mut rng, 3, true);
+  } else {
+    paintSpray(&mut cv, p, &mut rng);
+  }
+  // to bytes; a clear texel takes the needles' mean colour
+  imm fill = new Color((p.base.red + p.tip.red) * 0.5, (p.base.green + p.tip.green) * 0.5, (p.base.blue + p.tip.blue) * 0.5, 1.);
+  mut out = TexelMap.withCapacity(w, h, 4);
+  mut t = 0;
+  while t < w * h {
+    imm at = usize.from(t * 4);
+    imm a = clamp01(*cv.px[at + 3usize]);
+    mut r = fill.red;
+    mut g = fill.green;
+    mut b = fill.blue;
+    if a > 0.0005 {
+      r = *cv.px[at] / a;
+      g = *cv.px[at + 1usize] / a;
+      b = *cv.px[at + 2usize] / a;
+    }
+    out.pixels.push(unitByte(r / 255.));
+    out.pixels.push(unitByte(g / 255.));
+    out.pixels.push(unitByte(b / 255.));
+    out.pixels.push(unitByte(a));
+    t = t + 1;
+  }
+  out;
+}
+
+// The mean alpha of one cell ('cell' from 0) of a baked tuft
+pub fn meanAlpha(m &TexelMap, cell i32, cells i32) f32 {
+  imm cw = m.width / cells;
+  mut sum f64 = 0d;
+  mut y = 0;
+  while y < m.height {
+    mut x = 0;
+    while x < cw {
+      sum = sum + f64.from(m.at(cell * cw + x, y, 3));
+      x = x + 1;
+    }
+    y = y + 1;
+  }
+  f32.from(sum / f64.from(cw * m.height) / 255d);
+}

@@ -24,7 +24,12 @@
 //   them in whorls (a pine's), each whorl twisted from the last. And 'kink'
 //   (the chance per segment) with 'kinkAngle': a dog-leg, a stem that veers
 //   off and recovers only partly, where a maple's leader was lost and a side
-//   bud took over.
+//   bud took over. For a conifer's irregular whorls: 'skip' (the chance a
+//   child is left out, an incomplete whorl), 'nodeJitter' (nodes off even
+//   spacing), the tree's 'windBias' and 'windAzimuth' (limbs longer
+//   downwind, shorter and likelier missing upwind: a shore tree's one-sided
+//   crown), and 'stubs': dead branch stubs, short tapered spikes, up the
+//   trunk's lower part (a forest pine keeps its dead limbs for decades).
 // - grow: the skeleton from a seed, as a Tree (stems, each a polyline with
 //   a radius and a frame at each point, and the sites where leaves go).
 //   It is deterministic: the same params and seed give the same tree, bit
@@ -37,7 +42,10 @@
 //   a position along the blade; a plume is two crossed ribbons of needles
 //   along a stem). With FoliageParams.sway the mesh also carries each
 //   leaf's pivot and phase in its vertex colors, which render's flutter
-//   reads.
+//   reads. Two kinds are for a material that cuts out by alpha (a card
+//   painted with surfacepatterns' needle tufts): FOLIAGE_TUFTS, a white
+//   pine's, a few crossed cards at the ends of a limb's shoots, and
+//   FOLIAGE_SPRAYS, a hemlock's or fir's, flat cards laid along each limb.
 //
 // Where it departs from the paper: the divergence of a split's clone about
 // the vertical is simplified (a random azimuth, its angle scaled by the
@@ -51,7 +59,8 @@
 //   grow.cone        the skeleton
 //   tube.cone        the branches as a mesh
 //   foliage.cone     leaves and needles as a mesh
-//   species.cone     starting params: a red maple, a white pine
+//   species.cone     starting params: a red maple, white pines (young, forest,
+//                    shore), an eastern hemlock, a balsam fir
 
 mod weberpenn;
 
@@ -91,12 +100,16 @@ pub struct LevelParams {
   pub downAngle f32 = 45.;      // the angle of its children from it
   pub downAngleV f32 = 0.;      // random; negative: wide low, steep high, by this much
   pub rotate f32 = 140.;        // spiral between successive children (perNode 1)
-  pub rotateV f32 = 0.;
+  pub rotateV f32 = 0.;         // random turn between successive children (a whorl's: between whorls)
   pub radiusShare f32 = 0.;     // a stem of this level starts this fraction of its parent's radius there
                                 // (the pipe model's: limbs whose areas sum to the trunk's); 0: the paper's
                                 // formula, the parent's radius times (length ratio) ^ ratioPower
   pub perNode i32 = 1;          // children at a node: 1 spiral, 2 opposite, 3+ a whorl
   pub nodeTwist f32 = 90.;      // each node's turn from the one below
+  pub skip f32 = 0.;            // the chance a stem of this level is left out where its parent bears it: an incomplete whorl
+  pub nodeJitter f32 = 0.;      // how far a node strays from even spacing along the parent, as a fraction of the spacing
+  pub flat f32 = 0.;            // 0 to 1: this level's stems leave their parent in the horizontal plane, to the one side and the other
+                                // (a conifer limb's twigs, which lie in the tier's pad), their roll about it held to this much
 }
 
 pub struct TreeParams {
@@ -115,6 +128,12 @@ pub struct TreeParams {
   pub minRadius f32 = 0.0012;
   pub leafFromLevel i32 = 3;    // stems of this level and above carry leaf sites
   pub leafSites i32 = 4;        // sites on each such stem
+  pub windAzimuth f32 = 0.;     // degrees from +x towards +z: where the wind blows to
+  pub windBias f32 = 0.;        // 0 to 1: level-1 limbs downwind longer, upwind shorter and likelier missing
+  pub stubs i32 = 0;            // dead stubs on the trunk
+  pub stubFrom f32 = 0.08;      // between these fractions of the trunk's height
+  pub stubTo f32 = 0.55;
+  pub stubLength f32 = 0.3;     // metres, the lowest ones'; they shorten up the trunk
   pub levelParams Array[LevelParams, 4] = [new LevelParams(), new LevelParams(), new LevelParams(), new LevelParams()];
 }
 
@@ -137,6 +156,7 @@ pub struct Stem {
   pub radii List[f32];
   pub frames List[Quat];
   pub length f32;
+  pub dead bool = false;        // a dead stub: bark and no foliage
 }
 
 pub struct Tree {

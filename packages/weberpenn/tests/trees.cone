@@ -249,5 +249,79 @@ fn main() i32 {
     i = i + 1usize;
   }
   expect(plumeOk, "every plume index is a vertex");
+
+  // ---- The cone-card conifers ----
+  imm young = whitePineYoung(11u32, 10.);
+  imm yt = grow(&young);
+  imm forestP = whitePineForest(41u32, 24.);
+  imm ft = grow(&forestP);
+  imm shoreP = whitePineShore(71u32, 16.);
+  imm st = grow(&shoreP);
+  expect(mesh.meshHash(&branchMesh(&yt, &tp)) == mesh.meshHash(&branchMesh(&grow(&young), &tp)), "a young pine grown twice is the same");
+  mut limbs = 0;
+  mut dead = 0;
+  mut deadAbove = 0;
+  mut s2 = 0usize;
+  while s2 < ft.stems.len() {
+    imm sm = ft.stems[s2];
+    if sm.dead {
+      dead = dead + 1;
+      if (*sm.points[0usize]).y > forestP.scale * 0.56 { deadAbove = deadAbove + 1; }
+    } elif sm.level == 1 { limbs = limbs + 1; }
+    s2 = s2 + 1usize;
+  }
+  expectInt(i64.from(dead), 34i64, "a forest pine has its 34 dead stubs, as asked");
+  expectInt(i64.from(deadAbove), 0i64, "none above the stubs' range (about half the height)");
+  expect(limbs > 30 and limbs < 52, "a forest pine's tiers are incomplete: 13 whorls of four, some limbs missing");
+  // a young pine's limbs turn up at their ends: the last segment of a limb climbs
+  mut climbing = 0;
+  mut level1 = 0;
+  s2 = 0usize;
+  while s2 < yt.stems.len() {
+    imm sm = yt.stems[s2];
+    if sm.level == 1 and !sm.dead {
+      level1 = level1 + 1;
+      imm n = sm.points.len();
+      if (*sm.points[n - 1usize]).y > (*sm.points[n - 2usize]).y { climbing = climbing + 1; }
+    }
+    s2 = s2 + 1usize;
+  }
+  expect(climbing * 10 > level1 * 8, "most of a white pine's limbs end turned up");
+  // a shore pine is one-sided: more limb length downwind (+z, wind azimuth 90) than upwind
+  mut downwind f32 = 0.;
+  mut upwind f32 = 0.;
+  s2 = 0usize;
+  while s2 < st.stems.len() {
+    imm sm = st.stems[s2];
+    if sm.level == 1 and !sm.dead {
+      imm tip = *sm.points[sm.points.len() - 1usize];
+      imm base = *sm.points[0usize];
+      if tip.z > base.z { downwind = downwind + sm.length; } else { upwind = upwind + sm.length; }
+    }
+    s2 = s2 + 1usize;
+  }
+  expect(downwind > upwind * 1.4, "a shore pine's limbs are longer downwind than upwind");
+  // tufts and pads: cards, alpha-cut, double sided, uvs in a four-cell atlas
+  imm pt4 = pineTufts(5u32);
+  imm cards = foliageMesh(&yt, &pt4);
+  expect(cards.triangleCount() > 2000usize and cards.triangleCount() < 8000usize, "a young pine's cards are a few thousand triangles");
+  expectInt(i64.from(cards.triangleCount() % 2usize), 0, "cards are whole quads");
+  mut uvOk = true;
+  mut tawny = 0usize;
+  mut fresh = 0usize;
+  k = 0usize;
+  while k < cards.uvs.len() {
+    imm uv = *cards.uvs[k];
+    if uv.x < 0. or uv.x > 1. or uv.y < 0. or uv.y > 1. { uvOk = false; }
+    if uv.x > 0.5 and uv.x < 0.76 { fresh = fresh + 1usize; }
+    if uv.x > 0.76 { tawny = tawny + 1usize; }
+    k = k + 1usize;
+  }
+  expect(uvOk, "card uvs lie in the atlas");
+  expect(tawny > 0usize and fresh > tawny, "some pads are October's tawny, most fresh");
+  expect(mesh.meshHash(&cards) == mesh.meshHash(&foliageMesh(&yt, &pt4)), "the same cards twice");
+  imm hem = grow(&easternHemlock(91u32, 10.));
+  imm sprays = foliageMesh(&hem, &hemlockSprays(3u32));
+  expect(sprays.triangleCount() > 500usize and sprays.triangleCount() % 4usize == 0usize, "a hemlock's sprays are cards of four triangles");
   done();
 }

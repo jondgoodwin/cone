@@ -7,10 +7,30 @@
 // sunlit end), v the place on the blade (0.08 to 0.68 up it: a darker edge
 // and a paler midrib) and 0.9 for a petiole. Its normals lean outward from the
 // crown's middle, so a crown shades as a ball instead of a heap of plates.
+//
+// Two kinds are for a cut-out material instead (alpha-tested cards, painted
+// by surfacepatterns' needle tufts), and are cards, not blades:
+//
+// - TUFTS (an eastern white pine's): along each limb from 'tuftStart' to its
+//   tip, a tuft every 'tuftSpacing' metres, each a few crossed square cards
+//   standing on the limb and pointing forward and to a side, alternately left
+//   and right, a little drooped, a larger one at the tip pointing on and up.
+//   The tufts of a tier's limbs lie in one flat, horizontal pad. The paint is
+//   one cell, or an atlas of several side by side ('cells'): the last, a
+//   tawny one, goes on some tufts near the trunk ('tawnyShare').
+// - SPRAYS (an eastern hemlock's or a balsam fir's): flat cards laid along
+//   each limb, overlapping, as wide as 'sprayWidth' tapering to the tip, the
+//   edges drooping; the card's u is across and v along the limb.
+//
+// Their normals are the pad's, not the card's: up and out from the trunk's
+// axis, so a tier is lit from above and dark beneath as a real one is, and
+// each card turns a quarter of the way to its own plane.
 
 pub const FOLIAGE_MAPLE = 0;
 pub const FOLIAGE_NEEDLES = 1;
 pub const FOLIAGE_PLUMES = 2;   // a pine's: along each branch, two crossed ribbons of needles, widest a third of the way out
+pub const FOLIAGE_TUFTS = 3;    // tufts of crossed cards at a limb's shoot ends
+pub const FOLIAGE_SPRAYS = 4;   // flat cards along each limb
 
 pub struct FoliageParams {
   pub kind i32 = 0;
@@ -38,6 +58,33 @@ pub struct FoliageParams {
   // for every vertex of the leaf, a different number for each. Plumes carry
   // none.
   pub sway bool = false;
+  // Tufts and sprays (cards)
+  pub cells i32 = 1;            // the paint's cells side by side; the last is the tawny one when there are two or more
+  pub tawnyShare f32 = 0.;      // the chance a tuft by the trunk is tawny, falling to none at the crown's edge
+  pub tuftFromLevel i32 = 1;    // stems of this level carry tufts all along, those of a higher level one at the tip
+  pub tuftStart f32 = 0.4;      // from this fraction along the stem
+  pub tuftSpacing f32 = 0.45;   // metres between tufts
+  pub tuftSize f32 = 0.5;       // a card's side, metres
+  pub tuftSizeV f32 = 0.2;      // the fraction it varies by
+  pub tuftMax i32 = 320;        // the most tufts a tree has: past it they are thinned at random (tips stay)
+  pub tuftSplay f32 = 38.;      // degrees a tuft's axis leaves the stem's, alternately left and right
+  pub tuftDroop f32 = 12.;      // degrees it falls
+  pub tuftCards i32 = 3;        // crossed cards in a tuft (1 to 4)
+  // With four cells (surfacepatterns' pine atlas: tuft, tuft in October, pad, pad in October) each
+  // limb also carries pads from 'padStart' to its tip: flat cards 'padLength' long and 'padWidth'
+  // wide (narrowing to the tip), laid along the limb, each with a second tilted 'padTilt' degrees
+  // about the limb's axis, so a tier is a flat cloud of foliage a little thick
+  pub padWidth f32 = 1.2;
+  pub padLength f32 = 0.95;
+  pub padStart f32 = 0.3;
+  pub padTilt f32 = 24.;
+  pub sprayFromLevel i32 = 1;   // stems of this level and above carry sprays
+  pub sprayStart f32 = 0.15;    // from this fraction along the stem
+  pub sprayLength f32 = 0.6;    // a card's length along the stem, metres (neighbours overlap by a third)
+  pub sprayWidth f32 = 0.45;    // its width, metres, narrowing to 0.55 of that at the tip
+  pub sprayDroop f32 = 0.25;    // its edges fall by this much of its half-width
+  pub shadeUp f32 = 0.6;        // the normals' share of up
+  pub shadeOut f32 = 0.6;       // and of out from the trunk's axis
 }
 
 // The golden ratio's fractional part: the phases of successive leaves
@@ -209,10 +256,239 @@ fn addPlumes(m &mut mesh.Mesh, tree &Tree, fp &FoliageParams, rng &mut Rng, cent
   }
 }
 
+// ---- Cards: tufts and sprays ----
+
+// 'v' turned 'deg' degrees about the unit vector 'axis' (Rodrigues)
+fn turnAbout(v Vec3, axis Vec3, deg f32) Vec3 {
+  imm c = libc.cosf(radians(deg));
+  imm s = libc.sinf(radians(deg));
+  v * c + axis.cross(v) * s + axis * (axis.dot(v) * (1. - c));
+}
+
+// The horizontal direction across 'tan' (so a card on a level stem lies flat); a steep stem's,
+// across it on the x axis's side
+fn flatAcross(tan Vec3) Vec3 {
+  imm f = tan.cross(v3(0., 1., 0.));
+  if f.length() < 0.2 { return unitv(tan.cross(v3(1., 0., 0.))); }
+  unitv(f);
+}
+
+// A card's normal for the shading of a pad: up, and out from the trunk's axis at 'p', and
+// 'tilt' of 'plane' (the card's own, one way or the other)
+fn padNormal(fp &FoliageParams, p Vec3, plane Vec3, tilt f32) Vec3 {
+  imm hr = unitv(v3(p.x, 0., p.z));
+  unitv(v3(0., fp.shadeUp, 0.) + hr * fp.shadeOut + plane * tilt);
+}
+
+// One card, a quad 'a' 'b' (the bottom edge's ends) 'c' 'd' (the top's, above 'b' and 'a'), from both
+// sides: the front's normal 'nf', the back copy's 'nb', uvs from (u0, v0) at 'a' to (u1, v1) at 'c'
+fn addCard(m &mut mesh.Mesh, a Vec3, b Vec3, c Vec3, d Vec3, u0 f32, u1 f32, v0 f32, v1 f32, nf Vec3, nb Vec3) {
+  imm first = u32.from(m.positions.len());
+  mut side = 0;
+  while side < 2 {
+    imm n = if side == 0 { nf; } else { nb; };
+    m.positions.push(a); m.normals.push(n); m.uvs.push(new Vec2(u0, v0));
+    m.positions.push(b); m.normals.push(n); m.uvs.push(new Vec2(u1, v0));
+    m.positions.push(c); m.normals.push(n); m.uvs.push(new Vec2(u1, v1));
+    m.positions.push(d); m.normals.push(n); m.uvs.push(new Vec2(u0, v1));
+    side = side + 1;
+  }
+  m.indices.push(first); m.indices.push(first + 1u32); m.indices.push(first + 2u32);
+  m.indices.push(first); m.indices.push(first + 2u32); m.indices.push(first + 3u32);
+  m.indices.push(first + 4u32); m.indices.push(first + 6u32); m.indices.push(first + 5u32);
+  m.indices.push(first + 4u32); m.indices.push(first + 7u32); m.indices.push(first + 6u32);
+}
+
+// The u range of paint cell 'cell' of 'cells', held a hair in from its neighbours'
+fn cellU0(fp &FoliageParams, cell i32) f32 { (f32.from(cell) + 0.012) / f32.from(maxi(1, fp.cells)); }
+fn cellU1(fp &FoliageParams, cell i32) f32 { (f32.from(cell) + 0.988) / f32.from(maxi(1, fp.cells)); }
+
+// A tuft still to be made
+struct Tuft {
+  at Vec3;
+  axis Vec3;
+  size f32;
+  cell i32;
+  tip bool;
+}
+
+// The point on stem 'st' the fraction t along it, and the way it runs there
+fn stemAt(st &Stem, t f32, dir &mut Vec3) Vec3 {
+  mut q = Quat.identity();
+  imm p = pointAt(&st.points, &st.frames, t, &mut q);
+  *dir = axisOf(q);
+  p;
+}
+
+// Pads along every limb (see FoliageParams.padWidth)
+fn addPads(m &mut mesh.Mesh, tree &Tree, fp &FoliageParams, rng &mut Rng) {
+  imm reach = maxf(0.5, tree.reach);
+  mut s = 0usize;
+  while s < tree.stems.len() {
+    imm st = tree.stems[s];
+    if !st.dead and st.level >= fp.tuftFromLevel and st.points.len() >= 2usize and st.length > 0.3 {
+      imm L = st.length;
+      // a twig's pads are narrower and single
+      imm limb = st.level == fp.tuftFromLevel;
+      imm narrow = if limb { 1.; } else { 0.7; };
+      imm count = maxi(1, i32.from(libc.ceilf((1. - fp.padStart) * L / (fp.padLength * 0.7))));
+      mut k = 0;
+      while k < count {
+        imm ta = fp.padStart + (1. - fp.padStart) * f32.from(k) / f32.from(count);
+        imm tb = minf(1., ta + fp.padLength / L);
+        mut dA = v3(0., 1., 0.);
+        mut dB = v3(0., 1., 0.);
+        imm pa = stemAt(st, ta, &mut dA);
+        imm pb = stemAt(st, tb, &mut dB);
+        if (pb - pa).length() > 0.1 {
+          imm tan = unitv(pb - pa);
+          imm w0 = flatAcross(tan);
+          imm mid = (pa + pb) * 0.5;
+          imm inner = 1. - clampf(libc.sqrtf(mid.x * mid.x + mid.z * mid.z) / reach, 0., 1.);
+          imm cell = if fp.cells >= 4 and rng.unit() < fp.tawnyShare * inner { 3; } else { 2; };
+          imm wa = narrow * fp.padWidth * (1. - 0.4 * ta) * 0.5 * (0.85 + 0.3 * rng.unit());
+          imm wb = narrow * fp.padWidth * (1. - 0.4 * tb) * 0.5 * (0.85 + 0.3 * rng.unit());
+          // (a limb's pad has a second, tilted card about half the time: thickness without the cost everywhere)
+          imm cardsHere = if limb and rng.unit() < 0.55 { 2; } else { 1; };
+          mut c = 0;
+          while c < cardsHere {
+            // the first lies flat, the second tilted one way or the other and a little above
+            imm tiltSign = if rng.unit() < 0.5 { 1.; } else { -1.; };
+            imm roll = if c == 0 { 0.; } else { tiltSign * fp.padTilt * (0.7 + 0.6 * rng.unit()); };
+            imm w = turnAbout(w0, tan, roll);
+            imm lift = v3(0., 0.04 * f32.from(c), 0.);
+            imm plane = unitv(w.cross(tan));
+            addCard(m, pa - w * wa + lift, pa + w * wa + lift, pb + w * wb + lift, pb - w * wb + lift,
+              cellU0(fp, cell), cellU1(fp, cell), 0., 1., padNormal(fp, mid, plane, 0.2), padNormal(fp, mid, plane, -0.2));
+            c = c + 1;
+          }
+        }
+        k = k + 1;
+      }
+    }
+    s = s + 1usize;
+  }
+}
+
+fn addTufts(m &mut mesh.Mesh, tree &Tree, fp &FoliageParams, rng &mut Rng) {
+  if fp.cells >= 4 { addPads(m, tree, fp, rng); }
+  mut tufts = List[Tuft].empty();
+  imm up = v3(0., 1., 0.);
+  imm reach = maxf(0.5, tree.reach);
+  mut s = 0usize;
+  while s < tree.stems.len() {
+    imm st = tree.stems[s];
+    if !st.dead and st.level >= fp.tuftFromLevel and st.points.len() >= 2usize {
+      imm alongOnly = st.level > fp.tuftFromLevel;
+      imm span = st.length * (1. - fp.tuftStart);
+      imm n = if alongOnly { 0; } else { i32.from(libc.floorf(span / maxf(0.05, fp.tuftSpacing))); };
+      mut sgn = if rng.unit() < 0.5 { 1.; } else { -1.; };
+      mut k = 0;
+      while k <= n {
+        imm tip = k == n;
+        imm t = if tip { 1.; } else { fp.tuftStart + (1. - fp.tuftStart) * (f32.from(k) + 0.25 + 0.5 * rng.unit()) / f32.from(n + 1); };
+        mut tan = v3(0., 1., 0.);
+        imm at = stemAt(st, t, &mut tan);
+        imm flat = flatAcross(tan);
+        // a tip tuft points on and a little up; the others splay to one side, then the other
+        mut axis = v3(0., 1., 0.);
+        if tip {
+          axis = unitv(tan + up * 0.15);
+        } else {
+          if rng.unit() < 0.2 { sgn = 0. - sgn; }
+          imm splay = radians(fp.tuftSplay * (0.7 + 0.6 * rng.unit()));
+          axis = unitv(tan * libc.cosf(splay) + flat * (sgn * libc.sinf(splay)));
+          axis = unitv(axis - up * libc.sinf(radians(fp.tuftDroop)));
+          sgn = 0. - sgn;
+        }
+        imm size = fp.tuftSize * (1. + fp.tuftSizeV * rng.signed()) * (if tip { 1.25; } else { 0.8 + 0.3 * t; });
+        mut cell = 0;
+        if fp.cells > 1 and fp.tawnyShare > 0. {
+          imm inner = 1. - clampf(libc.sqrtf(at.x * at.x + at.z * at.z) / reach, 0., 1.);
+          if rng.unit() < fp.tawnyShare * inner { cell = 1; }
+        }
+        tufts.push(new Tuft(at, axis, size, cell, tip));
+        k = k + 1;
+      }
+    }
+    s = s + 1usize;
+  }
+  // too many: thinned at random, the tips kept
+  imm keep = if tufts.len() > usize.from(fp.tuftMax) { f32.from(fp.tuftMax) / f32.from(tufts.len()); } else { 1.; };
+  imm cards = if fp.tuftCards < 1 { 1; } elif fp.tuftCards > 4 { 4; } else { fp.tuftCards; };
+  mut i = 0usize;
+  while i < tufts.len() {
+    imm tf = *tufts[i];
+    if tf.tip or keep >= 1. or rng.unit() < keep {
+      imm base = tf.at - tf.axis * (0.08 * tf.size);
+      imm w0 = flatAcross(tf.axis);
+      imm turn0 = 12. * rng.signed();
+      mut c = 0;
+      while c < cards {
+        imm w = turnAbout(w0, tf.axis, turn0 + 180. / f32.from(cards) * f32.from(c));
+        imm hw = w * (tf.size * 0.5);
+        imm plane = unitv(w.cross(tf.axis));
+        imm ctr = tf.at + tf.axis * (tf.size * 0.5);
+        imm nf = padNormal(fp, ctr, plane, 0.2);
+        imm nb = padNormal(fp, ctr, plane, -0.2);
+        addCard(m, base - hw, base + hw, base + hw + tf.axis * tf.size, base - hw + tf.axis * tf.size,
+          cellU0(fp, tf.cell), cellU1(fp, tf.cell), 0., 1., nf, nb);
+        c = c + 1;
+      }
+    }
+    i = i + 1usize;
+  }
+}
+
+fn addSprays(m &mut mesh.Mesh, tree &Tree, fp &FoliageParams, rng &mut Rng) {
+  mut s = 0usize;
+  while s < tree.stems.len() {
+    imm st = tree.stems[s];
+    if !st.dead and st.level >= fp.sprayFromLevel and st.points.len() >= 2usize and st.length > 0.15 {
+      imm L = st.length;
+      imm step = fp.sprayLength * 0.67;
+      imm count = maxi(1, i32.from(libc.ceilf((1. - fp.sprayStart) * L / step)));
+      mut k = 0;
+      while k < count {
+        imm ta = fp.sprayStart + (1. - fp.sprayStart) * f32.from(k) / f32.from(count);
+        imm tb = minf(1., ta + fp.sprayLength / L);
+        mut dirA = v3(0., 1., 0.);
+        mut dirB = v3(0., 1., 0.);
+        imm pa = stemAt(st, ta, &mut dirA);
+        imm pb = stemAt(st, tb, &mut dirB);
+        if (pb - pa).length() > 0.05 {
+          imm tan = unitv(pb - pa);
+          imm w0 = turnAbout(flatAcross(tan), tan, 14. * rng.signed());
+          imm wa = fp.sprayWidth * (1. - 0.45 * ta) * (0.85 + 0.3 * rng.unit()) * 0.5;
+          imm wb = fp.sprayWidth * (1. - 0.45 * tb) * (0.85 + 0.3 * rng.unit()) * 0.5;
+          imm dropA = v3(0., 0. - fp.sprayDroop * wa, 0.);
+          imm dropB = v3(0., 0. - fp.sprayDroop * wb, 0.);
+          imm plane = unitv(w0.cross(tan));
+          imm mid = (pa + pb) * 0.5;
+          imm nf = padNormal(fp, mid, plane, 0.25);
+          imm nb = padNormal(fp, mid, plane, -0.25);
+          addCard(m, pa - w0 * wa + dropA, pa + w0 * wa + dropA, pb + w0 * wb + dropB, pb - w0 * wb + dropB,
+            cellU0(fp, 0), cellU1(fp, 0), 0., 1., nf, nb);
+        }
+        k = k + 1;
+      }
+    }
+    s = s + 1usize;
+  }
+}
+
 // Leaves (or needles) at every site of 'tree', in one mesh
 pub fn foliageMesh(tree &Tree, fp &FoliageParams) mesh.Mesh {
   mut m = mesh.Mesh.empty();
   mut rng = Rng.make(fp.seed);
+  if fp.kind == FOLIAGE_TUFTS {
+    addTufts(&mut m, tree, fp, &mut rng);
+    return m;
+  }
+  if fp.kind == FOLIAGE_SPRAYS {
+    addSprays(&mut m, tree, fp, &mut rng);
+    return m;
+  }
   imm crown = maxf(0.5, tree.reach);
   imm centre = v3(0., tree.height * 0.55, 0.);
   if fp.kind == FOLIAGE_PLUMES {
