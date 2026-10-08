@@ -149,7 +149,55 @@ fn buildStem(p &TreeParams, rng &mut Rng, job Job, trunk f32, tree &mut Tree, jo
   if lv >= p.leafFromLevel {
     placeSites(p, rng, &pts, &frames, si, lv, &mut tree.sites);
   }
+  // Dead stubs up the trunk's lower part (made while its polyline is still ours)
+  mut stubs = List[Stub].empty();
+  if lv == 0 and job.gen == 0 and p.stubs > 0 {
+    stubs = makeStubs(p, rng, &pts, &rad, &frames);
+  }
   tree.stems.push(new Stem(lv, job.parent, pts, rad, frames, job.length));
+  // each a stem of its own (level 1, 'dead'), two points, bark and nothing more
+  mut sk = 0usize;
+  while sk < stubs.len() {
+    imm sb = *stubs[sk];
+    mut sp = List[Vec3].withCapacity(2usize);
+    sp.push(sb.at);
+    sp.push(sb.at + axisOf(sb.q) * sb.len + v3(0., 0. - 0.12 * sb.len, 0.));
+    mut sr = List[f32].withCapacity(2usize);
+    sr.push(sb.radius);
+    sr.push(sb.radius * 0.3);
+    mut sf = List[Quat].withCapacity(2usize);
+    sf.push(sb.q);
+    sf.push(sb.q);
+    tree.stems.push(new Stem(1, si, sp, sr, sf, sb.len, true));
+    sk = sk + 1usize;
+  }
+}
+
+// A dead stub, before it is a stem: where it leaves the trunk, its direction, length, radius at its base
+struct Stub {
+  at Vec3;
+  q Quat;
+  len f32;
+  radius f32;
+}
+
+// The dead stubs of a trunk: 'stubs' short tapered spikes at random heights between 'stubFrom' and
+// 'stubTo' of the trunk, leaving it out and a little down, round it, the lowest the longest
+fn makeStubs(p &TreeParams, rng &mut Rng, pts &List[Vec3], rad &List[f32], frames &List[Quat]) List[Stub] {
+  mut out = List[Stub].empty();
+  mut k = 0;
+  while k < p.stubs {
+    imm t = p.stubFrom + (p.stubTo - p.stubFrom) * rng.unit();
+    mut qa = Quat.identity();
+    imm at = pointAt(pts, frames, t, &mut qa);
+    imm qc = pitchQ(rollQ(qa, rng.unit() * 360.), 82. + 22. * rng.unit());
+    imm along = (t - p.stubFrom) / maxf(0.001, p.stubTo - p.stubFrom);
+    imm len = p.stubLength * (1. - 0.65 * along) * (0.5 + 0.9 * rng.unit());
+    imm r = clampf(radiusAtT(rad, t) * 0.1, 0.012, 0.045);
+    out.push(new Stub(at, qc, len, r));
+    k = k + 1;
+  }
+  out;
 }
 
 // The point and frame at the fraction t along a stem's polyline (equal segments)
@@ -198,13 +246,19 @@ fn placeChildren(p &TreeParams, rng &mut Rng, job Job, trunk f32, pts &List[Vec3
   mut g = 0;
   mut made = 0;
   while g < groups {
-    imm t = zone0 + (1. - zone0) * (f32.from(g) + 0.5 + 0.25 * rng.signed() * (if per == 1 { 1.; } else { 0.; })) / f32.from(groups);
+    // (a whorl's node strays from even spacing by 'nodeJitter' of the spacing: tiers a year apart are not equal)
+    imm jit = if cp.nodeJitter > 0. { cp.nodeJitter * rng.signed(); } else { 0.; };
+    imm t = zone0 + (1. - zone0) * (f32.from(g) + 0.5 + jit + 0.25 * rng.signed() * (if per == 1 { 1.; } else { 0.; })) / f32.from(groups);
     imm tr = clampf((t - zone0) / (1. - zone0), 0., 1.);
     mut qa = Quat.identity();
     imm at = pointAt(pts, frames, t, &mut qa);
     imm offLen = t * L;
     // this node's turn
-    if per > 1 { roll = roll + cp.nodeTwist; }
+    if per > 1 {
+      roll = roll + cp.nodeTwist;
+      // (a whorl's turn from the last varies by 'rotateV' too, so a conifer's limbs do not line up in columns)
+      if cp.rotateV > 0. { roll = roll + cp.rotateV * rng.signed(); }
+    }
     mut j = 0;
     while j < per and made < count {
       if per == 1 { roll = roll + cp.rotate + cp.rotateV * rng.signed(); }
@@ -212,7 +266,20 @@ fn placeChildren(p &TreeParams, rng &mut Rng, job Job, trunk f32, pts &List[Vec3
       mut down f32 = 0.;
       if cp.downAngleV >= 0. { down = cp.downAngle + cp.downAngleV * rng.signed(); }
       else { down = cp.downAngle + (0. - cp.downAngleV) * (1. - 2. * tr) + 0.1 * (0. - cp.downAngleV) * rng.signed(); }
-      imm qr = rollQ(qa, nodeRoll);
+      // a flat level: the roll that puts the child in the horizontal plane through the parent, to its left
+      // (j even) or right, mixed with the random one by 'flat'
+      mut rollUsed = nodeRoll;
+      if cp.flat > 0. {
+        imm pa = axisOf(qa);
+        imm across = pa.cross(v3(0., 1., 0.));
+        if across.length() > 0.2 {
+          imm f = unitv(across);
+          imm x0 = qa * v3(1., 0., 0.);
+          imm ang = degrees(libc.atan2f(pa.dot(x0.cross(f)), x0.dot(f)));
+          rollUsed = ang + 360. / f32.from(per) * f32.from(j) + (1. - cp.flat) * roll;
+        }
+      }
+      imm qr = rollQ(qa, rollUsed);
       imm qc = pitchQ(qr, down);
       // the child's length
       mut cl f32 = 0.;
@@ -221,11 +288,21 @@ fn placeChildren(p &TreeParams, rng &mut Rng, job Job, trunk f32, pts &List[Vec3
       } else {
         cl = (cp.length + cp.lengthV * rng.signed()) * maxf(0., L - 0.6 * offLen);
       }
+      // a conifer's incomplete whorl: a limb missing by chance, the likelier and the shorter on
+      // the side the wind comes from (a shore tree is one-sided)
+      mut skipChance = cp.skip;
+      if lv == 0 and p.windBias > 0. {
+        imm a = axisOf(qc);
+        imm w = libc.cosf(libc.atan2f(a.z, a.x) - radians(p.windAzimuth));
+        cl = cl * (1. + 0.55 * p.windBias * w);
+        skipChance = skipChance + 0.3 * p.windBias * (1. - w);
+      }
+      imm dropped = skipChance > 0. and rng.unit() < skipChance;
       imm rp = radiusAtT(rad, t);
       imm ratio = clampf(cl / maxf(0.001, L), 0.01, 1.);
       imm rc = if cp.radiusShare > 0. { rp * cp.radiusShare * (1. + 0.15 * rng.signed()); }
         else { minf(rp, rp * libc.powf(ratio, p.ratioPower)); };
-      if cl > 0.02 and rc > 0. {
+      if cl > 0.02 and rc > 0. and !dropped {
         // the radius at the base: radiusAt tapers from 'radius', so start at rc
         jobs.push(new Job(c, si, at, qc, cl, rc, 1., new Vec2(0., 0.), 0));
       }

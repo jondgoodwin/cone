@@ -1,0 +1,107 @@
+// The surfacepatterns package's needle tufts. Only a failure prints.
+//
+// For each of the three kinds (a white pine's tuft atlas, a hemlock's spray, a balsam fir's), baked 128
+// texels a cell:
+// - Determinism: a second bake gives the same bytes, another seed other ones.
+// - Shape: RGBA, as many cells wide as the kind says, the bottom row first.
+// - Coverage: each cell's mean alpha is between a quarter and a half (a pad up to three fifths), so
+//   most of a card is clear and a cut-out discards it early; and the alpha is soft (some texels
+//   neither clear nor solid) at the strokes' edges.
+// - Clear texels carry the needles' colour, not black: every texel with alpha 0 has a green channel
+//   above its red and blue (a texel filtered with its neighbours does not dim the needles).
+// - Where the paint is: a pine tuft's centre is covered, its corners are clear; a spray's main twig,
+//   up its middle, is covered, its far left and right edges clear.
+// - October's cell holds tawny (red above blue by a margin beyond the fresh cell's) and the fresh one none.
+// Last, the maps at 64 texels a cell, pinned by their FNV-1a hashes.
+
+mod needletufts;
+
+import testing use *;
+import libc;
+import geomath use *;
+import collections use *;
+import pbrmaterial use *;
+import surfacepatterns use *;
+
+const SIZE = 128;
+
+fn alphaAt(m &TexelMap, x i32, y i32) f32 { f32.from(m.at(x, y, 3)) / 255.; }
+
+// How many texels of cell 'cell' are tawny (red well above blue, and above green)
+fn tawnyTexels(m &TexelMap, cell i32, cells i32) i32 {
+  imm cw = m.width / cells;
+  mut n = 0;
+  mut y = 0;
+  while y < m.height {
+    mut x = 0;
+    while x < cw {
+      imm r = i32.from(m.at(cell * cw + x, y, 0));
+      imm g = i32.from(m.at(cell * cw + x, y, 1));
+      imm b = i32.from(m.at(cell * cw + x, y, 2));
+      if m.at(cell * cw + x, y, 3) > 128u8 and r > b + 60 and r > g { n = n + 1; }
+      x = x + 1;
+    }
+    y = y + 1;
+  }
+  n;
+}
+
+fn main() i32 {
+  imm pp = NeedleTuftParams.whitePine(SIZE, 5u32);
+  imm hp = NeedleTuftParams.hemlock(SIZE, 6u32);
+  imm fp = NeedleTuftParams.balsamFir(SIZE, 7u32);
+  imm pine = bakeNeedleTuft(&pp);
+  imm hem = bakeNeedleTuft(&hp);
+  imm fir = bakeNeedleTuft(&fp);
+  expect(mapHash(&pine) == mapHash(&bakeNeedleTuft(&pp)), "a pine tuft baked twice is the same");
+  expect(mapHash(&pine) != mapHash(&bakeNeedleTuft(&NeedleTuftParams.whitePine(SIZE, 6u32))), "another seed, another tuft");
+  expectInt(i64.from(pine.channels), 4i64, "RGBA");
+  expectInt(i64.from(pine.width), i64.from(SIZE * 4), "a pine's atlas is four cells wide (tuft, tuft in October, pad, pad in October)");
+  expectInt(i64.from(hem.width), i64.from(SIZE), "a spray is one cell");
+  expectInt(i64.from(fir.height), i64.from(SIZE), "square cells");
+
+  // coverage
+  mut c = 0;
+  while c < 4 {
+    imm a = meanAlpha(&pine, c, 4);
+    expect(a > 0.25 and a < (if c >= 2 { 0.6; } else { 0.5; }), "a pine cell's mean alpha is a quarter to a half (a pad up to three fifths)");
+    c = c + 1;
+  }
+  expect(meanAlpha(&hem, 0, 1) > 0.25 and meanAlpha(&hem, 0, 1) < 0.5, "a hemlock spray's mean alpha is a quarter to a half");
+  expect(meanAlpha(&fir, 0, 1) > 0.25 and meanAlpha(&fir, 0, 1) < 0.5, "a fir spray's mean alpha is a quarter to a half");
+  mut soft = 0;
+  mut clearGreen = true;
+  mut y = 0;
+  while y < SIZE {
+    mut x = 0;
+    while x < SIZE {
+      imm a = alphaAt(&pine, x, y);
+      if a > 0.1 and a < 0.9 { soft = soft + 1; }
+      if pine.at(x, y, 3) == 0u8 and !(pine.at(x, y, 1) > pine.at(x, y, 0) and pine.at(x, y, 1) > pine.at(x, y, 2)) { clearGreen = false; }
+      x = x + 1;
+    }
+    y = y + 1;
+  }
+  expect(soft > 200, "the strokes' edges are anti-aliased");
+  expect(clearGreen, "a clear texel carries the needles' green, not black");
+
+  // where the paint is
+  expect(alphaAt(&pine, SIZE / 2, SIZE / 2) > 0.5, "a pine tuft is covered at its centre");
+  expect(alphaAt(&pine, 1, SIZE - 2) < 0.05 and alphaAt(&pine, SIZE - 2, SIZE - 2) < 0.05, "and clear at its upper corners");
+  expect(alphaAt(&hem, SIZE / 2, SIZE / 2) > 0.5, "a spray's main twig runs up its middle");
+  expect(alphaAt(&hem, 1, SIZE / 2) < 0.05 and alphaAt(&hem, SIZE - 2, SIZE / 2) < 0.05, "and its sides are clear at the edge");
+
+  // October
+  imm fresh = tawnyTexels(&pine, 0, 4);
+  imm october = tawnyTexels(&pine, 1, 4);
+  expect(october > fresh + 100, "the October cell holds tawny needles the fresh one has not");
+
+  // the maps, pinned (64 texels a cell)
+  imm p64 = bakeNeedleTuft(&NeedleTuftParams.whitePine(64, 5u32));
+  imm h64 = bakeNeedleTuft(&NeedleTuftParams.hemlock(64, 6u32));
+  imm f64 = bakeNeedleTuft(&NeedleTuftParams.balsamFir(64, 7u32));
+  expectUInt(mapHash(&p64), 13809006578633893633u64, "pine atlas hash");
+  expectUInt(mapHash(&h64), 16509456714674803249u64, "hemlock spray hash");
+  expectUInt(mapHash(&f64), 7001886773049724622u64, "fir spray hash");
+  done();
+}

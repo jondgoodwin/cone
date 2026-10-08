@@ -70,7 +70,8 @@ struct PbrParams {
     float4 maps;                   // 80: the normal map's scale (0: no normal map), the occlusion map's strength,
                                    //     the alpha mode (0 opaque, 1 cut out, 2 see-through), the cut-off
     float4 emissive;               // 96: rgb radiance (nits in physical units), its strength multiplied in
-    float4 foliage;                // 112: the translucency (0: none), its lobe's exponent, the flutter's most turn (radians, 0: none)
+    float4 foliage;                // 112: the translucency (0: none), its lobe's exponent, the flutter's most turn (radians, 0: none),
+                                   //      and w, the base's specular scale (1: as a dielectric's; a conifer's cards 0: see below)
 };
 
 static const uint ALPHA_MASK = 1;
@@ -304,7 +305,7 @@ float4 fragmentMain(VertexOutput input) : SV_Target {
     float3 directDiffuse = float3(0.0, 0.0, 0.0);
     if (nol > 0.0) {
         float3 f = fresnelSchlick(f0, loh);
-        float3 specular = distributionGGX(noh, a) * visibilitySmithGGX(nov, nol, a) * f * energy;
+        float3 specular = distributionGGX(noh, a) * visibilitySmithGGX(nov, nol, a) * f * energy * material.foliage.w;
         float3 diffuse = diffuseColor * (1.0 / PI);
         float3 baseLobe = (diffuse + specular) * (1.0 - coatFl);
         float3 coatLobe = distributionGGX(noh, coatA) * visibilityKelemen(loh) * coatFl;
@@ -315,7 +316,7 @@ float4 fragmentMain(VertexOutput input) : SV_Target {
     // The sky
     float strength = frame.viewport.w;
     float3 irradiance = irradianceCube.SampleLevel(environmentSampler, n, 0.0).rgb;
-    float3 envSpecular = environmentSpecular(r, roughness, f0, ab) * energy;
+    float3 envSpecular = environmentSpecular(r, roughness, f0, ab) * energy * material.foliage.w;
     float3 envBase = (diffuseColor * irradiance + envSpecular) * (1.0 - coatFv);
     float2 coatAb = brdfTable.SampleLevel(environmentSampler, float2(nov, coatRoughness), 0.0).xy;
     float3 coatPrefiltered = specularCube.SampleLevel(environmentSampler, r,
