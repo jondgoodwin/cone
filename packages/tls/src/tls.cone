@@ -227,7 +227,7 @@ pub enum VerifyKind {
 }
 
 // The name of a verifier's kind
-pub fn verifyKindName(k VerifyKind) &Array[u8] {
+pub fn verifyKindName(k VerifyKind) &str {
   if k == VerifyKind.Platform[] {"platform";}
   elif k == VerifyKind.Roots[] {"roots";}
   elif k == VerifyKind.Pinned[] {"pinned";}
@@ -244,20 +244,20 @@ pub struct Verifier {
   pub fn platform() Verifier {new Verifier(VerifyKind.Platform[], String.empty(), List[u8].empty());}
 
   // FOR DEVELOPMENT: these roots alone, in PEM, one or more certificates
-  pub fn roots(pem &Array[u8]) Verifier {new Verifier(VerifyKind.Roots[], String.from(pem as &str), List[u8].empty());}
+  pub fn roots(pem &Array[u8]) Verifier {new Verifier(VerifyKind.Roots[], String.fromBytes(pem), List[u8].empty());}
 
   // FOR DEVELOPMENT: a server whose public key's SHA-256 is one of these,
   // each 64 hex digits, separated by spaces or commas. A malformed one is a
   // panic at the caller's line
-  pub fn pinnedSha256(hex &Array[u8], file &Array[u8] = srcFile(), line u32 = srcLine()) Verifier {
+  pub fn pinnedSha256(hex &str, file &Array[u8] = srcFile(), line u32 = srcLine()) Verifier {
     mut pins = List[u8].empty();
     mut k = 0usize;
-    while k < hex.len {
+    while k < hex.len() {
       if hex[k] == ' ' or hex[k] == ',' or hex[k] == '\n' or hex[k] == '\r' or hex[k] == '\t' {
         k = k + 1usize;
         continue;
       }
-      if k + 64usize > hex.len {panic("tls: a pinned SHA-256 is 64 hex digits", file, line);}
+      if k + 64usize > hex.len() {panic("tls: a pinned SHA-256 is 64 hex digits", file, line);}
       mut j = 0usize;
       while j < 32usize {
         imm hi = hexDigit(hex[k + 2usize * j]);
@@ -318,7 +318,7 @@ pub struct ServerConfig {
   pub fn make(certFile &Array[u8], keyFile &Array[u8]) ServerConfig {
     mut alpn = List[String].empty();
     alpn.push(String.from("http/1.1"));
-    new ServerConfig(certFile: String.from(certFile as &str), keyFile: String.from(keyFile as &str), alpn: alpn,
+    new ServerConfig(certFile: String.fromBytes(certFile), keyFile: String.fromBytes(keyFile), alpn: alpn,
       minVersion: TlsVersion.Tls12[], maxVersion: TlsVersion.Tls13[], backend: Backend.Auto[]);
   }
 }
@@ -343,7 +343,7 @@ pub enum TlsErrorKind {
 }
 
 // The name of an error's kind
-pub fn errorName(k TlsErrorKind) &Array[u8] {
+pub fn errorName(k TlsErrorKind) &str {
   if k == TlsErrorKind.CertExpired[] {"certificate expired";}
   elif k == TlsErrorKind.CertNameMismatch[] {"certificate name mismatch";}
   elif k == TlsErrorKind.CertUntrusted[] {"certificate untrusted";}
@@ -364,8 +364,8 @@ pub struct TlsError {
   pub osError u32;      // Windows' error number when the OS gave the reason, else 0
   pub detail String;    // what was wrong, one line
 
-  pub fn make(kind TlsErrorKind, code u32, detail &Array[u8]) TlsError {
-    new TlsError(kind, code, 0u32, String.from(detail as &str));
+  pub fn make(kind TlsErrorKind, code u32, detail &str) TlsError {
+    new TlsError(kind, code, 0u32, String.from(detail));
   }
 
   pub fn none() TlsError {TlsError.make(TlsErrorKind.Backend[], 0u32, "");}
@@ -377,7 +377,7 @@ pub struct TlsError {
   // (Windows 0x800B0109)'
   pub fn message(self &) String {
     mut out = String.from("tls: ");
-    out.append(errorName(kind) as &str);
+    out.append(errorName(kind));
     out.append(": ");
     out.append(detail.view());
     out;
@@ -452,7 +452,7 @@ pub fn stats() TlsStats {
 }
 
 // The back end's own name and version: 'OpenSSL 3.5.9 30 Sep 2026'
-pub fn backendVersion() &Array[u8] {cText(OpenSSL_version(0i32));}
+pub fn backendVersion() &str {cText(OpenSSL_version(0i32));}
 
 // ---------------------------------------------------------------------------
 // The OS verifier's lane

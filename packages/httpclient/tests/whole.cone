@@ -155,7 +155,7 @@ fn answer(sv &mut Srv, lp &mut Loop, k usize) {
   imm query = &t[(if q < t.len {q + 1usize;} else {q;}) ..];
   imm head = *sv.methods[k] == Method.Head[];
   if path == "/echo" {
-    mut b = String.from(methodToken(*sv.methods[k]) as &str);
+    mut b = String.from(methodToken(*sv.methods[k]));
     b.append(" ");
     b.append(sv.bodies[k].view());
     reply(sv, req, head, 200u16, "", b.view());
@@ -187,7 +187,7 @@ fn answer(sv &mut Srv, lp &mut Loop, k usize) {
     b.append(";cookie=");
     b.append(sv.cookies[k].view());
     b.append(";method=");
-    b.append(methodToken(*sv.methods[k]) as &str);
+    b.append(methodToken(*sv.methods[k]));
     b.append(";body=");
     b.append(if sv.bodies[k].len() == 0usize {"-";} else {sv.bodies[k].view();});
     reply(sv, req, head, 200u16, "", b.view());
@@ -238,9 +238,9 @@ fn forget(sv &mut Srv, k usize) {
   sv.cookies.pop();
 }
 
-fn fieldOr(h &Headers, name &Array[u8]) String {
+fn fieldOr(h &Headers, name &str) String {
   match h.get(name) {
-    case imm v Some {String.from(v.value as &str);}
+    case imm v Some {String.fromBytes(v.value);}
     case is None[&Array[u8]] {String.from("-");}
   }
 }
@@ -434,6 +434,15 @@ fn serveThread(a ServerArgs) u64 {
 }
 
 fn main() i32 {
+  // Names and URLs are text, a '&str'
+  imm stageText &str = stageName(Stage.Url[]);
+  imm intentText &str = intentName(Intent.Urgent[]);
+  imm eventText &str = eventName(EventKind.Done[]);
+  imm sample = Request.get("http://127.0.0.1/");
+  imm methodText &str = sample.methodName();
+  imm failure = Failure.make(Stage.Url[], 0u32, ErrorKind.Malformed[], "text");
+  imm failText &str = failure.error.detail.view();
+  assert(stageText == "url" and intentText == "urgent" and eventText == "Done" and methodText == "GET" and failText == "text");
   mut portTx Sender[u16];
   mut portRx Receiver[u16];
   portTx, portRx = Channel[u16].make();
