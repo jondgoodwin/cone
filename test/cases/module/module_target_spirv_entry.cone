@@ -2,8 +2,8 @@
 // kernel of no parameters, a compute shader with its workgroup's size, which
 // fills the function's parameters from what a dispatch binds and calls it.
 // Core's Invocation from the invocation's built-ins; each slice a storage
-// buffer, set 0, numbered in order among the buffer parameters, '&[]T' read
-// only and '&[]mut T' read-write, its count the buffer's run-time array's
+// buffer, set 0, numbered in order among the buffer parameters, '&Array[T]' read
+// only and '&mut Array[T]' read-write, its count the buffer's run-time array's
 // length; each struct taken by value a small read-only storage buffer holding
 // one. The binding after the last is the kernel's error buffer, where a
 // failed bounds check, a panic and an assert record what failed, where and in
@@ -34,7 +34,7 @@ struct Part {
   pub k u32;
 }
 
-fn sum(s &[]f32) f32 {
+fn sum(s &Array[f32]) f32 {
   mut t = 0.f32;
   mut i = 0usize;
   while i < s.len {
@@ -51,7 +51,7 @@ fn check(v u32) u32 {
 }
 
 // Two slices read, one written
-fn @compute(64) add(inv Invocation, a &[]f32, b &[]f32, out &[]mut f32) {
+fn @compute(64) add(inv Invocation, a &Array[f32], b &Array[f32], out &mut Array[f32]) {
   imm i = usize.from(inv.globalId[0]);
   if i < out.len {
     out[i] = a[i] + b[i];
@@ -59,14 +59,14 @@ fn @compute(64) add(inv Invocation, a &[]f32, b &[]f32, out &[]mut f32) {
 }
 
 // A struct by value, and structs in buffers, read and written whole
-fn @compute(8, 8) shade(inv Invocation, s Settings, normals &[]Vec3, out &[]mut Vec3) {
+fn @compute(8, 8) shade(inv Invocation, s Settings, normals &Array[Vec3], out &mut Array[Vec3]) {
   imm i = usize.from(inv.globalId[0] + 8u32 * inv.globalId[1]);
   if i >= out.len or u32.from(i) >= s.count { return; }
   out[i] = normals[i].scale(normals[i].dot(s.dir) * s.gain);
 }
 
 // Every field of Invocation
-fn @compute(4, 2, 2) ids(inv Invocation, out &[]mut u32) {
+fn @compute(4, 2, 2) ids(inv Invocation, out &mut Array[u32]) {
   imm base = usize.from(inv.localIndex + 16u32 * inv.groupId[0]) * 13usize;
   mut k = 0usize;
   while k < 3usize {
@@ -80,7 +80,7 @@ fn @compute(4, 2, 2) ids(inv Invocation, out &[]mut u32) {
 }
 
 // Slices of every origin a kernel's may have
-fn @compute(64) windows(inv Invocation, a &[]f32, parts &[]Part, out &[]mut f32) {
+fn @compute(64) windows(inv Invocation, a &Array[f32], parts &Array[Part], out &mut Array[f32]) {
   imm i = usize.from(inv.globalId[0]);
   if i + 4usize > a.len or i >= out.len or i >= parts.len { return; }
   imm w = &a[i..i + 4usize];
@@ -90,7 +90,7 @@ fn @compute(64) windows(inv Invocation, a &[]f32, parts &[]Part, out &[]mut f32)
 }
 
 // A panic and an assert, beside the bounds checks
-fn @compute(64) doubled(inv Invocation, a &[]u32, out &[]mut u32) {
+fn @compute(64) doubled(inv Invocation, a &Array[u32], out &mut Array[u32]) {
   imm i = usize.from(inv.globalId[0]);
   if i < out.len {
     out[i] = check(a[i]);

@@ -406,7 +406,7 @@ annotating a borrow with a *lifetime* rather than with an arena.
 | --- | --- | --- |
 | `&T` | borrowed — points at something someone else owns | `T*` |
 | `Region[perm, T]` | owning — the region releases it | `T*`, pointing **past** a header |
-| `&Array[T]` (also written `&[]T`) | slice — the borrow of the body `Array[T]`, a run of elements | `{T*, usize}` |
+| `&Array[T]` | slice — the borrow of the body `Array[T]`, a run of elements | `{T*, usize}` |
 | `&<Trait` | virtual — dispatches through a vtable | `{i8*, Vtable*}` |
 | `&str`, `Region[perm, str]`, `Region[perm, Array[T]]` | to a body whose length it carries — borrowed or owning | `{T*, usize}`, the owner pointing **past** its header |
 

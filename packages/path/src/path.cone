@@ -14,7 +14,7 @@
 //     imm ext = path.extension(n.view());                // ".cone"
 //   }
 //
-// A path is bytes, a '&[]u8' in and a collections 'String' out, and a name in
+// A path is bytes, a '&Array[u8]' in and a collections 'String' out, and a name in
 // it is whatever bytes the file system was given, UTF-8 by Cone's convention.
 // Nothing here looks beyond ASCII: a separator, a dot and a drive letter are
 // all ASCII, and no UTF-8 byte of another character can be mistaken for one.
@@ -65,7 +65,7 @@ struct Prefix {
 
 fn isLetter(b u8) bool { (b >= 'a' and b <= 'z') or (b >= 'A' and b <= 'Z'); }
 
-fn prefixOf(p &[]u8) Prefix {
+fn prefixOf(p &Array[u8]) Prefix {
   // A share: two separators, a server, a separator, a share
   if p.len >= 2usize and isSeparator(p[0usize]) and isSeparator(p[1usize]) {
     mut i = 2usize;
@@ -93,31 +93,31 @@ fn prefixOf(p &[]u8) Prefix {
 
 // Whether the prefix is a share's: a share has its root even when no
 // separator is written after it
-fn isShare(p &[]u8, pre &Prefix) bool { pre.volume > 2usize; }
+fn isShare(p &Array[u8], pre &Prefix) bool { pre.volume > 2usize; }
 
 // Whether a path is absolute: a drive and a root ('C:\x'), or a share
 // ('\\server\share\x')
-pub fn isAbsolute(p &[]u8) bool {
+pub fn isAbsolute(p &Array[u8]) bool {
   imm pre = prefixOf(p);
   isShare(p, &pre) or (pre.volume == 2usize and pre.whole == 3usize);
 }
 
 // The volume a path starts with, 'C:' or '\\server\share' as written, or ""
-pub fn volume(p &[]u8) String {
+pub fn volume(p &Array[u8]) String {
   imm pre = prefixOf(p);
   String.from(&p[..pre.volume]);
 }
 
 // Where a path's names end once the separators after its last are left
 // off, never cutting into its volume and root
-fn trimmedEnd(p &[]u8, pre &Prefix) usize {
+fn trimmedEnd(p &Array[u8], pre &Prefix) usize {
   mut end = p.len;
   while end > pre.whole and isSeparator(p[end - 1usize]) { end = end - 1usize; }
   end;
 }
 
 // Where its last name starts, at or after the prefix
-fn lastNameStart(p &[]u8, pre &Prefix, end usize) usize {
+fn lastNameStart(p &Array[u8], pre &Prefix, end usize) usize {
   mut i = end;
   while i > pre.whole and not isSeparator(p[i - 1usize]) { i = i - 1usize; }
   i;
@@ -129,7 +129,7 @@ fn lastNameStart(p &[]u8, pre &Prefix, end usize) usize {
 // b itself, and b with a root but no volume ('\x') is a's volume and then b.
 // An empty a gives b, and an empty b gives a. Nothing is normalized: 'a/'
 // and '../b' join to 'a/../b'.
-pub fn join(a &[]u8, b &[]u8) String {
+pub fn join(a &Array[u8], b &Array[u8]) String {
   if b.len == 0usize { return String.from(a); }
   imm bpre = prefixOf(b);
   if a.len == 0usize or bpre.volume > 0usize { return String.from(b); }
@@ -152,7 +152,7 @@ pub fn join(a &[]u8, b &[]u8) String {
 // "", the current folder. A path that is only a volume and a root is its own
 // parent: 'C:/' is in 'C:/'. Separators after the last name are left off
 // first, so 'a/b/' is in 'a'. Nothing is normalized: 'a/..' is in 'a'.
-pub fn parent(p &[]u8) String {
+pub fn parent(p &Array[u8]) String {
   imm pre = prefixOf(p);
   imm end = trimmedEnd(p, &pre);
   mut i = lastNameStart(p, &pre, end);
@@ -162,7 +162,7 @@ pub fn parent(p &[]u8) String {
 
 // A path's last name: 'c.txt' of 'a/b/c.txt', 'b' of 'a/b/', and "" of a
 // path that is only a volume and a root ('C:/', '/')
-pub fn name(p &[]u8) String {
+pub fn name(p &Array[u8]) String {
   imm pre = prefixOf(p);
   imm end = trimmedEnd(p, &pre);
   String.from(&p[lastNameStart(p, &pre, end)..end]);
@@ -170,7 +170,7 @@ pub fn name(p &[]u8) String {
 
 // Where the extension of a name starts: at its last dot, unless that is its
 // first byte; at its end when it has none, as '..' has none
-fn extensionStart(n &[]u8) usize {
+fn extensionStart(n &Array[u8]) usize {
   if n == ".." { return n.len; }
   mut i = n.len;
   while i > 1usize {
@@ -181,7 +181,7 @@ fn extensionStart(n &[]u8) usize {
 }
 
 // A path's last name without its extension: 'b.tar' of 'a/b.tar.gz'
-pub fn stem(p &[]u8) String {
+pub fn stem(p &Array[u8]) String {
   imm n = name(p);
   imm v = n.view();
   String.from(&v[..extensionStart(v)]);
@@ -189,7 +189,7 @@ pub fn stem(p &[]u8) String {
 
 // The extension of a path's last name, from its last dot, the dot included:
 // '.gz' of 'a/b.tar.gz', '.' of 'b.', and "" of 'b' and '.profile'
-pub fn extension(p &[]u8) String {
+pub fn extension(p &Array[u8]) String {
   imm n = name(p);
   imm v = n.view();
   String.from(&v[extensionStart(v)..]);
@@ -199,7 +199,7 @@ pub fn extension(p &[]u8) String {
 // ('C:\', '/', '\\server\share\', 'C:'), then each name, as written, '.' and
 // '..' included, with no separators. Empty names, between two separators
 // or after the last, are left out. "" has no pieces.
-pub fn parts(p &[]u8) List[String] {
+pub fn parts(p &Array[u8]) List[String] {
   imm pre = prefixOf(p);
   mut out = List[String].empty();
   if pre.whole > 0usize { out.push(String.from(&p[..pre.whole])); }
@@ -229,7 +229,7 @@ pub fn parts(p &[]u8) List[String] {
 // The drive letter is kept as written. A '..' after a symbolic link is
 // dropped with the link, which on the disk may not be where the link's
 // folder is: this reads text, not the file system.
-pub fn normalize(p &[]u8) String {
+pub fn normalize(p &Array[u8]) String {
   imm pre = prefixOf(p);
   mut out = String.from(&p[..pre.whole]);
   out.replaceByte('\\', '/');

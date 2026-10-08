@@ -67,7 +67,7 @@ enum ActorRuntimeFn {
     ActorRtStartAwait,      // startAwait(a *u8, rp Reply): an Awaitable started at its seam
     ActorRtFutureReady,     // futureReady(fut *u8) bool: a Future has its ending
     ActorRtFutureRegister,  // futureRegister(fut *u8, rp Reply) bool: park on it, unless it has
-    ActorRtFutureOpen,      // futureOpen(fut *u8, file &[]u8, line u32) *u8: where its value is
+    ActorRtFutureOpen,      // futureOpen(fut *u8, file &Array[u8], line u32) *u8: where its value is
     ActorRtFutureTaken,     // futureTaken(fut *u8): a move value read out of it
     ActorRtCount
 };

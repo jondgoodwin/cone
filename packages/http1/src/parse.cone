@@ -6,7 +6,7 @@
 // and says false. None of them reads a byte past the slice.
 
 // Fill err and say false
-fn bad(err &mut HttpError, kind ErrorKind, status u16, why &[]u8) bool {
+fn bad(err &mut HttpError, kind ErrorKind, status u16, why &Array[u8]) bool {
   err.kind = kind;
   err.status = status;
   err.detail = String.from(why);
@@ -14,7 +14,7 @@ fn bad(err &mut HttpError, kind ErrorKind, status u16, why &[]u8) bool {
 }
 
 // The first offset of byte c in s at or after from, or s.len
-fn indexOf(s &[]u8, c u8, from usize) usize {
+fn indexOf(s &Array[u8], c u8, from usize) usize {
   mut i = from;
   while i < s.len and s[i] != c {i = i + 1usize;}
   i;
@@ -23,18 +23,18 @@ fn indexOf(s &[]u8, c u8, from usize) usize {
 // The end of the line starting at from: the offset of its CR, or of its LF
 // where an LF alone ends it (which the gather lets through only in a
 // response a client reads; it has checked that an LF follows every CR)
-fn lineEnd(h &[]u8, from usize) usize {
+fn lineEnd(h &Array[u8], from usize) usize {
   imm lf = indexOf(h, '\n', from);
   if lf > from and h[lf - 1usize] == '\r' {lf - 1usize;} else {lf;};
 }
 
 // Where the line after the one ending at end starts: past its LF
-fn lineNext(h &[]u8, end usize) usize {indexOf(h, '\n', end) + 1usize;}
+fn lineNext(h &Array[u8], end usize) usize {indexOf(h, '\n', end) + 1usize;}
 
 // HTTP-version, 'HTTP/1.1': 11 for 1.1 (and any later 1.x, read as 1.1, RFC
 // 9110 section 6.2), 10 for 1.0, 0 for another major version, and 1 for text
 // that is not a version at all
-fn versionOf(v &[]u8) u32 {
+fn versionOf(v &Array[u8]) u32 {
   if v.len != 8usize or not (v[0usize] == 'H' and v[1usize] == 'T' and v[2usize] == 'T' and v[3usize] == 'P' and v[4usize] == '/') {return 1u32;}
   imm major = v[5usize];
   imm minor = v[7usize];
@@ -45,7 +45,7 @@ fn versionOf(v &[]u8) u32 {
 
 // request-line = method SP request-target SP HTTP-version (RFC 9112, 3):
 // one space each, nothing else
-fn parseRequestLine(line &[]u8, head &mut RequestHead, err &mut HttpError) bool {
+fn parseRequestLine(line &Array[u8], head &mut RequestHead, err &mut HttpError) bool {
   imm sp1 = indexOf(line, ' ', 0usize);
   if sp1 == line.len {return bad(err, ErrorKind.Malformed[], 400u16, "the request line has no spaces");}
   imm method = &line[0usize .. sp1];
@@ -73,7 +73,7 @@ fn parseRequestLine(line &[]u8, head &mut RequestHead, err &mut HttpError) bool 
 // status-line = HTTP-version SP status-code SP [ reason-phrase ] (RFC 9112,
 // 4); a line that ends straight after the code is read too. The phrase is
 // checked and dropped
-fn parseStatusLine(line &[]u8, head &mut ResponseHead, err &mut HttpError) bool {
+fn parseStatusLine(line &Array[u8], head &mut ResponseHead, err &mut HttpError) bool {
   if line.len < 12usize or line[8usize] != ' ' {return bad(err, ErrorKind.Malformed[], 0u16, "the status line is not 'HTTP/1.x' and a code");}
   imm ver = versionOf(&line[0usize .. 8usize]);
   if ver == 1u32 {return bad(err, ErrorKind.Malformed[], 0u16, "the status line does not start with an HTTP version");}
@@ -107,7 +107,7 @@ fn parseStatusLine(line &[]u8, head &mut ResponseHead, err &mut HttpError) bool 
 // its own, and one starting with a space or a tab (obs-fold) is refused; in
 // a response (a client reading it, RFC 9112, 5.2) such a line continues the
 // field before it, the fold replaced by one space
-fn parseFields(h &[]u8, from usize, cfg &Config, request bool, takeHost bool, headers &mut Headers,
+fn parseFields(h &Array[u8], from usize, cfg &Config, request bool, takeHost bool, headers &mut Headers,
     host &mut String, hostCount &mut usize, err &mut HttpError) bool {
   imm status = if request {431u16;} else {0u16;};
   imm malformed = if request {400u16;} else {0u16;};
@@ -176,7 +176,7 @@ fn parseFields(h &[]u8, from usize, cfg &Config, request bool, takeHost bool, he
 }
 
 // A field read and checked: to headers, or a request's Host to host
-fn addField(name &[]u8, value &[]u8, takeHost bool, headers &mut Headers, host &mut String, hostCount &mut usize) {
+fn addField(name &Array[u8], value &Array[u8], takeHost bool, headers &mut Headers, host &mut String, hostCount &mut usize) {
   if takeHost and eqIgnoreCase(name, "Host") {
     *hostCount = *hostCount + 1usize;
     *host = String.from(value);
@@ -271,7 +271,7 @@ fn framingOf(headers &Headers, request bool, http10 bool, mode &mut u32, n &mut 
 
 // chunk-size [ chunk-ext ] (RFC 9112, 7.1), the line without its CRLF: the
 // size into size. An extension is checked for characters and skipped
-fn parseChunkLine(line &[]u8, cfg &Config, size &mut u64, err &mut HttpError) bool {
+fn parseChunkLine(line &Array[u8], cfg &Config, size &mut u64, err &mut HttpError) bool {
   mut i = 0usize;
   mut v = 0u64;
   while i < line.len {

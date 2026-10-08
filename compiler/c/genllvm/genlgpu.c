@@ -16,8 +16,8 @@
 #include <string.h>
 #include <assert.h>
 
-// A compute entry point, 'fn @compute(64) bake(inv Invocation, parts &[]Part,
-// out &[]mut f32)', is a kernel on SPIR-V's Vulkan form. Its Cone function is
+// A compute entry point, 'fn @compute(64) bake(inv Invocation, parts &Array[Part],
+// out &mut Array[f32])', is a kernel on SPIR-V's Vulkan form. Its Cone function is
 // generated as every function is, internal and inlined; beside it goes the
 // kernel itself, an LLVM function of no parameters named as the Cone function
 // is, marked the compute shader it is ("hlsl.shader", "hlsl.numthreads", the

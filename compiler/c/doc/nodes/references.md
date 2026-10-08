@@ -114,7 +114,7 @@ identity — and `refFindSuper` drops it entirely.
 ## Parse
 
 `parseAmper` handles `&`, `&[]`, `&<`; `parsePlus` handles `+`, `+<`, and
-refuses `+[]` (`ErrorOwnedArrayRef`, at the token, naming `List` and `&[]T`),
+refuses `+[]` (`ErrorOwnedArrayRef`, at the token, naming `List` and `&Array[T]`),
 reading the rest through as the thin form so that nothing after it is
 reported; the lexer keeps `PlusArrayRefToken` only for that.
 The differences are worth knowing:
@@ -124,7 +124,7 @@ The differences are worth knowing:
 - `&` leaves an absent permission as `unknownType`, deferred to type check.
   `+` defaults to `uni` **at parse time**.
 - `&` may name a lifetime right after its token, before the permission
-  (`&'a mut T`, `&[]'a u8`), only while `ParseState.lifesig` is set (the types
+  (`&'a mut T`, `&'a Array[u8]`), only while `ParseState.lifesig` is set (the types
   of a signature's parameters and result, a type's arguments there included),
   where it sets `lifenamed` on that signature, or `ParseState.lifestruct` (a
   struct's field's type), where it is noted for the struct to declare
@@ -133,7 +133,8 @@ The differences are worth knowing:
   may name too (a cast making a key, a variable's type, a generic's type
   argument), type check holding it to the signature's (`lifeBrandKnown`).
   An invariant lifetime on `&[]` or `&<` is `ErrorLifetimeInvariant`: a key is
-  a plain reference.
+  a plain reference. On `&Array[T]`, which the parser reads as a plain reference,
+  `refNameRes` refuses it once it has made the node the slice.
 - `&` has two escapes `+` does not: a `fn` operand, where the presence of a body
   decides closure-versus-signature; and a `,` or `)` operand, where `vtexp` is
   left `unknownType` for later `Self` inference in a parameter position.
@@ -435,7 +436,7 @@ registers each variant's implementation, not the enum's, and the conversion
 selects among them by the tag. A reference to an open trait converts to no other
 trait ([struct](struct.md), "A reference to an enum converts").
 
-`arrayRefMatchesRef` handles `&Array[T, n]` → `&[]T` and is never better than
+`arrayRefMatchesRef` handles `&Array[T, n]` → `&Array[T]` and is never better than
 `ConvSubtype` — a fat pointer must be built.
 
 `ptrMatches` is fully invariant, but `itypeMatches` separately accepts a
@@ -509,7 +510,7 @@ region: it calls the methods the struct declares, held to their shapes at the
 declaration (`lockPermCheck`, `ErrorLockPermShape`): `acquireMut` and
 `releaseMut`, required; `acquireRead` and `releaseRead`, both or neither; each
 taking only `self`, a borrowed reference to the lock, and returning nothing,
-but that an acquiring one may take `(file &[]u8, line u32)` after it and is
+but that an acquiring one may take `(file &Array[u8], line u32)` after it and is
 then handed the borrow's place in the source; and `init`, run by an
 allocation on the lock in place (`permInitTypeCheck`). The lock is in the
 header, `{region, lock, value}`.
@@ -738,11 +739,13 @@ element). `Array[T, n]` is still lowered to the array type at name resolution
 generic instance (`fnCallNameRes`). A trait's reference carries a vtable instead and
 is its own tag, `VirtRefTag`.
 
-**The borrow of `Array[T]` is the slice.** `&Array[T]` is `&[]T`, one type with two
-spellings, so nothing downstream of the type check knows the body is there: a borrow
+**The borrow of `Array[T]` is the slice.** `&Array[T]` is the slice type, so nothing
+downstream of the type check knows the body is there: a borrow
 of an instance (`refNameRes` for the spelling written out, `refTypeCheck` for one
 reached through an alias or built by the compiler) is retagged `ArrayRefTag` with the
-element as its target. Only an owner keeps the body as its target, `RefTag` with
+element as its target. The retired spelling `&[]T` is refused (`ErrorSliceSpelling`,
+at name resolution by `arrayRefNameRes`, which alone can tell the type from the
+borrow `&[]x`; a type parameter counts as a type there). Only an owner keeps the body as its target, `RefTag` with
 `vtexp` the instance, and it reaches the slice by the lend described under
 "Type check" below. `Array[T]`'s methods are core's, written on the instance; their
 `self` is that slice (`fnDclTypeCheck` accepts it as the type's own).
@@ -758,10 +761,10 @@ an `@unsized` enum are neither, and their references are thin.
   no permission written is `imm`, as `str` declares `Immutable` ("A type that
   never changes", below), where a borrow of any other type with no size is
   `opaq` (`borrowTypeCheck`). `castBitsize` gives a fat `RefTag` the size of a
-  slice, so `as` converts between `&str` and `&[]u8` and between an owner and a
+  slice, so `as` converts between `&str` and `&Array[u8]` and between an owner and a
   borrow of the same body, checking nothing else. Implicitly a `&str` goes to a
-  `&[]u8` (`arrayRefMatchesRef`, a recast, the permission narrowing as it must:
-  `imm` to `ro`, never `mut`) and a `&[]u8` does not go to a `&str`.
+  `&Array[u8]` (`arrayRefMatchesRef`, a recast, the permission narrowing as it must:
+  `imm` to `ro`, never `mut`) and a `&Array[u8]` does not go to a `&str`.
   **An owner of `Array[T]`, in any region, is lent as the slice** by the same
   function, a recast whose element variance is a slice's own. Flow reads that
   recast as the borrow of the owner it is (`pwIsOwnedLent`, `flowGateIsOwnedLent`),
@@ -840,7 +843,7 @@ apart, so the second can be loosened without touching the first:
   (`So[uni, str]`) is only unique, there being nothing to write through one.
   What an `Immutable` struct's own methods write through a `uni` receiver, or
   through a variable's name, is not checked: the marker is trusted as `Sendable`
-  is. Slices (`&[]T` of an Immutable `T`), raw pointers and virtual references to
+  is. Slices (`&Array[T]` of an Immutable `T`), raw pointers and virtual references to
   a trait declaring it take no part in either rule.
 
 ## Hazards

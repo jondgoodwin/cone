@@ -39,6 +39,10 @@ typedef struct {
     // 'R[perm, T]' (fnCallLowerManagedRef), and allocated 'new R[perm, T](...)'
     // (typeLitNewAllocate).
     uint16_t plusSpelled;
+    // Written '&[]' (parseAmper), the retired spelling of a slice, '&Array[T]':
+    // refused where name resolution settles that it is a type (arrayRefNameRes,
+    // ErrorSliceSpelling). '&[]x', the borrow of a value as a slice, is not.
+    uint16_t bracketSpelled;
 } RefNode;
 
 // Create a new reference type whose info will be filled in afterwards

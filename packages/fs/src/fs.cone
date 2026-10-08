@@ -39,7 +39,7 @@
 // Asking whether something is there is not a failure: 'exists', 'isDir' and
 // 'isFile' answer a bool, false for anything they cannot see.
 //
-// **Paths** are bytes, a '&[]u8' in, as the 'path' package takes them apart:
+// **Paths** are bytes, a '&Array[u8]' in, as the 'path' package takes them apart:
 // '/' and '\' both separate. A path the package makes (a listed entry's
 // 'path', and each one 'walk' gives) is the folder's path as given joined to
 // the name by 'path.join', a '/' between them unless the folder's path ends
@@ -119,11 +119,11 @@ pub struct FsError {
   pub fn alreadyExists(self &) bool { code == posix.EEXIST; }
 }
 
-fn failure(op &[]u8, p &[]u8, code i32) FsError {
+fn failure(op &Array[u8], p &Array[u8], code i32) FsError {
   new FsError(String.from(op), String.from(p), String.empty(), code);
 }
 
-fn fail[T](op &[]u8, p &[]u8, code i32) Result[T, FsError] {
+fn fail[T](op &Array[u8], p &Array[u8], code i32) Result[T, FsError] {
   Error[T, FsError][failure(op, p, code)];
 }
 
@@ -133,7 +133,7 @@ fn succeeded() Result[void, FsError] { Ok[void, FsError][nil]; }
 fn lastErrno() i32 { *libc.errno(); }
 
 // Whether a path holds a NUL byte, which a C function would take as its end
-fn hasNul(p &[]u8) bool {
+fn hasNul(p &Array[u8]) bool {
   mut i = 0usize;
   while i < p.len {
     if p[i] == 0u8 { return true; }
@@ -177,7 +177,7 @@ fn emptyStat() posix.Stat {
 }
 
 // The size, time and kind of what a path names, following a link
-pub fn stat(path &[]u8) Result[FileInfo, FsError] {
+pub fn stat(path &Array[u8]) Result[FileInfo, FsError] {
   if hasNul(path) { return fail[FileInfo]("stat", path, posix.EINVAL); }
   useUtf8();
   mut c = String.from(path);
@@ -189,7 +189,7 @@ pub fn stat(path &[]u8) Result[FileInfo, FsError] {
 }
 
 // The file-type bits of what a path names, or 0 when it cannot be seen
-fn kindOf(path &[]u8) u16 {
+fn kindOf(path &Array[u8]) u16 {
   if hasNul(path) { return 0u16; }
   useUtf8();
   mut c = String.from(path);
@@ -199,26 +199,26 @@ fn kindOf(path &[]u8) u16 {
 }
 
 // Whether anything has that name
-pub fn exists(path &[]u8) bool { kindOf(path) != 0u16; }
+pub fn exists(path &Array[u8]) bool { kindOf(path) != 0u16; }
 
 // Whether a folder has that name
-pub fn isDir(path &[]u8) bool { kindOf(path) == posix.S_IFDIR; }
+pub fn isDir(path &Array[u8]) bool { kindOf(path) == posix.S_IFDIR; }
 
 // Whether a regular file has that name
-pub fn isFile(path &[]u8) bool { kindOf(path) == posix.S_IFREG; }
+pub fn isFile(path &Array[u8]) bool { kindOf(path) == posix.S_IFREG; }
 
 // -------- whole files --------
 
 // The error number for a file that would not open: Windows answers EACCES
 // for a folder, which is EISDIR in POSIX's terms. Called straight after the
 // failure, before errno changes.
-fn openErrno(path &[]u8) i32 {
+fn openErrno(path &Array[u8]) i32 {
   imm code = lastErrno();
   if code == posix.EACCES and isDir(path) {posix.EISDIR;} else {code;};
 }
 
 // The whole of a file, its bytes as they are: text or not, NULs included
-pub fn readFile(path &[]u8) Result[String, FsError] {
+pub fn readFile(path &Array[u8]) Result[String, FsError] {
   if hasNul(path) { return fail[String]("readFile", path, posix.EINVAL); }
   useUtf8();
   mut c = String.from(path);
@@ -241,7 +241,7 @@ pub fn readFile(path &[]u8) Result[String, FsError] {
 }
 
 // Open with mode, write data, close; a failure anywhere is op's
-fn writeWith(op &[]u8, path &[]u8, data &[]u8, mode cstr) Result[void, FsError] {
+fn writeWith(op &Array[u8], path &Array[u8], data &Array[u8], mode cstr) Result[void, FsError] {
   if hasNul(path) { return fail[void](op, path, posix.EINVAL); }
   useUtf8();
   mut c = String.from(path);
@@ -257,12 +257,12 @@ fn writeWith(op &[]u8, path &[]u8, data &[]u8, mode cstr) Result[void, FsError] 
 
 // Make the file hold exactly data, making it if it is not there and
 // replacing what it held if it is
-pub fn writeFile(path &[]u8, data &[]u8) Result[void, FsError] {
+pub fn writeFile(path &Array[u8], data &Array[u8]) Result[void, FsError] {
   writeWith("writeFile", path, data, "wb");
 }
 
 // Add data to the end of the file, making it if it is not there
-pub fn appendFile(path &[]u8, data &[]u8) Result[void, FsError] {
+pub fn appendFile(path &Array[u8], data &Array[u8]) Result[void, FsError] {
   writeWith("appendFile", path, data, "ab");
 }
 
@@ -271,7 +271,7 @@ pub fn appendFile(path &[]u8, data &[]u8) Result[void, FsError] {
 // Give a file or folder another name, which may be in another folder on the
 // same volume. Where 'to' is already there, POSIX replaces it; Windows
 // refuses, EEXIST for a file and EACCES for a folder, and nothing changes.
-pub fn rename(from &[]u8, to &[]u8) Result[void, FsError] {
+pub fn rename(from &Array[u8], to &Array[u8]) Result[void, FsError] {
   if hasNul(from) or hasNul(to) {
     return Error[void, FsError][new FsError(String.from("rename"), String.from(from), String.from(to), posix.EINVAL)];
   }
@@ -285,7 +285,7 @@ pub fn rename(from &[]u8, to &[]u8) Result[void, FsError] {
 }
 
 // Remove a file. A folder is refused (EISDIR): 'removeDir' or 'removeAll'
-pub fn removeFile(path &[]u8) Result[void, FsError] {
+pub fn removeFile(path &Array[u8]) Result[void, FsError] {
   if hasNul(path) { return fail[void]("removeFile", path, posix.EINVAL); }
   useUtf8();
   mut c = String.from(path);
@@ -297,7 +297,7 @@ pub fn removeFile(path &[]u8) Result[void, FsError] {
 
 // Make a folder, whose parent must be there. One already there is refused
 // (EEXIST).
-pub fn makeDir(path &[]u8) Result[void, FsError] {
+pub fn makeDir(path &Array[u8]) Result[void, FsError] {
   if hasNul(path) { return fail[void]("makeDir", path, posix.EINVAL); }
   useUtf8();
   mut c = String.from(path);
@@ -308,7 +308,7 @@ pub fn makeDir(path &[]u8) Result[void, FsError] {
 // Make a folder and every folder above it that is not there yet. A folder
 // already there is success; a file in the way is refused (ENOTDIR), and so
 // is a parent that cannot be made, whose error names it.
-pub fn makeDirAll(path &[]u8) Result[void, FsError] {
+pub fn makeDirAll(path &Array[u8]) Result[void, FsError] {
   if hasNul(path) { return fail[void]("makeDirAll", path, posix.EINVAL); }
   imm kind = kindOf(path);
   if kind == posix.S_IFDIR { return succeeded(); }
@@ -328,7 +328,7 @@ pub fn makeDirAll(path &[]u8) Result[void, FsError] {
 }
 
 // Remove an empty folder. One with anything in it is refused (ENOTEMPTY).
-pub fn removeDir(path &[]u8) Result[void, FsError] {
+pub fn removeDir(path &Array[u8]) Result[void, FsError] {
   if hasNul(path) { return fail[void]("removeDir", path, posix.EINVAL); }
   useUtf8();
   mut c = String.from(path);
@@ -355,7 +355,7 @@ fn byName(a &DirEntry, b &DirEntry) i32 { a.name.compare(b.name.view()); }
 // What a folder holds, '.' and '..' left out, sorted by name, byte by byte
 // (so 'B' before 'a', and a UTF-8 name by its bytes). A path that is not a
 // folder is refused (ENOTDIR).
-pub fn readDir(path &[]u8) Result[List[DirEntry], FsError] {
+pub fn readDir(path &Array[u8]) Result[List[DirEntry], FsError] {
   if hasNul(path) { return fail[List[DirEntry]]("readDir", path, posix.EINVAL); }
   useUtf8();
   mut c = String.from(path);
@@ -387,7 +387,7 @@ pub fn readDir(path &[]u8) Result[List[DirEntry], FsError] {
 // not among them. Each entry's path is the root as given joined with the
 // names down to it. A linked folder is listed but not gone into. The first
 // folder that cannot be read ends the walk with its error.
-pub fn walk(root &[]u8) Result[List[DirEntry], FsError] {
+pub fn walk(root &Array[u8]) Result[List[DirEntry], FsError] {
   mut out = List[DirEntry].empty();
   imm went = walkInto(root, &mut out);
   match went {
@@ -401,7 +401,7 @@ pub fn walk(root &[]u8) Result[List[DirEntry], FsError] {
   Ok[List[DirEntry], FsError][out];
 }
 
-fn walkInto(dir &[]u8, out &mut List[DirEntry]) Result[void, FsError] {
+fn walkInto(dir &Array[u8], out &mut List[DirEntry]) Result[void, FsError] {
   match readDir(dir) {
     case mut e Error {
       mut err = failure("", "", 0i32);
@@ -433,7 +433,7 @@ fn walkInto(dir &[]u8, out &mut List[DirEntry]) Result[void, FsError] {
 // removed. As a guard against a path made wrongly, a path that is empty, is
 // a root or a volume ('C:/', '/', 'C:'), or ends in '.' or '..' is refused
 // (EINVAL).
-pub fn removeAll(path &[]u8) Result[void, FsError] {
+pub fn removeAll(path &Array[u8]) Result[void, FsError] {
   if hasNul(path) { return fail[void]("removeAll", path, posix.EINVAL); }
   imm n = normalize(path);
   imm up = parent(n.view());
@@ -454,10 +454,10 @@ pub fn removeAll(path &[]u8) Result[void, FsError] {
 }
 
 // A path's last name, as written
-fn lastName(p &[]u8) String { path.name(p); }
+fn lastName(p &Array[u8]) String { path.name(p); }
 
 // Remove what path names, whose kind (from lstat) is given
-fn removeTree(path &[]u8, kind u16) Result[void, FsError] {
+fn removeTree(path &Array[u8], kind u16) Result[void, FsError] {
   if kind == posix.S_IFLNK { return removeLink(path); }
   if kind != posix.S_IFDIR {
     mut c = String.from(path);
@@ -490,7 +490,7 @@ fn removeTree(path &[]u8, kind u16) Result[void, FsError] {
 
 // Remove a link itself: a link to a folder goes by rmdir on Windows, and a
 // link to a file by remove
-fn removeLink(path &[]u8) Result[void, FsError] {
+fn removeLink(path &Array[u8]) Result[void, FsError] {
   mut c = String.from(path);
   if posix.rmdir(c.cstr()) == 0i32 { return succeeded(); }
   if libc.remove(c.cstr()) == 0i32 { return succeeded(); }
@@ -512,7 +512,7 @@ pub fn currentDir() Result[String, FsError] {
 
 // Make path the folder relative paths are read from, for the whole program
 // (every thread)
-pub fn setCurrentDir(path &[]u8) Result[void, FsError] {
+pub fn setCurrentDir(path &Array[u8]) Result[void, FsError] {
   if hasNul(path) { return fail[void]("setCurrentDir", path, posix.EINVAL); }
   useUtf8();
   mut c = String.from(path);
@@ -524,7 +524,7 @@ pub fn setCurrentDir(path &[]u8) Result[void, FsError] {
 // in 'C:/work' is 'C:/work/a.txt'. Its text is all that is read: whatever is
 // or is not there, links are not followed, and '..' drops the name before
 // it. "" is the current folder.
-pub fn absolute(path &[]u8) Result[String, FsError] {
+pub fn absolute(path &Array[u8]) Result[String, FsError] {
   if hasNul(path) { return fail[String]("absolute", path, posix.EINVAL); }
   if path.len == 0usize { return currentDir(); }
   useUtf8();

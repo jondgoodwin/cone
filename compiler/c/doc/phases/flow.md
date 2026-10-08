@@ -823,7 +823,7 @@ those its struct's `where` clause lets into them (`lifeSlotsReach`), and those
 with no tag, which may be anywhere (`pwSlotStep`, `pwPlaceSlots`); it drops
 every tag once the value is no longer of the struct, as does a call's result,
 a cast and any value built of others but a struct literal of a struct
-declaring lifetimes. So `p.word()` for `word(self &mut) &[]'src u8` on a
+declaring lifetimes. So `p.word()` for `word(self &mut) &'src Array[u8]` on a
 `Parser['src, 'ar]` carries what `p` holds in `'src`, not what it holds in
 `'ar`. A callee may move a borrow from one slot to another where its signature
 names them as one, or orders them beyond the struct's own order
@@ -856,7 +856,7 @@ walk cannot key (`st(new W(&mut q), &x)`) is gone by through its own loans. One 
 lent to one call apart: a borrow written as an argument is stored only where the
 place's type can hold a borrow of what it borrows (`itypeHoldsBorrowOf`), so
 `arrive(&mut world, &mut seen, name)` leaves `world`, a `List[Named]`, holding
-nothing of `seen`, a `List[&[]u8]`, and each is free while the other is used.
+nothing of `seen`, a `List[&Array[u8]]`, and each is free while the other is used.
 
 **Calls** (`pwCall`). A borrow a call returns, or a value that may hold one,
 carries the loans of every argument: Cone's rule for a signature without

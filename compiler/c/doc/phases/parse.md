@@ -508,7 +508,7 @@ away the ones that were paths.
 | `StarTag` | `PtrTag` if the operand is a type, else `DerefTag` | `ptrNameRes` |
 | `ArrayTag` | `ArrayLitTag`; `[n; x]` is refused, a type for x the old array type (`ErrorArrayTypeOld`), a value the retired fill literal (`ErrorFillLiteral`) | `arrayNameRes` |
 | `RefTag` | stays a ref type, or becomes `BorrowTag`/`AllocateTag` by region | `refNameRes` |
-| `ArrayRefTag` | stays a ref type, or becomes `ArrayBorrowTag` | `arrayRefNameRes` |
+| `ArrayRefTag` | becomes `ArrayBorrowTag` (`&[]x`), or is refused as the retired slice type `&[]T` (`ErrorSliceSpelling`; the slice type is `&Array[T]`) | `arrayRefNameRes` |
 | `QuesTag` | `FnCallTag` for `Option[T]`, or folds into an `AllocateTag` with `FlagQues` | `allocateQuesNameRes` |
 | `FnCallTag` holding `a.b` | a bound name use, when `a` names a module or a type: the period was a path | `fnCallNameResPath` |
 | `FnCallTag` indexing `Array` | the array type, `ArrayTag`, one node per size | `arrayTypeLower` |
@@ -815,7 +815,7 @@ never be analyzed.
 | the retired `include` | `parseRetiredInclude` reports `ErrorInclude` at the word, then reads what the statement took — names or quoted paths, comma-separated — and its `;`, so a statement naming one file, a path or a list is one diagnostic and a `pub` before it adds none. A missing `;` ends the statement at its last name rather than swallowing the next declaration; only where no name follows does it resync with `parseSkipToNextStmt` |
 | the retired `typedef` | `parseRetiredTypedef` reports `ErrorTypedef` at the word, then reads the statement it was — a name, an `=` if one was written, and a type, however many lines it runs over — and its `;`, so each is one diagnostic and a `pub` before it adds none; without the `;` it resyncs with `parseSkipToNextStmt` |
 | the retired `into` | `parseRetiredInto` reports `ErrorInto` at the word, then reads the type after it if one begins there, and `parseCast` goes on with the operand it had, so each use is one diagnostic and what follows parses as written |
-| `+[]`, the owning array reference the language does not have | `parsePlus` reports `ErrorOwnedArrayRef` at the token, naming `List` and `&[]T`, then reads the region, the permission and the operand as the thin `+` form would, as a type or an allocation, so each is one diagnostic |
+| `+[]`, the owning array reference the language does not have | `parsePlus` reports `ErrorOwnedArrayRef` at the token, naming `List` and `&Array[T]`, then reads the region, the permission and the operand as the thin `+` form would, as a type or an allocation, so each is one diagnostic |
 | an `alias` with no `=` | `parseAlias` reports `ErrorAliasEq` just after the name, and still reads the type that follows, so the statement ends where it was written |
 | `parseCloseTok` | reports `ErrorNoRParen`, scans for the closer, gives up at `;`, `}`, EOF |
 | `parseBlockStart` | on `:`, reports `ErrorColonBlock` and reads what follows as the block; on anything else that is not `{`, reports `ErrorNoLCurly` and scans forward for one |

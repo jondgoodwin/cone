@@ -213,7 +213,7 @@ void permInitTypeCheck(INode *perm) {
 
 // Is this lock method '(self &L)', of any permission, returning nothing? An
 // acquiring one ('site') may also take where the borrow is, '(self &L, file
-// &[]u8, line u32)', as core's 'panic' does, to name it in a panic.
+// &Array[u8], line u32)', as core's 'panic' does, to name it in a panic.
 static int lockPermMethShapeOk(INode *member, StructNode *lock, int site) {
     if (member->tag != FnDclTag || !(member->flags & FlagMethFld))
         return 0;
@@ -241,7 +241,7 @@ static void lockPermCheckMeth(StructNode *lock, Name *name, int site) {
         char *l = &lock->namesym->namestr;
         if (site)
             errorMsgNode(member, ErrorLockPermShape,
-                "A lock permission's %s must be declared 'fn %s(self &%s)', of any permission, or 'fn %s(self &%s, file &[]u8, line u32)', handed where the borrow is: it is handed the lock in the allocation's header, and returns nothing.",
+                "A lock permission's %s must be declared 'fn %s(self &%s)', of any permission, or 'fn %s(self &%s, file &Array[u8], line u32)', handed where the borrow is: it is handed the lock in the allocation's header, and returns nothing.",
                 &name->namestr, &name->namestr, l, &name->namestr, l);
         else
             errorMsgNode(member, ErrorLockPermShape,

@@ -68,7 +68,7 @@ is open (`doc/reference/refintrinsic.html`, "Constants of the build").
 intrinsics answering where their call is written, the file's name without its
 folders and the line. Written as a parameter's default value, each answers
 where the call taking the default is. Each function above declares
-`file &[]u8 = srcFile(), line u32 = srcLine()` and so reports its caller, and
+`file &Array[u8] = srcFile(), line u32 = srcLine()` and so reports its caller, and
 any function can do the same and pass the two on — Swift's `#file`/`#line`,
 Odin's `#caller_location`; what Rust's `#[track_caller]` does out of sight.
 Written in a macro's body, the two answer where the macro is used (at the

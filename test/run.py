@@ -2091,10 +2091,10 @@ class Demangler:
     # A reference after its letter, read as the source writes it: a borrowed
     # one, which names no region, as its sigil, the permission and the value
     # ('&mut i32'); a managed one as its region's type, 'Rc[mut, i32]'
-    def reference(self, sigil: str, value) -> str:
+    def reference(self, sigil: str, value, body: str = "{}") -> str:
         region = self.ident()
         perm = self.ident()
-        target = value()
+        target = body.format(value())
         return f"{region}[{perm}, {target}]" if region else f"{sigil}{perm} {target}"
 
     # An array after its 'A': its element type and its sizes, outermost first,
@@ -2143,7 +2143,8 @@ class Demangler:
         if ch == "R":
             return self.reference("&", self.type)
         if ch == "S":
-            return self.reference("&[]", self.type)
+            # A slice is the borrow of the body of a run-time length: '&mut Array[i32]'
+            return self.reference("&", self.type, "Array[{}]")
         if ch == "V":
             return self.reference("&<", self.path)
         if ch == "P":
@@ -2220,7 +2221,7 @@ DEMANGLE_EXAMPLES = [
     ("_CLNt5Meter", "Meter (vtable list)"),
     ("_CINv4pickR2So3mutlE", "pick[So[mut, i32]]"),
     ("_CINv4pickR02roNt6HolderE", "pick[&ro Holder]"),
-    ("_CINv4pickS03mutlE", "pick[&[]mut i32]"),
+    ("_CINv4pickS03mutlE", "pick[&mut Array[i32]]"),
     ("_CINv4pickV02roNt5MeterE", "pick[&<ro Meter]"),
     ("_CINv11passThroughTxxEE", "passThrough[(i64,i64)]"),
     ("_CINv11passThroughAx2_E", "passThrough[Array[i64, 2]]"),

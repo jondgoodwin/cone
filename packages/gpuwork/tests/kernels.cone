@@ -30,11 +30,11 @@
 // 4. A Loop job whose kernel fails: its iocore answer Failed,
 //    ERROR_KERNEL_FAILED, and its Completion the failure; a clean one Done.
 // 5. Atomics and workgroup memory: 'compact' claims output slots with an
-//    '&[]mut Atomic[u32]' counter, on the GPU and on two twins (direct, and
+//    '&mut Array[Atomic[u32]]' counter, on the GPU and on two twins (direct, and
 //    through Words' 'atomicU32s'), the count and the sorted values compared,
 //    since the slots' order is the GPU's timing; 'extremes', i32 atomics'
 //    min, max and add, order-free, so bit for bit ('setTwin2' over
-//    '&[]mut Atomic[i32]'); 'groupSums', a '@workgroup' tile and a barrier,
+//    '&mut Array[Atomic[i32]]'); 'groupSums', a '@workgroup' tile and a barrier,
 //    the last invocation of each workgroup adding the tile up, bit for bit.
 // 6. Barriers, each kernel's twin running a workgroup's invocations
 //    together on threads ('kernel.together', found in the SPIR-V), each
@@ -78,7 +78,7 @@ struct P3 {
 }
 
 // out[i] = a[i] * factor + offset
-fn @compute(64) scale(inv Invocation, s Scale, a &[]f32, out &[]mut f32) {
+fn @compute(64) scale(inv Invocation, s Scale, a &Array[f32], out &mut Array[f32]) {
   imm i = usize.from(inv.globalId[0]);
   if i < out.len {
     out[i] = a[i] * s.factor + s.offset;
@@ -86,7 +86,7 @@ fn @compute(64) scale(inv Invocation, s Scale, a &[]f32, out &[]mut f32) {
 }
 
 // Each point's squared length, for as many points as there are
-fn @compute(64) lengths(inv Invocation, points &[]P3, out &[]mut f32) {
+fn @compute(64) lengths(inv Invocation, points &Array[P3], out &mut Array[f32]) {
   imm i = usize.from(inv.globalId[0]);
   if i < points.len and i < out.len {
     imm p = points[i];
@@ -95,7 +95,7 @@ fn @compute(64) lengths(inv Invocation, points &[]P3, out &[]mut f32) {
 }
 
 // A hash of each cell of a 2-D grid, from its seed and its place
-fn @compute(8, 8) hash2(inv Invocation, seeds &[]u32, out &[]mut u32) {
+fn @compute(8, 8) hash2(inv Invocation, seeds &Array[u32], out &mut Array[u32]) {
   imm i = usize.from(inv.globalId[0] + inv.groupCount[0] * 8u32 * inv.globalId[1]);
   if i < out.len {
     mut h = seeds[i % seeds.len] ^ (inv.globalId[0] * 73856093u32) ^ (inv.globalId[1] * 19349663u32);
@@ -106,8 +106,8 @@ fn @compute(8, 8) hash2(inv Invocation, seeds &[]u32, out &[]mut u32) {
 }
 
 // Seven buffers, the most a Cone kernel binds
-fn @compute(64) seven(inv Invocation, a &[]u32, b &[]u32, c &[]u32, d &[]u32, e &[]u32, f &[]u32,
-    out &[]mut u32) {
+fn @compute(64) seven(inv Invocation, a &Array[u32], b &Array[u32], c &Array[u32], d &Array[u32], e &Array[u32], f &Array[u32],
+    out &mut Array[u32]) {
   imm i = usize.from(inv.globalId[0]);
   if i < out.len {
     out[i] = a[i] + 2u32 * b[i] + 3u32 * c[i] + 5u32 * d[i] + 7u32 * e[i] + 11u32 * f[i];
@@ -115,7 +115,7 @@ fn @compute(64) seven(inv Invocation, a &[]u32, b &[]u32, c &[]u32, d &[]u32, e 
 }
 
 // Invocation 37 indexes past the end; every other writes its id plus one
-fn @compute(64) oob(inv Invocation, out &[]mut u32) {
+fn @compute(64) oob(inv Invocation, out &mut Array[u32]) {
   imm i = usize.from(inv.globalId[0]);
   if inv.globalId[0] == 37u32 { out[i + out.len] = 1u32; }
   if i < out.len { out[i] = inv.globalId[0] + 1u32; }
@@ -123,7 +123,7 @@ fn @compute(64) oob(inv Invocation, out &[]mut u32) {
 fn oobLine() u32 { srcLine() - 3u32; }
 
 // Invocations 5 and 77 fail an assert; every other writes twice its id
-fn @compute(64) checked(inv Invocation, out &[]mut u32) {
+fn @compute(64) checked(inv Invocation, out &mut Array[u32]) {
   imm g = inv.globalId[0];
   assert(g != 5u32 and g != 77u32, "not five or seventy-seven");
   imm i = usize.from(g);
@@ -132,7 +132,7 @@ fn @compute(64) checked(inv Invocation, out &[]mut u32) {
 fn checkedLine() u32 { srcLine() - 4u32; }
 
 // Invocation 3 panics
-fn @compute(64) panics(inv Invocation, out &[]mut u32) {
+fn @compute(64) panics(inv Invocation, out &mut Array[u32]) {
   if inv.globalId[0] == 3u32 { panic("three"); }
   imm i = usize.from(inv.globalId[0]);
   if i < out.len { out[i] = 9u32; }
@@ -140,7 +140,7 @@ fn @compute(64) panics(inv Invocation, out &[]mut u32) {
 fn panicsLine() u32 { srcLine() - 4u32; }
 
 // Invocation 9 takes a range of its output running 4 past the end
-fn @compute(64) window(inv Invocation, out &[]mut u32) {
+fn @compute(64) window(inv Invocation, out &mut Array[u32]) {
   imm i = usize.from(inv.globalId[0]);
   if i < out.len {
     imm end = if inv.globalId[0] == 9u32 { out.len + 4usize; } else { i + 1usize; };
@@ -154,7 +154,7 @@ fn windowLine() u32 { srcLine() - 4u32; }
 // is a multiple of 3 claims the next slot of 'out' with an atomic counter
 // and writes its value there. Which value lands in which slot is whichever
 // invocation came first; the count and the values kept are not.
-fn @compute(64) compact(inv Invocation, input &[]u32, count &[]mut Atomic[u32], out &[]mut u32) {
+fn @compute(64) compact(inv Invocation, input &Array[u32], count &mut Array[Atomic[u32]], out &mut Array[u32]) {
   imm i = usize.from(inv.globalId[0]);
   if i < input.len and input[i] % 3u32 == 0u32 {
     imm slot = count[0usize].addOrdered(1u32, MemOrder.Relaxed[]);
@@ -164,7 +164,7 @@ fn @compute(64) compact(inv Invocation, input &[]u32, count &[]mut Atomic[u32], 
 
 // Order-free i32 atomics: the least, the greatest and the sum of the
 // inputs, the same whatever order the invocations come in
-fn @compute(64) extremes(inv Invocation, input &[]i32, acc &[]mut Atomic[i32]) {
+fn @compute(64) extremes(inv Invocation, input &Array[i32], acc &mut Array[Atomic[i32]]) {
   imm i = usize.from(inv.globalId[0]);
   if i < input.len {
     imm v = input[i];
@@ -181,7 +181,7 @@ fn @compute(64) extremes(inv Invocation, input &[]i32, acc &[]mut Atomic[i32]) {
 // would find every other's write already there too.
 mut @workgroup tile Array[u32, 64];
 
-fn @compute(64) groupSums(inv Invocation, input &[]u32, sums &[]mut u32) {
+fn @compute(64) groupSums(inv Invocation, input &Array[u32], sums &mut Array[u32]) {
   imm g = usize.from(inv.globalId[0]);
   imm l = usize.from(inv.localIndex);
   tile[l] = if g < input.len { input[g]; } else { 0u32; };
@@ -204,7 +204,7 @@ fn @compute(64) groupSums(inv Invocation, input &[]u32, sums &[]mut u32) {
 // gives the GPU's answer.
 mut @workgroup scanTile Array[u32, 64];
 
-fn @compute(64) groupScan(inv Invocation, input &[]u32, out &[]mut u32) {
+fn @compute(64) groupScan(inv Invocation, input &Array[u32], out &mut Array[u32]) {
   imm g = usize.from(inv.globalId[0]);
   imm l = usize.from(inv.localIndex);
   scanTile[l] = if g < input.len { input[g]; } else { 0u32; };
@@ -226,7 +226,7 @@ fn @compute(64) groupScan(inv Invocation, input &[]u32, out &[]mut u32) {
 // The tree fixes the order of every addition, so the sum is bit for bit.
 mut @workgroup sumTile Array[f32, 128];
 
-fn @compute(128) treeSums(inv Invocation, input &[]f32, sums &[]mut f32) {
+fn @compute(128) treeSums(inv Invocation, input &Array[f32], sums &mut Array[f32]) {
   imm g = usize.from(inv.globalId[0]);
   imm l = usize.from(inv.localIndex);
   sumTile[l] = if g < input.len { input[g]; } else { 0.0; };
@@ -244,7 +244,7 @@ fn @compute(128) treeSums(inv Invocation, input &[]f32, sums &[]mut f32) {
 // mixed seed into 'work', waits at storageBarrier, and then reads the word
 // of its mirror in the workgroup (local (7 - x, 3 - y)), which half the
 // invocations write after them in the one-at-a-time order
-fn @compute(8, 4) mirror(inv Invocation, seeds &[]u32, work &[]mut u32, out &[]mut u32) {
+fn @compute(8, 4) mirror(inv Invocation, seeds &Array[u32], work &mut Array[u32], out &mut Array[u32]) {
   imm width = inv.groupCount[0] * 8u32;
   imm gx = inv.globalId[0];
   imm gy = inv.globalId[1];
@@ -2490,15 +2490,15 @@ imm KERNELS_SPIRV Array[u32, 13345] = [
 // cone-spirv-end
 
 // A direct twin of the wrong shape: a struct where 'lengths' binds a slice
-fn wrongShape(inv Invocation, s Scale, out &[]mut f32) {}
+fn wrongShape(inv Invocation, s Scale, out &mut Array[f32]) {}
 
 // hash2's twin through the Words adapter
-fn hashTwin(inv Invocation, buffers &[]Words) {
+fn hashTwin(inv Invocation, buffers &Array[Words]) {
   hash2(inv, buffers[0usize].u32s(), buffers[1usize].u32sMut());
 }
 
 // compact's twin through the Words adapter: the counter its atomic view
-fn compactTwin(inv Invocation, buffers &[]Words) {
+fn compactTwin(inv Invocation, buffers &Array[Words]) {
   compact(inv, buffers[0usize].u32s(), buffers[1usize].atomicU32s(), buffers[2usize].u32sMut());
 }
 
@@ -2518,7 +2518,7 @@ fn sortWords(w &mut List[u32]) {
   }
 }
 
-fn sameWords(a &[]u32, b &[]u32) bool {
+fn sameWords(a &Array[u32], b &Array[u32]) bool {
   if a.len != b.len { return false; }
   mut i = 0usize;
   while i < a.len {
@@ -2531,7 +2531,7 @@ fn sameWords(a &[]u32, b &[]u32) bool {
 // Run 'kernel' (compact) on its twin over 'input', a zero counter and an
 // output as long as the input, and expect the GPU's count and, sorted, its
 // values kept
-fn compactOnTwin(kernel &Kernel, input &List[u32], gpuCount u32, gpuKept &[]u32, what &[]u8) {
+fn compactOnTwin(kernel &Kernel, input &List[u32], gpuCount u32, gpuKept &Array[u32], what &Array[u8]) {
   mut buffers = List[List[u32]].empty();
   mut copy = List[u32].empty();
   mut i = 0usize;
@@ -2586,7 +2586,7 @@ fn ramp(count usize, a u32, b u32) List[u32] {
   l;
 }
 
-fn sameStr(a &[]u8, b &[]u8) bool {
+fn sameStr(a &Array[u8], b &Array[u8]) bool {
   if a.len != b.len { return false; }
   mut i = 0usize;
   while i < a.len {
@@ -2598,7 +2598,7 @@ fn sameStr(a &[]u8, b &[]u8) bool {
 
 // Run 'kernel' over 'buffers' on the GPU and its twin on the CPU, and
 // expect every word written the same
-fn parity(device &mut Device, kernel &Kernel, buffers &List[List[u32]], x u32, y u32, what &[]u8) {
+fn parity(device &mut Device, kernel &Kernel, buffers &List[List[u32]], x u32, y u32, what &Array[u8]) {
   imm p = checkParity(device, kernel, buffers, x, y);
   expectBool(p.ran, true, what);
   if !expect(p.exact(), what) {
@@ -2622,7 +2622,7 @@ fn parity(device &mut Device, kernel &Kernel, buffers &List[List[u32]], x u32, y
 // barriers is caught by a run that differs, if any does
 const RUNS = 100u32;
 
-fn parityRuns(device &mut Device, kernel &Kernel, buffers &List[List[u32]], x u32, y u32, what &[]u8) {
+fn parityRuns(device &mut Device, kernel &Kernel, buffers &List[List[u32]], x u32, y u32, what &Array[u8]) {
   mut bad = 0u32;
   mut first = new Parity(false, 0u64, 0u64, 0u32, 0u64, 0u32, 0u32);
   mut r = 0u32;
@@ -2668,8 +2668,8 @@ fn runOne(device &mut Device, works &mut Works, kernel &Kernel, n usize, groups 
 }
 
 // Expect failure 'f' to be as described
-fn expectFailure(f &KernelFailure, kernel &[]u8, dispatch u32, count u32, kind u32, line u32, x u32, index u32,
-    what &[]u8) {
+fn expectFailure(f &KernelFailure, kernel &Array[u8], dispatch u32, count u32, kind u32, line u32, x u32, index u32,
+    what &Array[u8]) {
   mut ok = sameStr(f.kernel.view(), kernel) and f.dispatch == dispatch and f.count == count and f.kind == kind
     and sameStr(f.file.view(), "kernels.cone") and f.line == line and f.invocation[0usize] == x
     and f.invocation[1usize] == 0u32 and f.invocation[2usize] == 0u32 and f.index == index;
@@ -2949,7 +2949,7 @@ fn main() i32 {
   mut compactK = Kernel.make(&device, &KERNELS_SPIRV, "compact", &[READ, READ_WRITE, READ_WRITE]);
   require(compactK.isValid(), "the compact kernel");
   compactK.setTwin3(&compact);
-  expectBool(compactK.hasTwin, true, "a direct twin taking '&[]mut Atomic[u32]'");
+  expectBool(compactK.hasTwin, true, "a direct twin taking '&mut Array[Atomic[u32]]'");
   mut compactW = Kernel.make(&device, &KERNELS_SPIRV, "compact", &[READ, READ_WRITE, READ_WRITE]);
   compactW.setTwin(&compactTwin);
   {
@@ -2992,7 +2992,7 @@ fn main() i32 {
   mut extremesK = Kernel.make(&device, &KERNELS_SPIRV, "extremes", &[READ, READ_WRITE]);
   require(extremesK.isValid(), "the extremes kernel");
   extremesK.setTwin2(&extremes);
-  expectBool(extremesK.hasTwin, true, "a direct twin taking '&[]mut Atomic[i32]'");
+  expectBool(extremesK.hasTwin, true, "a direct twin taking '&mut Array[Atomic[i32]]'");
   {
     mut buffers = List[List[u32]].empty();
     buffers.push(ramp(1000usize, 37u32, 0xFFFFB1E0u32));   // 37 i - 20000, as i32 bits

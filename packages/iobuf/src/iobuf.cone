@@ -34,9 +34,9 @@
 //
 //   IoBuf.empty()         a buffer with no block, capacity 0      (BUFFERS)
 //   b.len()  b.capacity()  b.room()  b.isEmpty()
-//   b.view()              the bytes it holds, '&[]u8'
-//   b.spare()             the room after them, '&[]mut u8', to fill
-//   b.whole()             the whole block, '&[]mut u8'
+//   b.view()              the bytes it holds, '&Array[u8]'
+//   b.spare()             the room after them, '&mut Array[u8]', to fill
+//   b.whole()             the whole block, '&mut Array[u8]'
 //   b.setLen(n)           say how many bytes it holds (a panic past capacity)
 //   b.append(bytes)       copy in as many as fit: how many
 //   b.clear()             hold none
@@ -482,7 +482,7 @@ pub struct Pool {
 
   // A buffer of at least size bytes, empty; a panic, reported at the
   // caller's line, when the bound refuses it
-  pub fn mustTake(self &, size usize, file &[]u8 = srcFile(), line u32 = srcLine()) IoBuf {
+  pub fn mustTake(self &, size usize, file &Array[u8] = srcFile(), line u32 = srcLine()) IoBuf {
     mut b = IoBuf.empty();
     match self.take(size) {
       case mut s Some {b <=> s.value;}
@@ -528,16 +528,16 @@ pub struct IoBuf is Move, Sendable {
   pub fn isEmpty(self &) bool {used == 0usize;}
 
   // The bytes it holds
-  pub fn view(self &) &[]u8 {mem.sliceFromParts(data, used);}
+  pub fn view(self &) &Array[u8] {mem.sliceFromParts(data, used);}
   // The room after them, to fill
-  pub fn spare(self &mut) &[]mut u8 {mem.sliceFromPartsMut(data + used, cap - used);}
+  pub fn spare(self &mut) &mut Array[u8] {mem.sliceFromPartsMut(data + used, cap - used);}
   // The whole block
-  pub fn whole(self &mut) &[]mut u8 {mem.sliceFromPartsMut(data, cap);}
+  pub fn whole(self &mut) &mut Array[u8] {mem.sliceFromPartsMut(data, cap);}
   // Its address, for the OS
   pub fn base(self &) *u8 {data;}
 
   // Say it holds n bytes: a panic, at the caller's line, past its capacity
-  pub fn setLen(self &mut, n usize, file &[]u8 = srcFile(), line u32 = srcLine()) {
+  pub fn setLen(self &mut, n usize, file &Array[u8] = srcFile(), line u32 = srcLine()) {
     if n > cap {panic("iobuf: setLen past the buffer's capacity", file, line);}
     used = n;
   }
@@ -548,7 +548,7 @@ pub struct IoBuf is Move, Sendable {
   pub fn freeze(self) Bytes {freezeBuf(self);}
 
   // Copy in as many of bytes as fit: how many
-  pub fn append(self &mut, bytes &[]u8) usize {
+  pub fn append(self &mut, bytes &Array[u8]) usize {
     imm n = if bytes.len < cap - used {bytes.len;} else {cap - used;};
     if n > 0usize {libc.memcpy(data + used, &bytes[0usize] as *u8, n);}
     used = used + n;
@@ -580,10 +580,10 @@ pub struct Bytes {
   n usize;
 
   pub fn len(self &) usize {n;}
-  pub fn view(self &) &[]u8 {mem.sliceFromParts(buf.data + from, n);}
+  pub fn view(self &) &Array[u8] {mem.sliceFromParts(buf.data + from, n);}
   // Another owner of bytes start to end of these: a panic, at the caller's
   // line, out of range
-  pub fn slice(self &, start usize, end usize, file &[]u8 = srcFile(), line u32 = srcLine()) Bytes {
+  pub fn slice(self &, start usize, end usize, file &Array[u8] = srcFile(), line u32 = srcLine()) Bytes {
     if start > end or end > n {panic("iobuf: Bytes.slice out of range", file, line);}
     new Bytes(buf, from + start, end - start);
   }
@@ -631,7 +631,7 @@ pub struct Chain is Move, Sendable {
   fn at(self &, k usize) *IoBuf {ring + ((head + k) & (slots - 1usize));}
 
   // The unconsumed bytes of the k-th segment
-  fn seg(self &, k usize) &[]u8 {
+  fn seg(self &, k usize) &Array[u8] {
     imm b = self.at(k) as &IoBuf;
     imm off = if k == 0usize {skip;} else {0usize;};
     mem.sliceFromParts(b.data + off, b.used - off);
@@ -674,7 +674,7 @@ pub struct Chain is Move, Sendable {
   }
 
   // The byte at offset i of the unconsumed bytes; a panic past the end
-  pub fn byteAt(self &, i usize, file &[]u8 = srcFile(), line u32 = srcLine()) u8 {
+  pub fn byteAt(self &, i usize, file &Array[u8] = srcFile(), line u32 = srcLine()) u8 {
     if i >= total {panic("iobuf: Chain.byteAt past the end", file, line);}
     mut at = i;
     mut k = 0usize;
@@ -694,7 +694,7 @@ pub struct Chain is Move, Sendable {
   }
 
   // Whether pat is there at segment k, offset j onward
-  fn matchFrom(self &, k0 usize, j0 usize, pat &[]u8) bool {
+  fn matchFrom(self &, k0 usize, j0 usize, pat &Array[u8]) bool {
     mut k = k0;
     mut j = j0;
     mut p = 0usize;
@@ -713,7 +713,7 @@ pub struct Chain is Move, Sendable {
   }
 
   // Whether the unconsumed bytes from offset i begin with pat
-  pub fn matchesAt(self &, i usize, pat &[]u8) bool {
+  pub fn matchesAt(self &, i usize, pat &Array[u8]) bool {
     if i + pat.len > total {return false;}
     mut at = i;
     mut k = 0usize;
@@ -728,7 +728,7 @@ pub struct Chain is Move, Sendable {
 
   // The offset of the first pat at or after offset 'from', across segment
   // boundaries, or None
-  pub fn find(self &, pat &[]u8, from usize = 0usize) Option[usize] {
+  pub fn find(self &, pat &Array[u8], from usize = 0usize) Option[usize] {
     if from + pat.len > total {return None[usize][];}
     if pat.len == 0usize {return Some[usize][from];}
     imm first = pat[0usize];
@@ -770,7 +770,7 @@ pub struct Chain is Move, Sendable {
 
   // Copy unconsumed bytes from offset 'from' into dest, as many as fit and
   // are there: how many
-  pub fn copyOut(self &, from usize, dest &[]mut u8) usize {
+  pub fn copyOut(self &, from usize, dest &mut Array[u8]) usize {
     mut at = from;
     mut done = 0usize;
     mut k = 0usize;
@@ -794,25 +794,25 @@ pub struct Chain is Move, Sendable {
   // The n unconsumed bytes from offset 'from' as one slice, when they lie in
   // one segment; None when they cross a boundary (copy them out instead) or
   // run past the end
-  pub fn contiguous(self &, from usize, n usize) Option[&[]u8] {
-    if from + n > total {return None[&[]u8][];}
+  pub fn contiguous(self &, from usize, n usize) Option[&Array[u8]] {
+    if from + n > total {return None[&Array[u8]][];}
     mut at = from;
     mut k = 0usize;
     while k < count {
       imm s = self.seg(k);
       if at < s.len or (n == 0usize and at == s.len) {
-        if at + n > s.len {return None[&[]u8][];}
-        return Some[&[]u8][&s[at .. at + n]];
+        if at + n > s.len {return None[&Array[u8]][];}
+        return Some[&Array[u8]][&s[at .. at + n]];
       }
       at = at - s.len;
       k = k + 1usize;
     }
-    None[&[]u8][];
+    None[&Array[u8]][];
   }
 
   // Consume the first n bytes: every segment wholly consumed dies, its block
   // back to its pool. A panic if fewer than n are held
-  pub fn advance(self &mut, n usize, file &[]u8 = srcFile(), line u32 = srcLine()) {
+  pub fn advance(self &mut, n usize, file &Array[u8] = srcFile(), line u32 = srcLine()) {
     if n > total {panic("iobuf: Chain.advance past the end", file, line);}
     total = total - n;
     mut left = skip + n;
@@ -832,7 +832,7 @@ pub struct Chain is Move, Sendable {
 
   // Copy the first dest.len unconsumed bytes, or as many as there are, into
   // dest, and consume them: how many
-  pub fn take(self &mut, dest &[]mut u8) usize {
+  pub fn take(self &mut, dest &mut Array[u8]) usize {
     imm n = self.copyOut(0usize, dest);
     self.advance(n);
     n;

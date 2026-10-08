@@ -382,7 +382,7 @@ enum ErrorCode {
     ErrorPlusRefType = 1202,    // A single or virtual managed reference type written '+R-perm T' outside a match pattern's root: it is 'R[perm, T]'
 
     // The owning array reference, '+[]R T', which the language does not have (parser/parseexpr.c)
-    ErrorOwnedArrayRef = 1203,  // '+[]', as a type or an allocation: an owned runtime-sized array is a List, shared as 'Rc[List[T]]'; a borrowed slice is '&[]T'
+    ErrorOwnedArrayRef = 1203,  // '+[]', as a type or an allocation: an owned runtime-sized array is a List, shared as 'Rc[List[T]]'; a borrowed slice is '&Array[T]'
 
     // The array type, 'Array[T, n]' (ir/types/array.c, ir/exp/nameuse.c)
     ErrorArrayTypeOld = 1204,   // '[n; T]' as a type, the old spelling: an array type is 'Array[T, n]'
@@ -537,6 +537,9 @@ enum ErrorCode {
 
     // The C boundary
     ErrorCPtrConv = 1335,       // A slice or text where a raw pointer is wanted, or a raw pointer or text where a cstr is wanted: a slice's pointer is asked for with 'as', text reaches C as a cstr, and a pointer becomes a cstr with 'cstr.fromPtr'
+
+    // Slices
+    ErrorSliceSpelling = 1336,  // The retired spelling of a slice type, '&[]T': a slice is the borrow of the body of a run-time length, '&Array[T]' ('&[]mut T' is '&mut Array[T]', '&[]'a T' is '&'a Array[T]')
 
     // Warnings
     WarnCode = 3000,

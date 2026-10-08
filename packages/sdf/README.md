@@ -85,10 +85,10 @@ symmetric in their cells), `elongate(p, extent)`.
 | `repeatAlong(curve, shape, p, count)` | the exact union of `count` copies at even steps of arc length |
 | `Arc.make(length, curl)` | a circular arc from the origin up +y, turning towards +x through `curl` radians; rotation-minimizing frames (binormal +z); `project(p)` (arc length and distance, no trigonometry inside the arc), `point(s)`, `cells(count) ArcCells` |
 | `repeatAlongArc(arc, cells, shape, p)` | the same union on an arc, its cells' frames stepped round by rotation, no trigonometry |
-| `PathCurve.make(frames, distances)` | a view of a path's frames (`&[]CurveFrame`) and their arc lengths (`&[]f32`), kept by their owner; for a `sculpt.Path`, `path.curveFrames()` and `path.distances()` (sculpt's rotation-minimizing frames) |
+| `PathCurve.make(frames, distances)` | a view of a path's frames (`&Array[CurveFrame]`) and their arc lengths (`&Array[f32]`), kept by their owner; for a `sculpt.Path`, `path.curveFrames()` and `path.distances()` (sculpt's rotation-minimizing frames) |
 | `curveCellFrame(curve, k, count) CurveFrame` | cell k's frame of `count`, as `repeatAlong` finds it: what an owner keeps, one per cell |
-| `curveCells(curve, out)` | every cell's frame written into `out` (`&[]mut CurveFrame`), as many cells as it holds |
-| `CurveCells` | a view of cells' frames (`frames &[]CurveFrame`), made where the distance is found: `new CurveCells(list.view())` |
+| `curveCells(curve, out)` | every cell's frame written into `out` (`&mut Array[CurveFrame]`), as many cells as it holds |
+| `CurveCells` | a view of cells' frames (`frames &Array[CurveFrame]`), made where the distance is found: `new CurveCells(list.view())` |
 | `repeatAlongCells(cells, shape, p)` | `repeatAlong` over cells already found: the same bits, no frame found per evaluation |
 
 A copy's size and twist are the shape's own functions of `u` (and of its

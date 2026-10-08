@@ -255,10 +255,10 @@ neighbours" below for what it converts to.
 **A literal and its neighbours.** Five conversions meet a literal, none of them
 the literal's own business but each decided from its tag:
 
-- `&str` to `&[]u8`, any `&str` and not only a literal: `arrayRefMatchesRef` answers
+- `&str` to `&Array[u8]`, any `&str` and not only a literal: `arrayRefMatchesRef` answers
   `CastSubtype` (a recast; the two share a layout) for a borrow-region fat `str`
   reference and a slice of `u8` whose permission the reference's meets
-  (`imm` to `ro`, but not `mut`). It is never `&[]u8` to `&str`, which is
+  (`imm` to `ro`, but not `mut`). It is never `&Array[u8]` to `&str`, which is
   `as`. `fnCallLowerRefCompare` takes a `&str` on the left of `==` against a
   slice as that slice (`fnCallArrayAsSlice`).
 - A literal fills a byte array exactly its length (`slitMatches`, `slitCoerce`,
@@ -290,7 +290,7 @@ the literal's own business but each decided from its tag:
   reaches a C parameter that is a `*u8` rather than a `cstr`: a buffer, or a
   pointer that may be null. The literal as an array is also an lval.
 
-A string literal wanted as a `&[]u8` is a `CastTag` recast of the `StringLitTag`
+A string literal wanted as a `&Array[u8]` is a `CastTag` recast of the `StringLitTag`
 node, and `litIsLiteral` accepts that (`litIsTextAsBytes`), so a global's,
 constant's, field's or parameter's default may be one.
 
@@ -410,7 +410,7 @@ what makes `imm g i32 = K` legal. It accepts a borrow (`BorrowTag` or
 `ArrayBorrowTag`) of a string literal too: the text is a constant global, so a
 reference to it, or a slice of it (its address and its length), is known before
 anything runs. The literal itself, which is that address and length, is a literal
-too, alone or recast to a `&[]u8` (`litIsTextAsBytes`), so `imm g &[]u8 = "text"`
+too, alone or recast to a `&Array[u8]` (`litIsTextAsBytes`), so `imm g &Array[u8] = "text"`
 and a struct literal holding one as a field are literal initializers;
 generation's `genlExpr` builds the `{ptr, usize}` with instructions the builder
 folds to a constant aggregate. It accepts a borrow of
@@ -449,7 +449,7 @@ anywhere else. An array literal with any other computed element is
 still a temporary, borrowed as one is: to its statement's end, or, where a
 local's initializer extends it, to its block's ([vardcl](vardcl.md),
 "Temporaries an initializer extends"). The literal was typed from its elements
-alone, the borrow expecting nothing of it, so `&[1, 2, 3]` wanted as a `&[]u32`
+alone, the borrow expecting nothing of it, so `&[1, 2, 3]` wanted as a `&Array[u32]`
 would be an `&Array[i32, 3]`: `iexpCoerce`'s `NoMatch` arm hands such a borrow to
 `borrowConstLitCoerce`, which coerces the elements to the wanted element type by
 `arrayLitCoerce`, rebuilds the borrow's type around the retyped literal, and
@@ -684,12 +684,12 @@ is its type exactly and has no terminator.
   two places, and only one of them sees the element type while checking.**
   Given an expected array type of its own length, `arrayLitTypeCheck` checks
   each element against the element type and coerces it there, so strings of
-  different lengths share a `&[]u8` element and a nested literal is checked
+  different lengths share a `&Array[u8]` element and a nested literal is checked
   against the inner array type. A call's argument and a struct literal's field
   value are checked with no type expected, so the literal folds its elements
   among themselves first, and `iexpCoerce`'s `NoMatch` arm (`arrayLitCoerce`)
   coerces them afterward — which cannot rescue a fold that already failed:
-  `f(["a", "bb"])` for an `Array[&[]u8, 2]` parameter is still refused (1046), where
+  `f(["a", "bb"])` for an `Array[&Array[u8], 2]` parameter is still refused (1046), where
   `["a", "b"]` is accepted. A literal of another length is never coerced.
 - **`TypeLitTag` has no arm in `inodeTypeCheck`**, so it falls to the default,
   which reports `ErrorUnreachable` and stops. `typeLitNameRes` *is* dispatched,

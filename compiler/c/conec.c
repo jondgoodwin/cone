@@ -138,9 +138,11 @@ static void writeIncludeFile(ConeOptions *opt, ProgramNode *pgm, BuildDesc *desc
         strcat(url, ".include.cone");
     }
     int before = errors;
+    stdlibIncludeChecking = 1;
     Nodes *check = parseIncludeCheck(pgm, desc, text, url);
     if (errors == before)
         pgmNameResAlone(pgm, check);
+    stdlibIncludeChecking = 0;
     if (errors != before) {
         writeFile(rejected, text, len);
         errorMsg(ErrorIncCheck,

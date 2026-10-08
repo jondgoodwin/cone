@@ -579,7 +579,7 @@ void itypeSpellCat(char *buf, size_t size, INode *type, int depth) {
         Name *permname = perm ? inodeGetName(perm) : NULL;
         char *pname = permname ? &permname->namestr : "?";
         INode *region = ref->region && isTypeNode(ref->region) ? itypeGetTypeDcl(ref->region) : ref->region;
-        char *shape = dcl->tag == ArrayRefTag ? "[]" : dcl->tag == VirtRefTag ? "<" : "";
+        char *shape = dcl->tag == VirtRefTag ? "<" : "";
         Name *regname = region && region->tag == StructTag ? ((StructNode *)region)->namesym : NULL;
         char *rname = regname ? &regname->namestr : "?";
         if (region == borrowRef) {

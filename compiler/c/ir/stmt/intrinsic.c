@@ -49,13 +49,13 @@ typedef enum {
     ShapeBool,          // bool
     ShapeT,             // T
     ShapePtrT,          // *T
-    ShapeSliceT,        // &[]T: a borrowed slice, read only
-    ShapeSliceMutT,     // &[]mut T: a borrowed slice, writable
+    ShapeSliceT,        // &Array[T]: a borrowed slice, read only
+    ShapeSliceMutT,     // &mut Array[T]: a borrowed slice, writable
     ShapePtrTypeRecord, // *TypeRecord: core's type record (typeRecordIsPtr)
     ShapeU32,           // u32
     ShapeOrder,         // MemOrder: core's enum of atomic orderings, a constant at each call
     ShapeTBool,         // T, bool: a tuple of the two
-    ShapeSliceU8,       // &[]u8: a borrowed slice of bytes, read only
+    ShapeSliceU8,       // &Array[u8]: a borrowed slice of bytes, read only
     ShapeI64,           // i64
     ShapeU64            // u64
 } IntrinsicShape;
@@ -103,9 +103,9 @@ static IntrinsicSpec intrinsicRegistry[] = {
         1, 0, {0}, ShapeBool, 0, 0, PhaseConstant, 1},
     {"finalize", FinalizeIntrinsic, "finalize[T](p *T)",
         1, 1, {ShapePtrT}, ShapeVoid, 1, 0, PhaseExpansion, 1},
-    {"sliceFromParts", SliceFromPartsIntrinsic, "sliceFromParts[T](p *T, len usize) &[]T",
+    {"sliceFromParts", SliceFromPartsIntrinsic, "sliceFromParts[T](p *T, len usize) &Array[T]",
         1, 2, {ShapePtrT, ShapeUsize}, ShapeSliceT, 1, 0, PhaseExpansion, 1},
-    {"sliceFromPartsMut", SliceFromPartsMutIntrinsic, "sliceFromPartsMut[T](p *T, len usize) &[]mut T",
+    {"sliceFromPartsMut", SliceFromPartsMutIntrinsic, "sliceFromPartsMut[T](p *T, len usize) &mut Array[T]",
         1, 2, {ShapePtrT, ShapeUsize}, ShapeSliceMutT, 1, 0, PhaseExpansion, 1},
     {"readRaw", ReadRawIntrinsic, "readRaw[T](p *T) T",
         1, 1, {ShapePtrT}, ShapeT, 1, 1, PhaseExpansion, 1},
@@ -149,7 +149,7 @@ static IntrinsicSpec intrinsicRegistry[] = {
         ClassInt | ClassBool | ClassPtr},
     // Where the call is: a constant at each call, and for a default value at
     // each call taking it (intrinsicSrcCallAt)
-    {"srcFile", SrcFileIntrinsic, "srcFile() &[]u8",
+    {"srcFile", SrcFileIntrinsic, "srcFile() &Array[u8]",
         0, 0, {0}, ShapeSliceU8, 0, 0, PhaseExpansion, 1},
     {"srcLine", SrcLineIntrinsic, "srcLine() u32",
         0, 0, {0}, ShapeU32, 0, 0, PhaseExpansion, 1},
@@ -167,9 +167,9 @@ static IntrinsicSpec intrinsicRegistry[] = {
         0, 0, {0}, ShapeBool, 0, 0, PhaseConstant, 1},
     {"isWasm", IsWasmIntrinsic, "isWasm() bool",
         0, 0, {0}, ShapeBool, 0, 0, PhaseConstant, 1},
-    {"isDefined", IsDefinedIntrinsic, "isDefined(name &[]u8) bool",
+    {"isDefined", IsDefinedIntrinsic, "isDefined(name &Array[u8]) bool",
         0, 1, {ShapeSliceU8}, ShapeBool, 0, 0, PhaseConstant, 1},
-    {"definedInt", DefinedIntIntrinsic, "definedInt(name &[]u8) i64",
+    {"definedInt", DefinedIntIntrinsic, "definedInt(name &Array[u8]) i64",
         0, 1, {ShapeSliceU8}, ShapeI64, 0, 0, PhaseConstant, 1},
     // An integer's bits, each also a method of every integer type. A count is
     // defined for 0, as the width; an amount is taken modulo the width
@@ -436,7 +436,7 @@ StructNode *typeRecordStruct(void) {
 // they are, by its name and its package, and held to its one signature so that
 // the call the compiler builds is sure to fit it
 static FnDclNode *sliceEqCore = NULL;
-static IntrinsicSpec sliceEqSpec = {"sliceEq", 0, "sliceEq[T](a &[]T, b &[]T) bool",
+static IntrinsicSpec sliceEqSpec = {"sliceEq", 0, "sliceEq[T](a &Array[T], b &Array[T]) bool",
     1, 2, {ShapeSliceT, ShapeSliceT}, ShapeBool, 0, 1, PhaseExpansion, 0};
 
 void sliceEqDclNameRes(FnDclNode *fndcl) {
@@ -787,7 +787,7 @@ void intrinsicBuildSetup(ConeOptions *opt) {
 }
 
 // The string literal a '-D' name is written as, under the borrow and the
-// coercion that make it a '&[]u8', or NULL
+// coercion that make it a '&Array[u8]', or NULL
 static SLitNode *intrinsicDefineName(INode *arg) {
     while (arg) {
         if (arg->tag == BorrowTag || arg->tag == ArrayBorrowTag)

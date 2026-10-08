@@ -332,11 +332,11 @@ void fnImplicitReturn(INode *rettype, BlockNode *blk) {
 
 // ---- Compute entry points ---------------------------------------------------
 //
-// A compute entry point, 'fn @compute(64) bake(inv Invocation, parts &[]Part,
-// out &[]mut f32)', is a kernel's interface. Its parameters are what a
+// A compute entry point, 'fn @compute(64) bake(inv Invocation, parts &Array[Part],
+// out &mut Array[f32])', is a kernel's interface. Its parameters are what a
 // dispatch binds: core's Invocation, at most once, which the GPU fills from
 // the invocation's built-ins; each slice one storage buffer, read-only for
-// '&[]T' and read-write for '&[]mut T'; and each struct taken by value one
+// '&Array[T]' and read-write for '&mut Array[T]'; and each struct taken by value one
 // small read-only storage buffer (WebGPU has no push constants, and a
 // uniform buffer's 16-byte array stride is not Cone's layout). It returns
 // nothing. What a buffer holds is shared with the CPU byte for byte, so it is

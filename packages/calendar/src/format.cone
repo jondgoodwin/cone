@@ -36,14 +36,14 @@ struct Scan {
 fn newScan() Scan { new Scan(0usize, false, 0usize, String.empty()); }
 
 // The first failure is the one kept
-fn failAt(s &mut Scan, at usize, reason &[]u8) {
+fn failAt(s &mut Scan, at usize, reason &Array[u8]) {
   if s.failed { return; }
   s.failed = true;
   s.at = at;
   s.reason = String.from(reason);
 }
 
-fn fail(s &mut Scan, reason &[]u8) { failAt(s, s.pos, reason); }
+fn fail(s &mut Scan, reason &Array[u8]) { failAt(s, s.pos, reason); }
 
 fn scanError(s &mut Scan) TimeError {
   mut reason = String.empty();
@@ -56,7 +56,7 @@ fn isLetter(c u8) bool { (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z'); }
 
 // Exactly n digits, their value; on anything else, a failure, 'expected two
 // digits for the month'
-fn digits(text &[]u8, s &mut Scan, n usize, what &[]u8) i64 {
+fn digits(text &Array[u8], s &mut Scan, n usize, what &Array[u8]) i64 {
   if s.failed { return 0i64; }
   mut v = 0i64;
   mut i = 0usize;
@@ -76,12 +76,12 @@ fn digits(text &[]u8, s &mut Scan, n usize, what &[]u8) i64 {
   v;
 }
 
-fn countWord(n usize) &[]u8 {
+fn countWord(n usize) &Array[u8] {
   if n == 1usize {"a";} elif n == 2usize {"two";} elif n == 4usize {"four";} else {"several";};
 }
 
 // The byte c, or a failure saying what was expected
-fn oneByte(text &[]u8, s &mut Scan, c u8, what &[]u8) {
+fn oneByte(text &Array[u8], s &mut Scan, c u8, what &Array[u8]) {
   if s.failed { return; }
   if s.pos < text.len and text[s.pos] == c {
     s.pos = s.pos + 1usize;
@@ -91,7 +91,7 @@ fn oneByte(text &[]u8, s &mut Scan, c u8, what &[]u8) {
 }
 
 // The end of the text, or a failure: 'unexpected text after the date'
-fn scanEnd(text &[]u8, s &mut Scan, what &[]u8) {
+fn scanEnd(text &Array[u8], s &mut Scan, what &Array[u8]) {
   if s.failed or s.pos >= text.len { return; }
   mut m = String.from("unexpected text after ");
   m.append(what);
@@ -99,7 +99,7 @@ fn scanEnd(text &[]u8, s &mut Scan, what &[]u8) {
 }
 
 // 'the month is 13, outside 01 to 12'
-fn outOfRange(s &mut Scan, at usize, part &[]u8, value i64, range &[]u8) {
+fn outOfRange(s &mut Scan, at usize, part &Array[u8], value i64, range &Array[u8]) {
   mut m = String.from("the ");
   m.append(part);
   m.append(" is ");
@@ -181,7 +181,7 @@ fn appendTime(out &mut String, t TimeOfDay) {
 
 // A year: four digits, or ISO 8601's expanded form, a sign and six to ten
 // digits within i32's range
-fn scanYear(text &[]u8, s &mut Scan) i64 {
+fn scanYear(text &Array[u8], s &mut Scan) i64 {
   if s.failed { return 0i64; }
   if s.pos >= text.len or (text[s.pos] != '+' and text[s.pos] != '-') {
     return digits(text, s, 4usize, "the year");
@@ -212,7 +212,7 @@ fn scanYear(text &[]u8, s &mut Scan) i64 {
 }
 
 // A full-date, yyyy-mm-dd
-fn scanDate(text &[]u8, s &mut Scan) Date {
+fn scanDate(text &Array[u8], s &mut Scan) Date {
   if s.pos >= text.len and not s.failed {
     fail(s, "the text is empty");
   }
@@ -246,7 +246,7 @@ fn scanDate(text &[]u8, s &mut Scan) Date {
 }
 
 // hh:mm:ss and, when fraction allows it, '.' and one to nine digits
-fn scanTime(text &[]u8, s &mut Scan, fraction bool) TimeOfDay {
+fn scanTime(text &Array[u8], s &mut Scan, fraction bool) TimeOfDay {
   imm hourAt = s.pos;
   imm hour = digits(text, s, 2usize, "the hour");
   oneByte(text, s, ':', "expected ':' after the hour");
@@ -296,7 +296,7 @@ fn scanTime(text &[]u8, s &mut Scan, fraction bool) TimeOfDay {
 
 // The offset from UTC that ends a date-time, in minutes: 'Z' (or 'z') is 0,
 // '+hh:mm' east of UTC, '-hh:mm' west
-fn scanOffset(text &[]u8, s &mut Scan) i64 {
+fn scanOffset(text &Array[u8], s &mut Scan) i64 {
   if s.failed { return 0i64; }
   if s.pos >= text.len {
     fail(s, "the date-time has no offset: RFC 3339 ends it with 'Z' or '+hh:mm' or '-hh:mm'");
@@ -331,7 +331,7 @@ fn scanOffset(text &[]u8, s &mut Scan) i64 {
 }
 
 // A whole RFC 3339 date-time, converted to UTC by its offset
-fn scanDateTime(text &[]u8, s &mut Scan) DateTime {
+fn scanDateTime(text &Array[u8], s &mut Scan) DateTime {
   imm date = scanDate(text, s);
   if not s.failed {
     if s.pos < text.len and (text[s.pos] == 'T' or text[s.pos] == 't') {
@@ -368,7 +368,7 @@ fn timestampOrFail(dt DateTime, s &mut Scan, at usize) Timestamp {
   }
 }
 
-fn parseTimestamp(text &[]u8) Result[Timestamp, TimeError] {
+fn parseTimestamp(text &Array[u8]) Result[Timestamp, TimeError] {
   mut s = newScan();
   imm dt = scanDateTime(text, &mut s);
   imm t = timestampOrFail(dt, &mut s, 0usize);
@@ -382,7 +382,7 @@ fn parseTimestamp(text &[]u8) Result[Timestamp, TimeError] {
 
 const monthAbbrs Array[u8, 36] = "JanFebMarAprMayJunJulAugSepOctNovDec";
 
-fn monthAbbr(month i64) &[]u8 {
+fn monthAbbr(month i64) &Array[u8] {
   imm at = usize.from(month - 1i64) * 3usize;
   &monthAbbrs[at..at + 3usize];
 }
@@ -407,7 +407,7 @@ fn httpDateOf(t Timestamp) String {
 }
 
 // A month's three letters, exactly as HTTP writes them ('Nov'): 1 to 12
-fn scanMonth(text &[]u8, s &mut Scan) i64 {
+fn scanMonth(text &Array[u8], s &mut Scan) i64 {
   if s.failed { return 0i64; }
   if s.pos + 3usize <= text.len {
     imm name = &text[s.pos..s.pos + 3usize];
@@ -425,7 +425,7 @@ fn scanMonth(text &[]u8, s &mut Scan) i64 {
 }
 
 // The word, exactly
-fn literal(text &[]u8, s &mut Scan, want &[]u8, what &[]u8) {
+fn literal(text &Array[u8], s &mut Scan, want &Array[u8], what &Array[u8]) {
   if s.failed { return; }
   if s.pos + want.len <= text.len and &text[s.pos..s.pos + want.len] == want {
     s.pos = s.pos + want.len;
@@ -450,7 +450,7 @@ fn civilCompare(y i64, mo i64, d i64, tod i64, y2 i64, mo2 i64, d2 i64, tod2 i64
 // after now is in the most recent year before it with the same two digits,
 // so the year is the latest one ending in them that is not more than 50
 // years after now.
-fn parseHttp(text &[]u8, now Timestamp) Result[Timestamp, TimeError] {
+fn parseHttp(text &Array[u8], now Timestamp) Result[Timestamp, TimeError] {
   mut s = newScan();
   if text.len == 0usize { fail(&mut s, "the text is empty"); }
   // The day's name, its letters up to ',' or ' '

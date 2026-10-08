@@ -179,7 +179,7 @@ static int iexpCPtrMismatch(INode *from, INode *totypedcl) {
     }
     if (toptr && iexpIsTextRef(fromtype)) {
         errorMsgNode(from, ErrorCPtrConv,
-            "Text is not a pointer. A C function that takes a string is declared with 'cstr', which a literal or a String's 'cstr()' is; for the bytes alone, 's as &[]u8' and then 'as *u8'.");
+            "Text is not a pointer. A C function that takes a string is declared with 'cstr', which a literal or a String's 'cstr()' is; for the bytes alone, 's as &Array[u8]' and then 'as *u8'.");
         return 1;
     }
     if (toptr && fromtype == (INode*)cstrTypeDcl) {

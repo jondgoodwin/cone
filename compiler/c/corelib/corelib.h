@@ -62,6 +62,15 @@ extern StructNode *arrayTypeDcl;
 // run-time length instead of a second struct of the name; else NULL.
 StructNode *stdlibAdoptArray(Name *name, ModuleNode *mod);
 
+// Is this declaration the generic body 'Array[T]', which a borrow of makes the slice
+// (refNameRes)? It is the compiler's own, once core has declared it; or, while a
+// library's include file is checked (stdlibIncludeChecking), the 'Array[T]' of the
+// copy of core being checked, which the first copy has already made the compiler's.
+int stdlibIsArrayBody(INode *dcl);
+
+// Set while writeIncludeFile checks the text it generated for a library
+extern int stdlibIncludeChecking;
+
 // 'str', the dynamically sized body of bytes (stdlibInit): a type with no
 // fields and no size of its own, held only through a reference, which carries
 // the number of bytes (itypeLenBodyElem, refIsFat)
