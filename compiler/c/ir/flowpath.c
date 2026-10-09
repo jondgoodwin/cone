@@ -751,6 +751,16 @@ static int pwMayAlias(INode *reftype) {
     return (permGetFlags(((RefNode *)reftype)->perm) & MayAlias) != 0;
 }
 
+// May a holder other than this reference change what it points at while it is
+// used? Every permission that may alias and does not allow interior references
+// (MayIntRefSum, as castSumInterior reads it): 'mut', 'ro' (its holder only
+// promises not to), and a lock permission, whose value is reached by a borrow
+// taking the lock. Not 'imm', 'mut1' or a held lock's.
+static int pwMayAliasWritten(INode *reftype) {
+    return pwMayAlias(reftype) && !(permGetFlags(((RefNode *)reftype)->perm) & MayIntRefSum)
+        && itypeGetTypeDcl(((RefNode *)reftype)->perm) != (INode *)opaqPerm;
+}
+
 // The place reached through the reference 'ref' evaluates to. Through a
 // borrowed reference it is a root of its own, what the reference points at,
 // keyed by the variable the reference is read from; through an owning one, a
@@ -776,6 +786,8 @@ static int pwThrough(INode **refp, Place *pl, PathSet **base) {
         pl->nsteps = 0;
         pl->shared = pwMayAlias(reftype);
         pl->sharedlen = 0;
+        pl->shwrite = pwMayAliasWritten(reftype);
+        pl->shcnt = (uint8_t)(refpl.shcnt + (pwMayAliasWritten(reftype) ? 1 : 0));
         pl->owned = 0;
         pl->far = refpl.deref;
         pl->referent = refpl.nsteps == 0 && !refpl.deref ? ((RefNode *)reftype)->vtexp : NULL;
@@ -795,6 +807,10 @@ static int pwThrough(INode **refp, Place *pl, PathSet **base) {
         if (!pl->shared && pwMayAlias(reftype)) {
             pl->shared = 1;
             pl->sharedlen = pl->nsteps;
+        }
+        if (pwMayAliasWritten(reftype)) {
+            pl->shwrite = 1;
+            ++pl->shcnt;
         }
     }
     return 1;
@@ -826,6 +842,7 @@ static int pwPlace(INode **nodep, Place *pl, PathSet **base) {
         pl->nsteps = 0;
         pl->shared = 0;
         pl->sharedlen = 0;
+        pl->shwrite = 0; pl->shcnt = 0;
         pl->owned = 0;
         pl->far = 0;
         pl->use = node;
@@ -841,6 +858,7 @@ static int pwPlace(INode **nodep, Place *pl, PathSet **base) {
         pl->nsteps = 0;
         pl->shared = 0;
         pl->sharedlen = 0;
+        pl->shwrite = 0; pl->shcnt = 0;
         pl->owned = 0;
         pl->far = 0;
         pl->use = node;
@@ -985,6 +1003,12 @@ static PathSet *pwLend(INode *site, Place *pl, INode *perm, int access, uint32_t
             && !lent.shared) {
             lent.shared = 1;
             lent.sharedlen = lent.nsteps;
+        }
+        // MEASURE: Rust's freeze applied to a shape-changing container reached through a shared path
+        if (referent && referent->tag == StructTag && ((StructNode *)referent)->lends == LendsShapeChanging
+            && lent.shared && getenv("CONE_SHAPE_FREEZE")) {
+            lent.shared = 0;
+            lent.sharedlen = 0;
         }
     }
     uint32_t id = loanMake(site, &lent, perm);
@@ -1576,6 +1600,796 @@ static void pwStaticArgs(FnCallNode *call, FnSigNode *sig, PathSet **argsets) {
     }
 }
 
+// A call whose result borrows from its receiver, a place reached through a
+// shared path that another holder may change: refuse it when the receiver is a
+// container that may change shape ('ShapeChanging'), whose elements another
+// holder's push can move out from under the borrow. Not the ordinary freezing
+// of 'uni' places, which the loan itself checks.
+// ======================================================================
+// MEASURE (shape-changing, part b). Prototype, never to be merged.
+// ======================================================================
+
+// Safe spellings for a measurement that now walks generated code too
+#define SHNAME(n) ((n) && (n)->namesym ? &(n)->namesym->namestr : "?")
+#define SHURL(n) ((n)->lexer && (n)->lexer->url ? (n)->lexer->url : "?")
+#define SHCOL(n) ((n)->srcp && (n)->linep ? (uint32_t)((n)->srcp - (n)->linep) + 1 : 0)
+
+// ---- What a type can reach (type level): a value of 'want' by value or through a
+// reference, pointer or owner. 1: reached by containment alone, 2: through some
+// reference or pointer, 4: through a virtual reference (could be anything).
+#define RcSeenCap 4096
+static INode *rcSeen[RcSeenCap];
+static uint8_t rcSeenI[RcSeenCap];
+static int rcN;
+static unsigned rcBits;
+static INode *rcWant;
+static int rcWritable;
+static int rcPtrDirect;
+
+static void rcWalk(INode *type, int ind) {
+    if (type == NULL)
+        return;
+    switch (type->tag) {
+    case NameUseTag:
+        if (isTypeNode(type))
+            rcWalk(itypeGetTypeDcl(type), ind);
+        return;
+    case AliasDclTag:
+        rcWalk(((AliasDclNode *)type)->target, ind);
+        return;
+    case RefTag:
+    case ArrayRefTag:
+    case VirtRefTag:
+    {
+        RefNode *ref = (RefNode *)type;
+        if (rcWritable && itypeGetTypeDcl(ref->region) == borrowRef) {
+            INode *perm = ref->perm == unknownType ? (INode *)roPerm : itypeGetTypeDcl(ref->perm);
+            if (perm == (INode *)roPerm || perm == (INode *)immPerm)
+                return;
+        }
+        if (type->tag == VirtRefTag) {
+            rcBits |= 4 | 2;
+            return;
+        }
+        rcWalk(ref->vtexp, 1);
+        return;
+    }
+    case PtrTag:
+        // a raw pointer field: the owner of a block (a List's), unless asked to take it as a way in from outside
+        rcWalk(((StarNode *)type)->vtexp, rcPtrDirect ? ind : 1);
+        return;
+    case ArrayTag:
+        rcWalk(arrayElemType(type), ind);
+        return;
+    case TTupleTag:
+    {
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodesFor(((TupleNode *)type)->elems, cnt, nodesp))
+            rcWalk(*nodesp, ind);
+        return;
+    }
+    case StructTag:
+    {
+        if (type == rcWant) {
+            rcBits |= ind ? 2 : 1;
+            return;
+        }
+        for (int i = 0; i < rcN; ++i) {
+            if (rcSeen[i] == type && rcSeenI[i] == ind)
+                return;
+        }
+        if (rcN >= RcSeenCap) {
+            rcBits |= 8 | 2;    // gave up: too large a type graph, taken as reaching
+            return;
+        }
+        rcSeen[rcN] = type;
+        rcSeenI[rcN++] = (uint8_t)ind;
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodelistFor(&((StructNode *)type)->fields, cnt, nodesp))
+            rcWalk(((IExpNode *)*nodesp)->vtype, ind);
+        if (((StructNode *)type)->derived) {
+            for (nodesFor(((StructNode *)type)->derived, cnt, nodesp))
+                rcWalk(*nodesp, ind);
+        }
+        return;
+    }
+    default:
+        return;
+    }
+}
+
+static unsigned rcReach(INode *type, INode *want, int writable, int ind0) {
+    rcN = 0;
+    rcBits = 0;
+    rcWant = want;
+    rcWritable = writable;
+    rcPtrDirect = 0;
+    rcWalk(type, ind0);
+    return rcBits;
+}
+
+static unsigned rcReachOwned(INode *type, INode *want, int writable, int ind0) {
+    rcN = 0;
+    rcBits = 0;
+    rcWant = want;
+    rcWritable = writable;
+    rcPtrDirect = 1;
+    rcWalk(type, ind0);
+    rcPtrDirect = 0;
+    return rcBits;
+}
+
+// ---- Inference: does a function (transitively) reshape?
+// Parameter mode: it writes, through parameter 'parm', a field of what that
+// points at (mode 1: any field; mode 0: only a field holding a raw pointer, the
+// storage), or replaces the whole of it, or hands the storage pointer to code it
+// cannot see, or passes the parameter to a callee that (transitively) does.
+// Element writes (through the pointer) do not count. Type mode: it replaces a
+// value of the container type or calls something that reshapes one.
+typedef struct {
+    FnDclNode *fn;
+    INode *cont;
+    uint8_t parm;
+    uint8_t mode;
+    uint8_t state;      // 0 empty, 1 busy, 2 no, 3 yes
+} RsMemo;
+#define RsMemoCap 65536
+static RsMemo rsMemo[RsMemoCap];
+
+typedef struct {
+    VarDclNode *parm;   // parameter mode, else NULL
+    INode *cont;        // type mode, else NULL
+    int mode;
+    int hit;
+} RsCtx;
+
+static int rsVisible(FnDclNode *fn) {
+    return fn && fn->genericinfo == NULL && !(fn->flags & FlagExtern) && !(fn->dclinfo.facts & DclIntrinsic)
+        && fn->value && fn->value->tag == BlockTag;
+}
+
+// Is 'e' a place inside what parameter 'parm' points at (or is), reached by field steps alone?
+// 'nearest' is the field of the pointee itself it passes through (NULL: the whole), 'outer' the last one named.
+static int rsRooted(INode *e, VarDclNode *parm, FieldDclNode **nearest, FieldDclNode **outer) {
+    *nearest = NULL;
+    *outer = NULL;
+    for (;;) {
+        switch (e->tag) {
+        case CastTag:
+            if (e->flags & FlagConvert)
+                return 0;
+            e = ((CastNode *)e)->exp;
+            continue;
+        case BorrowTag:
+        case ArrayBorrowTag:
+            e = ((RefNode *)e)->vtexp;
+            continue;
+        case DerefTag:
+        {
+            INode *in = ((StarNode *)e)->vtexp;
+            while (in->tag == CastTag && !(in->flags & FlagConvert))
+                in = ((CastNode *)in)->exp;
+            return pwNamedVar(in) == parm;
+        }
+        case FldAccessTag:
+        {
+            FnCallNode *f = (FnCallNode *)e;
+            if (f->methfld && f->methfld->tag == NameUseTag && ((NameUseNode *)f->methfld)->dclnode
+                && ((NameUseNode *)f->methfld)->dclnode->tag == FieldDclTag) {
+                FieldDclNode *fd = (FieldDclNode *)((NameUseNode *)f->methfld)->dclnode;
+                if (*outer == NULL)
+                    *outer = fd;
+                *nearest = fd;
+            }
+            e = f->objfn;
+            continue;
+        }
+        default:
+            return pwNamedVar(e) == parm;
+        }
+    }
+}
+
+static int rsFieldIsPtr(FieldDclNode *fd) {
+    if (fd == NULL)
+        return 0;
+    INode *t = itypeGetTypeDcl(fd->vtype);
+    return t && t->tag == PtrTag;
+}
+
+// A write at the place 'lval' (an assignment's left side, or an operator's operand)
+static int rsWriteHits(INode *lval, RsCtx *c) {
+    if (c->parm) {
+        FieldDclNode *nearest, *outer;
+        if (!rsRooted(lval, c->parm, &nearest, &outer))
+            return 0;
+        if (nearest == NULL)
+            return 1;                       // the whole pointee replaced
+        return c->mode == 1 || rsFieldIsPtr(outer);
+    }
+    INode *t = iexpGetTypeDcl(lval);
+    return t == c->cont && !pwUniqueLocalPlace(lval);
+}
+
+// Does the expression read a raw-pointer field rooted at the parameter?
+static int rsReadsPtr(INode *e, VarDclNode *parm) {
+    if (e == NULL)
+        return 0;
+    switch (e->tag) {
+    case CastTag:
+        return rsReadsPtr(((CastNode *)e)->exp, parm);
+    case BorrowTag:
+    case ArrayBorrowTag:
+        return rsReadsPtr(((RefNode *)e)->vtexp, parm);
+    case DerefTag:
+        return rsReadsPtr(((StarNode *)e)->vtexp, parm);
+    case FldAccessTag:
+    {
+        FieldDclNode *nearest, *outer;
+        if (rsRooted(e, parm, &nearest, &outer) && rsFieldIsPtr(outer))
+            return 1;
+        return 0;
+    }
+    case FnCallTag:
+    case ArrIndexTag:
+    {
+        FnCallNode *call = (FnCallNode *)e;
+        INode **argsp;
+        uint32_t cnt;
+        if (rsReadsPtr(call->objfn, parm))
+            return 1;
+        if (call->args)
+            for (nodesFor(call->args, cnt, argsp))
+                if (rsReadsPtr(*argsp, parm))
+                    return 1;
+        return 0;
+    }
+    default:
+        return 0;
+    }
+}
+
+static int pwUniqueLocalPlace(INode *e);
+static int rsParamReshapes(FnDclNode *fn, uint32_t k, int mode);
+static int rsTypeReshapes(FnDclNode *fn, INode *cont, int mode);
+static void rsWalk(INode *node, RsCtx *c);
+
+static void rsNodes(Nodes *nodes, RsCtx *c) {
+    if (nodes == NULL)
+        return;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(nodes, cnt, nodesp))
+        rsWalk(*nodesp, c);
+}
+
+static int rsParmWritable(FnDclNode *callee, uint32_t k, INode *arg) {
+    INode *ptype = NULL;
+    if (callee && callee->vtype && callee->vtype->tag == FnSigTag && k < ((FnSigNode *)callee->vtype)->parms->used)
+        ptype = iexpGetTypeDcl(nodesGet(((FnSigNode *)callee->vtype)->parms, k));
+    else
+        ptype = iexpGetTypeDcl(arg);
+    return ptype && ptype->tag == RefTag && (permGetFlags(((RefNode *)ptype)->perm) & MayWrite);
+}
+
+static const char *rsHit = "?";
+static void rsCall2(FnCallNode *call, RsCtx *c);
+static void rsCall(FnCallNode *call, RsCtx *c) {
+    rsCall2(call, c);
+    if (c->hit) {
+        INode *fnn = call->objfn;
+        rsHit = isNameUseNode(fnn) ? SHNAME((NameUseNode *)fnn) : "?";
+    }
+}
+
+static void rsCall2(FnCallNode *call, RsCtx *c) {
+    INode *fnn = call->objfn;
+    FnDclNode *callee = isNameUseNode(fnn) && ((NameUseNode *)fnn)->dclnode && ((NameUseNode *)fnn)->dclnode->tag == FnDclTag
+        ? (FnDclNode *)((NameUseNode *)fnn)->dclnode : NULL;
+    if (callee && ((callee->dclinfo.facts & DclIntrinsic) || (callee->value && callee->value->tag == IntrinsicTag)))
+        return;
+    uint32_t nargs = call->args ? call->args->used : 0;
+    if ((call->flags & FlagLvalOp) && nargs > 0 && rsWriteHits(nodesGet(call->args, 0), c)) {
+        c->hit = 1;
+        return;
+    }
+    int vis = rsVisible(callee);
+    int anyreach = 0;
+    for (uint32_t k = 0; k < nargs && !c->hit; ++k) {
+        INode *arg = nodesGet(call->args, k);
+        if (c->parm) {
+            FieldDclNode *nearest, *outer;
+            int rooted = rsRooted(arg, c->parm, &nearest, &outer);
+            if (rooted && rsParmWritable(callee, k, arg)) {
+                if (!vis || rsParamReshapes(callee, k, c->mode))
+                    c->hit = 1;
+            }
+            else if (!vis && !rooted && rsReadsPtr(arg, c->parm))
+                c->hit = 1;
+        }
+        else {
+            // A value this function made or owns whole (a local, a by-value parameter) is nobody
+            // else's: reshaping it cannot reshape a value the caller reached by another name
+            INode *ba = arg;
+            while (ba->tag == CastTag && !(ba->flags & FlagConvert))
+                ba = ((CastNode *)ba)->exp;
+            if (ba->tag == BorrowTag && pwUniqueLocalPlace(((RefNode *)ba)->vtexp))
+                continue;
+            INode *at = iexpGetTypeDcl(arg);
+            if (rcReach(at, c->cont, 1, 0) == 0)
+                continue;
+            if (at->tag == RefTag && itypeGetTypeDcl(((RefNode *)at)->vtexp) == c->cont) {
+                if (rsParmWritable(callee, k, arg) && (!vis || rsParamReshapes(callee, k, c->mode)))
+                    c->hit = 1;
+            }
+            else
+                anyreach = 1;
+        }
+    }
+    if (!c->parm && !c->hit && anyreach && (!vis || rsTypeReshapes(callee, c->cont, c->mode)))
+        c->hit = 1;
+}
+
+static void rsWalk(INode *node, RsCtx *c) {
+    if (node == NULL || c->hit)
+        return;
+    switch (node->tag) {
+    case BlockTag:
+        rsNodes(((BlockNode *)node)->stmts, c);
+        break;
+    case IfTag:
+        rsNodes(((IfNode *)node)->condblk, c);
+        break;
+    case BreakTag:
+    case ContinueTag:
+    case BlockRetTag:
+    case ReturnTag:
+        rsWalk(((BreakRetNode *)node)->exp, c);
+        break;
+    case VarDclTag:
+        rsWalk(((VarDclNode *)node)->value, c);
+        break;
+    case AssignTag:
+        if (rsWriteHits(((AssignNode *)node)->lval, c)) {
+            c->hit = 1;
+            break;
+        }
+        rsWalk(((AssignNode *)node)->lval, c);
+        rsWalk(((AssignNode *)node)->rval, c);
+        break;
+    case SwapTag:
+        if (rsWriteHits(((SwapNode *)node)->lval, c) || rsWriteHits(((SwapNode *)node)->rval, c)) {
+            c->hit = 1;
+            break;
+        }
+        rsWalk(((SwapNode *)node)->lval, c);
+        rsWalk(((SwapNode *)node)->rval, c);
+        break;
+    case VTupleTag:
+        rsNodes(((TupleNode *)node)->elems, c);
+        break;
+    case ArrayLitTag:
+        rsNodes(((ArrayNode *)node)->elems, c);
+        break;
+    case FnCallTag:
+        rsCall((FnCallNode *)node, c);
+        if (!c->hit) {
+            rsWalk(((FnCallNode *)node)->objfn, c);
+            rsNodes(((FnCallNode *)node)->args, c);
+        }
+        break;
+    case ArrIndexTag:
+    case FldAccessTag:
+    case TypeLitTag:
+        rsWalk(((FnCallNode *)node)->objfn, c);
+        rsNodes(((FnCallNode *)node)->args, c);
+        break;
+    case CastTag:
+    case IsTag:
+        rsWalk(((CastNode *)node)->exp, c);
+        break;
+    case DerefTag:
+        rsWalk(((StarNode *)node)->vtexp, c);
+        break;
+    case BorrowTag:
+    case ArrayBorrowTag:
+    case AllocateTag:
+        rsWalk(((RefNode *)node)->vtexp, c);
+        break;
+    case NotLogicTag:
+        rsWalk(((LogicNode *)node)->lexp, c);
+        break;
+    case OrLogicTag:
+    case AndLogicTag:
+        rsWalk(((LogicNode *)node)->lexp, c);
+        rsWalk(((LogicNode *)node)->rexp, c);
+        break;
+    case NamedValTag:
+        rsWalk(((NamedValNode *)node)->val, c);
+        break;
+    case OfEntryTag:
+    case FillEntryTag:
+    case PairEntryTag:
+        rsWalk(((EntryNode *)node)->first, c);
+        rsWalk(((EntryNode *)node)->val, c);
+        break;
+    case TempTag:
+        rsWalk(((TempNode *)node)->exp, c);
+        break;
+    case HollowTag:
+        rsWalk(((HollowNode *)node)->exp, c);
+        break;
+    case DropFlagTag:
+        rsWalk(((DropFlagNode *)node)->release, c);
+        break;
+    default:
+        break;
+    }
+}
+
+static RsMemo *rsMemoFor(FnDclNode *fn, INode *cont, uint32_t k, int mode) {
+    uint64_t h = ((uint64_t)(uintptr_t)fn * 0x9E3779B97F4A7C15ull) ^ ((uint64_t)(uintptr_t)cont * 0xC2B2AE3D27D4EB4Full)
+        ^ ((uint64_t)k << 8) ^ (uint64_t)mode;
+    uint32_t i = (uint32_t)(h >> 40) & (RsMemoCap - 1);
+    for (int probe = 0; probe < 4096; ++probe, i = (i + 1) & (RsMemoCap - 1)) {
+        RsMemo *m = &rsMemo[i];
+        if (m->state == 0) {
+            m->fn = fn;
+            m->cont = cont;
+            m->parm = (uint8_t)k;
+            m->mode = (uint8_t)mode;
+            return m;
+        }
+        if (m->fn == fn && m->cont == cont && m->parm == k && m->mode == mode)
+            return m;
+    }
+    return NULL;
+}
+
+static int rsRun(FnDclNode *fn, INode *cont, uint32_t k, int mode) {
+    if (!rsVisible(fn))
+        return 1;                           // code we cannot see: layer 1 assumes it reshapes
+    RsMemo *m = rsMemoFor(fn, cont, k, mode);
+    if (m == NULL)
+        return 1;
+    if (m->state == 1)
+        return 0;
+    if (m->state >= 2)
+        return m->state == 3;
+    m->state = 1;
+    RsCtx ctx;
+    ctx.parm = NULL;
+    ctx.cont = cont;
+    ctx.mode = mode;
+    ctx.hit = 0;
+    if (cont == NULL) {
+        FnSigNode *sig = (FnSigNode *)fn->vtype;
+        if (k >= sig->parms->used) {
+            m->state = 3;
+            return 1;
+        }
+        ctx.parm = (VarDclNode *)nodesGet(sig->parms, k);
+    }
+    rsHit = "assign";
+    rsWalk(fn->value, &ctx);
+    m->state = ctx.hit ? 3 : 2;
+    if (ctx.hit && getenv("CONE_SHAPE_DEBUG"))
+        fprintf(stderr, "RS %s k=%u mode=%d cont=%s via %s\n", SHNAME(fn), k, mode, cont ? SHNAME((StructNode *)cont) : "-", rsHit);
+    return ctx.hit;
+}
+
+static int rsParamReshapes(FnDclNode *fn, uint32_t k, int mode) {
+    return rsRun(fn, NULL, k, mode);
+}
+
+static int rsTypeReshapes(FnDclNode *fn, INode *cont, int mode) {
+    return rsRun(fn, cont, 0, mode);
+}
+
+// ---- Which structs would inference find shape-changing?
+static void siStruct(StructNode *st, int *seen) {
+    if (st->genericinfo != NULL || (st->flags & TraitType) || st->namesym == NULL)
+        return;
+    int hasptr = 0, mutA = 0, mutB = 0, lender = 0, nmeth = 0;
+    char first[64] = "";
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodelistFor(&st->fields, cnt, nodesp)) {
+        INode *t = itypeGetTypeDcl(((IExpNode *)*nodesp)->vtype);
+        if (t && t->tag == PtrTag)
+            hasptr = 1;
+    }
+    for (nodelistFor(&st->nodelist, cnt, nodesp)) {
+        INode *m = *nodesp;
+        FnDclNode *fns[16];
+        int nf = 0;
+        if (m->tag == FnDclTag)
+            fns[nf++] = (FnDclNode *)m;
+        else if (m->tag == FnOverloadDclTag) {
+            INode **op;
+            uint32_t oc;
+            for (nodesFor(((FnOverloadDclNode *)m)->overloads, oc, op))
+                if (nf < 16 && (*op)->tag == FnDclTag)
+                    fns[nf++] = (FnDclNode *)*op;
+        }
+        for (int i = 0; i < nf; ++i) {
+            FnDclNode *fn = fns[i];
+            if (!fn->vtype || fn->vtype->tag != FnSigTag || !(fn->flags & FlagMethFld))
+                continue;
+            FnSigNode *sig = (FnSigNode *)fn->vtype;
+            if (sig->parms->used == 0 || ((VarDclNode *)nodesGet(sig->parms, 0))->namesym != selfName)
+                continue;
+            ++nmeth;
+            INode *selft = iexpGetTypeDcl(nodesGet(sig->parms, 0));
+            if (selft->tag != RefTag)
+                continue;
+            int w = (permGetFlags(((RefNode *)selft)->perm) & MayWrite) != 0;
+            if (w && !fnDclIsInit(fn) && rsVisible(fn) && fn->namesym != nametblFind("final", 5)
+                && (&fn->namesym->namestr)[0] != '-') {
+                if (rsParamReshapes(fn, 0, 0)) {
+                    mutA = 1;
+                    if (!first[0])
+                        snprintf(first, sizeof(first), "%s", &fn->namesym->namestr);
+                }
+                if (rsParamReshapes(fn, 0, 1))
+                    mutB = 1;
+            }
+            if (sig->rettype && itypeCarriesBorrow(sig->rettype))
+                lender = 1;
+        }
+    }
+    FILE *f = fopen(getenv("CONE_SHAPE_LOG"), "a");
+    if (f) {
+        fprintf(f, "S\t%s\tmarked=%d\thasptr=%d\tmutA=%d\tmutB=%d\tlender=%d\tmeths=%d\tfirstA=%s\n",
+            &st->namesym->namestr, st->lends == LendsShapeChanging, hasptr, mutA, mutB, lender, nmeth, first);
+        fclose(f);
+    }
+    (void)seen;
+}
+
+static void siNode(INode *node, int *seen) {
+    if (node == NULL)
+        return;
+    switch (node->tag) {
+    case ProgramTag:
+    {
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodesFor(((ProgramNode *)node)->modules, cnt, nodesp))
+            siNode(*nodesp, seen);
+        break;
+    }
+    case ModuleTag:
+    {
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodesFor(((ModuleNode *)node)->nodes, cnt, nodesp))
+            siNode(*nodesp, seen);
+        break;
+    }
+    case StructTag:
+    {
+        StructNode *st = (StructNode *)node;
+        if (st->genericinfo != NULL) {
+            if (st->genericinfo->memonodes) {
+                INode **nodesp;
+                uint32_t cnt;
+                for (nodesFor(st->genericinfo->memonodes, cnt, nodesp)) {
+                    nodesp++;
+                    cnt--;
+                    if (*nodesp != node && (*nodesp)->tag == StructTag)
+                        siStruct((StructNode *)*nodesp, seen);
+                }
+            }
+        }
+        else
+            siStruct(st, seen);
+        break;
+    }
+    default:
+        break;
+    }
+}
+
+void shapeInferAll(INode *pgm) {
+    if (!getenv("CONE_SHAPE_LOG"))
+        return;
+    int seen = 0;
+    siNode(pgm, &seen);
+}
+
+static FnDclNode *pwCurFn = NULL;
+
+// ---- Classifying a call against a borrow that is held
+static int pwUniqueLocalPlace(INode *e) {
+    for (;;) {
+        if (e->tag == CastTag && !(e->flags & FlagConvert))
+            e = ((CastNode *)e)->exp;
+        else if (e->tag == FldAccessTag)
+            e = ((FnCallNode *)e)->objfn;
+        else if (e->tag == ArrIndexTag && iexpGetTypeDcl(((FnCallNode *)e)->objfn)->tag == ArrayTag)
+            e = ((FnCallNode *)e)->objfn;
+        else
+            break;
+    }
+    VarDclNode *var = pwNamedVar(e);
+    if (!var || var->scope == 0 || (var->flags & FlagStatic))
+        return 0;
+    INode *t = iexpGetTypeDcl(e);
+    return t->tag != RefTag && t->tag != ArrayRefTag && t->tag != VirtRefTag && t->tag != PtrTag;
+}
+
+// Returns 1 when the call could reshape what the loan's borrow points into (under any variant
+// measured), filling 'text' with the facts each variant needs
+static int pwShapeClassify(FnCallNode *call, FnDclNode *meth, Place *recvpl, uint32_t loan, INode *cont, char *text,
+        size_t size) {
+    INode *fnn = call->objfn;
+    FnDclNode *callee = isNameUseNode(fnn) && ((NameUseNode *)fnn)->dclnode && ((NameUseNode *)fnn)->dclnode->tag == FnDclTag
+        ? (FnDclNode *)((NameUseNode *)fnn)->dclnode : NULL;
+    const char *name = SHNAME(callee);
+    if (callee && (callee->dclinfo.facts & DclIntrinsic))
+        return 0;
+    if (callee && fnDclIsInit(callee))
+        return 0;
+    uint32_t nargs = call->args ? call->args->used : 0;
+    int vis = rsVisible(callee);
+    if (nargs == 0)
+        return 0;
+    INode *t0 = iexpGetTypeDcl(nodesGet(call->args, 0));
+    if (meth && t0->tag == RefTag && itypeGetTypeDcl(((RefNode *)t0)->vtexp) == cont) {
+        INode *selft = iexpGetTypeDcl(nodesGet(((FnSigNode *)meth->vtype)->parms, 0));
+        int rw = selft->tag == RefTag && (permGetFlags(((RefNode *)selft)->perm) & MayWrite) != 0;
+        if (!rw)
+            return 0;
+        int ra = vis ? rsParamReshapes(callee, 0, 0) : 1;
+        int rb = vis ? rsParamReshapes(callee, 0, 1) : 1;
+        int lo = recvpl && !recvpl->shared && !recvpl->owned;
+        int same = recvpl && loanShapeSamePlace(loan, recvpl);
+        snprintf(text, size, "k=M n=%s vis=%d rw=%d ra=%d rb=%d lo=%d same=%d", name, vis, rw, ra, rb, lo, same);
+        return 1;
+    }
+    int sA = 0, sW = 0, sA2 = 0, sW2 = 0, sA3 = 0, sW3 = 0, virt = 0;
+    for (uint32_t k = 0; k < nargs; ++k) {
+        INode *arg = nodesGet(call->args, k);
+        INode *at = iexpGetTypeDcl(arg);
+        INode *start = at;
+        int excus = 0;
+        INode *ba = arg;
+        while (ba->tag == CastTag && !(ba->flags & FlagConvert))
+            ba = ((CastNode *)ba)->exp;
+        if (ba->tag == BorrowTag && at->tag == RefTag && pwUniqueLocalPlace(((RefNode *)ba)->vtexp)) {
+            start = ((RefNode *)at)->vtexp;
+            excus = 1;
+        }
+        else if (at->tag != RefTag && at->tag != ArrayRefTag && at->tag != VirtRefTag && at->tag != PtrTag)
+            excus = 1;
+        // What the callee may write through is its parameter's permission, not the argument's
+        INode *wt = at;
+        if (callee && callee->vtype && callee->vtype->tag == FnSigTag && k < ((FnSigNode *)callee->vtype)->parms->used)
+            wt = iexpGetTypeDcl(nodesGet(((FnSigNode *)callee->vtype)->parms, k));
+        unsigned bits = rcReach(at, cont, 0, 0);
+        unsigned bitsW = rcReach(wt, cont, 1, 0);
+        if (bits & 4)
+            virt = 1;
+        unsigned eb = excus ? rcReach(start, cont, 0, 0) : bits;
+        unsigned ebW;
+        if (!excus)
+            ebW = bitsW;
+        else if (start != at) {
+            // a borrow of a unique local: the callee's parameter says whether it may write through it
+            INode *wp = wt->tag == RefTag ? (((RefNode *)wt)->perm == unknownType ? (INode *)roPerm
+                : itypeGetTypeDcl(((RefNode *)wt)->perm)) : NULL;
+            ebW = (wp == (INode *)roPerm || wp == (INode *)immPerm) ? 0 : rcReach(start, cont, 1, 0);
+        }
+        else
+            ebW = rcReach(wt, cont, 1, 0);
+        // The same where a unique local's raw pointers own what they point at (a List's block)
+        unsigned eb3 = excus ? rcReachOwned(start, cont, 0, 0) : bits;
+        unsigned ebW3;
+        if (!excus)
+            ebW3 = bitsW;
+        else if (start != at) {
+            INode *wp = wt->tag == RefTag ? (((RefNode *)wt)->perm == unknownType ? (INode *)roPerm
+                : itypeGetTypeDcl(((RefNode *)wt)->perm)) : NULL;
+            ebW3 = (wp == (INode *)roPerm || wp == (INode *)immPerm) ? 0 : rcReachOwned(start, cont, 1, 0);
+        }
+        else
+            ebW3 = rcReachOwned(wt, cont, 1, 0);
+        if (bits)
+            sA = 1;
+        if (bitsW)
+            sW = 1;
+        if (excus ? (eb & (2 | 4)) != 0 : bits != 0)
+            sA2 = 1;
+        if (excus ? (ebW & (2 | 4)) != 0 : bitsW != 0)
+            sW2 = 1;
+        if (excus ? (eb3 & (2 | 4)) != 0 : bits != 0)
+            sA3 = 1;
+        if (excus ? (ebW3 & (2 | 4)) != 0 : bitsW != 0)
+            sW3 = 1;
+    }
+    if (!sA)
+        return 0;
+    int pa = sW2 && (!vis || rsTypeReshapes(callee, cont, 0));
+    int pb = sW2 && (!vis || rsTypeReshapes(callee, cont, 1));
+    int pb3 = sW3 && (!vis || rsTypeReshapes(callee, cont, 1));
+    snprintf(text, size, "k=O n=%s vis=%d sA=%d sW=%d sA2=%d sW2=%d sA3=%d sW3=%d virt=%d pa=%d pb=%d pb3=%d", name, vis, sA, sW, sA2, sW2,
+        sA3, sW3, virt, pa, pb, pb3);
+    return 1;
+}
+
+static void pwShapeCall(FnCallNode *call, FnDclNode *meth, Place *recvpl, PathSet **argsets, uint32_t nargs, uint32_t recvloan) {
+    for (uint32_t i = 0; i < loanShapeCount(); ++i) {
+        uint32_t loan = loanShapeId(i);
+        // The borrow handed to this very call, beside another argument that could reshape its container
+        int own = 0;
+        for (uint32_t j = 0; loan != recvloan && j < nargs; ++j) {
+            if (argsets[j] && argsets[j] != &pathSetAll && pathSetHasLoan(argsets[j], loan))
+                own = 1;
+        }
+        char text[420];
+        if (!pwShapeClassify(call, meth, recvpl, loan, loanShapeContainer(loan), text, sizeof(text) - 80))
+            continue;
+        size_t used = strlen(text);
+        snprintf(text + used, sizeof(text) - used, " at=%s:%u:%u", SHURL(call), call->linenbr, SHCOL(call));
+        if (own) {
+            size_t u2 = strlen(text);
+            snprintf(text + u2, sizeof(text) - u2, " own=1");
+        }
+        if (own || loanShapeInFlight(loan))
+            loanShapeNow(loan, text);
+        else
+            loanShapePend((INode *)call, loan, text);
+    }
+}
+
+static struct { char text[480]; uint32_t loan; } measure[2048];
+static int nmeasure = 0;
+static void pwShapeShared(FnCallNode *call, Place *recvpl, uint32_t recvloan) {
+    INode *recvtype = iexpGetTypeDcl(nodesGet(call->args, 0));
+    INode *container = recvtype->tag == RefTag ? itypeGetTypeDcl(((RefNode *)recvtype)->vtexp) : NULL;
+    if (container == NULL || container->tag != StructTag || ((StructNode *)container)->lends != LendsShapeChanging)
+        return;
+    // The reference the place is reached through cannot write, and what it
+    // was borrowed from is a place the walk sees a loan on, which nothing else
+    // may change while the reference is used
+    VarDclNode *rv = pathVars[recvpl->var].var;
+    INode *rt = rv ? itypeGetTypeDcl(rv->vtype) : NULL;
+    PathSet *held = pathVars[recvpl->var].holds;
+    int frozen = recvpl->deref && !recvpl->owned && rt && rt->tag == RefTag
+        && !(permGetFlags(((RefNode *)rt)->perm) & MayWrite) && held && held != &pathSetAll && held->cnt > 0;
+    for (uint32_t i = 0; frozen && i < held->cnt; ++i)
+        frozen = loanExcludesWriters(held->ids[i]);
+    // MEASURE
+    if (getenv("CONE_SHAPE_LOG") && nmeasure < 2048) {
+        const char *perm = rt && rt->tag == RefTag && ((RefNode *)rt)->perm && ((RefNode *)rt)->perm->tag == NameUseTag
+            && ((NameUseNode *)((RefNode *)rt)->perm)->namesym ? &((NameUseNode *)((RefNode *)rt)->perm)->namesym->namestr : "-";
+        int kinds[5] = { 0, 0, 0, 0, 0 };
+        if (pathVars[recvpl->var].holds && pathVars[recvpl->var].holds != &pathSetAll)
+            for (uint32_t i = 0; i < pathVars[recvpl->var].holds->cnt; ++i)
+                ++kinds[loanKindOfEntry(pathVars[recvpl->var].holds->ids[i])];
+        snprintf(measure[nmeasure].text, sizeof(measure[0].text), "B\t%s:%u:%u\t%s\troot=%s\trootperm=%s\tisparm=%d\tderef=%d\towned=%d\tsteps=%d\tshcnt=%d\tfar=%d\tm=%s\tfn=%s\tfrozen=%d\tholds=S%dX%dA%dP%dC%d",
+            SHURL(call), call->linenbr, SHCOL(call), SHNAME((StructNode *)container),
+            SHNAME(rv), perm, rv && rv->scope == 1 ? (rv->namesym == selfName ? 2 : 1) : 0,
+            recvpl->deref, recvpl->owned, recvpl->nsteps, recvpl->shcnt, recvpl->far,
+            isNameUseNode(call->objfn) ? SHNAME((NameUseNode *)call->objfn) : "?",
+            SHNAME(pwCurFn), frozen, kinds[0], kinds[1], kinds[2], kinds[3], kinds[4]);
+        measure[nmeasure++].loan = recvloan;
+        if (!frozen) {
+            char key[300];
+            snprintf(key, sizeof(key), "%s:%u:%u", SHURL(call), call->linenbr, SHCOL(call));
+            loanShapeMark(recvloan, container, key);
+        }
+    }
+    if (frozen || !getenv("CONE_SHAPE_WARN"))
+        return;
+    errorMsgNode((INode *)call, WarnShapeShared,
+        "This borrow points into '%s', which may move its elements when it changes, and the path to it is shared: another reference to the same value could push or remove while the borrow is still used. Borrow it through a 'uni' or 'imm' path, take a lock, or copy the element out.",
+        &((StructNode *)container)->namesym->namestr);
+}
+
 // A call: the function reference it calls through, then each argument in
 // order, each carrying its loans in flight until the call is made. A borrow
 // the call returns (or a value holding one) carries every argument's loans --
@@ -1649,6 +2463,8 @@ static PathSet *pwCall(FnCallNode *call) {
     if (pathLoans) {
         pwCallStores(call, argsets, recvloan ? &recvpl : NULL);
         pwCallMoves(call, sig, recvloan ? &recvpl : NULL);
+        if (loanShapeCount())
+            pwShapeCall(call, meth, recvloan ? &recvpl : NULL, argsets, nargs, recvloan);
     }
     if (!carries)
         return NULL;
@@ -1669,8 +2485,12 @@ static PathSet *pwCall(FnCallNode *call) {
         else
             loanReturnedBy(recvloan, ((NameUseNode *)call->objfn)->namesym);
     }
-    if (meth)
-        result = pathSetUnion(result, pwArgCarries(sig, 0, rettype, recvholds));
+    if (meth) {
+        PathSet *fromrecv = pwArgCarries(sig, 0, rettype, recvholds);
+        if (recvloan && recvpl.shwrite && pathSetHasLoan(fromrecv, recvloan))
+            pwShapeShared(call, &recvpl, recvloan);
+        result = pathSetUnion(result, fromrecv);
+    }
     // What the result's borrows point at may be anything its arguments reach
     // ('h.r' returned from '&h'): every loan both near and far, and of no
     // struct's slot
@@ -1764,6 +2584,7 @@ static void pwSwap(SwapNode *node) {
             pl->nsteps = 0;
             pl->shared = 0;
             pl->sharedlen = 0;
+            pl->shwrite = 0; pl->shcnt = 0;
             pl->owned = 0;
             pl->far = 0;
             pl->use = *sides[i];
@@ -2516,6 +3337,8 @@ void flowPathWalk(FnDclNode *fndcl, int loans, int drops, int seams) {
     pathGpuChoices = flowGpu && loans;
     pwRetFirst = NULL;
     pwRetSeen = 0;
+    nmeasure = 0;
+    pwCurFn = fndcl;
     loanWalkBegin();
     if (drops)
         dropWalkBegin();
@@ -2543,6 +3366,15 @@ void flowPathWalk(FnDclNode *fndcl, int loans, int drops, int seams) {
             pathSetFacts(index, pwCallerLoans(index), NULL);
     }
     pwBlock((BlockNode *)fndcl->value, 1, 1);
+    // MEASURE
+    if (nmeasure) {
+        FILE *f = fopen(getenv("CONE_SHAPE_LOG"), "a");
+        for (int i = 0; f && i < nmeasure; ++i)
+            fprintf(f, "%s\theld=%d\n", measure[i].text, loanHeldByVariable(measure[i].loan));
+        if (f)
+            fclose(f);
+        nmeasure = 0;
+    }
     if (drops)
         dropWalkEnd(errors == errorsOnEntry);
 

@@ -620,8 +620,9 @@ void fnDclTypeCheck(TypeCheckState *pstate, FnDclNode *fnnode) {
     // say: the seam's rules are the loan walk's, and whether a variable still
     // holds its value there is drop flags' state (flowpath.c, pwSeam)
     int seams = fstate.awaits != NULL;
-    if ((fstate.gate || fstate.dropgate || flowGpu || seams) && errors == errorsOnEntry)
-        flowPathWalk(fnnode, fstate.gate != 0 || flowGpu || seams, fstate.dropgate || seams, seams);
+    int shapeall = getenv("CONE_SHAPE_ALL") != NULL;     // MEASURE: walk every function
+    if ((fstate.gate || fstate.dropgate || flowGpu || seams || shapeall) && errors == errorsOnEntry)
+        flowPathWalk(fnnode, fstate.gate != 0 || flowGpu || seams || shapeall, fstate.dropgate || seams, seams);
     // The seams every rule accepted: a message's are split, where the split is
     // built (generation makes its halves); any other is reported not built
     // yet where it stands, with what its continuation would carry

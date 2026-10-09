@@ -88,6 +88,9 @@ void doAnalysis(ConeOptions *opt, ProgramNode **pgm) {
     // (ir/types/actor.c)
     actorCheckAll();
 
+    if (!errors)
+        shapeInferAll((INode*)*pgm);   // MEASURE only
+
     if (opt->check_tree)
         inodeCheckTree((INode*)*pgm);
 }

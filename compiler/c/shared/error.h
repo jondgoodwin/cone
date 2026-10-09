@@ -548,6 +548,7 @@ enum ErrorCode {
     WarnCopy = 3003,       // Unsafe attempt to copy a CopyMethod or CopyMove typed value
     WarnLoop = 3004,       // Infinite loop with no break
     WarnAwaitUnused = 3005, // The result an awaited operation (actors.Awaitable: an I/O operation) answers with, a failure among what it may say, is thrown away
+    WarnShapeShared = 3006, // MEASURING ONLY
 
     // Uncounted
     Uncounted = 9000,

@@ -37,6 +37,8 @@ typedef struct {
     uint8_t kind;       // LoanKind
     uint8_t writes;     // the borrow may write, for the message
     uint8_t part;       // a caller loan: the part of its parameter it lends (LifePart)
+    INode *shapecont;   // MEASURE: the ShapeChanging struct this refused borrow is into, else NULL
+    char *shapekey;     // MEASURE: file:line:col of the borrowing call
 } Loan;
 
 // A pending conflict: 'access' conflicted with 'loan', held by 'holder'. On a
@@ -51,6 +53,13 @@ typedef struct {
     uint8_t fired;
 } Pending;
 #define PendingChosen 0xFF
+// MEASURE (shape-changing, part b): a call that could reshape the container a
+// holder's borrow is into; fired by a use of the holder, it is logged, not reported
+#define PendingShape 0xFD
+static uint32_t shapeloans[2048];
+static uint32_t nshapeloans = 0;
+static char shapeconf[1024][440];
+static uint32_t nshapeconf = 0;
 // A variable's live mark at a seam (loanSeamLive): fired, it records the
 // variable as used after the seam, and reports nothing
 #define PendingSeamLive 0xFE
@@ -166,6 +175,8 @@ void loanWalkBegin() {
     nmaypool = 0;
     nsaturated = 0;
     nflights = 0;
+    nshapeloans = 0;
+    nshapeconf = 0;
 }
 
 // *********************
@@ -196,6 +207,19 @@ static uint8_t loanKindOf(INode *perm, Place *pl) {
     }
 }
 
+int loanKindOfEntry(uint32_t entry) {
+    return loans[entry & LoanIdMask].kind;
+}
+
+int loanHeldByVariable(uint32_t entry) {
+    return loans[entry & LoanIdMask].nmay > 0;
+}
+
+int loanExcludesWriters(uint32_t entry) {
+    uint8_t kind = loans[entry & LoanIdMask].kind;
+    return kind == LoanShared || kind == LoanExcl;
+}
+
 uint32_t loanMake(INode *site, Place *pl, INode *perm) {
     uint32_t id = mapGet(site, 0, 0);
     if (id)
@@ -217,6 +241,8 @@ uint32_t loanMake(INode *site, Place *pl, INode *perm) {
     loan->kind = loanKindOf(perm, pl);
     loan->writes = (permGetFlags(perm) & MayWrite) != 0;
     loan->part = 0;
+    loan->shapecont = NULL;
+    loan->shapekey = NULL;
     // Linked from its root variable, so an access finds it
     loan->next = pathVars[pl->var].loans;
     pathVars[pl->var].loans = id;
@@ -253,6 +279,8 @@ uint32_t loanCaller(uint32_t var, uint32_t part) {
     loan->maycap = 0;
     loan->kind = LoanCaller;
     loan->writes = 0;
+    loan->shapecont = NULL;
+    loan->shapekey = NULL;
     loan->part = (uint8_t)part;
     mapPut(parm, 0, loanCallerKey(part), id);
     return id;
@@ -975,6 +1003,18 @@ void loanUse(uint32_t var, INode *usenode) {
             loanChosenReport(usenode, what, pend->loan, pend->other);
             continue;
         }
+        if (pend->kind == PendingShape) {
+            pend->fired = 1;
+            Loan *sl = &loans[pend->loan];
+            FILE *f = getenv("CONE_SHAPE_LOG") ? fopen(getenv("CONE_SHAPE_LOG"), "a") : NULL;
+            if (f) {
+                fprintf(f, "C\t%s\t%s\tholder=%s\tuse=%u:%u\n", sl->shapekey ? sl->shapekey : "?", shapeconf[pend->other],
+                    pathVars[var].var->namesym ? &pathVars[var].var->namesym->namestr : "?", usenode->linenbr,
+                    usenode->srcp && usenode->linep ? loanColumn(usenode) : 0);
+                fclose(f);
+            }
+            continue;
+        }
         pend->fired = 1;
         // One error per access, however many borrows it conflicts with
         if (mapGet(pend->access, 0, 1))
@@ -1267,4 +1307,91 @@ uint32_t loanChosenPending(uint32_t holder, uint32_t la, uint32_t lb) {
     pend->fired = 0;
     mapPut(key, a, b, id);
     return id;
+}
+// *********************
+// MEASURE (shape-changing, part b): borrows into a ShapeChanging value through
+// a shared path, and the calls that could reshape it while they are held
+// *********************
+
+void loanShapeMark(uint32_t loan, INode *container, const char *key) {
+    if (loans[loan].shapecont == NULL && nshapeloans < 2048) {
+        shapeloans[nshapeloans++] = loan;
+        size_t len = strlen(key) + 1;
+        loans[loan].shapekey = (char *)memAllocBlk(len);
+        memcpy(loans[loan].shapekey, key, len);
+    }
+    loans[loan].shapecont = container;
+}
+
+uint32_t loanShapeCount() {
+    return nshapeloans;
+}
+
+uint32_t loanShapeId(uint32_t i) {
+    return shapeloans[i];
+}
+
+INode *loanShapeContainer(uint32_t loan) {
+    return loans[loan].shapecont;
+}
+
+// Is this loan carried by an operand already walked, waiting for its call?
+int loanShapeInFlight(uint32_t loan) {
+    for (uint32_t k = 0; k < nflights; ++k) {
+        if (pathSetHasLoan(flights[k].loans, loan))
+            return 1;
+    }
+    return 0;
+}
+
+// Is the place 'pl' the very place (or part of it, or holding it) the loan borrows?
+int loanShapeSamePlace(uint32_t loan, Place *pl) {
+    Loan *l = &loans[loan];
+    return l->place.var == pl->var && l->place.deref == pl->deref && placeOverlaps(&l->place, pl);
+}
+
+void loanShapeNow(uint32_t loan, const char *text) {
+    FILE *f = getenv("CONE_SHAPE_LOG") ? fopen(getenv("CONE_SHAPE_LOG"), "a") : NULL;
+    if (f) {
+        fprintf(f, "C\t%s\t%s\tholder=<flight>\tuse=0:0\n", loans[loan].shapekey ? loans[loan].shapekey : "?", text);
+        fclose(f);
+    }
+}
+
+// The call at 'node' could reshape what the loan borrows into: every holder
+// that holds the loan now gets a pending conflict, which a later use fires
+void loanShapePend(INode *node, uint32_t loan, const char *text) {
+    if (nshapeconf >= 1024)
+        return;
+    Loan *l = &loans[loan];
+    uint32_t conf = 0;
+    int have = 0;
+    for (uint32_t k = 0; k < (uint32_t)l->nmay + nsaturated; ++k) {
+        uint32_t holder = k < l->nmay ? maypool[l->mayhold + k] : saturated[k - l->nmay];
+        PathVar *hv = &pathVars[holder];
+        if (!pathSetHasLoan(hv->holds, loan))
+            continue;
+        if (!have) {
+            conf = nshapeconf++;
+            snprintf(shapeconf[conf], sizeof(shapeconf[0]), "%s", text);
+            have = 1;
+        }
+        uint32_t key = 0x08000000u | loan;
+        uint32_t id = mapGet(node, key, holder);
+        if (!id) {
+            if (npendings >= pendingcap)
+                pendings = (Pending *)pathGrow(pendings, &pendingcap, sizeof(Pending));
+            id = npendings++;
+            Pending *pend = &pendings[id];
+            pend->access = node;
+            pend->loan = loan;
+            pend->other = conf;
+            pend->holder = holder;
+            pend->kind = PendingShape;
+            pend->fired = 0;
+            mapPut(node, key, holder, id);
+        }
+        if (!pathSetHas(hv->pending, id))
+            pathSetFacts(holder, hv->holds, pathSetAdd(hv->pending, id));
+    }
 }

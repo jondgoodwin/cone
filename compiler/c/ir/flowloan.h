@@ -52,6 +52,23 @@ void loanWalkBegin();
 // The access a borrow with the permission 'perm' makes of what it borrows
 int loanBorrowAccess(INode *perm);
 
+// Does this set entry's loan keep every other holder from writing what it
+// borrows while it is used: a read-only or exclusive loan of a place that
+// nothing else reaches, as against one through a shared path or a caller's?
+int loanExcludesWriters(uint32_t entry);
+int loanHeldByVariable(uint32_t entry);
+int loanKindOfEntry(uint32_t entry);
+
+// MEASURE (shape-changing, part b)
+void loanShapeMark(uint32_t loan, INode *container, const char *key);
+uint32_t loanShapeCount();
+uint32_t loanShapeId(uint32_t i);
+INode *loanShapeContainer(uint32_t loan);
+int loanShapeInFlight(uint32_t loan);
+int loanShapeSamePlace(uint32_t loan, Place *pl);
+void loanShapeNow(uint32_t loan, const char *text);
+void loanShapePend(INode *node, uint32_t loan, const char *text);
+
 // The loan made by the borrow at 'site' of the place 'pl', with the permission
 // 'perm'. A site walked again (a loop body) makes the same loan.
 uint32_t loanMake(INode *site, Place *pl, INode *perm);
