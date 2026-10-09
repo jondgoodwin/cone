@@ -46,7 +46,11 @@ two different reasons — see Hazards.
 
 `breakNameRes` and `continueNameRes` **bind the target block**: to the
 lifetime-named block if `life` was given, else to `pstate->loopblock`, else
-`ErrorNoLoop`. `continue` additionally requires the named block to be a loop.
+`ErrorNoLoop`. A `break` built with its loop already in `block` and
+`FlagBreakAimed` (the one that ends a loop's `else` with the loop's value) keeps
+it. `continue` additionally requires the named block to be a loop.
+A trailing `if` (`break v if c;`) is parsed to an `if` arm holding the jump: the
+nodes are the same.
 `returnNameRes` walks `exp` and does nothing else — a `return` needs no target.
 
 **`blockNameRes` enforces placement**, not type check: `ErrorRetNotLast` for a

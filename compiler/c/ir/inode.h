@@ -314,6 +314,14 @@ enum NodeTags {
 // walks it, which only type check knows, so type check finishes the block
 // (eachLower) before checking its statements.
 #define FlagEach      0x0008        // Block: an 'each' whose loop type check has yet to build
+// What a loop that has run out does, 'while c {...} else {...}' and 'each ... else {...}':
+// the statements of its 'else', in a block that stands inside the loop at the place the
+// loop is left, ending in the 'break' that gives the loop its value. The 'else' is
+// written after the loop, so a 'break' or 'continue' in it belongs to the loop around
+// this one: name resolution reads it with that loop as the innermost (blockNameRes).
+// The 'break' ending it is aimed at the loop it leaves from the start (FlagBreakAimed).
+#define FlagLoopElse  0x0100        // Block: the 'else' of the loop it stands in
+#define FlagBreakAimed 0x0001       // Break: built with its loop in 'block', which name resolution keeps
 
 #define FlagSuffix    0x0001        // Borrow: part of a borrow chain
 

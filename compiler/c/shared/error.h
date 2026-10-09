@@ -557,6 +557,10 @@ enum ErrorCode {
     ErrorGenForm = 1352,        // A generator of a form not built: generic, a method, with 'inline' or a 'where' clause
     ErrorGenFrame = 1353,       // A local a 'yield' would keep in the generator's frame that the frame cannot hold: a lock's guard, or a value holding a traced reference
 
+    // Loop control: a header 'if', a trailing 'if', a loop's 'else' (parser/parsefnflow.c)
+    ErrorLoopElse = 1360,       // An 'else' on a loop that cannot run out: a 'while' with no condition
+    ErrorTrailingIf = 1361,     // A trailing 'if' after a statement that takes none: only 'break', 'continue' and 'return' end with one
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name
