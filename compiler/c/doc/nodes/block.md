@@ -1,10 +1,12 @@
 `BlockNode` is a statement list that is also an expression. A **loop** block is
 the same node with `FlagLoop` — there is no loop node, and `while` and `each`
-are lowered into one by the parser.
+are lowered into one, by the parser, or for an `each` over a source that is not
+a numeric range, by type check once it knows the source.
 
 **At a glance.** Built by `parseExprBlock`. Name resolution pushes a scope,
 binds a lifetime label, enforces jump placement, and repairs `each`'s
-`continue`. Type check folds the block's value paths into one type. Flow
+`continue`. Type check builds the loop of an `each` over a source that is not
+a range (`FlagEach`), then folds the block's value paths into one type. Flow
 brackets the scope, injects `blockret`, and builds the release list. Generation
 creates basic blocks only when it has to.
 
@@ -26,6 +28,7 @@ caused, were measured.*
 | `FlagLoop` | a loop block. **Set only by `newLoopBlockNode`** |
 | `FlagLoopStep` | the last statement is `each`'s synthesized step |
 | `FlagKeepTemps` | an operator's rewrite (`fnCallOpAssgn`, `contentsLower`): its statements' temporaries die at its end, not each statement's ([Flow](../phases/flow.md), "Temporaries") |
+| `FlagEach` | the outer block of an `each` over a source that is not a numeric range: `blockTypeCheck` checks its first statement, the hidden variable holding the source, then builds the loop (`eachLower`, `ir/exp/each.c`) and clears the flag |
 
 ## Parse
 
@@ -35,19 +38,33 @@ a macro body, and the wrapper blocks pattern-matching builds — is regular.
 
 **`while` and `each` are lowered here, not later.** `while cond {…}` gets
 `if not cond { break }` inserted at index 0. `each x in a < b by s` becomes an
-outer block holding the loop variable plus a loop block whose **last statement
-is the synthesized step**, flagged `FlagLoopStep`. Where stepping past the bound
-could wrap the loop variable around the type's extreme, and so satisfy the
+outer block holding the loop's **counter** (a hidden variable, no name of the
+reader's) plus a loop block that begins with the guard and the pass's variable,
+`imm x = counter`, and whose **last statement is the synthesized step**, flagged
+`FlagLoopStep`. The variable is a new one on every pass and cannot be written;
+the loop steps its counter, whose uses are bound as the parser builds them, so a
+copy of the step carried into an inner loop by a labelled `continue` reaches this
+loop's counter whatever the inner loop names. Where stepping past the bound
+could wrap the counter around the type's extreme, and so satisfy the
 comparison again, that step is itself a block. For an inclusive range without
-`by` it is `{ if x == b {break}; x++ }`. With `by` it is `{ imm prev = x; x += s;
-if x < prev {break} }`, `>` in place of `<` for a range counting down: a step of
+`by` it is `{ if c == b {break}; c++ }`. With `by` it is `{ imm prev = c; c += s;
+if c < prev {break} }`, `>` in place of `<` for a range counting down: a step of
 more than one need never land on the bound, and neither the distance to the bound
 nor the step's sign may be computed ahead of the step, so the wrap is recognized
-afterwards instead — as the variable having moved against the range's direction.
+afterwards instead — as the counter having moved against the range's direction.
 The statements are one block so that the `continue` repair below carries the
 guard too, and `prev` is a phantom variable, resolved as the parser builds it, so
 that a copy reads its own. The synthesized `break` names the loop's lifetime when
 it has one, since a copy of it can land inside an inner loop.
+
+**`each` over anything else is finished by type check.** The parser cannot say
+how a loop walks its source, which is the source's type to say, so it builds an
+outer block flagged `FlagEach` holding `mut hidden = src` and the loop block,
+whose leading statements declare the reader's variables with no value and whose
+body follows them. Name resolution sees an ordinary pair of nested blocks, and
+the variables, the body and every `break`/`continue` in it resolve as for a
+`while`. The scopes it counts are the ones the finished loop has, which is why
+the loop keeps the body's statements where they are and adds only to its head.
 
 ## Name resolution
 
@@ -66,9 +83,48 @@ no such allowance — it would leave the step as unreachable code. `ErrorRetNotL
 and inserted ahead of the jump, then re-resolved. Cloned rather than shared,
 because a node reachable twice is type checked twice and lowering is not
 idempotent. Timing is load-bearing: after the walk so `continue` targets are
-known, before the hook pop so the copy can still see the loop variable.
+known. (The step names the loop's counter by a pre-resolved use, so the copy
+needs no hooked name.)
 
 ## Type check
+
+**`FlagEach`: the loop is built here, from the source's type.** Before any
+statement is checked, `blockTypeCheck` checks the block's first statement, the
+hidden variable `mut hidden = src` (`blockStmtTypeCheck`, so the source is
+lowered once and a temporary it extends is hoisted as any initializer's is),
+and `eachLower` reads what the checked source is and rewrites the block's
+statements; the loop below then checks them as built. By the source's type:
+
+- **an array, or a reference to one, a slice, or a type that lends an array it
+  holds** (a list, `structLentBody`): a counted loop over the slice, `mut i = 0`
+  and `loop { if i >= s.len {break}; imm x = &s[i]; i++; ...body }`, the slice
+  being the array lent as one, the source itself, or the lending method's
+  result (`list.view()`). No cursor is made, and the loop is the one a `while` over the
+  list's indexes optimizes to. A list's `iter()` is not called: its cursor gives
+  an Option each pass, whose null test on a pointer the optimizer cannot know is
+  not null blocks the loop's vectorization.
+- **a type with `next`**: the cursor is the source as it is. A place named
+  again without evaluating anything (`eachStablePlace`: a variable, a field of
+  one, a dereference of one) is advanced where it stands, so a cursor left part
+  way by a `break` is finished by the next loop; another place is borrowed once;
+  a value is held in the hidden variable.
+- **a type with `iter` and no `next`**: `mut cursor = src.iter()`, the source
+  held first unless it is a place.
+
+Each pass of a cursor loop declares its variable from the item:
+`imm x = match cursor.next() { case imm s Some { s.value; } case is None {
+break; } }`, built as `match` is desugared (`eachNextItem`), the `break`
+joined to the loop as it is built. Two or more variables take the item through
+a variable of the pass's own, `imm -item = ...; imm k = -item.0; imm v =
+-item.1`. An item that moves is refused before the loop is built
+(`ErrorEachItem`): `flowRefuseMoveField` would refuse the payload's move out of
+the Option the loop holds, as it does for a hand-written `match`.
+
+A source is checked once, as the initializer of the hidden variable. Checking an
+expression a second time is not idempotent for a call, which type check lowers,
+so the lowering uses the node the check left: where the source is a place a
+second check leaves alone (`eachRecheckable`), the variable is dropped and the
+place is used in its stead; otherwise the variable holds it.
 
 Every statement but the last is checked with `noCareType`. A nested plain block
 may not end in `break`/`continue` (`blockNoBreak`) — `if` arms are exempt,

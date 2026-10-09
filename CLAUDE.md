@@ -54,7 +54,8 @@ Visual Studio projects stay at the root.
   word and wyhash for bytes, seeded by `processSeed()` (random once per
   process, conestd's) or by `Hasher.withSeed`, over the `mem.mulFold`
   intrinsic; `Iterator[T]` (`next`) and `Iterable[T, I]` (`iter`, giving an `I` that is an
-  `Iterator[T]`), the shapes a cursor and what gives one are walked by, met by the methods
+  `Iterator[T]`), the shapes a cursor and what gives one are walked by (by `each` too, which
+  uses a source with a `next` as it is and otherwise one `iter` gives), met by the methods
   alone (`str`'s cursors and the collections' are `Iterator`s undeclared); and `panic`, `assert`, `unreachable`, `todo` and `setPanicHook`, whose
   work is conestd's, with `srcFile` and `srcLine`, intrinsics outside `mem`,
   which as a parameter's default give a caller's location; and the macros
@@ -531,7 +532,8 @@ Visual Studio projects stay at the root.
   (throughput, latency and memory over loopback);
   `collections` is a growable `List[T]` (lending a `&Array[T]`, folding the methods of
   `Array[T]` in with `use Array[T] via view`, frozen into a `So[Array[T]]` by
-  `freeze()`), an owned `String` (always a NUL after
+  `freeze()`; `each` walks it as the slice it lends, a counted loop, while its
+  `iter()` is the cursor for code generic over cursors), an owned `String` (always a NUL after
   its bytes, lending a `&str` whose methods it folds in with `use str via view`,
   frozen into a `So[str]` by `freeze()`) and `Dict[K, V]`, a
   SwissTable (control bytes probed eight at a time, up to 7/8 full) over any
@@ -543,7 +545,8 @@ Visual Studio projects stay at the root.
   `u32` positions probed by `Dict`'s own control-byte group probe; an
   overwrite keeps the entry's place, `remove` shifts the later entries down,
   `swapRemove` is O(1) and breaks the order; its example `dictbench.cone`
-  times it against `Dict`); `Set[T]`, a `Dict` whose value takes no
+  times it against `Dict`); a dictionary's `iter()` gives its pairs, a tuple of
+  a borrowed key and value, which `each k, v in d` unpacks; `Set[T]`, a `Dict` whose value takes no
   bytes (`insert` answers whether the element was new); and `Deque[T]`, a
   growable ring buffer (Rust's `VecDeque`: O(1) `push`/`pop` at the back and
   `pushFront`/`popFront` at the front, `peek`/`peekFront`, `get(i)`, `[i]` by

@@ -244,6 +244,11 @@ pub struct List[T] is ShapeChanging, Sendable {
   // body 'Array[T]', whose methods the list folds in
   pub fn view(self &) &Array[T] { mem.sliceFromParts(ptr, used); }
 
+  // A cursor over its values, front to back, which 'each x in list' walks: 'next'
+  // gives a borrow of each in turn until it answers None. The list may not
+  // change while the cursor, or a borrow it gave, is used
+  pub fn iter(self &) ListIter[T] { new ListIter[T](self, ptr, used, 0usize); }
+
   // A mutable slice of every value it holds, for changing them in place:
   // what a function that fills a slice writes into, a C function included.
   // The list stays borrowed mutably while the slice is used, so nothing else
@@ -323,6 +328,24 @@ pub struct List[T] is ShapeChanging, Sendable {
   fn final(self &uni) {
     self.finalizeAll();
     libc.free(ptr as *u8);
+  }
+}
+
+// A cursor over a list's values, front to back: 'next' gives a borrow of each in
+// turn. It borrows the list, which may not change while the cursor, or a value it
+// gave, is used; the block and the count are read once, when it is made, so that
+// a loop over it reads neither again
+pub struct ListIter['a, T] {
+  list &'a List[T];
+  ptr *T;
+  end usize;
+  pos usize;
+
+  pub fn next(self &mut) Option[&'a T] {
+    if pos >= end { return None[&T][]; }
+    imm i = pos;
+    pos = i + 1usize;
+    Some[&T][(ptr + i) as &T];
   }
 }
 
@@ -465,6 +488,9 @@ pub struct Deque[T] is ShapeChanging, Sendable {
   // A cursor over its values, front to back: 'next' gives a borrow of each in
   // turn until it answers None. The deque may not change while it is used.
   pub fn items(self &) DequeItems[T] { new DequeItems[T](self, 0usize); }
+
+  // The same cursor under the name 'each x in deque' walks it by
+  pub fn iter(self &) DequeItems[T] { new DequeItems[T](self, 0usize); }
 
   // The slot of the value at position i, which may be the one just past the last
   // when the caller is about to fill it
@@ -1240,6 +1266,10 @@ pub struct Dict[K Hash, V] is ShapeChanging, Sendable {
   pub fn values(self &) DictValues[K, V] { new DictValues[K, V](self, 0usize); }
   pub fn entries(self &) DictEntries[K, V] { new DictEntries[K, V](self, 0usize); }
 
+  // A cursor over its pairs, which 'each k, v in dict' walks: 'next' gives a
+  // pair of borrows, a key and its value, in the table's order
+  pub fn iter(self &) DictPairs[K, V] { new DictPairs[K, V](self, 0usize); }
+
   // The hash of a key: the key fed to this dictionary's hasher. '(*key)' and
   // not 'key': a So[str] or Rc[str] key is a reference itself, and a method
   // call reads through one reference only, so it is read through to its text
@@ -1424,6 +1454,20 @@ pub struct DictEntries['a, K Hash, V] {
     if i == noBucket { pos = dict.mask + 1usize; return None[&DictEntry[K, V]][]; }
     pos = i + 1usize;
     Some[&DictEntry[K, V]][(dict.slots + i) as &DictEntry[K, V]];
+  }
+}
+
+// A cursor over a dictionary's pairs: a borrow of each key with a borrow of its
+// value, as a tuple
+pub struct DictPairs['a, K Hash, V] {
+  dict &'a Dict[K, V];
+  pos usize;
+
+  pub fn next(self &mut) Option[(&'a K, &'a V)] {
+    imm i = nextFull(dict.ctrl, dict.mask, pos);
+    if i == noBucket { pos = dict.mask + 1usize; return None[(&K, &V)][]; }
+    pos = i + 1usize;
+    Some[(&K, &V)][(&dict.slots[i].key, &dict.slots[i].value)];
   }
 }
 
@@ -1647,6 +1691,10 @@ pub struct OrderedDict[K Hash, V] is ShapeChanging, Sendable {
   pub fn keys(self &) OrderedKeys[K, V] { new OrderedKeys[K, V](self, 0usize); }
   pub fn values(self &) OrderedValues[K, V] { new OrderedValues[K, V](self, 0usize); }
   pub fn entries(self &) OrderedEntries[K, V] { new OrderedEntries[K, V](self, 0usize); }
+
+  // A cursor over its pairs, which 'each k, v in dict' walks: 'next' gives a
+  // pair of borrows, a key and its value, in the order of insertion
+  pub fn iter(self &) OrderedPairs[K, V] { new OrderedPairs[K, V](self, 0usize); }
 
   // The hash of a key: the key fed to this dictionary's hasher
   fn hashOf[B](self &, key &B) u64 {
@@ -1896,6 +1944,20 @@ pub struct OrderedEntries['a, K Hash, V] {
   }
 }
 
+// A cursor over an OrderedDict's pairs: a borrow of each key with a borrow of
+// its value, as a tuple, in the order of insertion
+pub struct OrderedPairs['a, K Hash, V] {
+  dict &'a OrderedDict[K, V];
+  pos usize;
+
+  pub fn next(self &mut) Option[(&'a K, &'a V)] {
+    if pos >= dict.count { return None[(&K, &V)][]; }
+    imm i = pos;
+    pos = i + 1usize;
+    Some[(&K, &V)][(&dict.dense[i].key, &dict.dense[i].value)];
+  }
+}
+
 // -------- Set --------
 
 // A set of T, unordered: a Dict of T to nothing, so it has the Dict's table, its
@@ -1965,6 +2027,9 @@ pub struct Set[T Hash] is ShapeChanging, Sendable {
   // A cursor over its elements: 'next' gives a borrow of each in turn, in the
   // table's order, until it answers None
   pub fn items(self &) SetItems[T] { new SetItems[T](dict.keys()); }
+
+  // The same cursor under the name 'each x in set' walks it by
+  pub fn iter(self &) SetItems[T] { new SetItems[T](dict.keys()); }
 }
 
 // A cursor over a set's elements

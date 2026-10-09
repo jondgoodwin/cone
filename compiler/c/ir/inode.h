@@ -308,6 +308,12 @@ enum NodeTags {
 // += 1', or the guard of '(&mut *p).n += 1', which holds a lock) lives to the
 // block's end, not its first statement's, since the rest still reach it.
 #define FlagKeepTemps 0x0004        // Block: its statements' temporaries die at its end
+// The block an 'each' over anything but a numeric range is parsed to: the source
+// in a hidden variable, then the loop block holding the reader's variables
+// (declared without a value) and body. What the source is decides how the loop
+// walks it, which only type check knows, so type check finishes the block
+// (eachLower) before checking its statements.
+#define FlagEach      0x0008        // Block: an 'each' whose loop type check has yet to build
 
 #define FlagSuffix    0x0001        // Borrow: part of a borrow chain
 

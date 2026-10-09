@@ -548,6 +548,9 @@ enum ErrorCode {
     ErrorShapeMark = 1338,      // A type declaring 'ShapeChanging' that the compiler does not find so from its methods: none writes storage the type owns and lends a borrow. A declaration may only assert what is found
     ErrorShapeReshape = 1339,   // A call that could change the shape of a shape-changing value (a list, a string) while a borrow into it, reached through a path other references share, is still to be used: the change could come through another name for the same value
 
+    // 'each' over cursors (ir/exp/each.c)
+    ErrorEachItem = 1340,       // What an 'each' takes out of its cursor cannot be given to its variables: a 'next' that does not answer an Option, an 'iter' giving something with no 'next', variables that do not unpack the tuple item, or an item that moves
+
     // Generators (ir/exp/yield.c, parser/parsegen.c)
     ErrorYieldPlace = 1350,     // 'yield' outside the body of a function declared with 'yields'
     ErrorYieldReturn = 1351,    // A 'return' with a value in a generator, which gives its caller values only by 'yield'

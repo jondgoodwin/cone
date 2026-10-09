@@ -112,6 +112,14 @@ extern Name *fillName;     // "fill"
 extern Name *lenName;      // "len"
 extern Name *capacityName; // "capacity"
 
+// The two methods 'each' asks of its source (each.c): 'next', which makes the
+// source a cursor to walk as it is, and 'iter', which gives one; and the two
+// variants of the Option 'next' answers, matched by name
+extern Name *nextName;     // "next"
+extern Name *iterName;     // "iter"
+extern Name *someName;     // "Some"
+extern Name *noneName;     // "None"
+
 // The methods a region's annotation struct may declare, which the compiler
 // calls at each reference event (ir/types/region.c), and the built-in trait
 // that checks them
