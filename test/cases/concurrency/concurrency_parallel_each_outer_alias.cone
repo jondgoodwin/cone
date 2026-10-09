@@ -1,0 +1,128 @@
+// An outside reference that could point at what a 'parallel each' writes. A loop that
+// writes through its source (mutChunks, mutItems, a zip of them) changes the elements
+// one pass at a time. Its body may not name the buffer's own place
+// (concurrency_parallel_fill_refused), but a borrow taken before the loop, or a
+// parameter or a field that points into the buffer, is another name for an element,
+// and reading it while a pass writes races. Flow analysis sees that only for a local
+// (ErrorFrozen); for a parameter or a struct's field it compiled and ran.
+// ErrorParAlias refuses, by type, naming an outside variable whose type reaches
+// the written element (or a part held inline in it) behind a reference, owner or type
+// argument; a raw pointer is trusted. What is written comes from the cursors' own
+// types, never from a method's name. Copy what the body needs before the loop.
+//
+//   - the measured race: 'first = &mut cells[0]' read in the body of mutChunks
+//   - the same through a struct's field, mutItems, a '&mut' slice, a zip with
+//     two written sources and a three-way zip
+//   - allowed beside them: a palette of another type, a value copied out before the
+//     loop, an outside reference when nothing is written (chunks), an Atomic of
+//     another type, the pass's own variables
+
+mod concurrency_parallel_each_outer_alias;
+
+import collections use *;
+import sync use *;
+import actors;
+
+struct Color { pub n u8; pub g f32; }
+
+struct Ctx {
+  cells &mut Array[u32];
+  first &mut u32;
+}
+
+// The measured race (#433, judgement call 13)
+fn work(cells &mut Array[u32], seen &Atomic[u64]) {
+  imm first = &mut cells[0usize];
+  parallel each y, row in cells.mutChunks(4usize).indexed() {
+    if *first != 0u32 { seen.add(1u64); }          //~ ErrorParAlias "'first' could point at one of them"
+    row[0usize] = 1u32 + u32.from(y);
+  }
+}
+
+// The same through a struct holding both
+fn viaStruct(ctx &mut Ctx, seen &Atomic[u64]) {
+  parallel each y, row in ctx.cells.mutChunks(4usize).indexed() {
+    if *ctx.first != 0u32 { seen.add(1u64); }      //~ ErrorParAlias "'ctx' could point at one of them"
+    row[0usize] = 1u32 + u32.from(y);
+  }
+}
+
+// mutItems, and an outside borrow of a list of the same element
+fn items(cells &mut List[u32], other &List[u32], seen &Atomic[u64]) {
+  parallel each p in cells.mutItems() {
+    *p = *other[0usize];                           //~ ErrorParAlias "'other' could point at one of them"
+  }
+}
+
+// A '&mut' slice as the source itself writes its items too
+fn slice(s &mut Array[u32], first &mut u32) {
+  parallel each x in s {
+    *x = *first;                                   //~ ErrorParAlias "'first' could point at one of them"
+  }
+}
+
+// A zip with two written sources, and a three-way one
+fn zips(a &mut List[u32], b &mut List[u32], c &mut List[u32], first &mut u32) {
+  parallel each x, y in a.mutItems().zip(b.mutItems()) {
+    *x = *first;                                   //~ ErrorParAlias "'first' could point at one of them"
+    *y = 2u32;
+  }
+  parallel each x, y, z in a.mutItems().zip(b.mutItems()).zip(c.mutItems()) {
+    *x = *first;                                   //~ ErrorParAlias "'first' could point at one of them"
+    *y = 2u32;
+    *z = 3u32;
+  }
+}
+
+// A zip with a read-only source: only what is written counts
+fn zipRead(src &List[u8], dst &mut List[u16], t &u8, w &u16) {
+  parallel each s, d in src.chunks(1usize).zip(dst.mutChunks(1usize)) {
+    d[0usize] = u16.from(s[0usize]) + u16.from(*t);   // (t reaches u8, the read side: allowed)
+  }
+  parallel each s, d in src.chunks(1usize).zip(dst.mutChunks(1usize)) {
+    d[0usize] = *w;                                //~ ErrorParAlias "'w' could point at one of them"
+  }
+}
+
+// Allowed: a palette of another type beside the written buffer, a value copied out
+// before the loop, an Atomic of another type
+fn allowed(cells &mut List[u32], palette &List[Color], first &mut u32, seen &Atomic[u64]) {
+  imm f = *first;
+  parallel each y, row in cells.mutChunks(4usize).indexed() {
+    imm c = palette[0usize];
+    row[0usize] = f + u32.from(y) + u32.from(usize.from(c.n));
+    seen.add(1u64);
+  }
+}
+
+// Allowed: a field held inline is another object than an element: a struct lent
+// beside the buffer, and an actor's own field read while its list is written
+struct Pair { pub a u32; pub b u32; }
+
+fn inlineFields(cells &mut List[u32], p &Pair) {
+  parallel each x in cells.mutItems() {
+    *x = p.a + p.b;
+  }
+}
+
+actor Grid {
+  cells List[u32];
+  scale u32;
+
+  fn init(self &new) {
+    *self = new Self(cells: new List[u32], scale: 2u32);
+  }
+
+  pub async do step(self) {
+    parallel each x in cells.mutItems() {
+      *x = scale;
+    }
+  }
+}
+
+// Allowed: nothing is written, so an outside reference to the same type is read-only
+fn readOnly(cells &List[u32], first &u32, total &Atomic[u64]) {
+  parallel each c in cells.chunks(4usize) {
+    total.add(u64.from(*first + c[0usize]));
+  }
+}

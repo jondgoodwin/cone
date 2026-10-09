@@ -271,6 +271,19 @@ block behind a pointer, is found by its argument. The message differs for a root
 that is a counted or traced owner itself (`parIsCountedItself`: borrow its contents
 before the loop) and one that holds it (copy what the loop needs into a local).
 
+A loop that **writes through its source** also refuses an outside variable whose
+type could point at a written item (`ErrorParAlias`, `parCheckOuterAlias`, run where
+the `parCheckAlias` of the place the items are lent from is). What is written is read
+from the source's cursor types (`parWrittenElems`: the one type argument of core's
+`ArrayMutChunks`, `ArrayMutItems`, `MutItemsIndexed`, through `MutChunksIndexed`, the
+zips and their `indexed()`, or a `&mut` slice itself), never a method's name. The set
+is the element and what it holds inline (`parInlineTypes`). A variable's type reaches it
+(`parReachesWritten`) when, behind a reference (the pointee of one, or an element or
+type argument of what one points at), a type of the set appears; a field held inline is
+another object, so a struct reached through a reference is not searched for it, though a
+reference in one of its fields is. Raw pointers are not followed. A place
+`parCheckAlias` refused is skipped (no double report).
+
 A **traced reference made** in the loop is refused whole (`ErrorGcStopgap`,
 `gcRefuseVisit`, over the block with the loop's source, filter and `yield`): an
 allocation, a call or a type literal whose type `itypeHoldsTraced` says holds one

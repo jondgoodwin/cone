@@ -582,6 +582,9 @@ enum ErrorCode {
     // What a 'parallel each' body may reach (ir/exp/pareach.c)
     ErrorParReach = 1390,       // A 'parallel each' body, header, filter or yield names a value declared outside the loop (or its item) whose type is not safe to share across the passes: it holds, through a field, element, borrow or pointee, an aliasable owner of a region not declaring ThreadSafe (an Rc) or a traced reference
 
+    // An outside reference that could point at what a 'parallel each' writes (ir/exp/pareach.c)
+    ErrorParAlias = 1391,       // A 'parallel each' that writes through its source (mutChunks, mutItems, a zip of them, a '&mut' slice) names an outside variable whose type could reach a written element behind a reference: a read while a pass writes would race
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name

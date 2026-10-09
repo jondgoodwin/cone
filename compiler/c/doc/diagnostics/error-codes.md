@@ -400,7 +400,9 @@ as is one made in a `parallel each` (`parallelEachCheckBody`), until the
 collector is per actor. A `parallel each` body (or a builder's filter or
 `yield`) that names a value from outside, or its item, whose type is not safe to
 share across the passes (it holds an `Rc`-like owner or a traced reference) is
-`ErrorParReach` (`parCheckReach`); copying one stays `ErrorParCopy`.
+`ErrorParReach` (`parCheckReach`); copying one stays `ErrorParCopy`. In a loop
+that writes through its source, naming an outside variable whose type could point at
+a written item is `ErrorParAlias` (`parCheckOuterAlias`).
 
 `await` has five error codes and a warning. Where it may not stand -- anywhere
 but a behaviour -- is `ErrorAwaitPlace`; on a behaviour that returns nothing,
