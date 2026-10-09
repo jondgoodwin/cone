@@ -162,6 +162,14 @@ statements; the loop below then checks them as built. By the source's type:
   is no cursor in the code. With `indexed()` the first variable is a copy of `i`
   and the second the element's borrow. A cursor kept in a variable, or taken
   whole by one variable of `indexed()`, is walked through its `next`.
+- **core's `ArrayMutItems` or `MutItemsIndexed`, a value made for the loop**
+  (`mutItems()` with one variable, its `indexed()` with two): the same counted
+  loop as `ArrayIter` and `ArrayIndexed`, lending `&mut s[i]` where those lend
+  `&s[i]`. What is lent is what the cursor's own `next` lends, and a bare
+  `indexed()` lends `&` on any slice, a `&mut` one too: the meaning comes from the
+  library's types, the loop only being faster. `chunks(n)` and `mutChunks(n)` give
+  `ArrayChunks` and `ArrayMutChunks` (and `ChunksIndexed`, `MutChunksIndexed`
+  from their `indexed()`), cursors with a `next`, which `each` walks through it.
 - **a type with `next`**: the cursor is the source as it is. A place named
   again without evaluating anything (`eachStablePlace`: a variable, a field of
   one, a dereference of one) is advanced where it stands, so a cursor left part
@@ -201,7 +209,8 @@ place is used in its stead; otherwise the variable holds it.
 checks its two bounds first (`parallelEachBoundsFirst`: the one that is not an
 untyped literal, so that the other takes its type, `parallelEachBoundType`). The
 source must be a number range of whole numbers no wider than a usize, an array,
-a slice or a type that lends an array; anything else (a cursor, a type with its
+a slice, a type that lends an array, or core's `ArrayChunks` / `ArrayMutChunks`
+(below); anything else (a cursor, a type with its
 own `len` and `split`) is refused with the reason (`ErrorParSource`), as is a
 module that does not import `actors`, whose `parallelEach` runs the loop, and a
 generator (`ErrorParRuntime`). Written directly in an actor's behaviour (and not in
@@ -275,9 +284,27 @@ an item: the hidden slice is then named `sm'` (not `s'`), and `parallelEachCheck
 refuses a body that names the place the slice was lent from (`parPathOf`: the
 variable and the fields named from it, through references and a method's receiver,
 and any place that is that place, or inside it, or holds it) as well
-(`ErrorParWrite`). A header `if` needs nothing of its own: it is `eachLower`'s
-`continue` statement after the pass's variable, ahead of which the loop's step is
-inserted.
+(`ErrorParWrite`).
+
+**Cursors in a `parallel each`** (`parCursorOf`). A source of core's cursor types
+(`ArrayChunks`, `ArrayMutChunks`, `ArrayMutItems`, and the `ArrayIndexed`,
+`ChunksIndexed`, `MutChunksIndexed`, `MutItemsIndexed` their `indexed()` and an
+array's give) is not cut into index ranges of elements: the cursor is held in the
+hidden variable (named `s'`, or `sm'` for the ones that lend `&mut`, so that the
+alias check above applies), the range is `[0, c.len())` and the item `c.at(k')`
+(for a chunk a slice of its run that no other pass reaches). The compiler never
+recognises a method by name: what is lent, `&` or `&mut`, is what the cursor's own
+types say, so a bare `indexed()` lends `&` on any slice and `mutItems().indexed()`
+`&mut`. An indexed cursor takes two variables (any other source one,
+`ErrorParSource` otherwise) and its `at(k)` gives the position and the item as a
+tuple, which the loop unpacks: `imm pair' = c.at(k'); imm i = pair'.0; imm x =
+pair'.1; k'++`. The position is the cursor's own count plus `k'`, so it is global
+whichever piece runs it. A write through the pass's own run or item is its own;
+naming the buffer the cursor comes from is refused as for `mutItems()`. A cursor
+kept in a variable is held by copy and walked the same way; its items count from
+the first it has yet to give. A header `if` needs nothing of its own: it is
+`eachLower`'s `continue` statement after the pass's variable, ahead of which the
+loop's step is inserted.
 
 **The parallel builder**, `xs <- parallel each x in src [if c] yield v`, is an
 each entry of `<-` (`parseParallelEachEntry` sets the flag `parseEachLoop` reads

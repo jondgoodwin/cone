@@ -1,0 +1,286 @@
+// Filling an output buffer from a 'parallel each': 'indexed()' gives the loop two
+// variables, the position and the item, and 'chunks(n)' and 'mutChunks(n)' cut a
+// buffer between runs of n, so that each pass is given a slice no other pass can
+// reach and may write all of it.
+//
+//   parallel each y, row in pixels.mutChunks(size).indexed() {
+//     each x, p in row.mutItems().indexed() { *p = shade(x, y); }
+//   }
+//
+// is how a picture is baked a row at a time. The position is global, the item's
+// place in the whole source (a pass's chunk number, an element's place in the
+// whole slice), whichever piece of the loop it falls in.
+//
+// Each case is checked against a plain loop that does the same, element by
+// element, and against a sum worked out by hand:
+//
+//   - the bake above, 17 pixels a row and 2003 rows (a prime, so no piece's end
+//     is a round number), its pixel shade(x, y) = 7x + 13y + 1: the sum is
+//     7 * 2003 * (0 + ... + 16) + 13 * 17 * (0 + ... + 2002) + 34051
+//     = 1,906,856 + 443,105,663 + 34,051 = 445,046,570
+//   - a buffer whose last row is short: 10000 pixels in rows of 64 are 156 rows
+//     and one of 16; pixel (y, x) = 3 (64 y + x) + 1 is 3 times its place plus 1
+//     in a flat list, so the sum is 3 * (0 + ... + 9999) + 10000 = 149,995,000
+//   - a pass per element, 'parallel each i, p in buf.mutItems().indexed()', over
+//     100000 elements: element k is 3k + 7, the sum 3 * 4,999,950,000 + 700,000
+//     = 15,000,550,000
+//   - an array, a slice of an array (its positions counted from the slice's own
+//     start), a mutable slice as the source (no positions), and a bare
+//     'indexed()' (read-only, on any slice) over a list and an array
+//   - 'chunks(n)' for reading and 'mutChunks(n)' without 'indexed': n dividing the
+//     count exactly, a shorter last chunk, n of 1, n larger than the count (one
+//     pass), and nothing to walk (no pass)
+
+mod concurrency_parallel_fill;
+
+import stdio use *;
+import collections use *;
+import actors;
+
+fn shade(x usize, y usize) u32 {
+  u32.from(x * 7usize + y * 13usize + 1usize);
+}
+
+fn place(x usize, y usize) u32 {
+  u32.from((y * 64usize + x) * 3usize + 1usize);
+}
+
+fn report(name &str, ok bool) {
+  printStr(name);
+  printStr(if ok {": ok\n";} else {": FAILED\n";});
+}
+
+fn show(label &str, n u64) {
+  printStr(label);
+  printStr(" = ");
+  printUInt(n);
+  printStr("\n");
+}
+
+fn zeros(n usize) List[u32] {
+  mut l = new List[u32];
+  each i in 0usize < n { l.push(0u32); }
+  l;
+}
+
+fn total(s &Array[u32]) u64 {
+  mut sum = 0u64;
+  each p in s { sum = sum + u64.from(*p); }
+  sum;
+}
+
+// How many elements of two buffers differ
+fn mismatches(a &Array[u32], b &Array[u32]) u64 {
+  mut bad = 0u64;
+  if a.len != b.len { return 1000000u64; }
+  each i, p in a.indexed() {
+    if *p != b[i] { bad = bad + 1u64; }
+  }
+  bad;
+}
+
+// The element at k of a mutable slice, filled by a pass per element
+fn fillFrom(s &mut Array[u64], base u64) {
+  parallel each i, p in s.mutItems().indexed() {
+    *p = base + u64.from(i);
+  }
+}
+
+// A mutable slice as the source itself (no positions)
+fn fillSource(s &mut Array[u64], value u64) {
+  parallel each p in s {
+    *p = value;
+  }
+}
+
+fn main() {
+  initAll();
+  actors.configure(new actors.Options(workers: 4u32));
+
+  // ---- the bake, a row to a pass ----
+  imm size = 17usize;
+  imm rows = 2003usize;
+  mut pixels = zeros(size * rows);
+  mut serial = zeros(size * rows);
+  parallel each y, row in pixels.mutChunks(size).indexed() {
+    each x, p in row.mutItems().indexed() { *p = shade(x, y); }
+  }
+  each y, row in serial.mutChunks(size).indexed() {
+    each x, p in row.mutItems().indexed() { *p = shade(x, y); }
+  }
+  show("bake sum", total(pixels.view()));
+  show("bake serial sum", total(serial.view()));
+  show("bake mismatches", mismatches(pixels.view(), serial.view()));
+
+  // ---- the last row short ----
+  mut flat = zeros(10000usize);
+  mut flatSerial = zeros(10000usize);
+  parallel each y, row in flat.mutChunks(64usize).indexed() {
+    each x, p in row.mutItems().indexed() { *p = place(x, y); }
+  }
+  each y, row in flatSerial.mutChunks(64usize).indexed() {
+    each x, p in row.mutItems().indexed() { *p = place(x, y); }
+  }
+  show("short last row sum", total(flat.view()));
+  show("short last row mismatches", mismatches(flat.view(), flatSerial.view()));
+  show("last pixel", u64.from(*flat[9999usize]));        // 3 * 9999 + 1
+  mut ranks = 0u64;
+  mut longRows = 0u64;
+  each y, row in flat.chunks(64usize).indexed() {
+    ranks = ranks + 1u64;
+    if row.len == 64usize { longRows = longRows + 1u64; }
+  }
+  show("rows", ranks);                                   // 157
+  show("full rows", longRows);                           // 156
+
+  // ---- a pass per element, global positions ----
+  mut big = new List[u64];
+  each i in 0usize < 100000usize { big.push(0u64); }
+  parallel each i, p in big.mutItems().indexed() {
+    *p = u64.from(i) * 3u64 + 7u64;
+  }
+  mut sum = 0u64;
+  mut wrong = 0u64;
+  each i, p in big.indexed() {
+    sum = sum + *p;
+    if *p != u64.from(i) * 3u64 + 7u64 { wrong = wrong + 1u64; }
+  }
+  show("element sum", sum);
+  show("element k is not 3k + 7", wrong);
+
+  // ---- arrays and slices ----
+  mut arr = [0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64];
+  parallel each i, p in arr.mutItems().indexed() {
+    *p = u64.from(i * i);
+  }
+  show("array squares", arr[0usize] + arr[1usize] + arr[2usize] + arr[3usize] + arr[4usize] + arr[5usize] + arr[6usize] + arr[7usize]);  // 140
+
+  mut block = [9u64, 9u64, 9u64, 9u64, 9u64, 9u64];
+  fillFrom(&mut block[2usize..5usize], 1000u64);        // 2, 3, 4 get 1000, 1001, 1002
+  show("slice of an array", block[0usize] + block[1usize] + block[2usize] + block[3usize] + block[4usize] + block[5usize]);  // 9+9+1000+1001+1002+9 = 3030
+  fillSource(&mut block[1usize..3usize], 50u64);        // 1, 2 get 50
+  show("mutable slice as the source", block[1usize] * 1000u64 + block[2usize]);  // 50050
+
+  mut inList = new List[u64];
+  each i in 0usize < 400usize { inList.push(0u64); }
+  fillFrom(inList.viewMut(), 5u64);
+  show("list through a slice", *inList[0usize] + *inList[399usize]);  // 5 + 404 = 409
+
+  // ---- indexed() for reading ----
+  imm weights = Atomic[u64].of(0u64);
+  mut readList = new List[u64];
+  each i in 0usize < 3000usize { readList.push(u64.from(i) + 1u64); }
+  parallel each i, x in readList.indexed() {
+    weights.add(u64.from(i) * *x);
+  }
+  show("list i * (i + 1)", weights.load());               // 8,999,999,000
+
+  imm small = [10u64, 20u64, 30u64, 40u64];
+  imm smallSum = Atomic[u64].of(0u64);
+  parallel each i, x in small.indexed() {
+    smallSum.add(u64.from(i) * *x);
+  }
+  show("array 0*10 + 1*20 + 2*30 + 3*40", smallSum.load());  // 200
+
+  // ---- chunks for reading ----
+  mut data = new List[u64];
+  each i in 0usize < 1050usize { data.push(u64.from(i)); }
+  imm lens = Atomic[u64].of(0u64);
+  imm firsts = Atomic[u64].of(0u64);
+  imm chunkCount = Atomic[u64].of(0u64);
+  parallel each c in data.chunks(100usize) {
+    lens.add(u64.from(c.len));
+    firsts.add(c[0usize]);
+    chunkCount.add(1u64);
+  }
+  show("chunk lengths", lens.load());                      // 1050
+  show("chunk first elements", firsts.load());             // 0 + 100 + ... + 1000 = 5500
+  show("chunk count", chunkCount.load());                  // 11
+  imm byNumber = Atomic[u64].of(0u64);
+  parallel each y, c in data.chunks(100usize).indexed() {
+    byNumber.add(u64.from(y) * u64.from(c.len));
+  }
+  show("chunk number * length", byNumber.load());          // 100 * (0 + ... + 9) + 10 * 50 = 5000
+
+  // ---- mutChunks without indexed; n dividing, n of 1, n past the count ----
+  mut counts = new List[u64];
+  each i in 0usize < 1000usize { counts.push(1u64); }
+  imm passes = Atomic[u64].of(0u64);
+  parallel each c in counts.mutChunks(100usize) {          // 10 passes of 100
+    passes.add(1u64);
+    each p in c.mutItems() { *p = *p + 1u64; }
+  }
+  mut twos = 0u64;
+  each p in counts { twos = twos + *p; }
+  show("n divides: passes", passes.load());                // 10
+  show("n divides: sum", twos);                            // 2000
+
+  imm onePasses = Atomic[u64].of(0u64);
+  parallel each c in counts.mutChunks(1usize) {            // 1000 passes of 1
+    onePasses.add(1u64);
+    c[0usize] = c[0usize] * 3u64;
+  }
+  mut sixes = 0u64;
+  each p in counts { sixes = sixes + *p; }
+  show("n of 1: passes", onePasses.load());                // 1000
+  show("n of 1: sum", sixes);                              // 6000
+
+  mut few = new List[u64];
+  few.push(4u64);
+  few.push(5u64);
+  few.push(6u64);
+  imm farPasses = Atomic[u64].of(0u64);
+  parallel each y, c in few.mutChunks(100usize).indexed() {  // one pass of all 3
+    farPasses.add(1u64 + u64.from(y) * 1000u64);
+    each p in c.mutItems() { *p = *p * 10u64; }
+  }
+  show("n past the count: passes", farPasses.load());      // 1
+  show("n past the count: sum", *few[0usize] + *few[1usize] + *few[2usize]);  // 150
+
+  imm none = new List[u64];
+  imm nonePasses = Atomic[u64].of(0u64);
+  parallel each c in none.chunks(8usize) {
+    nonePasses.add(1u64);
+  }
+  mut nothing = new List[u64];
+  parallel each i, p in nothing.mutItems().indexed() {
+    nonePasses.add(1u64);
+  }
+  show("nothing to walk: passes", nonePasses.load());      // 0
+
+  // ---- an array's chunks, a slice's ----
+  mut tiles = [1u64, 1u64, 1u64, 1u64, 1u64, 1u64, 1u64];
+  parallel each y, c in tiles.mutChunks(3usize).indexed() {   // 3, 3, 1
+    each p in c.mutItems() { *p = *p + u64.from(y); }
+  }
+  show("array chunks", tiles[0usize] * 1000000u64 + tiles[3usize] * 1000u64 + tiles[6usize]);  // 1, 2, 3: 1002003
+
+  // ---- the same loops with a header filter, a cursor held in a variable, and the builder ----
+  imm held = data.chunks(150usize);                         // 7 runs of 150 (1050 = 7 * 150)
+  imm heldLens = Atomic[u64].of(0u64);
+  parallel each c in held {
+    heldLens.add(u64.from(c.len));
+  }
+  show("held cursor: lengths", heldLens.load());           // 1050
+  imm evenRuns = Atomic[u64].of(0u64);
+  parallel each y, c in data.chunks(10usize).indexed() if y % 2usize == 0usize {
+    evenRuns.add(u64.from(c.len) + 1000u64);
+  }
+  show("filter on the chunk number", evenRuns.load());     // 105 chunks of 10, numbers 0 to 104, 53 even: 53 * 1010 = 53530
+
+  // The parallel builder over chunks: a list of one value a chunk, in chunk order.
+  // 1000 numbers 0 ... 999 in runs of 100: run r gives its first plus its last,
+  // 100 r + (100 r + 99) = 200 r + 99, so the fourth (r = 3) is 699 and the sum
+  // is 200 * 45 + 990 = 9990
+  mut thousand = new List[u64];
+  each i in 0usize < 1000usize { thousand.push(u64.from(i)); }
+  mut sums = new List[u64];
+  sums <- parallel each c in thousand.chunks(100usize) yield c[0usize] + c[99usize];
+  mut builderTotal = 0u64;
+  each s in sums { builderTotal = builderTotal + *s; }
+  show("builder: runs", u64.from(sums.len));               // 10
+  show("builder: fourth", *sums[3usize]);                  // 699
+  show("builder: sum", builderTotal);                      // 9990
+
+  finalAll();
+}

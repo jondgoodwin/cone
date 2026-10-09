@@ -1,0 +1,50 @@
+// What 'chunks', 'mutChunks' and 'indexed()' refuse, said at type check: a run
+// 'chunks' gives is read-only, and so is the item of a bare 'indexed()' on ANY slice
+// or list, a '&mut' one too ("to change items, write src.mutItems()": the item of
+// 'mutItems().indexed()' is the '&mut' one); 'mutChunks' needs something that may
+// be changed.
+
+mod each_chunks_refused;
+
+import collections use *;
+
+// A run of 'chunks' is read
+fn writeARun(l &List[i64]) {
+  each c in l.chunks(2usize) {
+    c[0usize] = 1i64;                //~ ErrorNoMut
+  }
+}
+
+// 'indexed()' on a list gives '&' items; the mutable slice 'mutItems' gives '&mut' ones
+fn writeIndexedList(l &mut List[i64]) {
+  each i, x in l.indexed() {
+    *x = 1i64;                       //~ ErrorNoMut
+  }
+}
+
+fn writeIndexedReadOnlySlice(s &Array[i64]) {
+  each i, x in s.indexed() {
+    *x = 1i64;                       //~ ErrorNoMut
+  }
+}
+
+// ... and a bare 'indexed()' lends '&' on a '&mut' slice as well
+fn writeIndexedMutSlice(s &mut Array[i64]) {
+  each i, x in s.indexed() {
+    *x = 1i64;                       //~ ErrorNoMut
+  }
+}
+
+// A list that cannot be changed has no runs to change, nor does a read-only slice
+fn immutableList() {
+  imm l = new List[i64];
+  each c in l.mutChunks(2usize) {    //~ ErrorBadPerm
+    c[0usize] = 1i64;
+  }
+}
+
+fn readOnlySlice(s &Array[i64]) {
+  each c in s.mutChunks(2usize) {    //~ ErrorNoCandidate
+    c[0usize] = 1i64;
+  }
+}

@@ -16,10 +16,10 @@
 	<p style="margin-left: 40px;"><i>Note: Built: number ranges with &lt;, &le;, &gt;, &ge; and by; arrays, slices and lists; and
 			anything with a <span class="pre">next</span> method (a cursor) or an <span class="pre">iter</span> method (something
 			that gives one), a <a href="refcorout.html">generator</a> among them, with one variable or several that unpack a pair; a filter after the source (<span class="pre">if</span>); an <span class="pre">else</span> that makes the loop a value; the ways to walk a list, an array or a slice that
-			change its items in place (<span class="pre">mutItems</span>), consume it (<span class="pre">drain</span>) or number them
-			(<span class="pre">indexed</span>), and <span class="pre">zip</span>; <span class="pre">each</span> as an entry of the append operator's list
+			change its items in place (<span class="pre">mutItems</span>), consume it (<span class="pre">drain</span>), number them
+			(<span class="pre">indexed</span>) or cut it into runs (<span class="pre">chunks</span>, <span class="pre">mutChunks</span>), and <span class="pre">zip</span>; <span class="pre">each</span> as an entry of the append operator's list
 			(<a href="#builder">below</a>); and <a href="#parallel">parallel each</a> over a number range, an
-			array, a slice or a list, in a function or an actor's method, and <a href="#parallelbuilder">the parallel builder</a> that builds a list from it. Not built yet: <a href="#closure">closure iterators</a>, the adapters (<span class="pre">map</span>,
+			array, a slice or a list, or the runs of one, with <span class="pre">indexed</span> giving the position, in a function or an actor's method, and <a href="#parallelbuilder">the parallel builder</a> that builds a list from it. Not built yet: <a href="#closure">closure iterators</a>, the adapters (<span class="pre">map</span>,
 			<span class="pre">filter</span>, <span class="pre">fold</span>) and a source that runs its own loop, all of which wait for closures. An enum's variant is constructed with its values in square brackets, as written here: that is the current spelling, and how a variant is constructed is an open design question (<a href="refenum.html#init">Enums</a>).</i></p>
 
 	<p><span class="pre">each</span> makes it easier than <span class="pre">while</span>
@@ -246,6 +246,35 @@ each i, name in names.indexed() {   // i is a usize, name a borrow of the item
   print(i, name);
 }
 </pre>
+	<p>A bare <span class="pre">indexed()</span> always borrows its items for reading, on a <span class="pre">&amp;mut</span>
+		slice as on any other. To change them, call it on <span class="pre">mutItems()</span>, a cursor of its own whose
+		<span class="pre">indexed()</span> lends each item as a <span class="pre">&amp;mut</span>:</p>
+<pre>
+each i, p in buf.mutItems().indexed() {
+  *p = f(i);                        // p is a &amp;mut of the item
+}
+</pre>
+
+	<h4 id="chunks">Runs: <span class="pre">chunks</span> and <span class="pre">mutChunks</span></h4>
+	<p><span class="pre">chunks(n)</span> of a list, an array or a slice hands out its items in runs of
+		<span class="pre">n</span>, each run a slice; <span class="pre">mutChunks(n)</span> hands each out as a
+		<span class="pre">&amp;mut</span> slice, to change in place. The last run is what is left, so it is shorter when
+		<span class="pre">n</span> does not divide the count; <span class="pre">n</span> larger than the count is one run of
+		everything; an empty source has no run. <span class="pre">n</span> of 0 is a panic, at the line of the call.
+		<span class="pre">indexed()</span> numbers the runs from 0:</p>
+<pre>
+each run in list.chunks(4) {              // run is a &amp;Array[T] of 4 items (the last may be fewer)
+  ...
+}
+each y, row in pixels.mutChunks(width).indexed() {
+  each x, p in row.mutItems().indexed() { *p = shade(x, y); }
+}
+</pre>
+	<p>The cursor <span class="pre">chunks</span> gives has <span class="pre">len</span> (how many runs are left),
+		<span class="pre">at(k)</span> (run number <span class="pre">k</span> of those left) and
+		<span class="pre">split(at)</span> (the runs before run <span class="pre">at</span> and those from it on, each a cursor over
+		the same items), so it is a <span class="pre">ParallelIterable</span> that cuts only between runs.
+		<a href="#parallelfill">A parallel each</a> walks it.</p>
 
 	<h4 id="zip">Two together: <span class="pre">zip</span></h4>
 	<p><span class="pre">zip(&amp;xs, &amp;ys)</span> walks two lists (or deques, sets, dictionaries, or
@@ -365,7 +394,7 @@ each x in |{cnt = 12}| if cnt &gt; 0 {Some[cnt /= 2]} else {None} {
 
 	<h2 id="parallel">parallel each</h2>
 	<p style="margin-left: 40px;"><i>Note: Built in a function and in an actor's methods (<a href="#parallelactor">below</a>): over a number range, an
-			array, a slice or a list, with the header <span class="pre">if</span> and <span class="pre">mutItems()</span>, and, in a function that is not an actor's method, <a href="#parallelbuilder">the parallel builder</a> (<span class="pre">new List[T] &lt;- parallel each &hellip; yield</span>).
+			array, a slice or a list, with the header <span class="pre">if</span>, <span class="pre">mutItems()</span>, <span class="pre">indexed()</span> and the runs of <span class="pre">chunks(n)</span> and <span class="pre">mutChunks(n)</span>, and, in a function that is not an actor's method, <a href="#parallelbuilder">the parallel builder</a> (<span class="pre">new List[T] &lt;- parallel each &hellip; yield</span>).
 			Not built yet: inside a generator; a source of your own that is a
 			<span class="pre">ParallelIterable</span>; and
 			the reductions that come with closures. A parallel each takes no
@@ -401,7 +430,9 @@ fn total(xs &amp;Array[u64]) u64 {
 		the items before <span class="pre">at</span> and the items from it on). Today the loop walks a number range counting
 		up by one (<span class="pre">parallel each i in 0 &lt; n</span>, or <span class="pre">&lt;=</span>; a count down
 		or a <span class="pre">by</span> step is refused, since which pass runs first is not defined in parallel), an array,
-		a slice and a list, which it cuts into ranges of positions itself. A cursor, a generator, a file or a
+		a slice and a list, which it cuts into ranges of positions itself, and the runs
+		<span class="pre">chunks(n)</span> and <span class="pre">mutChunks(n)</span> give, which it cuts between runs
+		(<a href="#parallelfill">below</a>). A cursor, a generator, a file or a
 		channel hands out its items one after another and cannot be split: collect it into a list first, and walk the list.
 		As in the loops above, the variable is a new one on every pass, and is a borrow of the item for an array,
 		a slice or a list.</p>
@@ -450,6 +481,27 @@ fn total(xs &amp;Array[u64]) u64 {
 			sent after the loop, by the code that wrote it, in iteration order &mdash; the first pass's, then the second's &mdash; so
 			an actor sees the same order every run. A loop inside a pass's body is gathered into that pass in the same way.</li>
 	</ul>
+
+	<h3 id="parallelfill">Filling a buffer: indexed, chunks and mutChunks</h3>
+	<p>A counting range cannot write the elements of a buffer by position (<span class="pre">out[i] = &hellip;</span> writes
+		something declared outside the loop, and the compiler does not try to prove the passes' writes disjoint). A buffer is
+		filled by handing each pass the part it alone may write. Two variables from <span class="pre">indexed()</span> are the
+		position and the item, and the position is <b>global</b>: the item's place in the whole source, whichever piece of the loop
+		it falls in.</p>
+<pre>
+parallel each i, p in buf.mutItems().indexed() { *p = f(i); }     // one pass an element
+
+parallel each y, row in pixels.mutChunks(size).indexed() {      // one pass a row
+  each x, p in row.mutItems().indexed() { *p = shade(x, y); }
+}
+</pre>
+	<p><span class="pre">mutChunks(n)</span> cuts only between runs, so each pass is given a <span class="pre">&amp;mut</span> slice
+		of its own run (the last may be shorter) that no other pass can reach; the position of
+		<span class="pre">mutChunks(n).indexed()</span> is the run's number. <span class="pre">chunks(n)</span> is the same for
+		reading. <span class="pre">indexed()</span> over a list, an array, a slice or these runs gives two variables; every other
+		source gives one. The rules for the body are those above: a pass writes through its own run or item, naming the buffer the
+		runs come from in the body is refused (it may be a run another pass is writing), and a run <span class="pre">chunks</span>
+		gives cannot be written.</p>
 
 	<h3 id="parallelactor">In an actor's method</h3>
 	<p>A <span class="pre">parallel each</span> written directly in a behaviour (a method declared <span class="pre">async do</span>)

@@ -198,6 +198,9 @@ INode *cloneStructNode(CloneState *cstate, StructNode *node) {
         }
     }
     structCloneMapMembers(node, newnode);
+    // An instance of a generic generator is a generator of its own
+    if (yieldAny())
+        yieldGenCloned(node, newnode);
     INode **copyp = newnode->nodelist.nodes;
     for (nodelistFor(&node->nodelist, cnt, nodesp)) {
         if (structMemberAbsent(absent, *nodesp))

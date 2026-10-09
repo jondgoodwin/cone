@@ -104,6 +104,11 @@ GenInfo *yieldGenOf(FnDclNode *step);
 GenInfo *yieldGenOfStruct(INode *type);
 GenInfo *yieldGenOfCtor(FnDclNode *ctor);
 
+// An instance of a generic generator's struct has been cloned from the
+// template: the instance is a generator of its own, whose step, 'none' and
+// state are the clone's members
+void yieldGenCloned(StructNode *template, StructNode *copy);
+
 // A generator's seams, once its step is checked and walked
 void yieldSplitRegister(GenInfo *info, Nodes *yields);
 

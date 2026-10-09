@@ -37,9 +37,13 @@ Visual Studio projects stay at the root.
   the compiler makes and core's `pub struct @opaque str` gives its methods, all
   `inline`, `Array[T]`, the body of a run-time length whose borrow is the slice
   `&Array[T]`, a generic struct the compiler's `Array`
-  becomes when core declares it, whose `len`, `iter`, `indexed` and `mutItems`
-  are written there (an array and a slice call them, and a list folds them
-  in), with `zip`, which walks two sources with an `iter` side by side, and
+  becomes when core declares it, whose `len`, `iter`, `indexed`, `mutItems`,
+  `chunks` and `mutChunks` are written there (an array and a slice call them, and a
+  list folds them in; `mutItems()` gives `ArrayMutItems`, a cursor whose `next` and
+  `indexed()` lend `&mut` (a bare `indexed()` lends `&` on any slice);
+  `chunks(n)` and `mutChunks(n)` give `ArrayChunks` and
+  `ArrayMutChunks`, cursors over runs of `n` elements, each a slice or a `&mut`
+  one; `parallel each` walks these cursors by their `len` and `at(k)`), with `zip`, which walks two sources with an `iter` side by side, and
   `cstr`, C's `const char *`, a one-pointer struct the compiler makes
   too so that the C-named modules can declare their strings with it, whose
   field and methods are core's, the `So` and `Rc` regions, `Rwcell`, the
@@ -61,7 +65,8 @@ Visual Studio projects stay at the root.
   alone (`str`'s cursors and the collections' are `Iterator`s undeclared); `ParallelIterable[T, P]`
   (`len`, and `split(at)` giving two `P`s), the shape a `parallel each` walks, met the same
   way (a list's through the `len` and `split` it folds in from `Array`'s; the compiler cuts
-  arrays, slices, lists and number ranges into index ranges itself and does not call a
+  arrays, slices, lists and number ranges into index ranges itself, and the runs
+  `chunks` and `mutChunks` give into ranges of runs, and does not call a
   type's own `split` yet); and `panic`, `assert`, `unreachable`, `todo` and `setPanicHook`, whose
   work is conestd's, with `srcFile` and `srcLine`, intrinsics outside `mem`,
   which as a parameter's default give a caller's location; and the macros
@@ -540,7 +545,7 @@ Visual Studio projects stay at the root.
   `Array[T]` in with `use Array[T] via view`, frozen into a `So[Array[T]]` by
   `freeze()`; `each` walks it as the slice it lends, a counted loop, while its
   `iter()` is the cursor for code generic over cursors; `mutItems()` lends the
-  slice mutably and `drain()` moves the values out one at a time, leaving the list
+  slice mutably, `mutChunks(n)` lends it in `&mut` runs of `n`, and `drain()` moves the values out one at a time, leaving the list
   empty; `pieceBag`, `emptyPiece`, `depositPiece` and `joinPieces` are what a
   `<- parallel each x in src yield v` builds the list with, a list a piece, joined
   in the order of the passes), an owned `String` (always a NUL after

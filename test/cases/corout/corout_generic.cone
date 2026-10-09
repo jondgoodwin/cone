@@ -1,0 +1,161 @@
+mod corout_generic;
+
+// Generic generators: a function generic over a type, and the methods of a
+// generic type, declared 'yields'. The generator's struct takes the type
+// parameters of the function and of the type, so each instance is a generator
+// of its own, made for the arguments it was called with: 'items' at i64 and at
+// a struct below are two. Every value printed is worked out by hand from the
+// values put in.
+
+import stdio use *;
+import collections use *;
+
+struct Pt {
+  pub x i64;
+  pub y i64;
+}
+
+// A generic free generator: the borrows of a list's items, in order
+fn items[T](l &List[T]) yields &T {
+  mut i = 0usize;
+  while i < l.len {
+    match l.get(i) { case imm v Some { yield v.value; } case is None {} }
+    i = i + 1usize;
+  }
+}
+
+// One generic generator handing on another's values, twice: 'yield each'
+// reaches the instance for the same T
+fn twice[T](l &List[T]) yields &T {
+  yield each items(l);
+  yield each items(l);
+}
+
+// A generic generator whose items are not borrows, and that has a local living
+// across its yields
+fn firstN[T](l &List[T], n usize) yields T {
+  mut i = 0usize;
+  while i < n {
+    match l.get(i) { case imm v Some { yield *v.value; } case is None {} }
+    i = i + 1usize;
+  }
+}
+
+// A type parameter with a bound, which the generator's struct takes as written:
+// the first n items of any cursor of i64
+fn firsts[S Iterator[i64]](s &mut S, n i64) yields i64 {
+  mut k = 0i64;
+  while k < n {
+    match s.next() { case imm v Some { yield v.value; } case is None { return; } }
+    k = k + 1i64;
+  }
+}
+
+fn count(n i64) yields i64 {
+  mut i = 0i64;
+  while i < n {
+    yield i;
+    i = i + 1i64;
+  }
+}
+
+// Recursion through a generic generator: counting down from n, each level's
+// items handed on
+fn down[T](l &List[T], n usize) yields &T {
+  if n == 0usize { return; }
+  match l.get(n - 1usize) { case imm v Some { yield v.value; } case is None {} }
+  yield each down(l, n - 1usize);
+}
+
+// A generic type's generator methods
+struct Bag[T] {
+  pub all List[T];
+
+  fn forward(self &) yields &T {
+    mut i = 0usize;
+    while i < self.all.len {
+      match self.all.get(i) { case imm v Some { yield v.value; } case is None {} }
+      i = i + 1usize;
+    }
+  }
+
+  fn backward(self &) yields &T {
+    mut i = self.all.len;
+    while i > 0usize {
+      i = i - 1usize;
+      match self.all.get(i) { case imm v Some { yield v.value; } case is None {} }
+    }
+  }
+
+  // One generator handing on another of the same type's: the receiver passes on
+  fn both(self &) yields &T {
+    yield each self.forward();
+    yield each self.backward();
+  }
+
+  // 'Self' in the body is the type, not the generator
+  fn size(self &) usize { self.all.len; }
+  fn sized(self &) yields usize {
+    yield Self.size(self);
+  }
+}
+
+// A method with a type parameter of its own, beside its type's
+struct Pair[A] {
+  pub first A;
+  pub second A;
+
+  fn tagged[B](self &, tag &B) yields &A {
+    yield &self.first;
+    yield &self.second;
+  }
+}
+
+fn main() {
+  // The same generator at two types
+  mut a = new List[i64];
+  a.push(5i64); a.push(6i64); a.push(7i64);
+  each x in items(&a) { printInt(*x); printStr(" "); }
+  printStr("\n");
+  mut b = new List[Pt];
+  b.push(new Pt(1i64, 2i64)); b.push(new Pt(3i64, 4i64));
+  each p in items(&b) { printInt(p.x * 10i64 + p.y); printStr(" "); }
+  printStr("\n");
+
+  // Delegation, owned items and recursion at i64
+  each x in twice(&a) { printInt(*x); printStr(" "); }
+  printStr("\n");
+  each x in firstN(&a, 2usize) { printInt(x); printStr(" "); }
+  printStr("\n");
+  mut c = count(10i64);
+  each x in firsts(&mut c, 3i64) { printInt(x); printStr(" "); }
+  printStr("\n");
+  each x in down(&a, 3usize) { printInt(*x); printStr(" "); }
+  printStr("\n");
+  each p in down(&b, 2usize) { printInt(p.y); printStr(" "); }
+  printStr("\n");
+
+  // A generic type's methods at two arguments
+  mut bag = new Bag[i64](new List[i64]);
+  bag.all.push(1i64); bag.all.push(2i64); bag.all.push(3i64);
+  each x in bag.forward() { printInt(*x); printStr(" "); }
+  each x in bag.backward() { printInt(*x); printStr(" "); }
+  printStr("\n");
+  each x in bag.both() { printInt(*x); printStr(" "); }
+  printStr("\n");
+  mut bp = new Bag[Pt](new List[Pt]);
+  bp.all.push(new Pt(8i64, 9i64));
+  bp.all.push(new Pt(6i64, 7i64));
+  each p in bp.forward() { printInt(p.x); printStr(" "); }
+  each p in bp.both() { printInt(p.y); printStr(" "); }
+  printStr("\n");
+  each n in bag.sized() { printInt(i64.from(n)); printStr(" "); }
+  each n in bp.sized() { printInt(i64.from(n)); printStr(" "); }
+  printStr("\n");
+
+  // The method's own parameter beside the type's
+  imm pair = new Pair[i64](40i64, 41i64);
+  imm tag = 7i64;
+  each x in pair.tagged(&tag) { printInt(*x); printStr(" "); }
+  printStr("\n");
+}

@@ -766,9 +766,15 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
 
     // Handle if generic parameters are found. Its lifetimes are declared in
     // the same brackets, held apart: a lifetime is never instanced, so a
-    // struct declaring only lifetimes is no generic.
+    // struct declaring only lifetimes is no generic. Where they are written is
+    // kept for a generator method, whose struct has them too (parsegen.c)
+    char *svtparms = parse->tparms, *svtparmsend = parse->tparmsend;
+    parse->tparms = parse->tparmsend = NULL;
     if (lexIsToken(LBracketToken)) {
+        char *tparms = lex->tokp + 1;
         Nodes *parms = parseGenericParms(parse, 1, &strnode->lifeparms, NULL);
+        parse->tparms = tparms;
+        parse->tparmsend = lex->prevend - 1;
         if (parms->used > 0 || strnode->lifeparms == NULL) {
             strnode->genericinfo = newGenericInfo();
             strnode->genericinfo->parms = parms;
@@ -1033,6 +1039,12 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
                             "%s extends an enum, so the method %s needs a body: every variant of %s answers it, and the copies of its base's variants were written without it, with no body of their own to implement it in. Declare the requirement on the enum it extends.",
                             &strnode->namesym->namestr, &fn->namesym->namestr, &strnode->namesym->namestr);
                     fn->flags |= pubflag;
+                    // A generator method is a struct and a method made from its
+                    // body, which a package's include file would have to carry for
+                    // an importer to make again: not built
+                    if (parse->library && pubflag && yieldAny() && yieldGenOfCtor(fn))
+                        errorMsgNode((INode*)fn, ErrorGenForm,
+                            "A generator cannot be 'pub' in a library yet: its value is a struct made from its body, and a package's include file does not carry that for an importer. Write a 'pub' method that gathers what it yields into a collection, or wraps the generator in a type of your own.");
                     iNsTypeAddFn((INsTypeNode*)strnode, fn);
                 }
                 parseSpan(parse, &strnode->spans, (INode*)fn, mstart, mkw, SpanDcl);
@@ -1276,6 +1288,8 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
         lifeStructDeclare(strnode);
 
     parse->typenode = svtype;
+    parse->tparms = svtparms;
+    parse->tparmsend = svtparmsend;
     parse->hdrendp = hdrend;
     parse->isendp = isend;
     return (INode*)strnode;

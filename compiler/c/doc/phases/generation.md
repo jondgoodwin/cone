@@ -1627,6 +1627,11 @@ drop flag only if the flag says it holds its whole value (as `genlSeamDrop`
 does); then the boxes are freed. The parameters, fields of the struct, die after,
 with the struct's own drop. The deepest sub-generator therefore finalizes first.
 
+A generic generator's struct is cloned for each use, and each clone is a generator
+of its own (`yieldGenCloned`): its own `GenInfo`, so its own plan of the frame,
+seams and boxes. A recursive one is boxed in each instance, the sub-generator's
+type being the instance itself.
+
 Not built: a generator in a library's include file (it would have to carry the
 body whole for an importer to make the struct again; `ErrorGenForm`). Not tried:
 a GPU or WebAssembly target (a box is a C `malloc`).
