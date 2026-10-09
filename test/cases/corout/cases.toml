@@ -8,9 +8,10 @@
 # value out and waits to be resumed, 'yield each' hands on a sub-generator's,
 # the value a call gives is walked by its 'next' and complies with core's
 # Iterator[T] by having it. A generator may be a method and may be generic. A
-# two-way yield ('yieldenum') and a generator 'pub' in a library are not built,
+# A generator 'pub' in a library is walked by the packages that import it. A
+# two-way yield ('yieldenum') is not built,
 # and a generator that is 'inline', has a 'where' clause or no body, or is a
-# method of a trait or an enum, is refused; the parse scenario pins the
+# method of a trait, an enum or an actor, is refused; the parse scenario pins the
 # refusals. 'each' walks a generator as it walks
 # any cursor; the success and drop programs end with it.
 #
@@ -48,6 +49,29 @@ category = "run"
 description = "Generic generators: a function generic over a type, used at two types, handed on by 'yield each' and recursive; the methods of a generic type at two arguments; a method with a type parameter of its own"
 tags = ["parse", "nameres", "typecheck", "flow", "genllvm", "runtime"]
 
+# A package compiled on its own, with 'pub' generators, walked by a program
+# linked with it: a free generator, one whose body uses a private type and
+# function, a generic one, the methods of a plain type (a private one among
+# them) and of a generic type, one that writes through its receiver. The
+# program makes each generator's struct again from the include file, golden in
+# include/walks.cone. The same package is a Congo package, genwalk.
+[scenario.corout_library]
+category = "run"
+description = "A 'pub' generator in a library, walked by a program linked with it: a function, one using a private type and function, a generic one, the methods of a plain and of a generic type, a method writing through its receiver"
+tags = ["parse", "typecheck", "flow", "genllvm", "runtime"]
+link = ["package/walks.conebuild"]
+include = ["include/walks.cone"]
+
+# The same with a package whose one generator is a method of a plain type: the
+# private methods its body calls through a value, which name resolution cannot
+# see, go into the include file and are exported all the same.
+[scenario.corout_library_methods]
+category = "run"
+description = "A package whose only generator is a 'pub' method of a plain type, whose body calls private methods of its own type and of another, walked by a program linked with it"
+tags = ["parse", "typecheck", "flow", "genllvm", "runtime"]
+link = ["package/grids.conebuild"]
+include = ["include/grids.cone"]
+
 [scenario.corout_drop_methods]
 category = "run"
 description = "A generator method or a generic generator dying: finished, left at a seam, never run; a parameter of a generic type, a receiver taken by value, a generic type's recursive method with its sub-generators on the heap"
@@ -61,11 +85,13 @@ description = "Declarations a generator may not be, and a 'yield' where none sta
 tags = ["parse"]
 diagnostics = 18
 
-[scenario.corout_library]
+# -------- name resolution stage --------
+
+[scenario.corout_nameres]
 category = "reject"
-description = "A generator 'pub' in a library, a function, a generic one and a method, refused; one that is not 'pub' compiles"
-tags = ["parse"]
-diagnostics = 3
+description = "A bare method name in a generator method's body, which only self reaches"
+tags = ["nameres"]
+diagnostics = 2
 
 # -------- type check stage --------
 

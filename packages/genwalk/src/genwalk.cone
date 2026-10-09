@@ -1,0 +1,127 @@
+// The genwalk package: generators that other packages walk. A generator
+// ('yields') is a struct and a method made from its body, so a package that
+// exports one carries the declaration whole in its include file, and an importer
+// makes the struct again from it. This package is the sample of that: a free
+// generator, one whose body uses a private type and a private function of this
+// package, a generic one, the methods of a plain type (one of them private, which
+// a public one hands on to), a method that changes its receiver, and the methods
+// of a generic type.
+
+mod genwalk;
+
+import collections use *;
+
+// A private type and function, which the bodies of the public generators use:
+// the importer's copy of a body calls them, so they travel and are exported
+struct Window {
+  lo i64;
+  hi i64;
+}
+
+fn clamp(x i64, w &Window) i64 {
+  mut r = x;
+  if r < w.lo { r = w.lo; }
+  if r > w.hi { r = w.hi; }
+  r;
+}
+
+// A free generator
+pub fn count(n i64) yields i64 {
+  mut i = 0i64;
+  while i < n {
+    yield i;
+    i = i + 1i64;
+  }
+}
+
+// Its body names the private type and function
+pub fn clamped(n i64, lo i64, hi i64) yields i64 {
+  imm w = new Window(lo, hi);
+  mut i = 0i64;
+  while i < n {
+    yield clamp(i, &w);
+    i = i + 1i64;
+  }
+}
+
+// A generic free generator
+pub fn items[T](l &List[T]) yields &T {
+  mut i = 0usize;
+  while i < l.len {
+    match l.get(i) { case imm v Some { yield v.value; } case is None {} }
+    i = i + 1usize;
+  }
+}
+
+pub struct Node {
+  pub val i64;
+  pub left i64;
+  pub right i64;
+}
+
+// A tree held in an array, a node's children numbered by position
+pub struct Tree {
+  pub nodes Array[Node, 7];
+
+  // In order: the public method hands on to a private generator method
+  pub fn walk(self &) yields &Node {
+    yield each self.from(0usize);
+  }
+
+  fn from(self &, at usize) yields &Node {
+    imm n = &self.nodes[at];
+    if n.left >= 0i64 { yield each self.from(usize.from(n.left)); }
+    yield n;
+    if n.right >= 0i64 { yield each self.from(usize.from(n.right)); }
+  }
+
+  // A bare field name is the receiver's, as in any method
+  pub fn vals(self &) yields i64 {
+    mut i = 0usize;
+    while i < 7usize {
+      yield nodes[i].val;
+      i = i + 1usize;
+    }
+  }
+}
+
+// A receiver lent mutably: the generator changes what it was lent
+pub struct Counter {
+  pub n i64;
+
+  pub fn up(self &mut, k i64) yields i64 {
+    mut i = 0i64;
+    while i < k {
+      n = n + 1i64;
+      yield n;
+      i = i + 1i64;
+    }
+  }
+}
+
+// A generic type's generators, one named 'iter' so that 'each' walks the bag
+pub struct Bag[T] {
+  pub all List[T];
+
+  pub fn iter(self &) yields &T {
+    mut i = 0usize;
+    while i < all.len {
+      match all.get(i) { case imm v Some { yield v.value; } case is None {} }
+      i = i + 1usize;
+    }
+  }
+
+  pub fn backward(self &) yields &T {
+    mut i = all.len;
+    while i > 0usize {
+      i = i - 1usize;
+      match all.get(i) { case imm v Some { yield v.value; } case is None {} }
+    }
+  }
+}
+
+// A public generator handing on to a submodule's, which has a private generator
+// and a private function of its own: all of it travels in the include file
+pub fn evenCount(n i64) yields i64 {
+  yield each ranges.evens(n);
+}

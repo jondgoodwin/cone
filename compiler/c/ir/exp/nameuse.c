@@ -195,6 +195,50 @@ void nameUseMarkExpandReached(NameResState *pstate, NameUseNode *name) {
     }
 }
 
+// A generator method's body runs in the struct that is the generator, whose
+// fields are its parameters and the receiver (GenInfo.recv), so the type's own
+// fields are not the scope's to hook. A bare name there means what it means in any
+// method -- 'self.field' -- unless a local or a parameter of the generator is
+// named so, which shadows it as it shadows a field. The use is rewritten to a
+// member access on the receiver, 'self.field' read as the author's 'self'; type
+// check finds the field by its name in the receiver's type, an instance's too.
+// A bare method name is refused, since only a field is reached this way.
+// Returns whether the use was rewritten or refused.
+static int nameUseGenMember(NameResState *pstate, NameUseNode **namep) {
+    NameUseNode *name = *namep;
+    if (pstate->typenode->tag != StructTag)
+        return 0;
+    GenInfo *info = yieldGenOfStruct(pstate->typenode);
+    if (info == NULL || info->recv == NULL || info->recvtype == NULL || name->namesym == info->recv)
+        return 0;
+    // A parameter of the generator is a field of its struct; a local has no owner
+    if (namespaceFind(&((StructNode*)pstate->typenode)->namespace, name->namesym))
+        return 0;
+    INode *dcl = name->dclnode;
+    if (dcl && dcl->tag == VarDclTag && inodeGetDclInfo(dcl)->owner == NULL)
+        return 0;
+    INode *member = namespaceFind(&info->recvtype->namespace, name->namesym);
+    if (member == NULL)
+        return 0;
+    if (member->tag == FnDclTag || member->tag == FnOverloadDclTag) {
+        errorMsgNode((INode*)name, ErrorBareMbr,
+            "In a generator method, %s is a method of the type and must be reached through self, as self.%s",
+            &name->namesym->namestr, &name->namesym->namestr);
+        return 1;
+    }
+    if (member->tag != FieldDclTag || !(member->flags & FlagMethFld))
+        return 0;
+    NameUseNode *recvuse = newNameUseNode(info->recv);
+    copyNodeLex(recvuse, name);
+    FnCallNode *access = newFnCallNode((INode*)recvuse, 0);
+    access->methfld = (INode*)newMemberUseNode(name->namesym);
+    copyNodeLex(access->methfld, name);
+    copyNodeLex(access, name);
+    *((FnCallNode**)namep) = access;
+    inodeNameRes(pstate, (INode**)namep);
+    return 1;
+}
+
 // Handle name resolution for name use references: point dclnode at the name's
 // declaration. That is all a use needs -- whether it is a type, a value or a
 // macro is asked of the declaration (nameUseGroup), and a bare field name is
@@ -215,6 +259,10 @@ void nameUseNameRes(NameResState *pstate, NameUseNode **namep) {
     // A bare name is already hooked into the global name table by whichever
     // scope owns it, innermost last, so this is one pointer read and no walk
     name->dclnode = name->namesym->node;
+
+    // In a generator method's body a bare name may be a field of the receiver
+    if (yieldAny() && pstate->typenode && nameUseGenMember(pstate, namep))
+        return;
 
     if (!name->dclnode) {
         // A pattern's bare root may be a variant of the matched value's enum,

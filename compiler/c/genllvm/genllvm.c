@@ -1055,6 +1055,14 @@ static void genlImportedInstances(GenState *gen, INode *node) {
             }
             return;
         }
+        // A generator's struct is made again by every object that uses it, from
+        // the text of the declaration an include file carries, so its methods
+        // are defined here whoever's module it is in (dclIsInstance)
+        if (yieldAny() && yieldGenOfStruct(node)) {
+            genlGenericInstanceSyms(gen, node);
+            genlGlobalImpl(gen, node);
+            return;
+        }
         // A non-generic type's generic methods
         int istrait = node->flags & TraitType;
         for (nodelistFor(&strnode->nodelist, cnt, nodesp)) {

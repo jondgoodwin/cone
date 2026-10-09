@@ -217,8 +217,9 @@ an importer needs to see it, with a banner saying it is generated:
   declared `extern` and without a body, and spelled with the package's Cone
   name, which is the name its object exports;
 - its types are written with their fields, and what an importer must have the
-  body of — an `inline` or generic function, a generic type's methods, a macro —
-  is written whole;
+  body of — an `inline` or generic function, a generic type's methods, a macro,
+  a generator (a function or method declared `yields`: the importer makes its
+  struct and frame from the body) — is written whole;
 - a private name that such a body reaches is declared too;
 - a global whose members the package folds into its namespace
   (`pub mut config Config = ... pub use *;`) is declared `extern` with the same
