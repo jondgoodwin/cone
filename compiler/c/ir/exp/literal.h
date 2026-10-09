@@ -139,6 +139,25 @@ int slitMatches(INode *node, INode *totypedcl);
 // Make it so, returning 1 when *nodep now has the wanted type
 int slitCoerce(INode **nodep, INode *totypedcl);
 
+// Would a string literal be lent as a temporary where this type is wanted: a
+// read-only borrowed reference to a type that declares 'fromLiteral'? Made by
+// slitBorrowCoerce (it needs the type check state), which answers whether the
+// result meets 'totype'
+int slitBorrowMatches(INode *node, INode *totypedcl);
+
+// Selection among overloaded candidates counts that conversion only as a
+// fallback, when no candidate took the arguments without it
+void slitBorrowFallback(int on);
+int slitBorrowOffered(INode *node, INode *totypedcl);
+int slitAnyText(INode **self, Nodes *args);
+
+int slitBorrowCoerce(TypeCheckState *pstate, INode **nodep, INode *totype);
+
+// A string literal wanted as a borrow that writes, of a type that declares
+// 'fromLiteral': reports it (ErrorLitBorrowWrite) and answers 1; 0, saying
+// nothing, for any other pair
+int slitBorrowRefused(INode *node, INode *totypedcl);
+
 int litIsLiteral(INode* node);
 
 // Fold a type-checked value where a constant is required -- an expression of

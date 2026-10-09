@@ -83,7 +83,12 @@ So the normal path is `iexpTypeCheckCoerce`:
 3. Report `ErrorNotTyped` and **return success anyway** if what came back is not
    an expression node — a deliberate lie, so one untyped subexpression does not
    provoke a second complaint from every enclosing node.
-4. `iexpCoerce(from, totype)`.
+4. `iexpCoerceIn(pstate, from, totype)`: `iexpCoerce`, except that a string
+   literal wanted as a read-only `&T`, `T` declaring `fromLiteral`, inside a function's
+   body, becomes the borrow of a temporary `&T.fromLiteral(lit)`, which needs the
+   state (the temporary's scope, a local initializer's extension) that `iexpCoerce`
+   does not carry ([literals](../nodes/literals.md), "A literal and its neighbours").
+   `fnCallFinalizeArgs` coerces each argument the same way.
 
 `litTypeCheck` uses `expectType` for one case: an untyped integer literal takes
 a number expected type and keeps it — an integer type by retyping, a float type
@@ -337,7 +342,11 @@ receiver passable as parameter 0 (a virtual reference, which never coerces to
 the `&Trait` parameter 0 declares, where parameter 0 is a reference whose
 permission its own grants, as `permMatches` decides for a plain one), every argument `iexpMatches`-compatible with
 its parameter, and every unsupplied parameter carrying a default. Two viable
-candidates is `OverloadAmbiguous` and an error, not a tie-break.
+candidates is `OverloadAmbiguous` and an error, not a tie-break. One conversion
+is not counted at first: a string literal lent as a temporary to a `&T`. A call
+no candidate takes, with a string literal among its arguments, is asked again
+with it counted (`slitBorrowFallback`), so that conversion never competes with
+a candidate that takes the literal as the `&str` it is.
 
 **Coercion happens once, after selection**, in `fnCallFinalizeArgs`: coerce each
 argument to its parameter, then append defaults for what was not supplied. This

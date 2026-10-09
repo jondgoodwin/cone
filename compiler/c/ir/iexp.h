@@ -64,6 +64,12 @@ int iexpTypeCheckCoerce(TypeCheckState *pstate, INode *to, INode **from);
 
 // iexpTypeCheckCoerce for a node already type checked
 int iexpCheckedCoerce(INode *to, INode **from);
+int iexpCheckedCoerceIn(TypeCheckState *pstate, INode *to, INode **from);
+
+// iexpCoerce where the type check state is at hand, which a string literal lent
+// as a temporary needs (slitBorrowCoerce): it is made where a function's body
+// wants a read-only borrow of a type that declares 'fromLiteral'
+int iexpCoerceIn(TypeCheckState *pstate, INode **from, INode *to);
 
 // Used by 'if' and 'loop' to infer the type in common across all branches,
 // one branch at a time. Errors on bad type match and returns Match condition.

@@ -79,6 +79,12 @@ TypeCompare iexpMatches(INode **from, INode *totype, SubtypeConstraint constrain
     if (slitMatches(*from, totyp))
         return ConvSubtype;
 
+    // A string literal is lent as a temporary where a read-only borrow of a
+    // type that declares 'fromLiteral' is wanted, in a call that no candidate
+    // takes without it (slitBorrowFallback); iexpCoerceIn makes the borrow
+    if (slitBorrowOffered(*from, totyp))
+        return ConvSubtype;
+
     // Can we auto-borrow to match on the expected type?
     if (borrowAutoMatches(*from, (RefNode*)totyp)) {
         return ConvBorrow;    // Auto-borrow
@@ -280,6 +286,11 @@ static int iexpCoerceShape(INode **from, INode *totype) {
     if (slitCoerce(from, totypedcl))
         return 1;
 
+    // A string literal lent as a temporary is made by iexpCoerceIn, which has
+    // the type check state its borrow needs. Reached without it, it is not met.
+    if (slitBorrowMatches(*from, totypedcl))
+        return 0;
+
     // Are types equivalent, or is 'to' a subtype of fromtypedcl?
     switch (iexpMatches(from, totypedcl, Coercion)) {
     case NoMatch:
@@ -308,7 +319,8 @@ static int iexpCoerceShape(INode **from, INode *totype) {
         // A char is no number, nor a number a char (a non-ASCII character
         // literal wanted as a u8 included): the conversion is asked for. It is
         // then built anyway, as for a bool, so what uses the value says nothing more.
-        if (iexpCharNumberMismatch(*from, totypedcl) || iexpCPtrMismatch(*from, totypedcl)) {
+        if (iexpCharNumberMismatch(*from, totypedcl) || iexpCPtrMismatch(*from, totypedcl)
+            || slitBorrowRefused(*from, totypedcl)) {
             INode *conv = (INode*)newConvCastNode(*from, totypedcl);
             inodeLexCopy(conv, *from);
             *from = conv;
@@ -377,19 +389,36 @@ static int iexpCoerceShape(INode **from, INode *totype) {
 // Return 1 if type "matches", 0 otherwise
 int iexpTypeCheckCoerce(TypeCheckState *pstate, INode *totype, INode **from) {
     inodeTypeCheck(pstate, from, totype);
-    return iexpCheckedCoerce(totype, from);
+    return iexpCheckedCoerceIn(pstate, totype, from);
+}
+
+// iexpCoerce where the type check state is at hand. A string literal wanted as
+// a read-only borrow of a type that declares 'fromLiteral' is lent as a
+// temporary of it (slitBorrowCoerce), and that is made only in a function's
+// body (scope 2 and up): a temporary lasts to the end of its statement, which a
+// global's initializer, a constant, a field's or a parameter's default has no
+// statement to give. Anything else is iexpCoerce.
+int iexpCoerceIn(TypeCheckState *pstate, INode **from, INode *totype) {
+    if (pstate && pstate->scope >= 2 && totype != unknownType && totype != noCareType
+        && slitBorrowMatches(*from, itypeGetTypeDcl(totype)))
+        return slitBorrowCoerce(pstate, from, totype);
+    return iexpCoerce(from, totype);
 }
 
 // iexpTypeCheckCoerce for a node already type checked: ensure it is an
 // expression, then coerce it to the expected type, if needed
-int iexpCheckedCoerce(INode *totype, INode **from) {
+int iexpCheckedCoerceIn(TypeCheckState *pstate, INode *totype, INode **from) {
     if (totype == noCareType)
         return 1;
     if (!isExpNode(*from)) {
         errorMsgNode(*from, ErrorNotTyped, "Expected a typed expression.");
         return 1; // pretend we match to not provoke additional errors
     }
-    return iexpCoerce(from, totype);
+    return iexpCoerceIn(pstate, from, totype);
+}
+
+int iexpCheckedCoerce(INode *totype, INode **from) {
+    return iexpCheckedCoerceIn(NULL, totype, from);
 }
 
 // Used by 'if' and 'loop'/break to infer the type in common across all branches,

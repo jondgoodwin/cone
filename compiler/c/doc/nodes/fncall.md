@@ -443,7 +443,10 @@ analyzed** (`fnCallDemandCandidates` — a later method of the caller's own type
 is not, and its unchecked signature matched no reference receiver; see
 [type check](../phases/type-check.md), "Demand"), then `iNsTypeFindMethod`,
 which tests every candidate with `fnSigViableCall` and **alters nothing**. One
-viable candidate is a match; two are `OverloadAmbiguous`. There is no ranking.
+viable candidate is a match; two are `OverloadAmbiguous`. There is no ranking,
+bar one fallback: a string literal lent as a temporary to a `&T`
+([literals](literals.md)) is counted only when no candidate took the arguments
+without it.
 For a folded method the receiver is rewritten before any candidate is tried:
 `structFoldReceiver` makes it the access to the field the name was folded
 through, reborrowed with a reference receiver's permission, so selection,

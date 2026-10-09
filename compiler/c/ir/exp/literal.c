@@ -604,7 +604,7 @@ int slitCoerce(INode **nodep, INode *totypedcl) {
         fnCallDemandCandidates((INode*)fromlit);
         FnCallNode *call = newFnCallLower((INode*)lit, (INode*)newNameUseFromDclNode((INode*)fromlit, (INode*)lit), 1);
         nodesAdd(&call->args, (INode*)lit);
-        fnCallFinalizeArgs(call);
+        fnCallFinalizeArgs(NULL, call);
         *nodep = (INode*)call;
         return 1;
     }
@@ -621,6 +621,95 @@ int slitCoerce(INode **nodep, INode *totypedcl) {
     permInitTypeCheck(itypeGetTypeDcl(alloc->perm));
     *nodep = (INode*)alloc;
     return 1;
+}
+
+// A string literal wanted as a borrowed reference to a type that declares
+// 'fromLiteral': is it one, and does the borrow write? Answers the wanted
+// type's target, the type that declares it, or NULL for any other wanted type.
+static INode *slitBorrowTarget(INode *node, INode *totypedcl) {
+    if (!slitIsText(node) || totypedcl->tag != RefTag
+        || itypeGetTypeDcl(((RefNode*)totypedcl)->region) != borrowRef)
+        return NULL;
+    INode *target = itypeGetTypeDcl(((RefNode*)totypedcl)->vtexp);
+    return slitFromLiteralFn(target) ? target : NULL;
+}
+
+// Does a borrow let what it points at be written (a lock permission included)?
+static int slitBorrowWrites(RefNode *ref) {
+    return !isTypeNode(ref->perm) || ref->perm == unknownType
+        || permIsLock(ref->perm) || (permGetFlags(ref->perm) & MayWrite);
+}
+
+// Would a string literal be lent as a temporary where this type is wanted: a
+// read-only borrowed reference to a type that declares 'fromLiteral'? The
+// borrow is made by slitBorrowCoerce, which needs the type check state; a
+// coercion without one (iexpCoerce) leaves it unmade and the literal unmatched.
+int slitBorrowMatches(INode *node, INode *totypedcl) {
+    return slitBorrowTarget(node, totypedcl) != NULL && !slitBorrowWrites((RefNode*)totypedcl);
+}
+
+// Does a call of overloaded functions count this conversion yet? Only while
+// selection falls back to it (slitBorrowFallback): a literal that a candidate
+// takes as it is -- as the '&str' it is -- is never lent as a temporary while
+// another candidate would take it so, which would make 'd["a"]' ambiguous
+// between a dictionary's '&K' and '&str' indexes.
+static int slitBorrowSelecting = 0;
+
+void slitBorrowFallback(int on) {
+    slitBorrowSelecting = on;
+}
+
+int slitBorrowOffered(INode *node, INode *totypedcl) {
+    return slitBorrowSelecting && slitBorrowMatches(node, totypedcl);
+}
+
+// Is any of these arguments a string literal, which selection could retry?
+int slitAnyText(INode **self, Nodes *args) {
+    INode **argp;
+    uint32_t cnt;
+    if (self && slitIsText(*self))
+        return 1;
+    if (args == NULL)
+        return 0;
+    for (nodesFor(args, cnt, argp))
+        if (slitIsText(*argp))
+            return 1;
+    return 0;
+}
+
+// A string literal wanted as a borrow that writes, of a type that declares
+// 'fromLiteral' ('&mut String'): refused, saying why. A write to the temporary
+// would be lost with it. Answers 1 having reported it.
+int slitBorrowRefused(INode *node, INode *totypedcl) {
+    INode *target = slitBorrowTarget(node, totypedcl);
+    if (target == NULL || !slitBorrowWrites((RefNode*)totypedcl))
+        return 0;
+    errorMsgNode(node, ErrorLitBorrowWrite,
+        "A string literal is lent as a temporary %s only to a read-only borrow, '&%s'. This wants a borrow that writes, and a write to a temporary is lost when the statement ends. Make the %s first, '%s.fromLiteral(text)', and lend that.",
+        itypeName(target), itypeName(target), itypeName(target), itypeName(target));
+    return 1;
+}
+
+// A string literal where a read-only borrow of a type that declares
+// 'fromLiteral' is wanted becomes the borrow of a temporary, '&T.fromLiteral(lit)',
+// built and checked as that borrow is when written: the temporary lives to the
+// end of the statement and is finalized there, a borrow of it used after that
+// is refused, and a local's initializer extends it to the end of the block
+// ('imm r &String = "x"'). The borrow is the one the wanted type names, so the
+// permission is its own. Nothing here knows any type: 'T' is whatever declares
+// the function. Answers whether the result meets the wanted type.
+int slitBorrowCoerce(TypeCheckState *pstate, INode **nodep, INode *totype) {
+    INode *totypedcl = itypeGetTypeDcl(totype);
+    SLitNode *lit = (SLitNode*)*nodep;
+    FnDclNode *fromlit = slitFromLiteralFn(slitBorrowTarget(*nodep, totypedcl));
+    fnCallDemandCandidates((INode*)fromlit);
+    FnCallNode *call = newFnCallLower((INode*)lit, (INode*)newNameUseFromDclNode((INode*)fromlit, (INode*)lit), 1);
+    nodesAdd(&call->args, (INode*)lit);
+    RefNode *borrow = newRefNodeFull(BorrowTag, (INode*)lit, borrowRef,
+        newPermUseNode((PermNode*)itypeGetTypeDcl(((RefNode*)totypedcl)->perm)), (INode*)call);
+    *nodep = (INode*)borrow;
+    borrowTypeCheck(pstate, (RefNode**)nodep);
+    return iexpCoerce(nodep, totype);
 }
 
 // A reinterpretation ('as') of a constant number to a number or pointer type is

@@ -351,12 +351,14 @@ static int typeLitImplicitViable(StructNode *strnode, Nodes *args) {
 
 // Coerce a declared init's arguments to its parameters after 'self', and
 // append the defaults of those left out, as fnCallFinalizeArgs does for a call
-static void typeLitInitArgs(FnCallNode *node, FnSigNode *sig) {
+static void typeLitInitArgs(TypeCheckState *pstate, FnCallNode *node, FnSigNode *sig) {
     INode **parmp = &nodesGet(sig->parms, 1);
     INode **argsp;
     uint32_t cnt;
     for (nodesFor(node->args, cnt, argsp)) {
-        if (!iexpCoerce(argsp, ((IExpNode *)*parmp)->vtype))
+        // (A string literal wanted as a read-only borrow of a type declaring
+        // 'fromLiteral' is lent as a temporary of it: iexpCoerceIn.)
+        if (!iexpCoerceIn(pstate, argsp, ((IExpNode *)*parmp)->vtype))
             errorMsgNode(*argsp, ErrorInvType, "Expression's type does not match declared parameter");
         ++parmp;
     }
@@ -746,12 +748,31 @@ static void typeLitNewChecked(TypeCheckState *pstate, FnCallNode **nodep, int ar
             candp = &nodesGet(((FnOverloadDclNode*)inits)->overloads, 0);
             ncand = ((FnOverloadDclNode*)inits)->overloads->used;
         }
+        INode **firstp = candp;
+        uint32_t allcand = ncand;
         while (ncand--) {
             FnDclNode *cand = (FnDclNode*)*candp++;
             if (fnDclIsInit(cand) && typeLitInitViable(cand, node->args)) {
                 selected = cand;
                 ++viable;
             }
+        }
+        // Neither a declared init nor the implicit one takes the arguments,
+        // and one is a string literal: ask the declared inits again with a
+        // literal also lent as a temporary to a '&T' ('new File("x")' for
+        // 'init(self &new, p &Path)'), as a call's selection falls back to it
+        if (viable == 0 && !typeLitImplicitViable(strnode, node->args) && slitAnyText(NULL, node->args)) {
+            slitBorrowFallback(1);
+            candp = firstp;
+            ncand = allcand;
+            while (ncand--) {
+                FnDclNode *cand = (FnDclNode*)*candp++;
+                if (fnDclIsInit(cand) && typeLitInitViable(cand, node->args)) {
+                    selected = cand;
+                    ++viable;
+                }
+            }
+            slitBorrowFallback(0);
         }
     }
     // A declared init the arguments select is preferred to the implicit one,
@@ -784,6 +805,6 @@ static void typeLitNewChecked(TypeCheckState *pstate, FnCallNode **nodep, int ar
     }
     INode *type = node->objfn;
     node->objfn = newNameUseFromDclNode((INode*)selected, (INode*)node);
-    typeLitInitArgs(node, (FnSigNode*)selected->vtype);
+    typeLitInitArgs(pstate, node, (FnSigNode*)selected->vtype);
     node->vtype = type;
 }
