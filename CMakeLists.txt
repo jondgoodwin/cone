@@ -111,6 +111,7 @@ add_executable(conec
 	compiler/c/ir/exp/sizeof.c
 	compiler/c/ir/exp/typelit.c
 	compiler/c/ir/exp/vtuple.c
+	compiler/c/ir/exp/yield.c
 
 	compiler/c/ir/types/actor.c
 	compiler/c/ir/types/array.c
@@ -136,6 +137,7 @@ add_executable(conec
 
 	compiler/c/parser/lexer.c
 	compiler/c/parser/parseactor.c
+	compiler/c/parser/parsegen.c
 	compiler/c/parser/parsemod.c
 	compiler/c/parser/parsebuild.c
 	compiler/c/parser/parsefnflow.c
@@ -149,6 +151,7 @@ add_executable(conec
 	compiler/c/genllvm/genlalloc.c
 	compiler/c/genllvm/genlawait.c
 	compiler/c/genllvm/genlpar.c
+	compiler/c/genllvm/genlyield.c
 	compiler/c/genllvm/genltype.c
 	compiler/c/genllvm/genlcabi.c
 	compiler/c/genllvm/genlaggcopy.c

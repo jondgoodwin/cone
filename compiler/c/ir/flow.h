@@ -52,6 +52,7 @@ typedef struct FlowState {
     uint8_t shapelend;  // FlowGateShape: a method lending a borrow of a value that may change shape was met
     uint8_t shapewrite; // FlowGateShape: a call with a writable argument was met
     Nodes *awaits;     // Each 'await' the walk met, a seam the loan walk applies its rules to, or NULL
+    Nodes *yields;     // Each 'yield' the walk met, a generator's seam the loan walk applies its rules to, or NULL
     VarDclNode *inflight[FlowInflightMax];  // The variable each waiting operand's borrow is of
 } FlowState;
 

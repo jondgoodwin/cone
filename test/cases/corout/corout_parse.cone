@@ -1,0 +1,58 @@
+mod corout_parse;
+
+// What a generator's declaration and its 'yield' may not be, refused where
+// they are read. 'yield' stands in the body of a function declared 'yields',
+// as a statement, and a generator's 'return' ends its walk, taking no value.
+// The generator is a struct made for its parameters, with a method made of its
+// body, so it is a function with a name and a body, not generic, not a method,
+// not 'inline', and without a 'where' clause; these are refused by name.
+
+struct Holder {
+  n i64;
+  fn items(self &) yields i64 {           //~ ErrorGenForm:3 "A method cannot be a generator yet"
+    yield 1i64;
+  }
+}
+
+fn outside() {
+  yield 1i64;                             //~ ErrorYieldPlace:3 "'yield' stands only in the body of a function declared with 'yields'"
+}
+
+fn generic[T](x T) yields T {             //~ ErrorGenForm:1 "A generic function cannot be a generator yet"
+  yield x;
+}
+
+fn inlined(x i64) yields i64 inline {     //~ ErrorGenForm:1 "A generator cannot be 'inline'"
+  yield x;
+}
+
+fn bodiless(x i64) yields i64;            //~ ErrorGenForm:1 "A generator is its body"
+
+fn returnsAValue() yields i64 {
+  return 5i64;                            //~ ErrorYieldReturn:10 "its 'return' takes none"
+}
+
+// A seam stands as a statement: a value made before it in the same expression
+// would have to be kept across it
+fn two(a i64, b i64) i64 { a + b; }
+
+fn inAnArgument(c bool) yields i64 {
+  imm x = two(1i64, if c { yield 5i64; 2i64; } else { 3i64; });   //~ ErrorYieldPlace:28 "A 'yield' is a statement of its own"
+  yield x;
+}
+
+fn inABlock() yields i64 {
+  imm x = { yield 5i64; 2i64; };          //~ ErrorYieldPlace:13 "A 'yield' is a statement of its own"
+  yield x;
+}
+
+fn noType() yields {                      //~ ErrorInvType:20 "Expected the type a generator yields"
+}
+
+fn noValue() yields i64 {
+  yield;                                  //~ ErrorBadTerm:8 "'yield' needs the value to hand the caller"
+}
+
+fn noSource() yields i64 {
+  yield each;                             //~ ErrorBadTerm:13 "'yield each' needs the sub-generator"
+}

@@ -551,6 +551,12 @@ enum ErrorCode {
     // 'each' over cursors (ir/exp/each.c)
     ErrorEachItem = 1340,       // What an 'each' takes out of its cursor cannot be given to its variables: a 'next' that does not answer an Option, an 'iter' giving something with no 'next', variables that do not unpack the tuple item, or an item that moves
 
+    // Generators (ir/exp/yield.c, parser/parsegen.c)
+    ErrorYieldPlace = 1350,     // 'yield' outside the body of a function declared with 'yields'
+    ErrorYieldReturn = 1351,    // A 'return' with a value in a generator, which gives its caller values only by 'yield'
+    ErrorGenForm = 1352,        // A generator of a form not built: generic, a method, with 'inline' or a 'where' clause
+    ErrorGenFrame = 1353,       // A local a 'yield' would keep in the generator's frame that the frame cannot hold: a lock's guard, or a value holding a traced reference
+
     // 'parallel each' (ir/exp/pareach.c)
     ErrorParSource = 1360,      // A 'parallel each' over a source that cannot be split into independent pieces and report its size (a cursor, a generator, a file, a channel), or whose pieces the compiler cannot yet walk
     ErrorParControl = 1361,     // A 'break', 'return' or 'await', or a 'continue' of an outer loop, in a 'parallel each' body

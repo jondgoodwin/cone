@@ -33,4 +33,7 @@ void returnJoinFn(TypeCheckState *pstate, BreakRetNode *retnode);
 // Data flow for return: a returned borrowed reference may not point to a local
 void returnFlow(BreakRetNode *node);
 
+// The same check on a value handed out another way: a generator's 'yield'
+void returnFlowEscape(INode *exp);
+
 #endif

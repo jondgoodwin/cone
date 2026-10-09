@@ -57,7 +57,7 @@ void returnNameRes(NameResState *nstate, BreakRetNode *retnode) {
 // top block, where its parameters' own storage and its outermost locals live
 // (iexpGetLvalInfo). Global and the caller band outlive the call; anything
 // deeper is gone by the time the caller reads it.
-static void returnFlowEscape(INode *exp) {
+void returnFlowEscape(INode *exp) {
     if (!isExpNode(exp))
         return;
     // A value tuple returns each of its elements, so each is checked in turn

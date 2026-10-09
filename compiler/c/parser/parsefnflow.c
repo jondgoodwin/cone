@@ -74,7 +74,17 @@ INode *parseExpStmt(ParseState *parse) {
 INode *parseReturn(ParseState *parse) {
     BreakRetNode *stmtnode = newReturnNode();
     lexNextToken(); // Skip past 'return'
-    stmtnode->exp = parseIsEndOfStatement()? (INode*)newNilLitNode() : parseAnyExpr(parse);
+    // In a generator it ends the walk: the caller is handed None from then on
+    if (parse->genctx) {
+        if (!parseIsEndOfStatement()) {
+            errorMsgLex(ErrorYieldReturn,
+                "A generator hands its caller values with 'yield', so its 'return' takes none: it ends the walk.");
+            parseAnyExpr(parse);
+        }
+        stmtnode->exp = parseGenNone(parse);
+    }
+    else
+        stmtnode->exp = parseIsEndOfStatement()? (INode*)newNilLitNode() : parseAnyExpr(parse);
     parseEndOfStatement();
     return (INode*)stmtnode;
 }
@@ -646,6 +656,11 @@ INode *parseExprBlock(ParseState *parse, int isloop) {
 
         case WithToken:
             nodesAdd(&blk->stmts, parseWith(parse));
+            break;
+
+        // A generator's seam, 'yield e;' or 'yield each src;'
+        case YieldToken:
+            nodesAdd(&blk->stmts, parseYield(parse));
             break;
 
         case IfToken:
@@ -1338,7 +1353,12 @@ INode *parseFn(ParseState *parse, uint16_t mayflags) {
     // After '&fn' (ParseEmbedded), the signature is a function-reference type
     // unless a body follows, and its parameters are settled once that is known
     int reftype = (mayflags & ParseEmbedded) != 0;
+    int errorsAtSig = errors;
     fnnode->vtype = parseFnSig(parse, reftype);
+    // 'yields': a generator (parsegen.c). Its signature, read from the text
+    // the parameters and the yielded type are written in
+    int isgen = !reftype && parse->isgen;
+    GenSig gensig = parse->gensig;
 
     // Its type parameters' lifetime bounds join the order among its
     // signature's lifetimes, as a 'where' clause's do
@@ -1395,8 +1415,41 @@ INode *parseFn(ParseState *parse, uint16_t mayflags) {
             errorMsgNode((INode*)fnnode, ErrorBadImpl, "Function/method implementation is not allowed here.");
         bodyp = lex->tokp;
         uint32_t awaits = parse->dcltexts ? parse->dcltexts->awaits : 0;
+        // A generator's body reads 'yield' and its 'return'; a function nested
+        // in it, which is no generator, reads neither
+        if (isgen) {
+            const char *why = NULL;
+            if (fnnode->namesym == NULL)
+                why = "An anonymous function cannot be a generator: a generator is a function with a name, which makes a value that is walked.";
+            else if (fnnode->genericinfo)
+                why = "A generic function cannot be a generator yet: the generator is a struct of its own, made for the function's parameters, and a generic one is not built.";
+            else if (parse->typenode)
+                why = "A method cannot be a generator yet: the generator is a struct of its own that holds the method's parameters, 'self' among them, and a method's is not built. Write a function that takes what the method would.";
+            else if (fnnode->flags & FlagInline)
+                why = "A generator cannot be 'inline': it is a struct and a method, not code expanded where it is called.";
+            else if (fnnode->where)
+                why = "A generator cannot have a 'where' clause yet.";
+            else if (hasc || compute || intrinsic)
+                why = "A generator is a struct and a method, so it has no symbol for '@c' to name, cannot be an '@intrinsic', and is no '@compute' entry point.";
+            // Refused, but its body is still read as a generator's, so that
+            // its 'yield' is not reported as well
+            if (why)
+                errorMsgNode((INode*)fnnode, ErrorGenForm, "%s", why);
+        }
+        GenCtx *genctx = isgen ? parseGenBegin(parse, fnnode) : NULL;
+        GenCtx *svgenctx = parse->genctx;
+        int svgenoperand = parse->genoperand;
+        parse->genctx = genctx;
+        parse->genoperand = 0;
         fnnode->value = parseExprBlock(parse, 0);
+        parse->genctx = svgenctx;
+        parse->genoperand = svgenoperand;
         bodyendp = lex->prevend;
+        if (genctx && errors == errorsAtSig) {
+            parse->bodyp = bodyp;
+            parse->bodyendp = bodyendp;
+            return (INode*)parseGenFinish(parse, fnnode, &gensig, genctx, (BlockNode*)fnnode->value);
+        }
         // In an actor's body, a method holding an 'await' is noted: its
         // dispatch and its actor's state are generated for its seams
         // (parseactor.c)
@@ -1404,7 +1457,10 @@ INode *parseFn(ParseState *parse, uint16_t mayflags) {
             nodesAdd(&parse->dcltexts->awaiting, (INode*)fnnode);
     }
     else {
-        if (!(mayflags&ParseMaySig))
+        if (isgen)
+            errorMsgNode((INode*)fnnode, ErrorGenForm,
+                "A generator is its body: 'yields' declares a function that hands its caller values, so a declaration with no body, an 'extern' one among them, is not built.");
+        else if (!(mayflags&ParseMaySig))
             errorMsgNode((INode*)fnnode, ErrorNoImpl, "Function/method must be implemented.");
         if (!(mayflags&ParseEmbedded))
             parseEndOfStatement();

@@ -185,6 +185,8 @@ static void checkNode(INode *node) {
 
     case AwaitTag:
         checkNode(((AwaitNode*)node)->exp); break;
+    case YieldTag:
+        checkNode(((YieldNode*)node)->exp); break;
     case AwaitReplyTag:
     case SelfActorTag:
         break;

@@ -155,6 +155,12 @@ void genlFn(GenState *gen, FnDclNode *fnnode) {
     // A function generated inside a parallel each's piece is not part of it
     GenParBody *svparbody = gen->parbody;
     gen->parbody = NULL;
+    // A generator's 'next' (genlyield.c) is generated whole, entered through a
+    // switch on its state; set aside around any function generated within it
+    GenInfo *svgenstep = gen->genstep;
+    LLVMValueRef svgenself = gen->genself;
+    LLVMValueRef svgenswitch = gen->genswitch;
+    LLVMBasicBlockRef svgendone = gen->gendone;
 
     FnSigNode *fnsig = (FnSigNode*)fnnode->vtype;
     assert(fnnode->value->tag == BlockTag);
@@ -179,14 +185,17 @@ void genlFn(GenState *gen, FnDclNode *fnnode) {
     INode **nodesp;
     for (nodesFor(fnsig->parms, cnt, nodesp))
         genlParmVar(gen, fnnode, (VarDclNode*)*nodesp);
+    genlGenBegin(gen, fnnode);
 
     // Generate the function's code (always a block). A drop the compiler gave
     // a type is built here, from the type's layout: an enum's block is empty,
     // and a struct's holds only its 'final' calls.
     if (structIsGeneratedDropFn((INode*)fnnode))
         genlTypeDrop(gen, fnnode);
-    else
+    else {
         genlBlock(gen, (BlockNode *)fnnode->value);
+        genlGenEnd(gen);
+    }
 
     // A function holding traced references links its frame of them
     genlRootFrame(gen);
@@ -209,6 +218,10 @@ void genlFn(GenState *gen, FnDclNode *fnnode) {
     int split = gen->seams != NULL;
     gen->seams = svseams;
     gen->resumeat = svresumeat;
+    gen->genstep = svgenstep;
+    gen->genself = svgenself;
+    gen->genswitch = svgenswitch;
+    gen->gendone = svgendone;
     gen->flightcnt = gen->flightbase;
     gen->flightbase = svflightbase;
     gen->parbody = svparbody;
@@ -2279,6 +2292,10 @@ void genSetup(GenState *gen, ConeOptions *opt) {
     gen->awaitflights = 0;
     gen->awaitid = NULL;
     gen->parbody = NULL;
+    gen->genstep = NULL;
+    gen->genself = NULL;
+    gen->genswitch = NULL;
+    gen->gendone = NULL;
 
     gen->comdats = genlComdatSupport(opt->triple);   // genlCreateMachine filled in the default
     gen->cabi = genlCAbiTarget(opt->triple);

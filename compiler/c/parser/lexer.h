@@ -189,6 +189,7 @@ enum TokenTypes {
     NewToken,      // 'new': a construction, 'new Point(1, 2)', and an initializer's permission, '&new'
     TrynewToken,   // 'trynew': an allocation that may fail, 'trynew Rc[mut, Node](1)', giving an Option
     AwaitToken,    // 'await': in an actor's behaviour, wait for what is awaited; the behaviour is cut there, a seam
+    YieldToken,    // 'yield': in a function declared 'yields', hand the caller a value and wait to be resumed; 'yield each' hands on a sub-generator's
     SelfActorToken, // 'selfactor': in an actor's method, the actor's own handle
     AsyncToken,    // 'async': the first word of 'async do', which declares an actor's behaviour; nothing alone
     DoToken,       // 'do': the second word of 'async do'; nothing alone
