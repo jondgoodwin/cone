@@ -506,6 +506,11 @@ void varDclTypeCheck(TypeCheckState *pstate, VarDclNode *name) {
     if (itypeTypeCheck(pstate, &name->vtype) == 0)
         return;
 
+    // Every function can reach a global: whether one holds a collection decides
+    // what a call made while a borrow of it is held must be asked (reshape.h)
+    if (name->scope == 0 || (name->flags & FlagStatic))
+        reshapeNoteGlobal(name);
+
     // A function's static is owned by the function, which is what its symbol is
     // spelled after and what keeps two functions' statics of one name apart. An
     // inline function's body is copied into every caller, so a static in it

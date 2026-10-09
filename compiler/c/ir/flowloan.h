@@ -216,6 +216,28 @@ void loanReturnedBy(uint32_t loan, Name *method);
 // changes: the loan freezes the place, as a local's would
 void loanFreezeShared(uint32_t loan);
 
+// A shape loan: the borrow a call returned carries this loan of a place reached
+// through a shared path that another holder may write by, into 'container', a
+// struct that changes shape (reshape.h). The loan walk asks of every call made
+// while it is held whether the call could reshape a container of that type:
+// 'loanShapeCount' loans so far, 'loanShapeId' the i'th. A call that could
+// is reported at once when the borrow is in flight ('loanShapeInFlight': an
+// operand already walked waits for its call) or handed to the call itself
+// (loanShapeNow), and otherwise made a pending conflict for each variable holding
+// the loan (loanShapePend), which that variable's next use fires. 'why' is a
+// ReshapeWhy, 'callee' the function called, for the message.
+int loanExcludesWriters(uint32_t entry);
+int loanIsExclusive(uint32_t entry);
+void loanShapeMark(uint32_t loan, INode *container);
+uint32_t loanShapeCount();
+uint32_t loanShapeId(uint32_t i);
+INode *loanShapeContainer(uint32_t loan);
+int loanShapeInFlight(uint32_t loan);
+int loanShapeSamePlace(uint32_t loan, Place *pl);
+int loanShapeDisjoint(uint32_t loan, Place *pl);
+void loanShapeNow(INode *call, uint32_t loan, int why, Name *callee);
+void loanShapePend(INode *call, uint32_t loan, int why, Name *callee);
+
 // Loans in flight: what the walked operands of a call or literal carry, until
 // the call is made. A mark to pop back to, and one operand's loans pushed;
 // 'reserved' is a two-phase receiver's own loan among them (0 for none).

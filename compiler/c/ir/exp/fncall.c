@@ -3058,6 +3058,7 @@ void fnCallFlow(FlowState *fstate, FnCallNode **nodep) {
     }
     flowGateOperandsEnd(fstate, inflight);
     flowGateCall(fstate, node->args);
+    flowGateShape(fstate, node);
     // A type parameter's ''static' bound may make an argument passed by value
     // global, which no type of it shows: what it carries is the loan walk's
     // to check (pwStaticArgs)

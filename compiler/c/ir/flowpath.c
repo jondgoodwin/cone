@@ -776,6 +776,17 @@ static int pwMayAlias(INode *reftype) {
     return (permGetFlags(((RefNode *)reftype)->perm) & MayAlias) != 0;
 }
 
+// May a holder other than this reference change what it points at while it is
+// used? Every permission that may alias and does not allow interior references
+// (MayIntRefSum, as castSumInterior reads it): 'mut', 'ro' (its holder only
+// promises not to), and a lock permission, whose value is reached by a borrow
+// taking the lock. Not 'imm', 'mut1' or a held lock's: nothing else changes what
+// they reach, or only through this reference.
+static int pwMayAliasWritten(INode *reftype) {
+    return pwMayAlias(reftype) && !(permGetFlags(((RefNode *)reftype)->perm) & MayIntRefSum)
+        && itypeGetTypeDcl(((RefNode *)reftype)->perm) != (INode *)opaqPerm;
+}
+
 // The place reached through the reference 'ref' evaluates to. Through a
 // borrowed reference it is a root of its own, what the reference points at,
 // keyed by the variable the reference is read from; through an owning one, a
@@ -801,6 +812,7 @@ static int pwThrough(INode **refp, Place *pl, PathSet **base) {
         pl->nsteps = 0;
         pl->shared = pwMayAlias(reftype);
         pl->sharedlen = 0;
+        pl->shwrite = pwMayAliasWritten(reftype);
         pl->owned = 0;
         pl->far = refpl.deref;
         pl->referent = refpl.nsteps == 0 && !refpl.deref ? ((RefNode *)reftype)->vtexp : NULL;
@@ -813,6 +825,8 @@ static int pwThrough(INode **refp, Place *pl, PathSet **base) {
     *pl = refpl;
     if (pwMayAlias(reftype))
         pl->owned = 1;
+    if (pwMayAliasWritten(reftype))
+        pl->shwrite = 1;
     // A dereference cut off by the step limit is not marked shared: the place
     // then stands for more than itself, and is held to the stricter rule
     if (pl->nsteps < PlaceMaxSteps) {
@@ -851,6 +865,7 @@ static int pwPlace(INode **nodep, Place *pl, PathSet **base) {
         pl->nsteps = 0;
         pl->shared = 0;
         pl->sharedlen = 0;
+        pl->shwrite = 0;
         pl->owned = 0;
         pl->far = 0;
         pl->use = node;
@@ -866,6 +881,7 @@ static int pwPlace(INode **nodep, Place *pl, PathSet **base) {
         pl->nsteps = 0;
         pl->shared = 0;
         pl->sharedlen = 0;
+        pl->shwrite = 0;
         pl->owned = 0;
         pl->far = 0;
         pl->use = node;
@@ -1601,6 +1617,98 @@ static void pwStaticArgs(FnCallNode *call, FnSigNode *sig, PathSet **argsets) {
     }
 }
 
+int flowWalkFinal = 0;
+int flowShapeRetry = 0;
+
+// A borrow into a collection that changes shape (shapeinfer.h) through a path
+// others share: the walk marks its loan, and asks of every call made while it is
+// held whether the call could reshape the collection (reshape.h). Part (a) of the
+// rule, the same name changing it, is the loan's own freezing (loanFreezeShared).
+//
+// Marked unless the reference the place is reached through is read-only and what
+// it was borrowed from is a place this function holds a loan on that nothing else
+// may change while the reference is used: then there is no other name
+static int pwHeldExcluding(Place *pl, int sharedok) {
+    PathSet *held = pathVars[pl->var].holds;
+    if (held == NULL || held == &pathSetAll || held->cnt == 0)
+        return 0;
+    for (uint32_t i = 0; i < held->cnt; ++i) {
+        if (sharedok ? !loanExcludesWriters(held->ids[i]) : !loanIsExclusive(held->ids[i]))
+            return 0;
+    }
+    return 1;
+}
+
+static void pwShapeBorrow(Place *recvpl, uint32_t recvloan, INode *container) {
+    VarDclNode *rv = pathVars[recvpl->var].var;
+    INode *rt = rv ? itypeGetTypeDcl(rv->vtype) : NULL;
+    int frozen = recvpl->deref && !recvpl->owned && rt && rt->tag == RefTag
+        && (pwHeldExcluding(recvpl, 0) || (!(permGetFlags(((RefNode *)rt)->perm) & MayWrite) && pwHeldExcluding(recvpl, 1)));
+    if (!frozen)
+        loanShapeMark(recvloan, container);
+}
+
+// A call is made. Each marked loan is asked whether the call could reshape the
+// collection it points into: reported at once if the borrow is handed to this very
+// call or waits in flight for the call around it; otherwise a pending conflict for
+// each variable holding it, fired when that variable is used again. The answer is
+// the same for the loans of one type, so it is worked out once.
+static void pwShapeCall(FnCallNode *call, FnDclNode *meth, Place *recvpl, PathSet **argsets, uint32_t nargs,
+        uint32_t recvloan) {
+    // No other name reaches the receiver: a local, a place reached through 'uni'
+    // references only, or through a reference that holds only the exclusive
+    // borrow of such a place (the temporary an operator changing its operand in
+    // place borrows it through: 'text <- a, b')
+    int recvunique = recvpl && !recvpl->owned && (!recvpl->shared || (recvpl->deref && pwHeldExcluding(recvpl, 0)));
+    INode *conts[4];
+    ReshapeVerdict verdicts[4];
+    uint8_t answers[4];
+    uint32_t ncont = 0;
+    for (uint32_t i = 0; i < loanShapeCount(); ++i) {
+        uint32_t loan = loanShapeId(i);
+        INode *cont = loanShapeContainer(loan);
+        uint32_t c = 0;
+        while (c < ncont && conts[c] != cont)
+            ++c;
+        if (c == ncont) {
+            if (ncont == 4) {
+                // More types than the cache keeps: worked out afresh, not kept
+                c = 3;
+                ncont = 3;
+            }
+            conts[c] = cont;
+            uint32_t unsettled = shapeUnsettled;
+            answers[c] = (uint8_t)reshapeCall(call, meth, recvunique, cont, &verdicts[c]);
+            // A body this leans on is not checked yet: the verdict waits for the
+            // walk made again at the end of type check
+            if (shapeUnsettled != unsettled && !flowWalkFinal) {
+                flowShapeRetry = 1;
+                answers[c] = 0;
+            }
+            ncont = c + 1;
+        }
+        if (!answers[c])
+            continue;
+        // The collection changed through the very name the borrow was taken by is
+        // the loan's own freezing, which reports it; another field of the same
+        // struct, through the same reference, is another collection
+        if ((verdicts[c].why == ReshapeReceiver || verdicts[c].why == ReshapeReceiverUnseen) && recvpl
+                && (loanShapeSamePlace(loan, recvpl) || loanShapeDisjoint(loan, recvpl)))
+            continue;
+        Name *callee = verdicts[c].callee ? verdicts[c].callee->namesym : NULL;
+        // The borrow handed to this very call, beside whatever could reshape its collection
+        int own = 0;
+        for (uint32_t j = 0; loan != recvloan && j < nargs; ++j) {
+            if (argsets[j] && argsets[j] != &pathSetAll && pathSetHasLoan(argsets[j], loan))
+                own = 1;
+        }
+        if (own || loanShapeInFlight(loan))
+            loanShapeNow((INode *)call, loan, verdicts[c].why, callee);
+        else
+            loanShapePend((INode *)call, loan, verdicts[c].why, callee);
+    }
+}
+
 // A call: the function reference it calls through, then each argument in
 // order, each carrying its loans in flight until the call is made. A borrow
 // the call returns (or a value holding one) carries every argument's loans --
@@ -1674,6 +1782,8 @@ static PathSet *pwCall(FnCallNode *call) {
     if (pathLoans) {
         pwCallStores(call, argsets, recvloan ? &recvpl : NULL);
         pwCallMoves(call, sig, recvloan ? &recvpl : NULL);
+        if (loanShapeCount())
+            pwShapeCall(call, meth, recvloan ? &recvpl : NULL, argsets, nargs, recvloan);
     }
     if (!carries)
         return NULL;
@@ -1701,13 +1811,17 @@ static PathSet *pwCall(FnCallNode *call) {
         // cursor its method returns carries the receiver's loan, and that loan
         // freezes the place the receiver was reached through while the result
         // is used, as a local is frozen though the path is shared: the same
-        // path may not be changed. Another reference to the same value is not
-        // seen (the full rule waits on 'uni' reborrowing).
+        // path may not be changed. Another name for the same value changing
+        // it is asked of every call made while the borrow is held (pwShapeCall),
+        // where the place is reached through a path others may write by.
         if (recvloan && pathSetHasLoan(fromrecv, recvloan)) {
             INode *recvtype = iexpGetTypeDcl(nodesGet(call->args, 0));
             INode *container = recvtype->tag == RefTag ? itypeGetTypeDcl(((RefNode *)recvtype)->vtexp) : NULL;
-            if (container && container->tag == StructTag && shapeChanging((StructNode *)container))
+            if (container && container->tag == StructTag && shapeChanging((StructNode *)container)) {
                 loanFreezeShared(recvloan);
+                if (recvpl.shwrite)
+                    pwShapeBorrow(&recvpl, recvloan, container);
+            }
         }
         result = pathSetUnion(result, fromrecv);
     }
@@ -1804,6 +1918,7 @@ static void pwSwap(SwapNode *node) {
             pl->nsteps = 0;
             pl->shared = 0;
             pl->sharedlen = 0;
+            pl->shwrite = 0;
             pl->owned = 0;
             pl->far = 0;
             pl->use = *sides[i];
@@ -2553,6 +2668,7 @@ void flowPathWalk(FnDclNode *fndcl, int loans, int drops, int seams) {
     pathLoans = loans;
     pathDrops = drops;
     pwSeams = seams;
+    flowShapeRetry = 0;
     pathGpuChoices = flowGpu && loans;
     pwRetFirst = NULL;
     pwRetSeen = 0;

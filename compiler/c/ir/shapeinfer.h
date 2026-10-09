@@ -52,11 +52,22 @@ int shapeChanging(StructNode *st);
 // still unsettled being taken as yes.
 int shapeWalkReady(FnDclNode *fn, int maydefer);
 
-// Queue the loan walk of 'fn', with its drop walk when 'drops'
-void shapeWalkDefer(FnDclNode *fn, int drops);
+// Ask for the functions 'fn' calls by name to be checked, those never asked for
+// (a folded method of a lent body is called without being named), so that what a
+// call of them does can be read when the walk of 'fn' asks (reshape.h)
+void shapeDemandCallees(FnDclNode *fn);
+
+// Queue the loan walk of 'fn', with its drop walk when 'drops', and its seams'
+// rules when 'seams'
+void shapeWalkDefer(FnDclNode *fn, int drops, int seams);
 
 // The end of type check: make every queued walk
 void shapeWalkDeferred(void);
+
+// How many answers about what a call does were not settled (a body not checked
+// yet, taken as yes). A loan walk that meets one withholds its verdict and asks to
+// be made again at the end of type check (flowShapeRetry), unless it is that walk
+extern uint32_t shapeUnsettled;
 
 // A struct declaring 'ShapeChanging' has been laid out: it is checked against
 // what the compiler finds, at the end of type check
@@ -66,5 +77,25 @@ void shapeDeclaredCheck(void);
 // Does the package's include file say this type is shape-changing, though its
 // source does not? True of a type of the package the compiler found so
 int shapeRecordable(StructNode *st);
+
+// Reading a typed body, shared with reshape.c. siVisit calls 'fn' on every node
+// of an expression tree, each before what it holds, and stops when 'fn' answers
+// nonzero (returned). siVisible: the compiler can read what this function does
+// (it has a body here, and is not a trait's). siBodyReady: its body is type
+// checked. siNamedVar: the variable a name use names, or NULL.
+typedef int (*SiVisitFn)(INode *node, void *ctx);
+int siVisit(INode *node, SiVisitFn fn, void *ctx);
+VarDclNode *siNamedVar(INode *node);
+int siVisible(FnDclNode *fn);
+int siBodyReady(FnDclNode *fn);
+
+// Layer 2 of a call's check (reshape.h), read from the body of 'fn'. Does it write
+// any field of what its parameter 'k' points at, hand its storage to code that may
+// free it, or pass it to a callee that does? Does it reshape a value of the
+// collection type 'cont' that is not its own local: through a parameter or a global
+// ('viaparams'), or only through something that is no parameter of its own?
+// Code the compiler cannot read, or whose body is not checked yet, answers yes.
+int shapeParamReshapes(FnDclNode *fn, uint32_t k);
+int shapeTypeReshapes(FnDclNode *fn, INode *cont, int viaparams);
 
 #endif

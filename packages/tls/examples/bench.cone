@@ -243,21 +243,23 @@ fn sendBig(drv &mut Driver, sv &mut Serving) {
 }
 
 // A server's event: /big streams 'size' bytes; anything else is 64 bytes
-fn serve(drv &mut Driver, sv &mut Serving, e &mut Event, size u64) {
-  if e.kind == EventKind.Request[] {
-    if e.request.target.view() == "/big" {
-      drv.respond(e.req, ResponseHead.make(200u16), BodyLength.sized(size));
-      sv.big = e.req;
+// (The event's kind, request and whether it asks for /big are lent, not the event: it is
+// in a list the driver might change, and its target a view of a String in it.)
+fn serve(drv &mut Driver, sv &mut Serving, kind EventKind, req ReqId, big bool, size u64) {
+  if kind == EventKind.Request[] {
+    if big {
+      drv.respond(req, ResponseHead.make(200u16), BodyLength.sized(size));
+      sv.big = req;
       sv.left = size;
       sendBig(drv, sv);
     } else {
-      drv.respond(e.req, ResponseHead.make(200u16), BodyLength.sized(64u64));
+      drv.respond(req, ResponseHead.make(200u16), BodyLength.sized(64u64));
       mut b = sv.pool.mustTake(64usize);
       b.setLen(64usize);
-      drv.sendData(e.req, b);
-      drv.finish(e.req);
+      drv.sendData(req, b);
+      drv.finish(req);
     }
-  } elif e.kind == EventKind.Writable[] and sv.left > 0u64 {
+  } elif kind == EventKind.Writable[] and sv.left > 0u64 {
     sendBig(drv, sv);
   }
 }
@@ -316,7 +318,7 @@ fn cycles(label &str, secure bool, resume bool, n u32) {
       while j < events.len() {
         imm e = &mut events[j];
         j = j + 1usize;
-        if e.token == tokServer {serve(&mut drv, &mut sv, e, 0u64);}
+        if e.token == tokServer {serve(&mut drv, &mut sv, e.kind, e.req, e.request.target.view() == "/big", 0u64);}
         elif e.kind == EventKind.Data[] {drv.release(e.req, e.buf.len());}
         elif e.token == tokReq and e.isTerminal() {going = false;}
       }
@@ -346,7 +348,7 @@ fn getOn(drv &mut Driver, lp &mut Loop, sv &mut Serving, events &mut List[Event]
     while j < events.len() {
       imm e = &mut events[j];
       j = j + 1usize;
-      if e.token == tokServer {serve(drv, sv, e, 0u64);}
+      if e.token == tokServer {serve(drv, sv, e.kind, e.req, e.request.target.view() == "/big", 0u64);}
       elif e.kind == EventKind.Data[] {drv.release(e.req, e.buf.len());}
       elif e.token == tokReq and e.isTerminal() {going = false;}
     }
@@ -420,7 +422,7 @@ fn bulk(label &str, secure bool, size u64) {
       while j < events.len() {
         imm e = &mut events[j];
         j = j + 1usize;
-        if e.token == tokServer {serve(&mut drv, &mut sv, e, size);}
+        if e.token == tokServer {serve(&mut drv, &mut sv, e.kind, e.req, e.request.target.view() == "/big", size);}
         elif e.kind == EventKind.Data[] {
           if round == 1u32 {got = got + u64.from(e.buf.len());}
           drv.release(e.req, e.buf.len());
@@ -484,7 +486,7 @@ fn idleMemory(n u64) {
       while j < events.len() {
         imm e = &mut events[j];
         j = j + 1usize;
-        if e.token == tokServer {serve(&mut drv, &mut sv, e, 0u64);}
+        if e.token == tokServer {serve(&mut drv, &mut sv, e.kind, e.req, e.request.target.view() == "/big", 0u64);}
         elif e.kind == EventKind.Data[] {drv.release(e.req, e.buf.len());}
         elif e.kind == EventKind.Connected[] {connected = connected + 1u64;}
         elif e.token >= tokReq and e.isTerminal() {ended = ended + 1u64;}

@@ -636,13 +636,23 @@ void fnDclTypeCheck(TypeCheckState *pstate, FnDclNode *fnnode) {
             if (timerFine)
                 timerBegin(svTimer);
             walknow = shapeWalkReady(fnnode, !seams && !initmod);
+            // A call made while such a borrow is held could reshape it through
+            // another name: which calls do is read from the bodies of the functions
+            // called, so those never asked for are checked first (reshape.h)
+            if ((fstate.gate & FlowGateShape) || seams)
+                shapeDemandCallees(fnnode);
             if (timerFine)
                 timerBegin(FlowTimer);
         }
-        if (walknow)
+        if (walknow) {
             flowPathWalk(fnnode, loans, fstate.dropgate || seams, seams);
+            // A call the walk could not judge, for a body not checked yet: made
+            // again at the end of type check, for that verdict alone
+            if (flowShapeRetry && errors == errorsOnEntry)
+                shapeWalkDefer(fnnode, 0, seams);
+        }
         else
-            shapeWalkDefer(fnnode, fstate.dropgate != 0);
+            shapeWalkDefer(fnnode, fstate.dropgate != 0, 0);
     }
     // The seams every rule accepted: a message's are split, where the split is
     // built (generation makes its halves); any other is reported not built

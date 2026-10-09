@@ -160,6 +160,21 @@ a process — its code and buffers touched for the first time, some 5 µs, measu
 on a file of one small function — and the rest is the second traversal of each
 function walked.
 
+**The check of a change through another name** ([Flow](../phases/flow.md), "A
+change through another name"), on master `62e538e2` against the change that added
+it, 9 October 2026 (min of 5 runs per file): flow +17.4% on the packages (56.7 to
+66.5 ms over 62 compiles; the functions walked for loans went from 4,022 to about
+4,640), +6.9% on the suite, +3.0% to +7.3% on the stress
+files; total compile +0.5% on the packages, +0.1% on the suite, up to +3% on the
+stress files. The flow budget is over on the packages and within on the suite. Where it goes: the
+functions now walked (`FlowGateShape`: a function that lends a borrow of a value that may
+change shape through a reference and also makes a call with a writable
+argument: about 15% more walks on the packages and 2% on the suite), and the
+verdicts on the calls made beside such a borrow. What kept it from being twice that:
+what a type reaches is kept per struct (`RcMemo`), a gate that asks about a call's arguments only once a
+borrow was lent before it, the check of a call made against globals asked only if a global holds the type
+(`reshapeGlobalsReach`), and a body's answer memoised by function, mode and type.
+
 For anything finer, instrument and compile the corpus:
 [Measuring](../diagnostics/measuring.md).
 

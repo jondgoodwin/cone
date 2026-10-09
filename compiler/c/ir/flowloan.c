@@ -37,6 +37,7 @@ typedef struct {
     uint8_t kind;       // LoanKind
     uint8_t writes;     // the borrow may write, for the message
     uint8_t part;       // a caller loan: the part of its parameter it lends (LifePart)
+    INode *shapecont;   // a borrow into a shape-changing value through a shared path: its struct, else NULL
 } Loan;
 
 // A pending conflict: 'access' conflicted with 'loan', held by 'holder'. On a
@@ -51,6 +52,9 @@ typedef struct {
     uint8_t fired;
 } Pending;
 #define PendingChosen 0xFF
+// A call that could reshape the collection a holder's borrow points into
+// (loanShapePend): fired by a use of the holder; 'other' is its ShapeNote
+#define PendingShape 0xFD
 // A variable's live mark at a seam (loanSeamLive): fired, it records the
 // variable as used after the seam, and reports nothing
 #define PendingSeamLive 0xFE
@@ -73,6 +77,22 @@ static uint32_t nflights;
 static uint32_t *saturated = NULL;
 static uint32_t nsaturated = 0;
 static uint32_t saturatedcap = 0;
+
+// The loans into a shape-changing value through a shared path (loanShapeMark),
+// and what each call that could reshape one was (loanShapePend), a pending
+// conflict's 'other'
+typedef struct {
+    INode *call;
+    Name *callee;
+    uint8_t why;        // ReshapeWhy
+} ShapeNote;
+
+static uint32_t *shapeloans = NULL;
+static uint32_t nshapeloans = 0;
+static uint32_t shapeloancap = 0;
+static ShapeNote *shapenotes = NULL;
+static uint32_t nshapenotes = 0;
+static uint32_t shapenotecap = 0;
 
 // *********************
 // A small map from a node (with two numbers) to an id: which loan a borrow
@@ -166,6 +186,8 @@ void loanWalkBegin() {
     nmaypool = 0;
     nsaturated = 0;
     nflights = 0;
+    nshapeloans = 0;
+    nshapenotes = 0;
 }
 
 // *********************
@@ -217,6 +239,7 @@ uint32_t loanMake(INode *site, Place *pl, INode *perm) {
     loan->kind = loanKindOf(perm, pl);
     loan->writes = (permGetFlags(perm) & MayWrite) != 0;
     loan->part = 0;
+    loan->shapecont = NULL;
     // Linked from its root variable, so an access finds it
     loan->next = pathVars[pl->var].loans;
     pathVars[pl->var].loans = id;
@@ -254,6 +277,7 @@ uint32_t loanCaller(uint32_t var, uint32_t part) {
     loan->kind = LoanCaller;
     loan->writes = 0;
     loan->part = (uint8_t)part;
+    loan->shapecont = NULL;
     mapPut(parm, 0, loanCallerKey(part), id);
     return id;
 }
@@ -958,6 +982,8 @@ static void loanReport(Pending *pend, INode *usenode) {
 
 static void loanChosenReport(INode *node, char *what, uint32_t la, uint32_t lb);
 
+static void loanShapeReport(Pending *pend, INode *usenode);
+
 void loanUse(uint32_t var, INode *usenode) {
     PathSet *pending = pathVars[var].pending;
     if (pending == NULL)
@@ -977,6 +1003,14 @@ void loanUse(uint32_t var, INode *usenode) {
             snprintf(what, sizeof(what), usenode->tag == VarDclTag ? "'%s', finalized as it dies,"
                 : "'%s', used here,", &pathVars[var].var->namesym->namestr);
             loanChosenReport(usenode, what, pend->loan, pend->other);
+            continue;
+        }
+        if (pend->kind == PendingShape) {
+            pend->fired = 1;
+            if (mapGet(pend->access, 0, 1))
+                continue;
+            mapPut(pend->access, 0, 1, 1);
+            loanShapeReport(pend, usenode);
             continue;
         }
         pend->fired = 1;
@@ -1279,4 +1313,180 @@ uint32_t loanChosenPending(uint32_t holder, uint32_t la, uint32_t lb) {
     pend->fired = 0;
     mapPut(key, a, b, id);
     return id;
+}
+// *********************
+// Shape-changing values (reshape.h). A borrow into a collection that changes
+// shape, reached through a shared path, is marked: the same name changing the
+// collection is the loan's own freezing (loanFreezeShared), and a call that could
+// change it through another name is asked of every call made while the loan is
+// held (flowpath.c, pwShapeCall). A call met while a variable holds the loan is a
+// pending conflict, fired by that variable's next use as an ordinary freezing
+// conflict is; one met while the loan is in flight, or handed the borrow itself,
+// is reported at once.
+// *********************
+
+void loanShapeMark(uint32_t loan, INode *container) {
+    if (loans[loan].shapecont == NULL) {
+        if (nshapeloans == shapeloancap)
+            shapeloans = (uint32_t *)pathGrow(shapeloans, &shapeloancap, sizeof(uint32_t));
+        shapeloans[nshapeloans++] = loan;
+    }
+    loans[loan].shapecont = container;
+}
+
+uint32_t loanShapeCount() {
+    return nshapeloans;
+}
+
+uint32_t loanShapeId(uint32_t i) {
+    return shapeloans[i];
+}
+
+INode *loanShapeContainer(uint32_t loan) {
+    return loans[loan].shapecont;
+}
+
+int loanShapeInFlight(uint32_t loan) {
+    for (uint32_t k = 0; k < nflights; ++k) {
+        if (pathSetHasLoan(flights[k].loans, loan))
+            return 1;
+    }
+    return 0;
+}
+
+// What the call does, for the message
+static char *loanShapeReason(ShapeNote *note, char *cont, char *buf, size_t size) {
+    const char *name = note->callee ? &note->callee->namestr : "this call";
+    switch (note->why) {
+    case ReshapeReceiver:
+        snprintf(buf, size, "'%s' reshapes the %s it is called on: it writes a field of it, runs a finalizer of an element, or moves an element out", name, cont);
+        break;
+    case ReshapeReceiverUnseen:
+        snprintf(buf, size, "'%s' may change the %s it is called on, and its body is not visible here, so it is assumed to change its shape", name, cont);
+        break;
+    case ReshapeUnseen:
+        snprintf(buf, size, "'%s' is handed something that reaches a %s it may change, and its body is not visible here, so it is assumed to change its shape", name, cont);
+        break;
+    case ReshapeBody:
+        snprintf(buf, size, "'%s' is handed something that reaches a %s, and it, or something it calls, changes the shape of one", name, cont);
+        break;
+    default:
+        snprintf(buf, size, "'%s' changes the shape of a %s through a global", name, cont);
+        break;
+    }
+    return buf;
+}
+
+static void loanShapeContName(uint32_t loan, char *buf, size_t size) {
+    StructNode *st = (StructNode *)loans[loan].shapecont;
+    snprintf(buf, size, "'%s'", st->namesym ? &st->namesym->namestr : "collection");
+}
+
+static void loanShapeEmit(INode *node, char *msg) {
+    errorMsgNode(node, ErrorShapeReshape, "%s", msg);
+}
+
+static void loanShapeReport(Pending *pend, INode *usenode) {
+    Loan *loan = &loans[pend->loan];
+    ShapeNote *note = &shapenotes[pend->other];
+    char cont[100];
+    char reason[300];
+    char where[160];
+    char used[160];
+    loanShapeContName(pend->loan, cont, sizeof(cont));
+    loanWhere(loan, where, sizeof(where));
+    VarDclNode *holder = pathVars[pend->holder].var;
+    if (usenode->tag == VarDclTag)
+        snprintf(used, sizeof(used), "when '%s''s value is finalized", &holder->namesym->namestr);
+    else
+        snprintf(used, sizeof(used), "at %u:%u", usenode->linenbr, loanColumn(usenode));
+    char msg[1400];
+    snprintf(msg, sizeof(msg),
+        "This call could change the shape of a %s while '%s' still holds a borrow into it (made %s, through a path other references share), used again %s: %s. A %s that changes shape may move or free what it lent. Reach it through an 'imm' or 'uni' reference, or copy what is needed out before this call.",
+        cont, &holder->namesym->namestr, where, used, loanShapeReason(note, cont, reason, sizeof(reason)), cont);
+    loanShapeEmit(pend->access, msg);
+}
+
+void loanShapeNow(INode *call, uint32_t loan, int why, Name *callee) {
+    if (!loanReportOnce(call))
+        return;
+    ShapeNote note = { call, callee, (uint8_t)why };
+    char cont[100];
+    char reason[300];
+    char where[160];
+    loanShapeContName(loan, cont, sizeof(cont));
+    loanWhere(&loans[loan], where, sizeof(where));
+    char msg[1400];
+    snprintf(msg, sizeof(msg),
+        "This call could change the shape of a %s while a borrow into it (made %s, through a path other references share) is still to be used by this call or by a value around it: %s. A %s that changes shape may move or free what it lent. Reach it through an 'imm' or 'uni' reference, or copy what is needed out before this call.",
+        cont, where, loanShapeReason(&note, cont, reason, sizeof(reason)), cont);
+    loanShapeEmit(call, msg);
+}
+
+// The call at 'call' could reshape the collection the loan borrows into: every
+// holder that holds the loan gets a pending conflict, which its next use fires
+void loanShapePend(INode *call, uint32_t loan, int why, Name *callee) {
+    Loan *l = &loans[loan];
+    uint32_t note = 0;
+    int have = 0;
+    for (uint32_t k = 0; k < (uint32_t)l->nmay + nsaturated; ++k) {
+        uint32_t holder = k < l->nmay ? maypool[l->mayhold + k] : saturated[k - l->nmay];
+        PathVar *hv = &pathVars[holder];
+        if (!pathSetHasLoan(hv->holds, loan))
+            continue;
+        uint32_t key = 0x08000000u | loan;
+        uint32_t id = mapGet(call, key, holder);
+        if (!id) {
+            if (!have) {
+                if (nshapenotes == shapenotecap)
+                    shapenotes = (ShapeNote *)pathGrow(shapenotes, &shapenotecap, sizeof(ShapeNote));
+                note = nshapenotes++;
+                shapenotes[note].call = call;
+                shapenotes[note].callee = callee;
+                shapenotes[note].why = (uint8_t)why;
+                have = 1;
+            }
+            if (npendings >= pendingcap)
+                pendings = (Pending *)pathGrow(pendings, &pendingcap, sizeof(Pending));
+            id = npendings++;
+            Pending *pend = &pendings[id];
+            pend->access = call;
+            pend->loan = loan;
+            pend->other = note;
+            pend->holder = holder;
+            pend->kind = PendingShape;
+            pend->fired = 0;
+            mapPut(call, key, holder, id);
+        }
+        if (!pathSetHas(hv->pending, id))
+            pathSetFacts(holder, hv->holds, pathSetAdd(hv->pending, id));
+    }
+}
+
+// Does this set entry's loan keep every other holder from writing what it
+// borrows while it is used: a read-only or exclusive loan of a place that
+// nothing else reaches, as against one through a shared path or a caller's?
+int loanExcludesWriters(uint32_t entry) {
+    uint8_t kind = loans[entry & LoanIdMask].kind;
+    return kind == LoanShared || kind == LoanExcl;
+}
+
+// Is the place 'pl' the very place (or part of it, or holding it) the loan borrows?
+int loanShapeSamePlace(uint32_t loan, Place *pl) {
+    Loan *l = &loans[loan];
+    return l->place.var == pl->var && l->place.deref == pl->deref && placeOverlaps(&l->place, pl);
+}
+
+// Is this set entry's loan a mutable borrow of a source nothing else reaches (a
+// local, or what 'uni' references reach)? Whoever holds it holds the only path
+int loanIsExclusive(uint32_t entry) {
+    return loans[entry & LoanIdMask].kind == LoanExcl;
+}
+
+// Is the place 'pl' a different part of the very root the loan borrows from (another
+// field of the same struct, through the same reference)? Nothing reached by a path
+// that diverges from the loan's can be what the loan points into
+int loanShapeDisjoint(uint32_t loan, Place *pl) {
+    Loan *l = &loans[loan];
+    return l->place.var == pl->var && l->place.deref == pl->deref && !placeOverlaps(&l->place, pl);
 }
