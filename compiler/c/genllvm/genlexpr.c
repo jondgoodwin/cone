@@ -2927,7 +2927,6 @@ static LLVMValueRef genlTerm(GenState *gen, INode *termnode) {
     case AwaitReplyTag:
         return genlAwaitReply(gen, (AwaitReplyNode*)termnode);
     default:
-        fprintf(stderr, "DEBUG tag %d\n", (int)termnode->tag);
         errorUnreachable(termnode, "an expression node code generation has no case for");
         return NULL;
     }

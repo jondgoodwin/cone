@@ -718,7 +718,45 @@ name = "release"
 name = "debug"
 options = ["--debug"]
 
-[scenario.concurrency_parallel_each_basic]
+# -------- 'parallel each' outside actors --------
+#
+# The language form over actors.parallelEach (D1's parallelRange with a grain
+# chosen for the workers): the body
+# is outlined into a function the workers run, finding what it reads outside
+# the loop through a record of pointers to those variables. The chapter is
+# doc/reference/refeach.html; what the body may do is concurrency_parallel_each_refused's.
+
+[scenario.concurrency_parallel_each]
 category = "run"
-description = "The first parallel each, over an array, summing into an Atomic"
+description = "parallel each from main on four workers started for it, each case's sum or count checked against a plain 'each': number ranges ('<', '<=', empty, reversed, signed, untyped literals, ending at the type's maximum), arrays, a slice, a part of one, a literal array, lists, a list of structs, an empty list, uneven work, 'continue', a pass's own locals and loops, outside variables read in the body, a parallel each inside one, 'parallel' as a name, and work spread over more than one thread"
+tags = ["parse", "typecheck", "flow", "genllvm", "runtime"]
+
+[[scenario.concurrency_parallel_each.run]]
+name = "release"
+
+[[scenario.concurrency_parallel_each.run]]
+name = "debug"
+options = ["--debug"]
+
+[scenario.concurrency_parallel_each_refused]
+category = "reject"
+description = "What a parallel each refuses: a source that cannot be split (a cursor, a deque's items, a number that is no range, two variables, a float range, a type with its own len and split); break, return and await in the body and a continue of a loop around it, beside a break and continue of a loop inside it; writing what is outside the loop by assignment, an assigning operator, a field, an element, a swap, a method that changes it, a borrow that may write, or through a '&mut' parameter, beside a pass's own variables; a message sent to an actor; and a loop inside an actor's method"
+tags = ["parse", "typecheck"]
+diagnostics = 21
+
+[scenario.concurrency_parallel_each_parse]
+category = "reject"
+description = "A parallel each over a number range that does not count up by one is refused at parse, its message saying what is offered: a count down, '>' and '>=', and a 'by' step, '<' and '<='; a range with two variables"
+tags = ["parse"]
+diagnostics = 5
+
+[scenario.concurrency_parallel_iterable]
+category = "run"
+description = "ParallelIterable[T, P], met by shape: the len and split a list folds in from Array cut it in two, a function bounded by ParallelIterable takes a list and a struct of one's own and halves each, cuts at the ends, and the pieces are the two sides of the same elements"
 tags = ["typecheck", "genllvm", "runtime"]
+
+[scenario.concurrency_parallel_each_runtime]
+category = "reject"
+description = "A parallel each in a module that does not import the actors package its passes run on is refused where it is written, the message saying to write 'import actors;'"
+tags = ["typecheck"]
+diagnostics = 1

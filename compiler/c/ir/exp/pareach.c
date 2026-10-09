@@ -505,9 +505,9 @@ void parallelEachLower(TypeCheckState *pstate, BlockNode *outer) {
     outer->stmts->used = 0;
     outer->flags &= 0xFFFF - FlagParallel;
 
+    parControlRules(loop);
     if (!parRuntime(pstate, lexnode))
         return;
-    parControlRules(loop);
 
     if (nvars != 1) {
         errorMsgNode(nodesGet(loop->stmts, 0), ErrorParSource,

@@ -1,0 +1,415 @@
+// 'parallel each' outside actors: the passes of a loop run at the same time on
+// the actors' workers (four, started for it), and the loop has finished when
+// control reaches the statement after it.
+//
+// Each case is checked against a plain 'each' over the same items, whose body
+// is the same pure function, so what is compared is a sum or a count the order
+// of the passes cannot change; the program prints whether each held, not how the
+// work was divided. An outside variable is read-only in the body (the loop
+// borrows it), so the passes hand their results back through an Atomic, which
+// is changed by its methods and not by assignment.
+//
+//   - number ranges: '<' and '<=', empty and reversed ones, a signed range
+//     through zero, an unsigned one ending at its type's maximum
+//   - arrays, a slice of an array, a part of one, a list, a list of structs and
+//     an empty list
+//   - uneven work: pass i costs (i * i % 97) * 40 rounds, so some are ninety
+//     times the others
+//   - 'continue' skips the rest of a pass; a pass's own locals, and a loop with
+//     its own 'break' inside the body, are the pass's
+//   - outside variables read in the body: a parameter, a 'mut' variable no pass
+//     writes, a field through a reference, a global
+//   - a parallel each inside a parallel each's body
+//   - 'parallel' as a name: a variable, a function and a field are all usable,
+//     and a statement that begins with it is not a loop
+//   - work really is spread: the first pass waits until a second thread has run
+//     one, and the threads that ran passes are counted
+
+mod concurrency_parallel_each;
+
+import stdio use *;
+import collections use *;
+import thread;
+import time;
+import actors;
+
+// ---- a plain loop's function: the reference every case compares to ----
+
+fn mix(i u64, n u64) u64 {
+  mut x = i + 1u64;
+  mut k = 0u64;
+  while k < n {
+    x = x * 6364136223846793005u64 + k;
+    k = k + 1u64;
+  }
+  x;
+}
+
+fn weigh(i u64) u64 {
+  mix(i, (i * i) % 97u64 * 40u64);
+}
+
+fn report(name &str, ok bool) {
+  printStr(name);
+  printStr(if ok {": ok\n";} else {": FAILED\n";});
+}
+
+// ---- number ranges ----
+
+fn plainRange(n usize) u64 {
+  mut total = 0u64;
+  each i in 0usize < n {
+    total = total + weigh(u64.from(i));
+  }
+  total;
+}
+
+fn parRange(n usize) u64 {
+  imm total = Atomic[u64].of(0u64);
+  parallel each i in 0usize < n {
+    total.add(weigh(u64.from(i)));
+  }
+  total.load();
+}
+
+fn plainInclusive(lo usize, hi usize) u64 {
+  mut total = 0u64;
+  each i in lo <= hi {
+    total = total + weigh(u64.from(i));
+  }
+  total;
+}
+
+fn parInclusive(lo usize, hi usize) u64 {
+  imm total = Atomic[u64].of(0u64);
+  parallel each i in lo <= hi {
+    total.add(weigh(u64.from(i)));
+  }
+  total.load();
+}
+
+// How many passes a parallel range makes
+fn parCount(lo usize, hi usize, inclusive bool) u64 {
+  imm n = Atomic[u64].of(0u64);
+  if inclusive {
+    parallel each i in lo <= hi {
+      n.add(1u64);
+    }
+  } else {
+    parallel each i in lo < hi {
+      n.add(1u64);
+    }
+  }
+  n.load();
+}
+
+fn signedRange() bool {
+  // -20 .. 29, 50 numbers: the sum of 3 * i - 7, which is negative for some
+  imm par = Atomic[i64].of(0i64);
+  parallel each i in -20i64 < 30i64 {
+    par.add(i * 3i64 - 7i64);
+  }
+  mut plain = 0i64;
+  each i in -20i64 < 30i64 {
+    plain = plain + (i * 3i64 - 7i64);
+  }
+  par.load() == plain and plain == 3i64 * (-20i64 + 29i64) * 50i64 / 2i64 - 7i64 * 50i64;
+}
+
+fn defaultTypedRange() bool {
+  // The untyped literals take i32, as an ordinary range's do
+  imm par = Atomic[i64].of(0i64);
+  parallel each i in 1 <= 100 {
+    par.add(i64.from(i));
+  }
+  par.load() == 5050i64;
+}
+
+fn rangeToTheMaximum() bool {
+  // 250 ..= 255 is six numbers, the last the type's maximum: no wrapping past it
+  imm count = Atomic[u64].of(0u64);
+  imm sum = Atomic[u64].of(0u64);
+  parallel each i in 250u8 <= 255u8 {
+    count.add(1u64);
+    sum.add(u64.from(i));
+  }
+  count.load() == 6u64 and sum.load() == 250u64 + 251u64 + 252u64 + 253u64 + 254u64 + 255u64;
+}
+
+// ---- arrays, slices, lists ----
+
+fn plainSlice(s &Array[u64]) u64 {
+  mut total = 0u64;
+  each x in s {
+    total = total + weigh(*x);
+  }
+  total;
+}
+
+fn parSlice(s &Array[u64]) u64 {
+  imm total = Atomic[u64].of(0u64);
+  parallel each x in s {
+    total.add(weigh(*x));
+  }
+  total.load();
+}
+
+fn parArrayRef(a &Array[u64, 8]) u64 {
+  imm total = Atomic[u64].of(0u64);
+  parallel each x in a {
+    total.add(*x * 3u64);
+  }
+  total.load();
+}
+
+struct Pt {
+  x u64;
+  y u64;
+}
+
+fn arrays() {
+  imm a = [3u64, 4u64, 5u64, 6u64, 7u64, 8u64, 9u64, 10u64];
+  mut plain = 0u64;
+  each x in a {
+    plain = plain + weigh(*x);
+  }
+  imm total = Atomic[u64].of(0u64);
+  parallel each x in a {
+    total.add(weigh(*x));
+  }
+  report("an array: the plain loop's sum", total.load() == plain);
+  report("an array behind a reference", parArrayRef(&a) == 3u64 * (3u64 + 4u64 + 5u64 + 6u64 + 7u64 + 8u64 + 9u64 + 10u64));
+  report("a slice of the whole array", parSlice(&a) == plainSlice(&a));
+  report("a part of an array", parSlice(&a[2usize..6usize]) == plainSlice(&a[2usize..6usize]));
+  report("an empty part of an array", parSlice(&a[3usize..3usize]) == 0u64);
+
+  // A literal array is held for the loop
+  imm lit = Atomic[u64].of(0u64);
+  parallel each x in [100u64, 200u64, 300u64] {
+    lit.add(*x);
+  }
+  report("a literal array", lit.load() == 600u64);
+}
+
+fn lists() {
+  mut l = new List[u64];
+  mut k = 0u64;
+  while k < 5000u64 {
+    l.push(k * 7u64 % 1013u64);
+    k = k + 1u64;
+  }
+  imm total = Atomic[u64].of(0u64);
+  parallel each x in l {
+    total.add(weigh(*x));
+  }
+  report("a list of 5000: the plain loop's sum", total.load() == plainSlice(l.view()));
+  report("the list is whole afterwards", l.len == 5000usize);
+  l.push(1u64);                      // and still ours to change
+  report("and can be changed after the loop", l.len == 5001usize);
+
+  mut pts = new List[Pt];
+  pts.push(new Pt(1u64, 2u64));
+  pts.push(new Pt(10u64, 20u64));
+  pts.push(new Pt(100u64, 200u64));
+  imm fields = Atomic[u64].of(0u64);
+  parallel each p in pts {
+    fields.add(p.x * 1000u64 + p.y);
+  }
+  report("a list of structs, read through the borrow", fields.load() == 1002u64 + 10020u64 + 100200u64);
+
+  imm none = new List[u64];
+  imm passes = Atomic[u64].of(0u64);
+  parallel each x in none {
+    passes.add(1u64);
+  }
+  report("an empty list: no pass", passes.load() == 0u64);
+}
+
+// ---- inside the body ----
+
+struct Plan {
+  scale u64;
+  bias u64;
+}
+
+fn scaled(plan &Plan, n usize) u64 {
+  imm total = Atomic[u64].of(0u64);
+  parallel each i in 0usize < n {
+    total.add(u64.from(i) * plan.scale + plan.bias);       // a field through a reference
+  }
+  total.load();
+}
+
+const offset = 1000u64;
+
+fn outsideVariables(base u64) bool {
+  mut step = 3u64;                                  // changed before the loop, read in it
+  step = step + 1u64;
+  imm total = Atomic[u64].of(0u64);
+  parallel each i in 0usize < 200usize {
+    total.add(u64.from(i) * step + base + offset);  // a parameter, a mut variable, a constant
+  }
+  mut plain = 0u64;
+  each i in 0usize < 200usize {
+    plain = plain + u64.from(i) * step + base + offset;
+  }
+  total.load() == plain;
+}
+
+fn controlInBody() bool {
+  // 'continue' skips the rest of a pass: only the even numbers are added
+  imm evens = Atomic[u64].of(0u64);
+  parallel each i in 0usize < 1000usize {
+    if i % 2usize == 1usize {
+      continue;
+    }
+    evens.add(u64.from(i));
+  }
+  mut plain = 0u64;
+  each i in 0usize < 1000usize {
+    if i % 2usize == 0usize {
+      plain = plain + u64.from(i);
+    }
+  }
+
+  // The pass's own locals, its own loops, and a 'break' that leaves them
+  imm found = Atomic[u64].of(0u64);
+  parallel each i in 0usize < 300usize {
+    mut j = 0usize;
+    mut first = 0usize;
+    while j < 50usize {
+      if (i + j) % 7usize == 0usize {
+        first = j;
+        break;
+      }
+      j = j + 1usize;
+    }
+    imm row = [1u64, 2u64, 3u64];
+    mut sum = 0u64;
+    each r in row {
+      if *r == 2u64 {
+        continue;
+      }
+      sum = sum + *r;
+    }
+    found.add(u64.from(first) + sum);
+  }
+  mut plainfound = 0u64;
+  each i in 0usize < 300usize {
+    mut j = 0usize;
+    mut first = 0usize;
+    while j < 50usize {
+      if (i + j) % 7usize == 0usize {
+        first = j;
+        break;
+      }
+      j = j + 1usize;
+    }
+    plainfound = plainfound + u64.from(first) + 4u64;
+  }
+  evens.load() == plain and found.load() == plainfound;
+}
+
+fn nested() bool {
+  // 40 rows of 30 cells, each cell (r, c) worth weigh(r * 100 + c)
+  imm total = Atomic[u64].of(0u64);
+  parallel each r in 0usize < 40usize {
+    parallel each c in 0usize < 30usize {
+      total.add(weigh(u64.from(r) * 100u64 + u64.from(c)));      // r is the outer pass's
+    }
+  }
+  mut plain = 0u64;
+  each r in 0usize < 40usize {
+    each c in 0usize < 30usize {
+      plain = plain + weigh(u64.from(r) * 100u64 + u64.from(c));
+    }
+  }
+  total.load() == plain;
+}
+
+// ---- 'parallel' is a word only before 'each' ----
+
+struct Gauge {
+  parallel u64;
+
+  pub fn read(self &) u64 { parallel; }
+}
+
+fn parallel(n u64) u64 { n + 1u64; }
+
+fn parallelAsName() bool {
+  mut parallel = 5u64;
+  parallel = parallel + 1u64;          // a statement that begins with it
+  parallel += 1u64;
+  imm g = new Gauge(parallel);
+  imm total = Atomic[u64].of(0u64);
+  each parallel in [1u64, 2u64, 3u64] {              // the loop's own variable
+    total.add(*parallel);
+  }
+  parallel each x in [10u64, 20u64] {                // and a loop, with the word before it
+    total.add(*x);
+  }
+  imm viaFn = concurrency_parallel_each.parallel(41u64);
+  parallel == 7u64 and g.read() == 7u64 and total.load() == 36u64 and viaFn == 42u64;
+}
+
+// ---- spread: which threads ran the passes ----
+
+fn bits(v u64) u64 {
+  mut n = 0u64;
+  mut x = v;
+  while x != 0u64 {
+    n = n + (x & 1u64);
+    x = x >> 1u64;
+  }
+  n;
+}
+
+fn spread() {
+  imm ran = Atomic[u64].of(0u64);          // bit i: worker i ran a pass; bit 63: a thread that is no worker
+  imm items = Atomic[u64].of(0u64);
+  parallel each i in 0usize < 400usize {
+    imm w = actors.workerIndex();
+    imm bit = if w == actors.noWorker {1u64 << 63u64;} else {1u64 << u64.from(w);};
+    ran.bitOr(bit);
+    // Hold this pass until a second thread has run one, or three seconds pass
+    mut waited = 0u64;
+    while bits(ran.load()) < 2u64 and waited < 3000u64 {
+      thread.sleep(time.Duration.fromMillis(1));
+      waited = waited + 1u64;
+    }
+    items.add(1u64);
+  }
+  report("spread: every pass ran", items.load() == 400u64);
+  report("spread: more than one thread ran passes", bits(ran.load()) >= 2u64);
+}
+
+fn main() {
+  initAll();
+  actors.configure(new actors.Options(workers: 4u32));
+
+  report("range < over uneven work", parRange(3000usize) == plainRange(3000usize));
+  report("range < of one pass", parRange(1usize) == plainRange(1usize));
+  report("range < of many passes", parRange(20000usize) == plainRange(20000usize));
+  report("range <=", parInclusive(10usize, 2500usize) == plainInclusive(10usize, 2500usize));
+  report("range <= of one number", parInclusive(7usize, 7usize) == plainInclusive(7usize, 7usize));
+  report("an empty range < makes no pass", parCount(5usize, 5usize, false) == 0u64);
+  report("a reversed range < makes no pass", parCount(6usize, 5usize, false) == 0u64);
+  report("a reversed range <= makes no pass", parCount(5usize, 4usize, true) == 0u64);
+  report("range <= counts both ends", parCount(5usize, 5usize, true) == 1u64 and parCount(3usize, 12usize, true) == 10u64);
+  report("a signed range through zero", signedRange());
+  report("a range of untyped literals", defaultTypedRange());
+  report("a range ending at the type's maximum", rangeToTheMaximum());
+
+  arrays();
+  lists();
+
+  report("a field through a reference", scaled(&new Plan(7u64, 3u64), 500usize) == 7u64 * (499u64 * 500u64 / 2u64) + 3u64 * 500u64);
+  report("outside variables read in the body", outsideVariables(11u64));
+  report("continue, and a pass's own loops and break", controlInBody());
+  report("a parallel each inside a parallel each", nested());
+  report("parallel as a name", parallelAsName());
+
+  spread();
+  finalAll();
+}
