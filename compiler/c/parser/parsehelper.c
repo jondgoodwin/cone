@@ -49,6 +49,16 @@ void parseEndOfStatement() {
         lexNextToken();
         return;
     }
+    // An 'if' after a statement that takes none is said so, and its condition
+    // read and dropped, so that what follows is read as itself
+    if (lexIsToken(IfToken)) {
+        errorMsgLex(ErrorTrailingIf, "A trailing 'if' goes only on 'break', 'continue' or 'return': 'continue if n %% 2 == 0;'. Write 'if c { ... }' for any other statement.");
+        while (!lexIsToken(SemiToken) && !lexIsToken(RCurlyToken) && !lexIsToken(EofToken))
+            lexNextToken();
+        if (lexIsToken(SemiToken))
+            lexNextToken();
+        return;
+    }
     errorMsgLexAfter(ErrorNoSemi, "Expected ';' to end the statement");
 }
 

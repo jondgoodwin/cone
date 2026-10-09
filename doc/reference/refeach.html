@@ -15,7 +15,7 @@
 
 	<p style="margin-left: 40px;"><i>Note: Built: number ranges with &lt;, &le;, &gt;, &ge; and by; arrays, slices and lists; and
 			anything with a <span class="pre">next</span> method (a cursor) or an <span class="pre">iter</span> method (something
-			that gives one), with one variable or several that unpack a pair; and the ways to walk a list, an array or a slice that
+			that gives one), with one variable or several that unpack a pair; a filter after the source (<span class="pre">if</span>); an <span class="pre">else</span> that makes the loop a value; and the ways to walk a list, an array or a slice that
 			change its items in place (<span class="pre">mutItems</span>), consume it (<span class="pre">drain</span>) or number them
 			(<span class="pre">indexed</span>), and <span class="pre">zip</span>. Not built yet: closure iterators. An enum's variant is constructed with its values in square brackets, as written here: that is the current spelling, and how a variant is constructed is an open design question (<a href="refenum.html#init">Enums</a>).</i></p>
 
@@ -47,7 +47,57 @@ fn fact(n i32) i32 {
 	<h2>break and continue</h2>
 	<p><span class="pre">break</span> and <span class="pre">continue</span> statements may be used within an
 		<span class="pre">each</span> block to stop or re-start the loop. Either may name a loop's
-		label, to leave or re-start an outer one, and <span class="pre">return</span> leaves the function.</p>
+		label, to leave or re-start an outer one, and <span class="pre">return</span> leaves the function.
+			Each of the three may end with an <span class="pre">if</span> and a condition, as
+			<span class="pre">continue if x % 2 == 0;</span> does
+			(<a href="refwhile.html#trailing-if">While, Break and Continue</a>).</p>
+
+	<h2 id="filter">Skipping items: if</h2>
+	<p>An <span class="pre">if</span> and a condition after the source is a filter: the items for which the condition
+		is false are skipped, as if the block began with <span class="pre">if !cond { continue; }</span>.
+		It reads the loop's variables, and works for every kind of source below, ranges included:</p>
+<pre>
+each x in 0 &lt; 10 if x % 2 == 0 {       // 0 2 4 6 8
+}
+each name in names if name.len &gt; 3 {   // a List[String]
+}
+each key, value in ages if *value &gt; 18 {
+}
+each x in 100 &gt;= 0 by 10 if x != 50 {
+}
+</pre>
+
+	<h2 id="else">A loop that gives a value: else</h2>
+	<p>A loop that is searching for something has two ways to end: it finds it and leaves with
+		<span class="pre">break</span>, or it runs out of items. An <span class="pre">else</span> after the loop's
+		block says what the loop is worth when it runs out, and with one the whole <span class="pre">each</span>
+		is an expression whose value is the <span class="pre">break</span>'s or the <span class="pre">else</span>'s:</p>
+<pre>
+fn firstBig(list &amp;List[i32], limit i32) i32 {
+  each x in list {
+    if *x &gt; limit { break *x; }
+  } else {
+    -1;              // nothing was big enough
+  }
+}
+
+imm total = each x in 1 &lt;= 100 {
+  if x * x &gt; 500 { break x; }
+} else {
+  0;
+};
+</pre>
+	<p>The value is of one type, whichever way the loop ends. The <span class="pre">else</span> block is
+		an ordinary block (its last expression is the value, and it may do other work first), run only when the
+		items run out; a <span class="pre">break</span> skips it. It stands outside the loop: the loop's variables are not in
+		view, and a <span class="pre">break</span> or <span class="pre">continue</span> in it belongs to the loop around.
+		It may end in a <span class="pre">return</span> instead, which gives the loop no value
+		(<span class="pre">else { return -1; }</span>).
+		An <span class="pre">each</span> with an <span class="pre">else</span> may also be a statement; a
+		<span class="pre">break</span> that gives no value is then fine, and the <span class="pre">else</span>
+		is run for what it does. An <span class="pre">each</span> without an <span class="pre">else</span> is a statement only.
+		<span class="pre">while</span> with a condition does the same
+		(<a href="refwhile.html#else">While</a>).</p>
 
 	<h2>Iterators</h2>
 	<p><span class="pre">each</span> supports several ways to iterate over a sequence of values:</p>

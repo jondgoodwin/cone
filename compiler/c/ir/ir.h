@@ -154,6 +154,8 @@ typedef struct NameResState {
     ModuleNode *mod;        // Current module
     INode *typenode;        // Current type (e.g., struct)
     BlockNode *loopblock;   // Most current loop block (or NULL)
+    BlockNode *outerloop;   // The loop around the innermost loop (or NULL): where the 'else' of
+                            // the innermost loop is read from, as it is written after that loop
     INode *macromethod;     // The macro method whose body is being resolved (or NULL)
     INode *expander;        // The declaration whose body is being resolved, when an
                             // importer expands that body in its own object (or NULL)

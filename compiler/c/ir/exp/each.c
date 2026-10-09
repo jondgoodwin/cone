@@ -73,11 +73,20 @@ static INode *eachBreak(BlockNode *loop, INode *lexnode) {
     return (INode*)brk;
 }
 
-// 'if cond {break}', leaving 'loop'
-static INode *eachBreakIf(INode *cond, BlockNode *loop, INode *lexnode) {
-    BlockNode *ifblk = newBlockNode();
-    inodeLexCopy((INode*)ifblk, lexnode);
-    nodesAdd(&ifblk->stmts, eachBreak(loop, lexnode));
+// The block the loop leaves through when it has run out: its 'else', which ends
+// in the break that carries its value out, or a block holding just that break
+static BlockNode *eachLeave(BlockNode *loop, BlockNode *elseblk, INode *lexnode) {
+    if (elseblk != NULL)
+        return elseblk;
+    BlockNode *leave = newBlockNode();
+    inodeLexCopy((INode*)leave, lexnode);
+    nodesAdd(&leave->stmts, eachBreak(loop, lexnode));
+    return leave;
+}
+
+// 'if cond {break}', leaving 'loop'; or, given the loop's 'else', 'if cond {...}'
+static INode *eachBreakIf(INode *cond, BlockNode *loop, BlockNode *elseblk, INode *lexnode) {
+    BlockNode *ifblk = eachLeave(loop, elseblk, lexnode);
     IfNode *ifnode = newIfNode();
     inodeLexCopy((INode*)ifnode, lexnode);
     nodesAdd(&ifnode->condblk, cond);
@@ -92,7 +101,7 @@ static INode *eachBreakIf(INode *cond, BlockNode *loop, INode *lexnode) {
 //   { imm m = cursor.next();
 //     if m is Some { imm s = [Some]m; s.value } elif m is None { break } }
 // 'scope' is that block's.
-static INode *eachNextItem(INode *cursor, BlockNode *loop, uint16_t scope, INode *lexnode) {
+static INode *eachNextItem(INode *cursor, BlockNode *loop, BlockNode *elseblk, uint16_t scope, INode *lexnode) {
     static Name *valueName = NULL;
     if (valueName == NULL)
         valueName = nametblFind("value", 5);
@@ -127,9 +136,7 @@ static INode *eachNextItem(INode *cursor, BlockNode *loop, uint16_t scope, INode
     castPatternMark((INode*)none);
     CastNode *isnone = newIsNode(eachUse(matched, lexnode), (INode*)none);
     inodeLexCopy((INode*)isnone, lexnode);
-    BlockNode *leave = newBlockNode();
-    inodeLexCopy((INode*)leave, lexnode);
-    nodesAdd(&leave->stmts, eachBreak(loop, lexnode));
+    BlockNode *leave = eachLeave(loop, elseblk, lexnode);
 
     IfNode *ifnode = newIfNode();
     inodeLexCopy((INode*)ifnode, lexnode);
@@ -308,6 +315,18 @@ void eachLower(TypeCheckState *pstate, BlockNode *outer) {
     BlockNode *loop = (BlockNode*)nodesGet(outer->stmts, 1);
     INode *lexnode = (INode*)srcdcl;
     uint16_t scope = (uint16_t)pstate->scope;
+
+    // The loop's 'else', when it has one, stands ahead of the reader's variables
+    // (so that it cannot name them) as the block the loop leaves through; taken
+    // out of the loop here to be put where the loop is left
+    BlockNode *elseblk = NULL;
+    INode *first = loop->stmts->used > 0 ? nodesGet(loop->stmts, 0) : NULL;
+    if (first != NULL && first->tag == BlockTag && (first->flags & FlagLoopElse)) {
+        elseblk = (BlockNode*)first;
+        for (uint32_t i = 1; i < loop->stmts->used; ++i)
+            nodesGet(loop->stmts, i - 1) = nodesGet(loop->stmts, i);
+        --loop->stmts->used;
+    }
     uint32_t nvars = eachVarCount(loop);
 
     // A source that has no value or no type ends the loop here: what the body
@@ -447,7 +466,7 @@ void eachLower(TypeCheckState *pstate, BlockNode *outer) {
         FnCallNode *step = newFnCallOpnameLower(lexnode, eachUse(index, lexnode), incrPostName, 0);
         step->flags |= FlagLvalOp;
         nodesInsert(&loop->stmts, (INode*)step, nvars);
-        nodesInsert(&loop->stmts, eachBreakIf((INode*)done, loop, lexnode), 0);
+        nodesInsert(&loop->stmts, eachBreakIf((INode*)done, loop, elseblk, lexnode), 0);
         nodesAdd(&outer->stmts, (INode*)loop);
         return;
     }
@@ -479,7 +498,7 @@ void eachLower(TypeCheckState *pstate, BlockNode *outer) {
         nodesAdd(&outer->stmts, (INode*)cursordcl);
         cursor = eachUse(cursordcl, lexnode);
     }
-    eachBindVars(loop, nvars, eachNextItem(cursor, loop, (uint16_t)(scope + 2), lexnode),
+    eachBindVars(loop, nvars, eachNextItem(cursor, loop, elseblk, (uint16_t)(scope + 2), lexnode),
         (uint16_t)(scope + 1), lexnode);
     nodesAdd(&outer->stmts, (INode*)loop);
 }
