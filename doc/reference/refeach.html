@@ -290,6 +290,20 @@ each x, y in zip(&amp;xs, &amp;ys) {
 		is the loop <span class="pre">each x in a</span> is), and <span class="pre">zip</span> takes them, with
 		the <span class="pre">&amp;</span> a list takes: <span class="pre">zip(&amp;arr, &amp;xs)</span>, or two
 		slice parameters, <span class="pre">zip(s, t)</span>.</p>
+	<p>A <b>cursor</b> that <span class="pre">chunks(n)</span>, <span class="pre">mutChunks(n)</span> or
+		<span class="pre">mutItems()</span> gives is zipped with its own method, which takes the other cursor
+		by value (the <span class="pre">&amp;</span> of the function would borrow a value that ends with the
+		statement): <span class="pre">a.mutChunks(n).zip(b.mutChunks(3 * n))</span>. Its
+		<span class="pre">indexed()</span> numbers the pairs from 0, three variables, the position and one item from
+		each source. <span class="pre">each</span> walks it through <span class="pre">next</span>.</p>
+<pre>
+each y, ra, rb in a.mutChunks(n).zip(b.mutChunks(3 * n)).indexed() {
+  ...                          // ra is a &amp;mut slice of n items of a, rb of 3n items of b
+}
+each x, y, z in a.mutChunks(n).zip(b.mutChunks(m)).zip(c.mutChunks(k)) {
+  ...                          // a third cursor: a flat triple of the three
+}
+</pre>
 
 	<h3>Cursor Iterators</h3>
 	<p>A <b>cursor</b> is anything with a <span class="pre">next</span> method that answers an
@@ -395,7 +409,7 @@ each x in |{cnt = 12}| if cnt &gt; 0 {Some[cnt /= 2]} else {None} {
 
 	<h2 id="parallel">parallel each</h2>
 	<p style="margin-left: 40px;"><i>Note: Built in a function and in an actor's methods (<a href="#parallelactor">below</a>): over a number range, an
-			array, a slice or a list, with the header <span class="pre">if</span>, <span class="pre">mutItems()</span>, <span class="pre">indexed()</span> and the runs of <span class="pre">chunks(n)</span> and <span class="pre">mutChunks(n)</span>, and, in a function that is not an actor's method, <a href="#parallelbuilder">the parallel builder</a> (<span class="pre">new List[T] &lt;- parallel each &hellip; yield</span>).
+			array, a slice or a list, with the header <span class="pre">if</span>, <span class="pre">mutItems()</span>, <span class="pre">indexed()</span> and the runs of <span class="pre">chunks(n)</span> and <span class="pre">mutChunks(n)</span>, a <a href="#parallelzip">zip</a> of such cursors, and, in a function that is not an actor's method, <a href="#parallelbuilder">the parallel builder</a> (<span class="pre">new List[T] &lt;- parallel each &hellip; yield</span>).
 			Not built yet: inside a generator; a source of your own that is a
 			<span class="pre">ParallelIterable</span>; and
 			the reductions that come with closures. A parallel each takes no
@@ -469,6 +483,22 @@ fn total(xs &amp;Array[u64]) u64 {
 			<b>copy what the loop needs into a local before it</b> (<span class="pre">imm n = self.n;</span>). For an
 			<span class="pre">Rc</span> itself, <b>borrow the contents before the loop</b>:
 			<span class="pre">imm mesh = &amp;*shared;</span>, then use <span class="pre">mesh</span> in the body.</li>
+		<li>A loop that <b>writes through its source</b> (<span class="pre">mutChunks</span>, <span class="pre">mutItems</span>,
+			a zip of them, or a <span class="pre">&amp;mut</span> slice) may not name, in its body, filter or
+			<span class="pre">yield</span>, a place from outside that could be one of the items it writes. It is judged by the
+			<b>path</b> the body reads: <span class="pre">first</span> where <span class="pre">first</span> is a reference to the item's type; a
+			struct reached through a reference that is itself of the item's type; an index into a collection or array reached
+			through a reference whose elements are of the item's type (<span class="pre">hr.cells[0]</span>, <span class="pre">s.items[0]</span> after
+			<span class="pre">imm s = &amp;*self;</span>). A scalar field beside the buffer (<span class="pre">self.scale</span>) reads none of them. A
+			name used whole, or reached through a call, is judged by its whole type: a reference to the item's type, or a struct or
+			collection holding one or elements of that type, reached through a reference. A raw pointer is trusted. Another pass is
+			writing that item, so reading it would race, and flow analysis sees only a local, not a parameter, a reborrow or a struct's
+			field. <b>Copy what you need before the loop</b>: <span class="pre">imm f = *first;</span>, then use <span class="pre">f</span>. A value
+			already copied, a reference to another type, and every outside reference when nothing is written
+			(<span class="pre">chunks</span>) are free. A closure handed to a function that runs such a loop is read by every pass:
+			one that <i>borrows</i> a variable of the written type (<span class="pre">(x, y) =&gt; scale * f32.from(x)</span> into
+			a list of <span class="pre">f32</span>) is refused, naming the variable; copy it into the closure with the state list,
+			<span class="pre">fn(x i32, y i32) [scale] f32 { scale * f32.from(x); }</span>, where it is a value of its own.</li>
 		<li>A <span class="pre">Gc</span> may not be <b>made or held</b> in the loop, for now: the collector's heap and its one chain of
 			roots are not safe on the workers the passes run on. An allocation (<span class="pre">new Gc[...]</span>), a call that
 			returns one, or a literal holding one (a struct, tuple, array or enum holding a traced reference counts) is refused
@@ -509,6 +539,34 @@ parallel each y, row in pixels.mutChunks(size).indexed() {      // one pass a ro
 		source gives one. The rules for the body are those above: a pass writes through its own run or item, naming the buffer the
 		runs come from in the body is refused (it may be a run another pass is writing), and a run <span class="pre">chunks</span>
 		gives cannot be written.</p>
+
+	<h4 id="parallelzip">Two buffers in one pass: zip</h4>
+	<p>A zip of cursors is walked by a parallel each when <b>both</b> its sources can be cut and walked by position
+		(core's <span class="pre">RandomAccess</span> and <span class="pre">ParallelIterable</span>, met by the methods alone):
+		the cursors <span class="pre">chunks(n)</span>, <span class="pre">mutChunks(n)</span> and <span class="pre">mutItems()</span> give,
+		and those of arrays, slices and lists that <span class="pre">zip(&amp;a, &amp;b)</span> takes. The zip is as long as the shorter
+		source, is cut at the same place in both (as Rayon's zip is), and the pass <span class="pre">k</span> gets what each
+		gives at <span class="pre">k</span>. Its <span class="pre">indexed()</span> adds the pass's number, global, so three variables:</p>
+<pre>
+parallel each y, ra, rb in a.mutChunks(n).zip(b.mutChunks(3 * n)).indexed() {
+  each x, p in ra.mutItems().indexed() { *p = f(y * n + x); }          // a's part of the pass
+  each x, q in rb.mutItems().indexed() { *q = g(y * 3 * n + x); }      // b's part, three times as long
+}
+</pre>
+	<p>Without <span class="pre">indexed()</span> a zip gives two variables. What each source lends,
+		<span class="pre">&amp;</span> or <span class="pre">&amp;mut</span>, is what its own cursor says. A source that cannot be cut or
+		walked by position, a Deque's cursor, a cursor of your own, a generator, a file or a channel, is refused with the reason: collect it
+		into a list and zip the list. The body rules stand for both buffers: neither may be named in the body (the passes change their
+		own parts of them at the same time; naming a buffer is refused even when its source only reads), and a zip of two cursors over the
+		same buffer is refused as any second borrow of what is mutably borrowed.</p>
+	<p>A zip takes a third source with its own <span class="pre">zip</span>, a flat triple, three variables (four with
+		<span class="pre">indexed()</span>, the position first). It is as long as the shortest, cut at the same place in all three,
+		and the rules above hold for all three buffers:</p>
+<pre>
+parallel each y, ca, cb, cc in a.mutChunks(n).zip(b.mutChunks(m)).zip(c.mutChunks(k)).indexed() {
+  ...                          // a part of each of three buffers, one pass
+}
+</pre>
 
 	<h3 id="parallelactor">In an actor's method</h3>
 	<p>A <span class="pre">parallel each</span> written directly in a behaviour (a method declared <span class="pre">async do</span>)

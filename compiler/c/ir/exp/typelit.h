@@ -28,6 +28,7 @@ void typeLitTypeCheck(TypeCheckState *pstate, FnCallNode *lit);
 // 'trynew', allocate it in a region: an AllocateTag node holding the value's
 // construction.
 void typeLitNewCheck(TypeCheckState *pstate, FnCallNode **nodep);
+void typeLitNewArgsChecked(TypeCheckState *pstate, FnCallNode **nodep);
 
 // The construction an init's '*self = new T(...)' fills its self with, while
 // it is checked (assignTypeCheck): the one place but its handle's initializer

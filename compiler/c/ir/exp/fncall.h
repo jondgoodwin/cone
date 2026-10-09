@@ -89,6 +89,10 @@ void fnCallLowerOverloadFn(TypeCheckState *pstate, FnCallNode *node);
 // check state is NULL where the call is injected by a coercion, which has none.
 void fnCallFinalizeArgs(TypeCheckState *pstate, FnCallNode *node);
 
+// A closure literal wanted where 'trait' is, which has not exactly one method for
+// it to fill: refused, naming what the trait has
+void fnCallClosureTraitRefused(INode *lit, StructNode *trait);
+
 // Analyze each candidate a member name binds that is not analyzed yet, under its
 // own type's walk state, so that its signature can be compared
 void fnCallDemandCandidates(INode *binding);

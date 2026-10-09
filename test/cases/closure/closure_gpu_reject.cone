@@ -1,0 +1,69 @@
+// What a closure in GPU code may not do. It holds only what a GPU has: numbers,
+// structs and arrays of them, borrows of memory the GPU has. An owning reference
+// (Rc here, So, Arc and Gc the same), a function reference and a virtual
+// reference, held as its own state or borrowed from the code around it, are
+// refused. And it is taken by a generic bound by its signature, '[F fn(...)]',
+// and inlined: made a function reference, '&fn(...)', or a virtual reference
+// ('&<Trait', or an owner of one), it is refused, since a GPU has no pointers
+// to code to call it through. Each is refused where the closure is written or
+// converted.
+
+mod closure_gpu_reject;
+
+fn scaled[F fn(x f32) f32](f &F, x f32) f32 { f(x) * 2. + 1.; }
+fn double(x f32) f32 { x * 2.; }
+fn viaRef(f &fn(x f32) f32, x f32) f32 { f(x); }
+
+pub trait Unary {
+  pub fn `()`(self &, x f32) f32;
+}
+fn viaTrait(f &<Unary, x f32) f32 { f(x); }
+fn viaCallable(f &<fn(x f32) f32, x f32) f32 { f(x); }
+
+// An owner or a function reference reaches GPU code only as a parameter of a
+// function (making one is refused: module_gpu_unavailable)
+fn owner(held Rc[f32]) f32 {
+  scaled(x => x * *held, 3.);                                  //~ ErrorGpuClosureData
+}
+
+fn ownState(held Rc[f32]) f32 {
+  scaled(fn(x f32) [h = held] f32 { x * *h; }, 3.);            //~ ErrorGpuClosureData
+}
+
+fn funcRef(f &fn(x f32) f32) f32 {
+  scaled(x => f(x), 3.);                                       //~ ErrorGpuClosureData
+}
+
+fn @compute(64) asRef(inv Invocation, xs &Array[f32], out &mut Array[f32]) {
+  imm i = usize.from(inv.globalId[0]);
+  if i < out.len and i < xs.len {
+    imm k = xs[i];
+    out[i] = viaRef(x => x * 2., 3.);                          //~ ErrorGpuClosureRef
+    out[i] = out[i] + viaRef(x => x * k, 3.);                  //~ ErrorGpuClosureRef
+  }
+}
+
+fn @compute(64) asVirtual(inv Invocation, out &mut Array[f32]) {
+  imm i = usize.from(inv.globalId[0]);
+  if i < out.len {
+    imm c = fn(x f32) f32 { x * 2.; };
+    out[i] = viaTrait(&c, 3.);                                 //~ ErrorGpuClosureRef
+  }
+}
+
+fn @compute(64) asCallable(inv Invocation, xs &Array[f32], out &mut Array[f32]) {
+  imm i = usize.from(inv.globalId[0]);
+  if i < out.len and i < xs.len {
+    imm k = xs[i];
+    out[i] = viaCallable(x => x * k, 3.);                      //~ ErrorGpuClosureRef
+  }
+}
+
+fn @compute(64) asOwner(inv Invocation, xs &Array[f32], out &mut Array[f32]) {
+  imm i = usize.from(inv.globalId[0]);
+  if i < out.len and i < xs.len {
+    imm owned = new So[fn(x f32) f32](fn(x f32) [k = xs[i]] f32 { x * k; });   //~ ErrorGpuClosureRef
+                                                                               //~^ ErrorGpuUnavailable
+    out[i] = owned(3.);
+  }
+}

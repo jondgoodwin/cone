@@ -88,12 +88,22 @@ void allocateTypeCheck(TypeCheckState *pstate, RefNode **nodep) {
     allocateValueCheck(pstate, nodep);
 }
 
+int allocateZeroSizeOk = 0;
+
 // Type check an allocation whose value is checked: the value a region can
 // hold, and the reference's type
 void allocateValueCheck(TypeCheckState *pstate, RefNode **nodep) {
     RefNode *node = *nodep;
 
     INode *vtype = ((IExpNode*)node->vtexp)->vtype;
+
+    // A GPU has no allocator: a kernel's memory is its locals and the buffers
+    // it is bound. Checked as an allocation all the same, so nothing after it
+    // reports again.
+    if (flowGpu)
+        errorMsgNode((INode*)node, ErrorGpuUnavailable,
+            "In GPU code nothing is allocated, '%s %s[...]': a GPU has no allocator. Keep the value in a local, or in a buffer the kernel is bound.",
+            (node->flags & FlagQues) ? "trynew" : "new", itypeName(node->region));
 
     // The default permission type is 'uni', or 'imm' for a type declaring
     // Immutable
@@ -102,7 +112,7 @@ void allocateValueCheck(TypeCheckState *pstate, RefNode **nodep) {
         node->perm = immperm ? immperm : newPermUseNode(uniPerm);
     }
 
-    if (!itypeIsConcrete(vtype) || itypeIsZeroSize(vtype)) {
+    if (!itypeIsConcrete(vtype) || (itypeIsZeroSize(vtype) && !allocateZeroSizeOk)) {
         errorMsgNode(node->vtexp, ErrorInvType, "May not allocate a value of abstract or zero-size type");
     }
 

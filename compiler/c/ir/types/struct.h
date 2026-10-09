@@ -25,6 +25,7 @@ typedef struct {
     LLVMTypeRef llvmvtable;    // for the vtable
     LLVMTypeRef llvmreftype;   // For the virtual reference, not the vtable
     LLVMValueRef llvmvtables;  // List of vtables
+    LLVMValueRef llvmfnvtable; // A callable trait's vtable for a plain function: its one slot a stub calling it (NULL until a conversion needs it)
 } Vtable;
 
 // Field-containing types (e.g., struct, trait, etc.)
@@ -56,6 +57,8 @@ typedef struct StructNode {
     uint8_t holdsatomic;   // itypeHoldsAtomic's remembered answer (HoldsTraced*, read as "holds an atomic value"), once the type is checked
     uint8_t tagstate;       // Whether 'tagnbr' is settled yet, and whether it is below zero (TagState)
     uint8_t threadbound;    // itypeThreadBound's remembered answer (CarriesBorrow*, read as "bound to its thread"), once the type is checked
+    uint8_t callmut;        // On a callable trait (fnSigCallTrait): its '()' takes 'self &mut', else 'self &'
+    struct FnSigNode *callsig;     // The signature a callable trait stands for; NULL for every other type
 } StructNode;
 
 // What a borrow one of its methods returns costs a container (StructNode.lends),

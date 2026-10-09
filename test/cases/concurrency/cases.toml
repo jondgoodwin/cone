@@ -797,6 +797,28 @@ name = "release"
 name = "debug"
 options = ["--debug"]
 
+[scenario.concurrency_parallel_each_outer_alias]
+category = "reject"
+description = "A parallel each that writes through its source (mutChunks, mutItems, a zip or three-way zip of them) may not name an outside variable whose type could reach a written element behind a reference, owner or type argument (ErrorParAlias): the measured race of a parameter's '&mut cells[0]' read in the body, the same through a struct's field, an outside borrow of a list of the same element, a zip's written side; allowed are a palette of another type, a value copied out before the loop, an Atomic of another type, a zip's read-only side and an outside reference when nothing is written"
+tags = ["typecheck"]
+
+[scenario.concurrency_parallel_each_closure_alias]
+category = "reject"
+description = "A closure given to a fillGrid-shaped generic (a parallel each over out.mutChunks(width) calling f per item) may not borrow a variable of the caller's of the written type: a default-captured f32 into a List[f32] output (a parameter and a local), an f32 into an output struct holding one, and a separate captured List[f32], are ErrorParAlias reported where the generic reads f, the message naming the borrowed variable and, for a value, the state-list copy '[scale]'; a borrowed i32, a borrowed struct of f32 values, the copy and a separate list of another type are free"
+tags = ["typecheck"]
+
+[scenario.concurrency_parallel_each_closure_fill]
+category = "run"
+description = "A fillGrid-shaped generic over a List[f32], as surfacepatterns' writes it, given closures that hold values of their own (the state list '[scale]', '[s = scale]', a struct of values, a hand-written struct with an f32 field and a '()', a borrowed i32): each fill equals the serial one item by item, the sum worked out by hand (193536)"
+tags = ["typecheck", "flow", "genllvm", "runtime"]
+
+[[scenario.concurrency_parallel_each_closure_fill.run]]
+name = "release"
+
+[[scenario.concurrency_parallel_each_closure_fill.run]]
+name = "debug"
+options = ["--debug"]
+
 [scenario.concurrency_parallel_fill]
 category = "run"
 description = "Filling an output buffer from a parallel each: two variables from indexed() (the position, global, and the item) over mutItems of a list, an array and a slice of one, a mutable slice as the source, and read-only over a list and an array; mutChunks(n).indexed() giving each pass a chunk to write (the bake a row to a pass, byte for byte against a serial fill, and with a short last row), chunks(n) for reading, mutChunks(n) without indexed, n dividing the count, n of 1, n past the count and nothing to walk; sums worked out by hand"
@@ -837,6 +859,66 @@ category = "reject"
 description = "What a parallel each over chunks and indexed() refuses in a behaviour: the chunks of a list in a local, an array in a local walked with indexed(), and the items of a list in a local numbered or changed, whose frame is gone while the pieces run; beside what is allowed (a list's mutChunks and an array's indexed() and chunks through self)"
 tags = ["typecheck"]
 diagnostics = 4
+
+[scenario.concurrency_parallel_zip]
+category = "run"
+description = "A parallel each over a zip of cursors, two buffers walked side by side: one pass filling two outputs with unequal chunk sizes (7 and 21, a short last chunk) byte for byte against a serial fill, a chunks source beside a mutChunks one, mutItems beside chunks, with and without the position (three variables from indexed()), zip(&a, &b) over lists and over arrays of different lengths, the first source the shorter, the header 'if', and nothing to walk; sums worked out by hand"
+tags = ["parse", "typecheck", "flow", "genllvm", "runtime"]
+
+[[scenario.concurrency_parallel_zip.run]]
+name = "release"
+
+[[scenario.concurrency_parallel_zip.run]]
+name = "debug"
+options = ["--debug"]
+
+[scenario.concurrency_parallel_zip_refused]
+category = "reject"
+description = "What a parallel each over a zip refuses: a source that cannot be cut or walked by position (a Deque's cursor beside a list or a cursor, a type's own cursor, a generator), naming either buffer the zip lends from, writing a chunk that chunks(n) gives, writing an outside variable, and the wrong number of variables (one, two with indexed(), three without)"
+tags = ["typecheck"]
+diagnostics = 11
+
+[scenario.concurrency_parallel_zip3]
+category = "run"
+description = "A parallel each over a three-way zip, a zip's own zip(c): three outputs filled in one pass with chunks of 5, 15 and 9 and a short last chunk, byte for byte against a plain each over the same zip, with the position (four variables) and without (three); a read-only chunks source among the three; zip(&a, &b).zip(c.iter()) over three lists with the shortest ending it; the header 'if' and a source with nothing in it; sums worked out by hand"
+tags = ["parse", "typecheck", "flow", "genllvm", "runtime"]
+
+[[scenario.concurrency_parallel_zip3.run]]
+name = "release"
+
+[[scenario.concurrency_parallel_zip3.run]]
+name = "debug"
+options = ["--debug"]
+
+[scenario.concurrency_parallel_zip3_refused]
+category = "reject"
+description = "What a parallel each over a three-way zip refuses: a third source (or a first, or a second) that cannot be cut or walked by position, naming any of the three buffers in the body, writing a chunk that chunks(n) gives, and the wrong number of variables (two or four without indexed(), three or five with it)"
+tags = ["typecheck"]
+diagnostics = 11
+
+[scenario.concurrency_parallel_zip_flow_refused]
+category = "reject"
+description = "A zip of two cursors over the same buffer, one of them mutable, is refused as any second borrow of what is mutably borrowed: the passes would write overlapping parts"
+tags = ["flow"]
+diagnostics = 2
+
+[scenario.concurrency_parallel_zip_actor]
+category = "run"
+description = "A parallel each over a zip in an actor's behaviour, the actor's own fields through self: two lists filled in one pass with chunks of 3 and 6 by mutChunks(3).zip(mutChunks(6)).indexed(), and two lists read side by side by zip(&a, &b), with and without the position; sums worked out by hand"
+tags = ["parse", "typecheck", "flow", "genllvm", "runtime"]
+
+[[scenario.concurrency_parallel_zip_actor.run]]
+name = "release"
+
+[[scenario.concurrency_parallel_zip_actor.run]]
+name = "debug"
+options = ["--debug"]
+
+[scenario.concurrency_parallel_zip_actor_refused]
+category = "reject"
+description = "What a parallel each over a zip refuses in a behaviour: lists in locals, a local beside a field, and the third source of a three-way zip in a local (the zip lends from every source, not the first alone), whose frame is gone while the pieces run; beside a zip of fields, two-way and three-way, which is allowed"
+tags = ["typecheck"]
+diagnostics = 3
 
 [scenario.concurrency_parallel_each_copies]
 category = "reject"

@@ -400,7 +400,36 @@ as is one made in a `parallel each` (`parallelEachCheckBody`), until the
 collector is per actor. A `parallel each` body (or a builder's filter or
 `yield`) that names a value from outside, or its item, whose type is not safe to
 share across the passes (it holds an `Rc`-like owner or a traced reference) is
-`ErrorParReach` (`parCheckReach`); copying one stays `ErrorParCopy`.
+`ErrorParReach` (`parCheckReach`); copying one stays `ErrorParCopy`. In a loop
+that writes through its source, naming an outside variable whose type could point at
+a written item is `ErrorParAlias` (`parCheckOuterAlias`).
+
+A closure literal ([closure](../nodes/closure.md)) has five: a parameter written
+without a type where no signature gives one, or a signature the parameters do not
+fit, is `ErrorClosureParm`; paths that give different types where the return type
+is not written is `ErrorClosureRet`; a closure that names the variable it is the
+value of is `ErrorClosureSelf` (a closure cannot call itself); a closure written
+where it cannot be built (a global), in a form it does not take (the short form
+with something other than names), or given where a function reference is wanted
+while it holds or borrows something is `ErrorClosureForm`; and a literal given to
+overloads that cannot choose between it, or none that takes it, is
+`ErrorClosureOverload`. On a GPU target two more: a closure in GPU code that
+holds, as listed state or as a variable it borrows, a value of a type with an
+owning reference, a function reference, a virtual reference or a raw pointer is
+`ErrorGpuClosureData`; and one made a function reference, or converted to a
+virtual reference, is `ErrorGpuClosureRef`. What else a GPU has none of, written
+in GPU code, is one code, `ErrorGpuUnavailable`: a borrow of a function, a
+reference made a virtual reference, and an allocation.
+
+A callable behind a reference or an owner has three more: a callable refused for the
+permission its `()` takes or the borrow lent (a `()` taking `self &mut` given to a
+`&<fn`, a read-only borrow given to a `&<mut fn`, a `&<mut fn` lent as a `&<fn`, a
+generic's `&F` given one that changes, and a closure literal that fills a trait's
+method with `self &mut` behind a reference that only reads) is `ErrorCallablePerm`;
+an owner `So[fn(sig)]` made of a value that is no callable of its signature (no `()`
+of it, or a function of another signature) is `ErrorCallableUse`; and a closure literal
+given where a trait is wanted that has not exactly one method and no field is
+`ErrorClosureTrait`.
 
 `await` has five error codes and a warning. Where it may not stand -- anywhere
 but a behaviour -- is `ErrorAwaitPlace`; on a behaviour that returns nothing,

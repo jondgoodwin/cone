@@ -494,6 +494,10 @@ enum ErrorCode {
     ErrorWorkgroupData = 1268,  // What a '@workgroup' global holds: anything but 32-bit numbers, their atomics, and structs and fixed arrays of them
     ErrorGpuAtomicPlace = 1269, // In a kernel, an atomic operation on memory invocations do not share: a local, or a global not '@workgroup'
 
+    // Closures in GPU code, the static form only (ir/exp/closure.c, ir/iexp.c)
+    ErrorGpuClosureData = 1298, // A closure literal in GPU code holding what a GPU has none of: a variable it borrows, or a state entry, whose type holds an owning reference, a function or virtual reference, or a raw pointer
+    ErrorGpuClosureRef = 1299,  // A closure in GPU code made a function reference, '&fn(...)', or a virtual reference ('&<Trait', an owner of a trait): only a generic bound by a signature takes one there, inlined
+
     // 'await' in an actor's behaviour (ir/exp/await.c; its seam, ir/flowpath.c)
     ErrorAwaitPlace = 1270,     // 'await' outside an actor's behaviour: in a function, a method of another type, or an actor's 'fn' -- its 'init', its 'final' or a synchronous helper -- which no dispatcher runs as a message
     ErrorUnbuiltAwait = 1271,   // An 'await' every seam rule accepted, where its continuation is not built: one not on a behaviour, one whose record holds a traced reference
@@ -582,6 +586,24 @@ enum ErrorCode {
     // What a 'parallel each' body may reach (ir/exp/pareach.c)
     ErrorParReach = 1390,       // A 'parallel each' body, header, filter or yield names a value declared outside the loop (or its item) whose type is not safe to share across the passes: it holds, through a field, element, borrow or pointee, an aliasable owner of a region not declaring ThreadSafe (an Rc) or a traced reference
 
+    // Closures (ir/exp/closure.c)
+    ErrorClosureParm = 1391,    // A closure parameter written without a type where no signature is expected, or a signature the closure's parameters do not fit
+    ErrorClosureRet = 1392,     // A closure whose paths give different types, and whose return type is not written
+    ErrorClosureSelf = 1393,    // A closure that names itself: it cannot call itself
+    ErrorClosureForm = 1394,    // A closure written where it cannot be built, or in a form it does not take
+    ErrorClosureOverload = 1395, // A closure literal meeting overloaded callees it cannot choose between
+
+    // An outside reference that could point at what a 'parallel each' writes (ir/exp/pareach.c)
+    ErrorParAlias = 1396,       // A 'parallel each' that writes through its source (mutChunks, mutItems, a zip of them, a '&mut' slice) reads, by a path or as a whole, an outside variable that could reach a written element behind a reference: a read while a pass writes would race
+
+    // Callable references (ir/types/fnsig.c, ir/exp/fncall.c)
+    ErrorCallablePerm = 1397,   // A callable given where a '&<fn(sig)' or 'So[fn(sig)]' is wanted, refused because of the permission its '()' takes or the borrow lent
+    ErrorCallableUse = 1398,    // A value made into a 'So[fn(sig)]' or 'Rc[fn(sig)]' that has no pub '()' of that signature
+    ErrorClosureTrait = 1399,   // A closure literal given where a trait is wanted that does not have exactly one method (and no field) for it to fill
+
+    // What a GPU has none of, refused where it is written (ir/exp/borrow.c, ir/exp/allocate.c, ir/iexp.c)
+    ErrorGpuUnavailable = 1400, // In GPU code, a function reference ('&name'), a virtual reference made from a reference, or an allocation ('new So[T]', 'new Rc[T]', ...): a GPU has no pointers to code, no tables of them and no allocator
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name
@@ -595,6 +617,10 @@ enum ErrorCode {
 };
 
 extern int errors;
+extern int warnings;
+// Non-zero while a closure's body is tried under a guess at its permissions:
+// a diagnostic is counted and not printed
+extern int errorSilent;
 
 // Send an error message to stderr
 void errorExit(int exitcode, const char *msg, ...);

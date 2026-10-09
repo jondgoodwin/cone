@@ -1,0 +1,60 @@
+// A callable held in a field is called by the field's name, 'b.onClick(3)',
+// the way '(b.onClick)(3)' always was (no ambiguity: a field and a method
+// cannot share a name, ErrorDupName). Every kind of field: a function
+// reference, a borrowed callable, a borrowed callable that may change, an
+// owner, a counted owner, and a struct with a '()' -- called on the value,
+// through a '&' and through a '&mut'. A field that is not callable stays
+// ErrorFldArgs (closure_typecheck_dynamic). Every value is worked out by hand.
+
+mod closure_field_call;
+
+import stdio use *;
+
+struct Triple {
+  pub k i32;
+  pub fn `()`(self &, x i32) i32 { x * k; }
+}
+
+fn plus1(x i32) i32 { x + 1; }
+
+struct Button {
+  pub plain &fn(x i32) i32;
+  pub borrowed &<fn(x i32) i32;
+  pub changing &<mut fn(x i32) i32;
+  pub owned So[fn(x i32) i32];
+  pub shared Rc[imm, fn(x i32) i32];
+  pub direct Triple;
+  pub onClick &<fn() i32;
+  // Inside a method, through 'self', and the parenthesised spelling beside it
+  pub fn fire(self &, x i32) i32 { self.plain(x) + (self.plain)(x); }
+  pub fn press(self &mut, x i32) i32 { self.owned(x); }
+}
+
+fn viaRef(b &Button, x i32) i32 { b.plain(x) + b.borrowed(x) + b.shared(x) + b.direct(x); }
+fn viaMut(b &mut Button, x i32) i32 { b.changing(x) + b.owned(x); }
+
+fn main() {
+  imm ten = 10;
+  imm clicked = fn() i32 { ten + 1; };
+  mut base = new Triple(3);
+  mut count = new Triple(5);
+  mut b = new Button(
+    plain: &plus1,
+    borrowed: &base,
+    changing: &mut count,
+    owned: new So[fn(x i32) i32](fn(x i32) [mut s = 0] i32 { s += x; s; }),
+    shared: new Rc[imm, fn(x i32) i32](new Triple(6)),
+    direct: new Triple(7),
+    onClick: &clicked);
+  print <- b.onClick(), "\n";             // no arguments: 11
+  print <- b.plain(10), "\n";             // 11
+  print <- (b.plain)(10), "\n";           // 11, the old spelling
+  print <- b.borrowed(10), "\n";          // 30
+  print <- b.shared(10), "\n";            // 60
+  print <- b.direct(10), "\n";            // 70
+  print <- viaRef(&b, 1), "\n";           // 2 + 3 + 6 + 7 = 18
+  print <- viaMut(&mut b, 2), "\n";       // 10 + 2 = 12
+  print <- viaMut(&mut b, 3), "\n";       // 15 + 5 = 20
+  print <- b.fire(2), "\n";               // 3 + 3 = 6
+  print <- b.press(4), "\n";              // 5 + 4 = 9
+}

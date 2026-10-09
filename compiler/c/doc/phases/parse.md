@@ -559,7 +559,16 @@ signature's parameters are read before that is known, so `parseFnSigSettle`
 settles them once it is: in a type, a parameter written as a lone name is an
 unnamed parameter of the type the name names (`&fn(Vec3) f32`); in an anonymous
 function it stays a parameter's name, with a method's `Self` inference, and a
-parameter written as its type alone is `ErrorNoIdent`.
+parameter written as its type alone is `ErrorNoIdent`. **A closure literal** is a
+value, with no `&`: `fn (u f32) [ribs, mut n = 0] f32 { ... }`, read by
+`parseTerm` where a term begins with `fn`, and the short form `x => x * 2` (and
+`(a, b) => ...`, `() => ...`), read where a name or a parenthesised list is
+followed by `=>` (`FatArrowToken`). Both build a `ClosureNode`
+([closure](../nodes/closure.md)), which `&fn(...) { ... }` does not. **A bare `fn(sig)`
+where a type is written** is a signature, read as a generic bound is
+(`parseFnBound`): as an argument inside brackets (`parseIndexArg`: `So[fn(i32) i32]`,
+`Applied[fn(i32) i32]`, since nothing indexes by a closure), as a term while
+`ParseState.intype` is set, and as an alias's target (`parseAlias`).
 
 ## 5. Adding an operator: the six edits
 
@@ -1028,7 +1037,7 @@ numbers.
 | | `parseFoldClause` | `use *` with an optional `but` list, or a list of names each with an optional `as`; builds the clause on the field and an alias per listed name, bound by name resolution |
 | | `parseUseSibling`, `parseModUse`, `parseUseAdmits` | a `use` standing as a statement: in a type body it folds a sibling in, and at module scope (`parseGlobalStmts`) it folds an enum's variants or a submodule's names in, held on a `ModUseNode` — which of the two is known only once the source resolves. Both name their source and then share what follows it — every member by default, `*` refused as saying nothing more, a list with `as`, a block, or `but` |
 | `parser/parsefnflow.c` | `parseFn` | function/method declaration, with its `@initpure` after `fn`, before or after `@c`, recorded as `DclInitPure` and not checked, its `@intrinsic`, recorded as `DclIntrinsic` and letting the declaration end without a body, and its `@c`, refused where there is no one symbol for it to name — an anonymous, generic or `inline` fn, an intrinsic, a trait's or a generic type's method (`ErrorCAttr`), and its `@compute(x, y, z)` (`parseComputeAttr`), first or after the others: constant sizes, at least 1, at most 256 invocations and 64 along z (`ErrorComputeSize`), on no method, generic, `inline` fn, intrinsic, `@c` fn or anonymous one (`ErrorComputeAttr`), its signature left to type check (`fnDclComputeCheck`) — **despite the file name, this is where declarations and control flow are parsed, not data flow analysis** |
-| | `parseGenericParms`, `parseWhere`, `parseIsCondition`, `parseMacro` | the type parameter list, shared by `fn`, `struct`, `mod` and `macro`: comma-separated names, each a generic's annotated with `+`-joined names whose meaning name resolution decides (`or` there is `ErrorGenParmOr`), and a macro's or module's refused an annotation as `ErrorGenParmConstr`; the `where` clause just before a function's or a type's block, `T is Name` clauses joined by `and` and `or`, `and` binding tighter, grouped by parentheses, any other form `ErrorWhereForm` ([generic](../nodes/generic.md), "Parse"); and the condition after an `is` entry's `if`, read as a `where` clause's is, but kept whole and with no lifetime in it |
+| | `parseGenericParms`, `parseWhere`, `parseIsCondition`, `parseMacro` | the type parameter list, shared by `fn`, `struct`, `mod` and `macro`: comma-separated names, each a generic's annotated with `+`-joined names (or a function signature written bare, `parseFnBound`) whose meaning name resolution decides (`or` there is `ErrorGenParmOr`), and a macro's or module's refused an annotation as `ErrorGenParmConstr`; the `where` clause just before a function's or a type's block, `T is Name` (or `T is fn(...) R`) clauses joined by `and` and `or`, `and` binding tighter, grouped by parentheses, any other form `ErrorWhereForm` ([generic](../nodes/generic.md), "Parse"); and the condition after an `is` entry's `if`, read as a `where` clause's is, but kept whole and with no lifetime in it |
 | | `parseExprBlock` | the statement-block loop — the parser's second dispatch table |
 | | `parseIf`, `parseMatch`, `parseBoundMatch` | `if`/`elif`/`else` and the `match`-to-`if` desugaring; every pattern's root name is marked (`castPatternMark`) to be looked up in the matched value's enum at type check, as `parseCmp` marks an `is` test's |
 | | `parseMatchPattern`, `parseMatchRange` | one pattern of a case — `is`, a comparison, a range, a value alone — lowered to the condition that tests the captured value, a value alone to the undecided test `newMatchValueNode` builds; a condition (`not b`, `n > 3`), at the start of a case or after an `or`, is `ErrorPatBare` |

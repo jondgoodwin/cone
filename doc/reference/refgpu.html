@@ -18,8 +18,9 @@
 		their buffers, their Invocation, their error buffer, atomics on buffer elements,
 		workgroup memory and barriers as described below, and Congo builds a package's
 		kernels, a marked package's and a <span class="pre">gpu/</span> folder's (below,
-		"A package's kernels"). Not yet:
-		refusing the features a GPU lacks where they are written, textures, a checked form of
+		"A package's kernels"). A reference to a function, a virtual reference and an allocation
+		are refused where they are written in GPU code (below, "What a GPU lacks"). Not yet:
+		refusing the other features a GPU lacks (threads, locks, I/O), textures, a checked form of
 		workgroup memory, a CPU twin in <span class="pre">gpuwork</span> that runs a workgroup's
 		invocations together (so that one reading another's writes across a barrier gets the
 		GPU's answer; the barrier hook it needs is built, below), one package's
@@ -195,6 +196,33 @@ fn @compute(64) bake(inv Invocation, parts &amp;Array[Part], out &amp;mut Array[
 		since that is how the RTX 4060 computes C's exact remainder: forbidden, it matched at
 		62% of arguments. The CPU never fuses, on any CPU conec targets, one with fused
 		multiply-add instructions too (<span class="pre">--cpu=native</span>).</p>
+
+	<h3 id="closures">Closures on the GPU</h3>
+	<p>A <a href="refclosure.html">closure</a> may be written in GPU code in its static form
+		only: given to a generic bound by a signature, as in
+		<span class="pre">shade(p =&gt; p.dot(p) - radius * radius, pt)</span> for
+		<span class="pre">fn shade[F fn(p Vec3) f32](f &amp;F, p Vec3) f32</span>. The generic is
+		instanced for the closure and inlined into the kernel with every other call, so the
+		closure is only some locals of the invocation, and a hand-written struct with a
+		<span class="pre">()</span> method goes through the same generic. A closure holds what
+		a GPU has: numbers, structs and arrays of them, and borrows of memory the GPU has (a
+		local, a buffer's slice), whether listed as its state or borrowed from the code around
+		it; an owning reference (<span class="pre">So</span>, <span class="pre">Rc</span>), a
+		function reference, a virtual reference or a raw pointer anywhere inside is refused,
+		naming the variable. A GPU has no pointers to code, so a closure made a function
+		reference, <span class="pre">&amp;fn(...)</span>, or a virtual reference is refused too.</p>
+
+	<h3 id="lacks">What a GPU lacks</h3>
+	<p>A GPU has no pointers to code, no tables of them and no allocator, and GPU code that
+		writes any of them is refused, naming it: a reference to a function
+		(<span class="pre">&amp;double</span>, or an anonymous <span class="pre">&amp;fn(...) {...}</span>),
+		since every call is inlined into the kernel; a reference made a virtual reference
+		(<span class="pre">&amp;&lt;Shape</span> from a <span class="pre">&amp;Ball</span>), which would be called
+		through a table; and an allocation (<span class="pre">new So[T]</span>,
+		<span class="pre">new Rc[T]</span>, <span class="pre">trynew</span>), since a kernel's memory is
+		its locals and the buffers it is bound. Calling a function by name, a generic bound by a
+		signature or a trait (<span class="pre">[F fn(...)]</span>, <span class="pre">[S Shape]</span>,
+		inlined) and building a struct as a value are the way to do the same.</p>
 
 	<h2 id="packages">A package's kernels</h2>
 	<p>Whether a package may run on a GPU is said by the package: its manifest marks it,

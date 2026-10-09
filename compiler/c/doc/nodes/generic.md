@@ -184,13 +184,24 @@ lifetime bound, not an annotation (`parseBoundAdd`): a function's go to the
 `bounds` order `parseFn` adds to its signature's, and a generic type's are
 refused, `ErrorLifetimeBound`.
 
+**A function signature is a bound too**, written bare after `fn`: the first
+annotation or one after a `+` (`F fn(a &T, b &T) i32`), and the name after
+`is` in a `where` clause. `parseFnBound` reads it as the signature after `&fn`
+is read (`parseFnSig` with `reftype` set, then `parseFnSigSettle` as a type: a
+parameter may be written as its type alone), with `inlist` set so that a comma
+after its return type ends it as in a parameter list, and with a `+` after the
+parameters ending it with no return type, since a `+` there joins the next
+bound and not a (retired) plus-term type. It keeps the text it was written as
+(`FnSigNode.spelled`) for messages. The node is a `FnSigNode` in `annot` or as
+the `typ` of the clause's `IsNode`, where a trait's name would be.
+
 **A macro and a generic module take none.** There the comma is required, and a
 second name straight after the first is refused with `ErrorGenParmConstr`,
 reported at that second name: `[a i32]` would be a typed macro parameter, and
 read as two parameters it would become an arity complaint about the macro's
 uses. Recovery skips to the next `,` or `]`, stopping at `;`, `{`, `}` or EOF, so
 a whole `+`-combined annotation costs one diagnostic and each parameter carrying
-one is reported. The parameter survives; whatever followed its name is dropped.
+one is reported (a signature's own parentheses are skipped whole). The parameter survives; whatever followed its name is dropped.
 Anything else after a parameter name is still the unclosed-list `ErrorBadTok`.
 
 **`parseWhere`** reads the `where` clause, which stands just before the block:
@@ -258,7 +269,8 @@ enclosing scope and the matching pop would never remove it.
 **The constraints are resolved there too, once the parameters are hooked**, by
 `genericConstraintsNameRes`, from `structNameRes` for a generic type's and from
 `fnDclNameRes` for a function's. It first folds each parameter's annotation into
-the list, as clauses of a fresh use of the parameter and the annotation's name —
+the list, as clauses of a fresh use of the parameter and the annotation's name
+(a signature stands as it is, to be decided by evaluation) —
 refusing, `ErrorGenParmConstr`, a name that resolves to no trait — and then
 resolves every clause of every written condition (`genericConditionNameRes`),
 keeping a condition whose clauses each have a subject that is a type parameter
@@ -471,7 +483,11 @@ false diagnostic. The cost is silent acceptance — see Hazards.
    methods contradict one another, naming the method. A slot an argument already
    filled stays. No associated type is
    involved: a structural trait has no impl to look an answer up in, so the
-   methods are the only place it can be read.
+   methods are the only place it can be read. A signature bound, `F fn() T`, is
+   read the same way off the argument: a function type's signature is matched
+   with the bound's whole (`genericInferType`'s signature case), a struct's
+   `()` method (the one candidate with the bound's parameters and a receiver)
+   after its receiver.
 
    **An array or a slice given for a parameter bounded by a generic trait** —
    `xs &C` with `C Iterable[A, I]`, given `&arr` or a `&Array[T]` slice — has no
@@ -632,6 +648,33 @@ Every other question a clause asks is
   members, so the test is `structMatches` under `Monomorph` with `Self` the type
   asked about, exactly as for a non-generic trait; `Stack[i64]` and `Stack[f64]`
   are different traits, and a type may fit both.
+
+**A signature bound is no trait.** A clause whose `typ` is a `FnSigNode`
+(`F is fn(a &T, b &T) i32`, from the inline slot or a `where`) is resolved as
+the signature after `&fn` is, its types naming the generic's parameters, and
+vetted by `genericConditionNameRes` (refused in a condition on an `is` entry,
+`ErrorUnbuiltIsCond`). At the arguments `genericConditionValue` makes the
+signature as an instance written out is made (`genericClauseCloneChecked`: the
+parameters substituted, the copy checked) and asks `genericSigMeets`: a function
+type, or a reference to one (`genericFnTypeSig`: what a plain function referenced
+is the argument as through `&F`, and by value), is met by a signature `fnSigEqual`
+to it, a struct by a `pub` `()` method that is not generic and
+whose parameters after the receiver, and whose return type, are `itypeIsSame` to
+the signature's (`genericParensMethod`, `genericMethodTakesSig`). Nothing else
+meets it, and the receiver's permission is not asked there: where the generic takes
+the parameter as `&F`, the call asks (`genericCallablePermCheck`, after the type
+arguments are inferred and before the instance is made), and a `()` taking `self
+&mut` is refused at the caller's argument, in the author's words
+(`ErrorCallablePerm`); a `&mut F` meets both, and the instance's own body does the
+rest when it calls the parameter. A parameter written `&<fn(sig)` names the
+signature itself, and `genericParmBound` answers it too. A closure literal given to such a
+parameter takes its parameter types from the bound instead: `genericClosureSig`
+finds the bound (`genericParmBound`: the clause whose subject is the parameter
+the argument's parameter is, or is a reference to), reads the other type
+parameters off the call's other arguments (`genericInferType`) and clones the
+bound with them ([closure](closure.md)). The refusal is `ErrorWhereUnmet`,
+spelling the signature as written (`spelled`), as it comes to here
+(`genericFnSigCat`) and what the argument has instead (`genericSigMeetWhy`).
 
 **A condition is evaluated whole** (`genericConditionValue`), `or` and `and` as
 in an expression, the right side asked only where the left does not decide it,

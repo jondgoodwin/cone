@@ -88,6 +88,8 @@ INode *cloneNode(CloneState *cstate, INode *nodep) {
         node = (INode *)newSelfActorNode();
         inodeLexCopy(node, nodep);
         break;
+    case ClosureTag:
+        node = cloneClosureNode(cstate, (ClosureNode *)nodep); break;
     case NamedValTag:
         node = cloneNamedValNode(cstate, (NamedValNode *)nodep); break;
     case OfEntryTag: case FillEntryTag: case PairEntryTag: case EachEntryTag: case YieldEntryTag:

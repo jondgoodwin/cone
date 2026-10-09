@@ -323,6 +323,13 @@ pub struct ArrayChunks['a, T] {
 
   // The runs with their numbers, counted from 0 as the runs it gives are
   pub fn indexed(self) ChunksIndexed['a, T] { new ChunksIndexed[T](self, 0usize); }
+
+  // Walked side by side with another cursor, as 'zip' does two collections: the
+  // pairs of a run and what the other gives, ending with the shorter. When the other
+  // is one that can be cut and walked by position too, so is the zip (a Zip)
+  pub fn zip[B, J Iterator[B]](self, other J) Zip[&'a Array[T], B, ArrayChunks['a, T], J] {
+    new Zip[&Array[T], B, ArrayChunks[T], J](self, other);
+  }
 }
 
 // A cursor over runs and their numbers, which 'indexed' gives: 'next' gives a tuple
@@ -387,6 +394,10 @@ pub struct ArrayMutChunks['a, T] {
   }
 
   pub fn indexed(self) MutChunksIndexed['a, T] { new MutChunksIndexed[T](self, 0usize); }
+
+  pub fn zip[B, J Iterator[B]](self, other J) Zip[&'a mut Array[T], B, ArrayMutChunks['a, T], J] {
+    new Zip[&mut Array[T], B, ArrayMutChunks[T], J](self, other);
+  }
 }
 
 pub struct MutChunksIndexed['a, T] {
@@ -421,6 +432,23 @@ pub struct ArrayIter['a, T] {
     imm i = pos;
     pos = i + 1usize;
     Some[&T][&items[i]];
+  }
+
+  // How many elements are left, the one at k of them, and the cursors over the
+  // elements before the place 'at' of them and those from it on (a ParallelIterable
+  // and RandomAccess, which a zip of cursors needs to be walked by 'parallel each')
+  pub fn len(self &) usize { items.len - pos; }
+
+  pub fn at(self &, k usize) &'a T { &items[pos + k]; }
+
+  pub fn split(self &, at usize) (ArrayIter['a, T], ArrayIter['a, T]) {
+    if at > self.len() {
+      panic("ArrayIter.split: the index is past the end");
+    }
+    imm p = items as *T;
+    imm cut = pos + at;
+    (new ArrayIter[T](mem.sliceFromParts[T](p, cut), pos),
+      new ArrayIter[T](mem.sliceFromParts[T](p + cut, items.len - cut), 0usize));
   }
 }
 
@@ -468,6 +496,10 @@ pub struct ArrayMutItems['a, T] {
 
   // The same with the positions: the item is a '&mut' too
   pub fn indexed(self) MutItemsIndexed['a, T] { new MutItemsIndexed[T](items, pos); }
+
+  pub fn zip[B, J Iterator[B]](self, other J) Zip[&'a mut T, B, ArrayMutItems['a, T], J] {
+    new Zip[&mut T, B, ArrayMutItems[T], J](self, other);
+  }
 }
 
 // A cursor over a slice's elements and their positions for changing the elements,
@@ -510,6 +542,146 @@ pub struct Zip[A, B, I Iterator[A], J Iterator[B]] {
       }
       case is None { return None[(A, B)][]; }
     }
+  }
+
+  // The pairs with their numbers, counted from 0: a tuple of the number and
+  // what each source gives
+  pub fn indexed(self) ZipIndexed[A, B, I, J] { new ZipIndexed[A, B, I, J](self, 0usize); }
+
+  // A third source walked beside the two: a Zip3, whose items are flat triples (not a
+  // pair and a third), so that three variables unpack them. It ends with the shortest
+  pub fn zip[C, K Iterator[C]](self, other K) Zip3[A, B, C, I, J, K] {
+    new Zip3[A, B, C, I, J, K](self.first, self.second, other);
+  }
+
+  // When BOTH sources can be walked by position (RandomAccess) and cut
+  // (ParallelIterable), so can the zip, as Rayon's: its length is the shorter's, it
+  // is cut at the same place in both, and the pair at k is what each gives at k. A
+  // source that cannot (a generator, a Deque's cursor) leaves these out
+  pub fn len(self &) usize where I is RandomAccess[A] and J is RandomAccess[B] {
+    imm a = first.len();
+    imm b = second.len();
+    if a < b { a; } else { b; };
+  }
+
+  pub fn at(self &, k usize) (A, B) where I is RandomAccess[A] and J is RandomAccess[B] {
+    (first.at(k), second.at(k));
+  }
+
+  pub fn split(self &, at usize) (Zip[A, B, I, J], Zip[A, B, I, J])
+      where I is ParallelIterable[A, I] and J is ParallelIterable[B, J] {
+    imm f = first.split(at);
+    imm s = second.split(at);
+    (new Zip[A, B, I, J](f.0, s.0), new Zip[A, B, I, J](f.1, s.1));
+  }
+}
+
+// A zip with the pairs numbered, which a zip's 'indexed' gives: 'next' gives a
+// tuple of the number and what each source gives
+pub struct ZipIndexed[A, B, I Iterator[A], J Iterator[B]] {
+  pub zip Zip[A, B, I, J];
+  pub index usize;
+
+  pub fn next(self &mut) Option[(usize, A, B)] {
+    match zip.next() {
+      case imm p Some {
+        imm i = index;
+        index = i + 1usize;
+        imm pair = p.value;
+        return Some[(usize, A, B)][(i, pair.0, pair.1)];
+      }
+      case is None { return None[(usize, A, B)][]; }
+    }
+  }
+
+  pub fn len(self &) usize where I is RandomAccess[A] and J is RandomAccess[B] { zip.len(); }
+
+  pub fn at(self &, k usize) (usize, A, B) where I is RandomAccess[A] and J is RandomAccess[B] {
+    imm pair = zip.at(k);
+    (index + k, pair.0, pair.1);
+  }
+}
+
+// Three sources walked side by side, which a zip's own 'zip' gives: 'next' gives a
+// flat tuple of what each gives, and answers None as soon as any runs out. As a Zip
+// is, it is RandomAccess and ParallelIterable when ALL THREE sources are: its length
+// is the shortest's and it is cut at the same place in all three.
+pub struct Zip3[A, B, C, I Iterator[A], J Iterator[B], K Iterator[C]] {
+  first I;
+  second J;
+  third K;
+
+  pub fn next(self &mut) Option[(A, B, C)] {
+    match first.next() {
+      case imm x Some {
+        imm a = x.value;
+        match second.next() {
+          case imm y Some {
+            imm b = y.value;
+            match third.next() {
+              case imm z Some { return Some[(A, B, C)][(a, b, z.value)]; }
+              case is None { return None[(A, B, C)][]; }
+            }
+          }
+          case is None { return None[(A, B, C)][]; }
+        }
+      }
+      case is None { return None[(A, B, C)][]; }
+    }
+  }
+
+  // The triples with their numbers, counted from 0: a flat tuple of the number and
+  // what each source gives
+  pub fn indexed(self) Zip3Indexed[A, B, C, I, J, K] { new Zip3Indexed[A, B, C, I, J, K](self, 0usize); }
+
+  pub fn len(self &) usize
+      where I is RandomAccess[A] and J is RandomAccess[B] and K is RandomAccess[C] {
+    imm a = first.len();
+    imm b = second.len();
+    imm c = third.len();
+    imm ab = if a < b { a; } else { b; };
+    if ab < c { ab; } else { c; };
+  }
+
+  pub fn at(self &, k usize) (A, B, C)
+      where I is RandomAccess[A] and J is RandomAccess[B] and K is RandomAccess[C] {
+    (first.at(k), second.at(k), third.at(k));
+  }
+
+  pub fn split(self &, at usize) (Zip3[A, B, C, I, J, K], Zip3[A, B, C, I, J, K])
+      where I is ParallelIterable[A, I] and J is ParallelIterable[B, J] and K is ParallelIterable[C, K] {
+    imm f = first.split(at);
+    imm s = second.split(at);
+    imm t = third.split(at);
+    (new Zip3[A, B, C, I, J, K](f.0, s.0, t.0), new Zip3[A, B, C, I, J, K](f.1, s.1, t.1));
+  }
+}
+
+// A three-way zip with the triples numbered, which its 'indexed' gives: 'next' gives
+// a flat tuple of the number and what each of the three gives
+pub struct Zip3Indexed[A, B, C, I Iterator[A], J Iterator[B], K Iterator[C]] {
+  pub zip Zip3[A, B, C, I, J, K];
+  pub index usize;
+
+  pub fn next(self &mut) Option[(usize, A, B, C)] {
+    match zip.next() {
+      case imm p Some {
+        imm i = index;
+        index = i + 1usize;
+        imm triple = p.value;
+        return Some[(usize, A, B, C)][(i, triple.0, triple.1, triple.2)];
+      }
+      case is None { return None[(usize, A, B, C)][]; }
+    }
+  }
+
+  pub fn len(self &) usize
+      where I is RandomAccess[A] and J is RandomAccess[B] and K is RandomAccess[C] { zip.len(); }
+
+  pub fn at(self &, k usize) (usize, A, B, C)
+      where I is RandomAccess[A] and J is RandomAccess[B] and K is RandomAccess[C] {
+    imm triple = zip.at(k);
+    (index + k, triple.0, triple.1, triple.2);
   }
 }
 
@@ -757,6 +929,16 @@ pub trait ParallelIterable[T, P] {
   pub fn len(self &) usize;
   // The items before index 'at', and the items from it on
   pub fn split(self &, at usize) (P, P);
+}
+
+// What a zip needs of each of its sources to be walked by 'parallel each', beside
+// ParallelIterable: 'len' items, and item number k of them, 'at' (a panic past the
+// last). The cursors 'chunks', 'mutChunks', 'mutItems' and 'iter' give, and the
+// ones their 'indexed' gives, have both, and so has a zip of two that do. Met by
+// the methods alone, as the other shapes are.
+pub trait RandomAccess[T] {
+  pub fn len(self &) usize;
+  pub fn at(self &, k usize) T;
 }
 
 // A panic ends the program where something that must not happen has: an index

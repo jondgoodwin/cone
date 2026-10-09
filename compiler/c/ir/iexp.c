@@ -350,6 +350,13 @@ static int iexpCoerceShape(INode **from, INode *totype) {
         // require one ask for, and so does a named constant's use
         if (litWidenFloat(from, totypedcl) || litWidenConst(from, totypedcl))
             return 1;
+        // Refused in GPU code; the conversion is built anyway, so what uses the
+        // value says nothing more
+        if (!closureGpuVirtRefused(*from, totypedcl) && flowGpu && totypedcl->tag == VirtRefTag
+            && isExpNode(*from) && iexpGetTypeDcl(*from)->tag == RefTag)
+            errorMsgNode(*from, ErrorGpuUnavailable,
+                "In GPU code a reference to %s cannot be made a virtual reference to %s: it would be called through a table of code pointers, which a GPU has none of. Give the value to a function generic over a trait, '[S Shape]', which is inlined.",
+                itypeName(((RefNode*)iexpGetTypeDcl(*from))->vtexp), itypeName(((RefNode*)totypedcl)->vtexp));
         INode *newfrom = (INode*)newConvCastNode(*from, iexpCoerceType(*from, totypedcl));
         inodeLexCopy(newfrom, *from);
         *from = newfrom;
@@ -461,7 +468,11 @@ int iexpMultiInfer(INode *expectType, INode **maybeType, INode **from) {
                 return ConvSubtype;
             }
             else {
-                errorMsgNode(*from, ErrorInvType, "Branch's expression type inconsistent with other branches.");
+                if (closureInferring)
+                    errorMsgNode(*from, ErrorClosureRet,
+                        "The paths of this closure give different types, so its return type cannot be read off them: write the closure's return type, as in 'fn (x i32) i32 { ... }'.");
+                else
+                    errorMsgNode(*from, ErrorInvType, "Branch's expression type inconsistent with other branches.");
                 return NoMatch;
             }
         }

@@ -273,7 +273,12 @@ void nameUseNameRes(NameResState *pstate, NameUseNode **namep) {
             return;
         // An import with 'as' binds its module under the new name only
         ImportNode *renaming = pstate->mod ? importRenaming(pstate->mod, name->namesym) : NULL;
-        if (renaming)
+        // A closure naming the variable it is the value of: it cannot call itself
+        if (pstate->closure && name->namesym == pstate->declaring)
+            errorMsgNode((INode*)name, ErrorClosureSelf,
+                "A closure cannot call itself: %s is not yet a name inside the closure that is its value. For recursion, write a named function.",
+                &name->namesym->namestr);
+        else if (renaming)
             errorMsgNode((INode*)name, ErrorUnkName,
                 "The name %s does not refer to a declared name: this module imports %s as %s, which is the name it is reached by here.",
                 &name->namesym->namestr, &name->namesym->namestr, &renaming->rename->namestr);
@@ -295,6 +300,9 @@ void nameUseNameRes(NameResState *pstate, NameUseNode **namep) {
             &name->namesym->namestr, &name->namesym->namestr);
 
     nameUseMarkExpandReached(pstate, name);
+
+    // Inside a closure literal, a variable of the code around is one it borrows
+    closureNoteUse(pstate, name);
 }
 
 // Report a use of a member of a generic type itself, such as 'Box.stat' on a
@@ -406,6 +414,10 @@ void nameUseTypeCheck(TypeCheckState *pstate, NameUseNode **namep) {
         inodeTypeCheckAny(pstate, (INode**)namep);
         return;
     }
+    // Inside a closure's '()', a variable of the code around that the closure
+    // holds, or one of its state entries, is its field
+    if (closureUse(pstate, namep))
+        return;
     nameUseBaseInstanceMember(pstate, name);
     if (nameUseTemplateMember(name, name->dclnode)) {
         name->vtype = errorType;
@@ -434,7 +446,10 @@ void nameUseTypeCheck(TypeCheckState *pstate, NameUseNode **namep) {
         // Only a method has a receiver to reach a field through. A field's own
         // default value is analyzed with no function around it, so a name that
         // resolved to a sibling field there has nothing to qualify it.
-        if (pstate->fn == NULL || !(pstate->fn->flags & FlagMethFld)) {
+        // A closure's '()' is a method of its hidden struct, but the member is
+        // reached through the self of the method the closure is written in
+        if (pstate->fn == NULL || !(pstate->fn->flags & FlagMethFld)
+            || (pstate->fn->closure && pstate->fn->closure->outerself == NULL)) {
             nameUseNoSelf(pstate, name);
             name->vtype = errorType;
             return;
@@ -442,7 +457,7 @@ void nameUseTypeCheck(TypeCheckState *pstate, NameUseNode **namep) {
         // Build a resolved 'self' node and re-read the name as a member of it
         NameUseNode *selfnode = newNameUseNode(selfName);
         copyNodeLex(selfnode, name);
-        selfnode->dclnode = nodesGet(((FnSigNode*)pstate->fn->vtype)->parms, 0);
+        selfnode->dclnode = closureSelfParm(pstate->fn);
         selfnode->vtype = ((VarDclNode*)selfnode->dclnode)->vtype;
         FnCallNode *fncall = newFnCallNode((INode *)selfnode, 0);
         fncall->methfld = (INode*)name;

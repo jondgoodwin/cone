@@ -1327,6 +1327,10 @@ LLVMValueRef genlallocref(GenState *gen, RefNode *allocatenode) {
 
     // Calculate how much memory space we need to allocate
     long long allocsize = LLVMABISizeOfType(gen->datalayout, reftype->typeinfo->structype);
+    // A value with no size, and no header, is still a block of its own that is freed
+    // as any is: the smallest one (an owner of a callable that holds nothing)
+    if (allocsize == 0)
+        allocsize = 1;
     LLVMValueRef sizeval = LLVMConstInt(genlType(gen, (INode*)usizeType), allocsize, 0);
 
     // A body whose length the reference carries is allocated by copying a

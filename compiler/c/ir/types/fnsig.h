@@ -21,6 +21,7 @@ typedef struct FnSigNode {
     uint8_t lifenamed;     // A lifetime is named on one of its types (lifetime.h)
     uint8_t lifechecked;   // lifeSigCheck has settled 'lifenamed' and 'lifeorder'
     uint8_t lifestatic;    // Its order bounds a lifetime by ''static': a type parameter's bound (lifetime.h)
+    Name *spelled;         // A signature written bare as a generic bound: the text it was written as, for messages; else NULL
 } FnSigNode;
 
 FnSigNode *newFnSigNode();
@@ -51,6 +52,21 @@ TypeCompare fnSigMatches(FnSigNode *to, FnSigNode *from, SubtypeConstraint const
 
 // Return true if type of from-exp matches totype
 int fnSigCoerce(FnSigNode *totype, INode **fromexp);
+
+// The trait that stands for 'fn(sig)' behind a virtual reference or an owner:
+// one method '()' of that signature, 'self &mut' if 'mutself', else 'self &'.
+// One per signature and kind.
+StructNode *fnSigCallTrait(TypeCheckState *pstate, FnSigNode *sig, int mutself, INode *lexnode);
+
+// The signature a type is a callable trait for (fnSigCallTrait), or NULL
+FnSigNode *fnSigOfCallTrait(INode *type);
+
+// Does a struct's '()' take the receiver the callable trait's kind allows?
+int fnSigCallSelfFits(StructNode *trait, FnDclNode *meth);
+
+// Why a value of type 'from' is refused where the callable type 'to' is wanted,
+// when that is the permission of its '()'; NULL when it is not that
+char *fnSigCallRefusal(INode *from, INode *to);
 
 // Can a call passing 'self' (NULL if none) and 'args' call this signature?
 // This only decides viability, and never alters the call: no cast, borrow or

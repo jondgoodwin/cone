@@ -1,0 +1,52 @@
+// What a closure literal given where a trait is wanted is refused for. It fills a
+// trait with exactly one method and no field: a trait with two methods, or none, is
+// refused naming what it has; the literal's parameters and return type are the
+// method's (a count, a written type that differs, or a return type that differs
+// is refused naming the method); and a body that changes state does not fill a
+// method behind a reference that only reads, `&<Shape` or a generic's `&S`, in
+// the author's terms. Each is said once, at the literal.
+
+mod closure_typecheck_trait;
+
+struct V { pub x f32; pub y f32; }
+
+pub trait Shape {
+  pub fn distance(self &, p V) f32;
+}
+
+pub trait Two {
+  pub fn distance(self &, p V) f32;
+  pub fn normal(self &, p V) V;
+}
+
+pub trait Mark {
+}
+
+fn depth[S Shape](shape &S, p V) f32 { shape.distance(p); }
+fn depthVia(shape &<Shape, p V) f32 { shape.distance(p); }
+fn depthMut(shape &<mut Shape, p V) f32 { shape.distance(p); }
+fn twoVia(shape &<Two, p V) f32 { shape.distance(p); }
+fn twoGen[S Two](shape &S, p V) f32 { shape.distance(p); }
+fn markVia(shape &<Mark, p V) f32 { 0.; }
+
+fn main() {
+  imm p = new V(3., 4.);
+  mut total = 0.;
+
+  // A trait with more than one method, or none
+  twoVia(q => 1., p);              //~ ErrorClosureTrait:10 "Two has 2 methods and fields (the first method is `distance`)"
+  twoGen(q => 1., p);              //~ ErrorClosureTrait:10 "Two has 2 methods and fields (the first method is `distance`)"
+  markVia(q => 1., p);             //~ ErrorClosureTrait:11 "Mark has none"
+  imm many = new So[Two](q => 1.); //~ ErrorClosureTrait:26 "Two has 2 methods and fields"
+
+  // A signature that is not the method's
+  depthVia((a, b) => 1., p);                    //~ ErrorClosureParm:14 "This closure takes 2 parameters, and the trait's `distance` takes 1"
+  depthVia(fn(q f32) f32 { q; }, p);            //~ ErrorClosureParm:15 "the trait's `distance` takes V there"
+  depthVia(fn(q V) i32 { 1; }, p);              //~ ErrorClosureParm:12 "the trait's `distance` returns f32"
+  imm bad = new So[Shape](fn(q f32) f32 { q; }); //~ ErrorClosureParm:30 "the trait's `distance` takes V there"
+
+  // A body that changes state, behind a reference that only reads
+  depthVia(q => { total += q.x; total; }, p);   //~ ErrorCallablePerm:12 "`&<Shape` may only call a method that reads its state; this closure changes it (its `distance` takes `self &mut`)"
+  depth(q => { total += q.x; total; }, p);      //~ ErrorCallablePerm:9 "depth takes `shape` as `&S`, so the callable may only read its state; this closure changes it (its `distance` takes `self &mut`)"
+  depthMut(q => { total += q.x; total; }, p);
+}

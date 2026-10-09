@@ -271,6 +271,35 @@ block behind a pointer, is found by its argument. The message differs for a root
 that is a counted or traced owner itself (`parIsCountedItself`: borrow its contents
 before the loop) and one that holds it (copy what the loop needs into a local).
 
+A loop that **writes through its source** also refuses an outside variable whose
+type could point at a written item (`ErrorParAlias`, `parCheckOuterAlias`, run where
+the `parCheckAlias` of the place the items are lent from is). What is written is read
+from the source's cursor types (`parWrittenElems`: the one type argument of core's
+`ArrayMutChunks`, `ArrayMutItems`, `MutItemsIndexed`, through `MutChunksIndexed`, the
+zips and their `indexed()`, or a `&mut` slice itself), never a method's name. The set
+is the element and what it holds inline (`parInlineTypes`). The check is **by the path
+read**: `parCheckOuterAlias` takes the outermost place node (field, index, dereference,
+borrow of one; `parPlaceChain`) rooted at an outside variable and `parPlaceReaches`
+walks it from the root. A reference crossed (an object whose type is a reference, auto
+dereferenced or not) makes the rest *behind*, and refuses if what it points at (a struct,
+the item) is a type of the set; an index refuses when it is behind and the element's type
+is in the set; a raw pointer ends the walk, trusted. What the place finally holds is
+judged whole (`parReachesWritten`): a type of the set as the pointee of a reference or an
+element or type argument of a collection reached behind one (`elemlike`), searching fields
+and variants for more, and not counting a type argument the struct also holds by value
+(an `Atomic`'s). A scalar field read (`self.scale`) is neither a container nor an
+element, so is free. A bare name, or a variable named inside a call in the chain, is a path
+of one, judged whole. A place `parCheckAlias` refused, or any part of one, is skipped (no
+double report).
+
+When the variable is a closure passed to a generic that runs the loop (its type, or the
+pointee, is a hidden struct `closureOfStruct` knows), the message names the closure's
+borrowed capture that reaches a written type (`ClosureCap`, `!state`) and the fix: a value
+copies in by the state list (`[scale]`); a captured reference or collection that could be the
+buffer written cannot be copied that way, so it is told to be handed as a value made before the
+loop. The closure's state entries are values of its own and reach nothing; a hand-written
+struct with a value field is the same.
+
 A **traced reference made** in the loop is refused whole (`ErrorGcStopgap`,
 `gcRefuseVisit`, over the block with the loop's source, filter and `yield`): an
 allocation, a call or a type literal whose type `itypeHoldsTraced` says holds one
@@ -308,6 +337,24 @@ kept in a variable is held by copy and walked the same way; its items count from
 the first it has yet to give. A header `if` needs nothing of its own: it is
 `eachLower`'s `continue` statement after the pass's variable, ahead of which the
 loop's step is inserted.
+
+A **zip** of cursors (core's `Zip` and, from its `indexed()`, `ZipIndexed`; with a
+third source from `Zip`'s own `zip`, the flat-triple `Zip3` and its `Zip3Indexed`) is
+one of these cursors: it takes two variables (three for `ZipIndexed` and `Zip3`, four
+for `Zip3Indexed`, the position first), unpacked from the tuple its `at` gives. The
+three-way zip is a struct of its own, not a `Zip` of a `Zip`, so that its item is
+one flat tuple that three variables unpack; its `len` is the shortest's and its
+`split` cuts all three at one place. It has `len` (the shorter's), `at`
+and `split` only where both sources do (`where I is RandomAccess[A] and J is
+RandomAccess[B]`; the core traits `RandomAccess` and `ParallelIterable`, met by
+the methods), so a zip with a source that cannot be cut or walked by position has
+no `len` or `at`, and `parallelEachLower` refuses it with that reason
+(`ErrorParSource`). The zip lends `&mut` if either source does (`parCursorOf` reads
+its field types, never a method's name), and the checks that look at where the items
+are lent from look at every source: for a call, the alias check takes the path of
+each argument that holds a borrow (`parLentPaths`, `itypeCarriesBorrow`, never a
+function's name), and the behaviour's frame check refuses a local in any
+(`parMayBeFrame`).
 
 **The parallel builder**, `xs <- parallel each x in src [if c] yield v`, is an
 each entry of `<-` (`parseParallelEachEntry` sets the flag `parseEachLoop` reads

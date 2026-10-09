@@ -1,8 +1,9 @@
 // hornfamily: the horn experiments of the fractal survey's section 8.3, for
 // Jon's "fractal variation, not only precise geometry". Every horn is made
 // from general sculpt operators: an outline (an ellipse, the blade) swept
-// along a curved path, each ring scaled by the taper, a rib height written
-// into a vertex channel, and displaceAlongNormal by it. Nothing here extends
+// along a curved path, each ring scaled by the taper (sweepScaled, a closure
+// carrying the horn's dials), a rib height written into a vertex channel, and
+// displaceAlongNormalBy a function reading it. Nothing here extends
 // sdf's bespoke Horn.
 //
 //   congo run --release packages/sculpt/examples/hornfamily.cone -- --out DIR
@@ -87,10 +88,8 @@ fn radiusAt(s &Shape, u f32) f32 {
   r0 * (0.03 + 0.97 * libc.powf(1. - clampF(u, 0., 1.), s.taper));
 }
 
-// The bare horn: the blade swept along the path at unit scale, then each
-// ring scaled about its path point by the taper. (sweepScaled takes the
-// taper as a function, which cannot carry this horn's dials, so the rings
-// are scaled here: ring i is vertices i AROUND to i AROUND + AROUND - 1.)
+// The bare horn: the blade swept along the path, each ring scaled by the
+// taper, a closure carrying this horn's dials.
 fn bareHorn(s &Shape) mesh.PolyMesh {
   mut pts = List[Vec2].withCapacity(usize.from(AROUND));
   imm w = libc.sqrtf(s.blade);
@@ -102,32 +101,15 @@ fn bareHorn(s &Shape) mesh.PolyMesh {
   }
   imm outline = Profile.fromPoints(pts.view(), true);
   imm path = hornPath(s);
-  mut m = sweep(&outline, &path, s.twist, 1., 1., true);
-  imm frames = path.frames();
-  imm along = m.findFloatChannel(mesh.VertexDomain, "along");
-  mut k = 0usize;
-  while k < m.vertexCount() {
-    imm ring = k / usize.from(AROUND);
-    imm o = frames[ring].origin;
-    imm p = *m.positions[k];
-    m.positions.set(k, o + (p - o) * radiusAt(s, m.float(along, u32.from(k))));
-    k = k + 1usize;
-  }
-  m;
+  sweepScaled(&outline, &path, s.twist, true, u => radiusAt(s, u));
 }
 
 // The horn with its ribs: the "ribs" channel (crest height 1) times the
 // local radius times 'height', displaced along the normals
-fn ribbedHorn(m &mut mesh.PolyMesh, s &Shape, height f32) mesh.PolyMesh {
+fn ribbedHorn(m &mesh.PolyMesh, s &Shape, height f32) mesh.PolyMesh {
   imm ribs = m.findFloatChannel(mesh.VertexDomain, "ribs");
   imm along = m.findFloatChannel(mesh.VertexDomain, "along");
-  imm lift = m.addFloatChannel(mesh.VertexDomain, "lift", 0.);
-  mut k = 0u32;
-  while k < u32.from(m.vertexCount()) {
-    m.setFloat(lift, k, m.float(ribs, k) * height * radiusAt(s, m.float(along, k)));
-    k = k + 1u32;
-  }
-  displaceAlongNormal(m, "lift", 1.);
+  displaceAlongNormalBy(m, k => m.float(ribs, k) * height * radiusAt(s, m.float(along, k)));
 }
 
 // The "ribs" channel unrolled as an image, AROUND across, RINGS + 1 up
@@ -218,7 +200,7 @@ fn grow(ind &Individual) mesh.PolyMesh {
   mut bare = bareHorn(&ind.shape);
   if ind.ribbed { ribField(&mut bare, "ribs", &ind.ribs); }
   else { bare.addFloatChannel(mesh.VertexDomain, "ribs", 0.); }
-  ribbedHorn(&mut bare, &ind.shape, 0.2);
+  ribbedHorn(&bare, &ind.shape, 0.2);
 }
 
 // Measured, not dialled: the angle between the path's first and last
@@ -357,8 +339,8 @@ fn stageRing(k u32) MarginRing {
 const NSTAGES = 10u32;
 imm STAGES Array[&str, 10] = ["s0-regular", "s1-warp", "s2-envelope", "s3-per-rib", "s4-vortices", "s4b-vortices-alone",
   "s5-all-stronger", "rd-weak", "rd-strong", "rd-loose"];
-imm PINNED Array[u32, 10] = [0x383fe153u32, 0x9f0b7d1cu32, 0x2ff6bd4au32, 0x0a8831ccu32, 0x9837102bu32, 0xb79c2bfeu32,
-  0x3b825647u32, 0x53fb7362u32, 0xbe821aedu32, 0x07014adfu32];
+imm PINNED Array[u32, 10] = [0x8df6be8du32, 0xf83f1f4fu32, 0xa7da7560u32, 0x885caf68u32, 0x4aa81c46u32, 0x47bd36bdu32,
+  0xb99fa0fdu32, 0x9808749du32, 0xdcf2166au32, 0x77aa8552u32];
 
 fn main(argc i32, argv **u8) i32 {
   mut dir = String.empty();
@@ -387,7 +369,7 @@ fn main(argc i32, argv **u8) i32 {
       imm g = stageRing(k);
       marginRing(&mut b, "ribs", &g);
     }
-    imm horn = ribbedHorn(&mut b, &shape, 0.14);
+    imm horn = ribbedHorn(&b, &shape, 0.14);
     imm tri = horn.triangulate(true);
     imm t1 = sdl.GetPerformanceCounter();
     imm h = mesh.meshHash(&tri);

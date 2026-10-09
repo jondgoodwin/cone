@@ -212,7 +212,16 @@ each value expecting the field it will fill (`fnCallTypeLitField`). Then every
 argument is checked, against that type where there is one, so an `if`, a block
 or an array literal is coerced branch by branch as an initializer is; an
 overload set's, an operator's and a generic's arguments get none, because their
-types are what selects or infers the callee. Then generic substitution, which
+types are what selects or infers the callee. **A closure literal among a
+generic's or an overload set's arguments waits for the others** and is checked
+after them (`fnCallClosureArgs`): its signature is what the other arguments leave
+the callee's bound, or the overload its parameter count and written types pick
+([closure](closure.md), "A closure given to a call"). A literal given to a parameter
+that takes a borrowed callable, `&<fn(sig)`, is lent to it as a temporary of the
+statement (`fnCallCheckClosureArg`). **A method name that is a field of the receiver's
+type, with an argument list, is the call of what the field holds**: `t.profile(3.)`
+becomes the call of the access `t.profile` (`fnCallFieldCall`), unless the field's
+type cannot be called, which is `ErrorFldArgs`. Then generic substitution, which
 may finish the node entirely.
 
 **Stage 2 — make the callee knowable.**

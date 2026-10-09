@@ -516,6 +516,15 @@ constant` per implementing struct, plus one internal list per trait, prewired in
 `derived` order for the enum-to-virtref coercion. `nameVtable`, `nameVtableImpl`
 and `nameVtableList` spell the three from the trait and implementing type nodes.
 
+**A plain function has a vtable of its own for a callable trait** (`fnSigCallTrait`,
+[closure](../nodes/closure.md), "A callable used dynamically"). A reference to a
+function converts to `&<fn(sig)` with the function's code pointer as the data
+pointer, and `genlFnStubVtable` builds, once per trait and object (`Vtable.llvmfnvtable`,
+`nameVtableStub`), the vtable of its one slot: a stub of the slot's type that calls its
+erased first argument, as the function type `genlType` gives the signature, with the
+remaining arguments, and a null type record. A callable trait is in no module's nodes,
+and no struct is registered as its implementer for a function.
+
 **A vtable may contain itself**, through a slot whose method takes or returns a
 virtual reference to the same trait (`fn cmp(self &, o &<Self)`). So `genlVtable`
 creates the vtable struct and the fat-pointer struct as named types and stores
@@ -1716,7 +1725,12 @@ HLSL's compilers settle it:
   a global is in effect a copy per kind, with no instancing in Cone.
 - **Structs and arrays break into separate values** (`sroa`), so a struct
   holding a reference dissolves into locals: logical addressing keeps no
-  pointer in memory.
+  pointer in memory. It runs twice, `instsimplify` between: the struct of
+  borrows a closure literal builds is first one value whose parts only
+  `instsimplify` extracts, and only then is a local it borrows, a slice
+  parameter's, a candidate to break up. With the first run alone the closure's
+  slice is read through a pointer loaded from memory, and the kernel's indexing
+  of it is refused (`ErrorGpuSliceOrigin`).
 - **LLVM's address-space inference** (`infer-address-spaces`) then gives each
   use its origin's space back. It rewrites only casts into the target's flat
   space, which for the OpenCL form is 4, `Generic`; `genlLLVMOptions` names 0
@@ -1730,6 +1744,18 @@ holding references indexed at run time (`ErrorGpuRefIndexed`) by the loan walk
 ([Flow Analysis](flow.md), "GPU targets"); a global holding a reference
 (`ErrorGpuRefGlobal`, `genlGloVar`) and a function calling itself, which no
 inliner removes (`ErrorGpuRecursion`, `genlGpuCalls`), here.
+
+**What a GPU has none of is refused where it is written**, in type check, as
+`ErrorGpuUnavailable` (the closure forms of the first two, `ErrorGpuClosureRef`,
+are in [closure](../nodes/closure.md)): a borrow of a function, `&name`
+(`borrowTypeCheck`), since the calls are inlined and a pointer to code would be an
+indirect call; a reference converted to a virtual reference (`iexpCoerceShape`,
+the `ConvSubtype` case), whose table of code pointers LLVM's SPIR-V backend
+crashes on (its `SPIRV legalize pointer cast pass`); and an allocation, `new` or
+`trynew` of an owner (`allocateValueCheck`), whose allocator call becomes an
+import the Vulkan form does not allow (`Capability Linkage`). An owner or a
+function reference can still arrive as a parameter of a function and be passed
+about; nothing can make one.
 
 **LLVM 23's SPIR-V backend takes only some shapes of IR**, and on the rest it
 crashes, in its own passes, or emits a module the validator refuses. With
@@ -2091,9 +2117,9 @@ What does not work yet:
 - A program with a `main` compiled for the Vulkan form crashes LLVM's SPIR-V
   backend ("No unique definition is found for the virtual register").
 
-Also absent: closures with an environment — an anonymous `fn` is lifted to
-module scope and a `&fn` value is a bare function pointer with no capture
-struct. No exception handling or unwinding. No debug info for types or
+Also absent: a `&fn` value is a bare function pointer with no capture struct (a
+closure that holds something is the struct type check makes of it,
+[closure](../nodes/closure.md)). No exception handling or unwinding. No debug info for types or
 variables.
 
 ## 8. Hazards

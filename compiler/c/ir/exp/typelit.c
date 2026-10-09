@@ -11,6 +11,7 @@
 */
 
 #include "../ir.h"
+#include <stdio.h>
 
 INode *typeLitSelfFill = NULL;
 
@@ -478,6 +479,99 @@ static INode *typeLitAllocValue(TypeCheckState *pstate, FnCallNode *node, INode 
     return isExpNode(*argp) ? *argp : NULL;
 }
 
+static void typeLitNewAllocate(TypeCheckState *pstate, FnCallNode **nodep, RefNode *reftype, INode *option, INode *value);
+
+// 'new So[fn(i32) i32](c)': an owner of a callable, made from one value that has a
+// pub '()' of that signature, a closure or a struct of the author's. The value
+// is moved into an allocation of its own type, and the owner of that is viewed
+// as the callable's, as an owner of a trait is made from one of an implementer.
+static void typeLitNewCallable(TypeCheckState *pstate, FnCallNode **nodep, RefNode *reftype, INode *option) {
+    FnCallNode *node = *nodep;
+    StructNode *trait = (StructNode*)itypeGetTypeDcl(reftype->vtexp);
+    char sig[300] = "";
+    FnSigNode *csig = trait->callsig;
+    Name *method = NULL;
+    if (csig)
+        genericFnSigCat(sig, sizeof(sig), csig);
+    else
+        snprintf(sig, sizeof(sig), "%s", &trait->namesym->namestr);
+    INode *region = itypeGetTypeDcl(reftype->region);
+    char *regname = region->tag == StructTag ? &((StructNode*)region)->namesym->namestr : "So";
+    if (node->args == NULL || node->args->used != 1 || nodesGet(node->args, 0)->tag == NamedValTag) {
+        errorMsgNode((INode*)node, ErrorCallableUse,
+            "%s[%s] is made from one callable value, a closure or a struct with a pub `()` of that signature: 'new %s[%s](fn (...) { ... })'.",
+            regname, sig, regname, sig);
+        return;
+    }
+    INode **argp = &nodesGet(node->args, 0);
+    // A closure literal given for a trait with one method fills that method
+    if (csig == NULL) {
+        uint32_t count;
+        csig = closureTraitSig(trait, &method, &count);
+        if (csig == NULL) {
+            fnCallClosureTraitRefused(*argp, trait);
+            *((INode**)nodep) = newErrorNode((INode*)node);
+            return;
+        }
+    }
+    if ((*argp)->tag == ClosureTag) {
+        closureHint = csig;
+        closureMethod = method;
+    }
+    inodeTypeCheck(pstate, argp, unknownType);
+    closureHint = NULL;
+    closureMethod = NULL;
+    if (!isExpNode(*argp) || inodeIsError(*argp))
+        return;
+    INode *vtype = ((IExpNode*)*argp)->vtype;
+    INode *vdcl = itypeGetTypeDcl(vtype);
+    // A plain function: the reference to it is held by a struct that calls it
+    if (vdcl->tag == RefTag && itypeGetTypeDcl(((RefNode*)vdcl)->vtexp)->tag == FnSigTag
+        && itypeGetTypeDcl(((RefNode*)vdcl)->region) == (INode*)borrowRef) {
+        FnSigNode *fsig = (FnSigNode*)itypeGetTypeDcl(((RefNode*)vdcl)->vtexp);
+        if (trait->callsig == NULL || !fnSigEqual(trait->callsig, fsig)) {
+            errorMsgNode(*argp, ErrorCallableUse,
+                "%s[%s] is made from a callable of that signature, and this function is another.", regname, sig);
+            return;
+        }
+        StructNode *holder = closureFnHolder(pstate, trait->callsig, vtype, *argp);
+        FnCallNode *make = newFnCallNode(newNameUseFromDclNode((INode*)holder, *argp), 1);
+        inodeLexCopy((INode*)make, *argp);
+        make->flags |= FlagNew;
+        nodesAdd(&make->args, *argp);
+        INode *made = (INode*)make;
+        typeLitNewArgsChecked(pstate, (FnCallNode**)&made);
+        *argp = made;
+        if (!isExpNode(*argp) || inodeIsError(*argp))
+            return;
+        vtype = ((IExpNode*)*argp)->vtype;
+        vdcl = itypeGetTypeDcl(vtype);
+    }
+    if (vdcl->tag != StructTag || (vdcl->flags & TraitType)) {
+        errorMsgNode(*argp, ErrorCallableUse,
+            "%s[%s] is made from a closure, a function or a struct with a pub `()` of that signature, and %s is none of them.",
+            regname, sig, itypeName(vtype));
+        return;
+    }
+    // The owner of the value itself, then that viewed as the callable
+    INode *owner =(INode*)newRefNodeFull(RefTag, (INode*)node, reftype->region, reftype->perm, vtype);
+    if (!itypeTypeCheck(pstate, &owner))
+        return;
+    // A callable that holds nothing has no size: its allocation is the smallest block
+    allocateZeroSizeOk = 1;
+    typeLitNewAllocate(pstate, nodep, (RefNode*)owner, option, *argp);
+    allocateZeroSizeOk = 0;
+    if ((*nodep)->tag != AllocateTag)
+        return;
+    INode *made = (INode*)*nodep;
+    if (!iexpCoerce((INode**)nodep, (INode*)reftype)) {
+        char *why = fnSigCallRefusal((INode*)owner, (INode*)reftype);
+        errorMsgNode(made, why ? ErrorCallablePerm : ErrorCallableUse, "%s",
+            why ? why : "That value has no pub `()` of the signature the owner is of.");
+        *((INode**)nodep) = newErrorNode(made);
+    }
+}
+
 // 'new Rc[mut, Node](1)': an allocation in the region a managed reference type
 // names, written out or through an alias of it ('new Node(1)' for 'alias Node
 // = Gc[mut, NodeValue]'). The parentheses are the value's (typeLitAllocValue):
@@ -499,6 +593,12 @@ static void typeLitNewAllocate(TypeCheckState *pstate, FnCallNode **nodep, RefNo
         return;
     }
     if (reftype->tag == VirtRefTag) {
+        StructNode *calltrait = (StructNode*)itypeGetTypeDcl(reftype->vtexp);
+        INode *only = node->args && node->args->used == 1 ? nodesGet(node->args, 0) : NULL;
+        if (calltrait->tag == StructTag && value == NULL && (calltrait->callsig || (only && only->tag == ClosureTag))) {
+            typeLitNewCallable(pstate, nodep, reftype, option);
+            return;
+        }
         errorMsgNode((INode*)node, ErrorNewType,
             "A virtual reference refers to a trait, which has no value to construct: allocate a type implementing it, as 'new Rc[mut, Rect](...)', and the reference coerces where the virtual one is wanted.");
         return;
@@ -550,6 +650,13 @@ static void typeLitNewAllocate(TypeCheckState *pstate, FnCallNode **nodep, RefNo
 // which generation hands the memory the value goes into (genlNew).
 void typeLitNewCheck(TypeCheckState *pstate, FnCallNode **nodep) {
     typeLitNewChecked(pstate, nodep, 0);
+}
+
+// The same for a construction whose arguments are already checked (a closure's
+// hidden struct is made from the values of its state list and borrows of the
+// variables it names, closure.c)
+void typeLitNewArgsChecked(TypeCheckState *pstate, FnCallNode **nodep) {
+    typeLitNewChecked(pstate, nodep, 1);
 }
 
 // 'new Rc[mut, Array[i32, 4]] <- fill 0': the allocation, of the reference

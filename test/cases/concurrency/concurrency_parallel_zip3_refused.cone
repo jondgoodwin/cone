@@ -1,0 +1,68 @@
+// What a 'parallel each' over a three-way zip refuses, on the rules of a two-way one
+// (concurrency_parallel_zip_refused): every one of the three sources must report its
+// size and give item k (RandomAccess) and be cut (ParallelIterable), the body may
+// name none of the three buffers (the passes change their own parts of them at the
+// same time), a chunk 'chunks' gives is read-only, and the number of variables is
+// three (the position first makes four).
+
+mod concurrency_parallel_zip3_refused;
+
+import collections use *;
+import actors;
+
+struct Countdown {
+  n u32;
+
+  pub fn next(self &mut) Option[u32] {
+    if n == 0u32 { return None[u32][]; }
+    n = n - 1u32;
+    Some[u32][n];
+  }
+}
+
+// A source of the three that cannot be cut or walked by position, whichever it is
+fn cannotSplit(a &mut List[u32], b &mut List[u32], d &Deque[u32]) {
+  parallel each x, y, z in a.mutChunks(2usize).zip(b.mutChunks(3usize)).zip(d.items()) {   //~ ErrorParSource "needs every source of the zip to report its size"
+  }
+  parallel each x, y, z in a.mutChunks(2usize).zip(d.items()).zip(b.mutChunks(3usize)) {   //~ ErrorParSource "needs every source of the zip to report its size"
+  }
+  parallel each x, y, z in a.mutChunks(2usize).zip(b.mutChunks(3usize)).zip(new Countdown(5u32)) {   //~ ErrorParSource "needs every source of the zip to report its size"
+  }
+}
+
+// Naming any of the three buffers
+fn namesTheBuffer(a &mut List[u32], b &mut List[u32], c &List[u32]) {
+  parallel each x, y, z in a.mutChunks(2usize).zip(b.mutChunks(3usize)).zip(c.chunks(4usize)) {
+    x[0usize] = *a[0usize];                //~ ErrorParWrite "may not name a"
+    y[0usize] = *b[0usize];                //~ ErrorParWrite "may not name b"
+    x[1usize] = *c[0usize];                //~ ErrorParWrite "may not name c"
+  }
+}
+
+// A chunk 'chunks' gives is read-only, even as the third
+fn writesARead(a &mut List[u32], b &mut List[u32], c &List[u32]) {
+  parallel each x, y, z in a.mutChunks(2usize).zip(b.mutChunks(3usize)).zip(c.chunks(4usize)) {
+    z[0usize] = 1u32;                      //~ ErrorNoMut
+  }
+}
+
+// How many variables
+fn twoVariables(a &mut List[u32], b &mut List[u32], c &mut List[u32]) {
+  parallel each pair, z in a.mutChunks(2usize).zip(b.mutChunks(3usize)).zip(c.mutChunks(4usize)) {   //~ ErrorParSource "over a three-way zip gives three variables"
+  }
+}
+
+fn fourWithoutIndexed(a &mut List[u32], b &mut List[u32], c &mut List[u32]) {
+  parallel each y, x, z, w in a.mutChunks(2usize).zip(b.mutChunks(3usize)).zip(c.mutChunks(4usize)) {   //~ ErrorParSource "over a three-way zip gives three variables"
+  }
+}
+
+fn threeWithIndexed(a &mut List[u32], b &mut List[u32], c &mut List[u32]) {
+  parallel each x, y, z in a.mutChunks(2usize).zip(b.mutChunks(3usize)).zip(c.mutChunks(4usize)).indexed() {   //~ ErrorParSource "indexed() gives four variables"
+  }
+}
+
+fn fiveWithIndexed(a &mut List[u32], b &mut List[u32], c &mut List[u32]) {
+  parallel each i, x, y, z, w in a.mutChunks(2usize).zip(b.mutChunks(3usize)).zip(c.mutChunks(4usize)).indexed() {   //~ ErrorParSource "indexed() gives four variables"
+  }
+}

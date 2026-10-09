@@ -66,6 +66,23 @@ FnDclNode *genericMethodInstance(TypeCheckState *pstate, FnCallNode *callnode, F
 // Is 'fn' one of the instances made of generic function or method 'generic'?
 int genericIsInstanceOf(INode *fn, FnDclNode *generic);
 
+// The signature a closure literal given as argument 'argi' of a call of this
+// generic function or method is to fit (closure.h); see generic.c
+FnSigNode *genericParmBound(FnDclNode *generic, uint32_t pos, INode **refperm);
+
+// The plain trait that bounds the type parameter parameter 'pos' is (or is a
+// reference to), where a closure literal given there fills the trait's one method
+StructNode *genericParmTraitBound(FnDclNode *generic, uint32_t pos, INode **refperm);
+
+// Refuse, at the caller's argument, a callable whose '()' changes its state given
+// to a generic parameter taken as '&F'. 0 once reported.
+int genericCallablePermCheck(FnDclNode *generic, Nodes *valueargs, uint32_t firstparm);
+
+// Append a checked signature as a message spells it: 'fn(&Person, &Person) i32'
+void genericFnSigCat(char *buf, size_t size, FnSigNode *sig);
+FnSigNode *genericClosureSig(TypeCheckState *pstate, FnDclNode *generic, Nodes *args, uint32_t firstparm,
+        uint32_t argi, INode **refperm);
+
 // Constraints: 'where T is Name and ... or ...', and the inline '[T Name + Name]'.
 //
 // A 'where' list holds conditions, every one of which must hold: the operands
