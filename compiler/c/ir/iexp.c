@@ -461,7 +461,11 @@ int iexpMultiInfer(INode *expectType, INode **maybeType, INode **from) {
                 return ConvSubtype;
             }
             else {
-                errorMsgNode(*from, ErrorInvType, "Branch's expression type inconsistent with other branches.");
+                if (closureInferring)
+                    errorMsgNode(*from, ErrorClosureRet,
+                        "The paths of this closure give different types, so its return type cannot be read off them: write the closure's return type, as in 'fn (x i32) i32 { ... }'.");
+                else
+                    errorMsgNode(*from, ErrorInvType, "Branch's expression type inconsistent with other branches.");
                 return NoMatch;
             }
         }

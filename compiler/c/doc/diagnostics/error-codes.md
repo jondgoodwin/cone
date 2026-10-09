@@ -404,6 +404,17 @@ share across the passes (it holds an `Rc`-like owner or a traced reference) is
 that writes through its source, naming an outside variable whose type could point at
 a written item is `ErrorParAlias` (`parCheckOuterAlias`).
 
+A closure literal ([closure](../nodes/closure.md)) has five: a parameter written
+without a type where no signature gives one, or a signature the parameters do not
+fit, is `ErrorClosureParm`; paths that give different types where the return type
+is not written is `ErrorClosureRet`; a closure that names the variable it is the
+value of is `ErrorClosureSelf` (a closure cannot call itself); a closure written
+where it cannot be built (a global), in a form it does not take (the short form
+with something other than names), or given where a function reference is wanted
+while it holds or borrows something is `ErrorClosureForm`; and a literal given to
+overloads that cannot choose between it, or none that takes it, is
+`ErrorClosureOverload`.
+
 `await` has five error codes and a warning. Where it may not stand -- anywhere
 but a behaviour -- is `ErrorAwaitPlace`; on a behaviour that returns nothing,
 which sends no reply, it is `ErrorAwaitVoid`, a rule rather than a gap; a

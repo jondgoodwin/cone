@@ -663,7 +663,12 @@ whose parameters after the receiver, and whose return type, are `itypeIsSame` to
 the signature's (`genericParensMethod`, `genericMethodTakesSig`). Nothing else
 meets it, and the receiver's permission is not asked: the generic's body does
 that, in each instance, when it calls the parameter (`&F` through a `self &mut`
-`()` is the usual `ErrorNoCandidate` there). The refusal is `ErrorWhereUnmet`,
+`()` is the usual `ErrorNoCandidate` there). A closure literal given to such a
+parameter takes its parameter types from the bound instead: `genericClosureSig`
+finds the bound (`genericParmBound`: the clause whose subject is the parameter
+the argument's parameter is, or is a reference to), reads the other type
+parameters off the call's other arguments (`genericInferType`) and clones the
+bound with them ([closure](closure.md)). The refusal is `ErrorWhereUnmet`,
 spelling the signature as written (`spelled`), as it comes to here
 (`genericFnSigCat`) and what the argument has instead (`genericSigMeetWhy`).
 

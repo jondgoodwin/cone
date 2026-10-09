@@ -114,8 +114,13 @@ void varDclNameRes(NameResState *pstate, VarDclNode *name) {
         inodeNameRes(pstate, &name->vtype);
 
     // Name resolve value before hooking the variable name (so it cannot point to itself)
-    if (name->value)
+    if (name->value) {
+        // (A closure that names the variable it is the value of is told it cannot call itself)
+        Name *svdeclaring = pstate->declaring;
+        pstate->declaring = name->namesym;
         inodeNameRes(pstate, &name->value);
+        pstate->declaring = svdeclaring;
+    }
 
     // Variable declaration within a block is a local variable
     if (pstate->scope > 0) {

@@ -26,6 +26,7 @@ FnDclNode *newFnDclNode(Name *namesym, uint16_t flags, INode *type, INode *val) 
     node->genericinfo = NULL;
     node->where = NULL;
     node->compute[0] = node->compute[1] = node->compute[2] = 0;
+    node->closure = NULL;
     return node;
 }
 
@@ -560,7 +561,11 @@ void fnDclTypeCheck(TypeCheckState *pstate, FnDclNode *fnnode) {
     }
 
     // Syntactic sugar: Turn implicit returns into explicit returns
-    fnImplicitReturn(((FnSigNode*)fnnode->vtype)->rettype, (BlockNode *)fnnode->value);
+    // (A closure whose return type is not written reads it off its paths)
+    if (fnnode->closure && fnnode->closure->retinfer)
+        closureImplicitReturn(fnnode);
+    else
+        fnImplicitReturn(((FnSigNode*)fnnode->vtype)->rettype, (BlockNode *)fnnode->value);
 
     // Type check/inference of the function's logic.
     //

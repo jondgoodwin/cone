@@ -559,7 +559,12 @@ signature's parameters are read before that is known, so `parseFnSigSettle`
 settles them once it is: in a type, a parameter written as a lone name is an
 unnamed parameter of the type the name names (`&fn(Vec3) f32`); in an anonymous
 function it stays a parameter's name, with a method's `Self` inference, and a
-parameter written as its type alone is `ErrorNoIdent`.
+parameter written as its type alone is `ErrorNoIdent`. **A closure literal** is a
+value, with no `&`: `fn (u f32) [ribs, mut n = 0] f32 { ... }`, read by
+`parseTerm` where a term begins with `fn`, and the short form `x => x * 2` (and
+`(a, b) => ...`, `() => ...`), read where a name or a parenthesised list is
+followed by `=>` (`FatArrowToken`). Both build a `ClosureNode`
+([closure](../nodes/closure.md)), which `&fn(...) { ... }` does not.
 
 ## 5. Adding an operator: the six edits
 

@@ -1,0 +1,43 @@
+// Closure literals the type checker refuses: a return type that cannot be read
+// off the paths, a parameter nothing gives a type, a signature the literal's
+// parameters do not fit, a global that cannot hold a closure, a change the
+// variable around does not allow, and overloads the literal cannot choose
+// between.
+
+mod closure_typecheck_literal;
+
+fn takesOne(f &fn(x i32) i32) i32 { f(1); }
+
+// The paths give i32 and u8: the return type is to be written
+fn pathsDisagree() {
+  imm f = fn(x i32) { if x > 0 { x; } else { 0u8; } };   //~ ErrorClosureRet:44 "write the closure's return type"
+}
+
+fn noTypeToGive() {
+  imm f = fn(x) { x; };         //~ ErrorClosureParm:14 "nothing here says what it is"
+}
+
+fn wrongCount() i32 {
+  takesOne((a, b) => a);        //~ ErrorClosureParm:14 "takes 2 parameters"
+}
+
+imm global = fn(x i32) i32 { x; };    //~ ErrorClosureForm:14 "A closure is written inside a function"
+
+// A change to a variable that cannot change
+fn immutable() {
+  imm total = 0;
+  mut add = fn(x i32) { total += x; };    //~ ErrorNoMut:31 "permission to modify"
+  add(1);
+}
+
+fn taperA overload taper(m i32, t &fn(u f32) f32) f32 { t(1.); }
+fn taperB overload taper(m i32, t &fn(u i32) f32) f32 { t(1); }
+fn plain overload hold(m i32, t f32) f32 { t; }
+
+fn ambiguous() f32 {
+  taper(2, t => 0.5);          //~ ErrorClosureOverload:12 "more than one overload of taper"
+}
+
+fn nothingTakesIt() f32 {
+  hold(2, t => 0.5);           //~ ErrorClosureOverload:11 "No overload of hold"
+}

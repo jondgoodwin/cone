@@ -313,6 +313,8 @@ void pgmNameResAlone(ProgramNode *pgm, Nodes *mods) {
     nstate.expander = NULL;
     nstate.sigfn = NULL;
     nstate.scope = 0;
+    nstate.closure = NULL;
+    nstate.declaring = NULL;
     INode **nodesp;
     uint32_t cnt;
     for (nodesFor(mods, cnt, nodesp))

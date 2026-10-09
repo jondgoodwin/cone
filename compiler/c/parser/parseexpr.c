@@ -131,6 +131,155 @@ INode *parseNew(ParseState *parse) {
 }
 
 static INode *parseEntries(ParseState *parse);
+INode *parseAssignFrom(ParseState *parse, INode *lval);
+
+// The body of a closure written 'x => body': one expression, or a block. An
+// expression is the block's one statement, whose value the closure returns.
+static INode *parseClosureArrowBody(ParseState *parse) {
+    int svinlist = parse->inlist;
+    GenCtx *svgenctx = parse->genctx;
+    int svgenoperand = parse->genoperand;
+    parse->genctx = NULL;
+    parse->genoperand = 0;
+    // One expression, which may be a change ('n => total += n'): a comma
+    // after it belongs to the list the closure is written in
+    INode *body = parseAssignFrom(parse, parseSimpleExpr(parse));
+    parse->inlist = svinlist;
+    parse->genctx = svgenctx;
+    parse->genoperand = svgenoperand;
+    if (body == NULL)
+        body = (INode*)newNilLitNode();
+    if (body->tag == BlockTag)
+        return body;
+    BlockNode *blk = newBlockNode();
+    inodeLexCopy((INode*)blk, body);
+    if (blk->stmts == NULL)
+        blk->stmts = newNodes(2);
+    nodesAdd(&blk->stmts, body);
+    return (INode*)blk;
+}
+
+// A closure in the short form, 'x => x * 2' or '(a, b) => a < b', with the
+// lexer on the '=>'. 'names' holds the parameters' names, uses that name
+// resolution never sees: the short form's parameters take their types from the
+// signature the closure is given to.
+static INode *parseClosureArrow(ParseState *parse, Nodes *names, INode *at) {
+    ClosureNode *clo = newClosureNode();
+    inodeLexCopy((INode*)clo, at);
+    clo->isarrow = 1;
+    INode **namep;
+    uint32_t cnt;
+    uint16_t parmnbr = 0;
+    if (names) {
+        for (nodesFor(names, cnt, namep)) {
+            if (!isNameUseNode(*namep)) {
+                errorMsgNode(*namep, ErrorClosureForm,
+                    "The short form of a closure takes parameter names only, 'x => x * 2'. A parameter with a type is written in the full form, 'fn (x i32) i32 { x * 2; }'.");
+                continue;
+            }
+            VarDclNode *parm = newVarDclNode(((NameUseNode*)*namep)->namesym, VarDclTag, (INode*)immPerm);
+            inodeLexCopy((INode*)parm, *namep);
+            parm->flowtempflags |= VarInitialized;
+            parm->scope = 1;
+            parm->index = parmnbr++;
+            nodesAdd(&clo->sig->parms, (INode*)parm);
+        }
+    }
+    lexNextToken();   // past the '=>'
+    clo->body = parseClosureArrowBody(parse);
+    return (INode*)clo;
+}
+
+// A closure in the full form, with the lexer on its 'fn':
+//   fn (u f32) [ribs, mut n = 0] f32 { ... }
+// Parameters, then an optional state list in brackets (a bracket never starts a
+// type), an optional return type and the block. A parameter's type, and the
+// return type, are left out where the signature the closure is given to
+// supplies them.
+static INode *parseClosureFn(ParseState *parse) {
+    ClosureNode *clo = newClosureNode();
+    lexNextToken();   // past 'fn'
+    if (lexIsToken(IdentToken)) {
+        errorMsgLex(WarnName, "Unnecessary function name is ignored");
+        lexNextToken();
+    }
+    int svinlist = parse->inlist;
+    if (!lexIsToken(LParenToken))
+        errorMsgLex(ErrorNoLParen, "Expected left parenthesis for the closure's parameters");
+    else {
+        lexNextToken();
+        parse->inlist = 1;
+        uint16_t parmnbr = 0;
+        uint16_t parseflags = ParseMaySig | ParseMayImpl | ParseInList;
+        while (lexIsToken(PermToken) || lexIsToken(IdentToken)) {
+            VarDclNode *parm = parseVarDcl(parse, immPerm, parseflags);
+            parm->flowtempflags |= VarInitialized;
+            parm->scope = 1;
+            parm->index = parmnbr++;
+            if (parm->value)
+                parseflags = ParseMayImpl | ParseInList;
+            nodesAdd(&clo->sig->parms, (INode*)parm);
+            if (!lexIsToken(CommaToken))
+                break;
+            lexNextToken();
+        }
+        parse->inlist = svinlist;
+        parseCloseTok(RParenToken);
+    }
+
+    // The state list: entries that are fields of the closure, each with the
+    // value it starts from. An entry without one starts from the variable of
+    // the same name in the code around.
+    if (lexIsToken(LBracketToken)) {
+        lexNextToken();
+        parse->inlist = 1;
+        while (!lexIsToken(RBracketToken) && !lexIsToken(EofToken)) {
+            INode *perm = parseDclPerm(immPerm);
+            if (!lexIsToken(IdentToken)) {
+                errorMsgLex(ErrorNoIdent, "Expected a name in the closure's state list: '[ribs, mut n = 0]'");
+                while (!lexIsToken(RBracketToken) && !lexIsToken(LCurlyToken) && !lexIsToken(EofToken))
+                    lexNextToken();
+                break;
+            }
+            VarDclNode *ent = newVarDclNode(lex->val.ident, VarDclTag, perm);
+            lexNextToken();
+            if (lexIsToken(AssgnToken)) {
+                lexNextToken();
+                ent->value = parseSimpleExpr(parse);
+            }
+            else {
+                NameUseNode *same = newNameUseNode(ent->namesym);
+                inodeLexCopy((INode*)same, (INode*)ent);
+                ent->value = (INode*)same;
+            }
+            ent->scope = 1;
+            ent->flowtempflags |= VarInitialized;
+            nodesAdd(&clo->state, (INode*)ent);
+            if (!lexIsToken(CommaToken))
+                break;
+            lexNextToken();
+        }
+        parse->inlist = svinlist;
+        parseCloseTok(RBracketToken);
+    }
+
+    // The return type, if one is written: a '{' opens the body
+    int svinrettype = parse->inrettype;
+    parse->inrettype = 1;
+    INode *rettype = parseType(parse);
+    parse->inrettype = svinrettype;
+    clo->sig->rettype = rettype;
+
+    // Its body is its own: a generator's seams and the code around do not reach into it
+    GenCtx *svgenctx = parse->genctx;
+    int svgenoperand = parse->genoperand;
+    parse->genctx = NULL;
+    parse->genoperand = 0;
+    clo->body = parseExprBlock(parse, 0);
+    parse->genctx = svgenctx;
+    parse->genoperand = svgenoperand;
+    return (INode*)clo;
+}
 
 // Parse a term: literal, identifier, etc.
 INode *parseTerm(ParseState *parse) {
@@ -200,16 +349,46 @@ INode *parseTerm(ParseState *parse) {
             return (INode *)node;
         }
     case IdentToken:
-        return (INode*)parseNameUse(parse);
+    {
+        INode *name = (INode*)parseNameUse(parse);
+        // 'x => x * 2': a closure of one parameter
+        if (lexIsToken(FatArrowToken) && !parse->intype) {
+            Nodes *names = newNodes(1);
+            nodesAdd(&names, name);
+            return parseClosureArrow(parse, names, name);
+        }
+        return name;
+    }
+    // A closure in the full form, a value: 'fn (u f32) [ribs] f32 { ... }'
+    case FnToken:
+        return parseClosureFn(parse);
     case LParenToken:
         {
             INode *node;
             lexNextToken();
+            // '() => 5': a closure of no parameters
+            if (lexIsToken(RParenToken) && !entryparen) {
+                INode *at = (INode*)newNilLitNode();
+                lexNextToken();
+                if (lexIsToken(FatArrowToken))
+                    return parseClosureArrow(parse, NULL, at);
+                errorMsgNode(at, ErrorBadTerm, "Invalid term: expected name, literal, etc.");
+                return NULL;
+            }
             int svinlist = parse->inlist;
             parse->inlist = 1;
             node = entryparen ? parseEntries(parse) : parseAnyExpr(parse);
             parse->inlist = svinlist;
             parseCloseTok(RParenToken);
+            // '(a, b) => a < b': a closure of these parameters
+            if (lexIsToken(FatArrowToken) && node && !parse->intype) {
+                Nodes *names = node->tag == TupleTag ? ((TupleNode*)node)->elems : NULL;
+                if (names == NULL) {
+                    names = newNodes(1);
+                    nodesAdd(&names, node);
+                }
+                return parseClosureArrow(parse, names, node);
+            }
             return node;
         }
     case LBracketToken:
@@ -1226,7 +1405,11 @@ INode *parseAssign(ParseState *parse) {
         return parseAppend(parse, (INode*)newNameUseNode(thisName));
     }
 
-    INode *lval = parseTuple(parse);
+    return parseAssignFrom(parse, parseTuple(parse));
+}
+
+// The rest of an assignment expression whose left side is read
+INode *parseAssignFrom(ParseState *parse, INode *lval) {
     switch (lex->toktype) {
     case AssgnToken:
     {

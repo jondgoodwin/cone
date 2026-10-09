@@ -21,7 +21,11 @@ typedef struct FnDclNode {
     // A compute entry point's workgroup size, '@compute(x, y, z)', each 1 when
     // not written; all 0 for any other function (fnDclIsCompute)
     uint16_t compute[3];
+    struct ClosureInfo *closure;  // The '()' of a closure literal's hidden struct: what its body captured (closure.h), else NULL
 } FnDclNode;
+
+// Syntactic sugar: turn a body's last expression into an explicit return
+void fnImplicitReturn(INode *rettype, BlockNode *blk);
 
 // Whether a function is a compute entry point, '@compute(...)'
 #define fnDclIsCompute(fn) ((fn)->compute[0] != 0)

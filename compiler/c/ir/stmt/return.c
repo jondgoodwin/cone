@@ -137,6 +137,12 @@ void returnTypeCheck(TypeCheckState *tstate, BreakRetNode *retnode) {
     if (retnode->exp->tag == IfTag)
         ifRemoveReturns((IfNode*)(retnode->exp));
 
+    // A closure whose return type is not written reads it off its returns
+    if (tstate->fn->closure && tstate->fn->closure->retinfer) {
+        closureReturnTypeCheck(tstate, retnode);
+        return;
+    }
+
     // Ensure the vtype of the expression can be coerced to the function's declared return type
     // while processing the exp nodes
     FnSigNode *fnsig = (FnSigNode*)tstate->fn->vtype;
