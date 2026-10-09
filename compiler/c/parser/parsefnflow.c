@@ -15,6 +15,7 @@
 #include "lexer.h"
 
 #include <stdio.h>
+#include <string.h>
 
 INode *parseEach(ParseState *parse, Name *lifesym, int stmtflag);
 
@@ -512,6 +513,50 @@ INode *parseWhile(ParseState *parse, Name *lifesym, int stmtflag) {
 // not taken for a parallel one
 static int parseEachParallel = 0;
 
+// A source that is a name or fields named from one ('xs', 'self.items'), spelled as
+// written into 'out'; 0 for any other expression, whose spelling a message cannot repeat
+static int parseEachSpelling(INode *node, char *out, size_t size) {
+    if (node->tag == NameUseTag) {
+        Name *name = ((NameUseNode*)node)->namesym;
+        if (name == NULL || (size_t)name->namesz + 1 > size)
+            return 0;
+        memcpy(out, &name->namestr, name->namesz);
+        out[name->namesz] = '\0';
+        return 1;
+    }
+    if (node->tag == FnCallTag && ((FnCallNode*)node)->args == NULL
+        && ((FnCallNode*)node)->methfld && ((FnCallNode*)node)->methfld->tag == NameUseTag) {
+        FnCallNode *field = (FnCallNode*)node;
+        Name *name = ((NameUseNode*)field->methfld)->namesym;
+        if (!parseEachSpelling(field->objfn, out, size))
+            return 0;
+        size_t used = strlen(out);
+        if (name == NULL || used + 1 + name->namesz + 1 > size)
+            return 0;
+        out[used] = '.';
+        memcpy(out + used + 1, &name->namestr, name->namesz);
+        out[used + 1 + name->namesz] = '\0';
+        return 1;
+    }
+    return 0;
+}
+
+// The source of an 'each' or 'parallel each' written '&mut src' is refused: 'each' reads
+// the items of what it walks, and the way to change them in place is a method that
+// lends them, 'src.mutItems()'
+static void parseEachMutSource(INode *iter, int parallel) {
+    if (iter->tag != RefTag || ((RefNode*)iter)->perm->tag == UnknownTag
+        || itypeGetTypeDcl(((RefNode*)iter)->perm) != (INode*)mutPerm)
+        return;
+    char spelling[96];
+    INode *src = ((RefNode*)iter)->vtexp;
+    if (src == NULL || !parseEachSpelling(src, spelling, sizeof(spelling)))
+        strcpy(spelling, "src");
+    errorMsgNode(iter, ErrorEachMutSource,
+        "%s over '&mut %s' is refused: it reads the items of what it walks. To change the items in place, write '%s.mutItems()'.",
+        parallel ? "A 'parallel each'" : "An 'each'", spelling, spelling);
+}
+
 // The variable of a drain, '<- each src', which no name reaches
 static Name *parseDrainName() {
     static Name *name = NULL;
@@ -617,6 +662,7 @@ static INode *parseEachLoop(ParseState *parse, Name *lifesym, int stmtflag, int 
     INode *iter = parseSimpleExpr(parse);
     if (iter == NULL)       // Not a term, and already reported as such
         return (INode *)outerblk;
+    parseEachMutSource(iter, parallel);
     INode *step = NULL;
     int isrange = 0;
     if (iter->tag == FnCallTag && ((FnCallNode*)iter)->methfld) {

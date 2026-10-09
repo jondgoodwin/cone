@@ -1,0 +1,59 @@
+// An 'each' over a source written '&mut src' is refused.
+//
+// A plain 'each' reads the items of what it walks. To change them where they are,
+// the source is the method that lends them mutably, 'src.mutItems()'. A borrow
+// written as the source with the 'mut' permission is refused whatever it borrows
+// (a list, an array, a slice, a field), and in every form of the loop: the
+// statement, 'parallel each' and the entry of '<-' ('out <- each &mut src'). The
+// message names the fix with the source as it is spelled when that is a name or
+// fields named from one, and 'src' otherwise.
+//
+// Walking a '&' borrow of the source is not refused (each_mut_source_ok).
+
+mod each_mut_source;
+
+import collections use *;
+
+fn aList() {
+  mut l = new List[i32];
+  l.push(1i32);
+  each x in &mut l {              //~ ErrorEachMutSource:13 "To change the items in place, write 'l.mutItems()'"
+  }
+}
+
+fn anArray() {
+  mut a = [1i32, 2i32, 3i32];
+  each x in &mut a {              //~ ErrorEachMutSource:13 "An 'each' over '&mut a' is refused"
+  }
+}
+
+fn aSlice(s &mut Array[i32]) {
+  each x in &mut *s {             //~ ErrorEachMutSource:13 "write 'src.mutItems()'"
+  }
+}
+
+struct Holder {
+  items List[i32];
+}
+
+fn aField(h &mut Holder) {
+  each x in &mut h.items {        //~ ErrorEachMutSource:13 "write 'h.items.mutItems()'"
+  }
+}
+
+fn aBuilder(src &mut List[i32]) {
+  mut out = new List[i32];
+  out <- each &mut src;           //~ ErrorEachMutSource:15 "write 'src.mutItems()'"
+}
+
+fn aBuilderWithYield(src &mut List[i32]) {
+  mut out = new List[i32];
+  out <- each x in &mut src yield *x;   //~ ErrorEachMutSource:20 "write 'src.mutItems()'"
+}
+
+fn aParallel(l &mut List[i32]) {
+  parallel each x in &mut l {     //~ ErrorEachMutSource:22 "A 'parallel each' over '&mut l' is refused"
+  }
+}
+
+fn main() i32 { 0i32; }
