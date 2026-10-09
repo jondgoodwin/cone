@@ -36,10 +36,13 @@ claim that these rule rather than describe.**
    indentation mean something is *inside* one token, a multi-line string
    literal (section 2), which reads them to build the literal's content and
    never to decide where a token or a statement ends.
-3. **The parser desugars.** `match`, `each`, `while`, `with`, bound patterns and
-   several prefix forms are lowered here into blocks and `if` chains. ▸
-   **Settles** that later phases never see those forms, so a new sugar costs no
-   node, no dispatch arm and no phase work.
+3. **The parser desugars.** `match`, `each` over a numeric range, `while`,
+   `with`, bound patterns and several prefix forms are lowered here into blocks
+   and `if` chains. ▸ **Settles** that later phases never see those forms, so a
+   new sugar costs no node, no dispatch arm and no phase work. The one sugar that
+   cannot be finished here is an `each` over anything but a range: how it walks
+   its source is the source's type's to say, so the parser builds a block marked
+   `FlagEach` that type check finishes ([Block](../nodes/block.md), "Type check").
 4. **The parser binds module-level names.** Module namespaces are populated,
    hooked into the global name table, and duplicate-checked *during* parsing. ▸
    **This is what lets name resolution have no lookup routine** — by the time it

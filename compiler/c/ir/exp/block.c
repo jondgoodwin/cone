@@ -229,6 +229,14 @@ void blockTypeCheck(TypeCheckState *pstate, BlockNode *blk, INode *expectType) {
     // This includes block stack, used for gathering all breaks that might belong to some block
     ++pstate->scope;
 
+    // An 'each' over a source that is not a range: what the source is says how
+    // the loop is built, so the source is checked first, as the initializer of
+    // the variable that holds it, and the statements below are checked as built
+    if (blk->flags & FlagEach) {
+        blockStmtTypeCheck(pstate, &nodesGet(blk->stmts, 0), &hoists);
+        eachLower(pstate, blk);
+    }
+
     // A brand minted in a loop's body is its pass's (lifetime.h)
     if (blk->flags & FlagLoop)
         lifeBrandLoopEnter((INode*)blk);

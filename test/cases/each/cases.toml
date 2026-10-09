@@ -8,31 +8,29 @@
 # variable is bound and scoped, and how 'break' and 'continue' behave inside one.
 #
 # 'continue' gets depth here rather than in core, and the reason is that it is
-# 'each' that makes it hard: the rewrite ends the loop body with the step that
-# advances the loop variable, so the jump has to carry a copy of that step or the
+# 'each' that makes it hard: a range's rewrite ends the loop body with the step
+# that advances its counter, so the jump has to carry a copy of that step or the
 # loop cannot end. Nothing about that is visible in core's 'while'.
 #
-# The failure scenarios are split by pipeline stage. That split is not cosmetic
-# here: 'each' is a parser rewrite, so a header the parser cannot read produces
-# no loop at all and nothing downstream ever sees it.
+# Two lowerings are covered. The parser rewrites a numeric range into a counter
+# and a 'while' (each_success, and its refusals), and type check builds the loop
+# for anything else once it knows what the source is (eachLower): an array or a
+# slice or a list, whose counted loop each_collections runs and
+# compiler/c/doc/nodes/block.md ("Type check") describes, and a cursor, which it
+# walks through its 'next'. The refusals are split by pipeline stage. That split is not
+# cosmetic here: a header the parser cannot read produces no loop at all and
+# nothing downstream ever sees it, and flow runs only on a program whose types
+# are right.
 #
 # Left uncovered on purpose:
 #
-# - The behavior of iterating anything that is not a range.
-#   doc/reference/refeach.html documents a collection iterator
-#   ('each x in [4, 3, 8, 2]'), an index-and-value form ('each i, x in slice')
-#   and a closure iterator, and its own note at the top says only the numeric
-#   range operators are implemented. So there is no behavior to cover: the
-#   rejection is the whole of it, and each_parse.cone asserts that rejection as
-#   ErrorNotIterable. The index-and-value form fails earlier and differently --
-#   the parser wants 'in' where the comma is -- and is covered there as
-#   ErrorBadTok.
-# - The '...' and '..' range operators the manual's examples use. They are not
-#   the operators parseEach looks for, so they take the non-range path above and
-#   would only re-assert ErrorNotIterable under a different spelling.
-# - An LLVM IR check. The rewrite produces no symbol of its own -- no iterator
-#   object, no call to an 'iter' method -- so there is nothing in the IR that
-#   the printed arithmetic does not already establish.
+# - The '...' and '..' range operators the manual's old examples used. They are
+#   not the operators parseEach looks for, so they take the path of any other
+#   source and are refused as a value that cannot be walked.
+# - An LLVM IR check. The sum of a list, an array, a slice and a range is
+#   measured by compiler/c/doc/diagnostics/measuring.md's method, not asserted
+#   here, since the suite asserts what a program prints and not how it is
+#   optimised.
 #
 # ErrorNoLoop is core's for 'break' outside a loop; the instance claimed here is
 # the other site that raises it, an 'each' in expression position, and it is the
@@ -47,13 +45,18 @@ category = "run"
 description = "Range iteration: the four operators, 'by', loop variable scope, 'break' and 'continue'"
 tags = ["parse", "nameres", "typecheck", "flow", "genllvm", "runtime"]
 
+[scenario.each_collections]
+category = "run"
+description = "Iteration over arrays, slices, lists and cursors: a variable a borrow of each item, two variables unpacking a pair, a cursor used where it stands or given by 'iter', and 'break', 'continue', labels and 'return' across loops over different sources"
+tags = ["parse", "typecheck", "flow", "genllvm", "runtime"]
+
 # -------- parse stage --------
 
 [scenario.each_parse]
 category = "reject"
-description = "'each' headers the parser cannot turn into a loop, and iterators it cannot loop over"
+description = "'each' headers the parser cannot read"
 tags = ["parse"]
-diagnostics = 10
+diagnostics = 12
 
 [[scenario.each_parse.unlocated]]
 code = "ErrorNoLoop"
@@ -71,6 +74,20 @@ diagnostics = 2
 
 [scenario.each_typecheck]
 category = "reject"
-description = "Range bounds, element types and 'by' steps that do not agree"
+description = "Range bounds, element types and 'by' steps that do not agree, and a write to the loop variable"
 tags = ["typecheck"]
-diagnostics = 6
+diagnostics = 8
+
+[scenario.each_source]
+category = "reject"
+description = "What an 'each' cannot walk and what its variables cannot be given: a source with no items, a 'next' that answers no Option, an 'iter' with no cursor, variables that do not unpack the item, an item that moves, a write to a pass's variable, a cursor that cannot be advanced"
+tags = ["typecheck"]
+diagnostics = 13
+
+# -------- flow stage --------
+
+[scenario.each_flow]
+category = "reject"
+description = "Borrows an 'each' holds: the source changed while it is walked, an item kept past the source or returned from the function owning it, a borrowed array across an 'await'"
+tags = ["flow"]
+diagnostics = 5

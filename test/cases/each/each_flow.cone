@@ -1,0 +1,78 @@
+// What an 'each' keeps borrowed while it walks.
+//
+// A loop over a list, an array or a cursor reads the source through a borrow it
+// holds for the whole loop, and every variable of a pass borrows an item. So the
+// rules for borrows apply to the loop as they do to a cursor written out:
+//
+// - the source may not be changed while the loop walks it;
+// - an item may not be kept past the source it borrows from, or returned from
+//   a function that owns the source;
+// - the borrow of an array or a slice ends at an 'await' in the body, as any
+//   borrow of a local does, so the pass would have nothing to go on with.
+//
+// These are flow's, which runs only on a program whose types are right
+// (each_source.cone has those that are not).
+
+mod each_flow;
+
+import collections use *;
+import actors;
+
+fn pushWhileWalking() {
+  mut l = new List[i64];
+  l.push(1i64);
+  each x in l {
+    l.push(3i64);        //~ ErrorFrozen:5 "borrowed"
+  }
+}
+
+fn keptPastTheList() i64 {
+  mut l0 = new List[i64] <- 1i64;
+  mut keep = l0[0usize];
+  {
+    mut tmp = new List[i64] <- 9i64;      //~ ErrorFrozen:9 "goes out of scope"
+    each x in tmp {
+      keep = x;
+    }
+  }
+  *keep;
+}
+
+fn returnedFromTheOwner() &i64 {
+  mut l = new List[i64] <- 5i64;
+  each x in l {
+    if *x > 4i64 { return x; }            //~ ErrorEscape:27 "outlives"
+  }
+  l[0usize];                              //~ ErrorEscape:4 "outlives"
+}
+
+// A borrow of a local array does not outlive an 'await' (the actors' rule), so
+// a loop over one cannot hold an 'await'; a loop over a range can
+actor Net {
+  pub async do read(self, url u64) u64 {
+    url * 100u64;
+  }
+}
+
+actor Sizes {
+  net Net;
+
+  pub async do total(self) u64 {
+    mut sum = 0u64;
+    imm a = [1u64, 2u64, 3u64];
+    each i in a {
+      imm b = await net.read(*i);         //~ ErrorFrozen:15 "ends at this 'await'"
+      sum = sum + b;
+    }
+    sum;
+  }
+
+  pub async do counted(self, n u64) u64 {
+    mut sum = 0u64;
+    each i in 0u64 < n {
+      imm b = await net.read(i);
+      sum = sum + b;
+    }
+    sum;
+  }
+}

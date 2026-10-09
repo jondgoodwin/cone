@@ -1,16 +1,15 @@
 // 'each' over a numeric range: the four range operators, the optional 'by'
-// step, the scope and mutability of the loop variable, and how 'break' behaves
-// inside one.
+// step, the scope of the loop variable, and how 'break' behaves inside one.
 //
 // Everything is printed, because 'each' is not generated directly. The parser
-// rewrites it into a variable declaration plus a 'while' whose condition is the
-// range comparison and whose body ends with the increment, so a loop that
-// compiles is not a loop that visits the values meant. The sums below are
-// order-independent, so each one is paired with an iteration count where the
-// count is what distinguishes the operator.
+// rewrites it into a counter's declaration plus a 'while' whose condition is the
+// range comparison and whose body begins with the pass's variable, a copy of the
+// counter, and ends with the increment, so a loop that compiles is not a loop
+// that visits the values meant. The sums below are order-independent, so each
+// one is paired with an iteration count where the count is what distinguishes
+// the operator.
 //
-// Iteration over a collection is the one 'each' subject absent on purpose;
-// cases.toml gives the reason.
+// Iteration over anything but a range is each_collections'.
 
 mod each_success;
 
@@ -204,18 +203,23 @@ fn scoping() {
   show("shadowed-local", outer);
 }
 
-// It is mutable, and writing to it steers the loop: setting it to 8 on the
-// visit where it is 2 skips 3 through 7, so the loop makes four visits rather
-// than ten.
-fn writable() {
-  mut count = 0;
-  each i in 0 < 10 {
-    count += 1;
-    if i == 2 {
-      i = 8;
+// It is a new variable on every pass, which nothing can change (each_typecheck
+// refuses a write to it): the loop steps a counter of its own, so a name in an
+// inner block that covers it disturbs nothing. Five visits, each adding the
+// covering 100 and then the number: 5 * 100 + (0 + 1 + 2 + 3 + 4).
+fn freshEveryPass() {
+  mut visits = 0;
+  mut sum = 0;
+  each i in 0 < 5 {
+    visits += 1;
+    {
+      imm i = 100;
+      sum += i;
     }
+    sum += i;
   }
-  show("writable-visits", count);
+  show("fresh-visits", visits);
+  show("fresh-sum", sum);
 }
 
 // -------- interaction with the rest of control flow --------
@@ -547,7 +551,7 @@ fn main() i32 {
   typed();
   reevaluated();
   scoping();
-  writable();
+  freshEveryPass();
   breaking();
   continuing();
   labeledContinuing();

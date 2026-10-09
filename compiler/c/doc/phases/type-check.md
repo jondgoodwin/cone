@@ -571,7 +571,9 @@ source-order pass, so demand cannot reach it. `scope` is consumed during type
 check by `clonePushState`, which gives a cloned lifetime node its `life`, and by
 the variables `contentsLower` declares for a `<-` list (its receiver's borrow,
 a construction's value, a count and its index), which it gives the scope of the
-blocks it builds.
+blocks it builds, and by those `eachLower` declares for an `each` (the source's
+holder, a cursor, a slice and its index, a pass's item), each given the scope
+of the place it has in the finished loop.
 
 ## 10. Order of resolution within a declaration
 

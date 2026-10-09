@@ -1,0 +1,356 @@
+// 'each' over what is not a range: an array or a slice, a list, and a cursor,
+// whether it is the source itself (it has 'next') or something that gives one
+// (it has 'iter').
+//
+// Every value printed is worked out by hand from the values put in. A pass's
+// variable is a borrow of the item for a collection and an array (what the
+// cursor's 'next' gives, for a cursor that lends), and the item itself for a
+// cursor that gives values; either way it is a new variable on every pass that
+// the body cannot change.
+//
+// - arrays: a local's elements 3, 4, 5, a literal's 10 and 20, a slice's, the
+//   array behind a reference, and an array held for the loop;
+// - lists: 1 to 4 summed, a list of structs read through the borrow, a list of
+//   strings, a list that is still whole afterwards, and one that is empty;
+// - cursors: a deque's 10, 20, 30; a countdown that gives 3, 2, 1 as values; a
+//   cursor in a variable that a first loop leaves part way and a second finishes;
+//   one reached through a '&mut' parameter, a bound and a field;
+// - 'iter': a deque's and a set's and a type of its own, and the pairs of a
+//   dictionary, unpacked into two variables ('each k, v in d') or taken whole;
+// - control flow: 'break', 'continue', labelled ones across loops over
+//   different sources, and 'return' out of the middle of one.
+
+mod each_collections;
+
+import stdio use *;
+import collections use *;
+
+fn show(label &str, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+struct Pt {
+  x i64;
+  y i64;
+}
+
+// A cursor that gives values, not borrows: n, n - 1, ... 1
+struct Countdown {
+  n i64;
+
+  pub fn next(self &mut) Option[i64] {
+    if n <= 0i64 { return None[i64][]; }
+    imm v = n;
+    n = n - 1i64;
+    Some[i64][v];
+  }
+}
+
+// Something that gives a cursor: a countdown from its count
+struct Countable {
+  count i64;
+
+  pub fn iter(self &) Countdown { new Countdown(count); }
+}
+
+// A struct holding a cursor, walked through its field
+struct Tape {
+  cur DequeItems[i64];
+}
+
+// -------- arrays and slices --------
+
+fn sumSlice(s &Array[i64]) i64 {
+  mut total = 0i64;
+  each x in s {
+    total = total + *x;
+  }
+  total;
+}
+
+fn sumArrayRef(a &Array[i64, 3]) i64 {
+  mut total = 0i64;
+  each x in a {
+    total = total + *x;
+  }
+  total;
+}
+
+fn makeArray() Array[i64, 2] {
+  [7i64, 8i64];
+}
+
+fn arrays() {
+  imm a = [3i64, 4i64, 5i64];
+  mut sum = 0i64;
+  mut n = 0i64;
+  each x in a {
+    sum = sum + *x;
+    n = n + 1i64;
+  }
+  show("array-sum", sum);                 // 3 + 4 + 5
+  show("array-count", n);
+
+  mut lit = 0i64;
+  each x in [10i64, 20i64] {
+    lit = lit + *x;
+  }
+  show("literal-sum", lit);               // 10 + 20
+
+  show("slice-sum", sumSlice(a));         // 12
+  show("array-ref-sum", sumArrayRef(&a)); // 12
+
+  mut made = 0i64;
+  each x in makeArray() {                 // an array held for the loop
+    made = made * 10i64 + *x;
+  }
+  show("held-array", made);               // 7 then 8
+
+  imm empty = new List[i64];
+  show("empty-slice", sumSlice(empty.view()));    // no passes
+}
+
+// -------- lists --------
+
+fn lists() {
+  mut l = new List[i64];
+  l.push(1i64); l.push(2i64); l.push(3i64); l.push(4i64);
+  mut sum = 0i64;
+  each x in l {
+    sum = sum + *x;
+  }
+  show("list-sum", sum);                  // 1 + 2 + 3 + 4
+  show("list-still-whole", i64.from(l.len));
+  l.push(5i64);                           // and still ours to change
+  show("list-after-push", i64.from(l.len));
+
+  mut pts = new List[Pt];
+  pts.push(new Pt(1i64, 2i64));
+  pts.push(new Pt(10i64, 20i64));
+  mut fields = 0i64;
+  each p in pts {
+    fields = fields + p.x * 100i64 + p.y;        // the struct through its borrow
+  }
+  show("list-of-structs", fields);        // 102 + 1020
+
+  mut names = new List[String];
+  names.push(String.from("ab"));
+  names.push(String.from("cde"));
+  mut chars = 0i64;
+  each s in names {
+    chars = chars + i64.from(s.len);
+  }
+  show("list-of-strings", chars);         // 2 + 3
+
+  mut none = 0i64;
+  each x in List[i64].empty() {           // a list that is nobody's, held for the loop
+    none = none + 1i64;
+  }
+  show("empty-list", none);
+
+  mut pairs = 0i64;
+  each a in l {
+    each b in l {
+      pairs = pairs + 1i64;
+    }
+  }
+  show("same-list-twice", pairs);         // 5 * 5
+}
+
+// -------- cursors --------
+
+fn sumItems[S Iterator[&i64]](s &mut S) i64 {
+  mut total = 0i64;
+  each x in s {
+    total = total + *x;
+  }
+  total;
+}
+
+fn countItems[T, S Iterator[T]](s &mut S) i64 {
+  mut n = 0i64;
+  each x in s {
+    n = n + 1i64;
+  }
+  n;
+}
+
+fn tapeSum(t &mut Tape) i64 {
+  mut total = 0i64;
+  each x in t.cur {
+    total = total + *x;
+  }
+  total;
+}
+
+fn cursors() {
+  mut d = new Deque[i64];
+  d.push(10i64); d.push(20i64); d.push(30i64);
+
+  mut sum = 0i64;
+  each x in d.items() {                   // a cursor made for the loop
+    sum = sum + *x;
+  }
+  show("deque-cursor", sum);              // 60
+
+  mut count = new Countdown(3i64);
+  mut digits = 0i64;
+  each v in count {                       // values, not borrows
+    digits = digits * 10i64 + v;
+  }
+  show("values", digits);                 // 3, 2, 1
+  show("countdown-spent", count.n);       // advanced where it stood
+
+  mut cur = d.items();
+  mut seen = 0i64;
+  each x in cur {
+    seen = seen + 1i64;
+    if seen == 2i64 { break; }
+  }
+  show("left-part-way", seen);            // 10, then 20
+  mut rest = 0i64;
+  each x in cur {                         // the same cursor, from where it stopped
+    rest = rest + *x;
+  }
+  show("finished-later", rest);           // 30
+
+  mut again = d.items();
+  show("through-a-mut-parameter", sumItems(&mut again));   // 60
+  mut third = d.items();
+  show("counted-by-a-bound", countItems(&mut third));      // 3
+
+  mut tape = new Tape(d.items());
+  show("through-a-field", tapeSum(&mut tape));             // 60
+}
+
+// -------- iter --------
+
+fn iters() {
+  mut countable = new Countable(4i64);
+  mut digits = 0i64;
+  each v in countable {                   // it has no 'next': its 'iter' gives one
+    digits = digits * 10i64 + v;
+  }
+  show("own-iter", digits);               // 4, 3, 2, 1
+
+  mut d = new Deque[i64];
+  d.push(1i64); d.push(2i64);
+  mut fromDeque = 0i64;
+  each x in d {                           // a deque gives its cursor
+    fromDeque = fromDeque * 10i64 + *x;
+  }
+  show("deque-iter", fromDeque);          // 1 then 2
+
+  mut s = new Set[i64];
+  s.insert(7i64); s.insert(8i64); s.insert(9i64);
+  mut fromSet = 0i64;
+  each x in s {
+    fromSet = fromSet + *x;
+  }
+  show("set-iter", fromSet);              // 7 + 8 + 9
+
+  mut dict = new Dict[i64, i64];
+  dict.insert(1i64, 10i64);
+  dict.insert(2i64, 20i64);
+  dict.insert(3i64, 30i64);
+  mut products = 0i64;
+  each k, v in dict {                     // a pair unpacked into two variables
+    products = products + *k * *v;
+  }
+  show("dict-pairs", products);           // 10 + 40 + 90
+  mut whole = 0i64;
+  each pair in dict {                     // or one variable taking the tuple
+    whole = whole + *pair.0 + *pair.1;
+  }
+  show("dict-pair-tuple", whole);         // 1 + 2 + 3 + 10 + 20 + 30
+
+  mut ordered = new OrderedDict[i64, i64];
+  ordered.insert(5i64, 50i64);
+  ordered.insert(4i64, 40i64);
+  ordered.insert(6i64, 60i64);
+  mut order = 0i64;
+  mut valuesum = 0i64;
+  each k, v in ordered {
+    order = order * 10i64 + *k;
+    valuesum = valuesum + *v;
+  }
+  show("ordered-keys", order);            // insertion order: 5, 4, 6
+  show("ordered-values", valuesum);       // 50 + 40 + 60
+
+  mut codes = 0u64;
+  each c in "aé".chars() {                // a cursor that gives chars
+    codes = codes + u64.from(c);
+  }
+  show("chars", i64.from(codes));         // 97 + 233
+}
+
+// -------- control flow --------
+
+fn firstOver(l &List[i64], limit i64) i64 {
+  each x in l {
+    if *x > limit { return *x; }
+  }
+  -1i64;
+}
+
+fn flow() {
+  mut l = new List[i64];
+  l.push(1i64); l.push(2i64); l.push(3i64); l.push(4i64);
+
+  mut evens = 0i64;
+  each x in l {
+    if *x % 2i64 == 1i64 { continue; }
+    evens = evens + *x;
+  }
+  show("continue", evens);                // 2 + 4
+
+  mut upto = 0i64;
+  each x in l {
+    if *x == 3i64 { break; }
+    upto = upto + *x;
+  }
+  show("break", upto);                    // 1 + 2
+
+  show("return-from-the-middle", firstOver(&l, 2i64));    // 3
+  show("return-found-nothing", firstOver(&l, 9i64));      // -1
+
+  mut visits = 0i64;
+  'outer: each a in l {
+    each b in l {
+      if *b == 2i64 { continue; }
+      if *a == 3i64 { break 'outer; }
+      visits = visits + 1i64;
+    }
+  }
+  show("labelled-break", visits);         // a = 1 and a = 2 visit 1, 3 and 4 each
+
+  mut skipped = 0i64;
+  'rows: each a in l {
+    each i in 0 < 3 {                     // a range inside a list's loop
+      if i == 1 { continue 'rows; }
+      skipped = skipped + 1i64;
+    }
+  }
+  show("continue-outer-list", skipped);   // once for each of the four
+
+  mut ranged = 0i64;
+  'cols: each i in 0 < 3 {                // a list inside a range's loop
+    each a in l {
+      if *a == 2i64 { continue 'cols; }
+      ranged = ranged + 1i64;
+    }
+  }
+  show("continue-outer-range", ranged);   // 1 passes, then continues, three times
+}
+
+fn main() i32 {
+  arrays();
+  lists();
+  cursors();
+  iters();
+  flow();
+  0i32;
+}
