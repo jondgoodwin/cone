@@ -102,7 +102,7 @@ fn tube(pos &List[Vec3], m usize, nr usize, profileClosed bool, ringsClosed bool
     }
     emitFace(&mut counts, &mut idx, &mut uvs, &face, &fuv, flip);
   }
-  build(pos, &counts, &idx, &uvs, &along, &around);
+  build(pos, &counts, &idx, uvs.view(), &along, &around);
 }
 
 // Ring r's u at profile point j (j = m the closing 1): from one list for
@@ -127,12 +127,15 @@ fn emitFace(counts &mut List[u32], idx &mut List[u32], uvs &mut List[Vec2], face
 // The PolyMesh of the faces, with their corner uvs as the "uv" channel and
 // each vertex's generator parameters as the "along" and "around" vertex
 // channels
-fn build(pos &List[Vec3], counts &List[u32], idx &List[u32], uvs &List[Vec2], along &List[f32],
+// (The uvs are lent as a slice, which the caller, whose list is its own, has taken the
+// view of: a view taken here, of a list reached through a reference, would be handed to
+// the mesh's methods beside the mesh's own lists, which nothing shows are not that one)
+fn build(pos &List[Vec3], counts &List[u32], idx &List[u32], uvs &Array[Vec2], along &List[f32],
     around &List[f32]) PolyMesh {
   mut problems = List[String].empty();
   mut pm = PolyMesh.fromPolygons(pos.view(), counts.view(), idx.view(), &mut problems);
   imm ch = pm.addVec2Channel(CornerDomain, "uv", new Vec2(0., 0.));
-  pm.setCornerVec2s(ch, uvs.view());
+  pm.setCornerVec2s(ch, uvs);
   imm alongCh = pm.addFloatChannel(VertexDomain, "along", 0.);
   imm aroundCh = pm.addFloatChannel(VertexDomain, "around", 0.);
   mut v = 0usize;
@@ -381,5 +384,5 @@ pub fn lathe(profile &Profile, axis Vec3, angle f32, steps u32) PolyMesh {
     }
     k = k + 1usize;
   }
-  build(&pos, &counts, &idx, &uvs, &along, &around);
+  build(&pos, &counts, &idx, uvs.view(), &along, &around);
 }

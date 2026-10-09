@@ -387,7 +387,11 @@ pub struct Client {
     f.methodText <=> r.methodText;
     f.url <=> r.url;
     f.headers <=> r.headers;
-    if not f.headers.has("User-Agent") {f.headers.add("User-Agent", cfg.userAgent.view());}
+    if not f.headers.has("User-Agent") {
+      // Copied: the fields hold Strings, and nothing shows the config's is none of them
+      imm agent = cfg.userAgent.copy();
+      f.headers.add("User-Agent", agent.view());
+    }
     if not f.headers.has("Accept") {f.headers.add("Accept", "*/*");}
     f.body <=> r.body;
     f.intent = r.intent;
@@ -943,14 +947,17 @@ pub struct Client {
     total = total + 1u32;
     st.connects = st.connects + 1u64;
     imm sink = httpconn.Sink.Here[tokConn | (u64.from(p.gen) << 32u64) | u64.from(pc)];
+    // The driver is handed a copy of the host: it holds Strings, and nothing shows
+    // the origin's is none of them
+    imm host = og.host.copy();
     if not og.secure {
-      p.id = drv.connect(lp, og.host.view(), og.port, sink);
+      p.id = drv.connect(lp, host.view(), og.port, sink);
       return;
     }
     imm t = tlsc;
     match t {
       case imm c Some {
-        p.id = drv.connectWith(lp, og.host.view(), og.port, new So[tls.Stream](c.value.stream(og.host.view(), pool)), sink);
+        p.id = drv.connectWith(lp, host.view(), og.port, new So[tls.Stream](c.value.stream(host.view(), pool)), sink);
       }
       else {
         // No TLS context: nothing for this origin can be fetched
@@ -1086,9 +1093,11 @@ pub struct Client {
   // As much of fetch fi's body as its connection takes now
   fn sendBody(self &mut, lp &mut Loop, fi u32) {
     imm f = self.fetchAt(fi) as &mut Fetch;
-    imm all = f.body.view();
-    while f.sent < all.len {
-      imm n = if all.len - f.sent < sendChunk {all.len - f.sent;} else {sendChunk;};
+    // The body is viewed only where its bytes are copied: a view held across the
+    // driver's calls would be one into a String the driver might change
+    while f.sent < f.body.len() {
+      imm left = f.body.len() - f.sent;
+      imm n = if left < sendChunk {left;} else {sendChunk;};
       mut b = IoBuf.empty();
       match pool.take(n) {
         case mut s Some {b <=> s.value;}
@@ -1100,6 +1109,7 @@ pub struct Client {
         drv.cancel(lp, f.req);
         return;
       }
+      imm all = f.body.view();
       b.append(&all[f.sent .. f.sent + n]);
       match drv.sendData(f.req, b) {
         case is None[IoBuf] {f.sent = f.sent + n;}

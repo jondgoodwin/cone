@@ -3,8 +3,12 @@
  * shapeinfer.h says what the compiler takes a shape-changing type to be. This is
  * how it reads that from the typed bodies of a type's methods, and when.
  *
- * - siParamWrites asks of one function and one of its parameters whether the
- *   function's body (transitively) writes storage through that parameter. It is
+ * - siAsk asks of one function, in one of four modes (SiMode), whether its body
+ *   (transitively) writes storage through one of its parameters (siParamWrites:
+ *   what makes a type shape-changing), writes any field of what a parameter points
+ *   at, or reshapes a value of a collection type that is not its own local, through
+ *   a parameter or a global or only through a global. The last three are what
+ *   reshape.h asks of a call (shapeParamReshapes, shapeTypeReshapes). It is
  *   memoised; a function in the middle of being asked about, reached again by a
  *   recursion, answers no, and an answer that leaned on such a guess is not kept.
  * - siInferStruct combines the answers over a type's methods.
@@ -111,7 +115,7 @@ static int siTypeHoldsStorage(INode *type) {
 
 // ---- Places ----------------------------------------------------------------
 
-static VarDclNode *siNamedVar(INode *node) {
+VarDclNode *siNamedVar(INode *node) {
     if (!(isNameUseNode(node) && isExpNode(node)))
         return NULL;
     INode *dcl = ((NameUseNode *)node)->dclnode;
@@ -121,9 +125,24 @@ static VarDclNode *siNamedVar(INode *node) {
 #define SiTaintMax 16
 #define SiAliasMax 8
 
-// What is asked of one function's body: whether it writes storage through
-// parameter 'parm' (what it points at, when it is a reference)
+// What is asked of one function's body, in one of four modes. The first is
+// whether it writes storage through parameter 'parm' (what it points at, when it
+// is a reference): what makes a type shape-changing. The second is whether it
+// writes any field of what the parameter points at (reshape.h: layer 2 of the
+// check of a call). The last two ask of a function with no parameter in mind
+// whether it reshapes a value of the collection type 'cont' that is not its own
+// local, through a parameter or not (SiModeType), or only through something that
+// is no parameter of its own, a global (SiModeOut).
+enum SiMode {
+    SiModeStorage,
+    SiModeField,
+    SiModeType,
+    SiModeOut
+};
+
 typedef struct {
+    int mode;               // SiMode
+    INode *cont;            // type modes: the collection's type
     VarDclNode *parm;       // the parameter whose pointee is asked about
     int isref;              // it is a reference: a write through it reaches the caller's value
     int hit;                // a write found
@@ -135,11 +154,14 @@ typedef struct {
 } SiCtx;
 
 // Is this variable the parameter, or a local that holds a reference to a place of
-// what the parameter points at?
+// what the parameter points at? In SiModeOut, which asks of no parameter: a global
+// (or a static), or a local holding a reference to a place of one
 static int siIsRoot(SiCtx *c, VarDclNode *var) {
     if (var == NULL)
         return 0;
     if (var == c->parm)
+        return 1;
+    if (c->mode == SiModeOut && (var->scope == 0 || (var->flags & FlagStatic)))
         return 1;
     for (int i = 0; i < c->nalias; ++i) {
         if (c->alias[i] == var)
@@ -188,10 +210,6 @@ static int siRooted(INode *e, SiCtx *c) {
 
 // ---- Reading a body ---------------------------------------------------------
 
-typedef int (*SiVisitFn)(INode *node, void *ctx);
-
-static int siVisit(INode *node, SiVisitFn fn, void *ctx);
-
 static int siVisitNodes(Nodes *nodes, SiVisitFn fn, void *ctx) {
     if (nodes == NULL)
         return 0;
@@ -206,7 +224,7 @@ static int siVisitNodes(Nodes *nodes, SiVisitFn fn, void *ctx) {
 
 // Every node of an expression tree, each before what it holds, as the tree
 // check (checktree.c) reaches them. 'fn' answering nonzero stops the walk.
-static int siVisit(INode *node, SiVisitFn fn, void *ctx) {
+int siVisit(INode *node, SiVisitFn fn, void *ctx) {
     if (node == NULL)
         return 0;
     if (fn(node, ctx))
@@ -275,7 +293,7 @@ static int siVisit(INode *node, SiVisitFn fn, void *ctx) {
 
 // Can the compiler read what this function does: it has a body here, which is a
 // call of this very function and not of one of a trait's (a virtual call)?
-static int siVisible(FnDclNode *fn) {
+int siVisible(FnDclNode *fn) {
     if (fn == NULL || fn->genericinfo != NULL || (fn->flags & FlagExtern) || (fn->dclinfo.facts & DclIntrinsic)
         || fn->value == NULL || fn->value->tag != BlockTag)
         return 0;
@@ -283,7 +301,7 @@ static int siVisible(FnDclNode *fn) {
     return !(owner && owner->tag == StructTag && (owner->flags & TraitType));
 }
 
-static int siBodyReady(FnDclNode *fn) {
+int siBodyReady(FnDclNode *fn) {
     return (fn->dclinfo.facts & DclBodyTyped) != 0;
 }
 
@@ -356,8 +374,62 @@ static int siWriteHits(INode *lval, SiCtx *c) {
     }
     if (!siRooted(lval, c))
         return 0;
+    if (c->mode == SiModeField)
+        return 1;
     INode *t = iexpGetTypeDcl(lval);
     return t != NULL && siTypeHoldsStorage(t);
+}
+
+// ---- The type modes: a function that reshapes a value of one type --------------
+
+// Is the place written, or some value it is inside, of the collection's type: its
+// whole replaced, or a field of its header written?
+static int siPlaceInCont(INode *e, INode *cont) {
+    for (;;) {
+        if (iexpGetTypeDcl(e) == cont)
+            return 1;
+        switch (e->tag) {
+        case CastTag:
+            if (e->flags & FlagConvert)
+                return 0;
+            e = ((CastNode *)e)->exp;
+            continue;
+        case BorrowTag:
+        case ArrayBorrowTag:
+            e = ((RefNode *)e)->vtexp;
+            continue;
+        case DerefTag:
+            e = ((StarNode *)e)->vtexp;
+            continue;
+        case FldAccessTag:
+            e = ((FnCallNode *)e)->objfn;
+            continue;
+        case ArrIndexTag:
+            if (iexpGetTypeDcl(((FnCallNode *)e)->objfn)->tag != ArrayTag)
+                return 0;
+            e = ((FnCallNode *)e)->objfn;
+            continue;
+        default:
+            return 0;
+        }
+    }
+}
+
+// A write at this place, in a type mode: a place of the collection's type, that is
+// not a local of the function's own, and, in SiModeOut, one reached from a global
+static int siTypeWriteHits(INode *lval, SiCtx *c) {
+    if (lval->tag == VTupleTag) {
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodesFor(((TupleNode *)lval)->elems, cnt, nodesp)) {
+            if (siTypeWriteHits(*nodesp, c))
+                return 1;
+        }
+        return 0;
+    }
+    if (!siPlaceInCont(lval, c->cont) || reshapeUniqueLocal(lval))
+        return 0;
+    return c->mode != SiModeOut || siRooted(lval, c);
 }
 
 // May the callee write through its parameter 'k'?
@@ -373,7 +445,79 @@ static int siParmWritable(FnDclNode *callee, uint32_t k, INode *arg) {
 // A call: each argument that reaches the parameter's pointee as a place the
 // callee may write, or as storage handed on by value, is the callee's to answer
 // for. A callee the compiler cannot read is taken to write.
+static int siAsk(FnDclNode *fn, uint32_t k, int mode, INode *cont);
+
+// A call, in a type mode (SiModeType, SiModeOut). Every argument that can reach
+// a value of the collection's type, other than a value the function owns whole, is
+// either that value lent to be written (the callee is asked about that parameter)
+// or something holding it (the callee is asked about the type). With no argument
+// that can, only a callee that reshapes one without any, through a global, is
+// one that does. A callee the compiler cannot read is taken to reshape what its
+// arguments reach.
+static void siCallType(FnCallNode *call, SiCtx *c) {
+    INode *fnn = call->objfn;
+    FnDclNode *callee = isNameUseNode(fnn) && ((NameUseNode *)fnn)->dclnode && ((NameUseNode *)fnn)->dclnode->tag == FnDclTag
+        ? (FnDclNode *)((NameUseNode *)fnn)->dclnode : NULL;
+    if (callee && ((callee->dclinfo.facts & DclIntrinsic) || (callee->value && callee->value->tag == IntrinsicTag)
+            || fnDclIsInit(callee)))
+        return;
+    uint32_t nargs = call->args ? call->args->used : 0;
+    if ((call->flags & FlagLvalOp) && nargs > 0 && siTypeWriteHits(nodesGet(call->args, 0), c)) {
+        c->hit = 1;
+        return;
+    }
+    int visible = !(call->flags & FlagVDisp) && siVisible(callee);
+    int anyreach = 0;
+    for (uint32_t k = 0; k < nargs && !c->hit; ++k) {
+        INode *arg = nodesGet(call->args, k);
+        INode *ba = arg;
+        while (ba->tag == CastTag && !(ba->flags & FlagConvert))
+            ba = ((CastNode *)ba)->exp;
+        // A value the function owns whole, lent or handed over, is nobody else's
+        if ((ba->tag == BorrowTag && reshapeUniqueLocal(((RefNode *)ba)->vtexp)) || reshapeUniqueLocal(ba))
+            continue;
+        if (c->mode == SiModeOut && !siRooted(ba, c))
+            continue;
+        INode *at = iexpGetTypeDcl(arg);
+        if (reshapeReach(at, c->cont, 1) == 0)
+            continue;
+        if (at->tag == RefTag && itypeGetTypeDcl(((RefNode *)at)->vtexp) == c->cont) {
+            if (!siParmWritable(callee, k, arg))
+                continue;
+            if (!visible)
+                c->hit = 1;
+            else {
+                int answer = siAsk(callee, k, SiModeField, NULL);
+                if (answer == SiYes)
+                    c->hit = 1;
+                else if (answer == SiPending)
+                    c->pending = 1;
+            }
+        }
+        else
+            anyreach = 1;
+    }
+    if (c->hit)
+        return;
+    if (anyreach && !visible)
+        c->hit = 1;
+    else if (visible && (anyreach || reshapeGlobalsReach(c->cont))) {
+        // Handed what reaches the type: the callee through any parameter or global.
+        // Handed nothing that does: only through a global, and only if some global
+        // holds one
+        int answer = siAsk(callee, 0, anyreach ? SiModeType : SiModeOut, c->cont);
+        if (answer == SiYes)
+            c->hit = 1;
+        else if (answer == SiPending)
+            c->pending = 1;
+    }
+}
+
 static void siCall(FnCallNode *call, SiCtx *c) {
+    if (c->mode >= SiModeType) {
+        siCallType(call, c);
+        return;
+    }
     INode *fnn = call->objfn;
     FnDclNode *callee = isNameUseNode(fnn) && ((NameUseNode *)fnn)->dclnode && ((NameUseNode *)fnn)->dclnode->tag == FnDclTag
         ? (FnDclNode *)((NameUseNode *)fnn)->dclnode : NULL;
@@ -392,7 +536,7 @@ static void siCall(FnCallNode *call, SiCtx *c) {
             // A place of the pointee lent to be written
             if (intrinsic) {
                 INode *at = iexpGetTypeDcl(arg);
-                if (at->tag == RefTag && siTypeHoldsStorage(((RefNode *)at)->vtexp))
+                if (at->tag == RefTag && (c->mode == SiModeField || siTypeHoldsStorage(((RefNode *)at)->vtexp)))
                     c->hit = 1;
                 continue;
             }
@@ -405,7 +549,7 @@ static void siCall(FnCallNode *call, SiCtx *c) {
         if (!visible)
             c->hit = 1;
         else {
-            int answer = siParamWrites(callee, k);
+            int answer = siAsk(callee, k, c->mode, NULL);
             if (answer == SiYes)
                 c->hit = 1;
             else if (answer == SiPending)
@@ -431,19 +575,24 @@ static void siNote(VarDclNode *var, INode *value, SiCtx *c) {
 
 static int siWalkNode(INode *node, void *vc) {
     SiCtx *c = (SiCtx *)vc;
+    int types = c->mode >= SiModeType;
+    // What a local holds a reference to is followed to a parameter's pointee, and to a global
+    int notes = !types || c->mode == SiModeOut;
     switch (node->tag) {
     case AssignTag:
-        if (siWriteHits(((AssignNode *)node)->lval, c))
+        if (types ? siTypeWriteHits(((AssignNode *)node)->lval, c) : siWriteHits(((AssignNode *)node)->lval, c))
             c->hit = 1;
-        else
+        else if (notes)
             siNote(siNamedVar(((AssignNode *)node)->lval), ((AssignNode *)node)->rval, c);
         break;
     case SwapTag:
-        if (siWriteHits(((SwapNode *)node)->lval, c) || siWriteHits(((SwapNode *)node)->rval, c))
+        if (types ? siTypeWriteHits(((SwapNode *)node)->lval, c) || siTypeWriteHits(((SwapNode *)node)->rval, c)
+                : siWriteHits(((SwapNode *)node)->lval, c) || siWriteHits(((SwapNode *)node)->rval, c))
             c->hit = 1;
         break;
     case VarDclTag:
-        siNote((VarDclNode *)node, ((VarDclNode *)node)->value, c);
+        if (notes)
+            siNote((VarDclNode *)node, ((VarDclNode *)node)->value, c);
         break;
     case FnCallTag:
         siCall((FnCallNode *)node, c);
@@ -457,6 +606,8 @@ static int siWalkNode(INode *node, void *vc) {
 typedef struct {
     FnDclNode *fn;
     uint32_t k;
+    INode *cont;        // a type mode: the collection's type
+    uint8_t mode;       // SiMode
     uint8_t state;      // SiMemoBusy or SiMemoDone, else a key held for another try
     uint8_t answer;
     uint32_t depth;
@@ -470,12 +621,13 @@ static uint32_t siMemoUsed = 0;
 static uint32_t siDepth = 0;        // how many functions are being asked about
 static uint32_t siGuess = UINT32_MAX;   // the shallowest function a guess of 'no' was made for
 
-static uint32_t siMemoHash(FnDclNode *fn, uint32_t k) {
-    uint64_t h = ((uint64_t)(uintptr_t)fn * 0x9E3779B97F4A7C15ull) ^ ((uint64_t)k * 0xC2B2AE3D27D4EB4Full);
+static uint32_t siMemoHash(FnDclNode *fn, uint32_t k, int mode, INode *cont) {
+    uint64_t h = ((uint64_t)(uintptr_t)fn * 0x9E3779B97F4A7C15ull) ^ ((uint64_t)k * 0xC2B2AE3D27D4EB4Full)
+        ^ ((uint64_t)(uintptr_t)cont * 0xD6E8FEB86659FD93ull) ^ ((uint64_t)mode << 20);
     return (uint32_t)(h >> 32);
 }
 
-static SiMemo *siMemoFind(FnDclNode *fn, uint32_t k) {
+static SiMemo *siMemoFind(FnDclNode *fn, uint32_t k, int mode, INode *cont) {
     if ((siMemoUsed + 1) * 2 > siMemoCap) {
         SiMemo *old = siMemo;
         uint32_t oldcap = siMemoCap;
@@ -485,37 +637,44 @@ static SiMemo *siMemoFind(FnDclNode *fn, uint32_t k) {
         for (uint32_t i = 0; i < oldcap; ++i) {
             if (old[i].fn == NULL)
                 continue;
-            uint32_t at = siMemoHash(old[i].fn, old[i].k) & (siMemoCap - 1);
+            uint32_t at = siMemoHash(old[i].fn, old[i].k, old[i].mode, old[i].cont) & (siMemoCap - 1);
             while (siMemo[at].fn != NULL)
                 at = (at + 1) & (siMemoCap - 1);
             siMemo[at] = old[i];
         }
     }
-    uint32_t at = siMemoHash(fn, k) & (siMemoCap - 1);
+    uint32_t at = siMemoHash(fn, k, mode, cont) & (siMemoCap - 1);
     while (siMemo[at].fn != NULL) {
-        if (siMemo[at].fn == fn && siMemo[at].k == k)
+        if (siMemo[at].fn == fn && siMemo[at].k == k && siMemo[at].mode == mode && siMemo[at].cont == cont)
             return &siMemo[at];
         at = (at + 1) & (siMemoCap - 1);
     }
     siMemo[at].fn = fn;
     siMemo[at].k = k;
+    siMemo[at].mode = (uint8_t)mode;
+    siMemo[at].cont = cont;
     siMemo[at].state = SiMemoFree;
     ++siMemoUsed;
     return &siMemo[at];
 }
 
-// Does the body of 'fn' write storage through its parameter 'k' (what it points
-// at, when it is a reference), or hand storage read from it to code that may free
-// it, directly or through what it calls?
-static int siParamWrites(FnDclNode *fn, uint32_t k) {
+// Does the body of 'fn' do what 'mode' asks, directly or through what it calls?
+// The parameter modes: write storage (or, SiModeField, any field) through its
+// parameter 'k' (what it points at, when it is a reference), or hand storage read
+// from it to code that may free it. The type modes: reshape a value of the type
+// 'cont' that is not its own local.
+static int siAsk(FnDclNode *fn, uint32_t k, int mode, INode *cont) {
     if (!siVisible(fn))
         return SiYes;
     if (!siBodyReady(fn))
         return SiPending;
     FnSigNode *sig = (FnSigNode *)fn->vtype;
-    if (k >= sig->parms->used)
+    int ofparm = mode < SiModeType;
+    if (ofparm && k >= sig->parms->used)
         return SiYes;
-    SiMemo *m = siMemoFind(fn, k);
+    if (!ofparm)
+        k = 0;
+    SiMemo *m = siMemoFind(fn, k, mode, cont);
     if (m->state == SiMemoDone)
         return m->answer;
     if (m->state == SiMemoBusy) {
@@ -533,14 +692,18 @@ static int siParamWrites(FnDclNode *fn, uint32_t k) {
 
     SiCtx ctx;
     memset(&ctx, 0, sizeof(ctx));
-    ctx.parm = (VarDclNode *)nodesGet(sig->parms, k);
-    INode *ptype = iexpGetTypeDcl((INode *)ctx.parm);
-    ctx.isref = ptype != NULL && ptype->tag == RefTag;
+    ctx.mode = mode;
+    ctx.cont = cont;
+    if (ofparm) {
+        ctx.parm = (VarDclNode *)nodesGet(sig->parms, k);
+        INode *ptype = iexpGetTypeDcl((INode *)ctx.parm);
+        ctx.isref = ptype != NULL && ptype->tag == RefTag;
+    }
     siVisit(fn->value, siWalkNode, &ctx);
     int answer = ctx.hit ? SiYes : ctx.pending ? SiPending : SiNo;
 
     --siDepth;
-    m = siMemoFind(fn, k);      // the table may have grown
+    m = siMemoFind(fn, k, mode, cont);      // the table may have grown
     if (answer == SiNo && siGuess < depth) {
         // It leaned on a guess about a function still being asked about: asked again
         m->state = SiMemoFree;
@@ -556,6 +719,28 @@ static int siParamWrites(FnDclNode *fn, uint32_t k) {
         siGuess = savedGuess;
     }
     return answer;
+}
+
+static int siParamWrites(FnDclNode *fn, uint32_t k) {
+    return siAsk(fn, k, SiModeStorage, NULL);
+}
+
+// The two questions a call's check asks (reshape.h). An answer not settled yet is
+// taken as yes
+uint32_t shapeUnsettled = 0;
+
+int shapeParamReshapes(FnDclNode *fn, uint32_t k) {
+    int answer = siAsk(fn, k, SiModeField, NULL);
+    if (answer == SiPending)
+        ++shapeUnsettled;
+    return answer != SiNo;
+}
+
+int shapeTypeReshapes(FnDclNode *fn, INode *cont, int viaParams) {
+    int answer = siAsk(fn, 0, viaParams ? SiModeType : SiModeOut, cont);
+    if (answer == SiPending)
+        ++shapeUnsettled;
+    return answer != SiNo;
 }
 
 // ---- Does a type change shape? ----------------------------------------------
@@ -721,13 +906,14 @@ int shapeWalkReady(FnDclNode *fn, int maydefer) {
 typedef struct {
     FnDclNode *fn;
     int drops;
+    int seams;
 } SiDeferred;
 
 static SiDeferred *siQueue = NULL;
 static uint32_t siQueueUsed = 0;
 static uint32_t siQueueCap = 0;
 
-void shapeWalkDefer(FnDclNode *fn, int drops) {
+void shapeWalkDefer(FnDclNode *fn, int drops, int seams) {
     if (siQueueUsed == siQueueCap) {
         SiDeferred *old = siQueue;
         siQueueCap = siQueueCap ? siQueueCap * 2 : 64;
@@ -737,7 +923,27 @@ void shapeWalkDefer(FnDclNode *fn, int drops) {
     }
     siQueue[siQueueUsed].fn = fn;
     siQueue[siQueueUsed].drops = drops;
+    siQueue[siQueueUsed].seams = seams;
     ++siQueueUsed;
+}
+
+// A function this one calls by name that was never asked for, because a call was
+// lowered straight to it (a folded method of a lent body: 'conns.len()' is
+// 'conns.view().len()'): its body is checked now, so what a call of it does can be
+// read (reshape.h)
+static int siDemandCallee(INode *node, void *vc) {
+    (void)vc;
+    if (node->tag != FnCallTag || !isNameUseNode(((FnCallNode *)node)->objfn))
+        return 0;
+    INode *fn = ((NameUseNode *)((FnCallNode *)node)->objfn)->dclnode;
+    if (fn != NULL && fn->tag == FnDclTag && !(fn->flags & (TypeChecked | TypeChecking)) && siVisible((FnDclNode *)fn))
+        fnCallDemandCandidates(fn);
+    return 0;
+}
+
+void shapeDemandCallees(FnDclNode *fn) {
+    if (!structLayoutInFlight())
+        siVisit(fn->value, siDemandCallee, NULL);
 }
 
 void shapeWalkDeferred(void) {
@@ -745,11 +951,16 @@ void shapeWalkDeferred(void) {
     for (uint32_t i = 0; i < siQueueUsed; ++i) {
         FnDclNode *fn = siQueue[i].fn;
         int drops = siQueue[i].drops;
+        int seams = siQueue[i].seams;
         shapeWalkReady(fn, 0);
+        shapeDemandCallees(fn);
         size_t svTimer = timerCurrent;
         if (timerFine)
             timerBegin(FlowTimer);
-        flowPathWalk(fn, 1, drops, 0);
+        // Nothing is checked later: an answer not settled now is taken as yes
+        flowWalkFinal = 1;
+        flowPathWalk(fn, 1, drops, seams);
+        flowWalkFinal = 0;
         if (timerFine)
             timerBegin(svTimer);
     }

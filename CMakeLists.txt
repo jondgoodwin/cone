@@ -63,6 +63,7 @@ add_executable(conec
 	compiler/c/ir/flowloan.c
 	compiler/c/ir/flowpath.c
 	compiler/c/ir/shapeinfer.c
+	compiler/c/ir/reshape.c
 	compiler/c/ir/iexp.c
 	compiler/c/ir/inode.c
 	compiler/c/ir/instype.c

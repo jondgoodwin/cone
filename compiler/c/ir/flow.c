@@ -1808,7 +1808,7 @@ int flowGpu = 0;
 // Functions walked, functions gated, and functions each trigger fired in
 static uint32_t flowGateFns = 0;
 static uint32_t flowGateGated = 0;
-static uint32_t flowGateByTrigger[5] = { 0, 0, 0, 0, 0 };
+static uint32_t flowGateByTrigger[6] = { 0, 0, 0, 0, 0, 0 };
 
 // Is this type (a declaration) a bare borrowed reference?
 static int flowGateIsBorrowRef(INode *typedcl) {
@@ -1831,6 +1831,8 @@ void flowStateInit(FlowState *fstate, FnSigNode *fnsig) {
     fstate->dropgate = 0;
     fstate->jumped = 0;
     fstate->awaits = NULL;
+    fstate->shapelend = 0;
+    fstate->shapewrite = 0;
 }
 
 // A value handed out that carries a borrow: what it holds, and so how long it
@@ -1944,6 +1946,92 @@ void flowGateBoxedAsk(FlowState *fstate, INode *cast) {
         fstate->gate |= FlowGateBoxed;
 }
 
+// A method called on a value that may change shape (a list, a string, a struct
+// holding one: shapeinfer.h), returning a borrow, whose receiver is reached
+// through a reference (or is one): another name for the value may change it
+// while the borrow is held (reshape.h), which only the loan walk can follow. A
+// receiver that is a plain local, or a field of one, has no other name.
+void flowGateShapeAsk(FlowState *fstate, INode *node) {
+    FnCallNode *call = (FnCallNode *)node;
+    if (call->args == NULL || call->args->used == 0 || !isNameUseNode(call->objfn)
+        || !itypeCarriesBorrow(call->vtype))
+        return;
+    INode *fn = ((NameUseNode *)call->objfn)->dclnode;
+    if (fn == NULL || fn->tag != FnDclTag || !(fn->flags & FlagMethFld) || ((FnDclNode *)fn)->vtype == NULL
+        || ((FnDclNode *)fn)->vtype->tag != FnSigTag)
+        return;
+    Nodes *parms = ((FnSigNode *)((FnDclNode *)fn)->vtype)->parms;
+    if (parms->used == 0 || ((VarDclNode *)nodesGet(parms, 0))->namesym != selfName)
+        return;
+    INode *recv = nodesGet(call->args, 0);
+    INode *recvtype = ((IExpNode *)recv)->vtype;
+    recvtype = recvtype ? flowGateTypeDcl(recvtype) : NULL;
+    if (recvtype == NULL || recvtype->tag != RefTag)
+        return;
+    INode *container = flowGateTypeDcl(((RefNode *)recvtype)->vtexp);
+    if (container->tag != StructTag)
+        return;
+    StructNode *st = (StructNode *)container;
+    if (st->flags & (TraitType | EnumType))
+        return;
+    if (st->lends != LendsShapeChanging && (st->lends != LendsLoaned || st->shapeinf == ShapeNo))
+        return;
+    // A borrow of a plain local value's own place has no other name
+    INode *place = recv;
+    while (place->tag == CastTag && !(place->flags & FlagConvert))
+        place = ((CastNode *)place)->exp;
+    if (place->tag == BorrowTag) {
+        place = ((RefNode *)place)->vtexp;
+        for (;;) {
+            if (place->tag == CastTag && !(place->flags & FlagConvert))
+                place = ((CastNode *)place)->exp;
+            else if (place->tag == FldAccessTag)
+                place = ((FnCallNode *)place)->objfn;
+            else if (place->tag == ArrIndexTag && flowGateTypeDcl(((IExpNode *)((FnCallNode *)place)->objfn)->vtype)->tag == ArrayTag)
+                place = ((FnCallNode *)place)->objfn;
+            else
+                break;
+        }
+        if (isNameUseNode(place) && isExpNode(place)) {
+            INode *dcl = ((NameUseNode *)place)->dclnode;
+            if (dcl && dcl->tag == VarDclTag) {
+                INode *vt = ((IExpNode *)dcl)->vtype ? flowGateTypeDcl(((IExpNode *)dcl)->vtype) : NULL;
+                // (an actor's 'self' is a value that is reached through its handle)
+                if (vt && vt->tag != RefTag && vt->tag != ArrayRefTag && vt->tag != VirtRefTag && vt->tag != PtrTag
+                        && ((VarDclNode *)dcl)->namesym != selfName)
+                    return;
+            }
+        }
+    }
+    fstate->shapelend = 1;
+    flowGateShapeWrite(fstate, call->args);
+}
+
+// A call with an argument its callee may write through (a writable reference, or
+// a value that may hold one): the only calls that can reshape what another
+// name lent. A call handed nothing to write by could only do so through a global,
+// which this does not gate on
+void flowGateShapeWrite(FlowState *fstate, Nodes *args) {
+    if (args == NULL)
+        return;
+    INode **argsp;
+    uint32_t cnt;
+    for (nodesFor(args, cnt, argsp)) {
+        INode *type = ((IExpNode *)*argsp)->vtype;
+        if (type == NULL)
+            continue;
+        INode *named = flowGateTypeDcl(type);
+        if (((named->tag == RefTag || named->tag == ArrayRefTag) && (permGetFlags(((RefNode *)named)->perm) & MayWrite))
+            || (named->tag == StructTag && ((StructNode *)named)->carriesborrow != CarriesBorrowNo)
+            || named->tag == PtrTag || named->tag == VirtRefTag) {
+            fstate->shapewrite = 1;
+            if (fstate->shapelend)
+                fstate->gate |= FlowGateShape;
+            return;
+        }
+    }
+}
+
 void flowGateUse(FlowState *fstate, VarDclNode *var) {
     for (uint16_t i = 0; i < fstate->inflightcnt; ++i) {
         if (fstate->inflight[i] == var) {
@@ -1957,14 +2045,14 @@ void flowGateCount(FlowState *fstate) {
     ++flowGateFns;
     if (fstate->gate)
         ++flowGateGated;
-    for (int bit = 0; bit < 5; ++bit) {
+    for (int bit = 0; bit < 6; ++bit) {
         if (fstate->gate & (1 << bit))
             ++flowGateByTrigger[bit];
     }
 }
 
 void flowGatePrint() {
-    printf("Flow gate: %u of %u functions (holder %u, result %u, store %u, in-call %u, boxed %u)\n\n",
+    printf("Flow gate: %u of %u functions (holder %u, result %u, store %u, in-call %u, boxed %u, shape %u)\n\n",
         flowGateGated, flowGateFns, flowGateByTrigger[0], flowGateByTrigger[1],
-        flowGateByTrigger[2], flowGateByTrigger[3], flowGateByTrigger[4]);
+        flowGateByTrigger[2], flowGateByTrigger[3], flowGateByTrigger[4], flowGateByTrigger[5]);
 }

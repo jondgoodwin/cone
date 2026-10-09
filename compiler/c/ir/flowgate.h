@@ -94,6 +94,24 @@ static inline void flowGateCall(FlowState *fstate, Nodes *args) {
     }
 }
 
+// Gate trigger: a method lending a borrow from a value that may change shape,
+// reached through a reference, in a function that also makes a call with a
+// writable argument. Asked even when another trigger has fired, for it also
+// says the callees' bodies are checked before the walk (fnDclTypeCheck). A call
+// whose result holds no borrow is dismissed by its type.
+static inline void flowGateShape(FlowState *fstate, FnCallNode *call) {
+    if (fstate->gate & FlowGateShape)
+        return;
+    // A call with a writable argument matters once a borrow is lent before it (a
+    // borrow held across a loop is a holder, which gates the function itself)
+    if (fstate->shapelend) {
+        if (!fstate->shapewrite)
+            flowGateShapeWrite(fstate, call->args);
+    }
+    else if (call->vtype && !flowGateCarriesNone(call->vtype))
+        flowGateShapeAsk(fstate, (INode *)call);
+}
+
 // An operand of a call or a literal was just walked: while the rest are, a
 // borrow it made waits, and the variable it borrows is remembered
 static inline void flowGateOperand(FlowState *fstate, INode *operand) {

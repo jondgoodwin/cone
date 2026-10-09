@@ -31,6 +31,10 @@ enum FlowGate {
                             // such a writable borrow, beside another argument carrying one
     FlowGateInCall = 0x8,   // a variable named while an operand's borrow of it waits for its call or literal
     FlowGateBoxed  = 0x10,  // a value whose type carries a borrow converted to an owning virtual reference
+    FlowGateShape  = 0x20,  // a method call lending a borrow of a value that may change shape (a list, a string)
+                            // reached through a reference, transient or not, in a function that also makes a
+                            // call with a writable argument: that call could reshape it by another name
+                            // (reshape.h). The bodies of the functions called are checked before its walk
 };
 
 // How many operands' borrows the gate remembers waiting at once; past that,
@@ -45,7 +49,9 @@ typedef struct FlowState {
     uint16_t inflightcnt;   // How many of 'inflight' are in use
     uint8_t dropgate;   // 1: some variable's state may differ by path, so the path walk decides its drops
     uint8_t jumped;     // Set by blockFlow and ifFlow: every path through the block or 'if' jumped away
-    Nodes *awaits;      // Each 'await' the walk met, a seam the loan walk applies its rules to, or NULL
+    uint8_t shapelend;  // FlowGateShape: a method lending a borrow of a value that may change shape was met
+    uint8_t shapewrite; // FlowGateShape: a call with a writable argument was met
+    Nodes *awaits;     // Each 'await' the walk met, a seam the loan walk applies its rules to, or NULL
     VarDclNode *inflight[FlowInflightMax];  // The variable each waiting operand's borrow is of
 } FlowState;
 
@@ -132,6 +138,10 @@ void flowGateCallAsk(FlowState *fstate, Nodes *args);
 void flowGateOperandAsk(FlowState *fstate, INode *operand);
 // A conversion may make an owning virtual reference of a value holding a borrow
 void flowGateBoxedAsk(FlowState *fstate, INode *cast);
+// A call returns a borrow and may be a method lending from a value that changes shape
+void flowGateShapeAsk(FlowState *fstate, INode *call);
+// A call with a writable argument
+void flowGateShapeWrite(FlowState *fstate, Nodes *args);
 #define flowGateOperandsEnd(fstate, mark) ((fstate)->inflightcnt = (mark))
 
 // A variable is named while an operand's borrow waits: gate trigger when it is

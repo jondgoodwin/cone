@@ -57,7 +57,9 @@ typedef struct {
     uint8_t nsteps;     // A path longer than PlaceMaxSteps is cut short, which only overlaps more
     uint8_t shared;     // 1: reached through a shared path
     uint8_t sharedlen;  // then, how many steps lead to the first reference that may alias (0: the root's)
-    uint8_t owned;      // 1: a step dereferences an owning reference others may own too ('Rc'), so
+    uint8_t shwrite;    // 1: some reference on the way may alias and is not 'imm' or 'mut1' (pwMayAliasWritten),
+                        // so another holder may change what the place is in; a collection's block may move
+    uint8_t owned;     // 1: a step dereferences an owning reference others may own too ('Rc'), so
                         // the place may outlive its root variable
     uint8_t far;        // deref: the reference was itself read through a borrowed one ('**pp',
                         // '*r.g'), so the root stands for anything a borrow or more past where
@@ -145,6 +147,14 @@ void *pathGrow(void *buf, uint32_t *cap, size_t size);
 // 'await', so its operands are walked in the order a seam gives them
 // (awaitOrder)
 void flowPathWalk(FnDclNode *fndcl, int loans, int drops, int seams);
+
+// Set while the walks that waited are made at the end of type check
+// (shapeWalkDeferred): nothing is checked later, so a verdict that leans on
+// something not checked yet is final, taken as yes. A walk made earlier
+// withholds such a verdict and sets 'flowShapeRetry', which asks its caller to
+// queue it to be made again then (reshape.h)
+extern int flowWalkFinal;
+extern int flowShapeRetry;
 
 // Print the walk's tallies for -V 2
 void flowPathPrint();

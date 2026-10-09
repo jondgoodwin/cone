@@ -256,7 +256,7 @@ tags = ["flow"]
 
 # A borrow a method returns keeps its receiver loaned while it is used, and a
 # call's arguments are in flight until it is made. Uses the collections and
-# pool packages; the hole through shared paths is written out in its header.
+# pool packages; a collection reached through a shared path is the next two scenarios'.
 [scenario.collection_flow_freeze]
 category = "reject"
 description = "A list pushed onto, a pool's value removed, or a struct read while a borrow a method returned is still to be used; a list pushed onto, lent by 'viewMut' again or read by 'view', and a String grown, while a 'viewMut' slice is still to be used; an argument touching what an earlier one borrowed; a receiver's reserved borrow meeting a mutable argument borrow, and activated meeting a borrow another argument carries"
@@ -264,13 +264,22 @@ tags = ["flow"]
 diagnostics = 10
 
 # The same freezing for a container reached through a shared path: a '&mut'
-# parameter, a field of 'self'. Only the same path is frozen; the other
-# reference to one list stays open (collection_freeze_shared_success).
+# parameter, a field of 'self'. The same path is frozen here; a change through
+# another name for the container is refused by collection_flow_reshape.
 [scenario.collection_flow_freeze_shared]
 category = "reject"
 description = "An element, a cursor, a slice 'viewMut' lends, a String's view or a pool's value borrowed through a '&mut' parameter, a shared 'Rc[mut, T]' owner or a field of 'self', and the same container pushed onto, grown, lent again or read through that path while the borrow is still to be used"
 tags = ["flow"]
 diagnostics = 10
+
+# Part (b) of the same rule: a change through another name for the container, or
+# by a call that might make one. Read from the types and the bodies, not from
+# names (collection_reshape_success holds what is accepted beside each refusal).
+[scenario.collection_flow_reshape]
+category = "reject"
+description = "An element, a view or a struct's borrow held while another reference to the same container pushes, clears, pops or truncates it, is handed to a call whose body reshapes it (directly, through what it calls, through a struct holding the reference, or through a global), to a function pointer or a function defined elsewhere, a view held by a result that may hold it while another String grows, and an element or view handed to the very call beside the reference that changes it"
+tags = ["flow"]
+diagnostics = 17
 
 # A struct that wraps a container is shape-changing too, though it declares
 # nothing: the compiler finds it from its methods (a pointer written, a borrow
@@ -291,12 +300,23 @@ diagnostics = 3
 
 [scenario.collection_freeze_inferred_success]
 category = "run"
-description = "A borrow a method returned, held while the path it was reached through is changed, out of types that lack one of the two things that make a type shape-changing: a cursor that writes only its position, a List wrapper whose writer sets an element, one nothing writes through, a block freed only in 'final', and a borrow of a number; and a wrapper that does change shape, its borrow used up first, read meanwhile, and two different references to one"
+description = "A borrow a method returned, held while the path it was reached through is changed, out of types that lack one of the two things that make a type shape-changing: a cursor that writes only its position, a List wrapper whose writer sets an element, one nothing writes through, a block freed only in 'final', and a borrow of a number; and a wrapper that does change shape, its borrow used up first, and read meanwhile"
+tags = ["flow", "genllvm", "runtime"]
+
+[scenario.collection_flow_reshape_owners]
+category = "reject"
+description = "An element borrowed through a field of 'self', a shared 'Rc[mut, T]' owner, a list allocated in an arena and held by name, or a reference made from a pointer, while another name for the same list pushes"
+tags = ["flow"]
+diagnostics = 4
+
+[scenario.collection_reshape_success]
+category = "run"
+description = "A borrow held while another reference writes an element, a callee that only writes elements or only reads, a read-only reference, a list the function owns, a call handed nothing that reaches the list, and the borrow re-taken before it is used; two fields of one struct, an operator on a local String, a result whose signature says it is 'static, a view used up before the other String grows; and a String's view appended to another String with the source an '&imm' reference or the receiver an '&uni' one"
 tags = ["flow", "genllvm", "runtime"]
 
 [scenario.collection_freeze_shared_success]
 category = "run"
-description = "A borrow a method returned out of a list, deque or String reached through a '&mut' parameter or a field of 'self': the path read and borrowed read-only again while it is used, pushed onto after its last use, a cursor used up first; and the hole that remains, two different references to one list, still accepted"
+description = "A borrow a method returned out of a list, deque or String reached through a '&mut' parameter or a field of 'self': the path read and borrowed read-only again while it is used, pushed onto after its last use, a cursor used up first"
 tags = ["flow", "genllvm", "runtime"]
 
 # The body of text, 'str': its methods (written once, in core), a part of it

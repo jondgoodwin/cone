@@ -1084,8 +1084,10 @@ it ([flow](../phases/flow.md), "Calls"):
   is reached through a shared path that loan freezes the same path, as a
   local's does (`loanFreezeShared`): a change through the same name is
   refused. A change through another name, or a call that might make one, is
-  not yet. Its alternatives are writable: a `&uni` variable passed to a `&`,
-  `&mut` or `&uni` is borrowed from, so a `self &uni` method may be called
+  refused too (`ErrorShapeReshape`; flow's "A change through another name"):
+  every call made while the borrow is held is asked whether it could reshape a
+  value of the type. Its alternatives are writable: a `&uni` variable passed to a
+  `&`, `&mut` or `&uni` is borrowed from, so a `self &uni` method may be called
   repeatedly.
 
 ### AtomicValue

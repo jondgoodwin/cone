@@ -80,27 +80,28 @@ struct Raw {
   pub bytes String;
 }
 
-// The server's answers, by target
-fn serve(drv &mut Driver, lp &mut Loop, st &mut State, e &mut Event, pool &Pool) {
-  imm t = e.request.target.view();
-  st.lastSrvConn = e.req.connId();
+// The server's answers, by target. The request's id and target are lent, not the
+// event: the target is a view of a String in the list the event is in, which the
+// driver, handed here as well, might change
+fn serve(drv &mut Driver, lp &mut Loop, st &mut State, req ReqId, t &str, pool &Pool) {
+  st.lastSrvConn = req.connId();
   if t == "/resetnow" {
-    drv.abort(lp, e.req.connId());
+    drv.abort(lp, req.connId());
     return;
   }
   if t == "/resetmid" {
-    drv.respond(e.req, ResponseHead.make(200u16), BodyLength.sized(10000u64));
+    drv.respond(req, ResponseHead.make(200u16), BodyLength.sized(10000u64));
     mut b = pool.mustTake(1000usize);
     b.setLen(1000usize);
-    drv.sendData(e.req, b);
+    drv.sendData(req, b);
     return;
   }
   if t == "/upload" {return;}
-  drv.respond(e.req, ResponseHead.make(200u16), BodyLength.sized(2u64));
+  drv.respond(req, ResponseHead.make(200u16), BodyLength.sized(2u64));
   mut b = pool.mustTake(16usize);
   b.append("ok");
-  drv.sendData(e.req, b);
-  drv.finish(e.req);
+  drv.sendData(req, b);
+  drv.finish(req);
 }
 
 fn note(drv &mut Driver, lp &mut Loop, st &mut State, pool &Pool, events &mut List[Event]) {
@@ -109,7 +110,10 @@ fn note(drv &mut Driver, lp &mut Loop, st &mut State, pool &Pool, events &mut Li
     imm e = &mut events[k];
     k = k + 1usize;
     if e.token == tokServer {
-      if e.kind == EventKind.Request[] {serve(drv, lp, st, e, pool);}
+      if e.kind == EventKind.Request[] {
+        imm target = e.request.target.copy();
+        serve(drv, lp, st, e.req, target.view(), pool);
+      }
       elif e.kind == EventKind.Data[] {
         st.srvData = st.srvData + u64.from(e.buf.len());
         drv.release(e.req, e.buf.len());
@@ -122,7 +126,10 @@ fn note(drv &mut Driver, lp &mut Loop, st &mut State, pool &Pool, events &mut Li
       }
     } elif e.token == tokServer2 {
       // The second driver's server, plain answers
-      if e.kind == EventKind.Request[] {serve(drv, lp, st, e, pool);}
+      if e.kind == EventKind.Request[] {
+        imm target = e.request.target.copy();
+        serve(drv, lp, st, e.req, target.view(), pool);
+      }
     } elif e.token >= 100u64 and e.token < 200u64 {
       imm s = &mut st.conn[usize.from(e.token - 100u64)];
       if e.kind == EventKind.Closed[] {
@@ -192,10 +199,14 @@ fn takeRaw(st &mut State, tok u64, dest &mut String) i64 {
     imm c = &mut st.raw[k];
     if c.token == tok {
       imm n = if c.done {i64.from(c.n);} else {0i64 - 2i64;};
-      dest.append(c.bytes.view());
       imm last = st.raw.len() - 1usize;
       st.raw.swap(k, last);
-      st.raw.pop();
+      // Taken out of the list first: its bytes are then this function's own, and
+      // no view of them is held while 'dest', another reference, grows
+      match st.raw.pop() {
+        case imm taken Some {dest.append(taken.value.bytes.view());}
+        else {}
+      }
       return n;
     }
     k = k + 1usize;

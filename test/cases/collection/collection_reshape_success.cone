@@ -1,0 +1,183 @@
+// What the check for a change through another name accepts (the refusals are
+// collection_flow_reshape). Every case holds a borrow into a collection reached
+// through a reference while a call is made that the compiler can show does not
+// reshape it:
+// - an element write through another name ('set', or a callee whose body only
+//   writes elements): no header field is written, so no element moves. The
+//   program makes the two names one list, and the element it read before is the
+//   one written;
+// - a read-only reference ('&') to the collection, which cannot write it;
+// - a list the function owns, which cannot be the one reached through a reference;
+// - a callee handed the other reference that only reads it;
+// - a call handed nothing that reaches the list;
+// - and the cures for a String's view appended to another String: the source
+//   an '&imm' reference, which nothing may write, or the receiver an '&uni'
+//   one, which no other name reaches.
+
+mod collection_reshape_success;
+
+import stdio use *;
+import collections use *;
+
+struct Pt { pub x i64; pub y i64; }
+
+fn show(label &str, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+// An element written through the other name
+fn setOther(l &mut List[Pt], m &mut List[Pt], p Pt) i64 {
+  imm e = l[0usize];
+  m.set(0usize, p);
+  e.x;
+}
+
+// A callee that writes elements only, and one that only reads
+fn bumpFirst(q &mut List[Pt]) {
+  q.set(0usize, new Pt(q[0usize].x + 1, 0));
+}
+
+fn total(q &List[Pt]) i64 {
+  mut sum = 0i64;
+  mut i = 0usize;
+  while i < q.len() {
+    sum = sum + q[i].x;
+    i = i + 1usize;
+  }
+  sum;
+}
+
+fn viaCallees(l &mut List[Pt], m &mut List[Pt]) i64 {
+  imm e = l[0usize];
+  imm t = total(m);
+  bumpFirst(m);
+  e.x * 100 + t;
+}
+
+// A read-only reference to the collection
+fn readOnly(l &mut List[Pt], m &List[Pt]) i64 {
+  imm e = l[0usize];
+  imm n = i64.from(m.len());
+  e.x + n;
+}
+
+// A list this function owns
+fn ownedLocal(l &mut List[Pt], p Pt) i64 {
+  imm e = l[0usize];
+  mut mine = List[Pt].empty();
+  mine.push(p);
+  mine.push(p);
+  e.x + mine[1usize].x;
+}
+
+// A call handed nothing that reaches the list
+fn plain(n i64) i64 {
+  n + 1;
+}
+
+fn unrelated(l &mut List[Pt], n i64) i64 {
+  imm e = l[0usize];
+  e.x + plain(n);
+}
+
+// The borrow re-taken before it is used again
+fn retaken(l &mut List[Pt], m &mut List[Pt], p Pt) i64 {
+  mut e = l[0usize];
+  m.push(p);
+  e = l[1usize];
+  e.x;
+}
+
+// Two fields of one struct, through one reference: not another name
+struct Log {
+  pub log String;
+  pub body String;
+
+  fn noteBody(self &mut) usize {
+    log.append(body.view());
+    log.len();
+  }
+}
+
+// An operator on a local String, appending views of Strings reached through a
+// reference
+fn joinLocal(src &String) usize {
+  mut text = String.empty();
+  text <- "a", src.view(), "b";
+  text.len();
+}
+
+// A result that holds no borrow of what was lent: the signature says it is
+// 'static, so nothing holds the view while the other String grows
+fn pickText(target &str) &'static str {
+  if target == "ab" {"first";} else {"second";};
+}
+
+fn growAfterPick(out &mut String, x &String) usize {
+  imm t = pickText(x.view());
+  out.append("!");
+  t.len;
+}
+
+// A view's last use before the other String grows
+fn viewThenGrow(out &mut String, x &String) usize {
+  imm n = x.view().len;
+  out.append("!");
+  n;
+}
+
+// A String's view appended to another String, the source '&imm'
+fn appendImm(out &mut String, x &imm String) {
+  out.append(x.view());
+}
+
+// ... or the receiver '&uni'
+fn appendUni(out &uni String, x &String) {
+  out.append(x.view());
+}
+
+fn main() {
+  mut shared = List[Pt].empty();
+  shared.push(new Pt(1, 0));
+  shared.push(new Pt(20, 0));
+  imm one = &mut shared;
+  imm other = one;
+  show("set-other", setOther(one, other, new Pt(7, 0)));
+  show("via-callees", viaCallees(one, other));
+
+  mut a = List[Pt].empty();
+  a.push(new Pt(5, 0));
+  mut b = List[Pt].empty();
+  b.push(new Pt(1, 0));
+  b.push(new Pt(2, 0));
+  show("read-only", readOnly(&mut a, &b));
+  show("owned-local", ownedLocal(&mut a, new Pt(3, 0)));
+  show("unrelated", unrelated(&mut a, 9));
+
+  mut c = List[Pt].empty();
+  c.push(new Pt(8, 0));
+  c.reserve(4usize);
+  mut d = List[Pt].empty();
+  d.push(new Pt(4, 0));
+  d.push(new Pt(6, 0));
+  show("retaken", retaken(&mut d, &mut c, new Pt(9, 0)));
+
+  mut s = String.from("ab");
+  imm t = String.from("cd");
+  appendImm(&mut s, &imm t);
+  show("append-imm", i64.from(s.len()));
+  imm u = new So[String](String.from("xyz"));
+  appendUni(u, &t);
+  show("append-uni", i64.from(u.len()));
+
+  mut lg = new Log(String.from("ab"), String.from("cde"));
+  show("two-fields", i64.from(lg.noteBody()));
+  show("join-local", i64.from(joinLocal(&t)));
+  mut grown = String.from("q");
+  show("grow-after-pick", i64.from(growAfterPick(&mut grown, &s)));
+  show("view-then-grow", i64.from(viewThenGrow(&mut grown, &s)));
+  show("grown", i64.from(grown.len()));
+}

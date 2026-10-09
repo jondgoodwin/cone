@@ -53,7 +53,7 @@
 			so a type that declares it and has no such methods is refused. The rule
 			for an element borrowed from one reached through a shared path is that the borrow is
 			allowed, and refused only if something could reshape the collection while the borrow is
-			still to be used. That has two parts, and only the first is enforced.
+			still to be used. That has two parts, and both are enforced.
 			(a) A change through the same name is refused: a borrow a method of the collection
 			returns (an element, a cursor, a view) freezes the path the collection was reached
 			through, as it freezes a local, while the borrow is still to be used. The path may be read
@@ -63,12 +63,27 @@
 			(<span class="pre">mut it = dq.items(); dq.push(9); it.next();</span>) and the same through a
 			field of <span class="pre">self</span>
 			(<span class="pre">imm e = items[0usize]; items.push(p); e.x;</span>).
-			(b) A change through another name, or a call that might make one, is not enforced yet:
-			another, different reference to the same collection is not seen, and a change through it
-			leaves the element dangling. Two different <span class="pre">&amp;mut</span> references to
-			one collection stay open. Each of these compiles today,
-			<span class="pre">p</span> a value to push, and the push through the second reference
-			moving the element <span class="pre">e</span> points at:
+			(b) A change through another name, or a call that might make one, is refused too:
+			another, different reference to the same collection, or a call that could make one,
+			leaves the element dangling. The compiler asks of every call made while such a borrow is
+			still to be used, or is being handed to a call, whether the call could reshape the
+			collection, and it never goes by a method's name. A call could, when
+			(1) it is a method taking the collection writable whose body, or anything its body calls,
+			writes a field of the collection (<span class="pre">clear</span>, <span class="pre">pop</span>
+			and <span class="pre">truncate</span> each write the length; writing an element in place,
+			<span class="pre">set</span> or <span class="pre">l[i] = v</span>, writes no field and reshapes
+			nothing); (2) it is handed a value that can reach a collection of that type (as a field, an
+			element, a variant, a pointer, a reference or an owner) by a path it may write, and its body,
+			or what it calls, reshapes one; or (3) it is handed nothing that reaches one and reshapes
+			one through a global. A function whose body the compiler cannot read (an
+			<span class="pre">extern</span> function, a call through a function pointer or a trait, a function
+			of another package that is no generic and no inline) is assumed to reshape whatever it is
+			handed that reaches the collection. A read-only reference (<span class="pre">&amp;</span> or
+			<span class="pre">&amp;imm</span>) cannot write what it reaches, and a value the function owns
+			whole, a local, cannot be the collection reached through a reference, so neither makes a call
+			one that could.
+			Each of these is refused at the push, <span class="pre">p</span> a value to push, and the push
+			through the second name moving the element <span class="pre">e</span> points at:
 			(A) a parameter, <span class="pre">fn f(l &amp;mut List[Pt], m &amp;mut List[Pt]) { imm e = l[0usize]; m.push(p); e.x; }</span>
 			called with one list twice;
 			(B) a field of <span class="pre">self</span>, <span class="pre">imm e = items[0usize]; other.items.push(p); e.x;</span>
@@ -77,10 +92,20 @@
 			(D) a list allocated in an arena and held by name,
 			<span class="pre">imm l = a.alloc(List[Pt].empty()); imm l2 = l; imm e = l[0usize]; l2.push(p); e.x;</span>;
 			(E) a reference made from a pointer, <span class="pre">imm l = ptr as &amp;mut List[Pt]</span>, the same way.
-			Part (b) is to close these. The alternatives are writable:
-			a <span class="pre">&amp;uni</span> reference passed to a call that wants a
+			So is a borrow handed to the very call beside the reference that changes it,
+			<span class="pre">fn f(out &amp;mut String, x &amp;String) { out.append(x.view()); }</span>, for the caller
+			may have made <span class="pre">out</span> and <span class="pre">x</span> one string.
+			The cures keep the borrow: make the source <span class="pre">&amp;imm</span>, which nothing may write
+			(<span class="pre">x &amp;imm String</span>); make the receiver <span class="pre">&amp;uni</span>, which no
+			other name reaches (<span class="pre">out &amp;uni String</span>; a
+			<span class="pre">&amp;uni</span> reference passed to a call that wants a
 			<span class="pre">&amp;uni</span> is borrowed from, so a method taking
-			<span class="pre">self &amp;uni</span> may be called twice.
+			<span class="pre">self &amp;uni</span> may be called twice); or copy what is needed out first.
+			What is not followed: a borrow handed out by a free function, which is no method of the
+			collection; two values of one type are not told apart, so a function handed a
+			<span class="pre">List[Pt]</span> that reshapes one is taken to reshape the one borrowed from;
+			and a global that a function whose body is not visible changes while it is handed nothing
+			that reaches the collection.
 			Lifetimes struggle across method calls.</i></p>
 	
 	<p>References work differently than other types.

@@ -123,6 +123,18 @@ fn appendEncoded(out &mut String, c u8) {
   out.appendByte(hexDigit(c & 15u8));
 }
 
+// A host as written in an authority: in brackets when IPv6. The host is lent to
+// this, so the caller, whose 'out' is its own String, has shown it is no part of it
+fn appendHost(out &mut String, host &str, bracketed bool) {
+  if bracketed {
+    out.append("[");
+    out.append(host);
+    out.append("]");
+  } else {
+    out.append(host);
+  }
+}
+
 // s with every byte that is not unreserved percent-encoded: a value for a
 // query or a path segment
 pub fn encodeComponent(text &str) String {
@@ -247,22 +259,11 @@ pub struct Url {
   // The port written, or the scheme's default
   pub fn effectivePort(self &) u16 {if hasPort {port;} else {defaultPort(scheme.view());};}
 
-  // The host as written in an authority: in brackets when IPv6
-  fn appendHost(self &, out &mut String) {
-    if hostKind == HostKind.Ipv6[] {
-      out.append("[");
-      out.append(host.view());
-      out.append("]");
-    } else {
-      out.append(host.view());
-    }
-  }
-
   // Host and port as HTTP writes them in Host: the port only when it is not
   // the scheme's default
   pub fn authority(self &) String {
     mut out = String.empty();
-    self.appendHost(&mut out);
+    appendHost(&mut out, host.view(), hostKind == HostKind.Ipv6[]);
     if hasPort and port != defaultPort(scheme.view()) {
       out.append(":");
       out.appendUInt(u64.from(port));
@@ -275,7 +276,7 @@ pub struct Url {
   pub fn origin(self &) String {
     mut out = scheme.copy();
     out.append("://");
-    self.appendHost(&mut out);
+    appendHost(&mut out, host.view(), hostKind == HostKind.Ipv6[]);
     out.append(":");
     out.appendUInt(u64.from(self.effectivePort()));
     out;
