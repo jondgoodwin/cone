@@ -190,16 +190,21 @@ type is interned and shared and cannot hold a lifetime — that is what keeps a
 `&<Trait` or a widening to a base trait's reference from reading as global.
 
 A `&uni` reference held in a place (`borrowUniReborrows`: a single borrowed
-reference, not a slice or a virtual reference), wanted as a borrowed reference
-whose permission may be shared (`&`, `&imm`, `&mut`, `&mut1`, `&opaq`), is an
-`EqMatch`, and handed over as it is it would move. `iexpCoerce` rewrites it to
-the reborrow `&mut *p` a programmer could write (`borrowUniReborrow`: the
-target's permission, and the lifetime of a borrow of `*p` from
-`iexpGetLvalInfo`, as `borrowTypeCheck` gives a written one), so it is lent, and recovered after the borrow's last use
-(`refperm.html`, "Borrowed reference recovery"). Every coercion site gets it:
-an argument and a method's receiver (`fnCallFinalizeArgs`), a declaration or
-an assignment, a branch's value. A `&uni` wanted as a `&uni` is not rewritten,
-and still moves.
+reference or a borrowed slice, not a virtual reference), wanted as a borrowed
+reference of its kind, whatever the permission (`&`, `&imm`, `&mut`, `&mut1`,
+`&opaq`, `&uni`), is an `EqMatch`, and handed over as it is it would be the
+reference itself, moved if its permission is `uni`. `iexpCoerce` rewrites it
+instead to the borrow `&perm *p` a programmer could write (`borrowUniReborrow`:
+the target's permission, and the lifetime of a borrow of `*p` from
+`iexpGetLvalInfo`, as `borrowTypeCheck` gives a written one; for a slice an
+`ArrayBorrowTag` of the dereference the slice's `ArrayDerefTag` type gives, which
+generation hands on as the slice itself), a fresh and shorter loan, recovered
+after the borrow's last use (`refperm.html`, "Borrowed reference recovery").
+Every coercion site gets it: an argument and a method's receiver
+(`fnCallFinalizeArgs`), a declaration or an assignment, a branch's value, a
+return. A local with no declared type, whose initializer is such a reference,
+gets it too (`varDclTypeCheck`: there is no coercion to ask, the type being the
+initializer's own).
 
 An owning reference that is its value's only holder (`borrowOwnerLendsUni`: a
 move-typed owner, a `So` or a `Rc` still `uni`, held in a place), wanted as a

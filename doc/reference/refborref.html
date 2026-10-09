@@ -77,10 +77,10 @@
 			(D) a list allocated in an arena and held by name,
 			<span class="pre">imm l = a.alloc(List[Pt].empty()); imm l2 = l; imm e = l[0usize]; l2.push(p); e.x;</span>;
 			(E) a reference made from a pointer, <span class="pre">imm l = ptr as &amp;mut List[Pt]</span>, the same way.
-			Part (b) is to close these. It waits on <span class="pre">uni</span> reborrowing, which is to make
-			the alternatives writable: a <span class="pre">&amp;uni</span> reference is lent where a
-			<span class="pre">&amp;</span> or <span class="pre">&amp;mut</span> is wanted, but one handed
-			to another <span class="pre">&amp;uni</span> still moves.
+			Part (b) is to close these. The alternatives are writable:
+			a <span class="pre">&amp;uni</span> reference passed to a call that wants a
+			<span class="pre">&amp;uni</span> is borrowed from, so a method taking
+			<span class="pre">self &amp;uni</span> may be called twice.
 			Lifetimes struggle across method calls.</i></p>
 	
 	<p>References work differently than other types.
@@ -552,19 +552,38 @@ if ref1 === &amp;a {    // true
 
 	<h2 id="handle">Reference Handling</h2>
 	<p>References are values. As such, they can be stored and passed around a program.
-		Whether such transfers are simple copies or moves depends on the reference's permission
-		(move semantics apply to all references having the <a href="refmove.html">uni</a> permission).
-		A borrowed <span class="pre">&amp;uni</span> reference handed where a borrowed reference
-		with a shareable permission is wanted (<span class="pre">&amp;</span>,
-		<span class="pre">&amp;imm</span>, <span class="pre">&amp;mut</span>) is lent rather than moved:
-		it is reborrowed, exactly as <span class="pre">&amp;mut *r</span> written out would be,
-		its source frozen as for any borrow, and it may be used again once that borrow's
-		last use is behind it (<a href="refperm.html">"Borrowed reference recovery"</a>).
+		Whether such transfers are simple copies or moves depends on the reference's permission:
+		a reference having the <a href="refmove.html">uni</a> permission can itself be moved,
+		or it can be borrowed from, which is the reborrow.
+		Passing a <span class="pre">&amp;uni</span> variable to a call or binding that wants a borrowed
+		reference (<span class="pre">&amp;</span>, <span class="pre">&amp;imm</span>,
+		<span class="pre">&amp;mut</span> or <span class="pre">&amp;uni</span>: an argument, a method's
+		receiver, a local's type) implicitly borrows from it, a fresh and shorter loan, instead of
+		handing over the reference itself.
+		The borrow is exactly what <span class="pre">&amp;mut *r</span> (or <span class="pre">&amp;uni *r</span>)
+		written out would be: the reference is frozen as for any borrow, so it may not be used while
+		the borrow is, and it may be used again once that borrow's last use is behind it
+		(<a href="refperm.html">"Borrowed reference recovery"</a>).
+		A result derived from the borrow keeps the reference frozen while that result lives, and
+		the callee cannot keep the borrow past the caller's own storage.
 		So a function taking <span class="pre">r &amp;uni Point</span> may pass <span class="pre">r</span>
-		to a <span class="pre">&amp;mut Point</span> parameter twice,
+		to a <span class="pre">&amp;uni Point</span> or a <span class="pre">&amp;mut Point</span> parameter twice,
 		and a method taking <span class="pre">self &amp;uni</span> may call the type's
-		<span class="pre">self &amp;</span> and <span class="pre">self &amp;mut</span> methods and then
-		read its fields.
+		<span class="pre">self &amp;uni</span>, <span class="pre">self &amp;</span> and
+		<span class="pre">self &amp;mut</span> methods, one after another, and then read its fields.
+		A <span class="pre">&amp;uni</span> slice is borrowed from the same way, whether it is passed to a
+		<span class="pre">&amp;uni</span>, <span class="pre">&amp;mut</span> or <span class="pre">&amp;</span> slice:</p>
+<pre>
+fn fill(q &amp;uni Point) { q.x = q.x + 10; }
+fn twice(p &amp;uni Point) {
+  fill(p);       // fill borrows from p for the call
+  fill(p);       // and p is still there, still unique, to borrow from again
+  imm q &amp;uni Point = p;   // a &amp;uni local borrows from p
+  q.x = 0;
+  p.y = 1;       // allowed: q's last use is behind us
+}
+</pre>
+		<p>
 		Reference transfers also check reference type information to ensure everyone is in agreement
 		about what you can do with any passed-around reference.</p>
 	<p>Even though references are typed values,

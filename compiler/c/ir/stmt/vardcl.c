@@ -565,8 +565,14 @@ void varDclTypeCheck(TypeCheckState *pstate, VarDclNode *name) {
             varDclExtend(pstate->extend, &name->value);
         if (!matches)
             errorMsgNode(name->value, ErrorInvType, "Initialization value's type does not match variable's declared type");
-        else if (name->vtype == unknownType)
+        else if (name->vtype == unknownType) {
+            // A local of the type its initializer has, a '&uni' reference held
+            // in a place, borrows from it as a local of the declared type does
+            if (name->scope >= 2 && !(name->flags & FlagStatic) && isExpNode(name->value)
+                && borrowUniReborrows(name->value, iexpGetTypeDcl(name->value)))
+                borrowUniReborrow(&name->value, iexpGetTypeDcl(name->value));
             name->vtype = ((IExpNode *)name->value)->vtype;
+        }
         // A declared borrowed-reference type is a shared node carrying no
         // lifetime, so the variable takes a copy of it scoped as its initializer
         // is, as an undeclared one takes the initializer's own scoped type:

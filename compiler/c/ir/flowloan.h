@@ -70,6 +70,11 @@ uint32_t loanRoot(uint32_t loan);
 // a reference, or what a caller lent -- rather than the variable's own storage?
 int loanThrough(uint32_t loan);
 
+// Is a loan one of a place reached through the variable 'var' -- of what it
+// points at -- by name? Not a caller loan, which stands for what the caller lent
+// and is not a name that a store over the variable stales.
+int loanNamesThrough(uint32_t loan, uint32_t var);
+
 // Does a loan borrow the whole of its root, or of what its root points at,
 // not a part of it?
 int loanWhole(uint32_t loan);

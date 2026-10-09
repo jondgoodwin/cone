@@ -1,0 +1,185 @@
+// Passing a '&uni' variable to a call or binding that wants a '&uni' (an
+// argument, a receiver, a '&uni' local) implicitly borrows from it: a fresh and
+// shorter loan, '&uni *p' built as if written, instead of handing over the
+// reference itself. The caller is frozen while the loan is used and uses the
+// reference again afterwards (refborref.html, "Reference Handling"). A '&uni'
+// slice (a '&uni Array[T]') is borrowed from the same way, handed to a '&uni',
+// a '&mut' or a '&' slice.
+//
+// Each shape is here: one reference handed to a '&uni' parameter twice and in
+// a loop; a 'self &uni' method calling '&uni' methods through 'self', bare and
+// written out; a '&uni' local, declared and inferred, with the parameter used
+// after the local's last use; a call's result derived from the lent reference,
+// and the lent reference handed back; the slice in each shape; and a finalizer.
+// What the loan forbids while it is used is ref_flow_uniborrow.
+
+mod ref_uniborrow;
+
+import stdio use *;
+
+fn show(label &str, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+struct Counter {
+  pub n i64;
+
+  pub fn get(self &) i64 { n; }
+  pub fn grow(self &uni) { n = n + 1; }
+  pub fn add(self &uni, k i64) { n = n + k; }
+
+  // '&uni' methods through 'self', written out and bare
+  pub fn twice(self &uni) { self.grow(); self.grow(); }
+  pub fn bare(self &uni) { grow(); grow(); add(10); }
+  pub fn both(self &uni) i64 { twice(); bare(); n; }
+
+  fn final(self &uni) {
+    self.grow();
+    self.grow();
+    show("final", n);
+  }
+}
+
+fn fill(q &uni Counter) { q.n = q.n + 10; }
+fn pick(q &uni Counter) &uni i64 { &uni q.n; }
+fn same(q &uni Counter) &uni Counter { q; }
+
+// 1 -> 11 -> 21
+fn twiceCall(b &uni Counter) i64 {
+  fill(b);
+  fill(b);
+  b.n;
+}
+
+// 0 -> 30, three loans one after another
+fn inLoop(b &uni Counter, k i64) i64 {
+  mut i i64 = 0;
+  while i < k {
+    fill(b);
+    i = i + 1;
+  }
+  b.n;
+}
+
+// a declared local: 1 -> 3 through q, then fill through p -> 13
+fn declared(p &uni Counter) i64 {
+  imm q &uni Counter = p;
+  q.n = 3;
+  fill(p);
+  p.n;
+}
+
+// an inferred local: 1 -> 11 -> 12 through q, then fill through p -> 22
+fn inferred(p &uni Counter) i64 {
+  imm q = p;
+  fill(q);
+  q.n = q.n + 1;
+  fill(p);
+  p.n;
+}
+
+// the result's borrow of the field ends at its last use: 2 -> 7 (x) -> 17
+fn derived(b &uni Counter) i64 {
+  imm r = pick(b);
+  *r = *r + 5;
+  imm x = *r;
+  fill(b);
+  x + b.n;
+}
+
+// the reference handed back by a call is the one lent: 0 -> 1 -> 11
+fn throughSame(b &uni Counter) i64 {
+  imm c = same(b);
+  c.n = c.n + 1;
+  fill(b);
+  b.n;
+}
+
+// handing the lent reference on as the result: 0 -> 10
+fn handBack(b &uni Counter) &uni Counter {
+  fill(b);
+  b;
+}
+
+// a cursor used in the loop and then reassigned from a call on itself, as a
+// walk does: 5 -> 8, and then 'p' is the reference again once 'cur' is done
+fn cursor(p &uni Counter, k i64) i64 {
+  mut cur = p;
+  mut i i64 = 0;
+  while i < k {
+    cur.n = cur.n + 1;
+    cur = same(cur);
+    i = i + 1;
+  }
+  imm r = cur.n;
+  r + p.n;
+}
+
+// the same with the borrow written out, which master refused: 5 -> 8
+fn cursorWritten(p &uni Counter, k i64) i64 {
+  mut cur = p;
+  mut i i64 = 0;
+  while i < k {
+    cur.n = cur.n + 1;
+    cur = same(&uni *cur);
+    i = i + 1;
+  }
+  imm r = cur.n;
+  r + p.n;
+}
+
+fn sum(s &Array[i64]) i64 { s[0usize] + s[1usize] + s[2usize]; }
+fn setFirst(s &mut Array[i64], v i64) { s[0usize] = v; }
+fn bump(s &uni Array[i64]) { s[0usize] = s[0usize] + 100; }
+
+// [1, 2, 3] -> [4, 2, 3] -> [204, 2, 3]; sum 209 twice, 209 through a '&' local;
+// then 304 (bumped through s), 404 (through a '&uni' local), 504 (inferred)
+fn slices(s &uni Array[i64]) i64 {
+  setFirst(s, 1);
+  setFirst(s, 4);
+  bump(s);
+  bump(s);
+  imm a = sum(s) + sum(s);
+  imm t &Array[i64] = s;
+  imm c = sum(t);
+  bump(s);
+  imm u &uni Array[i64] = s;
+  bump(u);
+  imm w = s;
+  bump(w);
+  show("slice-sums", a + c);
+  s[0usize];
+}
+
+fn main() {
+  {
+    imm c = new So[Counter](5);
+    show("both", c.both());
+    show("held", c.get());
+  }
+  imm one = new So[Counter](1);
+  show("twiceCall", twiceCall(one));
+  imm zero = new So[Counter](0);
+  show("inLoop", inLoop(zero, 3));
+  imm d = new So[Counter](1);
+  show("declared", declared(d));
+  imm i = new So[Counter](1);
+  show("inferred", inferred(i));
+  imm e = new So[Counter](2);
+  show("derived", derived(e));
+  imm f = new So[Counter](0);
+  show("throughSame", throughSame(f));
+  imm g = new So[Counter](0);
+  show("handBack", handBack(g).n);
+  imm h = new So[Counter](5);
+  show("cursor", cursor(h, 3));
+  imm h2 = new So[Counter](5);
+  show("cursorWritten", cursorWritten(h2, 3));
+  imm arr = new So[Array[i64, 3]]([1, 2, 3]);
+  show("slices", slices(arr));
+  show("arr0", arr[0usize]);
+  show("end", 0);
+}

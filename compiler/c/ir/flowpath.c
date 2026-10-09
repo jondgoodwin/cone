@@ -80,6 +80,31 @@ static PathSet *pathSetWithout(PathSet *set, uint32_t id) {
     return less;
 }
 
+// The loans of 'set' but for those of a place reached through the variable
+// 'var', by its name (loanNamesThrough). Storing over the whole of 'var' makes
+// such a loan stale: the name now says another place, as in 'cur = next(cur)',
+// whose borrow of '*cur' is of the old one, so the new 'cur' does not hold it.
+static PathSet *pathSetWithoutThrough(PathSet *set, uint32_t var) {
+    if (set == NULL || set == &pathSetAll)
+        return set;
+    uint32_t kept = 0;
+    for (uint32_t i = 0; i < set->cnt; ++i) {
+        if (!loanNamesThrough(loanOf(set->ids[i]), var))
+            ++kept;
+    }
+    if (kept == set->cnt)
+        return set;
+    if (kept == 0)
+        return NULL;
+    PathSet *less = pathSetNew(kept);
+    uint32_t k = 0;
+    for (uint32_t i = 0; i < set->cnt; ++i) {
+        if (!loanNamesThrough(loanOf(set->ids[i]), var))
+            less->ids[k++] = set->ids[i];
+    }
+    return less;
+}
+
 // Is every id of 'a' in 'b'?
 static int pathSetWithin(PathSet *a, PathSet *b) {
     if (a == NULL || a == b || b == &pathSetAll)
@@ -1707,7 +1732,7 @@ static void pwStore(INode **lvalp, PathSet *holds, INode **rvalp) {
         pwAccess(&pl, itypeNeedsFinal(var->vtype) ? AccessReplace : AccessWrite, *lvalp);
         if (pathVars[index].holder) {
             pwHolderDies(index);
-            pathSetFacts(index, holds, NULL);
+            pathSetFacts(index, pathSetWithoutThrough(holds, index), NULL);
         }
         // Nor was any other variable stored over whole live before: a seam's
         // live mark on it is dropped (pwSeam)

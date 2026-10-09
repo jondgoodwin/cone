@@ -328,7 +328,8 @@ static int iexpCoerceShape(INode **from, INode *totype) {
         }
         return 0;
     case EqMatch:
-        // A '&uni' wanted as a shareable borrowed reference is lent, not moved
+        // A '&uni' wanted as a borrowed reference, a '&uni' too, is borrowed
+        // from (a fresh, shorter loan), not handed over
         if (borrowUniReborrows(*from, totypedcl))
             borrowUniReborrow(from, totypedcl);
         return 1;
