@@ -2095,7 +2095,10 @@ void genpgm(GenState *gen, ProgramNode *pgm) {
     // A GPU target's pipeline is its own at every optimization level, debug
     // too, since without it the module is not valid SPIR-V: inline every
     // call (genlGpuCalls), break each struct and array into separate values
-    // (so a struct holding a reference dissolves into locals), and infer each
+    // (so a struct holding a reference dissolves into locals; sroa runs twice,
+    // instsimplify between, since a closure's struct of borrows is first built
+    // as one value whose parts instsimplify extracts, and only then is a local
+    // it borrows, a slice, a candidate to break up), and infer each
     // pointer's address space from its origin, given the target machine
     // (genlLLVMOptions names the flat space); then fold what that leaves,
     // with instsimplify and not instcombine, which rewrites a field's address
@@ -2124,8 +2127,8 @@ void genpgm(GenState *gen, ProgramNode *pgm) {
     timerBegin(OptTimer);
     const char *pipeline = gen->opt->gpu
         ? (gen->opt->release
-            ? "always-inline,function(sroa,infer-address-spaces,instsimplify,reassociate,gvn,simplifycfg)"
-            : "always-inline,function(sroa,infer-address-spaces,instsimplify,simplifycfg)")
+            ? "always-inline,function(sroa,instsimplify,sroa,infer-address-spaces,instsimplify,reassociate,gvn,simplifycfg)"
+            : "always-inline,function(sroa,instsimplify,sroa,infer-address-spaces,instsimplify,simplifycfg)")
         : gen->opt->release
         ? "default<O2>"
         : "function(mem2reg,reassociate,gvn,simplifycfg)";
