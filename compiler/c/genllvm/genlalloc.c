@@ -1530,6 +1530,12 @@ void genlDropFlagBegin(GenState *gen, VarDclNode *var, int state) {
     if (!(var->flowtempflags & (VarDropFlag | VarSeamHeld)))
         return;
     LLVMTypeRef i8 = LLVMInt8TypeInContext(gen->context);
+    // A generator's local that lives across a seam keeps its flag in the
+    // frame, found when the function began (genlGenBegin)
+    if (genlGenFrameFlag(gen, var)) {
+        LLVMBuildStore(gen->builder, LLVMConstInt(i8, state, 0), var->llvmflag);
+        return;
+    }
     char name[256];
     snprintf(name, sizeof(name), "%s.held", &var->namesym->namestr);
     var->llvmflag = genlAlloca(gen, i8, name);

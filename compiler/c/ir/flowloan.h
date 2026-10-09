@@ -185,6 +185,17 @@ uint32_t loanSeamEnds(PathSet *holds);
 // The pending conflict of the seam 'seam' ending 'loan', which 'holder' holds
 uint32_t loanSeamPending(INode *seam, uint32_t loan, uint32_t holder);
 
+// A generator's seam ('yield'; flowpath.c, pwYield) keeps every borrow but one
+// of the generator's own ground: of a local, or into the generator itself, where
+// the parameters it holds by value are (reached through its own 'self', not past
+// a reference it holds). Is this loan such a borrow? The first such loan of a
+// set, or 0; and the pending conflict of the seam ending 'loan' for 'holder',
+// which fires, as the ordinary borrow-no-longer-valid ErrorFrozen pointing at
+// the seam, if the holder is used again
+int loanIsGenOwn(uint32_t loan);
+uint32_t loanGenOwnIn(PathSet *set);
+uint32_t loanYieldPending(INode *seam, uint32_t loan, uint32_t holder);
+
 // The live mark of 'holder' at the seam 'seam': a pending entry that, fired by
 // the variable's next use, records it as used after the seam (pathSeamLive),
 // and reports nothing. Any variable may carry one, not only a holder.

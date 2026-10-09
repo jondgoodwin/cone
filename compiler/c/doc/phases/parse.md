@@ -713,6 +713,45 @@ actor whole, its bodies too, so an importer generates them again, the same.
 What crosses to the actor, and what a behaviour returns, is checked after type
 check (`actorCheckAll`, `ir/types/actor.c`).
 
+**It generates a generator's declarations** (`parsegen.c`). `fn walk(t &Tree)
+yields &Node { ... yield n; ... }` is read as a function, `yields` being a word
+only right after the parameters (`parseFnSig`, which records where the
+parameter list and the yielded type are written, `GenSig`); its body is read
+once, in place, with the generator's context set (`ParseState.genctx`), in which
+`yield` is a statement (`parseYield`: a `YieldNode` whose value is a call of the
+generator's `walk.yield`, which makes `Some(value)`) and a `return` takes no
+value and hands back a call of `walk.none`. A `yield` met as a term's operand
+(an `if`, `match`, loop or block written inside an expression,
+`ParseState.genoperand`) is refused (`ErrorYieldPlace`), so no value made before
+a seam is in flight across it. A generic, method, `inline`, `where`, anonymous or
+bodiless generator is refused (`ErrorGenForm`), as is a `pub` one in a library
+(`ParseState.library`): its include file does not carry what an importer would
+need to make the struct again. Then `parseGenFinish` re-reads the parameter list
+from its text (`parseGenParms`), and writes as Cone source, parsed from a lexer of
+its own with private names (`Lexer.gennames`, as an actor's):
+
+```
+struct walk.Gen { imm t &'a Tree; state' u32;
+                  pub fn next(self &mut) Option[&'a Node] {}  fn final(self &uni) {} }
+fn walk.yield(v &Node) Option[&Node] inline {Some[&Node][v];}
+fn walk.none() Option[&Node] {None[&Node][];}
+fn walk(t &Tree) walk.Gen {new walk.Gen(t, 0u32);}
+```
+
+and gives `next` the author's body, ended with a call of `walk.none` unless it
+ends in a `return`. The parameters are the struct's fields, so the body names
+them as a method names its fields, and a diagnostic names the value `walk.Gen`.
+Where the parameters hold borrows and none names a lifetime or is written some
+way a lifetime cannot follow, each `&` of the fields and of the yielded type is
+given the one lifetime `'a` (`parseGenAnnotate`), so that `next` hands out borrows
+of what the generator was lent, not of the generator. `final` is an empty method
+that makes the struct need finalizing; generation hangs the frame's drop on it.
+`yield each src` is written as text too (`parseYieldEach`): a block holding
+`mut sub = src;` and a loop of `match sub.next()` that `yield`s each `Some`
+whole (`ParseState.genraw`: its `YieldNode`'s value is the sub-generator's own
+result, not wrapped again). What the compiler needs later is recorded in a
+`GenInfo` (`ir/exp/yield.h`).
+
 **It binds module-level names.** `modAddNode`, `modAddNamedNode` and `modAddFn`
 run *during* parsing, so by the time a module's parse finishes its namespace is
 populated, `ErrorDupName` and `ErrorOverloadClash` have already been reported,
@@ -879,6 +918,7 @@ numbers.
 | `shared/fileio.c` | `fileFindSrc`, `fileFindLocal`, `fileFindPackage`, `fileFolderScan`, `fileDesignatedFile` | locate a source file without reading it — beside a file, on the package search path (saying when it found a package's source root), or the one then the other; list a folder's `.cone` files and subfolders, sorted; probe a folder for the designated file that makes it a module folder |
 | | `parseImport`, `parseRetiredInclude` | the one source-composition form — a name or a path, `as` and a name to bind it under (`ErrorNoIdent` where no name follows), then a `use` clause — and the retired one reported |
 | | `parseRetiredTypedef` | the retired `typedef` reported, pointed at `alias` |
+| `parser/parsegen.c` | `parseGenBegin`, `parseGenFinish`, `parseGenParms`, `parseGenAnnotate`, `parseYield`, `parseYieldEach`, `parseGenNone` | a generator: its parameter list read again for where each parameter is written, the struct, `walk.yield`, `walk.none` and the function that makes the generator written as source and parsed with the author's body in `next`, a `yield` and `yield each` read as statements, a `return` made to hand back None (section 6) |
 | `parser/parseactor.c` | `parseActor`, `parseActorMembers`, `parseActorRuntime`, `parseDclText` | an actor: its body read as the state, its members checked, the `actors` package found and bound once per module, and the message enum, the handle and the dispatch function written and parsed, with what its seams, its behaviours returning a value and `selfactor` need (section 6), recorded in its `ActorInfo`; `actor trait` refused |
 | | `parseBehaviourWords` | `async do`, read up to the `do` in an actor's body; either word alone, `async fn`, and `async do` anywhere else `ErrorBehaviourWords`, the declaration passed over (section 6) |
 | `parser/parsehelper.c` | `parseBlockStart`, `parseBlockEnd` | `{` and `}`, with recovery |

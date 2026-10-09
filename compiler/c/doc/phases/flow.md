@@ -1531,6 +1531,41 @@ A `'static` borrow -- one whose every loan is global -- does not end: it is
 already returnable from a function, so it crosses as a value does. A lock
 borrow never is: its loan is of the guard, a local.
 
+### A yield
+
+A generator's `yield` (`YieldNode`, `ir/exp/yield.h`) is a seam of the same
+shape, walked by the same loan walk (`pwYield`, `pwYieldVar`) in a function that
+holds one, whatever the gates say: `fnDclTypeCheck` walks it for loans and drop
+flags (`FlowState.yields`) and then numbers its seams in the order written
+(`yieldSplitRegister`). Its value is the result `next` gives; it is walked first,
+and carries what a `return`'s value does: no borrow of the function's own storage
+(`loanEscape`, `LoanEscapeReturn`) and none of the generator itself (below),
+then each variable in scope is noted on the node (`seamvars`, the same
+`SeamFlags`: holding its value, used after the seam, finalized as it dies, a
+borrow that ends). Unlike an `await`, nothing is moved into a record, because the
+variables that live across a seam stay where they are, in the generator's frame
+(generation.md, "A generator"); and the rules differ in one place.
+
+An `await` ends every borrow that is not global, for the actor's method returns
+to a dispatcher and what the caller lent through `self` is no longer lent. A
+generator's seam ends only the borrows of its own ground (`loanIsGenOwn`): of a
+local (`loanIsLocal`), or into the generator itself, reached through its `self`
+(the hidden receiver of `next`) without crossing another reference, where the
+parameters it holds by value are. The generator is a value that moves between
+the calls that resume it, so neither stays put. A reborrow through a reference
+the generator holds (a parameter `t &Tree`, whose referent is the caller's), and
+what the caller lent through `self`, last across the seam. A holder of an ended
+borrow gets a pending conflict of kind `AccessYield` (`loanYieldPending`), fired
+by its next use as `ErrorFrozen` at the `yield`, worded for it. A lock's guard, or
+a value holding a traced reference, that would stay in the frame is refused at the
+seam (`ErrorGenFrame`): the lock would be held while the generator waits, and the
+collector finds a traced reference by the stack, not by a struct.
+
+A parameter of a generator is a field of the struct that is the generator, named
+by its bare name in the body as a method names its fields: the body may borrow it
+or copy it, or write one declared `mut`, but a move out of it is refused as a
+move out of a field is, worded for it (`flowRefuseMoveField`).
+
 ### An init's self
 
 An init's `self &new` (`fnDclIsInit`) is a reference to memory that holds no
@@ -1599,6 +1634,9 @@ Everything else about permissions is type check's: `permMatches` in
 | `ErrorLifetimeBound` | `loanNotGlobal` and `loanNotBound`, from `pwStaticArgs`; `fnCallStaticArgs`; `loanNotBound`, from `pwBoundHolds`; `loanNotBoxable`, from `pwValue` | an argument for a part a type parameter's `'static` bound makes global, or for a parameter `&<Trait + 'static`, carries, or is, a borrow that is not global; a value returned or stored as a virtual reference bounded by `'a` holds a borrow not known to last `'a`; a value made an owning virtual reference holds a borrow not known to be global |
 | `ErrorFrozen` | `loanUse`, for a conflict `loanAccess` recorded; `loanFlightAccess`, `loanFlightActivate` | a source read, changed, moved, borrowed or ended while a borrow of it that forbids that is still to be used; reported at the access, naming the borrow (or the method that returned it) and its next use. Or, at once, an access conflicting with a loan an earlier operand of the same call or literal carries, or a two-phase receiver conflicting at its call with what another argument carries |
 | `ErrorFrozen` | `loanUse`, for a seam's `AccessSeam` conflict; `loanSeamFlight` | a borrow that is not global, held at a seam (`await`) and used after it, reported at the seam where it ended; or one an operand around the seam carries in flight, a plain path |
+| `ErrorFrozen` | `loanUse`, for a generator seam's `AccessYield` conflict | a borrow of a generator's own ground -- one of its locals, or of a parameter it holds by value -- held at a `yield` and used after it, reported at the `yield` |
+| `ErrorGenFrame` | `pwYieldVar` | a lock's guard, or a value holding a traced reference, that would stay in a generator's frame across a `yield`; or, in generation, a `yield` where a temporary of an enclosing statement is still to be dropped |
+| `ErrorMoveField` | `flowRefuseMoveField` | among the rest, a move out of a generator's parameter, a field of the value it is |
 | `ErrorAwaitLeftCall` | `loanSeamFlight`; `awaitWalk`, from `awaitSplitOrReport` | a borrow, or a place's base or a swap's other side, written to the left of an `await` in its statement and used after it, made by a call or a temporary: only a plain path is reached again after the seam |
 | `ErrorAwaitNotFuture` | `awaitReportSeams`, from `awaitSplitOrReport` | an `await` every seam rule accepted, in a behaviour flow found no error in, on something that waits for no answer -- not a behaviour's reply, a future or an operation (without `--await-direct`): refused, the message naming what its seam would end, give back, carry and leave |
 | `ErrorUnbuiltAwait` | `awaitReportUnbuilt`, `awaitReportIn` and `awaitRecordTraced`, from `awaitSplitOrReport`; `pwSeamVar` | in a behaviour that is split, an `await` standing where the split is not built (an index whose place's base holds a seam too, both places of a swap, a slice's bounds, a parallel assignment's places, the entries of one `<-`, an array's contents filled in memory), or a seam whose record would hold a traced reference |
@@ -1715,6 +1753,7 @@ droppable noted as holding nothing is never finalized.
 | | `pwStmts`, `pwBlock`, `pwBlockExits`, `pwLoop`, `pwIf`, `pwJump`, `pwScopeEnd`, `pwScopeEndHanding`, `pwHolderDies`, `pwExit` | forks and joins, loops to a fixed point, jumps, a scope's end as an access (with a block's value in flight), a finalizing holder's death as a use, and an exit's record for the drop-flag client |
 | | `pwDropUse` | a use of a place's root variable, checked by the drop-flag client |
 | | `pwSeam`, `pwSeamVar`, `pwSeamNote`, `pathSeamLive`, `pwGlobalOnly`, `pwIsGuard` | a seam ("A seam"): what is awaited, the loans in flight across it, and each variable in scope -- its borrows ended, its live mark set, what it would do noted on the `AwaitNode` |
+| | `pwYield`, `pwYieldVar`, `pwYieldNote`, `pwGenKept` | a generator's seam ("A yield"): the result handed out, and each variable in scope -- the borrows of its own ground that end, its live mark, what it does there noted on the `YieldNode` |
 | | `pwOrder`, `pwSeams` | in a function holding an `await`, an operand list in the order generation makes it, a plain path before a seam made after it (`awaitOrder`) |
 | | `pwGpuOneValue`, `pwIsLitIndex`, `pathGpuChoices`, `pwRetFirst` | GPU targets: an `if`'s or a block's value, and a function's returns, against each other (`pathJoin` compares a holder's paths); a literal index |
 | `ir/flowdrop.c` | `dropMove`, `dropUse`, `dropRefuse` | a marked move's new state; a use some path left without its value, refused once |
@@ -1726,6 +1765,8 @@ droppable noted as holding nothing is never finalized.
 | | `loanWhole` | a loan of the whole of its root, where a slot's tag stays the root's |
 | | `loanAccess`, `loanUse` | a conflicting access records a pending conflict on each holder of the loan; a use of the holder fires it (`ErrorFrozen`, or `ErrorGpuRefChoice` for a `PendingChosen` one; a `PendingSeamLive` one records the variable live after its seam) |
 | | `loanIsGlobal`, `loanSeamEnds`, `loanSeamPending`, `loanSeamLive`, `loanSeamFlight`, `loanSeamOf` | a seam: whether a loan is global; the loan a holder holds that ends there, the borrow it was given where that can be told; the pending conflict and the live mark; what is in flight across it; what an ended borrow was of, for the message |
+| | `loanIsGenOwn`, `loanGenOwnIn`, `loanYieldPending` | a generator's seam: whether a loan is of the generator's own ground (a local, or its parameters held by value); the first such in a set; the pending conflict of the seam ending it |
+| `ir/exp/yield.c` | `yieldGenNew`, `yieldGenOf`, `yieldSplitRegister`, `yieldTypeCheck` | the generators made, each with its `next`, its struct and its seams, numbered once the function is walked; a `yield` type checked against what `next` gives |
 | `ir/exp/await.c` | `awaitIsPath`, `awaitReReached`, `awaitOrder`, `awaitLeftCallMsg` | where a seam cuts inside a statement ("A seam"): what is a plain path, reached again after the seam; which operands that makes after the last one holding a seam; the refusal of what a call made |
 | | `awaitSplitOrReport`, `awaitReportUnbuilt`, `awaitRecordTraced` | the seams of a function flow accepted: a behaviour's split where each awaits a behaviour returning a value, or under `--await-direct` (numbered, each lock's guard marked `VarSeamHeld`, the function recorded for generation, `awaitSplitOf`), unless one stands where the split is not built (`awaitWalk`, `awaitReportIn`) or a seam's record would hold a traced reference; otherwise each reported not built with what it would end, give back, carry (in the order it would die) and leave |
 | | `loanNearApart`, `loanChosen`, `loanChosenPending`, `loanIndexedRefs`, `loanOrigin`, `loanMemory` | GPU targets: whether two paths' values point at different places; a choice reported at once, or pending on a holder; a run-time index of references refused; where each choice points, for the message |
