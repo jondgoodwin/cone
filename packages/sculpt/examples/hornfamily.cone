@@ -2,7 +2,7 @@
 // Jon's "fractal variation, not only precise geometry". Every horn is made
 // from general sculpt operators: an outline (an ellipse, the blade) swept
 // along a curved path, each ring scaled by the taper, a rib height written
-// into a vertex channel, and displaceAlongNormal by it. Nothing here extends
+// into a vertex channel, and displaceAlongNormalBy a function reading it. Nothing here extends
 // sdf's bespoke Horn.
 //
 //   congo run --release packages/sculpt/examples/hornfamily.cone -- --out DIR
@@ -118,16 +118,10 @@ fn bareHorn(s &Shape) mesh.PolyMesh {
 
 // The horn with its ribs: the "ribs" channel (crest height 1) times the
 // local radius times 'height', displaced along the normals
-fn ribbedHorn(m &mut mesh.PolyMesh, s &Shape, height f32) mesh.PolyMesh {
+fn ribbedHorn(m &mesh.PolyMesh, s &Shape, height f32) mesh.PolyMesh {
   imm ribs = m.findFloatChannel(mesh.VertexDomain, "ribs");
   imm along = m.findFloatChannel(mesh.VertexDomain, "along");
-  imm lift = m.addFloatChannel(mesh.VertexDomain, "lift", 0.);
-  mut k = 0u32;
-  while k < u32.from(m.vertexCount()) {
-    m.setFloat(lift, k, m.float(ribs, k) * height * radiusAt(s, m.float(along, k)));
-    k = k + 1u32;
-  }
-  displaceAlongNormal(m, "lift", 1.);
+  displaceAlongNormalBy(m, k => m.float(ribs, k) * height * radiusAt(s, m.float(along, k)));
 }
 
 // The "ribs" channel unrolled as an image, AROUND across, RINGS + 1 up
@@ -218,7 +212,7 @@ fn grow(ind &Individual) mesh.PolyMesh {
   mut bare = bareHorn(&ind.shape);
   if ind.ribbed { ribField(&mut bare, "ribs", &ind.ribs); }
   else { bare.addFloatChannel(mesh.VertexDomain, "ribs", 0.); }
-  ribbedHorn(&mut bare, &ind.shape, 0.2);
+  ribbedHorn(&bare, &ind.shape, 0.2);
 }
 
 // Measured, not dialled: the angle between the path's first and last
@@ -387,7 +381,7 @@ fn main(argc i32, argv **u8) i32 {
       imm g = stageRing(k);
       marginRing(&mut b, "ribs", &g);
     }
-    imm horn = ribbedHorn(&mut b, &shape, 0.14);
+    imm horn = ribbedHorn(&b, &shape, 0.14);
     imm tri = horn.triangulate(true);
     imm t1 = sdl.GetPerformanceCounter();
     imm h = mesh.meshHash(&tri);
