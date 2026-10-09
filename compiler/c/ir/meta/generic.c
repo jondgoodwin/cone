@@ -268,6 +268,55 @@ static INode *genericCapturedType(FnCallNode *gencall, Nodes *genparms, INode *p
     return NULL;
 }
 
+static StructNode *genericNamedGenericTrait(INode *node);
+
+// A slice, or a reference to a fixed-size array, passed for 'xs &C' where C is
+// bounded by a generic trait ('C Iterable[A, I]'), is C's argument as the body
+// 'Array[T]' of its element: the struct whose methods an array and a slice call,
+// so the bound is read off them as for any other type. (An array has no methods
+// of its own, and a slice names no type for C to be.) Answers 1 once the
+// argument is so taken up, 0 for any other parameter and argument, which are
+// matched as ever (genericInferType). C's argument is the one 'T' of 'Array[T]'
+// whatever the array's size, so a bound's cursor cannot depend on it.
+static int genericInferArrayBound(TypeCheckState *pstate, Nodes *genparms, Nodes *where,
+        FnCallNode *inferredgencall, INode *parmtype, INode *argtype) {
+    if (where == NULL || parmtype == NULL || argtype == NULL)
+        return 0;
+    if (parmtype->tag != RefTag && parmtype->tag != BorrowTag)
+        return 0;
+    INode *target = ((RefNode*)parmtype)->vtexp;
+    if (!nameUseNames(target, GenVarDclTag) || nameUseNames(argtype, GenVarDclTag))
+        return 0;
+    if (isNameUseNode(argtype))
+        argtype = itypeGetTypeDcl(argtype);
+    INode *elem;
+    if (argtype->tag == ArrayRefTag)
+        elem = ((RefNode*)argtype)->vtexp;
+    else if (argtype->tag == RefTag && itypeGetTypeDcl(((RefNode*)argtype)->vtexp)->tag == ArrayTag)
+        elem = arrayElemType(itypeGetTypeDcl(((RefNode*)argtype)->vtexp));
+    else
+        return 0;
+    INode *parmdcl = ((NameUseNode*)target)->dclnode;
+    INode **condp;
+    uint32_t cnt;
+    int bounded = 0;
+    for (nodesFor(where, cnt, condp)) {
+        if ((*condp)->tag != IsTag)
+            continue;
+        CastNode *clause = (CastNode*)*condp;
+        if (isNameUseNode(clause->exp) && ((NameUseNode*)clause->exp)->dclnode == parmdcl
+            && genericNamedGenericTrait(clause->typ) != NULL)
+            bounded = 1;
+    }
+    if (!bounded)
+        return 0;
+    INode *body = fnCallArrayBody(pstate, (INode*)inferredgencall, elem);
+    if (body == NULL)
+        return 0;
+    genericCaptureType(inferredgencall, genparms, target, body);
+    return 1;
+}
+
 static int genericInferFnParms(TypeCheckState *pstate, Nodes *genparms, FnSigNode *genfnsig,
         Nodes *args, uint32_t firstparm, INode *errnode, FnCallNode *inferredgencall, Nodes *where) {
 
@@ -293,6 +342,7 @@ static int genericInferFnParms(TypeCheckState *pstate, Nodes *genparms, FnSigNod
         // which is taken up below, once the other arguments and the bounds
         // have had their say.
         if (!litIsUntypedNull(*argsp) && !genericArgIsAdaptable(*argsp, parmtype)
+            && !genericInferArrayBound(pstate, genparms, where, inferredgencall, parmtype, argtype)
             && genericInferType(inferredgencall, genparms, parmtype, argtype) == 0) {
             errorMsgNode(*argsp, ErrorInvType, "Inconsistent type for generic function");
             retcode = 0;

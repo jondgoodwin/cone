@@ -473,6 +473,17 @@ false diagnostic. The cost is silent acceptance — see Hazards.
    involved: a structural trait has no impl to look an answer up in, so the
    methods are the only place it can be read.
 
+   **An array or a slice given for a parameter bounded by a generic trait** —
+   `xs &C` with `C Iterable[A, I]`, given `&arr` or a `&Array[T]` slice — has no
+   struct for `C` to be: a slice names no type there, and an array has no methods
+   of its own to read the bound off. `genericInferArrayBound` captures `C` as the
+   body `Array[T]` of the element (`fnCallArrayBody`, the instance core declares,
+   whose `iter` an array and a slice call), a struct like any other, so the bound
+   is read and decided as for a list; the argument is then converted to the slice
+   the instance's parameter is. It applies only where `C` is the subject of a
+   clause naming a generic trait; any other parameter of the shape `&T`, given a
+   slice, is matched as ever.
+
    **An unsuffixed integer literal passed for a bare type parameter** (`v T`;
    `ULitTag` with `FlagUnkType`, `genericArgIsAdaptable`) does not capture in the
    first pass, as an untyped `null` does not: it is whichever number type is

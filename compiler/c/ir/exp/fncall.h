@@ -66,6 +66,10 @@ int fnCallIsNever(INode *node);
 // lowering with none to give passes NULL, which grants only what 'self' reaches.
 int fnCallLowerMethod(TypeCheckState *pstate, FnCallNode *callnode);
 
+// The body 'Array[T]' of element type 'elem', the struct whose methods an array
+// and a slice call (NULL if it could not be made), positioned on 'errnode'
+INode *fnCallArrayBody(TypeCheckState *pstate, INode *errnode, INode *elem);
+
 // The access reaching field 'fld' on 'obj', positioned on 'lexnode': for a
 // declared field one field access, for a folded copy an access per hop and
 // then one for the copy -- the nesting the hand-written path would produce.
