@@ -48,6 +48,10 @@ claim that these rule rather than describe.**
    loop's exit ([Block](../nodes/block.md), "Parse").
    `parallel each` is the same block with `FlagParallel` beside it; `parallel` is
    the word only where `each` directly follows it, and a name anywhere else.
+   The one thing the parser refuses of a source is its spelling: `&mut src`
+   written as the source of any `each` is `ErrorEachMutSource`, since the
+   spelling alone says the loop is meant to change items, which only
+   `src.mutItems()` does.
 4. **The parser binds module-level names.** Module namespaces are populated,
    hooked into the global name table, and duplicate-checked *during* parsing. ▸
    **This is what lets name resolution have no lookup routine** — by the time it
