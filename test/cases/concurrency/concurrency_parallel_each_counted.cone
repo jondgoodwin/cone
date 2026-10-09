@@ -1,0 +1,73 @@
+// Reading through a counted owner in a 'parallel each' body is allowed; copying
+// one that counts without atomic operations is not (concurrency_parallel_each_copies).
+//
+// Four workers run each loop. What is read: an 'Rc' dereferenced, lent to a
+// function ('&shared'), a field of a struct holding one, the Rc of each element
+// of a list through the pass's borrow, and a number field beside one. What is
+// copied, and so allowed: an 'Arc', whose count is atomic, and an Rc the pass
+// makes itself. Every number is worked out by hand.
+
+mod concurrency_parallel_each_counted;
+
+import stdio use *;
+import collections use *;
+import sync use *;
+import actors;
+
+struct Holder {
+  shared Rc[imm, u64];
+  n u64;
+}
+
+fn peek(r &Rc[imm, u64]) u64 { **r; }
+
+fn report(name &str, ok bool) {
+  printStr(name);
+  printStr(if ok {": ok\n";} else {": FAILED\n";});
+}
+
+fn main() {
+  initAll();
+  actors.configure(new actors.Options(workers: 4u32));
+
+  imm shared = new Rc[imm, u64](7u64);
+  imm holder = new Holder(new Rc[imm, u64](3u64), 10u64);
+  mut list = new List[Rc[imm, u64]];
+  mut k = 0u64;
+  while k < 200u64 {
+    list.push(new Rc[imm, u64](k));
+    k = k + 1u64;
+  }
+
+  imm total = Atomic[u64].of(0u64);
+  parallel each i in 0usize < 1000usize {
+    total.add(*shared);                            // dereferenced
+    total.add(peek(&shared));                      // lent to a function
+    total.add(*holder.shared + holder.n);          // inside a struct, and a number beside it
+  }
+  report("an Rc read by dereference, by a borrow, inside a struct", total.load() == 1000u64 * (7u64 + 7u64 + 3u64 + 10u64));
+
+  imm items = Atomic[u64].of(0u64);
+  parallel each r in list {
+    items.add(**r);                                // the Rc of each element, through the borrow
+  }
+  report("the Rcs of a list read through the pass's borrow", items.load() == 199u64 * 200u64 / 2u64);
+
+  imm arc = new Arc[imm, u64](5u64);
+  imm viaArc = Atomic[u64].of(0u64);
+  parallel each i in 0usize < 1000usize {
+    imm mine = arc;                                // an Arc is copied atomically
+    viaArc.add(*mine);
+  }
+  report("an Arc copied in the body", viaArc.load() == 5000u64);
+
+  imm own = Atomic[u64].of(0u64);
+  parallel each i in 0usize < 1000usize {
+    imm made = new Rc[imm, u64](u64.from(i));      // the pass's own Rc,
+    imm again = made;                              // and a copy of it
+    own.add(*again);
+  }
+  report("an Rc the pass makes, and copies", own.load() == 999u64 * 1000u64 / 2u64);
+
+  finalAll();
+}

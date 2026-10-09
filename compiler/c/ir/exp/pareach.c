@@ -513,6 +513,159 @@ static int parCheckAlias(INode *node, void *ctxp) {
     return 0;
 }
 
+// ---- Copies that write a count the passes share --------------------------------
+//
+// Outside variables are read-only for the loop, and copying a counted owner
+// writes its count: 'aliasRef' adds one holder. An 'Arc' does it atomically; an
+// 'Rc' (and any region that is shared and declares no ThreadSafe) does not, so
+// two passes copying the same one would lose a count and free what is still held.
+// A copy of such a value that is not the pass's own is therefore refused, as a
+// write is. What is copied is the value of a place read as a value; a borrow of
+// it, a field of it that is a number, a call that takes a borrow, are reads.
+// A traced reference (Gc) is counted as one: it has no count, but a copy of it
+// held in a local is a root the function links into the collector's one chain
+// of frames (conestd's roots.cone, single threaded), written without atomics.
+// A move owner (So) cannot be copied. (Only what the body itself copies is
+// seen: a function it calls that copies a borrow it was handed is that
+// function's; and a traced local the pass declares itself is not refused.)
+
+// Does a copy of a reference of this kind write shared state without atomics?
+static int parRefCountsPlain(RefNode *ref) {
+    INode *region = ref->region && isTypeNode(ref->region) ? itypeGetTypeDcl(ref->region) : ref->region;
+    if (region == NULL || region == borrowRef || permHeldKind(ref->perm))
+        return 0;
+    if (regionIsTraced(ref->region))
+        return 1;
+    if (regionIsMove(ref->region))
+        return 0;
+    INode *perm = ref->perm && isTypeNode(ref->perm) ? itypeGetTypeDcl(ref->perm) : NULL;
+    if (perm == NULL || perm->tag != PermTag || !(permGetFlags(perm) & MayAlias))
+        return 0;
+    return !regionIsThreadSafe(ref->region);
+}
+
+// Does a copy of a value of this type copy a counted owner whose count is not
+// atomic: it is one, or holds one in a field, a variant, an element?
+static int parHoldsPlainCount(INode *type, INode **seen, uint32_t *nseen) {
+    if (type == NULL || *nseen > 60)
+        return 0;
+    switch (type->tag) {
+    case NameUseTag:
+        return isTypeNode(type) ? parHoldsPlainCount(itypeGetTypeDcl(type), seen, nseen) : 0;
+    case AliasDclTag:
+        return parHoldsPlainCount(((AliasDclNode *)type)->target, seen, nseen);
+    case RefTag:
+        return parRefCountsPlain((RefNode *)type);
+    case ArrayTag:
+        return parHoldsPlainCount(arrayElemType(type), seen, nseen);
+    case TTupleTag: {
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodesFor(((TupleNode *)type)->elems, cnt, nodesp)) {
+            if (parHoldsPlainCount(*nodesp, seen, nseen))
+                return 1;
+        }
+        return 0;
+    }
+    case StructTag: {
+        for (uint32_t i = 0; i < *nseen; ++i) {
+            if (seen[i] == type)
+                return 0;       // (found where it was first asked)
+        }
+        seen[(*nseen)++] = type;
+        StructNode *strnode = (StructNode *)type;
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodelistFor(&strnode->fields, cnt, nodesp)) {
+            if (parHoldsPlainCount(((IExpNode *)*nodesp)->vtype, seen, nseen))
+                return 1;
+        }
+        if (strnode->derived) {
+            for (nodesFor(strnode->derived, cnt, nodesp)) {
+                if (parHoldsPlainCount(*nodesp, seen, nseen))
+                    return 1;
+            }
+        }
+        return 0;
+    }
+    default:
+        return 0;
+    }
+}
+
+static int parIsPlaceNode(INode *node) {
+    return isNameUseNode(node) || node->tag == FldAccessTag || node->tag == ArrIndexTag || node->tag == DerefTag;
+}
+
+// Is this place a value of the pass's own: a variable it declared, or a part of
+// one held inline (not through a reference or an index of something lent)?
+static int parPlaceIsOwn(INode *node, ParSet *inside) {
+    while (node != NULL) {
+        if (isNameUseNode(node)) {
+            INode *dcl = ((NameUseNode*)node)->dclnode;
+            return dcl != NULL && dcl->tag == VarDclTag && parSetHas(inside, dcl);
+        }
+        if (node->tag == FldAccessTag || node->tag == ArrIndexTag) {
+            INode *obj = ((FnCallNode*)node)->objfn;
+            INode *objtype = isExpNode(obj) ? iexpGetTypeDcl(obj) : NULL;
+            if (objtype == NULL || (objtype->tag != StructTag && objtype->tag != ArrayTag && objtype->tag != TTupleTag))
+                return 0;       // reached through a reference, a slice or a pointer
+            node = obj;
+            continue;
+        }
+        return 0;
+    }
+    return 0;
+}
+
+typedef struct {
+    ParSet inside;
+    ParSet reported;
+} ParCopies;
+
+static int parCheckCopies(INode *node, void *ctxp) {
+    ParCopies *ctx = (ParCopies *)ctxp;
+    switch (node->tag) {
+    case BorrowTag:
+    case ArrayBorrowTag: {
+        // The place is lent, not copied: only the indexes inside it are uses
+        INode *place = ((RefNode*)node)->vtexp;
+        if (!parIsPlaceNode(place))
+            return 1;
+        parWalkIndexArgs(place, parCheckCopies, ctx);
+        return 0;
+    }
+    case AssignTag:
+        if (parIsPlaceNode(((AssignNode*)node)->lval))
+            parWalkIndexArgs(((AssignNode*)node)->lval, parCheckCopies, ctx);
+        else
+            parWalk(((AssignNode*)node)->lval, parCheckCopies, ctx);
+        parWalk(((AssignNode*)node)->rval, parCheckCopies, ctx);
+        return 0;
+    case SwapTag:
+        // (a swap moves what is in its places; writes are refused elsewhere)
+        parWalkIndexArgs(((SwapNode*)node)->lval, parCheckCopies, ctx);
+        parWalkIndexArgs(((SwapNode*)node)->rval, parCheckCopies, ctx);
+        return 0;
+    default:
+        break;
+    }
+    if (!parIsPlaceNode(node) || !isExpNode(node))
+        return 1;
+    INode *type = iexpGetTypeDcl(node);
+    INode *seen[64];
+    uint32_t nseen = 0;
+    if (type != NULL && parHoldsPlainCount(type, seen, &nseen) && !parPlaceIsOwn(node, &ctx->inside)
+        && !parSetHas(&ctx->reported, node)) {
+        parSetAdd(&ctx->reported, node);
+        errorMsgNode(node, ErrorParCopy,
+            "A 'parallel each' body may not copy a value of type %s, which is not the pass's own: its passes run at the same time, and a copy writes state that every copy shares without an atomic operation (an Rc's count, or the roots of the collector's traced references), which two passes cannot do together. Read it through a borrow ('&x', or a method that takes one), or use an Arc, whose count is atomic.",
+            itypeName(type));
+    }
+    parWalkIndexArgs(node, parCheckCopies, ctx);
+    return 0;
+}
+
 // The loop of a built parallel each, its last loop block
 static BlockNode *parLoopOf(BlockNode *outer) {
     for (uint32_t i = outer->stmts->used; i > 0; --i) {
@@ -541,6 +694,12 @@ void parallelEachCheckBody(TypeCheckState *pstate, BlockNode *outer) {
     }
     parWalk((INode*)loop, parCollectDcls, &ctx);
     parWalk((INode*)loop, parCheckWrites, &ctx);
+
+    // Nor does it copy what counts its holders without atomic operations
+    ParCopies copies;
+    memset(&copies, 0, sizeof(copies));
+    copies.inside = ctx.inside;
+    parWalk((INode*)loop, parCheckCopies, &copies);
 
     // A loop that lends its items to be changed: the body names none of the
     // place they are lent from

@@ -567,6 +567,7 @@ enum ErrorCode {
     ErrorParWrite = 1372,       // A 'parallel each' body writes something declared outside the loop (or lends it for writing), which its pieces would do at the same time
     ErrorParRuntime = 1373,     // A 'parallel each' in a module that does not import the actors package its pieces run on, or in an actor's method or a generator (not built)
     ErrorParElse = 1374,        // A 'parallel each' with an 'else': its passes run at the same time and give no value
+    ErrorParCopy = 1375,        // A 'parallel each' body copies a value that is not the pass's own and holds a counted owner whose count is not atomic (an Rc): the copy would write a count the passes share
 
     // Warnings
     WarnCode = 3000,
