@@ -1,0 +1,113 @@
+// The closure literal, used where it is written: 'fn (params) [state] type { body }'
+// and the short form 'x => body'. A closure is a value of a struct the compiler
+// writes: the state list's entries are its fields, every other variable its body
+// names is borrowed ('&', or '&mut' where the body changes it), and '()' is the
+// body. Every value is worked out by hand beside it.
+
+mod closure_literal;
+
+import stdio use *;
+import collections use List;
+
+fn show(v i32) {
+  printInt(i64.from(v));
+  printStr(" ");
+}
+
+// A function reference wanted: a closure that holds and borrows nothing is one
+fn twiceRef(f &fn(x i32) i32, v i32) i32 { f(f(v)); }
+
+// A function outside any struct, which only calls what it is given
+fn runThree[F fn(x i32) i32](f &mut F) i32 {
+  f(1);
+  f(2);
+  f(3);
+}
+
+// A method writes a closure over its own fields, private ones among them, and
+// hands it to a function outside the struct
+struct Tally {
+  hits i32;
+  step i32;
+  pub fn run(self &mut) i32 {
+    mut bump = fn(x i32) i32 { hits += x * step; hits; };
+    runThree(&mut bump);
+  }
+}
+
+fn main() {
+  // The ruled case: state of its own, 'i32' read off the literal. 1 2 3
+  mut next = fn() [mut n = 0] { n += 1; n; };
+  show(next());
+  show(next());
+  show(next());
+  // A second closure has a state of its own. 1
+  mut other = fn() [mut n = 0] { n += 1; n; };
+  show(other());
+  printStr("\n");
+
+  // The state list copies a variable (ribs), or computes (base = 2 * 5 + 1 = 11).
+  // 2 * 3 + 11 = 17
+  imm ribs = 3;
+  imm shape = fn(u i32) [ribs, base = 2 * 5 + 1] i32 { u * ribs + base; };
+  show(shape(2));
+  printStr("\n");
+
+  // A closure changing a mut variable of the code around borrows it '&mut', and
+  // the variable shows the change: 10 + 3 + 4 = 17
+  mut total = 10;
+  mut add = fn(x i32) { total += x; };
+  add(3);
+  add(4);
+  show(total);
+  // Read-only, it borrows '&': the variable is read through it, and may change
+  // again once the closure is done with. 1 + 100 + 17 = 118, then 1 + 100 + 50 = 151
+  imm limit = 100;
+  imm sum = fn(x i32) i32 { x + limit + total; };
+  show(sum(1));
+  total = 50;
+  imm sum2 = fn(x i32) i32 { x + limit + total; };
+  show(sum2(1));
+  printStr("\n");
+
+  // 'return' leaves the closure: 1, then 3 + 2 = 5. Its type written, i64: 7000000000
+  imm early = fn(x i32) i32 { if x > 5 { return 1; } x + 2; };
+  show(early(9));
+  show(early(3));
+  imm wide = fn(x i32) i64 { i64.from(x) * 1000000000; };
+  printInt(wide(7));
+  printStr("\n");
+
+  // Where a function reference is wanted, the full form and the short form take
+  // their types from its signature. f(f(1)) = 9, plus 6: 15; 5 + 1 + 1 = 7; 0 + 50
+  printInt(i64.from(twiceRef(fn(x i32) i32 { x * 3; }, 1) + 6));
+  printStr(" ");
+  show(twiceRef(fn(x) { x + 1; }, 5));
+  show(twiceRef(x => x * 10, 0) + 50);
+  printStr("\n");
+
+  // Nested: the inner closure borrows what the outer closure's body names.
+  // inner(1) + inner(2) = (1 + 100 + 10) + (2 + 100 + 10) = 223
+  imm base = 10;
+  imm outer = fn(a i32) i32 {
+    imm inner = fn(b i32) i32 { b + a + base; };
+    inner(1) + inner(2);
+  };
+  show(outer(100));
+  printStr("\n");
+
+  // A closure holding a collection has it moved in. 10 + 2 = 12
+  mut xs = new List[i32]();
+  xs.push(4);
+  xs.push(5);
+  imm count = fn(x i32) [buf = xs] i32 { x + i32.from(buf.len()); };
+  show(count(10));
+  printStr("\n");
+
+  // In a method: it reads and changes the private fields, and runs outside the
+  // struct. hits: 0 + 1 * 2 = 2; + 2 * 2 = 6; + 3 * 2 = 12
+  mut t = new Tally(0, 2);
+  show(t.run());
+  show(t.hits);
+  printStr("\n");
+}

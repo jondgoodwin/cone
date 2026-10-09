@@ -482,6 +482,12 @@ static int genlIsDefinedHere(INode *dclnode) {
         return 0;
     if (dclIsInstance(dclnode))
         return dclnode->tag != FnDclTag || ((FnDclNode*)dclnode)->value != NULL;
+    // A closure written in a body an importer expands is made again by every
+    // object that expands it, and defined in each (internally: its name is the
+    // object's own)
+    ClosureInfo *closure = closureOfDcl(dclnode);
+    if (closure && closure->expanded)
+        return dclnode->tag != FnDclTag || ((FnDclNode*)dclnode)->value != NULL;
     ModuleNode *mod = dclInfoGetModule(dclnode);
     if (mod == NULL || !(mod->flags & FlagGenMod))
         return 0;
@@ -1059,6 +1065,13 @@ static void genlImportedInstances(GenState *gen, INode *node) {
         // the text of the declaration an include file carries, so its methods
         // are defined here whoever's module it is in (dclIsInstance)
         if (yieldAny() && yieldGenOfStruct(node)) {
+            genlGenericInstanceSyms(gen, node);
+            genlGlobalImpl(gen, node);
+            return;
+        }
+        // A closure written in an expanded body, the same (closure.h)
+        ClosureInfo *closure = closureOfStruct(node);
+        if (closure && closure->expanded) {
             genlGenericInstanceSyms(gen, node);
             genlGlobalImpl(gen, node);
             return;

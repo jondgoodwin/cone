@@ -116,6 +116,7 @@ enum TokenTypes {
     AssgnToken,        // '='
     LAssgnToken,       // ':='
     SwapToken,         // '<=>'
+    FatArrowToken,     // '=>': a closure's short form, 'x => x * 2'
     IsToken,           // 'is'
     EqToken,           // '=='
     NeToken,           // '!='

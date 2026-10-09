@@ -582,6 +582,13 @@ enum ErrorCode {
     // What a 'parallel each' body may reach (ir/exp/pareach.c)
     ErrorParReach = 1390,       // A 'parallel each' body, header, filter or yield names a value declared outside the loop (or its item) whose type is not safe to share across the passes: it holds, through a field, element, borrow or pointee, an aliasable owner of a region not declaring ThreadSafe (an Rc) or a traced reference
 
+    // Closures (ir/exp/closure.c)
+    ErrorClosureParm = 1391,    // A closure parameter written without a type where no signature is expected, or a signature the closure's parameters do not fit
+    ErrorClosureRet = 1392,     // A closure whose paths give different types, and whose return type is not written
+    ErrorClosureSelf = 1393,    // A closure that names itself: it cannot call itself
+    ErrorClosureForm = 1394,    // A closure written where it cannot be built, or in a form it does not take
+    ErrorClosureOverload = 1395, // A closure literal meeting overloaded callees it cannot choose between
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name
@@ -595,6 +602,10 @@ enum ErrorCode {
 };
 
 extern int errors;
+extern int warnings;
+// Non-zero while a closure's body is tried under a guess at its permissions:
+// a diagnostic is counted and not printed
+extern int errorSilent;
 
 // Send an error message to stderr
 void errorExit(int exitcode, const char *msg, ...);

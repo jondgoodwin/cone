@@ -1243,6 +1243,9 @@ void lexNextTokenx() {
                     lexReturnPuncTok(EqToken, 2);
                 }
             }
+            else if (*(srcp + 1) == '>') {
+                lexReturnPuncTok(FatArrowToken, 2);
+            }
             else {
                 lexReturnPuncTok(AssgnToken, 1);
             }

@@ -1,14 +1,16 @@
-# closure - anonymous functions: writing one, giving it a type, binding it,
-# passing it and calling it. Tier 1.
+# closure - anonymous functions and closure literals: writing one, giving it a
+# type, binding it, passing it and calling it. Tier 1.
+#
+# An anonymous function, '&fn(x i32) i32 { ... }', is lifted to module scope and
+# sees no local. A closure literal, 'fn (x i32) [n = 0] i32 { ... }' or 'x => x',
+# is a value of a struct the compiler writes: it holds its state list and
+# borrows the variables its body names (closure_literal, closure_capture).
 #
 # Key reference: compiler/c/doc/diagnostics/test-suite.md, "cases.toml keys".
 # The group directory supplies the feature tag, so tags carry pipeline phases.
 #
 # Not here, on purpose:
 #
-#   - Capture. An anonymous function cannot read a local of the function that
-#     encloses it, so there is nothing working to write a success scenario
-#     around. closure_capture is the xfail that records the gap.
 #   - References to named functions ('imm p = &fact'), which the design note
 #     gives to 'ref' as "function references", and closure references, which it
 #     gives to 'trait'.
@@ -62,9 +64,23 @@ tags = ["parse", "typecheck", "genllvm", "runtime"]
 
 [scenario.closure_capture]
 category = "compile"
-description = "An anonymous function reading a local of the function enclosing it"
-tags = ["nameres"]
-xfail = true
+description = "A closure literal reading a local of the function enclosing it"
+tags = ["nameres", "typecheck"]
+
+[scenario.closure_literal]
+category = "run"
+description = "The closure literal: state of its own, variables borrowed '&' and '&mut', return, the short form, nesting, a method's private fields"
+tags = ["parse", "nameres", "typecheck", "flow", "genllvm", "runtime"]
+
+[scenario.closure_bound]
+category = "run"
+description = "A closure literal given to a generic whose parameter is bound by a signature: both forms, F by value, '&F' and '&mut F'"
+tags = ["parse", "typecheck", "flow", "genllvm", "runtime"]
+
+[scenario.closure_overload]
+category = "run"
+description = "A closure literal meeting overloaded callees: a number's overload never takes it, then its parameter count, then its written types"
+tags = ["typecheck", "runtime"]
 
 # -------- warnings --------
 
@@ -107,3 +123,27 @@ category = "reject"
 description = "A function taking one two-valued function, where a type of two parameters, a function and a u32, is wanted"
 tags = ["typecheck"]
 diagnostics = 3
+
+# -------- parse stage --------
+
+[scenario.closure_parse_literal]
+category = "reject"
+description = "The short form of a closure with something other than a name for a parameter"
+tags = ["parse"]
+diagnostics = 1
+
+# -------- name resolution stage --------
+
+[scenario.closure_nameres_self]
+category = "reject"
+description = "A closure naming the variable it is the value of: it cannot call itself"
+tags = ["nameres"]
+diagnostics = 1
+
+# -------- type check stage --------
+
+[scenario.closure_typecheck_literal]
+category = "reject"
+description = "Closure literals refused: a return type the paths disagree on, a parameter with no type, the wrong parameter count, a global, a change not allowed, overloads that cannot be chosen between"
+tags = ["typecheck"]
+diagnostics = 7

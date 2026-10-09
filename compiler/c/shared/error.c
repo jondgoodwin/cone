@@ -16,6 +16,9 @@
 
 int errors = 0;
 int warnings = 0;
+// Non-zero while a closure's body is tried under a guess at its permissions
+// (closure.c): a diagnostic is counted and not printed
+int errorSilent = 0;
 
 // Send an error message to stderr
 void errorExit(int exitcode, const char *msg, ...) {
@@ -37,12 +40,16 @@ void errorOut(int code, const char *msg, va_list args) {
     // Prefix for error message
     if (code < WarnCode) {
         errors++;
-        fprintf(stderr, "Error %d: ", code);
+        if (!errorSilent)
+            fprintf(stderr, "Error %d: ", code);
     }
     else if (code < Uncounted) {
         warnings++;
-        fprintf(stderr, "Warning %d: ", code);
+        if (!errorSilent)
+            fprintf(stderr, "Warning %d: ", code);
     }
+    if (errorSilent)
+        return;
 
     // Do a formatted output of message, passing along all args
     vfprintf(stderr, msg, args);
@@ -56,6 +63,8 @@ void errorOutCode(char *tokp, uint32_t linenbr, char *linep, char *url, int code
 
     // Send out the error message and count
     errorOut(code, msg, args);
+    if (errorSilent)
+        return;
 
     // Reflect the source code line
     fputs(" --> ", stderr);
@@ -94,6 +103,8 @@ void errorOutCode(char *tokp, uint32_t linenbr, char *linep, char *url, int code
 static void errorOutGen(Lexer *lexer, char *tokp, char *linep, int code, const char *msg, va_list args) {
     INode *at = lexer->genat;
     errorOutCode(at->srcp, at->linenbr, at->linep, at->lexer->url, code, msg, args);
+    if (errorSilent)
+        return;
     fputs("     in the code the compiler generates for it: ", stderr);
     char *srcp = linep;
     while (srcp < tokp && (*srcp == ' ' || *srcp == '\t'))

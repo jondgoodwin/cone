@@ -35,6 +35,8 @@ void doAnalysis(ConeOptions *opt, ProgramNode **pgm) {
     nstate.expander = NULL;
     nstate.sigfn = NULL;
     nstate.scope = 0;
+    nstate.closure = NULL;
+    nstate.declaring = NULL;
     inodeNameRes(&nstate, (INode**)pgm);
     if (errors) {
         // Name resolution reporting a bad program is one of the two places a

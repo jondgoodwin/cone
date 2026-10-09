@@ -190,6 +190,12 @@ static void checkNode(INode *node) {
     case AwaitReplyTag:
     case SelfActorTag:
         break;
+    // Lowered by type check, so it is not in a checked tree
+    // (a program refused before type check lowers it still holds one)
+    case ClosureTag:
+        if (!errors)
+            errorMsgNode(node, ErrorBadTree, "Compiler defect: a closure literal was left unlowered.");
+        break;
 
     case NamedValTag:
         checkNode(((NamedValNode*)node)->val); break;
