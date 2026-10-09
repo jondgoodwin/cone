@@ -1277,6 +1277,16 @@ declare no symbol and whose uses nothing records, so a private one stays in too.
 A standalone `use` stays where what it names is in the file or another
 package's, and goes where it privately folds a submodule's names.
 
+**A type the compiler found shape-changing carries the finding**
+(`incRecordShape`, `shapeRecordable`): `ShapeChanging` is appended to the `is`
+list of each non-generic type of the package that its methods show to change
+shape and its source does not declare so, or written as a new `is` list where it
+has none (the parser records where the header and the list end, `DclSpan.hdrend`
+and `isend`). The methods that show it are cut out of the file, so an importer
+cannot read them; it takes a non-generic type from an include file as the file
+says (flow's "Which types change shape"). A generic type goes in whole, with its
+methods, and each importer reads its instances itself.
+
 **A global whose type was inferred gets its type written in** [Q6], the one
 thing printed from the IR: a number type, a struct — an instance of a generic
 one with its arguments, one of the package's own by its path from the module

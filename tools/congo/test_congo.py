@@ -666,6 +666,107 @@ class Scenarios(unittest.TestCase):
         # a's generated include file imports b, as a's source does
         self.assertIn("\nimport b;\n", (out / "a.cone").read_text())
 
+    def test_an_include_file_records_the_types_that_change_shape(self):
+        # A struct wrapping a List is shape-changing though it declares nothing,
+        # found from its methods; a gauge that lends a number it bumps is not.
+        # The methods are cut out of the package's include file, so the include
+        # file says which: 'ShapeChanging' is written into the type's 'is' list,
+        # and an importer takes the type as the file says
+        packages = self.root / "shapes"
+        self.registry(packages)
+        write(packages / "shapes" / "congo.toml",
+              '[package]\nname = "shapes"\nversion = "0.1.0"\noutput = "library"\n')
+        write(packages / "shapes" / "src" / "shapes.cone", """
+            mod shapes;
+
+            import collections use List;
+
+            pub struct Pt { pub x i64; pub y i64; }
+
+            // Wraps a List: found shape-changing, with no 'is' list to add to
+            pub struct Bag {
+              items List[Pt];
+
+              pub fn empty() Bag { new Bag(List[Pt].empty()); }
+              pub fn first(self &) &Pt { items[0usize]; }
+              pub fn add(self &mut, p Pt) { items.push(p); }
+            }
+
+            // The same through a type that has an 'is' list already
+            pub struct Shelf is Sendable {
+              items List[Pt];
+
+              pub fn empty() Shelf { new Shelf(List[Pt].empty()); }
+              pub fn first(self &) &Pt { items[0usize]; }
+              pub fn add(self &mut, p Pt) { items.push(p); }
+            }
+
+            // Lends a number it writes: not found
+            pub struct Gauge {
+              n i64;
+
+              pub fn start(n i64) Gauge { new Gauge(n); }
+              pub fn peek(self &) &i64 { &n; }
+              pub fn bump(self &mut) { n = n + 1; }
+            }
+            """)
+        write(self.root / "good.cone", """
+            mod good;
+
+            import stdio;
+            import shapes;
+
+            fn viaGauge(g &mut shapes.Gauge) i64 {
+              imm e = g.peek();
+              g.bump();
+              *e;
+            }
+
+            fn usedFirst(bag &mut shapes.Bag, p shapes.Pt) i64 {
+              imm x = bag.first().x;
+              bag.add(p);
+              x;
+            }
+
+            fn main() i32 {
+              mut g = shapes.Gauge.start(41i64);
+              stdio.print <- viaGauge(&mut g);
+              stdio.print <- "\\n";
+              mut bag = shapes.Bag.empty();
+              bag.add(new shapes.Pt(7i64, 0i64));
+              stdio.print <- usedFirst(&mut bag, new shapes.Pt(8i64, 0i64));
+              stdio.print <- "\\n";
+              0i32;
+            }
+            """)
+        run = self.congo("run", "good.cone", cwd=self.root)
+        # The gauge's borrow reads the number it bumped; the bag's first is read before the push
+        self.assertEqual(self.program_output(run), "42\n7\n")
+        out = next((self.root / "home" / "lone").glob("good-*")) / "debug"
+        included = (out / "shapes.cone").read_text()
+        self.assertIn("pub struct Bag is ShapeChanging {", included)
+        self.assertIn("pub struct Shelf is Sendable, ShapeChanging {", included)
+        self.assertIn("pub struct Gauge {", included)
+        self.assertNotIn("Gauge is", included)
+        self.assertNotIn("Pt is", included)
+        for name, spelling in (("bag", "shapes.Bag"), ("shelf", "shapes.Shelf")):
+            write(self.root / f"{name}.cone", f"""
+                mod {name};
+
+                import shapes;
+
+                fn viaShape(w &mut {spelling}, p shapes.Pt) i64 {{
+                  imm e = w.first();
+                  w.add(p);
+                  e.x;
+                }}
+
+                fn main() i32 {{ 0i32; }}
+                """)
+            run = self.congo("run", f"{name}.cone", cwd=self.root, ok=False)
+            self.assertNotEqual(run.returncode, 0, name)
+            self.assertIn("may not be borrowed mutably", run.stdout + run.stderr, name)
+
     def test_an_indirect_package_runs_its_init_once(self):
         # A diamond: the program imports a and c, each of which imports b, and
         # b holds a submodule. The program never imports b, yet b and its

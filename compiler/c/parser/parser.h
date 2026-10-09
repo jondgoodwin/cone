@@ -84,6 +84,10 @@ typedef struct ParseState {
     int typed;              // A variable: its type is written
     char *typep;            // A variable: where its type is written, and just past it; NULL where none is
     char *typeendp;
+    // Where a struct's header ends and where its 'is' list does, for the span
+    // of the struct just parsed (dclspan.h); written as parseStruct returns
+    char *hdrendp;
+    char *isendp;
 
     // While an actor's body is read, where each field's and parameter's type
     // and default value are written (parseFieldDclBody, parseFnSig); else NULL

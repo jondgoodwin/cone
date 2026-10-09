@@ -125,6 +125,9 @@ typedef struct DclSpans DclSpans;        // dclspan.h
 #include "flowloan.h"
 #include "flowdrop.h"
 
+// Which types the loan walk takes to change shape, read from their methods
+#include "shapeinfer.h"
+
 #include "../corelib/corelib.h"
 
 #define TypeCheckLoopMax 256

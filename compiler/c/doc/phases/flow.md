@@ -971,7 +971,9 @@ path is (`pwLend`): it keeps the container alive and promises no more, so two
 `&mut a` may live at once and `a.alloc(new Spawner(2, &mut a))` is one call. The
 third marker, `ShapeChanging` (`List`, `Deque`, `String`, `Dict`, `Pool`), makes a
 borrow its method returns freeze a shared receiver path too (`loanFreezeShared`,
-called from `pwCall`): see "What is not held".
+called from `pwCall`): see "What is not held". A type need not declare it: the
+compiler finds a type shape-changing from its methods (`shapeinfer.c`, "Which
+types change shape" below), and `shapeChanging` answers for both.
 
 **In flight.** A call's arguments are walked in order (where an `await` cuts
 them, in the order "A seam" gives), each one's loans pushed
@@ -1131,10 +1133,13 @@ call returns carries its receiver's loan as the receiver was reached: through a
 shared path (`l &mut List`, a field of `self`, a `Rc[mut, T]` owner) that loan
 only keeps the source alive (`LoanAlias`), so `imm e = l[0usize]; m.push(p); e.x`
 compiles when `m` is another reference to the same list, and `e` dangles. For
-a container that changes shape (it declares `ShapeChanging`) the loan the
+a container that changes shape (it declares `ShapeChanging`, or is found to
+be one: `shapeChanging`) the loan the
 returned borrow carries is made a `LoanShared` or `LoanExcl` one instead, as a
 local's is (`pwCall`, `loanFreezeShared`): the same path, `l` or `self.items`,
-is frozen while the borrow is used, so `imm e = l[0usize]; l.push(p); e.x` and
+is frozen while the borrow is used, so `imm e = l[0usize]; l.push(p); e.x`, the
+same through a struct wrapping a `List` (`bag.first(); bag.add(p)` through
+`bag &mut Bag`) and
 a cursor `mut it = dq.items(); dq.push(9); it.next()` are refused, and a call
 that returns nothing the receiver lent (`self.fill(self.roomFor(h), …)`)
 freezes nothing. That is part (a) of the rule for a shape-changing container —
@@ -1161,6 +1166,62 @@ unchecked, and a global a callee changes is invisible.
 reason: flow never runs re-entrantly (`flowPathWalk` refuses to). The buffers
 come from the compiler's arena, small at first, and are kept from one walk to
 the next; a variable's index is `VarDclNode.flowindex` for the length of a walk.
+
+### Which types change shape
+
+`pwCall` freezes a shared receiver path when `shapeChanging` says the receiver's
+type changes shape (`shapeinfer.c`): it declares `ShapeChanging`, or the
+compiler finds it so from its methods. A type declaring `NoLoanMut` or
+`NoLoanRead` is never found so; it said what its borrows cost. Found so, for
+a struct, means **both** hold of its methods (`siInferStruct`):
+
+- one with a writable `self` (not an `init`, a `final` or a drop) *writes
+  storage*, in its body or in anything it calls: an assignment, swap or
+  operator-assignment to a place of `*self` reached by field steps and
+  by-value array elements that holds a raw pointer or an owning reference by
+  containment (`siHoldsStorage`), or to the whole of `*self`; or it hands
+  storage read from `*self` (or from a local that copied it) to a callee the
+  compiler cannot read; or it lends a place of `*self` writable to a callee
+  that does either. A cursor advancing writes a number; an element written in
+  place is a write through a pointer, not to it; neither is storage. A
+  type that owns its block through a member (a `Set`'s `Dict`, a `String`'s
+  `List`) has no pointer field of its own and writes through the member's method
+  all the same, which is why the test is not "has a pointer field";
+- one returns a type that carries a borrow (`itypeCarriesBorrow`).
+
+A callee the compiler cannot read counts as writing (`siVisible`): an
+`extern` function, a call through a trait or a function pointer, a function
+whose body its package's include file left out, an intrinsic given a writable
+place that holds storage. The include file therefore **records** the verdict:
+`incRecordShape` appends `ShapeChanging` to the `is` list of each non-generic
+type of the package that the package's own compile found shape-changing, and
+an importer takes a non-generic type from an include file as it says
+(`siIsRecorded`), found or not. A generic type's methods travel in the file, so
+its instances are read where they are used. `ShapeChanging` written in the
+source only asserts: `shapeDeclaredCheck` refuses (`ErrorShapeMark`) a declaring
+type that the methods do not show to be so, wherever their bodies are visible.
+
+The answer is read from typed bodies, and type check is demand-driven, so a
+body the question needs may not be checked yet, or may be suspended further up
+the stack (a method whose check reached a function whose walk asks about its
+type). `siParamWrites` answers yes, no or not yet: a body is ready once
+`DclBodyTyped` says its check succeeded (the flag is set before its flow pass,
+so a method asking about its own type reads itself), and a function being asked
+about, reached again by a recursion, answers no, an answer that leaned on that
+guess being kept only when nothing above it was guessed. Before a gated
+function is walked, `shapeWalkReady` finds the receivers of its calls that return a
+borrow, whose types declare nothing, and settles each (`siSettle`): it asks for
+the type's methods to be checked, which is a demand and so outside any walk, and
+caches the answer on `StructNode.shapeinf`. If an answer is not yet known the
+walk is queued (`shapeWalkDefer`) and made at the end of type check
+(`shapeWalkDeferred`, in `doAnalysis`); a walk that cannot wait (a function
+with an `await`, a module's `init`) takes an unsettled type as shape-changing.
+A walk made later is the same walk, so nothing else about the function depends
+on when it ran.
+
+What is not covered: a type that reshapes only through a free function taking
+it (the function is not one of its methods); two names for one value (part (b),
+above).
 
 ### GPU targets
 
@@ -1423,7 +1484,7 @@ filled `self`'s fields is an ordinary store.
 | --- | --- | --- | --- |
 | **Move / ownership** | yes | `ErrorMove` on use of a moved-out or uninitialized variable, and on a borrow of a moved-out one; move out of a field, or of a global, or out through a borrowed or a shared owning reference, refused; a use some path reaching it moved, hollowed or never gave a value (a loop's earlier pass included), by the path walk | element granularity — moving `a[0]` deactivates all of `a` |
 | **Escape / lifetime** | representation in type check, enforcement here and in the loan walk | storing a bare borrow into a global or through a reference into a longer-lived place, by assignment or by either direction of a swap; any value — bare borrow, struct, `Option`, `Rc` owner, call result, a variable that was given a local's borrow — returned, or stored where it may outlive the function (a global, what a parameter or a copy of one points at, an `Rc`'s referent), or handed to a call that may store it so, while it holds a loan of the function's own storage (the loan walk); returning a borrow of a local, or a local initialized with one, its type declared or not; returning or storing outward a borrow of a by-value parameter, of `self` by value or through an owner passed by value; storing a borrowed parameter's borrow into a global, bare, read through a `&mut &T` parameter, held by a by-value parameter or carried inside a value; a returned `if`, `match` or block, arm by arm, and one used as a value carrying its shortest arm's lifetime; an owner handed back, or stored, as a borrow; a borrow through a borrowed reference held in a local, which has that reference's lifetime; a borrow arriving through a call's result, singly or as one of several values destructured into lvals, each carrying the narrowest argument borrow's scope; a `&mut` or `&uni` argument (a method's receiver included) to a place that can hold a borrow — `&T` itself, a struct with a borrow field, an `Option` or `List` of borrows, a slice of them — where that place would outlive another borrow passed with it; a borrow coerced to another reference type, whether widened to a base trait's reference or made a virtual reference; with lifetimes named on a signature or a struct, a caller's borrow returned, or stored where a parameter points, as a lifetime its part does not flow to by the `where` clause's order, a struct's field by field, and a borrow not global handed to a `'static` parameter; a type parameter's lifetime bound, by the order an instance's signature carries, a `'static` one's argument checked global; what a virtual reference bounded by `'a` points at holding a borrow not known to last `'a`, returned or stored through `*p`; a value holding a borrow not known to be global made an owning virtual reference, which is bounded by `'static` | a borrow captured; a lifetime bound on a generic type's parameter, or of a lifetime but `'static` on an owning virtual reference, and invariant lifetimes; a struct's tags are dropped wherever a value leaves it, and after a call that may move a borrow between its slots, so what it holds is then kept as one; a store through a reference a call returned, or one read through another, to a local struct of a self-similar type (a list node) holding the caller's borrows is refused |
-| **Freezing** | the loan walk, on a gated function | a borrow held in a local, bare or inside a struct, enum, `Option`, array or list, and its copies, freeze the source until the last use (a finalizer that may read it, at the holder's death, included), and so do a borrow a call returns, of every argument, and one a call or a store through a reference puts into a local (from a `NoLoanMut` or `NoLoanRead` container, only its life): `ErrorFrozen` at a change, a move, a conflicting borrow, the source's end, and, under a mutable borrow, a read — for a source reached as `uni`; for one reached through a shared path, only its owner's move, replacement or end, a change or mutable borrow of the owner where it is held, and an `&uni` or `&imm` borrow, but for a borrow a method of a `ShapeChanging` container returns, which freezes the path it was reached through as a local's does | an element borrow of a `ShapeChanging` container through a shared path, when the change comes through another name or a call that might make one (part (b) of the rule; not built); two copies of one `&mut`; a global a callee changes |
+| **Freezing** | the loan walk, on a gated function | a borrow held in a local, bare or inside a struct, enum, `Option`, array or list, and its copies, freeze the source until the last use (a finalizer that may read it, at the holder's death, included), and so do a borrow a call returns, of every argument, and one a call or a store through a reference puts into a local (from a `NoLoanMut` or `NoLoanRead` container, only its life): `ErrorFrozen` at a change, a move, a conflicting borrow, the source's end, and, under a mutable borrow, a read — for a source reached as `uni`; for one reached through a shared path, only its owner's move, replacement or end, a change or mutable borrow of the owner where it is held, and an `&uni` or `&imm` borrow, but for a borrow a method of a container that changes shape (`ShapeChanging`, declared or found) returns, which freezes the path it was reached through as a local's does | an element borrow of a container that changes shape through a shared path, when the change comes through another name or a call that might make one (part (b) of the rule; not built); two copies of one `&mut`; a global a callee changes |
 | **De-aliasing / drops** | flow decides, generation executes | scope-exit release of owning refs, of drop-fn structs and enums, and of tuples and arrays holding what finalizes or owns, from a jump down to the block it names; the previous value's release at a store over a variable, a part of one, or a place reached through a reference; each on the paths that hold the value, by a drop flag where they differ; a temporary's at the end of its statement, condition or operand, newest first, hollow where a value moved out through it | an array an element was moved out of leaks the rest; a value stored into a field of a variable holding nothing leaks; a temporary a borrow or a pointer made from it may outlive is kept, and leaks — see Hazards |
 | **Permission** | `MayWrite` and `MayRead` | `ErrorNoMut` on assignment and swap; `ErrorNoRead` on a read through a reference — a dereference, an index, or a field of a virtual reference | `MayAliasWrite` and `IsLockless` are populated and read nowhere; `RaceSafe` is read by the thread check, a type check question (`refThreadBinds`) |
 | **Initialization** | yes | `ErrorMove` "has not been initialized"; for a variable that moves or has anything to do as it dies, "may not have been given a value" where some path did not (the path walk) | for any other type, "initialized on one branch" reads as initialized everywhere; a variable never initialized may be borrowed, so a method taking it `&mut` can fill it, and nothing then stops a field it left unset being read through the borrow; the unused-variable warning in `flow.h`'s header does not exist |
@@ -1583,6 +1644,9 @@ droppable noted as holding nothing is never finalized.
 | | `awaitSplitOrReport`, `awaitReportUnbuilt`, `awaitRecordTraced` | the seams of a function flow accepted: a behaviour's split where each awaits a behaviour returning a value, or under `--await-direct` (numbered, each lock's guard marked `VarSeamHeld`, the function recorded for generation, `awaitSplitOf`), unless one stands where the split is not built (`awaitWalk`, `awaitReportIn`) or a seam's record would hold a traced reference; otherwise each reported not built with what it would end, give back, carry (in the order it would die) and leave |
 | | `loanNearApart`, `loanChosen`, `loanChosenPending`, `loanIndexedRefs`, `loanOrigin`, `loanMemory` | GPU targets: whether two paths' values point at different places; a choice reported at once, or pending on a holder; a run-time index of references refused; where each choice points, for the message |
 | `ir/stmt/module.c` | `modInitOf`, `modInitFlowBegin`, `modInitFlowEnd` | round a module's `init` only: its module's globals without a value start the pass uninitialized, as locals, so `init` assigns each once and reads none first; one never assigned is `ErrorGlobalUninit`. [module](../nodes/module.md), "Init and final" |
+| `ir/shapeinfer.c` | `shapeChanging`, `siSettle`, `siInferStruct`, `siMethod` | whether a type changes shape: declared, or found from its methods (a writable `self` method that writes storage, one that returns a borrow); the answer cached on `StructNode.shapeinf` |
+| | `siParamWrites`, `siCall`, `siWriteHits`, `siReadsStorage`, `siRooted`, `siHoldsStorage`, `siVisible` | whether a function's body writes storage through one of its parameters: its own assignments, what it lends writable to its callees (asked in turn), storage handed to code it cannot read; memoised, a recursion guessed no |
+| | `shapeWalkReady`, `shapeWalkDefer`, `shapeWalkDeferred`, `shapeDeclared`, `shapeDeclaredCheck`, `shapeRecordable` | a gated function's walk waits for the types it asks about (`fnDclTypeCheck`) and is made at the end of type check (`doAnalysis`) if a body is not checked yet; the types declaring `ShapeChanging` checked against the methods (`ErrorShapeMark`); the include file's record (`incRecordShape`) |
 | `ir/flow.c` | `flowLoadValue` | the walk's spine — tag dispatch for a value being read |
 | | `flowLoadThroughRef` | `MayRead` on the reference a value is read through; called from `derefFlow`, `fnCallArrIndexFlow` and `fnCallFldAccessFlow` |
 | | `flowNewSelf`, `flowNewSelfThrough`, `flowNewSelfFill`, `flowNewSelfReturn` | an init's `self &new`: the variable, a use through it, the store that fills it, a return before it is filled ("An init's self") |

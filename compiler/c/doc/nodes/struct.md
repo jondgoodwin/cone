@@ -1070,11 +1070,16 @@ resolution; a type declaring two of them is `ErrorInvType`. The loan walk reads
 it ([flow](../phases/flow.md), "Calls"):
 
 - none declared (`LendsLoaned`): the returned borrow keeps the receiver loaned,
-  the Rust way;
+  the Rust way, and the type is still shape-changing, as `ShapeChanging` below,
+  when the compiler finds it so (`StructNode.shapeinf`; `shapeinfer.c`, flow's
+  "Which types change shape"): one method writes storage the type owns and one
+  returns a borrow, as a struct wrapping a `List` does;
 - `NoLoanMut` (the arena) and `NoLoanRead` (a read-only borrow): only a pin,
   the container's life; a borrow of a `NoLoanMut` container itself only keeps
   it alive;
-- `ShapeChanging` (`List`, `Deque`, `String`, `Dict`, `Pool`): its elements may
+- `ShapeChanging` (`List`, `Deque`, `String`, `Dict`, `OrderedDict`, `Set`,
+  `Pool`), an assertion the compiler checks against the type's methods
+  (`ErrorShapeMark`): its elements may
   move. A borrow its method returns loans the receiver, and where the receiver
   is reached through a shared path that loan freezes the same path, as a
   local's does (`loanFreezeShared`): a change through the same name is

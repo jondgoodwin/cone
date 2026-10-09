@@ -37,6 +37,7 @@ StructNode *newStructNode(Name *namesym) {
     snode->carriesborrow = CarriesBorrowUnknown;
     snode->holdstraced = HoldsTracedUnknown;
     snode->lends = LendsLoaned;
+    snode->shapeinf = ShapeUnknown;
     snode->holdsatomic = HoldsTracedUnknown;
     snode->threadbound = CarriesBorrowUnknown;
     return snode;
@@ -80,6 +81,7 @@ INode *cloneStructNode(CloneState *cstate, StructNode *node) {
     newnode->holdstraced = HoldsTracedUnknown;
     newnode->holdsatomic = HoldsTracedUnknown;
     newnode->threadbound = CarriesBorrowUnknown;
+    newnode->shapeinf = ShapeUnknown;
 
     // Within the copy, 'Self' is the copy. A method's self parameter is declared
     // as a use of 'Self' (parsetype.c), and name resolution has already pointed
@@ -3598,6 +3600,10 @@ void structLayoutEnter(void) {
     ++structLayoutDepth;
 }
 
+int structLayoutInFlight(void) {
+    return structLayoutDepth != 0;
+}
+
 // A layout ends. When it was the last one in flight, every waiting variant is laid
 // out and every waiting member checked.
 void structLayoutExit(void) {
@@ -3897,6 +3903,8 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
     if (!(node->flags & (TraitType | HasTagField)))
         structKeepLifecycle(node);
     node->flags |= TypeChecked;
+    if (node->lends == LendsShapeChanging)
+        shapeDeclared(node);
 
     // Settle the drop fn as part of the layout, because each method's flow pass
     // asks for it: a by-value 'self', or a local of this type, is finalized at
