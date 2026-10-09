@@ -11,9 +11,9 @@
 // radius about 1; drawn scaled to metres):
 // - the envelope: one cubic Bezier from the mouth to the crown, lathed into
 //   GORES x 4 columns (the lathe's "along" channel is the angle's fraction);
-//   each gore bulges between its load tapes: a channel filled from "along"
-//   (sin of the place across the gore) times the radius there, and
-//   displaceAlongNormal by it; the tapes are creased edges (semi-sharp), so
+//   each gore bulges between its load tapes: displaceAlongNormalBy a
+//   function of the vertex (sin of the place across the gore, from "along",
+//   times the radius there); the tapes are creased edges (semi-sharp), so
 //   subdivision keeps a valley at each; subdivided twice (the levels of
 //   detail). Its colours are an image made here, read through the lathe's
 //   uv: u around (so a gore is a column of the image), v up the profile;
@@ -182,14 +182,6 @@ fn envelopeCage(look &Look) mesh.PolyMesh {
   mut env = lathe(&profile, up(), 2. * pi, look.gores * 4u32);
   imm gores = f32.from(look.gores);
   imm along = env.findFloatChannel(mesh.VertexDomain, "along");
-  imm bulge = env.addFloatChannel(mesh.VertexDomain, "bulge", 0.);
-  mut i = 0u32;
-  while i < u32.from(env.vertexCount()) {
-    imm p = *env.positions[usize.from(i)];
-    imm r = (p.x * p.x + p.z * p.z).sqrt();
-    env.setFloat(bulge, i, sin(pi * fract(env.float(along, i) * gores)) * r);
-    i = i + 1u32;
-  }
   // The tapes: edges up a gore's edge, off the axis
   imm crease = env.addFloatChannel(mesh.EdgeDomain, "crease", 0.);
   mut e = 0u32;
@@ -205,7 +197,12 @@ fn envelopeCage(look &Look) mesh.PolyMesh {
     }
     e = e + 1u32;
   }
-  displaceAlongNormal(&env, "bulge", BULGE);
+  // Each gore puffs out between its tapes: sin of its fraction across, times the radius
+  displaceAlongNormalBy(&env, k => {
+    imm p = *env.positions[usize.from(k)];
+    imm r = (p.x * p.x + p.z * p.z).sqrt();
+    BULGE * (sin(pi * fract(env.float(along, k) * gores)) * r);
+  });
 }
 
 // The skirt below the mouth, a little narrower at its foot

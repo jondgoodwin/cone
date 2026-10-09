@@ -229,15 +229,17 @@ fn torus() {
   uv(cornerUv(&t, 15u32, 3usize), 0.75, 1., "torus: face 15 corner 3, the v seam");
 }
 
-// Four ribs along the sweep: 1 + 0.25 sin(8 pi u), a function of arc length
+// Four ribs along the sweep: 1 + 0.25 sin(8 pi u), a function of arc length.
+// The plain function is kept to pin that a function reference still meets
+// sweepScaled's bound; the sweeps below are closures carrying their dials.
 fn fourRibs(u f32) f32 { 1. + 0.25 * sin(8. * pi * u); }
-
-fn unitScale(u f32) f32 { 1.; }
 
 fn ribbedSweep() {
   imm d = Profile.polygon(4u32, 1.);
   imm path = Path.line(new Vec3(0., 0., 0.), new Vec3(0., 0., 2.), 16u32);
-  imm r = sweepScaled(&d, &path, 0., true, &fourRibs);
+  imm ribs = 4.;
+  imm depth = 0.25;
+  imm r = sweepScaled(&d, &path, 0., true, u => 1. + depth * sin(2. * ribs * pi * u));
   counts(&r, 68, 132, 66, 2, "ribbed sweep: counts");
   requireInt(i64.from(r.vertexCount()), 68, "ribbed sweep: vertices");
   point(*r.positions[0usize], 1., 0., 0., "ribbed sweep: vertex 0, scale 1");
@@ -252,7 +254,7 @@ fn ribbedSweep() {
 
   // A constant scale function gives the linear sweep's positions, bit for bit
   imm lin = sweep(&d, &path, 0., 1., 1., true);
-  imm one = sweepScaled(&d, &path, 0., true, &unitScale);
+  imm one = sweepScaled(&d, &path, 0., true, u => 1.);
   mut same = true;
   mut i = 0usize;
   while i < lin.positions.len() {
@@ -262,6 +264,18 @@ fn ribbedSweep() {
     i = i + 1usize;
   }
   expectBool(same, true, "ribbed sweep: scale 1 is the plain sweep");
+
+  // The plain function and the closure carrying the same dials make the same bits
+  imm viaFn = sweepScaled(&d, &path, 0., true, &fourRibs);
+  same = true;
+  i = 0usize;
+  while i < r.positions.len() {
+    imm a = *r.positions[i];
+    imm b = *viaFn.positions[i];
+    if a.x != b.x or a.y != b.y or a.z != b.z { same = false; }
+    i = i + 1usize;
+  }
+  expectBool(same, true, "ribbed sweep: a closure with dials is the plain function, bit for bit");
 }
 
 fn lathes() {
