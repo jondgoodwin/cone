@@ -51,6 +51,12 @@
 //                                   (FUTURES, below)
 //   actors.liveFutures()            how many futures are not yet freed
 //   actors.waitQuiet()              wait until no actor is queued or running
+//   actors.parallelRange(lo, hi, grain, body, data)
+//                                   run body over [lo, hi) in pieces spread
+//                                   over the workers, and wait for all
+//                                   (PARALLEL LOOPS, below, and parallel.cone)
+//   actors.parallelRangeThen(...)   the same, not waiting: the last piece
+//                                   calls a function
 //
 // The five before Awaitable are what an actor's own code calls, and the compiler
 // generates that code from the 'actor' declaration
@@ -324,7 +330,7 @@
 //
 // 'actors.stats()' answers what the workers have done so far (Stats:
 // workers; messages handled; turns, an actor taken from a queue and run;
-// steals), counts read without stopping them; before the first actor, all
+// steals; loop pieces stolen), counts read without stopping them; before the first actor, all
 // 0; once stopped, the run's totals. 'actors.workerIndex()' is the index of
 // the worker running the caller, 0 up to the number of workers less 1, or
 // actors.noWorker on any other thread: for tests, and for per-worker
@@ -366,6 +372,17 @@
 // A turn runs at most 'batch' messages of one actor (Pony's 100): then the
 // actor, if it has more, goes to the back of its worker's queue, so an actor
 // with a flood of messages cannot keep a worker from the others.
+//
+// PARALLEL LOOPS share these workers (parallel.cone has the whole account).
+// 'parallelRange(lo, hi, grain, body, data)' runs a function over an index
+// range, split on demand: the range starts as one task, whoever runs a task
+// splits it in half while it is longer than grain and puts one half on top of
+// its worker's deque of tasks, which sits beside the ring of actors and is
+// taken before it, and an idle worker steals the oldest, largest half, tasks
+// before actors. Called from a behaviour, the worker runs tasks until the
+// loop is done, and its actor is not run again before that. It is the
+// low-level form: it trusts its caller that the body writes only its own
+// items and never waits.
 //
 // IDLE WORKERS park on the futex. A worker that finds no work looks again,
 // yielding its processor between looks, 64 times; then it counts itself
@@ -1112,6 +1129,8 @@ struct Worker {
   pub steals u64;
   pub gap3 Array[u8, 64];
   pub ring Array[*Header, 1024];
+  pub gap4 Array[u8, 64];
+  pub tasks TaskDeque;         // the loop pieces this worker has split off (parallel.cone)
 }
 
 // The runtime: its workers, the inject queue, and how workers sleep
@@ -1134,6 +1153,10 @@ struct Sched {
   pub batch u32;
   pub workers *Worker;
   pub threads *thread.Thread[u32];
+  pub extTasks TaskDeque;      // the pieces of a loop begun off the workers (parallel.cone)
+  pub stealRot u32;            // where the next steal of a piece starts looking (atomic)
+  pub taskSteals u64;          // pieces taken from another queue (atomic, Relaxed)
+  pub liveScheduled u64;       // loops begun with parallelRangeThen not yet finished (atomic)
 }
 
 // The running runtime, or 0: before the first actor, and once stopped
@@ -1359,12 +1382,13 @@ fn notify(s *Sched) {
 fn foundAway(w *Worker) {
   imm s = (*w).sched;
   mem.atomicStore[u32](&(*s).searching as *u32, 0u32, MemOrder.SeqCst[]);
-  if ld64(&(*s).injectLen as *u64) != 0u64 or ld64(&(*w).tail as *u64) != ld64(&(*w).head as *u64) {
+  if ld64(&(*s).injectLen as *u64) != 0u64 or ld64(&(*w).tail as *u64) != ld64(&(*w).head as *u64)
+      or taskWork(s) {
     notify(s);
   }
 }
 
-// The next actor for w to run, or 0
+// The next actor for w to run from its own queue or the inject queue, or 0
 fn findWork(w *Worker) *Header {
   imm s = (*w).sched;
   (*w).tick = (*w).tick + 1u32;
@@ -1383,7 +1407,14 @@ fn findWork(w *Worker) *Header {
     foundAway(w);
     return fromInject;
   }
-  // Steal, starting at a worker chosen at random
+  nullHeader();
+}
+
+// Steal an actor, once the worker's own queue, the inject queue and every
+// loop piece (stealTask) have come up empty: half of another worker's queue,
+// starting at one chosen at random. The actor to run, or 0.
+fn stealActor(w *Worker) *Header {
+  imm s = (*w).sched;
   imm n = (*s).nworkers;
   mut r = (*w).rng;
   r = r ^ (r << 13u32);
@@ -1405,9 +1436,9 @@ fn findWork(w *Worker) *Header {
   nullHeader();
 }
 
-// Whether any queue holds an actor, looked at without taking one
+// Whether any queue holds an actor or a loop piece, looked at without taking one
 fn anyWork(s *Sched) bool {
-  if ld64(&(*s).injectLen as *u64) != 0u64 {
+  if ld64(&(*s).injectLen as *u64) != 0u64 or taskWork(s) {
     return true;
   }
   mut i = 0u32;
@@ -1480,10 +1511,35 @@ struct WorkerArg is Sendable {
 fn workerMain(arg WorkerArg) u32 {
   imm w = arg.w;
   me = w as usize;
+  imm s = (*w).sched;
   while true {
+    // The order (parallel.cone, WHERE TASKS WAIT): the loop pieces on top of this
+    // worker's queue, then the pieces of a loop begun off the workers, then
+    // its actors and the inject queue's, and only with all of those empty
+    // another worker's pieces, and then another's actors
+    mut t = emptyTask();
+    if dequePopNewest(tasksOf(w), &mut t as *Task) {
+      runTask(s, t);
+      continue;
+    }
+    if dequeTakeOldest(extDeque(s), &mut t as *Task) {
+      foundAway(w);
+      runTask(s, t);
+      continue;
+    }
     imm h = findWork(w);
     if h as usize != 0usize {
       runActor(w, h);
+      continue;
+    }
+    if stealTask(s, w, &mut t as *Task) {
+      foundAway(w);
+      runTask(s, t);
+      continue;
+    }
+    imm a = stealActor(w);
+    if a as usize != 0usize {
+      runActor(w, a);
       continue;
     }
     if !idle(w) {
@@ -1510,7 +1566,7 @@ fn quiescent(s *Sched) bool {
     started = started + ld64(&(*workerAt(s, i)).started as *u64);
     i = i + 1u32;
   }
-  started == ended;
+  started == ended and ld64(&(*s).liveScheduled as *u64) == 0u64;
 }
 
 // ---------------------------------------------------------------------------
@@ -1531,6 +1587,7 @@ pub struct Stats {
   pub messages u64;            // messages handled
   pub activations u64;         // turns: an actor taken from a queue and run
   pub steals u64;              // times a worker took actors from another's queue
+  pub taskSteals u64;          // loop pieces taken from another queue (parallelRange)
 }
 
 // What configure set, read when the workers start
@@ -1545,7 +1602,7 @@ mut stoppedStats Stats;
 
 fn @initpure init() {
   startOnce = sync.Once.make();
-  stoppedStats = new Stats(0u32, 0u64, 0u64, 0u64);
+  stoppedStats = new Stats(0u32, 0u64, 0u64, 0u64, 0u64);
 }
 
 // The program is ending: wait until all is quiet, then stop the workers, if
@@ -1653,7 +1710,8 @@ fn stopWorkers() {
 
 // The workers' counts, summed
 fn totals(s *Sched) Stats {
-  mut st = new Stats((*s).nworkers, 0u64, 0u64, 0u64);
+  mut st = new Stats((*s).nworkers, 0u64, 0u64, 0u64,
+    mem.atomicLoad[u64](&(*s).taskSteals as *u64, MemOrder.Relaxed[]));
   mut i = 0u32;
   while i < (*s).nworkers {
     imm w = workerAt(s, i);

@@ -1,0 +1,387 @@
+// Parallel loops: a range of work spread over the actors' workers (the
+// package's header, PARALLEL LOOPS). This is the LOW-LEVEL form: a function
+// reference, a pointer to shared data and an index range, called as a
+// library. The language's 'parallel each' will be written over it, and the
+// rules it will check at compile time (below) are for now the caller's.
+//
+//   import actors;
+//
+//   struct Sums {
+//     in *u64;                  // read by every piece
+//     out *u64;                 // piece i writes only out[i]
+//   }
+//
+//   fn square(data *u8, lo usize, hi usize) {
+//     imm d = data as *Sums;
+//     mut i = lo;
+//     while i < hi {
+//       *((*d).out + i) = *((*d).in + i) * *((*d).in + i);
+//       i = i + 1usize;
+//     }
+//   }
+//
+//   fn main() {
+//     initAll();
+//     mut s = new Sums(inp, outp);
+//     actors.parallelRange(0usize, 1000000usize, 1024usize, &square, &mut s as *u8);
+//     // every out[i] is written; the loop has finished
+//     finalAll();
+//   }
+//
+//   actors.parallelRange(lo, hi, grain, body, data)
+//                          run body over [lo, hi), in pieces no smaller than
+//                          grain (except the last of a range that does not
+//                          divide), and return when all have finished
+//   actors.parallelRangeThen(lo, hi, grain, body, data, onDone, doneArg)
+//                          the same, but return at once: whichever piece
+//                          finishes last calls onDone(doneArg), on whichever
+//                          thread that is. This is the form a loop inside an
+//                          actor's behaviour will end at.
+//   actors.RangeBody       &fn(data *u8, lo usize, hi usize)
+//
+// WHAT THE BODY MAY DO. This form TRUSTS ITS CALLER. The body is called with
+// the caller's 'data' pointer and a sub-range [lo, hi) of the loop's range,
+// any number of times, on any worker, in any order, and at the same time as
+// itself on other pieces. So it must write only the items of its own
+// sub-range (or its own locals); it must read what it shares only if no piece
+// writes it; and it must not 'await', or block on anything another piece or
+// the loop's caller must do (a piece is run to completion on the worker's
+// stack, and a loop that waited could not finish). It may call
+// parallelRange itself: the inner loop finishes inside the piece that began
+// it. It may send messages (their order across pieces is not defined). A
+// body that breaks these rules races: nothing here checks it, and 'parallel
+// each' will refuse such a body where it is written.
+//
+// SPLIT ON DEMAND (Cilk, TBB, Rayon). The loop starts as ONE task, the whole
+// range [lo, hi), which the caller runs itself. Whoever runs a task splits it
+// in half while it is longer than grain: one half is put on top of the queue
+// of tasks of the worker running it, and the other is split further the same
+// way, until a piece no longer than grain is run. An idle worker steals the
+// OLDEST task in someone's queue, which is the largest, and splits it in
+// turn. Nothing is divided by the number of CPUs ahead of time: uneven work
+// spreads itself, and with no thief the loop costs about a plain loop and a
+// few pushes. Tasks are values in a queue (a range and the loop's record),
+// not allocations.
+//
+// WHERE TASKS WAIT. A worker has, besides the ring of actors that
+// messages made runnable, a deque of tasks (TaskDeque), and takes in this
+// order: its own tasks, newest first (the small piece next to the one it just
+// ran, so that its cache is warm); the tasks of a loop begun off the workers;
+// its own actors, then the inject queue's; and only when its own queue is
+// empty it steals: another worker's OLDEST task, and only if there is none,
+// another's actors. So a task sits on top of the queue, above the actors'
+// waiting messages, and stays on top until it is done; and a thief prefers
+// tasks to actors. A deque holds 128 tasks; one that is full is not split any
+// further (the piece in hand is run whole), which a loop's splitting depth
+// reaches only in nested loops many levels deep.
+//
+// COMPLETION. The loop's record counts the items not yet run, atomically. A
+// task that has run its piece subtracts the piece's length; the task whose
+// subtraction brings the count to zero is the last. In the scheduled form
+// (parallelRangeThen) the last task calls onDone: nothing polls, and nobody
+// is woken. The blocking form (parallelRange) has the caller WORK while it
+// waits: it runs tasks (its own newest first, then ones stolen from anywhere)
+// until the count is zero, and yields its processor when there is none to
+// run, since the pieces still running are on other workers. So a loop called
+// from main, from a thread of its own, from a worker's own code or from inside
+// an actor's behaviour all end the same way. It is not a sleeping wait: a
+// caller waiting on a long piece is a busy yield-loop for as long as that
+// piece runs.
+//
+// OUTSIDE AND INSIDE AN ACTOR. Called from a thread that is not a worker (main
+// is one), the loop starts the workers if no actor has (the same lazy start;
+// finalAll() stops them, as it does for actors), and its tasks go on a deque
+// shared by all such callers (the shared deque of Sched, extTasks), which the
+// workers look at before their actors. Called from a worker -- from inside an
+// actor's behaviour, or from the body of a loop -- its tasks go on that
+// worker's own deque, and the worker, which is running the behaviour, runs
+// tasks meanwhile instead of actors: the actor whose behaviour called it is
+// not run again until the loop has finished, because its behaviour has not
+// returned (its mailbox goes on accepting messages meanwhile, and they are
+// handled afterwards, in order). A worker waiting in a loop runs only tasks,
+// never another actor, so waiting does not nest actors on one stack.
+//
+// A loop begun with parallelRangeThen from a worker puts its first task on
+// that worker's deque, and from any other thread on the shared one. It is
+// counted (liveScheduled) so that finalAll() does not stop the workers while
+// it is unfinished.
+
+// The body of a loop: the caller's data pointer and a sub-range [lo, hi) of
+// the range, called possibly many times and at once on different pieces
+pub alias RangeBody = &fn(data *u8, lo usize, hi usize);
+
+// How many tasks a deque holds
+const taskCap = 128u64;
+const taskMask = 127u64;
+
+// One loop, shared by its tasks: the caller's stack for the blocking form, a
+// heap block for the scheduled form, freed by the last task. Every field but
+// 'remaining' is written before the first task runs and only read afterwards;
+// a task reads what it needs from it before its own subtraction, since the
+// caller of a blocking loop may return the instant the count reaches zero.
+struct LoopRec {
+  pub remaining usize;         // items not yet run (atomic)
+  pub grain usize;
+  pub body RangeBody;
+  pub data *u8;
+  pub onDone &fn(arg *u8);     // called by the last task, scheduled form only
+  pub doneArg *u8;
+  pub scheduled bool;          // a heap block, with an onDone to call
+}
+
+// A task: a range of a loop. It is a plain value; a deque holds copies.
+struct Task {
+  pub rec *LoopRec;
+  pub lo usize;
+  pub hi usize;
+}
+
+// A queue of tasks under a lock (a Mutex per worker, held for a few
+// instructions at a time): the owner pushes and takes at the newest end,
+// thieves take at the oldest. 'n' is how many it holds, written under the
+// lock, and read without it where a look is enough.
+struct TaskDeque {
+  pub lock sync.Mutex;
+  pub n u64;
+  pub head u64;                // the position of the oldest, counting up for ever
+  pub items Array[Task, 128];
+}
+
+fn nullRec() *LoopRec {null;}
+
+fn emptyTask() Task {new Task(nullRec(), 0usize, 0usize);}
+
+fn noDone(arg *u8) {}
+
+fn tasksOf(w *Worker) *TaskDeque {&(*w).tasks as *TaskDeque;}
+
+fn extDeque(s *Sched) *TaskDeque {&(*s).extTasks as *TaskDeque;}
+
+fn taskAt(d *TaskDeque, pos u64) *Task {
+  (&(*d).items as *Task) + usize.from(pos & taskMask);
+}
+
+// Put t at the newest end of d: false, with nothing put, if d is full
+fn dequePush(d *TaskDeque, t Task) bool {
+  (*d).lock.lock();
+  imm n = (*d).n;
+  if n >= taskCap {
+    (*d).lock.unlock();
+    return false;
+  }
+  imm slot = taskAt(d, (*d).head + n);
+  *slot = t;
+  mem.atomicStore[u64](&(*d).n as *u64, n + 1u64, MemOrder.SeqCst[]);
+  (*d).lock.unlock();
+  true;
+}
+
+// Take the newest task of d into *out: false if there is none
+fn dequePopNewest(d *TaskDeque, out *Task) bool {
+  if ld64(&(*d).n as *u64) == 0u64 {
+    return false;
+  }
+  (*d).lock.lock();
+  imm n = (*d).n;
+  if n == 0u64 {
+    (*d).lock.unlock();
+    return false;
+  }
+  *out = *taskAt(d, (*d).head + n - 1u64);
+  mem.atomicStore[u64](&(*d).n as *u64, n - 1u64, MemOrder.SeqCst[]);
+  (*d).lock.unlock();
+  true;
+}
+
+// Take the oldest task of d, the largest, into *out: false if there is none
+fn dequeTakeOldest(d *TaskDeque, out *Task) bool {
+  if ld64(&(*d).n as *u64) == 0u64 {
+    return false;
+  }
+  (*d).lock.lock();
+  imm n = (*d).n;
+  if n == 0u64 {
+    (*d).lock.unlock();
+    return false;
+  }
+  *out = *taskAt(d, (*d).head);
+  (*d).head = (*d).head + 1u64;
+  mem.atomicStore[u64](&(*d).n as *u64, n - 1u64, MemOrder.SeqCst[]);
+  (*d).lock.unlock();
+  true;
+}
+
+// Whether any deque holds a task, looked at without taking one
+fn taskWork(s *Sched) bool {
+  if ld64(&(*s).extTasks.n as *u64) != 0u64 {
+    return true;
+  }
+  mut i = 0u32;
+  while i < (*s).nworkers {
+    if ld64(&(*workerAt(s, i)).tasks.n as *u64) != 0u64 {
+      return true;
+    }
+    i = i + 1u32;
+  }
+  false;
+}
+
+// The deque of the caller's own tasks: its worker's, or the shared one of a
+// thread that is not a worker of this runtime
+fn curDeque(s *Sched) *TaskDeque {
+  imm w = me as *Worker;
+  if w as usize != 0usize and (*w).sched as usize == s as usize {
+    return tasksOf(w);
+  }
+  extDeque(s);
+}
+
+// Take the oldest task of another worker's deque, or of the shared one: into
+// *out, false if there is none. w is the thief if it is a worker, so that it
+// does not look in its own deque; its look begins at a worker that moves on
+// at every steal.
+fn stealTask(s *Sched, w *Worker, out *Task) bool {
+  imm n = (*s).nworkers;
+  imm r = mem.atomicAdd[u32](&(*s).stealRot as *u32, 1u32, MemOrder.Relaxed[]);
+  mut i = 0u32;
+  while i < n {
+    imm v = workerAt(s, (r + i) % n);
+    if v as usize != w as usize {
+      if dequeTakeOldest(tasksOf(v), out) {
+        mem.atomicAdd[u64](&(*s).taskSteals as *u64, 1u64, MemOrder.Relaxed[]);
+        return true;
+      }
+    }
+    i = i + 1u32;
+  }
+  if dequeTakeOldest(extDeque(s), out) {
+    mem.atomicAdd[u64](&(*s).taskSteals as *u64, 1u64, MemOrder.Relaxed[]);
+    return true;
+  }
+  false;
+}
+
+// Run task t: split it while it is longer than the loop's grain, putting the
+// upper half of each split on top of this thread's deque; run the piece left;
+// count it done
+fn runTask(s *Sched, t Task) {
+  imm rec = t.rec;
+  imm body = (*rec).body;
+  imm data = (*rec).data;
+  imm grain = (*rec).grain;
+  imm scheduled = (*rec).scheduled;
+  imm onDone = (*rec).onDone;
+  imm doneArg = (*rec).doneArg;
+  imm d = curDeque(s);
+  mut hi = t.hi;
+  while hi - t.lo > grain {
+    imm mid = t.lo + (hi - t.lo) / 2usize;
+    if !dequePush(d, new Task(rec, mid, hi)) {
+      break;
+    }
+    notify(s);
+    hi = mid;
+  }
+  body(data, t.lo, hi);
+  finishItems(s, rec, hi - t.lo, scheduled, onDone, doneArg);
+}
+
+// The items of one piece are done. The last piece's subtraction ends the
+// loop: a scheduled loop's block is freed and its onDone called. A blocking
+// loop's record may be gone as soon as the count is zero, so nothing here
+// touches it after the subtraction.
+fn finishItems(s *Sched, rec *LoopRec, n usize, scheduled bool, onDone &fn(arg *u8), doneArg *u8) {
+  imm prev = mem.atomicSub[usize](&(*rec).remaining as *usize, n, MemOrder.AcqRel[]);
+  if prev == n and scheduled {
+    libc.free(rec as *u8);
+    onDone(doneArg);
+    mem.atomicSub[u64](&(*s).liveScheduled as *u64, 1u64, MemOrder.SeqCst[]);
+    mem.atomicAdd[u32](&(*s).quiet as *u32, 1u32, MemOrder.SeqCst[]);
+    sync.futexWake(&(*s).quiet);
+  }
+}
+
+// The caller of a blocking loop works until its count is zero: its own newest
+// task, else the oldest of anyone's; with none to take, the pieces left are
+// running on other workers, so it yields its processor and looks again
+fn helpUntilDone(s *Sched, rec *LoopRec) {
+  imm remp = &(*rec).remaining as *usize;
+  imm w = me as *Worker;
+  imm mine = curDeque(s);
+  while mem.atomicLoad[usize](remp, MemOrder.Acquire[]) != 0usize {
+    mut t = emptyTask();
+    if dequePopNewest(mine, &mut t as *Task) or stealTask(s, w, &mut t as *Task) {
+      runTask(s, t);
+    } else {
+      yieldProcessor();
+    }
+  }
+}
+
+// A grain of 0 is taken as 1
+fn grainOf(g usize) usize {
+  if g == 0usize {1usize;} else {g;}
+}
+
+// Run body over the range [lo, hi) of indexes, in pieces of at least grain
+// items (a range no longer than grain is one call, made at once on the
+// caller's thread, with nothing else started) on the workers of the actors'
+// scheduler, and return when every piece has finished. An empty range
+// (hi <= lo) calls nothing. The caller works on its own loop while it waits.
+//
+// This is the low-level form: 'parallel each' will sit on it. It TRUSTS ITS
+// CALLER on the body's rules: the body writes only the items of the sub-range
+// it is handed, reads shared data that no piece writes, and does not 'await'
+// or wait on another piece (this file's header, WHAT THE BODY MAY DO). It may
+// be called from main, from any thread, or from inside an actor's behaviour,
+// where the actor is not run again until it returns; the workers are started
+// if no actor has started them.
+pub fn parallelRange(lo usize, hi usize, grain usize, body RangeBody, data *u8) {
+  if hi <= lo {
+    return;
+  }
+  imm g = grainOf(grain);
+  if hi - lo <= g {
+    body(data, lo, hi);
+    return;
+  }
+  ensureRunning();
+  imm s = running as *Sched;
+  mut rec = new LoopRec(hi - lo, g, body, data, &noDone, null, false);
+  imm p = &mut rec as *LoopRec;
+  runTask(s, new Task(p, lo, hi));
+  helpUntilDone(s, p);
+}
+
+// The same loop, started and left: it returns at once, and the piece that
+// finishes last calls onDone(doneArg), on whichever thread runs it, exactly
+// once; for an empty range, or one no longer than grain, onDone is called
+// before this returns, after the single call of body for the latter. The
+// first task goes on top of the caller's own queue if it is a worker, else on
+// the shared deque, and workers take it from there. data must live until
+// onDone is called. The same trust in the body's rules as parallelRange.
+pub fn parallelRangeThen(lo usize, hi usize, grain usize, body RangeBody, data *u8,
+    onDone &fn(arg *u8), doneArg *u8) {
+  imm g = grainOf(grain);
+  if hi <= lo or hi - lo <= g {
+    if hi > lo {
+      body(data, lo, hi);
+    }
+    onDone(doneArg);
+    return;
+  }
+  ensureRunning();
+  imm s = running as *Sched;
+  imm rec = libc.malloc(mem.sizeof[LoopRec]()) as *LoopRec;
+  if rec as usize == 0usize {
+    die("actors: out of memory for a parallel loop");
+  }
+  mem.writeRaw[LoopRec](rec, new LoopRec(hi - lo, g, body, data, onDone, doneArg, true));
+  mem.atomicAdd[u64](&(*s).liveScheduled as *u64, 1u64, MemOrder.SeqCst[]);
+  if !dequePush(curDeque(s), new Task(rec, lo, hi)) {
+    // The deque is full: run the loop's first task here, which splits it
+    runTask(s, new Task(rec, lo, hi));
+    return;
+  }
+  notify(s);
+}

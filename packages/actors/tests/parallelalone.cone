@@ -1,0 +1,57 @@
+// A parallel loop in a program that declares no actor. A range no longer than
+// the grain is run at once on the caller's thread and starts nothing: stats()
+// still answers no workers. A longer one starts the workers (as many as the
+// processor has) for itself, spreads over them, and returns with every item
+// written; finalAll() then stops them, quiet at once because no actor ever
+// ran.
+
+mod parallelalone;
+
+import testing use *;
+import libc;
+import actors;
+
+struct Squares {
+  pub out *u64;
+}
+
+fn bodySquares(data *u8, lo usize, hi usize) {
+  imm s = data as *Squares;
+  mut i = lo;
+  while i < hi {
+    *((*s).out + i) = u64.from(i) * u64.from(i);
+    i = i + 1usize;
+  }
+}
+
+fn allSquares(out *u64, n usize) bool {
+  mut i = 0usize;
+  while i < n {
+    if *(out + i) != u64.from(i) * u64.from(i) {
+      return false;
+    }
+    i = i + 1usize;
+  }
+  true;
+}
+
+fn main() i32 {
+  initAll();
+  imm n = 100000usize;
+  imm out = libc.calloc(n, 8usize) as *u64;
+  mut s = new Squares(out);
+
+  actors.parallelRange(0usize, 50usize, 64usize, &bodySquares, &mut s as *Squares as *u8);
+  expectUInt(u64.from(actors.stats().workers), 0u64, "a range within the grain starts no workers");
+  expect(allSquares(out, 50usize), "its items are written");
+
+  actors.parallelRange(0usize, n, 64usize, &bodySquares, &mut s as *Squares as *u8);
+  expect(actors.stats().workers > 0u32, "a longer range started the workers");
+  expect(allSquares(out, n), "every item of the longer range is written");
+  expectUInt(u64.from(actors.workerIndex()), u64.from(actors.noWorker), "main is still no worker");
+
+  finalAll();
+  expect(actors.stats().workers > 0u32, "the totals remember the workers");
+  libc.free(out as *u8);
+  done();
+}

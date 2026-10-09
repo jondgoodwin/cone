@@ -1,0 +1,183 @@
+// Parallel loops stressed together on four workers: four plain threads and
+// main each run a hundred loops of varying length and grain at the same time
+// (so their first tasks share the deque of callers that are not workers), a
+// 'Driver' actor runs thirty more from inside its behaviours, and every
+// fifth loop's body itself calls parallelRange. Each loop checks its own
+// array against the plain loop afterwards; loops are also started with
+// parallelRangeThen and awaited through their onDone. Nothing may hang and
+// nothing may be wrong: the program prints the failures counted (0) and the
+// loops run.
+
+mod concurrency_actors_parallel_stress;
+
+import stdio use *;
+import libc;
+import thread;
+import time;
+import actors;
+
+struct Counts {
+  pub failures Atomic[u64];
+  pub loops Atomic[u64];
+}
+
+imm counts Counts;
+
+fn @initpure init() {
+  counts = new Counts(Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+}
+
+fn mix(i u64, n u64) u64 {
+  mut x = i + 1u64;
+  mut k = 0u64;
+  while k < n {
+    x = x * 6364136223846793005u64 + k;
+    k = k + 1u64;
+  }
+  x;
+}
+
+fn work(i u64) u64 {
+  (i * 7u64) % 31u64 * 4u64;
+}
+
+struct Fill {
+  pub out *u64;
+  pub nest u64;                // 1: this body calls parallelRange over its items too
+}
+
+// The items from 'base' on, which an inner loop fills
+struct Cell {
+  pub out *u64;
+  pub base usize;
+}
+
+fn bodyCell(data *u8, lo usize, hi usize) {
+  imm c = data as *Cell;
+  mut i = (*c).base + lo;
+  while i < (*c).base + hi {
+    *((*c).out + i) = mix(u64.from(i), work(u64.from(i)));
+    i = i + 1usize;
+  }
+}
+
+fn bodyFill(data *u8, lo usize, hi usize) {
+  imm f = data as *Fill;
+  if (*f).nest == 1u64 {
+    // an inner loop over this piece's items, in a loop of its own
+    mut c = new Cell((*f).out, lo);
+    actors.parallelRange(0usize, hi - lo, 4usize, &bodyCell, &mut c as *Cell as *u8);
+    return;
+  }
+  mut i = lo;
+  while i < hi {
+    *((*f).out + i) = mix(u64.from(i), work(u64.from(i)));
+    i = i + 1usize;
+  }
+}
+
+fn correct(out *u64, n usize) bool {
+  mut i = 0usize;
+  while i < n {
+    if *(out + i) != mix(u64.from(i), work(u64.from(i))) {
+      return false;
+    }
+    i = i + 1usize;
+  }
+  true;
+}
+
+// One blocking loop, checked
+fn oneLoop(iter u64, id u64) {
+  imm n = usize.from(1u64 + (iter * 37u64 + id * 101u64) % 3000u64);
+  imm grain = usize.from(1u64 + iter % 40u64);
+  imm out = libc.calloc(n, 8usize) as *u64;
+  mut f = new Fill(out, if iter % 5u64 == 0u64 {1u64;} else {0u64;});
+  actors.parallelRange(0usize, n, grain, &bodyFill, &mut f as *Fill as *u8);
+  if !correct(out, n) {
+    counts.failures.add(1u64);
+  }
+  counts.loops.add(1u64);
+  libc.free(out as *u8);
+}
+
+// One scheduled loop, awaited through its onDone
+struct Waiting {
+  pub flag Atomic[u64];
+  pub out *u64;
+  pub n usize;
+}
+
+fn waitingDone(arg *u8) {
+  imm w = arg as *Waiting;
+  if !correct((*w).out, (*w).n) {
+    counts.failures.add(1u64);
+  }
+  counts.loops.add(1u64);
+  (*w).flag.store(1u64);
+}
+
+fn oneScheduled(iter u64, id u64) {
+  imm n = usize.from(1u64 + (iter * 53u64 + id * 17u64) % 2000u64);
+  imm out = libc.calloc(n, 8usize) as *u64;
+  mut f = new Fill(out, 0u64);
+  mut w = new Waiting(Atomic[u64].of(0u64), out, n);
+  actors.parallelRangeThen(0usize, n, usize.from(1u64 + iter % 17u64), &bodyFill,
+    &mut f as *Fill as *u8, &waitingDone, &mut w as *Waiting as *u8);
+  while w.flag.load() == 0u64 {
+    thread.sleep(time.Duration.fromMillis(1));
+  }
+  libc.free(out as *u8);
+}
+
+struct Who is Sendable {
+  pub id u64;
+}
+
+fn threadMain(who Who) u64 {
+  mut iter = 0u64;
+  while iter < 100u64 {
+    oneLoop(iter, who.id);
+    if iter % 10u64 == 0u64 {
+      oneScheduled(iter, who.id);
+    }
+    iter = iter + 1u64;
+  }
+  0u64;
+}
+
+actor Driver {
+  pub async do go(self, id u64) {
+    mut iter = 0u64;
+    while iter < 30u64 {
+      oneLoop(iter, id);
+      iter = iter + 1u64;
+    }
+    counts.loops.add(1000000u64);
+  }
+}
+
+fn main() {
+  initAll();
+  actors.configure(new actors.Options(workers: 4u32));
+  {
+    imm d = new Driver();
+    d.go(9u64);
+    imm t1 = thread.start(new Who(1u64), &threadMain);
+    imm t2 = thread.start(new Who(2u64), &threadMain);
+    imm t3 = thread.start(new Who(3u64), &threadMain);
+    imm t4 = thread.start(new Who(4u64), &threadMain);
+    threadMain(new Who(0u64));
+    t1.join();
+    t2.join();
+    t3.join();
+    t4.join();
+  }
+  // the Driver's marker, added when it finished
+  while counts.loops.load() < 1000000u64 {
+    thread.sleep(time.Duration.fromMillis(1));
+  }
+  printStr("failures "); printUInt(counts.failures.load()); printStr("\n");
+  printStr("loops "); printUInt(counts.loops.load() - 1000000u64); printStr("\n");
+  finalAll();
+}

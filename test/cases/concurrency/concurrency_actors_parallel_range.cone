@@ -1,0 +1,284 @@
+// A parallel loop as a library call (actors.parallelRange, parallelRangeThen),
+// called from main on four workers started for it: no actor is declared.
+// Each case's results are checked against a plain loop over the same items,
+// which the body computes with the same pure function.
+//
+//   - uneven work: item i takes (i*i % 97) * 40 rounds, so the pieces differ
+//     in cost by a factor of ninety; every item is run exactly once and its
+//     result is the plain loop's
+//   - many more pieces than workers: 5000 items at grain 1 are 5000 calls, none
+//     longer than the grain
+//   - a range shorter than the grain is one call of body, with its own bounds
+//   - an empty range, and one with hi below lo, call nothing
+//   - a range that does not begin at 0 touches only its own items
+//   - a body that itself calls parallelRange, over the rows of a grid
+//   - work really is spread: pieces wait until a second thread has run one
+//     (or three seconds pass), and the threads that ran them are counted
+//   - the scheduled form returns at once, and the last piece calls onDone
+//     exactly once; for a range no longer than the grain, onDone is called
+//     before parallelRangeThen returns
+//
+// The program prints whether each held, not how the work was divided.
+
+mod concurrency_actors_parallel_range;
+
+import stdio use *;
+import libc;
+import thread;
+import time;
+import actors;
+
+// ---- a plain loop's function: the reference every case compares to ----
+
+fn mix(i u64, n u64) u64 {
+  mut x = i + 1u64;
+  mut k = 0u64;
+  while k < n {
+    x = x * 6364136223846793005u64 + k;
+    k = k + 1u64;
+  }
+  x;
+}
+
+fn unevenWork(i u64) u64 {
+  (i * i) % 97u64 * 40u64;
+}
+
+fn report(name &str, ok bool) {
+  printStr(name);
+  printStr(if ok {": ok\n";} else {": FAILED\n";});
+}
+
+// ---- the data every piece shares ----
+
+struct Job {
+  pub out *u64;                // out[i], written by the piece that has i
+  pub seen *u8;                // seen[i], how many times i was run
+  pub calls Atomic[u64];       // calls of the body
+  pub longest Atomic[u64];     // the longest sub-range a call was handed
+}
+
+fn newJob(n usize) Job {
+  new Job(libc.calloc(n, 8usize) as *u64, libc.calloc(n, 1usize) as *u8,
+    Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+}
+
+fn bodyUneven(data *u8, lo usize, hi usize) {
+  imm j = data as *Job;
+  (*j).calls.add(1u64);
+  (*j).longest.max(u64.from(hi - lo));
+  mut i = lo;
+  while i < hi {
+    *((*j).out + i) = mix(u64.from(i), unevenWork(u64.from(i)));
+    *((*j).seen + i) = *((*j).seen + i) + 1u8;
+    i = i + 1usize;
+  }
+}
+
+// Whether items lo..hi each ran once with the plain loop's result, and
+// nothing else in 0..n ran
+fn exactly(j &Job, n usize, lo usize, hi usize) bool {
+  mut i = 0usize;
+  while i < n {
+    imm inside = i >= lo and i < hi;
+    imm once = *(j.seen + i) == (if inside {1u8;} else {0u8;});
+    if !once {
+      return false;
+    }
+    if inside and *(j.out + i) != mix(u64.from(i), unevenWork(u64.from(i))) {
+      return false;
+    }
+    i = i + 1usize;
+  }
+  true;
+}
+
+// ---- nested: a body that calls parallelRange ----
+
+struct Row {
+  pub out *u64;
+  pub row usize;
+  pub cols usize;
+}
+
+struct Grid {
+  pub out *u64;
+  pub cols usize;
+}
+
+fn cell(r u64, c u64) u64 {
+  mix(r * 1000u64 + c, (r + c) % 13u64 * 10u64);
+}
+
+fn bodyCells(data *u8, lo usize, hi usize) {
+  imm rw = data as *Row;
+  mut c = lo;
+  while c < hi {
+    *((*rw).out + (*rw).row * (*rw).cols + c) = cell(u64.from((*rw).row), u64.from(c));
+    c = c + 1usize;
+  }
+}
+
+fn bodyRows(data *u8, lo usize, hi usize) {
+  imm g = data as *Grid;
+  mut r = lo;
+  while r < hi {
+    mut rw = new Row((*g).out, r, (*g).cols);
+    actors.parallelRange(0usize, (*g).cols, 16usize, &bodyCells, &mut rw as *Row as *u8);
+    r = r + 1usize;
+  }
+}
+
+// ---- spread: which threads ran the pieces ----
+
+struct Spread {
+  pub ran Atomic[u64];         // bit i: worker i ran a piece; bit 63: a thread that is no worker
+  pub items Atomic[u64];
+}
+
+fn bits(v u64) u64 {
+  mut n = 0u64;
+  mut x = v;
+  while x != 0u64 {
+    n = n + (x & 1u64);
+    x = x >> 1u64;
+  }
+  n;
+}
+
+fn bodySpread(data *u8, lo usize, hi usize) {
+  imm sp = data as *Spread;
+  imm w = actors.workerIndex();
+  imm bit = if w == actors.noWorker {1u64 << 63u64;} else {1u64 << u64.from(w);};
+  (*sp).ran.bitOr(bit);
+  // Hold this piece until a second thread has run one, or three seconds pass
+  mut waited = 0u64;
+  while bits((*sp).ran.load()) < 2u64 and waited < 3000u64 {
+    thread.sleep(time.Duration.fromMillis(1));
+    waited = waited + 1u64;
+  }
+  (*sp).items.add(u64.from(hi - lo));
+}
+
+// ---- the scheduled form ----
+
+struct Finish {
+  pub flag Atomic[u64];        // 1 once onDone has been called
+  pub calls Atomic[u64];       // onDone's calls
+  pub job Job;
+}
+
+fn finished(arg *u8) {
+  imm f = arg as *Finish;
+  (*f).calls.add(1u64);
+  (*f).flag.store(1u64);
+}
+
+fn main() {
+  initAll();
+  actors.configure(new actors.Options(workers: 4u32));
+
+  // uneven work, results as the plain loop's
+  {
+    imm n = 20000usize;
+    mut j = newJob(n);
+    actors.parallelRange(0usize, n, 16usize, &bodyUneven, &mut j as *Job as *u8);
+    report("uneven work matches the plain loop", exactly(&j, n, 0usize, n));
+    report("no piece longer than the grain", j.longest.load() <= 16u64);
+  }
+
+  // many more pieces than workers
+  {
+    imm n = 5000usize;
+    mut j = newJob(n);
+    actors.parallelRange(0usize, n, 1usize, &bodyUneven, &mut j as *Job as *u8);
+    report("grain 1: every item run once", exactly(&j, n, 0usize, n));
+    report("grain 1: one call an item", j.calls.load() == 5000u64);
+    mut k = newJob(n);
+    actors.parallelRange(0usize, 300usize, 0usize, &bodyUneven, &mut k as *Job as *u8);
+    report("grain 0 runs as grain 1", k.calls.load() == 300u64 and exactly(&k, n, 0usize, 300usize));
+  }
+
+  // a range shorter than the grain: one call, with the range's own bounds
+  {
+    mut j = newJob(100usize);
+    actors.parallelRange(10usize, 15usize, 100usize, &bodyUneven, &mut j as *Job as *u8);
+    report("short range: one call", j.calls.load() == 1u64);
+    report("short range: its own items", exactly(&j, 100usize, 10usize, 15usize));
+    mut k = newJob(100usize);
+    actors.parallelRange(0usize, 16usize, 16usize, &bodyUneven, &mut k as *Job as *u8);
+    report("range equal to the grain: one call", k.calls.load() == 1u64);
+  }
+
+  // an empty range
+  {
+    mut j = newJob(100usize);
+    actors.parallelRange(50usize, 50usize, 4usize, &bodyUneven, &mut j as *Job as *u8);
+    actors.parallelRange(60usize, 40usize, 4usize, &bodyUneven, &mut j as *Job as *u8);
+    report("empty range: no call", j.calls.load() == 0u64);
+  }
+
+  // a range that does not begin at 0
+  {
+    imm n = 10000usize;
+    mut j = newJob(n);
+    actors.parallelRange(1234usize, 7777usize, 8usize, &bodyUneven, &mut j as *Job as *u8);
+    report("offset range: exactly its items", exactly(&j, n, 1234usize, 7777usize));
+  }
+
+  // nested
+  {
+    imm rows = 64usize;
+    imm cols = 500usize;
+    imm out = libc.calloc(rows * cols, 8usize) as *u64;
+    mut g = new Grid(out, cols);
+    actors.parallelRange(0usize, rows, 1usize, &bodyRows, &mut g as *Grid as *u8);
+    mut ok = true;
+    mut r = 0usize;
+    while r < rows {
+      mut c = 0usize;
+      while c < cols {
+        if *(out + r * cols + c) != cell(u64.from(r), u64.from(c)) {
+          ok = false;
+        }
+        c = c + 1usize;
+      }
+      r = r + 1usize;
+    }
+    report("nested loops: every cell as the plain loop's", ok);
+  }
+
+  // work spread over more than one thread
+  {
+    mut sp = new Spread(Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+    actors.parallelRange(0usize, 64usize, 1usize, &bodySpread, &mut sp as *Spread as *u8);
+    report("spread: every item run", sp.items.load() == 64u64);
+    report("spread: more than one thread ran pieces", bits(sp.ran.load()) > 1u64);
+    report("spread: pieces were taken from another queue", actors.stats().taskSteals > 0u64);
+    report("spread: four workers", actors.stats().workers == 4u32);
+  }
+
+  // the scheduled form
+  {
+    imm n = 8000usize;
+    mut f = new Finish(Atomic[u64].of(0u64), Atomic[u64].of(0u64), newJob(n));
+    actors.parallelRangeThen(0usize, n, 16usize, &bodyUneven, &mut f.job as *Job as *u8, &finished, &mut f as *Finish as *u8);
+    while f.flag.load() == 0u64 {
+      thread.sleep(time.Duration.fromMillis(1));
+    }
+    report("scheduled: every item as the plain loop's", exactly(&f.job, n, 0usize, n));
+    report("scheduled: onDone called once", f.calls.load() == 1u64);
+
+    mut e = new Finish(Atomic[u64].of(0u64), Atomic[u64].of(0u64), newJob(10usize));
+    actors.parallelRangeThen(5usize, 5usize, 16usize, &bodyUneven, &mut e.job as *Job as *u8, &finished, &mut e as *Finish as *u8);
+    report("scheduled, empty: onDone called before it returns", e.calls.load() == 1u64 and e.job.calls.load() == 0u64);
+
+    mut t = new Finish(Atomic[u64].of(0u64), Atomic[u64].of(0u64), newJob(10usize));
+    actors.parallelRangeThen(2usize, 6usize, 16usize, &bodyUneven, &mut t.job as *Job as *u8, &finished, &mut t as *Finish as *u8);
+    report("scheduled, short: one call, then onDone, before it returns",
+      t.calls.load() == 1u64 and t.job.calls.load() == 1u64 and exactly(&t.job, 10usize, 2usize, 6usize));
+  }
+
+  finalAll();
+  printStr("done\n");
+}
