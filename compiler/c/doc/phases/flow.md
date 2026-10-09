@@ -768,8 +768,12 @@ the holder; it does not access the source.
 **What holds what.** Each expression walked yields the loans its value may
 carry (a `PathSet`): a borrow, its new loan and whatever the holder at the root
 of the borrowed place holds (a reborrow `&mut *r`, or `&r`, keeps what `r`
-holds; so does the reborrow type check builds for a `&uni` lent where a `&`
-or `&mut` is wanted, which is why `g(p); g(p)` is no move); a holder named, or a place read through it, what it holds, if
+holds; so does the borrow type check builds from a `&uni` variable or slice
+passed where a borrowed reference is wanted, `&`, `&mut` or `&uni`, which is
+why `g(p); g(p)` is no move: `iexpCoerce` rewrites `p` to `&perm *p`
+(`borrowUniReborrows`, `borrowDerefOf`; an `ArrayBorrowTag` of the slice's
+dereference for a slice), as does `varDclTypeCheck` for a local declared with
+that type or inferred from the initializer); a holder named, or a place read through it, what it holds, if
 the value read can hold a borrow; a cast whose type can hold one, what its
 operand carries — a recast, a borrow coerced to a virtual reference, and the
 conversion a `case` binding makes of the matched value alike; an `if`, a
@@ -1136,9 +1140,10 @@ built: a different reference to the same container is not seen, and two
 different `&mut` references to one list stay open. Refusing every element
 borrow through a shared path would refuse ordinary code — reading a
 `List[String]` element through a `&List` parameter, a method reading its own
-`self` list field — and (b) waits on `uni` reborrowing making the
-alternatives writable (lending a `&uni` as a `&` or `&mut` is built; lending it
-to another `&uni` is not). `collection_flow_freeze_shared` and
+`self` list field — so (b) is to be a rule on the change, not a refusal of the
+borrow. Its alternatives are writable: a `&uni` variable passed to a `&`, `&mut`
+or `&uni` is borrowed from, so a `self &uni` method may be called repeatedly.
+`collection_flow_freeze_shared` and
 `collection_freeze_shared_success` pin the frozen path and what stays open,
 and `refborref.html` each shape. A
 borrow of the container itself that is not a method's returned borrow

@@ -1,0 +1,125 @@
+// A '&uni' variable passed to a call or binding that wants a '&uni' implicitly
+// borrows from it, '&uni *p' built as if written, so what the borrow forbids
+// the reference is what a borrow of what a 'uni' reaches forbids (ref_flow_freeze):
+// handed to one call twice, the borrow still being made meets the second; held in
+// a local, a struct or a call's result, the reference may not be read, changed or
+// lent again until the last use of what holds the borrow. A borrow that is
+// handed to a callee cannot be kept past the caller's own storage, nor returned
+// past it. An owning reference still moves where an owner is wanted, so a second
+// use is a move out (ref_uniborrow runs what is allowed).
+//
+// One function per case, so that one borrow's conflict cannot stand in for
+// another's.
+
+mod ref_flow_uniborrow;
+
+struct R {
+  pub n i64;
+  pub fn bumpBy(self &uni, o &uni R) { n = n + o.n; }
+}
+
+struct Holder { pub r &uni R; }
+
+fn fill(q &uni R) { q.n = q.n + 10; }
+fn two(a &uni R, b &uni R) {}
+fn pick(q &uni R) &uni i64 { &uni q.n; }
+fn same(q &uni R) &uni R { q; }
+fn take(o So[R]) {}
+fn sum(s &uni Array[i64], t &uni Array[i64]) {}
+fn viewOf(s &uni Array[i64]) &uni Array[i64] { s; }
+fn bump(s &uni Array[i64]) { s[0usize] = s[0usize] + 1; }
+
+// the reference is in use for the whole call
+fn twoInCall(p &uni R) {
+  two(p, p);                       //~ ErrorFrozen:10 "may not be borrowed"
+}
+
+fn receiverAndArgument(p &uni R) {
+  p.bumpBy(p);                     //~ ErrorFrozen:12 "for a call or value still being made"
+                                   //~^ ErrorFrozen:3 "as the call's receiver"
+}
+
+fn sliceTwoInCall(s &uni Array[i64]) {
+  sum(s, s);                       //~ ErrorFrozen:10 "may not be borrowed"
+}
+
+// held in a local
+fn heldDeclared(p &uni R) i64 {
+  imm q &uni R = p;
+  p.n = 1;                         //~ ErrorFrozen:4 "may not be changed"
+  q.n;
+}
+
+fn heldInferred(p &uni R) i64 {
+  imm q = p;
+  imm k = p.n;                     //~ ErrorFrozen:12 "may not be read"
+  q.n + k;
+}
+
+fn heldLentAgain(p &uni R) i64 {
+  imm q &uni R = p;
+  fill(p);                         //~ ErrorFrozen:8 "may not be borrowed"
+  q.n;
+}
+
+fn heldSlice(s &uni Array[i64]) i64 {
+  imm t &uni Array[i64] = s;
+  bump(s);                         //~ ErrorFrozen:8 "may not be borrowed"
+  t[0usize];
+}
+
+// held in a struct
+fn heldInStruct(p &uni R) i64 {
+  imm h = new Holder(p);
+  fill(p);                         //~ ErrorFrozen:8 "may not be borrowed"
+  h.r.n;
+}
+
+// a call's result derived from the reference keeps it frozen while the result lives
+fn derivedField(p &uni R) i64 {
+  imm r = pick(p);
+  p.n = 1;                         //~ ErrorFrozen:4 "may not be changed"
+  *r;
+}
+
+fn derivedSame(p &uni R) i64 {
+  imm c = same(p);
+  fill(p);                         //~ ErrorFrozen:8 "may not be borrowed"
+  c.n;
+}
+
+fn derivedSlice(s &uni Array[i64]) i64 {
+  imm r = viewOf(s);
+  bump(s);                         //~ ErrorFrozen:8 "may not be borrowed"
+  r[0usize];
+}
+
+// not kept past the caller's storage
+fn storeLocal(h &mut Holder) {
+  imm inner = new So[R](5);
+  imm q &uni R = inner;
+  imm c = same(q);
+  h.r = c;                         //~ ErrorInvType:4 "outlives"
+}
+
+fn returnLocal() &uni R {
+  imm inner = new So[R](5);
+  imm q &uni R = inner;
+  same(q);                         //~ ErrorEscape:7 "outlives"
+}
+
+// an owner still moves where an owner is wanted
+fn ownerTwice() {
+  imm o = new So[R](1);
+  take(o);
+  take(o);                         //~ ErrorMove:8 "moved out"
+}
+
+fn ownerLocal() i64 {
+  imm o = new So[R](1);
+  imm q = o;
+  o.n + q.n;                       //~ ErrorMove:3 "moved out"
+}
+
+fn main() {
+}

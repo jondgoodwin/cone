@@ -47,10 +47,10 @@ uint16_t borrowTempScope(TypeCheckState *pstate);
 // Retype a borrowed constant array literal to the reference type it is wanted as
 int borrowConstLitCoerce(INode *from, INode *totypedcl);
 
-// Is 'from' a '&uni' reference in a place, wanted as a shareable borrowed reference?
+// Is 'from' a '&uni' reference (or slice) in a place, wanted as a borrowed reference of its kind?
 int borrowUniReborrows(INode *from, INode *totypedcl);
 
-// Lend such a '&uni' reference by rewriting it to the reborrow '&mut *from'
+// Borrow from such a '&uni' reference by rewriting it to the reborrow '&mut *from'
 void borrowUniReborrow(INode **from, INode *totypedcl);
 
 // Is 'from' a sole owning reference in a place, wanted as a '&uni' borrowed reference?

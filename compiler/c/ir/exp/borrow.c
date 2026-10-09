@@ -132,47 +132,54 @@ void borrowAuto(INode **from, INode *totypedcl) {
     *from = (INode*)borrownode;
 }
 
-// Is 'from' a '&uni' reference held in a place, wanted as a borrowed reference
-// that may be shared ('&', '&mut', '&imm' ...)? Handing it over lends it rather
-// than moving it: "a uni can be borrowed as mut or imm. After the borrowed
-// references' last use, you once again have the original uni reference"
-// (refperm.html, "Borrowed reference recovery"). A '&uni' wanted as a '&uni'
-// still moves. Note: totypedcl has already done GetTypeDcl
+// Is 'from' a '&uni' reference (or '&uni' slice) held in a place, wanted as a
+// borrowed reference of the same kind: '&', '&mut', '&imm' ... or another
+// '&uni'? Handing it over borrows from it, a fresh and shorter loan, rather than
+// handing over the reference itself: "a uni can be borrowed as mut or imm. After
+// the borrowed references' last use, you once again have the original uni
+// reference" (refperm.html, "Borrowed reference recovery"). That holds for a
+// '&uni' wanted as a '&uni' too (refborref.html, "Reference Handling"). An
+// owning reference is not part of this: it is not a borrowed one.
+// Note: totypedcl has already done GetTypeDcl
 int borrowUniReborrows(INode *from, INode *totypedcl) {
     RefNode *fromtype = (RefNode*)iexpGetTypeDcl(from);
     RefNode *totype = (RefNode*)totypedcl;
-    return fromtype->tag == RefTag && fromtype->region == borrowRef
+    return (fromtype->tag == RefTag || fromtype->tag == ArrayRefTag) && fromtype->region == borrowRef
         && itypeGetTypeDcl(fromtype->perm) == (INode*)uniPerm
-        && totype->tag == RefTag && totype->region == borrowRef && !itypeIsMove(totypedcl)
+        && totype->tag == fromtype->tag && totype->region == borrowRef
         && iexpIsLval(from);
 }
 
 // Rewrite the reference 'from' to the borrow '&perm *from', typed as a borrowed
 // reference to 'vtexp', as borrowTypeCheck would build it if written out: the
 // lifetime of a borrow of '*from' (iexpGetLvalInfo). The permission has already
-// been checked by the match that asked for it.
+// been checked by the match that asked for it. A slice is borrowed from by a
+// borrow of its de-reference, which generation hands on as the slice itself.
 static void borrowDerefOf(INode **from, INode *perm, INode *vtexp) {
+    RefNode *fromtype = (RefNode*)iexpGetTypeDcl(*from);
+    int slice = fromtype->tag == ArrayRefTag;
     StarNode *deref = newStarNode(DerefTag);
     inodeLexCopy((INode*)deref, *from);
     deref->vtexp = *from;
-    deref->vtype = ((RefNode*)iexpGetTypeDcl(*from))->vtexp;
+    deref->vtype = slice ? (INode*)newArrayDerefNodeFrom(fromtype) : fromtype->vtexp;
 
     INode *lvalperm = (INode*)immPerm;
     uint16_t scope = 0;
     iexpGetLvalInfo((INode*)deref, &lvalperm, &scope);
 
-    RefNode *reftype = newRefNodeFull(RefTag, *from, borrowRef, perm, vtexp);
+    RefNode *reftype = newRefNodeFull(slice ? ArrayRefTag : RefTag, *from, borrowRef, perm, vtexp);
     reftype->scope = scope;
-    RefNode *borrownode = newRefNodeFull(BorrowTag, *from, borrowRef, perm, (INode*)deref);
+    RefNode *borrownode = newRefNodeFull(slice ? ArrayBorrowTag : BorrowTag, *from, borrowRef, perm, (INode*)deref);
     borrownode->vtype = (INode*)reftype;
     *from = (INode*)borrownode;
 }
 
-// Lend a '&uni' reference as the borrowed reference 'totypedcl' wants, by
-// rewriting it to the reborrow '&mut *from' that borrowTypeCheck would build
-// if written out: the same permission check, and the lifetime of the variable
-// the reference is held in. Flow analysis then sees a borrow of '*from', which
-// freezes the reference while the borrow is used, and not a move of it.
+// Borrow from a '&uni' reference as the borrowed reference 'totypedcl' wants, by
+// rewriting it to the reborrow '&mut *from' (or '&uni *from') that
+// borrowTypeCheck would build if written out: the same permission check, and the
+// lifetime of the variable the reference is held in. Flow analysis then sees a
+// borrow of '*from', which freezes the reference while the borrow is used, and
+// not a move of it.
 void borrowUniReborrow(INode **from, INode *totypedcl) {
     RefNode *totype = (RefNode*)totypedcl;
     borrowDerefOf(from, totype->perm, totype->vtexp);

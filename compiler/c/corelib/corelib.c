@@ -305,8 +305,9 @@ void stdlibInit(int ptrsize) {
     // 'self' field, a 'Rc[mut, T]' owner) or a call that might make one is
     // not seen: refusing every element borrow through a shared path would
     // break common collection code -- reading a 'List[String]' element
-    // through a '&List' parameter -- that 'uni' reborrowing is to make
-    // writable. Until then that is a documented hole (refborref.html).
+    // through a '&List' parameter -- whose alternatives (a '&uni' borrowed
+    // from, so a 'self &uni' method may be called twice) are writable now.
+    // That is a documented hole (refborref.html).
     shapeChangingTrait = newBuiltinTrait(shapeChangingTraitName);
     noLoanMutTrait = newBuiltinTrait(noLoanMutTraitName);
     noLoanReadTrait = newBuiltinTrait(noLoanReadTraitName);
