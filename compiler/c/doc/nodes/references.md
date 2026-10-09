@@ -791,7 +791,10 @@ an `@unsized` enum are neither, and their references are thin.
   object by that size, and not by its record's one element (`Gc` keeps the surplus
   in its header, in the padding after its colour). One byte is allocated beyond the
   elements: the NUL text keeps, and for an `Array[T]` only the byte that keeps an
-  empty one in a region with no header from asking for no memory. An `Array[T]`'s
+  empty one in a region with no header from asking for no memory. An `Array[T]` in
+  a region with a header gets no such byte, and `genlallocref` stores the NUL only
+  where it was allocated (it once stored it anyway, one byte past the block, on top of
+  the next block's heap header: `region_body_bounds`). An `Array[T]`'s
   allocation takes only elements that copy (`typeLitAllocValue`: the elements move
   in only with a `List`'s `freeze`, which casts the slice of its block to the owner).
 - **Release.** `genlRefPtr` takes word 0 wherever a pointer is wanted (the
