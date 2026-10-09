@@ -1,0 +1,173 @@
+// What the inferred freezing leaves alone (the refusals are
+// collection_flow_freeze_inferred). A type is shape-changing when one method
+// writes storage the type owns and one returns a borrow. Each type here lacks
+// one of the two, or only looks like one that has both, so a borrow its method
+// returns freezes nothing through a shared path:
+// - 'Cur' is a cursor: it writes a number, 'at', every time it advances, but
+//   never the pointer to the block it reads. A test of whether a method writes
+//   any field of the type would take it for one that reshapes;
+// - 'Slots' wraps a List and lends an element, but its only writing method
+//   sets an element: no storage is replaced or freed;
+// - 'Frozen' wraps a List and lends, and nothing it has writes;
+// - 'Guard' frees its block only in its 'final', which ends the value and every
+//   borrow of it with it;
+// - 'Counter' lends a borrow of a number it writes.
+// A borrow of a type that does change shape, and one that is used up before the
+// path is changed, are accepted too. As for a List's
+// (collection_freeze_shared_success), two different references to one value
+// are not seen.
+
+mod collection_freeze_inferred_success;
+
+import stdio use *;
+import collections use *;
+import libc;
+
+struct Pt { pub x i64; pub y i64; }
+
+fn show(label &str, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+// A cursor over a block it does not own
+struct Cur {
+  ptr *Pt;
+  used usize;
+  at usize;
+
+  fn first(self &) &Pt { (ptr + at) as &Pt; }
+  fn advance(self &mut) { at = at + 1usize; }
+}
+
+fn cursorAdvances(c &mut Cur) i64 {
+  imm e = c.first();
+  c.advance();
+  e.x;
+}
+
+// A List wrapper whose only writer sets an element
+struct Slots {
+  items List[Pt];
+
+  fn first(self &) &Pt { items[0usize]; }
+  fn setFirst(self &mut, p Pt) { items.set(0usize, p); }
+}
+
+fn slotsSet(s &mut Slots) i64 {
+  imm e = s.first();
+  s.setFirst(new Pt(40, 0));
+  e.x;
+}
+
+// A List wrapper that nothing writes through
+struct Frozen {
+  items List[Pt];
+
+  fn first(self &) &Pt { items[0usize]; }
+  fn count(self &) usize { items.len(); }
+}
+
+fn frozenRead(f &mut Frozen) i64 {
+  imm e = f.first();
+  imm n = f.count();
+  imm g = f.first();
+  e.x + g.y + i64.from(n);
+}
+
+// A block freed only when the value ends
+struct Guard {
+  ptr *i64;
+  n i64;
+
+  fn first(self &) &i64 { ptr as &i64; }
+  fn bump(self &mut) { n = n + 1; }
+  fn final(self &uni) { libc.free(ptr as *u8); }
+}
+
+fn guardBumps(g &mut Guard) i64 {
+  imm e = g.first();
+  g.bump();
+  *e + g.n;
+}
+
+// A borrow of the number a method writes
+struct Counter {
+  n i64;
+
+  fn peek(self &) &i64 { &n; }
+  fn bump(self &mut) { n = n + 1; }
+}
+
+fn counterBumps(c &mut Counter) i64 {
+  imm e = c.peek();
+  c.bump();
+  *e;
+}
+
+// A type that does change shape, its borrow used up before the change
+struct Bag {
+  items List[Pt];
+
+  fn first(self &) &Pt { items[0usize]; }
+  fn add(self &mut, p Pt) { items.push(p); }
+}
+
+fn bagUsedFirst(bag &mut Bag, p Pt) i64 {
+  imm x = bag.first().x;
+  bag.add(p);
+  x * 10 + bag.first().y;
+}
+
+// Its borrow, and a read of the path while it is used
+fn bagRead(bag &mut Bag) i64 {
+  imm e = bag.first();
+  imm f = bag.first();
+  e.x + f.y;
+}
+
+// Two different references to one value are not seen
+fn bagAliased(a &mut Bag, b &mut Bag, p Pt) i64 {
+  imm e = a.first();
+  b.add(p);
+  e.x;
+}
+
+fn main() {
+  imm block = libc.malloc(2usize * mem.sizeof[Pt]()) as *Pt;
+  mem.writeRaw(block, new Pt(3, 0));
+  mem.writeRaw(block + 1usize, new Pt(4, 0));
+  mut cur = new Cur(block, 2usize, 0usize);
+  show("cursor-advances", cursorAdvances(&mut cur));
+  show("cursor-at", i64.from(cur.at));
+
+  mut slots = new Slots(List[Pt].empty());
+  slots.items.push(new Pt(5, 0));
+  show("slots-set", slotsSet(&mut slots));
+  show("slots-after", slots.first().x);
+
+  mut frozen = new Frozen(List[Pt].empty());
+  frozen.items.push(new Pt(1, 2));
+  show("frozen-read", frozenRead(&mut frozen));
+
+  mut guard = new Guard(libc.malloc(mem.sizeof[i64]()) as *i64, 0);
+  mem.writeRaw(guard.ptr, 6);
+  show("guard-bumps", guardBumps(&mut guard));
+
+  mut counter = new Counter(8);
+  show("counter-bumps", counterBumps(&mut counter));
+
+  mut bag = new Bag(List[Pt].empty());
+  bag.add(new Pt(7, 1));
+  show("bag-used-first", bagUsedFirst(&mut bag, new Pt(9, 2)));
+  show("bag-read", bagRead(&mut bag));
+
+  mut shared = new Bag(List[Pt].empty());
+  shared.items.reserve(8usize);
+  shared.add(new Pt(11, 0));
+  imm one = &mut shared;
+  imm other = one;
+  show("bag-two-aliases", bagAliased(one, other, new Pt(12, 0)));
+}

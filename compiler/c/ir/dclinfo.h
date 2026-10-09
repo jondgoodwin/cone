@@ -73,11 +73,15 @@ enum DclFacts {
                               // runtime's generics reach their functions: a library
                               // compile exports every one, whatever its visibility, and
                               // every function of such a type (dclIsExported)
-    DclWorkgroup  = 0x1000    // Global only: '@workgroup', on a GPU one copy for each
+    DclWorkgroup  = 0x1000,   // Global only: '@workgroup', on a GPU one copy for each
                               // workgroup, which its invocations share, undefined as it
                               // starts. Written by the parser, kept by joining; on a GPU
                               // target generation puts it in the Workgroup storage
                               // class, and on the CPU it is an ordinary global
+    DclBodyTyped  = 0x2000    // Fn only: its body is type checked, without error, so
+                              // that what it does can be read from the tree before its
+                              // flow pass and its declaration's check have ended
+                              // (shapeinfer.c). Written by fnDclTypeCheck; a clone has none
 };
 
 #define dclInfoInit(dclinfo) ((dclinfo)->owner = NULL, (dclinfo)->facts = 0, (dclinfo)->cname = NULL)

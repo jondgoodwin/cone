@@ -79,6 +79,7 @@ FnDclNode *cloneFnDclShell(FnDclNode *oldfn) {
     // memcpy carries the type check marks with everything else, and a clone that
     // kept them would be skipped by the guard in inodeTypeCheck.
     newnode->flags &= 0xffff - (TypeChecked | TypeChecking);
+    newnode->dclinfo.facts &= 0xffff - DclBodyTyped;
     // A generic method copied with its type -- into a generic type's instance,
     // or a trait's default into an implementer -- is still generic there, with
     // its own instances. It shares the original's type parameters, so its
@@ -579,6 +580,8 @@ void fnDclTypeCheck(TypeCheckState *pstate, FnDclNode *fnnode) {
     pstate->scope = svScope;
     pstate->fn = svFn;
     pstate->extend = svExtend;
+    if (errors == errorsOnEntry)
+        fnnode->dclinfo.facts |= DclBodyTyped;
 
     // An inline body is generated in each caller as a block whose value is the
     // call's, its returns breaking out of it with that value. Every path ends in
@@ -620,8 +623,18 @@ void fnDclTypeCheck(TypeCheckState *pstate, FnDclNode *fnnode) {
     // say: the seam's rules are the loan walk's, and whether a variable still
     // holds its value there is drop flags' state (flowpath.c, pwSeam)
     int seams = fstate.awaits != NULL;
-    if ((fstate.gate || fstate.dropgate || flowGpu || seams) && errors == errorsOnEntry)
-        flowPathWalk(fnnode, fstate.gate != 0 || flowGpu || seams, fstate.dropgate || seams, seams);
+    if ((fstate.gate || fstate.dropgate || flowGpu || seams) && errors == errorsOnEntry) {
+        int loans = fstate.gate != 0 || flowGpu || seams;
+        // A borrow of a shape-changing value freezes what it was reached
+        // through, and which types those are is read from their methods, which
+        // may still be waiting to be checked. A walk that needs one of them is
+        // made when they are, at the end of type check, unless it cannot wait
+        // (shapeinfer.h)
+        if (loans && !shapeWalkReady(fnnode, !seams && !initmod))
+            shapeWalkDefer(fnnode, fstate.dropgate != 0);
+        else
+            flowPathWalk(fnnode, loans, fstate.dropgate || seams, seams);
+    }
     // The seams every rule accepted: a message's are split, where the split is
     // built (generation makes its halves); any other is reported not built
     // yet where it stands, with what its continuation would carry

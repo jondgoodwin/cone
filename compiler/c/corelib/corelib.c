@@ -298,7 +298,10 @@ void stdlibInit(int ptrsize) {
     // they are used; a container declaring 'NoLoanMut' is also borrowed
     // itself for its life only. Trusted: the compiler cannot check the
     // promise. 'ShapeChanging' says the container may move its elements (a
-    // list's push reallocates). A borrow its method returns, out of a
+    // list's push reallocates). The compiler finds a type so without the
+    // word, from its methods (shapeinfer.c), and a type that declares it
+    // without being found so is refused: the word asserts, it does not add.
+    // A borrow its method returns, out of a
     // container reached through a shared path, freezes that same path while
     // it is used (pwCall, loanFreezeShared): a change through the same name.
     // A change through another name (a '&mut' or '&' of unseen origin, a

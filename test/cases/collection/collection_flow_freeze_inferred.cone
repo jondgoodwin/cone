@@ -1,0 +1,177 @@
+// A type that wraps a container is shape-changing too, though it declares
+// nothing: the compiler finds it from the type's methods (shapeinfer.h). A type
+// is shape-changing when one method writes storage the type owns (a raw
+// pointer, or a field that holds one, as a list does) and one method returns a
+// borrow. A borrow such a method returns freezes the path the value was reached
+// through, even a shared one, as a borrow of a List's element does
+// (collection_flow_freeze_shared): the same path may not be changed while the
+// borrow is still to be used.
+//
+// What finds it is the methods, whatever the type holds:
+// - 'Bag' wraps a List and owns no pointer of its own;
+// - 'Shelf' holds a Bag, two types down from the pointer;
+// - 'Raw' owns its block through a pointer field;
+// - 'Table' owns its block through a member, 'Raw', as a Set owns its through a
+//   Dict and a String through a List: a test of the type's own pointer fields
+//   would miss it;
+// - 'Mapped' hands its pointer to a C function, code the compiler cannot read,
+//   which is taken to reshape;
+// - 'Ring' reshapes through two methods that call each other.
+// What does NOT find one is in collection_freeze_inferred_success.
+
+mod collection_flow_freeze_inferred;
+
+import collections use *;
+import libc;
+
+struct Pt { pub x i64; pub y i64; }
+
+// Written above the type it uses, and the type's methods declared in the other
+// order: which types change shape is read from the bodies wherever they are
+fn earlyUse(w &mut Early, p Pt) i64 {
+  imm e = w.first();
+  w.add(p);                     //~ ErrorFrozen:3 "may not be borrowed mutably"
+  e.x;
+}
+
+struct Early {
+  items List[Pt];
+
+  fn add(self &mut, p Pt) { items.push(p); }
+  fn first(self &) &Pt { items[0usize]; }
+}
+
+// A function its type's only writing method calls, which calls it back: its
+// walk waits until the body of 'add' is checked ('make' lays the type out
+// first, so that 'touch' is reached from inside 'add')
+fn make() Late { new Late(List[Pt].empty()); }
+
+struct Late {
+  items List[Pt];
+
+  fn first(self &) &Pt { items[0usize]; }
+  fn add(self &mut, p Pt) {
+    items.push(p);
+    if items.len() > 100usize { touch(self, p); }
+  }
+}
+
+fn touch(l &mut Late, p Pt) i64 {
+  imm e = l.first();
+  l.add(p);                     //~ ErrorFrozen:3 "may not be borrowed mutably"
+  e.x;
+}
+
+// A struct wrapping a List
+struct Bag {
+  items List[Pt];
+
+  fn first(self &) &Pt { items[0usize]; }
+  fn add(self &mut, p Pt) { items.push(p); }
+}
+
+fn bagThenAdd(bag &mut Bag, p Pt) i64 {
+  imm e = bag.first();
+  bag.add(p);                   //~ ErrorFrozen:3 "may not be borrowed mutably"
+  e.x;
+}
+
+// A struct holding one: the methods are the Bag's, called through a field
+struct Shelf {
+  bag Bag;
+
+  fn first(self &) &Pt { bag.first(); }
+  fn add(self &mut, p Pt) { bag.add(p); }
+}
+
+fn shelfThenAdd(shelf &mut Shelf, p Pt) i64 {
+  imm e = shelf.first();
+  shelf.add(p);                 //~ ErrorFrozen:3 "may not be borrowed mutably"
+  e.x;
+}
+
+// Through a field of 'self'
+struct Holder {
+  bag Bag;
+
+  fn growWhileHeld(self &mut, p Pt) i64 {
+    imm e = bag.first();
+    bag.add(p);                 //~ ErrorFrozen:5 "may not be borrowed mutably"
+    e.x;
+  }
+}
+
+// A block owned through a pointer field
+struct Raw {
+  ptr *i64;
+  used usize;
+  cap usize;
+
+  fn init(self &new) { *self = new Raw(null, 0usize, 0usize); }
+  fn first(self &) &i64 { ptr as &i64; }
+  fn add(self &mut, v i64) {
+    if used == cap {
+      ptr = libc.realloc(ptr as *u8, (cap + 4usize) * mem.sizeof[i64]()) as *i64;
+      cap = cap + 4usize;
+    }
+    mem.writeRaw(ptr + used, v);
+    used = used + 1usize;
+  }
+}
+
+fn rawThenAdd(r &mut Raw, v i64) i64 {
+  imm e = r.first();
+  r.add(v);                     //~ ErrorFrozen:3 "may not be borrowed mutably"
+  *e;
+}
+
+// A block owned through a member, with no pointer field of its own
+struct Table {
+  raw Raw;
+
+  fn init(self &new) { *self = new Table(new Raw()); }
+  fn first(self &) &i64 { raw.first(); }
+  fn add(self &mut, v i64) { raw.add(v); }
+}
+
+fn tableThenAdd(t &mut Table, v i64) i64 {
+  imm e = t.first();
+  t.add(v);                     //~ ErrorFrozen:3 "may not be borrowed mutably"
+  *e;
+}
+
+// A pointer handed to C, which the compiler cannot read: taken to reshape
+struct Mapped {
+  ptr *u8;
+  len usize;
+
+  fn first(self &) &u8 { ptr as &u8; }
+  fn fill(self &mut, v u8) { libc.memset(ptr, i32.from(v), len); }
+}
+
+fn mappedThenFill(m &mut Mapped) u8 {
+  imm e = m.first();
+  m.fill(7u8);                  //~ ErrorFrozen:3 "may not be borrowed mutably"
+  *e;
+}
+
+// Two methods that call each other, the second replacing the pointer
+struct Ring {
+  ptr *i64;
+  cap usize;
+
+  fn first(self &) &i64 { ptr as &i64; }
+  fn spin(self &mut, n usize) {
+    if n > 0usize { self.land(n - 1usize); }
+  }
+  fn land(self &mut, n usize) {
+    if n > 0usize { self.spin(n); }
+    else { ptr = libc.realloc(ptr as *u8, 64usize) as *i64; }
+  }
+}
+
+fn ringThenSpin(r &mut Ring) i64 {
+  imm e = r.first();
+  r.spin(2usize);               //~ ErrorFrozen:3 "may not be borrowed mutably"
+  *e;
+}

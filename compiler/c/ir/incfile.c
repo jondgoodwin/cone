@@ -1127,6 +1127,19 @@ static void incCut(IncGen *g, IncMod *m, DclSpan *span) {
     }
 }
 
+// A type of the package that the compiler found shape-changing from its methods
+// (shapeinfer.h) goes in with 'ShapeChanging' appended to its 'is' list, for the
+// importer to read: the methods that show it are not in the file. A type whose
+// source says so already, and a generic one, whose methods travel, are as written
+static void incRecordShape(IncGen *g, DclSpan *span) {
+    if (!shapeRecordable((StructNode*)span->node))
+        return;
+    if (span->isend)
+        incEdit(g, span->lexer, span->isend, span->isend, ", ShapeChanging");
+    else if (span->hdrend)
+        incEdit(g, span->lexer, span->hdrend, span->hdrend, " is ShapeChanging");
+}
+
 // The members of an included type: each whole, cut to 'extern' or left out
 static void incEditType(IncGen *g, IncMod *m, StructNode *strnode, char *floor) {
     DclSpans *spans = strnode->spans;
@@ -1148,6 +1161,7 @@ static void incEditType(IncGen *g, IncMod *m, StructNode *strnode, char *floor) 
                     incDelete(g, span, floor);
                 break;
             case StructTag:
+                incRecordShape(g, span);
                 incEditType(g, m, (StructNode*)node, span->kw);
                 break;
             default:
@@ -1179,8 +1193,10 @@ static void incEditRootDcl(IncGen *g, IncMod *m, DclSpan *span, char *floor) {
     case StructTag:
         if (!incWanted(g, node))
             incDelete(g, span, floor);
-        else
+        else {
+            incRecordShape(g, span);
             incEditType(g, m, (StructNode*)node, span->kw);
+        }
         break;
     case AliasDclTag:
         // An alias declares no symbol. One goes in unless it is private,
@@ -1222,6 +1238,7 @@ static void incEditSubDcl(IncGen *g, IncMod *m, DclSpan *span, char *floor) {
             incCut(g, m, span);
         break;
     case StructTag:
+        incRecordShape(g, span);
         incEditType(g, m, (StructNode*)node, span->kw);
         break;
     default:

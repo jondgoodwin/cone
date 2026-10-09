@@ -33,6 +33,7 @@ DclSpan *dclSpanAdd(DclSpans **listp, INode *node, Lexer *lexer, char *start, ch
     span->start = start;
     span->kw = kw;
     span->body = span->bodyend = span->nameend = NULL;
+    span->hdrend = span->isend = NULL;
     span->end = end;
     span->kind = kind;
     span->typed = 0;

@@ -782,6 +782,11 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
     if (isvariant)
         parseVariantTagPin(strnode);
 
+    // Where the header ends, and where an 'is' list does: the include file
+    // appends what a package's compile found of the type there (incfile.c)
+    char *hdrend = lex->prevend;
+    char *isend = NULL;
+
     // An enum may name the integer type its tag values are laid out in, which is
     // what lines the enum up with an external library's constants. It fixes the
     // tag's width, so a pinned value too large for it is refused rather than
@@ -870,6 +875,7 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
                 isafld->vtype = named;
                 structAddField(strnode, isafld);
             } while (lexIsToken(CommaToken));
+            isend = lex->prevend;
             // 'is' takes no siblings to fold from: it names abstractions, and an
             // abstraction has no value to reach a folded name through. Delegation is
             // what a field's own 'use' clause is for.
@@ -1270,6 +1276,8 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
         lifeStructDeclare(strnode);
 
     parse->typenode = svtype;
+    parse->hdrendp = hdrend;
+    parse->isendp = isend;
     return (INode*)strnode;
 }
 
