@@ -1,0 +1,213 @@
+// The sculpt package's tools that take a function, checked with the testing
+// package against values worked out by hand; only a failure prints, so
+// functioninputs.out holds the summary alone.
+//
+// - sweepScaled takes any callable of the fraction of arc length: a plain
+//   function ('&name'), a closure with no state, and a closure carrying dials
+//   it names from the code around it all make the same bits. A path of 16
+//   pieces along z from 0 to 2, the diamond of radius 1: ring k is at
+//   u = k / 16, z = k / 8, scale 1 + 0.25 sin(8 pi u) as solids.cone pins.
+//   The rescale-after loop that the horn examples used before (sweep at unit
+//   scale, then scale each ring about its path point) is within a few
+//   float steps of the same, not bit for bit: its rounding differs.
+// - The strip of deformers.cone: vertices 0 (0,0,0), 1 (pi/2,0,0), 2 (pi,0,0),
+//   3 (0,1,0), 4 (pi/2,1,0), 5 (pi,1,0).
+//   deform with p => p * 2 doubles every position; with p => p + (0, 1, 0) lifts
+//   them by 1 (a closure reading a variable). deformAlong along +x: the extent
+//   is 0 to pi, so u = 0, 0.5, 1 for the columns and an offset (0, u, 0) lifts
+//   vertex 1 by 0.5 and vertex 2 by 1; a mesh with no extent along the axis
+//   has u = 0.
+// - The box (a 2 x 2 square extruded 2 in z, 2 pieces, vertex 4i + j at
+//   z = i): taperBy with u => 1 + u * factor is taper's, and a scale of 1
+//   leaves it as it was; twistBy with u => angle * u is twist's.
+// - displaceAlongNormalBy (k => w) is displaceAlongNormal by a channel filled
+//   with the same w: the same bits, the function reading the very mesh it is
+//   given (a closure naming it). A constant amount moves every vertex by
+//   exactly it, along its normal.
+
+mod functioninputs;
+
+import testing use *;
+import collections use *;
+import geomath use *;
+import mesh use *;
+import sculpt use *;
+
+imm near = 0.00001d;
+
+fn point(got Vec3, x f32, y f32, z f32, label &Array[u8]) {
+  expectFloat(got.x, x, near, label);
+  expectFloat(got.y, y, near, label);
+  expectFloat(got.z, z, near, label);
+}
+
+// Two meshes whose positions are the same bits
+fn sameBits(a &PolyMesh, b &PolyMesh) bool {
+  if a.positions.len() != b.positions.len() { return false; }
+  mut i = 0usize;
+  while i < a.positions.len() {
+    imm p = *a.positions[i];
+    imm q = *b.positions[i];
+    if p.x != q.x or p.y != q.y or p.z != q.z { return false; }
+    i = i + 1usize;
+  }
+  true;
+}
+
+fn strip() PolyMesh {
+  imm pts Array[Vec3, 6] = [new Vec3(0., 0., 0.), new Vec3(pi / 2., 0., 0.), new Vec3(pi, 0., 0.),
+    new Vec3(0., 1., 0.), new Vec3(pi / 2., 1., 0.), new Vec3(pi, 1., 0.)];
+  imm counts Array[u32, 2] = [4u32, 4u32];
+  imm idx Array[u32, 8] = [0u32, 1u32, 4u32, 3u32, 1u32, 2u32, 5u32, 4u32];
+  mut problems = List[String].empty();
+  PolyMesh.fromPolygons(&pts, &counts, &idx, &mut problems);
+}
+
+fn box() PolyMesh {
+  imm sq = Profile.rectangle(2., 2.);
+  extrude(&sq, new Vec3(0., 0., 2.), 2u32, true);
+}
+
+fn fourRibs(u f32) f32 { 1. + 0.25 * sin(8. * pi * u); }
+
+fn sweeps() {
+  imm d = Profile.polygon(4u32, 1.);
+  imm path = Path.line(new Vec3(0., 0., 0.), new Vec3(0., 0., 2.), 16u32);
+  imm viaFn = sweepScaled(&d, &path, 0., true, &fourRibs);
+  imm ribs = 4.;
+  imm depth = 0.25;
+  imm viaClosure = sweepScaled(&d, &path, 0., true, u => 1. + depth * sin(2. * ribs * pi * u));
+  expectBool(sameBits(&viaFn, &viaClosure), true, "sweepScaled: a closure with dials is the plain function");
+  // The full form, its state list holding the dials
+  imm viaFull = sweepScaled(&d, &path, 0., true, fn(u f32) [r = 4., h = 0.25] f32 { 1. + h * sin(2. * r * pi * u); });
+  expectBool(sameBits(&viaFn, &viaFull), true, "sweepScaled: the full form with a state list");
+  // Another dial makes another shape: six ribs, a crest at u = 1/24 (ring 2/3)
+  imm six = 6.;
+  imm sixRibs = sweepScaled(&d, &path, 0., true, u => 1. + depth * sin(2. * six * pi * u));
+  imm r1 = *sixRibs.positions[4usize];
+  expectFloat(f64.from(r1.x), f64.from(1. + 0.25 * sin(2. * 6. * pi / 16.)), near, "sweepScaled: six ribs, ring 1");
+  expectBool(sameBits(&viaFn, &sixRibs), false, "sweepScaled: six ribs differ from four");
+
+  // The horn examples' old way: sweep at unit scale, then scale each ring about its path point
+  imm tip = 0.7;
+  imm direct = sweepScaled(&d, &path, 0., true, u => 1. - tip * u);
+  imm plain = sweep(&d, &path, 0., 1., 1., true);
+  imm frames = path.frames();
+  mut k = 0usize;
+  mut worst f32 = 0.;
+  while k < plain.vertexCount() {
+    if k < 68usize {
+      imm ring = k / 4usize;
+      imm o = frames[ring].origin;
+      imm p = *plain.positions[k];
+      imm s = 1. - tip * (f32.from(ring) / 16.);
+      imm q = o + (p - o) * s;
+      imm e = *direct.positions[k] - q;
+      imm dev = if e.length() > worst {e.length();} else {worst;};
+      worst = dev;
+    }
+    k = k + 1usize;
+  }
+  expectFloat(f64.from(worst), 0., near, "sweepScaled: the ring-rescale loop is the same shape");
+}
+
+fn deforms() {
+  imm s = strip();
+  imm dbl = deform(&s, p => p * 2.);
+  point(*dbl.positions[2usize], 2. * pi, 0., 0., "deform: doubled");
+  point(*dbl.positions[4usize], pi, 2., 0., "deform: doubled, vertex 4");
+  imm lift = new Vec3(0., 1., 0.);
+  imm up = deform(&s, p => p + lift);
+  point(*up.positions[0usize], 0., 1., 0., "deform: lifted by a variable");
+  point(*up.positions[5usize], pi, 2., 0., "deform: lifted, vertex 5");
+  expectInt(i64.from(up.faceCount()), 2, "deform: the faces are kept");
+  imm bump = deform(&s, p => new Vec3(p.x, p.y, 0.5 * sin(p.x)));
+  point(*bump.positions[1usize], pi / 2., 0., 0.5, "deform: z from a function of x");
+
+  imm sway = deformAlong(&s, new Vec3(1., 0., 0.), u => new Vec3(0., u, 0.));
+  point(*sway.positions[0usize], 0., 0., 0., "deformAlong: u = 0 at the start");
+  point(*sway.positions[1usize], pi / 2., 0.5, 0., "deformAlong: u = 0.5 midway");
+  point(*sway.positions[2usize], pi, 1., 0., "deformAlong: u = 1 at the end");
+  point(*sway.positions[4usize], pi / 2., 1.5, 0., "deformAlong: the upper row too");
+  // Along +y the extent is 0 to 1: u is 0 for the lower row, 1 for the upper
+  imm byY = deformAlong(&s, new Vec3(0., 3., 0.), u => new Vec3(0., 0., u));
+  point(*byY.positions[1usize], pi / 2., 0., 0., "deformAlong: the axis is made unit, lower row");
+  point(*byY.positions[4usize], pi / 2., 1., 1., "deformAlong: the axis is made unit, upper row");
+  // No extent along z: u is 0 throughout
+  imm flat = deformAlong(&s, new Vec3(0., 0., 1.), u => new Vec3(0., 0., 7. + u));
+  point(*flat.positions[2usize], pi, 0., 7., "deformAlong: no extent, u = 0");
+}
+
+fn tapersAndTwists() {
+  imm b = box();
+  // taper's own: factor 1 over a span from the origin at one end
+  imm factor = 1.;
+  imm byFactor = taper(&b, factor, new Vec3(0., 0., 1.), new Vec3(0., 0., 0.));
+  imm byFn = taperBy(&b, new Vec3(0., 0., 1.), new Vec3(0., 0., 0.), u => 1. + factor * u);
+  point(*byFn.positions[5usize], 1.5, -1.5, 1., "taperBy: vertex 5 at u = 0.5");
+  point(*byFn.positions[10usize], 2., 2., 2., "taperBy: vertex 10 at the end");
+  point(*byFn.positions[2usize], 1., 1., 0., "taperBy: vertex 2 stays");
+  mut i = 0usize;
+  mut worst f32 = 0.;
+  while i < b.positions.len() {
+    imm e = *byFn.positions[i] - *byFactor.positions[i];
+    if e.length() > worst { worst = e.length(); }
+    i = i + 1usize;
+  }
+  expectFloat(f64.from(worst), 0., near, "taperBy: u => 1 + factor u is taper by factor");
+  imm same = taperBy(&b, new Vec3(0., 0., 1.), new Vec3(0., 0., 0.), u => 1.);
+  expectBool(sameBits(&same, &b), true, "taperBy: a scale of 1 leaves the mesh");
+  imm waist = taperBy(&b, new Vec3(0., 0., 1.), new Vec3(0., 0., 0.), u => 1. - 0.5 * sin(pi * u));
+  point(*waist.positions[5usize], 0.5, -0.5, 1., "taperBy: a waist, half the width midway");
+
+  imm quarter = pi / 2.;
+  imm twisted = twist(&b, quarter, new Vec3(0., 0., 1.), new Vec3(0., 0., 0.));
+  imm viaFn = twistBy(&b, new Vec3(0., 0., 1.), new Vec3(0., 0., 0.), u => quarter * u);
+  point(*viaFn.positions[1usize], 1., -1., 0., "twistBy: vertex 1 stays");
+  point(*viaFn.positions[5usize], 1.414214, 0., 1., "twistBy: vertex 5 turned 45");
+  point(*viaFn.positions[9usize], 1., 1., 2., "twistBy: vertex 9 turned 90");
+  point(*viaFn.positions[11usize], -1., -1., 2., "twistBy: vertex 11 turned 90");
+  i = 0usize;
+  worst = 0.;
+  while i < b.positions.len() {
+    imm e = *viaFn.positions[i] - *twisted.positions[i];
+    if e.length() > worst { worst = e.length(); }
+    i = i + 1usize;
+  }
+  expectFloat(f64.from(worst), 0., near, "twistBy: u => angle u is twist by angle");
+  // Turned back and forth: the middle ring turns 90, the ends none
+  imm wag = twistBy(&b, new Vec3(0., 0., 1.), new Vec3(0., 0., 0.), u => quarter * sin(pi * u));
+  point(*wag.positions[5usize], 1., 1., 1., "twistBy: the middle ring turned 90");
+  point(*wag.positions[9usize], 1., -1., 2., "twistBy: the end not turned");
+}
+
+fn displacements() {
+  // The box's vertex normals point out diagonally; compare to the channel form
+  mut b = box();
+  imm along = b.findFloatChannel(VertexDomain, "along");
+  imm lift = b.addFloatChannel(VertexDomain, "lift", 0.);
+  imm k0 = 3.;
+  mut k = 0u32;
+  while usize.from(k) < b.vertexCount() {
+    b.setFloat(lift, k, b.float(along, k) * 0.1 * k0 + 0.01 * f32.from(k));
+    k = k + 1u32;
+  }
+  imm viaChannel = displaceAlongNormal(&b, "lift", 1.);
+  imm viaFn = displaceAlongNormalBy(&b, k => b.float(along, k) * 0.1 * k0 + 0.01 * f32.from(k));
+  expectBool(sameBits(&viaChannel, &viaFn), true, "displaceAlongNormalBy: the same bits as the channel form");
+  expectInt(i64.from(viaFn.vertexCount()), 12, "displaceAlongNormalBy: the topology is kept");
+  // Every vertex 0.25 out along its normal: the box's end vertices at (1, 1, 0) have the diagonal normal
+  imm fat = displaceAlongNormalBy(&b, k => 0.25);
+  imm n = b.vertexNormals();
+  imm moved = *fat.positions[0usize] - *b.positions[0usize];
+  expectFloat(f64.from(moved.length()), 0.25, near, "displaceAlongNormalBy: a constant amount moves by it");
+  expectFloat(f64.from(moved.dot(*n[0usize])), 0.25, near, "displaceAlongNormalBy: along the normal");
+}
+
+fn main() i32 {
+  sweeps();
+  deforms();
+  tapersAndTwists();
+  displacements();
+  done();
+}

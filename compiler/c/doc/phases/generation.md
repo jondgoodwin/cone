@@ -1725,7 +1725,12 @@ HLSL's compilers settle it:
   a global is in effect a copy per kind, with no instancing in Cone.
 - **Structs and arrays break into separate values** (`sroa`), so a struct
   holding a reference dissolves into locals: logical addressing keeps no
-  pointer in memory.
+  pointer in memory. It runs twice, `instsimplify` between: the struct of
+  borrows a closure literal builds is first one value whose parts only
+  `instsimplify` extracts, and only then is a local it borrows, a slice
+  parameter's, a candidate to break up. With the first run alone the closure's
+  slice is read through a pointer loaded from memory, and the kernel's indexing
+  of it is refused (`ErrorGpuSliceOrigin`).
 - **LLVM's address-space inference** (`infer-address-spaces`) then gives each
   use its origin's space back. It rewrites only casts into the target's flat
   space, which for the OpenCL form is 4, `Generic`; `genlLLVMOptions` names 0

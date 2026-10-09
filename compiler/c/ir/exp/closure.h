@@ -84,6 +84,10 @@ extern FnSigNode *closureHint;
 // the 'if' that finds its branches disagree says so in the closure's words
 extern int closureInferring;
 
+// In GPU code, a closure (a reference to its hidden struct) coerced to a
+// virtual reference: refused, answering whether it was
+int closureGpuVirtRefused(INode *from, INode *totypedcl);
+
 // Whether a node is a closure literal, still to be lowered
 #define closureIsLiteral(node) ((node)->tag == ClosureTag)
 

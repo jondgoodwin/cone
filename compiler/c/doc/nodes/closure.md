@@ -219,6 +219,32 @@ it is the virtual reference of a trait that already exists.
 The call is the ordinary virtual dispatch: `f(x)` on a callable reference reaches the
 trait's `()` (`fnCallTypeCheck`, `VirtRefTag`) through the vtable.
 
+## In GPU code
+
+On a GPU target (`flowGpu`) a closure is allowed in its static form only: given to
+a generic bound by a signature, whose instance for the hidden struct is inlined
+into the kernel with every other call (generation, section 7), so the struct, a
+value of fields that are numbers or borrows, is broken into locals and nothing of
+it is left to run. Three refusals keep it so:
+
+- **What it holds** (`closureGpuCheck`, `closureGpuWhy`, `ErrorGpuClosureData`):
+  the type of each state entry and of each variable it borrows may hold numbers,
+  structs and arrays of them, and borrows (a slice's element, a reference's
+  target) of such types; an owning reference (`So`, `Rc`, `Arc`, `Gc`), a function
+  reference, a virtual reference or a raw pointer, anywhere inside, is refused,
+  naming the variable. The closure is built all the same, so the call it is
+  given to goes on and says nothing more.
+- **A function reference** (`ErrorGpuClosureRef`): a literal given where `&fn(...)`
+  is wanted, which on the CPU becomes a plain function when it holds and borrows
+  nothing, is refused whatever it holds. A GPU has no pointers to code.
+- **A virtual reference** (`closureGpuVirtRefused`, from the `ConvSubtype` case of
+  `iexpCoerceShape`): a reference to a hidden struct converted to a virtual
+  reference or an owner of a trait is refused; it would be called through a table
+  of code pointers.
+
+A function reference to a named function, a virtual reference to a hand-written
+struct and an owner are not refused by this check; they are no closures.
+
 ## Across objects
 
 A closure written in a body an importer expands (an `inline` function, a generic's
@@ -251,6 +277,9 @@ says so, and the object defines the hidden struct's methods, internally
 | | `closureUse`, `closureSelfParm` | a name that is a field; the `self` a member is reached through |
 | | `closureImplicitReturn`, `closureReturnTypeCheck` | the return type read off the paths |
 | | `cloneClosureNode` | a copy of a literal, for a generic's instance and for the attempts |
+| | `closureGpuCheck`, `closureGpuWhy`, `closureGpuVirtRefused` | on a GPU target, what a closure may hold, and a closure made a virtual reference |
+| `ir/iexp.c` | `iexpCoerceShape` (`ConvSubtype`) | calls `closureGpuVirtRefused` |
+| `genllvm/genllvm.c` | `genpgm` | the GPU pipeline's two `sroa` runs, which break up what a closure borrows |
 | `ir/exp/fncall.c` | `fnCallClosureArgs`, `fnCallClosureOverload`, `fnCallCallableParm` | closure arguments of a generic or an overload set |
 | | `fnCallCheckClosureArg`, `fnCallLendParm` | a literal given to a `&<fn` parameter, lent as a temporary |
 | | `fnCallFieldCall`, `fnCallTypeCallable` | `t.profile(3.)`: a callable field's call |
