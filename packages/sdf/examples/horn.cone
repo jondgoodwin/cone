@@ -65,6 +65,8 @@ import mesh;
 import noise;
 import gpu use *;
 import render use *;
+import fs;
+import path use Path;
 import window use *;
 import sdf use *;
 import sdfmesh use *;
@@ -359,11 +361,8 @@ fn gpuParity(device &mut Device, horn &Horn) bool {
   // GPUs' tables can be compared value by value
   imm outPath = libc.getenv("HORN_PARITY_OUT");
   if (outPath as usize) != 0usize {
-    imm file = libc.fopen(cstr.fromPtr(outPath), "wb");
-    if (file as usize) != 0usize {
-      libc.fwrite(p, 1usize, usize.from(PARITY_WIDTH * PARITY_HEIGHT * 4u32), file);
-      libc.fclose(file);
-    }
+    imm file = Path.from(cstr.fromPtr(outPath).view());
+    fs.writeFile(&file, mem.sliceFromParts(p, usize.from(PARITY_WIDTH * PARITY_HEIGHT * 4u32)));
   }
   mut exact Array[u32, 4] = [0u32, 0u32, 0u32, 0u32];
   mut worst Array[f64, 4] = [0d, 0d, 0d, 0d];
@@ -627,7 +626,7 @@ fn drawDump(device &mut Device, meshes &List[mesh.Mesh], folder &String, start i
     downMs = downMs + f64.from(averaged - drawn) / frequency * 1000.;
     imm shot = Image.fromTexels(out, i32.from(VIDEO_WIDTH), i32.from(VIDEO_HEIGHT), false);
     imm name = frameName(folder, f);
-    if shot.save(name.view()) { written = written + 1; }
+    if shot.save(&Path.from(name.view())) { written = written + 1; }
     else { print <- "Could NOT write "; printStr(name.view()); print <- "\n"; }
     saveMs = saveMs + f64.from(sdl.GetPerformanceCounter() - averaged) / frequency * 1000.;
     n = n + 1;
@@ -898,7 +897,7 @@ fn main(argc i32, argv **u8) i32 {
         }
         if screenshot.len() > 0usize {
           imm shot = Image.fromTexels(p, i32.from(w), i32.from(h), bgra);
-          imm written = shot.save(name.view());
+          imm written = shot.save(&Path.from(name.view()));
           print <- "Screenshot: "; printStr(name.view());
           if written { print <- "\n"; } else { print <- " could NOT be written\n"; shotsWritten = false; }
         }
