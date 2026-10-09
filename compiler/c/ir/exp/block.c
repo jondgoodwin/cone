@@ -267,8 +267,21 @@ void blockTypeCheck(TypeCheckState *pstate, BlockNode *blk, INode *expectType) {
     // the loop is built, so the source is checked first, as the initializer of
     // the variable that holds it, and the statements below are checked as built
     if (blk->flags & FlagEach) {
-        blockStmtTypeCheck(pstate, &nodesGet(blk->stmts, 0), &hoists);
-        eachLower(pstate, blk);
+        if (blk->flags & FlagParallel) {
+            // A parallel each over a number range holds its two bounds in two
+            // hidden variables, one of which takes its type from the other
+            uint32_t first = parallelEachBoundsFirst(blk);
+            blockStmtTypeCheck(pstate, &nodesGet(blk->stmts, first), &hoists);
+            if (blk->stmts->used == 3) {
+                parallelEachBoundType(blk, first);
+                blockStmtTypeCheck(pstate, &nodesGet(blk->stmts, 1 - first), &hoists);
+            }
+            parallelEachLower(pstate, blk);
+        }
+        else {
+            blockStmtTypeCheck(pstate, &nodesGet(blk->stmts, 0), &hoists);
+            eachLower(pstate, blk);
+        }
     }
 
     // A brand minted in a loop's body is its pass's (lifetime.h)
@@ -354,6 +367,11 @@ void blockTypeCheck(TypeCheckState *pstate, BlockNode *blk, INode *expectType) {
 
     if (blk->flags & FlagLoop)
         lifeBrandLoopExit();
+
+    // A parallel each's body is checked: what its pieces may write is known now
+    // that its statements have their types
+    if (blk->flags & FlagParallel)
+        parallelEachCheckBody(pstate, blk);
 
     // Do inference on all registered breaks to ensure they all return the expected type
     // Note: Iterate differently because list may grow while iterating

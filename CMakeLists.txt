@@ -101,6 +101,7 @@ add_executable(conec
 	compiler/c/ir/exp/contents.c
 	compiler/c/ir/exp/deref.c
 	compiler/c/ir/exp/each.c
+	compiler/c/ir/exp/pareach.c
 	compiler/c/ir/exp/fncall.c
 	compiler/c/ir/exp/if.c
 	compiler/c/ir/exp/literal.c
@@ -149,6 +150,7 @@ add_executable(conec
 	compiler/c/genllvm/genlexpr.c
 	compiler/c/genllvm/genlalloc.c
 	compiler/c/genllvm/genlawait.c
+	compiler/c/genllvm/genlpar.c
 	compiler/c/genllvm/genlyield.c
 	compiler/c/genllvm/genltype.c
 	compiler/c/genllvm/genlcabi.c

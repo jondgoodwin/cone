@@ -1,0 +1,208 @@
+// What a 'parallel each' refuses. Its passes run at the same time, so the body
+// keeps rules a plain 'each' does not.
+//
+// The source: it is split into pieces and measured, so it must be a number
+// range counting up, an array, a slice or a list. A cursor hands its items out
+// one after another and cannot be split (the message says to collect it into a
+// list); neither can a count down or a step, since which pass runs first is not
+// defined in parallel.
+//
+// The body: 'break', 'return', 'await' and a 'continue' of a loop around the
+// parallel each are refused (a plain 'continue' is allowed, and so are a
+// 'break' and a 'continue' of a loop inside the body); and nothing declared
+// outside the loop is written or lent for writing -- by assignment, an
+// operator that assigns, a field, an element, a swap, a method that changes it
+// or a borrow that may -- because the passes would do it at the same time. A
+// pass's own variables are its own to write. (A message sent to an actor is
+// not refused: it is gathered and sent after the loop in iteration order,
+// concurrency_parallel_each_sends.)
+
+mod concurrency_parallel_each_refused;
+
+import collections use *;
+import actors;
+
+struct Countdown {
+  n u64;
+
+  pub fn next(self &mut) Option[u64] {
+    if n == 0u64 { return None[u64][]; }
+    n = n - 1u64;
+    Some[u64][n];
+  }
+}
+
+struct Pair {
+  a u64;
+  b u64;
+}
+
+// A ParallelIterable of its own: it has 'len' and 'split'. A parallel each does
+// not call a type's own 'split' yet
+struct Strip {
+  n usize;
+
+  pub fn len(self &) usize { n; }
+
+  pub fn split(self &, at usize) (Strip, Strip) {
+    (new Strip(at), new Strip(n - at));
+  }
+}
+
+// ---- the source ----
+
+fn sources() {
+  parallel each x in new Countdown(5u64) {         //~ ErrorParSource "hands out its items one after another"
+  }
+  mut d = new Deque[u64];
+  parallel each x in d.items() {                   //~ ErrorParSource "Collect it into a list first"
+  }
+  parallel each x in 5u64 {                        //~ ErrorParSource "is none of those"
+  }
+  parallel each x in new Strip(4usize) {           //~ ErrorParSource "has 'len' and 'split' and so is a ParallelIterable, is not built yet"
+  }
+  parallel each a, b in [1u64, 2u64] {             //~ ErrorParSource "gives one variable"
+  }
+  parallel each i in 0.5 < 2.5 {                   //~ ErrorParSource "whole numbers"
+  }}
+
+// ---- control ----
+
+fn control(xs &Array[u64]) {
+  parallel each x in xs {
+    if *x == 1u64 {
+      break;                                       //~ ErrorParControl "'break' is not allowed in a 'parallel each' body"
+    }
+  }
+  parallel each x in xs {
+    if *x == 1u64 {
+      return;                                      //~ ErrorParControl "'return' is not allowed in a 'parallel each' body"
+    }
+  }
+  'outer: each y in xs {
+    parallel each x in xs {
+      if *x == 1u64 {
+        continue 'outer;                           //~ ErrorParControl "may continue this loop, or a loop inside it"
+      }
+    }
+  }
+  // Allowed: a loop inside the body has its own break and continue
+  parallel each x in xs {
+    mut i = 0u64;
+    while i < 10u64 {
+      i = i + 1u64;
+      if i == 3u64 { continue; }
+      if i == 5u64 { break; }
+    }
+    if *x == 0u64 { continue; }
+  }
+}
+
+// ---- writing what is outside ----
+
+fn writes(xs &Array[u64], out &mut Array[u64], p &mut Pair) {
+  mut total = 0u64;
+  mut pair = new Pair(1u64, 2u64);
+  mut arr = [1u64, 2u64, 3u64];
+  mut list = new List[u64];
+  mut other = 0u64;
+  parallel each x in xs {
+    total = total + *x;                            //~ ErrorParWrite "may not write total"
+  }
+  parallel each x in xs {
+    total += *x;                                   //~ ErrorParWrite "may not lend for writing total"
+  }
+  parallel each x in xs {
+    pair.a = *x;                                   //~ ErrorParWrite "may not write pair"
+  }
+  parallel each x in xs {
+    arr[0usize] = *x;                              //~ ErrorParWrite "may not write arr"
+  }
+  parallel each x in xs {
+    list.push(*x);                                 //~ ErrorParWrite "may not lend for writing list"
+  }
+  parallel each x in xs {
+    total <=> other;                               //~ ErrorParWrite "may not swap total"
+  }
+  parallel each x in xs {
+    imm r = &mut total;                            //~ ErrorParWrite "may not lend for writing total"
+  }
+  parallel each x in xs {
+    out[0usize] = *x;                              //~ ErrorParWrite "may not write out"
+  }
+  parallel each x in xs {
+    p.a = *x;                                      //~ ErrorParWrite "may not write p"
+  }
+  // Allowed: what the pass declares is its own, and reading is free
+  parallel each x in xs {
+    mut mine = *x;
+    mine = mine + total + pair.b;
+    imm copy = arr[1usize];
+    mut scratch = new Pair(mine, copy);
+    scratch.a = scratch.b;
+  }
+}
+
+// ---- changing the items ----
+
+struct Holder {
+  items List[u64];
+  other u64;
+}
+
+// A pass may change its own item, and read what is not where the items are
+// lent from; it may not name that place as well
+fn items(out &mut Array[u64], h &mut Holder) {
+  mut list = new List[u64];
+  imm seen = Atomic[u64].of(0u64);
+  mut total = 0u64;
+  parallel each x in list.mutItems() {
+    *x = 1u64;
+  }
+  parallel each x in out.mutItems() {
+    *x = h.other;
+  }
+  parallel each x in h.items.mutItems() {
+    *x = h.other + seen.load();
+  }
+  parallel each x in list.mutItems() {
+    seen.add(u64.from(list.len));                  //~ ErrorParWrite "changes the items of list one pass at a time"
+  }
+  parallel each x in out {
+    seen.add(out[0usize]);                         //~ ErrorParWrite "changes the items of out one pass at a time"
+  }
+  parallel each x in h.items.mutItems() {
+    *x = u64.from(h.items.len);                    //~ ErrorParWrite "changes the items of h one pass at a time"
+  }
+  parallel each x in list.mutItems() {
+    total = total + *x;                            //~ ErrorParWrite "may not write total"
+  }
+}
+
+// ---- where the loop is written ----
+
+actor Inside {
+  total u64;
+
+  fn init(self &new) {
+    *self = new Self(total: 0u64);
+  }
+
+  pub async do get(self) u64 {
+    total;
+  }
+
+  pub async do run(self) {
+    imm xs = [1u64, 2u64];
+    parallel each x in xs {                        //~ ErrorParRuntime "inside an actor's method is not built yet"
+      await self.get();                            //~ ErrorParControl "'await' is not allowed in a 'parallel each' body"
+    }
+  }
+}
+
+// A generator's body is run a step at a time by whoever calls 'next'
+fn walk(xs &Array[u64]) yields u64 {
+  parallel each x in xs {                          //~ ErrorParRuntime "inside a generator is not built"
+  }
+  yield 1u64;
+}

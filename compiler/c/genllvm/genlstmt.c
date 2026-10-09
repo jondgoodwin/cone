@@ -161,7 +161,28 @@ LLVMValueRef genlBlock(GenState *gen, BlockNode *blk) {
     // (FlagKeepTemps)
     int keeptemps = blk->flags & FlagKeepTemps;
     uint32_t blocktempmark = gen->tempcnt;
+    // A parallel each is not generated statement by statement: from the index
+    // its pieces count with to its loop they are a function of their own, which
+    // the actors' workers run (genlParallelRun); the loop is the last of them
+    INode *outlined = NULL;     // That loop, once it has been generated
+    int skipping = 0;           // The statements from the index to the loop are generated in the function
     for (nodesFor(blk->stmts, cnt, nodesp)) {
+        if (skipping) {
+            // (the loop, the block's last statement, may be its value: the rest
+            // of that statement, the block's end, is generated here)
+            if (*nodesp == outlined) {
+                skipping = 0;
+                continue;
+            }
+            if ((*nodesp)->tag != BlockRetTag || ((BreakRetNode*)*nodesp)->exp != outlined)
+                continue;
+            skipping = 0;
+        }
+        else if ((blk->flags & FlagParallel) && (*nodesp)->tag == VarDclTag && ((VarDclNode*)*nodesp)->namesym == parKName) {
+            outlined = genlParallelRun(gen, blk, *nodesp);
+            skipping = 1;
+            continue;
+        }
         // The temporaries a statement makes die at its end, newest first, after
         // its value and before the locals a scope's end releases. A jump
         // finalizes them before it leaves (genlBreak, genlReturn), and nothing
@@ -211,7 +232,7 @@ LLVMValueRef genlBlock(GenState *gen, BlockNode *blk) {
         case BlockRetTag:
         {
             BreakRetNode *node = (BreakRetNode*)*nodesp;
-            if (node->exp->tag != NilLitTag)
+            if (node->exp->tag != NilLitTag && node->exp != outlined)
                 lastval = genlExpr(gen, node->exp);
             genlTempsEnd(gen, tempmark);
             genlDealiasNodes(gen, node->dealias);

@@ -1,0 +1,107 @@
+// ParallelIterable[T, P], the shape a 'parallel each' walks: a type with 'len',
+// how many items it holds, and 'split', which cuts it at an index into two
+// pieces. None declares it: a list is one by the 'len' and 'split' it folds in
+// from Array (its pieces are slices), and a type of one's own is by having the
+// two methods. (An array or a slice has no methods of its own to call; 'parallel
+// each' walks them, and a list, by cutting the index range itself.)
+//
+// A function bounded by ParallelIterable cuts a list and a structure of its own
+// in halves; what the pieces hold is worked out by hand from the numbers put in.
+// 'parallel each' does not call a type's own 'split' yet
+// (concurrency_parallel_each_refused).
+
+mod concurrency_parallel_iterable;
+
+import stdio use *;
+import collections use *;
+
+// A run of consecutive numbers first, first + 1, ... first + count - 1, which
+// cuts into two runs
+struct Run {
+  first u64;
+  count usize;
+
+  pub fn len(self &) usize { count; }
+
+  pub fn split(self &, at usize) (Run, Run) {
+    (new Run(first, at), new Run(first + u64.from(at), count - at));
+  }
+
+  pub fn total(self &) u64 {
+    mut sum = 0u64;
+    mut i = 0usize;
+    while i < count {
+      sum = sum + first + u64.from(i);
+      i = i + 1usize;
+    }
+    sum;
+  }
+}
+
+// The length of a ParallelIterable, and its two halves
+fn length[T, P, C ParallelIterable[T, P]](c &C) usize {
+  c.len();
+}
+
+fn halves[T, P, C ParallelIterable[T, P]](c &C) (P, P) {
+  c.split(c.len() / 2usize);
+}
+
+fn sumSlice(s &Array[u64]) u64 {
+  mut total = 0u64;
+  each x in s {
+    total = total + *x;
+  }
+  total;
+}
+
+fn show(label &str, n u64) {
+  printStr(label);
+  printStr(" = ");
+  printUInt(n);
+  printStr("\n");
+}
+
+fn main() {
+  mut l = new List[u64];
+  l.push(10u64); l.push(20u64); l.push(30u64); l.push(40u64); l.push(50u64); l.push(60u64); l.push(70u64);
+
+  // A list is cut where it is told, into the two sides of the same elements
+  imm cut = l.split(3usize);
+  imm left = cut.0;
+  imm right = cut.1;
+  show("left", u64.from(left.len));
+  show("right", u64.from(right.len));
+  show("left-sum", sumSlice(left));          // 10 + 20 + 30
+  show("right-sum", sumSlice(right));        // 40 + 50 + 60 + 70
+  imm start = l.split(0usize);
+  imm startleft = start.0;
+  imm startright = start.1;
+  show("cut-at-start-left", u64.from(startleft.len));
+  show("cut-at-start-right", u64.from(startright.len));
+  imm end = l.split(7usize);
+  imm endleft = end.0;
+  imm endright = end.1;
+  show("cut-at-end-left", u64.from(endleft.len));
+  show("cut-at-end-right", u64.from(endright.len));
+
+  // Through the bound
+  show("list-len", u64.from(length[u64, &Array[u64], List[u64]](&l)));
+  imm lh = halves[u64, &Array[u64], List[u64]](&l);
+  imm lhleft = lh.0;
+  imm lhright = lh.1;
+  show("list-left-half", u64.from(lhleft.len));
+  show("list-right-half", u64.from(lhright.len));
+  show("list-right-half-sum", sumSlice(lhright));     // 40 + 50 + 60 + 70
+
+  // A type of one's own, met by shape
+  imm run = new Run(100u64, 6usize);
+  show("run-len", u64.from(length[u64, Run, Run](&run)));
+  imm rh = halves[u64, Run, Run](&run);
+  imm rhleft = rh.0;
+  imm rhright = rh.1;
+  show("run-left-half", u64.from(rhleft.len()));
+  show("run-right-half", u64.from(rhright.len()));
+  show("run-left-half-sum", rhleft.total());          // 100 + 101 + 102
+  show("run-right-half-sum", rhright.total());        // 103 + 104 + 105
+}

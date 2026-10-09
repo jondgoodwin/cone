@@ -1,0 +1,77 @@
+// A 'parallel each' body may not copy a counted owner whose count is not atomic.
+// Outside variables are read-only for the loop, and a copy of an 'Rc' adds one to
+// its count, a write: two passes copying the same Rc at the same time would lose
+// a count and free what is still held. So a copy of such a value that is not the
+// pass's own is refused, wherever it is reached from: a variable, a field of a
+// struct, an element of a list, a tuple's, an array's, the Rc inside a struct
+// copied whole, or through a borrow (the pass's own variable of a list of them).
+//
+// Reading is free: through a borrow ('&x'), by dereferencing, a field that is a
+// number. An 'Arc' counts atomically and may be copied. A pass's own Rc, made in
+// it, is its own.
+
+mod concurrency_parallel_each_copies;
+
+import collections use *;
+import sync use *;
+import collector;
+import actors;
+
+struct Holder {
+  shared Rc[imm, u64];
+  n u64;
+}
+
+struct Pair {
+  a Rc[imm, u64];
+  b u64;
+}
+
+fn copies(h &Holder, list &List[Rc[imm, u64]], tup (Rc[imm, u64], u64), arr &Array[Rc[imm, u64], 2]) {
+  imm mine = new Rc[imm, u64](5u64);
+  parallel each i in 0usize < 4usize {
+    imm c = mine;                               //~ ErrorParCopy "may not copy a value of type"
+  }
+  parallel each i in 0usize < 4usize {
+    imm c = h.shared;                              //~ ErrorParCopy "may not copy a value of type"
+  }
+  parallel each i in 0usize < 4usize {
+    imm whole = *h;                                //~ ErrorParCopy "may not copy a value of type"
+  }
+  parallel each r in list {
+    imm c = *r;                                    //~ ErrorParCopy "may not copy a value of type"
+  }
+  parallel each i in 0usize < 4usize {
+    imm c = *list[0usize];                   //~ ErrorParCopy "may not copy a value of type"
+  }
+  parallel each i in 0usize < 4usize {
+    imm c = tup.0;                                 //~ ErrorParCopy "may not copy a value of type"
+  }
+  parallel each i in 0usize < 4usize {
+    imm c = arr[1usize];                           //~ ErrorParCopy "may not copy a value of type"
+  }
+}
+
+// An enum's payload holds one
+fn payload(o &Option[Rc[imm, u64]]) {
+  parallel each i in 0usize < 4usize {
+    imm c = *o;                                    //~ ErrorParCopy "may not copy a value of type"
+  }
+}
+
+// A copy passed to a function is a copy too
+fn take(r Rc[imm, u64]) u64 { *r; }
+
+fn passed(shared Rc[imm, u64]) {
+  imm out = Atomic[u64].of(0u64);
+  parallel each i in 0usize < 4usize {
+    out.add(take(shared));                        //~ ErrorParCopy "may not copy a value of type"
+  }
+}
+
+// A traced reference is the collector's, whose roots are one chain for every thread
+fn traced(g Gc[imm, u64]) {
+  parallel each i in 0usize < 4usize {
+    imm c = g;                                     //~ ErrorParCopy "may not copy a value of type"
+  }
+}

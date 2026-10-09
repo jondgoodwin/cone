@@ -29,6 +29,7 @@ caused, were measured.*
 | `FlagLoopStep` | the last statement is `each`'s synthesized step |
 | `FlagKeepTemps` | an operator's rewrite (`fnCallOpAssgn`, `contentsLower`): its statements' temporaries die at its end, not each statement's ([Flow](../phases/flow.md), "Temporaries") |
 | `FlagEach` | the outer block of an `each` over a source that is not a numeric range: `blockTypeCheck` checks its first statement, the hidden variable holding the source, then builds the loop (`eachLower`, `ir/exp/each.c`) and clears the flag |
+| `FlagParallel` | the outer block of a `parallel each`; set with `FlagEach` by the parser and **kept** once `parallelEachLower` has built the loop, for the body's checks and for generation, which outlines the loop. With `FlagParIncl` (a range written `<=`) and `FlagParRange` (a number range, not a source) |
 | `FlagLoopElse` | the block a loop leaves through when it has run out: the statements of its `else`, ending in the `break` that carries the loop's value (`blockElseFinish`). Name resolution reads it with the loop *around* the loop it stands in as the innermost one (below) |
 
 ## Parse
@@ -91,6 +92,15 @@ loop or of the cursor's `None` arm. A range has several places it runs out
 (the guard, and the steps that stop a counter wrapping or reaching its bound),
 and one `else`: they set a hidden flag instead of breaking, and the guard
 `if flag or not (c < b) {…else…}` leaves at the top of the next pass.
+
+**`parallel each` is parsed as `each` is**, with `FlagParallel` beside `FlagEach`.
+`parallel` is an ordinary name (`parallelName`) that `parseExprBlock` takes for the
+word only when `each` follows it directly (`lexNextIsWord`), so it stays usable as
+a variable, a function or a field. A number range is not rewritten to a counter, as
+`each`'s is: its two bounds are held in two hidden variables (`first'`, `last'`),
+the block has three statements, and `FlagParIncl` says `<=`. A count down, a
+`by` step and an `else` are refused here (`ErrorParSource`, `ErrorParElse`); a
+header `if` is the same `continue` statement after the pass's variable.
 
 ## Name resolution
 
@@ -178,6 +188,59 @@ expression a second time is not idempotent for a call, which type check lowers,
 so the lowering uses the node the check left: where the source is a place a
 second check leaves alone (`eachRecheckable`), the variable is dropped and the
 place is used in its stead; otherwise the variable holds it.
+
+**`FlagParallel`: a `parallel each` is built by `parallelEachLower`**
+(`ir/exp/pareach.c`), called in `eachLower`'s place from `blockTypeCheck`. A range
+checks its two bounds first (`parallelEachBoundsFirst`: the one that is not an
+untyped literal, so that the other takes its type, `parallelEachBoundType`). The
+source must be a number range of whole numbers no wider than a usize, an array,
+a slice or a type that lends an array; anything else (a cursor, a type with its
+own `len` and `split`) is refused with the reason (`ErrorParSource`), as is a
+module that does not import `actors`, whose `parallelEach` runs the loop, and an
+actor's method (`ErrorParRuntime`). The control rules (`break`, `return`, `await`,
+a `continue` of an outer loop: `ErrorParControl`) are checked on the body as
+written, before it is built, by a walk (`parWalk`). The loop built is `each`'s counted loop over an index
+range, the statements
+
+```
+[source held and lent as a slice, or the range's bounds]
+imm lo' = 0;  imm hi' = s.len;  mut k' = lo';
+loop { if k' >= hi' {break}; imm x = &s[k'] (or first + T.from(k')); k'++; ...body }
+```
+
+whose hidden variables carry names no source can spell, so generation finds the
+parts by name wherever `blockHoist` puts a temporary. `k'` and the loop are the
+*piece* generation outlines ([Generation](../phases/generation.md), "A parallel
+each"); `lo'` and `hi'` before them are the range of passes, a range's count
+worked out there. Once the body is checked, `parallelEachCheckBody` refuses a
+write to anything declared outside the loop (`ErrorParWrite`): an assignment, a
+swap, or a borrow that may write, whose place is rooted in a variable that is not
+the loop's own or the body's, through fields, elements and references, but not
+through a raw pointer (the loop trusts its writer). The loop is the block's last
+statement, so type check has made it the value of a `blockret` (`parLoopOf`
+looks through it).
+
+It also refuses a **copy** that writes shared state without atomics
+(`ErrorParCopy`, `parCheckCopies`): a place read as a value (not lent, not the
+object of a further access) whose type holds a counted owner whose region is not
+`ThreadSafe` (`Rc`) or a traced reference (`parHoldsPlainCount`, through fields,
+variants, tuples and arrays; an `Arc` and a move owner do not count) and that is
+not the pass's own (`parPlaceIsOwn`: a variable declared in the loop, or a part
+of one held inline, not reached through a reference or an index). A copy inside
+a function the body calls is not seen, and neither is a traced local the pass
+declares (its frame is linked into the collector's one chain).
+
+A mutable slice as the source (what `mutItems()` gives, or a `&mut` slice) lends
+each item mutably, as `eachLower` does, so a pass changes its own item through its
+variable, and the items are disjoint. `&mut` is shared in Cone, so nothing else
+stops the body reading the same list under its own name while another pass changes
+an item: the hidden slice is then named `sm'` (not `s'`), and `parallelEachCheckBody`
+refuses a body that names the place the slice was lent from (`parPathOf`: the
+variable and the fields named from it, through references and a method's receiver,
+and any place that is that place, or inside it, or holds it) as well
+(`ErrorParWrite`). A header `if` needs nothing of its own: it is `eachLower`'s
+`continue` statement after the pass's variable, ahead of which the loop's step is
+inserted.
 
 Every statement but the last is checked with `noCareType`. A nested plain block
 may not end in `break`/`continue` (`blockNoBreak`) — `if` arms are exempt,

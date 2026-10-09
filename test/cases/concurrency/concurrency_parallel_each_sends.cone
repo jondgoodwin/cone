@@ -1,0 +1,158 @@
+// A message a 'parallel each' body sends to an actor is gathered: it is not sent
+// where it is sent, since the passes run at the same time and an actor would
+// see a different order from run to run. It is kept, and sent after the loop,
+// by the thread that began it, in iteration order: the messages of the first
+// pass, then the second's, and so on.
+//
+// Four workers run each loop, over passes of very uneven cost, so the passes
+// finish in no order. What is checked is what each actor saw:
+//
+//   - one actor sent one message a pass: it saw 0, 1, 2, ... in order, and none
+//     of them was handled while the loop was still running (each pass looks)
+//   - two messages a pass, to two actors, from the body and from a function it
+//     calls: each actor saw its own in order
+//   - a parallel each inside a parallel each: the inner loop's messages are
+//     gathered again into the outer pass, so the order is the outer pass's
+//     first, the inner's within it
+//   - a pass that sends nothing, and a loop that sends nothing at all
+//
+// Each actor reports what it saw from its own behaviour once the loops are
+// done; finalAll waits for them all, so an actor kept alive by a message that
+// was never released (a held mailbox) would hang the program here.
+
+mod concurrency_parallel_each_sends;
+
+import stdio use *;
+import collections use *;
+import actors;
+
+struct Probe {
+  pub handled Atomic[u64];      // messages any Log has handled
+  pub early Atomic[u64];        // passes that found one handled while their loop ran
+  pub verdict Array[Atomic[u64], 6];    // each Log's report: its messages * 2, and 1 if in order
+}
+
+imm probe Probe;
+
+fn @initpure init() {
+  probe = new Probe(Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+    [Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64), Atomic[u64].of(0u64),
+     Atomic[u64].of(0u64), Atomic[u64].of(0u64)]);
+}
+
+actor Log {
+  seen List[u64];
+
+  fn init(self &new) {
+    *self = new Self(seen: new List[u64]);
+  }
+
+  pub async do note(self, n u64) {
+    seen.push(n);
+    probe.handled.add(1u64);
+  }
+
+  // mode 0: the numbers 0, 1, 2 ...; 1: 0 to 4, 10 to 14, 20 to 24 ...;
+  // 2: the even numbers; 3: the odd numbers
+  pub async do report(self &, label u64, mode u64) {
+    mut ok = true;
+    mut k = 0usize;
+    each n in seen {
+      imm want = if mode == 0u64 {u64.from(k);}
+        else if mode == 1u64 {u64.from(k / 5usize) * 10u64 + u64.from(k % 5usize);}
+        else if mode == 2u64 {u64.from(k) * 2u64;}
+        else {u64.from(k) * 2u64 + 1u64;};
+      if *n != want {
+        ok = false;
+      }
+      k = k + 1usize;
+    }
+    probe.verdict[usize.from(label)].store(u64.from(seen.len) * 2u64 + (if ok {1u64;} else {0u64;}));
+  }
+}
+
+fn mix(i u64, n u64) u64 {
+  mut x = i + 1u64;
+  mut k = 0u64;
+  while k < n {
+    x = x * 6364136223846793005u64 + k;
+    k = k + 1u64;
+  }
+  x;
+}
+
+// Very uneven cost, so passes end out of order
+fn weigh(i u64) u64 {
+  mix(i, (i * i) % 97u64 * 40u64);
+}
+
+fn sendAlso(log Log, n u64) {
+  log.note(n);
+}
+
+fn main() {
+  initAll();
+  actors.configure(new actors.Options(workers: 4u32));
+  {
+    imm one = new Log();
+    imm two = new Log();
+    imm three = new Log();
+    imm four = new Log();
+    imm silent = new Log();
+
+    // One message a pass
+    parallel each i in 0usize < 400usize {
+      imm w = weigh(u64.from(i));
+      if w != 1u64 and probe.handled.load() != 0u64 {
+        probe.early.add(1u64);
+      }
+      one.note(u64.from(i));
+    }
+    printStr("handled while the loop ran: ");
+    printUInt(probe.early.load());
+    printStr("\n");
+    one.report(1u64, 0u64);
+
+    // Two actors, one message of each a pass, one from the body, one from a function
+    parallel each i in 0usize < 300usize {
+      imm w = weigh(u64.from(i));
+      two.note(u64.from(i) * 2u64 + (w & 0u64));
+      sendAlso(three, u64.from(i) * 2u64 + 1u64 + (w & 0u64));
+    }
+    two.report(2u64, 2u64);
+    three.report(3u64, 3u64);
+
+    // A loop in a loop
+    parallel each r in 0usize < 12usize {
+      parallel each c in 0usize < 5usize {
+        imm w = weigh(u64.from(r) * 5u64 + u64.from(c));
+        four.note(u64.from(r) * 10u64 + u64.from(c) + (w & 0u64));
+      }
+    }
+    four.report(4u64, 1u64);
+
+    // A pass that sends nothing, and a loop that sends nothing
+    parallel each i in 0usize < 100usize {
+      if i % 2usize == 0usize {
+        silent.note(u64.from(i) / 2u64);
+      }
+    }
+    silent.report(5u64, 0u64);
+    parallel each i in 0usize < 50usize {
+      imm w = weigh(u64.from(i));
+    }
+  }
+  finalAll();
+  // Once the actors have handled everything: what each saw
+  mut label = 1usize;
+  while label <= 5usize {
+    imm v = probe.verdict[label].load();
+    printStr("log "); printUInt(u64.from(label));
+    printStr(": "); printUInt(v / 2u64); printStr(" messages, ");
+    printStr(if v % 2u64 == 1u64 {"in order\n";} else {"OUT OF ORDER\n";});
+    label = label + 1usize;
+  }
+  printStr("handled in all: ");
+  printUInt(probe.handled.load());
+  printStr("\n");
+}
