@@ -358,18 +358,6 @@ static int parCheckWrites(INode *node, void *ctxp) {
             parRefuseWrite(ctx, node, ((RefNode*)node)->vtexp, "lend for writing");
         break;
     }
-    case FnCallTag: {
-        // A message sent to an actor (a call of its handle's method)
-        INode *fn = ((FnCallNode*)node)->objfn;
-        if (fn != NULL && isNameUseNode(fn) && ((NameUseNode*)fn)->dclnode != NULL
-            && ((NameUseNode*)fn)->dclnode->tag == FnDclTag) {
-            ActorInfo *callee;
-            if (actorMessageOfSend((FnDclNode *)((NameUseNode*)fn)->dclnode, &callee) != NULL)
-                errorMsgNode(node, ErrorParSend,
-                    "A 'parallel each' body may not send a message to an actor yet. The sends are to be gathered per piece and made in iteration order after the loop, which is not built; collect what is to be sent in a list, and send after the loop.");
-        }
-        break;
-    }
     default:
         break;
     }

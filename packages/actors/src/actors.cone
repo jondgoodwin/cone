@@ -655,8 +655,25 @@ pub fn startActor[S, M Sendable](st *S) Arc[opaq, Mailbox[M]] {
 
 // Send msg to the actor whose Mailbox mb is: push it, and, if the push found
 // the actor idle, take the scheduler's owner of it and queue it. The caller
-// holds a handle, so the actor cannot die meanwhile.
+// holds a handle, so the actor cannot die meanwhile. From a piece of a
+// 'parallel each' (a thread running one has curPiece set) the message is kept
+// instead, to be sent after the loop in iteration order (parallel.cone, SENDS
+// GATHERED).
 pub fn send[M Sendable](mb &opaq Mailbox[M], msg M) {
+  sendTo[M](mb as *Header, msg);
+}
+
+// send, to the mailbox's header
+fn sendTo[M Sendable](h *Header, msg M) {
+  if curPiece != 0usize {
+    gatherSend[M](h, msg);
+    return;
+  }
+  sendNow[M](h, msg);
+}
+
+// The message pushed on the mailbox now
+fn sendNow[M Sendable](h *Header, msg M) {
   if running == 0usize {
     die("actors: a message sent after the runtime stopped");
   }
@@ -665,7 +682,6 @@ pub fn send[M Sendable](mb &opaq Mailbox[M], msg M) {
     die("actors: out of memory for a message");
   }
   mem.writeRaw[M](&(*n).msg as *M, msg);
-  imm h = mb as *Header;
   if mailPush(h, n as *Link) {
     holdArc[M](h);
     schedule(h);

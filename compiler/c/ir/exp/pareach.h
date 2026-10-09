@@ -59,8 +59,7 @@ void parallelEachBoundType(BlockNode *outer, uint32_t first);
 void parallelEachLower(TypeCheckState *pstate, BlockNode *outer);
 
 // Check the body's rules that need its types, once its statements are checked:
-// nothing declared outside the loop is written or lent for writing, and no
-// message is sent to an actor
+// nothing declared outside the loop is written or lent for writing
 void parallelEachCheckBody(TypeCheckState *pstate, BlockNode *outer);
 
 #endif

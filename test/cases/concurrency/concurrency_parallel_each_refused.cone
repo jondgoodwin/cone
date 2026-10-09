@@ -13,8 +13,9 @@
 // outside the loop is written or lent for writing -- by assignment, an
 // operator that assigns, a field, an element, a swap, a method that changes it
 // or a borrow that may -- because the passes would do it at the same time. A
-// pass's own variables are its own to write. A message sent to an actor is
-// refused too, until sends are gathered and made in iteration order.
+// pass's own variables are its own to write. (A message sent to an actor is
+// not refused: it is gathered and sent after the loop in iteration order,
+// concurrency_parallel_each_sends.)
 
 mod concurrency_parallel_each_refused;
 
@@ -48,21 +49,9 @@ struct Strip {
   }
 }
 
-actor Tally {
-  total u64;
-
-  fn init(self &new) {
-    *self = new Self(total: 0u64);
-  }
-
-  pub async do add(self, n u64) {
-    total = total + n;
-  }
-}
-
 // ---- the source ----
 
-fn sources(counter Tally) {
+fn sources() {
   parallel each x in new Countdown(5u64) {         //~ ErrorParSource "hands out its items one after another"
   }
   mut d = new Deque[u64];
@@ -151,14 +140,6 @@ fn writes(xs &Array[u64], out &mut Array[u64], p &mut Pair) {
     imm copy = arr[1usize];
     mut scratch = new Pair(mine, copy);
     scratch.a = scratch.b;
-  }
-}
-
-// ---- messages ----
-
-fn sends(xs &Array[u64], counter Tally) {
-  parallel each x in xs {
-    counter.add(*x);                               //~ ErrorParSend "may not send a message to an actor yet"
   }
 }
 
