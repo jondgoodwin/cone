@@ -38,6 +38,7 @@ import libc;
 import geomath use *;
 import collections use *;
 import render use *;
+import path use Path;
 
 fn push16(b &mut List[u8], v i32) {
   b.push(u8.from(v & 255));
@@ -211,9 +212,18 @@ fn files() {
   libc.fclose(f);
   imm img = Image.load("two.bmp");
   checkTwoByTwo(&img, "2x2 from a file");
+  // A Path in a variable is lent, not given away: it is as it was after the call
+  imm named = Path.from("two.bmp");
+  imm viaPath = Image.load(&named);
+  checkTwoByTwo(&viaPath, "2x2 from a file named by a Path variable");
+  expectStr(named.view(), "two.bmp", "and the Path is unchanged by the load");
   libc.remove("two.bmp");
   imm missing = Image.load("missing.bmp");
   expect(missing.isEmpty(), "a file that is not there");
+  imm gone = Path.from("missing.bmp");
+  imm missingToo = Image.load(&gone);
+  expect(missingToo.isEmpty(), "a file that is not there, named by a Path variable");
+  expectStr(gone.view(), "missing.bmp", "and the Path is unchanged by the failure");
 }
 
 fn checker() {
@@ -256,6 +266,16 @@ fn writing() {
   imm loaded = Image.load("written.bmp");
   checkTwoByTwo(&loaded, "2x2 saved and loaded");
   libc.remove("written.bmp");
+
+  imm out = Path.from("written-path.bmp");
+  expectBool(a.save(&out), true, "saved to a Path variable's file");
+  expectStr(out.view(), "written-path.bmp", "and the Path is unchanged by the save");
+  imm loadedPath = Image.load(&out);
+  checkTwoByTwo(&loadedPath, "2x2 saved to a Path and loaded");
+  libc.remove("written-path.bmp");
+  imm nowhere = Path.from("no such folder/written.bmp");
+  expectBool(a.save(&nowhere), false, "a file that cannot be made");
+  expectStr(nowhere.view(), "no such folder/written.bmp", "and the Path is unchanged by the failure");
 }
 
 // Pixels read back from a GPU: 2 by 2, 4 bytes each, rows from the top:

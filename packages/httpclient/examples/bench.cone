@@ -52,15 +52,15 @@ fn privateBytes() u64 {
   u64.from(c[9usize]);
 }
 
-fn certs(name &str) String {
+fn certs(name &str) Path {
   mut p = String.from("packages/tls/tests/certs/");
   p.append(name);
-  p;
+  Path.fromString(p);
 }
 
 fn readText(name &str) String {
   mut out = String.empty();
-  imm file = Path.from(certs(name).view());
+  imm file = certs(name);
   match fs.readFile(&file) {
     case mut r Ok {out <=> r.value;}
     case imm e Error {}
@@ -106,7 +106,9 @@ fn serveThread(a ServerArgs) u64 {
   mut drv = httpconn.Driver.make(cfg, pool);
   imm plain = drv.listen(&mut lp, SocketAddr.localhost(0u16), httpconn.Sink.Here[1u64]);
   a.portTx.send(portOf(&mut drv, &lp, plain));
-  match tls.Server.make(tls.ServerConfig.make(certs("server.pem").view(), certs("server.key").view())) {
+  imm serverPem = certs("server.pem");
+  imm serverKey = certs("server.key");
+  match tls.Server.make(tls.ServerConfig.make(&serverPem, &serverKey)) {
     case imm s Ok {
       imm secure = drv.listenWith(&mut lp, SocketAddr.localhost(0u16), new So[TlsMaker](new TlsMaker(s.value, pool)),
         httpconn.Sink.Here[1u64]);
