@@ -1074,11 +1074,13 @@ it ([flow](../phases/flow.md), "Calls"):
 - `NoLoanMut` (the arena) and `NoLoanRead` (a read-only borrow): only a pin,
   the container's life; a borrow of a `NoLoanMut` container itself only keeps
   it alive;
-- `ShapeChanging` (`List`, `String`, `Dict`, `Pool`): its elements may move.
-  Nothing reads it yet: it marks the containers a check to come will refuse an
-  element borrow of through a shared path, Jon's 2018 rule, which waits on
-  `uni` reborrowing: lending a `&uni` as a `&` or `&mut` is built, lending it
-  to another `&uni` is not.
+- `ShapeChanging` (`List`, `Deque`, `String`, `Dict`, `Pool`): its elements may
+  move. A borrow its method returns loans the receiver, and where the receiver
+  is reached through a shared path that loan freezes the same path, as a
+  local's does (`loanFreezeShared`): a change through the same name is
+  refused. A change through another name, or a call that might make one, is
+  not yet; it waits on `uni` reborrowing: lending a `&uni` as a `&` or
+  `&mut` is built, lending it to another `&uni` is not.
 
 ### AtomicValue
 

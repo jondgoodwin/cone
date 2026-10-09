@@ -1,0 +1,124 @@
+// What freezing a container's shared path still allows (the refusals are
+// collection_flow_freeze_shared). A borrow a method returned out of a list, a
+// deque or a String reached through a '&mut' parameter or a field of 'self'
+// freezes that path only until the borrow's last use, and only against what
+// it forbids: a read-only borrow lets the path be read and borrowed read-only
+// again, and a push or an append after its last use is fine.
+//
+// The last case is the hole that remains. Two different references to one
+// list -- here a '&mut' and a copy of it -- are not seen, so an element
+// borrowed through one and a push through the other compile. This program
+// reserves room first, so the push moves nothing and the element read after it
+// is sound; without the reserve it would dangle. Refusing it, a change
+// through another name, waits on 'uni' reborrowing.
+
+mod collection_freeze_shared_success;
+
+import stdio use *;
+import collections use *;
+
+struct Pt { pub x i64; pub y i64; }
+
+fn show(label &str, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+// The element's last use is before the push
+fn endsBeforePush(l &mut List[Pt]) i64 {
+  imm e = l[0usize];
+  imm x = e.x;
+  l.push(new Pt(x + 10, 0));
+  l[1usize].x;
+}
+
+// The path read, and borrowed read-only again, while the element is used
+fn readsUnderElement(l &mut List[Pt]) i64 {
+  imm e = l[0usize];
+  imm n = i64.from(l.len());
+  imm f = l[1usize];
+  imm v = l.view();
+  n * 1000 + i64.from(v.len) * 100 + e.x * 10 + f.x;
+}
+
+// A cursor used up before the deque is pushed onto
+fn cursorThenPush(dq &mut Deque[i64]) i64 {
+  mut it = dq.items();
+  mut sum = 0i64;
+  mut more = true;
+  while more {
+    match it.next() {
+      case imm n Some { sum = sum + *n.value; }
+      else { more = false; }
+    }
+  }
+  dq.push(sum);
+  *dq[dq.len() - 1usize];
+}
+
+// A String viewed, the view used up, then the String grown
+fn viewThenAppend(s &mut String) usize {
+  imm n = s.view().len;
+  s.appendByte('c');
+  n * 10usize + s.len();
+}
+
+// Through a field of 'self'
+struct Bag {
+  pub items List[Pt];
+  pub text String;
+
+  fn growAfterHeld(self &mut, p Pt) i64 {
+    imm e = items[0usize];
+    imm seen = e.x + i64.from(items.len());
+    items.push(p);
+    seen * 10 + items[2usize].x;
+  }
+
+  fn readsWhileViewed(self &mut) usize {
+    imm v = text.view();
+    imm n = text.len() + v.len;
+    text.appendByte('d');
+    n * 10usize + text.len();
+  }
+}
+
+// The hole that remains: two references to one list
+fn aliased(l &mut List[Pt], m &mut List[Pt], p Pt) i64 {
+  imm e = l[0usize];
+  m.push(p);
+  e.x;
+}
+
+fn main() {
+  mut list = List[Pt].empty();
+  list.push(new Pt(1, 2));
+  show("ends-before-push", endsBeforePush(&mut list));
+
+  mut two = List[Pt].empty();
+  two.push(new Pt(3, 0));
+  two.push(new Pt(4, 0));
+  show("reads-under-element", readsUnderElement(&mut two));
+
+  mut dq = Deque[i64].empty();
+  dq.push(2);
+  dq.push(3);
+  show("cursor-then-push", cursorThenPush(&mut dq));
+
+  mut text = String.from("ab");
+  show("view-then-append", i64.from(viewThenAppend(&mut text)));
+
+  mut bag = new Bag(List[Pt].empty(), String.from("xy"));
+  bag.items.push(new Pt(5, 0));
+  bag.items.push(new Pt(6, 0));
+  show("self-field-grown", bag.growAfterHeld(new Pt(7, 0)));
+  show("self-field-viewed", i64.from(bag.readsWhileViewed()));
+
+  mut shared = List[Pt].withCapacity(8usize);
+  shared.push(new Pt(9, 0));
+  imm one = &mut shared;
+  imm other = one;
+  show("two-aliases-still-open", aliased(one, other, new Pt(1, 1)));
+}

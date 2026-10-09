@@ -989,6 +989,14 @@ void loanReturnedBy(uint32_t loan, Name *method) {
         loans[loan].by = method;
 }
 
+// A loan of a place reached through a shared path, which the borrow it made
+// carried out of a call, freezes that place as a local's loan does: a
+// read-only borrow lets it be read, a borrow that writes lets nothing touch it
+void loanFreezeShared(uint32_t loan) {
+    if (loans[loan].kind == LoanAlias)
+        loans[loan].kind = loans[loan].writes ? LoanExcl : LoanShared;
+}
+
 // *********************
 // Loans in flight: those an operand of a call or a literal carries, walked and
 // waiting for the call to be made or the value to be built. That value is

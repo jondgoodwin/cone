@@ -62,12 +62,12 @@ typedef struct StructNode {
 // type declaring none keeps its receiver loaned while the borrow is used, the
 // Rust way (the loan walk's pwCall). A no-loan kind keeps only its lifetime:
 // it may not be moved, replaced or ended while the borrow is used, and nothing
-// else is frozen. 'ShapeChanging' is read by nothing yet: it marks the
-// containers a later check will refuse an element borrow of through a shared
-// path (corelib.c says why it waits).
+// else is frozen. 'ShapeChanging' marks the containers whose element borrow,
+// reached through a shared path, freezes that path (loanFreezeShared); a
+// change through another name is not seen yet (corelib.c says why).
 enum StructLends {
     LendsLoaned,            // declares none of them
-    LendsShapeChanging,     // 'ShapeChanging': its elements may move (no effect yet)
+    LendsShapeChanging,     // 'ShapeChanging': its elements may move
     LendsNoLoanMut,         // 'NoLoanMut': any borrow it returns loans nothing (an arena)
     LendsNoLoanRead         // 'NoLoanRead': a read-only borrow it returns loans nothing
 };
