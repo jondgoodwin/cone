@@ -1696,8 +1696,12 @@ LLVMValueRef genlLocalVar(GenState *gen, VarDclNode *var) {
         genlDropFlagBegin(gen, var, DropFlagWhole);
         return LLVMBuildLoad2(gen->builder, genlType(gen, var->vtype), var->llvmvar, "");
     }
-    var->llvmvar = genlAlloca(gen, genlType(gen, var->vtype), &var->namesym->namestr);
-    genlRootNote(gen, var->llvmvar, var->vtype);
+    // A generator's local that lives across a seam is the generator's frame's,
+    // found when its function began (genlGenBegin)
+    if (!genlGenFrameVar(gen, var)) {
+        var->llvmvar = genlAlloca(gen, genlType(gen, var->vtype), &var->namesym->namestr);
+        genlRootNote(gen, var->llvmvar, var->vtype);
+    }
     // A construction by a declared 'init' fills the variable in place
     if (var->value && genlNewInto(gen, var->value, var->llvmvar))
         val = LLVMBuildLoad2(gen->builder, genlType(gen, var->vtype), var->llvmvar, "");
@@ -2920,6 +2924,8 @@ static LLVMValueRef genlTerm(GenState *gen, INode *termnode) {
         return genlIf(gen, (IfNode*)termnode); break;
     case AwaitTag:
         return genlAwait(gen, (AwaitNode*)termnode);
+    case YieldTag:
+        return genlYield(gen, (YieldNode*)termnode);
     case AwaitReplyTag:
         return genlAwaitReply(gen, (AwaitReplyNode*)termnode);
     default:

@@ -1335,6 +1335,12 @@ INode *parseFnSig(ParseState *parse, int reftype) {
     // whether a comma after its return type is its own
     int svinlist = parse->inlist;
 
+    // Where the parameter list is written, which a generator copies (parsegen.c)
+    GenSig gensig;
+    int isgen = 0;
+    memset(&gensig, 0, sizeof(gensig));
+    gensig.parms = lex->tokp;
+
     // Process parameter declarations
     if (lexIsToken(LParenToken)) {
         lexNextToken();
@@ -1373,13 +1379,30 @@ INode *parseFnSig(ParseState *parse, int reftype) {
     }
     else
         errorMsgLex(ErrorNoLParen, "Expected left parenthesis for parameter declarations");
+    gensig.parmsend = lex->prevend;
 
     // Parse return type info - turn into void if none specified.
     // A '{' after the return type opens the body of the function being
     // declared, so nothing read here may claim it as its own.
     parse->inrettype = 1;
     char *rettypep = lex->tokp;
-    if ((fnsig->rettype = parseType(parse)) != unknownType) {
+    // 'yields T' after the parameters makes the function a generator, and T is
+    // what it hands its caller one at a time (parsegen.c). The word is
+    // contextual: a name everywhere else
+    if (!reftype && lexIsToken(IdentToken) && lex->val.ident == yieldsName) {
+        lexNextToken();
+        gensig.ytype = lex->tokp;
+        fnsig->rettype = parseType(parse);
+        gensig.ytypeend = lex->prevend;
+        if (fnsig->rettype == unknownType) {
+            errorMsgLex(ErrorInvType, "Expected the type a generator yields after 'yields', as in 'fn walk(t &Tree) yields &Node'.");
+            fnsig->rettype = (INode*)newVoidNode();
+            inodeLexCopy(fnsig->rettype, (INode*)fnsig);
+        }
+        else
+            isgen = 1;
+    }
+    else if ((fnsig->rettype = parseType(parse)) != unknownType) {
         // Handle multiple return types: 'fn ceil(x i32) i32, i32'. Inside a
         // list -- a parameter list, a tuple, arguments -- the comma continues
         // the list instead, so a signature there returning several values
@@ -1405,6 +1428,8 @@ INode *parseFnSig(ParseState *parse, int reftype) {
     parse->inrettype = svinrettype;
     parse->lifesig = svlifesig;
     parse->lifestruct = svlifestruct;
+    parse->isgen = isgen;
+    parse->gensig = gensig;
 
     return (INode*)fnsig;
 }

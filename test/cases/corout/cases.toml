@@ -1,0 +1,61 @@
+# corout - co-routines: generators, functions declared 'yields' that hand their
+# caller values one at a time. Tier 2.
+#
+# Key reference: compiler/c/doc/diagnostics/test-suite.md, "cases.toml keys".
+# The group directory supplies the feature tag, so tags carry pipeline phases.
+#
+# What is built is the one-way generator of refcorout.html: 'yield' hands a
+# value out and waits to be resumed, 'yield each' hands on a sub-generator's,
+# the value a call gives is walked by its 'next' and complies with core's
+# Iterator[T] by having it. Two-way yield ('yieldenum'), a generator that is a
+# method, a generic one, and one 'pub' in a library are not built, and the parse
+# scenario pins the first two's refusals. 'each' walks a generator as it walks
+# any cursor; the success and drop programs end with it.
+#
+# Not here, on purpose:
+#
+#   - 'each' itself, which the 'each' group owns.
+#   - The Iterator and Iterable traits themselves, which 'trait' covers; a
+#     generator is met by them as any cursor is, and the success program passes
+#     one to generic code and to a virtual reference.
+#
+# The reject scenarios are split by pipeline stage, because analysis halts
+# between stages and an expectation from a later stage would never be reached.
+
+support = []
+
+# -------- success --------
+
+[scenario.corout_success]
+category = "run"
+description = "Generators walked by 'next': counting, 'return', loops and arms, borrows of a lent parameter, 'yield each' joined and recursive, passed to generic code bounded by Iterator"
+tags = ["parse", "nameres", "typecheck", "flow", "genllvm", "runtime"]
+
+[scenario.corout_drop]
+category = "run"
+description = "A generator dying: finished, left at each seam, never run; locals, a flagged local, a parameter, owned values yielded, a sub-generator at every level"
+tags = ["parse", "nameres", "typecheck", "flow", "genllvm", "runtime"]
+
+# -------- parse stage --------
+
+[scenario.corout_parse]
+category = "reject"
+description = "Declarations a generator may not be, and a 'yield' where none stands, refused as they are read"
+tags = ["parse"]
+diagnostics = 11
+
+# -------- type check stage --------
+
+[scenario.corout_typecheck]
+category = "reject"
+description = "A value yielded of another type than the generator's, a generator asked to be an Iterator of another type, its value used as another"
+tags = ["typecheck"]
+diagnostics = 5
+
+# -------- flow stage --------
+
+[scenario.corout_flow]
+category = "reject"
+description = "A borrow of the body's own ground across a yield, a local's borrow handed out, a held parameter moved out, a generator used after it moved"
+tags = ["flow"]
+diagnostics = 5

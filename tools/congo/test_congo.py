@@ -116,7 +116,7 @@ class NotNames(unittest.TestCase):
                                  "isPermission": congo.PERMISSIONS})
         self.assertIsNone(congo.name_fault("usecheck"))
         self.assertIn("keyword", congo.name_fault("use"))
-        self.assertIn("reserved", congo.name_fault("yield"))
+        self.assertIn("reserved", congo.name_fault("wait"))
         self.assertIn("permission", congo.name_fault("mut"))
         self.assertIn("not a Cone name", congo.name_fault("two-words"))
 
@@ -1347,12 +1347,12 @@ class Scenarios(unittest.TestCase):
         self.assertIn("mut.cone: a one-file module is named by its file: 'mut' is a Cone"
                       " permission", run.stderr)
         (pkg / "src" / "mut.cone").unlink()
-        write(pkg / "src" / "yield" / "yield.cone", "mod yield;\n")
+        write(pkg / "src" / "wait" / "wait.cone", "mod wait;\n")
         run = self.congo("build", cwd=pkg, ok=False)
-        self.assertIn("yield.cone: a module folder names its module: 'yield' is reserved",
+        self.assertIn("wait.cone: a module folder names its module: 'wait' is reserved",
                       run.stderr)
         self.assertFalse((pkg / "build" / "debug" / "shelf.conebuild").exists())
-        shutil.rmtree(pkg / "src" / "yield")
+        shutil.rmtree(pkg / "src" / "wait")
         write(pkg / "congo.toml", '[package]\nname = "match"\nversion = "0.1.0"\n'
                                   'output = "library"\n')
         run = self.congo("build", cwd=pkg, ok=False)

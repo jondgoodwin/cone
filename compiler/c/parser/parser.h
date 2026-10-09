@@ -40,6 +40,23 @@ typedef struct BuildDesc {
     int library;            // 'output: library': the root is named, and prefixes every symbol
 } BuildDesc;
 
+// A generator's signature as parseFnSig read it, 'fn walk(t &Tree) yields &Node':
+// where its parameter list and the type after 'yields' are written, which the
+// declarations it stands for are generated from (parsegen.c)
+typedef struct GenSig {
+    char *parms, *parmsend;     // The parameter list: its '(' to just past its ')'
+    char *ytype, *ytypeend;     // The type after 'yields'
+} GenSig;
+
+// The generator whose body is being read: the names of the functions that make
+// its results, which a 'yield' and a 'return' in the body call (parsegen.c)
+typedef struct GenCtx {
+    Name *some;             // Makes 'Some(value)', what a 'yield' hands the caller
+    Name *none;             // Makes 'None', what the body's end and a 'return' hand it
+    Name *name;             // The generator's own name, for a message
+    int yields;             // How many 'yield's the body holds so far
+} GenCtx;
+
 // Where a field's or a parameter's type and default value are written, which
 // an 'actor' copies into the declarations it generates (parseactor.c)
 typedef struct DclText {
@@ -92,6 +109,17 @@ typedef struct ParseState {
     // While an actor's body is read, where each field's and parameter's type
     // and default value are written (parseFieldDclBody, parseFnSig); else NULL
     DclTexts *dcltexts;
+
+    // A generator (parsegen.c). parseFnSig writes 'isgen' and 'gensig' as it
+    // returns, for the parseFn that called it; 'genctx' is the generator whose
+    // body is being read, NULL elsewhere (a function nested in the body is no
+    // generator)
+    int isgen;
+    GenSig gensig;
+    GenCtx *genctx;
+    int genraw;             // The 'yield' being read hands on a result already made (a 'yield each')
+    int library;            // The package is being compiled as a library, whose include file declares what it exports
+    int genoperand;         // How many 'if', 'match', loop or block terms enclose what is being read: expression operands
 } ParseState;
 
 // Record where a field's or a parameter's type and value are written, when an
@@ -108,6 +136,19 @@ void parseActor(ParseState *parse, uint16_t pubflag);
 // a function where one follows. Returns whether parseFn should read one
 // (parseactor.c)
 int parseBehaviourWords(char *where);
+
+// parsegen.c: generators, 'fn walk(t &Tree) yields &Node { ... yield n; ... }'
+//
+// Called by parseFn, a generator's signature read: its body is read with the
+// generator's context set (parseGenBegin), and then parseGenFinish makes the
+// declarations the generator stands for, returning the one that takes its name,
+// the function that makes the generator, in place of the one parseFn read
+GenCtx *parseGenBegin(ParseState *parse, FnDclNode *fn);
+FnDclNode *parseGenFinish(ParseState *parse, FnDclNode *fn, GenSig *sig, GenCtx *ctx, BlockNode *body);
+// A 'yield' statement, with the lexer on 'yield': 'yield e;' or 'yield each src;'
+INode *parseYield(ParseState *parse);
+// The call giving a generator's 'None', which its 'return' and the end of its body hand the caller
+INode *parseGenNone(ParseState *parse);
 
 // When parsing a variable definition, what syntax is allowed?
 enum ParseFlags {

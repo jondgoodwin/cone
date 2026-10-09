@@ -1,0 +1,74 @@
+mod corout_flow;
+
+// What a generator may keep across a 'yield', and what its body may not do with
+// the parameters it holds. A 'yield' is a seam: the body is left there and the
+// generator, a value, may be moved before it is resumed. So a borrow of one of
+// the body's own locals, or of a parameter held by value, which is in the
+// generator, ends there, and is refused if it is used after. A borrow of what
+// the generator was lent -- a parameter that is a reference -- lasts, as do
+// copies. A generator's value is a move type, and its parameters stay in it.
+
+struct Fin {
+  pub n i64;
+  fn final(self &uni) { }
+}
+
+struct Node {
+  pub val i64;
+}
+
+// A borrow of a local, used after the seam
+fn localBorrow(k i64) yields i64 {
+  mut x = 5i64;
+  imm r = &x;
+  yield k;                                //~ ErrorFrozen:3 "cannot last across this 'yield'"
+  yield *r;
+}
+
+// A borrow of a parameter held by value, used after the seam
+fn parameterBorrow(n i64) yields i64 {
+  imm r = &n;
+  yield 1i64;                             //~ ErrorFrozen:3 "of the parameter 'n'"
+  yield *r;
+}
+
+// Not used after the seam: each ends where its seam does, and no use follows
+fn notUsedAfter(n i64) yields i64 {
+  mut x = 5i64;
+  imm r = &x;
+  yield *r;
+  mut y = 7i64;
+  imm s = &y;
+  yield *s + n;
+}
+
+// What the generator was lent lasts across seams
+fn lent(nodes &Array[Node], at usize) yields &Node {
+  imm n = &nodes[at];
+  yield n;
+  yield n;
+}
+
+// What a yield hands the caller carries no borrow of the generator's own
+fn handsOutALocal() yields &Fin {
+  imm f = new Fin(1i64);
+  yield &f;                               //~ ErrorEscape:9 "Returned value carries a borrow of 'f'"
+}
+
+// A parameter held by value is a field of the generator: borrowed or copied,
+// not moved out
+fn movesAParameter(f Fin) yields i64 {
+  imm g = f;                              //~ ErrorMoveField:11 "out of the generator that holds it"
+  yield g.n;
+}
+
+fn count(n i64) yields i64 {
+  yield n;
+}
+
+fn useAfterMove() {
+  mut g = count(3i64);
+  mut h = g;
+  g.next();                               //~ ErrorMove:3 "no longer there to use"
+  h.next();
+}

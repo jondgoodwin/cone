@@ -271,10 +271,17 @@ LLVMTypeRef genlStructFields(GenState *gen, LLVMTypeRef structype, StructNode *s
     // Add struct's fields (body) to type
     INode **nodesp;
     uint32_t cnt;
-    LLVMTypeRef *field_types = (LLVMTypeRef *)memAllocBlk(fieldcnt * sizeof(LLVMTypeRef));
+    LLVMTypeRef *field_types = (LLVMTypeRef *)memAllocBlk((fieldcnt + 2) * sizeof(LLVMTypeRef));
     LLVMTypeRef *field_type_ptr = field_types;
     for (nodelistFor(&strnode->fields, cnt, nodesp)) {
         *field_type_ptr++ = genlType(gen, ((FieldDclNode *)*nodesp)->vtype);
+    }
+    // A generator's frame follows its fields, the locals its body keeps across
+    // a 'yield' (genlyield.c)
+    LLVMTypeRef frame = genlGenFrameType(gen, strnode);
+    if (frame) {
+        *field_type_ptr++ = frame;
+        ++fieldcnt;
     }
     if (padding > 0) {
         *field_type_ptr++ = LLVMArrayType(LLVMInt8TypeInContext(gen->context), padding);

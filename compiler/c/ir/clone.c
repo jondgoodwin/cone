@@ -82,6 +82,8 @@ INode *cloneNode(CloneState *cstate, INode *nodep) {
         node = cloneLogicNode(cstate, (LogicNode *)nodep); break;
     case AwaitTag:
         node = cloneAwaitNode(cstate, (AwaitNode *)nodep); break;
+    case YieldTag:
+        node = cloneYieldNode(cstate, (YieldNode *)nodep); break;
     case SelfActorTag:
         node = (INode *)newSelfActorNode();
         inodeLexCopy(node, nodep);

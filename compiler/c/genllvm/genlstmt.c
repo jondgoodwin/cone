@@ -93,6 +93,8 @@ void genlReturn(GenState *gen, BreakRetNode *retnode) {
     genlDealiasNodes(gen, retnode->dealias);
     if (gen->exitzero)
         retval = LLVMConstInt(LLVMInt32TypeInContext(gen->context), 0, 0);
+    // A generator's body ends here: it hands back None from now on
+    genlGenReturn(gen);
     genlFnDclReturn(gen, gen->fndcl, retval);
 }
 

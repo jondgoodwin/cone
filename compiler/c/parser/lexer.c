@@ -163,6 +163,9 @@ void keywordInit() {
     // In an actor's behaviour, wait for what is awaited: the behaviour is cut
     // there, a seam where it returns to the actor's dispatcher
     keyAdd("await", AwaitToken);
+    // In a function declared 'yields' (a generator), hand the caller a value
+    // and wait to be resumed there (parser/parsegen.c)
+    keyAdd("yield", YieldToken);
     // In an actor's method, the actor's own handle: 'self' is its state,
     // which never leaves it
     keyAdd("selfactor", SelfActorToken);
@@ -196,7 +199,6 @@ void keywordInit() {
     keyAdd("selfmethod", ReservedToken);
     keyAdd("using", ReservedToken);
     keyAdd("wait", ReservedToken);
-    keyAdd("yield", ReservedToken);
 
     // The second group spells the syntax of features the reference describes but
     // reftoken.html has not caught up with: refexcept.html for error handling,

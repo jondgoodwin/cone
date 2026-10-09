@@ -108,6 +108,7 @@ typedef struct DclSpans DclSpans;        // dclspan.h
 #include "exp/sizeof.h"
 #include "exp/vtuple.h"
 #include "exp/await.h"
+#include "exp/yield.h"
 
 #include "export.h"
 
