@@ -1142,7 +1142,9 @@ to another `&uni` is not). `collection_flow_freeze_shared` and
 `collection_freeze_shared_success` pin the frozen path and what stays open,
 and `refborref.html` each shape. A
 borrow of the container itself that is not a method's returned borrow
-(`imm r = &mut *l`) is not frozen. Copies of one `&mut` reach one place two ways
+(`imm r = &mut *l`) is not frozen, and needs no freeze: it points at the
+container's header, which a push through `l` updates in place, not into the
+storage block a push may move. Copies of one `&mut` reach one place two ways
 unchecked, and a global a callee changes is invisible.
 
 **Its state** is file-static, as the variable stack is, and safe for the same
