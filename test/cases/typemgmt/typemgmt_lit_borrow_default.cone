@@ -1,0 +1,115 @@
+// A parameter whose default is a string literal, for a type that declares
+// 'fromLiteral', is made where each call that omits the argument is, exactly as a
+// literal written as that argument is (typemgmt_lit_borrow): a read-only
+// '&W' default is the borrow of a temporary 'W.fromLiteral(lit)', built at the
+// call, lent to it and dropped at the end of the call's statement; a 'W' by
+// value is the value, made at the call and given to it. W prints when it is made
+// and when it is dropped, so the output is the whole assertion: one make and one
+// drop per call that takes the default, and none for a call that gives the
+// argument.
+//
+// - A call omitting the borrowed default, a call giving the argument, and a
+//   call giving a literal of its own (that one is made too, once).
+// - A default after a given argument, and two defaults in one call: two
+//   temporaries, newest dropped first.
+// - A default by value: made at the call, dropped by the callee when it returns.
+// - Each pass of a loop makes and drops its own.
+// - A result that borrows from it is read within the statement. (A local's
+//   initializer that merely calls the function does not extend the temporary,
+//   no more than it does a literal given as an argument: typemgmt_flow_lit_borrow.)
+// - 'String' and 'cstr', types declaring 'fromLiteral' too.
+//
+// Refused: typemgmt_typecheck_lit_borrow (a default that writes, '&mut T', stays
+// refused, and so do a field's default and a constant's).
+//
+// Each printed value was checked by hand against the source.
+
+mod typemgmt_lit_borrow_default;
+
+import stdio use *;
+import collections use String;
+
+struct W {
+  pub n i32;
+  pub fn fromLiteral(s &str) W {
+    printStr("[make ");
+    printInt(i64.from(s.len));
+    printStr("] ");
+    new W(i32.from(s.len));
+  }
+  fn final(self &uni) {
+    printStr("[drop ");
+    printInt(i64.from(self.n));
+    printStr("] ");
+  }
+  pub fn get(self &) i32 { self.n; }
+}
+
+fn say(n i64) {
+  printStr("-> ");
+  printInt(n);
+  printStr(" ");
+}
+
+fn line(label &str) {
+  printStr("| ");
+  printStr(label);
+  printStr("\n");
+}
+
+fn borrowed(w &W = "hi") i32 { w.get(); }
+fn byValue(w W = "abc") i32 { w.get(); }
+fn after(n i32, w &W = "four") i32 { n + w.get(); }
+fn twice(a &W = "x", b &W = "yz") i32 { a.get() + b.get(); }
+fn keep(w &W = "ab") &W { w; }
+fn textLen(s &String = "hello") usize { s.len(); }
+fn stringValue(s String = "hey") usize { s.len(); }
+fn cLen(c &cstr = "cee") usize { c.view().len; }
+
+fn omitted() { say(i64.from(borrowed())); }
+fn given() { say(i64.from(borrowed("longer"))); }
+fn givenVariable() {
+  imm own = W.fromLiteral("mine");
+  say(i64.from(borrowed(&own)));
+}
+
+fn loopBody() {
+  mut i = 0;
+  while i < 3 {
+    say(i64.from(borrowed()));
+    i = i + 1;
+  }
+}
+
+
+fn main() i32 {
+  omitted();
+  line("the default made once, used, dropped at the statement's end");
+  given();
+  line("a literal given: made once, the default never");
+  givenVariable();
+  line("a variable lent: the default never made");
+
+  say(i64.from(byValue()));
+  line("by value: made at the call, dropped by the callee");
+  say(i64.from(byValue("zz")));
+  line("by value, a literal given");
+
+  say(i64.from(after(10)));
+  line("a default after an argument given");
+  say(i64.from(twice()));
+  line("two defaults: newest dropped first");
+  say(i64.from(twice("abcd")));
+  line("one given, one defaulted");
+
+  loopBody();
+  line("each pass of a loop");
+  say(i64.from(keep().get()));
+  line("a result that borrows from it, read within the statement");
+
+  say(i64.from(textLen()));
+  say(i64.from(stringValue()));
+  say(i64.from(cLen()));
+  line("String and cstr");
+  0;
+}

@@ -19,6 +19,13 @@ fn nameOf(p &Path) &str { p.name(); }
 fn absolute(p &Path) bool { p.isAbsolute(); }
 fn bothNames(a &Path, b &Path) usize { a.name().len() + b.name().len(); }
 
+// A parameter whose default is a literal: each call that omits the argument is
+// lent a temporary Path of its own, as if it had written the literal. By value,
+// the default is a Path made for the call.
+fn defaultedName(p &Path = "C:\\work\\a.txt") usize { p.name().len(); }
+fn defaultedAbsolute(p Path = "C:\\x") bool { p.isAbsolute(); }
+fn emptyDir(dir &Path = "") bool { dir.isEmpty(); }
+
 // A type built from a path it only reads: its init takes a '&Path', and a
 // literal given to 'new' is lent as one (the temporary ends with the statement)
 struct Located {
@@ -36,6 +43,16 @@ fn main() i32 {
   expectBool(absolute("\\\\server\\share"), true, "a share is");
   expectStr(nameOf("a/b.tar.gz"), "b.tar.gz", "a piece of the temporary, read in the statement");
   expectUInt(u64.from(bothNames("a/xy", "b/zzz")), 5, "two literals lent in one call");
+
+  expectUInt(u64.from(defaultedName()), 5, "a &Path default, a.txt: five bytes");
+  expectUInt(u64.from(defaultedName("ab/cde")), 3, "a literal given in place of it");
+  imm given = Path.from("x/yz");
+  expectUInt(u64.from(defaultedName(&given)), 2, "a variable lent in place of it");
+  expectBool(given.view() == "x/yz", true, "and the variable is as it was");
+  expectBool(defaultedAbsolute(), true, "a Path default by value: C:\\x is absolute");
+  expectBool(defaultedAbsolute("x/y"), false, "a literal given by value instead");
+  expectBool(emptyDir(), true, "an empty literal default is an empty Path");
+  expectBool(emptyDir("d"), false, "and a Path given is not");
 
   imm p &Path = "C:\\work\\a.txt";
   expectStr(p.extension(), ".txt", "a local &Path keeps the temporary to the block's end");
