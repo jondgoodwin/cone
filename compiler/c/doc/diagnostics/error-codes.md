@@ -416,6 +416,18 @@ actor's methods, or in its `final`, is `ErrorSelfActorPlace`; in its `init`
 before the state is filled, it is a use through an unfilled `self`,
 `ErrorInitSelf`, as `self.m()` there is.
 
+A generator (a function declared `yields`) has four codes, 1350 to 1353. A
+`yield` that stands outside a generator's body, or inside an expression, where a
+value made before it would have to be kept across the seam, is `ErrorYieldPlace`;
+a generator's `return` that takes a value, `ErrorYieldReturn`; a generator of a
+form not built -- generic, a method, `inline`, with a `where` clause, without a
+body, anonymous, or `pub` in a library -- `ErrorGenForm`, its message saying
+which; a lock's guard or a traced reference that would stay in its frame across a
+`yield`, or a `yield` standing where a temporary of an enclosing statement is
+still to be dropped, `ErrorGenFrame`. A borrow of the generator's own ground held
+across a `yield` is the ordinary `ErrorFrozen`, at the `yield`, and a type that
+does not fit what it yields the ordinary `ErrorInvType`.
+
 A future (`actors.Future[T]`, what a call of a behaviour returning a T gives
 where its value is kept) has one code of its own: the value of a call of a
 behaviour returning nothing, kept, is `ErrorFutureVoid`, a rule beside

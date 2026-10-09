@@ -13,10 +13,122 @@
 
     <div class="text">
 
+	<p style="margin-left: 40px;"><i>Note: Generators are built: a function declared <span class="pre">yields</span>,
+		with <span class="pre">yield</span> and <span class="pre">yield each</span>, among a module's functions. A generator
+		may not be generic, a method, <span class="pre">inline</span>, or <span class="pre">pub</span> in a library, and
+		<span class="pre">each</span> does not walk one yet: call <span class="pre">next</span>. Two-way
+		<span class="pre">yield</span> (the last section) is an idea that is not built.</i></p>
+
+	<p>A generator is a function that hands its caller values one at a time. It runs until it reaches a
+		<span class="pre">yield</span>, gives the caller the value written there, and waits. When the caller asks for the next
+		value it goes on from that <span class="pre">yield</span>, with its local variables as they were.
+		It is a function whose result is a sequence, written as the loop that makes the sequence:</p>
+<pre>
+fn count(n i64) yields i64 {
+  mut i = 0i64;
+  while i &lt; n {
+    yield i;
+    i = i + 1i64;
+  }
+}
+</pre>
+	<p>After <span class="pre">yields</span> comes the type of each value handed out. Calling <span class="pre">count(4i64)</span>
+		runs nothing. It gives a value that holds the parameters, and every call of its <span class="pre">next</span> runs the
+		body up to the next <span class="pre">yield</span>. <span class="pre">next</span> gives
+		<span class="pre">Some(value)</span> for each value handed out and <span class="pre">None</span> once the body ends,
+		by its last statement or by a <span class="pre">return</span>, which takes no value:</p>
+<pre>
+mut g = count(4i64);
+while true {
+  match g.next() {
+    case imm v Some { printInt(v.value); }   // 0 1 2 3
+    case is None { break; }
+  }
+}
+</pre>
+	<p>The value a generator gives is a struct made for it, of a type no source names. A message that has to spell it
+		writes <span class="pre">count.Gen</span>. It is a move type: it is moved, not copied, so two walks of one generator
+		never run. Having <span class="pre">next(self &amp;mut) Option[i64]</span>, it complies with core's
+		<span class="pre">Iterator[i64]</span> as any cursor does, so it is passed to generic code bounded by that trait, or lent as a
+		virtual reference:</p>
+<pre>
+fn sum[S Iterator[i64]](s &amp;mut S) i64 { ... }
+fn sumVirtual(s &amp;&lt;mut Iterator[i64]) i64 { ... }
+...
+mut g = count(4i64);
+sum(&amp;mut g);
+</pre>
+	<p>A <span class="pre">yield</span> is a statement of its own. It stands in a block, or in the arms of an
+		<span class="pre">if</span> or <span class="pre">match</span> written as statements, and in a loop, but not inside an
+		expression: <span class="pre">f(a(), if c { yield 1; 2; } else { 3; })</span> would have to keep the value of
+		<span class="pre">a()</span> across the wait, and is refused. Compute it into a variable first.</p>
+
+	<h2>Yielding another generator's values</h2>
+	<p><span class="pre">yield each</span> hands on every value of another generator, or of anything with a
+		<span class="pre">next</span>, in turn, and goes on when they are all handed on. It joins sequences, and it makes a
+		recursive walk as short as the recursion:</p>
+<pre>
+fn joined(a i64, b i64) yields i64 {
+  yield each count(a);
+  yield 99;
+  yield each count(b);
+}
+
+// In order, a tree kept in an array
+fn inorder(nodes &amp;Array[Node], at usize) yields &amp;Node {
+  imm n = &amp;nodes[at];
+  if n.left &gt;= 0 { yield each inorder(nodes, usize.from(n.left)); }
+  yield n;
+  if n.right &gt;= 0 { yield each inorder(nodes, usize.from(n.right)); }
+}
+</pre>
+	<p>The generator being handed on is kept in the one that hands it on, in its own storage, when its size is known. A
+		generator that hands on one of its own kind, as <span class="pre">inorder</span> does, would have to hold itself, so
+		that one is kept on the heap, one for each <span class="pre">yield each</span> that needs it, made when the
+		walk begins and freed when the generator dies. A value handed on is the sub-generator's own
+		<span class="pre">Some(value)</span>: it is moved up, not copied. Each value costs a step through every generator
+		that hands it on.</p>
+
+	<h2>Borrows across a yield</h2>
+	<p>A <span class="pre">yield</span> leaves the body, and the generator, a value, may be moved by its caller before it is
+		resumed. What the body keeps across a <span class="pre">yield</span> is held in the generator's value, so:</p>
+	<ul>
+		<li>A borrow of what the generator was lent, a parameter that is a reference, lasts across it. So does a copy of
+			any value.</li>
+		<li>A borrow of one of the body's own local variables, or of a parameter the generator holds by value, does not last:
+			it ends at the <span class="pre">yield</span>, and it is an error to use it after. The error names the
+			<span class="pre">yield</span>.</li>
+		<li>What a <span class="pre">yield</span> hands the caller may borrow only what the generator was lent. It is a
+			borrow of that, not of the generator, so a caller may hold several of the values handed out at once.</li>
+	</ul>
+<pre>
+fn words(text &amp;str) yields &amp;str {   // each word borrows the text
+  ...
+  yield &amp;text[start .. i];
+  ...
+}
+
+fn bad(k i64) yields i64 {
+  mut x = 5i64;
+  imm r = &amp;x;
+  yield k;      // ERROR: r borrows a local, which cannot last across this yield
+  yield *r;
+}
+</pre>
+	<p>The parameters are held in the generator, and the body names them as a method names its fields. It may borrow or copy
+		one, or change one declared <span class="pre">mut</span>, but it may not move one out. A parameter lives as long as
+		the generator does, not as long as the body, and dies after the locals.</p>
+
+	<h2>Dying</h2>
+	<p>The locals of the body die as they would in a function, in the order they were declared, last first, where the body
+		ends. A generator that dies while it waits at a <span class="pre">yield</span> finalizes the locals it holds there, in
+		the same order, and then its parameters. One never run holds only its parameters. A local moved on some paths only is
+		finalized only if it still holds its value, as anywhere.</p>
+
+	<h2>Two-way yield</h2>
 	<p style="margin-left: 40px;"><i>This is an interesting idea
-		which may or may not end up in the language in something like this form.</i></p>
-		
-	<p>Co-routines are functions able to suspend their execution back to their caller 
+		which may or may not end up in the language in something like this form. None of it is built.</i></p>
+	<p>Co-routines are functions able to suspend their execution back to their caller
 		using the <span class="pre">yield</span> statement.
 		The caller may later resume the co-routine where it left off.
 		Information may be exchanged between the caller and co-routine

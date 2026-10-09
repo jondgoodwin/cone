@@ -9,15 +9,19 @@
  * and parsed here, in this order (a diagnostic against generated text is
  * reported at the generator's name, Lexer.genat):
  *
- *   pub struct walk.Gen {                              the generator's value
+ *   struct walk.Gen {                                  the generator's value
  *     imm t &'a Tree;  imm n i32;                      the parameters, as the author wrote them
- *     state u32;                                       where the body resumes
+ *     state' u32;                                      where the body resumes
  *     pub fn next(self &mut) Option[&'a Node] {...}    the author's body
- *     pub fn final(self &mut) {}                       what the frame's drop hangs on
+ *     fn final(self &uni) {}                           what the frame's drop hangs on
  *   }
  *   fn walk.yield(v &Node) Option[&Node] inline {Some[&Node][v];}   what a 'yield' hands the caller
- *   fn walk.none() Option[&Node] inline {None[&Node][];}            what its end hands the caller
+ *   fn walk.none() Option[&Node] {None[&Node][];}                   what its end hands the caller
  *   fn walk(t &Tree, n i32) walk.Gen {new walk.Gen(t, n, 0u32);}    the generator, made
+ *
+ * The struct is private: a generator 'pub' in a library is refused, since the
+ * include file would have to carry its body whole for an importer to make the
+ * struct again (parseFnOrVar).
  *
  * The body is the author's, read once, in place, with 'yield' and 'return'
  * understood (parseGenBegin); it becomes the body of 'next', where the
