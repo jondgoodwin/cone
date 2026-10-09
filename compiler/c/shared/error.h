@@ -564,6 +564,7 @@ enum ErrorCode {
     // 'each' inside '<-' (parser/parseexpr.c, ir/exp/contents.c)
     ErrorEachEntry = 1370,      // An 'each' entry of '<-' written wrongly: with variables and no 'yield', a body in braces, or a 'yield' of nothing
     ErrorDrainItem = 1371,      // 'xs <- each src' over a source whose items come borrowed and move: a borrow cannot be copied out of
+    ErrorEachMutSource = 1372,  // An 'each' (or 'parallel each') over a source written '&mut src': 'each' reads, and the items are changed through 'src.mutItems()'
 
     // 'parallel each' (ir/exp/pareach.c)
     ErrorParSource = 1380,      // A 'parallel each' over a source that cannot be split into independent pieces and report its size (a cursor, a generator, a file, a channel), or whose pieces the compiler cannot yet walk
