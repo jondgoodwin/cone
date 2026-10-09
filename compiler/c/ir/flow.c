@@ -1920,6 +1920,10 @@ void flowGateOperandAsk(FlowState *fstate, INode *operand) {
     // A borrow written or built as if written ('&mut *o'), or an owner lent
     // implicitly by a recast: either way a borrow waiting for its call
     INode *place = NULL;
+    // An element of a slice borrowed, '&uni s[i]', is the index of a borrow of
+    // the slice (borrowRefIndexDispatches): the borrow waiting is that one
+    if (operand->tag == ArrIndexTag)
+        operand = ((FnCallNode *)operand)->objfn;
     while (operand->tag == CastTag) {
         if (flowGateIsOwnedLent((CastNode *)operand)) {
             place = ((CastNode *)operand)->exp;
