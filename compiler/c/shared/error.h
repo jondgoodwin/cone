@@ -589,9 +589,12 @@ enum ErrorCode {
     ErrorClosureForm = 1394,    // A closure written where it cannot be built, or in a form it does not take
     ErrorClosureOverload = 1395, // A closure literal meeting overloaded callees it cannot choose between
 
+    // An outside reference that could point at what a 'parallel each' writes (ir/exp/pareach.c)
+    ErrorParAlias = 1396,       // A 'parallel each' that writes through its source (mutChunks, mutItems, a zip of them, a '&mut' slice) reads, by a path or as a whole, an outside variable that could reach a written element behind a reference: a read while a pass writes would race
+
     // Callable references (ir/types/fnsig.c, ir/exp/fncall.c)
-    ErrorCallablePerm = 1396,   // A callable given where a '&<fn(sig)' or 'So[fn(sig)]' is wanted, refused because of the permission its '()' takes or the borrow lent
-    ErrorCallableUse = 1397,    // A value made into a 'So[fn(sig)]' or 'Rc[fn(sig)]' that has no pub '()' of that signature
+    ErrorCallablePerm = 1397,   // A callable given where a '&<fn(sig)' or 'So[fn(sig)]' is wanted, refused because of the permission its '()' takes or the borrow lent
+    ErrorCallableUse = 1398,    // A value made into a 'So[fn(sig)]' or 'Rc[fn(sig)]' that has no pub '()' of that signature
 
     // Warnings
     WarnCode = 3000,

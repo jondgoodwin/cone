@@ -43,6 +43,26 @@ pub struct PatternField {
   }
 }
 
+// Fills every texel of 'field' with 'f' of the texel's centre (u, v) in tile units,
+// a row to a pass over every core. 'f' is a closure (or a function) of the
+// pattern's parameters, such as (u, v) => brickTexel(p, u, v); the static bound
+// compiles one copy of the loop per pattern, so the call inlines.
+pub fn fillTexels[F fn(u f32, v f32) PatternTexel](field &mut PatternField, f &F) {
+  imm size = field.size;
+  fillGrid(&mut field.texels, usize.from(size), (x, y) => f(texelCentre(x, size), texelCentre(y, size)));
+}
+
+// Fills the rows of 'out' ('width' items each, bottom row first) with 'f' of the
+// item's column and row, a row to a pass over every core: the general form of
+// fillTexels, for any item type (a height grid, a struct of a texel's values)
+pub fn fillGrid[T, F fn(x i32, y i32) T](out &mut List[T], width usize, f &F) {
+  parallel each y, row in out.mutChunks(width).indexed() {
+    each x, t in row.mutItems().indexed() {
+      *t = f(i32.from(x), i32.from(y));
+    }
+  }
+}
+
 // The field's maps: the normal from its height (whose 0 to 1 spans
 // 'relief' metres of the tile's 'tileMetres'), ambient occlusion as the
 // horizon search ('occlusionRadius' tile units, 'occlusionSteps' steps a
@@ -75,32 +95,27 @@ pub fn finishField(f &mut PatternField, occlusionRadius f32, occlusionSteps i32)
     *h = texels[i].height;
   }
   imm field = &height;
-  parallel each y, row in baseColor.pixels.mutChunks(width * 3usize).indexed() {
-    each x in 0usize < width {
-      imm c = texels[usize.from(y) * width + x].colour;
-      row[x * 3usize] = unitByte(srgbEncode(c.red));
-      row[x * 3usize + 1usize] = unitByte(srgbEncode(c.green));
-      row[x * 3usize + 2usize] = unitByte(srgbEncode(c.blue));
-    }
-  }
-  parallel each y, row in orm.pixels.mutChunks(width * 3usize).indexed() {
+  // Base colour, ORM and normal in one pass, a row of each to a pass (zipped
+  // cursors over three buffers), since all three read the finished height
+  // field and the texels
+  parallel each y, colourRow, ormRow, normalRow in baseColor.pixels.mutChunks(width * 3usize).zip(orm.pixels.mutChunks(width * 3usize)).zip(normal.pixels.mutChunks(width * 3usize)).indexed() {
     each x in 0usize < width {
       imm t = texels[usize.from(y) * width + x];
+      imm c = t.colour;
+      colourRow[x * 3usize] = unitByte(srgbEncode(c.red));
+      colourRow[x * 3usize + 1usize] = unitByte(srgbEncode(c.green));
+      colourRow[x * 3usize + 2usize] = unitByte(srgbEncode(c.blue));
       mut ao = 1.;
       if occlusionSteps > 0 {
         ao = occlusionTexel(field, i32.from(x), i32.from(y), occlusionRadius, occlusionSteps, depth);
       }
       ao = ao * t.cavity;
-      row[x * 3usize] = unitByte(ao);
-      row[x * 3usize + 1usize] = unitByte(t.rough);
-    }
-  }
-  parallel each y, row in normal.pixels.mutChunks(width * 3usize).indexed() {
-    each x in 0usize < width {
+      ormRow[x * 3usize] = unitByte(ao);
+      ormRow[x * 3usize + 1usize] = unitByte(t.rough);
       imm n = normalTexel(field, i32.from(x), i32.from(y), depth);
-      row[x * 3usize] = unitByte(n.x * 0.5 + 0.5);
-      row[x * 3usize + 1usize] = unitByte(n.y * 0.5 + 0.5);
-      row[x * 3usize + 2usize] = unitByte(n.z * 0.5 + 0.5);
+      normalRow[x * 3usize] = unitByte(n.x * 0.5 + 0.5);
+      normalRow[x * 3usize + 1usize] = unitByte(n.y * 0.5 + 0.5);
+      normalRow[x * 3usize + 2usize] = unitByte(n.z * 0.5 + 0.5);
     }
   }
   parallel each i, b in heightMap.pixels.mutItems().indexed() {
