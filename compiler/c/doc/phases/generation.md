@@ -1502,7 +1502,6 @@ drop function.
 The pending table is not traced: a record that would hold a traced reference
 is refused before generation ([Flow](flow.md), "A seam").
 
-<<<<<<< HEAD
 ### A parallel each
 
 A `parallel each` ([Block](../nodes/block.md), "Type check") stays one loop in
@@ -1546,7 +1545,7 @@ first bound plus `T.from(k')`, wrapping, which cannot pass the last bound.
 `genlFn` clears `parbody` for the functions it generates in the middle of a
 piece (a drop a death asks for). A split method's second halves would each
 generate the piece again; a parallel each is not built inside an actor's method.
-=======
+
 ### A generator
 
 A generator ([Parse](parse.md), "It generates a generator's declarations") is a
@@ -1605,7 +1604,6 @@ with the struct's own drop. The deepest sub-generator therefore finalizes first.
 Not built: a generator in a library's include file (it would have to carry the
 body whole for an importer to make the struct again; `ErrorGenForm`). Not tried:
 a GPU or WebAssembly target (a box is a C `malloc`).
->>>>>>> origin/master
 
 ## 7. Output, and what does not work
 
