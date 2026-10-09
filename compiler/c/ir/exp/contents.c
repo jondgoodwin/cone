@@ -25,22 +25,27 @@
 #include <limits.h>
 #include <string.h>
 
-// Create an entry node: 'n of x', 'fill x' or 'k: v', its value filled in after
+// Create an entry node: 'n of x', 'fill x', 'k: v', an each or a yield, its value filled in after
 EntryNode *newEntryNode(uint16_t tag, INode *first) {
     EntryNode *node;
     newNode(node, EntryNode, tag);
     node->vtype = unknownType;
     node->first = first;
     node->val = NULL;
+    node->recv = NULL;
+    node->nest = 0;
+    node->drain = 0;
     return node;
 }
 
-// Clone an entry
+// Clone an entry. A yield's receiver is set by the '<-' that lowers its loop,
+// after any cloning, so it is not followed.
 INode *cloneEntryNode(CloneState *cstate, EntryNode *node) {
     EntryNode *newnode = memAllocBlk(sizeof(EntryNode));
     memcpy(newnode, node, sizeof(EntryNode));
     newnode->first = cloneNode(cstate, node->first);
     newnode->val = cloneNode(cstate, node->val);
+    newnode->recv = NULL;
     return (INode *)newnode;
 }
 
@@ -58,25 +63,36 @@ void entryPrint(EntryNode *node) {
         inodePrintNode(node->first);
         inodeFprint(": ");
         break;
+    case EachEntryTag:
+        inodeFprint("(<- ");
+        inodePrintNode(node->first);
+        inodeFprint(")");
+        return;
+    case YieldEntryTag:
+        inodeFprint("yield ");
+        if (node->first) {
+            inodePrintNode(node->first);
+            inodeFprint(": ");
+        }
+        break;
     }
     inodePrintNode(node->val);
 }
 
-// Name resolution of an entry: a count or key, and the value
+// Name resolution of an entry: a count or key, and the value. An each holds its
+// loop, a block of the scopes the loop's variables are numbered in; lowering
+// puts that block inside the blocks it makes to hold the receiver (nest of
+// them), so it is numbered as if inside them too.
 void entryNameRes(NameResState *pstate, EntryNode *node) {
+    if (node->tag == EachEntryTag) {
+        pstate->scope += node->nest;
+        inodeNameRes(pstate, &node->first);
+        pstate->scope -= node->nest;
+        return;
+    }
     if (node->first)
         inodeNameRes(pstate, &node->first);
     inodeNameRes(pstate, &node->val);
-}
-
-// The '<-' that owns an entry takes it apart before it is checked
-// (contentsLower), so one reached here sits where no '<-' takes it: inside a
-// tuple value that is itself appended, '(1, 2 of 0)'
-void entryTypeCheck(TypeCheckState *pstate, EntryNode *node) {
-    errorMsgNode((INode*)node, ErrorEntryPlace,
-        "%s is an entry of the list on the right of '<-', and is written only there: 'xs <- 3 of 0', 'xs <- fill 0', 'dict <- key: value'.",
-        node->tag == OfEntryTag ? "'n of x'" : node->tag == FillEntryTag ? "'fill x'" : "A pair 'k: v'");
-    node->vtype = errorType;
 }
 
 // Is this a construction, 'new T(...)' or 'trynew T(...)', not yet lowered?
@@ -94,6 +110,25 @@ int contentsIsAppend(FnCallNode *node) {
         return 0;
     INode *arg = nodesGet(node->args, 0);
     return contentsIsConstruction(node->objfn) || arg->tag == VTupleTag || isEntryNode(arg);
+}
+
+static void yieldEntryLower(TypeCheckState *pstate, INode **nodep);
+
+// The '<-' that owns an entry takes it apart before it is checked
+// (contentsLower), so one reached here sits where no '<-' takes it: inside a
+// tuple value that is itself appended, '(1, 2 of 0)'. A yield is the exception:
+// it is reached as the last statement of its loop's body, and is lowered here.
+void entryTypeCheck(TypeCheckState *pstate, INode **nodep) {
+    EntryNode *node = (EntryNode*)*nodep;
+    if (node->tag == YieldEntryTag) {
+        yieldEntryLower(pstate, nodep);
+        return;
+    }
+    errorMsgNode((INode*)node, ErrorEntryPlace,
+        "%s is an entry of the list on the right of '<-', and is written only there: 'xs <- 3 of 0', 'xs <- fill 0', 'xs <- each ys', 'dict <- key: value'.",
+        node->tag == OfEntryTag ? "'n of x'" : node->tag == FillEntryTag ? "'fill x'"
+        : node->tag == EachEntryTag ? "An 'each' that drains a source or yields values" : "A pair 'k: v'");
+    node->vtype = errorType;
 }
 
 // A use of a variable the lowering declared, positioned on lexnode

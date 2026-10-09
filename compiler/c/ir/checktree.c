@@ -194,10 +194,11 @@ static void checkNode(INode *node) {
     case NamedValTag:
         checkNode(((NamedValNode*)node)->val); break;
 
-    case OfEntryTag: case FillEntryTag: case PairEntryTag:
+    case OfEntryTag: case FillEntryTag: case PairEntryTag: case EachEntryTag: case YieldEntryTag:
         if (((EntryNode*)node)->first)
             checkNode(((EntryNode*)node)->first);
-        checkNode(((EntryNode*)node)->val);
+        if (((EntryNode*)node)->val)
+            checkNode(((EntryNode*)node)->val);
         break;
 
     case RefCountTag:

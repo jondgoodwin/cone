@@ -702,7 +702,7 @@ static int awaitWalk(INode *node, int check, uint32_t *bad) {
     }
     case NamedValTag:
         return awaitWalk(((NamedValNode *)node)->val, check, bad);
-    case OfEntryTag: case FillEntryTag: case PairEntryTag:
+    case OfEntryTag: case FillEntryTag: case PairEntryTag: case EachEntryTag: case YieldEntryTag:
     {
         int found = awaitWalk(((EntryNode *)node)->first, check, bad);
         found |= awaitWalk(((EntryNode *)node)->val, check, bad);
@@ -784,7 +784,7 @@ static void awaitReportIn(INode *node, char *why, uint32_t *bad) {
         return;
     case NamedValTag:
         awaitReportIn(((NamedValNode *)node)->val, why, bad); return;
-    case OfEntryTag: case FillEntryTag: case PairEntryTag:
+    case OfEntryTag: case FillEntryTag: case PairEntryTag: case EachEntryTag: case YieldEntryTag:
         awaitReportIn(((EntryNode *)node)->first, why, bad);
         awaitReportIn(((EntryNode *)node)->val, why, bad);
         return;
