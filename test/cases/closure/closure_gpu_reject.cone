@@ -19,27 +19,18 @@ pub trait Unary {
 }
 fn viaTrait(f &<Unary, x f32) f32 { f(x); }
 
-fn @compute(64) owner(inv Invocation, out &mut Array[f32]) {
-  imm i = usize.from(inv.globalId[0]);
-  if i < out.len {
-    imm held = new Rc[f32](2.);
-    out[i] = scaled(x => x * *held, 3.);                       //~ ErrorGpuClosureData
-  }
+// An owner or a function reference reaches GPU code only as a parameter of a
+// function (making one is refused: module_gpu_unavailable)
+fn owner(held Rc[f32]) f32 {
+  scaled(x => x * *held, 3.);                                  //~ ErrorGpuClosureData
 }
 
-fn @compute(64) ownState(inv Invocation, out &mut Array[f32]) {
-  imm i = usize.from(inv.globalId[0]);
-  if i < out.len {
-    out[i] = scaled(fn(x f32) [held = new Rc[f32](2.)] f32 { x * *held; }, 3.);   //~ ErrorGpuClosureData
-  }
+fn ownState(held Rc[f32]) f32 {
+  scaled(fn(x f32) [h = held] f32 { x * *h; }, 3.);            //~ ErrorGpuClosureData
 }
 
-fn @compute(64) funcRef(inv Invocation, out &mut Array[f32]) {
-  imm i = usize.from(inv.globalId[0]);
-  if i < out.len {
-    imm f = &double;
-    out[i] = scaled(x => f(x), 3.);                            //~ ErrorGpuClosureData
-  }
+fn funcRef(f &fn(x f32) f32) f32 {
+  scaled(x => f(x), 3.);                                       //~ ErrorGpuClosureData
 }
 
 fn @compute(64) asRef(inv Invocation, xs &Array[f32], out &mut Array[f32]) {

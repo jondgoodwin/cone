@@ -1,0 +1,39 @@
+// A closure in GPU code may borrow memory the GPU has, but a borrow whose memory is
+// chosen at run time is refused (ErrorGpuRefChoice), as it is without a closure:
+// SPIR-V types each pointer by the memory it points into, and cannot pick between
+// a local and a buffer's element. The closure here holds a borrow of 'r', and 'r'
+// is the choice; it is refused where the choice is made, or, for a variable given
+// a different place on some paths, where the closure uses it.
+
+mod closure_gpu_choice;
+
+fn scaled[F fn(x f32) f32](f &F, x f32) f32 { f(x) * 2. + 1.; }
+
+fn @compute(64) chosenByIf(inv Invocation, xs &Array[f32], out &mut Array[f32]) {
+  imm i = usize.from(inv.globalId[0]);
+  if i < out.len and i < xs.len {
+    imm base = 2.;
+    imm r = if i % 2usize == 0usize { &base; } else { &xs[i]; };  //~ ErrorGpuRefChoice
+    out[i] = scaled(x => x * *r, 3.);
+  }
+}
+
+fn @compute(64) chosenByAssign(inv Invocation, xs &Array[f32], out &mut Array[f32]) {
+  imm i = usize.from(inv.globalId[0]);
+  if i < out.len and i < xs.len {
+    imm base = 2.;
+    mut h = &base;
+    if i % 2usize == 0usize { h = &xs[i]; }
+    out[i] = scaled(x => x * *h, 3.);                              //~ ErrorGpuRefChoice
+  }
+}
+
+// Not refused: the closure borrows a local, and a buffer's element, each fixed
+fn @compute(64) fixed(inv Invocation, xs &Array[f32], out &mut Array[f32]) {
+  imm i = usize.from(inv.globalId[0]);
+  if i < out.len and i < xs.len {
+    imm base = 2.;
+    imm r = &xs[i];
+    out[i] = scaled(x => x * *r + base, 3.);
+  }
+}

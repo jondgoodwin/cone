@@ -180,7 +180,8 @@ it is left to run. Three refusals keep it so:
   of code pointers.
 
 A function reference to a named function, a virtual reference to a hand-written
-struct and an owner are not refused by this check; they are no closures.
+struct and an allocation are refused by `ErrorGpuUnavailable`, not by this check;
+they are no closures ([generation](../phases/generation.md), section 7).
 
 ## Across objects
 

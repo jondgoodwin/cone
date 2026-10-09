@@ -526,6 +526,12 @@ void borrowTypeCheck(TypeCheckState *pstate, RefNode **nodep) {
         errorMsgNode(node->vtexp, ErrorInlineRef,
             "May not borrow a reference to an inline function. Its body is copied into each caller, so it has no code of its own to point at.");
     }
+    // A GPU has no pointers to code: every call is inlined into the kernel
+    else if (flowGpu && nameUseNames(node->vtexp, FnDclTag)) {
+        errorMsgNode(node->vtexp, ErrorGpuUnavailable,
+            "In GPU code a function cannot be borrowed as a reference to it, '&%s': a GPU has no pointers to code. Call it, or give it to a function generic over its signature, '[F fn(...)]', which is inlined.",
+            &((NameUseNode*)node->vtexp)->namesym->namestr);
+    }
 
     // Where '&[]value' dispatches to the value's own '&[]' method, the receiver
     // that method wants is a plain borrow of the value. Retag to build exactly
