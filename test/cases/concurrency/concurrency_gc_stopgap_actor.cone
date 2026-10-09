@@ -1,0 +1,110 @@
+// A 'Gc' may not be made, held or copied inside an actor, for now. The
+// collector keeps its heap and its one chain of roots in process globals,
+// without locks, and a 'Gc' held in an actor's state is on no stack between
+// messages, so one made by an actor corrupts them whichever worker runs it.
+// Until the collector is per actor (the regions work), the compiler refuses it,
+// ErrorGcStopgap, saying GC per actor is coming:
+//
+//   - a 'Gc' local of a behaviour (3D Web's probe), of a synchronous method, of
+//     'init' and of 'final'
+//   - a struct holding a 'Gc', made in a behaviour
+//   - a 'Gc' parameter of a synchronous method
+//   - a 'Gc' made in the body of a 'parallel each' written in a behaviour
+//
+// A 'Gc' in the actor's state is refused by the same code ("inside an actor's
+// state"), but not pinned here: the placement rules refuse it too, in the actors
+// package's generated code, where no annotation of this file can reach.
+//
+// What stays good: a plain function using 'Gc' on one thread (the collector
+// package's own tests), and an actor that never touches one.
+
+mod concurrency_gc_stopgap_actor;
+
+import actors;
+import collections use *;
+import collector;
+import libc;
+
+struct Node { pub v i32; }
+struct Wrap { pub g Gc[mut, Node]; pub n i32; }
+
+// A traced region of the program's own: the rule is judged by what a region
+// declares ('is RegionRef, Traced'), not by its name, so it is refused alike
+struct Mine is RegionRef, Traced {
+  pub id i64;
+  fn alloc(size usize) *u8 {
+    imm p = malloc(size);
+    mem.writeRaw(p as *Mine, new Mine(1));
+    p;
+  }
+  fn mark(self &uni Mine) {}
+}
+
+actor Own {
+  n i32;
+  pub async do make(self) {
+    imm m = new Mine[mut, Node](new Node(1));  //~ ErrorGcStopgap "this makes a Mine[mut, Node]"
+    self.n = m.v;
+  }
+}
+
+// 3D Web's probe: compiled before, and corrupted the collector at run time
+actor Holder {
+  n i32;
+  pub async do poke(self) {
+    imm g = new Gc[mut, Node](new Node(1));    //~ ErrorGcStopgap "GC per actor is coming"
+    self.n = g.v;
+  }
+}
+
+// A struct that holds one, made in a behaviour
+actor Wrapper {
+  n i32;
+  pub async do wrap(self) {
+    imm w = new Wrap(new Gc[mut, Node](new Node(2)), 3);    //~ ErrorGcStopgap "this produces a Wrap, which a collector traces, inside an actor's method"
+    self.n = w.n;
+  }
+}
+
+// A synchronous method, a parameter, 'init' and 'final'
+actor Methods {
+  n i32;
+
+  fn helper(self) {
+    imm g = new Gc[mut, Node](new Node(1));    //~ ErrorGcStopgap "this makes a Gc[mut, Node], which a collector traces, inside an actor's method"
+  }
+
+  fn take(self, g Gc[mut, Node]) {}            //~ ErrorGcStopgap "this holds a Gc[mut, Node]"
+
+  fn init(self &new) {
+    imm g = new Gc[mut, Node](new Node(1));    //~ ErrorGcStopgap "GC per actor is coming"
+    *self = new Self(n: 0);
+  }
+
+  fn final(self &uni) {
+    imm g = new Gc[mut, Node](new Node(1));    //~ ErrorGcStopgap "GC per actor is coming"
+  }
+}
+
+// Inside a 'parallel each' in a behaviour: refused once
+actor Looper {
+  n i32;
+  pub async do loop(self) {
+    parallel each i in 0usize < 4usize {
+      imm g = new Gc[mut, Node](new Node(1));  //~ ErrorGcStopgap "inside a 'parallel each' body"
+    }
+  }
+}
+
+// An actor that uses none, beside a function that does
+actor Plain {
+  n i32;
+  pub async do bump(self) {
+    self.n = self.n + 1;
+  }
+}
+
+fn single() i32 {
+  imm g = new Gc[mut, Node](new Node(7));
+  g.v;
+}
