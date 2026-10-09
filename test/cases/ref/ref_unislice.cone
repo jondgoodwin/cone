@@ -1,0 +1,121 @@
+// A sub-slice or an element of a '&uni' slice borrowed '&uni', '&uni s[a..b]',
+// '&uni s[a..]', '&uni s[i]', is a borrow of part of what the reference reaches:
+// a fresh and shorter loan, the reference's own storage frozen while it is used
+// and unique again after its last use (refborref.html, "Reference Handling").
+// Nothing is moved out of the slice, though the borrow is a '&uni', a move type.
+// The same is true of an owner of an array, '&uni a[a..b]'. (A '&mut' sub-slice
+// always compiled.) What the loan forbids is ref_flow_unislice.
+//
+// Each shape is here: a sub-slice as an argument, in a local, handed back as a
+// result and borrowed again from that; the open-ended and one-element forms; and
+// an owner of an array.
+
+mod ref_unislice;
+
+import stdio use *;
+
+fn show(label &str, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+fn setAll(s &uni Array[i64], v i64) {
+  imm n = s.len();
+  mut i usize = 0usize;
+  while i < n {
+    s[i] = v;
+    i = i + 1usize;
+  }
+}
+
+fn sumOf(s &Array[i64]) i64 {
+  imm n = s.len();
+  mut t i64 = 0;
+  mut i usize = 0usize;
+  while i < n {
+    t = t + s[i];
+    i = i + 1usize;
+  }
+  t;
+}
+
+fn head(s &uni Array[i64]) &uni Array[i64] { &uni s[0usize..2usize]; }
+fn tail(s &uni Array[i64]) &uni Array[i64] { &uni s[2usize..]; }
+fn front(s &uni Array[i64]) &uni Array[i64] { &uni s[..1usize]; }
+fn mid(s &uni Array[i64]) &uni Array[i64] { &uni s[1usize...2usize]; }
+fn elem(s &uni Array[i64]) &uni i64 { &uni s[3usize]; }
+fn asMut(s &uni Array[i64]) &mut Array[i64] { &mut s[1usize..3usize]; }
+
+fn setMut(s &mut Array[i64], v i64) { s[0usize] = v; }
+
+// [0, 0, 0, 0] -> [1, 1, 0, 0] -> [1, 1, 10, 10]: 22
+fn halves(s &uni Array[i64]) i64 {
+  setAll(&uni s[0usize..2usize], 1);
+  setAll(&uni s[2usize..], 10);
+  sumOf(s);
+}
+
+// [1, 1, 10, 10] -> [5, 5, 10, 10] -> [6, 5, 10, 10]: 11 through the local;
+// then [6, 5, 100, 100]: 211 through s
+fn inLocal(s &uni Array[i64]) i64 {
+  imm h = &uni s[0usize..2usize];
+  setAll(h, 5);
+  h[0usize] = h[0usize] + 1;
+  imm x = sumOf(h);
+  setAll(&uni s[2usize..], 100);
+  x * 1000 + sumOf(s);
+}
+
+// handed back, and borrowed again: [6, 5, 100, 100] -> [2, 2, 100, 100] ->
+// [2, 2, 3, 3] -> [2, 4, 4, 3] (through a '&mut' and then a '&uni') -> [2, 4, 4, 9]: 19
+fn fromCalls(s &uni Array[i64]) i64 {
+  setAll(head(s), 2);
+  setAll(tail(s), 3);
+  setAll(mid(s), 4);
+  *elem(s) = 9;
+  sumOf(s);
+}
+
+// a sub-slice of a sub-slice: [2, 4, 4, 9] -> [2, 4, 7, 9] -> [2, 4, 7, 8]: 21
+fn nested(s &uni Array[i64]) i64 {
+  imm t = &uni s[1usize..];
+  imm u = &uni t[1usize..3usize];
+  setAll(&uni u[..1usize], 7);
+  u[1usize] = 8;
+  sumOf(s);
+}
+
+// the one-element-long slice, a '&mut' sub-slice and an element:
+// [2, 4, 7, 8] -> [20, 4, 7, 8] -> [20, 5, 7, 8] -> [20, 5, 8, 8]: 41
+fn variety(s &uni Array[i64]) i64 {
+  setAll(front(s), 20);
+  setMut(asMut(s), 5);
+  imm e = &uni s[2usize];
+  *e = *e + 1;
+  sumOf(s);
+}
+
+// an owner of an array: [1, 2, 3, 4] -> [1, 20, 3, 4] -> [1, 20, 3, 7] -> [0, 20, 3, 7]: 30
+fn owner() i64 {
+  imm b = new So[Array[i64, 4]]([1, 2, 3, 4]);
+  imm t = &uni b[1usize..3usize];
+  t[0usize] = 20;
+  setAll(&uni b[3usize..], 7);
+  imm e = &uni b[0usize];
+  *e = 0;
+  sumOf(b);
+}
+
+fn main() {
+  imm a = new So[Array[i64, 4]]([0, 0, 0, 0]);
+  show("halves", halves(a));
+  show("inLocal", inLocal(a));
+  show("fromCalls", fromCalls(a));
+  show("a3", a[3usize]);
+  show("nested", nested(a));
+  show("variety", variety(a));
+  show("owner", owner());
+  show("end", 0);
+}
