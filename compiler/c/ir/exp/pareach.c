@@ -719,8 +719,10 @@ static int parCheckCopies(INode *node, void *ctxp) {
 // when it holds, through a field, a variant, a tuple or array element, a borrow
 // or an owner's pointee, either an aliasable owner of a region that does not
 // declare ThreadSafe, or a traced reference: exactly parRefCountsPlain's test of
-// each reference met. Raw pointers are trusted (nothing is followed behind one),
-// and an Arc, an atomic and a number are free. What the pass declares itself is
+// each reference met, and so does an instance of a generic type whose type
+// argument does (List[Rc[T]], whatever pointer the list keeps its items behind).
+// Raw pointers of a type that is not generic are trusted (nothing is followed
+// behind one), and an Arc, an atomic and a number are free. What the pass declares itself is
 // its own, and so is nothing it was lent: the variable holding the item.
 
 typedef struct {
@@ -767,6 +769,17 @@ static int parNotSync(INode *type, INode **seen, uint32_t *nseen) {
         StructNode *strnode = (StructNode *)type;
         INode **nodesp;
         uint32_t cnt;
+        // An instance of a generic type is safe to share only if every type
+        // argument is (Rust's rule: Vec<T> is Sync iff T is), whatever raw
+        // pointer it keeps its items behind. A struct that is not generic keeps
+        // the trust given to its raw pointers.
+        Nodes *args = itypeInstanceTypeArgs(type);
+        if (args != NULL) {
+            for (nodesFor(args, cnt, nodesp)) {
+                if (parNotSync(*nodesp, seen, nseen))
+                    return 1;
+            }
+        }
         for (nodelistFor(&strnode->fields, cnt, nodesp)) {
             if (parNotSync(((IExpNode *)*nodesp)->vtype, seen, nseen))
                 return 1;
@@ -782,6 +795,27 @@ static int parNotSync(INode *type, INode **seen, uint32_t *nseen) {
     default:
         return 0;
     }
+}
+
+// Is this type a counted or traced owner itself, or a borrow of one, as against
+// a value or borrow of a struct, collection or tuple that holds one?
+static int parIsCountedItself(INode *type) {
+    for (int depth = 0; type != NULL && depth < 8; ++depth) {
+        if (type->tag == NameUseTag && isTypeNode(type))
+            type = itypeGetTypeDcl(type);
+        else if (type->tag == AliasDclTag)
+            type = ((AliasDclNode *)type)->target;
+        else if (type->tag == RefTag || type->tag == ArrayRefTag || type->tag == VirtRefTag) {
+            if (parRefCountsPlain((RefNode *)type))
+                return 1;
+            if (((RefNode *)type)->region != borrowRef)
+                return 0;
+            type = ((RefNode *)type)->vtexp;
+        }
+        else
+            return 0;
+    }
+    return 0;
 }
 
 // A variable the lowering made for the loop, which no source can name
@@ -817,6 +851,10 @@ static int parCheckReach(INode *node, void *ctxp) {
         errorMsgNode(node, ErrorParReach,
             "This 'parallel each' reaches its item '%s', a %s, and the source's items hold a counted owner whose count is not atomic (an Rc, for example) or a traced reference (a Gc, for example): its passes run at the same time, and a copy made anywhere they can reach it, in this body or in a function it hands the item to, would write a count or a root that every pass shares without an atomic operation. Walk a source whose items are safe to share (numbers, structs of them, Arcs), or its indexes and look the data up from a borrow taken before the loop.",
             &var->namesym->namestr, typename);
+    else if (!parIsCountedItself(var->vtype))
+        errorMsgNode(node, ErrorParReach,
+            "This 'parallel each' reaches '%s', a %s declared outside the loop, which holds a counted owner whose count is not atomic (an Rc, for example) or a traced reference (a Gc, for example), in a field, an element or a type argument: its passes run at the same time, and a copy made anywhere they can reach it, in this body or in a function it hands it to, would write a count or a root that every pass shares without an atomic operation. Naming it at all counts, even for a number beside the owner. Copy what the loop needs into a local before it ('imm n = %s.n;') and use the local in the body, or hold the owner in an Arc.",
+            &var->namesym->namestr, typename, &var->namesym->namestr);
     else
         errorMsgNode(node, ErrorParReach,
             "This 'parallel each' reaches '%s', a %s declared outside the loop, which is or holds a counted owner whose count is not atomic (an Rc, for example) or a traced reference (a Gc, for example): its passes run at the same time, and a copy made anywhere they can reach it, in this body or in a function it hands it to, would write a count or a root that every pass shares without an atomic operation. Reading through it, lending it and passing it count too. Borrow what the body needs before the loop ('imm mesh = &*%s;') and use 'mesh' in the body, or hold it in an Arc.",

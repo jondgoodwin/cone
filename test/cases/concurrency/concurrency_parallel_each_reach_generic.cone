@@ -1,0 +1,121 @@
+// What a 'parallel each' body may reach, continued (concurrency_parallel_each_reach):
+//
+//   - An instance of a GENERIC type is safe to share only if every type argument
+//     is (Rust's rule: Vec<T> is Sync iff T is), whatever raw pointer the collection
+//     keeps its items behind. So a List of Rc, a Dict with Rc values and an Option
+//     of an Rc are refused when named in the body, and so is handing one to a
+//     helper that copies an element. A List of numbers, of Arc, or of a region of
+//     the program's own that declares ThreadSafe is allowed. A struct that is
+//     not generic keeps the trust given to its raw pointers.
+//   - Naming the root counts, so a struct holding an Rc cannot be read for its
+//     number, and nor can the state of an actor, 'self', that holds one: the message
+//     then says to copy what the loop needs into a local before it. A local does.
+//     (An Rc itself is told to borrow its contents, 'imm n = &*shared;'.)
+
+mod concurrency_parallel_each_reach_generic;
+
+import collections use *;
+import sync use *;
+import actors;
+
+struct Leaf { pub n u64; }
+
+// A region of the program's own that says it may be shared
+struct Safe is RegionRef, ThreadSafe {
+  cnt usize;
+  fn alloc(size usize) *u8 inline { malloc(size); }
+  fn init(self &new) inline { *self = new Safe(1usize); }
+  fn aliasRef(self &uni Safe) inline { mem.atomicAdd[usize](self as *usize, 1usize, MemOrder.Relaxed[]); }
+  fn dealiasRef(self &uni Safe) bool inline {
+    mem.atomicSub[usize](self as *usize, 1usize, MemOrder.AcqRel[]) == 1usize;
+  }
+}
+
+// A helper that copies an element of a list it was lent
+fn grabFirst(xs &List[Rc[imm, u64]]) u64 {
+  imm c = *xs[0usize];
+  *c;
+}
+
+fn lists(xs &List[Rc[imm, u64]]) {
+  imm total = Atomic[u64].of(0u64);
+  parallel each i in 0usize < 1000usize {
+    total.add(grabFirst(xs));                      //~ ErrorParReach "reaches 'xs'"
+  }
+  parallel each i in 0usize < 1000usize {
+    total.add(u64.from(xs.len()));                 //~ ErrorParReach "reaches 'xs'"
+  }
+}
+
+fn dicts(d &Dict[u64, Rc[imm, u64]]) {
+  imm total = Atomic[u64].of(0u64);
+  parallel each i in 0usize < 1000usize {
+    total.add(u64.from(d.len()));                  //~ ErrorParReach "reaches 'd'"
+  }
+}
+
+fn flag(o &Option[Rc[imm, u64]]) u64 { 1u64; }
+
+fn options(o &Option[Rc[imm, u64]]) {
+  imm total = Atomic[u64].of(0u64);
+  parallel each i in 0usize < 1000usize {
+    total.add(flag(o));                            //~ ErrorParReach "reaches 'o'"
+  }
+}
+
+// Allowed: a list of numbers, of Arc, and of a ThreadSafe region of the program's own
+fn allowed(a &List[u32], b &List[Arc[imm, u64]], c &List[Safe[imm, Leaf]], d &Dict[u64, Arc[imm, u64]]) {
+  imm total = Atomic[u64].of(0u64);
+  parallel each i in 0usize < 1000usize {
+    total.add(u64.from(a.len()) + u64.from(b.len()) + u64.from(c.len()) + u64.from(d.len()));
+  }
+}
+
+// A struct that holds an Rc, named for its number: copy the number out first
+struct Holder {
+  shared Rc[imm, u64];
+  n u64;
+}
+
+fn holder(h &Holder) {
+  imm total = Atomic[u64].of(0u64);
+  parallel each i in 0usize < 1000usize {
+    total.add(h.n);                                //~ ErrorParReach "Copy what the loop needs into a local before it ('imm n = h.n;')"
+  }
+  imm n = h.n;
+  parallel each i in 0usize < 1000usize {
+    total.add(n);
+  }
+}
+
+fn counted(shared Rc[imm, u64]) {
+  imm total = Atomic[u64].of(0u64);
+  parallel each i in 0usize < 1000usize {
+    total.add(*shared);                            //~ ErrorParReach "Borrow what the body needs before the loop ('imm mesh = &*shared;')"
+  }
+}
+
+// An actor whose state holds an Rc: 'self.n' in the loop is refused, a local copy is not
+actor Keeper {
+  keep Rc[imm, u64];
+  n u64;
+
+  fn init(self &new) {
+    *self = new Self(keep: new Rc[imm, u64](1u64), n: 3u64);
+  }
+
+  pub async do refused(self) {
+    imm total = Atomic[u64].of(0u64);
+    parallel each i in 0usize < 10usize {
+      total.add(self.n);                           //~ ErrorParReach "Copy what the loop needs into a local before it ('imm n = self.n;')"
+    }
+  }
+
+  pub async do allowed(self) {
+    imm n = self.n;
+    imm total = Atomic[u64].of(0u64);
+    parallel each i in 0usize < 10usize {
+      total.add(n);
+    }
+  }
+}
