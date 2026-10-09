@@ -78,6 +78,11 @@ void doAnalysis(ConeOptions *opt, ProgramNode **pgm) {
     tstate.scope = 0;
     tstate.extend = NULL;
     inodeTypeCheckAny(&tstate, (INode**)pgm);
+    // The loan walks that waited for a type's methods to be checked, to say
+    // whether it changes shape, and the types that declare it against what the
+    // methods say (ir/shapeinfer.c)
+    shapeWalkDeferred();
+    shapeDeclaredCheck();
     // Where a traced reference may be held: judged over the places type check
     // noted, now that every type is laid out (ir/types/region.c)
     regionTracedCheckAll();

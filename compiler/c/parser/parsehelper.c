@@ -97,6 +97,10 @@ int parseBlockEnd() {
 // token after it, so the span ends where the previous token did
 DclSpan *parseSpan(ParseState *parse, DclSpans **listp, INode *node, char *start, char *kw, uint16_t kind) {
     DclSpan *span = dclSpanAdd(listp, node, lex, start, kw, lex->prevend, kind);
+    if (node && node->tag == StructTag) {
+        span->hdrend = parse->hdrendp;
+        span->isend = parse->isendp;
+    }
     if (node && (node->tag == FnDclTag || node->tag == VarDclTag)) {
         span->body = parse->bodyp;
         span->bodyend = parse->bodyendp;
