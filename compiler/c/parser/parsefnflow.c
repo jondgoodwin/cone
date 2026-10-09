@@ -1291,14 +1291,16 @@ static INode *parseWhereTerm(ParseState *parse, LifeOrder **orderp) {
             subject = again;
             continue;
         }
-        if (!lexIsToken(IdentToken)) {
+        if (!lexIsToken(IdentToken) && !lexIsToken(FnToken)) {
             errorMsgLex(ErrorWhereForm, lexIsToken(LifetimeToken)
                 ? "A lifetime bound alone is written 'T + 'a': what a type parameter 'is' is a trait, named."
                 : parseInIsCond ? "What a type parameter 'is' in a condition on an 'is' entry is a trait, named."
-                : "What a type parameter 'is' in a 'where' clause is a trait, named.");
+                : "What a type parameter 'is' in a 'where' clause is a trait, named, or a function signature, 'where F is fn(a &T) i32'.");
             return NULL;
         }
-        CastNode *clause = newIsNode(subject, parseTypeName(parse));
+        // A function signature, written bare, is what the type has a '()' method of
+        INode *isrhs = lexIsToken(FnToken) ? parseFnBound(parse) : parseTypeName(parse);
+        CastNode *clause = newIsNode(subject, isrhs);
         inodeLexCopy((INode*)clause, subject);
         term = term ? parseWhereJoin(AndLogicTag, term, (INode*)clause) : (INode*)clause;
         if (!lexIsToken(PlusToken))
@@ -1449,8 +1451,13 @@ Nodes *parseGenericParms(ParseState *parse, int annotate, LifeParms **lifes, Lif
             lexNextToken();
         // An annotation begins with a name: a trait's, a type's, a kind's;
         // or, for a bound alone, '[T + 'a]', with the '+'
-        else if (annotate && (lexIsToken(IdentToken) || (lexIsToken(PlusToken) && lexPeekIsLifetime()))) {
-            if (lexIsToken(IdentToken)) {
+        else if (annotate && (lexIsToken(IdentToken) || lexIsToken(FnToken) || (lexIsToken(PlusToken) && lexPeekIsLifetime()))) {
+            // A bound may be a function signature, written bare: 'F fn(a &T, b &T) i32'
+            if (lexIsToken(FnToken)) {
+                parm->annot = newNodes(2);
+                nodesAdd(&parm->annot, parseFnBound(parse));
+            }
+            else if (lexIsToken(IdentToken)) {
                 parm->annot = newNodes(2);
                 nodesAdd(&parm->annot, parseType(parse));
             }
@@ -1462,7 +1469,7 @@ Nodes *parseGenericParms(ParseState *parse, int annotate, LifeParms **lifes, Lif
                 }
                 if (parm->annot == NULL)
                     parm->annot = newNodes(2);
-                nodesAdd(&parm->annot, parseTypeReq(parse, "'+'"));
+                nodesAdd(&parm->annot, lexIsToken(FnToken) ? parseFnBound(parse) : parseTypeReq(parse, "'+'"));
             }
             // Every trait named here is required; a choice between them is
             // said in a 'where' clause [Jon 27 Sep]. The annotation is
@@ -1486,11 +1493,17 @@ Nodes *parseGenericParms(ParseState *parse, int annotate, LifeParms **lifes, Lif
         // implemented there, and reading the two names as two parameters
         // instead turned that into an arity complaint about a declaration
         // written in that form. Refuse it here and resync to the next ',' or ']'.
-        else if (lexIsToken(IdentToken)) {
+        else if (lexIsToken(IdentToken) || lexIsToken(FnToken)) {
             errorMsgLex(ErrorGenParmConstr, "A macro's or a generic module's parameter may not carry a constraint or a type: neither is implemented. Separate two parameters with a comma.");
-            while (!lexIsToken(CommaToken) && !lexIsToken(RBracketToken)) {
+            // (a signature's own commas are inside its parentheses)
+            int depth = 0;
+            while (depth > 0 || (!lexIsToken(CommaToken) && !lexIsToken(RBracketToken))) {
                 if (lexIsToken(SemiToken) || lexIsToken(LCurlyToken) || lexIsToken(RCurlyToken) || lexIsToken(EofToken))
                     break;
+                if (lexIsToken(LParenToken))
+                    ++depth;
+                else if (lexIsToken(RParenToken) && depth > 0)
+                    --depth;
                 lexNextToken();
             }
             if (lexIsToken(CommaToken))

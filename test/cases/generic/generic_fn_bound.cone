@@ -1,0 +1,182 @@
+// A function signature written bare as a generic bound, 'F fn(a &T, b &T) i32',
+// inline and in a 'where' clause (doc/reference/refgeneric.html). It is met
+// structurally: by any type with a pub '()' method whose parameters after the
+// receiver, and whose return type, are exactly the signature's, and by a plain
+// function referenced, '&byAbs'. The generic's body calls the parameter directly,
+// 'order(x, y)', in each instance, so the parameter's permission picks what the
+// call may do: '&F' reaches a 'self &' '()', '&mut F' a 'self &mut' one and keeps
+// what it changed, and F taken by value one that takes 'self &'.
+//
+// One generic is given a function and a hand-written struct, and each result is
+// worked out by hand below.
+
+mod generic_fn_bound;
+
+import stdio use *;
+
+fn absv(x i32) i32 { if x < 0i32 {0i32 - x;} else {x;}; }
+
+// A plain function: order by size without sign
+fn byAbs(a &i32, b &i32) i32 { absv(*a) - absv(*b); }
+
+// A struct with a pub '()': the numbers largest first
+struct Descending {
+  pub fn `()`(self &, a &i32, b &i32) i32 { *b - *a; }
+}
+
+// A '()' that changes the struct: it counts the comparisons it is asked
+struct Counting {
+  pub n i32;
+  pub fn `()`(self &mut, a &i32, b &i32) i32 { n = n + 1i32; absv(*a) - absv(*b); }
+}
+
+// Insertion sort. 'order(a, b)' is negative when a goes before b.
+fn sortBy[T, F fn(a &T, b &T) i32](xs &mut Array[T], order &F) {
+  mut i = 1usize;
+  while i < xs.len() {
+    mut j = i;
+    while j > 0usize and order(&xs[j], &xs[j - 1usize]) < 0i32 {
+      imm t = xs[j];
+      xs[j] = xs[j - 1usize];
+      xs[j - 1usize] = t;
+      j = j - 1usize;
+    }
+    i = i + 1usize;
+  }
+}
+
+// The same, over '&mut F': the call may change the comparer
+fn sortCounting[T, F fn(a &T, b &T) i32](xs &mut Array[T], order &mut F) {
+  mut i = 1usize;
+  while i < xs.len() {
+    mut j = i;
+    while j > 0usize and order(&xs[j], &xs[j - 1usize]) < 0i32 {
+      imm t = xs[j];
+      xs[j] = xs[j - 1usize];
+      xs[j - 1usize] = t;
+      j = j - 1usize;
+    }
+    i = i + 1usize;
+  }
+}
+
+fn show(xs &Array[i32, 5]) {
+  print <- xs[0usize], " ", xs[1usize], " ", xs[2usize], " ", xs[3usize], " ", xs[4usize], "\n";
+}
+
+fn addOne(x i32) i32 { x + 1i32; }
+
+struct Adder {
+  pub k i32;
+  pub fn `()`(self &, x i32) i32 { x + k; }
+}
+
+// A parameter's name does not matter, and a parameter may be written as its type alone
+fn twice[F fn(i32) i32](f &F, v i32) i32 { f(f(v)); }
+
+// The 'where' form says the same
+fn thrice[F](f &F, v i32) i32 where F is fn(x i32) i32 { f(f(f(v))); }
+
+// F by value reaches a '()' that takes 'self &'
+fn once[F fn(x i32) i32](f F, v i32) i32 { f(v); }
+
+// F by value reaches a '()' that takes 'self' by value, and, taken 'mut', one that
+// takes 'self &mut'
+struct Own {
+  pub k i32;
+  pub fn `()`(self, x i32) i32 { x + k; }
+}
+
+struct Chg {
+  pub k i32;
+  pub fn `()`(self &mut, x i32) i32 { k = k + 1i32; x + k; }
+}
+
+fn mutVal[F fn(x i32) i32](mut f F, v i32) i32 {
+  imm first = f(v);
+  f(first);
+}
+
+// No parameters, nothing returned, and a second bound joined with '+'
+struct Ticker {
+  pub n i32;
+  pub fn `()`(self &mut) { n = n + 1i32; }
+}
+
+fn tick3[F fn() + Sendable](f &mut F) {
+  f();
+  f();
+  f();
+}
+
+// A type parameter only the signature names is read off the argument's function
+// or '()': T is i32 for the function and i64 for the struct
+fn seven() i32 { 7i32; }
+
+struct Eight {
+  pub fn `()`(self &) i64 { 8i64; }
+}
+
+fn produce[T, F fn() T](f &F) T { f(); }
+
+// A signature bound in the 'where' clause of a generic type's member
+struct Holder[F] {
+  pub f &F;
+  pub fn run(self &, v i32) i32 where F is fn(x i32) i32 { f(v); }
+}
+
+// The signature first or after another bound, and on a generic type's own parameter
+fn signedFirst[F fn(x i32) i32 + Copy](f &F, v i32) i32 { f(v); }
+fn signedLast[F Copy + fn(x i32) i32](f &F, v i32) i32 { f(v); }
+
+struct Applied[F fn(x i32) i32] {
+  pub f &F;
+  pub fn run(self &, v i32) i32 { f(v); }
+}
+
+fn main() {
+  mut a = new Array[i32, 5] <- 5, -3, 2, -9, 1;
+
+  // A plain function, then a struct, through the same generic
+  sortBy(&mut a, &byAbs);
+  show(&a);                     // by size: 1 2 -3 5 -9
+  imm desc = new Descending();
+  sortBy(&mut a, &desc);
+  show(&a);                     // largest first: 5 2 1 -3 -9
+
+  // '&mut F': the sort keeps its count. Sorted by size again, from 5 2 1 -3 -9,
+  // insertion sort asks 1 (2<5, swap), 2 and 3 (1<5, 1<2, swaps), 4 and 5 (-3<5
+  // swaps, -3<2 does not), 6 (-9<5 does not): 6 questions
+  mut cnt = new Counting(0);
+  sortCounting(&mut a, &mut cnt);
+  show(&a);                     // 1 2 -3 5 -9
+  print <- cnt.n, "\n";         // 6
+
+  // The same generic with a function and with a struct
+  imm add10 = new Adder(10);
+  print <- twice(&addOne, 5), "\n";     // 7
+  print <- twice(&add10, 5), "\n";      // 25
+  print <- thrice(&addOne, 5), "\n";    // 8
+  print <- thrice(&add10, 5), "\n";     // 35
+  print <- once(add10, 5), "\n";        // 15
+  imm own = new Own(3);
+  print <- once(own, 1), "\n";          // 4
+  mut chg = new Chg(0);
+  print <- mutVal(chg, 1), "\n";        // 2, then 2 + 2: 4
+
+  mut ticker = new Ticker(0);
+  tick3(&mut ticker);
+  print <- ticker.n, "\n";      // 3
+
+  imm h = new Holder[Adder](&add10);
+  print <- h.run(1), "\n";      // 11
+
+  print <- signedFirst(&add10, 2), "\n";    // 12
+  print <- signedLast(&add10, 2), "\n";     // 12
+  imm applied = new Applied[Adder](&add10);
+  print <- applied.run(4), "\n";            // 14
+
+  imm eight = new Eight();
+  print <- produce(&seven), "\n";       // 7
+  print <- produce(&eight), "\n";       // 8
+}
