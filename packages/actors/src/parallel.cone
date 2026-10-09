@@ -353,6 +353,27 @@ pub fn parallelRange(lo usize, hi usize, grain usize, body RangeBody, data *u8) 
   helpUntilDone(s, p);
 }
 
+// The loop a 'parallel each' becomes (the compiler outlines the loop's body
+// into a function, whose first parameter is a record of the variables it uses):
+// parallelRange over [lo, hi) with the grain chosen here, about an eighth of an
+// even share of the range for each worker, so that the pieces are smaller than a
+// worker's share and a worker that finishes early takes more, and the work
+// stays in pieces large enough not to be lost in the splitting. The workers are
+// started if no actor has started them. The body's rules are the language's:
+// the compiler has checked them.
+pub fn parallelEach(lo usize, hi usize, body RangeBody, data *u8) {
+  if hi <= lo {
+    return;
+  }
+  ensureRunning();
+  imm s = running as *Sched;
+  mut grain = (hi - lo) / (usize.from((*s).nworkers) * 8usize);
+  if grain == 0usize {
+    grain = 1usize;
+  }
+  parallelRange(lo, hi, grain, body, data);
+}
+
 // The same loop, started and left: it returns at once, and the piece that
 // finishes last calls onDone(doneArg), on whichever thread runs it, exactly
 // once; for an empty range, or one no longer than grain, onDone is called

@@ -1,0 +1,49 @@
+// scratch
+mod concurrency_parallel_each_basic;
+
+import stdio use *;
+import collections use *;
+import actors;
+
+fn mix(i u64, n u64) u64 {
+  mut x = i + 1u64;
+  mut k = 0u64;
+  while k < n {
+    x = x * 6364136223846793005u64 + k;
+    k = k + 1u64;
+  }
+  x;
+}
+
+fn weigh(i u64) u64 {
+  mix(i, (i * i) % 97u64 * 40u64);
+}
+
+fn sumPlainRange(n usize) u64 {
+  mut total = 0u64;
+  each i in 0usize < n {
+    total = total + weigh(u64.from(i));
+  }
+  total;
+}
+
+fn sumParRange(n usize) u64 {
+  imm total = Atomic[u64].of(0u64);
+  parallel each i in 0 < n {
+    total.add(weigh(u64.from(i)));
+  }
+  total.load();
+}
+
+fn main() {
+  initAll();
+  actors.configure(new actors.Options(workers: 4u32));
+  printStr(if sumParRange(3000usize) == sumPlainRange(3000usize) {"range ok\n";} else {"range FAILED\n";});
+  imm nums = [1u64, 2u64, 3u64, 4u64, 5u64, 6u64, 7u64, 8u64];
+  imm total = Atomic[u64].of(0u64);
+  parallel each x in nums {
+    total.add(*x);
+  }
+  printStr(if total.load() == 36u64 {"sum ok\n";} else {"sum FAILED\n";});
+  finalAll();
+}

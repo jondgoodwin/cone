@@ -115,6 +115,10 @@ extern Name *capacityName; // "capacity"
 // variants of the Option 'next' answers, matched by name
 extern Name *nextName;     // "next"
 extern Name *iterName;     // "iter"
+// 'parallel', a word only directly before 'each'; and 'split', the method that,
+// with 'len', makes a source a ParallelIterable (pareach.c)
+extern Name *parallelName; // "parallel"
+extern Name *splitName;    // "split"
 extern Name *someName;     // "Some"
 extern Name *noneName;     // "None"
 

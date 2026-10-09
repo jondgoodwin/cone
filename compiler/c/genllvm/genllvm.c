@@ -152,6 +152,9 @@ void genlFn(GenState *gen, FnDclNode *fnnode) {
     gen->seams = awaitSplitOf(fnnode);
     gen->resumeat = NULL;
     gen->flightbase = gen->flightcnt;
+    // A function generated inside a parallel each's piece is not part of it
+    GenParBody *svparbody = gen->parbody;
+    gen->parbody = NULL;
 
     FnSigNode *fnsig = (FnSigNode*)fnnode->vtype;
     assert(fnnode->value->tag == BlockTag);
@@ -208,6 +211,7 @@ void genlFn(GenState *gen, FnDclNode *fnnode) {
     gen->resumeat = svresumeat;
     gen->flightcnt = gen->flightbase;
     gen->flightbase = svflightbase;
+    gen->parbody = svparbody;
 
     // A split method's second halves, one for each seam
     if (split)
@@ -2274,6 +2278,7 @@ void genSetup(GenState *gen, ConeOptions *opt) {
     gen->flightbase = 0;
     gen->awaitflights = 0;
     gen->awaitid = NULL;
+    gen->parbody = NULL;
 
     gen->comdats = genlComdatSupport(opt->triple);   // genlCreateMachine filled in the default
     gen->cabi = genlCAbiTarget(opt->triple);

@@ -313,6 +313,11 @@ enum NodeTags {
 // walks it, which only type check knows, so type check finishes the block
 // (eachLower) before checking its statements.
 #define FlagEach      0x0008        // Block: an 'each' whose loop type check has yet to build
+// With FlagEach, a 'parallel each'. Once type check has built it (pareach.c) the flag stays: the body's rules
+// are checked with it, and generation outlines the loop into a function the actors' workers run
+#define FlagParallel  0x0010        // Block: a 'parallel each'
+#define FlagParRange  0x0040        // Block: a parallel each over a number range (two hidden bounds, not a source)
+#define FlagParIncl   0x0020        // Block: a parallel each over a number range, '<=': its last bound is the last number
 
 #define FlagSuffix    0x0001        // Borrow: part of a borrow chain
 

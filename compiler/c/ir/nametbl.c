@@ -233,6 +233,8 @@ void nametblInit() {
     capacityName = nametblFind("capacity", 8);
     nextName = nametblFind("next", 4);
     iterName = nametblFind("iter", 4);
+    parallelName = nametblFind("parallel", 8);
+    splitName = nametblFind("split", 5);
     someName = nametblFind("Some", 4);
     noneName = nametblFind("None", 4);
 

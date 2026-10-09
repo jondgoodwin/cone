@@ -551,6 +551,13 @@ enum ErrorCode {
     // 'each' over cursors (ir/exp/each.c)
     ErrorEachItem = 1340,       // What an 'each' takes out of its cursor cannot be given to its variables: a 'next' that does not answer an Option, an 'iter' giving something with no 'next', variables that do not unpack the tuple item, or an item that moves
 
+    // 'parallel each' (ir/exp/pareach.c)
+    ErrorParSource = 1360,      // A 'parallel each' over a source that cannot be split into independent pieces and report its size (a cursor, a generator, a file, a channel), or whose pieces the compiler cannot yet walk
+    ErrorParControl = 1361,     // A 'break', 'return' or 'await', or a 'continue' of an outer loop, in a 'parallel each' body
+    ErrorParWrite = 1362,       // A 'parallel each' body writes something declared outside the loop (or lends it for writing), which its pieces would do at the same time
+    ErrorParSend = 1363,        // A 'parallel each' body sends a message to an actor: sends are not yet gathered and sent in iteration order after the loop
+    ErrorParRuntime = 1364,     // A 'parallel each' in a module that does not import the actors package its pieces run on, or in an actor's method (not built yet)
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name

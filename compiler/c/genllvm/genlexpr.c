@@ -70,6 +70,10 @@ static LLVMValueRef genlFlatAddr(GenState *gen, LLVMValueRef global) {
 static LLVMValueRef genlVarSym(GenState *gen, VarDclNode *var) {
     if (var->llvmvar == NULL && var->scope == 0)
         genlGloVarName(gen, var);
+    // In a parallel each's piece, a variable of the function it is written in is
+    // reached through the piece's record
+    if (gen->parbody != NULL && var->scope != 0)
+        genlParCapture(gen, var);
     return var->llvmvar ? genlFlatAddr(gen, var->llvmvar) : NULL;
 }
 
@@ -2923,6 +2927,7 @@ static LLVMValueRef genlTerm(GenState *gen, INode *termnode) {
     case AwaitReplyTag:
         return genlAwaitReply(gen, (AwaitReplyNode*)termnode);
     default:
+        fprintf(stderr, "DEBUG tag %d\n", (int)termnode->tag);
         errorUnreachable(termnode, "an expression node code generation has no case for");
         return NULL;
     }
