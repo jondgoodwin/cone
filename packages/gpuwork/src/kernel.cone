@@ -30,8 +30,15 @@ const SHAPE_STRUCT = 1u32;
 const SHAPE_SLICE = 2u32;
 
 // What a kernel's twin is until it is given one
-fn noTwin(inv Invocation, buffers &Array[Words]) {}
-fn noDirect(f *u8, inv Invocation, buffers &Array[Words]) {}
+struct NoTwin {
+  placeholder bool;
+  pub fn `()`(self &, inv Invocation, buffers &Array[Words]) {}
+}
+
+// A kernel's twin as it is kept: one owned callable over a dispatch's buffers
+// as words. A Words adapter is kept as it is; a kernel's own function is
+// kept inside a closure that reads each binding as the function's parameter
+alias TwinFn = fn(inv Invocation, buffers &Array[Words]);
 
 // A compute kernel: its SPIR-V made into a pipeline once, with the layout of
 // its bindings (binding i is parameter i, group 0, each a storage buffer;
@@ -45,7 +52,7 @@ pub struct Kernel {
   access Array[u32, 8];
   pub bindings u32;                // how many, the error buffer not counted
   pub workgroup Array[u32, 3];     // invocations a workgroup, each way
-  twin &fn(Invocation, &Array[Words]);
+  pub twin So[TwinFn];             // its CPU twin, called once for each invocation
   pub hasTwin bool;
   pub isCone bool;                 // compiled from Cone: it has an error buffer
   pub name String;                 // its entry point
@@ -53,9 +60,7 @@ pub struct Kernel {
   fileNames List[String];
   shapes Array[u32, 8];            // each binding's, from the SPIR-V
   strides Array[u32, 8];           // ...and a slice's element's bytes
-  direct *u8;                      // a direct twin: the kernel's own function,
-  call &fn(*u8, Invocation, &Array[Words]);   // and what calls it with the bindings
-  hasDirect bool;
+  hasDirect bool;                  // the twin is the kernel's own function (setTwin1 to 7)
   needs Array[u32, 8];             // the bytes a by-value struct parameter reads
   pub together bool;               // it has barriers (OpControlBarrier, read from the
                                    // SPIR-V): its twin runs a workgroup's invocations together
@@ -113,8 +118,8 @@ pub struct Kernel {
     mut layout = device.createPipelineLayout(&groupLayouts, 0u32);
     imm desc = new ComputePipelineDescriptor(layout: &layout, module: &shader, entryPoint: entryPoint);
     mut pipeline = device.createComputePipeline(&desc);
-    new Kernel(shader, groupLayout, layout, pipeline, acc, u32.from(access.len), size, &noTwin, false, isCone,
-      String.from(entryPoint), fileIds, fileNames, shapes, strides, null as *u8, &noDirect, false,
+    new Kernel(shader, groupLayout, layout, pipeline, acc, u32.from(access.len), size, new So[TwinFn](new NoTwin(false)), false, isCone,
+      String.from(entryPoint), fileIds, fileNames, shapes, strides, false,
       new Array[u32, 8] <- fill 0u32, ok and hasBarriers(spirv, entryPoint));
   }
 
@@ -124,7 +129,7 @@ pub struct Kernel {
   // dispatch, with the dispatch's buffers as words, in the same order as the
   // kernel's bindings
   pub fn setTwin(self &mut, f &fn(Invocation, &Array[Words])) {
-    twin = f;
+    twin = new So[TwinFn](fn(inv Invocation, w &Array[Words]) [f] { f(inv, w); });
     hasTwin = true;
     hasDirect = false;
   }
@@ -137,40 +142,40 @@ pub struct Kernel {
   // Refused if the count is not the kernel's bindings, or a parameter is a
   // struct where the SPIR-V binds a slice (see 'fits').
   pub fn setTwin1[A](self &mut, f &fn(Invocation, A)) {
-    if self.directFits(1u32) and self.fits[A](0usize) { self.setDirect(fnBits(f), &call1[A]); }
+    if self.directFits(1u32) and self.fits[A](0usize) { self.setDirect(new So[TwinFn](fn(inv Invocation, w &Array[Words]) [f] { f(inv, param[A](&w[0usize])); })); }
   }
   pub fn setTwin2[A, B](self &mut, f &fn(Invocation, A, B)) {
     if self.directFits(2u32) and self.fits[A](0usize) and self.fits[B](1usize) {
-      self.setDirect(fnBits(f), &call2[A, B]);
+      self.setDirect(new So[TwinFn](fn(inv Invocation, w &Array[Words]) [f] { f(inv, param[A](&w[0usize]), param[B](&w[1usize])); }));
     }
   }
   pub fn setTwin3[A, B, C](self &mut, f &fn(Invocation, A, B, C)) {
     if self.directFits(3u32) and self.fits[A](0usize) and self.fits[B](1usize) and self.fits[C](2usize) {
-      self.setDirect(fnBits(f), &call3[A, B, C]);
+      self.setDirect(new So[TwinFn](fn(inv Invocation, w &Array[Words]) [f] { f(inv, param[A](&w[0usize]), param[B](&w[1usize]), param[C](&w[2usize])); }));
     }
   }
   pub fn setTwin4[A, B, C, D](self &mut, f &fn(Invocation, A, B, C, D)) {
     if self.directFits(4u32) and self.fits[A](0usize) and self.fits[B](1usize) and self.fits[C](2usize)
         and self.fits[D](3usize) {
-      self.setDirect(fnBits(f), &call4[A, B, C, D]);
+      self.setDirect(new So[TwinFn](fn(inv Invocation, w &Array[Words]) [f] { f(inv, param[A](&w[0usize]), param[B](&w[1usize]), param[C](&w[2usize]), param[D](&w[3usize])); }));
     }
   }
   pub fn setTwin5[A, B, C, D, E](self &mut, f &fn(Invocation, A, B, C, D, E)) {
     if self.directFits(5u32) and self.fits[A](0usize) and self.fits[B](1usize) and self.fits[C](2usize)
         and self.fits[D](3usize) and self.fits[E](4usize) {
-      self.setDirect(fnBits(f), &call5[A, B, C, D, E]);
+      self.setDirect(new So[TwinFn](fn(inv Invocation, w &Array[Words]) [f] { f(inv, param[A](&w[0usize]), param[B](&w[1usize]), param[C](&w[2usize]), param[D](&w[3usize]), param[E](&w[4usize])); }));
     }
   }
   pub fn setTwin6[A, B, C, D, E, F](self &mut, f &fn(Invocation, A, B, C, D, E, F)) {
     if self.directFits(6u32) and self.fits[A](0usize) and self.fits[B](1usize) and self.fits[C](2usize)
         and self.fits[D](3usize) and self.fits[E](4usize) and self.fits[F](5usize) {
-      self.setDirect(fnBits(f), &call6[A, B, C, D, E, F]);
+      self.setDirect(new So[TwinFn](fn(inv Invocation, w &Array[Words]) [f] { f(inv, param[A](&w[0usize]), param[B](&w[1usize]), param[C](&w[2usize]), param[D](&w[3usize]), param[E](&w[4usize]), param[F](&w[5usize])); }));
     }
   }
   pub fn setTwin7[A, B, C, D, E, F, G](self &mut, f &fn(Invocation, A, B, C, D, E, F, G)) {
     if self.directFits(7u32) and self.fits[A](0usize) and self.fits[B](1usize) and self.fits[C](2usize)
         and self.fits[D](3usize) and self.fits[E](4usize) and self.fits[F](5usize) and self.fits[G](6usize) {
-      self.setDirect(fnBits(f), &call7[A, B, C, D, E, F, G]);
+      self.setDirect(new So[TwinFn](fn(inv Invocation, w &Array[Words]) [f] { f(inv, param[A](&w[0usize]), param[B](&w[1usize]), param[C](&w[2usize]), param[D](&w[3usize]), param[E](&w[4usize]), param[F](&w[5usize]), param[G](&w[6usize])); }));
     }
   }
 
@@ -202,9 +207,8 @@ pub struct Kernel {
     true;
   }
 
-  fn setDirect(self &mut, f *u8, c &fn(*u8, Invocation, &Array[Words])) {
-    direct = f;
-    call = c;
+  fn setDirect(self &mut, f So[TwinFn]) {
+    twin = f;
     hasDirect = true;
     hasTwin = true;
   }
@@ -225,50 +229,11 @@ pub struct Kernel {
 
 // ---- The direct twin: a kernel's own function called with its bindings ----
 
-// The bits of a function reference, kept as a raw pointer
-fn fnBits[F](f F) *u8 {
-  mut g = f;
-  mem.readRaw[*u8](&mut g as **u8);
-}
-
-// ...and the function reference again
-fn fnOf[F](bits *u8) F {
-  mut p = bits;
-  mem.readRaw[F](&mut p as *F);
-}
-
 // Binding 'w' as parameter type T: a slice of its elements (Words begins as
 // a slice does, its pointer and its count of elements), or the struct its
 // first bytes hold
 fn param[T](w &Words) T {
   if w.slice { mem.readRaw[T](w as *T); } else { mem.readRaw[T](w.ptr as *T); }
-}
-
-fn call1[A](f *u8, inv Invocation, w &Array[Words]) {
-  fnOf[&fn(Invocation, A)](f)(inv, param[A](&w[0usize]));
-}
-fn call2[A, B](f *u8, inv Invocation, w &Array[Words]) {
-  fnOf[&fn(Invocation, A, B)](f)(inv, param[A](&w[0usize]), param[B](&w[1usize]));
-}
-fn call3[A, B, C](f *u8, inv Invocation, w &Array[Words]) {
-  fnOf[&fn(Invocation, A, B, C)](f)(inv, param[A](&w[0usize]), param[B](&w[1usize]), param[C](&w[2usize]));
-}
-fn call4[A, B, C, D](f *u8, inv Invocation, w &Array[Words]) {
-  fnOf[&fn(Invocation, A, B, C, D)](f)(inv, param[A](&w[0usize]), param[B](&w[1usize]), param[C](&w[2usize]),
-    param[D](&w[3usize]));
-}
-fn call5[A, B, C, D, E](f *u8, inv Invocation, w &Array[Words]) {
-  fnOf[&fn(Invocation, A, B, C, D, E)](f)(inv, param[A](&w[0usize]), param[B](&w[1usize]),
-    param[C](&w[2usize]), param[D](&w[3usize]), param[E](&w[4usize]));
-}
-fn call6[A, B, C, D, E, F](f *u8, inv Invocation, w &Array[Words]) {
-  fnOf[&fn(Invocation, A, B, C, D, E, F)](f)(inv, param[A](&w[0usize]), param[B](&w[1usize]),
-    param[C](&w[2usize]), param[D](&w[3usize]), param[E](&w[4usize]), param[F](&w[5usize]));
-}
-fn call7[A, B, C, D, E, F, G](f *u8, inv Invocation, w &Array[Words]) {
-  fnOf[&fn(Invocation, A, B, C, D, E, F, G)](f)(inv, param[A](&w[0usize]), param[B](&w[1usize]),
-    param[C](&w[2usize]), param[D](&w[3usize]), param[E](&w[4usize]), param[F](&w[5usize]),
-    param[G](&w[6usize]));
 }
 
 // ---- Reading the SPIR-V ----
