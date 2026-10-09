@@ -30,6 +30,7 @@ caused, were measured.*
 | `FlagKeepTemps` | an operator's rewrite (`fnCallOpAssgn`, `contentsLower`): its statements' temporaries die at its end, not each statement's ([Flow](../phases/flow.md), "Temporaries") |
 | `FlagEach` | the outer block of an `each` over a source that is not a numeric range: `blockTypeCheck` checks its first statement, the hidden variable holding the source, then builds the loop (`eachLower`, `ir/exp/each.c`) and clears the flag |
 | `FlagParallel` | the outer block of a `parallel each`; set with `FlagEach` by the parser and **kept** once `parallelEachLower` has built the loop, for the body's checks and for generation, which outlines the loop. With `FlagParIncl` (a range written `<=`) and `FlagParRange` (a number range, not a source) |
+| `FlagLoopElse` | the block a loop leaves through when it has run out: the statements of its `else`, ending in the `break` that carries the loop's value (`blockElseFinish`). Name resolution reads it with the loop *around* the loop it stands in as the innermost one (below) |
 
 ## Parse
 
@@ -67,13 +68,39 @@ the variables, the body and every `break`/`continue` in it resolve as for a
 `while`. The scopes it counts are the ones the finished loop has, which is why
 the loop keeps the body's statements where they are and adds only to its head.
 
+**A header `if`, and the loop's `else`.** A filter, `each p in src if cond {…}`
+(`parseEachFilter`, which a later `<- each` header reads with the same call),
+becomes `if not cond { continue }` as the first statement of the body after the
+pass's variables, built by `parseEachFilterStmt`; for a range the `continue`
+carries the step like any other. A trailing `if` on `break`, `continue` or
+`return` is the same jump inside an `if` arm (`parseJumpEnd`). The `if` after
+a `break` or `return` with no value is the statement's when its condition is
+followed by the end of the statement, and an `if` expression's when a block
+follows, which `parseIf` decides when `parseJumpValue` has told it to leave the
+condition.
+
+An `else` after a loop (`parseLoopElse`) is a block of statements that is
+moved into the loop as the arm taken when the loop runs out, and the loop is
+then an expression: `blockElseFinish` flags the block `FlagLoopElse` and ends
+it with a `break` carrying its last expression (or nil, or nothing when it ends
+in a `return`, `break` or `continue`), aimed at the loop it leaves
+(`FlagBreakAimed`, which `breakNameRes` keeps). `while cond {…} else {…}` puts it
+where `if not cond { break }` goes. An `each` over anything but a range puts it
+first among the loop's statements, ahead of the reader's variables so that it
+cannot name them, and `eachLower` takes it out to make the exit of the counted
+loop or of the cursor's `None` arm. A range has several places it runs out
+(the guard, and the steps that stop a counter wrapping or reaching its bound),
+and one `else`: they set a hidden flag instead of breaking, and the guard
+`if flag or not (c < b) {…else…}` leaves at the top of the next pass.
+
 **`parallel each` is parsed as `each` is**, with `FlagParallel` beside `FlagEach`.
 `parallel` is an ordinary name (`parallelName`) that `parseExprBlock` takes for the
 word only when `each` follows it directly (`lexNextIsWord`), so it stays usable as
 a variable, a function or a field. A number range is not rewritten to a counter, as
 `each`'s is: its two bounds are held in two hidden variables (`first'`, `last'`),
-the block has three statements, and `FlagParIncl` says `<=`. A count down and a
-`by` step are refused here (`ErrorParSource`).
+the block has three statements, and `FlagParIncl` says `<=`. A count down, a
+`by` step and an `else` are refused here (`ErrorParSource`, `ErrorParElse`); a
+header `if` is the same `continue` statement after the pass's variable.
 
 ## Name resolution
 
@@ -82,6 +109,14 @@ if it is one — that is what an unlabelled `break`/`continue` binds to. Push a
 scope and a hook table. Hook `lifesym` if it is free; **if it is already bound,
 report the duplicate and do not hook**, so an inner `break 'x` silently reaches
 the outer block.
+
+**A loop's `else` is read as outside the loop.** An `else` is written after the
+loop, so its `break` and `continue` are the enclosing loop's, though it stands
+inside the loop it is the exit of. `blockNameRes` keeps `outerloop`, the loop
+around the innermost, and walks a `FlagLoopElse` block with it as the innermost
+(`loopblock`). Its variables are in the loop's scope depth, which is what the
+borrow-lifetime checks count, and it is placed ahead of the pass's variables, so
+the pass's variables are not in view.
 
 **Placement rule.** `return` may only be last; `break` and `continue` may be
 last, or one before last when `FlagLoopStep` allows for the step. `return` gets
@@ -111,7 +146,15 @@ statements; the loop below then checks them as built. By the source's type:
   result (`list.view()`). No cursor is made, and the loop is the one a `while` over the
   list's indexes optimizes to. A list's `iter()` is not called: its cursor gives
   an Option each pass, whose null test on a pointer the optimizer cannot know is
-  not null blocks the loop's vectorization.
+  not null blocks the loop's vectorization. A slice that is mutable (what
+  `mutItems()` answers) lends each element as `&mut s[i]`; any other as `&s[i]`.
+- **core's `ArrayIter` or `ArrayIndexed`, a value made for the loop** (not a
+  place, not behind a reference; `iter()` with one variable, `indexed()` with
+  two, `eachIsCore`): the same counted loop, over the slice the cursor holds and
+  from the position it holds (`mut i = cursor.pos`), so a cursor made by the loop
+  is no cursor in the code. With `indexed()` the first variable is a copy of `i`
+  and the second the element's borrow. A cursor kept in a variable, or taken
+  whole by one variable of `indexed()`, is walked through its `next`.
 - **a type with `next`**: the cursor is the source as it is. A place named
   again without evaluating anything (`eachStablePlace`: a variable, a field of
   one, a dereference of one) is advanced where it stands, so a cursor left part
@@ -125,9 +168,20 @@ Each pass of a cursor loop declares its variable from the item:
 break; } }`, built as `match` is desugared (`eachNextItem`), the `break`
 joined to the loop as it is built. Two or more variables take the item through
 a variable of the pass's own, `imm -item = ...; imm k = -item.0; imm v =
--item.1`. An item that moves is refused before the loop is built
-(`ErrorEachItem`): `flowRefuseMoveField` would refuse the payload's move out of
-the Option the loop holds, as it does for a hand-written `match`.
+-item.1`. The pass's binding of the `Some` has a name no reader can write
+(`-some`), so that a move out of it is marked at the move as a named binding's
+is. An item that moves is taken whole by one variable, `s.value` moving the
+Option the loop holds with it (`flowTakesSoleField`, [Flow](../phases/flow.md),
+"Moves and counting"); with several variables it would move the elements of a
+tuple out one by one, which is refused before the loop is built
+(`ErrorEachItem`).
+
+A loop's `else` (`FlagLoopElse`, first among the loop's statements) is taken
+out first and becomes the block the loop leaves through: the `if i >= len`
+arm of a counted loop, the `None` arm of a cursor's match (`eachLeave`). A
+cursor's arm is one block deeper than where name resolution counted the block's
+variables; the difference makes them look shallower, not deeper, to the
+borrow-lifetime checks.
 
 A source is checked once, as the initializer of the hidden variable. Checking an
 expression a second time is not idempotent for a call, which type check lowers,
@@ -165,6 +219,18 @@ the loop's own or the body's, through fields, elements and references, but not
 through a raw pointer (the loop trusts its writer). The loop is the block's last
 statement, so type check has made it the value of a `blockret` (`parLoopOf`
 looks through it).
+
+A mutable slice as the source (what `mutItems()` gives, or a `&mut` slice) lends
+each item mutably, as `eachLower` does, so a pass changes its own item through its
+variable, and the items are disjoint. `&mut` is shared in Cone, so nothing else
+stops the body reading the same list under its own name while another pass changes
+an item: the hidden slice is then named `sm'` (not `s'`), and `parallelEachCheckBody`
+refuses a body that names the place the slice was lent from (`parPathOf`: the
+variable and the fields named from it, through references and a method's receiver,
+and any place that is that place, or inside it, or holds it) as well
+(`ErrorParWrite`). A header `if` needs nothing of its own: it is `eachLower`'s
+`continue` statement after the pass's variable, ahead of which the loop's step is
+inserted.
 
 Every statement but the last is checked with `noCareType`. A nested plain block
 may not end in `break`/`continue` (`blockNoBreak`) — `if` arms are exempt,

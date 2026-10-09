@@ -34,6 +34,11 @@
 // A pass's variable is a new, unchangeable variable (not one that the loop
 // steps): two or more of them unpack a tuple item, 'imm -item = ...; imm k =
 // -item.0; imm v = -item.1'.
+//
+// A header filter ('each x in src if cond') is the statement 'if !cond {continue}'
+// after the variables, built by the parser (parseEachFilterStmt). A loop's 'else'
+// is the first statement of the loop, a block flagged FlagLoopElse, which this
+// takes out and makes the block the loop leaves through when it has run out.
 void eachLower(TypeCheckState *pstate, BlockNode *outer);
 
 #endif

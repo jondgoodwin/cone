@@ -1058,6 +1058,7 @@ int structEnumDemandSet(NameResState *pstate, StructNode *node) {
     NameResState dstate = *pstate;
     dstate.typenode = NULL;
     dstate.loopblock = NULL;
+    dstate.outerloop = NULL;
     dstate.macromethod = NULL;
     dstate.scope = 0;
     ModuleNode *mod = dclInfoGetModule((INode*)node);

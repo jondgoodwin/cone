@@ -65,25 +65,57 @@ fn fact(mut n i32) i32 {
 fn countOdd(mut n i32) i32 {
   mut result = 0;
   while n &gt; 0 {
-    if n-- % 2 == 0 { continue; } 
+    if n-- % 2 == 0 { continue; }
     ++result;
   }
   result;
 }
 </pre>
 
+	<h3 id="trailing-if">A trailing if</h3>
+	<p><span class="pre">break</span>, <span class="pre">continue</span> and <span class="pre">return</span>,
+		and only those three, may end with an <span class="pre">if</span> and a condition. The statement is then
+		performed only when the condition holds, exactly as if it stood alone in an
+		<span class="pre">if</span> block:</p>
+<pre>
+fn countOdd(mut n i32) i32 {
+  mut result = 0;
+  while n &gt; 0 {
+    continue if n-- % 2 == 0;    // the same as: if n-- % 2 == 0 { continue; }
+    ++result;
+  }
+  result;
+}
+
+fn firstOver(list &amp;List[i32], limit i32) i32 {
+  each x in list {
+    return *x if *x &gt; limit;     // a value, then the condition
+  }
+  -1;
+}
+
+break if done;                  // no value
+break idx if matches(idx);      // a value
+return if n == 0;               // no value
+</pre>
+	<p>Any other statement is written with an <span class="pre">if</span> block. A value that is itself an
+		<span class="pre">if</span> expression is told from a trailing one by the block that follows its condition:
+		<span class="pre">return if c {1} else {2};</span> returns the value of the expression, and
+		<span class="pre">return if c;</span> returns, when <span class="pre">c</span> holds. Writing the
+		expression in parentheses, <span class="pre">return (if c {1} else {2});</span>, leaves no doubt.</p>
+
 	<h3>loop as expression</h3>
 	<p>A <span class="pre">while</span> loop may be used within an expression, where it is expected to return a value.
-		The value(s) returned by a <span class="pre">while</span> loop are specified by the loop's 
+		The value(s) returned by a <span class="pre">while</span> loop are specified by the loop's
 		<span class="pre">break</span> statements.
-		The <span class="pre">while</span> statement cannot specify a conditional expression, as this condition
-		does not specify the loop's returned value.</p>
+		A <span class="pre">while</span> with no condition has no way to leave except by a
+		<span class="pre">break</span>, so every one of its breaks gives the loop's value.</p>
 	<p>This example shows use of a <span class="pre">while</span> loop as an expression.
 		Notice the lack of conditional expression on the <span class="pre">while</span>
 		and the specification of values on the <span class="pre">break</span> statements.</p>
 <pre>
-imm found = loop {
-  if idx &gt; maxidx { break -1; } 
+imm found = while {
+  if idx &gt; maxidx { break -1; }
   if matches(idx) { break idx; }
   ++idx;
 }
@@ -91,13 +123,47 @@ imm found = loop {
 	<p>If this feature is used, all <span class="pre">break</span> statements in the loop
 		must return a value, all of the same type.</p>
 
+	<h4 id="else">A loop with a condition: else</h4>
+	<p>A <span class="pre">while</span> with a condition has one more way out: the condition fails, and that exit
+		gives no value of its own. An <span class="pre">else</span> after the loop's block says what the loop gives
+		when it runs out, and with one the loop may be used as an expression. The <span class="pre">else</span>
+		block is an ordinary block: its last expression is the value, and it may do other work first.</p>
+<pre>
+imm found = while idx &lt;= maxidx {
+  if matches(idx) { break idx; }
+  ++idx;
+} else {
+  -1;               // the condition failed: nothing matched
+};
+</pre>
+	<p>The <span class="pre">else</span> block runs only when the loop runs out; a <span class="pre">break</span> skips it.
+		It stands outside the loop: the loop's variables are not in view, and a <span class="pre">break</span> or
+		<span class="pre">continue</span> in it belongs to the loop around. It may also end in a
+		<span class="pre">return</span>, which gives the loop no value:</p>
+<pre>
+imm found = while idx &lt;= maxidx {
+  if matches(idx) { break idx; }
+  ++idx;
+} else {
+  return notFound;
+};
+</pre>
+	<p>A <span class="pre">while</span> loop with an <span class="pre">else</span> may also be a statement,
+		with an <span class="pre">else</span> that is run for what it does. As a value, a
+		<span class="pre">break</span> that gives no value is refused when the <span class="pre">else</span> gives one: the
+		loop's value is of one type whichever way it ends. A <span class="pre">while</span> with no condition
+		never runs out, so it takes no <span class="pre">else</span>; a loop with a condition and no
+		<span class="pre">else</span> is a statement only.
+		<span class="pre">each</span> takes an <span class="pre">else</span> in the same way
+		(<a href="refeach.html#else">Each</a>).</p>
+
 	<h3>Outer block breaks</h2>
 	<p>To make it possible for <span class="pre">break</span> or <span class="pre">continue</span>
 		to apply to a loop outside the loop it is in, mark the outer loop with a
 		<a href="reftoken.html#lifetime">lifetime annotation</a> and then use that same
 		annotation on the <span class="pre">break</span> or <span class="pre">continue</span> statement.</p>
 <pre>
-'outer: each n in 1...5 {
+'outer: each n in 1 &lt;= 5 {
 	while obj.fireAShot() {
 		if obj.impacted { continue 'outer; }
 	}

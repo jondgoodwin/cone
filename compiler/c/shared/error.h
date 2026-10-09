@@ -557,11 +557,16 @@ enum ErrorCode {
     ErrorGenForm = 1352,        // A generator of a form not built: generic, a method, with 'inline' or a 'where' clause
     ErrorGenFrame = 1353,       // A local a 'yield' would keep in the generator's frame that the frame cannot hold: a lock's guard, or a value holding a traced reference
 
+    // Loop control: a header 'if', a trailing 'if', a loop's 'else' (parser/parsefnflow.c)
+    ErrorLoopElse = 1360,       // An 'else' on a loop that cannot run out: a 'while' with no condition
+    ErrorTrailingIf = 1361,     // A trailing 'if' after a statement that takes none: only 'break', 'continue' and 'return' end with one
+
     // 'parallel each' (ir/exp/pareach.c)
-    ErrorParSource = 1360,      // A 'parallel each' over a source that cannot be split into independent pieces and report its size (a cursor, a generator, a file, a channel), or whose pieces the compiler cannot yet walk
-    ErrorParControl = 1361,     // A 'break', 'return' or 'await', or a 'continue' of an outer loop, in a 'parallel each' body
-    ErrorParWrite = 1362,       // A 'parallel each' body writes something declared outside the loop (or lends it for writing), which its pieces would do at the same time
-    ErrorParRuntime = 1363,     // A 'parallel each' in a module that does not import the actors package its pieces run on, or in an actor's method or a generator (not built)
+    ErrorParSource = 1370,      // A 'parallel each' over a source that cannot be split into independent pieces and report its size (a cursor, a generator, a file, a channel), or whose pieces the compiler cannot yet walk
+    ErrorParControl = 1371,     // A 'break', 'return' or 'await', or a 'continue' of an outer loop, in a 'parallel each' body
+    ErrorParWrite = 1372,       // A 'parallel each' body writes something declared outside the loop (or lends it for writing), which its pieces would do at the same time
+    ErrorParRuntime = 1373,     // A 'parallel each' in a module that does not import the actors package its pieces run on, or in an actor's method or a generator (not built)
+    ErrorParElse = 1374,        // A 'parallel each' with an 'else': its passes run at the same time and give no value
 
     // Warnings
     WarnCode = 3000,

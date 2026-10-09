@@ -73,11 +73,20 @@ static INode *eachBreak(BlockNode *loop, INode *lexnode) {
     return (INode*)brk;
 }
 
-// 'if cond {break}', leaving 'loop'
-static INode *eachBreakIf(INode *cond, BlockNode *loop, INode *lexnode) {
-    BlockNode *ifblk = newBlockNode();
-    inodeLexCopy((INode*)ifblk, lexnode);
-    nodesAdd(&ifblk->stmts, eachBreak(loop, lexnode));
+// The block the loop leaves through when it has run out: its 'else', which ends
+// in the break that carries its value out, or a block holding just that break
+static BlockNode *eachLeave(BlockNode *loop, BlockNode *elseblk, INode *lexnode) {
+    if (elseblk != NULL)
+        return elseblk;
+    BlockNode *leave = newBlockNode();
+    inodeLexCopy((INode*)leave, lexnode);
+    nodesAdd(&leave->stmts, eachBreak(loop, lexnode));
+    return leave;
+}
+
+// 'if cond {break}', leaving 'loop'; or, given the loop's 'else', 'if cond {...}'
+static INode *eachBreakIf(INode *cond, BlockNode *loop, BlockNode *elseblk, INode *lexnode) {
+    BlockNode *ifblk = eachLeave(loop, elseblk, lexnode);
     IfNode *ifnode = newIfNode();
     inodeLexCopy((INode*)ifnode, lexnode);
     nodesAdd(&ifnode->condblk, cond);
@@ -92,7 +101,7 @@ static INode *eachBreakIf(INode *cond, BlockNode *loop, INode *lexnode) {
 //   { imm m = cursor.next();
 //     if m is Some { imm s = [Some]m; s.value } elif m is None { break } }
 // 'scope' is that block's.
-static INode *eachNextItem(INode *cursor, BlockNode *loop, uint16_t scope, INode *lexnode) {
+static INode *eachNextItem(INode *cursor, BlockNode *loop, BlockNode *elseblk, uint16_t scope, INode *lexnode) {
     static Name *valueName = NULL;
     if (valueName == NULL)
         valueName = nametblFind("value", 5);
@@ -110,7 +119,14 @@ static INode *eachNextItem(INode *cursor, BlockNode *loop, uint16_t scope, INode
     CastNode *cast = newConvCastNode(eachUse(matched, lexnode), (INode*)some);
     inodeLexCopy((INode*)cast, lexnode);
     cast->flags |= FlagMatchBind;
+    // The binding has a name of its own (one the reader cannot write), unlike the
+    // matched value's variable: a move out of it is marked where it happens, as a
+    // named binding's is, and that mark is what tells the matched value's drop flag
+    static Name *boundName = NULL;
+    if (boundName == NULL)
+        boundName = nametblFind("-some", 5);
     VarDclNode *bound = eachVar(immPerm, (INode*)cast, (uint16_t)(scope + 1), lexnode);
+    bound->namesym = boundName;
     BlockNode *arm = newBlockNode();
     inodeLexCopy((INode*)arm, lexnode);
     nodesAdd(&arm->stmts, (INode*)bound);
@@ -120,9 +136,7 @@ static INode *eachNextItem(INode *cursor, BlockNode *loop, uint16_t scope, INode
     castPatternMark((INode*)none);
     CastNode *isnone = newIsNode(eachUse(matched, lexnode), (INode*)none);
     inodeLexCopy((INode*)isnone, lexnode);
-    BlockNode *leave = newBlockNode();
-    inodeLexCopy((INode*)leave, lexnode);
-    nodesAdd(&leave->stmts, eachBreak(loop, lexnode));
+    BlockNode *leave = eachLeave(loop, elseblk, lexnode);
 
     IfNode *ifnode = newIfNode();
     inodeLexCopy((INode*)ifnode, lexnode);
@@ -168,6 +182,14 @@ static int eachRecheckable(INode *node) {
     default:
         return 0;
     }
+}
+
+// Is this type an instance of the struct of this name that core declares?
+static int eachIsCore(INode *type, char *name, size_t len) {
+    if (type->tag != StructTag || ((StructNode*)type)->namesym != nametblFind(name, (uint32_t)len))
+        return 0;
+    ModuleNode *mod = dclInfoGetModule(type);
+    return mod != NULL && mod->namesym == nametblFind("core", 4);
 }
 
 // Does the type declare a method of this name?
@@ -242,9 +264,9 @@ static int eachCheckItem(INode *cursortype, uint32_t nvars, INode *lexnode, INod
             (int)nvars, (int)nvars, itypeName(cursortype), itypeName(item));
         return 0;
     }
-    if (itypeIsMove(item)) {
+    if (nvars > 1 && itypeIsMove(item)) {
         errorMsgNode(lexnode, ErrorEachItem,
-            "The items of %s are %s, a type that moves, and an 'each' variable cannot yet take one out of the Option 'next' answers. Take them with 'while' and a 'match' on 'next()' that swaps each out ('<=>').",
+            "The items of %s are %s, a type that moves, and several 'each' variables cannot take its elements out one by one. Use one variable to take the item whole.",
             itypeName(cursortype), itypeName(item));
         return 0;
     }
@@ -293,6 +315,18 @@ void eachLower(TypeCheckState *pstate, BlockNode *outer) {
     BlockNode *loop = (BlockNode*)nodesGet(outer->stmts, 1);
     INode *lexnode = (INode*)srcdcl;
     uint16_t scope = (uint16_t)pstate->scope;
+
+    // The loop's 'else', when it has one, stands ahead of the reader's variables
+    // (so that it cannot name them) as the block the loop leaves through; taken
+    // out of the loop here to be put where the loop is left
+    BlockNode *elseblk = NULL;
+    INode *first = loop->stmts->used > 0 ? nodesGet(loop->stmts, 0) : NULL;
+    if (first != NULL && first->tag == BlockTag && (first->flags & FlagLoopElse)) {
+        elseblk = (BlockNode*)first;
+        for (uint32_t i = 1; i < loop->stmts->used; ++i)
+            nodesGet(loop->stmts, i - 1) = nodesGet(loop->stmts, i);
+        --loop->stmts->used;
+    }
     uint32_t nvars = eachVarCount(loop);
 
     // A source that has no value or no type ends the loop here: what the body
@@ -337,10 +371,21 @@ void eachLower(TypeCheckState *pstate, BlockNode *outer) {
     }
     int place = eachRecheckable(src);
 
+    // The cursor a slice gives (core's ArrayIter, ArrayIndexed), made for this
+    // loop, is the slice and a count it starts from: walked as the slice is, by
+    // a counted loop, rather than through its Option each pass
+    int itemskind = 0;
+    if (hasnext && !isref && !place) {
+        if (nvars == 1 && eachIsCore(base, "ArrayIter", 9))
+            itemskind = 1;
+        else if (nvars == 2 && eachIsCore(base, "ArrayIndexed", 12))
+            itemskind = 2;
+    }
+
     // The cursor the loop walks, and what it gives, are checked before the loop
     // is built: what is wrong with either is said here, in the loop's terms,
     // rather than by the statements built from it
-    if (hasnext || hasiter) {
+    if ((hasnext || hasiter) && !itemskind) {
         INode *cursortype = base;
         if (hasiter) {
             FnDclNode *iterfn = eachMethod(base, iterName);
@@ -360,10 +405,22 @@ void eachLower(TypeCheckState *pstate, BlockNode *outer) {
             return;
     }
 
-    if (isslice || isarray || islent) {
+    if (isslice || isarray || islent || itemskind) {
         // imm s = [the slice]; mut i = 0; loop { if i >= s.len {break}; imm x = &s[i]; i++; ... }
         VarDclNode *slicedcl = srcdcl;
-        if (islent) {
+        INode *start = (INode*)newULitNodeTC(0, (INode*)usizeType);
+        if (itemskind) {
+            // The cursor's own slice and position, read once
+            static Name *itemsName = NULL, *posName = NULL;
+            if (itemsName == NULL) {
+                itemsName = nametblFind("items", 5);
+                posName = nametblFind("pos", 3);
+            }
+            nodesAdd(&outer->stmts, (INode*)srcdcl);
+            slicedcl = eachVar(immPerm, (INode*)eachField(eachUse(srcdcl, lexnode), itemsName, lexnode), scope, lexnode);
+            start = (INode*)eachField(eachUse(srcdcl, lexnode), posName, lexnode);
+        }
+        else if (islent) {
             // The slice the type lends: its place's, or a value held first
             INode *owner = src;
             if (!place) {
@@ -385,7 +442,7 @@ void eachLower(TypeCheckState *pstate, BlockNode *outer) {
             slicedcl->value = (INode*)newRefNodeFull(ArrayBorrowTag, lexnode, borrowRef, unknownType, array);
         }
         nodesAdd(&outer->stmts, (INode*)slicedcl);
-        VarDclNode *index = eachVar(mutPerm, (INode*)newULitNodeTC(0, (INode*)usizeType), scope, lexnode);
+        VarDclNode *index = eachVar(mutPerm, start, scope, lexnode);
         nodesAdd(&outer->stmts, (INode*)index);
 
         FnCallNode *done = newFnCallOpnameLower(lexnode, eachUse(index, lexnode), geName, 1);
@@ -393,12 +450,23 @@ void eachLower(TypeCheckState *pstate, BlockNode *outer) {
         FnCallNode *elem = newFnCallLower(lexnode, eachUse(slicedcl, lexnode), 1);
         elem->flags |= FlagIndex;
         nodesAdd(&elem->args, eachUse(index, lexnode));
-        RefNode *borrow = newRefNodeFull(BorrowTag, lexnode, borrowRef, unknownType, (INode*)elem);
-        ((VarDclNode*)nodesGet(loop->stmts, 0))->value = (INode*)borrow;
+        // A slice that is mutable (what 'mutItems' gives) lends each element
+        // mutably; any other lends it to be read
+        INode *elemperm = unknownType;
+        if (isslice && permMatches((INode*)mutPerm, ((RefNode*)type)->perm))
+            elemperm = (INode*)mutPerm;
+        RefNode *borrow = newRefNodeFull(BorrowTag, lexnode, borrowRef, elemperm, (INode*)elem);
+        if (itemskind == 2) {
+            // The position is a copy of the count, the second variable the element's borrow
+            ((VarDclNode*)nodesGet(loop->stmts, 0))->value = eachUse(index, lexnode);
+            ((VarDclNode*)nodesGet(loop->stmts, 1))->value = (INode*)borrow;
+        }
+        else
+            ((VarDclNode*)nodesGet(loop->stmts, 0))->value = (INode*)borrow;
         FnCallNode *step = newFnCallOpnameLower(lexnode, eachUse(index, lexnode), incrPostName, 0);
         step->flags |= FlagLvalOp;
-        nodesInsert(&loop->stmts, (INode*)step, 1);
-        nodesInsert(&loop->stmts, eachBreakIf((INode*)done, loop, lexnode), 0);
+        nodesInsert(&loop->stmts, (INode*)step, nvars);
+        nodesInsert(&loop->stmts, eachBreakIf((INode*)done, loop, elseblk, lexnode), 0);
         nodesAdd(&outer->stmts, (INode*)loop);
         return;
     }
@@ -430,7 +498,7 @@ void eachLower(TypeCheckState *pstate, BlockNode *outer) {
         nodesAdd(&outer->stmts, (INode*)cursordcl);
         cursor = eachUse(cursordcl, lexnode);
     }
-    eachBindVars(loop, nvars, eachNextItem(cursor, loop, (uint16_t)(scope + 2), lexnode),
+    eachBindVars(loop, nvars, eachNextItem(cursor, loop, elseblk, (uint16_t)(scope + 2), lexnode),
         (uint16_t)(scope + 1), lexnode);
     nodesAdd(&outer->stmts, (INode*)loop);
 }

@@ -319,6 +319,14 @@ enum NodeTags {
 #define FlagParallel  0x0010        // Block: a 'parallel each'
 #define FlagParRange  0x0040        // Block: a parallel each over a number range (two hidden bounds, not a source)
 #define FlagParIncl   0x0020        // Block: a parallel each over a number range, '<=': its last bound is the last number
+// What a loop that has run out does, 'while c {...} else {...}' and 'each ... else {...}':
+// the statements of its 'else', in a block that stands inside the loop at the place the
+// loop is left, ending in the 'break' that gives the loop its value. The 'else' is
+// written after the loop, so a 'break' or 'continue' in it belongs to the loop around
+// this one: name resolution reads it with that loop as the innermost (blockNameRes).
+// The 'break' ending it is aimed at the loop it leaves from the start (FlagBreakAimed).
+#define FlagLoopElse  0x0100        // Block: the 'else' of the loop it stands in
+#define FlagBreakAimed 0x0001       // Break: built with its loop in 'block', which name resolution keeps
 
 #define FlagSuffix    0x0001        // Borrow: part of a borrow chain
 

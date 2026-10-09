@@ -143,6 +143,42 @@ fn writes(xs &Array[u64], out &mut Array[u64], p &mut Pair) {
   }
 }
 
+// ---- changing the items ----
+
+struct Holder {
+  items List[u64];
+  other u64;
+}
+
+// A pass may change its own item, and read what is not where the items are
+// lent from; it may not name that place as well
+fn items(out &mut Array[u64], h &mut Holder) {
+  mut list = new List[u64];
+  imm seen = Atomic[u64].of(0u64);
+  mut total = 0u64;
+  parallel each x in list.mutItems() {
+    *x = 1u64;
+  }
+  parallel each x in out.mutItems() {
+    *x = h.other;
+  }
+  parallel each x in h.items.mutItems() {
+    *x = h.other + seen.load();
+  }
+  parallel each x in list.mutItems() {
+    seen.add(u64.from(list.len));                  //~ ErrorParWrite "changes the items of list one pass at a time"
+  }
+  parallel each x in out {
+    seen.add(out[0usize]);                         //~ ErrorParWrite "changes the items of out one pass at a time"
+  }
+  parallel each x in h.items.mutItems() {
+    *x = u64.from(h.items.len);                    //~ ErrorParWrite "changes the items of h one pass at a time"
+  }
+  parallel each x in list.mutItems() {
+    total = total + *x;                            //~ ErrorParWrite "may not write total"
+  }
+}
+
 // ---- where the loop is written ----
 
 actor Inside {

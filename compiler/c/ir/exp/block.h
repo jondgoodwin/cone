@@ -35,6 +35,10 @@ BlockNode *newLoopBlockNode();
 // Clone block
 INode *cloneBlockNode(CloneState *cstate, BlockNode *node);
 
+// Make the block of a loop's 'else' statements (a loop's value when it runs out)
+// into the block the loop leaves through: see the definition
+BlockNode *blockElseFinish(BlockNode *elseblk, BlockNode *loop, INode *lexnode);
+
 void blockPrint(BlockNode *blk);
 
 // Handle name resolution and control structure compliance for a block

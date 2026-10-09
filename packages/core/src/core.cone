@@ -242,6 +242,75 @@ pub struct @opaque Array[T] {
     imm p = self as *T;
     (mem.sliceFromParts[T](p, at), mem.sliceFromParts[T](p + at, self.len - at));
   }
+
+  // A cursor over the elements, front to back: 'next' gives a borrow of each
+  pub fn iter(self &) ArrayIter[T] { new ArrayIter[T](self, 0usize); }
+
+  // The elements with their positions: 'next' gives a tuple of the position and
+  // a borrow of the element, and 'each i, x in a.indexed()' unpacks it
+  pub fn indexed(self &) ArrayIndexed[T] { new ArrayIndexed[T](self, 0usize); }
+
+  // The elements for changing in place: the slice itself, so 'each x in
+  // a.mutItems()' gives 'x' as a '&mut' of each element
+  pub fn mutItems(self &mut) &mut Array[T] { self; }
+}
+
+// A cursor over a slice's elements, which 'iter' gives: 'next' gives a borrow of
+// each in turn until it answers None. The elements may not change while it is used.
+// ('each' reads its two fields to walk the slice as a counted loop.)
+pub struct ArrayIter['a, T] {
+  pub items &'a Array[T];
+  pub pos usize;
+
+  pub fn next(self &mut) Option[&'a T] {
+    if pos >= items.len { return None[&T][]; }
+    imm i = pos;
+    pos = i + 1usize;
+    Some[&T][&items[i]];
+  }
+}
+
+// A cursor over a slice's elements and their positions, which 'indexed' gives:
+// 'next' gives the position and a borrow of the element, as a tuple
+// ('each' reads its two fields to walk the slice as a counted loop.)
+pub struct ArrayIndexed['a, T] {
+  pub items &'a Array[T];
+  pub pos usize;
+
+  pub fn next(self &mut) Option[(usize, &'a T)] {
+    if pos >= items.len { return None[(usize, &T)][]; }
+    imm i = pos;
+    pos = i + 1usize;
+    Some[(usize, &T)][(i, &items[i])];
+  }
+}
+
+// Two sources walked side by side, which 'zip' gives: 'next' gives a tuple of
+// what each cursor gives, and answers None as soon as either runs out. When the
+// second runs out after the first has given a value, that value is dropped.
+pub struct Zip[A, B, I Iterator[A], J Iterator[B]] {
+  first I;
+  second J;
+
+  pub fn next(self &mut) Option[(A, B)] {
+    match first.next() {
+      case imm x Some {
+        imm a = x.value;
+        match second.next() {
+          case imm y Some { return Some[(A, B)][(a, y.value)]; }
+          case is None { return None[(A, B)][]; }
+        }
+      }
+      case is None { return None[(A, B)][]; }
+    }
+  }
+}
+
+// Walk two sources side by side: 'each x, y in zip(xs, ys)' gives each pair of
+// what their 'iter' cursors give, and ends with the shorter of the two
+pub fn zip[A, I, C Iterable[A, I], B, J, D Iterable[B, J]](xs &C, ys &D) Zip[A, B, I, J]
+    where I is Iterator[A] and J is Iterator[B] {
+  new Zip[A, B, I, J](xs.iter(), ys.iter());
 }
 
 // 'cstr', a borrowed C string: one pointer to bytes that end in a NUL, which is

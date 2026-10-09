@@ -61,6 +61,33 @@ void blockPrint(BlockNode *blk) {
     }
 }
 
+// Finish the block that is a loop's 'else', so that the loop can leave through it
+// when it has run out. The block holds the 'else' body's statements; the loop's
+// value, when the body ends in an expression, is that expression, taken out of
+// the loop by a 'break' appended in its place. A body ending in a 'return',
+// 'break' or 'continue' leaves by that, and gives no value. A body ending in
+// anything else (a declaration) gives none.
+BlockNode *blockElseFinish(BlockNode *elseblk, BlockNode *loop, INode *lexnode) {
+    elseblk->flags |= FlagLoopElse;
+    INode *last = elseblk->stmts->used > 0 ? nodesLast(elseblk->stmts) : NULL;
+    if (last != NULL && (last->tag == ReturnTag || last->tag == BreakTag || last->tag == ContinueTag))
+        return elseblk;
+    BreakRetNode *brk = newBreakNode();
+    inodeLexCopy((INode*)brk, last ? last : lexnode);
+    brk->block = loop;
+    brk->flags |= FlagBreakAimed;
+    if (last != NULL && last->tag != VarDclTag && last->tag != SwapTag) {
+        brk->exp = last;
+        nodesLast(elseblk->stmts) = (INode*)brk;
+    }
+    else {
+        brk->exp = (INode*)newNilLitNode();
+        inodeLexCopy(brk->exp, lexnode);
+        nodesAdd(&elseblk->stmts, (INode*)brk);
+    }
+    return elseblk;
+}
+
 // Give a 'continue' the loop step it would otherwise jump over.
 //
 // 'each' lowers to a 'while' whose body ends with the step that advances the loop
@@ -111,9 +138,15 @@ void blockNameRes(NameResState *pstate, BlockNode *blk) {
     // Set up for break and continue nodes that do not specify a labeled block
     // By default we want to resolve them to inner-most loop block
     BlockNode *svloopblock = pstate->loopblock;
+    BlockNode *svouterloop = pstate->outerloop;
     if (blk->flags & FlagLoop) {
+        pstate->outerloop = svloopblock;
         pstate->loopblock = blk;
     }
+    // A loop's 'else' is written after the loop, and so is read as outside it:
+    // its 'break' and 'continue' are those of the loop around
+    if (blk->flags & FlagLoopElse)
+        pstate->loopblock = pstate->outerloop;
 
     ++pstate->scope; // Increment block scope counter
     nametblHookPush(); // Ensure block's local variable declarations are hooked
@@ -166,6 +199,7 @@ void blockNameRes(NameResState *pstate, BlockNode *blk) {
     nametblHookPop();  // Unhook local variables from global name table
     --pstate->scope;
     pstate->loopblock = svloopblock;
+    pstate->outerloop = svouterloop;
 }
 
 // Handle type-checking for a regular or loop block. This:

@@ -41,6 +41,8 @@ extern Name *parHiName;     // hi
 extern Name *parKName;      // k
 extern Name *parFirstName;  // A number range's first bound
 extern Name *parLastName;   // and its last
+extern Name *parSliceName;  // The slice walked, lent as the source's own slice
+extern Name *parSliceMutName; // ... when it lends its items to be changed (mutItems, a '&mut' slice)
 
 // Make the names, once
 void parallelEachNames();

@@ -37,7 +37,9 @@ Visual Studio projects stay at the root.
   the compiler makes and core's `pub struct @opaque str` gives its methods, all
   `inline`, `Array[T]`, the body of a run-time length whose borrow is the slice
   `&Array[T]`, a generic struct the compiler's `Array`
-  becomes when core declares it, whose `len` is written there, and
+  becomes when core declares it, whose `len`, `iter`, `indexed` and `mutItems`
+  are written there (an array and a slice call them, and a list folds them
+  in), with `zip`, which walks two sources with an `iter` side by side, and
   `cstr`, C's `const char *`, a one-pointer struct the compiler makes
   too so that the C-named modules can declare their strings with it, whose
   field and methods are core's, the `So` and `Rc` regions, `Rwcell`, the
@@ -537,7 +539,9 @@ Visual Studio projects stay at the root.
   `collections` is a growable `List[T]` (lending a `&Array[T]`, folding the methods of
   `Array[T]` in with `use Array[T] via view`, frozen into a `So[Array[T]]` by
   `freeze()`; `each` walks it as the slice it lends, a counted loop, while its
-  `iter()` is the cursor for code generic over cursors), an owned `String` (always a NUL after
+  `iter()` is the cursor for code generic over cursors; `mutItems()` lends the
+  slice mutably and `drain()` moves the values out one at a time, leaving the list
+  empty), an owned `String` (always a NUL after
   its bytes, lending a `&str` whose methods it folds in with `use str via view`,
   frozen into a `So[str]` by `freeze()`) and `Dict[K, V]`, a
   SwissTable (control bytes probed eight at a time, up to 7/8 full) over any

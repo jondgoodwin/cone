@@ -43,6 +43,9 @@ claim that these rule rather than describe.**
    cannot be finished here is an `each` over anything but a range: how it walks
    its source is the source's type's to say, so the parser builds a block marked
    `FlagEach` that type check finishes ([Block](../nodes/block.md), "Type check").
+   A header `if`, a trailing `if` on `break`, `continue` and `return`, and a
+   loop's `else` are desugared here too, into `continue`, an `if` arm and the
+   loop's exit ([Block](../nodes/block.md), "Parse").
    `parallel each` is the same block with `FlagParallel` beside it; `parallel` is
    the word only where `each` directly follows it, and a name anywhere else.
 4. **The parser binds module-level names.** Module namespaces are populated,

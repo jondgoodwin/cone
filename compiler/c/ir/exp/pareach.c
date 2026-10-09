@@ -19,6 +19,8 @@ Name *parHiName = NULL;
 Name *parKName = NULL;
 Name *parFirstName = NULL;
 Name *parLastName = NULL;
+Name *parSliceName = NULL;
+Name *parSliceMutName = NULL;
 FnDclNode *parallelEachFn = NULL;
 
 void parallelEachNames() {
@@ -29,6 +31,8 @@ void parallelEachNames() {
     parKName = nametblPrivate("k'", 2);
     parFirstName = nametblPrivate("first'", 6);
     parLastName = nametblPrivate("last'", 5);
+    parSliceName = nametblPrivate("s'", 2);
+    parSliceMutName = nametblPrivate("sm'", 3);
 }
 
 // ---- Node builders (as each.c's, which are its own) --------------------------
@@ -334,6 +338,10 @@ static void parRefuseWrite(ParWrites *ctx, INode *site, INode *place, const char
     VarDclNode *root = parWriteRoot(place);
     if (root == NULL || parSetHas(&ctx->inside, (INode*)root) || parSetHas(&ctx->reported, site))
         return;
+    // The loop's own lending of each item to its pass, '&mut s[k]', which is how
+    // a pass may change its item: items are disjoint
+    if (root->namesym == parSliceName || root->namesym == parSliceMutName)
+        return;
     parSetAdd(&ctx->reported, site);
     char *name = root->namesym == anonName ? "a value made outside the loop" : &root->namesym->namestr;
     errorMsgNode(site, ErrorParWrite,
@@ -364,6 +372,147 @@ static int parCheckWrites(INode *node, void *ctxp) {
     return 1;
 }
 
+// ---- A loop that changes its items: what else may name them -------------------
+//
+// Each pass changing its own item is safe, since the items are disjoint
+// (mutItems, or a mutable slice as the source). But '&mut' is shared mutable
+// in Cone, so nothing else stops the body reading the same list through its own
+// name while another pass changes an item of it. The body therefore may not
+// name the place the items are lent from -- or a place inside it, or one it is
+// inside -- the variable and the fields named from it.
+
+#define ParPathMax 8
+
+typedef struct {
+    VarDclNode *root;
+    Name *fields[ParPathMax];
+    uint32_t nfields;
+    int closed;         // An element was picked (an index): what is named after it is that element's
+} ParPath;
+
+// The place a node names, from the variable at its root: fields named after it,
+// through references, borrows and a method's receiver. 0 where it names none
+static int parPathOf(INode *node, ParPath *path) {
+    memset(path, 0, sizeof(*path));
+    while (node != NULL) {
+        if (isNameUseNode(node)) {
+            INode *dcl = ((NameUseNode*)node)->dclnode;
+            if (dcl == NULL || dcl->tag != VarDclTag)
+                return 0;
+            path->root = (VarDclNode*)dcl;
+            // (the fields were met outermost first: put them in order)
+            for (uint32_t i = 0; i < path->nfields / 2; ++i) {
+                Name *swap = path->fields[i];
+                path->fields[i] = path->fields[path->nfields - 1 - i];
+                path->fields[path->nfields - 1 - i] = swap;
+            }
+            return 1;
+        }
+        switch (node->tag) {
+        case FldAccessTag: {
+            INode *field = ((FnCallNode*)node)->methfld;
+            // A field after an index names an element's, which the index picked
+            if (field != NULL && isNameUseNode(field) && path->nfields < ParPathMax)
+                path->fields[path->nfields++] = ((NameUseNode*)field)->namesym;
+            else
+                path->closed = 1;
+            node = ((FnCallNode*)node)->objfn;
+            break;
+        }
+        case ArrIndexTag:
+            // What was named outside the index is an element's: forget it
+            path->nfields = 0;
+            path->closed = 1;
+            node = ((FnCallNode*)node)->objfn;
+            break;
+        case DerefTag:
+            node = ((StarNode*)node)->vtexp;
+            break;
+        case BorrowTag:
+        case ArrayBorrowTag:
+            node = ((RefNode*)node)->vtexp;
+            break;
+        case CastTag:
+            node = ((CastNode*)node)->exp;
+            break;
+        case FnCallTag: {
+            // A method called on a place (the lending method's own receiver)
+            INode *fn = ((FnCallNode*)node)->objfn;
+            Nodes *args = ((FnCallNode*)node)->args;
+            if (fn == NULL || !isNameUseNode(fn) || ((NameUseNode*)fn)->dclnode == NULL
+                || ((NameUseNode*)fn)->dclnode->tag != FnDclTag || args == NULL || args->used < 1)
+                return 0;
+            node = nodesGet(args, 0);
+            break;
+        }
+        default:
+            return 0;
+        }
+    }
+    return 0;
+}
+
+// Do two places overlap: one is the other, or inside it?
+static int parPathsOverlap(ParPath *a, ParPath *b) {
+    if (a->root != b->root)
+        return 0;
+    uint32_t n = a->nfields < b->nfields ? a->nfields : b->nfields;
+    for (uint32_t i = 0; i < n; ++i) {
+        if (a->fields[i] != b->fields[i])
+            return 0;
+    }
+    return 1;
+}
+
+typedef struct {
+    ParPath lent;           // The place the items are lent from
+    ParSet reported;
+} ParAlias;
+
+// Walk the arguments of the indexes a place goes through: they are uses too
+static void parWalkIndexArgs(INode *node, ParVisit visit, void *ctx) {
+    while (node != NULL) {
+        switch (node->tag) {
+        case ArrIndexTag:
+            parWalkNodes(((FnCallNode*)node)->args, visit, ctx);
+            node = ((FnCallNode*)node)->objfn;
+            break;
+        case FldAccessTag:
+            node = ((FnCallNode*)node)->objfn;
+            break;
+        case DerefTag:
+            node = ((StarNode*)node)->vtexp;
+            break;
+        case BorrowTag:
+        case ArrayBorrowTag:
+            node = ((RefNode*)node)->vtexp;
+            break;
+        default:
+            return;
+        }
+    }
+}
+
+static int parCheckAlias(INode *node, void *ctxp) {
+    ParAlias *ctx = (ParAlias *)ctxp;
+    int place = node->tag == FldAccessTag || node->tag == ArrIndexTag || isNameUseNode(node);
+    if (!place)
+        return 1;
+    ParPath path;
+    if (!parPathOf(node, &path))
+        return 1;
+    if (path.root == ctx->lent.root && parPathsOverlap(&path, &ctx->lent) && !parSetHas(&ctx->reported, node)) {
+        parSetAdd(&ctx->reported, node);
+        char *name = path.root->namesym == anonName ? "a value made outside the loop" : &path.root->namesym->namestr;
+        errorMsgNode(node, ErrorParWrite,
+            "This 'parallel each' changes the items of %s one pass at a time, so its body may not name %s, or what is inside it, as well: another pass may be changing the item it would read. Read the item through the pass's own variable.",
+            name, name);
+    }
+    // The place is taken whole: only the indexes inside it are uses of their own
+    parWalkIndexArgs(node, parCheckAlias, ctx);
+    return 0;
+}
+
 // The loop of a built parallel each, its last loop block
 static BlockNode *parLoopOf(BlockNode *outer) {
     for (uint32_t i = outer->stmts->used; i > 0; --i) {
@@ -392,6 +541,19 @@ void parallelEachCheckBody(TypeCheckState *pstate, BlockNode *outer) {
     }
     parWalk((INode*)loop, parCollectDcls, &ctx);
     parWalk((INode*)loop, parCheckWrites, &ctx);
+
+    // A loop that lends its items to be changed: the body names none of the
+    // place they are lent from
+    for (uint32_t i = 0; i < outer->stmts->used; ++i) {
+        INode *stmt = nodesGet(outer->stmts, i);
+        if (stmt->tag == VarDclTag && ((VarDclNode*)stmt)->namesym == parSliceMutName) {
+            ParAlias alias;
+            memset(&alias, 0, sizeof(alias));
+            if (((VarDclNode*)stmt)->value != NULL && parPathOf(((VarDclNode*)stmt)->value, &alias.lent))
+                parWalk((INode*)loop, parCheckAlias, &alias);
+            break;
+        }
+    }
 }
 
 // ---- The loop ------------------------------------------------------------------
@@ -574,8 +736,15 @@ void parallelEachLower(TypeCheckState *pstate, BlockNode *outer) {
         }
         int place = parRecheckable(src);
 
+        // A slice that is mutable (what 'mutItems' gives, or a '&mut' slice) lends
+        // each item mutably, as 'each' does; any other lends it to be read
+        int mutlend = isslice && permMatches((INode*)mutPerm, ((RefNode*)type)->perm);
+        Name *slicename = mutlend ? parSliceMutName : parSliceName;
+
         // imm s = [the slice]
         VarDclNode *slicedcl = srcdcl;
+        if (isslice)
+            slicedcl->namesym = slicename;
         if (islent) {
             // The slice the type lends: its place's, or a value held first
             INode *owner = src;
@@ -583,7 +752,7 @@ void parallelEachLower(TypeCheckState *pstate, BlockNode *outer) {
                 nodesAdd(&outer->stmts, (INode*)srcdcl);
                 owner = parUse(srcdcl, lexnode);
             }
-            slicedcl = parVar(anonName, immPerm, (INode*)parCall(owner, lentvia, lexnode), scope, lexnode);
+            slicedcl = parVar(slicename, immPerm, (INode*)parCall(owner, lentvia, lexnode), scope, lexnode);
         }
         else if (isarray) {
             INode *array = src;
@@ -597,7 +766,7 @@ void parallelEachLower(TypeCheckState *pstate, BlockNode *outer) {
                 deref->vtexp = array;
                 array = (INode*)deref;
             }
-            slicedcl = parVar(anonName, immPerm, NULL, scope, lexnode);
+            slicedcl = parVar(slicename, immPerm, NULL, scope, lexnode);
             slicedcl->value = (INode*)newRefNodeFull(ArrayBorrowTag, lexnode, borrowRef, unknownType, array);
         }
         nodesAdd(&outer->stmts, (INode*)slicedcl);
@@ -612,7 +781,7 @@ void parallelEachLower(TypeCheckState *pstate, BlockNode *outer) {
         FnCallNode *at = newFnCallLower(lexnode, parUse(slicedcl, lexnode), 1);
         at->flags |= FlagIndex;
         nodesAdd(&at->args, parUse(k, lexnode));
-        elem = (INode*)newRefNodeFull(BorrowTag, lexnode, borrowRef, unknownType, (INode*)at);
+        elem = (INode*)newRefNodeFull(BorrowTag, lexnode, borrowRef, mutlend ? (INode*)mutPerm : unknownType, (INode*)at);
         outer->flags |= FlagParallel;
     }
 

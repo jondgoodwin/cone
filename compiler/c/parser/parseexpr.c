@@ -219,6 +219,7 @@ INode *parseTerm(ParseState *parse) {
     case IfToken:
     case MatchToken:
     case WhileToken:
+    case EachToken:
     case LifetimeToken:
     case LCurlyToken:
     {
@@ -228,6 +229,7 @@ INode *parseTerm(ParseState *parse) {
         case IfToken: node = parseIf(parse); break;
         case MatchToken: node = parseMatch(parse); break;
         case WhileToken: node = parseWhile(parse, NULL, 0); break;
+        case EachToken: node = parseEach(parse, NULL, 0); break;
         case LifetimeToken: node = parseLifetime(parse, 0); break;
         default: node = parseExprBlock(parse, 0); break;
         }

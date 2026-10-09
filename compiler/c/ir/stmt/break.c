@@ -46,6 +46,11 @@ void breakNameRes(NameResState *nstate, BreakRetNode *breaknode) {
             errorMsgNode((INode*)breaknode, ErrorNoLoop, "break's lifetime not found on a lifetime-named block");
         }
     }
+    else if (breaknode->block && (breaknode->flags & FlagBreakAimed)) {
+        // Built to leave one particular loop (the 'break' that ends a loop's
+        // 'else' with its value, which stands in a block read as outside that
+        // loop): already aimed at it
+    }
     else {
         // If no lifetime specified, resolve to inner-most loop block
         if (nstate->loopblock)
