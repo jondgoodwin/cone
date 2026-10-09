@@ -79,12 +79,16 @@ typedef struct AwaitNode {
                         // started at the seam; NULL for anything else
     INode *future;      // Or what is awaited is a future, of this instance of actors.Future[T]:
                         // parked on unless it has its ending already; NULL for anything else
+    uint8_t par;        // Or it is the end of a 'parallel each' written in a behaviour (pareach.c):
+                        // what it waits for is the loop's last piece, and it follows the loop
     uint8_t walked;     // The loan walk reached it on some path
+    struct GenParSeam *genpar;  // Generation: the loop's range, piece and copies, made where the loop is generated (genlpar.c)
 } AwaitNode;
 
 // Does this seam wait for an answer -- a message's reply, an operation's, a
-// future's ending -- so that its record parks in the actor's pending table?
-#define awaitParks(node) ((node)->message || (node)->awaitable || (node)->future)
+// future's ending, a parallel loop's last piece -- so that its record parks in
+// the actor's pending table?
+#define awaitParks(node) ((node)->message || (node)->awaitable || (node)->future || (node)->par)
 
 // The envelope of the request a message 'await' sends: the last argument of
 // the handle's method that sends it awaited. Generation makes it where the
@@ -106,6 +110,10 @@ extern int awaitDirect;
 
 AwaitNode *newAwaitNode();
 SelfActorNode *newSelfActorNode();
+
+// The seam at the end of a 'parallel each' written in a behaviour: a statement
+// following the loop, which cuts the behaviour there (pareach.c builds it)
+AwaitNode *awaitParNew(TypeCheckState *pstate, INode *lexnode);
 
 // Clone await
 INode *cloneAwaitNode(CloneState *cstate, AwaitNode *node);

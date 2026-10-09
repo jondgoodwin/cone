@@ -243,6 +243,57 @@ INode *genlParallelRun(GenState *gen, BlockNode *blk, INode *kdcl) {
     lo->llvmvar = svlo;
     hi->llvmvar = svhi;
 
+    // ---- A loop cut at its end ----
+    // A behaviour's parallel each is followed by the seam that cuts the behaviour
+    // there (pareach.c). It does not call the loop: the seam hands it to the
+    // runtime as the behaviour returns (genlawait.c). What the pieces read of the
+    // behaviour's variables must outlive its frame, so it is copied now into a
+    // block of its own, and the record points into that
+    AwaitNode *cut = NULL;
+    for (uint32_t i = 0; i < blk->stmts->used; ++i) {
+        INode *stmt = nodesGet(blk->stmts, i);
+        // (the block's last statement is its value, a 'blockret')
+        if (stmt->tag == BlockRetTag)
+            stmt = ((BreakRetNode*)stmt)->exp;
+        if (stmt->tag == AwaitTag && ((AwaitNode*)stmt)->par)
+            cut = (AwaitNode*)stmt;
+    }
+    if (cut != NULL) {
+        GenParSeam *seam = (GenParSeam *)memAllocBlk(sizeof(GenParSeam));
+        seam->lo = rlo;
+        seam->hi = rhi;
+        seam->piece = fn;
+        seam->caps = NULL;
+        if (pb.ncaps > 0) {
+            // { [n x ptr] pointers, copy 0, copy 1, ... }
+            LLVMTypeRef *ftypes = (LLVMTypeRef *)memAllocBlk((pb.ncaps + 1) * sizeof(LLVMTypeRef));
+            ftypes[0] = LLVMArrayType2(ptr, pb.ncaps);
+            for (uint32_t i = 0; i < pb.ncaps; ++i) {
+                LLVMValueRef home = pb.caps[i].home;
+                ftypes[i + 1] = LLVMIsAAllocaInst(home) ? LLVMGetAllocatedType(home) : genlType(gen, pb.caps[i].var->vtype);
+            }
+            LLVMTypeRef blocktype = LLVMStructTypeInContext(context, ftypes, pb.ncaps + 1, 0);
+            if (actorRuntime[ActorRtParBlock]->llvmvar == NULL)
+                genlGloFnName(gen, actorRuntime[ActorRtParBlock]);
+            LLVMValueRef size = LLVMConstInt(usize, LLVMABISizeOfType(gen->datalayout, blocktype), 0);
+            LLVMValueRef block = genlFnDclCall(gen, actorRuntime[ActorRtParBlock], actorRuntime[ActorRtParBlock]->llvmvar, &size, 1);
+            LLVMValueRef pointers = LLVMBuildStructGEP2(gen->builder, blocktype, block, 0, "pointers");
+            for (uint32_t i = 0; i < pb.ncaps; ++i) {
+                VarDclNode *var = pb.caps[i].var;
+                LLVMValueRef copy = LLVMBuildStructGEP2(gen->builder, blocktype, block, i + 1, "copy");
+                LLVMValueRef value = LLVMBuildLoad2(gen->builder, ftypes[i + 1], pb.caps[i].home, "tocopy");
+                LLVMBuildStore(gen->builder, value, copy);
+                LLVMValueRef at = LLVMConstInt(LLVMInt32TypeInContext(context), i, 0);
+                LLVMValueRef slot = LLVMBuildInBoundsGEP2(gen->builder, ptr, pointers, &at, 1, "recslot");
+                LLVMBuildStore(gen->builder, copy, slot);
+                var->llvmvar = pb.caps[i].home;
+            }
+            seam->caps = block;
+        }
+        cut->genpar = seam;
+        return loop;
+    }
+
     // ---- The call ----
     // The record: a pointer to each variable the piece found outside it. In a
     // piece of a piece, those must be the outer piece's own pointers, which the

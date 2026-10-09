@@ -57,8 +57,19 @@ extern FnDclNode *parallelEachFn;
 uint32_t parallelEachBoundsFirst(BlockNode *outer);
 void parallelEachBoundType(BlockNode *outer, uint32_t first);
 
-// Build the loop, once the source (and a range's bounds) have been checked
+// Build the loop, once the source (and a range's bounds) have been checked.
+// Written directly in an actor's behaviour (not in the body of another parallel
+// each) the loop is followed by a statement that cuts the behaviour there, an
+// AwaitNode with 'par' set (await.h), so that the behaviour returns to its
+// actor's dispatcher while the pieces run, and the rest of it runs after the
+// last piece. Written in any other method of an actor, the loop runs where it
+// stands, the worker running pieces until it is done
 void parallelEachLower(TypeCheckState *pstate, BlockNode *outer);
+
+// A parallel each's body is being checked, or no longer is: a loop inside it
+// is a piece of a piece and is not cut (the check is made per function)
+void parallelEachEnter(TypeCheckState *pstate);
+void parallelEachLeave();
 
 // Check the body's rules that need its types, once its statements are checked:
 // nothing declared outside the loop is written or lent for writing

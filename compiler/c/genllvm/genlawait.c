@@ -663,6 +663,41 @@ LLVMValueRef genlAwait(GenState *gen, AwaitNode *node) {
     // 3: the record, every value still held moved in. 4: what is left is
     // nothing that does anything as it dies, so nothing is dropped
     LLVMValueRef record = seam->record ? genlSeamRecord(gen, seam) : NULL;
+
+    // The end of a parallel each: the record parks in the pending table as a
+    // reply's would, and the loop is noted for the runtime, which begins it when
+    // this method has returned to the dispatcher and, when its last piece has
+    // finished, calls the seam's resume function with the record's id
+    if (node->par) {
+        GenParSeam *loop = node->genpar;
+        if (loop == NULL) {
+            errorUnreachable((INode *)node, "the end of a parallel each generated where its loop was not");
+            return NULL;
+        }
+        LLVMTypeRef i64 = LLVMInt64TypeInContext(gen->context);
+        LLVMTypeRef ptr = LLVMPointerTypeInContext(gen->context, 0);
+        LLVMValueRef parid = LLVMConstInt(i64, 0, 0);
+        if (record) {
+            ActorInfo *info = genlSplitActor(gen->fndcl);
+            LLVMValueRef rargs[3];
+            rargs[0] = genlStateField(gen, info, genlSplitState(gen), info->pending);
+            rargs[1] = LLVMConstInt(genlUsize(gen), LLVMABISizeOfType(gen->datalayout, seam->record), 0);
+            rargs[2] = seam->drop;
+            parid = genlCallFn(gen, actorRuntime[ActorRtParkReserve], rargs, 3, "id");
+            LLVMValueRef pargs[2] = {rargs[0], parid};
+            LLVMValueRef block = genlCallFn(gen, actorRuntime[ActorRtParked], pargs, 2, "parked");
+            LLVMBuildStore(gen->builder, record, block);
+        }
+        LLVMValueRef sargs[7];
+        sargs[0] = loop->lo;
+        sargs[1] = loop->hi;
+        sargs[2] = loop->piece;
+        sargs[3] = loop->caps ? loop->caps : LLVMConstNull(ptr);
+        sargs[4] = seam->resume;
+        sargs[5] = parid;
+        sargs[6] = LLVMConstInt(genlType(gen, (INode*)boolType), record ? 1 : 0, 0);
+        genlCallFn(gen, actorRuntime[ActorRtParSeam], sargs, 7, "");
+    }
     // 5: the return to the dispatcher. Awaiting a message, the record is
     // parked in the block its slot in the pending table holds, and the method
     // returns no value: a seam took the envelope it answers, if it answers
@@ -671,7 +706,10 @@ LLVMValueRef genlAwait(GenState *gen, AwaitNode *node) {
     // half returns is returned
     INode *rettype = ((FnSigNode *)itypeGetTypeDcl(gen->fndcl->vtype))->rettype;
     LLVMValueRef retval = LLVMGetUndef(genlType(gen, rettype));
-    if (node->message || node->awaitable) {
+    if (node->par) {
+        // (the record is parked already)
+    }
+    else if (node->message || node->awaitable) {
         if (record) {
             if (id == NULL) {
                 errorUnreachable((INode *)node, "a message seam with a record whose envelope reserved no slot");

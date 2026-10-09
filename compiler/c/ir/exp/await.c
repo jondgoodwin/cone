@@ -26,7 +26,9 @@ AwaitNode *newAwaitNode() {
     node->message = NULL;
     node->awaitable = NULL;
     node->future = NULL;
+    node->par = 0;
     node->walked = 0;
+    node->genpar = NULL;
     return node;
 }
 
@@ -61,6 +63,7 @@ INode *cloneAwaitNode(CloneState *cstate, AwaitNode *node) {
     newnode->awaitable = NULL;
     newnode->future = NULL;
     newnode->walked = 0;
+    newnode->genpar = NULL;
     return (INode *)newnode;
 }
 
@@ -236,9 +239,32 @@ static void awaitFuture(TypeCheckState *pstate, AwaitNode *node) {
     node->vtype = result;
 }
 
+// The seam at the end of a 'parallel each' written in a behaviour: what it
+// waits for is the loop's last piece, which makes the actor runnable with the
+// rest of the behaviour ahead of its mailbox (the actors package's parSeam).
+// It is a statement that follows the loop, and waits for nothing the checker
+// sees: its operand is nil. NULL, reported, where the package lacks a function
+// the seam calls
+AwaitNode *awaitParNew(TypeCheckState *pstate, INode *lexnode) {
+    AwaitNode *node = newAwaitNode();
+    inodeLexCopy((INode *)node, lexnode);
+    node->par = 1;
+    node->exp = (INode *)newNilLitNode();
+    inodeLexCopy(node->exp, lexnode);
+    if (!awaitDemandRuntime(pstate, node))
+        return NULL;
+    return node;
+}
+
 // Type check await
 void awaitTypeCheck(TypeCheckState *pstate, AwaitNode *node, INode *expectType) {
     char buf[600];
+    // The end of a 'parallel each': nothing is awaited, and its value is void
+    if (node->par) {
+        if (iexpTypeCheckAny(pstate, &node->exp))
+            node->vtype = ((IExpNode *)node->exp)->vtype;
+        return;
+    }
     char *where = awaitNotPlaced(pstate->fn, buf, sizeof(buf));
     if (where)
         errorMsgNode((INode *)node, ErrorAwaitPlace,
@@ -930,7 +956,9 @@ static int awaitRecordTraced(AwaitNode *node) {
         if (!itypeHoldsTraced(sv->var->vtype))
             continue;
         errorMsgNode((INode *)node, ErrorUnbuiltAwait,
-            "'await' whose continuation holds a traced reference is not built: %s would wait in the actor's pending table, which the collector does not trace yet.",
+            node->par
+                ? "A 'parallel each' in a behaviour, whose rest of the behaviour holds a traced reference, is not built: %s would wait in the actor's pending table while the loop runs, which the collector does not trace yet."
+                : "'await' whose continuation holds a traced reference is not built: %s would wait in the actor's pending table, which the collector does not trace yet.",
             &sv->var->namesym->namestr);
         bad = 1;
     }
