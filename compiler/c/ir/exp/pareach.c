@@ -1315,6 +1315,37 @@ static int parCheckOuterAlias(INode *node, void *ctxp) {
     char elemname[256] = "";
     itypeSpellCat(elemname, sizeof(elemname), ctx->elem, 0);
     char *name = &var->namesym->namestr;
+
+    // A closure passed in (the loop is in a generic that calls it): say which variable
+    // of the caller's the closure borrows, which is where the fix is
+    int crossed = 0;
+    INode *held = parPeelRef(var->vtype, &crossed);
+    ClosureInfo *closure = held != NULL ? closureOfStruct(held) : NULL;
+    for (uint32_t c = 0; closure != NULL && c < closure->ncaps; ++c) {
+        ClosureCap *cap = &closure->caps[c];
+        if (cap->state || cap->field == NULL || cap->dcl == NULL)
+            continue;
+        INode *seen[64];
+        uint32_t nseen = 0;
+        if (!parReachesWritten(cap->field->vtype, 0, 0, ctx, seen, &nseen))
+            continue;
+        char captype[256] = "";
+        itypeSpellCat(captype, sizeof(captype), cap->field->vtype, 0);
+        char *capname = &cap->dcl->namesym->namestr;
+        // (borrowed, it is a reference to a value; copied in, would that value still reach?)
+        INode *seen2[64];
+        uint32_t nseen2 = 0;
+        if (!parReachesWritten(cap->dcl->vtype, 0, 0, ctx, seen2, &nseen2))
+            errorMsgNode(node, ErrorParAlias,
+                "This 'parallel each' writes the items of %s (%s), and the closure passed as '%s' borrows '%s' (%s), which could point at one of them: reading it while a pass writes would race. Copy it into the closure, where it is a value of its own: write it in the state list, '[%s]', as in 'fn(x i32, y i32) [%s] T { ... }'.",
+                ctx->source, elemname, name, capname, captype, capname, capname);
+        else
+            errorMsgNode(node, ErrorParAlias,
+                "This 'parallel each' writes the items of %s (%s), and the closure passed as '%s' borrows '%s' (%s), which could be the very list this loop writes, or point into it: reading it while a pass writes would race. Hand the closure what it needs as a value copied before the loop instead of '%s'.",
+                ctx->source, elemname, name, capname, captype, capname);
+        parWalkIndexArgs(node, parCheckOuterAlias, ctx);
+        return 0;
+    }
     errorMsgNode(node, ErrorParAlias,
         "This 'parallel each' writes the items of %s (%s), and what this reads through '%s' could be one of them: reading it while a pass writes would race. Copy what you need before the loop ('imm f = *%s;', 'imm n = %s.n;') and use the copy in the body.",
         ctx->source, elemname, name, name, name);
