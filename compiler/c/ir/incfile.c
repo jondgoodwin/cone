@@ -700,7 +700,11 @@ static void incWalkType(IncGen *g, INode *type) {
     uint32_t cnt;
     switch (type->tag) {
     case StructTag:
-        incReachStruct(g, (StructNode*)type);
+        // A callable trait is no declaration: what the signature names is reached
+        if (((StructNode*)type)->callsig)
+            incWalkType(g, (INode*)((StructNode*)type)->callsig);
+        else
+            incReachStruct(g, (StructNode*)type);
         break;
     case AliasDclTag:
         // An alias of the package goes in, and with it what it names

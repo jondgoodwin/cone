@@ -525,6 +525,8 @@ LLVMTypeRef genlUsize(GenState *gen);
 LLVMTypeRef genlEmptyStruct(GenState* gen);
 // Generate a vtable type
 void genlVtable(GenState *gen, Vtable *vtable);
+// A callable trait's vtable for a plain function, whose one slot is a stub calling it
+LLVMValueRef genlFnStubVtable(GenState *gen, Vtable *vtable);
 
 // genlawait.c: a split method, an actor's message holding an 'await'
 // The seam: what is awaited, the locks given back, the record built, and the

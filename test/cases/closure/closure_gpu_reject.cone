@@ -18,6 +18,7 @@ pub trait Unary {
   pub fn `()`(self &, x f32) f32;
 }
 fn viaTrait(f &<Unary, x f32) f32 { f(x); }
+fn viaCallable(f &<fn(x f32) f32, x f32) f32 { f(x); }
 
 // An owner or a function reference reaches GPU code only as a parameter of a
 // function (making one is refused: module_gpu_unavailable)
@@ -47,5 +48,21 @@ fn @compute(64) asVirtual(inv Invocation, out &mut Array[f32]) {
   if i < out.len {
     imm c = fn(x f32) f32 { x * 2.; };
     out[i] = viaTrait(&c, 3.);                                 //~ ErrorGpuClosureRef
+  }
+}
+
+fn @compute(64) asCallable(inv Invocation, xs &Array[f32], out &mut Array[f32]) {
+  imm i = usize.from(inv.globalId[0]);
+  if i < out.len and i < xs.len {
+    imm k = xs[i];
+    out[i] = viaCallable(x => x * k, 3.);                      //~ ErrorGpuClosureRef
+  }
+}
+
+fn @compute(64) asOwner(inv Invocation, xs &Array[f32], out &mut Array[f32]) {
+  imm i = usize.from(inv.globalId[0]);
+  if i < out.len and i < xs.len {
+    imm owned = new So[fn(x f32) f32](fn(x f32) [k = xs[i]] f32 { x * k; });   //~ ErrorGpuClosureRef
+    out[i] = owned(3.);
   }
 }

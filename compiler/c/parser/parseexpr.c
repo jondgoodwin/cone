@@ -361,6 +361,10 @@ INode *parseTerm(ParseState *parse) {
     }
     // A closure in the full form, a value: 'fn (u f32) [ribs] f32 { ... }'
     case FnToken:
+        // Where a type is written, 'fn(i32) i32' is a signature: the callable
+        // type of 'So[fn(i32) i32]' and of a type argument
+        if (parse->intype)
+            return parseFnBound(parse);
         return parseClosureFn(parse);
     case LParenToken:
         {
@@ -481,6 +485,10 @@ static INode *parseIndexArg(ParseState *parse) {
         lexNextToken();
         return life;
     }
+    // A signature, 'So[fn(i32) i32]' or 'apply[fn(i32) i32](...)': a type
+    // argument. Nothing indexes by a closure.
+    if (lexIsToken(FnToken))
+        return parseFnBound(parse);
     return parseArg(parse);
 }
 

@@ -573,8 +573,13 @@ void varDclTypeCheck(TypeCheckState *pstate, VarDclNode *name) {
         // A temporary the initializer extends becomes a hidden local of the block
         if (matches && pstate->extend && pstate->extend->var == name && !(name->flags & FlagStatic))
             varDclExtend(pstate->extend, &name->value);
-        if (!matches)
-            errorMsgNode(name->value, ErrorInvType, "Initialization value's type does not match variable's declared type");
+        if (!matches) {
+            char *why = isExpNode(name->value) ? fnSigCallRefusal(((IExpNode*)name->value)->vtype, name->vtype) : NULL;
+            if (why)
+                errorMsgNode(name->value, ErrorCallablePerm, "%s", why);
+            else
+                errorMsgNode(name->value, ErrorInvType, "Initialization value's type does not match variable's declared type");
+        }
         else if (name->vtype == unknownType) {
             // A local of the type its initializer has, a '&uni' reference held
             // in a place, borrows from it as a local of the declared type does

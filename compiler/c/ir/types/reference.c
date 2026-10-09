@@ -434,6 +434,15 @@ void refvirtTypeCheck(TypeCheckState *pstate, RefNode *node) {
     refAdoptInfections(node);
     regionTracedRefNote(node);
 
+    // A signature behind a virtual reference is the callable trait of that
+    // signature, of the kind this reference's permission allows to be called
+    // ('&<fn(i32) i32', 'So[fn(i32) i32]')
+    INode *target = itypeGetTypeDcl(node->vtexp);
+    if (target->tag == FnSigTag) {
+        node->vtexp = (INode*)fnSigCallTrait(pstate, (FnSigNode*)target,
+            (permGetFlags(node->perm) & MayWrite) != 0, (INode*)node);
+    }
+
     StructNode *trait = (StructNode*)itypeGetTypeDcl(node->vtexp);
     if (trait->tag != StructTag || !(trait->flags & TraitType)) {
         errorMsgNode((INode*)node, ErrorInvType, "A virtual reference must be to a trait.");
@@ -570,6 +579,15 @@ TypeCompare refvirtMatchesRef(RefNode *to, RefNode *from, SubtypeConstraint cons
     TypeCompare result = regionMatches(to->region, from->region, constraint);
     if (result == NoMatch)
         return NoMatch;
+
+    // A reference to a plain function is a callable of its signature: its
+    // vtable's one '()' is a stub calling the function, which reads and changes
+    // nothing, so it meets either kind of callable reference at any permission
+    StructNode *totrait = (StructNode*)itypeGetTypeDcl(to->vtexp);
+    INode *fromtarget = itypeGetTypeDcl(from->vtexp);
+    if (fromtarget->tag == FnSigTag)
+        return totrait->tag == StructTag && totrait->callsig && fnSigEqual(totrait->callsig, (FnSigNode*)fromtarget)
+            ? ConvSubtype : NoMatch;
 
     // Now their permissions
     switch (permMatches(to->perm, from->perm)) {

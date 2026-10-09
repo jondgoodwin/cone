@@ -596,6 +596,10 @@ enum ErrorCode {
     // An outside reference that could point at what a 'parallel each' writes (ir/exp/pareach.c)
     ErrorParAlias = 1396,       // A 'parallel each' that writes through its source (mutChunks, mutItems, a zip of them, a '&mut' slice) reads, by a path or as a whole, an outside variable that could reach a written element behind a reference: a read while a pass writes would race
 
+    // Callable references (ir/types/fnsig.c, ir/exp/fncall.c)
+    ErrorCallablePerm = 1397,   // A callable given where a '&<fn(sig)' or 'So[fn(sig)]' is wanted, refused because of the permission its '()' takes or the borrow lent
+    ErrorCallableUse = 1398,    // A value made into a 'So[fn(sig)]' or 'Rc[fn(sig)]' that has no pub '()' of that signature
+
     // What a GPU has none of, refused where it is written (ir/exp/borrow.c, ir/exp/allocate.c, ir/iexp.c)
     ErrorGpuUnavailable = 1400, // In GPU code, a function reference ('&name'), a virtual reference made from a reference, or an allocation ('new So[T]', 'new Rc[T]', ...): a GPU has no pointers to code, no tables of them and no allocator
 

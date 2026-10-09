@@ -1064,7 +1064,7 @@ static void genericDropRo(char *buf) {
 }
 
 // Append a checked signature as it comes to: 'fn(&Person, &Person) i32'
-static void genericFnSigCat(char *buf, size_t size, FnSigNode *sig) {
+void genericFnSigCat(char *buf, size_t size, FnSigNode *sig) {
     size_t used = strlen(buf);
     snprintf(buf + used, size - used, "fn(");
     for (uint32_t j = 0; j < sig->parms->used; ++j) {
@@ -2484,6 +2484,15 @@ int genericSubstitute(TypeCheckState *pstate, FnCallNode **srcgencallp) {
         }
     }
 
+    // A callable taken as '&F' may only be read: refused here, at the argument
+    if (nodetoclone->tag == FnDclTag) {
+        uint32_t firstparm = (nodetoclone->flags & FlagMethFld) && !(objfn->flags & FlagQualified) ? 1 : 0;
+        if (!genericCallablePermCheck((FnDclNode*)nodetoclone, srcgencall->args, firstparm)) {
+            *((INode**)srcgencallp) = newErrorNode((INode*)srcgencall);
+            return 1;
+        }
+    }
+
     // Now let's instantiate generic "call", substituting instantiated srcgencallp in objfn
     INode *instance = genericMemoize(pstate, (FnCallNode*)srcgencall->objfn, nodetoclone, genericinfo, name);
     if (inodeIsError(instance)) {
@@ -2527,6 +2536,8 @@ FnDclNode *genericMethodInstance(TypeCheckState *pstate, FnCallNode *callnode, F
             }
         }
     }
+    if (!genericCallablePermCheck(genmeth, callnode->args, 1))
+        return NULL;
     INode *instance = genericMemoize(pstate, gencall, (INode*)genmeth, genericinfo, genmeth->namesym);
     if (inodeIsError(instance))
         return NULL;
@@ -2582,6 +2593,13 @@ FnSigNode *genericParmBound(FnDclNode *generic, uint32_t pos, INode **refperm) {
     if (generic->genericinfo == NULL || pos >= gsig->parms->used)
         return NULL;
     INode *ptype = ((VarDclNode*)nodesGet(gsig->parms, pos))->vtype;
+    // A borrowed callable, 'f &<fn(a &T) i32': the signature is written in the parameter
+    if (ptype && ptype->tag == VirtRefTag && ((RefNode*)ptype)->region == (INode*)borrowRef
+        && ((RefNode*)ptype)->vtexp->tag == FnSigTag) {
+        RefNode *vref = (RefNode*)ptype;
+        *refperm = vref->perm == unknownType ? (INode*)newPermUseNode(roPerm) : vref->perm;
+        return (FnSigNode*)vref->vtexp;
+    }
     while (ptype && (ptype->tag == RefTag || ptype->tag == BorrowTag)) {
         if (*refperm == NULL)
             *refperm = ((RefNode*)ptype)->perm;
@@ -2604,6 +2622,56 @@ FnSigNode *genericParmBound(FnDclNode *generic, uint32_t pos, INode **refperm) {
         }
     }
     return bound;
+}
+
+// A callable given to a generic parameter taken as '&F' may only be read:
+// the instance calls it through a borrow that grants no change. One whose '()'
+// takes 'self &mut' is refused here, at the caller's argument and in the
+// author's terms, before an instance is made whose body would be refused at
+// the call, far from what was written. Answers 0 once reported.
+int genericCallablePermCheck(FnDclNode *generic, Nodes *valueargs, uint32_t firstparm) {
+    FnSigNode *gsig = (FnSigNode*)itypeGetTypeDcl(generic->vtype);
+    for (uint32_t j = 0; valueargs && j < valueargs->used; ++j) {
+        uint32_t pos = firstparm + j;
+        if (pos >= gsig->parms->used)
+            break;
+        INode *refperm;
+        if (genericParmBound(generic, pos, &refperm) == NULL || refperm == NULL)
+            continue;
+        // A '&<fn(...)' parameter is judged by its own conversion, in its own words
+        if (((VarDclNode*)nodesGet(gsig->parms, pos))->vtype->tag == VirtRefTag)
+            continue;
+        INode *permdcl = refperm == unknownType ? (INode*)roPerm : itypeGetTypeDcl(refperm);
+        if (permdcl->tag != PermTag || (permGetFlags(permdcl) & MayWrite))
+            continue;
+        INode *arg = nodesGet(valueargs, j);
+        if (!isExpNode(arg) || inodeIsError(arg))
+            continue;
+        INode *argtype = iexpGetTypeDcl(arg);
+        if (argtype->tag == RefTag)
+            argtype = itypeGetTypeDcl(((RefNode*)argtype)->vtexp);
+        if (argtype->tag != StructTag)
+            continue;
+        INode *binding = namespaceFind(&((StructNode*)argtype)->namespace, parensName);
+        if (binding == NULL || binding->tag != FnDclTag)
+            continue;
+        FnSigNode *csig = (FnSigNode*)itypeGetTypeDcl(((FnDclNode*)binding)->vtype);
+        INode *selftype = csig->tag == FnSigTag && csig->parms->used ? iexpGetTypeDcl(nodesGet(csig->parms, 0)) : NULL;
+        if (selftype == NULL || selftype->tag != RefTag || itypeGetTypeDcl(((RefNode*)selftype)->perm) != (INode*)mutPerm)
+            continue;
+        // The parameter as the generic wrote it: '&F'
+        VarDclNode *parm = (VarDclNode*)nodesGet(gsig->parms, pos);
+        INode *written = parm->vtype;
+        while (written && (written->tag == RefTag || written->tag == BorrowTag))
+            written = ((RefNode*)written)->vtexp;
+        char *fname = isNameUseNode(written) ? &((NameUseNode*)written)->namesym->namestr : "F";
+        errorMsgNode(arg, ErrorCallablePerm,
+            "%s takes `%s` as `&%s`, so the callable may only read its state; %s changes it (its `()` takes `self &mut`). Take `%s` as `&mut %s` to let it change, or pass a callable that only reads.",
+            &generic->namesym->namestr, &parm->namesym->namestr, fname,
+            closureOfStruct(argtype) ? "this closure" : "this one", &parm->namesym->namestr, fname);
+        return 0;
+    }
+    return 1;
 }
 
 // The signature a closure literal written as argument 'argi' of a call of

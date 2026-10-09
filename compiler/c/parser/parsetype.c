@@ -1529,7 +1529,11 @@ AliasDclNode *parseAlias(ParseState *parse) {
     lexNextToken();
     if (lexIsToken(AssgnToken)) {
         lexNextToken();
-        newnode->target = parseTypeReq(parse, "'='");
+        // A callable's type, 'alias Profile = fn(u f32) f32;', which '&<Profile' and 'So[Profile]' name
+        if (lexIsToken(FnToken))
+            newnode->target = parseFnBound(parse);
+        else
+            newnode->target = parseTypeReq(parse, "'='");
     }
     else {
         errorMsgLexAfter(ErrorAliasEq, "Expected '=' after the alias's name: an alias is written 'alias Name = type;'");

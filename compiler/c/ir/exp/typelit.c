@@ -478,6 +478,63 @@ static INode *typeLitAllocValue(TypeCheckState *pstate, FnCallNode *node, INode 
     return isExpNode(*argp) ? *argp : NULL;
 }
 
+static void typeLitNewAllocate(TypeCheckState *pstate, FnCallNode **nodep, RefNode *reftype, INode *option, INode *value);
+
+// 'new So[fn(i32) i32](c)': an owner of a callable, made from one value that has a
+// pub '()' of that signature, a closure or a struct of the author's. The value
+// is moved into an allocation of its own type, and the owner of that is viewed
+// as the callable's, as an owner of a trait is made from one of an implementer.
+static void typeLitNewCallable(TypeCheckState *pstate, FnCallNode **nodep, RefNode *reftype, INode *option) {
+    FnCallNode *node = *nodep;
+    StructNode *trait = (StructNode*)itypeGetTypeDcl(reftype->vtexp);
+    char sig[300] = "";
+    genericFnSigCat(sig, sizeof(sig), trait->callsig);
+    INode *region = itypeGetTypeDcl(reftype->region);
+    char *regname = region->tag == StructTag ? &((StructNode*)region)->namesym->namestr : "So";
+    if (node->args == NULL || node->args->used != 1 || nodesGet(node->args, 0)->tag == NamedValTag) {
+        errorMsgNode((INode*)node, ErrorCallableUse,
+            "%s[%s] is made from one callable value, a closure or a struct with a pub `()` of that signature: 'new %s[%s](fn (...) { ... })'.",
+            regname, sig, regname, sig);
+        return;
+    }
+    INode **argp = &nodesGet(node->args, 0);
+    if ((*argp)->tag == ClosureTag)
+        closureHint = trait->callsig;
+    inodeTypeCheck(pstate, argp, unknownType);
+    closureHint = NULL;
+    if (!isExpNode(*argp) || inodeIsError(*argp))
+        return;
+    INode *vtype = ((IExpNode*)*argp)->vtype;
+    INode *vdcl = itypeGetTypeDcl(vtype);
+    if (vdcl->tag != StructTag || (vdcl->flags & TraitType)) {
+        errorMsgNode(*argp, ErrorCallableUse,
+            "%s[%s] is made from a closure or a struct with a pub `()` of that signature, and %s is neither.",
+            regname, sig, itypeName(vtype));
+        return;
+    }
+    // An owner owns something: a value with no size has no allocation to own
+    if (((StructNode*)vdcl)->fields.used == 0) {
+        errorMsgNode(*argp, ErrorCallableUse,
+            "%s[%s] owns what its callable holds, and %s holds nothing, so there is no allocation to own. A callable that holds and borrows nothing is a plain function: pass it as a function reference, `&fn(...)`, or lend it as `&<fn(...)`.",
+            regname, sig, closureOfStruct(vdcl) ? "this closure" : itypeName(vtype));
+        return;
+    }
+    // The owner of the value itself, then that viewed as the callable
+    INode *owner =(INode*)newRefNodeFull(RefTag, (INode*)node, reftype->region, reftype->perm, vtype);
+    if (!itypeTypeCheck(pstate, &owner))
+        return;
+    typeLitNewAllocate(pstate, nodep, (RefNode*)owner, option, *argp);
+    if ((*nodep)->tag != AllocateTag)
+        return;
+    INode *made = (INode*)*nodep;
+    if (!iexpCoerce((INode**)nodep, (INode*)reftype)) {
+        char *why = fnSigCallRefusal((INode*)owner, (INode*)reftype);
+        errorMsgNode(made, why ? ErrorCallablePerm : ErrorCallableUse, "%s",
+            why ? why : "That value has no pub `()` of the signature the owner is of.");
+        *((INode**)nodep) = newErrorNode(made);
+    }
+}
+
 // 'new Rc[mut, Node](1)': an allocation in the region a managed reference type
 // names, written out or through an alias of it ('new Node(1)' for 'alias Node
 // = Gc[mut, NodeValue]'). The parentheses are the value's (typeLitAllocValue):
@@ -499,6 +556,11 @@ static void typeLitNewAllocate(TypeCheckState *pstate, FnCallNode **nodep, RefNo
         return;
     }
     if (reftype->tag == VirtRefTag) {
+        StructNode *calltrait = (StructNode*)itypeGetTypeDcl(reftype->vtexp);
+        if (calltrait->tag == StructTag && calltrait->callsig && value == NULL) {
+            typeLitNewCallable(pstate, nodep, reftype, option);
+            return;
+        }
         errorMsgNode((INode*)node, ErrorNewType,
             "A virtual reference refers to a trait, which has no value to construct: allocate a type implementing it, as 'new Rc[mut, Rect](...)', and the reference coerces where the virtual one is wanted.");
         return;
