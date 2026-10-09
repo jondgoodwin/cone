@@ -1,0 +1,81 @@
+// A method called on a '&uni' slice borrows from it: the slice can be reference
+// again and again, a fresh and shorter loan each time, as a '&uni' is that is
+// handed to a '&' parameter (ref_unireborrow) or to a '&uni' one (ref_uniborrow).
+// A slice's own methods, 'len' and 'maxlen', take the slice as the borrowed
+// reference they are declared with, not as the '&uni' itself, which would move
+// it: 's.len() + s.len()' and 'while i < s.len()' were refused as a use of a
+// slice already moved. What the loan forbids while a borrow of the slice is used
+// is ref_flow_unislicemethod.
+//
+// Each shape is here: twice in one expression, as a loop's condition, with an
+// element or a sub-slice borrowed in between, on a sub-slice and on the slice
+// handed back, and the same on a '&mut' slice; values checked.
+
+mod ref_unislicemethod;
+
+import stdio use *;
+
+fn show(label &str, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+fn twice(s &uni Array[i64]) usize { s.len() + s.len(); }
+
+// the loop condition asks for the length each time round: 1 + 2 + 3 + 4 = 10
+fn sumAll(s &uni Array[i64]) i64 {
+  mut t i64 = 0;
+  mut i usize = 0usize;
+  while i < s.len() {
+    t = t + s[i];
+    i = i + 1usize;
+  }
+  t;
+}
+
+// fills with the index, the length asked for in the condition and the body:
+// [0, 1, 2, 3], 4 * 10
+fn fillIndex(s &uni Array[i64]) i64 {
+  mut i usize = 0usize;
+  while i < s.len() {
+    s[i] = i64.from(i);
+    i = i + 1usize;
+  }
+  i64.from(s.len()) * 10 + s[3usize];
+}
+
+fn setFirst(s &uni Array[i64], v i64) { s[0usize] = v; }
+
+// the length before and after a borrow of the slice, and an element changed in between
+fn between(s &uni Array[i64]) i64 {
+  imm before = s.len();
+  setFirst(s, 50);
+  imm e = &uni s[1usize];
+  *e = 60;
+  imm after = s.len();
+  i64.from(before + after) + s[0usize] + s[1usize];
+}
+
+fn tail(s &uni Array[i64]) &uni Array[i64] { &uni s[1usize..]; }
+
+// a sub-slice, borrowed from and asked its length twice, then the slice again
+fn parts(s &uni Array[i64]) usize {
+  imm t = tail(s);
+  imm n = t.len() + t.len();
+  n + s.len();
+}
+
+fn mutTwice(s &mut Array[i64]) usize { s.len() + s.len(); }
+
+fn main() {
+  imm a = new So[Array[i64, 4]]([1, 2, 3, 4]);
+  show("twice", i64.from(twice(a)));
+  show("sumAll", sumAll(a));
+  show("fillIndex", fillIndex(a));
+  show("between", between(a));
+  show("parts", i64.from(parts(a)));
+  show("mutTwice", i64.from(mutTwice(a)));
+  show("end", 0);
+}

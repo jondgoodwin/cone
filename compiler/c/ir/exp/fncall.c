@@ -1407,6 +1407,16 @@ int fnCallLowerPtrMethod(FnCallNode *callnode, INsTypeNode *methtype) {
     // These compiler-declared signatures are generic over the pointer/reference's
     // value type, so only a concretely typed parameter takes part in coercion.
     Nodes *parms = ((FnSigNode *)selected->vtype)->parms;
+    // A '&uni' slice held in a place and taken as the slice a method borrows
+    // ('s.len()') is borrowed from, as it is when a user's method takes it
+    // (iexpCoerce): handed over as it is, it would be moved, and the second
+    // call refused
+    if (objtype->tag == ArrayRefTag && parms->used > 0 && iexpGetTypeDcl(nodesGet(parms, 0))->tag == ArrayRefTag) {
+        INode *wanted = (INode*)newRefNodeFull(ArrayRefTag, (INode*)callnode, borrowRef,
+            newPermUseNode(roPerm), ((RefNode*)objtype)->vtexp);
+        if (borrowUniReborrows(*selfp, wanted))
+            borrowUniReborrow(selfp, wanted);
+    }
     if (parms->used > 1) {
         INode *parm1type = iexpGetTypeDcl(nodesGet(parms, 1));
         if (parm1type->tag != PtrTag && parm1type->tag != RefTag && parm1type->tag != ArrayRefTag
