@@ -1547,9 +1547,30 @@ generation: its piece's list is a local declared after `k'`, so it is generated
 in the function with the loop, and the bag before `k'` and the join after the
 loop are the caller's.
 
+**In an actor's behaviour the loop is a seam.** Type check follows the loop with
+an `AwaitNode` whose `par` is set (`awaitParNew`), so flow, `awaitSplitOrReport`
+and `genlSplitHalves` treat it as they do an `await` that parks (`awaitParks`):
+the actor's pending table, the seam's record, `.resume` and `.drop` functions. A
+split method's second halves each generate the piece again (its name made
+unique), which is harmless: only the first half's call is reached. At the end of
+`genlParallelRun`, finding the `par` seam among the block's statements
+(`GenParSeam`, `AwaitNode.genpar`), no call is made. The captured variables'
+values are copied into a block of the runtime's (`parBlock`: `[n x ptr]` of
+pointers, then a copy of each), the record points into the copies, and
+`genlAwait` (`node->par`) hands the range, the piece, the block and the seam's
+resume function to `parSeam` after parking the record in the pending table as an
+`await` on a future does (`parkReserve`, `parked`). The behaviour then returns to
+the dispatcher. The copies are bitwise and never finalized: the originals are in
+the record, nothing writes the variables, and the second half moves them back
+afterwards. A copy of a borrow would point into a frame that is gone, so type
+check refuses a borrow held in a variable the body reads and a source array in
+the frame (`ErrorParFrame`); `self` is the one borrow a piece reads, and what it
+points at is the actor. The runtime side is the actors package's parallel.cone,
+"A PARALLEL EACH IN A BEHAVIOUR". In any other actor method (a synchronous
+`fn`, `init`, `final`) there is nothing to cut, and the loop is the blocking call.
+
 `genlFn` clears `parbody` for the functions it generates in the middle of a
-piece (a drop a death asks for). A split method's second halves would each
-generate the piece again; a parallel each is not built inside an actor's method.
+piece (a drop a death asks for).
 
 ### A generator
 
