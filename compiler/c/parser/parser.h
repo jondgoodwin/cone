@@ -220,6 +220,10 @@ INode *parseIf(ParseState *parse);
 INode *parseMatch(ParseState *parse);
 INode *parseWhile(ParseState *parse, Name *lifesym, int stmtflag);
 INode *parseEach(ParseState *parse, Name *lifesym, int stmtflag);
+// The entry of '<-' that begins with 'each' (lexer on the 'each'): 'each src',
+// draining a source, or 'each x in src [if cond] yield v', the loop's own header
+// and the value each pass appends. An EachEntryTag holding the loop.
+INode *parseEachEntry(ParseState *parse);
 // The filter of a loop header, 'if cond', after the source: the condition, or
 // NULL where the lexer is not on an 'if'. A header that takes one reads it with
 // this, then builds the statement that skips the items it rejects with

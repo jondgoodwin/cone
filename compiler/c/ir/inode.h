@@ -152,6 +152,8 @@ enum NodeTags {
     OfEntryTag,     // 'n of x', an entry on the right of '<-' (EntryNode, lowered at type check)
     FillEntryTag,   // 'fill x', an entry on the right of '<-' (EntryNode, lowered at type check)
     PairEntryTag,   // 'k: v', an entry on the right of '<-' (EntryNode, lowered at type check)
+    EachEntryTag,   // 'each src' or 'each x in src ... yield v', an entry on the right of '<-' (EntryNode, lowered at type check)
+    YieldEntryTag,  // the 'yield v' of an EachEntryTag's loop: the value appended each pass (EntryNode, lowered at type check)
     AwaitTag,       // 'await x': a seam in an actor's method, where it waits for x (AwaitNode)
     AwaitReplyTag,  // (injected) the envelope of a request an 'await' sends, made where the seam's id is (AwaitReplyNode)
     YieldTag,       // 'yield x': a generator's seam, where its body hands the caller a value and waits to be resumed (YieldNode)

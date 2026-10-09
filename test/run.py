@@ -122,6 +122,7 @@ TIERS = {
     "collection": 2,
     "each": 2,
     "corout": 2,
+    "stream": 2,
     "typemgmt": 2,
     "generic": 2,
     "module": 2,

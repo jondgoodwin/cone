@@ -15,9 +15,11 @@
 
 	<p style="margin-left: 40px;"><i>Note: Most of this has been implemented, including the final method
 		and the append operator's list of entries (values, <span class="pre">n of x</span>,
-		<span class="pre">fill x</span> and pairs), after a value and after a construction.
-		The &amp;- operator, closures, and an entry drawing its values from another collection
-		(<span class="pre">each src</span>) are not.</i></p>
+		<span class="pre">fill x</span>, pairs and <span class="pre">each</span>), after a value and
+		after a construction. The &amp;- operator and closures are not, nor are an
+		<span class="pre">each</span> entry fed by iterator methods
+		(<span class="pre">.filter(...).map(...)</span>) or the parallel
+		<span class="pre">&lt;- parallel each</span>.</i></p>
 
 	<p>Many operators are implemented as method calls. For instance, <span class="pre">x+3</span>
 		is treated as if it were:  <span class="pre">x.`+`(3)</span>
@@ -219,7 +221,7 @@ x.counter; // 10
 <pre>
 print &lt;- "Hello ", user;   // equivalent to: print &lt;- "Hello "; print &lt;- user
 </pre>
-	<p>Besides a value, an entry may take one of three forms, each recognized only in this list:</p>
+	<p>Besides a value, an entry may take one of four forms, each recognized only in this list:</p>
 	<ul>
 		<li><b><span class="pre">n of x</span></b> appends n values, evaluating
 			<span class="pre">x</span> once for each: <span class="pre">xs &lt;- 4 of 0</span>.
@@ -235,13 +237,30 @@ print &lt;- "Hello ", user;   // equivalent to: print &lt;- "Hello "; print &lt;
 			through a <span class="pre">&lt;-</span> method that takes the two:
 			<span class="pre">ages &lt;- name: 31</span>. Appended in order, a later value for
 			a key the dictionary already holds replaces the earlier.</li>
+		<li><b><span class="pre">each</span></b> draws values from a source, one at a time:
+			<span class="pre">each src</span> appends every item of <span class="pre">src</span>
+			(an item a loop would lend as a borrow is appended as a copy of it), and
+			<span class="pre">each x in src if cond yield v</span> is a loop's own header
+			(<a href="refeach.html#builder">Each</a>), the <span class="pre">yield</span> giving what is
+			appended on each pass. <span class="pre">yield k: v</span> appends a pair.
+			The source may be anything <span class="pre">each</span> walks, a number range
+			included.</li>
 	</ul>
 <pre>
 mut xs = new List[i32];
 xs &lt;- 1, 2, 3 of 0;          // 1, 2, 0, 0, 0
 xs &lt;- fill -1;                // -1 until xs.len() is xs.capacity()
 tx &lt;- job, 2 of next();       // a channel's '&lt;-' sends each
+imm copy = new List[i32] &lt;- each xs;                          // every item of xs
+imm evens = new List[i32] &lt;- each x in xs if *x % 2 == 0 yield *x * 10;
+imm older = new Dict[i32, i32] &lt;- each id, age in ages yield *id: *age + 1;
+xs &lt;- 9, each other.drain(), 8;      // items that move are handed over, not copied
 </pre>
+	<p>The loop reads its source while the list is appended to, so the two may not be the
+		same list: <span class="pre">xs &lt;- each xs</span> is refused as
+		<span class="pre">each x in xs { xs.push(*x); }</span> is, since the list could
+		move what the loop is reading. An array's contents may not use <span class="pre">each</span>:
+		its size is fixed, and a loop's count is not known when it is compiled.</p>
 	<p>The words <span class="pre">of</span> and <span class="pre">fill</span> mean
 		this only in the list; elsewhere they are ordinary names. In the list,
 		<span class="pre">fill</span> is the word when a space and then a value follow it,

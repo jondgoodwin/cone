@@ -90,7 +90,7 @@ INode *cloneNode(CloneState *cstate, INode *nodep) {
         break;
     case NamedValTag:
         node = cloneNamedValNode(cstate, (NamedValNode *)nodep); break;
-    case OfEntryTag: case FillEntryTag: case PairEntryTag:
+    case OfEntryTag: case FillEntryTag: case PairEntryTag: case EachEntryTag: case YieldEntryTag:
         node = cloneEntryNode(cstate, (EntryNode *)nodep); break;
     case SizeofTag:
         node = cloneSizeofNode(cstate, (SizeofNode *)nodep); break;

@@ -614,7 +614,11 @@ in place is rewritten to a block, `{imm tmp = &mut x; *tmp = *tmp + 1}`
 temporary its first statement makes (`mk().n += 1`, or the guard of
 `(&mut *p).n += 1`, which holds a lock) dies at the block's end, after the
 store, in generation and in the loan walk alike, not after the declaration
-that borrowed it.
+that borrowed it. That temporary holds nothing past its statement (it is no
+holder), which suits an operator and not a loop that appends across its passes
+while it reads: the receiver of a `<-` list holding an `each` is a variable of
+an ordinary name, a holder, so the loop's reads and its appends are checked
+against each other (`xs <- each xs` is refused).
 
 **A lock's guard** (`FlagLockAcquire`, [references](../nodes/references.md),
 "Lock permissions") is a conversion that is a temporary itself and takes its

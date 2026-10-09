@@ -233,6 +233,9 @@ int lexPeekIsLifetime();
 // With the lexer on a name, does a value follow it rather than an operator or
 // other continuation of an expression the name begins? ('fill' after '<-')
 int lexNextOpensValue();
+// With the lexer on the 'each' of an entry after '<-': does it name loop
+// variables and 'in' ('each x in src'), rather than just a source ('each src')?
+int lexEachHasVars();
 // Does this source's first statement begin 'mod' or 'pub mod'? Read off the text
 // alone: nothing is lexed and nothing reported.
 int lexOpensWithMod(char *src);

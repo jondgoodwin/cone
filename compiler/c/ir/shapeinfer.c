@@ -286,6 +286,8 @@ int siVisit(INode *node, SiVisitFn fn, void *ctx) {
     case OfEntryTag:
     case FillEntryTag:
     case PairEntryTag:
+    case EachEntryTag:
+    case YieldEntryTag:
         return siVisit(((EntryNode *)node)->first, fn, ctx) || siVisit(((EntryNode *)node)->val, fn, ctx);
     case RefCountTag:
         return siVisit(((RefCountNode *)node)->exp, fn, ctx);

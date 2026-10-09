@@ -1,0 +1,50 @@
+// What an 'each' entry of '<-' refuses once types are known.
+//
+// - it is an entry of the '<-' list and nowhere else (inside a parenthesized tuple
+//   that is itself appended, it has nothing to append to);
+// - an array's contents are a count known at compile time, which an 'each' is not;
+// - a pair 'yield k: v' needs a collection whose '<-' takes a key and a value;
+// - what a pass appends is checked against the collection as any '<-' is: a
+//   drain of items of another type, a yield of a different type;
+// - a source that cannot be walked is refused as an 'each' refuses it;
+// - a drain copies the items it is given borrowed, and a type that moves has
+//   none to copy: it is drained from a source that hands its items over.
+
+mod stream_typecheck;
+
+import collections use *;
+
+fn inATuple(src &List[i64]) {
+  mut out = new List[i64];
+  out <- (1i64, each src).1;                 //~ ErrorEntryPlace:17 "is written only there"
+}
+
+fn intoAnArray(src &List[i64]) {
+  imm arr = new Array[i64, 3] <- each src;   //~ ErrorArrayContents:34 "an 'each' gives as many values"
+}
+
+fn pairIntoAList(src &List[i64]) {
+  mut out = new List[i64];
+  out <- each x in src yield *x: *x;         //~ ErrorPairAppend:20 "taking a key and a value"
+}
+
+fn otherTypeDrained(src &List[f64]) {
+  mut out = new List[i64];
+  out <- each src;                           //~ ErrorNoCandidate:15 "<-"
+}
+
+fn otherTypeYielded(src &List[i64]) {
+  mut out = new List[i64];
+  out <- each x in src yield "text";         //~ ErrorNoCandidate:30 "<-"
+}
+
+fn notASource() {
+  mut out = new List[i64];
+  out <- each 5i64;                          //~ ErrorNotIterable:15 "walks a numeric range"
+}
+
+fn movesCannotBeCopied(src &List[String]) {
+  imm out = new List[String] <- each src;    //~ ErrorDrainItem:38 "a type that moves"
+}
+
+fn main() i32 { 0i32; }
